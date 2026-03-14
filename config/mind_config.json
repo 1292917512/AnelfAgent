@@ -1,0 +1,26 @@
+{
+  "heartbeat_interval": 600.0,
+  "meta_decision_temperature": 0.1,
+  "conversation_analysis_threshold": 30,
+  "max_tool_iterations": 30,
+  "log_ai_output": true,
+  "conv_recall_scan_limit": 500,
+  "conv_recall_backfill_batch": 30,
+  "conv_recall_min_score": 0.25,
+  "conv_recall_max_results": 10,
+  "cross_channel_enabled": true,
+  "cross_channel_window_minutes": 30,
+  "cross_channel_recall_min_score": 0.45,
+  "cross_channel_recall_max_results": 5,
+  "cross_channel_recall_scan_limit": 50,
+  "cross_channel_narrative_max_items": 3,
+  "tool_system_rules": [
+    "# 重要：禁止不使用工具！",
+    "你需要用send_message或其他工具向用户发送指定消息，必须用工具完成",
+    "完成所有操作后，必须调用 end_reply工具结束对话",
+    "所有工具都支持 _timeout参数（秒），预计耗时较长时可设置，tools_name(..., _timeout=120)",
+    "当前常驻工具仅为最小集，更多功能使用 list_entity_methods(group=分组名) 查看。",
+    "空消息表示属于你自己思考阶段，可以选择操作工具执行内容或者调用end_reply工具结束对话",
+    "出现工具总是错误就不要尝试继续了,中途也是可以回复的，合理规划工具使用次数"
+  ]
+}

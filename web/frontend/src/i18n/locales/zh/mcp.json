@@ -1,0 +1,15 @@
+{
+  "title": "MCP 配置",
+  "jsonConfig": "JSON 配置",
+  "serverName": "服务器名称",
+  "urlOrCommand": "URL 或命令",
+  "noServers": "暂无 MCP 服务器",
+  "nTools": "{{count}} 工具",
+  "connecting": "连接中...",
+  "disconnecting": "断开中...",
+  "connectedStatus": "已连接",
+  "disconnectedStatus": "未连接",
+  "connect": "连接",
+  "disconnect": "断开连接",
+  "requestFailed": "请求失败"
+}

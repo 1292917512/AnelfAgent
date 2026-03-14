@@ -1,0 +1,10 @@
+{
+  "placeholder": "输入消息... (Enter 发送, Shift+Enter 换行, 可粘贴/拖放文件)",
+  "send": "发送",
+  "clear": "清空",
+  "startConversation": "开始对话~",
+  "attachFiles": "附加文件",
+  "user": "用户",
+  "sendFailed": "发送失败",
+  "downloadFile": "下载文件"
+}

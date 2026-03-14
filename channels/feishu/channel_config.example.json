@@ -1,0 +1,12 @@
+{
+  "enabled": false,
+  "app_id": "",
+  "app_secret": "",
+  "domain": "feishu",
+  "connection_mode": "websocket",
+  "encrypt_key": "",
+  "verification_token": "",
+  "webhook_port": 9321,
+  "require_mention": true,
+  "text_limit": 4000
+}

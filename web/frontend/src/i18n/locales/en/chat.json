@@ -1,0 +1,10 @@
+{
+  "placeholder": "Type a message... (Enter to send, Shift+Enter for newline, paste/drop files)",
+  "send": "Send",
+  "clear": "Clear",
+  "startConversation": "Start a conversation~",
+  "attachFiles": "Attach files",
+  "user": "User",
+  "sendFailed": "Send failed",
+  "downloadFile": "Download file"
+}

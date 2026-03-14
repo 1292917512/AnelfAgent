@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AnelfAgent WebUI</title>
+  <style>
+    * { margin: 0; box-sizing: border-box }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #12141a; color: #e4e4e7;
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+    }
+    .card {
+      background: #181b22; border: 1px solid #27272a;
+      border-radius: 12px; padding: 32px 40px;
+      max-width: 520px; text-align: center;
+    }
+    h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; color: #fafafa; margin-bottom: 8px }
+    .sub { color: #71717a; font-size: 14px; margin-bottom: 24px }
+    .status {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 8px 16px; border-radius: 999px;
+      background: rgba(34, 197, 94, 0.12); color: #22c55e;
+      font-size: 13px; font-weight: 500; margin-bottom: 20px;
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #22c55e; box-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
+    }
+    .links { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 16px }
+    a {
+      color: #4a90d9; text-decoration: none;
+      padding: 8px 16px; border: 1px solid #27272a; border-radius: 8px;
+      font-size: 13px; transition: all .15s;
+    }
+    a:hover { border-color: #4a90d9; background: rgba(74, 144, 217, 0.1) }
+    code {
+      font-family: ui-monospace, monospace;
+      background: #262a35; padding: 2px 8px; border-radius: 4px; font-size: 12px;
+    }
+    .hint { color: #71717a; font-size: 12px; margin-top: 20px; line-height: 1.6 }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>AnelfAgent</h1>
+    <p class="sub">Unified Agent Framework WebUI</p>
+    <div class="status"><span class="dot"></span>API 服务运行中</div>
+    <p class="hint">前端尚未构建，请运行以下命令：</p>
+    <p class="hint"><code>cd web/frontend && npm install && npm run build</code></p>
+    <div class="links">
+      <a href="/api/config/webui">配置</a>
+      <a href="/api/status/">状态</a>
+      <a href="/api/tools/">工具</a>
+      <a href="/api/models/">模型</a>
+      <a href="/api/personas/">人设</a>
+      <a href="/api/mcp/">MCP</a>
+      <a href="/api/adapters/">通道</a>
+      <a href="/health">健康检查</a>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,51 @@
+{
+  "title": "Thinking Chain",
+  "subtitle": "Real-time visualization of AI thinking process, tool calls, and decision chains",
+  "sessionList": "Session List",
+  "refresh": "Refresh",
+  "tracking": "Tracking",
+  "disabled": "Disabled",
+  "toolsPanel": "Tools",
+  "autoFollow": "Auto Follow",
+  "nNodes": "{{count}} nodes",
+  "waitingForActivity": "Waiting for thinking activity...",
+  "enableTracking": "Enable tracking to view thinking chains",
+  "noSessions": "No thinking sessions",
+  "heartbeat": "Heartbeat",
+  "thinkingSession": "Thinking Session",
+  "inProgress": "In Progress",
+  "nodeTypes": {
+    "session_start": "Session Start",
+    "session_end": "Session End",
+    "phase_change": "Phase Change",
+    "situation": "Situation Assessment",
+    "decision": "Meta Decision",
+    "context_build": "Context Build",
+    "llm_call": "LLM Call",
+    "tool_call": "Tool Call",
+    "reply_round": "Reply Round",
+    "introspection": "Introspection"
+  },
+  "statusLabels": {
+    "pending": "Pending",
+    "running": "Running",
+    "completed": "Completed",
+    "error": "Error",
+    "warning": "Skipped"
+  },
+  "detailLabels": {
+    "label": "Label",
+    "status": "Status",
+    "time": "Time",
+    "duration": "Duration"
+  },
+  "detailData": "Detail Data",
+  "availableTools": "Available Tools",
+  "waitingToolsLoad": "Waiting for tools to load...",
+  "nMessages": "{{count}} messages",
+  "nTasks": "{{count}} tasks",
+  "memory": "Memory",
+  "toolCount": "Tools",
+  "hasReasoning": "💭 Contains reasoning",
+  "reasoningContent": "Reasoning"
+}

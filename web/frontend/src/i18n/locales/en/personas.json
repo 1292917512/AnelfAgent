@@ -1,0 +1,10 @@
+{
+  "title": "Persona Management",
+  "newPersonaKey": "New Persona Key",
+  "createNew": "Create",
+  "editPrefix": "Edit",
+  "nameLabel": "Name",
+  "descriptionLabel": "Description",
+  "personalityLabel": "Personality Traits (JSON)",
+  "activate": "Activate"
+}

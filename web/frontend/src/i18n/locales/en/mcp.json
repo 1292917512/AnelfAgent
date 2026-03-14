@@ -1,0 +1,15 @@
+{
+  "title": "MCP Config",
+  "jsonConfig": "JSON Config",
+  "serverName": "Server Name",
+  "urlOrCommand": "URL or Command",
+  "noServers": "No MCP servers",
+  "nTools": "{{count}} tools",
+  "connecting": "Connecting...",
+  "disconnecting": "Disconnecting...",
+  "connectedStatus": "Connected",
+  "disconnectedStatus": "Disconnected",
+  "connect": "Connect",
+  "disconnect": "Disconnect",
+  "requestFailed": "Request Failed"
+}

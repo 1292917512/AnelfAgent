@@ -1,0 +1,16 @@
+{
+  "enabled": false,
+  "ws_mode": "reverse",
+  "ws_url": "ws://127.0.0.1:3001",
+  "reverse_ws_port": 8095,
+  "access_token": "",
+  "reconnect_interval": 5,
+  "max_reconnect_attempts": 0,
+  "http_api_url": "",
+  "self_id": "",
+  "napcat_webui_url": "",
+  "require_mention": true,
+  "whitelist_enabled": false,
+  "group_whitelist": "",
+  "user_whitelist": ""
+}

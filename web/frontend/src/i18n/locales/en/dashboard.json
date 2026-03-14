@@ -1,0 +1,26 @@
+{
+  "tabs": {
+    "overview": "Overview",
+    "tools": "Tool Insights",
+    "events": "Events",
+    "logs": "Logs"
+  },
+  "runningStatus": "Running Status",
+  "messageCount": "Message Count",
+  "tools": "Tools",
+  "uptime": "Uptime",
+  "componentInfo": "Component Info",
+  "componentSubtitle": "Runtime component status overview",
+  "chatLink": "Chat",
+  "chatDesc": "Interact with the agent",
+  "statusLink": "Thinking Chain",
+  "statusDesc": "Thinking process visualization",
+  "toolsLink": "Tools",
+  "toolsDesc": "Manage tool plugins",
+  "memoryLink": "Memory",
+  "memoryDesc": "Memory system management",
+  "day": "d",
+  "hour": "h",
+  "minute": "m",
+  "second": "s"
+}

@@ -1,0 +1,26 @@
+{
+  "tabs": {
+    "overview": "概况",
+    "tools": "工具洞察",
+    "events": "事件统计",
+    "logs": "日志"
+  },
+  "runningStatus": "运行状态",
+  "messageCount": "消息计数",
+  "tools": "工具",
+  "uptime": "运行时长",
+  "componentInfo": "组件信息",
+  "componentSubtitle": "运行时组件状态概览",
+  "chatLink": "对话",
+  "chatDesc": "与智能体交互",
+  "statusLink": "思维链路",
+  "statusDesc": "思维过程可视化",
+  "toolsLink": "工具",
+  "toolsDesc": "管理工具插件",
+  "memoryLink": "记忆",
+  "memoryDesc": "记忆系统管理",
+  "day": "天",
+  "hour": "时",
+  "minute": "分",
+  "second": "秒"
+}

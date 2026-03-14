@@ -1,0 +1,20 @@
+{
+  "name": "memory_consolidation",
+  "display_name": "记忆整理",
+  "description": "定期审计并整理记忆库：合并重复、清理过期、修正错误",
+  "scope": "global",
+  "enabled": true,
+  "memory_type": "reflection",
+  "importance": 0.4,
+  "tags": [
+    "type:consolidation",
+    "type:reflection"
+  ],
+  "source": "memory_consolidation",
+  "null_keywords": [
+    "记忆库健康",
+    "无需整理",
+    "整体健康"
+  ],
+  "prompt": "现在进行记忆库健康审计与整理。按以下步骤执行，每步使用工具完成：\n\n【第一步：总览】\n调用 memory_stats 查看记忆健康状态和各类型数量。\n\n【第二步：合并重复反思】\n若 reflection 类型记忆超过 5 条：\n  - 调用 memory_deep_search(memory_type='reflection') 查看全部反思内容\n  - 将主题高度相似的反思用 merge_memories 合并\n  - 若数量不多或内容各异，可跳过\n\n【第三步：清理过期实体记忆】\n  - 调用 memory_index(tag='type:profile') 查看实体画像记忆\n  - 若同一实体有多条画像，仅保留最新最完整的，其余用 forget 删除\n\n【第四步：巡检便签文件】\n  1. 调用 list_memory_files 查看所有便签文件列表\n  2. 对需要检查的文件，调用 view_memory_outline 查看标题大纲（无需读取全文）\n  3. 若发现需要清理的段落（已完成的计划、过期信息、冗余内容）：\n     - 用 delete_section 删除整个过期段落\n     - 用 write_section 替换需要更新的段落内容\n     - 用 patch_memory_file 做小范围文本修正\n  4. 若需要了解具体内容再决定，用 read_section 按标题读取指定段落\n  注意：优先使用精确编辑工具，避免用 write_notes 整体覆写\n\n【完成】\n所有步骤完成后，调用 end_reply 结束本次整理。\n\n注意：\n- 已经完成或者解决的事项及时更新\n- 尽量在少数回合内完成，避免过度整理\n- 如果记忆整体健康无需操作，直接调用 end_reply 结束即可"
+}

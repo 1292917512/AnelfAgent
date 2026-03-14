@@ -1,0 +1,10 @@
+{
+  "title": "人设管理",
+  "newPersonaKey": "新人设标识",
+  "createNew": "新建",
+  "editPrefix": "编辑",
+  "nameLabel": "名称",
+  "descriptionLabel": "描述",
+  "personalityLabel": "人格特征 (JSON)",
+  "activate": "激活"
+}

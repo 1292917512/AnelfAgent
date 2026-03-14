@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "example-sse": {
+      "url": "http://127.0.0.1:8080/mcp",
+      "transport": "sse",
+      "enabled": false
+    },
+    "example-stdio": {
+      "command": "npx",
+      "args": ["-y", "@example/mcp-server"],
+      "env": {
+        "API_KEY": "your-api-key-here"
+      },
+      "transport": "stdio",
+      "enabled": false
+    }
+  }
+}

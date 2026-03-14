@@ -1,0 +1,16 @@
+{
+  "enabled": false,
+  "bot_token": "",
+  "proxy_host": "",
+  "proxy_port": 7890,
+  "require_mention": true,
+  "reply_to_mode": "all",
+  "stream_mode": "off",
+  "parse_mode": "html",
+  "link_preview": true,
+  "text_limit": 4096,
+  "webhook_enabled": false,
+  "webhook_url": "",
+  "webhook_secret": "",
+  "webhook_port": 8443
+}

@@ -1,0 +1,62 @@
+{
+  "title": "System Status",
+  "appConfigTitle": "App Config",
+  "configTabs": {
+    "thinking": "Thinking",
+    "memory": "Memory",
+    "behavior": "Behavior",
+    "system": "System"
+  },
+  "tabs": {
+    "system": "System Info",
+    "python": "Python",
+    "git": "Git",
+    "config": "Config Overview"
+  },
+  "os": "OS",
+  "architecture": "Architecture",
+  "cpu": "CPU",
+  "memoryLabel": "Memory",
+  "systemDetails": "System Details",
+  "processor": "Processor",
+  "user": "User",
+  "homeDir": "Home Directory",
+  "disk": "Disk",
+  "pythonEnv": "Python Environment",
+  "version": "Version",
+  "implementation": "Implementation",
+  "path": "Path",
+  "virtualEnv": "Virtual Environment",
+  "systemEnv": "System Environment",
+  "devTools": "Dev Tools",
+  "installed": "Installed",
+  "notInstalled": "Not Installed",
+  "pythonEnvStatus": "Python Environment Status",
+  "pipMirror": "pip Mirror",
+  "installedPackages": "Installed Packages",
+  "nPackages": "{{count}} packages",
+  "gitGlobalConfig": "Git Global Config",
+  "testGithub": "Test GitHub",
+  "githubConnectivity": "GitHub Connectivity Test",
+  "configFileStatus": "Config File Status",
+  "configLabels": {
+    "app": "App Config",
+    "mind": "Mind Config",
+    "llm": "LLM Client",
+    "mcp": "MCP Servers",
+    "personas": "Persona Index"
+  },
+  "about": "About",
+  "versionInfo": "Version v{{version}} | AnelfTools",
+  "webuiInfo": "WebUI built with React + Vite + Tailwind CSS",
+  "mindFields": {
+    "heartbeat_interval": "Heartbeat Interval (ms)",
+    "meta_decision_temperature": "Meta Decision Temperature",
+    "conversation_analysis_threshold": "Conversation Analysis Threshold",
+    "max_tool_iterations": "Max Tool Iterations",
+    "log_ai_output": "Log AI Output",
+    "llm_max_retries": "LLM Max Retries",
+    "llm_timeout": "LLM Timeout (seconds)",
+    "tool_system_rules": "Tool System Rules"
+  }
+}

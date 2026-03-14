@@ -1,0 +1,18 @@
+{
+  "dashboard": "Overview",
+  "chat": "Chat",
+  "models": "Models",
+  "tools": "Tools",
+  "tags": "Tag System",
+  "personas": "Personas",
+  "memory": "Memory",
+  "mcp": "MCP",
+  "thinking": "Thinking Chain",
+  "channels": "Channels",
+  "app_config": "App Config",
+  "settings": "Environment",
+  "group_core": "Core",
+  "group_ability": "Capability",
+  "group_agent": "Agent",
+  "group_system": "System"
+}

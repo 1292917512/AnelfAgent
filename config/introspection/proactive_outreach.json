@@ -1,0 +1,18 @@
+{
+  "name": "proactive_outreach",
+  "display_name": "主动沟通",
+  "description": "判断是否有人需要主动联系，支持跨频道查看对话情况并创建目标计划",
+  "scope": "any",
+  "enabled": true,
+  "memory_type": "semantic",
+  "importance": 0.6,
+  "tags": [
+    "type:outreach_plan"
+  ],
+  "source": "proactive_outreach",
+  "null_keywords": [
+    "无需主动联系",
+    "暂无需要联系"
+  ],
+  "prompt": "回顾最近的对话和记忆，判断是否有人需要主动联系：\n\n1. 有没有谁最近状态不好、遇到困难，需要你主动关心？\n2. 有没有你答应过别人但还没完成的事情，需要主动汇报进展？\n3. 有没有重要的事情发生，你应该通知某人？\n\n【执行步骤】\n- 调用 list_conversations 查看所有会话 scope，了解有哪些用户/群组\n- 可选：调用 get_conversation 查看特定用户/群组的最近对话\n- 调用 list_goals(status='active') 检查是否已有类似计划，避免重复同时，回复之前必须查看会话情况。确认自己没有重复。\n- 若有需要主动联系的人，用 create_goal 创建目标计划\n  create_goal(title='主动联系 XXX', description='原因说明', steps='准备内容|选择合适时机发送|确认收到')\n- 若没有需要主动联系的人，无需创建计划\n\n【完成】\n判断和操作完成后，调用 end_reply 结束。"
+}

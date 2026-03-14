@@ -1,0 +1,62 @@
+{
+  "title": "系统状态",
+  "appConfigTitle": "应用配置",
+  "configTabs": {
+    "thinking": "思考",
+    "memory": "记忆",
+    "behavior": "行为",
+    "system": "系统"
+  },
+  "tabs": {
+    "system": "系统信息",
+    "python": "Python",
+    "git": "Git",
+    "config": "配置概览"
+  },
+  "os": "操作系统",
+  "architecture": "架构",
+  "cpu": "CPU",
+  "memoryLabel": "内存",
+  "systemDetails": "系统详情",
+  "processor": "处理器",
+  "user": "用户",
+  "homeDir": "主目录",
+  "disk": "磁盘",
+  "pythonEnv": "Python 环境",
+  "version": "版本",
+  "implementation": "实现",
+  "path": "路径",
+  "virtualEnv": "虚拟环境",
+  "systemEnv": "系统环境",
+  "devTools": "开发工具",
+  "installed": "已安装",
+  "notInstalled": "未安装",
+  "pythonEnvStatus": "Python 环境状态",
+  "pipMirror": "pip 镜像源",
+  "installedPackages": "已安装包",
+  "nPackages": "{{count}} 个",
+  "gitGlobalConfig": "Git 全局配置",
+  "testGithub": "测试 GitHub",
+  "githubConnectivity": "GitHub 连通性测试",
+  "configFileStatus": "配置文件状态",
+  "configLabels": {
+    "app": "应用配置",
+    "mind": "Mind 配置",
+    "llm": "LLM 客户端",
+    "mcp": "MCP 服务器",
+    "personas": "人设索引"
+  },
+  "about": "关于",
+  "versionInfo": "版本 v{{version}} | AnelfTools",
+  "webuiInfo": "WebUI 基于 React + Vite + Tailwind CSS 构建",
+  "mindFields": {
+    "heartbeat_interval": "心跳间隔 (ms)",
+    "meta_decision_temperature": "元决策温度",
+    "conversation_analysis_threshold": "对话分析阈值",
+    "max_tool_iterations": "最大工具迭代次数",
+    "log_ai_output": "记录 AI 输出",
+    "llm_max_retries": "LLM 最大重试",
+    "llm_timeout": "LLM 超时 (秒)",
+    "tool_system_rules": "工具系统规则"
+  }
+}

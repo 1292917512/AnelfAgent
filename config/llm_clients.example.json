@@ -1,0 +1,78 @@
+{
+  "providers": [
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "sk-your-api-key-here",
+      "api_type": "openai",
+      "proxy_url": "",
+      "models": [
+        {
+          "id": "gpt-4o",
+          "name": "GPT-4o",
+          "model": "gpt-4o",
+          "model_types": ["chat"],
+          "supports_vision": true,
+          "supports_tools": true,
+          "vision_format": "base64",
+          "temperature": 0.4,
+          "top_p": 0.8,
+          "max_tokens": 16384,
+          "frequency_penalty": 0.0,
+          "presence_penalty": 0.0,
+          "timeout": 120.0,
+          "supports_reasoning": false
+        },
+        {
+          "id": "text-embedding-3-small",
+          "name": "Embedding",
+          "model": "text-embedding-3-small",
+          "model_types": ["embedding"],
+          "supports_vision": false,
+          "supports_tools": false,
+          "vision_format": "base64",
+          "temperature": 0.0,
+          "top_p": 1.0,
+          "max_tokens": 8192,
+          "frequency_penalty": 0.0,
+          "presence_penalty": 0.0,
+          "timeout": 30.0,
+          "supports_reasoning": false
+        }
+      ]
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "api_key": "",
+      "api_type": "ollama",
+      "proxy_url": "",
+      "models": [
+        {
+          "id": "ollama-chat",
+          "name": "Ollama Chat",
+          "model": "qwen3:latest",
+          "model_types": ["chat"],
+          "supports_vision": false,
+          "supports_tools": true,
+          "vision_format": "base64",
+          "temperature": 0.4,
+          "top_p": 0.7,
+          "max_tokens": 8192,
+          "frequency_penalty": 0.0,
+          "presence_penalty": 0.0,
+          "timeout": 120.0,
+          "supports_reasoning": false
+        }
+      ]
+    }
+  ],
+  "type_priorities": {
+    "chat": ["gpt-4o", "ollama-chat"],
+    "embedding": ["text-embedding-3-small"],
+    "vision": ["gpt-4o"]
+  },
+  "default_chat": "gpt-4o"
+}

@@ -1,0 +1,55 @@
+import { useEffect } from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Layout } from "./components/layout/Layout";
+import { useAppStore } from "./stores/app-store";
+import { configApi } from "./lib/api";
+import Dashboard from "./pages/Dashboard";
+import Chat from "./pages/Chat";
+import Models from "./pages/Models";
+import Tools from "./pages/Tools";
+import Personas from "./pages/Personas";
+import Memory from "./pages/Memory";
+import MCP from "./pages/MCP";
+import Channels from "./pages/Channels";
+import Settings from "./pages/Settings";
+import AppConfig from "./pages/AppConfig";
+import Thinking from "./pages/Thinking";
+import Tags from "./pages/Tags";
+
+export default function App() {
+  const setConfig = useAppStore((s) => s.setConfig);
+
+  useEffect(() => {
+    configApi.webui().then((r) => {
+      const data = r.data;
+      setConfig({
+        branding: data.branding,
+        theme: data.theme,
+        navigation: data.navigation,
+      });
+    }).catch((e) => console.warn("[API]", e));
+  }, [setConfig]);
+
+  return (
+    <BrowserRouter basename="/webui">
+      <Routes>
+        <Route element={<Layout />}>
+          <Route index element={<Chat />} />
+          <Route path="dashboard" element={<Dashboard />} />
+          <Route path="status" element={<Navigate to="/" replace />} />
+          <Route path="models" element={<Models />} />
+          <Route path="tools" element={<Tools />} />
+          <Route path="tags" element={<Tags />} />
+          <Route path="personas" element={<Personas />} />
+          <Route path="memory" element={<Memory />} />
+          <Route path="mcp" element={<MCP />} />
+          <Route path="channels" element={<Channels />} />
+          <Route path="thinking" element={<Thinking />} />
+          <Route path="settings" element={<Settings />} />
+          <Route path="app-config" element={<AppConfig />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  );
+}

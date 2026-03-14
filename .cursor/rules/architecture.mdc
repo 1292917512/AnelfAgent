@@ -1,0 +1,199 @@
+---
+description: "AnelfTools 架构速查 — 目录职责、依赖方向、核心系统、开发约定"
+globs: ["**/*"]
+alwaysApply: true
+---
+# 架构速查
+
+## 目录职责
+
+| 目录 | 职责 | 关键约定 |
+|------|------|---------|
+| `core/` | 基础框架（EntityRegistry / ConfigManager / Lifecycle / PathManager+ConfigPaths / 标签 / 事件 / 日志） | 不依赖任何业务模块 |
+| `agent/core/` | 智能体内核（Mind / LLM / Storage / Channel / Runtime） | 不依赖 web |
+| `channels/` | 频道适配器（目录自动发现） | 继承 BaseChannel |
+| `entities/` | 工具实体（目录自动发现） | 通过 `@tool`/`entity()` 注册，通过 `_sdk.py` 桥接 LLM |
+| `services/` | 业务封装层 | 供 Web API 调用，不依赖 web |
+| `web/routers/` | FastAPI 路由 | 共享模型放 `schemas.py` |
+| `web/frontend/src/` | React 前端 | 页面壳组件 + 子面板目录拆分 |
+| `config/` | JSON 配置 + SQLite 数据 + Markdown 便签 | 路径统一用 `ConfigPaths` |
+
+## 依赖方向
+
+```
+web/frontend → web/routers → services → agent.core → core/
+entities → entities._sdk → core.entity
+channels/ → agent.core.channel → core.entity
+
+禁止: agent → web | core → agent | services → web | entities → agent（通过 _sdk 桥接）
+```
+
+## 核心系统
+
+### EntityRegistry（core/entity.py）
+
+中央注册枢纽。所有模块以实体方式注册、发现、调用。
+
+| EntityType | 用途 |
+|-----------|------|
+| SERVICE | LLMManager, ChannelManager |
+| TOOL | entities/* 工具 |
+| MODEL | LLMClient |
+| ADAPTER | BaseChannel 子类 |
+| STORAGE | DataCenter |
+| DATABASE | MemoryStore |
+| MCP_SERVER | MCPBridge |
+
+### ConfigPaths（core/path.py）
+
+配置路径常量集中管理，避免硬编码分散：
+
+```python
+ConfigPaths.APP_CONFIG          # config/app_config.json
+ConfigPaths.WEBUI_CONFIG        # config/webui.json
+ConfigPaths.MCP_SERVERS         # config/mcp_servers.json
+ConfigPaths.INTROSPECTION_CONFIG # config/introspection.json
+ConfigPaths.UPLOAD_DIR          # workspace/uploads
+```
+
+### 标签系统（core/tags.py）
+
+`[key:value]` 统一数据编码。函数：`tag_label` / `etag` / `etag_all` / `batch_remove_tags`。
+16 种内置标签：time / uid / group_id / name / channel / platform / media_file / reply_to 等。
+
+### entities/_sdk.py
+
+工具注册 SDK + LLM 桥接层。entities 层通过此模块访问 LLM 能力，不直接依赖 agent：
+
+```python
+from entities._sdk import tool, entity                     # 工具注册
+from entities._sdk import get_llm_manager                   # LLM 访问
+from entities._sdk import load_image_from_path              # 图片加载
+from entities._sdk import get_image_content_class, get_model_type_enum  # 类型获取
+```
+
+## 思维系统
+
+### 自主循环
+
+```
+消息入队 → PFC.add_task → _autonomous_cycle
+  → 心跳: 日志合并 + 实体计数持久化
+  → 收集态势（消息/任务/记忆/目标/通道）
+  → 简单场景 fast-path REPLY / 复杂场景元决策
+  → REPLY → 记忆召回 → _think_loop（while 迭代 + 工具调用）
+  → end_reply → 完成
+```
+
+### 工具注入（PFC 7 路合并）
+
+| 来源 | 说明 |
+|------|------|
+| always | 永驻工具（end_reply, send_message 等） |
+| mcp:* | MCP 服务工具 |
+| channel | 频道能力匹配 |
+| tag_match | 消息标签激活（如 media:image） |
+| hot_recall | 热门工具 top-N |
+| discovered | 动态发现 |
+
+### 上下文组装
+
+```
+1. system（人设 + 便签）
+2. 工具系统提示 + 短期记忆
+3. 历史对话 head（超过 20 条时压缩摘要）
+4. 语义召回记忆
+5. 历史对话 tail（最近 10 条）
+```
+
+## 前端结构
+
+页面采用壳组件 + 子面板目录拆分模式，通用 TabBar 切换：
+
+```
+pages/
+├── Chat.tsx             # 对话（首页）
+├── Dashboard.tsx        # 总览 → dashboard/（4 个面板）
+├── Memory.tsx           # 记忆 → memory/（7 个面板）
+├── AppConfig.tsx        # 配置 → config/（7 个面板，含通用 ConfigFormPanel）
+├── Channels.tsx         # 频道 → channels/（4 个面板）
+├── Models.tsx           # 模型 → models/（2 个面板）
+└── ...
+
+components/common/TabBar.tsx  # 统一标签栏
+lib/types.ts                  # API 接口类型定义
+lib/styles.ts                 # 共享样式常量
+i18n/locales/{zh,en}/         # 14 个 namespace
+```
+
+## 关键文件索引
+
+| 文件 | 职责 |
+|------|------|
+| `mind.py` | 思维核心、自主循环、工具执行 |
+| `prefrontal_cortex.py` | 工作记忆、工具召回、上下文组装 |
+| `autonomous.py` | 决策类型、态势模型、元决策 prompt |
+| `memory/memory_store.py` | 长期记忆存储（SQLite + FTS5 + Embedding） |
+| `memory/tools.py` | 记忆工具（memorize/recall/forget） |
+| `memory/notes.py` | 便签文件系统 |
+| `bootstrap.py` | 启动流程（15 步：初始化 → 组装 → 启动 → 状态恢复 → 健康检查） |
+| `entities/_sdk.py` | 工具注册 + LLM 桥接 |
+| `channel/manager.py` | 频道管理（register / register_lightweight / 路由） |
+| `web/routers/schemas.py` | 共享 Pydantic 模型（MindConfigUpdate 等） |
+| `core/path.py` | PathManager + ConfigPaths 路径常量 |
+| `core/lifecycle.py` | 单例生命周期注册表（register / shutdown_all / reset） |
+
+## 工具分组体系
+
+### group key 规范
+
+工具分组 key 是全局标识符，**必须使用英文**，前端通过 i18n 翻译展示中文/英文名称。
+
+- 后端注册：`group="thinking"` / `entity("web", "...")`
+- 前端翻译：`i18n/locales/{zh,en}/tools.json` → `groups.thinking` → "思维工具"
+- 前端使用：`t(`groups.${g.group}`, { defaultValue: g.group })`
+
+修改分组名时必须同步更新：
+1. 后端 `@tool(group=...)` / `@deferred_tool(group=...)` / `entity(group, ...)` / `activate_group(group, ...)`
+2. 前端 `i18n/locales/zh/tools.json` 和 `en/tools.json` 的 `groups` 对象
+3. `core/entity.py` 的 `_CATALOG_ORDER`（LLM 工具目录排序）
+4. `services/tool.py` 的 `_GROUP_ORDER`（WebUI 工具列表排序）
+
+### 当前分组索引
+
+| group key | 中文名 | 注册文件 | tags |
+|---|---|---|---|
+| `output` | 消息输出 | `channel/output_tools.py` | always |
+| `memory` | 记忆管理 | `mind/memory/tools.py` | always/core/reflect |
+| `notes` | 便签记忆 | `mind/memory/notes.py` | core/reflect |
+| `thinking` | 思维工具 | `mind/mind.py` + `mind/multi_tool.py` | always |
+| `planning` | 目标规划 | `mind/planning/tools.py` | planning/goal/reflect |
+| `web` | 网络工具 | `entities/web/tools.py` | web/search/fetch |
+| `media` | 多媒体 | `entities/media/tools.py` | media:* |
+| `os` | 操作系统 | `entities/filesystem/tools.py` | media:file |
+| `environment` | 环境信息 | `entities/system/tools.py` | — |
+| `model_control` | 模型控制 | `entities/model_control/tools.py` | core |
+| `ollama` | Ollama | `entities/model_control/tools.py` | — |
+| `logs` | 日志查询 | `entities/logs/tools.py` | — |
+| `channel_ops` | 频道操作 | `channel/output_tools.py`（动态） | capability |
+| `entity` | 实体管理 | `entities/entity_query/tools.py` | always/core |
+| `mcp_manage` | MCP 管理 | `entities/mcp/bridge.py`（动态） | — |
+| `mcp:*` | MCP 服务 | 动态注册 | — |
+
+## 开发约定
+
+**import**：`from core.log import log` / `from core.entity import EntityRegistry` / `from core.path import ConfigPaths`
+
+**日志**：`log("内容")` / `log("调试", "DEBUG")` / `log(f"错误: {exc}", "ERROR")`
+
+**异常处理**：关键路径（数据库连接、关闭）保持 `except Exception`；工具函数返回 JSON error；其他 `pass` 场景补充 DEBUG 日志
+
+**工具开发**：返回 `str`（JSON）、完整类型注解、Google docstring、内部捕获异常
+
+**频道开发**：继承 BaseChannel、6 个必需接口（channel_id / display_name / capabilities / start / stop / send_text）
+
+**前端**：页面超过 300 行拆为子面板目录、统一用 TabBar、i18n 覆盖所有文本、`Record<string, unknown>` 替换为 `lib/types.ts` 接口
+
+**生命周期**：bootstrap 中创建的有状态单例须调用 `Lifecycle.register(name, instance, cleanup=close_fn)` 注册；关闭时 `Lifecycle.shutdown_all()` 逆序清理
+
+**禁止**：直接 import openai/anthropic SDK（用 litellm）/ entities 直接 import agent（用 _sdk 桥接）
