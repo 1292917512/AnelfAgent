@@ -82,9 +82,5 @@ web/frontend/node_modules/
 # === Workspace & uploads ===
 /workspace/
 
-# === Local scripts ===
-/start_napcat.sh
-/start_mengli.sh
-
 # === Misc ===
 /.other
