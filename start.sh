@@ -52,10 +52,22 @@ echo "  按 Ctrl+C 停止服务"
 echo "  ─────────────────────────────────────────"
 echo ""
 
-$RUN_CMD launch.py "$@"
-EXIT_CODE=$?
+while true; do
+    $RUN_CMD launch.py "$@"
+    EXIT_CODE=$?
 
-if [ $EXIT_CODE -ne 0 ]; then
-    echo ""
-    echo "  [!] 服务异常退出，错误码: $EXIT_CODE"
-fi
+    if [ $EXIT_CODE -eq 42 ]; then
+        echo ""
+        echo "  [重启] 收到重启信号，3 秒后重新启动..."
+        sleep 3
+        echo "  [重启] 正在重新启动..."
+        echo ""
+        continue
+    fi
+
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo ""
+        echo "  [!] 服务异常退出，错误码: $EXIT_CODE"
+    fi
+    break
+done

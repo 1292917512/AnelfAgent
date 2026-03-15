@@ -57,10 +57,21 @@ echo  按 Ctrl+C 停止服务
 echo  ─────────────────────────────────────────
 echo.
 
+:run_loop
 %RUN_CMD% launch.py %*
+set EXIT_CODE=%ERRORLEVEL%
 
-if %ERRORLEVEL% NEQ 0 (
+if %EXIT_CODE% EQU 42 (
     echo.
-    echo  [!] 服务异常退出，错误码: %ERRORLEVEL%
+    echo  [重启] 收到重启信号，3 秒后重新启动...
+    timeout /t 3 /nobreak >nul
+    echo  [重启] 正在重新启动...
+    echo.
+    goto run_loop
+)
+
+if %EXIT_CODE% NEQ 0 (
+    echo.
+    echo  [!] 服务异常退出，错误码: %EXIT_CODE%
     pause
 )

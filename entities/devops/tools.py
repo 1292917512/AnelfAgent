@@ -195,8 +195,14 @@ def _build_frontend() -> None:
         log(f"⚠️ 前端构建异常（不阻塞重启）: {e}", "WARNING", tag="运维")
 
 
+_RESTART_EXIT_CODE = 42
+
+
 def _schedule_restart() -> None:
-    """延迟 2 秒后执行：前端构建 → 生命周期清理 → 进程重启。"""
+    """延迟 2 秒后执行：前端构建 → 生命周期清理 → 以退出码 42 退出触发重启。
+
+    启动脚本（start.bat / start.sh）检测到退出码 42 会自动重新启动应用。
+    """
     import asyncio
     from core.log import log
 
@@ -212,10 +218,8 @@ def _schedule_restart() -> None:
         except Exception:
             pass
 
-        root = _project_root()
-        log(f"🔄 执行进程重启 (cwd={root})...", tag="运维")
-        os.chdir(root)
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        log(f"🔄 以退出码 {_RESTART_EXIT_CODE} 退出，等待启动脚本重启...", tag="运维")
+        os._exit(_RESTART_EXIT_CODE)
 
     try:
         loop = asyncio.get_running_loop()
