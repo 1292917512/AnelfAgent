@@ -339,6 +339,7 @@ class EntityRegistry:
         "output": 0, "memory": 1, "notes": 2, "thinking": 3, "planning": 4,
         "web": 5, "media": 6, "os": 7, "environment": 8, "model_control": 9,
         "ollama": 10, "logs": 11, "channel_ops": 12, "entity": 13, "mcp_manage": 14,
+        "devops": 15,
     }
 
     @classmethod

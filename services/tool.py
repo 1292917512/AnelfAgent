@@ -22,6 +22,7 @@ _GROUP_ORDER = {
     "channel_ops": 12,
     "entity": 13,
     "mcp_manage": 14,
+    "devops": 15,
 }
 
 

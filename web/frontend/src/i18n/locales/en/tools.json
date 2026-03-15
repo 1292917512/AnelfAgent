@@ -28,7 +28,8 @@
     "logs": "Logs",
     "channel_ops": "Channel Ops",
     "entity": "Entity Manager",
-    "mcp_manage": "MCP Manager"
+    "mcp_manage": "MCP Manager",
+    "devops": "DevOps"
   },
   "reload": "Reload",
   "reloading": "Reloading...",

@@ -28,7 +28,8 @@
     "logs": "日志查询",
     "channel_ops": "频道操作",
     "entity": "实体管理",
-    "mcp_manage": "MCP 管理"
+    "mcp_manage": "MCP 管理",
+    "devops": "运维管理"
   },
   "reload": "重新加载",
   "reloading": "重新加载中...",
