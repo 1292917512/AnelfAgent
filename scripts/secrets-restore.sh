@@ -14,15 +14,12 @@ fi
 
 echo "[restore] Pulling latest from private repo..."
 cd "$VAULT"
-git pull --ff-only
+git pull --ff-only 2>/dev/null || git pull --rebase
+cd "$ROOT"
 echo
 
-mkdir -p \
-    "$ROOT/config/personas" \
-    "$ROOT/config/memory" \
-    "$ROOT/channels/telegram" \
-    "$ROOT/channels/qq" \
-    "$ROOT/channels/feishu"
+echo "[restore] Copying files to project directory..."
+echo
 
 COUNT=0
 
@@ -39,20 +36,22 @@ FILES=(
 
 for f in "${FILES[@]}"; do
     if [[ -f "$VAULT/$f" ]]; then
-        cp -f "$VAULT/$f" "$ROOT/$(dirname "$f")/"
+        mkdir -p "$ROOT/$(dirname "$f")"
+        cp -f "$VAULT/$f" "$ROOT/$f"
         echo "  [ok] $f"
         ((COUNT++)) || true
-    else
-        echo "  [skip] $f (not in backup)"
     fi
 done
 
 if [[ -d "$VAULT/config/memory" ]]; then
-    rsync -a \
+    mkdir -p "$ROOT/config/memory"
+    rsync -a --delete \
+        --exclude='*.sqlite3-wal' \
+        --exclude='*.sqlite3-shm' \
         "$VAULT/config/memory/" "$ROOT/config/memory/"
     echo "  [ok] config/memory/ (synced)"
     ((COUNT++)) || true
 fi
 
 echo
-echo "[done] $COUNT items restored from .secrets/"
+echo "[done] Restored $COUNT items from private repo."
