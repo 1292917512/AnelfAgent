@@ -83,25 +83,6 @@ def backup_memories(message: str = "") -> str:
     }, ensure_ascii=False)
 
 
-# ── 记忆还原 ──────────────────────────────────────────────────────────
-
-@tool(name="restore_memories", group="devops")
-def restore_memories() -> str:
-    """从私有 GitHub 仓库还原记忆文件到项目中。
-
-    自动执行 secrets-restore 脚本：拉取最新备份并覆盖本地配置和记忆文件。
-    """
-    script = _pick_script("secrets-restore")
-    if not os.path.exists(script):
-        return json.dumps({"error": f"还原脚本不存在: {script}"}, ensure_ascii=False)
-
-    result = _run(f'"{script}"', cwd=_project_root(), timeout=120)
-    return json.dumps({
-        "action": "restore_memories",
-        **result,
-    }, ensure_ascii=False)
-
-
 # ── 项目更新 ──────────────────────────────────────────────────────────
 
 @tool(name="update_project", group="devops")
