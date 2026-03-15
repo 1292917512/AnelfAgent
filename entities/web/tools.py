@@ -76,7 +76,8 @@ def web_search_deep(
         region:           区域语言代码，默认 cn-zh
     """
     from duckduckgo_search import DDGS
-    fetch_top = min(max(1, fetch_top), 5)
+    fetch_top = min(max(1, int(fetch_top)), 5)
+    max_chars_per_page = int(max_chars_per_page)
     try:
         with DDGS() as ddgs:
             raw = list(ddgs.text(query, max_results=fetch_top + 2, region=region))
@@ -137,6 +138,7 @@ def web_fetch(
         timeout:      超时秒数，默认 15
     """
     import httpx
+    max_chars = int(max_chars)
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         return json.dumps({"error": f"仅支持 http/https，收到: {url[:50]}"}, ensure_ascii=False)

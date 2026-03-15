@@ -71,14 +71,14 @@ def extract_page_metadata(html: str, url: str = "") -> Dict[str, str]:
 
     # 描述
     for sel in [{"property": "og:description"}, {"name": "description"}, {"name": "twitter:description"}]:
-        tag = soup.find("meta", **sel)
+        tag = soup.find("meta", attrs=sel)
         if tag and tag.get("content"):
             meta["description"] = tag["content"].strip()
             break
 
     # 作者
     for sel in [{"name": "author"}, {"property": "article:author"}]:
-        tag = soup.find("meta", **sel)
+        tag = soup.find("meta", attrs=sel)
         if tag and tag.get("content"):
             meta["author"] = tag["content"].strip()
             break
@@ -91,7 +91,7 @@ def extract_page_metadata(html: str, url: str = "") -> Dict[str, str]:
 
     # 发布时间
     for sel in [{"property": "article:published_time"}, {"name": "pubdate"}, {"itemprop": "datePublished"}]:
-        tag = soup.find("meta", **sel) or soup.find(attrs=sel)
+        tag = soup.find("meta", attrs=sel) or soup.find(attrs=sel)
         if tag:
             v = tag.get("content") or tag.get("datetime") or tag.get_text(strip=True)
             if v:
