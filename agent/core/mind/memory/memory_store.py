@@ -228,6 +228,26 @@ class MemoryStore(BaseEntity):
         except Exception as exc:
             log(f"chunks_fts 创建失败: {exc}", "WARNING")
 
+        # ---- 工具错误追踪表 ----
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS tool_errors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tool_name TEXT NOT NULL,
+                error_type TEXT NOT NULL DEFAULT '',
+                error_msg TEXT NOT NULL,
+                args_json TEXT NOT NULL DEFAULT '{}',
+                context TEXT NOT NULL DEFAULT '',
+                resolved INTEGER NOT NULL DEFAULT 0,
+                ts_ns INTEGER NOT NULL
+            );
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_te_tool ON tool_errors(tool_name);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_te_ts ON tool_errors(ts_ns);"
+        )
+
         await db.commit()
 
     async def _create_fts_triggers(self, db: aiosqlite.Connection) -> None:
@@ -1285,3 +1305,90 @@ class MemoryStore(BaseEntity):
                 seen.add(t)
                 unique.append(t)
         return " OR ".join(f'"{t}"' for t in unique)
+
+    # ==================================================================
+    # 工具错误追踪
+    # ==================================================================
+
+    async def record_tool_error(
+        self,
+        tool_name: str,
+        error_type: str,
+        error_msg: str,
+        args_json: str = "{}",
+        context: str = "",
+    ) -> Optional[int]:
+        """记录工具执行错误，返回记录 ID。"""
+        try:
+            db = await self._get_db()
+            cursor = await db.execute(
+                "INSERT INTO tool_errors (tool_name, error_type, error_msg, args_json, context, ts_ns) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (tool_name, error_type, error_msg[:500], args_json[:500], context[:200],
+                 int(time.time() * 1e9)),
+            )
+            await db.commit()
+            return cursor.lastrowid
+        except Exception as e:
+            log(f"记录工具错误失败: {e}", "DEBUG")
+            return None
+
+    async def get_tool_errors(
+        self,
+        tool_name: str = "",
+        limit: int = 20,
+        unresolved_only: bool = False,
+    ) -> list[Dict[str, Any]]:
+        """查询工具错误历史。"""
+        db = await self._get_db()
+        conditions: list[str] = []
+        params: list[Any] = []
+        if tool_name:
+            conditions.append("tool_name = ?")
+            params.append(tool_name)
+        if unresolved_only:
+            conditions.append("resolved = 0")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+        cursor = await db.execute(
+            f"SELECT id, tool_name, error_type, error_msg, args_json, context, resolved, ts_ns "
+            f"FROM tool_errors{where} ORDER BY ts_ns DESC LIMIT ?",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "tool_name": r["tool_name"],
+                "error_type": r["error_type"],
+                "error_msg": r["error_msg"],
+                "args_preview": r["args_json"][:100],
+                "context": r["context"],
+                "resolved": bool(r["resolved"]),
+                "time": r["ts_ns"] / 1e9,
+            }
+            for r in rows
+        ]
+
+    async def get_tool_error_stats(self) -> list[Dict[str, Any]]:
+        """按工具名统计错误次数。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT tool_name, COUNT(*) as count, "
+            "SUM(CASE WHEN resolved = 0 THEN 1 ELSE 0 END) as unresolved "
+            "FROM tool_errors GROUP BY tool_name ORDER BY count DESC"
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"tool_name": r["tool_name"], "total": r["count"], "unresolved": r["unresolved"]}
+            for r in rows
+        ]
+
+    async def resolve_tool_error(self, error_id: int) -> bool:
+        """标记工具错误为已解决。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "UPDATE tool_errors SET resolved = 1 WHERE id = ?", (error_id,)
+        )
+        await db.commit()
+        return (cursor.rowcount or 0) > 0

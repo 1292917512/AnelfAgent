@@ -158,7 +158,7 @@ class MemoryRetriever:
         if not all_parts:
             return []
         log(f"实体画像注入: {len(scopes)} 个 scope, {len(all_parts)} 条画像", tag="思维")
-        return [{"role": "system", "content": "[人物画像]\n" + "\n---\n".join(all_parts)}]
+        return [{"role": "system", "content": "[系统注入·人物画像] 以下为相关实体的画像信息：\n" + "\n---\n".join(all_parts)}]
 
     async def _fallback_recent(self, limit: int) -> List[Dict]:
         entries = await self._store.list_recent(limit=limit)
@@ -171,20 +171,22 @@ class MemoryRetriever:
 
     @staticmethod
     def _extract_query(conversation: List[Dict], max_chars: int = 500) -> str:
-        """从对话中提取检索查询，同时考虑 user 和 assistant 的近期内容。"""
+        """从对话中提取检索查询，过滤无意义短文本，优先使用 user 消息。"""
         texts: list[str] = []
         for msg in reversed(conversation):
             role = msg.get("role", "")
             if role not in ("user", "assistant"):
                 continue
             content = msg.get("content", "")
-            if isinstance(content, str) and content.strip():
-                cleaned = _strip_tags(content)
-                if cleaned:
-                    if role == "assistant":
-                        cleaned = cleaned[:100]
-                    texts.append(cleaned)
-            if len(texts) >= 5:
+            if not isinstance(content, str) or not content.strip():
+                continue
+            cleaned = _strip_tags(content)
+            if not cleaned or len(cleaned) < 4:
+                continue
+            if role == "assistant":
+                cleaned = cleaned[:100]
+            texts.append(cleaned)
+            if len(texts) >= 8:
                 break
         if not texts:
             return ""
@@ -192,7 +194,7 @@ class MemoryRetriever:
 
     @staticmethod
     def _format_unified_results(results: list[MemorySearchResult]) -> List[Dict]:
-        """将统一搜索结果格式化为注入消息。"""
+        """将统一搜索结果格式化为注入消息，保留 score/type 元数据。"""
         if not results:
             return []
 
@@ -200,18 +202,28 @@ class MemoryRetriever:
         file_lines: list[str] = []
 
         for r in results:
+            snippet = r.snippet[:500]
             if r.source == "file":
-                prefix = f"[{r.path}:{r.start_line}-{r.end_line}] " if r.path else ""
-                file_lines.append(f"{prefix}{r.snippet}")
+                loc = f"[{r.path}:{r.start_line}-{r.end_line}]" if r.path else ""
+                file_lines.append(f"💡 {loc} score={r.score:.2f}: {snippet}")
             else:
-                tag_prefix = f"[{','.join(r.tags)}] " if r.tags else ""
-                mem_lines.append(f"{tag_prefix}{r.snippet}")
+                mtype = r.memory_type or "semantic"
+                tag_str = f" [{','.join(r.tags)}]" if r.tags else ""
+                mem_lines.append(
+                    f"💡 [{mtype}]{tag_str} score={r.score:.2f}: {snippet}"
+                )
 
         parts: list[str] = []
         if mem_lines:
-            parts.append("[记忆召回]\n" + "\n---\n".join(mem_lines))
+            parts.append(
+                "[系统注入·记忆召回] 以下为系统自动检索的相关记忆，非用户消息：\n"
+                + "\n".join(mem_lines)
+            )
         if file_lines:
-            parts.append("[知识检索]\n" + "\n---\n".join(file_lines))
+            parts.append(
+                "[系统注入·知识检索] 以下为便签文件检索结果：\n"
+                + "\n".join(file_lines)
+            )
 
         if not parts:
             return []

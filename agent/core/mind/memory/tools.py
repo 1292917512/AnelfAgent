@@ -51,7 +51,7 @@ async def memorize(content: str, tags: str = "", importance: float = 0.7) -> str
 
     Args:
         content: 要记住的内容（简洁扼要，一两句话）
-        tags: 标签，逗号分隔（如 user:123,topic:编程,type:fact）。type:permanent 表示永久记忆
+        tags: 标签，逗号分隔。推荐前缀：type:(fact/event/permanent) user:(uid) group:(id) topic:(主题) channel:(频道)。type:permanent 表示永久记忆
         importance: 重要性 0-1，默认 0.7。permanent 类型自动设为 1.0
     """
     try:
@@ -1130,6 +1130,38 @@ async def unlink_entity(scope_type: str, scope_id: str, copy_profile: bool = Tru
                 f"{primary[0]}:{primary[1]} 的关联"
             ),
             "copied_profile": copy_profile,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ------------------------------------------------------------------
+# 工具错误查询
+# ------------------------------------------------------------------
+
+@deferred_tool(
+    group="memory", tags=["core", "reflect"], source="mind.memory",
+    description="查询工具调用错误历史，用于反思和总结经验。空 tool_name 返回所有工具的错误统计。",
+)
+async def recall_tool_errors(tool_name: str = "", limit: int = 20) -> str:
+    """查询工具调用错误历史。
+
+    Args:
+        tool_name: 工具名称，空则返回所有工具的错误统计摘要
+        limit: 返回条数上限，默认 20
+    """
+    if not _store:
+        return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
+    try:
+        limit = int(limit)
+        if not tool_name:
+            stats = await _store.get_tool_error_stats()
+            return json.dumps({"stats": stats}, ensure_ascii=False)
+        errors = await _store.get_tool_errors(tool_name=tool_name, limit=limit)
+        return json.dumps({
+            "tool_name": tool_name,
+            "count": len(errors),
+            "errors": errors,
         }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)

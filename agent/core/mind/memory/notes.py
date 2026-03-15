@@ -66,6 +66,34 @@ def _atomic_write(target: Path, content: str) -> None:
         except OSError:
             pass
         raise
+    _schedule_file_resync(target)
+
+
+def _schedule_file_resync(file_path: Path) -> None:
+    """MD 文件写入后异步触发该文件的 chunks 增量重新索引。"""
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_resync_single_file(file_path))
+
+
+async def _resync_single_file(file_path: Path) -> None:
+    """对单个 MD 文件重新生成 chunks 索引。"""
+    try:
+        from services._runtime import require_runtime
+        rt = require_runtime()
+        store = rt.mind.memory_store
+        embedder = rt.mind.embedder
+        if not store:
+            return
+        ws = get_workspace_dir()
+        from agent.core.mind.memory.memory_sync import sync_files
+        await sync_files(store, embedder, ws)
+    except Exception as e:
+        from core.log import log as _log
+        _log(f"文件索引增量同步失败: {e}", "DEBUG", tag="思维")
 
 
 def _with_line_numbers(content: str, start: int = 1) -> str:
@@ -409,11 +437,32 @@ _NOTES_EMPTY_HINT = (
 )
 
 
+def _build_file_index() -> str:
+    """生成其他 MD 便签文件的索引摘要，让 AI 知道有哪些记忆文件可查阅。"""
+    try:
+        files = list_all_memory_files()
+    except Exception:
+        return ""
+    if not files:
+        return ""
+    lines = ["[可用便签文件] 使用 view_memory_outline 查看结构，read_section 读取章节"]
+    for f in files:
+        path = f.get("path", "")
+        if path.endswith("MEMORY.md") or path.endswith("heartbeat.md"):
+            continue
+        line_count = f.get("lines", "?")
+        lines.append(f"  - {path} ({line_count} 行)")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 def build_notes_system_message() -> List[dict]:
     """将便签内容构建为 system 消息列表。空便签时注入记录引导。"""
     content = load_notes_content()
     if not content.strip():
         return [{"role": "system", "content": _NOTES_EMPTY_HINT}]
+    file_index = _build_file_index()
+    if file_index:
+        content = f"{content}\n\n{file_index}"
     return [{"role": "system", "content": f"[个人笔记/便签记忆]\n{content}"}]
 
 

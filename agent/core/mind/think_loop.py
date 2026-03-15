@@ -471,6 +471,16 @@ async def execute_one_tool(
             "success": False,
         })
         log(f"工具 {tc.name} 执行失败: {exc}", "WARNING", tag="思维")
+        if mind.memory_store:
+            try:
+                await mind.memory_store.record_tool_error(
+                    tool_name=tc.name,
+                    error_type=type(exc).__name__,
+                    error_msg=str(exc),
+                    args_json=(tc.arguments or "")[:500],
+                )
+            except Exception:
+                pass
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False)
 
 

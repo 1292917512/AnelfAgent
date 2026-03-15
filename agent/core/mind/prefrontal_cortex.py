@@ -47,6 +47,16 @@ _TOOL_USAGE_RULES = (
     "延迟主动联系: schedule_reply(delay_seconds=秒数, reason='原因')"
 )
 
+_MEMORY_USAGE_HINT = (
+    "[记忆使用提示]\n"
+    "便签文件是索引，数据库是详细存储。两者通过标签联动。\n"
+    "- 看到人物 UID → get_entity_profile 查完整画像\n"
+    "- 想了解某话题 → recall 语义搜索 DB\n"
+    "- 新信息 → memorize 存 DB（标签: type:/user:/group:/topic:），必要时更新便签索引\n"
+    "- 工具出错 → recall_tool_errors 查历史错误\n"
+    "- 整理记忆 → 先 view_memory_outline 看文件结构，按顶部分类标准写入"
+)
+
 _FINAL_ROUND_WARNING = (
     "⚠️ [最终轮次] 这是最后一轮机会，系统将在本轮后强制结束。"
     "请立即完成必要操作并调用 end_reply，不要再开新工具调用链。"
@@ -621,7 +631,8 @@ class PrefrontalCortex:
             models_summary=models_summary,
         )
 
-        # 实时从 DB 获取最新对话历史
+        # 实时从 DB 获取最新对话历史（必须每轮重新获取，不可缓存或外部传入！
+        # 多轮 think_loop 期间用户可能发送新消息，必须确保每轮都能拿到最新对话）
         conversation_list: List[Dict] = []
         if self._conversation_data and anything:
             conversation_list = await self._conversation_data.get_conversation_record_by_everything(anything)
@@ -682,16 +693,40 @@ class PrefrontalCortex:
 
     @staticmethod
     def _compress_head(head: List[Dict]) -> List[Dict]:
-        """将过长的历史对话前段压缩为摘要，减少 token 消耗。"""
-        snippets: list[str] = []
-        for msg in head[:5]:
-            content = msg.get("content", "")
-            if isinstance(content, str) and content.strip():
-                snippet = content.strip()[:60]
-                snippets.append(snippet)
-        topics = "、".join(snippets) if snippets else "多轮对话"
-        summary = f"[历史摘要] 前 {len(head)} 条对话已省略，涉及：{topics}"
-        return [{"role": "system", "content": summary}]
+        """将过长的历史对话前段压缩为摘要，均匀采样保留关键片段。"""
+        system_kept: List[Dict] = []
+        user_msgs: List[Dict] = []
+        for m in head:
+            content = (m.get("content") or "")
+            if "[已执行操作摘要]" in content or "[上轮执行摘要]" in content:
+                system_kept.append(m)
+            elif m.get("role") in ("user", "assistant"):
+                user_msgs.append(m)
+
+        sample_count = min(7, len(user_msgs))
+        if sample_count <= 1:
+            snippets = [(user_msgs[0].get("content") or "").strip()[:80]] if user_msgs else []
+        else:
+            indices = sorted({
+                int(i * (len(user_msgs) - 1) / (sample_count - 1))
+                for i in range(sample_count)
+            })
+            snippets = []
+            for idx in indices:
+                content = (user_msgs[idx].get("content") or "").strip()[:80]
+                if content:
+                    snippets.append(content)
+
+        summary_text = (
+            f"[历史摘要] 前 {len(head)} 条对话已省略，关键片段：\n"
+            + "\n".join(f"  - {s}" for s in snippets)
+            if snippets else
+            f"[历史摘要] 前 {len(head)} 条对话已省略"
+        )
+        result: List[Dict] = [{"role": "system", "content": summary_text}]
+        if system_kept:
+            result.extend(system_kept[-2:])
+        return result
 
     # ==================================================================
     # 短期记忆
@@ -728,6 +763,7 @@ class PrefrontalCortex:
             limit_hint = f"最多 {safety_limit} 轮" if safety_limit > 0 else ""
             lines.append(f"[系统提示] 新一轮对话开始 | 请仔细分析上下文后决定操作{' | ' + limit_hint if limit_hint else ''}")
             lines.append(_TOOL_USAGE_RULES)
+            lines.append(_MEMORY_USAGE_HINT)
         else:
             round_info = f"第 {iteration + 1} 轮"
             if remaining is not None:
