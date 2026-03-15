@@ -19,6 +19,8 @@ def load_image_from_path(path: str | Path) -> ImageContent:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"图片路径不存在: {p}")
+    if not p.is_file():
+        raise IsADirectoryError(f"路径不是文件: {p}")
 
     mime_type, _ = mimetypes.guess_type(str(p))
     if not mime_type or not mime_type.startswith("image/"):

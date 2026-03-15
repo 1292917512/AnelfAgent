@@ -21,6 +21,8 @@ def _get_workspace_root() -> str:
 
 def _resolve_workspace_path(path: str) -> str:
     """Resolve a path that may be relative to workspace or CWD."""
+    if not path:
+        return ""
     if os.path.isabs(path):
         return path
     ws_root = _get_workspace_root()
@@ -66,21 +68,27 @@ async def recognize_image(image_path: str = "", prompt: str = "", **kwargs: str)
     """识别/分析图片内容。支持本地文件路径或 URL。
 
     Args:
-        image_path: 图片的本地路径（如 workspace/uploads/image/xxx.jpg）或 URL
+        image_path: 必须使用此参数传递图片的绝对路径或 URL，直接使用系统提供的完整路径即可，不要加 "image:" 等前缀
         prompt: 可选的分析提示，如"描述图片中的文字"
     """
     if not image_path:
         image_path = (
-            kwargs.get("image_source", "")
+            kwargs.get("media_file", "")
+            or kwargs.get("image_source", "")
             or kwargs.get("path", "")
             or kwargs.get("file_path", "")
             or kwargs.get("url", "")
         )
+    if image_path.startswith("image:"):
+        return json.dumps({"error": f"image_path 不需要 'image:' 前缀，请直接传路径: {image_path[6:]}"}, ensure_ascii=False)
     try:
         mgr = _get_llm_manager()
         from entities._sdk import load_image_from_path, get_image_content_class, get_model_type_enum
         ImageContent = get_image_content_class()
         ModelType = get_model_type_enum()
+
+        if not image_path:
+            return json.dumps({"error": "未提供图片路径或 URL，请使用 image_path 参数"}, ensure_ascii=False)
 
         is_url = image_path.startswith(("http://", "https://"))
 

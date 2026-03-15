@@ -30,6 +30,41 @@ if TYPE_CHECKING:
 
 _END_REPLY_TOOL_NAME = "end_reply"
 
+# ------------------------------------------------------------------
+# 思维循环系统提示常量
+# ------------------------------------------------------------------
+
+_PROMPT_TIMEOUT = (
+    "[系统通知] 本次 LLM 调用已超时（>{timeout}s），模型可能响应过慢或不可用。\n"
+    "请选择以下操作之一：\n"
+    "1. 调用 switch_model 切换到响应更快的模型后继续处理\n"
+    "2. 调用 end_reply 结束本轮\n"
+    "请立即做出选择，不要重复刚才超时的操作。"
+)
+
+_PROMPT_FAKE_TOOL_CALL = (
+    "[系统拦截] 你上一条回复被拦截，因为你在文本中伪造了工具调用结果。"
+    "这些文本不会被执行。你必须通过 function calling 接口发起真正的工具调用。"
+    "请立刻使用真正的工具而不是伪造假工具。"
+)
+
+_PROMPT_CONTINUE = (
+    "[系统提示] 继续执行，若已完成所有操作请调用 end_reply 结束。"
+)
+
+_PROMPT_INNER_MONOLOGUE = (
+    "[系统提示] 你刚才的文字输出是内心独白，用户看不到！"
+    "要回复用户必须调用 send_message 工具。"
+    "若已完成所有操作请调用 end_reply 结束。"
+)
+
+_PROMPT_EMPTY_OUTPUT = (
+    "[系统提示] 你刚才没有执行任何操作也没有输出任何内容。"
+    "如果你已完成所有任务，请立即调用 end_reply 结束；"
+    "如果还有待处理的事情，请立即使用工具继续操作。"
+    "禁止再次输出空内容。"
+)
+
 
 class ThinkMode(str, Enum):
     """思维循环模式。"""
@@ -213,13 +248,7 @@ async def think_loop(
             execution_steps.append(f"→ 第{iteration + 1}轮: LLM 调用超时 ({timeout_val}s)")
             tool_chain.append({
                 "role": "user",
-                "content": (
-                    f"[系统通知] 本次 LLM 调用已超时（>{timeout_val}s），模型可能响应过慢或不可用。\n"
-                    "请选择以下操作之一：\n"
-                    "1. 调用 switch_model 切换到响应更快的模型后继续处理\n"
-                    "2. 调用 end_reply 结束本轮\n"
-                    "请立即做出选择，不要重复刚才超时的操作。"
-                ),
+                "content": _PROMPT_TIMEOUT.format(timeout=timeout_val),
             })
             iteration += 1
             continue
@@ -266,11 +295,7 @@ async def think_loop(
                 tool_chain.append(assistant_msg)
                 tool_chain.append({
                     "role": "user",
-                    "content": (
-                        "[系统拦截] 你上一条回复被拦截，因为你在文本中伪造了工具调用结果。"
-                        "这些文本不会被执行。你必须通过 function calling 接口发起真正的工具调用。"
-                        "请立刻使用真正的工具而不是伪造假工具。"
-                    ),
+                    "content": _PROMPT_FAKE_TOOL_CALL,
                 })
                 execution_steps.append(f"→ 第{iteration + 1}轮: 假工具调用已拦截并纠正")
             elif raw_text:
@@ -283,12 +308,16 @@ async def think_loop(
                 # 避免违反 OpenAI/Anthropic 的消息交替规范，防止连续 assistant 消息。
                 tool_chain.append({
                     "role": "user",
-                    "content": "[系统提示] 继续执行，若已完成所有操作请调用 end_reply 结束。",
+                    "content": _PROMPT_CONTINUE,
                 })
                 collected_text.append(raw_text)
                 if mode == ThinkMode.REPLY and anything:
                     log(f"内心独白: {raw_text[:100]}", "DEBUG", tag="思维")
                     await save_ai_thought(mind, anything, raw_text)
+                    tool_chain[-1] = {
+                        "role": "user",
+                        "content": _PROMPT_INNER_MONOLOGUE,
+                    }
                 execution_steps.append(f"→ 第{iteration + 1}轮: {mode_label}中")
             else:
                 consecutive_fake_calls = 0
@@ -307,12 +336,7 @@ async def think_loop(
                     return
                 tool_chain.append({
                     "role": "user",
-                    "content": (
-                        "[系统提示] 你刚才没有执行任何操作也没有输出任何内容。"
-                        "如果你已完成所有任务，请立即调用 end_reply 结束；"
-                        "如果还有待处理的事情，请立即使用工具继续操作。"
-                        "禁止再次输出空内容。"
-                    ),
+                    "content": _PROMPT_EMPTY_OUTPUT,
                 })
 
             iteration += 1
