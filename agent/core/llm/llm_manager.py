@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import litellm
+
 from agent.core.llm.llm_client import LLMClient, LLMClientConfig, ModelType
 from agent.core.llm.types import ChatResult
 from core.entity import BaseEntity, EntityType
@@ -357,11 +359,24 @@ class LLMManager(BaseEntity):
                         f"LLM [{primary_name}] 超时，重试 {attempt + 1}/{max_retries}",
                         tag="模型",
                     )
+            except (litellm.AuthenticationError, litellm.PermissionDeniedError) as exc:
+                warning(f"LLM [{primary_name}] 认证/权限错误，跳过重试: {exc}", tag="模型")
+                last_exc = exc
+                break
+            except litellm.ContextWindowExceededError as exc:
+                warning(f"LLM [{primary_name}] 上下文超限: {exc}", tag="模型")
+                last_exc = exc
+                break
+            except litellm.RateLimitError as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    warning(f"LLM [{primary_name}] 限速，重试 {attempt + 1}/{max_retries}", tag="模型")
+                    await asyncio.sleep(min(2 ** attempt, 8))
             except Exception as exc:
                 last_exc = exc
                 if attempt < max_retries:
                     warning(
-                        f"LLM [{primary_name}] 调用失败 ({exc})，"
+                        f"LLM [{primary_name}] 调用失败 ({type(exc).__name__}: {exc})，"
                         f"重试 {attempt + 1}/{max_retries}",
                         tag="模型",
                     )
@@ -386,6 +401,9 @@ class LLMManager(BaseEntity):
                     )
                     info(f"回退成功: {fb.config.name}", tag="模型")
                     return result
+                except (litellm.AuthenticationError, litellm.PermissionDeniedError) as exc:
+                    warning(f"回退模型 {fb.config.name} 认证错误: {exc}", tag="模型")
+                    last_exc = exc
                 except Exception as exc:
                     warning(
                         f"回退模型 {fb.config.name} 失败: {exc}", tag="模型",

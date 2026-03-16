@@ -197,11 +197,30 @@ function TraceNodeComponent({ data, selected }: NodeProps) {
             {subtitle}
           </div>
         )}
-        {d.duration_ms != null && (
-          <div className="mt-0.5 text-[10px] text-[var(--muted)] font-mono">
-            {d.duration_ms >= 1000
-              ? `${(d.duration_ms / 1000).toFixed(1)}s`
-              : `${Math.round(d.duration_ms)}ms`}
+        {(d.duration_ms != null || (d.data.usage as Record<string, number> | undefined)?.total_tokens) && (
+          <div className="mt-0.5 text-[10px] text-[var(--muted)] font-mono flex items-center gap-1.5 flex-wrap">
+            {d.duration_ms != null && (
+              <span>
+                {d.duration_ms >= 1000
+                  ? `${(d.duration_ms / 1000).toFixed(1)}s`
+                  : `${Math.round(d.duration_ms)}ms`}
+              </span>
+            )}
+            {(() => {
+              const usage = d.data.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+              if (!usage?.total_tokens) return null;
+              return (
+                <span className="text-[var(--accent-2)]">
+                  {usage.prompt_tokens ?? 0}+{usage.completion_tokens ?? 0}={usage.total_tokens}t
+                </span>
+              );
+            })()}
+            {(() => {
+              const pct = d.data.usage_percent as number | undefined;
+              if (pct == null) return null;
+              const color = pct > 80 ? "text-[var(--danger)]" : pct > 50 ? "text-[var(--warn)]" : "text-[var(--ok)]";
+              return <span className={color}>{pct}%</span>;
+            })()}
           </div>
         )}
       </div>

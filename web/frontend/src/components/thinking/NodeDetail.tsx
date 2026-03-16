@@ -43,6 +43,26 @@ export function NodeDetail({ node, onClose }: Props) {
           <Row label="ID" value={node.id} mono />
         </div>
 
+        {node.type === "llm_call" && (() => {
+          const usage = node.data.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+          const pct = node.data.usage_percent as number | undefined;
+          const maxTokens = node.data.max_tokens as number | undefined;
+          if (!usage?.total_tokens) return null;
+          return (
+            <div className="space-y-1.5">
+              <Row label={t("detailLabels.promptTokens", { defaultValue: "Prompt Tokens" })} value={String(usage.prompt_tokens ?? 0)} mono />
+              <Row label={t("detailLabels.completionTokens", { defaultValue: "Completion Tokens" })} value={String(usage.completion_tokens ?? 0)} mono />
+              <Row label={t("detailLabels.totalTokens", { defaultValue: "Total Tokens" })} value={String(usage.total_tokens)} mono />
+              {maxTokens != null && maxTokens > 0 && (
+                <Row label={t("detailLabels.maxTokens", { defaultValue: "Max Tokens" })} value={String(maxTokens)} mono />
+              )}
+              {pct != null && (
+                <Row label={t("detailLabels.usagePercent", { defaultValue: "Usage" })} value={`${pct}%`} mono />
+              )}
+            </div>
+          );
+        })()}
+
         {node.type === "llm_call" && typeof node.data.reasoning_preview === "string" && node.data.reasoning_preview && (
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-strong)] mb-1.5">

@@ -33,6 +33,14 @@ MessageContent = Union[str, List[dict[str, Any]]]
 
 
 @dataclass(slots=True)
+class UsageInfo:
+    """LLM 调用的 token 用量统计。"""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+@dataclass(slots=True)
 class ToolCall:
     id: str
     name: str
@@ -47,13 +55,26 @@ class ChatStreamDelta:
     tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str = ""
     reasoning_content: str = ""
+    usage: Optional[UsageInfo] = None
 
 
 @dataclass(slots=True)
 class ChatResult:
+    """LLM 聊天补全结果。"""
     content: str
     tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str = ""
     reasoning_content: str = ""
+    raw: Optional[dict[str, Any]] = None
+    usage: Optional[UsageInfo] = None
+    model: str = ""
+
+
+@dataclass(slots=True)
+class TextCompletionResult:
+    """文本补全结果（/completions 端点）。"""
+    text: str = ""
+    finish_reason: str = ""
+    usage: Optional[UsageInfo] = None
     raw: Optional[dict[str, Any]] = None
 

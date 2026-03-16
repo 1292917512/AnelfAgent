@@ -37,7 +37,12 @@
     "label": "Label",
     "status": "Status",
     "time": "Time",
-    "duration": "Duration"
+    "duration": "Duration",
+    "promptTokens": "Prompt Tokens",
+    "completionTokens": "Completion Tokens",
+    "totalTokens": "Total Tokens",
+    "maxTokens": "Max Tokens",
+    "usagePercent": "Usage"
   },
   "detailData": "Detail Data",
   "availableTools": "Available Tools",

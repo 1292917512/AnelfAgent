@@ -23,7 +23,9 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 import litellm
 
-from agent.core.llm.types import ChatResult, ChatStreamDelta, ImageContent, ToolCall
+from agent.core.llm.types import (
+    ChatResult, ChatStreamDelta, ImageContent, TextCompletionResult, ToolCall, UsageInfo,
+)
 from core.entity import BaseEntity, EntityType
 from core.log import debug, info
 
@@ -146,8 +148,16 @@ class LLMClientConfig:
 
     @property
     def litellm_model(self) -> str:
-        """计算 litellm 模型标识符（provider_prefix/model）。"""
+        """计算 litellm 聊天模型标识符（provider_prefix/model）。"""
         prefix = _LITELLM_PREFIX_MAP.get(self.api_type, "openai")
+        return f"{prefix}/{self.model}"
+
+    @property
+    def litellm_embed_model(self) -> str:
+        """计算 litellm embedding 模型标识符（Ollama 使用 ollama/ 前缀）。"""
+        prefix = _LITELLM_PREFIX_MAP.get(self.api_type, "openai")
+        if prefix == "ollama_chat":
+            prefix = "ollama"
         return f"{prefix}/{self.model}"
 
     @property
@@ -391,12 +401,27 @@ class LLMClient(BaseEntity):
             tools: Optional[list[dict]] = None,
             tool_choice: Optional[Any] = None,
     ) -> AsyncGenerator[ChatStreamDelta, None]:
-        """流式聊天补全（通过 litellm 统一路由）。"""
+        """流式聊天补全（通过 litellm 统一路由）。
+
+        支持流式 tool_calls 累积：各 chunk 的 tool_call 片段会被合并，
+        在 finish_reason 为 "tool_calls" 或 "stop" 时随最终 delta 输出。
+        最后一个 chunk 的 usage 也会被提取。
+        """
         kwargs = self._build_kwargs(messages, options, tools, tool_choice, stream=True)
+        kwargs["stream_options"] = {"include_usage": True}
         stream = await litellm.acompletion(**kwargs)
         reasoning_buf = ""
+        tc_bufs: Dict[int, Dict[str, str]] = {}
+
         async for chunk in stream:  # type: ignore[union-attr]
             if not chunk.choices:
+                stream_usage = getattr(chunk, "usage", None)
+                if stream_usage:
+                    yield ChatStreamDelta(usage=UsageInfo(
+                        prompt_tokens=getattr(stream_usage, "prompt_tokens", 0) or 0,
+                        completion_tokens=getattr(stream_usage, "completion_tokens", 0) or 0,
+                        total_tokens=getattr(stream_usage, "total_tokens", 0) or 0,
+                    ))
                 continue
             delta = chunk.choices[0].delta
             content = delta.content or ""
@@ -411,17 +436,59 @@ class LLMClient(BaseEntity):
                         reasoning = text[len(reasoning_buf):]
                         reasoning_buf = text
 
-            yield ChatStreamDelta(content=content, finish_reason=finish, reasoning_content=reasoning)
+            dtc = getattr(delta, "tool_calls", None)
+            if dtc:
+                for tc_chunk in dtc:
+                    idx = tc_chunk.index if hasattr(tc_chunk, "index") else 0
+                    buf = tc_bufs.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                    if hasattr(tc_chunk, "id") and tc_chunk.id:
+                        buf["id"] = tc_chunk.id
+                    func = getattr(tc_chunk, "function", None)
+                    if func:
+                        if getattr(func, "name", None):
+                            buf["name"] = func.name
+                        if getattr(func, "arguments", None):
+                            buf["arguments"] += func.arguments
+
+            completed_tools: list[ToolCall] = []
+            if finish and tc_bufs:
+                for _, buf in sorted(tc_bufs.items()):
+                    if buf["name"]:
+                        completed_tools.append(ToolCall(
+                            id=buf["id"] or f"tc_{len(completed_tools)}",
+                            name=buf["name"],
+                            arguments=buf["arguments"],
+                        ))
+                tc_bufs.clear()
+
+            stream_usage: Optional[UsageInfo] = None
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage and getattr(chunk_usage, "total_tokens", 0):
+                stream_usage = UsageInfo(
+                    prompt_tokens=getattr(chunk_usage, "prompt_tokens", 0) or 0,
+                    completion_tokens=getattr(chunk_usage, "completion_tokens", 0) or 0,
+                    total_tokens=getattr(chunk_usage, "total_tokens", 0) or 0,
+                )
+
+            yield ChatStreamDelta(
+                content=content,
+                tool_calls=completed_tools,
+                finish_reason=finish,
+                reasoning_content=reasoning,
+                usage=stream_usage,
+            )
 
     # ------------------------------------------------------------------
     # 响应解析
     # ------------------------------------------------------------------
 
     def _parse_response(self, resp: Any) -> ChatResult:
-        """将 litellm 统一响应解析为 ChatResult。"""
+        """将 litellm 统一响应解析为 ChatResult（含 usage）。"""
         choice = resp.choices[0]
         msg = choice.message
         raw_dict: Optional[dict] = resp.model_dump() if hasattr(resp, "model_dump") else None
+
+        usage = self._extract_usage(resp)
 
         return ChatResult(
             content=msg.content or "",
@@ -429,6 +496,20 @@ class LLMClient(BaseEntity):
             finish_reason=choice.finish_reason or "",
             reasoning_content=self._extract_reasoning(msg, raw_dict),
             raw=raw_dict,
+            usage=usage,
+            model=getattr(resp, "model", "") or "",
+        )
+
+    @staticmethod
+    def _extract_usage(resp: Any) -> Optional[UsageInfo]:
+        """从 litellm 响应中提取 token 用量。"""
+        usage = getattr(resp, "usage", None)
+        if not usage:
+            return None
+        return UsageInfo(
+            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            total_tokens=getattr(usage, "total_tokens", 0) or 0,
         )
 
     @staticmethod
@@ -499,14 +580,86 @@ class LLMClient(BaseEntity):
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """文本嵌入（通过 litellm 统一路由）。"""
-        embed_model = self.config.litellm_model.replace("ollama_chat/", "ollama/")
-        kwargs: Dict[str, Any] = {"model": embed_model, "input": texts}
+        kwargs: Dict[str, Any] = {
+            "model": self.config.litellm_embed_model,
+            "input": texts,
+            "timeout": self.config.timeout,
+            "encoding_format": "float",
+        }
         if self.config.base_url:
             kwargs["api_base"] = self.config.base_url
         if self.config.api_key:
             kwargs["api_key"] = self.config.api_key
         resp = await litellm.aembedding(**kwargs)
         return [item["embedding"] for item in resp.data]
+
+    # ------------------------------------------------------------------
+    # Text Completion（/completions 端点）
+    # ------------------------------------------------------------------
+
+    async def text_completion(
+            self,
+            prompt: str,
+            *,
+            options: Optional[dict] = None,
+    ) -> TextCompletionResult:
+        """文本补全（通过 litellm.atext_completion）。"""
+        params = self._gen_params(options)
+        kwargs: Dict[str, Any] = {
+            "model": self.config.litellm_model,
+            "prompt": prompt,
+            "timeout": self.config.timeout,
+            **params,
+        }
+        if self.config.base_url:
+            kwargs["api_base"] = self.config.base_url
+        if self.config.api_key:
+            kwargs["api_key"] = self.config.api_key
+
+        resp = await litellm.atext_completion(**kwargs)
+        choice = resp.choices[0]
+        usage = self._extract_usage(resp)
+        raw_dict: Optional[dict] = resp.model_dump() if hasattr(resp, "model_dump") else None
+
+        return TextCompletionResult(
+            text=choice.text or "",
+            finish_reason=choice.finish_reason or "",
+            usage=usage,
+            raw=raw_dict,
+        )
+
+    # ------------------------------------------------------------------
+    # Token 计数与模型信息工具
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def count_tokens(model: str, messages: list[dict]) -> int:
+        """计算消息列表的 token 数（基于模型的 tokenizer）。"""
+        try:
+            return litellm.token_counter(model=model, messages=messages)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def count_text_tokens(model: str, text: str) -> int:
+        """计算纯文本的 token 数。"""
+        try:
+            return litellm.token_counter(model=model, text=text)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def get_max_tokens(model: str) -> Optional[int]:
+        """查询模型的最大上下文 token 数。"""
+        try:
+            return litellm.get_max_tokens(model)
+        except Exception:
+            return None
+
+    @staticmethod
+    def get_model_cost(model: str) -> Optional[Dict[str, Any]]:
+        """查询模型的价格信息（input_cost_per_token / output_cost_per_token 等）。"""
+        return litellm.model_cost.get(model)
 
     # ------------------------------------------------------------------
     # 能力探测

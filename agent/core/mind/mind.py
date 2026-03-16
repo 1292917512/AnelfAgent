@@ -691,14 +691,31 @@ class Mind:
                 log(f"AI 推理: {result.reasoning_content[:300]}", "DEBUG", tag="思维")
             if result.content:
                 log(f"AI 输出: {result.content[:500]}", tag="思维")
+        usage_data: Dict = {}
+        max_ctx = 0
+        if result.usage:
+            usage_data = {
+                "prompt_tokens": result.usage.prompt_tokens,
+                "completion_tokens": result.usage.completion_tokens,
+                "total_tokens": result.usage.total_tokens,
+            }
+            llm_client = self.llm if isinstance(self.llm, LLMClient) else None
+            if llm_client:
+                max_ctx = llm_client.config.max_tokens or 0
+        usage_percent: Optional[float] = None
+        if usage_data.get("total_tokens") and max_ctx > 0:
+            usage_percent = round(usage_data["total_tokens"] / max_ctx * 100, 1)
         await event_bus.emit(EVENT_THINKING_LLM_END, {
-            "model": model_name,
+            "model": result.model or model_name,
             "duration_ms": round(elapsed_ms),
             "has_content": bool(result.content),
             "content_preview": (result.content or "")[:200],
             "tool_calls": [tc.name for tc in result.tool_calls] if result.tool_calls else [],
             "has_reasoning": bool(result.reasoning_content),
             "reasoning_preview": (result.reasoning_content or "")[:800],
+            "usage": usage_data,
+            "usage_percent": usage_percent,
+            "max_tokens": max_ctx,
         })
         return result
 

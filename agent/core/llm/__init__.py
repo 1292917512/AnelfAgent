@@ -4,7 +4,7 @@ from .base import ChatModel
 from .llm_client import LLMClient, LLMClientConfig, ModelType, API_TYPE_OLLAMA, API_TYPE_OPENAI, API_TYPE_ANTHROPIC, API_TYPES
 from .llm_manager import LLMManager, ProviderConfig, get_llm_manager
 from .media_client import MediaClient
-from .types import ChatResult, ChatStreamDelta, ImageContent, MessageContent, ToolCall
+from .types import ChatResult, ChatStreamDelta, ImageContent, MessageContent, TextCompletionResult, ToolCall, UsageInfo
 
 __all__ = [
     "API_TYPE_ANTHROPIC",
@@ -18,7 +18,9 @@ __all__ = [
     "MediaClient",
     "MessageContent",
     "ModelType",
+    "TextCompletionResult",
     "ToolCall",
+    "UsageInfo",
     "LLMClient",
     "LLMClientConfig",
     "LLMManager",

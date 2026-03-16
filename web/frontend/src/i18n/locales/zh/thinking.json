@@ -38,7 +38,12 @@
     "label": "标签",
     "status": "状态",
     "time": "时间",
-    "duration": "耗时"
+    "duration": "耗时",
+    "promptTokens": "输入 Tokens",
+    "completionTokens": "输出 Tokens",
+    "totalTokens": "总 Tokens",
+    "maxTokens": "上下文上限",
+    "usagePercent": "使用率"
   },
   "detailData": "详细数据",
   "availableTools": "可用工具",
