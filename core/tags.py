@@ -169,6 +169,7 @@ media_file_tag = Tag(
 )
 
 # 交互标签
+at_uid_tag = Tag(tag_name="at_uid", tag_name_desc="消息中 @ 提及的用户 ID")
 reply_to_tag = Tag(tag_name="reply_to", tag_name_desc="回复引用的消息 ID")
 poke_tag = Tag(tag_name="poke", tag_name_desc="戳一戳事件的目标用户")
 reaction_tag = Tag(tag_name="reaction", tag_name_desc="表情回应的 emoji ID")

@@ -298,19 +298,13 @@ def _convert_segment(
 
     if mapped_type == SegmentType.AT:
         target = str(data.get("qq", "") or data.get("user_id", "") or data.get("target", ""))
-        if target == "all":
-            at_text = "[@id:all;nickname:全体成员@]"
-        else:
-            # 尝试获取缓存的昵称
-            nickname = get_cached_nickname(group_id, target) if group_id else ""
-            if nickname:
-                at_text = f"[@id:{target};nickname:{nickname}@]"
-            else:
-                at_text = f"[@id:{target}@]"
-        return (
-            MessageSegment(type=SegmentType.AT, at_user_id=target, content=at_text),
-            at_text,
-        )
+        at_text = f"[at_uid:{target}]" if target else ""
+        if at_text:
+            return (
+                MessageSegment(type=SegmentType.AT, at_user_id=target, content=at_text),
+                at_text,
+            )
+        return None, ""
 
     if mapped_type == SegmentType.VOICE:
         url = data.get("url", "") or data.get("file", "")

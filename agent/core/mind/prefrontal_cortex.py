@@ -119,6 +119,8 @@ class PrefrontalCortex:
         # scope → 消息预览 / adapter_key 路由
         self._message_previews: dict[str, str] = {}
         self._task_adapter_keys: dict[str, str] = {}
+        # 群聊 scope → 最近发送者 [(uid, name), ...]
+        self._group_recent_senders: dict[str, list[tuple[str, str]]] = {}
 
         # 通用任务（错误反馈、AI 自主任务、画像分析等）
         self._general_tasks: list[MindTask] = []
@@ -158,6 +160,15 @@ class PrefrontalCortex:
             self._message_previews[scope] = preview
             if adapter_key:
                 self._task_adapter_keys[scope] = adapter_key
+            uid = str(anything.uid) if anything.uid and anything.uid not in (0, "0") else ""
+            name = getattr(anything, "user_name", "") or getattr(anything, "nickname", "") or ""
+            if uid:
+                senders = self._group_recent_senders.setdefault(scope, [])
+                entry = (uid, name)
+                if entry not in senders:
+                    senders.append(entry)
+                if len(senders) > 10:
+                    senders[:] = senders[-10:]
             await self._handle_group_message(anything)
         else:
             self.pending_user.append(anything.uid)
@@ -314,6 +325,7 @@ class PrefrontalCortex:
         scope = f"group_{group_id}"
         self._message_previews.pop(scope, None)
         self._task_adapter_keys.pop(scope, None)
+        self._group_recent_senders.pop(scope, None)
         return self._consume_from_queue(self.pending_group, group_id)
 
     @staticmethod
@@ -530,26 +542,26 @@ class PrefrontalCortex:
 
 ## 消息标签
 对话中的 [key:value] 标签含义：
-- [uid:xxx] — 发送者ID，同一uid是同一人
-- [name:xxx] — 用户名
-- [nickname:xxx] — 群内昵称
+- [uid:xxx] — 消息发送者的用户ID，同一uid是同一人
+- [name:xxx] — 发送者用户名
+- [nickname:xxx] — 发送者群内昵称
 - [group_id:xxx] — 群组ID，不同group_id是不同群
+- [at_uid:xxx] — 消息中 @ 提及的用户ID
+- [at_uid:all] — @ 全体成员
 - [reply_to:xxx] — 引用的原消息
-- [@me@] — 有人@了你（机器人自己）
-- [@id:xxx;nickname:yyy@] — @了某个群成员
 
 ## 人物识别
 - 以 uid 为准识别身份，name/nickname 可能变化
-- 群聊中区分每条消息的发送者
-- [@me@] 表示有人在喊你，需要回应
-- [人物画像] 包含已知的用户特征
+- 群聊中 [uid:xxx] 是这条消息的发送者
+- [at_uid:xxx] 是消息中被 @ 的人的 uid
+- 当 [at_uid:xxx] 中的 xxx 是你自己的 uid 时，表示有人在 @ 你，需要回应
 
 ## @ 提及用户
-在 send_message 的 content 中使用以下格式可以 @ 提及用户：
-- [@id:用户uid;nickname:昵称@] — @ 指定用户（uid 取自消息标签中的 [uid:xxx]）
-- [@id:all;nickname:全体成员@] — @ 全体成员
-- 示例：如果看到 [uid:12345][name:张三] 的消息，回复时写 [@id:12345;nickname:张三@] 即可 @ 该用户
-- 不需要 @ 时直接写普通文本，不要使用此格式"""
+在 send_message 的 content 中使用 [at_uid:xxx] 可以 @ 提及用户：
+- [at_uid:12345] — @ uid 为 12345 的用户
+- [at_uid:all] — @ 全体成员
+- 示例：看到 [uid:12345] 的消息，回复时写 [at_uid:12345] 即可 @ 该用户
+- 不需要 @ 时直接写普通文本"""
 
     @staticmethod
     def _build_media_rules() -> str:
@@ -668,7 +680,7 @@ class PrefrontalCortex:
         anything: Optional["Everything"],
         adapter_key: str = "",
     ) -> str:
-        """构建当前对话场景信息（私聊/群聊、群组ID、频道等）。"""
+        """构建当前对话场景信息（私聊/群聊、群组ID、频道、发送者等）。"""
         if not anything:
             return ""
 
@@ -680,6 +692,12 @@ class PrefrontalCortex:
 
         if group_id and group_id not in (0, "0", ""):
             parts.append(f"群聊 group_id={group_id}")
+            scope = f"group_{group_id}"
+            senders = self._group_recent_senders.get(scope, [])
+            if senders:
+                desc = ", ".join(f"uid:{s[0]}({s[1]})" for s in senders if s[0])
+                if desc:
+                    parts.append(f"待回复消息来自: {desc}")
         elif uid and uid not in (0, "0", ""):
             parts.append(f"私聊 uid={uid}")
 

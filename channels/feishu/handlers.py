@@ -155,25 +155,13 @@ async def _handle_message_event(
     # 解析文本内容
     text_content = parse_message_content(raw_content, msg_type)
 
-    # 将 mention 占位符/标记转为统一 @ 格式，同时移除 @Bot 自身
     if mentions:
         for m in mentions:
-            is_bot = m.id.open_id == bot_open_id
+            at_tag = f"[at_uid:{m.id.open_id}]"
             if msg_type == "text" and m.key:
-                if is_bot:
-                    text_content = text_content.replace(m.key, "")
-                elif m.name:
-                    text_content = text_content.replace(
-                        m.key, f"[@id:{m.id.open_id};nickname:{m.name}@]"
-                    )
-                else:
-                    text_content = text_content.replace(
-                        m.key, f"[@id:{m.id.open_id}@]"
-                    )
-            elif msg_type == "post" and is_bot and m.id.open_id:
-                text_content = text_content.replace(
-                    f"[@id:{m.id.open_id};nickname:{m.name}@]", ""
-                )
+                text_content = text_content.replace(m.key, at_tag)
+            elif msg_type == "post" and m.id.open_id and m.name:
+                text_content = text_content.replace(f"@{m.name}", at_tag)
         text_content = text_content.strip()
 
     # 提取媒体

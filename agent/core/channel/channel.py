@@ -15,8 +15,7 @@ from typing import Any, Dict, List, Optional, Set
 from core.log import log
 from core.entity import BaseEntity, EntityType
 
-# 统一 @ 格式正则：[@id:xxx;nickname:yyy@] / [@id:xxx@] / [@me@]
-_AT_RE = re.compile(r'\[@(?:id:([^;@\]]+)(?:;nickname:([^@\]]+))?|me)@\]')
+_AT_RE = re.compile(r'\[at_uid:([^\]]+)\]')
 
 
 class ChannelStatus(str, Enum):
@@ -315,18 +314,15 @@ class BaseChannel(BaseEntity, ABC):
 
     @staticmethod
     def normalize_at_mentions(text: str) -> str:
-        """将 [@id:xxx;nickname:yyy@] 格式转为纯文本 @昵称。
+        """将 [at_uid:xxx] 转为纯文本 @uid。
 
         不支持原生 @ 的频道在发送前调用此方法，避免用户看到原始标记。
         """
         def _replacer(m: re.Match[str]) -> str:
             uid = m.group(1)
-            nick = m.group(2) or ""
-            if uid is None:
-                return ""  # [@me@]
             if uid == "all":
                 return "@全体成员"
-            return f"@{nick}" if nick else f"@{uid}"
+            return f"@{uid}"
         return _AT_RE.sub(_replacer, text)
 
     # ------------------------------------------------------------------

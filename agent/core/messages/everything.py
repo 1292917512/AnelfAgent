@@ -79,7 +79,7 @@ class Everything(Nothing):
     def set_text_content(self, content: str) -> None:
         self.text_content = content
         # 只有当内容包含完整的元数据标签（如 [time:xxx] 或 [uid:xxx]）时才跳过标签生成
-        # 简单的 [@me@] 或 [@id:xxx@] 不算元数据标签
+        # 简单的 [at_uid:xxx] 不算元数据标签
         self._tags_generated = bool(
             content
             and content.startswith('[')

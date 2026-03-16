@@ -77,10 +77,7 @@ def parse_post_content(raw_content: str) -> PostContentResult:
                 user_id = element.get("user_id", "")
                 user_name = element.get("user_name", user_id)
                 result.at_open_ids.append(user_id)
-                if user_name:
-                    line_parts.append(f"[@id:{user_id};nickname:{user_name}@]")
-                else:
-                    line_parts.append(f"[@id:{user_id}@]")
+                line_parts.append(f"[at_uid:{user_id}]")
             elif tag == "img":
                 image_key = element.get("image_key", "")
                 if image_key:

@@ -23,8 +23,7 @@ from core.log import log
 from .parser import parse_event, parse_event_async
 
 
-# @ 格式正则：匹配 [@id:xxx;nickname:yyy@] 或 [@id:xxx@] 或 [@me@]
-_AT_PATTERN = re.compile(r'\[@(?:id:([^;@\]]+)(?:;nickname:([^@\]]+))?|me)@\]')
+_AT_PATTERN = re.compile(r'\[at_uid:([^\]]+)\]')
 
 
 class OneBotV11Channel(BaseChannel):
@@ -108,10 +107,7 @@ class OneBotV11Channel(BaseChannel):
             self._session = None
 
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
-        """通过 OneBot v11 发送文本消息。
-
-        支持解析 AI 输出中的 @ 格式 [@id:xxx;nickname:yyy@] 并转换为 OneBot at 段。
-        """
+        """通过 OneBot v11 发送文本消息，解析 [at_uid:xxx] 并转换为 OneBot at 段。"""
         channel_type = kwargs.get("channel_type", "private")
         ob_message: list = []
         reply_to = kwargs.get("reply_to")
@@ -127,53 +123,29 @@ class OneBotV11Channel(BaseChannel):
         return _ok({"chat_id": chat_id}) if ok else _err("发送失败")
 
     def _parse_at_in_text(self, text: str, channel_type: str) -> List[Dict[str, Any]]:
-        """解析文本中的 @ 格式，返回 OneBot 消息段列表。
-
-        格式：[@id:xxx;nickname:yyy@] 或 [@id:xxx@]
-        - 群聊中转换为 at 段
-        - 私聊中转换为纯文本 @nickname 或 @id
-        """
+        """解析 [at_uid:xxx] 标签，转换为 OneBot 消息段。"""
         segments: List[Dict[str, Any]] = []
         last_end = 0
 
         for match in _AT_PATTERN.finditer(text):
-            # 添加 @ 之前的文本
             if match.start() > last_end:
-                prev_text = text[last_end:match.start()]
-                if prev_text:
-                    segments.append({"type": "text", "data": {"text": prev_text}})
+                prev = text[last_end:match.start()]
+                if prev:
+                    segments.append({"type": "text", "data": {"text": prev}})
 
-            user_id = match.group(1)
-            nickname = match.group(2) or ""
-
-            if channel_type == "group":
-                # 群聊：使用 at 段
-                if user_id is None:
-                    # [@me@] — @ 机器人自己，忽略不发送 at 段
-                    # （平台不支持 at 自己，且语义上也没有意义）
-                    pass
-                elif user_id == "all":
-                    segments.append({"type": "at", "data": {"qq": "all"}})
-                else:
-                    segments.append({"type": "at", "data": {"qq": user_id}})
-            else:
-                # 私聊：转为纯文本
-                if user_id is None:
-                    # [@me@] 在私聊中忽略
-                    pass
-                else:
-                    display = f"@{nickname}" if nickname else f"@{user_id}"
-                    segments.append({"type": "text", "data": {"text": display}})
+            uid = match.group(1)
+            if channel_type == "group" and uid != self._self_id:
+                segments.append({"type": "at", "data": {"qq": uid}})
+            elif channel_type != "group" and uid not in ("all", self._self_id):
+                segments.append({"type": "text", "data": {"text": f"@{uid}"}})
 
             last_end = match.end()
 
-        # 添加剩余文本
         if last_end < len(text):
             remaining = text[last_end:]
             if remaining:
                 segments.append({"type": "text", "data": {"text": remaining}})
 
-        # 如果没有找到任何 @ 格式，返回原始文本
         if not segments:
             segments.append({"type": "text", "data": {"text": text}})
 

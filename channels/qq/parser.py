@@ -210,7 +210,7 @@ async def _parse_message_segments_async(
     """异步解析消息段列表，返回 (纯文本, 消息段列表)。
 
     支持异步获取群成员昵称和合并转发内容。
-    @ 提及使用统一格式 [@id:xxx;nickname:yyy@]，便于 AI 理解和生成。
+    @ 提及使用统一标签 [at_uid:xxx]。
     """
     if isinstance(raw_message, str):
         return raw_message, [MessageSegment(type=SegmentType.TEXT, content=raw_message)]
@@ -241,32 +241,11 @@ async def _parse_message_segments_async(
 
         elif seg_type == "at":
             qq = str(seg_data.get("qq", ""))
-            if qq == "all":
-                at_text = "[@id:all;nickname:全体成员@]"
-                text_parts.append(at_text)
-                segments.append(MessageSegment(
-                    type=SegmentType.AT,
-                    at_user_id="all",
-                    content=at_text,
-                ))
-            elif qq == self_id:
-                # @ 的是机器人自己，使用 [@me@] 标识
-                at_text = "[@me@]"
-                text_parts.append(at_text)
-                segments.append(MessageSegment(
-                    type=SegmentType.AT,
-                    at_user_id=qq,
-                    content=at_text,
-                ))
-            else:
-                # 优先使用消息自带的 name 字段，其次使用缓存
-                nickname = seg_data.get("name", "") or get_cached_nickname(group_id, qq)
-                if nickname:
-                    at_text = f"[@id:{qq};nickname:{nickname}@]"
-                    if seg_data.get("name"):
-                        cache_nickname(group_id, qq, nickname)
-                else:
-                    at_text = f"[@id:{qq}@]"
+            at_text = f"[at_uid:{qq}]" if qq else ""
+            if at_text:
+                nickname = seg_data.get("name", "")
+                if nickname and group_id and qq not in ("all", self_id):
+                    cache_nickname(group_id, qq, nickname)
                 text_parts.append(at_text)
                 segments.append(MessageSegment(
                     type=SegmentType.AT,
@@ -379,29 +358,8 @@ def _parse_message_segments_sync(
 
         elif seg_type == "at":
             qq = str(seg_data.get("qq", ""))
-            if qq == "all":
-                at_text = "[@id:all;nickname:全体成员@]"
-                text_parts.append(at_text)
-                segments.append(MessageSegment(
-                    type=SegmentType.AT,
-                    at_user_id="all",
-                    content=at_text,
-                ))
-            elif qq == self_id:
-                # @ 的是机器人自己
-                at_text = "[@me@]"
-                text_parts.append(at_text)
-                segments.append(MessageSegment(
-                    type=SegmentType.AT,
-                    at_user_id=qq,
-                    content=at_text,
-                ))
-            else:
-                nickname = get_cached_nickname(group_id, qq) if group_id else ""
-                if nickname:
-                    at_text = f"[@id:{qq};nickname:{nickname}@]"
-                else:
-                    at_text = f"[@id:{qq}@]"
+            at_text = f"[at_uid:{qq}](me)" if qq else ""
+            if at_text:
                 text_parts.append(at_text)
                 segments.append(MessageSegment(
                     type=SegmentType.AT,

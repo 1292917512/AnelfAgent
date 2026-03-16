@@ -74,8 +74,7 @@ _ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _BLOCKQUOTE_LINE_RE = re.compile(r"^>\s?(.*)$", re.MULTILINE)
-# @ 格式：[@id:xxx;nickname:yyy@] 或 [@id:xxx@] 或 [@me@]
-_AT_PATTERN_RE = re.compile(r'\[@(?:id:([^;@\]]+)(?:;nickname:([^@\]]+))?|me)@\]')
+_AT_PATTERN_RE = re.compile(r'\[at_uid:([^\]]+)\]')
 
 # 用于保护代码块/行内代码中的内容不被二次转换
 _PLACEHOLDER_PREFIX = "\x00CB"
@@ -83,20 +82,12 @@ _placeholders: List[str] = []
 
 
 def _convert_at_mentions(text: str) -> str:
-    """将 [@id:xxx;nickname:yyy@] 格式转换为 Telegram @ 链接。
-
-    Telegram @ 链接格式：<a href="tg://user?id=xxx">nickname</a>
-    [@me@] 会被忽略（@ 自己没有意义）。
-    """
+    """将 [at_uid:xxx] 转换为 Telegram @ 链接。"""
     def replacer(match: re.Match) -> str:
-        user_id = match.group(1)
-        nickname = match.group(2) or ""
-        if user_id is None:
-            # [@me@] — 忽略
+        uid = match.group(1)
+        if uid == "all":
             return ""
-        # 转义 nickname 中的 HTML 特殊字符
-        display = html.escape(nickname) if nickname else user_id
-        return f'<a href="tg://user?id={user_id}">{display}</a>'
+        return f'<a href="tg://user?id={uid}">{html.escape(uid)}</a>'
 
     return _AT_PATTERN_RE.sub(replacer, text)
 

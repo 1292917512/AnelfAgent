@@ -75,7 +75,8 @@ def register_channel_capability_tools() -> int:
         tags = [cap_value]
         tool_func = _make_capability_tool(cap_value, method)
         if tool_func:
-            from core.entity import EntityMetadata, EntityType
+            from core.entity import EntityMetadata, EntityType, ToolParam
+            params = _extract_tool_params(method)
             EntityRegistry.register(EntityMetadata(
                 name=cap_value,
                 entity_type=EntityType.TOOL,
@@ -85,6 +86,7 @@ def register_channel_capability_tools() -> int:
                 source="channel.auto",
                 enabled=True,
                 func=tool_func,
+                meta={"params": params},
             ))
             registered += 1
 
@@ -131,6 +133,21 @@ def _make_capability_tool(cap_value: str, method: Any):
     _tool_func.__name__ = cap_value
     _tool_func.__doc__ = _extract_description(method, cap_value)
     return _tool_func
+
+
+def _extract_tool_params(method: Any) -> list:
+    """从方法签名提取 ToolParam 列表（含 channel_id 前缀），用于 schema 生成和 list_entity_methods。"""
+    from core.entity import ToolParam
+    sig = inspect.signature(method)
+    _TYPE_MAP = {str: "string", int: "integer", float: "number", bool: "boolean"}
+    params: list[ToolParam] = [ToolParam(name="channel_id", type="string", required=False, description="频道标识")]
+    for p in sig.parameters.values():
+        if p.name in ("self", "kwargs"):
+            continue
+        json_type = _TYPE_MAP.get(p.annotation, "string") if p.annotation != inspect.Parameter.empty else "string"
+        required = p.default is inspect.Parameter.empty
+        params.append(ToolParam(name=p.name, type=json_type, required=required, description=p.name))
+    return params
 
 
 def _extract_description(method: Any, fallback: str) -> str:
@@ -249,14 +266,14 @@ def list_channels() -> str:
 async def send_message(channel_id: str, target_id: str, content: str = "") -> str:
     """向指定频道发送文本消息。content 不能为空。
 
-    在 content 中使用 [@id:用户uid;nickname:昵称@] 格式可 @ 提及用户，
-    uid 取自消息标签中的 [uid:xxx]。例如 [@id:12345;nickname:张三@]。
-    @ 全体成员使用 [@id:all;nickname:全体成员@]。
+    在 content 中使用 [at_uid:用户uid] 格式可 @ 提及用户，
+    uid 取自消息标签中的 [uid:xxx]。例如 [at_uid:12345]。
+    @ 全体成员使用 [at_uid:all]。
 
     Args:
         channel_id: 频道标识（通过 list_channels 获取）
         target_id: 目标会话 ID（用户 uid 或群组 group_id，来自消息标签）
-        content: 消息文本内容（支持 [@id:xxx;nickname:yyy@] 格式 @ 提及用户）
+        content: 消息文本内容（支持 [at_uid:xxx] 格式 @ 提及用户）
     """
     if not content or not content.strip():
         return json.dumps({"success": False, "error": "content 参数不能为空，请提供要发送的消息内容"}, ensure_ascii=False)

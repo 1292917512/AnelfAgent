@@ -831,7 +831,12 @@ class Mind:
         entity_scope = self._resolve_entity_scope(anything)
         tail = conversation_list[-10:] if len(conversation_list) > 10 else conversation_list
         if self.retriever:
-            related_scopes = self._extract_related_scopes(tail, entity_scope)
+            scope_source = conversation_list[-30:] if len(conversation_list) > 30 else conversation_list
+            related_scopes = self._extract_related_scopes(scope_source, entity_scope)
+            if anything:
+                for s in self._extract_scopes_from_anything(anything, entity_scope):
+                    if s not in related_scopes:
+                        related_scopes.insert(0, s)
             memory_msgs = await self.retriever.recall(
                 tail, entity_scope=entity_scope, related_scopes=related_scopes,
             )
@@ -912,15 +917,14 @@ class Mind:
             return f"user_{anything.uid}"
         return ""
 
-    _UID_TAG_RE = re.compile(r"\[uid:([^\]]+)\]")
+    _RELATED_UID_RE = re.compile(r"\[(?:uid|at_uid):([^\]]+)\]")
 
     def _extract_related_scopes(
         self, conversation_tail: List[Dict], primary_scope: str,
     ) -> List[str]:
-        """从对话尾部提取涉及的用户 uid，构建 related_scopes 列表。
+        """从对话中提取涉及的用户 uid（发送者 [uid:] + @ 对象 [at_uid:]），构建画像加载列表。
 
-        仅在群聊场景下有意义：primary_scope 为 group_xxx 时，
-        提取对话中出现的 [uid:xxx] 标签对应的用户画像 scope。
+        仅在群聊场景下有意义。
         """
         if not primary_scope.startswith("group_"):
             return []
@@ -930,8 +934,33 @@ class Mind:
             content = msg.get("content", "")
             if not isinstance(content, str):
                 continue
-            for m in self._UID_TAG_RE.finditer(content):
+            for m in self._RELATED_UID_RE.finditer(content):
                 uid = m.group(1)
+                if uid == "all":
+                    continue
+                scope = f"user_{uid}"
+                if scope not in seen:
+                    seen.add(scope)
+                    scopes.append(scope)
+        return scopes
+
+    def _extract_scopes_from_anything(
+        self, anything: Everything, primary_scope: str,
+    ) -> List[str]:
+        """从当前消息对象提取发送者 uid 和 [at_uid:xxx] 中的 uid。"""
+        seen: set[str] = {primary_scope}
+        scopes: List[str] = []
+        if anything.uid and anything.uid not in (0, "0"):
+            scope = f"user_{anything.uid}"
+            if scope not in seen:
+                seen.add(scope)
+                scopes.append(scope)
+        content = anything.get_text_content() if hasattr(anything, "get_text_content") else ""
+        if content:
+            for m in self._RELATED_UID_RE.finditer(content):
+                uid = m.group(1)
+                if uid == "all":
+                    continue
                 scope = f"user_{uid}"
                 if scope not in seen:
                     seen.add(scope)

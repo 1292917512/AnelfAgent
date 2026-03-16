@@ -214,15 +214,10 @@ async def _tg_download(
 
 
 def _parse_mentions(text: str, entities: list, bot_id: int | None = None) -> str:
-    """解析消息中的 @ 提及，转换为统一格式。
-
-    - text_mention（带 user 对象）：[@id:xxx;nickname:yyy@]
-    - 普通 mention（@username）：保持原样或转为 [@me@] 如果 @ 的是机器人
-    """
+    """解析消息中的 @ 提及，转换为 [at_uid:xxx] 标准标签。"""
     if not entities or not text:
         return text
 
-    # 按 offset 从后往前处理，避免索引偏移
     sorted_entities = sorted(entities, key=lambda e: getattr(e, "offset", 0), reverse=True)
 
     result = text
@@ -231,19 +226,9 @@ def _parse_mentions(text: str, entities: list, bot_id: int | None = None) -> str
         offset = getattr(entity, "offset", 0)
         length = getattr(entity, "length", 0)
         if ent_type == "text_mention":
-            # text_mention 带有 user 对象
             user = getattr(entity, "user", None)
             if user:
-                user_id = str(user.id)
-                # 判断是否 @ 的是机器人自己
-                if bot_id and user.id == bot_id:
-                    at_text = "[@me@]"
-                else:
-                    name = getattr(user, "first_name", "") or ""
-                    if getattr(user, "last_name", ""):
-                        name = f"{name} {user.last_name}".strip()
-                    name = name or getattr(user, "username", "") or user_id
-                    at_text = f"[@id:{user_id};nickname:{name}@]"
+                at_text = f"[at_uid:{user.id}]"
                 result = result[:offset] + at_text + result[offset + length:]
 
     return result

@@ -21,8 +21,7 @@ from agent.core.channel.channel import BaseChannel, ChannelCapability, ChannelSt
 from .config import FEISHU_CONFIGS
 from .types import FeishuBotInfo
 
-# 统一 @ 格式正则
-_AT_RE = re.compile(r'\[@(?:id:([^;@\]]+)(?:;nickname:([^@\]]+))?|me)@\]')
+_AT_RE = re.compile(r'\[at_uid:([^\]]+)\]')
 
 
 def _fmt_exc(exc: BaseException) -> str:
@@ -361,16 +360,12 @@ class FeishuChannel(BaseChannel):
 
     @staticmethod
     def _convert_at_to_lark(text: str) -> str:
-        """将 [@id:xxx;nickname:yyy@] 转为飞书 <at> 格式。"""
+        """将 [at_uid:xxx] 转为飞书 <at> 格式。"""
         def _replacer(m: re.Match[str]) -> str:
             uid = m.group(1)
-            nick = m.group(2) or ""
-            if uid is None:
-                return ""  # [@me@]
             if uid == "all":
                 return '<at user_id="all">全体成员</at>'
-            display = nick if nick else uid
-            return f'<at user_id="{uid}">{display}</at>'
+            return f'<at user_id="{uid}">{uid}</at>'
         return _AT_RE.sub(_replacer, text)
 
     async def send_photo(self, chat_id: str, photo: str, caption: str = "", **kwargs: Any) -> str:
