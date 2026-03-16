@@ -22,7 +22,7 @@
     "tool_recall_top_n": "Tool Recall Top-N",
     "llm_timeout": "LLM Timeout (s)",
     "llm_max_retries": "LLM Max Retries",
-    "max_conversation_size": "Context Window Size",
+    "max_conversation_size": "Conversation History Limit",
     "llm_stream_enabled": "LLM Streaming",
     "sandbox_enabled": "Sandbox Mode",
     "vector_search_batch_size": "Vector Search Batch Size",
@@ -64,7 +64,8 @@
   "descs": {
     "meta_decision_temperature": "LLM temperature for meta-level decision tasks",
     "max_tool_iterations": "Maximum tool call rounds per reply",
-    "max_conversation_size": "Max conversation history entries per LLM call",
+    "short_term_memory_size": "Max cached entries for tool results and other temporary info; oldest discarded when exceeded",
+    "max_conversation_size": "Max conversation history entries per LLM call; older messages can be retrieved via memory tools",
     "vector_search_batch_size": "Split into parallel batches when exceeding this count",
     "memory_recall_top_k": "Maximum entries returned by passive memory recall",
     "memory_recall_min_score": "Memories below this score won't be recalled",

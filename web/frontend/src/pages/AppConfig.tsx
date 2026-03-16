@@ -49,7 +49,7 @@ function ThinkingTab() {
     { key: "max_tool_iterations", label: t("fields.max_tool_iterations"), type: "int", desc: t("descs.max_tool_iterations") },
     { key: "log_ai_output", label: t("fields.log_ai_output"), type: "bool" },
     { key: "send_interim_text", label: t("fields.send_interim_text"), type: "bool" },
-    { key: "short_term_memory_size", label: t("fields.short_term_memory_size"), type: "int" },
+    { key: "short_term_memory_size", label: t("fields.short_term_memory_size"), type: "int", desc: t("descs.short_term_memory_size") },
     { key: "tool_recall_top_n", label: t("fields.tool_recall_top_n"), type: "int" },
     { key: "llm_timeout", label: t("fields.llm_timeout"), type: "float" },
     { key: "llm_max_retries", label: t("fields.llm_max_retries"), type: "int" },

@@ -58,6 +58,8 @@ class ChannelCapability(str, Enum):
     UNBAN_USER = "unban_user"
     SET_CHAT_TITLE = "set_chat_title"
     SET_CHAT_DESCRIPTION = "set_chat_description"
+    # 互动
+    MESSAGE_REACTION = "message_reaction"
     # 高级
     REPLY_TO = "reply_to"
     INLINE_KEYBOARD = "inline_keyboard"
@@ -209,6 +211,10 @@ class BaseChannel(BaseEntity, ABC):
     async def set_chat_description(self, chat_id: str, description: str, **kwargs: Any) -> str:
         """修改群组简介描述。"""
         return _err(f"{self.display_name} 不支持修改群简介")
+
+    async def message_reaction(self, chat_id: str, message_id: str, emoji_id: str = "212", **kwargs: Any) -> str:
+        """对指定消息添加表情回应。"""
+        return _err(f"{self.display_name} 不支持表情回应")
 
     # ------------------------------------------------------------------
     # 状态

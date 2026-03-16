@@ -395,7 +395,7 @@ async def get_conversation(scope_type: str, scope_id: str, limit: int = 30) -> s
             items.append({
                 "id": r["id"],
                 "role": r["role"],
-                "content": r["content"][:500],
+                "content": r["content"],
                 "time": dt,
             })
         return json.dumps({
@@ -652,7 +652,7 @@ async def recall_conversation(
             dt = datetime.datetime.fromtimestamp(ts_sec).strftime("%Y-%m-%d %H:%M")
             items.append({
                 "role": r["role"],
-                "content": r["content"][:400],
+                "content": r["content"],
                 "time": dt,
                 "score": round(r.get("score", 0.0), 3),
             })

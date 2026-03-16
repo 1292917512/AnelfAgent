@@ -11,19 +11,39 @@ import json
 import os
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set
 
 import aiohttp
 from aiohttp import web
 
 from agent.core.channel.channel import BaseChannel, ChannelCapability, ChannelStatus, _ok, _err
 from agent.core.channel.schemas import ChannelType, SegmentType
+from core.entity import EntityMetadata, EntityRegistry, EntityType, ToolParam
 from core.log import log
 
 from .parser import parse_event, parse_event_async
 
 
 _AT_PATTERN = re.compile(r'\[at_uid:([^\]]+)\]')
+_SECTION_SPLIT_RE = re.compile(r'={3,}')
+
+
+def _split_forward_sections(text: str, max_lines_per_section: int = 20) -> List[str]:
+    """将长文本智能拆分为合并转发的多段内容。
+
+    拆分优先级：分隔符 ``===`` > 双换行 > 固定行数。
+    """
+    if _SECTION_SPLIT_RE.search(text):
+        parts = re.split(r'\n(?=={3,})', text)
+    elif '\n\n' in text:
+        parts = text.split('\n\n')
+    else:
+        lines = text.split('\n')
+        parts = [
+            '\n'.join(lines[i:i + max_lines_per_section])
+            for i in range(0, len(lines), max_lines_per_section)
+        ]
+    return [p.strip() for p in parts if p.strip()]
 
 
 class OneBotV11Channel(BaseChannel):
@@ -63,10 +83,12 @@ class OneBotV11Channel(BaseChannel):
             ChannelCapability.UNBAN_USER,
             ChannelCapability.SET_CHAT_TITLE,
             ChannelCapability.REPLY_TO,
+            ChannelCapability.MESSAGE_REACTION,
         }
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession()
+        self._register_qq_tools()
 
         mode = self._cfg("ws_mode", "reverse")
         if mode == "reverse":
@@ -262,6 +284,155 @@ class OneBotV11Channel(BaseChannel):
         except (ValueError, TypeError):
             return _err(f"无效的群 ID: {chat_id}")
         return _ok() if ok else _err("设置群名失败")
+
+    async def set_group_card(self, chat_id: str, user_id: str, card: str = "", **kwargs: Any) -> str:
+        """设置群成员名片（群昵称）。card 为空则取消名片。"""
+        try:
+            gid, uid = int(chat_id), int(user_id)
+        except (ValueError, TypeError):
+            return _err(f"无效的 ID: group={chat_id}, user={user_id}")
+        ok = await self._call_api("set_group_card", {
+            "group_id": gid, "user_id": uid, "card": card,
+        })
+        return _ok({"chat_id": chat_id, "user_id": user_id, "card": card}) if ok else _err("设置群名片失败")
+
+    async def send_forward_msg(self, chat_id: str, content: str, **kwargs: Any) -> str:
+        """将长文本以合并转发消息形式发送，自动按段落拆分。"""
+        channel_type = kwargs.get("channel_type")
+        if not channel_type:
+            from agent.core.channel.manager import get_channel_manager
+            channel_type = get_channel_manager().resolve_channel_type(self.channel_id, chat_id)
+
+        try:
+            cid = int(chat_id)
+        except (ValueError, TypeError):
+            return _err(f"无效的 ID: {chat_id}")
+
+        sections = _split_forward_sections(content)
+        if not sections:
+            return _err("消息内容为空，无法发送合并转发")
+
+        bot_name = "Bot"
+        nodes = [
+            {
+                "type": "node",
+                "data": {
+                    "name": bot_name,
+                    "uin": self._self_id or "0",
+                    "content": [{"type": "text", "data": {"text": sec}}],
+                },
+            }
+            for sec in sections
+        ]
+
+        if channel_type == "group":
+            ok = await self._call_api("send_group_forward_msg", {
+                "group_id": cid, "messages": nodes,
+            })
+        else:
+            ok = await self._call_api("send_private_forward_msg", {
+                "user_id": cid, "messages": nodes,
+            })
+        return _ok({"chat_id": chat_id, "sections": len(sections)}) if ok else _err("发送合并转发失败")
+
+    async def send_poke(self, chat_id: str, user_id: str, **kwargs: Any) -> str:
+        """向指定用户发送戳一戳互动。群聊中 chat_id 为群号，私聊中 chat_id 与 user_id 相同。"""
+        try:
+            uid = int(user_id)
+        except (ValueError, TypeError):
+            return _err(f"无效的用户 ID: {user_id}")
+
+        # 推断群聊/私聊：chat_id != user_id 视为群聊，也可通过 kwargs 显式指定
+        channel_type = kwargs.get("channel_type")
+        if not channel_type:
+            channel_type = "group" if chat_id != user_id else "private"
+
+        if channel_type == "group":
+            try:
+                gid = int(chat_id)
+            except (ValueError, TypeError):
+                return _err(f"无效的群 ID: {chat_id}")
+            ok = await self._call_api("group_poke", {"group_id": gid, "user_id": uid})
+        else:
+            ok = await self._call_api("friend_poke", {"user_id": uid})
+        return _ok({"chat_id": chat_id, "user_id": user_id}) if ok else _err("戳一戳失败")
+
+    async def message_reaction(self, chat_id: str, message_id: str, emoji_id: str = "212", **kwargs: Any) -> str:
+        """对指定消息添加表情回应（NapCat 扩展 API）。"""
+        try:
+            mid = int(message_id)
+        except (ValueError, TypeError):
+            return _err(f"无效的消息 ID: {message_id}")
+        ok = await self._call_api("set_msg_emoji_like", {
+            "message_id": mid, "emoji_id": str(emoji_id),
+        })
+        return _ok({"message_id": message_id, "emoji_id": emoji_id}) if ok else _err("表情回应失败")
+
+    # ------------------------------------------------------------------
+    # QQ 专属工具注册
+    # ------------------------------------------------------------------
+
+    def _register_qq_tools(self) -> None:
+        """注册 QQ/OneBot 专属工具（非通用频道能力）。"""
+        channel = self
+
+        async def _send_poke(chat_id: str, user_id: str) -> str:
+            return await channel.send_poke(chat_id, user_id)
+
+        async def _set_group_card(chat_id: str, user_id: str, card: str = "") -> str:
+            return await channel.set_group_card(chat_id, user_id, card)
+
+        async def _send_forward_msg(chat_id: str, content: str) -> str:
+            return await channel.send_forward_msg(chat_id, content)
+
+        _QQ_TOOLS: List[tuple[str, str, Any, List[ToolParam]]] = [
+            (
+                "qq_send_poke",
+                "向 QQ 用户发送戳一戳互动。群聊中 chat_id 为群号；私聊中 chat_id 与 user_id 相同。",
+                _send_poke,
+                [
+                    ToolParam(name="chat_id", type="string", description="目标会话 ID（群号或用户 QQ 号）"),
+                    ToolParam(name="user_id", type="string", description="被戳用户 QQ 号"),
+                ],
+            ),
+            (
+                "qq_set_group_card",
+                "设置 QQ 群成员名片（群昵称）。card 为空则取消名片。",
+                _set_group_card,
+                [
+                    ToolParam(name="chat_id", type="string", description="群号"),
+                    ToolParam(name="user_id", type="string", description="目标用户 QQ 号"),
+                    ToolParam(name="card", type="string", required=False, description="新名片内容，为空则取消名片", default=""),
+                ],
+            ),
+            (
+                "qq_send_forward_msg",
+                "将长文本以 QQ 合并转发消息形式发送，自动按段落拆分。",
+                _send_forward_msg,
+                [
+                    ToolParam(name="chat_id", type="string", description="目标会话 ID（群号或用户 QQ 号）"),
+                    ToolParam(name="content", type="string", description="要发送的长文本内容"),
+                ],
+            ),
+        ]
+
+        for name, desc, func, params in _QQ_TOOLS:
+            if name in EntityRegistry.get_all_names():
+                continue
+            EntityRegistry.register(EntityMetadata(
+                name=name,
+                entity_type=EntityType.TOOL,
+                description=desc,
+                group="channel_ops",
+                tags=["qq"],
+                source="channel.qq",
+                enabled=True,
+                func=func,
+                is_async=True,
+                meta={"params": params},
+            ))
+
+        log(f"QQ 专属工具已注册 ({len(_QQ_TOOLS)} 个)", tag="QQ")
 
     # ------------------------------------------------------------------
     # 发送辅助

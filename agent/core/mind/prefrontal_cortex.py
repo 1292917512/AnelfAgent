@@ -631,9 +631,9 @@ class PrefrontalCortex:
         消息顺序：
         1. system（人设 + 便签）
         2. 工作记忆（工具提示 + 短期记忆）
-        3. 历史对话前段（head）
+        3. 上下文溢出提示（对话历史达到窗口上限时）
         4. 语义召回记忆
-        5. 历史对话尾段（最近 10 条 tail）
+        5. 对话历史（最近 max_conversation_size 条）
         """
         system_msg = [{"role": "system", "content": "\n\n".join(system_parts)}] if system_parts else []
 
@@ -646,25 +646,30 @@ class PrefrontalCortex:
         # 实时从 DB 获取最新对话历史（必须每轮重新获取，不可缓存或外部传入！
         # 多轮 think_loop 期间用户可能发送新消息，必须确保每轮都能拿到最新对话）
         conversation_list: List[Dict] = []
+        max_size = 0
         if self._conversation_data and anything:
+            max_size = self._conversation_data.max_size
             conversation_list = await self._conversation_data.get_conversation_record_by_everything(anything)
-            log(f"对话历史: {len(conversation_list)} 条", "DEBUG", tag="PFC")
+            log(f"对话历史: {len(conversation_list)} 条 (窗口上限 {max_size})", "DEBUG", tag="PFC")
 
-        tail = conversation_list[-10:] if len(conversation_list) > 10 else conversation_list
-        head = conversation_list[:-10] if len(conversation_list) > 10 else []
-
-        if len(head) > 20:
-            head = self._compress_head(head)
+        # 上下文溢出提示：当对话历史达到窗口上限，提醒 AI 主动记忆和检索
+        overflow_hint: List[Dict] = []
+        if max_size > 0 and len(conversation_list) >= max_size:
+            overflow_hint = [{"role": "system", "content": (
+                f"[上下文溢出] 当前对话历史已达窗口上限（{max_size} 条），更早的消息已不在视野内。\n"
+                "- 建议使用 memorize 将对话中的重要信息存入长期记忆，避免遗忘\n"
+                "- 可通过 recall_conversation 按语义搜索更早的对话内容\n"
+                "- 可通过 recall 检索长期记忆中的相关信息"
+            )}]
 
         context_msgs = [
             {**m, "role": "user"} if m.get("role") == "system" else m
             for m in memory_msgs
         ]
 
-        all_msgs = system_msg + working_memory + head + context_msgs + tail
+        all_msgs = system_msg + working_memory + overflow_hint + context_msgs + conversation_list
 
         # 确保最后一条非 system 消息不是 assistant 角色，防止 Anthropic prefill 400 错误。
-        # 从末尾向前查找，将末尾连续的 assistant 消息转为 user 角色（保留内容）。
         for i in range(len(all_msgs) - 1, -1, -1):
             msg = all_msgs[i]
             if msg.get("role") == "system":
@@ -708,43 +713,6 @@ class PrefrontalCortex:
             return ""
 
         return f"[当前场景] {' | '.join(parts)}"
-
-    @staticmethod
-    def _compress_head(head: List[Dict]) -> List[Dict]:
-        """将过长的历史对话前段压缩为摘要，均匀采样保留关键片段。"""
-        system_kept: List[Dict] = []
-        user_msgs: List[Dict] = []
-        for m in head:
-            content = (m.get("content") or "")
-            if "[已执行操作摘要]" in content or "[上轮执行摘要]" in content:
-                system_kept.append(m)
-            elif m.get("role") in ("user", "assistant"):
-                user_msgs.append(m)
-
-        sample_count = min(7, len(user_msgs))
-        if sample_count <= 1:
-            snippets = [(user_msgs[0].get("content") or "").strip()[:80]] if user_msgs else []
-        else:
-            indices = sorted({
-                int(i * (len(user_msgs) - 1) / (sample_count - 1))
-                for i in range(sample_count)
-            })
-            snippets = []
-            for idx in indices:
-                content = (user_msgs[idx].get("content") or "").strip()[:80]
-                if content:
-                    snippets.append(content)
-
-        summary_text = (
-            f"[历史摘要] 前 {len(head)} 条对话已省略，关键片段：\n"
-            + "\n".join(f"  - {s}" for s in snippets)
-            if snippets else
-            f"[历史摘要] 前 {len(head)} 条对话已省略"
-        )
-        result: List[Dict] = [{"role": "system", "content": summary_text}]
-        if system_kept:
-            result.extend(system_kept[-2:])
-        return result
 
     # ==================================================================
     # 短期记忆

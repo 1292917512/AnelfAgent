@@ -63,21 +63,21 @@ async def parse_event_async(
     if post_type == "message":
         return await _parse_message_event_async(data, api_caller)
     if post_type == "notice":
-        return _parse_notice_event(data)
+        return await _parse_notice_event(data, api_caller)
     return None
 
 
 def parse_event(data: Dict[str, Any]) -> Optional[AdapterMessage]:
     """同步解析 OneBot v11 事件（消息 + 通知）。
 
-    注意：此函数为兼容性保留，不支持获取引用消息内容和异步获取昵称。
+    注意：此函数为兼容性保留，不支持获取引用消息内容、异步获取昵称和文件 URL。
     建议使用 parse_event_async。
     """
     post_type = data.get("post_type")
     if post_type == "message":
         return _parse_message_event_sync(data)
     if post_type == "notice":
-        return _parse_notice_event(data)
+        return _parse_notice_event_sync(data)
     return None
 
 
@@ -692,9 +692,9 @@ def _parse_json_card(seg_data: Dict[str, Any]) -> str:
 # ======================================================================
 
 
-def _parse_notice_event(data: Dict[str, Any]) -> Optional[AdapterMessage]:
-    """解析通知事件（群成员变动、戳一戳、禁言、撤回等）。"""
-    notice_text, is_to_me = _format_notice(data)
+def _parse_notice_event_sync(data: Dict[str, Any]) -> Optional[AdapterMessage]:
+    """同步解析通知事件（兼容性保留，不支持获取文件 URL）。"""
+    notice_text, is_to_me = _format_notice_sync(data)
     if not notice_text:
         return None
 
@@ -726,7 +726,109 @@ def _parse_notice_event(data: Dict[str, Any]) -> Optional[AdapterMessage]:
     )
 
 
-def _format_notice(data: Dict[str, Any]) -> Tuple[str, bool]:
+def _format_notice_sync(data: Dict[str, Any]) -> Tuple[str, bool]:
+    """同步版本的通知格式化（不支持文件 URL 获取）。"""
+    notice_type = data.get("notice_type", "")
+    sub_type = data.get("sub_type", "")
+    user_id = data.get("user_id", "")
+    operator_id = data.get("operator_id", "")
+    self_id = str(data.get("self_id", ""))
+
+    if notice_type == "notify" and sub_type == "poke":
+        target_id = str(data.get("target_id", ""))
+        raw_info = data.get("raw_info", [])
+        item2 = raw_info[2] if len(raw_info) > 2 else None
+        item4 = raw_info[4] if len(raw_info) > 4 else None
+        poke_style = item2.get("txt", "戳一戳") if isinstance(item2, dict) else "戳一戳"
+        poke_suffix = item4.get("txt", "") if isinstance(item4, dict) else ""
+
+        group_id = str(data.get("group_id", ""))
+        sender_nickname = get_cached_nickname(group_id, str(user_id)) if group_id else ""
+        sender_display = sender_nickname or f"用户{user_id}"
+
+        is_poke_me = target_id == self_id
+        if is_poke_me:
+            text = f"({sender_display} {poke_style} 你 {poke_suffix})".strip()
+        else:
+            target_nickname = get_cached_nickname(group_id, target_id) if group_id else ""
+            target_display = target_nickname or f"用户{target_id}"
+            text = f"({sender_display} {poke_style} {target_display} {poke_suffix})".strip()
+        return text, is_poke_me
+
+    if notice_type == "group_upload":
+        file_info = data.get("file", {})
+        file_name = file_info.get("name", "未知文件")
+        file_size = file_info.get("size", 0)
+        return f"(用户 {user_id} 上传了文件: {file_name}, 大小: {_format_file_size(file_size)})", False
+
+    if notice_type == "group_increase":
+        return f"(新成员 {user_id} 加入了群聊)", False
+
+    if notice_type == "group_decrease":
+        return f"(成员 {user_id} 离开了群聊)", False
+
+    if notice_type == "group_ban":
+        duration = data.get("duration", 0)
+        if duration == 0:
+            return f"(成员 {user_id} 被 {operator_id} 解除禁言)", False
+        return f"(成员 {user_id} 被 {operator_id} 禁言 {_format_duration(duration)})", False
+
+    if notice_type == "group_recall":
+        if str(user_id) == str(operator_id):
+            return f"(成员 {user_id} 撤回了一条消息)", False
+        return f"(成员 {user_id} 的消息被 {operator_id} 撤回)", False
+
+    if notice_type == "group_admin":
+        action = "被设为管理员" if sub_type == "set" else "被取消管理员"
+        return f"(成员 {user_id} {action})", False
+
+    if notice_type == "friend_add":
+        return f"(用户 {user_id} 已成为好友)", True
+
+    return "", False
+
+
+async def _parse_notice_event(
+    data: Dict[str, Any],
+    api_caller: Optional[ApiCaller] = None,
+) -> Optional[AdapterMessage]:
+    """解析通知事件（群成员变动、戳一戳、禁言、撤回等）。"""
+    notice_text, is_to_me = await _format_notice(data, api_caller)
+    if not notice_text:
+        return None
+
+    user_id = str(data.get("user_id", "system"))
+    group_id = data.get("group_id")
+
+    if group_id:
+        channel = AdapterChannel(
+            channel_id=str(group_id),
+            channel_type=ChannelType.GROUP,
+        )
+    else:
+        channel = AdapterChannel(
+            channel_id=user_id,
+            channel_type=ChannelType.PRIVATE,
+        )
+
+    return AdapterMessage(
+        sender=AdapterUser(
+            platform="qq",
+            user_id=user_id,
+            user_name="",
+        ),
+        channel=channel,
+        content=notice_text,
+        segments=[MessageSegment(type=SegmentType.TEXT, content=notice_text)],
+        is_to_me=is_to_me,
+        timestamp=float(data.get("time", time.time())),
+    )
+
+
+async def _format_notice(
+    data: Dict[str, Any],
+    api_caller: Optional[ApiCaller] = None,
+) -> Tuple[str, bool]:
     """将通知事件格式化为可读文本。
 
     Returns:
@@ -746,28 +848,44 @@ def _format_notice(data: Dict[str, Any]) -> Tuple[str, bool]:
         poke_style = item2.get("txt", "戳一戳") if isinstance(item2, dict) else "戳一戳"
         poke_suffix = item4.get("txt", "") if isinstance(item4, dict) else ""
 
-        # 获取戳人者的昵称
+        # 解析戳一戳动作图片 URL
+        action_img = ""
+        if len(raw_info) > 1 and isinstance(raw_info[1], dict) and raw_info[1].get("type") == "img":
+            action_img = raw_info[1].get("src", "")
+
         group_id = str(data.get("group_id", ""))
         sender_nickname = get_cached_nickname(group_id, str(user_id)) if group_id else ""
         sender_display = sender_nickname or f"用户{user_id}"
 
-        # 判断是否戳的是机器人
         is_poke_me = target_id == self_id
         if is_poke_me:
-            # 戳的是机器人，使用"你"
             text = f"({sender_display} {poke_style} 你 {poke_suffix})".strip()
         else:
-            # 戳的是其他人
             target_nickname = get_cached_nickname(group_id, target_id) if group_id else ""
             target_display = target_nickname or f"用户{target_id}"
             text = f"({sender_display} {poke_style} {target_display} {poke_suffix})".strip()
+
+        if action_img:
+            text = f"{text} [动作图片:{action_img}]"
         return text, is_poke_me
 
     if notice_type == "group_upload":
         file_info = data.get("file", {})
         file_name = file_info.get("name", "未知文件")
         file_size = file_info.get("size", 0)
-        return f"(用户 {user_id} 上传了文件: {file_name}, 大小: {file_size} 字节)", False
+        file_url = file_info.get("url", "")
+
+        # 尝试通过 get_file API 获取下载 URL
+        if not file_url and api_caller:
+            file_id = file_info.get("id", "")
+            if file_id:
+                file_url = await _fetch_file_url(file_id, api_caller)
+
+        size_display = _format_file_size(file_size)
+        text = f"(用户 {user_id} 上传了文件: {file_name}, 大小: {size_display})"
+        if file_url:
+            text = f"(用户 {user_id} 上传了文件: {file_name}, 大小: {size_display}, 链接: {file_url})"
+        return text, False
 
     if notice_type == "group_increase":
         return f"(新成员 {user_id} 加入了群聊)", False
@@ -779,7 +897,7 @@ def _format_notice(data: Dict[str, Any]) -> Tuple[str, bool]:
         duration = data.get("duration", 0)
         if duration == 0:
             return f"(成员 {user_id} 被 {operator_id} 解除禁言)", False
-        return f"(成员 {user_id} 被 {operator_id} 禁言 {duration} 秒)", False
+        return f"(成员 {user_id} 被 {operator_id} 禁言 {_format_duration(duration)})", False
 
     if notice_type == "group_recall":
         if str(user_id) == str(operator_id):
@@ -790,4 +908,52 @@ def _format_notice(data: Dict[str, Any]) -> Tuple[str, bool]:
         action = "被设为管理员" if sub_type == "set" else "被取消管理员"
         return f"(成员 {user_id} {action})", False
 
+    if notice_type == "friend_add":
+        return f"(用户 {user_id} 已成为好友)", True
+
     return "", False
+
+
+async def _fetch_file_url(
+    file_id: str,
+    api_caller: ApiCaller,
+    timeout: float = 3.0,
+) -> str:
+    """通过 get_file API 获取文件下载 URL。"""
+    try:
+        result = await asyncio.wait_for(
+            api_caller("get_file", {"file_id": file_id}),
+            timeout=timeout,
+        )
+        if result and result.get("data"):
+            return result["data"].get("url", "") or result["data"].get("file", "")
+    except asyncio.TimeoutError:
+        log(f"获取文件 URL 超时: file_id={file_id}", "DEBUG", tag="QQ")
+    except Exception as exc:
+        log(f"获取文件 URL 失败: {exc}", "DEBUG", tag="QQ")
+    return ""
+
+
+def _format_file_size(size_bytes: int) -> str:
+    """将字节数格式化为可读的文件大小。"""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    if size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+
+def _format_duration(seconds: int) -> str:
+    """将秒数格式化为可读的时长。"""
+    if seconds < 60:
+        return f"{seconds}秒"
+    if seconds < 3600:
+        return f"{seconds // 60}分钟"
+    if seconds < 86400:
+        h, m = divmod(seconds, 3600)
+        return f"{h}小时{m // 60}分钟" if m >= 60 else f"{h}小时"
+    d, remainder = divmod(seconds, 86400)
+    h = remainder // 3600
+    return f"{d}天{h}小时" if h else f"{d}天"
