@@ -86,6 +86,7 @@ def register_channel_capability_tools() -> int:
                 source="channel.auto",
                 enabled=True,
                 func=tool_func,
+                is_async=True,
                 meta={"params": params},
             ))
             registered += 1
