@@ -33,6 +33,32 @@ litellm.suppress_debug_info = True
 litellm.drop_params = True
 litellm.local_model_cost_map = True
 
+
+class _ProxyHttpClient:
+    """支持 deepcopy 的 httpx 代理客户端包装。
+
+    litellm 部分 handler（如 Anthropic）会对 optional_params 执行
+    copy.deepcopy，而原生 httpx.AsyncClient 含 _thread.RLock 无法序列化。
+    本类通过 __deepcopy__ 返回自身引用（共享连接池）来规避此问题，
+    同时保留 per-provider 独立代理能力。
+    """
+
+    def __init__(self, proxy_url: str) -> None:
+        import httpx
+        self._proxy_url = proxy_url
+        self._client = httpx.AsyncClient(proxy=proxy_url)
+
+    @property
+    def is_closed(self) -> bool:
+        return self._client.is_closed
+
+    def __deepcopy__(self, memo: dict) -> "_ProxyHttpClient":
+        return self
+
+    def __getattr__(self, name: str):
+        return getattr(self._client, name)
+
+
 _DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1"
 _DEFAULT_API_KEY = ""
 
@@ -255,13 +281,14 @@ class LLMClient(BaseEntity):
         self._entity_tags = [
             "AI Services", "LLM", f"model:{self.config.model}",
         ]
-        self._proxy_http_client: Optional[Any] = None
+        self._proxy_client: Optional[_ProxyHttpClient] = None
         super().__init__()
+        proxy = self.config.effective_proxy
         info(
             f"LLMClient [{self.config.name}] 已创建: "
             f"model={self.config.litellm_model}, "
             f"base_url={self.config.base_url}"
-            f"{f', proxy={self.config.effective_proxy}' if self.config.effective_proxy else ''}",
+            f"{f', proxy={proxy}' if proxy else ''}",
             tag="模型",
         )
 
@@ -292,15 +319,14 @@ class LLMClient(BaseEntity):
             params.update(options)
         return params
 
-    def _get_proxy_http_client(self) -> Optional[Any]:
-        """为配置了代理的客户端返回 httpx.AsyncClient（懒初始化并缓存）。"""
+    def _get_proxy_client(self) -> Optional[_ProxyHttpClient]:
+        """按需返回当前 Provider 的代理客户端（懒初始化）。"""
         proxy = self.config.effective_proxy
         if not proxy:
             return None
-        import httpx as _httpx
-        if self._proxy_http_client is None or self._proxy_http_client.is_closed:
-            self._proxy_http_client = _httpx.AsyncClient(proxy=proxy)
-        return self._proxy_http_client
+        if self._proxy_client is None or self._proxy_client.is_closed:
+            self._proxy_client = _ProxyHttpClient(proxy)
+        return self._proxy_client
 
     def _build_kwargs(
             self,
@@ -332,9 +358,9 @@ class LLMClient(BaseEntity):
         if stream:
             kwargs["stream"] = True
 
-        proxy_client = self._get_proxy_http_client()
-        if proxy_client:
-            kwargs["http_client"] = proxy_client
+        proxy = self._get_proxy_client()
+        if proxy:
+            kwargs["http_client"] = proxy
 
         extra = dict(self.config.extra_params)
         if self.config.supports_reasoning:
@@ -692,7 +718,6 @@ class LLMClient(BaseEntity):
             model: str,
             api_type: str = API_TYPE_OLLAMA,
             timeout: float = 120.0,
-            proxy_url: str = "",
     ) -> Dict[str, Any]:
         """探测模型是否支持 tools 和 vision（通过 litellm）。"""
         prefix = _LITELLM_PREFIX_MAP.get(api_type, "openai")
