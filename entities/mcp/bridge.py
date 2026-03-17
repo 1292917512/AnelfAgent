@@ -124,6 +124,19 @@ def load_mcp_config(path: Optional[str] = None) -> MCPConfig:
         return MCPConfig()
 
 
+def _extract_exception_detail(exc: Exception) -> str:
+    """从 ExceptionGroup 中递归提取真实的子异常信息。
+
+    anyio 的 TaskGroup 在子任务失败时抛出 ExceptionGroup，
+    其 str() 只显示 "unhandled errors in a TaskGroup (N sub-exception)"，
+    真正的原因（如 ConnectionRefused）藏在 .exceptions 中。
+    """
+    if hasattr(exc, "exceptions"):
+        causes = [_extract_exception_detail(sub) for sub in exc.exceptions]
+        return "; ".join(causes)
+    return f"{type(exc).__name__}: {exc}"
+
+
 # ------------------------------------------------------------------
 # MCP Bridge
 # ------------------------------------------------------------------
@@ -286,7 +299,8 @@ class MCPBridge:
             log(f"MCP server '{srv.name}' 已连接，发现 {count} 个工具")
             return count
         except Exception as exc:
-            log(f"MCP server '{srv.name}' 连接失败: {exc}", "ERROR")
+            detail = _extract_exception_detail(exc)
+            log(f"MCP server '{srv.name}' 连接失败: {detail}", "ERROR")
             return 0
 
     async def _async_connect_server_by_name(self, name: str) -> int:
@@ -371,7 +385,8 @@ class MCPBridge:
                     await stop_event.wait()
 
         except Exception as exc:
-            log(f"MCP server '{srv.name}' lifecycle 异常: {exc}", "ERROR")
+            detail = _extract_exception_detail(exc)
+            log(f"MCP server '{srv.name}' lifecycle 异常: {detail}", "ERROR")
             if not ready_event.is_set():
                 result_box.append(exc)
                 ready_event.set()
