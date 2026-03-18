@@ -10,16 +10,12 @@ import aiosqlite
 from core.log import log
 
 
-def _repo_root() -> Path:
-    """定位项目根目录（sqlite_backend.py → storage/ → core/ → agent/ → 项目根）。"""
-    return Path(__file__).resolve().parents[3]
-
-
 def default_sqlite_path() -> str:
     env_path = os.getenv("ANELF_BOT_SQLITE_PATH")
     if env_path and env_path.strip():
         return env_path.strip()
-    return str(_repo_root() / "config" / "memory" / "data" / "agent.sqlite3")
+    from core.path import project_root
+    return str(Path(project_root()) / "config" / "memory" / "data" / "agent.sqlite3")
 
 
 class SqliteBackend:

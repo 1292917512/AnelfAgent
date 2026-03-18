@@ -269,9 +269,10 @@ class Mind:
         })
 
         if is_heartbeat:
-            executed_tasks = await self.heartbeat_engine.tick()
-            if executed_tasks:
-                log(f"心跳任务完成: {', '.join(executed_tasks)}", tag="思维")
+            asyncio.create_task(
+                self._run_heartbeat_tick(),
+                name="agent.heartbeat.tick",
+            )
 
         situation = await self._gather_situation(is_heartbeat=is_heartbeat)
 
@@ -332,10 +333,9 @@ class Mind:
                 name=f"agent.mind.bg.{d.type.value}",
             )
 
-        # 即时决策保持顺序执行
-        for decision in immediate:
-            await self._safe_execute(decision)
-            await asyncio.sleep(0)
+        # 即时决策并行执行（不同 scope 的 REPLY 可并行，execute_reply 内有 scope 级锁）
+        if immediate:
+            await asyncio.gather(*(self._safe_execute(d) for d in immediate))
 
         self.pfc.clear_general_tasks()
 
@@ -360,6 +360,15 @@ class Mind:
         if self.pfc.has_pending_tasks():
             log("自主循环结束后仍有待处理任务，自动触发新一轮", tag="思维")
             asyncio.create_task(self.execute_mind())
+
+    async def _run_heartbeat_tick(self) -> None:
+        """后台执行心跳 tick，不阻塞主循环的消息处理。"""
+        try:
+            executed = await self.heartbeat_engine.tick()
+            if executed:
+                log(f"心跳任务完成: {', '.join(executed)}", tag="心跳")
+        except Exception as exc:
+            log(f"心跳 tick 异常: {exc}", "WARNING", tag="心跳")
 
     async def _safe_execute(self, decision: Decision) -> None:
         """安全执行决策，异常转为通用错误任务。"""

@@ -478,6 +478,37 @@ ensure_dir_exists = PathManager.ensure_dir_exists
 ensure_dir_exists_async = PathManager.ensure_dir_exists.async_version
 
 
+_PROJECT_ROOT: str = ""
+_MARKERS = ("launch.py", "pyproject.toml", ".git")
+
+
+def project_root() -> str:
+    """获取项目根目录绝对路径（首次调用自动探测并缓存）。
+
+    探测策略：从 cwd 和本文件位置向上搜索标志文件（launch.py / pyproject.toml / .git）。
+    找不到时回退为 cwd。
+    """
+    global _PROJECT_ROOT
+    if _PROJECT_ROOT:
+        return _PROJECT_ROOT
+
+    from pathlib import Path
+
+    for start in (Path.cwd(), Path(__file__).resolve().parent.parent):
+        current = start.resolve()
+        for _ in range(10):
+            if any((current / m).exists() for m in _MARKERS):
+                _PROJECT_ROOT = str(current)
+                return _PROJECT_ROOT
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+
+    _PROJECT_ROOT = str(Path.cwd())
+    return _PROJECT_ROOT
+
+
 class ConfigPaths:
     """配置路径常量集中管理。"""
     APP_CONFIG = "config/app_config.json"

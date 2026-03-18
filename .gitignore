@@ -58,7 +58,6 @@ config/introspection.json.bak
 config/introspection/
 
 # === Personal data & memory ===
-config/memory.md
 config/memory/
 
 # === Personal tasks (memory_consolidation.json kept as example) ===

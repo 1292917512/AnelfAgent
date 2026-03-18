@@ -23,8 +23,8 @@ _file_lock = asyncio.Lock()
 
 
 def _repo_root() -> Path:
-    """定位项目根目录（notes.py -> memory/ -> mind/ -> core/ -> agent/ -> 项目根）。"""
-    return Path(__file__).resolve().parents[4]
+    from core.path import project_root
+    return Path(project_root())
 
 
 def get_workspace_dir() -> Path:
