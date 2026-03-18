@@ -36,11 +36,11 @@ litellm.local_model_cost_map = True
 
 
 class _ProxyHttpClient(httpx.AsyncClient):
-    """支持 deepcopy 的 httpx 代理客户端。
+    """支持 deepcopy 的代理 HTTP 客户端。
 
-    继承 httpx.AsyncClient 以通过 litellm / Anthropic SDK 的 isinstance 检查
-    和内部 JSON 序列化。__deepcopy__ 返回自身引用以共享连接池，
-    规避 copy.deepcopy 时 _thread.RLock 无法序列化的问题。
+    继承 httpx.AsyncClient 以通过 litellm / Anthropic SDK 的 isinstance 检查，
+    避免内部 JSON 序列化时将其当作未知类型处理。
+    __deepcopy__ 返回自身引用以共享连接池，规避 _thread.RLock 序列化问题。
     """
 
     def __init__(self, proxy_url: str) -> None:
