@@ -375,6 +375,8 @@ class LLMClient(BaseEntity):
         effort = params.pop("reasoning_effort", None) or ""
         if effort and self._supports_effort():
             kwargs["reasoning_effort"] = effort
+            if self.config.api_type == API_TYPE_ANTHROPIC:
+                kwargs["temperature"] = 1
 
         return kwargs
 
