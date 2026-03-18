@@ -48,10 +48,22 @@ nohup.out
 config/app_config.json
 config/llm_clients.json
 config/mcp_servers.json
+config/mind_config.json
+
+# === Personal runtime configs ===
+config/heartbeat.json
+config/webui.json
+config/introspection.json
+config/introspection.json.bak
+config/introspection/
 
 # === Personal data & memory ===
 config/memory.md
 config/memory/
+
+# === Personal tasks (memory_consolidation.json kept as example) ===
+config/tasks/*
+!config/tasks/memory_consolidation.json
 
 # === Persona (personal characters; default.json is the template) ===
 config/personas/mengli.json

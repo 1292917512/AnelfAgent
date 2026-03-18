@@ -27,7 +27,9 @@ FILES=(
     "config/llm_clients.json"
     "config/mcp_servers.json"
     "config/app_config.json"
-    "config/memory.md"
+    "config/mind_config.json"
+    "config/heartbeat.json"
+    "config/webui.json"
     "config/personas/mengli.json"
     "channels/telegram/channel_config.json"
     "channels/qq/channel_config.json"
@@ -50,6 +52,14 @@ if [[ -d "$VAULT/config/memory" ]]; then
         --exclude='*.sqlite3-shm' \
         "$VAULT/config/memory/" "$ROOT/config/memory/"
     echo "  [ok] config/memory/ (synced)"
+    ((COUNT++)) || true
+fi
+
+if [[ -d "$VAULT/config/tasks" ]]; then
+    mkdir -p "$ROOT/config/tasks"
+    rsync -a --delete \
+        "$VAULT/config/tasks/" "$ROOT/config/tasks/"
+    echo "  [ok] config/tasks/ (synced)"
     ((COUNT++)) || true
 fi
 

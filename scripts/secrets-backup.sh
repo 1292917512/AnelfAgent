@@ -18,6 +18,7 @@ echo
 mkdir -p \
     "$VAULT/config/personas" \
     "$VAULT/config/memory" \
+    "$VAULT/config/tasks" \
     "$VAULT/channels/telegram" \
     "$VAULT/channels/qq" \
     "$VAULT/channels/feishu"
@@ -28,7 +29,9 @@ FILES=(
     "config/llm_clients.json"
     "config/mcp_servers.json"
     "config/app_config.json"
-    "config/memory.md"
+    "config/mind_config.json"
+    "config/heartbeat.json"
+    "config/webui.json"
     "config/personas/mengli.json"
     "channels/telegram/channel_config.json"
     "channels/qq/channel_config.json"
@@ -43,12 +46,21 @@ for f in "${FILES[@]}"; do
     fi
 done
 
+# config/memory/ (SQLite data + MD notes)
 if [[ -d "$ROOT/config/memory" ]]; then
     rsync -a --delete \
         --exclude='*.sqlite3-wal' \
         --exclude='*.sqlite3-shm' \
         "$ROOT/config/memory/" "$VAULT/config/memory/"
     echo "  [ok] config/memory/ (synced)"
+    ((COUNT++)) || true
+fi
+
+# config/tasks/ (personal task definitions)
+if [[ -d "$ROOT/config/tasks" ]]; then
+    rsync -a --delete \
+        "$ROOT/config/tasks/" "$VAULT/config/tasks/"
+    echo "  [ok] config/tasks/ (synced)"
     ((COUNT++)) || true
 fi
 

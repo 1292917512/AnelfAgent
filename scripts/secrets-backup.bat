@@ -17,6 +17,7 @@ echo.
 
 if not exist "%VAULT%\config\personas" mkdir "%VAULT%\config\personas"
 if not exist "%VAULT%\config\memory" mkdir "%VAULT%\config\memory"
+if not exist "%VAULT%\config\tasks" mkdir "%VAULT%\config\tasks"
 if not exist "%VAULT%\channels\telegram" mkdir "%VAULT%\channels\telegram"
 if not exist "%VAULT%\channels\qq" mkdir "%VAULT%\channels\qq"
 if not exist "%VAULT%\channels\feishu" mkdir "%VAULT%\channels\feishu"
@@ -27,7 +28,9 @@ for %%F in (
     config\llm_clients.json
     config\mcp_servers.json
     config\app_config.json
-    config\memory.md
+    config\mind_config.json
+    config\heartbeat.json
+    config\webui.json
     config\personas\mengli.json
     channels\telegram\channel_config.json
     channels\qq\channel_config.json
@@ -43,6 +46,12 @@ for %%F in (
 if exist "%ROOT%\config\memory" (
     xcopy /E /I /Y /Q "%ROOT%\config\memory" "%VAULT%\config\memory" >nul
     echo   [ok] config\memory\ (synced)
+    set /a COUNT+=1
+)
+
+if exist "%ROOT%\config\tasks" (
+    xcopy /E /I /Y /Q "%ROOT%\config\tasks" "%VAULT%\config\tasks" >nul
+    echo   [ok] config\tasks\ (synced)
     set /a COUNT+=1
 )
 
