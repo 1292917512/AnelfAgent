@@ -237,36 +237,39 @@ export const configApi = {
   saveMind: (data: Record<string, unknown>) => api.put("/config/mind", data),
 };
 
-// Introspection Config
-export const introspectionApi = {
-  get: () => api.get<Record<string, unknown>>("/config/introspection"),
-  save: (data: Record<string, unknown>) => api.put("/config/introspection", data),
-  trigger: () => api.post<{ status: string }>("/config/introspection/trigger"),
-};
-
-// Introspection Units CRUD
-export const introspectionUnitsApi = {
-  list: () => api.get<IntrospectionUnitConfig[]>("/config/introspection/units"),
-  get: (name: string) => api.get<IntrospectionUnitConfig>(`/config/introspection/units/${encodeURIComponent(name)}`),
-  create: (data: IntrospectionUnitConfig) => api.post<IntrospectionUnitConfig>("/config/introspection/units", data),
-  update: (name: string, data: Partial<IntrospectionUnitConfig>) =>
-    api.put<IntrospectionUnitConfig>(`/config/introspection/units/${encodeURIComponent(name)}`, data),
-  delete: (name: string) => api.delete(`/config/introspection/units/${encodeURIComponent(name)}`),
-};
-
-export interface IntrospectionUnitConfig {
-  name: string;
-  display_name: string;
-  description: string;
-  scope: "global" | "entity" | "any";
+// Heartbeat
+export interface HeartbeatConfig {
   enabled: boolean;
-  memory_type: "reflection" | "semantic" | "entity";
-  importance: number;
-  tags: string[];
-  source: string;
-  null_keywords: string[];
-  prompt: string;
+  interval_seconds: number;
+  analysis_temperature: number;
+  min_conversations_for_analysis: number;
+  task_schedules: TaskSchedule[];
 }
+
+export interface TaskSchedule {
+  task_name: string;
+  mode: "heartbeat" | "scheduled" | "manual";
+  every_n_beats?: number;
+  beat_count?: number;
+  schedule_times?: string[];
+  last_run_date?: string;
+}
+
+export interface HeartbeatStatus {
+  enabled: boolean;
+  interval_seconds: number;
+  total_ticks: number;
+  task_count: number;
+  schedule_count: number;
+  schedules: (TaskSchedule & { task_exists: boolean; task_enabled: boolean })[];
+}
+
+export const heartbeatApi = {
+  getConfig: () => api.get<HeartbeatConfig>("/config/heartbeat"),
+  saveConfig: (data: Partial<HeartbeatConfig>) => api.put("/config/heartbeat", data),
+  getStatus: () => api.get<HeartbeatStatus>("/config/heartbeat/status"),
+  trigger: () => api.post<{ status: string }>("/config/heartbeat/trigger"),
+};
 
 // Task Units CRUD + trigger
 export interface TaskConfig {

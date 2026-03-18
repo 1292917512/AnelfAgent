@@ -1,0 +1,44 @@
+{
+  "enabled": true,
+  "interval_seconds": 300,
+  "analysis_temperature": 0.5,
+  "min_conversations_for_analysis": 5,
+  "task_schedules": [
+    {
+      "task_name": "self_reflection",
+      "mode": "heartbeat",
+      "every_n_beats": 12,
+      "beat_count": 0
+    },
+    {
+      "task_name": "memory_consolidation",
+      "mode": "scheduled",
+      "schedule_times": [
+        "03:00"
+      ],
+      "last_run_date": ""
+    },
+    {
+      "task_name": "proactive_outreach",
+      "mode": "heartbeat",
+      "every_n_beats": 24,
+      "beat_count": 0
+    },
+    {
+      "task_name": "needs_expression",
+      "mode": "heartbeat",
+      "every_n_beats": 36,
+      "beat_count": 0
+    },
+    {
+      "task_name": "tool_usage_review",
+      "mode": "heartbeat",
+      "every_n_beats": 48,
+      "beat_count": 0
+    },
+    {
+      "task_name": "profile_cleanup",
+      "mode": "manual"
+    }
+  ]
+}

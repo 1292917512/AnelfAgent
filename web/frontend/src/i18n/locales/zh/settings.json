@@ -8,6 +8,7 @@
     "system": "系统"
   },
   "tabs": {
+    "sysConfig": "系统配置",
     "system": "系统信息",
     "python": "Python",
     "git": "Git",

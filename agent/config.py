@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.log import log
+from core.path import ConfigPaths
 
 _ENV_PREFIX = "ANELF_"
 
@@ -250,10 +251,10 @@ class BotConfig:
     """AnelfAgent 全局配置聚合。"""
     llm: LLMConfig = field(default_factory=LLMConfig)
     mind: MindConfig = field(default_factory=MindConfig)
-    personas_dir: str = "config/personas"
-    personas_config_path: str = "config/personas/index.json"
-    mcp_config_path: str = "config/mcp_servers.json"
-    sqlite_path: str = "config/memory/data/agent.sqlite3"
+    personas_dir: str = ConfigPaths.PERSONAS_DIR
+    personas_config_path: str = ConfigPaths.PERSONAS_INDEX
+    mcp_config_path: str = ConfigPaths.MCP_SERVERS
+    sqlite_path: str = ConfigPaths.SQLITE_DB
     max_conversation_size: int = 30
     max_tool_iterations: int = 3
 
@@ -317,8 +318,8 @@ class BotConfigProvider:
     def mind_config_path(self) -> str:
         if self._cm_available:
             from core.config import ConfigManager
-            return str(ConfigManager.get("mind_config_path", "config/mind_config.json"))
-        return "config/mind_config.json"
+            return str(ConfigManager.get("mind_config_path", ConfigPaths.MIND_CONFIG))
+        return ConfigPaths.MIND_CONFIG
 
     def _apply_env_overrides(self) -> None:
         """从环境变量覆盖配置。"""

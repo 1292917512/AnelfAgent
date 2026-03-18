@@ -1,0 +1,54 @@
+{
+  "tabs": {
+    "status": "Status",
+    "config": "Config & Schedule"
+  },
+  "status": {
+    "title": "Heartbeat",
+    "running": "Running",
+    "stopped": "Stopped",
+    "paused": "Paused",
+    "interval": "Interval",
+    "totalTicks": "Total Ticks",
+    "scheduledTasks": "Scheduled",
+    "uptime": "Uptime",
+    "triggerHeartbeat": "Manual Tick",
+    "triggering": "Triggering…",
+    "taskProgress": "Task Schedule Progress",
+    "taskProgressDesc": "Beat count and trigger status for each scheduled task",
+    "remaining": "{{count}} remaining",
+    "runNow": "Run Now",
+    "recentLog": "Recent Heartbeat Log",
+    "noLog": "No heartbeat log yet",
+    "loadingLog": "Loading log…",
+    "refreshLog": "Refresh"
+  },
+  "config": {
+    "title": "Heartbeat Config",
+    "subtitle": "Core parameters for the heartbeat engine",
+    "enabled": "Enable Heartbeat",
+    "enabledDesc": "Agent will autonomously run heartbeat cycles at the configured interval",
+    "interval": "Heartbeat Interval",
+    "intervalUnit": "sec",
+    "minutes": "min",
+    "temperature": "Analysis Temperature",
+    "minConversations": "Min Conversations",
+    "save": "Save Config",
+    "saving": "Saving…"
+  },
+  "schedule": {
+    "title": "Task Schedule",
+    "subtitle": "Bind tasks to heartbeat and configure trigger rules",
+    "modeHeartbeat": "Heartbeat",
+    "modeScheduled": "Scheduled",
+    "modeManual": "Manual Only",
+    "every": "Every",
+    "beats": "beats",
+    "progress": "Progress",
+    "times": "Run Times",
+    "manualOnly": "Only triggered via Web UI or AI tool",
+    "addTask": "Bind task:",
+    "addTime": "Add",
+    "resetCounter": "Reset counter"
+  }
+}

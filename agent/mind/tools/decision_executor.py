@@ -21,7 +21,7 @@ from agent.messages import (
     MessageAssistantGroup,
 )
 from agent.mind.autonomous import Decision, DecisionType
-from agent.mind.heartbeat import append_entry as _hb_append
+from agent.heartbeat.log import append_entry as _hb_append
 from agent.memory.memory_types import MemoryEntry, MemoryType
 from agent.mind.autonomous import MindPhase
 from core.log import log
@@ -89,97 +89,17 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
 
 
 async def execute_reflect(mind: Mind, decision: Optional[Decision] = None, *, skip_interval: bool = False) -> int:
-    """执行反思决策：运行内省编排器（支持有实体和无实体两种模式）。
-
-    REFLECT 始终以后台 asyncio.Task 方式执行，原会话在此之前已结束。
-    因此本方法主动发射 SESSION_START / SESSION_END，为反思过程创建独立的追踪会话，
-    确保所有 INTROSPECTION 事件都能被 Tracer 正确捕获。
-
-    反思期间外部消息会暂缓处理（留在 PFC 队列），反思结束后自动排空。
-
-    Args:
-        mind: Mind 实例
-        decision: 决策对象（可选，Web 手动触发时为 None）
-        skip_interval: 是否跳过间隔检查（手动触发时为 True）
-
-    Returns:
-        产出模块数量
-    """
+    """执行反思决策：通过心跳引擎运行自我反思任务。"""
     mind._reflecting = True
     mind._set_phase(MindPhase.INTROSPECTING)
 
-    intro_cfg = mind.intro.config
-    if not skip_interval:
-        hours_since = (time.time() - intro_cfg.last_reflect_time) / 3600.0
-        if intro_cfg.last_reflect_time > 0 and hours_since < intro_cfg.reflect_min_hours:
-            log(f"反思间隔不足 ({hours_since:.1f}h < {intro_cfg.reflect_min_hours}h)，跳过", tag="思维")
-            _hb_append(f"反思跳过: 间隔仅 {hours_since:.1f}h < {intro_cfg.reflect_min_hours}h")
-            mind._reflecting = False
-            return 0
-
-    analysis_entity = await mind.pfc.pop_analysis_task()
-    memory_warnings_checked: bool = bool(decision.params.get("memory_warnings_checked", False)) if decision else False
-    entity_desc = analysis_entity.get_entity_desc() if analysis_entity else "全局"
-
-    await event_bus.emit(EVENT_THINKING_SESSION_START, {
-        "is_heartbeat": True,
-        "is_introspection": True,
-        "entity": entity_desc,
-    })
-
     try:
-        await event_bus.emit(EVENT_THINKING_INTROSPECTION, {
-            "stage": "start",
-            "entity": entity_desc,
-        })
-        results = await mind.intro.run(
-            analysis_entity,
-            memory_warnings_checked=memory_warnings_checked,
-        )
-        await event_bus.emit(EVENT_THINKING_INTROSPECTION, {
-            "stage": "end",
-            "entity": entity_desc,
-            "module_count": len(results) if results else 0,
-        })
-
-        if analysis_entity and results:
-            await mind._add_system_context(
-                analysis_entity,
-                f"[内省] 已对 {entity_desc} 完成分析 ({len(results)} 个模块)",
-            )
-
-        extra_count = 0
-        max_extra = 2
-        while extra_count < max_extra and not mind.pfc.pending_analysis.is_empty():
-            extra_entity = await mind.pfc.pop_analysis_task()
-            if not extra_entity:
-                break
-            extra_desc = extra_entity.get_entity_desc()
-            log(f"批量实体分析: {extra_desc} ({extra_count + 1}/{max_extra})", tag="思维")
-            extra_result = await mind.intro.run_entity_only(extra_entity)
-            if extra_result:
-                await mind._add_system_context(
-                    extra_entity,
-                    f"[内省] 已对 {extra_desc} 完成画像分析",
-                )
-                _hb_append(f"批量画像: {extra_desc}")
-            extra_count += 1
-
-        total = (len(results) if results else 0) + extra_count
-        mind._last_reflect_time = time.time()
-        _hb_append(f"反思完成: {entity_desc} ({total} 个模块, +{extra_count} 个实体)")
-
-        try:
-            intro_cfg.last_reflect_time = mind._last_reflect_time
-            intro_cfg.save()
-        except Exception as e:
-            log(f"反思配置保存失败: {e}", "DEBUG", tag="思维")
-        return total
+        result = await mind.heartbeat_engine.run_task("self_reflection")
+        count = 1 if result else 0
+        _hb_append(f"反思完成: {'有产出' if result else '无产出'}")
+        return count
     finally:
         mind._reflecting = False
-        await event_bus.emit(EVENT_THINKING_SESSION_END, {
-            "reason": "introspection_completed",
-        })
         if mind.pfc.has_pending_tasks():
             asyncio.create_task(
                 mind.execute_mind(),

@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import datetime
 import json
 import time
 import uuid
@@ -26,11 +25,10 @@ def _make_goal(
     title: str,
     description: str = "",
     steps: Optional[List[str]] = None,
-    due_time: str = "",
     recurring: bool = False,
 ) -> Dict[str, Any]:
     """构造目标数据结构。"""
-    goal: Dict[str, Any] = {
+    return {
         "goal_id": uuid.uuid4().hex[:8],
         "title": title,
         "description": description,
@@ -43,16 +41,13 @@ def _make_goal(
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    if due_time:
-        goal["due_time"] = due_time
-    return goal
 
 
 def register_planning_tools(store: MemoryStore) -> None:
     """注入 MemoryStore 并批量注册规划工具。"""
     global _store
     _store = store
-    activate_group(_GROUP, "目标规划管理 - 创建执行计划、追踪目标进度、管理自主任务")
+    activate_group(_GROUP, "目标规划管理 - 创建执行计划、追踪目标进度")
 
 
 # ------------------------------------------------------------------
@@ -67,14 +62,13 @@ def register_planning_tools(store: MemoryStore) -> None:
         "或调用 delete_goal 删除已完成的目标。"
     ),
 )
-async def create_goal(title: str, description: str = "", steps: str = "", due_time: str = "", recurring: bool = False) -> str:
+async def create_goal(title: str, description: str = "", steps: str = "", recurring: bool = False) -> str:
     """创建一个新的目标计划。
 
     Args:
         title: 目标标题
         description: 目标详细描述
         steps: 执行步骤，用 | 分隔（如 "搜索资料|分析数据|总结报告"）
-        due_time: 到期时间（如 "2025-03-10 18:00"），留空表示无期限
         recurring: 是否为循环计划，完成后自动重置步骤为 pending 并恢复 active
 
     注意：非循环目标完成后需调用 delete_goal(goal_id) 删除。
@@ -83,7 +77,7 @@ async def create_goal(title: str, description: str = "", steps: str = "", due_ti
         return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
 
     step_list = [s.strip() for s in steps.split("|") if s.strip()] if steps else []
-    goal = _make_goal(title, description, step_list, due_time, recurring)
+    goal = _make_goal(title, description, step_list, recurring)
 
     entry = MemoryEntry(
         memory_type=MemoryType.SEMANTIC,
@@ -100,7 +94,7 @@ async def create_goal(title: str, description: str = "", steps: str = "", due_ti
 @deferred_tool(
     group=_GROUP, tags=["planning", "reflect"],
     description=(
-        "列出目标计划。定期检查 active 状态的目标，"
+        "列出目标计划。检查 active 状态的目标，"
         "已完成的用 update_goal 标记为 completed 或用 delete_goal 删除。"
     ),
 )
@@ -109,8 +103,6 @@ async def list_goals(status: str = "active") -> str:
 
     Args:
         status: 筛选状态，active（默认）/ completed / all
-
-    提示：定期检查活跃目标，完成的及时标记或删除，避免目标堆积。
     """
     if _store is None:
         return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
@@ -153,8 +145,6 @@ async def update_goal(
         step_status: 步骤状态（pending / in_progress / completed / skipped）
         note: 步骤备注
         goal_status: 整体目标状态（active / completed / cancelled），留空不更新
-
-    提示：完成目标后建议直接调用 delete_goal(goal_id) 删除，避免已完成目标干扰召回。
     """
     if _store is None:
         return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
@@ -225,8 +215,6 @@ async def delete_goal(goal_id: str) -> str:
 
     Args:
         goal_id: 目标 ID
-
-    重要：完成目标后必须删除！已完成目标如不删除会持续出现在记忆召回中。
     """
     if _store is None:
         return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
@@ -290,40 +278,8 @@ async def collect_active_goals(store: MemoryStore) -> list[str]:
                 title = data.get("title", "")
                 steps = data.get("steps", [])
                 done = sum(1 for s in steps if s.get("status") == "completed")
-                due = data.get("due_time", "")
                 summary = f"{data.get('goal_id', '?')}: {title} ({done}/{len(steps)} 步)"
-                if due:
-                    summary += f" [到期: {due}]"
                 goals.append(summary)
         return goals
-    except Exception:
-        return []
-
-
-async def check_due_goals(store: MemoryStore) -> list[str]:
-    """检查已到期的活跃目标，返回到期目标的 goal_id 列表。"""
-    try:
-        now = datetime.datetime.now()
-        entries = await store.list_recent(
-            limit=10, memory_type=MemoryType.SEMANTIC, source=_GOAL_SOURCE,
-        )
-        due_ids: list[str] = []
-        for entry in entries:
-            data = json.loads(entry.content)
-            if data.get("status") != "active":
-                continue
-            due_time = data.get("due_time", "")
-            if not due_time:
-                continue
-            try:
-                dt = datetime.datetime.strptime(due_time, "%Y-%m-%d %H:%M")
-            except ValueError:
-                try:
-                    dt = datetime.datetime.strptime(due_time, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    continue
-            if now >= dt:
-                due_ids.append(data.get("goal_id", ""))
-        return [gid for gid in due_ids if gid]
     except Exception:
         return []

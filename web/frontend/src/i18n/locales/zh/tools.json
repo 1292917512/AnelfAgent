@@ -1,5 +1,9 @@
 {
   "title": "实体 / 工具",
+  "tabs": {
+    "list": "工具列表",
+    "rules": "系统规则"
+  },
   "searchPlaceholder": "搜索工具名、描述、标签...",
   "noMatch": "没有匹配的工具",
   "noTools": "暂无工具注册",

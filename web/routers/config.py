@@ -250,232 +250,78 @@ async def save_mind_config(data: MindConfigUpdate) -> Dict[str, str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 反思系统配置（introspection.json）
+# 心跳系统配置（config/heartbeat.json）
 # ──────────────────────────────────────────────────────────────────────────────
 
-_INTROSPECTION_CONFIG_PATH = Path(ConfigPaths.INTROSPECTION_CONFIG)
+
+@router.get("/heartbeat")
+async def get_heartbeat_config() -> Dict[str, Any]:
+    """返回心跳调度配置。"""
+    from agent.heartbeat.config import get_heartbeat_config
+    return get_heartbeat_config().to_dict()
 
 
-@router.get("/introspection")
-async def get_introspection_config() -> Dict[str, Any]:
-    """返回反思系统配置（config/introspection.json），屏蔽 last_reflect_time 等运行时字段。"""
-    if not _INTROSPECTION_CONFIG_PATH.exists():
-        return {}
-    try:
-        data: Dict[str, Any] = json.loads(_INTROSPECTION_CONFIG_PATH.read_text("utf-8"))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"读取反思配置失败: {e}") from e
-    # 过滤运行时字段，前端只需查看/编辑全局开关与时间参数
-    return {k: v for k, v in data.items() if k != "units"}
-
-
-class IntrospectionConfigUpdate(BaseModel):
+class HeartbeatConfigUpdate(BaseModel):
     enabled: Optional[bool] = None
-    reflect_min_hours: Optional[float] = None
-    reflect_max_hours: Optional[float] = None
+    interval_seconds: Optional[int] = None
     analysis_temperature: Optional[float] = None
     min_conversations_for_analysis: Optional[int] = None
+    task_schedules: Optional[List[Dict[str, Any]]] = None
 
 
-@router.put("/introspection")
-async def save_introspection_config(data: IntrospectionConfigUpdate) -> Dict[str, str]:
-    """保存反思系统全局参数到 config/introspection.json 并热重载到运行中的 Mind。"""
-    if not _INTROSPECTION_CONFIG_PATH.exists():
-        raise HTTPException(status_code=404, detail="introspection.json 不存在")
-    try:
-        existing: Dict[str, Any] = json.loads(_INTROSPECTION_CONFIG_PATH.read_text("utf-8"))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"读取反思配置失败: {e}") from e
+@router.put("/heartbeat")
+async def save_heartbeat_config(data: HeartbeatConfigUpdate) -> Dict[str, str]:
+    """保存心跳配置并热重载。"""
+    from agent.heartbeat.config import get_heartbeat_config, TaskSchedule
 
-    updates = {k: v for k, v in data.model_dump().items() if v is not None}
-    existing.update(updates)
-
-    try:
-        _INTROSPECTION_CONFIG_PATH.write_text(
-            json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"写入反思配置失败: {e}") from e
-
-    # 热重载：使 Mind 内的 IntrospectionConfig 立即生效，无需重启
-    try:
-        from agent.introspection.config import reload_introspection_config
-        new_cfg = reload_introspection_config()
-        from services._runtime import get_runtime
-        rt = get_runtime()
-        if rt is not None:
-            rt.mind.intro.config = new_cfg
-    except Exception as e:
-        log(f"反思配置热重载失败（不影响文件已写入）: {e}", "DEBUG")
-
-    return {"status": "ok"}
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 配置型反思单元 CRUD（config/introspection/*.json）
-# ──────────────────────────────────────────────────────────────────────────────
-
-_UNITS_DIR = Path(ConfigPaths.INTROSPECTION_DIR)
-
-# 内置单元名称（不允许通过 API 修改/删除）
-_BUILTIN_UNIT_NAMES = frozenset({"self_reflection", "entity_analysis", "memory_health"})
-
-
-def _ensure_units_dir() -> None:
-    _UNITS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _unit_path(name: str) -> Path:
-    return _UNITS_DIR / f"{name}.json"
-
-
-def _load_unit(name: str) -> Dict[str, Any]:
-    p = _unit_path(name)
-    if not p.exists():
-        raise HTTPException(status_code=404, detail=f"单元 [{name}] 不存在")
-    try:
-        return json.loads(p.read_text("utf-8"))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"读取单元配置失败: {e}") from e
-
-
-def _reload_intro_units() -> None:
-    """热重载运行中的 Introspection 配置型单元。"""
-    try:
-        from services._runtime import get_runtime
-        rt = get_runtime()
-        if rt is not None:
-            rt.mind.intro.reload_config_units()
-    except Exception as e:
-        log(f"反思单元热重载失败: {e}", "DEBUG")
-
-
-@router.get("/introspection/units")
-async def list_introspection_units() -> List[Dict[str, Any]]:
-    """列出所有配置型反思单元（config/introspection/*.json）。"""
-    _ensure_units_dir()
-    units: List[Dict[str, Any]] = []
-    for json_file in sorted(_UNITS_DIR.glob("*.json")):
-        try:
-            data = json.loads(json_file.read_text("utf-8"))
-            units.append(data)
-        except Exception as e:
-            log(f"反思单元配置解析失败 ({json_file.name}): {e}", "DEBUG")
-    return units
-
-
-@router.get("/introspection/units/{name}")
-async def get_introspection_unit(name: str) -> Dict[str, Any]:
-    """获取指定配置型反思单元。"""
-    return _load_unit(name)
-
-
-class IntrospectionUnitCreate(BaseModel):
-    name: str
-    display_name: str = ""
-    description: str = ""
-    scope: str = "global"
-    enabled: bool = True
-    memory_type: str = "reflection"
-    importance: float = 0.5
-    tags: List[str] = []
-    source: str = ""
-    null_keywords: List[str] = []
-    prompt: str
-
-
-@router.post("/introspection/units", status_code=201)
-async def create_introspection_unit(data: IntrospectionUnitCreate) -> Dict[str, Any]:
-    """创建新的配置型反思单元（写入 JSON 文件并热重载）。"""
-    if data.name in _BUILTIN_UNIT_NAMES:
-        raise HTTPException(status_code=400, detail=f"[{data.name}] 是内置单元，无法通过 API 创建")
-    _ensure_units_dir()
-    p = _unit_path(data.name)
-    if p.exists():
-        raise HTTPException(status_code=409, detail=f"单元 [{data.name}] 已存在")
-
-    unit_data = data.model_dump()
-    if not unit_data.get("source"):
-        unit_data["source"] = data.name
-    if not unit_data.get("display_name"):
-        unit_data["display_name"] = data.name
-
-    try:
-        p.write_text(json.dumps(unit_data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"写入失败: {e}") from e
-
-    _reload_intro_units()
-    return unit_data
-
-
-class IntrospectionUnitUpdate(BaseModel):
-    display_name: Optional[str] = None
-    description: Optional[str] = None
-    scope: Optional[str] = None
-    enabled: Optional[bool] = None
-    memory_type: Optional[str] = None
-    importance: Optional[float] = None
-    tags: Optional[List[str]] = None
-    source: Optional[str] = None
-    null_keywords: Optional[List[str]] = None
-    prompt: Optional[str] = None
-
-
-@router.put("/introspection/units/{name}")
-async def update_introspection_unit(name: str, data: IntrospectionUnitUpdate) -> Dict[str, Any]:
-    """更新配置型反思单元并热重载。"""
-    existing = _load_unit(name)
-    updates = {k: v for k, v in data.model_dump().items() if v is not None}
-    existing.update(updates)
-
-    try:
-        _unit_path(name).write_text(
-            json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"写入失败: {e}") from e
-
-    _reload_intro_units()
-    return existing
-
-
-@router.delete("/introspection/units/{name}")
-async def delete_introspection_unit(name: str) -> Dict[str, str]:
-    """删除配置型反思单元文件并热重载。"""
-    if name in _BUILTIN_UNIT_NAMES:
-        raise HTTPException(status_code=400, detail=f"[{name}] 是内置单元，不允许删除")
-    p = _unit_path(name)
-    if not p.exists():
-        raise HTTPException(status_code=404, detail=f"单元 [{name}] 不存在")
-    try:
-        p.unlink()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"删除失败: {e}") from e
-
-    _reload_intro_units()
-    return {"status": "ok"}
-
-
-@router.post("/introspection/trigger")
-async def trigger_introspection() -> Dict[str, str]:
-    """手动触发一次全局反思（跳过间隔限制），在后台异步执行。"""
-    import asyncio
+    cfg = get_heartbeat_config()
+    if data.enabled is not None:
+        cfg.enabled = data.enabled
+    if data.interval_seconds is not None:
+        cfg.interval_seconds = max(10, data.interval_seconds)
+    if data.analysis_temperature is not None:
+        cfg.analysis_temperature = data.analysis_temperature
+    if data.min_conversations_for_analysis is not None:
+        cfg.min_conversations_for_analysis = data.min_conversations_for_analysis
+    if data.task_schedules is not None:
+        cfg.task_schedules = [TaskSchedule.from_dict(s) for s in data.task_schedules]
+    cfg.save()
 
     from services._runtime import get_runtime
     rt = get_runtime()
+    if rt is not None:
+        rt.mind.heartbeat_engine.reload()
+
+    return {"status": "ok"}
+
+
+@router.get("/heartbeat/status")
+async def get_heartbeat_status() -> Dict[str, Any]:
+    """返回心跳引擎运行状态。"""
+    from services._runtime import get_runtime
+    rt = get_runtime()
     if rt is None:
-        raise HTTPException(status_code=503, detail="Agent 尚未初始化，无法触发反思")
+        return {"enabled": False, "total_ticks": 0, "message": "Agent 尚未初始化"}
+    return rt.mind.heartbeat_engine.get_status()
+
+
+@router.post("/heartbeat/trigger")
+async def trigger_heartbeat() -> Dict[str, str]:
+    """手动触发一次心跳。"""
+    import asyncio
+    from services._runtime import get_runtime
+    rt = get_runtime()
+    if rt is None:
+        raise HTTPException(status_code=503, detail="Agent 尚未初始化")
 
     async def _run() -> None:
-        from core.log import log
         try:
-            count = await rt.mind._execute_reflect(skip_interval=True)
-            log(f"Web 手动反思完成: {count} 个单元有产出", tag="内省")
+            executed = await rt.mind.heartbeat_engine.tick()
+            log(f"Web 手动心跳完成: 执行了 {len(executed)} 个任务", tag="心跳")
         except Exception as exc:
-            log(f"Web 手动反思异常: {exc}", "WARNING", tag="内省")
+            log(f"Web 手动心跳异常: {exc}", "WARNING", tag="心跳")
 
-    asyncio.create_task(_run(), name="agent.mind.web_manual_reflect")
+    asyncio.create_task(_run(), name="agent.heartbeat.web_manual_tick")
     return {"status": "triggered"}
 
 
@@ -494,12 +340,27 @@ def _task_path(name: str) -> Path:
     return _TASKS_DIR / f"{name}.json"
 
 
+_TASK_DEFAULTS: Dict[str, Any] = {
+    "display_name": "", "description": "", "scope": "global",
+    "enabled": True, "memory_type": "semantic", "importance": 0.5,
+    "tags": [], "source": "", "null_keywords": [], "tool_tags": [], "prompt": "",
+}
+
+
+def _normalize_task(data: Dict[str, Any]) -> Dict[str, Any]:
+    """确保任务数据包含所有必需字段（兼容旧格式缺失字段）。"""
+    for k, v in _TASK_DEFAULTS.items():
+        if k not in data:
+            data[k] = v
+    return data
+
+
 def _load_task(name: str) -> Dict[str, Any]:
     p = _task_path(name)
     if not p.exists():
         raise HTTPException(status_code=404, detail=f"任务 [{name}] 不存在")
     try:
-        return json.loads(p.read_text("utf-8"))
+        return _normalize_task(json.loads(p.read_text("utf-8")))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取任务配置失败: {e}") from e
 
@@ -511,7 +372,7 @@ async def list_tasks() -> List[Dict[str, Any]]:
     tasks: List[Dict[str, Any]] = []
     for json_file in sorted(_TASKS_DIR.glob("*.json")):
         try:
-            data = json.loads(json_file.read_text("utf-8"))
+            data = _normalize_task(json.loads(json_file.read_text("utf-8")))
             tasks.append(data)
         except Exception as e:
             log(f"任务配置解析失败 ({json_file.name}): {e}", "DEBUG")
@@ -546,7 +407,6 @@ async def create_task(data: TaskCreate) -> Dict[str, Any]:
         raise HTTPException(status_code=409, detail=f"任务 [{data.name}] 已存在")
 
     task_data = data.model_dump()
-    task_data["mode"] = "task"
     if not task_data.get("source"):
         task_data["source"] = data.name
     if not task_data.get("display_name"):
@@ -557,7 +417,7 @@ async def create_task(data: TaskCreate) -> Dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"写入失败: {e}") from e
 
-    _reload_intro_units()
+    _reload_task_registry()
     return task_data
 
 
@@ -580,7 +440,6 @@ async def update_task(name: str, data: TaskUpdate) -> Dict[str, Any]:
     existing = _load_task(name)
     updates = {k: v for k, v in data.model_dump().items() if v is not None}
     existing.update(updates)
-    existing["mode"] = "task"
 
     try:
         _task_path(name).write_text(
@@ -589,7 +448,7 @@ async def update_task(name: str, data: TaskUpdate) -> Dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"写入失败: {e}") from e
 
-    _reload_intro_units()
+    _reload_task_registry()
     return existing
 
 
@@ -603,7 +462,7 @@ async def delete_task(name: str) -> Dict[str, str]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"删除失败: {e}") from e
 
-    _reload_intro_units()
+    _reload_task_registry()
     return {"status": "ok"}
 
 
@@ -625,9 +484,20 @@ async def trigger_task(name: str) -> Dict[str, str]:
         from core.log import log
         try:
             result = await rt.mind.execute_task(name)
-            log(f"Web 手动任务完成: {name} ({'有产出' if result else '无产出'})", tag="内省")
+            log(f"Web 手动任务完成: {name} ({'有产出' if result else '无产出'})", tag="任务")
         except Exception as exc:
-            log(f"Web 手动任务异常 [{name}]: {exc}", "WARNING", tag="内省")
+            log(f"Web 手动任务异常 [{name}]: {exc}", "WARNING", tag="任务")
 
-    asyncio.create_task(_run(), name=f"agent.mind.web_task_{name}")
+    asyncio.create_task(_run(), name=f"agent.task.web_{name}")
     return {"status": "triggered", "task": name}
+
+
+def _reload_task_registry() -> None:
+    """热重载运行中的任务注册表。"""
+    try:
+        from services._runtime import get_runtime
+        rt = get_runtime()
+        if rt is not None:
+            rt.mind.heartbeat_engine.task_registry.reload()
+    except Exception as e:
+        log(f"任务注册表热重载失败: {e}", "DEBUG")

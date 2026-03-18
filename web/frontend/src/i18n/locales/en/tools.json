@@ -1,5 +1,9 @@
 {
   "title": "Entities / Tools",
+  "tabs": {
+    "list": "Tools",
+    "rules": "System Rules"
+  },
   "searchPlaceholder": "Search tool name, description, tags...",
   "noMatch": "No matching tools",
   "noTools": "No tools registered",

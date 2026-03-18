@@ -12,9 +12,10 @@ import Memory from "./pages/Memory";
 import MCP from "./pages/MCP";
 import Channels from "./pages/Channels";
 import Settings from "./pages/Settings";
-import AppConfig from "./pages/AppConfig";
+import Heartbeat from "./pages/Heartbeat";
 import Thinking from "./pages/Thinking";
 import Tags from "./pages/Tags";
+import Tasks from "./pages/Tasks";
 
 export default function App() {
   const setConfig = useAppStore((s) => s.setConfig);
@@ -44,9 +45,10 @@ export default function App() {
           <Route path="memory" element={<Memory />} />
           <Route path="mcp" element={<MCP />} />
           <Route path="channels" element={<Channels />} />
+          <Route path="tasks" element={<Tasks />} />
+          <Route path="heartbeat" element={<Heartbeat />} />
           <Route path="thinking" element={<Thinking />} />
           <Route path="settings" element={<Settings />} />
-          <Route path="app-config" element={<AppConfig />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

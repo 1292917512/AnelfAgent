@@ -1,4 +1,4 @@
-"""心跳日志 — 记录 Mind 自主思考周期的摘要，写入 heartbeat.md。
+"""心跳日志 — 记录心跳周期摘要，写入 heartbeat.md。
 
 纯文件 I/O，无状态，不依赖 Mind 实例。
 """
@@ -7,12 +7,9 @@ from __future__ import annotations
 
 import time as _time
 from pathlib import Path
-from typing import TYPE_CHECKING, List
+from typing import List, Optional
 
 from core.log import log
-
-if TYPE_CHECKING:
-    from agent.mind.autonomous import Decision, SituationContext
 
 LOG_PATH = Path("config/memory/heartbeat.md")
 
@@ -49,21 +46,20 @@ def append_entry(text: str) -> None:
 
 
 def write_log(
-    situation: "SituationContext",
-    decisions: "List[Decision]",
-    exec_results: List[str],
+    task_names: Optional[List[str]] = None,
+    exec_results: Optional[List[str]] = None,
+    *,
+    pending_messages: int = 0,
+    active_goals: int = 0,
 ) -> None:
     """追加心跳日志条目，自动裁剪超出上限的旧记录。"""
     ts = _time.strftime("%Y-%m-%d %H:%M:%S")
     lines = [f"### {ts} 心跳"]
-    lines.append(
-        f"- 态势：{len(situation.pending_messages)} 条消息, "
-        f"{len(situation.active_goals)} 个活跃目标"
-    )
-    if decisions:
-        lines.append(f"- 决策：{', '.join(d.type.value for d in decisions)}")
+    lines.append(f"- 态势：{pending_messages} 条消息, {active_goals} 个活跃目标")
+    if task_names:
+        lines.append(f"- 执行任务：{', '.join(task_names)}")
     if exec_results:
-        lines.append(f"- 执行：{'; '.join(exec_results)}")
+        lines.append(f"- 结果：{'; '.join(exec_results)}")
     lines.append("")
     entry = "\n".join(lines)
 

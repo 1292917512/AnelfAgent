@@ -7,14 +7,18 @@ import { useAppStore } from "@/stores/app-store";
 import { systemApi, configApi } from "@/lib/api";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { Database, Check, X, TestTube } from "lucide-react";
+import { type FieldMeta } from "@/pages/config/AppField";
+import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
+import { LiteLLMCostMapCard } from "@/pages/config/LiteLLMCostMapCard";
 
-type SettingsTab = "system" | "python" | "git" | "config";
+type SettingsTab = "sysConfig" | "system" | "python" | "git" | "config";
 
 export default function Settings() {
   const { t } = useTranslation("settings");
-  const [tab, setTab] = useState<SettingsTab>("system");
+  const [tab, setTab] = useState<SettingsTab>("sysConfig");
 
   const TAB_KEYS: TabItem<SettingsTab>[] = [
+    { key: "sysConfig", label: t("tabs.sysConfig") },
     { key: "system", label: t("tabs.system") },
     { key: "python", label: t("tabs.python") },
     { key: "git", label: t("tabs.git") },
@@ -25,10 +29,55 @@ export default function Settings() {
     <div className="space-y-6 max-w-6xl">
       <TabBar tabs={TAB_KEYS} activeTab={tab} onChange={setTab} />
 
+      {tab === "sysConfig" && <SysConfigPanel />}
       {tab === "system" && <SystemPanel />}
       {tab === "python" && <PythonPanel />}
       {tab === "git" && <GitPanel />}
       {tab === "config" && <ConfigPanel />}
+    </div>
+  );
+}
+
+function SysConfigPanel() {
+  const { t } = useTranslation("appconfig");
+
+  const { data } = useQuery({
+    queryKey: ["appConfig"],
+    queryFn: () => configApi.getApp().then((r) => r.data),
+  });
+
+  const proxyUrl = typeof data?.["https_proxy"] === "string" ? (data["https_proxy"] as string) : "";
+
+  const networkFields: FieldMeta[] = [
+    { key: "proxy_enabled", label: t("fields.proxy_enabled"), type: "bool" },
+    { key: "http_proxy", label: t("fields.http_proxy"), type: "string", desc: t("descs.http_proxy") },
+    { key: "https_proxy", label: t("fields.https_proxy"), type: "string", desc: t("descs.https_proxy") },
+    { key: "connect_timeout", label: t("fields.connect_timeout"), type: "float" },
+    { key: "read_timeout", label: t("fields.read_timeout"), type: "float" },
+    { key: "total_timeout", label: t("fields.total_timeout"), type: "float" },
+    { key: "retry_count", label: t("fields.retry_count"), type: "int" },
+    { key: "retry_delay", label: t("fields.retry_delay"), type: "float" },
+    { key: "backoff_factor", label: t("fields.backoff_factor"), type: "float" },
+    { key: "chunk_size", label: t("fields.chunk_size"), type: "int" },
+    { key: "user_agent", label: t("fields.user_agent"), type: "string" },
+    { key: "overwrite_existing", label: t("fields.overwrite_existing"), type: "bool" },
+    { key: "verify_download", label: t("fields.verify_download"), type: "bool" },
+    { key: "default_download_dir", label: t("fields.default_download_dir"), type: "string" },
+    { key: "workspace_root", label: t("fields.workspace_root"), type: "string" },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <LiteLLMCostMapCard defaultProxy={proxyUrl} />
+      <ConfigFormPanel
+        title={t("sections.network")}
+        fields={networkFields}
+        queryKey="appConfig"
+        fetchFn={() => configApi.getApp().then((r) => r.data)}
+        saveFn={(values) => configApi.saveApp(values)}
+        extraInvalidateKeys={["configSnapshot"]}
+        note={t("notes.restartRequired")}
+      />
     </div>
   );
 }

@@ -19,12 +19,13 @@
     { "path": "/models", "label": "models", "icon": "Cpu", "group": "group_core" },
     { "path": "/personas", "label": "personas", "icon": "UserCircle", "group": "group_core" },
     { "path": "/memory", "label": "memory", "icon": "Brain", "group": "group_core" },
+    { "path": "/tasks", "label": "tasks", "icon": "ListChecks", "group": "group_core" },
+    { "path": "/heartbeat", "label": "heartbeat", "icon": "HeartPulse", "group": "group_core" },
     { "path": "/tags", "label": "tags", "icon": "Tags", "group": "group_ability" },
     { "path": "/tools", "label": "tools", "icon": "Wrench", "group": "group_ability" },
     { "path": "/mcp", "label": "mcp", "icon": "Plug", "group": "group_ability" },
     { "path": "/channels", "label": "channels", "icon": "Radio", "group": "group_ability" },
     { "path": "/thinking", "label": "thinking", "icon": "Workflow", "group": "group_ability" },
-    { "path": "/app-config", "label": "app_config", "icon": "SlidersHorizontal", "group": "group_system" },
     { "path": "/settings", "label": "settings", "icon": "Settings", "group": "group_system" }
   ],
   "configs": {

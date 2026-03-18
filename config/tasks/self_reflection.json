@@ -1,0 +1,14 @@
+{
+  "name": "self_reflection",
+  "display_name": "自我反思",
+  "description": "回顾近期表现，记录要点，发现问题，制定计划",
+  "scope": "any",
+  "enabled": true,
+  "memory_type": "reflection",
+  "importance": 0.7,
+  "tags": ["type:reflection"],
+  "source": "self_reflection",
+  "null_keywords": [],
+  "tool_tags": [],
+  "prompt": "根据记忆和对话内容，进行全面自我反思。请包含以下维度：\n1. [记忆] 记下重要的人和事，区分不同人的信息；用 memorize 工具保存尚未记录的关键内容\n2. [自检] 回顾自己最近的表现：回复质量如何？有没有犯错？工具使用是否恰当？\n3. [发现] 有什么需要改进或关注的问题？\n4. [计划] 接下来应该做什么？有没有未完成的承诺？\n可用工具（按需使用）：\n- 记忆：recall（语义搜索）、memorize（保存新记忆）\n- 便签导航：list_memory_files（列出文件）、view_memory_outline（查看标题大纲）\n- 便签读取：read_notes（主便签全文）、read_section（按标题读段落）\n- 便签编辑：write_section（替换/新建段落）、delete_section（删除段落）、patch_memory_file（字符串替换）、append_memory_file（追加内容）\n- 目标管理：create_goal/list_goals/update_goal/delete_goal\n编辑便签时优先使用 write_section/delete_section/patch_memory_file 精确修改，避免用 write_notes 整体覆写。\n5. [跨频道] 使用 list_conversations 浏览所有活跃会话，跨频道对比：\n   - 不同频道是否有人讨论相同话题？用 memorize 记录关联\n   - 同一用户是否在多个频道出现？可使用 link_entity 关联身份\n   - 是否有跨频道需要同步的信息或未完成的承诺？\n记忆库整理和合并由专门的整理任务负责，本次反思专注于自检和计划。\n完成工具操作后，输出结构化 Markdown 形式的反思总结。"
+}

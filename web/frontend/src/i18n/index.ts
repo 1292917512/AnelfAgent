@@ -17,6 +17,7 @@ import zhThinking from "./locales/zh/thinking.json";
 import zhSettings from "./locales/zh/settings.json";
 import zhAppconfig from "./locales/zh/appconfig.json";
 import zhTags from "./locales/zh/tags.json";
+import zhHeartbeat from "./locales/zh/heartbeat.json";
 
 import enCommon from "./locales/en/common.json";
 import enNav from "./locales/en/nav.json";
@@ -33,6 +34,7 @@ import enThinking from "./locales/en/thinking.json";
 import enSettings from "./locales/en/settings.json";
 import enAppconfig from "./locales/en/appconfig.json";
 import enTags from "./locales/en/tags.json";
+import enHeartbeat from "./locales/en/heartbeat.json";
 
 const resources = {
   zh: {
@@ -51,6 +53,7 @@ const resources = {
     settings: zhSettings,
     appconfig: zhAppconfig,
     tags: zhTags,
+    heartbeat: zhHeartbeat,
   },
   en: {
     common: enCommon,
@@ -68,6 +71,7 @@ const resources = {
     settings: enSettings,
     appconfig: enAppconfig,
     tags: enTags,
+    heartbeat: enHeartbeat,
   },
 };
 
@@ -95,6 +99,7 @@ i18n
       "settings",
       "appconfig",
       "tags",
+      "heartbeat",
     ],
     interpolation: {
       escapeValue: false,

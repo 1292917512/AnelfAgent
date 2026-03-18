@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import { Activity, HardDrive, Target, MessageSquare, StickyNote, Users, Database } from "lucide-react";
+import { Activity, HardDrive, Target, MessageSquare, StickyNote, Users, Database, Settings2 } from "lucide-react";
 import { OverviewPanel } from "@/pages/memory/OverviewPanel";
 import { STMPanel } from "@/pages/memory/STMPanel";
 import { LTMPanel } from "@/pages/memory/LTMPanel";
@@ -9,8 +9,9 @@ import { GoalsPanel } from "@/pages/memory/GoalsPanel";
 import { ConvPanel } from "@/pages/memory/ConvPanel";
 import { EntityPanel } from "@/pages/memory/EntityPanel";
 import { NotesPanel } from "@/pages/memory/NotesPanel";
+import { ConfigPanel } from "@/pages/memory/ConfigPanel";
 
-type MemTab = "overview" | "stm" | "goals" | "conv" | "notes" | "entity" | "ltm";
+type MemTab = "overview" | "stm" | "goals" | "conv" | "notes" | "entity" | "ltm" | "config";
 
 export default function Memory() {
   const { t } = useTranslation("memory");
@@ -24,6 +25,7 @@ export default function Memory() {
     { key: "notes", label: t("tabs.notes"), icon: StickyNote },
     { key: "entity", label: t("tabs.entity"), icon: Users },
     { key: "ltm", label: t("tabs.ltm"), icon: Database },
+    { key: "config", label: t("tabs.config"), icon: Settings2 },
   ];
 
   return (
@@ -36,6 +38,7 @@ export default function Memory() {
       {tab === "notes" && <NotesPanel />}
       {tab === "entity" && <EntityPanel />}
       {tab === "ltm" && <LTMPanel />}
+      {tab === "config" && <ConfigPanel />}
     </div>
   );
 }

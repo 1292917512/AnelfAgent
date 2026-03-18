@@ -207,14 +207,14 @@ function TaskDetail({ task }: { task: TaskConfig }) {
         <span><span className="font-medium">{t("tasks.detailMemoryType")}</span>{task.memory_type}</span>
         <span><span className="font-medium">{t("tasks.detailImportance")}</span>{task.importance}</span>
         <span><span className="font-medium">{t("tasks.detailSource")}</span>{task.source || task.name}</span>
-        {task.tags.length > 0 && (
-          <span className="col-span-2"><span className="font-medium">{t("tasks.detailTags")}</span>{task.tags.join(", ")}</span>
+        {(task.tags ?? []).length > 0 && (
+          <span className="col-span-2"><span className="font-medium">{t("tasks.detailTags")}</span>{(task.tags ?? []).join(", ")}</span>
         )}
-        {task.null_keywords.length > 0 && (
-          <span className="col-span-2"><span className="font-medium">{t("tasks.detailNullKeywords")}</span>{task.null_keywords.join(", ")}</span>
+        {(task.null_keywords ?? []).length > 0 && (
+          <span className="col-span-2"><span className="font-medium">{t("tasks.detailNullKeywords")}</span>{(task.null_keywords ?? []).join(", ")}</span>
         )}
-        {task.tool_tags.length > 0 && (
-          <span className="col-span-2"><span className="font-medium">{t("tasks.detailToolTags")}</span>{task.tool_tags.join(", ")}</span>
+        {(task.tool_tags ?? []).length > 0 && (
+          <span className="col-span-2"><span className="font-medium">{t("tasks.detailToolTags")}</span>{(task.tool_tags ?? []).join(", ")}</span>
         )}
       </div>
       <div>
@@ -285,18 +285,18 @@ function TaskEditForm({ task, onChange, onSave, onCancel, isPending, inputBase }
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.tagsLabel")}</label>
-          <input className={inputBase} value={task.tags.join(", ")}
+          <input className={inputBase} value={(task.tags ?? []).join(", ")}
             onChange={(e) => set("tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.nullKeywords")}</label>
-          <input className={inputBase} value={task.null_keywords.join(", ")}
+          <input className={inputBase} value={(task.null_keywords ?? []).join(", ")}
             onChange={(e) => set("null_keywords", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
             placeholder={t("tasks.nullKeywordsPlaceholder")} />
         </div>
         <div className="flex flex-col gap-1 md:col-span-2">
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.toolTags")}</label>
-          <input className={inputBase} value={task.tool_tags.join(", ")}
+          <input className={inputBase} value={(task.tool_tags ?? []).join(", ")}
             onChange={(e) => set("tool_tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
         </div>
         <div className="flex items-center justify-between md:col-span-2">
@@ -380,18 +380,18 @@ function TaskCreateForm({ onSave, onCancel, isPending, inputBase }: { onSave: (t
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.nullKeywords")}</label>
-          <input className={inputBase} value={task.null_keywords.join(", ")}
+          <input className={inputBase} value={(task.null_keywords ?? []).join(", ")}
             onChange={(e) => set("null_keywords", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
             placeholder={t("tasks.nullKeywordsCreatePlaceholder")} />
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.tagsLabel")}</label>
-          <input className={inputBase} value={task.tags.join(", ")}
+          <input className={inputBase} value={(task.tags ?? []).join(", ")}
             onChange={(e) => set("tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
         </div>
         <div className="flex flex-col gap-1 md:col-span-2">
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.toolTags")}</label>
-          <input className={inputBase} value={task.tool_tags.join(", ")}
+          <input className={inputBase} value={(task.tool_tags ?? []).join(", ")}
             onChange={(e) => set("tool_tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
         </div>
       </div>

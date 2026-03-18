@@ -44,12 +44,12 @@ from agent.mind.autonomous import (
     build_meta_decision_messages,
     parse_decisions_from_tool_calls,
 )
-from agent.mind.heartbeat import (
+from agent.heartbeat import (
     load_recent as _hb_load_recent,
     append_entry as _hb_append,
     write_log as _hb_write,
 )
-from agent.introspection import Introspection
+from agent.heartbeat.engine import HeartbeatEngine
 from agent.memory.embedder import Embedder
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_store import MemoryStore
@@ -141,7 +141,7 @@ class Mind:
             channel_manager=channel_manager,
             conversation_data=conversation_data,
         )
-        self.intro = Introspection(self)
+        self.heartbeat_engine = HeartbeatEngine(self)
 
         self.memory_store = memory_store
         self.embedder = Embedder()
@@ -156,7 +156,7 @@ class Mind:
         self._reply_idle_event.set()
         self._reply_adapter_key: str = ""
         self.phase: MindPhase = MindPhase.IDLE
-        self._last_reflect_time: float = self._load_last_reflect_time()
+        self._last_reflect_time: float = 0.0
         self._session_llm_params: dict = {}
 
         self._reflecting: bool = False
@@ -268,7 +268,9 @@ class Mind:
         })
 
         if is_heartbeat:
-            await self._heartbeat_maintenance()
+            executed_tasks = await self.heartbeat_engine.tick()
+            if executed_tasks:
+                log(f"心跳任务完成: {', '.join(executed_tasks)}", tag="思维")
 
         situation = await self._gather_situation(is_heartbeat=is_heartbeat)
 
@@ -318,39 +320,6 @@ class Mind:
         immediate = [d for d in sorted_decisions if d.type not in self._DEFERRED_DECISIONS]
         deferred = [d for d in sorted_decisions if d.type in self._DEFERRED_DECISIONS]
 
-        # 心跳且超过 reflect_max_hours → 若元决策未选 reflect，强制注入
-        if is_heartbeat:
-            intro_cfg = self.intro.config
-            has_reflect = any(d.type == DecisionType.REFLECT for d in deferred)
-            if not has_reflect and situation.hours_since_reflect >= intro_cfg.reflect_max_hours:
-                deferred.insert(0, Decision(
-                    type=DecisionType.REFLECT, priority=8,
-                    reason=(
-                        f"强制反思: 距上次反思 {situation.hours_since_reflect:.1f}h"
-                        f" >= {intro_cfg.reflect_max_hours}h"
-                    ),
-                ))
-                log(
-                    f"强制注入反思决策: {situation.hours_since_reflect:.1f}h 未反思",
-                    tag="思维",
-                )
-            # 心跳阶段已通过 check_memory_thresholds() 完成记忆预检，标记到 REFLECT 决策
-            for d in deferred:
-                if d.type == DecisionType.REFLECT:
-                    d.params["memory_warnings_checked"] = True
-
-            # 检查到期目标，强制注入 PLAN 决策
-            due_goal_ids = await self._check_due_goals()
-            if due_goal_ids:
-                has_plan = any(d.type == DecisionType.PLAN for d in immediate + deferred)
-                if not has_plan:
-                    deferred.append(Decision(
-                        type=DecisionType.PLAN, priority=7,
-                        content=f"到期目标需推进: {', '.join(due_goal_ids)}",
-                        reason=f"{len(due_goal_ids)} 个目标已到期",
-                    ))
-                    log(f"强制注入 PLAN 决策: {len(due_goal_ids)} 个目标到期", tag="思维")
-
         # 反思进行中时跳过新的 REFLECT 决策，避免重入
         if self._reflecting:
             deferred = [d for d in deferred if d.type != DecisionType.REFLECT]
@@ -371,7 +340,12 @@ class Mind:
 
         exec_results: List[str] = [f"{d.type.value} 已执行" for d in immediate]
         if is_heartbeat or decisions:
-            _hb_write(situation, sorted_decisions, exec_results)
+            _hb_write(
+                task_names=[d.type.value for d in sorted_decisions],
+                exec_results=exec_results,
+                pending_messages=len(situation.pending_messages),
+                active_goals=len(situation.active_goals),
+            )
 
         self.pfc.clear_dynamic_tools()
 
@@ -398,20 +372,6 @@ class Mind:
                 metadata={"decision": decision.type.value, "error": str(exc)},
             ))
 
-    async def _heartbeat_maintenance(self) -> None:
-        """心跳维护：日志合并 + 实体计数持久化（纯写操作，与态势收集分离）。"""
-        try:
-            from agent.memory.notes import consolidate_heartbeat
-            consolidate_heartbeat()
-        except Exception as e:
-            log(f"心跳日志合并失败: {e}", "DEBUG", tag="思维")
-        try:
-            saved = await self.everything_data.save_all_entity_counters()
-            if saved:
-                log(f"心跳持久化实体计数: {saved} 个", "DEBUG", tag="思维")
-        except Exception as e:
-            log(f"实体计数持久化失败: {e}", "DEBUG", tag="思维")
-
     async def _gather_situation(self, *, is_heartbeat: bool = False) -> SituationContext:
         """收集当前态势：待处理消息、记忆、通道、目标等（纯读取，无副作用）。"""
         pending: List[PendingMessage] = []
@@ -433,14 +393,6 @@ class Mind:
         active_goals = await self._collect_active_goals()
         general_tasks = self.pfc.peek_general_tasks()
         heartbeat_log = _hb_load_recent(3) if is_heartbeat else ""
-
-        if is_heartbeat:
-            try:
-                memory_warnings = await self.intro.check_memory_thresholds()
-                for warn in memory_warnings:
-                    recent_mem_lines.append(f"[⚠️ 记忆预警] {warn}")
-            except Exception as e:
-                log(f"记忆阈值检查失败: {e}", "DEBUG", tag="思维")
 
         return SituationContext(
             pending_messages=pending,
@@ -466,20 +418,6 @@ class Mind:
         from agent.planning.tools import collect_active_goals
         return await collect_active_goals(self.memory_store)
 
-    async def _check_due_goals(self) -> List[str]:
-        """检查已到期的活跃目标，返回到期目标的 goal_id 列表。"""
-        if not self.memory_store:
-            return []
-        from agent.planning.tools import check_due_goals
-        return await check_due_goals(self.memory_store)
-
-    @staticmethod
-    def _load_last_reflect_time() -> float:
-        try:
-            from agent.introspection.config import get_introspection_config
-            return get_introspection_config().last_reflect_time
-        except Exception:
-            return 0.0
 
     # ==================================================================
     # 元决策
@@ -812,10 +750,9 @@ class Mind:
         return total
 
     async def execute_task(self, task_name: str) -> Optional[str]:
-        """按名称执行指定任务单元，返回任务产出文本或 None。"""
+        """按名称执行指定任务，返回任务产出文本或 None。"""
         log(f"执行任务: {task_name}", tag="思维")
-        result = await self.intro.run_task(task_name)
-        return result.content if result else None
+        return await self.heartbeat_engine.run_task(task_name)
 
     # ==================================================================
     # 上下文构建（回忆 + 对话历史）

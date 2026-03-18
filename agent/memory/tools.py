@@ -771,7 +771,7 @@ async def list_tasks() -> str:
     """列出所有可执行的任务。"""
     try:
         from services._runtime import require_runtime
-        tasks = require_runtime().mind.intro.list_tasks()
+        tasks = require_runtime().mind.heartbeat_engine.task_registry.list_info()
         return json.dumps({"total": len(tasks), "tasks": tasks}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)

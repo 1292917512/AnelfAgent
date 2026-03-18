@@ -1,0 +1,54 @@
+{
+  "tabs": {
+    "status": "状态",
+    "config": "配置与调度"
+  },
+  "status": {
+    "title": "心跳状态",
+    "running": "运行中",
+    "stopped": "已停止",
+    "paused": "已暂停",
+    "interval": "心跳间隔",
+    "totalTicks": "累计心跳",
+    "scheduledTasks": "调度任务",
+    "uptime": "已运行",
+    "triggerHeartbeat": "手动心跳",
+    "triggering": "触发中…",
+    "taskProgress": "任务调度进度",
+    "taskProgressDesc": "各调度任务的当前心跳计数与触发状态",
+    "remaining": "剩余 {{count}} 次",
+    "runNow": "立即执行",
+    "recentLog": "最近心跳日志",
+    "noLog": "暂无心跳日志",
+    "loadingLog": "加载心跳日志…",
+    "refreshLog": "刷新日志"
+  },
+  "config": {
+    "title": "心跳配置",
+    "subtitle": "调整心跳引擎的核心参数",
+    "enabled": "启用心跳",
+    "enabledDesc": "开启后 Agent 将按间隔自主执行心跳循环",
+    "interval": "心跳间隔",
+    "intervalUnit": "秒",
+    "minutes": "分钟",
+    "temperature": "分析温度",
+    "minConversations": "最少对话数",
+    "save": "保存配置",
+    "saving": "保存中…"
+  },
+  "schedule": {
+    "title": "任务调度",
+    "subtitle": "将任务绑定到心跳并配置触发规则",
+    "modeHeartbeat": "心跳触发",
+    "modeScheduled": "定时触发",
+    "modeManual": "仅手动",
+    "every": "每",
+    "beats": "次心跳",
+    "progress": "进度",
+    "times": "执行时间",
+    "manualOnly": "仅通过 Web 或 AI 手动触发",
+    "addTask": "绑定任务：",
+    "addTime": "添加",
+    "resetCounter": "重置计数器"
+  }
+}

@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 import { toolsApi, tagsApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { UnifiedTag } from "@/lib/types";
+import { TabBar, type TabItem } from "@/components/common/TabBar";
+import { ToolSystemRulesPanel } from "@/pages/config/ToolSystemRulesPanel";
 import {
   ChevronDown,
   ChevronRight,
@@ -16,6 +18,8 @@ import {
   Pencil,
   X,
   Tag,
+  List,
+  FileText,
 } from "lucide-react";
 
 interface ToolItem {
@@ -50,7 +54,27 @@ interface EditState {
   description: string;
 }
 
+type ToolsTab = "list" | "rules";
+
 export default function Tools() {
+  const { t } = useTranslation("tools");
+  const [activeTab, setActiveTab] = useState<ToolsTab>("list");
+
+  const TABS: TabItem<ToolsTab>[] = [
+    { key: "list", label: t("tabs.list"), icon: List },
+    { key: "rules", label: t("tabs.rules"), icon: FileText },
+  ];
+
+  return (
+    <div className="space-y-6 max-w-6xl">
+      <TabBar tabs={TABS} activeTab={activeTab} onChange={setActiveTab} />
+      {activeTab === "list" && <ToolsListPanel />}
+      {activeTab === "rules" && <ToolSystemRulesPanel />}
+    </div>
+  );
+}
+
+function ToolsListPanel() {
   const { t } = useTranslation(["tools", "common", "tags"]);
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -195,7 +219,7 @@ export default function Tools() {
   const enabledTools = groups.reduce((s, g) => s + g.enabled_count, 0);
 
   return (
-    <div className="space-y-5 max-w-6xl">
+    <div className="space-y-5">
       {/* Header */}
       <div className="flex items-center justify-between">
         <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--secondary)] text-[var(--muted)] border border-[var(--border)]">

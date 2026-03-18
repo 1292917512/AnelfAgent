@@ -3,7 +3,6 @@
   "display_name": "画像整理",
   "description": "审查并整理所有实体画像，清理无用画像，更新过时内容，检查跨平台关联",
   "scope": "global",
-  "mode": "task",
   "enabled": true,
   "memory_type": "semantic",
   "importance": 0.6,

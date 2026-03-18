@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "host": "127.0.0.1",
   "port": 8093,
   "reply_timeout": 300

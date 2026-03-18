@@ -8,6 +8,7 @@
     "system": "System"
   },
   "tabs": {
+    "sysConfig": "System Config",
     "system": "System Info",
     "python": "Python",
     "git": "Git",
