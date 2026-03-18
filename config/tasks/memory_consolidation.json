@@ -6,9 +6,18 @@
   "enabled": true,
   "memory_type": "reflection",
   "importance": 0.4,
-  "tags": ["type:consolidation"],
+  "tags": [
+    "type:consolidation"
+  ],
   "source": "memory_consolidation",
-  "null_keywords": ["记忆库健康", "无需整理", "整体健康"],
-  "tool_tags": ["heartbeat"],
-  "prompt": "进行记忆库健康审计与整理。重点是清理过期和重复的内容。\n\n【第一步：总览】\n调用 memory_stats 查看各类型记忆数量。\n\n【第二步：检查过期记忆】\n1. 调用 memory_deep_search 逐页查看所有记忆\n2. 对每条记忆判断是否已过期/失效：\n   - 记录了某个问题但问题可能已解决 → 用 get_conversation 查看相关会话确认是否已解决，已解决的 forget 删除\n   - 重复记录（同一件事记了多次）→ merge_memories 合并\n   - 内容空泛无实际信息 → forget 删除\n\n【第三步：合并同类记忆】\n- reflection 类型超过 5 条 → 查看并合并主题相似的\n- entity 类型同一实体有多条 → 仅保留最新完整的\n\n【第四步：巡检便签文件】\n1. list_memory_files → view_memory_outline 查看标题\n2. 已完成的计划/过期信息 → delete_section\n3. 需更新的 → write_section"
+  "null_keywords": [
+    "记忆库健康",
+    "无需整理",
+    "整体健康"
+  ],
+  "tool_tags": [
+    "heartbeat"
+  ],
+  "prompt": "进行记忆库健康审计与整理。重点是清理过期和重复的内容。\n\n【第一步：总览】\n调用 memory_stats 查看各类型记忆数量。\n\n【第二步：检查过期记忆】\n1. 调用 memory_deep_search 逐页查看所有记忆\n2. 对每条记忆判断是否已过期/失效：\n   - 记录了某个问题但问题可能已解决 → 用 get_conversation 查看相关会话确认是否已解决，已解决的 forget 删除\n   - 重复记录（同一件事记了多次）→ merge_memories 合并\n   - 内容空泛无实际信息 → forget 删除\n\n【第三步：合并同类记忆】\n- reflection 类型超过 5 条 → 查看并合并主题相似的\n- entity 类型同一实体有多条 → 仅保留最新完整的\n\n【第四步：巡检便签文件】\n1. list_memory_files → view_memory_outline 查看标题\n2. 已完成的计划/过期信息 → delete_section\n3. 需更新的 → write_section",
+  "model_id": "Claude-Opus-4.6"
 }

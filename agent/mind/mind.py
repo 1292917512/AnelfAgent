@@ -649,7 +649,13 @@ class Mind:
             }
             llm_client = self.llm if isinstance(self.llm, LLMClient) else None
             if llm_client:
-                max_ctx = llm_client.config.max_tokens or 0
+                try:
+                    info = LLMClient.get_model_info(llm_client.config.litellm_model)
+                    max_ctx = info.get("max_input_tokens") or info.get("max_tokens") or 0
+                except Exception:
+                    max_ctx = 0
+                if not max_ctx:
+                    max_ctx = llm_client.config.max_tokens or 0
         usage_percent: Optional[float] = None
         if usage_data.get("total_tokens") and max_ctx > 0:
             usage_percent = round(usage_data["total_tokens"] / max_ctx * 100, 1)

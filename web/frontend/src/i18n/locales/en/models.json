@@ -41,6 +41,8 @@
   "selectedCount": "{{count}} selected",
   "addSelected": "Add Selected Models",
   "noRemoteModels": "Could not fetch remote model list. Please check provider config.",
+  "costPerMillion": "Cost ($/M tokens): input/output",
+  "contextWindowLabel": "Context Window",
   "autoConfig": "Auto Config",
   "autoConfigLoading": "Querying model info...",
   "autoConfigDone": "Parameters auto-filled",

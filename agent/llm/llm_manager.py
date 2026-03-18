@@ -667,13 +667,32 @@ class LLMManager(BaseEntity):
     # 优先级管理
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _query_model_cost(client: LLMClient) -> Dict[str, Any]:
+        """查询 litellm 模型价格和上下文窗口信息，查不到返回空值。"""
+        try:
+            info = LLMClient.get_model_info(client.config.litellm_model)
+            if not info:
+                return {"input_cost": None, "output_cost": None, "context_window": None}
+            input_cost = info.get("input_cost_per_token")
+            output_cost = info.get("output_cost_per_token")
+            return {
+                "input_cost": round(input_cost * 1e6, 2) if input_cost else None,
+                "output_cost": round(output_cost * 1e6, 2) if output_cost else None,
+                "context_window": info.get("max_input_tokens"),
+            }
+        except Exception:
+            return {"input_cost": None, "output_cost": None, "context_window": None}
+
     def get_type_priorities(self) -> Dict[str, List[Dict[str, Any]]]:
-        """返回所有类型的优先级列表（含模型详情）。
+        """返回所有类型的优先级列表（含模型详情和价格信息）。
 
         is_default 仅在 chat 类型中标记（排在首位的即为默认对话模型），
         其他类型统一按列表顺序决定优先级，无独立的"默认"概念。
+        价格单位：$/M tokens（每百万 token 的美元价格）。
         """
         default_chat = self.get_default().config.name if self._clients else ""
+        cost_cache: Dict[str, Dict[str, Any]] = {}
         result: Dict[str, List[Dict[str, Any]]] = {}
         for mt, mids in self._type_priorities.items():
             items: List[Dict[str, Any]] = []
@@ -681,6 +700,8 @@ class LLMManager(BaseEntity):
                 client = self._clients.get(mid)
                 if not client:
                     continue
+                if mid not in cost_cache:
+                    cost_cache[mid] = self._query_model_cost(client)
                 items.append({
                     "id": mid,
                     "model": client.config.model,
@@ -693,6 +714,7 @@ class LLMManager(BaseEntity):
                     "supports_tools": client.config.supports_tools,
                     "supports_reasoning": client.config.supports_reasoning,
                     "api_type": client.config.api_type,
+                    **cost_cache[mid],
                 })
             result[mt] = items
         return result
@@ -722,7 +744,7 @@ class LLMManager(BaseEntity):
         return True
 
     def get_provider_models(self, provider_id: str) -> List[Dict[str, Any]]:
-        """获取指定供应商下的所有模型配置。"""
+        """获取指定供应商下的所有模型配置（含价格信息）。"""
         default_chat = self.get_default().config.name if self._clients else ""
         result: List[Dict[str, Any]] = []
         for mid, client in self._clients.items():
@@ -731,6 +753,7 @@ class LLMManager(BaseEntity):
             d = client.config.to_model_dict()
             d["is_default"] = (mid == default_chat
                                and "chat" in client.config.model_types)
+            d.update(self._query_model_cost(client))
             result.append(d)
         return result
 

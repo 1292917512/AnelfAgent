@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { modelsApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
-  Star, Eye, Wrench, Server, Brain, ChevronsUp, GripVertical,
+  Star, Eye, Wrench, Server, Brain, ChevronsUp, GripVertical, Layers,
 } from "lucide-react";
 import {
   DndContext,
@@ -30,6 +30,8 @@ interface PriorityItem {
   id: string; model: string; provider_id: string; provider_name: string;
   is_default: boolean; supports_vision: boolean; supports_tools: boolean;
   supports_reasoning: boolean; api_type: string;
+  input_cost: number | null; output_cost: number | null;
+  context_window: number | null;
 }
 
 function SortableItem({
@@ -97,6 +99,18 @@ function SortableItem({
             {item.supports_reasoning && (
               <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(168,85,247,0.1)] text-[rgb(168,85,247)] border border-[rgba(168,85,247,0.3)]">
                 <Brain size={9} /> {t("deepThinking")}
+              </span>
+            )}
+            {item.context_window != null && (
+              <span title={t("contextWindowLabel")}
+                className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(234,179,8,0.1)] text-[rgb(180,140,20)] border border-[rgba(234,179,8,0.25)]">
+                <Layers size={9} /> {item.context_window >= 1000 ? `${Math.round(item.context_window / 1000)}K` : item.context_window}
+              </span>
+            )}
+            {(item.input_cost != null || item.output_cost != null) && (
+              <span title={t("costPerMillion")}
+                className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(34,197,94,0.1)] text-[rgb(22,163,74)] border border-[rgba(34,197,94,0.25)]">
+                ${item.input_cost ?? "?"}/{item.output_cost ?? "?"}
               </span>
             )}
           </div>

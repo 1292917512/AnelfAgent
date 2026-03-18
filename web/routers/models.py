@@ -223,12 +223,15 @@ async def update_cost_map(req: CostMapUpdateReq) -> Dict[str, Any]:
     import httpx
     import litellm
 
-    proxies: Dict[str, str] = {}
+    proxy: Optional[str] = None
     if req.proxy_url:
-        proxies = {"http://": req.proxy_url, "https://": req.proxy_url}
+        url = req.proxy_url.strip()
+        if not url.startswith(("http://", "https://", "socks5://")):
+            url = f"http://{url}"
+        proxy = url
 
     try:
-        async with httpx.AsyncClient(proxies=proxies, timeout=30.0) as client:  # type: ignore[arg-type]
+        async with httpx.AsyncClient(proxy=proxy, timeout=30.0) as client:
             response = await client.get(_COST_MAP_URL)
             response.raise_for_status()
             data: Dict[str, Any] = response.json()

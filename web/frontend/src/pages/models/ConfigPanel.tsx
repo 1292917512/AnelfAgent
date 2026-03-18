@@ -5,7 +5,7 @@ import { providersApi, modelsApi, type RemoteModelInfo } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   Plus, Trash2, Save, TestTube, Scan, ChevronDown, ChevronRight,
-  Eye, Wrench, Server, Brain, Download, Check, Loader2, Search,
+  Eye, Wrench, Server, Brain, Download, Check, Loader2, Search, Layers,
 } from "lucide-react";
 
 const API_TYPE_OPTIONS = [
@@ -27,6 +27,8 @@ interface ModelInfo {
   temperature: number; top_p: number; max_tokens: number;
   frequency_penalty: number; presence_penalty: number; timeout: number;
   is_default: boolean; supports_reasoning: boolean;
+  input_cost: number | null; output_cost: number | null;
+  context_window: number | null;
 }
 
 export function ConfigPanel() {
@@ -440,6 +442,18 @@ export function ConfigPanel() {
                                 {m.supports_tools && <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--accent-subtle)] text-[var(--accent)] border border-[rgba(74,144,217,0.3)]"><Wrench size={9} /> {t("toolCall")}</span>}
                                 {m.supports_reasoning && <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(168,85,247,0.1)] text-[rgb(168,85,247)] border border-[rgba(168,85,247,0.3)]"><Brain size={9} /> {t("deepThinking")}</span>}
                                 {m.model_types.map(mt => <span key={mt} className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--secondary)] text-[var(--muted)] border border-[var(--border)]">{t(`modelTypeLabels.${mt}`, { defaultValue: mt })}</span>)}
+                                {m.context_window != null && (
+                                  <span title={t("contextWindowLabel")}
+                                    className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(234,179,8,0.1)] text-[rgb(180,140,20)] border border-[rgba(234,179,8,0.25)]">
+                                    <Layers size={9} /> {m.context_window >= 1000 ? `${Math.round(m.context_window / 1000)}K` : m.context_window}
+                                  </span>
+                                )}
+                                {(m.input_cost != null || m.output_cost != null) && (
+                                  <span title={t("costPerMillion")}
+                                    className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(34,197,94,0.1)] text-[rgb(22,163,74)] border border-[rgba(34,197,94,0.25)]">
+                                    ${m.input_cost ?? "?"}/{m.output_cost ?? "?"}
+                                  </span>
+                                )}
                               </div>
                             </div>
                             <button onClick={e => { e.stopPropagation(); removeModelMut.mutate(m.id); }}

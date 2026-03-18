@@ -683,6 +683,14 @@ class LLMClient(BaseEntity):
             return None
 
     @staticmethod
+    def get_model_info(model: str) -> Dict[str, Any]:
+        """查询模型完整信息（上下文窗口 / 输出上限 / 能力 / 价格）。"""
+        try:
+            return litellm.get_model_info(model)
+        except Exception:
+            return {}
+
+    @staticmethod
     def get_model_cost(model: str) -> Optional[Dict[str, Any]]:
         """查询模型的价格信息（input_cost_per_token / output_cost_per_token 等）。"""
         return litellm.model_cost.get(model)

@@ -41,6 +41,8 @@
   "selectedCount": "已选 {{count}} 个",
   "addSelected": "添加所选模型",
   "noRemoteModels": "未能获取远程模型列表，请检查供应商配置",
+  "costPerMillion": "价格 ($/M tokens): 输入/输出",
+  "contextWindowLabel": "上下文窗口",
   "autoConfig": "自动配置",
   "autoConfigLoading": "正在查询模型信息...",
   "autoConfigDone": "已自动填充参数",
