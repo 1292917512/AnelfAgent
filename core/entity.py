@@ -207,7 +207,7 @@ class BaseEntity(ABC):
 # 常量
 # ======================================================================
 
-_DEFAULT_TOOL_TIMEOUT = 30.0
+_DEFAULT_TOOL_TIMEOUT = 60.0
 _SKIP_ENTITY_METHODS = frozenset({
     'get_entity_name', 'get_entity_config',
     'register_api', 'get_registered_apis',
