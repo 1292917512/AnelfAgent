@@ -21,6 +21,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 # 必须在 import litellm 之前设置，阻止启动时拉取远端模型价格表
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
+import httpx
 import litellm
 
 from agent.llm.types import (
@@ -34,29 +35,20 @@ litellm.drop_params = True
 litellm.local_model_cost_map = True
 
 
-class _ProxyHttpClient:
-    """支持 deepcopy 的 httpx 代理客户端包装。
+class _ProxyHttpClient(httpx.AsyncClient):
+    """支持 deepcopy 的 httpx 代理客户端。
 
-    litellm 部分 handler（如 Anthropic）会对 optional_params 执行
-    copy.deepcopy，而原生 httpx.AsyncClient 含 _thread.RLock 无法序列化。
-    本类通过 __deepcopy__ 返回自身引用（共享连接池）来规避此问题，
-    同时保留 per-provider 独立代理能力。
+    继承 httpx.AsyncClient 以通过 litellm / Anthropic SDK 的 isinstance 检查
+    和内部 JSON 序列化。__deepcopy__ 返回自身引用以共享连接池，
+    规避 copy.deepcopy 时 _thread.RLock 无法序列化的问题。
     """
 
     def __init__(self, proxy_url: str) -> None:
-        import httpx
         self._proxy_url = proxy_url
-        self._client = httpx.AsyncClient(proxy=proxy_url)
-
-    @property
-    def is_closed(self) -> bool:
-        return self._client.is_closed
+        super().__init__(proxy=proxy_url)
 
     def __deepcopy__(self, memo: dict) -> "_ProxyHttpClient":
         return self
-
-    def __getattr__(self, name: str):
-        return getattr(self._client, name)
 
 
 _DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1"
