@@ -38,8 +38,12 @@ class TaskExecutor:
         entity: Optional["EntityData"] = None,
         *,
         temperature: float = 0.7,
+        model_id: str = "",
     ) -> Optional[TaskResult]:
-        """执行一个任务，返回结果或 None。"""
+        """执行一个任务，返回结果或 None。
+
+        model_id 优先级：参数传入 > task.model_id > 默认模型。
+        """
         if not task.prompt:
             log(f"任务 [{task.name}] prompt 为空，跳过", "WARNING", tag="任务")
             return None
@@ -48,10 +52,11 @@ class TaskExecutor:
             log(f"任务 [{task.name}] scope 不匹配 (scope={task.scope.value}, has_entity={entity is not None})", tag="任务")
             return None
 
+        effective_model = model_id or task.model_id or ""
         await self._emit("unit_start", task, entity)
 
         try:
-            content = await self._execute_llm(task, entity, temperature)
+            content = await self._execute_llm(task, entity, temperature, effective_model)
             if not content:
                 log(f"任务 [{task.name}] 无产出", tag="任务")
                 await self._emit("unit_end", task, entity, has_output=False)
@@ -95,6 +100,7 @@ class TaskExecutor:
         task: TaskDefinition,
         entity: Optional["EntityData"],
         temperature: float,
+        model_id: str = "",
     ) -> str:
         """构建消息 -> LLM reflect -> 清洗输出。"""
         conversation_list: List[Dict[str, Any]] = []
@@ -108,9 +114,13 @@ class TaskExecutor:
         }
         messages = list(base_messages) + [prompt_msg]
 
+        options: Dict[str, Any] = {"temperature": temperature}
+        if model_id:
+            options["_model_id"] = model_id
+
         raw = await self.mind.reflect(
             messages,
-            options={"temperature": temperature},
+            options=options,
             tool_tags=task.tool_tags or None,
         )
         return _clean_llm_output(raw)

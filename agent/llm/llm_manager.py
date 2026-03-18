@@ -746,6 +746,11 @@ class LLMManager(BaseEntity):
     def client_count(self) -> int:
         return len(self._clients)
 
+    @property
+    def all_model_ids(self) -> List[str]:
+        """返回所有已配置模型的 ID 列表。"""
+        return list(self._clients.keys())
+
 
 # ------------------------------------------------------------------
 # 全局单例

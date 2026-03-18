@@ -129,6 +129,96 @@ class ModelService:
                 return f"连接成功! 可用模型: {', '.join(names)}" if names else "连接成功 (无模型列表)"
             return f"连接成功 (HTTP {r.status_code})"
 
+    _DEFAULT_BASE_URLS: Dict[str, str] = {
+        "anthropic": "https://api.anthropic.com/v1",
+        "gemini": "https://generativelanguage.googleapis.com/v1beta",
+        "ollama": "http://127.0.0.1:11434/v1",
+    }
+
+    async def fetch_remote_models(
+        self, base_url: str, api_key: str, api_type: str = "openai",
+    ) -> List[Dict[str, Any]]:
+        """从供应商 API 拉取远程可用模型列表，自动适配不同 api_type。"""
+        import httpx
+
+        effective_url = base_url.strip() or self._DEFAULT_BASE_URLS.get(api_type, "")
+        if not effective_url:
+            return []
+
+        headers: Dict[str, str] = {}
+        if api_type == "anthropic":
+            headers["x-api-key"] = api_key
+            headers["anthropic-version"] = "2023-06-01"
+        elif api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            r = await c.get(f"{effective_url.rstrip('/')}/models", headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            models_raw = data.get("data", [])
+            result: List[Dict[str, Any]] = []
+            for m in models_raw:
+                model_id = m.get("id", "")
+                if not model_id:
+                    continue
+                result.append({
+                    "id": model_id,
+                    "owned_by": m.get("owned_by", m.get("created_by", "")),
+                    "created": m.get("created") or m.get("created_at"),
+                })
+            result.sort(key=lambda x: x["id"])
+            return result
+
+    async def fetch_provider_remote_models(
+        self, provider_id: str,
+    ) -> List[Dict[str, Any]]:
+        """通过已配置的供应商凭据拉取远程可用模型列表。"""
+        mgr = self._manager()
+        prov = mgr.get_provider(provider_id)
+        if prov is None:
+            return []
+        return await self.fetch_remote_models(
+            prov.base_url, prov.api_key, prov.api_type,
+        )
+
+    @staticmethod
+    def get_model_info(model: str, api_type: str = "openai") -> Dict[str, Any]:
+        """通过 litellm 查询模型的能力和参数上限。"""
+        import litellm
+
+        prefix_map: Dict[str, str] = {
+            "openai": "openai", "anthropic": "anthropic",
+            "ollama": "ollama_chat", "gemini": "gemini",
+            "azure": "azure", "deepseek": "deepseek",
+            "groq": "groq", "mistral": "mistral",
+            "cohere": "cohere_chat", "bedrock": "bedrock",
+            "vertex_ai": "vertex_ai", "openrouter": "openrouter",
+            "together_ai": "together_ai", "fireworks_ai": "fireworks_ai",
+            "perplexity": "perplexity", "xai": "xai",
+            "cerebras": "cerebras", "cloudflare": "cloudflare",
+        }
+        prefix = prefix_map.get(api_type, "openai")
+        litellm_model = f"{prefix}/{model}"
+
+        try:
+            info = litellm.get_model_info(litellm_model)
+            return {
+                "max_output_tokens": info.get("max_output_tokens", 4096),
+                "max_input_tokens": info.get("max_input_tokens", 0),
+                "supports_vision": info.get("supports_vision", False),
+                "supports_tools": info.get("supports_function_calling", True),
+                "input_cost_per_token": info.get("input_cost_per_token"),
+                "output_cost_per_token": info.get("output_cost_per_token"),
+                "found": True,
+            }
+        except Exception:
+            return {"found": False}
+
+    def get_all_model_ids(self) -> List[str]:
+        """返回所有已配置的模型 ID 列表。"""
+        return self._manager().all_model_ids
+
     async def probe_capabilities(
         self, base_url: str, api_key: str, model: str, api_type: str = "openai",
     ) -> Dict[str, Any]:

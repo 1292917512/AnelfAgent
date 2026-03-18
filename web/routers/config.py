@@ -397,6 +397,7 @@ class TaskCreate(BaseModel):
     null_keywords: List[str] = []
     tool_tags: List[str] = []
     prompt: str
+    model_id: Optional[str] = None
 
 
 @router.post("/tasks", status_code=201)
@@ -433,6 +434,7 @@ class TaskUpdate(BaseModel):
     null_keywords: Optional[List[str]] = None
     tool_tags: Optional[List[str]] = None
     prompt: Optional[str] = None
+    model_id: Optional[str] = None
 
 
 @router.put("/tasks/{name}")

@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { providersApi, modelsApi } from "@/lib/api";
+import { providersApi, modelsApi, type RemoteModelInfo } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   Plus, Trash2, Save, TestTube, Scan, ChevronDown, ChevronRight,
-  Eye, Wrench, Server, Brain,
+  Eye, Wrench, Server, Brain, Download, Check, Loader2, Search,
 } from "lucide-react";
 
 const API_TYPE_OPTIONS = [
@@ -37,10 +37,13 @@ export function ConfigPanel() {
   const [providerEdit, setProviderEdit] = useState<Record<string, unknown> | null>(null);
   const [modelEdit, setModelEdit] = useState<Record<string, unknown> | null>(null);
   const [newProvider, setNewProvider] = useState({ id: "", name: "", base_url: "", api_key: "", api_type: "openai", proxy_url: "" });
-  const [newModel, setNewModel] = useState({ id: "", model: "" });
   const [showNewProvider, setShowNewProvider] = useState(false);
-  const [addingModelTo, setAddingModelTo] = useState<string | null>(null);
   const [testResult, setTestResult] = useState("");
+
+  const [browsingRemote, setBrowsingRemote] = useState<string | null>(null);
+  const [remoteFilter, setRemoteFilter] = useState("");
+  const [selectedRemote, setSelectedRemote] = useState<Set<string>>(new Set());
+  const [addingRemote, setAddingRemote] = useState(false);
 
   const { data: providers = [] } = useQuery<ProviderInfo[]>({
     queryKey: ["providers"],
@@ -52,6 +55,18 @@ export function ConfigPanel() {
     queryFn: () => expandedProvider ? providersApi.models(expandedProvider).then(r => r.data) : Promise.resolve([]),
     enabled: !!expandedProvider,
   });
+
+  const { data: remoteModelsData, isFetching: fetchingRemote } = useQuery<{ models: RemoteModelInfo[] }>({
+    queryKey: ["remoteModels", browsingRemote],
+    queryFn: () => browsingRemote ? providersApi.remoteModels(browsingRemote).then(r => r.data) : Promise.resolve({ models: [] }),
+    enabled: !!browsingRemote,
+    staleTime: 60_000,
+  });
+
+  const remoteModels = remoteModelsData?.models ?? [];
+  const filteredRemote = remoteFilter
+    ? remoteModels.filter(m => m.id.toLowerCase().includes(remoteFilter.toLowerCase()))
+    : remoteModels;
 
   const addProviderMut = useMutation({
     mutationFn: (data: Record<string, unknown>) => providersApi.create(data),
@@ -67,7 +82,11 @@ export function ConfigPanel() {
   });
   const addModelMut = useMutation({
     mutationFn: ({ pid, data }: { pid: string; data: Record<string, unknown> }) => providersApi.createModel(pid, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["providerModels", expandedProvider] }); qc.invalidateQueries({ queryKey: ["providers"] }); setAddingModelTo(null); setNewModel({ id: "", model: "" }); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["providerModels", expandedProvider] });
+      qc.invalidateQueries({ queryKey: ["providers"] });
+      qc.invalidateQueries({ queryKey: ["remoteModels", browsingRemote] });
+    },
   });
   const updateModelMut = useMutation({
     mutationFn: ({ mid, data }: { mid: string; data: Record<string, unknown> }) => modelsApi.update(mid, data),
@@ -81,6 +100,7 @@ export function ConfigPanel() {
   const toggleProvider = (pid: string) => {
     setExpandedProvider(expandedProvider === pid ? null : pid);
     setExpandedModel(null); setProviderEdit(null); setModelEdit(null); setTestResult("");
+    setBrowsingRemote(null); setSelectedRemote(new Set()); setRemoteFilter("");
   };
 
   const handleProbe = async (m: ModelInfo, prov: ProviderInfo) => {
@@ -92,6 +112,98 @@ export function ConfigPanel() {
         setTestResult(t("probeDone") + ": " + JSON.stringify(d));
       } else { setTestResult(t("probeFailed") + ": " + String(d.error)); }
     } catch { setTestResult(t("probeError")); }
+  };
+
+  const handleAutoConfig = async (m: ModelInfo, prov: ProviderInfo) => {
+    setTestResult(t("autoConfigLoading"));
+    try {
+      const r = await providersApi.modelInfo(m.model, prov.api_type);
+      const info = r.data;
+      if (!info.found) {
+        setTestResult(t("autoConfigNotFound"));
+        return;
+      }
+      const patch: Record<string, unknown> = { ...(modelEdit ?? { ...m }) };
+      if (info.max_output_tokens) patch.max_tokens = info.max_output_tokens;
+      if (info.supports_vision !== undefined) patch.supports_vision = info.supports_vision;
+      if (info.supports_tools !== undefined) patch.supports_tools = info.supports_tools;
+      setModelEdit(patch);
+      const parts: string[] = [];
+      if (info.max_output_tokens) parts.push(`max_tokens=${info.max_output_tokens}`);
+      if (info.max_input_tokens) parts.push(`context=${info.max_input_tokens}`);
+      if (info.supports_vision) parts.push("vision=true");
+      if (info.supports_tools) parts.push("tools=true");
+      if (info.input_cost_per_token != null) parts.push(`input=$${(info.input_cost_per_token * 1e6).toFixed(2)}/M`);
+      if (info.output_cost_per_token != null) parts.push(`output=$${(info.output_cost_per_token * 1e6).toFixed(2)}/M`);
+      setTestResult(t("autoConfigDone") + ": " + parts.join(", "));
+    } catch {
+      setTestResult(t("autoConfigError"));
+    }
+  };
+
+  const handleBrowseRemote = (pid: string) => {
+    if (browsingRemote === pid) {
+      setBrowsingRemote(null);
+      setSelectedRemote(new Set());
+      setRemoteFilter("");
+    } else {
+      setBrowsingRemote(pid);
+      setSelectedRemote(new Set());
+      setRemoteFilter("");
+    }
+  };
+
+  const toggleRemoteSelect = (modelId: string) => {
+    setSelectedRemote(prev => {
+      const next = new Set(prev);
+      if (next.has(modelId)) next.delete(modelId);
+      else next.add(modelId);
+      return next;
+    });
+  };
+
+  const handleAddSelectedRemote = async (pid: string) => {
+    if (selectedRemote.size === 0) return;
+    const prov = providers.find(p => p.id === pid);
+    const apiType = prov?.api_type ?? "openai";
+    setAddingRemote(true);
+    try {
+      for (const modelId of selectedRemote) {
+        const shortName = modelId.split("/").pop() || modelId;
+        let maxTokens = 4096;
+        let supportsVision = false;
+        let supportsTools = true;
+
+        try {
+          const infoRes = await providersApi.modelInfo(modelId, apiType);
+          const info = infoRes.data;
+          if (info.found) {
+            maxTokens = info.max_output_tokens ?? 4096;
+            supportsVision = info.supports_vision ?? false;
+            supportsTools = info.supports_tools ?? true;
+          }
+        } catch { /* litellm 不认识的模型用默认值 */ }
+
+        await addModelMut.mutateAsync({
+          pid,
+          data: {
+            id: shortName,
+            model: modelId,
+            model_types: ["chat"],
+            temperature: 0.7,
+            top_p: 1.0,
+            max_tokens: maxTokens,
+            supports_tools: supportsTools,
+            supports_vision: supportsVision,
+            vision_format: supportsVision ? "base64" : "base64",
+            timeout: 120.0,
+          },
+        });
+      }
+      setSelectedRemote(new Set());
+    } finally {
+      setAddingRemote(false);
+    }
   };
 
   const currentProvider = providers.find(p => p.id === expandedProvider);
@@ -214,31 +326,97 @@ export function ConfigPanel() {
 
                   <div className="flex items-center justify-between">
                     <p className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">{t("modelList")}</p>
-                    <button onClick={() => { setAddingModelTo(addingModelTo === prov.id ? null : prov.id); setNewModel({ id: "", model: "" }); }}
-                      className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] transition-all">
-                      <Plus size={12} /> {t("addModel")}</button>
+                    <div className="flex gap-2">
+                      <button onClick={() => handleBrowseRemote(prov.id)}
+                        className={cn(
+                          "flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border transition-all",
+                          browsingRemote === prov.id
+                            ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-subtle)]"
+                            : "border-[var(--border)] text-[var(--muted)] hover:bg-[var(--bg-hover)]",
+                        )}>
+                        <Download size={12} /> {t("browseRemote")}
+                      </button>
+                    </div>
                   </div>
 
-                  {addingModelTo === prov.id && (
-                    <div className="p-3 rounded-[var(--radius-md)] border border-[var(--accent)] bg-[var(--bg-elevated)] space-y-2">
-                      <div className="grid grid-cols-2 gap-2">
-                        <div className="space-y-1">
-                          <label className="text-xs font-medium text-[var(--muted)]">{t("modelId")}</label>
-                          <input value={newModel.id} onChange={e => setNewModel({ ...newModel, id: e.target.value })}
-                            className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]" />
-                        </div>
-                        <div className="space-y-1">
-                          <label className="text-xs font-medium text-[var(--muted)]">{t("modelName")}</label>
-                          <input value={newModel.model} onChange={e => setNewModel({ ...newModel, model: e.target.value })}
-                            className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]" />
-                        </div>
+                  {browsingRemote === prov.id && (
+                    <div className="p-4 rounded-[var(--radius-md)] border border-[var(--accent)] bg-[var(--bg-elevated)] space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-semibold text-[var(--text-strong)]">{t("remoteModelsTitle")}</p>
+                        <span className="text-xs text-[var(--muted)]">
+                          {fetchingRemote ? t("loading") : t("remoteCount", { count: remoteModels.length })}
+                        </span>
                       </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => newModel.id && addModelMut.mutate({ pid: prov.id, data: newModel })} disabled={!newModel.id}
-                          className="px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-all">{t("common:create")}</button>
-                        <button onClick={() => setAddingModelTo(null)}
-                          className="px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all">{t("common:cancel")}</button>
-                      </div>
+
+                      {fetchingRemote && (
+                        <div className="flex items-center justify-center py-4 text-[var(--muted)]">
+                          <Loader2 size={16} className="animate-spin mr-2" /> {t("loading")}
+                        </div>
+                      )}
+
+                      {!fetchingRemote && remoteModels.length > 0 && (
+                        <>
+                          <div className="relative">
+                            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
+                            <input
+                              type="text"
+                              value={remoteFilter}
+                              onChange={e => setRemoteFilter(e.target.value)}
+                              placeholder={t("filterModels")}
+                              className="w-full pl-9 pr-3 py-2 bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
+                            />
+                          </div>
+
+                          <div className="max-h-64 overflow-y-auto space-y-1 scrollbar-thin">
+                            {filteredRemote.map(rm => (
+                              <label key={rm.id}
+                                className={cn(
+                                  "flex items-center gap-3 px-3 py-2 rounded-[var(--radius-md)] cursor-pointer transition-all",
+                                  rm.already_added
+                                    ? "opacity-50 cursor-default bg-[var(--secondary)]"
+                                    : selectedRemote.has(rm.id)
+                                      ? "bg-[var(--accent-subtle)] border border-[var(--accent)]"
+                                      : "hover:bg-[var(--bg-hover)] border border-transparent",
+                                )}>
+                                <input
+                                  type="checkbox"
+                                  checked={rm.already_added || selectedRemote.has(rm.id)}
+                                  disabled={rm.already_added}
+                                  onChange={() => !rm.already_added && toggleRemoteSelect(rm.id)}
+                                  className="accent-[var(--accent)] w-3.5 h-3.5 shrink-0"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <span className="text-sm text-[var(--text)] truncate block">{rm.id}</span>
+                                  {rm.owned_by && <span className="text-[10px] text-[var(--muted)]">{rm.owned_by}</span>}
+                                </div>
+                                {rm.already_added && (
+                                  <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--accent-subtle)] text-[var(--accent)]">
+                                    <Check size={9} /> {t("alreadyAdded")}
+                                  </span>
+                                )}
+                              </label>
+                            ))}
+                          </div>
+
+                          <div className="flex items-center justify-between pt-2 border-t border-[var(--border)]">
+                            <span className="text-xs text-[var(--muted)]">
+                              {t("selectedCount", { count: selectedRemote.size })}
+                            </span>
+                            <button
+                              onClick={() => handleAddSelectedRemote(prov.id)}
+                              disabled={selectedRemote.size === 0 || addingRemote}
+                              className="flex items-center gap-1 px-4 py-2 text-sm font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-all"
+                            >
+                              {addingRemote ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                              {t("addSelected")}
+                            </button>
+                          </div>
+                        </>
+                      )}
+
+                      {!fetchingRemote && remoteModels.length === 0 && (
+                        <p className="text-sm text-[var(--muted)] py-4 text-center">{t("noRemoteModels")}</p>
+                      )}
                     </div>
                   )}
 
@@ -269,9 +447,11 @@ export function ConfigPanel() {
                           </div>
                           {isModelOpen && (
                             <div className="border-t border-[var(--border)] p-3 space-y-3">
-                              <div className="flex gap-2">
+                              <div className="flex gap-2 flex-wrap">
                                 {currentProvider && <button onClick={() => handleProbe(m, currentProvider)}
                                   className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all"><Scan size={12} /> {t("probeCapability")}</button>}
+                                {currentProvider && <button onClick={() => handleAutoConfig(m, currentProvider)}
+                                  className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--accent)] text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-all"><Scan size={12} /> {t("autoConfig")}</button>}
                                 {modelEdit ? (
                                   <button onClick={() => updateModelMut.mutate({ mid: m.id, data: modelEdit })}
                                     className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] transition-all"><Save size={12} /> {t("common:save")}</button>

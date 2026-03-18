@@ -196,7 +196,10 @@
     "detailTags": "Tags: ",
     "detailNullKeywords": "Null Keywords: ",
     "detailToolTags": "Tool Tags: ",
-    "detailPrompt": "Prompt: "
+    "detailModelId": "Model: ",
+    "detailPrompt": "Prompt: ",
+    "modelId": "Model",
+    "defaultModel": "Default Model"
   },
   "costMap": {
     "title": "LiteLLM Cost Map",

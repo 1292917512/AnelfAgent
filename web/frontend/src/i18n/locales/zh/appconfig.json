@@ -196,7 +196,10 @@
     "detailTags": "标签：",
     "detailNullKeywords": "空响应关键词：",
     "detailToolTags": "工具标签：",
-    "detailPrompt": "提示词："
+    "detailModelId": "指定模型：",
+    "detailPrompt": "提示词：",
+    "modelId": "指定模型",
+    "defaultModel": "默认模型"
   },
   "costMap": {
     "title": "LiteLLM 模型价格表",

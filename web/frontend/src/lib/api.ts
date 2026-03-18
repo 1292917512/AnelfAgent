@@ -64,7 +64,28 @@ export const providersApi = {
   models: (pid: string) => api.get(`/models/providers/${encodeURIComponent(pid)}/models`),
   createModel: (pid: string, data: Record<string, unknown>) =>
     api.post(`/models/providers/${encodeURIComponent(pid)}/models`, data),
+  remoteModels: (pid: string) =>
+    api.get<{ models: RemoteModelInfo[] }>(`/models/providers/${encodeURIComponent(pid)}/remote-models`),
+  modelInfo: (model: string, apiType = "openai") =>
+    api.post<ModelInfoResult>("/models/model-info", { model, api_type: apiType }),
 };
+
+export interface RemoteModelInfo {
+  id: string;
+  owned_by: string;
+  created: number | null;
+  already_added: boolean;
+}
+
+export interface ModelInfoResult {
+  found: boolean;
+  max_output_tokens?: number;
+  max_input_tokens?: number;
+  supports_vision?: boolean;
+  supports_tools?: boolean;
+  input_cost_per_token?: number | null;
+  output_cost_per_token?: number | null;
+}
 
 // Models
 export const modelsApi = {
@@ -253,6 +274,7 @@ export interface TaskSchedule {
   beat_count?: number;
   schedule_times?: string[];
   last_run_date?: string;
+  model_id?: string;
 }
 
 export interface HeartbeatStatus {
@@ -285,6 +307,7 @@ export interface TaskConfig {
   null_keywords: string[];
   tool_tags: string[];
   prompt: string;
+  model_id?: string;
 }
 
 export const tasksApi = {

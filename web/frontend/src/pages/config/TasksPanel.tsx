@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { tasksApi, type TaskConfig } from "@/lib/api";
+import { tasksApi, modelsApi, type TaskConfig } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
 import { Play, Trash2, Pencil, Plus, Save, X, ChevronDown, ChevronUp } from "lucide-react";
@@ -10,6 +10,7 @@ const EMPTY_TASK: TaskConfig = {
   name: "",
   display_name: "",
   description: "",
+  model_id: "",
   scope: "global",
   enabled: true,
   memory_type: "semantic",
@@ -216,6 +217,9 @@ function TaskDetail({ task }: { task: TaskConfig }) {
         {(task.tool_tags ?? []).length > 0 && (
           <span className="col-span-2"><span className="font-medium">{t("tasks.detailToolTags")}</span>{(task.tool_tags ?? []).join(", ")}</span>
         )}
+        {task.model_id && (
+          <span className="col-span-2"><span className="font-medium">{t("tasks.detailModelId")}</span>{task.model_id}</span>
+        )}
       </div>
       <div>
         <p className="font-medium mb-1">{t("tasks.detailPrompt")}</p>
@@ -239,6 +243,13 @@ interface TaskEditFormProps {
 function TaskEditForm({ task, onChange, onSave, onCancel, isPending, inputBase }: TaskEditFormProps) {
   const { t } = useTranslation("appconfig");
   const set = (key: keyof TaskConfig, value: unknown) => onChange({ ...task, [key]: value });
+
+  interface PriorityItem { id: string; model: string }
+  const { data: priorities = {} } = useQuery<Record<string, PriorityItem[]>>({
+    queryKey: ["priorities"],
+    queryFn: () => modelsApi.priorities().then(r => r.data),
+  });
+  const chatModels = priorities.chat ?? [];
 
   const scopeOptions = [
     { value: "global", label: t("tasks.scopeGlobal") },
@@ -294,10 +305,18 @@ function TaskEditForm({ task, onChange, onSave, onCancel, isPending, inputBase }
             onChange={(e) => set("null_keywords", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
             placeholder={t("tasks.nullKeywordsPlaceholder")} />
         </div>
-        <div className="flex flex-col gap-1 md:col-span-2">
+        <div className="flex flex-col gap-1">
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.toolTags")}</label>
           <input className={inputBase} value={(task.tool_tags ?? []).join(", ")}
             onChange={(e) => set("tool_tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.modelId")}</label>
+          <select className={inputBase} value={task.model_id ?? ""}
+            onChange={(e) => set("model_id", e.target.value || undefined)}>
+            <option value="">{t("tasks.defaultModel")}</option>
+            {chatModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+          </select>
         </div>
         <div className="flex items-center justify-between md:col-span-2">
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.enableTask")}</label>

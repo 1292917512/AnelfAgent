@@ -1,9 +1,9 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { heartbeatApi, tasksApi, type HeartbeatConfig, type TaskSchedule, type TaskConfig } from "@/lib/api";
+import { heartbeatApi, tasksApi, modelsApi, type HeartbeatConfig, type TaskSchedule, type TaskConfig } from "@/lib/api";
 import { Card } from "@/components/common/Card";
-import { Save, Plus, Trash2, RotateCcw, X, Clock } from "lucide-react";
+import { Save, Plus, Trash2, RotateCcw, X, Clock, Cpu } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const MODE_OPTIONS = [
@@ -25,6 +25,13 @@ export function ConfigPanel() {
     queryKey: ["tasks"],
     queryFn: () => tasksApi.list().then((r) => r.data as TaskConfig[]),
   });
+
+  interface PriorityItem { id: string; model: string }
+  const { data: priorities = {} } = useQuery<Record<string, PriorityItem[]>>({
+    queryKey: ["priorities"],
+    queryFn: () => modelsApi.priorities().then(r => r.data),
+  });
+  const chatModels = priorities.chat ?? [];
 
   const [form, setForm] = useState<Partial<HeartbeatConfig>>({});
   const [schedules, setSchedules] = useState<TaskSchedule[] | null>(null);
@@ -215,6 +222,20 @@ export function ConfigPanel() {
                   {s.mode === "manual" && (
                     <span className="text-xs text-[var(--muted)] italic">{t("schedule.manualOnly")}</span>
                   )}
+
+                  <div className="flex items-center gap-2 ml-auto">
+                    <Cpu size={13} className="text-[var(--muted)] flex-shrink-0" />
+                    <select
+                      className={cn(inputBase, "!w-40")}
+                      value={s.model_id ?? ""}
+                      onChange={(e) => updateSchedule(idx, { model_id: e.target.value })}
+                    >
+                      <option value="">{t("schedule.defaultModel")}</option>
+                      {chatModels.map((m) => (
+                        <option key={m.id} value={m.id}>{m.id}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
             );

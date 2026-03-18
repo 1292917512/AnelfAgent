@@ -49,6 +49,7 @@
     "manualOnly": "仅通过 Web 或 AI 手动触发",
     "addTask": "绑定任务：",
     "addTime": "添加",
-    "resetCounter": "重置计数器"
+    "resetCounter": "重置计数器",
+    "defaultModel": "默认模型"
   }
 }

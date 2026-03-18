@@ -39,6 +39,8 @@ class TaskSchedule:
     beat_count: int = 0
     schedule_times: List[str] = field(default_factory=list)
     last_run_date: str = ""
+    model_id: str = ""
+    """指定该调度使用的模型 ID，为空时使用任务定义或默认模型。"""
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -51,6 +53,8 @@ class TaskSchedule:
         elif self.mode == ScheduleMode.SCHEDULED:
             d["schedule_times"] = self.schedule_times
             d["last_run_date"] = self.last_run_date
+        if self.model_id:
+            d["model_id"] = self.model_id
         return d
 
     @classmethod
@@ -63,6 +67,7 @@ class TaskSchedule:
             beat_count=int(data.get("beat_count", 0)),
             schedule_times=list(data.get("schedule_times", [])),
             last_run_date=data.get("last_run_date", ""),
+            model_id=data.get("model_id", ""),
         )
 
 

@@ -49,6 +49,7 @@
     "manualOnly": "Only triggered via Web UI or AI tool",
     "addTask": "Bind task:",
     "addTime": "Add",
-    "resetCounter": "Reset counter"
+    "resetCounter": "Reset counter",
+    "defaultModel": "Default Model"
   }
 }

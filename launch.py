@@ -25,9 +25,12 @@ def main():
         from agent.channel import get_channel_manager
         await get_channel_manager().start_all()
 
+        web_task: asyncio.Task[None] | None = None
         if not args.no_webui:
             from web.server import start_web_server
-            asyncio.create_task(start_web_server())
+            web_task = asyncio.create_task(
+                start_web_server(), name="agent.web_server",
+            )
 
         try:
             await asyncio.Event().wait()
@@ -35,6 +38,14 @@ def main():
             pass
 
         log("正在关闭...")
+
+        if web_task and not web_task.done():
+            web_task.cancel()
+            try:
+                await web_task
+            except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+                pass
+
         try:
             from entities.mcp.bridge import get_mcp_bridge
             bridge = get_mcp_bridge()

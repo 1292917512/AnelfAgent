@@ -676,14 +676,22 @@ class Mind:
             options: Optional[dict] = None,
     ) -> ChatResult:
         mc = self._get_mind_config()
-        # 合并会话临时参数（set_session_params 写入的覆盖值）
         merged_options = dict(options or {})
         if self._session_llm_params:
             merged_options.update(self._session_llm_params)
+
+        model_override_id = merged_options.pop("_model_id", None)
         final_options = merged_options or None
 
         if self.llm_manager:
-            primary = self.llm if isinstance(self.llm, LLMClient) else None
+            if model_override_id:
+                primary = self.llm_manager.get_client(model_override_id)
+                if not primary:
+                    from core.log import log
+                    log(f"指定模型 '{model_override_id}' 不存在，回退到默认模型", "WARNING", tag="思维")
+                    primary = self.llm if isinstance(self.llm, LLMClient) else None
+            else:
+                primary = self.llm if isinstance(self.llm, LLMClient) else None
             result = await self.llm_manager.chat_with_fallback(
                 messages,
                 options=final_options,

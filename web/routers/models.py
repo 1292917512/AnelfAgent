@@ -69,6 +69,48 @@ async def provider_models(pid: str) -> List[Dict[str, Any]]:
     return _svc.list_provider_models(pid)
 
 
+@router.get("/providers/{pid}/remote-models")
+async def fetch_remote_models(pid: str) -> Dict[str, Any]:
+    """从供应商 API 拉取远程可用模型列表。"""
+    try:
+        models = await _svc.fetch_provider_remote_models(pid)
+        existing = set(_svc.get_all_model_ids())
+        for m in models:
+            m["already_added"] = m["id"] in existing
+        return {"models": models}
+    except Exception as e:
+        raise HTTPException(502, f"获取远程模型列表失败: {e}") from e
+
+
+class FetchRemoteReq(BaseModel):
+    base_url: str
+    api_key: str = ""
+
+
+@router.post("/remote-models")
+async def fetch_remote_models_generic(req: FetchRemoteReq) -> Dict[str, Any]:
+    """通过指定 URL 拉取远程可用模型列表。"""
+    try:
+        models = await _svc.fetch_remote_models(req.base_url, req.api_key)
+        existing = set(_svc.get_all_model_ids())
+        for m in models:
+            m["already_added"] = m["id"] in existing
+        return {"models": models}
+    except Exception as e:
+        raise HTTPException(502, f"获取远程模型列表失败: {e}") from e
+
+
+class ModelInfoReq(BaseModel):
+    model: str
+    api_type: str = "openai"
+
+
+@router.post("/model-info")
+async def get_model_info(req: ModelInfoReq) -> Dict[str, Any]:
+    """通过 litellm 查询模型能力信息（max_tokens / vision / tools 等）。"""
+    return _svc.get_model_info(req.model, req.api_type)
+
+
 class CreateModelReq(BaseModel):
     id: str
     model: str = ""

@@ -46,6 +46,8 @@ class TaskDefinition(BaseModel):
     null_keywords: List[str] = Field(default_factory=list)
     tool_tags: List[str] = Field(default_factory=list)
     prompt: str = ""
+    model_id: Optional[str] = None
+    """指定执行该任务的模型 ID，为空时使用默认模型。"""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> TaskDefinition:
@@ -66,6 +68,7 @@ class TaskDefinition(BaseModel):
             null_keywords=list(data.get("null_keywords", [])),
             tool_tags=list(data.get("tool_tags", [])),
             prompt=data.get("prompt", ""),
+            model_id=data.get("model_id") or None,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -84,6 +87,8 @@ class TaskDefinition(BaseModel):
         }
         if self.tool_tags:
             result["tool_tags"] = self.tool_tags
+        if self.model_id:
+            result["model_id"] = self.model_id
         return result
 
     def should_run_for_entity(self, has_entity: bool) -> bool:

@@ -125,7 +125,9 @@ class HeartbeatEngine:
 
             entity = await self._pop_analysis_entity() if pending_task.scope.value == "entity" else None
             await self.executor.run(
-                pending_task, entity, temperature=self.config.analysis_temperature,
+                pending_task, entity,
+                temperature=self.config.analysis_temperature,
+                model_id=schedule.model_id,
             )
             executed.append(pending_task.name)
 
@@ -358,6 +360,7 @@ class HeartbeatEngine:
                     **s.to_dict(),
                     "task_exists": self.task_registry.get(s.task_name) is not None,
                     "task_enabled": (self.task_registry.get(s.task_name) or TaskDefinition(name="")).enabled,
+                    "model_id": s.model_id,
                 }
                 for s in self.config.task_schedules
             ],
