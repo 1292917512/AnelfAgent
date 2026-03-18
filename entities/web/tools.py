@@ -26,12 +26,15 @@ _USER_AGENT = (
 
 
 def _proxy_kwargs(use_proxy: bool) -> dict[str, str]:
-    """构建 httpx 代理参数。"""
+    """构建 httpx 代理参数。始终禁止读取环境变量代理，避免被 LLM 代理污染。"""
     if not use_proxy:
-        return {}
+        return {"trust_env": False}
     from entities.web.baidu_search import get_proxy
     proxy = get_proxy()
-    return {"proxy": proxy} if proxy else {}
+    result: dict = {"trust_env": False}
+    if proxy:
+        result["proxy"] = proxy
+    return result
 
 
 # ==================================================================

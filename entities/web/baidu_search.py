@@ -91,6 +91,16 @@ def _build_headers() -> Dict[str, str]:
     }
 
 
+def _make_client(timeout: float) -> httpx.Client:
+    """创建 httpx 客户端，自动应用 config.json 中的代理，隔离环境变量。"""
+    proxy = get_proxy()
+    return httpx.Client(
+        timeout=timeout,
+        trust_env=False,
+        **({"proxy": proxy} if proxy else {}),
+    )
+
+
 def _extract_web_refs(data: Dict[str, Any]) -> List[Dict[str, str]]:
     """从 API 响应中提取 web 类型的引用结果。"""
     refs = data.get("references") or []
@@ -135,7 +145,7 @@ def search(
     if search_recency:
         body["search_recency_filter"] = search_recency
 
-    with httpx.Client(timeout=20.0) as client:
+    with _make_client(20.0) as client:
         resp = client.post(_STANDARD_URL, json=body, headers=headers)
         resp.raise_for_status()
         data = resp.json()
@@ -171,7 +181,7 @@ def search_with_summary(
         ],
     }
 
-    with httpx.Client(timeout=30.0) as client:
+    with _make_client(30.0) as client:
         resp = client.post(_HIGH_PERF_URL, json=body, headers=headers)
         resp.raise_for_status()
         data = resp.json()
