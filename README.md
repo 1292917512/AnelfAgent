@@ -266,9 +266,9 @@ AnelfAgent/
 **依赖方向（严格单向）：**
 
 ```
-web/frontend → web/routers → services → agent.core → core/
+web/frontend → web/routers → services → agent → core/
 entities → entities._sdk → core.entity
-channels/ → agent.core.channel
+channels/ → agent.channel
 
 禁止: agent → web | core → agent | services → web | entities → agent（通过 _sdk 桥接）
 ```

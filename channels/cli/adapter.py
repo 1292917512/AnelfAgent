@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Any, Set
 
-from agent.core.channel.channel import BaseChannel, ChannelCapability, ChannelStatus, _ok
+from agent.channel.channel import BaseChannel, ChannelCapability, ChannelStatus, _ok
 
 
 class CLIChannel(BaseChannel):
@@ -75,8 +75,8 @@ def _load_bot_name() -> str:
 
 async def run_cli(user_id: str = "cli_user", user_name: str = "用户") -> None:
     """运行交互式 CLI。"""
-    from agent.core.channel import get_channel_manager
-    from agent.core.runtime.agent_app import get_agent_app
+    from agent.channel import get_channel_manager
+    from agent.runtime.agent_app import get_agent_app
 
     channel = CLIChannel()
     cm = get_channel_manager()

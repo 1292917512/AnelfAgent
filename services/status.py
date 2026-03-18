@@ -77,7 +77,7 @@ class AgentStatusService:
     def get_mind_config(self) -> Optional[Dict[str, Any]]:
         """读取当前 Mind 配置。"""
         try:
-            from agent.ext.config_provider import get_config_provider
+            from agent.config import get_config_provider
             mc = get_config_provider().mind
             return {
                 "heartbeat_interval": mc.heartbeat_interval,
@@ -112,5 +112,5 @@ class AgentStatusService:
 
     def save_mind_config(self, params: Dict[str, Any]) -> None:
         """保存 Mind 配置参数。"""
-        from agent.ext.config_provider import get_config_provider
+        from agent.config import get_config_provider
         get_config_provider().save_mind_config(**params)

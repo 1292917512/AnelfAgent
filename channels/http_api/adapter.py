@@ -15,8 +15,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from agent.core.channel.channel import BaseChannel, ChannelCapability, ChannelStatus, _ok, _err
-from agent.core.llm.types import ImageContent
+from agent.channel.channel import BaseChannel, ChannelCapability, ChannelStatus, _ok, _err
+from agent.llm.types import ImageContent
 from core.log import log
 
 from .config import HTTP_API_CONFIGS
@@ -125,7 +125,7 @@ class HttpApiChannel(BaseChannel):
         return fut
 
     def _create_app(self) -> FastAPI:
-        from agent.core.runtime.agent_app import get_agent_app
+        from agent.runtime.agent_app import get_agent_app
 
         timeout: int = int(self.get_adapter_config("reply_timeout", 60))
 

@@ -16,8 +16,8 @@ from typing import Any, Dict, List, Optional, Set
 import aiohttp
 from aiohttp import web
 
-from agent.core.channel.channel import BaseChannel, ChannelCapability, ChannelStatus, _ok, _err
-from agent.core.channel.schemas import ChannelType, SegmentType
+from agent.channel.channel import BaseChannel, ChannelCapability, ChannelStatus, _ok, _err
+from agent.channel.schemas import ChannelType, SegmentType
 from core.entity import EntityMetadata, EntityRegistry, EntityType, ToolParam
 from core.log import log
 
@@ -300,7 +300,7 @@ class OneBotV11Channel(BaseChannel):
         """将长文本以合并转发消息形式发送，自动按段落拆分。"""
         channel_type = kwargs.get("channel_type")
         if not channel_type:
-            from agent.core.channel.manager import get_channel_manager
+            from agent.channel.manager import get_channel_manager
             channel_type = get_channel_manager().resolve_channel_type(self.channel_id, chat_id)
 
         try:

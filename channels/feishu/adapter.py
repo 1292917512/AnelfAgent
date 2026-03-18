@@ -17,7 +17,7 @@ import lark_oapi as lark
 
 from core.log import log
 
-from agent.core.channel.channel import BaseChannel, ChannelCapability, ChannelStatus, _ok, _err
+from agent.channel.channel import BaseChannel, ChannelCapability, ChannelStatus, _ok, _err
 from .config import FEISHU_CONFIGS
 from .types import FeishuBotInfo
 

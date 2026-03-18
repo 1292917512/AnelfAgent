@@ -19,10 +19,10 @@ def main():
         ConfigManager.initialize()
         enable_file_logging()
 
-        from agent.core.runtime.bootstrap import create_bootstrap
+        from agent.runtime.bootstrap import create_bootstrap
         await create_bootstrap().execute()
 
-        from agent.core.channel import get_channel_manager
+        from agent.channel import get_channel_manager
         await get_channel_manager().start_all()
 
         if not args.no_webui:

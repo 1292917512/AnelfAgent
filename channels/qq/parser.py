@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from core.log import log
 from core.tags import reply_to_tag, tag_label
 
-from agent.core.channel.schemas import (
+from agent.channel.schemas import (
     AdapterChannel,
     AdapterMessage,
     AdapterUser,

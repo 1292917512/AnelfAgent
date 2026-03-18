@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable, List, Optional
 from core.log import log
 from core.tags import forward_tag, reply_to_tag, tag_label
 
-from agent.core.channel.schemas import (
+from agent.channel.schemas import (
     AdapterChannel,
     AdapterMessage,
     AdapterUser,

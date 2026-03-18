@@ -141,37 +141,37 @@ def activate_group(group: str, description: str = "") -> int:
 
 
 # ------------------------------------------------------------------
-# LLM 桥接（延迟导入 agent.core.llm，供 entities 层使用）
+# LLM 桥接（延迟导入 agent.llm，供 entities 层使用）
 # ------------------------------------------------------------------
 
 
 def get_llm_manager() -> Any:
-    """获取 LLMManager 实例（延迟导入 agent.core.llm）。"""
-    from agent.core.llm import get_llm_manager as _get
+    """获取 LLMManager 实例（延迟导入 agent.llm）。"""
+    from agent.llm import get_llm_manager as _get
     return _get()
 
 
 def load_image_from_path(path: str) -> Any:
     """从本地路径加载图片为 base64 ImageContent。"""
-    from agent.core.llm.image_utils import load_image_from_path as _load
+    from agent.llm.image_utils import load_image_from_path as _load
     return _load(path)
 
 
 def download_image_to_base64(url: str) -> Any:
     """下载 URL 图片并转为 base64 ImageContent。"""
-    from agent.core.llm.image_utils import download_image_to_base64 as _dl
+    from agent.llm.image_utils import download_image_to_base64 as _dl
     return _dl(url)
 
 
 def get_image_content_class() -> type:
     """获取 ImageContent 类型。"""
-    from agent.core.llm.types import ImageContent
+    from agent.llm.types import ImageContent
     return ImageContent
 
 
 def get_model_type_enum() -> Any:
     """获取 ModelType 枚举。"""
-    from agent.core.llm.llm_manager import ModelType
+    from agent.llm.llm_manager import ModelType
     return ModelType
 
 

@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional, Set
 
 from core.log import log
 
-from agent.core.channel.channel import BaseChannel, ChannelCapability, ChannelStatus, _ok, _err
+from agent.channel.channel import BaseChannel, ChannelCapability, ChannelStatus, _ok, _err
 from .config import TELEGRAM_CONFIGS
 from .delivery import deliver_reply
 

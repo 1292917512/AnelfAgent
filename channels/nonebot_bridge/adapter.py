@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, Optional, Set
 
-from agent.core.channel.channel import (
+from agent.channel.channel import (
     BaseChannel,
     ChannelCapability,
     ChannelStatus,

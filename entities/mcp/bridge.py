@@ -80,7 +80,7 @@ def _resolve_config_path() -> Optional[str]:
     if env:
         return env
     try:
-        from agent.ext.config_provider import get_config_provider
+        from agent.config import get_config_provider
         p = Path(get_config_provider()._config.mcp_config_path)
         if p.exists():
             return str(p)

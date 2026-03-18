@@ -33,7 +33,7 @@ if _OLLAMA_AVAILABLE:
 def list_models() -> str:
     """列出所有已配置的 LLM 模型，包含类型（chat/vision/embedding）、能力和当前默认标记。"""
     try:
-        from agent.core.llm import get_llm_manager
+        from agent.llm import get_llm_manager
         manager = get_llm_manager()
 
         summary = manager.get_models_summary()
@@ -82,8 +82,8 @@ def get_current_model() -> str:
     """查看当前使用的模型详情，包括名称、底层模型、温度、超时配置和会话临时参数。"""
     try:
         from services._runtime import require_runtime
-        from agent.core.llm import get_llm_manager
-        from agent.core.llm.llm_client import LLMClient
+        from agent.llm import get_llm_manager
+        from agent.llm.llm_client import LLMClient
 
         rt = require_runtime()
         llm = rt.llm
@@ -171,7 +171,7 @@ def get_model_priority(model_type: str = "chat") -> str:
         model_type: 模型类型，支持 chat / vision / embedding / rerank，默认 chat
     """
     try:
-        from agent.core.llm import get_llm_manager
+        from agent.llm import get_llm_manager
         manager = get_llm_manager()
         priorities = manager.get_type_priorities()
 

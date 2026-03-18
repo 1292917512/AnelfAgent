@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core.log import log
 
-from agent.core.channel.schemas import (
+from agent.channel.schemas import (
     AdapterChannel,
     AdapterMessage,
     AdapterUser,

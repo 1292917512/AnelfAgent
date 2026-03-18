@@ -32,7 +32,7 @@ def _load_channel_config(channel_dir: Path) -> Dict[str, Any]:
 
 def discover_channels() -> List:
     """扫描 channels/ 下所有子目录，实例化已启用的频道。"""
-    from agent.core.channel.channel import BaseChannel
+    from agent.channel.channel import BaseChannel
 
     channel_dir = Path(__file__).parent
     loaded: list = []

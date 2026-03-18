@@ -201,22 +201,5 @@ class ToolService:
         return reload_entities()
 
     def list_plugins(self) -> List[Dict[str, Any]]:
-        """返回已加载 ext 插件列表。"""
-        try:
-            from agent.ext.plugin_base import get_all_plugins
-            plugins = get_all_plugins()
-            if not plugins:
-                return []
-            return [
-                {
-                    "name": p.name,
-                    "version": p.version,
-                    "author": getattr(p, "author", ""),
-                    "enabled": p.enabled,
-                    "description": p.description,
-                }
-                for p in plugins.values()
-            ]
-        except Exception as e:
-            log(f"加载插件列表失败: {e}", "DEBUG")
-            return []
+        """返回已加载插件列表（已废弃，始终返回空列表）。"""
+        return []

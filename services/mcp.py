@@ -19,7 +19,7 @@ class MCPService:
     def load_config(self) -> Dict[str, Any]:
         """加载 MCP 服务器配置。"""
         try:
-            from agent.ext.config_provider import get_config_provider
+            from agent.config import get_config_provider
             return get_config_provider().get_mcp_config()
         except Exception:
             p = Path(ConfigPaths.MCP_SERVERS)
@@ -29,7 +29,7 @@ class MCPService:
 
     def save_config(self, data: Dict[str, Any]) -> None:
         try:
-            from agent.ext.config_provider import get_config_provider
+            from agent.config import get_config_provider
             get_config_provider().save_mcp_config(data)
         except Exception:
             Path(ConfigPaths.MCP_SERVERS).write_text(

@@ -13,7 +13,7 @@ import lark_oapi as lark
 
 from core.log import log
 
-from agent.core.channel.schemas import (
+from agent.channel.schemas import (
     AdapterChannel,
     AdapterMessage,
     AdapterUser,

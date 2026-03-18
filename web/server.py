@@ -94,7 +94,7 @@ def create_app() -> FastAPI:
 async def register_webui_channel() -> None:
     """启动已注册的 WebUI 频道（由 bootstrap register_channels 统一注册）。"""
     try:
-        from agent.core.channel import get_channel_manager
+        from agent.channel import get_channel_manager
         cm = get_channel_manager()
         if "webui" in cm.list_channels():
             await cm.start_channel("webui")

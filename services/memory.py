@@ -12,7 +12,7 @@ def _parse_memory_type(type_str: Optional[str]):
     """解析 MemoryType 字符串，无效时返回 None。"""
     if not type_str:
         return None
-    from agent.core.mind.memory.memory_types import MemoryType
+    from agent.memory.memory_types import MemoryType
     try:
         return MemoryType(type_str)
     except ValueError:
@@ -113,7 +113,7 @@ class MemoryService:
         store = rt.mind.memory_store
         if not store:
             return -1
-        from agent.core.mind.memory.memory_types import MemoryEntry, MemoryType
+        from agent.memory.memory_types import MemoryEntry, MemoryType
         mt = _parse_memory_type(memory_type) or MemoryType.SEMANTIC
         entry = MemoryEntry(content=content, memory_type=mt, importance=importance, source="webui", tags=tags or [])
         return await store.add(entry)
@@ -270,33 +270,33 @@ class MemoryService:
 
     @staticmethod
     def read_notes() -> str:
-        from agent.core.mind.memory.notes import load_notes_content
+        from agent.memory.notes import load_notes_content
         return load_notes_content()
 
     @staticmethod
     def write_notes(content: str) -> None:
-        from agent.core.mind.memory.notes import get_notes_path, _atomic_write
+        from agent.memory.notes import get_notes_path, _atomic_write
         p = get_notes_path()
         _atomic_write(p, content)
 
     @staticmethod
     def get_notes_path() -> str:
-        from agent.core.mind.memory.notes import get_notes_path
+        from agent.memory.notes import get_notes_path
         return str(get_notes_path())
 
     @staticmethod
     def list_memory_files() -> List[Dict[str, str]]:
-        from agent.core.mind.memory.notes import list_all_memory_files
+        from agent.memory.notes import list_all_memory_files
         return list_all_memory_files()
 
     @staticmethod
     def read_memory_file(file_path: str) -> str:
-        from agent.core.mind.memory.notes import read_memory_file
+        from agent.memory.notes import read_memory_file
         return read_memory_file(file_path)
 
     @staticmethod
     def write_memory_file(file_path: str, content: str) -> int:
-        from agent.core.mind.memory.notes import write_memory_file
+        from agent.memory.notes import write_memory_file
         return write_memory_file(file_path, content)
 
     # ==================================================================
@@ -315,8 +315,8 @@ class MemoryService:
         store = rt.mind.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
-        from agent.core.mind.memory.memory_sync import sync_files
-        from agent.core.mind.memory.notes import get_workspace_dir
+        from agent.memory.memory_sync import sync_files
+        from agent.memory.notes import get_workspace_dir
         return await sync_files(store, rt.mind.embedder, get_workspace_dir(), force=force)
 
     async def clean_embedding_cache(self) -> Dict[str, int]:
@@ -352,7 +352,7 @@ class MemoryService:
         store = rt.mind.memory_store
         if not store:
             return []
-        from agent.core.mind.memory.memory_types import MemoryType
+        from agent.memory.memory_types import MemoryType
         entries = await store.list_recent(limit=100, memory_type=MemoryType.SEMANTIC, source=self._GOAL_SOURCE)
         goals: List[Dict[str, Any]] = []
         for entry in entries:
@@ -373,7 +373,7 @@ class MemoryService:
         store = rt.mind.memory_store
         if not store:
             return None
-        from agent.core.mind.memory.memory_types import MemoryType
+        from agent.memory.memory_types import MemoryType
         entries = await store.list_recent(limit=100, memory_type=MemoryType.SEMANTIC, source=self._GOAL_SOURCE)
         for entry in entries:
             try:
@@ -397,7 +397,7 @@ class MemoryService:
         store = rt.mind.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
-        from agent.core.mind.memory.memory_types import MemoryEntry, MemoryType
+        from agent.memory.memory_types import MemoryEntry, MemoryType
         goal: Dict[str, Any] = {
             "goal_id": uuid.uuid4().hex[:8],
             "title": title,
@@ -441,7 +441,7 @@ class MemoryService:
         store = rt.mind.memory_store
         if not store:
             return None
-        from agent.core.mind.memory.memory_types import MemoryEntry, MemoryType
+        from agent.memory.memory_types import MemoryEntry, MemoryType
         entries = await store.list_recent(limit=100, memory_type=MemoryType.SEMANTIC, source=self._GOAL_SOURCE)
         target_entry = None
         target_goal = None
@@ -495,7 +495,7 @@ class MemoryService:
         store = rt.mind.memory_store
         if not store:
             return False
-        from agent.core.mind.memory.memory_types import MemoryType
+        from agent.memory.memory_types import MemoryType
         entries = await store.list_recent(limit=100, memory_type=MemoryType.SEMANTIC, source=self._GOAL_SOURCE)
         for entry in entries:
             try:

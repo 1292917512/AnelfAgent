@@ -9,7 +9,7 @@ class PersonaService:
 
     @staticmethod
     def _provider():
-        from agent.ext.config_provider import get_config_provider
+        from agent.config import get_config_provider
         return get_config_provider()
 
     def list_personas(self) -> List[Dict[str, Any]]:

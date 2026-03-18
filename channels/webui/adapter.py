@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Set
 
-from agent.core.channel.channel import BaseChannel, ChannelCapability, ChannelStatus
+from agent.channel.channel import BaseChannel, ChannelCapability, ChannelStatus
 from core.log import log
 
 

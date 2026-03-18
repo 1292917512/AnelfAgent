@@ -9,14 +9,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from agent.core.runtime.agent_app import AgentApp
-    from agent.core.runtime.runtime import AgentRuntime
+    from agent.runtime.agent_app import AgentApp
+    from agent.runtime.runtime import AgentRuntime
 
 
 def is_ready() -> bool:
     """检查 AgentRuntime 是否已初始化（不触发懒创建）。"""
     try:
-        from agent.core.runtime import singleton
+        from agent.runtime import singleton
         return singleton._default_runtime is not None
     except Exception:
         return False
@@ -26,7 +26,7 @@ def get_runtime() -> Optional["AgentRuntime"]:
     """获取 runtime；未就绪返回 None。"""
     if not is_ready():
         return None
-    from agent.core.runtime.singleton import get_runtime as _get
+    from agent.runtime.singleton import get_runtime as _get
     return _get()
 
 
@@ -34,7 +34,7 @@ def get_agent_app() -> Optional["AgentApp"]:
     """获取 AgentApp；未就绪返回 None。"""
     if not is_ready():
         return None
-    from agent.core.runtime.agent_app import get_agent_app as _get
+    from agent.runtime.agent_app import get_agent_app as _get
     return _get()
 
 

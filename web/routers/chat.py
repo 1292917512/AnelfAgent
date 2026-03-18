@@ -102,8 +102,8 @@ async def serve_uploaded_file(file_type: str, filename: str) -> Any:
 @router.post("/send", response_model=SendMessageResponse)
 async def send_message(req: SendMessageRequest) -> SendMessageResponse:
     try:
-        from agent.core.llm.types import ImageContent
-        from agent.core.channel.schemas import MessageSegment, SegmentType
+        from agent.llm.types import ImageContent
+        from agent.channel.schemas import MessageSegment, SegmentType
 
         images = None
         if req.images:

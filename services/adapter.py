@@ -18,7 +18,7 @@ class AdapterService:
         """返回频道列表含状态（包括已配置但未启用的频道）。"""
         if not is_ready():
             return None
-        from agent.core.channel import get_channel_manager
+        from agent.channel import get_channel_manager
         mgr = get_channel_manager()
         channels = mgr.list_channels()
         status_map = {
@@ -70,7 +70,7 @@ class AdapterService:
         对于未注册的频道（config 中 enabled=false），先动态实例化并注册，
         再启动。这样前端点"激活"时可以启用一个之前未加载的频道。
         """
-        from agent.core.channel import get_channel_manager
+        from agent.channel import get_channel_manager
         mgr = get_channel_manager()
         channel = mgr.get(key)
 
@@ -124,7 +124,7 @@ class AdapterService:
             log(f"频道模块加载失败: {key} - {exc}", "ERROR")
             return
 
-        from agent.core.channel.channel import BaseChannel
+        from agent.channel.channel import BaseChannel
         channel_cls = getattr(mod, "CHANNEL_CLASS", None)
         if channel_cls is None:
             for attr_name in dir(mod):
@@ -315,7 +315,7 @@ class AdapterService:
         if not channel_names:
             return
         try:
-            from agent.core.channel import get_channel_manager
+            from agent.channel import get_channel_manager
             from core.log import log
             mgr = get_channel_manager()
             channels = mgr.list_channels()

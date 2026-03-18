@@ -55,7 +55,7 @@ class ChatService:
         if rt is None:
             raise RuntimeError("AgentRuntime 尚未初始化")
         if hasattr(output, "channel_id"):
-            from agent.core.channel import get_channel_manager
+            from agent.channel import get_channel_manager
             cm = get_channel_manager()
             if output.channel_id not in cm.list_channels():
                 cm.register_lightweight(output)
@@ -66,7 +66,7 @@ class ChatService:
     def get_bot_name() -> str:
         """从人设配置读取 bot 名称。"""
         try:
-            from agent.ext.config_provider import get_config_provider
+            from agent.config import get_config_provider
             data = get_config_provider().get_persona_config()
             if data.get("name"):
                 return data["name"]

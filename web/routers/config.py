@@ -299,7 +299,7 @@ async def save_introspection_config(data: IntrospectionConfigUpdate) -> Dict[str
 
     # 热重载：使 Mind 内的 IntrospectionConfig 立即生效，无需重启
     try:
-        from agent.core.mind.introspection.config import reload_introspection_config
+        from agent.introspection.config import reload_introspection_config
         new_cfg = reload_introspection_config()
         from services._runtime import get_runtime
         rt = get_runtime()

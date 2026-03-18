@@ -11,7 +11,7 @@ class ModelService:
 
     @staticmethod
     def _manager() -> Any:
-        from agent.core.llm import get_llm_manager
+        from agent.llm import get_llm_manager
         return get_llm_manager()
 
     # ------------------------------------------------------------------
@@ -132,5 +132,5 @@ class ModelService:
     async def probe_capabilities(
         self, base_url: str, api_key: str, model: str, api_type: str = "openai",
     ) -> Dict[str, Any]:
-        from agent.core.llm.llm_client import LLMClient as _LC
+        from agent.llm.llm_client import LLMClient as _LC
         return await _LC.probe_capabilities(base_url, api_key, model, api_type=api_type)

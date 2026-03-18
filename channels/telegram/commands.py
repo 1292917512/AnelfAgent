@@ -109,7 +109,7 @@ async def _cmd_reset(bot: Any, chat_id: int, update: Any) -> None:
         from services._runtime import get_runtime
         rt = get_runtime()
         if rt:
-            from agent.core.storage.storage_router import StorageDomain
+            from agent.storage.storage_router import StorageDomain
             is_group = update.effective_chat.type in ("group", "supergroup")
             if is_group:
                 scope_type, scope_id = "group", str(chat_id)
