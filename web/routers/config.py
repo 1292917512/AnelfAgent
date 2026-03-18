@@ -398,6 +398,7 @@ class TaskCreate(BaseModel):
     tool_tags: List[str] = []
     prompt: str
     model_id: Optional[str] = None
+    reasoning_effort: Optional[str] = None
 
 
 @router.post("/tasks", status_code=201)
@@ -435,6 +436,7 @@ class TaskUpdate(BaseModel):
     tool_tags: Optional[List[str]] = None
     prompt: Optional[str] = None
     model_id: Optional[str] = None
+    reasoning_effort: Optional[str] = None
 
 
 @router.put("/tasks/{name}")
@@ -503,3 +505,38 @@ def _reload_task_registry() -> None:
             rt.mind.heartbeat_engine.task_registry.reload()
     except Exception as e:
         log(f"任务注册表热重载失败: {e}", "DEBUG")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Web 工具配置（entities/web/config.json）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class WebToolsConfigUpdate(BaseModel):
+    baidu_api_key: Optional[str] = None
+    proxy: Optional[str] = None
+
+
+@router.get("/web-tools")
+async def get_web_tools_config() -> Dict[str, Any]:
+    """返回 Web 工具配置（API Key 已脱敏）。"""
+    from entities.web.baidu_search import get_config
+    config = get_config()
+    if config.get("baidu_api_key"):
+        config["baidu_api_key"] = _mask_key(config["baidu_api_key"])
+    return config
+
+
+@router.put("/web-tools")
+async def save_web_tools_config(data: WebToolsConfigUpdate) -> Dict[str, str]:
+    """保存 Web 工具配置（代理、API Key 等）。"""
+    from entities.web.baidu_search import update_config
+    updates: Dict[str, Any] = {}
+    if data.proxy is not None:
+        updates["proxy"] = data.proxy
+    if data.baidu_api_key is not None and "****" not in data.baidu_api_key:
+        updates["baidu_api_key"] = data.baidu_api_key
+    if not updates:
+        return {"status": "ok", "message": "无变更"}
+    update_config(updates)
+    return {"status": "ok"}

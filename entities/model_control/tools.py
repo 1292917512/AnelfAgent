@@ -111,13 +111,14 @@ def get_current_model() -> str:
 
 
 @tool(name="set_session_params", group="model_control", tags=["core"],
-      description="临时调整当前会话的模型参数（temperature/max_tokens），不持久化，重启后恢复。传 -1 表示不修改该参数")
-def set_session_params(temperature: float = -1.0, max_tokens: int = -1) -> str:
+      description="临时调整当前会话的模型参数（temperature/max_tokens/reasoning_effort），不持久化，重启后恢复。传 -1 表示不修改该参数")
+def set_session_params(temperature: float = -1.0, max_tokens: int = -1, reasoning_effort: str = "") -> str:
     """临时覆盖当前会话的模型参数，仅对本次运行有效，不写入配置文件。
 
     Args:
         temperature: 温度参数 0.0~2.0（传 -1 表示不修改）
         max_tokens: 最大输出 token 数（传 -1 表示不修改）
+        reasoning_effort: 思考等级 low/medium/high/max（空字符串表示不修改，low 节省成本，high 深度思考）
     """
     try:
         from services._runtime import require_runtime
@@ -131,6 +132,9 @@ def set_session_params(temperature: float = -1.0, max_tokens: int = -1) -> str:
         if max_tokens > 0:
             params["max_tokens"] = max_tokens
             changed.append(f"max_tokens={max_tokens}")
+        if reasoning_effort in ("low", "medium", "high", "max"):
+            params["reasoning_effort"] = reasoning_effort
+            changed.append(f"reasoning_effort={reasoning_effort}")
 
         if not changed:
             return json.dumps({

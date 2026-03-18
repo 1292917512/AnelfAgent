@@ -33,3 +33,4 @@ class MindConfigUpdate(BaseModel):
     cross_channel_recall_max_results: Optional[int] = None
     cross_channel_recall_scan_limit: Optional[int] = None
     cross_channel_narrative_max_items: Optional[int] = None
+    reasoning_effort: Optional[str] = None

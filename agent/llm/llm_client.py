@@ -368,7 +368,17 @@ class LLMClient(BaseEntity):
         if extra:
             kwargs["extra_body"] = extra
 
+        effort = params.pop("reasoning_effort", None) or ""
+        if effort and self._supports_effort():
+            kwargs["reasoning_effort"] = effort
+
         return kwargs
+
+    _EFFORT_PROVIDERS = frozenset({"anthropic", "bedrock", "vertex_ai"})
+
+    def _supports_effort(self) -> bool:
+        """检查当前模型是否支持 reasoning_effort 参数。"""
+        return self.config.api_type in self._EFFORT_PROVIDERS
 
     def _adapt_messages(self, messages: list[dict]) -> list[dict]:
         """合并头部连续 system 消息为一条，非头部 system 转 user。"""

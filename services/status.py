@@ -105,6 +105,7 @@ class AgentStatusService:
                 "cross_channel_recall_max_results": mc.cross_channel_recall_max_results,
                 "cross_channel_recall_scan_limit": mc.cross_channel_recall_scan_limit,
                 "cross_channel_narrative_max_items": mc.cross_channel_narrative_max_items,
+                "reasoning_effort": mc.reasoning_effort,
             }
         except Exception as e:
             log(f"获取 Mind 配置失败: {e}", "DEBUG")

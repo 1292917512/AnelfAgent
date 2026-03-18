@@ -23,6 +23,7 @@ if not exist "%ROOT%\config\tasks" mkdir "%ROOT%\config\tasks"
 if not exist "%ROOT%\channels\telegram" mkdir "%ROOT%\channels\telegram"
 if not exist "%ROOT%\channels\qq" mkdir "%ROOT%\channels\qq"
 if not exist "%ROOT%\channels\feishu" mkdir "%ROOT%\channels\feishu"
+if not exist "%ROOT%\entities\web" mkdir "%ROOT%\entities\web"
 
 set COUNT=0
 
@@ -37,6 +38,7 @@ for %%F in (
     channels\telegram\channel_config.json
     channels\qq\channel_config.json
     channels\feishu\channel_config.json
+    entities\web\config.json
 ) do (
     if exist "%VAULT%\%%F" (
         copy /Y "%VAULT%\%%F" "%ROOT%\%%F" >nul

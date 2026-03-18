@@ -50,6 +50,10 @@
     "addTask": "绑定任务：",
     "addTime": "添加",
     "resetCounter": "重置计数器",
-    "defaultModel": "默认模型"
+    "defaultModel": "默认模型",
+    "globalEffort": "全局等级",
+    "effortLow": "轻量",
+    "effortMedium": "均衡",
+    "effortHigh": "深度"
   }
 }

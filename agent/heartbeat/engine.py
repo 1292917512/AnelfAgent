@@ -128,6 +128,7 @@ class HeartbeatEngine:
                 pending_task, entity,
                 temperature=self.config.analysis_temperature,
                 model_id=schedule.model_id,
+                reasoning_effort=schedule.reasoning_effort,
             )
             executed.append(pending_task.name)
 

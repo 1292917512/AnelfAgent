@@ -163,6 +163,7 @@ _MIND_SYNC_FIELDS: tuple[str, ...] = (
     "cross_channel_enabled", "cross_channel_window_minutes",
     "cross_channel_recall_min_score", "cross_channel_recall_max_results",
     "cross_channel_recall_scan_limit", "cross_channel_narrative_max_items",
+    "reasoning_effort",
 )
 
 _ENV_MAPPING: Dict[str, str] = {
@@ -242,6 +243,8 @@ class MindConfig:
     cross_channel_recall_max_results: int = 3
     cross_channel_recall_scan_limit: int = 50
     cross_channel_narrative_max_items: int = 3
+    # 全局思考等级：low / medium / high / max（空=不设置）
+    reasoning_effort: str = ""
     # 工具系统提示规则（每条一行，注入到 LLM system prompt）；实际内容由 mind_config.json 提供
     tool_system_rules: list = field(default_factory=list)
 
@@ -405,6 +408,7 @@ class BotConfigProvider:
             "cross_channel_recall_max_results": mc.cross_channel_recall_max_results,
             "cross_channel_recall_scan_limit": mc.cross_channel_recall_scan_limit,
             "cross_channel_narrative_max_items": mc.cross_channel_narrative_max_items,
+            "reasoning_effort": mc.reasoning_effort,
             "tool_system_rules": mc.tool_system_rules,
         }
         p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

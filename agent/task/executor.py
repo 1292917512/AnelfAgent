@@ -39,10 +39,12 @@ class TaskExecutor:
         *,
         temperature: float = 0.7,
         model_id: str = "",
+        reasoning_effort: str = "",
     ) -> Optional[TaskResult]:
         """执行一个任务，返回结果或 None。
 
         model_id 优先级：参数传入 > task.model_id > 默认模型。
+        reasoning_effort 优先级：参数传入 > task.reasoning_effort > 全局设置。
         """
         if not task.prompt:
             log(f"任务 [{task.name}] prompt 为空，跳过", "WARNING", tag="任务")
@@ -53,10 +55,11 @@ class TaskExecutor:
             return None
 
         effective_model = model_id or task.model_id or ""
+        effective_effort = reasoning_effort or task.reasoning_effort or ""
         await self._emit("unit_start", task, entity)
 
         try:
-            content = await self._execute_llm(task, entity, temperature, effective_model)
+            content = await self._execute_llm(task, entity, temperature, effective_model, effective_effort)
             if not content:
                 log(f"任务 [{task.name}] 无产出", tag="任务")
                 await self._emit("unit_end", task, entity, has_output=False)
@@ -101,6 +104,7 @@ class TaskExecutor:
         entity: Optional["EntityData"],
         temperature: float,
         model_id: str = "",
+        reasoning_effort: str = "",
     ) -> str:
         """构建消息 -> LLM reflect -> 清洗输出。"""
         conversation_list: List[Dict[str, Any]] = []
@@ -117,6 +121,8 @@ class TaskExecutor:
         options: Dict[str, Any] = {"temperature": temperature}
         if model_id:
             options["_model_id"] = model_id
+        if reasoning_effort:
+            options["reasoning_effort"] = reasoning_effort
 
         raw = await self.mind.reflect(
             messages,

@@ -256,7 +256,14 @@ export const configApi = {
   saveApp: (data: Record<string, unknown>) => api.put("/config/app", data),
   getMind: () => api.get("/config/mind"),
   saveMind: (data: Record<string, unknown>) => api.put("/config/mind", data),
+  getWebTools: () => api.get<WebToolsConfig>("/config/web-tools"),
+  saveWebTools: (data: Partial<WebToolsConfig>) => api.put("/config/web-tools", data),
 };
+
+export interface WebToolsConfig {
+  baidu_api_key: string;
+  proxy: string;
+}
 
 // Heartbeat
 export interface HeartbeatConfig {
@@ -275,6 +282,7 @@ export interface TaskSchedule {
   schedule_times?: string[];
   last_run_date?: string;
   model_id?: string;
+  reasoning_effort?: string;
 }
 
 export interface HeartbeatStatus {
@@ -308,6 +316,7 @@ export interface TaskConfig {
   tool_tags: string[];
   prompt: string;
   model_id?: string;
+  reasoning_effort?: string;
 }
 
 export const tasksApi = {

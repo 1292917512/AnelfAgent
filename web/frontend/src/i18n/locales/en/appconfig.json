@@ -9,7 +9,9 @@
     "deepRecallSubtitle": "Parameters for the recall_conversation tool",
     "crossChannel": "Cross-Channel Awareness",
     "crossChannelSubtitle": "Control AI's ability to sense and correlate conversations across multiple channels",
-    "network": "Network / Download"
+    "network": "Network / Download",
+    "webTools": "Search Engine",
+    "webToolsSubtitle": "Baidu AI Search API key & web scraping proxy settings"
   },
   "fields": {
     "heartbeat_interval": "Heartbeat Interval (s)",
@@ -59,7 +61,9 @@
     "overwrite_existing": "Overwrite Existing Files",
     "verify_download": "Verify Download Integrity",
     "default_download_dir": "Default Download Dir",
-    "workspace_root": "Workspace Root"
+    "workspace_root": "Workspace Root",
+    "baidu_api_key": "Baidu Search API Key",
+    "web_proxy": "Web Scraping Proxy"
   },
   "descs": {
     "meta_decision_temperature": "LLM temperature for meta-level decision tasks",
@@ -85,7 +89,9 @@
     "cross_channel_recall_min_score": "Higher values are stricter; recommended 0.4-0.6 to avoid noise",
     "cross_channel_narrative_max_items": "Max cross-channel narrative items shown per reply; 0 disables narrative",
     "http_proxy": "e.g. http://127.0.0.1:7890",
-    "https_proxy": "e.g. http://127.0.0.1:7890"
+    "https_proxy": "e.g. http://127.0.0.1:7890",
+    "baidu_api_key": "Baidu AI Search API Key (bce-v3/...)",
+    "web_proxy": "Web scraping proxy, leave empty for direct, e.g. http://127.0.0.1:7890"
   },
   "actions": {
     "save": "Save",

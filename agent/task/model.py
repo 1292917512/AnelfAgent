@@ -48,6 +48,8 @@ class TaskDefinition(BaseModel):
     prompt: str = ""
     model_id: Optional[str] = None
     """指定执行该任务的模型 ID，为空时使用默认模型。"""
+    reasoning_effort: Optional[str] = None
+    """任务级思考等级覆盖（low/medium/high/max），为空时使用全局设置。"""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> TaskDefinition:
@@ -69,6 +71,7 @@ class TaskDefinition(BaseModel):
             tool_tags=list(data.get("tool_tags", [])),
             prompt=data.get("prompt", ""),
             model_id=data.get("model_id") or None,
+            reasoning_effort=data.get("reasoning_effort") or None,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -89,6 +92,8 @@ class TaskDefinition(BaseModel):
             result["tool_tags"] = self.tool_tags
         if self.model_id:
             result["model_id"] = self.model_id
+        if self.reasoning_effort:
+            result["reasoning_effort"] = self.reasoning_effort
         return result
 
     def should_run_for_entity(self, has_entity: bool) -> bool:

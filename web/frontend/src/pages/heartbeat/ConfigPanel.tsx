@@ -223,10 +223,10 @@ export function ConfigPanel() {
                     <span className="text-xs text-[var(--muted)] italic">{t("schedule.manualOnly")}</span>
                   )}
 
-                  <div className="flex items-center gap-2 ml-auto">
+                  <div className="flex items-center gap-2 ml-auto flex-wrap">
                     <Cpu size={13} className="text-[var(--muted)] flex-shrink-0" />
                     <select
-                      className={cn(inputBase, "!w-40")}
+                      className={cn(inputBase, "!w-36")}
                       value={s.model_id ?? ""}
                       onChange={(e) => updateSchedule(idx, { model_id: e.target.value })}
                     >
@@ -234,6 +234,16 @@ export function ConfigPanel() {
                       {chatModels.map((m) => (
                         <option key={m.id} value={m.id}>{m.id}</option>
                       ))}
+                    </select>
+                    <select
+                      className={cn(inputBase, "!w-28")}
+                      value={s.reasoning_effort ?? ""}
+                      onChange={(e) => updateSchedule(idx, { reasoning_effort: e.target.value })}
+                    >
+                      <option value="">{t("schedule.globalEffort")}</option>
+                      <option value="low">{t("schedule.effortLow")}</option>
+                      <option value="medium">{t("schedule.effortMedium")}</option>
+                      <option value="high">{t("schedule.effortHigh")}</option>
                     </select>
                   </div>
                 </div>

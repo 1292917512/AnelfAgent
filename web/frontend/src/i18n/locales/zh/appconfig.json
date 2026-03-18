@@ -9,7 +9,9 @@
     "deepRecallSubtitle": "recall_conversation 工具的参数",
     "crossChannel": "跨频道感知",
     "crossChannelSubtitle": "控制 AI 在多频道场景下的跨频道对话关联与感知能力",
-    "network": "网络 / 下载"
+    "network": "网络 / 下载",
+    "webTools": "搜索引擎",
+    "webToolsSubtitle": "百度智能搜索 API 配置与网页抓取代理设置"
   },
   "fields": {
     "heartbeat_interval": "心跳间隔（秒）",
@@ -59,7 +61,9 @@
     "overwrite_existing": "覆盖已有文件",
     "verify_download": "校验下载完整性",
     "default_download_dir": "默认下载目录",
-    "workspace_root": "工作区根目录"
+    "workspace_root": "工作区根目录",
+    "baidu_api_key": "百度搜索 API Key",
+    "web_proxy": "网页抓取代理"
   },
   "descs": {
     "meta_decision_temperature": "元层面决策任务的 LLM 温度参数",
@@ -85,7 +89,9 @@
     "cross_channel_recall_min_score": "值越高越严格，建议 0.4-0.6，过低会引入噪声",
     "cross_channel_narrative_max_items": "回复时展示的跨频道近况条数，0 则不展示近况叙事",
     "http_proxy": "例：http://127.0.0.1:7890",
-    "https_proxy": "例：http://127.0.0.1:7890"
+    "https_proxy": "例：http://127.0.0.1:7890",
+    "baidu_api_key": "百度智能搜索 API Key（bce-v3/...）",
+    "web_proxy": "网页抓取代理地址，留空直连，例：http://127.0.0.1:7890"
   },
   "actions": {
     "save": "保存",

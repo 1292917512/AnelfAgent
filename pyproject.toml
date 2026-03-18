@@ -17,8 +17,7 @@ dependencies = [
     "loguru>=0.7.0",
     # Web UI
     "sse-starlette>=2.0.0",
-    # 网页搜索与内容提取
-    "duckduckgo-search>=7.0.0",
+    # 网页内容提取
     "readability-lxml>=0.8.1",
     "markdownify>=0.14.1",
     "beautifulsoup4>=4.12.0",

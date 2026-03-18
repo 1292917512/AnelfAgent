@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { modelsApi } from "@/lib/api";
+import { modelsApi, configApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   Star, Eye, Wrench, Server, Brain, ChevronsUp, GripVertical, Layers,
@@ -139,6 +139,18 @@ export function PrioritiesPanel() {
     queryFn: () => modelsApi.priorities().then(r => r.data),
   });
 
+  const { data: mindConfig } = useQuery<Record<string, unknown>>({
+    queryKey: ["mindConfig"],
+    queryFn: () => configApi.getMind().then(r => r.data?.config || r.data),
+  });
+
+  const effortMut = useMutation({
+    mutationFn: (effort: string) => configApi.saveMind({ reasoning_effort: effort }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["mindConfig"] }),
+  });
+
+  const currentEffort = String(mindConfig?.reasoning_effort ?? "");
+
   const setDefaultMut = useMutation({
     mutationFn: (modelId: string) => modelsApi.setDefault(modelId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["priorities"] }),
@@ -180,7 +192,21 @@ export function PrioritiesPanel() {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-[var(--muted)]">{t("priorityDesc")}</p>
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-[var(--muted)]">{t("priorityDesc")}</p>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-xs text-[var(--muted)]">{t("reasoningEffort")}</span>
+          <select value={currentEffort}
+            onChange={e => effortMut.mutate(e.target.value)}
+            className="bg-[var(--bg-elevated)] border border-[var(--input)] rounded-[var(--radius-md)] px-2.5 py-1.5 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]">
+            <option value="">{t("effortDefault")}</option>
+            <option value="low">{t("effortLow")}</option>
+            <option value="medium">{t("effortMedium")}</option>
+            <option value="high">{t("effortHigh")}</option>
+            <option value="max">{t("effortMax")}</option>
+          </select>
+        </div>
+      </div>
 
       <div className="flex flex-wrap gap-1.5">
         {availableTypes.map(mt => (

@@ -50,6 +50,10 @@
     "addTask": "Bind task:",
     "addTime": "Add",
     "resetCounter": "Reset counter",
-    "defaultModel": "Default Model"
+    "defaultModel": "Default Model",
+    "globalEffort": "Global Level",
+    "effortLow": "Low",
+    "effortMedium": "Medium",
+    "effortHigh": "High"
   }
 }

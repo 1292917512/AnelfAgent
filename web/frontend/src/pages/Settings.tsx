@@ -4,7 +4,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
 import { useAppStore } from "@/stores/app-store";
-import { systemApi, configApi } from "@/lib/api";
+import { systemApi, configApi, type WebToolsConfig } from "@/lib/api";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { Database, Check, X, TestTube } from "lucide-react";
 import { type FieldMeta } from "@/pages/config/AppField";
@@ -66,9 +66,22 @@ function SysConfigPanel() {
     { key: "workspace_root", label: t("fields.workspace_root"), type: "string" },
   ];
 
+  const webToolsFields: FieldMeta[] = [
+    { key: "baidu_api_key", label: t("fields.baidu_api_key"), type: "password", desc: t("descs.baidu_api_key") },
+    { key: "proxy", label: t("fields.web_proxy"), type: "string", desc: t("descs.web_proxy") },
+  ];
+
   return (
     <div className="space-y-4">
       <LiteLLMCostMapCard defaultProxy={proxyUrl} />
+      <ConfigFormPanel
+        title={t("sections.webTools")}
+        subtitle={t("sections.webToolsSubtitle")}
+        fields={webToolsFields}
+        queryKey="webToolsConfig"
+        fetchFn={() => configApi.getWebTools().then((r) => r.data as unknown as Record<string, unknown>)}
+        saveFn={(values) => configApi.saveWebTools(values as unknown as Partial<WebToolsConfig>)}
+      />
       <ConfigFormPanel
         title={t("sections.network")}
         fields={networkFields}

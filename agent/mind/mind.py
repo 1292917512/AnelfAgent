@@ -683,6 +683,8 @@ class Mind:
     ) -> ChatResult:
         mc = self._get_mind_config()
         merged_options = dict(options or {})
+        if mc.reasoning_effort and "reasoning_effort" not in merged_options:
+            merged_options["reasoning_effort"] = mc.reasoning_effort
         if self._session_llm_params:
             merged_options.update(self._session_llm_params)
 

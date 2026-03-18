@@ -41,6 +41,8 @@ class TaskSchedule:
     last_run_date: str = ""
     model_id: str = ""
     """指定该调度使用的模型 ID，为空时使用任务定义或默认模型。"""
+    reasoning_effort: str = ""
+    """调度级思考等级覆盖，为空时使用任务定义或全局设置。"""
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -55,6 +57,8 @@ class TaskSchedule:
             d["last_run_date"] = self.last_run_date
         if self.model_id:
             d["model_id"] = self.model_id
+        if self.reasoning_effort:
+            d["reasoning_effort"] = self.reasoning_effort
         return d
 
     @classmethod
@@ -68,6 +72,7 @@ class TaskSchedule:
             schedule_times=list(data.get("schedule_times", [])),
             last_run_date=data.get("last_run_date", ""),
             model_id=data.get("model_id", ""),
+            reasoning_effort=data.get("reasoning_effort", ""),
         )
 
 

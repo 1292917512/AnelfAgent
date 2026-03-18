@@ -21,7 +21,8 @@ mkdir -p \
     "$VAULT/config/tasks" \
     "$VAULT/channels/telegram" \
     "$VAULT/channels/qq" \
-    "$VAULT/channels/feishu"
+    "$VAULT/channels/feishu" \
+    "$VAULT/entities/web"
 
 COUNT=0
 
@@ -36,6 +37,7 @@ FILES=(
     "channels/telegram/channel_config.json"
     "channels/qq/channel_config.json"
     "channels/feishu/channel_config.json"
+    "entities/web/config.json"
 )
 
 for f in "${FILES[@]}"; do

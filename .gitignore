@@ -67,6 +67,9 @@ config/tasks/*
 # === Persona (personal characters; default.json is the template) ===
 config/personas/mengli.json
 
+# === Entity secrets (copy *.example.json and remove .example suffix) ===
+entities/web/config.json
+
 # === Channel secrets (copy *.example.json and remove .example suffix) ===
 channels/telegram/channel_config.json
 channels/qq/channel_config.json
