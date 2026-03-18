@@ -87,38 +87,49 @@ class HeartbeatEngine:
     # ------------------------------------------------------------------
 
     async def tick(self) -> List[str]:
-        """单次心跳 — 返回本次执行的任务名列表。"""
+        """单次心跳 — 返回本次执行的任务名列表。
+
+        每次心跳只执行一个到期任务（避免长任务阻塞），
+        所有计数器无论是否执行都会递增并持久化。
+        """
         self._total_ticks += 1
         executed: List[str] = []
 
         await self._run_maintenance()
 
-        for schedule in self.config.task_schedules:
+        pending_task: Optional[TaskDefinition] = None
+        pending_schedule_idx: int = -1
+
+        for idx, schedule in enumerate(self.config.task_schedules):
             task = self.task_registry.get(schedule.task_name)
             if not task or not task.enabled:
                 continue
 
-            should_run = False
-
             if schedule.mode == ScheduleMode.HEARTBEAT:
                 schedule.beat_count += 1
-                if schedule.beat_count >= schedule.every_n_beats:
-                    should_run = True
-                    schedule.beat_count = 0
+                if schedule.beat_count >= schedule.every_n_beats and pending_task is None:
+                    pending_task = task
+                    pending_schedule_idx = idx
 
             elif schedule.mode == ScheduleMode.SCHEDULED:
-                if self._is_scheduled_now(schedule.schedule_times, schedule.last_run_date):
-                    should_run = True
-                    schedule.last_run_date = datetime.now().strftime("%Y-%m-%d")
+                if self._is_scheduled_now(schedule.schedule_times, schedule.last_run_date) and pending_task is None:
+                    pending_task = task
+                    pending_schedule_idx = idx
 
-            if should_run:
-                entity = await self._pop_analysis_entity() if task.scope.value == "entity" else None
-                result = await self.executor.run(
-                    task, entity, temperature=self.config.analysis_temperature,
-                )
-                if result:
-                    hb_log.append_entry(f"[{task.name}] {result.content[:120]}")
-                executed.append(task.name)
+        if pending_task is not None and pending_schedule_idx >= 0:
+            schedule = self.config.task_schedules[pending_schedule_idx]
+            if schedule.mode == ScheduleMode.HEARTBEAT:
+                schedule.beat_count = 0
+            elif schedule.mode == ScheduleMode.SCHEDULED:
+                schedule.last_run_date = datetime.now().strftime("%Y-%m-%d")
+
+            entity = await self._pop_analysis_entity() if pending_task.scope.value == "entity" else None
+            result = await self.executor.run(
+                pending_task, entity, temperature=self.config.analysis_temperature,
+            )
+            if result:
+                hb_log.append_entry(f"[{pending_task.name}] {result.content[:120]}")
+            executed.append(pending_task.name)
 
         self.config.save()
         return executed
@@ -172,7 +183,9 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"实体计数持久化失败: {e}", "DEBUG", tag="心跳")
 
-        await self._check_memory_health()
+        memory_warnings = await self._check_memory_health()
+        for warn in memory_warnings:
+            hb_log.append_entry(f"[记忆预警] {warn}")
 
         entity = await self._pop_analysis_entity()
         if entity:
