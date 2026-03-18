@@ -707,6 +707,11 @@ class Mind:
         """简单 LLM 调用封装（无工具，纯文本生成）。"""
         return await self.llm.chat(request_messages, options=options)
 
+    _BLOCKED_IN_REFLECT = frozenset({
+        "send_message", "send_photo", "send_voice", "send_file",
+        "list_channels", "schedule_reply",
+    })
+
     async def reflect(
             self,
             messages: List[Dict],
@@ -716,23 +721,28 @@ class Mind:
             options: Optional[dict] = None,
             tool_tags: Optional[List[str]] = None,
     ) -> str:
-        """反思/任务循环：与对话共享统一思维流程，但不发送消息给用户。
+        """内部任务循环：与对话共享统一思维流程，但禁止对外发送消息。
 
-        tool_tags 非空时按指定标签加载工具集（替代默认的 "heartbeat" 标签），
-        用于任务单元的专属工具配置。
+        tool_tags 非空时按指定标签加载工具集（替代默认的 "heartbeat" 标签）。
+        自动过滤所有 output 类工具（send_message 等），防止任务执行中泄露信息。
 
         Returns:
             LLM 产出的文本内容（所有轮次输出的合并）。
         """
         mc = self._get_mind_config()
         safety_limit = max_iterations or mc.max_tool_iterations
-        active_tools = list(self.pfc.get_active_tool_schemas(adapter_key))
+
+        base_tools = self.pfc.get_active_tool_schemas(adapter_key)
+        active_tools = [
+            s for s in base_tools
+            if s.get("function", {}).get("name", "") not in self._BLOCKED_IN_REFLECT
+        ]
 
         extra_tags = tool_tags if tool_tags else ["heartbeat"]
         existing_names = {s.get("function", {}).get("name", "") for s in active_tools}
         for schema in EntityRegistry.get_tool_schema_by_tags(extra_tags):
             name = schema.get("function", {}).get("name", "")
-            if name and name not in existing_names:
+            if name and name not in existing_names and name not in self._BLOCKED_IN_REFLECT:
                 active_tools.append(schema)
                 existing_names.add(name)
 

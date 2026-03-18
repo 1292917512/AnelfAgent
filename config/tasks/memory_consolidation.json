@@ -1,7 +1,7 @@
 {
   "name": "memory_consolidation",
   "display_name": "记忆整理",
-  "description": "审计记忆库：合并重复、清理过期、整理便签",
+  "description": "审计记忆库，清理过期/重复记忆，更新过时信息",
   "scope": "global",
   "enabled": true,
   "memory_type": "reflection",
@@ -10,5 +10,5 @@
   "source": "memory_consolidation",
   "null_keywords": ["记忆库健康", "无需整理", "整体健康"],
   "tool_tags": ["heartbeat"],
-  "prompt": "进行记忆库健康审计与整理。\n\n【第一步：总览】\n调用 memory_stats 查看记忆健康状态和各类型数量。\n\n【第二步：合并重复记忆】\n- 若 reflection 类型记忆超过 5 条，调用 memory_deep_search(memory_type='reflection') 查看内容\n- 将主题高度相似的用 merge_memories 合并\n- 检查 semantic 类型是否有重复，同样合并\n\n【第三步：清理过期实体记忆】\n- 调用 memory_index(tag='type:profile') 查看实体画像记忆\n- 同一实体有多条画像时，仅保留最新最完整的，其余用 forget 删除\n\n【第四步：巡检便签文件】\n1. 调用 list_memory_files 查看所有便签文件\n2. 用 view_memory_outline 查看标题大纲\n3. 已完成/过期的计划 → delete_section；需要更新的 → write_section；小修正 → patch_memory_file"
+  "prompt": "进行记忆库健康审计与整理。重点是清理过期和重复的内容。\n\n【第一步：总览】\n调用 memory_stats 查看各类型记忆数量。\n\n【第二步：检查过期记忆】\n1. 调用 memory_deep_search 逐页查看所有记忆\n2. 对每条记忆判断是否已过期/失效：\n   - 记录了某个问题但问题可能已解决 → 用 get_conversation 查看相关会话确认是否已解决，已解决的 forget 删除\n   - 重复记录（同一件事记了多次）→ merge_memories 合并\n   - 内容空泛无实际信息 → forget 删除\n\n【第三步：合并同类记忆】\n- reflection 类型超过 5 条 → 查看并合并主题相似的\n- entity 类型同一实体有多条 → 仅保留最新完整的\n\n【第四步：巡检便签文件】\n1. list_memory_files → view_memory_outline 查看标题\n2. 已完成的计划/过期信息 → delete_section\n3. 需更新的 → write_section"
 }

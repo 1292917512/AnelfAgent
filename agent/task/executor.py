@@ -83,10 +83,11 @@ class TaskExecutor:
             return None
 
     _TASK_SUFFIX = (
-        "\n\n[系统规则] 这是一个内部任务，你的文本输出不会发送给任何用户。"
-        "合理使用工具完成任务，不要过度操作。"
-        "完成后先调用 log_to_heartbeat 记录本次操作总结（做了什么、改了什么、发现了什么），"
-        "然后调用 end_reply 结束。可以用 multi_tool_invoke 将两者打包一次完成。"
+        "\n\n[系统规则]\n"
+        "1. 这是内部任务，严禁向任何频道/用户发送消息，严禁泄露任何用户隐私信息\n"
+        "2. 要了解会话内容必须用 get_conversation 实际读取消息，而非只看 scope 列表\n"
+        "3. 操作前先用 recall/list_goals 检查已有记忆和目标，避免重复记录和重复提问\n"
+        "4. 完成后调用 log_to_heartbeat 记录操作总结，然后 end_reply 结束"
     )
 
     async def _execute_llm(
