@@ -124,11 +124,9 @@ class HeartbeatEngine:
                 schedule.last_run_date = datetime.now().strftime("%Y-%m-%d")
 
             entity = await self._pop_analysis_entity() if pending_task.scope.value == "entity" else None
-            result = await self.executor.run(
+            await self.executor.run(
                 pending_task, entity, temperature=self.config.analysis_temperature,
             )
-            if result:
-                hb_log.append_entry(f"[{pending_task.name}] {result.content[:120]}")
             executed.append(pending_task.name)
 
         self.config.save()
@@ -158,8 +156,6 @@ class HeartbeatEngine:
             result = await self.executor.run(
                 task, entity, temperature=self.config.analysis_temperature,
             )
-            if result:
-                hb_log.append_entry(f"[手动] [{task.name}] {result.content[:120]}")
             return result.content if result else None
         finally:
             await event_bus.emit(EVENT_THINKING_SESSION_END, {"reason": "task_completed"})

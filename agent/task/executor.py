@@ -82,6 +82,13 @@ class TaskExecutor:
             await self._emit("unit_error", task, entity, error=str(exc))
             return None
 
+    _TASK_SUFFIX = (
+        "\n\n[系统规则] 这是一个内部任务，你的文本输出不会发送给任何用户。"
+        "合理使用工具完成任务，不要过度操作。"
+        "完成后先调用 log_to_heartbeat 记录本次操作总结（做了什么、改了什么、发现了什么），"
+        "然后调用 end_reply 结束。可以用 multi_tool_invoke 将两者打包一次完成。"
+    )
+
     async def _execute_llm(
         self,
         task: TaskDefinition,
@@ -96,7 +103,7 @@ class TaskExecutor:
         base_messages = await self.mind.get_recollection(conversation_list)
         prompt_msg: Dict[str, str] = {
             "role": "user",
-            "content": f"[系统任务 - {task.name}]\n{task.prompt}",
+            "content": f"[系统任务 - {task.name}]\n{task.prompt}{self._TASK_SUFFIX}",
         }
         messages = list(base_messages) + [prompt_msg]
 

@@ -1,5 +1,5 @@
 ---
-description: "AnelfTools 架构速查 — 目录职责、依赖方向、核心系统、开发约定"
+description: "AnelfAgent 架构速查 — 目录职责、依赖方向、核心系统、开发约定"
 globs: ["**/*"]
 alwaysApply: true
 ---
@@ -13,7 +13,7 @@ alwaysApply: true
 | `agent/` | 智能体内核（Mind / LLM / Storage / Channel / Runtime / Memory / Task / Heartbeat / Planning） | 不依赖 web |
 | `agent/mind/` | 思维核心（自主决策 / 多轮推理 / 跨频道感知） | 工具编排在 `mind/tools/` |
 | `agent/memory/` | 语义记忆（FTS5 + Embedding 混合检索 / 便签 / 文件索引） | 不依赖 mind |
-| `agent/task/` | 独立任务系统（任务定义 / 注册表 / 执行器） | 纯内容定义，不含调度逻辑 |
+| `agent/task/` | 独立任务系统（定义 / 注册表 / 执行器） | 纯内容定义，不含调度逻辑 |
 | `agent/heartbeat/` | 心跳调度（引擎 / 配置 / 日志 / 内置维护） | 管理何时执行任务，持久化计数器 |
 | `agent/planning/` | 自主规划（目标 CRUD / 执行追踪） | 依赖 memory |
 | `channels/` | 频道适配器（目录自动发现） | 继承 BaseChannel |
@@ -62,7 +62,8 @@ agent.planning → agent.memory
 ConfigPaths.APP_CONFIG          # config/app_config.json
 ConfigPaths.WEBUI_CONFIG        # config/webui.json
 ConfigPaths.MCP_SERVERS         # config/mcp_servers.json
-ConfigPaths.HEARTBEAT_CONFIG # config/heartbeat.json
+ConfigPaths.HEARTBEAT_CONFIG    # config/heartbeat.json
+ConfigPaths.TASKS_DIR           # config/tasks
 ConfigPaths.UPLOAD_DIR          # workspace/uploads
 ```
 
@@ -88,12 +89,24 @@ from entities._sdk import get_image_content_class, get_model_type_enum  # 类型
 
 ```
 消息入队 → PFC.add_task → _autonomous_cycle
-  → 心跳: 日志合并 + 实体计数持久化
+  → 心跳: heartbeat_engine.tick()（维护 + 调度任务）
   → 收集态势（消息/任务/记忆/目标/通道）
   → 简单场景 fast-path REPLY / 复杂场景元决策
   → REPLY → 记忆召回 → _think_loop（while 迭代 + 工具调用）
   → end_reply → 完成
 ```
+
+### 心跳引擎（HeartbeatEngine）
+
+```
+tick() 单次心跳：
+  1. 内置维护：日志合并 + 实体计数持久化 + 记忆健康检查 + 实体画像分析
+  2. 遍历 task_schedules，递增 beat_count
+  3. 选取一个到期任务 → TaskExecutor.run() → 结果记入心跳日志
+  4. 持久化计数器到 config/heartbeat.json
+```
+
+三种触发模式：heartbeat（每 N 次心跳）/ scheduled（每天指定时间）/ manual（仅手动）
 
 ### 工具注入（PFC 7 路合并）
 
@@ -123,15 +136,17 @@ from entities._sdk import get_image_content_class, get_model_type_enum  # 类型
 ```
 pages/
 ├── Chat.tsx             # 对话（首页）
-├── Dashboard.tsx        # 总览 → dashboard/（4 个面板）
-├── Memory.tsx           # 记忆 → memory/（7 个面板）
-├── AppConfig.tsx        # 配置 → config/（7 个面板，含通用 ConfigFormPanel）
-├── Channels.tsx         # 频道 → channels/（4 个面板）
-├── Models.tsx           # 模型 → models/（2 个面板）
+├── Dashboard.tsx        # 总览 → dashboard/
+├── Memory.tsx           # 记忆 → memory/
+├── Tasks.tsx            # 任务管理（独立页面）
+├── Heartbeat.tsx        # 心跳 → heartbeat/（状态 + 配置与调度）
+├── Models.tsx           # 模型 → models/
+├── Channels.tsx         # 频道 → channels/
+├── Thinking.tsx         # 思维链路
 └── ...
 
 components/common/TabBar.tsx  # 统一标签栏
-lib/types.ts                  # API 接口类型定义
+lib/types.ts / api.ts         # API 接口类型
 lib/styles.ts                 # 共享样式常量
 i18n/locales/{zh,en}/         # 14 个 namespace
 ```
@@ -150,13 +165,17 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 | `agent/memory/memory_store.py` | 长期记忆存储（SQLite + FTS5 + Embedding） |
 | `agent/memory/tools.py` | 记忆工具（memorize/recall/forget） |
 | `agent/memory/notes.py` | 便签文件系统 |
-| `agent/heartbeat/engine.py` | 心跳调度引擎（任务分发 + 内置维护） |
+| `agent/task/model.py` | 任务数据模型（TaskDefinition / TaskResult） |
+| `agent/task/registry.py` | 任务注册表（config/tasks/*.json 加载/CRUD） |
 | `agent/task/executor.py` | 任务执行器（LLM 调用 + 结果存储） |
-| `agent/planning/tools.py` | 规划工具（create_goal/update_goal 等） |
-| `agent/runtime/bootstrap.py` | 启动流程（15 步：初始化 → 组装 → 启动 → 状态恢复 → 健康检查） |
+| `agent/heartbeat/engine.py` | 心跳调度引擎（tick 循环 + 内置维护） |
+| `agent/heartbeat/config.py` | 心跳配置（HeartbeatConfig + TaskSchedule） |
+| `agent/heartbeat/log.py` | 心跳日志读写 |
+| `agent/planning/tools.py` | 规划工具（create_goal/update_goal/delete_goal） |
+| `agent/runtime/bootstrap.py` | 启动流程（初始化 → 组装 → 启动 → 健康检查） |
 | `entities/_sdk.py` | 工具注册 + LLM 桥接 |
-| `agent/channel/manager.py` | 频道管理（register / register_lightweight / 路由） |
-| `web/routers/schemas.py` | 共享 Pydantic 模型（MindConfigUpdate 等） |
+| `agent/channel/manager.py` | 频道管理（register / route） |
+| `web/routers/config.py` | 心跳/任务 API + Mind 配置 API |
 | `core/path.py` | PathManager + ConfigPaths 路径常量 |
 | `core/lifecycle.py` | 单例生命周期注册表（register / shutdown_all / reset） |
 
@@ -181,10 +200,10 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 | group key | 中文名 | 注册文件 | tags |
 |---|---|---|---|
 | `output` | 消息输出 | `channel/output_tools.py` | always |
-| `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/reflect |
-| `notes` | 便签记忆 | `agent/memory/notes.py` | core/reflect |
-| `thinking` | 思维工具 | `mind/mind.py` + `mind/tools/multi_tool.py` | always |
-| `planning` | 目标规划 | `agent/planning/tools.py` | planning/goal/reflect |
+| `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/heartbeat |
+| `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
+| `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tools/multi_tool.py` | always |
+| `planning` | 目标规划 | `agent/planning/tools.py` | planning/goal/heartbeat |
 | `web` | 网络工具 | `entities/web/tools.py` | web/search/fetch |
 | `media` | 多媒体 | `entities/media/tools.py` | media:* |
 | `os` | 操作系统 | `entities/filesystem/tools.py` | media:file |
@@ -199,7 +218,7 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 
 ## 开发约定
 
-**import**：`from core.log import log` / `from core.entity import EntityRegistry` / `from core.path import ConfigPaths` / `from agent.memory.memory_store import MemoryStore` / `from agent.heartbeat.engine import HeartbeatEngine` / `from agent.planning import register_planning_tools`
+**import**：`from core.log import log` / `from core.entity import EntityRegistry` / `from core.path import ConfigPaths` / `from agent.memory.memory_store import MemoryStore` / `from agent.heartbeat.engine import HeartbeatEngine` / `from agent.task.registry import TaskRegistry`
 
 **日志**：`log("内容")` / `log("调试", "DEBUG")` / `log(f"错误: {exc}", "ERROR")`
 

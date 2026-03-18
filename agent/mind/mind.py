@@ -100,16 +100,17 @@ from entities._sdk import deferred_tool, activate_group
 @deferred_tool(
     name=_END_REPLY_TOOL_NAME,
     group="thinking", tags=["always"], source="mind.core",
-    description="结束本轮操作，回复也是操作。当你已完成所有操作,不再需要继续时,调用此工具。",
+    description="结束本轮操作。当你已完成所有操作，不再需要继续时调用此工具。",
 )
 def _end_reply_tool(reason: str = "") -> str:
-    """结束本轮对话。
+    """结束本轮操作。
 
     Args:
-        reason: 结束原因（仅日志记录，用户不可见）
+        reason: 可选的结束备注，仅日志记录，通常不需要填写
     """
-    log(f"AI 主动结束对话: {reason or '无原因'}", tag="思维")
-    return json.dumps({"ok": True, "action": "end_reply", "reason": reason}, ensure_ascii=False)
+    if reason:
+        log(f"AI 结束操作: {reason}", tag="思维")
+    return json.dumps({"ok": True, "action": "end_reply"}, ensure_ascii=False)
 
 
 class Mind:
@@ -708,7 +709,7 @@ class Mind:
     ) -> str:
         """反思/任务循环：与对话共享统一思维流程，但不发送消息给用户。
 
-        tool_tags 非空时按指定标签加载工具集（替代默认的 "reflect" 标签），
+        tool_tags 非空时按指定标签加载工具集（替代默认的 "heartbeat" 标签），
         用于任务单元的专属工具配置。
 
         Returns:
@@ -718,7 +719,7 @@ class Mind:
         safety_limit = max_iterations or mc.max_tool_iterations
         active_tools = list(self.pfc.get_active_tool_schemas(adapter_key))
 
-        extra_tags = tool_tags if tool_tags else ["reflect"]
+        extra_tags = tool_tags if tool_tags else ["heartbeat"]
         existing_names = {s.get("function", {}).get("name", "") for s in active_tools}
         for schema in EntityRegistry.get_tool_schema_by_tags(extra_tags):
             name = schema.get("function", {}).get("name", "")

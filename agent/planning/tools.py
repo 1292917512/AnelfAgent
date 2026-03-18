@@ -55,7 +55,7 @@ def register_planning_tools(store: MemoryStore) -> None:
 # ------------------------------------------------------------------
 
 @deferred_tool(
-    group=_GROUP, tags=["planning", "reflect"],
+    group=_GROUP, tags=["planning", "heartbeat"],
     description=(
         "创建一个新的目标计划。"
         "创建后记住 goal_id，完成后需调用 update_goal 将状态改为 completed，"
@@ -92,7 +92,7 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
 
 
 @deferred_tool(
-    group=_GROUP, tags=["planning", "reflect"],
+    group=_GROUP, tags=["planning", "heartbeat"],
     description=(
         "列出目标计划。检查 active 状态的目标，"
         "已完成的用 update_goal 标记为 completed 或用 delete_goal 删除。"
@@ -123,7 +123,7 @@ async def list_goals(status: str = "active") -> str:
 
 
 @deferred_tool(
-    group=_GROUP, tags=["planning", "reflect"],
+    group=_GROUP, tags=["planning", "heartbeat"],
     description=(
         "更新目标计划的步骤状态或整体状态。"
         "用于更新进行中的步骤进度。"
@@ -204,7 +204,7 @@ async def update_goal(
 
 
 @deferred_tool(
-    group=_GROUP, tags=["planning", "reflect"],
+    group=_GROUP, tags=["planning", "heartbeat"],
     description=(
         "删除一个目标计划。"
         "完成目标后应立即调用此工具删除，避免已完成目标干扰记忆召回。"
@@ -237,7 +237,7 @@ async def delete_goal(goal_id: str) -> str:
     return json.dumps({"error": f"目标 '{goal_id}' 不存在"}, ensure_ascii=False)
 
 
-@deferred_tool(group=_GROUP, tags=["planning", "reflect"])
+@deferred_tool(group=_GROUP, tags=["planning", "heartbeat"])
 async def get_goal(goal_id: str) -> str:
     """获取单个目标的详细信息。
 

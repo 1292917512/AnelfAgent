@@ -480,7 +480,7 @@ def register_notes_tools(workspace_dir: Optional[Path] = None) -> None:
 # ------------------------------------------------------------------
 
 @deferred_tool(
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "读取主便签记忆（memory/MEMORY.md）的全部内容。"
         "返回两个字段：content（原始内容，用于 write_notes/patch_memory_file 的写回）"
@@ -506,7 +506,7 @@ async def read_notes() -> str:
 
 
 @deferred_tool(
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "覆写主便签记忆（memory/MEMORY.md）的全部内容。"
         "需要整体修改时，先用 read_notes 获取 content 字段（原始内容），在其基础上修改后整体写回。"
@@ -534,7 +534,7 @@ async def write_notes(content: str) -> str:
 
 
 @deferred_tool(
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "列出所有 Markdown 便签文件（memory/*.md）及其行数。"
         "【注意】这里只列出 MD 便签文件，不包含数据库长期记忆。"
@@ -557,7 +557,7 @@ async def list_memory_files() -> str:
 
 @deferred_tool(
     name="read_memory_file",
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "读取指定记忆文件的内容（memory/reflections.md、memory/entities.md 等）。"
         "返回两个字段：content（原始内容，用于 write_memory_file/patch_memory_file 的写回）"
@@ -585,7 +585,7 @@ async def _tool_read_memory_file(file_path: str) -> str:
 
 @deferred_tool(
     name="write_memory_file",
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "写入或编辑 MD 便签文件（完整覆写）。文件不存在时自动创建。"
         "需要整体修改时，先用 read_memory_file 获取 content 字段（原始内容），在其基础上修改后写回。"
@@ -613,7 +613,7 @@ async def _tool_write_memory_file(file_path: str, content: str) -> str:
 
 @deferred_tool(
     name="delete_memory_file",
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "删除指定的 MD 便签文件。仅限 .md 文件，不允许删除 data/ 目录下的数据库文件。"
         "删除不可撤销，建议先用 read_memory_file 确认内容后再删除。"
@@ -638,7 +638,7 @@ async def _tool_delete_memory_file(file_path: str) -> str:
 
 @deferred_tool(
     name="append_memory_file",
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "在 MD 便签文件末尾追加内容，文件不存在时自动创建。"
         "适合新增条目、追加段落，无需读取整个文件，是最安全的写入方式。"
@@ -665,7 +665,7 @@ async def _tool_append_memory_file(file_path: str, content: str) -> str:
 
 @deferred_tool(
     name="patch_memory_file",
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "在 MD 便签文件中进行精确字符串替换。"
         "old_text 必须来自 read_memory_file 返回的 content 字段（原始内容），"
@@ -699,7 +699,7 @@ async def _tool_patch_memory_file(
 
 @deferred_tool(
     name="edit_memory_lines",
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "按行号范围替换或插入 MD 便签文件中的内容（1-indexed，闭区间）。"
         "行号来自 read_memory_file/read_section 返回的 view 字段。"
@@ -743,7 +743,7 @@ async def _tool_edit_memory_lines(
 
 @deferred_tool(
     name="view_memory_outline",
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "查看 MD 便签文件的 Markdown 标题大纲（仅标题行和行号，不含正文）。"
         "适合先浏览文件结构再决定读取/编辑哪个段落，大幅节省 token 消耗。"
@@ -764,7 +764,7 @@ async def _tool_view_memory_outline(file_path: str) -> str:
 
 @deferred_tool(
     name="read_section",
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "按 Markdown 标题读取 MD 便签文件中的指定段落。"
         "heading 参数需包含 # 号，如 '## 待办事项'、'### 2025-03'。"
@@ -788,7 +788,7 @@ async def _tool_read_section(file_path: str, heading: str) -> str:
 
 @deferred_tool(
     name="write_section",
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "替换或创建 MD 便签文件中指定标题段落的内容。"
         "heading 存在时：替换该段落的 body（标题行自动保留），content 为新的段落内容。"
@@ -824,7 +824,7 @@ async def _tool_write_section(
 
 @deferred_tool(
     name="delete_section",
-    group="notes", tags=["core", "reflect"], source="mind.notes",
+    group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
         "删除 MD 便签文件中指定标题段落（含标题行和全部内容，包括子标题）。"
         "删除不可撤销。heading 参数需包含 # 号，如 '## 待办事项'。"

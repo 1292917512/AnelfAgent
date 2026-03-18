@@ -181,7 +181,7 @@ async def recall(query: str, tags: str = "", limit: int = 5) -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description="浏览记忆索引。不传 tag 返回标签统计；传 tag 返回该标签下的记忆列表。",
 )
 async def memory_index(tag: str = "") -> str:
@@ -217,7 +217,7 @@ async def memory_index(tag: str = "") -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description="按 ID 获取一条记忆的完整内容、标签、类型和重要性。用于在修改前先确认记忆的当前状态。",
 )
 async def get_memory(memory_id: int) -> str:
@@ -246,7 +246,7 @@ async def get_memory(memory_id: int) -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "更新指定 ID 的记忆内容、标签或重要性。用于纠正错误记忆、补充细节或调整分类。"
         "建议先用 get_memory 查看当前内容再修改，至少提供 content / tags / importance 之一。"
@@ -314,7 +314,7 @@ async def update_memory(
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@deferred_tool(group="memory", tags=["core", "reflect"], source="mind.memory")
+@deferred_tool(group="memory", tags=["core", "heartbeat"], source="mind.memory")
 async def forget(memory_id: int) -> str:
     """删除指定 ID 的记忆。
 
@@ -345,7 +345,7 @@ def _get_channel_manager():
 
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect", "always"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat", "always"], source="mind.memory",
     description=(
         "列出所有会话记录（用户/群组），了解有哪些对话历史可查阅。"
         "返回各 scope 的消息数量，便于选择要操作的会话。"
@@ -366,7 +366,7 @@ async def list_conversations() -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect", "always"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat", "always"], source="mind.memory",
     description=(
         "获取指定用户或群组的最近对话记录。"
         "可查阅任意频道的会话历史，实现跨频道信息协同。"
@@ -408,7 +408,7 @@ async def get_conversation(scope_type: str, scope_id: str, limit: int = 30) -> s
 
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "向指定用户或群组的会话追加一条消息记录。"
         "可用于跨频道协同时在另一个会话中留言或记录信息。"
@@ -450,7 +450,7 @@ async def add_conversation_message(
 
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "修改指定会话中的一条消息内容。"
         "需要先通过 get_conversation 获取消息的 row_id。"
@@ -521,7 +521,7 @@ async def list_active_channels() -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "删除一条会话记录。需要先通过 get_conversation 获取消息的 row_id。"
         "可用于清理错误消息或敏感内容。"
@@ -541,7 +541,7 @@ async def delete_conversation_message(row_id: int) -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "清空指定用户或群组的全部会话记录。"
         "此操作不可恢复，请谨慎使用。"
@@ -563,7 +563,7 @@ async def clear_conversation(scope_type: str, scope_id: str) -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "深度翻阅历史对话记录，语义搜索超出当前上下文窗口的旧聊天内容。"
         "当你隐约记得某件事但当前上下文中找不到时使用——就像翻阅自己的聊天记录。"
@@ -672,7 +672,7 @@ async def recall_conversation(
 # ------------------------------------------------------------------
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description="查看记忆系统统计和健康状态。返回各类型记忆数量、阈值预警、索引状态等信息。",
 )
 async def memory_stats() -> str:
@@ -687,7 +687,7 @@ async def memory_stats() -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description="分页深度搜索所有记忆，支持按类型过滤。用于整理和合并记忆时分批查看所有记忆。",
 )
 async def memory_deep_search(page: int = 1, page_size: int = 20, memory_type: str = "") -> str:
@@ -714,7 +714,7 @@ async def memory_deep_search(page: int = 1, page_size: int = 20, memory_type: st
 
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description="将多条记忆合并为一条。旧记忆不会删除但会被标记为低优先级。用于整理和压缩过多的同类记忆。",
 )
 async def merge_memories(memory_ids: str, merged_content: str) -> str:
@@ -755,6 +755,31 @@ async def merge_memories(memory_ids: str, merged_content: str) -> str:
             "merged_from": ids,
             "message": f"已将 {len(ids)} 条记忆合并为 id={new_id}",
         }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ------------------------------------------------------------------
+# 心跳日志
+# ------------------------------------------------------------------
+
+@deferred_tool(
+    group="memory", tags=["heartbeat"], source="mind.heartbeat",
+    description=(
+        "将内容写入心跳工作日志。用于在执行任务后记录操作总结。"
+        "在 end_reply 之前调用，简要记录本次做了什么。"
+    ),
+)
+async def log_to_heartbeat(content: str) -> str:
+    """将一条记录写入心跳工作日志。
+
+    Args:
+        content: 日志内容（简要总结，一两句话）
+    """
+    try:
+        from agent.heartbeat.log import append_entry
+        append_entry(content)
+        return json.dumps({"ok": True, "message": "已写入心跳日志"}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -1140,7 +1165,7 @@ async def unlink_entity(scope_type: str, scope_id: str, copy_profile: bool = Tru
 # ------------------------------------------------------------------
 
 @deferred_tool(
-    group="memory", tags=["core", "reflect"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description="查询工具调用错误历史，用于反思和总结经验。空 tool_name 返回所有工具的错误统计。",
 )
 async def recall_tool_errors(tool_name: str = "", limit: int = 20) -> str:

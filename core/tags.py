@@ -189,7 +189,7 @@ video_gen_tag = Tag(tag_name="video_gen", tag_name_desc="视频生成请求")
 # 调度类标签
 always_tag = Tag(tag_name="always", tag_name_desc="永驻工具，始终加载到上下文中", visible_to_llm=False)
 core_tag = Tag(tag_name="core", tag_name_desc="核心工具，高优先级召回", visible_to_llm=False)
-reflect_tag = Tag(tag_name="reflect", tag_name_desc="反思与自省模式工具", visible_to_llm=False)
+heartbeat_tag = Tag(tag_name="heartbeat", tag_name_desc="心跳任务工具", visible_to_llm=False)
 
 # 功能域标签
 planning_tag = Tag(tag_name="planning", tag_name_desc="目标规划与任务管理", visible_to_llm=False)
