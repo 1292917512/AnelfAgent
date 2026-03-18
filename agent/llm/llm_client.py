@@ -35,12 +35,15 @@ litellm.drop_params = True
 litellm.local_model_cost_map = True
 
 
-class _ProxyHttpClient(httpx.AsyncClient):
-    """支持 deepcopy 的代理 HTTP 客户端。
+_PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
 
-    继承 httpx.AsyncClient 以通过 litellm / Anthropic SDK 的 isinstance 检查，
-    避免内部 JSON 序列化时将其当作未知类型处理。
-    __deepcopy__ 返回自身引用以共享连接池，规避 _thread.RLock 序列化问题。
+
+class _ProxyHttpClient(httpx.AsyncClient):
+    """支持 deepcopy 的代理 HTTP 客户端（用于非 Anthropic Provider）。
+
+    继承 httpx.AsyncClient 并覆写 __deepcopy__ 返回自身引用以共享连接池，
+    规避 copy.deepcopy 时 _thread.RLock 无法序列化的问题。
+    Anthropic 通道因 litellm 内部 JSON 序列化限制，改由环境变量传递代理。
     """
 
     def __init__(self, proxy_url: str) -> None:
@@ -350,9 +353,18 @@ class LLMClient(BaseEntity):
         if stream:
             kwargs["stream"] = True
 
-        proxy = self._get_proxy_client()
-        if proxy:
-            kwargs["http_client"] = proxy
+        proxy_url = self.config.effective_proxy
+        if proxy_url:
+            if self.config.api_type == API_TYPE_ANTHROPIC:
+                for k in _PROXY_ENV_KEYS:
+                    os.environ[k] = proxy_url
+            else:
+                proxy_client = self._get_proxy_client()
+                if proxy_client:
+                    kwargs["http_client"] = proxy_client
+        elif self.config.api_type == API_TYPE_ANTHROPIC:
+            for k in _PROXY_ENV_KEYS:
+                os.environ.pop(k, None)
 
         extra = dict(self.config.extra_params)
         if self.config.supports_reasoning:
