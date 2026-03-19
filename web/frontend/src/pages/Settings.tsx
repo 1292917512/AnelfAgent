@@ -4,9 +4,10 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
 import { useAppStore } from "@/stores/app-store";
-import { systemApi, configApi, type WebToolsConfig } from "@/lib/api";
+import { systemApi, configApi, authApi, type WebToolsConfig } from "@/lib/api";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import { Database, Check, X, TestTube } from "lucide-react";
+import { Database, Check, X, TestTube, Shield } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { LiteLLMCostMapCard } from "@/pages/config/LiteLLMCostMapCard";
@@ -73,6 +74,7 @@ function SysConfigPanel() {
 
   return (
     <div className="space-y-4">
+      <PasswordCard />
       <LiteLLMCostMapCard defaultProxy={proxyUrl} />
       <ConfigFormPanel
         title={t("sections.webTools")}
@@ -360,5 +362,74 @@ function ConfigPanel() {
         </div>
       </Card>
     </div>
+  );
+}
+
+function PasswordCard() {
+  const { t } = useTranslation("appconfig");
+  const { data: authStatus } = useQuery({
+    queryKey: ["authCheck"],
+    queryFn: () => authApi.check().then((r) => r.data),
+  });
+  const [newPwd, setNewPwd] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  const mutation = useMutation({
+    mutationFn: (pwd: string) => authApi.updatePassword(pwd),
+    onSuccess: () => {
+      setSaved(true);
+      setNewPwd("");
+      setTimeout(() => setSaved(false), 2000);
+    },
+  });
+
+  const hasPassword = authStatus?.required ?? false;
+
+  return (
+    <Card
+      title={t("auth.title")}
+      subtitle={t("auth.subtitle")}
+      actions={
+        <span className={cn(
+          "text-xs font-medium px-2 py-0.5 rounded-full",
+          hasPassword
+            ? "bg-[var(--ok-subtle)] text-[var(--ok)]"
+            : "bg-[var(--secondary)] text-[var(--muted)]",
+        )}>
+          {hasPassword ? t("auth.enabled") : t("auth.disabled")}
+        </span>
+      }
+    >
+      <div className="flex items-end gap-3">
+        <div className="flex-1 flex flex-col gap-1">
+          <label className="text-xs text-[var(--muted)] font-medium">{t("auth.newPassword")}</label>
+          <input
+            type="password"
+            autoComplete="new-password"
+            placeholder={t("auth.placeholder")}
+            value={newPwd}
+            onChange={(e) => setNewPwd(e.target.value)}
+            className="w-full text-sm bg-[var(--bg-elevated)] border border-[var(--border)] rounded-[var(--radius-md)]
+              px-2.5 py-1.5 text-[var(--text-strong)] placeholder:text-[var(--muted)]
+              focus:outline-none focus:border-[var(--accent)] transition-colors"
+          />
+          <p className="text-[11px] text-[var(--muted)] opacity-70">{t("auth.hint")}</p>
+        </div>
+        <button
+          onClick={() => mutation.mutate(newPwd)}
+          disabled={mutation.isPending}
+          className={cn(
+            "flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-[var(--radius-md)] transition-all whitespace-nowrap",
+            saved
+              ? "bg-[var(--ok)] text-white"
+              : "bg-[var(--accent)] text-white hover:opacity-90",
+            mutation.isPending && "opacity-50 cursor-not-allowed",
+          )}
+        >
+          <Shield size={14} />
+          {saved ? t("actions.saved") : newPwd ? t("auth.setPassword") : t("auth.removePassword")}
+        </button>
+      </div>
+    </Card>
   );
 }

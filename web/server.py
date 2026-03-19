@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -9,6 +11,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from core.log import log
 from core.path import ConfigPaths
@@ -28,13 +33,53 @@ def _mount_nonebot(app: FastAPI) -> None:
         pass
 
 
+def _make_token(password: str) -> str:
+    """根据密码生成确定性 token（跨重启有效）。"""
+    return hashlib.sha256(f"anelf-auth:{password}".encode()).hexdigest()[:32]
+
+
+def _load_auth_password() -> str:
+    """从 webui.json 读取 auth.password，空字符串表示不启用密码。"""
+    p = Path(ConfigPaths.WEBUI_CONFIG)
+    if p.exists():
+        try:
+            return json.loads(p.read_text("utf-8")).get("auth", {}).get("password", "")
+        except Exception:
+            pass
+    return ""
+
+
+_AUTH_EXEMPT = frozenset({"/api/auth/login", "/api/auth/check"})
+
+
+class _AuthMiddleware(BaseHTTPMiddleware):
+    """API 密码保护中间件。仅拦截 /api/* 请求，SPA 静态文件不受影响。"""
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+        path = request.url.path
+        if not path.startswith("/api/") or path in _AUTH_EXEMPT:
+            return await call_next(request)
+
+        password = _load_auth_password()
+        if not password:
+            return await call_next(request)
+
+        token = request.cookies.get("_anelf_token", "")
+        if token == _make_token(password):
+            return await call_next(request)
+
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+
 def create_app() -> FastAPI:
     """创建 WebUI FastAPI 应用。"""
     app = FastAPI(title="AnelfAgent WebUI", version="1.0.0")
 
+    app.add_middleware(_AuthMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )

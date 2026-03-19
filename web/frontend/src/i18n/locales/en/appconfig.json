@@ -217,6 +217,17 @@
     "updateNow": "Update Now",
     "proxyPlaceholder": "Proxy address (optional), e.g. http://127.0.0.1:7890"
   },
+  "auth": {
+    "title": "Access Password",
+    "subtitle": "Set WebUI password. Leave empty to disable protection",
+    "enabled": "Enabled",
+    "disabled": "Not set",
+    "newPassword": "New Password",
+    "placeholder": "Enter new password, leave empty to disable",
+    "hint": "Current session auto-renews; other devices need re-login",
+    "setPassword": "Set Password",
+    "removePassword": "Remove Password"
+  },
   "notes": {
     "restartRequired": "Restart required after changes"
   }

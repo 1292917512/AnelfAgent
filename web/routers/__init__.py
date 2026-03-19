@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from web.routers.auth import router as auth_router
 from web.routers.adapters import router as adapters_router
 from web.routers.chat import router as chat_router
 from web.routers.config import router as config_router
@@ -19,6 +20,7 @@ from web.routers.tools import router as tools_router
 
 api_router = APIRouter(prefix="/api")
 
+api_router.include_router(auth_router)
 api_router.include_router(config_router)
 api_router.include_router(chat_router)
 api_router.include_router(status_router)

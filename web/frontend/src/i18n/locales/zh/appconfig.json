@@ -217,6 +217,17 @@
     "updateNow": "立即更新",
     "proxyPlaceholder": "代理地址（可选），例：http://127.0.0.1:7890"
   },
+  "auth": {
+    "title": "访问密码",
+    "subtitle": "设置 WebUI 访问密码，留空则取消密码保护",
+    "enabled": "已开启",
+    "disabled": "未设置",
+    "newPassword": "新密码",
+    "placeholder": "输入新密码，留空取消保护",
+    "hint": "修改后当前会话自动续签，其他设备需重新登录",
+    "setPassword": "设置密码",
+    "removePassword": "取消密码"
+  },
   "notes": {
     "restartRequired": "修改后需重启服务才能完全生效"
   }

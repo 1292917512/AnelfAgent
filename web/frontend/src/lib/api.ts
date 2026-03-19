@@ -18,6 +18,21 @@ api.interceptors.response.use(
 
 export default api;
 
+// ── Auth ────────────────────────────────────────────────────────
+
+export interface AuthStatus {
+  required: boolean;
+  authenticated: boolean;
+}
+
+export const authApi = {
+  check: () => api.get<AuthStatus>("/auth/check"),
+  login: (password: string) => api.post("/auth/login", { password }),
+  logout: () => api.post("/auth/logout"),
+  updatePassword: (newPassword: string) =>
+    api.put("/auth/password", { new_password: newPassword }),
+};
+
 // ── 类型化 API 方法 ─────────────────────────────────────────────
 
 // Chat

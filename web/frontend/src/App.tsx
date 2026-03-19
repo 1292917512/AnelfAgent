@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/layout/Layout";
+import { AuthGate } from "./components/AuthGate";
 import { useAppStore } from "./stores/app-store";
 import { configApi } from "./lib/api";
 import Dashboard from "./pages/Dashboard";
@@ -32,26 +33,28 @@ export default function App() {
   }, [setConfig]);
 
   return (
-    <BrowserRouter basename="/webui">
-      <Routes>
-        <Route element={<Layout />}>
-          <Route index element={<Chat />} />
-          <Route path="dashboard" element={<Dashboard />} />
-          <Route path="status" element={<Navigate to="/" replace />} />
-          <Route path="models" element={<Models />} />
-          <Route path="tools" element={<Tools />} />
-          <Route path="tags" element={<Tags />} />
-          <Route path="personas" element={<Personas />} />
-          <Route path="memory" element={<Memory />} />
-          <Route path="mcp" element={<MCP />} />
-          <Route path="channels" element={<Channels />} />
-          <Route path="tasks" element={<Tasks />} />
-          <Route path="heartbeat" element={<Heartbeat />} />
-          <Route path="thinking" element={<Thinking />} />
-          <Route path="settings" element={<Settings />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <AuthGate>
+      <BrowserRouter basename="/webui">
+        <Routes>
+          <Route element={<Layout />}>
+            <Route index element={<Chat />} />
+            <Route path="dashboard" element={<Dashboard />} />
+            <Route path="status" element={<Navigate to="/" replace />} />
+            <Route path="models" element={<Models />} />
+            <Route path="tools" element={<Tools />} />
+            <Route path="tags" element={<Tags />} />
+            <Route path="personas" element={<Personas />} />
+            <Route path="memory" element={<Memory />} />
+            <Route path="mcp" element={<MCP />} />
+            <Route path="channels" element={<Channels />} />
+            <Route path="tasks" element={<Tasks />} />
+            <Route path="heartbeat" element={<Heartbeat />} />
+            <Route path="thinking" element={<Thinking />} />
+            <Route path="settings" element={<Settings />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </AuthGate>
   );
 }
