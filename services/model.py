@@ -137,6 +137,7 @@ class ModelService:
 
     async def fetch_remote_models(
         self, base_url: str, api_key: str, api_type: str = "openai",
+        proxy_url: str = "",
     ) -> List[Dict[str, Any]]:
         """从供应商 API 拉取远程可用模型列表，自动适配不同 api_type。"""
         import httpx
@@ -146,14 +147,31 @@ class ModelService:
             return []
 
         headers: Dict[str, str] = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         if api_type == "anthropic":
             headers["x-api-key"] = api_key
             headers["anthropic-version"] = "2023-06-01"
-        elif api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
 
-        async with httpx.AsyncClient(timeout=15.0) as c:
-            r = await c.get(f"{effective_url.rstrip('/')}/models", headers=headers)
+        proxy: Optional[str] = None
+        if proxy_url:
+            p = proxy_url.strip()
+            if p and not p.startswith(("http://", "https://", "socks5://", "socks4://")):
+                p = f"http://{p}"
+            proxy = p
+
+        async with httpx.AsyncClient(timeout=15.0, proxy=proxy) as c:
+            url = f"{effective_url.rstrip('/')}/models"
+            r = await c.get(url, headers=headers)
+
+            if r.status_code == 404:
+                from urllib.parse import urlparse, urlunparse
+                parsed = urlparse(effective_url)
+                fallback = urlunparse((
+                    parsed.scheme, parsed.netloc, "/v1/models", "", "", "",
+                ))
+                r = await c.get(fallback, headers=headers)
+
             r.raise_for_status()
             data = r.json()
             models_raw = data.get("data", [])
@@ -179,7 +197,7 @@ class ModelService:
         if prov is None:
             return []
         return await self.fetch_remote_models(
-            prov.base_url, prov.api_key, prov.api_type,
+            prov.base_url, prov.api_key, prov.api_type, prov.proxy_url,
         )
 
     @staticmethod

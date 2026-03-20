@@ -503,13 +503,17 @@ class LLMClient(BaseEntity):
             finish = chunk.choices[0].finish_reason or ""
 
             reasoning = ""
-            rd = getattr(delta, "reasoning_details", None)
-            if rd:
-                for detail in rd:
-                    text = detail.get("text", "") if isinstance(detail, dict) else getattr(detail, "text", "")
-                    if text and len(text) > len(reasoning_buf):
-                        reasoning = text[len(reasoning_buf):]
-                        reasoning_buf = text
+            rc = getattr(delta, "reasoning_content", None)
+            if rc and isinstance(rc, str):
+                reasoning = rc
+            else:
+                rd = getattr(delta, "reasoning_details", None)
+                if rd:
+                    for detail in rd:
+                        text = detail.get("text", "") if isinstance(detail, dict) else getattr(detail, "text", "")
+                        if text and len(text) > len(reasoning_buf):
+                            reasoning = text[len(reasoning_buf):]
+                            reasoning_buf = text
 
             dtc = getattr(delta, "tool_calls", None)
             if dtc:
@@ -591,15 +595,23 @@ class LLMClient(BaseEntity):
     def _extract_reasoning(msg: Any, raw_response: Optional[dict] = None) -> str:
         """从响应中提取推理内容。
 
-        支持两种来源：
-        1. reasoning_details 字段（MiniMax reasoning_split 模式）
-        2. <think> 标签（DeepSeek 等模型）
+        支持三种来源（按优先级）：
+        1. reasoning_content 字段（litellm 标准，Anthropic thinking blocks）
+        2. reasoning_details 字段（自定义累积格式）
+        3. <think> 标签（DeepSeek 等模型）
         """
+        rc = getattr(msg, "reasoning_content", None)
+        if rc and isinstance(rc, str):
+            return rc
+
         details = getattr(msg, "reasoning_details", None)
         if not details and raw_response:
             choices = raw_response.get("choices", [])
             if choices:
-                details = choices[0].get("message", {}).get("reasoning_details")
+                msg_dict = choices[0].get("message", {})
+                if msg_dict.get("reasoning_content"):
+                    return str(msg_dict["reasoning_content"])
+                details = msg_dict.get("reasoning_details")
 
         if details:
             parts: list[str] = []
@@ -785,6 +797,7 @@ class LLMClient(BaseEntity):
             "api_base": base_url,
             "api_key": api_key or _DEFAULT_API_KEY,
             "timeout": timeout,
+            "temperature": 0.7,
         }
 
         result: Dict[str, Any] = {
@@ -795,7 +808,7 @@ class LLMClient(BaseEntity):
         }
 
         result.update(await LLMClient._probe_tools(litellm_model, probe_kw))
-        result.update(await LLMClient._probe_vision(litellm_model, probe_kw, flat_url))
+        result.update(await LLMClient._probe_vision(litellm_model, probe_kw, flat_url, api_type))
         return result
 
     @staticmethod
@@ -816,7 +829,7 @@ class LLMClient(BaseEntity):
                 messages=[{"role": "user", "content": "现在几点了？请调用工具获取。"}],
                 tools=test_tool,
                 tool_choice="auto",
-                max_tokens=128,
+                max_tokens=2048,
                 **probe_kw,
             )
             has_calls = bool(resp.choices[0].message.tool_calls)
@@ -833,9 +846,12 @@ class LLMClient(BaseEntity):
             detail = f"不支持 (HTTP {status})" if status else f"检测失败: {exc}"
             return {"supports_tools": False, "tools_detail": detail}
 
+    _BASE64_ONLY_TYPES = frozenset({API_TYPE_OLLAMA})
+
     @staticmethod
     async def _probe_vision(
-            litellm_model: str, probe_kw: Dict[str, Any], flat_url: bool,
+            litellm_model: str, probe_kw: Dict[str, Any],
+            flat_url: bool, api_type: str,
     ) -> Dict[str, Any]:
         import base64
 
@@ -850,13 +866,15 @@ class LLMClient(BaseEntity):
             resp = await litellm.acompletion(
                 model=litellm_model,
                 messages=[{"role": "user", "content": vision_content}],
-                max_tokens=64,
+                max_tokens=256,
                 **probe_kw,
             )
             answer = resp.choices[0].message.content or ""
+            fmt = "base64" if api_type in LLMClient._BASE64_ONLY_TYPES else "both"
             return {
                 "supports_vision": True,
                 "vision_detail": f"模型正确处理了图片输入: \"{answer[:80]}\"",
+                "vision_format": fmt,
             }
         except Exception as exc:
             status = getattr(exc, "status_code", "")

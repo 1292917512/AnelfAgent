@@ -110,7 +110,13 @@ export function ConfigPanel() {
       const r = await modelsApi.probe(prov.base_url, prov.api_key, m.model, prov.api_type);
       const d = r.data as Record<string, unknown>;
       if (!d.error) {
-        setModelEdit({ ...(modelEdit ?? { ...m }), supports_vision: d.supports_vision ?? false, supports_tools: d.supports_tools ?? false });
+        const patch: Record<string, unknown> = {
+          ...(modelEdit ?? { ...m }),
+          supports_vision: d.supports_vision ?? false,
+          supports_tools: d.supports_tools ?? false,
+        };
+        if (d.vision_format) patch.vision_format = d.vision_format;
+        setModelEdit(patch);
         setTestResult(t("probeDone") + ": " + JSON.stringify(d));
       } else { setTestResult(t("probeFailed") + ": " + String(d.error)); }
     } catch { setTestResult(t("probeError")); }

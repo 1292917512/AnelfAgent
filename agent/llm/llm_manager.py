@@ -142,6 +142,7 @@ class LLMManager(BaseEntity):
             for k, v in data.get("type_priorities", {}).items()
         }
         self._ensure_priorities_complete()
+        self._register_unknown_models()
 
     def _ensure_priorities_complete(self) -> None:
         """确保所有模型都出现在对应类型的优先级列表中。
@@ -158,6 +159,29 @@ class LLMManager(BaseEntity):
                 vision_list = self._type_priorities.setdefault("vision", [])
                 if mid not in vision_list:
                     vision_list.append(mid)
+
+    def _register_unknown_models(self) -> None:
+        """将 litellm 未收录的自定义模型注册到模型信息表，使 get_model_info 可查。"""
+        registered = 0
+        for client in self._clients.values():
+            cfg = client.config
+            model_key = cfg.litellm_model
+            if model_key in litellm.model_cost:
+                continue
+            litellm.model_cost[model_key] = {
+                "max_tokens": cfg.max_tokens,
+                "max_input_tokens": cfg.max_tokens,
+                "max_output_tokens": cfg.max_tokens,
+                "input_cost_per_token": 0,
+                "output_cost_per_token": 0,
+                "litellm_provider": model_key.split("/", 1)[0],
+                "mode": cfg.model_types[0] if cfg.model_types else "chat",
+                "supports_function_calling": cfg.supports_tools,
+                "supports_vision": cfg.supports_vision,
+            }
+            registered += 1
+        if registered:
+            info(f"已注册 {registered} 个自定义模型到 litellm 模型信息表", tag="模型")
 
     def save_config(self) -> bool:
         try:
@@ -741,6 +765,7 @@ class LLMManager(BaseEntity):
 
     def set_type_priority(self, model_type: str, model_ids: List[str]) -> None:
         """设置某类型的完整优先级顺序。"""
+        old_first = self._chat_first()
         valid = [mid for mid in model_ids if mid in self._clients]
         current = self._type_priorities.get(model_type, [])
         for mid in current:
@@ -748,9 +773,12 @@ class LLMManager(BaseEntity):
                 valid.append(mid)
         self._type_priorities[model_type] = valid
         self.save_config()
+        if model_type == "chat":
+            self._auto_switch_chat(old_first)
 
     def move_model_priority(self, model_type: str, model_id: str, direction: int) -> bool:
         """在类型优先级列表中上移(-1)/下移(+1)。"""
+        old_first = self._chat_first() if model_type == "chat" else None
         plist = self._type_priorities.get(model_type, [])
         try:
             idx = plist.index(model_id)
@@ -761,7 +789,32 @@ class LLMManager(BaseEntity):
             return False
         plist[idx], plist[new_idx] = plist[new_idx], plist[idx]
         self.save_config()
+        if model_type == "chat":
+            self._auto_switch_chat(old_first)
         return True
+
+    def _chat_first(self) -> Optional[str]:
+        """返回当前 chat 优先级列表中第一个支持工具调用的模型 ID。"""
+        for mid in self._type_priorities.get("chat", []):
+            client = self._clients.get(mid)
+            if client and client.config.supports_tools:
+                return mid
+        return None
+
+    def _auto_switch_chat(self, old_first: Optional[str]) -> None:
+        """chat 优先级变化后，若首位模型改变则自动热切换。"""
+        new_first = self._chat_first()
+        if new_first and new_first != old_first:
+            self._default_chat = new_first
+            try:
+                from services._runtime import get_runtime
+                rt = get_runtime()
+                client = self._clients.get(new_first)
+                if rt and client:
+                    rt.switch_llm(client)
+                    info(f"chat 优先级首位变更，已热切换至: {new_first}", tag="模型")
+            except Exception:
+                pass
 
     def get_provider_models(self, provider_id: str) -> List[Dict[str, Any]]:
         """获取指定供应商下的所有模型配置（含价格信息）。"""

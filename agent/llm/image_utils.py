@@ -10,6 +10,7 @@ from typing import List, Optional
 
 from agent.llm.types import ImageContent
 
+_MAX_LONG_EDGE = 1568
 _MAX_IMAGE_KB = 1024
 _SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
@@ -71,12 +72,14 @@ def _looks_like_file_path(data: str) -> bool:
 
 
 async def ensure_base64(images: List[ImageContent]) -> List[ImageContent]:
-    """确保所有图片都是 base64 格式。
+    """确保所有图片都是 base64 格式，并自动压缩优化。
 
     自动处理三种来源：
     - URL → 下载并编码
     - 本地文件路径 → 读取并编码
     - 已是 base64 → 直接使用
+
+    每张图片加载后自动经过 optimize_for_vision 压缩。
     """
     from core.log import log as _log
 
@@ -85,33 +88,42 @@ async def ensure_base64(images: List[ImageContent]) -> List[ImageContent]:
         if img.is_url:
             _log(f"ensure_base64: downloading URL ({img.data[:80]})", "DEBUG", tag="媒体")
             converted = await download_image_to_base64(img.data)
-            result.append(converted if converted else img)
+            loaded = converted if converted else img
         elif _looks_like_file_path(img.data):
             _log(f"ensure_base64: loading local file ({img.data})", "DEBUG", tag="媒体")
             try:
                 loaded = load_image_from_path(img.data)
-                _log(f"ensure_base64: loaded OK, base64 len={len(loaded.data)}", "DEBUG", tag="媒体")
-                result.append(loaded)
             except Exception as exc:
-                _log(f"ensure_base64: load_image_from_path FAILED: {exc}", "WARNING", tag="媒体")
-                result.append(img)
+                _log(f"ensure_base64: load failed: {exc}", "WARNING", tag="媒体")
+                loaded = img
         else:
-            is_b64 = len(img.data) > 100 and not img.data.startswith("data:")
-            _log(f"ensure_base64: passthrough (is_url={img.is_url}, b64={is_b64}, len={len(img.data)})", "DEBUG", tag="媒体")
-            result.append(img)
+            loaded = img
+        result.append(optimize_for_vision(loaded))
     return result
 
 
-def compress_image_if_needed(
+def optimize_for_vision(
     image: ImageContent,
+    *,
+    max_long_edge: int = _MAX_LONG_EDGE,
     max_kb: int = _MAX_IMAGE_KB,
 ) -> ImageContent:
-    """如果图片超过指定大小则压缩（需要 Pillow）。"""
-    if image.is_url:
+    """对发送给 LLM 的图片进行分辨率和体积优化。
+
+    策略：先限制分辨率（效果最显著），再递减 JPEG 质量（保底）。
+    1568px 长边是主流视觉模型的最佳分辨率上限（Claude 官方推荐值，
+    OpenAI 在此分辨率下 tile 数合理，MiniMax 在支持范围内）。
+
+    Args:
+        max_long_edge: 最长边像素上限，超过则等比缩放
+        max_kb: 体积上限（KB），超过则降低 JPEG 质量
+    """
+    if image.is_url or image.mime_type == "image/gif":
         return image
 
-    raw = base64.b64decode(image.data)
-    if len(raw) <= max_kb * 1024:
+    try:
+        raw = base64.b64decode(image.data)
+    except Exception:
         return image
 
     try:
@@ -119,29 +131,45 @@ def compress_image_if_needed(
     except ImportError:
         return image
 
-    img = PILImage.open(io.BytesIO(raw))
-    max_bytes = max_kb * 1024
+    try:
+        img = PILImage.open(io.BytesIO(raw))
+    except Exception:
+        return image
 
-    quality = 85
-    while quality >= 10:
-        buf = io.BytesIO()
-        if img.mode in ("RGBA", "P"):
-            img.convert("RGB").save(buf, format="JPEG", quality=quality, optimize=True)
-        else:
-            img.save(buf, format="JPEG", quality=quality, optimize=True)
-        if buf.tell() <= max_bytes:
-            data = base64.b64encode(buf.getvalue()).decode("utf-8")
-            return ImageContent(data=data, mime_type="image/jpeg")
-        quality -= 15
+    if getattr(img, "is_animated", False):
+        return image
 
     w, h = img.size
-    ratio = (max_bytes / len(raw)) ** 0.5
-    new_size = (int(w * ratio), int(h * ratio))
-    img = img.resize(new_size, PILImage.Resampling.LANCZOS)
-    buf = io.BytesIO()
-    img.convert("RGB").save(buf, format="JPEG", quality=60, optimize=True)
-    data = base64.b64encode(buf.getvalue()).decode("utf-8")
-    return ImageContent(data=data, mime_type="image/jpeg")
+    original_bytes = len(raw)
+    max_bytes = max_kb * 1024
+    needs_resize = max(w, h) > max_long_edge
+    needs_compress = original_bytes > max_bytes
+
+    if not needs_resize and not needs_compress:
+        return image
+
+    if needs_resize:
+        scale = max_long_edge / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), PILImage.Resampling.LANCZOS)
+
+    if img.mode in ("RGBA", "P", "LA"):
+        img = img.convert("RGB")
+
+    compressed = b""
+    for quality in (85, 70, 55, 40):
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        compressed = buf.getvalue()
+        if len(compressed) <= max_bytes:
+            break
+
+    from core.log import log as _log
+    _log(
+        f"图片优化: {w}x{h} ({original_bytes // 1024}KB) → "
+        f"{img.size[0]}x{img.size[1]} ({len(compressed) // 1024}KB)",
+        "DEBUG", tag="媒体",
+    )
+    return ImageContent(data=base64.b64encode(compressed).decode("utf-8"), mime_type="image/jpeg")
 
 
 def qimage_to_image_content(qimage: object) -> Optional[ImageContent]:
@@ -178,6 +206,8 @@ def build_multimodal_content(
 ) -> list[dict]:
     """将文本和图片列表构建为多模态 content 数组。
 
+    每张图片自动经过 optimize_for_vision 压缩后再编码。
+
     Args:
         flat_url: 为 True 时使用 Ollama 兼容的扁平 image_url 格式。
     """
@@ -185,5 +215,5 @@ def build_multimodal_content(
     if text:
         parts.append({"type": "text", "text": text})
     for img in images:
-        parts.append(img.to_openai_block(flat_url=flat_url))
+        parts.append(optimize_for_vision(img).to_openai_block(flat_url=flat_url))
     return parts

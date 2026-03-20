@@ -30,8 +30,9 @@ class SaveConfigRequest(BaseModel):
 
 @router.put("/config")
 async def save_config(req: SaveConfigRequest) -> Dict[str, str]:
+    import asyncio
     try:
-        _mcp_svc.save_config_json(req.content)
+        await asyncio.to_thread(_mcp_svc.save_config_json, req.content)
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(400, str(e))
@@ -44,13 +45,15 @@ class AddServerRequest(BaseModel):
 
 @router.post("/")
 async def add_server(req: AddServerRequest) -> Dict[str, str]:
-    _mcp_svc.add_server(req.name, req.url)
+    import asyncio
+    await asyncio.to_thread(_mcp_svc.add_server, req.name, req.url)
     return {"status": "ok"}
 
 
 @router.delete("/{name}")
 async def remove_server(name: str) -> Dict[str, str]:
-    _mcp_svc.remove_server(name)
+    import asyncio
+    await asyncio.to_thread(_mcp_svc.remove_server, name)
     return {"status": "ok"}
 
 

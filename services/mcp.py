@@ -41,9 +41,10 @@ class MCPService:
         return json.dumps(self.load_config(), ensure_ascii=False, indent=2)
 
     def save_config_json(self, json_str: str) -> None:
-        """解析 JSON 文本并保存。"""
+        """解析 JSON 文本并保存，自动触发热重载。"""
         data = json.loads(json_str)
         self.save_config(data)
+        self._trigger_reload()
 
     # ------------------------------------------------------------------
     # 服务器列表 / 工具
@@ -96,6 +97,7 @@ class MCPService:
         data = self.load_config()
         data.setdefault("mcpServers", {})[name] = {"url": url}
         self.save_config(data)
+        self._trigger_reload()
 
     def remove_server(self, name: str) -> None:
         data = self.load_config()
@@ -103,6 +105,7 @@ class MCPService:
         if name in servers:
             del servers[name]
             self.save_config(data)
+            self._trigger_reload()
 
     def toggle_server(self, name: str) -> Dict[str, Any]:
         """连接或断开 MCP 服务器，同时持久化 enabled 状态。返回结构化结果。"""
@@ -136,3 +139,15 @@ class MCPService:
         if name in servers and isinstance(servers[name], dict):
             servers[name]["enabled"] = enabled
             self.save_config(data)
+
+    @staticmethod
+    def _trigger_reload() -> None:
+        """触发 MCP Bridge 配置热重载（静默失败）。"""
+        try:
+            from entities.mcp.bridge import get_mcp_bridge
+            bridge = get_mcp_bridge()
+            if bridge:
+                bridge.reload_config()
+        except Exception as e:
+            from core.log import log
+            log(f"MCP 配置热重载失败: {e}", "WARNING")
