@@ -390,7 +390,7 @@ class LLMClient(BaseEntity):
                 kwargs["http_client"] = proxy_client
 
         extra = dict(self.config.extra_params)
-        if self.config.supports_reasoning:
+        if self.config.supports_reasoning and self.config.api_type != API_TYPE_ANTHROPIC:
             extra.setdefault("reasoning_split", True)
         if extra:
             kwargs["extra_body"] = extra
