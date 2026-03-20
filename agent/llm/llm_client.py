@@ -36,6 +36,29 @@ litellm.local_model_cost_map = True
 
 
 _PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+_SENTINEL = object()
+
+
+class _ProxyEnvContext:
+    """临时设置代理环境变量的上下文管理器，退出时还原原始值。"""
+
+    def __init__(self, proxy_url: str) -> None:
+        self._proxy_url = proxy_url
+        self._saved: Dict[str, Any] = {}
+
+    def __enter__(self) -> "_ProxyEnvContext":
+        for k in _PROXY_ENV_KEYS:
+            self._saved[k] = os.environ.get(k, _SENTINEL)
+            os.environ[k] = self._proxy_url
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        for k in _PROXY_ENV_KEYS:
+            orig = self._saved.get(k, _SENTINEL)
+            if orig is _SENTINEL:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = orig  # type: ignore[assignment]
 
 
 class _ProxyHttpClient(httpx.AsyncClient):
@@ -314,6 +337,13 @@ class LLMClient(BaseEntity):
             params.update(options)
         return params
 
+    def _anthropic_proxy_ctx(self) -> _ProxyEnvContext | None:
+        """Anthropic 专用：返回临时代理环境变量上下文，无代理时返回 None。"""
+        if self.config.api_type != API_TYPE_ANTHROPIC:
+            return None
+        proxy = self.config.effective_proxy
+        return _ProxyEnvContext(proxy) if proxy else None
+
     def _get_proxy_client(self) -> Optional[_ProxyHttpClient]:
         """按需返回当前 Provider 的代理客户端（懒初始化）。"""
         proxy = self.config.effective_proxy
@@ -354,17 +384,10 @@ class LLMClient(BaseEntity):
             kwargs["stream"] = True
 
         proxy_url = self.config.effective_proxy
-        if proxy_url:
-            if self.config.api_type == API_TYPE_ANTHROPIC:
-                for k in _PROXY_ENV_KEYS:
-                    os.environ[k] = proxy_url
-            else:
-                proxy_client = self._get_proxy_client()
-                if proxy_client:
-                    kwargs["http_client"] = proxy_client
-        elif self.config.api_type == API_TYPE_ANTHROPIC:
-            for k in _PROXY_ENV_KEYS:
-                os.environ.pop(k, None)
+        if proxy_url and self.config.api_type != API_TYPE_ANTHROPIC:
+            proxy_client = self._get_proxy_client()
+            if proxy_client:
+                kwargs["http_client"] = proxy_client
 
         extra = dict(self.config.extra_params)
         if self.config.supports_reasoning:
@@ -428,7 +451,12 @@ class LLMClient(BaseEntity):
             f"LLM chat: {self.config.litellm_model}, msgs={len(kwargs['messages'])}",
             tag="模型",
         )
-        resp = await litellm.acompletion(**kwargs)
+        ctx = self._anthropic_proxy_ctx()
+        if ctx:
+            with ctx:
+                resp = await litellm.acompletion(**kwargs)
+        else:
+            resp = await litellm.acompletion(**kwargs)
         return self._parse_response(resp)
 
     # ------------------------------------------------------------------
@@ -451,7 +479,12 @@ class LLMClient(BaseEntity):
         """
         kwargs = self._build_kwargs(messages, options, tools, tool_choice, stream=True)
         kwargs["stream_options"] = {"include_usage": True}
-        stream = await litellm.acompletion(**kwargs)
+        ctx = self._anthropic_proxy_ctx()
+        if ctx:
+            with ctx:
+                stream = await litellm.acompletion(**kwargs)
+        else:
+            stream = await litellm.acompletion(**kwargs)
         reasoning_buf = ""
         tc_bufs: Dict[int, Dict[str, str]] = {}
 
