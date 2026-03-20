@@ -1,5 +1,6 @@
 import asyncio
 import argparse
+import signal
 import warnings
 
 warnings.filterwarnings("ignore", message="urllib3.*doesn't match a supported version")
@@ -32,19 +33,30 @@ def main():
                 start_web_server(), name="agent.web_server",
             )
 
-        try:
-            await asyncio.Event().wait()
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            pass
+        shutdown_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def _on_signal():
+            if shutdown_event.is_set():
+                for s in (signal.SIGINT, signal.SIGTERM):
+                    loop.remove_signal_handler(s)
+                return
+            shutdown_event.set()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _on_signal)
+
+        await shutdown_event.wait()
 
         log("正在关闭...")
 
+        import logging
+        logging.getLogger("uvicorn.error").disabled = True
+        loop.set_exception_handler(lambda _l, _c: None)
+
         if web_task and not web_task.done():
-            web_task.cancel()
-            try:
-                await web_task
-            except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-                pass
+            from web.server import request_web_shutdown
+            request_web_shutdown()
 
         try:
             from entities.mcp.bridge import get_mcp_bridge
@@ -62,6 +74,14 @@ def main():
             await Lifecycle.shutdown_all()
         except Exception:
             pass
+
+        if web_task:
+            if not web_task.done():
+                web_task.cancel()
+            try:
+                await web_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     try:
         asyncio.run(_run())

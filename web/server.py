@@ -169,17 +169,38 @@ def _load_server_config() -> tuple[str, int]:
     return "0.0.0.0", 8092
 
 
+_server: Any = None
+
+
 async def start_web_server() -> None:
     """启动 WebUI 服务器，host/port 从 config/webui.json 读取。"""
+    global _server
+    import contextlib
     import uvicorn
+
+    class _QuietServer(uvicorn.Server):
+        """跳过 uvicorn 自带的信号处理，由外部统一管理关闭流程。"""
+
+        @contextlib.contextmanager
+        def capture_signals(self):  # type: ignore[override]
+            yield
 
     host, port = _load_server_config()
     await register_webui_channel()
 
     app = create_app()
     config = uvicorn.Config(app, host=host, port=port, log_level="warning")
-    server = uvicorn.Server(config)
+    _server = _QuietServer(config)
 
     local_url = f"http://127.0.0.1:{port}"
     log(f"WebUI 已启动: {local_url}  (监听 {host}:{port}，局域网可访问)")
-    await server.serve()
+    try:
+        await _server.serve()
+    finally:
+        _server = None
+
+
+def request_web_shutdown() -> None:
+    """请求 Web 服务器优雅关闭。"""
+    if _server is not None:
+        _server.should_exit = True

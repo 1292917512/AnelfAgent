@@ -761,7 +761,7 @@ class LLMClient(BaseEntity):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _make_test_png(size: int = 16) -> bytes:
+    def _make_test_png(size: int = 64) -> bytes:
         import struct
         import zlib as _zlib
 
