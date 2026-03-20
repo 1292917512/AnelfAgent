@@ -65,6 +65,8 @@ class MCPServerConfig:
     headers: Dict[str, str] = field(default_factory=dict)
     transport: str = ""
     enabled: bool = False
+    timeout: float = 5.0
+    sse_read_timeout: float = 300.0
 
 
 @dataclass
@@ -122,6 +124,12 @@ def load_mcp_config(path: Optional[str] = None) -> MCPConfig:
     except Exception as exc:
         log(f"加载 MCP 配置失败: {exc}", "ERROR")
         return MCPConfig()
+
+
+def _is_connection_closed(exc: Exception) -> bool:
+    """判断异常是否为连接断开类型（ClosedResourceError / BrokenResourceError 等）。"""
+    name = type(exc).__name__
+    return name in ("ClosedResourceError", "BrokenResourceError") or "closed" in str(exc).lower()
 
 
 def _extract_exception_detail(exc: Exception) -> str:
@@ -268,8 +276,9 @@ class MCPBridge:
                 )
                 return await asyncio.wrap_future(future)
         except Exception as exc:
-            log(f"MCP tool call 失败: {tool_name} → {exc}", "ERROR")
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            err_msg = str(exc) or f"{type(exc).__name__}: MCP 连接异常"
+            log(f"MCP tool call 失败: {tool_name} → {err_msg}", "ERROR")
+            return json.dumps({"error": err_msg}, ensure_ascii=False)
 
     # ------------------------------------------------------------------
     # 内部异步方法（在 MCP 事件循环中运行）
@@ -310,16 +319,85 @@ class MCPBridge:
         raise ValueError(f"未找到 MCP server: {name}")
 
     async def _do_call_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> str:
-        import asyncio
-        session = self._sessions[server_name]
+        session = self._sessions.get(server_name)
+        if not session:
+            return json.dumps({"error": f"MCP server '{server_name}' 未连接"}, ensure_ascii=False)
+
         log(f"MCP call: {tool_name}({arguments})", "DEBUG", tag="mcp")
-        result = await session.call_tool(tool_name, arguments=arguments)
+        try:
+            result = await session.call_tool(tool_name, arguments=arguments)
+        except Exception as first_exc:
+            if not _is_connection_closed(first_exc):
+                raise
+            log(f"MCP server '{server_name}' 连接已断开，尝试重连...", "WARNING")
+            if not await self._try_reconnect(server_name):
+                return json.dumps(
+                    {"error": f"MCP server '{server_name}' 连接已断开且重连失败"},
+                    ensure_ascii=False,
+                )
+            session = self._sessions.get(server_name)
+            if not session:
+                return json.dumps(
+                    {"error": f"MCP server '{server_name}' 重连后 session 不可用"},
+                    ensure_ascii=False,
+                )
+            result = await session.call_tool(tool_name, arguments=arguments)
+
         if hasattr(result, "content"):
             parts = []
             for item in result.content:
                 parts.append(item.text if hasattr(item, "text") else str(item))
             return "\n".join(parts) if parts else ""
         return str(result)
+
+    def _find_server_config(self, name: str) -> Optional[MCPServerConfig]:
+        """按名称查找 server 配置。"""
+        for srv in self.config.servers:
+            if srv.name == name:
+                return srv
+        return None
+
+    async def _try_reconnect(self, server_name: str) -> bool:
+        """尝试重连已断开的 MCP server，返回是否成功。"""
+        import asyncio
+
+        srv = self._find_server_config(server_name)
+        if not srv:
+            return False
+        try:
+            stop_event = self._stop_events.get(server_name)
+            if stop_event:
+                stop_event.set()
+            task = self._lifecycle_tasks.get(server_name)
+            if task:
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                    task.cancel()
+
+            self._sessions.pop(server_name, None)
+            self._stop_events.pop(server_name, None)
+            self._lifecycle_tasks.pop(server_name, None)
+
+            tools_to_remove = [t for t, s in self._tool_server_map.items() if s == server_name]
+            for t in tools_to_remove:
+                del self._tool_server_map[t]
+                try:
+                    EntityRegistry.unregister(t)
+                except (KeyError, ValueError):
+                    pass
+            try:
+                EntityRegistry.unregister(f"mcp:{server_name}")
+            except (KeyError, ValueError):
+                pass
+
+            count = await self._connect_server(srv)
+            log(f"MCP server '{server_name}' 重连成功，发现 {count} 个工具")
+            return True
+        except Exception as exc:
+            detail = _extract_exception_detail(exc)
+            log(f"MCP server '{server_name}' 重连失败: {detail}", "ERROR")
+            return False
 
     # ------------------------------------------------------------------
     # 内部方法
@@ -463,7 +541,12 @@ class MCPBridge:
 
         if transport == "sse":
             from mcp.client.sse import sse_client
-            return sse_client(srv.url, headers=srv.headers or None)
+            return sse_client(
+                srv.url,
+                headers=srv.headers or None,
+                timeout=srv.timeout,
+                sse_read_timeout=srv.sse_read_timeout,
+            )
 
         raise ValueError(f"不支持的传输类型: {transport}")
 
