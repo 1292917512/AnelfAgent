@@ -1,4 +1,4 @@
-"""MD 文件索引同步：扫描 MEMORY.md + memory/*.md，增量分块并生成 embedding 索引。
+"""MD 文件索引同步：扫描 memory.md + memory/*.md，增量分块并生成 embedding 索引。
 
 参考 OpenClaw 的 manager-sync-ops.ts / internal.ts 实现。
 """

@@ -1,6 +1,6 @@
 """便签记忆 -- Markdown 文件形式的持久化笔记。
 
-支持 MEMORY.md（常青知识）和 memory/ 目录下的多文件管理。
+支持 memory.md（常青知识）和 memory/ 目录下的多文件管理。
 Agent 每次对话时自动读取注入到上下文，并可通过工具随时编辑更新。
 """
 
@@ -33,8 +33,8 @@ def get_workspace_dir() -> Path:
 
 
 def get_notes_path() -> Path:
-    """获取主便签文件路径（memory/MEMORY.md）。"""
-    return get_memory_dir() / "MEMORY.md"
+    """获取主便签文件路径（memory/memory.md）。"""
+    return get_memory_dir() / "memory.md"
 
 
 def get_memory_dir() -> Path:
@@ -448,11 +448,19 @@ def _build_file_index() -> str:
     lines = ["[可用便签文件] 使用 view_memory_outline 查看结构，read_section 读取章节"]
     for f in files:
         path = f.get("path", "")
-        if path.endswith("MEMORY.md") or path.endswith("heartbeat.md"):
+        if path.endswith("memory.md") or path.endswith("heartbeat.md"):
             continue
         line_count = f.get("lines", "?")
         lines.append(f"  - {path} ({line_count} 行)")
     return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _load_skills_content() -> str:
+    """读取 skills.md 工作流手册，文件不存在返回空字符串。"""
+    p = get_memory_dir() / "skills.md"
+    if p.exists():
+        return p.read_text(encoding="utf-8")
+    return ""
 
 
 def build_notes_system_message() -> List[dict]:
@@ -463,7 +471,11 @@ def build_notes_system_message() -> List[dict]:
     file_index = _build_file_index()
     if file_index:
         content = f"{content}\n\n{file_index}"
-    return [{"role": "system", "content": f"[个人笔记/便签记忆]\n{content}"}]
+    msgs = [{"role": "system", "content": f"[个人笔记/便签记忆]\n{content}"}]
+    skills = _load_skills_content()
+    if skills.strip():
+        msgs.append({"role": "system", "content": skills})
+    return msgs
 
 
 def register_notes_tools(workspace_dir: Optional[Path] = None) -> None:
@@ -482,7 +494,7 @@ def register_notes_tools(workspace_dir: Optional[Path] = None) -> None:
 @deferred_tool(
     group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
-        "读取主便签记忆（memory/MEMORY.md）的全部内容。"
+        "读取主便签记忆（memory/memory.md）的全部内容。"
         "返回两个字段：content（原始内容，用于 write_notes/patch_memory_file 的写回）"
         "和 view（带行号的显示内容，用于 edit_memory_lines 定位行号）。"
         "对文件做精确修改时，old_text 和写回内容必须来自 content 字段，不要包含 view 中的行号前缀。"
@@ -508,7 +520,7 @@ async def read_notes() -> str:
 @deferred_tool(
     group="notes", tags=["core", "heartbeat"], source="mind.notes",
     description=(
-        "覆写主便签记忆（memory/MEMORY.md）的全部内容。"
+        "覆写主便签记忆（memory/memory.md）的全部内容。"
         "需要整体修改时，先用 read_notes 获取 content 字段（原始内容），在其基础上修改后整体写回。"
         "不要将 view 字段（带行号前缀的内容）写入文件。"
     ),
@@ -569,7 +581,7 @@ async def _tool_read_memory_file(file_path: str) -> str:
     """读取指定记忆文件的内容。
 
     Args:
-        file_path: 文件路径，如 memory/MEMORY.md、memory/reflections.md
+        file_path: 文件路径，如 memory/memory.md、memory/reflections.md
     """
     try:
         content = read_memory_file(file_path)
@@ -648,7 +660,7 @@ async def _tool_append_memory_file(file_path: str, content: str) -> str:
     """在 MD 便签文件末尾追加内容。
 
     Args:
-        file_path: 文件路径，如 memory/MEMORY.md、memory/reflections.md
+        file_path: 文件路径，如 memory/memory.md、memory/reflections.md
         content: 要追加的 Markdown 内容（自动在前一行末尾补换行符）
     """
     try:
@@ -679,7 +691,7 @@ async def _tool_patch_memory_file(
     """在 MD 便签文件中进行精确字符串替换。
 
     Args:
-        file_path: 文件路径，如 memory/MEMORY.md
+        file_path: 文件路径，如 memory/memory.md
         old_text: 要被替换的原始文本（必须能在文件中精确匹配）
         new_text: 替换后的新文本（可为空字符串，表示删除 old_text）
         replace_all: 是否替换所有匹配项，默认 false（只替换第一处）
@@ -714,7 +726,7 @@ async def _tool_edit_memory_lines(
     """按行号范围替换或插入 MD 便签文件中的内容。
 
     Args:
-        file_path: 文件路径，如 memory/MEMORY.md
+        file_path: 文件路径，如 memory/memory.md
         start_line: 起始行号（1-indexed）；纯插入时设为 end_line+1
         end_line: 结束行号（1-indexed，含）；-1 表示最后一行
         new_content: 替换/插入内容（多行用 \\n 分隔；空字符串表示删除该行范围）
@@ -753,7 +765,7 @@ async def _tool_view_memory_outline(file_path: str) -> str:
     """查看 MD 便签文件的标题大纲。
 
     Args:
-        file_path: 文件路径，如 memory/MEMORY.md
+        file_path: 文件路径，如 memory/memory.md
     """
     try:
         result = view_file_outline(file_path)
@@ -776,7 +788,7 @@ async def _tool_read_section(file_path: str, heading: str) -> str:
     """按标题读取指定段落。
 
     Args:
-        file_path: 文件路径，如 memory/MEMORY.md
+        file_path: 文件路径，如 memory/memory.md
         heading: Markdown 标题全文（含 # 号），如 '## 待办事项'
     """
     try:
@@ -803,7 +815,7 @@ async def _tool_write_section(
     """替换或创建指定标题段落的内容。
 
     Args:
-        file_path: 文件路径，如 memory/MEMORY.md
+        file_path: 文件路径，如 memory/memory.md
         heading: Markdown 标题全文（含 # 号），如 '## 待办事项'
         content: 段落的新内容（不含标题行，标题行自动保留/生成）
         after: 新建段落时的插入锚点标题（仅 heading 不存在时生效），为空则追加到文件末尾
@@ -834,7 +846,7 @@ async def _tool_delete_section(file_path: str, heading: str) -> str:
     """删除指定标题段落。
 
     Args:
-        file_path: 文件路径，如 memory/MEMORY.md
+        file_path: 文件路径，如 memory/memory.md
         heading: 要删除的 Markdown 标题全文（含 # 号），如 '## 待办事项'
     """
     try:

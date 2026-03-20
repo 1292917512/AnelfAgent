@@ -241,7 +241,7 @@ def _check_send_result(raw: Any, channel_id: str, target_id: str) -> tuple[dict,
 
 # ── 工具实现 ─────────────────────────────────────────────────────────
 
-@deferred_tool(group="output", tags=["always"], source="channel.output")
+@deferred_tool(group="output", tags=["core"], source="channel.output")
 def list_channels() -> str:
     """列出所有已连接的通信频道及其能力和状态。"""
     try:

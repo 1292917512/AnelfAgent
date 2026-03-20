@@ -80,7 +80,9 @@ _MULTI_TOOL_HINT = (
     "- 回复并结束: tasks=[{\"tool\":\"send_message\",\"args\":{...}},{\"tool\":\"end_reply\",\"args\":{}}]\n"
     "- 并行查询:   tasks=[{\"tool\":\"web_search\",\"args\":{\"query\":\"A\"}},{\"tool\":\"web_search\",\"args\":{\"query\":\"B\"}}]\n"
     "- 耗时操作:   tasks=[...], async_mode=true（后台执行，不阻塞对话）\n"
-    "凡是本轮就能确定参数的工具，都应打包进同一次 multi_tool_invoke。"
+    "凡是本轮就能确定参数的工具，都应打包进同一次 multi_tool_invoke。\n"
+    "**重要：回复完毕且没有其他操作时，必须将 send_message 和 end_reply 打包到同一个 multi_tool_invoke 中一次完成，禁止分开调用。**\n"
+    "**耗时任务（如图片识别、语音合成、视频生成等）必须使用 async_mode=true 放到后台执行，不要阻塞对话。**"
 )
 
 _PENDING_HINT = "→ 处理消息或执行操作，空消息表示当前处于自主思考阶段，不是对方发送的，选择是继续调用流程还是直接结束会话，不要重复发送消息,完成后调用 end_reply"
@@ -454,10 +456,6 @@ class PrefrontalCortex:
 
         _merge(EntityRegistry.get_tool_schema_by_tags(["always"]), "always")
 
-        for g in EntityRegistry.list_groups():
-            if g.startswith("mcp:"):
-                _merge(EntityRegistry.get_tool_schemas_by_group(g), f"mcp:{g}")
-
         if adapter_key:
             _merge(self.get_channel_tool_schemas(adapter_key), f"channel:{adapter_key}")
             _merge(EntityRegistry.get_tool_schema_by_tags([adapter_key]),
@@ -510,11 +508,6 @@ class PrefrontalCortex:
             lines.append("# 多媒体处理")
             lines.append(media_rules)
 
-        cross_channel_rules = self._build_cross_channel_rules()
-        if cross_channel_rules:
-            lines.append("")
-            lines.append(cross_channel_rules)
-
         context_reading_rules = self._build_context_reading_rules()
         if context_reading_rules:
             lines.append("")
@@ -524,16 +517,6 @@ class PrefrontalCortex:
         lines.append(_MULTI_TOOL_HINT)
 
         return [{"role": "system", "content": "\n".join(lines)}]
-
-    @staticmethod
-    def _build_cross_channel_rules() -> str:
-        """构建跨频道协同与目标管理的精简提示。"""
-        return (
-            "# 跨频道与目标管理\n"
-            "- 跨频道：list_conversations 查会话 → get_conversation 看内容 → send_message 发消息\n"
-            "- 目标：create_goal 创建 → list_goals 检查 → update_goal 更新 → 完成后 delete_goal 删除\n"
-            "- 重要：完成目标后必须立即 delete_goal，否则会持续干扰记忆召回"
-        )
 
     @staticmethod
     def _build_context_reading_rules() -> str:

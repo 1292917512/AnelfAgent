@@ -1,7 +1,7 @@
 """MemoryStore：基于 SQLite FTS5 + Embedding 的统一记忆存储。
 
 支持混合评分管线：语义评分 (Vector + FTS + TagMatch) × 衰减评分 (Recency + Frequency + Importance)。
-新增文件索引体系：MEMORY.md + memory/*.md 分块索引，双轨统一搜索。
+新增文件索引体系：memory.md + memory/*.md 分块索引，双轨统一搜索。
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ _HALF_LIFE_DAYS = 30
 
 
 def _file_temporal_decay(path: str) -> float:
-    """文件级时间衰减：MEMORY.md 等常青文件不衰减，memory/YYYY-MM-DD.md 按日期衰减。"""
+    """文件级时间衰减：memory.md 等常青文件不衰减，memory/YYYY-MM-DD.md 按日期衰减。"""
     normalized = path.replace("\\", "/").lstrip("./")
     if normalized in ("MEMORY.md", "memory.md"):
         return 1.0

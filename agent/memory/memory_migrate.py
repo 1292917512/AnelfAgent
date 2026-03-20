@@ -36,7 +36,7 @@ async def migrate_memories_to_md(db_path: str, workspace_dir: Path) -> int:
     """将 memories 表中未迁移的记忆导出为 MD 文件。
 
     按 MemoryType 分类：
-      - PERMANENT → MEMORY.md（常青知识）
+      - PERMANENT → memory.md（常青知识）
       - ENTITY    → memory/entities.md
       - REFLECTION → memory/reflections.md
       - EPISODIC  → memory/YYYY-MM-DD.md（按日期）
@@ -80,11 +80,11 @@ async def migrate_memories_to_md(db_path: str, workspace_dir: Path) -> int:
 
     migrated_ids: list[int] = []
 
-    # PERMANENT → memory/MEMORY.md
+    # PERMANENT → memory/memory.md
     if MemoryType.PERMANENT.value in grouped:
         entries = grouped[MemoryType.PERMANENT.value]
         _append_to_file(
-            memory_dir / "MEMORY.md",
+            memory_dir / "memory.md",
             _format_section("永久记忆", entries),
         )
         migrated_ids.extend(e["id"] for e in entries)

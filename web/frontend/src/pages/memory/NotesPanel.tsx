@@ -27,7 +27,7 @@ export function NotesPanel() {
         <div className="space-y-1">
           <button onClick={openMain} className={cn("w-full text-left p-2 rounded-[var(--radius-md)] text-sm transition-colors flex items-center gap-2", isMainEdit ? "bg-[var(--accent-subtle)] text-[var(--accent)]" : "text-[var(--text)] hover:bg-[var(--bg-hover)]")}>
             <FileText size={14} className="flex-shrink-0" />
-            <div className="min-w-0"><p className="font-medium">{t("mainNote")}</p><p className="text-[11px] text-[var(--muted)] font-mono truncate">{notes?.path ?? "MEMORY.md"}</p></div>
+            <div className="min-w-0"><p className="font-medium">{t("mainNote")}</p><p className="text-[11px] text-[var(--muted)] font-mono truncate">{notes?.path ?? "memory.md"}</p></div>
           </button>
           {files.map((f: Record<string, string>) => (
             <button key={f.path ?? f.name} onClick={() => openFile(f.path ?? f.name ?? "")} className={cn("w-full text-left p-2 rounded-[var(--radius-md)] text-sm transition-colors flex items-center gap-2", editingPath === (f.path ?? f.name) ? "bg-[var(--accent-subtle)] text-[var(--accent)]" : "text-[var(--text)] hover:bg-[var(--bg-hover)]")}>

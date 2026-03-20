@@ -789,7 +789,7 @@ async def log_to_heartbeat(content: str) -> str:
 # ------------------------------------------------------------------
 
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description="列出所有可执行的任务。任务是预定义的流程化工作，可按名称触发执行。",
 )
 async def list_tasks() -> str:
@@ -803,7 +803,7 @@ async def list_tasks() -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "按名称执行指定任务。任务在后台异步执行，可通过 list_tasks 查看可用任务。"
         "任务执行期间会调用工具完成具体工作（如整理画像、清理记忆等）。"
@@ -835,7 +835,7 @@ async def execute_task(task_name: str) -> str:
 # ------------------------------------------------------------------
 
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "列出所有已知的实体画像（用户/群组）。"
         "返回每个实体的 scope、对话次数、画像摘要和跨平台关联信息。"
@@ -878,7 +878,7 @@ async def list_entity_profiles() -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "查看指定实体的完整画像内容（自动解析跨平台关联）。"
         "先用 list_entity_profiles 获取可用的 scope_type/scope_id。"
@@ -917,7 +917,7 @@ async def get_entity_profile(scope_type: str, scope_id: str) -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "删除指定实体的画像。用于清理无意义或不再需要的实体画像（如临时用户、测试数据等）。"
         "删除前建议先用 get_entity_profile 确认内容。"
@@ -966,7 +966,7 @@ async def delete_entity_profile(scope_type: str, scope_id: str) -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "更新指定实体的画像内容（自动解析跨平台关联，写入主身份）。"
         "建议先用 get_entity_profile 查看当前画像，在此基础上增量更新。"
@@ -1050,7 +1050,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
 # ------------------------------------------------------------------
 
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "将两个不同平台的实体关联为同一个人/群组。"
         "source 将成为 target 的别名，画像共享 target 的内容。"
@@ -1111,7 +1111,7 @@ async def link_entity(
 
 
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory",
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(
         "解除一个实体的跨平台关联，使其恢复为独立实体。"
         "解除后该实体将拥有独立的画像（可选择复制当前主身份的画像）。"

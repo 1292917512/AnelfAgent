@@ -498,7 +498,7 @@ _MAX_DELAY = 600
 
 
 @deferred_tool(
-    group="thinking", tags=["always"], source="mind.multi_tool",
+    group="thinking", tags=["core"], source="mind.multi_tool",
     description="延迟指定秒数后自动触发一轮新的对话回复，适用于需要等一会儿再主动联系用户的场景。",
 )
 async def schedule_reply(delay_seconds: int = 30, reason: str = "") -> str:
