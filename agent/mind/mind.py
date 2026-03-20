@@ -161,6 +161,8 @@ class Mind:
         self._session_llm_params: dict = {}
 
         self._reflecting: bool = False
+        self._cycle_lock = asyncio.Lock()
+        self._heartbeat_active: bool = False
 
         self._channel_snapshots: dict[str, ChannelSnapshot] = {}
 
@@ -230,7 +232,21 @@ class Mind:
         return bool(self._active_scopes)
 
     async def execute_mind(self, *, is_heartbeat: bool = False) -> None:
-        await self._autonomous_cycle(is_heartbeat=is_heartbeat)
+        """触发自主循环。通过 _cycle_lock 防止多个循环并发执行。"""
+        async with self._cycle_lock:
+            if is_heartbeat:
+                self._heartbeat_active = True
+            try:
+                await self._autonomous_cycle(is_heartbeat=is_heartbeat)
+            finally:
+                self._heartbeat_active = False
+
+    async def try_execute_mind(self) -> None:
+        """尝试触发自主循环；已有循环在执行时直接跳过（用于 fire-and-forget 场景）。"""
+        if self._cycle_lock.locked():
+            return
+        async with self._cycle_lock:
+            await self._autonomous_cycle()
 
     async def execute_mind_for_scope(self, scope: str) -> None:
         """针对指定 scope 执行回复（带 scope 级锁）。"""
@@ -269,10 +285,7 @@ class Mind:
         })
 
         if is_heartbeat:
-            asyncio.create_task(
-                self._run_heartbeat_tick(),
-                name="agent.heartbeat.tick",
-            )
+            await self._run_heartbeat_tick()
 
         situation = await self._gather_situation(is_heartbeat=is_heartbeat)
 
@@ -359,7 +372,7 @@ class Mind:
         # SESSION_END 之后检查：如果还有待处理任务（如后台任务完成注入的），自动触发新一轮
         if self.pfc.has_pending_tasks():
             log("自主循环结束后仍有待处理任务，自动触发新一轮", tag="思维")
-            asyncio.create_task(self.execute_mind())
+            asyncio.create_task(self.try_execute_mind())
 
     async def _run_heartbeat_tick(self) -> None:
         """后台执行心跳 tick，不阻塞主循环的消息处理。"""
@@ -765,21 +778,18 @@ class Mind:
         collected_text: List[str] = []
         log(f"反思循环开始: {len(active_tools)} 个工具可用, 上限 {safety_limit} 轮", tag="思维")
 
-        try:
-            await self._think_loop(
-                mode=ThinkMode.REFLECT,
-                tool_chain=[],
-                execution_steps=[],
-                start_time=time.time(),
-                safety_limit=safety_limit,
-                collected_text=collected_text,
-                active_tools=active_tools,
-                anything=None,
-                base_messages=messages,
-                options=options,
-            )
-        finally:
-            self.pfc.clear_dynamic_tools()
+        await self._think_loop(
+            mode=ThinkMode.REFLECT,
+            tool_chain=[],
+            execution_steps=[],
+            start_time=time.time(),
+            safety_limit=safety_limit,
+            collected_text=collected_text,
+            active_tools=active_tools,
+            anything=None,
+            base_messages=messages,
+            options=options,
+        )
 
         total = "\n".join(collected_text)
         log(f"反思循环结束: 产出 {len(total)} 字", tag="思维")

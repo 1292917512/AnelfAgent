@@ -51,6 +51,7 @@ class ToolParam:
     required: bool = True
     enum: Optional[List[str]] = None
     default: Any = inspect.Parameter.empty
+    schema_extra: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -535,6 +536,8 @@ class EntityRegistry:
                 prop["description"] = p.description
             if p.enum:
                 prop["enum"] = p.enum
+            if p.schema_extra:
+                prop.update(p.schema_extra)
             properties[p.name] = prop
             if p.required:
                 required.append(p.name)

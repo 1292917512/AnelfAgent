@@ -291,7 +291,7 @@ async def _run_background_group(group_id: str, parsed_tasks: List[Dict[str, Any]
             log(f"后台任务结果已通过 accept_feel 注入: {group_id}", tag="多工具")
             # 如果 AI 空闲则立即触发；正忙时 _execute_reply finally 会自动检查 pending 并触发
             if not _mind_ref.is_reply:
-                asyncio.create_task(_mind_ref.execute_mind())
+                asyncio.create_task(_mind_ref.try_execute_mind())
         except Exception as exc:
             log(f"后台任务结果注入失败: {exc}", "WARNING", tag="多工具")
 
@@ -322,7 +322,7 @@ async def multi_tool_invoke(tasks: list, async_mode: bool = False) -> str:
     """批量执行多个工具调用，支持并行/顺序编排和异步后台执行。
 
     Args:
-        tasks: 工具调用数组，每个元素必须是对象: {"tool": "工具名(字符串)", "args": {"参数名": 值}, "step": 阶段号整数默认1, "id": "可选标识"}。同一step并行执行，不同step按序执行。示例: [{"tool":"send_message","args":{"content":"你好"},"step":1},{"tool":"end_reply","args":{},"step":1}]
+        tasks: 工具调用数组，每个元素必须是对象: {"tool": "工具名", "args": {"参数名": 值}, "step": 阶段号整数默认1, "id": "可选标识"}。同一step并行执行，不同step按序执行。
         async_mode: 为 true 时不阻塞当前对话，任务在后台执行，完成后系统自动触发新一轮思考并提供结果
     """
     error, parsed = _parse_and_validate(tasks)
@@ -382,6 +382,22 @@ async def multi_tool_invoke(tasks: list, async_mode: bool = False) -> str:
         result["_end_reply"] = True
 
     return json.dumps(result, ensure_ascii=False)
+
+
+multi_tool_invoke._schema_extra = {  # type: ignore[attr-defined]
+    "tasks": {
+        "items": {
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string", "description": "工具名"},
+                "args": {"type": "object", "description": "工具参数"},
+                "step": {"type": "integer", "description": "阶段号，同 step 并行，不同 step 串行，默认 1"},
+                "id": {"type": "string", "description": "可选标识"},
+            },
+            "required": ["tool", "args"],
+        },
+    },
+}
 
 
 @deferred_tool(
@@ -542,4 +558,4 @@ async def _delayed_reply(delay: int, channel: str, target: str, reason: str) -> 
         _pfc_ref._task_adapter_keys[scope] = channel
 
     log(f"延迟 {delay}s 到期，触发回复: {scope}", tag="多工具")
-    asyncio.create_task(_mind_ref.execute_mind())
+    asyncio.create_task(_mind_ref.try_execute_mind())

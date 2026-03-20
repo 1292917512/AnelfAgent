@@ -96,6 +96,8 @@ class AgentAssistant:
                 log(f"批量处理 {len(batch)} 条消息", "DEBUG", tag="运行时")
                 for anything in batch:
                     await self.mind.accept_feel(anything)
+                if self.mind._heartbeat_active:
+                    await self._notify_heartbeat_busy(batch)
                 await self.mind.execute_mind()
                 await self._drain_pending_tasks()
             except Exception:
@@ -103,6 +105,22 @@ class AgentAssistant:
             finally:
                 for _ in batch:
                     self._queue.task_done()
+
+    async def _notify_heartbeat_busy(self, batch: List[Everything]) -> None:
+        """心跳进行中收到消息，向来源频道发送简短提示。"""
+        notified_scopes: set[str] = set()
+        for anything in batch:
+            if not anything.adapter_key:
+                continue
+            scope = anything.entity_scope
+            if scope in notified_scopes:
+                continue
+            notified_scopes.add(scope)
+            try:
+                await self.mind.channel_manager.reply(anything, "稍等，我正在自主思考中~")
+                log(f"心跳忙碌提示已发送: {scope}", "DEBUG", tag="运行时")
+            except Exception:
+                log(f"心跳忙碌提示发送失败: {scope}", "DEBUG", tag="运行时")
 
     async def _drain_pending_tasks(self) -> None:
         """自检 PFC 非消息任务（画像分析、通用任务），消息任务不重复处理。"""

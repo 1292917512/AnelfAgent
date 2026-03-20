@@ -217,9 +217,14 @@ _STR_ANNOTATION_MAP = {
 
 
 def _extract_params(func: Callable) -> List[ToolParam]:
-    """从函数签名和 docstring 提取参数列表（含描述）。"""
+    """从函数签名和 docstring 提取参数列表（含描述）。
+
+    若函数设置了 ``_schema_extra`` 属性（dict[param_name, dict]），
+    对应参数的额外 JSON Schema 字段（如 items / minItems）会合并到 ToolParam。
+    """
     sig = inspect.signature(func)
     doc_params = _parse_docstring_args(func.__doc__ or "")
+    extras: dict[str, dict] = getattr(func, "_schema_extra", {})
     params: List[ToolParam] = []
     for p_name, p in sig.parameters.items():
         if p_name in ("self", "cls"):
@@ -239,6 +244,7 @@ def _extract_params(func: Callable) -> List[ToolParam]:
                 type=json_type,
                 required=required,
                 default=p.default,
+                schema_extra=extras.get(p_name),
             )
         )
     return params

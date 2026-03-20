@@ -102,7 +102,7 @@ async def execute_reflect(mind: Mind, decision: Optional[Decision] = None, *, sk
         mind._reflecting = False
         if mind.pfc.has_pending_tasks():
             asyncio.create_task(
-                mind.execute_mind(),
+                mind.try_execute_mind(),
                 name="agent.mind.post_reflect",
             )
 
