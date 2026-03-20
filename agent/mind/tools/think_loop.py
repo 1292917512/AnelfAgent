@@ -533,10 +533,10 @@ async def finish_think(
                     try:
                         args_obj = json.loads(args_raw)
                         args_preview = ", ".join(
-                            f"{k}={str(v)[:40]}" for k, v in args_obj.items()
+                            f"{k}={v}" for k, v in args_obj.items()
                         )
                     except Exception:
-                        args_preview = args_raw[:80]
+                        args_preview = args_raw
                     call_map[tc_id] = f"{name}({args_preview})"
 
         result_lines: List[str] = []
