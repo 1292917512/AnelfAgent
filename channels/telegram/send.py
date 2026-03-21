@@ -187,17 +187,17 @@ async def send_voice(
     return await with_retry(_send, label="sendVoice")
 
 
-async def send_document(
+async def send_file(
     bot: Any,
     chat_id: Union[str, int],
-    document: Any,
+    file_path: Any,
     *,
     caption: Optional[str] = None,
     parse_mode: Optional[str] = "HTML",
     reply_to_message_id: Optional[int] = None,
     thread: Optional[ThreadSpec] = None,
 ) -> int:
-    params: Dict[str, Any] = {"chat_id": chat_id, "document": document, **build_thread_params(thread)}
+    params: Dict[str, Any] = {"chat_id": chat_id, "document": file_path, **build_thread_params(thread)}
     if caption:
         params["caption"] = caption
     if parse_mode and caption:
@@ -210,7 +210,7 @@ async def send_document(
         msg = await bot.send_document(**params)
         return msg.message_id
 
-    return await with_retry(_send, label="sendDocument")
+    return await with_retry(_send, label="sendFile")
 
 
 async def send_animation(

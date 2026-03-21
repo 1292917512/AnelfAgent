@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -55,6 +56,34 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     return None
 
 
+def _normalize_tool_tags(value: Any) -> List[str]:
+    """标准化 tool_tags：兼容数组、逗号字符串和中文逗号写法。"""
+    if value is None:
+        return []
+
+    raw_items: List[str]
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, list):
+        raw_items = [str(v) for v in value if v is not None]
+    else:
+        raw_items = [str(value)]
+
+    result: List[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        for part in re.split(r"[,\uFF0C]", item):
+            tag = part.strip()
+            if not tag:
+                continue
+            key = tag.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(tag)
+    return result
+
+
 class TaskDefinition(BaseModel):
     """一个可执行任务的完整定义。"""
 
@@ -96,7 +125,7 @@ class TaskDefinition(BaseModel):
             tags=list(data.get("tags", [])),
             source=data.get("source", data["name"]),
             null_keywords=list(data.get("null_keywords", [])),
-            tool_tags=list(data.get("tool_tags", [])),
+            tool_tags=_normalize_tool_tags(data.get("tool_tags", [])),
             prompt=data.get("prompt", ""),
             allow_output_tools=_to_bool(data.get("allow_output_tools", False)),
             save_result_to_memory=_to_bool(data.get("save_result_to_memory", True)),

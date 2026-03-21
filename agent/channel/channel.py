@@ -37,7 +37,7 @@ class ChannelCapability(str, Enum):
     SEND_VIDEO = "send_video"
     SEND_AUDIO = "send_audio"
     SEND_VOICE = "send_voice"
-    SEND_DOCUMENT = "send_document"
+    SEND_FILE = "send_file"
     SEND_LOCATION = "send_location"
     SEND_ANIMATION = "send_animation"
     SEND_CONTACT = "send_contact"
@@ -140,8 +140,8 @@ class BaseChannel(BaseEntity, ABC):
         """发送语音消息。"""
         return _err(f"{self.display_name} 不支持发送语音")
 
-    async def send_document(self, chat_id: str, document: str, caption: str = "", **kwargs: Any) -> str:
-        """发送文件（文档），可附带说明文字。"""
+    async def send_file(self, chat_id: str, file_path: str, caption: str = "", **kwargs: Any) -> str:
+        """发送文件，可附带说明文字。"""
         return _err(f"{self.display_name} 不支持发送文件")
 
     async def send_location(self, chat_id: str, latitude: str, longitude: str, **kwargs: Any) -> str:

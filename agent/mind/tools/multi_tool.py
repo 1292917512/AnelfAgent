@@ -181,6 +181,33 @@ async def _execute_task_graph(
     return all_results
 
 
+def _build_sync_result(
+    parsed_tasks: List[Dict[str, Any]],
+    all_results: List[Dict[str, Any]],
+    *,
+    degraded_from_async: bool = False,
+) -> str:
+    """构建同步执行结果（可标记为 async 降级）。"""
+    completed = sum(1 for r in all_results if r["success"])
+    failed = len(all_results) - completed
+    has_end_reply = any(t["tool"] == "end_reply" for t in parsed_tasks)
+
+    result: Dict[str, Any] = {
+        "success": failed == 0,
+        "total": len(all_results),
+        "completed": completed,
+        "failed": failed,
+        "results": all_results,
+    }
+    if has_end_reply:
+        result["_end_reply"] = True
+    if degraded_from_async:
+        result["degraded_from_async"] = True
+        result["hint"] = "当前无可回调目标，async_mode 已自动降级为同步执行"
+
+    return json.dumps(result, ensure_ascii=False)
+
+
 def _parse_and_validate(tasks_input: Any) -> tuple[Optional[str], List[Dict[str, Any]]]:
     """解析并校验 tasks 参数，返回 (error_json | None, parsed_list)。"""
     if isinstance(tasks_input, list):
@@ -368,6 +395,14 @@ async def multi_tool_invoke(tasks: list, async_mode: bool = False) -> str:
                 elif scope.startswith("group_"):
                     reply_target = scope[6:]
                 break
+
+        # 无可回调目标（如 Web 手动任务）时，后台完成结果无法注入后续上下文。
+        # 这种场景自动降级为同步执行，避免本轮提前结束后“看起来不继续”。
+        if not reply_target:
+            log(f"async_mode 无回调目标，降级同步执行: {group_id}", "WARNING", tag="多工具")
+            all_results = await _execute_task_graph(parsed, group_id)
+            return _build_sync_result(parsed, all_results, degraded_from_async=True)
+
         group = TaskGroup(
             group_id=group_id,
             tasks=[TaskRecord(id=t["id"], tool=t["tool"], step=t["step"]) for t in parsed],
@@ -386,29 +421,15 @@ async def multi_tool_invoke(tasks: list, async_mode: bool = False) -> str:
             "group_id": group_id,
             "total_tasks": len(parsed),
             "total_steps": len(step_set),
-            "hint": "任务已在后台执行，你可以继续处理其他事务或调用 end_reply，完成后系统会自动触发新一轮思考",
+            "_end_reply": True,
+            "hint": "任务已在后台执行，本轮将自动结束。完成后系统会自动触发新一轮思考并注入结果",
         }, ensure_ascii=False)
 
     # 同步模式
     group_id = f"mt_{uuid.uuid4().hex[:8]}"
     log(f"同步任务组开始: {group_id} ({len(parsed)} 个任务)", tag="多工具")
     all_results = await _execute_task_graph(parsed, group_id)
-
-    completed = sum(1 for r in all_results if r["success"])
-    failed = len(all_results) - completed
-    has_end_reply = any(t["tool"] == "end_reply" for t in parsed)
-
-    result: Dict[str, Any] = {
-        "success": failed == 0,
-        "total": len(all_results),
-        "completed": completed,
-        "failed": failed,
-        "results": all_results,
-    }
-    if has_end_reply:
-        result["_end_reply"] = True
-
-    return json.dumps(result, ensure_ascii=False)
+    return _build_sync_result(parsed, all_results)
 
 
 multi_tool_invoke._schema_extra = {  # type: ignore[attr-defined]

@@ -59,11 +59,22 @@ class TaskExecutor:
         await self._emit("unit_start", task, entity)
 
         try:
+            tool_hits_before = self.mind.pfc.get_tool_use_total()
             content = await self._execute_llm(task, entity, temperature, effective_model, effective_effort)
+            tool_hits_after = self.mind.pfc.get_tool_use_total()
+            synthesized_tool_result = False
             if not content:
-                log(f"任务 [{task.name}] 无产出", tag="任务")
-                await self._emit("unit_end", task, entity, has_output=False)
-                return None
+                if tool_hits_after > tool_hits_before:
+                    synthesized_tool_result = True
+                    content = (
+                        f"任务 [{task.name}] 已执行 {tool_hits_after - tool_hits_before} 次工具调用，"
+                        "无文本产出（工具副作用已完成）"
+                    )
+                    log(f"任务 [{task.name}] 工具执行完成（无文本产出）", tag="任务")
+                else:
+                    log(f"任务 [{task.name}] 无产出", tag="任务")
+                    await self._emit("unit_end", task, entity, has_output=False)
+                    return None
 
             for kw in task.null_keywords:
                 if kw in content:
@@ -80,8 +91,10 @@ class TaskExecutor:
                 importance=task.importance,
             )
 
-            if task.save_result_to_memory:
+            if task.save_result_to_memory and not synthesized_tool_result:
                 await self._store_result(result)
+            elif synthesized_tool_result:
+                log(f"任务 [{task.name}] 为工具副作用完成态，跳过写入记忆", tag="任务")
             else:
                 log(f"任务 [{task.name}] 配置为不写入记忆，跳过存储", tag="任务")
             log(f"任务 [{task.name}] 完成: {content[:80]}", tag="任务")

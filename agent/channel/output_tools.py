@@ -19,7 +19,7 @@ from entities._sdk import deferred_tool, activate_group
 from core.log import log
 
 # 已由手动 @deferred_tool 注册的 capability（避免重复注册）
-_MANUAL_CAPABILITIES = {"send_text", "send_photo", "send_voice", "send_document"}
+_MANUAL_CAPABILITIES = {"send_text", "send_photo", "send_voice", "send_file"}
 # 不适合暴露为 LLM 工具的 capability
 _SKIP_CAPABILITIES = {"streaming", "inline_keyboard", "reply_to"}
 
@@ -445,7 +445,7 @@ async def send_voice(channel_id: str, target_id: str, voice: str) -> str:
     )
 
 
-@deferred_tool(group="output", tags=["send_document"], source="channel.output")
+@deferred_tool(group="output", tags=["send_file"], source="channel.output")
 async def send_file(channel_id: str, target_id: str, file_path: str, caption: str = "") -> str:
     """向指定频道发送文件。
 
@@ -456,7 +456,7 @@ async def send_file(channel_id: str, target_id: str, file_path: str, caption: st
         caption: 文件说明文字
     """
     async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
-        return await ch.send_document(resolved_target_id, file_path, caption=caption, channel_type=channel_type)
+        return await ch.send_file(resolved_target_id, file_path, caption=caption, channel_type=channel_type)
 
     def _enrich(parsed: dict, ok: bool) -> None:
         parsed["media_path"] = file_path

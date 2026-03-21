@@ -33,7 +33,7 @@ class WebUIChannel(BaseChannel):
             ChannelCapability.SEND_VOICE,
             ChannelCapability.SEND_AUDIO,
             ChannelCapability.SEND_VIDEO,
-            ChannelCapability.SEND_DOCUMENT,
+            ChannelCapability.SEND_FILE,
         }
 
     async def start(self) -> None:
@@ -77,10 +77,10 @@ class WebUIChannel(BaseChannel):
         })
         return json.dumps({"success": True}, ensure_ascii=False)
 
-    async def send_document(self, chat_id: str, document: str, caption: str = "", **kwargs: Any) -> str:
+    async def send_file(self, chat_id: str, file_path: str, caption: str = "", **kwargs: Any) -> str:
         self._broadcast("media", {
             "media_type": "file",
-            "url": document,
+            "url": file_path,
             "caption": caption,
         })
         return json.dumps({"success": True}, ensure_ascii=False)

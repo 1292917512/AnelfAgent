@@ -71,7 +71,7 @@ class FeishuChannel(BaseChannel):
             ChannelCapability.SEND_PHOTO,
             ChannelCapability.SEND_AUDIO,
             ChannelCapability.SEND_VIDEO,
-            ChannelCapability.SEND_DOCUMENT,
+            ChannelCapability.SEND_FILE,
             # 消息操作
             ChannelCapability.EDIT_MESSAGE,
             ChannelCapability.DELETE_MESSAGE,
@@ -413,14 +413,14 @@ class FeishuChannel(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
-    async def send_document(self, chat_id: str, document: str, caption: str = "", **kwargs: Any) -> str:
+    async def send_file(self, chat_id: str, file_path: str, caption: str = "", **kwargs: Any) -> str:
         """发送文件。"""
         if not self._client:
             return _err("飞书频道未就绪")
         try:
             from . import send as feishu_send
             result = await feishu_send.send_file(
-                self._client, chat_id, document,
+                self._client, chat_id, file_path,
                 caption=caption,
                 reply_to=kwargs.get("reply_to"),
             )

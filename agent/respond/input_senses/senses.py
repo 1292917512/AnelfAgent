@@ -50,7 +50,8 @@ class Senses:
             await consumer.feel(anything)
 
     async def accept_data(self, anything: Everything) -> None:
-        content: str = await self.senses_organ.sensory_output(str(anything))
+        # 向后兼容链路同样只处理正文，避免上下文标签污染 text_content。
+        content: str = await self.senses_organ.sensory_output(anything.get_text_content())
         anything.set_text_content(content)
         await self._push_to_consumers(anything)
 

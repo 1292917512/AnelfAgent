@@ -248,6 +248,11 @@ class Mind:
         """判断外部消息是否应进入待回复队列。"""
         if not bool(getattr(anything, "trigger_mind", True)):
             return False
+        text = (anything.get_text_content() or "").strip()
+        has_media = bool(getattr(anything, "images", None) or getattr(anything, "media_segments", None))
+        if not text and not has_media:
+            log(f"忽略空消息入队: {anything.entity_scope}", "DEBUG", tag="思维")
+            return False
         if (
             self._reflecting
             and isinstance(anything, EverythingGroup)
@@ -788,7 +793,8 @@ class Mind:
     ) -> str:
         """内部任务循环：与对话共享统一思维流程，默认禁止对外发送消息。
 
-        tool_tags 非空时按指定标签加载工具集（替代默认的 "heartbeat" 标签）。
+        tool_tags 非空时按选择器加载工具集（替代默认的 "heartbeat" 标签）。
+        选择器优先按 tag 匹配，同时兼容按 group 名匹配（如 mcp:web-fetch）。
         默认过滤 output 类工具（send_message/send_file 等），可按任务配置放开。
 
         Returns:
@@ -804,30 +810,49 @@ class Mind:
             if s.get("function", {}).get("name", "") not in blocked_tools
         ]
 
-        extra_tags = tool_tags if tool_tags else ["heartbeat"]
+        extra_selectors = tool_tags if tool_tags else ["heartbeat"]
         existing_names = {s.get("function", {}).get("name", "") for s in active_tools}
-        for schema in EntityRegistry.get_tool_schema_by_tags(extra_tags):
-            name = schema.get("function", {}).get("name", "")
-            if name and name not in existing_names and name not in blocked_tools:
-                active_tools.append(schema)
-                existing_names.add(name)
+
+        def _merge_extra_schemas(schemas: List[Dict]) -> None:
+            for schema in schemas:
+                name = schema.get("function", {}).get("name", "")
+                if name and name not in existing_names and name not in blocked_tools:
+                    active_tools.append(schema)
+                    existing_names.add(name)
+
+        for selector in extra_selectors:
+            sel = (selector or "").strip()
+            if not sel:
+                continue
+            # 1) 先按 tag 匹配（历史行为）
+            _merge_extra_schemas(EntityRegistry.get_tool_schema_by_tags([sel]))
+            # 2) 再按 group 匹配，支持 mcp:web-fetch 这类分组选择器
+            _merge_extra_schemas(EntityRegistry.get_tool_schemas_by_group(sel))
+            # 3) 兼容简写：web-fetch -> mcp:web-fetch
+            if ":" not in sel:
+                _merge_extra_schemas(EntityRegistry.get_tool_schemas_by_group(f"mcp:{sel}"))
 
         collected_text: List[str] = []
+        execution_steps: List[str] = []
         output_policy = "放开外发" if allow_output_tools else "禁用外发"
         log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
 
-        await self._think_loop(
-            mode=ThinkMode.REFLECT,
-            tool_chain=[],
-            execution_steps=[],
-            start_time=time.time(),
-            safety_limit=safety_limit,
-            collected_text=collected_text,
-            active_tools=active_tools,
-            anything=None,
-            base_messages=messages,
-            options=options,
-        )
+        try:
+            await self._think_loop(
+                mode=ThinkMode.REFLECT,
+                tool_chain=[],
+                execution_steps=execution_steps,
+                start_time=time.time(),
+                safety_limit=safety_limit,
+                collected_text=collected_text,
+                active_tools=active_tools,
+                anything=None,
+                base_messages=messages,
+                options=options,
+            )
+        finally:
+            # reflect 可能临时激活大量动态工具，结束后必须清理，避免污染后续普通会话。
+            self.pfc.clear_dynamic_tools()
 
         total = "\n".join(collected_text)
         log(f"反思循环结束: 产出 {len(total)} 字", tag="思维")

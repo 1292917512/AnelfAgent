@@ -373,6 +373,10 @@ class PrefrontalCortex:
         self._tool_recall[tool_name] = prev + 1
         log(f"工具命中: {tool_name} ({prev} -> {prev + 1})", "DEBUG", tag="PFC")
 
+    def get_tool_use_total(self) -> int:
+        """返回累计工具命中总次数。"""
+        return sum(self._tool_recall.values())
+
     def get_hot_tool_names(self) -> list[str]:
         """返回 top-N 热工具名（按命中次数降序）。"""
         if not self._tool_recall:

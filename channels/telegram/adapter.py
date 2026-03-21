@@ -65,7 +65,7 @@ class TelegramAdapter(BaseChannel):
             ChannelCapability.SEND_VIDEO,
             ChannelCapability.SEND_AUDIO,
             ChannelCapability.SEND_VOICE,
-            ChannelCapability.SEND_DOCUMENT,
+            ChannelCapability.SEND_FILE,
             ChannelCapability.SEND_LOCATION,
             ChannelCapability.SEND_ANIMATION,
             ChannelCapability.SEND_CONTACT,
@@ -347,12 +347,12 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
-    async def send_document(self, chat_id: str, document: str, caption: str = "", **kwargs: Any) -> str:
+    async def send_file(self, chat_id: str, file_path: str, caption: str = "", **kwargs: Any) -> str:
         """通过 Telegram 发送文件。"""
         try:
             async def _do():
                 from . import send as tg_send
-                return await tg_send.send_document(self._app.bot, chat_id, document, caption=caption)
+                return await tg_send.send_file(self._app.bot, chat_id, file_path, caption=caption)
 
             msg_id = await self._run_in_tg_loop(_do())
             return _ok({"message_id": msg_id, "chat_id": chat_id})

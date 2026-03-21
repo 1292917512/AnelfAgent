@@ -32,7 +32,8 @@ class TagProcessor(InputProcessor):
         from core.tags import etag_all
         from agent.respond.input_senses.built_in.sense_file import SensePath
 
-        content = str(anything)
+        # 只处理原始正文，避免把 [time]/[uid]/[channel] 等上下文标签写回正文。
+        content = anything.get_text_content()
         sense = SensePath()
         label_list = etag_all(content)
         for label in label_list:

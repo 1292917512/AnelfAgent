@@ -148,4 +148,4 @@ def _resolve_media_sender(mime: str):
         if "ogg" in mime or "opus" in mime:
             return tg_send.send_voice, {}
         return tg_send.send_audio, {}
-    return tg_send.send_document, {}
+    return tg_send.send_file, {}

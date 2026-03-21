@@ -199,7 +199,7 @@ web_tag = Tag(tag_name="web", tag_name_desc="网络搜索与页面抓取", visib
 send_text_tag = Tag(tag_name="send_text", tag_name_desc="文本消息发送能力", visible_to_llm=False)
 send_photo_tag = Tag(tag_name="send_photo", tag_name_desc="图片发送能力", visible_to_llm=False)
 send_voice_tag = Tag(tag_name="send_voice", tag_name_desc="语音发送能力", visible_to_llm=False)
-send_document_tag = Tag(tag_name="send_document", tag_name_desc="文件发送能力", visible_to_llm=False)
+send_file_tag = Tag(tag_name="send_file", tag_name_desc="文件发送能力", visible_to_llm=False)
 
 # 媒体处理子标签（PFC 从 [media_file:类型:路径] 解析后用于工具路由）
 media_image_tag = Tag(tag_name="media:image", tag_name_desc="图片识别与处理", visible_to_llm=False)

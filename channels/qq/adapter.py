@@ -75,7 +75,7 @@ class OneBotV11Channel(BaseChannel):
             ChannelCapability.SEND_TEXT,
             ChannelCapability.SEND_PHOTO,
             ChannelCapability.SEND_VOICE,
-            ChannelCapability.SEND_DOCUMENT,
+            ChannelCapability.SEND_FILE,
             ChannelCapability.DELETE_MESSAGE,
             ChannelCapability.FORWARD_MESSAGE,
             ChannelCapability.GET_CHAT_INFO,
@@ -252,18 +252,18 @@ class OneBotV11Channel(BaseChannel):
         ok = await self._send_to(chat_id, channel_type, ob_message)
         return _ok({"chat_id": chat_id}) if ok else _err("发送语音失败")
 
-    async def send_document(self, chat_id: str, document: str, caption: str = "", **kwargs: Any) -> str:
+    async def send_file(self, chat_id: str, file_path: str, caption: str = "", **kwargs: Any) -> str:
         channel_type = kwargs.get("channel_type", "private")
         try:
             cid = int(chat_id)
         except (ValueError, TypeError):
             return _err(f"无效的 ID: {chat_id}")
-        file_value = self._to_ob_upload_uri(document)
-        resolved = self._resolve_local_file_path(document)
-        file_name = os.path.basename(resolved if os.path.isfile(resolved) else document) or "file"
+        file_value = self._to_ob_upload_uri(file_path)
+        resolved = self._resolve_local_file_path(file_path)
+        file_name = os.path.basename(resolved if os.path.isfile(resolved) else file_path) or "file"
         if caption:
             # OneBot upload_*_file 不支持独立 caption 字段，这里仅记录提示，文件名仍使用真实文件名。
-            log("QQ send_document 暂不支持 caption，已忽略说明文字", "DEBUG", tag="通道")
+            log("QQ send_file 暂不支持 caption，已忽略说明文字", "DEBUG", tag="通道")
         action = "upload_group_file" if channel_type == "group" else "upload_private_file"
         params: Dict[str, Any] = {
             "name": file_name,
@@ -283,7 +283,7 @@ class OneBotV11Channel(BaseChannel):
             wording = str(result.get("wording") or "")
         if "EPERM" in f"{message} {wording}" and os.path.isfile(resolved):
             params["file"] = self._to_ob_file(resolved)
-            log("QQ send_document 检测到 EPERM，回退 base64 上传", "WARNING", tag="通道")
+            log("QQ send_file 检测到 EPERM，回退 base64 上传", "WARNING", tag="通道")
             result = await self._call_api_raw(action, params)
             if result and result.get("retcode") == 0:
                 return _ok({"chat_id": chat_id})
