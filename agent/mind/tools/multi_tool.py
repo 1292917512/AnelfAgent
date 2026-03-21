@@ -106,17 +106,21 @@ async def _run_task(
             tool_name, args_str, timeout=_DEFAULT_TASK_TIMEOUT,
         )
         duration_ms = round((time.time() - t0) * 1000)
+        semantic_success, semantic_error = _infer_result_success(result)
 
         await event_bus.emit(EVENT_MULTI_TOOL_PROGRESS, {
             "group_id": group_id, "task_id": task_id,
             "tool": tool_name, "step": step,
-            "event": "done", "success": True, "duration_ms": duration_ms,
+            "event": "done", "success": semantic_success, "duration_ms": duration_ms,
         })
 
-        return {
+        output: Dict[str, Any] = {
             "id": task_id, "tool": tool_name, "step": step,
-            "success": True, "result": result, "duration_ms": duration_ms,
+            "success": semantic_success, "result": result, "duration_ms": duration_ms,
         }
+        if not semantic_success and semantic_error:
+            output["error"] = semantic_error
+        return output
     except Exception as exc:
         duration_ms = round((time.time() - t0) * 1000)
 
@@ -131,6 +135,29 @@ async def _run_task(
             "success": False, "error": f"{type(exc).__name__}: {exc}",
             "duration_ms": duration_ms,
         }
+
+
+def _infer_result_success(result: Any) -> tuple[bool, str]:
+    """根据工具返回语义判断任务成功与否（兼容 JSON 字符串返回）。"""
+    payload = result
+    if isinstance(result, str):
+        try:
+            payload = json.loads(result)
+        except json.JSONDecodeError:
+            return True, ""
+
+    if isinstance(payload, dict):
+        if payload.get("success") is False:
+            return False, str(payload.get("error", "") or "tool returned success=false")
+        if payload.get("ok") is False:
+            return False, str(payload.get("error", "") or "tool returned ok=false")
+        status = str(payload.get("status", "")).lower()
+        if status in {"error", "failed", "failure"}:
+            return False, str(payload.get("error", "") or f"tool status={status}")
+        if payload.get("error"):
+            return False, str(payload.get("error"))
+
+    return True, ""
 
 
 async def _execute_task_graph(

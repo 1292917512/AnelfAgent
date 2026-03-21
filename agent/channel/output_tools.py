@@ -113,9 +113,22 @@ def _make_capability_tool(cap_value: str, method: Any):
             return json.dumps({"success": False, "error": f"频道 '{channel_id}' 不支持 {cap_value}"}, ensure_ascii=False)
         try:
             call_args = {k: v for k, v in kwargs.items() if k in param_names and not k.startswith("_")}
+            if "chat_id" in call_args and isinstance(call_args["chat_id"], str):
+                resolved_chat_id, forced_ct = _resolve_send_target(channel_id, call_args["chat_id"])
+                call_args["chat_id"] = resolved_chat_id
+                if forced_ct and "channel_type" in param_names and not call_args.get("channel_type"):
+                    call_args["channel_type"] = forced_ct
             raw = await fn(**call_args)
-            target_id = call_args.get("chat_id", "")
-            parsed, ok = _check_send_result(raw, channel_id, target_id)
+            target_id = kwargs.get("chat_id", call_args.get("chat_id", ""))
+            parsed, ok = _check_send_result(raw, channel_id, str(target_id))
+            resolved_chat_id = call_args.get("chat_id")
+            if isinstance(target_id, str) and isinstance(resolved_chat_id, str):
+                _attach_target_resolution_meta(
+                    parsed,
+                    original_target_id=target_id,
+                    resolved_target_id=resolved_chat_id,
+                    resolved_channel_type=_resolve_channel_type(channel_id, resolved_chat_id),
+                )
             if not ok:
                 log(f"{cap_value} 失败: [{channel_id}] {parsed.get('error', '?')}", "WARNING", tag="通道")
             return json.dumps(parsed, ensure_ascii=False)
@@ -166,6 +179,46 @@ def _get_channel(channel_id: str):
 def _resolve_channel_type(channel_id: str, target_id: str) -> str:
     from .manager import get_channel_manager
     return get_channel_manager().resolve_channel_type(channel_id, target_id)
+
+
+def _normalize_target_id(target_id: str) -> tuple[str, Optional[str]]:
+    """标准化目标会话 ID，兼容 user:/group: 前缀写法。"""
+    raw = (target_id or "").strip()
+    if not raw or ":" not in raw:
+        return raw, None
+
+    prefix, rest = raw.split(":", 1)
+    value = rest.strip()
+    if not value:
+        return raw, None
+
+    p = prefix.strip().lower()
+    if p in {"user", "uid", "private", "friend", "dm"}:
+        return value, "private"
+    if p in {"group", "gid"}:
+        return value, "group"
+    return raw, None
+
+
+def _resolve_send_target(channel_id: str, target_id: str) -> tuple[str, str]:
+    """统一解析发送目标 ID 与 channel_type。"""
+    resolved_target_id, forced_ct = _normalize_target_id(target_id)
+    final_target_id = resolved_target_id or (target_id or "").strip()
+    channel_type = forced_ct or _resolve_channel_type(channel_id, final_target_id)
+    return final_target_id, channel_type
+
+
+def _attach_target_resolution_meta(
+        parsed: dict,
+        *,
+        original_target_id: str,
+        resolved_target_id: str,
+        resolved_channel_type: str,
+) -> None:
+    """在返回结果中附加目标规范化信息（仅当发生转换时）。"""
+    if resolved_target_id != original_target_id:
+        parsed["resolved_target_id"] = resolved_target_id
+        parsed["resolved_channel_type"] = resolved_channel_type
 
 
 def _list_running_channels() -> list[str]:
@@ -282,10 +335,16 @@ async def send_message(channel_id: str, target_id: str, content: str = "") -> st
     if err:
         return err
     try:
-        ct = _resolve_channel_type(channel_id, target_id)
-        log(f"调用 {channel_id}.send_text({target_id}, {ct}, {content[:50]}...)", "DEBUG", tag="通道")
-        raw = await ch.send_text(target_id, content, channel_type=ct)
+        resolved_target_id, ct = _resolve_send_target(channel_id, target_id)
+        log(f"调用 {channel_id}.send_text({resolved_target_id}, {ct}, {content[:50]}...)", "DEBUG", tag="通道")
+        raw = await ch.send_text(resolved_target_id, content, channel_type=ct)
         parsed, ok = _check_send_result(raw, channel_id, target_id)
+        _attach_target_resolution_meta(
+            parsed,
+            original_target_id=target_id,
+            resolved_target_id=resolved_target_id,
+            resolved_channel_type=ct,
+        )
         parsed["content"] = content[:200]
         if ok:
             log(f"消息已发送: [{channel_id}] -> {target_id} ({len(content)}字)", tag="通道")
@@ -310,9 +369,15 @@ async def send_photo(channel_id: str, target_id: str, photo: str, caption: str =
     if err:
         return err
     try:
-        ct = _resolve_channel_type(channel_id, target_id)
-        raw = await ch.send_photo(target_id, photo, caption=caption, channel_type=ct)
+        resolved_target_id, ct = _resolve_send_target(channel_id, target_id)
+        raw = await ch.send_photo(resolved_target_id, photo, caption=caption, channel_type=ct)
         parsed, ok = _check_send_result(raw, channel_id, target_id)
+        _attach_target_resolution_meta(
+            parsed,
+            original_target_id=target_id,
+            resolved_target_id=resolved_target_id,
+            resolved_channel_type=ct,
+        )
         parsed["media_path"] = photo
         if caption:
             parsed["caption"] = caption
@@ -339,9 +404,15 @@ async def send_voice(channel_id: str, target_id: str, voice: str) -> str:
     if err:
         return err
     try:
-        ct = _resolve_channel_type(channel_id, target_id)
-        raw = await ch.send_voice(target_id, voice, channel_type=ct)
+        resolved_target_id, ct = _resolve_send_target(channel_id, target_id)
+        raw = await ch.send_voice(resolved_target_id, voice, channel_type=ct)
         parsed, ok = _check_send_result(raw, channel_id, target_id)
+        _attach_target_resolution_meta(
+            parsed,
+            original_target_id=target_id,
+            resolved_target_id=resolved_target_id,
+            resolved_channel_type=ct,
+        )
         parsed["media_path"] = voice
         if ok:
             log(f"语音已发送: [{channel_id}] -> {target_id}", tag="通道")
@@ -367,9 +438,15 @@ async def send_file(channel_id: str, target_id: str, file_path: str, caption: st
     if err:
         return err
     try:
-        ct = _resolve_channel_type(channel_id, target_id)
-        raw = await ch.send_document(target_id, file_path, caption=caption, channel_type=ct)
+        resolved_target_id, ct = _resolve_send_target(channel_id, target_id)
+        raw = await ch.send_document(resolved_target_id, file_path, caption=caption, channel_type=ct)
         parsed, ok = _check_send_result(raw, channel_id, target_id)
+        _attach_target_resolution_meta(
+            parsed,
+            original_target_id=target_id,
+            resolved_target_id=resolved_target_id,
+            resolved_channel_type=ct,
+        )
         parsed["media_path"] = file_path
         if caption:
             parsed["caption"] = caption
