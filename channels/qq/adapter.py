@@ -11,6 +11,7 @@ import json
 import os
 import re
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import aiohttp
@@ -174,6 +175,40 @@ class OneBotV11Channel(BaseChannel):
         return segments
 
     @staticmethod
+    def _resolve_local_file_path(path: str) -> str:
+        """解析媒体路径：支持绝对路径、项目相对路径和 workspace 相对路径。"""
+        raw = (path or "").strip()
+        if not raw:
+            return raw
+        if raw.startswith(("http://", "https://", "base64://", "data:", "file://")):
+            return raw
+
+        expanded = os.path.expandvars(os.path.expanduser(raw))
+        if os.path.isabs(expanded):
+            return os.path.normpath(expanded)
+
+        candidates = [os.path.normpath(expanded)]
+
+        workspace_root = "workspace"
+        try:
+            from core.config import ConfigManager
+            workspace_root = str(ConfigManager.get("workspace_root", "workspace") or "workspace")
+        except Exception:
+            pass
+
+        ws_norm = os.path.normpath(workspace_root)
+        norm_expanded = os.path.normpath(expanded)
+        if norm_expanded.startswith(ws_norm + os.sep) or norm_expanded == ws_norm:
+            candidates.append(norm_expanded)
+        else:
+            candidates.append(os.path.normpath(os.path.join(ws_norm, norm_expanded)))
+
+        for cand in candidates:
+            if os.path.isfile(cand):
+                return os.path.abspath(cand)
+        return os.path.abspath(candidates[-1])
+
+    @staticmethod
     def _to_ob_file(path: str) -> str:
         """将本地文件路径转为 OneBot ``base64://`` 格式，URL 和已有 base64 格式原样返回。
 
@@ -182,9 +217,20 @@ class OneBotV11Channel(BaseChannel):
         """
         if path.startswith(("http://", "https://", "base64://", "data:")):
             return path
-        if os.path.isfile(path):
-            with open(path, "rb") as f:
+        resolved = OneBotV11Channel._resolve_local_file_path(path)
+        if os.path.isfile(resolved):
+            with open(resolved, "rb") as f:
                 return "base64://" + base64.b64encode(f.read()).decode()
+        return path
+
+    @staticmethod
+    def _to_ob_upload_uri(path: str) -> str:
+        """将文件路径转为 OneBot upload_*_file 可识别的 URI。"""
+        if path.startswith(("http://", "https://", "file://", "base64://", "data:")):
+            return path
+        resolved = OneBotV11Channel._resolve_local_file_path(path)
+        if os.path.isfile(resolved):
+            return Path(resolved).as_uri()
         return path
 
     async def send_photo(self, chat_id: str, photo: str, caption: str = "", **kwargs: Any) -> str:
@@ -212,13 +258,19 @@ class OneBotV11Channel(BaseChannel):
             cid = int(chat_id)
         except (ValueError, TypeError):
             return _err(f"无效的 ID: {chat_id}")
+        file_value = self._to_ob_upload_uri(document)
+        resolved = self._resolve_local_file_path(document)
+        file_name = os.path.basename(resolved if os.path.isfile(resolved) else document) or "file"
+        if caption:
+            # OneBot upload_*_file 不支持独立 caption 字段，这里仅记录提示，文件名仍使用真实文件名。
+            log("QQ send_document 暂不支持 caption，已忽略说明文字", "DEBUG", tag="通道")
         if channel_type == "group":
             ok = await self._call_api("upload_group_file", {
-                "group_id": cid, "file": document, "name": caption or document.rsplit("/", 1)[-1],
+                "group_id": cid, "file": file_value, "name": file_name,
             })
         else:
             ok = await self._call_api("upload_private_file", {
-                "user_id": cid, "file": document, "name": caption or document.rsplit("/", 1)[-1],
+                "user_id": cid, "file": file_value, "name": file_name,
             })
         return _ok({"chat_id": chat_id}) if ok else _err("发送文件失败")
 
