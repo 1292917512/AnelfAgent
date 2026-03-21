@@ -264,15 +264,33 @@ class OneBotV11Channel(BaseChannel):
         if caption:
             # OneBot upload_*_file 不支持独立 caption 字段，这里仅记录提示，文件名仍使用真实文件名。
             log("QQ send_document 暂不支持 caption，已忽略说明文字", "DEBUG", tag="通道")
-        if channel_type == "group":
-            ok = await self._call_api("upload_group_file", {
-                "group_id": cid, "file": file_value, "name": file_name,
-            })
-        else:
-            ok = await self._call_api("upload_private_file", {
-                "user_id": cid, "file": file_value, "name": file_name,
-            })
-        return _ok({"chat_id": chat_id}) if ok else _err("发送文件失败")
+        action = "upload_group_file" if channel_type == "group" else "upload_private_file"
+        params: Dict[str, Any] = {
+            "name": file_name,
+            "file": file_value,
+            ("group_id" if channel_type == "group" else "user_id"): cid,
+        }
+        result = await self._call_api_raw(action, params)
+        if result and result.get("retcode") == 0:
+            return _ok({"chat_id": chat_id})
+
+        # NapCat 在 macOS App Sandbox 下可能无法直接读取外部本地路径（EPERM），
+        # 回退到 base64:// 可绕过路径权限问题。
+        message = ""
+        wording = ""
+        if result:
+            message = str(result.get("message") or "")
+            wording = str(result.get("wording") or "")
+        if "EPERM" in f"{message} {wording}" and os.path.isfile(resolved):
+            params["file"] = self._to_ob_file(resolved)
+            log("QQ send_document 检测到 EPERM，回退 base64 上传", "WARNING", tag="通道")
+            result = await self._call_api_raw(action, params)
+            if result and result.get("retcode") == 0:
+                return _ok({"chat_id": chat_id})
+
+        if result:
+            log(f"OneBot v11 API 失败: {action} -> {result}", "WARNING")
+        return _err("发送文件失败")
 
     async def delete_message(self, chat_id: str, message_id: str, **kwargs: Any) -> str:
         ok = await self._call_api("delete_msg", {"message_id": int(message_id)})
