@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from entities._sdk import deferred_tool, activate_group
 from core.log import log
@@ -292,6 +292,47 @@ def _check_send_result(raw: Any, channel_id: str, target_id: str) -> tuple[dict,
     return parsed, ok
 
 
+async def _execute_send_action(
+        *,
+        channel_id: str,
+        target_id: str,
+        operation: str,
+        invoke: Callable[[Any, str, str], Awaitable[Any]],
+        enrich: Optional[Callable[[dict, bool], None]] = None,
+        success_suffix: str = "",
+) -> str:
+    """统一发送执行管道：校验 -> 目标解析 -> 调用频道 -> 结果解析 -> 日志。"""
+    ch, err = _validate_channel(channel_id)
+    if err:
+        return err
+
+    try:
+        resolved_target_id, channel_type = _resolve_send_target(channel_id, target_id)
+        raw = await invoke(ch, resolved_target_id, channel_type)
+        parsed, ok = _check_send_result(raw, channel_id, target_id)
+        _attach_target_resolution_meta(
+            parsed,
+            original_target_id=target_id,
+            resolved_target_id=resolved_target_id,
+            resolved_channel_type=channel_type,
+        )
+        if enrich:
+            enrich(parsed, ok)
+
+        if ok:
+            log(f"{operation}已发送: [{channel_id}] -> {target_id}{success_suffix}", tag="通道")
+        else:
+            log(f"{operation}发送失败: [{channel_id}] -> {target_id}: {parsed.get('error', '?')}", "WARNING", tag="通道")
+        return json.dumps(parsed, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"发送{operation}失败: {e}",
+            "channel_id": channel_id,
+            "target_id": target_id,
+        }, ensure_ascii=False)
+
+
 # ── 工具实现 ─────────────────────────────────────────────────────────
 
 @deferred_tool(group="output", tags=["core"], source="channel.output")
@@ -331,28 +372,22 @@ async def send_message(channel_id: str, target_id: str, content: str = "") -> st
     """
     if not content or not content.strip():
         return json.dumps({"success": False, "error": "content 参数不能为空，请提供要发送的消息内容"}, ensure_ascii=False)
-    ch, err = _validate_channel(channel_id)
-    if err:
-        return err
-    try:
-        resolved_target_id, ct = _resolve_send_target(channel_id, target_id)
-        log(f"调用 {channel_id}.send_text({resolved_target_id}, {ct}, {content[:50]}...)", "DEBUG", tag="通道")
-        raw = await ch.send_text(resolved_target_id, content, channel_type=ct)
-        parsed, ok = _check_send_result(raw, channel_id, target_id)
-        _attach_target_resolution_meta(
-            parsed,
-            original_target_id=target_id,
-            resolved_target_id=resolved_target_id,
-            resolved_channel_type=ct,
-        )
+
+    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
+        log(f"调用 {channel_id}.send_text({resolved_target_id}, {channel_type}, {content[:50]}...)", "DEBUG", tag="通道")
+        return await ch.send_text(resolved_target_id, content, channel_type=channel_type)
+
+    def _enrich(parsed: dict, _: bool) -> None:
         parsed["content"] = content[:200]
-        if ok:
-            log(f"消息已发送: [{channel_id}] -> {target_id} ({len(content)}字)", tag="通道")
-        else:
-            log(f"消息发送失败: [{channel_id}] -> {target_id}: {parsed.get('error', '?')}", "WARNING", tag="通道")
-        return json.dumps(parsed, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"success": False, "error": f"发送失败: {e}", "channel_id": channel_id, "target_id": target_id}, ensure_ascii=False)
+
+    return await _execute_send_action(
+        channel_id=channel_id,
+        target_id=target_id,
+        operation="消息",
+        invoke=_invoke,
+        enrich=_enrich,
+        success_suffix=f" ({len(content)}字)",
+    )
 
 
 @deferred_tool(group="output", tags=["send_photo"], source="channel.output")
@@ -365,30 +400,23 @@ async def send_photo(channel_id: str, target_id: str, photo: str, caption: str =
         photo: 图片文件路径或 URL
         caption: 图片说明文字
     """
-    ch, err = _validate_channel(channel_id)
-    if err:
-        return err
-    try:
-        resolved_target_id, ct = _resolve_send_target(channel_id, target_id)
-        raw = await ch.send_photo(resolved_target_id, photo, caption=caption, channel_type=ct)
-        parsed, ok = _check_send_result(raw, channel_id, target_id)
-        _attach_target_resolution_meta(
-            parsed,
-            original_target_id=target_id,
-            resolved_target_id=resolved_target_id,
-            resolved_channel_type=ct,
-        )
+    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
+        return await ch.send_photo(resolved_target_id, photo, caption=caption, channel_type=channel_type)
+
+    def _enrich(parsed: dict, ok: bool) -> None:
         parsed["media_path"] = photo
         if caption:
             parsed["caption"] = caption
         if ok:
-            log(f"图片已发送: [{channel_id}] -> {target_id}", tag="通道")
             parsed["sent_media"] = f"[media_type:image][media_path:{photo}]"
-        else:
-            log(f"图片发送失败: [{channel_id}] -> {target_id}: {parsed.get('error', '?')}", "WARNING", tag="通道")
-        return json.dumps(parsed, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"success": False, "error": f"发送图片失败: {e}", "channel_id": channel_id, "target_id": target_id, "media_path": photo}, ensure_ascii=False)
+
+    return await _execute_send_action(
+        channel_id=channel_id,
+        target_id=target_id,
+        operation="图片",
+        invoke=_invoke,
+        enrich=_enrich,
+    )
 
 
 @deferred_tool(group="output", tags=["send_voice"], source="channel.output")
@@ -400,28 +428,21 @@ async def send_voice(channel_id: str, target_id: str, voice: str) -> str:
         target_id: 目标会话 ID（用户 uid 或群组 group_id）
         voice: 语音文件路径
     """
-    ch, err = _validate_channel(channel_id)
-    if err:
-        return err
-    try:
-        resolved_target_id, ct = _resolve_send_target(channel_id, target_id)
-        raw = await ch.send_voice(resolved_target_id, voice, channel_type=ct)
-        parsed, ok = _check_send_result(raw, channel_id, target_id)
-        _attach_target_resolution_meta(
-            parsed,
-            original_target_id=target_id,
-            resolved_target_id=resolved_target_id,
-            resolved_channel_type=ct,
-        )
+    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
+        return await ch.send_voice(resolved_target_id, voice, channel_type=channel_type)
+
+    def _enrich(parsed: dict, ok: bool) -> None:
         parsed["media_path"] = voice
         if ok:
-            log(f"语音已发送: [{channel_id}] -> {target_id}", tag="通道")
             parsed["sent_media"] = f"[media_type:voice][media_path:{voice}]"
-        else:
-            log(f"语音发送失败: [{channel_id}] -> {target_id}: {parsed.get('error', '?')}", "WARNING", tag="通道")
-        return json.dumps(parsed, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"success": False, "error": f"发送语音失败: {e}", "channel_id": channel_id, "target_id": target_id, "media_path": voice}, ensure_ascii=False)
+
+    return await _execute_send_action(
+        channel_id=channel_id,
+        target_id=target_id,
+        operation="语音",
+        invoke=_invoke,
+        enrich=_enrich,
+    )
 
 
 @deferred_tool(group="output", tags=["send_document"], source="channel.output")
@@ -434,27 +455,20 @@ async def send_file(channel_id: str, target_id: str, file_path: str, caption: st
         file_path: 文件路径
         caption: 文件说明文字
     """
-    ch, err = _validate_channel(channel_id)
-    if err:
-        return err
-    try:
-        resolved_target_id, ct = _resolve_send_target(channel_id, target_id)
-        raw = await ch.send_document(resolved_target_id, file_path, caption=caption, channel_type=ct)
-        parsed, ok = _check_send_result(raw, channel_id, target_id)
-        _attach_target_resolution_meta(
-            parsed,
-            original_target_id=target_id,
-            resolved_target_id=resolved_target_id,
-            resolved_channel_type=ct,
-        )
+    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
+        return await ch.send_document(resolved_target_id, file_path, caption=caption, channel_type=channel_type)
+
+    def _enrich(parsed: dict, ok: bool) -> None:
         parsed["media_path"] = file_path
         if caption:
             parsed["caption"] = caption
         if ok:
-            log(f"文件已发送: [{channel_id}] -> {target_id}", tag="通道")
             parsed["sent_media"] = f"[media_type:file][media_path:{file_path}]"
-        else:
-            log(f"文件发送失败: [{channel_id}] -> {target_id}: {parsed.get('error', '?')}", "WARNING", tag="通道")
-        return json.dumps(parsed, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"success": False, "error": f"发送文件失败: {e}", "channel_id": channel_id, "target_id": target_id, "media_path": file_path}, ensure_ascii=False)
+
+    return await _execute_send_action(
+        channel_id=channel_id,
+        target_id=target_id,
+        operation="文件",
+        invoke=_invoke,
+        enrich=_enrich,
+    )
