@@ -219,7 +219,16 @@ class Mind:
         preview = str(anything)[:80] if anything else ""
         log(f"感知输入: {preview}", tag="思维")
         await self.add_conversation(anything)
-        if anything.trigger_mind:
+        should_enqueue = self.should_enqueue_external_message(anything)
+        if (
+            not should_enqueue
+            and bool(getattr(anything, "trigger_mind", True))
+            and self._reflecting
+            and isinstance(anything, EverythingGroup)
+            and not bool(getattr(anything, "to_me", False))
+        ):
+            log(f"反思中忽略非 @ 群消息: {anything.entity_scope}", "DEBUG", tag="思维")
+        if should_enqueue:
             await self.pfc.add_task(anything)
             self._update_channel_snapshot(anything)
 
@@ -230,6 +239,22 @@ class Mind:
     @property
     def is_reply(self) -> bool:
         return bool(self._active_scopes)
+
+    @property
+    def is_reflecting(self) -> bool:
+        return self._reflecting
+
+    def should_enqueue_external_message(self, anything: Everything) -> bool:
+        """判断外部消息是否应进入待回复队列。"""
+        if not bool(getattr(anything, "trigger_mind", True)):
+            return False
+        if (
+            self._reflecting
+            and isinstance(anything, EverythingGroup)
+            and not bool(getattr(anything, "to_me", False))
+        ):
+            return False
+        return True
 
     async def execute_mind(self, *, is_heartbeat: bool = False) -> None:
         """触发自主循环。通过 _cycle_lock 防止多个循环并发执行。"""

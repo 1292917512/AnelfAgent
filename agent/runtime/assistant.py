@@ -96,7 +96,7 @@ class AgentAssistant:
                 log(f"批量处理 {len(batch)} 条消息", "DEBUG", tag="运行时")
                 for anything in batch:
                     await self.mind.accept_feel(anything)
-                if self.mind._heartbeat_active:
+                if self.mind.is_reflecting:
                     await self._notify_heartbeat_busy(batch)
                 await self.mind.execute_mind()
                 await self._drain_pending_tasks()
@@ -110,6 +110,8 @@ class AgentAssistant:
         """心跳进行中收到消息，向来源频道发送简短提示。"""
         notified_scopes: set[str] = set()
         for anything in batch:
+            if not self.mind.should_enqueue_external_message(anything):
+                continue
             if not anything.adapter_key:
                 continue
             scope = anything.entity_scope
