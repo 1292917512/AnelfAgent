@@ -184,10 +184,8 @@ async def _execute_task_graph(
 def _build_sync_result(
     parsed_tasks: List[Dict[str, Any]],
     all_results: List[Dict[str, Any]],
-    *,
-    degraded_from_async: bool = False,
 ) -> str:
-    """构建同步执行结果（可标记为 async 降级）。"""
+    """构建同步执行结果。"""
     completed = sum(1 for r in all_results if r["success"])
     failed = len(all_results) - completed
     has_end_reply = any(t["tool"] == "end_reply" for t in parsed_tasks)
@@ -201,9 +199,6 @@ def _build_sync_result(
     }
     if has_end_reply:
         result["_end_reply"] = True
-    if degraded_from_async:
-        result["degraded_from_async"] = True
-        result["hint"] = "当前无可回调目标，async_mode 已自动降级为同步执行"
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -326,12 +321,14 @@ async def _run_background_group(group_id: str, parsed_tasks: List[Dict[str, Any]
         "failed": failed,
     })
 
-    # 完成后从运行列表移除
-    _background_groups.pop(group_id, None)
+    # 保留已完成任务组供后续 check_multi_tool_status 查询（超限后统一清理）
     _cleanup_old_groups()
 
-    # 通过 accept_feel 标准入口注入结果（和频道消息统一流程）
-    if _mind_ref is not None and group.reply_target:
+    # 完成后注入结果并主动触发下一轮
+    if _mind_ref is None:
+        return
+
+    if group.reply_target:
         from agent.messages import MessageToolResult
 
         result_msg = MessageToolResult(
@@ -343,11 +340,37 @@ async def _run_background_group(group_id: str, parsed_tasks: List[Dict[str, Any]
         try:
             await _mind_ref.accept_feel(result_msg)
             log(f"后台任务结果已通过 accept_feel 注入: {group_id}", tag="多工具")
-            # 如果 AI 空闲则立即触发；正忙时 _execute_reply finally 会自动检查 pending 并触发
             if not _mind_ref.is_reply:
-                asyncio.create_task(_mind_ref.try_execute_mind())
+                asyncio.create_task(_mind_ref.execute_mind())
         except Exception as exc:
             log(f"后台任务结果注入失败: {exc}", "WARNING", tag="多工具")
+        return
+
+    # 无 reply_target（如任务 reflect 场景）：注入通用任务并在空闲后主动触发一轮
+    if _pfc_ref is None:
+        log(f"后台任务完成但未注入（PFC 未就绪）: {group_id}", "WARNING", tag="多工具")
+        return
+    try:
+        from agent.mind.autonomous import MindTask, TaskType
+
+        _pfc_ref.add_temporary({
+            "role": "user",
+            "content": (
+                f"{notification}\n"
+                "[系统提示] 后台任务已完成，请基于结果继续当前流程；"
+                "若无需继续请调用 end_reply 结束。"
+            ),
+        })
+        _pfc_ref.add_general_task(MindTask(
+            task_type=TaskType.SELF_TASK,
+            preview=f"后台任务完成: {group_id}",
+            metadata={"source": "multi_tool_async", "group_id": group_id},
+        ))
+        log(f"后台任务结果已注入通用任务: {group_id}", tag="多工具")
+        # 复用 Mind 内部 _cycle_lock 串行能力：若当前仍在执行，本任务会排队等待后自动触发。
+        asyncio.create_task(_mind_ref.execute_mind())
+    except Exception as exc:
+        log(f"后台任务通用注入失败: {exc}", "WARNING", tag="多工具")
 
 
 def _cleanup_old_groups() -> None:
@@ -369,15 +392,17 @@ def _cleanup_old_groups() -> None:
     description=(
         "批量执行多个工具调用。同一 step 并行执行、不同 step 按序执行，全部完成后一起返回结果。"
         "async_mode=true 时不阻塞当前对话，任务在后台执行完成后系统自动触发新一轮思考并提供结果。"
+        "可通过 auto_end 控制是否立即结束本轮。"
     ),
     timeout=180.0,
 )
-async def multi_tool_invoke(tasks: list, async_mode: bool = False) -> str:
+async def multi_tool_invoke(tasks: list, async_mode: bool = False, auto_end: bool = False) -> str:
     """批量执行多个工具调用，支持并行/顺序编排和异步后台执行。
 
     Args:
         tasks: 工具调用数组，每个元素必须是对象: {"tool": "工具名", "args": {"参数名": 值}, "step": 阶段号整数默认1, "id": "可选标识"}。同一step并行执行，不同step按序执行。
         async_mode: 为 true 时不阻塞当前对话，任务在后台执行，完成后系统自动触发新一轮思考并提供结果
+        auto_end: 仅在 async_mode=true 时生效。True 表示本轮自动结束，False 表示继续当前轮由 AI 自主决定（默认 False）
     """
     error, parsed = _parse_and_validate(tasks)
     if error:
@@ -396,13 +421,6 @@ async def multi_tool_invoke(tasks: list, async_mode: bool = False) -> str:
                     reply_target = scope[6:]
                 break
 
-        # 无可回调目标（如 Web 手动任务）时，后台完成结果无法注入后续上下文。
-        # 这种场景自动降级为同步执行，避免本轮提前结束后“看起来不继续”。
-        if not reply_target:
-            log(f"async_mode 无回调目标，降级同步执行: {group_id}", "WARNING", tag="多工具")
-            all_results = await _execute_task_graph(parsed, group_id)
-            return _build_sync_result(parsed, all_results, degraded_from_async=True)
-
         group = TaskGroup(
             group_id=group_id,
             tasks=[TaskRecord(id=t["id"], tool=t["tool"], step=t["step"]) for t in parsed],
@@ -416,14 +434,18 @@ async def multi_tool_invoke(tasks: list, async_mode: bool = False) -> str:
         log(f"后台任务组启动: {group_id} ({len(parsed)} 个任务, {len(step_set)} 个阶段)", tag="多工具")
         asyncio.create_task(_run_background_group(group_id, parsed))
 
-        return json.dumps({
+        result: Dict[str, Any] = {
             "status": "running",
             "group_id": group_id,
             "total_tasks": len(parsed),
             "total_steps": len(step_set),
-            "_end_reply": True,
-            "hint": "任务已在后台执行，本轮将自动结束。完成后系统会自动触发新一轮思考并注入结果",
-        }, ensure_ascii=False)
+        }
+        if auto_end:
+            result["_end_reply"] = True
+            result["hint"] = "任务已在后台执行，本轮将自动结束。完成后系统会自动触发新一轮思考并注入结果"
+        else:
+            result["hint"] = "任务已在后台执行。你可继续当前轮操作，或调用 end_reply 主动结束"
+        return json.dumps(result, ensure_ascii=False)
 
     # 同步模式
     group_id = f"mt_{uuid.uuid4().hex[:8]}"
@@ -433,6 +455,14 @@ async def multi_tool_invoke(tasks: list, async_mode: bool = False) -> str:
 
 
 multi_tool_invoke._schema_extra = {  # type: ignore[attr-defined]
+    "async_mode": {
+        "type": "boolean",
+        "description": "是否后台异步执行。true 时立即返回任务组信息，后台完成后会主动触发后续思考。",
+    },
+    "auto_end": {
+        "type": "boolean",
+        "description": "仅 async_mode=true 时生效。true 自动结束本轮，false 继续当前轮。",
+    },
     "tasks": {
         "items": {
             "type": "object",
@@ -469,15 +499,19 @@ async def check_multi_tool_status(group_id: str = "") -> str:
 
 
 def _list_all_groups() -> str:
-    """列出当前运行中的后台任务。"""
+    """列出后台任务组概况（运行中 + 已完成保留项）。"""
     if not _background_groups:
-        return json.dumps({"running": 0, "hint": "当前无运行中的后台任务"}, ensure_ascii=False)
+        return json.dumps({"running": 0, "total": 0, "hint": "当前无后台任务"}, ensure_ascii=False)
 
     groups_info: List[Dict[str, Any]] = []
+    running_count = 0
     for g in _background_groups.values():
         done = sum(1 for r in g.tasks if r.status in (TaskStatus.COMPLETED, TaskStatus.FAILED))
+        if g.status == "running":
+            running_count += 1
         info: Dict[str, Any] = {
             "group_id": g.group_id,
+            "status": g.status,
             "progress": f"{done}/{len(g.tasks)}",
             "task_count": len(g.tasks),
         }
@@ -486,7 +520,11 @@ def _list_all_groups() -> str:
             info["running_tools"] = running_tools
         groups_info.append(info)
 
-    return json.dumps({"running": len(groups_info), "groups": groups_info}, ensure_ascii=False)
+    return json.dumps({
+        "running": running_count,
+        "total": len(groups_info),
+        "groups": groups_info,
+    }, ensure_ascii=False)
 
 
 def _build_group_detail(group: TaskGroup) -> str:
