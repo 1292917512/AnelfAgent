@@ -39,8 +39,15 @@ _NOISE_PATTERNS = re.compile(
 
 def _is_noisy(tag: Any) -> bool:
     """判断 BS4 元素是否为噪声节点。"""
+    if tag is None or not hasattr(tag, "get"):
+        return False
     for attr in ("id", "class", "role"):
-        val = tag.get(attr, "")
+        try:
+            val = tag.get(attr, "")
+        except Exception:
+            continue
+        if val is None:
+            val = ""
         text = " ".join(val) if isinstance(val, list) else str(val)
         if _NOISE_PATTERNS.search(text):
             return True

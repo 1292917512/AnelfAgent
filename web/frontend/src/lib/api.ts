@@ -330,8 +330,9 @@ export interface TaskConfig {
   null_keywords: string[];
   tool_tags: string[];
   prompt: string;
-  model_id?: string;
-  reasoning_effort?: string;
+  allow_output_tools?: boolean;
+  model_id?: string | null;
+  reasoning_effort?: string | null;
 }
 
 export const tasksApi = {

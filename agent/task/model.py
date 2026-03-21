@@ -46,6 +46,8 @@ class TaskDefinition(BaseModel):
     null_keywords: List[str] = Field(default_factory=list)
     tool_tags: List[str] = Field(default_factory=list)
     prompt: str = ""
+    allow_output_tools: bool = False
+    """是否允许该任务在 reflect 阶段使用 send_* 外发工具。"""
     model_id: Optional[str] = None
     """指定执行该任务的模型 ID，为空时使用默认模型。"""
     reasoning_effort: Optional[str] = None
@@ -70,6 +72,7 @@ class TaskDefinition(BaseModel):
             null_keywords=list(data.get("null_keywords", [])),
             tool_tags=list(data.get("tool_tags", [])),
             prompt=data.get("prompt", ""),
+            allow_output_tools=bool(data.get("allow_output_tools", False)),
             model_id=data.get("model_id") or None,
             reasoning_effort=data.get("reasoning_effort") or None,
         )
@@ -87,6 +90,7 @@ class TaskDefinition(BaseModel):
             "source": self.source or self.name,
             "null_keywords": self.null_keywords,
             "prompt": self.prompt,
+            "allow_output_tools": self.allow_output_tools,
         }
         if self.tool_tags:
             result["tool_tags"] = self.tool_tags

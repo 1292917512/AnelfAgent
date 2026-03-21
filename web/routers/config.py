@@ -344,7 +344,10 @@ _TASK_DEFAULTS: Dict[str, Any] = {
     "display_name": "", "description": "", "scope": "global",
     "enabled": True, "memory_type": "semantic", "importance": 0.5,
     "tags": [], "source": "", "null_keywords": [], "tool_tags": [], "prompt": "",
+    "allow_output_tools": False,
 }
+
+_OPTIONAL_TASK_OVERRIDE_FIELDS = ("model_id", "reasoning_effort")
 
 
 def _normalize_task(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -352,6 +355,24 @@ def _normalize_task(data: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in _TASK_DEFAULTS.items():
         if k not in data:
             data[k] = v
+    return data
+
+
+def _normalize_optional_task_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
+    """标准化可选覆盖字段：空值转为“移除字段”，非空字符串做 trim。"""
+    for field in _OPTIONAL_TASK_OVERRIDE_FIELDS:
+        if field not in data:
+            continue
+        raw = data.get(field)
+        if raw is None:
+            data.pop(field, None)
+            continue
+        if isinstance(raw, str):
+            normalized = raw.strip()
+            if normalized:
+                data[field] = normalized
+            else:
+                data.pop(field, None)
     return data
 
 
@@ -397,6 +418,7 @@ class TaskCreate(BaseModel):
     null_keywords: List[str] = []
     tool_tags: List[str] = []
     prompt: str
+    allow_output_tools: bool = False
     model_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
 
@@ -408,11 +430,12 @@ async def create_task(data: TaskCreate) -> Dict[str, Any]:
     if p.exists():
         raise HTTPException(status_code=409, detail=f"任务 [{data.name}] 已存在")
 
-    task_data = data.model_dump()
+    task_data = _normalize_optional_task_overrides(data.model_dump())
     if not task_data.get("source"):
         task_data["source"] = data.name
     if not task_data.get("display_name"):
         task_data["display_name"] = data.name
+    _normalize_task(task_data)
 
     try:
         p.write_text(json.dumps(task_data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -435,6 +458,7 @@ class TaskUpdate(BaseModel):
     null_keywords: Optional[List[str]] = None
     tool_tags: Optional[List[str]] = None
     prompt: Optional[str] = None
+    allow_output_tools: Optional[bool] = None
     model_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
 
@@ -442,8 +466,13 @@ class TaskUpdate(BaseModel):
 @router.put("/tasks/{name}")
 async def update_task(name: str, data: TaskUpdate) -> Dict[str, Any]:
     existing = _load_task(name)
-    updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    provided_fields = set(data.model_fields_set)
+    updates = data.model_dump(exclude_unset=True)
+    updates = _normalize_optional_task_overrides(updates)
     existing.update(updates)
+    for field in _OPTIONAL_TASK_OVERRIDE_FIELDS:
+        if field in provided_fields and field not in updates:
+            existing.pop(field, None)
 
     try:
         _task_path(name).write_text(

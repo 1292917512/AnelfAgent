@@ -71,8 +71,8 @@ _TOOL_RESULT_MAX_CHARS = 8000
 _TOOL_RESULT_HTML_MAX_CHARS = 3000
 _TOOL_RESULT_HEAD_RATIO = 0.75
 _TOOL_JSON_STR_MAX_CHARS = 1200
-_TOOL_JSON_LIST_MAX_ITEMS = 20
-_TOOL_JSON_DICT_MAX_ITEMS = 40
+_TOOL_JSON_LIST_MAX_ITEMS = 40
+_TOOL_JSON_DICT_MAX_ITEMS = 80
 
 
 class ThinkMode(str, Enum):
@@ -427,6 +427,27 @@ def _trim_json_value(value: Any) -> Any:
     if isinstance(value, str):
         if len(value) <= _TOOL_JSON_STR_MAX_CHARS:
             return value
+
+        # 优先处理“内嵌 JSON 字符串”（例如 multi_tool_invoke 的 result 字段），
+        # 尽可能保留结构化信息，减少 LLM 因截断而猜错工具名。
+        stripped = value.strip()
+        if stripped and stripped[:1] in "{[" and stripped[-1:] in "}]":
+            try:
+                nested_obj = json.loads(value)
+                nested_trimmed = _trim_json_value(nested_obj)
+                nested_text = json.dumps(nested_trimmed, ensure_ascii=False)
+                if len(nested_text) <= _TOOL_JSON_STR_MAX_CHARS:
+                    return nested_text
+                head_len = int(_TOOL_JSON_STR_MAX_CHARS * _TOOL_RESULT_HEAD_RATIO)
+                tail_len = _TOOL_JSON_STR_MAX_CHARS - head_len
+                return (
+                    f"{nested_text[:head_len]}"
+                    f"\n...[内嵌JSON过长已截断，原长度={len(value)}]...\n"
+                    f"{nested_text[-tail_len:]}"
+                )
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         head_len = int(_TOOL_JSON_STR_MAX_CHARS * _TOOL_RESULT_HEAD_RATIO)
         tail_len = _TOOL_JSON_STR_MAX_CHARS - head_len
         return (

@@ -202,10 +202,12 @@
     "detailTags": "Tags: ",
     "detailNullKeywords": "Null Keywords: ",
     "detailToolTags": "Tool Tags: ",
+    "detailAllowOutputTools": "Allow Outbound: ",
     "detailModelId": "Model: ",
     "detailPrompt": "Prompt: ",
     "modelId": "Model",
-    "defaultModel": "Default Model"
+    "defaultModel": "Default Model",
+    "allowOutputTools": "Allow outbound send_* tools"
   },
   "costMap": {
     "title": "LiteLLM Cost Map",

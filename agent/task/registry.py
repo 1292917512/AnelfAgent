@@ -52,6 +52,7 @@ class TaskRegistry:
                 "scope": t.scope.value,
                 "enabled": t.enabled,
                 "tool_tags": t.tool_tags,
+                "allow_output_tools": t.allow_output_tools,
             }
             for t in self._tasks.values()
         ]

@@ -90,13 +90,22 @@ class TaskExecutor:
             await self._emit("unit_error", task, entity, error=str(exc))
             return None
 
-    _TASK_SUFFIX = (
-        "\n\n[系统规则]\n"
-        "1. 这是内部任务，严禁向任何频道/用户发送消息，严禁泄露任何用户隐私信息\n"
-        "2. 要了解会话内容必须用 get_conversation 实际读取消息，而非只看 scope 列表\n"
-        "3. 操作前先用 recall/list_goals 检查已有记忆和目标，避免重复记录和重复提问\n"
-        "4. 完成后调用 log_to_heartbeat 记录操作总结，然后 end_reply 结束"
-    )
+    @staticmethod
+    def _build_task_suffix(allow_output_tools: bool) -> str:
+        """按任务配置构建系统规则后缀。"""
+        rule_1 = (
+            "1. 这是内部任务，仅可在任务明确要求时使用 send_message/send_file/send_photo/send_voice 外发结果，"
+            "禁止发送无关内容，严禁泄露用户隐私信息"
+            if allow_output_tools
+            else "1. 这是内部任务，严禁向任何频道/用户发送消息，严禁泄露任何用户隐私信息"
+        )
+        return (
+            "\n\n[系统规则]\n"
+            f"{rule_1}\n"
+            "2. 要了解会话内容必须用 get_conversation 实际读取消息，而非只看 scope 列表\n"
+            "3. 操作前先用 recall/list_goals 检查已有记忆和目标，避免重复记录和重复提问\n"
+            "4. 完成后调用 log_to_heartbeat 记录操作总结，然后 end_reply 结束"
+        )
 
     async def _execute_llm(
         self,
@@ -114,7 +123,10 @@ class TaskExecutor:
         base_messages = await self.mind.get_recollection(conversation_list)
         prompt_msg: Dict[str, str] = {
             "role": "user",
-            "content": f"[系统任务 - {task.name}]\n{task.prompt}{self._TASK_SUFFIX}",
+            "content": (
+                f"[系统任务 - {task.name}]\n"
+                f"{task.prompt}{self._build_task_suffix(task.allow_output_tools)}"
+            ),
         }
         messages = list(base_messages) + [prompt_msg]
 
@@ -128,6 +140,7 @@ class TaskExecutor:
             messages,
             options=options,
             tool_tags=task.tool_tags or None,
+            allow_output_tools=task.allow_output_tools,
         )
         return _clean_llm_output(raw)
 

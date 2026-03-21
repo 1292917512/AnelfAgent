@@ -761,10 +761,20 @@ class Mind:
         """简单 LLM 调用封装（无工具，纯文本生成）。"""
         return await self.llm.chat(request_messages, options=options)
 
-    _BLOCKED_IN_REFLECT = frozenset({
-        "send_message", "send_photo", "send_voice", "send_file",
+    _REFLECT_ALWAYS_BLOCKED = frozenset({
         "list_channels", "schedule_reply",
     })
+    _REFLECT_OUTPUT_TOOLS = frozenset({
+        "send_message", "send_photo", "send_voice", "send_file",
+    })
+
+    @classmethod
+    def _build_reflect_blocklist(cls, allow_output_tools: bool) -> Set[str]:
+        """根据任务策略构建 reflect 阶段工具黑名单。"""
+        blocked = set(cls._REFLECT_ALWAYS_BLOCKED)
+        if not allow_output_tools:
+            blocked.update(cls._REFLECT_OUTPUT_TOOLS)
+        return blocked
 
     async def reflect(
             self,
@@ -774,34 +784,37 @@ class Mind:
             max_iterations: int = 0,
             options: Optional[dict] = None,
             tool_tags: Optional[List[str]] = None,
+            allow_output_tools: bool = False,
     ) -> str:
-        """内部任务循环：与对话共享统一思维流程，但禁止对外发送消息。
+        """内部任务循环：与对话共享统一思维流程，默认禁止对外发送消息。
 
         tool_tags 非空时按指定标签加载工具集（替代默认的 "heartbeat" 标签）。
-        自动过滤所有 output 类工具（send_message 等），防止任务执行中泄露信息。
+        默认过滤 output 类工具（send_message/send_file 等），可按任务配置放开。
 
         Returns:
             LLM 产出的文本内容（所有轮次输出的合并）。
         """
         mc = self._get_mind_config()
         safety_limit = max_iterations or mc.max_tool_iterations
+        blocked_tools = self._build_reflect_blocklist(allow_output_tools)
 
         base_tools = self.pfc.get_active_tool_schemas(adapter_key)
         active_tools = [
             s for s in base_tools
-            if s.get("function", {}).get("name", "") not in self._BLOCKED_IN_REFLECT
+            if s.get("function", {}).get("name", "") not in blocked_tools
         ]
 
         extra_tags = tool_tags if tool_tags else ["heartbeat"]
         existing_names = {s.get("function", {}).get("name", "") for s in active_tools}
         for schema in EntityRegistry.get_tool_schema_by_tags(extra_tags):
             name = schema.get("function", {}).get("name", "")
-            if name and name not in existing_names and name not in self._BLOCKED_IN_REFLECT:
+            if name and name not in existing_names and name not in blocked_tools:
                 active_tools.append(schema)
                 existing_names.add(name)
 
         collected_text: List[str] = []
-        log(f"反思循环开始: {len(active_tools)} 个工具可用, 上限 {safety_limit} 轮", tag="思维")
+        output_policy = "放开外发" if allow_output_tools else "禁用外发"
+        log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
 
         await self._think_loop(
             mode=ThinkMode.REFLECT,

@@ -10,7 +10,7 @@ const EMPTY_TASK: TaskConfig = {
   name: "",
   display_name: "",
   description: "",
-  model_id: "",
+  model_id: null,
   scope: "global",
   enabled: true,
   memory_type: "semantic",
@@ -20,6 +20,7 @@ const EMPTY_TASK: TaskConfig = {
   null_keywords: [],
   tool_tags: [],
   prompt: "",
+  allow_output_tools: false,
 };
 
 export function TasksPanel() {
@@ -201,6 +202,7 @@ export function TasksPanel() {
 
 function TaskDetail({ task }: { task: TaskConfig }) {
   const { t } = useTranslation("appconfig");
+  const { t: tc } = useTranslation("common");
   return (
     <div className="space-y-2 text-xs text-[var(--muted)]">
       <div className="grid grid-cols-2 gap-x-4 gap-y-1">
@@ -208,6 +210,7 @@ function TaskDetail({ task }: { task: TaskConfig }) {
         <span><span className="font-medium">{t("tasks.detailMemoryType")}</span>{task.memory_type}</span>
         <span><span className="font-medium">{t("tasks.detailImportance")}</span>{task.importance}</span>
         <span><span className="font-medium">{t("tasks.detailSource")}</span>{task.source || task.name}</span>
+        <span><span className="font-medium">{t("tasks.detailAllowOutputTools")}</span>{task.allow_output_tools ? tc("on") : tc("off")}</span>
         {(task.tags ?? []).length > 0 && (
           <span className="col-span-2"><span className="font-medium">{t("tasks.detailTags")}</span>{(task.tags ?? []).join(", ")}</span>
         )}
@@ -313,10 +316,25 @@ function TaskEditForm({ task, onChange, onSave, onCancel, isPending, inputBase }
         <div className="flex flex-col gap-1">
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.modelId")}</label>
           <select className={inputBase} value={task.model_id ?? ""}
-            onChange={(e) => set("model_id", e.target.value || undefined)}>
+            onChange={(e) => set("model_id", e.target.value || null)}>
             <option value="">{t("tasks.defaultModel")}</option>
             {chatModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
           </select>
+        </div>
+        <div className="flex items-center justify-between md:col-span-2">
+          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.allowOutputTools")}</label>
+          <button
+            onClick={() => set("allow_output_tools", !task.allow_output_tools)}
+            className={cn(
+              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+              task.allow_output_tools ? "bg-[var(--accent)]" : "bg-[var(--border)]",
+            )}
+          >
+            <span className={cn(
+              "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
+              task.allow_output_tools ? "translate-x-4" : "translate-x-1",
+            )} />
+          </button>
         </div>
         <div className="flex items-center justify-between md:col-span-2">
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.enableTask")}</label>
@@ -412,6 +430,21 @@ function TaskCreateForm({ onSave, onCancel, isPending, inputBase }: { onSave: (t
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.toolTags")}</label>
           <input className={inputBase} value={(task.tool_tags ?? []).join(", ")}
             onChange={(e) => set("tool_tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
+        </div>
+        <div className="flex items-center justify-between md:col-span-2">
+          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.allowOutputTools")}</label>
+          <button
+            onClick={() => set("allow_output_tools", !task.allow_output_tools)}
+            className={cn(
+              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+              task.allow_output_tools ? "bg-[var(--accent)]" : "bg-[var(--border)]",
+            )}
+          >
+            <span className={cn(
+              "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
+              task.allow_output_tools ? "translate-x-4" : "translate-x-1",
+            )} />
+          </button>
         </div>
       </div>
       <div className="flex flex-col gap-1">
