@@ -289,6 +289,8 @@ export interface HeartbeatConfig {
   task_schedules: TaskSchedule[];
 }
 
+export type ReasoningEffort = "low" | "medium" | "high" | "max";
+
 export interface TaskSchedule {
   task_name: string;
   mode: "heartbeat" | "scheduled" | "manual";
@@ -297,7 +299,7 @@ export interface TaskSchedule {
   schedule_times?: string[];
   last_run_date?: string;
   model_id?: string;
-  reasoning_effort?: string;
+  reasoning_effort?: ReasoningEffort | "";
 }
 
 export interface HeartbeatStatus {
@@ -331,8 +333,9 @@ export interface TaskConfig {
   tool_tags: string[];
   prompt: string;
   allow_output_tools?: boolean;
+  save_result_to_memory?: boolean;
   model_id?: string | null;
-  reasoning_effort?: string | null;
+  reasoning_effort?: ReasoningEffort | null;
 }
 
 export const tasksApi = {

@@ -54,6 +54,7 @@
     "globalEffort": "Global Level",
     "effortLow": "Low",
     "effortMedium": "Medium",
-    "effortHigh": "High"
+    "effortHigh": "High",
+    "effortMax": "Max"
   }
 }

@@ -54,6 +54,7 @@
     "globalEffort": "全局等级",
     "effortLow": "轻量",
     "effortMedium": "均衡",
-    "effortHigh": "深度"
+    "effortHigh": "深度",
+    "effortMax": "极限"
   }
 }

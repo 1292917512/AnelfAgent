@@ -14,6 +14,15 @@ from typing import Any, Dict, List, Optional
 from core.log import log
 
 _CONFIG_PATH = Path("config/heartbeat.json")
+_REASONING_EFFORT_VALUES = frozenset({"low", "medium", "high", "max"})
+
+
+def _normalize_reasoning_effort(value: Any) -> str:
+    """标准化 reasoning_effort，非法值返回空字符串。"""
+    normalized = str(value or "").strip().lower()
+    if normalized in _REASONING_EFFORT_VALUES:
+        return normalized
+    return ""
 
 
 class ScheduleMode(str, Enum):
@@ -57,8 +66,9 @@ class TaskSchedule:
             d["last_run_date"] = self.last_run_date
         if self.model_id:
             d["model_id"] = self.model_id
-        if self.reasoning_effort:
-            d["reasoning_effort"] = self.reasoning_effort
+        effort = _normalize_reasoning_effort(self.reasoning_effort)
+        if effort:
+            d["reasoning_effort"] = effort
         return d
 
     @classmethod
@@ -72,7 +82,7 @@ class TaskSchedule:
             schedule_times=list(data.get("schedule_times", [])),
             last_run_date=data.get("last_run_date", ""),
             model_id=data.get("model_id", ""),
-            reasoning_effort=data.get("reasoning_effort", ""),
+            reasoning_effort=_normalize_reasoning_effort(data.get("reasoning_effort", "")),
         )
 
 

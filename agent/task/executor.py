@@ -80,7 +80,10 @@ class TaskExecutor:
                 importance=task.importance,
             )
 
-            await self._store_result(result)
+            if task.save_result_to_memory:
+                await self._store_result(result)
+            else:
+                log(f"任务 [{task.name}] 配置为不写入记忆，跳过存储", tag="任务")
             log(f"任务 [{task.name}] 完成: {content[:80]}", tag="任务")
             await self._emit("unit_end", task, entity, has_output=True, content_preview=content[:300])
             return result

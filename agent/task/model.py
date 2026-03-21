@@ -29,6 +29,30 @@ _MEMORY_TYPE_MAP: Dict[str, MemoryType] = {
     "semantic": MemoryType.SEMANTIC,
     "entity": MemoryType.ENTITY,
 }
+_REASONING_EFFORT_VALUES = frozenset({"low", "medium", "high", "max"})
+
+
+def _to_bool(value: Any) -> bool:
+    """兼容字符串/数字的布尔值解析。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    if value is None:
+        return False
+    return bool(value)
+
+
+def _normalize_reasoning_effort(value: Any) -> Optional[str]:
+    """标准化 reasoning_effort：仅接受 low/medium/high/max。"""
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    if normalized in _REASONING_EFFORT_VALUES:
+        return normalized
+    return None
 
 
 class TaskDefinition(BaseModel):
@@ -48,6 +72,8 @@ class TaskDefinition(BaseModel):
     prompt: str = ""
     allow_output_tools: bool = False
     """是否允许该任务在 reflect 阶段使用 send_* 外发工具。"""
+    save_result_to_memory: bool = True
+    """任务执行产出是否写入记忆。"""
     model_id: Optional[str] = None
     """指定执行该任务的模型 ID，为空时使用默认模型。"""
     reasoning_effort: Optional[str] = None
@@ -72,9 +98,10 @@ class TaskDefinition(BaseModel):
             null_keywords=list(data.get("null_keywords", [])),
             tool_tags=list(data.get("tool_tags", [])),
             prompt=data.get("prompt", ""),
-            allow_output_tools=bool(data.get("allow_output_tools", False)),
+            allow_output_tools=_to_bool(data.get("allow_output_tools", False)),
+            save_result_to_memory=_to_bool(data.get("save_result_to_memory", True)),
             model_id=data.get("model_id") or None,
-            reasoning_effort=data.get("reasoning_effort") or None,
+            reasoning_effort=_normalize_reasoning_effort(data.get("reasoning_effort")),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -91,13 +118,15 @@ class TaskDefinition(BaseModel):
             "null_keywords": self.null_keywords,
             "prompt": self.prompt,
             "allow_output_tools": self.allow_output_tools,
+            "save_result_to_memory": self.save_result_to_memory,
         }
         if self.tool_tags:
             result["tool_tags"] = self.tool_tags
         if self.model_id:
             result["model_id"] = self.model_id
-        if self.reasoning_effort:
-            result["reasoning_effort"] = self.reasoning_effort
+        normalized_effort = _normalize_reasoning_effort(self.reasoning_effort)
+        if normalized_effort:
+            result["reasoning_effort"] = normalized_effort
         return result
 
     def should_run_for_entity(self, has_entity: bool) -> bool:

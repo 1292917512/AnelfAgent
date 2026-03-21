@@ -345,9 +345,22 @@ _TASK_DEFAULTS: Dict[str, Any] = {
     "enabled": True, "memory_type": "semantic", "importance": 0.5,
     "tags": [], "source": "", "null_keywords": [], "tool_tags": [], "prompt": "",
     "allow_output_tools": False,
+    "save_result_to_memory": True,
 }
 
 _OPTIONAL_TASK_OVERRIDE_FIELDS = ("model_id", "reasoning_effort")
+_TASK_REASONING_EFFORTS = frozenset({"low", "medium", "high", "max"})
+
+
+def _to_bool(value: Any, *, default: bool = False) -> bool:
+    """兼容字符串/数字的布尔值解析。"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _normalize_task(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -355,7 +368,9 @@ def _normalize_task(data: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in _TASK_DEFAULTS.items():
         if k not in data:
             data[k] = v
-    return data
+    data["allow_output_tools"] = _to_bool(data.get("allow_output_tools"), default=False)
+    data["save_result_to_memory"] = _to_bool(data.get("save_result_to_memory"), default=True)
+    return _normalize_optional_task_overrides(data)
 
 
 def _normalize_optional_task_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -367,12 +382,18 @@ def _normalize_optional_task_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
         if raw is None:
             data.pop(field, None)
             continue
-        if isinstance(raw, str):
-            normalized = raw.strip()
-            if normalized:
-                data[field] = normalized
+        normalized = str(raw).strip()
+        if not normalized:
+            data.pop(field, None)
+            continue
+        if field == "reasoning_effort":
+            lowered = normalized.lower()
+            if lowered in _TASK_REASONING_EFFORTS:
+                data[field] = lowered
             else:
                 data.pop(field, None)
+            continue
+        data[field] = normalized
     return data
 
 
@@ -419,6 +440,7 @@ class TaskCreate(BaseModel):
     tool_tags: List[str] = []
     prompt: str
     allow_output_tools: bool = False
+    save_result_to_memory: bool = True
     model_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
 
@@ -459,6 +481,7 @@ class TaskUpdate(BaseModel):
     tool_tags: Optional[List[str]] = None
     prompt: Optional[str] = None
     allow_output_tools: Optional[bool] = None
+    save_result_to_memory: Optional[bool] = None
     model_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
 

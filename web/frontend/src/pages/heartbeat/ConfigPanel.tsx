@@ -244,6 +244,7 @@ export function ConfigPanel() {
                       <option value="low">{t("schedule.effortLow")}</option>
                       <option value="medium">{t("schedule.effortMedium")}</option>
                       <option value="high">{t("schedule.effortHigh")}</option>
+                      <option value="max">{t("schedule.effortMax")}</option>
                     </select>
                   </div>
                 </div>

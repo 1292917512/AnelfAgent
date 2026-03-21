@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { tasksApi, modelsApi, type TaskConfig } from "@/lib/api";
+import { tasksApi, modelsApi, type ReasoningEffort, type TaskConfig } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
 import { Play, Trash2, Pencil, Plus, Save, X, ChevronDown, ChevronUp } from "lucide-react";
@@ -21,7 +21,16 @@ const EMPTY_TASK: TaskConfig = {
   tool_tags: [],
   prompt: "",
   allow_output_tools: false,
+  save_result_to_memory: true,
+  reasoning_effort: null,
 };
+
+const REASONING_EFFORTS: Array<{ value: ReasoningEffort; key: string }> = [
+  { value: "low", key: "tasks.effortLow" },
+  { value: "medium", key: "tasks.effortMedium" },
+  { value: "high", key: "tasks.effortHigh" },
+  { value: "max", key: "tasks.effortMax" },
+];
 
 export function TasksPanel() {
   const { t } = useTranslation("appconfig");
@@ -211,6 +220,8 @@ function TaskDetail({ task }: { task: TaskConfig }) {
         <span><span className="font-medium">{t("tasks.detailImportance")}</span>{task.importance}</span>
         <span><span className="font-medium">{t("tasks.detailSource")}</span>{task.source || task.name}</span>
         <span><span className="font-medium">{t("tasks.detailAllowOutputTools")}</span>{task.allow_output_tools ? tc("on") : tc("off")}</span>
+        <span><span className="font-medium">{t("tasks.detailSaveResultToMemory")}</span>{task.save_result_to_memory === false ? tc("off") : tc("on")}</span>
+        <span><span className="font-medium">{t("tasks.detailReasoningEffort")}</span>{task.reasoning_effort || t("tasks.defaultReasoningEffort")}</span>
         {(task.tags ?? []).length > 0 && (
           <span className="col-span-2"><span className="font-medium">{t("tasks.detailTags")}</span>{(task.tags ?? []).join(", ")}</span>
         )}
@@ -264,6 +275,10 @@ function TaskEditForm({ task, onChange, onSave, onCancel, isPending, inputBase }
     { value: "reflection", label: t("tasks.memoryTypeReflection") },
     { value: "entity", label: t("tasks.memoryTypeEntity") },
   ];
+  const reasoningEffortOptions = REASONING_EFFORTS.map((item) => ({
+    value: item.value,
+    label: t(item.key),
+  }));
 
   return (
     <div className="space-y-3">
@@ -321,6 +336,17 @@ function TaskEditForm({ task, onChange, onSave, onCancel, isPending, inputBase }
             {chatModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
           </select>
         </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.reasoningEffort")}</label>
+          <select
+            className={inputBase}
+            value={task.reasoning_effort ?? ""}
+            onChange={(e) => set("reasoning_effort", (e.target.value || null) as ReasoningEffort | null)}
+          >
+            <option value="">{t("tasks.defaultReasoningEffort")}</option>
+            {reasoningEffortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
         <div className="flex items-center justify-between md:col-span-2">
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.allowOutputTools")}</label>
           <button
@@ -333,6 +359,21 @@ function TaskEditForm({ task, onChange, onSave, onCancel, isPending, inputBase }
             <span className={cn(
               "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
               task.allow_output_tools ? "translate-x-4" : "translate-x-1",
+            )} />
+          </button>
+        </div>
+        <div className="flex items-center justify-between md:col-span-2">
+          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.saveResultToMemory")}</label>
+          <button
+            onClick={() => set("save_result_to_memory", !(task.save_result_to_memory === false))}
+            className={cn(
+              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+              task.save_result_to_memory === false ? "bg-[var(--border)]" : "bg-[var(--accent)]",
+            )}
+          >
+            <span className={cn(
+              "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
+              task.save_result_to_memory === false ? "translate-x-1" : "translate-x-4",
             )} />
           </button>
         </div>
@@ -370,6 +411,13 @@ function TaskCreateForm({ onSave, onCancel, isPending, inputBase }: { onSave: (t
   const [task, setTask] = useState<TaskConfig>({ ...EMPTY_TASK });
   const set = (key: keyof TaskConfig, value: unknown) => setTask((prev) => ({ ...prev, [key]: value }));
 
+  interface PriorityItem { id: string; model: string }
+  const { data: priorities = {} } = useQuery<Record<string, PriorityItem[]>>({
+    queryKey: ["priorities"],
+    queryFn: () => modelsApi.priorities().then(r => r.data),
+  });
+  const chatModels = priorities.chat ?? [];
+
   const scopeOptions = [
     { value: "global", label: t("tasks.scopeGlobal") },
     { value: "entity", label: t("tasks.scopeEntity") },
@@ -380,6 +428,10 @@ function TaskCreateForm({ onSave, onCancel, isPending, inputBase }: { onSave: (t
     { value: "reflection", label: t("tasks.memoryTypeReflection") },
     { value: "entity", label: t("tasks.memoryTypeEntity") },
   ];
+  const reasoningEffortOptions = REASONING_EFFORTS.map((item) => ({
+    value: item.value,
+    label: t(item.key),
+  }));
 
   return (
     <div className="space-y-3">
@@ -431,6 +483,25 @@ function TaskCreateForm({ onSave, onCancel, isPending, inputBase }: { onSave: (t
           <input className={inputBase} value={(task.tool_tags ?? []).join(", ")}
             onChange={(e) => set("tool_tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
         </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.modelId")}</label>
+          <select className={inputBase} value={task.model_id ?? ""}
+            onChange={(e) => set("model_id", e.target.value || null)}>
+            <option value="">{t("tasks.defaultModel")}</option>
+            {chatModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+          </select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.reasoningEffort")}</label>
+          <select
+            className={inputBase}
+            value={task.reasoning_effort ?? ""}
+            onChange={(e) => set("reasoning_effort", (e.target.value || null) as ReasoningEffort | null)}
+          >
+            <option value="">{t("tasks.defaultReasoningEffort")}</option>
+            {reasoningEffortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
         <div className="flex items-center justify-between md:col-span-2">
           <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.allowOutputTools")}</label>
           <button
@@ -443,6 +514,21 @@ function TaskCreateForm({ onSave, onCancel, isPending, inputBase }: { onSave: (t
             <span className={cn(
               "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
               task.allow_output_tools ? "translate-x-4" : "translate-x-1",
+            )} />
+          </button>
+        </div>
+        <div className="flex items-center justify-between md:col-span-2">
+          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.saveResultToMemory")}</label>
+          <button
+            onClick={() => set("save_result_to_memory", !(task.save_result_to_memory === false))}
+            className={cn(
+              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+              task.save_result_to_memory === false ? "bg-[var(--border)]" : "bg-[var(--accent)]",
+            )}
+          >
+            <span className={cn(
+              "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
+              task.save_result_to_memory === false ? "translate-x-1" : "translate-x-4",
             )} />
           </button>
         </div>

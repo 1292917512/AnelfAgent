@@ -53,6 +53,8 @@ class TaskRegistry:
                 "enabled": t.enabled,
                 "tool_tags": t.tool_tags,
                 "allow_output_tools": t.allow_output_tools,
+                "save_result_to_memory": t.save_result_to_memory,
+                "reasoning_effort": t.reasoning_effort or "",
             }
             for t in self._tasks.values()
         ]

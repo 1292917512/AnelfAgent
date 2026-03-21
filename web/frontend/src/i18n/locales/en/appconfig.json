@@ -203,11 +203,20 @@
     "detailNullKeywords": "Null Keywords: ",
     "detailToolTags": "Tool Tags: ",
     "detailAllowOutputTools": "Allow Outbound: ",
+    "detailSaveResultToMemory": "Write Memory: ",
+    "detailReasoningEffort": "Reasoning Effort: ",
     "detailModelId": "Model: ",
     "detailPrompt": "Prompt: ",
     "modelId": "Model",
     "defaultModel": "Default Model",
-    "allowOutputTools": "Allow outbound send_* tools"
+    "allowOutputTools": "Allow outbound send_* tools",
+    "saveResultToMemory": "Write result to memory",
+    "reasoningEffort": "Reasoning effort",
+    "defaultReasoningEffort": "Global default",
+    "effortLow": "Low",
+    "effortMedium": "Medium",
+    "effortHigh": "High",
+    "effortMax": "Max"
   },
   "costMap": {
     "title": "LiteLLM Cost Map",
