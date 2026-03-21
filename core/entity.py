@@ -572,15 +572,19 @@ class EntityRegistry:
         """执行工具实体（带超时保护）。"""
         entity = cls.get(name)
         if entity is None:
+            import difflib
             catalog = cls.get_entity_catalog()
             groups = [
                 f"{e['group']}({e['tool_count']}个方法)"
                 for e in catalog
             ]
+            all_tool_names = cls.get_all_names()
+            suggested = difflib.get_close_matches(name, all_tool_names, n=8, cutoff=0.35)
             return json.dumps({
                 "error": f"工具 '{name}' 不存在，请勿猜测工具名。",
                 "hint": '请先调用 list_entity_methods({"group": "分组名"}) 查看该实体的具体方法名和参数。',
                 "available_groups": groups,
+                "suggested_tools": suggested,
             }, ensure_ascii=False)
         if not entity.enabled:
             return json.dumps({"error": f"工具已禁用: {name}"}, ensure_ascii=False)
