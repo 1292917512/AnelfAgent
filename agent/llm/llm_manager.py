@@ -367,6 +367,22 @@ class LLMManager(BaseEntity):
             result.append(client)
         return result
 
+    @staticmethod
+    def _is_context_window_error(exc: Exception) -> bool:
+        """识别上下文超限异常（包含供应商包装后的 BadRequest 文本）。"""
+        msg = str(exc).lower()
+        keywords = (
+            "context window",
+            "context length",
+            "context limit",
+            "context_window_exceeded",
+            "prompt is too long",
+            "too many tokens",
+            "token limit",
+            "max context",
+        )
+        return any(k in msg for k in keywords)
+
     async def chat_with_fallback(
         self,
         messages: List[Dict[str, Any]],
@@ -418,6 +434,9 @@ class LLMManager(BaseEntity):
                     await asyncio.sleep(min(2 ** attempt, 8))
             except Exception as exc:
                 last_exc = exc
+                if self._is_context_window_error(exc):
+                    warning(f"LLM [{primary_name}] 上下文超限（通用异常）: {exc}", tag="模型")
+                    break
                 if attempt < max_retries:
                     warning(
                         f"LLM [{primary_name}] 调用失败 ({type(exc).__name__}: {exc})，"

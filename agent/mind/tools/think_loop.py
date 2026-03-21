@@ -65,6 +65,15 @@ _PROMPT_EMPTY_OUTPUT = (
     "禁止再次输出空内容。"
 )
 
+# 工具输出裁剪阈值（字符数）。
+# 目的：避免超长网页/HTML 直接进入下一轮上下文，触发 context window 超限。
+_TOOL_RESULT_MAX_CHARS = 8000
+_TOOL_RESULT_HTML_MAX_CHARS = 3000
+_TOOL_RESULT_HEAD_RATIO = 0.75
+_TOOL_JSON_STR_MAX_CHARS = 1200
+_TOOL_JSON_LIST_MAX_ITEMS = 20
+_TOOL_JSON_DICT_MAX_ITEMS = 40
+
 
 class ThinkMode(str, Enum):
     """思维循环模式。"""
@@ -402,6 +411,113 @@ def resolve_tool_calls(result: ChatResult) -> List[ToolCall]:
     return []
 
 
+def _looks_like_html_payload(text: str) -> bool:
+    """判断工具结果是否近似 HTML 文档。"""
+    sample = text.lstrip().lower()[:1500]
+    return (
+        sample.startswith("<!doctype html")
+        or sample.startswith("<html")
+        or "<html" in sample
+        or "<body" in sample
+    )
+
+
+def _trim_json_value(value: Any) -> Any:
+    """递归裁剪 JSON 值，保持结构与可解析性。"""
+    if isinstance(value, str):
+        if len(value) <= _TOOL_JSON_STR_MAX_CHARS:
+            return value
+        head_len = int(_TOOL_JSON_STR_MAX_CHARS * _TOOL_RESULT_HEAD_RATIO)
+        tail_len = _TOOL_JSON_STR_MAX_CHARS - head_len
+        return (
+            f"{value[:head_len]}"
+            f"\n...[字符串过长已截断，原长度={len(value)}]...\n"
+            f"{value[-tail_len:]}"
+        )
+
+    if isinstance(value, list):
+        kept = [_trim_json_value(v) for v in value[:_TOOL_JSON_LIST_MAX_ITEMS]]
+        if len(value) > _TOOL_JSON_LIST_MAX_ITEMS:
+            kept.append({"_truncated_items": len(value) - _TOOL_JSON_LIST_MAX_ITEMS})
+        return kept
+
+    if isinstance(value, dict):
+        result: Dict[str, Any] = {}
+        for idx, (k, v) in enumerate(value.items()):
+            if idx >= _TOOL_JSON_DICT_MAX_ITEMS:
+                result["_truncated_keys"] = len(value) - _TOOL_JSON_DICT_MAX_ITEMS
+                break
+            result[k] = _trim_json_value(v)
+        return result
+
+    return value
+
+
+def _truncate_json_output(tool_name: str, output: str, limit: int) -> Optional[str]:
+    """优先对 JSON 进行结构化裁剪，返回 None 表示不是 JSON。"""
+    try:
+        parsed = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    trimmed_obj = _trim_json_value(parsed)
+    # 保留关键结束标记，避免影响 should_end_reply 判定。
+    if isinstance(parsed, dict) and isinstance(trimmed_obj, dict) and "_end_reply" in parsed:
+        trimmed_obj["_end_reply"] = parsed.get("_end_reply")
+
+    trimmed_text = json.dumps(trimmed_obj, ensure_ascii=False)
+    if len(trimmed_text) <= limit:
+        return trimmed_text if len(trimmed_text) < len(output) else output
+
+    summary: Dict[str, Any] = {
+        "_truncated": True,
+        "_tool": tool_name,
+        "_original_chars": len(output),
+        "_kept_limit": limit,
+        "_json_compacted": True,
+    }
+    if isinstance(parsed, dict):
+        for k in ("success", "status", "total", "completed", "failed", "group_id", "_end_reply"):
+            if k in parsed:
+                summary[k] = parsed[k]
+        summary["keys"] = list(parsed.keys())[:20]
+    elif isinstance(parsed, list):
+        summary["type"] = "list"
+        summary["total_items"] = len(parsed)
+    return json.dumps(summary, ensure_ascii=False)
+
+
+def _truncate_tool_output(tool_name: str, output: str) -> str:
+    """裁剪超长工具结果，降低后续 LLM 调用的上下文占用。"""
+    if not output:
+        return output
+
+    limit = _TOOL_RESULT_MAX_CHARS
+    if _looks_like_html_payload(output) or "html" in tool_name.lower():
+        limit = _TOOL_RESULT_HTML_MAX_CHARS
+
+    if len(output) <= limit:
+        return output
+
+    # 对 JSON 输出做结构化裁剪，保持可解析性与关键信号。
+    json_trimmed = _truncate_json_output(tool_name, output, limit)
+    if json_trimmed is not None:
+        return json_trimmed
+
+    head_len = max(1, int(limit * _TOOL_RESULT_HEAD_RATIO))
+    tail_len = max(1, limit - head_len)
+    kept_len = head_len + tail_len
+
+    return (
+        "[系统提示] 工具返回内容过长，已自动截断以避免上下文溢出。\n"
+        f"[tool={tool_name}] 原始长度={len(output)} 字符，保留长度={kept_len} 字符。\n"
+        "----- head -----\n"
+        f"{output[:head_len]}\n"
+        "----- tail -----\n"
+        f"{output[-tail_len:]}"
+    )
+
+
 async def execute_tool_calls(
         mind: Mind,
         tool_chain: List[Dict],
@@ -427,7 +543,15 @@ async def execute_tool_calls(
     for tc, output in zip(tool_calls, _outputs):
         if isinstance(output, BaseException):
             output = json.dumps({"error": str(output)}, ensure_ascii=False)
-        tool_chain.append({"role": "tool", "tool_call_id": tc.id, "content": output})
+        output_str = output if isinstance(output, str) else str(output)
+        final_output = _truncate_tool_output(tc.name, output_str)
+        if len(final_output) < len(output_str):
+            log(
+                f"工具结果已裁剪: {tc.name} ({len(output_str)} -> {len(final_output)} 字符)",
+                "DEBUG",
+                tag="思维",
+            )
+        tool_chain.append({"role": "tool", "tool_call_id": tc.id, "content": final_output})
     log_tool_round(iteration, tool_calls)
 
 
