@@ -66,6 +66,7 @@ config/tasks/*
 
 # === Persona (personal characters; default.json is the template) ===
 config/personas/mengli.json
+config/personas/yanyi.json
 
 # === Entity secrets (copy *.example.json and remove .example suffix) ===
 entities/web/config.json

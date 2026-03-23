@@ -349,7 +349,7 @@ def search_files(path: str = ".", pattern: str = "*", max_results: int = 50) -> 
 # ------------------------------------------------------------------
 
 
-@tool(name="run_shell_command", group="os")
+@tool(name="run_shell_command", group="os", tags=["always"])
 def run_shell_command(command: str, timeout: int = 30) -> str:
     """在系统 shell 中执行命令并返回输出结果。
 
