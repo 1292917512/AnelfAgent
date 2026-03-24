@@ -11,7 +11,7 @@ import time as _time
 from typing import Any, Awaitable, Callable, List, Optional
 
 from core.log import log
-from core.tags import forward_tag, reply_to_tag, tag_label
+from core.tags import forward_tag, tag_label
 
 from agent.channel.schemas import (
     AdapterChannel,
@@ -412,14 +412,17 @@ def _build_adapter_message(
     channel_id = str(chat.id) if chat else user_id
 
     reply_to_id = ""
+    reply_content = ""
 
-    # 注入回复引用上下文
+    # 仅结构化保留回复引用上下文，统一由 ChannelManager 注入 [reply_to:xxx]
     if reply_context and reply_context.id:
         reply_to_id = str(reply_context.id)
-        reply_label = tag_label(reply_to_tag.get_tag_name(), reply_to_id)
         body_preview = reply_context.body[:200] if reply_context.body else ""
-        reply_header = f"{reply_label}{reply_context.sender}: {body_preview}"
-        content = f"{reply_header}\n{content}" if content else reply_header
+        sender = (reply_context.sender or "").strip()
+        if sender and body_preview:
+            reply_content = f"{sender}: {body_preview}"
+        else:
+            reply_content = body_preview
 
     # 注入转发来源
     if forward_origin:
@@ -443,4 +446,5 @@ def _build_adapter_message(
         is_to_me=is_to_me,
         trigger_mind=trigger_mind,
         reply_to_id=reply_to_id,
+        reply_content=reply_content,
     )

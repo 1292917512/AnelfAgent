@@ -58,6 +58,9 @@ class Everything(Nothing):
     tag_list: list[Tag] = Field(default_factory=lambda: [name_tag, uid_tag])
     adapter_key: str = ""
     adapter_message_id: str = ""
+    session_id: str = ""
+    reply_to_id: str = ""
+    reply_content: str = ""
     trigger_mind: bool = True
     _tags_generated: bool = PrivateAttr(default=False)
 
@@ -85,7 +88,7 @@ class Everything(Nothing):
             and content.startswith('[')
             and any(
                 f"[{tag}:" in content
-                for tag in ("time", "uid", "channel", "group_id")
+                for tag in ("time", "uid", "channel", "group_id", "session_id", "message_id")
             )
         )
 
@@ -95,6 +98,7 @@ class Everything(Nothing):
     _tag_field_map: dict[str, str] = {
         "channel": "adapter_key",
         "name": "user_name",
+        "message_id": "adapter_message_id",
     }
 
     def get_tag_list(self) -> str:

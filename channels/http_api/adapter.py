@@ -37,6 +37,9 @@ class ChatRequest(BaseModel):
     user_id: str = "api_user"
     user_name: str = ""
     group_id: str = ""
+    session_id: str = ""
+    message_id: str = ""
+    reply_to_id: str = ""
     to_me: bool = True
     images: List[ImageItem] = Field(default_factory=list)
     request_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -143,6 +146,8 @@ class HttpApiChannel(BaseChannel):
             agent_app = get_agent_app()
             reply_key = req.user_id if not req.group_id else req.group_id
             fut = adapter._expect_reply(reply_key)
+            session_id = req.session_id or (req.group_id if req.group_id else req.user_id)
+            message_id = req.message_id or req.request_id
 
             images: List[ImageContent] = []
             for img in req.images:
@@ -159,6 +164,9 @@ class HttpApiChannel(BaseChannel):
                 to_me=req.to_me,
                 images=images or None,
                 adapter_key=adapter.channel_id,
+                message_id=message_id,
+                session_id=session_id,
+                reply_to_id=req.reply_to_id,
             )
 
             try:

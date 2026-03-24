@@ -534,7 +534,9 @@ class PrefrontalCortex:
 - [uid:xxx] — 消息发送者的用户ID，同一uid是同一人
 - [name:xxx] — 发送者用户名
 - [nickname:xxx] — 发送者群内昵称
+- [session_id:xxx] — 会话ID（同一频道内会话上下文标识）
 - [group_id:xxx] — 群组ID，不同group_id是不同群
+- [message_id:xxx] — 当前消息ID，可用于精确定位某一条消息
 - [at_uid:xxx] — 消息中 @ 提及的用户ID
 - [at_uid:all] — @ 全体成员
 - [reply_to:xxx] — 引用的原消息

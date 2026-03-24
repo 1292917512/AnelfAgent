@@ -358,7 +358,12 @@ def list_channels() -> str:
 
 
 @deferred_tool(group="output", tags=["always", "send_text"], source="channel.output")
-async def send_message(channel_id: str, target_id: str, content: str = "") -> str:
+async def send_message(
+        channel_id: str,
+        target_id: str,
+        content: str = "",
+        reply_to_message_id: str = "",
+) -> str:
     """向指定频道发送文本消息。content 不能为空。
 
     在 content 中使用 [at_uid:用户uid] 格式可 @ 提及用户，
@@ -369,16 +374,22 @@ async def send_message(channel_id: str, target_id: str, content: str = "") -> st
         channel_id: 频道标识（通过 list_channels 获取）
         target_id: 目标会话 ID（用户 uid 或群组 group_id，来自消息标签）
         content: 消息文本内容（支持 [at_uid:xxx] 格式 @ 提及用户）
+        reply_to_message_id: 可选，指定回复引用的消息 ID（为空则普通发送）
     """
     if not content or not content.strip():
         return json.dumps({"success": False, "error": "content 参数不能为空，请提供要发送的消息内容"}, ensure_ascii=False)
 
     async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
         log(f"调用 {channel_id}.send_text({resolved_target_id}, {channel_type}, {content[:50]}...)", "DEBUG", tag="通道")
-        return await ch.send_text(resolved_target_id, content, channel_type=channel_type)
+        kwargs: dict[str, Any] = {"channel_type": channel_type}
+        if reply_to_message_id:
+            kwargs["reply_to"] = reply_to_message_id
+        return await ch.send_text(resolved_target_id, content, **kwargs)
 
     def _enrich(parsed: dict, _: bool) -> None:
         parsed["content"] = content[:200]
+        if reply_to_message_id:
+            parsed["reply_to_message_id"] = reply_to_message_id
 
     return await _execute_send_action(
         channel_id=channel_id,

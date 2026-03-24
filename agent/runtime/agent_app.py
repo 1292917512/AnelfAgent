@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional, Union
@@ -146,6 +147,9 @@ class AgentApp:
         media_segments: Optional[list] = None,
         adapter_key: str = "",
         message_id: str = "",
+        session_id: str = "",
+        reply_to_id: str = "",
+        reply_content: str = "",
         trigger_mind: bool = True,
     ) -> None:
         """便捷方法：提交一条消息事件（适配器推荐使用此方法）。
@@ -153,6 +157,9 @@ class AgentApp:
         当调用方与 AgentApp 不在同一事件循环时（如 Telegram 独立线程），
         自动使用 run_coroutine_threadsafe 进行跨循环线程安全提交。
         """
+        resolved_message_id = message_id or uuid.uuid4().hex[:16]
+        resolved_session_id = session_id or (str(group_id) if group_id not in (0, "0", "") else str(user_id))
+
         payload: dict[str, Any] = {
             "user_id": user_id,
             "content": content,
@@ -161,7 +168,10 @@ class AgentApp:
             "to_me": to_me,
             "nickname": nickname,
             "adapter_key": adapter_key,
-            "message_id": message_id,
+            "message_id": resolved_message_id,
+            "session_id": resolved_session_id,
+            "reply_to_id": reply_to_id,
+            "reply_content": reply_content,
             "trigger_mind": trigger_mind,
         }
         if images:
@@ -282,6 +292,9 @@ def _build_message_everything(payload: dict[str, Any]) -> Everything:
     media_segments: list = payload.get("media_segments") or []
     adapter_key: str = payload.get("adapter_key", "")
     message_id: str = payload.get("message_id", "")
+    session_id: str = payload.get("session_id", "")
+    reply_to_id: str = payload.get("reply_to_id", "")
+    reply_content: str = payload.get("reply_content", "")
     trigger_mind: bool = payload.get("trigger_mind", True)
 
     if group_id and group_id not in (0, "0", ""):
@@ -295,6 +308,9 @@ def _build_message_everything(payload: dict[str, Any]) -> Everything:
             media_segments=media_segments,
             adapter_key=adapter_key,
             adapter_message_id=message_id,
+            session_id=session_id,
+            reply_to_id=reply_to_id,
+            reply_content=reply_content,
             trigger_mind=trigger_mind,
         )
     else:
@@ -305,6 +321,9 @@ def _build_message_everything(payload: dict[str, Any]) -> Everything:
             media_segments=media_segments,
             adapter_key=adapter_key,
             adapter_message_id=message_id,
+            session_id=session_id,
+            reply_to_id=reply_to_id,
+            reply_content=reply_content,
             trigger_mind=trigger_mind,
         )
     return msg

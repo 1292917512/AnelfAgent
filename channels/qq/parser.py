@@ -12,7 +12,6 @@ import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from core.log import log
-from core.tags import reply_to_tag, tag_label
 
 from agent.channel.schemas import (
     AdapterChannel,
@@ -126,10 +125,6 @@ async def _parse_message_event_async(
     reply_content = ""
     if reply_to_id and api_caller:
         reply_content = await _fetch_reply_content(reply_to_id, api_caller, group_id, self_id)
-        if reply_content:
-            # 使用 tag 系统生成标签，与 Telegram 保持一致
-            reply_label = tag_label(reply_to_tag.get_tag_name(), reply_to_id)
-            content = f"{reply_label}{reply_content}\n{content}"
 
     is_to_me = _check_to_me(data)
 
