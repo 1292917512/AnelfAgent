@@ -769,12 +769,67 @@ def register_mcp_tools() -> None:
     bridge = get_mcp_bridge()
     server_names = [s.name for s in bridge.config.servers] if bridge else []
     names_hint = f" ({', '.join(server_names)})" if server_names else ""
-    EntityRegistry.register_group("mcp_manage", f"MCP 管理 - 查看/连接/断开/增删 MCP 服务器{names_hint}")
+    EntityRegistry.register_group("mcp_manage", f"MCP 管理 - 查看/连接/断开/增删改 MCP 服务器{names_hint}")
 
     EntityRegistry.register_tool(
         name="list_mcp_servers",
         func=_tool_list_mcp_servers,
         description="列出所有可用的 MCP 服务器及其连接状态和工具数量。",
+        group="mcp_manage",
+        params=[],
+        source="mcp", tags=["core"],
+    )
+
+    EntityRegistry.register_tool(
+        name="get_mcp_server_config",
+        func=_tool_get_mcp_server_config,
+        description=(
+            "读取 MCP 配置。可查看单个 server 配置或完整 mcpServers，"
+            "并返回可编辑字段说明，便于后续精准修改。"
+        ),
+        group="mcp_manage",
+        params=[
+            ToolParam(name="server_name", description="服务器名称；留空返回完整 mcpServers 配置", type="string", required=False),
+        ],
+        source="mcp", tags=["core"],
+    )
+
+    EntityRegistry.register_tool(
+        name="update_mcp_server_config",
+        func=_tool_update_mcp_server_config,
+        description=(
+            "按补丁更新 MCP server 配置（支持 merge/replace、删除字段、可选创建、可选热重载）。"
+            "patch_json 传 JSON 对象字符串，例如 {\"transport\":\"streamable_http\",\"timeout\":10}。"
+        ),
+        group="mcp_manage",
+        params=[
+            ToolParam(name="server_name", description="服务器名称", type="string", required=True),
+            ToolParam(name="patch_json", description="JSON 对象字符串，填写要变更的字段", type="string", required=True),
+            ToolParam(name="replace", description="true=整配置替换；false=增量合并（默认）", type="boolean", required=False),
+            ToolParam(name="remove_fields", description="要删除的字段列表（逗号分隔或 JSON 数组字符串）", type="string", required=False),
+            ToolParam(name="create_if_missing", description="服务器不存在时是否创建", type="boolean", required=False),
+            ToolParam(name="reload", description="修改后是否立即热重载", type="boolean", required=False),
+        ],
+        source="mcp", tags=["core"],
+    )
+
+    EntityRegistry.register_tool(
+        name="set_mcp_server_enabled",
+        func=_tool_set_mcp_server_enabled,
+        description="显式设置 MCP server 的 enabled 状态（区别于 toggle，不依赖当前状态猜测）。",
+        group="mcp_manage",
+        params=[
+            ToolParam(name="server_name", description="服务器名称", type="string", required=True),
+            ToolParam(name="enabled", description="是否启用", type="boolean", required=True),
+            ToolParam(name="reload", description="是否立即热重载", type="boolean", required=False),
+        ],
+        source="mcp", tags=["core"],
+    )
+
+    EntityRegistry.register_tool(
+        name="get_mcp_config_template",
+        func=_tool_get_mcp_config_template,
+        description="返回 MCP server 配置字段模板与示例，便于 AI 构造 update_mcp_server_config 的 patch_json。",
         group="mcp_manage",
         params=[],
         source="mcp", tags=["core"],
@@ -816,7 +871,10 @@ def register_mcp_tools() -> None:
     EntityRegistry.register_tool(
         name="add_mcp_server",
         func=_tool_add_mcp_server,
-        description="添加新的 MCP 服务器到配置并自动连接。支持 stdio（command 方式）和 HTTP（url 方式）两种传输。",
+        description=(
+            "添加新的 MCP 服务器并热重载。支持 stdio（command）和 HTTP/SSE（url）方式，"
+            "并可直接配置 headers/timeout/call_timeout 等字段。"
+        ),
         group="mcp_manage",
         params=[
             ToolParam(name="name", description="服务器名称（唯一标识）", type="string", required=True),
@@ -824,7 +882,12 @@ def register_mcp_tools() -> None:
             ToolParam(name="command", description="启动命令（stdio 方式，与 url 二选一）", type="string", required=False),
             ToolParam(name="args", description="命令参数列表（stdio 方式，JSON 数组字符串）", type="string", required=False),
             ToolParam(name="env", description="环境变量（JSON 对象字符串）", type="string", required=False),
+            ToolParam(name="headers", description="HTTP 请求头（JSON 对象字符串）", type="string", required=False),
             ToolParam(name="transport", description="传输方式：stdio / streamable_http / sse（留空自动推断）", type="string", required=False),
+            ToolParam(name="enabled", description="是否启用（默认 true）", type="boolean", required=False),
+            ToolParam(name="timeout", description="连接超时秒数（>0）", type="number", required=False),
+            ToolParam(name="sse_read_timeout", description="SSE 读取超时秒数（>0）", type="number", required=False),
+            ToolParam(name="call_timeout", description="工具调用超时秒数（>0）", type="number", required=False),
         ],
         source="mcp", tags=["core"],
     )
@@ -849,7 +912,10 @@ def register_mcp_tools() -> None:
         source="mcp", tags=["core"],
     )
 
-    log("MCP 管理工具已注册 (list / connect / disconnect / toggle / add / remove / reload)", tag="思维")
+    log(
+        "MCP 管理工具已注册 (list/get/update/set/add/remove/connect/disconnect/toggle/reload/template)",
+        tag="思维",
+    )
 
 
 def _tool_list_mcp_servers() -> str:
@@ -860,6 +926,201 @@ def _tool_list_mcp_servers() -> str:
     return json.dumps({"servers": servers, "total": len(servers)}, ensure_ascii=False)
 
 
+def _tool_get_mcp_server_config(server_name: str = "") -> str:
+    """查看 MCP 原始配置（单个或全部）。"""
+    try:
+        from services import MCPService
+
+        svc = MCPService()
+        schema = svc.get_server_config_schema()
+        if server_name.strip():
+            cfg = svc.get_server_config(server_name.strip())
+            if cfg is None:
+                return json.dumps({
+                    "error": f"服务器 '{server_name}' 不存在",
+                    "hint": "可先调用 list_mcp_servers 查看名称",
+                }, ensure_ascii=False)
+            return json.dumps({
+                "server": server_name.strip(),
+                "config": cfg,
+                "editable_schema": schema,
+            }, ensure_ascii=False)
+
+        full = svc.load_config()
+        return json.dumps({
+            "mcpServers": full.get("mcpServers", {}),
+            "editable_schema": schema,
+        }, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+def _parse_remove_fields_arg(remove_fields: str) -> List[str]:
+    """解析 remove_fields：支持逗号分隔或 JSON 数组字符串。"""
+    raw = (remove_fields or "").strip()
+    if not raw:
+        return []
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except json.JSONDecodeError:
+            pass
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def _coerce_bool_arg(value: Any, default: bool) -> bool:
+    """将工具参数稳健转为 bool（兼容 LLM 误传字符串）。"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+    return bool(value)
+
+
+def _coerce_positive_float_arg(value: Any, field_name: str) -> Optional[float]:
+    """解析可选正数参数；空值返回 None。"""
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    num = float(value)
+    if num <= 0:
+        raise ValueError(f"{field_name} 必须 > 0")
+    return num
+
+
+async def _tool_update_mcp_server_config(
+    server_name: str,
+    patch_json: str,
+    replace: bool = False,
+    remove_fields: str = "",
+    create_if_missing: bool = False,
+    reload: bool = True,
+) -> str:
+    """按补丁更新 server 配置。"""
+    import asyncio
+
+    try:
+        patch = json.loads(patch_json or "{}")
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"patch_json 不是合法 JSON: {exc}"}, ensure_ascii=False)
+    if not isinstance(patch, dict):
+        return json.dumps({"error": "patch_json 必须是 JSON 对象字符串"}, ensure_ascii=False)
+
+    try:
+        from services import MCPService
+
+        svc = MCPService()
+        result = await asyncio.to_thread(
+            svc.update_server_config,
+            server_name.strip(),
+            patch,
+            replace=_coerce_bool_arg(replace, False),
+            remove_fields=_parse_remove_fields_arg(remove_fields),
+            create_if_missing=_coerce_bool_arg(create_if_missing, False),
+            reload=_coerce_bool_arg(reload, True),
+        )
+        bridge = get_mcp_bridge()
+        connected = False
+        tools: List[str] = []
+        if bridge:
+            connected_map = bridge.get_connected_servers()
+            tools = connected_map.get(server_name.strip(), [])
+            connected = server_name.strip() in connected_map
+        return json.dumps({
+            "success": True,
+            **result,
+            "connected": connected,
+            "tool_count": len(tools),
+            "tools": tools[:50],
+        }, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+async def _tool_set_mcp_server_enabled(
+    server_name: str,
+    enabled: bool,
+    reload: bool = True,
+) -> str:
+    """显式设置 enabled 状态。"""
+    import asyncio
+
+    try:
+        from services import MCPService
+
+        svc = MCPService()
+        result = await asyncio.to_thread(
+            svc.set_server_enabled,
+            server_name.strip(),
+            _coerce_bool_arg(enabled, False),
+            reload=_coerce_bool_arg(reload, True),
+        )
+        bridge = get_mcp_bridge()
+        connected = False
+        if bridge:
+            connected = server_name.strip() in bridge.get_connected_servers()
+        return json.dumps({
+            "success": True,
+            **result,
+            "connected": connected,
+        }, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+def _tool_get_mcp_config_template() -> str:
+    """返回 MCP 配置模板与 patch 示例。"""
+    try:
+        from services import MCPService
+
+        schema = MCPService.get_server_config_schema()
+        return json.dumps({
+            "schema": schema,
+            "examples": {
+                "set_http_server": {
+                    "server_name": "my-http-server",
+                    "patch_json": json.dumps({
+                        "url": "https://example.com/mcp",
+                        "headers": {"Authorization": "Bearer xxx"},
+                        "transport": "streamable_http",
+                        "enabled": True,
+                        "call_timeout": 180,
+                    }, ensure_ascii=False),
+                },
+                "set_stdio_server": {
+                    "server_name": "my-stdio-server",
+                    "patch_json": json.dumps({
+                        "command": "npx",
+                        "args": ["-y", "@example/mcp-server"],
+                        "env": {"API_KEY": "xxx"},
+                        "transport": "stdio",
+                    }, ensure_ascii=False),
+                },
+                "remove_fields": {
+                    "server_name": "my-http-server",
+                    "patch_json": "{}",
+                    "remove_fields": "headers,timeout",
+                },
+            },
+            "notes": [
+                "update_mcp_server_config 是推荐入口，支持 merge/replace + remove_fields + reload",
+                "enabled 建议用 set_mcp_server_enabled 显式控制，避免 toggle 带来的状态不确定",
+            ],
+        }, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
 async def _tool_connect_mcp_server(server_name: str) -> str:
     """异步连接 MCP 服务器，不阻塞 Mind 思考循环。"""
     import asyncio
@@ -868,10 +1129,17 @@ async def _tool_connect_mcp_server(server_name: str) -> str:
         return json.dumps({"error": "MCP Bridge 未初始化"}, ensure_ascii=False)
     try:
         count = await asyncio.to_thread(bridge.connect_server_by_name, server_name)
+        try:
+            from services import MCPService
+            svc = MCPService()
+            await asyncio.to_thread(svc.set_server_enabled, server_name, True, reload=False)
+        except Exception as inner_exc:
+            log(f"同步 enabled 状态失败(connect): {inner_exc}", "DEBUG", tag="mcp")
         return json.dumps({
             "success": True,
             "server": server_name,
             "tools_discovered": count,
+            "enabled": True,
         }, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -887,7 +1155,16 @@ async def _tool_disconnect_mcp_server(server_name: str) -> str:
         return json.dumps({"error": f"服务器 '{server_name}' 未连接"}, ensure_ascii=False)
     try:
         await asyncio.to_thread(bridge.disconnect_server_by_name, server_name)
-        return json.dumps({"success": True, "server": server_name, "action": "disconnected"}, ensure_ascii=False)
+        try:
+            from services import MCPService
+            svc = MCPService()
+            await asyncio.to_thread(svc.set_server_enabled, server_name, False, reload=False)
+        except Exception as inner_exc:
+            log(f"同步 enabled 状态失败(disconnect): {inner_exc}", "DEBUG", tag="mcp")
+        return json.dumps(
+            {"success": True, "server": server_name, "action": "disconnected", "enabled": False},
+            ensure_ascii=False,
+        )
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
@@ -901,14 +1178,30 @@ async def _tool_toggle_mcp_server(server_name: str) -> str:
     try:
         if server_name in bridge.get_connected_servers():
             await asyncio.to_thread(bridge.disconnect_server_by_name, server_name)
-            return json.dumps({"success": True, "server": server_name, "action": "disconnected"}, ensure_ascii=False)
+            try:
+                from services import MCPService
+                svc = MCPService()
+                await asyncio.to_thread(svc.set_server_enabled, server_name, False, reload=False)
+            except Exception as inner_exc:
+                log(f"同步 enabled 状态失败(toggle->disconnect): {inner_exc}", "DEBUG", tag="mcp")
+            return json.dumps(
+                {"success": True, "server": server_name, "action": "disconnected", "enabled": False},
+                ensure_ascii=False,
+            )
         else:
             count = await asyncio.to_thread(bridge.connect_server_by_name, server_name)
+            try:
+                from services import MCPService
+                svc = MCPService()
+                await asyncio.to_thread(svc.set_server_enabled, server_name, True, reload=False)
+            except Exception as inner_exc:
+                log(f"同步 enabled 状态失败(toggle->connect): {inner_exc}", "DEBUG", tag="mcp")
             return json.dumps({
                 "success": True,
                 "server": server_name,
                 "action": "connected",
                 "tools_discovered": count,
+                "enabled": True,
             }, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -920,7 +1213,12 @@ async def _tool_add_mcp_server(
     command: str = "",
     args: str = "",
     env: str = "",
+    headers: str = "",
     transport: str = "",
+    enabled: bool = True,
+    timeout: float = 0.0,
+    sse_read_timeout: float = 0.0,
+    call_timeout: float = 0.0,
 ) -> str:
     """添加 MCP 服务器到配置文件并触发热重载。"""
     import asyncio
@@ -937,7 +1235,7 @@ async def _tool_add_mcp_server(
         if name in servers:
             return json.dumps({"error": f"服务器 '{name}' 已存在"}, ensure_ascii=False)
 
-        server_cfg: Dict[str, Any] = {"enabled": True}
+        server_cfg: Dict[str, Any] = {"enabled": _coerce_bool_arg(enabled, True)}
         if url:
             server_cfg["url"] = url
         if command:
@@ -952,13 +1250,40 @@ async def _tool_add_mcp_server(
                 server_cfg["env"] = json.loads(env)
             except json.JSONDecodeError:
                 return json.dumps({"error": "env 必须是合法 JSON 对象"}, ensure_ascii=False)
+        if headers:
+            try:
+                server_cfg["headers"] = json.loads(headers)
+            except json.JSONDecodeError:
+                return json.dumps({"error": "headers 必须是合法 JSON 对象"}, ensure_ascii=False)
         if transport:
             server_cfg["transport"] = transport
+        parsed_timeout = _coerce_positive_float_arg(timeout, "timeout")
+        parsed_sse_timeout = _coerce_positive_float_arg(sse_read_timeout, "sse_read_timeout")
+        parsed_call_timeout = _coerce_positive_float_arg(call_timeout, "call_timeout")
+        if parsed_timeout is not None:
+            server_cfg["timeout"] = parsed_timeout
+        if parsed_sse_timeout is not None:
+            server_cfg["sse_read_timeout"] = parsed_sse_timeout
+        if parsed_call_timeout is not None:
+            server_cfg["call_timeout"] = parsed_call_timeout
 
-        servers[name] = server_cfg
-        svc.save_config(data)
-        result = await asyncio.to_thread(bridge.reload_config)
-        return json.dumps({"success": True, "server": name, "reload": result}, ensure_ascii=False)
+        result = await asyncio.to_thread(
+            svc.update_server_config,
+            name,
+            server_cfg,
+            replace=True,
+            create_if_missing=True,
+            reload=True,
+        )
+        connected_map = bridge.get_connected_servers()
+        tools = connected_map.get(name, [])
+        return json.dumps({
+            "success": True,
+            **result,
+            "connected": name in connected_map,
+            "tool_count": len(tools),
+            "tools": tools[:50],
+        }, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
