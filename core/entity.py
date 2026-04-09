@@ -338,9 +338,9 @@ class EntityRegistry:
 
     _CATALOG_ORDER: Dict[str, int] = {
         "output": 0, "memory": 1, "notes": 2, "thinking": 3, "planning": 4,
-        "web": 5, "media": 6, "os": 7, "environment": 8, "model_control": 9,
-        "ollama": 10, "logs": 11, "channel_ops": 12, "entity": 13, "mcp_manage": 14,
-        "devops": 15,
+        "web": 5, "media": 6, "minimax": 7, "os": 8, "environment": 9,
+        "model_control": 10, "ollama": 11, "logs": 12, "channel_ops": 13,
+        "entity": 14, "mcp_manage": 15, "devops": 16,
     }
 
     @classmethod

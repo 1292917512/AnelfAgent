@@ -70,6 +70,7 @@ config/personas/yanyi.json
 
 # === Entity secrets (copy *.example.json and remove .example suffix) ===
 entities/web/config.json
+entities/minimax/config.json
 
 # === Channel secrets (copy *.example.json and remove .example suffix) ===
 channels/telegram/channel_config.json
