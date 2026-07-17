@@ -153,9 +153,29 @@ async def recall(query: str, tags: str = "", limit: int = 5) -> str:
         if _embedder and _embedder.available:
             query_vec = await _embedder.embed_one(query)
 
-        results = await _store.search_unified(
-            query=query, query_vec=query_vec,
-            query_tags=tag_list, limit=limit,
+        from .cognee.config import load_cognee_config
+        from .cognee.fusion import federated_search
+        from .cognee.runtime import get_cognee_client
+        cognee_config = load_cognee_config()
+        entity_scope = ""
+        for tag in tag_list or []:
+            if tag.startswith(("user:", "group:")):
+                scope_type, scope_id = tag.split(":", 1)
+                entity_scope = f"{scope_type}_{scope_id}"
+                break
+        results = await federated_search(
+            _store.search_unified(
+                query=query,
+                query_vec=query_vec,
+                query_tags=tag_list,
+                limit=limit * cognee_config.recall_pool_multiplier,
+            ),
+            query=query,
+            client=get_cognee_client(),
+            config=cognee_config,
+            limit=limit,
+            entity_scope=entity_scope,
+            query_tags=tag_list,
         )
 
         mem_ids = [
@@ -174,6 +194,8 @@ async def recall(query: str, tags: str = "", limit: int = 5) -> str:
             "source": r.source,
             "path": r.path,
             "score": round(r.score, 3),
+            "dataset": r.dataset_name,
+            "provenance": r.provenance,
         } for r in results]
         return json.dumps({"count": len(items), "results": items}, ensure_ascii=False)
     except Exception as e:
@@ -682,6 +704,99 @@ async def memory_stats() -> str:
             return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
         health = await _store.get_health_status()
         return json.dumps(health, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@deferred_tool(
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    description="查看 Cognee 知识图谱记忆后端的安装、可用性、同步积压和失败状态。",
+)
+async def cognee_status() -> str:
+    """查看 Cognee 可选后端状态。"""
+    try:
+        from .cognee.config import load_cognee_config
+        from .cognee.runtime import get_cognee_client, get_cognee_coordinator
+
+        config = load_cognee_config()
+        client = get_cognee_client()
+        coordinator = get_cognee_coordinator()
+        availability = (
+            client.availability().model_dump()
+            if client
+            else {
+                "installed": False, "enabled": config.enabled, "ready": False,
+                "version": "", "reason": "运行时未初始化",
+            }
+        )
+        sync = (
+            (await coordinator.status()).model_dump()
+            if coordinator
+            else {"enabled": False, "running": False, "pending": 0, "failed": 0, "synced": 0}
+        )
+        return json.dumps(
+            {"availability": availability, "sync": sync},
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@deferred_tool(
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    description="重试 Cognee 同步队列中已达到失败上限的记忆投影任务。",
+)
+async def retry_cognee_sync() -> str:
+    """重试 Cognee 失败同步项。"""
+    try:
+        from .cognee.runtime import get_cognee_coordinator
+        coordinator = get_cognee_coordinator()
+        if not coordinator:
+            return json.dumps({"error": "Cognee 运行时未初始化"}, ensure_ascii=False)
+        count = await coordinator.retry_failed()
+        return json.dumps({"ok": True, "retried": count}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@deferred_tool(
+    group="memory", tags=["core"], source="mind.memory",
+    description="列出当前 Cognee 可访问的数据集，仅用于诊断记忆作用域。",
+)
+async def list_cognee_datasets() -> str:
+    """列出 Cognee datasets。"""
+    try:
+        from .cognee.runtime import get_cognee_client
+        client = get_cognee_client()
+        if not client:
+            return json.dumps({"error": "Cognee 运行时未初始化"}, ensure_ascii=False)
+        values = await client.list_datasets()
+        items = [
+            value.model_dump(mode="json")
+            if hasattr(value, "model_dump")
+            else value if isinstance(value, dict)
+            else {"id": str(getattr(value, "id", "")), "name": str(getattr(value, "name", ""))}
+            for value in values
+        ]
+        return json.dumps({"datasets": items, "count": len(items)}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@deferred_tool(
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    description="显式运行指定 Cognee 数据集的知识图谱增强。仅对已确认存在的数据集使用。",
+)
+async def improve_cognee_dataset(dataset_name: str) -> str:
+    """增强指定 Cognee 数据集。"""
+    try:
+        from .cognee.runtime import get_cognee_coordinator
+        coordinator = get_cognee_coordinator()
+        if not coordinator:
+            return json.dumps({"error": "Cognee 运行时未初始化"}, ensure_ascii=False)
+        result = await coordinator.improve(dataset_name)
+        value = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+        return json.dumps({"ok": True, "result": value}, ensure_ascii=False, default=str)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 

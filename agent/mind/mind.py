@@ -149,6 +149,10 @@ class Mind:
         self.retriever: Optional[MemoryRetriever] = None
         if self.memory_store:
             self.retriever = MemoryRetriever(self.memory_store, self.embedder)
+            if self.llm_manager:
+                rerank_client = self.llm_manager.get_rerank_client()
+                if rerank_client:
+                    self.retriever.set_rerank_client(rerank_client)
 
         self.media_pipeline = MediaPipeline()
 

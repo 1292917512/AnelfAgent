@@ -34,6 +34,8 @@ class MemoryRetriever:
         self._top_k = top_k
         self._min_score = min_score
         self._rerank_client: Optional[object] = None
+        from .cognee.config import load_cognee_config
+        self._cognee_config = load_cognee_config()
 
     def set_rerank_client(self, client: object) -> None:
         """Set reranker (MediaClient instance) for post-search reranking."""
@@ -52,7 +54,14 @@ class MemoryRetriever:
         同时搜索 memories 表和 MD 文件 chunks（双轨统一召回）。
         related_scopes 用于群聊场景下加载活跃成员的画像。
         """
-        k = top_k or self._top_k
+        try:
+            from agent.config import get_mind_config
+            mind_config = get_mind_config()
+            k = top_k or mind_config.memory_recall_top_k
+            min_score = mind_config.memory_recall_min_score
+        except Exception:
+            k = top_k or self._top_k
+            min_score = self._min_score
 
         all_scopes: List[str] = []
         if entity_scope:
@@ -74,11 +83,20 @@ class MemoryRetriever:
         if self._embedder.available:
             query_vec = await self._embedder.embed_one(query)
 
-        results = await self._store.search_unified(
+        from .cognee.fusion import federated_search
+        from .cognee.runtime import get_cognee_client
+        results = await federated_search(
+            self._store.search_unified(
+                query=query,
+                query_vec=query_vec,
+                limit=k * self._cognee_config.recall_pool_multiplier,
+                min_score=min_score,
+            ),
             query=query,
-            query_vec=query_vec,
+            client=get_cognee_client(),
+            config=self._cognee_config,
             limit=k,
-            min_score=self._min_score,
+            entity_scope=entity_scope,
         )
 
         if not results:
@@ -100,7 +118,11 @@ class MemoryRetriever:
             await self._store.record_access(mem_ids)
 
         for r in results:
-            src_label = f"[{r.source}]" if r.source == "file" else f"[{r.memory_type or 'memory'}]"
+            src_label = (
+                f"[{r.source}]"
+                if r.source != "memory"
+                else f"[{r.memory_type or 'memory'}]"
+            )
             tag_str = f" [{','.join(r.tags)}]" if r.tags else ""
             path_str = f" {r.path}" if r.path else ""
             log(f"  💡 {src_label}{tag_str}{path_str} score={r.score:.2f}: {r.snippet[:50]}", tag="思维")
@@ -200,12 +222,18 @@ class MemoryRetriever:
 
         mem_lines: list[str] = []
         file_lines: list[str] = []
+        graph_lines: list[str] = []
 
         for r in results:
             snippet = r.snippet[:500]
             if r.source == "file":
                 loc = f"[{r.path}:{r.start_line}-{r.end_line}]" if r.path else ""
                 file_lines.append(f"💡 {loc} score={r.score:.2f}: {snippet}")
+            elif r.source.startswith("cognee_"):
+                dataset = f" [{r.dataset_name}]" if r.dataset_name else ""
+                graph_lines.append(
+                    f"💡 [{r.source}]{dataset} score={r.score:.2f}: {snippet}"
+                )
             else:
                 mtype = r.memory_type or "semantic"
                 tag_str = f" [{','.join(r.tags)}]" if r.tags else ""
@@ -223,6 +251,11 @@ class MemoryRetriever:
             parts.append(
                 "[系统注入·知识检索] 以下为便签文件检索结果：\n"
                 + "\n".join(file_lines)
+            )
+        if graph_lines:
+            parts.append(
+                "[系统注入·知识图谱召回] 以下为 Cognee 图谱与语义检索结果：\n"
+                + "\n".join(graph_lines)
             )
 
         if not parts:

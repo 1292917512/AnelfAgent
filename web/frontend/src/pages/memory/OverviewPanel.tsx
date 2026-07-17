@@ -16,10 +16,17 @@ export function OverviewPanel() {
   const { data: indexStatus } = useQuery({ queryKey: ["indexStatus"], queryFn: () => memoryApi.index.status().then((r) => r.data) });
   const resyncMutation = useMutation({ mutationFn: (force: boolean) => memoryApi.index.resync(force), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["indexStatus"] }) });
   const cleanCacheMutation = useMutation({ mutationFn: () => memoryApi.index.cleanCache(), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["indexStatus"] }) });
+  const retryCogneeMutation = useMutation({
+    mutationFn: () => memoryApi.cognee.retry(),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["memoryHealth"] }),
+  });
 
   const typeCounts = (health?.type_counts || {}) as Record<string, number>;
   const warnings = (health?.warnings || []) as string[];
   const warnThreshold = health?.warn_threshold || 200;
+  const cognee = health?.cognee;
+  const cogneeAvailability = cognee?.availability;
+  const cogneeSync = cognee?.sync;
 
   return (
     <div className="space-y-4">
@@ -53,6 +60,25 @@ export function OverviewPanel() {
           </div>
         </Card>
       )}
+
+      <Card title={t("cogneeStatus")} subtitle={cogneeAvailability?.reason || t("cogneeStatusSubtitle")} actions={
+        cogneeSync?.failed > 0 ? (
+          <button onClick={() => retryCogneeMutation.mutate()}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all">
+            <RefreshCw size={14} /> {t("retryFailedSync")}
+          </button>
+        ) : undefined
+      }>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <StatCard label={t("cogneeInstalled")} value={cogneeAvailability?.installed ? (cogneeAvailability.version || t("common:available")) : t("common:unavailable")}
+            variant={cogneeAvailability?.installed ? "ok" : "default"} />
+          <StatCard label={t("cogneeReady")} value={cogneeAvailability?.ready ? t("common:available") : t("common:unavailable")}
+            variant={cogneeAvailability?.ready ? "ok" : "default"} />
+          <StatCard label={t("syncPending")} value={String(cogneeSync?.pending || 0)} />
+          <StatCard label={t("syncFailed")} value={String(cogneeSync?.failed || 0)}
+            variant={(cogneeSync?.failed || 0) > 0 ? "danger" : "default"} />
+        </div>
+      </Card>
 
       <Card title={t("fileIndexTitle")} subtitle={t("fileIndexSubtitle")} actions={
         <div className="flex gap-2">

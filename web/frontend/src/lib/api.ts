@@ -194,6 +194,17 @@ export const personasApi = {
 // Memory
 export const memoryApi = {
   health: () => api.get("/memory/health"),
+  cognee: {
+    status: () => api.get("/memory/cognee/status"),
+    getConfig: () => api.get<Record<string, unknown>>("/memory/cognee/config"),
+    saveConfig: (data: Record<string, unknown>) => api.put("/memory/cognee/config", data),
+    retry: () => api.post("/memory/cognee/retry"),
+    backfill: (limit = 0, dryRun = true) =>
+      api.post("/memory/cognee/backfill", { limit, dry_run: dryRun }),
+    datasets: () => api.get("/memory/cognee/datasets"),
+    improve: (datasetName: string) =>
+      api.post("/memory/cognee/improve", { dataset_name: datasetName }),
+  },
   stm: {
     list: () => api.get("/memory/stm"),
     delete: (index: number) => api.delete(`/memory/stm/${index}`),

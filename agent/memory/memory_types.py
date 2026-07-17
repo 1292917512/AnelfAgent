@@ -64,8 +64,11 @@ class MemorySearchResult(BaseModel):
     snippet: str
     """摘要文本（最多 700 字符）。"""
     score: float
-    source: Literal["file", "memory"] = "memory"
-    """来源类型：file = MD 文件 chunk，memory = memories 表。"""
+    source: Literal["file", "memory", "cognee_graph", "cognee_chunk"] = "memory"
+    """来源类型：本地记忆、文件块或 Cognee 图/向量结果。"""
     memory_type: Optional[str] = None
     """原始 MemoryType 值（仅 memory 来源有值）。"""
     tags: List[str] = Field(default_factory=list)
+    dataset_id: str = ""
+    dataset_name: str = ""
+    provenance: Dict[str, Any] = Field(default_factory=dict)

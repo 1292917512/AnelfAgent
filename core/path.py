@@ -524,6 +524,8 @@ class ConfigPaths:
     PERSONAS_DIR = "config/personas"
     PERSONAS_INDEX = "config/personas/index.json"
     MEMORY_DIR = "config/memory"
+    COGNEE_CONFIG = "config/cognee.json"
+    COGNEE_DATA_DIR = "config/memory/cognee"
     HEARTBEAT_LOG = "config/memory/heartbeat.md"
     SQLITE_DB = "config/memory/data/agent.sqlite3"
     UPLOAD_DIR = "workspace/uploads"

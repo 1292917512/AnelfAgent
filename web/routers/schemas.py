@@ -34,3 +34,29 @@ class MindConfigUpdate(BaseModel):
     cross_channel_recall_scan_limit: Optional[int] = None
     cross_channel_narrative_max_items: Optional[int] = None
     reasoning_effort: Optional[str] = None
+
+
+class CogneeConfigUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    sync_enabled: Optional[bool] = None
+    recall_enabled: Optional[bool] = None
+    data_root: Optional[str] = None
+    dataset_prefix: Optional[str] = None
+    timeout_seconds: Optional[float] = None
+    sync_interval_seconds: Optional[float] = None
+    sync_batch_size: Optional[int] = None
+    max_retries: Optional[int] = None
+    native_weight: Optional[float] = None
+    cognee_weight: Optional[float] = None
+    rrf_k: Optional[int] = None
+    recall_pool_multiplier: Optional[int] = None
+    search_types: Optional[list[str]] = None
+
+
+class CogneeBackfillRequest(BaseModel):
+    limit: int = 0
+    dry_run: bool = True
+
+
+class CogneeImproveRequest(BaseModel):
+    dataset_name: str

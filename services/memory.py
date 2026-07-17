@@ -158,14 +158,29 @@ class MemoryService:
                 query_vec = await rt.mind.embedder.embed_one(query)
         except Exception as e:
             log(f"搜索记忆时 embedding 失败: {e}", "DEBUG")
-        results = await store.search_unified(
-            query=query, query_vec=query_vec, query_tags=tag_list, limit=limit,
+        from agent.memory.cognee.config import load_cognee_config
+        from agent.memory.cognee.fusion import federated_search
+        from agent.memory.cognee.runtime import get_cognee_client
+        cognee_config = load_cognee_config()
+        results = await federated_search(
+            store.search_unified(
+                query=query,
+                query_vec=query_vec,
+                query_tags=tag_list,
+                limit=limit * cognee_config.recall_pool_multiplier,
+            ),
+            query=query,
+            client=get_cognee_client(),
+            config=cognee_config,
+            limit=limit,
+            query_tags=tag_list,
         )
         return [
             {
                 "id": r.id, "snippet": r.snippet[:300], "score": round(r.score, 3),
                 "source": r.source, "memory_type": r.memory_type or "",
-                "tags": r.tags, "path": r.path,
+                "tags": r.tags, "path": r.path, "dataset": r.dataset_name,
+                "provenance": r.provenance,
             }
             for r in results
         ]
@@ -337,7 +352,118 @@ class MemoryService:
         embedder = rt.mind.embedder
         health["embedding_available"] = embedder.available if embedder else False
         health["embedding_dims"] = embedder.dimensions if embedder else None
+        health["cognee"] = await self.get_cognee_status()
         return health
+
+    # ==================================================================
+    # Cognee 可选后端
+    # ==================================================================
+
+    @staticmethod
+    async def get_cognee_status() -> Dict[str, Any]:
+        from agent.memory.cognee.config import load_cognee_config
+        from agent.memory.cognee.runtime import (
+            get_cognee_client,
+            get_cognee_coordinator,
+        )
+
+        config = load_cognee_config()
+        client = get_cognee_client()
+        coordinator = get_cognee_coordinator()
+        availability = (
+            client.availability()
+            if client
+            else {
+                "installed": False,
+                "enabled": config.enabled,
+                "ready": False,
+                "version": "",
+                "reason": "运行时未初始化",
+            }
+        )
+        availability_data = (
+            availability.model_dump()
+            if hasattr(availability, "model_dump")
+            else availability
+        )
+        sync = await coordinator.status() if coordinator else None
+        return {
+            "availability": availability_data,
+            "sync": sync.model_dump() if sync else {
+                "enabled": config.enabled and config.sync_enabled,
+                "running": False,
+                "pending": 0,
+                "failed": 0,
+                "synced": 0,
+                "last_error": "",
+            },
+        }
+
+    @staticmethod
+    def get_cognee_config() -> Dict[str, Any]:
+        from agent.memory.cognee.config import load_cognee_config
+        return load_cognee_config().to_dict()
+
+    @staticmethod
+    def save_cognee_config(values: Dict[str, Any]) -> Dict[str, Any]:
+        from agent.memory.cognee.config import (
+            CogneeConfig,
+            load_cognee_config,
+            save_cognee_config,
+        )
+
+        current = load_cognee_config().to_dict()
+        current.update(values)
+        allowed = CogneeConfig.__dataclass_fields__.keys()
+        config = CogneeConfig(**{
+            key: value for key, value in current.items() if key in allowed
+        }).normalized()
+        save_cognee_config(config)
+        return config.to_dict()
+
+    @staticmethod
+    async def retry_cognee_sync() -> int:
+        from agent.memory.cognee.runtime import get_cognee_coordinator
+        coordinator = get_cognee_coordinator()
+        return await coordinator.retry_failed() if coordinator else 0
+
+    @staticmethod
+    async def backfill_cognee(
+        *,
+        limit: int = 0,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        from agent.memory.cognee.runtime import get_cognee_coordinator
+        coordinator = get_cognee_coordinator()
+        if not coordinator:
+            return {"error": "Cognee 运行时未初始化"}
+        return await coordinator.backfill(limit=limit, dry_run=dry_run)
+
+    @staticmethod
+    async def list_cognee_datasets() -> List[Dict[str, Any]]:
+        from agent.memory.cognee.runtime import get_cognee_client
+        client = get_cognee_client()
+        if not client:
+            return []
+        datasets = await client.list_datasets()
+        return [
+            item.model_dump(mode="json")
+            if hasattr(item, "model_dump")
+            else dict(item) if isinstance(item, dict)
+            else {"id": str(getattr(item, "id", "")), "name": str(getattr(item, "name", ""))}
+            for item in datasets
+        ]
+
+    @staticmethod
+    async def improve_cognee(dataset_name: str) -> Any:
+        from agent.memory.cognee.runtime import get_cognee_coordinator
+        coordinator = get_cognee_coordinator()
+        if not coordinator:
+            return {"error": "Cognee 运行时未初始化"}
+        result = await coordinator.improve(dataset_name)
+        if hasattr(result, "model_dump"):
+            return result.model_dump(mode="json")
+        return result
 
     # ==================================================================
     # 目标计划（Goals）

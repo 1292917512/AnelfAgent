@@ -8,6 +8,11 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from services import MemoryService
+from web.routers.schemas import (
+    CogneeBackfillRequest,
+    CogneeConfigUpdate,
+    CogneeImproveRequest,
+)
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -21,6 +26,43 @@ async def get_health_status() -> Dict[str, Any]:
         return await _mem_svc.get_health_status()
     except RuntimeError:
         return {"error": "运行时未初始化"}
+
+
+@router.get("/cognee/status")
+async def get_cognee_status() -> Dict[str, Any]:
+    return await _mem_svc.get_cognee_status()
+
+
+@router.get("/cognee/config")
+async def get_cognee_config() -> Dict[str, Any]:
+    return _mem_svc.get_cognee_config()
+
+
+@router.put("/cognee/config")
+async def save_cognee_config(req: CogneeConfigUpdate) -> Dict[str, Any]:
+    return _mem_svc.save_cognee_config(
+        req.model_dump(exclude_none=True),
+    )
+
+
+@router.post("/cognee/retry")
+async def retry_cognee_sync() -> Dict[str, int]:
+    return {"retried": await _mem_svc.retry_cognee_sync()}
+
+
+@router.post("/cognee/backfill")
+async def backfill_cognee(req: CogneeBackfillRequest) -> Dict[str, Any]:
+    return await _mem_svc.backfill_cognee(limit=req.limit, dry_run=req.dry_run)
+
+
+@router.get("/cognee/datasets")
+async def list_cognee_datasets() -> List[Dict[str, Any]]:
+    return await _mem_svc.list_cognee_datasets()
+
+
+@router.post("/cognee/improve")
+async def improve_cognee(req: CogneeImproveRequest) -> Any:
+    return await _mem_svc.improve_cognee(req.dataset_name)
 
 
 @router.get("/ltm/stats")

@@ -151,7 +151,39 @@ def create_bootstrap() -> FlowMachine:
         except Exception as exc:
             log(f"文件索引同步失败（不影响启动）: {exc}", "WARNING")
 
-        return {"store": store, "embedder": embedder, "workspace_dir": workspace_dir}
+        cognee_client = None
+        cognee_coordinator = None
+        try:
+            from agent.memory.cognee.client import CogneeClient
+            from agent.memory.cognee.config import load_cognee_config
+            from agent.memory.cognee.coordinator import CogneeCoordinator
+            from agent.memory.cognee.runtime import set_cognee_runtime
+
+            cognee_config = load_cognee_config()
+            cognee_client = CogneeClient(cognee_config)
+            cognee_coordinator = CogneeCoordinator(store, cognee_client, cognee_config)
+            await cognee_coordinator.start()
+            set_cognee_runtime(cognee_client, cognee_coordinator)
+            Lifecycle.register(
+                "cognee_memory",
+                cognee_coordinator,
+                cleanup=cognee_coordinator.close,
+            )
+            availability = cognee_client.availability()
+            log(
+                f"Cognee: enabled={cognee_config.enabled}, "
+                f"installed={availability.installed}, ready={availability.ready}"
+            )
+        except Exception as exc:
+            log(f"Cognee 可选后端初始化失败（已降级）: {exc}", "WARNING")
+
+        return {
+            "store": store,
+            "embedder": embedder,
+            "workspace_dir": workspace_dir,
+            "cognee_client": cognee_client,
+            "cognee_coordinator": cognee_coordinator,
+        }
 
     @machine.node(skip_on_error=False)
     async def register_internal_tools():

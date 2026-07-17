@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { configApi } from "@/lib/api";
+import { configApi, memoryApi } from "@/lib/api";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 
@@ -36,6 +36,18 @@ export function ConfigPanel() {
     { key: "cross_channel_narrative_max_items", label: ta("fields.cross_channel_narrative_max_items"), type: "int", desc: ta("descs.cross_channel_narrative_max_items") },
   ];
 
+  const cogneeFields: FieldMeta[] = [
+    { key: "enabled", label: t("cogneeFields.enabled"), type: "bool", desc: t("cogneeDescs.enabled") },
+    { key: "sync_enabled", label: t("cogneeFields.sync_enabled"), type: "bool", desc: t("cogneeDescs.sync_enabled") },
+    { key: "recall_enabled", label: t("cogneeFields.recall_enabled"), type: "bool", desc: t("cogneeDescs.recall_enabled") },
+    { key: "dataset_prefix", label: t("cogneeFields.dataset_prefix"), type: "string", desc: t("cogneeDescs.dataset_prefix") },
+    { key: "timeout_seconds", label: t("cogneeFields.timeout_seconds"), type: "float", desc: t("cogneeDescs.timeout_seconds") },
+    { key: "sync_batch_size", label: t("cogneeFields.sync_batch_size"), type: "int", desc: t("cogneeDescs.sync_batch_size") },
+    { key: "max_retries", label: t("cogneeFields.max_retries"), type: "int", desc: t("cogneeDescs.max_retries") },
+    { key: "native_weight", label: t("cogneeFields.native_weight"), type: "float", desc: t("cogneeDescs.native_weight") },
+    { key: "cognee_weight", label: t("cogneeFields.cognee_weight"), type: "float", desc: t("cogneeDescs.cognee_weight") },
+  ];
+
   return (
     <div className="space-y-4">
       <ConfigFormPanel
@@ -63,6 +75,16 @@ export function ConfigPanel() {
         queryKey="mindConfig"
         fetchFn={() => configApi.getMind().then((r) => r.data?.config || r.data)}
         saveFn={(values) => configApi.saveMind(values)}
+      />
+      <ConfigFormPanel
+        title={t("cogneeConfig")}
+        subtitle={t("cogneeConfigSubtitle")}
+        fields={cogneeFields}
+        queryKey="cogneeConfig"
+        fetchFn={() => memoryApi.cognee.getConfig().then((r) => r.data)}
+        saveFn={(values) => memoryApi.cognee.saveConfig(values)}
+        extraInvalidateKeys={["memoryHealth"]}
+        note={t("cogneeRestartNote")}
       />
     </div>
   );

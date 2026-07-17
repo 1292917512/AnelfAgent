@@ -39,8 +39,11 @@ _MEM_COLUMNS = (
 )
 
 
-def _time_decay(ts: float, half_life_hours: float = _HALF_LIFE_HOURS) -> float:
+def _time_decay(ts: float, half_life_hours: Optional[float] = None) -> float:
     """基于时间的衰减因子，越新越接近 1。"""
+    if half_life_hours is None:
+        days = float(_get_memory_config_value("memory_time_decay_days", 30))
+        half_life_hours = max(1.0, days * 24)
     age_hours = (time.time() - ts) / 3600.0
     return 0.5 ** (age_hours / half_life_hours)
 
@@ -104,7 +107,12 @@ class MemoryStore(BaseEntity):
         self._initialized = False
         self._fts_available = False
         self._chunks_fts_available = False
+        self._cognee_projection_enabled = False
         super().__init__()
+
+    def set_cognee_projection_enabled(self, enabled: bool) -> None:
+        """启用或禁用 Cognee 持久化投影队列。"""
+        self._cognee_projection_enabled = enabled
 
     async def _get_db(self) -> aiosqlite.Connection:
         if self._db is not None:
@@ -248,6 +256,39 @@ class MemoryStore(BaseEntity):
             "CREATE INDEX IF NOT EXISTS idx_te_ts ON tool_errors(ts_ns);"
         )
 
+        # ---- Cognee 异步投影队列与 ID 映射 ----
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS cognee_sync_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_id INTEGER NOT NULL,
+                operation TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_retry_ns INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT '',
+                created_ns INTEGER NOT NULL,
+                updated_ns INTEGER NOT NULL
+            );
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cognee_queue_ready "
+            "ON cognee_sync_queue(status, next_retry_ns, id);"
+        )
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS cognee_memory_map (
+                memory_id INTEGER PRIMARY KEY,
+                dataset_name TEXT NOT NULL,
+                dataset_id TEXT NOT NULL DEFAULT '',
+                data_id TEXT NOT NULL DEFAULT '',
+                synced_ns INTEGER NOT NULL
+            );
+        """)
+        # 上次进程异常退出时可能遗留 processing，启动后安全重试。
+        await db.execute(
+            "UPDATE cognee_sync_queue SET status='pending' WHERE status='processing'"
+        )
+
         await db.commit()
 
     async def _create_fts_triggers(self, db: aiosqlite.Connection) -> None:
@@ -321,6 +362,48 @@ class MemoryStore(BaseEntity):
     # CRUD
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _entry_projection_payload(entry: MemoryEntry, memory_id: int) -> Dict[str, Any]:
+        return {
+            "memory_id": memory_id,
+            "type": entry.memory_type.value,
+            "content": entry.content,
+            "source": entry.source,
+            "importance": entry.importance,
+            "timestamp": entry.timestamp,
+            "metadata": entry.metadata,
+            "tags": entry.tags,
+        }
+
+    async def _enqueue_cognee_sync(
+        self,
+        db: aiosqlite.Connection,
+        memory_id: int,
+        operation: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """在当前事务中追加 Cognee 投影操作，并压缩尚未执行的旧操作。"""
+        if not self._cognee_projection_enabled or memory_id <= 0:
+            return
+        now_ns = time.time_ns()
+        await db.execute(
+            "DELETE FROM cognee_sync_queue "
+            "WHERE memory_id=? AND status IN ('pending', 'failed')",
+            (memory_id,),
+        )
+        await db.execute(
+            "INSERT INTO cognee_sync_queue"
+            "(memory_id, operation, payload_json, status, attempts, next_retry_ns, "
+            "last_error, created_ns, updated_ns) VALUES(?,?,?,'pending',0,0,'',?,?)",
+            (
+                memory_id,
+                operation,
+                json.dumps(payload or {}, ensure_ascii=False),
+                now_ns,
+                now_ns,
+            ),
+        )
+
     async def add(self, entry: MemoryEntry) -> int:
         """添加一条记忆，返回 id。"""
         db = await self._get_db()
@@ -345,6 +428,12 @@ class MemoryStore(BaseEntity):
             ),
         )
         row_id = cursor.lastrowid or 0
+        await self._enqueue_cognee_sync(
+            db,
+            row_id,
+            "upsert",
+            self._entry_projection_payload(entry, row_id),
+        )
         # FTS 触发器会自动同步，无需手动插入 memories_fts
         await db.commit()
         tag_hint = f" tags={entry.tags}" if entry.tags else ""
@@ -362,6 +451,11 @@ class MemoryStore(BaseEntity):
     async def update_importance(self, memory_id: int, importance: float) -> None:
         db = await self._get_db()
         await db.execute("UPDATE memories SET importance=? WHERE id=?", (importance, memory_id))
+        entry = await self.get(memory_id)
+        if entry:
+            await self._enqueue_cognee_sync(
+                db, memory_id, "upsert", self._entry_projection_payload(entry, memory_id),
+            )
         await db.commit()
 
     async def update(self, entry: MemoryEntry) -> bool:
@@ -383,6 +477,13 @@ class MemoryStore(BaseEntity):
                 entry.id,
             ),
         )
+        if (cursor.rowcount or 0) > 0:
+            await self._enqueue_cognee_sync(
+                db,
+                entry.id,
+                "upsert",
+                self._entry_projection_payload(entry, entry.id),
+            )
         # FTS 触发器会自动处理 UPDATE OF content
         await db.commit()
         updated = (cursor.rowcount or 0) > 0
@@ -393,6 +494,8 @@ class MemoryStore(BaseEntity):
     async def delete(self, memory_id: int) -> bool:
         db = await self._get_db()
         cursor = await db.execute("DELETE FROM memories WHERE id=?", (memory_id,))
+        if (cursor.rowcount or 0) > 0:
+            await self._enqueue_cognee_sync(db, memory_id, "delete")
         # FTS 触发器会自动处理 DELETE
         await db.commit()
         return (cursor.rowcount or 0) > 0
@@ -404,17 +507,177 @@ class MemoryStore(BaseEntity):
     ) -> int:
         """清除记忆。默认跳过 permanent 类型。"""
         db = await self._get_db()
+        select_sql = "SELECT id FROM memories"
+        select_params: tuple[Any, ...] = ()
         if memory_type:
-            cursor = await db.execute("DELETE FROM memories WHERE type=?", (memory_type.value,))
+            select_sql += " WHERE type=?"
+            select_params = (memory_type.value,)
+            delete_sql = "DELETE FROM memories WHERE type=?"
+            delete_params = select_params
         elif include_permanent:
-            cursor = await db.execute("DELETE FROM memories")
+            delete_sql = "DELETE FROM memories"
+            delete_params = ()
         else:
-            cursor = await db.execute(
-                "DELETE FROM memories WHERE type != ?", (MemoryType.PERMANENT.value,),
-            )
+            select_sql += " WHERE type != ?"
+            select_params = (MemoryType.PERMANENT.value,)
+            delete_sql = "DELETE FROM memories WHERE type != ?"
+            delete_params = select_params
+        ids_cursor = await db.execute(select_sql, select_params)
+        memory_ids = [int(row["id"]) for row in await ids_cursor.fetchall()]
+        cursor = await db.execute(delete_sql, delete_params)
+        for memory_id in memory_ids:
+            await self._enqueue_cognee_sync(db, memory_id, "delete")
         # FTS 触发器会自动同步删除
         await db.commit()
         return cursor.rowcount or 0
+
+    # ------------------------------------------------------------------
+    # Cognee 投影队列
+    # ------------------------------------------------------------------
+
+    async def claim_cognee_sync_batch(self, limit: int) -> list[Dict[str, Any]]:
+        """领取一批可执行投影任务，避免同进程重复消费。"""
+        db = await self._get_db()
+        now_ns = time.time_ns()
+        cursor = await db.execute(
+            "SELECT id, memory_id, operation, payload_json, attempts "
+            "FROM cognee_sync_queue "
+            "WHERE status='pending' AND next_retry_ns<=? ORDER BY id LIMIT ?",
+            (now_ns, max(1, limit)),
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            return []
+        ids = [int(row["id"]) for row in rows]
+        placeholders = ",".join("?" for _ in ids)
+        await db.execute(
+            f"UPDATE cognee_sync_queue SET status='processing', updated_ns=? "
+            f"WHERE id IN ({placeholders})",
+            (now_ns, *ids),
+        )
+        await db.commit()
+        result: list[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            result.append({
+                "queue_id": int(row["id"]),
+                "memory_id": int(row["memory_id"]),
+                "operation": str(row["operation"]),
+                "payload": payload,
+                "attempts": int(row["attempts"]),
+            })
+        return result
+
+    async def complete_cognee_sync(
+        self,
+        queue_id: int,
+        memory_id: int,
+        *,
+        dataset_name: str = "",
+        dataset_id: str = "",
+        data_id: str = "",
+        delete_mapping: bool = False,
+    ) -> None:
+        db = await self._get_db()
+        if delete_mapping:
+            await db.execute(
+                "DELETE FROM cognee_memory_map WHERE memory_id=?", (memory_id,),
+            )
+        elif dataset_name:
+            await db.execute(
+                "INSERT OR REPLACE INTO cognee_memory_map"
+                "(memory_id, dataset_name, dataset_id, data_id, synced_ns) "
+                "VALUES(?,?,?,?,?)",
+                (memory_id, dataset_name, dataset_id, data_id, time.time_ns()),
+            )
+        await db.execute("DELETE FROM cognee_sync_queue WHERE id=?", (queue_id,))
+        await db.commit()
+
+    async def fail_cognee_sync(
+        self,
+        queue_id: int,
+        error: str,
+        *,
+        max_retries: int,
+        retry_delay_seconds: float,
+    ) -> None:
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT attempts FROM cognee_sync_queue WHERE id=?", (queue_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return
+        attempts = int(row["attempts"]) + 1
+        status = "failed" if attempts >= max_retries else "pending"
+        next_retry_ns = time.time_ns() + int(max(0.5, retry_delay_seconds) * 1e9)
+        await db.execute(
+            "UPDATE cognee_sync_queue SET status=?, attempts=?, next_retry_ns=?, "
+            "last_error=?, updated_ns=? WHERE id=?",
+            (status, attempts, next_retry_ns, error[:1000], time.time_ns(), queue_id),
+        )
+        await db.commit()
+
+    async def get_cognee_mapping(self, memory_id: int) -> Optional[Dict[str, Any]]:
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT memory_id, dataset_name, dataset_id, data_id, synced_ns "
+            "FROM cognee_memory_map WHERE memory_id=?",
+            (memory_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_cognee_sync_status(self) -> Dict[str, int]:
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT status, COUNT(*) AS cnt FROM cognee_sync_queue GROUP BY status"
+        )
+        counts = {str(row["status"]): int(row["cnt"]) for row in await cursor.fetchall()}
+        mapped = await db.execute("SELECT COUNT(*) AS cnt FROM cognee_memory_map")
+        mapped_row = await mapped.fetchone()
+        return {
+            "pending": counts.get("pending", 0) + counts.get("processing", 0),
+            "failed": counts.get("failed", 0),
+            "synced": int(mapped_row["cnt"]) if mapped_row else 0,
+        }
+
+    async def retry_failed_cognee_sync(self) -> int:
+        db = await self._get_db()
+        cursor = await db.execute(
+            "UPDATE cognee_sync_queue SET status='pending', attempts=0, "
+            "next_retry_ns=0, last_error='', updated_ns=? WHERE status='failed'",
+            (time.time_ns(),),
+        )
+        await db.commit()
+        return cursor.rowcount or 0
+
+    async def enqueue_cognee_backfill(self, *, limit: int = 0) -> int:
+        """显式将历史记忆加入投影队列；不会在启动时自动调用。"""
+        if not self._cognee_projection_enabled:
+            return 0
+        db = await self._get_db()
+        sql = f"SELECT {_MEM_COLUMNS} FROM memories ORDER BY id"
+        params: tuple[Any, ...] = ()
+        if limit > 0:
+            sql += " LIMIT ?"
+            params = (limit,)
+        cursor = await db.execute(sql, params)
+        rows = await cursor.fetchall()
+        for row in rows:
+            entry = self._row_to_entry(row)
+            if entry.id:
+                await self._enqueue_cognee_sync(
+                    db,
+                    entry.id,
+                    "upsert",
+                    self._entry_projection_payload(entry, entry.id),
+                )
+        await db.commit()
+        return len(rows)
 
     # ------------------------------------------------------------------
     # 访问跟踪（隐式反馈回路）
@@ -940,10 +1203,17 @@ class MemoryStore(BaseEntity):
     async def cleanup_low_importance(self, threshold: float = 0.05, max_age_hours: float = 24 * 90) -> int:
         db = await self._get_db()
         cutoff_ts = int((time.time() - max_age_hours * 3600) * 1e9)
+        ids_cursor = await db.execute(
+            "SELECT id FROM memories WHERE importance < ? AND ts_ns < ? AND type != ?",
+            (threshold, cutoff_ts, MemoryType.PERMANENT.value),
+        )
+        memory_ids = [int(row["id"]) for row in await ids_cursor.fetchall()]
         cursor = await db.execute(
             "DELETE FROM memories WHERE importance < ? AND ts_ns < ? AND type != ?",
             (threshold, cutoff_ts, MemoryType.PERMANENT.value),
         )
+        for memory_id in memory_ids:
+            await self._enqueue_cognee_sync(db, memory_id, "delete")
         await db.commit()
         return cursor.rowcount or 0
 

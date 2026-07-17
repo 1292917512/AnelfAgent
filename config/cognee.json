@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "sync_enabled": true,
+  "recall_enabled": true,
+  "data_root": "config/memory/cognee",
+  "dataset_prefix": "anelf",
+  "timeout_seconds": 30.0,
+  "sync_interval_seconds": 5.0,
+  "sync_batch_size": 20,
+  "max_retries": 5,
+  "native_weight": 1.0,
+  "cognee_weight": 0.8,
+  "rrf_k": 60,
+  "recall_pool_multiplier": 3,
+  "search_types": [
+    "CHUNKS",
+    "CHUNKS_LEXICAL"
+  ]
+}
