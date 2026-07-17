@@ -14,6 +14,10 @@ __pycache__/
 .springBeans
 .metadata/
 .cursor/plans/
+.zcode/plans/
+.zcode/
+.agents/
+.codex/
 *.swp
 *.swo
 *.swn
@@ -36,6 +40,7 @@ venv.bak/
 logs/
 nohup.out
 *.log
+.mindmap-cache/
 
 # === Database ===
 *.sqlite3
