@@ -8,6 +8,20 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, List, Dict, Callable, Optional, Any
 
+
+def _resolve_log_stream() -> Any:
+    """根据环境变量选择日志输出流（默认 stdout）。"""
+    stream = os.getenv("ANELF_LOG_STREAM", "").strip().lower()
+    if stream == "stderr":
+        return sys.stderr
+    if os.getenv("ANELF_MCP_STDIO", "").strip().lower() in {"1", "true", "yes", "on"}:
+        # MCP stdio 协议要求 stdout 仅用于 JSONRPC，日志必须走 stderr。
+        return sys.stderr
+    return sys.stdout
+
+
+_DEFAULT_LOG_STREAM = _resolve_log_stream()
+
 try:
     from loguru import logger as _loguru_logger
 
@@ -20,7 +34,7 @@ except ImportError:
     _USE_LOGURU = False
 
     # 构建 stdlib fallback logger
-    _stdlib_handler = _stdlib_logging.StreamHandler(sys.stdout)
+    _stdlib_handler = _stdlib_logging.StreamHandler(_DEFAULT_LOG_STREAM)
     _stdlib_handler.setFormatter(
         _stdlib_logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S")
     )
@@ -128,7 +142,7 @@ def remove_listener(callback: Callable[[Dict[str, Any]], None], tag: Optional[st
 def set_log_level(level: str):
     """设置日志等级"""
     if _USE_LOGURU:
-        logger.add(sys.stdout, format=format_record, level=level.upper())
+        logger.add(_DEFAULT_LOG_STREAM, format=format_record, level=level.upper())
     else:
         import logging as _logging
         _level_map = {"DEBUG": _logging.DEBUG, "INFO": _logging.INFO, "WARNING": _logging.WARNING,

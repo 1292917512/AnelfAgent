@@ -701,10 +701,18 @@ class MCPBridge:
 
         if transport == "stdio":
             from mcp.client.stdio import stdio_client, StdioServerParameters
+            stdio_env = {
+                **os.environ,
+                "ANELF_MCP_STDIO": "1",
+                "ANELF_LOG_STREAM": "stderr",
+                "PYTHONUNBUFFERED": "1",
+            }
+            if srv.env:
+                stdio_env.update(srv.env)
             return stdio_client(StdioServerParameters(
                 command=srv.command,
                 args=srv.args,
-                env={**os.environ, **srv.env} if srv.env else None,
+                env=stdio_env,
             ))
 
         if transport == "streamable_http":
