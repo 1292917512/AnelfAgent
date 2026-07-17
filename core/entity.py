@@ -24,6 +24,45 @@ from core.log import log
 
 
 # ======================================================================
+# JSON 容错修复
+# ======================================================================
+
+import re as _re
+
+# 尾部逗号：匹配 } 或 ] 前的逗号（及后续空白）
+_TRAILING_COMMA_RE = _re.compile(r",\s*([]}])")
+# 单行注释 //
+_LINE_COMMENT_RE = _re.compile(r"//(?![/])")
+# 非法控制字符（\x00-\x1f 中排除 \t \n \r）
+_CTRL_CHAR_RE = _re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def repair_json_arguments(arguments: str) -> str:
+    """对 LLM 生成的 JSON 参数做常见容错修复。
+
+    处理 LLM function calling 输出的高频格式错误：
+    - 移除 } / ] 前的尾部逗号
+    - 移除 // 单行注释
+    - 移除非法控制字符
+    """
+    if not arguments:
+        return arguments
+
+    result = arguments
+
+    # 移除尾部逗号（LLM 最常见的 JSON 错误）
+    result = _TRAILING_COMMA_RE.sub(r"\1", result)
+
+    # 移除单行注释（某些模型会在 JSON 中加注释）
+    result = _LINE_COMMENT_RE.sub("", result)
+
+    # 移除非法控制字符
+    result = _CTRL_CHAR_RE.sub("", result)
+
+    return result
+
+
+# ======================================================================
 # 类型定义
 # ======================================================================
 
@@ -592,10 +631,13 @@ class EntityRegistry:
             return json.dumps({"error": f"工具无执行函数: {name}"}, ensure_ascii=False)
 
         try:
-            kwargs = json.loads(arguments) if arguments else {}
+            repaired = repair_json_arguments(arguments) if arguments else "{}"
+            kwargs = json.loads(repaired) if arguments else {}
         except json.JSONDecodeError as e:
+            preview = arguments[:200] if arguments else ""
             return json.dumps(
-                {"error": f"参数 JSON 解析失败: {e}"}, ensure_ascii=False,
+                {"error": f"参数 JSON 解析失败: {e}", "args_preview": preview},
+                ensure_ascii=False,
             )
 
         # 优先级: AI 传入 > 装饰器定义 > 全局默认

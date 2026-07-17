@@ -14,6 +14,9 @@ from core.log import log
 from .config import CogneeConfig
 from .types import CogneeAvailability, CogneeRecallItem
 
+# cognee 支持且走 litellm 路由的 provider（无需额外原生 SDK）
+_COGNEE_SUPPORTED_PROVIDERS = frozenset({"openai", "ollama", "azure"})
+
 
 class CogneeClient:
     """隔离 Cognee 导入、配置和返回类型的异步门面。"""
@@ -62,10 +65,16 @@ class CogneeClient:
         # Cognee 导入时会 dotenv.load_dotenv(override=True)。恢复环境，避免污染宿主进程。
         original_env = dict(os.environ)
         try:
+            # 抑制 cognee 的 structlog 喧哗：只输出 WARNING 及以上
+            os.environ.setdefault("LOG_LEVEL", "WARNING")
+            os.environ.setdefault("COGNEE_LOG_FILE", "false")
             self._module = importlib.import_module("cognee")
         finally:
             os.environ.clear()
             os.environ.update(original_env)
+        # cognee 的 setup_logging() 接管了 stdlib root logger，
+        # 限制其 handler 级别以避免 pipeline 状态持续刷屏
+        _quieten_cognee_logger()
         return self._module
 
     async def _configure(self, module: Any) -> None:
@@ -80,20 +89,24 @@ class CogneeClient:
             from agent.llm import get_llm_manager
 
             manager = get_llm_manager()
-            chat = manager.get_default()
+            chat = _pick_openai_chat(manager)
             embedding = manager.get_embedding_client()
             if chat:
                 module.config.set_llm_config({
-                    "llm_provider": _provider_name(chat.config.api_type),
-                    "llm_model": chat.config.model,
+                    "llm_provider": "openai",
+                    "llm_model": chat.config.litellm_model,
                     "llm_api_key": chat.config.api_key,
                     "llm_endpoint": chat.config.base_url,
                     "llm_temperature": 0.0,
                 })
             if embedding:
+                embed_provider = _provider_name(embedding.config.api_type)
+                embed_model = embedding.config.litellm_embed_model
+                if embed_provider not in _COGNEE_SUPPORTED_PROVIDERS:
+                    embed_provider = "openai"
                 embedding_cfg: dict[str, Any] = {
-                    "embedding_provider": _provider_name(embedding.config.api_type),
-                    "embedding_model": embedding.config.model,
+                    "embedding_provider": embed_provider,
+                    "embedding_model": embed_model,
                     "embedding_api_key": embedding.config.api_key,
                     "embedding_endpoint": embedding.config.base_url,
                 }
@@ -260,6 +273,44 @@ class CogneeClient:
         if name not in {"agents", "session", "migration", "agent_memory", "config", "pipelines", "Drop"}:
             raise ValueError(f"不允许访问未承诺的 Cognee 命名空间: {name}")
         return getattr(self._module, name)
+
+
+def _quieten_cognee_logger() -> None:
+    """cognee 的 setup_logging() 接管了 stdlib root logger，限制其输出级别。"""
+    import logging as _logging
+
+    root = _logging.getLogger()
+    for handler in root.handlers:
+        if handler.level < _logging.WARNING:
+            handler.setLevel(_logging.WARNING)
+    # cognee 子 logger 也限制
+    _logging.getLogger("cognee").setLevel(_logging.WARNING)
+
+
+def _pick_openai_chat(manager: Any) -> Any:
+    """选取 api_type=openai 的 chat 客户端供 cognee 使用。
+
+    cognee 的 OpenAIAdapter 走 litellm.acompletion，可兼容任何 OpenAI 兼容端点；
+    而 AnthropicAdapter 依赖原生 anthropic SDK，项目未安装且 MiniMax 兼容端点不一定契合。
+    因此强制为 cognee 选 openai 类型客户端，默认 chat 如非 openai 则回退。
+    """
+    from agent.llm.llm_client import API_TYPE_OPENAI
+
+    default = manager.get_default()
+    if default and default.config.api_type == API_TYPE_OPENAI:
+        return default
+    # 回退：遍历 chat 优先级列表，选第一个 openai 兼容的
+    for mid in manager._type_priorities.get("chat", []):
+        client = manager._clients.get(mid)
+        if client and client.config.api_type == API_TYPE_OPENAI:
+            log(
+                f"Cognee: 默认 chat 模型 '{default.config.name}' 为 "
+                f"api_type={default.config.api_type}，回退到 '{client.config.name}'",
+                "DEBUG",
+            )
+            return client
+    # 全部都不兼容时仍返回默认（让 cognee 自己报错，不吞异常）
+    return default
 
 
 def _provider_name(api_type: str) -> str:

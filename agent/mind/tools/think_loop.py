@@ -65,6 +65,15 @@ _PROMPT_EMPTY_OUTPUT = (
     "禁止再次输出空内容。"
 )
 
+_PROMPT_TOOL_ERROR_ESCALATION = (
+    "[严重警告] 工具调用连续返回错误，你可能陷入了参数格式错误的循环。"
+    "请立即停止重试，改用以下策略之一：\n"
+    "1. 调用 end_reply 结束本轮\n"
+    "2. 换用完全不同的工具或不同的参数格式\n"
+    "3. 如果是 multi_tool_invoke 报错，改为单独调用各工具\n"
+    "禁止继续以相同方式调用正在报错的工具。"
+)
+
 # 工具输出裁剪阈值（字符数）。
 # 目的：避免超长网页/HTML 直接进入下一轮上下文，触发 context window 超限。
 _TOOL_RESULT_MAX_CHARS = 8000
@@ -229,6 +238,7 @@ async def think_loop(
     iteration = 0
     consecutive_fake_calls = 0
     consecutive_empty_calls = 0
+    consecutive_tool_errors = 0
 
     while iteration < safety_limit:
         await event_bus.emit(EVENT_THINKING_REPLY_ROUND, {
@@ -353,13 +363,47 @@ async def think_loop(
 
         # 有工具调用
         mind._set_phase(MindPhase.TOOL_EXECUTING)
+        consecutive_fake_calls = 0
+        consecutive_empty_calls = 0
         await execute_tool_calls(mind, tool_chain, result, tool_calls, iteration, anything)
+
+        # 检测本轮工具结果是否全部为错误
+        all_errors = _check_tool_results_all_errors(tool_chain, tool_calls)
+        if all_errors:
+            consecutive_tool_errors += 1
+            log(
+                f"全部工具调用返回错误 (轮次 {iteration + 1}, "
+                f"连续 {consecutive_tool_errors} 次)",
+                "WARNING", tag="思维",
+            )
+        else:
+            consecutive_tool_errors = 0
+
         for tc in tool_calls:
             mind.pfc.record_tool_use(tc.name)
         mind.pfc.expand_discovered_tools(tool_calls)
 
         tool_names = ", ".join(tc.name for tc in tool_calls)
         execution_steps.append(f"→ 第{iteration + 1}轮: 调用工具 [{tool_names}]")
+
+        if consecutive_tool_errors >= 3:
+            log(
+                f"连续 {consecutive_tool_errors} 轮工具全部报错，强制结束本轮",
+                "WARNING", tag="思维",
+            )
+            execution_steps.append(
+                f"→ 第{iteration + 1}轮: 连续工具错误 {consecutive_tool_errors} 次，强制结束"
+            )
+            if mode == ThinkMode.REPLY and anything:
+                await finish_think(mind, anything, execution_steps, iteration + 1, tool_chain)
+            return
+
+        # 连续错误达到阈值时注入警告
+        if consecutive_tool_errors >= 2:
+            tool_chain.append({
+                "role": "user",
+                "content": _PROMPT_TOOL_ERROR_ESCALATION,
+            })
 
         if should_end_reply(tool_calls, tool_chain):
             log(f"AI 主动结束{mode_label} (轮次 {iteration + 1})", tag="思维")
@@ -409,6 +453,52 @@ def resolve_tool_calls(result: ChatResult) -> List[ToolCall]:
         )
         return result.tool_calls
     return []
+
+
+def _check_tool_results_all_errors(
+        tool_chain: List[Dict],
+        tool_calls: List[ToolCall],
+) -> bool:
+    """检测最近一批工具调用结果是否全部为错误。
+
+    从 tool_chain 末尾查找与本轮 tool_calls 对应的 role=tool 消息，
+    判断每条结果是否包含 error 关键信号。全部为错误时返回 True。
+    """
+    tc_ids = {tc.id for tc in tool_calls}
+    if not tc_ids:
+        return False
+
+    results: List[str] = []
+    for msg in reversed(tool_chain):
+        if msg.get("role") != "tool":
+            break
+        if msg.get("tool_call_id") in tc_ids:
+            content = msg.get("content", "")
+            results.append(content if isinstance(content, str) else "")
+
+    if not results:
+        return False
+
+    for r in results:
+        # 尝试 JSON 解析判断
+        try:
+            parsed = json.loads(r)
+            if isinstance(parsed, dict):
+                # 有 error 键 → 错误，继续检查下一个
+                if "error" in parsed:
+                    continue
+                # success=false / ok=false → 错误，继续检查下一个
+                if parsed.get("success") is False or parsed.get("ok") is False:
+                    continue
+                # 无错误信号，至少一个成功
+                return False
+            # 非 dict 的 JSON（list/string/number）视为非错误
+            return False
+        except (json.JSONDecodeError, TypeError):
+            # 非 JSON 内容视为非错误（纯文本结果）
+            return False
+    # 全部都是错误结果
+    return True
 
 
 def _looks_like_html_payload(text: str) -> bool:

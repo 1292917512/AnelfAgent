@@ -16,7 +16,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from entities._sdk import deferred_tool, activate_group
-from core.entity import EntityRegistry
+from core.entity import EntityRegistry, repair_json_arguments
 from core.event_bus import event_bus, EVENT_MULTI_TOOL_PROGRESS, EVENT_MULTI_TOOL_COMPLETE
 from core.log import log
 
@@ -208,21 +208,23 @@ def _parse_and_validate(tasks_input: Any) -> tuple[Optional[str], List[Dict[str,
     if isinstance(tasks_input, list):
         task_list = tasks_input
     elif isinstance(tasks_input, str):
+        # 先尝试容错修复再解析
+        repaired = repair_json_arguments(tasks_input)
         try:
-            task_list = json.loads(tasks_input)
+            task_list = json.loads(repaired)
         except json.JSONDecodeError as e:
             log(f"tasks 原始值: {tasks_input[:300]}", "DEBUG", tag="多工具")
-            snippet = tasks_input[max(0, e.pos - 20):e.pos + 20] if e.pos else ""
+            snippet = tasks_input[max(0, e.pos - 40):e.pos + 40] if e.pos else ""
             return json.dumps(
                 {
                     "error": (
                         f"tasks JSON 解析失败(位置 {e.pos}): {e.msg}。"
                         f"出错附近: ...{snippet}..."
-                        "常见原因: args 中的字符串值包含未转义的引号（中文引号"" 或英文引号）。"
-                        "修复方法: 不要把 tasks 序列化为字符串，直接传入原生 JSON 数组；"
-                        "或者确保所有字符串值中的引号用 \\\" 转义。"
-                        "建议: 放弃 multi_tool_invoke，改为直接调用 send_message 和 end_reply。"
+                        "常见原因: args 中的字符串值包含未转义的引号（中文引号"" 或英文引号）、"
+                        "多余尾部逗号、缺少闭合括号。"
+                        "请勿再次尝试 multi_tool_invoke——改为逐个单独调用 send_message 和 end_reply 等工具。"
                     ),
+                    "fallback_hint": "放弃 multi_tool_invoke，改为直接调用各工具",
                 },
                 ensure_ascii=False,
             ), []
