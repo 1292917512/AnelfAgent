@@ -10,18 +10,21 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import litellm
 
-from agent.llm.llm_client import LLMClient, LLMClientConfig, ModelType
+from agent.llm.llm_client import (
+    API_TYPES, LLMClient, LLMClientConfig, LLMNotConfiguredError, ModelType,
+)
 from agent.llm.types import ChatResult
 from core.entity import BaseEntity, EntityType
 from core.log import info, warning, error
+from core.path import ConfigPaths
 
-_CONFIG_PATH = "config/llm_clients.json"
+_CONFIG_PATH = ConfigPaths.LLM_CLIENTS
 
 
 @dataclass
@@ -34,6 +37,12 @@ class ProviderConfig:
     api_key: str = ""
     api_type: str = "openai"
     proxy_url: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id.strip():
+            raise ValueError("供应商 id 不能为空")
+        if self.api_type not in API_TYPES:
+            raise ValueError(f"不支持的 api_type: {self.api_type}")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -131,7 +140,11 @@ class LLMManager(BaseEntity):
                         model_types=mdata.get("model_types", ["chat"]),
                         provider_id=prov.id,
                         supports_reasoning=mdata.get("supports_reasoning", False),
+                        context_window=mdata.get("context_window", 0),
+                        request_params=mdata.get("request_params", {}),
+                        extra_body=mdata.get("extra_body", {}),
                         extra_params=mdata.get("extra_params", {}),
+                        chat_protocol=mdata.get("chat_protocol", "chat_completions"),
                     )
                     self._clients[mid] = LLMClient(config=cfg)
             except Exception as exc:
@@ -170,7 +183,7 @@ class LLMManager(BaseEntity):
                 continue
             litellm.model_cost[model_key] = {
                 "max_tokens": cfg.max_tokens,
-                "max_input_tokens": cfg.max_tokens,
+                "max_input_tokens": cfg.context_window or cfg.max_tokens,
                 "max_output_tokens": cfg.max_tokens,
                 "input_cost_per_token": 0,
                 "output_cost_per_token": 0,
@@ -396,84 +409,132 @@ class LLMManager(BaseEntity):
     ) -> ChatResult:
         """带重试和模型回退的统一聊天调用。
 
-        流程：主模型重试 → 按优先级尝试回退模型 → 全部失败则抛出异常。
+        所有候选共享总超时预算，避免模型级 timeout 与外层 timeout 叠加失控。
         """
         primary = client or self.get_default()
-        primary_name = primary.config.name
-
+        candidates = [primary, *self.get_fallback_chat_clients(
+            exclude=primary.config.name,
+            require_tools=bool(tools),
+            require_vision=self._messages_contain_images(messages),
+        )]
+        deadline = asyncio.get_running_loop().time() + timeout
         last_exc: Optional[Exception] = None
-        for attempt in range(max_retries + 1):
-            try:
-                result = await asyncio.wait_for(
-                    primary.chat(
-                        messages, options=options,
-                        tools=tools, tool_choice=tool_choice,
-                    ),
-                    timeout=timeout,
+        for index, candidate in enumerate(candidates):
+            if index:
+                info(
+                    f"尝试回退: {candidate.config.name} ({candidate.config.model})",
+                    tag="模型",
                 )
+            try:
+                result = await self._chat_candidate(
+                    candidate,
+                    messages,
+                    options=options,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    max_retries=max_retries,
+                    deadline=deadline,
+                )
+                if index:
+                    info(f"回退成功: {candidate.config.name}", tag="模型")
                 return result
-            except asyncio.TimeoutError:
-                last_exc = asyncio.TimeoutError(f"LLM 调用超时 ({timeout}s)")
-                if attempt < max_retries:
-                    warning(
-                        f"LLM [{primary_name}] 超时，重试 {attempt + 1}/{max_retries}",
-                        tag="模型",
-                    )
-            except (litellm.AuthenticationError, litellm.PermissionDeniedError) as exc:
-                warning(f"LLM [{primary_name}] 认证/权限错误，跳过重试: {exc}", tag="模型")
-                last_exc = exc
-                break
-            except litellm.ContextWindowExceededError as exc:
-                warning(f"LLM [{primary_name}] 上下文超限: {exc}", tag="模型")
-                last_exc = exc
-                break
-            except litellm.RateLimitError as exc:
-                last_exc = exc
-                if attempt < max_retries:
-                    warning(f"LLM [{primary_name}] 限速，重试 {attempt + 1}/{max_retries}", tag="模型")
-                    await asyncio.sleep(min(2 ** attempt, 8))
+            except LLMNotConfiguredError:
+                raise
             except Exception as exc:
                 last_exc = exc
-                if self._is_context_window_error(exc):
-                    warning(f"LLM [{primary_name}] 上下文超限（通用异常）: {exc}", tag="模型")
+                warning(
+                    f"LLM [{candidate.config.name}] 最终失败: "
+                    f"{self._safe_error(exc, candidate)}",
+                    tag="模型",
+                )
+                if asyncio.get_running_loop().time() >= deadline:
                     break
-                if attempt < max_retries:
-                    warning(
-                        f"LLM [{primary_name}] 调用失败 ({type(exc).__name__}: {exc})，"
-                        f"重试 {attempt + 1}/{max_retries}",
-                        tag="模型",
-                    )
 
-        fallbacks = self.get_fallback_chat_clients(
-            exclude=primary_name, require_tools=bool(tools),
-        )
-        if fallbacks:
-            info(f"开始模型回退，尝试 {len(fallbacks)} 个候选", tag="模型")
-            for fb in fallbacks:
-                try:
-                    info(
-                        f"尝试回退: {fb.config.name} ({fb.config.model})",
-                        tag="模型",
-                    )
-                    result = await asyncio.wait_for(
-                        fb.chat(
-                            messages, options=options,
-                            tools=tools, tool_choice=tool_choice,
-                        ),
-                        timeout=timeout,
-                    )
-                    info(f"回退成功: {fb.config.name}", tag="模型")
-                    return result
-                except (litellm.AuthenticationError, litellm.PermissionDeniedError) as exc:
-                    warning(f"回退模型 {fb.config.name} 认证错误: {exc}", tag="模型")
-                    last_exc = exc
-                except Exception as exc:
-                    warning(
-                        f"回退模型 {fb.config.name} 失败: {exc}", tag="模型",
-                    )
-                    last_exc = exc
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("没有可用的 LLM 候选模型")
 
-        raise last_exc  # type: ignore[misc]
+    async def _chat_candidate(
+        self,
+        client: LLMClient,
+        messages: List[Dict[str, Any]],
+        *,
+        options: Optional[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        tool_choice: Optional[Any],
+        max_retries: int,
+        deadline: float,
+    ) -> ChatResult:
+        """在共享截止时间内调用单个候选，并对瞬态错误有界重试。"""
+        name = client.config.name
+        for attempt in range(max(0, max_retries) + 1):
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError("LLM 调用总超时")
+            try:
+                result = await asyncio.wait_for(
+                    client.chat(
+                        messages,
+                        options=options,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                    ),
+                    timeout=min(remaining, client.config.timeout),
+                )
+                if result.finish_reason == "error":
+                    raise RuntimeError("LLM 返回了无有效 choices/message 的响应")
+                return result
+            except LLMNotConfiguredError:
+                raise
+            except (litellm.AuthenticationError, litellm.PermissionDeniedError):
+                raise
+            except litellm.ContextWindowExceededError:
+                raise
+            except (litellm.BadRequestError, litellm.NotFoundError, ValueError):
+                raise
+            except asyncio.TimeoutError as exc:
+                error_to_raise: Exception = asyncio.TimeoutError(
+                    f"LLM [{name}] 调用超时"
+                )
+                if attempt >= max_retries:
+                    raise error_to_raise from exc
+            except Exception as exc:
+                error_to_raise = exc
+                if self._is_context_window_error(exc) or attempt >= max_retries:
+                    raise
+
+            delay = min(2 ** attempt, 8)
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= delay:
+                raise asyncio.TimeoutError("LLM 重试预算不足") from error_to_raise
+            warning(
+                f"LLM [{name}] 调用失败，重试 {attempt + 1}/{max_retries}: "
+                f"{type(error_to_raise).__name__}: "
+                f"{self._safe_error(error_to_raise, client)}",
+                tag="模型",
+            )
+            await asyncio.sleep(delay)
+        raise RuntimeError("LLM 重试流程异常退出")
+
+    @staticmethod
+    def _messages_contain_images(messages: List[Dict[str, Any]]) -> bool:
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, list) and any(
+                isinstance(part, dict)
+                and part.get("type") in {"image", "image_url", "input_image"}
+                for part in content
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _safe_error(exc: Exception, client: LLMClient) -> str:
+        message = str(exc)
+        api_key = client.config.api_key
+        if api_key:
+            message = message.replace(api_key, "****")
+        return message
 
     def get_models_summary(self) -> str:
         """生成所有可用模型及其能力的摘要（供系统提示词注入）。"""
@@ -545,18 +606,18 @@ class LLMManager(BaseEntity):
         prov = self._providers.get(pid)
         if prov is None:
             return False
-        for k, v in kwargs.items():
-            if hasattr(prov, k) and k != "id":
-                setattr(prov, k, v)
+        allowed = {k: v for k, v in kwargs.items() if hasattr(prov, k) and k != "id"}
+        updated = replace(prov, **allowed)
+        self._providers[pid] = updated
         # 同步更新该供应商下所有模型的连接参数
         for client in self._clients.values():
             if client.config.provider_id != pid:
                 continue
             client.update_config(
-                base_url=prov.base_url,
-                api_key=prov.api_key,
-                api_type=prov.api_type,
-                proxy_url=prov.proxy_url,
+                base_url=updated.base_url,
+                api_key=updated.api_key,
+                api_type=updated.api_type,
+                proxy_url=updated.proxy_url,
             )
         self.save_config()
         return True
@@ -602,7 +663,10 @@ class LLMManager(BaseEntity):
             api_type=prov.api_type,
             proxy_url=prov.proxy_url,
             provider_id=provider_id,
-            **{k: v for k, v in kwargs.items() if hasattr(LLMClientConfig, k)},
+            **{
+                k: v for k, v in kwargs.items()
+                if k in LLMClientConfig.__dataclass_fields__
+            },
         )
         client = LLMClient(config=cfg)
         self._clients[model_id] = client
@@ -619,29 +683,59 @@ class LLMManager(BaseEntity):
     def get_client(self, name: str) -> Optional[LLMClient]:
         return self._clients.get(name)
 
+    def resolve_client(self, model: str) -> Optional[LLMClient]:
+        """按模型 ID 或原始模型名解析客户端。
+
+        优先级：精确匹配客户端 ID → 精确匹配 config.model →
+        在 chat 优先级中寻找同名原始模型。
+        """
+        name = (model or "").strip()
+        if not name:
+            return None
+        direct = self._clients.get(name)
+        if direct is not None:
+            return direct
+        matches = [
+            client for client in self._clients.values()
+            if client.config.model == name
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            for mid in self._type_priorities.get("chat", []):
+                client = self._clients.get(mid)
+                if client is not None and client.config.model == name:
+                    return client
+            return matches[0]
+        return None
+
     def get_default(self) -> LLMClient:
         """按 chat 优先级列表顺序返回第一个可用的对话模型。
 
         优先选择 supports_tools 的模型，若无则回退到任意 chat 模型。
         """
+        configured = self._clients.get(self._default_chat)
+        if (
+            configured is not None
+            and "chat" in configured.config.model_types
+            and configured.config.supports_tools
+        ):
+            return configured
         chat_prio = self._type_priorities.get("chat", [])
         for mid in chat_prio:
             client = self._clients.get(mid)
             if client is not None and client.config.supports_tools:
-                self._default_chat = mid
                 return client
         for mid in chat_prio:
             client = self._clients.get(mid)
             if client is not None:
-                self._default_chat = mid
                 warning(f"默认模型 '{mid}' 不支持工具调用，功能将受限", tag="模型")
                 return client
         if self._clients:
             first = next(iter(self._clients.values()))
-            self._default_chat = first.config.name
             return first
-        dummy = LLMClient(config=LLMClientConfig(name="_empty"))
-        warning("无可用 LLM 客户端，返回空客户端", tag="模型")
+        dummy = LLMClient(config=LLMClientConfig(name="_empty", base_url=""))
+        warning("无可用 LLM 客户端，调用时将返回明确配置错误", tag="模型")
         return dummy
 
     def set_default(self, name: str) -> bool:
@@ -685,8 +779,10 @@ class LLMManager(BaseEntity):
             return False
         old_types = set(client.config.model_types)
         old_supports_vision = client.config.supports_vision
-        client.update_config(**{k: v for k, v in kwargs.items()
-                                if k not in ("provider_id", "base_url", "api_key", "api_type", "proxy_url")})
+        allowed = set(LLMClientConfig.__dataclass_fields__) - {
+            "provider_id", "base_url", "api_key", "api_type", "proxy_url",
+        }
+        client.update_config(**{k: v for k, v in kwargs.items() if k in allowed})
         new_types = set(client.config.model_types)
         new_supports_vision = client.config.supports_vision
         removed = old_types - new_types
@@ -736,13 +832,20 @@ class LLMManager(BaseEntity):
         try:
             info = LLMClient.get_model_info(client.config.litellm_model)
             if not info:
-                return {"input_cost": None, "output_cost": None, "context_window": None}
+                return {
+                    "input_cost": None,
+                    "output_cost": None,
+                    "context_window": client.config.context_window or None,
+                }
             input_cost = info.get("input_cost_per_token")
             output_cost = info.get("output_cost_per_token")
             return {
                 "input_cost": round(input_cost * 1e6, 2) if input_cost else None,
                 "output_cost": round(output_cost * 1e6, 2) if output_cost else None,
-                "context_window": info.get("max_input_tokens"),
+                "context_window": (
+                    client.config.context_window
+                    or info.get("max_input_tokens")
+                ),
             }
         except Exception:
             return {"input_cost": None, "output_cost": None, "context_window": None}
@@ -765,13 +868,12 @@ class LLMManager(BaseEntity):
                     continue
                 if mid not in cost_cache:
                     cost_cache[mid] = self._query_model_cost(client)
+                provider = self._providers.get(client.config.provider_id)
                 items.append({
                     "id": mid,
                     "model": client.config.model,
                     "provider_id": client.config.provider_id,
-                    "provider_name": self._providers.get(
-                        client.config.provider_id, ProviderConfig(id="")
-                    ).name,
+                    "provider_name": provider.name if provider is not None else "",
                     "is_default": mt == "chat" and mid == default_chat,
                     "supports_vision": client.config.supports_vision,
                     "supports_tools": client.config.supports_tools,
@@ -865,6 +967,15 @@ class LLMManager(BaseEntity):
     def all_model_ids(self) -> List[str]:
         """返回所有已配置模型的 ID 列表。"""
         return list(self._clients.keys())
+
+    async def close(self) -> None:
+        """关闭所有客户端持有的网络资源。"""
+        clients = list(self._clients.values())
+        if clients:
+            await asyncio.gather(
+                *(client.close() for client in clients),
+                return_exceptions=True,
+            )
 
 
 # ------------------------------------------------------------------

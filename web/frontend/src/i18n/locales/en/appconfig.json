@@ -25,7 +25,6 @@
     "llm_timeout": "LLM Timeout (s)",
     "llm_max_retries": "LLM Max Retries",
     "max_conversation_size": "Conversation History Limit",
-    "llm_stream_enabled": "LLM Streaming",
     "sandbox_enabled": "Sandbox Mode",
     "vector_search_batch_size": "Vector Search Batch Size",
     "memory_recall_top_k": "Semantic Recall Top-K",
@@ -238,6 +237,22 @@
     "hint": "Current session auto-renews; other devices need re-login",
     "setPassword": "Set Password",
     "removePassword": "Remove Password"
+  },
+  "apiKeys": {
+    "title": "Responses API Keys",
+    "subtitle": "Bearer auth for /v1/responses, independent from WebUI password",
+    "name": "Name",
+    "namePlaceholder": "e.g. sdk-client",
+    "create": "Generate Key",
+    "rotate": "Rotate",
+    "delete": "Delete",
+    "empty": "No API keys yet",
+    "createdOnce": "Copy now — the secret is shown only once",
+    "copy": "Copy",
+    "copied": "Copied",
+    "prefix": "Prefix",
+    "createdAt": "Created",
+    "lastUsed": "Last used"
   },
   "notes": {
     "restartRequired": "Restart required after changes"

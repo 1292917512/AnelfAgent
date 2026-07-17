@@ -1,10 +1,10 @@
-"""认证 API 路由 — 登录 / 状态检查 / 登出。"""
+"""认证 API 路由 — 登录 / 状态检查 / 登出 / API Key。"""
 
 from __future__ import annotations
 
 from typing import Any, Dict
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -64,23 +64,13 @@ class PasswordUpdate(BaseModel):
 @router.put("/password")
 async def update_password(body: PasswordUpdate) -> JSONResponse:
     """修改访问密码。空字符串表示取消密码保护。修改后需重新登录。"""
-    import json as _json
-    from pathlib import Path
-    from core.path import ConfigPaths
-
-    p = Path(ConfigPaths.WEBUI_CONFIG)
-    cfg: Dict[str, Any] = {}
-    if p.exists():
-        try:
-            cfg = _json.loads(p.read_text("utf-8"))
-        except Exception:
-            pass
-
-    cfg.setdefault("auth", {})["password"] = body.new_password
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(_json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-
+    from web.auth_keys import load_webui_config, save_webui_config
     from web.server import _make_token
+
+    cfg = load_webui_config()
+    cfg.setdefault("auth", {})["password"] = body.new_password
+    save_webui_config(cfg)
+
     resp = JSONResponse({"status": "ok"})
     if body.new_password:
         resp.set_cookie(
@@ -90,3 +80,40 @@ async def update_password(body: PasswordUpdate) -> JSONResponse:
     else:
         resp.delete_cookie("_anelf_token")
     return resp
+
+
+class ApiKeyCreateReq(BaseModel):
+    name: str = "default"
+
+
+@router.get("/api-keys")
+async def list_api_keys() -> Dict[str, Any]:
+    from web.auth_keys import list_api_keys as _list
+
+    return {"keys": _list()}
+
+
+@router.post("/api-keys")
+async def create_api_key(req: ApiKeyCreateReq) -> Dict[str, Any]:
+    from web.auth_keys import create_api_key as _create
+
+    return _create(name=req.name)
+
+
+@router.post("/api-keys/{key_id}/rotate")
+async def rotate_api_key(key_id: str) -> Dict[str, Any]:
+    from web.auth_keys import rotate_api_key as _rotate
+
+    result = _rotate(key_id)
+    if result is None:
+        raise HTTPException(404, f"API Key '{key_id}' 不存在")
+    return result
+
+
+@router.delete("/api-keys/{key_id}")
+async def delete_api_key(key_id: str) -> Dict[str, str]:
+    from web.auth_keys import delete_api_key as _delete
+
+    if not _delete(key_id):
+        raise HTTPException(404, f"API Key '{key_id}' 不存在")
+    return {"status": "ok"}

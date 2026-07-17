@@ -4,7 +4,7 @@
       "id": "openai",
       "name": "OpenAI",
       "base_url": "https://api.openai.com/v1",
-      "api_key": "sk-your-api-key-here",
+      "api_key": "",
       "api_type": "openai",
       "proxy_url": "",
       "models": [
@@ -19,10 +19,16 @@
           "temperature": 0.4,
           "top_p": 0.8,
           "max_tokens": 16384,
+          "context_window": 128000,
           "frequency_penalty": 0.0,
           "presence_penalty": 0.0,
           "timeout": 120.0,
-          "supports_reasoning": false
+          "supports_reasoning": false,
+          "chat_protocol": "auto",
+          "request_params": {
+            "service_tier": "auto"
+          },
+          "extra_body": {}
         },
         {
           "id": "text-embedding-3-small",
@@ -35,10 +41,46 @@
           "temperature": 0.0,
           "top_p": 1.0,
           "max_tokens": 8192,
+          "context_window": 8192,
           "frequency_penalty": 0.0,
           "presence_penalty": 0.0,
           "timeout": 30.0,
-          "supports_reasoning": false
+          "supports_reasoning": false,
+          "chat_protocol": "chat_completions",
+          "request_params": {
+            "dimensions": 1536
+          },
+          "extra_body": {}
+        }
+      ]
+    },
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "base_url": "",
+      "api_key": "",
+      "api_type": "anthropic",
+      "proxy_url": "",
+      "models": [
+        {
+          "id": "claude-sonnet",
+          "name": "Claude Sonnet",
+          "model": "claude-sonnet-4-5",
+          "model_types": ["chat"],
+          "supports_vision": true,
+          "supports_tools": true,
+          "vision_format": "base64",
+          "temperature": 0.4,
+          "top_p": 1.0,
+          "max_tokens": 16384,
+          "context_window": 200000,
+          "frequency_penalty": 0.0,
+          "presence_penalty": 0.0,
+          "timeout": 120.0,
+          "supports_reasoning": true,
+          "chat_protocol": "chat_completions",
+          "request_params": {},
+          "extra_body": {}
         }
       ]
     },
@@ -61,18 +103,26 @@
           "temperature": 0.4,
           "top_p": 0.7,
           "max_tokens": 8192,
+          "context_window": 8192,
           "frequency_penalty": 0.0,
           "presence_penalty": 0.0,
           "timeout": 120.0,
-          "supports_reasoning": false
+          "supports_reasoning": false,
+          "chat_protocol": "chat_completions",
+          "request_params": {},
+          "extra_body": {
+            "options": {
+              "num_ctx": 8192
+            }
+          }
         }
       ]
     }
   ],
   "type_priorities": {
-    "chat": ["gpt-4o", "ollama-chat"],
+    "chat": ["gpt-4o", "claude-sonnet", "ollama-chat"],
     "embedding": ["text-embedding-3-small"],
-    "vision": ["gpt-4o"]
+    "vision": ["gpt-4o", "claude-sonnet"]
   },
   "default_chat": "gpt-4o"
 }

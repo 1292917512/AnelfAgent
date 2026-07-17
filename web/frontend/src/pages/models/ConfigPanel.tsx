@@ -2,6 +2,15 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { providersApi, modelsApi, type RemoteModelInfo } from "@/lib/api";
+import type {
+  CreateModelConfig,
+  CreateProviderConfig,
+  JsonObject,
+  ModelConfig,
+  ProviderConfig,
+  UpdateModelConfig,
+  UpdateProviderConfig,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
   Plus, Trash2, Save, TestTube, Scan, ChevronDown, ChevronRight,
@@ -16,19 +25,31 @@ const API_TYPE_OPTIONS = [
 ];
 const MODEL_TYPE_OPTIONS = ["chat", "embedding", "image_gen", "image_edit", "asr", "tts", "video", "rerank"];
 
-interface ProviderInfo {
-  id: string; name: string; base_url: string; api_key: string;
-  api_type: string; proxy_url: string; model_count: number;
-}
+const EMPTY_PROVIDER: CreateProviderConfig = {
+  id: "", name: "", base_url: "", api_key: "", api_type: "openai", proxy_url: "",
+};
 
-interface ModelInfo {
-  id: string; name: string; model: string; model_types: string[];
-  supports_vision: boolean; supports_tools: boolean; vision_format: string;
-  temperature: number; top_p: number; max_tokens: number;
-  frequency_penalty: number; presence_penalty: number; timeout: number;
-  is_default: boolean; supports_reasoning: boolean;
-  input_cost: number | null; output_cost: number | null;
-  context_window: number | null;
+type JsonField = "request_params" | "extra_body";
+
+function toModelUpdate(model: ModelConfig): UpdateModelConfig {
+  return {
+    model: model.model,
+    model_types: model.model_types,
+    supports_vision: model.supports_vision,
+    supports_tools: model.supports_tools,
+    vision_format: model.vision_format,
+    supports_reasoning: model.supports_reasoning,
+    temperature: model.temperature,
+    top_p: model.top_p,
+    max_tokens: model.max_tokens,
+    context_window: model.context_window ?? 0,
+    frequency_penalty: model.frequency_penalty,
+    presence_penalty: model.presence_penalty,
+    timeout: model.timeout,
+    request_params: model.request_params,
+    extra_body: model.extra_body,
+    chat_protocol: model.chat_protocol ?? "chat_completions",
+  };
 }
 
 export function ConfigPanel() {
@@ -36,9 +57,14 @@ export function ConfigPanel() {
   const qc = useQueryClient();
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
-  const [providerEdit, setProviderEdit] = useState<Record<string, unknown> | null>(null);
-  const [modelEdit, setModelEdit] = useState<Record<string, unknown> | null>(null);
-  const [newProvider, setNewProvider] = useState({ id: "", name: "", base_url: "", api_key: "", api_type: "openai", proxy_url: "" });
+  const [providerEdit, setProviderEdit] = useState<UpdateProviderConfig | null>(null);
+  const [modelEdit, setModelEdit] = useState<UpdateModelConfig | null>(null);
+  const [jsonDrafts, setJsonDrafts] = useState<Record<JsonField, string>>({
+    request_params: "{}",
+    extra_body: "{}",
+  });
+  const [jsonErrors, setJsonErrors] = useState<Partial<Record<JsonField, string>>>({});
+  const [newProvider, setNewProvider] = useState<CreateProviderConfig>(EMPTY_PROVIDER);
   const [showNewProvider, setShowNewProvider] = useState(false);
   const [testResult, setTestResult] = useState("");
 
@@ -47,12 +73,12 @@ export function ConfigPanel() {
   const [selectedRemote, setSelectedRemote] = useState<Set<string>>(new Set());
   const [addingRemote, setAddingRemote] = useState(false);
 
-  const { data: providers = [] } = useQuery<ProviderInfo[]>({
+  const { data: providers = [] } = useQuery<ProviderConfig[]>({
     queryKey: ["providers"],
     queryFn: () => providersApi.list().then(r => r.data),
   });
 
-  const { data: providerModels = [] } = useQuery<ModelInfo[]>({
+  const { data: providerModels = [] } = useQuery<ModelConfig[]>({
     queryKey: ["providerModels", expandedProvider],
     queryFn: () => expandedProvider ? providersApi.models(expandedProvider).then(r => r.data) : Promise.resolve([]),
     enabled: !!expandedProvider,
@@ -71,11 +97,11 @@ export function ConfigPanel() {
     : remoteModels;
 
   const addProviderMut = useMutation({
-    mutationFn: (data: Record<string, unknown>) => providersApi.create(data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["providers"] }); setShowNewProvider(false); setNewProvider({ id: "", name: "", base_url: "", api_key: "", api_type: "openai", proxy_url: "" }); },
+    mutationFn: (data: CreateProviderConfig) => providersApi.create(data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["providers"] }); setShowNewProvider(false); setNewProvider(EMPTY_PROVIDER); },
   });
   const updateProviderMut = useMutation({
-    mutationFn: ({ pid, data }: { pid: string; data: Record<string, unknown> }) => providersApi.update(pid, data),
+    mutationFn: ({ pid, data }: { pid: string; data: UpdateProviderConfig }) => providersApi.update(pid, data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["providers"] }); setProviderEdit(null); },
   });
   const removeProviderMut = useMutation({
@@ -83,7 +109,7 @@ export function ConfigPanel() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["providers"] }); setExpandedProvider(null); },
   });
   const addModelMut = useMutation({
-    mutationFn: ({ pid, data }: { pid: string; data: Record<string, unknown> }) => providersApi.createModel(pid, data),
+    mutationFn: ({ pid, data }: { pid: string; data: CreateModelConfig }) => providersApi.createModel(pid, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["providerModels", expandedProvider] });
       qc.invalidateQueries({ queryKey: ["providers"] });
@@ -91,7 +117,7 @@ export function ConfigPanel() {
     },
   });
   const updateModelMut = useMutation({
-    mutationFn: ({ mid, data }: { mid: string; data: Record<string, unknown> }) => modelsApi.update(mid, data),
+    mutationFn: ({ mid, data }: { mid: string; data: UpdateModelConfig }) => modelsApi.update(mid, data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["providerModels", expandedProvider] }); setModelEdit(null); },
   });
   const removeModelMut = useMutation({
@@ -105,24 +131,30 @@ export function ConfigPanel() {
     setBrowsingRemote(null); setSelectedRemote(new Set()); setRemoteFilter("");
   };
 
-  const handleProbe = async (m: ModelInfo, prov: ProviderInfo) => {
+  const handleProbe = async (m: ModelConfig, prov: ProviderConfig) => {
     try {
-      const r = await modelsApi.probe(prov.base_url, prov.api_key, m.model, prov.api_type);
-      const d = r.data as Record<string, unknown>;
+      const r = await modelsApi.probe(prov.base_url, prov.api_key, m.model, prov.api_type, prov.id);
+      const d = r.data;
       if (!d.error) {
-        const patch: Record<string, unknown> = {
-          ...(modelEdit ?? { ...m }),
+        const patch: UpdateModelConfig = {
+          ...(modelEdit ?? toModelUpdate(m)),
           supports_vision: d.supports_vision ?? false,
           supports_tools: d.supports_tools ?? false,
         };
         if (d.vision_format) patch.vision_format = d.vision_format;
+        if (!modelEdit) {
+          setJsonDrafts({
+            request_params: JSON.stringify(m.request_params, null, 2),
+            extra_body: JSON.stringify(m.extra_body, null, 2),
+          });
+        }
         setModelEdit(patch);
         setTestResult(t("probeDone") + ": " + JSON.stringify(d));
       } else { setTestResult(t("probeFailed") + ": " + String(d.error)); }
     } catch { setTestResult(t("probeError")); }
   };
 
-  const handleAutoConfig = async (m: ModelInfo, prov: ProviderInfo) => {
+  const handleAutoConfig = async (m: ModelConfig, prov: ProviderConfig) => {
     setTestResult(t("autoConfigLoading"));
     try {
       const r = await providersApi.modelInfo(m.model, prov.api_type);
@@ -131,8 +163,15 @@ export function ConfigPanel() {
         setTestResult(t("autoConfigNotFound"));
         return;
       }
-      const patch: Record<string, unknown> = { ...(modelEdit ?? { ...m }) };
+      const patch: UpdateModelConfig = { ...(modelEdit ?? toModelUpdate(m)) };
+      if (!modelEdit) {
+        setJsonDrafts({
+          request_params: JSON.stringify(m.request_params, null, 2),
+          extra_body: JSON.stringify(m.extra_body, null, 2),
+        });
+      }
       if (info.max_output_tokens) patch.max_tokens = info.max_output_tokens;
+      if (info.max_input_tokens) patch.context_window = info.max_input_tokens;
       if (info.supports_vision !== undefined) patch.supports_vision = info.supports_vision;
       if (info.supports_tools !== undefined) patch.supports_tools = info.supports_tools;
       setModelEdit(patch);
@@ -181,6 +220,7 @@ export function ConfigPanel() {
         let maxTokens = 4096;
         let supportsVision = false;
         let supportsTools = true;
+        let contextWindow = 0;
 
         try {
           const infoRes = await providersApi.modelInfo(modelId, apiType);
@@ -189,6 +229,7 @@ export function ConfigPanel() {
             maxTokens = info.max_output_tokens ?? 4096;
             supportsVision = info.supports_vision ?? false;
             supportsTools = info.supports_tools ?? true;
+            contextWindow = info.max_input_tokens ?? 0;
           }
         } catch { /* litellm 不认识的模型用默认值 */ }
 
@@ -201,10 +242,17 @@ export function ConfigPanel() {
             temperature: 0.7,
             top_p: 1.0,
             max_tokens: maxTokens,
+            context_window: contextWindow,
+            frequency_penalty: 0,
+            presence_penalty: 0,
             supports_tools: supportsTools,
             supports_vision: supportsVision,
-            vision_format: supportsVision ? "base64" : "base64",
+            vision_format: "base64",
+            supports_reasoning: false,
             timeout: 120.0,
+            chat_protocol: "chat_completions",
+            request_params: {},
+            extra_body: {},
           },
         });
       }
@@ -215,7 +263,46 @@ export function ConfigPanel() {
   };
 
   const currentProvider = providers.find(p => p.id === expandedProvider);
-  const editableModelFields = ["model", "temperature", "top_p", "max_tokens", "frequency_penalty", "presence_penalty", "timeout"] as const;
+  const editableModelFields = ["model", "temperature", "top_p", "max_tokens", "context_window", "frequency_penalty", "presence_penalty", "timeout"] as const;
+
+  const startModelEdit = (model: ModelConfig) => {
+    setModelEdit(toModelUpdate(model));
+    setJsonDrafts({
+      request_params: JSON.stringify(model.request_params, null, 2),
+      extra_body: JSON.stringify(model.extra_body, null, 2),
+    });
+    setJsonErrors({});
+  };
+
+  const parseJsonObject = (field: JsonField): JsonObject | null => {
+    try {
+      const value: unknown = JSON.parse(jsonDrafts[field]);
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        setJsonErrors(prev => ({ ...prev, [field]: t("jsonObjectRequired") }));
+        return null;
+      }
+      setJsonErrors(prev => ({ ...prev, [field]: undefined }));
+      return value as JsonObject;
+    } catch {
+      setJsonErrors(prev => ({ ...prev, [field]: t("invalidJson") }));
+      return null;
+    }
+  };
+
+  const saveModel = (modelId: string) => {
+    if (!modelEdit) return;
+    const requestParams = parseJsonObject("request_params");
+    const extraBody = parseJsonObject("extra_body");
+    if (requestParams === null || extraBody === null) return;
+    updateModelMut.mutate({
+      mid: modelId,
+      data: {
+        ...modelEdit,
+        request_params: requestParams,
+        extra_body: extraBody,
+      },
+    });
+  };
 
   return (
     <div className="space-y-4">
@@ -265,7 +352,9 @@ export function ConfigPanel() {
       <div className="grid gap-3">
         {providers.map(prov => {
           const isOpen = expandedProvider === prov.id;
-          const pe = providerEdit && isOpen ? providerEdit : prov;
+          const pe: ProviderConfig = providerEdit && isOpen
+            ? { ...prov, ...providerEdit }
+            : prov;
           return (
             <div key={prov.id} className={cn(
               "rounded-[var(--radius-md)] border transition-all bg-[var(--card)]",
@@ -290,7 +379,7 @@ export function ConfigPanel() {
                     <div className="flex items-center justify-between">
                       <p className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">{t("providerConfig")}</p>
                       <div className="flex gap-2">
-                        <button onClick={async () => { try { const r = await modelsApi.test(prov.base_url, prov.api_key); setTestResult(r.data.result); } catch { setTestResult(t("connectionFailed")); } }}
+                        <button onClick={async () => { try { const r = await modelsApi.test(prov.base_url, prov.api_key, prov.id); setTestResult(r.data.result); } catch { setTestResult(t("connectionFailed")); } }}
                           className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all">
                           <TestTube size={12} /> {t("common:test")}</button>
                         {providerEdit ? (
@@ -308,14 +397,14 @@ export function ConfigPanel() {
                         <div key={k} className="space-y-1">
                           <label className="text-xs font-medium text-[var(--muted)]">{t(`providerFields.${k}`, { defaultValue: k })}</label>
                           <input type={k === "api_key" ? "password" : "text"}
-                            value={String((pe as Record<string, unknown>)[k] ?? "")} readOnly={!providerEdit}
+                            value={pe[k]} readOnly={!providerEdit}
                             onChange={e => providerEdit && setProviderEdit({ ...providerEdit, [k]: e.target.value })}
                             className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]" />
                         </div>
                       ))}
                       <div className="space-y-1">
                         <label className="text-xs font-medium text-[var(--muted)]">{t("providerFields.api_type", { defaultValue: "api_type" })}</label>
-                        <select value={String((pe as Record<string, unknown>).api_type ?? "openai")} disabled={!providerEdit}
+                        <select value={pe.api_type} disabled={!providerEdit}
                           onChange={e => providerEdit && setProviderEdit({ ...providerEdit, api_type: e.target.value })}
                           className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]">
                           {API_TYPE_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -324,7 +413,7 @@ export function ConfigPanel() {
                       <div className="space-y-1">
                         <label className="text-xs font-medium text-[var(--muted)]">{t("providerFields.proxy_url", { defaultValue: "proxy_url" })}</label>
                         <input type="text" placeholder={t("proxyPlaceholder")}
-                          value={String((pe as Record<string, unknown>).proxy_url ?? "")} readOnly={!providerEdit}
+                          value={pe.proxy_url} readOnly={!providerEdit}
                           onChange={e => providerEdit && setProviderEdit({ ...providerEdit, proxy_url: e.target.value })}
                           className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]" />
                       </div>
@@ -431,7 +520,9 @@ export function ConfigPanel() {
                   <div className="space-y-2">
                     {providerModels.map(m => {
                       const isModelOpen = expandedModel === m.id;
-                      const me = modelEdit && isModelOpen ? modelEdit : m;
+                      const me: ModelConfig = modelEdit && isModelOpen
+                        ? { ...m, ...modelEdit }
+                        : m;
                       return (
                         <div key={m.id} className={cn(
                           "rounded-[var(--radius-md)] border transition-all",
@@ -473,10 +564,10 @@ export function ConfigPanel() {
                                 {currentProvider && <button onClick={() => handleAutoConfig(m, currentProvider)}
                                   className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--accent)] text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-all"><Scan size={12} /> {t("autoConfig")}</button>}
                                 {modelEdit ? (
-                                  <button onClick={() => updateModelMut.mutate({ mid: m.id, data: modelEdit })}
+                                  <button onClick={() => saveModel(m.id)}
                                     className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] transition-all"><Save size={12} /> {t("common:save")}</button>
                                 ) : (
-                                  <button onClick={() => setModelEdit({ ...m })}
+                                  <button onClick={() => startModelEdit(m)}
                                     className="px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all">{t("common:edit")}</button>
                                 )}
                               </div>
@@ -484,34 +575,96 @@ export function ConfigPanel() {
                                 {editableModelFields.map(k => (
                                   <div key={k} className="space-y-1">
                                     <label className="text-xs font-medium text-[var(--muted)]">{k}</label>
-                                    <input value={String((me as Record<string, unknown>)[k] ?? "")} readOnly={!modelEdit}
-                                      onChange={e => modelEdit && setModelEdit({ ...modelEdit, [k]: e.target.value })}
+                                    <input
+                                      type={k === "model" ? "text" : "number"}
+                                      step={k === "max_tokens" || k === "context_window" ? 1 : "any"}
+                                      value={me[k] ?? ""}
+                                      readOnly={!modelEdit}
+                                      onChange={e => {
+                                        if (!modelEdit) return;
+                                        const value = k === "model" ? e.target.value : Number(e.target.value);
+                                        setModelEdit({ ...modelEdit, [k]: value });
+                                      }}
                                       className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-1.5 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]" />
+                                  </div>
+                                ))}
+                                <div className="space-y-1">
+                                  <label className="text-xs font-medium text-[var(--muted)]">
+                                    {t("modelFields.chat_protocol")}
+                                  </label>
+                                  <select
+                                    value={me.chat_protocol ?? "chat_completions"}
+                                    disabled={!modelEdit}
+                                    onChange={e => {
+                                      if (!modelEdit) return;
+                                      setModelEdit({
+                                        ...modelEdit,
+                                        chat_protocol: e.target.value as ModelConfig["chat_protocol"],
+                                      });
+                                    }}
+                                    className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-1.5 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
+                                  >
+                                    <option value="chat_completions">{t("chatProtocol.chat_completions")}</option>
+                                    <option value="responses">{t("chatProtocol.responses")}</option>
+                                    <option value="auto">{t("chatProtocol.auto")}</option>
+                                  </select>
+                                  <p className="text-[11px] text-[var(--muted)] opacity-70">
+                                    {t("modelFields.chat_protocolHint")}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {(["request_params", "extra_body"] as const).map(field => (
+                                  <div key={field} className="space-y-1">
+                                    <label className="text-xs font-medium text-[var(--muted)]">
+                                      {t(`modelFields.${field}`)}
+                                    </label>
+                                    <textarea
+                                      rows={6}
+                                      value={modelEdit
+                                        ? jsonDrafts[field]
+                                        : JSON.stringify(me[field], null, 2)}
+                                      readOnly={!modelEdit}
+                                      onChange={event => {
+                                        setJsonDrafts(prev => ({ ...prev, [field]: event.target.value }));
+                                        setJsonErrors(prev => ({ ...prev, [field]: undefined }));
+                                      }}
+                                      className={cn(
+                                        "w-full font-mono bg-[var(--card)] border rounded-[var(--radius-md)] px-3 py-2 text-xs text-[var(--text)] outline-none focus:border-[var(--ring)]",
+                                        jsonErrors[field] ? "border-[var(--danger)]" : "border-[var(--input)]",
+                                      )}
+                                    />
+                                    <p className={cn(
+                                      "text-xs",
+                                      jsonErrors[field] ? "text-[var(--danger)]" : "text-[var(--muted)]",
+                                    )}>
+                                      {jsonErrors[field] ?? t(`modelFields.${field}Hint`)}
+                                    </p>
                                   </div>
                                 ))}
                               </div>
                               <div className="flex flex-wrap gap-3">
                                 <label className="flex items-center gap-2 cursor-pointer">
-                                  <input type="checkbox" checked={!!(me as Record<string, unknown>).supports_vision} disabled={!modelEdit}
+                                  <input type="checkbox" checked={me.supports_vision} disabled={!modelEdit}
                                     onChange={e => modelEdit && setModelEdit({ ...modelEdit, supports_vision: e.target.checked })}
                                     className="accent-[var(--accent-2)] w-3.5 h-3.5" />
                                   <span className="text-xs text-[var(--text)]">{t("vision")}</span>
                                 </label>
-                                {!!(me as Record<string, unknown>).supports_vision && (
-                                  <select value={String((me as Record<string, unknown>).vision_format ?? "base64")} disabled={!modelEdit}
+                                {me.supports_vision && (
+                                  <select value={me.vision_format} disabled={!modelEdit}
                                     onChange={e => modelEdit && setModelEdit({ ...modelEdit, vision_format: e.target.value })}
                                     className="bg-[var(--card)] border border-[var(--input)] rounded px-2 py-0.5 text-xs text-[var(--text)] outline-none">
                                     <option value="base64">base64</option><option value="url">url</option><option value="both">both</option>
                                   </select>
                                 )}
                                 <label className="flex items-center gap-2 cursor-pointer">
-                                  <input type="checkbox" checked={!!(me as Record<string, unknown>).supports_tools} disabled={!modelEdit}
+                                  <input type="checkbox" checked={me.supports_tools} disabled={!modelEdit}
                                     onChange={e => modelEdit && setModelEdit({ ...modelEdit, supports_tools: e.target.checked })}
                                     className="accent-[var(--accent)] w-3.5 h-3.5" />
                                   <span className="text-xs text-[var(--text)]">{t("toolCall")}</span>
                                 </label>
                                 <label className="flex items-center gap-2 cursor-pointer">
-                                  <input type="checkbox" checked={!!(me as Record<string, unknown>).supports_reasoning} disabled={!modelEdit}
+                                  <input type="checkbox" checked={me.supports_reasoning} disabled={!modelEdit}
                                     onChange={e => modelEdit && setModelEdit({ ...modelEdit, supports_reasoning: e.target.checked })}
                                     className="accent-[rgb(168,85,247)] w-3.5 h-3.5" />
                                   <span className="text-xs text-[var(--text)]">{t("deepThinking")}</span>
@@ -521,11 +674,11 @@ export function ConfigPanel() {
                                 <p className="text-xs font-medium text-[var(--muted)] mb-1">{t("modelTypes")}</p>
                                 <div className="flex flex-wrap gap-1.5">
                                   {MODEL_TYPE_OPTIONS.map(mt => {
-                                    const types = (Array.isArray((me as Record<string, unknown>).model_types) ? (me as Record<string, unknown>).model_types : []) as string[];
+                                    const types = me.model_types;
                                     const active = types.includes(mt);
                                     return (
                                       <button key={mt} disabled={!modelEdit}
-                                        onClick={() => { if (!modelEdit) return; const cur = (Array.isArray(modelEdit.model_types) ? modelEdit.model_types : []) as string[]; setModelEdit({ ...modelEdit, model_types: active ? cur.filter(x => x !== mt) : [...cur, mt] }); }}
+                                        onClick={() => { if (!modelEdit) return; const cur = modelEdit.model_types ?? me.model_types; setModelEdit({ ...modelEdit, model_types: active ? cur.filter(x => x !== mt) : [...cur, mt] }); }}
                                         className={cn("px-2.5 py-0.5 text-xs font-medium rounded-full border transition-all",
                                           active ? "bg-[var(--accent-subtle)] text-[var(--accent)] border-[var(--accent)]" : "bg-[var(--secondary)] text-[var(--muted)] border-[var(--border)]",
                                           !modelEdit && "opacity-60 cursor-default")}>{t(`modelTypeLabels.${mt}`, { defaultValue: mt })}</button>

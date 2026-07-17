@@ -203,24 +203,31 @@ class MediaClient:
     async def _poll_video(self, request_id: str) -> str:
         """Poll video generation status until done."""
         url = f"{self._base_url}/videos/generations/{request_id}"
-        for _ in range(_VIDEO_MAX_POLL):
-            await asyncio.sleep(_VIDEO_POLL_INTERVAL)
-            async with self._http_client(timeout=30.0) as client:
-                resp = await client.get(url, headers=self._headers())
+        async with self._http_client(timeout=30.0) as client:
+            for _ in range(_VIDEO_MAX_POLL):
+                await asyncio.sleep(_VIDEO_POLL_INTERVAL)
+                try:
+                    resp = await client.get(url, headers=self._headers())
+                except httpx.TransportError as exc:
+                    log(f"video poll transport error: {exc}", "DEBUG", tag="媒体")
+                    continue
                 if resp.status_code == 404:
+                    continue
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    log(f"video poll transient HTTP {resp.status_code}", "DEBUG", tag="媒体")
                     continue
                 resp.raise_for_status()
                 data = resp.json()
 
-            status = data.get("status", "")
-            if status in ("succeeded", "complete", "Succeed"):
-                video_url = self._extract_video_url(data)
-                if video_url:
-                    return video_url
-                raise ValueError(f"Video done but no URL: {data}")
-            if status in ("failed", "error", "Failed"):
-                raise RuntimeError(f"Video generation failed: {data}")
-            log(f"video poll: status={status}", "DEBUG", tag="媒体")
+                status = data.get("status", "")
+                if status in ("succeeded", "complete", "Succeed"):
+                    video_url = self._extract_video_url(data)
+                    if video_url:
+                        return video_url
+                    raise ValueError(f"Video done but no URL: {data}")
+                if status in ("failed", "error", "Failed"):
+                    raise RuntimeError(f"Video generation failed: {data}")
+                log(f"video poll: status={status}", "DEBUG", tag="媒体")
 
         raise TimeoutError(f"Video generation timed out after {_VIDEO_MAX_POLL * _VIDEO_POLL_INTERVAL}s")
 
@@ -341,26 +348,26 @@ class MediaClient:
         """下载图片 URL 或解码 base64，保存到 save_dir，返回相对路径列表。"""
         os.makedirs(save_dir, exist_ok=True)
         saved: List[str] = []
-        for i, src in enumerate(image_results):
-            ts = int(time.time() * 1000)
-            if src.startswith("data:image/"):
-                header, b64 = src.split(",", 1)
-                img_bytes = base64.b64decode(b64)
-                ext = ".png" if "png" in header else ".jpg"
-            else:
-                async with self._http_client(timeout=60.0) as client:
+        async with self._http_client(timeout=60.0) as client:
+            for i, src in enumerate(image_results):
+                ts = int(time.time() * 1000)
+                if src.startswith("data:image/"):
+                    header, b64 = src.split(",", 1)
+                    img_bytes = base64.b64decode(b64)
+                    ext = ".png" if "png" in header else ".jpg"
+                else:
                     resp = await client.get(src, follow_redirects=True)
                     resp.raise_for_status()
                     img_bytes = resp.content
                     ct = resp.headers.get("content-type", "image/png")
                     ext = ".png" if "png" in ct else ".jpg"
-            fname = f"gen_{ts}_{i}{ext}"
-            fpath = os.path.join(save_dir, fname)
-            with open(fpath, "wb") as f:
-                f.write(img_bytes)
-            rel = os.path.relpath(fpath, os.getcwd()).replace("\\", "/")
-            saved.append(rel)
-            log(f"图片已保存: {rel} ({len(img_bytes)} bytes)", "DEBUG", tag="媒体")
+                fname = f"gen_{ts}_{i}{ext}"
+                fpath = os.path.join(save_dir, fname)
+                with open(fpath, "wb") as f:
+                    f.write(img_bytes)
+                rel = os.path.relpath(fpath, os.getcwd()).replace("\\", "/")
+                saved.append(rel)
+                log(f"图片已保存: {rel} ({len(img_bytes)} bytes)", "DEBUG", tag="媒体")
         return saved
 
     # ------------------------------------------------------------------

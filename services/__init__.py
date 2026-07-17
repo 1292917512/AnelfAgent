@@ -8,6 +8,7 @@ from services.mcp import MCPService
 from services.memory import MemoryService
 from services.model import ModelService
 from services.persona import PersonaService
+from services.responses import ResponsesService
 from services.status import AgentStatusService
 from services.tag import TagService
 from services.tool import ToolService
@@ -24,6 +25,7 @@ __all__ = [
     "MemoryService",
     "ModelService",
     "PersonaService",
+    "ResponsesService",
     "AgentStatusService",
     "TagService",
     "ToolService",

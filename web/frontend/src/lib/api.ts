@@ -1,5 +1,14 @@
 import axios from "axios";
-import type { GoalStep, PersonaData, ProviderConfig } from "./types";
+import type {
+  CreateModelConfig,
+  CreateProviderConfig,
+  GoalStep,
+  ModelConfig,
+  PersonaData,
+  ProviderConfig,
+  UpdateModelConfig,
+  UpdateProviderConfig,
+} from "./types";
 export type { GoalStep } from "./types";
 
 const api = axios.create({
@@ -31,7 +40,27 @@ export const authApi = {
   logout: () => api.post("/auth/logout"),
   updatePassword: (newPassword: string) =>
     api.put("/auth/password", { new_password: newPassword }),
+  listApiKeys: () => api.get<{ keys: ApiKeyInfo[] }>("/auth/api-keys"),
+  createApiKey: (name = "default") =>
+    api.post<ApiKeyCreated>("/auth/api-keys", { name }),
+  rotateApiKey: (keyId: string) =>
+    api.post<ApiKeyCreated>(`/auth/api-keys/${keyId}/rotate`),
+  deleteApiKey: (keyId: string) =>
+    api.delete<{ status: string }>(`/auth/api-keys/${keyId}`),
 };
+
+export interface ApiKeyInfo {
+  id: string;
+  name: string;
+  key_prefix: string;
+  masked_key: string;
+  created_at: number;
+  last_used_at: number | null;
+}
+
+export interface ApiKeyCreated extends ApiKeyInfo {
+  api_key: string;
+}
 
 // ── 类型化 API 方法 ─────────────────────────────────────────────
 
@@ -71,13 +100,13 @@ export const statusApi = {
 
 // Providers
 export const providersApi = {
-  list: () => api.get("/models/providers"),
-  create: (data: Partial<ProviderConfig>) => api.post("/models/providers", data),
-  update: (pid: string, data: Partial<ProviderConfig>) =>
+  list: () => api.get<ProviderConfig[]>("/models/providers"),
+  create: (data: CreateProviderConfig) => api.post("/models/providers", data),
+  update: (pid: string, data: UpdateProviderConfig) =>
     api.put(`/models/providers/${encodeURIComponent(pid)}`, data),
   remove: (pid: string) => api.delete(`/models/providers/${encodeURIComponent(pid)}`),
-  models: (pid: string) => api.get(`/models/providers/${encodeURIComponent(pid)}/models`),
-  createModel: (pid: string, data: Record<string, unknown>) =>
+  models: (pid: string) => api.get<ModelConfig[]>(`/models/providers/${encodeURIComponent(pid)}/models`),
+  createModel: (pid: string, data: CreateModelConfig) =>
     api.post(`/models/providers/${encodeURIComponent(pid)}/models`, data),
   remoteModels: (pid: string) =>
     api.get<{ models: RemoteModelInfo[] }>(`/models/providers/${encodeURIComponent(pid)}/remote-models`),
@@ -102,10 +131,17 @@ export interface ModelInfoResult {
   output_cost_per_token?: number | null;
 }
 
+export interface ProbeResult {
+  error?: string;
+  supports_vision?: boolean;
+  supports_tools?: boolean;
+  vision_format?: string;
+}
+
 // Models
 export const modelsApi = {
-  get: (id: string) => api.get(`/models/${encodeURIComponent(id)}`),
-  update: (id: string, data: Record<string, unknown>) =>
+  get: (id: string) => api.get<ModelConfig>(`/models/${encodeURIComponent(id)}`),
+  update: (id: string, data: UpdateModelConfig) =>
     api.put(`/models/${encodeURIComponent(id)}`, data),
   remove: (id: string) => api.delete(`/models/${encodeURIComponent(id)}`),
   rename: (id: string, newId: string) =>
@@ -116,10 +152,16 @@ export const modelsApi = {
     api.put(`/models/priorities/${encodeURIComponent(modelType)}`, { model_ids: modelIds }),
   movePriority: (modelId: string, modelType: string, direction: number) =>
     api.put(`/models/${encodeURIComponent(modelId)}/priority-move/${encodeURIComponent(modelType)}`, { direction }),
-  test: (baseUrl: string, apiKey: string) =>
-    api.post("/models/test", { base_url: baseUrl, api_key: apiKey }),
-  probe: (baseUrl: string, apiKey: string, model: string, apiType = "openai") =>
-    api.post("/models/probe", { base_url: baseUrl, api_key: apiKey, model, api_type: apiType }),
+  test: (baseUrl: string, apiKey: string, providerId = "") =>
+    api.post("/models/test", { base_url: baseUrl, api_key: apiKey, provider_id: providerId }),
+  probe: (baseUrl: string, apiKey: string, model: string, apiType = "openai", providerId = "") =>
+    api.post<ProbeResult>("/models/probe", {
+      base_url: baseUrl,
+      api_key: apiKey,
+      model,
+      api_type: apiType,
+      provider_id: providerId,
+    }),
   costMapInfo: () => api.get<{ model_count: number }>("/models/cost-map/info"),
   updateCostMap: (proxyUrl = "") =>
     api.post<{ status: string; model_count: number }>("/models/cost-map/update", { proxy_url: proxyUrl }),

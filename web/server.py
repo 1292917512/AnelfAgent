@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse
 
 from core.log import log
 from core.path import ConfigPaths
+from web.auth_keys import extract_bearer_token, verify_bearer_api_key
 
 _WEB_DIR = Path(__file__).parent
 FRONTEND_DIST = _WEB_DIR / "frontend" / "dist"
@@ -71,11 +72,38 @@ class _AuthMiddleware(BaseHTTPMiddleware):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
 
+class _V1BearerAuthMiddleware(BaseHTTPMiddleware):
+    """保护 /v1/* 的独立 Bearer API Key 鉴权。"""
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+        path = request.url.path
+        if not path.startswith("/v1"):
+            return await call_next(request)
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        authorization = request.headers.get("authorization", "")
+        token = extract_bearer_token(authorization)
+        if not verify_bearer_api_key(token):
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": "Invalid API key",
+                        "type": "invalid_request_error",
+                        "code": "invalid_api_key",
+                    }
+                },
+                status_code=401,
+            )
+        return await call_next(request)
+
+
 def create_app() -> FastAPI:
     """创建 WebUI FastAPI 应用。"""
     app = FastAPI(title="AnelfAgent WebUI", version="1.0.0")
 
     app.add_middleware(_AuthMiddleware)
+    app.add_middleware(_V1BearerAuthMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -85,7 +113,10 @@ def create_app() -> FastAPI:
     )
 
     from web.routers import api_router
+    from web.routers.v1_responses import router as v1_responses_router
+
     app.include_router(api_router)
+    app.include_router(v1_responses_router, prefix="/v1")
 
     _mount_nonebot(app)
 
@@ -154,17 +185,14 @@ async def register_webui_channel() -> None:
         log(f"WebUI 频道启动失败: {e}", "WARNING")
 
 
-
 def _load_server_config() -> tuple[str, int]:
     """从 config/webui.json 读取 host/port。"""
-    import json
     p = Path(ConfigPaths.WEBUI_CONFIG)
     if p.exists():
         try:
             cfg = json.loads(p.read_text("utf-8")).get("server", {})
             return cfg.get("host", "0.0.0.0"), int(cfg.get("port", 8092))
         except Exception as e:
-            from core.log import log
             log(f"WebUI 服务器配置加载失败: {e}", "DEBUG")
     return "0.0.0.0", 8092
 

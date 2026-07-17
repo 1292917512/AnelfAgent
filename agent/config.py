@@ -2,7 +2,7 @@
 BotConfigProvider：AnelfAgent 集中配置访问层。
 
 LLM 客户端配置由 LLMManager 管理（config/llm_clients.json），
-此模块保留流式开关、人设配置、MCP 配置等全局设置的读写。
+此模块保留兼容性运行参数、人设配置、MCP 配置等全局设置的读写。
 
 支持环境变量覆盖：``ANELF_<KEY>`` 格式的环境变量会覆盖对应配置。
 """
@@ -20,14 +20,7 @@ from core.path import ConfigPaths
 
 _ENV_PREFIX = "ANELF_"
 
-_LLM_CONFIGS = {
-    "AnelfAgent/LLM": {
-        "llm_stream_enabled": {
-            "description": "启用流式输出（逐 token 渐进显示）",
-            "default": True,
-        },
-    },
-}
+_LLM_CONFIGS: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 _MIND_CONFIGS = {
     "AnelfAgent/Mind": {
@@ -246,7 +239,7 @@ class MindConfig:
     # 全局思考等级：low / medium / high / max（空=不设置）
     reasoning_effort: str = ""
     # 工具系统提示规则（每条一行，注入到 LLM system prompt）；实际内容由 mind_config.json 提供
-    tool_system_rules: list = field(default_factory=list)
+    tool_system_rules: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -392,25 +385,8 @@ class BotConfigProvider:
                     setattr(mc, k, type(current)(v))
         p = Path(self.mind_config_path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "heartbeat_interval": mc.heartbeat_interval,
-            "meta_decision_temperature": mc.meta_decision_temperature,
-            "conversation_analysis_threshold": mc.conversation_analysis_threshold,
-            "max_tool_iterations": mc.max_tool_iterations,
-            "log_ai_output": mc.log_ai_output,
-            "conv_recall_scan_limit": mc.conv_recall_scan_limit,
-            "conv_recall_backfill_batch": mc.conv_recall_backfill_batch,
-            "conv_recall_min_score": mc.conv_recall_min_score,
-            "conv_recall_max_results": mc.conv_recall_max_results,
-            "cross_channel_enabled": mc.cross_channel_enabled,
-            "cross_channel_window_minutes": mc.cross_channel_window_minutes,
-            "cross_channel_recall_min_score": mc.cross_channel_recall_min_score,
-            "cross_channel_recall_max_results": mc.cross_channel_recall_max_results,
-            "cross_channel_recall_scan_limit": mc.cross_channel_recall_scan_limit,
-            "cross_channel_narrative_max_items": mc.cross_channel_narrative_max_items,
-            "reasoning_effort": mc.reasoning_effort,
-            "tool_system_rules": mc.tool_system_rules,
-        }
+        data = {key: getattr(mc, key) for key in _MIND_SYNC_FIELDS}
+        data["tool_system_rules"] = mc.tool_system_rules
         p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         self._sync_mind_to_config_manager()
         log(f"Mind 配置已保存: {p}")

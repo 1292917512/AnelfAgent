@@ -1,17 +1,50 @@
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
+export interface JsonObject {
+  [key: string]: JsonValue;
+}
+
 export interface ProviderConfig {
   id: string;
+  name: string;
   base_url: string;
   api_key: string;
-  api_type?: string;
-  [key: string]: unknown;
+  api_type: string;
+  proxy_url: string;
+  model_count: number;
 }
 
 export interface ModelConfig {
   id: string;
-  provider_id: string;
-  model_type?: string;
-  [key: string]: unknown;
+  name: string;
+  model: string;
+  model_types: string[];
+  supports_vision: boolean;
+  supports_tools: boolean;
+  vision_format: string;
+  supports_reasoning: boolean;
+  temperature: number;
+  top_p: number;
+  max_tokens: number;
+  frequency_penalty: number;
+  presence_penalty: number;
+  timeout: number;
+  request_params: JsonObject;
+  extra_body: JsonObject;
+  chat_protocol: "chat_completions" | "responses" | "auto";
+  is_default: boolean;
+  input_cost: number | null;
+  output_cost: number | null;
+  context_window: number | null;
 }
+
+export type CreateProviderConfig = Omit<ProviderConfig, "model_count">;
+export type UpdateProviderConfig = Partial<Omit<CreateProviderConfig, "id">>;
+export type CreateModelConfig = Omit<
+  ModelConfig,
+  "name" | "is_default" | "input_cost" | "output_cost" | "context_window"
+> & { context_window?: number };
+export type UpdateModelConfig = Partial<Omit<CreateModelConfig, "id">>;
 
 export interface PersonaData {
   name?: string;

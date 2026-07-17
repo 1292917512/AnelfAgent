@@ -1,16 +1,17 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
 import { useAppStore } from "@/stores/app-store";
 import { systemApi, configApi, authApi, type WebToolsConfig } from "@/lib/api";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import { Database, Check, X, TestTube, Shield } from "lucide-react";
+import { Database, Check, X, TestTube, Shield, KeyRound, Copy, RefreshCw, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { LiteLLMCostMapCard } from "@/pages/config/LiteLLMCostMapCard";
+import type { ApiKeyCreated, ApiKeyInfo } from "@/lib/api";
 
 type SettingsTab = "sysConfig" | "system" | "python" | "git" | "config";
 
@@ -75,6 +76,7 @@ function SysConfigPanel() {
   return (
     <div className="space-y-4">
       <PasswordCard />
+      <ApiKeysCard />
       <LiteLLMCostMapCard defaultProxy={proxyUrl} />
       <ConfigFormPanel
         title={t("sections.webTools")}
@@ -429,6 +431,132 @@ function PasswordCard() {
           <Shield size={14} />
           {saved ? t("actions.saved") : newPwd ? t("auth.setPassword") : t("auth.removePassword")}
         </button>
+      </div>
+    </Card>
+  );
+}
+
+function ApiKeysCard() {
+  const { t } = useTranslation("appconfig");
+  const qc = useQueryClient();
+  const [name, setName] = useState("default");
+  const [revealed, setRevealed] = useState<ApiKeyCreated | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const { data } = useQuery({
+    queryKey: ["apiKeys"],
+    queryFn: () => authApi.listApiKeys().then((r) => r.data),
+  });
+  const keys: ApiKeyInfo[] = data?.keys ?? [];
+
+  const refresh = async (created?: ApiKeyCreated) => {
+    if (created) {
+      setRevealed(created);
+      setCopied(false);
+    }
+    await qc.invalidateQueries({ queryKey: ["apiKeys"] });
+  };
+
+  const createMut = useMutation({
+    mutationFn: () => authApi.createApiKey(name || "default").then((r) => r.data),
+    onSuccess: (created) => { void refresh(created); },
+  });
+  const rotateMut = useMutation({
+    mutationFn: (keyId: string) => authApi.rotateApiKey(keyId).then((r) => r.data),
+    onSuccess: (created) => { void refresh(created); },
+  });
+  const deleteMut = useMutation({
+    mutationFn: (keyId: string) => authApi.deleteApiKey(keyId),
+    onSuccess: () => {
+      setRevealed(null);
+      void refresh();
+    },
+  });
+
+  return (
+    <Card title={t("apiKeys.title")} subtitle={t("apiKeys.subtitle")}>
+      <div className="space-y-3">
+        <div className="flex items-end gap-3">
+          <div className="flex-1 flex flex-col gap-1">
+            <label className="text-xs text-[var(--muted)] font-medium">{t("apiKeys.name")}</label>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={t("apiKeys.namePlaceholder")}
+              className="w-full text-sm bg-[var(--bg-elevated)] border border-[var(--border)] rounded-[var(--radius-md)]
+                px-2.5 py-1.5 text-[var(--text-strong)] placeholder:text-[var(--muted)]
+                focus:outline-none focus:border-[var(--accent)] transition-colors"
+            />
+          </div>
+          <button
+            onClick={() => createMut.mutate()}
+            disabled={createMut.isPending}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-[var(--radius-md)]
+              bg-[var(--accent)] text-white hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
+          >
+            <KeyRound size={14} />
+            {t("apiKeys.create")}
+          </button>
+        </div>
+
+        {revealed?.api_key && (
+          <div className="rounded-[var(--radius-md)] border border-[var(--accent)] bg-[var(--accent-subtle)] p-3 space-y-2">
+            <p className="text-xs text-[var(--accent)] font-medium">{t("apiKeys.createdOnce")}</p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 text-xs break-all text-[var(--text-strong)]">{revealed.api_key}</code>
+              <button
+                onClick={async () => {
+                  await navigator.clipboard.writeText(revealed.api_key);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1500);
+                }}
+                className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-[var(--border)] hover:bg-[var(--bg-hover)]"
+              >
+                <Copy size={12} />
+                {copied ? t("apiKeys.copied") : t("apiKeys.copy")}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {keys.length === 0 ? (
+          <p className="text-sm text-[var(--muted)]">{t("apiKeys.empty")}</p>
+        ) : (
+          <div className="space-y-2">
+            {keys.map((key) => (
+              <div
+                key={key.id}
+                className="flex items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-[var(--text-strong)] truncate">{key.name}</p>
+                  <p className="text-[11px] text-[var(--muted)]">
+                    {t("apiKeys.prefix")}: {key.masked_key || key.key_prefix}
+                    {" · "}
+                    {t("apiKeys.createdAt")}: {key.created_at ? new Date(key.created_at * 1000).toLocaleString() : "-"}
+                    {key.last_used_at
+                      ? ` · ${t("apiKeys.lastUsed")}: ${new Date(key.last_used_at * 1000).toLocaleString()}`
+                      : ""}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={() => rotateMut.mutate(key.id)}
+                    className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--bg-hover)]"
+                  >
+                    <RefreshCw size={12} /> {t("apiKeys.rotate")}
+                  </button>
+                  <button
+                    onClick={() => deleteMut.mutate(key.id)}
+                    className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-[var(--border)] text-[var(--danger)] hover:bg-[var(--bg-hover)]"
+                  >
+                    <Trash2 size={12} /> {t("apiKeys.delete")}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </Card>
   );

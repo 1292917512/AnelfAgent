@@ -119,7 +119,7 @@ class ChannelManager(BaseEntity):
             if not getattr(ch, '_deferred_start', False)
         ]
         if tasks:
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _start_one(self, cid: str, channel: BaseChannel) -> None:
         """启动单个频道，捕获异常防止影响其他频道的并发启动。"""

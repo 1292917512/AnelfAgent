@@ -25,7 +25,6 @@
     "llm_timeout": "LLM 超时（秒）",
     "llm_max_retries": "LLM 最大重试",
     "max_conversation_size": "对话历史总条数",
-    "llm_stream_enabled": "LLM 流式输出",
     "sandbox_enabled": "沙箱模式",
     "vector_search_batch_size": "向量搜索批大小",
     "memory_recall_top_k": "语义召回 Top-K",
@@ -238,6 +237,22 @@
     "hint": "修改后当前会话自动续签，其他设备需重新登录",
     "setPassword": "设置密码",
     "removePassword": "取消密码"
+  },
+  "apiKeys": {
+    "title": "Responses API Key",
+    "subtitle": "用于 /v1/responses 的 Bearer 鉴权，与 WebUI 密码相互独立",
+    "name": "名称",
+    "namePlaceholder": "例如 sdk-client",
+    "create": "生成密钥",
+    "rotate": "轮换",
+    "delete": "删除",
+    "empty": "尚未创建 API Key",
+    "createdOnce": "请立即复制，密钥仅显示一次",
+    "copy": "复制",
+    "copied": "已复制",
+    "prefix": "前缀",
+    "createdAt": "创建时间",
+    "lastUsed": "最近使用"
   },
   "notes": {
     "restartRequired": "修改后需重启服务才能完全生效"

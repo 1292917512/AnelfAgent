@@ -57,7 +57,9 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=False)
     async def init_llm():
         from agent.llm import get_llm_manager
+        from core.lifecycle import Lifecycle
         manager = get_llm_manager()
+        Lifecycle.register("llm_manager", manager, cleanup=manager.close)
         llm = manager.get_default()
         log(f"LLM 默认客户端: {llm.config.name} ({llm.config.model})")
         return {"manager": manager, "llm": llm}

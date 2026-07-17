@@ -8,22 +8,44 @@ from services._runtime import get_runtime
 
 
 class ModelService:
+    _API_KEY_MASK = "****"
 
     @staticmethod
     def _manager() -> Any:
         from agent.llm import get_llm_manager
         return get_llm_manager()
 
+    @classmethod
+    def _mask_api_key(cls, api_key: str) -> str:
+        """返回不可用于鉴权的密钥掩码。"""
+        if not api_key:
+            return ""
+        if len(api_key) <= 8:
+            return cls._API_KEY_MASK
+        return f"{api_key[:4]}{cls._API_KEY_MASK}{api_key[-4:]}"
+
+    @classmethod
+    def _is_masked_api_key(cls, api_key: str) -> bool:
+        return cls._API_KEY_MASK in api_key
+
     # ------------------------------------------------------------------
     # 供应商
     # ------------------------------------------------------------------
 
     def list_providers(self) -> List[Dict[str, Any]]:
-        return self._manager().list_providers()
+        providers = self._manager().list_providers()
+        return [
+            {**provider, "api_key": self._mask_api_key(str(provider.get("api_key", "")))}
+            for provider in providers
+        ]
 
     def get_provider(self, pid: str) -> Optional[Dict[str, Any]]:
         prov = self._manager().get_provider(pid)
-        return prov.to_dict() if prov else None
+        if prov is None:
+            return None
+        result = prov.to_dict()
+        result["api_key"] = self._mask_api_key(str(result.get("api_key", "")))
+        return result
 
     def add_provider(self, pid: str, **kwargs: Any) -> bool:
         mgr = self._manager()
@@ -34,7 +56,29 @@ class ModelService:
         return True
 
     def update_provider(self, pid: str, **kwargs: Any) -> bool:
+        api_key = kwargs.get("api_key")
+        if isinstance(api_key, str) and (not api_key or self._is_masked_api_key(api_key)):
+            kwargs.pop("api_key")
         return self._manager().update_provider(pid, **kwargs)
+
+    def resolve_provider_api_key(self, provider_id: str, api_key: str) -> str:
+        """将界面提交的空值或掩码解析为供应商当前密钥。"""
+        if api_key and not self._is_masked_api_key(api_key):
+            return api_key
+        provider = self._manager().get_provider(provider_id)
+        return provider.api_key if provider is not None else ""
+
+    def sanitize_error(self, exc: Exception, *extra_secrets: str) -> str:
+        """移除异常文本中的已配置密钥和请求密钥。"""
+        message = str(exc)
+        secrets = [secret for secret in extra_secrets if secret]
+        for provider in self._manager().list_providers():
+            api_key = str(provider.get("api_key", ""))
+            if api_key:
+                secrets.append(api_key)
+        for secret in secrets:
+            message = message.replace(secret, self._API_KEY_MASK)
+        return message
 
     def remove_provider(self, pid: str) -> bool:
         return self._manager().remove_provider(pid)
@@ -54,7 +98,7 @@ class ModelService:
         d = cfg.to_model_dict()
         d["provider_id"] = cfg.provider_id
         d["base_url"] = cfg.base_url
-        d["api_key"] = cfg.api_key
+        d["api_key"] = self._mask_api_key(cfg.api_key)
         d["api_type"] = cfg.api_type
         return d
 

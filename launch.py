@@ -1,5 +1,6 @@
 import asyncio
 import argparse
+import contextlib
 import signal
 import warnings
 
@@ -36,15 +37,29 @@ def main():
         shutdown_event = asyncio.Event()
         loop = asyncio.get_running_loop()
 
-        def _on_signal():
+        def _request_shutdown() -> None:
+            if not shutdown_event.is_set():
+                shutdown_event.set()
+
+        def _on_signal() -> None:
             if shutdown_event.is_set():
                 for s in (signal.SIGINT, signal.SIGTERM):
-                    loop.remove_signal_handler(s)
+                    with contextlib.suppress(NotImplementedError, ValueError, RuntimeError):
+                        loop.remove_signal_handler(s)
                 return
-            shutdown_event.set()
+            _request_shutdown()
 
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, _on_signal)
+        # Windows ProactorEventLoop 不支持 add_signal_handler
+        try:
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, _on_signal)
+        except NotImplementedError:
+            def _win_handler(signum: int, frame: object) -> None:
+                loop.call_soon_threadsafe(_request_shutdown)
+
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                with contextlib.suppress(ValueError, OSError):
+                    signal.signal(sig, _win_handler)
 
         await shutdown_event.wait()
 

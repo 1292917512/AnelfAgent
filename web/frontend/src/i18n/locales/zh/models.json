@@ -54,6 +54,21 @@
   "autoConfigDone": "已自动填充参数",
   "autoConfigNotFound": "该模型未收录，无法自动配置（可手动设置）",
   "autoConfigError": "查询模型信息失败",
+  "invalidJson": "JSON 格式无效",
+  "jsonObjectRequired": "必须输入 JSON 对象",
+  "modelFields": {
+    "request_params": "请求参数",
+    "request_paramsHint": "通用生成参数；上方数值字段保存时优先",
+    "extra_body": "扩展请求体",
+    "extra_bodyHint": "发送给供应商的额外 JSON 请求字段",
+    "chat_protocol": "对话协议",
+    "chat_protocolHint": "Mind 默认仍走 Chat Completions；选 responses 时内部自动桥接"
+  },
+  "chatProtocol": {
+    "chat_completions": "Chat Completions",
+    "responses": "Responses API",
+    "auto": "自动（官方 OpenAI/Azure 优先 Responses）"
+  },
   "providerFields": {
     "id": "供应商 ID",
     "name": "名称",

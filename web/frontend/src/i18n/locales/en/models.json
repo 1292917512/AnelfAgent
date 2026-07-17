@@ -54,6 +54,21 @@
   "autoConfigDone": "Parameters auto-filled",
   "autoConfigNotFound": "Model not in database, cannot auto-configure (set manually)",
   "autoConfigError": "Failed to query model info",
+  "invalidJson": "Invalid JSON",
+  "jsonObjectRequired": "A JSON object is required",
+  "modelFields": {
+    "request_params": "Request Parameters",
+    "request_paramsHint": "Common generation parameters; the numeric fields above take precedence when saved",
+    "extra_body": "Extra Request Body",
+    "extra_bodyHint": "Additional JSON fields sent to the provider",
+    "chat_protocol": "Chat Protocol",
+    "chat_protocolHint": "Mind still uses Chat Completions by default; responses bridges internally"
+  },
+  "chatProtocol": {
+    "chat_completions": "Chat Completions",
+    "responses": "Responses API",
+    "auto": "Auto (official OpenAI/Azure prefers Responses)"
+  },
   "providerFields": {
     "id": "Provider ID",
     "name": "Name",
