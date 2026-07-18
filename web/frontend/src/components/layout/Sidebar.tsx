@@ -21,6 +21,8 @@ import {
   PanelLeft,
   Workflow,
   Tags,
+  GraduationCap,
+  SlidersHorizontal,
   type LucideIcon,
 } from "lucide-react";
 
@@ -40,6 +42,8 @@ const ICON_MAP: Record<string, LucideIcon> = {
   ListChecks,
   Workflow,
   Tags,
+  GraduationCap,
+  SlidersHorizontal,
 };
 
 const FALLBACK_NAV: NavItem[] = [
@@ -48,6 +52,7 @@ const FALLBACK_NAV: NavItem[] = [
   { path: "/models", label: "models", icon: "Cpu", group: "group_core" },
   { path: "/personas", label: "personas", icon: "UserCircle", group: "group_core" },
   { path: "/memory", label: "memory", icon: "Brain", group: "group_core" },
+  { path: "/skills", label: "skills", icon: "GraduationCap", group: "group_core" },
   { path: "/tasks", label: "tasks", icon: "ListChecks", group: "group_core" },
   { path: "/heartbeat", label: "heartbeat", icon: "HeartPulse", group: "group_core" },
   { path: "/tags", label: "tags", icon: "Tags", group: "group_ability" },
@@ -55,6 +60,7 @@ const FALLBACK_NAV: NavItem[] = [
   { path: "/mcp", label: "mcp", icon: "Plug", group: "group_ability" },
   { path: "/channels", label: "channels", icon: "Radio", group: "group_ability" },
   { path: "/thinking", label: "thinking", icon: "Workflow", group: "group_ability" },
+  { path: "/config", label: "config", icon: "SlidersHorizontal", group: "group_system" },
   { path: "/settings", label: "settings", icon: "Settings", group: "group_system" },
 ];
 
@@ -73,7 +79,7 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "flex flex-col border-r border-[var(--border)] bg-[var(--panel)] transition-all duration-200",
+        "flex flex-col h-full border-r border-[var(--border)] bg-[var(--panel)] transition-all duration-200",
         sidebarCollapsed ? "w-16" : "w-60",
       )}
     >
@@ -86,7 +92,7 @@ export function Sidebar() {
         )}
         <button
           onClick={toggleSidebar}
-          className="p-1.5 rounded-[var(--radius-md)] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors"
+          className="hidden md:block p-1.5 rounded-[var(--radius-md)] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors"
         >
           {sidebarCollapsed ? <PanelLeft size={18} /> : <PanelLeftClose size={18} />}
         </button>

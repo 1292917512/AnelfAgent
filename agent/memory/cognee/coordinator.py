@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import re
+import time
 from collections import defaultdict
 from typing import Any, Optional
 
@@ -35,6 +36,7 @@ class CogneeCoordinator:
         self._wake = asyncio.Event()
         self._closing = False
         self._last_error = ""
+        self._last_improve_ns: dict[str, int] = {}
 
     async def start(self) -> None:
         self.store.set_cognee_projection_enabled(
@@ -45,11 +47,22 @@ class CogneeCoordinator:
         availability = await self.client.initialize()
         if not availability.ready:
             self._last_error = availability.reason
+        # 启动时回收上次异常退出遗留的卡死任务（processing → pending）
+        try:
+            await self.store.requeue_stale_cognee_sync(self._stale_after_seconds())
+        except Exception as exc:
+            log(f"Cognee 卡死任务回收失败: {exc}", "DEBUG", tag="思维")
         if self.config.sync_enabled and self._task is None:
             self._task = asyncio.create_task(
                 self._worker(),
                 name="memory.cognee.sync",
             )
+
+    @staticmethod
+    def _stale_after_seconds() -> float:
+        """卡死判定阈值（processing 超过该时长视为被中断）。"""
+        from core.config import get_config_float
+        return get_config_float("cognee_sync_stale_seconds", 900.0)
 
     async def close(self) -> None:
         self._closing = True
@@ -95,6 +108,8 @@ class CogneeCoordinator:
     async def _worker(self) -> None:
         while not self._closing:
             try:
+                # 每轮先回收卡死任务（worker 崩溃/取消导致的中断），再认领新批次
+                await self.store.requeue_stale_cognee_sync(self._stale_after_seconds())
                 batch = await self.store.claim_cognee_sync_batch(
                     self.config.sync_batch_size,
                 )
@@ -104,8 +119,8 @@ class CogneeCoordinator:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._last_error = str(exc)
-                log(f"Cognee 同步循环异常: {exc}", "WARNING", tag="思维")
+                self._last_error = _error_text(exc)
+                log(f"Cognee 同步循环异常: {self._last_error}", "WARNING", tag="思维")
 
             self._wake.clear()
             try:
@@ -154,23 +169,34 @@ class CogneeCoordinator:
                 item["queue_id"], item["memory_id"], delete_mapping=True,
             )
         except Exception as exc:
-            await self._fail(item, str(exc))
+            await self._fail(item, _error_text(exc))
 
     async def _process_upsert_group(
         self,
         dataset_name: str,
         items: list[dict[str, Any]],
     ) -> None:
-        try:
-            data_items: list[Any] = []
-            for item in items:
-                mapping = await self.store.get_cognee_mapping(item["memory_id"])
-                if mapping and mapping.get("dataset_id") and mapping.get("data_id"):
+        # 先删后加实现更新语义；单条目删除失败仅隔离该条目，不毒化整组
+        active: list[dict[str, Any]] = []
+        for item in items:
+            mapping = await self.store.get_cognee_mapping(item["memory_id"])
+            if mapping and mapping.get("dataset_id") and mapping.get("data_id"):
+                try:
                     await self.client.delete_data(
                         mapping["dataset_id"],
                         mapping["data_id"],
                         delete_dataset_if_empty=False,
                     )
+                except Exception as exc:
+                    await self._fail(item, f"清理旧投影失败: {_error_text(exc)}")
+                    continue
+            active.append(item)
+        if not active:
+            return
+
+        try:
+            data_items: list[Any] = []
+            for item in active:
                 payload = item["payload"]
                 data_items.append(await self.client.make_data_item(
                     self._render_memory(payload),
@@ -188,13 +214,14 @@ class CogneeCoordinator:
                 incremental_loading=True,
             )
             await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
-            await self.client.improve(dataset=dataset_name)
+            await self._maybe_improve(dataset_name)
             identifiers = await self._resolve_data_ids(dataset_name)
 
-            for item in items:
+            for item in active:
                 ids = identifiers.get(str(item["memory_id"]))
                 if not ids:
-                    raise RuntimeError(f"无法解析 memory {item['memory_id']} 的 Cognee 数据 ID")
+                    await self._fail(item, "无法解析 Cognee 数据 ID")
+                    continue
                 await self.store.complete_cognee_sync(
                     item["queue_id"],
                     item["memory_id"],
@@ -204,9 +231,33 @@ class CogneeCoordinator:
                 )
             self._last_error = ""
         except Exception as exc:
-            self._last_error = str(exc)
-            for item in items:
-                await self._fail(item, str(exc))
+            self._last_error = _error_text(exc)
+            for item in active:
+                await self._fail(item, self._last_error)
+
+    async def _maybe_improve(self, dataset_name: str) -> None:
+        """按数据集防抖运行图谱增强；增强失败不影响已完成的投影。
+
+        memify 全图增强随数据集增长越来越慢，且 CHUNKS 类召回不依赖它，
+        因此按 improve_interval_seconds 限频（<=0 时同步路径不运行），
+        周期性增强可经 improve_cognee_dataset 工具触发。
+        """
+        interval = self.config.improve_interval_seconds
+        if interval <= 0:
+            return
+        now_ns = time.time_ns()
+        last_ns = self._last_improve_ns.get(dataset_name, 0)
+        if now_ns - last_ns < int(interval * 1e9):
+            return
+        self._last_improve_ns[dataset_name] = now_ns
+        try:
+            await self.client.improve(dataset=dataset_name)
+        except Exception as exc:
+            log(
+                f"Cognee 数据集 {dataset_name} 图谱增强失败（不影响投影）: {_error_text(exc)}",
+                "WARNING",
+                tag="思维",
+            )
 
     async def _resolve_data_ids(self, dataset_name: str) -> dict[str, tuple[str, str]]:
         datasets = await self.client.list_datasets()
@@ -272,6 +323,12 @@ class CogneeCoordinator:
             f"Metadata: {metadata}\n\n"
             f"{payload.get('content', '')}"
         )
+
+
+def _error_text(exc: BaseException) -> str:
+    """生成可见的错误描述；asyncio.TimeoutError 等异常的 str() 为空。"""
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
 def _value(item: Any, key: str, default: Any) -> Any:

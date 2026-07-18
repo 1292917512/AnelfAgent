@@ -34,7 +34,9 @@
     "channel_ops": "频道操作",
     "entity": "实体管理",
     "mcp_manage": "MCP 管理",
-    "devops": "运维管理"
+    "devops": "运维管理",
+    "skills": "技能",
+    "delegation": "子代理"
   },
   "reload": "重新加载",
   "reloading": "重新加载中...",

@@ -186,6 +186,29 @@ class HeartbeatEngine:
         for warn in memory_warnings:
             hb_log.append_entry(f"[记忆预警] {warn}")
 
+        # 记忆整理：遗忘低价值记忆 + 类型上限 + 高相似合并 + cognee 同步（人脑"睡眠整理"）
+        try:
+            if self.mind.memory_store:
+                from agent.memory.consolidator import MemoryConsolidator
+                report = await MemoryConsolidator(self.mind.memory_store).consolidate()
+                for line in report.to_log_lines():
+                    hb_log.append_entry(f"[记忆整理] {line}")
+        except Exception as e:
+            log(f"记忆整理失败: {e}", "DEBUG", tag="心跳")
+
+        # 技能策展：长期未用技能自动降级/归档（确定性状态机，无 LLM）
+        try:
+            curator = getattr(self.mind, "skill_curator", None)
+            if curator is not None:
+                report = curator.apply_automatic_transitions()
+                if report["staled"] or report["archived"]:
+                    hb_log.append_entry(
+                        f"[技能策展] 降级 {len(report['staled'])} 个，"
+                        f"归档 {len(report['archived'])} 个"
+                    )
+        except Exception as e:
+            log(f"技能策展失败: {e}", "DEBUG", tag="心跳")
+
         entity = await self._pop_analysis_entity()
         if entity:
             await self._run_entity_analysis(entity)

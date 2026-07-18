@@ -40,6 +40,10 @@ _MIND_CONFIGS = {
             "description": "最大工具调用轮次",
             "default": 8,
         },
+        "force_tool_use": {
+            "description": "纯工具模式：思维循环中 LLM 调用强制工具选择（tool_choice=required），杜绝纯文本输出",
+            "default": True,
+        },
         "log_ai_output": {
             "description": "是否记录 AI 输出日志",
             "default": True,
@@ -144,7 +148,7 @@ _MIND_CONFIGS = {
 _MIND_SYNC_FIELDS: tuple[str, ...] = (
     "heartbeat_interval", "meta_decision_temperature",
     "conversation_analysis_threshold", "max_tool_iterations",
-    "log_ai_output", "send_interim_text",
+    "log_ai_output", "send_interim_text", "force_tool_use",
     "vector_search_batch_size", "memory_recall_top_k",
     "memory_recall_min_score", "memory_time_decay_days",
     "memory_warn_threshold", "memory_max_per_type",
@@ -205,6 +209,8 @@ class MindConfig:
     meta_decision_temperature: float = 0.3
     conversation_analysis_threshold: int = 5
     max_tool_iterations: int = 8
+    # 纯工具模式：思维循环中 LLM 调用强制工具选择（tool_choice=required）
+    force_tool_use: bool = True
     log_ai_output: bool = True
     send_interim_text: bool = False
     # 记忆搜索配置

@@ -422,3 +422,56 @@ export const systemApi = {
   setGit: (key: string, value: string) => api.put("/system/git", { key, value }),
   testGithub: () => api.post("/system/git/test"),
 };
+
+// Skills
+export interface SkillItem {
+  name: string;
+  description: string;
+  trigger_patterns: string[];
+  state: "active" | "stale" | "archived";
+  use_count: number;
+  patch_count: number;
+  pinned: boolean;
+  created_by: string;
+  created_at: number;
+  last_activity_at: number;
+  content?: string;
+}
+
+export const skillsApi = {
+  list: (includeArchived = false) =>
+    api.get<SkillItem[]>("/skills/", { params: { include_archived: includeArchived } }),
+  get: (name: string) => api.get<SkillItem>(`/skills/${encodeURIComponent(name)}`),
+  create: (data: { name: string; description: string; content: string; trigger_patterns?: string[] }) =>
+    api.post("/skills/", data),
+  update: (name: string, data: { content?: string; description?: string; add_trigger_patterns?: string[] }) =>
+    api.put(`/skills/${encodeURIComponent(name)}`, data),
+  remove: (name: string) => api.delete(`/skills/${encodeURIComponent(name)}`),
+  setState: (name: string, state: string) =>
+    api.post(`/skills/${encodeURIComponent(name)}/state`, { state }),
+  setPinned: (name: string, pinned: boolean) =>
+    api.post(`/skills/${encodeURIComponent(name)}/pinned`, { pinned }),
+};
+
+// Config Meta（统一配置元数据，数据驱动配置中心）
+export interface ConfigMetaItem {
+  key: string;
+  description: string;
+  type: string;
+  value: unknown;
+  default: unknown;
+  editable: boolean;
+  options: string[] | null;
+  source: "mind" | "config_manager";
+}
+
+export interface ConfigMetaGroup {
+  group: string;
+  items: ConfigMetaItem[];
+}
+
+export const configMetaApi = {
+  list: () => api.get<{ groups: ConfigMetaGroup[] }>("/config/meta"),
+  save: (key: string, value: unknown) =>
+    api.put(`/config/meta/${encodeURIComponent(key)}`, { value }),
+};

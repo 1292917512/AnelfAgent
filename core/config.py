@@ -300,3 +300,48 @@ def register_configs(configs: Dict[str, Dict[str, Any]]) -> None:
             ConfigRegistry.register(config_item)
             if not ConfigManager.has(config_key):
                 ConfigManager.set(config_key, config_info.get("default", ""))
+
+
+# ----------------------------------------------------------------------
+# 安全访问辅助（供各模块在 ConfigManager 可能未初始化时使用）
+# ----------------------------------------------------------------------
+
+
+def get_config(key: str, default: Any = None) -> Any:
+    """安全读取配置值：ConfigManager 不可用/未初始化时返回 default。
+
+    各模块统一使用本函数替代散落的 try/except ConfigManager.get 样板代码。
+    """
+    try:
+        return ConfigManager.get(key, default)
+    except Exception:
+        return default
+
+
+def get_config_bool(key: str, default: bool = False) -> bool:
+    """安全读取布尔配置。"""
+    return bool(get_config(key, default))
+
+
+def get_config_int(key: str, default: int = 0) -> int:
+    """安全读取整数配置。"""
+    try:
+        return int(get_config(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def get_config_float(key: str, default: float = 0.0) -> float:
+    """安全读取浮点配置。"""
+    try:
+        return float(get_config(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def register_configs_safe(configs: Dict[str, Dict[str, Any]]) -> None:
+    """安全注册配置：ConfigManager 不可用时不中断模块导入。"""
+    try:
+        register_configs(configs)
+    except Exception:
+        pass

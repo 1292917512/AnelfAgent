@@ -1,8 +1,8 @@
 """统一输出工具 -- AI 通过这些工具向任意频道发送消息和媒体。
 
 所有发送操作通过 ChannelManager 路由到具体频道实例。
-发送内容通过工具返回值（tool result）传递给 AI 上下文，
-不再额外写入 assistant 消息到对话历史，避免误导 AI 产生不调用工具的行为。
+发送成功后 AI 的回复会以 assistant 角色写入对话历史（主流做法），
+使 AI 在后续对话中能看到自己说过什么，避免重复回复和上下文断裂。
 
 频道能力自动注册：当频道连接后调用 register_channel_capability_tools()，
 根据频道声明的 capabilities 和 BaseChannel 方法签名自动生成工具，
@@ -23,11 +23,36 @@ _MANUAL_CAPABILITIES = {"send_text", "send_photo", "send_voice", "send_file"}
 # 不适合暴露为 LLM 工具的 capability
 _SKIP_CAPABILITIES = {"streaming", "inline_keyboard", "reply_to"}
 
+# 会话记录引用（register_output_tools 注入，用于将 AI 回复写入对话历史）
+_conversation_data: Optional[Any] = None
+
 
 def register_output_tools(conversation_data: Optional[Any] = None) -> None:
     """批量注册输出工具。"""
+    global _conversation_data
+    _conversation_data = conversation_data
     count = activate_group("output", "消息输出 — 向频道发送文本、图片、语音、文件等")
     log(f"统一输出工具已注册 ({count} 个)", tag="通道")
+
+
+async def _record_sent_reply(target_id: str, content: str, channel_type: str) -> None:
+    """将 AI 发送的回复记录到对话历史（assistant 角色）。
+
+    主流做法：对话历史应同时包含用户消息与 AI 回复，
+    否则 AI 在历史中看不到自己说过什么，导致重复回复/上下文断裂。
+    """
+    if _conversation_data is None or not content:
+        return
+    try:
+        from agent.storage.storage_router import StorageDomain
+        scope_type = "group" if channel_type == "group" else "user"
+        await _conversation_data.router.append(
+            StorageDomain.CONVERSATION,
+            scope_type=scope_type, scope_id=str(target_id),
+            role="assistant", content=content,
+        )
+    except Exception as exc:
+        log(f"回复记录失败: {exc}", "DEBUG", tag="通道")
 
 
 def register_channel_capability_tools() -> int:
@@ -182,8 +207,11 @@ def _resolve_channel_type(channel_id: str, target_id: str) -> str:
 
 
 def _normalize_target_id(target_id: str) -> tuple[str, Optional[str]]:
-    """标准化目标会话 ID，兼容 user:/group: 前缀写法。"""
-    raw = (target_id or "").strip()
+    """标准化目标会话 ID，兼容 user:/group: 前缀写法。
+
+    LLM 可能将纯数字 ID 按 JSON number 传递，此处统一转 str 容错。
+    """
+    raw = (str(target_id) if target_id is not None else "").strip()
     if not raw or ":" not in raw:
         return raw, None
 
@@ -203,7 +231,7 @@ def _normalize_target_id(target_id: str) -> tuple[str, Optional[str]]:
 def _resolve_send_target(channel_id: str, target_id: str) -> tuple[str, str]:
     """统一解析发送目标 ID 与 channel_type。"""
     resolved_target_id, forced_ct = _normalize_target_id(target_id)
-    final_target_id = resolved_target_id or (target_id or "").strip()
+    final_target_id = resolved_target_id or (str(target_id) if target_id is not None else "").strip()
     channel_type = forced_ct or _resolve_channel_type(channel_id, final_target_id)
     return final_target_id, channel_type
 
@@ -379,7 +407,11 @@ async def send_message(
     if not content or not content.strip():
         return json.dumps({"success": False, "error": "content 参数不能为空，请提供要发送的消息内容"}, ensure_ascii=False)
 
+    resolved_channel_type = "private"
+
     async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
+        nonlocal resolved_channel_type
+        resolved_channel_type = channel_type
         log(f"调用 {channel_id}.send_text({resolved_target_id}, {channel_type}, {content[:50]}...)", "DEBUG", tag="通道")
         kwargs: dict[str, Any] = {"channel_type": channel_type}
         if reply_to_message_id:
@@ -391,7 +423,7 @@ async def send_message(
         if reply_to_message_id:
             parsed["reply_to_message_id"] = reply_to_message_id
 
-    return await _execute_send_action(
+    result = await _execute_send_action(
         channel_id=channel_id,
         target_id=target_id,
         operation="消息",
@@ -399,6 +431,14 @@ async def send_message(
         enrich=_enrich,
         success_suffix=f" ({len(content)}字)",
     )
+
+    # 发送成功后将 AI 回复记录到对话历史（assistant 角色）
+    try:
+        if json.loads(result).get("success") is not False:
+            await _record_sent_reply(target_id, content, resolved_channel_type)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return result
 
 
 @deferred_tool(group="output", tags=["send_photo"], source="channel.output")

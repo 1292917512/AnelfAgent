@@ -21,6 +21,7 @@ export interface ModelConfig {
   model_types: string[];
   supports_vision: boolean;
   supports_tools: boolean;
+  supports_forced_tool_choice: boolean;
   vision_format: string;
   supports_reasoning: boolean;
   temperature: number;

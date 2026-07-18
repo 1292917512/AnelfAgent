@@ -329,3 +329,42 @@ async def test_proxy_update_closes_stale_client() -> None:
 
     stale.aclose.assert_awaited_once()
     assert client._proxy_client is None
+
+
+def _tool() -> list[dict[str, Any]]:
+    return [{
+        "type": "function",
+        "function": {
+            "name": "get_time",
+            "description": "获取当前时间",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }]
+
+
+def test_forced_tool_choice_downgraded_when_unsupported() -> None:
+    messages = [{"role": "user", "content": "hi"}]
+    kimi = LLMClient(LLMClientConfig(
+        model="k3[1m]", api_type="anthropic", supports_forced_tool_choice=False,
+    ))
+    kwargs = kimi._build_kwargs(messages, tools=_tool(), tool_choice="required")
+    assert kwargs["tool_choice"] == "auto"
+    # auto / none 与 thinking 兼容，原样保留
+    for safe in ("auto", "none"):
+        kwargs = kimi._build_kwargs(messages, tools=_tool(), tool_choice=safe)
+        assert kwargs["tool_choice"] == safe
+    # 默认开启：required 原样透传
+    normal = LLMClient(LLMClientConfig(model="claude", api_type="anthropic"))
+    kwargs = normal._build_kwargs(messages, tools=_tool(), tool_choice="required")
+    assert kwargs["tool_choice"] == "required"
+
+
+def test_supports_forced_tool_choice_serialization() -> None:
+    config = LLMClientConfig(model="m", supports_forced_tool_choice=False)
+    assert config.to_dict()["supports_forced_tool_choice"] is False
+    assert config.to_model_dict()["supports_forced_tool_choice"] is False
+    restored = LLMClientConfig.from_dict(config.to_dict())
+    assert restored.supports_forced_tool_choice is False
+    # 旧配置无此字段时默认 True
+    legacy = {k: v for k, v in config.to_dict().items() if k != "supports_forced_tool_choice"}
+    assert LLMClientConfig.from_dict(legacy).supports_forced_tool_choice is True

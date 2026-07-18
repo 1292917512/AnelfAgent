@@ -1,4 +1,5 @@
 import { useState } from "react";
+import axios from "axios";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { providersApi, modelsApi, type RemoteModelInfo } from "@/lib/api";
@@ -29,6 +30,23 @@ const EMPTY_PROVIDER: CreateProviderConfig = {
   id: "", name: "", base_url: "", api_key: "", api_type: "openai", proxy_url: "",
 };
 
+interface ManualModelForm {
+  id: string;
+  model: string;
+  max_tokens: number;
+  context_window: number;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  supports_reasoning: boolean;
+  supports_forced_tool_choice: boolean;
+}
+
+const EMPTY_MANUAL_MODEL: ManualModelForm = {
+  id: "", model: "", max_tokens: 4096, context_window: 0,
+  supports_tools: true, supports_vision: false, supports_reasoning: false,
+  supports_forced_tool_choice: true,
+};
+
 type JsonField = "request_params" | "extra_body";
 
 function toModelUpdate(model: ModelConfig): UpdateModelConfig {
@@ -37,6 +55,7 @@ function toModelUpdate(model: ModelConfig): UpdateModelConfig {
     model_types: model.model_types,
     supports_vision: model.supports_vision,
     supports_tools: model.supports_tools,
+    supports_forced_tool_choice: model.supports_forced_tool_choice,
     vision_format: model.vision_format,
     supports_reasoning: model.supports_reasoning,
     temperature: model.temperature,
@@ -72,6 +91,10 @@ export function ConfigPanel() {
   const [remoteFilter, setRemoteFilter] = useState("");
   const [selectedRemote, setSelectedRemote] = useState<Set<string>>(new Set());
   const [addingRemote, setAddingRemote] = useState(false);
+
+  const [manualAddProvider, setManualAddProvider] = useState<string | null>(null);
+  const [manualModel, setManualModel] = useState<ManualModelForm>(EMPTY_MANUAL_MODEL);
+  const [manualAddError, setManualAddError] = useState("");
 
   const { data: providers = [] } = useQuery<ProviderConfig[]>({
     queryKey: ["providers"],
@@ -129,6 +152,7 @@ export function ConfigPanel() {
     setExpandedProvider(expandedProvider === pid ? null : pid);
     setExpandedModel(null); setProviderEdit(null); setModelEdit(null); setTestResult("");
     setBrowsingRemote(null); setSelectedRemote(new Set()); setRemoteFilter("");
+    closeManualAdd();
   };
 
   const handleProbe = async (m: ModelConfig, prov: ProviderConfig) => {
@@ -197,6 +221,61 @@ export function ConfigPanel() {
       setBrowsingRemote(pid);
       setSelectedRemote(new Set());
       setRemoteFilter("");
+      closeManualAdd();
+    }
+  };
+
+  const closeManualAdd = () => {
+    setManualAddProvider(null);
+    setManualModel(EMPTY_MANUAL_MODEL);
+    setManualAddError("");
+  };
+
+  const handleManualAddToggle = (pid: string) => {
+    if (manualAddProvider === pid) {
+      closeManualAdd();
+    } else {
+      setManualAddProvider(pid);
+      setManualModel(EMPTY_MANUAL_MODEL);
+      setManualAddError("");
+      setBrowsingRemote(null);
+      setSelectedRemote(new Set());
+      setRemoteFilter("");
+    }
+  };
+
+  const handleManualAddSubmit = async (pid: string) => {
+    const modelId = manualModel.id.trim();
+    if (!modelId) return;
+    setManualAddError("");
+    try {
+      await addModelMut.mutateAsync({
+        pid,
+        data: {
+          id: modelId,
+          model: manualModel.model.trim() || modelId,
+          model_types: ["chat"],
+          temperature: 0.7,
+          top_p: 1.0,
+          max_tokens: manualModel.max_tokens,
+          context_window: manualModel.context_window,
+          frequency_penalty: 0,
+          presence_penalty: 0,
+          supports_tools: manualModel.supports_tools,
+          supports_vision: manualModel.supports_vision,
+          supports_forced_tool_choice: manualModel.supports_forced_tool_choice,
+          vision_format: "base64",
+          supports_reasoning: manualModel.supports_reasoning,
+          timeout: 120.0,
+          chat_protocol: "chat_completions",
+          request_params: {},
+          extra_body: {},
+        },
+      });
+      closeManualAdd();
+    } catch (err) {
+      const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      setManualAddError(`${t("createFailed")}: ${typeof detail === "string" ? detail : String(err)}`);
     }
   };
 
@@ -247,6 +326,7 @@ export function ConfigPanel() {
             presence_penalty: 0,
             supports_tools: supportsTools,
             supports_vision: supportsVision,
+            supports_forced_tool_choice: true,
             vision_format: "base64",
             supports_reasoning: false,
             timeout: 120.0,
@@ -424,6 +504,15 @@ export function ConfigPanel() {
                   <div className="flex items-center justify-between">
                     <p className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">{t("modelList")}</p>
                     <div className="flex gap-2">
+                      <button onClick={() => handleManualAddToggle(prov.id)}
+                        className={cn(
+                          "flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border transition-all",
+                          manualAddProvider === prov.id
+                            ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-subtle)]"
+                            : "border-[var(--border)] text-[var(--muted)] hover:bg-[var(--bg-hover)]",
+                        )}>
+                        <Plus size={12} /> {t("manualAdd")}
+                      </button>
                       <button onClick={() => handleBrowseRemote(prov.id)}
                         className={cn(
                           "flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border transition-all",
@@ -435,6 +524,77 @@ export function ConfigPanel() {
                       </button>
                     </div>
                   </div>
+
+                  {manualAddProvider === prov.id && (
+                    <div className="p-4 rounded-[var(--radius-md)] border border-[var(--accent)] bg-[var(--bg-elevated)] space-y-3">
+                      <p className="text-sm font-semibold text-[var(--text-strong)]">{t("manualAddTitle")}</p>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-[var(--muted)]">{t("modelId")} *</label>
+                          <input type="text" value={manualModel.id} placeholder={t("modelIdHint")}
+                            onChange={e => setManualModel({ ...manualModel, id: e.target.value })}
+                            className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-[var(--muted)]">{t("modelName")}</label>
+                          <input type="text" value={manualModel.model} placeholder={t("modelNameHint")}
+                            onChange={e => setManualModel({ ...manualModel, model: e.target.value })}
+                            className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-[var(--muted)]">max_tokens</label>
+                          <input type="number" step={1} value={manualModel.max_tokens}
+                            onChange={e => setManualModel({ ...manualModel, max_tokens: Number(e.target.value) })}
+                            className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-[var(--muted)]">{t("contextWindowLabel")}</label>
+                          <input type="number" step={1} value={manualModel.context_window}
+                            onChange={e => setManualModel({ ...manualModel, context_window: Number(e.target.value) })}
+                            className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]" />
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-4">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={manualModel.supports_tools}
+                            onChange={e => setManualModel({ ...manualModel, supports_tools: e.target.checked })}
+                            className="accent-[var(--accent)] w-3.5 h-3.5" />
+                          <span className="text-xs text-[var(--text)]">{t("toolCall")}</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={manualModel.supports_vision}
+                            onChange={e => setManualModel({ ...manualModel, supports_vision: e.target.checked })}
+                            className="accent-[var(--accent-2)] w-3.5 h-3.5" />
+                          <span className="text-xs text-[var(--text)]">{t("vision")}</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={manualModel.supports_reasoning}
+                            onChange={e => setManualModel({ ...manualModel, supports_reasoning: e.target.checked })}
+                            className="accent-[rgb(168,85,247)] w-3.5 h-3.5" />
+                          <span className="text-xs text-[var(--text)]">{t("deepThinking")}</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer" title={t("forcedToolChoiceHint")}>
+                          <input type="checkbox" checked={manualModel.supports_forced_tool_choice}
+                            onChange={e => setManualModel({ ...manualModel, supports_forced_tool_choice: e.target.checked })}
+                            className="accent-[var(--accent)] w-3.5 h-3.5" />
+                          <span className="text-xs text-[var(--text)]">{t("forcedToolChoice")}</span>
+                        </label>
+                      </div>
+                      {manualAddError && (
+                        <p className="text-xs text-[var(--danger)]">{manualAddError}</p>
+                      )}
+                      <div className="flex gap-2">
+                        <button onClick={() => handleManualAddSubmit(prov.id)}
+                          disabled={!manualModel.id.trim() || addModelMut.isPending}
+                          className="flex items-center gap-1 px-4 py-2 text-sm font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-all">
+                          {addModelMut.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                          {t("common:create")}
+                        </button>
+                        <button onClick={closeManualAdd}
+                          className="px-4 py-2 text-sm font-medium rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all">{t("common:cancel")}</button>
+                      </div>
+                    </div>
+                  )}
 
                   {browsingRemote === prov.id && (
                     <div className="p-4 rounded-[var(--radius-md)] border border-[var(--accent)] bg-[var(--bg-elevated)] space-y-3">
@@ -668,6 +828,12 @@ export function ConfigPanel() {
                                     onChange={e => modelEdit && setModelEdit({ ...modelEdit, supports_reasoning: e.target.checked })}
                                     className="accent-[rgb(168,85,247)] w-3.5 h-3.5" />
                                   <span className="text-xs text-[var(--text)]">{t("deepThinking")}</span>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer" title={t("forcedToolChoiceHint")}>
+                                  <input type="checkbox" checked={me.supports_forced_tool_choice} disabled={!modelEdit}
+                                    onChange={e => modelEdit && setModelEdit({ ...modelEdit, supports_forced_tool_choice: e.target.checked })}
+                                    className="accent-[var(--accent)] w-3.5 h-3.5" />
+                                  <span className="text-xs text-[var(--text)]">{t("forcedToolChoice")}</span>
                                 </label>
                               </div>
                               <div>

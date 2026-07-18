@@ -84,12 +84,13 @@ def _notify_listeners(level: str, message: str, tag: Optional[str] = None):
 def log(message: str, level: str = "INFO", tag: Optional[str] = None):
     """
     统一日志函数
-    
+
     Args:
         message: 日志消息
         level: 日志级别
         tag: 标签，用于监听器过滤
     """
+    message = _maybe_sanitize(message)
     if level in ["ERROR", "CRITICAL"] and sys.exc_info()[0] is not None:
         traceback.print_exc()
 
@@ -102,6 +103,25 @@ def log(message: str, level: str = "INFO", tag: Optional[str] = None):
                       "ERROR": _logging.ERROR, "CRITICAL": _logging.CRITICAL}
         _fallback_logger.log(_level_map.get(level.upper(), _logging.INFO), message)
     _notify_listeners(level, message, tag)
+
+
+# 日志脱敏快速预检标记（命中才执行完整正则脱敏，避免每条日志都跑正则）
+_SANITIZE_HINTS = ("sk-", "bearer", "akia", "eyj", "private key", "password",
+                   "passwd", "secret", "token", "api_key", "apikey")
+
+
+def _maybe_sanitize(message: str) -> str:
+    """日志消息脱敏：快速预检命中敏感标记时执行完整脱敏。"""
+    try:
+        lowered = message.lower()
+        if not any(h in lowered for h in _SANITIZE_HINTS):
+            return message
+        from core.sanitizer import sanitize_text, is_sanitize_enabled
+        if not is_sanitize_enabled():
+            return message
+        return sanitize_text(message)
+    except Exception:
+        return message
 
 
 def add_listener(callback: Callable[[Dict[str, Any]], None], tag: Optional[str] = None):

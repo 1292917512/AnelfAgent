@@ -136,6 +136,7 @@ class LLMManager(BaseEntity):
                         proxy_url=prov.proxy_url,
                         supports_vision=mdata.get("supports_vision", False),
                         supports_tools=mdata.get("supports_tools", True),
+                        supports_forced_tool_choice=mdata.get("supports_forced_tool_choice", True),
                         vision_format=mdata.get("vision_format", "base64"),
                         model_types=mdata.get("model_types", ["chat"]),
                         provider_id=prov.id,
@@ -380,22 +381,6 @@ class LLMManager(BaseEntity):
             result.append(client)
         return result
 
-    @staticmethod
-    def _is_context_window_error(exc: Exception) -> bool:
-        """识别上下文超限异常（包含供应商包装后的 BadRequest 文本）。"""
-        msg = str(exc).lower()
-        keywords = (
-            "context window",
-            "context length",
-            "context limit",
-            "context_window_exceeded",
-            "prompt is too long",
-            "too many tokens",
-            "token limit",
-            "max context",
-        )
-        return any(k in msg for k in keywords)
-
     async def chat_with_fallback(
         self,
         messages: List[Dict[str, Any]],
@@ -465,7 +450,16 @@ class LLMManager(BaseEntity):
         max_retries: int,
         deadline: float,
     ) -> ChatResult:
-        """在共享截止时间内调用单个候选，并对瞬态错误有界重试。"""
+        """在共享截止时间内调用单个候选，并按错误分类自适应重试。
+
+        重试策略由 error_classifier 驱动：
+        - 不可重试错误（auth/参数/上下文超限/模型不存在）立即抛出
+        - 限流错误使用更长基础退避 + 抖动
+        - 其余瞬态错误使用标准指数退避 + 抖动
+        """
+        from agent.llm.error_classifier import ErrorCategory, classify_llm_error
+        from agent.llm.retry import jittered_backoff
+
         name = client.config.name
         for attempt in range(max(0, max_retries) + 1):
             remaining = deadline - asyncio.get_running_loop().time()
@@ -486,34 +480,25 @@ class LLMManager(BaseEntity):
                 return result
             except LLMNotConfiguredError:
                 raise
-            except (litellm.AuthenticationError, litellm.PermissionDeniedError):
-                raise
-            except litellm.ContextWindowExceededError:
-                raise
-            except (litellm.BadRequestError, litellm.NotFoundError, ValueError):
-                raise
-            except asyncio.TimeoutError as exc:
-                error_to_raise: Exception = asyncio.TimeoutError(
-                    f"LLM [{name}] 调用超时"
-                )
-                if attempt >= max_retries:
-                    raise error_to_raise from exc
             except Exception as exc:
-                error_to_raise = exc
-                if self._is_context_window_error(exc) or attempt >= max_retries:
+                classified = classify_llm_error(exc)
+                if not classified.retryable or attempt >= max_retries:
                     raise
-
-            delay = min(2 ** attempt, 8)
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= delay:
-                raise asyncio.TimeoutError("LLM 重试预算不足") from error_to_raise
-            warning(
-                f"LLM [{name}] 调用失败，重试 {attempt + 1}/{max_retries}: "
-                f"{type(error_to_raise).__name__}: "
-                f"{self._safe_error(error_to_raise, client)}",
-                tag="模型",
-            )
-            await asyncio.sleep(delay)
+                # 限流：更长基础退避；其余瞬态错误：标准指数退避（均带抖动）
+                if classified.category == ErrorCategory.RATE_LIMIT:
+                    delay = jittered_backoff(attempt + 1, base_delay=5.0, max_delay=60.0)
+                else:
+                    delay = jittered_backoff(attempt + 1, base_delay=2.0, max_delay=30.0)
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= delay:
+                    raise asyncio.TimeoutError("LLM 重试预算不足") from exc
+                warning(
+                    f"LLM [{name}] 调用失败 ({classified.category.value})，"
+                    f"退避 {delay:.1f}s 后重试 {attempt + 1}/{max_retries}: "
+                    f"{type(exc).__name__}: {self._safe_error(exc, client)}",
+                    tag="模型",
+                )
+                await asyncio.sleep(delay)
         raise RuntimeError("LLM 重试流程异常退出")
 
     @staticmethod

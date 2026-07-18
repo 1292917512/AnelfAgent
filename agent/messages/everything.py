@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from enum import Enum
 from typing import List, Optional, Union
 
@@ -62,6 +63,8 @@ class Everything(Nothing):
     reply_to_id: str = ""
     reply_content: str = ""
     trigger_mind: bool = True
+    # 消息到达时间（纳秒）：构造即到达，时间标签与对话历史入库均以它为准，保证时序
+    created_ts_ns: int = Field(default_factory=time.time_ns)
     _tags_generated: bool = PrivateAttr(default=False)
 
     @property
@@ -106,7 +109,7 @@ class Everything(Nothing):
         for tag in self.tag_list:
             tag_name: str = tag.get_tag_name()
             if tag_name == time_tag.get_tag_name():
-                text_tags += get_time_tag()
+                text_tags += get_time_tag(self.created_ts_ns)
             else:
                 field = self._tag_field_map.get(tag_name, tag_name)
                 val = getattr(self, field, None)

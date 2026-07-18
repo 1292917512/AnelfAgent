@@ -10,6 +10,8 @@ import Models from "./pages/Models";
 import Tools from "./pages/Tools";
 import Personas from "./pages/Personas";
 import Memory from "./pages/Memory";
+import Skills from "./pages/Skills";
+import Config from "./pages/Config";
 import MCP from "./pages/MCP";
 import Channels from "./pages/Channels";
 import Settings from "./pages/Settings";
@@ -45,6 +47,8 @@ export default function App() {
             <Route path="tags" element={<Tags />} />
             <Route path="personas" element={<Personas />} />
             <Route path="memory" element={<Memory />} />
+            <Route path="skills" element={<Skills />} />
+            <Route path="config" element={<Config />} />
             <Route path="mcp" element={<MCP />} />
             <Route path="channels" element={<Channels />} />
             <Route path="tasks" element={<Tasks />} />

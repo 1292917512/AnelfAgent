@@ -24,6 +24,7 @@ export interface ThemeConfig {
 interface AppState {
   theme: Theme;
   sidebarCollapsed: boolean;
+  mobileMenuOpen: boolean;
   branding: Branding;
   themeConfig: ThemeConfig;
   navigation: NavItem[];
@@ -32,6 +33,7 @@ interface AppState {
 
   toggleTheme: () => void;
   toggleSidebar: () => void;
+  setMobileMenuOpen: (open: boolean) => void;
   setConfig: (cfg: {
     branding?: Branding;
     theme?: ThemeConfig;
@@ -55,6 +57,7 @@ const DEFAULT_THEME: ThemeConfig = {
 export const useAppStore = create<AppState>((set, get) => ({
   theme: (localStorage.getItem("theme") as Theme) || "dark",
   sidebarCollapsed: false,
+  mobileMenuOpen: false,
   branding: DEFAULT_BRANDING,
   themeConfig: DEFAULT_THEME,
   navigation: [],
@@ -70,6 +73,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
 
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+
+  setMobileMenuOpen: (open: boolean) => set({ mobileMenuOpen: open }),
 
   setConfig: (cfg) =>
     set((s) => ({

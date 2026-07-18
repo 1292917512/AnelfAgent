@@ -136,7 +136,9 @@ def optimize_for_vision(
     except Exception:
         return image
 
-    if getattr(img, "is_animated", False):
+    src_format = (img.format or "").upper()
+    # 动图（GIF/动态PNG/动态WEBP）不重编码，保持原样
+    if getattr(img, "is_animated", False) and src_format in ("GIF", "PNG", "WEBP"):
         return image
 
     w, h = img.size
@@ -144,8 +146,10 @@ def optimize_for_vision(
     max_bytes = max_kb * 1024
     needs_resize = max(w, h) > max_long_edge
     needs_compress = original_bytes > max_bytes
+    # 视觉 API 不支持的容器格式（如 QQ 图片常见的 MPO）统一取首帧重编码为 JPEG
+    needs_reencode = src_format not in ("JPEG", "PNG", "GIF", "WEBP")
 
-    if not needs_resize and not needs_compress:
+    if not needs_resize and not needs_compress and not needs_reencode:
         return image
 
     if needs_resize:
@@ -165,8 +169,8 @@ def optimize_for_vision(
 
     from core.log import log as _log
     _log(
-        f"图片优化: {w}x{h} ({original_bytes // 1024}KB) → "
-        f"{img.size[0]}x{img.size[1]} ({len(compressed) // 1024}KB)",
+        f"图片优化: {src_format} {w}x{h} ({original_bytes // 1024}KB) → "
+        f"JPEG {img.size[0]}x{img.size[1]} ({len(compressed) // 1024}KB)",
         "DEBUG", tag="媒体",
     )
     return ImageContent(data=base64.b64encode(compressed).decode("utf-8"), mime_type="image/jpeg")

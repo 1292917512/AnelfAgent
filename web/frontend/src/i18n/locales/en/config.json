@@ -1,0 +1,17 @@
+{
+  "title": "Configuration",
+  "subtitle": "Runtime parameters, saved instantly and applied hot",
+  "resetToDefault": "Reset to default",
+  "groups": {
+    "AnelfAgent/Mind": "Mind",
+    "AnelfAgent/Mind/Memory": "Memory Recall",
+    "记忆": "Memory",
+    "工具门控": "Tool Gate",
+    "错误守卫": "Guardrails",
+    "安全": "Security",
+    "Prompt缓存": "Prompt Cache",
+    "上下文压缩": "Compression",
+    "技能": "Skills",
+    "子代理": "Delegation"
+  }
+}

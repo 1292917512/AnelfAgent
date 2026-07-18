@@ -87,7 +87,7 @@ async def get_weather(city: str) -> str:
 | TOOL_ACTION | 自主工具操作 |
 | PLAN | 目标规划 |
 
-**PFC 七路工具合并** — 每次思考自动组装最优工具集：
+**PFC 多路工具合并 + 门控** — 每次思考自动组装最优工具集：
 
 | 来源 | 说明 |
 |---|---|
@@ -97,7 +97,51 @@ async def get_weather(city: str) -> str:
 | tag_match | 标签激活（如收到图片 → 图片工具） |
 | hot_recall | 热门工具 Top-N |
 | discovered | 动态发现 |
-| task_tools | 任务专属工具 |
+| activated | 已激活的沉睡分组 |
+
+合并结果经两道**工具门控**过滤，工具按需出现、schema 精简：
+
+- **check_fn 前置检查**：工具声明环境探测函数（30s TTL 缓存 + 60s 瞬态故障宽限），条件不满足时不出现在 schema 中
+- **沉睡/激活模式**：`allow_sleep` 工具默认只展示一句话简介，AI 需要时调用 `activate_tool_group` 唤醒完整 schema，按对话隔离、按轮次自动回收
+
+### 🛡️ 稳定与安全防护
+
+多层程序级防护，不依赖提示词自觉：
+
+| 机制 | 说明 |
+|---|---|
+| **工具守卫** | 检测精确失败重复 / 同工具连续失败 / 无进展循环，动作 warn / block / halt，杜绝死循环 |
+| **错误分类** | LLM 错误分为限流/过载/超时/上下文超限/认证/参数等 8 类，驱动自适应重试（指数退避 + 抖动）与模型回退 |
+| **上下文压缩** | 溢出自动检测（真实 usage 优先），保头保尾 + LLM 结构化摘要，长对话可持续 |
+| **结果预算** | 按模型上下文窗口动态截断工具结果（单条 15% / 整轮 30%），小模型也能稳定运行 |
+| **会话令牌** | 一次性令牌标记可信历史，AI 复述即触发 SECURITY 停止，防 prompt 注入伪造 |
+| **威胁扫描** | 注入模式扫描（工具结果标记 / 记忆写入拦截），敏感信息（API Key/Token/密码）自动脱敏 |
+
+### ⚡ Prompt 分层缓存
+
+系统提示按变更频率分三层构建，stable 层对话内字节级冻结，命中 Anthropic/OpenAI 前缀缓存（缓存前缀 90% 折扣）：
+
+```
+stable（人设 + 工具提示，冻结）→ context（便签，低频）→ volatile（召回 + 技能，每轮）
+```
+
+### 🎓 技能自学习闭环
+
+任务完成 → 技能提取 → 存储 → 匹配 → 改进 → 策展的完整闭环：
+
+- **后台评审**：每轮对话结束后自动评审经验，LLM 自主决定是否沉淀技能
+- **SKILL.md 存储**：YAML frontmatter + Markdown，存于 `workspace/skills/`
+- **语义匹配注入**：当前对话自动匹配相关技能注入上下文，越用越聪明
+- **自动策展**：长期未用技能自动降级/归档（置顶豁免），WebUI 技能页可视化管理
+
+### 🤖 子代理调度
+
+`delegate_task` 工具将复杂任务拆分给隔离的子代理执行：
+
+- **角色模型**：leaf（不可再委托）/ orchestrator（可再委托，深度限制）
+- **并行模式**：tasks 数组 fan-out，并发上限可配置
+- **后台模式**：异步委托，结果经事件总线推送
+- **预算控制**：独立迭代预算 + 结果摘要按父上下文动态截断
 
 ### 💓 心跳调度系统
 
@@ -116,6 +160,7 @@ async def get_weather(city: str) -> str:
 内置维护（每次心跳自动执行）：
 - 实体画像分析（对话达标的用户/群组自动生成画像）
 - 记忆健康检查（阈值预警写入心跳日志）
+- 技能策展（长期未用技能自动降级/归档）
 - 心跳日志合并与实体计数持久化
 
 ### 💾 混合语义记忆
@@ -217,22 +262,33 @@ AnelfAgent/
 ├── core/                     # 基础框架层（零业务依赖）
 │   ├── entity.py             #   EntityRegistry 中央注册枢纽
 │   ├── tags.py               #   标签系统 [key:value]
-│   ├── config.py             #   ConfigManager
+│   ├── config.py             #   ConfigManager + 声明式配置注册
+│   ├── tool_gate.py          #   工具门控（check_fn TTL 缓存）
+│   ├── sanitizer.py          #   敏感信息脱敏
 │   ├── path.py               #   PathManager + ConfigPaths
 │   ├── event_bus.py          #   异步事件总线
 │   ├── lifecycle.py          #   单例生命周期管理
-│   └── log.py                #   统一日志（loguru）
+│   └── log.py                #   统一日志（loguru，自动脱敏）
 ├── agent/                    # 智能体内核
 │   ├── mind/                 #   思维系统
 │   │   ├── mind.py           #     自主循环 + 多轮推理
-│   │   ├── prefrontal_cortex.py  # 工作记忆 + 七路工具合并
+│   │   ├── prefrontal_cortex.py  # 工作记忆 + 工具合并 + 分层上下文组装
 │   │   ├── autonomous.py     #     元决策模型
-│   │   └── tools/            #     工具编排（think_loop / multi_tool / decision_executor）
+│   │   ├── prompt_layers.py  #     Prompt 分层缓存（stable/context/volatile）
+│   │   ├── guardrails.py     #     工具调用守卫（死循环检测）
+│   │   ├── context_compressor.py # 上下文压缩（保头保尾 + LLM 摘要）
+│   │   ├── result_budget.py  #     工具结果预算截断
+│   │   ├── tool_activation.py #    工具沉睡/激活状态机
+│   │   ├── think_session.py  #     思维会话上下文管理
+│   │   └── tools/            #     工具编排（think_loop / result_pipeline / multi_tool）
+│   ├── skills/               #   技能自学习（存储 / 匹配 / 后台评审 / 策展）
+│   ├── delegation/           #   子代理调度（delegate_task / 并行 / 深度限制）
+│   ├── security/             #   安全防护（会话令牌 / 威胁扫描）
 │   ├── memory/               #   语义记忆（Embedding + FTS5 + 便签）
 │   ├── task/                 #   独立任务系统（定义 + 注册表 + 执行器）
 │   ├── heartbeat/            #   心跳调度（引擎 + 配置 + 日志）
 │   ├── planning/             #   目标规划（CRUD + 追踪）
-│   ├── llm/                  #   LLM 统一接口（litellm）
+│   ├── llm/                  #   LLM 统一接口（litellm + 错误分类 + 自适应重试）
 │   ├── channel/              #   频道基础设施
 │   ├── runtime/              #   运行时（Bootstrap + AgentApp）
 │   ├── storage/              #   混合存储（SQLite + StorageRouter）
@@ -325,6 +381,18 @@ async def get_weather(city: str) -> str:
 - 完整类型注解 + Google docstring
 - 内部捕获异常，返回 JSON error
 - 复杂逻辑拆分到 service 层
+
+可选的门控声明（让工具按需出现，精简 schema）：
+
+```python
+@tool(
+    name="docker_ps", group="devops",
+    check_fn=lambda: shutil.which("docker") is not None,  # 前置条件不满足时不出现在 schema
+    allow_sleep=True, sleep_brief="Docker 容器管理",       # 沉睡模式：仅展示简介，AI 按需激活
+)
+def docker_ps() -> str:
+    """列出运行中的容器。"""
+```
 
 ### 添加心跳任务
 

@@ -147,13 +147,9 @@ class SqliteBackend:
         rows = await cursor.fetchall()
         db.row_factory = None
         rows = list(reversed(rows))
-        result = []
-        for r in rows:
-            role = r["role"]
-            if role == "system":
-                role = "assistant"
-            result.append({"role": role, "content": r["content"]})
-        return result
+        # 角色按存储原样返回（主流 OpenAI 格式：system/user/assistant/tool），
+        # 不做 system→assistant 等特殊映射；ts_ns 由调用方用于时序水位，入库时间即消息到达时间
+        return [{"role": r["role"], "content": r["content"], "ts_ns": r["ts_ns"]} for r in rows]
 
     # ------------------------------------------------------------------
     # 实体画像

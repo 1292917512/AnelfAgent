@@ -63,12 +63,12 @@ def _frequency_boost(access_count: int, max_access: int) -> float:
     return math.log(1 + access_count) / math.log(1 + max_access)
 
 
-_DATED_PATH_RE = re.compile(r"(?:^|/)memory/(\d{4})-(\d{2})-(\d{2})\.md$")
+_DATED_PATH_RE = re.compile(r"(?:^|/)memory/(?:events/)?(\d{4})-(\d{2})-(\d{2})\.md$")
 _HALF_LIFE_DAYS = 30
 
 
 def _file_temporal_decay(path: str) -> float:
-    """文件级时间衰减：memory.md 等常青文件不衰减，memory/YYYY-MM-DD.md 按日期衰减。"""
+    """文件级时间衰减：常青文件不衰减，memory/events/YYYY-MM-DD.md 按日期衰减。"""
     normalized = path.replace("\\", "/").lstrip("./")
     if normalized in ("MEMORY.md", "memory.md"):
         return 1.0
@@ -173,6 +173,23 @@ class MemoryStore(BaseEntity):
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_mem_access ON memories(access_count);"
         )
+
+        # ---- 遗忘归档表（归档记忆不参与召回，但可恢复） ----
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS memories_archive (
+                id INTEGER PRIMARY KEY,
+                type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                importance REAL NOT NULL DEFAULT 0.5,
+                ts_ns INTEGER NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                access_count INTEGER NOT NULL DEFAULT 0,
+                archived_at_ns INTEGER NOT NULL,
+                archive_reason TEXT NOT NULL DEFAULT ''
+            );
+        """)
 
         # ---- 文件索引表 ----
         await db.execute("""
@@ -571,6 +588,25 @@ class MemoryStore(BaseEntity):
             })
         return result
 
+    async def requeue_stale_cognee_sync(self, stale_after_seconds: float = 900.0) -> int:
+        """回收卡死的投影任务：processing 超过阈值时间的重置为 pending。
+
+        worker 认领后若进程退出或任务被取消，条目会永远卡在 processing。
+        本方法将其重新入队（不增加 attempts——并非执行失败而是被中断）。
+        """
+        db = await self._get_db()
+        cutoff_ns = time.time_ns() - int(stale_after_seconds * 1e9)
+        cursor = await db.execute(
+            "UPDATE cognee_sync_queue SET status='pending', updated_ns=? "
+            "WHERE status='processing' AND updated_ns<?",
+            (time.time_ns(), cutoff_ns),
+        )
+        await db.commit()
+        requeued = cursor.rowcount or 0
+        if requeued:
+            log(f"Cognee 投影队列回收卡死任务: {requeued} 条", "WARNING", tag="思维")
+        return requeued
+
     async def complete_cognee_sync(
         self,
         queue_id: int,
@@ -684,17 +720,246 @@ class MemoryStore(BaseEntity):
     # ------------------------------------------------------------------
 
     async def record_access(self, memory_ids: list[int]) -> None:
-        """批量记录记忆被访问（递增 access_count，更新 last_accessed）。"""
+        """批量记录记忆被访问（递增 access_count，更新 last_accessed）。
+
+        强化机制：被召回的记忆 importance 微升（每次 +0.02，封顶 1.0），
+        越常被想起的记忆越难忘（permanent 无需强化）。
+        """
         if not memory_ids:
             return
         db = await self._get_db()
         now_ns = int(time.time() * 1e9)
         for mid in memory_ids:
+            # 访问计数对所有类型记录；重要性强化仅非永久记忆
             await db.execute(
-                "UPDATE memories SET access_count = access_count + 1, last_accessed_ns = ? WHERE id = ?",
+                "UPDATE memories SET access_count = access_count + 1, last_accessed_ns = ?, "
+                "importance = CASE WHEN type != 'permanent' "
+                "THEN MIN(1.0, importance + 0.02) ELSE importance END WHERE id = ?",
                 (now_ns, mid),
             )
         await db.commit()
+
+    # ------------------------------------------------------------------
+    # 遗忘机制（有效分评估 + 自动清理）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def compute_effective_score(entry: MemoryEntry, now: Optional[float] = None) -> float:
+        """计算记忆的有效分：importance × 时间衰减 × 访问强化。
+
+        有效分模拟人脑遗忘曲线：重要性是基础，时间推移衰减，
+        频繁访问的记忆获得强化抵抗遗忘。permanent 永远返回 1.0（不遗忘）。
+        """
+        if entry.memory_type == MemoryType.PERMANENT:
+            return 1.0
+        now = now or time.time()
+        age_hours = max(0.0, (now - entry.timestamp) / 3600.0)
+        days = float(_get_memory_config_value("memory_time_decay_days", 30))
+        half_life_hours = max(1.0, days * 24)
+        decay = 0.5 ** (age_hours / half_life_hours)
+        reinforcement = 1.0 + math.log1p(entry.access_count) * 0.15
+        return entry.importance * decay * reinforcement
+
+    async def _archive_entry(self, entry: MemoryEntry, reason: str) -> None:
+        """将记忆移入归档表（软遗忘：不参与召回，可恢复）。"""
+        if entry.id is None:
+            return
+        db = await self._get_db()
+        await db.execute(
+            "INSERT OR REPLACE INTO memories_archive "
+            "(id, type, content, source, importance, ts_ns, metadata_json, "
+            "tags_json, access_count, archived_at_ns, archive_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                entry.id, entry.memory_type.value, entry.content, entry.source,
+                entry.importance, int(entry.timestamp * 1e9),
+                json.dumps(entry.metadata, ensure_ascii=False),
+                json.dumps(entry.tags, ensure_ascii=False),
+                entry.access_count, int(time.time() * 1e9), reason,
+            ),
+        )
+        await db.execute("DELETE FROM memories WHERE id = ?", (entry.id,))
+
+    async def restore_memory(self, memory_id: int) -> bool:
+        """从归档恢复记忆（回到活跃记忆库）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT * FROM memories_archive WHERE id = ?", (memory_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        await db.execute(
+            "INSERT OR REPLACE INTO memories "
+            "(id, type, content, source, importance, ts_ns, metadata_json, "
+            "embedding_blob, tags_json, access_count, last_accessed_ns, migrated) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1)",
+            (
+                row["id"], row["type"], row["content"], row["source"],
+                row["importance"], row["ts_ns"], row["metadata_json"],
+                row["tags_json"], row["access_count"], int(time.time() * 1e9),
+            ),
+        )
+        await db.execute("DELETE FROM memories_archive WHERE id = ?", (memory_id,))
+        await db.commit()
+        return True
+
+    async def list_archived(self, limit: int = 50) -> list[Dict[str, Any]]:
+        """列出已归档的记忆（遗忘记录）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT id, type, content, importance, archived_at_ns, archive_reason "
+            "FROM memories_archive ORDER BY archived_at_ns DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": r["id"], "type": r["type"], "content": r["content"][:100],
+                "importance": r["importance"], "archived_at": r["archived_at_ns"] / 1e9,
+                "reason": r["archive_reason"],
+            }
+            for r in rows
+        ]
+
+    async def forget_weak_memories(
+            self,
+            *,
+            min_age_days: int = 30,
+            score_threshold: float = 0.08,
+            limit: int = 100,
+    ) -> Dict[str, Any]:
+        """遗忘低价值记忆：有效分低于阈值且超过最小年龄的非永久记忆。
+
+        保守策略：permanent 豁免 + 最小年龄保护（新记忆不遗忘）。
+        遗忘为归档制（memories_archive）：不参与召回，但可通过 restore_memory 恢复。
+        Returns:
+            遗忘报告 {forgotten: [{id, type, score}], count}
+        """
+        db = await self._get_db()
+        now = time.time()
+        min_ts = now - min_age_days * 86400
+        cursor = await db.execute(
+            f"SELECT {_MEM_COLUMNS} FROM memories WHERE type != 'permanent' AND ts_ns < ?",
+            (int(min_ts * 1e9),),
+        )
+        rows = await cursor.fetchall()
+
+        forgotten: list[Dict[str, Any]] = []
+        for row in rows:
+            entry = self._row_to_entry(row)
+            score = self.compute_effective_score(entry, now)
+            if score < score_threshold and entry.id is not None:
+                forgotten.append({
+                    "id": entry.id,
+                    "type": entry.memory_type.value,
+                    "score": round(score, 4),
+                    "preview": entry.content[:50],
+                })
+                if len(forgotten) >= limit:
+                    break
+
+        for item in forgotten:
+            entry = await self.get(item["id"])
+            if entry is not None:
+                await self._archive_entry(entry, f"低有效分遗忘 (score={item['score']})")
+        if forgotten:
+            await db.commit()
+        return {"forgotten": forgotten, "count": len(forgotten)}
+
+    async def enforce_type_limits(
+            self,
+            max_per_type: Optional[int] = None,
+    ) -> Dict[str, int]:
+        """强制每类记忆数量上限：超出时删除该类有效分最低的条目。
+
+        permanent 类不受限。Returns: {type: 删除数量}
+        """
+        if max_per_type is None:
+            max_per_type = int(_get_memory_config_value("memory_max_per_type", 500))
+        db = await self._get_db()
+        now = time.time()
+        removed: Dict[str, int] = {}
+
+        cursor = await db.execute(
+            "SELECT type, COUNT(*) as cnt FROM memories GROUP BY type"
+        )
+        for row in await cursor.fetchall():
+            mem_type, count = row["type"], row["cnt"]
+            if mem_type == MemoryType.PERMANENT.value or count <= max_per_type:
+                continue
+            excess = count - max_per_type
+            cursor2 = await db.execute(
+                f"SELECT {_MEM_COLUMNS} FROM memories WHERE type = ?", (mem_type,),
+            )
+            entries = [self._row_to_entry(r) for r in await cursor2.fetchall()]
+            entries.sort(key=lambda e: self.compute_effective_score(e, now))
+            for entry in entries[:excess]:
+                if entry.id is not None:
+                    await self._archive_entry(entry, "类型上限清理")
+            removed[mem_type] = excess
+
+        if removed:
+            await db.commit()
+        return removed
+
+    async def find_similar_memories(
+            self,
+            similarity_threshold: float = 0.92,
+            *,
+            limit: int = 50,
+    ) -> list[tuple[MemoryEntry, MemoryEntry, float]]:
+        """查找高相似度记忆对（向量余弦相似度），供自动合并。
+
+        Returns: [(entry_a, entry_b, similarity)] 按相似度降序。
+        """
+        db = await self._get_db()
+        cursor = await db.execute(
+            f"SELECT {_MEM_COLUMNS} FROM memories WHERE embedding_blob IS NOT NULL "
+            "AND type != 'permanent' ORDER BY ts_ns DESC LIMIT 500"
+        )
+        entries = [self._row_to_entry(r) for r in await cursor.fetchall()]
+        vecs: Dict[int, list[float]] = {}
+        for e in entries:
+            if e.id is not None and e.embedding:
+                vecs[e.id] = e.embedding
+
+        pairs: list[tuple[MemoryEntry, MemoryEntry, float]] = []
+        entry_list = [e for e in entries if e.id in vecs]
+        for i in range(len(entry_list)):
+            for j in range(i + 1, len(entry_list)):
+                a, b = entry_list[i], entry_list[j]
+                if a.memory_type != b.memory_type:
+                    continue
+                sim = cosine_similarity(vecs[a.id], vecs[b.id])  # type: ignore[index]
+                if sim >= similarity_threshold:
+                    pairs.append((a, b, sim))
+            if len(pairs) >= limit:
+                break
+        pairs.sort(key=lambda p: p[2], reverse=True)
+        return pairs[:limit]
+
+    async def merge_pair(
+            self,
+            keep_id: int,
+            drop_id: int,
+    ) -> bool:
+        """合并记忆对：保留 keep，drop 的 tags/访问次数并入后删除。"""
+        db = await self._get_db()
+        keep = await self.get(keep_id)
+        drop = await self.get(drop_id)
+        if keep is None or drop is None:
+            return False
+        merged_tags = list(dict.fromkeys(keep.tags + drop.tags))
+        await db.execute(
+            "UPDATE memories SET tags_json = ?, access_count = access_count + ?, "
+            "importance = MAX(importance, ?) WHERE id = ?",
+            (json.dumps(merged_tags, ensure_ascii=False), drop.access_count,
+             drop.importance, keep_id),
+        )
+        await db.execute("DELETE FROM memories WHERE id = ?", (drop_id,))
+        await db.commit()
+        return True
 
     # ------------------------------------------------------------------
     # 查询
@@ -765,6 +1030,45 @@ class MemoryStore(BaseEntity):
         )
         rows = await cursor.fetchall()
         return [self._row_to_entry(r) for r in rows]
+
+    async def search_associative(
+            self,
+            tags: list[str],
+            *,
+            exclude_ids: Optional[set[int]] = None,
+            limit: int = 5,
+    ) -> list[tuple[MemoryEntry, float]]:
+        """关联检索：查找与给定标签集合有任一交集的记忆（标签网络的一跳扩展）。
+
+        评分 = 标签命中比例 × 0.6 + 有效分 × 0.4（关联强度与记忆质量兼顾）。
+        Returns: [(entry, score)] 按分数降序。
+        """
+        if not tags:
+            return []
+        db = await self._get_db()
+        conditions = " OR ".join("tags_json LIKE ?" for _ in tags)
+        params: list[Any] = [f'%"{t}"%' for t in tags]
+        cursor = await db.execute(
+            f"SELECT {_MEM_COLUMNS} FROM memories WHERE ({conditions}) "
+            "ORDER BY ts_ns DESC LIMIT 200",
+            params,
+        )
+        rows = await cursor.fetchall()
+        now = time.time()
+        exclude = exclude_ids or set()
+        scored: list[tuple[MemoryEntry, float]] = []
+        for row in rows:
+            entry = self._row_to_entry(row)
+            if entry.id is None or entry.id in exclude:
+                continue
+            hits = sum(1 for t in tags if t in entry.tags)
+            if hits == 0:
+                continue
+            tag_ratio = hits / len(tags)
+            score = tag_ratio * 0.6 + self.compute_effective_score(entry, now) * 0.4
+            scored.append((entry, score))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:limit]
 
     # ------------------------------------------------------------------
     # FTS5 全文检索

@@ -8,6 +8,7 @@ import importlib.util
 import os
 from pathlib import Path
 from typing import Any, Optional
+from uuid import UUID
 
 from core.log import log
 
@@ -118,7 +119,13 @@ class CogneeClient:
             raise RuntimeError(f"无法映射 AnelfAgent 模型配置: {exc}") from exc
         self._configured = True
 
-    async def _call(self, dotted_name: str, *args: Any, **kwargs: Any) -> Any:
+    async def _call(
+        self,
+        dotted_name: str,
+        *args: Any,
+        timeout: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Any:
         if self._module is None or not self._configured:
             availability = await self.initialize()
             if not availability.ready:
@@ -128,7 +135,8 @@ class CogneeClient:
             target = getattr(target, part)
         result = target(*args, **kwargs)
         if hasattr(result, "__await__"):
-            return await asyncio.wait_for(result, timeout=self.config.timeout_seconds)
+            limit = timeout if timeout is not None else self.config.timeout_seconds
+            return await asyncio.wait_for(result, timeout=limit)
         return result
 
     # v2 memory-oriented API
@@ -140,7 +148,12 @@ class CogneeClient:
         return _normalize_recall(raw)
 
     async def improve(self, dataset: str = "main_dataset", **kwargs: Any) -> Any:
-        return await self._call("improve", dataset=dataset, **kwargs)
+        return await self._call(
+            "improve",
+            dataset=dataset,
+            timeout=self.config.pipeline_timeout_seconds,
+            **kwargs,
+        )
 
     async def forget(self, **kwargs: Any) -> Any:
         return await self._call("forget", **kwargs)
@@ -159,7 +172,12 @@ class CogneeClient:
 
     # v1/lower-level public API
     async def add(self, data: Any, **kwargs: Any) -> Any:
-        return await self._call("add", data, **kwargs)
+        return await self._call(
+            "add",
+            data,
+            timeout=self.config.pipeline_timeout_seconds,
+            **kwargs,
+        )
 
     async def make_data_item(
         self,
@@ -181,14 +199,22 @@ class CogneeClient:
         )
 
     async def cognify(self, **kwargs: Any) -> Any:
-        return await self._call("cognify", **kwargs)
+        return await self._call(
+            "cognify",
+            timeout=self.config.pipeline_timeout_seconds,
+            **kwargs,
+        )
 
     async def search(self, query_text: str, **kwargs: Any) -> list[CogneeRecallItem]:
         raw = await self._call("search", query_text, **kwargs)
         return _normalize_recall(raw)
 
     async def memify(self, **kwargs: Any) -> Any:
-        return await self._call("memify", **kwargs)
+        return await self._call(
+            "memify",
+            timeout=self.config.pipeline_timeout_seconds,
+            **kwargs,
+        )
 
     async def update(self, *args: Any, **kwargs: Any) -> Any:
         return await self._call("update", *args, **kwargs)
@@ -207,19 +233,28 @@ class CogneeClient:
         return await self._call("datasets.discover_datasets", directory_path)
 
     async def list_data(self, dataset_id: Any, **kwargs: Any) -> Any:
-        return await self._call("datasets.list_data", dataset_id, **kwargs)
+        return await self._call("datasets.list_data", _to_uuid(dataset_id), **kwargs)
 
     async def has_data(self, dataset_id: Any, **kwargs: Any) -> bool:
-        return bool(await self._call("datasets.has_data", dataset_id, **kwargs))
+        return bool(await self._call("datasets.has_data", _to_uuid(dataset_id), **kwargs))
 
     async def get_dataset_status(self, dataset_ids: list[Any], **kwargs: Any) -> Any:
-        return await self._call("datasets.get_status", dataset_ids, **kwargs)
+        return await self._call(
+            "datasets.get_status",
+            [_to_uuid(dataset_id) for dataset_id in dataset_ids],
+            **kwargs,
+        )
 
     async def empty_dataset(self, dataset_id: Any, **kwargs: Any) -> Any:
-        return await self._call("datasets.empty_dataset", dataset_id, **kwargs)
+        return await self._call("datasets.empty_dataset", _to_uuid(dataset_id), **kwargs)
 
     async def delete_data(self, dataset_id: Any, data_id: Any, **kwargs: Any) -> Any:
-        return await self._call("datasets.delete_data", dataset_id, data_id, **kwargs)
+        return await self._call(
+            "datasets.delete_data",
+            _to_uuid(dataset_id),
+            _to_uuid(data_id),
+            **kwargs,
+        )
 
     async def delete_all(self, **kwargs: Any) -> Any:
         return await self._call("datasets.delete_all", **kwargs)
@@ -273,6 +308,22 @@ class CogneeClient:
         if name not in {"agents", "session", "migration", "agent_memory", "config", "pipelines", "Drop"}:
             raise ValueError(f"不允许访问未承诺的 Cognee 命名空间: {name}")
         return getattr(self._module, name)
+
+
+def _to_uuid(value: Any) -> Any:
+    """将字符串形式的 UUID 还原为 UUID 对象。
+
+    cognee 的授权检查把 str 类型 dataset_id 当作数据集「名称」解析，
+    直接传字符串 UUID 会被误判为无权访问（401），因此必须在边界处转换。
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            try:
+                return UUID(text)
+            except ValueError:
+                return value
+    return value
 
 
 def _quieten_cognee_logger() -> None:

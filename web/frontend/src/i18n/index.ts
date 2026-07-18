@@ -18,6 +18,8 @@ import zhSettings from "./locales/zh/settings.json";
 import zhAppconfig from "./locales/zh/appconfig.json";
 import zhTags from "./locales/zh/tags.json";
 import zhHeartbeat from "./locales/zh/heartbeat.json";
+import zhConfig from "./locales/zh/config.json";
+import zhSkills from "./locales/zh/skills.json";
 
 import enCommon from "./locales/en/common.json";
 import enNav from "./locales/en/nav.json";
@@ -35,6 +37,8 @@ import enSettings from "./locales/en/settings.json";
 import enAppconfig from "./locales/en/appconfig.json";
 import enTags from "./locales/en/tags.json";
 import enHeartbeat from "./locales/en/heartbeat.json";
+import enConfig from "./locales/en/config.json";
+import enSkills from "./locales/en/skills.json";
 
 const resources = {
   zh: {
@@ -54,6 +58,8 @@ const resources = {
     appconfig: zhAppconfig,
     tags: zhTags,
     heartbeat: zhHeartbeat,
+    skills: zhSkills,
+    config: zhConfig,
   },
   en: {
     common: enCommon,
@@ -72,6 +78,8 @@ const resources = {
     appconfig: enAppconfig,
     tags: enTags,
     heartbeat: enHeartbeat,
+    skills: enSkills,
+    config: enConfig,
   },
 };
 
@@ -100,6 +108,8 @@ i18n
       "appconfig",
       "tags",
       "heartbeat",
+      "skills",
+      "config",
     ],
     interpolation: {
       escapeValue: false,

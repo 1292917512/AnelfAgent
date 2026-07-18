@@ -122,6 +122,21 @@ class EntityMetadata:
 
     config_group: str = ""
 
+    @property
+    def check_fn(self) -> Optional[Callable]:
+        """工具门控前置检查函数（meta["check_fn"]），None 表示无门控。"""
+        return self.meta.get("check_fn")
+
+    @property
+    def allow_sleep(self) -> bool:
+        """工具是否允许沉睡（meta["allow_sleep"]）。"""
+        return bool(self.meta.get("allow_sleep"))
+
+    @property
+    def sleep_brief(self) -> str:
+        """工具沉睡时展示的简短描述（meta["sleep_brief"]）。"""
+        return str(self.meta.get("sleep_brief") or "")
+
     def get_registered_apis(self) -> List[str]:
         """获取实体对外暴露的接口列表"""
         if self.instance and hasattr(self.instance, '_registered_apis'):
@@ -171,6 +186,108 @@ class EntityMetadata:
             }
             for item in items
         ]
+
+
+# ======================================================================
+# 参数类型矫正
+# ======================================================================
+
+
+def _coerce_param_value(value: Any, declared: str) -> Any:
+    """按 schema 声明类型矫正单个参数值，无法明确转换时返回原值。
+
+    仅做无损明确转换：string←number/bool、integer←数字字符串/整值浮点、
+    number←数字字符串、boolean←"true"/"false"/0/1。
+    注意 bool 是 int 子类，数值分支需先排除 bool。
+    """
+    if declared == "string":
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        if isinstance(value, (int, float)):
+            return str(value)
+        return value
+    if declared == "integer":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(value.strip())
+            except ValueError:
+                return value
+        return value
+    if declared == "number":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            try:
+                return float(value.strip())
+            except ValueError:
+                return value
+        return value
+    if declared == "boolean":
+        if isinstance(value, str):
+            lower = value.strip().lower()
+            if lower in ("true", "1"):
+                return True
+            if lower in ("false", "0"):
+                return False
+            return value
+        if isinstance(value, int) and value in (0, 1):
+            return bool(value)
+        return value
+    return value
+
+
+def _validate_param_types(params: List[ToolParam], kwargs: Dict[str, Any]) -> str:
+    """校验矫正后的参数类型，返回错误描述（空串表示通过）。
+
+    矫正失败的非法值（如 integer 参数收到 "abc"）在此拦截，
+    给 AI 清晰可行动的反馈，而非让其在工具内部崩溃成 TypeError。
+    """
+    if not params or not kwargs:
+        return ""
+    type_map = {p.name: p.type for p in params}
+    for key, value in kwargs.items():
+        declared = type_map.get(key)
+        if declared == "integer":
+            if isinstance(value, bool) or not isinstance(value, int):
+                return f"参数 {key} 需要整数，收到: {value!r}"
+        elif declared == "number":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return f"参数 {key} 需要数字，收到: {value!r}"
+        elif declared == "boolean":
+            if not isinstance(value, bool):
+                return f"参数 {key} 需要布尔值，收到: {value!r}"
+    return ""
+
+
+def _coerce_kwargs_types(params: List[ToolParam], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """按工具 schema 声明类型矫正参数值（LLM 可能传错 JSON 类型）。
+
+    例如纯数字 ID 被按 JSON number 传递、布尔值被按字符串传递时，
+    在调用工具函数前统一矫正；schema 未声明的参数原样保留。
+    """
+    if not params or not kwargs:
+        return kwargs
+    type_map = {p.name: p.type for p in params}
+    coerced: Dict[str, Any] = {}
+    for key, value in kwargs.items():
+        declared = type_map.get(key)
+        if declared is None:
+            coerced[key] = value
+            continue
+        new_value = _coerce_param_value(value, declared)
+        if new_value is not value:
+            log(
+                f"参数类型矫正: {key} ({type(value).__name__} -> {declared})",
+                "DEBUG", tag="实体",
+            )
+        coerced[key] = new_value
+    return coerced
 
 
 # ======================================================================
@@ -340,11 +457,27 @@ class EntityRegistry:
         source: str = "internal",
         cacheable: bool = False,
         meta: Optional[Dict[str, Any]] = None,
+        check_fn: Optional[Callable] = None,
+        allow_sleep: bool = False,
+        sleep_brief: str = "",
     ) -> bool:
-        """注册工具实体。"""
+        """注册工具实体。
+
+        Args:
+            check_fn: 工具门控前置检查（零参数 callable，返回 bool 或 Awaitable[bool]），
+                检查不通过时工具不出现在 LLM schema 中。
+            allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief，激活后恢复完整 schema）。
+            sleep_brief: 沉睡状态下展示给 AI 的简短描述。
+        """
         tool_meta = {"params": params or []}
         if meta:
             tool_meta.update(meta)
+        if check_fn is not None:
+            tool_meta["check_fn"] = check_fn
+        if allow_sleep:
+            tool_meta["allow_sleep"] = True
+        if sleep_brief:
+            tool_meta["sleep_brief"] = sleep_brief
         
         return cls.register(EntityMetadata(
             name=name,
@@ -380,6 +513,7 @@ class EntityRegistry:
         "web": 5, "media": 6, "minimax": 7, "os": 8, "environment": 9,
         "model_control": 10, "ollama": 11, "logs": 12, "channel_ops": 13,
         "entity": 14, "mcp_manage": 15, "devops": 16,
+        "skills": 17, "delegation": 18,
     }
 
     @classmethod
@@ -563,6 +697,52 @@ class EntityRegistry:
                 result.append(cls._build_tool_schema(e))
         return result
 
+    @classmethod
+    async def get_active_tools(cls, names: List[str]) -> List[EntityMetadata]:
+        """按名称返回通过门控检查的工具实体（check_fn 不通过的被过滤）。
+
+        门控结果带 TTL 缓存（见 core.tool_gate.ToolGate），
+        门控总开关关闭时不过滤直接返回。
+        """
+        entities = [
+            e for n in names
+            if (e := cls.get(n)) and e.entity_type == EntityType.TOOL and e.enabled and e.func
+        ]
+        try:
+            from core.tool_gate import tool_gate, is_gate_enabled
+        except ImportError:
+            return entities
+        if not is_gate_enabled():
+            return entities
+        verdicts = await tool_gate.filter_names({e.name: e.check_fn for e in entities})
+        filtered = [e for e in entities if verdicts.get(e.name, True)]
+        blocked = [e.name for e in entities if not verdicts.get(e.name, True)]
+        if blocked:
+            log(f"工具门控过滤: {', '.join(blocked)} (check_fn 未通过)", "DEBUG", tag="门控")
+        return filtered
+
+    @classmethod
+    async def get_active_tool_schema_by_names(cls, names: List[str]) -> List[Dict[str, Any]]:
+        """按名称构建工具 schema（经门控过滤）。"""
+        return [cls._build_tool_schema(e) for e in await cls.get_active_tools(names)]
+
+    @classmethod
+    def get_sleepable_groups(cls) -> Dict[str, Dict[str, Any]]:
+        """返回可沉睡的工具分组信息 {group: {"brief": ..., "tool_count": ...}}。
+
+        分组内任一工具声明 allow_sleep=True 且带 sleep_brief 时，
+        该分组视为可沉睡分组，沉睡期间以 brief 代替完整 schema 展示。
+        """
+        result: Dict[str, Dict[str, Any]] = {}
+        for e in cls._entities.values():
+            if e.entity_type != EntityType.TOOL or not e.enabled or not e.func:
+                continue
+            if not (e.allow_sleep and e.sleep_brief):
+                continue
+            entry = result.setdefault(e.group, {"brief": e.sleep_brief, "tool_count": 0})
+            entry["tool_count"] += 1
+        return result
+
     @staticmethod
     def _build_tool_schema(entity: EntityMetadata) -> Dict[str, Any]:
         """单个 TOOL 实体 -> OpenAI function schema"""
@@ -639,6 +819,17 @@ class EntityRegistry:
                 {"error": f"参数 JSON 解析失败: {e}", "args_preview": preview},
                 ensure_ascii=False,
             )
+
+        # 按 schema 声明类型矫正参数（LLM 可能传错 JSON 类型，如数字 ID 按 number 传递）
+        if isinstance(kwargs, dict):
+            kwargs = _coerce_kwargs_types(entity.meta.get("params") or [], kwargs)
+            # 矫正失败的非法值在此拦截，给 AI 清晰反馈而非工具内部 TypeError
+            type_error = _validate_param_types(entity.meta.get("params") or [], kwargs)
+            if type_error:
+                return json.dumps({
+                    "error": f"参数类型错误: {type_error}",
+                    "hint": "请按工具 schema 声明的类型传参后重试",
+                }, ensure_ascii=False)
 
         # 优先级: AI 传入 > 装饰器定义 > 全局默认
         ai_timeout = kwargs.pop("_timeout", None)

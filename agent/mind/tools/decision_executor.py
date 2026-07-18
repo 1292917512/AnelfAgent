@@ -74,6 +74,9 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
             log(f"注入待处理图片: {len(pending_images)} 张", tag="思维")
 
         pending_media = mind.pfc.collect_media()
+        # 按实际携带的媒体激活媒体工具（recognize_image 等），确保本轮 schema 可用
+        if pending_images or pending_media:
+            mind.pfc.activate_media_tools(pending_images, pending_media)
         if mind.media_pipeline and pending_media:
             media_texts = await mind.media_pipeline.process_segments(pending_media)
             if media_texts:

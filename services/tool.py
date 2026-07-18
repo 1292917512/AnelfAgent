@@ -24,6 +24,8 @@ _GROUP_ORDER = {
     "entity": 14,
     "mcp_manage": 15,
     "devops": 16,
+    "skills": 17,
+    "delegation": 18,
 }
 
 

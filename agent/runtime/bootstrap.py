@@ -191,7 +191,7 @@ def create_bootstrap() -> FlowMachine:
         from agent.memory.tools import register_memory_tools
         from agent.planning import register_planning_tools
         from agent.channel.output_tools import register_output_tools
-        from agent.mind.tools.multi_tool import register_multi_tool
+        from agent.skills import SkillMatcher, SkillStore, register_skill_tools
 
         mem = machine.get(BK.MEMORY)
         data_center = machine.get(BK.STORAGE)
@@ -199,7 +199,9 @@ def create_bootstrap() -> FlowMachine:
         register_notes_tools(workspace_dir=mem.get("workspace_dir"))
         register_planning_tools(mem["store"])
         register_output_tools(data_center.conversation_data)
-        register_multi_tool()
+
+        skill_store = SkillStore()
+        register_skill_tools(skill_store, SkillMatcher(skill_store, mem["embedder"]))
 
     @machine.node(skip_on_error=False)
     async def assemble_runtime():
@@ -242,7 +244,7 @@ def create_bootstrap() -> FlowMachine:
         )
         set_runtime(runtime)
 
-        from agent.mind.tools.multi_tool import set_mind
+        from agent.mind.tools.scheduler import set_mind
         set_mind(mind)
 
         log(

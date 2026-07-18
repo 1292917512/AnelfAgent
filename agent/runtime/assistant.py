@@ -11,9 +11,10 @@ DEFAULT_HEARTBEAT_INTERVAL = 300.0
 
 
 class AgentAssistant:
-    """智能体执行壳：批量接收消息，驱动 Mind 统一决策。
+    """智能体执行壳：消息到达即感知入窗，批量驱动 Mind 统一决策。
 
-    消息到达时入队，Mind 空闲后一次性排空队列（自然 CD），
+    消息到达时立即写入对话历史（保证时序）并入 PFC 队列，
+    Mind 空闲后一次性排空唤醒队列（自然 CD），
     心跳定期触发自主思考（反思、主动行为等）。
     """
 
@@ -49,7 +50,17 @@ class AgentAssistant:
             log(f"心跳已启动（间隔 {self._heartbeat_interval}s）", tag="运行时")
 
     async def feel(self, anything: Everything) -> None:
+        """消息到达入口：立即感知（写入对话历史 + 入 PFC 队列），再入队等待统一决策。
+
+        对话历史是与 AI 共同维护的消息窗口——无论 AI 是否正在思考，
+        新消息都必须第一时间按到达时序插入，保证每轮 LLM 看到严格时序的上下文。
+        """
         self._ensure_started()
+        try:
+            await self.mind.accept_feel(anything)
+        except Exception:
+            log("消息感知处理失败", "ERROR", tag="运行时")
+            return
         await self._queue.put(anything)
 
     def _ensure_started(self) -> None:
@@ -80,8 +91,9 @@ class AgentAssistant:
     async def _run_loop(self) -> None:
         """批量消息处理循环。
 
-        阻塞等待首条消息 → 排空队列中所有已到达的消息 → 全部 accept_feel →
-        一次 execute_mind 统一决策。Mind 执行期间新到的消息自然积累（CD）。
+        阻塞等待首条消息 → 排空队列中所有已到达的消息 → 一次 execute_mind 统一决策。
+        消息在 feel() 到达时已写入对话历史并入 PFC 队列，此处仅负责触发决策；
+        Mind 执行期间新到的消息自然积累（CD），由下一轮或循环内合并机制处理。
         处理完成后自检 PFC，有待处理任务则短暂延迟后再执行。
         """
         while True:
@@ -94,8 +106,6 @@ class AgentAssistant:
                     break
             try:
                 log(f"批量处理 {len(batch)} 条消息", "DEBUG", tag="运行时")
-                for anything in batch:
-                    await self.mind.accept_feel(anything)
                 if self.mind.is_reflecting:
                     await self._notify_heartbeat_busy(batch)
                 await self.mind.execute_mind()

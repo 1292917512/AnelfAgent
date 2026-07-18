@@ -55,6 +55,8 @@ from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_store import MemoryStore
 from agent.memory.notes import build_notes_system_message
 from agent.mind.prefrontal_cortex import PrefrontalCortex
+from agent.mind import tool_activation as _tool_activation  # noqa: F401  # 注册 activate_tool_group 延迟工具
+from agent.mind.context_compressor import ContextCompressor, register_compressor
 from agent.mind.tools.media_pipeline import MediaPipeline
 from agent.mind.cross_channel import (
     ChannelSnapshot,
@@ -100,7 +102,11 @@ from entities._sdk import deferred_tool, activate_group
 @deferred_tool(
     name=_END_REPLY_TOOL_NAME,
     group="thinking", tags=["always"], source="mind.core",
-    description="结束本轮操作。当你已完成所有操作，不再需要继续时调用此工具。",
+    description=(
+        "结束本轮操作。当你已完成所有操作，不再需要继续时调用此工具。"
+        "可与 send_message 等工具同批调用以节约轮次；"
+        "若同批或同轮存在失败工具，结束将不生效并反馈失败原因，修正后需重新调用。"
+    ),
 )
 def _end_reply_tool(reason: str = "") -> str:
     """结束本轮操作。
@@ -150,7 +156,8 @@ class Mind:
         if self.memory_store:
             self.retriever = MemoryRetriever(self.memory_store, self.embedder)
             if self.llm_manager:
-                rerank_client = self.llm_manager.get_rerank_client()
+                # rerank 需要 MediaClient（有 rerank 方法），而非 LLMClient
+                rerank_client = self.llm_manager.get_media_client("rerank")
                 if rerank_client:
                     self.retriever.set_rerank_client(rerank_client)
 
@@ -170,7 +177,31 @@ class Mind:
 
         self._channel_snapshots: dict[str, ChannelSnapshot] = {}
 
+        # 当前模型上下文窗口缓存（tokens，0 = 未知）
+        self._cached_context_length: int = 0
+
+        self._init_subsystems()
         self._register_core_tools()
+
+    def _init_subsystems(self) -> None:
+        """初始化思维子系统：上下文压缩 / 技能自学习 / 子代理委托。"""
+        # 上下文压缩器（think_loop 每轮调用前检查溢出风险）
+        self.compressor = ContextCompressor(self)
+        register_compressor(self.compressor)
+
+        # 技能自学习系统（存储/匹配/策展/后台评审）
+        from agent.skills import SkillCurator, SkillMatcher, SkillReviewer, SkillStore
+        self.skill_store = SkillStore()
+        self.skill_matcher = SkillMatcher(self.skill_store, self.embedder)
+        self.skill_curator = SkillCurator(self.skill_store)
+        self.skill_reviewer = SkillReviewer(self, self.skill_store)
+        if self._skills_enabled():
+            self.skill_reviewer.start()
+
+        # 子代理委托管理器（delegate_task 工具注册）
+        from agent.delegation import DelegationManager, register_delegation_tools
+        self.delegation_manager = DelegationManager(self)
+        register_delegation_tools(self.delegation_manager)
 
     # ==================================================================
     # 初始化与配置
@@ -196,6 +227,24 @@ class Mind:
     def tool_executor(self) -> Optional[Callable[[ToolCall], Awaitable[str]]]:
         return EntityRegistry.execute_tool_call
 
+    def get_model_context_length(self) -> int:
+        """获取当前模型的上下文窗口（tokens，带缓存；0 表示未知）。"""
+        if self._cached_context_length > 0:
+            return self._cached_context_length
+        llm_client = self.llm if isinstance(self.llm, LLMClient) else None
+        if llm_client is None:
+            return 0
+        max_ctx = 0
+        try:
+            info = LLMClient.get_model_info(llm_client.config.litellm_model)
+            max_ctx = info.get("max_input_tokens") or info.get("max_tokens") or 0
+        except Exception:
+            max_ctx = 0
+        if not max_ctx:
+            max_ctx = llm_client.config.max_tokens or 0
+        self._cached_context_length = max_ctx
+        return max_ctx
+
     @staticmethod
     def _get_mind_config():
         from agent.config import get_mind_config
@@ -218,8 +267,10 @@ class Mind:
     # ==================================================================
 
     async def accept_feel(self, anything: Everything) -> None:
-        """接收外部消息：写入对话历史；仅在 trigger_mind 时加入 PFC 任务队列。"""
-        self._set_phase(MindPhase.ACCEPTING)
+        """接收外部消息：到达即写入对话历史（保证时序）；仅在 trigger_mind 时加入 PFC 任务队列。"""
+        # 思维循环运行中不覆盖当前阶段，避免 UI 阶段抖动
+        if not self._active_scopes and not self._cycle_lock.locked():
+            self._set_phase(MindPhase.ACCEPTING)
         preview = str(anything)[:80] if anything else ""
         log(f"感知输入: {preview}", tag="思维")
         await self.add_conversation(anything)
@@ -770,6 +821,11 @@ class Mind:
         """简单 LLM 调用封装（无工具，纯文本生成）。"""
         return await self.llm.chat(request_messages, options=options)
 
+    async def summarize_text(self, prompt: str) -> str:
+        """用主模型生成摘要文本（供上下文压缩等内部流程使用）。"""
+        result = await self.llm_chat([{"role": "user", "content": prompt}])
+        return (result.content or "").strip()
+
     _REFLECT_ALWAYS_BLOCKED = frozenset({
         "list_channels", "schedule_reply",
     })
@@ -794,12 +850,14 @@ class Mind:
             options: Optional[dict] = None,
             tool_tags: Optional[List[str]] = None,
             allow_output_tools: bool = False,
+            extra_blocked_tools: Optional[Set[str]] = None,
     ) -> str:
         """内部任务循环：与对话共享统一思维流程，默认禁止对外发送消息。
 
         tool_tags 非空时按选择器加载工具集（替代默认的 "heartbeat" 标签）。
         选择器优先按 tag 匹配，同时兼容按 group 名匹配（如 mcp:web-fetch）。
         默认过滤 output 类工具（send_message/send_file 等），可按任务配置放开。
+        extra_blocked_tools 可追加屏蔽特定工具（如子代理 leaf 角色屏蔽 delegate_task）。
 
         Returns:
             LLM 产出的文本内容（所有轮次输出的合并）。
@@ -807,8 +865,10 @@ class Mind:
         mc = self._get_mind_config()
         safety_limit = max_iterations or mc.max_tool_iterations
         blocked_tools = self._build_reflect_blocklist(allow_output_tools)
+        if extra_blocked_tools:
+            blocked_tools = blocked_tools | set(extra_blocked_tools)
 
-        base_tools = self.pfc.get_active_tool_schemas(adapter_key)
+        base_tools = await self.pfc.get_active_tool_schemas(adapter_key, scope="reflect")
         active_tools = [
             s for s in base_tools
             if s.get("function", {}).get("name", "") not in blocked_tools
@@ -841,7 +901,8 @@ class Mind:
         output_policy = "放开外发" if allow_output_tools else "禁用外发"
         log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
 
-        try:
+        from agent.mind.think_session import think_session
+        with think_session(self, "reflect", with_token=False):
             await self._think_loop(
                 mode=ThinkMode.REFLECT,
                 tool_chain=[],
@@ -854,9 +915,6 @@ class Mind:
                 base_messages=messages,
                 options=options,
             )
-        finally:
-            # reflect 可能临时激活大量动态工具，结束后必须清理，避免污染后续普通会话。
-            self.pfc.clear_dynamic_tools()
 
         total = "\n".join(collected_text)
         log(f"反思循环结束: 产出 {len(total)} 字", tag="思维")
@@ -922,29 +980,116 @@ class Mind:
         if narrative:
             memory_msgs.append({"role": "system", "content": narrative})
 
-        # 人设 + 便签
-        system_parts: List[str] = []
-        for msg in self.char.get_personality_msg():
-            if msg.get("content"):
-                system_parts.append(msg["content"])
-        for msg in build_notes_system_message():
-            if msg.get("content"):
-                system_parts.append(msg["content"])
+        # 技能匹配注入（volatile 层）：当前对话语义匹配到的经验技能
+        await self._inject_matched_skills(memory_msgs, tail)
+
+        # Prompt 分层构建（参考 hermes 三层架构）：
+        # stable 层（人设 + 工具提示）对话内冻结复用，context 层（便签）低频重建，
+        # volatile 层（语义召回等）每轮构建并置于其后，保证前缀缓存命中。
+        models_summary = self._get_models_summary()
+        stable_text, context_text, stable_hit, context_hit = await self._build_layered_prompts(
+            anything, models_summary,
+        )
 
         await event_bus.emit(EVENT_THINKING_CONTEXT_BUILD, {
-            "system_parts_count": len(system_parts),
             "memory_msgs_count": len(memory_msgs),
-            "has_persona": bool(system_parts),
+            "stable_cache_hit": stable_hit,
+            "context_cache_hit": context_hit,
         })
 
         return await self.pfc.build_llm_context(
-            system_parts=system_parts,
+            stable_text=stable_text,
+            context_text=context_text,
             memory_msgs=memory_msgs,
             anything=anything,
             adapter_key=getattr(anything, "adapter_key", ""),
             target_id=self._resolve_target_id(anything),
-            models_summary=self._get_models_summary(),
+            models_summary=models_summary,
+            anthropic_breakpoint=self._is_anthropic_model(),
         )
+
+    async def _inject_matched_skills(self, memory_msgs: List[Dict], tail: List[Dict]) -> None:
+        """将当前对话匹配到的技能注入 volatile 层（并记录使用次数）。"""
+        if not self._skills_enabled() or not tail:
+            return
+        try:
+            query_texts = [
+                m.get("content", "") for m in tail
+                if isinstance(m.get("content"), str)
+            ]
+            from core.config import get_config_int
+            top_k = get_config_int("skills_match_top_k", 3)
+            matched_skills = await self.skill_matcher.match(query_texts, top_k=top_k)
+            if not matched_skills:
+                return
+            skill_lines = ["[相关技能] 以下经验可能适用于当前任务，可参考复用："]
+            for skill, score in matched_skills:
+                skill_lines.append(
+                    f"## {skill.name} — {skill.description}\n{skill.content[:800]}"
+                )
+                self.skill_store.record_use(skill.name)
+            memory_msgs.append({
+                "role": "system",
+                "content": "\n\n".join(skill_lines),
+            })
+            log(f"技能注入: {', '.join(s.name for s, _ in matched_skills)}", "DEBUG", tag="技能")
+        except Exception as exc:
+            log(f"技能匹配失败: {exc}", "DEBUG", tag="技能")
+
+    async def _build_layered_prompts(
+            self,
+            anything: Optional[Everything],
+            models_summary: str,
+    ) -> Tuple[str, str, bool, bool]:
+        """构建 stable/context 两层提示（经 PromptCacheManager 缓存复用）。
+
+        Returns:
+            (stable_text, context_text, stable_hit, context_hit)
+        """
+        from agent.mind.prompt_layers import (
+            LAYER_CONTEXT, LAYER_STABLE, prompt_cache_manager,
+        )
+
+        scope = self._resolve_entity_scope(anything)
+
+        persona_parts = [
+            msg["content"] for msg in self.char.get_personality_msg() if msg.get("content")
+        ]
+        stable_hash = prompt_cache_manager.compute_hash(
+            *persona_parts, self.pfc.stable_fingerprint(models_summary),
+        )
+        stable_text, stable_hit = prompt_cache_manager.get_or_build(
+            scope, LAYER_STABLE, stable_hash,
+            lambda: self.pfc.build_stable_layer(persona_parts, models_summary),
+        )
+
+        notes_parts = [
+            msg["content"] for msg in build_notes_system_message() if msg.get("content")
+        ]
+        context_hash = prompt_cache_manager.compute_hash(*notes_parts)
+        context_text, context_hit = prompt_cache_manager.get_or_build(
+            scope, LAYER_CONTEXT, context_hash,
+            lambda: "\n\n".join(notes_parts),
+        )
+        return stable_text, context_text, stable_hit, context_hit
+
+    @staticmethod
+    def _skills_enabled() -> bool:
+        """技能系统总开关。"""
+        from core.config import get_config_bool
+        return get_config_bool("skills_enabled", True)
+
+    def _is_anthropic_model(self) -> bool:
+        """当前主模型是否为 Anthropic（决定是否注入 cache_control 断点）。"""
+        from agent.mind.prompt_layers import is_anthropic_breakpoint_enabled
+        if not is_anthropic_breakpoint_enabled():
+            return False
+        llm_client = self.llm if isinstance(self.llm, LLMClient) else None
+        if llm_client is None:
+            return False
+        model = (llm_client.config.litellm_model or "").lower()
+        api_type = (getattr(llm_client.config, "api_type", "") or "").lower()
+        return "anthropic" in model or "claude" in model or api_type == "anthropic"
 
     async def get_conversation(self, anything: Everything) -> List[Dict]:
         """从 DB 获取指定对象的对话历史。"""
@@ -954,12 +1099,12 @@ class Mind:
         """将消息写入对话历史。"""
         await self.conversation_data.add_conversation_record_by_everything(anything)
 
-    async def _add_system_context(self, anything: Everything, content: str, role: str = "assistant") -> None:
+    async def _add_system_context(self, anything: Everything, content: str, role: str = "system") -> None:
         """向对话存储追加一条系统上下文消息。
 
         Args:
-            role: 存储角色。工具摘要等结束性记录应使用 "user"，避免对话末尾残留
-                  assistant 消息导致 Anthropic 等模型报 assistant prefill 错误。
+            role: 存储角色（主流 OpenAI 格式）。系统上下文用 "system"，
+                  AI 自身输出（如内心独白）用 "assistant"，用户消息用 "user"。
         """
         scope_type, scope_id = self._resolve_scope(anything)
         await self.conversation_data.router.append(

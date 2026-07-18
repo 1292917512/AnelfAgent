@@ -64,9 +64,16 @@ def get_current_time(time_format: str = "%Y年%m月%d日%H时%M分%S秒") -> str
     return datetime.datetime.now().strftime(time_format)
 
 
-def get_time_tag() -> str:
-    """返回当前时间标签 ``[time:...]``。"""
-    return tag_label("time", get_current_time())
+def format_time(ts_ns: int, time_format: str = "%Y年%m月%d日%H时%M分%S秒") -> str:
+    """将纳秒时间戳格式化为时间字符串。"""
+    return datetime.datetime.fromtimestamp(ts_ns / 1_000_000_000).strftime(time_format)
+
+
+def get_time_tag(ts_ns: Optional[int] = None) -> str:
+    """返回时间标签 ``[time:...]``；给定纳秒时间戳时按该时刻格式化，否则取当前时间。"""
+    if ts_ns is None:
+        return tag_label("time", get_current_time())
+    return tag_label("time", format_time(ts_ns))
 
 
 async def rm_unless_text(text: str) -> str:

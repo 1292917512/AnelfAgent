@@ -47,13 +47,20 @@ def tool(
     tags: Optional[List[str]] = None,
     cacheable: bool = False,
     timeout: Optional[float] = None,
+    check_fn: Optional[Callable[[], Any]] = None,
+    allow_sleep: bool = False,
+    sleep_brief: str = "",
 ) -> Callable[[F], F]:
     """装饰器：将函数注册为 LLM 可调用工具（注册到 EntityRegistry）。
 
     参数的名称、类型、是否必填从函数签名自动推导。
-    
+
     Args:
         timeout: 工具执行超时时间（秒），默认使用全局配置（30秒）
+        check_fn: 工具门控前置检查（返回 bool 或 Awaitable[bool]），
+            检查不通过时工具不出现在 LLM schema 中
+        allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
+        sleep_brief: 沉睡状态下展示给 AI 的简短描述
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
@@ -73,6 +80,9 @@ def tool(
             tags=tags or [],
             source="internal",
             meta=meta,
+            check_fn=check_fn,
+            allow_sleep=allow_sleep,
+            sleep_brief=sleep_brief,
         )
         return func
 
@@ -98,28 +108,36 @@ def deferred_tool(
     tags: Optional[List[str]] = None,
     source: str = "internal",
     timeout: Optional[float] = None,
+    check_fn: Optional[Callable[[], Any]] = None,
+    allow_sleep: bool = False,
+    sleep_brief: str = "",
 ) -> Callable[[F], F]:
     """延迟注册装饰器：装饰时仅收集元数据，activate_group() 时批量注册。
 
     用于需要运行时依赖注入的工具（如 MemoryStore、Embedder 等）。
     参数名称、类型、描述从函数签名和 docstring 自动推导。
-    
+
     Args:
         timeout: 工具执行超时时间（秒），默认使用全局配置（30秒）
+        check_fn: 工具门控前置检查（返回 bool 或 Awaitable[bool]）
+        allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
+        sleep_brief: 沉睡状态下展示给 AI 的简短描述
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
         tool_desc = description or _get_first_line(func.__doc__) or tool_name
         params = _extract_params(func)
-        
+
         meta = {}
         if timeout is not None:
             meta["timeout"] = timeout
-        
+
         _deferred_registry.setdefault(group, []).append({
             "name": tool_name, "func": func, "description": tool_desc,
-            "group": group, "params": params, "tags": tags or [], 
+            "group": group, "params": params, "tags": tags or [],
             "source": source, "meta": meta,
+            "check_fn": check_fn, "allow_sleep": allow_sleep,
+            "sleep_brief": sleep_brief,
         })
         return func
     return decorator

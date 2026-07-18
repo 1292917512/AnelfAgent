@@ -36,6 +36,9 @@ Cursor 用户继续读取 `.cursor/rules/*.mdc`，ZCode 读取本文件，互不
 | `agent/` | 智能体内核（Mind / LLM / Storage / Channel / Runtime / Memory / Task / Heartbeat / Planning） | 不依赖 web |
 | `agent/mind/` | 思维核心（自主决策 / 多轮推理 / 跨频道感知） | 工具编排在 `mind/tools/` |
 | `agent/memory/` | 语义记忆（FTS5 + Embedding 混合检索 / 便签 / 文件索引） | 不依赖 mind |
+| `agent/skills/` | 技能自学习（SKILL.md 存储 / 匹配 / 后台评审 / 策展） | 文件存储在 `workspace/skills/` |
+| `agent/delegation/` | 子代理调度（delegate_task / 并行 fan-out / 深度限制） | 经 `mind.reflect()` 隔离执行 |
+| `agent/security/` | 安全防护（会话令牌 / 威胁扫描） | 脱敏核心在 `core/sanitizer.py` |
 | `agent/task/` | 独立任务系统（定义 / 注册表 / 执行器） | 纯内容定义，不含调度逻辑 |
 | `agent/heartbeat/` | 心跳调度（引擎 / 配置 / 日志 / 内置维护） | 管理何时执行任务，持久化计数器 |
 | `agent/planning/` | 自主规划（目标 CRUD / 执行追踪） | 依赖 memory |
@@ -131,7 +134,7 @@ tick() 单次心跳：
 
 三种触发模式：heartbeat（每 N 次心跳）/ scheduled（每天指定时间）/ manual（仅手动）
 
-#### 工具注入（PFC 7 路合并）
+#### 工具注入（PFC 多路合并 + 门控）
 
 | 来源 | 说明 |
 |------|------|
@@ -141,16 +144,34 @@ tick() 单次心跳：
 | tag_match | 消息标签激活（如 media:image） |
 | hot_recall | 热门工具 top-N |
 | discovered | 动态发现 |
+| activated | 已激活的沉睡分组（activate_tool_group） |
 
-#### 上下文组装
+合并结果经两道门控过滤（`core/tool_gate.py` + `agent/mind/tool_activation.py`）：
+1. **check_fn 门控**：工具声明的前置条件检查（30s TTL 缓存 + 60s 瞬态故障宽限），不通过则不出现在 schema
+2. **沉睡/激活**：`allow_sleep=True` + `sleep_brief` 的工具默认沉睡（目录中仅展示 brief），AI 调用 `activate_tool_group` 唤醒，按 scope 隔离、按轮次消耗
+
+#### 上下文组装（Prompt 分层缓存）
 
 ```
-1. system（人设 + 便签）
-2. 工具系统提示 + 短期记忆
-3. 历史对话 head（超过 20 条时压缩摘要）
-4. 语义召回记忆
-5. 历史对话 tail（最近 10 条）
+1. stable 层（人设 + 工具提示）—— 对话内冻结，PromptCacheManager 按 scope 缓存，
+   字节级稳定供 Anthropic/OpenAI 前缀缓存复用（Anthropic 注入 cache_control 断点）
+2. context 层（便签）—— 低频重建
+3. volatile 层（短期记忆 + 溢出提示 + 安全标记 + 语义召回 + 技能注入）—— 每轮构建
+4. 对话历史（实时从 DB 获取，禁止缓存）
 ```
+
+#### 思维循环防护（think_loop）
+
+| 机制 | 文件 | 说明 |
+|------|------|------|
+| 工具守卫 | `agent/mind/guardrails.py` | 精确失败重复/同工具连续失败/无进展循环检测，动作 warn/block/halt |
+| 错误分类 | `agent/llm/error_classifier.py` | LLM 错误分类（rate_limit/context_overflow/auth 等）驱动重试策略 |
+| 自适应重试 | `agent/llm/retry.py` | 指数退避 + 抖动（jittered_backoff） |
+| 上下文压缩 | `agent/mind/context_compressor.py` | 溢出检测（真实 usage 优先）→ 保头保尾 + LLM 摘要 → 压缩反馈注入 |
+| 结果预算 | `agent/mind/result_budget.py` | 按模型窗口动态截断工具结果（15% 单条 / 30% 整轮） |
+| 会话令牌 | `agent/security/session_token.py` | 一次性令牌标记可信历史，泄露即 SECURITY 停止 |
+| 威胁扫描 | `agent/security/threat_scanner.py` | 注入模式扫描（工具结果标记 / 记忆写入拦截） |
+| 结果脱敏 | `core/sanitizer.py` | API Key/Token/密码自动遮盖（工具结果 + 日志） |
 
 ### 前端结构
 
@@ -179,9 +200,27 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 | 文件 | 职责 |
 |------|------|
 | `agent/mind/mind.py` | 思维核心、自主循环 |
-| `agent/mind/prefrontal_cortex.py` | 工作记忆、工具召回、上下文组装 |
+| `agent/mind/prefrontal_cortex.py` | 工作记忆、工具召回、上下文组装（分层缓存） |
 | `agent/mind/autonomous.py` | 决策类型、态势模型、元决策 prompt |
+| `agent/mind/prompt_layers.py` | Prompt 分层缓存（stable/context/volatile + PromptCacheManager） |
+| `agent/mind/guardrails.py` | 工具调用守卫（死循环检测 warn/block/halt） |
+| `agent/mind/context_compressor.py` | 上下文压缩（溢出检测 + 保头保尾 + LLM 摘要） |
+| `agent/mind/result_budget.py` | 工具结果预算截断（按模型窗口动态计算） |
+| `agent/mind/tool_activation.py` | 工具沉睡/激活状态机（activate_tool_group） |
 | `agent/mind/tools/think_loop.py` | 统一思维循环（多轮 LLM + 工具编排） |
+| `agent/llm/error_classifier.py` | LLM 错误分类（驱动重试/压缩/回退策略） |
+| `agent/llm/retry.py` | 自适应退避（指数 + 抖动） |
+| `agent/security/session_token.py` | 一次性会话令牌（防注入伪造历史） |
+| `agent/security/threat_scanner.py` | 威胁模式扫描（prompt 注入检测） |
+| `core/sanitizer.py` | 敏感信息脱敏（API Key/Token/密码） |
+| `core/tool_gate.py` | 工具门控（check_fn TTL 缓存 + 瞬态宽限） |
+| `agent/skills/skill_store.py` | 技能存储（workspace/skills/SKILL.md） |
+| `agent/skills/skill_matcher.py` | 技能匹配（关键词 + 语义混合评分） |
+| `agent/skills/background_review.py` | 技能后台评审（对话后自动沉淀经验） |
+| `agent/skills/curator.py` | 技能策展（自动降级/归档，挂心跳维护） |
+| `agent/delegation/sub_agent.py` | 子代理（leaf/orchestrator 角色 + 深度限制） |
+| `agent/delegation/delegation_manager.py` | 委托调度（并发上限/预算/聚合/后台模式） |
+| `agent/delegation/delegate_tool.py` | delegate_task 工具 |
 | `agent/mind/tools/multi_tool.py` | 多工具并行编排（multi_tool_invoke） |
 | `agent/mind/tools/decision_executor.py` | 决策执行分发（REPLY/REFLECT/PLAN 等） |
 | `agent/mind/tools/media_pipeline.py` | 媒体标签转换 |
@@ -225,8 +264,10 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 | `output` | 消息输出 | `channel/output_tools.py` | always |
 | `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/heartbeat |
 | `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
-| `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tools/multi_tool.py` | always |
+| `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tools/multi_tool.py` + `agent/mind/tool_activation.py` + `agent/mind/context_compressor.py` | always |
 | `planning` | 目标规划 | `agent/planning/tools.py` | planning/goal/heartbeat |
+| `skills` | 技能 | `agent/skills/tools.py` | always |
+| `delegation` | 子代理 | `agent/delegation/delegate_tool.py` | always |
 | `web` | 网络工具 | `entities/web/tools.py` | web/search/fetch |
 | `media` | 多媒体 | `entities/media/tools.py` | media:* |
 | `os` | 操作系统 | `entities/filesystem/tools.py` | media:file |

@@ -153,17 +153,36 @@ class ConversationData:
     def __init__(self, router: StorageRouter, max_size: int = MaxConversationSize) -> None:
         self.router = router
         self.max_size = max_size
+        # scope_key("user_123"/"group_456") → 最近一次历史快照的最大 ts_ns（快照水位）。
+        # 水位与快照出自同一次 SELECT，think_loop 以此增量合并循环期间到达的新消息。
+        self._fetch_watermarks: dict[str, int] = {}
 
     async def get_conversation_record_by_everything(self, anything: Everything) -> list[dict]:
-        if isinstance(anything, EverythingGroup) and anything.group_id not in (0, "0", "", None):
-            return await self.router.fetch(
-                StorageDomain.CONVERSATION,
-                scope_type="group", scope_id=str(anything.group_id), limit=self.max_size,
-            )
-        return await self.router.fetch(
+        scope_type, scope_id = self._scope_of(anything)
+        rows = await self.router.fetch(
             StorageDomain.CONVERSATION,
-            scope_type="user", scope_id=str(anything.uid), limit=self.max_size,
+            scope_type=scope_type, scope_id=scope_id, limit=self.max_size,
         )
+        # 记录快照水位（快照内最大 ts_ns），并剥离 ts_ns 避免泄漏进 LLM 消息
+        max_ts = 0
+        records: list[dict] = []
+        for row in rows:
+            ts = int(row.get("ts_ns", 0) or 0)
+            if ts > max_ts:
+                max_ts = ts
+            records.append({"role": row["role"], "content": row["content"]})
+        self._fetch_watermarks[f"{scope_type}_{scope_id}"] = max_ts
+        return records
+
+    def get_fetch_watermark(self, scope_type: str, scope_id: str) -> Optional[int]:
+        """返回指定 scope 最近一次历史快照的水位（最大 ts_ns），未快照过返回 None。"""
+        return self._fetch_watermarks.get(f"{scope_type}_{scope_id}")
+
+    @staticmethod
+    def _scope_of(anything: Everything) -> tuple[str, str]:
+        if isinstance(anything, EverythingGroup) and anything.group_id not in (0, "0", "", None):
+            return "group", str(anything.group_id)
+        return "user", str(anything.uid)
 
     async def search_conversation_vector(
         self,
@@ -211,18 +230,14 @@ class ConversationData:
         if media_lines:
             content = content + "\n" + "\n".join(media_lines)
 
-        if isinstance(anything, EverythingGroup) and anything.group_id not in (0, "0", "", None):
-            await self.router.append(
-                StorageDomain.CONVERSATION,
-                scope_type="group", scope_id=str(anything.group_id),
-                role=role, content=content,
-            )
-        else:
-            await self.router.append(
-                StorageDomain.CONVERSATION,
-                scope_type="user", scope_id=str(anything.uid),
-                role=role, content=content,
-            )
+        scope_type, scope_id = self._scope_of(anything)
+        # 以消息到达时间入库，保证对话历史严格按到达时序排列
+        await self.router.append(
+            StorageDomain.CONVERSATION,
+            scope_type=scope_type, scope_id=scope_id,
+            role=role, content=content,
+            ts_ns=anything.created_ts_ns,
+        )
 
 
 @dataclass(slots=True)

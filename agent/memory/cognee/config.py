@@ -21,6 +21,8 @@ class CogneeConfig:
     data_root: str = ConfigPaths.COGNEE_DATA_DIR
     dataset_prefix: str = "anelf"
     timeout_seconds: float = 30.0
+    pipeline_timeout_seconds: float = 300.0
+    improve_interval_seconds: float = 600.0
     sync_interval_seconds: float = 5.0
     sync_batch_size: int = 20
     max_retries: int = 5
@@ -41,6 +43,8 @@ class CogneeConfig:
 
     def normalized(self) -> "CogneeConfig":
         self.timeout_seconds = max(1.0, float(self.timeout_seconds))
+        self.pipeline_timeout_seconds = max(self.timeout_seconds, float(self.pipeline_timeout_seconds))
+        self.improve_interval_seconds = float(self.improve_interval_seconds)
         self.sync_interval_seconds = max(0.5, float(self.sync_interval_seconds))
         self.sync_batch_size = max(1, int(self.sync_batch_size))
         self.max_retries = max(1, int(self.max_retries))

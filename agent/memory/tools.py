@@ -38,6 +38,23 @@ def register_memory_tools(store: MemoryStore, embedder: Embedder) -> None:
     log(f"💾 内部记忆工具已注册 ({count} 个)", tag="思维")
 
 
+def _current_scope_tag() -> str:
+    """解析当前对话 scope 为实体标签（user_X → user:X，group_X → group:X）。
+
+    memorize 未指定实体标签时自动补充，让记忆自动挂入关联网络。
+    """
+    try:
+        from agent.mind.tool_activation import ToolActivationManager
+        scope = ToolActivationManager.current_scope()
+        if scope.startswith("user_"):
+            return f"user:{scope[5:]}"
+        if scope.startswith("group_"):
+            return f"group:{scope[6:]}"
+    except Exception:
+        pass
+    return ""
+
+
 # ------------------------------------------------------------------
 # 工具实现
 # ------------------------------------------------------------------
@@ -58,7 +75,23 @@ async def memorize(content: str, tags: str = "", importance: float = 0.7) -> str
         if not _store:
             return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
 
+        # 威胁扫描：记忆写入是注入持久化的关键路径，命中威胁模式时拒绝写入
+        from agent.security.threat_scanner import first_threat_message, is_threat_scan_enabled
+        if is_threat_scan_enabled():
+            threat = first_threat_message(content, scope="strict")
+            if threat:
+                log(f"记忆写入被威胁扫描拦截: {threat}", "WARNING", tag="安全")
+                return json.dumps({
+                    "error": f"写入被拒绝：{threat}。请检查内容是否包含注入指令。",
+                }, ensure_ascii=False)
+
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+
+        # 自动关联：未指定实体标签时，用当前对话 scope 补充（记忆自动挂到关联网络）
+        if not any(t.startswith(("user:", "group:")) for t in tag_list):
+            scope_tag = _current_scope_tag()
+            if scope_tag:
+                tag_list.append(scope_tag)
 
         mem_type = MemoryType.SEMANTIC
         for t in tag_list:
@@ -133,7 +166,8 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
 
 @deferred_tool(
     group="memory", tags=["always"], source="mind.memory",
-    description="在长期记忆中语义搜索，返回最相关的记忆。",
+    description="在长期记忆中语义搜索，返回最相关的记忆及其联想关联。"
+    "结果中 related=true 的是沿标签网络联想出的关联记忆。",
 )
 async def recall(query: str, tags: str = "", limit: int = 5) -> str:
     """在长期记忆中语义搜索（同时检索 memories 表和 MD 文件索引）。
@@ -189,17 +223,53 @@ async def recall(query: str, tags: str = "", limit: int = 5) -> str:
         items = [{
             "id": r.id,
             "content": r.snippet[:300],
-            "tags": r.tags,
             "type": r.memory_type or "",
-            "source": r.source,
-            "path": r.path,
+            "tags": r.tags,
             "score": round(r.score, 3),
-            "dataset": r.dataset_name,
-            "provenance": r.provenance,
+            **({"path": r.path} if r.source == "file" else {}),
         } for r in results]
-        return json.dumps({"count": len(items), "results": items}, ensure_ascii=False)
+
+        # 关联扩展：沿标签网络联想相关记忆（想到一件事 → 唤起相关的事）
+        related_items = await _recall_associations(results, mem_ids)
+        return json.dumps({
+            "count": len(items),
+            "results": items,
+            "related": related_items,
+        }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def _recall_associations(
+        results: list,
+        existing_mem_ids: list[int],
+        *,
+        max_related: int = 3,
+) -> list:
+    """沿主结果的标签网络联想关联记忆（一跳扩展）。"""
+    if not _store or not results:
+        return []
+    assoc_tags: list[str] = []
+    for r in results:
+        for tag in r.tags:
+            if tag.startswith(("user:", "group:", "topic:")) and tag not in assoc_tags:
+                assoc_tags.append(tag)
+    if not assoc_tags:
+        return []
+    related = await _store.search_associative(
+        assoc_tags, exclude_ids=set(existing_mem_ids), limit=max_related,
+    )
+    return [
+        {
+            "id": f"mem:{entry.id}",
+            "content": entry.content[:300],
+            "type": entry.memory_type.value,
+            "tags": entry.tags,
+            "score": round(score, 3),
+            "related": True,
+        }
+        for entry, score in related
+    ]
 
 
 @deferred_tool(

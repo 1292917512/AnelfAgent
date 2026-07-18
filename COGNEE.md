@@ -1,15 +1,12 @@
 # Cognee 记忆增强
 
-Cognee 是可选的知识图谱投影与联邦召回后端。SQLite、FTS5 和现有
+Cognee 是知识图谱投影与联邦召回后端，作为核心依赖随 `uv sync` 默认安装
+（`pyproject.toml` 固定 `cognee==1.3.0`）。SQLite、FTS5 和现有
 Embedding `MemoryStore` 始终是权威存储；Cognee 不替代 `EntityRegistry`。
 
-## 安装与启用
+## 启用
 
-```powershell
-uv sync --extra cognee
-```
-
-安装完成后，在 WebUI 的“记忆管理 → 配置”中启用 Cognee，或修改
+无需额外安装依赖。在 WebUI 的“记忆管理 → 配置”中启用 Cognee，或修改
 `config/cognee.json` 的 `enabled`。重启 Agent 后生效。Cognee 使用当前
 AnelfAgent 默认聊天模型和 Embedding 模型，不需要重复保存 API Key。
 
@@ -21,6 +18,11 @@ Cognee v1.3.0 仍处于 Beta，因此依赖固定到该版本。
 - 新增、更新和删除先提交到 SQLite，再写入持久化 outbox。
 - 后台任务按数据集批量投影；失败会指数退避并保留，达到上限后可在
   WebUI 或 `retry_cognee_sync` 工具中重试。
+- 投影流程为 add → cognify；图谱增强（improve/memify）按
+  `improve_interval_seconds` 限频运行且失败不影响投影，也可通过
+  `improve_cognee_dataset` 工具显式触发。
+- 轻量操作（检索/列举/删除）超时为 `timeout_seconds`，LLM 密集型管道
+  （add/cognify/improve）超时为 `pipeline_timeout_seconds`。
 - 召回使用加权 RRF 合并原生与 Cognee 结果，并按内容和来源标识去重。
 - 未安装、未配置、超时或运行失败时自动返回原生召回结果。
 - user/group scope 使用不可逆哈希数据集名隔离，默认查询 global 与当前

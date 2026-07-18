@@ -190,6 +190,9 @@ class LLMClientConfig:
     proxy_url: str = ""
     supports_vision: bool = False
     supports_tools: bool = True
+    # 端点是否接受强制工具选择（tool_choice=required/any）；
+    # thinking 服务端常开的端点（如 Kimi）应置 False，强制值将降级为 auto
+    supports_forced_tool_choice: bool = True
     vision_format: str = "base64"
     model_types: List[str] = field(default_factory=lambda: ["chat"])
     provider_id: str = ""
@@ -296,6 +299,7 @@ class LLMClientConfig:
             "proxy_url": self.proxy_url,
             "supports_vision": self.supports_vision,
             "supports_tools": self.supports_tools,
+            "supports_forced_tool_choice": self.supports_forced_tool_choice,
             "vision_format": self.vision_format,
             "model_types": self.model_types,
             "provider_id": self.provider_id,
@@ -318,6 +322,7 @@ class LLMClientConfig:
             "model_types": self.model_types,
             "supports_vision": self.supports_vision,
             "supports_tools": self.supports_tools,
+            "supports_forced_tool_choice": self.supports_forced_tool_choice,
             "vision_format": self.vision_format,
             "temperature": self.temperature,
             "top_p": self.top_p,
@@ -455,7 +460,7 @@ class LLMClient(BaseEntity):
         if tools:
             kwargs["tools"] = tools
         if tool_choice is not None:
-            kwargs["tool_choice"] = tool_choice
+            kwargs["tool_choice"] = self._resolve_tool_choice(tool_choice)
         if stream:
             kwargs["stream"] = True
 
@@ -492,6 +497,19 @@ class LLMClient(BaseEntity):
     def _ensure_configured(self) -> None:
         if not self.config.model.strip():
             raise LLMNotConfiguredError("尚未配置可用的 LLM 模型")
+
+    def _resolve_tool_choice(self, tool_choice: Any) -> Any:
+        """端点不接受强制工具选择时，将 required 等强制值降级为 auto。
+
+        auto / none 与 thinking 模式兼容，原样保留。
+        """
+        if (
+            not self.config.supports_forced_tool_choice
+            and isinstance(tool_choice, str)
+            and tool_choice not in ("auto", "none")
+        ):
+            return "auto"
+        return tool_choice
 
     def _merge_request_params(
         self,

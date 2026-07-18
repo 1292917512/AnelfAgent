@@ -187,3 +187,8 @@ body {
 .thinking-flow .react-flow__minimap {
   border-radius: var(--radius-md);
 }
+
+/* 移动端安全区适配（iPhone 底部横条） */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}

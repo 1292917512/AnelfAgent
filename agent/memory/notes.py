@@ -50,6 +50,105 @@ def load_notes_content() -> str:
     return ""
 
 
+# ------------------------------------------------------------------
+# 目录组织与迁移
+# ------------------------------------------------------------------
+
+# 顶层散落文件 → 分类子目录的迁移规则（文件名正则 -> 子目录）
+_LAYOUT_MIGRATIONS = (
+    (re.compile(r"^\d{4}-\d{2}-\d{2}\.md$"), "events"),
+    (re.compile(r"^group_.*\.md$"), "groups"),
+)
+
+
+def migrate_memory_layout() -> List[str]:
+    """将顶层散落的记忆文件迁移到分类子目录（幂等，可重复执行）。
+
+    日期文件（YYYY-MM-DD.md）→ events/；群文件（group_*.md）→ groups/。
+    目标已存在时删除重复的源文件。返回迁移动作描述列表。
+    """
+    memory_dir = get_memory_dir()
+    if not memory_dir.is_dir():
+        return []
+    moved: List[str] = []
+    for f in sorted(memory_dir.iterdir()):
+        if not f.is_file() or f.suffix != ".md":
+            continue
+        for pattern, subdir in _LAYOUT_MIGRATIONS:
+            if not pattern.match(f.name):
+                continue
+            target_dir = memory_dir / subdir
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / f.name
+            if target.exists():
+                f.unlink()
+                moved.append(f"{f.name} 目标已存在，删除重复")
+            else:
+                f.rename(target)
+                moved.append(f"{f.name} -> {subdir}/")
+            break
+    if moved:
+        log(f"记忆目录迁移: {len(moved)} 个文件已整理", tag="记忆")
+    return moved
+
+
+# ------------------------------------------------------------------
+# 主便签智能加载（注入预算控制）
+# ------------------------------------------------------------------
+
+# 高优先级章节关键词：行为准则类内容必须完整保留
+_HIGH_PRIORITY_KEYWORDS = (
+    "主人教导", "权限", "待确认", "待跟进", "存储体系", "使用原则", "操作速查",
+)
+
+_SECTION_SPLIT_RE = re.compile(r"(?=^## )", re.MULTILINE)
+
+
+def _smart_truncate_notes(content: str, max_chars: int) -> str:
+    """按章节优先级裁剪主便签，控制注入上下文的字符预算。
+
+    高优先级章节（主人教导/权限/待办等行为准则）完整保留；
+    其余章节按序填充剩余预算，放不下的折叠为标题 + 查阅提示。
+    """
+    if len(content) <= max_chars:
+        return content
+
+    parts = _SECTION_SPLIT_RE.split(content)
+    preamble = parts[0] if not parts[0].startswith("## ") else ""
+    sections = [p for p in parts if p.startswith("## ")]
+
+    kept: List[str] = []
+    folded: List[str] = []
+    used = len(preamble)
+
+    for section in sections:
+        heading = section.split("\n", 1)[0].strip()
+        is_high = any(kw in heading for kw in _HIGH_PRIORITY_KEYWORDS)
+        if is_high:
+            kept.append(section)
+            used += len(section)
+        elif used + len(section) <= max_chars:
+            kept.append(section)
+            used += len(section)
+        else:
+            folded.append(heading)
+
+    result = preamble + "".join(kept)
+    if folded:
+        result += (
+            "\n## 已折叠章节（内容未加载）\n"
+            + "\n".join(f"- {h}" for h in folded)
+            + "\n（以上章节已折叠以节省上下文，需要时用 read_section 工具读取，"
+              "文件路径 memory/memory.md）\n"
+        )
+    log(
+        f"主便签智能加载: {len(content)} -> {len(result)} 字符 "
+        f"(保留 {len(kept)} 节, 折叠 {len(folded)} 节)",
+        "DEBUG", tag="记忆",
+    )
+    return result
+
+
 def _atomic_write(target: Path, content: str) -> None:
     """原子写入文件：先写临时文件，再 os.replace 避免并发写入导致数据损坏。"""
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -464,10 +563,18 @@ def _load_skills_content() -> str:
 
 
 def build_notes_system_message() -> List[dict]:
-    """将便签内容构建为 system 消息列表。空便签时注入记录引导。"""
+    """将便签内容构建为 system 消息列表。空便签时注入记录引导。
+
+    主便签按注入预算智能裁剪（高优先级章节完整保留，其余折叠），
+    保证加载高效且不丢关键行为准则。
+    """
     content = load_notes_content()
     if not content.strip():
         return [{"role": "system", "content": _NOTES_EMPTY_HINT}]
+    from core.config import get_config_int
+    content = _smart_truncate_notes(
+        content, get_config_int("notes_inject_max_chars", 6000),
+    )
     file_index = _build_file_index()
     if file_index:
         content = f"{content}\n\n{file_index}"
@@ -483,6 +590,11 @@ def register_notes_tools(workspace_dir: Optional[Path] = None) -> None:
     global _workspace_dir
     if workspace_dir:
         _workspace_dir = workspace_dir
+    # 目录整理：散落的日期/群文件迁移到 events/ groups/ 子目录（幂等）
+    try:
+        migrate_memory_layout()
+    except Exception as e:
+        log(f"记忆目录迁移失败: {e}", "WARNING", tag="记忆")
     count = activate_group("notes", "便签记忆 - 计划与关键记忆的持久化笔记本（支持多文件）")
     log(f"便签记忆工具已注册 ({count} 个) -> {get_workspace_dir()}", tag="思维")
 

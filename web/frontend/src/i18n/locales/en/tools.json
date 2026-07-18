@@ -34,7 +34,9 @@
     "channel_ops": "Channel Ops",
     "entity": "Entity Manager",
     "mcp_manage": "MCP Manager",
-    "devops": "DevOps"
+    "devops": "DevOps",
+    "skills": "Skills",
+    "delegation": "Sub-agents"
   },
   "reload": "Reload",
   "reloading": "Reloading...",

@@ -31,22 +31,13 @@ def _get_mind_config():
 # 提示词模板常量
 # ==================================================================
 
+# 工具使用指引（仅保留无法程序强制的引导性内容；
+# "必须 function calling"由纯工具模式 API 强制，"失败勿重复"由工具守卫强制，
+# 并行调用用法由 stable 层 _PARALLEL_CALL_HINT 统一提供，此处不重复）
 _TOOL_USAGE_RULES = (
-    "[工具使用规范]\n"
-    "1. 必须通过 function calling 调用工具，严禁在文本中伪造工具调用或结果。\n"
-    "2. 工具调用失败后不要以相同参数重试，应换方式或 end_reply 结束。\n"
-    "3. 如果返回“工具不存在/未知工具”，必须先调用 list_entity_methods 获取精确方法名，禁止继续猜测相似名称。\n"
-    "4. 同一任务连续两次出现未知工具后，必须停止继续猜测并改用已确认可用工具，或直接结束并说明限制。\n"
-    "6. 工具的结果会直接出现再上下文中是以user用户的形式，但执行的结果是自己执行的结果。\n"
-    "[multi_tool_invoke 使用指南]\n"
-    "将所有参数已确定的工具打包并行执行，减少对话轮次。tasks 是数组，每个元素: {\"tool\": \"工具名\", \"args\": {参数对象}}。\n"
-    "判断标准：现在就知道全部参数的工具可以打包；需要等前序结果的不能放同一批。\n"
-    "当你确定本轮不需要再做其他操作时，务必将 end_reply 一起打包在 tasks 中。\n"
-    "场景1 - 回复+结束: tasks=[{\"tool\":\"send_message\",\"args\":{\"content\":\"...\"}},{\"tool\":\"end_reply\",\"args\":{}}]\n"
-    "场景2 - 回复+记忆+结束: tasks=[{\"tool\":\"send_message\",\"args\":{...}},{\"tool\":\"memorize\",\"args\":{...}},{\"tool\":\"end_reply\",\"args\":{}}]\n"
-    "场景3 - 并行查询: tasks=[{\"tool\":\"web_search\",\"args\":{\"query\":\"A\"}},{\"tool\":\"web_search\",\"args\":{\"query\":\"B\"}}] → 下一轮再回复+结束\n"
-    "场景4 - 异步耗时任务: tasks=[{\"tool\":\"...\",\"args\":{...}}], async_mode=true\n"
-    "延迟主动联系: schedule_reply(delay_seconds=秒数, reason='原因')"
+    "[工具使用指引]\n"
+    "1. 如果返回“工具不存在/未知工具”，必须先调用 list_entity_methods 获取精确方法名，禁止继续猜测相似名称。\n"
+    "2. 同一任务连续两次出现未知工具后，必须停止继续猜测并改用已确认可用工具，或直接结束并说明限制。"
 )
 
 _MEMORY_USAGE_HINT = (
@@ -69,23 +60,12 @@ _URGENT_ROUND_WARNING = (
     "避免在此阶段开启复杂工具链。"
 )
 
-_ERROR_RETRY_WARNING = (
-    "[错误提示] 最近有工具调用失败——请勿以相同参数重复调用出错的工具。"
-    "应尝试不同参数、换用其他工具，或直接调用 end_reply 结束本轮。"
-    "连续出错时必须调用 end_reply 结束，禁止继续尝试相同操作。"
-)
-
 _NO_PENDING_HINT = "[当前无外部消息] 当前处于自主思考阶段，可执行工具操作或调用 end_reply 结束，必须使用工具"
 
-_MULTI_TOOL_HINT = (
+_PARALLEL_CALL_HINT = (
     "# 并行工具调用\n"
-    "只要本轮参数已确定，务必用 multi_tool_invoke 打包执行，减少对话轮次。\n"
-    "- 回复并结束: tasks=[{\"tool\":\"send_message\",\"args\":{...}},{\"tool\":\"end_reply\",\"args\":{}}]\n"
-    "- 并行查询:   tasks=[{\"tool\":\"web_search\",\"args\":{\"query\":\"A\"}},{\"tool\":\"web_search\",\"args\":{\"query\":\"B\"}}]\n"
-    "- 耗时操作:   tasks=[...], async_mode=true（后台执行，不阻塞对话）\n"
-    "凡是本轮就能确定参数的工具，都应打包进同一次 multi_tool_invoke。\n"
-    "**重要：回复完毕且没有其他操作时，必须将 send_message 和 end_reply 打包到同一个 multi_tool_invoke 中一次完成，禁止分开调用。**\n"
-    "**耗时任务（如图片识别、语音合成、视频生成等）必须使用 async_mode=true 放到后台执行，不要阻塞对话。**"
+    "同一轮可以发起多个工具调用（原生并行），参数已确定的独立操作应一次性全部发起，减少对话轮次。\n"
+    "**回复完毕且没有其他操作时，必须在同一轮同时调用 send_message 和 end_reply，一次完成回复并结束，禁止分开调用。**"
 )
 
 _PENDING_HINT = "→ 处理消息或执行操作，空消息表示当前处于自主思考阶段，不是对方发送的，选择是继续调用流程还是直接结束会话，不要重复发送消息,完成后调用 end_reply"
@@ -187,16 +167,18 @@ class PrefrontalCortex:
     def _scan_message_tags(self, content: str) -> None:
         """扫描消息中的标签，按 key 和 value 搜索匹配工具。
 
-        [media_file:image:path] -> tag "media:image"
-        [channel:telegram]      -> tag "channel", "telegram"
-        [platform:qq]           -> tag "platform", "qq"
+        [media_type:image][media_path:path] -> tag "media:image"
+        [media_file:image:path]             -> tag "media:image"（兼容旧格式）
+        [channel:telegram]                  -> tag "channel", "telegram"
+        [platform:qq]                       -> tag "platform", "qq"
         """
         tags = etag_all(content)
         for key, value in tags:
-            if key == "media_file":
-                parts = value.split(":", 1)
-                if parts:
-                    self._activate_by_tag(f"media:{parts[0]}")
+            if key in ("media_type", "media_file"):
+                # [media_type:image] 的 value 即媒体类型；[media_file:image:path] 取首段
+                media_kind = value.split(":", 1)[0] if value else ""
+                if media_kind:
+                    self._activate_by_tag(f"media:{media_kind}")
             else:
                 self._activate_by_tag(key)
                 first_val = value.split(":")[0] if value else ""
@@ -211,6 +193,20 @@ class PrefrontalCortex:
                 if entity.name not in self._tag_activated_tools:
                     self._tag_activated_tools.add(entity.name)
                     log(f"标签激活工具: [{tag_query}] -> {entity.name}", "DEBUG", tag="PFC")
+
+    def activate_media_tools(self, images: list, media_segments: list) -> None:
+        """按消息实际携带的媒体激活对应媒体工具（recognize_image / voice_to_text 等）。
+
+        图片/媒体段是结构化字段而非文本标签（[media_type:*] 标签在入库时才生成），
+        文本标签扫描覆盖不到，需按媒体对象显式激活。
+        """
+        if images:
+            self._activate_by_tag("media:image")
+        for seg in media_segments or []:
+            seg_type = getattr(seg, "type", None)
+            type_name = seg_type.value if hasattr(seg_type, "value") else str(seg_type or "")
+            if type_name:
+                self._activate_by_tag(f"media:{type_name}")
 
     @staticmethod
     def _analysis_threshold() -> int:
@@ -444,8 +440,16 @@ class PrefrontalCortex:
         self._tag_activated_tools.clear()
         self._discovered_tools.clear()
 
-    def get_active_tool_schemas(self, adapter_key: str = "") -> list[dict]:
-        """合并返回当前所有活跃工具 schema（always + mcp + 频道 + 标签 + 热召回 + 动态发现）。"""
+    async def get_active_tool_schemas(self, adapter_key: str = "", scope: str = "") -> list[dict]:
+        """合并返回当前所有活跃工具 schema（always + mcp + 频道 + 标签 + 热召回 + 动态发现）。
+
+        合并结果经两道门控过滤：
+        1. 沉睡过滤：allow_sleep 工具所属分组未激活时不出现在 schema 中；
+           已激活分组的全部工具补充进来
+        2. check_fn 门控：前置条件不满足的工具被过滤（core.tool_gate）
+        """
+        from agent.mind.tool_activation import tool_activation
+
         seen_names: set[str] = set()
         all_schemas: list[dict] = []
         source_counts: dict[str, int] = {}
@@ -475,11 +479,48 @@ class PrefrontalCortex:
             _merge(EntityRegistry.get_tool_schema_by_names(
                 list(self._discovered_tools)), "discovered")
 
+        # 已激活的沉睡分组：补充其全部工具（即使未被上述渠道命中）
+        activated = tool_activation.active_groups(scope)
+        for group in activated:
+            _merge(EntityRegistry.get_tool_schemas_by_group(group), f"activated:{group}")
+
+        # 沉睡过滤：移除未激活分组中的可沉睡工具
+        sleepable_groups = EntityRegistry.get_sleepable_groups()
+        if sleepable_groups:
+            before = len(all_schemas)
+            all_schemas = [
+                s for s in all_schemas
+                if not self._is_sleeping_tool(
+                    s.get("function", {}).get("name", ""), sleepable_groups, scope,
+                )
+            ]
+            slept = before - len(all_schemas)
+            if slept:
+                source_counts["sleeping"] = -slept
+
+        # check_fn 门控过滤
+        names = [s.get("function", {}).get("name", "") for s in all_schemas]
+        active_entities = await EntityRegistry.get_active_tools(names)
+        active_names = {e.name for e in active_entities}
+        all_schemas = [
+            s for s in all_schemas
+            if s.get("function", {}).get("name", "") in active_names
+        ]
+
         sources = ", ".join(f"{k}={v}" for k, v in source_counts.items())
         tool_names = [s.get("function", {}).get("name", "") for s in all_schemas]
         log(f"活跃工具集: {len(all_schemas)} 个 ({sources}) [{', '.join(tool_names)}]", "DEBUG", tag="PFC")
 
         return all_schemas
+
+    @staticmethod
+    def _is_sleeping_tool(tool_name: str, sleepable_groups: dict, scope: str) -> bool:
+        """判断工具当前是否处于沉睡状态（可沉睡且所属分组未激活）。"""
+        from agent.mind.tool_activation import tool_activation
+        entity = EntityRegistry.get(tool_name)
+        if entity is None or not (entity.allow_sleep and entity.sleep_brief):
+            return False
+        return not tool_activation.is_active(entity.group, scope)
 
     # ==================================================================
     # 系统提示构建
@@ -500,10 +541,23 @@ class PrefrontalCortex:
         rules = mc.tool_system_rules if hasattr(mc, "tool_system_rules") else []
         lines = list(rules) + ["# 工具分组目录"]
 
+        # 可沉睡分组：未激活时仅展示 brief，提示 AI 按需激活（节省 token）
+        from agent.mind.tool_activation import tool_activation
+        sleepable_groups = EntityRegistry.get_sleepable_groups()
+
         for entry in catalog:
+            group = entry["group"]
             desc = entry.get("description", "")
             desc_part = f" — {desc}" if desc else ""
-            lines.append(f"- {entry['group']} ({entry['tool_count']}){desc_part}")
+            sleep_info = sleepable_groups.get(group)
+            if sleep_info and not tool_activation.is_active(group):
+                lines.append(
+                    f"- {group} ({entry['tool_count']}){desc_part} "
+                    f"[沉睡] {sleep_info['brief']}"
+                    f"（需要时调用 activate_tool_group(group=\"{group}\") 激活）"
+                )
+            else:
+                lines.append(f"- {group} ({entry['tool_count']}){desc_part}")
 
         if models_summary:
             lines.append("")
@@ -520,8 +574,14 @@ class PrefrontalCortex:
             lines.append("")
             lines.append(context_reading_rules)
 
+        # 工具使用指引 + 记忆使用提示（静态引导，归入 stable 层冻结复用）
         lines.append("")
-        lines.append(_MULTI_TOOL_HINT)
+        lines.append(_TOOL_USAGE_RULES)
+        lines.append("")
+        lines.append(_MEMORY_USAGE_HINT)
+
+        lines.append("")
+        lines.append(_PARALLEL_CALL_HINT)
 
         return [{"role": "system", "content": "\n".join(lines)}]
 
@@ -570,70 +630,87 @@ class PrefrontalCortex:
         if not tag_tool_map:
             return ""
 
-        lines = ["对话中出现 [media_file:类型:路径] 标签时，使用对应工具处理："]
+        lines = [
+            "对话中出现 [media_type:类型][media_path:路径] 标签时，**必须优先使用下列内置媒体工具**处理：",
+        ]
         for media_type, tool_names in sorted(tag_tool_map.items()):
             tools_str = " / ".join(tool_names)
-            lines.append(f"- [media_file:{media_type}:路径] → {tools_str}")
-        lines.append("如果有其他可用工具或 MCP 服务能更好地处理该文件，也可以适当使用。")
-        lines.append("媒体分析是耗时操作，应放入 multi_tool_invoke(tasks=[{tool,args,...}], async_mode=true) 执行，避免阻塞对话。")
+            lines.append(f"- [media_type:{media_type}] → {tools_str}")
+        lines.append(
+            "禁止用 run_shell_command 编写脚本（如 python HTTP 请求）替代上述媒体工具——"
+            "内置工具已封装好多模型回退，更可靠。"
+        )
+        lines.append("媒体分析是耗时操作，应与其他独立操作并行发起，避免阻塞对话。")
         return "\n".join(lines)
 
     # ==================================================================
-    # LLM 上下文组装
+    # LLM 上下文组装（Prompt 分层缓存架构）
     # ==================================================================
 
-    def build_working_memory(
-            self,
-            *,
-            adapter_key: str = "",
-            target_id: str = "",
-            models_summary: str = "",
-    ) -> list[dict]:
-        """构建工作记忆：工具系统提示 + 短期记忆片段。"""
-        messages: list[dict] = []
+    def build_stable_layer(self, persona_parts: List[str], models_summary: str = "") -> str:
+        """构建 stable 层：人设 + 工具系统提示（对话内字节级不变，供前缀缓存复用）。"""
+        parts = list(persona_parts)
+        for msg in self.build_tool_system_prompt(models_summary=models_summary):
+            if msg.get("content"):
+                parts.append(msg["content"])
+        return "\n\n".join(parts)
 
-        messages.extend(self.build_tool_system_prompt(
-            models_summary=models_summary,
-            adapter_key=adapter_key,
-            target_id=target_id,
-        ))
+    def stable_fingerprint(self, models_summary: str = "") -> str:
+        """计算 stable 层动态输入的指纹（任一输入变化即触发重建）。
 
-        # 短期记忆以 system role 注入，避免 AI 把它当用户消息回复
-        if self.temporary:
-            for clip in self.temporary:
-                if clip.get("role") == "user":
-                    messages.append({**clip, "role": "system"})
-                else:
-                    messages.append(clip)
+        覆盖：工具目录、可沉睡分组及其激活状态、工具规则、模型摘要、媒体规则。
+        """
+        import json as _json
 
-        return messages
+        from agent.mind.prompt_layers import prompt_cache_manager
+        from agent.mind.tool_activation import tool_activation
+
+        mc = _get_mind_config()
+        rules = mc.tool_system_rules if hasattr(mc, "tool_system_rules") else []
+        catalog = EntityRegistry.get_entity_catalog()
+        sleepable = EntityRegistry.get_sleepable_groups()
+        activated = tool_activation.active_groups()
+        return prompt_cache_manager.compute_hash(
+            _json.dumps(catalog, sort_keys=True, ensure_ascii=False),
+            _json.dumps(sleepable, sort_keys=True, ensure_ascii=False),
+            _json.dumps(sorted(activated.items()), ensure_ascii=False),
+            "\n".join(rules),
+            models_summary,
+            self._build_media_rules(),
+        )
 
     async def build_llm_context(
             self,
             *,
-            system_parts: List[str],
+            stable_text: str = "",
+            context_text: str = "",
             memory_msgs: List[Dict],
             anything: Optional["Everything"] = None,
             adapter_key: str = "",
             target_id: str = "",
             models_summary: str = "",
+            anthropic_breakpoint: bool = False,
     ) -> List[Dict]:
-        """组装完整 LLM 上下文，每次调用实时从 DB 获取最新对话历史。
+        """组装完整 LLM 上下文（分层架构），每次调用实时从 DB 获取最新对话历史。
 
-        消息顺序：
-        1. system（人设 + 便签）
-        2. 工作记忆（工具提示 + 短期记忆）
-        3. 上下文溢出提示（对话历史达到窗口上限时）
-        4. 语义召回记忆
-        5. 对话历史（最近 max_conversation_size 条）
+        消息顺序（stable/context 层在前且字节稳定，供 Prompt Caching 前缀复用）：
+        1. stable 层（人设 + 工具提示，对话内冻结）
+        2. context 层（便签等低频内容）
+        3. volatile 层（短期记忆 + 溢出提示 + 安全标记 + 语义召回）
+        4. 对话历史（最近 max_conversation_size 条）
         """
-        system_msg = [{"role": "system", "content": "\n\n".join(system_parts)}] if system_parts else []
+        system_msgs: List[Dict] = []
+        if stable_text:
+            stable_msg: Dict = {"role": "system", "content": stable_text}
+            if anthropic_breakpoint:
+                # Anthropic Prompt Caching 断点：stable 层标记为可缓存前缀
+                stable_msg["cache_control"] = {"type": "ephemeral"}
+            system_msgs.append(stable_msg)
+        if context_text:
+            system_msgs.append({"role": "system", "content": context_text})
 
-        working_memory = self.build_working_memory(
-            adapter_key=adapter_key,
-            target_id=target_id,
-            models_summary=models_summary,
-        )
+        # volatile 层：短期记忆片段（角色按存储原样使用，主流格式不做转换）
+        volatile_msgs: List[Dict] = list(self.temporary)
 
         # 实时从 DB 获取最新对话历史（必须每轮重新获取，不可缓存或外部传入！
         # 多轮 think_loop 期间用户可能发送新消息，必须确保每轮都能拿到最新对话）
@@ -643,6 +720,24 @@ class PrefrontalCortex:
             max_size = self._conversation_data.max_size
             conversation_list = await self._conversation_data.get_conversation_record_by_everything(anything)
             log(f"对话历史: {len(conversation_list)} 条 (窗口上限 {max_size})", "DEBUG", tag="PFC")
+
+        # 会话令牌：为历史消息包裹可信标记（防 prompt 注入伪造历史）
+        security_hint: List[Dict] = []
+        try:
+            from agent.security.session_token import (
+                build_token_rule_hint, current_token, wrap_history_content,
+            )
+            if current_token():
+                conversation_list = [
+                    {**m, "content": wrap_history_content(m["content"])}
+                    if isinstance(m.get("content"), str) else m
+                    for m in conversation_list
+                ]
+                hint = build_token_rule_hint()
+                if hint:
+                    security_hint = [{"role": "system", "content": hint}]
+        except Exception:
+            pass
 
         # 上下文溢出提示：当对话历史达到窗口上限，提醒 AI 主动记忆和检索
         overflow_hint: List[Dict] = []
@@ -654,12 +749,10 @@ class PrefrontalCortex:
                 "- 可通过 recall 检索长期记忆中的相关信息"
             )}]
 
-        context_msgs = [
-            {**m, "role": "user"} if m.get("role") == "system" else m
-            for m in memory_msgs
-        ]
-
-        all_msgs = system_msg + working_memory + overflow_hint + context_msgs + conversation_list
+        all_msgs = (
+            system_msgs + volatile_msgs + overflow_hint + security_hint
+            + memory_msgs + conversation_list
+        )
 
         # 确保最后一条非 system 消息不是 assistant 角色，防止 Anthropic prefill 400 错误。
         for i in range(len(all_msgs) - 1, -1, -1):
@@ -740,8 +833,6 @@ class PrefrontalCortex:
         if iteration == 0:
             limit_hint = f"最多 {safety_limit} 轮" if safety_limit > 0 else ""
             lines.append(f"[系统提示] 新一轮对话开始 | 请仔细分析上下文后决定操作{' | ' + limit_hint if limit_hint else ''}")
-            lines.append(_TOOL_USAGE_RULES)
-            lines.append(_MEMORY_USAGE_HINT)
         else:
             round_info = f"第 {iteration + 1} 轮"
             if remaining is not None:
@@ -772,14 +863,6 @@ class PrefrontalCortex:
                         "建议优先完成核心操作，不必要的步骤可跳过。"
                     )
 
-            # 检测最近是否有工具报错，提示不要重复调用
-            recent_errors = [
-                s for s in execution_steps[-5:]
-                if "error" in s.lower() or "失败" in s or "错误" in s or "exception" in s.lower()
-            ]
-            if recent_errors:
-                lines.append(_ERROR_RETRY_WARNING)
-
         # 工具态势摘要
         tool_parts: list[str] = []
         if self._tag_activated_tools:
@@ -791,6 +874,19 @@ class PrefrontalCortex:
             tool_parts.append(f"热工具: {', '.join(hot)}")
         if tool_parts:
             lines.append(f"[工具态势] {' | '.join(tool_parts)}")
+
+        # 沉睡分组激活状态（剩余最后一轮时提示续期）
+        from agent.mind.tool_activation import tool_activation
+        active_groups = tool_activation.active_groups()
+        if active_groups:
+            group_desc = ", ".join(f"{g}(剩余{r}轮)" for g, r in sorted(active_groups.items()))
+            lines.append(f"[已激活工具分组] {group_desc}")
+            expiring = [g for g, r in active_groups.items() if r <= 1]
+            if expiring:
+                lines.append(
+                    f"⚠️ 分组 {', '.join(expiring)} 即将回到沉睡，"
+                    "如下轮仍需使用请立即调用 activate_tool_group 续期。"
+                )
 
         # 频道信息
         if adapter_key and self._channel_manager:
@@ -878,6 +974,12 @@ class PrefrontalCortex:
             self._tool_recall.items(), key=lambda x: x[1], reverse=True,
         )
 
+        try:
+            from agent.mind.prompt_layers import prompt_cache_manager
+            cache_stats = prompt_cache_manager.stats()
+        except Exception:
+            cache_stats = {}
+
         return {
             "tool_recall": [{"name": n, "count": c} for n, c in tool_recall_sorted],
             "tool_recall_top_n": self._tool_recall_top_n,
@@ -888,4 +990,5 @@ class PrefrontalCortex:
             "pending_analysis_count": len(self.pending_analysis),
             "short_term_memory_count": len(self.temporary),
             "short_term_memory_max": self._max_temp,
+            "prompt_cache": cache_stats,
         }
