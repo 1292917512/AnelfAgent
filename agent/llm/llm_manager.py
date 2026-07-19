@@ -175,27 +175,36 @@ class LLMManager(BaseEntity):
                     vision_list.append(mid)
 
     def _register_unknown_models(self) -> None:
-        """将 litellm 未收录的自定义模型注册到模型信息表，使 get_model_info 可查。"""
-        registered = 0
+        """将 litellm 未收录的自定义模型注册到模型信息表，使 get_model_info 可查。
+
+        通过公开 API register_model 注册（而非直接改写 model_cost 字典），
+        由 litellm 负责失效其内部的小写索引与 get_model_info LRU 缓存。
+        """
+        custom_models: Dict[str, Dict[str, Any]] = {}
         for client in self._clients.values():
             cfg = client.config
             model_key = cfg.litellm_model
-            if model_key in litellm.model_cost:
+            # register_model 会以去前缀名入库，两种形式都已存在则跳过，
+            # 避免重复注册或将零值合并进内置同名条目
+            if model_key in litellm.model_cost or model_key.split("/", 1)[-1] in litellm.model_cost:
                 continue
-            litellm.model_cost[model_key] = {
+            custom_models[model_key] = {
                 "max_tokens": cfg.max_tokens,
                 "max_input_tokens": cfg.context_window or cfg.max_tokens,
                 "max_output_tokens": cfg.max_tokens,
                 "input_cost_per_token": 0,
                 "output_cost_per_token": 0,
+                "cache_creation_input_token_cost": 0,
+                "cache_read_input_token_cost": 0,
                 "litellm_provider": model_key.split("/", 1)[0],
                 "mode": cfg.model_types[0] if cfg.model_types else "chat",
                 "supports_function_calling": cfg.supports_tools,
                 "supports_vision": cfg.supports_vision,
             }
-            registered += 1
-        if registered:
-            info(f"已注册 {registered} 个自定义模型到 litellm 模型信息表", tag="模型")
+        if not custom_models:
+            return
+        litellm.register_model(custom_models)
+        info(f"已注册 {len(custom_models)} 个自定义模型到 litellm 模型信息表", tag="模型")
 
     def save_config(self) -> bool:
         try:

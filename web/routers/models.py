@@ -302,7 +302,7 @@ class CostMapUpdateReq(BaseModel):
 
 @router.post("/cost-map/update")
 async def update_cost_map(req: CostMapUpdateReq) -> Dict[str, Any]:
-    """从 GitHub 拉取最新 LiteLLM 模型价格表，支持代理。"""
+    """从 GitHub 拉取最新 LiteLLM 模型价格表并合并（保留自定义注册模型），支持代理。"""
     import httpx
     import litellm
 
@@ -318,8 +318,10 @@ async def update_cost_map(req: CostMapUpdateReq) -> Dict[str, Any]:
             response = await client.get(_COST_MAP_URL)
             response.raise_for_status()
             data: Dict[str, Any] = response.json()
-            litellm.model_cost = data
-            return {"status": "ok", "model_count": len(data)}
+            # register_model 逐条合并并失效 litellm 内部缓存，
+            # 整表替换会丢弃自定义模型注册且绕过缓存失效
+            litellm.register_model(data)
+            return {"status": "ok", "model_count": len(litellm.model_cost)}
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"更新失败: {e}") from e
 

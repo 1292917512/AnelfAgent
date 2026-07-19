@@ -1,9 +1,13 @@
 import axios from "axios";
 import type {
+  CogneeConfig,
+  CogneeDataset,
+  CogneeStatus,
   CreateModelConfig,
   CreateProviderConfig,
   GoalStep,
   ModelConfig,
+  ModelPriorityItem,
   PersonaData,
   ProviderConfig,
   UpdateModelConfig,
@@ -147,7 +151,7 @@ export const modelsApi = {
   rename: (id: string, newId: string) =>
     api.put(`/models/${encodeURIComponent(id)}/rename`, { new_id: newId }),
   setDefault: (modelId: string) => api.put("/models/config/default", { model_id: modelId }),
-  priorities: () => api.get("/models/priorities"),
+  priorities: () => api.get<Record<string, ModelPriorityItem[]>>("/models/priorities"),
   setPriority: (modelType: string, modelIds: string[]) =>
     api.put(`/models/priorities/${encodeURIComponent(modelType)}`, { model_ids: modelIds }),
   movePriority: (modelId: string, modelType: string, direction: number) =>
@@ -195,13 +199,13 @@ export const personasApi = {
 export const memoryApi = {
   health: () => api.get("/memory/health"),
   cognee: {
-    status: () => api.get("/memory/cognee/status"),
-    getConfig: () => api.get<Record<string, unknown>>("/memory/cognee/config"),
-    saveConfig: (data: Record<string, unknown>) => api.put("/memory/cognee/config", data),
+    status: () => api.get<CogneeStatus>("/memory/cognee/status"),
+    getConfig: () => api.get<CogneeConfig>("/memory/cognee/config"),
+    saveConfig: (data: Partial<CogneeConfig>) => api.put<CogneeConfig>("/memory/cognee/config", data),
     retry: () => api.post("/memory/cognee/retry"),
     backfill: (limit = 0, dryRun = true) =>
       api.post("/memory/cognee/backfill", { limit, dry_run: dryRun }),
-    datasets: () => api.get("/memory/cognee/datasets"),
+    datasets: () => api.get<CogneeDataset[]>("/memory/cognee/datasets"),
     improve: (datasetName: string) =>
       api.post("/memory/cognee/improve", { dataset_name: datasetName }),
   },

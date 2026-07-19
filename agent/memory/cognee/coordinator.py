@@ -75,6 +75,36 @@ class CogneeCoordinator:
                 pass
             self._task = None
 
+    async def reconfigure(self, config: CogneeConfig) -> None:
+        """热更新配置：按启停状态调整 worker，并重映射 Cognee 模型配置。"""
+        self.config = config.normalized()
+        self.store.set_cognee_projection_enabled(
+            self.config.enabled and self.config.sync_enabled,
+        )
+        self.client.reconfigure(self.config)
+
+        should_run = self.config.enabled and self.config.sync_enabled
+        if should_run and (self._task is None or self._task.done()):
+            self._closing = False
+            self._wake = asyncio.Event()
+            self._task = asyncio.create_task(self._worker(), name="memory.cognee.sync")
+        elif not should_run and self._task and not self._task.done():
+            self._closing = True
+            self._wake.set()
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+        # 立即按新配置做一次初始化，让状态接口即时反馈解析结果
+        if self.config.enabled:
+            availability = await self.client.initialize()
+            self._last_error = "" if availability.ready else availability.reason
+        else:
+            self._last_error = ""
+
     def wake(self) -> None:
         self._wake.set()
 

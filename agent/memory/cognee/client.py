@@ -13,10 +13,13 @@ from uuid import UUID
 from core.log import log
 
 from .config import CogneeConfig
+from .llm_bridge import (
+    anthropic_env_bridge,
+    resolve_chat_llm_config,
+    resolve_embedding_llm_config,
+    summarize_resolved,
+)
 from .types import CogneeAvailability, CogneeRecallItem
-
-# cognee 支持且走 litellm 路由的 provider（无需额外原生 SDK）
-_COGNEE_SUPPORTED_PROVIDERS = frozenset({"openai", "ollama", "azure"})
 
 
 class CogneeClient:
@@ -27,6 +30,8 @@ class CogneeClient:
         self._module: Optional[Any] = None
         self._configured = False
         self._import_error = ""
+        self._resolved_chat: dict[str, Any] = {}
+        self._resolved_embedding: dict[str, Any] = {}
 
     @property
     def installed(self) -> bool:
@@ -34,6 +39,20 @@ class CogneeClient:
             return importlib.util.find_spec("cognee") is not None
         except (ImportError, ValueError):
             return False
+
+    @property
+    def resolved_info(self) -> dict[str, Any]:
+        """已解析的模型配置摘要（脱敏），供状态接口展示。"""
+        return {
+            "chat": self._resolved_chat,
+            "embedding": self._resolved_embedding,
+        }
+
+    def reconfigure(self, config: CogneeConfig) -> None:
+        """热更新配置：下次调用时按新配置重新映射模型。"""
+        self.config = config.normalized()
+        self._configured = False
+        self._import_error = ""
 
     async def initialize(self) -> CogneeAvailability:
         if not self.config.enabled:
@@ -90,31 +109,15 @@ class CogneeClient:
             from agent.llm import get_llm_manager
 
             manager = get_llm_manager()
-            chat = _pick_openai_chat(manager)
-            embedding = manager.get_embedding_client()
-            if chat:
-                module.config.set_llm_config({
-                    "llm_provider": "openai",
-                    "llm_model": chat.config.litellm_model,
-                    "llm_api_key": chat.config.api_key,
-                    "llm_endpoint": chat.config.base_url,
-                    "llm_temperature": 0.0,
-                })
-            if embedding:
-                embed_provider = _provider_name(embedding.config.api_type)
-                embed_model = embedding.config.litellm_embed_model
-                if embed_provider not in _COGNEE_SUPPORTED_PROVIDERS:
-                    embed_provider = "openai"
-                embedding_cfg: dict[str, Any] = {
-                    "embedding_provider": embed_provider,
-                    "embedding_model": embed_model,
-                    "embedding_api_key": embedding.config.api_key,
-                    "embedding_endpoint": embedding.config.base_url,
-                }
-                dimensions = getattr(embedding, "dimensions", None)
-                if isinstance(dimensions, int) and dimensions > 0:
-                    embedding_cfg["embedding_dimensions"] = dimensions
-                module.config.set_embedding_config(embedding_cfg)
+            chat_payload = resolve_chat_llm_config(self.config.chat, manager)
+            anthropic_env_bridge(chat_payload)
+            module.config.set_llm_config(chat_payload)
+            self._resolved_chat = summarize_resolved(chat_payload, kind="chat")
+
+            embedding_payload = resolve_embedding_llm_config(self.config.embedding, manager)
+            if embedding_payload:
+                module.config.set_embedding_config(embedding_payload)
+            self._resolved_embedding = summarize_resolved(embedding_payload, kind="embedding")
         except Exception as exc:
             raise RuntimeError(f"无法映射 AnelfAgent 模型配置: {exc}") from exc
         self._configured = True
@@ -336,41 +339,6 @@ def _quieten_cognee_logger() -> None:
             handler.setLevel(_logging.WARNING)
     # cognee 子 logger 也限制
     _logging.getLogger("cognee").setLevel(_logging.WARNING)
-
-
-def _pick_openai_chat(manager: Any) -> Any:
-    """选取 api_type=openai 的 chat 客户端供 cognee 使用。
-
-    cognee 的 OpenAIAdapter 走 litellm.acompletion，可兼容任何 OpenAI 兼容端点；
-    而 AnthropicAdapter 依赖原生 anthropic SDK，项目未安装且 MiniMax 兼容端点不一定契合。
-    因此强制为 cognee 选 openai 类型客户端，默认 chat 如非 openai 则回退。
-    """
-    from agent.llm.llm_client import API_TYPE_OPENAI
-
-    default = manager.get_default()
-    if default and default.config.api_type == API_TYPE_OPENAI:
-        return default
-    # 回退：遍历 chat 优先级列表，选第一个 openai 兼容的
-    for mid in manager._type_priorities.get("chat", []):
-        client = manager._clients.get(mid)
-        if client and client.config.api_type == API_TYPE_OPENAI:
-            log(
-                f"Cognee: 默认 chat 模型 '{default.config.name}' 为 "
-                f"api_type={default.config.api_type}，回退到 '{client.config.name}'",
-                "DEBUG",
-            )
-            return client
-    # 全部都不兼容时仍返回默认（让 cognee 自己报错，不吞异常）
-    return default
-
-
-def _provider_name(api_type: str) -> str:
-    value = (api_type or "openai").strip().lower()
-    aliases = {
-        "openai_compatible": "openai",
-        "azure_openai": "azure",
-    }
-    return aliases.get(value, value)
 
 
 def _normalize_recall(raw_results: Any) -> list[CogneeRecallItem]:

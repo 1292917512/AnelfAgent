@@ -179,7 +179,8 @@ class MCPBridge:
         self._sessions: Dict[str, Any] = {}           # name -> ClientSession
         self._stop_events: Dict[str, Any] = {}         # name -> asyncio.Event
         self._lifecycle_tasks: Dict[str, Any] = {}     # name -> asyncio.Future
-        self._tool_server_map: Dict[str, str] = {}
+        self._tool_server_map: Dict[str, str] = {}      # 注册名 -> server 名
+        self._tool_original_names: Dict[str, str] = {}  # 注册名 -> MCP 原始工具名（仅冲突重命名时记录）
         self._lock = threading.Lock()
 
         self._loop = asyncio.new_event_loop()
@@ -312,6 +313,7 @@ class MCPBridge:
         with self._lock:
             server_name = self._tool_server_map.get(tool_name)
             has_session = server_name in self._sessions if server_name else False
+            original_name = self._tool_original_names.get(tool_name, tool_name)
         if not server_name or not has_session:
             return json.dumps(
                 {"error": f"MCP 工具未找到对应 server: {tool_name}"},
@@ -321,10 +323,10 @@ class MCPBridge:
             import asyncio
             loop = asyncio.get_running_loop()
             if loop is self._loop:
-                return await self._do_call_tool(server_name, tool_name, arguments)
+                return await self._do_call_tool(server_name, original_name, arguments)
             else:
                 future = asyncio.run_coroutine_threadsafe(
-                    self._do_call_tool(server_name, tool_name, arguments),
+                    self._do_call_tool(server_name, original_name, arguments),
                     self._loop,
                 )
                 return await asyncio.wrap_future(future)
@@ -519,11 +521,12 @@ class MCPBridge:
             log(f"自动禁用 MCP server '{name}' 失败: {e}", "DEBUG")
 
     def _cleanup_server_entities(self, name: str) -> None:
-        """从 EntityRegistry 和 _tool_server_map 中移除指定 server 的所有工具。"""
+        """从 EntityRegistry 和工具映射中移除指定 server 的所有工具。"""
         with self._lock:
             tools = [t for t, s in self._tool_server_map.items() if s == name]
             for t in tools:
                 self._tool_server_map.pop(t, None)
+                self._tool_original_names.pop(t, None)
         for t in tools:
             try:
                 EntityRegistry.unregister(t)
@@ -665,34 +668,52 @@ class MCPBridge:
         ))
 
         tools_result = await session.list_tools()
-        tool_names: List[str] = []
-        count = 0
-        for t in tools_result.tools:
-            t_name, t_params = self._parse_mcp_tool(t)
-            bridge = self
-
-            async def _proxy(_name: str = t_name, **kwargs: Any) -> str:
-                return await bridge.call_tool(_name, kwargs)
-
-            EntityRegistry.register_tool(
-                name=t_name,
-                func=_proxy,
-                description=getattr(t, "description", "") or t_name,
-                group=f"mcp:{srv.name}",
-                params=t_params,
-                tags=["mcp", srv.name],
-                source="mcp",
-            )
-            with self._lock:
-                self._tool_server_map[t_name] = srv.name
-            tool_names.append(t_name)
-            count += 1
+        tool_names = self._register_tool_entries(srv.name, list(tools_result.tools))
 
         mcp_entity = EntityRegistry.get(f"mcp:{srv.name}")
         if mcp_entity:
             mcp_entity.meta["tools"] = tool_names
 
-        return count
+        return len(tool_names)
+
+    def _register_tool_entries(self, server_name: str, tools: List[Any]) -> List[str]:
+        """将 server 的工具批量注册到 EntityRegistry，返回注册名列表。
+
+        工具名与现有实体（内置工具或其他 MCP 工具）冲突时，
+        自动加 ``{server}__`` 前缀注册，避免覆盖同名实体。
+        """
+        registered: List[str] = []
+        for t in tools:
+            t_name, t_params = self._parse_mcp_tool(t)
+            bridge = self
+
+            reg_name = t_name
+            if EntityRegistry.exists(reg_name):
+                reg_name = f"{server_name}__{t_name}"
+                log(
+                    f"MCP 工具名冲突: '{t_name}' 已被占用，"
+                    f"server '{server_name}' 的工具注册为 '{reg_name}'",
+                    "WARNING",
+                )
+
+            async def _proxy(_name: str = reg_name, **kwargs: Any) -> str:
+                return await bridge.call_tool(_name, kwargs)
+
+            EntityRegistry.register_tool(
+                name=reg_name,
+                func=_proxy,
+                description=getattr(t, "description", "") or t_name,
+                group=f"mcp:{server_name}",
+                params=t_params,
+                tags=["mcp", server_name],
+                source="mcp",
+            )
+            with self._lock:
+                self._tool_server_map[reg_name] = server_name
+                if reg_name != t_name:
+                    self._tool_original_names[reg_name] = t_name
+            registered.append(reg_name)
+        return registered
 
     @staticmethod
     def _create_transport(srv: MCPServerConfig) -> Any:

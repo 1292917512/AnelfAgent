@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { modelsApi, configApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import type { ModelPriorityItem } from "@/lib/types";
 import {
   Star, Eye, Wrench, Server, Brain, ChevronsUp, GripVertical, Layers,
 } from "lucide-react";
@@ -26,13 +27,7 @@ import { CSS } from "@dnd-kit/utilities";
 
 const TYPE_ORDER = ["chat", "vision", "embedding", "asr", "tts", "video", "rerank", "image_gen", "image_edit"];
 
-interface PriorityItem {
-  id: string; model: string; provider_id: string; provider_name: string;
-  is_default: boolean; supports_vision: boolean; supports_tools: boolean;
-  supports_reasoning: boolean; api_type: string;
-  input_cost: number | null; output_cost: number | null;
-  context_window: number | null;
-}
+type PriorityItem = ModelPriorityItem;
 
 function SortableItem({
   item, index, activeType, onSetDefault,

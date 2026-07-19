@@ -29,10 +29,6 @@ from core.log import log
 
 import re as _re
 
-# 尾部逗号：匹配 } 或 ] 前的逗号（及后续空白）
-_TRAILING_COMMA_RE = _re.compile(r",\s*([]}])")
-# 单行注释 //
-_LINE_COMMENT_RE = _re.compile(r"//(?![/])")
 # 非法控制字符（\x00-\x1f 中排除 \t \n \r）
 _CTRL_CHAR_RE = _re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
@@ -44,22 +40,47 @@ def repair_json_arguments(arguments: str) -> str:
     - 移除 } / ] 前的尾部逗号
     - 移除 // 单行注释
     - 移除非法控制字符
+
+    注释与尾逗号清理仅在字符串字面量之外进行，
+    避免破坏字符串值内容（如 URL 中的 //）。
     """
     if not arguments:
         return arguments
 
-    result = arguments
+    out: List[str] = []
+    i, n = 0, len(arguments)
+    in_string = False
+    while i < n:
+        ch = arguments[i]
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(arguments[i + 1])
+                i += 1
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+            out.append(ch)
+        elif ch == "/" and arguments[i + 1:i + 2] == "/":
+            # 字符串外的 // 注释：跳过至行尾
+            while i < n and arguments[i] not in "\r\n":
+                i += 1
+            continue
+        elif ch == ",":
+            # 字符串外的尾部逗号：下一个非空白字符是 } 或 ] 时丢弃
+            j = i + 1
+            while j < n and arguments[j] in " \t\r\n":
+                j += 1
+            if j < n and arguments[j] in "}]":
+                i += 1
+                continue
+            out.append(ch)
+        else:
+            out.append(ch)
+        i += 1
 
-    # 移除尾部逗号（LLM 最常见的 JSON 错误）
-    result = _TRAILING_COMMA_RE.sub(r"\1", result)
-
-    # 移除单行注释（某些模型会在 JSON 中加注释）
-    result = _LINE_COMMENT_RE.sub("", result)
-
-    # 移除非法控制字符
-    result = _CTRL_CHAR_RE.sub("", result)
-
-    return result
+    return _CTRL_CHAR_RE.sub("", "".join(out))
 
 
 # ======================================================================
@@ -401,6 +422,12 @@ class EntityRegistry:
                     and existing.entity_class != metadata.entity_class):
                 log(f"⚠️ 实体名称冲突: {metadata.name}", "WARNING")
                 return False
+            if existing.source != metadata.source:
+                log(
+                    f"⚠️ 实体名称冲突，已覆盖: {metadata.name} "
+                    f"({existing.source} → {metadata.source})",
+                    "WARNING",
+                )
             cls._remove_from_indexes(metadata.name)
 
         cls._entities[metadata.name] = metadata

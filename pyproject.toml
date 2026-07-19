@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10, <3.12"
 dependencies = [
     # 智能体核心（litellm 统一 LLM API，内含 openai 作为传递依赖）
-    "litellm>=1.92.0",
+    "litellm>=1.93.0",
     "orjson>=3.11.9",
     "aiosqlite==0.21.0",
     "pydantic>=2.10.0",

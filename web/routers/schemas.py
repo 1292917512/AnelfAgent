@@ -36,6 +36,29 @@ class MindConfigUpdate(BaseModel):
     reasoning_effort: Optional[str] = None
 
 
+class CogneeChatModelUpdate(BaseModel):
+    source: Optional[str] = None
+    model_id: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+    endpoint: Optional[str] = None
+    api_version: Optional[str] = None
+    instructor_mode: Optional[str] = None
+    max_completion_tokens: Optional[int] = None
+    extra_args: Optional[dict] = None
+
+
+class CogneeEmbeddingModelUpdate(BaseModel):
+    source: Optional[str] = None
+    model_id: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+    endpoint: Optional[str] = None
+    dimensions: Optional[int] = None
+
+
 class CogneeConfigUpdate(BaseModel):
     enabled: Optional[bool] = None
     sync_enabled: Optional[bool] = None
@@ -43,6 +66,8 @@ class CogneeConfigUpdate(BaseModel):
     data_root: Optional[str] = None
     dataset_prefix: Optional[str] = None
     timeout_seconds: Optional[float] = None
+    pipeline_timeout_seconds: Optional[float] = None
+    improve_interval_seconds: Optional[float] = None
     sync_interval_seconds: Optional[float] = None
     sync_batch_size: Optional[int] = None
     max_retries: Optional[int] = None
@@ -51,6 +76,8 @@ class CogneeConfigUpdate(BaseModel):
     rrf_k: Optional[int] = None
     recall_pool_multiplier: Optional[int] = None
     search_types: Optional[list[str]] = None
+    chat: Optional[CogneeChatModelUpdate] = None
+    embedding: Optional[CogneeEmbeddingModelUpdate] = None
 
 
 class CogneeBackfillRequest(BaseModel):

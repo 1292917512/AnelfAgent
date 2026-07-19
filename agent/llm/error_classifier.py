@@ -74,6 +74,11 @@ _PARAM_ERROR_PATTERNS = (
     "validation error", "malformed", "invalid schema",
 )
 
+# 流式响应体内的错误载荷（litellm 以通用异常抛出，无类型与状态码）
+_STREAM_ERROR_PATTERNS = (
+    "raised a streaming error", "unable to parse response",
+)
+
 
 def _match_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(p in text for p in patterns)
@@ -163,6 +168,11 @@ def classify_llm_error(exc: BaseException) -> ClassifiedError:
     if _match_any(msg_lower, _PARAM_ERROR_PATTERNS):
         return ClassifiedError(
             ErrorCategory.PARAM_ERROR, retryable=False, message=message,
+            status_code=status_code,
+        )
+    if _match_any(msg_lower, _STREAM_ERROR_PATTERNS):
+        return ClassifiedError(
+            ErrorCategory.SERVER_ERROR, retryable=True, message=message,
             status_code=status_code,
         )
 

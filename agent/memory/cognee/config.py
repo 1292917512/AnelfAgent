@@ -10,6 +10,68 @@ from typing import Any
 from core.log import log
 from core.path import ConfigPaths, project_root
 
+# 模型来源：auto=自动映射 LLMManager / model=指定 LLMManager 模型 / custom=完全自定义
+MODEL_SOURCE_AUTO = "auto"
+MODEL_SOURCE_MODEL = "model"
+MODEL_SOURCE_CUSTOM = "custom"
+MODEL_SOURCES = (MODEL_SOURCE_AUTO, MODEL_SOURCE_MODEL, MODEL_SOURCE_CUSTOM)
+
+
+@dataclass(slots=True)
+class CogneeChatModelConfig:
+    """Cognee 结构化抽取 LLM 配置（独立于主对话模型）。"""
+
+    source: str = MODEL_SOURCE_AUTO
+    # source=model：LLMManager 中的 chat 模型 id
+    model_id: str = ""
+    # source=custom：cognee provider（openai/anthropic/gemini/ollama/custom/azure/mistral/bedrock）
+    provider: str = "openai"
+    model: str = ""
+    api_key: str = ""
+    endpoint: str = ""
+    api_version: str = ""
+    # instructor 结构化输出模式覆盖；thinking 端点用 json_mode 规避 tool_choice 限制
+    instructor_mode: str = ""
+    max_completion_tokens: int = 0
+    extra_args: dict[str, Any] = field(default_factory=dict)
+
+    def normalized(self) -> "CogneeChatModelConfig":
+        if self.source not in MODEL_SOURCES:
+            self.source = MODEL_SOURCE_AUTO
+        self.model_id = self.model_id.strip()
+        self.provider = self.provider.strip().lower() or "openai"
+        self.model = self.model.strip()
+        self.endpoint = self.endpoint.strip()
+        self.api_version = self.api_version.strip()
+        self.instructor_mode = self.instructor_mode.strip()
+        self.max_completion_tokens = max(0, int(self.max_completion_tokens))
+        if not isinstance(self.extra_args, dict):
+            self.extra_args = {}
+        return self
+
+
+@dataclass(slots=True)
+class CogneeEmbeddingModelConfig:
+    """Cognee 向量化模型配置（独立于主 Embedding 客户端）。"""
+
+    source: str = MODEL_SOURCE_AUTO
+    model_id: str = ""
+    provider: str = ""
+    model: str = ""
+    api_key: str = ""
+    endpoint: str = ""
+    dimensions: int = 0
+
+    def normalized(self) -> "CogneeEmbeddingModelConfig":
+        if self.source not in MODEL_SOURCES:
+            self.source = MODEL_SOURCE_AUTO
+        self.model_id = self.model_id.strip()
+        self.provider = self.provider.strip().lower()
+        self.model = self.model.strip()
+        self.endpoint = self.endpoint.strip()
+        self.dimensions = max(0, int(self.dimensions))
+        return self
+
 
 @dataclass(slots=True)
 class CogneeConfig:
@@ -33,6 +95,8 @@ class CogneeConfig:
     search_types: list[str] = field(
         default_factory=lambda: ["CHUNKS", "CHUNKS_LEXICAL"],
     )
+    chat: CogneeChatModelConfig = field(default_factory=CogneeChatModelConfig)
+    embedding: CogneeEmbeddingModelConfig = field(default_factory=CogneeEmbeddingModelConfig)
 
     @property
     def absolute_data_root(self) -> str:
@@ -54,6 +118,12 @@ class CogneeConfig:
         self.recall_pool_multiplier = max(1, int(self.recall_pool_multiplier))
         self.dataset_prefix = self.dataset_prefix.strip() or "anelf"
         self.search_types = [str(item).strip().upper() for item in self.search_types if str(item).strip()]
+        if not isinstance(self.chat, CogneeChatModelConfig):
+            self.chat = _build_nested(CogneeChatModelConfig, self.chat)
+        if not isinstance(self.embedding, CogneeEmbeddingModelConfig):
+            self.embedding = _build_nested(CogneeEmbeddingModelConfig, self.embedding)
+        self.chat.normalized()
+        self.embedding.normalized()
         return self
 
     def to_dict(self) -> dict[str, Any]:
@@ -71,10 +141,20 @@ def load_cognee_config() -> CogneeConfig:
         raw = json.loads(path.read_text(encoding="utf-8"))
         allowed = CogneeConfig.__dataclass_fields__.keys()
         values = {key: value for key, value in raw.items() if key in allowed}
+        values["chat"] = _build_nested(CogneeChatModelConfig, values.get("chat"))
+        values["embedding"] = _build_nested(CogneeEmbeddingModelConfig, values.get("embedding"))
         return CogneeConfig(**values).normalized()
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         log(f"Cognee 配置加载失败，使用默认值: {exc}", "WARNING")
         return CogneeConfig()
+
+
+def _build_nested(cls: type, raw: Any) -> Any:
+    """从 dict 构造嵌套配置 dataclass，过滤未知字段。"""
+    if not isinstance(raw, dict):
+        return cls()
+    allowed = cls.__dataclass_fields__.keys()
+    return cls(**{key: value for key, value in raw.items() if key in allowed})
 
 
 def save_cognee_config(config: CogneeConfig) -> None:

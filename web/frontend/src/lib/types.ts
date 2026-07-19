@@ -53,6 +53,103 @@ export interface PersonaData {
   [key: string]: unknown;
 }
 
+export interface ModelPriorityItem {
+  id: string;
+  model: string;
+  provider_id: string;
+  provider_name: string;
+  is_default: boolean;
+  supports_vision: boolean;
+  supports_tools: boolean;
+  supports_reasoning: boolean;
+  api_type: string;
+  input_cost: number | null;
+  output_cost: number | null;
+  context_window: number | null;
+}
+
+export type CogneeModelSource = "auto" | "model" | "custom";
+
+export interface CogneeChatModelConfig {
+  source: CogneeModelSource;
+  model_id: string;
+  provider: string;
+  model: string;
+  api_key: string;
+  endpoint: string;
+  api_version: string;
+  instructor_mode: string;
+  max_completion_tokens: number;
+  extra_args: Record<string, unknown>;
+}
+
+export interface CogneeEmbeddingModelConfig {
+  source: CogneeModelSource;
+  model_id: string;
+  provider: string;
+  model: string;
+  api_key: string;
+  endpoint: string;
+  dimensions: number;
+}
+
+export interface CogneeConfig {
+  enabled: boolean;
+  sync_enabled: boolean;
+  recall_enabled: boolean;
+  data_root: string;
+  dataset_prefix: string;
+  timeout_seconds: number;
+  pipeline_timeout_seconds: number;
+  improve_interval_seconds: number;
+  sync_interval_seconds: number;
+  sync_batch_size: number;
+  max_retries: number;
+  native_weight: number;
+  cognee_weight: number;
+  rrf_k: number;
+  recall_pool_multiplier: number;
+  search_types: string[];
+  chat: CogneeChatModelConfig;
+  embedding: CogneeEmbeddingModelConfig;
+}
+
+export interface CogneeResolvedInfo {
+  provider?: string;
+  model?: string;
+  endpoint?: string;
+  instructor_mode?: string;
+  api_key_set?: boolean;
+}
+
+export interface CogneeStatus {
+  availability: {
+    installed: boolean;
+    enabled: boolean;
+    ready: boolean;
+    version: string;
+    reason: string;
+  };
+  resolved: {
+    chat?: CogneeResolvedInfo;
+    embedding?: CogneeResolvedInfo;
+  };
+  sync: {
+    enabled: boolean;
+    running: boolean;
+    pending: number;
+    failed: number;
+    synced: number;
+    last_error: string;
+  };
+}
+
+export interface CogneeDataset {
+  id: string;
+  name: string;
+  [key: string]: unknown;
+}
+
 export interface LTMItem {
   id: number;
   content: string;

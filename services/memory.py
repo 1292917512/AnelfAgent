@@ -389,6 +389,7 @@ class MemoryService:
         sync = await coordinator.status() if coordinator else None
         return {
             "availability": availability_data,
+            "resolved": client.resolved_info if client else {},
             "sync": sync.model_dump() if sync else {
                 "enabled": config.enabled and config.sync_enabled,
                 "running": False,
@@ -405,20 +406,30 @@ class MemoryService:
         return load_cognee_config().to_dict()
 
     @staticmethod
-    def save_cognee_config(values: Dict[str, Any]) -> Dict[str, Any]:
+    async def save_cognee_config(values: Dict[str, Any]) -> Dict[str, Any]:
         from agent.memory.cognee.config import (
             CogneeConfig,
             load_cognee_config,
             save_cognee_config,
         )
+        from agent.memory.cognee.runtime import get_cognee_coordinator
 
         current = load_cognee_config().to_dict()
-        current.update(values)
+        for key, value in values.items():
+            if isinstance(value, dict) and isinstance(current.get(key), dict):
+                current[key].update(value)
+            else:
+                current[key] = value
         allowed = CogneeConfig.__dataclass_fields__.keys()
         config = CogneeConfig(**{
             key: value for key, value in current.items() if key in allowed
         }).normalized()
         save_cognee_config(config)
+
+        # 热更新运行时，保存即生效（worker 启停 + 模型重映射）
+        coordinator = get_cognee_coordinator()
+        if coordinator:
+            await coordinator.reconfigure(config)
         return config.to_dict()
 
     @staticmethod
