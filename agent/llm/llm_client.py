@@ -499,16 +499,18 @@ class LLMClient(BaseEntity):
             raise LLMNotConfiguredError("尚未配置可用的 LLM 模型")
 
     def _resolve_tool_choice(self, tool_choice: Any) -> Any:
-        """端点不接受强制工具选择时，将 required 等强制值降级为 auto。
+        """端点不接受强制工具选择时，将强制值降级为 auto。
 
+        强制值包括字符串 required 与指定工具的 object 形式
+        （OpenAI {"type": "function"} / Anthropic {"type": "any"|"tool"}）。
         auto / none 与 thinking 模式兼容，原样保留。
         """
-        if (
-            not self.config.supports_forced_tool_choice
-            and isinstance(tool_choice, str)
-            and tool_choice not in ("auto", "none")
-        ):
-            return "auto"
+        if self.config.supports_forced_tool_choice:
+            return tool_choice
+        if isinstance(tool_choice, str):
+            return tool_choice if tool_choice in ("auto", "none") else "auto"
+        if isinstance(tool_choice, dict):
+            return tool_choice if tool_choice.get("type") in ("auto", "none") else "auto"
         return tool_choice
 
     def _merge_request_params(

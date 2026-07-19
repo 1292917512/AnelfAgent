@@ -40,6 +40,7 @@
   "modelIdHint": "Unique identifier, e.g. kimi-for-coding",
   "modelNameHint": "Leave empty to use the model ID",
   "createFailed": "Failed to add model",
+  "createProviderFailed": "Failed to add provider",
   "remoteModelsTitle": "Available Models from Provider",
   "loading": "Loading...",
   "remoteCount": "{{count}} models available",

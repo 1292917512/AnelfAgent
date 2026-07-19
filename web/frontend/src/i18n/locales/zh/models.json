@@ -40,6 +40,7 @@
   "modelIdHint": "唯一标识，如 kimi-for-coding",
   "modelNameHint": "留空则与模型 ID 相同",
   "createFailed": "添加模型失败",
+  "createProviderFailed": "添加供应商失败",
   "remoteModelsTitle": "供应商可用模型",
   "loading": "加载中...",
   "remoteCount": "共 {{count}} 个模型",

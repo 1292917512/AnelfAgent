@@ -85,6 +85,7 @@ export function ConfigPanel() {
   const [jsonErrors, setJsonErrors] = useState<Partial<Record<JsonField, string>>>({});
   const [newProvider, setNewProvider] = useState<CreateProviderConfig>(EMPTY_PROVIDER);
   const [showNewProvider, setShowNewProvider] = useState(false);
+  const [addProviderError, setAddProviderError] = useState("");
   const [testResult, setTestResult] = useState("");
 
   const [browsingRemote, setBrowsingRemote] = useState<string | null>(null);
@@ -121,7 +122,11 @@ export function ConfigPanel() {
 
   const addProviderMut = useMutation({
     mutationFn: (data: CreateProviderConfig) => providersApi.create(data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["providers"] }); setShowNewProvider(false); setNewProvider(EMPTY_PROVIDER); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["providers"] }); setShowNewProvider(false); setNewProvider(EMPTY_PROVIDER); setAddProviderError(""); },
+    onError: (err) => {
+      const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      setAddProviderError(`${t("createProviderFailed")}: ${typeof detail === "string" ? detail : String(err)}`);
+    },
   });
   const updateProviderMut = useMutation({
     mutationFn: ({ pid, data }: { pid: string; data: UpdateProviderConfig }) => providersApi.update(pid, data),
@@ -420,10 +425,17 @@ export function ConfigPanel() {
                 className="w-full bg-[var(--bg-elevated)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]" />
             </div>
           </div>
+          {addProviderError && (
+            <p className="text-xs text-[var(--danger)]">{addProviderError}</p>
+          )}
           <div className="flex gap-2">
-            <button onClick={() => newProvider.id && addProviderMut.mutate(newProvider)} disabled={!newProvider.id}
-              className="px-4 py-2 text-sm font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-all">{t("common:create")}</button>
-            <button onClick={() => setShowNewProvider(false)}
+            <button onClick={() => newProvider.id.trim() && addProviderMut.mutate({ ...newProvider, id: newProvider.id.trim() })}
+              disabled={!newProvider.id.trim() || addProviderMut.isPending}
+              className="flex items-center gap-1 px-4 py-2 text-sm font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-all">
+              {addProviderMut.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+              {t("common:create")}
+            </button>
+            <button onClick={() => { setShowNewProvider(false); setAddProviderError(""); }}
               className="px-4 py-2 text-sm font-medium rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all">{t("common:cancel")}</button>
           </div>
         </div>
