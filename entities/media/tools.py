@@ -82,7 +82,7 @@ async def _media_with_fallback(
 # 图片识别（vision）— 已有回退机制，保持但统一风格
 # ==================================================================
 
-@tool(name="recognize_image", group="media", tags=["media:image", "media:video"])
+@tool(name="recognize_image", group="media", tags=["media:image", "media:video"], timeout=120.0)
 async def recognize_image(image_path: str = "", prompt: str = "", **kwargs: str) -> str:
     """识别/分析图片内容。支持本地文件路径或 URL。
 
