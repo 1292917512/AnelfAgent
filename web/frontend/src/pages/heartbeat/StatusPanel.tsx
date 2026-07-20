@@ -60,31 +60,31 @@ export function StatusPanel() {
     <div className="space-y-4">
       {/* 顶部状态指标 */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <div className="flex items-center gap-3 p-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--card)]">
+        <div className="flex items-center gap-3 p-3 rounded-md border border-border bg-card">
           <StatusDot status={isRunning && hbStatus?.enabled ? "ok" : "offline"} />
           <div>
-            <p className="text-[10px] text-[var(--muted)] uppercase tracking-wide">{t("status.title")}</p>
-            <p className="text-sm font-semibold text-[var(--text-strong)]">
+            <p className="text-[10px] text-muted uppercase tracking-wide">{t("status.title")}</p>
+            <p className="text-sm font-semibold text-heading">
               {!isRunning ? t("status.stopped") : hbStatus?.enabled ? t("status.running") : t("status.paused")}
             </p>
           </div>
         </div>
-        <div className="p-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--card)]">
-          <p className="text-[10px] text-[var(--muted)] uppercase tracking-wide">{t("status.interval")}</p>
-          <p className="text-sm font-semibold text-[var(--text-strong)]">{formatTime(interval)}</p>
+        <div className="p-3 rounded-md border border-border bg-card">
+          <p className="text-[10px] text-muted uppercase tracking-wide">{t("status.interval")}</p>
+          <p className="text-sm font-semibold text-heading">{formatTime(interval)}</p>
         </div>
-        <div className="p-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--card)]">
-          <p className="text-[10px] text-[var(--muted)] uppercase tracking-wide">{t("status.totalTicks")}</p>
-          <p className="text-sm font-semibold text-[var(--text-strong)]">{totalTicks}</p>
+        <div className="p-3 rounded-md border border-border bg-card">
+          <p className="text-[10px] text-muted uppercase tracking-wide">{t("status.totalTicks")}</p>
+          <p className="text-sm font-semibold text-heading">{totalTicks}</p>
         </div>
-        <div className="p-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--card)]">
-          <p className="text-[10px] text-[var(--muted)] uppercase tracking-wide">{t("status.scheduledTasks")}</p>
-          <p className="text-sm font-semibold text-[var(--text-strong)]">{schedules.length}</p>
+        <div className="p-3 rounded-md border border-border bg-card">
+          <p className="text-[10px] text-muted uppercase tracking-wide">{t("status.scheduledTasks")}</p>
+          <p className="text-sm font-semibold text-heading">{schedules.length}</p>
         </div>
         {agentStatus?.uptime != null && (
-          <div className="p-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--card)]">
-            <p className="text-[10px] text-[var(--muted)] uppercase tracking-wide">{t("status.uptime")}</p>
-            <p className="text-sm font-semibold text-[var(--text-strong)]">{formatTime(agentStatus.uptime)}</p>
+          <div className="p-3 rounded-md border border-border bg-card">
+            <p className="text-[10px] text-muted uppercase tracking-wide">{t("status.uptime")}</p>
+            <p className="text-sm font-semibold text-heading">{formatTime(agentStatus.uptime)}</p>
           </div>
         )}
       </div>
@@ -94,7 +94,7 @@ export function StatusPanel() {
         <button
           onClick={() => triggerMut.mutate()}
           disabled={triggerMut.isPending || !isRunning}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-white hover:opacity-90 disabled:opacity-50 transition-all"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-50 transition-all"
         >
           <Zap size={13} /> {triggerMut.isPending ? t("status.triggering") : t("status.triggerHeartbeat")}
         </button>
@@ -113,15 +113,15 @@ export function StatusPanel() {
                 <div
                   key={s.task_name}
                   className={cn(
-                    "flex items-center gap-3 p-2.5 rounded-[var(--radius-md)] border border-[var(--border)]",
-                    isDisabled ? "opacity-50 bg-[var(--bg-base)]" : "bg-[var(--bg-elevated)]",
+                    "flex items-center gap-3 p-2.5 rounded-md border border-border",
+                    isDisabled ? "opacity-50 bg-bg" : "bg-elevated",
                   )}
                 >
-                  <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", isDisabled ? "bg-[var(--muted)]" : "bg-[var(--ok)]")} />
+                  <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", isDisabled ? "bg-[var(--muted)]" : "bg-ok")} />
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-[var(--text-strong)] truncate">{displayName}</span>
+                      <span className="text-sm font-medium text-heading truncate">{displayName}</span>
                       <span className={cn(
                         "text-[10px] px-1.5 py-0.5 rounded-full",
                         s.mode === "heartbeat" ? "bg-blue-500/10 text-blue-500" :
@@ -136,21 +136,21 @@ export function StatusPanel() {
                       <div className="flex items-center gap-2 mt-1">
                         <div className="flex-1 h-1.5 rounded-full bg-[var(--border)] overflow-hidden max-w-[200px]">
                           <div
-                            className="h-full rounded-full bg-[var(--accent)] transition-all"
+                            className="h-full rounded-full bg-accent transition-all"
                             style={{ width: `${Math.min(100, ((s.beat_count ?? 0) / (s.every_n_beats ?? 10)) * 100)}%` }}
                           />
                         </div>
-                        <span className="text-[11px] text-[var(--muted)] tabular-nums">
+                        <span className="text-[11px] text-muted tabular-nums">
                           {s.beat_count ?? 0}/{s.every_n_beats ?? 10}
                         </span>
-                        <span className="text-[11px] text-[var(--muted)]">
+                        <span className="text-[11px] text-muted">
                           ({t("status.remaining", { count: Math.max(0, (s.every_n_beats ?? 10) - (s.beat_count ?? 0)) })} ≈ {formatTime(Math.max(0, (s.every_n_beats ?? 10) - (s.beat_count ?? 0)) * interval)})
                         </span>
                       </div>
                     )}
 
                     {s.mode === "scheduled" && (
-                      <p className="text-[11px] text-[var(--muted)] mt-0.5">
+                      <p className="text-[11px] text-muted mt-0.5">
                         {t("schedule.times")}: {(s.schedule_times ?? []).join(", ") || "—"}
                       </p>
                     )}
@@ -159,7 +159,7 @@ export function StatusPanel() {
                   <button
                     onClick={() => triggerTaskMut.mutate(s.task_name)}
                     disabled={triggerTaskMut.isPending || isDisabled}
-                    className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] disabled:opacity-40 transition-colors"
+                    className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md border border-border text-muted hover:text-accent hover:border-accent disabled:opacity-40 transition-colors"
                     title={t("status.runNow")}
                   >
                     <Play size={11} /> {t("status.runNow")}
@@ -177,16 +177,16 @@ export function StatusPanel() {
         actions={
           <button
             onClick={() => setLogRefreshKey((k) => k + 1)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
           >
             <RefreshCw size={14} /> {t("status.refreshLog")}
           </button>
         }
       >
         {logLoading ? (
-          <p className="text-sm text-[var(--muted)]">{t("status.loadingLog")}</p>
+          <p className="text-sm text-muted">{t("status.loadingLog")}</p>
         ) : logLines.length === 0 ? (
-          <p className="text-sm text-[var(--muted)]">{t("status.noLog")}</p>
+          <p className="text-sm text-muted">{t("status.noLog")}</p>
         ) : (
           <div className="space-y-2 max-h-[360px] overflow-y-auto">
             {logLines.map((block, i) => {
@@ -194,10 +194,10 @@ export function StatusPanel() {
               const header = lines[0]?.replace(/^#+\s*/, "").trim() ?? "";
               const body = lines.slice(1);
               return (
-                <div key={i} className="p-2.5 rounded-[var(--radius-md)] bg-[var(--bg-elevated)] border border-[var(--border)]">
-                  <p className="text-xs font-semibold text-[var(--accent)] mb-0.5">{header}</p>
+                <div key={i} className="p-2.5 rounded-md bg-elevated border border-border">
+                  <p className="text-xs font-semibold text-accent mb-0.5">{header}</p>
                   {body.map((line, j) => (
-                    <p key={j} className="text-[11px] text-[var(--text)] font-mono leading-relaxed">{line}</p>
+                    <p key={j} className="text-[11px] text-foreground font-mono leading-relaxed">{line}</p>
                   ))}
                 </div>
               );

@@ -27,7 +27,7 @@ export function ChannelWebView({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <p className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
+        <p className="text-xs font-semibold text-muted uppercase tracking-wider">
           {t("remotePanel")}
         </p>
         <div className="flex items-center gap-2">
@@ -35,7 +35,7 @@ export function ChannelWebView({
             href={url}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-1 px-2 py-1 text-[11px] text-[var(--muted)] rounded hover:bg-[var(--bg-hover)] transition-colors"
+            className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted rounded hover:bg-hover transition-colors"
           >
             <ExternalLink size={12} /> {t("openNewWindow")}
           </a>
@@ -44,8 +44,8 @@ export function ChannelWebView({
             className={cn(
               "px-2 py-1 text-[11px] rounded transition-colors",
               showIframe
-                ? "bg-[var(--accent)] text-white"
-                : "text-[var(--muted)] hover:bg-[var(--bg-hover)]",
+                ? "bg-accent text-white"
+                : "text-muted hover:bg-hover",
             )}
           >
             {showIframe ? t("collapse") : t("inlinePreview")}
@@ -53,11 +53,10 @@ export function ChannelWebView({
         </div>
       </div>
       {showIframe && (
-        <div className="rounded-[var(--radius-md)] border border-[var(--border)] overflow-hidden">
+        <div className="rounded-md border border-border overflow-hidden">
           <iframe
             src={url}
-            className="w-full border-0 bg-[var(--bg)]"
-            style={{ height: "600px" }}
+            className="w-full border-0 bg-bg h-[50dvh] md:h-[600px]"
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
             title={`${channelKey} WebUI`}
           />

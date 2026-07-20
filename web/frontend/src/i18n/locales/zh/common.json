@@ -34,5 +34,8 @@
   "on": "开启中",
   "off": "关闭中",
   "connected": "已连接",
-  "disconnected": "未连接"
+  "disconnected": "未连接",
+  "login": "登录",
+  "passwordPlaceholder": "输入访问密码",
+  "verifying": "验证中…"
 }

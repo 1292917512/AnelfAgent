@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
+import { PageContainer } from "@/components/common/PageContainer";
 import { Activity, BarChart3, Zap, ScrollText } from "lucide-react";
 import { OverviewPanel } from "@/pages/dashboard/OverviewPanel";
 import { ToolsInsightPanel } from "@/pages/dashboard/ToolsInsightPanel";
@@ -21,12 +22,12 @@ export default function Dashboard() {
   ];
 
   return (
-    <div className="space-y-6 max-w-6xl">
+    <PageContainer wide>
       <TabBar tabs={TAB_KEYS} activeTab={tab} onChange={setTab} />
       {tab === "overview" && <OverviewPanel />}
       {tab === "tools" && <ToolsInsightPanel />}
       {tab === "events" && <EventsPanel />}
       {tab === "logs" && <LogsPanel />}
-    </div>
+    </PageContainer>
   );
 }

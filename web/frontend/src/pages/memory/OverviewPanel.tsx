@@ -31,7 +31,7 @@ export function OverviewPanel() {
   return (
     <div className="space-y-4">
       {(!health || health.error) ? (
-        <Card title={t("healthTitle")}><p className="text-sm text-[var(--muted)]">{health?.error || t("common:loading")}</p></Card>
+        <Card title={t("healthTitle")}><p className="text-sm text-muted">{health?.error || t("common:loading")}</p></Card>
       ) : (
         <Card title={t("healthSubtitle")} subtitle={t("totalMemories", { count: health.total_memories || 0 })}>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
@@ -43,9 +43,9 @@ export function OverviewPanel() {
           {warnings.length > 0 && (
             <div className="space-y-2 mb-4">
               {warnings.map((w) => (
-                <div key={w} className="flex items-start gap-2 p-3 rounded-[var(--radius-md)] bg-[var(--warn-subtle)] border border-[var(--warn)] text-sm">
-                  <AlertTriangle size={16} className="flex-shrink-0 mt-0.5 text-[var(--warn)]" />
-                  <span className="text-[var(--text)]">{w}</span>
+                <div key={w} className="flex items-start gap-2 p-3 rounded-md bg-warn-subtle border border-[var(--warn)] text-sm">
+                  <AlertTriangle size={16} className="flex-shrink-0 mt-0.5 text-warn" />
+                  <span className="text-foreground">{w}</span>
                 </div>
               ))}
             </div>
@@ -64,7 +64,7 @@ export function OverviewPanel() {
       <Card title={t("cogneeStatus")} subtitle={cogneeAvailability?.reason || t("cogneeStatusSubtitle")} actions={
         cogneeSync?.failed > 0 ? (
           <button onClick={() => retryCogneeMutation.mutate()}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all">
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all">
             <RefreshCw size={14} /> {t("retryFailedSync")}
           </button>
         ) : undefined
@@ -83,15 +83,15 @@ export function OverviewPanel() {
       <Card title={t("fileIndexTitle")} subtitle={t("fileIndexSubtitle")} actions={
         <div className="flex gap-2">
           <button onClick={() => cleanCacheMutation.mutate()}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all">
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all">
             <Trash2 size={14} /> {t("cleanCache")}
           </button>
           <button onClick={() => resyncMutation.mutate(false)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all">
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all">
             <RefreshCw size={14} /> {t("incrementalSync")}
           </button>
           <button onClick={() => resyncMutation.mutate(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--danger-subtle)] text-[var(--danger)] hover:bg-[rgba(239,68,68,0.15)] transition-all">
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all">
             <RefreshCw size={14} /> {t("fullRebuild")}
           </button>
         </div>
@@ -103,7 +103,7 @@ export function OverviewPanel() {
                 variant={typeof v === "boolean" ? (v ? "ok" : "default") : undefined} />
             ))}
           </div>
-        ) : (<p className="text-sm text-[var(--muted)]">{t("common:loading")}</p>)}
+        ) : (<p className="text-sm text-muted">{t("common:loading")}</p>)}
       </Card>
     </div>
   );

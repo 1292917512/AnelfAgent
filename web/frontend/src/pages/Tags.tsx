@@ -4,12 +4,9 @@ import { useTranslation } from "react-i18next";
 import { tagsApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { UnifiedTag } from "@/lib/types";
-import { Tag, Plus, Trash2, Lock, Search, X, MessageSquare, Wrench } from "lucide-react";
-
-interface CreateForm {
-  name: string;
-  description: string;
-}
+import { PageContainer } from "@/components/common/PageContainer";
+import { Button, ConfirmDialog, Input, LoadingBlock, Modal, Textarea } from "@/components/ui";
+import { Tag, Plus, Trash2, Lock, Search, MessageSquare, Wrench } from "lucide-react";
 
 function SourceBadge({ source, t }: { source: "message" | "tool"; t: (k: string) => string }) {
   if (source === "message") {
@@ -17,7 +14,7 @@ function SourceBadge({ source, t }: { source: "message" | "tool"; t: (k: string)
       <span
         title={t("sourceMessageTooltip")}
         className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full
-          bg-blue-500/10 text-blue-400 border border-blue-500/20 cursor-help"
+          bg-accent-subtle text-info border border-info/20 cursor-help"
       >
         <MessageSquare size={8} />
         {t("sourceMessage")}
@@ -28,7 +25,7 @@ function SourceBadge({ source, t }: { source: "message" | "tool"; t: (k: string)
     <span
       title={t("sourceToolTooltip")}
       className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full
-        bg-[var(--secondary)] text-[var(--muted)] border border-[var(--border)] cursor-help"
+        bg-secondary text-muted border border-border cursor-help"
     >
       <Wrench size={8} />
       {t("sourceTool")}
@@ -48,30 +45,29 @@ function TagCard({
   return (
     <div
       className={cn(
-        "group flex flex-col gap-1.5 p-3 rounded-[var(--radius-md)] border transition-colors",
+        "group flex flex-col gap-1.5 p-3 rounded-md border transition-colors",
         tag.builtin
-          ? "border-[var(--border)] bg-[var(--secondary)] hover:border-[var(--border-strong)]"
-          : "border-[var(--accent)]/30 bg-[var(--accent)]/5 hover:border-[var(--accent)]/50",
+          ? "border-border bg-secondary hover:border-border-strong"
+          : "border-accent/30 bg-accent/5 hover:border-accent/50",
       )}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          {/* Name + badges */}
           <div className="flex items-center gap-1.5 flex-wrap">
-            <code className="text-xs font-mono font-semibold text-[var(--text-strong)]">
+            <code className="text-xs font-mono font-semibold text-heading">
               [{tag.name}]
             </code>
             {tag.builtin ? (
               <span
                 title={t("builtinTooltip")}
                 className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full
-                  bg-[var(--secondary)] text-[var(--muted)] border border-[var(--border)] cursor-help"
+                  bg-secondary text-muted border border-border cursor-help"
               >
                 <Lock size={8} />
                 {t("builtin")}
               </span>
             ) : (
-              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/20">
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-accent/10 text-accent border border-accent/20">
                 {t("custom")}
               </span>
             )}
@@ -81,21 +77,20 @@ function TagCard({
                 <SourceBadge key={s} source={s as "message" | "tool"} t={t} />
               ))}
           </div>
-          {/* Description */}
           {tag.description ? (
-            <p className="text-[11px] text-[var(--muted)] mt-1 leading-relaxed">
+            <p className="text-[11px] text-muted mt-1 leading-relaxed">
               {tag.description}
             </p>
           ) : (
-            <p className="text-[11px] text-[var(--muted)]/50 mt-1 italic">—</p>
+            <p className="text-[11px] text-muted/50 mt-1 italic">—</p>
           )}
         </div>
-        {/* Delete button for custom tags */}
+        {/* 删除按钮（触屏常显） */}
         {!tag.builtin && onDelete && (
           <button
             onClick={onDelete}
-            className="opacity-0 group-hover:opacity-100 flex-shrink-0 p-1 rounded
-              text-[var(--muted)] hover:text-red-400 hover:bg-red-400/10 transition-all"
+            className="opacity-100 md:opacity-0 md:group-hover:opacity-100 flex-shrink-0 p-1 rounded
+              text-muted hover:text-danger hover:bg-danger/10 transition-all"
             title={t("common:delete")}
           >
             <Trash2 size={13} />
@@ -111,7 +106,7 @@ export default function Tags() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState<CreateForm>({ name: "", description: "" });
+  const [form, setForm] = useState({ name: "", description: "" });
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   const { data: allTags = [], isLoading } = useQuery<UnifiedTag[]>({
@@ -147,74 +142,70 @@ export default function Tags() {
     );
   }, [allTags, kw]);
 
-  const builtinTags = filtered.filter((t) => t.builtin);
-  const customTags = filtered.filter((t) => !t.builtin);
-  const totalBuiltin = allTags.filter((t) => t.builtin).length;
-  const totalCustom = allTags.filter((t) => !t.builtin).length;
+  const builtinTags = filtered.filter((tag) => tag.builtin);
+  const customTags = filtered.filter((tag) => !tag.builtin);
+  const totalBuiltin = allTags.filter((tag) => tag.builtin).length;
+  const totalCustom = allTags.filter((tag) => !tag.builtin).length;
+
+  const closeCreate = () => {
+    setShowCreate(false);
+    setForm({ name: "", description: "" });
+  };
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      {/* Header */}
+    <PageContainer>
+      {/* 统计 + 创建 */}
       <div className="flex items-start justify-between gap-4">
-        <div className="space-y-1.5">
+        <div className="space-y-1.5 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--secondary)] text-[var(--muted)] border border-[var(--border)]">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted border border-border">
               {t("statsTotal", { count: allTags.length })}
             </span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--secondary)] text-[var(--muted)] border border-[var(--border)]">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted border border-border">
               {t("statsBuiltin", { count: totalBuiltin })}
             </span>
             {totalCustom > 0 && (
-              <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/20">
+              <span className="text-xs px-2 py-0.5 rounded-full bg-accent/10 text-accent border border-accent/20">
                 {t("statsCustom", { count: totalCustom })}
               </span>
             )}
           </div>
-          <p className="text-xs text-[var(--muted)] max-w-xl">{t("subtitle")}</p>
+          <p className="text-xs text-muted max-w-xl">{t("subtitle")}</p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)]
-            bg-[var(--accent)] text-white hover:opacity-90 transition-all flex-shrink-0"
-        >
+        <Button variant="primary" size="sm" onClick={() => setShowCreate(true)} className="shrink-0">
           <Plus size={14} />
           {t("createTag")}
-        </button>
+        </Button>
       </div>
 
-      {/* Search */}
+      {/* 搜索 */}
       <div className="relative">
-        <Search
-          size={16}
-          className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]"
-        />
-        <input
+        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+        <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder={t("searchPlaceholder")}
-          className="w-full pl-9 pr-3 py-2 text-sm rounded-[var(--radius-md)]
-            border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text)]
-            placeholder:text-[var(--muted)] focus:outline-none focus:border-[var(--accent)]"
+          className="pl-9"
         />
       </div>
 
       {isLoading ? (
-        <p className="text-sm text-[var(--muted)]">{t("common:loading")}</p>
+        <LoadingBlock label={t("common:loading")} />
       ) : filtered.length === 0 ? (
-        <p className="text-sm text-[var(--muted)] text-center py-10">
+        <p className="text-sm text-muted text-center py-10">
           {search ? t("noMatch") : t("noTags")}
         </p>
       ) : (
         <div className="space-y-6">
-          {/* Builtin tags */}
+          {/* 内置标签 */}
           {builtinTags.length > 0 && (
             <section className="space-y-2">
-              <div className="flex items-center gap-2">
-                <Lock size={13} className="text-[var(--muted)]" />
-                <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-strong)]">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Lock size={13} className="text-muted" />
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-strong">
                   {t("sectionBuiltin")}
                 </h2>
-                <span className="text-[11px] text-[var(--muted)]">
+                <span className="text-[11px] text-muted">
                   — {t("sectionBuiltinDesc")}
                 </span>
               </div>
@@ -226,20 +217,20 @@ export default function Tags() {
             </section>
           )}
 
-          {/* Custom tags */}
+          {/* 自定义标签 */}
           <section className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Tag size={13} className="text-[var(--accent)]" />
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-strong)]">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Tag size={13} className="text-accent" />
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-strong">
                 {t("sectionCustom")}
               </h2>
-              <span className="text-[11px] text-[var(--muted)]">
+              <span className="text-[11px] text-muted">
                 — {t("sectionCustomDesc")}
               </span>
             </div>
             {customTags.length === 0 ? (
-              <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] p-6 text-center">
-                <p className="text-xs text-[var(--muted)]">{t("noCustomTags")}</p>
+              <div className="rounded-md border border-dashed border-border p-6 text-center">
+                <p className="text-xs text-muted">{t("noCustomTags")}</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
@@ -257,117 +248,78 @@ export default function Tags() {
         </div>
       )}
 
-      {/* Create Modal */}
-      {showCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-[var(--card)] rounded-[var(--radius-lg,12px)] border border-[var(--border)] shadow-xl w-full max-w-md mx-4 p-6">
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-2">
-                <Plus size={18} className="text-[var(--accent)]" />
-                <h3 className="text-base font-semibold text-[var(--text-strong)]">
-                  {t("createTagTitle")}
-                </h3>
-              </div>
-              <button
-                onClick={() => { setShowCreate(false); setForm({ name: "", description: "" }); }}
-                className="text-[var(--muted)] hover:text-[var(--text)] transition-colors"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-[var(--muted)] mb-1">
-                  {t("tagName")}
-                </label>
-                <input
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder={t("tagNamePlaceholder")}
-                  className="w-full px-3 py-2 text-sm font-mono rounded-[var(--radius-md)]
-                    border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text)]
-                    placeholder:text-[var(--muted)] focus:outline-none focus:border-[var(--accent)]"
-                />
-                <p className="text-[10px] text-[var(--muted)] mt-1">{t("tagNameHint")}</p>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-[var(--muted)] mb-1">
-                  {t("tagDescription")}
-                </label>
-                <textarea
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  placeholder={t("tagDescriptionPlaceholder")}
-                  rows={3}
-                  className="w-full px-3 py-2 text-sm rounded-[var(--radius-md)]
-                    border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text)]
-                    placeholder:text-[var(--muted)] focus:outline-none focus:border-[var(--accent)] resize-none"
-                />
-              </div>
-              {form.name && (
-                <div className="p-2.5 rounded-[var(--radius-md)] bg-[var(--secondary)] border border-[var(--border)]">
-                  <p className="text-[10px] text-[var(--muted)] mb-1">预览</p>
-                  <code className="text-xs font-mono text-[var(--text-strong)]">
-                    [{form.name}:值]
-                  </code>
-                </div>
-              )}
-            </div>
-
-            <div className="flex justify-end gap-2 mt-5">
-              <button
-                onClick={() => { setShowCreate(false); setForm({ name: "", description: "" }); }}
-                className="px-4 py-1.5 text-xs font-medium rounded-[var(--radius-md)]
-                  border border-[var(--border)] text-[var(--text)] hover:bg-[var(--bg-hover)] transition-all"
-              >
-                {t("common:cancel")}
-              </button>
-              <button
-                onClick={() => createMut.mutate()}
-                disabled={!form.name.trim() || createMut.isPending}
-                className="px-4 py-1.5 text-xs font-medium rounded-[var(--radius-md)]
-                  bg-[var(--accent)] text-white hover:opacity-90 transition-all disabled:opacity-50"
-              >
-                {createMut.isPending ? t("common:saving") : t("common:create")}
-              </button>
-            </div>
+      {/* 创建弹窗 */}
+      <Modal
+        open={showCreate}
+        onClose={closeCreate}
+        width="max-w-md"
+        title={
+          <span className="flex items-center gap-2">
+            <Plus size={18} className="text-accent" />
+            {t("createTagTitle")}
+          </span>
+        }
+        footer={
+          <>
+            <Button variant="secondary" size="sm" onClick={closeCreate}>
+              {t("common:cancel")}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => createMut.mutate()}
+              disabled={!form.name.trim()}
+              loading={createMut.isPending}
+            >
+              {createMut.isPending ? t("common:saving") : t("common:create")}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-muted mb-1">{t("tagName")}</label>
+            <Input
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder={t("tagNamePlaceholder")}
+              className="font-mono"
+            />
+            <p className="text-[10px] text-muted mt-1">{t("tagNameHint")}</p>
           </div>
-        </div>
-      )}
-
-      {/* Delete Confirm */}
-      {deleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-[var(--card)] rounded-[var(--radius-lg,12px)] border border-[var(--border)] shadow-xl w-full max-w-sm mx-4 p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-9 h-9 rounded-full bg-red-500/10 flex items-center justify-center flex-shrink-0">
-                <Trash2 size={16} className="text-red-400" />
-              </div>
-              <p className="text-sm text-[var(--text)]">
-                {t("deleteConfirm", { name: deleteConfirm })}
-              </p>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setDeleteConfirm(null)}
-                className="px-4 py-1.5 text-xs font-medium rounded-[var(--radius-md)]
-                  border border-[var(--border)] text-[var(--text)] hover:bg-[var(--bg-hover)] transition-all"
-              >
-                {t("common:cancel")}
-              </button>
-              <button
-                onClick={() => deleteMut.mutate(deleteConfirm)}
-                disabled={deleteMut.isPending}
-                className="px-4 py-1.5 text-xs font-medium rounded-[var(--radius-md)]
-                  bg-red-500 text-white hover:bg-red-600 transition-all disabled:opacity-50"
-              >
-                {deleteMut.isPending ? t("common:saving") : t("common:delete")}
-              </button>
-            </div>
+          <div>
+            <label className="block text-xs font-medium text-muted mb-1">{t("tagDescription")}</label>
+            <Textarea
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+              placeholder={t("tagDescriptionPlaceholder")}
+              rows={3}
+              className="resize-none"
+            />
           </div>
+          {form.name && (
+            <div className="p-2.5 rounded-md bg-secondary border border-border">
+              <p className="text-[10px] text-muted mb-1">{t("preview")}</p>
+              <code className="text-xs font-mono text-heading">
+                [{form.name}:{t("previewValue")}]
+              </code>
+            </div>
+          )}
         </div>
-      )}
-    </div>
+      </Modal>
+
+      {/* 删除确认 */}
+      <ConfirmDialog
+        open={!!deleteConfirm}
+        onClose={() => setDeleteConfirm(null)}
+        onConfirm={() => deleteConfirm && deleteMut.mutate(deleteConfirm)}
+        title={t("common:delete")}
+        message={t("deleteConfirm", { name: deleteConfirm ?? "" })}
+        confirmText={deleteMut.isPending ? t("common:saving") : t("common:delete")}
+        cancelText={t("common:cancel")}
+        danger
+        loading={deleteMut.isPending}
+      />
+    </PageContainer>
   );
 }

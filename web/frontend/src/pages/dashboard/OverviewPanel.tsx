@@ -90,42 +90,42 @@ export function OverviewPanel() {
           {(pfc?.pending_messages?.length || pfc?.general_tasks?.length || (pfc?.pending_analysis_count ?? 0) > 0) ? (
             <div className="space-y-1.5 max-h-[260px] overflow-y-auto">
               {pfc?.pending_messages?.map((m, i) => (
-                <div key={`msg-${i}`} className="py-1.5 px-3 rounded-[var(--radius-sm)] bg-[var(--bg-elevated)] border border-[var(--border)]">
+                <div key={`msg-${i}`} className="py-1.5 px-3 rounded-sm bg-elevated border border-border">
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--accent-subtle)] text-[var(--accent)] font-medium">{t("message", { ns: "status" })}</span>
-                    <span className="text-xs font-mono text-[var(--muted)]">{m.scope}</span>
-                    {m.adapter_key && <span className="text-[10px] text-[var(--muted)]">[{m.adapter_key}]</span>}
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-subtle text-accent font-medium">{t("message", { ns: "status" })}</span>
+                    <span className="text-xs font-mono text-muted">{m.scope}</span>
+                    {m.adapter_key && <span className="text-[10px] text-muted">[{m.adapter_key}]</span>}
                   </div>
-                  <p className="text-xs text-[var(--text)] mt-1 truncate">{m.preview}</p>
+                  <p className="text-xs text-foreground mt-1 truncate">{m.preview}</p>
                 </div>
               ))}
               {pfc?.general_tasks?.map((task, i) => (
-                <div key={`task-${i}`} className="py-1.5 px-3 rounded-[var(--radius-sm)] bg-[var(--bg-elevated)] border border-[var(--border)]">
+                <div key={`task-${i}`} className="py-1.5 px-3 rounded-sm bg-elevated border border-border">
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--warn-subtle)] text-[var(--warn)] font-medium">{task.type}</span>
-                    <span className="text-xs font-mono text-[var(--muted)]">{task.scope}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-warn-subtle text-warn font-medium">{task.type}</span>
+                    <span className="text-xs font-mono text-muted">{task.scope}</span>
                   </div>
-                  <p className="text-xs text-[var(--text)] mt-1 truncate">{task.preview}</p>
+                  <p className="text-xs text-foreground mt-1 truncate">{task.preview}</p>
                 </div>
               ))}
               {(pfc?.pending_analysis_count ?? 0) > 0 && (
-                <div className="py-1.5 px-3 rounded-[var(--radius-sm)] bg-[var(--bg-elevated)] border border-[var(--border)] flex items-center gap-2">
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--info-subtle)] text-[var(--info)] font-medium">{t("analysis", { ns: "status" })}</span>
-                  <span className="text-xs text-[var(--text)]">{t("entitiesWaiting", { ns: "status", count: pfc?.pending_analysis_count })}</span>
+                <div className="py-1.5 px-3 rounded-sm bg-elevated border border-border flex items-center gap-2">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-subtle text-info font-medium">{t("analysis", { ns: "status" })}</span>
+                  <span className="text-xs text-foreground">{t("entitiesWaiting", { ns: "status", count: pfc?.pending_analysis_count })}</span>
                 </div>
               )}
             </div>
-          ) : <p className="text-[var(--muted)] text-sm py-2">{t("noPendingTasks", { ns: "status" })}</p>}
+          ) : <p className="text-muted text-sm py-2">{t("noPendingTasks", { ns: "status" })}</p>}
         </Card>
 
         <Card title={t("componentInfo")} subtitle={t("componentSubtitle")}>
           {components?.lines ? (
             <div className="space-y-1 font-mono text-[13px] max-h-[260px] overflow-y-auto">
               {(components.lines as string[]).map((line: string) => (
-                <div key={line} className="text-[var(--text)] py-0.5">{line}</div>
+                <div key={line} className="text-foreground py-0.5">{line}</div>
               ))}
             </div>
-          ) : <p className="text-[var(--muted)] text-sm">{t("loading", { ns: "common" })}</p>}
+          ) : <p className="text-muted text-sm">{t("loading", { ns: "common" })}</p>}
         </Card>
       </div>
 
@@ -137,10 +137,10 @@ export function OverviewPanel() {
           { icon: Activity, label: t("statusLink"), desc: t("statusDesc"), to: "/thinking" },
         ].map((item) => (
           <Link key={item.label} to={item.to}
-            className="group rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-4 transition-all duration-[var(--duration-normal)] hover:border-[var(--accent)] hover:shadow-[var(--shadow-md)] hover:-translate-y-0.5 animate-[rise_0.35s_var(--ease-out)_backwards]">
-            <item.icon size={20} className="text-[var(--accent)] mb-2" strokeWidth={1.5} />
-            <div className="font-semibold text-sm text-[var(--text-strong)]">{item.label}</div>
-            <div className="text-xs text-[var(--muted)] mt-0.5">{item.desc}</div>
+            className="group rounded-lg border border-border bg-card p-4 transition-all duration-[var(--duration-normal)] hover:border-accent hover:shadow-md hover:-translate-y-0.5 animate-[rise_0.35s_var(--ease-out)_backwards]">
+            <item.icon size={20} className="text-accent mb-2" strokeWidth={1.5} />
+            <div className="font-semibold text-sm text-heading">{item.label}</div>
+            <div className="text-xs text-muted mt-0.5">{item.desc}</div>
           </Link>
         ))}
       </div>

@@ -51,6 +51,16 @@ _COGNEE_NATIVE_EMBED_PROVIDERS = frozenset({"openai", "ollama", "azure"})
 
 _ANTHROPIC_OFFICIAL_ENDPOINT = "https://api.anthropic.com"
 
+# 模型 extra_body 透传时的保留键（与 cognee/instructor 自身参数冲突，丢弃）
+_LLM_ARGS_RESERVED_KEYS = frozenset({
+    "model", "messages", "max_tokens", "temperature",
+    "tools", "tool_choice", "response_format", "stream",
+})
+
+# thinking 模型的思考预算上限（tokens）。部分端点强制开启 thinking 且不可关闭，
+# 推理 token 与正文共享 max_tokens 预算，不加限制会把输出截断
+_THINKING_BUDGET_TOKENS = 2048
+
 
 class CogneeConfigError(RuntimeError):
     """Cognee 模型配置无法解析（配置不完整或与 cognee 不兼容）。"""
@@ -137,6 +147,8 @@ def _resolve_custom_chat(chat_cfg: CogneeChatModelConfig) -> dict[str, Any]:
     }
     if chat_cfg.api_version:
         payload["llm_api_version"] = chat_cfg.api_version
+    if chat_cfg.extra_args:
+        payload["llm_args"] = dict(chat_cfg.extra_args)
     _apply_chat_overrides(payload, chat_cfg)
     return payload
 
@@ -157,8 +169,39 @@ def _payload_from_client(client: Any, chat_cfg: CogneeChatModelConfig) -> dict[s
         "llm_endpoint": cfg.base_url,
         "llm_temperature": 0.0,
     }
+    llm_args = _build_llm_args(cfg, chat_cfg)
+    if llm_args:
+        payload["llm_args"] = llm_args
     _apply_chat_overrides(payload, chat_cfg, client=client)
     return payload
+
+
+def _build_llm_args(cfg: Any, chat_cfg: CogneeChatModelConfig) -> dict[str, Any]:
+    """组装透传给 litellm 的 llm_args。
+
+    - 模型自身 extra_body 过滤保留键后透传，与主对话行为对齐；
+    - thinking 模型自动注入思考预算上限（extra_body 通道），
+      防止推理 token 吃光输出预算导致 JSON 截断，可在模型 extra_body 中覆盖；
+    - chat 配置中的 extra_args 显式指定，优先级最高。
+    """
+    extra_body = {
+        key: value for key, value in (getattr(cfg, "extra_body", None) or {}).items()
+        if key not in _LLM_ARGS_RESERVED_KEYS
+    }
+    if getattr(cfg, "supports_reasoning", False) and "thinking" not in extra_body:
+        max_tokens = chat_cfg.max_completion_tokens or 16384
+        budget = max(1024, min(_THINKING_BUDGET_TOKENS, max_tokens - 1024))
+        extra_body["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        log(
+            f"Cognee: 模型 '{cfg.name}' 为 thinking 模型，"
+            f"思考预算限制为 {budget} tokens（可在模型 extra_body 中覆盖）",
+            "DEBUG",
+        )
+    llm_args: dict[str, Any] = {}
+    if extra_body:
+        llm_args["extra_body"] = extra_body
+    llm_args.update(chat_cfg.extra_args)
+    return llm_args
 
 
 def _apply_chat_overrides(
@@ -166,7 +209,7 @@ def _apply_chat_overrides(
     chat_cfg: CogneeChatModelConfig,
     client: Optional[Any] = None,
 ) -> None:
-    """应用 instructor_mode / max_tokens / extra_args 覆盖。
+    """应用 instructor_mode / max_tokens 覆盖。
 
     端点标记为不支持强制 tool_choice（thinking 常开）且未显式指定模式时，
     自动回退 json_mode——instructor 的 tools 系模式会注入 tool_choice=required，
@@ -184,8 +227,6 @@ def _apply_chat_overrides(
         payload["llm_instructor_mode"] = mode
     if chat_cfg.max_completion_tokens > 0:
         payload["llm_max_completion_tokens"] = chat_cfg.max_completion_tokens
-    if chat_cfg.extra_args:
-        payload["llm_args"] = dict(chat_cfg.extra_args)
 
 
 def anthropic_env_bridge(payload: dict[str, Any]) -> None:

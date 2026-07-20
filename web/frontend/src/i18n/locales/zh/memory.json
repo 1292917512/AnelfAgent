@@ -221,6 +221,7 @@
     "generalTitle": "通用配置",
     "generalSubtitle": "投影同步与联邦召回参数",
     "hotApplyNote": "保存后立即生效，无需重启",
-    "saveFailed": "保存失败，请查看后端日志"
+    "saveFailed": "保存失败，请查看后端日志",
+    "reasoningModelHint": "该模型为 thinking 模型：已自动限制思考预算防止输出截断，但抽取成本较高，建议改用非 thinking 模型"
   }
 }

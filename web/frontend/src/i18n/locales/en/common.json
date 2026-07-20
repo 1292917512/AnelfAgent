@@ -34,5 +34,8 @@
   "on": "On",
   "off": "Off",
   "connected": "Connected",
-  "disconnected": "Disconnected"
+  "disconnected": "Disconnected",
+  "login": "Sign In",
+  "passwordPlaceholder": "Enter access password",
+  "verifying": "Verifying…"
 }

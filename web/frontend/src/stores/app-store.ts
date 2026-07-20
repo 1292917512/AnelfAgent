@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-type Theme = "dark" | "light";
+export type Theme = "dark" | "light";
 
 export interface NavItem {
   path: string;
@@ -15,18 +15,11 @@ export interface Branding {
   version: string;
 }
 
-export interface ThemeConfig {
-  primaryColor: string;
-  accentColor: string;
-  defaultTheme: Theme;
-}
-
 interface AppState {
   theme: Theme;
   sidebarCollapsed: boolean;
   mobileMenuOpen: boolean;
   branding: Branding;
-  themeConfig: ThemeConfig;
   navigation: NavItem[];
   configLoaded: boolean;
   startedAt: number | null;
@@ -34,11 +27,7 @@ interface AppState {
   toggleTheme: () => void;
   toggleSidebar: () => void;
   setMobileMenuOpen: (open: boolean) => void;
-  setConfig: (cfg: {
-    branding?: Branding;
-    theme?: ThemeConfig;
-    navigation?: NavItem[];
-  }) => void;
+  setConfig: (cfg: { branding?: Branding; navigation?: NavItem[] }) => void;
   setStartedAt: (serverUptime: number) => void;
 }
 
@@ -48,18 +37,19 @@ const DEFAULT_BRANDING: Branding = {
   version: "0.2.0",
 };
 
-const DEFAULT_THEME: ThemeConfig = {
-  primaryColor: "#4a90d9",
-  accentColor: "#14b8a6",
-  defaultTheme: "dark",
-};
+/** 初始主题：本地存储 > 系统偏好 > 默认暗色 */
+export function getInitialTheme(): Theme {
+  const saved = localStorage.getItem("theme");
+  if (saved === "dark" || saved === "light") return saved;
+  if (window.matchMedia?.("(prefers-color-scheme: light)").matches) return "light";
+  return "dark";
+}
 
 export const useAppStore = create<AppState>((set, get) => ({
-  theme: (localStorage.getItem("theme") as Theme) || "dark",
+  theme: getInitialTheme(),
   sidebarCollapsed: false,
   mobileMenuOpen: false,
   branding: DEFAULT_BRANDING,
-  themeConfig: DEFAULT_THEME,
   navigation: [],
   configLoaded: false,
   startedAt: null,
@@ -79,7 +69,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setConfig: (cfg) =>
     set((s) => ({
       branding: cfg.branding ?? s.branding,
-      themeConfig: cfg.theme ?? s.themeConfig,
       navigation: cfg.navigation ?? s.navigation,
       configLoaded: true,
     })),

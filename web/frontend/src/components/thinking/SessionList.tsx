@@ -14,7 +14,7 @@ export function SessionList({ sessions, activeId, onSelect }: Props) {
 
   if (sessions.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-xs text-[var(--muted)] px-4">
+      <div className="flex items-center justify-center h-full text-xs text-muted px-4">
         {t("noSessions")}
       </div>
     );
@@ -30,31 +30,31 @@ export function SessionList({ sessions, activeId, onSelect }: Props) {
             key={s.id}
             onClick={() => onSelect(s.id)}
             className={cn(
-              "w-full text-left px-3 py-2 rounded-[var(--radius-md)] transition-all duration-150",
+              "w-full text-left px-3 py-2 rounded-md transition-all duration-150",
               "border text-xs",
               isActive
-                ? "bg-[var(--accent-subtle)] border-[var(--accent)] text-[var(--text-strong)]"
-                : "border-transparent text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)]",
+                ? "bg-accent-subtle border-accent text-heading"
+                : "border-transparent text-muted hover:text-foreground hover:bg-hover",
             )}
           >
             <div className="flex items-center gap-1.5 mb-0.5">
               {s.is_introspection ? (
-                <Brain size={11} className="text-[var(--ok)] shrink-0" />
+                <Brain size={11} className="text-ok shrink-0" />
               ) : s.is_heartbeat ? (
-                <Clock size={11} className="text-[var(--warn)] shrink-0" />
+                <Clock size={11} className="text-warn shrink-0" />
               ) : (
-                <Zap size={11} className="text-[var(--accent)] shrink-0" />
+                <Zap size={11} className="text-accent shrink-0" />
               )}
               <span className="font-medium truncate">
                 {s.is_introspection ? t("introspection") : s.is_heartbeat ? t("heartbeat") : t("thinkingSession")}
               </span>
               {!s.ended && (
-                <span className="ml-auto px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-[var(--ok-subtle)] text-[var(--ok)]">
+                <span className="ml-auto px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-ok-subtle text-ok">
                   {t("inProgress")}
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-2 text-[10px] text-[var(--muted)]">
+            <div className="flex items-center gap-2 text-[10px] text-muted">
               <span>{ts.toLocaleTimeString()}</span>
               <span>{t("nNodes", { count: s.node_count })}</span>
               {s.duration_ms != null && (

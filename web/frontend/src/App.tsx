@@ -28,7 +28,6 @@ export default function App() {
       const data = r.data;
       setConfig({
         branding: data.branding,
-        theme: data.theme,
         navigation: data.navigation,
       });
     }).catch((e) => console.warn("[API]", e));

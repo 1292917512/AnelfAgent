@@ -1,5 +1,78 @@
 @import "tailwindcss";
 
+/*
+ * 设计令牌注册：将 CSS 变量映射为 Tailwind 原生 utility
+ * （bg-card / text-foreground / border-border / bg-accent / rounded-md ...），
+ * 亮色主题通过 [data-theme="light"] 覆盖同名变量自动生效。
+ */
+@theme {
+  --color-bg: var(--bg);
+  --color-bg-accent: var(--bg-accent);
+  --color-elevated: var(--bg-elevated);
+  --color-hover: var(--bg-hover);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-panel: var(--panel);
+  --color-panel-strong: var(--panel-strong);
+
+  --color-foreground: var(--text);
+  --color-heading: var(--text-strong);
+  --color-muted: var(--muted);
+  --color-muted-strong: var(--muted-strong);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-border-hover: var(--border-hover);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent2: var(--accent-2);
+  --color-accent2-subtle: var(--accent-2-subtle);
+
+  --color-ok: var(--ok);
+  --color-ok-subtle: var(--ok-subtle);
+  --color-warn: var(--warn);
+  --color-warn-subtle: var(--warn-subtle);
+  --color-danger: var(--danger);
+  --color-danger-subtle: var(--danger-subtle);
+  --color-info: var(--info);
+
+  --animate-rise: rise 0.35s var(--ease-out) backwards;
+  --animate-fade-in: fade-in 0.2s ease-out;
+  --animate-pulse-subtle: pulse-subtle 1.2s ease-in-out infinite;
+}
+
+/* 与 :root 变量同名的令牌用 inline 注入，避免 --x: var(--x) 循环引用 */
+@theme inline {
+  --font-body: var(--font-body);
+  --font-mono: var(--mono);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+}
+
+/* 隐藏滚动条但保留滚动能力（移动端 TabBar 等横向滚动区） */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 :root {
   --bg: #12141a;
   --bg-accent: #14161d;

@@ -28,6 +28,8 @@ class _FakeClientConfig:
         *,
         model_types: list[str] | None = None,
         supports_forced_tool_choice: bool = True,
+        supports_reasoning: bool = False,
+        extra_body: dict | None = None,
     ) -> None:
         self.name = name
         self.api_type = api_type
@@ -36,6 +38,8 @@ class _FakeClientConfig:
         self.api_key = "sk-test"
         self.model_types = model_types or ["chat"]
         self.supports_forced_tool_choice = supports_forced_tool_choice
+        self.supports_reasoning = supports_reasoning
+        self.extra_body = extra_body or {}
 
     @property
     def litellm_model(self) -> str:
@@ -74,6 +78,7 @@ def _manager() -> _FakeManager:
             _FakeClientConfig(
                 "qwen-thinking", "anthropic", "qwen3.8",
                 supports_forced_tool_choice=False,
+                supports_reasoning=True,
             )
         ),
         "sf-chat": _FakeClient(_FakeClientConfig("sf-chat", "openai", "Qwen3-32B")),
@@ -172,6 +177,64 @@ def test_custom_anthropic_requires_sdk() -> None:
     ).normalized()
     with pytest.raises(CogneeConfigError, match="anthropic"):
         resolve_chat_llm_config(cfg, _manager())
+
+
+# ==================================================================
+# thinking 预算注入与 extra_body 透传
+# ==================================================================
+
+
+def test_reasoning_model_gets_thinking_budget() -> None:
+    """thinking 模型自动注入思考预算，防止推理 token 吃光输出上限。"""
+    cfg = CogneeChatModelConfig(source="model", model_id="qwen-thinking").normalized()
+    payload = resolve_chat_llm_config(cfg, _manager())
+    thinking = payload["llm_args"]["extra_body"]["thinking"]
+    assert thinking == {"type": "enabled", "budget_tokens": 2048}
+
+
+def test_non_reasoning_model_no_thinking_injection() -> None:
+    cfg = CogneeChatModelConfig(source="model", model_id="sf-chat").normalized()
+    payload = resolve_chat_llm_config(cfg, _manager())
+    assert "llm_args" not in payload
+
+
+def test_user_extra_body_thinking_wins() -> None:
+    """模型 extra_body 中显式配置的 thinking 不被自动注入覆盖。"""
+    manager = _manager()
+    manager._clients["qwen-thinking"].config.extra_body = {
+        "thinking": {"type": "enabled", "budget_tokens": 4096},
+    }
+    cfg = CogneeChatModelConfig(source="model", model_id="qwen-thinking").normalized()
+    payload = resolve_chat_llm_config(cfg, manager)
+    thinking = payload["llm_args"]["extra_body"]["thinking"]
+    assert thinking["budget_tokens"] == 4096
+
+
+def test_extra_body_reserved_keys_filtered() -> None:
+    manager = _manager()
+    manager._clients["sf-chat"].config.extra_body = {
+        "temperature": 0.9,
+        "tool_choice": "required",
+        "custom_flag": True,
+    }
+    cfg = CogneeChatModelConfig(source="model", model_id="sf-chat").normalized()
+    payload = resolve_chat_llm_config(cfg, manager)
+    extra_body = payload["llm_args"]["extra_body"]
+    assert "temperature" not in extra_body
+    assert "tool_choice" not in extra_body
+    assert extra_body["custom_flag"] is True
+
+
+def test_explicit_extra_args_override() -> None:
+    manager = _manager()
+    cfg = CogneeChatModelConfig(
+        source="model",
+        model_id="qwen-thinking",
+        extra_args={"extra_body": {"thinking": {"type": "enabled", "budget_tokens": 8192}}},
+    ).normalized()
+    payload = resolve_chat_llm_config(cfg, manager)
+    thinking = payload["llm_args"]["extra_body"]["thinking"]
+    assert thinking["budget_tokens"] == 8192
 
 
 # ==================================================================

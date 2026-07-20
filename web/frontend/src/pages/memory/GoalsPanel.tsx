@@ -82,10 +82,10 @@ export function GoalsPanel() {
 
   const stepStatusIcon = (status: string) => {
     switch (status) {
-      case "completed": return <CheckCircle2 size={14} className="text-[var(--ok)]" />;
-      case "in_progress": return <Clock size={14} className="text-[var(--accent)]" />;
-      case "skipped": return <XCircle size={14} className="text-[var(--muted)]" />;
-      default: return <Circle size={14} className="text-[var(--muted)]" />;
+      case "completed": return <CheckCircle2 size={14} className="text-ok" />;
+      case "in_progress": return <Clock size={14} className="text-accent" />;
+      case "skipped": return <XCircle size={14} className="text-muted" />;
+      default: return <Circle size={14} className="text-muted" />;
     }
   };
 
@@ -99,8 +99,8 @@ export function GoalsPanel() {
 
   const isDue = (goal: GoalData) => goal.due_time && new Date(goal.due_time) <= new Date();
 
-  const inputCls = "w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]";
-  const toggleCls = (on: boolean) => cn("relative inline-flex h-5 w-9 items-center rounded-full transition-colors", on ? "bg-[var(--accent)]" : "bg-[var(--secondary)] border border-[var(--border)]");
+  const inputCls = "w-full bg-card border border-input rounded-md px-3 py-2 text-sm text-foreground outline-none focus:border-ring";
+  const toggleCls = (on: boolean) => cn("relative inline-flex h-5 w-9 items-center rounded-full transition-colors", on ? "bg-accent" : "bg-secondary border border-border");
   const dotCls = (on: boolean) => cn("inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform", on ? "translate-x-[18px]" : "translate-x-[3px]");
 
   return (
@@ -109,19 +109,19 @@ export function GoalsPanel() {
       <div className="w-72 flex-shrink-0 space-y-3">
         <div className="flex items-center gap-2">
           <select value={filter} onChange={(e) => setFilter(e.target.value as GoalFilter)}
-            className="flex-1 bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-2 py-1.5 text-xs text-[var(--text)] outline-none">
+            className="flex-1 bg-card border border-input rounded-md px-2 py-1.5 text-xs text-foreground outline-none">
             <option value="active">{t("goalStatusActive")}</option>
             <option value="completed">{t("goalStatusCompleted")}</option>
             <option value="all">{t("goalStatusAll")}</option>
           </select>
           <button onClick={() => { setShowCreate(!showCreate); setSelectedGoalId(null); setEditing(false); }}
-            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] transition-all">
+            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] transition-all">
             <Plus size={13} /> {t("common:create")}
           </button>
         </div>
 
         <div className="space-y-1.5 max-h-[500px] overflow-y-auto">
-          {goals.length === 0 && <p className="text-xs text-[var(--muted)] p-2">{t("noGoals")}</p>}
+          {goals.length === 0 && <p className="text-xs text-muted p-2">{t("noGoals")}</p>}
           {goals.map((goal) => {
             const done = goal.steps.filter((s) => s.status === "completed").length;
             const due = isDue(goal);
@@ -129,23 +129,23 @@ export function GoalsPanel() {
               <div key={goal.goal_id}
                 onClick={() => { setSelectedGoalId(goal.goal_id); setShowCreate(false); setEditing(false); }}
                 className={cn(
-                  "p-2.5 rounded-[var(--radius-md)] border cursor-pointer transition-all",
-                  selectedGoalId === goal.goal_id ? "border-[var(--accent)] bg-[var(--accent-subtle)]" : "border-[var(--border)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)]",
+                  "p-2.5 rounded-md border cursor-pointer transition-all",
+                  selectedGoalId === goal.goal_id ? "border-accent bg-accent-subtle" : "border-border bg-elevated hover:border-border-strong",
                   goal.status === "completed" && !goal.recurring && "opacity-60",
                 )}>
                 <div className="flex items-center gap-2 mb-1">
-                  <Target size={12} className={cn("flex-shrink-0", due ? "text-[var(--danger)]" : "text-[var(--accent)]")} />
-                  <span className="text-xs font-medium text-[var(--text-strong)] truncate flex-1">{goal.title}</span>
-                  {goal.recurring && <span title={t("recurring")}><RefreshCw size={10} className="text-[var(--accent)] flex-shrink-0" /></span>}
+                  <Target size={12} className={cn("flex-shrink-0", due ? "text-danger" : "text-accent")} />
+                  <span className="text-xs font-medium text-heading truncate flex-1">{goal.title}</span>
+                  {goal.recurring && <span title={t("recurring")}><RefreshCw size={10} className="text-accent flex-shrink-0" /></span>}
                   <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium flex-shrink-0",
-                    goal.status === "completed" ? "bg-[var(--ok-subtle)] text-[var(--ok)]"
-                      : goal.status === "cancelled" ? "bg-[var(--secondary)] text-[var(--muted)]"
-                      : "bg-[var(--accent-subtle)] text-[var(--accent)]"
+                    goal.status === "completed" ? "bg-ok-subtle text-ok"
+                      : goal.status === "cancelled" ? "bg-secondary text-muted"
+                      : "bg-accent-subtle text-accent"
                   )}>{t(`goalStatus${goal.status.charAt(0).toUpperCase() + goal.status.slice(1)}`)}</span>
                 </div>
-                <div className="flex items-center gap-2 text-[10px] text-[var(--muted)]">
+                <div className="flex items-center gap-2 text-[10px] text-muted">
                   {goal.steps.length > 0 && <span>{done}/{goal.steps.length} {t("stepsUnit")}</span>}
-                  {goal.due_time && <span className={cn("flex items-center gap-0.5", due && "text-[var(--danger)]")}><Clock size={10} />{goal.due_time}</span>}
+                  {goal.due_time && <span className={cn("flex items-center gap-0.5", due && "text-danger")}><Clock size={10} />{goal.due_time}</span>}
                 </div>
               </div>
             );
@@ -162,32 +162,32 @@ export function GoalsPanel() {
               <textarea value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder={t("goalDescPlaceholder")} rows={2} className={inputCls + " resize-y"} />
               <div className="flex items-center gap-3">
                 <div className="flex items-center gap-2 flex-1">
-                  <Clock size={14} className="text-[var(--muted)]" />
+                  <Clock size={14} className="text-muted" />
                   <input type="datetime-local" value={newDueTime} onChange={(e) => setNewDueTime(e.target.value)}
-                    className="flex-1 bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-1.5 text-xs text-[var(--text)] outline-none focus:border-[var(--ring)]" />
-                  {newDueTime && <button onClick={() => setNewDueTime("")} className="p-1 text-[var(--muted)] hover:text-[var(--danger)]"><X size={14} /></button>}
+                    className="flex-1 bg-card border border-input rounded-md px-3 py-1.5 text-xs text-foreground outline-none focus:border-ring" />
+                  {newDueTime && <button onClick={() => setNewDueTime("")} className="p-1 text-muted hover:text-danger"><X size={14} /></button>}
                 </div>
                 <div className="flex items-center gap-2">
                   <button onClick={() => setNewRecurring(!newRecurring)} className={toggleCls(newRecurring)}><span className={dotCls(newRecurring)} /></button>
-                  <span className="text-xs text-[var(--muted)]">{t("recurring")}</span>
-                  <span title={t("recurringHint")} className="text-[var(--muted)] hover:text-[var(--accent)] cursor-help transition-colors"><Info size={12} /></span>
+                  <span className="text-xs text-muted">{t("recurring")}</span>
+                  <span title={t("recurringHint")} className="text-muted hover:text-accent cursor-help transition-colors"><Info size={12} /></span>
                 </div>
               </div>
               <div className="space-y-1">
                 {newSteps.map((step, i) => (
                   <div key={`new-step-${i}`} className="flex gap-2">
-                    <span className="text-xs text-[var(--muted)] w-5 text-right mt-1">{i + 1}.</span>
+                    <span className="text-xs text-muted w-5 text-right mt-1">{i + 1}.</span>
                     <input value={step} onChange={(e) => { const u = [...newSteps]; u[i] = e.target.value; setNewSteps(u); }} placeholder={t("stepPlaceholder")}
-                      className="flex-1 bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-2 py-1 text-xs text-[var(--text)] outline-none" />
-                    <button onClick={() => setNewSteps(newSteps.filter((_, idx) => idx !== i))} className="p-1 text-[var(--muted)] hover:text-[var(--danger)]"><X size={14} /></button>
+                      className="flex-1 bg-card border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none" />
+                    <button onClick={() => setNewSteps(newSteps.filter((_, idx) => idx !== i))} className="p-1 text-muted hover:text-danger"><X size={14} /></button>
                   </div>
                 ))}
-                <button onClick={() => setNewSteps([...newSteps, ""])} className="text-xs text-[var(--accent)] hover:underline ml-7">+ {t("addStep")}</button>
+                <button onClick={() => setNewSteps([...newSteps, ""])} className="text-xs text-accent hover:underline ml-7">+ {t("addStep")}</button>
               </div>
               <div className="flex justify-end gap-2 pt-2">
-                <button onClick={() => setShowCreate(false)} className="px-3 py-1.5 text-xs text-[var(--muted)]">{t("common:cancel")}</button>
+                <button onClick={() => setShowCreate(false)} className="px-3 py-1.5 text-xs text-muted">{t("common:cancel")}</button>
                 <button onClick={() => newTitle && createMutation.mutate()} disabled={!newTitle}
-                  className="px-4 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] disabled:opacity-50">{t("common:create")}</button>
+                  className="px-4 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground disabled:opacity-50">{t("common:create")}</button>
               </div>
             </div>
           </Card>
@@ -196,19 +196,19 @@ export function GoalsPanel() {
             <div className="flex gap-1">
               {!editing && (
                 <button onClick={() => enterEdit(selectedGoal)} title={t("common:edit")}
-                  className="p-1.5 text-[var(--muted)] hover:text-[var(--accent)] transition-colors"><Pencil size={16} /></button>
+                  className="p-1.5 text-muted hover:text-accent transition-colors"><Pencil size={16} /></button>
               )}
               {selectedGoal.status === "active" && !editing && (
                 <button onClick={() => updateMutation.mutate({ goalId: selectedGoal.goal_id, status: "completed" })} title={t("markComplete")}
-                  className="p-1.5 text-[var(--muted)] hover:text-[var(--ok)] transition-colors"><CheckCircle2 size={16} /></button>
+                  className="p-1.5 text-muted hover:text-ok transition-colors"><CheckCircle2 size={16} /></button>
               )}
               {selectedGoal.status === "completed" && !editing && (
                 <button onClick={() => updateMutation.mutate({ goalId: selectedGoal.goal_id, status: "active" })} title={t("markActive")}
-                  className="p-1.5 text-[var(--muted)] hover:text-[var(--accent)] transition-colors"><RefreshCw size={16} /></button>
+                  className="p-1.5 text-muted hover:text-accent transition-colors"><RefreshCw size={16} /></button>
               )}
               {!editing && (
                 <button onClick={() => deleteMutation.mutate(selectedGoal.goal_id)}
-                  className="p-1.5 text-[var(--muted)] hover:text-[var(--danger)] transition-colors"><Trash2 size={16} /></button>
+                  className="p-1.5 text-muted hover:text-danger transition-colors"><Trash2 size={16} /></button>
               )}
             </div>
           }>
@@ -218,62 +218,62 @@ export function GoalsPanel() {
                 <textarea value={editDesc} onChange={(e) => setEditDesc(e.target.value)} rows={2} className={inputCls + " resize-y"} />
                 <div className="flex items-center gap-3">
                   <div className="flex items-center gap-2 flex-1">
-                    <Clock size={14} className="text-[var(--muted)]" />
+                    <Clock size={14} className="text-muted" />
                     <input type="datetime-local" value={editDueTime} onChange={(e) => setEditDueTime(e.target.value)}
-                      className="flex-1 bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-1.5 text-xs text-[var(--text)] outline-none focus:border-[var(--ring)]" />
-                    {editDueTime && <button onClick={() => setEditDueTime("")} className="p-1 text-[var(--muted)] hover:text-[var(--danger)]"><X size={14} /></button>}
+                      className="flex-1 bg-card border border-input rounded-md px-3 py-1.5 text-xs text-foreground outline-none focus:border-ring" />
+                    {editDueTime && <button onClick={() => setEditDueTime("")} className="p-1 text-muted hover:text-danger"><X size={14} /></button>}
                   </div>
                   <div className="flex items-center gap-2">
                     <button onClick={() => setEditRecurring(!editRecurring)} className={toggleCls(editRecurring)}><span className={dotCls(editRecurring)} /></button>
-                    <span className="text-xs text-[var(--muted)]">{t("recurring")}</span>
-                    <span title={t("recurringHint")} className="text-[var(--muted)] hover:text-[var(--accent)] cursor-help transition-colors"><Info size={12} /></span>
+                    <span className="text-xs text-muted">{t("recurring")}</span>
+                    <span title={t("recurringHint")} className="text-muted hover:text-accent cursor-help transition-colors"><Info size={12} /></span>
                   </div>
                 </div>
                 <div className="flex justify-end gap-2 pt-2">
-                  <button onClick={() => setEditing(false)} className="px-3 py-1.5 text-xs text-[var(--muted)]">{t("common:cancel")}</button>
+                  <button onClick={() => setEditing(false)} className="px-3 py-1.5 text-xs text-muted">{t("common:cancel")}</button>
                   <button onClick={() => updateMutation.mutate({
                     goalId: selectedGoal.goal_id, title: editTitle, description: editDesc,
                     due_time: editDueTime || null, recurring: editRecurring,
-                  })} className="px-4 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)]">{t("common:save")}</button>
+                  })} className="px-4 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground">{t("common:save")}</button>
                 </div>
               </div>
             ) : (
               <div className="space-y-4">
-                <div className="flex flex-wrap gap-3 text-xs text-[var(--muted)]">
+                <div className="flex flex-wrap gap-3 text-xs text-muted">
                   <span className={cn("px-2 py-0.5 rounded-full font-medium",
-                    selectedGoal.status === "completed" ? "bg-[var(--ok-subtle)] text-[var(--ok)]"
-                      : selectedGoal.status === "cancelled" ? "bg-[var(--secondary)] text-[var(--muted)]"
-                      : "bg-[var(--accent-subtle)] text-[var(--accent)]"
+                    selectedGoal.status === "completed" ? "bg-ok-subtle text-ok"
+                      : selectedGoal.status === "cancelled" ? "bg-secondary text-muted"
+                      : "bg-accent-subtle text-accent"
                   )}>{t(`goalStatus${selectedGoal.status.charAt(0).toUpperCase() + selectedGoal.status.slice(1)}`)}</span>
-                  {selectedGoal.recurring && <span className="px-2 py-0.5 rounded-full font-medium bg-[var(--accent-subtle)] text-[var(--accent)] flex items-center gap-1"><RefreshCw size={10} />{t("recurring")}</span>}
+                  {selectedGoal.recurring && <span className="px-2 py-0.5 rounded-full font-medium bg-accent-subtle text-accent flex items-center gap-1"><RefreshCw size={10} />{t("recurring")}</span>}
                   <span>{t("goalCreated")}: {new Date(selectedGoal.created_at).toLocaleString()}</span>
                   {selectedGoal.updated_at !== selectedGoal.created_at && <span>{t("goalUpdated")}: {new Date(selectedGoal.updated_at).toLocaleString()}</span>}
-                  {selectedGoal.due_time && <span className={cn("flex items-center gap-1", isDue(selectedGoal) && "text-[var(--danger)] font-medium")}>
+                  {selectedGoal.due_time && <span className={cn("flex items-center gap-1", isDue(selectedGoal) && "text-danger font-medium")}>
                     <Clock size={12} />{t("dueTime")}: {selectedGoal.due_time}
                   </span>}
                 </div>
                 {selectedGoal.steps.length > 0 ? (
                   <div className="space-y-1.5">
-                    <span className="text-xs font-medium text-[var(--text-strong)]">{t("stepsLabel")} ({selectedGoal.steps.filter(s => s.status === "completed").length}/{selectedGoal.steps.length})</span>
+                    <span className="text-xs font-medium text-heading">{t("stepsLabel")} ({selectedGoal.steps.filter(s => s.status === "completed").length}/{selectedGoal.steps.length})</span>
                     {selectedGoal.steps.map((step, i) => (
-                      <div key={step.index ?? i} className="flex items-center gap-2.5 p-2 rounded-[var(--radius-md)] bg-[var(--bg-elevated)] border border-[var(--border)] cursor-pointer hover:border-[var(--border-strong)] transition-all"
+                      <div key={step.index ?? i} className="flex items-center gap-2.5 p-2 rounded-md bg-elevated border border-border cursor-pointer hover:border-border-strong transition-all"
                         onClick={() => cycleStepStatus(selectedGoal, i)}>
                         {stepStatusIcon(step.status)}
-                        <span className={cn("flex-1 text-sm", step.status === "completed" || step.status === "skipped" ? "text-[var(--muted)] line-through" : "text-[var(--text)]")}>
+                        <span className={cn("flex-1 text-sm", step.status === "completed" || step.status === "skipped" ? "text-muted line-through" : "text-foreground")}>
                           {step.content || step.step}
                         </span>
-                        {step.note && <span className="text-[10px] text-[var(--muted)]">({step.note})</span>}
+                        {step.note && <span className="text-[10px] text-muted">({step.note})</span>}
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-sm text-[var(--muted)]">{t("noSteps")}</p>
+                  <p className="text-sm text-muted">{t("noSteps")}</p>
                 )}
               </div>
             )}
           </Card>
         ) : (
-          <div className="flex items-center justify-center h-full text-sm text-[var(--muted)]">{t("selectGoalHint")}</div>
+          <div className="flex items-center justify-center h-full text-sm text-muted">{t("selectGoalHint")}</div>
         )}
       </div>
     </div>

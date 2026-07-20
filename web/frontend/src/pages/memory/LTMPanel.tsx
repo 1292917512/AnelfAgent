@@ -69,7 +69,7 @@ export function LTMPanel() {
       <Card title={t("ltmTitle")} subtitle={isSearching ? `${t("searchResults")}: ${items.length}` : `${paginated?.total || 0} · ${page}/${totalPages} ${t("pages")}`} actions={
         <div className="flex gap-2 items-center">
           <select value={memType} onChange={(e) => { setMemType(e.target.value); setPage(1); setIsSearching(false); }}
-            className="bg-[var(--bg-elevated)] border border-[var(--input)] rounded-[var(--radius-md)] px-2 py-1 text-xs text-[var(--text)] outline-none">
+            className="bg-elevated border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none">
             <option value="">{t("allTypes")}</option>
             <option value="episodic">{t("episodic")}</option>
             <option value="semantic">{t("semantic")}</option>
@@ -78,11 +78,11 @@ export function LTMPanel() {
             <option value="permanent">{t("permanent")}</option>
           </select>
           {selectedIds.size >= 2 && (
-            <button onClick={() => setShowMerge(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--ok-subtle)] text-[var(--ok)] border border-[var(--ok)]">
+            <button onClick={() => setShowMerge(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-ok-subtle text-ok border border-[var(--ok)]">
               <Merge size={14} /> {t("mergeSelected")} ({selectedIds.size})
             </button>
           )}
-          <button onClick={() => setShowCreate(!showCreate)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] transition-all"><Plus size={14} /> {t("common:create")}</button>
+          <button onClick={() => setShowCreate(!showCreate)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] transition-all"><Plus size={14} /> {t("common:create")}</button>
         </div>
       }>
         {/* Search bar */}
@@ -90,48 +90,48 @@ export function LTMPanel() {
           <input value={searchQuery} onChange={(e) => { setSearchQuery(e.target.value); if (!e.target.value) setIsSearching(false); }}
             onKeyDown={(e) => e.key === "Enter" && handleSearch()}
             placeholder={t("searchMemory")}
-            className="flex-1 bg-[var(--bg-elevated)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-1.5 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]" />
-          <button onClick={handleSearch} className="px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)] hover:bg-[var(--bg-hover)]"><Search size={14} /></button>
-          {isSearching && <button onClick={() => { setIsSearching(false); setSearchQuery(""); }} className="px-3 py-1.5 text-xs text-[var(--muted)]">{t("clearSearch")}</button>}
+            className="flex-1 bg-elevated border border-input rounded-md px-3 py-1.5 text-sm text-foreground outline-none focus:border-ring" />
+          <button onClick={handleSearch} className="px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover"><Search size={14} /></button>
+          {isSearching && <button onClick={() => { setIsSearching(false); setSearchQuery(""); }} className="px-3 py-1.5 text-xs text-muted">{t("clearSearch")}</button>}
         </div>
 
         {/* Merge dialog */}
         {showMerge && (
-          <div className="mb-4 p-3 rounded-[var(--radius-md)] bg-[var(--bg-elevated)] border border-[var(--ok)] space-y-2">
-            <p className="text-xs text-[var(--muted)]">{t("mergePrompt", { count: selectedIds.size })} (ID: {Array.from(selectedIds).join(", ")})</p>
+          <div className="mb-4 p-3 rounded-md bg-elevated border border-[var(--ok)] space-y-2">
+            <p className="text-xs text-muted">{t("mergePrompt", { count: selectedIds.size })} (ID: {Array.from(selectedIds).join(", ")})</p>
             <textarea value={mergeContent} onChange={(e) => setMergeContent(e.target.value)} rows={3} placeholder={t("mergeInputPlaceholder")}
-              className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)] resize-y" />
+              className="w-full bg-card border border-input rounded-md px-3 py-2 text-sm text-foreground outline-none focus:border-ring resize-y" />
             <div className="flex justify-end gap-2">
-              <button onClick={() => setShowMerge(false)} className="px-3 py-1 text-xs text-[var(--muted)]">{t("common:cancel")}</button>
+              <button onClick={() => setShowMerge(false)} className="px-3 py-1 text-xs text-muted">{t("common:cancel")}</button>
               <button onClick={() => mergeContent && mergeMutation.mutate()} disabled={!mergeContent}
-                className="px-3 py-1 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--ok)] text-white disabled:opacity-50">{t("common:merge")}</button>
+                className="px-3 py-1 text-xs font-medium rounded-md bg-ok text-white disabled:opacity-50">{t("common:merge")}</button>
             </div>
           </div>
         )}
 
         {/* Create form */}
         {showCreate && (
-          <div className="mb-4 p-3 rounded-[var(--radius-md)] bg-[var(--bg-elevated)] border border-[var(--accent)] space-y-2">
+          <div className="mb-4 p-3 rounded-md bg-elevated border border-accent space-y-2">
             <div className="flex gap-2">
-              <select value={newType} onChange={(e) => setNewType(e.target.value)} className="bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-2 py-1 text-xs text-[var(--text)] outline-none">
+              <select value={newType} onChange={(e) => setNewType(e.target.value)} className="bg-card border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none">
                 <option value="semantic">{t("semantic")}</option><option value="episodic">{t("episodic")}</option><option value="permanent">{t("permanent")}</option><option value="reflection">{t("reflection")}</option>
               </select>
               <input type="number" step="0.1" min="0" max="1" value={newImportance} onChange={(e) => setNewImportance(Number(e.target.value))}
-                className="w-20 bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-2 py-1 text-xs text-[var(--text)] outline-none" placeholder={t("importanceLabel")} />
+                className="w-20 bg-card border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none" placeholder={t("importanceLabel")} />
             </div>
             <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} rows={3} placeholder={t("memoryContent")}
-              className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)] resize-y" />
+              className="w-full bg-card border border-input rounded-md px-3 py-2 text-sm text-foreground outline-none focus:border-ring resize-y" />
             <div className="flex justify-end gap-2">
-              <button onClick={() => setShowCreate(false)} className="px-3 py-1 text-xs text-[var(--muted)]">{t("common:cancel")}</button>
+              <button onClick={() => setShowCreate(false)} className="px-3 py-1 text-xs text-muted">{t("common:cancel")}</button>
               <button onClick={() => newContent && createMutation.mutate()} disabled={!newContent}
-                className="px-3 py-1 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] disabled:opacity-50">{t("common:create")}</button>
+                className="px-3 py-1 text-xs font-medium rounded-md bg-accent text-primary-foreground disabled:opacity-50">{t("common:create")}</button>
             </div>
           </div>
         )}
 
         {/* Memory list */}
         <div className="space-y-2 max-h-[500px] overflow-y-auto">
-          {items.length === 0 && <p className="text-sm text-[var(--muted)]">{t("noMemory")}</p>}
+          {items.length === 0 && <p className="text-sm text-muted">{t("noMemory")}</p>}
           {items.map((item) => {
             const id = Number(item.id);
             const isEditing = editingId === id;
@@ -139,41 +139,41 @@ export function LTMPanel() {
             const tags = (item.tags as string[]) || [];
             const accessCount = Number(item.access_count || 0);
             return (
-              <div key={id} className={cn("p-3 rounded-[var(--radius-md)] border transition-all", isSelected ? "bg-[var(--ok-subtle)] border-[var(--ok)]" : "bg-[var(--bg-elevated)] border-[var(--border)]")}>
+              <div key={id} className={cn("p-3 rounded-md border transition-all", isSelected ? "bg-ok-subtle border-[var(--ok)]" : "bg-elevated border-border")}>
                 <div className="flex items-start justify-between gap-2 mb-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(id)} className="rounded" />
-                    <span className="text-[11px] px-2 py-0.5 rounded-full border border-[var(--border)] text-[var(--muted)]">{String(item.type ?? "unknown")}</span>
-                    <span className="text-[11px] text-[var(--muted)]">#{id}</span>
-                    <span className="text-[11px] text-[var(--muted)]">{t("importanceLabel")}: {String(item.importance ?? "—")}</span>
-                    {accessCount > 0 && <span className="text-[11px] text-[var(--muted)]">{t("accessLabel")}: {accessCount}</span>}
-                    {!!item.source && <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--secondary)] text-[var(--muted)]">{String(item.source)}</span>}
+                    <span className="text-[11px] px-2 py-0.5 rounded-full border border-border text-muted">{String(item.type ?? "unknown")}</span>
+                    <span className="text-[11px] text-muted">#{id}</span>
+                    <span className="text-[11px] text-muted">{t("importanceLabel")}: {String(item.importance ?? "—")}</span>
+                    {accessCount > 0 && <span className="text-[11px] text-muted">{t("accessLabel")}: {accessCount}</span>}
+                    {!!item.source && <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted">{String(item.source)}</span>}
                   </div>
                   <div className="flex gap-1">
                     <button onClick={() => { if (isEditing) { setEditingId(null); } else { setEditingId(id); setEditContent(String(item.content ?? "")); setEditImportance(Number(item.importance ?? 0.5)); } }}
-                      className="p-1 text-[var(--muted)] hover:text-[var(--accent)] transition-colors">{isEditing ? <X size={14} /> : <Pencil size={14} />}</button>
-                    <button onClick={() => deleteMutation.mutate(id)} className="p-1 text-[var(--muted)] hover:text-[var(--danger)] transition-colors"><Trash2 size={14} /></button>
+                      className="p-1 text-muted hover:text-accent transition-colors">{isEditing ? <X size={14} /> : <Pencil size={14} />}</button>
+                    <button onClick={() => deleteMutation.mutate(id)} className="p-1 text-muted hover:text-danger transition-colors"><Trash2 size={14} /></button>
                   </div>
                 </div>
                 {tags.length > 0 && (
                   <div className="flex gap-1 flex-wrap mb-1">
-                    {tags.map((tg) => <span key={tg} className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--accent-subtle)] text-[var(--accent)]">{tg}</span>)}
+                    {tags.map((tg) => <span key={tg} className="text-[10px] px-1.5 py-0.5 rounded-full bg-accent-subtle text-accent">{tg}</span>)}
                   </div>
                 )}
                 {isEditing ? (
                   <div className="space-y-2 mt-2">
                     <textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} rows={3}
-                      className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)] resize-y" />
+                      className="w-full bg-card border border-input rounded-md px-3 py-2 text-sm text-foreground outline-none focus:border-ring resize-y" />
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-[var(--muted)]">{t("importanceLabel")}:</span>
+                      <span className="text-xs text-muted">{t("importanceLabel")}:</span>
                       <input type="number" step="0.1" min="0" max="1" value={editImportance} onChange={(e) => setEditImportance(Number(e.target.value))}
-                        className="w-20 bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-2 py-1 text-xs text-[var(--text)] outline-none" />
+                        className="w-20 bg-card border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none" />
                       <button onClick={() => updateMutation.mutate({ id, content: editContent, importance: editImportance })}
-                        className="ml-auto flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)]"><Save size={12} /> {t("common:save")}</button>
+                        className="ml-auto flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md bg-accent text-primary-foreground"><Save size={12} /> {t("common:save")}</button>
                     </div>
                   </div>
                 ) : (
-                  <p className="text-sm text-[var(--text)]">{String(item.content ?? item.snippet ?? "")}</p>
+                  <p className="text-sm text-foreground">{String(item.content ?? item.snippet ?? "")}</p>
                 )}
               </div>
             );
@@ -184,10 +184,10 @@ export function LTMPanel() {
         {!isSearching && totalPages > 1 && (
           <div className="flex items-center justify-center gap-2 mt-4">
             <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page <= 1}
-              className="px-3 py-1 text-xs rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--muted)] disabled:opacity-30">{t("common:prev")}</button>
-            <span className="text-xs text-[var(--muted)]">{page} / {totalPages}</span>
+              className="px-3 py-1 text-xs rounded-md border border-border text-muted disabled:opacity-30">{t("common:prev")}</button>
+            <span className="text-xs text-muted">{page} / {totalPages}</span>
             <button onClick={() => setPage(Math.min(totalPages, page + 1))} disabled={page >= totalPages}
-              className="px-3 py-1 text-xs rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--muted)] disabled:opacity-30">{t("common:next")}</button>
+              className="px-3 py-1 text-xs rounded-md border border-border text-muted disabled:opacity-30">{t("common:next")}</button>
           </div>
         )}
       </Card>

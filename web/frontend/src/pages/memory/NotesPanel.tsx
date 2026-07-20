@@ -25,14 +25,14 @@ export function NotesPanel() {
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       <Card title={t("memoryFiles")}>
         <div className="space-y-1">
-          <button onClick={openMain} className={cn("w-full text-left p-2 rounded-[var(--radius-md)] text-sm transition-colors flex items-center gap-2", isMainEdit ? "bg-[var(--accent-subtle)] text-[var(--accent)]" : "text-[var(--text)] hover:bg-[var(--bg-hover)]")}>
+          <button onClick={openMain} className={cn("w-full text-left p-2 rounded-md text-sm transition-colors flex items-center gap-2", isMainEdit ? "bg-accent-subtle text-accent" : "text-foreground hover:bg-hover")}>
             <FileText size={14} className="flex-shrink-0" />
-            <div className="min-w-0"><p className="font-medium">{t("mainNote")}</p><p className="text-[11px] text-[var(--muted)] font-mono truncate">{notes?.path ?? "memory.md"}</p></div>
+            <div className="min-w-0"><p className="font-medium">{t("mainNote")}</p><p className="text-[11px] text-muted font-mono truncate">{notes?.path ?? "memory.md"}</p></div>
           </button>
           {files.map((f: Record<string, string>) => (
-            <button key={f.path ?? f.name} onClick={() => openFile(f.path ?? f.name ?? "")} className={cn("w-full text-left p-2 rounded-[var(--radius-md)] text-sm transition-colors flex items-center gap-2", editingPath === (f.path ?? f.name) ? "bg-[var(--accent-subtle)] text-[var(--accent)]" : "text-[var(--text)] hover:bg-[var(--bg-hover)]")}>
-              <FileText size={14} className="text-[var(--muted)] flex-shrink-0" />
-              <div className="min-w-0"><p className="truncate">{f.name ?? f.path}</p><p className="text-[11px] text-[var(--muted)]">{f.lines ? t("nLines", { count: Number(f.lines) }) : ""}{f.size ? ` · ${f.size}` : ""}</p></div>
+            <button key={f.path ?? f.name} onClick={() => openFile(f.path ?? f.name ?? "")} className={cn("w-full text-left p-2 rounded-md text-sm transition-colors flex items-center gap-2", editingPath === (f.path ?? f.name) ? "bg-accent-subtle text-accent" : "text-foreground hover:bg-hover")}>
+              <FileText size={14} className="text-muted flex-shrink-0" />
+              <div className="min-w-0"><p className="truncate">{f.name ?? f.path}</p><p className="text-[11px] text-muted">{f.lines ? t("nLines", { count: Number(f.lines) }) : ""}{f.size ? ` · ${f.size}` : ""}</p></div>
             </button>
           ))}
         </div>
@@ -40,13 +40,13 @@ export function NotesPanel() {
       <Card title={isMainEdit ? t("mainNote") : editingPath ? editingPath.split("/").pop() ?? "" : t("selectFile")} className="md:col-span-2" actions={
         (isMainEdit || editingPath) ? (
           <button onClick={() => { if (isMainEdit) saveMainMutation.mutate(editContent); else if (editingPath) saveFileMutation.mutate({ path: editingPath, content: editContent }); }}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] transition-all"><Save size={14} /> {t("common:save")}</button>
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] transition-all"><Save size={14} /> {t("common:save")}</button>
         ) : undefined
       }>
         {(isMainEdit || editingPath) ? (
           <textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} rows={16}
-            className="w-full bg-[var(--bg-elevated)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] font-mono outline-none focus:border-[var(--ring)] resize-y" />
-        ) : (<p className="text-sm text-[var(--muted)]">{t("clickToEdit")}</p>)}
+            className="w-full bg-elevated border border-input rounded-md px-3 py-2 text-sm text-foreground font-mono outline-none focus:border-ring resize-y" />
+        ) : (<p className="text-sm text-muted">{t("clickToEdit")}</p>)}
       </Card>
     </div>
   );

@@ -79,20 +79,20 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "flex flex-col h-full border-r border-[var(--border)] bg-[var(--panel)] transition-all duration-200",
+        "flex flex-col h-full border-r border-border bg-panel transition-all duration-200",
         sidebarCollapsed ? "w-16" : "w-60",
       )}
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-4 h-14 border-b border-[var(--border)]">
+      <div className="flex items-center justify-between px-4 h-14 border-b border-border">
         {!sidebarCollapsed && (
-          <span className="text-base font-semibold text-[var(--text-strong)] tracking-tight">
+          <span className="text-base font-semibold text-heading tracking-tight">
             {branding.title}
           </span>
         )}
         <button
           onClick={toggleSidebar}
-          className="hidden md:block p-1.5 rounded-[var(--radius-md)] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors"
+          className="hidden md:block p-1.5 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors"
         >
           {sidebarCollapsed ? <PanelLeft size={18} /> : <PanelLeftClose size={18} />}
         </button>
@@ -103,7 +103,7 @@ export function Sidebar() {
         {Object.entries(groups).map(([group, items]) => (
           <div key={group} className="mb-3">
             {!sidebarCollapsed && (
-              <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-strong)]">
+              <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-strong">
                 {t(group, { defaultValue: group })}
               </div>
             )}
@@ -117,10 +117,10 @@ export function Sidebar() {
                     end={item.path === "/"}
                     className={({ isActive }) =>
                       cn(
-                        "flex items-center gap-3 px-3 py-2 rounded-[var(--radius-md)] text-sm font-medium transition-all duration-[var(--duration-fast)]",
+                        "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-150",
                         isActive
-                          ? "bg-[var(--accent-subtle)] text-[var(--accent)] border border-[var(--accent)]"
-                          : "text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] border border-transparent",
+                          ? "bg-accent-subtle text-accent border border-accent"
+                          : "text-muted hover:text-foreground hover:bg-hover border border-transparent",
                         sidebarCollapsed && "justify-center px-0",
                       )
                     }
@@ -137,7 +137,7 @@ export function Sidebar() {
 
       {/* Version */}
       {!sidebarCollapsed && (
-        <div className="px-4 py-3 border-t border-[var(--border)] text-xs text-[var(--muted)]">
+        <div className="px-4 py-3 border-t border-border text-xs text-muted">
           v{branding.version}
         </div>
       )}

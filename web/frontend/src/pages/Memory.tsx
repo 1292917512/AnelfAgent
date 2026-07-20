@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
+import { PageContainer } from "@/components/common/PageContainer";
 import { Activity, HardDrive, Target, MessageSquare, StickyNote, Users, Database, Settings2, Network } from "lucide-react";
 import { OverviewPanel } from "@/pages/memory/OverviewPanel";
 import { STMPanel } from "@/pages/memory/STMPanel";
@@ -31,7 +32,7 @@ export default function Memory() {
   ];
 
   return (
-    <div className="space-y-6 max-w-6xl">
+    <PageContainer wide>
       <TabBar tabs={TAB_KEYS} activeTab={tab} onChange={setTab} />
       {tab === "overview" && <OverviewPanel />}
       {tab === "stm" && <STMPanel />}
@@ -42,6 +43,6 @@ export default function Memory() {
       {tab === "ltm" && <LTMPanel />}
       {tab === "cognee" && <CogneePanel />}
       {tab === "config" && <ConfigPanel />}
-    </div>
+    </PageContainer>
   );
 }

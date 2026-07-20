@@ -1,10 +1,12 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { heartbeatApi, tasksApi, modelsApi, type HeartbeatConfig, type TaskSchedule, type TaskConfig } from "@/lib/api";
+import { heartbeatApi, tasksApi, type HeartbeatConfig, type TaskSchedule, type TaskConfig } from "@/lib/api";
 import { Card } from "@/components/common/Card";
-import { Save, Plus, Trash2, RotateCcw, X, Clock, Cpu } from "lucide-react";
+import { Save, Plus, Trash2, RotateCcw, X, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button, Input, Select, Switch } from "@/components/ui";
+import { ModelSelect } from "@/components/models/ModelSelect";
 
 const MODE_OPTIONS = [
   { value: "heartbeat", labelKey: "schedule.modeHeartbeat" },
@@ -25,13 +27,6 @@ export function ConfigPanel() {
     queryKey: ["tasks"],
     queryFn: () => tasksApi.list().then((r) => r.data as TaskConfig[]),
   });
-
-  interface PriorityItem { id: string; model: string }
-  const { data: priorities = {} } = useQuery<Record<string, PriorityItem[]>>({
-    queryKey: ["priorities"],
-    queryFn: () => modelsApi.priorities().then(r => r.data),
-  });
-  const chatModels = priorities.chat ?? [];
 
   const [form, setForm] = useState<Partial<HeartbeatConfig>>({});
   const [schedules, setSchedules] = useState<TaskSchedule[] | null>(null);
@@ -80,9 +75,6 @@ export function ConfigPanel() {
     (t) => !activeSchedules.some((s) => s.task_name === t.name),
   );
 
-  const inputBase =
-    "w-full text-sm bg-[var(--bg-elevated)] border border-[var(--border)] rounded-[var(--radius-md)] px-2.5 py-1.5 text-[var(--text-strong)] focus:outline-none focus:border-[var(--accent)] transition-colors";
-
   if (!config) return null;
 
   const handleSave = () => {
@@ -100,51 +92,40 @@ export function ConfigPanel() {
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-sm font-medium text-[var(--text-strong)]">{t("config.enabled")}</div>
-              <div className="text-xs text-[var(--muted)]">{t("config.enabledDesc")}</div>
+              <div className="text-sm font-medium text-heading">{t("config.enabled")}</div>
+              <div className="text-xs text-muted">{t("config.enabledDesc")}</div>
             </div>
-            <button
-              onClick={() => setField("enabled", !form.enabled)}
-              className={cn(
-                "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                form.enabled ? "bg-[var(--accent)]" : "bg-[var(--border)]",
-              )}
-            >
-              <span className={cn(
-                "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
-                form.enabled ? "translate-x-4" : "translate-x-1",
-              )} />
-            </button>
+            <Switch checked={!!form.enabled} onChange={(v) => setField("enabled", v)} />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-[var(--muted)] font-medium">{t("config.interval")}</label>
+              <label className="text-xs text-muted font-medium">{t("config.interval")}</label>
               <div className="flex items-center gap-2">
-                <input
-                  type="number" min={10} step={10} className={inputBase}
+                <Input
+                  type="number" min={10} step={10}
                   value={form.interval_seconds ?? 300}
                   onChange={(e) => setField("interval_seconds", parseInt(e.target.value) || 300)}
                 />
-                <span className="text-xs text-[var(--muted)] whitespace-nowrap">
+                <span className="text-xs text-muted whitespace-nowrap">
                   {t("config.intervalUnit")} ({Math.round((form.interval_seconds ?? 300) / 60)} {t("config.minutes")})
                 </span>
               </div>
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-[var(--muted)] font-medium">{t("config.temperature")}</label>
-              <input
-                type="number" min={0} max={1} step={0.1} className={inputBase}
+              <label className="text-xs text-muted font-medium">{t("config.temperature")}</label>
+              <Input
+                type="number" min={0} max={1} step={0.1}
                 value={form.analysis_temperature ?? 0.7}
                 onChange={(e) => setField("analysis_temperature", parseFloat(e.target.value) || 0.7)}
               />
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-[var(--muted)] font-medium">{t("config.minConversations")}</label>
-              <input
-                type="number" min={1} className={inputBase}
+              <label className="text-xs text-muted font-medium">{t("config.minConversations")}</label>
+              <Input
+                type="number" min={1}
                 value={form.min_conversations_for_analysis ?? 3}
                 onChange={(e) => setField("min_conversations_for_analysis", parseInt(e.target.value) || 3)}
               />
@@ -159,49 +140,49 @@ export function ConfigPanel() {
           {activeSchedules.map((s, idx) => {
             const task = (tasks as TaskConfig[]).find((t) => t.name === s.task_name);
             return (
-              <div key={s.task_name} className="border border-[var(--border)] rounded-[var(--radius-md)] p-3 bg-[var(--bg-elevated)]">
+              <div key={s.task_name} className="border border-border rounded-md p-3 bg-elevated">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", task?.enabled !== false ? "bg-[var(--ok)]" : "bg-[var(--muted)]")} />
-                    <span className="text-sm font-medium text-[var(--text-strong)] truncate">
+                    <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", task?.enabled !== false ? "bg-ok" : "bg-muted")} />
+                    <span className="text-sm font-medium text-heading truncate">
                       {task?.display_name || s.task_name}
                     </span>
-                    <span className="text-[11px] text-[var(--muted)]">{s.task_name}</span>
+                    <span className="text-[11px] text-muted">{s.task_name}</span>
                   </div>
-                  <button onClick={() => removeSchedule(idx)} className="p-1 text-[var(--muted)] hover:text-[var(--danger)] transition-colors">
+                  <button onClick={() => removeSchedule(idx)} className="p-1 text-muted hover:text-danger transition-colors">
                     <Trash2 size={14} />
                   </button>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3">
-                  <select
-                    className={cn(inputBase, "!w-32")}
+                  <Select
+                    className="w-32"
                     value={s.mode}
                     onChange={(e) => updateSchedule(idx, { mode: e.target.value })}
                   >
                     {MODE_OPTIONS.map((o) => (
                       <option key={o.value} value={o.value}>{t(o.labelKey)}</option>
                     ))}
-                  </select>
+                  </Select>
 
                   {s.mode === "heartbeat" && (
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs text-[var(--muted)]">{t("schedule.every")}</span>
-                      <input
-                        type="number" min={1} className={cn(inputBase, "!w-16")}
+                      <span className="text-xs text-muted">{t("schedule.every")}</span>
+                      <Input
+                        type="number" min={1} className="!w-16"
                         value={s.every_n_beats ?? 10}
                         onChange={(e) => updateSchedule(idx, { every_n_beats: parseInt(e.target.value) || 10 })}
                       />
-                      <span className="text-xs text-[var(--muted)]">{t("schedule.beats")}</span>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--accent-subtle)] text-[var(--accent)] font-medium">
+                      <span className="text-xs text-muted">{t("schedule.beats")}</span>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-accent-subtle text-accent font-medium">
                         ≈ {((s.every_n_beats ?? 10) * interval / 60).toFixed(0)} {t("config.minutes")}
                       </span>
                       {(s.beat_count ?? 0) > 0 && (
                         <div className="flex items-center gap-1">
-                          <span className="text-[11px] text-[var(--muted)]">{t("schedule.progress")}: {s.beat_count}/{s.every_n_beats ?? 10}</span>
+                          <span className="text-[11px] text-muted">{t("schedule.progress")}: {s.beat_count}/{s.every_n_beats ?? 10}</span>
                           <button
                             onClick={() => updateSchedule(idx, { beat_count: 0 })}
-                            className="p-0.5 text-[var(--muted)] hover:text-[var(--accent)]"
+                            className="p-0.5 text-muted hover:text-accent"
                             title={t("schedule.resetCounter")}
                           >
                             <RotateCcw size={11} />
@@ -215,28 +196,23 @@ export function ConfigPanel() {
                     <TimeChipList
                       times={s.schedule_times ?? []}
                       onChange={(times) => updateSchedule(idx, { schedule_times: times })}
-                      inputBase={inputBase}
                     />
                   )}
 
                   {s.mode === "manual" && (
-                    <span className="text-xs text-[var(--muted)] italic">{t("schedule.manualOnly")}</span>
+                    <span className="text-xs text-muted italic">{t("schedule.manualOnly")}</span>
                   )}
 
                   <div className="flex items-center gap-2 ml-auto flex-wrap">
-                    <Cpu size={13} className="text-[var(--muted)] flex-shrink-0" />
-                    <select
-                      className={cn(inputBase, "!w-36")}
+                    <ModelSelect
+                      modelType="chat"
+                      allowEmpty
                       value={s.model_id ?? ""}
-                      onChange={(e) => updateSchedule(idx, { model_id: e.target.value })}
-                    >
-                      <option value="">{t("schedule.defaultModel")}</option>
-                      {chatModels.map((m) => (
-                        <option key={m.id} value={m.id}>{m.id}</option>
-                      ))}
-                    </select>
-                    <select
-                      className={cn(inputBase, "!w-28")}
+                      onChange={(id) => updateSchedule(idx, { model_id: id || null })}
+                      className="w-44"
+                    />
+                    <Select
+                      className="w-28"
                       value={s.reasoning_effort ?? ""}
                       onChange={(e) => updateSchedule(idx, { reasoning_effort: e.target.value })}
                     >
@@ -245,7 +221,7 @@ export function ConfigPanel() {
                       <option value="medium">{t("schedule.effortMedium")}</option>
                       <option value="high">{t("schedule.effortHigh")}</option>
                       <option value="max">{t("schedule.effortMax")}</option>
-                    </select>
+                    </Select>
                   </div>
                 </div>
               </div>
@@ -254,12 +230,12 @@ export function ConfigPanel() {
 
           {unboundTasks.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap pt-1">
-              <span className="text-xs text-[var(--muted)]">{t("schedule.addTask")}</span>
+              <span className="text-xs text-muted">{t("schedule.addTask")}</span>
               {unboundTasks.map((task) => (
                 <button
                   key={task.name}
                   onClick={() => addSchedule(task.name)}
-                  className="flex items-center gap-1 px-2 py-1 text-xs rounded-[var(--radius-md)] border border-dashed border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
+                  className="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-dashed border-border text-muted hover:border-accent hover:text-accent transition-colors"
                 >
                   <Plus size={12} /> {task.display_name || task.name}
                 </button>
@@ -271,13 +247,9 @@ export function ConfigPanel() {
 
       {/* 统一保存 */}
       <div className="flex justify-end">
-        <button
-          onClick={handleSave}
-          disabled={saveMut.isPending}
-          className="flex items-center gap-1.5 px-5 py-2 text-sm font-semibold rounded-[var(--radius-md)] bg-[var(--accent)] text-white hover:opacity-90 transition-all disabled:opacity-50"
-        >
+        <Button variant="primary" onClick={handleSave} loading={saveMut.isPending}>
           <Save size={14} /> {saveMut.isPending ? t("config.saving") : t("config.save")}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -286,11 +258,9 @@ export function ConfigPanel() {
 function TimeChipList({
   times,
   onChange,
-  inputBase,
 }: {
   times: string[];
   onChange: (times: string[]) => void;
-  inputBase: string;
 }) {
   const { t } = useTranslation("heartbeat");
   const [adding, setAdding] = useState(false);
@@ -312,17 +282,17 @@ function TimeChipList({
 
   return (
     <div className="flex items-center gap-2 flex-wrap">
-      <Clock size={13} className="text-[var(--muted)] flex-shrink-0" />
+      <Clock size={13} className="text-muted flex-shrink-0" />
 
       {times.map((time, idx) => (
         <span
           key={time}
-          className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-[var(--accent-subtle)] text-[var(--accent)] border border-[var(--accent)]/20"
+          className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-accent-subtle text-accent border border-accent/20"
         >
           {time}
           <button
             onClick={() => removeTime(idx)}
-            className="hover:text-[var(--danger)] transition-colors"
+            className="hover:text-danger transition-colors"
           >
             <X size={11} />
           </button>
@@ -331,23 +301,20 @@ function TimeChipList({
 
       {adding ? (
         <div className="flex items-center gap-1.5">
-          <input
+          <Input
             type="time"
-            className={cn(inputBase, "!w-28 !py-1 !text-xs")}
+            className="!w-28 !h-7 !text-xs"
             value={newTime}
             onChange={(e) => setNewTime(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") addTime(); }}
             autoFocus
           />
-          <button
-            onClick={addTime}
-            className="px-2 py-1 text-[11px] font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-white hover:opacity-90 transition-all"
-          >
+          <Button variant="primary" size="sm" onClick={addTime}>
             {t("schedule.addTime")}
-          </button>
+          </Button>
           <button
             onClick={() => setAdding(false)}
-            className="p-1 text-[var(--muted)] hover:text-[var(--text)]"
+            className="p-1 text-muted hover:text-foreground"
           >
             <X size={13} />
           </button>
@@ -355,7 +322,7 @@ function TimeChipList({
       ) : (
         <button
           onClick={() => setAdding(true)}
-          className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full border border-dashed border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
+          className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full border border-dashed border-border text-muted hover:border-accent hover:text-accent transition-colors"
         >
           <Plus size={11} /> {t("schedule.addTime")}
         </button>

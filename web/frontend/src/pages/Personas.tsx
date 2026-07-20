@@ -3,7 +3,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { personasApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
+import { PageContainer } from "@/components/common/PageContainer";
 import { cn } from "@/lib/utils";
+import { Button, Input, Textarea } from "@/components/ui";
 import { Plus, Trash2, Star, Save } from "lucide-react";
 
 interface PersonaItem {
@@ -61,56 +63,55 @@ export default function Personas() {
   });
 
   return (
-    <div className="space-y-6 max-w-6xl">
-      {/* Create */}
+    <PageContainer wide>
+      {/* 新建 */}
       <div className="flex gap-2">
-        <input
+        <Input
           value={newKey}
           onChange={(e) => setNewKey(e.target.value)}
           placeholder={t("newPersonaKey")}
-          className="flex-1 max-w-xs bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
+          className="flex-1 max-w-xs"
         />
-        <button
+        <Button
+          variant="primary"
           onClick={() => newKey && createMutation.mutate(newKey)}
           disabled={!newKey}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-[var(--radius-md)]
-            bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)]
-            disabled:opacity-50 transition-all"
+          loading={createMutation.isPending}
         >
           <Plus size={16} /> {t("createNew")}
-        </button>
+        </Button>
       </div>
 
-      {/* Persona List */}
+      {/* 人设列表 */}
       <div className="grid gap-3">
         {personas.map((p) => (
           <div
             key={p.key}
             onClick={() => setSelected(p.key === selected ? null : p.key)}
             className={cn(
-              "flex items-center justify-between p-4 rounded-[var(--radius-md)] border cursor-pointer transition-all",
-              "bg-[var(--card)] hover:border-[var(--border-strong)]",
+              "flex items-center justify-between gap-2 p-4 rounded-md border cursor-pointer transition-all",
+              "bg-card hover:border-border-strong",
               p.key === selected
-                ? "border-[var(--accent)] shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--ring)]"
-                : "border-[var(--border)]",
+                ? "border-accent shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--ring)]"
+                : "border-border",
             )}
           >
-            <div className="flex items-center gap-3">
-              {p.key === active && <Star size={16} className="text-[var(--warn)] fill-[var(--warn)]" />}
-              <div>
-                <span className="font-medium text-[var(--text-strong)]">{p.name || p.key}</span>
+            <div className="flex items-center gap-3 min-w-0">
+              {p.key === active && <Star size={16} className="text-warn fill-warn shrink-0" />}
+              <div className="min-w-0">
+                <span className="font-medium text-heading">{p.name || p.key}</span>
                 {p.description && (
-                  <p className="text-xs text-[var(--muted)] mt-0.5">{p.description}</p>
+                  <p className="text-xs text-muted mt-0.5">{p.description}</p>
                 )}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
               <button onClick={(e) => { e.stopPropagation(); activateMutation.mutate(p.key); }}
-                className="p-1.5 rounded text-[var(--muted)] hover:text-[var(--warn)] transition-colors" title={t("activate")}>
+                className="p-1.5 rounded text-muted hover:text-warn transition-colors" title={t("activate")}>
                 <Star size={14} />
               </button>
               <button onClick={(e) => { e.stopPropagation(); deleteMutation.mutate(p.key); }}
-                className="p-1.5 rounded text-[var(--muted)] hover:text-[var(--danger)] transition-colors" title={t("common:delete")}>
+                className="p-1.5 rounded text-muted hover:text-danger transition-colors" title={t("common:delete")}>
                 <Trash2 size={14} />
               </button>
             </div>
@@ -118,68 +119,59 @@ export default function Personas() {
         ))}
       </div>
 
-      {/* Persona Editor */}
+      {/* 人设编辑器 */}
       {selected && personaConfig && (
         <Card
           title={`${t("editPrefix")}: ${selected}`}
           actions={
             editing ? (
-              <button
+              <Button variant="primary" size="sm"
                 onClick={() => saveMutation.mutate({ key: selected, data: editing })}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)]
-                  bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] transition-all"
-              >
+                loading={saveMutation.isPending}>
                 <Save size={14} /> {t("common:save")}
-              </button>
+              </Button>
             ) : (
-              <button
-                onClick={() => setEditing({ ...personaConfig })}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)]
-                  border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)]
-                  hover:bg-[var(--bg-hover)] transition-all"
-              >
+              <Button variant="secondary" size="sm" onClick={() => setEditing({ ...personaConfig })}>
                 {t("common:edit")}
-              </button>
+              </Button>
             )
           }
         >
           <div className="space-y-3">
             <div className="space-y-1">
-              <label className="text-xs font-medium text-[var(--muted)]">{t("nameLabel")}</label>
-              <input
+              <label className="text-xs font-medium text-muted">{t("nameLabel")}</label>
+              <Input
                 value={String((editing ?? personaConfig).name ?? "")}
                 readOnly={!editing}
                 onChange={(e) => editing && setEditing({ ...editing, name: e.target.value })}
-                className="w-full bg-[var(--bg-elevated)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-[var(--muted)]">{t("descriptionLabel")}</label>
-              <input
+              <label className="text-xs font-medium text-muted">{t("descriptionLabel")}</label>
+              <Input
                 value={String((editing ?? personaConfig).description ?? "")}
                 readOnly={!editing}
                 onChange={(e) => editing && setEditing({ ...editing, description: e.target.value })}
-                className="w-full bg-[var(--bg-elevated)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-[var(--muted)]">{t("personalityLabel")}</label>
-              <textarea
+              <label className="text-xs font-medium text-muted">{t("personalityLabel")}</label>
+              <Textarea
                 value={JSON.stringify((editing ?? personaConfig).personality ?? [], null, 2)}
                 readOnly={!editing}
                 onChange={(e) => {
                   if (!editing) return;
                   try {
                     setEditing({ ...editing, personality: JSON.parse(e.target.value) });
-                  } catch { /* keep current */ }
+                  } catch { /* 保留当前值直到 JSON 合法 */ }
                 }}
                 rows={8}
-                className="w-full bg-[var(--bg-elevated)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] font-mono outline-none focus:border-[var(--ring)] resize-y"
+                className="font-mono"
               />
             </div>
           </div>
         </Card>
       )}
-    </div>
+    </PageContainer>
   );
 }

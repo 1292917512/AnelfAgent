@@ -9,17 +9,17 @@ export function Header() {
   const toggleLang = () => i18n.changeLanguage(i18n.language === "zh" ? "en" : "zh");
 
   return (
-    <header className="flex items-center justify-between gap-1 h-14 px-3 md:px-6 border-b border-[var(--border)] bg-[var(--panel)]">
+    <header className="flex items-center justify-between gap-1 h-14 px-3 md:px-6 border-b border-border bg-panel shrink-0">
       {/* 移动端：汉堡菜单 + 品牌名 */}
       <div className="flex items-center gap-2">
         <button
           onClick={() => setMobileMenuOpen(true)}
-          className="md:hidden p-2 rounded-[var(--radius-md)] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors"
+          className="md:hidden p-2 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors"
           aria-label="菜单"
         >
           <Menu size={20} />
         </button>
-        <span className="md:hidden text-sm font-semibold text-[var(--text-strong)]">
+        <span className="md:hidden text-sm font-semibold text-heading">
           {branding.title}
         </span>
       </div>
@@ -27,7 +27,7 @@ export function Header() {
       <div className="flex items-center gap-1">
         <button
           onClick={toggleLang}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-[var(--radius-md)] text-xs font-medium text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-muted hover:text-foreground hover:bg-hover transition-colors"
           title={i18n.language === "zh" ? "Switch to English" : "切换为中文"}
         >
           <Languages size={16} />
@@ -35,7 +35,7 @@ export function Header() {
         </button>
         <button
           onClick={toggleTheme}
-          className="p-2 rounded-[var(--radius-md)] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors"
+          className="p-2 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors"
         >
           {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
         </button>

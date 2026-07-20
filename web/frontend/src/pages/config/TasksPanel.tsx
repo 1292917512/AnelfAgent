@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { tasksApi, modelsApi, type ReasoningEffort, type TaskConfig } from "@/lib/api";
+import { tasksApi, type ReasoningEffort, type TaskConfig } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
 import { Play, Trash2, Pencil, Plus, Save, X, ChevronDown, ChevronUp } from "lucide-react";
+import { Button, Input, Select, Switch, Textarea } from "@/components/ui";
+import { ModelSelect } from "@/components/models/ModelSelect";
 
 const EMPTY_TASK: TaskConfig = {
   name: "",
@@ -31,6 +33,129 @@ const REASONING_EFFORTS: Array<{ value: ReasoningEffort; key: string }> = [
   { value: "high", key: "tasks.effortHigh" },
   { value: "max", key: "tasks.effortMax" },
 ];
+
+function Field({ label, required, children, className }: {
+  label: string;
+  required?: boolean;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex flex-col gap-1", className)}>
+      <label className="text-xs text-muted font-medium">
+        {label} {required && <span className="text-danger">*</span>}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+/** 任务表单字段（创建/编辑共用） */
+function TaskFormFields({ task, set, isCreate }: {
+  task: TaskConfig;
+  set: (key: keyof TaskConfig, value: unknown) => void;
+  isCreate?: boolean;
+}) {
+  const { t } = useTranslation("appconfig");
+
+  const scopeOptions = [
+    { value: "global", label: t("tasks.scopeGlobal") },
+    { value: "entity", label: t("tasks.scopeEntity") },
+    { value: "any", label: t("tasks.scopeAny") },
+  ];
+  const memoryTypeOptions = [
+    { value: "semantic", label: t("tasks.memoryTypeSemantic") },
+    { value: "reflection", label: t("tasks.memoryTypeReflection") },
+    { value: "entity", label: t("tasks.memoryTypeEntity") },
+  ];
+
+  return (
+    <>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {isCreate && (
+          <Field label={t("tasks.taskName")} required>
+            <Input value={task.name} onChange={(e) => set("name", e.target.value)}
+              placeholder={t("tasks.taskNamePlaceholder")} />
+          </Field>
+        )}
+        <Field label={t("tasks.displayName")}>
+          <Input value={task.display_name} onChange={(e) => set("display_name", e.target.value)}
+            placeholder={isCreate ? t("tasks.displayNamePlaceholder") : undefined} />
+        </Field>
+        <Field label={t("tasks.description")}>
+          <Input value={task.description} onChange={(e) => set("description", e.target.value)} />
+        </Field>
+        <Field label={t("tasks.scope")}>
+          <Select className="w-full" value={task.scope} onChange={(e) => set("scope", e.target.value)}>
+            {scopeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </Select>
+        </Field>
+        <Field label={t("tasks.memoryType")}>
+          <Select className="w-full" value={task.memory_type} onChange={(e) => set("memory_type", e.target.value)}>
+            {memoryTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </Select>
+        </Field>
+        <Field label={t("tasks.importance")}>
+          <Input type="number" step="0.1" min="0" max="1" value={task.importance}
+            onChange={(e) => set("importance", parseFloat(e.target.value) || 0.5)} />
+        </Field>
+        {!isCreate && (
+          <Field label={t("tasks.sourceLabel")}>
+            <Input value={task.source} onChange={(e) => set("source", e.target.value)} placeholder={task.name} />
+          </Field>
+        )}
+        <Field label={t("tasks.tagsLabel")}>
+          <Input value={(task.tags ?? []).join(", ")}
+            onChange={(e) => set("tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
+        </Field>
+        <Field label={t("tasks.nullKeywords")}>
+          <Input value={(task.null_keywords ?? []).join(", ")}
+            onChange={(e) => set("null_keywords", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+            placeholder={isCreate ? t("tasks.nullKeywordsCreatePlaceholder") : t("tasks.nullKeywordsPlaceholder")} />
+        </Field>
+        <Field label={t("tasks.toolTags")} className={isCreate ? "md:col-span-2" : undefined}>
+          <Input value={(task.tool_tags ?? []).join(", ")}
+            onChange={(e) => set("tool_tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
+        </Field>
+        <Field label={t("tasks.modelId")}>
+          <ModelSelect
+            modelType="chat"
+            allowEmpty
+            value={task.model_id ?? ""}
+            onChange={(id) => set("model_id", id || null)}
+          />
+        </Field>
+        <Field label={t("tasks.reasoningEffort")}>
+          <Select className="w-full" value={task.reasoning_effort ?? ""}
+            onChange={(e) => set("reasoning_effort", (e.target.value || null) as ReasoningEffort | null)}>
+            <option value="">{t("tasks.defaultReasoningEffort")}</option>
+            {REASONING_EFFORTS.map((o) => <option key={o.value} value={o.value}>{t(o.key)}</option>)}
+          </Select>
+        </Field>
+        <div className="flex items-center justify-between md:col-span-2">
+          <label className="text-xs text-muted font-medium">{t("tasks.allowOutputTools")}</label>
+          <Switch checked={task.allow_output_tools ?? false} onChange={(v) => set("allow_output_tools", v)} />
+        </div>
+        <div className="flex items-center justify-between md:col-span-2">
+          <label className="text-xs text-muted font-medium">{t("tasks.saveResultToMemory")}</label>
+          <Switch checked={task.save_result_to_memory !== false}
+            onChange={(v) => set("save_result_to_memory", v)} />
+        </div>
+        {!isCreate && (
+          <div className="flex items-center justify-between md:col-span-2">
+            <label className="text-xs text-muted font-medium">{t("tasks.enableTask")}</label>
+            <Switch checked={task.enabled} onChange={(v) => set("enabled", v)} />
+          </div>
+        )}
+      </div>
+      <Field label={t("tasks.prompt")} required={isCreate}>
+        <Textarea className="min-h-[160px] font-mono text-[11px] leading-relaxed"
+          value={task.prompt} onChange={(e) => set("prompt", e.target.value)}
+          placeholder={isCreate ? t("tasks.promptPlaceholder") : undefined} />
+      </Field>
+    </>
+  );
+}
 
 export function TasksPanel() {
   const { t } = useTranslation("appconfig");
@@ -84,14 +209,11 @@ export function TasksPanel() {
     }
   };
 
-  const inputBase =
-    "w-full text-sm bg-[var(--bg-elevated)] border border-[var(--border)] rounded-[var(--radius-md)] px-2.5 py-1.5 text-[var(--text-strong)] focus:outline-none focus:border-[var(--accent)] transition-colors";
-
   return (
     <Card title={t("tasks.title")} subtitle={t("tasks.subtitle", { count: (tasks as TaskConfig[]).length })}>
       <div className="space-y-3">
         {(tasks as TaskConfig[]).length === 0 && !isCreating && (
-          <p className="text-sm text-[var(--muted)] py-2">{t("tasks.empty")}</p>
+          <p className="text-sm text-muted py-2">{t("tasks.empty")}</p>
         )}
 
         {(tasks as TaskConfig[]).map((task) => {
@@ -100,41 +222,41 @@ export function TasksPanel() {
           const isEditing = editingTask?.name === task.name;
 
           return (
-            <div key={task.name} className="border border-[var(--border)] rounded-[var(--radius-md)] overflow-hidden">
+            <div key={task.name} className="border border-border rounded-md overflow-hidden">
               <div
-                className="flex items-center gap-3 px-3 py-2.5 bg-[var(--bg-elevated)] cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
+                className="flex items-center gap-3 px-3 py-2.5 bg-elevated cursor-pointer hover:bg-hover transition-colors"
                 onClick={() => setExpandedName(isExpanded ? null : task.name)}
               >
-                <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", task.enabled ? "bg-[var(--ok)]" : "bg-[var(--muted)]")} />
+                <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", task.enabled ? "bg-ok" : "bg-muted")} />
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-[var(--text-strong)]">{task.display_name || task.name}</span>
-                    <span className="text-xs text-[var(--muted)]">{task.name}</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium text-heading">{task.display_name || task.name}</span>
+                    <span className="text-xs text-muted">{task.name}</span>
                     {!task.enabled && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--secondary)] text-[var(--muted)]">{t("tasks.disabled")}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-secondary text-muted">{t("tasks.disabled")}</span>
                     )}
                   </div>
-                  {task.description && <p className="text-xs text-[var(--muted)] truncate mt-0.5">{task.description}</p>}
+                  {task.description && <p className="text-xs text-muted truncate mt-0.5">{task.description}</p>}
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
                   <button
                     onClick={() => handleTrigger(task.name)}
                     disabled={state === "pending" || !task.enabled}
                     className={cn(
-                      "flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-[var(--radius-md)] transition-all",
+                      "flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-all",
                       state === "ok"
-                        ? "bg-[var(--ok-subtle)] text-[var(--ok)]"
+                        ? "bg-ok-subtle text-ok"
                         : state === "error"
-                          ? "bg-[var(--danger-subtle)] text-[var(--danger)]"
-                          : "bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)]",
+                          ? "bg-danger-subtle text-danger"
+                          : "bg-accent text-primary-foreground hover:bg-accent-hover",
                       (state === "pending" || !task.enabled) && "opacity-50 cursor-not-allowed",
                     )}
                   >
-                    <Play size={11} /> {triggerLabel(state)}
+                    <Play size={11} /> <span className="hidden sm:inline">{triggerLabel(state)}</span>
                   </button>
                   <button
                     onClick={() => { setEditingTask({ ...task }); setExpandedName(task.name); }}
-                    className="p-1.5 rounded hover:bg-[var(--bg-hover)] text-[var(--muted)] hover:text-[var(--accent)] transition-colors"
+                    className="p-1.5 rounded hover:bg-hover text-muted hover:text-accent transition-colors"
                     title={tc("edit")}
                   >
                     <Pencil size={13} />
@@ -145,29 +267,35 @@ export function TasksPanel() {
                         deleteMut.mutate(task.name);
                       }
                     }}
-                    className="p-1.5 rounded hover:bg-[var(--bg-hover)] text-[var(--muted)] hover:text-[var(--danger)] transition-colors"
+                    className="p-1.5 rounded hover:bg-hover text-muted hover:text-danger transition-colors"
                     title={tc("delete")}
                   >
                     <Trash2 size={13} />
                   </button>
                 </div>
-                {isExpanded ? <ChevronUp size={14} className="text-[var(--muted)]" /> : <ChevronDown size={14} className="text-[var(--muted)]" />}
+                {isExpanded ? <ChevronUp size={14} className="text-muted" /> : <ChevronDown size={14} className="text-muted" />}
               </div>
 
               {isExpanded && (
-                <div className="px-3 py-3 border-t border-[var(--border)] bg-[var(--bg-base)]">
+                <div className="px-3 py-3 border-t border-border">
                   {isEditing ? (
-                    <TaskEditForm
-                      task={editingTask!}
-                      onChange={setEditingTask}
-                      onSave={() => {
-                        const { name, ...rest } = editingTask!;
-                        updateMut.mutate({ name, data: rest });
-                      }}
-                      onCancel={() => setEditingTask(null)}
-                      isPending={updateMut.isPending}
-                      inputBase={inputBase}
-                    />
+                    <div className="space-y-3">
+                      <TaskFormFields
+                        task={editingTask!}
+                        set={(key, value) => setEditingTask((prev) => prev ? { ...prev, [key]: value } : prev)}
+                      />
+                      <div className="flex items-center gap-2">
+                        <Button variant="primary" size="sm" onClick={() => {
+                          const { name, ...rest } = editingTask!;
+                          updateMut.mutate({ name, data: rest });
+                        }} loading={updateMut.isPending}>
+                          <Save size={12} /> {updateMut.isPending ? t("actions.saving") : t("actions.save")}
+                        </Button>
+                        <Button variant="secondary" size="sm" onClick={() => setEditingTask(null)}>
+                          <X size={12} /> {t("actions.cancel")}
+                        </Button>
+                      </div>
+                    </div>
                   ) : (
                     <TaskDetail task={task} />
                   )}
@@ -178,28 +306,17 @@ export function TasksPanel() {
         })}
 
         {isCreating && (
-          <div className="border border-[var(--accent)] rounded-[var(--radius-md)] overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-2 bg-[var(--bg-elevated)] border-b border-[var(--border)]">
-              <span className="text-sm font-medium text-[var(--accent)]">{t("tasks.newTask")}</span>
-              <button onClick={() => setIsCreating(false)} className="text-[var(--muted)] hover:text-[var(--text-strong)]">
-                <X size={14} />
-              </button>
-            </div>
-            <div className="px-3 py-3 bg-[var(--bg-base)]">
-              <TaskCreateForm
-                onSave={(task) => createMut.mutate(task)}
-                onCancel={() => setIsCreating(false)}
-                isPending={createMut.isPending}
-                inputBase={inputBase}
-              />
-            </div>
-          </div>
+          <TaskCreateForm
+            onSave={(task) => createMut.mutate(task)}
+            onCancel={() => setIsCreating(false)}
+            isPending={createMut.isPending}
+          />
         )}
 
         {!isCreating && (
           <button
             onClick={() => setIsCreating(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-[var(--radius-md)] border border-dashed border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md border border-dashed border-border text-muted hover:border-accent hover:text-accent transition-colors"
           >
             <Plus size={14} /> {t("tasks.addTask")}
           </button>
@@ -213,8 +330,8 @@ function TaskDetail({ task }: { task: TaskConfig }) {
   const { t } = useTranslation("appconfig");
   const { t: tc } = useTranslation("common");
   return (
-    <div className="space-y-2 text-xs text-[var(--muted)]">
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+    <div className="space-y-2 text-xs text-muted">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
         <span><span className="font-medium">{t("tasks.detailScope")}</span>{task.scope}</span>
         <span><span className="font-medium">{t("tasks.detailMemoryType")}</span>{task.memory_type}</span>
         <span><span className="font-medium">{t("tasks.detailImportance")}</span>{task.importance}</span>
@@ -223,21 +340,21 @@ function TaskDetail({ task }: { task: TaskConfig }) {
         <span><span className="font-medium">{t("tasks.detailSaveResultToMemory")}</span>{task.save_result_to_memory === false ? tc("off") : tc("on")}</span>
         <span><span className="font-medium">{t("tasks.detailReasoningEffort")}</span>{task.reasoning_effort || t("tasks.defaultReasoningEffort")}</span>
         {(task.tags ?? []).length > 0 && (
-          <span className="col-span-2"><span className="font-medium">{t("tasks.detailTags")}</span>{(task.tags ?? []).join(", ")}</span>
+          <span className="sm:col-span-2"><span className="font-medium">{t("tasks.detailTags")}</span>{(task.tags ?? []).join(", ")}</span>
         )}
         {(task.null_keywords ?? []).length > 0 && (
-          <span className="col-span-2"><span className="font-medium">{t("tasks.detailNullKeywords")}</span>{(task.null_keywords ?? []).join(", ")}</span>
+          <span className="sm:col-span-2"><span className="font-medium">{t("tasks.detailNullKeywords")}</span>{(task.null_keywords ?? []).join(", ")}</span>
         )}
         {(task.tool_tags ?? []).length > 0 && (
-          <span className="col-span-2"><span className="font-medium">{t("tasks.detailToolTags")}</span>{(task.tool_tags ?? []).join(", ")}</span>
+          <span className="sm:col-span-2"><span className="font-medium">{t("tasks.detailToolTags")}</span>{(task.tool_tags ?? []).join(", ")}</span>
         )}
         {task.model_id && (
-          <span className="col-span-2"><span className="font-medium">{t("tasks.detailModelId")}</span>{task.model_id}</span>
+          <span className="sm:col-span-2"><span className="font-medium">{t("tasks.detailModelId")}</span>{task.model_id}</span>
         )}
       </div>
       <div>
         <p className="font-medium mb-1">{t("tasks.detailPrompt")}</p>
-        <pre className="whitespace-pre-wrap text-[11px] bg-[var(--bg-elevated)] p-2 rounded border border-[var(--border)] max-h-48 overflow-y-auto leading-relaxed">
+        <pre className="whitespace-pre-wrap text-[11px] bg-elevated p-2 rounded border border-border max-h-48 overflow-y-auto leading-relaxed">
           {task.prompt}
         </pre>
       </div>
@@ -245,310 +362,34 @@ function TaskDetail({ task }: { task: TaskConfig }) {
   );
 }
 
-interface TaskEditFormProps {
-  task: TaskConfig;
-  onChange: (t: TaskConfig) => void;
-  onSave: () => void;
+function TaskCreateForm({ onSave, onCancel, isPending }: {
+  onSave: (t: TaskConfig) => void;
   onCancel: () => void;
   isPending: boolean;
-  inputBase: string;
-}
-
-function TaskEditForm({ task, onChange, onSave, onCancel, isPending, inputBase }: TaskEditFormProps) {
-  const { t } = useTranslation("appconfig");
-  const set = (key: keyof TaskConfig, value: unknown) => onChange({ ...task, [key]: value });
-
-  interface PriorityItem { id: string; model: string }
-  const { data: priorities = {} } = useQuery<Record<string, PriorityItem[]>>({
-    queryKey: ["priorities"],
-    queryFn: () => modelsApi.priorities().then(r => r.data),
-  });
-  const chatModels = priorities.chat ?? [];
-
-  const scopeOptions = [
-    { value: "global", label: t("tasks.scopeGlobal") },
-    { value: "entity", label: t("tasks.scopeEntity") },
-    { value: "any", label: t("tasks.scopeAny") },
-  ];
-  const memoryTypeOptions = [
-    { value: "semantic", label: t("tasks.memoryTypeSemantic") },
-    { value: "reflection", label: t("tasks.memoryTypeReflection") },
-    { value: "entity", label: t("tasks.memoryTypeEntity") },
-  ];
-  const reasoningEffortOptions = REASONING_EFFORTS.map((item) => ({
-    value: item.value,
-    label: t(item.key),
-  }));
-
-  return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.displayName")}</label>
-          <input className={inputBase} value={task.display_name} onChange={(e) => set("display_name", e.target.value)} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.description")}</label>
-          <input className={inputBase} value={task.description} onChange={(e) => set("description", e.target.value)} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.scope")}</label>
-          <select className={inputBase} value={task.scope} onChange={(e) => set("scope", e.target.value)}>
-            {scopeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.memoryType")}</label>
-          <select className={inputBase} value={task.memory_type} onChange={(e) => set("memory_type", e.target.value)}>
-            {memoryTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.importance")}</label>
-          <input type="number" step="0.1" min="0" max="1" className={inputBase} value={task.importance}
-            onChange={(e) => set("importance", parseFloat(e.target.value) || 0.5)} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.sourceLabel")}</label>
-          <input className={inputBase} value={task.source} onChange={(e) => set("source", e.target.value)} placeholder={task.name} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.tagsLabel")}</label>
-          <input className={inputBase} value={(task.tags ?? []).join(", ")}
-            onChange={(e) => set("tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.nullKeywords")}</label>
-          <input className={inputBase} value={(task.null_keywords ?? []).join(", ")}
-            onChange={(e) => set("null_keywords", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
-            placeholder={t("tasks.nullKeywordsPlaceholder")} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.toolTags")}</label>
-          <input className={inputBase} value={(task.tool_tags ?? []).join(", ")}
-            onChange={(e) => set("tool_tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.modelId")}</label>
-          <select className={inputBase} value={task.model_id ?? ""}
-            onChange={(e) => set("model_id", e.target.value || null)}>
-            <option value="">{t("tasks.defaultModel")}</option>
-            {chatModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
-          </select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.reasoningEffort")}</label>
-          <select
-            className={inputBase}
-            value={task.reasoning_effort ?? ""}
-            onChange={(e) => set("reasoning_effort", (e.target.value || null) as ReasoningEffort | null)}
-          >
-            <option value="">{t("tasks.defaultReasoningEffort")}</option>
-            {reasoningEffortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        <div className="flex items-center justify-between md:col-span-2">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.allowOutputTools")}</label>
-          <button
-            onClick={() => set("allow_output_tools", !task.allow_output_tools)}
-            className={cn(
-              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-              task.allow_output_tools ? "bg-[var(--accent)]" : "bg-[var(--border)]",
-            )}
-          >
-            <span className={cn(
-              "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
-              task.allow_output_tools ? "translate-x-4" : "translate-x-1",
-            )} />
-          </button>
-        </div>
-        <div className="flex items-center justify-between md:col-span-2">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.saveResultToMemory")}</label>
-          <button
-            onClick={() => set("save_result_to_memory", !(task.save_result_to_memory === false))}
-            className={cn(
-              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-              task.save_result_to_memory === false ? "bg-[var(--border)]" : "bg-[var(--accent)]",
-            )}
-          >
-            <span className={cn(
-              "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
-              task.save_result_to_memory === false ? "translate-x-1" : "translate-x-4",
-            )} />
-          </button>
-        </div>
-        <div className="flex items-center justify-between md:col-span-2">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.enableTask")}</label>
-          <button
-            onClick={() => set("enabled", !task.enabled)}
-            className={cn("relative inline-flex h-5 w-9 items-center rounded-full transition-colors", task.enabled ? "bg-[var(--accent)]" : "bg-[var(--border)]")}
-          >
-            <span className={cn("inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform", task.enabled ? "translate-x-4" : "translate-x-1")} />
-          </button>
-        </div>
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.prompt")}</label>
-        <textarea className={cn(inputBase, "min-h-[160px] resize-y font-mono text-[11px] leading-relaxed")}
-          value={task.prompt} onChange={(e) => set("prompt", e.target.value)} />
-      </div>
-      <div className="flex items-center gap-2">
-        <button onClick={onSave} disabled={isPending}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-[var(--radius-md)] bg-[var(--accent)] text-white hover:opacity-90 transition-all disabled:opacity-50">
-          <Save size={12} /> {isPending ? t("actions.saving") : t("actions.save")}
-        </button>
-        <button onClick={onCancel}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--bg-hover)]">
-          <X size={12} /> {t("actions.cancel")}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function TaskCreateForm({ onSave, onCancel, isPending, inputBase }: { onSave: (t: TaskConfig) => void; onCancel: () => void; isPending: boolean; inputBase: string }) {
+}) {
   const { t } = useTranslation("appconfig");
   const [task, setTask] = useState<TaskConfig>({ ...EMPTY_TASK });
   const set = (key: keyof TaskConfig, value: unknown) => setTask((prev) => ({ ...prev, [key]: value }));
 
-  interface PriorityItem { id: string; model: string }
-  const { data: priorities = {} } = useQuery<Record<string, PriorityItem[]>>({
-    queryKey: ["priorities"],
-    queryFn: () => modelsApi.priorities().then(r => r.data),
-  });
-  const chatModels = priorities.chat ?? [];
-
-  const scopeOptions = [
-    { value: "global", label: t("tasks.scopeGlobal") },
-    { value: "entity", label: t("tasks.scopeEntity") },
-    { value: "any", label: t("tasks.scopeAny") },
-  ];
-  const memoryTypeOptions = [
-    { value: "semantic", label: t("tasks.memoryTypeSemantic") },
-    { value: "reflection", label: t("tasks.memoryTypeReflection") },
-    { value: "entity", label: t("tasks.memoryTypeEntity") },
-  ];
-  const reasoningEffortOptions = REASONING_EFFORTS.map((item) => ({
-    value: item.value,
-    label: t(item.key),
-  }));
-
   return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">
-            {t("tasks.taskName")} <span className="text-[var(--error)]">*</span>
-          </label>
-          <input className={inputBase} value={task.name} onChange={(e) => set("name", e.target.value)} placeholder={t("tasks.taskNamePlaceholder")} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.displayName")}</label>
-          <input className={inputBase} value={task.display_name} onChange={(e) => set("display_name", e.target.value)} placeholder={t("tasks.displayNamePlaceholder")} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.description")}</label>
-          <input className={inputBase} value={task.description} onChange={(e) => set("description", e.target.value)} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.scope")}</label>
-          <select className={inputBase} value={task.scope} onChange={(e) => set("scope", e.target.value)}>
-            {scopeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.memoryType")}</label>
-          <select className={inputBase} value={task.memory_type} onChange={(e) => set("memory_type", e.target.value)}>
-            {memoryTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.importance")}</label>
-          <input type="number" step="0.1" min="0" max="1" className={inputBase} value={task.importance}
-            onChange={(e) => set("importance", parseFloat(e.target.value) || 0.5)} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.nullKeywords")}</label>
-          <input className={inputBase} value={(task.null_keywords ?? []).join(", ")}
-            onChange={(e) => set("null_keywords", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
-            placeholder={t("tasks.nullKeywordsCreatePlaceholder")} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.tagsLabel")}</label>
-          <input className={inputBase} value={(task.tags ?? []).join(", ")}
-            onChange={(e) => set("tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
-        </div>
-        <div className="flex flex-col gap-1 md:col-span-2">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.toolTags")}</label>
-          <input className={inputBase} value={(task.tool_tags ?? []).join(", ")}
-            onChange={(e) => set("tool_tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.modelId")}</label>
-          <select className={inputBase} value={task.model_id ?? ""}
-            onChange={(e) => set("model_id", e.target.value || null)}>
-            <option value="">{t("tasks.defaultModel")}</option>
-            {chatModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
-          </select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.reasoningEffort")}</label>
-          <select
-            className={inputBase}
-            value={task.reasoning_effort ?? ""}
-            onChange={(e) => set("reasoning_effort", (e.target.value || null) as ReasoningEffort | null)}
-          >
-            <option value="">{t("tasks.defaultReasoningEffort")}</option>
-            {reasoningEffortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        <div className="flex items-center justify-between md:col-span-2">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.allowOutputTools")}</label>
-          <button
-            onClick={() => set("allow_output_tools", !task.allow_output_tools)}
-            className={cn(
-              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-              task.allow_output_tools ? "bg-[var(--accent)]" : "bg-[var(--border)]",
-            )}
-          >
-            <span className={cn(
-              "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
-              task.allow_output_tools ? "translate-x-4" : "translate-x-1",
-            )} />
-          </button>
-        </div>
-        <div className="flex items-center justify-between md:col-span-2">
-          <label className="text-xs text-[var(--muted)] font-medium">{t("tasks.saveResultToMemory")}</label>
-          <button
-            onClick={() => set("save_result_to_memory", !(task.save_result_to_memory === false))}
-            className={cn(
-              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-              task.save_result_to_memory === false ? "bg-[var(--border)]" : "bg-[var(--accent)]",
-            )}
-          >
-            <span className={cn(
-              "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
-              task.save_result_to_memory === false ? "translate-x-1" : "translate-x-4",
-            )} />
-          </button>
-        </div>
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-[var(--muted)] font-medium">
-          {t("tasks.prompt")} <span className="text-[var(--error)]">*</span>
-        </label>
-        <textarea className={cn(inputBase, "min-h-[160px] resize-y font-mono text-[11px] leading-relaxed")}
-          value={task.prompt} onChange={(e) => set("prompt", e.target.value)} placeholder={t("tasks.promptPlaceholder")} />
-      </div>
-      <div className="flex items-center gap-2">
-        <button onClick={() => onSave(task)} disabled={isPending || !task.name.trim() || !task.prompt.trim()}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-[var(--radius-md)] bg-[var(--accent)] text-white hover:opacity-90 transition-all disabled:opacity-50">
-          <Plus size={12} /> {isPending ? t("tasks.creating") : t("tasks.createTask")}
+    <div className="border border-accent rounded-md overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 bg-elevated border-b border-border">
+        <span className="text-sm font-medium text-accent">{t("tasks.newTask")}</span>
+        <button onClick={onCancel} className="text-muted hover:text-heading">
+          <X size={14} />
         </button>
-        <button onClick={onCancel}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--bg-hover)]">
-          <X size={12} /> {t("actions.cancel")}
-        </button>
+      </div>
+      <div className="px-3 py-3 space-y-3">
+        <TaskFormFields task={task} set={set} isCreate />
+        <div className="flex items-center gap-2">
+          <Button variant="primary" size="sm" onClick={() => onSave(task)}
+            disabled={!task.name.trim() || !task.prompt.trim()} loading={isPending}>
+            <Plus size={12} /> {isPending ? t("tasks.creating") : t("tasks.createTask")}
+          </Button>
+          <Button variant="secondary" size="sm" onClick={onCancel}>
+            <X size={12} /> {t("actions.cancel")}
+          </Button>
+        </div>
       </div>
     </div>
   );

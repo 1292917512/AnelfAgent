@@ -40,21 +40,21 @@ export function ToolsInsightPanel() {
               {toolRecall.map((tool, i) => (
                 <div key={tool.name} className="group">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-mono text-[var(--text)] truncate flex items-center gap-2">
+                    <span className="text-xs font-mono text-foreground truncate flex items-center gap-2">
                       <span className={cn("w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0",
-                        i === 0 ? "bg-[var(--accent)] text-white" : i < 3 ? "bg-[var(--accent-subtle)] text-[var(--accent)]" : "bg-[var(--secondary)] text-[var(--muted)]"
+                        i === 0 ? "bg-accent text-white" : i < 3 ? "bg-accent-subtle text-accent" : "bg-secondary text-muted"
                       )}>{i + 1}</span>
                       {tool.name}
                     </span>
-                    <span className="text-xs font-semibold text-[var(--accent)] ml-2 flex-shrink-0">{t("times", { count: tool.count })}</span>
+                    <span className="text-xs font-semibold text-accent ml-2 flex-shrink-0">{t("times", { count: tool.count })}</span>
                   </div>
-                  <div className="h-1.5 rounded-full bg-[var(--secondary)] overflow-hidden">
-                    <div className="h-full rounded-full bg-[var(--accent)] transition-all duration-500" style={{ width: `${(tool.count / maxCount) * 100}%` }} />
+                  <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
+                    <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${(tool.count / maxCount) * 100}%` }} />
                   </div>
                 </div>
               ))}
             </div>
-          ) : <p className="text-[var(--muted)] text-sm py-4 text-center">{t("noToolCalls")}</p>}
+          ) : <p className="text-muted text-sm py-4 text-center">{t("noToolCalls")}</p>}
         </Card>
 
         <Card title={`${t("currentActiveTools")} (${pfc?.active_tools?.length ?? 0})`}>
@@ -63,23 +63,23 @@ export function ToolsInsightPanel() {
               {pfc.active_tools.map((name) => {
                 const recall = toolRecall.find((tr) => tr.name === name);
                 return (
-                  <span key={name} className={cn("px-2.5 py-1 text-[11px] font-mono rounded-[var(--radius-md)] border transition-all",
-                    recall ? "bg-[var(--accent-subtle)] text-[var(--accent)] border-[var(--accent)]" : "bg-[var(--bg-elevated)] text-[var(--text)] border-[var(--border)]"
+                  <span key={name} className={cn("px-2.5 py-1 text-[11px] font-mono rounded-md border transition-all",
+                    recall ? "bg-accent-subtle text-accent border-accent" : "bg-elevated text-foreground border-border"
                   )}>{name}{recall ? ` (${recall.count})` : ""}</span>
                 );
               })}
             </div>
-          ) : <p className="text-[var(--muted)] text-sm py-4 text-center">{t("noActiveTools")}</p>}
+          ) : <p className="text-muted text-sm py-4 text-center">{t("noActiveTools")}</p>}
         </Card>
 
         <Card title={t("tagActivatedTools")}>
           {pfc?.tag_activated_tools?.length ? (
             <div className="flex flex-wrap gap-2">
               {pfc.tag_activated_tools.map((name) => (
-                <span key={name} className="px-2.5 py-1 text-xs font-mono rounded-full bg-[var(--accent-subtle)] text-[var(--accent)] border border-[var(--accent)]">{name}</span>
+                <span key={name} className="px-2.5 py-1 text-xs font-mono rounded-full bg-accent-subtle text-accent border border-accent">{name}</span>
               ))}
             </div>
-          ) : <p className="text-[var(--muted)] text-sm py-2">{t("noTagTools")}</p>}
+          ) : <p className="text-muted text-sm py-2">{t("noTagTools")}</p>}
         </Card>
       </div>
     </div>

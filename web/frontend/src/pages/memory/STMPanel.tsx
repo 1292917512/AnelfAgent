@@ -30,7 +30,7 @@ export function STMPanel() {
         <select
           value={filter}
           onChange={(e) => setFilter(e.target.value as STMFilter)}
-          className="bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-2 py-1 text-xs text-[var(--text)] outline-none"
+          className="bg-card border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none"
         >
           <option value="all">{t("common:all")}</option>
           <option value="temporary">{t("temporary")}</option>
@@ -38,16 +38,16 @@ export function STMPanel() {
           <option value="task">{t("taskFilter")}</option>
           <option value="analysis">{t("analysisFilter")}</option>
         </select>
-        <button onClick={() => clearMutation.mutate()} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--danger-subtle)] text-[var(--danger)] hover:bg-[rgba(239,68,68,0.15)] transition-all"><Trash2 size={14} /> {t("common:clear")}</button>
+        <button onClick={() => clearMutation.mutate()} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all"><Trash2 size={14} /> {t("common:clear")}</button>
       </div>
     }>
       <div className="space-y-2 max-h-96 overflow-y-auto">
-        {filtered.length === 0 && <p className="text-sm text-[var(--muted)]">{t("common:noData")}</p>}
+        {filtered.length === 0 && <p className="text-sm text-muted">{t("common:noData")}</p>}
         {filtered.map((item) => (
-          <div key={`${item.type}-${item.index}-${item.role}`} className="flex items-start gap-3 p-3 rounded-[var(--radius-md)] bg-[var(--bg-elevated)] border border-[var(--border)]">
-            <span className={cn("text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0 mt-0.5", item.type === "temporary" ? "bg-[var(--accent-subtle)] text-[var(--accent)]" : item.type === "pending" ? "bg-[var(--warn-subtle)] text-[var(--warn)]" : item.type === "task" ? "bg-[var(--ok-subtle)] text-[var(--ok)]" : "bg-[var(--secondary)] text-[var(--muted)]")}>{item.role}</span>
-            <p className="text-sm text-[var(--text)] flex-1 break-all">{item.content}</p>
-            {item.index >= 0 && <button onClick={() => deleteMutation.mutate(item.index)} className="flex-shrink-0 p-1 text-[var(--muted)] hover:text-[var(--danger)] transition-colors"><Trash2 size={14} /></button>}
+          <div key={`${item.type}-${item.index}-${item.role}`} className="flex items-start gap-3 p-3 rounded-md bg-elevated border border-border">
+            <span className={cn("text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0 mt-0.5", item.type === "temporary" ? "bg-accent-subtle text-accent" : item.type === "pending" ? "bg-warn-subtle text-warn" : item.type === "task" ? "bg-ok-subtle text-ok" : "bg-secondary text-muted")}>{item.role}</span>
+            <p className="text-sm text-foreground flex-1 break-all">{item.content}</p>
+            {item.index >= 0 && <button onClick={() => deleteMutation.mutate(item.index)} className="flex-shrink-0 p-1 text-muted hover:text-danger transition-colors"><Trash2 size={14} /></button>}
           </div>
         ))}
       </div>

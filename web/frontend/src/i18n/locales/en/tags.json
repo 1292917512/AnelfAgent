@@ -32,5 +32,7 @@
   "selectedTags": "Selected",
   "availableTags": "Available Tags",
   "noAvailableTags": "All tags already selected",
-  "goCreateTag": "Go to Tag System to create new tags"
+  "goCreateTag": "Go to Tag System to create new tags",
+  "preview": "Preview",
+  "previewValue": "value"
 }

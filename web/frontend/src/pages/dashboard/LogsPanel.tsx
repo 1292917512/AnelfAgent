@@ -9,11 +9,11 @@ import { Search, Pause, Play } from "lucide-react";
 
 const LEVEL_OPTIONS = ["", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
 const LEVEL_COLORS: Record<string, string> = {
-  DEBUG: "text-[var(--muted)]",
-  INFO: "text-[var(--info)]",
-  WARNING: "text-[var(--warn)]",
-  ERROR: "text-[var(--danger)]",
-  CRITICAL: "text-[var(--danger)] font-bold",
+  DEBUG: "text-muted",
+  INFO: "text-info",
+  WARNING: "text-warn",
+  ERROR: "text-danger",
+  CRITICAL: "text-danger font-bold",
 };
 
 type LogEntry = { level: string; message: string; tag: string; time: string };
@@ -80,14 +80,14 @@ export function LogsPanel() {
 
       <div className="flex flex-wrap gap-2 items-center">
         <select value={level} onChange={(e) => setLevel(e.target.value)}
-          className="bg-[var(--bg-elevated)] border border-[var(--input)] rounded-[var(--radius-md)] px-2 py-1 text-xs text-[var(--text)] outline-none">
+          className="bg-elevated border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none">
           {LEVEL_OPTIONS.map((lv) => (
             <option key={lv} value={lv}>{t(`levelLabels.${lv === "" ? "all" : lv.toLowerCase()}`)}</option>
           ))}
         </select>
 
         <select value={tag} onChange={(e) => setTag(e.target.value)}
-          className="bg-[var(--bg-elevated)] border border-[var(--input)] rounded-[var(--radius-md)] px-2 py-1 text-xs text-[var(--text)] outline-none">
+          className="bg-elevated border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none">
           <option value="">{t("allTags")}</option>
           {tagOptions.map((tagOpt) => (
             <option key={tagOpt} value={tagOpt}>{tagOpt} ({byTag[tagOpt]})</option>
@@ -95,27 +95,27 @@ export function LogsPanel() {
         </select>
 
         <div className="relative flex-1 min-w-[150px] max-w-xs">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
           <input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder={t("searchKeyword")}
-            className="w-full pl-8 pr-3 py-1.5 text-xs bg-[var(--bg-elevated)] border border-[var(--input)] rounded-[var(--radius-md)] text-[var(--text)] outline-none focus:border-[var(--ring)]" />
+            className="w-full pl-8 pr-3 py-1.5 text-xs bg-elevated border border-input rounded-md text-foreground outline-none focus:border-ring" />
         </div>
 
         <button onClick={() => setPaused(!paused)}
           className={cn("flex items-center gap-1 px-3 py-1 text-[11px] font-medium rounded-full border transition-all",
-            paused ? "bg-[var(--warn-subtle)] text-[var(--warn)] border-[var(--warn)]" : "bg-[var(--ok-subtle)] text-[var(--ok)] border-[rgba(34,197,94,0.3)]")}>
+            paused ? "bg-warn-subtle text-warn border-[var(--warn)]" : "bg-ok-subtle text-ok border-[rgba(34,197,94,0.3)]")}>
           {paused ? <><Play size={12} /> {t("paused")}</> : <><Pause size={12} /> {t("realtime")}</>}
         </button>
       </div>
 
       <Card title={`${t("logs")} (${filtered.length} ${t("entries")}${paused ? ` · ${t("paused")}` : ` · ${t("realtime")}`})`}>
         <div ref={scrollRef} className="space-y-0.5 max-h-[500px] overflow-y-auto font-mono text-[12px]">
-          {filtered.length === 0 && <p className="text-sm text-[var(--muted)] py-4 text-center">{t("noMatchingLogs")}</p>}
+          {filtered.length === 0 && <p className="text-sm text-muted py-4 text-center">{t("noMatchingLogs")}</p>}
           {filtered.map((entry, i) => (
-            <div key={`${entry.time}-${entry.level}-${i}`} className="flex items-start gap-2 py-1 px-2 rounded-[var(--radius-sm)] hover:bg-[var(--bg-hover)] transition-colors">
-              <span className="text-[var(--muted)] flex-shrink-0 w-16">{entry.time}</span>
-              <span className={cn("flex-shrink-0 w-16 font-semibold", LEVEL_COLORS[entry.level] ?? "text-[var(--text)]")}>{entry.level}</span>
-              {entry.tag && <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-[var(--secondary)] text-[var(--muted)] border border-[var(--border)]">{entry.tag}</span>}
-              <span className="text-[var(--text)] break-all">{entry.message}</span>
+            <div key={`${entry.time}-${entry.level}-${i}`} className="flex items-start gap-2 py-1 px-2 rounded-sm hover:bg-hover transition-colors">
+              <span className="text-muted flex-shrink-0 w-16">{entry.time}</span>
+              <span className={cn("flex-shrink-0 w-16 font-semibold", LEVEL_COLORS[entry.level] ?? "text-foreground")}>{entry.level}</span>
+              {entry.tag && <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-secondary text-muted border border-border">{entry.tag}</span>}
+              <span className="text-foreground break-all">{entry.message}</span>
             </div>
           ))}
         </div>

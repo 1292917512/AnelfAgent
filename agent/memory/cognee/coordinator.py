@@ -58,11 +58,16 @@ class CogneeCoordinator:
                 name="memory.cognee.sync",
             )
 
-    @staticmethod
-    def _stale_after_seconds() -> float:
-        """卡死判定阈值（processing 超过该时长视为被中断）。"""
+    def _stale_after_seconds(self) -> float:
+        """卡死判定阈值（processing 超过该时长视为被中断）。
+
+        必须与批次最坏耗时联动：单批次可能顺序执行 add + cognify + improve
+        三次流水线，阈值过低会把仍在正常处理的长批次误判为卡死并重复认领。
+        """
         from core.config import get_config_float
-        return get_config_float("cognee_sync_stale_seconds", 900.0)
+        configured = get_config_float("cognee_sync_stale_seconds", 900.0)
+        batch_worst_case = 3 * self.config.pipeline_timeout_seconds + 600.0
+        return max(configured, batch_worst_case)
 
     async def close(self) -> None:
         self._closing = True

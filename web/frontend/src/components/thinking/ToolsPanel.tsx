@@ -11,7 +11,7 @@ export function ToolsPanel({ tools }: Props) {
 
   if (tools.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-xs text-[var(--muted)] gap-2 px-4">
+      <div className="flex flex-col items-center justify-center h-full text-xs text-muted gap-2 px-4">
         <Package size={20} className="opacity-40" />
         <span>{t("waitingToolsLoad")}</span>
       </div>
@@ -20,13 +20,13 @@ export function ToolsPanel({ tools }: Props) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-4 py-3 border-b border-[var(--border)]">
+      <div className="px-4 py-3 border-b border-border">
         <div className="flex items-center gap-1.5">
-          <Wrench size={12} className="text-[var(--accent)]" />
-          <span className="text-xs font-semibold text-[var(--text-strong)] uppercase tracking-wider">
+          <Wrench size={12} className="text-accent" />
+          <span className="text-xs font-semibold text-heading uppercase tracking-wider">
             {t("availableTools")}
           </span>
-          <span className="ml-auto text-[10px] font-mono text-[var(--muted)]">
+          <span className="ml-auto text-[10px] font-mono text-muted">
             {tools.length}
           </span>
         </div>
@@ -39,7 +39,7 @@ export function ToolsPanel({ tools }: Props) {
               className={cn(
                 "inline-flex items-center gap-1 px-2 py-0.5 rounded-full",
                 "text-[10px] font-mono leading-relaxed",
-                "bg-[var(--accent-subtle)] text-[var(--accent)] border border-[var(--accent)]/20",
+                "bg-accent-subtle text-accent border border-accent/20",
               )}
               title={name}
             >

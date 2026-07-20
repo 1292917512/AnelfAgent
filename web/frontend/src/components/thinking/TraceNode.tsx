@@ -30,40 +30,40 @@ export interface TraceNodeData {
 
 const TYPE_STYLES: Record<string, { bg: string; border: string; icon: React.ElementType; accent: string }> = {
   session_start: {
-    bg: "bg-[var(--ok-subtle)]",
+    bg: "bg-ok-subtle",
     border: "border-[var(--ok)]",
     icon: Play,
-    accent: "text-[var(--ok)]",
+    accent: "text-ok",
   },
   session_end: {
     bg: "bg-[var(--bg-muted)]",
     border: "border-[var(--muted)]",
     icon: Square,
-    accent: "text-[var(--muted)]",
+    accent: "text-muted",
   },
   phase_change: {
-    bg: "bg-[var(--accent-2-subtle)]",
+    bg: "bg-accent2-subtle",
     border: "border-[var(--accent-2)]",
     icon: Zap,
-    accent: "text-[var(--accent-2)]",
+    accent: "text-accent2",
   },
   situation: {
     bg: "bg-[var(--info)]/10",
     border: "border-[var(--info)]",
     icon: Search,
-    accent: "text-[var(--info)]",
+    accent: "text-info",
   },
   decision: {
-    bg: "bg-[var(--warn-subtle)]",
+    bg: "bg-warn-subtle",
     border: "border-[var(--warn)]",
     icon: GitBranch,
-    accent: "text-[var(--warn)]",
+    accent: "text-warn",
   },
   context_build: {
     bg: "bg-[var(--bg-muted)]",
-    border: "border-[var(--border-strong)]",
+    border: "border-border-strong",
     icon: Layers,
-    accent: "text-[var(--muted)]",
+    accent: "text-muted",
   },
   llm_call: {
     bg: "bg-purple-500/10",
@@ -72,16 +72,16 @@ const TYPE_STYLES: Record<string, { bg: string; border: string; icon: React.Elem
     accent: "text-purple-400",
   },
   tool_call: {
-    bg: "bg-[var(--accent-subtle)]",
-    border: "border-[var(--accent)]",
+    bg: "bg-accent-subtle",
+    border: "border-accent",
     icon: Wrench,
-    accent: "text-[var(--accent)]",
+    accent: "text-accent",
   },
   reply_round: {
-    bg: "bg-[var(--accent-2-subtle)]",
+    bg: "bg-accent2-subtle",
     border: "border-[var(--accent-2)]",
     icon: MessageSquare,
-    accent: "text-[var(--accent-2)]",
+    accent: "text-accent2",
   },
   introspection: {
     bg: "bg-pink-500/10",
@@ -166,8 +166,8 @@ function TraceNodeComponent({ data, selected }: NodeProps) {
       <Handle type="target" position={Position.Top} className="!bg-[var(--border-strong)] !w-2 !h-2" />
       <div
         className={cn(
-          "px-3 py-2 rounded-[var(--radius-md)] border min-w-[180px] max-w-[300px]",
-          "shadow-[var(--shadow-sm)] transition-all duration-150",
+          "px-3 py-2 rounded-md border min-w-[180px] max-w-[300px]",
+          "shadow-sm transition-all duration-150",
           d.status === "error"
             ? "bg-red-500/15 border-red-500 border-2"
             : cn(style.bg, style.border),
@@ -177,7 +177,7 @@ function TraceNodeComponent({ data, selected }: NodeProps) {
       >
         <div className="flex items-center gap-2">
           <Icon size={14} className={cn(style.accent, "shrink-0")} />
-          <span className="text-xs font-medium text-[var(--text-strong)] truncate flex-1">
+          <span className="text-xs font-medium text-heading truncate flex-1">
             {d.label}
           </span>
           {StatusIcon && (
@@ -185,20 +185,20 @@ function TraceNodeComponent({ data, selected }: NodeProps) {
               size={12}
               className={cn(
                 "shrink-0",
-                d.status === "running" && "text-[var(--accent)] animate-spin",
-                d.status === "completed" && "text-[var(--ok)]",
-                d.status === "error" && "text-[var(--danger)]",
+                d.status === "running" && "text-accent animate-spin",
+                d.status === "completed" && "text-ok",
+                d.status === "error" && "text-danger",
               )}
             />
           )}
         </div>
         {subtitle && (
-          <div className="mt-0.5 text-[10px] text-[var(--muted)] truncate max-w-[260px]">
+          <div className="mt-0.5 text-[10px] text-muted truncate max-w-[260px]">
             {subtitle}
           </div>
         )}
         {(d.duration_ms != null || (d.data.usage as Record<string, number> | undefined)?.total_tokens) && (
-          <div className="mt-0.5 text-[10px] text-[var(--muted)] font-mono flex items-center gap-1.5 flex-wrap">
+          <div className="mt-0.5 text-[10px] text-muted font-mono flex items-center gap-1.5 flex-wrap">
             {d.duration_ms != null && (
               <span>
                 {d.duration_ms >= 1000
@@ -210,7 +210,7 @@ function TraceNodeComponent({ data, selected }: NodeProps) {
               const usage = d.data.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
               if (!usage?.total_tokens) return null;
               return (
-                <span className="text-[var(--accent-2)]">
+                <span className="text-accent2">
                   {usage.prompt_tokens ?? 0}+{usage.completion_tokens ?? 0}={usage.total_tokens}t
                 </span>
               );
@@ -218,7 +218,7 @@ function TraceNodeComponent({ data, selected }: NodeProps) {
             {(() => {
               const pct = d.data.usage_percent as number | undefined;
               if (pct == null) return null;
-              const color = pct > 80 ? "text-[var(--danger)]" : pct > 50 ? "text-[var(--warn)]" : "text-[var(--ok)]";
+              const color = pct > 80 ? "text-danger" : pct > 50 ? "text-warn" : "text-ok";
               return <span className={color}>{pct}%</span>;
             })()}
           </div>

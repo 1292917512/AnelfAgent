@@ -17,7 +17,7 @@ interface AppFieldProps {
 
 export function AppField({ meta, value, onChange }: AppFieldProps) {
   const base =
-    "w-full text-sm bg-[var(--bg-elevated)] border border-[var(--border)] rounded-[var(--radius-md)] px-2.5 py-1.5 text-[var(--text-strong)] focus:outline-none focus:border-[var(--accent)] transition-colors";
+    "w-full text-sm bg-elevated border border-border rounded-md px-2.5 py-1.5 text-heading focus:outline-none focus:border-accent transition-colors";
 
   const renderInput = () => {
     if (meta.type === "bool") {
@@ -26,7 +26,7 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
           onClick={() => onChange(!value)}
           className={cn(
             "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-            value ? "bg-[var(--accent)]" : "bg-[var(--border)]",
+            value ? "bg-accent" : "bg-[var(--border)]",
           )}
         >
           <span
@@ -84,10 +84,10 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between">
-        <label className="text-xs text-[var(--muted)] font-medium">{meta.label}</label>
+        <label className="text-xs text-muted font-medium">{meta.label}</label>
         {meta.type === "bool" && renderInput()}
       </div>
-      {meta.desc && <p className="text-[11px] text-[var(--muted)] opacity-70">{meta.desc}</p>}
+      {meta.desc && <p className="text-[11px] text-muted opacity-70">{meta.desc}</p>}
       {meta.type !== "bool" && renderInput()}
     </div>
   );

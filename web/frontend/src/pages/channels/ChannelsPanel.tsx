@@ -149,13 +149,13 @@ export function ChannelsPanel() {
         {dirty && (
           <div className="flex items-center gap-2">
             {saveOk && (
-              <span className="flex items-center gap-1 text-xs text-[var(--ok)]">
+              <span className="flex items-center gap-1 text-xs text-ok">
                 <CheckCircle size={14} /> {t("savedOk")}
               </span>
             )}
             <button onClick={() => saveMutation.mutate(values)} disabled={saveMutation.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)]
-                bg-[var(--accent)] text-white hover:opacity-90 transition-all disabled:opacity-50">
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md
+                bg-accent text-white hover:opacity-90 transition-all disabled:opacity-50">
               <Save size={14} />
               {saveMutation.isPending ? t("common:saving") : t("saveConfig")}
             </button>
@@ -164,9 +164,9 @@ export function ChannelsPanel() {
       </div>
 
       {isLoading ? (
-        <p className="text-sm text-[var(--muted)]">{t("common:loading")}</p>
+        <p className="text-sm text-muted">{t("common:loading")}</p>
       ) : !ready ? (
-        <p className="text-sm text-[var(--muted)]">{t("runtimeNotReady")}</p>
+        <p className="text-sm text-muted">{t("runtimeNotReady")}</p>
       ) : (
         <div className="grid gap-3">
           {adapters.map((a) => {
@@ -174,28 +174,28 @@ export function ChannelsPanel() {
             const configs = getConfigsForChannel(a.key);
             return (
               <div key={a.key} className={cn(
-                "rounded-[var(--radius-md)] border transition-all bg-[var(--card)]",
-                isOpen ? "border-[var(--accent)] shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--ring)]"
-                       : "border-[var(--border)] hover:border-[var(--border-strong)]",
+                "rounded-md border transition-all bg-card",
+                isOpen ? "border-accent shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--ring)]"
+                       : "border-border hover:border-border-strong",
               )}>
                 {/* Header */}
                 <div className="flex items-center justify-between p-4 cursor-pointer"
                   onClick={() => setExpanded(isOpen ? null : a.key)}>
                   <div className="flex items-center gap-3">
-                    <ChevronDown size={16} className={cn("text-[var(--muted)] transition-transform", isOpen && "rotate-180")} />
+                    <ChevronDown size={16} className={cn("text-muted transition-transform", isOpen && "rotate-180")} />
                     <StatusDot status={statusToColor(a.status)} />
                     <div>
-                      <span className="text-sm font-medium text-[var(--text-strong)]">{a.name}</span>
+                      <span className="text-sm font-medium text-heading">{a.name}</span>
                       <span className={cn("ml-2 text-[11px] px-2 py-0.5 rounded-full border",
                         a.status === "running"
-                          ? "bg-[var(--ok-subtle)] text-[var(--ok)] border-[rgba(34,197,94,0.3)]"
+                          ? "bg-ok-subtle text-ok border-[rgba(34,197,94,0.3)]"
                           : a.status === "error"
-                            ? "bg-[var(--danger-subtle)] text-[var(--danger)] border-[rgba(239,68,68,0.3)]"
-                            : "bg-[var(--secondary)] text-[var(--muted)] border-[var(--border)]"
+                            ? "bg-danger-subtle text-danger border-[rgba(239,68,68,0.3)]"
+                            : "bg-secondary text-muted border-border"
                       )}>{a.status_display}</span>
                     </div>
                     {configs.length > 0 && (
-                      <span className="text-[11px] text-[var(--muted)] flex items-center gap-1">
+                      <span className="text-[11px] text-muted flex items-center gap-1">
                         <Settings2 size={12} /> {t("nConfigItems", { count: configs.length })}
                       </span>
                     )}
@@ -207,12 +207,12 @@ export function ChannelsPanel() {
                       return (
                         <button onClick={() => toggleMutation.mutate(a.key)} disabled={isToggling}
                           className={cn(
-                            "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border transition-all disabled:opacity-70",
+                            "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-all disabled:opacity-70",
                             isToggling
-                              ? "border-[var(--border)] text-[var(--warn)] bg-[var(--warn-subtle)] cursor-wait"
+                              ? "border-border text-warn bg-warn-subtle cursor-wait"
                               : isRunning
-                                ? "border-[rgba(239,68,68,0.3)] text-[var(--danger)] hover:bg-[var(--danger-subtle)]"
-                                : "border-[rgba(34,197,94,0.3)] text-[var(--ok)] hover:bg-[var(--ok-subtle)]",
+                                ? "border-[rgba(239,68,68,0.3)] text-danger hover:bg-danger-subtle"
+                                : "border-[rgba(34,197,94,0.3)] text-ok hover:bg-ok-subtle",
                           )}>
                           <Power size={14} className={isToggling ? "animate-spin" : ""} />
                           {isToggling ? (isRunning ? t("stopping") : t("starting")) : isRunning ? t("stop") : t("start")}
@@ -224,16 +224,16 @@ export function ChannelsPanel() {
 
                 {/* Expanded: status + config */}
                 {isOpen && (
-                  <div className="border-t border-[var(--border)] p-4 space-y-4">
+                  <div className="border-t border-border p-4 space-y-4">
                     {/* Connection status panel */}
                     {a.detail && (
                       <div className={cn(
-                        "flex items-center gap-3 px-3 py-2.5 rounded-[var(--radius-md)] text-xs font-mono",
+                        "flex items-center gap-3 px-3 py-2.5 rounded-md text-xs font-mono",
                         (a.online || a.ws_connected)
-                          ? "bg-[var(--ok-subtle)] text-[var(--ok)] border border-[rgba(34,197,94,0.2)]"
+                          ? "bg-ok-subtle text-ok border border-[rgba(34,197,94,0.2)]"
                           : a.status === "running" || a.status === "reconnecting"
-                            ? "bg-[var(--warn-subtle)] text-[var(--warn)] border border-[rgba(245,158,11,0.2)]"
-                            : "bg-[var(--secondary)] text-[var(--muted)] border border-[var(--border)]"
+                            ? "bg-warn-subtle text-warn border border-[rgba(245,158,11,0.2)]"
+                            : "bg-secondary text-muted border border-border"
                       )}>
                         {(a.online || a.ws_connected) ? <Wifi size={14} /> : <WifiOff size={14} />}
                         <span>{a.detail}</span>
@@ -249,7 +249,7 @@ export function ChannelsPanel() {
                     {configs.length > 0 ? (
                       <>
                         <div className="flex items-center justify-between">
-                          <p className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
+                          <p className="text-xs font-semibold text-muted uppercase tracking-wider">
                             {t("channelConfig", { name: a.name })}
                           </p>
                           <button onClick={() => {
@@ -263,7 +263,7 @@ export function ChannelsPanel() {
                             setValues((prev) => ({ ...prev, ...defaults }));
                             setDirty(true); setSaveOk(false);
                           }}
-                            className="flex items-center gap-1 px-2 py-1 text-[11px] text-[var(--muted)] rounded hover:bg-[var(--bg-hover)] transition-colors">
+                            className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted rounded hover:bg-hover transition-colors">
                             <RotateCcw size={12} /> {t("resetDefaults")}
                           </button>
                         </div>
@@ -283,7 +283,7 @@ export function ChannelsPanel() {
                         </div>
                       </>
                     ) : (
-                      <p className="text-sm text-[var(--muted)] text-center py-2">
+                      <p className="text-sm text-muted text-center py-2">
                         {t("noConfig")}
                       </p>
                     )}
@@ -301,22 +301,22 @@ export function ChannelsPanel() {
             const isToggling = togglingKey === channelKey;
             return (
               <div key={channelKey} className={cn(
-                "rounded-[var(--radius-md)] border transition-all bg-[var(--card)]",
-                isOpen ? "border-[var(--accent)] shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--ring)]"
-                       : "border-[var(--border)] hover:border-[var(--border-strong)]",
+                "rounded-md border transition-all bg-card",
+                isOpen ? "border-accent shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--ring)]"
+                       : "border-border hover:border-border-strong",
               )}>
                 <div className="flex items-center justify-between p-4 cursor-pointer"
                   onClick={() => setExpanded(isOpen ? null : channelKey)}>
                   <div className="flex items-center gap-3">
-                    <ChevronDown size={16} className={cn("text-[var(--muted)] transition-transform", isOpen && "rotate-180")} />
+                    <ChevronDown size={16} className={cn("text-muted transition-transform", isOpen && "rotate-180")} />
                     <StatusDot status="offline" />
                     <div>
-                      <span className="text-sm font-medium text-[var(--text-strong)]">{channelKey}</span>
-                      <span className="ml-2 text-[11px] px-2 py-0.5 rounded-full bg-[var(--secondary)] text-[var(--muted)] border border-[var(--border)]">
+                      <span className="text-sm font-medium text-heading">{channelKey}</span>
+                      <span className="ml-2 text-[11px] px-2 py-0.5 rounded-full bg-secondary text-muted border border-border">
                         {t("notEnabled")}
                       </span>
                     </div>
-                    <span className="text-[11px] text-[var(--muted)] flex items-center gap-1">
+                    <span className="text-[11px] text-muted flex items-center gap-1">
                       <Settings2 size={12} /> {t("nConfigItems", { count: configs.length })}
                     </span>
                   </div>
@@ -335,10 +335,10 @@ export function ChannelsPanel() {
                       }}
                       disabled={isToggling}
                       className={cn(
-                        "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border transition-all disabled:opacity-70",
+                        "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-all disabled:opacity-70",
                         isToggling
-                          ? "border-[var(--border)] text-[var(--warn)] bg-[var(--warn-subtle)] cursor-wait"
-                          : "border-[rgba(34,197,94,0.3)] text-[var(--ok)] hover:bg-[var(--ok-subtle)]",
+                          ? "border-border text-warn bg-warn-subtle cursor-wait"
+                          : "border-[rgba(34,197,94,0.3)] text-ok hover:bg-ok-subtle",
                       )}
                     >
                       <Power size={14} className={isToggling ? "animate-spin" : ""} />
@@ -347,7 +347,7 @@ export function ChannelsPanel() {
                   </div>
                 </div>
                 {isOpen && (
-                  <div className="border-t border-[var(--border)] p-4 space-y-4">
+                  <div className="border-t border-border p-4 space-y-4">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {configs.map(([key, meta]) => (
                         <ConfigField key={key} configKey={key} meta={meta}

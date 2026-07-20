@@ -73,7 +73,7 @@ export function ConfigFormPanel({
     }
   };
 
-  if (isLoading) return <Card title={title}><p className="text-sm text-[var(--muted)]">{tc("loading")}</p></Card>;
+  if (isLoading) return <Card title={title}><p className="text-sm text-muted">{tc("loading")}</p></Card>;
 
   return (
     <Card title={title} subtitle={subtitle}>
@@ -87,10 +87,10 @@ export function ConfigFormPanel({
           onClick={handleSave}
           disabled={!hasChanges || saveMutation.isPending}
           className={cn(
-            "flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-[var(--radius-md)] transition-all",
+            "flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-md transition-all",
             saved
-              ? "bg-[var(--ok)] text-white border border-[var(--ok)]"
-              : "bg-[var(--accent)] text-white border border-[var(--accent)] hover:opacity-90",
+              ? "bg-ok text-white border border-[var(--ok)]"
+              : "bg-accent text-white border border-accent hover:opacity-90",
             (!hasChanges || saveMutation.isPending) && "opacity-50 cursor-not-allowed",
           )}
         >
@@ -99,11 +99,11 @@ export function ConfigFormPanel({
         </button>
         <button
           onClick={handleReset}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all"
+          className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
         >
           <RotateCcw size={14} /> {ta("actions.reset")}
         </button>
-        {note && <p className="text-xs text-[var(--muted)]">{note}</p>}
+        {note && <p className="text-xs text-muted">{note}</p>}
       </div>
     </Card>
   );

@@ -44,5 +44,7 @@
   "pluginsTitle": "插件",
   "pluginsLoaded": "{{count}} 个已加载",
   "pluginEnabled": "已启用",
-  "pluginDisabled": "已禁用"
+  "pluginDisabled": "已禁用",
+  "tagCount": "{{count}} 个标签",
+  "tagActiveCount": "（已激活 {{count}} 个）"
 }

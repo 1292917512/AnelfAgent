@@ -51,7 +51,7 @@ export function ToolSystemRulesPanel() {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setEditRules((prev) => (prev ? [...prev, ""] : [""]))}
-              className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-[var(--radius-md)] border border-dashed border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-all"
+              className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md border border-dashed border-border text-muted hover:border-accent hover:text-accent transition-all"
             >
               <Plus size={12} /> {t("addRule")}
             </button>
@@ -59,10 +59,10 @@ export function ToolSystemRulesPanel() {
               onClick={handleSave}
               disabled={saveMutation.isPending}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] transition-all",
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all",
                 saved
-                  ? "bg-[var(--ok)] text-white border border-[var(--ok)]"
-                  : "bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)]",
+                  ? "bg-ok text-white border border-[var(--ok)]"
+                  : "bg-accent text-primary-foreground hover:bg-[var(--accent-hover)]",
               )}
             >
               {saved ? <Check size={14} /> : <Save size={14} />}
@@ -70,7 +70,7 @@ export function ToolSystemRulesPanel() {
             </button>
             <button
               onClick={() => setEditRules(null)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
             >
               <X size={14} /> {t("cancel", { ns: "common" })}
             </button>
@@ -78,7 +78,7 @@ export function ToolSystemRulesPanel() {
         ) : (
           <button
             onClick={handleStartEdit}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
           >
             {t("edit", { ns: "common" })}
           </button>
@@ -89,8 +89,8 @@ export function ToolSystemRulesPanel() {
         {currentRules.length > 0 ? (
           currentRules.map((rule, i) => (
             <div key={`rule-${i}`} className="flex items-start gap-2">
-              {isEditing && <GripVertical size={14} className="mt-2 text-[var(--muted)] flex-shrink-0 cursor-grab" />}
-              <span className="text-[var(--muted)] text-xs font-mono mt-1.5 w-5 flex-shrink-0 text-right">{i + 1}</span>
+              {isEditing && <GripVertical size={14} className="mt-2 text-muted flex-shrink-0 cursor-grab" />}
+              <span className="text-muted text-xs font-mono mt-1.5 w-5 flex-shrink-0 text-right">{i + 1}</span>
               {isEditing ? (
                 <>
                   <textarea
@@ -101,11 +101,11 @@ export function ToolSystemRulesPanel() {
                       newRules[i] = e.target.value;
                       setEditRules(newRules);
                     }}
-                    className="flex-1 bg-transparent border border-[var(--input)] rounded-[var(--radius-sm)] px-2.5 py-1.5 text-xs text-[var(--text)] font-mono outline-none focus:border-[var(--ring)] resize-none"
+                    className="flex-1 bg-transparent border border-input rounded-sm px-2.5 py-1.5 text-xs text-foreground font-mono outline-none focus:border-ring resize-none"
                   />
                   <button
                     onClick={() => setEditRules((prev) => (prev ? prev.filter((_, j) => j !== i) : null))}
-                    className="mt-1 p-1 text-[var(--muted)] hover:text-[var(--danger)] transition-colors flex-shrink-0"
+                    className="mt-1 p-1 text-muted hover:text-danger transition-colors flex-shrink-0"
                   >
                     <Trash2 size={13} />
                   </button>
@@ -113,10 +113,10 @@ export function ToolSystemRulesPanel() {
               ) : (
                 <p
                   className={cn(
-                    "flex-1 text-xs font-mono py-1.5 px-2.5 rounded-[var(--radius-sm)]",
+                    "flex-1 text-xs font-mono py-1.5 px-2.5 rounded-sm",
                     rule.startsWith("#")
-                      ? "text-[var(--accent)] font-semibold bg-[var(--accent-subtle)] border border-[var(--accent)]/20"
-                      : "text-[var(--text)] bg-[var(--bg-elevated)] border border-[var(--border)]",
+                      ? "text-accent font-semibold bg-accent-subtle border border-accent/20"
+                      : "text-foreground bg-elevated border border-border",
                   )}
                 >
                   {rule}
@@ -125,7 +125,7 @@ export function ToolSystemRulesPanel() {
             </div>
           ))
         ) : (
-          <p className="text-[var(--muted)] text-sm py-2">{t("noRules")}</p>
+          <p className="text-muted text-sm py-2">{t("noRules")}</p>
         )}
       </div>
     </Card>

@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { modelsApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
+import { Button, Input } from "@/components/ui";
 import { Check, RefreshCw, AlertCircle } from "lucide-react";
 
 export function LiteLLMCostMapCard({ defaultProxy }: { defaultProxy: string }) {
@@ -33,33 +34,25 @@ export function LiteLLMCostMapCard({ defaultProxy }: { defaultProxy: string }) {
     },
   });
 
-  const inputBase =
-    "flex-1 text-sm bg-[var(--bg-elevated)] border border-[var(--border)] rounded-[var(--radius-md)] px-2.5 py-1.5 text-[var(--text-strong)] focus:outline-none focus:border-[var(--accent)] transition-colors";
-
   return (
     <Card title={t("costMap.title")} subtitle={info ? t("costMap.subtitle", { count: info.model_count }) : undefined}>
       <div className="space-y-3">
-        <p className="text-xs text-[var(--muted)]">{t("costMap.description")}</p>
+        <p className="text-xs text-muted">{t("costMap.description")}</p>
         <div className="flex items-center gap-2">
-          <input type="text" className={inputBase} placeholder={t("costMap.proxyPlaceholder")} value={proxy} onChange={(e) => setProxy(e.target.value)} />
-          <button
+          <Input type="text" placeholder={t("costMap.proxyPlaceholder")} value={proxy} onChange={(e) => setProxy(e.target.value)} />
+          <Button
+            variant="primary"
+            size="sm"
             onClick={() => updateMutation.mutate()}
-            disabled={updateMutation.isPending}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-[var(--radius-md)] border transition-all whitespace-nowrap",
-              updateMutation.isPending
-                ? "border-[var(--border)] bg-[var(--secondary)] text-[var(--muted)] cursor-not-allowed"
-                : resultCount !== null
-                  ? "border-[var(--ok)] bg-[var(--ok-subtle)] text-[var(--ok)]"
-                  : "border-[var(--accent)] bg-[var(--accent)] text-white hover:opacity-90",
-            )}
+            loading={updateMutation.isPending}
+            className={cn("whitespace-nowrap shrink-0", resultCount !== null && "!bg-ok")}
           >
             {updateMutation.isPending ? <RefreshCw size={13} className="animate-spin" /> : resultCount !== null ? <Check size={13} /> : <RefreshCw size={13} />}
             {updateMutation.isPending ? t("costMap.updating") : resultCount !== null ? t("costMap.updated", { count: resultCount }) : t("costMap.updateNow")}
-          </button>
+          </Button>
         </div>
         {error && (
-          <div className="flex items-center gap-1.5 text-xs text-[var(--error)]">
+          <div className="flex items-center gap-1.5 text-xs text-danger">
             <AlertCircle size={13} />
             <span>{error}</span>
           </div>

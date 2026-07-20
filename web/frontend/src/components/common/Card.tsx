@@ -15,10 +15,10 @@ export const Card = forwardRef<HTMLDivElement, CardProps>(function Card({ title,
     <div
       ref={ref}
       className={cn(
-        "rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-5",
-        "shadow-[var(--shadow-sm)] transition-all duration-[var(--duration-normal)]",
-        "hover:border-[var(--border-strong)] hover:shadow-[var(--shadow-md)]",
-        "animate-[rise_0.35s_var(--ease-out)_backwards]",
+        "rounded-lg border border-border bg-card p-5",
+        "shadow-sm transition-all duration-200",
+        "hover:border-border-strong hover:shadow-md",
+        "animate-rise",
         className,
       )}
     >
@@ -26,12 +26,12 @@ export const Card = forwardRef<HTMLDivElement, CardProps>(function Card({ title,
         <div className="flex items-center justify-between mb-4">
           <div>
             {title && (
-              <h3 className="text-[15px] font-semibold tracking-tight text-[var(--text-strong)]">
+              <h3 className="text-[15px] font-semibold tracking-tight text-heading">
                 {title}
               </h3>
             )}
             {subtitle && (
-              <p className="text-[13px] text-[var(--muted)] mt-1">{subtitle}</p>
+              <p className="text-[13px] text-muted mt-1">{subtitle}</p>
             )}
           </div>
           {actions && <div className="flex gap-2">{actions}</div>}

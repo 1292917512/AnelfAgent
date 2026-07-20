@@ -139,7 +139,13 @@ class CogneeClient:
         result = target(*args, **kwargs)
         if hasattr(result, "__await__"):
             limit = timeout if timeout is not None else self.config.timeout_seconds
-            return await asyncio.wait_for(result, timeout=limit)
+            try:
+                return await asyncio.wait_for(result, timeout=limit)
+            except asyncio.TimeoutError:
+                # 裸 TimeoutError 的 str() 为空，必须带操作上下文否则无法定位
+                raise RuntimeError(
+                    f"Cognee 调用 {dotted_name} 超时（>{limit:.0f}s）"
+                ) from None
         return result
 
     # v2 memory-oriented API

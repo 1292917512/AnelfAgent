@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
+import { PageContainer } from "@/components/common/PageContainer";
 import { Plug } from "lucide-react";
 import { ChannelsPanel } from "@/pages/channels/ChannelsPanel";
 import { NoneBotPanel } from "@/pages/channels/NoneBotPanel";
@@ -17,7 +18,7 @@ export default function Channels() {
   ];
 
   return (
-    <div className="space-y-6 max-w-6xl">
+    <PageContainer wide>
       <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
 
       {activeTab === "nonebot" ? (
@@ -25,6 +26,6 @@ export default function Channels() {
       ) : (
         <ChannelsPanel />
       )}
-    </div>
+    </PageContainer>
   );
 }

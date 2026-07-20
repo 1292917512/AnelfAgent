@@ -1,9 +1,10 @@
 import { TasksPanel } from "@/pages/config/TasksPanel";
+import { PageContainer } from "@/components/common/PageContainer";
 
 export default function Tasks() {
   return (
-    <div className="space-y-6 max-w-6xl">
+    <PageContainer wide>
       <TasksPanel />
-    </div>
+    </PageContainer>
   );
 }

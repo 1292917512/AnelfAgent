@@ -83,7 +83,9 @@ class CogneeConfig:
     data_root: str = ConfigPaths.COGNEE_DATA_DIR
     dataset_prefix: str = "anelf"
     timeout_seconds: float = 30.0
-    pipeline_timeout_seconds: float = 300.0
+    # 流水线超时需覆盖整批次的 add/cognify/improve：
+    # thinking 模型下单批 20 条记忆的图谱抽取约需 15 分钟
+    pipeline_timeout_seconds: float = 1800.0
     improve_interval_seconds: float = 600.0
     sync_interval_seconds: float = 5.0
     sync_batch_size: int = 20

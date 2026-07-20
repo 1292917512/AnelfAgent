@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { skillsApi, type SkillItem } from "@/lib/api";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { cn } from "@/lib/utils";
+import { Button, EmptyState, Input, Textarea } from "@/components/ui";
 import { Plus, Trash2, Pin, PinOff, Archive, ArchiveRestore, Save, X, GraduationCap } from "lucide-react";
 
 export default function Skills() {
@@ -72,10 +73,10 @@ export default function Skills() {
 
   const stateColor = (state: string) =>
     state === "active"
-      ? "text-[var(--success)]"
+      ? "text-ok"
       : state === "stale"
-        ? "text-[var(--warn)]"
-        : "text-[var(--text-dim)]";
+        ? "text-warn"
+        : "text-muted";
 
   return (
     <PageContainer>
@@ -84,113 +85,103 @@ export default function Skills() {
         title={t("title")}
         subtitle={t("subtitle")}
         actions={
-          <button
-            onClick={() => setCreating(!creating)}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-[var(--radius-md)]
-              bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] transition-all"
-          >
+          <Button variant="primary" onClick={() => setCreating(!creating)}>
             <Plus size={16} /> {t("createNew")}
-          </button>
+          </Button>
         }
       />
 
-      {/* Create Form */}
+      {/* 创建表单 */}
       {creating && (
-        <div className="p-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--card)] space-y-3">
-          <input
+        <div className="p-4 rounded-md border border-border bg-card space-y-3">
+          <Input
             value={newSkill.name}
             onChange={(e) => setNewSkill({ ...newSkill, name: e.target.value })}
             placeholder={t("newSkillName")}
-            className="w-full bg-[var(--bg)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
           />
-          <input
+          <Input
             value={newSkill.description}
             onChange={(e) => setNewSkill({ ...newSkill, description: e.target.value })}
             placeholder={t("description")}
-            className="w-full bg-[var(--bg)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
           />
-          <textarea
+          <Textarea
             value={newSkill.content}
             onChange={(e) => setNewSkill({ ...newSkill, content: e.target.value })}
             placeholder={t("content")}
             rows={5}
-            className="w-full bg-[var(--bg)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)] font-mono"
+            className="font-mono"
           />
-          <input
+          <Input
             value={newSkill.trigger_patterns}
             onChange={(e) => setNewSkill({ ...newSkill, trigger_patterns: e.target.value })}
             placeholder={t("triggerPatterns")}
-            className="w-full bg-[var(--bg)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
           />
           <div className="flex gap-2">
-            <button
+            <Button
+              variant="primary"
               onClick={() => createMutation.mutate()}
-              disabled={!newSkill.name || createMutation.isPending}
-              className="px-4 py-2 text-sm font-medium rounded-[var(--radius-md)] bg-[var(--accent)]
-                text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-all"
+              disabled={!newSkill.name}
+              loading={createMutation.isPending}
             >
               {t("save")}
-            </button>
-            <button
-              onClick={() => setCreating(false)}
-              className="px-4 py-2 text-sm rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text)] transition-all"
-            >
+            </Button>
+            <Button variant="secondary" onClick={() => setCreating(false)}>
               {t("cancel")}
-            </button>
+            </Button>
           </div>
         </div>
       )}
 
-      {/* Toolbar */}
-      <div className="flex items-center gap-3">
-        <input
+      {/* 工具栏 */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <Input
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           placeholder={t("searchPlaceholder")}
-          className="flex-1 max-w-xs bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
+          className="flex-1 min-w-40 max-w-xs"
         />
-        <label className="flex items-center gap-1.5 text-sm text-[var(--text-dim)] cursor-pointer">
+        <label className="flex items-center gap-1.5 text-sm text-muted cursor-pointer">
           <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
           {t("showArchived")}
         </label>
       </div>
 
-      {/* Skill List */}
+      {/* 技能列表 */}
       {filtered.length === 0 && (
-        <div className="p-8 text-center text-sm text-[var(--text-dim)]">{t("empty")}</div>
+        <EmptyState icon={GraduationCap} title={t("empty")} />
       )}
       <div className="grid gap-3">
         {filtered.map((s) => (
           <div
             key={s.name}
             className={cn(
-              "p-4 rounded-[var(--radius-md)] border cursor-pointer transition-all",
-              "bg-[var(--card)] hover:border-[var(--border-strong)]",
+              "p-4 rounded-md border cursor-pointer transition-all",
+              "bg-card hover:border-border-strong",
               s.name === selected
-                ? "border-[var(--accent)] shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--ring)]"
-                : "border-[var(--border)]",
+                ? "border-accent shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--ring)]"
+                : "border-border",
             )}
             onClick={() => { setSelected(s.name === selected ? null : s.name); setEditing(null); }}
           >
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-3 min-w-0">
-                {s.pinned && <Pin size={14} className="text-[var(--warn)] shrink-0" />}
+                {s.pinned && <Pin size={14} className="text-warn shrink-0" />}
                 <div className="min-w-0">
-                  <div className="font-medium text-[var(--text)] truncate">{s.name}</div>
-                  <div className="text-xs text-[var(--text-dim)] truncate">{s.description}</div>
+                  <div className="font-medium text-foreground truncate">{s.name}</div>
+                  <div className="text-xs text-muted truncate">{s.description}</div>
                 </div>
               </div>
               <div className="flex items-center gap-3 text-xs shrink-0">
                 <span className={stateColor(s.state)}>{stateLabel(s.state)}</span>
-                <span className="text-[var(--text-dim)]">{t("useCount")}: {s.use_count}</span>
-                <span className="text-[var(--text-dim)]">{t("patchCount")}: {s.patch_count}</span>
+                <span className="text-muted hidden sm:inline">{t("useCount")}: {s.use_count}</span>
+                <span className="text-muted hidden sm:inline">{t("patchCount")}: {s.patch_count}</span>
               </div>
             </div>
 
-            {/* Detail Panel */}
+            {/* 详情面板 */}
             {s.name === selected && detail && (
-              <div className="mt-4 pt-4 border-t border-[var(--border)] space-y-3" onClick={(e) => e.stopPropagation()}>
-                <div className="flex flex-wrap gap-2 text-xs text-[var(--text-dim)]">
+              <div className="mt-4 pt-4 border-t border-border space-y-3" onClick={(e) => e.stopPropagation()}>
+                <div className="flex flex-wrap gap-2 text-xs text-muted">
                   <span>{t("createdBy")}: {detail.created_by === "agent" ? t("createdByAgent") : t("createdByUser")}</span>
                   {detail.trigger_patterns.length > 0 && (
                     <span>{t("triggerPatterns")}: {detail.trigger_patterns.join(", ")}</span>
@@ -199,74 +190,60 @@ export default function Skills() {
 
                 {editing ? (
                   <div className="space-y-2">
-                    <input
+                    <Input
                       value={editing.description}
                       onChange={(e) => setEditing({ ...editing, description: e.target.value })}
-                      className="w-full bg-[var(--bg)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
                     />
-                    <textarea
+                    <Textarea
                       value={editing.content}
                       onChange={(e) => setEditing({ ...editing, content: e.target.value })}
                       rows={10}
-                      className="w-full bg-[var(--bg)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)] font-mono"
+                      className="font-mono"
                     />
                     <div className="flex gap-2">
-                      <button
+                      <Button
+                        variant="primary" size="sm"
                         onClick={() => saveMutation.mutate({ name: s.name, data: editing })}
-                        disabled={saveMutation.isPending}
-                        className="flex items-center gap-1 px-3 py-1.5 text-sm rounded-[var(--radius-md)] bg-[var(--accent)]
-                          text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-all"
+                        loading={saveMutation.isPending}
                       >
                         <Save size={14} /> {t("save")}
-                      </button>
-                      <button
-                        onClick={() => setEditing(null)}
-                        className="flex items-center gap-1 px-3 py-1.5 text-sm rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text)] transition-all"
-                      >
+                      </Button>
+                      <Button variant="secondary" size="sm" onClick={() => setEditing(null)}>
                         <X size={14} /> {t("cancel")}
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 ) : (
                   <>
-                    <pre className="p-3 rounded-[var(--radius-md)] bg-[var(--bg)] text-sm text-[var(--text)] whitespace-pre-wrap font-mono max-h-96 overflow-auto">
+                    <pre className="p-3 rounded-md bg-bg text-sm text-foreground whitespace-pre-wrap font-mono max-h-96 overflow-auto">
                       {detail.content}
                     </pre>
                     <div className="flex flex-wrap gap-2">
-                      <button
-                        onClick={() => setEditing({ description: detail.description, content: detail.content || "" })}
-                        className="px-3 py-1.5 text-sm rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--text)] hover:border-[var(--border-strong)] transition-all"
-                      >
+                      <Button variant="secondary" size="sm"
+                        onClick={() => setEditing({ description: detail.description, content: detail.content || "" })}>
                         {t("edit")}
-                      </button>
-                      <button
-                        onClick={() => pinMutation.mutate({ name: s.name, pinned: !s.pinned })}
-                        className="flex items-center gap-1 px-3 py-1.5 text-sm rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--text)] hover:border-[var(--border-strong)] transition-all"
-                      >
+                      </Button>
+                      <Button variant="secondary" size="sm"
+                        onClick={() => pinMutation.mutate({ name: s.name, pinned: !s.pinned })}>
                         {s.pinned ? <PinOff size={14} /> : <Pin size={14} />}
                         {s.pinned ? t("unpin") : t("pin")}
-                      </button>
+                      </Button>
                       {s.state === "archived" ? (
-                        <button
-                          onClick={() => stateMutation.mutate({ name: s.name, state: "active" })}
-                          className="flex items-center gap-1 px-3 py-1.5 text-sm rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--text)] hover:border-[var(--border-strong)] transition-all"
-                        >
+                        <Button variant="secondary" size="sm"
+                          onClick={() => stateMutation.mutate({ name: s.name, state: "active" })}>
                           <ArchiveRestore size={14} /> {t("unarchive")}
-                        </button>
+                        </Button>
                       ) : (
-                        <button
-                          onClick={() => stateMutation.mutate({ name: s.name, state: "archived" })}
-                          className="flex items-center gap-1 px-3 py-1.5 text-sm rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--text)] hover:border-[var(--border-strong)] transition-all"
-                        >
+                        <Button variant="secondary" size="sm"
+                          onClick={() => stateMutation.mutate({ name: s.name, state: "archived" })}>
                           <Archive size={14} /> {t("archive")}
-                        </button>
+                        </Button>
                       )}
-                      <button
-                        onClick={() => { if (confirm(t("deleteConfirm"))) deleteMutation.mutate(s.name); }}
-                        className="flex items-center gap-1 px-3 py-1.5 text-sm rounded-[var(--radius-md)] border border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--danger)] hover:text-white transition-all"
-                      >
+                      <Button variant="secondary" size="sm"
+                        className="border-danger text-danger hover:bg-danger hover:text-white"
+                        onClick={() => { if (confirm(t("deleteConfirm"))) deleteMutation.mutate(s.name); }}>
                         <Trash2 size={14} /> {t("delete")}
-                      </button>
+                      </Button>
                     </div>
                   </>
                 )}

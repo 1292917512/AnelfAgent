@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
+import { PageContainer } from "@/components/common/PageContainer";
 import { Cpu, ListOrdered } from "lucide-react";
 import { ConfigPanel } from "@/pages/models/ConfigPanel";
 import { PrioritiesPanel } from "@/pages/models/PrioritiesPanel";
@@ -17,10 +18,10 @@ export default function Models() {
   ];
 
   return (
-    <div className="space-y-6 max-w-6xl">
+    <PageContainer wide>
       <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
 
       {activeTab === "config" ? <ConfigPanel /> : <PrioritiesPanel />}
-    </div>
+    </PageContainer>
   );
 }

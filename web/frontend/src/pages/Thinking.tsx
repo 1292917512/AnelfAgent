@@ -22,6 +22,7 @@ import { SessionList } from "@/components/thinking/SessionList";
 import { NodeDetail } from "@/components/thinking/NodeDetail";
 import { ToolsPanel } from "@/components/thinking/ToolsPanel";
 import TraceNodeComponent from "@/components/thinking/TraceNode";
+import { useIsMobile } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 import {
   Power,
@@ -30,6 +31,7 @@ import {
   RefreshCw,
   PanelLeftOpen,
   PanelLeftClose,
+  List,
 } from "lucide-react";
 
 const NODE_TYPES: NodeTypes = {
@@ -41,7 +43,7 @@ const V_GAP = 24;
 const H_GAP = 240;
 
 function edgeStroke(status: string): string {
-  if (status === "error") return "#ef4444";
+  if (status === "error") return "var(--danger)";
   return "var(--border-strong)";
 }
 
@@ -242,6 +244,8 @@ function ThinkingFlow() {
   const prevNodeCount = useRef(0);
   const { setCenter, fitView, getZoom } = useReactFlow();
   const [showTools, setShowTools] = useState(true);
+  const [showSessions, setShowSessions] = useState(false);
+  const isMobile = useIsMobile();
 
   // 服务端 enabled 状态只同步一次（首次加载），切换页面不重置用户的开关选择
   useEffect(() => {
@@ -338,55 +342,77 @@ function ThinkingFlow() {
 
   return (
     <div className="flex h-full gap-0">
-      {/* Left: Session List */}
-      <div className="w-56 shrink-0 border-r border-[var(--border)] bg-[var(--panel)] flex flex-col">
-        <div className="px-4 py-3 border-b border-[var(--border)]">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-[var(--text-strong)] uppercase tracking-wider">
-              {t("sessionList")}
-            </span>
-            <button
-              onClick={() => {
-                thinkingApi.sessions(50).then((r) => setSessions(r.data.sessions ?? [])).catch((e) => console.warn("[API]", e));
-              }}
-              className="p-1 rounded-[var(--radius-sm)] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)]"
-              title={t("refresh")}
-            >
-              <RefreshCw size={12} />
-            </button>
+      {/* 左侧：会话列表（桌面常驻，移动端抽屉） */}
+      {(!isMobile || showSessions) && (
+        <>
+          {isMobile && (
+            <div className="fixed inset-0 z-40 bg-black/50" onClick={() => setShowSessions(false)} />
+          )}
+          <div className={cn(
+            "border-r border-border bg-panel flex flex-col",
+            isMobile ? "fixed inset-y-0 left-0 z-50 w-64" : "w-56 shrink-0",
+          )}>
+            <div className="px-4 py-3 border-b border-border">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-heading uppercase tracking-wider">
+                  {t("sessionList")}
+                </span>
+                <button
+                  onClick={() => {
+                    thinkingApi.sessions(50).then((r) => setSessions(r.data.sessions ?? [])).catch((e) => console.warn("[API]", e));
+                  }}
+                  className="p-1 rounded-sm text-muted hover:text-foreground hover:bg-hover"
+                  title={t("refresh")}
+                >
+                  <RefreshCw size={12} />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <SessionList
+                sessions={sessions}
+                activeId={activeSessionId}
+                onSelect={(id) => {
+                  handleSelectSession(id);
+                  if (isMobile) setShowSessions(false);
+                }}
+              />
+            </div>
           </div>
-        </div>
-        <div className="flex-1 overflow-y-auto">
-          <SessionList
-            sessions={sessions}
-            activeId={activeSessionId}
-            onSelect={handleSelectSession}
-          />
-        </div>
-      </div>
+        </>
+      )}
 
-      {/* Center: Flow Canvas */}
+      {/* 中间：流图画布 */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Toolbar */}
-        <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] bg-[var(--panel)]">
+        {/* 工具栏 */}
+        <div className="flex items-center gap-2 px-3 md:px-4 py-2 border-b border-border bg-panel">
+          {isMobile && (
+            <button
+              onClick={() => setShowSessions(true)}
+              className="flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium text-muted hover:text-foreground transition-all"
+              title={t("sessionList")}
+            >
+              <List size={14} />
+            </button>
+          )}
           <button
             onClick={handleToggle}
             className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-md)] text-xs font-medium transition-all",
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
               enabled
-                ? "bg-[var(--ok-subtle)] text-[var(--ok)] border border-[var(--ok)]"
-                : "bg-[var(--bg-muted)] text-[var(--muted)] border border-[var(--border)] hover:border-[var(--border-strong)]",
+                ? "bg-ok-subtle text-ok border border-ok"
+                : "bg-hover text-muted border border-border hover:border-border-strong",
             )}
           >
             {enabled ? <Power size={12} /> : <PowerOff size={12} />}
             {enabled ? t("tracking") : t("disabled")}
           </button>
 
-          <div className="flex items-center gap-1 text-[10px] text-[var(--muted)]">
+          <div className="flex items-center gap-1 text-[10px] text-muted">
             <div
               className={cn(
                 "w-1.5 h-1.5 rounded-full",
-                connected ? "bg-[var(--ok)]" : "bg-[var(--danger)]",
+                connected ? "bg-ok" : "bg-danger",
               )}
             />
             {connected ? tc("connected") : tc("disconnected")}
@@ -397,10 +423,10 @@ function ThinkingFlow() {
           <button
             onClick={() => setShowTools(!showTools)}
             className={cn(
-              "flex items-center gap-1 px-2 py-1 rounded-[var(--radius-sm)] text-[10px] font-medium transition-all",
+              "hidden md:flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium transition-all",
               showTools
-                ? "bg-[var(--accent-subtle)] text-[var(--accent)]"
-                : "text-[var(--muted)] hover:text-[var(--text)]",
+                ? "bg-accent-subtle text-accent"
+                : "text-muted hover:text-foreground",
             )}
             title={t("toolsPanel")}
           >
@@ -411,36 +437,36 @@ function ThinkingFlow() {
           <button
             onClick={() => setAutoFollow(!autoFollow)}
             className={cn(
-              "flex items-center gap-1 px-2 py-1 rounded-[var(--radius-sm)] text-[10px] font-medium transition-all",
+              "flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium transition-all",
               autoFollow
-                ? "bg-[var(--accent-subtle)] text-[var(--accent)]"
-                : "text-[var(--muted)] hover:text-[var(--text)]",
+                ? "bg-accent-subtle text-accent"
+                : "text-muted hover:text-foreground",
             )}
             title={t("autoFollow")}
           >
             <Crosshair size={11} />
-            {t("autoFollow")}
+            <span className="hidden sm:inline">{t("autoFollow")}</span>
           </button>
 
           {activeSession && (
-            <div className="text-[10px] text-[var(--muted)] font-mono">
+            <div className="text-[10px] text-muted font-mono">
               {t("nNodes", { count: activeSession.nodes.length })}
             </div>
           )}
         </div>
 
-        {/* Main area: Tools panel + Canvas */}
+        {/* 主区域：工具面板 + 画布 */}
         <div className="flex-1 flex min-h-0">
-          {/* Tools panel (left) */}
-          {showTools && (
-            <div className="w-56 shrink-0 border-r border-[var(--border)] bg-[var(--panel)]">
+          {/* 工具面板（仅桌面端） */}
+          {showTools && !isMobile && (
+            <div className="w-56 shrink-0 border-r border-border bg-panel">
               <ToolsPanel tools={availableTools} />
             </div>
           )}
 
           <div className="flex-1 relative">
             {!activeSession ? (
-              <div className="flex items-center justify-center h-full text-sm text-[var(--muted)]">
+              <div className="flex items-center justify-center h-full text-sm text-muted px-4 text-center">
                 {enabled
                   ? t("waitingForActivity")
                   : t("enableTracking")}
@@ -468,12 +494,12 @@ function ThinkingFlow() {
                 />
                 <Controls
                   showInteractive={false}
-                  className="!bg-[var(--card)] !border-[var(--border)] !shadow-[var(--shadow-sm)] [&>button]:!bg-[var(--card)] [&>button]:!border-[var(--border)] [&>button]:!fill-[var(--text)] [&>button:hover]:!bg-[var(--bg-hover)]"
+                  className="!bg-card !border-border !shadow-sm [&>button]:!bg-card [&>button]:!border-border [&>button]:!fill-[var(--text)] [&>button:hover]:!bg-hover"
                 />
                 <MiniMap
                   nodeColor={() => "var(--accent)"}
                   maskColor="rgba(0,0,0,0.6)"
-                  className="!bg-[var(--card)] !border-[var(--border)]"
+                  className="!bg-card !border-border !hidden md:!block"
                 />
               </ReactFlow>
             )}
@@ -481,9 +507,12 @@ function ThinkingFlow() {
         </div>
       </div>
 
-      {/* Right: Node Detail */}
+      {/* 右侧：节点详情（桌面常驻，移动端全屏抽屉） */}
       {selectedNode && (
-        <div className="w-72 shrink-0 border-l border-[var(--border)] bg-[var(--panel)]">
+        <div className={cn(
+          "border-l border-border bg-panel",
+          isMobile ? "fixed inset-y-0 right-0 z-50 w-full max-w-sm shadow-lg" : "w-72 shrink-0",
+        )}>
           <NodeDetail
             node={selectedNode}
             onClose={() => setSelectedNodeId(null)}
@@ -498,9 +527,9 @@ export default function Thinking() {
   const { t } = useTranslation("thinking");
   return (
     <div className="h-full flex flex-col">
-      <div className="px-6 py-4 border-b border-[var(--border)]">
-        <h1 className="text-lg font-semibold text-[var(--text-strong)]">{t("title")}</h1>
-        <p className="text-xs text-[var(--muted)] mt-0.5">
+      <div className="px-3 md:px-6 py-4 border-b border-border">
+        <h1 className="text-lg font-semibold text-heading">{t("title")}</h1>
+        <p className="text-xs text-muted mt-0.5">
           {t("subtitle")}
         </p>
       </div>

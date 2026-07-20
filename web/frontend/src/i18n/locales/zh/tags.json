@@ -32,5 +32,7 @@
   "selectedTags": "已选标签",
   "availableTags": "可用标签",
   "noAvailableTags": "所有标签均已选中",
-  "goCreateTag": "前往标签系统创建新标签"
+  "goCreateTag": "前往标签系统创建新标签",
+  "preview": "预览",
+  "previewValue": "值"
 }

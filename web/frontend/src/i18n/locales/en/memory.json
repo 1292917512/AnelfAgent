@@ -197,6 +197,7 @@
     "generalTitle": "General",
     "generalSubtitle": "Projection sync and federated recall parameters",
     "hotApplyNote": "Applied immediately after save, no restart required",
-    "saveFailed": "Save failed; check backend logs"
+    "saveFailed": "Save failed; check backend logs",
+    "reasoningModelHint": "This is a thinking model: its thinking budget is auto-capped to prevent output truncation, but extraction costs more — a non-thinking model is recommended"
   }
 }

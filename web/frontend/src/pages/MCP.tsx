@@ -3,9 +3,11 @@ import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { mcpApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
+import { PageContainer } from "@/components/common/PageContainer";
 import { StatusDot } from "@/components/common/StatusDot";
 import { cn } from "@/lib/utils";
-import { Plus, Trash2, Power, Save, Wrench, Loader2 } from "lucide-react";
+import { Button, EmptyState, Input, Textarea } from "@/components/ui";
+import { Plus, Trash2, Power, Save, Wrench, Loader2, Plug } from "lucide-react";
 
 interface MCPServer {
   name: string;
@@ -63,10 +65,9 @@ export default function MCP() {
 
   const toggleMutation = useMutation({
     mutationFn: (name: string) => mcpApi.toggle(name).then((r) => r.data),
-    onSettled: (_data, _err, name) => {
+    onSettled: () => {
       setTogglingServer(null);
       queryClient.invalidateQueries({ queryKey: ["mcpServers"] });
-      if (!name) return;
     },
     onSuccess: (
       data: { success: boolean; message: string },
@@ -111,45 +112,39 @@ export default function MCP() {
   };
 
   return (
-    <div className="space-y-6 max-w-6xl">
+    <PageContainer wide>
       <div className="flex items-center justify-end">
-        <button
-          onClick={loadConfig}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all"
-        >
+        <Button variant="secondary" size="sm" onClick={loadConfig}>
           {t("jsonConfig")}
-        </button>
+        </Button>
       </div>
 
-      {/* Add server */}
-      <div className="flex gap-2">
-        <input
+      {/* 添加服务器 */}
+      <div className="flex gap-2 flex-wrap sm:flex-nowrap">
+        <Input
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           placeholder={t("serverName")}
-          className="flex-1 max-w-[180px] bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
+          className="flex-1 min-w-32 sm:max-w-[200px]"
         />
-        <input
+        <Input
           value={newUrl}
           onChange={(e) => setNewUrl(e.target.value)}
           placeholder={t("urlOrCommand")}
-          className="flex-1 bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
+          className="flex-2 min-w-40"
         />
-        <button
+        <Button
+          variant="primary"
           onClick={() => newName && addMutation.mutate()}
-          disabled={!newName || addMutation.isPending}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-all"
+          disabled={!newName}
+          loading={addMutation.isPending}
         >
-          {addMutation.isPending ? (
-            <Loader2 size={16} className="animate-spin" />
-          ) : (
-            <Plus size={16} />
-          )}
+          <Plus size={16} />
           {t("common:add")}
-        </button>
+        </Button>
       </div>
 
-      {/* Server list */}
+      {/* 服务器列表 */}
       <div className="grid gap-3">
         {servers.map((s) => {
           const isToggling = togglingServer === s.name;
@@ -158,45 +153,41 @@ export default function MCP() {
             <div
               key={s.name}
               className={cn(
-                "rounded-[var(--radius-lg)] border bg-[var(--card)] p-4 transition-all",
+                "rounded-lg border bg-card p-4 transition-all",
                 isToggling
-                  ? "border-[var(--warn)]"
-                  : "border-[var(--border)] hover:border-[var(--border-strong)]",
+                  ? "border-warn"
+                  : "border-border hover:border-border-strong",
               )}
             >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-3 min-w-0">
                   <StatusDot status={getServerStatus(s)} />
-                  <div>
+                  <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="font-medium text-[var(--text-strong)]">
+                      <span className="font-medium text-heading truncate">
                         {s.name}
                       </span>
                       <span
                         className={cn(
-                          "text-[11px] px-1.5 py-0.5 rounded-full",
-                          isToggling && "text-[var(--warn)]",
-                          !isToggling &&
-                            s.connected &&
-                            "text-[var(--ok)]",
-                          !isToggling &&
-                            !s.connected &&
-                            "text-[var(--muted)]",
+                          "text-[11px] px-1.5 py-0.5 rounded-full shrink-0",
+                          isToggling && "text-warn",
+                          !isToggling && s.connected && "text-ok",
+                          !isToggling && !s.connected && "text-muted",
                         )}
                       >
                         {getStatusLabel(s)}
                       </span>
                     </div>
                     {s.url && (
-                      <p className="text-xs text-[var(--muted)] mt-0.5 font-mono truncate max-w-[400px]">
+                      <p className="text-xs text-muted mt-0.5 font-mono truncate">
                         {s.url}
                       </p>
                     )}
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                   {s.connected && (
-                    <span className="text-xs text-[var(--muted)]">
+                    <span className="text-xs text-muted hidden sm:inline">
                       <Wrench size={12} className="inline mr-1" />
                       {t("nTools", { count: s.tool_count })}
                     </span>
@@ -210,15 +201,9 @@ export default function MCP() {
                     className={cn(
                       "p-1.5 rounded transition-colors",
                       isToggling && "cursor-wait",
-                      !isToggling &&
-                        s.connected &&
-                        "text-[var(--ok)] hover:text-[var(--danger)]",
-                      !isToggling &&
-                        !s.connected &&
-                        "text-[var(--muted)] hover:text-[var(--ok)]",
-                      !!togglingServer &&
-                        !isToggling &&
-                        "opacity-40 cursor-not-allowed",
+                      !isToggling && s.connected && "text-ok hover:text-danger",
+                      !isToggling && !s.connected && "text-muted hover:text-ok",
+                      !!togglingServer && !isToggling && "opacity-40 cursor-not-allowed",
                     )}
                     title={
                       isToggling
@@ -231,10 +216,7 @@ export default function MCP() {
                     }
                   >
                     {isToggling ? (
-                      <Loader2
-                        size={16}
-                        className="animate-spin text-[var(--warn)]"
-                      />
+                      <Loader2 size={16} className="animate-spin text-warn" />
                     ) : (
                       <Power size={16} />
                     )}
@@ -242,35 +224,33 @@ export default function MCP() {
                   <button
                     onClick={() => removeMutation.mutate(s.name)}
                     disabled={!!togglingServer}
-                    className="p-1.5 rounded text-[var(--muted)] hover:text-[var(--danger)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="p-1.5 rounded text-muted hover:text-danger transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <Trash2 size={16} />
                   </button>
                 </div>
               </div>
 
-              {/* Inline feedback message */}
+              {/* 内联反馈消息 */}
               {message && (
                 <div
                   className={cn(
-                    "mt-2 px-3 py-1.5 rounded-[var(--radius-md)] text-xs border-l-2 bg-[var(--bg-elevated)]",
-                    message.type === "success" &&
-                      "border-l-[var(--ok)] text-[var(--ok)]",
-                    message.type === "error" &&
-                      "border-l-[var(--danger)] text-[var(--danger)]",
+                    "mt-2 px-3 py-1.5 rounded-md text-xs border-l-2 bg-elevated",
+                    message.type === "success" && "border-l-ok text-ok",
+                    message.type === "error" && "border-l-danger text-danger",
                   )}
                 >
                   {message.text}
                 </div>
               )}
 
-              {/* Tools */}
+              {/* 工具 */}
               {s.tools.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {s.tools.map((tool) => (
                     <span
                       key={tool}
-                      className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--secondary)] border border-[var(--border)] text-[var(--muted)]"
+                      className="text-[11px] px-2 py-0.5 rounded-full bg-secondary border border-border text-muted"
                     >
                       {tool}
                     </span>
@@ -281,47 +261,39 @@ export default function MCP() {
           );
         })}
         {servers.length === 0 && (
-          <p className="text-sm text-[var(--muted)] text-center py-8">
-            {t("noServers")}
-          </p>
+          <EmptyState icon={Plug} title={t("noServers")} />
         )}
       </div>
 
-      {/* JSON Config Editor */}
+      {/* JSON 配置编辑器 */}
       {showConfig && (
         <Card
           title={t("jsonConfig")}
           actions={
             <div className="flex gap-2">
-              <button
-                onClick={() => setShowConfig(false)}
-                className="px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)] hover:bg-[var(--bg-hover)] transition-all"
-              >
+              <Button variant="secondary" size="sm" onClick={() => setShowConfig(false)}>
                 {t("common:cancel")}
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={() => saveConfigMutation.mutate(configJson)}
-                disabled={saveConfigMutation.isPending}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-all"
+                loading={saveConfigMutation.isPending}
               >
-                {saveConfigMutation.isPending ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Save size={14} />
-                )}
+                <Save size={14} />
                 {t("common:save")}
-              </button>
+              </Button>
             </div>
           }
         >
-          <textarea
+          <Textarea
             value={configJson}
             onChange={(e) => setConfigJson(e.target.value)}
             rows={15}
-            className="w-full bg-[var(--bg-elevated)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] font-mono outline-none focus:border-[var(--ring)] resize-y"
+            className="font-mono"
           />
         </Card>
       )}
-    </div>
+    </PageContainer>
   );
 }

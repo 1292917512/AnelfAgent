@@ -56,10 +56,10 @@ export default function Config() {
             key={g.group}
             onClick={() => setActiveGroup(g.group)}
             className={cn(
-              "shrink-0 px-3 py-1.5 text-sm font-medium rounded-[var(--radius-md)] border transition-all",
+              "shrink-0 px-3 py-1.5 text-sm font-medium rounded-md border transition-all",
               (current?.group === g.group)
-                ? "bg-[var(--accent-subtle)] text-[var(--accent)] border-[var(--accent)]"
-                : "text-[var(--muted)] border-[var(--border)] hover:text-[var(--text)] hover:border-[var(--border-strong)]",
+                ? "bg-accent-subtle text-accent border-accent"
+                : "text-muted border-border hover:text-foreground hover:border-border-strong",
             )}
           >
             {t(`groups.${g.group}`, { defaultValue: g.group })}
@@ -69,7 +69,7 @@ export default function Config() {
 
       {/* 配置项列表 */}
       {isLoading ? (
-        <div className="flex justify-center py-12 text-[var(--muted)]">
+        <div className="flex justify-center py-12 text-muted">
           <Loader2 size={24} className="animate-spin" />
         </div>
       ) : (
@@ -106,10 +106,10 @@ function ConfigItemRow({ item, onSaved }: { item: ConfigMetaItem; onSaved: () =>
   };
 
   return (
-    <div className="flex items-center gap-3 p-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--card)]">
+    <div className="flex items-center gap-3 p-3 rounded-md border border-border bg-card">
       <div className="flex-1 min-w-0">
-        <div className="text-sm text-[var(--text-strong)]">{item.description}</div>
-        <div className="text-xs text-[var(--muted)] font-mono truncate">{item.key}</div>
+        <div className="text-sm text-heading">{item.description}</div>
+        <div className="text-xs text-muted font-mono truncate">{item.key}</div>
       </div>
 
       <div className="flex items-center gap-2 shrink-0">
@@ -122,7 +122,7 @@ function ConfigItemRow({ item, onSaved }: { item: ConfigMetaItem; onSaved: () =>
             onClick={() => save(!value)}
             className={cn(
               "w-11 h-6 rounded-full transition-colors relative",
-              value ? "bg-[var(--accent)]" : "bg-[var(--secondary)]",
+              value ? "bg-accent" : "bg-secondary",
               "disabled:opacity-50",
             )}
           >
@@ -138,7 +138,7 @@ function ConfigItemRow({ item, onSaved }: { item: ConfigMetaItem; onSaved: () =>
             value={String(value ?? "")}
             disabled={!item.editable || mutation.isPending}
             onChange={(e) => save(e.target.value)}
-            className="bg-[var(--bg)] border border-[var(--input)] rounded-[var(--radius-md)] px-2.5 py-1.5 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
+            className="bg-bg border border-input rounded-md px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring"
           >
             {item.options.map((opt) => (
               <option key={opt} value={opt}>{opt}</option>
@@ -158,7 +158,7 @@ function ConfigItemRow({ item, onSaved }: { item: ConfigMetaItem; onSaved: () =>
             onKeyDown={(e) => {
               if (e.key === "Enter" && dirty && !mutation.isPending) mutation.mutate(value);
             }}
-            className="w-36 bg-[var(--bg)] border border-[var(--input)] rounded-[var(--radius-md)] px-2.5 py-1.5 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)] disabled:opacity-50"
+            className="w-36 bg-bg border border-input rounded-md px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring disabled:opacity-50"
           />
         )}
 
@@ -167,14 +167,14 @@ function ConfigItemRow({ item, onSaved }: { item: ConfigMetaItem; onSaved: () =>
           <button
             onClick={() => mutation.mutate(value)}
             disabled={mutation.isPending}
-            className="px-3 py-1.5 text-sm font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)] hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-all"
+            className="px-3 py-1.5 text-sm font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-all"
           >
             {mutation.isPending ? <Loader2 size={14} className="animate-spin" /> : t("common:save")}
           </button>
         )}
 
         {/* 保存成功反馈 */}
-        {saved && <Check size={16} className="text-[var(--success)]" />}
+        {saved && <Check size={16} className="text-ok" />}
 
         {/* 重置为默认值 */}
         {!isDefault && item.editable && (
@@ -182,7 +182,7 @@ function ConfigItemRow({ item, onSaved }: { item: ConfigMetaItem; onSaved: () =>
             title={t("resetToDefault")}
             onClick={() => save(item.default)}
             disabled={mutation.isPending}
-            className="p-1.5 rounded-[var(--radius-md)] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50"
+            className="p-1.5 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors disabled:opacity-50"
           >
             <RotateCcw size={14} />
           </button>

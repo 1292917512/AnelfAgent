@@ -101,7 +101,7 @@ export function EntityPanel() {
       <Card title={t("entityList")} subtitle={t("nEntities", { count: (entities as unknown[]).length })}>
         <div className="space-y-1 max-h-[28rem] overflow-y-auto">
           {(entities as unknown[]).length === 0 && (
-            <p className="text-sm text-[var(--muted)]">{t("noEntityProfile")}</p>
+            <p className="text-sm text-muted">{t("noEntityProfile")}</p>
           )}
           {(entities as Array<Record<string, unknown>>).map((e) => {
             const key = `${e.scope_type}:${e.scope_id}`;
@@ -113,19 +113,19 @@ export function EntityPanel() {
                 key={key}
                 onClick={() => handleSelect(String(e.scope_type ?? ""), String(e.scope_id ?? ""))}
                 className={cn(
-                  "w-full text-left p-2 rounded-[var(--radius-md)] text-sm transition-colors",
+                  "w-full text-left p-2 rounded-md text-sm transition-colors",
                   isActive
-                    ? "bg-[var(--accent-subtle)] text-[var(--accent)]"
-                    : "text-[var(--text)] hover:bg-[var(--bg-hover)]",
+                    ? "bg-accent-subtle text-accent"
+                    : "text-foreground hover:bg-hover",
                 )}
               >
                 <div className="flex items-center gap-1.5">
-                  {hasAlias && <Link2 size={12} className="flex-shrink-0 text-[var(--accent)]" />}
+                  {hasAlias && <Link2 size={12} className="flex-shrink-0 text-accent" />}
                   <span className="font-medium truncate">{String(e.scope_id)}</span>
-                  <span className="text-xs text-[var(--muted)]">({String(e.scope_type)})</span>
+                  <span className="text-xs text-muted">({String(e.scope_type)})</span>
                 </div>
                 {summary && (
-                  <p className="text-xs text-[var(--muted)] mt-0.5 truncate pl-0.5">{summary}</p>
+                  <p className="text-xs text-muted mt-0.5 truncate pl-0.5">{summary}</p>
                 )}
               </button>
             );
@@ -143,13 +143,13 @@ export function EntityPanel() {
                 onClick={() => {
                   if (isEditing) { setIsEditing(false); } else { setIsEditing(true); setEditText((selectedEntity.personality as string) ?? ""); }
                 }}
-                className="p-1.5 text-[var(--muted)] hover:text-[var(--accent)] transition-colors"
+                className="p-1.5 text-muted hover:text-accent transition-colors"
               >
                 {isEditing ? <X size={14} /> : <Pencil size={14} />}
               </button>
               <button
                 onClick={() => deleteMutation.mutate({ type: String(selectedEntity.scope_type), id: String(selectedEntity.scope_id) })}
-                className="p-1.5 text-[var(--muted)] hover:text-[var(--danger)] transition-colors"
+                className="p-1.5 text-muted hover:text-danger transition-colors"
               >
                 <Trash2 size={14} />
               </button>
@@ -158,24 +158,24 @@ export function EntityPanel() {
         }
       >
         {!selectedEntity ? (
-          <p className="text-sm text-[var(--muted)]">{t("selectEntity")}</p>
+          <p className="text-sm text-muted">{t("selectEntity")}</p>
         ) : (
           <div className="space-y-4">
-            <div className="flex flex-wrap gap-3 text-xs text-[var(--muted)]">
+            <div className="flex flex-wrap gap-3 text-xs text-muted">
               <span>{t("convCount")}: {String(selectedEntity.conv_num ?? 0)}</span>
             </div>
 
             {(linkedTo || myAliases) && (
-              <div className="p-3 rounded-[var(--radius-md)] bg-[var(--bg-elevated)] border border-[var(--border)] space-y-2">
+              <div className="p-3 rounded-md bg-elevated border border-border space-y-2">
                 {linkedTo && (
                   <div className="flex items-center justify-between text-sm">
-                    <span className="text-[var(--muted)]">
+                    <span className="text-muted">
                       <Link2 size={12} className="inline mr-1" />
-                      {t("entityLinkedTo")}: <span className="text-[var(--text-strong)]">{linkedTo}</span>
+                      {t("entityLinkedTo")}: <span className="text-heading">{linkedTo}</span>
                     </span>
                     <button
                       onClick={() => unlinkMutation.mutate({ type: selected!.type, id: selected!.id })}
-                      className="flex items-center gap-1 px-2 py-0.5 text-xs rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] transition-colors"
+                      className="flex items-center gap-1 px-2 py-0.5 text-xs rounded-md border border-border text-muted hover:text-danger hover:border-danger transition-colors"
                     >
                       <Unlink size={11} /> {t("unlinkEntity")}
                     </button>
@@ -183,7 +183,7 @@ export function EntityPanel() {
                 )}
                 {myAliases && myAliases.length > 0 && (
                   <div className="text-sm">
-                    <span className="text-[var(--muted)]">{t("entityAliases")}:</span>
+                    <span className="text-muted">{t("entityAliases")}:</span>
                     <div className="flex flex-wrap gap-1.5 mt-1">
                       {myAliases.map((alias) => {
                         const [aType = "", ...aRest] = alias.split(":");
@@ -191,12 +191,12 @@ export function EntityPanel() {
                         return (
                           <span
                             key={alias}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-[var(--accent-subtle)] text-[var(--accent)]"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-accent-subtle text-accent"
                           >
                             <Link2 size={10} /> {alias}
                             <button
                               onClick={() => unlinkMutation.mutate({ type: aType, id: aId })}
-                              className="ml-0.5 hover:text-[var(--danger)] transition-colors"
+                              className="ml-0.5 hover:text-danger transition-colors"
                               title={t("unlinkEntity")}
                             >
                               <X size={10} />
@@ -216,13 +216,13 @@ export function EntityPanel() {
                   value={linkInput}
                   onChange={(ev) => setLinkInput(ev.target.value)}
                   placeholder={t("linkPlaceholder")}
-                  className="flex-1 bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-1.5 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)]"
+                  className="flex-1 bg-card border border-input rounded-md px-3 py-1.5 text-sm text-foreground outline-none focus:border-ring"
                   onKeyDown={(ev) => { if (ev.key === "Enter") handleLink(); }}
                 />
                 <button
                   onClick={handleLink}
                   disabled={!linkInput.includes(":")}
-                  className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40"
+                  className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-md border border-border text-foreground hover:bg-hover transition-colors disabled:opacity-40"
                 >
                   <Link2 size={12} /> {t("linkEntity")}
                 </button>
@@ -235,7 +235,7 @@ export function EntityPanel() {
                   value={editText}
                   onChange={(ev) => setEditText(ev.target.value)}
                   rows={14}
-                  className="w-full bg-[var(--card)] border border-[var(--input)] rounded-[var(--radius-md)] px-3 py-2 text-sm text-[var(--text)] outline-none focus:border-[var(--ring)] resize-y font-mono"
+                  className="w-full bg-card border border-input rounded-md px-3 py-2 text-sm text-foreground outline-none focus:border-ring resize-y font-mono"
                 />
                 <div className="flex justify-end">
                   <button
@@ -246,7 +246,7 @@ export function EntityPanel() {
                         personality: editText,
                       })
                     }
-                    className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--primary-foreground)]"
+                    className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground"
                   >
                     <Save size={12} /> {t("common:save")}
                   </button>
@@ -254,7 +254,7 @@ export function EntityPanel() {
               </div>
             ) : (
               <div className="max-h-[24rem] overflow-y-auto">
-                <pre className="text-sm text-[var(--text)] whitespace-pre-wrap break-words font-sans leading-relaxed">
+                <pre className="text-sm text-foreground whitespace-pre-wrap break-words font-sans leading-relaxed">
                   {(selectedEntity.personality as string) || t("noEntityProfile")}
                 </pre>
               </div>

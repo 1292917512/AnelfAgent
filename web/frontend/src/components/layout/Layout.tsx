@@ -18,7 +18,7 @@ export function Layout() {
   }, [location.pathname, setMobileMenuOpen]);
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-dvh overflow-hidden">
       {/* 桌面端：固定侧边栏；移动端：抽屉 + 遮罩 */}
       {isMobile ? (
         <>

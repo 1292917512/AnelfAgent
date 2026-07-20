@@ -44,5 +44,7 @@
   "pluginsTitle": "Plugins",
   "pluginsLoaded": "{{count}} loaded",
   "pluginEnabled": "enabled",
-  "pluginDisabled": "disabled"
+  "pluginDisabled": "disabled",
+  "tagCount": "{{count}} tags",
+  "tagActiveCount": " ({{count}} active)"
 }

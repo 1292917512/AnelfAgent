@@ -1,9 +1,12 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { useAuthStore } from "@/stores/auth-store";
 import { useAppStore } from "@/stores/app-store";
+import { Button, Input, Spinner } from "@/components/ui";
 import { Lock } from "lucide-react";
 
 export function AuthGate({ children }: { children: ReactNode }) {
+  const { t } = useTranslation("common");
   const { checked, required, authenticated, error, checkAuth, login } =
     useAuthStore();
   const branding = useAppStore((s) => s.branding);
@@ -16,8 +19,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   if (!checked) {
     return (
-      <div className="fixed inset-0 flex items-center justify-center bg-[var(--bg)]">
-        <p className="text-sm text-[var(--muted)]">Loading…</p>
+      <div className="fixed inset-0 flex items-center justify-center bg-bg">
+        <Spinner size={24} />
       </div>
     );
   }
@@ -35,47 +38,44 @@ export function AuthGate({ children }: { children: ReactNode }) {
   };
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-[var(--bg)]">
+    <div className="fixed inset-0 flex items-center justify-center bg-bg">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-sm mx-4 p-8 rounded-2xl border border-[var(--border)] bg-[var(--bg-surface)] shadow-2xl"
+        className="w-full max-w-sm mx-4 p-8 rounded-2xl border border-border bg-card shadow-2xl"
       >
         <div className="flex flex-col items-center gap-2 mb-6">
-          <div className="w-12 h-12 rounded-full bg-[var(--accent)]/10 flex items-center justify-center">
-            <Lock size={22} className="text-[var(--accent)]" />
+          <div className="w-12 h-12 rounded-full bg-accent/10 flex items-center justify-center">
+            <Lock size={22} className="text-accent" />
           </div>
-          <h1 className="text-lg font-bold text-[var(--text-strong)]">
+          <h1 className="text-lg font-bold text-heading">
             {branding.title}
           </h1>
-          <p className="text-xs text-[var(--muted)]">{branding.subtitle}</p>
+          <p className="text-xs text-muted">{branding.subtitle}</p>
         </div>
 
-        <input
+        <Input
           type="password"
           autoFocus
           autoComplete="current-password"
-          placeholder="输入访问密码"
+          placeholder={t("passwordPlaceholder")}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="w-full px-4 py-2.5 text-sm rounded-[var(--radius-md)]
-            bg-[var(--bg-elevated)] border border-[var(--border)]
-            text-[var(--text-strong)] placeholder:text-[var(--muted)]
-            focus:outline-none focus:border-[var(--accent)] transition-colors"
+          className="!h-10"
         />
 
         {error && (
-          <p className="mt-2 text-xs text-[var(--error)]">{error}</p>
+          <p className="mt-2 text-xs text-danger">{error}</p>
         )}
 
-        <button
+        <Button
           type="submit"
-          disabled={loading || !password.trim()}
-          className="w-full mt-4 py-2.5 text-sm font-semibold rounded-[var(--radius-md)]
-            bg-[var(--accent)] text-white hover:opacity-90 transition-all
-            disabled:opacity-50 disabled:cursor-not-allowed"
+          variant="primary"
+          disabled={!password.trim()}
+          loading={loading}
+          className="w-full mt-4 !h-10"
         >
-          {loading ? "验证中…" : "登录"}
-        </button>
+          {loading ? t("verifying") : t("login")}
+        </Button>
       </form>
     </div>
   );

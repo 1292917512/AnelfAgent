@@ -40,12 +40,12 @@ export function PageHeader({
   return (
     <div className="flex items-start justify-between gap-3 flex-wrap">
       <div className="min-w-0">
-        <h1 className="text-lg md:text-xl font-semibold text-[var(--text-strong)] flex items-center gap-2">
+        <h1 className="text-lg md:text-xl font-semibold text-heading flex items-center gap-2">
           {icon}
           <span className="truncate">{title}</span>
         </h1>
         {subtitle && (
-          <p className="text-sm text-[var(--muted)] mt-1">{subtitle}</p>
+          <p className="text-sm text-muted mt-1">{subtitle}</p>
         )}
       </div>
       {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}

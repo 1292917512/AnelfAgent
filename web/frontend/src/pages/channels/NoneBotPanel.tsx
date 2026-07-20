@@ -92,10 +92,10 @@ export function NoneBotPanel() {
     <div className="space-y-4">
       {/* Status */}
       <div className={cn(
-        "flex items-center gap-3 px-4 py-3 rounded-[var(--radius-md)] border text-sm",
+        "flex items-center gap-3 px-4 py-3 rounded-md border text-sm",
         initialized
-          ? "bg-[var(--ok-subtle)] text-[var(--ok)] border-[rgba(34,197,94,0.2)]"
-          : "bg-[var(--secondary)] text-[var(--muted)] border-[var(--border)]",
+          ? "bg-ok-subtle text-ok border-[rgba(34,197,94,0.2)]"
+          : "bg-secondary text-muted border-border",
       )}>
         <Plug size={16} />
         <span>{initialized ? t("nonebotInitialized") : t("nonebotNotStarted")}</span>
@@ -109,16 +109,16 @@ export function NoneBotPanel() {
       {/* Online Bots */}
       {bots.length > 0 && (
         <div className="space-y-2">
-          <h4 className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
+          <h4 className="text-xs font-semibold text-muted uppercase tracking-wider">
             {t("onlineBots")}
           </h4>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {bots.map((bot) => (
               <div key={bot.self_id}
-                className="flex items-center gap-2 px-3 py-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--card)]">
-                <Bot size={14} className="text-[var(--accent)]" />
-                <span className="text-sm font-mono text-[var(--text)]">{bot.self_id}</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--secondary)] text-[var(--muted)] ml-auto">
+                className="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-card">
+                <Bot size={14} className="text-accent" />
+                <span className="text-sm font-mono text-foreground">{bot.self_id}</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted ml-auto">
                   {bot.adapter}
                 </span>
               </div>
@@ -129,7 +129,7 @@ export function NoneBotPanel() {
 
       {/* Adapter Selection */}
       <div className="space-y-2">
-        <h4 className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
+        <h4 className="text-xs font-semibold text-muted uppercase tracking-wider">
           {t("availableAdapters")}
         </h4>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
@@ -137,28 +137,28 @@ export function NoneBotPanel() {
             <button key={adapter.key}
               onClick={() => toggleAdapterSelection(adapter.key)}
               className={cn(
-                "flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius-md)] border text-left transition-all text-sm",
+                "flex items-center gap-2 px-3 py-2.5 rounded-md border text-left transition-all text-sm",
                 selectedAdapters.includes(adapter.key)
-                  ? "border-[var(--accent)] bg-[var(--accent)]/5"
-                  : "border-[var(--border)] hover:border-[var(--border-strong)]",
+                  ? "border-accent bg-accent/5"
+                  : "border-border hover:border-border-strong",
                 !adapter.installed && "opacity-50",
               )}>
               <Circle size={8}
                 className={cn(
                   "shrink-0",
-                  adapter.registered ? "fill-[var(--ok)] text-[var(--ok)]"
-                    : selectedAdapters.includes(adapter.key) ? "fill-[var(--accent)] text-[var(--accent)]"
-                    : "text-[var(--muted)]",
+                  adapter.registered ? "fill-[var(--ok)] text-ok"
+                    : selectedAdapters.includes(adapter.key) ? "fill-[var(--accent)] text-accent"
+                    : "text-muted",
                 )} />
               <div className="flex-1 min-w-0">
-                <span className="text-[var(--text-strong)] font-medium">{adapter.label}</span>
+                <span className="text-heading font-medium">{adapter.label}</span>
                 <div className="flex items-center gap-1 mt-0.5">
-                  <Package size={10} className="text-[var(--muted)]" />
-                  <span className="text-[10px] text-[var(--muted)] truncate">{adapter.package}</span>
+                  <Package size={10} className="text-muted" />
+                  <span className="text-[10px] text-muted truncate">{adapter.package}</span>
                 </div>
               </div>
               {!adapter.installed && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--warn-subtle)] text-[var(--warn)] border border-[rgba(245,158,11,0.2)] shrink-0">
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-warn-subtle text-warn border border-[rgba(245,158,11,0.2)] shrink-0">
                   {t("notInstalled")}
                 </span>
               )}
@@ -170,15 +170,15 @@ export function NoneBotPanel() {
       {/* Config */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h4 className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
+          <h4 className="text-xs font-semibold text-muted uppercase tracking-wider">
             {t("bridgeConfig")}
           </h4>
           {configDirty && (
             <button
               onClick={() => saveMutation.mutate(configValues)}
               disabled={saveMutation.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[var(--radius-md)]
-                bg-[var(--accent)] text-white hover:opacity-90 transition-all disabled:opacity-50">
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md
+                bg-accent text-white hover:opacity-90 transition-all disabled:opacity-50">
               <Save size={14} />
               {saveMutation.isPending ? t("common:saving") : t("common:save")}
             </button>
@@ -187,39 +187,39 @@ export function NoneBotPanel() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-[var(--text-strong)]">{t("enableBridge")}</label>
+            <label className="text-xs font-semibold text-heading">{t("enableBridge")}</label>
             <div className="flex items-center gap-2">
               <button onClick={() => updateConfig("enabled", !configValues.enabled)}
                 className={cn(
                   "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                  configValues.enabled ? "bg-[var(--accent)]" : "bg-[var(--secondary)] border border-[var(--border)]",
+                  configValues.enabled ? "bg-accent" : "bg-secondary border border-border",
                 )}>
                 <span className={cn(
                   "inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform",
                   configValues.enabled ? "translate-x-[18px]" : "translate-x-[3px]",
                 )} />
               </button>
-              <span className="text-xs text-[var(--muted)]">
+              <span className="text-xs text-muted">
                 {configValues.enabled ? t("common:enabled") : t("common:disabled")}
               </span>
             </div>
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-[var(--text-strong)]">{t("interceptMode")}</label>
-            <p className="text-[11px] text-[var(--muted)]">{t("interceptDesc")}</p>
+            <label className="text-xs font-semibold text-heading">{t("interceptMode")}</label>
+            <p className="text-[11px] text-muted">{t("interceptDesc")}</p>
             <div className="flex items-center gap-2">
               <button onClick={() => updateConfig("intercept_all", !configValues.intercept_all)}
                 className={cn(
                   "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                  configValues.intercept_all ? "bg-[var(--accent)]" : "bg-[var(--secondary)] border border-[var(--border)]",
+                  configValues.intercept_all ? "bg-accent" : "bg-secondary border border-border",
                 )}>
                 <span className={cn(
                   "inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform",
                   configValues.intercept_all ? "translate-x-[18px]" : "translate-x-[3px]",
                 )} />
               </button>
-              <span className="text-xs text-[var(--muted)]">
+              <span className="text-xs text-muted">
                 {configValues.intercept_all ? t("fullIntercept") : t("passthrough")}
               </span>
             </div>

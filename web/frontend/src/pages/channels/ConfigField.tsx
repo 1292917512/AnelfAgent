@@ -27,19 +27,19 @@ export function ConfigField({
   const vtype = meta.value_type_str;
 
   const fieldCls =
-    "w-full px-3 py-1.5 text-sm rounded-[var(--radius-md)] " +
-    "border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text)] " +
-    "placeholder:text-[var(--muted)] focus:outline-none focus:border-[var(--accent)] font-mono";
+    "w-full px-3 py-1.5 text-sm rounded-md " +
+    "border border-border bg-elevated text-foreground " +
+    "placeholder:text-muted focus:outline-none focus:border-accent font-mono";
 
   const label = meta.description && meta.description !== shortKey ? meta.description : shortKey;
 
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-2">
-        <label className="text-xs font-semibold text-[var(--text-strong)]">
+        <label className="text-xs font-semibold text-heading">
           {label}
         </label>
-        <span className="text-[10px] text-[var(--muted)] font-mono px-1.5 py-0.5 rounded bg-[var(--secondary)]">
+        <span className="text-[10px] text-muted font-mono px-1.5 py-0.5 rounded bg-secondary">
           {shortKey}
         </span>
       </div>
@@ -50,7 +50,7 @@ export function ConfigField({
             onClick={() => onChange(!value)}
             className={cn(
               "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-              value ? "bg-[var(--accent)]" : "bg-[var(--secondary)] border border-[var(--border)]",
+              value ? "bg-accent" : "bg-secondary border border-border",
             )}
           >
             <span
@@ -60,7 +60,7 @@ export function ConfigField({
               )}
             />
           </button>
-          <span className="text-xs text-[var(--muted)]">
+          <span className="text-xs text-muted">
             {value ? t("enabled") : t("disabled")}
           </span>
         </div>

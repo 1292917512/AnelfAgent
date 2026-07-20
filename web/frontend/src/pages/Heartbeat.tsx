@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
+import { PageContainer } from "@/components/common/PageContainer";
 import { Activity, Settings2 } from "lucide-react";
 import { StatusPanel } from "@/pages/heartbeat/StatusPanel";
 import { ConfigPanel } from "@/pages/heartbeat/ConfigPanel";
@@ -17,10 +18,10 @@ export default function Heartbeat() {
   ];
 
   return (
-    <div className="space-y-6 max-w-6xl">
+    <PageContainer wide>
       <TabBar tabs={TABS} activeTab={tab} onChange={setTab} />
       {tab === "status" && <StatusPanel />}
       {tab === "config" && <ConfigPanel />}
-    </div>
+    </PageContainer>
   );
 }
