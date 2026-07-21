@@ -43,11 +43,24 @@ def _validate_request_params(value: Dict[str, Any]) -> Dict[str, Any]:
 
 RequestParams = Annotated[Dict[str, Any], AfterValidator(_validate_request_params)]
 
+# 允许通过显式传 null 清除配置、恢复"由模型默认决定"的可选采样参数
+_CLEARABLE_PARAM_FIELDS = frozenset({"temperature", "top_p", "max_tokens"})
+
 def _normalize_model_params(req: BaseModel) -> Dict[str, Any]:
-    """规范化扩展参数，并兼容旧 extra_params 字段。"""
+    """规范化扩展参数。
+
+    用 exclude_unset 而非 exclude_none：显式传 null 的可选采样参数
+    （temperature/max_tokens）需要透传给 update_config 以清除已有配置，
+    恢复"由模型默认决定"的 auto 行为。
+    """
     structured_fields = {"request_params", "extra_body", "extra_params"}
     structured_supplied = bool(req.model_fields_set & structured_fields)
-    params = req.model_dump(exclude_none=True)
+    params = req.model_dump(exclude_unset=True)
+    # null 仅对白名单字段（可清除回 auto 的采样参数）透传，其余字段 null 视为未提供
+    params = {
+        k: v for k, v in params.items()
+        if v is not None or k in _CLEARABLE_PARAM_FIELDS
+    }
     request_params = params.pop("request_params", {})
     extra_body = params.pop("extra_body", {})
     legacy_extra = params.pop("extra_params", {})
@@ -186,8 +199,14 @@ class CreateModelReq(BaseModel):
     id: str
     model: str = ""
     model_types: List[ModelTypeValue] = Field(default_factory=lambda: ["chat"])
-    temperature: float = Field(default=0.7, ge=0, le=2)
-    top_p: float = Field(default=1.0, ge=0, le=1)
+    temperature: Optional[float] = Field(
+        default=None, ge=0, le=2,
+        description="可选采样温度；缺省不下发，由 provider/SDK 按模型默认决定",
+    )
+    top_p: Optional[float] = Field(
+        default=None, ge=0, le=1,
+        description="可选 nucleus 采样；缺省不下发，由 provider/SDK 按模型默认决定",
+    )
     max_tokens: Optional[int] = Field(
         default=None, ge=0,
         description="可选输出预算上限；缺省不限制，由 provider/SDK 按模型默认决定",
@@ -206,7 +225,6 @@ class CreateModelReq(BaseModel):
     extra_body: Dict[str, Any] = Field(default_factory=dict)
     extra_params: Dict[str, Any] = Field(
         default_factory=dict,
-        description="已弃用：兼容旧客户端，按 extra_body 处理",
     )
 
 
@@ -355,7 +373,6 @@ class UpdateModelReq(BaseModel):
     extra_body: Optional[Dict[str, Any]] = None
     extra_params: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="已弃用：兼容旧客户端，按 extra_body 处理",
     )
 
 

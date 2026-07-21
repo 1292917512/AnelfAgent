@@ -13,7 +13,15 @@ from typing import Any, Dict, Optional, Set
 
 from core.log import log
 
-from agent.channel.channel import BaseChannel, ChannelCapability, ChannelStatus, _ok, _err
+from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
+from agent.channel.channel_types import ChannelCapability, ChannelStatus, _ok, _err
+from agent.channel.tool_bridge import channel_tool
+from agent.channel.schemas import (
+    AdapterChannel, ChannelType, SendRequest, SendResponse, SendSegment,
+    ChannelInfo, ChannelUser, ChannelUserRole, HealthStatus,
+)
+import time
+from pydantic import Field
 from .config import TELEGRAM_CONFIGS
 from .delivery import deliver_reply
 
@@ -30,11 +38,36 @@ def _fmt_exc(exc: BaseException) -> str:
     return msg
 
 
-class TelegramAdapter(BaseChannel):
+
+
+class TelegramConfig(ChannelConfig):
+    """Telegram 频道配置（pydantic 强类型）。"""
+
+    bot_token: str = Field(default="", description="Bot Token（从 @BotFather 获取）")
+    proxy_host: str = Field(default="", description="代理地址（留空不使用代理）")
+    proxy_port: int = Field(default=7890, description="代理端口")
+    require_mention: bool = Field(default=False, description="群聊中是否需要 @Bot 才触发思考")
+    reply_to_mode: str = Field(default="first", description="回复引用策略 (first/all/off)")
+    stream_mode: str = Field(default="off", description="流式输出模式 (off/draft)")
+    parse_mode: str = Field(default="html", description="消息格式化模式 (html/markdown)")
+    text_limit: int = Field(default=4096, description="单条消息最大长度")
+    link_preview: bool = Field(default=True, description="是否显示链接预览")
+
+
+class TelegramAdapter(BaseChannel[TelegramConfig]):
     """Telegram Bot 频道（独立线程运行）。"""
 
     _entity_description = "Telegram Bot 频道"
     _adapter_configs = TELEGRAM_CONFIGS
+
+    metadata = ChannelMetadata(
+        name="Telegram",
+        description="基于 python-telegram-bot 的 Telegram Bot 频道",
+        version="1.0.0",
+        author="AnelfAgent",
+        tags=["telegram", "chat", "bot"],
+    )
+    _Configs = TelegramConfig
 
     def __init__(self) -> None:
         self._app: Optional[Any] = None
@@ -48,17 +81,11 @@ class TelegramAdapter(BaseChannel):
         self._known_chats: dict[str, dict] = {}
         super().__init__()
 
-    @property
-    def channel_id(self) -> str:
-        return "telegram"
+    channel_id = "telegram"
 
-    @property
-    def display_name(self) -> str:
-        return "Telegram"
+    display_name = "Telegram"
 
-    @property
-    def capabilities(self) -> Set[ChannelCapability]:
-        return {
+    capabilities: Set[ChannelCapability] = {
             # 发送类
             ChannelCapability.SEND_TEXT,
             ChannelCapability.SEND_PHOTO,
@@ -120,14 +147,14 @@ class TelegramAdapter(BaseChannel):
             filters,
         )
 
-        token: str = self.get_adapter_config("bot_token", "")
+        token: str = self.config.bot_token
         if not token:
             log("Telegram Bot Token 未配置，频道无法启动", "WARNING")
             self._status = ChannelStatus.ERROR
             return
 
-        proxy_host: str = self.get_adapter_config("proxy_host", "")
-        proxy_port: int = int(self.get_adapter_config("proxy_port", 7890))
+        proxy_host: str = self.config.proxy_host
+        proxy_port: int = int(self.config.proxy_port)
 
         builder = Application.builder().token(token).connect_timeout(15).read_timeout(30)
         if proxy_host:
@@ -272,10 +299,10 @@ class TelegramAdapter(BaseChannel):
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
         """通过 Telegram 发送文本消息。"""
         reply_to = kwargs.get("reply_to")
-        reply_to_mode = self.get_adapter_config("reply_to_mode", "first")
-        parse_mode = self.get_adapter_config("parse_mode", "html")
-        text_limit = int(self.get_adapter_config("text_limit", 4096))
-        link_preview = bool(self.get_adapter_config("link_preview", True))
+        reply_to_mode = self.config.reply_to_mode
+        parse_mode = self.config.parse_mode
+        text_limit = int(self.config.text_limit)
+        link_preview = bool(self.config.link_preview)
 
         try:
             async def _do():
@@ -359,6 +386,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool()
     async def send_location(self, chat_id: str, latitude: str, longitude: str, **kwargs: Any) -> str:
         """通过 Telegram 发送地理位置。"""
         try:
@@ -373,6 +401,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool()
     async def send_animation(self, chat_id: str, animation: str, caption: str = "", **kwargs: Any) -> str:
         """通过 Telegram 发送 GIF 动图。"""
         try:
@@ -385,6 +414,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool()
     async def edit_message(self, chat_id: str, message_id: str, text: str, **kwargs: Any) -> str:
         """编辑已发送的 Telegram 消息。"""
         try:
@@ -399,6 +429,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool()
     async def delete_message(self, chat_id: str, message_id: str, **kwargs: Any) -> str:
         """删除 Telegram 消息。"""
         try:
@@ -415,6 +446,7 @@ class TelegramAdapter(BaseChannel):
     # 信息查询 / 群管理 / 交互
     # ------------------------------------------------------------------
 
+    @channel_tool()
     async def send_contact(self, chat_id: str, phone: str, first_name: str, last_name: str = "", **kwargs: Any) -> str:
         """通过 Telegram 发送联系人名片。"""
         try:
@@ -429,6 +461,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool()
     async def send_poll(self, chat_id: str, question: str, options: str, **kwargs: Any) -> str:
         """通过 Telegram 发送投票，选项用竖线分隔。"""
         try:
@@ -443,7 +476,8 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
-    async def forward_message(self, chat_id: str, from_chat_id: str, message_id: str, **kwargs: Any) -> str:
+    @channel_tool()
+    async def forward_msg(self, chat_id: str, from_chat_id: str, message_id: str, **kwargs: Any) -> str:
         """转发 Telegram 消息到另一个会话。"""
         try:
             async def _do():
@@ -456,6 +490,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool()
     async def pin_message(self, chat_id: str, message_id: str, **kwargs: Any) -> str:
         """置顶 Telegram 群组中的消息。"""
         try:
@@ -466,6 +501,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool()
     async def unpin_message(self, chat_id: str, message_id: str, **kwargs: Any) -> str:
         """取消置顶 Telegram 群组中的消息。"""
         try:
@@ -476,6 +512,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool()
     async def get_chat_info(self, chat_id: str, **kwargs: Any) -> str:
         """查询 Telegram 会话详细信息（标题、类型、成员数等）。"""
         try:
@@ -502,6 +539,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool(description="获取群成员列表（Telegram Bot API 限制，仅返回不可用提示）")
     async def get_chat_members(self, chat_id: str, **kwargs: Any) -> str:
         return _err(
             "Telegram Bot API 不支持直接获取完整成员列表。"
@@ -510,6 +548,7 @@ class TelegramAdapter(BaseChannel):
             "Bot 只能看到与它交互过的用户。"
         )
 
+    @channel_tool()
     async def get_chat_admins(self, chat_id: str, **kwargs: Any) -> str:
         """查询 Telegram 群组管理员列表。"""
         try:
@@ -530,6 +569,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool()
     async def list_known_chats(self, **kwargs: Any) -> str:
         """列出 Bot 已交互过的所有会话。"""
         if not self._known_chats:
@@ -539,6 +579,7 @@ class TelegramAdapter(BaseChannel):
             })
         return _ok({"chats": list(self._known_chats.values()), "count": len(self._known_chats)})
 
+    @channel_tool(sensitive=True)
     async def ban_user(self, chat_id: str, user_id: str, **kwargs: Any) -> str:
         """封禁 Telegram 群组中的用户。"""
         try:
@@ -549,6 +590,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool()
     async def unban_user(self, chat_id: str, user_id: str, **kwargs: Any) -> str:
         """解除 Telegram 群组中用户的封禁。"""
         try:
@@ -559,6 +601,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool()
     async def set_chat_title(self, chat_id: str, title: str, **kwargs: Any) -> str:
         """修改 Telegram 群组标题。"""
         try:
@@ -569,6 +612,7 @@ class TelegramAdapter(BaseChannel):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    @channel_tool()
     async def set_chat_description(self, chat_id: str, description: str, **kwargs: Any) -> str:
         """修改 Telegram 群组简介描述。"""
         try:
@@ -601,11 +645,9 @@ class TelegramAdapter(BaseChannel):
         )
 
     # ------------------------------------------------------------------
-    # 向后兼容：AdapterSendRequest 接口
     # ------------------------------------------------------------------
 
     async def send_message(self, request: Any) -> bool:
-        """兼容旧的 AdapterSendRequest 接口。"""
         chat_id = request.channel.channel_id
         text = request.content
         reply_to = getattr(request, "reply_to", None)
@@ -620,7 +662,7 @@ class TelegramAdapter(BaseChannel):
     async def _on_message(self, update: Any, context: Any) -> None:
         self._track_chat(update)
         from .handlers import handle_message
-        require_mention = bool(self.get_adapter_config("require_mention", False))
+        require_mention = bool(self.config.require_mention)
         await handle_message(
             update, context,
             bot_username=self._bot_username,
@@ -644,7 +686,7 @@ class TelegramAdapter(BaseChannel):
 
     async def _on_edited_message(self, update: Any, context: Any) -> None:
         from .handlers import handle_edited_message
-        require_mention = bool(self.get_adapter_config("require_mention", False))
+        require_mention = bool(self.config.require_mention)
         await handle_edited_message(
             update, context,
             bot_username=self._bot_username,
@@ -655,3 +697,214 @@ class TelegramAdapter(BaseChannel):
     async def _on_channel_post(self, update: Any, context: Any) -> None:
         from .handlers import handle_channel_post
         await handle_channel_post(update, context, on_message=self.on_message)
+
+
+    # ------------------------------------------------------------------
+    # BaseChannel 协议方法
+    # ------------------------------------------------------------------
+
+    async def forward_message(self, request: SendRequest) -> SendResponse:
+        """统一发送入口。"""
+        try:
+            chat_id = request.channel.channel_id
+            reply_to = request.reply_to
+            parse_mode = request.parse_mode or self.config.parse_mode
+            message_ids: list[str] = []
+
+            for seg in request.segments:
+                seg_type = seg.type.value
+                if seg_type == "text":
+                    result_json = await self.send_text(
+                        chat_id, seg.content,
+                        reply_to=reply_to, parse_mode=parse_mode,
+                    )
+                    result = json.loads(result_json)
+                    if result.get("success") and result.get("message_ids"):
+                        message_ids.extend(result["message_ids"])
+                    elif result.get("success") and result.get("message_id"):
+                        message_ids.append(result["message_id"])
+                elif seg_type == "image":
+                    result_json = await self.send_photo(
+                        chat_id, seg.file_path, caption=seg.caption,
+                    )
+                    result = json.loads(result_json)
+                    if result.get("success") and result.get("message_id"):
+                        message_ids.append(result["message_id"])
+                elif seg_type == "video":
+                    result_json = await self.send_video(
+                        chat_id, seg.file_path, caption=seg.caption,
+                    )
+                    result = json.loads(result_json)
+                    if result.get("success") and result.get("message_id"):
+                        message_ids.append(result["message_id"])
+                elif seg_type == "audio":
+                    result_json = await self.send_audio(
+                        chat_id, seg.file_path, caption=seg.caption,
+                    )
+                    result = json.loads(result_json)
+                    if result.get("success") and result.get("message_id"):
+                        message_ids.append(result["message_id"])
+                elif seg_type == "voice":
+                    result_json = await self.send_voice(chat_id, seg.file_path)
+                    result = json.loads(result_json)
+                    if result.get("success") and result.get("message_id"):
+                        message_ids.append(result["message_id"])
+                elif seg_type == "file":
+                    result_json = await self.send_file(
+                        chat_id, seg.file_path, caption=seg.caption,
+                    )
+                    result = json.loads(result_json)
+                    if result.get("success") and result.get("message_id"):
+                        message_ids.append(result["message_id"])
+
+            if message_ids:
+                return SendResponse(
+                    success=True,
+                    message_id=message_ids[0],
+                    message_ids=message_ids,
+                )
+            return SendResponse(success=True, message_id="empty")
+        except Exception as exc:
+            return SendResponse(success=False, error=str(exc))
+
+    async def get_self_info(self) -> ChannelUser:
+        """获取 Bot 自身信息。"""
+        if not self._app or not self._app.bot:
+            raise RuntimeError("Telegram 频道未初始化")
+        bot_info = await self._app.bot.get_me()
+        return ChannelUser(
+            platform=self.channel_id,
+            user_id=str(bot_info.id),
+            user_name=bot_info.username or "",
+            role=ChannelUserRole.MEMBER,
+            is_bot=True,
+        )
+
+    async def get_user_info(self, user_id: str, channel_id: str) -> ChannelUser:
+        """获取用户信息。"""
+        if not self._app or not self._app.bot:
+            raise RuntimeError("Telegram 频道未初始化")
+        try:
+            chat_id_int = int(channel_id.split("_", 1)[1]) if "_" in channel_id else int(channel_id)
+            if channel_id.startswith("group") or chat_id_int < 0:
+                member = await self._app.bot.get_chat_member(chat_id_int, int(user_id))
+                user = member.user
+                role_map = {
+                    "creator": ChannelUserRole.OWNER,
+                    "administrator": ChannelUserRole.ADMIN,
+                    "member": ChannelUserRole.MEMBER,
+                    "restricted": ChannelUserRole.GUEST,
+                    "left": ChannelUserRole.GUEST,
+                    "kicked": ChannelUserRole.GUEST,
+                }
+                return ChannelUser(
+                    platform=self.channel_id,
+                    user_id=str(user.id),
+                    user_name=user.full_name or user.username or str(user.id),
+                    role=role_map.get(member.status, ChannelUserRole.MEMBER),
+                    is_bot=user.is_bot,
+                )
+            # 私聊
+            return ChannelUser(
+                platform=self.channel_id,
+                user_id=user_id,
+                user_name=user_id,
+            )
+        except Exception as exc:
+            log(f"获取用户信息失败 ({user_id}): {exc}", "DEBUG")
+            return ChannelUser(
+                platform=self.channel_id,
+                user_id=user_id,
+                user_name=user_id,
+            )
+
+    async def get_channel_info(self, channel_id: str) -> ChannelInfo:
+        """获取频道信息。"""
+        if not self._app or not self._app.bot:
+            raise RuntimeError("Telegram 频道未初始化")
+        try:
+            chat_id_int = int(channel_id.split("_", 1)[1]) if "_" in channel_id else int(channel_id)
+            chat = await self._app.bot.get_chat(chat_id_int)
+            chat_type = (
+                ChannelType.PRIVATE
+                if chat.type.value == "private"
+                else ChannelType.GROUP
+            )
+            member_count: Optional[int] = None
+            try:
+                member_count = await self._app.bot.get_chat_member_count(chat_id_int)
+            except Exception:
+                pass
+            return ChannelInfo(
+                channel_id=channel_id,
+                channel_name=chat.title or chat.first_name or str(chat_id_int),
+                channel_type=chat_type,
+                member_count=member_count,
+                description=getattr(chat, "description", "") or "",
+            )
+        except Exception as exc:
+            log(f"获取频道信息失败 ({channel_id}): {exc}", "DEBUG")
+            chat_type = ChannelType.PRIVATE if channel_id.startswith("private") else ChannelType.GROUP
+            return ChannelInfo(
+                channel_id=channel_id,
+                channel_name=channel_id,
+                channel_type=chat_type,
+            )
+
+    async def health_check(self) -> HealthStatus:
+        """健康探针：调用 get_me 验证 Bot 可达。"""
+        if not self._app or not self._app.bot:
+            return HealthStatus(
+                healthy=False,
+                detail="Telegram 频道未初始化",
+                last_error="not_initialized",
+            )
+        try:
+            started = time.time()
+            await self._app.bot.get_me()
+            return HealthStatus(
+                healthy=True,
+                detail=f"@{self._bot_username} OK",
+                latency_ms=(time.time() - started) * 1000,
+                last_success_at=time.time(),
+            )
+        except Exception as exc:
+            return HealthStatus(
+                healthy=False,
+                detail=f"get_me failed: {exc}",
+                last_error=str(exc),
+            )
+
+    async def render_approval_prompt(self, ctx) -> SendRequest:
+        """渲染批准提示（Telegram InlineKeyboard）。"""
+        from agent.channel.base import ApprovalPromptRenderContext
+
+        text = (
+            f"⚠️ **工具调用需要批准**\n"
+            f"\n"
+            f"工具: `{ctx.tool_name}`\n"
+            f"参数: ```\n{ctx.tool_args_summary}\n```\n"
+            f"风险等级: **{ctx.risk_level}**\n"
+            f"原因: {ctx.reason}\n"
+            f"超时: {ctx.timeout_seconds:.0f}s\n"
+        )
+
+        return SendRequest(
+            adapter_key=self.channel_id,
+            channel=AdapterChannel(
+                channel_id="",  # 由 approval/gate.py 填充
+                channel_type=ChannelType.PRIVATE,
+            ),
+            segments=[SendSegment(type="text", content=text)],
+            extra={
+                "reply_markup": {
+                    "inline_keyboard": [
+                        [
+                            {"text": "✅ 允许", "callback_data": f"approve:{ctx.request_id}"},
+                            {"text": "❌ 拒绝", "callback_data": f"deny:{ctx.request_id}"},
+                        ],
+                    ],
+                },
+                "parse_mode": "markdown",
+            },
+        )

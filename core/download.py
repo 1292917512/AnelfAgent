@@ -465,7 +465,6 @@ class DownloadInterface:
                       progress_callback: Optional[Callable[[float, int, int], None]] = None,
                       cancel_check: Optional[Callable[[], bool]] = None,
                       config: Optional[DownloadConfig] = None,
-                      # 向后兼容的参数
                       timeout_sec: Optional[int] = None,
                       retry_count: Optional[int] = None) -> CommandResult:
         """流程化的文件下载接口"""
@@ -474,11 +473,9 @@ class DownloadInterface:
 
         if timeout_sec is not None:
             config.total_timeout = float(timeout_sec)
-            log(f"⚠️ 使用已废弃的 timeout_sec 参数，建议使用 config.total_timeout", "WARNING")
 
         if retry_count is not None:
             config.retry_count = int(retry_count)
-            log(f"⚠️ 使用已废弃的 retry_count 参数，建议使用 config.retry_count", "WARNING")
 
         context = DownloadContext(url, output_path, progress_callback, cancel_check, config)
         downloader = FlowDownloader(context)

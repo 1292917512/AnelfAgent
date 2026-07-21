@@ -340,6 +340,20 @@ export const nonebotApi = {
   saveConfig: (config: Record<string, unknown>) => api.put("/nonebot/config", config),
 };
 
+// Approvals
+export const approvalsApi = {
+  pending: () => api.get("/approvals/pending"),
+  history: (limit = 50) => api.get("/approvals/history", { params: { limit } }),
+  approve: (requestId: string, reason?: string) =>
+    api.post(`/approvals/${encodeURIComponent(requestId)}/approve`, { reason }),
+  deny: (requestId: string, reason?: string) =>
+    api.post(`/approvals/${encodeURIComponent(requestId)}/deny`, { reason }),
+  stats: () => api.get("/approvals/stats"),
+  policies: () => api.get("/approvals/policies"),
+  savePolicies: (policies: Record<string, unknown>) =>
+    api.put("/approvals/policies", policies),
+};
+
 // Thinking Tracer
 export const thinkingApi = {
   status: () => api.get("/thinking/status"),

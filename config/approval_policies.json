@@ -1,0 +1,169 @@
+{
+  "policies": [
+    {
+      "tool_name_pattern": "shell.*",
+      "risk_level": "critical",
+      "requires_approval": false,
+      "timeout_seconds": 60.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "Shell 命令执行（高危）"
+    },
+    {
+      "tool_name_pattern": "system.*",
+      "risk_level": "critical",
+      "requires_approval": false,
+      "timeout_seconds": 60.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "系统级操作（重启、关机等）"
+    },
+    {
+      "tool_name_pattern": "filesystem.write*",
+      "risk_level": "high",
+      "requires_approval": false,
+      "timeout_seconds": 60.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 3,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "文件写入（信任后免批准）"
+    },
+    {
+      "tool_name_pattern": "filesystem.delete*",
+      "risk_level": "high",
+      "requires_approval": false,
+      "timeout_seconds": 60.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "文件删除"
+    },
+    {
+      "tool_name_pattern": "filesystem.move*",
+      "risk_level": "high",
+      "requires_approval": false,
+      "timeout_seconds": 60.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "文件移动/重命名"
+    },
+    {
+      "tool_name_pattern": "http.post*",
+      "risk_level": "medium",
+      "requires_approval": false,
+      "timeout_seconds": 45.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "HTTP POST 请求（可能修改外部状态）"
+    },
+    {
+      "tool_name_pattern": "http.put*",
+      "risk_level": "medium",
+      "requires_approval": false,
+      "timeout_seconds": 45.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "HTTP PUT 请求"
+    },
+    {
+      "tool_name_pattern": "http.delete*",
+      "risk_level": "high",
+      "requires_approval": false,
+      "timeout_seconds": 60.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "HTTP DELETE 请求"
+    },
+    {
+      "tool_name_pattern": "mcp.*",
+      "risk_level": "medium",
+      "requires_approval": false,
+      "timeout_seconds": 45.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "MCP 外部服务调用"
+    },
+    {
+      "tool_name_pattern": "database.execute*",
+      "risk_level": "high",
+      "requires_approval": false,
+      "timeout_seconds": 60.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "数据库写操作"
+    },
+    {
+      "tool_name_pattern": "database.query*",
+      "risk_level": "low",
+      "requires_approval": false,
+      "timeout_seconds": 60.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "数据库只读查询"
+    },
+    {
+      "tool_name_pattern": "memory.*",
+      "risk_level": "low",
+      "requires_approval": false,
+      "timeout_seconds": 60.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "记忆系统（只读/追加）"
+    },
+    {
+      "tool_name_pattern": "web.search*",
+      "risk_level": "low",
+      "requires_approval": false,
+      "timeout_seconds": 60.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "Web 搜索"
+    },
+    {
+      "tool_name_pattern": "web.read*",
+      "risk_level": "low",
+      "requires_approval": false,
+      "timeout_seconds": 60.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "Web 页面读取"
+    },
+    {
+      "tool_name_pattern": "*",
+      "risk_level": "low",
+      "requires_approval": false,
+      "timeout_seconds": 60.0,
+      "on_timeout": "deny",
+      "trust_after_n_approvals": 0,
+      "auto_approve_users": [],
+      "auto_deny_users": [],
+      "description": "默认低风险（兜底）"
+    }
+  ]
+}

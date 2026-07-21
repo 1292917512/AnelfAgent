@@ -42,7 +42,6 @@ except ImportError:
     _fallback_logger.addHandler(_stdlib_handler)
     _fallback_logger.setLevel(_stdlib_logging.DEBUG)
 
-# 向后兼容
 logger = _loguru_logger  # type: ignore[assignment]
 
 level_emoji = {"DEBUG": "🔍", "INFO": "ℹ️", "WARNING": "⚠️", "ERROR": "❌", "CRITICAL": "🚨"}

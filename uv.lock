@@ -149,6 +149,7 @@ dependencies = [
     { name = "lxml" },
     { name = "markdownify" },
     { name = "mcp" },
+    { name = "mcp-server-fetch" },
     { name = "minimax-coding-plan-mcp" },
     { name = "nonebot-adapter-onebot" },
     { name = "nonebot2", extra = ["fastapi"] },
@@ -190,6 +191,7 @@ requires-dist = [
     { name = "lxml", specifier = ">=5.0.0" },
     { name = "markdownify", specifier = ">=0.14.1" },
     { name = "mcp", specifier = ">=1.0.0" },
+    { name = "mcp-server-fetch", specifier = ">=2026.7.10" },
     { name = "minimax-coding-plan-mcp", specifier = ">=0.0.4" },
     { name = "nonebot-adapter-onebot", specifier = ">=2.4.6" },
     { name = "nonebot2", extras = ["fastapi"], specifier = ">=2.4.4" },
@@ -1010,6 +1012,19 @@ wheels = [
 ]
 
 [[package]]
+name = "html5lib"
+version = "1.1"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
+dependencies = [
+    { name = "six" },
+    { name = "webencodings" },
+]
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/ac/b6/b55c3f49042f1df3dcd422b7f224f939892ee94f22abcf503a9b7339eaf2/html5lib-1.1.tar.gz", hash = "sha256:b2e5b40261e20f354d198eae92afc10d750afb487ed5e50f9c4eaf07c184146f", size = 272215, upload-time = "2020-06-22T23:32:38.834Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/6c/dd/a834df6482147d48e225a49515aabc28974ad5a4ca3215c18a882565b028/html5lib-1.1-py2.py3-none-any.whl", hash = "sha256:0d78f8fde1c230e99fe37986a60526d7049ed4bf8a9fadbad5f00e22e58e041d", size = 112173, upload-time = "2020-06-22T23:32:36.781Z" },
+]
+
+[[package]]
 name = "httpcore"
 version = "1.0.7"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
@@ -1630,6 +1645,24 @@ cli = [
 ]
 
 [[package]]
+name = "mcp-server-fetch"
+version = "2026.7.10"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
+dependencies = [
+    { name = "httpx" },
+    { name = "markdownify" },
+    { name = "mcp" },
+    { name = "protego" },
+    { name = "pydantic" },
+    { name = "readabilipy" },
+    { name = "requests" },
+]
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/91/02/34edafea75b31f3e13a07c0fa205c8bf16d49d89fae82a5784a78b1113a0/mcp_server_fetch-2026.7.10.tar.gz", hash = "sha256:974d359dfc02acc3ea9904dc792902ecc5226415eaebe50c16afa6231b4d32b4", size = 89890, upload-time = "2026-07-10T03:31:07.814Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/42/05/8be7be4fbf4ba8448e08dc1ac661bd6c5e616801d3112780c49548aca76b/mcp_server_fetch-2026.7.10-py3-none-any.whl", hash = "sha256:6991b9a8133726b9f0b76d8c5e9607c8207e19e7c3a47c9e174a8b2e0742fc70", size = 9004, upload-time = "2026-07-10T03:31:06.746Z" },
+]
+
+[[package]]
 name = "mdurl"
 version = "0.1.2"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
@@ -2062,6 +2095,15 @@ wheels = [
 ]
 
 [[package]]
+name = "protego"
+version = "0.6.2"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/7d/1b/6b0ee60bb1561843bfc62f5c7c3cb1ef6147b47e829a5fd6b7fcd2752471/protego-0.6.2.tar.gz", hash = "sha256:88ff004544ce44e61269cc6f8735f7837d12e09bb77619fc94fbb26b72e5d137", size = 3137854, upload-time = "2026-06-25T09:33:16.361Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/61/10/cbd3c06603bb8b3e0e871df24ee793a6e3b53d8c4cc8763f1b8b936649aa/protego-0.6.2-py3-none-any.whl", hash = "sha256:714de21d82527c9be900066c3211b266985dd6a19b6e70c57e033fc1a589f3ff", size = 10296, upload-time = "2026-06-25T09:33:14.771Z" },
+]
+
+[[package]]
 name = "psutil"
 version = "7.0.0"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
@@ -2485,6 +2527,21 @@ dependencies = [
 sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/e8/7e/cb2d74466bd8495051ebe2d241b1cb1d4acf9740d481126aef19ef2697f5/rdflib-7.1.4.tar.gz", hash = "sha256:fed46e24f26a788e2ab8e445f7077f00edcf95abb73bcef4b86cefa8b62dd174", size = 4692745, upload-time = "2025-03-29T02:23:02.386Z" }
 wheels = [
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/f4/31/e9b6f04288dcd3fa60cb3179260d6dad81b92aef3063d679ac7d80a827ea/rdflib-7.1.4-py3-none-any.whl", hash = "sha256:72f4adb1990fa5241abd22ddaf36d7cafa5d91d9ff2ba13f3086d339b213d997", size = 565051, upload-time = "2025-03-29T02:22:44.987Z" },
+]
+
+[[package]]
+name = "readabilipy"
+version = "0.3.0"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
+dependencies = [
+    { name = "beautifulsoup4" },
+    { name = "html5lib" },
+    { name = "lxml" },
+    { name = "regex" },
+]
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/b8/e4/260a202516886c2e0cc6e6ae96d1f491792d829098886d9529a2439fbe8e/readabilipy-0.3.0.tar.gz", hash = "sha256:e13313771216953935ac031db4234bdb9725413534bfb3c19dbd6caab0887ae0", size = 35491, upload-time = "2024-12-02T23:03:02.311Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/dd/46/8a640c6de1a6c6af971f858b2fb178ca5e1db91f223d8ba5f40efe1491e5/readabilipy-0.3.0-py3-none-any.whl", hash = "sha256:d106da0fad11d5fdfcde21f5c5385556bfa8ff0258483037d39ea6b1d6db3943", size = 22158, upload-time = "2024-12-02T23:03:00.438Z" },
 ]
 
 [[package]]
@@ -3029,6 +3086,15 @@ wheels = [
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/bd/95/615e72cd27b85b61eec764a5ca51bd94d40b5adea5ff47567d9ebc4d275a/watchfiles-1.1.1-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:89eef07eee5e9d1fda06e38822ad167a044153457e6fd997f8a858ab7564a336", size = 396117, upload-time = "2025-10-14T15:06:11.28Z" },
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c9/81/e7fe958ce8a7fb5c73cc9fb07f5aeaf755e6aa72498c57d760af760c91f8/watchfiles-1.1.1-pp311-pypy311_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ce19e06cbda693e9e7686358af9cd6f5d61312ab8b00488bc36f5aabbaf77e24", size = 450493, upload-time = "2025-10-14T15:06:12.321Z" },
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/6e/d4/ed38dd3b1767193de971e694aa544356e63353c33a85d948166b5ff58b9e/watchfiles-1.1.1-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3e6f39af2eab0118338902798b5aa6664f46ff66bc0280de76fca67a7f262a49", size = 457546, upload-time = "2025-10-14T15:06:13.372Z" },
+]
+
+[[package]]
+name = "webencodings"
+version = "0.5.1"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/0b/02/ae6ceac1baeda530866a85075641cec12989bd8d31af6d5ab4a3e8c92f47/webencodings-0.5.1.tar.gz", hash = "sha256:b36a1c245f2d304965eb4e0a82848379241dc04b865afcc4aab16748587e1923", size = 9721, upload-time = "2017-04-05T20:21:34.189Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/f4/24/2a3e3df732393fed8b3ebf2ec078f05546de641fe1b667ee316ec1dcf3b7/webencodings-0.5.1-py2.py3-none-any.whl", hash = "sha256:a0af1213f3c2226497a97e2b3aa01a7e4bee4f403f95be16fc9acd2947514a78", size = 11774, upload-time = "2017-04-05T20:21:32.581Z" },
 ]
 
 [[package]]

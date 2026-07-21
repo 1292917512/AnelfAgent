@@ -32,7 +32,7 @@ def _load_channel_config(channel_dir: Path) -> Dict[str, Any]:
 
 def discover_channels() -> List:
     """扫描 channels/ 下所有子目录，实例化已启用的频道。"""
-    from agent.channel.channel import BaseChannel
+    from agent.channel.base import BaseChannel
 
     channel_dir = Path(__file__).parent
     loaded: list = []
@@ -75,10 +75,9 @@ def discover_channels() -> List:
             skipped.append(item.name)
             continue
 
-        # 实例化并加载配置
+        # 实例化（配置在 __init__ 中自动加载）
         try:
             instance = channel_cls()
-            instance.load_channel_config(str(item))
             instance._deferred_start = cfg.get("deferred_start", False)
             loaded.append(instance)
         except Exception as e:

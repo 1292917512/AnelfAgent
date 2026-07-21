@@ -68,21 +68,9 @@ export function RemoteModelPicker({
         await onAdd({
           id: shortName,
           model: modelId,
-          model_types: ["chat"],
-          temperature: 0.7,
-          top_p: 1.0,
           context_window: contextWindow,
-          frequency_penalty: 0,
-          presence_penalty: 0,
           supports_tools: supportsTools,
           supports_vision: supportsVision,
-          supports_forced_tool_choice: true,
-          vision_format: "base64",
-          supports_reasoning: false,
-          timeout: 120.0,
-          chat_protocol: "chat_completions",
-          request_params: {},
-          extra_body: {},
         });
       }
       setSelected(new Set());

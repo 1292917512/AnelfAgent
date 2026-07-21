@@ -1,7 +1,8 @@
 {
   "tabs": {
     "channels": "通道管理",
-    "nonebot": "NoneBot Bridge"
+    "nonebot": "NoneBot Bridge",
+    "approvals": "批准管理"
   },
   "savedOk": "已保存",
   "saveConfig": "保存配置",

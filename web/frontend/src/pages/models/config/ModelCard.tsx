@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import { Button, Input, Select, Textarea } from "@/components/ui";
 import { MODEL_TYPE_OPTIONS, ModelBadges, type JsonField } from "./shared";
 
-const EDITABLE_FIELDS = ["model", "temperature", "top_p", "context_window", "frequency_penalty", "presence_penalty", "timeout"] as const;
+const EDITABLE_FIELDS = ["model", "temperature", "context_window", "timeout"] as const;
 
 /** 单个模型卡片：头部徽标 + 展开编辑器 */
 export function ModelCard({
@@ -86,7 +86,8 @@ export function ModelCard({
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {EDITABLE_FIELDS.map((k) => (
               <div key={k} className="space-y-1">
-                <label className="text-xs font-medium text-muted">{k}</label>
+                <label className="text-xs font-medium text-muted"
+                  title={k === "temperature" ? t("modelFields.temperatureHint") : undefined}>{k}</label>
                 <Input
                   type={k === "model" ? "text" : "number"}
                   step={k === "context_window" ? 1 : "any"}
@@ -94,7 +95,10 @@ export function ModelCard({
                   readOnly={!editing}
                   onChange={(e) => {
                     if (!editing) return;
-                    const value = k === "model" ? e.target.value : Number(e.target.value);
+                    // temperature 留空 = 清除配置，恢复由模型默认决定
+                    const value = k === "model" ? e.target.value
+                      : k === "temperature" && e.target.value === "" ? null
+                      : Number(e.target.value);
                     onEditChange({ [k]: value });
                   }}
                 />

@@ -131,8 +131,8 @@ class LLMManager(BaseEntity):
                         api_key=prov.api_key,
                         model=mdata.get("model", ""),
                         api_type=prov.api_type,
-                        temperature=mdata.get("temperature", 0.7),
-                        top_p=mdata.get("top_p", 1.0),
+                        temperature=mdata.get("temperature"),
+                        top_p=mdata.get("top_p"),
                         max_tokens=mdata.get("max_tokens"),
                         frequency_penalty=mdata.get("frequency_penalty", 0.0),
                         presence_penalty=mdata.get("presence_penalty", 0.0),
@@ -425,7 +425,9 @@ class LLMManager(BaseEntity):
         )]
         deadline = asyncio.get_running_loop().time() + timeout
         last_exc: Optional[Exception] = None
-        for index, candidate in enumerate(candidates):
+        index = 0
+        while index < len(candidates):
+            candidate = candidates[index]
             if index:
                 info(
                     f"尝试回退: {candidate.config.name} ({candidate.config.model})",
@@ -455,6 +457,21 @@ class LLMManager(BaseEntity):
                 )
                 if asyncio.get_running_loop().time() >= deadline:
                     break
+                # 上下文超限：窗口不大于当前失败者的候选必然同样溢出，
+                # 跳过它们直达更大窗口候选（无则快速失败，交由调用方压缩重试）
+                from agent.llm.resilience import next_fallback_index
+                nxt = next_fallback_index(exc, candidate, candidates, index + 1)
+                if nxt is None:
+                    break
+                if nxt > index + 1:
+                    skipped = [c.config.name for c in candidates[index + 1:nxt]]
+                    info(
+                        f"跳过窗口不更大的候选: {', '.join(skipped)}",
+                        tag="模型",
+                    )
+                index = nxt
+                continue
+            index += 1
 
         if last_exc is not None:
             raise last_exc
@@ -478,7 +495,7 @@ class LLMManager(BaseEntity):
         - 限流错误使用更长基础退避 + 抖动
         - 其余瞬态错误使用标准指数退避 + 抖动
         """
-        from agent.llm.error_classifier import ErrorCategory, classify_llm_error
+        from agent.llm.resilience import ErrorCategory, classify_llm_error
         from agent.llm.retry import jittered_backoff
 
         name = client.config.name
@@ -536,10 +553,15 @@ class LLMManager(BaseEntity):
 
     @staticmethod
     def _safe_error(exc: Exception, client: LLMClient) -> str:
+        """错误消息脱敏：精确替换当前 key（覆盖任意格式的 key 泄漏），
+        再走统一脱敏管线兜底（错误体中可能夹带其他凭证/URL 内联凭证）。"""
         message = str(exc)
         api_key = client.config.api_key
         if api_key:
             message = message.replace(api_key, "****")
+        from core.sanitizer import is_sanitize_enabled, sanitize_text
+        if is_sanitize_enabled():
+            message = sanitize_text(message)
         return message
 
     def get_models_summary(self) -> str:

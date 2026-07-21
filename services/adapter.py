@@ -124,7 +124,7 @@ class AdapterService:
             log(f"频道模块加载失败: {key} - {exc}", "ERROR")
             return
 
-        from agent.channel.channel import BaseChannel
+        from agent.channel.base import BaseChannel
         channel_cls = getattr(mod, "CHANNEL_CLASS", None)
         if channel_cls is None:
             for attr_name in dir(mod):

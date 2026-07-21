@@ -1,7 +1,8 @@
 {
   "tabs": {
     "channels": "Channel Management",
-    "nonebot": "NoneBot Bridge"
+    "nonebot": "NoneBot Bridge",
+    "approvals": "Approvals"
   },
   "savedOk": "Saved",
   "saveConfig": "Save Config",

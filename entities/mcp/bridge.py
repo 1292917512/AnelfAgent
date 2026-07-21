@@ -707,13 +707,32 @@ class MCPBridge:
         ))
 
         tools_result = await session.list_tools()
-        tool_names = self._register_tool_entries(srv.name, list(tools_result.tools))
+        mcp_tools = list(tools_result.tools)
+        tool_names = self._register_tool_entries(srv.name, mcp_tools)
+
+        # 分组目录描述：让 AI 在工具分组目录中识别该服务的用途
+        EntityRegistry.register_group(
+            f"mcp:{srv.name}",
+            self._build_group_description(srv.name, mcp_tools),
+        )
 
         mcp_entity = EntityRegistry.get(f"mcp:{srv.name}")
         if mcp_entity:
             mcp_entity.meta["tools"] = tool_names
 
         return len(tool_names)
+
+    @staticmethod
+    def _build_group_description(server_name: str, tools: List[Any]) -> str:
+        """生成 mcp:<server> 分组目录描述（工具名 + 一句话用途）。"""
+        briefs: List[str] = []
+        for t in tools[:8]:
+            t_name = getattr(t, "name", "") or ""
+            t_desc = (getattr(t, "description", "") or "").strip().split("\n")[0][:40]
+            briefs.append(f"{t_name}({t_desc})" if t_desc else t_name)
+        suffix = "…" if len(tools) > 8 else ""
+        desc = f"MCP 服务 {server_name}，工具: {', '.join(briefs)}{suffix}"
+        return desc[:300]
 
     def _register_tool_entries(self, server_name: str, tools: List[Any]) -> List[str]:
         """将 server 的工具批量注册到 EntityRegistry，返回注册名列表。
@@ -1055,13 +1074,15 @@ def _coerce_bool_arg(value: Any, default: bool) -> bool:
 
 
 def _coerce_positive_float_arg(value: Any, field_name: str) -> Optional[float]:
-    """解析可选正数参数；空值返回 None。"""
+    """解析可选正数参数；空值或 0 视为未提供（返回 None）。"""
     if value is None:
         return None
     if isinstance(value, str) and not value.strip():
         return None
     num = float(value)
-    if num <= 0:
+    if num == 0:
+        return None
+    if num < 0:
         raise ValueError(f"{field_name} 必须 > 0")
     return num
 

@@ -24,8 +24,29 @@ def main():
         from agent.runtime.bootstrap import create_bootstrap
         await create_bootstrap().execute()
 
+        # 初始化批准机制：加载策略配置 + 启动热更新监听
+        import os
+        from agent.approval import get_approval_gate
+        from agent.channel.config_watcher import get_config_watcher
+        gate = get_approval_gate()
+        policies_path = "config/approval_policies.json"
+        if os.path.exists(policies_path):
+            gate.reload_policies(policies_path)
+            log(f"批准策略已加载: {policies_path}", tag="批准")
+            # 启动批准策略热更新监听
+            watcher = get_config_watcher()
+            watcher.watch(policies_path, lambda: gate.reload_policies(policies_path))
+            log(f"批准策略热更新监听已启动: {policies_path}", tag="批准")
+        else:
+            log(f"批准策略文件不存在，使用默认策略: {policies_path}", "WARNING", tag="批准")
+
         from agent.channel import get_channel_manager
         await get_channel_manager().start_all()
+
+        # 频道看门狗：ERROR 频道自动退避重启（先启动，覆盖整个运行期）
+        from agent.channel.supervision import is_supervisor_enabled, start_channel_supervisor
+        if is_supervisor_enabled():
+            start_channel_supervisor(get_channel_manager())
 
         web_task: asyncio.Task[None] | None = None
         if not args.no_webui:
@@ -79,6 +100,12 @@ def main():
             if bridge:
                 bridge.shutdown()
         except (OSError, RuntimeError):
+            pass
+        try:
+            # 先停看门狗，防止关停过程中误判 ERROR 触发重启
+            from agent.channel.supervision import stop_channel_supervisor
+            await stop_channel_supervisor()
+        except Exception:
             pass
         try:
             await get_channel_manager().stop_all()

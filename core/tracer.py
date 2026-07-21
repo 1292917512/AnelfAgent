@@ -134,7 +134,6 @@ class TraceSession:
         }
 
 
-# 向后兼容别名
 ThinkingSession = TraceSession
 
 
@@ -968,7 +967,6 @@ class Tracer:
         ))
 
 
-# 向后兼容别名
 ThinkingTracer = Tracer
 
 # 全局单例（保持变量名不变，避免影响现有 router）

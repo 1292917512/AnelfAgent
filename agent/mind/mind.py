@@ -55,8 +55,16 @@ from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_store import MemoryStore
 from agent.memory.notes import build_notes_system_message
 from agent.mind.prefrontal_cortex import PrefrontalCortex
+from agent.mind.interrupt import (
+    InterruptRegistry,
+    is_interrupt_enabled,
+    match_interrupt_keyword,
+)
+from agent.mind.background_tasks import BackgroundTaskRegistry
 from agent.mind import tool_activation as _tool_activation  # noqa: F401  # 注册 activate_tool_group 延迟工具
 from agent.mind.context_compressor import ContextCompressor, register_compressor
+from agent.mind.message_schema import normalize_for_send, normalize_roles
+from agent.mind import context_audit
 from agent.mind.tools.media_pipeline import MediaPipeline
 from agent.mind.cross_channel import (
     ChannelSnapshot,
@@ -119,6 +127,15 @@ def _end_reply_tool(reason: str = "") -> str:
     return json.dumps({"ok": True, "action": "end_reply"}, ensure_ascii=False)
 
 
+def _normalize_message_roles(messages: List[Dict]) -> List[Dict]:
+    """发送边界角色归一（已收拢至 message_schema.normalize_roles，此处保留兼容别名）。
+
+    头部连续 system 块（提示词分层）保持 system 供 Anthropic 前缀缓存复用；
+    中途的 system 注入（纠正提示/执行反馈/执行上下文）转为 user 保留位置语义。
+    """
+    return normalize_roles(messages)
+
+
 class Mind:
     """统一思维核心：自主决策、LLM 对话、工具编排。"""
 
@@ -177,6 +194,12 @@ class Mind:
 
         self._channel_snapshots: dict[str, ChannelSnapshot] = {}
 
+        # scope 级中断信号（think_loop 每轮检查，用户可刹车失控回复）
+        self.interrupts = InterruptRegistry()
+
+        # scope 级后台任务注册表（等待意图挂起 / 完成通知新轮次的统一原语）
+        self.background_tasks = BackgroundTaskRegistry()
+
         # 当前模型上下文窗口缓存（tokens，0 = 未知）
         self._cached_context_length: int = 0
 
@@ -216,12 +239,14 @@ class Mind:
     def _resolve_adapter_key(self) -> str:
         """获取当前回复的 adapter_key。"""
         if self._reply_adapter_key:
-            return self._reply_adapter_key
-        tasks = self.pfc.peek_all_tasks()
-        if tasks:
-            scope = tasks[0][0]
-            return self.pfc.get_adapter_key(scope)
-        return ""
+            key = self._reply_adapter_key
+        else:
+            tasks = self.pfc.peek_all_tasks()
+            key = self.pfc.get_adapter_key(tasks[0][0]) if tasks else ""
+        if key:
+            from agent.channel.context import bind_current_channel
+            bind_current_channel(key)
+        return key
 
     @property
     def tool_executor(self) -> Optional[Callable[[ToolCall], Awaitable[str]]]:
@@ -274,6 +299,19 @@ class Mind:
         preview = str(anything)[:80] if anything else ""
         log(f"感知输入: {preview}", tag="思维")
         await self.add_conversation(anything)
+
+        # 中断指令优先：整条消息精确匹配中断关键词且该 scope 正在回复时，
+        # 请求中断进行中的会话，而非作为新消息入队（用户意图是"刹车"而非对话）
+        scope = anything.entity_scope
+        if (
+            is_interrupt_enabled()
+            and scope in self._active_scopes
+            and match_interrupt_keyword(anything.get_text_content() or "")
+        ):
+            self.interrupts.request(scope, reason="用户发送中断指令")
+            log(f"识别到中断指令，已请求中断: {scope}", tag="中断")
+            return
+
         should_enqueue = self.should_enqueue_external_message(anything)
         if (
             not should_enqueue
@@ -298,6 +336,17 @@ class Mind:
     @property
     def is_reflecting(self) -> bool:
         return self._reflecting
+
+    def interrupt(self, scope: str, reason: str = "") -> bool:
+        """请求中断指定 scope 的进行中会话（协作式，下一轮检查点生效）。
+
+        Returns:
+            是否成功登记（该 scope 无进行中会话时返回 False）。
+        """
+        if scope not in self._active_scopes:
+            return False
+        self.interrupts.request(scope, reason=reason or "外部请求")
+        return True
 
     def should_enqueue_external_message(self, anything: Everything) -> bool:
         """判断外部消息是否应进入待回复队列。"""
@@ -719,6 +768,10 @@ class Mind:
             options: Optional[Dict] = None,
     ) -> ChatResult:
         """统一 LLM 调用（带重试、模型回退和事件追踪）。"""
+        # 发送边界统一规整（message_schema.normalize_for_send）：
+        # 角色归一（头部提示词分层保持 system 供 Anthropic 前缀缓存，中途注入
+        # 转 user 保留位置语义）+ 尾部 assistant prefill 修复
+        messages = normalize_for_send(messages)
         model_name = self.llm.config.model if isinstance(self.llm, LLMClient) else "unknown"
         log(f"调用 LLM: {model_name} msgs={len(messages)}", tag="思维")
         tool_names = [t.get("function", {}).get("name", "") for t in (tools or [])]
@@ -729,8 +782,21 @@ class Mind:
             "tool_names": tool_names[:20],
         })
         t0 = time.time()
-        result = await self._llm_chat_with_retry(messages, tools, tool_choice=tool_choice, options=options)
+        try:
+            result = await self._llm_chat_with_retry(messages, tools, tool_choice=tool_choice, options=options)
+        except Exception as exc:
+            # 请求级审计：异常交换同样落盘（未开启时零开销）
+            await context_audit.record_exchange(
+                model=model_name, messages=messages, tools=tools,
+                error=exc, duration_ms=(time.time() - t0) * 1000,
+            )
+            raise
         elapsed_ms = (time.time() - t0) * 1000
+        # 请求级审计：规整后最终发送的 messages + 完整响应（未开启时零开销）
+        await context_audit.record_exchange(
+            model=result.model or model_name, messages=messages, tools=tools,
+            result=result, duration_ms=elapsed_ms,
+        )
         mc = self._get_mind_config()
         if mc.log_ai_output:
             if result.reasoning_content:
@@ -1055,12 +1121,13 @@ class Mind:
         persona_parts = [
             msg["content"] for msg in self.char.get_personality_msg() if msg.get("content")
         ]
+        direct_vision = self._direct_vision()
         stable_hash = prompt_cache_manager.compute_hash(
-            *persona_parts, self.pfc.stable_fingerprint(models_summary),
+            *persona_parts, self.pfc.stable_fingerprint(models_summary, direct_vision),
         )
         stable_text, stable_hit = prompt_cache_manager.get_or_build(
             scope, LAYER_STABLE, stable_hash,
-            lambda: self.pfc.build_stable_layer(persona_parts, models_summary),
+            lambda: self.pfc.build_stable_layer(persona_parts, models_summary, direct_vision),
         )
 
         notes_parts = [
@@ -1090,6 +1157,11 @@ class Mind:
         model = (llm_client.config.litellm_model or "").lower()
         api_type = (getattr(llm_client.config, "api_type", "") or "").lower()
         return "anthropic" in model or "claude" in model or api_type == "anthropic"
+
+    def _direct_vision(self) -> bool:
+        """当前主模型是否支持视觉（决定图片直传与媒体规则文案）。"""
+        llm_client = self.llm if isinstance(self.llm, LLMClient) else None
+        return bool(llm_client and llm_client.config.supports_vision)
 
     async def get_conversation(self, anything: Everything) -> List[Dict]:
         """从 DB 获取指定对象的对话历史。"""

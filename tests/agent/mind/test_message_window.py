@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.llm.types import ToolCall
+from agent.llm.types import ImageContent, ToolCall
 from agent.messages import MessageUser
 from agent.mind.tools.think_loop import ThinkMode, think_loop
 from agent.storage.data_center import ConversationData
@@ -350,7 +350,7 @@ class TestThinkLoopMerge:
         )
 
         mind = _MergeMind(conv_data)
-        mind.pfc.pending_images = [SimpleNamespace(data="/tmp/x.jpg")]
+        mind.pfc.pending_images = [ImageContent(data="/tmp/x.jpg")]
         await think_loop(
             mind,
             mode=ThinkMode.REPLY,

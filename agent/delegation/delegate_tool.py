@@ -50,7 +50,8 @@ async def delegate_task(
         context: 背景上下文（子代理只能看到 goal+context，看不到主对话）
         tasks: 并行任务数组的 JSON 字符串，如 [{"goal":"...","context":"..."}, ...]（提供时忽略 goal）
         role: 子代理角色：leaf（默认，不可再委托）/ orchestrator（可再委托，有深度限制）
-        background: 是否后台执行（立即返回 delegation_id，结果稍后推送）
+        background: 是否后台执行（立即返回 delegation_id；完成时系统自动通知并触发新一轮回复，
+            期间可用 check_background_tasks 查询进度）
         max_iterations: 子代理迭代预算（轮次），默认 15
     """
     if not _delegation_enabled():
@@ -92,17 +93,39 @@ async def delegate_task(
         return json.dumps({"error": "必须提供 goal 或 tasks 参数"}, ensure_ascii=False)
 
     if background:
+        from agent.mind.tool_activation import ToolActivationManager
         delegation_id = _manager.delegate_background(
             goal, context, role=role, max_iterations=max_iterations,
+            scope=ToolActivationManager.current_scope(),
         )
         return json.dumps({
             "ok": True,
             "mode": "background",
             "delegation_id": delegation_id,
-            "message": "子代理已在后台执行，结果将在完成后自动推送。",
+            "message": "子代理已在后台执行，完成后系统会自动通知你（可用 check_background_tasks 查询进度）。",
         }, ensure_ascii=False)
 
     result = await _manager.delegate(
         goal, context, role=role, max_iterations=max_iterations,
     )
     return _manager.aggregate_results([result])
+
+
+@deferred_tool(
+    name="check_background_tasks",
+    group="delegation", tags=["always"], source="mind.delegation",
+    description="查看当前会话后台任务（子代理委托等）的运行状态与已完成结果。"
+    "启动后台任务后用它查询进度，禁止凭空猜测任务状态。",
+)
+async def check_background_tasks() -> str:
+    """查看当前会话的后台任务状态（运行中 + 已完成）。"""
+    if _manager is None:
+        return json.dumps({"error": "委托管理器未初始化"}, ensure_ascii=False)
+    from agent.mind.tool_activation import ToolActivationManager
+    snapshot = _manager.background_tasks_snapshot(ToolActivationManager.current_scope())
+    snapshot["hint"] = (
+        "有运行中任务时：可稍后用本工具再查，或 end_reply 结束本轮——"
+        "任务完成时系统会自动通知你并触发新一轮回复。"
+        if snapshot["running"] else "当前没有运行中的后台任务。"
+    )
+    return json.dumps(snapshot, ensure_ascii=False)

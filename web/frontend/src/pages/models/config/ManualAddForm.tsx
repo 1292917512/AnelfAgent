@@ -28,21 +28,11 @@ export function ManualAddForm({
       await onSubmit({
         id: modelId,
         model: form.model.trim() || modelId,
-        model_types: ["chat"],
-        temperature: 0.7,
-        top_p: 1.0,
         context_window: form.context_window,
-        frequency_penalty: 0,
-        presence_penalty: 0,
         supports_tools: form.supports_tools,
         supports_vision: form.supports_vision,
         supports_forced_tool_choice: form.supports_forced_tool_choice,
-        vision_format: "base64",
         supports_reasoning: form.supports_reasoning,
-        timeout: 120.0,
-        chat_protocol: "chat_completions",
-        request_params: {},
-        extra_body: {},
       });
     } catch (err) {
       const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;

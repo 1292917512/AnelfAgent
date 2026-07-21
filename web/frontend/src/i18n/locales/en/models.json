@@ -74,7 +74,8 @@
     "extra_body": "Extra Request Body",
     "extra_bodyHint": "Additional JSON fields sent to the provider",
     "chat_protocol": "Chat Protocol",
-    "chat_protocolHint": "Mind still uses Chat Completions by default; responses bridges internally"
+    "chat_protocolHint": "Mind still uses Chat Completions by default; responses bridges internally",
+    "temperatureHint": "Leave empty = not sent, model default applies"
   },
   "chatProtocol": {
     "chat_completions": "Chat Completions",

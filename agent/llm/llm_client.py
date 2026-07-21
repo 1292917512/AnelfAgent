@@ -30,7 +30,7 @@ from agent.llm.types import (
     ChatResult, ChatStreamDelta, ImageContent, TextCompletionResult, ToolCall, UsageInfo,
 )
 from core.entity import BaseEntity, EntityType
-from core.log import debug, info
+from core.log import debug, info, log
 
 litellm.suppress_debug_info = True
 litellm.drop_params = True
@@ -87,6 +87,8 @@ class _ProxyHttpClient(httpx.AsyncClient):
 
 _DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1"
 _DEFAULT_API_KEY = ""
+# 全局默认请求超时（秒）；模型配置仅在需要非默认值时才显式指定
+DEFAULT_TIMEOUT = 120.0
 
 API_TYPE_OPENAI = "openai"
 API_TYPE_ANTHROPIC = "anthropic"
@@ -158,6 +160,36 @@ class LLMNotConfiguredError(RuntimeError):
     """未配置可调用模型时抛出的明确异常。"""
 
 
+def _clean_message_surrogates(msg: dict) -> dict:
+    """清洗消息中的孤代理字符（仅文本部分；图片等多模态部件不动）。
+
+    零拷贝：未检出孤代理时原样返回原 dict 引用；
+    检出时浅拷贝消息与 content 列表，绝不污染调用方的对话历史。
+    """
+    from core.sanitizer import clean_surrogates, has_surrogates
+
+    content = msg.get("content")
+    if isinstance(content, str):
+        if has_surrogates(content):
+            return {**msg, "content": clean_surrogates(content)}
+        return msg
+    if isinstance(content, list):
+        dirty_idx = [
+            i for i, part in enumerate(content)
+            if isinstance(part, dict)
+            and isinstance(part.get("text"), str)
+            and has_surrogates(part["text"])
+        ]
+        if not dirty_idx:
+            return msg
+        new_content = list(content)
+        for i in dirty_idx:
+            part = new_content[i]
+            new_content[i] = {**part, "text": clean_surrogates(part["text"])}
+        return {**msg, "content": new_content}
+    return msg
+
+
 class ModelType(str, Enum):
     """模型能力类型。一个客户端可拥有多个类型。"""
 
@@ -181,14 +213,15 @@ class LLMClientConfig:
     api_key: str = _DEFAULT_API_KEY
     model: str = ""
     api_type: str = API_TYPE_OPENAI
-    temperature: float = 0.7
-    top_p: float = 1.0
+    # None 表示不下发，由 provider/SDK 按模型默认决定（参考 hermes/nekro/openclaw）
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
     # 输出预算上限；None 表示不主动限制，由 provider/SDK 按模型默认决定
     # （Anthropic 协议强制要求该参数，未配置时按模型能力自动推断）。
     max_tokens: Optional[int] = None
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
-    timeout: float = 120.0
+    timeout: float = DEFAULT_TIMEOUT
     proxy_url: str = ""
     supports_vision: bool = False
     supports_tools: bool = True
@@ -202,7 +235,6 @@ class LLMClientConfig:
     context_window: int = 0
     request_params: Dict[str, Any] = field(default_factory=dict)
     extra_body: Dict[str, Any] = field(default_factory=dict)
-    # 兼容旧配置：历史 extra_params 按 extra_body 处理。
     extra_params: Dict[str, Any] = field(default_factory=dict)
     chat_protocol: str = ChatProtocol.CHAT_COMPLETIONS.value
     # 图片生成协议适配器名（见 agent.llm.image_adapters），空表示按 host 自动匹配。
@@ -216,9 +248,9 @@ class LLMClientConfig:
             for item in self.model_types
         ):
             raise ValueError(f"无效的 model_types: {self.model_types!r}")
-        if not 0 <= self.temperature <= 2:
+        if self.temperature is not None and not 0 <= self.temperature <= 2:
             raise ValueError("temperature 必须在 0~2 之间")
-        if not 0 <= self.top_p <= 1:
+        if self.top_p is not None and not 0 <= self.top_p <= 1:
             raise ValueError("top_p 必须在 0~1 之间")
         if self.max_tokens is not None and self.max_tokens < 0:
             raise ValueError("max_tokens 不能小于 0")
@@ -329,11 +361,6 @@ class LLMClientConfig:
             "supports_tools": self.supports_tools,
             "supports_forced_tool_choice": self.supports_forced_tool_choice,
             "vision_format": self.vision_format,
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "frequency_penalty": self.frequency_penalty,
-            "presence_penalty": self.presence_penalty,
-            "timeout": self.timeout,
             "supports_reasoning": self.supports_reasoning,
             "context_window": self.context_window,
             "request_params": self.request_params,
@@ -341,9 +368,19 @@ class LLMClientConfig:
             "chat_protocol": self.chat_protocol,
             "media_protocol": self.media_protocol,
         }
-        # 输出预算为可选覆盖项：仅在显式配置时写入，避免配置文件冗余
+        # 采样/超时参数为可选覆盖项：仅在显式配置（非默认）时写入，避免配置文件冗余
+        if self.temperature is not None:
+            d["temperature"] = self.temperature
+        if self.top_p is not None:
+            d["top_p"] = self.top_p
         if self.max_tokens is not None:
             d["max_tokens"] = self.max_tokens
+        if self.frequency_penalty:
+            d["frequency_penalty"] = self.frequency_penalty
+        if self.presence_penalty:
+            d["presence_penalty"] = self.presence_penalty
+        if self.timeout != DEFAULT_TIMEOUT:
+            d["timeout"] = self.timeout
         if self.extra_params:
             d["extra_params"] = self.extra_params
         return d
@@ -381,6 +418,8 @@ class LLMClient(BaseEntity):
             "AI Services", "LLM", f"model:{self.config.model}",
         ]
         self._proxy_client: Optional[_ProxyHttpClient] = None
+        # 从端点 400 报错中学习到的 max_tokens 实际上限（本次运行内有效）
+        self._learned_output_cap: Optional[int] = None
         super().__init__()
         proxy = self.config.effective_proxy
         info(
@@ -405,8 +444,10 @@ class LLMClient(BaseEntity):
         Anthropic 不允许 temperature 和 top_p 同时存在，只传 temperature。
         其余不支持的参数由 litellm.drop_params=True 自动处理。
         """
-        params: Dict[str, Any] = {"temperature": self.config.temperature}
-        if self.config.api_type != API_TYPE_ANTHROPIC:
+        params: Dict[str, Any] = {}
+        if self.config.temperature is not None:
+            params["temperature"] = self.config.temperature
+        if self.config.top_p is not None and self.config.api_type != API_TYPE_ANTHROPIC:
             params["top_p"] = self.config.top_p
         if self.config.max_tokens and self.config.max_tokens > 0:
             params["max_tokens"] = self.config.max_tokens
@@ -430,15 +471,27 @@ class LLMClient(BaseEntity):
         proxy = self.config.effective_proxy
         return _ProxyEnvContext(proxy) if proxy else None
 
-    # Anthropic 自定义/未知模型查不到输出上限时的兜底预算（保守值，避免超出端点限制）
-    _ANTHROPIC_FALLBACK_MAX_TOKENS = 16384
+    # 已知 Anthropic 兼容端点模型家族的输出上限（模型名小写子串匹配）。
+    # 参考 hermes-agent anthropic_adapter 的内置表；端点实际限制更小时，
+    # 由 _start_completion 的报错自适应钳制兜底，无需手动维护完整表。
+    _ANTHROPIC_OUTPUT_LIMITS = {
+        "minimax": 131072,
+        "qwen": 65536,
+    }
+    # 未知模型的默认输出预算：激进取值（新模型输出能力通常只增不减），
+    # 超出端点限制时会从报错中解析真实上限并缓存，后续请求自动钳制。
+    _ANTHROPIC_DEFAULT_MAX_TOKENS = 65536
 
     def _infer_anthropic_max_tokens(self) -> int:
-        """推断 Anthropic 输出预算：仅信 litellm 模型信息中的 max_output_tokens。
+        """推断 Anthropic 输出预算。
 
-        不能用 max_tokens 键——它是上下文窗口（自定义模型注册时即按 context_window
-        写入），当作输出预算会超出端点限制导致 400。查不到时回落保守兜底值。
+        优先级：端点报错学习到的实际上限 > litellm 模型信息 max_output_tokens
+        > 模型名前缀表 > 激进默认值。不能用 litellm 的 max_tokens 键——
+        它是上下文窗口（自定义模型注册时即按 context_window 写入），
+        当作输出预算会超出端点限制导致 400。
         """
+        if self._learned_output_cap:
+            return self._learned_output_cap
         try:
             info = self.get_model_info(self.config.litellm_model)
             cap = info.get("max_output_tokens")
@@ -446,14 +499,64 @@ class LLMClient(BaseEntity):
                 return int(cap)
         except Exception:
             pass
+        name = self.config.model.lower()
+        for key, cap in self._ANTHROPIC_OUTPUT_LIMITS.items():
+            if key in name:
+                return cap
         if not getattr(self, "_fallback_budget_logged", False):
             self._fallback_budget_logged = True
             debug(
                 f"LLMClient [{self.config.name}] 未配置 max_tokens 且查不到模型输出上限，"
-                f"使用兜底值 {self._ANTHROPIC_FALLBACK_MAX_TOKENS}（可在模型配置中显式指定）",
+                f"使用默认值 {self._ANTHROPIC_DEFAULT_MAX_TOKENS}"
+                "（超限时会按端点报错自动钳制，也可在模型配置中显式指定）",
                 tag="模型",
             )
-        return self._ANTHROPIC_FALLBACK_MAX_TOKENS
+        return self._ANTHROPIC_DEFAULT_MAX_TOKENS
+
+    # 端点报错中输出上限的两种常见表述：
+    #   "Range of max_tokens should be [1, 131072]"      (阿里云/千问系)
+    #   "does not support max tokens > 524288"           (MiniMax 系)
+    _MAX_TOKENS_RANGE_RE = re.compile(r"\[\s*1\s*,\s*(\d+)\s*\]")
+    _MAX_TOKENS_GT_RE = re.compile(r"max(?:imum)?[ _]tokens?\s*>\s*(\d+)", re.IGNORECASE)
+
+    @classmethod
+    def _parse_output_cap_from_error(cls, exc: Exception) -> Optional[int]:
+        """从 400 报错文本中解析端点的 max_tokens 上限，解析不到返回 None。"""
+        if getattr(exc, "status_code", None) != 400 and not isinstance(
+            exc, litellm.BadRequestError
+        ):
+            return None
+        message = str(exc)
+        if "max_tokens" not in message and "max tokens" not in message.lower():
+            return None
+        m = cls._MAX_TOKENS_RANGE_RE.search(message) or cls._MAX_TOKENS_GT_RE.search(message)
+        if not m:
+            return None
+        cap = int(m.group(1))
+        return cap if cap > 0 else None
+
+    async def _start_completion(self, kwargs: Dict[str, Any]) -> Any:
+        """发起 litellm.acompletion：max_tokens 超限报错时解析端点上限，钳制后重试一次。
+
+        解析到的上限缓存到 _learned_output_cap，同模型后续请求直接钳制，
+        实现新模型零配置自适应（参考 hermes-agent conversation_loop 的
+        available_tokens 报错解析重试）。
+        """
+        try:
+            return await litellm.acompletion(**kwargs)
+        except Exception as exc:
+            new_cap = self._parse_output_cap_from_error(exc)
+            current = kwargs.get("max_tokens")
+            if new_cap is None or not current or current <= new_cap:
+                raise
+            self._learned_output_cap = new_cap
+            kwargs["max_tokens"] = new_cap
+            info(
+                f"LLMClient [{self.config.name}] 端点限制 max_tokens ≤ {new_cap}"
+                f"（原请求 {current}），已钳制并重试，本次运行内缓存",
+                tag="模型",
+            )
+            return await litellm.acompletion(**kwargs)
 
     def _get_proxy_client(self) -> Optional[_ProxyHttpClient]:
         """按需返回当前 Provider 的代理客户端（懒初始化）。"""
@@ -489,6 +592,9 @@ class LLMClient(BaseEntity):
             "timeout": self.config.timeout,
             **params,
         }
+        # 已学习到的端点输出上限：钳制一切来源（配置/会话覆盖）的 max_tokens
+        if self._learned_output_cap and kwargs.get("max_tokens"):
+            kwargs["max_tokens"] = min(kwargs["max_tokens"], self._learned_output_cap)
         if self.config.base_url:
             kwargs["api_base"] = self.config.base_url
         if self.config.api_key:
@@ -540,14 +646,24 @@ class LLMClient(BaseEntity):
         强制值包括字符串 required 与指定工具的 object 形式
         （OpenAI {"type": "function"} / Anthropic {"type": "any"|"tool"}）。
         auto / none 与 thinking 模式兼容，原样保留。
+        降级会记录 WARNING（每客户端首次）：强制约束静默失效是内心独白
+        类问题的重要排查线索，不应无迹可寻。
         """
         if self.config.supports_forced_tool_choice:
             return tool_choice
+        resolved = tool_choice
         if isinstance(tool_choice, str):
-            return tool_choice if tool_choice in ("auto", "none") else "auto"
-        if isinstance(tool_choice, dict):
-            return tool_choice if tool_choice.get("type") in ("auto", "none") else "auto"
-        return tool_choice
+            resolved = tool_choice if tool_choice in ("auto", "none") else "auto"
+        elif isinstance(tool_choice, dict):
+            resolved = tool_choice if tool_choice.get("type") in ("auto", "none") else "auto"
+        if resolved != tool_choice and not getattr(self, "_tool_choice_downgrade_warned", False):
+            self._tool_choice_downgrade_warned = True
+            log(
+                f"端点不支持强制工具选择，tool_choice 已降级为 auto "
+                f"(请求值: {tool_choice!r}, model={self.config.model})",
+                "WARNING", tag="LLM",
+            )
+        return resolved
 
     def _merge_request_params(
         self,
@@ -569,7 +685,11 @@ class LLMClient(BaseEntity):
             return False
 
     def _adapt_messages(self, messages: list[dict]) -> list[dict]:
-        """合并头部连续 system 消息为一条，非头部 system 转 user。"""
+        """合并头部连续 system 消息为一条，非头部 system 转 user。
+
+        出口清洗：字符串内容过孤代理清理（lone surrogate 会让部分
+        提供商直接 400，整轮作废）。仅在检出时浅拷贝，零污染原列表。
+        """
         head_systems: list[Any] = []
         rest_start = 0
         for i, msg in enumerate(messages):
@@ -602,7 +722,7 @@ class LLMClient(BaseEntity):
             else:
                 adapted.append(msg)
 
-        return adapted
+        return [_clean_message_surrogates(m) for m in adapted]
 
     # ------------------------------------------------------------------
     # ChatModel 协议：chat
@@ -749,9 +869,9 @@ class LLMClient(BaseEntity):
         if ctx:
             async with _ANTHROPIC_PROXY_LOCK:
                 with ctx:
-                    resp = await litellm.acompletion(**kwargs)
+                    resp = await self._start_completion(kwargs)
         else:
-            resp = await litellm.acompletion(**kwargs)
+            resp = await self._start_completion(kwargs)
         return self._parse_response(resp)
 
     # ------------------------------------------------------------------
@@ -784,12 +904,12 @@ class LLMClient(BaseEntity):
                 await _ANTHROPIC_PROXY_LOCK.acquire()
                 lock_acquired = True
                 with ctx:
-                    stream = await litellm.acompletion(**kwargs)
+                    stream = await self._start_completion(kwargs)
                     async for item in self._iter_stream(stream, reasoning_buf, tc_bufs):
                         reasoning_buf = item[1]
                         yield item[0]
             else:
-                stream = await litellm.acompletion(**kwargs)
+                stream = await self._start_completion(kwargs)
                 async for item in self._iter_stream(stream, reasoning_buf, tc_bufs):
                     reasoning_buf = item[1]
                     yield item[0]

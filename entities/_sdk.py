@@ -32,10 +32,14 @@
 
 from __future__ import annotations
 
-import inspect
 from typing import Any, Callable, List, Optional, TypeVar
 
-from core.entity import EntityRegistry, ToolParam
+from core.entity import EntityRegistry
+from core.tool_schema import extract_tool_params, get_first_line
+
+# 兼容别名：历史引用（含测试）使用私有名
+_extract_params = extract_tool_params
+_get_first_line = get_first_line
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -192,117 +196,3 @@ def get_model_type_enum() -> Any:
     from agent.llm.llm_manager import ModelType
     return ModelType
 
-
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
-
-def _get_first_line(docstring: str | None) -> str:
-    """提取 docstring 首行作为工具描述。"""
-    if not docstring:
-        return ""
-    for line in docstring.strip().split("\n"):
-        line = line.strip()
-        if line:
-            return line
-    return ""
-
-
-_PY_ANNOTATION_MAP = {
-    str: "string",
-    int: "integer",
-    float: "number",
-    bool: "boolean",
-    list: "array",
-    dict: "object",
-}
-
-# `from __future__ import annotations` 使注解懒加载为字符串，需额外映射
-_STR_ANNOTATION_MAP = {
-    "str": "string",
-    "int": "integer",
-    "float": "number",
-    "bool": "boolean",
-    "list": "array",
-    "dict": "object",
-    "List": "array",
-    "Dict": "object",
-    "Optional[str]": "string",
-    "Optional[int]": "integer",
-    "Optional[float]": "number",
-    "Optional[bool]": "boolean",
-}
-
-
-def _extract_params(func: Callable) -> List[ToolParam]:
-    """从函数签名和 docstring 提取参数列表（含描述）。
-
-    若函数设置了 ``_schema_extra`` 属性（dict[param_name, dict]），
-    对应参数的额外 JSON Schema 字段（如 items / minItems）会合并到 ToolParam。
-    """
-    sig = inspect.signature(func)
-    doc_params = _parse_docstring_args(func.__doc__ or "")
-    extras: dict[str, dict] = getattr(func, "_schema_extra", {})
-    params: List[ToolParam] = []
-    for p_name, p in sig.parameters.items():
-        if p_name in ("self", "cls"):
-            continue
-        # *args / **kwargs 是容错性捕获参数，不应出现在 LLM schema 中
-        if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
-            continue
-        annotation = p.annotation
-        if annotation == inspect.Parameter.empty:
-            json_type = "string"
-        elif isinstance(annotation, str):
-            json_type = _STR_ANNOTATION_MAP.get(annotation, "string")
-        else:
-            json_type = _PY_ANNOTATION_MAP.get(annotation, "string")
-        required = p.default is inspect.Parameter.empty
-        params.append(
-            ToolParam(
-                name=p_name,
-                description=doc_params.get(p_name, ""),
-                type=json_type,
-                required=required,
-                default=p.default,
-                schema_extra=extras.get(p_name),
-            )
-        )
-    return params
-
-
-def _parse_docstring_args(docstring: str) -> dict[str, str]:
-    """从 docstring 提取参数描述（支持 Google style / Sphinx style）。"""
-    result: dict[str, str] = {}
-    if not docstring:
-        return result
-
-    lines = docstring.split("\n")
-    in_args = False
-
-    for line in lines:
-        stripped = line.strip()
-
-        if stripped.lower() in ("args:", "arguments:", "parameters:"):
-            in_args = True
-            continue
-
-        if in_args and stripped and not stripped.startswith("-") and ":" not in stripped:
-            if not line.startswith((" ", "\t")):
-                in_args = False
-                continue
-
-        if in_args and ":" in stripped:
-            key, _, desc = stripped.partition(":")
-            key = key.strip().lstrip("-").strip()
-            if key and not key.startswith("*"):
-                result[key] = desc.strip()
-
-        if stripped.startswith(":param "):
-            rest = stripped[7:]
-            key, _, desc = rest.partition(":")
-            key = key.strip()
-            if key:
-                result[key] = desc.strip()
-
-    return result

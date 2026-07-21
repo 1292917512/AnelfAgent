@@ -40,15 +40,12 @@ class AgentRuntime:
         self.switch_llm(client)
         return True
 
-    # 向后兼容
     @property
     def respond(self):
-        """兼容旧代码访问 respond。"""
         return _RespondCompat(self.channel_manager, self.pipeline)
 
 
 class _RespondCompat:
-    """向后兼容层：让旧代码通过 runtime.respond 访问新系统。"""
 
     def __init__(self, cm: ChannelManager, pipeline: InputPipeline) -> None:
         self._cm = cm

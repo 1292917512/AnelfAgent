@@ -1,0 +1,56 @@
+{
+  "tabs": {
+    "pending": "Pending",
+    "history": "History",
+    "policies": "Policies",
+    "stats": "Statistics"
+  },
+  "loading": "Loading...",
+  "noPendingApprovals": "No pending approvals",
+  "noHistory": "No history",
+  "requestedBy": "Requested by",
+  "reason": "Reason",
+  "arguments": "Arguments",
+  "expiresIn": "Expires in",
+  "approve": "Approve",
+  "deny": "Deny",
+  "save": "Save",
+  "reset": "Reset",
+  "addPolicy": "Add Policy",
+  "policy": "Policy",
+  "toolNamePattern": "Tool Name Pattern",
+  "riskLevel": "Risk Level",
+  "requiresApproval": "Requires Approval",
+  "timeoutSeconds": "Timeout (seconds)",
+  "onTimeout": "On Timeout",
+  "trustAfterNApprovals": "Trust After N Approvals",
+  "trustAfterNApprovalsHint": "Auto-trust after N approvals (0 = always ask)",
+  "description": "Description",
+  "descriptionPlaceholder": "Policy description...",
+  "decidedBy": "Decided By",
+  "decisionReason": "Decision Reason",
+  "system": "System",
+  "risk": {
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "critical": "Critical"
+  },
+  "onTimeout": {
+    "deny": "Deny",
+    "allow": "Allow",
+    "halt": "Halt"
+  },
+  "decision": {
+    "approved": "Approved",
+    "denied": "Denied",
+    "expired": "Expired",
+    "cancelled": "Cancelled"
+  },
+  "stats": {
+    "pending": "Pending",
+    "totalDecisions": "Total Decisions",
+    "approvalRate": "Approval Rate",
+    "decisionBreakdown": "Decision Breakdown"
+  }
+}

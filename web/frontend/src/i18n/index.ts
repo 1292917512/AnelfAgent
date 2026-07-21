@@ -13,6 +13,7 @@ import zhPersonas from "./locales/zh/personas.json";
 import zhMemory from "./locales/zh/memory.json";
 import zhMcp from "./locales/zh/mcp.json";
 import zhChannels from "./locales/zh/channels.json";
+import zhApprovals from "./locales/zh/approvals.json";
 import zhThinking from "./locales/zh/thinking.json";
 import zhSettings from "./locales/zh/settings.json";
 import zhAppconfig from "./locales/zh/appconfig.json";
@@ -32,6 +33,7 @@ import enPersonas from "./locales/en/personas.json";
 import enMemory from "./locales/en/memory.json";
 import enMcp from "./locales/en/mcp.json";
 import enChannels from "./locales/en/channels.json";
+import enApprovals from "./locales/en/approvals.json";
 import enThinking from "./locales/en/thinking.json";
 import enSettings from "./locales/en/settings.json";
 import enAppconfig from "./locales/en/appconfig.json";
@@ -53,6 +55,7 @@ const resources = {
     memory: zhMemory,
     mcp: zhMcp,
     channels: zhChannels,
+    approvals: zhApprovals,
     thinking: zhThinking,
     settings: zhSettings,
     appconfig: zhAppconfig,
@@ -73,6 +76,7 @@ const resources = {
     memory: enMemory,
     mcp: enMcp,
     channels: enChannels,
+    approvals: enApprovals,
     thinking: enThinking,
     settings: enSettings,
     appconfig: enAppconfig,
@@ -103,6 +107,7 @@ i18n
       "memory",
       "mcp",
       "channels",
+      "approvals",
       "thinking",
       "settings",
       "appconfig",

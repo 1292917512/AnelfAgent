@@ -247,7 +247,7 @@ class AgentApp:
                 self._stats.error_count += 1
                 self._stats.last_error = str(exc)
                 self._status = AgentStatus.ERROR
-                log(f"AgentApp 处理事件异常: {event.type}", "ERROR")
+                log(f"AgentApp 处理事件异常: {event.type} -> {exc}", "ERROR")
                 await event_bus.emit(EVENT_ERROR_OCCURRED, {"error": str(exc), "event_type": event.type})
             finally:
                 self._queue.task_done()

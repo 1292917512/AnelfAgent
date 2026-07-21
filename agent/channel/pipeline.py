@@ -26,21 +26,20 @@ class InputProcessor(ABC):
 
 
 class TagProcessor(InputProcessor):
-    """Tag 解析处理器（[file:xxx] 等标签替换）。"""
+    """Tag 解析处理器（[media_file:xxx] 等媒体标签占位替换）。"""
 
     async def process(self, anything: Everything) -> Everything:
-        from core.tags import etag_all
-        from agent.respond.input_senses.built_in.sense_file import SensePath
+        from core.tags import etag_all, media_file_tag
 
         # 只处理原始正文，避免把 [time]/[uid]/[channel] 等上下文标签写回正文。
         content = anything.get_text_content()
-        sense = SensePath()
-        label_list = etag_all(content)
-        for label in label_list:
-            result = await sense.processing_sensory(label)
-            if result:
-                temp = f"[{label[0]}:{label[1]}]"
-                content = content.replace(temp, result)
+        for key, value in etag_all(content):
+            if key != media_file_tag.tag_name:
+                continue
+            # TODO: 后续扩展为真实的文件路径/内容处理（读取文件、摘要等）
+            content = content.replace(
+                f"[{key}:{value}]", media_file_tag.generate_label("路径")
+            )
         anything.set_text_content(content)
         return anything
 

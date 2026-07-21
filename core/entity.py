@@ -312,7 +312,6 @@ def _coerce_kwargs_types(params: List[ToolParam], kwargs: Dict[str, Any]) -> Dic
 
 
 # ======================================================================
-# BaseEntity（保持向后兼容）
 # ======================================================================
 
 
@@ -583,7 +582,7 @@ class EntityRegistry:
 
     @classmethod
     def import_from_api_registry(cls) -> int:
-        """从 APIRegistry 批量导入 PUBLIC API 作为工具实体（向后兼容）。
+        """从 APIRegistry 批量导入 PUBLIC API 作为工具实体。
 
         自 Phase 5 起，PUBLIC API 应直接通过 EntityRegistry.register_tool() 注册。
         """

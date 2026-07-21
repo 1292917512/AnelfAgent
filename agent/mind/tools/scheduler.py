@@ -126,17 +126,26 @@ def _current_scope() -> str:
     return ""
 
 
-def _enqueue_reply(scope: str, channel: str, preview: str, prompt: str) -> None:
-    """注入系统提示并将目标 scope 排入回复队列。"""
-    _pfc_ref.add_temporary({"role": "system", "content": prompt})
+def enqueue_scope_reply(pfc: Any, scope: str, channel: str, preview: str, prompt: str) -> None:
+    """注入系统提示并将目标 scope 排入回复队列（"完成即新 turn"的统一入口）。
+
+    供延迟回复、定时提醒、后台任务完成通知等场景复用：
+    提示写入短期记忆，scope 入待处理队列，由调用方触发 try_execute_mind。
+    """
+    pfc.add_temporary({"role": "system", "content": prompt})
     target = scope.split("_", 1)[1]
     if scope.startswith("group_"):
-        _pfc_ref.pending_group.append(target)
+        pfc.pending_group.append(target)
     else:
-        _pfc_ref.pending_user.append(target)
-    _pfc_ref._message_previews[scope] = preview
+        pfc.pending_user.append(target)
+    pfc._message_previews[scope] = preview
     if channel:
-        _pfc_ref._task_adapter_keys[scope] = channel
+        pfc._task_adapter_keys[scope] = channel
+
+
+def _enqueue_reply(scope: str, channel: str, preview: str, prompt: str) -> None:
+    """基于模块级 PFC 引用的 enqueue_scope_reply 便捷封装。"""
+    enqueue_scope_reply(_pfc_ref, scope, channel, preview, prompt)
 
 
 def _parse_run_at(run_at: str) -> Optional[float]:

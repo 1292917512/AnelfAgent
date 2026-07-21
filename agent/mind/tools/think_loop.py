@@ -31,7 +31,13 @@ from agent.mind.tools.result_pipeline import (
 
 if TYPE_CHECKING:
     from agent.llm import ChatResult, ImageContent, ToolCall
+    from agent.llm.llm_client import LLMClientConfig
     from agent.messages import Everything
+    from agent.mind.background_tasks import (
+        BackgroundTaskInfo,
+        BackgroundTaskRegistry,
+        TaskCompletion,
+    )
     from agent.mind.guardrails import GuardrailController
     from agent.mind.mind import Mind
 
@@ -67,6 +73,14 @@ _PROMPT_TOOL_OUTPUT_DISCIPLINE = (
     "3. 全部完成后调用 end_reply 结束本轮"
 )
 
+# 反思模式的输出纪律（无 send_message，产出文本即反思结果，但动作必须走工具）
+_PROMPT_REFLECT_OUTPUT_DISCIPLINE = (
+    "[输出纪律] 当前模型端点不支持强制工具调用，你必须自觉遵守：\n"
+    "1. 需要执行动作（检索/查询/分析）时立即调用对应工具，禁止只用文字描述动作\n"
+    "2. 文字输出只是思考草稿，不会执行任何操作\n"
+    "3. 完成分析后调用 end_reply 结束本轮反思"
+)
+
 _PROMPT_INNER_MONOLOGUE = (
     "[系统提示] 你刚才的文字输出是内心独白，用户看不到！"
     "要回复用户必须调用 send_message 工具。"
@@ -80,6 +94,23 @@ _PROMPT_INNER_MONOLOGUE_STRICT = (
     "1. 要回复用户 → 立即调用 send_message\n"
     "2. 没有要说的 → 立即调用 end_reply\n"
     "再次只输出文字将被系统强制结束本轮。"
+)
+
+# 独白提示的情境化补充：有后台任务运行中时，给 AI 指出正确的查询路径
+_PROMPT_MONOLOGUE_TASKS_HINT = (
+    "\n当前有 {count} 个后台任务运行中（{tasks}）。"
+    "想查进度 → 调用 check_background_tasks；"
+    "想等结果 → 调用 end_reply 结束本轮，任务完成时系统会自动通知你。"
+)
+
+# 挂起等待超时后的降级提示（任务仍在运行，决策权交还 AI）
+_PROMPT_TASKS_STILL_RUNNING = (
+    "[系统提示] 你等待的后台任务仍未完成（运行中：{tasks}）。\n"
+    "请选择：\n"
+    "1. 调用 check_background_tasks 查看最新进度\n"
+    "2. 调用 end_reply 结束本轮（任务完成时系统会自动通知你并触发新一轮回复）\n"
+    "3. 继续处理其他事务\n"
+    "禁止反复输出「任务还在运行」之类的文字——这些文字用户完全看不到。"
 )
 
 # 连续内心独白上限：达到后强制结束（防模型陷入叙事模式死循环）
@@ -107,6 +138,18 @@ _PROMPT_END_BLOCKED_FAILURE = (
     "（注意：target_id 等 ID 类参数必须按 schema 声明传字符串类型，不要传数字），"
     "全部成功后再调用 end_reply 结束。若确认无法修复，可再次调用 end_reply 强制结束。"
 )
+
+_PROMPT_END_BLOCKED_PREMATURE = (
+    "[系统拦截] 结束请求未生效：你本轮没有执行任何实际操作，"
+    "只留下一段用户完全看不到的文字就结束了。\n"
+    "注意：end_reply 会彻底结束本轮对话，不存在「下一轮再继续」——"
+    "计划中的操作必须在结束前实际发起工具调用，只说不做等于放弃。\n"
+    "有未完成的操作 → 立刻调用对应工具；确认无事可做 → 再次调用 end_reply 即可结束。"
+)
+
+# 提前结束判定：end_reply 是本轮唯一工具调用且附带超过此长度的文本时，
+# 判定为「用大段不可见文字代替实际行动后提前结束」（结构性判定，不解析文本语义）
+_PREMATURE_END_MIN_TEXT = 40
 
 _PROMPT_SECURITY_LEAK = (
     "[系统安全检测] 你的上一条回复中包含了会话安全标记（一次性令牌）。"
@@ -169,16 +212,25 @@ async def apply_vision(
         images: List[ImageContent],
         anything: Optional[Everything] = None,
 ) -> List[Dict]:
-    """处理图片：大 base64 图转存为文件路径。
+    """处理图片：视觉模型直接注入图片 block，其余大 base64 图转存为文件路径。
 
-    图片标签已由 add_conversation_record_by_everything 写入用户消息（持久化），
-    此处不再重复写 system 消息或追加标签（避免 user/system/内存三处重复）。
-    仅当图片是超大 base64 数据时转存为文件，并更新用户消息中的标签路径。
+    视觉模型（supports_vision）：图片以多模态 content block 附着到最后一条
+    user 消息，LLM 直接"看到"图片，无需 recognize_image 工具中转；
+    消息含图片 block 时 chat_with_fallback 的回退链自动收敛到视觉候选。
+
+    非视觉模型：图片标签已由 add_conversation_record_by_everything 写入用户
+    消息（持久化），此处不再重复写 system 消息或追加标签（避免 user/system/
+    内存三处重复）。仅当图片是超大 base64 数据时转存为文件，并更新用户消息
+    中的标签路径。
     """
     if not images:
         return messages
 
     log(f"processing {len(images)} image(s)", tag="思维")
+
+    config = getattr(getattr(mind, "llm", None), "config", None)
+    if config is not None and getattr(config, "supports_vision", False):
+        return await _inject_image_blocks(messages, images, config)
 
     # 仅处理需要转存的超大 base64 图片（QQ/Telegram 通常是 URL/文件路径，无需处理）
     path_map: Dict[str, str] = {}
@@ -200,6 +252,46 @@ async def apply_vision(
                     c = c.replace(f"[media_path:{old_path}]", f"[media_path:{new_path}]")
                 result[i] = {**result[i], "content": c}
             break
+    return result
+
+
+async def _inject_image_blocks(
+        messages: List[Dict],
+        images: List[ImageContent],
+        config: "LLMClientConfig",
+) -> List[Dict]:
+    """将图片以多模态 content block 注入到最后一条 user 消息（视觉模型直传）。
+
+    按模型 vision_format 逐张协商图片形式：
+    - URL 且模型支持 url 视觉：原样引用，不下载
+    - 其余（本地路径 / base64 / 模型仅支持 base64）：统一归一为压缩后的 base64
+
+    注入位置在对话尾部，stable/volatile 前缀字节不变，Prompt Caching 不受影响。
+    """
+    from agent.llm.image_utils import ensure_base64
+
+    prepared: List[ImageContent] = []
+    for img in images:
+        if img.is_url and config.supports_url_vision:
+            prepared.append(img)
+        else:
+            prepared.extend(await ensure_base64([img]))
+    blocks = [img.to_openai_block(flat_url=config.use_flat_image_url) for img in prepared]
+
+    result = list(messages)
+    for i in range(len(result) - 1, -1, -1):
+        if result[i].get("role") != "user":
+            continue
+        content = result[i].get("content", "")
+        if isinstance(content, str):
+            parts: List[Dict] = [{"type": "text", "text": content}] if content else []
+        elif isinstance(content, list):
+            parts = list(content)
+        else:
+            parts = []
+        result[i] = {**result[i], "content": parts + blocks}
+        log(f"图片直传: {len(blocks)} 张注入到最后一条 user 消息", "DEBUG", tag="思维")
+        break
     return result
 
 
@@ -266,6 +358,55 @@ async def _compress_context(
         summarizer=mind.summarize_text,
     )
 
+
+def _format_running_tasks(tasks: List["BackgroundTaskInfo"]) -> str:
+    """运行中任务的一行式摘要（注入提示词用）。"""
+    return "、".join(f"{t.description[:30]}({t.task_id})" for t in tasks) or "无"
+
+
+def _format_task_completions(
+        completions: List["TaskCompletion"],
+        running: List["BackgroundTaskInfo"],
+) -> str:
+    """后台任务完成事件注入文本（system 角色，保持消息交替规范）。"""
+    lines = ["[后台任务完成] 你等待的后台任务已结束："]
+    for c in completions:
+        status = "成功" if c.success else "失败"
+        lines.append(f"- {c.description[:60]} ({c.task_id})：{status}")
+        if c.summary:
+            lines.append(f"  结果：{c.summary[:800]}")
+    if running:
+        lines.append(f"仍有 {len(running)} 个任务运行中：{_format_running_tasks(running)}")
+    lines.append("请根据结果继续处理（回复用户请调用 send_message，完成请调用 end_reply）。")
+    return "\n".join(lines)
+
+
+async def _suspend_for_background(
+        mind: Mind,
+        anything: Everything,
+        registry: "BackgroundTaskRegistry",
+        scope: str,
+        since_ts: int,
+        timeout: float,
+        interrupts,
+) -> tuple[str, List["TaskCompletion"], float]:
+    """挂起等待后台任务完成，返回 (reason, completions, elapsed)。
+
+    挂起期间新消息照常实时入库（accept_feel 不经思考循环）；
+    should_abort 轮询中断信号与新消息水位，被打断时立即返回，
+    由循环顶部统一并入新消息 / 处理中断，时序不受挂起影响。
+    """
+    log(f"检测到等待意图，挂起等待后台任务 (scope={scope}, 上限 {timeout:.0f}s)", tag="思维")
+
+    async def _aborted() -> bool:
+        if interrupts is not None and interrupts.is_requested(scope):
+            return True
+        return bool(await _fetch_new_user_messages(mind, anything, since_ts))
+
+    t0 = time.monotonic()
+    result = await registry.wait_any(scope, timeout=timeout, should_abort=_aborted)
+    return result.reason, result.completions, time.monotonic() - t0
+
 async def reply_loop(
         mind: Mind,
         anything: Everything,
@@ -278,6 +419,10 @@ async def reply_loop(
     adapter_key = mind._resolve_adapter_key()
     scope = mind._resolve_entity_scope(anything) if anything else ""
     with think_session(mind, scope):
+        # 会话开始清理历史中断信号，避免上一轮遗留请求误杀新会话
+        _interrupts = getattr(mind, "interrupts", None)
+        if scope and _interrupts is not None:
+            _interrupts.clear(scope)
         active_tools = await mind.pfc.get_active_tool_schemas(adapter_key, scope=scope)
         base_messages = await mind.get_recollection(anything=anything)
         # 历史快照已覆盖该 scope 当前全部消息：消费到达时入队的待处理条目，
@@ -348,7 +493,12 @@ async def think_loop(
     force_tool_choice = False
     # 纯工具模式：本 Agent 的合法动作（send_message/end_reply/工具）全部是工具调用，
     # 纯文本输出本就不该存在——LLM 调用默认强制工具选择（范式级约束，非事后拦截）
-    pure_tool_mode = bool(getattr(mind._get_mind_config(), "force_tool_use", True))
+    mc = mind._get_mind_config()
+    pure_tool_mode = bool(getattr(mc, "force_tool_use", True))
+    # 后台任务等待：等待意图挂起的单次上限与本轮回复累计预算（秒）
+    wait_per_round = float(getattr(mc, "background_wait_timeout", 30.0))
+    wait_budget = float(getattr(mc, "background_wait_budget", 120.0))
+    background = getattr(mind, "background_tasks", None)
     # 工具调用守卫：跟踪本次会话的调用历史，检测死循环
     guardrail = GuardrailController()
     # 工具结果加工管线：脱敏 → 扫描 → 守卫 → 截断（整轮预算在会话内累计）
@@ -367,7 +517,26 @@ async def think_loop(
         except Exception as exc:
             log(f"快照水位获取失败，按当前时间并入: {exc}", "DEBUG", tag="思维")
 
+    # 中断注册表（协作式刹车信号；替身 Mind 可能不具备，容忍缺省）
+    interrupts = getattr(mind, "interrupts", None)
+
     while iteration < safety_limit:
+        # 中断检查点（协作式）：用户/守卫请求中断时安全收束，
+        # 不发半截消息、不写残缺工具链、历史留中断元消息
+        if current_scope and interrupts is not None and interrupts.is_requested(current_scope):
+            reason = interrupts.consume(current_scope) or "未说明"
+            log(f"会话被中断 (轮次 {iteration + 1}): scope={current_scope} reason={reason}", tag="中断")
+            execution_steps.append(f"→ 第{iteration + 1}轮前: 会话被中断 ({reason})")
+            if mode == ThinkMode.REPLY and anything:
+                await mind._add_system_context(
+                    anything,
+                    f"[系统] 本次回复在执行中被中断（{reason}），"
+                    "未完成的操作已放弃，如需继续请重新发起。",
+                    role="system",
+                )
+                await finish_think(mind, anything, execution_steps, iteration, tool_chain)
+            return
+
         await event_bus.emit(EVENT_THINKING_REPLY_ROUND, {
             "iteration": iteration,
             "safety_limit": safety_limit,
@@ -382,9 +551,12 @@ async def think_loop(
             last_prompt_tokens=last_prompt_tokens,
             scope=current_scope,
         ):
-            base_messages, tool_chain = await _compress_context(
-                mind, base_messages, tool_chain, current_scope,
-            )
+            async with mind.compressor.scope_lock(current_scope):
+                base_messages, tool_chain = await _compress_context(
+                    mind, base_messages, tool_chain, current_scope,
+                )
+            # 压缩后旧真用量已失真，清零避免下轮以过期值重复触发压缩
+            last_prompt_tokens = 0
             execution_steps.append(f"→ 第{iteration + 1}轮前: 上下文已压缩")
 
         # 并入循环期间到达的新用户消息（让 AI 在当前回复中一并处理，
@@ -401,6 +573,9 @@ async def think_loop(
                 # （媒体标签已随内容并入上下文，待处理媒体不留存到后续周期）
                 merged_images = mind.pfc.collect_images()
                 merged_media = mind.pfc.collect_media()
+                if merged_images:
+                    # 视觉模型直传图片 block；非视觉模型转存超大 base64 为文件路径
+                    tool_chain = await apply_vision(mind, tool_chain, merged_images)
                 if merged_images or merged_media:
                     mind.pfc.activate_media_tools(merged_images, merged_media)
                     active_tools = await mind.pfc.get_active_tool_schemas(
@@ -416,10 +591,13 @@ async def think_loop(
         )
         # 纯工具模式（或独白升级）且有可用工具时，API 级强制工具选择
         require_tools = bool(active_tools) and (pure_tool_mode or force_tool_choice)
-        if require_tools and mode == ThinkMode.REPLY and not _supports_forced_tool_choice(mind):
+        if require_tools and not _supports_forced_tool_choice(mind):
             # 端点（如 thinking 常开的 Kimi）不接受强制 tool_choice，
             # API 级约束缺失，改用提示词约束输出纪律（每轮注入末尾位置）
-            exec_context["content"] += "\n" + _PROMPT_TOOL_OUTPUT_DISCIPLINE
+            exec_context["content"] += "\n" + (
+                _PROMPT_TOOL_OUTPUT_DISCIPLINE if mode == ThinkMode.REPLY
+                else _PROMPT_REFLECT_OUTPUT_DISCIPLINE
+            )
         # exec_context（每轮动态）置于末尾：保持 stable/context/volatile/历史前缀
         # 字节稳定供 Prompt Caching 复用，且当前轮状态在模型注意力最强的末尾位置
         llm_messages = base_messages + tool_chain + [exec_context]
@@ -443,7 +621,7 @@ async def think_loop(
             continue
         except Exception as exc:
             # 上下文超限：立即压缩后重试（连续压缩无效时放弃，防止死循环）
-            from agent.llm.error_classifier import classify_llm_error
+            from agent.llm.resilience import classify_llm_error
             classified = classify_llm_error(exc)
             if (
                 classified.should_compress
@@ -455,9 +633,12 @@ async def think_loop(
                     f"LLM 上下文超限，执行紧急压缩 (第 {consecutive_overflow_compressions} 次)",
                     "WARNING", tag="压缩",
                 )
-                base_messages, tool_chain = await _compress_context(
-                    mind, base_messages, tool_chain, current_scope,
-                )
+                async with mind.compressor.scope_lock(current_scope):
+                    base_messages, tool_chain = await _compress_context(
+                        mind, base_messages, tool_chain, current_scope,
+                    )
+                # 紧急压缩后旧真用量已失真，清零防止下轮误判再次溢出
+                last_prompt_tokens = 0
                 execution_steps.append(f"→ 第{iteration + 1}轮: 上下文超限，已紧急压缩")
                 iteration += 1
                 continue
@@ -537,13 +718,44 @@ async def think_loop(
                 assistant_msg = {"role": "assistant", "content": raw_text}
                 preserve_reasoning_fields(assistant_msg, result)
                 tool_chain.append(assistant_msg)
-                # 追加 user 分隔消息，确保下一轮上下文不以 assistant 结尾，
-                # 避免违反 OpenAI/Anthropic 的消息交替规范，防止连续 assistant 消息。
-                tool_chain.append({
-                    "role": "system",
-                    "content": _PROMPT_CONTINUE,
-                })
                 collected_text.append(raw_text)
+
+                running_bg: List[BackgroundTaskInfo] = []
+                if mode == ThinkMode.REPLY and anything and background is not None:
+                    running_bg = background.running(current_scope)
+
+                if running_bg and wait_budget > 0:
+                    # 等待挂起：后台任务运行中时的纯文本一律视为等待——挂起会合
+                    # 而非计入独白熔断（结构性判定，不解析文本语义）。
+                    # 挂起期间新消息照常实时入库，中断/新消息/完成/超时都会安全唤醒；
+                    # 超时说明等待无望，清零预算，后续纯文本回落到普通独白路径。
+                    reason, completions, elapsed = await _suspend_for_background(
+                        mind, anything, background, current_scope,
+                        last_merged_ts, min(wait_per_round, wait_budget), interrupts,
+                    )
+                    execution_steps.append(
+                        f"→ 第{iteration + 1}轮: 等待后台任务（{reason}，{elapsed:.0f}s）"
+                    )
+                    if reason == "completed":
+                        wait_budget -= elapsed
+                        tool_chain.append({
+                            "role": "system",
+                            "content": _format_task_completions(
+                                completions, background.running(current_scope),
+                            ),
+                        })
+                    elif reason == "timeout":
+                        wait_budget = 0.0
+                        tool_chain.append({
+                            "role": "system",
+                            "content": _PROMPT_TASKS_STILL_RUNNING.format(
+                                tasks=_format_running_tasks(running_bg),
+                            ),
+                        })
+                    # interrupted：不追加提示，循环顶部统一并入新消息 / 处理中断
+                    iteration += 1
+                    continue
+
                 if mode == ThinkMode.REPLY and anything:
                     # 内心独白计数：连续只说不做达到上限时强制结束（防叙事模式死循环）
                     consecutive_monologues += 1
@@ -567,14 +779,34 @@ async def think_loop(
                         return
                     # 首次独白后升级：下一轮 API 级强制工具调用（不靠劝）
                     force_tool_choice = True
-                    tool_chain[-1] = {
-                        "role": "system",
-                        "content": (
-                            _PROMPT_INNER_MONOLOGUE_STRICT
-                            if consecutive_monologues >= 2
-                            else _PROMPT_INNER_MONOLOGUE
-                        ),
-                    }
+                    feedback = (
+                        _PROMPT_INNER_MONOLOGUE_STRICT
+                        if consecutive_monologues >= 2
+                        else _PROMPT_INNER_MONOLOGUE
+                    )
+                    if running_bg:
+                        # 情境化：指出后台任务的正确查询/等待路径，而非只堵不疏
+                        feedback += _PROMPT_MONOLOGUE_TASKS_HINT.format(
+                            count=len(running_bg),
+                            tasks=_format_running_tasks(running_bg),
+                        )
+                else:
+                    # 反思模式：连续纯文本达到上限即收束（产出已累积在 collected_text）
+                    consecutive_monologues += 1
+                    if consecutive_monologues >= _MAX_CONSECUTIVE_MONOLOGUES:
+                        log(
+                            f"反思连续纯文本 {consecutive_monologues} 次，结束本轮反思",
+                            "WARNING", tag="思维",
+                        )
+                        execution_steps.append(
+                            f"→ 第{iteration + 1}轮: 反思连续纯文本 {consecutive_monologues} 次，结束"
+                        )
+                        return
+                    feedback = _PROMPT_CONTINUE
+                # 反馈消息追加在 assistant 之后，保证下一轮上下文不以 assistant 结尾，
+                # 避免违反 OpenAI/Anthropic 的消息交替规范，防止连续 assistant 消息。
+                # （发送边界统一归一为 user 角色，确保 anthropic 端点位置正确）
+                tool_chain.append({"role": "system", "content": feedback})
                 execution_steps.append(f"→ 第{iteration + 1}轮: {mode_label}中")
             else:
                 consecutive_fake_calls = 0
@@ -658,19 +890,21 @@ async def think_loop(
             })
 
         if should_end_reply(tool_calls, tool_chain):
-            # 结束拦截：本轮存在失败工具时，注入失败反馈给 AI 修正机会（最多 2 次防死循环）
+            # 结束拦截：本轮存在失败工具、或文字声明了动作却未实际发起调用时，
+            # 注入反馈给 AI 修正机会（两类合计最多 2 次防死循环）
             if mode == ThinkMode.REPLY and end_reply_interceptions < 2:
-                failure_feedback = _collect_round_failures(tool_chain, tool_calls)
-                if failure_feedback:
+                feedback = _collect_round_failures(tool_chain, tool_calls) \
+                    or _collect_premature_end(result, tool_calls)
+                if feedback:
                     end_reply_interceptions += 1
                     log(
-                        f"结束请求被拦截: 本轮存在失败工具 (轮次 {iteration + 1}, "
+                        f"结束请求被拦截: 存在未完成操作 (轮次 {iteration + 1}, "
                         f"第 {end_reply_interceptions} 次拦截)",
                         "WARNING", tag="思维",
                     )
-                    tool_chain.append({"role": "system", "content": failure_feedback})
+                    tool_chain.append({"role": "system", "content": feedback})
                     execution_steps.append(
-                        f"→ 第{iteration + 1}轮: 结束被拦截（存在失败工具），已反馈 AI 修正"
+                        f"→ 第{iteration + 1}轮: 结束被拦截（存在未完成操作），已反馈 AI 修正"
                     )
                     iteration += 1
                     continue
@@ -829,8 +1063,25 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List[ToolCall]) 
     return _PROMPT_END_BLOCKED_FAILURE.format(failures=lines)
 
 
+def _collect_premature_end(result: ChatResult, tool_calls: List[ToolCall]) -> str:
+    """检测"只说不做就结束"：end_reply 是本轮唯一工具调用，且附带大段不可见文本。
+
+    纯工具模式下文本对用户不可见，唯一动作就是结束——大段文字几乎必然是
+    「用文字描述计划/承诺代替实际工具调用」（说要做就必须在同一响应里调用，
+    参考 hermes intent-ack，但用结构性信号判定，不解析文本语义）。
+    正常收尾（send_message + end_reply、工作工具 + end_reply、简短/无文本）不拦截。
+
+    返回拦截反馈文本；非提前结束时返回空串。
+    """
+    if any(tc.name != _END_REPLY_TOOL_NAME for tc in tool_calls):
+        return ""
+    text = _strip_think_blocks(result.content or "").strip()
+    if len(text) < _PREMATURE_END_MIN_TEXT:
+        return ""
+    return _PROMPT_END_BLOCKED_PREMATURE
+
+
 # 工具结果加工（脱敏/扫描/截断）已迁移至 result_pipeline.py，
-# 顶部保留 _truncate_tool_output 向后兼容别名（测试与历史调用方使用）。
 
 
 async def execute_tool_calls(
@@ -910,6 +1161,56 @@ async def execute_one_tool(
         "iteration": iteration,
     })
     log(f"执行工具: {tc.name}", tag="思维")
+
+    # ------------------------------------------------------------------
+    # 批准机制：在执行前检查是否需要人工批准
+    # ------------------------------------------------------------------
+    if anything is not None:
+        try:
+            from agent.approval import ApprovalDecision, get_approval_gate
+
+            gate = get_approval_gate()
+            # 从 anything 提取上下文
+            adapter_key = getattr(anything, "adapter_key", "") or "unknown"
+            user_id = str(getattr(anything, "uid", "") or getattr(anything, "user_id", "") or "unknown")
+            group_id = str(getattr(anything, "group_id", "") or "")
+            chat_id = group_id if group_id not in ("", "0") else user_id
+
+            # 获取频道实例
+            from agent.channel.manager import get_channel_manager
+            channel = get_channel_manager().get(adapter_key)
+
+            if channel:
+                # 解析工具参数
+                try:
+                    tool_args = json.loads(tc.arguments) if tc.arguments else {}
+                except (json.JSONDecodeError, TypeError):
+                    tool_args = {"_raw": tc.arguments or ""}
+
+                decision = await gate.request_approval(
+                    tool_name=tc.name,
+                    tool_args=tool_args,
+                    reason=f"AI 请求调用工具 {tc.name}",
+                    channel=channel,
+                    chat_id=chat_id,
+                    user_id=user_id,
+                )
+                if decision != ApprovalDecision.APPROVED:
+                    log(
+                        f"工具 {tc.name} 未获批准: {decision.value}",
+                        "WARNING",
+                        tag="批准",
+                    )
+                    return json.dumps({
+                        "error": f"工具调用未获批准: {decision.value}",
+                        "approval_decision": decision.value,
+                    }, ensure_ascii=False)
+        except ImportError:
+            # approval 模块未安装，跳过
+            pass
+        except Exception as exc:
+            log(f"批准机制异常（继续执行）: {exc}", "WARNING", tag="批准")
+
     t0 = time.time()
     try:
         result = await mind.tool_executor(tc)  # type: ignore[misc]
@@ -946,18 +1247,29 @@ async def execute_one_tool(
 
 
 def preserve_reasoning_fields(msg: Dict[str, Any], result: ChatResult) -> None:
-    """从 ChatResult.raw 中提取 reasoning_details 到 assistant 消息，维持多轮思维链。
+    """从 ChatResult.raw 中提取推理字段到 assistant 消息，维持多轮思维链。
 
-    litellm 统一返回 OpenAI 格式，仅需处理 reasoning_details 字段。
+    litellm 统一返回 OpenAI 格式，按协议覆盖两种载体：
+    - reasoning_details：OpenRouter 风格，litellm 请求侧原样回传
+    - thinking_blocks：Anthropic 协议 thinking 块（含 signature/redacted），
+      litellm 请求侧据此重构 thinking 块（交错思考 + tool_use 场景必需）
+    均以响应实际存在为条件，不返回推理字段的模型行为不变。
     """
     if not result.raw or not result.reasoning_content:
         return
     try:
         choices = result.raw.get("choices")
-        if choices and isinstance(choices, list):
-            rd = choices[0].get("message", {}).get("reasoning_details")
-            if rd:
-                msg["reasoning_details"] = rd
+        if not choices or not isinstance(choices, list):
+            return
+        message = choices[0].get("message", {})
+        if not isinstance(message, dict):
+            return
+        rd = message.get("reasoning_details")
+        if rd:
+            msg["reasoning_details"] = rd
+        tb = message.get("thinking_blocks")
+        if tb:
+            msg["thinking_blocks"] = tb
     except (IndexError, AttributeError, TypeError):
         pass
 

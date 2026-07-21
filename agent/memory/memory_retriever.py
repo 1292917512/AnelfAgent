@@ -202,7 +202,9 @@ class MemoryRetriever:
         if not all_parts:
             return []
         log(f"实体画像注入: {len(scopes)} 个 scope, {len(all_parts)} 条画像", tag="思维")
-        return [{"role": "system", "content": "[系统注入·人物画像] 以下为相关实体的画像信息：\n" + "\n---\n".join(all_parts)}]
+        from core.sanitizer import sanitize_for_context
+        content = "[系统注入·人物画像] 以下为相关实体的画像信息：\n" + "\n---\n".join(all_parts)
+        return [{"role": "system", "content": sanitize_for_context(content)}]
 
     async def _fallback_recent(self, limit: int) -> List[Dict]:
         entries = await self._store.list_recent(limit=limit)
@@ -211,7 +213,8 @@ class MemoryRetriever:
         if not entries:
             return []
         lines = [e.content for e in entries]
-        return [{"role": "system", "content": "[近期记忆]\n" + "\n---\n".join(lines)}]
+        from core.sanitizer import sanitize_for_context
+        return [{"role": "system", "content": sanitize_for_context("[近期记忆]\n" + "\n---\n".join(lines))}]
 
     @staticmethod
     def _extract_query(conversation: List[Dict], max_chars: int = 500) -> str:
@@ -412,7 +415,9 @@ class MemoryRetriever:
 
         if not parts:
             return []
-        return [{"role": "system", "content": "\n\n".join(parts)}]
+        # LLM 出向边界：统一脱敏（记忆中可能存过密钥/URL凭证）+ 孤代理清理 + 中部截断
+        from core.sanitizer import sanitize_for_context
+        return [{"role": "system", "content": sanitize_for_context("\n\n".join(parts))}]
 
 
     async def _apply_rerank(

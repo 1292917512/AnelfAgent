@@ -90,18 +90,24 @@ def web_fetch(
     max_chars: int = 8000,
     timeout: int = 15,
     use_proxy: bool = False,
+    start_index: int = 0,
 ) -> str:
     """获取指定 URL 的网页正文，自动提取可读内容。
 
+    长页面会按 max_chars 截断；返回 truncated=true 时，
+    可用 start_index 传回 next_start_index 继续分块读取后续内容。
+
     Args:
         url:          网页地址（必须以 http:// 或 https:// 开头）
-        extract_mode: 输出格式：markdown（默认，保留结构）或 text（纯文本）
+        extract_mode: 输出格式：markdown（默认，保留结构）、text（纯文本）或 raw（原始内容，不提取正文）
         max_chars:    最大返回字符数，默认 8000
         timeout:      超时秒数，默认 15
         use_proxy:    是否使用代理，默认 False
+        start_index:  从该字符索引开始返回，默认 0，用于长页面分块续读
     """
     import httpx
     max_chars = int(max_chars)
+    start_index = max(0, int(start_index))
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         return json.dumps({"error": f"仅支持 http/https，收到: {url[:50]}"}, ensure_ascii=False)
@@ -122,15 +128,13 @@ def web_fetch(
     ct = resp.headers.get("content-type", "")
     final_url = str(resp.url)
 
-    if "application/json" in ct:
-        from entities.web.content_extractor import truncate_text
-        body, truncated = truncate_text(resp.text, max_chars)
-        return json.dumps({"url": final_url, "content_type": "json", "content": body, "truncated": truncated}, ensure_ascii=False)
+    if "application/json" in ct or extract_mode == "raw":
+        return _process_raw(resp.text, final_url, ct, start_index, max_chars)
 
     if "text/" not in ct:
         return json.dumps({"url": final_url, "content_type": ct, "error": f"不支持的内容类型: {ct}"}, ensure_ascii=False)
 
-    return _process_html(resp.text, final_url, extract_mode, max_chars)
+    return _process_html(resp.text, final_url, extract_mode, max_chars, start_index)
 
 
 @tool(name="extract_page_links", group="web", tags=["web"])
@@ -256,8 +260,20 @@ def web_request(
 # ==================================================================
 
 
-def _process_html(html: str, url: str, extract_mode: str, max_chars: int) -> str:
-    """处理 HTML：提取元数据 + 预清洗 + 正文提取 + 格式转换 + 截断。"""
+def _process_raw(body: str, url: str, content_type: str, start_index: int, max_chars: int) -> str:
+    """原始内容直通（JSON 响应 / raw 模式）：分块切片 + 截断。"""
+    from entities.web.content_extractor import truncate_text
+
+    body = body[start_index:]
+    body, truncated = truncate_text(body, max_chars)
+    result: dict = {"url": url, "content_type": content_type, "content": body, "truncated": truncated}
+    if truncated:
+        result["next_start_index"] = start_index + len(body)
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _process_html(html: str, url: str, extract_mode: str, max_chars: int, start_index: int = 0) -> str:
+    """处理 HTML：提取元数据 + 预清洗 + 正文提取 + 格式转换 + 分块截断。"""
     from entities.web.content_extractor import (
         extract_page_metadata,
         extract_readable_content,
@@ -282,6 +298,7 @@ def _process_html(html: str, url: str, extract_mode: str, max_chars: int) -> str
     else:
         text = _bs4_to_text(content_html) or _simple_html_to_text(content_html)
 
+    text = text[start_index:]
     text, truncated = truncate_text(text, max_chars)
 
     result: dict = {
@@ -291,6 +308,8 @@ def _process_html(html: str, url: str, extract_mode: str, max_chars: int) -> str
         "truncated": truncated,
         "raw_length": len(html),
     }
+    if truncated:
+        result["next_start_index"] = start_index + len(text)
     if title:
         result["title"] = title
     if meta.get("description"):

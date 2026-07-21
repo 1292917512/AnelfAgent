@@ -364,7 +364,7 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
 
 
 def _normalize_task(data: Dict[str, Any]) -> Dict[str, Any]:
-    """确保任务数据包含所有必需字段（兼容旧格式缺失字段）。"""
+    """确保任务数据包含所有必需字段。"""
     for k, v in _TASK_DEFAULTS.items():
         if k not in data:
             data[k] = v

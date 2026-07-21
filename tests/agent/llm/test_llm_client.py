@@ -435,6 +435,26 @@ def test_forced_tool_choice_downgraded_when_unsupported() -> None:
     assert kwargs["tool_choice"] == "required"
 
 
+def test_tool_choice_downgrade_logged_once(monkeypatch) -> None:
+    """强制降级产生 WARNING（每客户端仅首次），不再静默失效。"""
+    import agent.llm.llm_client as client_mod
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        client_mod, "log",
+        lambda msg, level="INFO", tag=None: warnings.append(msg) if level == "WARNING" else None,
+    )
+    kimi = LLMClient(LLMClientConfig(
+        model="k3[1m]", api_type="anthropic", supports_forced_tool_choice=False,
+    ))
+    kimi._resolve_tool_choice("required")
+    kimi._resolve_tool_choice("required")
+    kimi._resolve_tool_choice({"type": "function", "function": {"name": "x"}})
+    kimi._resolve_tool_choice("auto")  # 非强制值不触发
+    assert len(warnings) == 1
+    assert "降级" in warnings[0] and "k3[1m]" in warnings[0]
+
+
 def test_supports_forced_tool_choice_serialization() -> None:
     config = LLMClientConfig(model="m", supports_forced_tool_choice=False)
     assert config.to_dict()["supports_forced_tool_choice"] is False

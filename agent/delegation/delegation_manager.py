@@ -4,7 +4,8 @@
 - 并行模式：tasks 数组 fan-out，asyncio.gather 并发执行
 - 预算控制：每个子代理独立的迭代预算（默认 15 轮）
 - 结果聚合：按 task_index 排序，摘要按父上下文剩余空间动态截断
-- 后台模式：立即返回 delegation_id，结果经事件总线异步推送
+- 后台模式：登记 BackgroundTaskRegistry 后立即返回 delegation_id，
+  结果按注册表路由（轮内会合注入 / 完成即新 turn 通知）
 """
 from __future__ import annotations
 
@@ -111,11 +112,21 @@ class DelegationManager:
             *,
             role: str = "leaf",
             max_iterations: int = 0,
+            scope: str = "",
     ) -> str:
-        """后台委托：立即返回 delegation_id，结果经事件总线异步推送。"""
-        delegation_id = uuid.uuid4().hex[:8]
+        """后台委托：登记注册表后立即返回 delegation_id，结果异步送达。
+
+        送达路径（由 BackgroundTaskRegistry 路由）：
+        - 父 Agent 正挂起等待 → 完成事件注入当前思考循环（轮内会合）；
+        - 否则 → 完成事件排入回复队列触发新一轮 REPLY（完成即新 turn）。
+        """
+        registry = getattr(self._mind, "background_tasks", None)
+        if registry is not None:
+            delegation_id = registry.register(scope or "_global", "delegation", goal[:80])
+        else:
+            delegation_id = uuid.uuid4().hex[:8]
         task = asyncio.create_task(
-            self._run_background(delegation_id, goal, context, role, max_iterations),
+            self._run_background(delegation_id, goal, context, role, max_iterations, scope),
             name=f"delegation.{delegation_id}",
         )
         self._background_tasks[delegation_id] = task
@@ -130,8 +141,9 @@ class DelegationManager:
             context: str,
             role: str,
             max_iterations: int,
+            scope: str = "",
     ) -> None:
-        """后台执行委托并推送结果事件。"""
+        """后台执行委托并按注册表路由结果（轮内会合 / 完成即新 turn）。"""
         result = await self.delegate(
             goal, context, role=role, max_iterations=max_iterations,
         )
@@ -143,17 +155,39 @@ class DelegationManager:
             "error": result.error,
         }
         await event_bus.emit(EVENT_DELEGATION_COMPLETED, payload)
-        # 结果写入短期记忆，主 Agent 下一轮思考时可见
+
         status = "成功" if result.success else "失败"
-        summary = result.output if result.success else result.error
-        self._mind.pfc.add_temporary({
-            "role": "user",
-            "content": (
-                f"[后台委托完成] id={delegation_id} 状态={status}\n"
-                f"目标: {goal[:200]}\n结果: {summary[:1500]}"
-            ),
-        })
+        summary = (result.output if result.success else result.error) or ""
+        note = (
+            f"[后台委托完成] id={delegation_id} 状态={status}\n"
+            f"目标: {goal[:200]}\n结果: {summary[:1500]}"
+        )
+
+        registry = getattr(self._mind, "background_tasks", None)
+        claimed = registry.complete(delegation_id, result.success, summary[:1500]) if registry else False
+        if not claimed and scope.startswith(("user_", "group_")):
+            # 轮外完成（无等待者）：排入回复队列触发新一轮 REPLY，主动汇报结果
+            from agent.mind.tools.scheduler import enqueue_scope_reply
+            enqueue_scope_reply(
+                self._mind.pfc,
+                scope,
+                self._mind.pfc.get_adapter_key(scope),
+                f"后台委托完成: {goal[:60]}",
+                note + "\n请将结果告知用户，或根据结果继续未完成的操作。",
+            )
+            asyncio.create_task(self._mind.try_execute_mind())
+        else:
+            # 轮内会合（等待者已收到注入）或无回复目标：结果写入短期记忆兜底，
+            # 保证后续轮次可见、信息不丢失
+            self._mind.pfc.add_temporary({"role": "user", "content": note})
         log(f"后台委托完成: {delegation_id} ({status})", tag="委托")
+
+    def background_tasks_snapshot(self, scope: str) -> Dict[str, Any]:
+        """当前 scope 后台任务状态快照（check_background_tasks 工具用）。"""
+        registry = getattr(self._mind, "background_tasks", None)
+        if registry is None:
+            return {"running": [], "completed": []}
+        return registry.snapshot(scope)
 
     # ------------------------------------------------------------------
     # 结果聚合

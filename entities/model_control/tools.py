@@ -98,7 +98,7 @@ def get_current_model() -> str:
             cfg = llm.config
             info.update({
                 "model": cfg.model,
-                "temperature": cfg.temperature,
+                "temperature": cfg.temperature if cfg.temperature is not None else "auto（由模型默认决定）",
                 "max_tokens": cfg.max_tokens if cfg.max_tokens else "auto（由模型默认决定）",
                 "timeout": cfg.timeout,
                 "supports_tools": cfg.supports_tools,

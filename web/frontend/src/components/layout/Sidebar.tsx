@@ -23,6 +23,7 @@ import {
   Tags,
   GraduationCap,
   SlidersHorizontal,
+  Shield,
   type LucideIcon,
 } from "lucide-react";
 
@@ -44,6 +45,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   Tags,
   GraduationCap,
   SlidersHorizontal,
+  Shield,
 };
 
 const FALLBACK_NAV: NavItem[] = [

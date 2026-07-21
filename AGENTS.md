@@ -237,6 +237,8 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 | `agent/runtime/bootstrap.py` | 启动流程（初始化 → 组装 → 启动 → 健康检查） |
 | `entities/_sdk.py` | 工具注册 + LLM 桥接 |
 | `agent/channel/manager.py` | 频道管理（register / route） |
+| `agent/channel/tool_bridge.py` | 频道工具桥接（@channel_tool 扫描注册 / 通用能力路由 / 敏感门控） |
+| `agent/channel/context.py` | 当前会话频道 ContextVar（通用工具默认路由目标） |
 | `web/routers/config.py` | 心跳/任务 API + Mind 配置 API |
 | `core/path.py` | PathManager + ConfigPaths 路径常量 |
 | `core/lifecycle.py` | 单例生命周期注册表（register / shutdown_all / reset） |
@@ -275,7 +277,7 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 | `model_control` | 模型控制 | `entities/model_control/tools.py` | core |
 | `ollama` | Ollama | `entities/model_control/tools.py` | — |
 | `logs` | 日志查询 | `entities/logs/tools.py` | — |
-| `channel_ops` | 频道操作 | `channel/output_tools.py`（动态） | capability |
+| `channel_ops` | 频道操作 | `agent/channel/tool_bridge.py`（@channel_tool 动态） | capability/channel_id |
 | `entity` | 实体管理 | `entities/entity_query/tools.py` | always/core |
 | `mcp_manage` | MCP 管理 | `entities/mcp/bridge.py`（动态） | — |
 | `mcp:*` | MCP 服务 | 动态注册 | — |

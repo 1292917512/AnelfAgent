@@ -3,31 +3,48 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Set
 
-from agent.channel.channel import BaseChannel, ChannelCapability, ChannelStatus
+from pydantic import Field
+
+from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
+from agent.channel.channel_types import ChannelCapability, ChannelStatus
+from agent.channel.schemas import (
+    AdapterChannel, ChannelType, SendRequest, SendResponse, SendSegment,
+    ChannelInfo, ChannelUser, ChannelUserRole, HealthStatus,
+)
 from core.log import log
 
 
-class WebUIChannel(BaseChannel):
+
+
+class WebUIConfig(ChannelConfig):
+    """网页界面 频道配置。"""
+    pass
+
+
+class WebUIChannel(BaseChannel[WebUIConfig]):
     """WebUI 频道 — 通过 SSE 向前端推送 Agent 消息（文本/图片/语音/视频）。"""
 
     _entity_description = "网页界面多媒体频道"
 
+    metadata = ChannelMetadata(
+        name="WebUI",
+        description="Web 前端 SSE 推送频道",
+        version="2.0.0",
+        author="AnelfAgent",
+    )
+    _Configs = WebUIConfig
+
     def __init__(self) -> None:
         super().__init__()
 
-    @property
-    def channel_id(self) -> str:
-        return "webui"
+    channel_id = "webui"
 
-    @property
-    def display_name(self) -> str:
-        return "网页界面"
+    display_name = "网页界面"
 
-    @property
-    def capabilities(self) -> Set[ChannelCapability]:
-        return {
+    capabilities: Set[ChannelCapability] = {
             ChannelCapability.SEND_TEXT,
             ChannelCapability.SEND_PHOTO,
             ChannelCapability.SEND_VOICE,
@@ -84,6 +101,69 @@ class WebUIChannel(BaseChannel):
             "caption": caption,
         })
         return json.dumps({"success": True}, ensure_ascii=False)
+
+    # ------------------------------------------------------------------
+    # BaseChannel 协议方法
+    # ------------------------------------------------------------------
+
+    async def forward_message(self, request: SendRequest) -> SendResponse:
+        """统一发送入口。"""
+        try:
+            for seg in request.segments:
+                seg_type = seg.type.value
+                if seg_type == "text":
+                    self._broadcast("reply", {
+                        "content": seg.content,
+                        "media_type": "text",
+                    })
+                elif seg_type in ("image", "voice", "audio", "video", "file"):
+                    self._broadcast("media", {
+                        "media_type": seg_type,
+                        "url": seg.file_path or seg.content,
+                        "caption": seg.caption,
+                    })
+            return SendResponse(success=True, message_id=f"webui-{int(time.time() * 1000)}")
+        except Exception as exc:
+            return SendResponse(success=False, error=str(exc))
+
+    async def get_self_info(self) -> ChannelUser:
+        return ChannelUser(
+            platform=self.channel_id,
+            user_id="webui_bot",
+            user_name="WebUI Bot",
+            role=ChannelUserRole.MEMBER,
+            is_bot=True,
+        )
+
+    async def get_user_info(self, user_id: str, channel_id: str) -> ChannelUser:
+        return ChannelUser(
+            platform=self.channel_id,
+            user_id=user_id,
+            user_name=user_id,
+        )
+
+    async def get_channel_info(self, channel_id: str) -> ChannelInfo:
+        return ChannelInfo(
+            channel_id=channel_id,
+            channel_name="WebUI Session",
+            channel_type=ChannelType.PRIVATE,
+        )
+
+    async def health_check(self) -> HealthStatus:
+        """WebUI 健康探针：检查 broadcast 函数可达。"""
+        try:
+            from web.routers.chat import broadcast_chat_event
+            return HealthStatus(
+                healthy=True,
+                detail="WebUI broadcast channel reachable",
+                last_success_at=time.time(),
+            )
+        except ImportError as exc:
+            return HealthStatus(
+                healthy=False,
+                detail=f"WebUI router not available: {exc}",
+                last_error=str(exc),
+            )
 
     @staticmethod
     def _broadcast(event: str, data: dict) -> None:

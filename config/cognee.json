@@ -20,7 +20,7 @@
   ],
   "chat": {
     "source": "model",
-    "model_id": "deepseek-v4-pro",
+    "model_id": "MiniMax-M3-NoThinking",
     "provider": "openai",
     "model": "",
     "api_key": "",
@@ -28,7 +28,7 @@
     "api_version": "",
     "instructor_mode": "",
     "max_completion_tokens": 0,
-    "reasoning_effort": "",
+    "reasoning_effort": "off",
     "extra_args": {}
   },
   "embedding": {

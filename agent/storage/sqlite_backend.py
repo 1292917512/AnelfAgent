@@ -104,7 +104,6 @@ class SqliteBackend:
                 pass
             self._db = None
 
-    # 兼容旧代码的 _ensure_init
     async def _ensure_init(self) -> None:
         await self._get_db()
 
@@ -262,6 +261,16 @@ class SqliteBackend:
         rows = await cursor.fetchall()
         rows = list(reversed(rows))
         return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
+
+    async def count_conversation(self, *, scope_type: str, scope_id: str) -> int:
+        """统计该 scope 的对话消息总数（含窗口外历史，溢出提示感知用）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM conversation_messages WHERE scope_type=? AND scope_id=?",
+            (scope_type, scope_id),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
 
     async def _ensure_conv_embedding_column(self) -> None:
         """懒迁移：确保 conversation_messages 拥有 embedding_blob 列。"""

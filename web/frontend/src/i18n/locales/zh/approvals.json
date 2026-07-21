@@ -1,0 +1,56 @@
+{
+  "tabs": {
+    "pending": "待批准",
+    "history": "历史记录",
+    "policies": "策略配置",
+    "stats": "统计信息"
+  },
+  "loading": "加载中...",
+  "noPendingApprovals": "没有待批准的请求",
+  "noHistory": "暂无历史记录",
+  "requestedBy": "请求者",
+  "reason": "原因",
+  "arguments": "参数",
+  "expiresIn": "过期时间",
+  "approve": "批准",
+  "deny": "拒绝",
+  "save": "保存",
+  "reset": "重置",
+  "addPolicy": "添加策略",
+  "policy": "策略",
+  "toolNamePattern": "工具名称模式",
+  "riskLevel": "风险等级",
+  "requiresApproval": "需要批准",
+  "timeoutSeconds": "超时时间（秒）",
+  "onTimeout": "超时处理",
+  "trustAfterNApprovals": "信任阈值",
+  "trustAfterNApprovalsHint": "批准 N 次后自动信任（0 = 永远询问）",
+  "description": "描述",
+  "descriptionPlaceholder": "策略描述...",
+  "decidedBy": "决策人",
+  "decisionReason": "决策理由",
+  "system": "系统",
+  "risk": {
+    "low": "低风险",
+    "medium": "中风险",
+    "high": "高风险",
+    "critical": "严重风险"
+  },
+  "onTimeout": {
+    "deny": "拒绝",
+    "allow": "允许",
+    "halt": "终止"
+  },
+  "decision": {
+    "approved": "已批准",
+    "denied": "已拒绝",
+    "expired": "已过期",
+    "cancelled": "已取消"
+  },
+  "stats": {
+    "pending": "待批准",
+    "totalDecisions": "总决策数",
+    "approvalRate": "批准率",
+    "decisionBreakdown": "决策分布"
+  }
+}

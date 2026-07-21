@@ -40,4 +40,15 @@ async def get_configs() -> Dict[str, Dict[str, Any]]:
 @router.put("/configs")
 async def save_configs(values: Dict[str, Any]) -> Dict[str, int]:
     changed = _adapter_svc.save_adapter_configs(values)
+
+    # 触发热更新：重载所有频道配置
+    if changed > 0:
+        from agent.channel import get_channel_manager
+        manager = get_channel_manager()
+        for channel in manager.list_channels().values():
+            try:
+                channel.reload_config()
+            except Exception:
+                pass  # 单个频道重载失败不影响其他频道
+
     return {"changed": changed}

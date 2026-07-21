@@ -13,7 +13,7 @@ from core.entity import BaseEntity, EntityType
 from core.log import log
 from core.tags import reply_to_tag, tag_label
 
-from .channel import BaseChannel, ChannelStatus
+from .base import BaseChannel, ChannelStatus
 
 
 @dataclass
@@ -71,8 +71,8 @@ class ChannelManager(BaseEntity):
         self._channels[cid] = channel
         log(f"频道已注册: {cid} ({channel.display_name})", tag="通道")
         try:
-            from .output_tools import register_channel_capability_tools
-            register_channel_capability_tools()
+            from .tool_bridge import register_channel_tools
+            register_channel_tools(channel)
         except Exception as exc:
             log(f"频道能力工具注册失败: {exc}", "WARNING", tag="通道")
 
@@ -88,6 +88,11 @@ class ChannelManager(BaseEntity):
     def unregister(self, channel_id: str) -> None:
         channel = self._channels.pop(channel_id, None)
         if channel:
+            try:
+                from .tool_bridge import unregister_channel_tools
+                unregister_channel_tools(channel_id)
+            except Exception as exc:
+                log(f"频道工具注销失败: {exc}", "WARNING", tag="通道")
             log(f"频道已注销: {channel_id}", tag="通道")
 
     def get(self, channel_id: str) -> Optional[BaseChannel]:
@@ -152,6 +157,11 @@ class ChannelManager(BaseEntity):
             await channel.start()
             if channel._status == ChannelStatus.STARTING:
                 channel._status = ChannelStatus.RUNNING
+            try:
+                from .tool_bridge import register_channel_tools
+                register_channel_tools(channel)
+            except Exception as exc:
+                log(f"频道能力工具注册失败: {exc}", "WARNING", tag="通道")
             return True
         except Exception as exc:
             channel._status = ChannelStatus.ERROR
@@ -165,6 +175,11 @@ class ChannelManager(BaseEntity):
         try:
             await channel.stop()
             channel._status = ChannelStatus.STOPPED
+            try:
+                from .tool_bridge import unregister_channel_tools
+                unregister_channel_tools(channel_id)
+            except Exception as exc:
+                log(f"频道工具注销失败: {exc}", "WARNING", tag="通道")
             return True
         except Exception as exc:
             log(f"频道停止失败: {channel_id} -> {exc}", "ERROR", tag="通道")

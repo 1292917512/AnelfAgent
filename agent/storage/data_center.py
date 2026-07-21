@@ -178,6 +178,13 @@ class ConversationData:
         """返回指定 scope 最近一次历史快照的水位（最大 ts_ns），未快照过返回 None。"""
         return self._fetch_watermarks.get(f"{scope_type}_{scope_id}")
 
+    async def count_messages(self, anything: Everything) -> int:
+        """该 scope 的对话消息总数（含窗口外历史，溢出提示感知用）。"""
+        scope_type, scope_id = self._scope_of(anything)
+        return await self.router.sqlite.count_conversation(
+            scope_type=scope_type, scope_id=scope_id,
+        )
+
     @staticmethod
     def _scope_of(anything: Everything) -> tuple[str, str]:
         if isinstance(anything, EverythingGroup) and anything.group_id not in (0, "0", "", None):

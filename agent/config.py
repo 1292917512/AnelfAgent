@@ -44,6 +44,14 @@ _MIND_CONFIGS = {
             "description": "纯工具模式：思维循环中 LLM 调用强制工具选择（tool_choice=required），杜绝纯文本输出",
             "default": True,
         },
+        "background_wait_timeout": {
+            "description": "后台任务等待：等待意图挂起的单次上限（秒）",
+            "default": 30.0,
+        },
+        "background_wait_budget": {
+            "description": "后台任务等待：单轮回复累计挂起预算（秒），耗尽后等待意图按普通独白处理",
+            "default": 120.0,
+        },
         "log_ai_output": {
             "description": "是否记录 AI 输出日志",
             "default": True,
@@ -157,6 +165,7 @@ _MIND_SYNC_FIELDS: tuple[str, ...] = (
     "heartbeat_interval", "meta_decision_temperature",
     "conversation_analysis_threshold", "max_tool_iterations",
     "log_ai_output", "send_interim_text", "force_tool_use",
+    "background_wait_timeout", "background_wait_budget",
     "vector_search_batch_size", "memory_recall_top_k",
     "memory_recall_min_score", "memory_time_decay_days",
     "memory_warn_threshold", "memory_max_per_type",
@@ -220,6 +229,9 @@ class MindConfig:
     max_tool_iterations: int = 8
     # 纯工具模式：思维循环中 LLM 调用强制工具选择（tool_choice=required）
     force_tool_use: bool = True
+    # 后台任务等待：等待意图挂起的单次上限 / 单轮回复累计预算（秒）
+    background_wait_timeout: float = 30.0
+    background_wait_budget: float = 120.0
     log_ai_output: bool = True
     send_interim_text: bool = False
     # 记忆搜索配置

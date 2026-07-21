@@ -25,8 +25,10 @@ export interface ModelConfig {
   supports_forced_tool_choice: boolean;
   vision_format: string;
   supports_reasoning: boolean;
-  temperature: number;
-  top_p: number;
+  /** null = 不下发，由 provider/SDK 按模型默认决定 */
+  temperature: number | null;
+  /** null = 不下发，由 provider/SDK 按模型默认决定 */
+  top_p: number | null;
   frequency_penalty: number;
   presence_penalty: number;
   timeout: number;
@@ -41,10 +43,9 @@ export interface ModelConfig {
 
 export type CreateProviderConfig = Omit<ProviderConfig, "model_count">;
 export type UpdateProviderConfig = Partial<Omit<CreateProviderConfig, "id">>;
-export type CreateModelConfig = Omit<
-  ModelConfig,
-  "name" | "is_default" | "input_cost" | "output_cost" | "context_window"
-> & { context_window?: number };
+export type CreateModelConfig = { id: string } & Partial<
+  Omit<ModelConfig, "id" | "name" | "is_default" | "input_cost" | "output_cost">
+>;
 export type UpdateModelConfig = Partial<Omit<CreateModelConfig, "id">>;
 
 export interface PersonaData {

@@ -27,6 +27,12 @@ def _get_mind_config():
     return get_mind_config()
 
 
+def _delegation_enabled() -> bool:
+    """子代理委托是否启用（后台任务规范提示的注入条件）。"""
+    from core.config import get_config_bool
+    return get_config_bool("delegation_enabled", True)
+
+
 # ==================================================================
 # 提示词模板常量
 # ==================================================================
@@ -65,7 +71,17 @@ _NO_PENDING_HINT = "[当前无外部消息] 当前处于自主思考阶段，可
 _PARALLEL_CALL_HINT = (
     "# 并行工具调用\n"
     "同一轮可以发起多个工具调用（原生并行），参数已确定的独立操作应一次性全部发起，减少对话轮次。\n"
-    "**回复完毕且没有其他操作时，必须在同一轮同时调用 send_message 和 end_reply，一次完成回复并结束，禁止分开调用。**"
+    "**回复完毕且没有其他操作时，必须在同一轮同时调用 send_message 和 end_reply，一次完成回复并结束，禁止分开调用。**\n"
+    "**end_reply 会彻底结束本轮对话，不存在「下一轮再继续」——文字中声明要做的操作，"
+    "必须在调用 end_reply 之前实际发起工具调用，只说不做等于放弃。**"
+)
+
+_BACKGROUND_TASK_HINT = (
+    "# 后台任务\n"
+    "delegate_task(background=true) 启动的后台任务，完成时系统会自动通知你（触发新一轮对话），无需守候。\n"
+    "- 想查进度 → 调用 check_background_tasks\n"
+    "- 想等结果 → send_message 告知用户后调用 end_reply，完成时你会被自动唤醒\n"
+    "- 禁止反复输出「任务还在运行」之类的文字——这些文字用户完全看不到，且会被系统判定为内心独白"
 )
 
 _PENDING_HINT = "→ 处理消息或执行操作，空消息表示当前处于自主思考阶段，不是对方发送的，选择是继续调用流程还是直接结束会话，不要重复发送消息,完成后调用 end_reply"
@@ -168,7 +184,7 @@ class PrefrontalCortex:
         """扫描消息中的标签，按 key 和 value 搜索匹配工具。
 
         [media_type:image][media_path:path] -> tag "media:image"
-        [media_file:image:path]             -> tag "media:image"（兼容旧格式）
+        [media_file:image:path]             -> tag "media:image"
         [channel:telegram]                  -> tag "channel", "telegram"
         [platform:qq]                       -> tag "platform", "qq"
         """
@@ -441,7 +457,7 @@ class PrefrontalCortex:
         self._discovered_tools.clear()
 
     async def get_active_tool_schemas(self, adapter_key: str = "", scope: str = "") -> list[dict]:
-        """合并返回当前所有活跃工具 schema（always + mcp + 频道 + 标签 + 热召回 + 动态发现）。
+        """合并返回当前所有活跃工具 schema（always + 频道 + 标签 + 热召回 + 动态发现 + 已激活分组）。
 
         合并结果经两道门控过滤：
         1. 沉睡过滤：allow_sleep 工具所属分组未激活时不出现在 schema 中；
@@ -531,6 +547,7 @@ class PrefrontalCortex:
             models_summary: str = "",
             adapter_key: str = "",
             target_id: str = "",
+            direct_vision: bool = False,
     ) -> list[dict]:
         """构建工具使用规则、通道感知、媒体处理规则的系统提示。"""
         catalog = EntityRegistry.get_entity_catalog()
@@ -563,7 +580,7 @@ class PrefrontalCortex:
             lines.append("")
             lines.append(models_summary)
 
-        media_rules = self._build_media_rules()
+        media_rules = self._build_media_rules(direct_vision)
         if media_rules:
             lines.append("")
             lines.append("# 多媒体处理")
@@ -582,6 +599,11 @@ class PrefrontalCortex:
 
         lines.append("")
         lines.append(_PARALLEL_CALL_HINT)
+
+        # 后台任务行为规范：仅子代理委托启用时注入（无后台任务来源则规则无意义）
+        if _delegation_enabled():
+            lines.append("")
+            lines.append(_BACKGROUND_TASK_HINT)
 
         return [{"role": "system", "content": "\n".join(lines)}]
 
@@ -616,8 +638,13 @@ class PrefrontalCortex:
 - 不需要 @ 时直接写普通文本"""
 
     @staticmethod
-    def _build_media_rules() -> str:
-        """根据 EntityRegistry 中的 media:TYPE 标签动态生成媒体处理规则。"""
+    def _build_media_rules(direct_vision: bool = False) -> str:
+        """根据 EntityRegistry 中的 media:TYPE 标签动态生成媒体处理规则。
+
+        Args:
+            direct_vision: 当前主模型支持视觉时，图片直接以多模态形式呈现，
+                无需强制调用图片识别工具（仍保留工具供深入分析）。
+        """
         tag_tool_map: dict[str, list[str]] = {}
         for entity in EntityRegistry.get_all():
             if entity.entity_type.value != "tool" or not entity.enabled:
@@ -635,7 +662,13 @@ class PrefrontalCortex:
         ]
         for media_type, tool_names in sorted(tag_tool_map.items()):
             tools_str = " / ".join(tool_names)
-            lines.append(f"- [media_type:{media_type}] → {tools_str}")
+            if media_type == "image" and direct_vision:
+                lines.append(
+                    f"- [media_type:image] → 图片已直接以视觉形式呈现给你，无需调用工具识别；"
+                    f"如需更深入分析（OCR/细节）仍可调用 {tools_str}"
+                )
+            else:
+                lines.append(f"- [media_type:{media_type}] → {tools_str}")
         lines.append(
             "禁止用 run_shell_command 编写脚本（如 python HTTP 请求）替代上述媒体工具——"
             "内置工具已封装好多模型回退，更可靠。"
@@ -647,15 +680,22 @@ class PrefrontalCortex:
     # LLM 上下文组装（Prompt 分层缓存架构）
     # ==================================================================
 
-    def build_stable_layer(self, persona_parts: List[str], models_summary: str = "") -> str:
+    def build_stable_layer(
+            self,
+            persona_parts: List[str],
+            models_summary: str = "",
+            direct_vision: bool = False,
+    ) -> str:
         """构建 stable 层：人设 + 工具系统提示（对话内字节级不变，供前缀缓存复用）。"""
         parts = list(persona_parts)
-        for msg in self.build_tool_system_prompt(models_summary=models_summary):
+        for msg in self.build_tool_system_prompt(
+                models_summary=models_summary, direct_vision=direct_vision,
+        ):
             if msg.get("content"):
                 parts.append(msg["content"])
         return "\n\n".join(parts)
 
-    def stable_fingerprint(self, models_summary: str = "") -> str:
+    def stable_fingerprint(self, models_summary: str = "", direct_vision: bool = False) -> str:
         """计算 stable 层动态输入的指纹（任一输入变化即触发重建）。
 
         覆盖：工具目录、可沉睡分组及其激活状态、工具规则、模型摘要、媒体规则。
@@ -676,7 +716,8 @@ class PrefrontalCortex:
             _json.dumps(sorted(activated.items()), ensure_ascii=False),
             "\n".join(rules),
             models_summary,
-            self._build_media_rules(),
+            self._build_media_rules(direct_vision),
+            str(_delegation_enabled()),
         )
 
     async def build_llm_context(
@@ -739,13 +780,21 @@ class PrefrontalCortex:
         except Exception:
             pass
 
-        # 上下文溢出提示：当对话历史达到窗口上限，提醒 AI 主动记忆和检索
+        # 上下文溢出提示：对话历史达到窗口上限时，告知窗口外真实数量与检索路径
+        # （窗口外消息仍完整存于 DB——软归档感知，而非沉默丢弃）
         overflow_hint: List[Dict] = []
         if max_size > 0 and len(conversation_list) >= max_size:
+            hidden = 0
+            try:
+                total = await self._conversation_data.count_messages(anything)
+                hidden = max(0, total - len(conversation_list))
+            except Exception as exc:
+                log(f"窗口外消息计数失败: {exc}", "DEBUG", tag="PFC")
+            hidden_note = f"，另有 {hidden} 条更早消息在窗口外" if hidden else ""
             overflow_hint = [{"role": "system", "content": (
-                f"[上下文溢出] 当前对话历史已达窗口上限（{max_size} 条），更早的消息已不在视野内。\n"
+                f"[上下文溢出] 当前仅显示最近 {max_size} 条对话{hidden_note}，更早的消息已不在视野内。\n"
+                "- 可通过 recall_conversation 按语义搜索窗口外的对话内容\n"
                 "- 建议使用 memorize 将对话中的重要信息存入长期记忆，避免遗忘\n"
-                "- 可通过 recall_conversation 按语义搜索更早的对话内容\n"
                 "- 可通过 recall 检索长期记忆中的相关信息"
             )}]
 
@@ -755,13 +804,9 @@ class PrefrontalCortex:
         )
 
         # 确保最后一条非 system 消息不是 assistant 角色，防止 Anthropic prefill 400 错误。
-        for i in range(len(all_msgs) - 1, -1, -1):
-            msg = all_msgs[i]
-            if msg.get("role") == "system":
-                continue
-            if msg.get("role") == "assistant":
-                all_msgs[i] = {**msg, "role": "user"}
-            break
+        # （规则实现已收拢至 message_schema.fix_trailing_assistant，此处就地委托）
+        from agent.mind.message_schema import fix_trailing_assistant
+        fix_trailing_assistant(all_msgs)
 
         return all_msgs
 

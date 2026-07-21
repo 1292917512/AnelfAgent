@@ -260,3 +260,117 @@ async def test_monologue_counter_resets_on_tool_call(anything) -> None:
     # 第 2 轮 end_reply 正常结束，未触发独白强制结束
     assert call_count == 2
     assert not any("连续内心独白" in s for s in steps)
+
+
+# ==================================================================
+# 提前结束拦截：唯一动作是 end_reply 且附带大段不可见文本
+# ==================================================================
+
+_DECLARED_TOOLS = [
+    {"type": "function", "function": {"name": "send_message"}},
+    {"type": "function", "function": {"name": "generate_image"}},
+    {"type": "function", "function": {"name": "end_reply"}},
+]
+
+_LONG_PLAN_TEXT = (
+    "找到 generate_image 工具了！现在先调 generate_image 画图，"
+    "拿到生成路径后再用 send_photo 发给主人，最后 send_message 收尾"
+)
+
+
+def _mk_result(text: str, tool_names: List[str]) -> SimpleNamespace:
+    return SimpleNamespace(
+        content=text,
+        tool_calls=[
+            SimpleNamespace(
+                id=f"tc_{n}", name=n, arguments="{}",
+                raw={"id": f"tc_{n}", "type": "function",
+                     "function": {"name": n, "arguments": "{}"}},
+            )
+            for n in tool_names
+        ],
+        reasoning_content="", usage=None, raw=None, model="fake",
+    )
+
+
+class _DeclaredMind(_FakeMind):
+    """Mind 替身：按队列返回 文本+工具调用 组合。"""
+
+    def __init__(self, rounds: List[SimpleNamespace]) -> None:
+        super().__init__()
+        self._rounds = list(rounds)
+        self._reply_adapter_key = ""
+
+    async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None):
+        self.llm_calls += 1
+        self.tool_choices.append(tool_choice)
+        if self._rounds:
+            return self._rounds.pop(0)
+        return _mk_result("", ["end_reply"])
+
+
+async def _run_loop(mind, anything, steps: List[str], chain: List) -> None:
+    await think_loop(
+        mind,
+        mode=ThinkMode.REPLY,
+        tool_chain=chain,
+        execution_steps=steps,
+        start_time=time.time(),
+        safety_limit=10,
+        collected_text=[],
+        active_tools=list(_DECLARED_TOOLS),
+        anything=anything,
+        base_messages=[{"role": "user", "content": "帮我画张图"}],
+    )
+
+
+async def test_end_reply_intercepted_when_action_declared(anything) -> None:
+    """唯一动作是 end_reply 且附带大段计划文本 → 拦截并要求兑现。"""
+    mind = _DeclaredMind([
+        _mk_result(_LONG_PLAN_TEXT, ["end_reply"]),
+        _mk_result("", ["end_reply"]),
+    ])
+    steps: List[str] = []
+    chain: List = []
+    await _run_loop(mind, anything, steps, chain)
+
+    assert mind.llm_calls == 2
+    assert any("结束被拦截" in s for s in steps)
+    blocked = [m for m in chain if m.get("role") == "system" and "没有执行任何实际操作" in m.get("content", "")]
+    assert blocked and "下一轮" in blocked[0]["content"]
+
+
+async def test_end_reply_interception_capped_at_two(anything) -> None:
+    """持续只说不做：拦截 2 次后第 3 次 end_reply 放行（防拦截死循环）。"""
+    mind = _DeclaredMind([
+        _mk_result(_LONG_PLAN_TEXT, ["end_reply"]) for _ in range(5)
+    ])
+    steps: List[str] = []
+    await _run_loop(mind, anything, steps, [])
+
+    assert mind.llm_calls == 3
+    assert sum("结束被拦截" in s for s in steps) == 2
+
+
+async def test_end_reply_honored_when_action_fulfilled(anything) -> None:
+    """本轮有实际工具调用（工作工具 + end_reply）→ end_reply 直接放行。"""
+    mind = _DeclaredMind([
+        _mk_result(_LONG_PLAN_TEXT, ["generate_image", "end_reply"]),
+    ])
+    steps: List[str] = []
+    await _run_loop(mind, anything, steps, [])
+
+    assert mind.llm_calls == 1
+    assert not any("结束被拦截" in s for s in steps)
+
+
+async def test_end_reply_honored_with_short_text(anything) -> None:
+    """简短收尾文本 + end_reply → 直接放行（不足判定阈值）。"""
+    mind = _DeclaredMind([
+        _mk_result("好的，结束啦", ["end_reply"]),
+    ])
+    steps: List[str] = []
+    await _run_loop(mind, anything, steps, [])
+
+    assert mind.llm_calls == 1
+    assert not any("结束被拦截" in s for s in steps)

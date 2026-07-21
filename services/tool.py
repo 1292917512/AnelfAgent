@@ -204,5 +204,5 @@ class ToolService:
         return reload_entities()
 
     def list_plugins(self) -> List[Dict[str, Any]]:
-        """返回已加载插件列表（已废弃，始终返回空列表）。"""
+        """返回已加载插件列表。"""
         return []
