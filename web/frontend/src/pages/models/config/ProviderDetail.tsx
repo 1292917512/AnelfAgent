@@ -13,7 +13,7 @@ import type {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button, Input, Select } from "@/components/ui";
-import { API_TYPE_OPTIONS, toModelUpdate, type JsonField } from "./shared";
+import { API_TYPE_OPTIONS, MEDIA_PROTOCOL_OPTIONS, toModelUpdate, type JsonField } from "./shared";
 import { ModelCard } from "./ModelCard";
 import { ManualAddForm } from "./ManualAddForm";
 import { RemoteModelPicker } from "./RemoteModelPicker";
@@ -116,13 +116,11 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
         return;
       }
       const patch: UpdateModelConfig = { ...ensureDraft(m) };
-      if (info.max_output_tokens) patch.max_tokens = info.max_output_tokens;
       if (info.max_input_tokens) patch.context_window = info.max_input_tokens;
       if (info.supports_vision !== undefined) patch.supports_vision = info.supports_vision;
       if (info.supports_tools !== undefined) patch.supports_tools = info.supports_tools;
       setModelEdit(patch);
       const parts: string[] = [];
-      if (info.max_output_tokens) parts.push(`max_tokens=${info.max_output_tokens}`);
       if (info.max_input_tokens) parts.push(`context=${info.max_input_tokens}`);
       if (info.supports_vision) parts.push("vision=true");
       if (info.supports_tools) parts.push("tools=true");
@@ -222,6 +220,18 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
               readOnly={!providerEdit}
               onChange={(e) => providerEdit && setProviderEdit({ ...providerEdit, proxy_url: e.target.value })}
             />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted">{t("providerFields.media_protocol", { defaultValue: "media_protocol" })}</label>
+            <Select
+              className="w-full"
+              value={pe.media_protocol ?? ""}
+              disabled={!providerEdit}
+              onChange={(e) => providerEdit && setProviderEdit({ ...providerEdit, media_protocol: e.target.value })}
+            >
+              <option value="">{t("mediaProtocolAuto")}</option>
+              {MEDIA_PROTOCOL_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+            </Select>
           </div>
         </div>
         {testResult && <div className="p-3 rounded-md bg-card border border-border text-sm text-foreground break-all">{testResult}</div>}

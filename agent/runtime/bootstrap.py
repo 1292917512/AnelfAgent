@@ -210,6 +210,9 @@ def create_bootstrap() -> FlowMachine:
         from agent.runtime.assistant import AgentAssistant
         from agent.runtime.runtime import AgentRuntime
         from agent.runtime.singleton import set_runtime
+        # 提前导入 scheduler 模块，使其 deferred 工具在 Mind 初始化
+        # activate_group("thinking") 时一并注册
+        from agent.mind.tools.scheduler import set_mind
 
         data_center = machine.get(BK.STORAGE)
         llm_data = machine.get(BK.LLM)
@@ -244,7 +247,6 @@ def create_bootstrap() -> FlowMachine:
         )
         set_runtime(runtime)
 
-        from agent.mind.tools.scheduler import set_mind
         set_mind(mind)
 
         log(

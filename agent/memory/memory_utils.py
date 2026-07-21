@@ -47,3 +47,33 @@ def list_workspace_md_files(workspace_dir: Path) -> list[Path]:
         p for p in memory_dir.rglob("*.md")
         if p.is_file() and not p.is_symlink()
     )
+
+
+def list_indexable_files(
+    workspace_dir: Path,
+    uploads_dir: Path | None = None,
+) -> list[tuple[Path, str]]:
+    """枚举全部可索引文件，返回 (绝对路径, 索引 rel_key) 对。
+
+    rel_key 命名空间：
+    - memory/**/*.md → 相对 workspace_dir 的路径（兼容存量索引）
+    - uploads/docs/** → "uploads/docs/<相对路径>"（文档命名空间）
+    """
+    from .doc_extract import SUPPORTED_DOC_EXTS
+
+    pairs: list[tuple[Path, str]] = [
+        (p, str(p.relative_to(workspace_dir)).replace("\\", "/"))
+        for p in list_workspace_md_files(workspace_dir)
+    ]
+    if uploads_dir is not None:
+        docs_dir = uploads_dir / "docs"
+        if docs_dir.is_dir():
+            for p in sorted(docs_dir.rglob("*")):
+                if (
+                    p.is_file()
+                    and not p.is_symlink()
+                    and p.suffix.lower() in SUPPORTED_DOC_EXTS
+                ):
+                    rel = str(p.relative_to(uploads_dir)).replace("\\", "/")
+                    pairs.append((p, f"uploads/{rel}"))
+    return pairs

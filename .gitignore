@@ -57,6 +57,7 @@ config/mind_config.json
 
 # === Personal runtime configs ===
 config/heartbeat.json
+config/reminders.json
 config/webui.json
 config/introspection.json
 config/introspection.json.bak

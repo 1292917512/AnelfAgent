@@ -195,7 +195,10 @@ def test_reasoning_model_gets_thinking_budget() -> None:
 def test_non_reasoning_model_no_thinking_injection() -> None:
     cfg = CogneeChatModelConfig(source="model", model_id="sf-chat").normalized()
     payload = resolve_chat_llm_config(cfg, _manager())
-    assert "llm_args" not in payload
+    assert "extra_body" not in payload.get("llm_args", {})
+    # 结构化抽取始终显式设置输出预算，防止端点小默认值截断
+    assert payload["llm_max_completion_tokens"] >= 16384
+    assert payload["llm_args"]["max_tokens"] == payload["llm_max_completion_tokens"]
 
 
 def test_user_extra_body_thinking_wins() -> None:
@@ -223,6 +226,65 @@ def test_extra_body_reserved_keys_filtered() -> None:
     assert "temperature" not in extra_body
     assert "tool_choice" not in extra_body
     assert extra_body["custom_flag"] is True
+
+
+# ==================================================================
+# 思考等级（reasoning_effort）显式配置
+# ==================================================================
+
+
+def test_reasoning_effort_off_disables_thinking() -> None:
+    """reasoning_effort=off 强制注入 thinking disabled。"""
+    cfg = CogneeChatModelConfig(
+        source="model", model_id="qwen-thinking", reasoning_effort="off",
+    ).normalized()
+    payload = resolve_chat_llm_config(cfg, _manager())
+    thinking = payload["llm_args"]["extra_body"]["thinking"]
+    assert thinking == {"type": "disabled"}
+
+
+def test_reasoning_effort_levels_budget() -> None:
+    """low/medium/high 映射到对应思考预算；max 不限制预算。"""
+    cases = {"low": 1024, "medium": 2048, "high": 4096}
+    for effort, expected in cases.items():
+        cfg = CogneeChatModelConfig(
+            source="model", model_id="qwen-thinking", reasoning_effort=effort,
+        ).normalized()
+        payload = resolve_chat_llm_config(cfg, _manager())
+        thinking = payload["llm_args"]["extra_body"]["thinking"]
+        assert thinking == {"type": "enabled", "budget_tokens": expected}, effort
+
+    cfg = CogneeChatModelConfig(
+        source="model", model_id="qwen-thinking", reasoning_effort="max",
+    ).normalized()
+    payload = resolve_chat_llm_config(cfg, _manager())
+    thinking = payload["llm_args"]["extra_body"]["thinking"]
+    assert thinking == {"type": "enabled"}
+
+
+def test_reasoning_effort_overrides_model_extra_body() -> None:
+    """显式 reasoning_effort 优先级高于模型 extra_body.thinking。"""
+    manager = _manager()
+    manager._clients["qwen-thinking"].config.extra_body = {
+        "thinking": {"type": "enabled", "budget_tokens": 4096},
+    }
+    cfg = CogneeChatModelConfig(
+        source="model", model_id="qwen-thinking", reasoning_effort="low",
+    ).normalized()
+    payload = resolve_chat_llm_config(cfg, manager)
+    thinking = payload["llm_args"]["extra_body"]["thinking"]
+    assert thinking["budget_tokens"] == 1024
+
+
+def test_reasoning_effort_invalid_falls_back_to_auto() -> None:
+    """非法 reasoning_effort 归一化为 auto，保持按 supports_reasoning 自动注入。"""
+    cfg = CogneeChatModelConfig(
+        source="model", model_id="qwen-thinking", reasoning_effort="extreme",
+    ).normalized()
+    assert cfg.reasoning_effort == ""
+    payload = resolve_chat_llm_config(cfg, _manager())
+    thinking = payload["llm_args"]["extra_body"]["thinking"]
+    assert thinking == {"type": "enabled", "budget_tokens": 2048}
 
 
 def test_explicit_extra_args_override() -> None:

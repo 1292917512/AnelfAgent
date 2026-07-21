@@ -48,11 +48,15 @@ def web_search(query: str, max_results: int = 8, search_recency: str = "") -> st
 
     自动搜索全网信息并生成结构化总结，同时提供原始参考链接。
     若需要某个页面的完整内容，请配合 web_fetch 使用。
+    时间敏感的问题（比分、新闻、股价等）：query 中应显式包含当前日期/
+    年份等时间词（如"2026年7月 世界杯决赛比分"），并配合 search_recency
+    限定时间范围，避免搜出赛前预测等过时内容。
 
     Args:
-        query:           搜索关键词，支持自然语言
+        query:           搜索关键词，支持自然语言；时间敏感问题请显式写入日期/年份
         max_results:     最多返回条数，默认 8，最大 20
-        search_recency:  时间过滤，可选 week/month/semiyear/year，默认不限
+        search_recency:  时间过滤，可选 week/month/semiyear/year，默认不限；
+                         注意指定后返回纯结果列表（无 AI 总结）
     """
     from entities.web.baidu_search import search_prefer_deep
     max_results = min(max(1, max_results), 20)

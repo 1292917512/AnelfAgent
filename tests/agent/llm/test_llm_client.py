@@ -225,6 +225,82 @@ async def test_stream_reassembles_tools_and_closes(monkeypatch: pytest.MonkeyPat
     assert stream.closed is True
 
 
+def test_normalize_tc_index_coerces_mixed_types() -> None:
+    """provider 可能把 tool_call.index 返回为字符串，必须归一化为 int。"""
+    assert LLMClient._normalize_tc_index(None, 0) == 0
+    assert LLMClient._normalize_tc_index(0, 0) == 0
+    assert LLMClient._normalize_tc_index("1", 0) == 1
+    assert LLMClient._normalize_tc_index("abc", 3) == 3
+    assert LLMClient._normalize_tc_index(2.0, 0) == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_mixed_index_types_do_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """复现历史 bug：流式 chunk 中 tool_call.index 混合 int/str 时，
+    sorted(tc_bufs) 抛 '<' not supported between instances of 'int' and 'str'。"""
+    chunks = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content="",
+                    reasoning_content=None,
+                    reasoning_details=None,
+                    tool_calls=[
+                        SimpleNamespace(index="0", id="call-1", function=SimpleNamespace(
+                            name="lookup", arguments='{"q":')),
+                        SimpleNamespace(index=1, id="call-2", function=SimpleNamespace(
+                            name="send", arguments='{"x":')),
+                    ],
+                ),
+                finish_reason=None,
+            )],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content="",
+                    reasoning_content=None,
+                    reasoning_details=None,
+                    tool_calls=[
+                        SimpleNamespace(index=0, id=None, function=SimpleNamespace(
+                            name=None, arguments='1}')),
+                        SimpleNamespace(index="1", id=None, function=SimpleNamespace(
+                            name=None, arguments='2}')),
+                    ],
+                ),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        ),
+    ]
+
+    class FakeStream:
+        def __aiter__(self):
+            async def iterator():
+                for chunk in chunks:
+                    yield chunk
+            return iterator()
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "agent.llm.llm_client.litellm.acompletion",
+        AsyncMock(return_value=FakeStream()),
+    )
+    client = LLMClient(LLMClientConfig(model="gpt-4.1"))
+
+    deltas = [delta async for delta in client.chat_stream(
+        [{"role": "user", "content": "hello"}],
+    )]
+
+    tool_calls = [tool for delta in deltas for tool in delta.tool_calls]
+    assert [t.name for t in tool_calls] == ["lookup", "send"]
+    assert tool_calls[0].arguments == '{"q":1}'
+    assert tool_calls[1].arguments == '{"x":2}'
+
+
 @pytest.mark.asyncio
 async def test_stream_consumer_cancel_closes_underlying_stream(
     monkeypatch: pytest.MonkeyPatch,

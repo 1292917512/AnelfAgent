@@ -18,6 +18,8 @@ export function ConfigPanel() {
     { key: "reflection_merge_threshold", label: t("configFields.reflection_merge_threshold"), type: "int", desc: t("configDescs.reflection_merge_threshold") },
     { key: "heartbeat_max_entries", label: t("configFields.heartbeat_max_entries"), type: "int", desc: t("configDescs.heartbeat_max_entries") },
     { key: "auto_consolidate_enabled", label: t("configFields.auto_consolidate_enabled"), type: "bool", desc: t("configDescs.auto_consolidate_enabled") },
+    { key: "notes_events_retention_days", label: t("configFields.notes_events_retention_days"), type: "int", desc: t("configDescs.notes_events_retention_days") },
+    { key: "notes_events_distill_enabled", label: t("configFields.notes_events_distill_enabled"), type: "bool", desc: t("configDescs.notes_events_distill_enabled") },
   ];
 
   const recallFields: FieldMeta[] = [

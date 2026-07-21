@@ -51,7 +51,6 @@ export function RemoteModelPicker({
     try {
       for (const modelId of selected) {
         const shortName = modelId.split("/").pop() || modelId;
-        let maxTokens = 4096;
         let supportsVision = false;
         let supportsTools = true;
         let contextWindow = 0;
@@ -60,7 +59,6 @@ export function RemoteModelPicker({
           const infoRes = await providersApi.modelInfo(modelId, apiType);
           const info = infoRes.data;
           if (info.found) {
-            maxTokens = info.max_output_tokens ?? 4096;
             supportsVision = info.supports_vision ?? false;
             supportsTools = info.supports_tools ?? true;
             contextWindow = info.max_input_tokens ?? 0;
@@ -73,7 +71,6 @@ export function RemoteModelPicker({
           model_types: ["chat"],
           temperature: 0.7,
           top_p: 1.0,
-          max_tokens: maxTokens,
           context_window: contextWindow,
           frequency_penalty: 0,
           presence_penalty: 0,

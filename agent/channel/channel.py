@@ -213,7 +213,16 @@ class BaseChannel(BaseEntity, ABC):
         return _err(f"{self.display_name} 不支持修改群简介")
 
     async def message_reaction(self, chat_id: str, message_id: str, emoji_id: str = "212", **kwargs: Any) -> str:
-        """对指定消息添加表情回应。"""
+        """对指定消息添加表情回应。
+
+        Args:
+            chat_id: 会话 ID
+            message_id: 要回应的消息 ID
+            emoji_id: QQ 系统小黄脸表情代码（字符串）。常用值：4=得意, 5=流泪,
+                8=发呆, 20=抠鼻, 21=可爱, 46=猪, 66=爱心, 76=赞, 124=OK,
+                212=呲牙(默认), 319=眼中有爱, 337=花朵脸。
+                完整代码表见 NapCat/OneBot set_msg_emoji_like 文档
+        """
         return _err(f"{self.display_name} 不支持表情回应")
 
     # ------------------------------------------------------------------

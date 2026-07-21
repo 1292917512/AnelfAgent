@@ -6,10 +6,10 @@ import { Plus } from "lucide-react";
 import { providersApi } from "@/lib/api";
 import type { CreateProviderConfig } from "@/lib/types";
 import { Button, Input, Select } from "@/components/ui";
-import { API_TYPE_OPTIONS } from "./shared";
+import { API_TYPE_OPTIONS, MEDIA_PROTOCOL_OPTIONS } from "./shared";
 
 const EMPTY_PROVIDER: CreateProviderConfig = {
-  id: "", name: "", base_url: "", api_key: "", api_type: "openai", proxy_url: "",
+  id: "", name: "", base_url: "", api_key: "", api_type: "openai", proxy_url: "", media_protocol: "",
 };
 
 /** 新建供应商表单 */
@@ -59,6 +59,13 @@ export function ProviderForm({ onClose }: { onClose: () => void }) {
             value={form.proxy_url}
             onChange={(e) => setForm({ ...form, proxy_url: e.target.value })}
           />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-muted">{t("providerFields.media_protocol", { defaultValue: "media_protocol" })}</label>
+          <Select className="w-full" value={form.media_protocol} onChange={(e) => setForm({ ...form, media_protocol: e.target.value })}>
+            <option value="">{t("mediaProtocolAuto")}</option>
+            {MEDIA_PROTOCOL_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+          </Select>
         </div>
       </div>
       {error && <p className="text-xs text-danger">{error}</p>}

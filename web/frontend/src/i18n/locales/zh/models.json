@@ -37,6 +37,7 @@
   "noModelsOfType": "该类型暂无模型，请在「模型配置」中添加",
   "priorityNote": "优先级说明：系统在需要「{{type}}」类型模型时，会从上到下依次尝试，排名第一的模型优先使用。拖拽卡片可调整顺序。",
   "proxyPlaceholder": "如 127.0.0.1:7890（可选）",
+  "mediaProtocolAuto": "自动识别",
   "browseRemote": "浏览远程模型",
   "manualAdd": "手动添加",
   "manualAddTitle": "手动添加模型",
@@ -86,7 +87,8 @@
     "base_url": "API 地址",
     "api_key": "API 密钥",
     "api_type": "API 类型",
-    "proxy_url": "代理地址"
+    "proxy_url": "代理地址",
+    "media_protocol": "图片生成协议"
   },
   "modelTypeLabels": {
     "chat": "对话",

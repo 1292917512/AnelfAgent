@@ -169,13 +169,15 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
     description="在长期记忆中语义搜索，返回最相关的记忆及其联想关联。"
     "结果中 related=true 的是沿标签网络联想出的关联记忆。",
 )
-async def recall(query: str, tags: str = "", limit: int = 5) -> str:
+async def recall(query: str, tags: str = "", limit: int = 5, min_score: float = 0.0) -> str:
     """在长期记忆中语义搜索（同时检索 memories 表和 MD 文件索引）。
 
     Args:
         query: 搜索查询（自然语言）
         tags: 可选标签过滤，逗号分隔（如 user:123）
         limit: 最大返回数量，默认 5
+        min_score: 最低相关度过滤（0-1，相对最高分归一化）。默认 0 不过滤；
+            需要精确模式减少噪音时建议 0.5~0.7，只保留高相关记忆
     """
     try:
         if not _store:
@@ -211,6 +213,9 @@ async def recall(query: str, tags: str = "", limit: int = 5) -> str:
             entity_scope=entity_scope,
             query_tags=tag_list,
         )
+
+        if min_score > 0:
+            results = [r for r in results if r.score >= min_score]
 
         mem_ids = [
             int(r.id.split(":")[1])

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 from services import MemoryService
@@ -347,6 +347,17 @@ async def write_memory_file(req: WriteMemoryFileRequest) -> Dict[str, int]:
     lines = _mem_svc.write_memory_file(req.path, req.content)
     return {"lines": lines}
 
+
+@router.delete("/files")
+async def delete_memory_file(path: str = Query(...)) -> Dict[str, str]:
+    try:
+        removed = _mem_svc.delete_memory_file(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"{path} 不存在")
+    return {"status": "ok"}
+
 # ── 目标计划 ─────────────────────────────────────────────────────────
 
 @router.get("/goals")
@@ -428,5 +439,32 @@ async def resync_files(force: bool = Query(False)) -> Dict[str, Any]:
 async def clean_embedding_cache() -> Dict[str, Any]:
     try:
         return await _mem_svc.clean_embedding_cache()
+    except RuntimeError:
+        return {"error": "运行时未初始化"}
+
+
+# ── 文档索引 ─────────────────────────────────────────────────────────
+
+@router.post("/documents/upload")
+async def upload_document(file: UploadFile = File(...)) -> Dict[str, Any]:
+    try:
+        content = await file.read()
+        return await _mem_svc.upload_document(file.filename or "document", content)
+    except RuntimeError:
+        return {"error": "运行时未初始化"}
+
+
+@router.get("/documents")
+async def list_documents() -> List[Dict[str, Any]]:
+    try:
+        return await _mem_svc.list_documents()
+    except RuntimeError:
+        return []
+
+
+@router.delete("/documents")
+async def delete_document(path: str = Query(...)) -> Dict[str, Any]:
+    try:
+        return await _mem_svc.delete_document(path)
     except RuntimeError:
         return {"error": "运行时未初始化"}

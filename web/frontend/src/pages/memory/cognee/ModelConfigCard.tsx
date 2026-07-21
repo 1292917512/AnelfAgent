@@ -9,6 +9,7 @@ import type {
   CogneeChatModelConfig,
   CogneeEmbeddingModelConfig,
   CogneeModelSource,
+  CogneeReasoningEffort,
 } from "@/lib/types";
 import { Button, Input, Select } from "@/components/ui";
 import { ModelSelect, usePriorities } from "@/components/models/ModelSelect";
@@ -19,6 +20,7 @@ type KindConfig = CogneeChatModelConfig | CogneeEmbeddingModelConfig;
 const CHAT_PROVIDERS = ["openai", "anthropic", "gemini", "ollama", "custom", "azure", "mistral", "bedrock"];
 const EMBED_PROVIDERS = ["openai", "ollama", "azure", "fastembed"];
 const INSTRUCTOR_MODES = ["json_mode", "json_schema_mode", "tools", "anthropic_tools", "mistral_tools"];
+const REASONING_EFFORTS: CogneeReasoningEffort[] = ["", "off", "low", "medium", "high", "max"];
 
 function Field({ label, desc, children }: { label: string; desc?: string; children: React.ReactNode }) {
   return (
@@ -199,6 +201,19 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
                 value={(form as CogneeChatModelConfig).max_completion_tokens || ""}
                 onChange={(e) => update({ max_completion_tokens: parseInt(e.target.value, 10) || 0 })}
               />
+            </Field>
+            <Field label={t("cognee.reasoningEffort")} desc={t("cognee.reasoningEffortHint")}>
+              <Select
+                className="w-full"
+                value={(form as CogneeChatModelConfig).reasoning_effort ?? ""}
+                onChange={(e) => update({ reasoning_effort: e.target.value as CogneeReasoningEffort })}
+              >
+                {REASONING_EFFORTS.map((effort) => (
+                  <option key={effort || "auto"} value={effort}>
+                    {t(`cognee.reasoning_${effort || "auto"}`)}
+                  </option>
+                ))}
+              </Select>
             </Field>
           </div>
         )}

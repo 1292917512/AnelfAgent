@@ -4,10 +4,31 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.log import log
 from core.path import ConfigPaths
+from core.sanitizer import is_sanitize_enabled, sanitize_text
+
+# 配置文件读-改-写串行化锁：Web API、AI 工具、热重载等多条写路径共用，
+# 防止并发写互相覆盖丢更新。
+_CONFIG_LOCK = threading.RLock()
+
+
+def _env_config_path() -> Optional[Path]:
+    """ANELF_MCP_CONFIG 环境变量指定的配置文件路径（与 bridge 路径解析对齐）。"""
+    env = os.getenv("ANELF_MCP_CONFIG", "").strip()
+    return Path(env) if env else None
+
+
+def _mask_display(text: str) -> str:
+    """展示用脱敏：遮盖 URL 等文本中可能内嵌的密钥。"""
+    if not text or not is_sanitize_enabled():
+        return text
+    return sanitize_text(text)
 
 
 class MCPService:
@@ -31,6 +52,11 @@ class MCPService:
 
     def load_config(self) -> Dict[str, Any]:
         """加载 MCP 服务器配置。"""
+        env_path = _env_config_path()
+        if env_path is not None:
+            if env_path.exists():
+                return json.loads(env_path.read_text("utf-8"))
+            return {"mcpServers": {}}
         try:
             from agent.config import get_config_provider
             return get_config_provider().get_mcp_config()
@@ -41,6 +67,12 @@ class MCPService:
         return {"mcpServers": {}}
 
     def save_config(self, data: Dict[str, Any]) -> None:
+        env_path = _env_config_path()
+        if env_path is not None:
+            env_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8",
+            )
+            return
         try:
             from agent.config import get_config_provider
             get_config_provider().save_mcp_config(data)
@@ -76,7 +108,10 @@ class MCPService:
     def save_config_json(self, json_str: str) -> None:
         """解析 JSON 文本并保存，自动触发热重载。"""
         data = json.loads(json_str)
-        self.save_config(data)
+        if not isinstance(data, dict):
+            raise ValueError("配置必须是 JSON 对象")
+        with _CONFIG_LOCK:
+            self.save_config(data)
         self._trigger_reload()
 
     @staticmethod
@@ -238,32 +273,33 @@ class MCPService:
         reload: bool = True,
     ) -> Dict[str, Any]:
         """更新指定 server 配置（merge 或 replace），并可选热重载。"""
-        data = self.load_config()
-        servers = data.setdefault("mcpServers", {})
-        existing_raw = servers.get(name)
-        if existing_raw is None and not create_if_missing:
-            raise ValueError(f"服务器 '{name}' 不存在")
-        if existing_raw is not None and not isinstance(existing_raw, dict):
-            raise ValueError(f"服务器 '{name}' 配置格式非法")
+        with _CONFIG_LOCK:
+            data = self.load_config()
+            servers = data.setdefault("mcpServers", {})
+            existing_raw = servers.get(name)
+            if existing_raw is None and not create_if_missing:
+                raise ValueError(f"服务器 '{name}' 不存在")
+            if existing_raw is not None and not isinstance(existing_raw, dict):
+                raise ValueError(f"服务器 '{name}' 配置格式非法")
 
-        before = dict(existing_raw) if isinstance(existing_raw, dict) else {}
-        current = {} if replace else dict(before)
+            before = dict(existing_raw) if isinstance(existing_raw, dict) else {}
+            current = {} if replace else dict(before)
 
-        for field in (remove_fields or []):
-            f = str(field).strip()
-            if f:
-                current.pop(f, None)
+            for field in (remove_fields or []):
+                f = str(field).strip()
+                if f:
+                    current.pop(f, None)
 
-        normalized_patch = self._normalize_server_patch(patch)
-        for key, val in normalized_patch.items():
-            if val is None:
-                current.pop(key, None)
-            else:
-                current[key] = val
+            normalized_patch = self._normalize_server_patch(patch)
+            for key, val in normalized_patch.items():
+                if val is None:
+                    current.pop(key, None)
+                else:
+                    current[key] = val
 
-        final_cfg = self._finalize_server_config(current)
-        servers[name] = final_cfg
-        self.save_config(data)
+            final_cfg = self._finalize_server_config(current)
+            servers[name] = final_cfg
+            self.save_config(data)
         if reload:
             self._trigger_reload()
 
@@ -276,12 +312,13 @@ class MCPService:
 
     def set_server_enabled(self, name: str, enabled: bool, *, reload: bool = True) -> Dict[str, Any]:
         """显式设置 server 的 enabled 状态。"""
-        data = self.load_config()
-        servers = data.get("mcpServers", {})
-        if name not in servers or not isinstance(servers[name], dict):
-            raise ValueError(f"服务器 '{name}' 不存在")
-        servers[name]["enabled"] = bool(enabled)
-        self.save_config(data)
+        with _CONFIG_LOCK:
+            data = self.load_config()
+            servers = data.get("mcpServers", {})
+            if name not in servers or not isinstance(servers[name], dict):
+                raise ValueError(f"服务器 '{name}' 不存在")
+            servers[name]["enabled"] = bool(enabled)
+            self.save_config(data)
         if reload:
             self._trigger_reload()
         return {"name": name, "enabled": bool(enabled), "reloaded": reload}
@@ -294,49 +331,108 @@ class MCPService:
             if bridge:
                 return bridge.get_connected_servers()
         except Exception as e:
-            from core.log import log
             log(f"获取 MCP 已连接工具失败: {e}", "DEBUG")
         return {}
 
+    def get_last_errors(self) -> Dict[str, str]:
+        """返回各 server 最近一次连接错误（name → 错误详情）。"""
+        try:
+            from entities.mcp.bridge import get_mcp_bridge
+            bridge = get_mcp_bridge()
+            if bridge:
+                return bridge.get_last_errors()
+        except Exception as e:
+            log(f"获取 MCP 连接错误信息失败: {e}", "DEBUG")
+        return {}
+
+    @staticmethod
+    def _infer_transport(cfg: Dict[str, Any]) -> str:
+        transport = str(cfg.get("transport", "") or "").strip()
+        if transport:
+            return transport
+        return "stdio" if cfg.get("command") else "streamable_http"
+
     def list_servers(self) -> List[Dict[str, Any]]:
-        """返回所有 MCP 服务器的状态摘要。"""
+        """返回所有 MCP 服务器的状态摘要（url 为展示用，已脱敏）。"""
         data = self.load_config()
         connected = self.get_connected_tools()
+        errors = self.get_last_errors()
         result: List[Dict[str, Any]] = []
         for name, cfg in data.get("mcpServers", {}).items():
-            enabled = cfg.get("enabled", True) if isinstance(cfg, dict) else True
-            url = (cfg.get("url", "") or cfg.get("command", "")) if isinstance(cfg, dict) else ""
+            if not isinstance(cfg, dict):
+                cfg = {}
+            enabled = cfg.get("enabled", True)
+            raw_url = cfg.get("url", "") or cfg.get("command", "")
             tools = connected.get(name, [])
             result.append({
                 "name": name,
-                "url": url,
+                "url": _mask_display(raw_url),
+                "transport": self._infer_transport(cfg),
                 "enabled": enabled,
                 "connected": name in connected,
                 "tool_count": len(tools),
                 "tools": tools,
+                "last_error": errors.get(name, ""),
             })
         return result
 
     def get_server_tools(self, name: str) -> List[str]:
         return self.get_connected_tools().get(name, [])
 
+    def get_server_tool_details(self, name: str) -> List[Dict[str, Any]]:
+        """返回指定 server 已注册工具的详情（名称/描述/参数 schema）。"""
+        from core.entity import EntityRegistry, EntityType
+        details: List[Dict[str, Any]] = []
+        for e in EntityRegistry.get_by_type(EntityType.TOOL):
+            if e.source != "mcp" or e.group != f"mcp:{name}":
+                continue
+            params = [
+                {
+                    "name": p.name,
+                    "description": p.description,
+                    "type": p.type,
+                    "required": p.required,
+                    "enum": p.enum,
+                }
+                for p in e.meta.get("params", [])
+            ]
+            details.append({
+                "name": e.name,
+                "description": e.description,
+                "params": params,
+            })
+        return sorted(details, key=lambda d: d["name"])
+
     # ------------------------------------------------------------------
     # 增删 / 连接控制
     # ------------------------------------------------------------------
 
     def add_server(self, name: str, url: str) -> None:
-        data = self.load_config()
-        data.setdefault("mcpServers", {})[name] = {"url": url}
-        self.save_config(data)
+        with _CONFIG_LOCK:
+            data = self.load_config()
+            data.setdefault("mcpServers", {})[name] = {"url": url}
+            self.save_config(data)
         self._trigger_reload()
 
+    def create_server(self, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        """以完整字段创建 server（统一走校验与热重载）；已存在时拒绝覆盖。"""
+        with _CONFIG_LOCK:
+            data = self.load_config()
+            if name in data.get("mcpServers", {}):
+                raise ValueError(f"服务器 '{name}' 已存在")
+        return self.update_server_config(
+            name, config, replace=True, create_if_missing=True, reload=True,
+        )
+
     def remove_server(self, name: str) -> None:
-        data = self.load_config()
-        servers = data.get("mcpServers", {})
-        if name in servers:
+        with _CONFIG_LOCK:
+            data = self.load_config()
+            servers = data.get("mcpServers", {})
+            if name not in servers:
+                raise ValueError(f"服务器 '{name}' 不存在")
             del servers[name]
             self.save_config(data)
-            self._trigger_reload()
+        self._trigger_reload()
 
     def toggle_server(self, name: str) -> Dict[str, Any]:
         """连接或断开 MCP 服务器，同时持久化 enabled 状态。返回结构化结果。"""
@@ -365,11 +461,12 @@ class MCPService:
 
     def _set_enabled(self, name: str, enabled: bool) -> None:
         """更新配置文件中指定 server 的 enabled 字段。"""
-        data = self.load_config()
-        servers = data.get("mcpServers", {})
-        if name in servers and isinstance(servers[name], dict):
-            servers[name]["enabled"] = enabled
-            self.save_config(data)
+        with _CONFIG_LOCK:
+            data = self.load_config()
+            servers = data.get("mcpServers", {})
+            if name in servers and isinstance(servers[name], dict):
+                servers[name]["enabled"] = enabled
+                self.save_config(data)
 
     @staticmethod
     def _trigger_reload() -> None:
@@ -380,5 +477,4 @@ class MCPService:
             if bridge:
                 bridge.reload_config()
         except Exception as e:
-            from core.log import log
             log(f"MCP 配置热重载失败: {e}", "WARNING")

@@ -241,7 +241,7 @@ class Mind:
         except Exception:
             max_ctx = 0
         if not max_ctx:
-            max_ctx = llm_client.config.max_tokens or 0
+            max_ctx = llm_client.config.context_window or 0
         self._cached_context_length = max_ctx
         return max_ctx
 
@@ -753,7 +753,7 @@ class Mind:
                 except Exception:
                     max_ctx = 0
                 if not max_ctx:
-                    max_ctx = llm_client.config.max_tokens or 0
+                    max_ctx = llm_client.config.context_window or 0
         usage_percent: Optional[float] = None
         if usage_data.get("total_tokens") and max_ctx > 0:
             usage_percent = round(usage_data["total_tokens"] / max_ctx * 100, 1)

@@ -11,6 +11,7 @@ export interface ProviderConfig {
   api_key: string;
   api_type: string;
   proxy_url: string;
+  media_protocol: string;
   model_count: number;
 }
 
@@ -26,7 +27,6 @@ export interface ModelConfig {
   supports_reasoning: boolean;
   temperature: number;
   top_p: number;
-  max_tokens: number;
   frequency_penalty: number;
   presence_penalty: number;
   timeout: number;
@@ -70,6 +70,8 @@ export interface ModelPriorityItem {
 
 export type CogneeModelSource = "auto" | "model" | "custom";
 
+export type CogneeReasoningEffort = "" | "off" | "low" | "medium" | "high" | "max";
+
 export interface CogneeChatModelConfig {
   source: CogneeModelSource;
   model_id: string;
@@ -80,6 +82,7 @@ export interface CogneeChatModelConfig {
   api_version: string;
   instructor_mode: string;
   max_completion_tokens: number;
+  reasoning_effort: CogneeReasoningEffort;
   extra_args: Record<string, unknown>;
 }
 
@@ -203,11 +206,17 @@ export interface ConvScope {
 }
 
 export interface MemoryFileInfo {
-  name?: string;
-  path?: string;
-  lines?: number;
-  size?: string;
-  [key: string]: unknown;
+  path: string;
+  lines: string;
+  size: string;
+}
+
+export interface MemoryDocument {
+  path: string;
+  name: string;
+  size: number;
+  chunks: number;
+  indexed_at: number;
 }
 
 export interface UnifiedTag {
@@ -215,4 +224,54 @@ export interface UnifiedTag {
   description: string;
   builtin: boolean;
   sources: Array<"message" | "tool" | "custom">;
+}
+
+// ── MCP ─────────────────────────────────────────────────────────
+
+export type MCPTransport = "stdio" | "streamable_http" | "sse";
+
+export interface MCPServer {
+  name: string;
+  /** 展示用地址（stdio 为命令），后端已脱敏 */
+  url: string;
+  transport: MCPTransport | string;
+  enabled: boolean;
+  connected: boolean;
+  tool_count: number;
+  tools: string[];
+  last_error: string;
+}
+
+/** MCP server 完整配置（创建/编辑共用，字段均可选） */
+export interface MCPServerConfig {
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  transport?: MCPTransport;
+  enabled?: boolean;
+  timeout?: number;
+  sse_read_timeout?: number;
+  call_timeout?: number;
+}
+
+export interface MCPToolParam {
+  name: string;
+  description: string;
+  type: string;
+  required: boolean;
+  enum: string[] | null;
+}
+
+export interface MCPToolInfo {
+  name: string;
+  description: string;
+  params: MCPToolParam[];
+}
+
+export interface MCPToggleResult {
+  success: boolean;
+  message: string;
+  tool_count?: number;
 }

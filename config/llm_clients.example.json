@@ -12,13 +12,14 @@
           "id": "gpt-4o",
           "name": "GPT-4o",
           "model": "gpt-4o",
-          "model_types": ["chat"],
+          "model_types": [
+            "chat"
+          ],
           "supports_vision": true,
           "supports_tools": true,
           "vision_format": "base64",
           "temperature": 0.4,
           "top_p": 0.8,
-          "max_tokens": 16384,
           "context_window": 128000,
           "frequency_penalty": 0.0,
           "presence_penalty": 0.0,
@@ -34,13 +35,14 @@
           "id": "text-embedding-3-small",
           "name": "Embedding",
           "model": "text-embedding-3-small",
-          "model_types": ["embedding"],
+          "model_types": [
+            "embedding"
+          ],
           "supports_vision": false,
           "supports_tools": false,
           "vision_format": "base64",
           "temperature": 0.0,
           "top_p": 1.0,
-          "max_tokens": 8192,
           "context_window": 8192,
           "frequency_penalty": 0.0,
           "presence_penalty": 0.0,
@@ -66,13 +68,14 @@
           "id": "claude-sonnet",
           "name": "Claude Sonnet",
           "model": "claude-sonnet-4-5",
-          "model_types": ["chat"],
+          "model_types": [
+            "chat"
+          ],
           "supports_vision": true,
           "supports_tools": true,
           "vision_format": "base64",
           "temperature": 0.4,
           "top_p": 1.0,
-          "max_tokens": 16384,
           "context_window": 200000,
           "frequency_penalty": 0.0,
           "presence_penalty": 0.0,
@@ -96,13 +99,14 @@
           "id": "ollama-chat",
           "name": "Ollama Chat",
           "model": "qwen3:latest",
-          "model_types": ["chat"],
+          "model_types": [
+            "chat"
+          ],
           "supports_vision": false,
           "supports_tools": true,
           "vision_format": "base64",
           "temperature": 0.4,
           "top_p": 0.7,
-          "max_tokens": 8192,
           "context_window": 8192,
           "frequency_penalty": 0.0,
           "presence_penalty": 0.0,
@@ -120,9 +124,18 @@
     }
   ],
   "type_priorities": {
-    "chat": ["gpt-4o", "claude-sonnet", "ollama-chat"],
-    "embedding": ["text-embedding-3-small"],
-    "vision": ["gpt-4o", "claude-sonnet"]
+    "chat": [
+      "gpt-4o",
+      "claude-sonnet",
+      "ollama-chat"
+    ],
+    "embedding": [
+      "text-embedding-3-small"
+    ],
+    "vision": [
+      "gpt-4o",
+      "claude-sonnet"
+    ]
   },
   "default_chat": "gpt-4o"
 }

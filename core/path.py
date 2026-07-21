@@ -517,6 +517,7 @@ class ConfigPaths:
     LLM_CLIENTS = "config/llm_clients.json"
     MCP_SERVERS = "config/mcp_servers.json"
     HEARTBEAT_CONFIG = "config/heartbeat.json"
+    REMINDERS = "config/reminders.json"
     INTROSPECTION_CONFIG = "config/introspection.json"
     INTROSPECTION_DIR = "config/introspection"
     TASKS_DIR = "config/tasks"

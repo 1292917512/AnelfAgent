@@ -31,7 +31,6 @@ export function ManualAddForm({
         model_types: ["chat"],
         temperature: 0.7,
         top_p: 1.0,
-        max_tokens: form.max_tokens,
         context_window: form.context_window,
         frequency_penalty: 0,
         presence_penalty: 0,
@@ -64,11 +63,6 @@ export function ManualAddForm({
           <label className="text-xs font-medium text-muted">{t("modelName")}</label>
           <Input value={form.model} placeholder={t("modelNameHint")}
             onChange={(e) => setForm({ ...form, model: e.target.value })} />
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-muted">max_tokens</label>
-          <Input type="number" step={1} value={form.max_tokens}
-            onChange={(e) => setForm({ ...form, max_tokens: Number(e.target.value) })} />
         </div>
         <div className="space-y-1">
           <label className="text-xs font-medium text-muted">{t("contextWindowLabel")}</label>

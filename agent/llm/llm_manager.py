@@ -37,6 +37,8 @@ class ProviderConfig:
     api_key: str = ""
     api_type: str = "openai"
     proxy_url: str = ""
+    # 图片生成协议适配器名（见 agent.llm.image_adapters），空表示按 host 自动匹配。
+    media_protocol: str = ""
 
     def __post_init__(self) -> None:
         if not self.id.strip():
@@ -52,6 +54,7 @@ class ProviderConfig:
             "api_key": self.api_key,
             "api_type": self.api_type,
             "proxy_url": self.proxy_url,
+            "media_protocol": self.media_protocol,
         }
 
     @classmethod
@@ -63,6 +66,7 @@ class ProviderConfig:
             api_key=data.get("api_key", ""),
             api_type=data.get("api_type", "openai"),
             proxy_url=data.get("proxy_url", ""),
+            media_protocol=data.get("media_protocol", ""),
         )
 
 
@@ -129,7 +133,7 @@ class LLMManager(BaseEntity):
                         api_type=prov.api_type,
                         temperature=mdata.get("temperature", 0.7),
                         top_p=mdata.get("top_p", 1.0),
-                        max_tokens=mdata.get("max_tokens", 4096),
+                        max_tokens=mdata.get("max_tokens"),
                         frequency_penalty=mdata.get("frequency_penalty", 0.0),
                         presence_penalty=mdata.get("presence_penalty", 0.0),
                         timeout=mdata.get("timeout", 120.0),
@@ -146,6 +150,7 @@ class LLMManager(BaseEntity):
                         extra_body=mdata.get("extra_body", {}),
                         extra_params=mdata.get("extra_params", {}),
                         chat_protocol=mdata.get("chat_protocol", "chat_completions"),
+                        media_protocol=mdata.get("media_protocol", prov.media_protocol),
                     )
                     self._clients[mid] = LLMClient(config=cfg)
             except Exception as exc:
@@ -188,10 +193,7 @@ class LLMManager(BaseEntity):
             # 避免重复注册或将零值合并进内置同名条目
             if model_key in litellm.model_cost or model_key.split("/", 1)[-1] in litellm.model_cost:
                 continue
-            custom_models[model_key] = {
-                "max_tokens": cfg.max_tokens,
-                "max_input_tokens": cfg.context_window or cfg.max_tokens,
-                "max_output_tokens": cfg.max_tokens,
+            entry: Dict[str, Any] = {
                 "input_cost_per_token": 0,
                 "output_cost_per_token": 0,
                 "cache_creation_input_token_cost": 0,
@@ -201,6 +203,14 @@ class LLMManager(BaseEntity):
                 "supports_function_calling": cfg.supports_tools,
                 "supports_vision": cfg.supports_vision,
             }
+            # 上下文窗口是模型属性，输出预算仅在显式配置时声明
+            if cfg.context_window:
+                entry["max_tokens"] = cfg.context_window
+                entry["max_input_tokens"] = cfg.context_window
+            if cfg.max_tokens:
+                entry.setdefault("max_tokens", cfg.max_tokens)
+                entry["max_output_tokens"] = cfg.max_tokens
+            custom_models[model_key] = entry
         if not custom_models:
             return
         litellm.register_model(custom_models)
@@ -304,6 +314,7 @@ class LLMManager(BaseEntity):
                     api_key=client.config.api_key,
                     timeout=client.config.timeout,
                     proxy_url=client.config.effective_proxy,
+                    image_protocol=client.config.media_protocol,
                 )
         return None
 
@@ -349,6 +360,7 @@ class LLMManager(BaseEntity):
                 api_key=client.config.api_key,
                 timeout=client.config.timeout,
                 proxy_url=client.config.effective_proxy,
+                image_protocol=client.config.media_protocol,
             )
             result.append((client.config.model, mc))
         return result
@@ -584,12 +596,14 @@ class LLMManager(BaseEntity):
         api_key: str = "",
         api_type: str = "openai",
         proxy_url: str = "",
+        media_protocol: str = "",
     ) -> ProviderConfig:
         if pid in self._providers:
             warning(f"供应商 '{pid}' 已存在，将被覆盖", tag="模型")
         prov = ProviderConfig(
             id=pid, name=name or pid, base_url=base_url,
             api_key=api_key, api_type=api_type, proxy_url=proxy_url,
+            media_protocol=media_protocol,
         )
         self._providers[pid] = prov
         if pid not in self._provider_order:
@@ -612,6 +626,7 @@ class LLMManager(BaseEntity):
                 api_key=updated.api_key,
                 api_type=updated.api_type,
                 proxy_url=updated.proxy_url,
+                media_protocol=updated.media_protocol,
             )
         self.save_config()
         return True
@@ -649,6 +664,7 @@ class LLMManager(BaseEntity):
         if model_id in self._clients:
             warning(f"模型 '{model_id}' 已存在，将被覆盖", tag="模型")
 
+        kwargs.setdefault("media_protocol", prov.media_protocol)
         cfg = LLMClientConfig(
             name=model_id,
             base_url=prov.base_url,

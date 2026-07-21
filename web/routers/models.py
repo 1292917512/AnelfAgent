@@ -87,6 +87,7 @@ class CreateProviderReq(BaseModel):
     api_key: str = ""
     api_type: ApiType = "openai"
     proxy_url: str = ""
+    media_protocol: str = ""
 
 
 @router.post("/providers")
@@ -94,6 +95,7 @@ async def create_provider(req: CreateProviderReq) -> Dict[str, Any]:
     ok = _svc.add_provider(
         req.id, name=req.name, base_url=req.base_url,
         api_key=req.api_key, api_type=req.api_type, proxy_url=req.proxy_url,
+        media_protocol=req.media_protocol,
     )
     if not ok:
         raise HTTPException(409, f"供应商 '{req.id}' 已存在")
@@ -106,6 +108,7 @@ class UpdateProviderReq(BaseModel):
     api_key: Optional[str] = None
     api_type: Optional[ApiType] = None
     proxy_url: Optional[str] = None
+    media_protocol: Optional[str] = None
 
 
 @router.put("/providers/{pid}")
@@ -185,7 +188,10 @@ class CreateModelReq(BaseModel):
     model_types: List[ModelTypeValue] = Field(default_factory=lambda: ["chat"])
     temperature: float = Field(default=0.7, ge=0, le=2)
     top_p: float = Field(default=1.0, ge=0, le=1)
-    max_tokens: int = Field(default=4096, ge=0)
+    max_tokens: Optional[int] = Field(
+        default=None, ge=0,
+        description="可选输出预算上限；缺省不限制，由 provider/SDK 按模型默认决定",
+    )
     frequency_penalty: float = Field(default=0.0, ge=-2, le=2)
     presence_penalty: float = Field(default=0.0, ge=-2, le=2)
     timeout: float = Field(default=120.0, gt=0)

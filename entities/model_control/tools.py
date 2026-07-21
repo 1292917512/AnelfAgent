@@ -99,7 +99,7 @@ def get_current_model() -> str:
             info.update({
                 "model": cfg.model,
                 "temperature": cfg.temperature,
-                "max_tokens": cfg.max_tokens,
+                "max_tokens": cfg.max_tokens if cfg.max_tokens else "auto（由模型默认决定）",
                 "timeout": cfg.timeout,
                 "supports_tools": cfg.supports_tools,
                 "supports_vision": cfg.supports_vision,

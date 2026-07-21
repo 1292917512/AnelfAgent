@@ -94,6 +94,8 @@ class AgentStatusService:
                 "memory_max_per_type": mc.memory_max_per_type,
                 "heartbeat_max_entries": mc.heartbeat_max_entries,
                 "auto_consolidate_enabled": mc.auto_consolidate_enabled,
+                "notes_events_retention_days": mc.notes_events_retention_days,
+                "notes_events_distill_enabled": mc.notes_events_distill_enabled,
                 "short_term_memory_size": mc.short_term_memory_size,
                 "tool_recall_top_n": mc.tool_recall_top_n,
                 "llm_timeout": mc.llm_timeout,

@@ -158,6 +158,16 @@ def search(
     return _extract_web_refs(data)
 
 
+def _summary_instruction() -> str:
+    """构建带时间锚点的总结指令，引导时间敏感问题以最新/最终结果为准。"""
+    today = time.strftime("%Y-%m-%d")
+    return (
+        f"今天是{today}。简洁准确地总结搜索结果，保留关键信息和数据。"
+        "时间敏感的问题（如赛事比分、新闻、股价）以最新和最终结果为准，"
+        "丢弃赛前预测和过时信息。"
+    )
+
+
 def search_with_summary(
     query: str,
     max_results: int = 10,
@@ -174,7 +184,7 @@ def search_with_summary(
     headers = _build_headers()
     body: Dict[str, Any] = {
         "messages": [{"role": "user", "content": query}],
-        "instruction": "简洁准确地总结搜索结果，保留关键信息和数据。",
+        "instruction": _summary_instruction(),
         "stream": False,
         "resource_type_filter": [
             {"type": "web", "top_k": min(max(1, max_results), 50)},
@@ -222,12 +232,15 @@ def search_prefer_deep(
 ) -> Dict[str, Any]:
     """统一搜索入口：优先高性能版，额度用尽自动降级到标准版。
 
+    注意：search_recency_filter 仅标准版 API 支持，因此传入 search_recency
+    时直接走标准版，避免时间过滤被高性能版静默忽略。
+
     Returns:
         {"summary": str | None, "references": [{title, url, snippet, ...}, ...]}
     """
     global _high_perf_disabled_until
 
-    if time.time() >= _high_perf_disabled_until:
+    if not search_recency and time.time() >= _high_perf_disabled_until:
         try:
             return search_with_summary(query, min(max_results, 50))
         except Exception as e:

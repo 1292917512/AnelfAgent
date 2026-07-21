@@ -49,10 +49,17 @@ class CogneeClient:
         }
 
     def reconfigure(self, config: CogneeConfig) -> None:
-        """热更新配置：下次调用时按新配置重新映射模型。"""
+        """热更新配置：下次调用时按新配置重新映射模型。
+
+        cognee 的 LLM/embedding 引擎按配置内容哈希缓存（get_llm_client），
+        set_llm_config 就地更新单例后，新配置会产生新的缓存键并即时生效，
+        因此无需显式重建引擎，重置 _configured 触发 _configure 重映射即可。
+        """
         self.config = config.normalized()
         self._configured = False
         self._import_error = ""
+        self._resolved_chat = {}
+        self._resolved_embedding = {}
 
     async def initialize(self) -> CogneeAvailability:
         if not self.config.enabled:

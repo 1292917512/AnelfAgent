@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.log import log
 from services._runtime import require_runtime
+
+_DOC_PREFIX = "uploads/docs/"
+_DOC_MAX_SIZE = 20 * 1024 * 1024
+
+
+def _docs_dir() -> Path:
+    from core.path import ConfigPaths, project_root
+    return Path(project_root()) / ConfigPaths.UPLOAD_DIR / "docs"
 
 
 def _parse_memory_type(type_str: Optional[str]):
@@ -314,6 +324,15 @@ class MemoryService:
         from agent.memory.notes import write_memory_file
         return write_memory_file(file_path, content)
 
+    @staticmethod
+    def delete_memory_file(file_path: str) -> bool:
+        """删除指定 MD 便签文件。主便签 memory.md 不允许删除。"""
+        from agent.memory.notes import delete_memory_file, get_notes_path, get_workspace_dir
+        main_rel = str(get_notes_path().relative_to(get_workspace_dir())).replace("\\", "/")
+        if file_path == main_rel:
+            raise ValueError("主便签不允许删除")
+        return delete_memory_file(file_path)
+
     # ==================================================================
     # 文件索引状态
     # ==================================================================
@@ -341,6 +360,83 @@ class MemoryService:
             return {"error": "记忆系统未初始化"}
         cleaned = await store.clean_embedding_cache()
         return {"cleaned": cleaned}
+
+    # ==================================================================
+    # 文档索引（uploads/docs 下的 PDF/Word/文本）
+    # ==================================================================
+
+    async def upload_document(self, filename: str, content: bytes) -> Dict[str, Any]:
+        """保存上传文档并立即解析入库，返回索引统计。"""
+        rt = require_runtime()
+        store = rt.mind.memory_store
+        if not store:
+            return {"error": "记忆系统未初始化"}
+        from agent.memory.doc_extract import SUPPORTED_DOC_EXTS
+
+        ext = Path(filename).suffix.lower()
+        if ext not in SUPPORTED_DOC_EXTS:
+            return {"error": f"不支持的文档类型: {ext or '无扩展名'}"}
+        if not content:
+            return {"error": "文件内容为空"}
+        if len(content) > _DOC_MAX_SIZE:
+            return {"error": "文件超过 20MB 上限"}
+
+        docs_dir = _docs_dir()
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = f"{int(time.time() * 1000)}_{Path(filename).name}"
+        dest = docs_dir / safe_name
+        dest.write_bytes(content)
+
+        rel_key = f"{_DOC_PREFIX}{safe_name}"
+        from agent.memory.memory_sync import index_single_file
+        chunks = await index_single_file(store, rt.mind.embedder, dest, rel_key, force=True)
+        if chunks <= 0:
+            dest.unlink(missing_ok=True)
+            return {"error": "文档解析失败或无可用文本"}
+        return {
+            "ok": True, "path": rel_key, "name": Path(filename).name,
+            "size": len(content), "chunks": chunks,
+        }
+
+    async def list_documents(self) -> List[Dict[str, Any]]:
+        """列出已索引的上传文档。"""
+        rt = require_runtime()
+        store = rt.mind.memory_store
+        if not store:
+            return []
+        counts = await store.list_chunk_counts()
+        docs: List[Dict[str, Any]] = []
+        for f in await store.list_files():
+            path = f["path"]
+            if not path.startswith(_DOC_PREFIX):
+                continue
+            name = path[len(_DOC_PREFIX):]
+            ts_prefix, _, display = name.partition("_")
+            docs.append({
+                "path": path,
+                "name": display if ts_prefix.isdigit() and display else name,
+                "size": f["size"],
+                "chunks": counts.get(path, 0),
+                "indexed_at": f["mtime_ns"] / 1e9,
+            })
+        return docs
+
+    async def delete_document(self, path: str) -> Dict[str, Any]:
+        """删除上传文档：清理索引并移除磁盘文件。"""
+        rt = require_runtime()
+        store = rt.mind.memory_store
+        if not store:
+            return {"error": "记忆系统未初始化"}
+        if not path.startswith(_DOC_PREFIX) or ".." in path:
+            return {"error": "非法文档路径"}
+        await store.delete_file(path)
+        from core.path import ConfigPaths, project_root
+        disk = Path(project_root()) / ConfigPaths.UPLOAD_DIR / path[len("uploads/"):]
+        try:
+            disk.unlink(missing_ok=True)
+        except Exception as exc:
+            log(f"文档磁盘删除失败 [{disk}]: {exc}", "WARNING")
+        return {"ok": True}
 
     async def get_health_status(self) -> Dict[str, Any]:
         """返回记忆系统综合健康状态。"""

@@ -10,11 +10,12 @@ export const API_TYPE_OPTIONS = [
   "cerebras", "xai", "sambanova", "volcengine", "dashscope",
 ];
 export const MODEL_TYPE_OPTIONS = ["chat", "embedding", "image_gen", "image_edit", "asr", "tts", "video", "rerank"];
+// 图片生成协议适配器（对应后端 agent.llm.image_adapters 注册名），空串表示按 host 自动识别
+export const MEDIA_PROTOCOL_OPTIONS = ["siliconflow", "openai", "dashscope"];
 
 export interface ManualModelForm {
   id: string;
   model: string;
-  max_tokens: number;
   context_window: number;
   supports_tools: boolean;
   supports_vision: boolean;
@@ -23,7 +24,7 @@ export interface ManualModelForm {
 }
 
 export const EMPTY_MANUAL_MODEL: ManualModelForm = {
-  id: "", model: "", max_tokens: 4096, context_window: 0,
+  id: "", model: "", context_window: 0,
   supports_tools: true, supports_vision: false, supports_reasoning: false,
   supports_forced_tool_choice: true,
 };
@@ -41,7 +42,6 @@ export function toModelUpdate(model: ModelConfig): UpdateModelConfig {
     supports_reasoning: model.supports_reasoning,
     temperature: model.temperature,
     top_p: model.top_p,
-    max_tokens: model.max_tokens,
     context_window: model.context_window ?? 0,
     frequency_penalty: model.frequency_penalty,
     presence_penalty: model.presence_penalty,

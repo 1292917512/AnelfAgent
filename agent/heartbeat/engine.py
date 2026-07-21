@@ -62,6 +62,21 @@ def _clean_llm(text: str) -> str:
     return text.strip()
 
 
+_EVENT_DISTILL_PROMPT = (
+    "以下是一天的事件便签内容，即将超过保留期被归档删除。\n"
+    "请提取其中值得长期保留的事实、事件、约定、里程碑，"
+    "以要点列表输出（每行一个要点，简洁具体，保留关键时间与对象）。\n"
+    "若没有长期保留价值的内容，只输出一个字：无。不要输出任何其他解释。\n\n"
+    "【日期】{date}\n【便签内容】\n{content}"
+)
+
+# 单次提炼送入 LLM 的便签内容上限（超出截断，避免上下文膨胀）
+_DISTILL_MAX_CHARS = 8000
+
+# 每次心跳维护最多归档的过期便签数（避免阻塞心跳）
+_ARCHIVE_MAX_PER_TICK = 2
+
+
 class HeartbeatEngine:
     """心跳调度引擎。"""
 
@@ -96,6 +111,13 @@ class HeartbeatEngine:
         executed: List[str] = []
 
         await self._run_maintenance()
+
+        # 到期定时提醒触发（持久化提醒，含停机期间错过的补触发）
+        try:
+            from agent.mind.tools.scheduler import check_due_reminders
+            await check_due_reminders()
+        except Exception as e:
+            log(f"定时提醒检查失败: {e}", "DEBUG", tag="心跳")
 
         pending_task: Optional[TaskDefinition] = None
         pending_schedule_idx: int = -1
@@ -196,6 +218,12 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"记忆整理失败: {e}", "DEBUG", tag="心跳")
 
+        # 过期日期便签归档：提炼进长期记忆（自动同步 cognee）后删除文件
+        try:
+            await self._archive_expired_events()
+        except Exception as e:
+            log(f"日期便签归档失败: {e}", "DEBUG", tag="心跳")
+
         # 技能策展：长期未用技能自动降级/归档（确定性状态机，无 LLM）
         try:
             curator = getattr(self.mind, "skill_curator", None)
@@ -242,6 +270,101 @@ class HeartbeatEngine:
         if warnings:
             log(f"记忆阈值预警: {len(warnings)} 条", tag="心跳")
         return warnings
+
+    # ------------------------------------------------------------------
+    # 过期日期便签归档
+    # ------------------------------------------------------------------
+
+    async def _archive_expired_events(self) -> None:
+        """归档超过保留期的 events 日期便签。
+
+        每个过期文件：先经 LLM 提炼长期价值要点写入数据库长期记忆
+        （store.add 自动触发 cognee 投影），再删除文件并重建 chunks 索引。
+        提炼失败时保留文件，下次心跳重试。
+        """
+        from agent.memory import notes as notes_mod
+        from core.config import get_config_bool, get_config_int
+
+        retention = get_config_int("notes_events_retention_days", 30)
+        expired = notes_mod.list_expired_events(retention)
+        if not expired:
+            return
+
+        distill = get_config_bool("notes_events_distill_enabled", True)
+        deleted = False
+        for note in expired[:_ARCHIVE_MAX_PER_TICK]:
+            try:
+                content = notes_mod.read_memory_file(note.path)
+                if distill and content.strip():
+                    distilled = await self._distill_event_note(note.date, content)
+                    if distilled is None:
+                        continue
+                    if distilled:
+                        await self._store_distilled_event(note.date, distilled)
+                        hb_log.append_entry(
+                            f"[事件归档] {note.date}: 提炼 {len(distilled)} 字要点，文件已删除"
+                        )
+                    else:
+                        hb_log.append_entry(f"[事件归档] {note.date}: 无长期价值，文件已删除")
+                else:
+                    hb_log.append_entry(f"[事件归档] {note.date}: 文件已删除")
+                notes_mod.delete_memory_file(note.path)
+                deleted = True
+                log(f"过期日期便签已归档: {note.path}", tag="心跳")
+            except Exception as exc:
+                log(f"日期便签归档失败 {note.path}: {exc}", "WARNING", tag="心跳")
+
+        if deleted:
+            await self._resync_file_index()
+
+    async def _distill_event_note(self, note_date: str, content: str) -> Optional[str]:
+        """提炼日期便签的长期价值要点。
+
+        返回要点文本；无保留价值返回空字符串；提炼失败返回 None（调用方保留文件重试）。
+        """
+        prompt = _EVENT_DISTILL_PROMPT.replace("{date}", note_date).replace(
+            "{content}", content[:_DISTILL_MAX_CHARS]
+        )
+        try:
+            raw = await self.mind.reflect(
+                [{"role": "user", "content": f"[系统任务 - events_archive]\n{prompt}"}],
+                options={"temperature": 0.3},
+            )
+        except Exception as exc:
+            log(f"日期便签提炼失败 {note_date}: {exc}", "WARNING", tag="心跳")
+            return None
+        text = _clean_llm(raw)
+        if not text or text.startswith("无"):
+            return ""
+        return text
+
+    async def _store_distilled_event(self, note_date: str, distilled: str) -> None:
+        """将提炼要点写入数据库长期记忆（自动进入 cognee 投影队列）。"""
+        store = self.mind.memory_store
+        if not store:
+            return
+        entry = MemoryEntry(
+            memory_type=MemoryType.EPISODIC,
+            content=f"[{note_date} 事件归档]\n{distilled}",
+            source="events_archive",
+            tags=["type:event", f"date:{note_date}"],
+            importance=0.6,
+        )
+        if self.mind.embedder.available:
+            entry.embedding = await self.mind.embedder.embed_one(entry.content)
+        await store.add(entry)
+
+    async def _resync_file_index(self) -> None:
+        """归档删除文件后重建 chunks 索引（清理已删文件的索引项）。"""
+        store = self.mind.memory_store
+        if not store:
+            return
+        try:
+            from agent.memory.memory_sync import sync_files
+            from agent.memory.notes import get_workspace_dir
+            await sync_files(store, self.mind.embedder, get_workspace_dir())
+        except Exception as exc:
+            log(f"归档后索引同步失败: {exc}", "DEBUG", tag="心跳")
 
     async def _run_entity_analysis(self, entity: "EntityData") -> Optional[TaskResult]:
         """内置实体画像分析。"""

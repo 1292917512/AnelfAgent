@@ -6,6 +6,12 @@ import type {
   CreateModelConfig,
   CreateProviderConfig,
   GoalStep,
+  MCPServer,
+  MCPServerConfig,
+  MCPToggleResult,
+  MCPToolInfo,
+  MemoryFileInfo,
+  MemoryDocument,
   ModelConfig,
   ModelPriorityItem,
   PersonaData,
@@ -257,18 +263,30 @@ export const memoryApi = {
       api.post("/memory/entities/unlink", { scope_type: scopeType, scope_id: scopeId }),
   },
   notes: {
-    read: () => api.get("/memory/notes"),
+    read: () => api.get<{ content: string; path: string }>("/memory/notes"),
     write: (content: string) => api.put("/memory/notes", { content }),
   },
   files: {
-    list: () => api.get("/memory/files"),
-    read: (path: string) => api.get("/memory/files/content", { params: { path } }),
+    list: () => api.get<MemoryFileInfo[]>("/memory/files"),
+    read: (path: string) => api.get<{ content: string }>("/memory/files/content", { params: { path } }),
     write: (path: string, content: string) => api.put("/memory/files/content", { path, content }),
+    delete: (path: string) => api.delete("/memory/files", { params: { path } }),
   },
   index: {
     status: () => api.get("/memory/index/status"),
     resync: (force = false) => api.post("/memory/index/resync", null, { params: { force } }),
     cleanCache: () => api.post("/memory/index/clean-cache"),
+  },
+  documents: {
+    list: () => api.get<MemoryDocument[]>("/memory/documents"),
+    upload: (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return api.post<{ ok?: boolean; error?: string; chunks?: number }>("/memory/documents/upload", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+    },
+    delete: (path: string) => api.delete("/memory/documents", { params: { path } }),
   },
   goals: {
     list: (status = "all") => api.get("/memory/goals", { params: { status } }),
@@ -283,15 +301,27 @@ export const memoryApi = {
 
 // MCP
 export const mcpApi = {
-  list: () => api.get("/mcp/"),
-  config: () => api.get("/mcp/config"),
+  list: () => api.get<MCPServer[]>("/mcp/"),
+  config: () => api.get<{ content: string }>("/mcp/config"),
   saveConfig: (content: string) => api.put("/mcp/config", { content }),
-  add: (name: string, url: string) => api.post("/mcp/", { name, url }),
+  add: (name: string, config: MCPServerConfig) =>
+    api.post("/mcp/", { name, ...config }),
+  get: (name: string) =>
+    api.get<MCPServerConfig>(`/mcp/${encodeURIComponent(name)}`),
+  update: (name: string, config: MCPServerConfig) =>
+    api.put(`/mcp/${encodeURIComponent(name)}`, config),
   remove: (name: string) => api.delete(`/mcp/${encodeURIComponent(name)}`),
   toggle: (name: string) =>
-    api.put(`/mcp/${encodeURIComponent(name)}/toggle`, null, { timeout: 65000 }),
-  tools: (name: string) => api.get(`/mcp/${encodeURIComponent(name)}/tools`),
+    api.put<MCPToggleResult>(`/mcp/${encodeURIComponent(name)}/toggle`, null, { timeout: 65000 }),
+  tools: (name: string) =>
+    api.get<MCPToolInfo[]>(`/mcp/${encodeURIComponent(name)}/tools`),
 };
+
+/** 从 axios 错误中提取可读信息（统一用于 toast 反馈） */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  const axErr = err as { response?: { data?: { detail?: string } }; message?: string };
+  return axErr?.response?.data?.detail || axErr?.message || fallback;
+}
 
 // Adapters
 export const adaptersApi = {

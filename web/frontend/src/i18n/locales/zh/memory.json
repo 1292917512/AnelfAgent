@@ -9,7 +9,9 @@
     "entity": "实体画像",
     "notes": "便签",
     "config": "配置",
-    "cognee": "Cognee"
+    "cognee": "Cognee",
+    "daily": "日记",
+    "docs": "文档"
   },
   "healthTitle": "记忆状态",
   "healthSubtitle": "记忆系统健康状态",
@@ -73,6 +75,22 @@
   "mainNote": "主便签",
   "selectFile": "选择文件",
   "clickToEdit": "点击左侧文件进行编辑",
+  "noteGroups": {
+    "knowledge": "知识便签",
+    "groups": "群组便签",
+    "others": "其他便签"
+  },
+  "deleteFileTitle": "删除便签文件",
+  "deleteFileConfirm": "确定删除便签「{{name}}」吗？删除不可撤销。",
+  "daily": {
+    "calendarTitle": "日期便签",
+    "empty": "暂无日期便签",
+    "newNoteHint": "该日期暂无便签，保存后自动创建",
+    "placeholder": "记录今天发生的事情…",
+    "retentionHint": "日期便签超过 {{days}} 天会自动提炼进长期记忆后删除（可在配置中调整）",
+    "deleteTitle": "删除日期便签",
+    "deleteConfirm": "确定删除 {{date}} 的便签吗？删除不可撤销。"
+  },
   "fileIndexTitle": "文件索引",
   "fileIndexSubtitle": "记忆系统的文件索引状态",
   "cleanCache": "清理缓存",
@@ -99,7 +117,9 @@
     "entity_merge_threshold": "实体合并阈值",
     "reflection_merge_threshold": "反思合并阈值",
     "heartbeat_max_entries": "心跳最大条目",
-    "auto_consolidate_enabled": "自动整理"
+    "auto_consolidate_enabled": "自动整理",
+    "notes_events_retention_days": "日期便签保留天数",
+    "notes_events_distill_enabled": "过期便签提炼归档"
   },
   "configDescs": {
     "vector_search_batch_size": "超过此数量时分批并行搜索",
@@ -111,7 +131,9 @@
     "entity_merge_threshold": "同一实体记忆超过此数时建议合并",
     "reflection_merge_threshold": "反思记忆超过此数时建议合并",
     "heartbeat_max_entries": "heartbeat.md 保留的最大条目数",
-    "auto_consolidate_enabled": "是否在心跳时自动整理记忆文件"
+    "auto_consolidate_enabled": "是否在心跳时自动整理记忆文件",
+    "notes_events_retention_days": "events 日期便签保留天数，超期自动提炼归档后删除文件",
+    "notes_events_distill_enabled": "过期日期便签删除前是否先提炼进长期记忆（关闭则直接删除）"
   },
   "cogneeFields": {
     "enabled": "启用 Cognee",
@@ -214,6 +236,14 @@
     "instructorModeAuto": "自动（适配器默认）",
     "instructorModeHint": "thinking 模式端点不支持 tool_choice，此时请选择 json_mode",
     "maxCompletionTokens": "最大输出 tokens（0=默认）",
+    "reasoningEffort": "思考等级",
+    "reasoningEffortHint": "仅对 thinking（思考型）模型生效；调低可显著加快抽取，off 尝试关闭思考",
+    "reasoning_auto": "跟随模型默认",
+    "reasoning_off": "关闭思考",
+    "reasoning_low": "低（1024 tokens）",
+    "reasoning_medium": "中（2048 tokens）",
+    "reasoning_high": "高（4096 tokens）",
+    "reasoning_max": "最高（不限制）",
     "datasetsTitle": "数据集",
     "datasetsSubtitle": "Cognee 中的记忆数据集，可手动触发图谱增强",
     "improve": "图谱增强",
@@ -223,5 +253,14 @@
     "hotApplyNote": "保存后立即生效，无需重启",
     "saveFailed": "保存失败，请查看后端日志",
     "reasoningModelHint": "该模型为 thinking 模型：已自动限制思考预算防止输出截断，但抽取成本较高，建议改用非 thinking 模型"
+  },
+  "docs": {
+    "title": "文档索引",
+    "upload": "上传文档",
+    "uploading": "索引中…",
+    "empty": "暂无文档，支持 PDF / Word / TXT / MD，上传后自动解析入库并参与记忆召回",
+    "chunks": "{{count}} 块",
+    "deleteTitle": "删除文档",
+    "deleteConfirm": "确定删除文档「{{name}}」吗？将同时移除其索引与磁盘文件。"
   }
 }

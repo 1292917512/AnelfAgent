@@ -42,6 +42,7 @@ from typing import Any, Dict, List, Optional
 
 from core.log import log
 from core.entity import EntityMetadata, EntityRegistry, EntityType, ToolParam
+from core.sanitizer import is_sanitize_enabled, sanitize_text
 
 _MAX_LIFECYCLE_RETRIES = 5
 _DEFAULT_CALL_TIMEOUT = 300.0
@@ -159,6 +160,12 @@ def _extract_exception_detail(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def _safe_json(payload: Any) -> str:
+    """序列化为 JSON 并脱敏，防止配置中的密钥进入 LLM 上下文与供应商日志。"""
+    text = json.dumps(payload, ensure_ascii=False)
+    return sanitize_text(text) if is_sanitize_enabled() else text
+
+
 # ------------------------------------------------------------------
 # MCP Bridge
 # ------------------------------------------------------------------
@@ -181,6 +188,8 @@ class MCPBridge:
         self._lifecycle_tasks: Dict[str, Any] = {}     # name -> asyncio.Future
         self._tool_server_map: Dict[str, str] = {}      # 注册名 -> server 名
         self._tool_original_names: Dict[str, str] = {}  # 注册名 -> MCP 原始工具名（仅冲突重命名时记录）
+        self._last_errors: Dict[str, str] = {}          # name -> 最近一次连接错误详情
+        self._op_locks: Dict[str, threading.Lock] = {}  # name -> 连接/断开操作串行锁
         self._lock = threading.Lock()
 
         self._loop = asyncio.new_event_loop()
@@ -195,10 +204,34 @@ class MCPBridge:
         self._loop.run_forever()
 
     def _run_coro(self, coro: Any, timeout: float = 60) -> Any:
-        """在 MCP 事件循环中执行协程并等待结果。"""
+        """在 MCP 事件循环中执行协程并等待结果。
+
+        等待超时或失败时取消底层协程，避免调用方已报失败但
+        协程仍在后台继续执行造成的半连接状态。
+        """
         import asyncio
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except BaseException:
+            future.cancel()
+            raise
+
+    def _op_lock(self, name: str) -> threading.Lock:
+        """返回指定 server 的连接/断开操作串行锁。"""
+        with self._lock:
+            lock = self._op_locks.get(name)
+            if lock is None:
+                lock = threading.Lock()
+                self._op_locks[name] = lock
+            return lock
+
+    def _set_last_error(self, name: str, error: str) -> None:
+        with self._lock:
+            if error:
+                self._last_errors[name] = error
+            else:
+                self._last_errors.pop(name, None)
 
     # ------------------------------------------------------------------
     # 公开同步接口
@@ -209,16 +242,19 @@ class MCPBridge:
         return self._run_coro(self._async_connect_all(), timeout=60)
 
     def connect_server_by_name(self, name: str) -> int:
-        """按名称连接单个 server（同步）。"""
-        return self._run_coro(self._async_connect_server_by_name(name), timeout=30)
+        """按名称连接单个 server（同步，同一 server 的连接操作串行执行）。"""
+        with self._op_lock(name):
+            return self._run_coro(self._async_connect_server_by_name(name), timeout=30)
 
     def disconnect_server_by_name(self, name: str) -> None:
         """断开单个 server：向 lifecycle task 发送停止信号，注销工具。"""
-        with self._lock:
-            has_stop = name in self._stop_events
-        if has_stop:
-            self._run_coro(self._signal_stop(name), timeout=10)
-        self._cleanup_server_entities(name)
+        with self._op_lock(name):
+            with self._lock:
+                has_stop = name in self._stop_events
+            if has_stop:
+                self._run_coro(self._signal_stop(name), timeout=10)
+            self._cleanup_server_entities(name)
+            self._set_last_error(name, "")
 
     def reload_config(self) -> Dict[str, Any]:
         """热重载配置：重读磁盘配置，diff 增删改，自动连接/断开变更的 server。"""
@@ -289,22 +325,31 @@ class MCPBridge:
             result[name] = [t for t, s in tsm.items() if s == name]
         return result
 
+    def get_last_errors(self) -> Dict[str, str]:
+        """返回各 server 最近一次连接错误（name → 错误详情）。"""
+        with self._lock:
+            return dict(self._last_errors)
+
     def list_available_servers(self) -> List[Dict[str, Any]]:
-        """列出所有配置的 server 及其连接状态（供 AI 工具使用）。"""
+        """列出所有配置的 server 及其连接状态（供 AI 工具使用，url 已脱敏）。"""
         with self._lock:
             servers_snapshot = list(self.config.servers)
             session_names = set(self._sessions.keys())
             tsm = dict(self._tool_server_map)
+            errors = dict(self._last_errors)
+        mask = is_sanitize_enabled()
         servers: List[Dict[str, Any]] = []
         for srv in servers_snapshot:
             connected = srv.name in session_names
             tool_count = sum(1 for s in tsm.values() if s == srv.name)
+            display_url = srv.url or srv.command
             servers.append({
                 "name": srv.name,
-                "url": srv.url or srv.command,
+                "url": sanitize_text(display_url) if mask else display_url,
                 "enabled": srv.enabled,
                 "connected": connected,
                 "tool_count": tool_count,
+                "last_error": errors.get(srv.name, ""),
             })
         return servers
 
@@ -377,8 +422,8 @@ class MCPBridge:
     async def _connect_one_safe(self, srv: MCPServerConfig) -> int:
         """连接单个 server，捕获异常防止影响其他 server 的并发连接。
 
-        启动时连接失败的 server 会自动禁用（enabled=false），避免每次启动都报错。
-        需要时可通过 WebUI 或 AI 工具手动重新启用。
+        启动连接失败仅记录 last_error 供排查，不写回配置禁用——
+        一次性网络抖动不应导致 server 被永久禁用。
         """
         try:
             count = await self._connect_server(srv)
@@ -386,8 +431,8 @@ class MCPBridge:
             return count
         except Exception as exc:
             detail = _extract_exception_detail(exc)
-            log(f"MCP server '{srv.name}' 连接失败，已自动禁用: {detail}", "WARNING")
-            self._auto_disable_server(srv.name)
+            log(f"MCP server '{srv.name}' 连接失败: {detail}", "WARNING")
+            self._set_last_error(srv.name, detail)
             return 0
 
     async def _async_connect_server_by_name(self, name: str) -> int:
@@ -503,23 +548,6 @@ class MCPBridge:
     # 内部方法
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _auto_disable_server(name: str) -> None:
-        """将连接失败的 server 在配置文件中标记为 enabled=false。"""
-        try:
-            path = _resolve_config_path()
-            if not path or not Path(path).exists():
-                return
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            servers = data.get("mcpServers", {})
-            if name in servers and isinstance(servers[name], dict):
-                servers[name]["enabled"] = False
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            log(f"自动禁用 MCP server '{name}' 失败: {e}", "DEBUG")
-
     def _cleanup_server_entities(self, name: str) -> None:
         """从 EntityRegistry 和工具映射中移除指定 server 的所有工具。"""
         with self._lock:
@@ -542,8 +570,15 @@ class MCPBridge:
 
         lifecycle task 持有 transport context manager 的完整生命周期，
         保证 enter/exit 在同一 asyncio task 内，避免 anyio cancel scope 跨 task 错误。
+        同名 lifecycle task 仍存活时先将其停止，避免重复连接导致旧 task 失联泄漏。
         """
         import asyncio
+
+        with self._lock:
+            old_task = self._lifecycle_tasks.get(srv.name)
+        if old_task is not None and not old_task.done():
+            log(f"MCP server '{srv.name}' 已存在连接任务，先停止旧任务再重连", "DEBUG")
+            await self._signal_stop(srv.name)
 
         ready_event: asyncio.Event = asyncio.Event()
         stop_event: asyncio.Event = asyncio.Event()
@@ -563,8 +598,10 @@ class MCPBridge:
             with self._lock:
                 self._stop_events.pop(srv.name, None)
                 self._lifecycle_tasks.pop(srv.name, None)
+            self._set_last_error(srv.name, _extract_exception_detail(result_box[0]))
             raise result_box[0]
 
+        self._set_last_error(srv.name, "")
         return result_box[0] if result_box else 0
 
     async def _server_lifecycle(
@@ -606,6 +643,7 @@ class MCPBridge:
                             else:
                                 self._cleanup_server_entities(srv.name)
                                 count = await self._register_server_tools(srv, session)
+                                self._set_last_error(srv.name, "")
                                 log(f"MCP server '{srv.name}' 自动重连成功 (第 {attempt + 1} 次)，{count} 个工具")
 
                             await stop_event.wait()
@@ -624,6 +662,7 @@ class MCPBridge:
 
                     with self._lock:
                         self._sessions.pop(srv.name, None)
+                    self._set_last_error(srv.name, f"连接断开: {detail}")
 
                     wait = min(2 ** attempt, 60)
                     log(
@@ -956,7 +995,7 @@ def _tool_list_mcp_servers() -> str:
 
 
 def _tool_get_mcp_server_config(server_name: str = "") -> str:
-    """查看 MCP 原始配置（单个或全部）。"""
+    """查看 MCP 原始配置（单个或全部，输出已脱敏）。"""
     try:
         from services import MCPService
 
@@ -969,17 +1008,17 @@ def _tool_get_mcp_server_config(server_name: str = "") -> str:
                     "error": f"服务器 '{server_name}' 不存在",
                     "hint": "可先调用 list_mcp_servers 查看名称",
                 }, ensure_ascii=False)
-            return json.dumps({
+            return _safe_json({
                 "server": server_name.strip(),
                 "config": cfg,
                 "editable_schema": schema,
-            }, ensure_ascii=False)
+            })
 
         full = svc.load_config()
-        return json.dumps({
+        return _safe_json({
             "mcpServers": full.get("mcpServers", {}),
             "editable_schema": schema,
-        }, ensure_ascii=False)
+        })
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
@@ -1065,13 +1104,13 @@ async def _tool_update_mcp_server_config(
             connected_map = bridge.get_connected_servers()
             tools = connected_map.get(server_name.strip(), [])
             connected = server_name.strip() in connected_map
-        return json.dumps({
+        return _safe_json({
             "success": True,
             **result,
             "connected": connected,
             "tool_count": len(tools),
             "tools": tools[:50],
-        }, ensure_ascii=False)
+        })
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
@@ -1306,13 +1345,13 @@ async def _tool_add_mcp_server(
         )
         connected_map = bridge.get_connected_servers()
         tools = connected_map.get(name, [])
-        return json.dumps({
+        return _safe_json({
             "success": True,
             **result,
             "connected": name in connected_map,
             "tool_count": len(tools),
             "tools": tools[:50],
-        }, ensure_ascii=False)
+        })
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 

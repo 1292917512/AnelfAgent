@@ -9,7 +9,9 @@
     "entity": "Entity Profiles",
     "notes": "Notes",
     "config": "Config",
-    "cognee": "Cognee"
+    "cognee": "Cognee",
+    "daily": "Daily",
+    "docs": "Docs"
   },
   "healthTitle": "Memory Status",
   "healthSubtitle": "Memory system health status",
@@ -73,6 +75,22 @@
   "mainNote": "Main Note",
   "selectFile": "Select File",
   "clickToEdit": "Click a file on the left to edit",
+  "noteGroups": {
+    "knowledge": "Knowledge Notes",
+    "groups": "Group Notes",
+    "others": "Other Notes"
+  },
+  "deleteFileTitle": "Delete Note File",
+  "deleteFileConfirm": "Delete note \"{{name}}\"? This cannot be undone.",
+  "daily": {
+    "calendarTitle": "Daily Notes",
+    "empty": "No daily notes yet",
+    "newNoteHint": "No note for this date — it will be created on save",
+    "placeholder": "Write down what happened today…",
+    "retentionHint": "Daily notes older than {{days}} days are distilled into long-term memory and deleted (adjustable in Config)",
+    "deleteTitle": "Delete Daily Note",
+    "deleteConfirm": "Delete the note for {{date}}? This cannot be undone."
+  },
   "fileIndexTitle": "File Index",
   "fileIndexSubtitle": "Memory system file index status",
   "cleanCache": "Clean Cache",
@@ -99,7 +117,9 @@
     "entity_merge_threshold": "Entity Merge Threshold",
     "reflection_merge_threshold": "Reflection Merge Threshold",
     "heartbeat_max_entries": "Heartbeat Max Entries",
-    "auto_consolidate_enabled": "Auto Consolidation"
+    "auto_consolidate_enabled": "Auto Consolidation",
+    "notes_events_retention_days": "Daily Note Retention (days)",
+    "notes_events_distill_enabled": "Distill Expired Notes"
   },
   "configDescs": {
     "vector_search_batch_size": "Batch parallel search when exceeding this count",
@@ -111,7 +131,9 @@
     "entity_merge_threshold": "Suggest merging when entity memories exceed this count",
     "reflection_merge_threshold": "Suggest merging when reflection memories exceed this count",
     "heartbeat_max_entries": "Max entries kept in heartbeat.md",
-    "auto_consolidate_enabled": "Auto-consolidate memory files during heartbeat"
+    "auto_consolidate_enabled": "Auto-consolidate memory files during heartbeat",
+    "notes_events_retention_days": "Days to keep events daily notes; expired notes are distilled and archived, then deleted",
+    "notes_events_distill_enabled": "Distill expired daily notes into long-term memory before deletion (delete directly when off)"
   },
   "cogneeFields": {
     "enabled": "Enable Cognee",
@@ -190,6 +212,14 @@
     "instructorModeAuto": "Auto (adapter default)",
     "instructorModeHint": "Thinking-mode endpoints reject tool_choice; choose json_mode for them",
     "maxCompletionTokens": "Max completion tokens (0 = default)",
+    "reasoningEffort": "Reasoning effort",
+    "reasoningEffortHint": "Only affects thinking models; lower values speed up extraction, off attempts to disable thinking",
+    "reasoning_auto": "Follow model default",
+    "reasoning_off": "Thinking off",
+    "reasoning_low": "Low (1024 tokens)",
+    "reasoning_medium": "Medium (2048 tokens)",
+    "reasoning_high": "High (4096 tokens)",
+    "reasoning_max": "Max (unlimited)",
     "datasetsTitle": "Datasets",
     "datasetsSubtitle": "Memory datasets in Cognee; graph improve can be triggered manually",
     "improve": "Improve graph",
@@ -199,5 +229,14 @@
     "hotApplyNote": "Applied immediately after save, no restart required",
     "saveFailed": "Save failed; check backend logs",
     "reasoningModelHint": "This is a thinking model: its thinking budget is auto-capped to prevent output truncation, but extraction costs more — a non-thinking model is recommended"
+  },
+  "docs": {
+    "title": "Document Index",
+    "upload": "Upload",
+    "uploading": "Indexing…",
+    "empty": "No documents yet. PDF / Word / TXT / MD are supported; uploaded files are parsed, indexed and included in memory recall.",
+    "chunks": "{{count}} chunks",
+    "deleteTitle": "Delete Document",
+    "deleteConfirm": "Delete document \"{{name}}\"? Its index and file on disk will also be removed."
   }
 }

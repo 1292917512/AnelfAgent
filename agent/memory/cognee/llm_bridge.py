@@ -61,6 +61,19 @@ _LLM_ARGS_RESERVED_KEYS = frozenset({
 # 推理 token 与正文共享 max_tokens 预算，不加限制会把输出截断
 _THINKING_BUDGET_TOKENS = 2048
 
+# 思考等级 → thinking budget_tokens 映射；与主 LLM 系统 reasoning_effort 档位对齐，
+# max 不封顶交由端点决定（None 表示不传 budget_tokens，仅启用思考）
+_EFFORT_TO_BUDGET: dict[str, Optional[int]] = {
+    "low": 1024,
+    "medium": _THINKING_BUDGET_TOKENS,
+    "high": 4096,
+    "max": None,
+}
+
+# cognee 结构化抽取的输出预算下限：正文需容纳 nodes+edges JSON，
+# thinking 模型的推理 token 与其共享该预算，过小必然截断
+_MIN_EXTRACTION_MAX_TOKENS = 16384
+
 
 class CogneeConfigError(RuntimeError):
     """Cognee 模型配置无法解析（配置不完整或与 cognee 不兼容）。"""
@@ -173,6 +186,7 @@ def _payload_from_client(client: Any, chat_cfg: CogneeChatModelConfig) -> dict[s
     if llm_args:
         payload["llm_args"] = llm_args
     _apply_chat_overrides(payload, chat_cfg, client=client)
+    _ensure_extraction_budget(payload, client)
     return payload
 
 
@@ -180,15 +194,31 @@ def _build_llm_args(cfg: Any, chat_cfg: CogneeChatModelConfig) -> dict[str, Any]
     """组装透传给 litellm 的 llm_args。
 
     - 模型自身 extra_body 过滤保留键后透传，与主对话行为对齐；
-    - thinking 模型自动注入思考预算上限（extra_body 通道），
-      防止推理 token 吃光输出预算导致 JSON 截断，可在模型 extra_body 中覆盖；
+    - thinking 注入优先级：chat.reasoning_effort 显式档位 > 模型 extra_body.thinking
+      > 按 supports_reasoning 自动注入 medium 预算；reasoning_effort=off 时强制
+      关闭思考（部分端点强制常开，会忽略 disabled，属正常）；
     - chat 配置中的 extra_args 显式指定，优先级最高。
     """
     extra_body = {
         key: value for key, value in (getattr(cfg, "extra_body", None) or {}).items()
         if key not in _LLM_ARGS_RESERVED_KEYS
     }
-    if getattr(cfg, "supports_reasoning", False) and "thinking" not in extra_body:
+    effort = chat_cfg.reasoning_effort
+    if effort == "off":
+        extra_body["thinking"] = {"type": "disabled"}
+        log(f"Cognee: 模型 '{cfg.name}' 思考模式已显式关闭", "DEBUG")
+    elif effort in _EFFORT_TO_BUDGET:
+        budget = _EFFORT_TO_BUDGET[effort]
+        thinking: dict[str, Any] = {"type": "enabled"}
+        if budget is not None:
+            thinking["budget_tokens"] = budget
+        extra_body["thinking"] = thinking
+        log(
+            f"Cognee: 模型 '{cfg.name}' 思考等级 {effort}"
+            + (f"（预算 {budget} tokens）" if budget else "（不限制预算）"),
+            "DEBUG",
+        )
+    elif getattr(cfg, "supports_reasoning", False) and "thinking" not in extra_body:
         max_tokens = chat_cfg.max_completion_tokens or 16384
         budget = max(1024, min(_THINKING_BUDGET_TOKENS, max_tokens - 1024))
         extra_body["thinking"] = {"type": "enabled", "budget_tokens": budget}
@@ -227,6 +257,32 @@ def _apply_chat_overrides(
         payload["llm_instructor_mode"] = mode
     if chat_cfg.max_completion_tokens > 0:
         payload["llm_max_completion_tokens"] = chat_cfg.max_completion_tokens
+
+
+def _ensure_extraction_budget(
+    payload: dict[str, Any],
+    client: Optional[Any],
+) -> None:
+    """为结构化抽取保证足够的输出预算。
+
+    cognee 默认 llm_max_completion_tokens=16384，但部分适配器不回填默认值，
+    缺省时端点会按自身小默认值截断；thinking 模型的推理 token 还与正文
+    共享该预算，过小会在长记忆抽取时反复 max_tokens 截断。模型自身
+    max_tokens 配置（对话用途）若偏小，自动抬升到下限，不影响主对话配置。
+    """
+    if "llm_max_completion_tokens" in payload:
+        return
+    model_max = int(getattr(client.config, "max_tokens", 0) or 0) if client is not None else 0
+    budget = max(model_max, _MIN_EXTRACTION_MAX_TOKENS)
+    payload["llm_max_completion_tokens"] = budget
+    llm_args = payload.setdefault("llm_args", {})
+    llm_args.setdefault("max_tokens", budget)
+    if model_max and model_max < _MIN_EXTRACTION_MAX_TOKENS and client is not None:
+        log(
+            f"Cognee: 模型 '{client.config.name}' max_tokens={model_max} 偏小，"
+            f"结构化抽取输出预算抬升至 {budget}（不影响主对话配置）",
+            "DEBUG",
+        )
 
 
 def anthropic_env_bridge(payload: dict[str, Any]) -> None:

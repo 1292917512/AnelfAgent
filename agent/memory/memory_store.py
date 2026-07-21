@@ -107,6 +107,8 @@ class MemoryStore(BaseEntity):
         self._initialized = False
         self._fts_available = False
         self._chunks_fts_available = False
+        self._vec_available = False
+        self._vec_dims: Optional[int] = None
         self._cognee_projection_enabled = False
         super().__init__()
 
@@ -134,6 +136,7 @@ class MemoryStore(BaseEntity):
         await db.execute("PRAGMA journal_mode=WAL;")
         await db.execute("PRAGMA synchronous=NORMAL;")
         await db.execute("PRAGMA busy_timeout=5000;")
+        self._vec_available = await self._load_vec_extension(db)
 
         if not self._initialized:
             await self._init_schema(db)
@@ -141,6 +144,23 @@ class MemoryStore(BaseEntity):
 
         self._db = db
         return db
+
+    async def _load_vec_extension(self, db: aiosqlite.Connection) -> bool:
+        """加载 sqlite-vec 扩展（连接级），失败时向量检索降级为全表扫描。"""
+        try:
+            import sqlite_vec
+
+            await db.enable_load_extension(True)
+            try:
+                await db.load_extension(sqlite_vec.loadable_path())
+            finally:
+                await db.enable_load_extension(False)
+            cursor = await db.execute("SELECT vec_version()")
+            await cursor.fetchone()
+            return True
+        except Exception as exc:
+            log(f"sqlite-vec 不可用，向量检索降级为全表扫描: {exc}", "WARNING")
+            return False
 
     async def _init_schema(self, db: aiosqlite.Connection) -> None:
         await db.execute("""
@@ -306,7 +326,158 @@ class MemoryStore(BaseEntity):
             "UPDATE cognee_sync_queue SET status='pending' WHERE status='processing'"
         )
 
+        await self._init_vec_index(db)
+
         await db.commit()
+
+    # ------------------------------------------------------------------
+    # sqlite-vec 向量索引（embedding_blob 为权威数据，vec0 表为派生索引）
+    # ------------------------------------------------------------------
+
+    async def _init_vec_index(self, db: aiosqlite.Connection) -> None:
+        """初始化 vec0 索引表并对齐既有数据，失败时整体降级为全表扫描。"""
+        if not self._vec_available:
+            return
+        try:
+            dims = await self._infer_vec_dims(db)
+            if dims is None:
+                return  # 尚无 embedding，首次写入时惰性建表
+            await self._ensure_vec_tables(db, dims)
+            await self._rebuild_vec_index_if_stale(db)
+        except Exception as exc:
+            log(f"vec 索引初始化失败，降级为全表扫描: {exc}", "WARNING")
+            self._vec_available = False
+            self._vec_dims = None
+
+    async def _infer_vec_dims(self, db: aiosqlite.Connection) -> Optional[int]:
+        """从既有数据推断 embedding 维度（blob 字节数 / 4）。"""
+        for sql, is_bytes in (
+            ("SELECT length(embedding_blob) AS n FROM memories WHERE embedding_blob IS NOT NULL LIMIT 1", True),
+            ("SELECT dims AS n FROM embedding_cache WHERE dims IS NOT NULL AND dims > 0 LIMIT 1", False),
+            ("SELECT length(embedding) AS n FROM chunks WHERE embedding IS NOT NULL LIMIT 1", True),
+        ):
+            cursor = await db.execute(sql)
+            row = await cursor.fetchone()
+            if row and row["n"]:
+                n = int(row["n"])
+                return n // 4 if is_bytes else n
+        return None
+
+    async def _existing_vec_dims(self, db: aiosqlite.Connection) -> Optional[int]:
+        """读取已存在的 memories_vec 声明维度，不存在返回 None。"""
+        cursor = await db.execute(
+            "SELECT sql FROM sqlite_master WHERE name='memories_vec'"
+        )
+        row = await cursor.fetchone()
+        if not row or not row["sql"]:
+            return None
+        m = re.search(r"float\[(\d+)\]", str(row["sql"]))
+        return int(m.group(1)) if m else None
+
+    async def _ensure_vec_tables(self, db: aiosqlite.Connection, dims: int) -> None:
+        """确保 vec0 索引表存在且维度匹配；维度变更时重建。"""
+        existing = await self._existing_vec_dims(db)
+        if existing is not None and existing != dims:
+            log(f"vec 索引维度变更 {existing}→{dims}，重建索引", "WARNING")
+            await db.execute("DROP TABLE IF EXISTS memories_vec")
+            await db.execute("DROP TABLE IF EXISTS chunks_vec")
+            existing = None
+        await db.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec "
+            f"USING vec0(embedding float[{dims}] distance_metric=cosine)"
+        )
+        await db.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec "
+            f"USING vec0(chunk_id TEXT PRIMARY KEY, embedding float[{dims}] distance_metric=cosine)"
+        )
+        self._vec_dims = dims
+        if existing is None:
+            await self._rebuild_vec_index_if_stale(db)
+
+    async def _rebuild_vec_index_if_stale(self, db: aiosqlite.Connection) -> None:
+        """计数不一致时从权威 BLOB 列全量回填（覆盖迁移/修复/重建场景）。"""
+        pairs = (
+            ("memories_vec", "memories", "embedding_blob", "id", "rowid"),
+            ("chunks_vec", "chunks", "embedding", "id", "chunk_id"),
+        )
+        for vec_table, src_table, blob_col, src_key, vec_key in pairs:
+            src_cnt = await (await db.execute(
+                f"SELECT COUNT(*) AS c FROM {src_table} WHERE {blob_col} IS NOT NULL"
+            )).fetchone()
+            idx_cnt = await (await db.execute(
+                f"SELECT COUNT(*) AS c FROM {vec_table}"
+            )).fetchone()
+            if (src_cnt["c"] if src_cnt else 0) != (idx_cnt["c"] if idx_cnt else 0):
+                await db.execute(f"DELETE FROM {vec_table}")
+                await db.execute(
+                    f"INSERT INTO {vec_table}({vec_key}, embedding) "
+                    f"SELECT {src_key}, {blob_col} FROM {src_table} WHERE {blob_col} IS NOT NULL"
+                )
+                log(f"vec 索引回填: {vec_table} ← {src_cnt['c'] if src_cnt else 0} 条", "DEBUG", tag="思维")
+
+    async def _vec_upsert_memory(self, db: aiosqlite.Connection, memory_id: int, blob: Optional[bytes]) -> None:
+        """同步单条记忆到 vec 索引（失败不影响主流程）。"""
+        if not self._vec_available or memory_id <= 0:
+            return
+        try:
+            if blob is None:
+                if self._vec_dims is not None:
+                    await db.execute("DELETE FROM memories_vec WHERE rowid=?", (memory_id,))
+                return
+            await self._ensure_vec_tables(db, len(blob) // 4)
+            await db.execute("DELETE FROM memories_vec WHERE rowid=?", (memory_id,))
+            await db.execute(
+                "INSERT INTO memories_vec(rowid, embedding) VALUES(?,?)",
+                (memory_id, blob),
+            )
+        except Exception as exc:
+            log(f"vec 索引写入失败 id={memory_id}: {exc}", "DEBUG")
+
+    async def _vec_delete_memories(self, db: aiosqlite.Connection, memory_ids: list[int]) -> None:
+        """从 vec 索引批量移除记忆。"""
+        if not self._vec_available or self._vec_dims is None or not memory_ids:
+            return
+        try:
+            placeholders = ",".join("?" for _ in memory_ids)
+            await db.execute(
+                f"DELETE FROM memories_vec WHERE rowid IN ({placeholders})",
+                memory_ids,
+            )
+        except Exception as exc:
+            log(f"vec 索引删除失败: {exc}", "DEBUG")
+
+    async def _vec_upsert_chunk(self, db: aiosqlite.Connection, chunk_id: str, blob: Optional[bytes]) -> None:
+        """同步单个 chunk 到 vec 索引（失败不影响主流程）。"""
+        if not self._vec_available:
+            return
+        try:
+            if blob is None:
+                if self._vec_dims is not None:
+                    await db.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
+                return
+            await self._ensure_vec_tables(db, len(blob) // 4)
+            await db.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
+            await db.execute(
+                "INSERT INTO chunks_vec(chunk_id, embedding) VALUES(?,?)",
+                (chunk_id, blob),
+            )
+        except Exception as exc:
+            log(f"vec 索引写入失败 chunk={chunk_id}: {exc}", "DEBUG")
+
+    async def _vec_delete_chunks_by_path(self, db: aiosqlite.Connection, path: str) -> None:
+        """按文件路径移除 chunks vec 索引（需在 chunks 行删除前调用）。"""
+        if not self._vec_available or self._vec_dims is None:
+            return
+        try:
+            cursor = await db.execute("SELECT id FROM chunks WHERE path=?", (path,))
+            ids = [row["id"] for row in await cursor.fetchall()]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                await db.execute(
+                    f"DELETE FROM chunks_vec WHERE chunk_id IN ({placeholders})", ids,
+                )
+        except Exception as exc:
+            log(f"vec 索引按路径删除失败 [{path}]: {exc}", "DEBUG")
 
     async def _create_fts_triggers(self, db: aiosqlite.Connection) -> None:
         """为 memories_fts 创建自动同步触发器（INSERT/DELETE/UPDATE）。"""
@@ -367,6 +538,7 @@ class MemoryStore(BaseEntity):
                         "UPDATE memories SET embedding_blob=? WHERE id=?",
                         (blob, row["id"]),
                     )
+                    await self._vec_upsert_memory(db, int(row["id"]), blob)
                     count += 1
             except Exception:
                 continue
@@ -445,6 +617,7 @@ class MemoryStore(BaseEntity):
             ),
         )
         row_id = cursor.lastrowid or 0
+        await self._vec_upsert_memory(db, row_id, blob)
         await self._enqueue_cognee_sync(
             db,
             row_id,
@@ -495,6 +668,7 @@ class MemoryStore(BaseEntity):
             ),
         )
         if (cursor.rowcount or 0) > 0:
+            await self._vec_upsert_memory(db, entry.id or 0, blob)
             await self._enqueue_cognee_sync(
                 db,
                 entry.id,
@@ -512,6 +686,7 @@ class MemoryStore(BaseEntity):
         db = await self._get_db()
         cursor = await db.execute("DELETE FROM memories WHERE id=?", (memory_id,))
         if (cursor.rowcount or 0) > 0:
+            await self._vec_delete_memories(db, [memory_id])
             await self._enqueue_cognee_sync(db, memory_id, "delete")
         # FTS 触发器会自动处理 DELETE
         await db.commit()
@@ -542,6 +717,7 @@ class MemoryStore(BaseEntity):
         ids_cursor = await db.execute(select_sql, select_params)
         memory_ids = [int(row["id"]) for row in await ids_cursor.fetchall()]
         cursor = await db.execute(delete_sql, delete_params)
+        await self._vec_delete_memories(db, memory_ids)
         for memory_id in memory_ids:
             await self._enqueue_cognee_sync(db, memory_id, "delete")
         # FTS 触发器会自动同步删除
@@ -779,6 +955,7 @@ class MemoryStore(BaseEntity):
             ),
         )
         await db.execute("DELETE FROM memories WHERE id = ?", (entry.id,))
+        await self._vec_delete_memories(db, [entry.id])
 
     async def restore_memory(self, memory_id: int) -> bool:
         """从归档恢复记忆（回到活跃记忆库）。"""
@@ -1151,7 +1328,13 @@ class MemoryStore(BaseEntity):
         limit: int = 10,
         min_score: float = 0.3,
     ) -> list[tuple[MemoryEntry, float]]:
-        """向量搜索，超过阈值时分批加载并行计算。"""
+        """向量搜索：优先走 sqlite-vec ANN 索引，不可用时分批全表扫描。"""
+        if self._vec_available and self._vec_dims is not None:
+            try:
+                return await self._search_vector_vec(query_vec, limit, min_score)
+            except Exception as exc:
+                log(f"vec 检索失败，降级全表扫描: {exc}", "WARNING")
+
         db = await self._get_db()
         batch_size: int = _get_memory_config_value("vector_search_batch_size", 500)
 
@@ -1179,6 +1362,41 @@ class MemoryStore(BaseEntity):
             merged.extend(batch)
         merged.sort(key=lambda x: x[1], reverse=True)
         return merged[:limit]
+
+    async def _search_vector_vec(
+        self,
+        query_vec: list[float],
+        limit: int,
+        min_score: float,
+    ) -> list[tuple[MemoryEntry, float]]:
+        """基于 sqlite-vec 的 ANN 检索（cosine distance → similarity）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT rowid, distance FROM memories_vec "
+            "WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+            (pack_embedding(query_vec), max(1, limit)),
+        )
+        vec_rows = await cursor.fetchall()
+        if not vec_rows:
+            return []
+
+        ids = [int(r["rowid"]) for r in vec_rows]
+        placeholders = ",".join("?" for _ in ids)
+        cursor = await db.execute(
+            f"SELECT {_MEM_COLUMNS} FROM memories WHERE id IN ({placeholders})", ids,
+        )
+        entries = {int(row["id"]): self._row_to_entry(row) for row in await cursor.fetchall()}
+
+        scored: list[tuple[MemoryEntry, float]] = []
+        for r in vec_rows:
+            score = 1.0 - float(r["distance"])
+            if score < min_score:
+                continue
+            entry = entries.get(int(r["rowid"]))
+            if entry is not None:
+                scored.append((entry, score))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:limit]
 
     async def _search_vector_batch(
         self,
@@ -1595,6 +1813,7 @@ class MemoryStore(BaseEntity):
     async def delete_file(self, path: str) -> None:
         """删除文件记录及其所有 chunks。"""
         db = await self._get_db()
+        await self._vec_delete_chunks_by_path(db, path)
         if self._chunks_fts_available:
             try:
                 await db.execute("DELETE FROM chunks_fts WHERE path=?", (path,))
@@ -1609,6 +1828,12 @@ class MemoryStore(BaseEntity):
         cursor = await db.execute("SELECT path, hash, mtime_ns, size FROM files ORDER BY path")
         rows = await cursor.fetchall()
         return [{"path": r["path"], "hash": r["hash"], "mtime_ns": r["mtime_ns"], "size": r["size"]} for r in rows]
+
+    async def list_chunk_counts(self) -> Dict[str, int]:
+        """返回每个已索引文件的 chunk 数量（path → count）。"""
+        db = await self._get_db()
+        cursor = await db.execute("SELECT path, COUNT(*) AS c FROM chunks GROUP BY path")
+        return {str(row["path"]): int(row["c"]) for row in await cursor.fetchall()}
 
     # ------------------------------------------------------------------
     # Chunks CRUD
@@ -1627,6 +1852,7 @@ class MemoryStore(BaseEntity):
                 (ch["id"], ch["path"], ch["start_line"], ch["end_line"],
                  ch["hash"], ch["text"], ch.get("embedding"), ch["updated_ns"]),
             )
+            await self._vec_upsert_chunk(db, ch["id"], ch.get("embedding"))
             if self._chunks_fts_available:
                 try:
                     await db.execute("DELETE FROM chunks_fts WHERE id=?", (ch["id"],))
@@ -1642,6 +1868,7 @@ class MemoryStore(BaseEntity):
 
     async def delete_chunks_by_path(self, path: str) -> int:
         db = await self._get_db()
+        await self._vec_delete_chunks_by_path(db, path)
         if self._chunks_fts_available:
             try:
                 await db.execute("DELETE FROM chunks_fts WHERE path=?", (path,))
@@ -1657,7 +1884,13 @@ class MemoryStore(BaseEntity):
         limit: int = 10,
         min_score: float = 0.3,
     ) -> list[Dict[str, Any]]:
-        """在 chunks 表中执行向量搜索（支持分批并行）。"""
+        """在 chunks 表中执行向量搜索：优先 sqlite-vec 索引，降级分批全表扫描。"""
+        if self._vec_available and self._vec_dims is not None:
+            try:
+                return await self._search_chunks_vector_vec(query_vec, limit, min_score)
+            except Exception as exc:
+                log(f"chunks vec 检索失败，降级全表扫描: {exc}", "WARNING")
+
         db = await self._get_db()
         batch_size: int = _get_memory_config_value("vector_search_batch_size", 500)
 
@@ -1683,6 +1916,48 @@ class MemoryStore(BaseEntity):
             merged.extend(batch)
         merged.sort(key=lambda x: x["score"], reverse=True)
         return merged[:limit]
+
+    async def _search_chunks_vector_vec(
+        self,
+        query_vec: list[float],
+        limit: int,
+        min_score: float,
+    ) -> list[Dict[str, Any]]:
+        """基于 sqlite-vec 的 chunks ANN 检索。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT chunk_id, distance FROM chunks_vec "
+            "WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+            (pack_embedding(query_vec), max(1, limit)),
+        )
+        vec_rows = await cursor.fetchall()
+        if not vec_rows:
+            return []
+
+        ids = [str(r["chunk_id"]) for r in vec_rows]
+        placeholders = ",".join("?" for _ in ids)
+        cursor = await db.execute(
+            f"SELECT id, path, start_line, end_line, text FROM chunks WHERE id IN ({placeholders})",
+            ids,
+        )
+        chunk_rows = {str(row["id"]): row for row in await cursor.fetchall()}
+
+        scored: list[Dict[str, Any]] = []
+        for r in vec_rows:
+            score = 1.0 - float(r["distance"])
+            if score < min_score:
+                continue
+            row = chunk_rows.get(str(r["chunk_id"]))
+            if row is None:
+                continue
+            scored.append({
+                "id": row["id"], "path": row["path"],
+                "start_line": row["start_line"], "end_line": row["end_line"],
+                "snippet": row["text"][:700], "score": score,
+                "source": "file",
+            })
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[:limit]
 
     async def _search_chunks_vector_batch(
         self,

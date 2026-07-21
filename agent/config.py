@@ -86,6 +86,14 @@ _MIND_CONFIGS = {
             "description": "是否自动整理便签",
             "default": True,
         },
+        "notes_events_retention_days": {
+            "description": "events 日期便签保留天数，超期自动提炼归档后删除文件",
+            "default": 30,
+        },
+        "notes_events_distill_enabled": {
+            "description": "过期日期便签删除前是否先提炼进长期记忆（关闭则直接删除）",
+            "default": True,
+        },
         "short_term_memory_size": {
             "description": "短期记忆容量",
             "default": 10,
@@ -153,6 +161,7 @@ _MIND_SYNC_FIELDS: tuple[str, ...] = (
     "memory_recall_min_score", "memory_time_decay_days",
     "memory_warn_threshold", "memory_max_per_type",
     "heartbeat_max_entries", "auto_consolidate_enabled",
+    "notes_events_retention_days", "notes_events_distill_enabled",
     "short_term_memory_size", "tool_recall_top_n",
     "llm_timeout", "llm_max_retries",
     "conv_recall_scan_limit", "conv_recall_backfill_batch",
@@ -224,6 +233,9 @@ class MindConfig:
     # 便签整理配置
     heartbeat_max_entries: int = 50
     auto_consolidate_enabled: bool = True
+    # events 日期便签生命周期
+    notes_events_retention_days: int = 30
+    notes_events_distill_enabled: bool = True
     # 短期记忆 & 工具召回
     short_term_memory_size: int = 10
     tool_recall_top_n: int = 10

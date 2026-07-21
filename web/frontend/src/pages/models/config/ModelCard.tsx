@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import { Button, Input, Select, Textarea } from "@/components/ui";
 import { MODEL_TYPE_OPTIONS, ModelBadges, type JsonField } from "./shared";
 
-const EDITABLE_FIELDS = ["model", "temperature", "top_p", "max_tokens", "context_window", "frequency_penalty", "presence_penalty", "timeout"] as const;
+const EDITABLE_FIELDS = ["model", "temperature", "top_p", "context_window", "frequency_penalty", "presence_penalty", "timeout"] as const;
 
 /** 单个模型卡片：头部徽标 + 展开编辑器 */
 export function ModelCard({
@@ -89,7 +89,7 @@ export function ModelCard({
                 <label className="text-xs font-medium text-muted">{k}</label>
                 <Input
                   type={k === "model" ? "text" : "number"}
-                  step={k === "max_tokens" || k === "context_window" ? 1 : "any"}
+                  step={k === "context_window" ? 1 : "any"}
                   value={me[k] ?? ""}
                   readOnly={!editing}
                   onChange={(e) => {

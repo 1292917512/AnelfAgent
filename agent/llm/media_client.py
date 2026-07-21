@@ -1,7 +1,8 @@
-"""MediaClient: async client for SiliconFlow non-chat APIs (ASR, TTS, Rerank, Video).
+"""MediaClient: async client for non-chat media APIs (ASR, TTS, Rerank, Video, Image).
 
 Uses httpx for HTTP requests. Each method is stateless and independently callable.
 Constructed from LLMClientConfig by LLMManager.
+图片生成/编辑的协议差异由 agent.llm.image_adapters 中的适配器收口。
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from agent.llm.image_adapters import ImageGenAdapter, resolve_image_adapter
 from core.log import log
 
 _TIMEOUT = 120.0
@@ -26,7 +28,7 @@ _VIDEO_MAX_POLL = 120
 
 
 class MediaClient:
-    """SiliconFlow media API client."""
+    """媒体 API 客户端（语音/视频/图片等非聊天接口）。"""
 
     def __init__(
         self,
@@ -35,11 +37,13 @@ class MediaClient:
         *,
         timeout: float = _TIMEOUT,
         proxy_url: str = "",
+        image_protocol: str = "",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
         self._proxy_url = proxy_url
+        self._image_protocol = image_protocol
 
     def _http_client(self, timeout: Optional[float] = None) -> httpx.AsyncClient:
         """创建 httpx 异步客户端（若配置了代理则自动应用）。"""
@@ -244,8 +248,23 @@ class MediaClient:
         return data.get("url", "")
 
     # ------------------------------------------------------------------
-    # Image generation / editing (SiliconFlow /images/generations API)
+    # Image generation / editing（协议差异由 ImageGenAdapter 收口）
     # ------------------------------------------------------------------
+
+    def _image_adapter(self) -> ImageGenAdapter:
+        """解析当前凭据对应的图片协议适配器。"""
+        return resolve_image_adapter(self._base_url, self._image_protocol)
+
+    async def _post_json(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """发送 JSON POST 请求并返回响应 JSON。"""
+        async with self._http_client() as client:
+            resp = await client.post(
+                url,
+                headers={**self._headers(), "Content-Type": "application/json"},
+                json=payload,
+            )
+            resp.raise_for_status()
+        return resp.json()
 
     async def generate_image(
         self,
@@ -256,27 +275,17 @@ class MediaClient:
         num_inference_steps: int = 20,
         cfg: Optional[float] = None,
     ) -> List[str]:
-        """文生图：POST /images/generations，返回图片 URL 列表。
-
-        SiliconFlow 参数：image_size、num_inference_steps、cfg（Qwen 系列）。
-        """
-        url = f"{self._base_url}/images/generations"
-        payload: Dict[str, Any] = {
-            "model": model,
-            "prompt": prompt,
-            "image_size": image_size,
-            "num_inference_steps": num_inference_steps,
-        }
-        if cfg is not None:
-            payload["cfg"] = cfg
-        async with self._http_client() as client:
-            resp = await client.post(
-                url,
-                headers={**self._headers(), "Content-Type": "application/json"},
-                json=payload,
-            )
-            resp.raise_for_status()
-        return self._extract_image_results(resp.json())
+        """文生图：由图片协议适配器构建请求并解析响应，返回图片 URL 列表。"""
+        adapter = self._image_adapter()
+        req = adapter.build_generate_request(
+            self._base_url,
+            model=model,
+            prompt=prompt,
+            image_size=image_size,
+            num_inference_steps=num_inference_steps,
+            cfg=cfg,
+        )
+        return adapter.extract_urls(await self._post_json(req.url, req.payload))
 
     async def edit_image(
         self,
@@ -287,11 +296,7 @@ class MediaClient:
         num_inference_steps: int = 20,
         cfg: float = 4.0,
     ) -> List[str]:
-        """图片编辑：POST /images/generations，image 字段传 base64 或 URL。
-
-        SiliconFlow Qwen-Image-Edit-2509 不支持 image_size 字段，
-        image 可为 URL 或 "data:image/png;base64,XXX" 格式。
-        """
+        """图片编辑：image 可为 URL 或本地路径（转 "data:image/...;base64,XXX"）。"""
         if image_path.startswith(("http://", "https://")):
             image_content: str = image_path
         else:
@@ -301,44 +306,16 @@ class MediaClient:
             mime_type = mime_type or "image/png"
             image_content = f"data:{mime_type};base64,{base64.b64encode(raw).decode()}"
 
-        url = f"{self._base_url}/images/generations"
-        payload: Dict[str, Any] = {
-            "model": model,
-            "prompt": prompt,
-            "image": image_content,
-            "num_inference_steps": num_inference_steps,
-            "cfg": cfg,
-        }
-        async with self._http_client() as client:
-            resp = await client.post(
-                url,
-                headers={**self._headers(), "Content-Type": "application/json"},
-                json=payload,
-            )
-            resp.raise_for_status()
-        return self._extract_image_results(resp.json())
-
-    @staticmethod
-    def _extract_image_results(result: Dict[str, Any]) -> List[str]:
-        """从响应中提取图片 URL，兼容 SiliconFlow 和 OpenAI 格式。
-
-        SiliconFlow: {"images": [{"url": "..."}]}
-        OpenAI:      {"data": [{"url": "...", "b64_json": "..."}]}
-        """
-        out: List[str] = []
-        # SiliconFlow 格式优先
-        for item in result.get("images", []):
-            if isinstance(item, dict) and item.get("url"):
-                out.append(item["url"])
-        if out:
-            return out
-        # OpenAI 格式兜底
-        for item in result.get("data", []):
-            if item.get("url"):
-                out.append(item["url"])
-            elif item.get("b64_json"):
-                out.append(f"data:image/png;base64,{item['b64_json']}")
-        return out
+        adapter = self._image_adapter()
+        req = adapter.build_edit_request(
+            self._base_url,
+            model=model,
+            prompt=prompt,
+            image_content=image_content,
+            num_inference_steps=num_inference_steps,
+            cfg=cfg,
+        )
+        return adapter.extract_urls(await self._post_json(req.url, req.payload))
 
     async def download_and_save_images(
         self,

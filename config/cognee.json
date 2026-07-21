@@ -5,6 +5,8 @@
   "data_root": "config/memory/cognee",
   "dataset_prefix": "anelf",
   "timeout_seconds": 30.0,
+  "pipeline_timeout_seconds": 1800.0,
+  "improve_interval_seconds": 600.0,
   "sync_interval_seconds": 5.0,
   "sync_batch_size": 20,
   "max_retries": 5,
@@ -15,5 +17,27 @@
   "search_types": [
     "CHUNKS",
     "CHUNKS_LEXICAL"
-  ]
+  ],
+  "chat": {
+    "source": "model",
+    "model_id": "deepseek-v4-pro",
+    "provider": "openai",
+    "model": "",
+    "api_key": "",
+    "endpoint": "",
+    "api_version": "",
+    "instructor_mode": "",
+    "max_completion_tokens": 0,
+    "reasoning_effort": "",
+    "extra_args": {}
+  },
+  "embedding": {
+    "source": "auto",
+    "model_id": "",
+    "provider": "",
+    "model": "",
+    "api_key": "",
+    "endpoint": "",
+    "dimensions": 0
+  }
 }

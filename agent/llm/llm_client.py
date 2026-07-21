@@ -183,7 +183,9 @@ class LLMClientConfig:
     api_type: str = API_TYPE_OPENAI
     temperature: float = 0.7
     top_p: float = 1.0
-    max_tokens: int = 4096
+    # 输出预算上限；None 表示不主动限制，由 provider/SDK 按模型默认决定
+    # （Anthropic 协议强制要求该参数，未配置时按模型能力自动推断）。
+    max_tokens: Optional[int] = None
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
     timeout: float = 120.0
@@ -203,6 +205,8 @@ class LLMClientConfig:
     # 兼容旧配置：历史 extra_params 按 extra_body 处理。
     extra_params: Dict[str, Any] = field(default_factory=dict)
     chat_protocol: str = ChatProtocol.CHAT_COMPLETIONS.value
+    # 图片生成协议适配器名（见 agent.llm.image_adapters），空表示按 host 自动匹配。
+    media_protocol: str = ""
 
     def __post_init__(self) -> None:
         if self.api_type not in API_TYPES:
@@ -216,7 +220,7 @@ class LLMClientConfig:
             raise ValueError("temperature 必须在 0~2 之间")
         if not 0 <= self.top_p <= 1:
             raise ValueError("top_p 必须在 0~1 之间")
-        if self.max_tokens < 0:
+        if self.max_tokens is not None and self.max_tokens < 0:
             raise ValueError("max_tokens 不能小于 0")
         if self.context_window < 0:
             raise ValueError("context_window 不能小于 0")
@@ -308,6 +312,7 @@ class LLMClientConfig:
             "request_params": self.request_params,
             "extra_body": self.extra_body,
             "chat_protocol": self.chat_protocol,
+            "media_protocol": self.media_protocol,
         }
         if self.extra_params:
             d["extra_params"] = self.extra_params
@@ -326,7 +331,6 @@ class LLMClientConfig:
             "vision_format": self.vision_format,
             "temperature": self.temperature,
             "top_p": self.top_p,
-            "max_tokens": self.max_tokens,
             "frequency_penalty": self.frequency_penalty,
             "presence_penalty": self.presence_penalty,
             "timeout": self.timeout,
@@ -335,7 +339,11 @@ class LLMClientConfig:
             "request_params": self.request_params,
             "extra_body": self.extra_body,
             "chat_protocol": self.chat_protocol,
+            "media_protocol": self.media_protocol,
         }
+        # 输出预算为可选覆盖项：仅在显式配置时写入，避免配置文件冗余
+        if self.max_tokens is not None:
+            d["max_tokens"] = self.max_tokens
         if self.extra_params:
             d["extra_params"] = self.extra_params
         return d
@@ -402,6 +410,9 @@ class LLMClient(BaseEntity):
             params["top_p"] = self.config.top_p
         if self.config.max_tokens and self.config.max_tokens > 0:
             params["max_tokens"] = self.config.max_tokens
+        elif self.config.api_type == API_TYPE_ANTHROPIC:
+            # Anthropic 协议强制要求 max_tokens：未显式配置时按模型能力推断
+            params["max_tokens"] = self._infer_anthropic_max_tokens()
         if self.config.frequency_penalty:
             params["frequency_penalty"] = self.config.frequency_penalty
         if self.config.presence_penalty:
@@ -418,6 +429,31 @@ class LLMClient(BaseEntity):
             return None
         proxy = self.config.effective_proxy
         return _ProxyEnvContext(proxy) if proxy else None
+
+    # Anthropic 自定义/未知模型查不到输出上限时的兜底预算（保守值，避免超出端点限制）
+    _ANTHROPIC_FALLBACK_MAX_TOKENS = 16384
+
+    def _infer_anthropic_max_tokens(self) -> int:
+        """推断 Anthropic 输出预算：仅信 litellm 模型信息中的 max_output_tokens。
+
+        不能用 max_tokens 键——它是上下文窗口（自定义模型注册时即按 context_window
+        写入），当作输出预算会超出端点限制导致 400。查不到时回落保守兜底值。
+        """
+        try:
+            info = self.get_model_info(self.config.litellm_model)
+            cap = info.get("max_output_tokens")
+            if cap:
+                return int(cap)
+        except Exception:
+            pass
+        if not getattr(self, "_fallback_budget_logged", False):
+            self._fallback_budget_logged = True
+            debug(
+                f"LLMClient [{self.config.name}] 未配置 max_tokens 且查不到模型输出上限，"
+                f"使用兜底值 {self._ANTHROPIC_FALLBACK_MAX_TOKENS}（可在模型配置中显式指定）",
+                tag="模型",
+            )
+        return self._ANTHROPIC_FALLBACK_MAX_TOKENS
 
     def _get_proxy_client(self) -> Optional[_ProxyHttpClient]:
         """按需返回当前 Provider 的代理客户端（懒初始化）。"""
@@ -803,7 +839,11 @@ class LLMClient(BaseEntity):
                         reasoning_buf = text
 
             for tc_chunk in getattr(delta, "tool_calls", None) or []:
-                idx = getattr(tc_chunk, "index", 0) or 0
+                # 部分 provider 会把 index 返回为字符串，统一强转 int，
+                # 避免混合类型 key 在 sorted() 时炸 TypeError
+                idx = self._normalize_tc_index(
+                    getattr(tc_chunk, "index", None), len(tc_bufs)
+                )
                 buf = tc_bufs.setdefault(idx, {"id": "", "name": "", "arguments": ""})
                 tc_id = getattr(tc_chunk, "id", None)
                 if tc_id:
@@ -826,6 +866,16 @@ class LLMClient(BaseEntity):
                 reasoning_content=reasoning,
                 usage=self._usage_from_object(getattr(chunk, "usage", None)),
             ), reasoning_buf
+
+    @staticmethod
+    def _normalize_tc_index(raw: Any, fallback: int) -> int:
+        """将流式 tool_call 的 index 归一化为 int，非法值回退为 fallback。"""
+        if raw is None:
+            return 0
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return fallback
 
     @staticmethod
     def _complete_tool_buffers(
@@ -967,7 +1017,11 @@ class LLMClient(BaseEntity):
         )
         messages: list[dict] = [{"role": "user", "content": content}]
         result = await self.chat(messages, options={"max_tokens": 1024})
-        return result.content
+        text = (result.content or "").strip()
+        if not text:
+            # 空结果视为调用失败，让上层回退到下一个视觉模型
+            raise RuntimeError("视觉模型返回空结果")
+        return text
 
     # ------------------------------------------------------------------
     # Embedding

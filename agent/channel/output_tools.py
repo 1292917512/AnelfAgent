@@ -177,7 +177,9 @@ def _make_capability_tool(cap_value: str, method: Any):
 def _extract_tool_params(method: Any) -> list:
     """从方法签名提取 ToolParam 列表（含 channel_id 前缀），用于 schema 生成和 list_entity_methods。"""
     from core.entity import ToolParam
+    from entities._sdk import _parse_docstring_args
     sig = inspect.signature(method)
+    doc_params = _parse_docstring_args(getattr(method, "__doc__", "") or "")
     _TYPE_MAP = {str: "string", int: "integer", float: "number", bool: "boolean"}
     params: list[ToolParam] = [ToolParam(name="channel_id", type="string", required=False, description="频道标识")]
     for p in sig.parameters.values():
@@ -185,7 +187,10 @@ def _extract_tool_params(method: Any) -> list:
             continue
         json_type = _TYPE_MAP.get(p.annotation, "string") if p.annotation != inspect.Parameter.empty else "string"
         required = p.default is inspect.Parameter.empty
-        params.append(ToolParam(name=p.name, type=json_type, required=required, description=p.name))
+        params.append(ToolParam(
+            name=p.name, type=json_type, required=required,
+            description=doc_params.get(p.name, p.name),
+        ))
     return params
 
 

@@ -48,6 +48,31 @@ def _mgr():
     return get_llm_manager()
 
 
+_MEDIA_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
+_media_config_cache: Optional[dict] = None
+
+
+def _media_config() -> dict:
+    """加载媒体工具配置（默认音色、风格预设），进程级缓存。"""
+    global _media_config_cache
+    if _media_config_cache is None:
+        try:
+            with open(_MEDIA_CONFIG_FILE, encoding="utf-8") as f:
+                _media_config_cache = json.load(f)
+        except Exception:
+            _media_config_cache = {}
+    return _media_config_cache
+
+
+def _apply_style(prompt: str, style: str) -> str:
+    """将风格预设拼接到提示词末尾；未命中预设时按原始风格描述拼接。"""
+    if not style.strip():
+        return prompt
+    presets = _media_config().get("style_presets", {}) or {}
+    suffix = presets.get(style.strip(), style.strip())
+    return f"{prompt}, {suffix}"
+
+
 async def _media_with_fallback(
     model_type: str,
     label: str,
@@ -216,12 +241,23 @@ async def text_to_voice(
     1. 预置音色：通过 voice 参数选择，可选 alex/anna/bella/benjamin/charles/claire/david/diana
     2. 声音克隆：通过 reference_audio 提供参考音频 + reference_text 对应文字
 
+    两者都不传时，使用 config.json 中配置的默认音色（专属音色优先）。
+
     Args:
         text: 要转换为语音的文字内容
         voice: 预置音色名称
         reference_audio: 声音克隆的参考音频（URL 或本地路径），与 voice 互斥
         reference_text: 参考音频中的文字内容（克隆时必须提供）
     """
+    if not voice and not reference_audio:
+        cfg = _media_config()
+        default_ref = cfg.get("default_reference_audio", "")
+        if default_ref:
+            reference_audio = default_ref
+            reference_text = reference_text or cfg.get("default_reference_text", "")
+        else:
+            voice = cfg.get("default_voice", "")
+
     if reference_audio and not reference_text:
         return json.dumps({"error": "使用声音克隆时必须提供 reference_text"}, ensure_ascii=False)
 
@@ -257,13 +293,16 @@ async def text_to_voice(
 # ==================================================================
 
 @tool(name="generate_video", group="media")
-async def generate_video(prompt: str, image_url: str = "") -> str:
+async def generate_video(prompt: str, image_url: str = "", style: str = "") -> str:
     """根据文字描述生成视频（可选提供参考图片进行图生视频）。
 
     Args:
         prompt: 视频内容的文字描述
         image_url: 可选的参考图片 URL（用于图生视频）
+        style: 可选风格预设名（见 config.json 的 style_presets）或自定义风格描述
     """
+    prompt = _apply_style(prompt, style)
+
     async def _try(model: str, client: Any) -> dict:
         video_url = await client.generate_video(prompt, model=model, image_url=image_url)
         return {"video_url": video_url}
@@ -280,6 +319,7 @@ async def generate_image(
     prompt: str,
     image_size: str = "1024x1024",
     num_inference_steps: int = 20,
+    style: str = "",
 ) -> str:
     """根据文字描述生成图片（文生图）。生成结果保存到本地并返回文件路径。
 
@@ -287,7 +327,11 @@ async def generate_image(
         prompt: 图片内容的文字描述
         image_size: 图片尺寸，如 "1024x1024"、"1664x928"(16:9)、"928x1664"(9:16)
         num_inference_steps: 推理步数，默认 20，越高越精细但更慢
+        style: 可选风格预设名（见 config.json 的 style_presets，如 nekomimi_maid）
+            或自定义风格描述，用于锁定画风
     """
+    prompt = _apply_style(prompt, style)
+
     ws_root = _get_workspace_root()
     save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "image")
 

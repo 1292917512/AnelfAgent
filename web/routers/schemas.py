@@ -22,6 +22,8 @@ class MindConfigUpdate(BaseModel):
     memory_max_per_type: Optional[int] = None
     heartbeat_max_entries: Optional[int] = None
     auto_consolidate_enabled: Optional[bool] = None
+    notes_events_retention_days: Optional[int] = None
+    notes_events_distill_enabled: Optional[bool] = None
     short_term_memory_size: Optional[int] = None
     tool_recall_top_n: Optional[int] = None
     llm_timeout: Optional[float] = None
@@ -46,6 +48,7 @@ class CogneeChatModelUpdate(BaseModel):
     api_version: Optional[str] = None
     instructor_mode: Optional[str] = None
     max_completion_tokens: Optional[int] = None
+    reasoning_effort: Optional[str] = None
     extra_args: Optional[dict] = None
 
 

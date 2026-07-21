@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/layout/Layout";
 import { AuthGate } from "./components/AuthGate";
+import { Toaster } from "./components/ui/Toast";
 import { useAppStore } from "./stores/app-store";
 import { configApi } from "./lib/api";
 import Dashboard from "./pages/Dashboard";
@@ -58,6 +59,7 @@ export default function App() {
           </Route>
         </Routes>
       </BrowserRouter>
+      <Toaster />
     </AuthGate>
   );
 }

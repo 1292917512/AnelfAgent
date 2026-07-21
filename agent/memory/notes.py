@@ -11,6 +11,8 @@ import json
 import os
 import re
 import tempfile
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -90,6 +92,58 @@ def migrate_memory_layout() -> List[str]:
     if moved:
         log(f"记忆目录迁移: {len(moved)} 个文件已整理", tag="记忆")
     return moved
+
+
+# ------------------------------------------------------------------
+# events 日期便签生命周期（超期自动归档）
+# ------------------------------------------------------------------
+
+_EVENT_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.md$")
+
+
+@dataclass(frozen=True)
+class ExpiredEventNote:
+    """超过保留期的 events 日期便签。"""
+
+    path: str        # 工作区相对路径，如 memory/events/2026-05-07.md
+    abs_path: Path
+    date: str        # YYYY-MM-DD
+
+
+def get_events_dir() -> Path:
+    """获取 events 日期便签目录（memory/events/）。"""
+    return get_memory_dir() / "events"
+
+
+def list_expired_events(
+    retention_days: int, today: Optional[date] = None
+) -> List[ExpiredEventNote]:
+    """列出超过保留天数的 events 日期便签，按日期升序。
+
+    便签日期早于 today - retention_days 视为过期（恰好满 retention_days 天仍保留）。
+    非日期命名的文件忽略。
+    """
+    events_dir = get_events_dir()
+    if not events_dir.is_dir():
+        return []
+    ref = today or datetime.now().date()
+    cutoff = ref - timedelta(days=retention_days)
+    expired: List[ExpiredEventNote] = []
+    for f in sorted(events_dir.iterdir()):
+        if not f.is_file():
+            continue
+        m = _EVENT_DATE_RE.match(f.name)
+        if not m:
+            continue
+        try:
+            d = datetime.strptime(m.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d < cutoff:
+            expired.append(ExpiredEventNote(
+                path=f"memory/events/{f.name}", abs_path=f, date=m.group(1),
+            ))
+    return expired
 
 
 # ------------------------------------------------------------------
@@ -577,7 +631,13 @@ def build_notes_system_message() -> List[dict]:
     )
     file_index = _build_file_index()
     if file_index:
-        content = f"{content}\n\n{file_index}"
+        retention = get_config_int("notes_events_retention_days", 30)
+        lifecycle_hint = (
+            f"[便签生命周期] events/ 日期便签超过 {retention} 天会自动提炼进"
+            "数据库长期记忆后删除；有长期价值的事实请及时用 memorize 记录，"
+            "常青知识请维护在主便签或知识文件中，不要只留在日期便签里。"
+        )
+        content = f"{content}\n\n{file_index}\n{lifecycle_hint}"
     msgs = [{"role": "system", "content": f"[个人笔记/便签记忆]\n{content}"}]
     skills = _load_skills_content()
     if skills.strip():

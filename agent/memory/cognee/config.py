@@ -16,6 +16,10 @@ MODEL_SOURCE_MODEL = "model"
 MODEL_SOURCE_CUSTOM = "custom"
 MODEL_SOURCES = (MODEL_SOURCE_AUTO, MODEL_SOURCE_MODEL, MODEL_SOURCE_CUSTOM)
 
+# 思考等级：与主 LLM 系统 reasoning_effort 对齐；""=auto 跟随模型 supports_reasoning，
+# off=强制关闭思考，low/medium/high/max 为思考预算档位
+REASONING_EFFORTS = ("", "off", "low", "medium", "high", "max")
+
 
 @dataclass(slots=True)
 class CogneeChatModelConfig:
@@ -33,6 +37,8 @@ class CogneeChatModelConfig:
     # instructor 结构化输出模式覆盖；thinking 端点用 json_mode 规避 tool_choice 限制
     instructor_mode: str = ""
     max_completion_tokens: int = 0
+    # 思考等级：""=auto 跟随模型 supports_reasoning / off=关闭 / low~max 为思考预算档位
+    reasoning_effort: str = ""
     extra_args: dict[str, Any] = field(default_factory=dict)
 
     def normalized(self) -> "CogneeChatModelConfig":
@@ -45,6 +51,9 @@ class CogneeChatModelConfig:
         self.api_version = self.api_version.strip()
         self.instructor_mode = self.instructor_mode.strip()
         self.max_completion_tokens = max(0, int(self.max_completion_tokens))
+        self.reasoning_effort = self.reasoning_effort.strip().lower()
+        if self.reasoning_effort not in REASONING_EFFORTS:
+            self.reasoning_effort = ""
         if not isinstance(self.extra_args, dict):
             self.extra_args = {}
         return self

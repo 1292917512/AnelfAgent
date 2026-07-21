@@ -247,6 +247,9 @@ def _extract_params(func: Callable) -> List[ToolParam]:
     for p_name, p in sig.parameters.items():
         if p_name in ("self", "cls"):
             continue
+        # *args / **kwargs 是容错性捕获参数，不应出现在 LLM schema 中
+        if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
         annotation = p.annotation
         if annotation == inspect.Parameter.empty:
             json_type = "string"

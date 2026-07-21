@@ -37,6 +37,7 @@
   "noModelsOfType": "No models of this type. Please add in \"Model Config\".",
   "priorityNote": "Priority note: When the system needs a \"{{type}}\" model, it tries from top to bottom, preferring the first-ranked model. Drag cards to reorder.",
   "proxyPlaceholder": "e.g. 127.0.0.1:7890 (optional)",
+  "mediaProtocolAuto": "Auto detect",
   "browseRemote": "Browse Remote Models",
   "manualAdd": "Manual Add",
   "manualAddTitle": "Add Model Manually",
@@ -86,7 +87,8 @@
     "base_url": "API URL",
     "api_key": "API Key",
     "api_type": "API Type",
-    "proxy_url": "Proxy URL"
+    "proxy_url": "Proxy URL",
+    "media_protocol": "Image Gen Protocol"
   },
   "modelTypeLabels": {
     "chat": "Chat",

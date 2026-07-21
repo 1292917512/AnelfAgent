@@ -1,0 +1,8 @@
+{
+    "default_voice": "",
+    "default_reference_audio": "",
+    "default_reference_text": "",
+    "style_presets": {
+        "nekomimi_maid": "anime style, cat ears, maid outfit, kawaii, detailed illustration, soft colors"
+    }
+}
