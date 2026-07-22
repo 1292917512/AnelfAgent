@@ -9,6 +9,29 @@
   "downloadFile": "Download file",
   "queued": "Queued · will be handled after current reply",
   "activity": {
-    "usingTool": "Using tool: {{tool}}"
-  }
+    "usingTool": "Using tool: {{tool}}",
+    "verbs": [
+      "Thinking",
+      "Weaving",
+      "Brewing",
+      "Polishing",
+      "Searching",
+      "Reasoning",
+      "Assembling",
+      "Associating",
+      "Distilling",
+      "Proofreading"
+    ]
+  },
+  "contextUsage": {
+    "title": "Context usage {{tokens}} / compression threshold {{threshold}} tokens",
+    "label": "Context {{pct}}%"
+  },
+  "stream": {
+    "readonlyCollapsed": "{{count}} read-only tool calls, click to expand",
+    "collapse": "Collapse"
+  },
+  "fileLimit": "You can attach up to {{max}} files",
+  "fileTooLarge": "File {{name}} exceeds the {{max}}MB size limit",
+  "sendTimeout": "Response timed out. Please send again."
 }

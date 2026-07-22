@@ -36,7 +36,7 @@ def get_cwd(workspace_root: str, scope: str = "", sandbox: bool = True) -> str:
     root = os.path.abspath(workspace_root)
     with _lock:
         cwd = _cwds.get(scope, root)
-    drifted = (not cwd.startswith(root)) if sandbox else False
+    drifted = (cwd != root and not cwd.startswith(root + os.sep)) if sandbox else False
     if drifted or not os.path.isdir(cwd):
         cwd = root if os.path.isdir(root) else os.path.expanduser("~")
         with _lock:
@@ -49,7 +49,7 @@ def set_cwd(cwd: str, workspace_root: str, scope: str = "", sandbox: bool = True
     scope = scope or get_current_scope()
     root = os.path.abspath(workspace_root)
     cwd = os.path.abspath(cwd)
-    drifted = (not cwd.startswith(root)) if sandbox else False
+    drifted = (cwd != root and not cwd.startswith(root + os.sep)) if sandbox else False
     if drifted or not os.path.isdir(cwd):
         fallback = root if os.path.isdir(root) else os.path.expanduser("~")
         with _lock:

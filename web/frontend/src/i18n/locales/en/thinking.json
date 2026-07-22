@@ -12,6 +12,7 @@
   "enableTracking": "Enable tracking to view thinking chains",
   "noSessions": "No thinking sessions",
   "heartbeat": "Heartbeat",
+  "introspection": "Introspection",
   "thinkingSession": "Thinking Session",
   "inProgress": "In Progress",
   "nodeTypes": {

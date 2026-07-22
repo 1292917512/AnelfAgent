@@ -9,9 +9,11 @@ import asyncio
 import json
 import re
 import time
+import uuid
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from core.stream_events import EVENT_ASSISTANT_DELTA, EVENT_CONTEXT_USAGE
 from core.event_bus import (
     event_bus,
     EVENT_BEFORE_REPLY,
@@ -416,7 +418,7 @@ def _rehydrate_recent_files(scope: str) -> str:
     try:
         from entities.filesystem import file_state
         cache = file_state.get_cache(scope)
-        entries = list(cache._items.items())[-_REHYDRATE_MAX_FILES:]
+        entries = cache.recent_entries(_REHYDRATE_MAX_FILES)
     except Exception:
         return ""
     if not entries:
@@ -424,7 +426,7 @@ def _rehydrate_recent_files(scope: str) -> str:
     import os
     sections: List[str] = []
     total = 0
-    for path, _state in reversed(entries):  # 最近使用的优先
+    for path, _state in entries:  # 最近使用的优先
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read(_REHYDRATE_PER_FILE_CHARS + 1)
@@ -608,6 +610,34 @@ async def think_loop(
     # 中断注册表（协作式刹车信号；替身 Mind 可能不具备，容忍缺省）
     interrupts = getattr(mind, "interrupts", None)
 
+    # 流式过程事件：turn_id 标识本轮思维会话，增量事件供通道订阅（webui 流式渲染）
+    turn_id = uuid.uuid4().hex[:8]
+    _delta_accumulated = {"text": "", "reasoning": ""}
+
+    async def delta_emitter(delta: str, reasoning: bool) -> None:
+        key = "reasoning" if reasoning else "text"
+        _delta_accumulated[key] += delta
+        try:
+            await event_bus.emit(EVENT_ASSISTANT_DELTA, {
+                "scope": current_scope,
+                "turn_id": turn_id,
+                "delta": delta,
+                "accumulated": _delta_accumulated[key],
+                "reasoning": reasoning,
+            })
+        except Exception:
+            pass  # 过程事件失败不影响主流程
+
+    # 替身 Mind（测试/子代理）可能仍是非流式签名：探测后按需传参
+    try:
+        import inspect as _inspect
+        _invoke_params = _inspect.signature(mind._invoke_llm_unified).parameters
+        _supports_stream = "stream" in _invoke_params or any(
+            p.kind == _inspect.Parameter.VAR_KEYWORD for p in _invoke_params.values()
+        )
+    except (TypeError, ValueError):
+        _supports_stream = False
+
     while iteration < safety_limit:
         # 中断检查点（协作式）：用户/守卫请求中断时安全收束，
         # 不发半截消息、不写残缺工具链、历史留中断元消息
@@ -697,10 +727,15 @@ async def think_loop(
 
         mind._set_phase(MindPhase.LLM_CALLING)
         try:
+            _stream_kwargs = (
+                {"stream": _streaming_enabled(), "on_delta": delta_emitter}
+                if _supports_stream else {}
+            )
             result = await mind._invoke_llm_unified(
                 llm_messages, active_tools or None, anything,
                 tool_choice="required" if require_tools else None,
                 options=options,
+                **_stream_kwargs,
             )
         except asyncio.TimeoutError:
             timeout_val = mind._get_mind_config().llm_timeout
@@ -740,6 +775,24 @@ async def think_loop(
         consecutive_overflow_compressions = 0
         if result.usage and result.usage.prompt_tokens:
             last_prompt_tokens = result.usage.prompt_tokens
+
+        # 上下文用量快照（usage 锚定：API 真实用量优先；供 webui 状态栏显示）
+        if mind.compressor is not None:
+            try:
+                _tokens = last_prompt_tokens or mind.compressor.estimate_tokens(
+                    base_messages + tool_chain)
+                _threshold = mind.compressor.threshold_tokens()
+                _window = mind.get_model_context_length()
+                if _threshold > 0:
+                    await event_bus.emit(EVENT_CONTEXT_USAGE, {
+                        "scope": current_scope,
+                        "tokens": _tokens,
+                        "threshold": _threshold,
+                        "window": _window,
+                        "percent": round(_tokens / _threshold * 100, 1),
+                    })
+            except Exception:
+                pass  # 状态事件失败不影响主流程
 
         # max_output_tokens 截断恢复：输出被长度截断时续写（对齐 Claude Code 两级恢复，
         # Anelf 端点上限自适应已在 LLMClient 处理，这里做注入续写层，最多 3 次）。
@@ -1210,6 +1263,19 @@ def _collect_premature_end(result: ChatResult, tool_calls: List[ToolCall]) -> st
 
 
 # 工具结果加工（脱敏/扫描/截断）已迁移至 result_pipeline.py，
+
+def _streaming_enabled() -> bool:
+    """流式内核开关（配置 mind_streaming_enabled，默认开）。
+
+    流式只产生过程事件（assistant_delta），回复出口仍是
+    send_message/end_reply —— 多频道语义不受影响。
+    """
+    try:
+        from core.config import get_config_bool
+        return get_config_bool("mind_streaming_enabled", True)
+    except Exception:
+        return True
+
 
 # 并行执行上限（对齐 Claude Code CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY 默认 10）
 _MAX_TOOL_CONCURRENCY = 10

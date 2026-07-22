@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import platform
-import sys
+from typing import List
 
 from entities._sdk import tool, entity
 
@@ -24,23 +24,19 @@ def _project_root() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-def _run(command: str, cwd: str | None = None, timeout: int = 60) -> dict:
-    """执行命令并返回结构化结果，支持指定工作目录。"""
-    import subprocess
-    try:
-        proc = subprocess.run(
-            command, shell=True, capture_output=True, text=True,
-            timeout=timeout, cwd=cwd or _project_root(),
-        )
-        return {
-            "ok": proc.returncode == 0,
-            "stdout": (proc.stdout or "").strip()[:3000],
-            "stderr": (proc.stderr or "").strip()[:1000],
-        }
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "stdout": "", "stderr": f"命令超时 ({timeout}s)"}
-    except Exception as e:
-        return {"ok": False, "stdout": "", "stderr": str(e)}
+def _run(command: List[str], cwd: str | None = None, timeout: int = 60) -> dict:
+    """执行命令并返回结构化结果，支持指定工作目录。
+
+    复用 core/command.py 的 run_command（参数列表形式，shell=False，
+    POSIX 下独立进程组、超时整组终止）。
+    """
+    from core.command import run_command
+    result = run_command(list(command), timeout_sec=timeout, cwd=cwd or _project_root())
+    return {
+        "ok": result.ok,
+        "stdout": (result.stdout or "").strip()[:3000],
+        "stderr": (result.stderr or "").strip()[:1000],
+    }
 
 
 def _pick_script(name: str) -> str:
@@ -72,9 +68,9 @@ def backup_memories(message: str = "") -> str:
     if not os.path.exists(script):
         return json.dumps({"error": f"备份脚本不存在: {script}"}, ensure_ascii=False)
 
-    cmd = f'"{script}"'
+    cmd = [script]
     if message:
-        cmd += f' "{message}"'
+        cmd.append(message)
 
     result = _run(cmd, cwd=_project_root(), timeout=120)
     return json.dumps({
@@ -93,7 +89,7 @@ def update_project() -> str:
     """
     root = _project_root()
 
-    status = _run("git status --porcelain", cwd=root, timeout=15)
+    status = _run(["git", "status", "--porcelain"], cwd=root, timeout=15)
     if status["ok"] and status["stdout"].strip():
         return json.dumps({
             "action": "update_project",
@@ -102,7 +98,7 @@ def update_project() -> str:
             "dirty_files": status["stdout"][:500],
         }, ensure_ascii=False)
 
-    result = _run("git pull --ff-only", cwd=root, timeout=120)
+    result = _run(["git", "pull", "--ff-only"], cwd=root, timeout=120)
 
     if not result["ok"] or _has_conflict(result["stdout"] + result["stderr"]):
         return json.dumps({
@@ -130,7 +126,7 @@ def update_and_restart() -> str:
     """
     root = _project_root()
 
-    status = _run("git status --porcelain", cwd=root, timeout=15)
+    status = _run(["git", "status", "--porcelain"], cwd=root, timeout=15)
     if status["ok"] and status["stdout"].strip():
         return json.dumps({
             "action": "update_and_restart",
@@ -139,7 +135,7 @@ def update_and_restart() -> str:
             "dirty_files": status["stdout"][:500],
         }, ensure_ascii=False)
 
-    pull = _run("git pull --ff-only", cwd=root, timeout=120)
+    pull = _run(["git", "pull", "--ff-only"], cwd=root, timeout=120)
 
     if not pull["ok"] or _has_conflict(pull["stdout"] + pull["stderr"]):
         return json.dumps({
@@ -150,7 +146,12 @@ def update_and_restart() -> str:
             "detail": pull["stdout"][:500],
         }, ensure_ascii=False)
 
-    _schedule_restart()
+    if not _schedule_restart():
+        return json.dumps({
+            "action": "update_and_restart",
+            "ok": False,
+            "error": "代码已更新，但无法调度重启任务：未找到运行中的事件循环，请手动重启",
+        }, ensure_ascii=False)
     return json.dumps({
         "action": "update_and_restart",
         "ok": True,
@@ -167,7 +168,12 @@ def restart_app() -> str:
 
     通过 os.execv 原地替换当前进程实现热重启，保持相同的启动参数。
     """
-    _schedule_restart()
+    if not _schedule_restart():
+        return json.dumps({
+            "action": "restart_app",
+            "ok": False,
+            "error": "无法调度重启任务：未找到运行中的事件循环，请手动重启",
+        }, ensure_ascii=False)
     return json.dumps({
         "action": "restart_app",
         "ok": True,
@@ -186,7 +192,7 @@ def _build_frontend() -> None:
 
     log("🔨 构建前端...", tag="运维")
     try:
-        result = _run("pnpm run build", cwd=frontend_dir, timeout=120)
+        result = _run(["pnpm", "run", "build"], cwd=frontend_dir, timeout=120)
         if result["ok"]:
             log("✅ 前端构建完成", tag="运维")
         else:
@@ -198,10 +204,14 @@ def _build_frontend() -> None:
 _RESTART_EXIT_CODE = 42
 
 
-def _schedule_restart() -> None:
+def _schedule_restart() -> bool:
     """延迟 2 秒后执行：前端构建 → 生命周期清理 → 以退出码 42 退出触发重启。
 
     启动脚本（start.bat / start.sh）检测到退出码 42 会自动重新启动应用。
+    同步工具在 to_thread 工作线程中执行时，经后台注册表绑定的主循环桥回调度。
+
+    Returns:
+        是否成功调度重启任务
     """
     import asyncio
     from core.log import log
@@ -215,8 +225,8 @@ def _schedule_restart() -> None:
         try:
             from core.lifecycle import Lifecycle
             await Lifecycle.shutdown_all()
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"⚠️ 重启前生命周期清理异常: {e}", "WARNING", tag="运维")
 
         log(f"🔄 以退出码 {_RESTART_EXIT_CODE} 退出，等待启动脚本重启...", tag="运维")
         os._exit(_RESTART_EXIT_CODE)
@@ -224,5 +234,14 @@ def _schedule_restart() -> None:
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(_do_restart())
+        return True
     except RuntimeError:
         pass
+
+    from entities._sdk import get_background_registry
+    registry = get_background_registry()
+    loop = getattr(registry, "_loop", None) if registry else None
+    if loop and loop.is_running():
+        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_do_restart()))
+        return True
+    return False

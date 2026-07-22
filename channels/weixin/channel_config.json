@@ -1,0 +1,13 @@
+{
+  "enabled": false,
+  "account_id": "",
+  "token": "",
+  "base_url": "https://ilinkai.weixin.qq.com",
+  "cdn_base_url": "https://novac2c.cdn.weixin.qq.com/c2c",
+  "dm_policy": "open",
+  "allow_from": "",
+  "group_policy": "disabled",
+  "group_allow_from": "",
+  "split_multiline_messages": false,
+  "typing_indicator": true
+}

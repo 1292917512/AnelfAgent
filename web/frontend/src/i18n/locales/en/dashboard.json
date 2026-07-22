@@ -22,5 +22,25 @@
   "day": "d",
   "hour": "h",
   "minute": "m",
-  "second": "s"
+  "second": "s",
+  "attention": {
+    "title": "Attention Needed",
+    "okShort": "OK",
+    "allClear": "All systems normal, no issues found",
+    "notReady": "Agent is not ready",
+    "pendingApprovals": "{{count}} pending approval requests",
+    "nearestExpiry": "Nearest expires in {{seconds}}s",
+    "mcpDown": "MCP server \"{{name}}\" is not connected",
+    "channelError": "Channel \"{{name}}\" is in error state"
+  },
+  "comp": {
+    "llm": "LLM",
+    "storage": "Storage",
+    "tools": "Tools",
+    "toolsEnabled": "{{enabled}}/{{total}} enabled",
+    "personaPrompts": "Persona Prompts",
+    "stm": "Short-term Memory",
+    "items": "{{count}} items",
+    "notReady": "Runtime not initialized yet"
+  }
 }

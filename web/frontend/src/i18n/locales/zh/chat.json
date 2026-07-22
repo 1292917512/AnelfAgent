@@ -9,6 +9,29 @@
   "downloadFile": "下载文件",
   "queued": "排队中 · 将于当前回复后处理",
   "activity": {
-    "usingTool": "正在使用工具: {{tool}}"
-  }
+    "usingTool": "正在使用工具: {{tool}}",
+    "verbs": [
+      "思考中",
+      "编织中",
+      "酝酿中",
+      "打磨中",
+      "检索中",
+      "推演中",
+      "组装中",
+      "联想中",
+      "沉淀中",
+      "校对中"
+    ]
+  },
+  "contextUsage": {
+    "title": "上下文用量 {{tokens}} / 压缩阈值 {{threshold}} tokens",
+    "label": "上下文 {{pct}}%"
+  },
+  "stream": {
+    "readonlyCollapsed": "已调用 {{count}} 个只读工具，点击展开",
+    "collapse": "收起"
+  },
+  "fileLimit": "最多附加 {{max}} 个文件",
+  "fileTooLarge": "文件 {{name}} 超过 {{max}}MB 大小上限",
+  "sendTimeout": "响应超时，请重新发送"
 }

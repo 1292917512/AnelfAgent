@@ -20,9 +20,20 @@ def _get_workspace_root() -> str:
 
 
 def _resolve_workspace_path(path: str) -> str:
-    """解析可能相对于 workspace 或 CWD 的路径。"""
+    """解析可能相对于 workspace 或 CWD 的路径。
+
+    沙箱开启时（含绝对路径）统一经 entities/filesystem/paths.py 解析并做沙箱校验，
+    越界时抛 ValueError；沙箱关闭时保持原有解析行为。
+    """
     if not path:
         return ""
+    from entities.filesystem import paths as _paths
+    if _paths.sandbox_enabled():
+        ws_abs = os.path.abspath(_get_workspace_root())
+        resolved = _paths.resolve_workspace_path(path, ws_abs)
+        if not _paths.check_sandbox(resolved, ws_abs):
+            raise ValueError(f"沙箱限制: {path} 不在工作目录内")
+        return resolved
     if os.path.isabs(path):
         return path
     ws_root = _get_workspace_root()
@@ -168,7 +179,10 @@ async def recognize_image(image_path: str = "", prompt: str = "", **kwargs: str)
                     last_err = str(exc)
                     continue
         else:
-            resolved = _resolve_workspace_path(image_path)
+            try:
+                resolved = _resolve_workspace_path(image_path)
+            except ValueError as e:
+                return json.dumps({"error": str(e)}, ensure_ascii=False)
             if not os.path.exists(resolved):
                 return json.dumps({"error": f"文件不存在: {image_path}", "resolved": resolved}, ensure_ascii=False)
             img = load_image_from_path(resolved)
@@ -205,7 +219,10 @@ async def voice_to_text(audio_source: str = "", **kwargs: str) -> str:
     is_url = audio_source.startswith(("http://", "https://"))
 
     if not is_url:
-        resolved = _resolve_workspace_path(audio_source)
+        try:
+            resolved = _resolve_workspace_path(audio_source)
+        except ValueError as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
         if not os.path.exists(resolved):
             return json.dumps({"error": f"文件不存在: {audio_source}", "resolved": resolved}, ensure_ascii=False)
     else:
@@ -265,7 +282,10 @@ async def text_to_voice(
     if reference_audio:
         audio_value = reference_audio
         if not audio_value.startswith(("http://", "https://", "data:audio/")):
-            resolved = _resolve_workspace_path(audio_value)
+            try:
+                resolved = _resolve_workspace_path(audio_value)
+            except ValueError as e:
+                return json.dumps({"error": str(e)}, ensure_ascii=False)
             if not os.path.exists(resolved):
                 return json.dumps({"error": f"参考音频文件不存在: {audio_value}"}, ensure_ascii=False)
             import base64, mimetypes
@@ -368,7 +388,10 @@ async def edit_image(
     if image_path.startswith(("http://", "https://")):
         resolved_image = image_path
     else:
-        resolved_image = _resolve_workspace_path(image_path)
+        try:
+            resolved_image = _resolve_workspace_path(image_path)
+        except ValueError as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
         if not os.path.exists(resolved_image):
             return json.dumps({"error": f"图片不存在: {image_path}", "resolved": resolved_image}, ensure_ascii=False)
 

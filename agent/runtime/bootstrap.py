@@ -310,6 +310,62 @@ def create_bootstrap() -> FlowMachine:
             cm.register(channel)
 
     @machine.node(skip_on_error=True)
+    async def recover_unanswered():
+        """启动恢复（失败不影响启动）：
+
+        1. 未回复消息补回：feel() 先把消息写入 DB 再入内存队列，进程在
+           "已收到未回复"窗口期重启后，消息在 DB 里但回复触发器已丢——
+           扫描各 scope 最后一条消息，若是窗口期内的真用户消息则重新入队，
+           让她"醒来后看到错过的消息"（复用提醒 catch-up 范式）。
+        2. PFC 待办 replay：pending_tasks 表中未消费的画像分析/通用任务
+           重新入队（消费时才删行，replay 后再次崩溃也不丢）。
+        """
+        import asyncio
+        import time
+        from core.config import get_config_bool, get_config_float
+        from agent.runtime.singleton import get_runtime
+
+        rt = get_runtime()
+        mind = rt.mind
+        sqlite = rt.data_center.sqlite
+
+        # ---- B: PFC 待办 replay ----
+        if get_config_bool("pfc_persist_enabled", True):
+            rows = await sqlite.load_pending_tasks()
+            if rows:
+                restored = mind.pfc.restore_persisted_tasks(rows)
+                if restored:
+                    log(f"PFC 待办已恢复: {restored} 条", tag="启动")
+
+        # ---- A: 未回复消息补回 ----
+        if not get_config_bool("recovery_unanswered_enabled", True):
+            return
+        max_age_hours = get_config_float("recovery_max_age_hours", 24.0)
+        cutoff_ns = time.time_ns() - int(max_age_hours * 3600 * 1e9)
+
+        from agent.mind.context_compressor import _is_genuine_user_message
+        from agent.mind.tools.scheduler import enqueue_scope_reply
+
+        last_msgs = await sqlite.list_scopes_with_last_message()
+        recovered = 0
+        for row in last_msgs:
+            if row["role"] != "user" or row["ts_ns"] < cutoff_ns:
+                continue
+            if not _is_genuine_user_message({"role": "user", "content": row["content"]}):
+                continue
+            scope = f"{row['scope_type']}_{row['scope_id']}"
+            preview = row["content"][:300]
+            enqueue_scope_reply(
+                mind.pfc, scope, row["adapter_key"], preview,
+                f"[系统] 进程重启前你收到了这条消息但尚未回复（对话历史中可见其完整内容）：\n"
+                f"{preview}\n请现在补回处理。",
+            )
+            recovered += 1
+        if recovered:
+            log(f"未回复消息恢复: {recovered} 个 scope 重新入队", tag="启动")
+            asyncio.create_task(mind.try_execute_mind())
+
+    @machine.node(skip_on_error=True)
     async def check_health():
         """启动健康检查 — 验证关键组件就绪状态。"""
         from core.entity import EntityRegistry, EntityType
@@ -345,3 +401,29 @@ def create_bootstrap() -> FlowMachine:
             )
 
     return machine
+
+
+# ------------------------------------------------------------------
+# 配置注册
+# ------------------------------------------------------------------
+
+_RECOVERY_CONFIGS = {
+    "启动恢复": {
+        "recovery_unanswered_enabled": {
+            "description": "启动时扫描各对话窗口，补回重启前收到但尚未回复的消息",
+            "default": True,
+        },
+        "recovery_max_age_hours": {
+            "description": "未回复消息恢复的最大消息年龄（小时），超龄消息不再补回",
+            "default": 24.0,
+        },
+        "pfc_persist_enabled": {
+            "description": "PFC 待办（画像分析/通用任务）持久化，重启后自动恢复执行",
+            "default": True,
+        },
+    },
+}
+
+from core.config import register_configs_safe  # noqa: E402
+
+register_configs_safe(_RECOVERY_CONFIGS)

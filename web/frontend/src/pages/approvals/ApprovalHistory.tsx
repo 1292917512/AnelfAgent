@@ -1,8 +1,22 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { approvalsApi } from "@/lib/api";
-import { CheckCircle, XCircle, Clock, Ban, ChevronDown, ChevronUp } from "lucide-react";
+import { Badge, type BadgeVariant } from "@/components/ui/Badge";
+import { Input } from "@/components/ui/Input";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { LoadingBlock } from "@/components/ui/Spinner";
+import { cn } from "@/lib/utils";
+import {
+  CheckCircle,
+  XCircle,
+  Clock,
+  Ban,
+  History,
+  ChevronDown,
+  ChevronUp,
+  Search,
+} from "lucide-react";
 
 interface ApprovalHistoryItem {
   request_id: string;
@@ -17,120 +31,165 @@ interface ApprovalHistoryItem {
   requester_channel: string;
 }
 
-const decisionIcon = (decision: string) => {
-  switch (decision) {
-    case "approved": return <CheckCircle className="w-5 h-5 text-green-500" />;
-    case "denied": return <XCircle className="w-5 h-5 text-red-500" />;
-    case "expired": return <Clock className="w-5 h-5 text-yellow-500" />;
-    case "cancelled": return <Ban className="w-5 h-5 text-gray-500" />;
-    default: return null;
-  }
+type DecisionFilter = "all" | "approved" | "denied" | "expired" | "cancelled";
+
+const DECISION_VARIANT: Record<string, BadgeVariant> = {
+  approved: "ok",
+  denied: "danger",
+  expired: "warn",
+  cancelled: "neutral",
 };
 
-const decisionColor = (decision: string): string => {
-  switch (decision) {
-    case "approved": return "text-green-600 bg-green-50";
-    case "denied": return "text-red-600 bg-red-50";
-    case "expired": return "text-yellow-600 bg-yellow-50";
-    case "cancelled": return "text-gray-600 bg-gray-50";
-    default: return "text-gray-600 bg-gray-50";
-  }
+const DECISION_ICON: Record<string, typeof CheckCircle> = {
+  approved: CheckCircle,
+  denied: XCircle,
+  expired: Clock,
+  cancelled: Ban,
 };
+
+const DECISION_ICON_COLOR: Record<string, string> = {
+  approved: "text-ok",
+  denied: "text-danger",
+  expired: "text-warn",
+  cancelled: "text-muted",
+};
+
+function relativeTime(ts: number, t: (key: string, opts?: Record<string, unknown>) => string): string {
+  const diff = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (diff < 60) return t("timeAgo.justNow");
+  if (diff < 3600) return t("timeAgo.minutes", { count: Math.floor(diff / 60) });
+  if (diff < 86400) return t("timeAgo.hours", { count: Math.floor(diff / 3600) });
+  return t("timeAgo.days", { count: Math.floor(diff / 86400) });
+}
 
 export function ApprovalHistory() {
   const { t } = useTranslation("approvals");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<DecisionFilter>("all");
+  const [search, setSearch] = useState("");
 
   const { data, isLoading } = useQuery({
     queryKey: ["approvals", "history"],
     queryFn: () => approvalsApi.history(100).then((r) => r.data),
   });
 
-  const history = data?.history || [];
+  const history = (data?.history ?? []) as ApprovalHistoryItem[];
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { all: history.length };
+    for (const item of history) c[item.decision] = (c[item.decision] ?? 0) + 1;
+    return c;
+  }, [history]);
+
+  const filtered = history.filter((item) => {
+    if (filter !== "all" && item.decision !== filter) return false;
+    if (search && !item.tool_name.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
 
   if (isLoading) {
-    return <div className="text-center py-8 text-muted-foreground">{t("loading")}</div>;
+    return <LoadingBlock label={t("loading")} />;
   }
 
-  if (history.length === 0) {
-    return (
-      <div className="text-center py-12 text-muted-foreground">
-        {t("noHistory")}
-      </div>
-    );
-  }
+  const FILTERS: DecisionFilter[] = ["all", "approved", "denied", "expired", "cancelled"];
 
   return (
-    <div className="space-y-2">
-      {history.map((item: ApprovalHistoryItem) => {
-        const isExpanded = expandedId === item.request_id;
-
-        return (
-          <div
-            key={item.request_id}
-            className="border border-border rounded-lg overflow-hidden hover:shadow-sm transition-shadow"
-          >
-            {/* 头部 */}
-            <div
-              className="flex items-center justify-between p-3 bg-muted cursor-pointer"
-              onClick={() => setExpandedId(isExpanded ? null : item.request_id)}
+    <div className="space-y-3">
+      {/* 过滤栏 */}
+      <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+        <div className="flex flex-wrap gap-1.5">
+          {FILTERS.map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={cn(
+                "px-2.5 py-1 rounded-full text-xs font-medium border transition-colors",
+                filter === f
+                  ? "bg-accent-subtle text-accent border-accent"
+                  : "bg-elevated text-muted border-border hover:text-foreground",
+              )}
             >
-              <div className="flex items-center gap-3 flex-1">
-                {decisionIcon(item.decision)}
-                <div className="flex-1">
-                  <div className="font-mono text-sm">{item.tool_name}</div>
-                  <div className="text-xs text-muted-foreground mt-1">
-                    {item.requester_user_id} ({item.requester_channel})
+              {f === "all" ? t("filterAll") : t(`decision.${f}`)}
+              <span className="ml-1 opacity-70">{counts[f] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+        <div className="relative sm:ml-auto sm:w-56">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t("searchTool")}
+            className="pl-8 h-8"
+          />
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState icon={History} title={history.length === 0 ? t("noHistory") : t("noMatch")} />
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((item) => {
+            const isExpanded = expandedId === item.request_id;
+            const Icon = DECISION_ICON[item.decision] ?? Clock;
+            const absolute = new Date(item.decided_at * 1000).toLocaleString();
+
+            return (
+              <div
+                key={item.request_id}
+                className="rounded-lg border border-border bg-card overflow-hidden transition-shadow hover:shadow-sm animate-rise"
+              >
+                <div
+                  className="flex items-center gap-3 p-3 cursor-pointer"
+                  onClick={() => setExpandedId(isExpanded ? null : item.request_id)}
+                >
+                  <Icon size={18} className={cn("shrink-0", DECISION_ICON_COLOR[item.decision])} />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-mono text-sm text-heading truncate">{item.tool_name}</div>
+                    <div className="text-xs text-muted mt-0.5 truncate">
+                      {item.requester_user_id} ({item.requester_channel})
+                    </div>
                   </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <div className={`px-3 py-1 rounded-full text-xs font-medium ${decisionColor(item.decision)}`}>
-                  {t(`decision.${item.decision}`)}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {new Date(item.decided_at * 1000).toLocaleString()}
-                </div>
-                {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-              </div>
-            </div>
-
-            {/* 展开内容 */}
-            {isExpanded && (
-              <div className="p-4 space-y-3 border-t border-border">
-                {/* 决策人 */}
-                <div>
-                  <div className="text-sm font-medium text-foreground mb-1">{t("decidedBy")}</div>
-                  <div className="text-sm text-muted-foreground">{item.decided_by || t("system")}</div>
+                  <Badge variant={DECISION_VARIANT[item.decision] ?? "neutral"}>
+                    {t(`decision.${item.decision}`)}
+                  </Badge>
+                  <span className="text-xs text-muted shrink-0" title={absolute}>
+                    {relativeTime(item.decided_at, t)}
+                  </span>
+                  {isExpanded ? <ChevronUp size={14} className="shrink-0 text-muted" /> : <ChevronDown size={14} className="shrink-0 text-muted" />}
                 </div>
 
-                {/* 命中规则 */}
-                {item.matched_rule && (
-                  <div>
-                    <div className="text-sm font-medium text-foreground mb-1">{t("matchedRule")}</div>
-                    <div className="font-mono text-sm text-muted-foreground">{item.matched_rule}</div>
+                {isExpanded && (
+                  <div className="px-4 pb-4 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-border">
+                    <div>
+                      <div className="text-xs font-medium text-muted mb-1">{t("decidedBy")}</div>
+                      <div className="text-sm text-foreground">{item.decided_by || t("system")}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-muted mb-1">{t("riskLevel")}</div>
+                      <div className="text-sm text-foreground">{t(`risk.${item.risk_level.toLowerCase()}`)}</div>
+                    </div>
+                    {item.matched_rule && (
+                      <div className="sm:col-span-2">
+                        <div className="text-xs font-medium text-muted mb-1">{t("matchedRule")}</div>
+                        <div className="font-mono text-xs text-foreground bg-elevated border border-border rounded-md px-3 py-2">
+                          {item.matched_rule}
+                        </div>
+                      </div>
+                    )}
+                    {item.decision_reason && (
+                      <div className="sm:col-span-2">
+                        <div className="text-xs font-medium text-muted mb-1">{t("decisionReason")}</div>
+                        <div className="text-sm text-foreground">{item.decision_reason}</div>
+                      </div>
+                    )}
                   </div>
                 )}
-
-                {/* 决策理由 */}
-                {item.decision_reason && (
-                  <div>
-                    <div className="text-sm font-medium text-foreground mb-1">{t("decisionReason")}</div>
-                    <div className="text-sm text-muted-foreground">{item.decision_reason}</div>
-                  </div>
-                )}
-
-                {/* 风险等级 */}
-                <div>
-                  <div className="text-sm font-medium text-foreground mb-1">{t("riskLevel")}</div>
-                  <div className="text-sm text-muted-foreground">{t(`risk.${item.risk_level.toLowerCase()}`)}</div>
-                </div>
               </div>
-            )}
-          </div>
-        );
-      })}
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

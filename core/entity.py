@@ -453,6 +453,8 @@ class EntityRegistry:
     _types: Dict[EntityType, List[str]] = {}
     _groups: Dict[str, List[str]] = {}
     _group_descriptions: Dict[str, str] = {}
+    # 工具名候选缓存（未知工具名纠错建议用），注册/注销时失效
+    _names_cache: Optional[List[str]] = None
 
     # ------------------------------------------------------------------
     # 通用注册 / 注销
@@ -480,6 +482,7 @@ class EntityRegistry:
         cls._types.setdefault(metadata.entity_type, []).append(metadata.name)
         if metadata.group:
             cls._groups.setdefault(metadata.group, []).append(metadata.name)
+        cls._names_cache = None
 
         log(f"✅ 实体注册: {metadata.name} [{metadata.entity_type.value}]", "DEBUG")
         return True
@@ -511,6 +514,7 @@ class EntityRegistry:
             cls.deactivate_entity(name)
         cls._remove_from_indexes(name)
         del cls._entities[name]
+        cls._names_cache = None
         log(f"✅ 实体注销: {name}")
         return True
 
@@ -699,6 +703,13 @@ class EntityRegistry:
         return list(cls._entities.keys())
 
     @classmethod
+    def _get_all_names_cached(cls) -> List[str]:
+        """实体名候选列表（带缓存，供未知工具名纠错建议复用）。"""
+        if cls._names_cache is None:
+            cls._names_cache = list(cls._entities.keys())
+        return cls._names_cache
+
+    @classmethod
     def exists(cls, name: str) -> bool:
         return name in cls._entities
 
@@ -870,7 +881,7 @@ class EntityRegistry:
                 f"{e['group']}({e['tool_count']}个方法)"
                 for e in catalog
             ]
-            all_tool_names = cls.get_all_names()
+            all_tool_names = cls._get_all_names_cached()
             suggested = difflib.get_close_matches(name, all_tool_names, n=8, cutoff=0.35)
             return json.dumps({
                 "error": f"工具 '{name}' 不存在或当前不可用，请勿猜测工具名。",
@@ -937,7 +948,7 @@ class EntityRegistry:
 
         import uuid as _uuid
         call_id = _uuid.uuid4().hex[:8]
-        t0 = asyncio.get_event_loop().time()
+        t0 = asyncio.get_running_loop().time()
 
         log(f"▶ 执行工具: {name}({arguments[:120] if arguments else ''})", "DEBUG", tag="实体")
         await event_bus.emit(EVENT_TRACE_CALL_START, {
@@ -955,7 +966,7 @@ class EntityRegistry:
                 coro = asyncio.to_thread(entity.func, **kwargs)
             result = await asyncio.wait_for(coro, timeout=tool_timeout)
         except asyncio.TimeoutError:
-            dur = round((asyncio.get_event_loop().time() - t0) * 1000)
+            dur = round((asyncio.get_running_loop().time() - t0) * 1000)
             log(f"工具执行超时 ({tool_timeout}s): {name}", "WARNING", tag="实体")
             await event_bus.emit(EVENT_TRACE_CALL_END, {
                 "call_id": call_id,
@@ -969,7 +980,7 @@ class EntityRegistry:
                 ensure_ascii=False,
             )
         except Exception as exc:
-            dur = round((asyncio.get_event_loop().time() - t0) * 1000)
+            dur = round((asyncio.get_running_loop().time() - t0) * 1000)
             log(f"工具执行异常: {name} - {exc}", "ERROR", tag="实体")
             await event_bus.emit(EVENT_TRACE_CALL_END, {
                 "call_id": call_id,
@@ -980,7 +991,7 @@ class EntityRegistry:
             })
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
-        dur = round((asyncio.get_event_loop().time() - t0) * 1000)
+        dur = round((asyncio.get_running_loop().time() - t0) * 1000)
         result_str = _serialize_result(result)
         log(f"◀ 工具完成: {name} → {result_str[:150]}", "DEBUG", tag="实体")
         await event_bus.emit(EVENT_TRACE_CALL_END, {
@@ -1146,6 +1157,7 @@ class EntityRegistry:
         cls._types.clear()
         cls._groups.clear()
         cls._group_descriptions.clear()
+        cls._names_cache = None
         log("🧹 实体注册表已清空")
 
     @classmethod
@@ -1209,6 +1221,13 @@ _PYTHON_TYPE_MAP = {
 
 def _python_type_to_json_type(py_type: str) -> str:
     low = py_type.lower().strip("<>\"'class ")
+    # 先精确匹配（如 "str"、"list"）
+    if low in _PYTHON_TYPE_MAP:
+        return _PYTHON_TYPE_MAP[low]
+    # 子串匹配时容器类型优先（"List[str]" 应映射 array 而非 string）
+    for container in ("list", "dict"):
+        if container in low:
+            return _PYTHON_TYPE_MAP[container]
     for k, v in _PYTHON_TYPE_MAP.items():
         if k in low:
             return v

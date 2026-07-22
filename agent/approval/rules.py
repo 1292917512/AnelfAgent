@@ -14,6 +14,8 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import re
+import tempfile
 import time
 import uuid
 from enum import Enum
@@ -23,10 +25,15 @@ from pydantic import BaseModel, Field
 
 from core.log import log
 
-from .policy import ApprovalPolicySet, RiskLevel, extract_matchable_arg
+from .policy import ApprovalPolicySet, RiskLevel, match_path_pattern, matchable_arg_candidates
 
 RULES_PATH = "config/permission_rules.json"
 LEGACY_PATH = "config/approval_policies.json"
+
+# 命令执行类工具：参数 glob 的比对对象是命令字符串
+COMMAND_TOOLS = frozenset({"run_shell_command", "python_exec"})
+# 复合命令特征（与 gate 创建永久规则时的拦截共用同一正则）
+COMPOUND_CMD_RE = re.compile(r"&&|\|\||[;|\n\r]|`\s*[^`]|\$\(")
 
 
 class PermissionEffect(str, Enum):
@@ -77,7 +84,14 @@ class PermissionRule(BaseModel):
 
     def matches(self, tool_name: str, tool_args: Optional[Dict[str, Any]],
                 channel_id: str, user_id: str) -> bool:
-        """判断规则是否命中本次调用。"""
+        """判断规则是否命中本次调用。
+
+        参数模式匹配语义：
+        - 含 ``/`` 时走路径段感知匹配（``*`` 不跨目录、``**`` 跨目录），否则 fnmatch
+        - 命令类工具的 allow 规则 fail-closed：arg_pattern 含通配符且候选命令
+          含复合特征（&&/;/|/换行/$()/反引号）时不命中（``npm *`` 的 ``*`` 不能
+          跨复合命令边界放行），降级由后续规则或默认效果处理
+        """
         if not self.enabled:
             return False
         if self.users and user_id not in self.users:
@@ -88,7 +102,21 @@ class PermissionRule(BaseModel):
         if arg_pattern:
             if tool_args is None:
                 return False
-            return fnmatch.fnmatch(extract_matchable_arg(tool_name, tool_args), arg_pattern)
+            # 绝对路径与 workspace 相对形式双候选（等价生效，防 ../、~ 绕过）
+            candidates = matchable_arg_candidates(tool_name, tool_args)
+            if (
+                self.effect == PermissionEffect.ALLOW
+                and tool_name in COMMAND_TOOLS
+                and any(ch in arg_pattern for ch in "*?[")
+                and any(COMPOUND_CMD_RE.search(c) for c in candidates)
+            ):
+                return False
+            if "/" in arg_pattern:
+                return any(match_path_pattern(candidate, arg_pattern) for candidate in candidates)
+            return any(
+                fnmatch.fnmatch(candidate, arg_pattern)
+                for candidate in candidates
+            )
         return True
 
     def applies_to_channel(self, channel_id: str) -> bool:
@@ -213,30 +241,62 @@ class PermissionRuleSet(BaseModel):
         return cls(rules=rules, default_effect=default_effect)
 
 
+# 上一次成功加载的规则集（解析失败时保留，避免损坏文件导致规则被清空）
+_last_good_rules: Optional["PermissionRuleSet"] = None
+
+
 def load_rules(path: str = RULES_PATH) -> PermissionRuleSet:
-    """加载规则集（自动识别新旧格式）；文件不存在时尝试转换旧 approval_policies.json。"""
+    """加载规则集（自动识别新旧格式）；文件不存在时尝试转换旧 approval_policies.json。
+
+    解析失败时 fail-closed：保留内存中上一次成功加载的规则集；若从未成功
+    加载过，返回 default_effect=ASK 的集合（全部询问），避免损坏的规则文件
+    导致权限被静默放开。
+    """
+    global _last_good_rules
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             if "rules" in data:
-                return PermissionRuleSet.from_file_dict(data)
+                rule_set = PermissionRuleSet.from_file_dict(data)
+                _last_good_rules = rule_set
+                return rule_set
             if "policies" in data:
                 # 旧格式：ApprovalPolicySet 自动转换
                 policy_set = ApprovalPolicySet.load_from_file(path)
                 converted = from_legacy_policyset(policy_set)
                 log(f"已从旧审批策略转换 {len(converted.rules)} 条权限规则", tag="权限")
+                _last_good_rules = converted
                 return converted
             log(f"权限规则文件格式未知: {path}，使用空规则集", "WARNING", tag="权限")
             return PermissionRuleSet()
         except Exception as exc:
-            log(f"权限规则文件解析失败: {exc}，使用空规则集", "ERROR", tag="权限")
-            return PermissionRuleSet()
+            if _last_good_rules is not None:
+                log(f"权限规则文件损坏，解析失败: {exc}；已保留上一次成功加载的规则集",
+                    "WARNING", tag="权限")
+                return _last_good_rules
+            log(f"权限规则文件损坏，解析失败: {exc}；已降级为全部询问",
+                "WARNING", tag="权限")
+            return PermissionRuleSet(default_effect=PermissionEffect.ASK)
     legacy = load_legacy_rules()
     if legacy is not None:
         log(f"已从旧审批策略转换 {len(legacy.rules)} 条权限规则", tag="权限")
         return legacy
-    return PermissionRuleSet()
+    return default_rules()
+
+
+def default_rules() -> PermissionRuleSet:
+    """默认规则集（无配置文件时）：仅自发 Plan 确认默认询问。"""
+    return PermissionRuleSet(rules=[
+        PermissionRule(
+            pattern="present_plan",
+            effect=PermissionEffect.ASK,
+            risk_level=RiskLevel.MEDIUM,
+            timeout_seconds=300.0,
+            description="Agent 自发提交的执行计划，默认需用户确认",
+            created_by="builtin",
+        ),
+    ])
 
 
 def load_legacy_rules(path: str = LEGACY_PATH) -> Optional[PermissionRuleSet]:
@@ -283,7 +343,17 @@ def from_legacy_policyset(policy_set: ApprovalPolicySet) -> PermissionRuleSet:
 
 
 def save_rules(rule_set: PermissionRuleSet, path: str = RULES_PATH) -> None:
-    """保存规则集到文件。"""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(rule_set.to_file_dict(), f, indent=2, ensure_ascii=False)
+    """保存规则集到文件（tmp 文件 + os.replace 原子写，避免中断产生截断文件）。"""
+    dir_name = os.path.dirname(path) or "."
+    os.makedirs(dir_name, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, prefix=".permission_rules.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(rule_set.to_file_dict(), f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise

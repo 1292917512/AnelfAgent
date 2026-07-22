@@ -1,0 +1,21 @@
+{
+  "enabled": false,
+  "account_id": "",
+  "token": "",
+  "base_url": "https://ilinkai.weixin.qq.com",
+  "cdn_base_url": "https://novac2c.cdn.weixin.qq.com/c2c",
+  "dm_policy": "open",
+  "allow_from": "",
+  "group_policy": "disabled",
+  "group_allow_from": "",
+  "split_multiline_messages": false,
+  "typing_indicator": true,
+  "send_chunk_delay_seconds": 1.5,
+  "send_chunk_retries": 4,
+  "send_chunk_retry_delay_seconds": 1.0,
+  "rate_limit_circuit_threshold": 1,
+  "rate_limit_circuit_window_seconds": 30.0,
+  "rate_limit_circuit_open_seconds": 30.0,
+  "text_batch_delay_seconds": 3.0,
+  "text_batch_split_delay_seconds": 5.0
+}

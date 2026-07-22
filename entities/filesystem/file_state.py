@@ -81,6 +81,11 @@ class FileStateCache:
         self._items.clear()
         self._total_bytes = 0
 
+    def recent_entries(self, n: int) -> list:
+        """最近使用的 n 条（新→旧），供压缩后 rehydration 等场景使用。"""
+        items = list(self._items.items())
+        return list(reversed(items[-n:]))
+
 
 _caches: Dict[str, FileStateCache] = {}
 _caches_lock = threading.Lock()

@@ -110,6 +110,8 @@ class LLMManager(BaseEntity):
             error(f"加载 LLM 配置失败: {exc}", tag="模型")
 
     def _apply_config(self, data: Dict[str, Any]) -> None:
+        # 重建客户端前关闭旧客户端持有的代理连接池，避免连接泄漏
+        self._close_stale_clients(list(self._clients.values()))
         self._providers.clear()
         self._provider_order.clear()
         self._clients.clear()

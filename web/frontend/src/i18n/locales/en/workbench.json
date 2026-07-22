@@ -92,7 +92,20 @@
     "loading": "Reading file…",
     "loadFailed": "Failed to read file",
     "binaryFile": "Binary file, editing not supported",
-    "tooLarge": "File too large to edit online"
+    "tooLarge": "File too large to edit online",
+    "editView": "Edit",
+    "preview": "Preview",
+    "split": "Split",
+    "attach": "Attach to chat",
+    "quote": "Quote content into input",
+    "copy": "Copy content",
+    "copied": "Copied",
+    "download": "Download",
+    "closeAll": "Close all tabs",
+    "collapse": "Collapse panel (tabs kept)",
+    "discardTitle": "Close unsaved file",
+    "discardConfirm": "There are unsaved changes that will be lost. Close anyway?",
+    "saveFailed": "Save failed"
   },
   "ask": {
     "inputPlaceholder": "Type your answer…",

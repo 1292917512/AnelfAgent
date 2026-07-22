@@ -13,6 +13,7 @@ import { ChatInput } from "./chat/ChatInput";
 import { StatusBar } from "./chat/StatusBar";
 import { Dock, LeftDock } from "./chat/Dock";
 import { UiCommandHost } from "./chat/UiCommandHost";
+import { ContextChip } from "./chat/ContextChip";
 
 // CodeMirror 编辑器体积较大，仅在打开文件时按需加载
 const FileEditor = lazy(() =>
@@ -30,7 +31,7 @@ export default function Chat() {
   const dockOpen = useWorkbenchStore((s) => s.dockOpen);
   const toggleLeft = useWorkbenchStore((s) => s.toggleLeft);
   const toggleDock = useWorkbenchStore((s) => s.toggleDock);
-  const openFilePath = useWorkbenchStore((s) => s.openFilePath);
+  const hasOpenFiles = useWorkbenchStore((s) => s.openFiles.length > 0);
 
   const { data: botName } = useQuery({
     queryKey: ["botName"],
@@ -48,6 +49,13 @@ export default function Chat() {
     <div className="relative flex h-full min-h-0 -m-3 md:-m-6">
       {/* 左栏：工作区文件树 */}
       <LeftDock />
+
+      {/* 文件编辑器侧栏（非模态；收起面板不卸载，标签与草稿保留） */}
+      {hasOpenFiles && (
+        <Suspense fallback={null}>
+          <FileEditor />
+        </Suspense>
+      )}
 
       {/* 中栏：对话流 */}
       <div className="flex-1 flex flex-col min-w-0 h-full p-3 md:p-4">
@@ -68,6 +76,7 @@ export default function Chat() {
             </h2>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <ContextChip />
             <ModelSelect modelType="chat" compact />
             <Button variant="secondary" size="sm" onClick={clearMessages}>
               <Trash2 size={14} />
@@ -93,12 +102,7 @@ export default function Chat() {
       {/* 右栏：功能 Dock */}
       <Dock />
 
-      {/* 文件编辑器 + AI 界面命令宿主 */}
-      {openFilePath && (
-        <Suspense fallback={null}>
-          <FileEditor />
-        </Suspense>
-      )}
+      {/* AI 界面命令宿主 */}
       <UiCommandHost />
     </div>
   );

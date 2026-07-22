@@ -10,13 +10,8 @@ import { useTranslation } from "react-i18next";
 import { useChatStore } from "@/stores/chat-store";
 import { useThinkingStore } from "@/stores/thinking-store";
 
-const VERBS = [
-  "思考中", "编织中", "酝酿中", "打磨中", "检索中",
-  "推演中", "组装中", "联想中", "沉淀中", "校对中",
-];
-
-function pickVerb(seed: number) {
-  return VERBS[seed % VERBS.length];
+function pickVerb(verbs: string[], seed: number) {
+  return verbs[seed % verbs.length] ?? "";
 }
 
 export function ActivityRow() {
@@ -47,7 +42,10 @@ export function ActivityRow() {
     return "";
   }, [activeSession]);
 
-  const verb = pickVerb(verbSeed + Math.floor(elapsed / 3));
+  const verb = useMemo(() => {
+    const verbs = t("activity.verbs", { returnObjects: true }) as string[];
+    return pickVerb(Array.isArray(verbs) ? verbs : [], verbSeed + Math.floor(elapsed / 3));
+  }, [t, verbSeed, elapsed]);
   // 卡死提示：8 秒无进展时变暗红（对齐 Claude Code stalled 动画）
   const stalled = elapsed >= 8 && !currentTool;
 
@@ -61,7 +59,7 @@ export function ActivityRow() {
         </span>
         <span className={stalled ? "text-red-400" : "text-muted-foreground"}>
           {currentTool
-            ? t("activity.usingTool", { tool: currentTool, defaultValue: `正在使用工具: ${currentTool}` })
+            ? t("activity.usingTool", { tool: currentTool })
             : `${verb}…`}
         </span>
         <span className="text-xs text-muted">{elapsed}s</span>

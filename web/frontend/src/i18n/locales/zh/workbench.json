@@ -92,7 +92,20 @@
     "loading": "读取文件中…",
     "loadFailed": "文件读取失败",
     "binaryFile": "二进制文件，不支持编辑",
-    "tooLarge": "文件过大，不支持在线编辑"
+    "tooLarge": "文件过大，不支持在线编辑",
+    "editView": "编辑",
+    "preview": "预览",
+    "split": "分屏",
+    "attach": "附加到对话",
+    "quote": "引用内容到输入框",
+    "copy": "复制内容",
+    "copied": "已复制",
+    "download": "下载",
+    "closeAll": "全部关闭",
+    "collapse": "收起面板（标签保留）",
+    "discardTitle": "关闭未保存的文件",
+    "discardConfirm": "存在未保存的修改，关闭后将丢失。确定关闭吗？",
+    "saveFailed": "保存失败"
   },
   "ask": {
     "inputPlaceholder": "输入你的回答…",

@@ -108,5 +108,19 @@
     "reply_to": "Reply To",
     "inline_keyboard": "Inline Keyboard",
     "streaming": "Streaming"
+  },
+  "weixin": {
+    "qrLogin": "QR Login",
+    "qrTitle": "WeChat QR Login",
+    "qrHint": "Scan with WeChat and confirm on your phone",
+    "qrWaiting": "Waiting for scan...",
+    "qrScanned": "Scanned — confirm in WeChat...",
+    "qrSuccess": "Logged in. Channel started automatically",
+    "qrRefreshing": "QR expired — refreshed automatically",
+    "qrTimeout": "QR timed out, please request a new one",
+    "qrError": "Login failed",
+    "qrClose": "Close",
+    "qrRetry": "Get a new QR code",
+    "qrAccount": "Account"
   }
 }

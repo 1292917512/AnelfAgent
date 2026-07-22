@@ -3,7 +3,8 @@
     "pending": "Pending",
     "history": "History",
     "policies": "Policies",
-    "stats": "Statistics"
+    "stats": "Statistics",
+    "rules": "Permission Rules"
   },
   "loading": "Loading...",
   "noPendingApprovals": "No pending approvals",
@@ -81,5 +82,19 @@
     "sessionNotice": "{{count}} session-scoped allow rules active (lost on restart); saving only affects persisted rules",
     "orderTitle": "Evaluation order (first match wins)",
     "orderDesc": "User deny → channel deny → global deny → user allow → channel ask → global ask → channel allow → global allow → default"
+  },
+  "pageTitle": "Approvals",
+  "pageSubtitle": "Review AI tool-call requests and manage permission rules",
+  "pendingBadge": "{{count}} pending",
+  "noPendingHint": "High-risk tool calls from the AI will wait here for your approval",
+  "onTimeoutLabel": "On Timeout",
+  "filterAll": "All",
+  "searchTool": "Search tool name...",
+  "noMatch": "No matching records",
+  "timeAgo": {
+    "justNow": "just now",
+    "minutes": "{{count}}m ago",
+    "hours": "{{count}}h ago",
+    "days": "{{count}}d ago"
   }
 }

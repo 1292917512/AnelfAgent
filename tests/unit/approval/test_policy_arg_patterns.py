@@ -29,10 +29,15 @@ class TestExtractMatchableArg:
         assert extract_matchable_arg("run_shell_command", {"command": "npm test"}) == "npm test"
 
     def test_edit_file_path(self):
-        assert extract_matchable_arg("edit_file", {"file_path": "a.py"}) == "a.py"
+        # A1 起路径参数规范化为绝对路径（防绕过），相对匹配见 matchable_arg_candidates
+        import os
+        out = extract_matchable_arg("edit_file", {"file_path": "a.py"})
+        assert os.path.isabs(out) and out.endswith("a.py")
 
     def test_move_file_two_paths(self):
-        assert extract_matchable_arg("move_file", {"src": "a", "dst": "b"}) == "a b"
+        out = extract_matchable_arg("move_file", {"src": "a", "dst": "b"})
+        parts = out.split(" ")
+        assert len(parts) == 2 and parts[0].endswith("/a") and parts[1].endswith("/b")
 
     def test_unknown_tool_falls_back_to_json(self):
         out = extract_matchable_arg("some_tool", {"x": 1})

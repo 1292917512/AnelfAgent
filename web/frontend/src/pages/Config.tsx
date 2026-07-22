@@ -6,24 +6,20 @@ import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { cn } from "@/lib/utils";
 import { SlidersHorizontal, RotateCcw, Check, Loader2 } from "lucide-react";
 
-/** 配置项分组展示顺序（未列出的组排最后） */
-const GROUP_ORDER = [
-  "AnelfAgent/Mind",
-  "AnelfAgent/Mind/Memory",
-  "记忆",
-  "工具门控",
-  "错误守卫",
-  "安全",
-  "Prompt缓存",
-  "上下文压缩",
-  "技能",
-  "子代理",
-];
+/** 分组展示顺序从 i18n groups 资源 key 顺序派生（未列出的组排最后） */
+function useGroupOrder(): string[] {
+  const { i18n } = useTranslation("config");
+  return useMemo(() => {
+    const bundle = i18n.getResourceBundle(i18n.language, "config") as { groups?: Record<string, string> } | undefined;
+    return Object.keys(bundle?.groups ?? {});
+  }, [i18n, i18n.language]);
+}
 
 export default function Config() {
   const { t } = useTranslation(["config", "common"]);
   const queryClient = useQueryClient();
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const groupOrder = useGroupOrder();
 
   const { data, isLoading } = useQuery({
     queryKey: ["configMeta"],
@@ -33,11 +29,11 @@ export default function Config() {
   const groups = useMemo(() => {
     const list = data?.groups ?? [];
     return [...list].sort((a, b) => {
-      const ia = GROUP_ORDER.indexOf(a.group);
-      const ib = GROUP_ORDER.indexOf(b.group);
+      const ia = groupOrder.indexOf(a.group);
+      const ib = groupOrder.indexOf(b.group);
       return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
     });
-  }, [data]);
+  }, [data, groupOrder]);
 
   const current = groups.find((g) => g.group === activeGroup) ?? groups[0];
 

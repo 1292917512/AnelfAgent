@@ -108,5 +108,19 @@
     "reply_to": "引用回复",
     "inline_keyboard": "内联键盘",
     "streaming": "流式输出"
+  },
+  "weixin": {
+    "qrLogin": "扫码登录",
+    "qrTitle": "微信扫码登录",
+    "qrHint": "请使用微信扫描二维码，并在手机上确认",
+    "qrWaiting": "等待扫码...",
+    "qrScanned": "已扫码，请在微信里确认...",
+    "qrSuccess": "登录成功，频道已自动启动",
+    "qrRefreshing": "二维码已过期，已自动刷新",
+    "qrTimeout": "二维码已超时，请重新获取",
+    "qrError": "登录失败",
+    "qrClose": "关闭",
+    "qrRetry": "重新获取二维码",
+    "qrAccount": "账号"
   }
 }

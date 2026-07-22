@@ -195,6 +195,18 @@ def get_current_scope() -> str:
         return "_global"
 
 
+def get_background_registry() -> Any:
+    """获取后台任务注册表（延迟导入 agent.runtime，未初始化返回 None）。
+
+    供 entities 层工具登记/完成后台任务（如后台 shell 执行）。
+    """
+    try:
+        from agent.runtime.singleton import get_runtime
+        return get_runtime().mind.background_tasks
+    except Exception:
+        return None
+
+
 def load_image_from_path(path: str) -> Any:
     """从本地路径加载图片为 base64 ImageContent。"""
     from agent.llm.image_utils import load_image_from_path as _load

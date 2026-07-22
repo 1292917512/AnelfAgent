@@ -25,8 +25,10 @@ async def get_status() -> Dict[str, Any]:
 
 @router.get("/components")
 async def get_components() -> Dict[str, Any]:
-    lines = _status_svc.get_component_info()
-    return {"lines": lines}
+    return {
+        "lines": _status_svc.get_component_info(),
+        "structured": _status_svc.get_components(),
+    }
 
 
 @router.get("/events")

@@ -34,6 +34,40 @@ def _mount_nonebot(app: FastAPI) -> None:
         pass
 
 
+def _mount_channel_routers(app: FastAPI) -> None:
+    """挂载各频道包暴露的 HTTP 路由到 /api/channels/<id>。
+
+    频道模块（channels.<name>.adapter）若提供模块级 ``build_router()``，
+    即被挂载 — 不要求频道已启用（例如微信扫码登录需在启用前可用）。
+    """
+    import importlib
+
+    channels_dir = Path(__file__).resolve().parent.parent / "channels"
+    if not channels_dir.is_dir():
+        return
+    for item in sorted(channels_dir.iterdir()):
+        if not item.is_dir() or item.name.startswith("_"):
+            continue
+        if not (item / "adapter.py").exists():
+            continue
+        try:
+            mod = importlib.import_module(f"channels.{item.name}.adapter")
+        except Exception:
+            continue
+        build_router = getattr(mod, "build_router", None)
+        if not callable(build_router):
+            continue
+        try:
+            app.include_router(
+                build_router(),
+                prefix=f"/api/channels/{item.name}",
+                tags=[f"channel-{item.name}"],
+            )
+            log(f"频道路由已挂载: /api/channels/{item.name}")
+        except Exception as exc:
+            log(f"频道路由挂载失败: {item.name} - {exc}", "WARNING")
+
+
 def _make_token(password: str) -> str:
     """根据密码生成确定性 token（跨重启有效）。"""
     return hashlib.sha256(f"anelf-auth:{password}".encode()).hexdigest()[:32]
@@ -119,6 +153,7 @@ def create_app() -> FastAPI:
     app.include_router(v1_responses_router, prefix="/v1")
 
     _mount_nonebot(app)
+    _mount_channel_routers(app)
 
     @app.get("/health")
     async def health() -> Dict[str, str]:

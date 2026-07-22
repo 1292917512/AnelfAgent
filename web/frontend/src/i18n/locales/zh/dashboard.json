@@ -22,5 +22,25 @@
   "day": "天",
   "hour": "时",
   "minute": "分",
-  "second": "秒"
+  "second": "秒",
+  "attention": {
+    "title": "需要注意",
+    "okShort": "正常",
+    "allClear": "运行正常，未发现需要关注的问题",
+    "notReady": "Agent 尚未就绪",
+    "pendingApprovals": "{{count}} 个待处理批准请求",
+    "nearestExpiry": "最近一个 {{seconds}}s 后过期",
+    "mcpDown": "MCP 服务器「{{name}}」未连接",
+    "channelError": "通道「{{name}}」状态异常"
+  },
+  "comp": {
+    "llm": "LLM",
+    "storage": "存储",
+    "tools": "工具",
+    "toolsEnabled": "{{enabled}}/{{total}} 已启用",
+    "personaPrompts": "角色提示词",
+    "stm": "短期记忆",
+    "items": "{{count}} 条",
+    "notReady": "运行时尚未初始化"
+  }
 }

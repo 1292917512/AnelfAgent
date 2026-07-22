@@ -12,9 +12,12 @@ import Chat from "./pages/Chat";
 import Models from "./pages/Models";
 import Personas from "./pages/Personas";
 import Memory from "./pages/Memory";
-import Capabilities from "./pages/Capabilities";
+import Tools from "./pages/Tools";
+import Skills from "./pages/Skills";
+import Mcp from "./pages/Mcp";
 import Config from "./pages/Config";
 import Channels from "./pages/Channels";
+import Approvals from "./pages/Approvals";
 import Settings from "./pages/Settings";
 import Heartbeat from "./pages/Heartbeat";
 import Thinking from "./pages/Thinking";
@@ -46,15 +49,16 @@ export default function App() {
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="status" element={<Navigate to="/" replace />} />
             <Route path="models" element={<Models />} />
-            <Route path="capabilities" element={<Capabilities />} />
-            <Route path="tools" element={<Navigate to="/capabilities?tab=tools" replace />} />
-            <Route path="skills" element={<Navigate to="/capabilities?tab=skills" replace />} />
-            <Route path="mcp" element={<Navigate to="/capabilities?tab=mcp" replace />} />
+            <Route path="capabilities" element={<Navigate to="/tools" replace />} />
+            <Route path="tools" element={<Tools />} />
+            <Route path="skills" element={<Skills />} />
+            <Route path="mcp" element={<Mcp />} />
             <Route path="tags" element={<Tags />} />
             <Route path="personas" element={<Personas />} />
             <Route path="memory" element={<Memory />} />
             <Route path="config" element={<Config />} />
             <Route path="channels" element={<Channels />} />
+            <Route path="approvals" element={<Approvals />} />
             <Route path="tasks" element={<Tasks />} />
             <Route path="heartbeat" element={<Heartbeat />} />
             <Route path="thinking" element={<Thinking />} />

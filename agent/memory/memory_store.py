@@ -118,22 +118,20 @@ class MemoryStore(BaseEntity):
         self._cognee_projection_enabled = enabled
 
     async def _get_db(self) -> aiosqlite.Connection:
-        if self._db is not None:
-            try:
-                await self._db.execute("SELECT 1")
-                return self._db
-            except Exception:
-                try:
-                    await self._db.close()
-                except Exception:
-                    pass
-                self._db = None
-
-        # 并发调用（如后台 EmbeddingWorker 与请求路径）必须串行建连，
-        # 否则各自持有独立连接写同一文件会触发 database is locked
+        # 健康检查失败后的关闭/重建全程走 _db_connect_lock：
+        # 并发调用（如后台 EmbeddingWorker 与请求路径）若各自持有独立连接写同一文件
+        # 会触发 database is locked，重连交错还可能在关闭途中复用旧连接
         async with self._db_connect_lock:
             if self._db is not None:
-                return self._db
+                try:
+                    await self._db.execute("SELECT 1")
+                    return self._db
+                except Exception:
+                    try:
+                        await self._db.close()
+                    except Exception:
+                        pass
+                    self._db = None
 
             from pathlib import Path
             Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -217,6 +215,15 @@ class MemoryStore(BaseEntity):
                 archive_reason TEXT NOT NULL DEFAULT ''
             );
         """)
+        # 懒迁移：归档保留向量与最近访问时间，恢复时可原样回填
+        cursor = await db.execute("PRAGMA table_info(memories_archive)")
+        archive_cols = {row["name"] for row in await cursor.fetchall()}
+        if "embedding_blob" not in archive_cols:
+            await db.execute("ALTER TABLE memories_archive ADD COLUMN embedding_blob BLOB")
+        if "last_accessed_ns" not in archive_cols:
+            await db.execute(
+                "ALTER TABLE memories_archive ADD COLUMN last_accessed_ns INTEGER NOT NULL DEFAULT 0"
+            )
 
         # ---- 文件索引表 ----
         await db.execute("""
@@ -383,7 +390,11 @@ class MemoryStore(BaseEntity):
 
     async def _ensure_vec_tables(self, db: aiosqlite.Connection, dims: int) -> None:
         """确保 vec0 索引表存在且维度匹配；维度变更时重建。"""
-        existing = await self._existing_vec_dims(db)
+        # _vec_dims 已缓存时跳过 sqlite_master 探测（写入路径热调用）
+        existing = (
+            self._vec_dims if self._vec_dims is not None
+            else await self._existing_vec_dims(db)
+        )
         if existing is not None and existing != dims:
             log(f"vec 索引维度变更 {existing}→{dims}，重建索引", "WARNING")
             await db.execute("DROP TABLE IF EXISTS memories_vec")
@@ -693,27 +704,40 @@ class MemoryStore(BaseEntity):
             )
         await db.commit()
 
-    async def update(self, entry: MemoryEntry) -> bool:
-        """原地更新一条记忆的内容、标签、embedding 等字段（保留原 id 和时间戳）。"""
+    async def update(self, entry: MemoryEntry, *, clear_embedding: bool = False) -> bool:
+        """原地更新一条记忆的内容、标签等字段（保留原 id 和时间戳）。
+
+        embedding 语义：entry.embedding 非空时写入新向量；clear_embedding=True 时
+        显式清空（内容已变更，待后台 worker 重建）；其余情况不触碰 embedding_blob。
+        """
         if not entry.id:
             return False
         db = await self._get_db()
-        blob = pack_embedding(entry.embedding) if entry.embedding else None
-        tags_json = json.dumps(entry.tags, ensure_ascii=False)
+        set_clause = "content=?, importance=?, metadata_json=?, tags_json=?"
+        params: list[Any] = [
+            entry.content,
+            entry.importance,
+            json.dumps(entry.metadata, ensure_ascii=False),
+            json.dumps(entry.tags, ensure_ascii=False),
+        ]
+        blob: Optional[bytes] = None
+        embedding_touched = False
+        if entry.embedding:
+            blob = pack_embedding(entry.embedding)
+            set_clause += ", embedding_blob=?"
+            params.append(blob)
+            embedding_touched = True
+        elif clear_embedding:
+            set_clause += ", embedding_blob=NULL"
+            embedding_touched = True
+        params.append(entry.id)
         cursor = await db.execute(
-            "UPDATE memories SET content=?, importance=?, metadata_json=?, "
-            "embedding_blob=?, tags_json=? WHERE id=?",
-            (
-                entry.content,
-                entry.importance,
-                json.dumps(entry.metadata, ensure_ascii=False),
-                blob,
-                tags_json,
-                entry.id,
-            ),
+            f"UPDATE memories SET {set_clause} WHERE id=?",
+            params,
         )
         if (cursor.rowcount or 0) > 0:
-            await self._vec_upsert_memory(db, entry.id or 0, blob)
+            if embedding_touched:
+                await self._vec_upsert_memory(db, entry.id or 0, blob)
             await self._enqueue_cognee_sync(
                 db,
                 entry.id,
@@ -950,14 +974,15 @@ class MemoryStore(BaseEntity):
             return
         db = await self._get_db()
         now_ns = int(time.time() * 1e9)
-        for mid in memory_ids:
-            # 访问计数对所有类型记录；重要性强化仅非永久记忆
-            await db.execute(
-                "UPDATE memories SET access_count = access_count + 1, last_accessed_ns = ?, "
-                "importance = CASE WHEN type != 'permanent' "
-                "THEN MIN(1.0, importance + 0.02) ELSE importance END WHERE id = ?",
-                (now_ns, mid),
-            )
+        # 访问计数对所有类型记录；重要性强化仅非永久记忆（单条批量 UPDATE）
+        placeholders = ",".join("?" for _ in memory_ids)
+        await db.execute(
+            f"UPDATE memories SET access_count = access_count + 1, last_accessed_ns = ?, "
+            f"importance = CASE WHEN type != 'permanent' "
+            f"THEN MIN(1.0, importance + 0.02) ELSE importance END "
+            f"WHERE id IN ({placeholders})",
+            (now_ns, *memory_ids),
+        )
         await db.commit()
 
     # ------------------------------------------------------------------
@@ -982,28 +1007,32 @@ class MemoryStore(BaseEntity):
         return entry.importance * decay * reinforcement
 
     async def _archive_entry(self, entry: MemoryEntry, reason: str) -> None:
-        """将记忆移入归档表（软遗忘：不参与召回，可恢复）。"""
+        """将记忆移入归档表（软遗忘：不参与召回，可恢复，向量随档保留）。"""
         if entry.id is None:
             return
         db = await self._get_db()
         await db.execute(
             "INSERT OR REPLACE INTO memories_archive "
             "(id, type, content, source, importance, ts_ns, metadata_json, "
-            "tags_json, access_count, archived_at_ns, archive_reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "tags_json, access_count, archived_at_ns, archive_reason, "
+            "embedding_blob, last_accessed_ns) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.id, entry.memory_type.value, entry.content, entry.source,
                 entry.importance, int(entry.timestamp * 1e9),
                 json.dumps(entry.metadata, ensure_ascii=False),
                 json.dumps(entry.tags, ensure_ascii=False),
                 entry.access_count, int(time.time() * 1e9), reason,
+                pack_embedding(entry.embedding) if entry.embedding else None,
+                int(entry.last_accessed * 1e9),
             ),
         )
         await db.execute("DELETE FROM memories WHERE id = ?", (entry.id,))
         await self._vec_delete_memories(db, [entry.id])
+        await self._enqueue_cognee_sync(db, entry.id, "delete")
 
     async def restore_memory(self, memory_id: int) -> bool:
-        """从归档恢复记忆（回到活跃记忆库）。"""
+        """从归档恢复记忆（回到活跃记忆库，向量与最近访问时间原样回填）。"""
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT * FROM memories_archive WHERE id = ?", (memory_id,),
@@ -1011,17 +1040,21 @@ class MemoryStore(BaseEntity):
         row = await cursor.fetchone()
         if not row:
             return False
+        blob: Optional[bytes] = row["embedding_blob"] if "embedding_blob" in row.keys() else None
+        last_accessed_ns = row["last_accessed_ns"] if "last_accessed_ns" in row.keys() else 0
         await db.execute(
             "INSERT OR REPLACE INTO memories "
             "(id, type, content, source, importance, ts_ns, metadata_json, "
             "embedding_blob, tags_json, access_count, last_accessed_ns, migrated) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
             (
                 row["id"], row["type"], row["content"], row["source"],
                 row["importance"], row["ts_ns"], row["metadata_json"],
-                row["tags_json"], row["access_count"], int(time.time() * 1e9),
+                blob,
+                row["tags_json"], row["access_count"], last_accessed_ns,
             ),
         )
+        await self._vec_upsert_memory(db, memory_id, blob)
         await db.execute("DELETE FROM memories_archive WHERE id = ?", (memory_id,))
         await db.commit()
         return True
@@ -1092,6 +1125,7 @@ class MemoryStore(BaseEntity):
         rows = await cursor.fetchall()
 
         forgotten: list[Dict[str, Any]] = []
+        to_archive: list[tuple[MemoryEntry, float]] = []
         for row in rows:
             entry = self._row_to_entry(row)
             score = self.compute_effective_score(entry, now)
@@ -1102,13 +1136,13 @@ class MemoryStore(BaseEntity):
                     "score": round(score, 4),
                     "preview": entry.content[:50],
                 })
+                to_archive.append((entry, score))
                 if len(forgotten) >= limit:
                     break
 
-        for item in forgotten:
-            entry = await self.get(item["id"])
-            if entry is not None:
-                await self._archive_entry(entry, f"低有效分遗忘 (score={item['score']})")
+        # 复用第一轮已取出的行，不再逐条 get()
+        for entry, score in to_archive:
+            await self._archive_entry(entry, f"低有效分遗忘 (score={round(score, 4)})")
         if forgotten:
             await db.commit()
         return {"forgotten": forgotten, "count": len(forgotten)}
@@ -1170,8 +1204,21 @@ class MemoryStore(BaseEntity):
             if e.id is not None and e.embedding:
                 vecs[e.id] = e.embedding
 
-        pairs: list[tuple[MemoryEntry, MemoryEntry, float]] = []
         entry_list = [e for e in entries if e.id in vecs]
+        # O(n²) 相似度计算放工作线程，避免阻塞事件循环
+        return await asyncio.to_thread(
+            self._find_similar_pairs, entry_list, vecs, similarity_threshold, limit,
+        )
+
+    @staticmethod
+    def _find_similar_pairs(
+            entry_list: list[MemoryEntry],
+            vecs: Dict[int, list[float]],
+            similarity_threshold: float,
+            limit: int,
+    ) -> list[tuple[MemoryEntry, MemoryEntry, float]]:
+        """在候选向量中枚举高相似度记忆对（纯计算，供 asyncio.to_thread 调用）。"""
+        pairs: list[tuple[MemoryEntry, MemoryEntry, float]] = []
         for i in range(len(entry_list)):
             for j in range(i + 1, len(entry_list)):
                 a, b = entry_list[i], entry_list[j]
@@ -1204,6 +1251,8 @@ class MemoryStore(BaseEntity):
              drop.importance, keep_id),
         )
         await db.execute("DELETE FROM memories WHERE id = ?", (drop_id,))
+        await self._vec_delete_memories(db, [drop_id])
+        await self._enqueue_cognee_sync(db, drop_id, "delete")
         await db.commit()
         return True
 
@@ -1803,6 +1852,7 @@ class MemoryStore(BaseEntity):
             "DELETE FROM memories WHERE importance < ? AND ts_ns < ? AND type != ?",
             (threshold, cutoff_ts, MemoryType.PERMANENT.value),
         )
+        await self._vec_delete_memories(db, memory_ids)
         for memory_id in memory_ids:
             await self._enqueue_cognee_sync(db, memory_id, "delete")
         await db.commit()

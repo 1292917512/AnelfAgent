@@ -283,3 +283,28 @@ async def collect_active_goals(store: MemoryStore) -> list[str]:
         return goals
     except Exception:
         return []
+
+@deferred_tool(
+    group=_GROUP, tags=["planning", "always"],
+    description=(
+        "在执行复杂任务前，先把计划提交给用户确认（自发 Plan 模式）。"
+        "适用场景：多步骤任务、涉及文件修改、不可逆操作、需求有歧义。"
+        "计划获批后再执行；被拒时会收到用户反馈，据反馈调整后重新提交或放弃。"
+    ),
+)
+async def present_plan(goal: str, steps: str, files: str = "", risks: str = "") -> str:
+    """把执行计划呈现给用户确认。
+
+    Args:
+        goal: 计划目标（一句话）
+        steps: 执行步骤（每步一行，含顺序）
+        files: 涉及的文件/资源（可选）
+        risks: 风险与注意事项（可选）
+    """
+    # 到达此处说明已通过批准（审批由统一权限管线在工具执行前完成）。
+    # 无人交互的自主场景（心跳/反思）无批准流程，直接视为通过。
+    return json.dumps({
+        "ok": True,
+        "approved": True,
+        "message": "计划已获批准。请按计划步骤执行，执行中如需调整计划请重新提交。",
+    }, ensure_ascii=False)

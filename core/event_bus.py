@@ -138,23 +138,25 @@ class EventBus:
             return True
 
         once_handlers: List[_Subscription] = []
-        for sub in list(subs):
-            try:
-                result = await sub.handler(payload)
+        try:
+            for sub in list(subs):
+                result: Any = None
+                try:
+                    result = await sub.handler(payload)
+                except Exception:
+                    log(
+                        f"事件处理器异常: event={event} handler={sub.handler.__name__}\n"
+                        f"{_tb.format_exc()}",
+                        "ERROR",
+                    )
+                if sub.once:
+                    once_handlers.append(sub)
                 if result is False:
                     return False
-            except Exception:
-                log(
-                    f"事件处理器异常: event={event} handler={sub.handler.__name__}\n"
-                    f"{_tb.format_exc()}",
-                    "ERROR",
-                )
-            if sub.once:
-                once_handlers.append(sub)
-
-        for sub in once_handlers:
-            if sub in subs:
-                subs.remove(sub)
+        finally:
+            for sub in once_handlers:
+                if sub in subs:
+                    subs.remove(sub)
 
         return True
 

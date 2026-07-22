@@ -166,6 +166,23 @@ def _safe_json(payload: Any) -> str:
     return sanitize_text(text) if is_sanitize_enabled() else text
 
 
+async def _list_roots_callback(context: Any) -> Any:
+    """MCP roots 能力回调：向 server 声明允许写入的根目录。
+
+    chrome-devtools-mcp 等 server 仅允许 filePath 写入 roots 之内
+    （客户端未声明 roots 时默认只有 OS 临时目录）。将 workspace
+    声明为 root 后，截图/快照等工具可直接保存到工作区。
+    """
+    from mcp import types
+
+    from core.path import workspace_root
+
+    ws = Path(workspace_root()).resolve()
+    return types.ListRootsResult(
+        roots=[types.Root(uri=ws.as_uri(), name="workspace")]
+    )
+
+
 # ------------------------------------------------------------------
 # MCP Bridge
 # ------------------------------------------------------------------
@@ -630,7 +647,11 @@ class MCPBridge:
                     transport_cm = self._create_transport(srv)
                     async with transport_cm as streams:
                         read_stream, write_stream = streams[0], streams[1]
-                        async with ClientSession(read_stream, write_stream) as session:
+                        async with ClientSession(
+                            read_stream,
+                            write_stream,
+                            list_roots_callback=_list_roots_callback,
+                        ) as session:
                             await session.initialize()
                             with self._lock:
                                 self._sessions[srv.name] = session
