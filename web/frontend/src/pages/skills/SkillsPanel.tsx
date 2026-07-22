@@ -2,12 +2,11 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { skillsApi, type SkillItem } from "@/lib/api";
-import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { cn } from "@/lib/utils";
 import { Button, EmptyState, Input, Textarea } from "@/components/ui";
 import { Plus, Trash2, Pin, PinOff, Archive, ArchiveRestore, Save, X, GraduationCap } from "lucide-react";
 
-export default function Skills() {
+export function SkillsPanel() {
   const { t } = useTranslation(["skills", "common"]);
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<string | null>(null);
@@ -79,17 +78,25 @@ export default function Skills() {
         : "text-muted";
 
   return (
-    <PageContainer>
-      <PageHeader
-        icon={<GraduationCap size={22} />}
-        title={t("title")}
-        subtitle={t("subtitle")}
-        actions={
-          <Button variant="primary" onClick={() => setCreating(!creating)}>
+    <div className="space-y-4">
+      {/* 工具栏 */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <Input
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          placeholder={t("searchPlaceholder")}
+          className="flex-1 min-w-40 max-w-xs"
+        />
+        <label className="flex items-center gap-1.5 text-sm text-muted cursor-pointer">
+          <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
+          {t("showArchived")}
+        </label>
+        <div className="ml-auto">
+          <Button variant="primary" size="sm" onClick={() => setCreating(!creating)}>
             <Plus size={16} /> {t("createNew")}
           </Button>
-        }
-      />
+        </div>
+      </div>
 
       {/* 创建表单 */}
       {creating && (
@@ -131,20 +138,6 @@ export default function Skills() {
           </div>
         </div>
       )}
-
-      {/* 工具栏 */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <Input
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-          placeholder={t("searchPlaceholder")}
-          className="flex-1 min-w-40 max-w-xs"
-        />
-        <label className="flex items-center gap-1.5 text-sm text-muted cursor-pointer">
-          <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
-          {t("showArchived")}
-        </label>
-      </div>
 
       {/* 技能列表 */}
       {filtered.length === 0 && (
@@ -252,6 +245,6 @@ export default function Skills() {
           </div>
         ))}
       </div>
-    </PageContainer>
+    </div>
   );
 }

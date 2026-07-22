@@ -1,11 +1,19 @@
 import axios from "axios";
 import type {
+  AdapterListResult,
+  ChannelTestHealthResult,
+  ChannelTestSendResult,
+  ChannelToolTestResult,
+  ChannelToolToggleResult,
+  ChannelToolsResult,
   CogneeConfig,
   CogneeDataset,
   CogneeStatus,
   CreateModelConfig,
   CreateProviderConfig,
   GoalStep,
+  LogEntry,
+  LogStats,
   MCPServer,
   MCPServerConfig,
   MCPToggleResult,
@@ -103,8 +111,8 @@ export const statusApi = {
   pfc: () => api.get("/status/pfc"),
   mindConfig: () => api.get("/status/mind-config"),
   logs: (level?: string, tag?: string, keyword?: string, limit = 50) =>
-    api.get("/status/logs", { params: { level: level || undefined, tag: tag || undefined, keyword: keyword || undefined, limit } }),
-  logStats: () => api.get("/status/log-stats"),
+    api.get<{ logs: LogEntry[]; count: number }>("/status/logs", { params: { level: level || undefined, tag: tag || undefined, keyword: keyword || undefined, limit } }),
+  logStats: () => api.get<LogStats>("/status/log-stats"),
   saveMindConfig: (data: Record<string, unknown>) => api.put("/status/mind-config", data),
 };
 
@@ -325,10 +333,25 @@ export function apiErrorMessage(err: unknown, fallback: string): string {
 
 // Adapters
 export const adaptersApi = {
-  list: () => api.get("/adapters/"),
+  list: () => api.get<AdapterListResult>("/adapters/"),
   toggle: (key: string) => api.put(`/adapters/${encodeURIComponent(key)}/toggle`),
   configs: () => api.get("/adapters/configs"),
   saveConfigs: (values: Record<string, unknown>) => api.put("/adapters/configs", values),
+  testHealth: (key: string) =>
+    api.post<ChannelTestHealthResult>(`/adapters/${encodeURIComponent(key)}/test/health`),
+  testSend: (key: string, payload: { chat_id: string; text: string }) =>
+    api.post<ChannelTestSendResult>(`/adapters/${encodeURIComponent(key)}/test/send`, payload),
+  channelTools: (key: string) =>
+    api.get<ChannelToolsResult>(`/adapters/${encodeURIComponent(key)}/tools`),
+  toggleChannelTool: (key: string, name: string) =>
+    api.put<ChannelToolToggleResult>(
+      `/adapters/${encodeURIComponent(key)}/tools/${encodeURIComponent(name)}/toggle`,
+    ),
+  testChannelTool: (key: string, name: string, args: Record<string, unknown>) =>
+    api.post<ChannelToolTestResult>(
+      `/adapters/${encodeURIComponent(key)}/tools/${encodeURIComponent(name)}/test`,
+      { args },
+    ),
 };
 
 // NoneBot Bridge

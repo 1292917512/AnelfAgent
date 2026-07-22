@@ -80,7 +80,7 @@
     "heartbeat_max_entries": "heartbeat.md 保留的最大条目数",
     "auto_consolidate_enabled": "是否在心跳时自动整理记忆文件",
     "conv_recall_scan_limit": "翻阅历史对话工具的向量扫描最大条数",
-    "conv_recall_backfill_batch": "每次调用时回填 embedding 的批次大小",
+    "conv_recall_backfill_batch": "对话 embedding 后台回填的批次大小",
     "conv_recall_min_score": "低于此分数的历史消息不返回（0~1）",
     "conv_recall_max_results": "recall_conversation 工具单次最多返回条数",
     "cross_channel_enabled": "开启后 AI 在回复时能感知其他频道的相关对话并自然关联",

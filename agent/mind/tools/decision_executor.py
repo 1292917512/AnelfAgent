@@ -122,9 +122,9 @@ async def execute_remember(mind: Mind, decision: Decision) -> None:
         content=decision.content,
         importance=0.7,
     )
-    if mind.embedder.available:
-        entry.embedding = await mind.embedder.embed_one(decision.content)
     await mind.memory_store.add(entry)
+    from agent.memory.embedding_worker import wake_embedding_worker
+    wake_embedding_worker()
     log(f"AI 主动记忆: {decision.content[:80]}", tag="思维")
 
 

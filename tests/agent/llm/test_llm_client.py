@@ -89,23 +89,38 @@ def test_anthropic_does_not_send_top_p() -> None:
     assert "top_p" not in kwargs
 
 
-def test_unsupported_reasoning_effort_is_not_silently_dropped(
+def test_unsupported_reasoning_effort_is_dropped_with_warning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """不支持的 effort 降级为告警 + 丢弃（全局配置不能打挂整个模型）。"""
     monkeypatch.setattr(
         "agent.llm.llm_client.litellm.supports_reasoning",
         lambda *_args, **_kwargs: False,
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "agent.llm.llm_client.log",
+        lambda msg, level="INFO", *, tag=None: warnings.append(msg) if level == "WARNING" else None,
     )
     client = LLMClient(LLMClientConfig(
         model="qwen3",
         api_type="ollama",
         supports_reasoning=False,
     ))
-    with pytest.raises(ValueError, match="reasoning_effort"):
-        client._build_kwargs(
-            [{"role": "user", "content": "hello"}],
-            {"reasoning_effort": "high"},
-        )
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hello"}],
+        {"reasoning_effort": "high"},
+    )
+    assert "reasoning_effort" not in kwargs
+    assert len(warnings) == 1 and "reasoning_effort" in warnings[0]
+
+    # 重复调用不重复告警（每客户端首次）
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hello"}],
+        {"reasoning_effort": "high"},
+    )
+    assert "reasoning_effort" not in kwargs
+    assert len(warnings) == 1
 
 
 def test_adapt_messages_accepts_multimodal_system_content() -> None:
@@ -138,6 +153,74 @@ async def test_unconfigured_client_fails_before_network() -> None:
     client = LLMClient(LLMClientConfig(model="", base_url=""))
     with pytest.raises(LLMNotConfiguredError):
         await client.chat([{"role": "user", "content": "hello"}])
+
+
+@pytest.mark.asyncio
+async def test_tool_choice_rejection_learns_and_downgrades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """端点 400 拒绝强制 tool_choice：学习 → 降级 auto 重试 → 后续预防性降级。"""
+    import litellm
+
+    client = LLMClient(LLMClientConfig(
+        model="qwen3.7-plus",
+        api_type="anthropic",
+        supports_forced_tool_choice=True,
+    ))
+    seen: list[Any] = []
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        seen.append(kwargs.get("tool_choice"))
+        if kwargs.get("tool_choice") not in (None, "auto", "none"):
+            raise litellm.BadRequestError(
+                '{"request_id":"ff2a66bb-180f-429b","code":"InvalidParameter",'
+                '"message":"The tool_choice parameter does not support being '
+                'set to required or object in thinking mode"}',
+                model="m", llm_provider="anthropic",
+            )
+        return "ok"
+
+    monkeypatch.setattr("agent.llm.llm_client.litellm.acompletion", fake_acompletion)
+
+    kwargs = {"model": "m", "messages": [], "tool_choice": "required"}
+    assert await client._start_completion(kwargs) == "ok"
+    assert seen == ["required", "auto"]
+    assert client._learned_no_forced_tool_choice
+
+    # 学习后 _resolve_tool_choice 预防性降级，不再触发 400
+    assert client._resolve_tool_choice("required") == "auto"
+    assert client._resolve_tool_choice(
+        {"type": "function", "function": {"name": "decide"}}
+    ) == "auto"
+    assert client._resolve_tool_choice("none") == "none"
+
+
+@pytest.mark.asyncio
+async def test_unrelated_bad_request_is_not_learned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """与 tool_choice 无关的 400 不触发学习、不重试，原样抛出。"""
+    import litellm
+
+    client = LLMClient(LLMClientConfig(
+        model="qwen3.7-plus",
+        api_type="anthropic",
+        supports_forced_tool_choice=True,
+    ))
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        raise litellm.BadRequestError(
+            '{"code":"InvalidParameter","message":"messages: text content '
+            'blocks must be non-empty"}',
+            model="m", llm_provider="anthropic",
+        )
+
+    monkeypatch.setattr("agent.llm.llm_client.litellm.acompletion", fake_acompletion)
+
+    kwargs = {"model": "m", "messages": [], "tool_choice": "required"}
+    with pytest.raises(litellm.BadRequestError):
+        await client._start_completion(kwargs)
+    assert not client._learned_no_forced_tool_choice
 
 
 @pytest.mark.asyncio
@@ -436,7 +519,8 @@ def test_forced_tool_choice_downgraded_when_unsupported() -> None:
 
 
 def test_tool_choice_downgrade_logged_once(monkeypatch) -> None:
-    """强制降级产生 WARNING（每客户端仅首次），不再静默失效。"""
+    """显式配置 supports_forced_tool_choice=False 静默降级（用户已知行为）；
+    仅端点 400 学习到的意外降级产生 WARNING（每客户端仅首次）。"""
     import agent.llm.llm_client as client_mod
 
     warnings: list[str] = []
@@ -444,13 +528,21 @@ def test_tool_choice_downgrade_logged_once(monkeypatch) -> None:
         client_mod, "log",
         lambda msg, level="INFO", tag=None: warnings.append(msg) if level == "WARNING" else None,
     )
+    # 显式配置：静默降级，无 WARNING
     kimi = LLMClient(LLMClientConfig(
         model="k3[1m]", api_type="anthropic", supports_forced_tool_choice=False,
     ))
-    kimi._resolve_tool_choice("required")
-    kimi._resolve_tool_choice("required")
-    kimi._resolve_tool_choice({"type": "function", "function": {"name": "x"}})
-    kimi._resolve_tool_choice("auto")  # 非强制值不触发
+    assert kimi._resolve_tool_choice("required") == "auto"
+    assert kimi._resolve_tool_choice({"type": "function", "function": {"name": "x"}}) == "auto"
+    assert not warnings
+
+    # 学习到的限制（配置预判失败）：WARNING 一次
+    learned = LLMClient(LLMClientConfig(model="k3[1m]", api_type="anthropic"))
+    learned._learned_no_forced_tool_choice = True
+    assert learned._resolve_tool_choice("required") == "auto"
+    assert learned._resolve_tool_choice("required") == "auto"
+    assert learned._resolve_tool_choice({"type": "function", "function": {"name": "x"}}) == "auto"
+    assert learned._resolve_tool_choice("auto") == "auto"  # 非强制值不触发
     assert len(warnings) == 1
     assert "降级" in warnings[0] and "k3[1m]" in warnings[0]
 

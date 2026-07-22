@@ -196,7 +196,7 @@ class TestCommonTools:
         props = list(params["properties"])
         assert props[0] == "channel_id"
         assert "duration" in props
-        assert set(params["required"]) == {"chat_id", "user_id"}
+        assert set(params["required"]) == {"target_id", "user_id"}
 
     def test_alias_forward_message_maps_to_forward_msg(self, channel_manager) -> None:
         cm, created = channel_manager
@@ -222,6 +222,18 @@ class TestCommonTools:
         assert res["success"] is True
         assert res["deleted"] == "9"
         # group: 前缀解析后 channel_type 自动注入
+        assert res["channel_type"] == "group"
+
+    @pytest.mark.asyncio
+    async def test_target_id_alias_maps_to_chat_id(self, channel_manager) -> None:
+        """schema 层统一暴露 target_id，调用时映射回适配器方法的 chat_id。"""
+        cm, created = channel_manager
+        _make(cm, created)
+        bind_current_channel("fake")
+        res = json.loads(await EntityRegistry.execute_tool(
+            "delete_message", '{"target_id":"group:123","message_id":"9"}'))
+        assert res["success"] is True
+        assert res["deleted"] == "9"
         assert res["channel_type"] == "group"
 
     @pytest.mark.asyncio

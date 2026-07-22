@@ -292,51 +292,55 @@ class SqliteBackend:
         *,
         scope_type: str = "",
         scope_id: str = "",
-        batch_size: int = 20,
+        batch_size: int = 32,
+        max_age_days: int = 30,
     ) -> int:
-        """为对话记录中缺少 embedding 的条目批量补充向量。
+        """批量为对话记录中缺少 embedding 的条目补充向量（单次 API 调用处理一批）。
 
         仅处理 user/assistant 角色的消息（系统消息不需要检索），
-        支持限定 scope 加速局部回填。
+        支持限定 scope 加速局部回填；max_age_days>0 时只回填最近时间窗内的
+        消息，避免为远古消息浪费 embedding 额度。
         """
         await self._ensure_conv_embedding_column()
         db = await self._get_db()
 
+        conditions = ["embedding_blob IS NULL", "role IN ('user','assistant')"]
+        params: list = []
         if scope_type and scope_id:
-            cursor = await db.execute(
-                "SELECT id, content FROM conversation_messages "
-                "WHERE scope_type=? AND scope_id=? AND embedding_blob IS NULL "
-                "AND role IN ('user','assistant') LIMIT ?",
-                (scope_type, scope_id, batch_size),
-            )
-        else:
-            cursor = await db.execute(
-                "SELECT id, content FROM conversation_messages "
-                "WHERE embedding_blob IS NULL AND role IN ('user','assistant') LIMIT ?",
-                (batch_size,),
-            )
+            conditions.append("scope_type=? AND scope_id=?")
+            params.extend([scope_type, scope_id])
+        if max_age_days > 0:
+            conditions.append("ts_ns >= ?")
+            params.append(int((time.time() - max_age_days * 86400) * 1e9))
+        params.append(batch_size)
+
+        cursor = await db.execute(
+            f"SELECT id, content FROM conversation_messages "
+            f"WHERE {' AND '.join(conditions)} LIMIT ?",
+            params,
+        )
         rows = await cursor.fetchall()
         if not rows:
             return 0
 
         from agent.memory.memory_utils import pack_embedding
 
+        vecs = await embedder.embed([row[1] for row in rows])  # type: ignore[attr-defined]
+        if len(vecs) != len(rows):
+            return 0
+
         count = 0
-        for row in rows:
-            try:
-                vec = await embedder.embed_one(row[1])  # type: ignore[attr-defined]
-                if vec:
-                    await db.execute(
-                        "UPDATE conversation_messages SET embedding_blob=? WHERE id=?",
-                        (pack_embedding(vec), row[0]),
-                    )
-                    count += 1
-            except Exception as e:
-                log(f"对话 embedding 生成失败 (id={row[0]}): {e}", "DEBUG")
+        for row, vec in zip(rows, vecs):
+            if not vec:
                 continue
+            await db.execute(
+                "UPDATE conversation_messages SET embedding_blob=? WHERE id=?",
+                (pack_embedding(vec), row[0]),
+            )
+            count += 1
         if count:
             await db.commit()
-            log(f"对话 embedding 回填: {count} 条", "DEBUG", tag="存储")
+            log(f"对话 embedding 批量回填: {count} 条", "DEBUG", tag="存储")
         return count
 
     async def search_conversation_vector(

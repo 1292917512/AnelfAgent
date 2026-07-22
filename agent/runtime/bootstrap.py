@@ -151,6 +151,17 @@ def create_bootstrap() -> FlowMachine:
         except Exception as exc:
             log(f"文件索引同步失败（不影响启动）: {exc}", "WARNING")
 
+        from agent.memory.embedding_worker import EmbeddingWorker, set_embedding_worker
+
+        embedding_worker = EmbeddingWorker(store, embedder)
+        await embedding_worker.start()
+        set_embedding_worker(embedding_worker)
+        Lifecycle.register(
+            "embedding_worker",
+            embedding_worker,
+            cleanup=embedding_worker.close,
+        )
+
         cognee_client = None
         cognee_coordinator = None
         try:

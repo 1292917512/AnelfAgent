@@ -24,6 +24,7 @@ import {
   GraduationCap,
   SlidersHorizontal,
   Shield,
+  Blocks,
   type LucideIcon,
 } from "lucide-react";
 
@@ -46,6 +47,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   GraduationCap,
   SlidersHorizontal,
   Shield,
+  Blocks,
 };
 
 const FALLBACK_NAV: NavItem[] = [
@@ -54,12 +56,10 @@ const FALLBACK_NAV: NavItem[] = [
   { path: "/models", label: "models", icon: "Cpu", group: "group_core" },
   { path: "/personas", label: "personas", icon: "UserCircle", group: "group_core" },
   { path: "/memory", label: "memory", icon: "Brain", group: "group_core" },
-  { path: "/skills", label: "skills", icon: "GraduationCap", group: "group_core" },
+  { path: "/capabilities", label: "capabilities", icon: "Blocks", group: "group_core" },
   { path: "/tasks", label: "tasks", icon: "ListChecks", group: "group_core" },
   { path: "/heartbeat", label: "heartbeat", icon: "HeartPulse", group: "group_core" },
   { path: "/tags", label: "tags", icon: "Tags", group: "group_ability" },
-  { path: "/tools", label: "tools", icon: "Wrench", group: "group_ability" },
-  { path: "/mcp", label: "mcp", icon: "Plug", group: "group_ability" },
   { path: "/channels", label: "channels", icon: "Radio", group: "group_ability" },
   { path: "/thinking", label: "thinking", icon: "Workflow", group: "group_ability" },
   { path: "/config", label: "config", icon: "SlidersHorizontal", group: "group_system" },

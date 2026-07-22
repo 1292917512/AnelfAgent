@@ -112,5 +112,16 @@
     "thinking_reply_round": "Reply Round",
     "thinking_introspection": "Introspection",
     "thinking_fake_tool_call": "Fake Tool Call Blocked"
+  },
+  "logsView": {
+    "follow": "Follow",
+    "unfollowed": "Unfollowed",
+    "clear": "Clear",
+    "onlyErrors": "Errors only",
+    "resume": "Resume",
+    "pause": "Pause",
+    "levels": "Levels",
+    "bufferUsage": "Buffer {{used}}/{{capacity}}",
+    "clearConfirm": "Clear logs in current view?"
   }
 }

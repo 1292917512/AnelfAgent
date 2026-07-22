@@ -36,6 +36,11 @@ _AT_PATTERN = re.compile(r'\[at_uid:([^\]]+)\]')
 _SECTION_SPLIT_RE = re.compile(r'={3,}')
 
 
+def _ok_raw(data: Any) -> str:
+    """构造成功响应，非 dict 的 data 自动包装为 data 字段。"""
+    return _ok(data if isinstance(data, dict) else {"data": data})
+
+
 def _split_forward_sections(text: str, max_lines_per_section: int = 20) -> List[str]:
     """将长文本智能拆分为合并转发的多段内容。
 
@@ -413,8 +418,8 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
             uid = int(user_id)
         except (ValueError, TypeError):
             return _err(f"无效的用户 ID: {user_id}")
-        data = await self._call_api("get_stranger_info", {"user_id": uid})
-        if not data:
+        data = await self._call_api_data("get_stranger_info", {"user_id": uid})
+        if data is None:
             return _err("获取用户信息失败")
         return _ok({
             "user_id": str(data.get("user_id", "")),
@@ -431,10 +436,10 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
             gid, uid = int(chat_id), int(user_id)
         except (ValueError, TypeError):
             return _err(f"无效的 ID: group={chat_id}, user={user_id}")
-        data = await self._call_api("get_group_member_info", {
+        data = await self._call_api_data("get_group_member_info", {
             "group_id": gid, "user_id": uid,
         })
-        if not data:
+        if data is None:
             return _err("获取群成员信息失败")
         return _ok({
             "group_id": str(data.get("group_id", "")),
@@ -485,8 +490,8 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
     @channel_tool()
     async def get_friend_list(self, **kwargs: Any) -> str:
         """获取好友列表。"""
-        data = await self._call_api("get_friend_list", {})
-        if not data:
+        data = await self._call_api_data("get_friend_list", {})
+        if data is None:
             return _err("获取好友列表失败")
         friends = [
             {
@@ -501,8 +506,8 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
     @channel_tool()
     async def get_group_list(self, **kwargs: Any) -> str:
         """获取群列表。"""
-        data = await self._call_api("get_group_list", {})
-        if not data:
+        data = await self._call_api_data("get_group_list", {})
+        if data is None:
             return _err("获取群列表失败")
         groups = [
             {
@@ -522,8 +527,8 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
     @channel_tool()
     async def get_login_info(self, **kwargs: Any) -> str:
         """获取登录账号信息（Bot 自身）。"""
-        data = await self._call_api("get_login_info", {})
-        if not data:
+        data = await self._call_api_data("get_login_info", {})
+        if data is None:
             return _err("获取登录信息失败")
         return _ok({
             "user_id": str(data.get("user_id", "")),
@@ -541,8 +546,8 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
             mid = int(message_id)
         except (ValueError, TypeError):
             return _err(f"无效的消息 ID: {message_id}")
-        data = await self._call_api("get_msg", {"message_id": mid})
-        if not data:
+        data = await self._call_api_data("get_msg", {"message_id": mid})
+        if data is None:
             return _err("获取消息失败")
         return _ok({
             "message_id": str(data.get("message_id", "")),
@@ -554,8 +559,8 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
     @channel_tool()
     async def get_forward_msg(self, forward_id: str, **kwargs: Any) -> str:
         """获取合并转发消息内容。"""
-        data = await self._call_api("get_forward_msg", {"id": forward_id})
-        if not data:
+        data = await self._call_api_data("get_forward_msg", {"id": forward_id})
+        if data is None:
             return _err("获取合并转发消息失败")
         messages = data.get("messages", [])
         return _ok({
@@ -617,11 +622,11 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
             gid = int(chat_id)
         except (ValueError, TypeError):
             return _err(f"无效的群 ID: {chat_id}")
-        data = await self._call_api("get_group_msg_history", {
+        data = await self._call_api_data("get_group_msg_history", {
             "group_id": gid,
             "count": min(count, 200),
         })
-        if not data:
+        if data is None:
             return _err("获取群消息历史失败")
         messages = data.get("messages", [])
         return _ok({
@@ -683,11 +688,11 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
             uid = int(user_id)
         except (ValueError, TypeError):
             return _err(f"无效的用户 ID: {user_id}")
-        data = await self._call_api("get_friend_msg_history", {
+        data = await self._call_api_data("get_friend_msg_history", {
             "user_id": uid,
             "count": min(count, 200),
         })
-        if not data:
+        if data is None:
             return _err("获取好友消息历史失败")
         messages = data.get("messages", [])
         return _ok({
@@ -698,8 +703,8 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
     @channel_tool()
     async def get_group_system_msg(self, **kwargs: Any) -> str:
         """获取群系统消息（加群申请、被邀请入群等）。"""
-        data = await self._call_api("get_group_system_msg", {})
-        if not data:
+        data = await self._call_api_data("get_group_system_msg", {})
+        if data is None:
             return _err("获取群系统消息失败")
         return _ok({
             "invited_requests": data.get("invited_requests", []),
@@ -713,8 +718,8 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         Args:
             file_id: 图片文件 ID（从消息中获取）
         """
-        data = await self._call_api("get_image", {"file": file_id})
-        if not data:
+        data = await self._call_api_data("get_image", {"file": file_id})
+        if data is None:
             return _err("获取图片信息失败")
         return _ok({
             "file": data.get("file", ""),
@@ -731,11 +736,11 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
             file_id: 语音文件 ID（从消息中获取）
             out_format: 输出格式（mp3/amr/wma/m4a/spx/ogg/wav/flac）
         """
-        data = await self._call_api("get_record", {
+        data = await self._call_api_data("get_record", {
             "file": file_id,
             "out_format": out_format,
         })
-        if not data:
+        if data is None:
             return _err("获取语音信息失败")
         return _ok({
             "file": data.get("file", ""),
@@ -789,12 +794,12 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
             gid = int(chat_id)
         except (ValueError, TypeError):
             return _err(f"无效的群 ID: {chat_id}")
-        data = await self._call_api("get_group_file_url", {
+        data = await self._call_api_data("get_group_file_url", {
             "group_id": gid,
             "file_id": file_id,
             "busid": busid,
         })
-        if not data:
+        if data is None:
             return _err("获取群文件下载链接失败")
         return _ok({
             "url": data.get("url", ""),
@@ -830,13 +835,13 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
             gid = int(chat_id)
         except (ValueError, TypeError):
             return _err(f"无效的群 ID: {chat_id}")
-        data = await self._call_api("get_group_honor_info", {
+        data = await self._call_api_data("get_group_honor_info", {
             "group_id": gid,
             "type": honor_type,
         })
-        if not data:
+        if data is None:
             return _err("获取群荣誉信息失败")
-        return _ok(data)
+        return _ok_raw(data)
 
     # ------------------------------------------------------------------
     # NapCat 扩展 API（新增）
@@ -866,11 +871,11 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
             text: 要转换的文本
             character: AI 语音角色（为空则使用默认角色）
         """
-        data = await self._call_api("get_ai_record", {
+        data = await self._call_api_data("get_ai_record", {
             "text": text,
             "character": character,
         })
-        if not data:
+        if data is None:
             return _err("AI 文字转语音失败")
         return _ok({
             "file": data.get("file", ""),
@@ -880,11 +885,13 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
     @channel_tool()
     async def get_ai_characters(self, **kwargs: Any) -> str:
         """获取 AI 语音角色列表。"""
-        data = await self._call_api("get_ai_characters", {})
-        if not data:
+        data = await self._call_api_data("get_ai_characters", {})
+        if data is None:
             return _err("获取 AI 语音角色列表失败")
+        if isinstance(data, dict):
+            data = data.get("characters", [])
         return _ok({
-            "characters": data.get("characters", []),
+            "characters": data,
         })
 
     @channel_tool()
@@ -910,10 +917,10 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
     @channel_tool()
     async def get_friends_with_category(self, **kwargs: Any) -> str:
         """获取分类的好友列表。"""
-        data = await self._call_api("get_friends_with_category", {})
-        if not data:
+        data = await self._call_api_data("get_friends_with_category", {})
+        if data is None:
             return _err("获取分类好友列表失败")
-        return _ok(data)
+        return _ok_raw(data)
 
     @channel_tool(sensitive=True)
     async def set_qq_avatar(self, file_path: str, **kwargs: Any) -> str:
@@ -978,14 +985,12 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         Args:
             text: 要翻译的英文文本
         """
-        data = await self._call_api("translate_en2zh", {
+        data = await self._call_api_data("translate_en2zh", {
             "text": text,
         })
-        if not data:
+        if data is None:
             return _err("翻译失败")
-        return _ok({
-            "text": data.get("text", ""),
-        })
+        return _ok_raw(data)
 
     @channel_tool()
     async def mark_private_msg_as_read(self, user_id: str, **kwargs: Any) -> str:
@@ -1034,10 +1039,10 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
     @channel_tool()
     async def get_recent_contact(self, **kwargs: Any) -> str:
         """获取最近联系人列表。"""
-        data = await self._call_api("get_recent_contact", {})
-        if not data:
+        data = await self._call_api_data("get_recent_contact", {})
+        if data is None:
             return _err("获取最近联系人失败")
-        return _ok(data)
+        return _ok_raw(data)
 
     @channel_tool()
     async def send_forward_msg(self, chat_id: str, content: str, **kwargs: Any) -> str:
@@ -1090,8 +1095,8 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         Args:
             file_id: 文件 ID
         """
-        data = await self._call_api("get_file", {"file_id": file_id})
-        if not data:
+        data = await self._call_api_data("get_file", {"file_id": file_id})
+        if data is None:
             return _err("获取文件信息失败")
         return _ok({
             "file": data.get("file", ""),
@@ -1116,11 +1121,13 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
     @channel_tool()
     async def get_collection_list(self, **kwargs: Any) -> str:
         """获取收藏列表。"""
-        data = await self._call_api("get_collection_list", {})
-        if not data:
+        data = await self._call_api_data("get_collection_list", {})
+        if data is None:
             return _err("获取收藏列表失败")
+        if isinstance(data, dict):
+            data = data.get("collections", [])
         return _ok({
-            "collections": data.get("collections", []),
+            "collections": data,
         })
 
     @channel_tool()
@@ -1132,10 +1139,10 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
     @channel_tool()
     async def get_profile_like(self, **kwargs: Any) -> str:
         """获取自身点赞列表。"""
-        data = await self._call_api("get_profile_like", {})
-        if not data:
+        data = await self._call_api_data("get_profile_like", {})
+        if data is None:
             return _err("获取点赞列表失败")
-        return _ok(data)
+        return _ok_raw(data)
 
     @channel_tool()
     async def fetch_custom_face(self, count: int = 10, **kwargs: Any) -> str:
@@ -1144,11 +1151,13 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         Args:
             count: 获取数量
         """
-        data = await self._call_api("fetch_custom_face", {"count": count})
-        if not data:
+        data = await self._call_api_data("fetch_custom_face", {"count": count})
+        if data is None:
             return _err("获取自定义表情失败")
+        if isinstance(data, dict):
+            data = data.get("faces", [])
         return _ok({
-            "faces": data.get("faces", []),
+            "faces": data,
         })
 
     @channel_tool(sensitive=True)
@@ -1166,10 +1175,10 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
     @channel_tool()
     async def get_robot_uin_range(self, **kwargs: Any) -> str:
         """获取机器人账号范围。"""
-        data = await self._call_api("get_robot_uin_range", {})
-        if not data:
+        data = await self._call_api_data("get_robot_uin_range", {})
+        if data is None:
             return _err("获取机器人账号范围失败")
-        return _ok(data)
+        return _ok_raw(data)
 
     @channel_tool(name="ark_share_peer")
     async def ArkSharePeer(self, user_id: str, **kwargs: Any) -> str:
@@ -1178,10 +1187,10 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         Args:
             user_id: 用户 QQ 号
         """
-        data = await self._call_api("ArkSharePeer", {"user_id": user_id})
-        if not data:
+        data = await self._call_api_data("ArkSharePeer", {"user_id": user_id})
+        if data is None:
             return _err("获取推荐卡片失败")
-        return _ok(data)
+        return _ok_raw(data)
 
     @channel_tool(name="ark_share_group")
     async def ArkShareGroup(self, chat_id: str, **kwargs: Any) -> str:
@@ -1190,10 +1199,10 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         Args:
             chat_id: 群号
         """
-        data = await self._call_api("ArkShareGroup", {"group_id": chat_id})
-        if not data:
+        data = await self._call_api_data("ArkShareGroup", {"group_id": chat_id})
+        if data is None:
             return _err("获取推荐群聊卡片失败")
-        return _ok(data)
+        return _ok_raw(data)
 
     @channel_tool()
     async def send_poke(self, chat_id: str, user_id: str, **kwargs: Any) -> str:

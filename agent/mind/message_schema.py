@@ -122,10 +122,29 @@ def fix_trailing_assistant(messages: List[Dict]) -> List[Dict]:
     return messages
 
 
+def fix_empty_tool_call_content(messages: List[Dict]) -> List[Dict]:
+    """空 content 修复：带 tool_calls 的 assistant 消息空 content 置 None。
+
+    模型只调用工具、无文本输出时 content 为 ""；anthropic 协议端点拒绝空
+    文本块，litellm 会注入占位文本 "[System: Empty message content
+    sanitised...]"——污染上下文且会被模型复述为用户可见的垃圾输出。
+    content=None 时转换层只输出 tool_use 块，协议合法且零污染。
+    """
+    for i, msg in enumerate(messages):
+        if (
+            msg.get("role") == "assistant"
+            and msg.get("tool_calls")
+            and isinstance(msg.get("content"), str)
+            and not msg["content"].strip()
+        ):
+            messages[i] = {**msg, "content": None}
+    return messages
+
+
 def normalize_for_send(messages: List[Dict]) -> List[Dict]:
-    """发送边界统一规整：角色归一 + 尾部 prefill 修复。
+    """发送边界统一规整：角色归一 + 尾部 prefill 修复 + 空 content 修复。
 
     _invoke_llm_unified 的唯一入口；新增发送边界规则只加在这里，
     不再散落到上下文组装各阶段。
     """
-    return fix_trailing_assistant(normalize_roles(messages))
+    return fix_empty_tool_call_content(fix_trailing_assistant(normalize_roles(messages)))

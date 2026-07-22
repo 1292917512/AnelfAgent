@@ -65,9 +65,10 @@ _PROMPT_CONTINUE = (
     "[系统提示] 继续执行，若已完成所有操作请调用 end_reply 结束。"
 )
 
-# 端点不接受强制 tool_choice 时的提示词替代约束（API 级强制缺失时的提示级兜底）
+# 提示词输出纪律约束：与 API 级强制 tool_choice 并行注入，
+# 覆盖端点静默忽略强制值（如 MiniMax 仅支持 auto/none）的失效场景
 _PROMPT_TOOL_OUTPUT_DISCIPLINE = (
-    "[输出纪律] 当前模型端点不支持强制工具调用，你必须自觉遵守：\n"
+    "[输出纪律] 你必须严格遵守：\n"
     "1. 回复用户的内容一律调用 send_message 工具发出，直接输出的文字用户完全看不到\n"
     "2. 需要执行动作时立即调用对应工具，禁止只用文字描述动作\n"
     "3. 全部完成后调用 end_reply 结束本轮"
@@ -75,7 +76,7 @@ _PROMPT_TOOL_OUTPUT_DISCIPLINE = (
 
 # 反思模式的输出纪律（无 send_message，产出文本即反思结果，但动作必须走工具）
 _PROMPT_REFLECT_OUTPUT_DISCIPLINE = (
-    "[输出纪律] 当前模型端点不支持强制工具调用，你必须自觉遵守：\n"
+    "[输出纪律] 你必须严格遵守：\n"
     "1. 需要执行动作（检索/查询/分析）时立即调用对应工具，禁止只用文字描述动作\n"
     "2. 文字输出只是思考草稿，不会执行任何操作\n"
     "3. 完成分析后调用 end_reply 结束本轮反思"
@@ -298,13 +299,6 @@ async def _inject_image_blocks(
 # ==================================================================
 # 循环主体
 # ==================================================================
-
-def _supports_forced_tool_choice(mind: Mind) -> bool:
-    """当前 LLM 端点是否接受强制工具选择（tool_choice=required）。"""
-    client = getattr(mind, "llm", None)
-    config = getattr(client, "config", None)
-    return bool(getattr(config, "supports_forced_tool_choice", True))
-
 
 def _consume_pending_for_scope(mind: Mind, anything: Everything) -> None:
     """消费当前 scope 的待处理队列条目（新消息已并入当前循环，无需另起周期）。"""
@@ -591,9 +585,10 @@ async def think_loop(
         )
         # 纯工具模式（或独白升级）且有可用工具时，API 级强制工具选择
         require_tools = bool(active_tools) and (pure_tool_mode or force_tool_choice)
-        if require_tools and not _supports_forced_tool_choice(mind):
-            # 端点（如 thinking 常开的 Kimi）不接受强制 tool_choice，
-            # API 级约束缺失，改用提示词约束输出纪律（每轮注入末尾位置）
+        if require_tools:
+            # 输出纪律提示与 API 级强制并行注入：强制 tool_choice 可能被
+            # 端点静默忽略（如 MiniMax 仅支持 auto/none），提示词是
+            # 跨端点可靠的兜底约束（每轮注入末尾位置）
             exec_context["content"] += "\n" + (
                 _PROMPT_TOOL_OUTPUT_DISCIPLINE if mode == ThinkMode.REPLY
                 else _PROMPT_REFLECT_OUTPUT_DISCIPLINE
@@ -967,6 +962,27 @@ def _detect_token_leak(result: ChatResult, tool_calls: List[ToolCall]) -> bool:
     return False
 
 
+def _parse_tool_result_json(text: str) -> Optional[Any]:
+    """宽松解析工具结果 JSON。
+
+    结果经加工管线后可能带威胁扫描前缀（[安全警告] ...\\n）或
+    守卫警告后缀（\\n\\n[工具守卫警告: ...]），整体 json.loads 会失败；
+    此处定位首个 '{' 起解析首个完整 JSON 值，容忍前后附加文本。
+    """
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    start = text.find("{")
+    if start < 0:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(text, start)
+        return obj
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
 def _check_tool_results_all_errors(
         tool_chain: List[Dict],
         tool_calls: List[ToolCall],
@@ -992,23 +1008,18 @@ def _check_tool_results_all_errors(
         return False
 
     for r in results:
-        # 尝试 JSON 解析判断
-        try:
-            parsed = json.loads(r)
-            if isinstance(parsed, dict):
-                # 有 error 键 → 错误，继续检查下一个
-                if "error" in parsed:
-                    continue
-                # success=false / ok=false → 错误，继续检查下一个
-                if parsed.get("success") is False or parsed.get("ok") is False:
-                    continue
-                # 无错误信号，至少一个成功
-                return False
-            # 非 dict 的 JSON（list/string/number）视为非错误
+        parsed = _parse_tool_result_json(r)
+        if not isinstance(parsed, dict):
+            # 非 JSON dict 内容视为非错误（纯文本结果）
             return False
-        except (json.JSONDecodeError, TypeError):
-            # 非 JSON 内容视为非错误（纯文本结果）
-            return False
+        # 有 error 键 → 错误，继续检查下一个
+        if "error" in parsed:
+            continue
+        # success=false / ok=false → 错误，继续检查下一个
+        if parsed.get("success") is False or parsed.get("ok") is False:
+            continue
+        # 无错误信号，至少一个成功
+        return False
     # 全部都是错误结果
     return True
 
@@ -1016,10 +1027,7 @@ def _check_tool_results_all_errors(
 def _extract_error_text(payload: Any) -> str:
     """从工具结果 payload（dict 或 JSON 字符串）中提取错误文本，无错误返回空串。"""
     if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except (json.JSONDecodeError, TypeError):
-            return ""
+        payload = _parse_tool_result_json(payload)
     if not isinstance(payload, dict):
         return ""
     if payload.get("success") is False or payload.get("ok") is False:
@@ -1046,10 +1054,7 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List[ToolCall]) 
         content = msg.get("content", "")
         if not isinstance(content, str):
             continue
-        try:
-            parsed = json.loads(content)
-        except (json.JSONDecodeError, TypeError):
-            continue
+        parsed = _parse_tool_result_json(content)
         if not isinstance(parsed, dict):
             continue
 

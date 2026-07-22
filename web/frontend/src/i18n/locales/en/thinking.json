@@ -52,5 +52,13 @@
   "memory": "Memory",
   "toolCount": "Tools",
   "hasReasoning": "💭 Contains reasoning",
-  "reasoningContent": "Reasoning"
+  "reasoningContent": "Reasoning",
+  "views": {
+    "flow": "Flow",
+    "timeline": "Timeline"
+  },
+  "fitView": "Fit View",
+  "filterTypes": "Filter types",
+  "allTypes": "All types",
+  "expandDetail": "Expand details"
 }

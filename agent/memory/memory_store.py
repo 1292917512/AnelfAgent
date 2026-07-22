@@ -104,6 +104,7 @@ class MemoryStore(BaseEntity):
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
         self._db: Optional[aiosqlite.Connection] = None
+        self._db_connect_lock = asyncio.Lock()
         self._initialized = False
         self._fts_available = False
         self._chunks_fts_available = False
@@ -128,22 +129,28 @@ class MemoryStore(BaseEntity):
                     pass
                 self._db = None
 
-        from pathlib import Path
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+        # 并发调用（如后台 EmbeddingWorker 与请求路径）必须串行建连，
+        # 否则各自持有独立连接写同一文件会触发 database is locked
+        async with self._db_connect_lock:
+            if self._db is not None:
+                return self._db
 
-        db = await aiosqlite.connect(self._db_path)
-        db.row_factory = aiosqlite.Row
-        await db.execute("PRAGMA journal_mode=WAL;")
-        await db.execute("PRAGMA synchronous=NORMAL;")
-        await db.execute("PRAGMA busy_timeout=5000;")
-        self._vec_available = await self._load_vec_extension(db)
+            from pathlib import Path
+            Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
 
-        if not self._initialized:
-            await self._init_schema(db)
-            self._initialized = True
+            db = await aiosqlite.connect(self._db_path)
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA journal_mode=WAL;")
+            await db.execute("PRAGMA synchronous=NORMAL;")
+            await db.execute("PRAGMA busy_timeout=5000;")
+            self._vec_available = await self._load_vec_extension(db)
 
-        self._db = db
-        return db
+            if not self._initialized:
+                await self._init_schema(db)
+                self._initialized = True
+
+            self._db = db
+            return db
 
     async def _load_vec_extension(self, db: aiosqlite.Connection) -> bool:
         """加载 sqlite-vec 扩展（连接级），失败时向量检索降级为全表扫描。"""
@@ -517,8 +524,8 @@ class MemoryStore(BaseEntity):
         except Exception as exc:
             log(f"FTS 索引同步失败: {exc}", "WARNING", tag="思维")
 
-    async def backfill_embeddings(self, embedder: Any, batch_size: int = 2) -> int:
-        """渐进式为缺少 embedding 的记忆补充向量。"""
+    async def backfill_embeddings(self, embedder: Any, batch_size: int = 32) -> int:
+        """批量为缺少 embedding 的记忆补充向量（单次 API 调用处理一批）。"""
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT id, content FROM memories WHERE embedding_blob IS NULL LIMIT ?",
@@ -528,23 +535,61 @@ class MemoryStore(BaseEntity):
         if not rows:
             return 0
 
+        vecs = await embedder.embed([row["content"] for row in rows])
+        if len(vecs) != len(rows):
+            return 0
+
         count = 0
-        for row in rows:
-            try:
-                vec = await embedder.embed_one(row["content"])
-                if vec:
-                    blob = pack_embedding(vec)
-                    await db.execute(
-                        "UPDATE memories SET embedding_blob=? WHERE id=?",
-                        (blob, row["id"]),
-                    )
-                    await self._vec_upsert_memory(db, int(row["id"]), blob)
-                    count += 1
-            except Exception:
+        for row, vec in zip(rows, vecs):
+            if not vec:
                 continue
+            blob = pack_embedding(vec)
+            await db.execute(
+                "UPDATE memories SET embedding_blob=? WHERE id=?",
+                (blob, row["id"]),
+            )
+            await self._vec_upsert_memory(db, int(row["id"]), blob)
+            count += 1
         if count:
             await db.commit()
-            log(f"Embedding 渐进回填: {count} 条", "DEBUG", tag="思维")
+            log(f"Embedding 批量回填: {count} 条记忆", "DEBUG", tag="思维")
+        return count
+
+    async def backfill_chunk_embeddings(self, embedder: Any, batch_size: int = 32) -> int:
+        """批量为缺少 embedding 的文件 chunk 补充向量，并写入 embedding 缓存。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT id, hash, text FROM chunks WHERE embedding IS NULL LIMIT ?",
+            (batch_size,),
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            return 0
+
+        vecs = await embedder.embed([row["text"] for row in rows])
+        if len(vecs) != len(rows):
+            return 0
+
+        now_ns = int(time.time() * 1e9)
+        count = 0
+        for row, vec in zip(rows, vecs):
+            if not vec:
+                continue
+            blob = pack_embedding(vec)
+            await db.execute(
+                "UPDATE chunks SET embedding=? WHERE id=?",
+                (blob, row["id"]),
+            )
+            await self._vec_upsert_chunk(db, str(row["id"]), blob)
+            await db.execute(
+                "INSERT OR REPLACE INTO embedding_cache(hash, embedding, dims, updated_ns) "
+                "VALUES(?,?,?,?)",
+                (row["hash"], blob, len(vec), now_ns),
+            )
+            count += 1
+        if count:
+            await db.commit()
+            log(f"Embedding 批量回填: {count} 条 chunk", "DEBUG", tag="思维")
         return count
 
     # ------------------------------------------------------------------
@@ -998,6 +1043,30 @@ class MemoryStore(BaseEntity):
             }
             for r in rows
         ]
+
+    async def purge_archived_memories(self, older_than_days: int, limit: int = 500) -> int:
+        """物理删除超过保留期的归档记忆，防止归档表无限增长。
+
+        Args:
+            older_than_days: 归档保留天数（按 archived_at_ns 计算），<=0 时不清理。
+            limit: 单次最多删除条数。
+        Returns:
+            实际删除的条数。
+        """
+        if older_than_days <= 0:
+            return 0
+        db = await self._get_db()
+        cutoff_ns = int((time.time() - older_than_days * 86400) * 1e9)
+        cursor = await db.execute(
+            "DELETE FROM memories_archive WHERE id IN "
+            "(SELECT id FROM memories_archive WHERE archived_at_ns < ? LIMIT ?)",
+            (cutoff_ns, limit),
+        )
+        deleted = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        if deleted:
+            await db.commit()
+            log(f"归档清理: 物理删除 {deleted} 条超过 {older_than_days} 天的归档记忆", tag="思维")
+        return deleted
 
     async def forget_weak_memories(
             self,

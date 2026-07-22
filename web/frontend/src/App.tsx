@@ -8,12 +8,10 @@ import { configApi } from "./lib/api";
 import Dashboard from "./pages/Dashboard";
 import Chat from "./pages/Chat";
 import Models from "./pages/Models";
-import Tools from "./pages/Tools";
 import Personas from "./pages/Personas";
 import Memory from "./pages/Memory";
-import Skills from "./pages/Skills";
+import Capabilities from "./pages/Capabilities";
 import Config from "./pages/Config";
-import MCP from "./pages/MCP";
 import Channels from "./pages/Channels";
 import Settings from "./pages/Settings";
 import Heartbeat from "./pages/Heartbeat";
@@ -43,13 +41,14 @@ export default function App() {
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="status" element={<Navigate to="/" replace />} />
             <Route path="models" element={<Models />} />
-            <Route path="tools" element={<Tools />} />
+            <Route path="capabilities" element={<Capabilities />} />
+            <Route path="tools" element={<Navigate to="/capabilities?tab=tools" replace />} />
+            <Route path="skills" element={<Navigate to="/capabilities?tab=skills" replace />} />
+            <Route path="mcp" element={<Navigate to="/capabilities?tab=mcp" replace />} />
             <Route path="tags" element={<Tags />} />
             <Route path="personas" element={<Personas />} />
             <Route path="memory" element={<Memory />} />
-            <Route path="skills" element={<Skills />} />
             <Route path="config" element={<Config />} />
-            <Route path="mcp" element={<MCP />} />
             <Route path="channels" element={<Channels />} />
             <Route path="tasks" element={<Tasks />} />
             <Route path="heartbeat" element={<Heartbeat />} />

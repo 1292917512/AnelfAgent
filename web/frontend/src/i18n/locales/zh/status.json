@@ -112,5 +112,16 @@
     "thinking_reply_round": "回复循环",
     "thinking_introspection": "内省反思",
     "thinking_fake_tool_call": "假工具调用拦截"
+  },
+  "logsView": {
+    "follow": "跟随滚动",
+    "unfollowed": "已脱离跟随",
+    "clear": "清屏",
+    "onlyErrors": "仅错误",
+    "resume": "继续",
+    "pause": "暂停",
+    "levels": "级别",
+    "bufferUsage": "缓冲 {{used}}/{{capacity}}",
+    "clearConfirm": "清空当前视图中的日志？"
   }
 }

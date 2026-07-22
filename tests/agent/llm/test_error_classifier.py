@@ -50,6 +50,18 @@ class TestClassifyByExceptionType:
         assert c.category == ErrorCategory.PARAM_ERROR
         assert not c.retryable
 
+    def test_bad_request_with_429_in_request_id(self) -> None:
+        """request_id 随机 hex 含 "429" 子串时不得误判为限流（类型优先于数字模式）。"""
+        exc = litellm.BadRequestError(
+            'AnthropicException - {"request_id":"ff2a66bb-180f-429b-bfe4",'
+            '"code":"InvalidParameter","message":"The tool_choice parameter '
+            'does not support being set to required or object in thinking mode"}',
+            model="m", llm_provider="anthropic",
+        )
+        c = classify_llm_error(exc)
+        assert c.category == ErrorCategory.PARAM_ERROR
+        assert not c.retryable
+
     def test_not_found(self) -> None:
         exc = litellm.NotFoundError("no model", model="m", llm_provider="openai")
         c = classify_llm_error(exc)

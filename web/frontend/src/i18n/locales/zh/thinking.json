@@ -53,5 +53,13 @@
   "memory": "记忆",
   "toolCount": "工具",
   "hasReasoning": "💭 含推理内容",
-  "reasoningContent": "推理内容"
+  "reasoningContent": "推理内容",
+  "views": {
+    "flow": "流程图",
+    "timeline": "时间线"
+  },
+  "fitView": "适应视图",
+  "filterTypes": "类型过滤",
+  "allTypes": "全部类型",
+  "expandDetail": "展开详情"
 }

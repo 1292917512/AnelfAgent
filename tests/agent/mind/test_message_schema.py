@@ -11,6 +11,7 @@ import pytest
 
 from agent.mind.message_schema import (
     ChatMessage,
+    fix_empty_tool_call_content,
     fix_trailing_assistant,
     normalize_for_send,
     normalize_roles,
@@ -96,6 +97,57 @@ class TestFixTrailingAssistant:
         ]
         result = fix_trailing_assistant(msgs)
         assert result[0]["role"] == "user"
+
+
+class TestFixEmptyToolCallContent:
+    def test_empty_content_with_tool_calls_becomes_none(self) -> None:
+        """纯工具调用的 assistant 空 content 置 None，避免 anthropic 端点占位符污染。"""
+        msgs = [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "call_1", "type": "function",
+                                "function": {"name": "recall", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "结果"},
+        ]
+        result = fix_empty_tool_call_content(msgs)
+        assert result[1]["content"] is None
+        assert result[1]["tool_calls"]
+
+    def test_whitespace_content_also_fixed(self) -> None:
+        msgs = [{
+            "role": "assistant", "content": "  \n",
+            "tool_calls": [{"id": "c", "type": "function",
+                            "function": {"name": "t", "arguments": "{}"}}],
+        }]
+        assert fix_empty_tool_call_content(msgs)[0]["content"] is None
+
+    def test_non_empty_or_toolless_untouched(self) -> None:
+        """有文本的 assistant、无 tool_calls 的空 assistant 均不动。"""
+        msgs = [
+            {"role": "assistant", "content": "有文本",
+             "tool_calls": [{"id": "c", "type": "function",
+                             "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "assistant", "content": ""},
+            {"role": "user", "content": ""},
+        ]
+        result = fix_empty_tool_call_content(msgs)
+        assert result[0]["content"] == "有文本"
+        assert result[1]["content"] == ""
+        assert result[2]["content"] == ""
+
+    def test_original_dict_not_mutated(self) -> None:
+        """修复产生新 dict，不污染调用方持有的原消息（tool_chain 内部复用）。"""
+        original = {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "c", "type": "function",
+                            "function": {"name": "t", "arguments": "{}"}}],
+        }
+        result = fix_empty_tool_call_content([original])
+        assert original["content"] == ""
+        assert result[0] is not original
 
 
 class TestNormalizeForSend:

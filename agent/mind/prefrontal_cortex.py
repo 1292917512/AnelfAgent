@@ -413,14 +413,21 @@ class PrefrontalCortex:
 
         每个 ChannelCapability 的 value（如 "send_text"、"edit_message"）
         会作为 tag 在 EntityRegistry 中搜索，匹配到的工具全部加入。
+        被该频道按频道禁用的公共能力工具在此过滤（专属工具由实体
+        enabled 状态过滤）。
         """
         if not adapter_key or not self._channel_manager:
             return []
         channel = self._channel_manager.get(adapter_key)
         if not channel:
             return []
+        from agent.channel.tool_bridge import is_channel_tool_enabled
+
         cap_tags = [c.value for c in channel.capabilities]
-        schemas = EntityRegistry.get_tool_schema_by_tags(cap_tags)
+        schemas = [
+            s for s in EntityRegistry.get_tool_schema_by_tags(cap_tags)
+            if is_channel_tool_enabled(adapter_key, s.get("function", {}).get("name", ""))
+        ]
         if schemas:
             names = [s.get("function", {}).get("name", "") for s in schemas]
             log(f"频道工具 [{adapter_key}] ({len(cap_tags)} 能力): {', '.join(names)}", "DEBUG", tag="PFC")
@@ -617,6 +624,7 @@ class PrefrontalCortex:
 - [uid:xxx] — 消息发送者的用户ID，同一uid是同一人
 - [name:xxx] — 发送者用户名
 - [nickname:xxx] — 发送者群内昵称
+- [channel:xxx] — 消息来源频道标识（adapter_key），send_message 等频道工具的 channel_id 参数应填此值
 - [session_id:xxx] — 会话ID（同一频道内会话上下文标识）
 - [group_id:xxx] — 群组ID，不同group_id是不同群
 - [message_id:xxx] — 当前消息ID，可用于精确定位某一条消息

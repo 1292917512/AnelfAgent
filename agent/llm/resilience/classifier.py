@@ -105,6 +105,8 @@ def classify_llm_error(exc: BaseException) -> ClassifiedError:
         )
 
     # ---- 上下文超限（不重试，触发压缩）----
+    # 保持在 BadRequestError 类型判断之前：ContextWindowExceededError 是
+    # BadRequestError 子类，且部分供应商把溢出包装成 400 文本
     if isinstance(exc, litellm.ContextWindowExceededError) or _match_any(
         msg_lower, _CONTEXT_OVERFLOW_PATTERNS
     ):
@@ -113,17 +115,15 @@ def classify_llm_error(exc: BaseException) -> ClassifiedError:
             should_compress=True, message=message, status_code=status_code,
         )
 
-    # ---- 限流 ----
-    if isinstance(exc, litellm.RateLimitError) or _match_any(msg_lower, _RATE_LIMIT_PATTERNS):
+    # ---- 限流（类型）----
+    if isinstance(exc, litellm.RateLimitError):
         return ClassifiedError(
             ErrorCategory.RATE_LIMIT, retryable=True, message=message,
             status_code=status_code or 429,
         )
 
-    # ---- 过载 / 服务不可用 ----
-    if isinstance(exc, litellm.ServiceUnavailableError) or _match_any(
-        msg_lower, _OVERLOADED_PATTERNS
-    ):
+    # ---- 过载 / 服务不可用（类型）----
+    if isinstance(exc, litellm.ServiceUnavailableError):
         return ClassifiedError(
             ErrorCategory.OVERLOADED, retryable=True, should_fallback=True,
             message=message, status_code=status_code or 503,
@@ -159,7 +159,18 @@ def classify_llm_error(exc: BaseException) -> ClassifiedError:
             status_code=status_code,
         )
 
-    # ---- 消息模式兜底 ----
+    # ---- 消息模式兜底（无类型的包装异常；request_id 等随机 hex 可能含
+    # "429"/"400" 子串，故数字模式只能用于无类型的兜底识别，不能先于类型判断）----
+    if _match_any(msg_lower, _RATE_LIMIT_PATTERNS):
+        return ClassifiedError(
+            ErrorCategory.RATE_LIMIT, retryable=True, message=message,
+            status_code=status_code or 429,
+        )
+    if _match_any(msg_lower, _OVERLOADED_PATTERNS):
+        return ClassifiedError(
+            ErrorCategory.OVERLOADED, retryable=True, should_fallback=True,
+            message=message, status_code=status_code or 503,
+        )
     if _match_any(msg_lower, _AUTH_PATTERNS):
         return ClassifiedError(
             ErrorCategory.AUTH, retryable=False, message=message,

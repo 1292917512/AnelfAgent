@@ -5,7 +5,8 @@
 2. 上限：每类记忆超限时删除最低分条目
 3. 合并：向量相似度 > 阈值的高相似记忆自动合并
 4. 清理：过期 embedding 缓存
-5. 同步：cognee 队列积压检查与唤醒
+5. 归档：物理删除超过保留期的归档记忆（防归档表无限增长）
+6. 同步：cognee 队列积压检查与唤醒
 
 全部确定性操作（无 LLM 调用），报告写入心跳日志。
 """
@@ -29,6 +30,7 @@ class ConsolidationReport:
     limit_removed: Dict[str, int] = field(default_factory=dict)
     merged_count: int = 0
     cache_cleaned: int = 0
+    archive_purged: int = 0
     cognee_pending: int = 0
     errors: List[str] = field(default_factory=list)
 
@@ -44,6 +46,8 @@ class ConsolidationReport:
             lines.append(f"合并 {self.merged_count} 对高相似记忆")
         if self.cache_cleaned:
             lines.append(f"清理 {self.cache_cleaned} 条过期 embedding 缓存")
+        if self.archive_purged:
+            lines.append(f"物理删除 {self.archive_purged} 条超期归档记忆")
         if self.cognee_pending:
             lines.append(f"cognee 同步积压 {self.cognee_pending} 条（已唤醒）")
         if self.errors:
@@ -109,7 +113,15 @@ class MemoryConsolidator:
         except Exception as exc:
             report.errors.append(f"缓存清理失败: {exc}")
 
-        # 5. cognee 同步队列检查与唤醒
+        # 5. 超期归档物理删除（0 = 永久保留归档）
+        try:
+            report.archive_purged = await self._store.purge_archived_memories(
+                get_config_int("memory_archive_retention_days", 90),
+            )
+        except Exception as exc:
+            report.errors.append(f"归档清理失败: {exc}")
+
+        # 6. cognee 同步队列检查与唤醒
         try:
             report.cognee_pending = await self._check_cognee_sync()
         except Exception as exc:
@@ -162,6 +174,10 @@ _CONSOLIDATOR_CONFIGS = {
         "memory_merge_similarity": {
             "description": "高相似记忆自动合并的向量相似度阈值",
             "default": 0.92,
+        },
+        "memory_archive_retention_days": {
+            "description": "归档记忆保留天数（超期物理删除，0 = 永久保留）",
+            "default": 90,
         },
         "notes_inject_max_chars": {
             "description": "主便签注入上下文的最大字符数（超出按章节优先级裁剪）",

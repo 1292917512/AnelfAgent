@@ -15,6 +15,11 @@ PFC 注入沿用现有 tag 机制：capability tag 命中通用工具，adapter_
 
 敏感操作（``sensitive=True``）附加 check_fn 门控，由配置
 ``channel_tools_allow_sensitive``（默认 true）全局开关。
+
+接口开关：``channel_tool_states``（app_config.json）按频道持久化接口启停，
+Web 端可单独关闭某频道的专属工具或公共能力（公共能力按频道生效：
+PFC schema 组装过滤 + handler 执行守卫双层拦截）；注册/重建时回读
+持久化状态，避免覆盖已禁用开关。
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from core.config import get_config_bool, register_configs_safe
+from core.config import ConfigManager, get_config_bool, register_configs_safe
 from core.entity import EntityRegistry
 from core.log import log
 from core.tool_schema import extract_tool_params, get_first_line
@@ -105,6 +110,45 @@ def _sensitive_check() -> bool:
 
 
 # ------------------------------------------------------------------
+# 按频道接口开关（持久化到 app_config.json 的 channel_tool_states）
+# ------------------------------------------------------------------
+
+def get_channel_tool_states() -> Dict[str, Dict[str, bool]]:
+    """读取全部频道接口开关状态：{channel_id: {tool_name: enabled}}。"""
+    states = ConfigManager.get("channel_tool_states", {})
+    return states if isinstance(states, dict) else {}
+
+
+def is_channel_tool_enabled(channel_id: str, tool_name: str) -> bool:
+    """指定频道下某接口是否启用（缺省启用）。"""
+    return bool(get_channel_tool_states().get(channel_id, {}).get(tool_name, True))
+
+
+def set_channel_tool_state(channel_id: str, tool_name: str, enabled: bool) -> None:
+    """设置并持久化指定频道的接口开关。"""
+    states = get_channel_tool_states()
+    channel_states = dict(states.get(channel_id, {}))
+    channel_states[tool_name] = bool(enabled)
+    ConfigManager.set("channel_tool_states", {**states, channel_id: channel_states})
+    ConfigManager.save()
+
+
+def _entity_states() -> Dict[str, bool]:
+    """全局实体开关状态（services 层 entity_states 持久化）。"""
+    states = ConfigManager.get("entity_states", {})
+    return states if isinstance(states, dict) else {}
+
+
+def _apply_persisted_state(tool_name: str, channel_id: Optional[str] = None) -> None:
+    """注册/重建后回读持久化开关，避免注册行为覆盖已禁用状态。"""
+    enabled = bool(_entity_states().get(tool_name, True))
+    if channel_id is not None:
+        enabled = enabled and is_channel_tool_enabled(channel_id, tool_name)
+    if not enabled:
+        EntityRegistry.disable(tool_name)
+
+
+# ------------------------------------------------------------------
 # 注册状态
 # ------------------------------------------------------------------
 
@@ -162,6 +206,48 @@ def unregister_channel_tools(channel_id: str) -> None:
         EntityRegistry.unregister(cap_value)
 
 
+def get_channel_tool_info(channel_id: str) -> List[Dict[str, Any]]:
+    """汇总指定频道的接口信息（专属工具 + 其参与的公共能力工具），供 Web API 使用。"""
+    tools: List[Dict[str, Any]] = []
+
+    for tool_name in _specific_tools.get(channel_id, []):
+        entity = EntityRegistry.get(tool_name)
+        if entity is None:
+            continue
+        # 全局状态取 entity_states（能力页开关），实体 enabled 是按频道开关翻转的结果
+        globally_enabled = bool(_entity_states().get(tool_name, True))
+        tools.append({
+            "name": tool_name,
+            "description": entity.description,
+            "common": False,
+            "sensitive": entity.check_fn is not None,
+            "enabled": globally_enabled and is_channel_tool_enabled(channel_id, tool_name),
+            "globally_enabled": globally_enabled,
+            "params": _serialize_params(entity),
+        })
+
+    for cap_value, supporters in sorted(_common_methods.items()):
+        if channel_id not in supporters:
+            continue
+        entity = EntityRegistry.get(cap_value)
+        if entity is None:
+            continue
+        globally_enabled = entity.enabled
+        tools.append({
+            "name": cap_value,
+            "description": entity.description,
+            "common": True,
+            "sensitive": supporters[channel_id][1].sensitive,
+            "enabled": globally_enabled and is_channel_tool_enabled(channel_id, cap_value),
+            "globally_enabled": globally_enabled,
+            "supporting_channels": sorted(supporters),
+            "params": _serialize_params(entity),
+        })
+
+    tools.sort(key=lambda t: (t["common"], t["name"]))
+    return tools
+
+
 # ------------------------------------------------------------------
 # 内部实现
 # ------------------------------------------------------------------
@@ -188,6 +274,15 @@ def _declares_capability(channel: Any, cap_value: str) -> bool:
         return False
 
 
+def _serialize_params(entity: Any) -> List[Dict[str, Any]]:
+    """将实体参数元数据序列化为 Web API 友好的字典列表。"""
+    params = entity.meta.get("params") or []
+    return [
+        {"name": p.name, "type": p.type, "required": p.required, "description": p.description}
+        for p in params
+    ]
+
+
 def _register_specific_tool(channel_id: str, bound: Callable, meta: ChannelToolMeta) -> bool:
     """注册频道特有工具：{channel_id}_{method}，tags=[channel_id]。"""
     base_name = meta.name or getattr(bound, "__name__", "tool")
@@ -202,13 +297,14 @@ def _register_specific_tool(channel_id: str, bound: Callable, meta: ChannelToolM
         func=_make_specific_handler(channel_id, tool_name, bound),
         description=description,
         group="channel_ops",
-        params=extract_tool_params(bound),
+        params=_normalize_target_params(extract_tool_params(bound)),
         tags=tags,
         source=f"channel.{channel_id}",
         check_fn=_sensitive_check if meta.sensitive else None,
     )
     if ok:
         _specific_tools.setdefault(channel_id, []).append(tool_name)
+        _apply_persisted_state(tool_name, channel_id)
     else:
         log(f"频道特有工具注册失败(重名): {tool_name}", "WARNING", tag="通道")
     return ok
@@ -245,7 +341,7 @@ def _rebuild_common_tool(cap_value: str) -> bool:
     description = _common_description(cap_value, supporters)
 
     EntityRegistry.unregister(cap_value)
-    return EntityRegistry.register_tool(
+    ok = EntityRegistry.register_tool(
         name=cap_value,
         func=_make_common_handler(cap_value, method_name),
         description=description,
@@ -255,6 +351,9 @@ def _rebuild_common_tool(cap_value: str) -> bool:
         source="channel.auto",
         check_fn=_sensitive_check if sensitive else None,
     )
+    if ok:
+        _apply_persisted_state(cap_value)
+    return ok
 
 
 def _merge_params(cap_value: str, supporters: Dict[str, Tuple[Callable, ChannelToolMeta]]) -> list:
@@ -279,7 +378,27 @@ def _merge_params(cap_value: str, supporters: Dict[str, Tuple[Callable, ChannelT
     for p in merged.values():
         p.required = p.name in (required_in_all or set())
         result.append(p)
-    return result
+    return _normalize_target_params(result)
+
+
+def _normalize_target_params(params: list) -> list:
+    """将 schema 中的 chat_id 参数统一命名为 target_id（对齐 send_message 等手写工具）。
+
+    适配器方法签名保持 chat_id 不变，handler 调用前由 _prepare_call 映射回去，
+    避免 LLM 面对同语义两套参数名时泛化出错。
+    """
+    from dataclasses import replace as _dc_replace
+
+    normalized = []
+    for p in params:
+        if p.name == "chat_id":
+            p = _dc_replace(
+                p,
+                name="target_id",
+                description=p.description or "目标会话/用户 ID",
+            )
+        normalized.append(p)
+    return normalized
 
 
 def _common_description(cap_value: str, supporters: Dict[str, Tuple[Callable, ChannelToolMeta]]) -> str:
@@ -317,6 +436,13 @@ def _make_common_handler(cap_value: str, method_name: str) -> Callable:
                 "supporting_channels": sorted(_common_methods.get(cap_value, {})),
             }, ensure_ascii=False)
 
+        if not is_channel_tool_enabled(channel_id, cap_value):
+            return json.dumps({
+                "success": False,
+                "error": f"接口 {cap_value} 已在频道 '{channel_id}' 上被管理员禁用",
+                "channel_id": channel_id,
+            }, ensure_ascii=False)
+
         fn = supporter[0]
         call_kwargs = _prepare_call(fn, kwargs, channel_id)
         try:
@@ -336,9 +462,12 @@ def _make_common_handler(cap_value: str, method_name: str) -> Callable:
 
 
 def _prepare_call(fn: Callable, kwargs: Dict[str, Any], channel_id: str) -> Dict[str, Any]:
-    """调用前处理：chat_id 前缀解析 + channel_type 自动注入 + 签名过滤。"""
+    """调用前处理：target_id→chat_id 映射 + chat_id 前缀解析 + channel_type 自动注入 + 签名过滤。"""
     from .output_tools import _resolve_send_target
 
+    # schema 层统一暴露 target_id（对齐手写 output 工具），适配器方法仍用 chat_id
+    if "target_id" in kwargs and "chat_id" not in kwargs:
+        kwargs["chat_id"] = kwargs.pop("target_id")
     accepts_kwargs = _accepts_var_kwargs(fn)
     if "chat_id" in kwargs and isinstance(kwargs["chat_id"], str):
         resolved, channel_type = _resolve_send_target(channel_id, kwargs["chat_id"])

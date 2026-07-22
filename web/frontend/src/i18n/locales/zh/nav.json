@@ -18,5 +18,6 @@
   "group_agent": "智能体",
   "group_system": "系统",
   "skills": "技能",
-  "config": "参数配置"
+  "config": "参数配置",
+  "capabilities": "能力中心"
 }

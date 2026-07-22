@@ -177,9 +177,9 @@ class TaskExecutor:
             tags=result.tags,
             importance=result.importance,
         )
-        if self.mind.embedder.available:
-            entry.embedding = await self.mind.embedder.embed_one(result.content)
         await self.mind.memory_store.add(entry)
+        from agent.memory.embedding_worker import wake_embedding_worker
+        wake_embedding_worker()
         log(f"任务结果已存储: [{result.task_name}] {result.source}", tag="任务")
 
     @staticmethod

@@ -28,7 +28,7 @@ export interface TraceNodeData {
   [key: string]: unknown;
 }
 
-const TYPE_STYLES: Record<string, { bg: string; border: string; icon: React.ElementType; accent: string }> = {
+export const TYPE_STYLES: Record<string, { bg: string; border: string; icon: React.ElementType; accent: string }> = {
   session_start: {
     bg: "bg-ok-subtle",
     border: "border-[var(--ok)]",

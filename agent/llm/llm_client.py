@@ -87,8 +87,10 @@ class _ProxyHttpClient(httpx.AsyncClient):
 
 _DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1"
 _DEFAULT_API_KEY = ""
-# 全局默认请求超时（秒）；模型配置仅在需要非默认值时才显式指定
-DEFAULT_TIMEOUT = 120.0
+# 全局默认请求超时（秒）；模型配置仅在需要非默认值时才显式指定。
+# 取值须明显小于思维循环总预算（mind.llm_timeout，默认 120s），
+# 否则单次慢调用即耗尽共享预算，重试与回退模型永远无法执行
+DEFAULT_TIMEOUT = 60.0
 
 API_TYPE_OPENAI = "openai"
 API_TYPE_ANTHROPIC = "anthropic"
@@ -420,6 +422,8 @@ class LLMClient(BaseEntity):
         self._proxy_client: Optional[_ProxyHttpClient] = None
         # 从端点 400 报错中学习到的 max_tokens 实际上限（本次运行内有效）
         self._learned_output_cap: Optional[int] = None
+        # 从端点 400 报错中学习到的「不支持强制 tool_choice」（本次运行内有效）
+        self._learned_no_forced_tool_choice: bool = False
         super().__init__()
         proxy = self.config.effective_proxy
         info(
@@ -536,15 +540,19 @@ class LLMClient(BaseEntity):
         return cap if cap > 0 else None
 
     async def _start_completion(self, kwargs: Dict[str, Any]) -> Any:
-        """发起 litellm.acompletion：max_tokens 超限报错时解析端点上限，钳制后重试一次。
+        """发起 litellm.acompletion：端点报错自适应学习后重试一次。
 
-        解析到的上限缓存到 _learned_output_cap，同模型后续请求直接钳制，
-        实现新模型零配置自适应（参考 hermes-agent conversation_loop 的
-        available_tokens 报错解析重试）。
+        两类可学习报错：强制 tool_choice 被拒（降级 auto）、max_tokens
+        超限（解析端点上限并钳制）。学习结果本次运行内缓存，同模型后续
+        请求直接规避，实现新模型零配置自适应（参考 hermes-agent
+        conversation_loop 的 available_tokens 报错解析重试）。
         """
         try:
             return await litellm.acompletion(**kwargs)
         except Exception as exc:
+            if self._learn_tool_choice_rejection(exc, kwargs):
+                kwargs["tool_choice"] = "auto"
+                return await litellm.acompletion(**kwargs)
             new_cap = self._parse_output_cap_from_error(exc)
             current = kwargs.get("max_tokens")
             if new_cap is None or not current or current <= new_cap:
@@ -557,6 +565,31 @@ class LLMClient(BaseEntity):
                 tag="模型",
             )
             return await litellm.acompletion(**kwargs)
+
+    def _learn_tool_choice_rejection(self, exc: Exception, kwargs: Dict[str, Any]) -> bool:
+        """从端点 400 报错学习「不支持强制 tool_choice」。
+
+        部分端点（如阿里 anthropic 网关的 thinking 模式）拒绝 required /
+        object 形式的 tool_choice，配置项 supports_forced_tool_choice 无法
+        预判所有端点行为，按报错自适应并缓存，后续请求预防性降级。
+        """
+        tool_choice = kwargs.get("tool_choice")
+        if tool_choice is None or tool_choice in ("auto", "none"):
+            return False
+        if getattr(exc, "status_code", None) != 400 and not isinstance(
+            exc, litellm.BadRequestError
+        ):
+            return False
+        msg = str(exc).lower()
+        if "tool_choice" not in msg or "not support" not in msg:
+            return False
+        self._learned_no_forced_tool_choice = True
+        info(
+            f"LLMClient [{self.config.name}] 端点拒绝强制 tool_choice"
+            f"（请求值 {tool_choice!r}），已降级为 auto 并重试，本次运行内缓存",
+            tag="模型",
+        )
+        return True
 
     def _get_proxy_client(self) -> Optional[_ProxyHttpClient]:
         """按需返回当前 Provider 的代理客户端（懒初始化）。"""
@@ -630,11 +663,25 @@ class LLMClient(BaseEntity):
             if self.config.api_type == API_TYPE_ANTHROPIC:
                 kwargs["temperature"] = 1
         elif effort:
-            raise ValueError(
-                f"当前 provider 不支持 reasoning_effort: {self.config.api_type}"
-            )
+            self._warn_effort_dropped(effort)
 
         return kwargs
+
+    def _warn_effort_dropped(self, effort: str) -> None:
+        """effort 不支持时降级为告警 + 丢弃（每客户端首次）。
+
+        reasoning_effort 多为全局配置（Mind/心跳/任务），逐模型注入会命中
+        不支持推理的端点；直接 raise 会让该模型每轮必败、完全不可用，
+        告警保留可追溯性，丢弃保证调用可用。
+        """
+        if getattr(self, "_effort_drop_warned", False):
+            return
+        self._effort_drop_warned = True
+        log(
+            f"端点不支持 reasoning_effort={effort}，已忽略该参数 "
+            f"(model={self.config.model}, api_type={self.config.api_type})",
+            "WARNING", tag="LLM",
+        )
 
     def _ensure_configured(self) -> None:
         if not self.config.model.strip():
@@ -646,17 +693,23 @@ class LLMClient(BaseEntity):
         强制值包括字符串 required 与指定工具的 object 形式
         （OpenAI {"type": "function"} / Anthropic {"type": "any"|"tool"}）。
         auto / none 与 thinking 模式兼容，原样保留。
-        降级会记录 WARNING（每客户端首次）：强制约束静默失效是内心独白
-        类问题的重要排查线索，不应无迹可寻。
+        显式配置 supports_forced_tool_choice=false 是用户已知的预期行为，
+        静默降级；仅 _learned_no_forced_tool_choice（端点 400 报错学习、
+        配置预判失败）触发的降级记录 WARNING（每客户端首次）：
+        强制约束意外失效是内心独白类问题的重要排查线索，不应无迹可寻。
         """
-        if self.config.supports_forced_tool_choice:
+        if self.config.supports_forced_tool_choice and not self._learned_no_forced_tool_choice:
             return tool_choice
         resolved = tool_choice
         if isinstance(tool_choice, str):
             resolved = tool_choice if tool_choice in ("auto", "none") else "auto"
         elif isinstance(tool_choice, dict):
             resolved = tool_choice if tool_choice.get("type") in ("auto", "none") else "auto"
-        if resolved != tool_choice and not getattr(self, "_tool_choice_downgrade_warned", False):
+        if (
+            resolved != tool_choice
+            and self.config.supports_forced_tool_choice
+            and not getattr(self, "_tool_choice_downgrade_warned", False)
+        ):
             self._tool_choice_downgrade_warned = True
             log(
                 f"端点不支持强制工具选择，tool_choice 已降级为 auto "
@@ -664,6 +717,25 @@ class LLMClient(BaseEntity):
                 "WARNING", tag="LLM",
             )
         return resolved
+
+    def get_runtime_issues(self) -> List[str]:
+        """运行时学习到的端点限制（会话内自适应生效，重启失效）。
+
+        供 list_models/get_current_model 展示，AI 发现后可通过
+        update_model_config 将修复固化为持久配置，避免重启后重踩。
+        """
+        issues: List[str] = []
+        if self._learned_no_forced_tool_choice:
+            issues.append(
+                "端点拒绝强制 tool_choice（已降级为 auto，"
+                "可用 update_model_config 将 supports_forced_tool_choice 固化为 false）"
+            )
+        if self._learned_output_cap:
+            issues.append(
+                f"端点限制 max_tokens ≤ {self._learned_output_cap}（已钳制，"
+                f"可用 update_model_config 将 max_tokens 固化为 {self._learned_output_cap}）"
+            )
+        return issues
 
     def _merge_request_params(
         self,
@@ -823,9 +895,8 @@ class LLMClient(BaseEntity):
             if effort not in {"low", "medium", "high", "max"}:
                 raise ValueError(f"无效的 reasoning_effort: {effort}")
             if not self._supports_effort():
-                raise ValueError(
-                    f"当前 provider 不支持 reasoning_effort: {self.config.api_type}"
-                )
+                self._warn_effort_dropped(effort)
+                effort = None
         create_kwargs: Dict[str, Any] = {
             "input": input_payload,
             "instructions": instructions,

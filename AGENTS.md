@@ -237,7 +237,7 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 | `agent/runtime/bootstrap.py` | 启动流程（初始化 → 组装 → 启动 → 健康检查） |
 | `entities/_sdk.py` | 工具注册 + LLM 桥接 |
 | `agent/channel/manager.py` | 频道管理（register / route） |
-| `agent/channel/tool_bridge.py` | 频道工具桥接（@channel_tool 扫描注册 / 通用能力路由 / 敏感门控） |
+| `agent/channel/tool_bridge.py` | 频道工具桥接（@channel_tool 扫描注册 / 通用能力路由 / 敏感门控 / 按频道接口开关 channel_tool_states） |
 | `agent/channel/context.py` | 当前会话频道 ContextVar（通用工具默认路由目标） |
 | `web/routers/config.py` | 心跳/任务 API + Mind 配置 API |
 | `core/path.py` | PathManager + ConfigPaths 路径常量 |

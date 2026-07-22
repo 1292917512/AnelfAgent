@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 import litellm
 
 from agent.llm.llm_client import (
-    API_TYPES, LLMClient, LLMClientConfig, LLMNotConfiguredError, ModelType,
+    API_TYPES, DEFAULT_TIMEOUT, LLMClient, LLMClientConfig, LLMNotConfiguredError, ModelType,
 )
 from agent.llm.types import ChatResult
 from core.entity import BaseEntity, EntityType
@@ -136,7 +136,7 @@ class LLMManager(BaseEntity):
                         max_tokens=mdata.get("max_tokens"),
                         frequency_penalty=mdata.get("frequency_penalty", 0.0),
                         presence_penalty=mdata.get("presence_penalty", 0.0),
-                        timeout=mdata.get("timeout", 120.0),
+                        timeout=mdata.get("timeout", DEFAULT_TIMEOUT),
                         proxy_url=prov.proxy_url,
                         supports_vision=mdata.get("supports_vision", False),
                         supports_tools=mdata.get("supports_tools", True),
@@ -714,6 +714,10 @@ class LLMManager(BaseEntity):
 
     def get_client(self, name: str) -> Optional[LLMClient]:
         return self._clients.get(name)
+
+    def get_all_names(self) -> List[str]:
+        """返回全部已注册模型 ID。"""
+        return list(self._clients.keys())
 
     def resolve_client(self, model: str) -> Optional[LLMClient]:
         """按模型 ID 或原始模型名解析客户端。

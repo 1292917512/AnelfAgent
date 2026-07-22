@@ -350,9 +350,9 @@ class HeartbeatEngine:
             tags=["type:event", f"date:{note_date}"],
             importance=0.6,
         )
-        if self.mind.embedder.available:
-            entry.embedding = await self.mind.embedder.embed_one(entry.content)
         await store.add(entry)
+        from agent.memory.embedding_worker import wake_embedding_worker
+        wake_embedding_worker()
 
     async def _resync_file_index(self) -> None:
         """归档删除文件后重建 chunks 索引（清理已删文件的索引项）。"""
@@ -430,9 +430,9 @@ class HeartbeatEngine:
                 tags=[scope_tag, "type:profile"],
                 importance=0.8,
             )
-            if self.mind.embedder.available:
-                entry.embedding = await self.mind.embedder.embed_one(content)
             await self.mind.memory_store.add(entry)
+            from agent.memory.embedding_worker import wake_embedding_worker
+            wake_embedding_worker()
 
         hb_log.append_entry(f"[entity_analysis] {desc}: {content[:100]}")
         return TaskResult(

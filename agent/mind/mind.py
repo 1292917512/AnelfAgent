@@ -1007,12 +1007,6 @@ class Mind:
                 若为 None，内部自动从 DB 获取最新对话。
             anything: 消息对象，用于确定对话 scope。
         """
-        if self.memory_store and self.embedder.available:
-            try:
-                await self.memory_store.backfill_embeddings(self.embedder, batch_size=2)
-            except Exception as e:
-                log(f"Embedding 回填失败: {e}", "DEBUG", tag="思维")
-
         # 若未传入对话历史，从 DB 实时获取
         if conversation_list is None:
             conversation_list = await self.get_conversation(anything) if anything else []

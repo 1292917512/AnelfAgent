@@ -311,6 +311,53 @@ def _coerce_kwargs_types(params: List[ToolParam], kwargs: Dict[str, Any]) -> Dic
     return coerced
 
 
+def _func_accepts_var_kwargs(func: Callable) -> bool:
+    """判断工具函数是否声明了 **kwargs（声明则未知名参属于合法透传）。"""
+    try:
+        return any(
+            p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in inspect.signature(func).parameters.values()
+        )
+    except (TypeError, ValueError):
+        return True
+
+
+def _unwrap_nested_arguments(params: List[ToolParam], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """解开 LLM 偶发的参数嵌套包装（如 {"tool_args": "{\\"image_path\\": ...}"}）。
+
+    部分模型按训练先验把真实参数包进单个包装键（tool_args/arguments 等），
+    字符串化后作为唯一参数传入。当没有任何键命中声明参数、且恰好一个
+    包装键的值可解析为非空 dict 时，以解包结果为准；与声明参数混传时
+    不做猜测，保持原样交由后续校验反馈。
+    """
+    if not kwargs:
+        return kwargs
+    declared = {p.name for p in params}
+    if any(k in declared for k in kwargs):
+        return kwargs
+    wrappers = [k for k in kwargs if k != "_timeout"]
+    if len(wrappers) != 1:
+        return kwargs
+    inner: Any = kwargs[wrappers[0]]
+    if isinstance(inner, str):
+        text = inner.strip()
+        if not text.startswith("{"):
+            return kwargs
+        try:
+            inner = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            return kwargs
+    if isinstance(inner, dict) and inner:
+        log(
+            f"参数嵌套包装已解包: {wrappers[0]} -> {list(inner)}",
+            "WARNING", tag="实体",
+        )
+        if "_timeout" in kwargs and "_timeout" not in inner:
+            inner["_timeout"] = kwargs["_timeout"]
+        return inner
+    return kwargs
+
+
 # ======================================================================
 # ======================================================================
 
@@ -848,6 +895,8 @@ class EntityRegistry:
 
         # 按 schema 声明类型矫正参数（LLM 可能传错 JSON 类型，如数字 ID 按 number 传递）
         if isinstance(kwargs, dict):
+            # 解开模型先验产生的嵌套包装（{"tool_args": "{...}"}）
+            kwargs = _unwrap_nested_arguments(entity.meta.get("params") or [], kwargs)
             kwargs = _coerce_kwargs_types(entity.meta.get("params") or [], kwargs)
             # 矫正失败的非法值在此拦截，给 AI 清晰反馈而非工具内部 TypeError
             type_error = _validate_param_types(entity.meta.get("params") or [], kwargs)
@@ -856,6 +905,22 @@ class EntityRegistry:
                     "error": f"参数类型错误: {type_error}",
                     "hint": "请按工具 schema 声明的类型传参后重试",
                 }, ensure_ascii=False)
+            # schema 未声明的参数对不接收 **kwargs 的工具必然崩溃成 TypeError，
+            # 提前拦截并返回正确参数列表，避免 AI 盲猜参数名反复失败
+            if not _func_accepts_var_kwargs(entity.func):
+                declared = {p.name for p in entity.meta.get("params") or []}
+                declared.add("_timeout")
+                unknown = sorted(k for k in kwargs if k not in declared)
+                if unknown:
+                    log(
+                        f"工具参数拦截: {name} 收到未知参数 {unknown}",
+                        "WARNING", tag="实体",
+                    )
+                    return json.dumps({
+                        "error": f"参数错误: 工具 {name} 不接受参数 {unknown}",
+                        "valid_params": sorted(declared - {"_timeout"}),
+                        "hint": "请仅使用 valid_params 列出的参数名修正后重试，不要猜测其他参数名",
+                    }, ensure_ascii=False)
 
         # 优先级: AI 传入 > 装饰器定义 > 全局默认
         ai_timeout = kwargs.pop("_timeout", None)

@@ -179,8 +179,8 @@ async def test_tool_output_discipline_hint_injected(anything) -> None:
     assert all("输出纪律" in content for content in seen)
 
 
-async def test_tool_output_discipline_hint_skipped_when_supported(anything) -> None:
-    """端点支持强制 tool_choice（默认）时：不注入输出纪律提示。"""
+async def test_tool_output_discipline_hint_injected_when_supported(anything) -> None:
+    """端点支持强制 tool_choice 时：输出纪律提示与 API 级强制并行注入。"""
     mind = _FakeMind()
     seen = _spy_exec_context(mind)
     await think_loop(
@@ -196,7 +196,7 @@ async def test_tool_output_discipline_hint_skipped_when_supported(anything) -> N
         base_messages=[{"role": "user", "content": "你好"}],
     )
     assert seen
-    assert all("输出纪律" not in content for content in seen)
+    assert all("输出纪律" in content for content in seen)
 
 
 async def test_pure_tool_mode_disabled(anything) -> None:

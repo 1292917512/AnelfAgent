@@ -132,7 +132,7 @@ export function OverviewPanel() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { icon: MessageCircle, label: t("chatLink"), desc: t("chatDesc"), to: "/chat" },
-          { icon: Wrench, label: t("toolsLink"), desc: t("toolsDesc"), to: "/tools" },
+          { icon: Wrench, label: t("toolsLink"), desc: t("toolsDesc"), to: "/capabilities?tab=tools" },
           { icon: Brain, label: t("memoryLink"), desc: t("memoryDesc"), to: "/memory" },
           { icon: Activity, label: t("statusLink"), desc: t("statusDesc"), to: "/thinking" },
         ].map((item) => (

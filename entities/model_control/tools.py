@@ -1,9 +1,10 @@
 """模型控制实体 — 列出/切换/参数调整/优先级控制 + Ollama 本地模型管理。
 
 AI 通过这些工具可以自主完成：
-- 查看所有可用模型及其能力
+- 查看所有可用模型及其能力（含运行时学习到的端点限制）
 - 热切换当前思考模型（立即生效，同时持久化）
 - 临时调整当前会话的模型参数（temperature、max_tokens）
+- 持久化修复模型配置（update_model_config，固化端点行为问题的修复）
 - 查看/修改模型优先级顺序
 - 管理 Ollama 本地模型（状态、拉取、删除、详情）— 仅在检测到本地安装 Ollama 时才注册
 """
@@ -12,8 +13,12 @@ from __future__ import annotations
 
 import json
 import shutil
+from typing import TYPE_CHECKING, Any
 
 from entities._sdk import tool, entity
+
+if TYPE_CHECKING:
+    from agent.llm.llm_manager import LLMManager
 
 entity("model_control", "模型控制 - 切换模型、调整参数、管理优先级")
 
@@ -45,9 +50,27 @@ def list_models() -> str:
             "model_summary": summary,
             "priorities": priorities,
         }
+        # 运行时学习到的端点限制（仅列出存在问题的模型）
+        issues = _collect_runtime_issues(manager)
+        if issues:
+            result["runtime_issues"] = issues
+            result["hint"] = "runtime_issues 为运行时临时自适应（重启失效），可用 update_model_config 固化修复"
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+def _collect_runtime_issues(manager: "LLMManager") -> dict:
+    """汇总各模型运行时学习到的端点限制（无问题返回空 dict）。"""
+    issues: dict = {}
+    for name in manager.get_all_names():
+        client = manager.get_client(name)
+        if client is None:
+            continue
+        found = client.get_runtime_issues()
+        if found:
+            issues[name] = found
+    return issues
 
 
 @tool(name="switch_model", group="model_control", tags=["core"],
@@ -104,6 +127,10 @@ def get_current_model() -> str:
                 "supports_tools": cfg.supports_tools,
                 "supports_vision": cfg.supports_vision,
             })
+            issues = llm.get_runtime_issues()
+            if issues:
+                info["runtime_issues"] = issues
+                info["hint"] = "runtime_issues 为运行时临时自适应（重启失效），可用 update_model_config 固化修复"
 
         return json.dumps(info, ensure_ascii=False)
     except Exception as e:
@@ -164,6 +191,88 @@ def clear_session_params() -> str:
         return json.dumps({"ok": True, "message": "已清除所有临时参数，恢复模型默认配置"}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# AI 可持久化修改的模型配置字段（保守白名单：仅端点行为类参数，
+# 连接/结构字段 api_key/base_url/model_types 等不开放）
+_UPDATABLE_FIELDS = {
+    "timeout": float,
+    "max_tokens": int,
+    "supports_forced_tool_choice": bool,
+    "supports_reasoning": bool,
+}
+
+
+@tool(name="update_model_config", group="model_control", tags=["core"],
+      description="持久化修改指定模型的配置参数（timeout/max_tokens/supports_forced_tool_choice/supports_reasoning），"
+                  "用于固化端点行为问题的修复（如 list_models 中 runtime_issues 提示的问题），重启后仍生效")
+def update_model_config(model_name: str, field: str, value: str) -> str:
+    """持久化修改模型配置并写入配置文件，立即生效。
+
+    Args:
+        model_name: 模型名称（通过 list_models 查看）
+        field: 配置字段，可选值: timeout（秒，如 "60"）、max_tokens（如 "8192"）、
+            supports_forced_tool_choice / supports_reasoning（"true"/"false"）
+        value: 新值（按字段类型解析）
+    """
+    try:
+        from agent.llm import get_llm_manager
+        manager = get_llm_manager()
+
+        client = manager.get_client(model_name)
+        if client is None:
+            return json.dumps({
+                "ok": False,
+                "error": f"模型 '{model_name}' 不存在，请用 list_models 查看可用名称",
+            }, ensure_ascii=False)
+
+        if field not in _UPDATABLE_FIELDS:
+            return json.dumps({
+                "ok": False,
+                "error": f"字段 '{field}' 不允许修改，可修改字段: {list(_UPDATABLE_FIELDS)}",
+            }, ensure_ascii=False)
+
+        parsed, parse_err = _parse_field_value(field, value)
+        if parse_err:
+            return json.dumps({"ok": False, "error": parse_err}, ensure_ascii=False)
+
+        old_value = getattr(client.config, field)
+        if not manager.update_model(model_name, **{field: parsed}):
+            return json.dumps({
+                "ok": False,
+                "error": f"更新模型 '{model_name}' 失败",
+            }, ensure_ascii=False)
+
+        return json.dumps({
+            "ok": True,
+            "message": f"已持久化 {model_name}.{field}: {old_value} -> {parsed}，立即生效且重启后保留",
+            "model": model_name,
+            "field": field,
+            "old": old_value,
+            "new": parsed,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+def _parse_field_value(field: str, value: str) -> tuple[Any, str]:
+    """按字段类型解析配置值，返回 (解析值, 错误描述)。"""
+    ptype = _UPDATABLE_FIELDS[field]
+    text = value.strip()
+    if ptype is bool:
+        lowered = text.lower()
+        if lowered in ("true", "1", "yes"):
+            return True, ""
+        if lowered in ("false", "0", "no"):
+            return False, ""
+        return None, f"字段 {field} 需要布尔值（true/false），收到: {value!r}"
+    try:
+        parsed = ptype(text)
+    except (TypeError, ValueError):
+        return None, f"字段 {field} 需要 {ptype.__name__} 类型，收到: {value!r}"
+    if parsed <= 0:
+        return None, f"字段 {field} 必须为正数，收到: {parsed}"
+    return parsed, ""
 
 
 @tool(name="get_model_priority", group="model_control", tags=["core"],

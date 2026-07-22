@@ -17,5 +17,6 @@
   "group_agent": "Agent",
   "group_system": "System",
   "skills": "Skills",
-  "config": "Config"
+  "config": "Config",
+  "capabilities": "Capabilities"
 }

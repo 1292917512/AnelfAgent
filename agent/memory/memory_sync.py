@@ -156,14 +156,10 @@ async def index_single_file(
         chunk_id = f"{rel_path}:{ch['start_line']}-{ch['end_line']}"
         embedding_blob: Optional[bytes] = None
 
+        # 只命中缓存即落库；未命中的留 NULL，由后台 EmbeddingWorker 批量补全
         cached = await store.get_cached_embedding(ch["hash"])
         if cached:
             embedding_blob = pack_embedding(cached)
-        elif embedder.available:
-            vec = await embedder.embed_one(ch["text"])
-            if vec:
-                embedding_blob = pack_embedding(vec)
-                await store.put_cached_embedding(ch["hash"], vec)
 
         chunk_dicts.append({
             "id": chunk_id,
@@ -228,5 +224,8 @@ async def sync_files(
             f"移除 {stats['removed']} 文件, 共 {stats['chunks']} chunks",
             tag="思维",
         )
+        if stats["chunks"]:
+            from .embedding_worker import wake_embedding_worker
+            wake_embedding_worker()
 
     return stats

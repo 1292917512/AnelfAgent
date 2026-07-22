@@ -15,6 +15,7 @@ from core.log import log
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry, MemoryType
 from .embedder import Embedder
+from .embedding_worker import wake_embedding_worker
 
 _store: Optional[MemoryStore] = None
 _embedder: Optional[Embedder] = None
@@ -113,12 +114,8 @@ async def memorize(content: str, tags: str = "", importance: float = 0.7) -> str
             importance=max(0.0, min(1.0, importance)),
         )
 
-        if _embedder and _embedder.available:
-            vec = await _embedder.embed_one(content)
-            if vec:
-                entry.embedding = vec
-
         mid = await _store.add(entry)
+        wake_embedding_worker()
         return json.dumps({"ok": True, "id": mid, "tags": tag_list}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -133,19 +130,16 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
         candidates = await _store.search_by_tags(match_tags, limit=10)
         existing = [e for e in candidates if e.memory_type == MemoryType.PERMANENT]
 
-    new_embedding = None
-    if _embedder and _embedder.available:
-        new_embedding = await _embedder.embed_one(content)
-
     if existing:
         target = existing[0]
         old_preview = target.content[:60]
         target.content = content
         target.tags = tag_list
         target.importance = importance
-        if new_embedding:
-            target.embedding = new_embedding
+        # 内容已变更，清空旧向量，由后台 worker 重新生成
+        target.embedding = None
         await _store.update(target)
+        wake_embedding_worker()
         return json.dumps({
             "ok": True, "id": target.id, "action": "updated",
             "old_preview": old_preview, "tags": tag_list,
@@ -156,9 +150,9 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
         content=content,
         tags=tag_list,
         importance=importance,
-        embedding=new_embedding,
     )
     mid = await _store.add(entry)
+    wake_embedding_worker()
     return json.dumps({
         "ok": True, "id": mid, "action": "created", "tags": tag_list,
     }, ensure_ascii=False)
@@ -392,13 +386,13 @@ async def update_memory(
         if not changed:
             return json.dumps({"ok": True, "message": "无变更"}, ensure_ascii=False)
 
-        # 内容变更时重新生成 embedding
-        if content_changed and _embedder and _embedder.available:
-            vec = await _embedder.embed_one(entry.content)
-            if vec:
-                entry.embedding = vec
+        # 内容变更时清空旧向量，由后台 worker 重新生成
+        if content_changed:
+            entry.embedding = None
 
         ok = await _store.update(entry)
+        if ok and content_changed:
+            wake_embedding_worker()
         return json.dumps({
             "ok": ok,
             "id": memory_id,
@@ -687,31 +681,20 @@ async def recall_conversation(
         from agent.config import get_config_provider
         _cfg = get_config_provider().mind
         max_results: int = _cfg.conv_recall_max_results
-        backfill_batch: int = _cfg.conv_recall_backfill_batch
         min_score: float = _cfg.conv_recall_min_score
         scan_limit: int = _cfg.conv_recall_scan_limit
         skip_recent: int = get_config_provider().config.max_conversation_size
     except Exception as e:
         from core.log import log as _log
         _log(f"对话检索配置加载失败，使用默认值: {e}", "DEBUG")
-        max_results, backfill_batch, min_score, scan_limit, skip_recent = 10, 30, 0.25, 500, 30
+        max_results, min_score, scan_limit, skip_recent = 10, 0.25, 500, 30
 
     try:
         sqlite = _get_sqlite()
         limit = max(1, min(limit, max_results))
 
-        # 先为该 scope 回填缺失的 embedding（批次由配置控制）
-        if _embedder and _embedder.available:
-            try:
-                await sqlite.backfill_conversation_embeddings(
-                    _embedder,
-                    scope_type=scope_type,
-                    scope_id=scope_id,
-                    batch_size=backfill_batch,
-                )
-            except Exception as e:
-                from core.log import log as _log
-                _log(f"对话 embedding 回填失败: {e}", "DEBUG")
+        # 通知后台 worker 补齐缺失的 embedding（不阻塞本次检索）
+        wake_embedding_worker()
 
         t0 = _time.monotonic()
         results: list[dict] = []
@@ -932,13 +915,7 @@ async def merge_memories(memory_ids: str, merged_content: str) -> str:
         if not new_id:
             return json.dumps({"error": "合并失败，指定的记忆可能不存在"}, ensure_ascii=False)
 
-        if _embedder and _embedder.available:
-            vec = await _embedder.embed_one(merged_content)
-            if vec:
-                entry = await _store.get(new_id)
-                if entry:
-                    entry.embedding = vec
-                    await _store.update(entry)
+        wake_embedding_worker()
 
         return json.dumps({
             "ok": True, "new_id": new_id,
@@ -1219,9 +1196,8 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
                 tags=[scope_tag, "type:profile"],
                 importance=0.8,
             )
-            if _embedder and _embedder.available:
-                entry.embedding = await _embedder.embed_one(personality.strip())
             await _store.add(entry)
+            wake_embedding_worker()
 
         target_desc = f"{p_type}:{p_id}"
         if primary:

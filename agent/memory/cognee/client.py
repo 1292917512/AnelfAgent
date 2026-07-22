@@ -89,6 +89,11 @@ class CogneeClient:
     def _import_cognee(self) -> Any:
         if self._module is not None:
             return self._module
+        # cognee 1.3 默认把 graph/vector 引擎放在子进程运行，每轮流水线都会
+        # 创建 worker 子进程，父进程的 PIPE/信号量 fd 随运行时间单调泄露直至
+        # EMFILE。宿主为单进程架构，改回进程内引擎（setdefault 保留环境变量覆盖）。
+        os.environ.setdefault("GRAPH_DATABASE_SUBPROCESS_ENABLED", "false")
+        os.environ.setdefault("VECTOR_DB_SUBPROCESS_ENABLED", "false")
         # Cognee 导入时会 dotenv.load_dotenv(override=True)。恢复环境，避免污染宿主进程。
         original_env = dict(os.environ)
         try:

@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { MessageCircle, LayoutDashboard, Brain, GraduationCap, Settings } from "lucide-react";
+import { MessageCircle, LayoutDashboard, Brain, Blocks, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** 移动端核心导航项（精简版，覆盖高频页面） */
@@ -8,7 +8,7 @@ const MOBILE_TABS = [
   { path: "/", label: "chat", icon: MessageCircle },
   { path: "/dashboard", label: "dashboard", icon: LayoutDashboard },
   { path: "/memory", label: "memory", icon: Brain },
-  { path: "/skills", label: "skills", icon: GraduationCap },
+  { path: "/capabilities", label: "capabilities", icon: Blocks },
   { path: "/settings", label: "settings", icon: Settings },
 ];
 

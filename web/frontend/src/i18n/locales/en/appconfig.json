@@ -80,7 +80,7 @@
     "heartbeat_max_entries": "Maximum entries kept in heartbeat.md",
     "auto_consolidate_enabled": "Automatically consolidate memory files during heartbeat",
     "conv_recall_scan_limit": "Maximum vector scan entries for conversation recall",
-    "conv_recall_backfill_batch": "Embedding backfill batch size per call",
+    "conv_recall_backfill_batch": "Background embedding backfill batch size for conversations",
     "conv_recall_min_score": "Skip historical messages below this score (0~1)",
     "conv_recall_max_results": "Max results per recall_conversation call",
     "cross_channel_enabled": "When enabled, AI can sense related conversations from other channels during replies",

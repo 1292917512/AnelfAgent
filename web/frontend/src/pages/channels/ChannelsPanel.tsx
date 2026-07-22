@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { adaptersApi } from "@/lib/api";
+import type { AdapterInfo } from "@/lib/types";
 import { StatusDot } from "@/components/common/StatusDot";
 import { cn } from "@/lib/utils";
 import {
@@ -11,24 +12,13 @@ import {
   RotateCcw,
   CheckCircle,
   Settings2,
+  Blocks,
   Wifi,
   WifiOff,
 } from "lucide-react";
 import { ChannelWebView } from "@/pages/channels/ChannelWebView";
 import { ConfigField } from "@/pages/channels/ConfigField";
 import type { ConfigMeta } from "@/pages/channels/ConfigField";
-
-interface AdapterInfo {
-  key: string;
-  name: string;
-  status: string;
-  status_display: string;
-  detail?: string;
-  ws_mode?: string;
-  ws_connected?: boolean;
-  online?: boolean;
-  self_id?: string;
-}
 
 const GROUP_KEY_MAP: Record<string, string> = {
   telegram: "adapter/telegram",
@@ -48,7 +38,12 @@ const statusToColor = (s: string): "ok" | "warn" | "danger" | "offline" => {
   }
 };
 
-export function ChannelsPanel() {
+export function ChannelsPanel({
+  onOpenTools,
+}: {
+  /** 打开频道接口抽屉（开关 / 测试该频道的接口） */
+  onOpenTools?: (channel: { key: string; name: string }) => void;
+}) {
   const { t } = useTranslation("channels");
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -201,6 +196,14 @@ export function ChannelsPanel() {
                     )}
                   </div>
                   <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    {onOpenTools && (
+                      <button onClick={() => onOpenTools({ key: a.key, name: a.name })}
+                        title={t("tools.openTools")}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border text-muted hover:text-foreground hover:bg-hover transition-all">
+                        <Blocks size={14} />
+                        {t("tools.openTools")}
+                      </button>
+                    )}
                     {(() => {
                       const isToggling = togglingKey === a.key;
                       const isRunning = a.status === "running";

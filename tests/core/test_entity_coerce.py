@@ -129,3 +129,126 @@ class TestExecuteToolCoercion:
         assert payload.get("ok") is True
         assert registered_tool["target_id"] == "1292917512"
         assert registered_tool["type"] == "str"
+
+
+class TestExecuteToolUnknownParams:
+    """execute_tool 未知参数拦截：不接收 **kwargs 的工具收到 schema 外参数时，
+    应返回含正确参数列表的可行动错误，而非崩溃成 TypeError。"""
+
+    @pytest.fixture
+    def strict_tool(self):
+        def echo_target(target_id: str) -> str:
+            return json.dumps({"ok": True, "target_id": target_id})
+
+        EntityRegistry.register(EntityMetadata(
+            name="strict_echo",
+            entity_type=EntityType.TOOL,
+            description="test",
+            func=echo_target,
+            meta={"params": [ToolParam(name="target_id", type="string")]},
+        ))
+        yield
+        EntityRegistry.unregister("strict_echo")
+
+    @pytest.fixture
+    def kwargs_tool(self):
+        def echo_kwargs(**kwargs) -> str:  # type: ignore[no-untyped-def]
+            return json.dumps({"ok": True, "kwargs": kwargs})
+
+        EntityRegistry.register(EntityMetadata(
+            name="kwargs_echo",
+            entity_type=EntityType.TOOL,
+            description="test",
+            func=echo_kwargs,
+            meta={"params": [ToolParam(name="target_id", type="string")]},
+        ))
+        yield
+        EntityRegistry.unregister("kwargs_echo")
+
+    async def test_unknown_param_blocked_with_valid_list(self, strict_tool: None) -> None:
+        result = await EntityRegistry.execute_tool(
+            "strict_echo", '{"target_id": "1", "chat_id": "2", "channel": "telegram"}',
+        )
+        payload = json.loads(result)
+        assert "error" in payload
+        assert payload["valid_params"] == ["target_id"]
+        assert "chat_id" in payload["error"] and "channel" in payload["error"]
+
+    async def test_timeout_param_not_treated_as_unknown(self, strict_tool: None) -> None:
+        result = await EntityRegistry.execute_tool(
+            "strict_echo", '{"target_id": "1", "_timeout": 5}',
+        )
+        payload = json.loads(result)
+        assert payload.get("ok") is True
+
+    async def test_kwargs_func_passes_unknown_through(self, kwargs_tool: None) -> None:
+        """声明 **kwargs 的工具（MCP 代理/频道 handler）未知参数合法透传。"""
+        result = await EntityRegistry.execute_tool(
+            "kwargs_echo", '{"target_id": "1", "extra": "x"}',
+        )
+        payload = json.loads(result)
+        assert payload.get("ok") is True
+        assert payload["kwargs"]["extra"] == "x"
+
+
+class TestUnwrapNestedArguments:
+    """execute_tool 嵌套包装解包：模型先验产生的 {"tool_args": "{...}"} 格式。"""
+
+    @pytest.fixture
+    def image_tool(self):
+        received: dict = {}
+
+        def recognize(image_path: str = "", **kwargs: str) -> str:
+            received["image_path"] = image_path
+            return json.dumps({"ok": True, "image_path": image_path})
+
+        EntityRegistry.register(EntityMetadata(
+            name="unwrap_image",
+            entity_type=EntityType.TOOL,
+            description="test",
+            func=recognize,
+            meta={"params": [ToolParam(name="image_path", type="string", required=False)]},
+        ))
+        yield received
+        EntityRegistry.unregister("unwrap_image")
+
+    async def test_tool_args_wrapper_unwrapped(self, image_tool: dict) -> None:
+        result = await EntityRegistry.execute_tool(
+            "unwrap_image", '{"tool_args": "{\\"image_path\\": \\"/tmp/a.png\\"}"}',
+        )
+        payload = json.loads(result)
+        assert payload.get("ok") is True
+        assert image_tool["image_path"] == "/tmp/a.png"
+
+    async def test_dict_wrapper_unwrapped(self, image_tool: dict) -> None:
+        result = await EntityRegistry.execute_tool(
+            "unwrap_image", '{"arguments": {"image_path": "/tmp/b.png"}}',
+        )
+        payload = json.loads(result)
+        assert payload.get("ok") is True
+        assert image_tool["image_path"] == "/tmp/b.png"
+
+    async def test_direct_params_untouched(self, image_tool: dict) -> None:
+        result = await EntityRegistry.execute_tool(
+            "unwrap_image", '{"image_path": "/tmp/c.png"}',
+        )
+        payload = json.loads(result)
+        assert payload.get("ok") is True
+        assert image_tool["image_path"] == "/tmp/c.png"
+
+    async def test_mixed_declared_and_wrapper_not_unwrapped(self, image_tool: dict) -> None:
+        """声明参数与包装键混传时不做猜测，保持原样。"""
+        result = await EntityRegistry.execute_tool(
+            "unwrap_image", '{"image_path": "/tmp/d.png", "tool_args": "{\\"image_path\\": \\"/x\\"}"}',
+        )
+        payload = json.loads(result)
+        assert payload.get("ok") is True
+        assert image_tool["image_path"] == "/tmp/d.png"
+
+    async def test_wrapper_preserved_timeout(self, image_tool: dict) -> None:
+        result = await EntityRegistry.execute_tool(
+            "unwrap_image", '{"tool_args": "{\\"image_path\\": \\"/tmp/e.png\\"}", "_timeout": 30}',
+        )
+        payload = json.loads(result)
+        assert payload.get("ok") is True
+        assert image_tool["image_path"] == "/tmp/e.png"
