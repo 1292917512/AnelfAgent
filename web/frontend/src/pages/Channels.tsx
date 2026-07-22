@@ -2,14 +2,13 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer } from "@/components/common/PageContainer";
-import { Plug, Shield, FlaskConical } from "lucide-react";
+import { Plug, FlaskConical } from "lucide-react";
 import { ChannelsPanel } from "@/pages/channels/ChannelsPanel";
 import { NoneBotPanel } from "@/pages/channels/NoneBotPanel";
-import { ApprovalsPanel } from "@/pages/channels/ApprovalsPanel";
 import { ChannelTestPanel } from "@/pages/channels/ChannelTestPanel";
 import { ChannelToolsDrawer, type ChannelToolsTarget } from "@/pages/channels/ChannelToolsDrawer";
 
-type ChannelTab = "channels" | "nonebot" | "approvals" | "test";
+type ChannelTab = "channels" | "nonebot" | "test";
 
 export default function Channels() {
   const { t } = useTranslation("channels");
@@ -21,7 +20,6 @@ export default function Channels() {
     { key: "channels", label: t("tabs.channels") },
     { key: "test", label: t("tabs.test"), icon: FlaskConical },
     { key: "nonebot", label: t("tabs.nonebot"), icon: Plug },
-    { key: "approvals", label: t("tabs.approvals"), icon: Shield },
   ];
 
   return (
@@ -30,8 +28,6 @@ export default function Channels() {
 
       {activeTab === "nonebot" ? (
         <NoneBotPanel />
-      ) : activeTab === "approvals" ? (
-        <ApprovalsPanel />
       ) : activeTab === "test" ? (
         <ChannelTestPanel initialKey={testChannelKey} />
       ) : (

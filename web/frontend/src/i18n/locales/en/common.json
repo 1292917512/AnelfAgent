@@ -39,5 +39,6 @@
   "passwordPlaceholder": "Enter access password",
   "verifying": "Verifying…",
   "capabilitiesTitle": "Capabilities",
-  "capabilitiesSubtitle": "Unified management of tools, skills and MCP servers"
+  "capabilitiesSubtitle": "Unified management of tools, skills and MCP servers",
+  "loginFailed": "Sign-in failed"
 }

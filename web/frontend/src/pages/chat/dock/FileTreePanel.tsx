@@ -15,11 +15,14 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<WorkspaceNode[] | null>(node.children ?? null);
   const [loading, setLoading] = useState(false);
+  const openFiles = useWorkbenchStore((s) => s.openFiles);
   const openFilePath = useWorkbenchStore((s) => s.openFilePath);
   const openFile = useWorkbenchStore((s) => s.openFile);
 
   const isDir = node.type === "dir";
   const isActive = openFilePath === node.path;
+  // 已在编辑器标签中打开但未激活
+  const isOpened = !isActive && openFiles.includes(node.path);
   // 二进制中的图片/音视频可打开预览，其余二进制不可编辑
   const openable = !node.binary || workspaceMediaKind(node.name) !== null;
 
@@ -78,6 +81,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
           </>
         )}
         <span className="truncate">{node.name}</span>
+        {isOpened && <span className="w-1 h-1 rounded-full bg-accent shrink-0 ml-auto" aria-label="opened" />}
       </button>
       {isDir && expanded && children && (
         <div>

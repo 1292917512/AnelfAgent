@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +33,8 @@ from agent.channel.base import ApprovalPromptRenderContext, BaseChannel
 from .manager import ApprovalManager, get_approval_manager
 from .policy import ApprovalPolicySet
 from .rules import (
+    COMPOUND_CMD_RE,
+    COMMAND_TOOLS,
     PermissionDecision,
     PermissionEffect,
     PermissionRule,
@@ -147,8 +150,16 @@ class ApprovalGate:
             )
             return ApprovalDecision.DENIED
 
-        # ASK：走人工批准流程
+        # ASK：命中规则的信任阈值达成时自动放行（trust_after_n_approvals）
         rule = verdict.rule
+        if rule is not None and rule.trust_after_n_approvals > 0:
+            if await self._manager.is_trusted(tool_name, user_id, rule):
+                log(f"信任阈值达成，自动放行: {tool_name} "
+                    f"(规则 [{rule.pattern}]，{rule.trust_after_n_approvals} 次批准)",
+                    tag="权限")
+                return ApprovalDecision.APPROVED
+
+        # ASK：走人工批准流程
         timeout_seconds = timeout or (rule.timeout_seconds if rule else 60.0)
         request = ApprovalRequest(
             tool_name=tool_name,
@@ -194,7 +205,11 @@ class ApprovalGate:
 
     async def approve(self, request_id: str, decided_by: str = "", reason: str = "",
                       remember: str = "once") -> bool:
-        """批准；remember: once / session（本会话不再询问）/ always（永久放行）。"""
+        """批准；remember: once / session（本会话不再询问）/ always（永久放行）。
+
+        remember=always 时按本次调用参数收窄放行范围（命令头 glob / 文件路径），
+        无法安全收窄的（复合 shell 命令）自动降级为 session 并告知原因。
+        """
         ok = await self._manager.approve(request_id, decided_by, reason)
         if ok and remember in ("session", "always"):
             session = await self._manager.get_session(request_id)
@@ -214,19 +229,72 @@ class ApprovalGate:
     # 内部
     # ------------------------------------------------------------------
 
+    # 命令执行类工具：remember=always 时取命令头 glob，复合命令拒绝永久化
+    _COMMAND_TOOLS = frozenset({"run_shell_command", "python_exec"})
+    # 文件类工具：remember=always 时按 path 参数收窄
+    _FILE_ARG_TOOLS = frozenset({
+        "write_file", "edit_file", "append_file", "delete_file", "move_file", "copy_file",
+    })
+    # 复合命令特征（含任一即不生成永久规则——信任只给"这件事"，不给"所有事"）
+    _COMPOUND_CMD_RE = re.compile(r"&&|\|\||[;|]|`\s*[^`]|\$\(")
+
+    @classmethod
+    def _build_remember_pattern(cls, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+        """按本次调用参数生成收窄的放行 pattern；无法安全收窄返回 None。
+
+        - 命令类：取命令首 token 作 glob（`npm test` → `run_shell_command(npm *)`）；
+          含 &&/|;/$()/反引号 的复合命令返回 None（降级为会话级）
+        - 文件类：取 path 参数精确值（`write_file(/exact/path)`）
+        - 其他工具：裸工具名
+        """
+        if tool_name in cls._COMMAND_TOOLS:
+            command = str(tool_args.get("command") or tool_args.get("code") or "").strip()
+            if not command or cls._COMPOUND_CMD_RE.search(command):
+                return None
+            try:
+                import shlex
+                head = shlex.split(command, posix=True)[0]
+            except (ValueError, IndexError):
+                return None
+            if not head:
+                return None
+            return f"{tool_name}({head} *)"
+        if tool_name in cls._FILE_ARG_TOOLS:
+            path = str(tool_args.get("path") or "").strip()
+            if not path or any(ch in path for ch in "()*"):
+                return None
+            return f"{tool_name}({path})"
+        return tool_name
+
     async def _remember_rule(self, session: ApprovalSession, remember: str,
                              decided_by: str) -> None:
-        """把批准决策固化为放行规则（会话级或永久）。"""
+        """把批准决策固化为放行规则（会话级或永久）。
+
+        仅 remember=always 按参数收窄（命令头 glob / 文件路径）——永久规则
+        长期生效，"批一次≠全放行"；会话级规则随进程消亡且用户在场，保持
+        裸工具名的宽松语义。
+        """
         req = session.request
+        effective = remember
+        pattern = req.tool_name
+        if remember == "always":
+            narrowed = self._build_remember_pattern(req.tool_name, req.tool_args or {})
+            if narrowed is None:
+                # 复合命令等无法安全收窄：降级为会话级放行
+                effective = "session"
+                log(f"永久放行已降级为会话级: {req.tool_name}（参数无法安全收窄）",
+                    "WARNING", tag="权限")
+            else:
+                pattern = narrowed
         rule = PermissionRule(
-            pattern=req.tool_name,
+            pattern=pattern,
             effect=PermissionEffect.ALLOW,
             scope=req.requester_channel or "global",
             users=[req.requester_user_id] if req.requester_user_id not in ("", "unknown") else [],
-            description=f"批准时选择{'本会话' if remember == 'session' else '永久'}放行",
+            description=f"批准时选择{'本会话' if effective == 'session' else '永久'}放行",
             created_by=f"approve:{decided_by or 'unknown'}",
         )
-        if remember == "always":
+        if effective == "always":
             self._rule_set.rules.append(rule)
             try:
                 save_rules(self._rule_set)
@@ -235,7 +303,7 @@ class ApprovalGate:
         else:
             self._session_rules.insert(0, rule)
         log(f"放行规则已创建: [{rule.pattern}] scope={rule.scope} "
-            f"({'会话级' if remember == 'session' else '永久'})", tag="权限")
+            f"({'会话级' if effective == 'session' else '永久'})", tag="权限")
 
     def _sanitize_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """脱敏工具参数（移除 API Key / Token / 密码等）。"""
@@ -244,8 +312,8 @@ class ApprovalGate:
         for k, v in args.items():
             if any(s in k.lower() for s in sensitive_keys):
                 sanitized[k] = "***REDACTED***"
-            elif isinstance(v, str) and len(v) > 200:
-                sanitized[k] = v[:200] + "..."
+            elif isinstance(v, str) and len(v) > 2000:
+                sanitized[k] = v[:2000] + "..."
             else:
                 sanitized[k] = v
         return sanitized

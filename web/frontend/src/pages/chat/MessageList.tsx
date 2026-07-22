@@ -5,6 +5,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { Markdown } from "./render/Markdown";
 import { MediaBubble } from "./render/MediaBubble";
 import { ActivityRow } from "./ActivityRow";
+import { StreamingArea } from "./StreamingArea";
 
 /** 消息列表：气泡渲染 + 自动滚动 */
 export function MessageList() {
@@ -63,6 +64,7 @@ export function MessageList() {
           </div>
         </div>
       ))}
+      <StreamingArea />
       {sending && <ActivityRow />}
     </div>
   );

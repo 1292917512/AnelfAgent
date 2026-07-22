@@ -45,7 +45,7 @@ export function Drawer({ open, onClose, title, children, footer, width = "max-w-
       >
         {title != null && (
           <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-            <h3 className="text-[15px] font-semibold text-heading truncate">{title}</h3>
+            <div className="text-[15px] font-semibold text-heading truncate flex-1 min-w-0 flex items-center">{title}</div>
             <Button variant="ghost" size="icon" onClick={onClose} aria-label="close">
               <X size={16} />
             </Button>

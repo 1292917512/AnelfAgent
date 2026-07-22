@@ -53,6 +53,12 @@ _RATE_LIMIT_PATTERNS = (
     "quota exceeded", "requests per minute", "tokens per minute",
 )
 
+# 账户级配额耗尽（区别于 RPM/TPM 瞬时限流）：重试无意义，直接 fallback
+_ACCOUNT_QUOTA_PATTERNS = (
+    "insufficient_quota", "exceeded your current quota", "billing",
+    "credit balance", "account quota", "quota has been exhausted",
+)
+
 _OVERLOADED_PATTERNS = (
     "overloaded", "capacity", "service unavailable", "503",
     "temporarily unavailable", "server is busy",
@@ -82,6 +88,19 @@ _STREAM_ERROR_PATTERNS = (
 
 def _match_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(p in text for p in patterns)
+
+
+def _classify_quota_error(message: str, status_code: Optional[int]) -> ClassifiedError:
+    """限流细分：RPM/TPM 瞬时限流可退避重试；账户配额耗尽直接 fallback。"""
+    if _match_any(message, _ACCOUNT_QUOTA_PATTERNS):
+        return ClassifiedError(
+            ErrorCategory.RATE_LIMIT, retryable=False, should_fallback=True,
+            message=message, status_code=status_code or 429,
+        )
+    return ClassifiedError(
+        ErrorCategory.RATE_LIMIT, retryable=True, message=message,
+        status_code=status_code or 429,
+    )
 
 
 def classify_llm_error(exc: BaseException) -> ClassifiedError:
@@ -117,10 +136,7 @@ def classify_llm_error(exc: BaseException) -> ClassifiedError:
 
     # ---- 限流（类型）----
     if isinstance(exc, litellm.RateLimitError):
-        return ClassifiedError(
-            ErrorCategory.RATE_LIMIT, retryable=True, message=message,
-            status_code=status_code or 429,
-        )
+        return _classify_quota_error(msg_lower, status_code)
 
     # ---- 过载 / 服务不可用（类型）----
     if isinstance(exc, litellm.ServiceUnavailableError):
@@ -144,10 +160,22 @@ def classify_llm_error(exc: BaseException) -> ClassifiedError:
         )
 
     # ---- 参数错误（不重试，反馈 AI 修正）----
-    if isinstance(exc, (litellm.BadRequestError, ValueError)):
+    if isinstance(exc, litellm.BadRequestError):
         return ClassifiedError(
             ErrorCategory.PARAM_ERROR, retryable=False, message=message,
             status_code=status_code or 400,
+        )
+    # 裸 ValueError 仅在有 HTTP 400 语义证据时归 PARAM_ERROR；
+    # 否则视为瞬态/未知错误，允许保守重试（如解析失败的包装异常）
+    if isinstance(exc, ValueError):
+        if status_code == 400 or _match_any(msg_lower, _PARAM_ERROR_PATTERNS):
+            return ClassifiedError(
+                ErrorCategory.PARAM_ERROR, retryable=False, message=message,
+                status_code=status_code or 400,
+            )
+        return ClassifiedError(
+            ErrorCategory.UNKNOWN, retryable=True, message=message,
+            status_code=status_code,
         )
 
     # ---- 服务器错误 ----
@@ -162,10 +190,7 @@ def classify_llm_error(exc: BaseException) -> ClassifiedError:
     # ---- 消息模式兜底（无类型的包装异常；request_id 等随机 hex 可能含
     # "429"/"400" 子串，故数字模式只能用于无类型的兜底识别，不能先于类型判断）----
     if _match_any(msg_lower, _RATE_LIMIT_PATTERNS):
-        return ClassifiedError(
-            ErrorCategory.RATE_LIMIT, retryable=True, message=message,
-            status_code=status_code or 429,
-        )
+        return _classify_quota_error(msg_lower, status_code)
     if _match_any(msg_lower, _OVERLOADED_PATTERNS):
         return ClassifiedError(
             ErrorCategory.OVERLOADED, retryable=True, should_fallback=True,

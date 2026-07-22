@@ -1,6 +1,7 @@
 """委托管理器 — 子代理的并发调度、预算控制与结果聚合。
 
-- 并发上限：asyncio.Semaphore（默认 3，可配置）
+- 并发上限：顶层与嵌套委托各一把 asyncio.Semaphore（默认各 3，可配置），
+  嵌套委托不竞争顶层槽位以避免持槽等待死锁；获取槽位带超时
 - 并行模式：tasks 数组 fan-out，asyncio.gather 并发执行
 - 预算控制：每个子代理独立的迭代预算（默认 15 轮）
 - 结果聚合：按 task_index 排序，摘要按父上下文剩余空间动态截断
@@ -17,7 +18,12 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from core.event_bus import event_bus
 from core.log import log
 
-from agent.delegation.sub_agent import SubAgent, SubAgentResult, normalize_role
+from agent.delegation.sub_agent import (
+    SubAgent,
+    SubAgentResult,
+    current_depth,
+    normalize_role,
+)
 
 if TYPE_CHECKING:
     from agent.mind.mind import Mind
@@ -36,12 +42,20 @@ def _max_concurrent() -> int:
     return max(1, get_config_int("delegation_max_concurrent", 3))
 
 
+def _acquire_timeout_seconds() -> float:
+    from core.config import get_config_float
+    return max(1.0, get_config_float("delegation_acquire_timeout_seconds", 300.0))
+
+
 class DelegationManager:
     """子代理委托管理器。"""
 
     def __init__(self, mind: "Mind") -> None:
         self._mind = mind
         self._semaphore = asyncio.Semaphore(_max_concurrent())
+        # 嵌套委托（orchestrator 子代理内再委托）使用独立信号量，
+        # 避免 orchestrator 持有顶层槽位等待同一把信号量造成死锁
+        self._nested_semaphore = asyncio.Semaphore(_max_concurrent())
         self._background_tasks: Dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
@@ -58,12 +72,27 @@ class DelegationManager:
             task_index: int = 0,
     ) -> SubAgentResult:
         """委托单个子任务（阻塞至完成）。"""
-        async with self._semaphore:
+        # 顶层委托（depth 0）与嵌套委托（depth>=1）分离并发槽，
+        # 嵌套方持槽等待时不再竞争同一把信号量
+        semaphore = self._semaphore if current_depth() < 1 else self._nested_semaphore
+        timeout = _acquire_timeout_seconds()
+        try:
+            await asyncio.wait_for(semaphore.acquire(), timeout)
+        except asyncio.TimeoutError:
+            log(f"委托并发槽获取超时（>{timeout:.0f}s）: {goal[:60]}", "WARNING", tag="委托")
+            return SubAgentResult(
+                goal=goal, success=False,
+                error=f"获取委托并发槽超时（>{timeout:.0f}s），子代理并发已满",
+                role=normalize_role(role), task_index=task_index,
+            )
+        try:
             agent = SubAgent(
                 self._mind, goal, context,
                 role=role, max_iterations=max_iterations, task_index=task_index,
             )
             return await agent.run()
+        finally:
+            semaphore.release()
 
     async def delegate_batch(
             self,
@@ -259,6 +288,18 @@ _DELEGATION_CONFIGS = {
         "delegation_default_iterations": {
             "description": "子代理默认迭代预算（轮次）",
             "default": 15,
+        },
+        "delegation_max_iterations_cap": {
+            "description": "子代理迭代预算硬上限（轮次）",
+            "default": 50,
+        },
+        "delegation_timeout_seconds": {
+            "description": "单个子代理整体执行超时（秒）",
+            "default": 600,
+        },
+        "delegation_acquire_timeout_seconds": {
+            "description": "委托并发槽获取超时（秒），超时返回失败而非永久阻塞",
+            "default": 300,
         },
     },
 }

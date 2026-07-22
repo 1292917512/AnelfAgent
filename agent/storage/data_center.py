@@ -238,12 +238,14 @@ class ConversationData:
             content = content + "\n" + "\n".join(media_lines)
 
         scope_type, scope_id = self._scope_of(anything)
-        # 以消息到达时间入库，保证对话历史严格按到达时序排列
+        # 以消息到达时间入库，保证对话历史严格按到达时序排列；
+        # adapter_key 记录来源频道，供启动时未回复恢复定位回复路由
         await self.router.append(
             StorageDomain.CONVERSATION,
             scope_type=scope_type, scope_id=scope_id,
             role=role, content=content,
             ts_ns=anything.created_ts_ns,
+            adapter_key=getattr(anything, "adapter_key", "") or "",
         )
 
 

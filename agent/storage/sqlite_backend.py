@@ -27,6 +27,7 @@ class SqliteBackend:
         self._initialized = False
         self._conv_embed_ready = False
         self._entity_counter_ready = False
+        self._adapter_key_ready = False
 
     async def _get_db(self) -> aiosqlite.Connection:
         """获取持久连接，首次调用时创建并初始化表结构。"""
@@ -89,6 +90,17 @@ class SqliteBackend:
                 );
                 """
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_tasks (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  scope TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  payload_json TEXT NOT NULL DEFAULT '{}',
+                  ts_ns INTEGER NOT NULL
+                );
+                """
+            )
             await db.commit()
             self._initialized = True
 
@@ -111,6 +123,20 @@ class SqliteBackend:
     # 会话记录
     # ------------------------------------------------------------------
 
+    async def _ensure_adapter_key_column(self) -> None:
+        """懒迁移：确保 conversation_messages 拥有 adapter_key 列（消息来源频道）。"""
+        if self._adapter_key_ready:
+            return
+        db = await self._get_db()
+        cursor = await db.execute("PRAGMA table_info(conversation_messages)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        if "adapter_key" not in cols:
+            await db.execute(
+                "ALTER TABLE conversation_messages ADD COLUMN adapter_key TEXT NOT NULL DEFAULT ''"
+            )
+            await db.commit()
+        self._adapter_key_ready = True
+
     async def append_conversation(
         self,
         *,
@@ -119,14 +145,42 @@ class SqliteBackend:
         role: str,
         content: str,
         ts_ns: Optional[int] = None,
+        adapter_key: str = "",
     ) -> None:
+        await self._ensure_adapter_key_column()
         db = await self._get_db()
         ts_ns = ts_ns or time.time_ns()
         await db.execute(
-            "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns) VALUES(?,?,?,?,?)",
-            (scope_type, scope_id, role, content, int(ts_ns)),
+            "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns, adapter_key) VALUES(?,?,?,?,?,?)",
+            (scope_type, scope_id, role, content, int(ts_ns), adapter_key or ""),
         )
         await db.commit()
+
+    async def list_scopes_with_last_message(self) -> list[dict]:
+        """列出每个 scope 的最后一条消息（启动时未回复恢复扫描用）。
+
+        返回 [{scope_type, scope_id, role, content, adapter_key, ts_ns}]。
+        """
+        await self._ensure_adapter_key_column()
+        db = await self._get_db()
+        cursor = await db.execute(
+            """
+            SELECT m.scope_type, m.scope_id, m.role, m.content, m.adapter_key, m.ts_ns
+            FROM conversation_messages m
+            JOIN (
+              SELECT scope_type, scope_id, MAX(ts_ns) AS max_ts
+              FROM conversation_messages GROUP BY scope_type, scope_id
+            ) t ON m.scope_type=t.scope_type AND m.scope_id=t.scope_id AND m.ts_ns=t.max_ts
+            """
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "scope_type": r[0], "scope_id": r[1], "role": r[2],
+                "content": r[3], "adapter_key": r[4] or "", "ts_ns": r[5],
+            }
+            for r in rows
+        ]
 
     async def fetch_conversation(
         self, *, scope_type: str, scope_id: str, limit: int
@@ -233,6 +287,43 @@ class SqliteBackend:
             (conv_num, conv_update_num, scope_type, scope_id),
         )
         await db.commit()
+
+    # ------------------------------------------------------------------
+    # PFC 待办持久化（跨重启恢复用户托付的异步任务）
+    # ------------------------------------------------------------------
+
+    async def add_pending_task(self, *, scope: str, kind: str, payload_json: str) -> int:
+        """写入一条待办，返回行 id。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "INSERT INTO pending_tasks(scope, kind, payload_json, ts_ns) VALUES(?,?,?,?)",
+            (scope, kind, payload_json, time.time_ns()),
+        )
+        await db.commit()
+        return int(cursor.lastrowid or 0)
+
+    async def delete_pending_task_by_key(self, task_key: str) -> None:
+        """按 payload 中的 task_key 删除已消费的待办（PFC 侧以 uuid 关联）。"""
+        if not task_key:
+            return
+        db = await self._get_db()
+        await db.execute(
+            "DELETE FROM pending_tasks WHERE json_extract(payload_json, '$.task_key')=?",
+            (task_key,),
+        )
+        await db.commit()
+
+    async def load_pending_tasks(self) -> list[dict]:
+        """加载全部未消费待办（启动 replay 用），按入库时间升序。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT id, scope, kind, payload_json, ts_ns FROM pending_tasks ORDER BY ts_ns ASC"
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"id": r[0], "scope": r[1], "kind": r[2], "payload_json": r[3], "ts_ns": r[4]}
+            for r in rows
+        ]
 
     # ------------------------------------------------------------------
     # 记忆管理扩展

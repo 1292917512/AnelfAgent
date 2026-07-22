@@ -22,9 +22,24 @@ _chat_svc = ChatService()
 
 _UPLOAD_DIR = Path(ConfigPaths.UPLOAD_DIR).resolve()
 
+_FILE_TYPES = {"image", "audio", "video", "file"}
+
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
 _AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".amr", ".opus"}
 _VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv"}
+
+# 强制以下载形式响应的扩展名（防存储型 XSS）
+_ATTACHMENT_EXTS = {".html", ".htm", ".svg"}
+
+
+def _upload_max_bytes() -> int:
+    """上传大小上限（字节），配置 upload_max_mb，默认 50MB。"""
+    try:
+        from core.config import ConfigManager
+        max_mb = float(ConfigManager.get("upload_max_mb", 50))
+    except Exception:
+        max_mb = 50.0
+    return max(1, int(max_mb)) * 1024 * 1024
 
 _sse_subscribers: List[asyncio.Queue[Dict[str, Any]]] = []
 
@@ -124,9 +139,18 @@ def _resolve_media_path(file_path: str) -> str:
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
     """Upload a file to workspace/uploads/{type}/, return metadata."""
-    filename = file.filename or f"upload_{int(time.time())}"
+    from fastapi import HTTPException
+
+    filename = os.path.basename(file.filename or f"upload_{int(time.time())}")
+    if not filename or ".." in filename:
+        raise HTTPException(400, "Invalid filename")
     ext = Path(filename).suffix.lower()
     file_type = _classify_file(ext)
+
+    max_bytes = _upload_max_bytes()
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(413, f"File too large (limit {max_bytes // (1024 * 1024)}MB)")
 
     sub_dir = _UPLOAD_DIR / file_type
     sub_dir.mkdir(parents=True, exist_ok=True)
@@ -136,7 +160,6 @@ async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
     dest = sub_dir / safe_name
 
     with open(dest, "wb") as f:
-        content = await file.read()
         f.write(content)
 
     return {
@@ -151,12 +174,17 @@ async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
 @router.get("/files/{file_type}/{filename}")
 async def serve_uploaded_file(file_type: str, filename: str) -> Any:
     """Serve an uploaded file."""
+    from fastapi import HTTPException
     from starlette.responses import FileResponse
-    fp = _UPLOAD_DIR / file_type / filename
-    if not fp.exists():
-        from fastapi import HTTPException
+    if file_type not in _FILE_TYPES:
         raise HTTPException(404, "File not found")
-    return FileResponse(str(fp))
+    fp = (_UPLOAD_DIR / file_type / os.path.basename(filename)).resolve()
+    if not str(fp).startswith(str(_UPLOAD_DIR) + os.sep) or not fp.is_file():
+        raise HTTPException(404, "File not found")
+    headers = None
+    if fp.suffix.lower() in _ATTACHMENT_EXTS:
+        headers = {"Content-Disposition": "attachment"}
+    return FileResponse(str(fp), headers=headers)
 
 
 @router.post("/send", response_model=SendMessageResponse)

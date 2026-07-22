@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Any, Optional, Tuple
 
 from entities._sdk import tool, entity
 
@@ -35,6 +35,88 @@ def _proxy_kwargs(use_proxy: bool) -> dict[str, str]:
     if proxy:
         result["proxy"] = proxy
     return result
+
+
+# ==================================================================
+# SSRF 防护
+# ==================================================================
+
+# 防护开启时响应体流式读取的字节上限
+_SSRF_MAX_BODY_BYTES = 4 * 1024 * 1024
+
+
+def _ssrf_protection_enabled() -> bool:
+    """SSRF 防护开关（web_ssrf_protection，默认开）。"""
+    try:
+        from core.config import ConfigManager
+        return bool(ConfigManager.get("web_ssrf_protection", True))
+    except Exception:
+        return True
+
+
+def _check_ssrf_url(url: str) -> Optional[str]:
+    """SSRF 检查：解析目标 host 的 IP，拒绝回环/内网/链路本地等受限地址。
+
+    Returns:
+        拦截原因，未拦截返回 None
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname
+    if not host:
+        return "URL 缺少主机名"
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception as e:
+        return f"DNS 解析失败: {host}: {e}"
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if (ip.is_loopback or ip.is_private or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            return f"SSRF 防护拦截: {host} 解析到受限地址 {ip_str}"
+    return None
+
+
+def _read_body_limited(resp: Any, max_bytes: int = _SSRF_MAX_BODY_BYTES) -> str:
+    """流式读取响应体，按字节上限截断后解码（避免先全量加载到内存）。"""
+    buf = bytearray()
+    for chunk in resp.iter_bytes(65536):
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            break
+    return bytes(buf[:max_bytes]).decode(resp.encoding or "utf-8", errors="replace")
+
+
+def _request_ssrf_checked(client: Any, method: str, url: str,
+                          content: Optional[str] = None,
+                          max_redirects: int = 5) -> Tuple[int, str, str, str]:
+    """SSRF 防护模式请求：逐跳校验重定向目标，流式读取响应体并按字节上限截断。
+
+    Returns:
+        (status_code, final_url, content_type, body_text)
+    """
+    from urllib.parse import urljoin
+    for _ in range(max_redirects):
+        err = _check_ssrf_url(url)
+        if err:
+            raise PermissionError(err)
+        with client.stream(method, url, content=content, follow_redirects=False) as resp:
+            if resp.is_redirect:
+                location = resp.headers.get("location", "")
+                if not location:
+                    raise ValueError(f"重定向响应缺少 Location: {url}")
+                url = urljoin(str(resp.url), location)
+                if resp.status_code in (301, 302, 303):
+                    method, content = "GET", None
+                continue
+            body = _read_body_limited(resp)
+            return resp.status_code, str(resp.url), resp.headers.get("content-type", ""), body
+    raise ValueError(f"重定向次数过多 (上限 {max_redirects})")
 
 
 # ==================================================================

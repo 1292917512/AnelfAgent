@@ -92,10 +92,12 @@ class AsyncHelper:
     @staticmethod
     def _run_in_new_thread(coro_func: Callable[..., Any], *args: Any, timeout: float = 30, **kwargs: Any) -> Any:
         """在新线程中执行异步函数"""
+        worker_loops: list = []
 
         def _thread_worker():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+            worker_loops.append(loop)
             try:
                 coro = AsyncHelper._create_coroutine(coro_func, *args, **kwargs)
                 if isinstance(coro, Coroutine):
@@ -109,16 +111,21 @@ class AsyncHelper:
             finally:
                 loop.close()
 
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_thread_worker)
         try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_thread_worker)
-                return future.result(timeout=timeout)
+            return future.result(timeout=timeout)
         except TimeoutError:
             log(f"⏰ 异步函数执行超时: {coro_func.__name__} (超时: {timeout}s)", "ERROR")
+            # 停止线程内事件循环，避免 shutdown(wait=True) 使超时形同虚设
+            if worker_loops:
+                worker_loops[0].call_soon_threadsafe(worker_loops[0].stop)
             raise
         except Exception as e:
             log(f"❌ 线程池执行异步函数失败: {coro_func.__name__} - {str(e)}", "ERROR")
             raise
+        finally:
+            executor.shutdown(wait=False)
 
     @staticmethod
     def dual_mode(func: Callable[..., T]) -> Callable[..., T]:

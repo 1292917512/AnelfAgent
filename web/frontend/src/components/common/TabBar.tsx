@@ -18,7 +18,7 @@ interface TabBarProps<T extends string = string> {
 /** 通用标签栏：标签过多时横向滚动（移动端友好）；fill 模式下均分宽度 */
 export function TabBar<T extends string = string>({ tabs, activeTab, onChange, fill = false }: TabBarProps<T>) {
   return (
-    <div className={cn("border-b border-border", fill ? "w-full" : "overflow-x-auto no-scrollbar")}>
+    <div className={cn("border-b border-border", fill ? "w-full" : "overflow-x-auto overflow-y-hidden no-scrollbar")}>
       <div className={cn("flex items-center", fill ? "w-full" : "gap-1 min-w-max")}>
         {tabs.map((tabItem) => (
           <button

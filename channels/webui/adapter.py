@@ -39,6 +39,8 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
 
     def __init__(self) -> None:
         super().__init__()
+        # 流式 delta 合帧缓冲（turn_id → 待发送增量）
+        self._delta_buffers: dict = {}
 
     channel_id = "webui"
 
@@ -55,9 +57,83 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
 
     async def start(self) -> None:
         self._status = ChannelStatus.RUNNING
+        self._subscribe_stream_events()
 
     async def stop(self) -> None:
         self._status = ChannelStatus.STOPPED
+        from core.event_bus import event_bus
+        event_bus.off_by_owner("channel:webui")
+
+    # ------------------------------------------------------------------
+    # 流式过程事件订阅（内核事件 → SSE 帧；过程性内容，不落对话历史）
+    # ------------------------------------------------------------------
+
+    def _subscribe_stream_events(self) -> None:
+        from core.event_bus import event_bus
+        from core.stream_events import EVENT_ASSISTANT_DELTA
+        event_bus.on(EVENT_ASSISTANT_DELTA, self._on_assistant_delta, owner="channel:webui")
+        event_bus.on("thinking_tool_start", self._on_tool_start, owner="channel:webui")
+        event_bus.on("thinking_tool_end", self._on_tool_end, owner="channel:webui")
+        from core.stream_events import EVENT_FILE_DIFF, EVENT_CONTEXT_USAGE
+        event_bus.on(EVENT_FILE_DIFF, self._on_file_diff, owner="channel:webui")
+        event_bus.on(EVENT_CONTEXT_USAGE, self._on_context_usage, owner="channel:webui")
+
+    async def _on_assistant_delta(self, payload: dict) -> None:
+        """assistant 文本增量 → 50ms 合帧后推送 SSE delta 帧。"""
+        import asyncio
+        turn_id = str(payload.get("turn_id", ""))
+        buf = self._delta_buffers.setdefault(
+            turn_id, {"text": "", "reasoning": "", "scheduled": False})
+        key = "reasoning" if payload.get("reasoning") else "text"
+        buf[key] += str(payload.get("delta", ""))
+        if not buf["scheduled"]:
+            buf["scheduled"] = True
+            asyncio.get_running_loop().call_later(0.05, self._flush_delta, turn_id)
+
+    def _flush_delta(self, turn_id: str) -> None:
+        buf = self._delta_buffers.get(turn_id)
+        if not buf:
+            return
+        buf["scheduled"] = False
+        text, reasoning = buf["text"], buf["reasoning"]
+        buf["text"] = buf["reasoning"] = ""
+        if reasoning:
+            self._broadcast("delta", {"turn_id": turn_id, "delta": reasoning, "reasoning": True})
+        if text:
+            self._broadcast("delta", {"turn_id": turn_id, "delta": text, "reasoning": False})
+
+    async def _on_tool_start(self, payload: dict) -> None:
+        self._broadcast("tool_call", {
+            "call_id": payload.get("tool_id", ""),
+            "name": payload.get("tool_name", ""),
+            "status": "running",
+            "arguments": payload.get("arguments_preview", ""),
+        })
+
+    async def _on_context_usage(self, payload: dict) -> None:
+        self._broadcast("context_usage", {
+            "tokens": payload.get("tokens", 0),
+            "threshold": payload.get("threshold", 0),
+            "window": payload.get("window", 0),
+            "percent": payload.get("percent", 0),
+        })
+
+    async def _on_file_diff(self, payload: dict) -> None:
+        self._broadcast("file_diff", {
+            "path": payload.get("path", ""),
+            "diff": payload.get("diff", ""),
+            "additions": payload.get("additions", 0),
+            "removals": payload.get("removals", 0),
+        })
+
+    async def _on_tool_end(self, payload: dict) -> None:
+        self._broadcast("tool_call", {
+            "call_id": payload.get("tool_id", ""),
+            "name": payload.get("tool_name", ""),
+            "status": "done" if payload.get("success") else "error",
+            "result_preview": payload.get("result_preview", "") or payload.get("error", ""),
+            "duration_ms": payload.get("duration_ms", 0),
+        })
 
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
         self._broadcast("reply", {"content": text, "media_type": "text"})

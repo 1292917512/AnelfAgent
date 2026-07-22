@@ -1,13 +1,18 @@
 /**
  * 统一权限规则编辑器 — 单一规则模型（allow/ask/deny + global/频道 scope）。
  *
- * 替代旧 ApprovalPolicyEditor（三套白名单已合并进 users 限定规则）。
  * 求值顺序说明见页面底部（与后端 PermissionRuleSet.evaluate 一致）。
  */
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "@/lib/api";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
+import { Badge } from "@/components/ui/Badge";
+import { Switch } from "@/components/ui/Switch";
+import { LoadingBlock } from "@/components/ui/Spinner";
 import { Save, RotateCcw, Plus, Trash2, ShieldCheck, ShieldX, ShieldQuestion, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -32,9 +37,15 @@ const EFFECT_ICON: Record<string, typeof ShieldCheck> = {
 };
 
 const EFFECT_STYLE: Record<string, string> = {
-  allow: "text-green-600",
-  ask: "text-yellow-600",
-  deny: "text-red-600",
+  allow: "text-ok",
+  ask: "text-warn",
+  deny: "text-danger",
+};
+
+const EFFECT_ACCENT: Record<string, string> = {
+  allow: "border-l-ok",
+  ask: "border-l-warn",
+  deny: "border-l-danger",
 };
 
 export function PermissionRulesEditor() {
@@ -93,23 +104,24 @@ export function PermissionRulesEditor() {
   };
 
   if (isLoading) {
-    return <div className="text-center py-8 text-muted-foreground">{t("loading")}</div>;
+    return <LoadingBlock label={t("loading")} />;
   }
 
   return (
     <div className="space-y-4">
       {/* 操作栏 */}
-      <div className="flex justify-between items-center p-4 bg-muted rounded-lg">
-        <div className="flex items-center gap-3">
-          <button
+      <div className="flex justify-between items-center gap-3 flex-wrap rounded-lg border border-border bg-card p-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            variant="primary"
             onClick={() => saveMutation.mutate()}
-            disabled={!dirty || saveMutation.isPending}
-            className="px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50 flex items-center gap-2"
+            disabled={!dirty}
+            loading={saveMutation.isPending}
           >
-            <Save className="w-4 h-4" />
+            <Save size={14} />
             {t("save")}
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={() => {
               if (data?.rules) {
                 setRules(data.rules);
@@ -118,36 +130,32 @@ export function PermissionRulesEditor() {
               }
             }}
             disabled={!dirty}
-            className="px-4 py-2 bg-secondary text-secondary-foreground rounded hover:bg-secondary/90 disabled:opacity-50 flex items-center gap-2"
           >
-            <RotateCcw className="w-4 h-4" />
+            <RotateCcw size={14} />
             {t("reset")}
-          </button>
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">{t("rules.defaultEffect")}</span>
-            <select
+          </Button>
+          <div className="flex items-center gap-2 text-sm ml-1">
+            <span className="text-muted">{t("rules.defaultEffect")}</span>
+            <Select
               value={defaultEffect}
               onChange={(e) => { setDefaultEffect(e.target.value); setDirty(true); }}
-              className="px-2 py-1 border border-border rounded bg-background"
+              className="w-28"
             >
               <option value="allow">{t("rules.effect.allow")}</option>
               <option value="ask">{t("rules.effect.ask")}</option>
               <option value="deny">{t("rules.effect.deny")}</option>
-            </select>
+            </Select>
           </div>
         </div>
-        <button
-          onClick={handleAdd}
-          className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 flex items-center gap-2"
-        >
-          <Plus className="w-4 h-4" />
+        <Button variant="primary" onClick={handleAdd}>
+          <Plus size={14} />
           {t("rules.add")}
-        </button>
+        </Button>
       </div>
 
       {sessionCount > 0 && (
-        <div className="flex items-center gap-2 px-4 py-2 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 rounded text-sm">
-          <Info className="w-4 h-4" />
+        <div className="flex items-center gap-2 px-4 py-2.5 rounded-md border border-info/30 bg-accent-subtle text-info text-sm">
+          <Info size={16} className="shrink-0" />
           {t("rules.sessionNotice", { count: sessionCount })}
         </div>
       )}
@@ -160,114 +168,107 @@ export function PermissionRulesEditor() {
           return (
             <div
               key={rule.id ?? index}
-              className={cn("border border-border rounded-lg p-4 space-y-3", !rule.enabled && "opacity-50")}
+              className={cn(
+                "rounded-lg border border-border border-l-4 bg-card p-4 space-y-3 animate-rise",
+                EFFECT_ACCENT[rule.effect] ?? "border-l-border",
+                !rule.enabled && "opacity-50",
+              )}
             >
               <div className="flex items-center gap-3 flex-wrap">
-                <EffectIcon className={cn("w-5 h-5 shrink-0", EFFECT_STYLE[rule.effect])} />
-                <input
-                  type="text"
+                <EffectIcon size={20} className={cn("shrink-0", EFFECT_STYLE[rule.effect])} />
+                <Input
                   value={rule.pattern}
                   onChange={(e) => handleChange(index, "pattern", e.target.value)}
-                  className="flex-1 min-w-[220px] px-3 py-2 border border-border rounded font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="flex-1 min-w-[220px] font-mono"
                   placeholder="run_shell_command(npm test*)"
                   title={t("rules.patternHint")}
                 />
-                <select
+                <Select
                   value={rule.effect}
                   onChange={(e) => handleChange(index, "effect", e.target.value)}
-                  className="px-2 py-2 border border-border rounded bg-background text-sm"
+                  className="w-28"
                 >
                   <option value="allow">{t("rules.effect.allow")}</option>
                   <option value="ask">{t("rules.effect.ask")}</option>
                   <option value="deny">{t("rules.effect.deny")}</option>
-                </select>
-                <input
-                  type="text"
+                </Select>
+                <Input
                   value={rule.scope}
                   onChange={(e) => handleChange(index, "scope", e.target.value)}
-                  className="w-32 px-3 py-2 border border-border rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-32"
                   placeholder="global"
                   title={t("rules.scopeHint")}
                 />
-                <label className="flex items-center gap-1 text-sm text-muted-foreground">
-                  <input
-                    type="checkbox"
+                <label className="flex items-center gap-2 text-sm text-muted">
+                  <Switch
                     checked={rule.enabled}
-                    onChange={(e) => handleChange(index, "enabled", e.target.checked)}
-                    className="w-4 h-4"
+                    onChange={(v) => handleChange(index, "enabled", v)}
                   />
                   {t("rules.enabled")}
                 </label>
-                {isSession && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
-                    {t("rules.sessionBadge")}
-                  </span>
-                )}
-                <button
+                {isSession && <Badge variant="info">{t("rules.sessionBadge")}</Badge>}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-danger hover:bg-danger-subtle"
                   onClick={() => {
                     setRules(rules.filter((_, i) => i !== index));
                     setDirty(true);
                   }}
-                  className="p-2 text-red-500 hover:bg-red-50 rounded transition-colors"
                 >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                  <Trash2 size={16} />
+                </Button>
               </div>
 
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                 <div>
-                  <label className="block text-xs text-muted-foreground mb-1">{t("rules.users")}</label>
-                  <input
-                    type="text"
+                  <label className="block text-xs text-muted mb-1">{t("rules.users")}</label>
+                  <Input
                     value={rule.users.join(",")}
                     onChange={(e) =>
                       handleChange(index, "users", e.target.value.split(",").map((u) => u.trim()).filter(Boolean))
                     }
-                    className="w-full px-2 py-1.5 border border-border rounded text-sm"
                     placeholder={t("rules.usersPlaceholder")}
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-muted-foreground mb-1">{t("riskLevel")}</label>
-                  <select
+                  <label className="block text-xs text-muted mb-1">{t("riskLevel")}</label>
+                  <Select
                     value={rule.risk_level}
                     onChange={(e) => handleChange(index, "risk_level", e.target.value)}
-                    className="w-full px-2 py-1.5 border border-border rounded bg-background text-sm"
+                    className="w-full"
                   >
                     <option value="low">{t("risk.low")}</option>
                     <option value="medium">{t("risk.medium")}</option>
                     <option value="high">{t("risk.high")}</option>
                     <option value="critical">{t("risk.critical")}</option>
-                  </select>
+                  </Select>
                 </div>
                 <div>
-                  <label className="block text-xs text-muted-foreground mb-1">{t("timeoutSeconds")}</label>
-                  <input
+                  <label className="block text-xs text-muted mb-1">{t("timeoutSeconds")}</label>
+                  <Input
                     type="number"
                     value={rule.timeout_seconds}
                     onChange={(e) => handleChange(index, "timeout_seconds", Number(e.target.value))}
-                    className="w-full px-2 py-1.5 border border-border rounded text-sm"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-muted-foreground mb-1">{t("onTimeout")}</label>
-                  <select
+                  <label className="block text-xs text-muted mb-1">{t("onTimeoutLabel")}</label>
+                  <Select
                     value={rule.on_timeout}
                     onChange={(e) => handleChange(index, "on_timeout", e.target.value)}
-                    className="w-full px-2 py-1.5 border border-border rounded bg-background text-sm"
+                    className="w-full"
                   >
                     <option value="deny">{t("onTimeout.deny")}</option>
                     <option value="allow">{t("onTimeout.allow")}</option>
                     <option value="halt">{t("onTimeout.halt")}</option>
-                  </select>
+                  </Select>
                 </div>
               </div>
 
-              <input
-                type="text"
+              <Input
                 value={rule.description}
                 onChange={(e) => handleChange(index, "description", e.target.value)}
-                className="w-full px-3 py-2 border border-border rounded text-sm"
                 placeholder={t("descriptionPlaceholder")}
               />
             </div>
@@ -276,8 +277,8 @@ export function PermissionRulesEditor() {
       </div>
 
       {/* 求值顺序说明 */}
-      <div className="text-xs text-muted-foreground p-4 bg-muted rounded-lg space-y-1">
-        <div className="font-medium">{t("rules.orderTitle")}</div>
+      <div className="text-xs text-muted p-4 rounded-lg border border-border bg-elevated space-y-1">
+        <div className="font-medium text-foreground">{t("rules.orderTitle")}</div>
         <div>{t("rules.orderDesc")}</div>
       </div>
     </div>

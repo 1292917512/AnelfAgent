@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { statusApi } from "@/lib/api";
 import type { LogEntry } from "@/lib/types";
 import { Card } from "@/components/common/Card";
+import { ConfirmDialog } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { Search, Pause, Play, Trash2, ArrowDownToLine, OctagonAlert } from "lucide-react";
 
@@ -28,6 +29,9 @@ const LEVEL_CHIP: Record<string, string> = {
 
 const MAX_LOG_ENTRIES = 2000;
 const BOTTOM_THRESHOLD = 48;
+
+/** 列表行：附加单调序号作为稳定 key（服务端日志条目无唯一 id） */
+type LogRow = LogEntry & { seq: number };
 
 /** 关键词高亮渲染 */
 function Highlighted({ text, keyword }: { text: string; keyword: string }) {
@@ -60,16 +64,18 @@ export function LogsPanel() {
   const [onlyErrors, setOnlyErrors] = useState(false);
   const [tag, setTag] = useState("");
   const [keyword, setKeyword] = useState("");
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useState<LogRow[]>([]);
   const [paused, setPaused] = useState(false);
   const [following, setFollowing] = useState(true);
   const [pendingCount, setPendingCount] = useState(0);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
   const followingRef = useRef(following);
   followingRef.current = following;
-  const backlogRef = useRef<LogEntry[]>([]);
+  const backlogRef = useRef<LogRow[]>([]);
+  const seqRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const queryClient = useQueryClient();
@@ -80,13 +86,16 @@ export function LogsPanel() {
   });
 
   useEffect(() => {
+    let cancelled = false;
     let es: EventSource | null = null;
     statusApi.logs("", "", "", 500).then((r) => {
-      setLogs(r.data.logs ?? []);
+      if (cancelled) return;
+      const rows = (r.data.logs ?? []).map((e) => ({ ...e, seq: ++seqRef.current }));
+      setLogs(rows);
       es = new EventSource("/api/status/logs/stream");
       es.addEventListener("log", (e) => {
         try {
-          const entry = JSON.parse(e.data) as LogEntry;
+          const entry = { ...(JSON.parse(e.data) as LogEntry), seq: ++seqRef.current };
           if (pausedRef.current) {
             backlogRef.current.push(entry);
             setPendingCount(backlogRef.current.length);
@@ -100,7 +109,10 @@ export function LogsPanel() {
       });
       es.addEventListener("ping", () => {});
     });
-    return () => { es?.close(); };
+    return () => {
+      cancelled = true;
+      es?.close();
+    };
   }, []);
 
   useEffect(() => {
@@ -136,7 +148,7 @@ export function LogsPanel() {
   };
 
   const clearLogs = async () => {
-    if (!confirm(t("logsView.clearConfirm"))) return;
+    setConfirmClear(false);
     try {
       await statusApi.clearLogs();
     } catch { /* 后端清除失败时仍清理本地视图 */ }
@@ -268,7 +280,7 @@ export function LogsPanel() {
             <ArrowDownToLine size={14} />
           </button>
           <button
-            onClick={clearLogs}
+            onClick={() => setConfirmClear(true)}
             title={t("logsView.clear")}
             className="p-1.5 rounded-md border bg-secondary text-muted border-border hover:text-danger transition-all"
           >
@@ -308,9 +320,9 @@ export function LogsPanel() {
           {filtered.length === 0 && (
             <p className="text-sm text-muted py-8 text-center font-sans">{t("noMatchingLogs")}</p>
           )}
-          {filtered.map((entry, i) => (
+          {filtered.map((entry) => (
             <div
-              key={`${entry.time}-${i}`}
+              key={entry.seq}
               className="flex items-start gap-2 py-1 px-3 hover:bg-hover transition-colors"
             >
               <span className="text-muted flex-shrink-0 w-16">{entry.time}</span>
@@ -334,6 +346,17 @@ export function LogsPanel() {
           ))}
         </div>
       </Card>
+
+      <ConfirmDialog
+        open={confirmClear}
+        onClose={() => setConfirmClear(false)}
+        onConfirm={clearLogs}
+        title={t("logsView.clear")}
+        message={t("logsView.clearConfirm")}
+        confirmText={t("logsView.clear")}
+        cancelText={t("common:cancel")}
+        danger
+      />
     </div>
   );
 }

@@ -508,6 +508,16 @@ def project_root() -> str:
     return _PROJECT_ROOT
 
 
+def workspace_root() -> str:
+    """获取工作区根目录绝对路径。
+
+    与 entities/filesystem 工具的路径解析基准保持一致：
+    读取 workspace_root 配置（默认 "workspace"），相对路径基于进程 cwd 解析。
+    """
+    from core.config import ConfigManager
+    return os.path.abspath(ConfigManager.get("workspace_root", "workspace"))
+
+
 class ConfigPaths:
     """配置路径常量集中管理。"""
     APP_CONFIG = "config/app_config.json"

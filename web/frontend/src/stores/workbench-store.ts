@@ -27,8 +27,12 @@ interface WorkbenchState {
   /** 右侧 Dock 栏 */
   dockOpen: boolean;
   activeTab: DockTab;
-  /** 编辑器当前打开的工作区文件路径 */
+  /** 编辑器已打开的工作区文件标签（保持打开顺序） */
+  openFiles: string[];
+  /** 当前激活的文件标签（openFiles 为空时为 null） */
   openFilePath: string | null;
+  /** 编辑器面板是否展开（收起时标签保留，再点文件即恢复） */
+  filePanelOpen: boolean;
   /** 文件树定位路径（open_panel files 时展开） */
   fileTreeFocus: string | null;
   /** 搜索面板预填关键词 */
@@ -45,7 +49,11 @@ interface WorkbenchState {
   /** AI ui_open_panel 命令入口：打开面板并携带 payload */
   openPanel: (panel: string, payload?: string) => void;
   openFile: (path: string) => void;
-  closeFile: () => void;
+  activateFile: (path: string) => void;
+  closeFile: (path?: string) => void;
+  closeAllFiles: () => void;
+  /** 收起编辑器面板（保留全部标签与未保存草稿） */
+  collapseFilePanel: () => void;
   setFileTreeFocus: (path: string | null) => void;
   setSearchSeed: (q: string) => void;
   setDraft: (text: string) => void;
@@ -60,7 +68,9 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   leftOpen: false,
   dockOpen: true,
   activeTab: "status",
+  openFiles: [],
   openFilePath: null,
+  filePanelOpen: false,
   fileTreeFocus: null,
   searchSeed: "",
   draft: null,
@@ -76,7 +86,10 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     // files 是左侧文件树栏而非右侧 Dock tab，单独处理
     if (panel === "files") {
       set({ leftOpen: true });
-      if (payload) set({ openFilePath: payload, fileTreeFocus: payload });
+      if (payload) {
+        get().openFile(payload);
+        set({ fileTreeFocus: payload });
+      }
       return;
     }
     const tab = DOCK_TABS.includes(panel as DockTab) ? (panel as DockTab) : "status";
@@ -84,8 +97,27 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     if (tab === "search" && payload) set({ searchSeed: payload });
   },
 
-  openFile: (path) => set({ openFilePath: path }),
-  closeFile: () => set({ openFilePath: null }),
+  openFile: (path) =>
+    set((s) => ({
+      openFiles: s.openFiles.includes(path) ? s.openFiles : [...s.openFiles, path],
+      openFilePath: path,
+      filePanelOpen: true,
+    })),
+  activateFile: (path) =>
+    set((s) => (s.openFiles.includes(path) ? { openFilePath: path, filePanelOpen: true } : {})),
+  closeFile: (path) =>
+    set((s) => {
+      const target = path ?? s.openFilePath;
+      if (!target) return {};
+      const idx = s.openFiles.indexOf(target);
+      const openFiles = s.openFiles.filter((p) => p !== target);
+      // 关闭激活标签时切到相邻标签（优先右侧，否则左侧）
+      const openFilePath =
+        s.openFilePath === target ? (openFiles[Math.min(idx, openFiles.length - 1)] ?? null) : s.openFilePath;
+      return { openFiles, openFilePath, filePanelOpen: openFiles.length > 0 };
+    }),
+  closeAllFiles: () => set({ openFiles: [], openFilePath: null, filePanelOpen: false }),
+  collapseFilePanel: () => set({ filePanelOpen: false }),
   setFileTreeFocus: (path) => set({ fileTreeFocus: path }),
   setSearchSeed: (q) => set({ searchSeed: q }),
 

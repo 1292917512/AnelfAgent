@@ -17,6 +17,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { ChannelWebView } from "@/pages/channels/ChannelWebView";
+import { WeixinQrLogin } from "@/pages/channels/WeixinQrLogin";
 import { ConfigField } from "@/pages/channels/ConfigField";
 import type { ConfigMeta } from "@/pages/channels/ConfigField";
 
@@ -196,6 +197,7 @@ export function ChannelsPanel({
                     )}
                   </div>
                   <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    {a.key === "weixin" && <WeixinQrLogin compact />}
                     {onOpenTools && (
                       <button onClick={() => onOpenTools({ key: a.key, name: a.name })}
                         title={t("tools.openTools")}
@@ -324,6 +326,7 @@ export function ChannelsPanel({
                     </span>
                   </div>
                   <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    {channelKey === "weixin" && <WeixinQrLogin compact />}
                     <button
                       onClick={() => {
                         togglingRef.current = { key: channelKey, prevStatus: "stopped" };

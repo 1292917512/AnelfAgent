@@ -50,6 +50,38 @@ class AgentStatusService:
             lines.append(f"获取组件信息失败: {e}")
         return lines
 
+    def get_components(self) -> Dict[str, Any]:
+        """结构化组件信息（供前端可视化卡片展示）。"""
+        rt = get_runtime()
+        if rt is None:
+            return {"ready": False}
+        try:
+            from core.entity import EntityRegistry, EntityType
+            tools: Dict[str, Any] = {"enabled": 0, "total": 0, "by_source": {}}
+            tool_entities = EntityRegistry.get_by_type(EntityType.TOOL)
+            if tool_entities:
+                enabled = sum(1 for e in tool_entities if e.enabled)
+                by_source: Dict[str, int] = {}
+                for e in tool_entities:
+                    by_source[e.source] = by_source.get(e.source, 0) + 1
+                tools = {"enabled": enabled, "total": len(tool_entities), "by_source": by_source}
+            return {
+                "ready": True,
+                "llm": {
+                    "impl": rt.llm.__class__.__name__,
+                    "model": getattr(rt.llm, "model", None),
+                },
+                "storage": {
+                    "impl": rt.data_center.__class__.__name__,
+                    "sqlite": rt.data_center.sqlite.__class__.__name__,
+                },
+                "tools": tools,
+                "persona_prompts": len(rt.char.personality),
+                "short_term_memory": len(rt.mind.pfc.temporary),
+            }
+        except Exception as e:
+            return {"ready": False, "error": str(e)}
+
     def get_event_stats(self) -> Optional[Dict[str, int]]:
         """获取事件总线触发统计。"""
         try:

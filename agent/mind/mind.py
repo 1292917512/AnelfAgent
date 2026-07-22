@@ -199,6 +199,10 @@ class Mind:
 
         # scope 级后台任务注册表（等待意图挂起 / 完成通知新轮次的统一原语）
         self.background_tasks = BackgroundTaskRegistry()
+        try:
+            self.background_tasks.bind_loop(asyncio.get_running_loop())
+        except RuntimeError:
+            pass  # 非异步上下文（测试等）：工作线程完成时退化为直接调用
 
         # 当前模型上下文窗口缓存（tokens，0 = 未知）
         self._cached_context_length: int = 0
@@ -766,8 +770,14 @@ class Mind:
             *,
             tool_choice: Optional[str] = None,
             options: Optional[Dict] = None,
+            stream: bool = False,
+            on_delta: Optional[Any] = None,
     ) -> ChatResult:
-        """统一 LLM 调用（带重试、模型回退和事件追踪）。"""
+        """统一 LLM 调用（带重试、模型回退和事件追踪）。
+
+        stream=True 时优先走主客户端流式（增量经 on_delta 上报），
+        流式失败自动回退非流式重试路径（行为与非流式完全一致）。
+        """
         # 发送边界统一规整（message_schema.normalize_for_send）：
         # 角色归一（头部提示词分层保持 system 供 Anthropic 前缀缓存，中途注入
         # 转 user 保留位置语义）+ 尾部 assistant prefill 修复
@@ -783,7 +793,19 @@ class Mind:
         })
         t0 = time.time()
         try:
-            result = await self._llm_chat_with_retry(messages, tools, tool_choice=tool_choice, options=options)
+            if stream:
+                try:
+                    result = await self._llm_chat_stream_once(
+                        messages, tools,
+                        tool_choice=tool_choice, options=options, on_delta=on_delta,
+                    )
+                except Exception as stream_exc:
+                    log(f"流式调用失败，回退非流式: {stream_exc}", "DEBUG", tag="思维")
+                    result = await self._llm_chat_with_retry(
+                        messages, tools, tool_choice=tool_choice, options=options,
+                    )
+            else:
+                result = await self._llm_chat_with_retry(messages, tools, tool_choice=tool_choice, options=options)
         except Exception as exc:
             # 请求级审计：异常交换同样落盘（未开启时零开销）
             await context_audit.record_exchange(
@@ -882,6 +904,74 @@ class Mind:
             from core.tags import rm_unless_text
             result.content = await rm_unless_text(result.content)
         return result
+
+    async def _llm_chat_stream_once(
+            self,
+            messages: List[Dict],
+            tools: Optional[list[dict]],
+            *,
+            tool_choice: Optional[str] = None,
+            options: Optional[dict] = None,
+            on_delta: Optional[Any] = None,
+    ) -> ChatResult:
+        """主客户端单次流式调用，增量经 on_delta 上报，聚合为 ChatResult 返回。
+
+        多频道语义约束：流式只产生过程事件，回复出口仍是 send_message/end_reply。
+        失败由调用方回退到 _llm_chat_with_retry（完整降级链），本函数不重试。
+        """
+        if not isinstance(self.llm, LLMClient):
+            raise RuntimeError("当前 LLM 客户端不支持流式调用")
+        mc = self._get_mind_config()
+        merged_options = dict(options or {})
+        if mc.reasoning_effort and "reasoning_effort" not in merged_options:
+            merged_options["reasoning_effort"] = mc.reasoning_effort
+        if self._session_llm_params:
+            merged_options.update(self._session_llm_params)
+        merged_options.pop("_model_id", None)
+        final_options = merged_options or None
+
+        from agent.llm.types import ChatResult as _ChatResult, UsageInfo as _UsageInfo
+
+        content_parts: List[str] = []
+        reasoning_parts: List[str] = []
+        tool_calls: List[Any] = []
+        usage = None
+        finish_reason = ""
+        stream_iter = self.llm.chat_stream(
+            messages, options=final_options, tools=tools, tool_choice=tool_choice,
+        ).__aiter__()
+        while True:
+            try:
+                # 每个 chunk 独立计时（停滞流保护；asyncio.timeout 需 3.11+，用 wait_for 兼容 3.10）
+                delta = await asyncio.wait_for(stream_iter.__anext__(), timeout=mc.llm_timeout)
+            except StopAsyncIteration:
+                break
+            if delta.content:
+                content_parts.append(delta.content)
+                if on_delta is not None:
+                    await on_delta(delta.content, False)
+            if delta.reasoning_content:
+                reasoning_parts.append(delta.reasoning_content)
+                if on_delta is not None:
+                    await on_delta(delta.reasoning_content, True)
+            if delta.tool_calls:
+                tool_calls.extend(delta.tool_calls)
+            if delta.usage is not None:
+                usage = delta.usage
+            if delta.finish_reason:
+                finish_reason = delta.finish_reason
+        content = "".join(content_parts)
+        if content:
+            from core.tags import rm_unless_text
+            content = await rm_unless_text(content)
+        return _ChatResult(
+            content=content,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            reasoning_content="".join(reasoning_parts),
+            usage=usage,
+            model=self.llm.config.model,
+        )
 
     async def llm_chat(self, request_messages: List[Dict], options: Optional[dict] = None) -> ChatResult:
         """简单 LLM 调用封装（无工具，纯文本生成）。"""

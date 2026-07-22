@@ -92,8 +92,8 @@ class StorageRouter:
     # Conversation → SQLite
     # ------------------------------------------------------------------
 
-    async def _append_conversation(self, *, scope_type: str, scope_id: str, role: str, content: str, ts_ns: Optional[int] = None, **_kw: Any) -> None:
-        await self.sqlite.append_conversation(scope_type=scope_type, scope_id=scope_id, role=role, content=content, ts_ns=ts_ns)
+    async def _append_conversation(self, *, scope_type: str, scope_id: str, role: str, content: str, ts_ns: Optional[int] = None, adapter_key: str = "", **_kw: Any) -> None:
+        await self.sqlite.append_conversation(scope_type=scope_type, scope_id=scope_id, role=role, content=content, ts_ns=ts_ns, adapter_key=adapter_key)
 
     async def _fetch_conversation(self, *, scope_type: str, scope_id: str, limit: int = 30, **_kw: Any) -> List[Dict[str, Any]]:
         return await self.sqlite.fetch_conversation(scope_type=scope_type, scope_id=scope_id, limit=limit)

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+import threading
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Dict, List, Optional
 
@@ -96,6 +97,12 @@ class BackgroundTaskRegistry:
         self._events: Dict[str, asyncio.Event] = {}
         # scope -> 正在 wait_any 中挂起的等待者数量（轮内会合判定依据）
         self._waiting: Dict[str, int] = {}
+        # 主事件循环（bind_loop 绑定；工作线程完成任务时经 call_soon_threadsafe 回到循环）
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """绑定主事件循环（Mind 初始化时调用）。"""
+        self._loop = loop
 
     # ------------------------------------------------------------------
     # 登记与完成
@@ -118,13 +125,27 @@ class BackgroundTaskRegistry:
         return task_id
 
     def complete(self, task_id: str, success: bool, summary: str) -> bool:
-        """标记任务完成并唤醒等待者。
+        """标记任务完成并唤醒等待者（线程安全）。
+
+        主循环线程内直接完成；工作线程（如后台 shell 等待线程）经
+        call_soon_threadsafe 回到主循环完成，此时返回值无意义（恒 True）。
 
         Returns:
             True 表示该 scope 存在轮内等待者（完成事件由 wait_any 送达）；
             False 表示无等待者，调用方应走轮外通知（事件已标记为已送达，
             避免后续 wait_any 重复投递）。
         """
+        if (
+            self._loop is not None
+            and self._loop.is_running()
+            and threading.current_thread() is not threading.main_thread()
+        ):
+            self._loop.call_soon_threadsafe(self._finish, task_id, success, summary)
+            return True
+        return self._finish(task_id, success, summary)
+
+    def _finish(self, task_id: str, success: bool, summary: str) -> bool:
+        """完成处理的实际实现（须运行在主循环线程）。"""
         rec = self._records.get(task_id)
         if rec is None or rec.done:
             return True

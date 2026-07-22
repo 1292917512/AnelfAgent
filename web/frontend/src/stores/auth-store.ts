@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { authApi } from "@/lib/api";
+import i18n from "@/i18n";
 
 interface AuthState {
   checked: boolean;
@@ -40,7 +41,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     } catch (e: unknown) {
       const msg =
         (e as { response?: { data?: { error?: string } } })?.response?.data
-          ?.error || "登录失败";
+          ?.error || i18n.t("loginFailed", { ns: "common" });
       set({ error: msg });
       return false;
     }

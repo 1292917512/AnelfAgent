@@ -91,6 +91,23 @@ interface ChatState {
   sending: boolean;
   /** 进入发送态的时间戳（加载行计时用） */
   sendingSince: number | null;
+  /** 流式过程状态（尾随兄弟，不落消息历史；回复到达时清除） */
+  streaming: {
+    turnId: string;
+    text: string;
+    reasoning: string;
+    tools: {
+      call_id: string;
+      name: string;
+      status: "running" | "done" | "error";
+      arguments?: string;
+      result_preview?: string;
+      duration_ms?: number;
+    }[];
+    diffs: { path: string; diff: string; additions: number; removals: number }[];
+  } | null;
+  /** 上下文用量快照（状态栏显示；null=未知） */
+  contextUsage: { tokens: number; threshold: number; window: number; percent: number } | null;
   pendingFiles: PendingFile[];
   historyLoaded: boolean;
 
@@ -109,6 +126,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   sending: false,
   sendingSince: null,
+  streaming: null,
+  contextUsage: null,
   pendingFiles: [],
   historyLoaded: false,
 
@@ -145,6 +164,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ],
           sending: false,
           sendingSince: null,
+          streaming: null,
         }));
       } catch { /* 忽略非 JSON 帧 */ }
     });
@@ -152,14 +172,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       try {
         const data = JSON.parse(e.data) as ChatMessage;
         set((s) => ({
-          messages: [...s.messages, {
-            role: "assistant",
-            content: data.caption || "",
-            cid: nextCid(),
-            media_type: data.media_type,
-            url: data.url,
-            caption: data.caption,
-          }],
+          messages: [
+            ...s.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
+            {
+              role: "assistant",
+              content: data.caption || "",
+              cid: nextCid(),
+              media_type: data.media_type,
+              url: data.url,
+              caption: data.caption,
+            },
+          ],
+          sending: false,
+          sendingSince: null,
+          streaming: null,
         }));
       } catch { /* 忽略非 JSON 帧 */ }
     });
@@ -180,6 +206,61 @@ export const useChatStore = create<ChatState>((set, get) => ({
           timeout_seconds: data.timeout_seconds ?? 60,
           received_at: Date.now(),
         });
+      } catch { /* 忽略非 JSON 帧 */ }
+    });
+    es.addEventListener("delta", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        set((s) => {
+          const cur = s.streaming && s.streaming.turnId === data.turn_id
+            ? s.streaming
+            : { turnId: data.turn_id, text: "", reasoning: "", tools: s.streaming?.tools ?? [], diffs: s.streaming?.diffs ?? [] };
+          return {
+            streaming: {
+              ...cur,
+              text: data.reasoning ? cur.text : cur.text + data.delta,
+              reasoning: data.reasoning ? cur.reasoning + data.delta : cur.reasoning,
+            },
+          };
+        });
+      } catch { /* 忽略非 JSON 帧 */ }
+    });
+    es.addEventListener("tool_call", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        set((s) => {
+          const cur = s.streaming ?? { turnId: "", text: "", reasoning: "", tools: [], diffs: [] };
+          const idx = cur.tools.findIndex((t) => t.call_id === data.call_id);
+          const tools = [...cur.tools];
+          const frame = {
+            call_id: data.call_id, name: data.name, status: data.status,
+            arguments: data.arguments, result_preview: data.result_preview,
+            duration_ms: data.duration_ms,
+          };
+          if (idx >= 0) tools[idx] = { ...tools[idx], ...frame };
+          else tools.push(frame);
+          return { streaming: { ...cur, tools } };
+        });
+      } catch { /* 忽略非 JSON 帧 */ }
+    });
+    es.addEventListener("file_diff", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        set((s) => {
+          const cur = s.streaming ?? { turnId: "", text: "", reasoning: "", tools: [], diffs: [] };
+          return {
+            streaming: {
+              ...cur,
+              diffs: [...cur.diffs, { path: data.path, diff: data.diff, additions: data.additions, removals: data.removals }].slice(-3),
+            },
+          };
+        });
+      } catch { /* 忽略非 JSON 帧 */ }
+    });
+    es.addEventListener("context_usage", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        set({ contextUsage: { tokens: data.tokens, threshold: data.threshold, window: data.window, percent: data.percent } });
       } catch { /* 忽略非 JSON 帧 */ }
     });
     es.addEventListener("ping", () => {});

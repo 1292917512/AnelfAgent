@@ -469,7 +469,13 @@ class LLMClient(BaseEntity):
         return params
 
     def _anthropic_proxy_ctx(self) -> _ProxyEnvContext | None:
-        """Anthropic 专用：返回临时代理环境变量上下文，无代理时返回 None。"""
+        """Anthropic 专用：返回临时代理环境变量上下文，无代理时返回 None。
+
+        已知限制：litellm 的 anthropic 通道不接受 httpx 客户端注入
+        （其 handler 仅接受 litellm 自有 AsyncHTTPHandler，且该类不支持
+        proxy 参数），无法像其他 provider 一样通过 http_client 显式传代理，
+        因此保留环境变量方案，并以 _ANTHROPIC_PROXY_LOCK 串行化并发请求。
+        """
         if self.config.api_type != API_TYPE_ANTHROPIC:
             return None
         proxy = self.config.effective_proxy
@@ -897,6 +903,10 @@ class LLMClient(BaseEntity):
             if not self._supports_effort():
                 self._warn_effort_dropped(effort)
                 effort = None
+        # 已学习到的端点输出上限：与 chat_completions 路径一致地钳制
+        max_output_tokens = params.get("max_tokens")
+        if max_output_tokens and self._learned_output_cap:
+            max_output_tokens = min(max_output_tokens, self._learned_output_cap)
         create_kwargs: Dict[str, Any] = {
             "input": input_payload,
             "instructions": instructions,
@@ -904,7 +914,7 @@ class LLMClient(BaseEntity):
             "tool_choice": tool_choice,
             "temperature": params.get("temperature"),
             "top_p": params.get("top_p"),
-            "max_output_tokens": params.get("max_tokens"),
+            "max_output_tokens": max_output_tokens,
         }
         if effort:
             create_kwargs["extra"] = {"reasoning": {"effort": effort}}
@@ -960,8 +970,10 @@ class LLMClient(BaseEntity):
         """流式聊天补全（通过 litellm 统一路由）。
 
         支持流式 tool_calls 累积：各 chunk 的 tool_call 片段会被合并，
-        在 finish_reason 为 "tool_calls" 或 "stop" 时随最终 delta 输出。
-        最后一个 chunk 的 usage 也会被提取。
+        仅当 finish_reason 为 "tool_calls" 或 "stop" 时随最终 delta 输出；
+        finish=="length" 或无 finish chunk 时视为输出被截断，丢弃不完整
+        缓冲并记录 WARNING，避免下发出残缺 JSON arguments 的工具调用。
+        usage 仅在最终 chunk（finish chunk 或无 choices 的 usage-only chunk）输出。
         """
         kwargs = self._build_kwargs(messages, options, tools, tool_choice, stream=True)
         kwargs["stream_options"] = {"include_usage": True}
@@ -970,6 +982,7 @@ class LLMClient(BaseEntity):
         stream: Any = None
         reasoning_buf = ""
         tc_bufs: Dict[int, Dict[str, str]] = {}
+        last_finish = ""
         try:
             if ctx:
                 await _ANTHROPIC_PROXY_LOCK.acquire()
@@ -978,11 +991,15 @@ class LLMClient(BaseEntity):
                     stream = await self._start_completion(kwargs)
                     async for item in self._iter_stream(stream, reasoning_buf, tc_bufs):
                         reasoning_buf = item[1]
+                        if item[0].finish_reason:
+                            last_finish = item[0].finish_reason
                         yield item[0]
             else:
                 stream = await self._start_completion(kwargs)
                 async for item in self._iter_stream(stream, reasoning_buf, tc_bufs):
                     reasoning_buf = item[1]
+                    if item[0].finish_reason:
+                        last_finish = item[0].finish_reason
                     yield item[0]
         finally:
             if stream is not None:
@@ -993,10 +1010,18 @@ class LLMClient(BaseEntity):
                 _ANTHROPIC_PROXY_LOCK.release()
 
         if tc_bufs:
-            yield ChatStreamDelta(
-                tool_calls=self._complete_tool_buffers(tc_bufs),
-                finish_reason="tool_calls",
-            )
+            if last_finish in ("tool_calls", "stop"):
+                yield ChatStreamDelta(
+                    tool_calls=self._complete_tool_buffers(tc_bufs),
+                    finish_reason="tool_calls",
+                )
+            else:
+                log(
+                    f"流式响应被截断（finish_reason={last_finish or '缺失'}），"
+                    f"丢弃 {len(tc_bufs)} 个不完整的 tool_call 缓冲",
+                    "WARNING", tag="模型",
+                )
+                tc_bufs.clear()
 
     async def _iter_stream(
         self,
@@ -1047,15 +1072,27 @@ class LLMClient(BaseEntity):
                     if arguments:
                         buf["arguments"] += str(arguments)
 
-            completed_tools = self._complete_tool_buffers(tc_bufs) if finish and tc_bufs else []
+            completed_tools = (
+                self._complete_tool_buffers(tc_bufs)
+                if finish in ("tool_calls", "stop") and tc_bufs
+                else []
+            )
             if completed_tools:
+                tc_bufs.clear()
+            elif finish == "length" and tc_bufs:
+                log(
+                    f"流式输出达到长度上限，丢弃 {len(tc_bufs)} 个不完整的 tool_call 缓冲",
+                    "WARNING", tag="模型",
+                )
                 tc_bufs.clear()
             yield ChatStreamDelta(
                 content=content,
                 tool_calls=completed_tools,
                 finish_reason=finish,
                 reasoning_content=reasoning,
-                usage=self._usage_from_object(getattr(chunk, "usage", None)),
+                # usage 仅在最终 chunk 输出：带 finish 的 chunk 或无 choices 的
+                # usage-only chunk（上方分支），中间 chunk 的增量 usage 不下发
+                usage=self._usage_from_object(getattr(chunk, "usage", None)) if finish else None,
             ), reasoning_buf
 
     @staticmethod
@@ -1080,10 +1117,18 @@ class LLMClient(BaseEntity):
                     "WARNING", tag="模型",
                 )
                 continue
+            call_id = buf["id"] or f"tc_{len(result)}"
             result.append(ToolCall(
-                id=buf["id"] or f"tc_{len(result)}",
+                id=call_id,
                 name=buf["name"],
                 arguments=buf["arguments"],
+                # raw 必须是 OpenAI 线格式完整结构 — think_loop 用它拼装
+                # assistant 历史消息（tool_calls 字段），缺 id 会破坏配对
+                raw={
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": buf["name"], "arguments": buf["arguments"]},
+                },
             ))
         return result
 
@@ -1353,19 +1398,44 @@ class LLMClient(BaseEntity):
 
     @staticmethod
     def count_tokens(model: str, messages: list[dict]) -> int:
-        """计算消息列表的 token 数（基于模型的 tokenizer）。"""
+        """计算消息列表的 token 数（基于模型的 tokenizer）。
+
+        tokenizer 不可用时返回字符数/4 的兜底估计并记录 DEBUG 日志，
+        避免静默返回 0 导致上游误判上下文为空。
+        """
         try:
             return litellm.token_counter(model=model, messages=messages)
-        except Exception:
-            return 0
+        except Exception as exc:
+            total = 0
+            for msg in messages:
+                content = msg.get("content")
+                if isinstance(content, str):
+                    total += len(content)
+                elif isinstance(content, list):
+                    total += sum(
+                        len(part["text"])
+                        for part in content
+                        if isinstance(part, dict) and isinstance(part.get("text"), str)
+                    )
+            debug(
+                f"token_counter 失败 ({type(exc).__name__}: {exc})，"
+                f"使用字符数/4 兜底估计 ({total} 字符)",
+                tag="模型",
+            )
+            return total // 4
 
     @staticmethod
     def count_text_tokens(model: str, text: str) -> int:
-        """计算纯文本的 token 数。"""
+        """计算纯文本的 token 数（失败时字符数/4 兜底估计）。"""
         try:
             return litellm.token_counter(model=model, text=text)
-        except Exception:
-            return 0
+        except Exception as exc:
+            debug(
+                f"token_counter 失败 ({type(exc).__name__}: {exc})，"
+                f"使用字符数/4 兜底估计 ({len(text)} 字符)",
+                tag="模型",
+            )
+            return len(text) // 4
 
     @staticmethod
     def get_max_tokens(model: str) -> Optional[int]:

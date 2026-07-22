@@ -1,13 +1,15 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router-dom";
 import { statusApi, toolsApi } from "@/lib/api";
 import { StatCard } from "@/components/common/StatCard";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
 import { useAppStore } from "@/stores/app-store";
-import { Activity, MessageCircle, Wrench, Brain } from "lucide-react";
+import { AttentionPanel } from "@/pages/dashboard/AttentionPanel";
+import { ComponentInfoCard } from "@/pages/dashboard/ComponentInfoCard";
+import { ToolsInsightPanel } from "@/pages/dashboard/ToolsInsightPanel";
+import { EventsPanel } from "@/pages/dashboard/EventsPanel";
 
 type StmItem = { index: number; role: string; content: string };
 
@@ -58,7 +60,6 @@ export function OverviewPanel() {
   const { data: status } = useQuery({ queryKey: ["status"], queryFn: () => statusApi.get().then((r) => r.data), refetchInterval: 3000 });
   const { data: pfc } = useQuery({ queryKey: ["pfc"], queryFn: () => statusApi.pfc().then((r) => r.data as PfcSnapshot), refetchInterval: 3000 });
   const { data: tools } = useQuery({ queryKey: ["tools"], queryFn: () => toolsApi.list().then((r) => r.data) });
-  const { data: components } = useQuery({ queryKey: ["components"], queryFn: () => statusApi.components().then((r) => r.data) });
 
   const isReady = status?.ready;
   const statusInfo = status?.status as Record<string, unknown> | undefined;
@@ -84,6 +85,8 @@ export function OverviewPanel() {
         <StatCard label={t("stm", { ns: "status" })} value={`${pfc?.short_term_memory_count ?? 0}/${pfc?.short_term_memory_max ?? 0}`} />
         <StatCard label={t("pending", { ns: "status" })} value={String(pendingTotal)} variant={pendingTotal > 0 ? "warn" : "default"} />
       </div>
+
+      <AttentionPanel />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card title={t("pendingTasks", { ns: "status" })}>
@@ -118,32 +121,12 @@ export function OverviewPanel() {
           ) : <p className="text-muted text-sm py-2">{t("noPendingTasks", { ns: "status" })}</p>}
         </Card>
 
-        <Card title={t("componentInfo")} subtitle={t("componentSubtitle")}>
-          {components?.lines ? (
-            <div className="space-y-1 font-mono text-[13px] max-h-[260px] overflow-y-auto">
-              {(components.lines as string[]).map((line: string) => (
-                <div key={line} className="text-foreground py-0.5">{line}</div>
-              ))}
-            </div>
-          ) : <p className="text-muted text-sm">{t("loading", { ns: "common" })}</p>}
-        </Card>
+        <ComponentInfoCard />
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {[
-          { icon: MessageCircle, label: t("chatLink"), desc: t("chatDesc"), to: "/chat" },
-          { icon: Wrench, label: t("toolsLink"), desc: t("toolsDesc"), to: "/capabilities?tab=tools" },
-          { icon: Brain, label: t("memoryLink"), desc: t("memoryDesc"), to: "/memory" },
-          { icon: Activity, label: t("statusLink"), desc: t("statusDesc"), to: "/thinking" },
-        ].map((item) => (
-          <Link key={item.label} to={item.to}
-            className="group rounded-lg border border-border bg-card p-4 transition-all duration-[var(--duration-normal)] hover:border-accent hover:shadow-md hover:-translate-y-0.5 animate-[rise_0.35s_var(--ease-out)_backwards]">
-            <item.icon size={20} className="text-accent mb-2" strokeWidth={1.5} />
-            <div className="font-semibold text-sm text-heading">{item.label}</div>
-            <div className="text-xs text-muted mt-0.5">{item.desc}</div>
-          </Link>
-        ))}
-      </div>
+      <ToolsInsightPanel />
+
+      <EventsPanel />
     </div>
   );
 }

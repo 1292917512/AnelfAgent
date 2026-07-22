@@ -288,9 +288,9 @@ async def _try_resolve_approval(payload: dict) -> bool:
         return False
     decision_str, request_id = parsed
 
-    from agent.approval import ApprovalDecision, get_approval_gate
+    from agent.approval import get_approval_gate, get_approval_manager
     manager_gate = get_approval_gate()
-    session = await manager_gate._manager.get_session(request_id)
+    session = await get_approval_manager().get_session(request_id)
     if session is None or not session.is_pending():
         return False
 

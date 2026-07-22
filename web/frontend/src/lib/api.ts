@@ -1,4 +1,5 @@
 import axios from "axios";
+import i18n from "@/i18n";
 import type {
   AdapterListResult,
   ChannelTestHealthResult,
@@ -84,11 +85,11 @@ export interface ApiKeyCreated extends ApiKeyInfo {
 
 // Chat
 export const chatApi = {
-  send: (message: string, userId = "web_user", userName = "用户", files?: string[]) =>
+  send: (message: string, userId = "web_user", userName?: string, files?: string[]) =>
     api.post("/chat/send", {
       message,
       user_id: userId,
-      user_name: userName,
+      user_name: userName ?? i18n.t("user", { ns: "chat" }),
       ...(files?.length ? { files } : {}),
     }),
   upload: (file: File) => {
@@ -353,6 +354,30 @@ export const adaptersApi = {
       `/adapters/${encodeURIComponent(key)}/tools/${encodeURIComponent(name)}/test`,
       { args },
     ),
+};
+
+// Weixin QR Login（微信扫码登录）
+export interface WeixinQrStartResult {
+  session_id: string;
+  qr_png: string;
+  qr_url: string;
+}
+
+export interface WeixinQrStatusResult {
+  status: "wait" | "scaned" | "confirmed" | "timeout" | "error";
+  qr_png?: string;
+  qr_url?: string;
+  refreshed?: boolean;
+  account_id?: string;
+  error?: string;
+}
+
+export const weixinQrApi = {
+  start: () => api.post<WeixinQrStartResult>("/channels/weixin/qr/start"),
+  status: (sessionId: string) =>
+    api.get<WeixinQrStatusResult>(`/channels/weixin/qr/${encodeURIComponent(sessionId)}/status`),
+  discard: (sessionId: string) =>
+    api.delete(`/channels/weixin/qr/${encodeURIComponent(sessionId)}`),
 };
 
 // NoneBot Bridge

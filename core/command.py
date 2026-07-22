@@ -22,6 +22,30 @@ class CommandResult:
     stderr: str
 
 
+def _run_with_group_kill(command, timeout_sec: float, run_kwargs: dict):
+    """POSIX 下以独立进程组执行，超时时 SIGTERM→SIGKILL 整组终止（防孙进程泄漏）。"""
+    import signal
+    kwargs = dict(run_kwargs)
+    if kwargs.pop("capture_output", False):
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.PIPE
+    proc = subprocess.Popen(command, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_sec)
+        return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=2)
+        except (ProcessLookupError, subprocess.TimeoutExpired, PermissionError):
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        proc.wait()
+        raise
+
+
 @dual_mode
 def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars: Optional[Dict[str, str]] = None,
                 shell: Optional[bool] = None, cwd: Optional[str] = None) -> CommandResult:
@@ -56,17 +80,23 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
             'text': True,
             'encoding': 'utf-8',
             'errors': 'replace',
-            'timeout': timeout_sec,
             'env': env,
         }
         if cwd:
             run_kwargs['cwd'] = cwd
 
-        # Windows平台下隐藏命令行窗口
-        if platform.system() == "Windows":
+        is_windows = platform.system() == "Windows"
+        if is_windows:
             run_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+        else:
+            # 独立进程组：超时时整组终止，避免 shell 子进程（孙进程）泄漏
+            # （对齐 Claude Code tree-kill 语义；subprocess.run 只杀直接子进程）
+            run_kwargs['start_new_session'] = True
 
-        result = subprocess.run(command, **run_kwargs)
+        if is_windows:
+            result = subprocess.run(command, timeout=timeout_sec, **run_kwargs)
+        else:
+            result = _run_with_group_kill(command, timeout_sec, run_kwargs)
 
         # 记录执行结果
         if result.returncode == 0:

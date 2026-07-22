@@ -140,6 +140,7 @@ dependencies = [
     { name = "beautifulsoup4" },
     { name = "chardet" },
     { name = "cognee" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jinja2" },
@@ -161,6 +162,7 @@ dependencies = [
     { name = "python-docx" },
     { name = "python-telegram-bot" },
     { name = "pyyaml" },
+    { name = "qrcode" },
     { name = "readability-lxml" },
     { name = "sqlite-vec" },
     { name = "sse-starlette" },
@@ -182,6 +184,7 @@ requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
     { name = "chardet", specifier = ">=5,<6" },
     { name = "cognee", specifier = "==1.3.0" },
+    { name = "cryptography", specifier = ">=42.0.0" },
     { name = "fastapi", specifier = ">=0.116.2,<0.139.0" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "jinja2", specifier = ">=3.1.0" },
@@ -203,6 +206,7 @@ requires-dist = [
     { name = "python-docx", specifier = ">=1.2.0" },
     { name = "python-telegram-bot", specifier = ">=22.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
+    { name = "qrcode", specifier = ">=7.4.0" },
     { name = "readability-lxml", specifier = ">=0.8.1" },
     { name = "sqlite-vec", specifier = ">=0.1.9" },
     { name = "sse-starlette", specifier = ">=2.0.0" },
@@ -2514,6 +2518,18 @@ wheels = [
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/45/73/0f49dacd6e82c9430e46f4a027baa4ca205e8b0a9dce1397f44edc23559d/PyYAML-6.0.2-cp311-cp311-musllinux_1_1_x86_64.whl", hash = "sha256:797b4f722ffa07cc8d62053e4cff1486fa6dc094105d13fea7b1de7d8bf71c9e", size = 756638, upload-time = "2024-08-06T20:32:18.555Z" },
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/22/5f/956f0f9fc65223a58fbc14459bf34b4cc48dec52e00535c79b8db361aabd/PyYAML-6.0.2-cp311-cp311-win32.whl", hash = "sha256:11d8f3dd2b9c1207dcaf2ee0bbbfd5991f571186ec9cc78427ba5bd32afae4b5", size = 143850, upload-time = "2024-08-06T20:32:19.889Z" },
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/ed/23/8da0bbe2ab9dcdd11f4f4557ccaf95c10b9811b13ecced089d43ce59c3c8/PyYAML-6.0.2-cp311-cp311-win_amd64.whl", hash = "sha256:e10ce637b18caea04431ce14fabcf5c64a1c61ec9c56b071a4b7ca131ca52d44", size = 161980, upload-time = "2024-08-06T20:32:21.273Z" },
+]
+
+[[package]]
+name = "qrcode"
+version = "8.2"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/8f/b2/7fc2931bfae0af02d5f53b174e9cf701adbb35f39d69c2af63d4a39f81a9/qrcode-8.2.tar.gz", hash = "sha256:35c3f2a4172b33136ab9f6b3ef1c00260dd2f66f858f24d88418a015f446506c", size = 43317, upload-time = "2025-05-01T15:44:24.726Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/dd/b8/d2d6d731733f51684bbf76bf34dab3b70a9148e8f2cef2bb544fccec681a/qrcode-8.2-py3-none-any.whl", hash = "sha256:16e64e0716c14960108e85d853062c9e8bba5ca8252c0b4d0231b9df4060ff4f", size = 45986, upload-time = "2025-05-01T15:44:22.781Z" },
 ]
 
 [[package]]

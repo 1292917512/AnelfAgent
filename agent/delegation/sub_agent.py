@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional
@@ -73,6 +74,20 @@ def default_max_iterations() -> int:
     return get_config_int("delegation_default_iterations", _DEFAULT_MAX_ITERATIONS)
 
 
+def clamp_iterations(value: int) -> int:
+    """钳制迭代预算到 [1, 硬上限]（<=0 时按默认预算再钳制）。"""
+    from core.config import get_config_int
+    cap = max(1, get_config_int("delegation_max_iterations_cap", 50))
+    budget = value if value > 0 else default_max_iterations()
+    return max(1, min(budget, cap))
+
+
+def delegation_timeout_seconds() -> float:
+    """单个子代理整体执行超时（配置 delegation_timeout_seconds，默认 600s）。"""
+    from core.config import get_config_float
+    return max(1.0, get_config_float("delegation_timeout_seconds", 600.0))
+
+
 _SUB_AGENT_PROMPT = """你是一个子代理，负责完成主代理委托的子任务。
 
 [子任务目标]
@@ -107,7 +122,7 @@ class SubAgent:
         self.goal = goal
         self.context = context
         self.role = normalize_role(role)
-        self.max_iterations = max_iterations or default_max_iterations()
+        self.max_iterations = clamp_iterations(max_iterations)
         self.task_index = task_index
 
     async def run(self) -> SubAgentResult:
@@ -134,23 +149,25 @@ class SubAgent:
         extra_blocked = {"delegate_task"} if self.role == _ROLE_LEAF else None
 
         token = _delegate_depth.set(depth + 1)
+        timeout = delegation_timeout_seconds()
         try:
-            output = await self._mind.reflect(
-                [{"role": "user", "content": prompt}],
-                max_iterations=self.max_iterations,
-                allow_output_tools=False,
-                extra_blocked_tools=extra_blocked,
+            output = await asyncio.wait_for(
+                self._mind.reflect(
+                    [{"role": "user", "content": prompt}],
+                    max_iterations=self.max_iterations,
+                    allow_output_tools=False,
+                    extra_blocked_tools=extra_blocked,
+                ),
+                timeout=timeout,
             )
-            output = (output or "").strip()
-            if not output:
-                return SubAgentResult(
-                    goal=self.goal, success=False,
-                    error="子代理未产出任何结果",
-                    role=self.role, task_index=self.task_index,
-                )
-            log(f"子代理完成: {self.goal[:60]} -> {len(output)} 字", tag="委托")
+        except asyncio.TimeoutError:
+            log(
+                f"子代理整体超时（>{timeout:.0f}s）: {self.goal[:60]}",
+                "WARNING", tag="委托",
+            )
             return SubAgentResult(
-                goal=self.goal, success=True, output=output,
+                goal=self.goal, success=False,
+                error=f"子代理执行超时（>{timeout:.0f}s），已中断",
                 role=self.role, task_index=self.task_index,
             )
         except Exception as exc:
@@ -162,3 +179,15 @@ class SubAgent:
             )
         finally:
             _delegate_depth.reset(token)
+        output = (output or "").strip()
+        if not output:
+            return SubAgentResult(
+                goal=self.goal, success=False,
+                error="子代理未产出任何结果",
+                role=self.role, task_index=self.task_index,
+            )
+        log(f"子代理完成: {self.goal[:60]} -> {len(output)} 字", tag="委托")
+        return SubAgentResult(
+            goal=self.goal, success=True, output=output,
+            role=self.role, task_index=self.task_index,
+        )

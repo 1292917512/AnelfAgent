@@ -39,5 +39,6 @@
   "passwordPlaceholder": "输入访问密码",
   "verifying": "验证中…",
   "capabilitiesTitle": "能力中心",
-  "capabilitiesSubtitle": "工具、技能与 MCP 服务的统一管理"
+  "capabilitiesSubtitle": "工具、技能与 MCP 服务的统一管理",
+  "loginFailed": "登录失败"
 }

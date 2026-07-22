@@ -3,7 +3,8 @@
     "pending": "待批准",
     "history": "历史记录",
     "policies": "策略配置",
-    "stats": "统计信息"
+    "stats": "统计信息",
+    "rules": "权限规则"
   },
   "loading": "加载中...",
   "noPendingApprovals": "没有待批准的请求",
@@ -81,5 +82,19 @@
     "sessionNotice": "当前有 {{count}} 条会话级放行规则（重启后失效），保存只影响持久规则",
     "orderTitle": "求值顺序（命中即生效）",
     "orderDesc": "用户限定拒绝 → 频道拒绝 → 全局拒绝 → 用户限定放行 → 频道询问 → 全局询问 → 频道放行 → 全局放行 → 默认效果"
+  },
+  "pageTitle": "批准管理",
+  "pageSubtitle": "审批 AI 的工具调用请求，并管理权限规则",
+  "pendingBadge": "{{count}} 个待处理",
+  "noPendingHint": "AI 发起的高风险工具调用会在这里等待你的审批",
+  "onTimeoutLabel": "超时行为",
+  "filterAll": "全部",
+  "searchTool": "搜索工具名...",
+  "noMatch": "没有匹配的记录",
+  "timeAgo": {
+    "justNow": "刚刚",
+    "minutes": "{{count}} 分钟前",
+    "hours": "{{count}} 小时前",
+    "days": "{{count}} 天前"
   }
 }

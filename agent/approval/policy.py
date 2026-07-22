@@ -58,7 +58,11 @@ class ApprovalPolicy(BaseModel):
         return pattern, ""
 
     def matches(self, tool_name: str, tool_args: Optional[Dict[str, Any]] = None) -> bool:
-        """检查工具（及参数）是否匹配本策略。"""
+        """检查工具（及参数）是否匹配本策略。
+
+        参数模式含 ``/`` 时使用路径段感知匹配（``*`` 不跨目录、``**`` 跨目录），
+        不含 ``/`` 时保持 fnmatch 语义。
+        """
         name_pattern, arg_pattern = self._split_pattern()
         if not fnmatch.fnmatch(tool_name, name_pattern):
             return False
@@ -67,7 +71,13 @@ class ApprovalPolicy(BaseModel):
         if tool_args is None:
             # 无参数上下文时参数模式不命中（fail-closed，不误放行）
             return False
-        return fnmatch.fnmatch(extract_matchable_arg(tool_name, tool_args), arg_pattern)
+        candidates = matchable_arg_candidates(tool_name, tool_args)
+        if "/" in arg_pattern:
+            return any(match_path_pattern(candidate, arg_pattern) for candidate in candidates)
+        return any(
+            fnmatch.fnmatch(candidate, arg_pattern)
+            for candidate in candidates
+        )
 
     def is_auto_approved(self, user_id: str) -> bool:
         """检查用户是否在白名单中。"""
@@ -94,17 +104,93 @@ _ARG_KEYS: Dict[str, tuple] = {
     "web_request": ("url",),
 }
 
+# 路径类工具：匹配前先做与执行层一致的路径规范化（防 ./、../、~ 绕过）
+_PATH_TOOLS = frozenset({
+    "read_file", "write_file", "edit_file", "append_file",
+    "delete_file", "move_file", "copy_file", "mkdir",
+})
+
+
+def match_path_pattern(value: str, pattern: str) -> bool:
+    """路径段感知 glob 匹配（pattern 含 ``/`` 时使用，替代 fnmatch）。
+
+    语义：``*``/``?``/``[...]`` 仅在单一路径段内生效，**不跨** ``/``；
+    独立的 ``**`` 段匹配零或多层目录。防止 ``config/*`` 这类规则被
+    ``config/../../etc`` 之类的多层路径意外命中。
+    """
+    return _match_path_segments(value.split("/"), pattern.split("/"))
+
+
+def _match_path_segments(value_segs: List[str], pattern_segs: List[str]) -> bool:
+    if not pattern_segs:
+        return not value_segs
+    head = pattern_segs[0]
+    if head == "**":
+        return any(
+            _match_path_segments(value_segs[i:], pattern_segs[1:])
+            for i in range(len(value_segs) + 1)
+        )
+    return (
+        bool(value_segs)
+        and fnmatch.fnmatchcase(value_segs[0], head)
+        and _match_path_segments(value_segs[1:], pattern_segs[1:])
+    )
+
 
 def extract_matchable_arg(tool_name: str, tool_args: Dict[str, Any]) -> str:
     """提取工具的关键参数用于 ``工具名(参数glob)`` 匹配。
 
     已知工具取其关键参数（命令/路径/URL），多值以空格连接；
+    路径类参数先做与执行层一致的规范化（对齐 Claude Code backfillObservableInput，
+    防止 ``./config/x``、``config/../config/x``、``~/x`` 绕过路径规则）；
     未知工具退化为参数的紧凑 JSON。
     """
     keys = _ARG_KEYS.get(tool_name)
     if keys:
-        return " ".join(str(tool_args.get(k, "")) for k in keys).strip()
+        values = [str(tool_args.get(k, "")) for k in keys]
+        if tool_name in _PATH_TOOLS:
+            values = [_normalize_path_arg(v) for v in values]
+        return " ".join(values).strip()
     return json.dumps(tool_args, ensure_ascii=False, sort_keys=True)
+
+
+def matchable_arg_candidates(tool_name: str, tool_args: Optional[Dict[str, Any]]) -> List[str]:
+    """参数模式匹配的候选文本：规范化绝对路径 + workspace 相对形式。
+
+    规则既可写绝对 glob（``/data/**``）也可写相对 glob（``config/**``），
+    两种写法等价生效，且都无法用 ``./``、``../``、``~`` 绕过。
+    """
+    if tool_args is None:
+        return []
+    value = extract_matchable_arg(tool_name, tool_args)
+    candidates = [value]
+    if tool_name in _PATH_TOOLS:
+        try:
+            from entities.filesystem.paths import get_workspace_root
+            root = get_workspace_root()
+            parts = []
+            for v in value.split(" "):
+                if v.startswith(root + os.sep):
+                    parts.append(v[len(root) + 1:])
+                else:
+                    parts.append(v)
+            rel = " ".join(parts).strip()
+            if rel != value:
+                candidates.append(rel)
+        except Exception:
+            pass
+    return candidates
+
+
+def _normalize_path_arg(path: str) -> str:
+    """与文件工具执行层（_safe_path）完全一致的路径解析。"""
+    if not path:
+        return path
+    try:
+        from entities.filesystem.paths import resolve_workspace_path
+        return resolve_workspace_path(path)
+    except Exception:
+        return path
 
 
 class ApprovalPolicySet(BaseModel):

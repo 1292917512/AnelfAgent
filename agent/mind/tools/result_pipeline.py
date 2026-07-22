@@ -34,6 +34,35 @@ _TOOL_RESULT_HEAD_RATIO = 0.75
 _TOOL_JSON_STR_MAX_CHARS = 1200
 _TOOL_JSON_LIST_MAX_ITEMS = 40
 _TOOL_JSON_DICT_MAX_ITEMS = 80
+# 结果持久化阈值与预览大小（对齐 Claude Code 50K 字符 / 2KB 预览）
+_PERSIST_THRESHOLD_CHARS = 50_000
+_PERSIST_PREVIEW_CHARS = 2048
+
+
+def _persist_oversized_result(tool_name: str, output: str) -> Optional[str]:
+    """超持久化阈值的结果完整落盘，返回 预览+路径 的替代文本；未超返回 None。
+
+    对齐 Claude Code processToolResultBlock：信息不丢失，模型按需分段读取。
+    """
+    if len(output) <= _PERSIST_THRESHOLD_CHARS:
+        return None
+    try:
+        from core.config import ConfigManager
+        from entities.filesystem.shell_state import persist_output
+        workspace = ConfigManager.get("workspace_root", "workspace")
+        path = persist_output(output, workspace)
+    except Exception as exc:
+        log(f"工具结果落盘失败（退回截断）: {exc}", "DEBUG", tag="思维")
+        return None
+    log(f"工具结果超限已落盘: {tool_name} ({len(output)} 字符) -> {path}", "DEBUG", tag="思维")
+    return (
+        f"<persisted-output>\n"
+        f"输出过大（{len(output)} 字符），完整输出已保存到: {path}\n"
+        f"预览（前 {_PERSIST_PREVIEW_CHARS} 字符）:\n"
+        f"{output[:_PERSIST_PREVIEW_CHARS]}\n"
+        f"</persisted-output>\n"
+        f"可使用 read_file 配合 offset/limit 查看完整内容。"
+    )
 
 
 class ToolResultPipeline:
@@ -67,6 +96,9 @@ class ToolResultPipeline:
             skip_guardrail: bool = False,
     ) -> str:
         """按管线加工单个工具结果，返回可注入上下文的最终文本。"""
+        # 0. 空结果占位（对齐 Claude Code：防止模型在空工具结果后复读 stop 序列）
+        if not output or not output.strip():
+            return f"({tool_name} 执行完成，无输出)"
         output = self._sanitize(output)
         output = self._threat_scan(tool_name, output)
 
@@ -139,9 +171,18 @@ class ToolResultPipeline:
     # ------------------------------------------------------------------
 
     def _truncate(self, tool_name: str, output: str) -> str:
-        """裁剪超长工具结果（动态预算优先，静态阈值兜底）。"""
+        """裁剪超长工具结果（超限落盘优先，动态预算其次，静态阈值兜底）。
+
+        对齐 Claude Code persisted-output：超过持久化阈值的结果完整写盘，
+        模型只收到预览 + 路径（可用 read_file offset/limit 查看全文），
+        避免破坏性截断导致信息彻底丢失。
+        """
         if not output:
             return output
+
+        persisted = _persist_oversized_result(tool_name, output)
+        if persisted is not None:
+            output = persisted
 
         if self._budget is not None:
             limit = resolve_result_limit(tool_name, self._budget)
