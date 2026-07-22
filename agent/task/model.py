@@ -107,6 +107,8 @@ class TaskDefinition(BaseModel):
     """指定执行该任务的模型 ID，为空时使用默认模型。"""
     reasoning_effort: Optional[str] = None
     """任务级思考等级覆盖（low/medium/high/max），为空时使用全局设置。"""
+    folder: str = ""
+    """任务所在文件夹（config/tasks 下的相对路径），由文件位置决定。"""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> TaskDefinition:
@@ -131,6 +133,7 @@ class TaskDefinition(BaseModel):
             save_result_to_memory=_to_bool(data.get("save_result_to_memory", True)),
             model_id=data.get("model_id") or None,
             reasoning_effort=_normalize_reasoning_effort(data.get("reasoning_effort")),
+            folder=str(data.get("folder", "") or "").strip("/"),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -156,6 +159,8 @@ class TaskDefinition(BaseModel):
         normalized_effort = _normalize_reasoning_effort(self.reasoning_effort)
         if normalized_effort:
             result["reasoning_effort"] = normalized_effort
+        if self.folder:
+            result["folder"] = self.folder
         return result
 
     def should_run_for_entity(self, has_entity: bool) -> bool:

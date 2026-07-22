@@ -92,15 +92,24 @@ def parse_approval_command(text: str) -> Optional[tuple[str, str]]:
     """解析批准命令。
 
     支持格式：
-      approve <request_id>
-      deny <request_id>
-      allow <request_id>  (alias)
-      reject <request_id> (alias)
+      approve <request_id>     deny <request_id>
+      approve:<request_id>     deny:<request_id>   （Telegram 按钮回调格式）
+      allow / reject / yes / y / no / n（别名）
 
     Returns:
         (decision, request_id) 或 None
     """
-    parts = text.strip().split(None, 1)
+    text = text.strip()
+    # 冒号格式（Telegram InlineKeyboard 回调）
+    if ":" in text and " " not in text:
+        cmd, _, request_id = text.partition(":")
+        cmd_lower = cmd.lower()
+        if cmd_lower in ("approve", "allow"):
+            return ("approved", request_id.strip())
+        if cmd_lower in ("deny", "reject"):
+            return ("denied", request_id.strip())
+        return None
+    parts = text.split(None, 1)
     if len(parts) != 2:
         return None
     cmd, request_id = parts

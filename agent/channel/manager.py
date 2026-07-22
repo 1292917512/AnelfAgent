@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Set, Union
 
 from core.entity import BaseEntity, EntityType
@@ -14,34 +13,6 @@ from core.log import log
 from core.tags import reply_to_tag, tag_label
 
 from .base import BaseChannel, ChannelStatus
-
-
-@dataclass
-class RoutePolicy:
-    """路由策略（白名单/黑名单/require_to_me）。"""
-
-    require_to_me: bool = False
-    user_allowlist: Set[str] = field(default_factory=set)
-    user_blocklist: Set[str] = field(default_factory=set)
-    group_allowlist: Set[str] = field(default_factory=set)
-    group_blocklist: Set[str] = field(default_factory=set)
-
-    def check(self, user_id: str, group_id: str = "") -> bool:
-        """检查用户/群组是否通过白名单/黑名单。不含 require_to_me 门控。"""
-        if self.user_blocklist and user_id in self.user_blocklist:
-            return False
-        if self.user_allowlist and user_id not in self.user_allowlist:
-            return False
-        if group_id:
-            if self.group_blocklist and group_id in self.group_blocklist:
-                return False
-            if self.group_allowlist and group_id not in self.group_allowlist:
-                return False
-        return True
-
-    def should_trigger(self, is_to_me: bool) -> bool:
-        """判断消息是否应触发 Mind 思考。require_to_me=False 时总触发。"""
-        return not self.require_to_me or is_to_me
 
 
 class ChannelManager(BaseEntity):
@@ -54,8 +25,6 @@ class ChannelManager(BaseEntity):
         self._channels: Dict[str, BaseChannel] = {}
         self._channel_map: Dict[str, str] = {}
         self._group_targets: set[str] = set()
-        self._global_policy = RoutePolicy()
-        self._channel_policies: Dict[str, RoutePolicy] = {}
         super().__init__()
 
     # ------------------------------------------------------------------
@@ -100,16 +69,6 @@ class ChannelManager(BaseEntity):
 
     def list_channels(self) -> Dict[str, BaseChannel]:
         return dict(self._channels)
-
-    # ------------------------------------------------------------------
-    # 策略
-    # ------------------------------------------------------------------
-
-    def set_global_policy(self, policy: RoutePolicy) -> None:
-        self._global_policy = policy
-
-    def set_channel_policy(self, channel_id: str, policy: RoutePolicy) -> None:
-        self._channel_policies[channel_id] = policy
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -199,22 +158,8 @@ class ChannelManager(BaseEntity):
         cid = channel.channel_id
         log(f"收到入站消息: [{cid}] {message.sender.user_name}({message.sender.user_id}): {message.content[:80]}", "DEBUG", tag="通道")
         user_id = message.sender.user_id
-        group_id = (
-            message.channel.channel_id
-            if message.channel.channel_type == ChannelType.GROUP
-            else ""
-        )
-
-        policy = self._channel_policies.get(cid)
-        if policy and not policy.check(user_id, group_id):
-            return
-        if not self._global_policy.check(user_id, group_id):
-            return
 
         trigger_mind = message.trigger_mind
-        if policy:
-            trigger_mind = trigger_mind and policy.should_trigger(message.is_to_me)
-        trigger_mind = trigger_mind and self._global_policy.should_trigger(message.is_to_me)
 
         channel_key = f"{cid}:{message.channel.channel_id}"
         self._channel_map[channel_key] = cid

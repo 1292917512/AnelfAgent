@@ -22,7 +22,11 @@
   "riskLevel": "Risk Level",
   "requiresApproval": "Requires Approval",
   "timeoutSeconds": "Timeout (seconds)",
-  "onTimeout": "On Timeout",
+  "onTimeout": {
+    "deny": "Deny",
+    "allow": "Allow",
+    "halt": "Halt"
+  },
   "trustAfterNApprovals": "Trust After N Approvals",
   "trustAfterNApprovalsHint": "Auto-trust after N approvals (0 = always ask)",
   "description": "Description",
@@ -36,11 +40,6 @@
     "high": "High",
     "critical": "Critical"
   },
-  "onTimeout": {
-    "deny": "Deny",
-    "allow": "Allow",
-    "halt": "Halt"
-  },
   "decision": {
     "approved": "Approved",
     "denied": "Denied",
@@ -52,5 +51,35 @@
     "totalDecisions": "Total Decisions",
     "approvalRate": "Approval Rate",
     "decisionBreakdown": "Decision Breakdown"
+  },
+  "matchedRule": "Matched Rule",
+  "popup": {
+    "title": "AI requests tool execution",
+    "tool": "Tool",
+    "args": "Arguments",
+    "allowOnce": "Allow once",
+    "allowSession": "Don't ask again (session)",
+    "allowAlways": "Always allow",
+    "deny": "Deny",
+    "feedbackPlaceholder": "Feedback (optional, sent to AI)",
+    "more": "{{count}} more pending requests"
+  },
+  "rules": {
+    "add": "Add Rule",
+    "defaultEffect": "Default effect",
+    "effect": {
+      "allow": "Allow",
+      "ask": "Ask",
+      "deny": "Deny"
+    },
+    "enabled": "Enabled",
+    "users": "Users",
+    "usersPlaceholder": "Empty=all users, comma-separated",
+    "patternHint": "Tool name glob, optionally with arg pattern: run_shell_command(npm test*)",
+    "scopeHint": "global or channel id (telegram/qq/webui...)",
+    "sessionBadge": "Session",
+    "sessionNotice": "{{count}} session-scoped allow rules active (lost on restart); saving only affects persisted rules",
+    "orderTitle": "Evaluation order (first match wins)",
+    "orderDesc": "User deny → channel deny → global deny → user allow → channel ask → global ask → channel allow → global allow → default"
   }
 }

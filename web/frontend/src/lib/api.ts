@@ -113,6 +113,7 @@ export const statusApi = {
   logs: (level?: string, tag?: string, keyword?: string, limit = 50) =>
     api.get<{ logs: LogEntry[]; count: number }>("/status/logs", { params: { level: level || undefined, tag: tag || undefined, keyword: keyword || undefined, limit } }),
   logStats: () => api.get<LogStats>("/status/log-stats"),
+  clearLogs: () => api.post<{ status: string; cleared: number }>("/status/logs/clear"),
   saveMindConfig: (data: Record<string, unknown>) => api.put("/status/mind-config", data),
 };
 
@@ -367,14 +368,21 @@ export const nonebotApi = {
 export const approvalsApi = {
   pending: () => api.get("/approvals/pending"),
   history: (limit = 50) => api.get("/approvals/history", { params: { limit } }),
-  approve: (requestId: string, reason?: string) =>
-    api.post(`/approvals/${encodeURIComponent(requestId)}/approve`, { reason }),
+  approve: (requestId: string, reason?: string, remember: string = "once") =>
+    api.post(`/approvals/${encodeURIComponent(requestId)}/approve`, { reason, remember }),
   deny: (requestId: string, reason?: string) =>
     api.post(`/approvals/${encodeURIComponent(requestId)}/deny`, { reason }),
   stats: () => api.get("/approvals/stats"),
   policies: () => api.get("/approvals/policies"),
   savePolicies: (policies: Record<string, unknown>) =>
     api.put("/approvals/policies", policies),
+  // 统一权限规则
+  rules: () => api.get("/approvals/rules"),
+  saveRules: (data: { rules: Record<string, unknown>[]; default_effect: string }) =>
+    api.put("/approvals/rules", data),
+  addRule: (rule: Record<string, unknown>) => api.post("/approvals/rules", rule),
+  deleteRule: (ruleId: string) =>
+    api.delete(`/approvals/rules/${encodeURIComponent(ruleId)}`),
 };
 
 // Thinking Tracer
@@ -460,16 +468,92 @@ export interface TaskConfig {
   save_result_to_memory?: boolean;
   model_id?: string | null;
   reasoning_effort?: ReasoningEffort | null;
+  folder?: string;
 }
 
 export const tasksApi = {
   list: () => api.get<TaskConfig[]>("/config/tasks"),
-  get: (name: string) => api.get<TaskConfig>(`/config/tasks/${encodeURIComponent(name)}`),
+  get: (name: string, folder = "") =>
+    api.get<TaskConfig>(`/config/tasks/${encodeURIComponent(name)}`, { params: { folder: folder || undefined } }),
   create: (data: TaskConfig) => api.post<TaskConfig>("/config/tasks", data),
-  update: (name: string, data: Partial<TaskConfig>) =>
-    api.put<TaskConfig>(`/config/tasks/${encodeURIComponent(name)}`, data),
-  delete: (name: string) => api.delete(`/config/tasks/${encodeURIComponent(name)}`),
-  trigger: (name: string) => api.post<{ status: string; task: string }>(`/config/tasks/trigger/${encodeURIComponent(name)}`),
+  update: (name: string, data: Partial<TaskConfig>, folder = "") =>
+    api.put<TaskConfig>(`/config/tasks/${encodeURIComponent(name)}`, data, { params: { folder: folder || undefined } }),
+  delete: (name: string, folder = "") =>
+    api.delete(`/config/tasks/${encodeURIComponent(name)}`, { params: { folder: folder || undefined } }),
+  trigger: (name: string, folder = "") =>
+    api.post<{ status: string; task: string }>(`/config/tasks/trigger/${encodeURIComponent(name)}`, null, { params: { folder: folder || undefined } }),
+};
+
+// Workspace 文件浏览/编辑
+export interface WorkspaceNode {
+  name: string;
+  path: string;
+  type: "dir" | "file";
+  size?: number;
+  modified: number;
+  binary?: boolean;
+  children?: WorkspaceNode[];
+}
+
+export interface WorkspaceFile {
+  path: string;
+  name: string;
+  size: number;
+  modified: number;
+  binary: boolean;
+  truncated: boolean;
+  content: string;
+}
+
+export interface WorkspaceSearchHit {
+  path: string;
+  name: string;
+  match: "name" | "content";
+  snippet?: string;
+}
+
+export const workspaceApi = {
+  tree: (path = "", depth = 2) =>
+    api.get<{ path: string; children: WorkspaceNode[]; truncated: boolean }>("/workspace/tree", { params: { path: path || undefined, depth } }),
+  read: (path: string) => api.get<WorkspaceFile>("/workspace/file", { params: { path } }),
+  write: (path: string, content: string) => api.put("/workspace/file", { path, content }),
+  mkdir: (path: string) => api.post("/workspace/mkdir", { path }),
+  remove: (path: string) => api.delete("/workspace/file", { params: { path } }),
+  search: (q: string, limit = 30) =>
+    api.get<{ query: string; files: WorkspaceSearchHit[] }>("/workspace/search", { params: { q, limit } }),
+  /** 原始字节服务 URL（图片/音视频预览） */
+  rawUrl: (path: string) => `/api/workspace/raw?path=${encodeURIComponent(path)}`,
+};
+
+/** 按文件名判断可预览的媒体类型 */
+export function workspaceMediaKind(name: string): "image" | "video" | "audio" | null {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  if (["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "ico"].includes(ext)) return "image";
+  if (["mp4", "webm", "mov", "mkv", "avi", "flv"].includes(ext)) return "video";
+  if (["mp3", "wav", "ogg", "flac", "m4a", "opus"].includes(ext)) return "audio";
+  return null;
+}
+
+// 全局搜索
+export interface GlobalSearchResult {
+  query: string;
+  memory: { id: number; snippet: string; memory_type: string; tags: string[]; score: number }[];
+  logs: LogEntry[];
+  files: WorkspaceSearchHit[];
+  conversations: { id: number; scope: string; role: string; snippet: string; time: string }[];
+}
+
+export const searchApi = {
+  global: (q: string, limit = 10) =>
+    api.get<GlobalSearchResult>("/search/global", { params: { q, limit } }),
+};
+
+// UI 交互（ui_ask 回答 / 工作台状态上报）
+export const uiApi = {
+  answer: (askId: string, answer: string) =>
+    api.post<{ status: string }>("/chat/ui-answer", { ask_id: askId, answer }),
+  reportState: (state: Record<string, unknown>) =>
+    api.post("/chat/ui-state", { state }),
 };
 
 // Tags

@@ -263,11 +263,57 @@ class AgentApp:
 
             await event_bus.emit(EVENT_MESSAGE_RECEIVED, payload)
 
+            # 批准回复路由：approve/deny <request_id> 直接决策，不触发思维
+            if await _try_resolve_approval(payload):
+                return
+
             anything = _build_message_everything(payload)
             anything.set_text_content(str(payload.get("content", "")))
             await self.runtime.respond.accept_data(anything)
         else:
             log(f"未处理的事件类型: {event.type}", "DEBUG")
+
+
+async def _try_resolve_approval(payload: dict) -> bool:
+    """把频道内的批准回复（approve/deny <id>）路由到批准管理器。
+
+    仅当 request_id 对应挂起会话时拦截消息，否则按普通消息放行。
+    """
+    content = str(payload.get("content", "") or "").strip()
+    if not content or len(content) > 64:
+        return False
+    from agent.approval.renderer import parse_approval_command
+    parsed = parse_approval_command(content)
+    if not parsed:
+        return False
+    decision_str, request_id = parsed
+
+    from agent.approval import ApprovalDecision, get_approval_gate
+    manager_gate = get_approval_gate()
+    session = await manager_gate._manager.get_session(request_id)
+    if session is None or not session.is_pending():
+        return False
+
+    user_id = str(payload.get("user_id", "") or "unknown")
+    ok = await (manager_gate.approve(request_id, decided_by=user_id)
+                if decision_str == "approved"
+                else manager_gate.deny(request_id, decided_by=user_id))
+    if ok:
+        # 决策确认回执（best-effort）
+        try:
+            from agent.channel.manager import get_channel_manager
+            channel = get_channel_manager().get(str(payload.get("adapter_key", "") or ""))
+            if channel is not None:
+                mark = "✅ 已批准" if decision_str == "approved" else "🚫 已拒绝"
+                send_text = getattr(channel, "send_text", None)
+                if callable(send_text):
+                    await send_text(str(payload.get("group_id") or payload.get("user_id") or ""),
+                                    f"{mark}: {session.request.tool_name} ({request_id})")
+        except Exception:
+            pass
+        log(f"频道内批准决策: {request_id} -> {decision_str} (by {user_id})", tag="权限")
+        return True
+    return False
 
 
 # 全局单例

@@ -22,14 +22,18 @@ class TaskRegistry:
         self.reload()
 
     def reload(self) -> int:
-        """重新加载所有任务定义，返回加载数量。"""
+        """重新加载所有任务定义（递归子目录），返回加载数量。"""
         self._tasks.clear()
         if not self._dir.is_dir():
             return 0
-        for json_file in sorted(self._dir.glob("*.json")):
+        for json_file in sorted(self._dir.rglob("*.json")):
             try:
                 data: Dict[str, Any] = json.loads(json_file.read_text("utf-8"))
                 task = TaskDefinition.from_dict(data)
+                folder = json_file.parent.relative_to(self._dir).as_posix()
+                task.folder = "" if folder == "." else folder
+                if task.name in self._tasks:
+                    log(f"任务名称冲突 [{task.name}] ({json_file})，后者覆盖前者", "WARNING", tag="任务")
                 self._tasks[task.name] = task
             except Exception as exc:
                 log(f"任务加载失败 [{json_file.name}]: {exc}", "WARNING", tag="任务")
@@ -51,6 +55,7 @@ class TaskRegistry:
                 "description": t.description,
                 "scope": t.scope.value,
                 "enabled": t.enabled,
+                "folder": t.folder,
                 "tool_tags": t.tool_tags,
                 "allow_output_tools": t.allow_output_tools,
                 "save_result_to_memory": t.save_result_to_memory,

@@ -230,3 +230,6 @@ EVENT_THINKING_FAKE_TOOL_CALL = "thinking_fake_tool_call"
 # 多工具批量调用追踪事件
 EVENT_MULTI_TOOL_PROGRESS = "multi_tool_progress"
 EVENT_MULTI_TOOL_COMPLETE = "multi_tool_complete"
+
+# 界面交互命令（entities/ui 工具 → 前端工作台）
+EVENT_UI_COMMAND = "ui_command"

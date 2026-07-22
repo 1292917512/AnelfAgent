@@ -272,6 +272,25 @@ class SqliteBackend:
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
 
+    async def search_conversation_global(self, keyword: str, *, limit: int = 20) -> list[dict]:
+        """跨 scope 关键词搜索会话消息（LIKE 匹配，按时间倒序）。"""
+        if not keyword:
+            return []
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT id, scope_type, scope_id, role, content, ts_ns FROM conversation_messages "
+            "WHERE content LIKE ? ORDER BY ts_ns DESC LIMIT ?",
+            (f"%{keyword}%", int(limit)),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": r[0], "scope_type": r[1], "scope_id": r[2],
+                "role": r[3], "content": r[4], "ts_ns": r[5],
+            }
+            for r in rows
+        ]
+
     async def _ensure_conv_embedding_column(self) -> None:
         """懒迁移：确保 conversation_messages 拥有 embedding_blob 列。"""
         if self._conv_embed_ready:

@@ -158,6 +158,14 @@ _PROMPT_SECURITY_LEAK = (
     "请不要给出额外解释或道歉，保持原有回复格式重新输出。"
 )
 
+# max_output_tokens 截断恢复（对齐 Claude Code，最多 3 次）
+_MAX_OUTPUT_RECOVERY_LIMIT = 3
+_PROMPT_MAX_OUTPUT_CONTINUE = (
+    "[系统] 你的上一条输出达到了长度上限被截断。"
+    "请直接从中断处继续，不要道歉、不要复述之前的内容；"
+    "如果剩余工作较多，请拆分为更小的步骤逐步完成。"
+)
+
 
 class ThinkMode(str, Enum):
     """思维循环模式。"""
@@ -185,7 +193,26 @@ async def reply_entry(
     except Exception as exc:
         log(f"reply 异常: {type(exc).__name__}: {exc}", "ERROR", tag="思维")
         error_msg = f"抱歉，处理消息时出错了: {type(exc).__name__}: {exc}"
+        await _send_reply_error(anything, error_msg)
         await complete_reply(mind, anything, error_msg, 0, error=True)
+
+
+async def _send_reply_error(anything: Everything, error_msg: str) -> None:
+    """reply 异常时主动把错误提示发送到来源频道（避免用户端无反馈地空等）。"""
+    adapter_key = getattr(anything, "adapter_key", "")
+    if not adapter_key:
+        return
+    try:
+        from agent.channel.manager import get_channel_manager
+        channel = get_channel_manager().get(adapter_key)
+        if channel is None:
+            return
+        target_id = str(anything.uid)
+        await channel.send_text(target_id, error_msg)
+        from agent.channel.output_tools import _record_sent_reply, _resolve_channel_type
+        await _record_sent_reply(target_id, error_msg, _resolve_channel_type(adapter_key, target_id))
+    except Exception as exc:
+        log(f"错误提示发送失败: {exc}", "DEBUG", tag="思维")
 
 
 def collect_pending_images(mind: Mind) -> List[ImageContent]:
@@ -272,12 +299,22 @@ async def _inject_image_blocks(
     from agent.llm.image_utils import ensure_base64
 
     prepared: List[ImageContent] = []
+    failed: List[str] = []
     for img in images:
         if img.is_url and config.supports_url_vision:
             prepared.append(img)
         else:
-            prepared.extend(await ensure_base64([img]))
+            converted = await ensure_base64([img])
+            if converted:
+                prepared.extend(converted)
+            else:
+                failed.append(img.data[:80])
     blocks = [img.to_openai_block(flat_url=config.use_flat_image_url) for img in prepared]
+    if failed:
+        blocks.append({
+            "type": "text",
+            "text": f"[系统提示] {len(failed)} 张图片加载失败（{'; '.join(failed)}），未包含在消息中，请告知用户。",
+        })
 
     result = list(messages)
     for i in range(len(result) - 1, -1, -1):
@@ -291,7 +328,7 @@ async def _inject_image_blocks(
         else:
             parts = []
         result[i] = {**result[i], "content": parts + blocks}
-        log(f"图片直传: {len(blocks)} 张注入到最后一条 user 消息", "DEBUG", tag="思维")
+        log(f"图片直传: {len(prepared)} 张注入到最后一条 user 消息", "DEBUG", tag="思维")
         break
     return result
 
@@ -345,11 +382,67 @@ async def _compress_context(
         tool_chain: List[Dict],
         scope: str,
 ) -> tuple[List[Dict], List[Dict]]:
-    """执行上下文压缩（保头保尾 + 中间摘要），返回新的 (base_messages, tool_chain)。"""
-    return await mind.compressor.compress_messages(
-        base_messages, tool_chain,
-        scope=scope,
-        summarizer=mind.summarize_text,
+    """执行上下文压缩（保头保尾 + 中间摘要），返回新的 (base_messages, tool_chain)。
+
+    压缩成败记录到熔断器（连续失败 3 次停止尝试）；
+    成功后执行 rehydration：重读压缩前正在处理的文件，恢复工作现场
+    （对齐 Claude Code post-compact rehydration，消费 file_state 缓存）。
+    """
+    try:
+        new_base, new_chain = await mind.compressor.compress_messages(
+            base_messages, tool_chain,
+            scope=scope,
+            summarizer=mind.summarize_text,
+        )
+    except Exception as exc:
+        mind.compressor._record_compress_result(False)
+        log(f"上下文压缩失败: {exc}", "WARNING", tag="压缩")
+        raise
+    mind.compressor._record_compress_result(True)
+    rehydrated = _rehydrate_recent_files(scope)
+    if rehydrated:
+        new_chain = [*new_chain, {"role": "system", "content": rehydrated}]
+    return new_base, new_chain
+
+
+# rehydration 单文件字符上限与总预算（对齐 Claude Code 5K/文件、50K 总量）
+_REHYDRATE_MAX_FILES = 5
+_REHYDRATE_PER_FILE_CHARS = 5000
+_REHYDRATE_TOTAL_CHARS = 50000
+
+
+def _rehydrate_recent_files(scope: str) -> str:
+    """压缩后重读最近读取/编辑过的文件（≤5 个），生成恢复上下文。"""
+    try:
+        from entities.filesystem import file_state
+        cache = file_state.get_cache(scope)
+        entries = list(cache._items.items())[-_REHYDRATE_MAX_FILES:]
+    except Exception:
+        return ""
+    if not entries:
+        return ""
+    import os
+    sections: List[str] = []
+    total = 0
+    for path, _state in reversed(entries):  # 最近使用的优先
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(_REHYDRATE_PER_FILE_CHARS + 1)
+        except OSError:
+            continue
+        if len(content) > _REHYDRATE_PER_FILE_CHARS:
+            content = content[:_REHYDRATE_PER_FILE_CHARS] + "\n... (截断)"
+        block = f"### {os.path.basename(path)} ({path})\n```\n{content}\n```"
+        if total + len(block) > _REHYDRATE_TOTAL_CHARS:
+            break
+        sections.append(block)
+        total += len(block)
+    if not sections:
+        return ""
+    return (
+        "[系统] 上下文已压缩。以下是你压缩前正在处理的文件的最新内容"
+        "（自动恢复，供继续工作参考；如需编辑请遵循 read-before-write 流程）：\n"
+        + "\n\n".join(sections)
     )
 
 
@@ -482,6 +575,7 @@ async def think_loop(
     consecutive_overflow_compressions = 0
     consecutive_monologues = 0
     end_reply_interceptions = 0
+    max_output_recoveries = 0
     last_prompt_tokens = 0
     # 首次独白后升级为 API 级强制工具调用（tool_choice="required"）
     force_tool_choice = False
@@ -538,6 +632,10 @@ async def think_loop(
             "steps_so_far": len(execution_steps),
             "mode": mode.value,
         })
+
+        # Microcompact：完整压缩前的轻量清理（旧只读工具结果 → 占位符）
+        if mind.compressor is not None:
+            mind.compressor.microcompact(tool_chain)
 
         # 上下文压缩：溢出风险（或手动请求）时压缩中间轮次
         if mind.compressor is not None and mind.compressor.should_compress(
@@ -642,6 +740,24 @@ async def think_loop(
         consecutive_overflow_compressions = 0
         if result.usage and result.usage.prompt_tokens:
             last_prompt_tokens = result.usage.prompt_tokens
+
+        # max_output_tokens 截断恢复：输出被长度截断时续写（对齐 Claude Code 两级恢复，
+        # Anelf 端点上限自适应已在 LLMClient 处理，这里做注入续写层，最多 3 次）。
+        # 截断轮的 tool_calls 参数可能不完整（JSON 断裂），一律丢弃不执行。
+        if getattr(result, "finish_reason", "") == "length" \
+                and max_output_recoveries < _MAX_OUTPUT_RECOVERY_LIMIT:
+            max_output_recoveries += 1
+            log(f"输出被 max_tokens 截断，注入续写提示 (第 {max_output_recoveries} 次)",
+                "WARNING", tag="思维")
+            partial_text = _strip_think_blocks(result.content or "").strip()
+            if partial_text or result.tool_calls:
+                truncated_msg: Dict[str, Any] = {"role": "assistant", "content": partial_text}
+                preserve_reasoning_fields(truncated_msg, result)
+                tool_chain.append(truncated_msg)
+            tool_chain.append({"role": "system", "content": _PROMPT_MAX_OUTPUT_CONTINUE})
+            execution_steps.append(f"→ 第{iteration + 1}轮: 输出截断，已注入续写提示")
+            iteration += 1
+            continue
 
         tool_calls = resolve_tool_calls(result)
 
@@ -836,6 +952,13 @@ async def think_loop(
             mind, tool_chain, result, tool_calls, iteration, anything,
             guardrail=guardrail, pipeline=pipeline,
         )
+
+        # 记录目标工具使用（goal nag 提醒的计数依据）
+        try:
+            from agent.planning.nag import note_tools_used
+            note_tools_used(current_scope, [tc.name for tc in tool_calls])
+        except Exception:
+            pass
 
         # 守卫 halt：同工具连续失败达到上限，强制结束本轮
         if guardrail.halt_decision is not None:
@@ -1088,6 +1211,34 @@ def _collect_premature_end(result: ChatResult, tool_calls: List[ToolCall]) -> st
 
 # 工具结果加工（脱敏/扫描/截断）已迁移至 result_pipeline.py，
 
+# 并行执行上限（对齐 Claude Code CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY 默认 10）
+_MAX_TOOL_CONCURRENCY = 10
+
+
+def _partition_tool_calls(tool_calls: List[ToolCall]) -> List[tuple]:
+    """按并发安全性把工具调用切分为连续批次（对齐 Claude Code toolOrchestration）。
+
+    连续的并发安全调用组成并行批次，其余各自串行。
+    安全判定 fail-closed：查询失败一律视为不安全。
+    """
+    from core.entity import EntityRegistry
+
+    def _is_safe(tc: ToolCall) -> bool:
+        try:
+            entity = EntityRegistry.get(tc.name)
+            return bool(entity and entity.meta.get("concurrency_safe"))
+        except Exception:
+            return False
+
+    partitions: List[tuple] = []
+    for tc in tool_calls:
+        safe = _is_safe(tc)
+        if safe and partitions and partitions[-1][0]:
+            partitions[-1][1].append(tc)
+        else:
+            partitions.append((safe, [tc]))
+    return partitions
+
 
 async def execute_tool_calls(
         mind: Mind,
@@ -1134,17 +1285,35 @@ async def execute_tool_calls(
             return blocked_results[tc.id]
         return await execute_one_tool(mind, tc, iteration, anything)
 
-    _tasks = [_run_one(tc) for tc in tool_calls]
-    _outputs = await asyncio.gather(*_tasks, return_exceptions=True)
-    for tc, output in zip(tool_calls, _outputs):
-        if isinstance(output, BaseException):
-            output = json.dumps({"error": str(output)}, ensure_ascii=False)
-        output_str = output if isinstance(output, str) else str(output)
-        final_output = pipeline.process(
-            tc.name, tc.arguments or "", output_str,
-            skip_guardrail=tc.id in blocked_results,
-        )
-        tool_chain.append({"role": "tool", "tool_call_id": tc.id, "content": final_output})
+    # 并发安全分级（对齐 Claude Code）：连续只读调用并行（上限 10），写操作严格串行。
+    # 无论哪条路径，tool 消息都按 tool_calls 原始顺序追加，保证配对完整。
+    semaphore = asyncio.Semaphore(_MAX_TOOL_CONCURRENCY)
+
+    async def _run_guarded(tc: ToolCall):
+        async with semaphore:
+            try:
+                return await _run_one(tc)
+            except BaseException as e:
+                return e
+
+    for is_parallel, batch in _partition_tool_calls(tool_calls):
+        if is_parallel and len(batch) > 1:
+            outputs = await asyncio.gather(*[_run_guarded(tc) for tc in batch])
+        else:
+            outputs = [await _run_guarded(tc) for tc in batch]
+        for tc, output in zip(batch, outputs):
+            if isinstance(output, BaseException):
+                output = json.dumps({"error": str(output)}, ensure_ascii=False)
+            output_str = output if isinstance(output, str) else str(output)
+            try:
+                final_output = pipeline.process(
+                    tc.name, tc.arguments or "", output_str,
+                    skip_guardrail=tc.id in blocked_results,
+                )
+            except Exception as e:
+                # 配对铁律：结果加工失败也要保证 tool 消息落链
+                final_output = json.dumps({"error": f"结果加工异常: {e}"}, ensure_ascii=False)
+            tool_chain.append({"role": "tool", "tool_call_id": tc.id, "content": final_output})
     log_tool_round(iteration, tool_calls)
 
 
@@ -1207,7 +1376,9 @@ async def execute_one_tool(
                         tag="批准",
                     )
                     return json.dumps({
-                        "error": f"工具调用未获批准: {decision.value}",
+                        "error": f"工具调用未获批准: {decision.value}。"
+                                 "用户已通过频道收到拒绝原因；请勿重试相同的调用，"
+                                 "可向用户说明情况或改用其他方式完成任务。",
                         "approval_decision": decision.value,
                     }, ensure_ascii=False)
         except ImportError:

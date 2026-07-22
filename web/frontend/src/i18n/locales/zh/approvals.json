@@ -22,7 +22,11 @@
   "riskLevel": "风险等级",
   "requiresApproval": "需要批准",
   "timeoutSeconds": "超时时间（秒）",
-  "onTimeout": "超时处理",
+  "onTimeout": {
+    "deny": "拒绝",
+    "allow": "允许",
+    "halt": "终止"
+  },
   "trustAfterNApprovals": "信任阈值",
   "trustAfterNApprovalsHint": "批准 N 次后自动信任（0 = 永远询问）",
   "description": "描述",
@@ -36,11 +40,6 @@
     "high": "高风险",
     "critical": "严重风险"
   },
-  "onTimeout": {
-    "deny": "拒绝",
-    "allow": "允许",
-    "halt": "终止"
-  },
   "decision": {
     "approved": "已批准",
     "denied": "已拒绝",
@@ -52,5 +51,35 @@
     "totalDecisions": "总决策数",
     "approvalRate": "批准率",
     "decisionBreakdown": "决策分布"
+  },
+  "matchedRule": "命中规则",
+  "popup": {
+    "title": "AI 请求执行工具",
+    "tool": "工具",
+    "args": "参数",
+    "allowOnce": "允许一次",
+    "allowSession": "本会话不再询问",
+    "allowAlways": "永久允许",
+    "deny": "拒绝",
+    "feedbackPlaceholder": "附言（可选，将告知 AI）",
+    "more": "还有 {{count}} 个待处理请求"
+  },
+  "rules": {
+    "add": "添加规则",
+    "defaultEffect": "默认效果",
+    "effect": {
+      "allow": "放行",
+      "ask": "询问",
+      "deny": "拒绝"
+    },
+    "enabled": "启用",
+    "users": "限定用户",
+    "usersPlaceholder": "留空=所有用户，逗号分隔",
+    "patternHint": "工具名 glob，可带参数模式：run_shell_command(npm test*)",
+    "scopeHint": "global 或频道 id（telegram/qq/webui...）",
+    "sessionBadge": "会话级",
+    "sessionNotice": "当前有 {{count}} 条会话级放行规则（重启后失效），保存只影响持久规则",
+    "orderTitle": "求值顺序（命中即生效）",
+    "orderDesc": "用户限定拒绝 → 频道拒绝 → 全局拒绝 → 用户限定放行 → 频道询问 → 全局询问 → 频道放行 → 全局放行 → 默认效果"
   }
 }

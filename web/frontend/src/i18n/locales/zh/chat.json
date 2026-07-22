@@ -6,5 +6,9 @@
   "attachFiles": "附加文件",
   "user": "用户",
   "sendFailed": "发送失败",
-  "downloadFile": "下载文件"
+  "downloadFile": "下载文件",
+  "queued": "排队中 · 将于当前回复后处理",
+  "activity": {
+    "usingTool": "正在使用工具: {{tool}}"
+  }
 }

@@ -36,7 +36,8 @@
     "mcp_manage": "MCP Manager",
     "devops": "DevOps",
     "skills": "Skills",
-    "delegation": "Sub-agents"
+    "delegation": "Sub-agents",
+    "ui": "UI Interaction"
   },
   "reload": "Reload",
   "reloading": "Reloading...",

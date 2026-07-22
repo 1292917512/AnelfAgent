@@ -1,0 +1,103 @@
+{
+  "toggleFiles": "Workspace files",
+  "toggleDock": "Panels",
+  "tabs": {
+    "status": "Status",
+    "trace": "Trace",
+    "tasks": "Tasks",
+    "search": "Search",
+    "settings": "Settings"
+  },
+  "statusbar": {
+    "errors": "{{count}} errors"
+  },
+  "status": {
+    "sseConnected": "Thinking stream connected",
+    "sseDisconnected": "Thinking stream disconnected",
+    "tracingDisabled": "Thinking trace disabled",
+    "activeSession": "Active Session",
+    "nodes": "Nodes",
+    "toolCalls": "Tool Calls",
+    "errors": "Errors",
+    "noSession": "No active session",
+    "problems": "Problems Detected",
+    "healthy": "Healthy, no problems found",
+    "quickActions": "Quick Actions",
+    "triggerHeartbeat": "Trigger Heartbeat",
+    "clearChat": "Clear Chat",
+    "fullThinking": "Full Thinking View",
+    "heartbeatTriggered": "Heartbeat triggered",
+    "heartbeatFailed": "Heartbeat trigger failed"
+  },
+  "trace": {
+    "disabled": "Thinking trace is disabled, enable it in Settings",
+    "empty": "No thinking data yet",
+    "sessionInfo": "{{count}} nodes",
+    "ended": "ended"
+  },
+  "tasks": {
+    "count": "{{count}} tasks",
+    "create": "New",
+    "rootFolder": "(root)",
+    "trigger": "Trigger",
+    "edit": "Edit",
+    "empty": "No tasks",
+    "editTitle": "Edit Task: {{name}}",
+    "createTitle": "New Task",
+    "cancel": "Cancel",
+    "save": "Save",
+    "fieldName": "Name (unique id)",
+    "fieldDisplayName": "Display name",
+    "fieldFolder": "Folder (empty = root)",
+    "fieldDescription": "Description",
+    "fieldScope": "Scope",
+    "fieldPrompt": "Prompt",
+    "fieldEnabled": "Enabled",
+    "saveFailed": "Save failed, please check fields"
+  },
+  "search": {
+    "placeholder": "Global search: memory / logs / files / chats…",
+    "searching": "Searching…",
+    "hint": "Type a keyword to search all data sources at once",
+    "noResults": "No results found",
+    "groups": {
+      "memory": "Memory",
+      "conversations": "Conversations",
+      "logs": "Logs",
+      "files": "Files"
+    }
+  },
+  "settings": {
+    "chatModel": "Chat Model",
+    "thinkingTrace": "Thinking Trace",
+    "thinkingTraceHint": "Show AI thinking and tool calls in real time",
+    "theme": "Theme",
+    "dark": "Dark",
+    "light": "Light",
+    "heartbeat": "Heartbeat",
+    "heartbeatInfo": "{{count}} ticks · {{tasks}} scheduled tasks"
+  },
+  "files": {
+    "title": "Workspace",
+    "refresh": "Refresh",
+    "loading": "Loading…",
+    "loadFailed": "Failed to load file tree",
+    "empty": "Workspace is empty",
+    "dragHint": "Drag a file into the input to attach it"
+  },
+  "editor": {
+    "save": "Save",
+    "saved": "Saved",
+    "close": "Close",
+    "loading": "Reading file…",
+    "loadFailed": "Failed to read file",
+    "binaryFile": "Binary file, editing not supported",
+    "tooLarge": "File too large to edit online"
+  },
+  "ask": {
+    "inputPlaceholder": "Type your answer…",
+    "submit": "Submit",
+    "skip": "Skip",
+    "skipped": "(skipped by user)"
+  }
+}

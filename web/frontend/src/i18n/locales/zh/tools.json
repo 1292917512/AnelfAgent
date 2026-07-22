@@ -36,7 +36,8 @@
     "mcp_manage": "MCP 管理",
     "devops": "运维管理",
     "skills": "技能",
-    "delegation": "子代理"
+    "delegation": "子代理",
+    "ui": "界面交互"
   },
   "reload": "重新加载",
   "reloading": "重新加载中...",

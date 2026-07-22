@@ -15,9 +15,25 @@ _MAX_IMAGE_KB = 1024
 _SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
 
-def load_image_from_path(path: str | Path) -> ImageContent:
-    """从文件路径加载图片并转为 base64 ImageContent。"""
+def _resolve_image_path(path: str) -> Path:
+    """解析图片路径：相对路径优先按当前目录，其次按工作区根目录解析。"""
     p = Path(path)
+    if p.is_absolute() or p.exists():
+        return p
+    try:
+        from core.config import ConfigManager
+        workspace_root = ConfigManager.get("workspace_root", "workspace")
+    except Exception:
+        workspace_root = "workspace"
+    candidate = Path(workspace_root) / path
+    if candidate.exists():
+        return candidate
+    return p
+
+
+def load_image_from_path(path: str | Path) -> ImageContent:
+    """从文件路径加载图片并转为 base64 ImageContent（相对路径自动按工作区解析）。"""
+    p = _resolve_image_path(str(path))
     if not p.exists():
         raise FileNotFoundError(f"图片路径不存在: {p}")
     if not p.is_file():
@@ -64,8 +80,14 @@ async def download_image_to_base64(url: str, timeout: float = 30.0) -> Optional[
         return None
 
 
+# 常见图片格式的 base64 魔数前缀（避免把短 base64 误判为文件路径）
+_BASE64_MAGIC_PREFIXES = ("/9j/", "iVBOR", "R0lGOD", "UklGR", "Qk2", "SUkq")
+
+
 def _looks_like_file_path(data: str) -> bool:
     """Detect if data string is a local file path rather than base64."""
+    if data.startswith(_BASE64_MAGIC_PREFIXES):
+        return False
     return (len(data) < 500
             and ("/" in data or "\\" in data)
             and not data.startswith("data:"))
@@ -75,8 +97,8 @@ async def ensure_base64(images: List[ImageContent]) -> List[ImageContent]:
     """确保所有图片都是 base64 格式，并自动压缩优化。
 
     自动处理三种来源：
-    - URL → 下载并编码
-    - 本地文件路径 → 读取并编码
+    - URL → 下载并编码（失败保留原 URL，交由端点拉取）
+    - 本地文件路径 → 读取并编码（失败则丢弃该图片，避免脏数据注入 LLM）
     - 已是 base64 → 直接使用
 
     每张图片加载后自动经过 optimize_for_vision 压缩。
@@ -94,8 +116,8 @@ async def ensure_base64(images: List[ImageContent]) -> List[ImageContent]:
             try:
                 loaded = load_image_from_path(img.data)
             except Exception as exc:
-                _log(f"ensure_base64: load failed: {exc}", "WARNING", tag="媒体")
-                loaded = img
+                _log(f"ensure_base64: 图片加载失败，已丢弃 ({img.data}): {exc}", "WARNING", tag="媒体")
+                continue
         else:
             loaded = img
         result.append(optimize_for_vision(loaded))

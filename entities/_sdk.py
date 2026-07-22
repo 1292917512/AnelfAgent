@@ -54,6 +54,7 @@ def tool(
     check_fn: Optional[Callable[[], Any]] = None,
     allow_sleep: bool = False,
     sleep_brief: str = "",
+    concurrency_safe: bool = False,
 ) -> Callable[[F], F]:
     """装饰器：将函数注册为 LLM 可调用工具（注册到 EntityRegistry）。
 
@@ -65,6 +66,8 @@ def tool(
             检查不通过时工具不出现在 LLM schema 中
         allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
         sleep_brief: 沉睡状态下展示给 AI 的简短描述
+        concurrency_safe: 是否可与其他安全工具并行执行（只读工具才应开启，
+            默认 False — 与 Claude Code isConcurrencySafe 一致的 fail-closed 语义）
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
@@ -74,6 +77,8 @@ def tool(
         meta = {}
         if timeout is not None:
             meta["timeout"] = timeout
+        if concurrency_safe:
+            meta["concurrency_safe"] = True
 
         EntityRegistry.register_tool(
             name=tool_name,
@@ -115,6 +120,7 @@ def deferred_tool(
     check_fn: Optional[Callable[[], Any]] = None,
     allow_sleep: bool = False,
     sleep_brief: str = "",
+    concurrency_safe: bool = False,
 ) -> Callable[[F], F]:
     """延迟注册装饰器：装饰时仅收集元数据，activate_group() 时批量注册。
 
@@ -126,6 +132,7 @@ def deferred_tool(
         check_fn: 工具门控前置检查（返回 bool 或 Awaitable[bool]）
         allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
         sleep_brief: 沉睡状态下展示给 AI 的简短描述
+        concurrency_safe: 是否可与其他安全工具并行执行（只读工具才应开启）
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
@@ -135,6 +142,8 @@ def deferred_tool(
         meta = {}
         if timeout is not None:
             meta["timeout"] = timeout
+        if concurrency_safe:
+            meta["concurrency_safe"] = True
 
         _deferred_registry.setdefault(group, []).append({
             "name": tool_name, "func": func, "description": tool_desc,
@@ -171,6 +180,19 @@ def get_llm_manager() -> Any:
     """获取 LLMManager 实例（延迟导入 agent.llm）。"""
     from agent.llm import get_llm_manager as _get
     return _get()
+
+
+def get_current_scope() -> str:
+    """获取当前对话 scope（延迟导入 agent.mind，未绑定时返回 "_global"）。
+
+    供 entities 层工具按 scope 隔离会话状态（如文件读取缓存）。
+    在思维会话外调用（测试、心跳等）时返回全局作用域。
+    """
+    try:
+        from agent.mind.tool_activation import ToolActivationManager
+        return ToolActivationManager.current_scope()
+    except Exception:
+        return "_global"
 
 
 def load_image_from_path(path: str) -> Any:

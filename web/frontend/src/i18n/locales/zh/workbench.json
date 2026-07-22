@@ -1,0 +1,103 @@
+{
+  "toggleFiles": "工作区文件",
+  "toggleDock": "功能面板",
+  "tabs": {
+    "status": "状态",
+    "trace": "思维",
+    "tasks": "任务",
+    "search": "搜索",
+    "settings": "设置"
+  },
+  "statusbar": {
+    "errors": "{{count}} 个错误"
+  },
+  "status": {
+    "sseConnected": "思维链实时连接中",
+    "sseDisconnected": "思维链连接已断开",
+    "tracingDisabled": "思维链追踪未启用",
+    "activeSession": "活跃会话",
+    "nodes": "节点",
+    "toolCalls": "工具调用",
+    "errors": "错误",
+    "noSession": "暂无活跃会话",
+    "problems": "发现的问题",
+    "healthy": "运行正常，未发现问题",
+    "quickActions": "快捷操作",
+    "triggerHeartbeat": "触发心跳",
+    "clearChat": "清空对话",
+    "fullThinking": "完整思维链路",
+    "heartbeatTriggered": "心跳已触发",
+    "heartbeatFailed": "心跳触发失败"
+  },
+  "trace": {
+    "disabled": "思维链追踪未启用，可在设置面板开启",
+    "empty": "暂无思维链路数据",
+    "sessionInfo": "{{count}} 个节点",
+    "ended": "已结束"
+  },
+  "tasks": {
+    "count": "{{count}} 个任务",
+    "create": "新建",
+    "rootFolder": "（根目录）",
+    "trigger": "触发执行",
+    "edit": "编辑",
+    "empty": "暂无任务",
+    "editTitle": "编辑任务：{{name}}",
+    "createTitle": "新建任务",
+    "cancel": "取消",
+    "save": "保存",
+    "fieldName": "任务名（唯一标识）",
+    "fieldDisplayName": "显示名",
+    "fieldFolder": "文件夹（留空为根目录）",
+    "fieldDescription": "描述",
+    "fieldScope": "作用域",
+    "fieldPrompt": "任务提示词",
+    "fieldEnabled": "启用",
+    "saveFailed": "保存失败，请检查字段"
+  },
+  "search": {
+    "placeholder": "全局搜索：记忆 / 日志 / 文件 / 会话…",
+    "searching": "搜索中…",
+    "hint": "输入关键词，一次搜索全部数据源",
+    "noResults": "没有找到匹配结果",
+    "groups": {
+      "memory": "记忆",
+      "conversations": "会话",
+      "logs": "日志",
+      "files": "文件"
+    }
+  },
+  "settings": {
+    "chatModel": "聊天模型",
+    "thinkingTrace": "思维链追踪",
+    "thinkingTraceHint": "实时显示 AI 的思考与工具调用",
+    "theme": "主题",
+    "dark": "深色",
+    "light": "浅色",
+    "heartbeat": "心跳",
+    "heartbeatInfo": "已 tick {{count}} 次 · {{tasks}} 个调度任务"
+  },
+  "files": {
+    "title": "工作区",
+    "refresh": "刷新",
+    "loading": "加载中…",
+    "loadFailed": "文件树加载失败",
+    "empty": "工作区为空",
+    "dragHint": "拖拽文件到输入框即可注入对话"
+  },
+  "editor": {
+    "save": "保存",
+    "saved": "已保存",
+    "close": "关闭",
+    "loading": "读取文件中…",
+    "loadFailed": "文件读取失败",
+    "binaryFile": "二进制文件，不支持编辑",
+    "tooLarge": "文件过大，不支持在线编辑"
+  },
+  "ask": {
+    "inputPlaceholder": "输入你的回答…",
+    "submit": "提交",
+    "skip": "跳过",
+    "skipped": "（用户跳过）"
+  }
+}

@@ -179,7 +179,7 @@ tick() 单次心跳：
 
 ```
 pages/
-├── Chat.tsx             # 对话（首页）
+├── Chat.tsx             # 对话工作台（首页，三栏：文件树/对话流/功能 Dock）→ chat/
 ├── Dashboard.tsx        # 总览 → dashboard/
 ├── Memory.tsx           # 记忆 → memory/
 ├── Tasks.tsx            # 任务管理（独立页面）
@@ -240,6 +240,12 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 | `agent/channel/tool_bridge.py` | 频道工具桥接（@channel_tool 扫描注册 / 通用能力路由 / 敏感门控 / 按频道接口开关 channel_tool_states） |
 | `agent/channel/context.py` | 当前会话频道 ContextVar（通用工具默认路由目标） |
 | `web/routers/config.py` | 心跳/任务 API + Mind 配置 API |
+| `web/routers/workspace.py` | 工作区文件 API（目录树 / 读写 / 搜索，沙箱复用 entities.filesystem） |
+| `web/routers/search.py` | 全局搜索聚合 API（记忆 / 日志 / 文件 / 会话） |
+| `entities/ui/tools.py` | 界面交互工具组（ui_notify / ui_ask / ui_open_panel / ui_compose / ui_get_state） |
+| `web/frontend/src/pages/chat/` | 对话工作凳子面板（Dock / StatusBar / FileEditor / UiCommandHost / render） |
+| `web/frontend/src/stores/chat-store.ts` | 对话状态 + 聊天 SSE（含 ui_command 分发） |
+| `web/frontend/src/stores/workbench-store.ts` | 工作台状态（Dock / 编辑器 / UI 命令收件箱 / 状态上报） |
 | `core/path.py` | PathManager + ConfigPaths 路径常量 |
 | `core/lifecycle.py` | 单例生命周期注册表（register / shutdown_all / reset） |
 
@@ -270,6 +276,7 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 | `planning` | 目标规划 | `agent/planning/tools.py` | planning/goal/heartbeat |
 | `skills` | 技能 | `agent/skills/tools.py` | always |
 | `delegation` | 子代理 | `agent/delegation/delegate_tool.py` | always |
+| `ui` | 界面交互 | `entities/ui/tools.py`（经 event_bus `EVENT_UI_COMMAND` → 聊天 SSE 桥接） | always |
 | `web` | 网络工具 | `entities/web/tools.py` | web/search/fetch |
 | `media` | 多媒体 | `entities/media/tools.py` | media:* |
 | `os` | 操作系统 | `entities/filesystem/tools.py` | media:file |

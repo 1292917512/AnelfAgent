@@ -928,6 +928,16 @@ class PrefrontalCortex:
         if tool_parts:
             lines.append(f"[工具态势] {' | '.join(tool_parts)}")
 
+        # 目标 nag 提醒（对齐 Claude Code todo_reminder：10 轮未更新才提醒）
+        try:
+            from agent.planning.nag import maybe_nag
+            from agent.mind.tool_activation import ToolActivationManager
+            nag_text = maybe_nag(ToolActivationManager.current_scope())
+            if nag_text:
+                lines.append(nag_text)
+        except Exception:
+            pass
+
         # 沉睡分组激活状态（剩余最后一轮时提示续期）
         from agent.mind.tool_activation import tool_activation
         active_groups = tool_activation.active_groups()

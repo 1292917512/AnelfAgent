@@ -1,39 +1,46 @@
-"""批准门 — 工具调用前的人工确认入口。
+"""批准门 — 工具调用前的人工确认入口（统一权限引擎驱动）。
 
 职责：
-1. 匹配策略（policy_set.match(tool_name)）
-2. 检查是否自动批准（白名单 / 信任阈值）
-3. 创建批准会话
-4. 通过频道发送批准提示
-5. 等待用户决策（同步阻塞或超时）
-6. 返回决策结果
+1. 经统一规则引擎求值（PermissionRuleSet.evaluate）
+2. auto_allow / auto_deny 直接决策（deny 会通知用户原因）
+3. ask → 创建批准会话 → 频道提示（WebUI 为 SSE 弹窗）→ 等待决策
+4. 支持"记住决策"：本会话不再询问（内存规则）/ 永久放行（写入规则文件）
+5. 决策结果（含命中规则）回写频道与日志，拒绝原因全链路可见
 
 使用方式：
     gate = get_approval_gate()
     decision = await gate.request_approval(
-        tool_name="filesystem.write_file",
+        tool_name="write_file",
         tool_args={"path": "/tmp/x", "content": "..."},
         reason="high risk write",
         channel=current_channel,
         chat_id="...",
         user_id="...",
     )
-    if decision != ApprovalDecision.APPROVED:
-        raise ApprovalDenied(...)
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from core.log import log
 
 from agent.channel.base import ApprovalPromptRenderContext, BaseChannel
 
 from .manager import ApprovalManager, get_approval_manager
-from .policy import ApprovalPolicy, ApprovalPolicySet, RiskLevel
+from .policy import ApprovalPolicySet
+from .rules import (
+    PermissionDecision,
+    PermissionEffect,
+    PermissionRule,
+    PermissionRuleSet,
+    PermissionVerdict,
+    from_legacy_policyset,
+    load_rules,
+    save_rules,
+)
 from .session import ApprovalDecision, ApprovalRequest, ApprovalSession
 
 
@@ -52,27 +59,57 @@ class ApprovalGate:
     def __init__(
         self,
         manager: Optional[ApprovalManager] = None,
-        policy_set: Optional[ApprovalPolicySet] = None,
+        rule_set: Optional[PermissionRuleSet] = None,
     ) -> None:
         self._manager = manager or get_approval_manager()
-        self._policy_set = policy_set or ApprovalPolicySet.default()
+        self._rule_set = rule_set if rule_set is not None else load_rules()
+        # 会话级放行规则（重启失效）：(scope, tool_name) → rule
+        self._session_rules: List[PermissionRule] = []
 
     # ------------------------------------------------------------------
-    # 策略管理
+    # 规则管理
     # ------------------------------------------------------------------
+
+    def get_rule_set(self) -> PermissionRuleSet:
+        """获取当前规则集（含会话级规则）。"""
+        return PermissionRuleSet(
+            rules=[*self._session_rules, *self._rule_set.rules],
+            default_effect=self._rule_set.default_effect,
+            default_risk=self._rule_set.default_risk,
+        )
+
+    def set_rule_set(self, rule_set: PermissionRuleSet, *, persist: bool = False) -> None:
+        """替换规则集（不含会话级规则）。"""
+        self._rule_set = rule_set
+        if persist:
+            save_rules(rule_set)
+
+    def reload_rules(self, path: str = "") -> None:
+        """从文件重载规则（热更新入口）。"""
+        self._rule_set = load_rules() if not path else load_rules(path)
+        log(f"权限规则已重载 ({len(self._rule_set.rules)} 条)", tag="权限")
+
+    def add_rule(self, rule: PermissionRule, *, persist: bool = True) -> None:
+        """添加规则；persist 时写入规则文件。"""
+        if persist:
+            self._rule_set.rules.append(rule)
+            save_rules(self._rule_set)
+        else:
+            self._session_rules.insert(0, rule)
+
+    # ---- 旧接口兼容（ApprovalPolicySet） ----
 
     def set_policy_set(self, policy_set: ApprovalPolicySet) -> None:
-        """替换策略集。"""
-        self._policy_set = policy_set
+        """旧接口：替换策略集（内部转换为统一规则）。"""
+        self._rule_set = from_legacy_policyset(policy_set)
 
     def get_policy_set(self) -> ApprovalPolicySet:
-        """获取当前策略集。"""
-        return self._policy_set
+        """旧接口：获取策略集（由统一规则近似转换，仅供旧 API 展示）。"""
+        return from_legacy_policyset_to_policies(self._rule_set)
 
     def reload_policies(self, path: str) -> None:
-        """从文件重载策略。"""
-        self._policy_set = ApprovalPolicySet.load_from_file(path)
-        log(f"批准策略已重载: {path} ({len(self._policy_set.policies)} 条)", tag="批准")
+        """旧接口：从文件重载（自动识别新旧格式）。"""
+        self.reload_rules(path)
 
     # ------------------------------------------------------------------
     # 批准请求
@@ -91,77 +128,79 @@ class ApprovalGate:
     ) -> ApprovalDecision:
         """请求批准（核心入口）。
 
-        Args:
-            tool_name: 工具名
-            tool_args: 工具参数（会被脱敏后展示）
-            reason: 触发批准的原因
-            channel: 来源频道（用于发送批准提示）
-            chat_id: 会话 ID
-            user_id: 发起用户 ID
-            timeout: 超时时间（秒），None 则使用策略默认
-
         Returns:
             ApprovalDecision.APPROVED / DENIED / EXPIRED / CANCELLED
-
-        Raises:
-            ApprovalDenied: 被拒绝或超时（如果调用方希望以异常方式处理）
         """
-        # 1. 匹配策略
-        policy = self._policy_set.match(tool_name)
-        if not policy or not policy.requires_approval:
-            return ApprovalDecision.APPROVED  # 无需批准
+        channel_id = getattr(channel, "channel_id", "") or ""
+        verdict = self.get_rule_set().evaluate(tool_name, tool_args, channel_id, user_id)
 
-        # 2. 检查自动决策
-        if policy.is_auto_approved(user_id):
-            log(f"用户 {user_id} 在白名单，自动批准: {tool_name}", "DEBUG", tag="批准")
+        if verdict.decision == PermissionDecision.AUTO_ALLOW:
+            if verdict.rule is not None:
+                log(f"权限放行: {tool_name} — {verdict.reason}", "DEBUG", tag="权限")
             return ApprovalDecision.APPROVED
-        if policy.is_auto_denied(user_id):
-            log(f"用户 {user_id} 在黑名单，自动拒绝: {tool_name}", "DEBUG", tag="批准")
+
+        if verdict.decision == PermissionDecision.AUTO_DENY:
+            log(f"权限拒绝: {tool_name} — {verdict.reason} (user={user_id})", "WARNING", tag="权限")
+            await self._notify_outcome(
+                channel, chat_id,
+                f"⛔ 已拒绝执行 {tool_name}\n原因: {verdict.reason}",
+            )
             return ApprovalDecision.DENIED
-        if await self._manager.is_trusted(tool_name, user_id, policy):
-            log(f"用户 {user_id} 已信任 {tool_name}，自动批准", "DEBUG", tag="批准")
-            return ApprovalDecision.APPROVED
 
-        # 3. 创建请求
-        timeout_seconds = timeout or policy.timeout_seconds
+        # ASK：走人工批准流程
+        rule = verdict.rule
+        timeout_seconds = timeout or (rule.timeout_seconds if rule else 60.0)
         request = ApprovalRequest(
             tool_name=tool_name,
             tool_args=self._sanitize_args(tool_args),
-            risk_level=policy.risk_level,
+            risk_level=rule.risk_level if rule else self._rule_set.default_risk,
             reason=reason,
-            requester_channel=channel.channel_id,
+            requester_channel=channel_id,
             requester_chat_id=chat_id,
             requester_user_id=user_id,
             expires_at=time.time() + timeout_seconds,
+            matched_rule=verdict.matched_pattern or "*",
         )
         session = await self._manager.create_session(request)
 
-        # 4. 发送批准提示
         try:
             await self._send_approval_prompt(channel, chat_id, session)
         except Exception as exc:
-            log(f"发送批准提示失败: {exc}", "ERROR", tag="批准")
+            log(f"发送批准提示失败: {exc}", "ERROR", tag="权限")
             await self._manager.cancel(request.request_id, "send_prompt_failed")
             return ApprovalDecision.CANCELLED
 
-        # 5. 等待决策
         decision = await self._wait_for_decision(session, timeout_seconds)
 
-        # 6. 根据策略处理结果
         if decision == ApprovalDecision.EXPIRED:
-            if policy.on_timeout == "allow":
-                log(f"批准超时但策略允许: {tool_name}", "WARNING", tag="批准")
+            on_timeout = rule.on_timeout if rule else "deny"
+            if on_timeout == "allow":
+                log(f"批准超时但规则允许: {tool_name}", "WARNING", tag="权限")
                 return ApprovalDecision.APPROVED
-            elif policy.on_timeout == "halt":
+            if on_timeout == "halt":
                 raise ApprovalDenied(ApprovalDecision.EXPIRED, "timeout halt")
-            # 默认 deny
+            await self._notify_outcome(
+                channel, chat_id,
+                f"⏰ 批准请求超时，已拒绝执行 {tool_name}（规则: {request.matched_rule}）",
+            )
             return ApprovalDecision.DENIED
 
+        if decision == ApprovalDecision.DENIED:
+            await self._notify_outcome(
+                channel, chat_id,
+                f"🚫 已拒绝执行 {tool_name}（规则: {request.matched_rule}）",
+            )
         return decision
 
-    async def approve(self, request_id: str, decided_by: str = "", reason: str = "") -> bool:
-        """批准（供外部调用，如命令处理器）。"""
-        return await self._manager.approve(request_id, decided_by, reason)
+    async def approve(self, request_id: str, decided_by: str = "", reason: str = "",
+                      remember: str = "once") -> bool:
+        """批准；remember: once / session（本会话不再询问）/ always（永久放行）。"""
+        ok = await self._manager.approve(request_id, decided_by, reason)
+        if ok and remember in ("session", "always"):
+            session = await self._manager.get_session(request_id)
+            if session is not None:
+                await self._remember_rule(session, remember, decided_by)
+        return ok
 
     async def deny(self, request_id: str, decided_by: str = "", reason: str = "") -> bool:
         """拒绝。"""
@@ -174,6 +213,29 @@ class ApprovalGate:
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
+
+    async def _remember_rule(self, session: ApprovalSession, remember: str,
+                             decided_by: str) -> None:
+        """把批准决策固化为放行规则（会话级或永久）。"""
+        req = session.request
+        rule = PermissionRule(
+            pattern=req.tool_name,
+            effect=PermissionEffect.ALLOW,
+            scope=req.requester_channel or "global",
+            users=[req.requester_user_id] if req.requester_user_id not in ("", "unknown") else [],
+            description=f"批准时选择{'本会话' if remember == 'session' else '永久'}放行",
+            created_by=f"approve:{decided_by or 'unknown'}",
+        )
+        if remember == "always":
+            self._rule_set.rules.append(rule)
+            try:
+                save_rules(self._rule_set)
+            except Exception as exc:
+                log(f"永久放行规则写入失败: {exc}", "ERROR", tag="权限")
+        else:
+            self._session_rules.insert(0, rule)
+        log(f"放行规则已创建: [{rule.pattern}] scope={rule.scope} "
+            f"({'会话级' if remember == 'session' else '永久'})", tag="权限")
 
     def _sanitize_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """脱敏工具参数（移除 API Key / Token / 密码等）。"""
@@ -210,6 +272,15 @@ class ApprovalGate:
         if not response.success:
             raise RuntimeError(f"批准提示发送失败: {response.error}")
 
+    async def _notify_outcome(self, channel: BaseChannel, chat_id: str, text: str) -> None:
+        """把权限决策结果通知到频道（best-effort，拒绝原因对用户可见）。"""
+        try:
+            send_text = getattr(channel, "send_text", None)
+            if callable(send_text):
+                await send_text(chat_id, text)
+        except Exception as exc:
+            log(f"权限结果通知发送失败: {exc}", "DEBUG", tag="权限")
+
     async def _wait_for_decision(
         self,
         session: ApprovalSession,
@@ -220,10 +291,11 @@ class ApprovalGate:
         poll_interval = 0.5
         while time.time() < deadline:
             current = await self._manager.get_session(session.request.request_id)
+            # 先检查决策：resolved 会话 status 已非 pending，但 decision 有效
+            if current and current.decision:
+                return current.decision
             if not current or current.status != "pending":
                 break
-            if current.decision:
-                return current.decision
             await asyncio.sleep(poll_interval)
             poll_interval = min(poll_interval * 1.2, 2.0)  # 渐进退避
 
@@ -235,6 +307,24 @@ class ApprovalGate:
             "timeout",
         )
         return ApprovalDecision.EXPIRED
+
+
+def from_legacy_policyset_to_policies(rule_set: PermissionRuleSet) -> ApprovalPolicySet:
+    """统一规则集 → 旧策略集近似转换（仅供旧 API 读取展示）。"""
+    from .policy import ApprovalPolicy
+
+    policies: List[ApprovalPolicy] = []
+    for r in rule_set.rules:
+        policies.append(ApprovalPolicy(
+            tool_name_pattern=r.pattern,
+            risk_level=r.risk_level,
+            requires_approval=r.effect == PermissionEffect.ASK,
+            timeout_seconds=r.timeout_seconds,
+            on_timeout=r.on_timeout,
+            trust_after_n_approvals=r.trust_after_n_approvals,
+            description=f"[{r.effect.value}@{r.scope}] {r.description}".strip(),
+        ))
+    return ApprovalPolicySet(policies=policies)
 
 
 # ======================================================================

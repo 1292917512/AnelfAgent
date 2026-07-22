@@ -26,6 +26,7 @@ _GROUP_ORDER = {
     "devops": 16,
     "skills": 17,
     "delegation": 18,
+    "ui": 19,
 }
 
 

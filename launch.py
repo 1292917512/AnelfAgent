@@ -24,21 +24,26 @@ def main():
         from agent.runtime.bootstrap import create_bootstrap
         await create_bootstrap().execute()
 
-        # 初始化批准机制：加载策略配置 + 启动热更新监听
+        # 初始化统一权限机制：加载规则 + 启动热更新监听
+        # （新格式 config/permission_rules.json 优先，旧 approval_policies.json 自动转换）
         import os
         from agent.approval import get_approval_gate
+        from agent.approval.rules import RULES_PATH, LEGACY_PATH
         from agent.channel.config_watcher import get_config_watcher
         gate = get_approval_gate()
-        policies_path = "config/approval_policies.json"
-        if os.path.exists(policies_path):
-            gate.reload_policies(policies_path)
-            log(f"批准策略已加载: {policies_path}", tag="批准")
-            # 启动批准策略热更新监听
-            watcher = get_config_watcher()
-            watcher.watch(policies_path, lambda: gate.reload_policies(policies_path))
-            log(f"批准策略热更新监听已启动: {policies_path}", tag="批准")
+        watcher = get_config_watcher()
+        watched = False
+        for path in (RULES_PATH, LEGACY_PATH):
+            if os.path.exists(path):
+                gate.reload_rules(path)
+                watcher.watch(path, lambda p=path: gate.reload_rules(p))
+                log(f"权限规则热更新监听已启动: {path}", tag="权限")
+                watched = True
+                break
+        if watched:
+            log(f"权限规则已加载 ({len(gate.get_rule_set().rules)} 条)", tag="权限")
         else:
-            log(f"批准策略文件不存在，使用默认策略: {policies_path}", "WARNING", tag="批准")
+            log("权限规则文件不存在，使用默认（全部放行）", "WARNING", tag="权限")
 
         from agent.channel import get_channel_manager
         await get_channel_manager().start_all()

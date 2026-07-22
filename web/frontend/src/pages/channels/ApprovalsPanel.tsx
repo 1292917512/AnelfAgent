@@ -4,7 +4,7 @@ import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { Clock, History, Settings, BarChart3 } from "lucide-react";
 import { PendingApprovalsList } from "@/pages/approvals/PendingApprovalsList";
 import { ApprovalHistory } from "@/pages/approvals/ApprovalHistory";
-import { ApprovalPolicyEditor } from "@/pages/approvals/ApprovalPolicyEditor";
+import { PermissionRulesEditor } from "@/pages/approvals/PermissionRulesEditor";
 import { ApprovalStats } from "@/pages/approvals/ApprovalStats";
 
 type ApprovalTab = "pending" | "history" | "policies" | "stats";
@@ -26,7 +26,7 @@ export function ApprovalsPanel() {
 
       {activeTab === "pending" && <PendingApprovalsList />}
       {activeTab === "history" && <ApprovalHistory />}
-      {activeTab === "policies" && <ApprovalPolicyEditor />}
+      {activeTab === "policies" && <PermissionRulesEditor />}
       {activeTab === "stats" && <ApprovalStats />}
     </div>
   );

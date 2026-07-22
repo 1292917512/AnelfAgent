@@ -106,6 +106,29 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     # BaseChannel 协议方法
     # ------------------------------------------------------------------
 
+    async def render_approval_prompt(self, ctx):
+        """审批提示 → SSE 弹窗事件（Web 富交互，不发纯文本消息）。"""
+        self._broadcast("approval_request", {
+            "request_id": ctx.request_id,
+            "tool_name": ctx.tool_name,
+            "tool_args": ctx.tool_args_summary,
+            "risk_level": ctx.risk_level,
+            "reason": ctx.reason,
+            "timeout_seconds": ctx.timeout_seconds,
+        })
+        # 返回空片段请求，forward_message 成为 no-op（提示完全由弹窗承担）
+        return self._build_empty_request()
+
+    def _build_empty_request(self) -> SendRequest:
+        return SendRequest(
+            adapter_key=self.channel_id,
+            channel=AdapterChannel(
+                channel_id="",
+                channel_type=ChannelType.PRIVATE,
+            ),
+            segments=[],
+        )
+
     async def forward_message(self, request: SendRequest) -> SendResponse:
         """统一发送入口。"""
         try:

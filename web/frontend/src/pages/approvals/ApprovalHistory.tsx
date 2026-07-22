@@ -12,6 +12,7 @@ interface ApprovalHistoryItem {
   decided_by: string;
   decided_at: number;
   decision_reason: string;
+  matched_rule?: string;
   requester_user_id: string;
   requester_channel: string;
 }
@@ -103,6 +104,14 @@ export function ApprovalHistory() {
                   <div className="text-sm font-medium text-foreground mb-1">{t("decidedBy")}</div>
                   <div className="text-sm text-muted-foreground">{item.decided_by || t("system")}</div>
                 </div>
+
+                {/* 命中规则 */}
+                {item.matched_rule && (
+                  <div>
+                    <div className="text-sm font-medium text-foreground mb-1">{t("matchedRule")}</div>
+                    <div className="font-mono text-sm text-muted-foreground">{item.matched_rule}</div>
+                  </div>
+                )}
 
                 {/* 决策理由 */}
                 {item.decision_reason && (

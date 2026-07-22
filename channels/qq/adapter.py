@@ -1431,6 +1431,8 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
             self._self_id = str(self_id)
 
         if not self._check_whitelist(data):
+            log(f"QQ 白名单拦截: group={data.get('group_id')} user={data.get('user_id')} "
+                f"的消息已被丢弃（不在白名单内）", "WARNING", tag="通道")
             return
 
         # 使用异步解析，支持获取引用消息内容、群成员昵称和合并转发

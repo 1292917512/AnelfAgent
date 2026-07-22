@@ -1075,6 +1075,10 @@ class LLMClient(BaseEntity):
         result: list[ToolCall] = []
         for _, buf in sorted(tc_bufs.items()):
             if not buf["name"]:
+                log(
+                    f"丢弃无名流式 tool_call 片段: id={buf['id']} args={buf['arguments'][:120]}",
+                    "WARNING", tag="模型",
+                )
                 continue
             result.append(ToolCall(
                 id=buf["id"] or f"tc_{len(result)}",
@@ -1175,21 +1179,59 @@ class LLMClient(BaseEntity):
 
     @staticmethod
     def _parse_tool_calls(raw_tool_calls: Any) -> list[ToolCall]:
+        """解析 tool_calls，兼容 OpenAI 对象 / dict / anthropic tool_use 原始形态。
+
+        部分 anthropic 桥接端点返回的 tool_call 结构不标准（function 为 dict、
+        或 name 位于顶层），此处做多形态兜底；名字缺失的调用丢弃并输出原始
+        结构日志，避免空调用在思维循环中反复失败。
+        """
         if not raw_tool_calls:
             return []
         result: list[ToolCall] = []
         for i, tc in enumerate(raw_tool_calls):
+            raw_dict: dict = {}
+            if hasattr(tc, "model_dump"):
+                try:
+                    raw_dict = tc.model_dump()
+                except Exception:
+                    raw_dict = {}
+            elif isinstance(tc, dict):
+                raw_dict = tc
+
             func = getattr(tc, "function", None)
-            if func is None:
+            if func is None and isinstance(tc, dict):
+                func = tc.get("function")
+
+            func_name: Any = None
+            func_args: Any = None
+            if isinstance(func, dict):
+                func_name = func.get("name")
+                func_args = func.get("arguments")
+            elif func is not None:
+                func_name = getattr(func, "name", None)
+                func_args = getattr(func, "arguments", None)
+            else:
+                # anthropic tool_use 原始形态：{type: "tool_use", name, input}
+                func_name = raw_dict.get("name")
+                func_args = raw_dict.get("input") if "input" in raw_dict else raw_dict.get("arguments")
+
+            name = func_name.strip() if isinstance(func_name, str) else ""
+            if not name:
+                log(
+                    f"丢弃无名 tool_call（端点返回结构异常）: {json.dumps(raw_dict, ensure_ascii=False)[:300]}",
+                    "WARNING", tag="模型",
+                )
                 continue
-            args_str = func.arguments if isinstance(func.arguments, str) else json.dumps(
-                func.arguments, ensure_ascii=False,
+
+            args_str = func_args if isinstance(func_args, str) else json.dumps(
+                func_args if func_args is not None else {}, ensure_ascii=False,
             )
+            tc_id = getattr(tc, "id", None) or raw_dict.get("id") or f"tc_{i}"
             result.append(ToolCall(
-                id=getattr(tc, "id", None) or f"tc_{i}",
-                name=getattr(func, "name", None) or "",
+                id=str(tc_id),
+                name=name,
                 arguments=args_str,
-                raw=tc.model_dump() if hasattr(tc, "model_dump") else {},
+                raw=raw_dict,
             ))
         return result
 

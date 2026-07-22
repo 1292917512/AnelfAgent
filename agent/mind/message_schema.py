@@ -141,10 +141,62 @@ def fix_empty_tool_call_content(messages: List[Dict]) -> List[Dict]:
     return messages
 
 
+def ensure_tool_result_pairing(messages: List[Dict]) -> List[Dict]:
+    """tool_use/tool_result 配对铁律（对齐 Claude Code ensureToolResultPairing）。
+
+    发送前最后一道防线：
+    - assistant 的 tool_calls 缺少对应 role=tool 结果 → 合成错误结果
+      （执行被中断/取消），避免提供商 400
+    - 无对应 tool_calls 的孤儿 role=tool 消息 → 剔除
+    """
+    # 收集全部 tool_call id 与已有结果 id
+    call_ids: List[str] = []
+    result_ids: set = set()
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                tc_id = tc.get("id") if isinstance(tc, dict) else None
+                if tc_id:
+                    call_ids.append(tc_id)
+        elif msg.get("role") == "tool":
+            tc_id = msg.get("tool_call_id")
+            if tc_id:
+                result_ids.add(tc_id)
+
+    call_id_set = set(call_ids)
+    # 1. 剔除孤儿 tool 结果
+    cleaned = [
+        msg for msg in messages
+        if not (msg.get("role") == "tool" and msg.get("tool_call_id")
+                and msg["tool_call_id"] not in call_id_set)
+    ]
+
+    # 2. 为缺失结果的 tool_calls 合成错误结果（紧跟对应 assistant 消息之后）
+    missing = [cid for cid in call_ids if cid not in result_ids]
+    if not missing:
+        return cleaned
+    missing_set = set(missing)
+    repaired: List[Dict] = []
+    for msg in cleaned:
+        repaired.append(msg)
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                tc_id = tc.get("id") if isinstance(tc, dict) else None
+                if tc_id and tc_id in missing_set:
+                    repaired.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": '{"error": "工具执行被中断或取消，未产生结果"}',
+                    })
+    return repaired
+
+
 def normalize_for_send(messages: List[Dict]) -> List[Dict]:
-    """发送边界统一规整：角色归一 + 尾部 prefill 修复 + 空 content 修复。
+    """发送边界统一规整：配对修复 + 角色归一 + 尾部 prefill 修复 + 空 content 修复。
 
     _invoke_llm_unified 的唯一入口；新增发送边界规则只加在这里，
     不再散落到上下文组装各阶段。
     """
-    return fix_empty_tool_call_content(fix_trailing_assistant(normalize_roles(messages)))
+    return fix_empty_tool_call_content(
+        fix_trailing_assistant(normalize_roles(ensure_tool_result_pairing(messages)))
+    )

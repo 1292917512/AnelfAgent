@@ -6,5 +6,9 @@
   "attachFiles": "Attach files",
   "user": "User",
   "sendFailed": "Send failed",
-  "downloadFile": "Download file"
+  "downloadFile": "Download file",
+  "queued": "Queued · will be handled after current reply",
+  "activity": {
+    "usingTool": "Using tool: {{tool}}"
+  }
 }

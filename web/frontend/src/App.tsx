@@ -3,7 +3,9 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/layout/Layout";
 import { AuthGate } from "./components/AuthGate";
 import { Toaster } from "./components/ui/Toast";
+import { ApprovalDialog } from "./components/ApprovalDialog";
 import { useAppStore } from "./stores/app-store";
+import { useChatStore } from "./stores/chat-store";
 import { configApi } from "./lib/api";
 import Dashboard from "./pages/Dashboard";
 import Chat from "./pages/Chat";
@@ -21,6 +23,7 @@ import Tasks from "./pages/Tasks";
 
 export default function App() {
   const setConfig = useAppStore((s) => s.setConfig);
+  const startSSE = useChatStore((s) => s.startSSE);
 
   useEffect(() => {
     configApi.webui().then((r) => {
@@ -30,7 +33,9 @@ export default function App() {
         navigation: data.navigation,
       });
     }).catch((e) => console.warn("[API]", e));
-  }, [setConfig]);
+    // 全局启动 chat SSE（幂等）：审批弹窗等事件不依赖 Chat 页
+    startSSE();
+  }, [setConfig, startSSE]);
 
   return (
     <AuthGate>
@@ -59,6 +64,7 @@ export default function App() {
         </Routes>
       </BrowserRouter>
       <Toaster />
+      <ApprovalDialog />
     </AuthGate>
   );
 }

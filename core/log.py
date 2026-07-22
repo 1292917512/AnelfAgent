@@ -333,6 +333,13 @@ def query_log_buffer(
     return results
 
 
+def clear_log_buffer() -> int:
+    """清空内存日志缓冲区，返回清除的条数。"""
+    count = len(_log_buffer)
+    _log_buffer.clear()
+    return count
+
+
 def get_log_buffer_stats() -> Dict[str, Any]:
     """获取日志缓冲区统计信息。"""
     level_counts: Dict[str, int] = {}

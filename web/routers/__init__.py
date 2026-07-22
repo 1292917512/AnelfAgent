@@ -14,12 +14,14 @@ from web.routers.memory import router as memory_router
 from web.routers.models import router as models_router
 from web.routers.nonebot import router as nonebot_router
 from web.routers.personas import router as personas_router
+from web.routers.search import router as search_router
 from web.routers.skills import router as skills_router
 from web.routers.status import router as status_router
 from web.routers.system import router as system_router
 from web.routers.tags import router as tags_router
 from web.routers.thinking import router as thinking_router
 from web.routers.tools import router as tools_router
+from web.routers.workspace import router as workspace_router
 
 api_router = APIRouter(prefix="/api")
 
@@ -41,3 +43,5 @@ api_router.include_router(nonebot_router)
 api_router.include_router(system_router)
 api_router.include_router(entities_router)
 api_router.include_router(thinking_router)
+api_router.include_router(workspace_router)
+api_router.include_router(search_router)

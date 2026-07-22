@@ -70,6 +70,14 @@ async def get_logs(
     return {"logs": logs, "count": len(logs)}
 
 
+@router.post("/logs/clear")
+async def clear_logs() -> Dict[str, Any]:
+    """清空内存日志缓冲区。"""
+    from core.log import clear_log_buffer
+    cleared = clear_log_buffer()
+    return {"status": "ok", "cleared": cleared}
+
+
 @router.get("/log-stats")
 async def get_log_stats() -> Dict[str, Any]:
     from core.log import get_log_buffer_stats

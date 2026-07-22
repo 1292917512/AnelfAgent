@@ -63,6 +63,12 @@ class CompressionConfig:
     keep_user_messages: bool = True
     # 保留的 user 消息单条字符上限（0 = 不截断；防超大粘贴常驻上下文）
     user_max_chars: int = 2000
+    # Microcompact：工具链超过此条数时，清理较早的只读工具结果（0=关闭）
+    microcompact_chain_threshold: int = 40
+    # Microcompact 保留的最新工具结果条数
+    microcompact_keep_recent: int = 6
+    # 连续压缩失败熔断次数（对齐 Claude Code MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES）
+    max_consecutive_failures: int = 3
 
     @classmethod
     def from_config_manager(cls) -> "CompressionConfig":
@@ -76,6 +82,8 @@ class CompressionConfig:
             tool_result_fold_keep=get_config_int("compression_tool_fold_keep", 4),
             keep_user_messages=get_config_bool("compression_keep_user_messages", True),
             user_max_chars=get_config_int("compression_user_max_chars", 2000),
+            microcompact_chain_threshold=get_config_int("compression_microcompact_threshold", 40),
+            microcompact_keep_recent=get_config_int("compression_microcompact_keep", 6),
         )
 
 
@@ -167,6 +175,66 @@ class ContextCompressor:
         self._manual_requests: Dict[str, str] = {}
         # per-scope 压缩锁：同一 scope 的压缩串行，其他 scope 互不阻塞
         self._scope_locks: Dict[str, asyncio.Lock] = {}
+        # 连续失败熔断（对齐 Claude Code：连续 3 次失败后停止尝试）
+        self._consecutive_failures = 0
+        self._broken = False
+
+    # 可 microcompact 清理的只读工具（对齐 Claude Code COMPACTABLE_TOOLS）
+    _MICROCOMPACTABLE_TOOLS = frozenset({
+        "read_file", "search_files", "list_directory", "file_info",
+        "run_shell_command", "web_fetch", "web_search",
+        "extract_page_links", "web_request", "recall", "get_conversation",
+    })
+    _MICROCOMPACT_PLACEHOLDER = "[旧工具结果已清理，需要时请重新调用工具获取]"
+
+    def microcompact(self, tool_chain: List[Dict]) -> int:
+        """清理工具链中较早的只读工具结果为占位符（对齐 Claude Code microCompact）。
+
+        在完整压缩之前先做轻量清理：工具链较长时，只读工具的旧结果
+        （read_file/shell/web 等）通常已失效，直接替换为占位符，
+        避免触发更重 LLM 摘要压缩。返回清理条数。
+        """
+        threshold = self.config.microcompact_chain_threshold
+        if threshold <= 0 or len(tool_chain) < threshold:
+            return 0
+        # 定位 role=tool 消息，保留最新 keep_recent 条不动
+        tool_msg_indexes = [
+            i for i, m in enumerate(tool_chain) if m.get("role") == "tool"
+        ]
+        keep = self.config.microcompact_keep_recent
+        clearable = tool_msg_indexes[:-keep] if len(tool_msg_indexes) > keep else []
+        # 建立 tool_call_id → 工具名映射（向前找 assistant 的 tool_calls）
+        call_names: Dict[str, str] = {}
+        for m in tool_chain:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    if isinstance(tc, dict) and tc.get("id"):
+                        call_names[tc["id"]] = (tc.get("function") or {}).get("name", "")
+        cleared = 0
+        for i in clearable:
+            msg = tool_chain[i]
+            name = call_names.get(msg.get("tool_call_id", ""), "")
+            if name not in self._MICROCOMPACTABLE_TOOLS:
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and len(content) > 200 \
+                    and content != self._MICROCOMPACT_PLACEHOLDER:
+                tool_chain[i] = {**msg, "content": self._MICROCOMPACT_PLACEHOLDER}
+                cleared += 1
+        if cleared:
+            log(f"Microcompact: 清理 {cleared} 条旧只读工具结果", "DEBUG", tag="压缩")
+        return cleared
+
+    def _record_compress_result(self, success: bool) -> None:
+        """记录压缩成败，连续失败达阈值熔断。"""
+        if success:
+            self._consecutive_failures = 0
+            return
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.config.max_consecutive_failures:
+            self._broken = True
+            log(f"上下文压缩连续失败 {self._consecutive_failures} 次，已熔断（本会话不再尝试）",
+                "WARNING", tag="压缩")
 
     # ------------------------------------------------------------------
     # 溢出检测
@@ -224,7 +292,7 @@ class ContextCompressor:
             scope: str = "",
     ) -> bool:
         """判断是否需要压缩（真实用量优先，估算兜底；支持手动请求）。"""
-        if not self.config.enabled:
+        if not self.config.enabled or self._broken:
             return False
         if scope and scope in self._manual_requests:
             return True

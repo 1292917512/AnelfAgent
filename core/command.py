@@ -24,15 +24,16 @@ class CommandResult:
 
 @dual_mode
 def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars: Optional[Dict[str, str]] = None,
-                shell: Optional[bool] = None) -> CommandResult:
+                shell: Optional[bool] = None, cwd: Optional[str] = None) -> CommandResult:
     """执行系统命令
-    
+
     Args:
         command: 命令字符串或参数列表
         timeout_sec: 超时时间（秒）
         env_vars: 额外的环境变量
         shell: 是否使用shell模式，None时自动判断
-        
+        cwd: 工作目录，None 时继承当前进程目录
+
     Returns:
         CommandResult: 执行结果
     """
@@ -58,6 +59,8 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
             'timeout': timeout_sec,
             'env': env,
         }
+        if cwd:
+            run_kwargs['cwd'] = cwd
 
         # Windows平台下隐藏命令行窗口
         if platform.system() == "Windows":

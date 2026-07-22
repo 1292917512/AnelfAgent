@@ -586,7 +586,7 @@ class EntityRegistry:
         "web": 5, "media": 6, "minimax": 7, "os": 8, "environment": 9,
         "model_control": 10, "ollama": 11, "logs": 12, "channel_ops": 13,
         "entity": 14, "mcp_manage": 15, "devops": 16,
-        "skills": 17, "delegation": 18,
+        "skills": 17, "delegation": 18, "ui": 19,
     }
 
     @classmethod
@@ -873,8 +873,10 @@ class EntityRegistry:
             all_tool_names = cls.get_all_names()
             suggested = difflib.get_close_matches(name, all_tool_names, n=8, cutoff=0.35)
             return json.dumps({
-                "error": f"工具 '{name}' 不存在，请勿猜测工具名。",
-                "hint": '请先调用 list_entity_methods({"group": "分组名"}) 查看该实体的具体方法名和参数。',
+                "error": f"工具 '{name}' 不存在或当前不可用，请勿猜测工具名。",
+                "hint": '请先调用 list_entity_methods({"group": "分组名"}) 查看该实体的具体方法名和参数。'
+                        '部分工具可能因门控检查未通过或处于沉睡状态而暂时隐藏；'
+                        '被管理员禁用或被权限规则拒绝的工具会在调用时收到明确的原因说明。',
                 "available_groups": groups,
                 "suggested_tools": suggested,
             }, ensure_ascii=False)

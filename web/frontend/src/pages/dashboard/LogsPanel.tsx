@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { statusApi } from "@/lib/api";
 import type { LogEntry } from "@/lib/types";
@@ -72,6 +72,7 @@ export function LogsPanel() {
   const backlogRef = useRef<LogEntry[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  const queryClient = useQueryClient();
   const { data: stats } = useQuery({
     queryKey: ["logStats"],
     queryFn: () => statusApi.logStats().then((r) => r.data),
@@ -134,11 +135,15 @@ export function LogsPanel() {
     }
   };
 
-  const clearLogs = () => {
+  const clearLogs = async () => {
     if (!confirm(t("logsView.clearConfirm"))) return;
+    try {
+      await statusApi.clearLogs();
+    } catch { /* 后端清除失败时仍清理本地视图 */ }
     setLogs([]);
     backlogRef.current = [];
     setPendingCount(0);
+    queryClient.invalidateQueries({ queryKey: ["logStats"] });
   };
 
   const toggleLevel = (lv: string) => {

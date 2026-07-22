@@ -42,7 +42,7 @@ def _proxy_kwargs(use_proxy: bool) -> dict[str, str]:
 # ==================================================================
 
 
-@tool(name="web_search", group="web", tags=["web"])
+@tool(name="web_search", group="web", tags=["web"], concurrency_safe=True)
 def web_search(query: str, max_results: int = 8, search_recency: str = "") -> str:
     """搜索关键词并智能总结，返回 AI 总结和参考来源列表。
 
@@ -83,7 +83,7 @@ def web_search(query: str, max_results: int = 8, search_recency: str = "") -> st
 # ==================================================================
 
 
-@tool(name="web_fetch", group="web", tags=["web"])
+@tool(name="web_fetch", group="web", tags=["web"], concurrency_safe=True)
 def web_fetch(
     url: str,
     extract_mode: str = "markdown",
@@ -137,7 +137,7 @@ def web_fetch(
     return _process_html(resp.text, final_url, extract_mode, max_chars, start_index)
 
 
-@tool(name="extract_page_links", group="web", tags=["web"])
+@tool(name="extract_page_links", group="web", tags=["web"], concurrency_safe=True)
 def extract_page_links(
     url: str,
     max_links: int = 50,
@@ -184,7 +184,7 @@ def extract_page_links(
 # ==================================================================
 
 
-@tool(name="web_request", group="web", tags=["web"])
+@tool(name="web_request", group="web", tags=["web"], concurrency_safe=True)
 def web_request(
     url: str,
     method: str = "GET",

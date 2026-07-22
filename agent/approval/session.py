@@ -38,6 +38,7 @@ class ApprovalRequest(BaseModel):
     requester_chat_id: str = Field(..., description="来源会话 ID")
     requester_user_id: str = Field(..., description="发起用户 ID")
     expires_at: float = Field(..., description="过期时间戳（秒）")
+    matched_rule: str = Field(default="", description="命中的策略规则（决策审计）")
     created_at: float = Field(default_factory=time.time)
 
 

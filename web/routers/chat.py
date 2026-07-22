@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -37,6 +38,49 @@ def broadcast_chat_event(event: Dict[str, Any]) -> None:
             pass
 
 
+def _setup_ui_command_bridge() -> None:
+    """订阅界面命令事件并桥接到聊天 SSE 流。"""
+    from core.event_bus import EVENT_UI_COMMAND, event_bus
+
+    @event_bus.on(EVENT_UI_COMMAND, owner="webui")
+    async def _forward_ui_command(payload: Dict[str, Any]) -> None:
+        broadcast_chat_event({"event": "ui_command", **payload})
+
+
+_setup_ui_command_bridge()
+
+
+class UiAnswerRequest(BaseModel):
+    ask_id: str
+    answer: str
+
+
+@router.post("/ui-answer")
+async def ui_answer(req: UiAnswerRequest) -> Dict[str, Any]:
+    """前端提交 ui_ask 弹窗的回答，解决后端挂起的提问。"""
+    from entities.ui.tools import resolve_ask
+    ok = resolve_ask(req.ask_id, req.answer)
+    return {"status": "ok" if ok else "expired"}
+
+
+class UiStateRequest(BaseModel):
+    state: Dict[str, Any]
+
+
+@router.post("/ui-state")
+async def post_ui_state(req: UiStateRequest) -> Dict[str, str]:
+    """前端上报工作台状态快照（供 ui_get_state 工具查询）。"""
+    from entities.ui.tools import update_ui_state
+    update_ui_state(req.state)
+    return {"status": "ok"}
+
+
+@router.get("/ui-state")
+async def get_ui_state() -> Dict[str, Any]:
+    from entities.ui.tools import get_ui_state_snapshot
+    return {"state": get_ui_state_snapshot()}
+
+
 class SendMessageRequest(BaseModel):
     message: str
     user_id: str = "web_user"
@@ -59,6 +103,22 @@ def _classify_file(ext: str) -> str:
     if ext in _VIDEO_EXTS:
         return "video"
     return "file"
+
+
+def _resolve_media_path(file_path: str) -> str:
+    """解析媒体路径：相对路径优先按当前路径，其次按工作区根目录解析。"""
+    if not file_path or file_path.startswith(("http://", "https://", "/api/")):
+        return file_path
+    if os.path.isabs(file_path) or os.path.exists(file_path):
+        return file_path
+    try:
+        from entities.filesystem.tools import _safe_path
+        resolved = _safe_path(file_path)
+        if os.path.exists(resolved):
+            return resolved
+    except Exception:
+        pass
+    return file_path
 
 
 @router.post("/upload")
@@ -125,6 +185,7 @@ async def send_message(req: SendMessageRequest) -> SendMessageResponse:
         if req.files:
             media_segments = []
             for file_path in req.files:
+                file_path = _resolve_media_path(file_path)
                 ext = Path(file_path).suffix.lower()
                 ftype = _classify_file(ext)
                 seg_type_map = {

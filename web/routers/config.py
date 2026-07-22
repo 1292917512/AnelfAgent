@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from core.log import log
@@ -336,8 +336,31 @@ def _ensure_tasks_dir() -> None:
     _TASKS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _task_path(name: str) -> Path:
-    return _TASKS_DIR / f"{name}.json"
+def _sanitize_folder(folder: str) -> str:
+    """标准化任务文件夹：限制为 tasks 目录内的相对路径，防路径穿越。"""
+    normalized = folder.replace("\\", "/").strip("/").strip()
+    if not normalized:
+        return ""
+    parts = [p for p in normalized.split("/") if p and p != "."]
+    if any(p == ".." for p in parts):
+        raise HTTPException(status_code=400, detail="非法的任务文件夹路径")
+    return "/".join(parts)
+
+
+def _task_path(name: str, folder: str = "") -> Path:
+    if "/" in name or "\\" in name or name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="非法的任务名称")
+    base = _TASKS_DIR / folder if folder else _TASKS_DIR
+    resolved = base.resolve()
+    if not str(resolved).startswith(str(_TASKS_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="非法的任务文件夹路径")
+    return resolved / f"{name}.json"
+
+
+def _task_folder_of(json_file: Path) -> str:
+    """由文件位置推导任务文件夹。"""
+    folder = json_file.parent.relative_to(_TASKS_DIR).as_posix()
+    return "" if folder == "." else folder
 
 
 _TASK_DEFAULTS: Dict[str, Any] = {
@@ -397,24 +420,29 @@ def _normalize_optional_task_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def _load_task(name: str) -> Dict[str, Any]:
-    p = _task_path(name)
+def _load_task(name: str, folder: str = "") -> Dict[str, Any]:
+    p = _task_path(name, _sanitize_folder(folder))
     if not p.exists():
         raise HTTPException(status_code=404, detail=f"任务 [{name}] 不存在")
     try:
-        return _normalize_task(json.loads(p.read_text("utf-8")))
+        data = _normalize_task(json.loads(p.read_text("utf-8")))
+        data["folder"] = _task_folder_of(p)
+        return data
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取任务配置失败: {e}") from e
 
 
 @router.get("/tasks")
 async def list_tasks() -> List[Dict[str, Any]]:
-    """列出所有任务单元（config/tasks/*.json）。"""
+    """列出所有任务单元（config/tasks/**/*.json，递归子目录）。"""
     _ensure_tasks_dir()
     tasks: List[Dict[str, Any]] = []
-    for json_file in sorted(_TASKS_DIR.glob("*.json")):
+    for json_file in sorted(_TASKS_DIR.rglob("*.json")):
         try:
             data = _normalize_task(json.loads(json_file.read_text("utf-8")))
+            data["folder"] = _task_folder_of(json_file)
             tasks.append(data)
         except Exception as e:
             log(f"任务配置解析失败 ({json_file.name}): {e}", "DEBUG")
@@ -422,8 +450,8 @@ async def list_tasks() -> List[Dict[str, Any]]:
 
 
 @router.get("/tasks/{name}")
-async def get_task(name: str) -> Dict[str, Any]:
-    return _load_task(name)
+async def get_task(name: str, folder: str = Query("")) -> Dict[str, Any]:
+    return _load_task(name, folder)
 
 
 class TaskCreate(BaseModel):
@@ -443,16 +471,19 @@ class TaskCreate(BaseModel):
     save_result_to_memory: bool = True
     model_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
+    folder: str = ""
 
 
 @router.post("/tasks", status_code=201)
 async def create_task(data: TaskCreate) -> Dict[str, Any]:
     _ensure_tasks_dir()
-    p = _task_path(data.name)
+    folder = _sanitize_folder(data.folder)
+    p = _task_path(data.name, folder)
     if p.exists():
         raise HTTPException(status_code=409, detail=f"任务 [{data.name}] 已存在")
 
     task_data = _normalize_optional_task_overrides(data.model_dump())
+    task_data.pop("folder", None)
     if not task_data.get("source"):
         task_data["source"] = data.name
     if not task_data.get("display_name"):
@@ -460,11 +491,13 @@ async def create_task(data: TaskCreate) -> Dict[str, Any]:
     _normalize_task(task_data)
 
     try:
+        p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(task_data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"写入失败: {e}") from e
 
     _reload_task_registry()
+    task_data["folder"] = folder
     return task_data
 
 
@@ -484,33 +517,46 @@ class TaskUpdate(BaseModel):
     save_result_to_memory: Optional[bool] = None
     model_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
+    folder: Optional[str] = None
 
 
 @router.put("/tasks/{name}")
-async def update_task(name: str, data: TaskUpdate) -> Dict[str, Any]:
-    existing = _load_task(name)
+async def update_task(name: str, data: TaskUpdate, folder: str = Query("")) -> Dict[str, Any]:
+    old_folder = _sanitize_folder(folder)
+    existing = _load_task(name, old_folder)
     provided_fields = set(data.model_fields_set)
     updates = data.model_dump(exclude_unset=True)
+    new_folder = _sanitize_folder(updates.pop("folder")) if "folder" in updates else None
     updates = _normalize_optional_task_overrides(updates)
     existing.update(updates)
     for field in _OPTIONAL_TASK_OVERRIDE_FIELDS:
         if field in provided_fields and field not in updates:
             existing.pop(field, None)
+    existing.pop("folder", None)
+
+    target_folder = new_folder if new_folder is not None else old_folder
+    target = _task_path(name, target_folder)
+    if new_folder is not None and target.exists():
+        raise HTTPException(status_code=409, detail=f"任务 [{name}] 在目标文件夹已存在")
 
     try:
-        _task_path(name).write_text(
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
             json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        if new_folder is not None and target != _task_path(name, old_folder):
+            _task_path(name, old_folder).unlink()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"写入失败: {e}") from e
 
     _reload_task_registry()
+    existing["folder"] = target_folder
     return existing
 
 
 @router.delete("/tasks/{name}")
-async def delete_task(name: str) -> Dict[str, str]:
-    p = _task_path(name)
+async def delete_task(name: str, folder: str = Query("")) -> Dict[str, str]:
+    p = _task_path(name, _sanitize_folder(folder))
     if not p.exists():
         raise HTTPException(status_code=404, detail=f"任务 [{name}] 不存在")
     try:
@@ -523,11 +569,11 @@ async def delete_task(name: str) -> Dict[str, str]:
 
 
 @router.post("/tasks/trigger/{name}")
-async def trigger_task(name: str) -> Dict[str, str]:
+async def trigger_task(name: str, folder: str = Query("")) -> Dict[str, str]:
     """手动触发执行指定任务，在后台异步执行。"""
     import asyncio
 
-    p = _task_path(name)
+    p = _task_path(name, _sanitize_folder(folder))
     if not p.exists():
         raise HTTPException(status_code=404, detail=f"任务 [{name}] 不存在")
 
