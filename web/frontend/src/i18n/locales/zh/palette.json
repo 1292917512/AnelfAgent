@@ -1,0 +1,18 @@
+{
+  "label": "命令面板",
+  "placeholder": "搜索页面、操作或内容…",
+  "empty": "没有匹配的结果",
+  "group_results": "搜索结果",
+  "group_nav": "页面导航",
+  "group_actions": "快捷操作",
+  "result_memory": "记忆",
+  "result_conversation": "会话",
+  "result_file": "文件",
+  "open_search": "在全局搜索中查看「{{query}}」",
+  "action_theme_light": "切换为浅色主题",
+  "action_theme_dark": "切换为深色主题",
+  "action_lang": "切换语言",
+  "action_sidebar": "折叠/展开侧边栏",
+  "action_search": "打开全局搜索",
+  "action_logout": "退出登录"
+}

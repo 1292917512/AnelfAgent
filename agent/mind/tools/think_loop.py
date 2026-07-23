@@ -219,9 +219,17 @@ async def _send_reply_error(anything: Everything, error_msg: str) -> None:
             target_id = str(anything.uid) if anything.uid else ""
         if not target_id:
             return
-        await channel.send_text(target_id, error_msg)
+        raw = await channel.send_text(target_id, error_msg)
+        sent_message_id = ""
+        try:
+            sent_message_id = str(json.loads(raw).get("message_id") or "")
+        except (json.JSONDecodeError, TypeError):
+            pass
         from agent.channel.output_tools import _record_sent_reply, _resolve_channel_type
-        await _record_sent_reply(target_id, error_msg, _resolve_channel_type(adapter_key, target_id))
+        await _record_sent_reply(
+            target_id, error_msg, _resolve_channel_type(adapter_key, target_id),
+            message_id=sent_message_id,
+        )
     except Exception as exc:
         log(f"错误提示发送失败: {exc}", "DEBUG", tag="思维")
 

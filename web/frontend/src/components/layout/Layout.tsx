@@ -1,8 +1,9 @@
-import { useEffect } from "react";
+import { Suspense, useEffect } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { Header } from "./Header";
 import { MobileNav } from "./MobileNav";
+import { Spinner } from "@/components/ui";
 import { useIsMobile } from "@/lib/use-media-query";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
@@ -45,7 +46,16 @@ export function Layout() {
       <div className="flex flex-col flex-1 min-w-0">
         <Header />
         <main className="flex-1 overflow-y-auto p-3 md:p-6">
-          <Outlet />
+          {/* 页面级 React.lazy 的加载兜底 */}
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center">
+                <Spinner size={24} />
+              </div>
+            }
+          >
+            <Outlet />
+          </Suspense>
         </main>
         <MobileNav />
       </div>

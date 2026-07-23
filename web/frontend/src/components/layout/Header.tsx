@@ -1,13 +1,18 @@
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "@/stores/app-store";
-import { Sun, Moon, Languages, Menu } from "lucide-react";
+import { Sun, Moon, Languages, Menu, Search } from "lucide-react";
 
 export function Header() {
   const theme = useAppStore((s) => s.theme);
   const toggleTheme = useAppStore((s) => s.toggleTheme);
   const setMobileMenuOpen = useAppStore((s) => s.setMobileMenuOpen);
   const branding = useAppStore((s) => s.branding);
-  const { i18n } = useTranslation();
+  const setPaletteOpen = useAppStore((s) => s.setPaletteOpen);
+  const { t, i18n } = useTranslation("palette");
+
+  // ⌘K 提示按平台显示（Mac 用 ⌘，其余 Ctrl）
+  const modKey =
+    typeof navigator !== "undefined" && /mac/i.test(navigator.platform) ? "\u2318K" : "Ctrl K";
 
   const toggleLang = () => i18n.changeLanguage(i18n.language === "zh" ? "en" : "zh");
 
@@ -28,6 +33,18 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-1">
+        {/* 命令面板入口：⌘K / Ctrl+K */}
+        <button
+          onClick={() => setPaletteOpen(true)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-muted hover:text-foreground hover:bg-hover transition-colors"
+          title={t("label")}
+          aria-label={t("label")}
+        >
+          <Search size={16} />
+          <kbd className="hidden md:inline rounded border border-border bg-elevated px-1 py-0.5 text-[10px] font-mono text-muted">
+            {modKey}
+          </kbd>
+        </button>
         <button
           onClick={toggleLang}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-muted hover:text-foreground hover:bg-hover transition-colors"

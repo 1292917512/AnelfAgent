@@ -24,6 +24,7 @@ import zhSkills from "./locales/zh/skills.json";
 import zhWorkbench from "./locales/zh/workbench.json";
 import zhStickers from "./locales/zh/stickers.json";
 import zhData from "./locales/zh/data.json";
+import zhPalette from "./locales/zh/palette.json";
 
 import enCommon from "./locales/en/common.json";
 import enNav from "./locales/en/nav.json";
@@ -47,6 +48,7 @@ import enSkills from "./locales/en/skills.json";
 import enWorkbench from "./locales/en/workbench.json";
 import enStickers from "./locales/en/stickers.json";
 import enData from "./locales/en/data.json";
+import enPalette from "./locales/en/palette.json";
 
 const resources = {
   zh: {
@@ -72,6 +74,7 @@ const resources = {
     workbench: zhWorkbench,
     stickers: zhStickers,
     data: zhData,
+    palette: zhPalette,
   },
   en: {
     common: enCommon,
@@ -96,6 +99,7 @@ const resources = {
     workbench: enWorkbench,
     stickers: enStickers,
     data: enData,
+    palette: enPalette,
   },
 };
 
@@ -130,6 +134,7 @@ i18n
       "workbench",
       "stickers",
       "data",
+      "palette",
     ],
     interpolation: {
       escapeValue: false,

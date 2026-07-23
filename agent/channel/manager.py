@@ -10,7 +10,6 @@ from typing import Any, Dict, Optional, Set, Union
 
 from core.entity import BaseEntity, EntityType
 from core.log import log
-from core.tags import reply_to_tag, tag_label
 
 from .base import BaseChannel, ChannelStatus
 
@@ -178,15 +177,9 @@ class ChannelManager(BaseEntity):
         images = self._extract_images(message)
         media_segments = self._extract_media_segments(message)
 
-        normalized_content = self._inject_reply_context(
-            message.content,
-            reply_to_id=message.reply_to_id,
-            reply_content=message.reply_content,
-        )
-
         await get_agent_app().send_message(
             user_id=user_id,
-            content=normalized_content,
+            content=message.content,
             user_name=message.sender.user_name or user_id,
             group_id=message.channel.channel_id if message.channel.channel_type == CT.GROUP else 0,
             to_me=message.is_to_me,
@@ -270,26 +263,6 @@ class ChannelManager(BaseEntity):
             "WARNING", tag="通道",
         )
         return None
-
-    @staticmethod
-    def _inject_reply_context(content: str, *, reply_to_id: str, reply_content: str) -> str:
-        """统一注入 [reply_to:id] 前缀，避免频道侧重复拼接。"""
-        text = content or ""
-        if not reply_to_id:
-            return text
-
-        lines = text.splitlines()
-        while lines and lines[0].lstrip().startswith("[reply_to:"):
-            lines.pop(0)
-        body = "\n".join(lines)
-
-        header = tag_label(reply_to_tag.get_tag_name(), str(reply_to_id))
-        preview = " ".join((reply_content or "").split()).strip()
-        if preview:
-            preview = preview[:200]
-            header = f"{header}{preview}"
-
-        return f"{header}\n{body}" if body else header
 
     @staticmethod
     def _extract_images(message: Any) -> list:

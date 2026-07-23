@@ -19,6 +19,7 @@ interface AppState {
   theme: Theme;
   sidebarCollapsed: boolean;
   mobileMenuOpen: boolean;
+  paletteOpen: boolean;
   branding: Branding;
   navigation: NavItem[];
   configLoaded: boolean;
@@ -27,6 +28,7 @@ interface AppState {
   toggleTheme: () => void;
   toggleSidebar: () => void;
   setMobileMenuOpen: (open: boolean) => void;
+  setPaletteOpen: (open: boolean) => void;
   setConfig: (cfg: { branding?: Branding; navigation?: NavItem[] }) => void;
   setStartedAt: (serverUptime: number) => void;
 }
@@ -49,6 +51,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   theme: getInitialTheme(),
   sidebarCollapsed: false,
   mobileMenuOpen: false,
+  paletteOpen: false,
   branding: DEFAULT_BRANDING,
   navigation: [],
   configLoaded: false,
@@ -59,12 +62,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       const next = s.theme === "dark" ? "light" : "dark";
       localStorage.setItem("theme", next);
       document.documentElement.setAttribute("data-theme", next);
+      document.documentElement.classList.toggle("dark", next === "dark");
       return { theme: next };
     }),
 
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 
   setMobileMenuOpen: (open: boolean) => set({ mobileMenuOpen: open }),
+
+  setPaletteOpen: (open: boolean) => set({ paletteOpen: open }),
 
   setConfig: (cfg) =>
     set((s) => ({

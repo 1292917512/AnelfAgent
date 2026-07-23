@@ -1,0 +1,18 @@
+{
+  "label": "Command Palette",
+  "placeholder": "Search pages, actions, or content…",
+  "empty": "No results found",
+  "group_results": "Search Results",
+  "group_nav": "Navigation",
+  "group_actions": "Quick Actions",
+  "result_memory": "Memory",
+  "result_conversation": "Chat",
+  "result_file": "File",
+  "open_search": "Open \"{{query}}\" in global search",
+  "action_theme_light": "Switch to light theme",
+  "action_theme_dark": "Switch to dark theme",
+  "action_lang": "Switch language",
+  "action_sidebar": "Toggle sidebar",
+  "action_search": "Open global search",
+  "action_logout": "Log out"
+}

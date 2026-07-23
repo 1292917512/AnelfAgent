@@ -23,5 +23,13 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // React 全家桶单独成 chunk：内容稳定、缓存周期长
+          "react-vendor": ["react", "react-dom", "react-router-dom"],
+        },
+      },
+    },
   },
 });
