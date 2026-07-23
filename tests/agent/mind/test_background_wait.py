@@ -2,7 +2,7 @@
 
 覆盖：
 - BackgroundTaskRegistry：登记/完成/快照/等待/去重/轮内轮外路由
-- think_loop 挂起点：等待意图 → 挂起会合，完成注入 / 超时降级 / 不触发独白熔断
+- think_loop 挂起点：等待意图 → 挂起会合，完成注入 / 超时降级 / 预算耗尽后纯文本投递
 - REFLECT 模式：连续纯文本上限 + 输出纪律提示注入
 - DelegationManager：后台委托登记注册表、完成后的轮外通知（完成即新 turn）
 """
@@ -18,7 +18,16 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.mind.background_tasks import BackgroundTaskRegistry
+from agent.mind.tools import think_loop as tl
 from agent.mind.tools.think_loop import ThinkMode, think_loop
+
+
+@pytest.fixture(autouse=True)
+def _mock_deliver(monkeypatch):
+    """拦截纯文本投递，避免真实频道发送。"""
+    mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(tl, "deliver_text", mock)
+    return mock
 
 
 # ==================================================================
@@ -244,15 +253,9 @@ class TestWaitSuspension:
         assert any("等待后台任务（completed" in s for s in steps)
         injected = [m for m in chain if m.get("role") == "system" and "后台任务完成" in m.get("content", "")]
         assert injected and "图片已生成" in injected[0]["content"]
-        # 独白未入库（等待不是独白；finish_think 的操作摘要不算）
-        monologue_saves = [
-            c for c in mind._add_system_context.await_args_list
-            if "内心独白" in str(c)
-        ]
-        assert not monologue_saves
 
     async def test_wait_timeout_degrades_to_prompt(self, anything) -> None:
-        """挂起超时 → 注入「仍在运行」提示，AI 随后正常结束，不触发独白熔断。"""
+        """挂起超时 → 注入「仍在运行」提示，AI 随后正常结束。"""
         mind = _WaitMind()
         mind.background_tasks.register("_global", "delegation", "生成图片")
         steps: List[str] = []
@@ -262,23 +265,22 @@ class TestWaitSuspension:
         assert any("等待后台任务（timeout" in s for s in steps)
         injected = [m for m in chain if m.get("role") == "system" and "仍未完成" in m.get("content", "")]
         assert injected
-        assert not any("连续内心独白" in s for s in steps)
 
-    async def test_wait_timeout_zeroes_budget_then_monologue(self, anything) -> None:
-        """挂起超时后预算清零：后续纯文本立即按普通独白处理（计数 + 熔断）。"""
+    async def test_wait_timeout_zeroes_budget_then_delivered(self, anything) -> None:
+        """挂起超时后预算清零：后续纯文本按普通兜底投递处理（投递到激活会话并结束）。"""
         mind = _WaitMind()
         mind.background_tasks.register("_global", "delegation", "生成图片")
         mind._queue = [_text_result(mind._wait_text) for _ in range(5)]
         steps: List[str] = []
         await _run_reply(mind, anything, steps)
 
-        # 第 1 次文本 → 挂起超时（预算清零）；之后 3 次独白熔断
+        # 第 1 次文本 → 挂起超时（预算清零）；第 2 次文本 → 兜底投递并结束
         assert any("等待后台任务（timeout" in s for s in steps)
-        assert any("连续内心独白" in s for s in steps)
-        assert mind.llm_calls == 4
+        assert any("纯文本回复已投递" in s for s in steps)
+        assert mind.llm_calls == 2
 
     async def test_any_text_with_tasks_suspends_once(self, anything) -> None:
-        """有后台任务时任意纯文本都先挂起一次（非等待措辞也如此），超时后才计独白。"""
+        """有后台任务时任意纯文本都先挂起一次；预算耗尽后纯文本正常投递。"""
         mind = _WaitMind(wait_text="我今天心情不太好喵，想随便聊聊")
         mind.background_tasks.register("_global", "delegation", "生成图片")
         mind._queue = [_text_result("我还是不太舒服") for _ in range(5)]
@@ -286,20 +288,20 @@ class TestWaitSuspension:
         chain: List = []
         await _run_reply(mind, anything, steps, chain)
 
-        # 首次文本挂起超时 → 之后 3 次独白熔断；独白提示情境化含任务查询路径
+        # 首次文本挂起超时 → 之后文本兜底投递；超时提示含任务查询路径
         assert sum("等待后台任务" in s for s in steps) == 1
-        assert any("连续内心独白" in s for s in steps)
+        assert any("纯文本回复已投递" in s for s in steps)
         hints = [m for m in chain if m.get("role") == "system" and "check_background_tasks" in m.get("content", "")]
         assert hints
 
-    async def test_no_tasks_monologue_unchanged(self, anything) -> None:
-        """无后台任务时独白守卫行为与现状一致（3 次熔断）。"""
+    async def test_no_tasks_text_delivered(self, anything) -> None:
+        """无后台任务时纯文本直接投递到激活会话并结束本轮。"""
         mind = _WaitMind()
         mind._queue = [_text_result(mind._wait_text) for _ in range(5)]
         steps: List[str] = []
         await _run_reply(mind, anything, steps)
-        assert mind.llm_calls == 3
-        assert any("连续内心独白" in s for s in steps)
+        assert mind.llm_calls == 1
+        assert any("纯文本回复已投递" in s for s in steps)
 
 
 # ==================================================================

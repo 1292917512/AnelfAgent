@@ -6,13 +6,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from core.log import log
 from .embedder import Embedder
 from .memory_store import MemoryStore
-from .memory_types import MemorySearchResult, MemoryType
+from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
 
 DEFAULT_TOP_K = 5
 DEFAULT_MIN_SCORE = 0.1
@@ -48,11 +49,14 @@ class MemoryRetriever:
         top_k: Optional[int] = None,
         entity_scope: str = "",
         related_scopes: Optional[List[str]] = None,
+        query_vec: Optional[List[float]] = None,
     ) -> List[Dict]:
         """根据对话上下文召回相关记忆，返回 messages 格式列表。
 
         同时搜索 memories 表和 MD 文件 chunks（双轨统一召回）。
         related_scopes 用于群聊场景下加载活跃成员的画像。
+        query_vec 为调用方预计算的查询向量（三条召回路径共享一次 embedding），
+        为 None 时内部按需自行计算。
         """
         try:
             from agent.config import get_mind_config
@@ -69,47 +73,56 @@ class MemoryRetriever:
         for s in (related_scopes or []):
             if s and s not in all_scopes:
                 all_scopes.append(s)
-        entity_msgs = await self._load_entity_profiles(all_scopes) if all_scopes else []
+        # 实体画像加载与检索并行（独立的 DB 读取，不依赖查询结果）
+        profiles_task = asyncio.create_task(self._load_entity_profiles(all_scopes))
 
         query = self._extract_query(conversation)
         if not query:
             log("💾 被动召回: 无有效查询，回退近期记忆", tag="思维")
-            fallback = await self._fallback_recent(k)
+            entity_msgs, fallback = await asyncio.gather(profiles_task, self._fallback_recent(k))
             return entity_msgs + fallback
 
         log(f"💾 被动召回: \"{query[:50]}\" (embedding={'是' if self._embedder.available else '否'})", tag="思维")
 
-        query_vec: Optional[list[float]] = None
-        if self._embedder.available:
-            query_vec = await self._embedder.embed_one(query)
-
-        from .cognee.fusion import federated_search
-        from .cognee.runtime import get_cognee_client
-        results = await federated_search(
-            self._store.search_unified(
+        async def _main_search() -> List[MemorySearchResult]:
+            vec = query_vec
+            if vec is None and self._embedder.available:
+                vec = await self._embedder.embed_one(query)
+            from .cognee.fusion import federated_search
+            from .cognee.runtime import get_cognee_client
+            return await federated_search(
+                self._store.search_unified(
+                    query=query,
+                    query_vec=vec,
+                    limit=k * self._cognee_config.recall_pool_multiplier,
+                    min_score=min_score,
+                ),
                 query=query,
-                query_vec=query_vec,
-                limit=k * self._cognee_config.recall_pool_multiplier,
-                min_score=min_score,
-            ),
-            query=query,
-            client=get_cognee_client(),
-            config=self._cognee_config,
-            limit=k,
-            entity_scope=entity_scope,
-        )
+                client=get_cognee_client(),
+                config=self._cognee_config,
+                limit=k,
+                entity_scope=entity_scope,
+            )
 
-        # 多窗口补充：以最近一条用户消息为焦点查询，融合主查询结果
+        # 多窗口补充：以最近一条用户消息为焦点查询，与主查询并行检索后融合
         focus_query = self._extract_focus_query(conversation)
-        if focus_query and focus_query != query:
+
+        async def _focus_search() -> List[MemorySearchResult]:
             focus_vec = await self._embedder.embed_one(focus_query) if self._embedder.available else None
-            focus_results = await self._store.search_unified(
+            return await self._store.search_unified(
                 query=focus_query,
                 query_vec=focus_vec,
                 limit=k,
                 min_score=min_score,
             )
+
+        if focus_query and focus_query != query:
+            results, focus_results, entity_msgs = await asyncio.gather(
+                _main_search(), _focus_search(), profiles_task,
+            )
             results = self._merge_results(results, focus_results, limit=k * 2)
+        else:
+            results, entity_msgs = await asyncio.gather(_main_search(), profiles_task)
 
         # 时间感知：检测到时间引用词时，提升事件记忆与近期记忆权重
         if self._detect_time_reference(query):
@@ -169,20 +182,22 @@ class MemoryRetriever:
     async def _load_entity_profiles(self, scopes: List[str]) -> List[Dict]:
         """加载多个实体的画像记忆，按 scope 分组标注。
 
-        多个 alias 指向同一 primary 时自动去重，仅加载一次。
+        多个 alias 指向同一 primary 时自动去重，仅加载一次；
+        各 scope 的画像读取互相独立，并发执行避免串行 DB 往返。
         """
+        if not scopes:
+            return []
+        primaries = await asyncio.gather(*(self._resolve_scope_alias(s) for s in scopes))
         resolved_map: dict[str, str] = {}
-        for scope in scopes:
-            primary = await self._resolve_scope_alias(scope)
+        for scope, primary in zip(scopes, primaries):
             if primary not in resolved_map:
                 resolved_map[primary] = scope
 
-        all_parts: List[str] = []
-        for primary_scope, original_scope in resolved_map.items():
+        async def _load_one(primary_scope: str) -> Tuple[str, str, List[MemoryEntry]]:
+            """加载单个实体的画像条目，返回 (primary_scope, source, entries)。"""
             entity_id = primary_scope.split("_", 1)[1] if "_" in primary_scope else primary_scope
             if not entity_id:
-                continue
-
+                return primary_scope, "", []
             source = f"entity_{entity_id}"
             entries = await self._store.list_recent(
                 limit=2, memory_type=MemoryType.ENTITY, source=source,
@@ -190,10 +205,15 @@ class MemoryRetriever:
             if not entries:
                 tag = f"user:{entity_id}" if primary_scope.startswith("user_") else f"group:{entity_id}"
                 entries = await self._store.search_by_tags([tag], limit=3)
+            return primary_scope, source, entries
 
+        loaded = await asyncio.gather(*(_load_one(p) for p in resolved_map))
+
+        all_parts: List[str] = []
+        for primary_scope, source, entries in loaded:
             if not entries:
                 continue
-
+            entity_id = primary_scope.split("_", 1)[1] if "_" in primary_scope else primary_scope
             scope_label = f"[uid:{entity_id}]" if primary_scope.startswith("user_") else f"[group_id:{entity_id}]"
             for e in entries:
                 all_parts.append(f"{scope_label}\n{e.content}")

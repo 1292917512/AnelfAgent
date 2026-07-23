@@ -101,8 +101,13 @@ async def recall_cross_channel(
     query_conversation: List[Dict],
     current_adapter_key: str,
     current_scope: str,
+    query_vec: Optional[List[float]] = None,
 ) -> Tuple[List[Dict], Set[str]]:
-    """搜索其他频道的语义相关对话，返回 (注入消息列表, 已召回 scope 集合)。"""
+    """搜索其他频道的语义相关对话，返回 (注入消息列表, 已召回 scope 集合)。
+
+    query_vec 为调用方预计算的查询向量（与语义召回共享一次 embedding），
+    为 None 时内部按需自行计算。
+    """
     recalled_scopes: Set[str] = set()
     mc = get_mind_config()
     if not mc.cross_channel_enabled or not mind.embedder.available:
@@ -130,7 +135,8 @@ async def recall_cross_channel(
     if not other_scopes:
         return [], recalled_scopes
 
-    query_vec = await mind.embedder.embed_one(query)
+    if query_vec is None:
+        query_vec = await mind.embedder.embed_one(query)
     if not query_vec:
         return [], recalled_scopes
 

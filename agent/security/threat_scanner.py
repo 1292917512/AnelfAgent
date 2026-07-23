@@ -174,9 +174,13 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
         segments.append(content)
     else:
         start = 0
-        while start < len(content):
-            end = min(start + _SEGMENT_SIZE, len(content))
+        n = len(content)
+        while start < n:
+            end = min(start + _SEGMENT_SIZE, n)
             segments.append(content[start:end])
+            # 末段已覆盖尾部即结束：end 封顶后 start 会停滞在 n-overlap 造成死循环
+            if end >= n:
+                break
             start = end - overlap
 
     target_level = _SCOPE_ORDER.get(scope, 1)

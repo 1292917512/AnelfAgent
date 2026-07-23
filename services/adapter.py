@@ -243,6 +243,30 @@ class AdapterService:
         cfg["enabled"] = enabled
         cfg_file.write_bytes(json.dumps(cfg, indent=2, ensure_ascii=False).encode("utf-8"))
 
+    @staticmethod
+    def get_channel_webui_url(channel_id: str) -> Optional[str]:
+        """解析频道配置的内嵌 WebUI 地址（实际值优先，回退元数据默认值）。
+
+        匹配 napcat_webui_url / webui_url / dashboard_url 配置项，
+        供频道 WebUI 同源代理确定转发目标。
+        """
+        import json
+        from pathlib import Path
+
+        cfg: Dict[str, Any] = {}
+        cfg_file = Path("channels") / channel_id / "channel_config.json"
+        if cfg_file.exists():
+            try:
+                cfg = json.loads(cfg_file.read_text("utf-8"))
+            except (json.JSONDecodeError, OSError):
+                cfg = {}
+        meta = AdapterService._load_all_config_meta().get(channel_id, {})
+        for suffix in ("napcat_webui_url", "webui_url", "dashboard_url"):
+            value = cfg.get(suffix) or meta.get(suffix, {}).get("default")
+            if value:
+                return str(value)
+        return None
+
     # ------------------------------------------------------------------
     # 频道接口（channel_tool）开关与测试
     # ------------------------------------------------------------------

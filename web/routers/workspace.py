@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any, Dict, List
@@ -153,7 +154,7 @@ async def read_file(path: str = Query(...)) -> Dict[str, Any]:
             result["truncated"] = True
         return result
     try:
-        result["content"] = Path(fp).read_text("utf-8", errors="replace")
+        result["content"] = await asyncio.to_thread(Path(fp).read_text, "utf-8", errors="replace")
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"读取失败: {e}") from e
     return result
@@ -190,12 +191,17 @@ async def write_file(req: FileWriteRequest) -> Dict[str, Any]:
     if os.path.isdir(fp):
         raise HTTPException(status_code=400, detail="目标是目录")
     try:
-        os.makedirs(os.path.dirname(fp), exist_ok=True)
-        Path(fp).write_text(req.content, encoding="utf-8")
+        await asyncio.to_thread(_write_text_file, fp, req.content)
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"写入失败: {e}") from e
     log(f"工作台写入文件: {_rel(fp)}", "DEBUG", tag="工作区")
     return {"status": "ok", "path": _rel(fp), "size": os.path.getsize(fp)}
+
+
+def _write_text_file(fp: str, content: str) -> None:
+    """创建父目录并写入文本文件（同步实现，供 to_thread 调用）。"""
+    os.makedirs(os.path.dirname(fp), exist_ok=True)
+    Path(fp).write_text(content, encoding="utf-8")
 
 
 class MkdirRequest(BaseModel):
@@ -232,7 +238,12 @@ async def delete_file(path: str = Query(...)) -> Dict[str, str]:
 @router.get("/search")
 async def search_files(q: str = Query(..., min_length=1), limit: int = Query(_SEARCH_MAX_RESULTS, ge=1, le=100)) -> Dict[str, Any]:
     """搜索工作区：文件名匹配 + 文本内容匹配。"""
-    root = _workspace_root()
+    # os.walk + 逐文件读取为同步阻塞 I/O，移入线程避免卡住事件循环
+    return await asyncio.to_thread(_search_files_impl, _workspace_root(), q, limit)
+
+
+def _search_files_impl(root: str, q: str, limit: int) -> Dict[str, Any]:
+    """在工作区内执行文件名 + 内容搜索（同步实现，供 to_thread 调用）。"""
     query = q.lower()
     name_hits: List[Dict[str, Any]] = []
     content_hits: List[Dict[str, Any]] = []

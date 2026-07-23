@@ -41,15 +41,15 @@ _MIND_CONFIGS = {
             "default": 8,
         },
         "force_tool_use": {
-            "description": "纯工具模式：思维循环中 LLM 调用强制工具选择（tool_choice=required），杜绝纯文本输出",
-            "default": True,
+            "description": "纯工具模式：思维循环中 LLM 调用强制工具选择（tool_choice=required）。默认关闭——纯文本输出会自动投递到当前会话，无需强制",
+            "default": False,
         },
         "background_wait_timeout": {
             "description": "后台任务等待：等待意图挂起的单次上限（秒）",
             "default": 30.0,
         },
         "background_wait_budget": {
-            "description": "后台任务等待：单轮回复累计挂起预算（秒），耗尽后等待意图按普通独白处理",
+            "description": "后台任务等待：单轮回复累计挂起预算（秒），耗尽后等待意图按普通纯文本投递处理",
             "default": 120.0,
         },
         "log_ai_output": {
@@ -227,8 +227,9 @@ class MindConfig:
     meta_decision_temperature: float = 0.3
     conversation_analysis_threshold: int = 5
     max_tool_iterations: int = 8
-    # 纯工具模式：思维循环中 LLM 调用强制工具选择（tool_choice=required）
-    force_tool_use: bool = True
+    # 纯工具模式：思维循环中 LLM 调用强制工具选择（tool_choice=required）。
+    # 默认关闭：纯文本输出由系统自动投递到激活会话（兜底路由），无需强制
+    force_tool_use: bool = False
     # 后台任务等待：等待意图挂起的单次上限 / 单轮回复累计预算（秒）
     background_wait_timeout: float = 30.0
     background_wait_budget: float = 120.0

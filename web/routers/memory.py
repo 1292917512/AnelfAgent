@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from services import MemoryService
@@ -63,6 +64,18 @@ async def list_cognee_datasets() -> List[Dict[str, Any]]:
 @router.post("/cognee/improve")
 async def improve_cognee(req: CogneeImproveRequest) -> Any:
     return await _mem_svc.improve_cognee(req.dataset_name)
+
+
+@router.get("/cognee/graph")
+async def get_cognee_graph(
+    dataset: Optional[str] = Query(None),
+) -> HTMLResponse:
+    """渲染 Cognee 官方知识图谱 HTML（同源输出，供前端内嵌/新窗口打开）。"""
+    try:
+        html = await _mem_svc.get_cognee_graph_html(dataset)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return HTMLResponse(html)
 
 
 @router.get("/ltm/stats")

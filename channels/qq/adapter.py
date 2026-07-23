@@ -41,6 +41,12 @@ def _ok_raw(data: Any) -> str:
     return _ok(data if isinstance(data, dict) else {"data": data})
 
 
+def _read_file_base64(path: str) -> str:
+    """读取文件并 base64 编码（同步实现，供 to_thread 调用）。"""
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+
 def _split_forward_sections(text: str, max_lines_per_section: int = 20) -> List[str]:
     """将长文本智能拆分为合并转发的多段内容。
 
@@ -235,18 +241,18 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         return os.path.abspath(candidates[-1])
 
     @staticmethod
-    def _to_ob_file(path: str) -> str:
+    async def _to_ob_file(path: str) -> str:
         """将本地文件路径转为 OneBot ``base64://`` 格式，URL 和已有 base64 格式原样返回。
 
         NapCat / QQ 运行在 macOS App Sandbox 内，无法读取外部路径（如 /tmp），
         转为 base64 可彻底绕过文件权限与沙箱限制。
+        大文件读取 + base64 编码移入线程，避免阻塞事件循环。
         """
         if path.startswith(("http://", "https://", "base64://", "data:")):
             return path
         resolved = OneBotV11Channel._resolve_local_file_path(path)
         if os.path.isfile(resolved):
-            with open(resolved, "rb") as f:
-                return "base64://" + base64.b64encode(f.read()).decode()
+            return "base64://" + await asyncio.to_thread(_read_file_base64, resolved)
         return path
 
     @staticmethod
@@ -261,7 +267,7 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
 
     async def send_photo(self, chat_id: str, photo: str, caption: str = "", **kwargs: Any) -> str:
         channel_type = kwargs.get("channel_type", "private")
-        file_value = self._to_ob_file(photo)
+        file_value = await self._to_ob_file(photo)
         ob_message: list = [{"type": "image", "data": {"file": file_value}}]
         if caption:
             ob_message.append({"type": "text", "data": {"text": caption}})
@@ -273,7 +279,7 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
 
     async def send_voice(self, chat_id: str, voice: str, caption: str = "", **kwargs: Any) -> str:
         channel_type = kwargs.get("channel_type", "private")
-        file_value = self._to_ob_file(voice)
+        file_value = await self._to_ob_file(voice)
         ob_message = [{"type": "record", "data": {"file": file_value}}]
         data = await self._send_to(chat_id, channel_type, ob_message)
         return self._send_result(chat_id, data, "发送语音失败")
@@ -308,7 +314,7 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
             message = str(result.get("message") or "")
             wording = str(result.get("wording") or "")
         if "EPERM" in f"{message} {wording}" and os.path.isfile(resolved):
-            params["file"] = self._to_ob_file(resolved)
+            params["file"] = await self._to_ob_file(resolved)
             log("QQ send_file 检测到 EPERM，回退 base64 上传", "WARNING", tag="通道")
             result = await self._call_api_raw(action, params)
             if result and result.get("retcode") == 0:
@@ -767,10 +773,8 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         if not os.path.exists(file_path):
             return _err(f"文件不存在: {file_path}")
 
-        # 读取文件内容并转为 base64
-        import base64
-        with open(file_path, "rb") as f:
-            file_content = base64.b64encode(f.read()).decode()
+        # 读取文件内容并转为 base64（大文件移入线程，避免阻塞事件循环）
+        file_content = await asyncio.to_thread(_read_file_base64, file_path)
 
         file_name = name or os.path.basename(file_path)
         ok = await self._call_api("upload_group_file", {
@@ -933,9 +937,7 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         if not os.path.exists(file_path):
             return _err(f"文件不存在: {file_path}")
 
-        import base64
-        with open(file_path, "rb") as f:
-            file_content = base64.b64encode(f.read()).decode()
+        file_content = await asyncio.to_thread(_read_file_base64, file_path)
 
         ok = await self._call_api("set_qq_avatar", {
             "file": file_content,

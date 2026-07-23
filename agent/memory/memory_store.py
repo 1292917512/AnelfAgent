@@ -22,6 +22,9 @@ from .memory_utils import cosine_similarity, pack_embedding, unpack_embedding
 
 _HALF_LIFE_HOURS = 24 * 30  # 30 天半衰期
 
+# 连接健康检查节流间隔（秒）：避免每次 _get_db 都执行 SELECT 1
+_HEALTH_CHECK_INTERVAL = 30.0
+
 # 混合评分权重
 _W_SEMANTIC = 0.7
 _W_DECAY = 0.3
@@ -105,6 +108,7 @@ class MemoryStore(BaseEntity):
         self._db_path = db_path
         self._db: Optional[aiosqlite.Connection] = None
         self._db_connect_lock = asyncio.Lock()
+        self._last_health_check = 0.0
         self._initialized = False
         self._fts_available = False
         self._chunks_fts_available = False
@@ -120,11 +124,16 @@ class MemoryStore(BaseEntity):
     async def _get_db(self) -> aiosqlite.Connection:
         # 健康检查失败后的关闭/重建全程走 _db_connect_lock：
         # 并发调用（如后台 EmbeddingWorker 与请求路径）若各自持有独立连接写同一文件
-        # 会触发 database is locked，重连交错还可能在关闭途中复用旧连接
+        # 会触发 database is locked，重连交错还可能在关闭途中复用旧连接。
+        # 健康检查（SELECT 1）按 30s 节流，避免每次调用都探测（与 SqliteBackend 同约定）
         async with self._db_connect_lock:
             if self._db is not None:
+                now = time.monotonic()
+                if now - self._last_health_check < _HEALTH_CHECK_INTERVAL:
+                    return self._db
                 try:
                     await self._db.execute("SELECT 1")
+                    self._last_health_check = now
                     return self._db
                 except Exception:
                     try:
@@ -1558,7 +1567,11 @@ class MemoryStore(BaseEntity):
         min_score: float,
         limit: int,
     ) -> list[tuple[MemoryEntry, float]]:
-        """加载一个批次的记忆并计算向量相似度。"""
+        """加载一个批次的记忆并计算向量相似度。
+
+        相似度计算为纯 CPU 循环，移入线程执行避免阻塞事件循环
+        （与 find_similar_memories 的 O(n²) 卸载约定一致）。
+        """
         db = await self._get_db()
         cursor = await db.execute(
             f"SELECT {_MEM_COLUMNS} FROM memories WHERE embedding_blob IS NOT NULL "
@@ -1567,16 +1580,18 @@ class MemoryStore(BaseEntity):
         )
         rows = await cursor.fetchall()
 
-        scored: list[tuple[MemoryEntry, float]] = []
-        for row in rows:
-            entry = self._row_to_entry(row)
-            if entry.embedding:
-                score = cosine_similarity(query_vec, entry.embedding)
-                if score >= min_score:
-                    scored.append((entry, score))
+        def _score_rows() -> list[tuple[MemoryEntry, float]]:
+            scored: list[tuple[MemoryEntry, float]] = []
+            for row in rows:
+                entry = self._row_to_entry(row)
+                if entry.embedding:
+                    score = cosine_similarity(query_vec, entry.embedding)
+                    if score >= min_score:
+                        scored.append((entry, score))
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return scored[:limit]
 
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return scored[:limit]
+        return await asyncio.to_thread(_score_rows)
 
     # ------------------------------------------------------------------
     # 混合搜索（三路并行评分管线）
@@ -1590,20 +1605,23 @@ class MemoryStore(BaseEntity):
         limit: int = 10,
         min_score: float = 0.1,
     ) -> list[tuple[MemoryEntry, float]]:
-        """混合搜索：向量 + FTS + LIKE 三路并行，取并集后统一评分。"""
+        """混合搜索：向量 + FTS 两路并行，取并集后统一评分。
+
+        LIKE 全表扫描兜底由 search_fts 内部覆盖（FTS 不可用或异常时自动回退），
+        不再作为独立一路重复执行（FTS 可用时 LIKE 与 FTS 命中高度重叠，
+        却每次召回都付出一次全表扫描成本）。
+        """
         pool_size = limit * 5
 
         async def _empty_vec() -> list[tuple[MemoryEntry, float]]:
             return []
 
-        # 三路并行搜索
+        # 两路并行搜索
         vec_coro = self.search_vector(query_vec, limit=pool_size, min_score=0.05) if query_vec else _empty_vec()
         fts_coro = self.search_fts(query, limit=pool_size)
-        like_coro = self._search_like(query, pool_size)
 
-        vec_results, fts_results, like_results = await asyncio.gather(
-            vec_coro, fts_coro, like_coro
-        )
+        vec_results, fts_results = await asyncio.gather(vec_coro, fts_coro)
+        like_results: list[tuple[MemoryEntry, float]] = []
 
         all_results = fts_results + like_results + vec_results
         max_access = max((e.access_count for e, _ in all_results), default=0)
@@ -1665,7 +1683,8 @@ class MemoryStore(BaseEntity):
         """统一搜索：同时检索 memories 表和 chunks 表，合并排序返回。"""
         pool_size = limit * 3
 
-        # memories 搜索 + chunks 三路搜索并行执行
+        # memories 搜索 + chunks 搜索并行执行
+        # （chunks 的 LIKE 兜底由 search_chunks_fts 内部覆盖，不再重复一路）
         async def _empty_chunk_vec() -> list[Dict[str, Any]]:
             return []
 
@@ -1675,11 +1694,11 @@ class MemoryStore(BaseEntity):
         )
         chunk_vec_coro = self.search_chunks_vector(query_vec, limit=pool_size, min_score=0.05) if query_vec else _empty_chunk_vec()
         chunk_fts_coro = self.search_chunks_fts(query, limit=pool_size)
-        chunk_like_coro = self._search_chunks_like(query, pool_size)
 
-        mem_results, chunk_vec_results, chunk_fts_results, chunk_like_results = await asyncio.gather(
-            mem_coro, chunk_vec_coro, chunk_fts_coro, chunk_like_coro
+        mem_results, chunk_vec_results, chunk_fts_results = await asyncio.gather(
+            mem_coro, chunk_vec_coro, chunk_fts_coro,
         )
+        chunk_like_results: list[Dict[str, Any]] = []
 
         # 合并 chunks 候选
         chunk_candidates: Dict[str, Dict[str, Any]] = {}
