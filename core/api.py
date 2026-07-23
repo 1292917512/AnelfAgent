@@ -106,6 +106,8 @@ class APIRegistry:
             if existing.func != metadata.func:
                 log(f"⚠️ API名称冲突: {metadata.name}", "WARNING")
                 return False
+            # 同名同 func 的重复注册幂等跳过，避免分组索引重复 append 污染
+            return True
 
         # 注册API
         cls._apis[metadata.name] = metadata
@@ -131,8 +133,8 @@ class APIRegistry:
         return cls._apis.get(name)
 
     @classmethod
-    def call(cls, name: str, *args, **kwargs) -> Any:
-        """调用API"""
+    async def call(cls, name: str, *args, **kwargs) -> Any:
+        """调用API（ASYNC_FUNCTION 返回的协程会被自动 await）"""
         start_time = time.time()
 
         metadata = cls.get(name)
@@ -146,6 +148,8 @@ class APIRegistry:
 
         try:
             result = metadata.func(*args, **kwargs)
+            if inspect.iscoroutine(result):
+                result = await result
             stats['success_count'] += 1
             stats['total_time'] += time.time() - start_time
             return result
@@ -346,6 +350,6 @@ def api(name: Optional[str] = None, scope: ApiScope = ApiScope.PUBLIC, group: st
 
 
 # 调用api
-def call_api(name: str, *args: Any, **kwargs: Any) -> Any:
+async def call_api(name: str, *args: Any, **kwargs: Any) -> Any:
     """调用API"""
-    return APIRegistry.call(name, *args, **kwargs)
+    return await APIRegistry.call(name, *args, **kwargs)

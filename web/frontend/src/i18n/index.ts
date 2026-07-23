@@ -22,6 +22,8 @@ import zhHeartbeat from "./locales/zh/heartbeat.json";
 import zhConfig from "./locales/zh/config.json";
 import zhSkills from "./locales/zh/skills.json";
 import zhWorkbench from "./locales/zh/workbench.json";
+import zhStickers from "./locales/zh/stickers.json";
+import zhData from "./locales/zh/data.json";
 
 import enCommon from "./locales/en/common.json";
 import enNav from "./locales/en/nav.json";
@@ -43,6 +45,8 @@ import enHeartbeat from "./locales/en/heartbeat.json";
 import enConfig from "./locales/en/config.json";
 import enSkills from "./locales/en/skills.json";
 import enWorkbench from "./locales/en/workbench.json";
+import enStickers from "./locales/en/stickers.json";
+import enData from "./locales/en/data.json";
 
 const resources = {
   zh: {
@@ -66,6 +70,8 @@ const resources = {
     skills: zhSkills,
     config: zhConfig,
     workbench: zhWorkbench,
+    stickers: zhStickers,
+    data: zhData,
   },
   en: {
     common: enCommon,
@@ -88,6 +94,8 @@ const resources = {
     skills: enSkills,
     config: enConfig,
     workbench: enWorkbench,
+    stickers: enStickers,
+    data: enData,
   },
 };
 
@@ -120,6 +128,8 @@ i18n
       "skills",
       "config",
       "workbench",
+      "stickers",
+      "data",
     ],
     interpolation: {
       escapeValue: false,

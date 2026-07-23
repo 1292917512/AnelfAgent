@@ -36,6 +36,14 @@ class FlowResult:
     blackboard: Dict[str, Any] = field(default_factory=dict)
 
 
+def result_key(node_name: str) -> str:
+    """节点结果在 blackboard 中的键名（execute 写入 ``result_<node_name>``）。
+
+    集中键名生成，避免调用方硬编码 ``result_`` 前缀造成耦合。
+    """
+    return f"result_{node_name}"
+
+
 class FlowMachine:
     """异步流程状态机"""
 
@@ -68,7 +76,7 @@ class FlowMachine:
             results.append(result)
 
             if result.result is not None:
-                self.blackboard[f"result_{node_name}"] = result.result
+                self.blackboard[result_key(node_name)] = result.result
 
             if result.state == FlowState.FAILURE and not options.get('skip_on_error', False):
                 log(f"❌ 流程因节点 {node_name} 失败而终止", "ERROR")
@@ -115,6 +123,10 @@ class FlowMachine:
     def get(self, key: str, default: Any = None) -> Any:
         """获取黑板数据"""
         return self.blackboard.get(key, default)
+
+    def get_result(self, node_name: str, default: Any = None) -> Any:
+        """获取某节点的执行结果（blackboard 中 ``result_<node_name>``）。"""
+        return self.blackboard.get(result_key(node_name), default)
 
     def set(self, key: str, value: Any) -> None:
         """设置黑板数据"""

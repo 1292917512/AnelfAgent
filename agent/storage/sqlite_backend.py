@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -9,13 +10,16 @@ import aiosqlite
 
 from core.log import log
 
+# 连接健康检查节流间隔（秒）：避免每次 _get_db 都执行 SELECT 1
+_HEALTH_CHECK_INTERVAL = 30.0
+
 
 def default_sqlite_path() -> str:
     env_path = os.getenv("ANELF_BOT_SQLITE_PATH")
     if env_path and env_path.strip():
         return env_path.strip()
-    from core.path import project_root
-    return str(Path(project_root()) / "config" / "memory" / "data" / "agent.sqlite3")
+    from core.path import ConfigPaths, project_root
+    return str(Path(project_root()) / ConfigPaths.SQLITE_DB)
 
 
 class SqliteBackend:
@@ -28,84 +32,96 @@ class SqliteBackend:
         self._conv_embed_ready = False
         self._entity_counter_ready = False
         self._adapter_key_ready = False
+        self._conn_lock = asyncio.Lock()
+        self._last_health_check = 0.0
 
     async def _get_db(self) -> aiosqlite.Connection:
-        """获取持久连接，首次调用时创建并初始化表结构。"""
-        if self._db is not None:
-            try:
-                await self._db.execute("SELECT 1")
-                return self._db
-            except Exception:
+        """获取持久连接，首次调用时创建并初始化表结构。
+
+        用 asyncio.Lock 包裹 check-and-connect，避免并发调用时重复建连竞态；
+        健康检查（SELECT 1）按 30s 节流，避免每次调用都探测。
+        """
+        async with self._conn_lock:
+            if self._db is not None:
+                now = time.monotonic()
+                if now - self._last_health_check < _HEALTH_CHECK_INTERVAL:
+                    return self._db
                 try:
-                    await self._db.close()
+                    await self._db.execute("SELECT 1")
+                    self._last_health_check = now
+                    return self._db
                 except Exception:
-                    pass
-                self._db = None
+                    try:
+                        await self._db.close()
+                    except Exception:
+                        pass
+                    self._db = None
 
-        path = Path(self.db_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+            path = Path(self.db_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
 
-        db = await aiosqlite.connect(self.db_path)
-        await db.execute("PRAGMA journal_mode=WAL;")
-        await db.execute("PRAGMA synchronous=NORMAL;")
-        await db.execute("PRAGMA busy_timeout=5000;")
+            db = await aiosqlite.connect(self.db_path)
+            await db.execute("PRAGMA journal_mode=WAL;")
+            await db.execute("PRAGMA synchronous=NORMAL;")
+            await db.execute("PRAGMA busy_timeout=5000;")
 
-        if not self._initialized:
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS conversation_messages (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  scope_type TEXT NOT NULL,
-                  scope_id TEXT NOT NULL,
-                  role TEXT NOT NULL,
-                  content TEXT NOT NULL,
-                  ts_ns INTEGER NOT NULL
-                );
-                """
-            )
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_conversation_scope_ts "
-                "ON conversation_messages(scope_type, scope_id, ts_ns);"
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS entity_profile (
-                  scope_type TEXT NOT NULL,
-                  scope_id TEXT NOT NULL,
-                  personality TEXT,
-                  updated_ts_ns INTEGER NOT NULL DEFAULT 0,
-                  PRIMARY KEY(scope_type, scope_id)
-                );
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS entity_alias (
-                  scope_type TEXT NOT NULL,
-                  scope_id TEXT NOT NULL,
-                  primary_scope_type TEXT NOT NULL,
-                  primary_scope_id TEXT NOT NULL,
-                  created_ts_ns INTEGER NOT NULL DEFAULT 0,
-                  PRIMARY KEY(scope_type, scope_id)
-                );
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS pending_tasks (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  scope TEXT NOT NULL,
-                  kind TEXT NOT NULL,
-                  payload_json TEXT NOT NULL DEFAULT '{}',
-                  ts_ns INTEGER NOT NULL
-                );
-                """
-            )
-            await db.commit()
-            self._initialized = True
+            if not self._initialized:
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS conversation_messages (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      scope_type TEXT NOT NULL,
+                      scope_id TEXT NOT NULL,
+                      role TEXT NOT NULL,
+                      content TEXT NOT NULL,
+                      ts_ns INTEGER NOT NULL
+                    );
+                    """
+                )
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_conversation_scope_ts "
+                    "ON conversation_messages(scope_type, scope_id, ts_ns);"
+                )
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS entity_profile (
+                      scope_type TEXT NOT NULL,
+                      scope_id TEXT NOT NULL,
+                      personality TEXT,
+                      updated_ts_ns INTEGER NOT NULL DEFAULT 0,
+                      PRIMARY KEY(scope_type, scope_id)
+                    );
+                    """
+                )
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS entity_alias (
+                      scope_type TEXT NOT NULL,
+                      scope_id TEXT NOT NULL,
+                      primary_scope_type TEXT NOT NULL,
+                      primary_scope_id TEXT NOT NULL,
+                      created_ts_ns INTEGER NOT NULL DEFAULT 0,
+                      PRIMARY KEY(scope_type, scope_id)
+                    );
+                    """
+                )
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pending_tasks (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      scope TEXT NOT NULL,
+                      kind TEXT NOT NULL,
+                      payload_json TEXT NOT NULL DEFAULT '{}',
+                      ts_ns INTEGER NOT NULL
+                    );
+                    """
+                )
+                await db.commit()
+                self._initialized = True
 
-        self._db = db
-        return db
+            self._db = db
+            self._last_health_check = time.monotonic()
+            return db
 
     async def close(self) -> None:
         """关闭持久连接。"""
@@ -168,9 +184,9 @@ class SqliteBackend:
             SELECT m.scope_type, m.scope_id, m.role, m.content, m.adapter_key, m.ts_ns
             FROM conversation_messages m
             JOIN (
-              SELECT scope_type, scope_id, MAX(ts_ns) AS max_ts
+              SELECT scope_type, scope_id, MAX(ts_ns) AS max_ts, MAX(id) AS max_id
               FROM conversation_messages GROUP BY scope_type, scope_id
-            ) t ON m.scope_type=t.scope_type AND m.scope_id=t.scope_id AND m.ts_ns=t.max_ts
+            ) t ON m.scope_type=t.scope_type AND m.scope_id=t.scope_id AND m.id=t.max_id
             """
         )
         rows = await cursor.fetchall()
@@ -186,7 +202,6 @@ class SqliteBackend:
         self, *, scope_type: str, scope_id: str, limit: int
     ) -> list[dict]:
         db = await self._get_db()
-        db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
             SELECT role, content, ts_ns
@@ -198,11 +213,11 @@ class SqliteBackend:
             (scope_type, scope_id, int(limit)),
         )
         rows = await cursor.fetchall()
-        db.row_factory = None
         rows = list(reversed(rows))
         # 角色按存储原样返回（主流 OpenAI 格式：system/user/assistant/tool），
-        # 不做 system→assistant 等特殊映射；ts_ns 由调用方用于时序水位，入库时间即消息到达时间
-        return [{"role": r["role"], "content": r["content"], "ts_ns": r["ts_ns"]} for r in rows]
+        # 不做 system→assistant 等特殊映射；ts_ns 由调用方用于时序水位，入库时间即消息到达时间。
+        # 按列位置手工构造 dict，避免修改共享连接的 row_factory 引发并发竞态。
+        return [{"role": r[0], "content": r[1], "ts_ns": r[2]} for r in rows]
 
     # ------------------------------------------------------------------
     # 实体画像
@@ -287,6 +302,26 @@ class SqliteBackend:
             (conv_num, conv_update_num, scope_type, scope_id),
         )
         await db.commit()
+
+    async def save_entity_counters_batch(
+        self, records: list[tuple[str, str, int, int]]
+    ) -> int:
+        """批量更新对话计数（单事务一次提交），返回更新的记录数。
+
+        每条记录为 (scope_type, scope_id, conv_num, conv_update_num)。
+        """
+        if not records:
+            return 0
+        await self._ensure_entity_counter_columns()
+        db = await self._get_db()
+        await db.executemany(
+            "UPDATE entity_profile SET conv_num=?, conv_update_num=? "
+            "WHERE scope_type=? AND scope_id=?",
+            [(conv_num, conv_update_num, scope_type, scope_id)
+             for scope_type, scope_id, conv_num, conv_update_num in records],
+        )
+        await db.commit()
+        return len(records)
 
     # ------------------------------------------------------------------
     # PFC 待办持久化（跨重启恢复用户托付的异步任务）
@@ -560,6 +595,28 @@ class SqliteBackend:
         db = await self._get_db()
         await db.execute("DELETE FROM conversation_messages WHERE id=?", (row_id,))
         await db.commit()
+
+    async def update_conversation_message(self, row_id: int, new_content: str) -> bool:
+        """更新单条会话消息内容（存储层正式 API）。
+
+        改写 content 的同时将 embedding_blob 置 NULL（内容变更使旧向量失效），
+        提交后唤醒 embedding worker 异步重建向量。
+
+        Returns:
+            True 表示命中并更新了消息；False 表示 row_id 不存在。
+        """
+        await self._ensure_conv_embedding_column()
+        db = await self._get_db()
+        cursor = await db.execute(
+            "UPDATE conversation_messages SET content=?, embedding_blob=NULL WHERE id=?",
+            (new_content, row_id),
+        )
+        if cursor.rowcount == 0:
+            return False
+        await db.commit()
+        from agent.memory.embedding_worker import wake_embedding_worker
+        wake_embedding_worker()
+        return True
 
     async def clear_conversation(self, *, scope_type: str, scope_id: str) -> int:
         """清空指定 scope 的全部会话记录，返回删除数量。"""

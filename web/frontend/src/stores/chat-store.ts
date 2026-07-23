@@ -39,6 +39,38 @@ let _eventSource: EventSource | null = null;
 let _cidSeq = 0;
 const nextCid = () => `c-${++_cidSeq}`;
 
+/** 发送看门狗：120s 无 reply/delta 则复位发送态 */
+let _sendWatchdog: ReturnType<typeof setTimeout> | null = null;
+const SEND_TIMEOUT_MS = 120_000;
+
+function clearSendWatchdog() {
+  if (_sendWatchdog) {
+    clearTimeout(_sendWatchdog);
+    _sendWatchdog = null;
+  }
+}
+
+function armSendWatchdog() {
+  clearSendWatchdog();
+  _sendWatchdog = setTimeout(() => {
+    _sendWatchdog = null;
+    const s = useChatStore.getState();
+    if (!s.sending) return;
+    useChatStore.setState((prev) => ({
+      sending: false,
+      sendingSince: null,
+      streaming: null,
+      messages: [
+        ...prev.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
+        { role: "system", content: i18n.t("sendTimeout", { ns: "chat" }), cid: nextCid() },
+      ],
+    }));
+  }, SEND_TIMEOUT_MS);
+}
+
+const MAX_FILES = 9;
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+
 interface UiCommandPayload {
   command: string;
   id?: string;
@@ -119,7 +151,7 @@ interface ChatState {
   /** 以已在工作区内的路径附加文件（如从文件树拖入） */
   attachWorkspaceFile: (path: string, name: string) => void;
   removeFile: (idx: number) => void;
-  send: (text: string, userName: string) => Promise<void>;
+  send: (text: string, userName: string) => Promise<boolean>;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -157,6 +189,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     es.addEventListener("reply", (e) => {
       try {
         const data = JSON.parse(e.data) as ChatMessage;
+        clearSendWatchdog();
         set((s) => ({
           messages: [
             ...s.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
@@ -171,6 +204,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     es.addEventListener("media", (e) => {
       try {
         const data = JSON.parse(e.data) as ChatMessage;
+        clearSendWatchdog();
         set((s) => ({
           messages: [
             ...s.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
@@ -211,10 +245,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     es.addEventListener("delta", (e) => {
       try {
         const data = JSON.parse(e.data);
+        clearSendWatchdog();
         set((s) => {
           const cur = s.streaming && s.streaming.turnId === data.turn_id
             ? s.streaming
-            : { turnId: data.turn_id, text: "", reasoning: "", tools: s.streaming?.tools ?? [], diffs: s.streaming?.diffs ?? [] };
+            : { turnId: data.turn_id, text: "", reasoning: "", tools: [], diffs: [] };
           return {
             streaming: {
               ...cur,
@@ -229,7 +264,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       try {
         const data = JSON.parse(e.data);
         set((s) => {
-          const cur = s.streaming ?? { turnId: "", text: "", reasoning: "", tools: [], diffs: [] };
+          const turnId = data.turn_id ?? "";
+          const cur = s.streaming && s.streaming.turnId === turnId
+            ? s.streaming
+            : { turnId, text: "", reasoning: "", tools: [], diffs: [] };
           const idx = cur.tools.findIndex((t) => t.call_id === data.call_id);
           const tools = [...cur.tools];
           const frame = {
@@ -247,7 +285,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       try {
         const data = JSON.parse(e.data);
         set((s) => {
-          const cur = s.streaming ?? { turnId: "", text: "", reasoning: "", tools: [], diffs: [] };
+          const turnId = data.turn_id ?? "";
+          const cur = s.streaming && s.streaming.turnId === turnId
+            ? s.streaming
+            : { turnId, text: "", reasoning: "", tools: [], diffs: [] };
           return {
             streaming: {
               ...cur,
@@ -270,6 +311,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   stopSSE: () => {
+    clearSendWatchdog();
     _eventSource?.close();
     _eventSource = null;
   },
@@ -278,8 +320,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   addFiles: async (files) => {
     if (!files) return;
+    const current = get().pendingFiles;
+    const incoming = Array.from(files);
+    const accepted: File[] = [];
+    for (const file of incoming) {
+      if (current.length + accepted.length >= MAX_FILES) {
+        useWorkbenchStore.getState().pushNotification({
+          id: nextCid(),
+          title: "",
+          content: i18n.t("fileLimit", { ns: "chat", max: MAX_FILES }),
+          level: "warning",
+          ts: Date.now() / 1000,
+        });
+        break;
+      }
+      if (file.size > MAX_FILE_SIZE) {
+        useWorkbenchStore.getState().pushNotification({
+          id: nextCid(),
+          title: "",
+          content: i18n.t("fileTooLarge", { ns: "chat", name: file.name, max: 50 }),
+          level: "warning",
+          ts: Date.now() / 1000,
+        });
+        continue;
+      }
+      accepted.push(file);
+    }
+    if (!accepted.length) return;
     const newFiles: PendingFile[] = [];
-    for (const file of Array.from(files)) {
+    for (const file of accepted) {
       const type = classifyFile(file.name);
       const pf: PendingFile = { file, type, uploading: true };
       if (type === "image") pf.preview = URL.createObjectURL(file);
@@ -328,7 +397,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   send: async (text, userName) => {
     const { pendingFiles } = get();
     const uploadedPaths = pendingFiles.filter((f) => f.path).map((f) => f.path!);
-    if (!text.trim() && !uploadedPaths.length) return;
+    if (!text.trim() && !uploadedPaths.length) return false;
 
     const displayParts: string[] = [];
     if (text.trim()) displayParts.push(text.trim());
@@ -339,6 +408,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         displayParts.push(`[${pf.type}: ${pf.file.name}]`);
       }
     }
+
+    // 释放 blob 预览 URL（send 后 pendingFiles 清空，blob 不再需要）
+    for (const pf of pendingFiles) {
+      if (pf.preview?.startsWith("blob:")) URL.revokeObjectURL(pf.preview);
+    }
+
     set((s) => ({
       messages: [...s.messages, {
         role: "user",
@@ -351,14 +426,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sendingSince: Date.now(),
     }));
 
+    armSendWatchdog();
+
     try {
       await chatApi.send(text.trim() || " ", "web_user", userName, uploadedPaths.length ? uploadedPaths : undefined);
+      return true;
     } catch {
+      clearSendWatchdog();
       set((s) => ({
         sending: false,
         sendingSince: null,
-        messages: [...s.messages, { role: "system", content: i18n.t("sendFailed", { ns: "chat" }), cid: nextCid() }],
+        messages: [
+          ...s.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
+          { role: "system", content: i18n.t("sendFailed", { ns: "chat" }), cid: nextCid() },
+        ],
       }));
+      return false;
     }
   },
 }));

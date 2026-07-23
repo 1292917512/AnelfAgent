@@ -32,8 +32,8 @@ export function ApprovalStatsStrip() {
     refetchInterval: 5000,
   });
 
-  const pendingCount = (data?.pending_count as number) ?? 0;
-  const byDecision = (data?.history_by_decision ?? {}) as Record<string, number>;
+  const pendingCount = data?.pending_count ?? 0;
+  const byDecision = data?.history_by_decision ?? {};
   const totalDecisions = DECISION_ORDER.reduce((sum, k) => sum + (byDecision[k] ?? 0), 0);
   const approvalRate = totalDecisions > 0 ? Math.round(((byDecision.approved ?? 0) / totalDecisions) * 100) : 0;
 

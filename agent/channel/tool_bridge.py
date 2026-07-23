@@ -105,7 +105,11 @@ register_configs_safe(_CHANNEL_TOOL_CONFIGS)
 
 
 def _sensitive_check() -> bool:
-    """敏感频道操作门控。"""
+    """敏感频道操作门控。
+
+    敏感操作注册时附加 meta={"risk": "CRITICAL"} 元数据，
+    供审批规则（EntityRegistry 工具元数据结构）按 risk 级别匹配拦截。
+    """
     return get_config_bool("channel_tools_allow_sensitive", True)
 
 
@@ -301,6 +305,7 @@ def _register_specific_tool(channel_id: str, bound: Callable, meta: ChannelToolM
         tags=tags,
         source=f"channel.{channel_id}",
         check_fn=_sensitive_check if meta.sensitive else None,
+        meta={"risk": "CRITICAL"} if meta.sensitive else None,
     )
     if ok:
         _specific_tools.setdefault(channel_id, []).append(tool_name)
@@ -311,8 +316,14 @@ def _register_specific_tool(channel_id: str, bound: Callable, meta: ChannelToolM
 
 
 def _make_specific_handler(channel_id: str, tool_name: str, bound: Callable) -> Callable:
-    """特有工具薄封装：目标解析（chat_id/channel_type）+ 结果规范化。"""
+    """特有工具薄封装：目标解析（chat_id/channel_type）+ 运行时开关守卫 + 结果规范化。"""
     async def _handler(**kwargs: Any) -> str:
+        if not is_channel_tool_enabled(channel_id, tool_name):
+            return json.dumps({
+                "success": False,
+                "error": f"接口 {tool_name} 已在频道 '{channel_id}' 上被管理员禁用",
+                "channel_id": channel_id,
+            }, ensure_ascii=False)
         try:
             raw = bound(**_prepare_call(bound, kwargs, channel_id))
             if inspect.isawaitable(raw):
@@ -350,6 +361,7 @@ def _rebuild_common_tool(cap_value: str) -> bool:
         tags=[cap_value],
         source="channel.auto",
         check_fn=_sensitive_check if sensitive else None,
+        meta={"risk": "CRITICAL"} if sensitive else None,
     )
     if ok:
         _apply_persisted_state(cap_value)

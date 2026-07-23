@@ -3,6 +3,7 @@
 from services._runtime import get_agent_app, get_runtime, is_ready, require_runtime
 from services.adapter import AdapterService
 from services.chat import ChatService
+from services.database import DatabaseService
 from services.entity import EntityService
 from services.mcp import MCPService
 from services.memory import MemoryService
@@ -20,6 +21,7 @@ __all__ = [
     "require_runtime",
     "AdapterService",
     "ChatService",
+    "DatabaseService",
     "EntityService",
     "MCPService",
     "MemoryService",

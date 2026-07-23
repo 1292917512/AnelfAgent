@@ -1,7 +1,7 @@
 {
   "enabled": false,
-  "account_id": "",
-  "token": "",
+  "account_id": "cb9a8cfa0d5b@im.bot",
+  "token": "cb9a8cfa0d5b@im.bot:0600004f232964b41313086355d2e877de0ef7",
   "base_url": "https://ilinkai.weixin.qq.com",
   "cdn_base_url": "https://novac2c.cdn.weixin.qq.com/c2c",
   "dm_policy": "open",

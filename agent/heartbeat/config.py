@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -23,6 +25,30 @@ def _normalize_reasoning_effort(value: Any) -> str:
     if normalized in _REASONING_EFFORT_VALUES:
         return normalized
     return ""
+
+
+def _normalize_schedule_times(raw_times: List[Any]) -> List[str]:
+    """校验并归一化 SCHEDULED 时间列表为 HH:MM 零填充格式。
+
+    非法值（无法解析为 0-23:0-59）WARNING 跳过，避免字符串比较语义错误。
+    """
+    result: List[str] = []
+    for t in raw_times:
+        s = str(t).strip()
+        parts = s.split(":")
+        if len(parts) != 2:
+            log(f"SCHEDULED 时间格式非法（期望 HH:MM）: '{s}'，已跳过", "WARNING", tag="心跳")
+            continue
+        try:
+            h, m = int(parts[0]), int(parts[1])
+        except ValueError:
+            log(f"SCHEDULED 时间格式非法（期望 HH:MM）: '{s}'，已跳过", "WARNING", tag="心跳")
+            continue
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            log(f"SCHEDULED 时间超出范围: '{s}'，已跳过", "WARNING", tag="心跳")
+            continue
+        result.append(f"{h:02d}:{m:02d}")
+    return result
 
 
 class ScheduleMode(str, Enum):
@@ -79,7 +105,7 @@ class TaskSchedule:
             mode=mode,
             every_n_beats=int(data.get("every_n_beats", 10)),
             beat_count=int(data.get("beat_count", 0)),
-            schedule_times=list(data.get("schedule_times", [])),
+            schedule_times=_normalize_schedule_times(list(data.get("schedule_times", []))),
             last_run_date=data.get("last_run_date", ""),
             model_id=data.get("model_id", ""),
             reasoning_effort=_normalize_reasoning_effort(data.get("reasoning_effort", "")),
@@ -127,10 +153,21 @@ class HeartbeatConfig:
     def save(self, path: Optional[Path] = None) -> None:
         p = path or _CONFIG_PATH
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(
-            json.dumps(self.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        content = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+        fd, tmp = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
+        try:
+            os.write(fd, content.encode("utf-8"))
+            os.close(fd)
+            fd = -1
+            os.replace(tmp, str(p))
+        except BaseException:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> HeartbeatConfig:

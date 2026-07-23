@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "@/lib/api";
+import type { ApprovalPendingItem } from "@/lib/types";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -17,19 +18,6 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
-
-interface ApprovalRequest {
-  request_id: string;
-  tool_name: string;
-  tool_args: Record<string, unknown>;
-  risk_level: string;
-  reason: string;
-  requester_channel: string;
-  requester_chat_id: string;
-  requester_user_id: string;
-  expires_at: number;
-  created_at: number;
-}
 
 type Remember = "once" | "session" | "always";
 
@@ -77,7 +65,7 @@ export function PendingApprovalsList() {
     onSuccess: invalidate,
   });
 
-  const pending = (data?.pending ?? []) as ApprovalRequest[];
+  const pending: ApprovalPendingItem[] = data?.pending ?? [];
   const now = useNow(pending.length > 0);
 
   if (isLoading) {

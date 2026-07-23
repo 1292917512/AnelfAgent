@@ -66,14 +66,14 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
     mind._active_scopes.add(scope)
     mind._reply_idle_event.clear()
     try:
-        mind._reply_adapter_key = getattr(anything, "adapter_key", "") or ""
+        adapter_key = getattr(anything, "adapter_key", "") or ""
         mind._set_phase(MindPhase.RECALLING)
 
-        pending_images = mind._collect_pending_images()
+        pending_images = mind._collect_pending_images(scope=scope)
         if pending_images:
             log(f"注入待处理图片: {len(pending_images)} 张", tag="思维")
 
-        pending_media = mind.pfc.collect_media()
+        pending_media = mind.pfc.collect_media(scope=scope)
         # 按实际携带的媒体激活媒体工具（recognize_image 等），确保本轮 schema 可用
         if pending_images or pending_media:
             mind.pfc.activate_media_tools(pending_images, pending_media)
@@ -83,7 +83,7 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
                 combined = '\n'.join(media_texts)
                 await mind._add_system_context(anything, combined)
 
-        await mind.reply(anything, pending_images)
+        await mind.reply(anything, pending_images, adapter_key=adapter_key)
     finally:
         mind._active_scopes.discard(scope)
         if not mind._active_scopes:
@@ -287,11 +287,14 @@ def resolve_reply_target(mind: Mind, target: str) -> Optional[Everything]:
     """根据 target 在已知路由中查找并消费对应任务。
 
     支持格式：user_123 / group_456 / 纯 ID（自动补前缀）。
+    判活前置：scope 已被占用时不消费队列条目（避免并行 scope 串台丢消息）。
     """
     if not target:
         return None
 
     if target.startswith("group_"):
+        if target in mind._active_scopes:
+            return None
         group_id: Union[int, str] = target[6:]
         try:
             group_id = int(group_id)
@@ -302,6 +305,8 @@ def resolve_reply_target(mind: Mind, target: str) -> Optional[Everything]:
         return MessageAssistantGroup(group_id=group_id, adapter_key=adapter_key)
 
     if target.startswith("user_"):
+        if target in mind._active_scopes:
+            return None
         uid: Union[int, str] = target[5:]
         try:
             uid = int(uid)
@@ -312,12 +317,16 @@ def resolve_reply_target(mind: Mind, target: str) -> Optional[Everything]:
         return MessageAssistant(uid=uid, adapter_key=adapter_key)
 
     scope_user = f"user_{target}"
+    if scope_user in mind._active_scopes:
+        return None
     adapter_key = mind.pfc.get_adapter_key(scope_user)
     if mind.pfc.consume_user_task(target):
         log(f"将 target '{target}' 补充 user_ 前缀匹配到 {scope_user}", tag="思维")
         return MessageAssistant(uid=target, adapter_key=adapter_key)
 
     scope_group = f"group_{target}"
+    if scope_group in mind._active_scopes:
+        return None
     adapter_key = mind.pfc.get_adapter_key(scope_group)
     if mind.pfc.consume_group_task(target):
         log(f"将 target '{target}' 补充 group_ 前缀匹配到 {scope_group}", tag="思维")

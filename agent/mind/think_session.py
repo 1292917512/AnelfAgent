@@ -46,4 +46,5 @@ def think_session(
         if token_ctx is not None:
             reset_token(token_ctx)
         if clear_dynamic_tools:
-            mind.pfc.clear_dynamic_tools()
+            # 传入 scope：非主会话（如后台评审 reflect）不清理全局动态工具，避免踩踏
+            mind.pfc.clear_dynamic_tools(scope=scope)

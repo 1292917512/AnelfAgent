@@ -47,6 +47,23 @@ from core.sanitizer import is_sanitize_enabled, sanitize_text
 _MAX_LIFECYCLE_RETRIES = 5
 _DEFAULT_CALL_TIMEOUT = 300.0
 
+# ------------------------------------------------------------------
+# 配置注册
+# ------------------------------------------------------------------
+
+_MCP_CONFIGS = {
+    "安全": {
+        "mcp_stdio_passthrough_env": {
+            "description": "MCP stdio 子进程是否透传全量环境变量（默认仅白名单）",
+            "default": False,
+        },
+    },
+}
+
+from core.config import register_configs_safe  # noqa: E402
+
+register_configs_safe(_MCP_CONFIGS)
+
 
 # ------------------------------------------------------------------
 # Config models
@@ -794,6 +811,42 @@ class MCPBridge:
             registered.append(reg_name)
         return registered
 
+    # stdio 子进程环境变量白名单（防止敏感 env 泄露给第三方 MCP server）
+    _STDIO_ENV_WHITELIST = frozenset({
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL",
+        "LANG", "LANGUAGE", "TERM", "TZ",
+        "SYSTEMROOT", "COMSPEC", "TEMP", "TMP",
+        "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+        "HOMEDRIVE", "HOMEPATH", "PATHEXT", "USERNAME", "OS",
+    })
+
+    @staticmethod
+    def _build_stdio_env(user_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """构建 stdio 子进程环境变量：默认白名单 + 用户显式配置。
+
+        配置 mcp_stdio_passthrough_env=True 时恢复全量透传。
+        """
+        try:
+            from core.config import ConfigManager
+            passthrough = bool(ConfigManager.get("mcp_stdio_passthrough_env", False))
+        except Exception:
+            passthrough = False
+
+        if passthrough:
+            env: Dict[str, str] = dict(os.environ)
+        else:
+            env = {
+                k: v for k, v in os.environ.items()
+                if k in MCPBridge._STDIO_ENV_WHITELIST or k.startswith("LC_")
+            }
+
+        env["ANELF_MCP_STDIO"] = "1"
+        env["ANELF_LOG_STREAM"] = "stderr"
+        env["PYTHONUNBUFFERED"] = "1"
+        if user_env:
+            env.update(user_env)
+        return env
+
     @staticmethod
     def _create_transport(srv: MCPServerConfig) -> Any:
         """根据配置创建传输上下文管理器。"""
@@ -801,14 +854,7 @@ class MCPBridge:
 
         if transport == "stdio":
             from mcp.client.stdio import stdio_client, StdioServerParameters
-            stdio_env = {
-                **os.environ,
-                "ANELF_MCP_STDIO": "1",
-                "ANELF_LOG_STREAM": "stderr",
-                "PYTHONUNBUFFERED": "1",
-            }
-            if srv.env:
-                stdio_env.update(srv.env)
+            stdio_env = MCPBridge._build_stdio_env(srv.env)
             return stdio_client(StdioServerParameters(
                 command=srv.command,
                 args=srv.args,

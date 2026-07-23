@@ -3,7 +3,10 @@ import { useAppStore } from "@/stores/app-store";
 import { Sun, Moon, Languages, Menu } from "lucide-react";
 
 export function Header() {
-  const { theme, toggleTheme, setMobileMenuOpen, branding } = useAppStore();
+  const theme = useAppStore((s) => s.theme);
+  const toggleTheme = useAppStore((s) => s.toggleTheme);
+  const setMobileMenuOpen = useAppStore((s) => s.setMobileMenuOpen);
+  const branding = useAppStore((s) => s.branding);
   const { i18n } = useTranslation();
 
   const toggleLang = () => i18n.changeLanguage(i18n.language === "zh" ? "en" : "zh");

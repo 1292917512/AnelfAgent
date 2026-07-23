@@ -204,12 +204,22 @@ def test_config_round_trip_preserves_extended_parameters(tmp_path) -> None:
     assert model["extra_body"] == {"custom": True}
 
 
-def test_error_redaction_removes_api_key() -> None:
-    client = LLMClient(LLMClientConfig(
+def test_error_redaction_removes_api_key(tmp_path) -> None:
+    config_path = tmp_path / "llm.json"
+    config_path.write_text(json.dumps({
+        "providers": [{
+            "id": "p1",
+            "api_key": "top-secret-key",
+            "models": [{"id": "default", "model": "model"}],
+        }],
+        "default_chat": "default",
+    }), encoding="utf-8")
+    manager = LLMManager(str(config_path))
+    client = manager.get_client("default") or LLMClient(LLMClientConfig(
         model="model",
         api_key="top-secret-key",
     ))
-    redacted = LLMManager._safe_error(
+    redacted = manager._safe_error(
         RuntimeError("request failed with top-secret-key"),
         client,
     )

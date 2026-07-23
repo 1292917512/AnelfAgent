@@ -20,7 +20,7 @@
   ],
   "chat": {
     "source": "model",
-    "model_id": "deepseek-v4-pro",
+    "model_id": "MiniMax-M3-NoThinking",
     "provider": "openai",
     "model": "",
     "api_key": "",

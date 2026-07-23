@@ -305,12 +305,22 @@ class ApprovalGate:
         log(f"放行规则已创建: [{rule.pattern}] scope={rule.scope} "
             f"({'会话级' if effective == 'session' else '永久'})", tag="权限")
 
+    # 敏感参数名：按 `_`/`-` 分词边界匹配，避免子串误伤（monkey/keyboard）
+    _SENSITIVE_RE = re.compile(
+        r"(?:^|[_-])(?:api_key|token|password|secret|key|auth)(?:$|[_-])",
+        re.IGNORECASE,
+    )
+
     def _sanitize_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """脱敏工具参数（移除 API Key / Token / 密码等）。"""
-        sensitive_keys = {"api_key", "token", "password", "secret", "key", "auth"}
+        """脱敏工具参数（移除 API Key / Token / 密码等）。
+
+        敏感判定按边界匹配：参数名精确等于敏感词，或以 ``_``/``-`` 分隔的
+        边界包含敏感词（``api_key``/``my-key``/``key_id`` 命中，``monkey``/
+        ``keyboard`` 不命中）。
+        """
         sanitized: Dict[str, Any] = {}
         for k, v in args.items():
-            if any(s in k.lower() for s in sensitive_keys):
+            if self._SENSITIVE_RE.search(k):
                 sanitized[k] = "***REDACTED***"
             elif isinstance(v, str) and len(v) > 2000:
                 sanitized[k] = v[:2000] + "..."

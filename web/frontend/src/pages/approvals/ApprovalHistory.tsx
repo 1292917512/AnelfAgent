@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { approvalsApi } from "@/lib/api";
+import type { ApprovalHistoryItem } from "@/lib/types";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -17,19 +18,6 @@ import {
   ChevronUp,
   Search,
 } from "lucide-react";
-
-interface ApprovalHistoryItem {
-  request_id: string;
-  tool_name: string;
-  risk_level: string;
-  decision: string;
-  decided_by: string;
-  decided_at: number;
-  decision_reason: string;
-  matched_rule?: string;
-  requester_user_id: string;
-  requester_channel: string;
-}
 
 type DecisionFilter = "all" | "approved" | "denied" | "expired" | "cancelled";
 
@@ -73,7 +61,7 @@ export function ApprovalHistory() {
     queryFn: () => approvalsApi.history(100).then((r) => r.data),
   });
 
-  const history = (data?.history ?? []) as ApprovalHistoryItem[];
+  const history: ApprovalHistoryItem[] = data?.history ?? [];
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: history.length };

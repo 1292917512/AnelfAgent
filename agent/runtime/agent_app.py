@@ -21,7 +21,23 @@ from agent.messages import (
     MessageGroupUser,
     MessageUser,
 )
+from core.config import get_config, register_configs_safe
 from core.log import log
+
+# 频道内审批授权白名单：非空时仅白名单用户可 approve/deny，其他用户指令按普通消息放行。
+# 条目格式："user_id"（全局）或 "channel:user_id"（限定频道）；默认空=不启用校验。
+_APPROVAL_CONFIGS = {
+    "审批": {
+        "approval_admin_users": {
+            "description": "频道内审批授权白名单（user_id 或 channel:user_id），空=不限制",
+            "default": [],
+        },
+    },
+}
+register_configs_safe(_APPROVAL_CONFIGS)
+
+# 白名单为空时仅提示一次（启动后首次遇到审批指令时）
+_approval_admin_hint_logged = False
 
 
 class AgentStatus(str, Enum):
@@ -131,7 +147,7 @@ class AgentApp:
 
     async def submit(self, event: AgentEvent) -> None:
         """向运行时提交通用事件（在当前事件循环中执行）。"""
-        self._ensure_started()
+        await self._ensure_started()
         await self._queue.put(event)
 
     async def send_message(
@@ -180,7 +196,7 @@ class AgentApp:
             payload["media_segments"] = media_segments
 
         event = AgentEvent(type="message", payload=payload)
-        self._ensure_started()
+        await self._ensure_started()
 
         # 检测跨循环调用（如 Telegram 独立线程 → 主循环）
         try:
@@ -225,13 +241,15 @@ class AgentApp:
     # 内部处理
     # ------------------------------------------------------------------
 
-    def _ensure_started(self) -> None:
+    async def _ensure_started(self) -> None:
         if self._running:
             return
+        self._main_loop = asyncio.get_running_loop()
         self._running = True
         self._stats.start_time = time.time()
         self._status = AgentStatus.RUNNING
         self._task = asyncio.create_task(self._run_loop(), name="agent.agent_core.AgentApp")
+        await event_bus.emit(EVENT_AGENT_STARTED, {"time": self._stats.start_time})
 
     async def _run_loop(self) -> None:
         while self._running:
@@ -251,7 +269,8 @@ class AgentApp:
                 await event_bus.emit(EVENT_ERROR_OCCURRED, {"error": str(exc), "event_type": event.type})
             finally:
                 self._queue.task_done()
-                if self._status in (AgentStatus.PROCESSING, AgentStatus.ERROR):
+                # ERROR 状态保留到下一个事件到来再被覆盖，便于外部观测最近一次失败
+                if self._status == AgentStatus.PROCESSING:
                     self._status = AgentStatus.RUNNING
 
     async def _default_handler(self, event: AgentEvent) -> None:
@@ -272,6 +291,25 @@ class AgentApp:
             await self.runtime.respond.accept_data(anything)
         else:
             log(f"未处理的事件类型: {event.type}", "DEBUG")
+
+
+def _is_approval_admin(user_id: str, channel_id: str) -> bool:
+    """判断用户是否有权在频道内做出审批决策。
+
+    白名单（approval_admin_users）为空时不启用校验，任何用户均可审批
+    （保持向后兼容）；非空时仅 ``user_id`` 或 ``channel:user_id`` 命中者生效。
+    """
+    global _approval_admin_hint_logged
+    admins = get_config("approval_admin_users", []) or []
+    if not isinstance(admins, (list, tuple)):
+        admins = []
+    if not admins:
+        if not _approval_admin_hint_logged:
+            log("approval_admin_users 未配置，频道内审批不限制操作者（任意用户可审批）",
+                "WARNING", tag="权限")
+            _approval_admin_hint_logged = True
+        return True
+    return user_id in admins or f"{channel_id}:{user_id}" in admins
 
 
 async def _try_resolve_approval(payload: dict) -> bool:
@@ -295,6 +333,12 @@ async def _try_resolve_approval(payload: dict) -> bool:
         return False
 
     user_id = str(payload.get("user_id", "") or "unknown")
+    channel_id = str(payload.get("adapter_key", "") or "")
+    if not _is_approval_admin(user_id, channel_id):
+        # 非授权用户：审批指令按普通消息放行（不拦截、不决策）
+        log(f"频道内审批指令来自非授权用户，已按普通消息放行: "
+            f"{request_id} (user={user_id}, channel={channel_id})", "WARNING", tag="权限")
+        return False
     ok = await (manager_gate.approve(request_id, decided_by=user_id)
                 if decision_str == "approved"
                 else manager_gate.deny(request_id, decided_by=user_id))

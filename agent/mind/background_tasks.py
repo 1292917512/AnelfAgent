@@ -99,10 +99,20 @@ class BackgroundTaskRegistry:
         self._waiting: Dict[str, int] = {}
         # 主事件循环（bind_loop 绑定；工作线程完成任务时经 call_soon_threadsafe 回到循环）
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # 轮外完成回调（无等待者时触发，由 Mind 注册，避免 entities 层直接 import agent.mind）
+        self._on_unclaimed: Optional[Callable[[str, str, str], None]] = None
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """绑定主事件循环（Mind 初始化时调用）。"""
         self._loop = loop
+
+    def set_unclaimed_callback(self, callback: Callable[[str, str, str], None]) -> None:
+        """注册轮外完成回调（无等待者时触发新 REPLY 周期）。
+
+        Args:
+            callback: (scope, description, summary) -> None
+        """
+        self._on_unclaimed = callback
 
     # ------------------------------------------------------------------
     # 登记与完成
@@ -166,6 +176,11 @@ class BackgroundTaskRegistry:
             f"{'轮内会合' if claimed else '轮外通知'}",
             tag="后台",
         )
+        # 轮外完成（无等待者）：触发回调（由 Mind 注册，排入回复队列触发新 REPLY）
+        if not claimed and self._on_unclaimed is not None:
+            scope = rec.info.scope
+            if scope.startswith(("user_", "group_")):
+                self._on_unclaimed(scope, rec.info.description, summary[:1500])
         return claimed
 
     # ------------------------------------------------------------------

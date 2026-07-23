@@ -1,7 +1,7 @@
-"""媒体文件下载工具 — 统一将远程 URL 下载到本地 workspace。
+"""媒体文件下载工具 — 将远程 URL 按需下载到本地 workspace。
 
-频道适配器只需在 MessageSegment 中填入 url，
-核心层在 dispatch_inbound 前调用 ensure_local_media 自动下载。
+频道媒体不再入站时自动下载，而是由 AI 通过工具（web_download /
+qq_download_file）按需触发，此处提供统一的落盘实现。
 """
 
 from __future__ import annotations
@@ -9,13 +9,12 @@ from __future__ import annotations
 import os
 import time
 import uuid
-from typing import List
 
 import httpx
 
 from core.log import log
 
-from .schemas import MessageSegment, SegmentType
+from .schemas import SegmentType
 
 MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024  # 20 MB
 DOWNLOAD_TIMEOUT = 30.0
@@ -37,7 +36,8 @@ _TYPE_EXT_MAP = {
 }
 
 
-def _get_upload_dir() -> str:
+def get_upload_dir() -> str:
+    """返回 workspace 下的 uploads 根目录（绝对路径）。"""
     try:
         from core.config import ConfigManager
         ws = ConfigManager.get("workspace_root", "workspace")
@@ -56,45 +56,31 @@ def _guess_ext(url: str, seg_type: SegmentType) -> str:
     return _TYPE_EXT_MAP.get(seg_type, ".bin")
 
 
-async def ensure_local_media(segments: List[MessageSegment]) -> List[MessageSegment]:
-    """遍历消息段，将有远程 URL 但无本地路径的媒体下载到 workspace/uploads/。
+async def download_to_uploads(
+    url: str,
+    seg_type: SegmentType,
+    save_name: str = "",
+    max_size: int = MAX_DOWNLOAD_SIZE,
+) -> str:
+    """下载单个 URL 到 uploads 对应子目录，返回本地路径。失败返回空字符串。
 
-    已有 file_path（且文件存在）的 segment 不重复下载。
-    TEXT / AT / LOCATION 等无需下载的类型直接跳过。
-    返回更新后的 segments 列表（原地修改）。
+    Args:
+        url: 远程文件地址（http/https）
+        seg_type: 媒体类型，决定落盘子目录与默认扩展名
+        save_name: 期望的文件名（仅取 basename，附加唯一前缀防冲突）
+        max_size: 允许的最大字节数，超限跳过
     """
-    downloadable = {SegmentType.IMAGE, SegmentType.VOICE, SegmentType.AUDIO,
-                    SegmentType.VIDEO, SegmentType.FILE}
-
-    for seg in segments:
-        if seg.type not in downloadable:
-            continue
-
-        if seg.file_path and os.path.exists(seg.file_path):
-            continue
-
-        url = seg.url
-        if not url or not url.startswith(("http://", "https://")):
-            continue
-
-        local_path = await _download_to_local(url, seg.type)
-        if local_path:
-            seg.file_path = local_path
-            if not seg.file_name:
-                seg.file_name = os.path.basename(local_path)
-
-    return segments
-
-
-async def _download_to_local(url: str, seg_type: SegmentType) -> str:
-    """下载单个 URL 到本地，返回本地路径。失败返回空字符串。"""
     sub_dir = _TYPE_DIR_MAP.get(seg_type, "file")
-    dl_dir = os.path.join(_get_upload_dir(), sub_dir)
+    dl_dir = os.path.join(get_upload_dir(), sub_dir)
     os.makedirs(dl_dir, exist_ok=True)
 
-    ext = _guess_ext(url, seg_type)
     short_id = uuid.uuid4().hex[:8]
-    filename = f"{int(time.time() * 1000)}_{short_id}{ext}"
+    if save_name:
+        base = os.path.basename(save_name).strip() or f"file{_guess_ext(url, seg_type)}"
+        filename = f"{int(time.time() * 1000)}_{short_id}_{base}"
+    else:
+        ext = _guess_ext(url, seg_type)
+        filename = f"{int(time.time() * 1000)}_{short_id}{ext}"
     local_path = os.path.join(dl_dir, filename)
 
     try:
@@ -103,13 +89,13 @@ async def _download_to_local(url: str, seg_type: SegmentType) -> str:
             resp.raise_for_status()
 
             content_length = int(resp.headers.get("content-length", 0))
-            if content_length > MAX_DOWNLOAD_SIZE:
-                log(f"媒体下载跳过（超过 {MAX_DOWNLOAD_SIZE // 1024 // 1024}MB）: {url}", "WARNING")
+            if content_length > max_size:
+                log(f"媒体下载跳过（超过 {max_size // 1024 // 1024}MB）: {url}", "WARNING")
                 return ""
 
             data = resp.content
-            if len(data) > MAX_DOWNLOAD_SIZE:
-                log(f"媒体下载跳过（超过 {MAX_DOWNLOAD_SIZE // 1024 // 1024}MB）: {url}", "WARNING")
+            if len(data) > max_size:
+                log(f"媒体下载跳过（超过 {max_size // 1024 // 1024}MB）: {url}", "WARNING")
                 return ""
 
             with open(local_path, "wb") as f:

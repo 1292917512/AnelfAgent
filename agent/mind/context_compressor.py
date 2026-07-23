@@ -163,6 +163,10 @@ def _is_genuine_user_message(msg: Dict) -> bool:
     return head.startswith("[") and any(f"[{tag}:" in head for tag in _USER_ARRIVAL_TAGS)
 
 
+# 公开别名：供外部模块（如 runtime.bootstrap）引用，避免跨模块导入私有函数
+is_genuine_user_message = _is_genuine_user_message
+
+
 class ContextCompressor:
     """上下文压缩器：检测溢出并压缩中间轮次。"""
 

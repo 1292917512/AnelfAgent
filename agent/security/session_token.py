@@ -41,9 +41,9 @@ def current_token() -> str:
 
 
 def is_token_enabled() -> bool:
-    """会话令牌总开关。"""
+    """会话令牌总开关（默认关闭，与注册默认值一致）。"""
     from core.config import get_config_bool
-    return get_config_bool("security_session_token_enabled", True)
+    return get_config_bool("security_session_token_enabled", False)
 
 
 def wrap_history_content(content: str, token: Optional[str] = None) -> str:

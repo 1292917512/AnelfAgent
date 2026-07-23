@@ -25,6 +25,8 @@ import {
   SlidersHorizontal,
   Shield,
   Blocks,
+  Smile,
+  Database,
   type LucideIcon,
 } from "lucide-react";
 
@@ -48,6 +50,8 @@ const ICON_MAP: Record<string, LucideIcon> = {
   SlidersHorizontal,
   Shield,
   Blocks,
+  Smile,
+  Database,
 };
 
 const FALLBACK_NAV: NavItem[] = [
@@ -56,6 +60,7 @@ const FALLBACK_NAV: NavItem[] = [
   { path: "/models", label: "models", icon: "Cpu", group: "group_core" },
   { path: "/personas", label: "personas", icon: "UserCircle", group: "group_core" },
   { path: "/memory", label: "memory", icon: "Brain", group: "group_core" },
+  { path: "/data", label: "data", icon: "Database", group: "group_core" },
   { path: "/tasks", label: "tasks", icon: "ListChecks", group: "group_core" },
   { path: "/heartbeat", label: "heartbeat", icon: "HeartPulse", group: "group_core" },
   { path: "/tools", label: "tools", icon: "Wrench", group: "group_ability" },
@@ -70,7 +75,10 @@ const FALLBACK_NAV: NavItem[] = [
 ];
 
 export function Sidebar() {
-  const { sidebarCollapsed, toggleSidebar, navigation, branding } = useAppStore();
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
+  const toggleSidebar = useAppStore((s) => s.toggleSidebar);
+  const navigation = useAppStore((s) => s.navigation);
+  const branding = useAppStore((s) => s.branding);
   const { t } = useTranslation("nav");
 
   const navItems = navigation.length > 0 ? navigation : FALLBACK_NAV;

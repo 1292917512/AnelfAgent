@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+import threading
 import time as _time
 from pathlib import Path
 from typing import List, Optional
@@ -13,6 +16,9 @@ from core.log import log
 
 LOG_PATH = Path("config/memory/heartbeat.md")
 
+# 进程内锁：防止并发 tick 交错写入
+_WRITE_LOCK = threading.Lock()
+
 
 def _max_entries() -> int:
     try:
@@ -20,6 +26,25 @@ def _max_entries() -> int:
         return get_config_provider().mind.heartbeat_max_entries
     except Exception:
         return 50
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """原子写入：tmp + os.replace，避免并发读写到半截文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        os.write(fd, content.encode("utf-8"))
+        os.close(fd)
+        fd = -1
+        os.replace(tmp, str(path))
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def load_recent(count: int = 3) -> str:
@@ -38,9 +63,10 @@ def load_recent(count: int = 3) -> str:
 def append_entry(text: str) -> None:
     """向最后一条心跳日志追加一行内容。"""
     try:
-        if LOG_PATH.exists():
-            content = LOG_PATH.read_text("utf-8")
-            LOG_PATH.write_text(content.rstrip() + f"\n- {text}\n", encoding="utf-8")
+        with _WRITE_LOCK:
+            if LOG_PATH.exists():
+                content = LOG_PATH.read_text("utf-8")
+                _atomic_write(LOG_PATH, content.rstrip() + f"\n- {text}\n")
     except Exception as e:
         log(f"心跳日志追加失败: {e}", "DEBUG")
 
@@ -64,19 +90,19 @@ def write_log(
     entry = "\n".join(lines)
 
     try:
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        existing = LOG_PATH.read_text("utf-8") if LOG_PATH.exists() else ""
-        text = (
-            existing.rstrip() + "\n\n" + entry
-            if existing.strip()
-            else f"# 心跳日志\n\n{entry}"
-        )
+        with _WRITE_LOCK:
+            existing = LOG_PATH.read_text("utf-8") if LOG_PATH.exists() else ""
+            text = (
+                existing.rstrip() + "\n\n" + entry
+                if existing.strip()
+                else f"# 心跳日志\n\n{entry}"
+            )
 
-        blocks = text.split("\n### ")
-        max_n = _max_entries()
-        if len(blocks) > max_n + 1:
-            text = blocks[0] + "\n### " + "\n### ".join(blocks[-max_n:])
+            blocks = text.split("\n### ")
+            max_n = _max_entries()
+            if len(blocks) > max_n + 1:
+                text = blocks[0] + "\n### " + "\n### ".join(blocks[-max_n:])
 
-        LOG_PATH.write_text(text, encoding="utf-8")
+            _atomic_write(LOG_PATH, text)
     except Exception as e:
         log(f"心跳日志写入失败: {e}", "DEBUG")

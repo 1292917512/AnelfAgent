@@ -53,8 +53,8 @@ export function ChatInput() {
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    await send(text, t("user"));
-    setInput("");
+    const ok = await send(text, t("user"));
+    if (ok) setInput("");
   }, [input, send, t]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

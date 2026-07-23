@@ -19,5 +19,7 @@
   "group_system": "System",
   "skills": "Skills",
   "config": "Config",
-  "capabilities": "Capabilities"
+  "capabilities": "Capabilities",
+  "stickers": "Stickers",
+  "data": "Data"
 }

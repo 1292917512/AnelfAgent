@@ -103,7 +103,7 @@ function AskDialog() {
 
         <div className="flex justify-end">
           <button
-            onClick={() => answer(t("ask.skipped"))}
+            onClick={() => answer("__skipped__")}
             className="text-[11px] text-muted hover:text-foreground transition-colors"
           >
             {t("ask.skip")}

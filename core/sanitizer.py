@@ -23,6 +23,8 @@ _PATTERNS: List[Tuple[str, "re.Pattern[str]", int]] = [
     # Bearer Token
     ("bearer", re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b", re.IGNORECASE), 7),
     # 通用密钥赋值（api_key/password/secret/token = "..."）
+    # 值要求 ≥8 字符且不含 ,}（避免匹配 JSON 结构字符和短布尔/枚举值如 true/none）；
+    # 短于 8 字符的真实密钥极少见，放宽阈值会显著增加误报（password: 123456 等场景）
     ("credential_assign", re.compile(
         r"(?i)\b(api[_-]?key|passwd|password|secret|access[_-]?token|auth[_-]?token|private[_-]?key)"
         r"([\s]*[=:][\s]*[\"']?)([^\s\"'}{,]{8,})"

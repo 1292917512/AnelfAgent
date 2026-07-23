@@ -22,6 +22,8 @@ export function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
   const [refreshed, setRefreshed] = useState(false);
   const sessionRef = useRef<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollingRef = useRef(false);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const stopPolling = () => {
     if (timerRef.current) {
@@ -30,8 +32,16 @@ export function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
     }
   };
 
+  const clearRefreshTimer = () => {
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    }
+  };
+
   const discardSession = () => {
     stopPolling();
+    clearRefreshTimer();
     const sid = sessionRef.current;
     sessionRef.current = null;
     if (sid) weixinQrApi.discard(sid).catch(() => undefined);
@@ -58,7 +68,8 @@ export function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
 
   const poll = async () => {
     const sid = sessionRef.current;
-    if (!sid) return;
+    if (!sid || pollingRef.current) return;
+    pollingRef.current = true;
     try {
       const { data } = await weixinQrApi.status(sid);
       if (data.qr_png) {
@@ -67,7 +78,8 @@ export function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
       }
       if (data.refreshed) {
         setRefreshed(true);
-        setTimeout(() => setRefreshed(false), 4000);
+        clearRefreshTimer();
+        refreshTimerRef.current = setTimeout(() => setRefreshed(false), 4000);
       }
       switch (data.status) {
         case "scaned":
@@ -96,6 +108,8 @@ export function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
       }
     } catch {
       // 单次轮询失败静默，下一轮重试
+    } finally {
+      pollingRef.current = false;
     }
   };
 
@@ -105,7 +119,7 @@ export function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
     setPhase("idle");
   };
 
-  useEffect(() => () => discardSession(), []);
+  useEffect(() => () => { discardSession(); clearRefreshTimer(); }, []);
 
   return (
     <>

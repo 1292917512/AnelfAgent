@@ -24,6 +24,7 @@ class ChannelManager(BaseEntity):
     def __init__(self) -> None:
         self._channels: Dict[str, BaseChannel] = {}
         self._channel_map: Dict[str, str] = {}
+        self._channel_map_max: int = 1000
         self._group_targets: set[str] = set()
         super().__init__()
 
@@ -163,14 +164,16 @@ class ChannelManager(BaseEntity):
 
         channel_key = f"{cid}:{message.channel.channel_id}"
         self._channel_map[channel_key] = cid
+        # LRU 上限：超出时淘汰最早插入的条目
+        if len(self._channel_map) > self._channel_map_max:
+            excess = len(self._channel_map) - self._channel_map_max
+            for k in list(self._channel_map.keys())[:excess]:
+                del self._channel_map[k]
         if message.channel.channel_type == ChannelType.GROUP:
             self._group_targets.add(channel_key)
 
         from agent.runtime.agent_app import get_agent_app
         from .schemas import ChannelType as CT
-
-        from .media import ensure_local_media
-        await ensure_local_media(message.segments)
 
         images = self._extract_images(message)
         media_segments = self._extract_media_segments(message)
@@ -252,7 +255,7 @@ class ChannelManager(BaseEntity):
         return "private"
 
     def _resolve_channel(self, anything: Any) -> Optional[BaseChannel]:
-        """从消息对象解析来源频道。"""
+        """从消息对象解析来源频道。解析失败时返回 None（拒绝发送）。"""
         adapter_key = getattr(anything, "adapter_key", None)
         if adapter_key and adapter_key in self._channels:
             return self._channels[adapter_key]
@@ -261,8 +264,11 @@ class ChannelManager(BaseEntity):
         for key, cid in self._channel_map.items():
             if key.endswith(f":{uid}") or key.endswith(f":{group_id}"):
                 return self._channels.get(cid)
-        if self._channels:
-            return next(iter(self._channels.values()))
+        log(
+            f"回复路由解析失败：无法从消息对象确定来源频道 "
+            f"(adapter_key={adapter_key}, uid={uid}, group_id={group_id})",
+            "WARNING", tag="通道",
+        )
         return None
 
     @staticmethod
@@ -287,6 +293,8 @@ class ChannelManager(BaseEntity):
 
     @staticmethod
     def _extract_images(message: Any) -> list:
+        import os
+
         from agent.llm.types import ImageContent
         from .schemas import SegmentType
 
@@ -296,7 +304,7 @@ class ChannelManager(BaseEntity):
                 continue
             file_path = getattr(seg, "file_path", "")
             url = getattr(seg, "url", "")
-            if file_path:
+            if file_path and os.path.isfile(file_path):
                 images.append(ImageContent(data=file_path, is_url=False))
             elif url:
                 is_url = url.startswith("http://") or url.startswith("https://")

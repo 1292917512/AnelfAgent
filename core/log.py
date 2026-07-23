@@ -3,7 +3,6 @@
 import os
 import sys
 import time
-import traceback
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, List, Dict, Callable, Optional, Any
@@ -27,11 +26,14 @@ try:
 
     _loguru_logger.remove()
     _USE_LOGURU = True
+    # remove() 清空了内置 sink，这里记录默认 stream sink 的 id（在 format_record 定义后挂载）
+    _stream_sink_id: Optional[int] = None
 except ImportError:
     import logging as _stdlib_logging
 
     _loguru_logger = None  # type: ignore[assignment]
     _USE_LOGURU = False
+    _stream_sink_id = None
 
     # 构建 stdlib fallback logger
     _stdlib_handler = _stdlib_logging.StreamHandler(_DEFAULT_LOG_STREAM)
@@ -58,6 +60,12 @@ def format_record(record: dict) -> str:
     level_name = record["level"].name
     message = record["message"]
     return f"[{time_str}] {emoji} {level_name}: {message}\n"
+
+
+# 挂载默认 stream sink：非 launch.py 入口（未调用 set_log_level）也能正常输出日志，
+# 避免 remove() 清空内置 sink 后日志全部丢失。
+if _USE_LOGURU:
+    _stream_sink_id = logger.add(_DEFAULT_LOG_STREAM, format=format_record, level="DEBUG")
 
 
 def _notify_listeners(level: str, message: str, tag: Optional[str] = None):
@@ -90,17 +98,18 @@ def log(message: str, level: str = "INFO", tag: Optional[str] = None):
         tag: 标签，用于监听器过滤
     """
     message = _maybe_sanitize(message)
-    if level in ["ERROR", "CRITICAL"] and sys.exc_info()[0] is not None:
-        traceback.print_exc()
+    with_exc = level in ["ERROR", "CRITICAL"] and sys.exc_info()[0] is not None
 
     if _USE_LOGURU:
         safe = message.replace("{", "{{").replace("}", "}}").replace("<", r"\<")
-        getattr(logger.opt(depth=1), level.lower())(safe)
+        getattr(logger.opt(depth=1, exception=with_exc), level.lower())(safe)
     else:
         import logging as _logging
         _level_map = {"DEBUG": _logging.DEBUG, "INFO": _logging.INFO, "WARNING": _logging.WARNING,
                       "ERROR": _logging.ERROR, "CRITICAL": _logging.CRITICAL}
-        _fallback_logger.log(_level_map.get(level.upper(), _logging.INFO), message)
+        _fallback_logger.log(
+            _level_map.get(level.upper(), _logging.INFO), message, exc_info=with_exc,
+        )
     _notify_listeners(level, message, tag)
 
 
@@ -160,8 +169,12 @@ def remove_listener(callback: Callable[[Dict[str, Any]], None], tag: Optional[st
 
 def set_log_level(level: str):
     """设置日志等级"""
+    global _stream_sink_id
     if _USE_LOGURU:
-        logger.add(_DEFAULT_LOG_STREAM, format=format_record, level=level.upper())
+        # 重设等级前先移除旧 stream sink，避免重复 sink 导致日志双写
+        if _stream_sink_id is not None:
+            logger.remove(_stream_sink_id)
+        _stream_sink_id = logger.add(_DEFAULT_LOG_STREAM, format=format_record, level=level.upper())
     else:
         import logging as _logging
         _level_map = {"DEBUG": _logging.DEBUG, "INFO": _logging.INFO, "WARNING": _logging.WARNING,

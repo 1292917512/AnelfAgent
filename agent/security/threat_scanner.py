@@ -21,6 +21,7 @@ from typing import List, Optional, Tuple
 from core.log import log
 
 MAX_SCAN_CHARS = 65_536
+_SEGMENT_SIZE = 65_536
 
 # 有界填充：防多词绕过且避免正则回溯爆炸
 _FILLER = r"(?:\w+\s+){0,8}"
@@ -81,10 +82,61 @@ _PATTERNS: List[Tuple[str, str, str]] = [
 
 # 隐形 unicode 字符（零宽字符等，用于隐藏注入内容）
 _INVISIBLE_CHARS = (
-    "​", "‌", "‍", "⁠", "﻿",
-    "᠎", " ", " ", " ", " ",
-    " ", " ", " ", " ", " ", " ", " ",
+    "\u200b", "\u200c", "\u200d", "\u2060", "\ufeff",
+    "\u180e", "\u2000", "\u2001", "\u2002", "\u2003",
+    "\u2004", "\u2005", "\u2006", "\u2007", "\u2008", "\u2009", "\u200a",
 )
+
+# ZWJ/ZWNJ 在 emoji 组合序列或阿拉伯/波斯文上下文中是正常字符，需豁免
+_ZWJ_ZWNJ = frozenset(("\u200d", "\u200c"))
+
+
+def _is_emoji_context(text: str, idx: int) -> bool:
+    """判断 idx 处的 ZWJ/ZWNJ 是否处于 emoji 修饰符/扩展 pictographic 上下文中。"""
+    # 检查前一个字符是否为 emoji 相关（Extended_Pictographic 或修饰符）
+    if idx > 0:
+        prev = text[idx - 1]
+        if unicodedata.category(prev).startswith("So") or ord(prev) >= 0x1F000:
+            return True
+        # 肤色修饰符 U+1F3FB..U+1F3FF
+        if 0x1F3FB <= ord(prev) <= 0x1F3FF:
+            return True
+    # 检查后一个字符
+    next_idx = idx + 1
+    if next_idx < len(text):
+        nxt = text[next_idx]
+        if unicodedata.category(nxt).startswith("So") or ord(nxt) >= 0x1F000:
+            return True
+        if 0x1F3FB <= ord(nxt) <= 0x1F3FF:
+            return True
+    return False
+
+
+def _is_arabic_persian_context(text: str, idx: int) -> bool:
+    """判断 idx 处的 ZWNJ 是否处于阿拉伯/波斯文书写上下文中。"""
+    # 阿拉伯文字范围 U+0600-U+06FF, U+0750-U+077F, U+FB50-U+FDFF, U+FE70-U+FEFF
+    arabic_ranges = (
+        (0x0600, 0x06FF), (0x0750, 0x077F), (0xFB50, 0xFDFF), (0xFE70, 0xFEFF),
+    )
+    for offset in (-1, 1):
+        pos = idx + offset
+        if 0 <= pos < len(text):
+            cp = ord(text[pos])
+            if any(lo <= cp <= hi for lo, hi in arabic_ranges):
+                return True
+    return False
+
+
+def _has_suspicious_invisible(text: str) -> bool:
+    """检测隐形字符，豁免 emoji 组合序列和阿拉伯/波斯文上下文中的 ZWJ/ZWNJ。"""
+    for i, ch in enumerate(text):
+        if ch not in _INVISIBLE_CHARS:
+            continue
+        if ch in _ZWJ_ZWNJ:
+            if _is_emoji_context(text, i) or _is_arabic_persian_context(text, i):
+                continue
+        return True
+    return False
 
 _COMPILED: List[Tuple["re.Pattern[str]", str, str]] = [
     (re.compile(p, re.IGNORECASE | re.MULTILINE), pid, scope)
@@ -103,27 +155,47 @@ def _normalize(content: str) -> str:
 def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     """扫描内容中的威胁模式，返回命中的 pattern_id 列表。
 
+    超长内容（>MAX_SCAN_CHARS）分段扫描，确保尾部内容不被遗漏。
+
     Args:
-        content: 待扫描内容（超长时只扫描前 MAX_SCAN_CHARS 字符）
+        content: 待扫描内容
         scope: 扫描级别（all / context / strict），级别越宽命中的模式越多
     """
     if not content:
         return []
 
-    text = content[:MAX_SCAN_CHARS]
     hits: List[str] = []
+    seen: set[str] = set()
 
-    # 隐形字符检测
-    if any(ch in text for ch in _INVISIBLE_CHARS):
-        hits.append("invisible_unicode_chars")
+    # 分段扫描：每段 _SEGMENT_SIZE 字符，段间重叠 256 字符防跨段漏检
+    overlap = 256
+    segments: List[str] = []
+    if len(content) <= _SEGMENT_SIZE:
+        segments.append(content)
+    else:
+        start = 0
+        while start < len(content):
+            end = min(start + _SEGMENT_SIZE, len(content))
+            segments.append(content[start:end])
+            start = end - overlap
 
-    normalized = _normalize(text)
     target_level = _SCOPE_ORDER.get(scope, 1)
-    for pattern, pattern_id, pattern_scope in _COMPILED:
-        if _SCOPE_ORDER.get(pattern_scope, 1) > target_level:
-            continue
-        if pattern.search(normalized):
-            hits.append(pattern_id)
+
+    for segment in segments:
+        # 隐形字符检测（豁免 emoji/阿拉伯文上下文）
+        if "invisible_unicode_chars" not in seen and _has_suspicious_invisible(segment):
+            seen.add("invisible_unicode_chars")
+            hits.append("invisible_unicode_chars")
+
+        normalized = _normalize(segment)
+        for pattern, pattern_id, pattern_scope in _COMPILED:
+            if pattern_id in seen:
+                continue
+            if _SCOPE_ORDER.get(pattern_scope, 1) > target_level:
+                continue
+            if pattern.search(normalized):
+                seen.add(pattern_id)
+                hits.append(pattern_id)
 
     return hits
 

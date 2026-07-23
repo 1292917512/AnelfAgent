@@ -6,7 +6,7 @@ import { useIsMobile } from "@/lib/use-media-query";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { StatusPanel } from "./dock/StatusPanel";
 import { TracePanel } from "./dock/TracePanel";
-import { TasksPanel } from "./dock/TasksPanel";
+import { DockTasksPanel } from "./dock/TasksPanel";
 import { SearchPanel } from "./dock/SearchPanel";
 import { SettingsPanel } from "./dock/SettingsPanel";
 import { FileTreePanel } from "./dock/FileTreePanel";
@@ -14,7 +14,7 @@ import { FileTreePanel } from "./dock/FileTreePanel";
 const PANELS: Record<DockTab, () => React.JSX.Element> = {
   status: StatusPanel,
   trace: TracePanel,
-  tasks: TasksPanel,
+  tasks: DockTasksPanel,
   search: SearchPanel,
   settings: SettingsPanel,
 };

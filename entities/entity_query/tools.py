@@ -68,9 +68,11 @@ def list_entity_methods(group: str) -> str:
     """查看指定实体分组的所有可用方法及其参数详情。
 
     Args:
-        group: 实体分组名称（如 filesystem、system、git 等）
+        group: 实体分组名称（如 os、environment、memory、web 等，完整列表见 query_entities 返回的目录）
     """
     try:
+        import difflib
+
         from core.entity import EntityRegistry, EntityType as ET
 
         entities = EntityRegistry.get_by_group(group)
@@ -79,9 +81,14 @@ def list_entity_methods(group: str) -> str:
             if e.entity_type == ET.TOOL and e.enabled
         ]
         if not tools:
+            catalog = EntityRegistry.get_entity_catalog()
+            available = [c["group"] for c in catalog]
+            suggestions = difflib.get_close_matches(group, available, n=3, cutoff=0.5)
             return json.dumps({
                 "group": group,
                 "error": f"实体分组 '{group}' 不存在或无可用方法",
+                "available_groups": available,
+                "did_you_mean": suggestions or None,
             }, ensure_ascii=False)
 
         description = EntityRegistry.get_group_description(group)
@@ -227,7 +234,7 @@ def toggle_entity_group(group: str, enabled: bool = True) -> str:
     """启用或禁用实体分组内的所有工具。
 
     Args:
-        group: 实体分组名称（如 filesystem、system、web）
+        group: 实体分组名称（如 os、environment、web）
         enabled: true 启用，false 禁用
     """
     try:

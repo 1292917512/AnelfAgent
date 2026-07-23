@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -31,9 +33,20 @@ def load_webui_config() -> dict[str, Any]:
 
 
 def save_webui_config(cfg: dict[str, Any]) -> None:
+    """原子写 webui.json（tmp 文件 + os.replace，避免中断产生截断文件）。"""
     path = _webui_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".webui.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def hash_api_key(raw_key: str) -> str:

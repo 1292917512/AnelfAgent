@@ -8,15 +8,23 @@
 """
 from __future__ import annotations
 
-import math
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
+from agent.memory.memory_utils import cosine_similarity, hash_text
 from agent.skills.skill_store import Skill, SkillState, SkillStore
 from core.log import log
 
 _W_KEYWORD = 0.4
 _W_SEMANTIC = 0.6
 _MIN_SCORE = 0.15
+
+# 技能描述 embedding 缓存：按内容 hash 键控，内容变更即天然失效（新 hash 命中新键）。
+_EMBEDDING_CACHE: Dict[str, List[float]] = {}
+
+
+def clear_embedding_cache() -> None:
+    """清空技能 embedding 缓存（技能保存/更新后调用以确保不复用过期向量）。"""
+    _EMBEDDING_CACHE.clear()
 
 
 class SkillMatcher:
@@ -66,7 +74,7 @@ class SkillMatcher:
             if query_vec is not None:
                 skill_vec = await self._skill_embedding(skill)
                 if skill_vec:
-                    score += _cosine(query_vec, skill_vec) * _W_SEMANTIC
+                    score += cosine_similarity(query_vec, skill_vec) * _W_SEMANTIC
             if score >= min_score:
                 scored.append((skill, score))
 
@@ -90,24 +98,19 @@ class SkillMatcher:
         return min(1.0, hits / max(1, len(skill.trigger_patterns)) * 2)
 
     async def _skill_embedding(self, skill: Skill) -> Optional[List[float]]:
-        """技能描述向量（每次实时计算，技能数量小可接受）。"""
+        """技能描述向量（按内容 hash 缓存，避免每轮实时重算）。"""
         embedder = self._embedder
         if embedder is None or not getattr(embedder, "available", False):
             return None
         text = f"{skill.name} {skill.description} {' '.join(skill.trigger_patterns)}"
+        key = hash_text(text)
+        cached = _EMBEDDING_CACHE.get(key)
+        if cached is not None:
+            return cached
         try:
-            return await embedder.embed_one(text)  # type: ignore[attr-defined]
+            vec = await embedder.embed_one(text)  # type: ignore[attr-defined]
         except Exception:
             return None
-
-
-def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
-    """余弦相似度。"""
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(y * y for y in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
+        if vec:
+            _EMBEDDING_CACHE[key] = vec
+        return vec

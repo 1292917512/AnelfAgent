@@ -20,6 +20,7 @@ export interface UiAsk {
 }
 
 const MAX_NOTIFICATIONS = 20;
+const MAX_ASKS = 20;
 
 interface WorkbenchState {
   /** 左侧文件树栏 */
@@ -133,7 +134,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   dismissNotification: (id) =>
     set((s) => ({ notifications: s.notifications.filter((n) => n.id !== id) })),
 
-  pushAsk: (a) => set((s) => ({ asks: [...s.asks.filter((x) => x.ask_id !== a.ask_id), a] })),
+  pushAsk: (a) => set((s) => ({ asks: [...s.asks.filter((x) => x.ask_id !== a.ask_id), a].slice(-MAX_ASKS) })),
   resolveAsk: (askId) => set((s) => ({ asks: s.asks.filter((a) => a.ask_id !== askId) })),
 }));
 

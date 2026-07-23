@@ -7,6 +7,7 @@
 - web_fetch:          抓取指定 URL 的可读正文
 - web_request:        通用 HTTP 请求（GET/POST，自定义 Header）
 - extract_page_links: 提取页面所有链接
+- web_download:       下载远程文件到本地 workspace（按需落盘）
 """
 
 from __future__ import annotations
@@ -17,6 +18,23 @@ from typing import Any, Optional, Tuple
 from entities._sdk import tool, entity
 
 entity("web", "网络工具 - 搜索引擎查询、网页正文抓取、HTTP 请求")
+
+# ------------------------------------------------------------------
+# 配置注册
+# ------------------------------------------------------------------
+
+_WEB_CONFIGS = {
+    "安全": {
+        "web_ssrf_protection": {
+            "description": "网络工具 SSRF 防护：拒绝访问回环/内网/链路本地等受限地址",
+            "default": True,
+        },
+    },
+}
+
+from core.config import register_configs_safe  # noqa: E402
+
+register_configs_safe(_WEB_CONFIGS)
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -194,29 +212,40 @@ def web_fetch(
     if not url.startswith(("http://", "https://")):
         return json.dumps({"error": f"仅支持 http/https，收到: {url[:50]}"}, ensure_ascii=False)
 
+    ssrf = _ssrf_protection_enabled()
+    if ssrf:
+        err = _check_ssrf_url(url)
+        if err:
+            return json.dumps({"error": err}, ensure_ascii=False)
+
     try:
         with httpx.Client(
             timeout=float(timeout),
-            follow_redirects=True,
+            follow_redirects=not ssrf,
             headers={"User-Agent": _USER_AGENT},
             **_proxy_kwargs(use_proxy),
         ) as client:
-            resp = client.get(url)
+            if ssrf:
+                status, final_url, ct, body = _request_ssrf_checked(client, "GET", url)
+            else:
+                resp = client.get(url)
+                final_url = str(resp.url)
+                ct = resp.headers.get("content-type", "")
+                body = resp.text
     except httpx.TimeoutException:
         return json.dumps({"error": f"请求超时 ({timeout}s): {url}"}, ensure_ascii=False)
+    except PermissionError as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": f"请求失败: {e}"}, ensure_ascii=False)
 
-    ct = resp.headers.get("content-type", "")
-    final_url = str(resp.url)
-
     if "application/json" in ct or extract_mode == "raw":
-        return _process_raw(resp.text, final_url, ct, start_index, max_chars)
+        return _process_raw(body, final_url, ct, start_index, max_chars)
 
     if "text/" not in ct:
         return json.dumps({"url": final_url, "content_type": ct, "error": f"不支持的内容类型: {ct}"}, ensure_ascii=False)
 
-    return _process_html(resp.text, final_url, extract_mode, max_chars, start_index)
+    return _process_html(body, final_url, extract_mode, max_chars, start_index)
 
 
 @tool(name="extract_page_links", group="web", tags=["web"], concurrency_safe=True)
@@ -300,41 +329,193 @@ def web_request(
 
     req_body: Optional[str] = body.strip() or None
 
+    ssrf = _ssrf_protection_enabled()
+    if ssrf:
+        err = _check_ssrf_url(url)
+        if err:
+            return json.dumps({"error": err}, ensure_ascii=False)
+
     try:
         with httpx.Client(
             timeout=float(timeout),
-            follow_redirects=True,
+            follow_redirects=not ssrf,
             headers=req_headers,
             **_proxy_kwargs(use_proxy),
         ) as client:
-            if method == "GET":
-                resp = client.get(url)
-            elif method == "POST":
-                resp = client.post(url, content=req_body)
-            elif method == "PUT":
-                resp = client.put(url, content=req_body)
-            elif method == "DELETE":
-                resp = client.delete(url)
-            elif method == "PATCH":
-                resp = client.patch(url, content=req_body)
+            if ssrf:
+                status_code, final_url, ct, text = _request_ssrf_checked(
+                    client, method, url, content=req_body)
             else:
-                return json.dumps({"error": f"不支持的方法: {method}"}, ensure_ascii=False)
+                if method == "GET":
+                    resp = client.get(url)
+                elif method == "POST":
+                    resp = client.post(url, content=req_body)
+                elif method == "PUT":
+                    resp = client.put(url, content=req_body)
+                elif method == "DELETE":
+                    resp = client.delete(url)
+                elif method == "PATCH":
+                    resp = client.patch(url, content=req_body)
+                else:
+                    return json.dumps({"error": f"不支持的方法: {method}"}, ensure_ascii=False)
+                status_code = resp.status_code
+                ct = resp.headers.get("content-type", "")
+                text = resp.text
 
-        text = resp.text
         truncated = len(text) > max_chars
         if truncated:
             text = text[:max_chars] + "\n... (响应过长，已截断)"
 
         return json.dumps({
-            "status_code": resp.status_code,
-            "content_type": resp.headers.get("content-type", ""),
+            "status_code": status_code,
+            "content_type": ct,
             "body": text,
             "truncated": truncated,
         }, ensure_ascii=False)
     except httpx.TimeoutException:
         return json.dumps({"error": f"请求超时 ({timeout}s)"}, ensure_ascii=False)
+    except PermissionError as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ==================================================================
+# 文件下载
+# ==================================================================
+
+
+def _download_to_file_checked(
+    client: Any,
+    url: str,
+    dest_path: str,
+    max_bytes: int,
+    ssrf: bool,
+    max_redirects: int = 5,
+) -> Tuple[int, str, int]:
+    """流式下载 URL 到本地文件，逐跳校验重定向目标（SSRF 开启时），按字节上限截断。
+
+    Returns:
+        (status_code, final_url, written_bytes)
+    """
+    import os
+    from urllib.parse import urljoin
+    for _ in range(max_redirects):
+        if ssrf:
+            err = _check_ssrf_url(url)
+            if err:
+                raise PermissionError(err)
+        with client.stream("GET", url, follow_redirects=False) as resp:
+            if resp.is_redirect:
+                location = resp.headers.get("location", "")
+                if not location:
+                    raise ValueError(f"重定向响应缺少 Location: {url}")
+                url = urljoin(str(resp.url), location)
+                continue
+            if resp.status_code >= 400:
+                raise ValueError(f"HTTP {resp.status_code}: {url}")
+            content_length = resp.headers.get("content-length", "")
+            if content_length.isdigit() and int(content_length) > max_bytes:
+                raise ValueError(f"文件超过大小限制 ({max_bytes // 1024 // 1024}MB)")
+            written = 0
+            overflow = False
+            with open(dest_path, "wb") as f:
+                for chunk in resp.iter_bytes(65536):
+                    written += len(chunk)
+                    if written > max_bytes:
+                        overflow = True
+                        break
+                    f.write(chunk)
+            if overflow:
+                try:
+                    os.remove(dest_path)
+                except OSError:
+                    pass
+                raise ValueError(f"文件超过大小限制 ({max_bytes // 1024 // 1024}MB)")
+            return resp.status_code, str(resp.url), written
+    raise ValueError(f"重定向次数过多 (上限 {max_redirects})")
+
+
+@tool(name="web_download", group="web",
+      tags=["web", "media:file", "media:video", "media:audio", "media:voice"],
+      concurrency_safe=True)
+def web_download(
+    url: str,
+    filename: str = "",
+    max_mb: int = 50,
+    timeout: int = 30,
+    use_proxy: bool = False,
+) -> str:
+    """下载远程文件到本地 workspace/uploads/file/，返回本地路径。
+
+    适用于频道消息中标记为「未下载」且标签带有 URL 的媒体/文件，
+    或任何需要落地后再用 read_file 等工具分析的远程文件。
+    若标签带的是 file_id 而非 URL（如 QQ 文件），请改用 qq_download_file。
+
+    Args:
+        url:       文件地址（必须以 http:// 或 https:// 开头）
+        filename:  期望保存的文件名（可选，默认从 URL 推断）
+        max_mb:    允许的最大文件大小（MB），默认 50
+        timeout:   超时秒数，默认 30
+        use_proxy: 是否使用代理，默认 False
+    """
+    import os
+    import time
+    import uuid
+    from urllib.parse import unquote, urlparse
+
+    import httpx
+
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        return json.dumps({"error": f"仅支持 http/https，收到: {url[:50]}"}, ensure_ascii=False)
+    max_bytes = max(1, int(max_mb)) * 1024 * 1024
+
+    ssrf = _ssrf_protection_enabled()
+    if ssrf:
+        err = _check_ssrf_url(url)
+        if err:
+            return json.dumps({"error": err}, ensure_ascii=False)
+
+    try:
+        from core.config import ConfigManager
+        ws = ConfigManager.get("workspace_root", "workspace")
+    except Exception:
+        ws = "workspace"
+    dl_dir = os.path.abspath(os.path.join(ws, "uploads", "file"))
+    os.makedirs(dl_dir, exist_ok=True)
+
+    name = os.path.basename(filename.strip()) if filename.strip() else ""
+    if not name:
+        name = os.path.basename(unquote(urlparse(url).path)) or "download.bin"
+    local_path = os.path.join(
+        dl_dir, f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}_{name}")
+    if not os.path.realpath(local_path).startswith(os.path.realpath(dl_dir) + os.sep):
+        return json.dumps({"error": f"非法文件名: {filename}"}, ensure_ascii=False)
+
+    try:
+        with httpx.Client(
+            timeout=float(timeout),
+            follow_redirects=False,
+            headers={"User-Agent": _USER_AGENT},
+            **_proxy_kwargs(use_proxy),
+        ) as client:
+            _, final_url, written = _download_to_file_checked(
+                client, url, local_path, max_bytes, ssrf)
+    except httpx.TimeoutException:
+        return json.dumps({"error": f"下载超时 ({timeout}s): {url}"}, ensure_ascii=False)
+    except PermissionError as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": f"下载失败: {e}"}, ensure_ascii=False)
+
+    return json.dumps({
+        "path": local_path,
+        "name": os.path.basename(local_path),
+        "size": written,
+        "source_url": final_url,
+        "hint": "文件已下载，可用 read_file 读取该路径进行分析",
+    }, ensure_ascii=False)
 
 
 # ==================================================================
