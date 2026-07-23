@@ -340,7 +340,7 @@ def create_bootstrap() -> FlowMachine:
 
     @machine.node(skip_on_error=True)
     async def recover_unanswered():
-        """启动恢复（失败不影响启动）：
+        """启动恢复（后台执行，不阻塞 bootstrap 收尾与 WebUI 端口开放）：
 
         1. 未回复消息补回：feel() 先把消息写入 DB 再入内存队列，进程在
            "已收到未回复"窗口期重启后，消息在 DB 里但回复触发器已丢——
@@ -349,6 +349,15 @@ def create_bootstrap() -> FlowMachine:
         2. PFC 待办 replay：pending_tasks 表中未消费的画像分析/通用任务
            重新入队（消费时才删行，replay 后再次崩溃也不丢）。
         """
+        _spawn_background(_recover_unanswered(), name="recover-unanswered")
+
+    async def _recover_unanswered() -> None:
+        try:
+            await _do_recover_unanswered()
+        except Exception as exc:
+            log(f"启动恢复失败: {exc}", "ERROR", tag="启动")
+
+    async def _do_recover_unanswered() -> None:
         import time
         from core.config import get_config_bool, get_config_float
         from agent.runtime.singleton import get_runtime

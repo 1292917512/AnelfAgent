@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -21,8 +20,8 @@ from agent.task.model import TaskDefinition, TaskResult
 from agent.task.registry import TaskRegistry
 from agent.task.executor import TaskExecutor
 
-from core.event_bus import event_bus, EVENT_THINKING_INTROSPECTION, EVENT_THINKING_SESSION_START, EVENT_THINKING_SESSION_END
 from core.log import log
+from core.trace_session import thinking_session
 
 from .config import HeartbeatConfig, ScheduleMode, get_heartbeat_config
 from . import log as hb_log
@@ -129,6 +128,8 @@ class HeartbeatEngine:
 
         pending_task: Optional[TaskDefinition] = None
         pending_schedule_idx: int = -1
+        # 计数器/标记脏标记：无 heartbeat 模式调度且未执行任务时跳过落盘
+        dirty = False
 
         for idx, schedule in enumerate(self.config.task_schedules):
             task = self.task_registry.get(schedule.task_name)
@@ -137,6 +138,7 @@ class HeartbeatEngine:
 
             if schedule.mode == ScheduleMode.HEARTBEAT:
                 schedule.beat_count += 1
+                dirty = True
                 if schedule.beat_count >= schedule.every_n_beats and pending_task is None:
                     pending_task = task
                     pending_schedule_idx = idx
@@ -164,8 +166,10 @@ class HeartbeatEngine:
                 schedule.beat_count = 0
             elif schedule.mode == ScheduleMode.SCHEDULED:
                 schedule.last_run_date = datetime.now().strftime("%Y-%m-%d")
+            dirty = True
 
-        self.config.save()
+        if dirty:
+            self.config.save()
         return executed
 
     # ------------------------------------------------------------------
@@ -184,17 +188,17 @@ class HeartbeatEngine:
 
         log(f"手动执行任务: {task_name}", tag="心跳")
 
-        await event_bus.emit(EVENT_THINKING_SESSION_START, {
+        # 会话生命周期由 thinking_session 管理：退出（含异常）保证发射 SESSION_END，
+        # 且与并发的思维会话按执行上下文隔离，互不干扰
+        async with thinking_session({
             "is_heartbeat": True, "is_introspection": True, "entity": "任务执行",
-        })
-        try:
+        }) as session:
+            session.end["reason"] = "task_completed"
             entity = await self._pop_analysis_entity() if task.scope.value == "entity" else None
             result = await self.executor.run(
                 task, entity, temperature=self.config.analysis_temperature,
             )
             return result.content if result else None
-        finally:
-            await event_bus.emit(EVENT_THINKING_SESSION_END, {"reason": "task_completed"})
 
     # ------------------------------------------------------------------
     # 内置维护
@@ -220,8 +224,11 @@ class HeartbeatEngine:
             hb_log.append_entry(f"[记忆预警] {warn}")
 
         # 记忆整理：遗忘低价值记忆 + 类型上限 + 高相似合并 + cognee 同步（人脑"睡眠整理"）
+        # 全量扫描成本较高，按每 N 个 tick 执行一次（默认 12，约每小时一次）
         try:
-            if self.mind.memory_store:
+            from core.config import get_config_int
+            consolidate_every = max(1, get_config_int("memory_consolidate_every_n_ticks", 12))
+            if self.mind.memory_store and self._total_ticks % consolidate_every == 0:
                 from agent.memory.consolidator import MemoryConsolidator
                 report = await MemoryConsolidator(self.mind.memory_store).consolidate()
                 for line in report.to_log_lines():

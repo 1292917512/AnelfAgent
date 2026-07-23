@@ -156,6 +156,8 @@ class ToolService:
             entity.tags = tags
         if description is not None:
             entity.description = description
+        # 直接修改了实体元数据，递增注册表版本使派生缓存（标签索引/schema）失效
+        EntityRegistry.bump_version()
 
         # 持久化覆盖到 ConfigManager
         overrides: dict = ConfigManager.get("tool_overrides", {})
@@ -196,6 +198,8 @@ class ToolService:
             applied += 1
 
         if applied:
+            # 直接修改了实体元数据，递增注册表版本使派生缓存失效
+            EntityRegistry.bump_version()
             log(f"工具属性覆盖已加载: {applied} 个工具", tag="工具")
         return applied
 

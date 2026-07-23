@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, List, Optional, Union
 
 from core.log import log
@@ -13,6 +14,12 @@ from . import send as tg_send
 from .format import chunk_html_text, markdown_to_telegram_html, plain_fallback
 from .helpers import build_inline_keyboard, split_caption
 from .types import DeliveryResult, InlineKeyboard, ThreadSpec
+
+
+def _read_file_bytes(file_path: str) -> bytes:
+    """读取文件全部字节（同步实现，供 to_thread 调用）。"""
+    with open(file_path, "rb") as f:
+        return f.read()
 
 
 async def deliver_reply(
@@ -87,8 +94,8 @@ async def deliver_reply(
         pm = "HTML" if parse_mode == "html" and html_caption else None
         first_media_markup = reply_markup if first_media else None
 
-        with open(file_path, "rb") as f:
-            file_data = f.read()
+        # 大文件读取为阻塞 I/O，移入线程避免卡住事件循环
+        file_data = await asyncio.to_thread(_read_file_bytes, file_path)
 
         send_fn, send_kwargs = _resolve_media_sender(mime)
         msg_id = await send_fn(

@@ -572,6 +572,53 @@ class MemoryService:
             return result.model_dump(mode="json")
         return result
 
+    @staticmethod
+    async def get_cognee_graph_html(dataset: Optional[str] = None) -> str:
+        """渲染 Cognee 官方知识图谱为自包含交互式 HTML。
+
+        Args:
+            dataset: 数据集名称；空值自动回退到首个可用数据集
+                （访问控制开启时 cognee 强制要求指定数据集）。
+
+        Raises:
+            RuntimeError: Cognee 未就绪、无数据集或渲染失败。
+        """
+        from pathlib import Path
+
+        from core.path import ConfigPaths, PathManager
+        from agent.memory.cognee.runtime import get_cognee_client
+
+        client = get_cognee_client()
+        if not client:
+            raise RuntimeError("Cognee 运行时未初始化")
+        if not client.availability().ready:
+            raise RuntimeError("Cognee 未就绪")
+
+        target = dataset
+        if not target:
+            names = [
+                str(item.get("name", ""))
+                for item in await MemoryService.list_cognee_datasets()
+            ]
+            names = [name for name in names if name]
+            if not names:
+                raise RuntimeError("Cognee 暂无数据集可渲染")
+            target = "main_dataset" if "main_dataset" in names else names[0]
+
+        out_dir = Path(ConfigPaths.COGNEE_DATA_DIR)
+        PathManager.ensure_dir_exists(str(out_dir))
+        try:
+            html = await client.visualize_graph(
+                destination_file_path=str(out_dir / "graph.html"),
+                dataset=target,
+                timeout=client.config.pipeline_timeout_seconds,
+            )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Cognee 图谱渲染失败: {exc}") from exc
+        return str(html)
+
     # ==================================================================
     # 目标计划（Goals）
     # ==================================================================

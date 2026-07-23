@@ -1,6 +1,7 @@
 import asyncio
 import argparse
 import contextlib
+import faulthandler
 import signal
 import warnings
 
@@ -10,12 +11,20 @@ from core.log import set_log_level, level_emoji, log, enable_file_logging
 from core.config import ConfigManager
 
 
+def _setup_faulthandler() -> None:
+    """启用故障转储：致命错误自动打印堆栈；运行期可 kill -USR1 <pid> 在线抓全线程栈。"""
+    faulthandler.enable()
+    with contextlib.suppress(AttributeError, ValueError, OSError, RuntimeError):
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description='AnelfAgent')
     parser.add_argument('--log-level', choices=level_emoji.keys(), default='DEBUG')
     parser.add_argument('--no-webui', action='store_true', help='不启动 WebUI')
     args = parser.parse_args()
     set_log_level(args.log_level)
+    _setup_faulthandler()
 
     async def _run():
         ConfigManager.initialize()
@@ -45,20 +54,31 @@ def main():
         else:
             log("权限规则文件不存在，使用默认（全部放行）", "WARNING", tag="权限")
 
-        from agent.channel import get_channel_manager
-        await get_channel_manager().start_all()
-
-        # 频道看门狗：ERROR 频道自动退避重启（先启动，覆盖整个运行期）
-        from agent.channel.supervision import is_supervisor_enabled, start_channel_supervisor
-        if is_supervisor_enabled():
-            start_channel_supervisor(get_channel_manager())
-
+        # 尽早拉起 WebUI：HTTP 端口不再等待频道网络登录。
+        # 频道支持运行期热启动/停止，且有看门狗退避重启兜底，后台启动安全。
         web_task: asyncio.Task[None] | None = None
         if not args.no_webui:
             from web.server import start_web_server
             web_task = asyncio.create_task(
                 start_web_server(), name="agent.web_server",
             )
+
+        # 频道后台并发启动（各自网络登录耗时不阻塞主流程）
+        from agent.channel import get_channel_manager
+
+        async def _start_channels() -> None:
+            try:
+                await get_channel_manager().start_all()
+                log("全部频道启动流程完成", tag="启动")
+            except Exception as exc:
+                log(f"频道后台启动异常: {exc}", "ERROR", tag="启动")
+
+        channels_task = asyncio.create_task(_start_channels(), name="agent.channels_start")
+
+        # 频道看门狗：ERROR 频道自动退避重启（先启动，覆盖整个运行期）
+        from agent.channel.supervision import is_supervisor_enabled, start_channel_supervisor
+        if is_supervisor_enabled():
+            start_channel_supervisor(get_channel_manager())
 
         shutdown_event = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -112,6 +132,11 @@ def main():
             await stop_channel_supervisor()
         except Exception:
             pass
+        if not channels_task.done():
+            # 关停时若频道仍在后台启动，先取消，避免与 stop_all 竞态
+            channels_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await channels_task
         try:
             await get_channel_manager().stop_all()
         except BaseException:

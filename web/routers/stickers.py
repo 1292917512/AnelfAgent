@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +23,12 @@ router = APIRouter(prefix="/stickers", tags=["stickers"])
 
 _ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+
+def _write_bytes(path: str, data: bytes) -> None:
+    """写入二进制文件（同步实现，供 to_thread 调用）。"""
+    with open(path, "wb") as f:
+        f.write(data)
 
 
 def _store():
@@ -133,8 +140,7 @@ async def upload_sticker(
 
     # 先落到 stickers 临时名，算出哈希后再规范命名
     tmp_path = os.path.join(_stickers_dir(), f"upload_{os.urandom(4).hex()}{ext}")
-    with open(tmp_path, "wb") as f:
-        f.write(data)
+    await asyncio.to_thread(_write_bytes, tmp_path, data)
 
     try:
         content_hash = _md5_file(tmp_path)

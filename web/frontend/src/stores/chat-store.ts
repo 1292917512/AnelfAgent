@@ -201,6 +201,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }));
       } catch { /* 忽略非 JSON 帧 */ }
     });
+    es.addEventListener("turn_end", () => {
+      // 轮次结束（含无 reply 的沉默/空输出/异常路径）：清除发送态与流式气泡
+      clearSendWatchdog();
+      set({ sending: false, sendingSince: null, streaming: null });
+    });
     es.addEventListener("media", (e) => {
       try {
         const data = JSON.parse(e.data) as ChatMessage;

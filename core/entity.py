@@ -455,6 +455,32 @@ class EntityRegistry:
     _group_descriptions: Dict[str, str] = {}
     # 工具名候选缓存（未知工具名纠错建议用），注册/注销时失效
     _names_cache: Optional[List[str]] = None
+    # 注册表版本号：任何元数据变更（注册/注销/启停/属性覆盖）时递增，
+    # 派生缓存（标签索引/实体目录/沉睡分组/工具 schema）随版本递增整体失效
+    _version: int = 0
+    _tag_index_cache: Optional[Dict[str, List[str]]] = None
+    _catalog_cache: Optional[List[Dict[str, Any]]] = None
+    _sleepable_cache: Optional[Dict[str, Dict[str, Any]]] = None
+    _schema_cache: Dict[str, Dict[str, Any]] = {}
+
+    @classmethod
+    def bump_version(cls) -> None:
+        """递增注册表版本并使全部派生缓存失效。
+
+        注册表元数据的任何变更（含直接修改 EntityMetadata 属性，如 tags/description
+        覆盖）都必须调用本方法，否则按版本缓存的派生数据会过期。
+        """
+        cls._version += 1
+        cls._names_cache = None
+        cls._tag_index_cache = None
+        cls._catalog_cache = None
+        cls._sleepable_cache = None
+        cls._schema_cache.clear()
+
+    @classmethod
+    def version(cls) -> int:
+        """当前注册表版本号（供外部做按版本缓存的失效判断）。"""
+        return cls._version
 
     # ------------------------------------------------------------------
     # 通用注册 / 注销
@@ -482,7 +508,7 @@ class EntityRegistry:
         cls._types.setdefault(metadata.entity_type, []).append(metadata.name)
         if metadata.group:
             cls._groups.setdefault(metadata.group, []).append(metadata.name)
-        cls._names_cache = None
+        cls.bump_version()
 
         log(f"✅ 实体注册: {metadata.name} [{metadata.entity_type.value}]", "DEBUG")
         return True
@@ -514,7 +540,7 @@ class EntityRegistry:
             cls.deactivate_entity(name)
         cls._remove_from_indexes(name)
         del cls._entities[name]
-        cls._names_cache = None
+        cls.bump_version()
         log(f"✅ 实体注销: {name}")
         return True
 
@@ -573,6 +599,7 @@ class EntityRegistry:
     def register_group(cls, group: str, description: str) -> None:
         """注册实体分组描述，供 AI 进行实体目录发现。"""
         cls._group_descriptions[group] = description
+        cls.bump_version()
         log(f"✅ 实体分组注册: {group}", "DEBUG")
 
     @classmethod
@@ -600,7 +627,10 @@ class EntityRegistry:
         只返回分组名、描述和工具数量，不含具体工具名。
         具体工具通过 list_entity_methods 按需查询。
         按预定义顺序排列，mcp:* 动态分组排在末尾。
+        结果按注册表版本缓存，返回拷贝供调用方安全使用。
         """
+        if cls._catalog_cache is not None:
+            return [dict(entry) for entry in cls._catalog_cache]
         catalog: List[Dict[str, Any]] = []
         seen_groups: set[str] = set()
 
@@ -629,7 +659,8 @@ class EntityRegistry:
             return (cls._CATALOG_ORDER.get(g, 100), g)
 
         catalog.sort(key=_sort_key)
-        return catalog
+        cls._catalog_cache = catalog
+        return [dict(entry) for entry in catalog]
 
     @classmethod
     def import_from_api_registry(cls) -> int:
@@ -726,12 +757,23 @@ class EntityRegistry:
         ]
 
     @classmethod
+    def _tag_index(cls) -> Dict[str, List[str]]:
+        """tag（小写）-> 实体名列表 索引（按注册表版本缓存，变更时整体重建）。"""
+        if cls._tag_index_cache is None:
+            index: Dict[str, List[str]] = {}
+            for name, e in cls._entities.items():
+                for t in e.tags:
+                    index.setdefault(t.lower(), []).append(name)
+            cls._tag_index_cache = index
+        return cls._tag_index_cache
+
+    @classmethod
     def get_by_tag(cls, tag: str) -> List[EntityMetadata]:
         """按标签精确匹配查询实体。"""
-        tag_lower = tag.lower()
         return [
-            e for e in cls._entities.values()
-            if any(tag_lower == t.lower() for t in e.tags)
+            cls._entities[n]
+            for n in cls._tag_index().get(tag.lower(), [])
+            if n in cls._entities
         ]
 
     # ------------------------------------------------------------------
@@ -742,7 +784,7 @@ class EntityRegistry:
     def get_tool_schemas(cls, *, enabled_only: bool = True) -> List[Dict[str, Any]]:
         """生成所有 TOOL 实体的 OpenAI function-calling schema"""
         return [
-            cls._build_tool_schema(e)
+            cls._get_tool_schema(e)
             for e in cls.get_by_type(EntityType.TOOL)
             if not enabled_only or e.enabled
         ]
@@ -751,7 +793,7 @@ class EntityRegistry:
     def get_tool_schema_by_names(cls, names: List[str]) -> List[Dict[str, Any]]:
         """按工具名列表构建子集 schema"""
         return [
-            cls._build_tool_schema(e)
+            cls._get_tool_schema(e)
             for n in names
             if (e := cls.get(n)) and e.entity_type == EntityType.TOOL and e.enabled
         ]
@@ -760,7 +802,7 @@ class EntityRegistry:
     def get_tool_schemas_by_group(cls, group: str) -> List[Dict[str, Any]]:
         """按分组构建工具 schema"""
         return [
-            cls._build_tool_schema(e)
+            cls._get_tool_schema(e)
             for e in cls.get_by_group(group)
             if e.entity_type == EntityType.TOOL and e.enabled
         ]
@@ -768,17 +810,20 @@ class EntityRegistry:
     @classmethod
     def get_tool_schema_by_tags(cls, tags: List[str]) -> List[Dict[str, Any]]:
         """返回包含任一指定 tag 的已启用工具的 schema。"""
-        tags_lower = {t.lower() for t in tags}
+        index = cls._tag_index()
+        names: List[str] = []
         seen: set[str] = set()
+        for t in tags:
+            for n in index.get(t.lower(), []):
+                if n not in seen:
+                    seen.add(n)
+                    names.append(n)
         result: List[Dict[str, Any]] = []
-        for e in cls._entities.values():
-            if e.entity_type != EntityType.TOOL or not e.enabled or not e.func:
+        for n in names:
+            e = cls._entities.get(n)
+            if e is None or e.entity_type != EntityType.TOOL or not e.enabled or not e.func:
                 continue
-            if e.name in seen:
-                continue
-            if any(t.lower() in tags_lower for t in e.tags):
-                seen.add(e.name)
-                result.append(cls._build_tool_schema(e))
+            result.append(cls._get_tool_schema(e))
         return result
 
     @classmethod
@@ -808,7 +853,7 @@ class EntityRegistry:
     @classmethod
     async def get_active_tool_schema_by_names(cls, names: List[str]) -> List[Dict[str, Any]]:
         """按名称构建工具 schema（经门控过滤）。"""
-        return [cls._build_tool_schema(e) for e in await cls.get_active_tools(names)]
+        return [cls._get_tool_schema(e) for e in await cls.get_active_tools(names)]
 
     @classmethod
     def get_sleepable_groups(cls) -> Dict[str, Dict[str, Any]]:
@@ -816,16 +861,31 @@ class EntityRegistry:
 
         分组内任一工具声明 allow_sleep=True 且带 sleep_brief 时，
         该分组视为可沉睡分组，沉睡期间以 brief 代替完整 schema 展示。
+        结果按注册表版本缓存，返回拷贝供调用方安全使用。
         """
-        result: Dict[str, Dict[str, Any]] = {}
-        for e in cls._entities.values():
-            if e.entity_type != EntityType.TOOL or not e.enabled or not e.func:
-                continue
-            if not (e.allow_sleep and e.sleep_brief):
-                continue
-            entry = result.setdefault(e.group, {"brief": e.sleep_brief, "tool_count": 0})
-            entry["tool_count"] += 1
-        return result
+        if cls._sleepable_cache is None:
+            result: Dict[str, Dict[str, Any]] = {}
+            for e in cls._entities.values():
+                if e.entity_type != EntityType.TOOL or not e.enabled or not e.func:
+                    continue
+                if not (e.allow_sleep and e.sleep_brief):
+                    continue
+                entry = result.setdefault(e.group, {"brief": e.sleep_brief, "tool_count": 0})
+                entry["tool_count"] += 1
+            cls._sleepable_cache = result
+        return {g: dict(info) for g, info in cls._sleepable_cache.items()}
+
+    @classmethod
+    def _get_tool_schema(cls, entity: EntityMetadata) -> Dict[str, Any]:
+        """构建工具 schema（按实体名缓存，注册表版本变更时整体失效）。
+
+        返回值为缓存共享对象，调用方只读使用，禁止原地修改。
+        """
+        schema = cls._schema_cache.get(entity.name)
+        if schema is None:
+            schema = cls._build_tool_schema(entity)
+            cls._schema_cache[entity.name] = schema
+        return schema
 
     @staticmethod
     def _build_tool_schema(entity: EntityMetadata) -> Dict[str, Any]:
@@ -1015,7 +1075,9 @@ class EntityRegistry:
     @classmethod
     def enable(cls, name: str) -> bool:
         if name in cls._entities:
-            cls._entities[name].enabled = True
+            if not cls._entities[name].enabled:
+                cls._entities[name].enabled = True
+                cls.bump_version()
             log(f"✅ 实体已启用: {name}")
             return True
         return False
@@ -1023,7 +1085,9 @@ class EntityRegistry:
     @classmethod
     def disable(cls, name: str) -> bool:
         if name in cls._entities:
-            cls._entities[name].enabled = False
+            if cls._entities[name].enabled:
+                cls._entities[name].enabled = False
+                cls.bump_version()
             log(f"⚠️ 实体已禁用: {name}")
             return True
         return False
@@ -1038,6 +1102,7 @@ class EntityRegistry:
                 cls._entities[n].enabled = True
                 count += 1
         if count:
+            cls.bump_version()
             log(f"✅ group enabled: {group} ({count} entities)")
         return count
 
@@ -1051,6 +1116,7 @@ class EntityRegistry:
                 cls._entities[n].enabled = False
                 count += 1
         if count:
+            cls.bump_version()
             log(f"⚠️ group disabled: {group} ({count} entities)")
         return count
 
@@ -1088,6 +1154,7 @@ class EntityRegistry:
             return False
 
         metadata.enabled = True
+        cls.bump_version()
         entity_type = getattr(
             metadata.entity_class, '_entity_type', EntityType.CUSTOM,
         ).value
@@ -1106,6 +1173,7 @@ class EntityRegistry:
             return False
 
         metadata.enabled = False
+        cls.bump_version()
         if metadata.instance and hasattr(metadata.instance, '_registered_apis'):
             metadata.instance._registered_apis.clear()
 
@@ -1144,7 +1212,7 @@ class EntityRegistry:
         cls._types.clear()
         cls._groups.clear()
         cls._group_descriptions.clear()
-        cls._names_cache = None
+        cls.bump_version()
         log("🧹 实体注册表已清空")
 
     @classmethod

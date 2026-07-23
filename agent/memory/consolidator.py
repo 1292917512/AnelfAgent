@@ -163,6 +163,10 @@ _CONSOLIDATOR_CONFIGS = {
             "description": "是否启用自动遗忘（心跳时清理低价值记忆）",
             "default": True,
         },
+        "memory_consolidate_every_n_ticks": {
+            "description": "记忆整理执行间隔（每 N 次心跳执行一次全量整理）",
+            "default": 12,
+        },
         "memory_forget_min_age_days": {
             "description": "记忆最小保留天数（早于此年龄的记忆不遗忘）",
             "default": 30,

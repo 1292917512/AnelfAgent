@@ -40,6 +40,7 @@ class SkillMatcher:
             *,
             top_k: int = 3,
             min_score: float = _MIN_SCORE,
+            query_vec: Optional[List[float]] = None,
     ) -> List[Tuple[Skill, float]]:
         """匹配相关技能，返回 [(技能, 得分)] 按得分降序。
 
@@ -47,6 +48,8 @@ class SkillMatcher:
             query_texts: 查询文本（通常为最近几条对话消息）
             top_k: 最多返回数量
             min_score: 最低得分阈值
+            query_vec: 调用方预计算的查询向量（与记忆召回共享一次 embedding），
+                为 None 时内部按需自行计算
         """
         skills = [
             s for s in self._store.list_skills()
@@ -59,14 +62,14 @@ class SkillMatcher:
         if not query:
             return []
 
-        # 语义路：查询向量（Embedder 不可用时跳过得 0 分）
-        query_vec: Optional[List[float]] = None
-        embedder = self._embedder
-        if embedder is not None and getattr(embedder, "available", False):
-            try:
-                query_vec = await embedder.embed_one(query)  # type: ignore[attr-defined]
-            except Exception as exc:
-                log(f"技能匹配 embedding 失败: {exc}", "DEBUG", tag="技能")
+        # 语义路：查询向量（Embedder 不可用时跳过得 0 分；调用方已预计算则直接复用）
+        if query_vec is None:
+            embedder = self._embedder
+            if embedder is not None and getattr(embedder, "available", False):
+                try:
+                    query_vec = await embedder.embed_one(query)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    log(f"技能匹配 embedding 失败: {exc}", "DEBUG", tag="技能")
 
         scored: List[Tuple[Skill, float]] = []
         for skill in skills:

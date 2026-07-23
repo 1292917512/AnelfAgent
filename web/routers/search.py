@@ -61,12 +61,16 @@ async def global_search(
     limit: int = Query(10, ge=1, le=50),
 ) -> Dict[str, Any]:
     """全局搜索：聚合记忆 / 日志 / 工作区文件 / 会话记录。"""
+    import asyncio
     from web.routers.workspace import search_workspace
 
-    memory = await _search_memory(q, limit)
-    conversations = await _search_conversations(q, limit)
+    # 记忆 / 会话 / 文件三路搜索互相独立，并行执行（文件搜索走线程避免阻塞事件循环）
+    memory, conversations, files = await asyncio.gather(
+        _search_memory(q, limit),
+        _search_conversations(q, limit),
+        asyncio.to_thread(search_workspace, q, limit=limit),
+    )
     logs = query_log_buffer(keyword=q, limit=limit)
-    files = search_workspace(q, limit=limit)
 
     return {
         "query": q,

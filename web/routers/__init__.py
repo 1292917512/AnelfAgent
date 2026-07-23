@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from web.routers.auth import router as auth_router
 from web.routers.adapters import router as adapters_router
 from web.routers.approvals import router as approvals_router
+from web.routers.channel_webui import router as channel_webui_router
 from web.routers.chat import router as chat_router
 from web.routers.config import router as config_router
 from web.routers.config_meta import router as config_meta_router
@@ -40,6 +41,7 @@ api_router.include_router(skills_router)
 api_router.include_router(memory_router)
 api_router.include_router(mcp_router)
 api_router.include_router(adapters_router)
+api_router.include_router(channel_webui_router)
 api_router.include_router(approvals_router)
 api_router.include_router(nonebot_router)
 api_router.include_router(system_router)

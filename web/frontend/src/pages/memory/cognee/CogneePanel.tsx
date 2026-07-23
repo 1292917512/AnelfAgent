@@ -6,6 +6,7 @@ import { StatCard } from "@/components/common/StatCard";
 import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ModelConfigCard } from "@/pages/memory/cognee/ModelConfigCard";
+import { CogneeGraphCard } from "@/pages/memory/cognee/CogneeGraphCard";
 import { memoryApi } from "@/lib/api";
 import type { CogneeResolvedInfo } from "@/lib/types";
 
@@ -171,6 +172,8 @@ export function CogneePanel() {
           <p className="text-sm text-muted">{t("cognee.noDatasets")}</p>
         )}
       </Card>
+
+      <CogneeGraphCard ready={Boolean(availability?.ready)} datasets={datasets} />
 
       <ConfigFormPanel
         title={t("cognee.generalTitle")}

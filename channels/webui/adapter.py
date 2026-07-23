@@ -69,14 +69,23 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     # ------------------------------------------------------------------
 
     def _subscribe_stream_events(self) -> None:
-        from core.event_bus import event_bus
+        from core.event_bus import event_bus, EVENT_AFTER_REPLY
         from core.stream_events import EVENT_ASSISTANT_DELTA
         event_bus.on(EVENT_ASSISTANT_DELTA, self._on_assistant_delta, owner="channel:webui")
         event_bus.on("thinking_tool_start", self._on_tool_start, owner="channel:webui")
         event_bus.on("thinking_tool_end", self._on_tool_end, owner="channel:webui")
+        event_bus.on(EVENT_AFTER_REPLY, self._on_after_reply, owner="channel:webui")
         from core.stream_events import EVENT_FILE_DIFF, EVENT_CONTEXT_USAGE
         event_bus.on(EVENT_FILE_DIFF, self._on_file_diff, owner="channel:webui")
         event_bus.on(EVENT_CONTEXT_USAGE, self._on_context_usage, owner="channel:webui")
+
+    async def _on_after_reply(self, payload: dict) -> None:
+        """轮次结束 → turn_end 帧（前端清除发送态/流式气泡）。
+
+        覆盖无 reply 帧的结束路径（[SILENT] 沉默、空输出、异常），
+        避免前端 sending 状态空等看门狗超时。
+        """
+        self._broadcast("turn_end", {"error": bool(payload.get("error"))})
 
     async def _on_assistant_delta(self, payload: dict) -> None:
         """assistant 文本增量 → 50ms 合帧后推送 SSE delta 帧。"""

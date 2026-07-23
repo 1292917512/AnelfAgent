@@ -153,14 +153,16 @@ async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
         raise HTTPException(413, f"File too large (limit {max_bytes // (1024 * 1024)}MB)")
 
     sub_dir = _UPLOAD_DIR / file_type
-    sub_dir.mkdir(parents=True, exist_ok=True)
 
     ts = int(time.time() * 1000)
     safe_name = f"{ts}_{filename}"
     dest = sub_dir / safe_name
 
-    with open(dest, "wb") as f:
-        f.write(content)
+    def _write_upload() -> None:
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(content)
+
+    await asyncio.to_thread(_write_upload)
 
     return {
         "path": str(dest),

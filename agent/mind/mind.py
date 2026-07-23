@@ -13,8 +13,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 
 from core.event_bus import (
     event_bus,
-    EVENT_THINKING_SESSION_START,
-    EVENT_THINKING_SESSION_END,
     EVENT_THINKING_PHASE_CHANGE,
     EVENT_THINKING_SITUATION,
     EVENT_THINKING_DECISION,
@@ -23,6 +21,7 @@ from core.event_bus import (
     EVENT_THINKING_LLM_END,
     EVENT_THINKING_INTROSPECTION,
 )
+from core.trace_session import thinking_session, detach_thinking_session
 from agent.llm import ChatModel, ChatResult, ImageContent, ToolCall
 from agent.llm.llm_client import LLMClient
 from agent.llm.llm_manager import LLMManager
@@ -111,8 +110,8 @@ from entities._sdk import deferred_tool, activate_group
     name=_END_REPLY_TOOL_NAME,
     group="thinking", tags=["always"], source="mind.core",
     description=(
-        "结束本轮操作。当你已完成所有操作，不再需要继续时调用此工具。"
-        "可与 send_message 等工具同批调用以节约轮次；"
+        "结束本轮操作。当你已通过工具完成所有操作，不再需要继续时调用此工具。"
+        "直接输出文字也会结束本轮（文字自动发送给当前会话）；"
         "若同批或同轮存在失败工具，结束将不生效并反馈失败原因，修正后需重新调用。"
     ),
 )
@@ -437,10 +436,16 @@ class Mind:
     })
 
     async def _autonomous_cycle(self, *, is_heartbeat: bool = False) -> None:
-        """自主循环：收集态势 → AI 决策 → 分发执行 → 写入心跳日志。"""
-        await event_bus.emit(EVENT_THINKING_SESSION_START, {
-            "is_heartbeat": is_heartbeat,
-        })
+        """自主循环：收集态势 → AI 决策 → 分发执行 → 写入心跳日志。
+
+        会话生命周期由 thinking_session 管理：退出（含异常）保证发射 SESSION_END，
+        会话内所有链路事件经 ContextVar 归属本会话。
+        """
+        async with thinking_session({"is_heartbeat": is_heartbeat}) as session:
+            await self._cycle_body(session.end, is_heartbeat=is_heartbeat)
+
+    async def _cycle_body(self, end_payload: Dict[str, Any], *, is_heartbeat: bool = False) -> None:
+        """自主循环主体（会话生命周期由 _autonomous_cycle 管理）。"""
 
         if is_heartbeat:
             # 心跳 tick 后台执行，不阻塞主循环的消息处理
@@ -453,7 +458,7 @@ class Mind:
         cheap_tasks = self.pfc.peek_general_tasks()
         cheap_profiles = len(self.pfc.pending_analysis)
         if not cheap_pending and not cheap_tasks and not cheap_profiles and not is_heartbeat:
-            await event_bus.emit(EVENT_THINKING_SESSION_END, {"reason": "no_pending"})
+            end_payload["reason"] = "no_pending"
             return
 
         # fast-path：有消息、无任务/画像/目标时直接 REPLY，跳过元决策和昂贵查询
@@ -488,14 +493,14 @@ class Mind:
                     heartbeat_log="",
                 )
                 await self._execute_decisions_and_finalize(
-                    situation, decisions, is_heartbeat=False,
+                    end_payload, situation, decisions, is_heartbeat=False,
                 )
                 return
 
         situation = await self._gather_situation(is_heartbeat=is_heartbeat)
 
         if not situation.has_pending and not is_heartbeat:
-            await event_bus.emit(EVENT_THINKING_SESSION_END, {"reason": "no_pending"})
+            end_payload["reason"] = "no_pending"
             return
 
         self._set_phase(MindPhase.DECIDING)
@@ -540,17 +545,22 @@ class Mind:
         log(f"决策结果: {', '.join(d.type.value for d in decisions)}", tag="思维")
 
         await self._execute_decisions_and_finalize(
-            situation, decisions, is_heartbeat=is_heartbeat,
+            end_payload, situation, decisions, is_heartbeat=is_heartbeat,
         )
 
     async def _execute_decisions_and_finalize(
             self,
+            end_payload: Dict[str, Any],
             situation: SituationContext,
             decisions: List[Decision],
             *,
             is_heartbeat: bool = False,
     ) -> None:
-        """执行决策列表并完成周期收尾（供 fast-path 和主路径复用）。"""
+        """执行决策列表并完成周期收尾（供 fast-path 和主路径复用）。
+
+        会话结束信息写入 end_payload，由 _autonomous_cycle 的 finally 统一发射，
+        确保异常路径下会话也能按 id 关闭。
+        """
         self._set_phase(MindPhase.DECIDING)
 
         await event_bus.emit(EVENT_THINKING_DECISION, {
@@ -598,8 +608,7 @@ class Mind:
 
         self.pfc.clear_dynamic_tools()
 
-        await event_bus.emit(EVENT_THINKING_SESSION_END, {
-            "reason": "completed",
+        end_payload.update({
             "decisions_executed": [d.type.value for d in immediate],
             "decisions_deferred": [d.type.value for d in deferred],
         })
@@ -609,6 +618,8 @@ class Mind:
 
     async def _run_heartbeat_tick_bg(self) -> None:
         """后台执行心跳 tick，完成后触发新周期（不阻塞主循环）。"""
+        # tick 是独立后台工作，不属于派生它的思维会话，脱离其链路上下文
+        detach_thinking_session()
         try:
             executed = await self.heartbeat_engine.tick()
             if executed:
@@ -923,6 +934,13 @@ class Mind:
             else:
                 result = await self._llm_chat_with_retry(messages, tools, tool_choice=tool_choice, options=options)
         except Exception as exc:
+            # 关闭链路中的 LLM 节点，避免一直停留在执行中
+            await event_bus.emit(EVENT_THINKING_LLM_END, {
+                "model": model_name,
+                "duration_ms": round((time.time() - t0) * 1000),
+                "error": str(exc),
+                "success": False,
+            })
             # 请求级审计：异常交换同样落盘（未开启时零开销）
             await context_audit.record_exchange(
                 model=model_name, messages=messages, tools=tools,
@@ -1218,28 +1236,44 @@ class Mind:
             conversation_list = await self.get_conversation(anything) if anything else []
 
         # 语义记忆召回（用最新对话尾部作为查询上下文）
-        memory_msgs: List[Dict] = []
         entity_scope = self._resolve_entity_scope(anything)
         tail = conversation_list[-10:] if len(conversation_list) > 10 else conversation_list
-        if self.retriever:
+        current_adapter = getattr(anything, "adapter_key", "") or ""
+
+        # 查询提取与 embedding 每轮只做一次，三条召回路径（语义/跨频道/技能）共享
+        query = MemoryRetriever._extract_query(tail) if tail else ""
+        query_vec: Optional[List[float]] = None
+        if query and self.embedder.available:
+            try:
+                query_vec = await self.embedder.embed_one(query)
+            except Exception as exc:
+                log(f"召回查询 embedding 失败: {exc}", "DEBUG", tag="思维")
+
+        async def _recall_memory() -> List[Dict]:
+            if not self.retriever:
+                return []
             scope_source = conversation_list[-30:] if len(conversation_list) > 30 else conversation_list
             related_scopes = self._extract_related_scopes(scope_source, entity_scope)
             if anything:
                 for s in self._extract_scopes_from_anything(anything, entity_scope):
                     if s not in related_scopes:
                         related_scopes.insert(0, s)
-            memory_msgs = await self.retriever.recall(
+            msgs = await self.retriever.recall(
                 tail, entity_scope=entity_scope, related_scopes=related_scopes,
+                query_vec=query_vec,
             )
-            log(f"语义召回: {len(memory_msgs)} 条", tag="思维")
+            log(f"语义召回: {len(msgs)} 条", tag="思维")
+            return msgs
+
+        # 三条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行
+        memory_msgs, (cross_recall_msgs, recalled_scopes), skill_msgs = await asyncio.gather(
+            _recall_memory(),
+            self._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec),
+            self._match_skills(tail, query_vec=query_vec),
+        )
 
         # 跨频道语义召回 + 叙事面包屑
-        current_adapter = getattr(anything, "adapter_key", "") or ""
-        cross_recall_msgs, recalled_scopes = await self._recall_cross_channel(
-            tail, current_adapter, entity_scope,
-        )
-        if cross_recall_msgs:
-            memory_msgs.extend(cross_recall_msgs)
+        memory_msgs.extend(cross_recall_msgs)
         narrative = self._build_cross_channel_narrative(
             current_adapter, entity_scope, recalled_scopes,
         )
@@ -1247,7 +1281,7 @@ class Mind:
             memory_msgs.append({"role": "system", "content": narrative})
 
         # 技能匹配注入（volatile 层）：当前对话语义匹配到的经验技能
-        await self._inject_matched_skills(memory_msgs, tail)
+        memory_msgs.extend(skill_msgs)
 
         # Prompt 分层构建（参考 hermes 三层架构）：
         # stable 层（人设 + 工具提示）对话内冻结复用，context 层（便签）低频重建，
@@ -1275,10 +1309,15 @@ class Mind:
             prefetched_conversation=conversation_list,
         )
 
-    async def _inject_matched_skills(self, memory_msgs: List[Dict], tail: List[Dict]) -> None:
-        """将当前对话匹配到的技能注入 volatile 层（并记录使用次数）。"""
+    async def _match_skills(
+            self,
+            tail: List[Dict],
+            *,
+            query_vec: Optional[List[float]] = None,
+    ) -> List[Dict]:
+        """匹配当前对话相关的技能（并记录使用次数），返回注入消息列表。"""
         if not self._skills_enabled() or not tail:
-            return
+            return []
         try:
             query_texts = [
                 m.get("content", "") for m in tail
@@ -1286,22 +1325,25 @@ class Mind:
             ]
             from core.config import get_config_int
             top_k = get_config_int("skills_match_top_k", 3)
-            matched_skills = await self.skill_matcher.match(query_texts, top_k=top_k)
+            matched_skills = await self.skill_matcher.match(
+                query_texts, top_k=top_k, query_vec=query_vec,
+            )
             if not matched_skills:
-                return
+                return []
             skill_lines = ["[相关技能] 以下经验可能适用于当前任务，可参考复用："]
             for skill, score in matched_skills:
                 skill_lines.append(
                     f"## {skill.name} — {skill.description}\n{skill.content[:800]}"
                 )
                 self.skill_store.record_use(skill.name)
-            memory_msgs.append({
+            log(f"技能注入: {', '.join(s.name for s, _ in matched_skills)}", "DEBUG", tag="技能")
+            return [{
                 "role": "system",
                 "content": "\n\n".join(skill_lines),
-            })
-            log(f"技能注入: {', '.join(s.name for s, _ in matched_skills)}", "DEBUG", tag="技能")
+            }]
         except Exception as exc:
             log(f"技能匹配失败: {exc}", "DEBUG", tag="技能")
+            return []
 
     async def _build_layered_prompts(
             self,
@@ -1377,7 +1419,7 @@ class Mind:
 
         Args:
             role: 存储角色（主流 OpenAI 格式）。系统上下文用 "system"，
-                  AI 自身输出（如内心独白）用 "assistant"，用户消息用 "user"。
+                  AI 自身输出用 "assistant"，用户消息用 "user"。
         """
         scope_type, scope_id = self._resolve_scope(anything)
         await self.conversation_data.router.append(
@@ -1461,9 +1503,12 @@ class Mind:
         query_conversation: List[Dict],
         current_adapter_key: str,
         current_scope: str,
+        query_vec: Optional[List[float]] = None,
     ) -> Tuple[List[Dict], Set[str]]:
         """搜索其他频道的语义相关对话，返回 (注入消息列表, 已召回 scope 集合)。"""
-        return await _cc_recall(self, query_conversation, current_adapter_key, current_scope)
+        return await _cc_recall(
+            self, query_conversation, current_adapter_key, current_scope, query_vec=query_vec,
+        )
 
     def _build_cross_channel_narrative(
         self,
