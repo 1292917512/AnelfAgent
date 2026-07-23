@@ -16,8 +16,10 @@ const queryClient = new QueryClient({
   },
 });
 
-// 首帧前应用主题，避免闪烁
-document.documentElement.setAttribute("data-theme", getInitialTheme());
+// 首帧前应用主题（index.html 内联脚本已先行设置，这里兜底并同步 dark class）
+const initialTheme = getInitialTheme();
+document.documentElement.setAttribute("data-theme", initialTheme);
+document.documentElement.classList.toggle("dark", initialTheme === "dark");
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

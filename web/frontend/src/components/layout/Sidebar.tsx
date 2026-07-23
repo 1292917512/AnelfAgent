@@ -30,7 +30,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-const ICON_MAP: Record<string, LucideIcon> = {
+export const ICON_MAP: Record<string, LucideIcon> = {
   LayoutDashboard,
   MessageCircle,
   Activity,
@@ -54,7 +54,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   Database,
 };
 
-const FALLBACK_NAV: NavItem[] = [
+export const FALLBACK_NAV: NavItem[] = [
   { path: "/", label: "chat", icon: "MessageCircle", group: "group_core" },
   { path: "/dashboard", label: "dashboard", icon: "LayoutDashboard", group: "group_core" },
   { path: "/models", label: "models", icon: "Cpu", group: "group_core" },

@@ -28,16 +28,21 @@ def register_output_tools(conversation_data: Optional[Any] = None) -> None:
     log(f"统一输出工具已注册 ({count} 个)", tag="通道")
 
 
-async def _record_sent_reply(target_id: str, content: str, channel_type: str) -> None:
+async def _record_sent_reply(target_id: str, content: str, channel_type: str, message_id: str = "") -> None:
     """将 AI 发送的回复记录到对话历史（assistant 角色）。
 
     主流做法：对话历史应同时包含用户消息与 AI 回复，
     否则 AI 在历史中看不到自己说过什么，导致重复回复/上下文断裂。
+    message_id 非空时以 [message_id:xxx] 标签前缀入库，
+    使 AI 后续可对自发消息执行表情回应/撤回等引用操作。
     """
     if _conversation_data is None or not content:
         return
     try:
         from agent.storage.storage_router import StorageDomain
+        if message_id:
+            from core.tags import tag_label
+            content = f"{tag_label('message_id', message_id)}{content}"
         scope_type = "group" if channel_type == "group" else "user"
         await _conversation_data.router.append(
             StorageDomain.CONVERSATION,
@@ -286,10 +291,14 @@ async def send_message(
         success_suffix=f" ({len(content)}字)",
     )
 
-    # 发送成功后将 AI 回复记录到对话历史（assistant 角色）
+    # 发送成功后将 AI 回复记录到对话历史（assistant 角色），回填频道返回的 message_id
     try:
-        if json.loads(result).get("success") is not False:
-            await _record_sent_reply(resolved_target, content, resolved_channel_type)
+        parsed_result = json.loads(result)
+        if parsed_result.get("success") is not False:
+            await _record_sent_reply(
+                resolved_target, content, resolved_channel_type,
+                message_id=str(parsed_result.get("message_id") or ""),
+            )
     except (json.JSONDecodeError, TypeError):
         pass
     return result

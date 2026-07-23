@@ -5,6 +5,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AnelfAgent</title>
     <link rel="icon" type="image/svg+xml" href="/webui/vite.svg" />
+    <!-- 防闪烁：bundle 加载前同步应用主题（镜像 app-store.getInitialTheme 逻辑），
+         并预设首帧背景色，避免暗色用户先看到白底帧 -->
+    <script>
+      (() => {
+        try {
+          const saved = localStorage.getItem("theme");
+          const theme =
+            saved === "dark" || saved === "light"
+              ? saved
+              : window.matchMedia &&
+                  window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "light"
+                : "dark";
+          document.documentElement.setAttribute("data-theme", theme);
+          document.documentElement.classList.toggle("dark", theme === "dark");
+        } catch {
+          document.documentElement.setAttribute("data-theme", "dark");
+          document.documentElement.classList.add("dark");
+        }
+      })();
+    </script>
+    <style>
+      /* 首帧底色（与 globals.css 的 --bg 保持一致），CSS bundle 到达后无缝接管 */
+      html { background: #12141a; }
+      html[data-theme="light"] { background: #fafafa; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

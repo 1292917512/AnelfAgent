@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* dark: 变体跟随应用主题（<html class="dark">），而非系统 prefers-color-scheme */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /*
  * 设计令牌注册：将 CSS 变量映射为 Tailwind 原生 utility
  * （bg-card / text-foreground / border-border / bg-accent / rounded-md ...），
@@ -270,4 +273,28 @@ body {
 /* 移动端安全区适配（iPhone 底部横条） */
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Shiki 双主题高亮：一次渲染产出 light/dark 两套 CSS 变量，
+   应用主题（<html class="dark">）切换即时生效，无需重新高亮 */
+.shiki {
+  margin: 0;
+  padding: 0.625rem 0.875rem;
+  overflow-x: auto;
+  background: transparent;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.shiki code {
+  font-family: inherit;
+  font-size: inherit;
+}
+.shiki span {
+  color: var(--shiki-light);
+  background-color: var(--shiki-light-bg);
+}
+.dark .shiki span {
+  color: var(--shiki-dark);
+  background-color: var(--shiki-dark-bg);
 }

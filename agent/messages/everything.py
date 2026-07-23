@@ -13,6 +13,8 @@ from core.tags import (
     group_id_tag,
     name_tag,
     nickname_tag,
+    reply_to_tag,
+    tag_label,
     time_tag,
     uid_tag,
 )
@@ -102,6 +104,7 @@ class Everything(Nothing):
         "channel": "adapter_key",
         "name": "user_name",
         "message_id": "adapter_message_id",
+        "reply_to": "reply_to_id",
     }
 
     def get_tag_list(self) -> str:
@@ -110,12 +113,24 @@ class Everything(Nothing):
             tag_name: str = tag.get_tag_name()
             if tag_name == time_tag.get_tag_name():
                 text_tags += get_time_tag(self.created_ts_ns)
+            elif tag_name == reply_to_tag.get_tag_name():
+                text_tags += self._render_reply_to_label()
             else:
                 field = self._tag_field_map.get(tag_name, tag_name)
                 val = getattr(self, field, None)
                 if val is not None and val != "":
                     text_tags += tag.generate_label(str(val))
         return text_tags
+
+    def _render_reply_to_label(self) -> str:
+        """渲染 [reply_to:xxx] 标签及引用预览（压缩空白后截取前 200 字符）。"""
+        if not self.reply_to_id:
+            return ""
+        header = tag_label(reply_to_tag.get_tag_name(), str(self.reply_to_id))
+        preview = " ".join((self.reply_content or "").split()).strip()
+        if preview:
+            header = f"{header}{preview[:200]}"
+        return f"{header}\n" if self.text_content else header
 
     def __str__(self) -> str:
         if self._tags_generated:

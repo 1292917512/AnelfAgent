@@ -168,8 +168,8 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         ob_message.extend(segments)
 
         log(f"QQ 发送{'群' if channel_type == 'group' else '私聊'}消息: {chat_id}, text={text[:50]}", "DEBUG", tag="通道")
-        ok = await self._send_to(chat_id, channel_type, ob_message)
-        return _ok({"chat_id": chat_id}) if ok else _err("发送失败")
+        data = await self._send_to(chat_id, channel_type, ob_message)
+        return self._send_result(chat_id, data, "发送失败")
 
     def _parse_at_in_text(self, text: str, channel_type: str) -> List[Dict[str, Any]]:
         """解析 [at_uid:xxx] 标签，转换为 OneBot 消息段。"""
@@ -268,15 +268,15 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         reply_to = kwargs.get("reply_to")
         if reply_to:
             ob_message.insert(0, {"type": "reply", "data": {"id": str(reply_to)}})
-        ok = await self._send_to(chat_id, channel_type, ob_message)
-        return _ok({"chat_id": chat_id}) if ok else _err("发送图片失败")
+        data = await self._send_to(chat_id, channel_type, ob_message)
+        return self._send_result(chat_id, data, "发送图片失败")
 
     async def send_voice(self, chat_id: str, voice: str, caption: str = "", **kwargs: Any) -> str:
         channel_type = kwargs.get("channel_type", "private")
         file_value = self._to_ob_file(voice)
         ob_message = [{"type": "record", "data": {"file": file_value}}]
-        ok = await self._send_to(chat_id, channel_type, ob_message)
-        return _ok({"chat_id": chat_id}) if ok else _err("发送语音失败")
+        data = await self._send_to(chat_id, channel_type, ob_message)
+        return self._send_result(chat_id, data, "发送语音失败")
 
     async def send_file(self, chat_id: str, file_path: str, caption: str = "", **kwargs: Any) -> str:
         channel_type = kwargs.get("channel_type", "private")
@@ -298,7 +298,7 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         }
         result = await self._call_api_raw(action, params)
         if result and result.get("retcode") == 0:
-            return _ok({"chat_id": chat_id})
+            return self._send_result(chat_id, result.get("data") or {}, "发送文件失败")
 
         # NapCat 在 macOS App Sandbox 下可能无法直接读取外部本地路径（EPERM），
         # 回退到 base64:// 可绕过路径权限问题。
@@ -312,7 +312,7 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
             log("QQ send_file 检测到 EPERM，回退 base64 上传", "WARNING", tag="通道")
             result = await self._call_api_raw(action, params)
             if result and result.get("retcode") == 0:
-                return _ok({"chat_id": chat_id})
+                return self._send_result(chat_id, result.get("data") or {}, "发送文件失败")
 
         if result:
             log(f"OneBot v11 API 失败: {action} -> {result}", "WARNING")
@@ -1294,15 +1294,23 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
 
     @channel_tool()
     async def message_reaction(self, chat_id: str, message_id: str, emoji_id: str = "212", **kwargs: Any) -> str:
-        """对指定消息添加表情回应（NapCat 扩展 API）。"""
+        """对指定消息添加表情回应（NapCat 扩展 API）。message_id 取自消息标签 [message_id:xxx]，仅对缓存期内的近期消息有效。"""
         try:
             mid = int(message_id)
         except (ValueError, TypeError):
             return _err(f"无效的消息 ID: {message_id}")
-        ok = await self._call_api("set_msg_emoji_like", {
+        raw = await self._call_api_raw("set_msg_emoji_like", {
             "message_id": mid, "emoji_id": str(emoji_id),
         })
-        return _ok({"message_id": message_id, "emoji_id": emoji_id}) if ok else _err("表情回应失败")
+        if raw and raw.get("retcode") == 0:
+            return _ok({"message_id": message_id, "emoji_id": emoji_id})
+        wording = str((raw or {}).get("wording") or (raw or {}).get("message") or "未知原因")
+        return json.dumps({
+            "success": False,
+            "error": f"表情回应失败: {wording}",
+            "retcode": (raw or {}).get("retcode"),
+            "message_id": message_id,
+        }, ensure_ascii=False)
 
     # ------------------------------------------------------------------
     # 发送辅助
@@ -1317,12 +1325,12 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         group_wl = {g.strip() for g in raw_groups.split(",") if g.strip()}
         return target_id in group_wl
 
-    async def _send_to(self, chat_id: str, channel_type: str, ob_message: list) -> bool:
-        """根据 channel_type 发送到群或私聊。"""
+    async def _send_to(self, chat_id: str, channel_type: str, ob_message: list) -> Optional[Any]:
+        """根据 channel_type 发送到群或私聊，返回 OneBot 响应 data（含 message_id），失败返回 None。"""
         try:
             cid = int(chat_id)
         except (ValueError, TypeError):
-            return False
+            return None
         if channel_type == "group":
             return await self._send_group_msg(cid, ob_message)
         return await self._send_private_msg(cid, ob_message)
@@ -1540,18 +1548,28 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
     # 发送消息
     # ------------------------------------------------------------------
 
-    async def _send_group_msg(self, group_id: int, message: Any) -> bool:
-        return await self._call_api("send_group_msg", {
+    async def _send_group_msg(self, group_id: int, message: Any) -> Optional[Any]:
+        return await self._call_api_data("send_group_msg", {
             "group_id": group_id,
             "message": message,
         })
 
-    async def _send_private_msg(self, user_id: int, message: Any) -> bool:
-        return await self._call_api("send_msg", {
+    async def _send_private_msg(self, user_id: int, message: Any) -> Optional[Any]:
+        return await self._call_api_data("send_msg", {
             "message_type": "private",
             "user_id": user_id,
             "message": message,
         })
+
+    @staticmethod
+    def _send_result(chat_id: str, data: Optional[Any], err_msg: str) -> str:
+        """构造发送结果：成功时透传 OneBot 返回的 message_id（供后续引用/撤回/表情回应）。"""
+        if data is None:
+            return _err(err_msg)
+        payload: Dict[str, Any] = {"chat_id": chat_id}
+        if isinstance(data, dict) and data.get("message_id") is not None:
+            payload["message_id"] = str(data["message_id"])
+        return _ok(payload)
 
     async def _call_api_data(self, action: str, params: Dict[str, Any]) -> Optional[Any]:
         """调用 API 并返回 data 字段，失败返回 None。"""

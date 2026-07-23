@@ -1,52 +1,9 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import python from "react-syntax-highlighter/dist/esm/languages/prism/python";
-import javascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript";
-import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
-import jsx from "react-syntax-highlighter/dist/esm/languages/prism/jsx";
-import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
-import json from "react-syntax-highlighter/dist/esm/languages/prism/json";
-import markdown from "react-syntax-highlighter/dist/esm/languages/prism/markdown";
-import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
-import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
-import css from "react-syntax-highlighter/dist/esm/languages/prism/css";
-import markup from "react-syntax-highlighter/dist/esm/languages/prism/markup";
-import sql from "react-syntax-highlighter/dist/esm/languages/prism/sql";
-import go from "react-syntax-highlighter/dist/esm/languages/prism/go";
-import rust from "react-syntax-highlighter/dist/esm/languages/prism/rust";
-import java from "react-syntax-highlighter/dist/esm/languages/prism/java";
-import c from "react-syntax-highlighter/dist/esm/languages/prism/c";
-import cpp from "react-syntax-highlighter/dist/esm/languages/prism/cpp";
 import { Check, Copy, ExternalLink, Link2 } from "lucide-react";
 import { useLightbox } from "./Lightbox";
-
-SyntaxHighlighter.registerLanguage("python", python);
-SyntaxHighlighter.registerLanguage("javascript", javascript);
-SyntaxHighlighter.registerLanguage("js", javascript);
-SyntaxHighlighter.registerLanguage("typescript", typescript);
-SyntaxHighlighter.registerLanguage("ts", typescript);
-SyntaxHighlighter.registerLanguage("jsx", jsx);
-SyntaxHighlighter.registerLanguage("tsx", tsx);
-SyntaxHighlighter.registerLanguage("json", json);
-SyntaxHighlighter.registerLanguage("markdown", markdown);
-SyntaxHighlighter.registerLanguage("md", markdown);
-SyntaxHighlighter.registerLanguage("yaml", yaml);
-SyntaxHighlighter.registerLanguage("yml", yaml);
-SyntaxHighlighter.registerLanguage("bash", bash);
-SyntaxHighlighter.registerLanguage("sh", bash);
-SyntaxHighlighter.registerLanguage("shell", bash);
-SyntaxHighlighter.registerLanguage("css", css);
-SyntaxHighlighter.registerLanguage("html", markup);
-SyntaxHighlighter.registerLanguage("xml", markup);
-SyntaxHighlighter.registerLanguage("sql", sql);
-SyntaxHighlighter.registerLanguage("go", go);
-SyntaxHighlighter.registerLanguage("rust", rust);
-SyntaxHighlighter.registerLanguage("java", java);
-SyntaxHighlighter.registerLanguage("c", c);
-SyntaxHighlighter.registerLanguage("cpp", cpp);
+import { highlightCode } from "@/lib/shiki";
 
 /** 从 URL 提取域名（失败返回空串） */
 function domainOf(href: string): string {
@@ -97,12 +54,24 @@ function LinkCard({ href, children }: { href?: string; children?: ReactNode }) {
   );
 }
 
-/** 代码块：语法高亮 + 语言标签 + 复制按钮 */
+/** 代码块：Shiki 语法高亮 + 语言标签 + 复制按钮（高亮完成前用纯文本占位，避免布局跳动） */
 function CodeBlock({ className, children }: { className?: string; children?: ReactNode }) {
   const [copied, setCopied] = useState(false);
   const match = /language-(\w+)/.exec(className || "");
   const lang = match?.[1] || "";
   const code = String(children ?? "").replace(/\n$/, "");
+  const [html, setHtml] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setHtml(null);
+    highlightCode(code, lang).then((h) => {
+      if (alive) setHtml(h);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [code, lang]);
 
   const copy = async () => {
     try {
@@ -124,14 +93,14 @@ function CodeBlock({ className, children }: { className?: string; children?: Rea
           {copied ? "OK" : "Copy"}
         </button>
       </div>
-      <SyntaxHighlighter
-        language={lang || "text"}
-        style={oneDark}
-        customStyle={{ margin: 0, borderRadius: 0, fontSize: 12.5, background: "var(--elevated)" }}
-        codeTagProps={{ style: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" } }}
-      >
-        {code}
-      </SyntaxHighlighter>
+      {html ? (
+        // Shiki 产物（代码已转义），主题色由 .shiki 相关 CSS 变量接管
+        <div className="bg-elevated" dangerouslySetInnerHTML={{ __html: html }} />
+      ) : (
+        <pre className="m-0 px-3.5 py-2.5 overflow-x-auto bg-elevated text-[12.5px] font-mono text-foreground">
+          <code>{code}</code>
+        </pre>
+      )}
     </div>
   );
 }
