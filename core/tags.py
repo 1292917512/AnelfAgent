@@ -110,6 +110,11 @@ class Tag(BaseModel):
     visible_to_llm: bool = True
 
     def model_post_init(self, __context: object) -> None:
+        # 按 tag_name 去重：重复定义时替换旧条目，避免 tag_list 膨胀与描述重复拼接
+        for i, existing in enumerate(tag_list):
+            if existing.tag_name == self.tag_name:
+                tag_list[i] = self
+                return
         tag_list.append(self)
 
     def get_tag_name(self) -> str:
@@ -174,6 +179,19 @@ avatar_tag = Tag(tag_name="avatar", tag_name_desc="用户头像 URL")
 media_file_tag = Tag(
     tag_name="media_file",
     tag_name_desc="媒体文件，格式 [media_file:类型:路径]，类型包括 image/voice/audio/video/file",
+)
+media_type_tag = Tag(
+    tag_name="media_type",
+    tag_name_desc="媒体类型（image/voice/audio/video/file），与 media_path 成对出现于消息尾部",
+)
+media_path_tag = Tag(
+    tag_name="media_path",
+    tag_name_desc="媒体文件的本地路径或 URL；为「未下载」时表示文件未落地，"
+                  "可配合 media_file_id 用 qq_download_file 或直接用 URL 调 web_download 按需下载",
+)
+media_file_id_tag = Tag(
+    tag_name="media_file_id",
+    tag_name_desc="平台文件 ID（如 QQ 文件），可传给 qq_download_file 按需下载到本地后再分析",
 )
 
 # 交互标签

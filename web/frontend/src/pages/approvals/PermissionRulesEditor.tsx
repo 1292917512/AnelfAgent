@@ -7,6 +7,7 @@ import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "@/lib/api";
+import type { PermissionRuleItem } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -16,19 +17,11 @@ import { LoadingBlock } from "@/components/ui/Spinner";
 import { Save, RotateCcw, Plus, Trash2, ShieldCheck, ShieldX, ShieldQuestion, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-interface PermissionRule {
+/** 编辑器中的规则：id / created_by 可选（新规则无服务端字段），省略自动填充的字段 */
+type EditableRule = Omit<PermissionRuleItem, "id" | "created_at" | "trust_after_n_approvals" | "created_by"> & {
   id?: string;
-  pattern: string;
-  effect: string;
-  scope: string;
-  users: string[];
-  risk_level: string;
-  timeout_seconds: number;
-  on_timeout: string;
-  description: string;
-  enabled: boolean;
   created_by?: string;
-}
+};
 
 const EFFECT_ICON: Record<string, typeof ShieldCheck> = {
   allow: ShieldCheck,
@@ -51,7 +44,7 @@ const EFFECT_ACCENT: Record<string, string> = {
 export function PermissionRulesEditor() {
   const { t } = useTranslation("approvals");
   const queryClient = useQueryClient();
-  const [rules, setRules] = useState<PermissionRule[]>([]);
+  const [rules, setRules] = useState<EditableRule[]>([]);
   const [defaultEffect, setDefaultEffect] = useState("allow");
   const [sessionCount, setSessionCount] = useState(0);
   const [dirty, setDirty] = useState(false);
@@ -63,7 +56,7 @@ export function PermissionRulesEditor() {
 
   const saveMutation = useMutation({
     mutationFn: () =>
-      approvalsApi.saveRules({ rules: rules as unknown as Record<string, unknown>[], default_effect: defaultEffect }),
+      approvalsApi.saveRules({ rules, default_effect: defaultEffect }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["approvals", "rules"] });
       setDirty(false);
@@ -96,9 +89,9 @@ export function PermissionRulesEditor() {
     setDirty(true);
   };
 
-  const handleChange = (index: number, field: keyof PermissionRule, value: unknown) => {
+  const handleChange = (index: number, field: keyof EditableRule, value: EditableRule[keyof EditableRule]) => {
     const updated = [...rules];
-    updated[index] = { ...updated[index], [field]: value } as PermissionRule;
+    updated[index] = { ...updated[index], [field]: value } as EditableRule;
     setRules(updated);
     setDirty(true);
   };

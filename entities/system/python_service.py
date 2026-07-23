@@ -19,6 +19,45 @@ dual_mode = AsyncHelper.dual_mode
 # pip可用性缓存
 _pip_availability_cache: Dict[str, bool] = {}
 
+# 环境管理器检测缓存
+_env_manager_cache: Dict[str, Dict[str, Any]] = {}
+
+# ==================== 环境管理器检测 ====================
+
+def detect_env_manager(python_path: str = None) -> Dict[str, Any]:
+    """检测 Python 环境的管理工具（uv / conda / pip）。
+
+    判定依据：venv 的 pyvenv.cfg 中 `uv = x.y.z` 标记（uv 创建 venv 时写入），
+    其次按路径特征识别 conda，默认视为 pip 管理。
+    uv 管理的 venv 默认不含 pip，属正常状态而非故障。
+    """
+    python_exe = python_path or sys.executable
+
+    if python_exe in _env_manager_cache:
+        return _env_manager_cache[python_exe]
+
+    info: Dict[str, Any] = {'manager': 'pip', 'uv_managed': False, 'uv_version': None}
+
+    cfg_path = Path(python_exe).parent.parent / "pyvenv.cfg"
+    if cfg_path.exists():
+        try:
+            for line in cfg_path.read_text().splitlines():
+                key, _, value = line.partition('=')
+                if key.strip() == 'uv':
+                    info['uv_managed'] = True
+                    info['manager'] = 'uv'
+                    info['uv_version'] = value.strip() or None
+                    break
+        except Exception as e:
+            log(f"⚠️ 读取pyvenv.cfg失败: {cfg_path} - {str(e)}", "DEBUG")
+
+    if not info['uv_managed'] and any(k in python_exe for k in ('conda', 'miniconda', 'anaconda')):
+        info['manager'] = 'conda'
+
+    _env_manager_cache[python_exe] = info
+    return info
+
+
 # ==================== pip 工具检测 ====================
 
 @dual_mode
@@ -47,6 +86,8 @@ def is_pip_available(python_path: str = None) -> bool:
         
         if available:
             log(f"✅ pip可用: {python_exe}", "DEBUG")
+        elif detect_env_manager(python_exe)['uv_managed']:
+            log(f"ℹ️ pip未安装（uv 管理的 venv 默认不含 pip，属正常状态）: {python_exe}", "INFO")
         else:
             log(f"❌ pip不可用: {python_exe} - {result.stderr}", "WARNING")
         
@@ -58,9 +99,10 @@ def is_pip_available(python_path: str = None) -> bool:
 
 
 def clear_pip_cache():
-    """清空pip缓存"""
-    global _pip_availability_cache
+    """清空pip与环境管理器检测缓存"""
+    global _pip_availability_cache, _env_manager_cache
     _pip_availability_cache.clear()
+    _env_manager_cache.clear()
     log("🧹 pip缓存已清空", "DEBUG")
 
 
@@ -80,8 +122,23 @@ def get_python_info() -> Dict[str, Any]:
             'pip_available': False,
             'venv_active': False,
             'venv_path': None,
-            'site_packages': None
+            'site_packages': None,
+            'managed_by': 'pip',
+            'package_advice': None
         }
+
+        # 检测环境管理器（uv / conda / pip）
+        manager_info = detect_env_manager(sys.executable)
+        info['managed_by'] = manager_info['manager']
+        if manager_info['uv_managed']:
+            info['package_advice'] = (
+                '该环境由 uv 管理：安装依赖使用 uv add（写入 pyproject.toml/uv.lock），'
+                '临时包使用 uv pip install；禁止 pip install / ensurepip，'
+                'pip 安装的包不受 uv.lock 追踪，会被 uv sync 清除'
+            )
+            log(f"🔧 环境管理器: uv (创建版本 {manager_info['uv_version'] or '未知'})", "DEBUG")
+        else:
+            log(f"🔧 环境管理器: {manager_info['manager']}", "DEBUG")
         
         log(f"🔍 Python可执行文件: {info['python_path']}", "DEBUG")
         log(f"📊 Python版本: {info['python_version']}", "DEBUG")
@@ -118,7 +175,10 @@ def get_python_info() -> Dict[str, Any]:
             else:
                 log("⚠️ 无法获取site-packages路径", "WARNING")
         else:
-            log("⚠️ pip不可用，跳过相关信息获取", "WARNING")
+            if info['managed_by'] == 'uv':
+                log("ℹ️ uv 管理环境 pip 缺失属正常，包信息可走 uv pip list", "INFO")
+            else:
+                log("⚠️ pip不可用，跳过相关信息获取", "WARNING")
             
         log("✅ Python环境信息获取完成", "DEBUG")
         return info
@@ -346,6 +406,9 @@ def get_installed_packages(python_path: str = None) -> List[Dict[str, str]]:
         
         # 检查pip可用性
         if not is_pip_available(python_exe):
+            if detect_env_manager(python_exe)['uv_managed']:
+                log("🔄 pip未安装，回退到 uv pip list", "DEBUG")
+                return _get_uv_packages(python_exe)
             log(f"❌ pip不可用，无法获取包列表: {python_exe}", "WARNING")
             return []
         
@@ -361,6 +424,32 @@ def get_installed_packages(python_path: str = None) -> List[Dict[str, str]]:
     except Exception as e:
         log(f"❌ 获取包列表失败: {python_exe} - {str(e)}", "ERROR")
         return []
+
+
+def _get_uv_packages(python_exe: str) -> List[Dict[str, str]]:
+    """通过 uv pip list 获取 uv 管理环境的包列表（适用于无 pip 的 uv venv）"""
+    log(f"📦 使用 'uv pip list' 获取包列表: {python_exe}", "DEBUG")
+
+    if not which_tool("uv"):
+        log("❌ uv 命令不可用，无法获取包列表", "WARNING")
+        return []
+
+    result = run_command(["uv", "pip", "list", "--python", python_exe, "--format", "json"], timeout_sec=15)
+    if not result.ok or not result.stdout.strip():
+        log(f"❌ uv pip list 命令失败: {result.stderr}", "WARNING")
+        return []
+
+    packages = []
+    try:
+        for pkg in json.loads(result.stdout):
+            packages.append({
+                'name': pkg.get('name', ''),
+                'version': pkg.get('version', '')
+            })
+        log(f"✅ uv包列表获取成功，共 {len(packages)} 个包", "DEBUG")
+    except json.JSONDecodeError as e:
+        log(f"❌ 解析uv包JSON失败: {str(e)}", "WARNING")
+    return packages
 
 
 def _get_conda_packages(python_exe: str) -> List[Dict[str, str]]:
@@ -976,11 +1065,12 @@ def get_python_status() -> Dict[str, Any]:
     status = {
         'system_info': {
             'system': platform.system(),
-            'architecture': platform.architecture()[0], 
+            'architecture': platform.architecture()[0],
             'python_version': platform.python_version()
         },
         'current_python': get_python_info(),
         'python_installations': find_python_installations(),
+        'uv_info': get_comprehensive_uv_info(),
         'conda_info': {
             'installed': False,
             'version': None,

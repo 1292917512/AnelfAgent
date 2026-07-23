@@ -50,6 +50,35 @@ def register_planning_tools(store: MemoryStore) -> None:
     activate_group(_GROUP, "目标规划管理 - 创建执行计划、追踪目标进度")
 
 
+async def _find_goal(
+    store: MemoryStore, goal_id: str,
+) -> tuple[Optional[MemoryEntry], Optional[Dict[str, Any]]]:
+    """按 source='goal' 分页查全，定位 goal_id 对应的记忆条目与目标数据。
+
+    目标数量可能超过单页，逐页扫描直到命中或遍历完毕。
+    """
+    page_size = 100
+    offset = 0
+    while True:
+        entries = await store.list_by_source(
+            _GOAL_SOURCE, memory_type=MemoryType.SEMANTIC,
+            limit=page_size, offset=offset,
+        )
+        if not entries:
+            break
+        for entry in entries:
+            try:
+                goal = json.loads(entry.content)
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            if goal.get("goal_id") == goal_id:
+                return entry, goal
+        if len(entries) < page_size:
+            break
+        offset += page_size
+    return None, None
+
+
 # ------------------------------------------------------------------
 # 工具实现
 # ------------------------------------------------------------------
@@ -149,20 +178,7 @@ async def update_goal(
     if _store is None:
         return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
 
-    entries = await _store.list_recent(limit=50, memory_type=MemoryType.SEMANTIC, source=_GOAL_SOURCE)
-
-    target_entry = None
-    target_goal = None
-    for entry in entries:
-        try:
-            goal = json.loads(entry.content)
-            if goal.get("goal_id") == goal_id:
-                target_entry = entry
-                target_goal = goal
-                break
-        except (json.JSONDecodeError, AttributeError):
-            continue
-
+    target_entry, target_goal = await _find_goal(_store, goal_id)
     if target_entry is None or target_goal is None:
         return json.dumps({"error": f"目标 '{goal_id}' 不存在"}, ensure_ascii=False)
 
@@ -184,18 +200,12 @@ async def update_goal(
 
     target_goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
-    if target_entry.id:
-        await _store.delete(target_entry.id)
-
-    new_entry = MemoryEntry(
-        memory_type=MemoryType.SEMANTIC,
-        content=json.dumps(target_goal, ensure_ascii=False),
-        source=_GOAL_SOURCE,
-        importance=0.8 if target_goal["status"] == "active" else 0.3,
-        metadata={"goal_id": goal_id, "status": target_goal["status"]},
-    )
-    new_id = await _store.add(new_entry)
-    target_goal["memory_id"] = new_id
+    # 原地更新（保留 id 与时间戳），内容变更后清空旧向量待后台 worker 重建
+    target_entry.content = json.dumps(target_goal, ensure_ascii=False)
+    target_entry.importance = 0.8 if target_goal["status"] == "active" else 0.3
+    target_entry.metadata = {"goal_id": goal_id, "status": target_goal["status"]}
+    await _store.update(target_entry, clear_embedding=True)
+    target_goal["memory_id"] = target_entry.id
 
     result: Dict[str, Any] = {"success": True, "goal": target_goal}
     if target_goal["status"] in ("completed", "cancelled"):
@@ -219,20 +229,14 @@ async def delete_goal(goal_id: str) -> str:
     if _store is None:
         return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
 
-    entries = await _store.list_recent(limit=50, memory_type=MemoryType.SEMANTIC, source=_GOAL_SOURCE)
-
-    for entry in entries:
-        try:
-            goal = json.loads(entry.content)
-            if goal.get("goal_id") == goal_id and entry.id:
-                await _store.delete(entry.id)
-                return json.dumps({
-                    "success": True,
-                    "message": f"目标 '{goal_id}' 已删除",
-                    "deleted_goal": goal.get("title", ""),
-                }, ensure_ascii=False)
-        except (json.JSONDecodeError, AttributeError):
-            continue
+    target_entry, target_goal = await _find_goal(_store, goal_id)
+    if target_entry is not None and target_goal is not None and target_entry.id:
+        await _store.delete(target_entry.id)
+        return json.dumps({
+            "success": True,
+            "message": f"目标 '{goal_id}' 已删除",
+            "deleted_goal": target_goal.get("title", ""),
+        }, ensure_ascii=False)
 
     return json.dumps({"error": f"目标 '{goal_id}' 不存在"}, ensure_ascii=False)
 
@@ -247,16 +251,10 @@ async def get_goal(goal_id: str) -> str:
     if _store is None:
         return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
 
-    entries = await _store.list_recent(limit=50, memory_type=MemoryType.SEMANTIC, source=_GOAL_SOURCE)
-
-    for entry in entries:
-        try:
-            goal = json.loads(entry.content)
-            if goal.get("goal_id") == goal_id:
-                goal["memory_id"] = entry.id
-                return json.dumps({"success": True, "goal": goal}, ensure_ascii=False)
-        except (json.JSONDecodeError, AttributeError):
-            continue
+    target_entry, target_goal = await _find_goal(_store, goal_id)
+    if target_entry is not None and target_goal is not None:
+        target_goal["memory_id"] = target_entry.id
+        return json.dumps({"success": True, "goal": target_goal}, ensure_ascii=False)
 
     return json.dumps({"error": f"目标 '{goal_id}' 不存在"}, ensure_ascii=False)
 
@@ -283,6 +281,7 @@ async def collect_active_goals(store: MemoryStore) -> list[str]:
         return goals
     except Exception:
         return []
+
 
 @deferred_tool(
     group=_GROUP, tags=["planning", "always"],

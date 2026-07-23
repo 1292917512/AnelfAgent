@@ -15,10 +15,42 @@ from entities._sdk import tool, entity
 
 _GIT_AVAILABLE = shutil.which("git") is not None
 
-entity("environment", "环境信息 - 系统信息、Python 环境、Git 配置、日志查询")
+entity("environment", "环境信息 - 系统信息、工作区路径、Python 环境、Git 配置、日志查询")
 
 
 # ── 系统信息 ─────────────────────────────────────────────────────────
+
+@tool(name="get_workspace_info", group="environment")
+def get_workspace_info() -> str:
+    """获取工作区路径信息：工作区根目录绝对路径、Shell 当前工作目录、平台与沙箱状态。
+
+    文件工具的相对路径与 Shell 的初始工作目录均基于工作区根目录；
+    执行文件/命令操作前如不确定当前位置，可先调用本工具确认，避免猜测系统路径。
+    """
+    try:
+        from core.path import workspace_root
+
+        root = os.path.abspath(workspace_root())
+        shell_cwd = root
+        sandbox = True
+        try:
+            from entities.filesystem import shell_state
+            from entities.filesystem import tools as fs_tools
+
+            fs_tools._load_config()
+            sandbox = fs_tools._SANDBOX
+            shell_cwd = shell_state.get_cwd(root, sandbox=sandbox)
+        except Exception:
+            pass
+        return json.dumps({
+            "workspace_root": root,
+            "shell_cwd": shell_cwd,
+            "platform": f"{platform.system().lower()} ({platform.machine()})",
+            "sandbox_enabled": sandbox,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
 
 @tool(name="get_system_info", group="environment")
 def get_system_info() -> str:
@@ -43,7 +75,12 @@ def get_system_info() -> str:
 
 @tool(name="get_python_status", group="environment")
 def get_python_status() -> str:
-    """获取当前系统的 Python 环境状态，包括版本、虚拟环境、pip 可用性等。"""
+    """获取当前系统的 Python 环境状态，包括版本、虚拟环境、包管理器（uv/pip/conda）等。
+
+    若结果中 managed_by 为 "uv"（uv 管理的 venv 默认不含 pip，属正常状态），
+    安装依赖必须使用 uv add（写入 pyproject.toml/uv.lock）或 uv pip install，
+    禁止 pip install / ensurepip——pip 安装的包不受 uv.lock 追踪，会被 uv sync 清除。
+    """
     try:
         from entities.system.python_service import get_python_status as _get
         return json.dumps(_get(), ensure_ascii=False, default=str)
@@ -53,7 +90,7 @@ def get_python_status() -> str:
 
 @tool(name="list_python_packages", group="environment")
 def list_python_packages() -> str:
-    """列出当前 Python 环境中已安装的所有包及其版本。"""
+    """列出当前 Python 环境中已安装的所有包及其版本（pip 环境走 pip list，uv 环境自动回退 uv pip list）。"""
     try:
         from entities.system.python_service import get_installed_packages
         packages = get_installed_packages()
@@ -70,7 +107,7 @@ def list_python_packages() -> str:
 
 @tool(name="get_pip_mirror_info", group="environment")
 def get_pip_mirror_info() -> str:
-    """获取当前 pip 镜像源配置信息。"""
+    """获取当前 pip 镜像源配置信息（仅适用于 pip 管理的环境；uv 管理的环境镜像走 uv 索引配置）。"""
     try:
         from entities.system.python_service import get_pip_config
         return json.dumps(get_pip_config(), ensure_ascii=False, default=str)

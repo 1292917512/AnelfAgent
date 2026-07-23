@@ -64,6 +64,8 @@ class MessageSegment(BaseModel):
     mime_type: str = ""
     duration: float = 0
     file_name: str = ""
+    file_id: str = ""
+    file_size: int = 0
 
 
 class SendSegment(BaseModel):

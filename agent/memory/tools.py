@@ -558,14 +558,9 @@ async def update_conversation_message(row_id: int, new_content: str) -> str:
         if not new_content.strip():
             return json.dumps({"error": "new_content 不能为空"}, ensure_ascii=False)
         sqlite = _get_sqlite()
-        db = await sqlite._get_db()
-        cursor = await db.execute(
-            "UPDATE conversation_messages SET content=? WHERE id=?",
-            (new_content, row_id),
-        )
-        if cursor.rowcount == 0:
+        updated = await sqlite.update_conversation_message(row_id, new_content)
+        if not updated:
             return json.dumps({"error": f"消息 {row_id} 不存在"}, ensure_ascii=False)
-        await db.commit()
         return json.dumps({
             "ok": True,
             "message": f"消息 {row_id} 已更新",

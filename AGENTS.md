@@ -7,6 +7,10 @@ description: "AnelfAgent 项目指令 — 开发规范与架构速查（由 .cur
 本文件由 `.cursor/rules/global.mdc` 与 `.cursor/rules/architecture.mdc` 合并而来。
 Cursor 用户继续读取 `.cursor/rules/*.mdc`，ZCode 读取本文件，互不影响。
 
+> **定位说明**：本文件是供 AI 代码编辑器（ZCode / Cursor）读取的**工作区指令文件**，
+> 用于向编辑器描述本项目的开发规范与架构，**不属于 AnelfAgent 产品的运行时代码或交付内容**，
+> 不会被程序加载，也不影响任何运行逻辑。修改本文件仅改变编辑器对项目的理解。
+
 ---
 
 ## 一、开发规范
@@ -190,9 +194,9 @@ pages/
 └── ...
 
 components/common/TabBar.tsx  # 统一标签栏
-lib/types.ts / api.ts         # API 接口类型
-lib/styles.ts                 # 共享样式常量
-i18n/locales/{zh,en}/         # 14 个 namespace
+lib/types.ts / api.ts         # API 接口类型（接口集中在 types.ts，api.ts 引用）
+lib/utils.ts                  # cn() 类名合并工具（样式走 Tailwind 内联类，无独立 styles.ts）
+i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 ```
 
 ### 关键文件索引
@@ -304,6 +308,8 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 **前端**：页面超过 300 行拆为子面板目录、统一用 TabBar、i18n 覆盖所有文本、`Record<string, unknown>` 替换为 `lib/types.ts` 接口
 
 **生命周期**：bootstrap 中创建的有状态单例须调用 `Lifecycle.register(name, instance, cleanup=close_fn)` 注册；关闭时 `Lifecycle.shutdown_all()` 逆序清理
+
+**包管理**：项目依赖由 uv 管理（`pyproject.toml` + `uv.lock`），安装依赖用 `uv add`，临时操作用 `uv pip install`；禁止对 `.venv` 使用 `pip install` / `ensurepip`（uv 创建的 venv 默认不含 pip，属正常状态而非故障，不要"修复"它）
 
 **禁止**：直接 import openai/anthropic SDK（用 litellm）/ entities 直接 import agent（用 _sdk 桥接）
 

@@ -9,7 +9,8 @@ import { cn } from "@/lib/utils";
 
 export function Layout() {
   const isMobile = useIsMobile();
-  const { mobileMenuOpen, setMobileMenuOpen } = useAppStore();
+  const mobileMenuOpen = useAppStore((s) => s.mobileMenuOpen);
+  const setMobileMenuOpen = useAppStore((s) => s.setMobileMenuOpen);
   const location = useLocation();
 
   // 路由切换时关闭移动端抽屉

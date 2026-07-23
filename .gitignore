@@ -59,6 +59,7 @@ config/mind_config.json
 config/heartbeat.json
 config/reminders.json
 config/webui.json
+config/permission_rules.json
 config/introspection.json
 config/introspection.json.bak
 config/introspection/

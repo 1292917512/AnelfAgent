@@ -41,6 +41,13 @@ class ToolActivationManager:
 
     def __init__(self) -> None:
         self._scope_rounds: Dict[str, Dict[str, int]] = {}
+        # 版本号：每次激活/续期/消耗/清除时递增，供 think_loop 检测工具集变化
+        self._version: int = 0
+
+    @property
+    def version(self) -> int:
+        """当前工具集版本号（激活/续期/消耗/清除时递增）。"""
+        return self._version
 
     @staticmethod
     def current_scope() -> str:
@@ -59,6 +66,7 @@ class ToolActivationManager:
         scope = scope or self.current_scope()
         final_rounds = self._clamp_rounds(rounds)
         self._scope_rounds.setdefault(scope, {})[group] = final_rounds
+        self._version += 1
         log(f"工具分组已激活: [{group}] scope={scope} 持续 {final_rounds} 轮", tag="门控")
         return final_rounds
 
@@ -70,6 +78,7 @@ class ToolActivationManager:
         maximum = get_config_int("tool_gate_max_active_rounds", _MAX_ACTIVE_ROUNDS)
         final_rounds = min(current + added, maximum)
         self._scope_rounds.setdefault(scope, {})[group] = final_rounds
+        self._version += 1
         log(f"工具分组已续期: [{group}] scope={scope} 剩余 {final_rounds} 轮", "DEBUG", tag="门控")
         return final_rounds
 
@@ -103,12 +112,15 @@ class ToolActivationManager:
         if not groups:
             self._scope_rounds.pop(scope, None)
         if expired:
+            self._version += 1
             log(f"工具分组回到沉睡: {', '.join(expired)} (scope={scope})", "DEBUG", tag="门控")
         return expired
 
     def clear_scope(self, scope: str) -> None:
         """清空指定 scope 的全部激活状态。"""
-        self._scope_rounds.pop(scope, None)
+        if scope in self._scope_rounds:
+            self._scope_rounds.pop(scope, None)
+            self._version += 1
 
 
 # 全局单例

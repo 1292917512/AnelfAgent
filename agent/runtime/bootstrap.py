@@ -5,18 +5,34 @@
 
 from __future__ import annotations
 
-from core.flow import FlowMachine
+import asyncio
+from pathlib import Path
+from typing import Any, Coroutine
+
+from core.flow import FlowMachine, result_key
 from core.log import log
 
 
 class BK:
     """Bootstrap blackboard 键名常量。"""
 
-    STORAGE = "result_init_storage"
-    LLM = "result_init_llm"
-    CHANNEL = "result_init_channel_system"
-    PERSONA = "result_init_persona"
-    MEMORY = "result_init_memory"
+    STORAGE = result_key("init_storage")
+    LLM = result_key("init_llm")
+    CHANNEL = result_key("init_channel_system")
+    PERSONA = result_key("init_persona")
+    MEMORY = result_key("init_memory")
+
+
+# 持有后台任务引用，避免 fire-and-forget 任务被 GC 提前回收
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task:
+    """创建后台任务并保活引用，任务结束后自动从集合移除。"""
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 
 def create_bootstrap() -> FlowMachine:
@@ -84,7 +100,6 @@ def create_bootstrap() -> FlowMachine:
 
     @machine.node(skip_on_error=True)
     async def init_mcp():
-        import asyncio
         from entities.mcp.bridge import (
             MCPBridge,
             load_mcp_config,
@@ -98,7 +113,7 @@ def create_bootstrap() -> FlowMachine:
         log(f"MCP Bridge: {len(config.servers)} servers")
         enabled_count = sum(1 for s in config.servers if s.enabled)
         if enabled_count:
-            asyncio.create_task(
+            _spawn_background(
                 asyncio.to_thread(bridge.connect_all),
                 name="mcp-autoconnect",
             )
@@ -119,7 +134,10 @@ def create_bootstrap() -> FlowMachine:
         from agent.storage.sqlite_backend import default_sqlite_path
         from core.lifecycle import Lifecycle
 
-        db_path = default_sqlite_path().replace(".sqlite3", "_memory.sqlite3")
+        # 在主库路径基础上派生记忆库路径： stem + "_memory" + 原后缀
+        # （with_suffix 要求后缀以 "." 开头，且 replace 对非 .sqlite3 后缀会失效，故按 stem 拼接）
+        _main = Path(default_sqlite_path())
+        db_path = str(_main.with_name(f"{_main.stem}_memory{_main.suffix or '.sqlite3'}"))
         store = MemoryStore(db_path=db_path)
         embedder = Embedder()
 
@@ -213,6 +231,17 @@ def create_bootstrap() -> FlowMachine:
 
         skill_store = SkillStore()
         register_skill_tools(skill_store, SkillMatcher(skill_store, mem["embedder"]))
+
+        # 图片感知索引 worker：入站图片后台沉淀（phash/描述/向量），支撑文搜图/图搜图
+        from entities.sticker.worker import ImageIndexWorker, set_image_index_worker
+        from core.lifecycle import Lifecycle
+        image_index_worker = ImageIndexWorker()
+        await image_index_worker.start()
+        set_image_index_worker(image_index_worker)
+        Lifecycle.register(
+            "image_index_worker", image_index_worker,
+            cleanup=image_index_worker.close,
+        )
 
     @machine.node(skip_on_error=False)
     async def assemble_runtime():
@@ -320,7 +349,6 @@ def create_bootstrap() -> FlowMachine:
         2. PFC 待办 replay：pending_tasks 表中未消费的画像分析/通用任务
            重新入队（消费时才删行，replay 后再次崩溃也不丢）。
         """
-        import asyncio
         import time
         from core.config import get_config_bool, get_config_float
         from agent.runtime.singleton import get_runtime
@@ -343,7 +371,7 @@ def create_bootstrap() -> FlowMachine:
         max_age_hours = get_config_float("recovery_max_age_hours", 24.0)
         cutoff_ns = time.time_ns() - int(max_age_hours * 3600 * 1e9)
 
-        from agent.mind.context_compressor import _is_genuine_user_message
+        from agent.mind.context_compressor import is_genuine_user_message
         from agent.mind.tools.scheduler import enqueue_scope_reply
 
         last_msgs = await sqlite.list_scopes_with_last_message()
@@ -351,7 +379,7 @@ def create_bootstrap() -> FlowMachine:
         for row in last_msgs:
             if row["role"] != "user" or row["ts_ns"] < cutoff_ns:
                 continue
-            if not _is_genuine_user_message({"role": "user", "content": row["content"]}):
+            if not is_genuine_user_message({"role": "user", "content": row["content"]}):
                 continue
             scope = f"{row['scope_type']}_{row['scope_id']}"
             preview = row["content"][:300]
@@ -363,7 +391,7 @@ def create_bootstrap() -> FlowMachine:
             recovered += 1
         if recovered:
             log(f"未回复消息恢复: {recovered} 个 scope 重新入队", tag="启动")
-            asyncio.create_task(mind.try_execute_mind())
+            _spawn_background(mind.try_execute_mind(), name="recover-mind-execute")
 
     @machine.node(skip_on_error=True)
     async def check_health():

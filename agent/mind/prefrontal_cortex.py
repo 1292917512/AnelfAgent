@@ -56,7 +56,8 @@ def _env_info_block() -> str:
         f"工作区根目录: {workspace_root()}\n"
         f"平台: {_platform.system().lower()} ({_platform.machine()})\n"
         "文件工具的相对路径与 Shell 的初始工作目录均基于工作区根目录；"
-        "日常操作建议优先在工作区内进行，访问其他位置时使用绝对路径。"
+        "日常操作建议优先在工作区内进行，访问其他位置时使用绝对路径；"
+        "需要当前 Shell 工作目录等更多路径信息时调用 get_workspace_info。"
     )
 
 
@@ -141,8 +142,9 @@ class PrefrontalCortex:
         self.pending_user: UniqueQueue[Union[int, str]] = UniqueQueue()
         self.pending_group: UniqueQueue[Union[int, str]] = UniqueQueue()
         self.pending_analysis: UniqueQueue[tuple[Union[int, str], Union[int, str]]] = UniqueQueue()
-        self._pending_images: List[ImageContent] = []
-        self._pending_media: list = []
+        # 按 scope 分桶的待处理媒体（跨频道并行不串台）
+        self._pending_images: dict[str, List[ImageContent]] = {}
+        self._pending_media: dict[str, list] = {}
 
         # scope → 消息预览 / adapter_key 路由
         self._message_previews: dict[str, str] = {}
@@ -163,6 +165,8 @@ class PrefrontalCortex:
         self._tag_activated_tools: set[str] = set()
         # 通过 list_entity_methods 动态发现的工具名（整个思维会话有效，会话结束后清理）
         self._discovered_tools: set[str] = set()
+        # 动态工具集版本号（tag 激活/动态发现变化时递增，供 think_loop 检测重建）
+        self._tools_version: int = 0
 
     # ==================================================================
     # 待办持久化（pending_tasks 表双写，崩溃重启后 replay）
@@ -273,10 +277,11 @@ class PrefrontalCortex:
 
     async def add_task(self, anything: Everything) -> None:
         """将消息加入待处理队列，收集附带媒体，触发画像分析检查。"""
+        scope = anything.entity_scope
         if anything.images:
-            self._pending_images.extend(anything.images)
+            self._pending_images.setdefault(scope, []).extend(anything.images)
         if hasattr(anything, "media_segments") and anything.media_segments:
-            self._pending_media.extend(anything.media_segments)
+            self._pending_media.setdefault(scope, []).extend(anything.media_segments)
 
         preview = anything.get_text_content()[:300] if hasattr(anything, "get_text_content") else str(anything)[:300]
         adapter_key = getattr(anything, "adapter_key", "") or ""
@@ -327,6 +332,11 @@ class PrefrontalCortex:
                 if first_val and first_val != key:
                     self._activate_by_tag(first_val)
 
+    @property
+    def tools_version(self) -> int:
+        """动态工具集版本号（tag 激活/动态发现变化时递增）。"""
+        return self._tools_version
+
     def _activate_by_tag(self, tag_query: str) -> None:
         """按 tag 查询 EntityRegistry，将匹配的工具加入激活集。"""
         matched = EntityRegistry.get_by_tag(tag_query)
@@ -334,6 +344,7 @@ class PrefrontalCortex:
             if entity.enabled and entity.func is not None:
                 if entity.name not in self._tag_activated_tools:
                     self._tag_activated_tools.add(entity.name)
+                    self._tools_version += 1
                     log(f"标签激活工具: [{tag_query}] -> {entity.name}", "DEBUG", tag="PFC")
 
     def activate_media_tools(self, images: list, media_segments: list) -> None:
@@ -474,6 +485,18 @@ class PrefrontalCortex:
             self._persist_remove(key)
         return count
 
+    def clear_general_tasks_before(self, snapshot_count: int) -> int:
+        """快照式清理：只清快照前已存在的条目，周期内新增保留到下周期。"""
+        if snapshot_count <= 0:
+            return 0
+        removed = min(snapshot_count, len(self._general_tasks))
+        self._general_tasks = self._general_tasks[removed:]
+        keys_to_remove = self._general_task_keys[:removed]
+        self._general_task_keys = self._general_task_keys[removed:]
+        for key in keys_to_remove:
+            self._persist_remove(key)
+        return removed
+
     # ==================================================================
     # 态势感知
     # ==================================================================
@@ -613,14 +636,24 @@ class PrefrontalCortex:
                     name = schema["function"]["name"]
                     if name not in self._discovered_tools:
                         self._discovered_tools.add(name)
+                        self._tools_version += 1
                         log(f"动态发现工具: {name} (来自分组 {group})", "DEBUG", tag="PFC")
             except Exception as e:
                 log(f"动态工具发现失败: {e}", "DEBUG", tag="PFC")
 
-    def clear_dynamic_tools(self) -> None:
-        """清除当轮动态工具状态（tag 激活 + 动态发现）。"""
+    def clear_dynamic_tools(self, scope: str = "") -> None:
+        """清除当轮动态工具状态（tag 激活 + 动态发现）。
+
+        scope 非空时仅清除该 scope 相关的状态（后台评审等并行会话不踩踏主会话）。
+        当前实现：动态工具是全局共享的（tag/discovered 不按 scope 分桶），
+        因此仅在 scope 为空（主会话结束）时执行全量清理，非空时跳过。
+        """
+        if scope:
+            # 非主会话（如后台评审 reflect）：不清理全局动态工具，避免踩踏正在进行的对话
+            return
         self._tag_activated_tools.clear()
         self._discovered_tools.clear()
+        self._tools_version += 1
 
     async def get_active_tool_schemas(self, adapter_key: str = "", scope: str = "") -> list[dict]:
         """合并返回当前所有活跃工具 schema（always + 频道 + 标签 + 热召回 + 动态发现 + 已激活分组）。
@@ -900,6 +933,7 @@ class PrefrontalCortex:
             target_id: str = "",
             models_summary: str = "",
             anthropic_breakpoint: bool = False,
+            prefetched_conversation: Optional[List[Dict]] = None,
     ) -> List[Dict]:
         """组装完整 LLM 上下文（分层架构），每次调用实时从 DB 获取最新对话历史。
 
@@ -908,6 +942,10 @@ class PrefrontalCortex:
         2. context 层（便签等低频内容）
         3. volatile 层（短期记忆 + 溢出提示 + 安全标记 + 语义召回）
         4. 对话历史（最近 max_conversation_size 条）
+
+        Args:
+            prefetched_conversation: 外部已获取的对话历史（避免重复拉取）。
+                若为 None，内部自动从 DB 获取。
         """
         system_msgs: List[Dict] = []
         if stable_text:
@@ -924,9 +962,14 @@ class PrefrontalCortex:
 
         # 实时从 DB 获取最新对话历史（必须每轮重新获取，不可缓存或外部传入！
         # 多轮 think_loop 期间用户可能发送新消息，必须确保每轮都能拿到最新对话）
+        # 若调用方已预取（避免同一次 get_recollection 内重复拉取），直接复用
         conversation_list: List[Dict] = []
         max_size = 0
-        if self._conversation_data and anything:
+        if prefetched_conversation is not None:
+            conversation_list = prefetched_conversation
+            if self._conversation_data:
+                max_size = self._conversation_data.max_size
+        elif self._conversation_data and anything:
             max_size = self._conversation_data.max_size
             conversation_list = await self._conversation_data.get_conversation_record_by_everything(anything)
             log(f"对话历史: {len(conversation_list)} 条 (窗口上限 {max_size})", "DEBUG", tag="PFC")
@@ -1141,15 +1184,16 @@ class PrefrontalCortex:
 
         return {"role": "system", "content": "\n".join(lines)}
 
-    def collect_images(self) -> List[ImageContent]:
-        images = self._pending_images
-        self._pending_images = []
+    def collect_images(self, scope: str = "") -> List[ImageContent]:
+        """收集并清空指定 scope 的待处理图片（无 scope 时取默认桶）。"""
+        key = scope or "_default"
+        images = self._pending_images.pop(key, [])
         return images
 
-    def collect_media(self) -> list:
-        """收集并清空待处理的媒体片段。"""
-        media = self._pending_media
-        self._pending_media = []
+    def collect_media(self, scope: str = "") -> list:
+        """收集并清空指定 scope 的待处理媒体片段（无 scope 时取默认桶）。"""
+        key = scope or "_default"
+        media = self._pending_media.pop(key, [])
         return media
 
     # ==================================================================

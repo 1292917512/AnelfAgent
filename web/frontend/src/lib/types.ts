@@ -379,3 +379,413 @@ export interface LogStats {
   by_level: Record<string, number>;
   by_tag: Record<string, number>;
 }
+
+// ── Approvals ──────────────────────────────────────────────────
+
+export interface ApprovalPendingItem {
+  request_id: string;
+  tool_name: string;
+  tool_args: Record<string, unknown>;
+  risk_level: string;
+  reason: string;
+  requester_channel: string;
+  requester_chat_id: string;
+  requester_user_id: string;
+  expires_at: number;
+  created_at: number;
+  matched_rule: string;
+}
+
+export interface ApprovalPendingResponse {
+  pending: ApprovalPendingItem[];
+}
+
+export interface ApprovalHistoryItem {
+  request_id: string;
+  tool_name: string;
+  risk_level: string;
+  decision: string;
+  decided_by: string;
+  decided_at: number;
+  decision_reason: string;
+  requester_user_id: string;
+  requester_channel: string;
+  matched_rule: string;
+}
+
+export interface ApprovalHistoryResponse {
+  history: ApprovalHistoryItem[];
+}
+
+export interface ApprovalStats {
+  pending_count: number;
+  history_size: number;
+  history_by_decision: Record<string, number>;
+}
+
+export interface ApprovalPolicyItem {
+  tool_name_pattern: string;
+  risk_level: string;
+  requires_approval: boolean;
+  timeout_seconds: number;
+  on_timeout: string;
+  trust_after_n_approvals: number;
+  auto_approve_users: string[];
+  auto_deny_users: string[];
+  description: string;
+}
+
+export interface ApprovalPoliciesResponse {
+  policies: ApprovalPolicyItem[];
+}
+
+export interface PermissionRuleItem {
+  id: string;
+  pattern: string;
+  effect: string;
+  scope: string;
+  users: string[];
+  risk_level: string;
+  timeout_seconds: number;
+  on_timeout: string;
+  trust_after_n_approvals: number;
+  description: string;
+  enabled: boolean;
+  created_by: string;
+  created_at: number;
+}
+
+export interface ApprovalRulesResponse {
+  default_effect: string;
+  rules: PermissionRuleItem[];
+  persisted_count: number;
+  session_count: number;
+}
+
+// ── Auth ───────────────────────────────────────────────────────
+
+export interface AuthStatus {
+  required: boolean;
+  authenticated: boolean;
+}
+
+export interface ApiKeyInfo {
+  id: string;
+  name: string;
+  key_prefix: string;
+  masked_key: string;
+  created_at: number;
+  last_used_at: number | null;
+}
+
+export interface ApiKeyCreated extends ApiKeyInfo {
+  api_key: string;
+}
+
+// ── Models (inline from api.ts) ────────────────────────────────
+
+export interface RemoteModelInfo {
+  id: string;
+  owned_by: string;
+  created: number | null;
+  already_added: boolean;
+}
+
+export interface ModelInfoResult {
+  found: boolean;
+  max_output_tokens?: number;
+  max_input_tokens?: number;
+  supports_vision?: boolean;
+  supports_tools?: boolean;
+  input_cost_per_token?: number | null;
+  output_cost_per_token?: number | null;
+}
+
+export interface ProbeResult {
+  error?: string;
+  supports_vision?: boolean;
+  supports_tools?: boolean;
+  vision_format?: string;
+}
+
+// ── Weixin QR Login ────────────────────────────────────────────
+
+export interface WeixinQrStartResult {
+  session_id: string;
+  qr_png: string;
+  qr_url: string;
+}
+
+export interface WeixinQrStatusResult {
+  status: "wait" | "scaned" | "confirmed" | "timeout" | "error";
+  qr_png?: string;
+  qr_url?: string;
+  refreshed?: boolean;
+  account_id?: string;
+  error?: string;
+}
+
+// ── Config (inline from api.ts) ────────────────────────────────
+
+export interface WebToolsConfig {
+  baidu_api_key: string;
+  proxy: string;
+}
+
+export type ReasoningEffort = "low" | "medium" | "high" | "max";
+
+export interface HeartbeatConfig {
+  enabled: boolean;
+  interval_seconds: number;
+  analysis_temperature: number;
+  min_conversations_for_analysis: number;
+  task_schedules: TaskSchedule[];
+}
+
+export interface TaskSchedule {
+  task_name: string;
+  mode: "heartbeat" | "scheduled" | "manual";
+  every_n_beats?: number;
+  beat_count?: number;
+  schedule_times?: string[];
+  last_run_date?: string;
+  model_id?: string;
+  reasoning_effort?: ReasoningEffort | "";
+}
+
+export interface HeartbeatStatus {
+  enabled: boolean;
+  interval_seconds: number;
+  total_ticks: number;
+  task_count: number;
+  schedule_count: number;
+  schedules: (TaskSchedule & { task_exists: boolean; task_enabled: boolean })[];
+}
+
+export interface TaskConfig {
+  name: string;
+  display_name: string;
+  description: string;
+  scope: string;
+  enabled: boolean;
+  memory_type: string;
+  importance: number;
+  tags: string[];
+  source: string;
+  null_keywords: string[];
+  tool_tags: string[];
+  prompt: string;
+  allow_output_tools?: boolean;
+  save_result_to_memory?: boolean;
+  model_id?: string | null;
+  reasoning_effort?: ReasoningEffort | null;
+  folder?: string;
+}
+
+// ── Workspace ──────────────────────────────────────────────────
+
+export interface WorkspaceNode {
+  name: string;
+  path: string;
+  type: "dir" | "file";
+  size?: number;
+  modified: number;
+  binary?: boolean;
+  children?: WorkspaceNode[];
+}
+
+export interface WorkspaceFile {
+  path: string;
+  name: string;
+  size: number;
+  modified: number;
+  binary: boolean;
+  truncated: boolean;
+  content: string;
+}
+
+export interface WorkspaceSearchHit {
+  path: string;
+  name: string;
+  match: "name" | "content";
+  snippet?: string;
+}
+
+export interface GlobalSearchResult {
+  query: string;
+  memory: { id: number; snippet: string; memory_type: string; tags: string[]; score: number }[];
+  logs: LogEntry[];
+  files: WorkspaceSearchHit[];
+  conversations: { id: number; scope: string; role: string; snippet: string; time: string }[];
+}
+
+// ── Skills ─────────────────────────────────────────────────────
+
+export interface SkillItem {
+  name: string;
+  description: string;
+  trigger_patterns: string[];
+  state: "active" | "stale" | "archived";
+  use_count: number;
+  patch_count: number;
+  pinned: boolean;
+  created_by: string;
+  created_at: number;
+  last_activity_at: number;
+  content?: string;
+}
+
+// ── Config Meta ────────────────────────────────────────────────
+
+export interface ConfigMetaItem {
+  key: string;
+  description: string;
+  type: string;
+  value: unknown;
+  default: unknown;
+  editable: boolean;
+  options: string[] | null;
+  source: "mind" | "config_manager";
+}
+
+export interface ConfigMetaGroup {
+  group: string;
+  items: ConfigMetaItem[];
+}
+
+// ── Stickers / 图片索引 ────────────────────────────────────────
+
+export interface StickerItem {
+  id: string;
+  description: string;
+  tags: string[];
+  emotion: string;
+  file_path: string;
+  content_hash: string;
+  phash: string;
+  source: string;
+  use_count: number;
+  created_ns: number;
+  updated_ns: number;
+  has_embedding: boolean;
+}
+
+export interface StickerListResult {
+  items: StickerItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface StickerStats {
+  stickers: number;
+  total_uses: number;
+  indexed_images: number;
+  described_images: number;
+  vec_available: boolean;
+}
+
+export interface IndexedImage {
+  path: string;
+  description: string;
+  content_hash: string;
+  phash: string;
+  source: string;
+  ts_ns: number;
+  has_embedding: boolean;
+}
+
+export interface IndexedImageListResult {
+  items: IndexedImage[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+// ======================================================================
+// 数据库管理（数据管理页 · 数据库 Tab）
+// ======================================================================
+
+export interface DbInfo {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+  exists: boolean;
+  size_bytes: number;
+  table_count: number;
+  error?: string;
+}
+
+export interface DbTableInfo {
+  name: string;
+  type: string;
+  virtual: boolean;
+  shadow: boolean;
+  readonly: boolean;
+  row_count: number;
+  column_count: number;
+}
+
+export interface DbColumnInfo {
+  cid: number;
+  name: string;
+  type: string;
+  notnull: boolean;
+  default: string | null;
+  pk: boolean;
+}
+
+/** 后端智能序列化的单元格值：原始标量或带 __type__ 的结构 */
+export type CellValue =
+  | null
+  | string
+  | number
+  | {
+      __type__: "blob" | "vec" | "ts" | "json" | "text";
+      bytes?: number;
+      dims?: number;
+      preview?: number[];
+      value?: unknown;
+      raw?: string;
+      text?: string;
+      truncated?: boolean;
+    };
+
+export interface DbRow {
+  __rowid__: number;
+  values: Record<string, CellValue>;
+}
+
+export interface DbRowsResult {
+  items: DbRow[];
+  columns: DbColumnInfo[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+  readonly: boolean;
+}
+
+export interface DbIndexInfo {
+  name: string;
+  unique: boolean;
+  columns: string[];
+}
+
+export interface DbSchemaResult {
+  table: string;
+  type: string;
+  readonly: boolean;
+  ddl: string;
+  columns: DbColumnInfo[];
+  indexes: DbIndexInfo[];
+}
+
+export interface DbQueryResult {
+  columns: string[];
+  rows: Record<string, CellValue>[];
+  row_count: number;
+  elapsed_ms: number;
+  truncated: boolean;
+}

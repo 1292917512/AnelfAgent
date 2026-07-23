@@ -1100,20 +1100,12 @@ class EntityRegistry:
     @classmethod
     @catch_exceptions(reraise=False, default_value=False, tag="entity")
     def deactivate_entity(cls, name: str) -> bool:
-        """失活实体并注销其 API"""
+        """失活实体并清理其已注册 API 跟踪记录"""
         metadata = cls.get(name)
         if not metadata:
             return False
 
         metadata.enabled = False
-        if metadata.entity_class:
-            entity_type = getattr(
-                metadata.entity_class, '_entity_type', EntityType.CUSTOM,
-            ).value
-            entity_name = metadata.entity_class.__name__
-            api_group = f"{entity_type}/{entity_name}"
-            cls._auto_unregister_entity_apis(api_group)
-
         if metadata.instance and hasattr(metadata.instance, '_registered_apis'):
             metadata.instance._registered_apis.clear()
 
@@ -1136,11 +1128,6 @@ class EntityRegistry:
                 if hasattr(instance, '_registered_apis'):
                     if api_name not in instance._registered_apis:
                         instance._registered_apis.append(api_name)
-
-    @classmethod
-    @catch_exceptions(reraise=False, tag="entity")
-    def _auto_unregister_entity_apis(cls, api_group: str) -> None:
-        pass
 
     # ------------------------------------------------------------------
     # 清理 / 统计

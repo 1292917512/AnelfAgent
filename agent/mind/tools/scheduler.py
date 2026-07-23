@@ -52,11 +52,11 @@ async def schedule_reply(delay_seconds: int = 30, reason: str = "") -> str:
 
     delay = max(1, min(delay_seconds, _MAX_DELAY))
 
-    reply_channel = getattr(_mind_ref, "_reply_adapter_key", "") or ""
     scope = _current_scope()
     if not scope:
         return json.dumps({"error": "无法确定回复目标"}, ensure_ascii=False)
 
+    reply_channel = getattr(_pfc_ref, "get_adapter_key", lambda s: "")(scope) if _pfc_ref else ""
     log(f"计划 {delay}s 后触发回复: scope={scope} reason={reason}", tag="调度")
     asyncio.create_task(_delayed_reply(delay, reply_channel, scope, reason))
 
@@ -119,10 +119,18 @@ def _save_reminders(reminders: List[Dict[str, Any]]) -> None:
 
 
 def _current_scope() -> str:
-    """从 Mind 当前活跃 scope 中提取回复目标（user_xxx / group_xxx）。"""
-    for scope in getattr(_mind_ref, "_active_scopes", set()) or set():
-        if scope.startswith(("user_", "group_")):
-            return scope
+    """从当前思维会话的 ContextVar 中获取 scope（工具激活管理器绑定）。
+
+    优先使用 ContextVar（并行安全），回退到 _active_scopes（兼容无绑定场景）。
+    """
+    from agent.mind.tool_activation import ToolActivationManager
+    scope = ToolActivationManager.current_scope()
+    if scope and scope != "_global" and scope.startswith(("user_", "group_")):
+        return scope
+    # 回退：从 Mind 活跃 scope 中提取（兼容测试/无 ContextVar 绑定场景）
+    for s in getattr(_mind_ref, "_active_scopes", set()) or set():
+        if s.startswith(("user_", "group_")):
+            return s
     return ""
 
 
@@ -214,7 +222,7 @@ async def schedule_reminder(note: str, run_at: str = "", delay_seconds: int = 0)
         "note": note.strip(),
         "run_at_ts": run_at_ts,
         "scope": scope,
-        "channel": getattr(_mind_ref, "_reply_adapter_key", "") or "",
+        "channel": getattr(_pfc_ref, "get_adapter_key", lambda s: "")(scope) if _pfc_ref else "",
         "created_ts": time.time(),
     }
     reminders = _load_reminders()

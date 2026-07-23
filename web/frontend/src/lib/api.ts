@@ -2,6 +2,14 @@ import axios from "axios";
 import i18n from "@/i18n";
 import type {
   AdapterListResult,
+  ApiKeyCreated,
+  ApiKeyInfo,
+  ApprovalHistoryResponse,
+  ApprovalPendingResponse,
+  ApprovalPoliciesResponse,
+  ApprovalRulesResponse,
+  ApprovalStats,
+  AuthStatus,
   ChannelTestHealthResult,
   ChannelTestSendResult,
   ChannelToolTestResult,
@@ -10,9 +18,19 @@ import type {
   CogneeConfig,
   CogneeDataset,
   CogneeStatus,
+  ConfigMetaGroup,
   CreateModelConfig,
   CreateProviderConfig,
+  DbInfo,
+  DbQueryResult,
+  DbRow,
+  DbRowsResult,
+  DbSchemaResult,
+  DbTableInfo,
+  GlobalSearchResult,
   GoalStep,
+  HeartbeatConfig,
+  HeartbeatStatus,
   LogEntry,
   LogStats,
   MCPServer,
@@ -22,13 +40,66 @@ import type {
   MemoryFileInfo,
   MemoryDocument,
   ModelConfig,
+  ModelInfoResult,
   ModelPriorityItem,
+  PermissionRuleItem,
   PersonaData,
+  ProbeResult,
   ProviderConfig,
+  RemoteModelInfo,
+  SkillItem,
+  StickerItem,
+  StickerListResult,
+  StickerStats,
+  IndexedImageListResult,
+  TaskConfig,
   UpdateModelConfig,
   UpdateProviderConfig,
+  WebToolsConfig,
+  WeixinQrStartResult,
+  WeixinQrStatusResult,
+  WorkspaceFile,
+  WorkspaceNode,
+  WorkspaceSearchHit,
 } from "./types";
-export type { GoalStep } from "./types";
+
+export type {
+  ApiKeyCreated,
+  ApiKeyInfo,
+  ApprovalHistoryItem,
+  ApprovalHistoryResponse,
+  ApprovalPendingItem,
+  ApprovalPendingResponse,
+  ApprovalPoliciesResponse,
+  ApprovalPolicyItem,
+  ApprovalRulesResponse,
+  ApprovalStats,
+  AuthStatus,
+  ConfigMetaGroup,
+  ConfigMetaItem,
+  GlobalSearchResult,
+  GoalStep,
+  HeartbeatConfig,
+  HeartbeatStatus,
+  ModelInfoResult,
+  PermissionRuleItem,
+  ProbeResult,
+  ReasoningEffort,
+  RemoteModelInfo,
+  SkillItem,
+  StickerItem,
+  StickerListResult,
+  StickerStats,
+  IndexedImageListResult,
+  TaskConfig,
+  TaskSchedule,
+  WebToolsConfig,
+  WeixinQrStartResult,
+  WeixinQrStatusResult,
+  WorkspaceFile,
+  WorkspaceNode,
+  WorkspaceSearchHit,
+} from "./types";
 
 const api = axios.create({
   baseURL: "/api",
@@ -48,11 +119,6 @@ export default api;
 
 // ── Auth ────────────────────────────────────────────────────────
 
-export interface AuthStatus {
-  required: boolean;
-  authenticated: boolean;
-}
-
 export const authApi = {
   check: () => api.get<AuthStatus>("/auth/check"),
   login: (password: string) => api.post("/auth/login", { password }),
@@ -67,19 +133,6 @@ export const authApi = {
   deleteApiKey: (keyId: string) =>
     api.delete<{ status: string }>(`/auth/api-keys/${keyId}`),
 };
-
-export interface ApiKeyInfo {
-  id: string;
-  name: string;
-  key_prefix: string;
-  masked_key: string;
-  created_at: number;
-  last_used_at: number | null;
-}
-
-export interface ApiKeyCreated extends ApiKeyInfo {
-  api_key: string;
-}
 
 // ── 类型化 API 方法 ─────────────────────────────────────────────
 
@@ -133,30 +186,6 @@ export const providersApi = {
   modelInfo: (model: string, apiType = "openai") =>
     api.post<ModelInfoResult>("/models/model-info", { model, api_type: apiType }),
 };
-
-export interface RemoteModelInfo {
-  id: string;
-  owned_by: string;
-  created: number | null;
-  already_added: boolean;
-}
-
-export interface ModelInfoResult {
-  found: boolean;
-  max_output_tokens?: number;
-  max_input_tokens?: number;
-  supports_vision?: boolean;
-  supports_tools?: boolean;
-  input_cost_per_token?: number | null;
-  output_cost_per_token?: number | null;
-}
-
-export interface ProbeResult {
-  error?: string;
-  supports_vision?: boolean;
-  supports_tools?: boolean;
-  vision_format?: string;
-}
 
 // Models
 export const modelsApi = {
@@ -357,21 +386,6 @@ export const adaptersApi = {
 };
 
 // Weixin QR Login（微信扫码登录）
-export interface WeixinQrStartResult {
-  session_id: string;
-  qr_png: string;
-  qr_url: string;
-}
-
-export interface WeixinQrStatusResult {
-  status: "wait" | "scaned" | "confirmed" | "timeout" | "error";
-  qr_png?: string;
-  qr_url?: string;
-  refreshed?: boolean;
-  account_id?: string;
-  error?: string;
-}
-
 export const weixinQrApi = {
   start: () => api.post<WeixinQrStartResult>("/channels/weixin/qr/start"),
   status: (sessionId: string) =>
@@ -391,21 +405,21 @@ export const nonebotApi = {
 
 // Approvals
 export const approvalsApi = {
-  pending: () => api.get("/approvals/pending"),
-  history: (limit = 50) => api.get("/approvals/history", { params: { limit } }),
+  pending: () => api.get<ApprovalPendingResponse>("/approvals/pending"),
+  history: (limit = 50) => api.get<ApprovalHistoryResponse>("/approvals/history", { params: { limit } }),
   approve: (requestId: string, reason?: string, remember: string = "once") =>
     api.post(`/approvals/${encodeURIComponent(requestId)}/approve`, { reason, remember }),
   deny: (requestId: string, reason?: string) =>
     api.post(`/approvals/${encodeURIComponent(requestId)}/deny`, { reason }),
-  stats: () => api.get("/approvals/stats"),
-  policies: () => api.get("/approvals/policies"),
+  stats: () => api.get<ApprovalStats>("/approvals/stats"),
+  policies: () => api.get<ApprovalPoliciesResponse>("/approvals/policies"),
   savePolicies: (policies: Record<string, unknown>) =>
     api.put("/approvals/policies", policies),
   // 统一权限规则
-  rules: () => api.get("/approvals/rules"),
-  saveRules: (data: { rules: Record<string, unknown>[]; default_effect: string }) =>
+  rules: () => api.get<ApprovalRulesResponse>("/approvals/rules"),
+  saveRules: (data: { rules: Partial<PermissionRuleItem>[]; default_effect: string }) =>
     api.put("/approvals/rules", data),
-  addRule: (rule: Record<string, unknown>) => api.post("/approvals/rules", rule),
+  addRule: (rule: Partial<PermissionRuleItem>) => api.post("/approvals/rules", rule),
   deleteRule: (ruleId: string) =>
     api.delete(`/approvals/rules/${encodeURIComponent(ruleId)}`),
 };
@@ -432,42 +446,7 @@ export const configApi = {
   saveWebTools: (data: Partial<WebToolsConfig>) => api.put("/config/web-tools", data),
 };
 
-export interface WebToolsConfig {
-  baidu_api_key: string;
-  proxy: string;
-}
-
 // Heartbeat
-export interface HeartbeatConfig {
-  enabled: boolean;
-  interval_seconds: number;
-  analysis_temperature: number;
-  min_conversations_for_analysis: number;
-  task_schedules: TaskSchedule[];
-}
-
-export type ReasoningEffort = "low" | "medium" | "high" | "max";
-
-export interface TaskSchedule {
-  task_name: string;
-  mode: "heartbeat" | "scheduled" | "manual";
-  every_n_beats?: number;
-  beat_count?: number;
-  schedule_times?: string[];
-  last_run_date?: string;
-  model_id?: string;
-  reasoning_effort?: ReasoningEffort | "";
-}
-
-export interface HeartbeatStatus {
-  enabled: boolean;
-  interval_seconds: number;
-  total_ticks: number;
-  task_count: number;
-  schedule_count: number;
-  schedules: (TaskSchedule & { task_exists: boolean; task_enabled: boolean })[];
-}
-
 export const heartbeatApi = {
   getConfig: () => api.get<HeartbeatConfig>("/config/heartbeat"),
   saveConfig: (data: Partial<HeartbeatConfig>) => api.put("/config/heartbeat", data),
@@ -476,26 +455,6 @@ export const heartbeatApi = {
 };
 
 // Task Units CRUD + trigger
-export interface TaskConfig {
-  name: string;
-  display_name: string;
-  description: string;
-  scope: string;
-  enabled: boolean;
-  memory_type: string;
-  importance: number;
-  tags: string[];
-  source: string;
-  null_keywords: string[];
-  tool_tags: string[];
-  prompt: string;
-  allow_output_tools?: boolean;
-  save_result_to_memory?: boolean;
-  model_id?: string | null;
-  reasoning_effort?: ReasoningEffort | null;
-  folder?: string;
-}
-
 export const tasksApi = {
   list: () => api.get<TaskConfig[]>("/config/tasks"),
   get: (name: string, folder = "") =>
@@ -510,33 +469,6 @@ export const tasksApi = {
 };
 
 // Workspace 文件浏览/编辑
-export interface WorkspaceNode {
-  name: string;
-  path: string;
-  type: "dir" | "file";
-  size?: number;
-  modified: number;
-  binary?: boolean;
-  children?: WorkspaceNode[];
-}
-
-export interface WorkspaceFile {
-  path: string;
-  name: string;
-  size: number;
-  modified: number;
-  binary: boolean;
-  truncated: boolean;
-  content: string;
-}
-
-export interface WorkspaceSearchHit {
-  path: string;
-  name: string;
-  match: "name" | "content";
-  snippet?: string;
-}
-
 export const workspaceApi = {
   tree: (path = "", depth = 2) =>
     api.get<{ path: string; children: WorkspaceNode[]; truncated: boolean }>("/workspace/tree", { params: { path: path || undefined, depth } }),
@@ -546,8 +478,9 @@ export const workspaceApi = {
   remove: (path: string) => api.delete("/workspace/file", { params: { path } }),
   search: (q: string, limit = 30) =>
     api.get<{ query: string; files: WorkspaceSearchHit[] }>("/workspace/search", { params: { q, limit } }),
-  /** 原始字节服务 URL（图片/音视频预览） */
-  rawUrl: (path: string) => `/api/workspace/raw?path=${encodeURIComponent(path)}`,
+  /** 原始字节服务 URL（图片/音视频预览；inline 供 iframe 内联渲染，如 PDF） */
+  rawUrl: (path: string, inline = false) =>
+    `/api/workspace/raw?path=${encodeURIComponent(path)}${inline ? "&inline=1" : ""}`,
 };
 
 /** 按文件名判断可预览的媒体类型 */
@@ -559,15 +492,37 @@ export function workspaceMediaKind(name: string): "image" | "video" | "audio" | 
   return null;
 }
 
-// 全局搜索
-export interface GlobalSearchResult {
-  query: string;
-  memory: { id: number; snippet: string; memory_type: string; tags: string[]; score: number }[];
-  logs: LogEntry[];
-  files: WorkspaceSearchHit[];
-  conversations: { id: number; scope: string; role: string; snippet: string; time: string }[];
+/** 可按富格式预览的文件类型（按扩展名分类） */
+export type WorkspaceFileKind = "markdown" | "html" | "csv" | "pdf" | "docx" | "xlsx";
+
+/** 按文件名判断富格式预览类型，不命中返回 null */
+export function workspaceFileKind(name: string): WorkspaceFileKind | null {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  if (["md", "markdown"].includes(ext)) return "markdown";
+  if (["html", "htm"].includes(ext)) return "html";
+  if (["csv", "tsv"].includes(ext)) return "csv";
+  if (ext === "pdf") return "pdf";
+  if (ext === "docx") return "docx";
+  if (["xlsx", "xls"].includes(ext)) return "xlsx";
+  return null;
 }
 
+/** 是否为可预览的二进制文档（pdf/docx/xlsx，媒体类型由 workspaceMediaKind 覆盖） */
+export function isPreviewableBinary(name: string): boolean {
+  const kind = workspaceFileKind(name);
+  return kind === "pdf" || kind === "docx" || kind === "xlsx";
+}
+
+/** 视频文件的浏览器播放支持级别：native 原生可播 / flv 经 mpegts.js 可播 / unsupported 无法在线播放 */
+export function workspaceVideoSupport(name: string): "native" | "flv" | "unsupported" | null {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  if (["mp4", "webm", "mov"].includes(ext)) return "native";
+  if (ext === "flv") return "flv";
+  if (["mkv", "avi"].includes(ext)) return "unsupported";
+  return null;
+}
+
+// 全局搜索
 export const searchApi = {
   global: (q: string, limit = 10) =>
     api.get<GlobalSearchResult>("/search/global", { params: { q, limit } }),
@@ -604,20 +559,6 @@ export const systemApi = {
 };
 
 // Skills
-export interface SkillItem {
-  name: string;
-  description: string;
-  trigger_patterns: string[];
-  state: "active" | "stale" | "archived";
-  use_count: number;
-  patch_count: number;
-  pinned: boolean;
-  created_by: string;
-  created_at: number;
-  last_activity_at: number;
-  content?: string;
-}
-
 export const skillsApi = {
   list: (includeArchived = false) =>
     api.get<SkillItem[]>("/skills/", { params: { include_archived: includeArchived } }),
@@ -634,24 +575,80 @@ export const skillsApi = {
 };
 
 // Config Meta（统一配置元数据，数据驱动配置中心）
-export interface ConfigMetaItem {
-  key: string;
-  description: string;
-  type: string;
-  value: unknown;
-  default: unknown;
-  editable: boolean;
-  options: string[] | null;
-  source: "mind" | "config_manager";
-}
-
-export interface ConfigMetaGroup {
-  group: string;
-  items: ConfigMetaItem[];
-}
-
 export const configMetaApi = {
   list: () => api.get<{ groups: ConfigMetaGroup[] }>("/config/meta"),
   save: (key: string, value: unknown) =>
     api.put(`/config/meta/${encodeURIComponent(key)}`, { value }),
+};
+
+// Stickers（表情包与图片索引）
+export const stickersApi = {
+  list: (params: { query?: string; page?: number; page_size?: number }) =>
+    api.get<StickerListResult>("/stickers", { params }),
+  stats: () => api.get<StickerStats>("/stickers/stats"),
+  upload: (data: FormData) =>
+    api.post<{ success: boolean; sticker: StickerItem }>("/stickers", data, {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 120000,
+    }),
+  update: (id: string, data: { description?: string; tags?: string[]; emotion?: string }) =>
+    api.put(`/stickers/${encodeURIComponent(id)}`, data),
+  reindex: (id: string) =>
+    api.post(`/stickers/${encodeURIComponent(id)}/reindex`, null, { timeout: 120000 }),
+  remove: (id: string) => api.delete(`/stickers/${encodeURIComponent(id)}`),
+  fileUrl: (id: string) => `/api/stickers/${encodeURIComponent(id)}/file`,
+  listImages: (params: { page?: number; page_size?: number }) =>
+    api.get<IndexedImageListResult>("/stickers/images/list", { params }),
+  imageFileUrl: (path: string) => `/api/stickers/images/file?path=${encodeURIComponent(path)}`,
+  removeImage: (path: string) =>
+    api.delete("/stickers/images", { params: { path } }),
+};
+
+// Database（数据管理页 · 数据库管理）
+export const databaseApi = {
+  databases: () => api.get<{ items: DbInfo[] }>("/database/databases"),
+  tables: (db: string, includeShadow = false) =>
+    api.get<{ items: DbTableInfo[] }>(`/database/${encodeURIComponent(db)}/tables`, {
+      params: { include_shadow: includeShadow },
+    }),
+  schema: (db: string, table: string) =>
+    api.get<DbSchemaResult>(
+      `/database/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/schema`,
+    ),
+  rows: (
+    db: string,
+    table: string,
+    params: {
+      page?: number;
+      page_size?: number;
+      sort?: string;
+      order?: "asc" | "desc";
+      filter_col?: string;
+      filter_text?: string;
+    },
+  ) =>
+    api.get<DbRowsResult>(
+      `/database/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows`,
+      { params },
+    ),
+  row: (db: string, table: string, rowid: number) =>
+    api.get<DbRow>(
+      `/database/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows/${rowid}`,
+    ),
+  insertRow: (db: string, table: string, values: Record<string, unknown>) =>
+    api.post<{ rowid: number }>(
+      `/database/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows`,
+      { values },
+    ),
+  updateRow: (db: string, table: string, rowid: number, values: Record<string, unknown>) =>
+    api.put<{ success: boolean }>(
+      `/database/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows/${rowid}`,
+      { values },
+    ),
+  deleteRow: (db: string, table: string, rowid: number) =>
+    api.delete<{ success: boolean }>(
+      `/database/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows/${rowid}`,
+    ),
+  query: (db: string, sql: string) =>
+    api.post<DbQueryResult>(`/database/${encodeURIComponent(db)}/query`, { sql }),
 };

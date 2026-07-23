@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ReactFlowProvider } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { useShallow } from "zustand/react/shallow";
 
 import { useThinkingStore } from "@/stores/thinking-store";
 import { thinkingApi } from "@/lib/api";
+import { useThinkingBootstrap } from "@/pages/chat/useThinkingBootstrap";
 import { SessionList } from "@/components/thinking/SessionList";
 import { NodeDetail } from "@/components/thinking/NodeDetail";
 import { ToolsPanel } from "@/components/thinking/ToolsPanel";
@@ -39,17 +41,31 @@ function ThinkingFlow() {
     activeSession,
     selectedNodeId,
     autoFollow,
-    _statusSynced,
     setEnabled,
     setSessions,
     setActiveSessionId,
     setActiveSession,
     setSelectedNodeId,
     setAutoFollow,
-    setStatusSynced,
     startSSE,
     stopSSE,
-  } = useThinkingStore();
+  } = useThinkingStore(useShallow((s) => ({
+    enabled: s.enabled,
+    connected: s.connected,
+    sessions: s.sessions,
+    activeSessionId: s.activeSessionId,
+    activeSession: s.activeSession,
+    selectedNodeId: s.selectedNodeId,
+    autoFollow: s.autoFollow,
+    setEnabled: s.setEnabled,
+    setSessions: s.setSessions,
+    setActiveSessionId: s.setActiveSessionId,
+    setActiveSession: s.setActiveSession,
+    setSelectedNodeId: s.setSelectedNodeId,
+    setAutoFollow: s.setAutoFollow,
+    startSSE: s.startSSE,
+    stopSSE: s.stopSSE,
+  })));
 
   const [view, setView] = useState<ViewMode>("flow");
   const [showTools, setShowTools] = useState(false);
@@ -57,17 +73,7 @@ function ThinkingFlow() {
   const isMobile = useIsMobile();
 
   // 服务端 enabled 状态只同步一次（首次加载），切换页面不重置用户的开关选择
-  useEffect(() => {
-    if (!_statusSynced) {
-      thinkingApi.status().then((r) => {
-        setEnabled(r.data.enabled);
-        if (r.data.enabled) {
-          startSSE();
-        }
-        setStatusSynced(true);
-      }).catch((e) => console.warn("[API]", e));
-    }
-  }, [_statusSynced, setEnabled, setStatusSynced, startSSE]);
+  useThinkingBootstrap();
 
   // 每次进入页面都刷新会话列表（获取离开期间产生的新会话）
   useEffect(() => {

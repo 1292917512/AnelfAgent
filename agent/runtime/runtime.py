@@ -58,8 +58,5 @@ class _RespondCompat:
     def agent_action(self):
         return self._cm
 
-    def register_output(self, output, adapter_key: str = ""):
-        pass
-
     def register_agent(self, agent):
         self._pipeline.register_agent(agent)

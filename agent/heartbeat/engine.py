@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from datetime import datetime
@@ -86,6 +87,7 @@ class HeartbeatEngine:
         self.task_registry = TaskRegistry()
         self.executor = TaskExecutor(mind)
         self._total_ticks: int = 0
+        self._tick_lock = asyncio.Lock()
 
     @property
     def total_ticks(self) -> int:
@@ -106,7 +108,13 @@ class HeartbeatEngine:
 
         每次心跳只执行一个到期任务（避免长任务阻塞），
         所有计数器无论是否执行都会递增并持久化。
+        使用 asyncio.Lock 保证 Web 手动 tick 与调度 tick 互斥。
         """
+        async with self._tick_lock:
+            return await self._tick_inner()
+
+    async def _tick_inner(self) -> List[str]:
+        """tick 实际逻辑（已持锁）。"""
         self._total_ticks += 1
         executed: List[str] = []
 
@@ -140,10 +148,6 @@ class HeartbeatEngine:
 
         if pending_task is not None and pending_schedule_idx >= 0:
             schedule = self.config.task_schedules[pending_schedule_idx]
-            if schedule.mode == ScheduleMode.HEARTBEAT:
-                schedule.beat_count = 0
-            elif schedule.mode == ScheduleMode.SCHEDULED:
-                schedule.last_run_date = datetime.now().strftime("%Y-%m-%d")
 
             entity = await self._pop_analysis_entity() if pending_task.scope.value == "entity" else None
             await self.executor.run(
@@ -153,6 +157,13 @@ class HeartbeatEngine:
                 reasoning_effort=schedule.reasoning_effort,
             )
             executed.append(pending_task.name)
+
+            # at-least-once：先执行任务，成功后才更新标记并原子落盘；
+            # 若执行中途崩溃，标记未更新，下次 tick 会重新触发
+            if schedule.mode == ScheduleMode.HEARTBEAT:
+                schedule.beat_count = 0
+            elif schedule.mode == ScheduleMode.SCHEDULED:
+                schedule.last_run_date = datetime.now().strftime("%Y-%m-%d")
 
         self.config.save()
         return executed

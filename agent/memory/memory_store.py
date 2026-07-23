@@ -1281,6 +1281,31 @@ class MemoryStore(BaseEntity):
         rows = await cursor.fetchall()
         return [self._row_to_entry(r) for r in reversed(rows)]
 
+    async def list_by_source(
+        self,
+        source: str,
+        *,
+        memory_type: Optional[MemoryType] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[MemoryEntry]:
+        """按 source 分页查询记忆（按 ts_ns 降序，返回序稳定，适合翻页遍历）。
+
+        与 list_recent 不同：不做 reverse，保证 OFFSET 翻页时各页衔接无重叠。
+        """
+        db = await self._get_db()
+        sql = f"SELECT {_MEM_COLUMNS} FROM memories WHERE source=?"
+        params: list[Any] = [source]
+        if memory_type:
+            sql += " AND type=?"
+            params.append(memory_type.value)
+        sql += " ORDER BY ts_ns DESC LIMIT ? OFFSET ?"
+        params.append(limit)
+        params.append(max(0, offset))
+        cursor = await db.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [self._row_to_entry(r) for r in rows]
+
     async def count(self, memory_type: Optional[MemoryType] = None) -> int:
         db = await self._get_db()
         if memory_type:
@@ -1314,10 +1339,19 @@ class MemoryStore(BaseEntity):
         tags: list[str],
         limit: int = 20,
     ) -> list[MemoryEntry]:
-        """按标签交集筛选记忆（返回包含所有指定标签的记忆）。"""
+        """按标签交集筛选记忆（返回包含所有指定标签的记忆）。
+
+        使用 json_each 精确匹配标签值，避免 LIKE '%"tag"%' 的子串误命中
+        （如标签 "art" 误匹配 "article"）。
+        """
+        if not tags:
+            return []
         db = await self._get_db()
-        conditions = " AND ".join("tags_json LIKE ?" for _ in tags)
-        params: list[Any] = [f'%"{t}"%' for t in tags]
+        conditions = " AND ".join(
+            "EXISTS (SELECT 1 FROM json_each(memories.tags_json) WHERE value = ?)"
+            for _ in tags
+        )
+        params: list[Any] = list(tags)
         params.append(limit)
         cursor = await db.execute(
             f"SELECT {_MEM_COLUMNS} FROM memories WHERE {conditions} ORDER BY ts_ns DESC LIMIT ?",

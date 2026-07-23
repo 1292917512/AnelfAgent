@@ -23,7 +23,7 @@ export default function Approvals() {
     queryFn: () => approvalsApi.pending().then((r) => r.data),
     refetchInterval: 3000,
   });
-  const pendingCount = (pendingData?.pending as unknown[] | undefined)?.length ?? 0;
+  const pendingCount = pendingData?.pending?.length ?? 0;
 
   const tabs: TabItem<ApprovalTab>[] = [
     {

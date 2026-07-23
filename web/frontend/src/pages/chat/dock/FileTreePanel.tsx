@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, FileText, FolderClosed, FolderOpen, Loader2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { workspaceApi, workspaceMediaKind, type WorkspaceNode } from "@/lib/api";
+import { workspaceApi, workspaceMediaKind, isPreviewableBinary, type WorkspaceNode } from "@/lib/api";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { WORKSPACE_FILE_MIME } from "../ChatInput";
 
@@ -23,8 +23,8 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   const isActive = openFilePath === node.path;
   // 已在编辑器标签中打开但未激活
   const isOpened = !isActive && openFiles.includes(node.path);
-  // 二进制中的图片/音视频可打开预览，其余二进制不可编辑
-  const openable = !node.binary || workspaceMediaKind(node.name) !== null;
+  // 二进制中的图片/音视频/PDF/DOCX/XLSX 可打开预览，其余二进制不可编辑
+  const openable = !node.binary || workspaceMediaKind(node.name) !== null || isPreviewableBinary(node.name);
 
   const toggle = useCallback(async () => {
     if (!isDir) {

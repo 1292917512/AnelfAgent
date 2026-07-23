@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -226,13 +227,7 @@ async def _parse_message_segments_async(
             segments.append(MessageSegment(type=SegmentType.TEXT, content=text))
 
         elif seg_type == "image":
-            url = seg_data.get("url", "")
-            file_path = _strip_file_prefix(seg_data.get("file", ""))
-            segments.append(MessageSegment(
-                type=SegmentType.IMAGE,
-                url=url,
-                file_path=file_path,
-            ))
+            segments.append(_build_media_segment(SegmentType.IMAGE, seg_data))
 
         elif seg_type == "at":
             qq = str(seg_data.get("qq", ""))
@@ -249,35 +244,15 @@ async def _parse_message_segments_async(
                 ))
 
         elif seg_type == "record":
-            url = seg_data.get("url", "")
-            file_path = _strip_file_prefix(seg_data.get("file", ""))
-            segments.append(MessageSegment(
-                type=SegmentType.VOICE,
-                url=url,
-                file_path=file_path,
-                mime_type="audio/amr",
-            ))
+            segments.append(_build_media_segment(
+                SegmentType.VOICE, seg_data, mime_type="audio/amr"))
 
         elif seg_type == "video":
-            url = seg_data.get("url", "")
-            file_path = _strip_file_prefix(seg_data.get("file", ""))
-            segments.append(MessageSegment(
-                type=SegmentType.VIDEO,
-                url=url,
-                file_path=file_path,
-                mime_type="video/mp4",
-            ))
+            segments.append(_build_media_segment(
+                SegmentType.VIDEO, seg_data, mime_type="video/mp4"))
 
         elif seg_type == "file":
-            url = seg_data.get("url", "")
-            file_path = _strip_file_prefix(seg_data.get("file", ""))
-            file_name = seg_data.get("name", "")
-            segments.append(MessageSegment(
-                type=SegmentType.FILE,
-                url=url,
-                file_path=file_path,
-                file_name=file_name,
-            ))
+            segments.append(_build_media_segment(SegmentType.FILE, seg_data))
 
         elif seg_type == "json":
             summary = _parse_json_card(seg_data)
@@ -343,13 +318,7 @@ def _parse_message_segments_sync(
             segments.append(MessageSegment(type=SegmentType.TEXT, content=text))
 
         elif seg_type == "image":
-            url = seg_data.get("url", "")
-            file_path = _strip_file_prefix(seg_data.get("file", ""))
-            segments.append(MessageSegment(
-                type=SegmentType.IMAGE,
-                url=url,
-                file_path=file_path,
-            ))
+            segments.append(_build_media_segment(SegmentType.IMAGE, seg_data))
 
         elif seg_type == "at":
             qq = str(seg_data.get("qq", ""))
@@ -363,35 +332,15 @@ def _parse_message_segments_sync(
                 ))
 
         elif seg_type == "record":
-            url = seg_data.get("url", "")
-            file_path = _strip_file_prefix(seg_data.get("file", ""))
-            segments.append(MessageSegment(
-                type=SegmentType.VOICE,
-                url=url,
-                file_path=file_path,
-                mime_type="audio/amr",
-            ))
+            segments.append(_build_media_segment(
+                SegmentType.VOICE, seg_data, mime_type="audio/amr"))
 
         elif seg_type == "video":
-            url = seg_data.get("url", "")
-            file_path = _strip_file_prefix(seg_data.get("file", ""))
-            segments.append(MessageSegment(
-                type=SegmentType.VIDEO,
-                url=url,
-                file_path=file_path,
-                mime_type="video/mp4",
-            ))
+            segments.append(_build_media_segment(
+                SegmentType.VIDEO, seg_data, mime_type="video/mp4"))
 
         elif seg_type == "file":
-            url = seg_data.get("url", "")
-            file_path = _strip_file_prefix(seg_data.get("file", ""))
-            file_name = seg_data.get("name", "")
-            segments.append(MessageSegment(
-                type=SegmentType.FILE,
-                url=url,
-                file_path=file_path,
-                file_name=file_name,
-            ))
+            segments.append(_build_media_segment(SegmentType.FILE, seg_data))
 
         elif seg_type == "json":
             summary = _parse_json_card(seg_data)
@@ -600,13 +549,49 @@ def _check_to_me(data: Dict[str, Any]) -> bool:
 
 def _strip_file_prefix(path: str) -> str:
     """移除 OneBot 文件路径的 file: 前缀。"""
-    if path.startswith("file:///"):
-        return path[len("file:///"):]
     if path.startswith("file://"):
+        # file:///abs/path -> /abs/path（保留根斜杠）
         return path[len("file://"):]
     if path.startswith("file:"):
         return path[len("file:"):]
     return path
+
+
+def _build_media_segment(
+    seg_type: SegmentType,
+    seg_data: Dict[str, Any],
+    mime_type: str = "",
+) -> MessageSegment:
+    """从 OneBot 媒体段数据构建 MessageSegment。
+
+    `file` 字段仅当指向真实存在的本地文件时作为 file_path（同机部署零拷贝），
+    否则视为文件名填入 file_name，避免产生误导性的假路径。
+    file_id / size 一并保留，供 AI 按需调用 qq_download_file 下载。
+    """
+    raw_file = _strip_file_prefix(seg_data.get("file", "") or "")
+    file_path = ""
+    file_name = str(seg_data.get("name", "") or "")
+    if raw_file:
+        if os.path.isfile(raw_file):
+            file_path = raw_file
+        elif not file_name:
+            file_name = raw_file
+
+    raw_size = seg_data.get("size", seg_data.get("file_size", 0))
+    try:
+        file_size = int(raw_size)
+    except (TypeError, ValueError):
+        file_size = 0
+
+    return MessageSegment(
+        type=seg_type,
+        url=str(seg_data.get("url", "") or ""),
+        file_path=file_path,
+        file_name=file_name,
+        file_id=str(seg_data.get("file_id", "") or ""),
+        file_size=file_size,
+        mime_type=mime_type,
+    )
 
 
 def _get_str_val(detail: Dict[str, Any], key: str) -> Optional[str]:
@@ -754,7 +739,12 @@ def _format_notice_sync(data: Dict[str, Any]) -> Tuple[str, bool]:
         file_info = data.get("file", {})
         file_name = file_info.get("name", "未知文件")
         file_size = file_info.get("size", 0)
-        return f"(用户 {user_id} 上传了文件: {file_name}, 大小: {_format_file_size(file_size)})", False
+        file_id = str(file_info.get("id", "") or "")
+        hint = f"，file_id: {file_id}，可用 qq_download_file 下载到本地" if file_id else ""
+        return (
+            f"(用户 {user_id} 上传了文件: {file_name}, "
+            f"大小: {_format_file_size(file_size)}{hint})"
+        ), False
 
     if notice_type == "group_increase":
         return f"(新成员 {user_id} 加入了群聊)", False
@@ -869,17 +859,19 @@ async def _format_notice(
         file_name = file_info.get("name", "未知文件")
         file_size = file_info.get("size", 0)
         file_url = file_info.get("url", "")
+        file_id = str(file_info.get("id", "") or "")
 
         # 尝试通过 get_file API 获取下载 URL
-        if not file_url and api_caller:
-            file_id = file_info.get("id", "")
-            if file_id:
-                file_url = await _fetch_file_url(file_id, api_caller)
+        if not file_url and api_caller and file_id:
+            file_url = await _fetch_file_url(file_id, api_caller)
 
         size_display = _format_file_size(file_size)
-        text = f"(用户 {user_id} 上传了文件: {file_name}, 大小: {size_display})"
+        text = f"(用户 {user_id} 上传了文件: {file_name}, 大小: {size_display}"
         if file_url:
-            text = f"(用户 {user_id} 上传了文件: {file_name}, 大小: {size_display}, 链接: {file_url})"
+            text += f", 链接: {file_url}，可用 web_download 下载"
+        elif file_id:
+            text += f", file_id: {file_id}，可用 qq_download_file 下载到本地"
+        text += ")"
         return text, False
 
     if notice_type == "group_increase":

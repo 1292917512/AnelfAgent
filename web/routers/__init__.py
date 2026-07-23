@@ -8,6 +8,7 @@ from web.routers.approvals import router as approvals_router
 from web.routers.chat import router as chat_router
 from web.routers.config import router as config_router
 from web.routers.config_meta import router as config_meta_router
+from web.routers.database import router as database_router
 from web.routers.entities import router as entities_router
 from web.routers.mcp import router as mcp_router
 from web.routers.memory import router as memory_router
@@ -17,6 +18,7 @@ from web.routers.personas import router as personas_router
 from web.routers.search import router as search_router
 from web.routers.skills import router as skills_router
 from web.routers.status import router as status_router
+from web.routers.stickers import router as stickers_router
 from web.routers.system import router as system_router
 from web.routers.tags import router as tags_router
 from web.routers.thinking import router as thinking_router
@@ -45,3 +47,5 @@ api_router.include_router(entities_router)
 api_router.include_router(thinking_router)
 api_router.include_router(workspace_router)
 api_router.include_router(search_router)
+api_router.include_router(stickers_router)
+api_router.include_router(database_router)

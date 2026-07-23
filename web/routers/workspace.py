@@ -160,13 +160,20 @@ async def read_file(path: str = Query(...)) -> Dict[str, Any]:
 
 
 @router.get("/raw")
-async def serve_raw_file(path: str = Query(...)) -> Any:
-    """以原始字节服务工作区文件（图片/音视频预览用），按扩展名推断 Content-Type。"""
+async def serve_raw_file(path: str = Query(...), inline: bool = False) -> Any:
+    """以原始字节服务工作区文件（图片/音视频/PDF 预览用），按扩展名推断 Content-Type。
+
+    inline=True 时以 inline 方式返回（供 iframe 内联渲染），默认 attachment（下载语义）。
+    """
     from starlette.responses import FileResponse
     fp = _safe_path(path)
     if not os.path.isfile(fp):
         raise HTTPException(status_code=404, detail="文件不存在")
-    return FileResponse(fp, filename=os.path.basename(fp))
+    return FileResponse(
+        fp,
+        filename=os.path.basename(fp),
+        content_disposition_type="inline" if inline else "attachment",
+    )
 
 
 class FileWriteRequest(BaseModel):

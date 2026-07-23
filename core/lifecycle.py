@@ -22,9 +22,13 @@ class Lifecycle:
 
     @classmethod
     def register(cls, name: str, instance: Any, cleanup: Optional[CleanupFn] = None) -> None:
-        """注册单例实例，可选附带 cleanup 回调。"""
+        """注册单例实例，可选附带 cleanup 回调。
+
+        同名重复注册时替换旧实例并丢弃旧 cleanup，避免关闭时重复清理。
+        """
         cls._instances[name] = instance
         if cleanup:
+            cls._cleanups = [(n, fn) for n, fn in cls._cleanups if n != name]
             cls._cleanups.append((name, cleanup))
 
     @classmethod

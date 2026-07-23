@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 from pathlib import Path
 from typing import Any, Dict
 
@@ -73,15 +74,47 @@ def _make_token(password: str) -> str:
     return hashlib.sha256(f"anelf-auth:{password}".encode()).hexdigest()[:32]
 
 
+# auth.password 的 mtime 缓存：避免每请求读盘，文件变更（mtime 改变）时失效重读
+_auth_cache: Dict[str, Any] = {"password": "", "mtime": -1.0}
+
+
 def _load_auth_password() -> str:
-    """从 webui.json 读取 auth.password，空字符串表示不启用密码。"""
+    """读取 auth.password（带 mtime 缓存，空字符串表示不启用密码）。"""
     p = Path(ConfigPaths.WEBUI_CONFIG)
-    if p.exists():
-        try:
-            return json.loads(p.read_text("utf-8")).get("auth", {}).get("password", "")
-        except Exception:
-            pass
-    return ""
+    try:
+        mtime = p.stat().st_mtime if p.exists() else -1.0
+    except OSError:
+        mtime = -1.0
+    if mtime != _auth_cache["mtime"]:
+        _auth_cache["mtime"] = mtime
+        password = ""
+        if p.exists():
+            try:
+                password = json.loads(p.read_text("utf-8")).get("auth", {}).get("password", "")
+            except Exception:
+                password = ""
+        _auth_cache["password"] = password
+    return _auth_cache["password"]
+
+
+def _ensure_strict_password() -> None:
+    """严格模式（auth.strict=true）且密码为空时，生成 32 位随机管理密码并原子写入。
+
+    strict=false（默认）保持现状，不强制密码。
+    """
+    from web.auth_keys import load_webui_config, save_webui_config
+
+    cfg = load_webui_config()
+    auth = cfg.get("auth") or {}
+    if not auth.get("strict", False) or auth.get("password", ""):
+        return
+    password = secrets.token_hex(16)  # 32 位十六进制
+    auth["password"] = password
+    cfg["auth"] = auth
+    save_webui_config(cfg)
+    _auth_cache["password"] = password
+    _auth_cache["mtime"] = -1.0  # 失效缓存，下次读取时按最新 mtime 重载
+    log("WebUI 严格模式已启用：已生成管理密码并写入 config/webui.json，请妥善保管", "WARNING")
 
 
 _AUTH_EXEMPT = frozenset({"/api/auth/login", "/api/auth/check"})
@@ -136,6 +169,7 @@ def create_app() -> FastAPI:
     """创建 WebUI FastAPI 应用。"""
     app = FastAPI(title="AnelfAgent WebUI", version="1.0.0")
 
+    _ensure_strict_password()
     app.add_middleware(_AuthMiddleware)
     app.add_middleware(_V1BearerAuthMiddleware)
     app.add_middleware(

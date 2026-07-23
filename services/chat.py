@@ -59,8 +59,6 @@ class ChatService:
             cm = get_channel_manager()
             if output.channel_id not in cm.list_channels():
                 cm.register_lightweight(output)
-        else:
-            rt.respond.register_output(output, adapter_key=adapter_key)
 
     @staticmethod
     def get_bot_name() -> str:

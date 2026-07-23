@@ -191,6 +191,9 @@ class Mind:
         self._reflecting: bool = False
         self._cycle_lock = asyncio.Lock()
         self._heartbeat_active: bool = False
+        self._heartbeat_running: bool = False
+        # 自动续轮退避计数（周期内无实质进展时递增，防紧凑重试烧 token）
+        self._auto_cycle_retry: int = 0
 
         self._channel_snapshots: dict[str, ChannelSnapshot] = {}
 
@@ -203,9 +206,12 @@ class Mind:
             self.background_tasks.bind_loop(asyncio.get_running_loop())
         except RuntimeError:
             pass  # 非异步上下文（测试等）：工作线程完成时退化为直接调用
+        # 轮外完成回调：后台任务完成且无等待者时，排入回复队列触发新 REPLY
+        self.background_tasks.set_unclaimed_callback(self._on_bg_task_unclaimed)
 
         # 当前模型上下文窗口缓存（tokens，0 = 未知）
         self._cached_context_length: int = 0
+        self._cached_model_name: str = ""
 
         self._init_subsystems()
         self._register_core_tools()
@@ -257,21 +263,26 @@ class Mind:
         return EntityRegistry.execute_tool_call
 
     def get_model_context_length(self) -> int:
-        """获取当前模型的上下文窗口（tokens，带缓存；0 表示未知）。"""
-        if self._cached_context_length > 0:
-            return self._cached_context_length
+        """获取当前模型的上下文窗口（tokens，带缓存；0 表示未知）。
+
+        缓存键含模型名，switch_model 后自动失效。
+        """
         llm_client = self.llm if isinstance(self.llm, LLMClient) else None
         if llm_client is None:
             return 0
+        current_model = llm_client.config.litellm_model or ""
+        if self._cached_context_length > 0 and self._cached_model_name == current_model:
+            return self._cached_context_length
         max_ctx = 0
         try:
-            info = LLMClient.get_model_info(llm_client.config.litellm_model)
+            info = LLMClient.get_model_info(current_model)
             max_ctx = info.get("max_input_tokens") or info.get("max_tokens") or 0
         except Exception:
             max_ctx = 0
         if not max_ctx:
             max_ctx = llm_client.config.context_window or 0
         self._cached_context_length = max_ctx
+        self._cached_model_name = current_model
         return max_ctx
 
     @staticmethod
@@ -326,12 +337,42 @@ class Mind:
         ):
             log(f"反思中忽略非 @ 群消息: {anything.entity_scope}", "DEBUG", tag="思维")
         if should_enqueue:
+            # 真实外部事件：重置自动续轮退避
+            self._auto_cycle_retry = 0
             await self.pfc.add_task(anything)
             self._update_channel_snapshot(anything)
+
+    def _schedule_next_cycle(self, reason: str) -> None:
+        """以指数退避调度下一轮自主循环（1s/2s/4s/8s 封顶），避免紧凑重试。"""
+        delay = min(2.0 ** self._auto_cycle_retry, 8.0)
+        self._auto_cycle_retry += 1
+        log(f"{reason}，{delay:.0f}s 后自动触发新一轮 (第{self._auto_cycle_retry}次续轮)", tag="思维")
+
+        async def _later() -> None:
+            await asyncio.sleep(delay)
+            await self.try_execute_mind()
+
+        asyncio.create_task(_later(), name="agent.mind.auto_cycle")
 
     def _update_channel_snapshot(self, anything: Everything) -> None:
         """记录频道活动快照，供跨频道感知使用。"""
         _cc_update_snapshot(self, anything)
+
+    def _on_bg_task_unclaimed(self, scope: str, description: str, summary: str) -> None:
+        """后台任务轮外完成回调：排入回复队列触发新 REPLY（与 delegation_manager 同路径）。"""
+        from agent.mind.tools.scheduler import enqueue_scope_reply
+        prompt = (
+            f"[后台任务完成] {description}\n"
+            f"结果：{summary[:800]}\n"
+            "请根据结果继续处理（回复用户请调用 send_message，完成请调用 end_reply）。"
+        )
+        enqueue_scope_reply(
+            self.pfc, scope,
+            self.pfc.get_adapter_key(scope),
+            f"后台任务完成: {description[:60]}",
+            prompt,
+        )
+        asyncio.create_task(self.try_execute_mind())
 
     @property
     def is_reply(self) -> bool:
@@ -386,27 +427,6 @@ class Mind:
         async with self._cycle_lock:
             await self._autonomous_cycle()
 
-    async def execute_mind_for_scope(self, scope: str) -> None:
-        """针对指定 scope 执行回复（带 scope 级锁）。"""
-        if scope in self._active_scopes:
-            return
-        self._active_scopes.add(scope)
-        self._reply_idle_event.clear()
-        await event_bus.emit(EVENT_THINKING_SESSION_START, {
-            "is_heartbeat": False, "scope": scope,
-        })
-        try:
-            await _de_execute_reply(self, Decision(type=DecisionType.REPLY, target=scope, priority=10))
-        finally:
-            self.pfc.clear_dynamic_tools()
-            self._active_scopes.discard(scope)
-            if not self._active_scopes:
-                self._reply_idle_event.set()
-                self._set_phase(MindPhase.IDLE)
-            await event_bus.emit(EVENT_THINKING_SESSION_END, {
-                "reason": "scope_completed", "scope": scope,
-            })
-
     # ==================================================================
     # 自主循环：态势收集 → 元决策 → 分发执行
     # ==================================================================
@@ -423,7 +443,54 @@ class Mind:
         })
 
         if is_heartbeat:
-            await self._run_heartbeat_tick()
+            # 心跳 tick 后台执行，不阻塞主循环的消息处理
+            if not self._heartbeat_running:
+                self._heartbeat_running = True
+                asyncio.create_task(self._run_heartbeat_tick_bg())
+
+        # 廉价前置判断：仅检查队列是否有待处理项，命中 fast-path 时跳过昂贵的 memory/goals 查询
+        cheap_pending = self.pfc.peek_all_tasks()
+        cheap_tasks = self.pfc.peek_general_tasks()
+        cheap_profiles = len(self.pfc.pending_analysis)
+        if not cheap_pending and not cheap_tasks and not cheap_profiles and not is_heartbeat:
+            await event_bus.emit(EVENT_THINKING_SESSION_END, {"reason": "no_pending"})
+            return
+
+        # fast-path：有消息、无任务/画像/目标时直接 REPLY，跳过元决策和昂贵查询
+        if (not is_heartbeat and cheap_pending and not cheap_tasks
+                and cheap_profiles == 0):
+            # 惰性检查目标（仅在 fast-path 候选时查询）
+            active_goals = await self._collect_active_goals()
+            if not active_goals:
+                decisions = [
+                    Decision(type=DecisionType.REPLY, target=scope, priority=10)
+                    for scope, _, _, _ in cheap_pending
+                ]
+                log("fast-path: direct reply (no meta-decision)", tag="思维")
+                # 构建最小态势供后续流程使用
+                situation = SituationContext(
+                    pending_messages=[
+                        PendingMessage(
+                            scope=scope, uid=uid, group_id=gid,
+                            preview=preview, timestamp=time.time(),
+                            adapter_key=self.pfc.get_adapter_key(scope),
+                        )
+                        for scope, uid, gid, preview in cheap_pending
+                    ],
+                    pending_tasks=[],
+                    pending_profile_count=0,
+                    recent_memories=[],
+                    last_reflect_time=self._last_reflect_time,
+                    current_time=time.time(),
+                    is_heartbeat=False,
+                    connected_channels=[],
+                    active_goals=[],
+                    heartbeat_log="",
+                )
+                await self._execute_decisions_and_finalize(
+                    situation, decisions, is_heartbeat=False,
+                )
+                return
 
         situation = await self._gather_situation(is_heartbeat=is_heartbeat)
 
@@ -460,7 +527,31 @@ class Mind:
             log("fast-path: direct reply (no meta-decision)", tag="思维")
         else:
             decisions = await self._think_and_decide(situation)
+
+        # 代码级兜底：有 pending 消息但元决策全非 REPLY 时，为每个 scope 补充 REPLY
+        if situation.pending_messages and not any(d.type == DecisionType.REPLY for d in decisions):
+            for pm in situation.pending_messages:
+                decisions.append(Decision(
+                    type=DecisionType.REPLY, target=pm.scope, priority=10,
+                    reason="代码级兜底: 有消息但未产生 REPLY 决策",
+                ))
+            log("兜底: 补充 REPLY 决策 (元决策未覆盖待处理消息)", "WARNING", tag="思维")
+
         log(f"决策结果: {', '.join(d.type.value for d in decisions)}", tag="思维")
+
+        await self._execute_decisions_and_finalize(
+            situation, decisions, is_heartbeat=is_heartbeat,
+        )
+
+    async def _execute_decisions_and_finalize(
+            self,
+            situation: SituationContext,
+            decisions: List[Decision],
+            *,
+            is_heartbeat: bool = False,
+    ) -> None:
+        """执行决策列表并完成周期收尾（供 fast-path 和主路径复用）。"""
+        self._set_phase(MindPhase.DECIDING)
 
         await event_bus.emit(EVENT_THINKING_DECISION, {
             "decisions": [
@@ -473,24 +564,30 @@ class Mind:
         immediate = [d for d in sorted_decisions if d.type not in self._DEFERRED_DECISIONS]
         deferred = [d for d in sorted_decisions if d.type in self._DEFERRED_DECISIONS]
 
-        # 反思进行中时跳过新的 REFLECT 决策，避免重入
         if self._reflecting:
             deferred = [d for d in deferred if d.type != DecisionType.REFLECT]
 
-        # 后台决策立即并行启动（不等待 REPLY）
         for d in deferred:
             asyncio.create_task(
                 self._safe_execute(d),
                 name=f"agent.mind.bg.{d.type.value}",
             )
 
-        # 即时决策并行执行（不同 scope 的 REPLY 可并行，execute_reply 内有 scope 级锁）
+        snapshot_count = len(self.pfc.peek_general_tasks())
+
+        exec_ok: List[bool] = []
         if immediate:
-            await asyncio.gather(*(self._safe_execute(d) for d in immediate))
+            exec_ok = list(await asyncio.gather(*(self._safe_execute(d) for d in immediate)))
+            if any(exec_ok):
+                # 有实质进展（即时决策执行成功）：重置自动续轮退避
+                self._auto_cycle_retry = 0
 
-        self.pfc.clear_general_tasks()
+        self.pfc.clear_general_tasks_before(snapshot_count)
 
-        exec_results: List[str] = [f"{d.type.value} 已执行" for d in immediate]
+        exec_results: List[str] = [
+            f"{d.type.value} {'成功' if ok else '失败'}"
+            for d, ok in zip(immediate, exec_ok)
+        ]
         if is_heartbeat or decisions:
             _hb_write(
                 task_names=[d.type.value for d in sorted_decisions],
@@ -507,13 +604,25 @@ class Mind:
             "decisions_deferred": [d.type.value for d in deferred],
         })
 
-        # SESSION_END 之后检查：如果还有待处理任务（如后台任务完成注入的），自动触发新一轮
         if self.pfc.has_pending_tasks():
-            log("自主循环结束后仍有待处理任务，自动触发新一轮", tag="思维")
-            asyncio.create_task(self.try_execute_mind())
+            self._schedule_next_cycle("自主循环结束后仍有待处理任务")
+
+    async def _run_heartbeat_tick_bg(self) -> None:
+        """后台执行心跳 tick，完成后触发新周期（不阻塞主循环）。"""
+        try:
+            executed = await self.heartbeat_engine.tick()
+            if executed:
+                log(f"心跳任务完成: {', '.join(executed)}", tag="心跳")
+        except Exception as exc:
+            log(f"心跳 tick 异常: {exc}", "WARNING", tag="心跳")
+        finally:
+            self._heartbeat_running = False
+            # 完成后触发新周期（心跳可能注入了新任务）
+            if self.pfc.has_pending_tasks():
+                self._schedule_next_cycle("心跳完成后仍有待处理任务")
 
     async def _run_heartbeat_tick(self) -> None:
-        """后台执行心跳 tick，不阻塞主循环的消息处理。"""
+        """同步执行心跳 tick（保留供外部直接调用）。"""
         try:
             executed = await self.heartbeat_engine.tick()
             if executed:
@@ -521,10 +630,11 @@ class Mind:
         except Exception as exc:
             log(f"心跳 tick 异常: {exc}", "WARNING", tag="心跳")
 
-    async def _safe_execute(self, decision: Decision) -> None:
-        """安全执行决策，异常转为通用错误任务。"""
+    async def _safe_execute(self, decision: Decision) -> bool:
+        """安全执行决策，异常转为通用错误任务。返回是否成功。"""
         try:
             await self._execute_decision(decision)
+            return True
         except Exception as exc:
             log(f"决策执行异常 [{decision.type.value}]: {exc}", "WARNING", tag="思维")
             self.pfc.add_general_task(MindTask(
@@ -532,6 +642,7 @@ class Mind:
                 preview=f"{decision.type.value} 执行失败: {exc}",
                 metadata={"decision": decision.type.value, "error": str(exc)},
             ))
+            return False
 
     async def _gather_situation(self, *, is_heartbeat: bool = False) -> SituationContext:
         """收集当前态势：待处理消息、记忆、通道、目标等（纯读取，无副作用）。"""
@@ -688,12 +799,14 @@ class Mind:
             self,
             anything: Everything,
             images: Optional[List[ImageContent]] = None,
+            *,
+            adapter_key: str = "",
     ) -> None:
         """执行回复，异常时发送错误提示。"""
-        await _tl_reply(self, anything, images)
+        await _tl_reply(self, anything, images, adapter_key=adapter_key)
 
-    def _collect_pending_images(self) -> List[ImageContent]:
-        return _tl_collect_images(self)
+    def _collect_pending_images(self, scope: str = "") -> List[ImageContent]:
+        return _tl_collect_images(self, scope=scope)
 
     @staticmethod
     def _save_base64_image(b64_data: str, mime_type: str = "image/jpeg") -> str:
@@ -729,12 +842,15 @@ class Mind:
             anything: Optional[Everything] = None,
             base_messages: Optional[List[Dict]] = None,
             options: Optional[Dict] = None,
+            *,
+            adapter_key: str = "",
     ) -> None:
         """统一思维循环。"""
         await _tl_think_loop(
             self, mode, tool_chain, execution_steps, start_time,
             safety_limit, collected_text, active_tools,
             anything, base_messages, options,
+            adapter_key=adapter_key,
         )
 
     @staticmethod
@@ -1156,6 +1272,7 @@ class Mind:
             target_id=self._resolve_target_id(anything),
             models_summary=models_summary,
             anthropic_breakpoint=self._is_anthropic_model(),
+            prefetched_conversation=conversation_list,
         )
 
     async def _inject_matched_skills(self, memory_msgs: List[Dict], tail: List[Dict]) -> None:

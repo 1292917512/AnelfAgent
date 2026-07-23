@@ -343,5 +343,5 @@ def register_configs_safe(configs: Dict[str, Dict[str, Any]]) -> None:
     """安全注册配置：ConfigManager 不可用时不中断模块导入。"""
     try:
         register_configs(configs)
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"配置注册失败（已忽略，不中断导入）: {e}", "WARNING")

@@ -23,6 +23,8 @@ import Heartbeat from "./pages/Heartbeat";
 import Thinking from "./pages/Thinking";
 import Tags from "./pages/Tags";
 import Tasks from "./pages/Tasks";
+import Stickers from "./pages/Stickers";
+import Data from "./pages/Data";
 
 export default function App() {
   const setConfig = useAppStore((s) => s.setConfig);
@@ -56,6 +58,8 @@ export default function App() {
             <Route path="tags" element={<Tags />} />
             <Route path="personas" element={<Personas />} />
             <Route path="memory" element={<Memory />} />
+            <Route path="stickers" element={<Stickers />} />
+            <Route path="data" element={<Data />} />
             <Route path="config" element={<Config />} />
             <Route path="channels" element={<Channels />} />
             <Route path="approvals" element={<Approvals />} />

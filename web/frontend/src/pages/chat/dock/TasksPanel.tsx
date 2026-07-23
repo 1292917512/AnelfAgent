@@ -42,7 +42,7 @@ function taskToForm(task: TaskConfig): TaskFormState {
 }
 
 /** 任务面板：按文件夹分组 + 启停/触发/编辑/新建 */
-export function TasksPanel() {
+export function DockTasksPanel() {
   const { t } = useTranslation("workbench");
   const queryClient = useQueryClient();
   const [editorOpen, setEditorOpen] = useState(false);

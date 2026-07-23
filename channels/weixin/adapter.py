@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import mimetypes
 import os
 import secrets
@@ -705,6 +706,13 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
 
     async def _send_text(self, chat_id: str, content: str) -> str:
         context_token = self._token_store.get(self._account_id, chat_id)
+        if not context_token:
+            log(
+                f"微信: 发往 {chat_id[:8]} 的消息没有 context_token（从未收到该用户的入站消息），"
+                "iLink 可能返回成功但不实际投递。请先让对方在微信里给 bot 发一条消息建立会话。",
+                "WARNING",
+                tag="通道",
+            )
         chunks = [
             c
             for c in ilink.split_text_for_weixin_delivery(
@@ -849,6 +857,11 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
                             f"iLink sendmessage 错误: ret={ret} errcode={errcode} errmsg={errmsg}"
                         )
                 self._reset_rate_limit_circuit()
+                log(
+                    f"微信: 发送块成功 to={chat_id[:8]} resp={json.dumps(resp, ensure_ascii=False)[:200]}",
+                    "DEBUG",
+                    tag="通道",
+                )
                 return
             except Exception as exc:
                 last_error = exc

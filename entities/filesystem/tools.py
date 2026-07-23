@@ -796,6 +796,10 @@ def run_shell_command(command: str, timeout: int = 120, run_in_background: bool 
             payload["persisted"] = persisted
         if notes:
             payload["notes"] = notes
+        # 失败时附带真实 cwd 与工作区根，便于模型定位路径问题后自纠（而非猜测系统路径）
+        if not result.ok:
+            payload["cwd"] = shell_state.get_cwd(_WORKSPACE, sandbox=_SANDBOX)
+            payload["workspace_root"] = os.path.abspath(_WORKSPACE)
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)

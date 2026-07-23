@@ -133,9 +133,15 @@ export function AttentionPanel() {
     }
   });
 
-  // 最近的 ERROR / WARNING 日志
+  // 最近的 ERROR / WARNING 日志（相同消息去重，避免重复告警刷屏）
+  const seen = new Set<string>();
   const recentLogs = [...(errorLogs?.logs ?? []), ...(warnLogs?.logs ?? [])]
     .sort((a, b) => logTime(b) - logTime(a))
+    .filter((log) => {
+      if (seen.has(log.message)) return false;
+      seen.add(log.message);
+      return true;
+    })
     .slice(0, 5);
   recentLogs.forEach((log, i) => {
     items.push({

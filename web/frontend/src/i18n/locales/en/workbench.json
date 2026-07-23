@@ -105,7 +105,11 @@
     "collapse": "Collapse panel (tabs kept)",
     "discardTitle": "Close unsaved file",
     "discardConfirm": "There are unsaved changes that will be lost. Close anyway?",
-    "saveFailed": "Save failed"
+    "saveFailed": "Save failed",
+    "renderFailed": "Failed to render preview",
+    "emptyPreview": "File is empty",
+    "csvTruncated": "Showing first {{count}} rows only",
+    "videoUnsupported": "This video format can't be played in the browser; please download to watch"
   },
   "ask": {
     "inputPlaceholder": "Type your answer…",

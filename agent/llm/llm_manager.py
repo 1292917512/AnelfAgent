@@ -109,6 +109,23 @@ class LLMManager(BaseEntity):
         except Exception as exc:
             error(f"加载 LLM 配置失败: {exc}", tag="模型")
 
+    @staticmethod
+    def _close_stale_clients(clients: List[LLMClient]) -> None:
+        """同步上下文中尽力关闭旧客户端持有的代理连接池。
+
+        _apply_config 是同步方法，无法 await；此处尝试获取运行中的事件循环
+        以 fire-and-forget 方式调度异步关闭，无事件循环时静默跳过
+        （进程退出或配置首次加载时旧客户端通常为空）。
+        """
+        if not clients:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            for client in clients:
+                loop.create_task(client.close())
+        except RuntimeError:
+            pass
+
     def _apply_config(self, data: Dict[str, Any]) -> None:
         # 重建客户端前关闭旧客户端持有的代理连接池，避免连接泄漏
         self._close_stale_clients(list(self._clients.values()))
@@ -553,13 +570,18 @@ class LLMManager(BaseEntity):
                 return True
         return False
 
-    @staticmethod
-    def _safe_error(exc: Exception, client: LLMClient) -> str:
-        """错误消息脱敏：精确替换当前 key（覆盖任意格式的 key 泄漏），
-        再走统一脱敏管线兜底（错误体中可能夹带其他凭证/URL 内联凭证）。"""
+    def _safe_error(self, exc: Exception, client: LLMClient) -> str:
+        """错误消息脱敏：替换所有供应商 key（错误体可能夹带非当前客户端的凭证），
+        再走统一脱敏管线兜底（URL 内联凭证等）。"""
         message = str(exc)
+        seen_keys: set[str] = set()
+        for prov in self._providers.values():
+            if prov.api_key and prov.api_key not in seen_keys:
+                seen_keys.add(prov.api_key)
+                message = message.replace(prov.api_key, "****")
+        # 兜底：当前客户端 key 可能来自非供应商来源（如环境变量）
         api_key = client.config.api_key
-        if api_key:
+        if api_key and api_key not in seen_keys:
             message = message.replace(api_key, "****")
         from core.sanitizer import is_sanitize_enabled, sanitize_text
         if is_sanitize_enabled():
@@ -1027,4 +1049,10 @@ def get_llm_manager(config_path: str = _CONFIG_PATH) -> LLMManager:
     global _manager
     if _manager is None:
         _manager = LLMManager(config_path=config_path)
+    elif str(_manager._config_path) != config_path:
+        warning(
+            f"get_llm_manager 已初始化 (config_path={_manager._config_path})，"
+            f"忽略本次请求的 config_path={config_path}",
+            tag="模型",
+        )
     return _manager

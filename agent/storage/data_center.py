@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
@@ -17,6 +18,16 @@ class EverythingData:
     def __init__(self, router: StorageRouter) -> None:
         self.router = router
         self.entities: dict[str, EntityData] = {}
+        # 按 scope_key 隔离的加载锁：避免并发 get_anything 对同一 scope 重复加载创建
+        self._load_locks: dict[str, asyncio.Lock] = {}
+
+    def _lock_for(self, scope_key: str) -> asyncio.Lock:
+        """获取/创建指定 scope 的加载锁（同步操作，单线程事件循环下原子）。"""
+        lock = self._load_locks.get(scope_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._load_locks[scope_key] = lock
+        return lock
 
     def add_anything(self, entity: EntityData) -> None:
         if entity.uid not in (0, "0", None):
@@ -25,23 +36,28 @@ class EverythingData:
             self.entities[f"group_{entity.group_id}"] = entity
 
     async def get_anything(self, group_id: Union[int, str] = 0, uid: Union[int, str] = 0) -> EntityData:
-        if uid not in (0, "0", None) and f"user_{uid}" not in self.entities:
-            entity = EntityData(uid=uid, group_id=group_id)
-            # 先加载自身 scope 的计数，再通过 alias 加载 primary 的画像
-            own_data = await self.router.get_one(
-                StorageDomain.ENTITY_PROFILE, scope_type="user", scope_id=str(uid)
-            )
-            primary_data = await self._load_primary_profile("user", str(uid))
-            self._restore_entity_with_alias(entity, own_data, primary_data)
-            self.add_anything(entity)
-        if f"group_{group_id}" not in self.entities:
-            entity = EntityData(uid=0, group_id=group_id)
-            own_data = await self.router.get_one(
-                StorageDomain.ENTITY_PROFILE, scope_type="group", scope_id=str(group_id)
-            )
-            primary_data = await self._load_primary_profile("group", str(group_id))
-            self._restore_entity_with_alias(entity, own_data, primary_data)
-            self.add_anything(entity)
+        if uid not in (0, "0", None):
+            user_key = f"user_{uid}"
+            async with self._lock_for(user_key):
+                if user_key not in self.entities:
+                    entity = EntityData(uid=uid, group_id=group_id)
+                    # 先加载自身 scope 的计数，再通过 alias 加载 primary 的画像
+                    own_data = await self.router.get_one(
+                        StorageDomain.ENTITY_PROFILE, scope_type="user", scope_id=str(uid)
+                    )
+                    primary_data = await self._load_primary_profile("user", str(uid))
+                    self._restore_entity_with_alias(entity, own_data, primary_data)
+                    self.add_anything(entity)
+        group_key = f"group_{group_id}"
+        async with self._lock_for(group_key):
+            if group_key not in self.entities:
+                entity = EntityData(uid=0, group_id=group_id)
+                own_data = await self.router.get_one(
+                    StorageDomain.ENTITY_PROFILE, scope_type="group", scope_id=str(group_id)
+                )
+                primary_data = await self._load_primary_profile("group", str(group_id))
+                self._restore_entity_with_alias(entity, own_data, primary_data)
+                self.add_anything(entity)
 
         if uid not in (0, "0", None):
             return self.entities[f"user_{uid}"]
@@ -137,14 +153,19 @@ class EverythingData:
         )
 
     async def save_all_entity_counters(self) -> int:
-        """批量持久化所有在线实体的对话计数，返回保存数量。"""
-        count = 0
+        """批量持久化所有在线实体的对话计数（单事务一次提交），返回保存数量。"""
+        records: list[tuple[str, str, int, int]] = []
         for entity in self.entities.values():
             conv_num = int(entity.personality.get("conv_num", 0))
-            if conv_num > 0:
-                await self.save_entity_counters(entity)
-                count += 1
-        return count
+            if conv_num <= 0:
+                continue
+            conv_update_num = int(entity.personality.get("conv_update_num", 0))
+            if entity.uid not in (0, "0", None):
+                scope_type, scope_id = "user", str(entity.uid)
+            else:
+                scope_type, scope_id = "group", str(entity.group_id)
+            records.append((scope_type, scope_id, conv_num, conv_update_num))
+        return await self.router.sqlite.save_entity_counters_batch(records)
 
 
 class ConversationData:
@@ -230,9 +251,17 @@ class ConversationData:
             for seg in anything.media_segments:
                 seg_type = getattr(seg, "type", None)
                 file_path = getattr(seg, "file_path", "") or getattr(seg, "url", "")
-                if seg_type and file_path:
+                file_id = getattr(seg, "file_id", "")
+                if seg_type and (file_path or file_id):
                     type_name = seg_type.value if hasattr(seg_type, "value") else str(seg_type)
-                    media_lines.append(f"[media_type:{type_name}][media_path:{file_path}]")
+                    line = f"[media_type:{type_name}]"
+                    if file_path:
+                        line += f"[media_path:{file_path}]"
+                    else:
+                        line += "[media_path:未下载]"
+                    if file_id:
+                        line += f"[media_file_id:{file_id}]"
+                    media_lines.append(line)
 
         if media_lines:
             content = content + "\n" + "\n".join(media_lines)

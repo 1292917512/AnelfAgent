@@ -1105,6 +1105,63 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
         })
 
     @channel_tool()
+    async def download_file(self, file_id: str, save_name: str = "", **kwargs: Any) -> str:
+        """下载文件到本地 workspace/uploads/file/，返回本地路径。
+
+        用于消息标签中标记「未下载」且带 [media_file_id:xxx] 的文件。
+        同机部署时直接复制 NapCat 本地缓存，否则从 URL 下载（上限 20MB）。
+
+        Args:
+            file_id: 文件 ID（消息标签 [media_file_id:xxx] 中的值）
+            save_name: 期望保存的文件名（可选，默认使用原始文件名）
+        """
+        import shutil
+
+        from agent.channel.media import download_to_uploads, get_upload_dir
+
+        data = await self._call_api_data("get_file", {"file_id": file_id})
+        if data is None:
+            return _err("获取文件信息失败")
+
+        src_file = str(data.get("file", "") or "")
+        url = str(data.get("url", "") or "")
+        name = save_name.strip() or str(
+            data.get("file_name", "") or data.get("name", "") or "")
+
+        # 同机部署：get_file 返回的本地路径直接复制，避免重复下载
+        if src_file and os.path.isfile(src_file):
+            if not name:
+                name = os.path.basename(src_file)
+            dl_dir = os.path.join(get_upload_dir(), "file")
+            os.makedirs(dl_dir, exist_ok=True)
+            local_path = os.path.join(
+                dl_dir,
+                f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}_{os.path.basename(name)}",
+            )
+            try:
+                shutil.copyfile(src_file, local_path)
+            except OSError as exc:
+                return _err(f"复制本地文件失败: {exc}")
+            return _ok({
+                "path": local_path,
+                "name": os.path.basename(local_path),
+                "size": os.path.getsize(local_path),
+                "hint": "文件已就绪，可用 read_file 读取该路径进行分析",
+            })
+
+        if url.startswith(("http://", "https://")):
+            local_path = await download_to_uploads(url, SegmentType.FILE, save_name=name)
+            if local_path:
+                return _ok({
+                    "path": local_path,
+                    "name": os.path.basename(local_path),
+                    "size": os.path.getsize(local_path),
+                    "hint": "文件已就绪，可用 read_file 读取该路径进行分析",
+                })
+            return _err("文件下载失败（可能超过 20MB 限制或网络错误）")
+        return _err("未获取到可用的下载地址")
+
+    @channel_tool()
     async def create_collection(self, title: str, content: str, **kwargs: Any) -> str:
         """创建收藏。
 
@@ -1432,7 +1489,7 @@ class OneBotV11Channel(BaseChannel[QQConfig]):
 
         if not self._check_whitelist(data):
             log(f"QQ 白名单拦截: group={data.get('group_id')} user={data.get('user_id')} "
-                f"的消息已被丢弃（不在白名单内）", "WARNING", tag="通道")
+                f"的消息已被丢弃（不在白名单内）", "DEBUG", tag="通道")
             return
 
         # 使用异步解析，支持获取引用消息内容、群成员昵称和合并转发

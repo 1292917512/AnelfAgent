@@ -187,11 +187,13 @@ async def reply_entry(
         mind: Mind,
         anything: Everything,
         images: Optional[List[ImageContent]] = None,
+        *,
+        adapter_key: str = "",
 ) -> None:
     """执行回复，异常时发送错误提示。"""
     await event_bus.emit(EVENT_BEFORE_REPLY, {"phase": "llm_calling"})
     try:
-        await reply_loop(mind, anything, images or [])
+        await reply_loop(mind, anything, images or [], adapter_key=adapter_key)
     except Exception as exc:
         log(f"reply 异常: {type(exc).__name__}: {exc}", "ERROR", tag="思维")
         error_msg = f"抱歉，处理消息时出错了: {type(exc).__name__}: {exc}"
@@ -206,10 +208,17 @@ async def _send_reply_error(anything: Everything, error_msg: str) -> None:
         return
     try:
         from agent.channel.manager import get_channel_manager
+        from agent.messages import EverythingGroup
         channel = get_channel_manager().get(adapter_key)
         if channel is None:
             return
-        target_id = str(anything.uid)
+        # 按 is_group_scope 选 group_id/uid（参考 mind.py _resolve_target_id）
+        if isinstance(anything, EverythingGroup) and anything.is_group_scope:
+            target_id = str(anything.group_id)
+        else:
+            target_id = str(anything.uid) if anything.uid else ""
+        if not target_id:
+            return
         await channel.send_text(target_id, error_msg)
         from agent.channel.output_tools import _record_sent_reply, _resolve_channel_type
         await _record_sent_reply(target_id, error_msg, _resolve_channel_type(adapter_key, target_id))
@@ -217,8 +226,8 @@ async def _send_reply_error(anything: Everything, error_msg: str) -> None:
         log(f"错误提示发送失败: {exc}", "DEBUG", tag="思维")
 
 
-def collect_pending_images(mind: Mind) -> List[ImageContent]:
-    return mind.pfc.collect_images()
+def collect_pending_images(mind: Mind, scope: str = "") -> List[ImageContent]:
+    return mind.pfc.collect_images(scope=scope)
 
 
 def save_base64_image(b64_data: str, mime_type: str = "image/jpeg") -> str:
@@ -229,7 +238,7 @@ def save_base64_image(b64_data: str, mime_type: str = "image/jpeg") -> str:
     ext = "jpg" if "jpeg" in mime_type else mime_type.split("/")[-1] if "/" in mime_type else "jpg"
     upload_dir = os.path.abspath(os.path.join("workspace", "uploads", "image"))
     os.makedirs(upload_dir, exist_ok=True)
-    fname = f"vision_{int(_time.time() * 1000)}.{ext}"
+    fname = f"vision_{int(_time.time() * 1000)}_{uuid.uuid4().hex[:6]}.{ext}"
     fpath = os.path.join(upload_dir, fname)
     with open(fpath, "wb") as f:
         f.write(base64.b64decode(b64_data))
@@ -500,12 +509,16 @@ async def reply_loop(
         mind: Mind,
         anything: Everything,
         images: Optional[List[ImageContent]] = None,
+        *,
+        adapter_key: str = "",
 ) -> None:
     """多轮对话循环入口：处理图片，委托给统一思维循环。"""
     from agent.mind.think_session import think_session
 
     mc = mind._get_mind_config()
-    adapter_key = mind._resolve_adapter_key()
+    # adapter_key 优先使用调用方传入（按 scope 隔离），回退到共享状态（兼容旧路径）
+    if not adapter_key:
+        adapter_key = mind._resolve_adapter_key()
     scope = mind._resolve_entity_scope(anything) if anything else ""
     with think_session(mind, scope):
         # 会话开始清理历史中断信号，避免上一轮遗留请求误杀新会话
@@ -532,6 +545,7 @@ async def reply_loop(
             active_tools=active_tools,
             anything=anything,
             base_messages=base_messages,
+            adapter_key=adapter_key,
         )
 
 
@@ -547,6 +561,8 @@ async def think_loop(
         anything: Optional[Everything] = None,
         base_messages: Optional[List[Dict]] = None,
         options: Optional[Dict] = None,
+        *,
+        adapter_key: str = "",
 ) -> None:
     """统一思维循环：对话和反思共享同一流程。
 
@@ -562,7 +578,9 @@ async def think_loop(
     from agent.mind.tool_activation import ToolActivationManager
 
     mode_label = "反思" if mode == ThinkMode.REFLECT else "对话"
-    adapter_key = mind._resolve_adapter_key() if mode == ThinkMode.REPLY else ""
+    # adapter_key 优先使用调用方传入（按 scope 隔离），回退到共享状态（兼容旧路径）
+    if not adapter_key and mode == ThinkMode.REPLY:
+        adapter_key = mind._resolve_adapter_key()
     if base_messages is None:
         if mode == ThinkMode.REPLY and anything:
             base_messages = await mind.get_recollection(anything=anything)
@@ -638,6 +656,13 @@ async def think_loop(
     except (TypeError, ValueError):
         _supports_stream = False
 
+    # 工具集版本快照：每轮检查版本变化，变了就重建 active_tools（保持 prefix 缓存友好）
+    from agent.mind.tool_activation import tool_activation as _tool_act_mgr
+    _last_tools_version = (
+        getattr(mind.pfc, "tools_version", 0),
+        _tool_act_mgr.version,
+    )
+
     while iteration < safety_limit:
         # 中断检查点（协作式）：用户/守卫请求中断时安全收束，
         # 不发半截消息、不写残缺工具链、历史留中断元消息
@@ -654,6 +679,15 @@ async def think_loop(
                 )
                 await finish_think(mind, anything, execution_steps, iteration, tool_chain)
             return
+
+        # 工具集版本检查：激活/发现变化时重建 active_tools（字节稳定时不重建，prefix 缓存友好）
+        _cur_tools_version = (getattr(mind.pfc, "tools_version", 0), _tool_act_mgr.version)
+        if _cur_tools_version != _last_tools_version:
+            _last_tools_version = _cur_tools_version
+            active_tools = await mind.pfc.get_active_tool_schemas(
+                adapter_key, scope=current_scope,
+            )
+            log(f"工具集版本变化，重建 active_tools: {len(active_tools)} 个", "DEBUG", tag="思维")
 
         await event_bus.emit(EVENT_THINKING_REPLY_ROUND, {
             "iteration": iteration,
@@ -693,8 +727,12 @@ async def think_loop(
                 _consume_pending_for_scope(mind, anything)
                 # 新消息携带的媒体：激活对应媒体工具并重建工具集供后续轮次使用
                 # （媒体标签已随内容并入上下文，待处理媒体不留存到后续周期）
-                merged_images = mind.pfc.collect_images()
-                merged_media = mind.pfc.collect_media()
+                try:
+                    merged_images = mind.pfc.collect_images(scope=current_scope)
+                    merged_media = mind.pfc.collect_media(scope=current_scope)
+                except TypeError:
+                    merged_images = mind.pfc.collect_images()
+                    merged_media = mind.pfc.collect_media()
                 if merged_images:
                     # 视觉模型直传图片 block；非视觉模型转存超大 base64 为文件路径
                     tool_chain = await apply_vision(mind, tool_chain, merged_images)
@@ -809,6 +847,24 @@ async def think_loop(
                 tool_chain.append(truncated_msg)
             tool_chain.append({"role": "system", "content": _PROMPT_MAX_OUTPUT_CONTINUE})
             execution_steps.append(f"→ 第{iteration + 1}轮: 输出截断，已注入续写提示")
+            iteration += 1
+            continue
+
+        # 恢复次数耗尽时同样跳过本轮 tool_calls（参数可能不完整，执行会出错）
+        if getattr(result, "finish_reason", "") == "length" \
+                and max_output_recoveries >= _MAX_OUTPUT_RECOVERY_LIMIT:
+            log("输出截断恢复次数耗尽，跳过本轮 tool_calls 并结束", "WARNING", tag="思维")
+            partial_text = _strip_think_blocks(result.content or "").strip()
+            if partial_text:
+                truncated_msg = {"role": "assistant", "content": partial_text}
+                preserve_reasoning_fields(truncated_msg, result)
+                tool_chain.append(truncated_msg)
+            tool_chain.append({
+                "role": "system",
+                "content": "[系统] 输出多次被截断，本轮工具调用参数可能不完整，已跳过执行。"
+                           "请拆分为更小的步骤或调用 end_reply 结束。",
+            })
+            execution_steps.append(f"→ 第{iteration + 1}轮: 截断恢复耗尽，跳过 tool_calls")
             iteration += 1
             continue
 
@@ -1262,8 +1318,6 @@ def _collect_premature_end(result: ChatResult, tool_calls: List[ToolCall]) -> st
     return _PROMPT_END_BLOCKED_PREMATURE
 
 
-# 工具结果加工（脱敏/扫描/截断）已迁移至 result_pipeline.py，
-
 def _streaming_enabled() -> bool:
     """流式内核开关（配置 mind_streaming_enabled，默认开）。
 
@@ -1359,6 +1413,8 @@ async def execute_tool_calls(
         async with semaphore:
             try:
                 return await _run_one(tc)
+            except asyncio.CancelledError:
+                raise
             except BaseException as e:
                 return e
 
@@ -1380,7 +1436,63 @@ async def execute_tool_calls(
                 # 配对铁律：结果加工失败也要保证 tool 消息落链
                 final_output = json.dumps({"error": f"结果加工异常: {e}"}, ensure_ascii=False)
             tool_chain.append({"role": "tool", "tool_call_id": tc.id, "content": final_output})
+            # 多模态工具结果：候选图片注入上下文，让视觉模型直接看到（如表情包检索）
+            try:
+                await _append_multimodal_result(mind, tool_chain, final_output)
+            except Exception as exc:
+                log(f"多模态工具结果展开失败（不影响主流程）: {exc}", "DEBUG", tag="思维")
     log_tool_round(iteration, tool_calls)
+
+
+# 单个工具结果允许附带的最大图片数（防上下文膨胀）
+_MAX_TOOL_RESULT_IMAGES = 6
+
+
+async def _append_multimodal_result(
+        mind: Mind,
+        tool_chain: List[Dict],
+        output: str,
+) -> None:
+    """展开多模态工具结果约定，把候选图片以 user 消息注入上下文。
+
+    工具返回 JSON 含 ``{"_multimodal": true, "text": ..., "images": [路径...]}``
+    时（如 search_sticker / search_image / find_similar_image），将图片加载
+    压缩后以 image_url block 注入，视觉模型即可"亲眼看到"候选再做选择
+    （借鉴 nekro-agent MULTIMODAL_AGENT 的检索体验）。非视觉模型跳过，
+    文本摘要（text/results 字段）已随 tool 消息提供全部信息。
+    """
+    if '"_multimodal"' not in output:
+        return
+    parsed = _parse_tool_result_json(output)
+    if not isinstance(parsed, dict) or not parsed.get("_multimodal"):
+        return
+    images = [p for p in (parsed.get("images") or []) if isinstance(p, str) and p]
+    if not images:
+        return
+    config = getattr(getattr(mind, "llm", None), "config", None)
+    if config is None or not getattr(config, "supports_vision", False):
+        return
+
+    from agent.llm.image_utils import ensure_base64, load_image_from_path
+    from agent.llm.types import ImageContent
+
+    candidates: List[ImageContent] = []
+    for path in images[:_MAX_TOOL_RESULT_IMAGES]:
+        try:
+            candidates.append(load_image_from_path(path))
+        except Exception:
+            continue
+    if not candidates:
+        return
+    prepared = await ensure_base64(candidates)
+    if not prepared:
+        return
+
+    text = parsed.get("text") or "[系统] 上方工具返回了候选图片，请查看后继续。"
+    blocks: List[Dict] = [{"type": "text", "text": text}]
+    blocks.extend(img.to_openai_block(flat_url=config.use_flat_image_url) for img in prepared)
+    tool_chain.append({"role": "user", "content": blocks})
+    log(f"多模态工具结果: 注入 {len(prepared)} 张候选图片", "DEBUG", tag="思维")
 
 
 async def execute_one_tool(

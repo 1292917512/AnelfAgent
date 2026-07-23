@@ -260,10 +260,12 @@ async def send_message(
         return json.dumps({"success": False, "error": "content 参数不能为空，请提供要发送的消息内容"}, ensure_ascii=False)
 
     resolved_channel_type = "private"
+    resolved_target = target_id
 
     async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
-        nonlocal resolved_channel_type
+        nonlocal resolved_channel_type, resolved_target
         resolved_channel_type = channel_type
+        resolved_target = resolved_target_id
         log(f"调用 {channel_id}.send_text({resolved_target_id}, {channel_type}, {content[:50]}...)", "DEBUG", tag="通道")
         kwargs: dict[str, Any] = {"channel_type": channel_type}
         if reply_to_message_id:
@@ -287,7 +289,7 @@ async def send_message(
     # 发送成功后将 AI 回复记录到对话历史（assistant 角色）
     try:
         if json.loads(result).get("success") is not False:
-            await _record_sent_reply(target_id, content, resolved_channel_type)
+            await _record_sent_reply(resolved_target, content, resolved_channel_type)
     except (json.JSONDecodeError, TypeError):
         pass
     return result

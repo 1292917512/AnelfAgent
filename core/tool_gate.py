@@ -22,6 +22,7 @@ CheckFn = Callable[[], Union[bool, Awaitable[bool]]]
 
 _CHECK_FN_TTL_SECONDS = 30.0
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
+_CHECK_FN_TIMEOUT_SECONDS = 5.0
 
 
 class ToolGate:
@@ -39,7 +40,6 @@ class ToolGate:
         self._cache: Dict[CheckFn, Tuple[float, bool]] = {}
         # check_fn -> 最近一次返回 True 的单调时钟时间戳
         self._last_good: Dict[CheckFn, float] = {}
-        self._lock = asyncio.Lock()
 
     def _effective_ttl(self) -> float:
         return get_config_float("tool_gate_check_ttl_seconds", self.ttl_seconds)
@@ -48,12 +48,15 @@ class ToolGate:
         return get_config_float("tool_gate_check_grace_seconds", self.failure_grace_seconds)
 
     async def _run_check(self, fn: CheckFn) -> bool:
-        """执行 check_fn（兼容同步/异步），异常一律视为检查失败。"""
+        """执行 check_fn（兼容同步/异步，异步分支 5s 超时），异常一律视为检查失败。"""
         try:
             result = fn()
             if inspect.isawaitable(result):
-                result = await result
+                result = await asyncio.wait_for(result, timeout=_CHECK_FN_TIMEOUT_SECONDS)
             return bool(result)
+        except asyncio.TimeoutError:
+            log(f"工具门控 check_fn 超时 ({_CHECK_FN_TIMEOUT_SECONDS}s)", "DEBUG", tag="门控")
+            return False
         except Exception as exc:
             log(f"工具门控 check_fn 异常: {type(exc).__name__}: {exc}", "DEBUG", tag="门控")
             return False
@@ -97,16 +100,24 @@ class ToolGate:
             {名称: 是否通过}
         """
         results: Dict[str, bool] = {}
-        fn_results: Dict[int, bool] = {}
-        async with self._lock:
-            for name, fn in items.items():
-                if fn is None:
-                    results[name] = True
-                    continue
-                fn_key = id(fn)
-                if fn_key not in fn_results:
-                    fn_results[fn_key] = await self.check(fn)
-                results[name] = fn_results[fn_key]
+        # 收集去重后的待探测 fn（None 直接通过），name → fn 标识
+        pending: Dict[int, CheckFn] = {}
+        name_to_key: Dict[str, int] = {}
+        for name, fn in items.items():
+            if fn is None:
+                results[name] = True
+                continue
+            fn_key = id(fn)
+            name_to_key[name] = fn_key
+            pending.setdefault(fn_key, fn)
+
+        # 并发探测去重后的 fn；check 内部自管缓存，无需持锁串行 await
+        keys = list(pending.keys())
+        outcomes = await asyncio.gather(*(self.check(pending[k]) for k in keys))
+        fn_results = dict(zip(keys, outcomes))
+
+        for name, fn_key in name_to_key.items():
+            results[name] = fn_results[fn_key]
         return results
 
     def invalidate(self) -> None:

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import CodeMirror from "@uiw/react-codemirror";
 import type { Extension } from "@codemirror/state";
@@ -12,7 +12,10 @@ import { css } from "@codemirror/lang-css";
 import {
   Check, Code, Columns2, Copy, Download, Eye, ListX, Loader2, PanelLeftClose, Paperclip, Quote, Save, X,
 } from "lucide-react";
-import { workspaceApi, workspaceMediaKind, type WorkspaceFile } from "@/lib/api";
+import {
+  isPreviewableBinary, workspaceApi, workspaceFileKind, workspaceMediaKind,
+  type WorkspaceFile, type WorkspaceFileKind,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -21,6 +24,12 @@ import { Button, ConfirmDialog, toast } from "@/components/ui";
 import { useIsMobile } from "@/lib/use-media-query";
 import { Lightbox } from "./render/Lightbox";
 import { Markdown } from "./render/Markdown";
+import { CsvPreview } from "./file_preview/CsvPreview";
+import { DocxPreview } from "./file_preview/DocxPreview";
+import { HtmlPreview } from "./file_preview/HtmlPreview";
+import { PdfPreview } from "./file_preview/PdfPreview";
+import { VideoPreview } from "./file_preview/VideoPreview";
+import { XlsxPreview } from "./file_preview/XlsxPreview";
 
 /** 按扩展名映射 CodeMirror 语言包 */
 function langExtension(path: string): Extension[] {
@@ -40,12 +49,6 @@ function langExtension(path: string): Extension[] {
   }
 }
 
-/** 是否为可预览渲染的 Markdown 文件 */
-function isMarkdownFile(path: string): boolean {
-  const ext = path.split(".").pop()?.toLowerCase() || "";
-  return ext === "md" || ext === "markdown";
-}
-
 /** 单个标签页的编辑状态（file 为已保存内容，draft 为当前草稿） */
 interface TabState {
   file: WorkspaceFile;
@@ -53,6 +56,12 @@ interface TabState {
 }
 
 type ViewMode = "edit" | "preview" | "split";
+
+/** 文本类文件打开时的默认视图：可渲染格式（md/html/csv）默认预览，其余默认编辑 */
+function defaultViewMode(path: string): ViewMode {
+  const kind = workspaceFileKind(path);
+  return kind === "markdown" || kind === "html" || kind === "csv" ? "preview" : "edit";
+}
 
 /** 工作区文件编辑器：多标签侧栏（非模态）+ CodeMirror + Markdown 预览 + 对话操作 */
 export function FileEditor() {
@@ -80,16 +89,26 @@ export function FileEditor() {
   /** 待确认关闭的目标：path 为单标签，null path 语义为全部关闭 */
   const [confirmClose, setConfirmClose] = useState<{ path: string | null } | null>(null);
 
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 组件卸载时清理定时器
+  useEffect(() => () => {
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+  }, []);
+
   const cur = openFilePath ? tabs.get(openFilePath) : undefined;
-  const isMd = openFilePath ? isMarkdownFile(openFilePath) : false;
+  // 富格式预览类型（markdown/html/csv/pdf/docx/xlsx），不命中为普通文本
+  const kind: WorkspaceFileKind | null = openFilePath ? workspaceFileKind(openFilePath) : null;
   // 二进制媒体（图片/视频/音频）走预览而非文本编辑
   const mediaKind = cur?.file.binary ? workspaceMediaKind(cur.file.name) : null;
   const rawUrl = cur ? workspaceApi.rawUrl(cur.file.path) : "";
   const dirty = cur !== undefined && cur.draft !== cur.file.content;
 
-  // 激活标签首次加载内容；切换标签重置视图模式与加载状态
+  // 激活标签首次加载内容；切换标签按文件类型重置默认视图与加载状态
   useEffect(() => {
-    setViewMode("edit");
+    setViewMode(openFilePath ? defaultViewMode(openFilePath) : "edit");
     setLoadError(false);
     setLoading(false);
     if (!openFilePath || tabs.has(openFilePath)) return;
@@ -130,10 +149,13 @@ export function FileEditor() {
       await workspaceApi.write(cur.file.path, cur.draft);
       setTabs((m) => new Map(m).set(cur.file.path, { file: { ...cur.file, content: cur.draft }, draft: cur.draft }));
       setSavedTick(true);
-      setTimeout(() => setSavedTick(false), 1500);
-    } catch { /* 保存失败保留脏状态 */ }
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => setSavedTick(false), 1500);
+    } catch {
+      toast.error(t("editor.saveFailed"));
+    }
     finally { setSaving(false); }
-  }, [cur, dirty]);
+  }, [cur, dirty, t]);
 
   // Ctrl/Cmd+S 保存
   useEffect(() => {
@@ -188,7 +210,8 @@ export function FileEditor() {
     if (!cur || cur.file.binary) return;
     navigator.clipboard.writeText(cur.draft).then(() => {
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
     }).catch(() => { /* 剪贴板不可用时忽略 */ });
   }, [cur]);
 
@@ -207,7 +230,7 @@ export function FileEditor() {
     />
   );
 
-  const splitWide = isMd && viewMode === "split";
+  const splitWide = (kind === "markdown" || kind === "html") && viewMode === "split";
 
   const body = (
     <div
@@ -271,12 +294,13 @@ export function FileEditor() {
       {/* 操作工具条 */}
       {cur && (
         <div className="flex items-center gap-1 px-2 py-1 border-b border-border shrink-0">
-          {isMd && !cur.file.binary && !cur.file.truncated && (
+          {(kind === "markdown" || kind === "html" || kind === "csv") && !cur.file.binary && !cur.file.truncated && (
             <div className="flex items-center rounded-md border border-border overflow-hidden mr-1">
               {([
                 { mode: "edit" as ViewMode, icon: Code, label: t("editor.editView") },
                 { mode: "preview" as ViewMode, icon: Eye, label: t("editor.preview") },
-                { mode: "split" as ViewMode, icon: Columns2, label: t("editor.split") },
+                // csv 表格不提供分屏（源码即结构化数据，分屏收益低）
+                ...(kind === "csv" ? [] : [{ mode: "split" as ViewMode, icon: Columns2, label: t("editor.split") }]),
               ]).map(({ mode, icon: Icon, label }) => (
                 <button
                   key={mode}
@@ -339,16 +363,29 @@ export function FileEditor() {
           </div>
         )}
         {cur && cur.file.binary && mediaKind === "video" && (
-          <div className="flex items-center justify-center py-4">
-            <video controls src={rawUrl} className="max-w-full max-h-[70vh] rounded-md border border-border" />
-          </div>
+          <VideoPreview path={cur.file.path} name={cur.file.name} />
         )}
         {cur && cur.file.binary && mediaKind === "audio" && (
           <div className="flex items-center justify-center py-12">
             <audio controls src={rawUrl} className="w-full max-w-md" />
           </div>
         )}
-        {cur && cur.file.binary && !mediaKind && (
+        {cur && cur.file.binary && kind === "pdf" && (
+          <div className="flex-1 min-h-0">
+            <PdfPreview path={cur.file.path} title={cur.file.name} />
+          </div>
+        )}
+        {cur && cur.file.binary && kind === "docx" && (
+          <div className="flex-1 min-h-0">
+            <DocxPreview path={cur.file.path} title={cur.file.name} />
+          </div>
+        )}
+        {cur && cur.file.binary && kind === "xlsx" && (
+          <div className="flex-1 min-h-0 flex flex-col">
+            <XlsxPreview path={cur.file.path} title={cur.file.name} />
+          </div>
+        )}
+        {cur && cur.file.binary && !mediaKind && !isPreviewableBinary(cur.file.name) && (
           <p className="py-8 text-center text-sm text-muted">{t("editor.binaryFile")}</p>
         )}
         {cur && cur.file.truncated && (
@@ -356,17 +393,33 @@ export function FileEditor() {
         )}
 
         {cur && !cur.file.binary && !cur.file.truncated && (
-          isMd && viewMode === "preview" ? (
+          kind === "markdown" && viewMode === "preview" ? (
             <div className="flex-1 min-h-0 overflow-y-auto pr-1">
               <Markdown content={cur.draft} />
             </div>
-          ) : isMd && viewMode === "split" ? (
+          ) : kind === "markdown" && viewMode === "split" ? (
             <div className="flex-1 min-h-0 grid grid-cols-2 gap-2">
               <div className="min-h-0 h-full">{editorNode}</div>
               <div className="min-h-0 h-full overflow-y-auto pr-1">
                 <Markdown content={cur.draft} />
               </div>
             </div>
+          ) : kind === "html" && viewMode === "preview" ? (
+            <div className="flex-1 min-h-0">
+              <HtmlPreview html={cur.draft} title={cur.file.name} />
+            </div>
+          ) : kind === "html" && viewMode === "split" ? (
+            <div className="flex-1 min-h-0 grid grid-cols-2 gap-2">
+              <div className="min-h-0 h-full">{editorNode}</div>
+              <div className="min-h-0 h-full">
+                <HtmlPreview html={cur.draft} title={cur.file.name} />
+              </div>
+            </div>
+          ) : kind === "csv" && viewMode === "preview" ? (
+            <CsvPreview
+              text={cur.draft}
+              delimiter={cur.file.name.toLowerCase().endsWith(".tsv") ? "\t" : ","}
+            />
           ) : (
             <div className="flex-1 min-h-0">{editorNode}</div>
           )
