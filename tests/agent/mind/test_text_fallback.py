@@ -168,13 +168,13 @@ async def test_bare_text_loop_hits_limit(anything, deliver_mock) -> None:
 
 
 async def test_bare_text_injects_continue_hint(anything, deliver_mock) -> None:
-    """纯文本后注入「已发送」标记 + 未调工具收尾提醒，不宣传可纯文本投递。"""
+    """纯文本后注入 assistant「已发送」确认 + system 未调工具提醒（确认不入库）。"""
     mind = _FakeMind(limit=5)
     chain: List = []
     await _run(mind, anything, chain=chain)
 
     sent_marks = [
-        m for m in chain if m.get("role") == "system"
+        m for m in chain if m.get("role") == "assistant"
         and "已发送给用户" in m.get("content", "")
     ]
     assert sent_marks
@@ -211,7 +211,7 @@ async def test_non_output_tools_inject_visibility_hint(anything, deliver_mock) -
 
 
 async def test_send_message_injects_sent_mark(anything, deliver_mock) -> None:
-    """send_message 成功后注入「以上内容已发送给用户」。"""
+    """send_message 成功后注入 assistant「已发送」确认（仅 tool_chain，不入库）。"""
     mind = _FakeMind(limit=5)
     mind._rounds = [
         _mk_result("你好", ["send_message"]),
@@ -221,7 +221,7 @@ async def test_send_message_injects_sent_mark(anything, deliver_mock) -> None:
     await _run(mind, anything, chain=chain)
 
     sent_marks = [
-        m for m in chain if m.get("role") == "system"
+        m for m in chain if m.get("role") == "assistant"
         and "已发送给用户" in m.get("content", "")
     ]
     assert sent_marks

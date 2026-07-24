@@ -109,9 +109,10 @@ _PROMPT_AFTER_NON_OUTPUT_TOOLS = (
     "若需回复用户请调用 send_message；若已完成请调用 end_reply（参数留空）。"
 )
 
-# 纯文本 / send_message 等已成功发出后：明确「已发送」，避免重复再说一遍
+# 纯文本 / send_message 等已成功发出后：在 tool_chain 补一句 assistant，
+# 仅本轮上下文可见（不入库），让模型感知「已输出给用户」。
 _PROMPT_CONTENT_SENT = (
-    "[系统提示] 以上内容已发送给用户。"
+    "[已发送给用户] 以上内容已发出。"
     "勿重复发送同一内容；若需继续请调用工具，若已完成请调用 end_reply。"
 )
 
@@ -902,10 +903,7 @@ async def think_loop(
                             "" if chosen else "（路由解析失败，回退激活会话）"
                         )
                         if sent:
-                            tool_chain.append({
-                                "role": "system",
-                                "content": _PROMPT_CONTENT_SENT,
-                            })
+                            _append_content_sent_ack(tool_chain)
                 pending_route = None
                 pending_route_text = ""
                 if delivered_to:
@@ -1042,10 +1040,7 @@ async def think_loop(
                         if target is not None:
                             sent = await deliver_text(target, raw_text)
                             if sent:
-                                tool_chain.append({
-                                    "role": "system",
-                                    "content": _PROMPT_CONTENT_SENT,
-                                })
+                                _append_content_sent_ack(tool_chain)
                         execution_steps.append(
                             f"→ 第{iteration + 1}轮: 纯文本已投递到 {target.session_key}（本轮继续）"
                             if target and target.session_key
@@ -1144,10 +1139,7 @@ async def think_loop(
         # 投递成功 / 非输出工具后的上下文标记（帮助弱模型区分「已发出」与「仅自己可见」）
         if mode == ThinkMode.REPLY:
             if _round_output_sent_successfully(tool_chain, tool_calls):
-                tool_chain.append({
-                    "role": "system",
-                    "content": _PROMPT_CONTENT_SENT,
-                })
+                _append_content_sent_ack(tool_chain)
             else:
                 called = {tc.name for tc in tool_calls}
                 if (
@@ -1207,11 +1199,8 @@ async def think_loop(
                     if target is not None:
                         sent = await deliver_text(target, end_text)
                         if sent:
-                            # 本轮即将结束，标记仍写入链，供 finish 摘要/调试一致
-                            tool_chain.append({
-                                "role": "system",
-                                "content": _PROMPT_CONTENT_SENT,
-                            })
+                            # 本轮即将结束，标记仍写入链，供 finish 摘要/调试一致（不入库）
+                            _append_content_sent_ack(tool_chain)
                         execution_steps.append(
                             f"→ 第{iteration + 1}轮: end_reply 附带纯文本已投递到 {target.session_key}"
                         )
@@ -1378,6 +1367,14 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List[ToolCall]) 
         return ""
     lines = "\n".join(f"- {f}" for f in failures)
     return _PROMPT_END_BLOCKED_FAILURE.format(failures=lines)
+
+
+def _append_content_sent_ack(tool_chain: List[Dict]) -> None:
+    """投递成功后补一句 assistant，仅写入本轮 tool_chain，不写对话库。"""
+    tool_chain.append({
+        "role": "assistant",
+        "content": _PROMPT_CONTENT_SENT,
+    })
 
 
 def _round_output_sent_successfully(
