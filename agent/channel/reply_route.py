@@ -1,11 +1,13 @@
 """纯文本回复的自动路由（兜底投递）。
 
-AI 未调用 send_message 而直接输出文字时，由系统把这段文字投递到
-激活本轮的会话（来源绑定路由，参考 hermes-agent：路由是系统职责，
-AI 无选路权，从结构上杜绝"发错频道"的幻觉）。
+对齐 hermes-agent：对当前用户的最终回复 = 无工具时的 assistant 正文，
+由运行时投递一次后结束本轮；send_message 仍可用于跨会话 / 媒体等旁路出站。
 
-send_message 等工具仍是推荐主路径（可 @ 提及、引用回复、跨会话、发媒体），
-本模块只处理"未指定频道"的纯文本兜底场景。
+路由规则（系统优先，必要时问 AI 一轮）：
+1. 仅有一个候选（通常即来源会话：同一私聊 / 同一群）→ 直接投递回去
+2. 同时存在多个私聊 / 群待回复 → 反问 AI 选目标，解析失败回退到来源会话
+
+send_message 等工具仍可显式指定频道；本模块只处理未指定目标的纯文本终态。
 """
 
 from __future__ import annotations
@@ -86,6 +88,7 @@ class ReplyTarget:
     target_id: str
     channel_type: str = "private"  # "private" | "group"
     reply_to: str = ""  # 引用锚点（触发消息的 message_id，可选）
+    label: str = ""  # 展示用短标签（如「当前触发」或待办预览）
 
     @property
     def session_key(self) -> str:
@@ -93,7 +96,13 @@ class ReplyTarget:
 
     def describe(self) -> str:
         kind = "群聊" if self.channel_type == "group" else "私聊"
-        return f"{self.session_key}（{kind}，频道={self.channel_id}）"
+        base = f"{self.session_key}（{kind}，频道={self.channel_id}）"
+        if not self.label:
+            return base
+        preview = " ".join(self.label.split()).strip()
+        if len(preview) > 40:
+            preview = preview[:40] + "…"
+        return f"{base} — {preview}"
 
 
 def target_from_anything(anything, adapter_key: str = "") -> Optional[ReplyTarget]:
@@ -120,6 +129,7 @@ def target_from_anything(anything, adapter_key: str = "") -> Optional[ReplyTarge
         target_id=target_id,
         channel_type=channel_type,
         reply_to=reply_to,
+        label="当前触发会话",
     )
 
 

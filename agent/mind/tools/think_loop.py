@@ -76,44 +76,35 @@ _PROMPT_CONTINUE = (
     "[系统提示] 继续执行，若已完成所有操作请调用 end_reply 结束。"
 )
 
-# 输出方式说明（每轮注入）：只引导工具路径；纯文本投递是系统静默兜底，不对 AI 宣传。
+# 输出方式说明（每轮注入）：先完成任务再回复；无工具正文 = 最终回复并结束本轮。
 _PROMPT_REPLY_GUIDE = (
     "[输出方式]\n"
-    "1. 回复用户 → 调用 send_message（content 即回复文本）\n"
-    "2. 需要查资料或执行操作 → 通过 function calling 调用工具"
-    "（禁止在文字里伪造工具结果）\n"
-    "3. 已完成 → 调用 end_reply（参数留空，不要废话）；不想说话 → 整条仅输出 [SILENT]"
+    "1. 先完成任务：需要查资料或执行操作时，立刻通过 function calling 调用工具；"
+    "可并行的独立工具同一轮一并发起。禁止只说「检查一下/让我看看」而不调工具。\n"
+    "2. 全部完成后再回复用户：调用 send_message，或直接输出最终回复正文"
+    "（系统投递到来源会话后结束本轮；多会话并存时会再问你选目标）。"
+    "不要在任务中途输出过程话术当回复。\n"
+    "3. 无需回复 → 调用 end_reply（参数留空），或整条仅输出 [SILENT]"
 )
 
-# 未调工具时的纠正提醒（不解释投递机制，避免鼓励纯文本）
-_PROMPT_TEXT_NO_TOOL = (
-    "[系统提示] 你刚才未调用工具。请二选一，不要废话：\n"
-    "1. 还要继续工作 → 立即调用工具（回复用户用 send_message）\n"
-    "2. 无需继续 → 调用 end_reply，或整条仅输出 [SILENT]\n"
-    "不要重复刚才的文字。"
-)
-
-# 连续未调工具接近熔断
-_PROMPT_TEXT_NO_TOOL_STRICT = (
-    "[系统提示] 连续 {count} 次未调用工具。"
-    "请立刻：调用工具继续，或 end_reply / [SILENT] 结束——不要再输出说明性文字。"
-    "再继续 {remaining} 次将被强制结束。"
-)
-
-# 查资料等非输出工具后：纠正「以为调工具就等于已回复用户」
+# 查资料等非输出工具后：结果仅自己可见；未完成则继续调工具，完成后再回用户
 _OUTPUT_TOOL_NAMES = frozenset({
     "send_message", "send_photo", "send_voice", "send_file",
 })
 _PROMPT_AFTER_NON_OUTPUT_TOOLS = (
-    "[系统提示] 工具结果仅你可见，不会自动发给用户。"
-    "若需回复用户请调用 send_message；若已完成请调用 end_reply（参数留空）。"
+    "[系统提示] 工具结果仅你可见，不会自动发给用户。\n"
+    "若任务尚未完成 → 继续调用工具，不要输出过程话术。\n"
+    "若已全部完成 → 输出最终回复正文或调用 send_message；"
+    "无需回复则调用 end_reply（参数留空）。"
 )
 
-# 纯文本 / send_message 等已成功发出后：在 tool_chain 补一句 assistant，
-# 仅本轮上下文可见（不入库），让模型感知「已输出给用户」。
-_PROMPT_CONTENT_SENT = (
-    "[已发送给用户] 以上内容已发出。"
-    "勿重复发送同一内容；若需继续请调用工具，若已完成请调用 end_reply。"
+# 路由询问：仅当同时存在多个待回复私聊/群时，让 AI 选一轮目标
+_PROMPT_ROUTE_ASK = (
+    "[系统路由询问] 刚才的回复正文尚未投递。"
+    "当前同时存在多个待回复会话，请选择投递目标：\n"
+    "{sessions}\n"
+    "规则：同源私聊/同源群应回到该会话；"
+    "请仅回复编号（如 2）或完整 session_key，不要输出其他内容。"
 )
 
 # 反思模式的输出纪律（无 send_message，产出文本即反思结果，但动作必须走工具）
@@ -122,13 +113,6 @@ _PROMPT_REFLECT_OUTPUT_DISCIPLINE = (
     "1. 需要执行动作（检索/查询/分析）时立即调用对应工具，禁止只用文字描述动作\n"
     "2. 文字输出只是思考草稿，不会执行任何操作\n"
     "3. 完成分析后调用 end_reply 结束本轮反思"
-)
-
-# 路由询问：纯文本投递时存在多个候选会话，反问 AI 选择目标
-_PROMPT_ROUTE_ASK = (
-    "[系统路由询问] 你刚才的文字没有指定目标会话，当前存在多个待回复会话：\n"
-    "{sessions}\n"
-    "请仅回复目标会话的编号或 session_key，你的上一条文字将由系统投递到该会话。"
 )
 
 # 挂起等待超时后的降级提示（任务仍在运行，决策权交还 AI）
@@ -465,7 +449,11 @@ def _format_task_completions(
             lines.append(f"  结果：{c.summary[:800]}")
     if running:
         lines.append(f"仍有 {len(running)} 个任务运行中：{_format_running_tasks(running)}")
-    lines.append("请根据结果继续处理（回复用户请调用 send_message，完成请调用 end_reply）。")
+    lines.append(
+        "请根据结果继续处理："
+        "任务未完成则继续调用工具；全部完成后再回复用户（send_message 或最终正文）；"
+        "无需回复则 end_reply。"
+    )
     return "\n".join(lines)
 
 
@@ -587,14 +575,10 @@ async def think_loop(
     end_reply_interceptions = 0
     max_output_recoveries = 0
     last_prompt_tokens = 0
-    # 纯文本（无工具）连续次数：达上限强制结束本轮（防纯叙事死循环）
-    text_without_tool_count = 0
-    # 纯文本路由询问：多候选会话时挂起的候选列表与待投递文本
+    # 纯文本路由询问：多候选会话时挂起的候选列表与待投递正文
     pending_route: Optional[List[ReplyTarget]] = None
     pending_route_text = ""
-    # 纯文本连续上限（配置可调，默认 5）
     mc = mind._get_mind_config()
-    text_without_tool_limit = max(1, int(getattr(mc, "text_without_tool_limit", 5)))
     # 纯工具模式（可选，默认关）：开启后 LLM 调用强制工具选择（tool_choice=required）
     pure_tool_mode = bool(getattr(mc, "force_tool_use", False))
     # 后台任务等待：等待意图挂起的单次上限与本轮回复累计预算（秒）
@@ -887,8 +871,7 @@ async def think_loop(
         if not tool_calls:
             raw_text = _strip_think_blocks(result.content or "").strip()
 
-            # 路由询问应答轮：AI 正在回答"上一条文字推送到哪个会话"。
-            # 投递挂起的原文（不结束本轮，让 AI 继续执行原任务或收尾）。
+            # 路由询问应答轮：AI 选择投递目标 → 投递挂起正文 → 本轮结束（Hermes 终态）
             if pending_route is not None:
                 assistant_msg: Dict[str, Any] = {"role": "assistant", "content": raw_text}
                 preserve_reasoning_fields(assistant_msg, result)
@@ -900,17 +883,24 @@ async def think_loop(
                     if target is not None:
                         sent = await deliver_text(target, pending_route_text)
                         delivered_to = target.session_key + (
-                            "" if chosen else "（路由解析失败，回退激活会话）"
+                            "" if chosen else "（路由解析失败，回退来源会话）"
                         )
-                        if sent:
-                            _append_content_sent_ack(tool_chain)
+                        execution_steps.append(
+                            f"→ 第{iteration + 1}轮: 路由投递到 {delivered_to}，本轮结束"
+                            if sent
+                            else f"→ 第{iteration + 1}轮: 路由投递失败（{delivered_to}），本轮结束"
+                        )
+                    else:
+                        execution_steps.append(
+                            f"→ 第{iteration + 1}轮: 路由无可用目标，本轮结束"
+                        )
                 pending_route = None
                 pending_route_text = ""
-                if delivered_to:
-                    execution_steps.append(
-                        f"→ 第{iteration + 1}轮: 路由投递到 {delivered_to}，本轮继续"
+                if mode == ThinkMode.REPLY and anything:
+                    await finish_think(
+                        mind, anything, execution_steps, iteration + 1, tool_chain,
                     )
-                # 不 return：让循环继续（投递完应当还能继续后续动作）
+                return
 
             if looks_like_fake_tool_call(raw_text):
                 # 伪造工具调用的文本：不投递，提示纠正，连续 2 次强制结束
@@ -1016,9 +1006,8 @@ async def think_loop(
                     continue
 
                 if mode == ThinkMode.REPLY and anything:
-                    # 纯文本自动投递到激活会话：兼容不会调工具的模型。
-                    # 用户能及时看到，本轮不结束——AI 可继续调工具或 end_reply / [SILENT]。
-                    # 多候选会话时反问路由，下一轮提取投递；解析失败回退激活会话。
+                    # Hermes 终态：无工具正文 = 最终回复。
+                    # 单候选（同源私聊/群）直接投递后结束；多候选时问 AI 一轮再投递结束。
                     candidates = _collect_reply_candidates(
                         mind, anything, adapter_key, current_scope,
                     )
@@ -1036,39 +1025,29 @@ async def think_loop(
                             f"→ 第{iteration + 1}轮: 存在 {len(candidates)} 个候选会话，等待路由选择"
                         )
                     else:
-                        target = candidates[0] if candidates else target_from_anything(anything, adapter_key)
+                        target = (
+                            candidates[0] if candidates
+                            else target_from_anything(anything, adapter_key)
+                        )
                         if target is not None:
                             sent = await deliver_text(target, raw_text)
-                            if sent:
-                                _append_content_sent_ack(tool_chain)
-                        execution_steps.append(
-                            f"→ 第{iteration + 1}轮: 纯文本已投递到 {target.session_key}（本轮继续）"
-                            if target and target.session_key
-                            else f"→ 第{iteration + 1}轮: 纯文本无投递目标，本轮继续"
-                        )
-                        text_without_tool_count += 1
-                        if text_without_tool_count >= text_without_tool_limit:
-                            log(
-                                f"纯文本无工具连续 {text_without_tool_count} 次达到上限，强制结束",
-                                "WARNING", tag="思维",
-                            )
                             execution_steps.append(
-                                f"→ 第{iteration + 1}轮: 纯文本无工具 "
-                                f"{text_without_tool_count}/{text_without_tool_limit} 次，熔断结束"
+                                f"→ 第{iteration + 1}轮: 纯文本已投递到 "
+                                f"{target.session_key}，本轮结束"
+                                if sent
+                                else (
+                                    f"→ 第{iteration + 1}轮: 纯文本投递失败"
+                                    f"（{target.session_key}），本轮结束"
+                                )
                             )
-                            await finish_think(
-                                mind, anything, execution_steps, iteration + 1, tool_chain,
+                        else:
+                            execution_steps.append(
+                                f"→ 第{iteration + 1}轮: 纯文本无投递目标，本轮结束"
                             )
-                            return
-                        remaining = max(0, text_without_tool_limit - text_without_tool_count)
-                        feedback = (
-                            _PROMPT_TEXT_NO_TOOL_STRICT.format(
-                                count=text_without_tool_count, remaining=remaining,
-                            )
-                            if text_without_tool_count >= 2
-                            else _PROMPT_TEXT_NO_TOOL
+                        await finish_think(
+                            mind, anything, execution_steps, iteration + 1, tool_chain,
                         )
-                        tool_chain.append({"role": "system", "content": feedback})
+                        return
                 else:
                     # 反思模式：连续纯文本达到上限即收束（产出已累积在 collected_text）
                     reflect_text_rounds += 1
@@ -1092,7 +1071,6 @@ async def think_loop(
         consecutive_fake_calls = 0
         consecutive_empty_calls = 0
         reflect_text_rounds = 0
-        text_without_tool_count = 0
         # 路由询问轮改用工具响应：挂起的路由状态作废（原文不再投递，避免陈旧投递）
         pending_route = None
         pending_route_text = ""
@@ -1136,20 +1114,17 @@ async def think_loop(
         tool_names = ", ".join(tc.name for tc in tool_calls)
         execution_steps.append(f"→ 第{iteration + 1}轮: 调用工具 [{tool_names}]")
 
-        # 投递成功 / 非输出工具后的上下文标记（帮助弱模型区分「已发出」与「仅自己可见」）
+        # 非输出工具后：提醒结果仅自己可见（输出类工具已直接发往用户，无需再确认）
         if mode == ThinkMode.REPLY:
-            if _round_output_sent_successfully(tool_chain, tool_calls):
-                _append_content_sent_ack(tool_chain)
-            else:
-                called = {tc.name for tc in tool_calls}
-                if (
-                    not (called & _OUTPUT_TOOL_NAMES)
-                    and _END_REPLY_TOOL_NAME not in called
-                ):
-                    tool_chain.append({
-                        "role": "system",
-                        "content": _PROMPT_AFTER_NON_OUTPUT_TOOLS,
-                    })
+            called = {tc.name for tc in tool_calls}
+            if (
+                not (called & _OUTPUT_TOOL_NAMES)
+                and _END_REPLY_TOOL_NAME not in called
+            ):
+                tool_chain.append({
+                    "role": "system",
+                    "content": _PROMPT_AFTER_NON_OUTPUT_TOOLS,
+                })
 
         if consecutive_tool_errors >= 3:
             log(
@@ -1199,11 +1174,15 @@ async def think_loop(
                     if target is not None:
                         sent = await deliver_text(target, end_text)
                         if sent:
-                            # 本轮即将结束，标记仍写入链，供 finish 摘要/调试一致（不入库）
-                            _append_content_sent_ack(tool_chain)
-                        execution_steps.append(
-                            f"→ 第{iteration + 1}轮: end_reply 附带纯文本已投递到 {target.session_key}"
-                        )
+                            execution_steps.append(
+                                f"→ 第{iteration + 1}轮: end_reply 附带纯文本已投递到 "
+                                f"{target.session_key}"
+                            )
+                        else:
+                            execution_steps.append(
+                                f"→ 第{iteration + 1}轮: end_reply 附带纯文本投递失败"
+                                f"（{target.session_key}）"
+                            )
             log(f"AI 主动结束{mode_label} (轮次 {iteration + 1})", tag="思维")
             if mode == ThinkMode.REPLY and anything:
                 await finish_think(mind, anything, execution_steps, iteration + 1, tool_chain)
@@ -1369,44 +1348,16 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List[ToolCall]) 
     return _PROMPT_END_BLOCKED_FAILURE.format(failures=lines)
 
 
-def _append_content_sent_ack(tool_chain: List[Dict]) -> None:
-    """投递成功后补一句 assistant，仅写入本轮 tool_chain，不写对话库。"""
-    tool_chain.append({
-        "role": "assistant",
-        "content": _PROMPT_CONTENT_SENT,
-    })
-
-
-def _round_output_sent_successfully(
-        tool_chain: List[Dict], tool_calls: List[ToolCall],
-) -> bool:
-    """本轮是否已通过输出类工具成功发送（send_message / 媒体发送）。"""
-    tc_ids = {
-        tc.id for tc in tool_calls if tc.name in _OUTPUT_TOOL_NAMES
-    }
-    if not tc_ids:
-        return False
-    for msg in reversed(tool_chain):
-        if msg.get("role") != "tool":
-            break
-        if msg.get("tool_call_id") not in tc_ids:
-            continue
-        parsed = _parse_tool_result_json(msg.get("content", ""))
-        if isinstance(parsed, dict) and parsed.get("success") is not False:
-            return True
-    return False
-
-
 def _collect_reply_candidates(
         mind: Mind,
         anything: Everything,
         adapter_key: str,
         current_scope: str,
 ) -> List[ReplyTarget]:
-    """收集纯文本投递的候选会话：激活会话 + 其他待处理消息会话（去重，上限 5）。
+    """收集纯文本投递候选：来源会话优先，再并入其他待处理会话（去重，上限 5）。
 
-    通常只有激活会话一个候选（直接投递）；多条来自不同频道的对话同时
-    待处理时才有多个候选（反问 AI 选择投递目标，解析失败回退激活会话）。
+    - 仅 1 个候选（同源私聊/同源群）→ 调用方直接投递回该会话
+    - 多个私聊/群并存 → 调用方反问 AI 选一轮目标，解析失败回退来源会话
     """
     candidates: List[ReplyTarget] = []
     seen: set = set()
@@ -1417,15 +1368,18 @@ def _collect_reply_candidates(
         seen.add(active.session_key)
 
     try:
-        for scope, _uid, _gid, _preview in mind.pfc.peek_all_tasks():
+        for scope, _uid, _gid, preview in mind.pfc.peek_all_tasks():
             if len(candidates) >= 5:
                 break
             if scope == current_scope:
                 continue
             t = target_from_scope(scope, mind.pfc.get_adapter_key(scope))
-            if t is not None and t.session_key not in seen:
-                seen.add(t.session_key)
-                candidates.append(t)
+            if t is None or t.session_key in seen:
+                continue
+            if preview:
+                t.label = str(preview)
+            seen.add(t.session_key)
+            candidates.append(t)
     except Exception:
         pass
     return candidates
