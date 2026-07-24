@@ -417,6 +417,118 @@ class SqliteBackend:
             for r in rows
         ]
 
+    async def find_conversation_by_message_id(
+        self,
+        message_id: str,
+        *,
+        scope_type: str = "",
+        scope_id: str = "",
+        limit: int = 5,
+        candidate_limit: int = 50,
+    ) -> list[dict]:
+        """按 ``[message_id:xxx]`` 标签精确查找对话消息（含窗口外历史）。
+
+        先用 LIKE 粗筛，再用标签解析精确匹配，避免 ``12`` 误命中 ``123``。
+        可限定 scope；未限定时跨会话搜索。
+        """
+        message_id = (message_id or "").strip()
+        if not message_id:
+            return []
+
+        from core.tags import etag_all, tag_label
+
+        needle = tag_label("message_id", message_id)
+        db = await self._get_db()
+        conditions = ["content LIKE ?"]
+        params: list = [f"%{needle}%"]
+        if scope_type and scope_id:
+            conditions.append("scope_type=? AND scope_id=?")
+            params.extend([scope_type, scope_id])
+        params.append(max(1, int(candidate_limit)))
+
+        cursor = await db.execute(
+            "SELECT id, scope_type, scope_id, role, content, ts_ns FROM conversation_messages "
+            f"WHERE {' AND '.join(conditions)} ORDER BY ts_ns DESC LIMIT ?",
+            params,
+        )
+        rows = await cursor.fetchall()
+
+        matched: list[dict] = []
+        for r in rows:
+            content = r[4] or ""
+            tags = {k: v for k, v in etag_all(content)}
+            if tags.get("message_id") != message_id:
+                continue
+            matched.append({
+                "id": r[0],
+                "scope_type": r[1],
+                "scope_id": r[2],
+                "role": r[3],
+                "content": content,
+                "ts_ns": r[5],
+                "message_id": message_id,
+                "reply_to": tags.get("reply_to", ""),
+            })
+            if len(matched) >= max(1, int(limit)):
+                break
+        return matched
+
+    async def fetch_conversation_around(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        center_ts_ns: int,
+        center_id: int,
+        before: int = 2,
+        after: int = 2,
+    ) -> list[dict]:
+        """取指定消息前后若干条同 scope 对话（按时间正序，含中心消息）。"""
+        db = await self._get_db()
+        before = max(0, int(before))
+        after = max(0, int(after))
+
+        older: list[tuple] = []
+        if before > 0:
+            cursor = await db.execute(
+                "SELECT id, scope_type, scope_id, role, content, ts_ns FROM conversation_messages "
+                "WHERE scope_type=? AND scope_id=? AND (ts_ns<? OR (ts_ns=? AND id<?)) "
+                "ORDER BY ts_ns DESC, id DESC LIMIT ?",
+                (scope_type, scope_id, center_ts_ns, center_ts_ns, center_id, before),
+            )
+            older = list(reversed(await cursor.fetchall()))
+
+        cursor = await db.execute(
+            "SELECT id, scope_type, scope_id, role, content, ts_ns FROM conversation_messages "
+            "WHERE id=?",
+            (center_id,),
+        )
+        center_row = await cursor.fetchone()
+        if not center_row:
+            return []
+
+        newer: list[tuple] = []
+        if after > 0:
+            cursor = await db.execute(
+                "SELECT id, scope_type, scope_id, role, content, ts_ns FROM conversation_messages "
+                "WHERE scope_type=? AND scope_id=? AND (ts_ns>? OR (ts_ns=? AND id>?)) "
+                "ORDER BY ts_ns ASC, id ASC LIMIT ?",
+                (scope_type, scope_id, center_ts_ns, center_ts_ns, center_id, after),
+            )
+            newer = list(await cursor.fetchall())
+
+        def _row(r: tuple) -> dict:
+            return {
+                "id": r[0],
+                "scope_type": r[1],
+                "scope_id": r[2],
+                "role": r[3],
+                "content": r[4],
+                "ts_ns": r[5],
+            }
+
+        return [_row(r) for r in older] + [_row(center_row)] + [_row(r) for r in newer]
+
     async def _ensure_conv_embedding_column(self) -> None:
         """懒迁移：确保 conversation_messages 拥有 embedding_blob 列。"""
         if self._conv_embed_ready:

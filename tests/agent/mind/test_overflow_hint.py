@@ -39,6 +39,7 @@ class TestOverflowHint:
         assert hint, "窗口满时应注入溢出提示"
         assert "7 条更早消息在窗口外" in hint[0]["content"]
         assert "recall_conversation" in hint[0]["content"]
+        assert "lookup_message" in hint[0]["content"]
 
     async def test_no_hidden_count_when_exact(self) -> None:
         """窗口刚好满但无窗口外历史：提示不包含隐藏数量。"""

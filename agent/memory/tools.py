@@ -498,6 +498,140 @@ async def get_conversation(scope_type: str, scope_id: str, limit: int = 30) -> s
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
+def _format_conversation_time(ts_ns: int) -> str:
+    import datetime
+    return datetime.datetime.fromtimestamp(ts_ns // 1_000_000_000).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _resolve_lookup_scope(
+    scope_type: str,
+    scope_id: str,
+) -> tuple[str, str]:
+    """解析查找 scope：显式参数优先，否则回落到当前对话 scope。"""
+    st = (scope_type or "").strip()
+    sid = (scope_id or "").strip()
+    if st and sid:
+        return st, sid
+    try:
+        from agent.mind.tool_activation import ToolActivationManager
+        scope = ToolActivationManager.current_scope()
+        if scope.startswith("user_"):
+            return "user", scope[5:]
+        if scope.startswith("group_"):
+            return "group", scope[6:]
+    except Exception:
+        pass
+    return "", ""
+
+
+@deferred_tool(
+    group="memory", tags=["core", "heartbeat", "always"], source="mind.memory",
+    description=(
+        "按 message_id 精确查找会话中的某条消息（含窗口外历史）。"
+        "当看到 [reply_to:xxx] 需要原文、或 [message_id:xxx] 需要定位该条时使用；"
+        "可返回前后邻接消息便于理解上下文。"
+        "与 recall_conversation（语义搜）互补：本工具按 ID 精确取回。"
+    ),
+)
+async def lookup_message(
+    message_id: str,
+    scope_type: str = "",
+    scope_id: str = "",
+    context_before: int = 2,
+    context_after: int = 2,
+) -> str:
+    """按 ``[message_id:xxx]`` 精确查找对话消息（含窗口外历史）。
+
+    典型用法：当前消息带 ``[reply_to:abc]`` 且预览不够用时，
+    传入 ``message_id=abc`` 取回被引用原文；也可直接用任意已知的 message_id。
+
+    Args:
+        message_id: 平台消息 ID（来自 [message_id:xxx] 或 [reply_to:xxx]）
+        scope_type: 可选，user 或 group；为空则优先当前会话，仍无则跨会话搜索
+        scope_id: 可选，用户 ID 或群组 ID
+        context_before: 一并返回该消息之前的邻接条数，默认 2，最大 10
+        context_after: 一并返回该消息之后的邻接条数，默认 2，最大 10
+    """
+    try:
+        message_id = (message_id or "").strip()
+        if not message_id:
+            return json.dumps({"error": "message_id 不能为空"}, ensure_ascii=False)
+
+        sqlite = _get_sqlite()
+        st, sid = _resolve_lookup_scope(scope_type, scope_id)
+        context_before = max(0, min(int(context_before), 10))
+        context_after = max(0, min(int(context_after), 10))
+
+        # 先在当前/指定 scope 内精确查；未命中且未强制指定 scope 时再跨会话兜底
+        hits = await sqlite.find_conversation_by_message_id(
+            message_id, scope_type=st, scope_id=sid, limit=5,
+        )
+        searched_global = False
+        if not hits and not ((scope_type or "").strip() and (scope_id or "").strip()):
+            hits = await sqlite.find_conversation_by_message_id(
+                message_id, limit=5,
+            )
+            searched_global = True
+
+        if not hits:
+            return json.dumps({
+                "found": False,
+                "message_id": message_id,
+                "scope": f"{st}:{sid}" if st and sid else "",
+                "searched_global": searched_global or not (st and sid),
+                "message": (
+                    "未找到该 message_id 对应的会话记录。"
+                    "可能原因：原消息未入库（非本 Bot 可见会话）、"
+                    "来自其他平台且 ID 未写入对话、或已被清空。"
+                ),
+            }, ensure_ascii=False)
+
+        primary = hits[0]
+        around = await sqlite.fetch_conversation_around(
+            scope_type=primary["scope_type"],
+            scope_id=primary["scope_id"],
+            center_ts_ns=int(primary["ts_ns"]),
+            center_id=int(primary["id"]),
+            before=context_before,
+            after=context_after,
+        )
+
+        def _item(row: dict, *, is_target: bool = False) -> dict:
+            item = {
+                "id": row["id"],
+                "role": row["role"],
+                "content": row["content"],
+                "time": _format_conversation_time(int(row["ts_ns"])),
+            }
+            if is_target:
+                item["is_target"] = True
+                item["message_id"] = primary.get("message_id", message_id)
+                if primary.get("reply_to"):
+                    item["reply_to"] = primary["reply_to"]
+            return item
+
+        context_items = [
+            _item(row, is_target=(row["id"] == primary["id"]))
+            for row in around
+        ]
+
+        return json.dumps({
+            "found": True,
+            "message_id": message_id,
+            "scope": f"{primary['scope_type']}:{primary['scope_id']}",
+            "match_count": len(hits),
+            "searched_global": searched_global,
+            "target": _item(primary, is_target=True),
+            "context": context_items,
+            "hint": (
+                "target 为精确命中的消息；context 含前后邻接。"
+                "若只需语义相关历史而非精确 ID，改用 recall_conversation。"
+            ),
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
 @deferred_tool(
     group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description=(

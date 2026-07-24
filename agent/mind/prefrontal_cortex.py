@@ -88,6 +88,8 @@ _MEMORY_USAGE_HINT = (
     "便签文件是索引，数据库是详细存储。两者通过标签联动。\n"
     "- 看到人物 UID → get_entity_profile 查完整画像\n"
     "- 想了解某话题 → recall 语义搜索 DB\n"
+    "- 看到 [reply_to:id] / 已知 message_id 且需原文 → lookup_message 精确取回（含窗口外）\n"
+    "- 翻阅窗口外旧对话（语义）→ recall_conversation\n"
     "- 新信息 → memorize 存 DB（标签: type:/user:/group:/topic:），必要时更新便签索引\n"
     "- 工具出错 → recall_tool_errors 查历史错误\n"
     "- 整理记忆 → 先 view_memory_outline 看文件结构，按顶部分类标准写入"
@@ -828,10 +830,16 @@ class PrefrontalCortex:
 - [channel:xxx] — 消息来源频道标识（adapter_key），send_message 等频道工具的 channel_id 参数应填此值
 - [session_id:xxx] — 会话ID（同一频道内会话上下文标识）
 - [group_id:xxx] — 群组ID，不同group_id是不同群
-- [message_id:xxx] — 当前消息ID，可用于精确定位某一条消息
+- [message_id:xxx] — 当前这条消息的平台 ID；可用 lookup_message(message_id=xxx) 精确取回（含窗口外）
 - [at_uid:xxx] — 消息中 @ 提及的用户ID
 - [at_uid:all] — @ 全体成员
-- [reply_to:xxx] — 引用的原消息
+- [reply_to:xxx] — 引用回复：xxx 是被引用消息的 message_id。标签后常紧跟该消息的短预览（约 200 字）；预览不够或需要原文/前后文时，调用 lookup_message(message_id=xxx)
+
+## 引用消息怎么用
+- 看见 [reply_to:abc]张三: 你好… → 用户正在回复 id=abc 的消息；预览已内联时通常够用
+- 预览缺失、被截断、或不在当前对话窗口 → lookup_message(message_id="abc") 取回被引用原文及邻接上下文
+- 不要臆造被引用内容；查不到则如实说明（可能未入库或已清空）
+- 语义翻旧账用 recall_conversation；按 ID 精确定位用 lookup_message
 
 ## 人物识别
 - 以 uid 为准识别身份，name/nickname 可能变化
@@ -1019,6 +1027,7 @@ class PrefrontalCortex:
             overflow_hint = [{"role": "system", "content": (
                 f"[上下文溢出] 当前仅显示最近 {max_size} 条对话{hidden_note}，更早的消息已不在视野内。\n"
                 "- 可通过 recall_conversation 按语义搜索窗口外的对话内容\n"
+                "- 看到 [reply_to:xxx] / 已知 message_id 时，用 lookup_message 精确取回该条（含窗口外）\n"
                 "- 建议使用 memorize 将对话中的重要信息存入长期记忆，避免遗忘\n"
                 "- 可通过 recall 检索长期记忆中的相关信息"
             )}]
