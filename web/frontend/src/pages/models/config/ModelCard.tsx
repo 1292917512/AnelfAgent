@@ -169,6 +169,24 @@ export function ModelCard({
                 className="accent-[rgb(168,85,247)] w-3.5 h-3.5" />
               <span className="text-xs text-foreground">{t("deepThinking")}</span>
             </label>
+            {me.supports_reasoning && (
+              <Select
+                value={me.reasoning_effort ?? ""}
+                disabled={!editing}
+                onChange={(e) => editing && onEditChange({ reasoning_effort: e.target.value })}
+                className="!h-7 text-xs"
+                title={t("reasoningEffort")}
+              >
+                <option value="">{t("effortInherit")}</option>
+                <option value="off">{t("effortOff")}</option>
+                <option value="minimal">{t("effortMinimal")}</option>
+                <option value="low">{t("effortLow")}</option>
+                <option value="medium">{t("effortMedium")}</option>
+                <option value="high">{t("effortHigh")}</option>
+                <option value="xhigh">{t("effortXhigh")}</option>
+                <option value="max">{t("effortMax")}</option>
+              </Select>
+            )}
             <label className="flex items-center gap-2 cursor-pointer" title={t("forcedToolChoiceHint")}>
               <input type="checkbox" checked={me.supports_forced_tool_choice} disabled={!editing}
                 onChange={(e) => editing && onEditChange({ supports_forced_tool_choice: e.target.checked })}

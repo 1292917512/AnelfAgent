@@ -15,8 +15,10 @@ from typing import Any, Dict, List, Optional
 
 from core.log import log
 
+from agent.llm.reasoning import CANONICAL_EFFORTS
+
 _CONFIG_PATH = Path("config/heartbeat.json")
-_REASONING_EFFORT_VALUES = frozenset({"low", "medium", "high", "max"})
+_REASONING_EFFORT_VALUES = frozenset(CANONICAL_EFFORTS)
 
 
 def _normalize_reasoning_effort(value: Any) -> str:

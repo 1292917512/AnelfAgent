@@ -13,9 +13,10 @@ from __future__ import annotations
 import glob
 import json
 import os
+import shlex
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from entities._sdk import tool, entity
 from entities.filesystem import edit_utils, file_state
@@ -722,6 +723,23 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
 # ------------------------------------------------------------------
 
 
+def _redundant_workspace_prefix(command: str) -> Optional[str]:
+    """返回命令中误带 workspace 目录名前缀的相对路径 token。
+
+    cwd 已是 workspace 根目录，该前缀会指向不存在的嵌套路径（workspace/workspace/...）。
+    仅用于失败归因提示，不做拦截；无命中返回 None。
+    """
+    prefix = os.path.basename(os.path.abspath(_WORKSPACE)) + "/"
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = command.split()
+    for token in tokens:
+        if token.startswith(prefix):
+            return token
+    return None
+
+
 @tool(name="run_shell_command", group="os", tags=["always"], description=_SHELL_PROMPT)
 def run_shell_command(command: str, timeout: int = 120, run_in_background: bool = False) -> str:
     """在系统 shell 中执行命令并返回输出结果。
@@ -794,12 +812,22 @@ def run_shell_command(command: str, timeout: int = 120, run_in_background: bool 
         payload: Dict[str, Any] = {"ok": result.ok, "stdout": stdout, "stderr": stderr}
         if persisted:
             payload["persisted"] = persisted
-        if notes:
-            payload["notes"] = notes
         # 失败时附带真实 cwd 与工作区根，便于模型定位路径问题后自纠（而非猜测系统路径）
         if not result.ok:
             payload["cwd"] = shell_state.get_cwd(_WORKSPACE, sandbox=_SANDBOX)
             payload["workspace_root"] = os.path.abspath(_WORKSPACE)
+            redundant = _redundant_workspace_prefix(command)
+            if redundant:
+                prefix = os.path.basename(os.path.abspath(_WORKSPACE)) + "/"
+                stripped = redundant
+                while stripped.startswith(prefix):
+                    stripped = stripped[len(prefix):]
+                notes.append(
+                    f"注意: 工作目录已是 workspace 根目录，{redundant} 的 {prefix} 前缀多余"
+                    f"（指向不存在的嵌套路径），直接写 {stripped.rstrip('/') or '.'} 即可"
+                )
+        if notes:
+            payload["notes"] = notes
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)

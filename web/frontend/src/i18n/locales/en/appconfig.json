@@ -215,7 +215,10 @@
     "effortLow": "Low",
     "effortMedium": "Medium",
     "effortHigh": "High",
-    "effortMax": "Max"
+    "effortMax": "Max",
+    "effortXhigh": "Extra High",
+    "effortOff": "Off",
+    "effortMinimal": "Minimal"
   },
   "costMap": {
     "title": "LiteLLM Cost Map",

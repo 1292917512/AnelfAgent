@@ -164,6 +164,7 @@ class LLMManager(BaseEntity):
                         model_types=mdata.get("model_types", ["chat"]),
                         provider_id=prov.id,
                         supports_reasoning=mdata.get("supports_reasoning", False),
+                        reasoning_effort=mdata.get("reasoning_effort", ""),
                         context_window=mdata.get("context_window", 0),
                         request_params=mdata.get("request_params", {}),
                         extra_body=mdata.get("extra_body", {}),
@@ -607,6 +608,8 @@ class LLMManager(BaseEntity):
                     caps.append("工具调用")
                 if client.config.supports_reasoning:
                     caps.append("深度思考")
+                if client.config.reasoning_effort:
+                    caps.append(f"思考等级:{client.config.reasoning_effort}")
                 default_mark = " (当前默认)" if mid == self._default_chat else ""
                 lines.append(
                     f"- {mid}{default_mark}: {client.config.model} [{', '.join(caps)}]"
@@ -938,6 +941,7 @@ class LLMManager(BaseEntity):
                     "supports_vision": client.config.supports_vision,
                     "supports_tools": client.config.supports_tools,
                     "supports_reasoning": client.config.supports_reasoning,
+                    "reasoning_effort": client.config.reasoning_effort,
                     "api_type": client.config.api_type,
                     **cost_cache[mid],
                 })

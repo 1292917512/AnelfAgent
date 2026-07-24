@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from core.log import log
+from core.tags import strip_message_meta_tags
 
 # 沉默标记：AI 整条回复恰好是其中之一时视为"决定不回复"（hermes 式精确匹配，
 # 正文里提到这些词不会误杀——要求整条规范化后完全相等且有长度上限）
@@ -144,7 +145,9 @@ async def deliver_text(target: ReplyTarget, content: str) -> bool:
     """
     from agent.channel.output_tools import _execute_send_action, _record_sent_reply
 
-    if not content or not content.strip():
+    # 剥离 LLM 可能模仿历史格式带入的元数据标签（[message_id:xxx] 等）
+    content = strip_message_meta_tags(content or "").strip()
+    if not content:
         return False
 
     resolved: dict = {}
@@ -185,7 +188,6 @@ async def deliver_text(target: ReplyTarget, content: str) -> bool:
         resolved.get("target_id", target.target_id),
         content,
         resolved.get("channel_type", target.channel_type),
-        message_id=str(parsed.get("message_id") or ""),
     )
     return True
 

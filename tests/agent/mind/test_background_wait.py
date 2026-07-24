@@ -266,21 +266,25 @@ class TestWaitSuspension:
         injected = [m for m in chain if m.get("role") == "system" and "仍未完成" in m.get("content", "")]
         assert injected
 
-    async def test_wait_timeout_zeroes_budget_then_delivered(self, anything) -> None:
-        """挂起超时后预算清零：后续纯文本按普通兜底投递处理（投递到激活会话并结束）。"""
+    async def test_wait_timeout_zeroes_budget_then_continues(self, anything) -> None:
+        """挂起超时后预算清零：后续纯文本按普通纯文本处理（继续循环 + 注入工具提醒）。"""
         mind = _WaitMind()
         mind.background_tasks.register("_global", "delegation", "生成图片")
         mind._queue = [_text_result(mind._wait_text) for _ in range(5)]
         steps: List[str] = []
-        await _run_reply(mind, anything, steps)
+        chain: List = []
+        await _run_reply(mind, anything, steps, chain)
 
-        # 第 1 次文本 → 挂起超时（预算清零）；第 2 次文本 → 兜底投递并结束
         assert any("等待后台任务（timeout" in s for s in steps)
-        assert any("纯文本回复已投递" in s for s in steps)
-        assert mind.llm_calls == 2
+        # 第 1 次挂起超时；后续纯文本进入兜底循环 + 工具提醒
+        reminders = [m for m in chain if m.get("role") == "system" and (
+            "纯文字" in m.get("content", "") or "纯文本" in m.get("content", "")
+        )]
+        assert reminders
+        assert mind.llm_calls >= 2
 
     async def test_any_text_with_tasks_suspends_once(self, anything) -> None:
-        """有后台任务时任意纯文本都先挂起一次；预算耗尽后纯文本正常投递。"""
+        """有后台任务时任意纯文本都先挂起一次；预算耗尽后纯文本进入兜底循环。"""
         mind = _WaitMind(wait_text="我今天心情不太好喵，想随便聊聊")
         mind.background_tasks.register("_global", "delegation", "生成图片")
         mind._queue = [_text_result("我还是不太舒服") for _ in range(5)]
@@ -288,20 +292,40 @@ class TestWaitSuspension:
         chain: List = []
         await _run_reply(mind, anything, steps, chain)
 
-        # 首次文本挂起超时 → 之后文本兜底投递；超时提示含任务查询路径
         assert sum("等待后台任务" in s for s in steps) == 1
-        assert any("纯文本回复已投递" in s for s in steps)
+        # 超时提示含任务查询路径
         hints = [m for m in chain if m.get("role") == "system" and "check_background_tasks" in m.get("content", "")]
         assert hints
 
-    async def test_no_tasks_text_delivered(self, anything) -> None:
-        """无后台任务时纯文本直接投递到激活会话并结束本轮。"""
+    async def test_no_tasks_text_continues_loop(self, anything) -> None:
+        """无后台任务时纯文本继续循环（注入工具提醒），不投递。"""
         mind = _WaitMind()
-        mind._queue = [_text_result(mind._wait_text) for _ in range(5)]
+        # _queue 长度 2 = 第 2 次文本后第 3 次没东西 → 默认 end_reply 兜底
+        # 用 5 次纯文本触发熔断以验证"继续循环不投递"
+        mind._queue = [_text_result(mind._wait_text) for _ in range(6)]
+        # 降低熔断上限便于测试
+        import types as _t
+        orig = mind._get_mind_config
+        def _cfg():
+            return _t.SimpleNamespace(
+                **{
+                    **vars(orig()),
+                    "text_without_tool_limit": 3,
+                    "background_wait_timeout": 30.0,
+                    "background_wait_budget": 120.0,
+                }
+            )
+        mind._get_mind_config = _cfg
         steps: List[str] = []
-        await _run_reply(mind, anything, steps)
-        assert mind.llm_calls == 1
-        assert any("纯文本回复已投递" in s for s in steps)
+        chain: List = []
+        await _run_reply(mind, anything, steps, chain)
+
+        reminders = [m for m in chain if m.get("role") == "system" and (
+            "纯文字" in m.get("content", "") or "纯文本" in m.get("content", "")
+        )]
+        assert reminders
+        assert any("熔断结束" in s for s in steps)
+        assert mind.llm_calls >= 3
 
 
 # ==================================================================

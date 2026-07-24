@@ -51,14 +51,23 @@ def _env_info_block() -> str:
     import platform as _platform
 
     from core.path import workspace_root
-    return (
+    system = _platform.system().lower()
+    block = (
         "[运行环境]\n"
         f"工作区根目录: {workspace_root()}\n"
-        f"平台: {_platform.system().lower()} ({_platform.machine()})\n"
+        f"平台: {system} ({_platform.machine()})\n"
         "文件工具的相对路径与 Shell 的初始工作目录均基于工作区根目录；"
         "日常操作建议优先在工作区内进行，访问其他位置时使用绝对路径；"
         "需要当前 Shell 工作目录等更多路径信息时调用 get_workspace_info。"
     )
+    if system in ("darwin", "freebsd", "openbsd", "netbsd"):
+        block += (
+            "\n命令方言: 当前为 BSD 用户态（非 GNU），常见 GNU 专有写法不可用——"
+            "find 无 -printf（用 -exec ls -l {} + 或 du 替代）、sed -i 必须跟备份后缀（如 -i ''）、"
+            "stat 用 -f 而非 -c、date 无 -d（用 -v）、grep 无 -P；"
+            "不确定的选项先查 man 或换用文件工具完成。"
+        )
+    return block
 
 
 # ==================================================================

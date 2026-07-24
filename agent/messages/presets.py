@@ -21,14 +21,14 @@ from core.tags import (
 
 class MessageAssistant(Everything):
     uid: Optional[Union[int, str]] = 0
-    tag_list: list[Tag] = Field(default_factory=lambda: [message_id_tag])
+    tag_list: list[Tag] = Field(default_factory=list)
     char_type: CharType = CharType.ASSISTANT
 
 
 class MessageAssistantGroup(EverythingGroup):
     uid: Optional[Union[int, str]] = 0
     group_id: Union[int, str] = 0
-    tag_list: list[Tag] = Field(default_factory=lambda: [message_id_tag])
+    tag_list: list[Tag] = Field(default_factory=list)
     char_type: CharType = CharType.ASSISTANT
 
 

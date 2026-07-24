@@ -28,9 +28,12 @@ const EMPTY_TASK: TaskConfig = {
 };
 
 const REASONING_EFFORTS: Array<{ value: ReasoningEffort; key: string }> = [
+  { value: "off", key: "tasks.effortOff" },
+  { value: "minimal", key: "tasks.effortMinimal" },
   { value: "low", key: "tasks.effortLow" },
   { value: "medium", key: "tasks.effortMedium" },
   { value: "high", key: "tasks.effortHigh" },
+  { value: "xhigh", key: "tasks.effortXhigh" },
   { value: "max", key: "tasks.effortMax" },
 ];
 

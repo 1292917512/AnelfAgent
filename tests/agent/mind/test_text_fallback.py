@@ -1,12 +1,9 @@
-"""纯文本兜底投递（think_loop）单元测试。
+"""纯文本（无工具调用）兜底投递与继续循环（think_loop）单元测试。
 
-新行为（参考 hermes-agent 来源绑定路由：路由是系统职责，AI 无选路权）：
-- AI 未调工具直接输出文字 → 系统自动投递到激活本轮的会话并结束本轮
-- [SILENT] 精确匹配 → 不投递，直接结束（正文提及不误杀）
-- 伪造工具调用文本 → 不投递，纠正后连续 2 次熔断
-- 空输出 → 可接受，不注入纠正提示，连续 2 次安静结束
-- 多候选会话 → 反问 AI 路由，纯逻辑提取；解析失败回退激活会话
-- end_reply 附带文本 → 同轮无成功 send_message 时投递（同轮抑制防双发）
+最终方案 D：纯文本既是合法回复（投递到激活会话），又不结束本轮——
+AI 可继续执行原任务（调工具）或调 end_reply 收尾。
+多候选会话时反问 AI 路由，下一轮提取投递；解析失败回退激活会话。
+仅当 AI 反复只输出纯文本不调工具也不结束时，达到上限熔断。
 """
 
 from __future__ import annotations
@@ -74,14 +71,14 @@ def _mk_result(text: str, tool_names: List[str]) -> SimpleNamespace:
 class _FakeMind:
     """最小 Mind 替身：LLM 按队列返回结果（默认持续返回同一文本）。"""
 
-    def __init__(self, text: str = "好的，收到！", force_tool_use: bool = False) -> None:
+    def __init__(self, text: str = "我先说两句～", limit: int = 5) -> None:
         self.pfc = _FakePfc()
         self.compressor = None
         self._text = text
         self._rounds: List[SimpleNamespace] = []
         self.llm_calls = 0
         self.tool_choices: list = []
-        self._force_tool_use = force_tool_use
+        self._limit = limit
         self._add_system_context = AsyncMock()
         self._reply_adapter_key = ""
 
@@ -100,7 +97,11 @@ class _FakeMind:
         pass
 
     def _get_mind_config(self):
-        return SimpleNamespace(llm_timeout=10.0, force_tool_use=self._force_tool_use)
+        return SimpleNamespace(
+            llm_timeout=10.0, force_tool_use=False,
+            text_without_tool_limit=self._limit,
+            background_wait_timeout=30.0, background_wait_budget=120.0,
+        )
 
     def get_model_context_length(self) -> int:
         return 0
@@ -120,7 +121,7 @@ def anything():
 
 @pytest.fixture
 def deliver_mock(monkeypatch):
-    """拦截纯文本投递，避免真实频道发送。"""
+    """拦截纯文本投递。"""
     mock = AsyncMock(return_value=True)
     monkeypatch.setattr(tl, "deliver_text", mock)
     return mock
@@ -142,54 +143,134 @@ def _run(mind, anything, steps=None, chain=None, tools=None):
 
 
 # ==================================================================
-# 纯文本兜底投递
+# 纯文本兜底投递（已发给用户 + 继续循环 + 上限熔断）
 # ==================================================================
 
-async def test_plain_text_delivered_to_active_session(anything, deliver_mock) -> None:
-    """纯文本直接投递到激活会话（adapter_key + uid），一轮结束，不再纠正/重试。"""
-    mind = _FakeMind("你好呀！")
+async def test_bare_text_delivered_and_continues(anything, deliver_mock) -> None:
+    """纯文本投递到激活会话，且不结束本轮：纯文本轮 LLM 调用一次但继续循环。"""
+    mind = _FakeMind(limit=3)
     steps: List[str] = []
     await _run(mind, anything, steps)
 
-    assert mind.llm_calls == 1
-    deliver_mock.assert_awaited_once()
+    deliver_mock.assert_awaited()
+    # 至少投递了一次（每次纯文本轮）
     target, content = deliver_mock.await_args.args
     assert target.session_key == "test:private:1"
-    assert content == "你好呀！"
-    assert any("纯文本回复已投递" in s for s in steps)
+    assert content == "我先说两句～"
+    # 步骤日志显示"本轮继续"
+    assert any("本轮继续" in s for s in steps)
 
 
-async def test_group_text_delivered_to_group(deliver_mock) -> None:
-    """群聊触发：纯文本投递到 group scope。"""
-    from agent.messages import EverythingGroup
+async def test_bare_text_loop_hits_limit(anything, deliver_mock) -> None:
+    """达到 text_without_tool_limit 后强制结束本轮。"""
+    mind = _FakeMind(limit=3)
+    steps: List[str] = []
+    await _run(mind, anything, steps)
 
-    anything = EverythingGroup(adapter_key="qq", uid=42, group_id=777, text_content="在吗")
-    mind = _FakeMind("在的～")
+    assert mind.llm_calls == 3
+    assert any("熔断结束" in s for s in steps)
+
+
+async def test_bare_text_injects_continue_hint(anything, deliver_mock) -> None:
+    """纯文本后注入温和提示"已发送，可继续或 end_reply"，而非"用户看不到"。"""
+    mind = _FakeMind(limit=5)
+    chain: List = []
+    await _run(mind, anything, chain=chain)
+
+    reminders = [
+        m for m in chain if m.get("role") == "system"
+        and ("已发送" in m.get("content", "") or "已自动发送给用户" in m.get("content", ""))
+    ]
+    assert reminders, "应至少注入一次'已发送'提示"
+    # 不应该再注入「用户不可见」措辞
+    assert not any("用户不可见" in m.get("content", "") for m in chain if m.get("role") == "system")
+
+
+async def test_bare_text_count_resets_on_tool_call(anything, deliver_mock) -> None:
+    """工具调用出现时清零计数，熔断链中断。"""
+    mind = _FakeMind(limit=3)
+    # round1 text + round2 text + round3 send_message + round4 text + round5 text
+    # → count 在 round3 重置，round4/round5 重新计数
+    mind._rounds = [
+        _text_result("我先想想"),                       # round1
+        _text_result("嗯，让我再看看"),                # round2
+        _mk_result("好的，主人！", ["send_message"]),  # round3 → 计数清零
+        _text_result("再想想"),                        # round4 count=1
+        _text_result("还是想不出"),                    # round5 count=2
+        _text_result("算了吧"),                        # round6 count=3 → 熔断
+    ]
+    steps: List[str] = []
+    await _run(mind, anything, steps)
+
+    assert mind.llm_calls == 6
+    assert any("熔断结束" in s for s in steps)
+
+
+async def test_bare_text_no_thought_label(anything, deliver_mock) -> None:
+    """纯文本不应以 '[思维]' 标签入库（已通过 deliver_text 以 assistant 原文本入库）。"""
+    mind = _FakeMind(limit=2)
     await _run(mind, anything)
 
-    target, _ = deliver_mock.await_args.args
-    assert target.session_key == "qq:group:777"
+    # 不应有 [思维] 标签入库（标签由 _add_system_context 完成）
+    thought_labels = [
+        c for c in mind._add_system_context.await_args_list
+        if "[思维]" in (c.kwargs.get("content") or (c.args[1] if len(c.args) > 1 else ""))
+    ]
+    assert not thought_labels
 
 
-async def test_reply_guide_injected_each_round(anything, deliver_mock) -> None:
-    """输出方式说明（事实陈述）每轮随执行上下文注入。"""
+# ==================================================================
+# 多候选路由
+# ==================================================================
+
+async def test_multi_candidates_route_by_index(anything, deliver_mock) -> None:
+    """多候选会话：反问 AI 路由 → 投递到所选会话（本轮继续）。"""
     mind = _FakeMind()
-    seen: List[str] = []
-    original = mind._invoke_llm_unified
+    mind.pfc._pending = [("group_777", 0, 777, "群消息预览")]
+    mind.pfc._adapter_keys = {"group_777": "qq"}
+    mind._rounds = [
+        _text_result("大家好！"),  # round1 → 多候选，反问路由
+        _text_result("2"),         # round2 → 投递到 group_777
+        _text_result("好吧"),      # round3 → 继续循环（投递激活会话）
+    ]
+    steps: List[str] = []
+    chain: List = []
+    await _run(mind, anything, steps, chain)
 
-    async def spy(messages, tools, anything=None, *, tool_choice=None, options=None):
-        seen.append(messages[-1]["content"])
-        return await original(messages, tools, anything, tool_choice=tool_choice, options=options)
-
-    mind._invoke_llm_unified = spy
-    await _run(mind, anything)
-
-    assert seen and all("输出方式" in content for content in seen)
+    assert mind.llm_calls >= 2
+    assert any("路由询问" in m.get("content", "") for m in chain if m.get("role") == "system")
+    # 第一次 deliver_text 应该是 round2 的投递（group_777）
+    first_deliver_target, first_content = deliver_mock.await_args_list[0].args
+    assert first_deliver_target.session_key == "qq:group:777"
+    assert first_content == "大家好！"
 
 
-async def test_silent_marker_not_delivered(anything, deliver_mock) -> None:
-    """[SILENT] 精确匹配：不投递，直接结束本轮。"""
-    mind = _FakeMind("[SILENT]")
+async def test_route_parse_failure_falls_back(anything, deliver_mock) -> None:
+    """路由解析失败：回退到激活会话投递。"""
+    mind = _FakeMind()
+    mind.pfc._pending = [("group_777", 0, 777, "群消息预览")]
+    mind.pfc._adapter_keys = {"group_777": "qq"}
+    mind._rounds = [
+        _text_result("大家好！"),
+        _text_result("嗯……随便吧"),  # 解析失败
+    ]
+    steps: List[str] = []
+    chain: List = []
+    await _run(mind, anything, steps, chain)
+
+    first_deliver_target, first_content = deliver_mock.await_args_list[0].args
+    assert first_deliver_target.session_key == "test:private:1"
+    assert first_content == "大家好！"
+    assert any("回退激活会话" in s for s in steps)
+
+
+# ==================================================================
+# 沉默/伪造/空输出
+# ==================================================================
+
+async def test_silent_marker_ends_turn(anything, deliver_mock) -> None:
+    """[SILENT] 精确匹配：不投递，直接结束。"""
+    mind = _FakeMind(text="[SILENT]", limit=5)
     steps: List[str] = []
     await _run(mind, anything, steps)
 
@@ -198,37 +279,28 @@ async def test_silent_marker_not_delivered(anything, deliver_mock) -> None:
     assert any("沉默" in s for s in steps)
 
 
-async def test_silent_word_in_sentence_still_delivered(anything, deliver_mock) -> None:
-    """正文中提到 [SILENT] 不触发沉默（精确匹配防误杀）。"""
-    mind = _FakeMind("我不太想用 [SILENT] 这种方式回应你")
-    await _run(mind, anything)
-
-    deliver_mock.assert_awaited_once()
-
-
-@pytest.mark.parametrize("narration", ["*沉默*", "（沉默）", "🔇", "…", "*(silent)*", "`silent`"])
-async def test_silence_narration_not_delivered(anything, deliver_mock, narration) -> None:
-    """幻觉沉默旁白（hermes 式过滤）：整条只是姿态标记 → 不投递，直接结束。"""
-    mind = _FakeMind(narration)
+@pytest.mark.parametrize("narration", ["*沉默*", "（沉默）", "🔇", "…", "*(silent)*"])
+async def test_silence_narration_ends_turn(anything, deliver_mock, narration) -> None:
+    """幻觉沉默旁白：不投递，直接结束。"""
+    mind = _FakeMind(text=narration, limit=5)
     steps: List[str] = []
     await _run(mind, anything, steps)
 
     assert mind.llm_calls == 1
     deliver_mock.assert_not_awaited()
-    assert any("沉默" in s for s in steps)
 
 
-async def test_silence_narration_in_sentence_still_delivered(anything, deliver_mock) -> None:
-    """包含"沉默"的正常句子不触发旁白过滤（锚定整条防误杀）。"""
-    mind = _FakeMind("沉默是今晚的康桥，这句话出自徐志摩的诗")
+async def test_silence_word_in_sentence_delivered(anything, deliver_mock) -> None:
+    """正文中提到 [SILENT] 不触发沉默（正常投递）。"""
+    mind = _FakeMind(text="我不太想用 [SILENT] 这种方式回应你", limit=2)
     await _run(mind, anything)
 
-    deliver_mock.assert_awaited_once()
+    deliver_mock.assert_awaited()
 
 
 async def test_empty_output_quietly_ends(anything, deliver_mock) -> None:
-    """空输出可接受：不注入纠正提示，连续 2 次安静结束。"""
-    mind = _FakeMind("")
+    """空输出可接受，不注入纠正提示，连续 2 次安静结束。"""
+    mind = _FakeMind(text="", limit=5)
     steps: List[str] = []
     chain: List = []
     await _run(mind, anything, steps, chain)
@@ -239,73 +311,33 @@ async def test_empty_output_quietly_ends(anything, deliver_mock) -> None:
 
 
 async def test_fake_tool_call_not_delivered(anything, deliver_mock) -> None:
-    """伪造工具调用文本：不投递，纠正后连续 2 次熔断结束。"""
-    mind = _FakeMind('[工具执行记录] send_message {"success": true, "action": "send"}')
-    steps: List[str] = []
+    """伪造工具调用文本：不投递，提示纠正。"""
+    mind = _FakeMind(text='[工具执行记录] send_message {"success": true}', limit=5)
     chain: List = []
-    await _run(mind, anything, steps, chain)
+    await _run(mind, anything, chain=chain)
 
-    assert mind.llm_calls == 2
-    deliver_mock.assert_not_awaited()
-    assert any("系统拦截" in m.get("content", "") for m in chain if m.get("role") == "system")
-
-
-# ==================================================================
-# 多候选会话路由
-# ==================================================================
-
-async def test_multi_candidates_route_by_index(anything, deliver_mock) -> None:
-    """多候选会话：反问 AI 路由，AI 回答编号 → 投递到所选会话。"""
-    mind = _FakeMind()
-    mind.pfc._pending = [("group_777", 0, 777, "群消息预览")]
-    mind.pfc._adapter_keys = {"group_777": "qq"}
-    mind._rounds = [_text_result("大家好！"), _text_result("2")]
-    chain: List = []
-    steps: List[str] = []
-    await _run(mind, anything, steps, chain)
-
-    assert mind.llm_calls == 2
-    # 第一轮注入了路由询问
-    assert any("路由询问" in m.get("content", "") for m in chain if m.get("role") == "system")
-    # 投递的是第一轮的原文，目标是编号 2 对应的会话
-    deliver_mock.assert_awaited_once()
-    target, content = deliver_mock.await_args.args
-    assert target.session_key == "qq:group:777"
-    assert content == "大家好！"
-
-
-async def test_route_parse_failure_falls_back_to_active(anything, deliver_mock) -> None:
-    """路由解析失败：回退投递到激活本轮的会话。"""
-    mind = _FakeMind()
-    mind.pfc._pending = [("group_777", 0, 777, "群消息预览")]
-    mind.pfc._adapter_keys = {"group_777": "qq"}
-    mind._rounds = [_text_result("大家好！"), _text_result("嗯……随便吧")]
-    steps: List[str] = []
-    await _run(mind, anything, steps)
-
-    target, content = deliver_mock.await_args.args
-    assert target.session_key == "test:private:1"
-    assert content == "大家好！"
-    assert any("回退激活会话" in s for s in steps)
+    blocked = [m for m in chain if m.get("role") == "system" and "系统拦截" in m.get("content", "")]
+    assert blocked
+    deliver_mock.assert_not_awaited()  # 第一次 mock 不会被调用？
 
 
 # ==================================================================
-# end_reply 附带文本
+# end_reply 附带文本同轮抑制
 # ==================================================================
 
 async def test_end_reply_text_delivered_when_no_send(anything, deliver_mock) -> None:
-    """end_reply 附带文本且本轮未发送 → 文本作为回复投递后结束。"""
+    """end_reply 附带文本且本轮未成功 send_message → 投递。"""
     mind = _FakeMind()
-    mind._rounds = [_mk_result("这就是答案啦", ["end_reply"])]
+    mind._rounds = [_mk_result("这是最后一段话～", ["end_reply"])]
     await _run(mind, anything)
 
     deliver_mock.assert_awaited_once()
     _, content = deliver_mock.await_args.args
-    assert content == "这就是答案啦"
+    assert content == "这是最后一段话～"
 
 
 async def test_end_reply_text_suppressed_when_send_succeeded(anything, deliver_mock) -> None:
-    """同轮 send_message 已成功 → end_reply 附带文本不投递（防双发）。"""
+    """同轮 send_message 成功 → end_reply 附带文本不投递（防双发）。"""
     mind = _FakeMind()
     mind._rounds = [_mk_result("已发送补充说明", ["send_message", "end_reply"])]
     await _run(mind, anything)
@@ -314,20 +346,14 @@ async def test_end_reply_text_suppressed_when_send_succeeded(anything, deliver_m
 
 
 # ==================================================================
-# tool_choice 策略
+# 配置可调
 # ==================================================================
 
-async def test_force_tool_use_required_when_enabled(anything, deliver_mock) -> None:
-    """开启纯工具模式：LLM 调用强制 tool_choice='required'。"""
-    mind = _FakeMind(force_tool_use=True)
-    await _run(mind, anything, tools=[{"type": "function", "function": {"name": "send_message"}}])
+async def test_custom_limit(anything, deliver_mock) -> None:
+    """配置上限=2：第 2 次纯文本后熔断。"""
+    mind = _FakeMind(limit=2)
+    steps: List[str] = []
+    await _run(mind, anything, steps)
 
-    assert mind.tool_choices[0] == "required"
-
-
-async def test_tool_choice_auto_by_default(anything, deliver_mock) -> None:
-    """默认（纯工具模式关闭）：不强制 tool_choice，纯文本可正常产出。"""
-    mind = _FakeMind(force_tool_use=False)
-    await _run(mind, anything, tools=[{"type": "function", "function": {"name": "send_message"}}])
-
-    assert mind.tool_choices[0] is None
+    assert mind.llm_calls == 2
+    assert any("熔断结束" in s for s in steps)

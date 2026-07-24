@@ -21,6 +21,19 @@ def _validate_api_type(value: str) -> str:
     return value
 
 
+def _validate_reasoning_effort(value: str) -> str:
+    from agent.llm.reasoning import normalize_effort
+    normalized = normalize_effort(value)
+    if value.strip() and not normalized:
+        raise ValueError(
+            f"无效的 reasoning_effort: {value}（可选 off/minimal/low/medium/high/xhigh/max）"
+        )
+    return normalized
+
+
+ReasoningEffort = Annotated[str, AfterValidator(_validate_reasoning_effort)]
+
+
 ApiType = Annotated[str, AfterValidator(_validate_api_type)]
 ModelTypeValue = Literal[
     "chat", "vision", "embedding", "image_gen", "image_edit",
@@ -220,6 +233,7 @@ class CreateModelReq(BaseModel):
     supports_forced_tool_choice: bool = True
     vision_format: VisionFormat = "base64"
     supports_reasoning: bool = False
+    reasoning_effort: ReasoningEffort = ""
     chat_protocol: ChatProtocolValue = "chat_completions"
     request_params: RequestParams = Field(default_factory=dict)
     extra_body: Dict[str, Any] = Field(default_factory=dict)
@@ -368,6 +382,7 @@ class UpdateModelReq(BaseModel):
     supports_forced_tool_choice: Optional[bool] = None
     vision_format: Optional[VisionFormat] = None
     supports_reasoning: Optional[bool] = None
+    reasoning_effort: Optional[ReasoningEffort] = None
     chat_protocol: Optional[ChatProtocolValue] = None
     request_params: Optional[RequestParams] = None
     extra_body: Optional[Dict[str, Any]] = None

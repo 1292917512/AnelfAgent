@@ -10,15 +10,17 @@ from typing import Any
 from core.log import log
 from core.path import ConfigPaths, project_root
 
+from agent.llm.reasoning import CANONICAL_EFFORTS
+
 # 模型来源：auto=自动映射 LLMManager / model=指定 LLMManager 模型 / custom=完全自定义
 MODEL_SOURCE_AUTO = "auto"
 MODEL_SOURCE_MODEL = "model"
 MODEL_SOURCE_CUSTOM = "custom"
 MODEL_SOURCES = (MODEL_SOURCE_AUTO, MODEL_SOURCE_MODEL, MODEL_SOURCE_CUSTOM)
 
-# 思考等级：与主 LLM 系统 reasoning_effort 对齐；""=auto 跟随模型 supports_reasoning，
-# off=强制关闭思考，low/medium/high/max 为思考预算档位
-REASONING_EFFORTS = ("", "off", "low", "medium", "high", "max")
+# 思考等级：与主 LLM 系统 reasoning_effort 对齐（agent.llm.reasoning 的 7 级规范词汇）；
+# ""=auto 跟随模型 supports_reasoning，off=强制关闭思考，其余为思考预算档位
+REASONING_EFFORTS = ("",) + CANONICAL_EFFORTS
 
 
 @dataclass(slots=True)

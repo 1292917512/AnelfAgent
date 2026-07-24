@@ -215,7 +215,10 @@
     "effortLow": "轻量",
     "effortMedium": "均衡",
     "effortHigh": "深度",
-    "effortMax": "极限"
+    "effortMax": "极限",
+    "effortXhigh": "超高",
+    "effortOff": "关闭",
+    "effortMinimal": "极简"
   },
   "costMap": {
     "title": "LiteLLM 模型价格表",

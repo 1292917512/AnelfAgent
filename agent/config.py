@@ -52,6 +52,10 @@ _MIND_CONFIGS = {
             "description": "后台任务等待：单轮回复累计挂起预算（秒），耗尽后等待意图按普通纯文本投递处理",
             "default": 120.0,
         },
+        "text_without_tool_limit": {
+            "description": "纯文本（无工具调用）连续上限：超过则强制结束本轮，避免兜底死循环",
+            "default": 5,
+        },
         "log_ai_output": {
             "description": "是否记录 AI 输出日志",
             "default": True,
@@ -166,6 +170,7 @@ _MIND_SYNC_FIELDS: tuple[str, ...] = (
     "conversation_analysis_threshold", "max_tool_iterations",
     "log_ai_output", "send_interim_text", "force_tool_use",
     "background_wait_timeout", "background_wait_budget",
+    "text_without_tool_limit",
     "vector_search_batch_size", "memory_recall_top_k",
     "memory_recall_min_score", "memory_time_decay_days",
     "memory_warn_threshold", "memory_max_per_type",
@@ -233,6 +238,8 @@ class MindConfig:
     # 后台任务等待：等待意图挂起的单次上限 / 单轮回复累计预算（秒）
     background_wait_timeout: float = 30.0
     background_wait_budget: float = 120.0
+    # 纯文本（无工具调用）连续上限：超过则强制结束本轮
+    text_without_tool_limit: int = 5
     log_ai_output: bool = True
     send_interim_text: bool = False
     # 记忆搜索配置
@@ -267,7 +274,8 @@ class MindConfig:
     cross_channel_recall_max_results: int = 3
     cross_channel_recall_scan_limit: int = 50
     cross_channel_narrative_max_items: int = 3
-    # 全局思考等级：low / medium / high / max（空=不设置）
+    # 全局思考等级：off / minimal / low / medium / high / xhigh / max（空=不设置）；
+    # 规范词汇与钳制规则见 agent.llm.reasoning
     reasoning_effort: str = ""
     # 工具系统提示规则（每条一行，注入到 LLM system prompt）；实际内容由 mind_config.json 提供
     tool_system_rules: List[str] = field(default_factory=list)

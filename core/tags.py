@@ -59,6 +59,24 @@ def batch_remove_tags(text: str) -> str:
     return re.sub(r"\[(?:[^:]+):(.*?)\]", r"\1", text, flags=re.DOTALL)
 
 
+# 消息上下文元数据标签（渲染进对话历史、仅作系统元数据，禁止出现在出站文本中）
+_META_TAG_NAMES = (
+    "time", "channel", "session_id", "message_id",
+    "group_id", "uid", "name", "nickname", "reply_to",
+)
+_meta_tag_pattern = re.compile(r"\[(?:" + "|".join(_META_TAG_NAMES) + r"):[^\]]*\]")
+
+
+def strip_message_meta_tags(text: str) -> str:
+    """移除文本中的消息元数据标签（整段删除，不保留值）。
+
+    用于出站文本清洗：LLM 可能模仿对话历史中的标签格式，
+    将 [message_id:xxx] 等元数据带进回复内容，发送前需剥离。
+    功能性标签（如 [at_uid:xxx]）不在移除范围。
+    """
+    return _meta_tag_pattern.sub("", text)
+
+
 def get_current_time(time_format: str = "%Y年%m月%d日%H时%M分%S秒") -> str:
     """返回当前时间的格式化字符串。"""
     return datetime.datetime.now().strftime(time_format)
