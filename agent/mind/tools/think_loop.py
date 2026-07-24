@@ -83,7 +83,8 @@ _PROMPT_REPLY_GUIDE = (
     "可并行的独立工具同一轮一并发起。禁止只说「检查一下/让我看看」而不调工具。\n"
     "2. 全部完成后再回复用户：调用 send_message，或直接输出最终回复正文"
     "（系统投递到来源会话后结束本轮；多会话并存时会再问你选目标）。"
-    "不要在任务中途输出过程话术当回复。\n"
+    "不要在任务中途输出过程话术当回复；"
+    "若已用 send_message 回复过，不要再输出纯文本（会结束本轮且不再代发）。\n"
     "3. 无需回复 → 调用 end_reply（参数留空），或整条仅输出 [SILENT]"
 )
 
@@ -578,6 +579,9 @@ async def think_loop(
     # 纯文本路由询问：多候选会话时挂起的候选列表与待投递正文
     pending_route: Optional[List[ReplyTarget]] = None
     pending_route_text = ""
+    # 上一轮是否仅为输出类工具（send_message 等）且已成功发送：
+    # 其后紧跟的纯文本不再代发，直接结束，避免重复出站
+    prev_round_outbound_only = False
     mc = mind._get_mind_config()
     # 纯工具模式（可选，默认关）：开启后 LLM 调用强制工具选择（tool_choice=required）
     pure_tool_mode = bool(getattr(mc, "force_tool_use", False))
@@ -1006,6 +1010,20 @@ async def think_loop(
                     continue
 
                 if mode == ThinkMode.REPLY and anything:
+                    # send_message（仅输出类）成功后紧跟纯文本：消息已发出，不再代发，直接结束
+                    if prev_round_outbound_only:
+                        execution_steps.append(
+                            f"→ 第{iteration + 1}轮: 输出类工具后纯文本跳过投递，本轮结束"
+                        )
+                        log(
+                            "输出类工具后出现纯文本，跳过代发以防重复出站",
+                            "DEBUG", tag="思维",
+                        )
+                        await finish_think(
+                            mind, anything, execution_steps, iteration + 1, tool_chain,
+                        )
+                        return
+
                     # Hermes 终态：无工具正文 = 最终回复。
                     # 单候选（同源私聊/群）直接投递后结束；多候选时问 AI 一轮再投递结束。
                     candidates = _collect_reply_candidates(
@@ -1114,9 +1132,16 @@ async def think_loop(
         tool_names = ", ".join(tc.name for tc in tool_calls)
         execution_steps.append(f"→ 第{iteration + 1}轮: 调用工具 [{tool_names}]")
 
+        # 标记「仅输出类且已成功」：供下一拍纯文本决定是否跳过代发
+        called = {tc.name for tc in tool_calls}
+        prev_round_outbound_only = bool(
+            called
+            and called <= _OUTPUT_TOOL_NAMES
+            and _round_output_sent_successfully(tool_chain, tool_calls)
+        )
+
         # 非输出工具后：提醒结果仅自己可见（输出类工具已直接发往用户，无需再确认）
         if mode == ThinkMode.REPLY:
-            called = {tc.name for tc in tool_calls}
             if (
                 not (called & _OUTPUT_TOOL_NAMES)
                 and _END_REPLY_TOOL_NAME not in called
@@ -1346,6 +1371,26 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List[ToolCall]) 
         return ""
     lines = "\n".join(f"- {f}" for f in failures)
     return _PROMPT_END_BLOCKED_FAILURE.format(failures=lines)
+
+
+def _round_output_sent_successfully(
+        tool_chain: List[Dict], tool_calls: List[ToolCall],
+) -> bool:
+    """本轮是否已通过输出类工具成功发送（send_message / 媒体发送）。"""
+    tc_ids = {
+        tc.id for tc in tool_calls if tc.name in _OUTPUT_TOOL_NAMES
+    }
+    if not tc_ids:
+        return False
+    for msg in reversed(tool_chain):
+        if msg.get("role") != "tool":
+            break
+        if msg.get("tool_call_id") not in tc_ids:
+            continue
+        parsed = _parse_tool_result_json(msg.get("content", ""))
+        if isinstance(parsed, dict) and parsed.get("success") is not False:
+            return True
+    return False
 
 
 def _collect_reply_candidates(

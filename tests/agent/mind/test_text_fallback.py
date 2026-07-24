@@ -229,7 +229,7 @@ async def test_send_message_no_sent_ack(anything, deliver_mock) -> None:
 
 
 async def test_tool_then_bare_text_ends(anything, deliver_mock) -> None:
-    """工具后输出最终纯文本：投递一次并结束。"""
+    """非输出工具后输出最终纯文本：投递一次并结束。"""
     mind = _FakeMind()
     mind._rounds = [
         _mk_result("", ["recall"]),
@@ -241,6 +241,56 @@ async def test_tool_then_bare_text_ends(anything, deliver_mock) -> None:
     deliver_mock.assert_awaited_once()
     assert mind.llm_calls == 2
     assert any("本轮结束" in s for s in steps)
+
+
+async def test_send_message_then_bare_text_skips_deliver(anything, deliver_mock) -> None:
+    """仅 send_message 成功后紧跟纯文本：不再代发，直接结束。"""
+    mind = _FakeMind()
+    mind._rounds = [
+        _mk_result("", ["send_message"]),
+        _text_result("再说一遍会重复～"),
+    ]
+    steps: List[str] = []
+    await _run(mind, anything, steps)
+
+    deliver_mock.assert_not_awaited()
+    assert mind.llm_calls == 2
+    assert any("跳过投递" in s for s in steps)
+
+
+async def test_send_message_then_other_tool_then_text_delivers(
+        anything, deliver_mock,
+) -> None:
+    """send_message 后再调其他工具，随后纯文本仍可投递（非紧邻输出类）。"""
+    mind = _FakeMind()
+    mind._rounds = [
+        _mk_result("", ["send_message"]),
+        _mk_result("", ["recall"]),
+        _text_result("补充最终结论～"),
+    ]
+    steps: List[str] = []
+    await _run(mind, anything, steps)
+
+    deliver_mock.assert_awaited_once()
+    _, content = deliver_mock.await_args.args
+    assert content == "补充最终结论～"
+    assert mind.llm_calls == 3
+
+
+async def test_send_message_mixed_with_other_tool_then_text_delivers(
+        anything, deliver_mock,
+) -> None:
+    """同轮 send_message+recall 后纯文本仍可投递（不是「仅输出类」）。"""
+    mind = _FakeMind()
+    mind._rounds = [
+        _mk_result("", ["send_message", "recall"]),
+        _text_result("混合轮后的最终答复～"),
+    ]
+    await _run(mind, anything)
+
+    deliver_mock.assert_awaited_once()
+    _, content = deliver_mock.await_args.args
+    assert content == "混合轮后的最终答复～"
 
 
 async def test_bare_text_no_thought_label(anything, deliver_mock) -> None:
