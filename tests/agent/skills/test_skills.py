@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -191,3 +192,52 @@ class TestSkillTools:
 
         searched = json.loads(await skill_tools.search_skills("测试"))
         assert searched["count"] >= 1
+
+
+class TestSkillReviewerContract:
+    """SkillReviewer 与 finish_think / EVENT_AFTER_REPLY 的数据契约。"""
+
+    async def test_reads_execution_summary_from_event(self, store: SkillStore, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent.skills.background_review import SkillReviewer
+        from core.event_bus import EVENT_AFTER_REPLY, event_bus
+
+        mind = SimpleNamespace(reflect=AsyncMock(return_value=""))
+        reviewer = SkillReviewer(mind, store)
+        monkeypatch.setattr(SkillReviewer, "_enabled", staticmethod(lambda: True))
+        reviewer.start()
+        try:
+            await event_bus.emit(EVENT_AFTER_REPLY, {
+                "error": False,
+                "iterations": 2,
+                "execution_summary": "[已执行操作摘要]\n  #1 recall(q=x) → ok",
+            })
+            assert reviewer._task is not None
+            await reviewer._task
+            mind.reflect.assert_awaited_once()
+            prompt = mind.reflect.await_args.args[0][0]["content"]
+            assert "recall(q=x)" in prompt
+        finally:
+            reviewer.stop()
+
+    async def test_skips_when_summary_missing(self, store: SkillStore, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent.skills.background_review import SkillReviewer
+        from core.event_bus import EVENT_AFTER_REPLY, event_bus
+
+        mind = SimpleNamespace(reflect=AsyncMock(return_value=""), pfc=SimpleNamespace(temporary=[]))
+        reviewer = SkillReviewer(mind, store)
+        monkeypatch.setattr(SkillReviewer, "_enabled", staticmethod(lambda: True))
+        reviewer.start()
+        try:
+            await event_bus.emit(EVENT_AFTER_REPLY, {
+                "error": False,
+                "iterations": 1,
+                "execution_summary": "",
+            })
+            assert reviewer._task is None
+            mind.reflect.assert_not_awaited()
+        finally:
+            reviewer.stop()

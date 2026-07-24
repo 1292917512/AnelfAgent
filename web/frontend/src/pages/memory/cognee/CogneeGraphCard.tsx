@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RefreshCw, ExternalLink, Waypoints } from "lucide-react";
 import { Card } from "@/components/common/Card";
+import { memoryApi } from "@/lib/api";
 import type { CogneeDataset } from "@/lib/types";
 
 export function CogneeGraphCard({
@@ -14,7 +15,9 @@ export function CogneeGraphCard({
   const { t } = useTranslation("memory");
   const [selected, setSelected] = useState("");
   const [nonce, setNonce] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [html, setHtml] = useState("");
 
   const names = useMemo(
     () => (datasets || []).map((ds) => ds.name).filter(Boolean),
@@ -24,12 +27,59 @@ export function CogneeGraphCard({
   const dataset = selected || names[0] || "";
   const hasDataset = Boolean(dataset);
 
-  const graphUrl = useMemo(() => {
+  const openUrl = useMemo(() => {
     const params = new URLSearchParams();
     if (dataset) params.set("dataset", dataset);
-    params.set("ts", String(nonce));
     return `/api/memory/cognee/graph?${params.toString()}`;
-  }, [dataset, nonce]);
+  }, [dataset]);
+
+  useEffect(() => {
+    if (!ready || !hasDataset) {
+      setHtml("");
+      setError("");
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setHtml("");
+
+    memoryApi.cognee
+      .graphHtml(dataset)
+      .then((res) => {
+        if (cancelled) return;
+        const body = typeof res.data === "string" ? res.data : String(res.data ?? "");
+        if (!body.trim()) {
+          setError(t("cognee.graphLoadFailed"));
+          return;
+        }
+        setHtml(body);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const detail =
+          typeof err === "object" &&
+          err !== null &&
+          "response" in err &&
+          typeof (err as { response?: { data?: unknown } }).response?.data === "object" &&
+          (err as { response?: { data?: { detail?: unknown } } }).response?.data !== null
+            ? String(
+                (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail ||
+                  "",
+              )
+            : "";
+        setError(detail || t("cognee.graphLoadFailed"));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, hasDataset, dataset, nonce, t]);
 
   return (
     <Card
@@ -44,7 +94,6 @@ export function CogneeGraphCard({
                 value={dataset}
                 onChange={(e) => {
                   setSelected(e.target.value);
-                  setLoading(true);
                 }}
                 className="px-2 py-1 text-xs rounded-md border border-border bg-elevated text-heading"
               >
@@ -56,16 +105,13 @@ export function CogneeGraphCard({
               </select>
             </label>
             <button
-              onClick={() => {
-                setNonce(Date.now());
-                setLoading(true);
-              }}
+              onClick={() => setNonce(Date.now())}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
             >
               <RefreshCw size={14} /> {t("cognee.graphRefresh")}
             </button>
             <a
-              href={graphUrl}
+              href={openUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
@@ -84,14 +130,20 @@ export function CogneeGraphCard({
               {t("cognee.graphLoading")}
             </div>
           )}
-          <iframe
-            key={graphUrl}
-            src={graphUrl}
-            onLoad={() => setLoading(false)}
-            className="w-full border-0 h-[70dvh]"
-            sandbox="allow-scripts allow-same-origin"
-            title={t("cognee.graphTitle")}
-          />
+          {!loading && error && (
+            <div className="flex items-center justify-center h-[40dvh] px-6 text-sm text-danger text-center">
+              {error}
+            </div>
+          )}
+          {!loading && !error && html && (
+            <iframe
+              key={`${dataset}-${nonce}`}
+              srcDoc={html}
+              className="w-full border-0 h-[70dvh]"
+              sandbox="allow-scripts allow-same-origin"
+              title={t("cognee.graphTitle")}
+            />
+          )}
         </div>
       ) : (
         <p className="text-sm text-muted">

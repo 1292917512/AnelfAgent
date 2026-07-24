@@ -256,6 +256,7 @@
     "graphRefresh": "Refresh",
     "graphOpenNew": "Open in new tab",
     "graphLoading": "Rendering graph…",
+    "graphLoadFailed": "Failed to load graph; refresh or check backend logs",
     "graphNotReady": "Cognee is not ready; knowledge graph unavailable",
     "generalTitle": "General",
     "generalSubtitle": "Projection sync and federated recall parameters",

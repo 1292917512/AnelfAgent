@@ -256,6 +256,7 @@
     "graphRefresh": "刷新",
     "graphOpenNew": "新窗口打开",
     "graphLoading": "图谱渲染中…",
+    "graphLoadFailed": "图谱加载失败，请刷新重试或查看后端日志",
     "graphNotReady": "Cognee 未就绪，无法渲染知识图谱",
     "generalTitle": "通用配置",
     "generalSubtitle": "投影同步与联邦召回参数",

@@ -2,9 +2,7 @@
 
 覆盖场景：
 - AI 调用 end_reply 结束本轮时，若同轮存在失败工具，
-  系统应生成失败反馈拦截结束，给 AI 修正参数后重试的机会；
-- end_reply 附带文本的同轮抑制：本轮 send_message 已成功发送时，
-  附带文本不再作为纯文本兜底投递（防双发）。
+  系统应生成失败反馈拦截结束，给 AI 修正参数后重试的机会。
 """
 
 from __future__ import annotations
@@ -15,7 +13,6 @@ from agent.llm.types import ToolCall
 from agent.mind.tools.think_loop import (
     _collect_round_failures,
     _extract_error_text,
-    _round_sent_via_tool,
 )
 
 
@@ -81,39 +78,3 @@ class TestCollectRoundFailures:
 
     def test_empty_tool_calls_returns_empty(self) -> None:
         assert _collect_round_failures([], []) == ""
-
-
-class TestRoundSentViaTool:
-    """_round_sent_via_tool 判断本轮是否已通过 send_message 成功发送。
-
-    保留该辅助用于日志/统计/同轮抑制类决策（防双发的输入信号）。
-    """
-
-    def test_send_success_suppresses(self) -> None:
-        tool_calls = [_tc("c1", "send_message"), _tc("c2", "end_reply")]
-        tool_chain = [
-            _tool_msg("c1", {"success": True, "target_id": "123"}),
-            _tool_msg("c2", {"ok": True, "action": "end_reply"}),
-        ]
-        assert _round_sent_via_tool(tool_chain, tool_calls) is True
-
-    def test_send_failure_does_not_suppress(self) -> None:
-        tool_calls = [_tc("c1", "send_message"), _tc("c2", "end_reply")]
-        tool_chain = [
-            _tool_msg("c1", {"success": False, "error": "频道未就绪"}),
-            _tool_msg("c2", {"ok": True, "action": "end_reply"}),
-        ]
-        assert _round_sent_via_tool(tool_chain, tool_calls) is False
-
-    def test_no_send_message_round(self) -> None:
-        tool_calls = [_tc("c1", "end_reply")]
-        tool_chain = [_tool_msg("c1", {"ok": True, "action": "end_reply"})]
-        assert _round_sent_via_tool(tool_chain, tool_calls) is False
-
-    def test_previous_round_send_does_not_suppress(self) -> None:
-        tool_calls = [_tc("c2", "end_reply")]
-        tool_chain = [
-            _tool_msg("c1", {"success": True, "target_id": "123"}),
-            _tool_msg("c2", {"ok": True, "action": "end_reply"}),
-        ]
-        assert _round_sent_via_tool(tool_chain, tool_calls) is False

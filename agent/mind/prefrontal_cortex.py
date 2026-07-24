@@ -653,7 +653,7 @@ class PrefrontalCortex:
 
         scope 非空时仅清除该 scope 相关的状态（后台评审等并行会话不踩踏主会话）。
         当前实现：动态工具是全局共享的（tag/discovered 不按 scope 分桶），
-        因此仅在 scope 为空（主会话结束）时执行全量清理，非空时跳过。
+        因此仅在 scope 为空时执行全量清理；调用方应在 active_scopes 清空后再清。
         """
         if scope:
             # 非主会话（如后台评审 reflect）：不清理全局动态工具，避免踩踏正在进行的对话

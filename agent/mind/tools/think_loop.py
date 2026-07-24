@@ -68,41 +68,36 @@ _PROMPT_TIMEOUT = (
 
 _PROMPT_FAKE_TOOL_CALL = (
     "[系统拦截] 你在文本中伪造了工具调用结果，这些内容不会被执行也不会发送给用户。"
-    "请通过 function calling 接口发起真正的工具调用，或直接输出普通文字作为回复。"
+    "请通过 function calling 发起真正的工具调用；"
+    "回复用户请调用 send_message。"
 )
 
 _PROMPT_CONTINUE = (
     "[系统提示] 继续执行，若已完成所有操作请调用 end_reply 结束。"
 )
 
-# 输出方式说明（事实陈述，每轮随执行上下文注入）：
-# 纯文本不是回复——纯文本将作为思维草稿入库，并由系统提醒 AI 调用工具。
-# 路由是系统职责，AI 仅需选择行为（调什么工具 / 沉默）。
+# 输出方式说明（每轮注入）：只引导工具路径；纯文本投递是系统静默兜底，不对 AI 宣传。
 _PROMPT_REPLY_GUIDE = (
     "[输出方式]\n"
-    "1. 回复用户 → 调用 send_message 工具（content 即回复文本）\n"
-    "2. 已完成所有操作 → 调用 end_reply 结束本轮\n"
-    "3. 决定不回复时，整条回复仅输出 [SILENT]\n"
-    "4. 纯文本也会自动发送给用户——本轮不会因此结束；"
-    "可继续执行原任务（调工具）或调 end_reply 收尾；"
-    "持续纯文本无工具调用会达到熔断上限被系统强制结束"
+    "1. 回复用户 → 调用 send_message（content 即回复文本）\n"
+    "2. 需要查资料或执行操作 → 通过 function calling 调用工具"
+    "（禁止在文字里伪造工具结果）\n"
+    "3. 已完成 → 调用 end_reply（参数留空，不要废话）；不想说话 → 整条仅输出 [SILENT]"
 )
 
-# 纯文本（无工具）首轮提示：温和提醒 AI 继续或收尾
+# 未调工具时的纠正提醒（不解释投递机制，避免鼓励纯文本）
 _PROMPT_TEXT_NO_TOOL = (
-    "[系统提示] 你刚发出去的纯文本已自动发送给用户。"
-    "如果还有后续动作要做，可以：\n"
-    "1. 继续执行原任务 → 调用对应工具\n"
-    "2. 已完成所有操作 → 调用 end_reply 结束本轮\n"
-    "你也可以继续输出纯文本（也会自动发送给用户），不需要立即调工具。"
+    "[系统提示] 你刚才未调用工具。请二选一，不要废话：\n"
+    "1. 还要继续工作 → 立即调用工具（回复用户用 send_message）\n"
+    "2. 无需继续 → 调用 end_reply，或整条仅输出 [SILENT]\n"
+    "不要重复刚才的文字。"
 )
 
-# 纯文本（无工具）严格提示：连续多次时接近上限的提醒
+# 连续未调工具接近熔断
 _PROMPT_TEXT_NO_TOOL_STRICT = (
-    "[系统提示] 你已连续 {count} 次只输出文字（未调用工具）。"
-    "文字都已发送给用户。如果还有具体任务未完成，"
-    "请调用工具继续执行；如已完成所有事情，调 end_reply 收尾。"
-    "再继续 {remaining} 次纯文本将被系统强制结束本轮。"
+    "[系统提示] 连续 {count} 次未调用工具。"
+    "请立刻：调用工具继续，或 end_reply / [SILENT] 结束——不要再输出说明性文字。"
+    "再继续 {remaining} 次将被强制结束。"
 )
 
 # 反思模式的输出纪律（无 send_message，产出文本即反思结果，但动作必须走工具）
@@ -113,7 +108,7 @@ _PROMPT_REFLECT_OUTPUT_DISCIPLINE = (
     "3. 完成分析后调用 end_reply 结束本轮反思"
 )
 
-# 路由询问：纯文本兜底时存在多个候选会话，反问 AI 选择投递目标（下一轮纯逻辑提取）
+# 路由询问：纯文本投递时存在多个候选会话，反问 AI 选择目标
 _PROMPT_ROUTE_ASK = (
     "[系统路由询问] 你刚才的文字没有指定目标会话，当前存在多个待回复会话：\n"
     "{sessions}\n"
@@ -579,7 +574,6 @@ async def think_loop(
     # 纯文本（无工具）连续次数：达上限强制结束本轮（防纯叙事死循环）
     text_without_tool_count = 0
     # 纯文本路由询问：多候选会话时挂起的候选列表与待投递文本
-    # （当前流程不再自动投递，作为兼容占位保留字段）
     pending_route: Optional[List[ReplyTarget]] = None
     pending_route_text = ""
     # 纯文本连续上限（配置可调，默认 5）
@@ -1004,14 +998,13 @@ async def think_loop(
                     continue
 
                 if mode == ThinkMode.REPLY and anything:
-                    # 纯文本自动兜底投递到激活会话（参考 hermes 来源绑定路由）：
-                    # 用户能及时看到，且本轮不结束——AI 可继续执行原任务或调 end_reply 收尾。
+                    # 纯文本自动投递到激活会话：兼容不会调工具的模型。
+                    # 用户能及时看到，本轮不结束——AI 可继续调工具或 end_reply / [SILENT]。
                     # 多候选会话时反问路由，下一轮提取投递；解析失败回退激活会话。
                     candidates = _collect_reply_candidates(
                         mind, anything, adapter_key, current_scope,
                     )
                     if len(candidates) > 1:
-                        # 多候选：反问路由，原文挂起，pending_route 标记本轮继续
                         pending_route = candidates
                         pending_route_text = raw_text
                         sessions_text = "\n".join(
@@ -1040,7 +1033,8 @@ async def think_loop(
                                 "WARNING", tag="思维",
                             )
                             execution_steps.append(
-                                f"→ 第{iteration + 1}轮: 纯文本无工具 {text_without_tool_count}/{text_without_tool_limit} 次，熔断结束"
+                                f"→ 第{iteration + 1}轮: 纯文本无工具 "
+                                f"{text_without_tool_count}/{text_without_tool_limit} 次，熔断结束"
                             )
                             await finish_think(
                                 mind, anything, execution_steps, iteration + 1, tool_chain,
@@ -1158,18 +1152,20 @@ async def think_loop(
                     )
                     iteration += 1
                     continue
-            # end_reply 附带文本：投递到激活会话（同轮若 send_message 已成功发送则跳过，避免双发）
+            # end_reply 同批若带有 assistant 正文，按纯文本照常投递（与是否已 send_message 无关）
             if mode == ThinkMode.REPLY and anything:
                 end_text = _strip_think_blocks(result.content or "").strip()
                 if (
                     end_text
                     and not should_suppress(end_text)
                     and not looks_like_fake_tool_call(end_text)
-                    and not _round_sent_via_tool(tool_chain, tool_calls)
                 ):
                     target = target_from_anything(anything, adapter_key)
                     if target is not None:
                         await deliver_text(target, end_text)
+                        execution_steps.append(
+                            f"→ 第{iteration + 1}轮: end_reply 附带纯文本已投递到 {target.session_key}"
+                        )
             log(f"AI 主动结束{mode_label} (轮次 {iteration + 1})", tag="思维")
             if mode == ThinkMode.REPLY and anything:
                 await finish_think(mind, anything, execution_steps, iteration + 1, tool_chain)
@@ -1333,21 +1329,6 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List[ToolCall]) 
         return ""
     lines = "\n".join(f"- {f}" for f in failures)
     return _PROMPT_END_BLOCKED_FAILURE.format(failures=lines)
-
-
-def _round_sent_via_tool(tool_chain: List[Dict], tool_calls: List[ToolCall]) -> bool:
-    """本轮是否已通过 send_message 成功发送（同轮抑制：避免 end_reply 附带文本双发）。"""
-    tc_ids = {tc.id for tc in tool_calls if tc.name == "send_message"}
-    if not tc_ids:
-        return False
-    for msg in reversed(tool_chain):
-        if msg.get("role") != "tool":
-            break
-        if msg.get("tool_call_id") in tc_ids:
-            parsed = _parse_tool_result_json(msg.get("content", ""))
-            if isinstance(parsed, dict) and parsed.get("success") is not False:
-                return True
-    return False
 
 
 def _collect_reply_candidates(
@@ -1741,7 +1722,34 @@ async def finish_think(
         iterations: int,
         tool_chain: Optional[List[Dict]] = None,
 ) -> None:
-    """思维循环结束处理：工具结果持久化 + 执行摘要写入短期记忆。"""
+    """思维循环结束处理：工具摘要入库 + 经 EVENT_AFTER_REPLY 交给技能评审。"""
+    execution_summary = _build_execution_summary(tool_chain, execution_steps)
+    if execution_summary.startswith("[已执行操作摘要]"):
+        # 工具执行记录持久化到对话历史（system 角色），
+        # 等价于主流 function calling 历史中的 assistant(tool_calls) + tool results。
+        # 不再写入短期记忆（DB 历史每轮都会加载，避免双重注入）。
+        await mind._add_system_context(
+            anything,
+            execution_summary,
+            role="system",
+        )
+
+    await complete_reply(
+        mind, anything, "", iterations,
+        tool_chain=tool_chain,
+        execution_summary=execution_summary,
+    )
+
+
+def _build_execution_summary(
+        tool_chain: Optional[List[Dict]],
+        execution_steps: List[str],
+) -> str:
+    """从工具链构建执行摘要；无工具结果时回退到步骤日志。
+
+    摘要同时用于：对话历史入库（仅工具摘要）与 EVENT_AFTER_REPLY.execution_summary
+    （SkillReviewer 契约）。
+    """
     if tool_chain:
         call_map: Dict[str, str] = {}  # tool_call_id → "name(args_preview)"
         for msg in tool_chain:
@@ -1777,17 +1785,14 @@ async def finish_think(
                 result_lines.append(f"  #{tool_idx} {call_sig} → {result}")
 
         if result_lines:
-            # 工具执行记录持久化到对话历史（system 角色），
-            # 等价于主流 function calling 历史中的 assistant(tool_calls) + tool results。
-            # 不再重复写入短期记忆（DB 历史每轮都会加载，避免双重注入）。
-            await mind._add_system_context(
-                anything,
+            return (
                 f"[已执行操作摘要] 本轮共执行 {len(result_lines)} 次工具\n"
-                + "\n".join(result_lines),
-                role="system",
+                + "\n".join(result_lines)
             )
 
-    await complete_reply(mind, anything, "", iterations, tool_chain=tool_chain)
+    if execution_steps:
+        return "[执行步骤]\n" + "\n".join(execution_steps[-20:])
+    return ""
 
 
 # ==================================================================
@@ -1802,11 +1807,14 @@ async def complete_reply(
         *,
         error: bool = False,
         tool_chain: Optional[List[Dict]] = None,
+        execution_summary: str = "",
 ) -> None:
     """清理回复状态并发出完成事件。
 
-    AI 的最终输出已由投递路径（send_message 工具 / 纯文本兜底）以
+    AI 的最终输出已由投递路径（send_message / 纯文本自动投递 / end_reply 附带正文）以
     assistant 角色写入对话历史，此处不再重复记录。
+
+    EVENT_AFTER_REPLY.execution_summary 是 SkillReviewer 的唯一评审材料来源。
     """
     from agent.mind.autonomous import MindPhase
 
@@ -1818,6 +1826,7 @@ async def complete_reply(
         "content": content[:100] if content else "",
         "iterations": iterations,
         "error": error,
+        "execution_summary": execution_summary,
     })
 
 

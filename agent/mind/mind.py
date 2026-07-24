@@ -110,16 +110,15 @@ from entities._sdk import deferred_tool, activate_group
     name=_END_REPLY_TOOL_NAME,
     group="thinking", tags=["always"], source="mind.core",
     description=(
-        "结束本轮操作。当你已通过工具完成所有操作，不再需要继续时调用此工具。"
-        "直接输出文字也会结束本轮（文字自动发送给当前会话）；"
-        "若同批或同轮存在失败工具，结束将不生效并反馈失败原因，修正后需重新调用。"
+        "结束本轮操作。任务已完成或无需继续时调用；参数留空即可（reason 仅内部日志，不发给用户）。"
+        "回复用户请用 send_message。若同批或同轮存在失败工具，结束将不生效并反馈失败原因，修正后需重新调用。"
     ),
 )
 def _end_reply_tool(reason: str = "") -> str:
     """结束本轮操作。
 
     Args:
-        reason: 可选的结束备注，仅日志记录，通常不需要填写
+        reason: 可选备注，仅内部日志，不会发给用户，通常留空
     """
     if reason:
         log(f"AI 结束操作: {reason}", tag="思维")
@@ -606,7 +605,7 @@ class Mind:
                 active_goals=len(situation.active_goals),
             )
 
-        self.pfc.clear_dynamic_tools()
+        await self._clear_dynamic_tools_when_idle()
 
         end_payload.update({
             "decisions_executed": [d.type.value for d in immediate],
@@ -615,6 +614,17 @@ class Mind:
 
         if self.pfc.has_pending_tasks():
             self._schedule_next_cycle("自主循环结束后仍有待处理任务")
+
+    async def _clear_dynamic_tools_when_idle(self) -> None:
+        """等所有回复会话结束后再清动态工具，避免并行 REPLY 被提前清掉。"""
+        if self._active_scopes:
+            log(
+                f"延迟清理动态工具：仍有活跃会话 {sorted(self._active_scopes)}",
+                "DEBUG", tag="思维",
+            )
+            await self._reply_idle_event.wait()
+        if not self._active_scopes:
+            self.pfc.clear_dynamic_tools()
 
     async def _run_heartbeat_tick_bg(self) -> None:
         """后台执行心跳 tick，完成后触发新周期（不阻塞主循环）。"""

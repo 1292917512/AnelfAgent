@@ -253,6 +253,15 @@ export const memoryApi = {
     datasets: () => api.get<CogneeDataset[]>("/memory/cognee/datasets"),
     improve: (datasetName: string) =>
       api.post("/memory/cognee/improve", { dataset_name: datasetName }),
+    /** 同源 HTML；超时需覆盖默认 30s，图谱生成可能较慢 */
+    graphHtml: (dataset: string) =>
+      api.get<string>("/memory/cognee/graph", {
+        params: { dataset },
+        responseType: "text",
+        timeout: 180_000,
+        headers: { Accept: "text/html" },
+        transformResponse: [(data) => data],
+      }),
   },
   stm: {
     list: () => api.get("/memory/stm"),

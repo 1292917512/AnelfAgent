@@ -278,7 +278,9 @@ class TestWaitSuspension:
         assert any("等待后台任务（timeout" in s for s in steps)
         # 第 1 次挂起超时；后续纯文本进入兜底循环 + 工具提醒
         reminders = [m for m in chain if m.get("role") == "system" and (
-            "纯文字" in m.get("content", "") or "纯文本" in m.get("content", "")
+            "未调用工具" in m.get("content", "")
+            or "纯文字" in m.get("content", "")
+            or "纯文本" in m.get("content", "")
         )]
         assert reminders
         assert mind.llm_calls >= 2
@@ -321,7 +323,9 @@ class TestWaitSuspension:
         await _run_reply(mind, anything, steps, chain)
 
         reminders = [m for m in chain if m.get("role") == "system" and (
-            "纯文字" in m.get("content", "") or "纯文本" in m.get("content", "")
+            "未调用工具" in m.get("content", "")
+            or "纯文字" in m.get("content", "")
+            or "纯文本" in m.get("content", "")
         )]
         assert reminders
         assert any("熔断结束" in s for s in steps)
