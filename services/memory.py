@@ -586,6 +586,7 @@ class MemoryService:
         from pathlib import Path
 
         from core.path import ConfigPaths, PathManager
+        from agent.memory.cognee.graph_html import sanitize_cognee_graph_html
         from agent.memory.cognee.runtime import get_cognee_client
 
         client = get_cognee_client()
@@ -607,17 +608,20 @@ class MemoryService:
 
         out_dir = Path(ConfigPaths.COGNEE_DATA_DIR)
         PathManager.ensure_dir_exists(str(out_dir))
+        # 可视化不应占用流水线级超时（可至 1800s）；过长会导致前端一直「渲染中」
+        graph_timeout = min(max(float(client.config.timeout_seconds), 90.0), 180.0)
         try:
             html = await client.visualize_graph(
                 destination_file_path=str(out_dir / "graph.html"),
                 dataset=target,
-                timeout=client.config.pipeline_timeout_seconds,
+                include_session_events=False,
+                timeout=graph_timeout,
             )
         except RuntimeError:
             raise
         except Exception as exc:
             raise RuntimeError(f"Cognee 图谱渲染失败: {exc}") from exc
-        return str(html)
+        return sanitize_cognee_graph_html(str(html))
 
     # ==================================================================
     # 目标计划（Goals）

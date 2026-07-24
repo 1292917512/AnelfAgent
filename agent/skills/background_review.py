@@ -4,6 +4,9 @@
 询问 LLM "这段经验中是否有可复用的方法/流程值得保存为技能"，
 由 LLM 自主调用 create_skill / update_skill 完成写入（不影响主对话）。
 
+评审材料契约：读取 EVENT_AFTER_REPLY.execution_summary
+（由 finish_think → complete_reply 写入），不依赖 pfc.temporary。
+
 防失控设计：
 - 上一次评审未完成时跳过本次（不堆积）
 - 评审使用受限工具集（仅 skills 组），禁止外发消息
@@ -74,24 +77,20 @@ class SkillReviewer:
             return
         if payload.get("error"):
             return
+        summary = str(payload.get("execution_summary") or "").strip()
+        if not summary:
+            return
         if self._task and not self._task.done():
             log("上一次技能评审未完成，跳过本次", "DEBUG", tag="技能")
             return
-        self._task = asyncio.create_task(self._review(), name="skills.review")
+        self._task = asyncio.create_task(
+            self._review(summary), name="skills.review",
+        )
 
-    async def _review(self) -> None:
+    async def _review(self, summary: str) -> None:
         """执行评审：用受限工具集让 LLM 自主决定是否沉淀技能。"""
         try:
-            # 评审材料：短期记忆中的执行摘要（finish_think 写入）
-            clips = self._mind.pfc.temporary
-            if not clips:
-                return
-            summary = "\n".join(
-                str(c.get("content", "")) for c in clips[-5:]
-            )[:_MAX_SUMMARY_CHARS]
-            if not summary.strip():
-                return
-
+            summary = summary[:_MAX_SUMMARY_CHARS]
             existing_skills = self._store.list_skills()
             existing = (
                 "\n".join(f"- {s.name}: {s.description}" for s in existing_skills[:20])
