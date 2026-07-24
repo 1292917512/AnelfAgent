@@ -168,11 +168,16 @@ async def test_bare_text_loop_hits_limit(anything, deliver_mock) -> None:
 
 
 async def test_bare_text_injects_continue_hint(anything, deliver_mock) -> None:
-    """纯文本后注入「未调工具 → 继续调工具或干净结束」提醒，不宣传可纯文本投递。"""
+    """纯文本后注入「已发送」标记 + 未调工具收尾提醒，不宣传可纯文本投递。"""
     mind = _FakeMind(limit=5)
     chain: List = []
     await _run(mind, anything, chain=chain)
 
+    sent_marks = [
+        m for m in chain if m.get("role") == "system"
+        and "已发送给用户" in m.get("content", "")
+    ]
+    assert sent_marks
     reminders = [
         m for m in chain if m.get("role") == "system"
         and "未调用工具" in m.get("content", "")
@@ -186,6 +191,45 @@ async def test_bare_text_injects_continue_hint(anything, deliver_mock) -> None:
     assert "直接输出纯文本" not in guide_and_hints
     assert "系统会代为发送" not in guide_and_hints
 
+
+async def test_non_output_tools_inject_visibility_hint(anything, deliver_mock) -> None:
+    """查资料类工具后注入「结果仅你可见，请用 send_message」。"""
+    mind = _FakeMind(limit=5)
+    mind._rounds = [
+        _mk_result("", ["recall"]),
+        _mk_result("", ["end_reply"]),
+    ]
+    chain: List = []
+    await _run(mind, anything, chain=chain)
+
+    hints = [
+        m for m in chain if m.get("role") == "system"
+        and "仅你可见" in m.get("content", "")
+        and "send_message" in m.get("content", "")
+    ]
+    assert hints
+
+
+async def test_send_message_injects_sent_mark(anything, deliver_mock) -> None:
+    """send_message 成功后注入「以上内容已发送给用户」。"""
+    mind = _FakeMind(limit=5)
+    mind._rounds = [
+        _mk_result("你好", ["send_message"]),
+        _mk_result("", ["end_reply"]),
+    ]
+    chain: List = []
+    await _run(mind, anything, chain=chain)
+
+    sent_marks = [
+        m for m in chain if m.get("role") == "system"
+        and "已发送给用户" in m.get("content", "")
+    ]
+    assert sent_marks
+    # 已走输出工具，不应再注入「仅你可见」
+    assert not any(
+        "仅你可见" in m.get("content", "")
+        for m in chain if m.get("role") == "system"
+    )
 
 async def test_bare_text_count_resets_on_tool_call(anything, deliver_mock) -> None:
     """工具调用出现时清零计数，熔断链中断。"""
