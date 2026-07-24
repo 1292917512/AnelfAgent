@@ -100,6 +100,21 @@ _PROMPT_TEXT_NO_TOOL_STRICT = (
     "再继续 {remaining} 次将被强制结束。"
 )
 
+# 查资料等非输出工具后：纠正「以为调工具就等于已回复用户」
+_OUTPUT_TOOL_NAMES = frozenset({
+    "send_message", "send_photo", "send_voice", "send_file",
+})
+_PROMPT_AFTER_NON_OUTPUT_TOOLS = (
+    "[系统提示] 工具结果仅你可见，不会自动发给用户。"
+    "若需回复用户请调用 send_message；若已完成请调用 end_reply（参数留空）。"
+)
+
+# 纯文本 / send_message 等已成功发出后：明确「已发送」，避免重复再说一遍
+_PROMPT_CONTENT_SENT = (
+    "[系统提示] 以上内容已发送给用户。"
+    "勿重复发送同一内容；若需继续请调用工具，若已完成请调用 end_reply。"
+)
+
 # 反思模式的输出纪律（无 send_message，产出文本即反思结果，但动作必须走工具）
 _PROMPT_REFLECT_OUTPUT_DISCIPLINE = (
     "[输出纪律] 你必须严格遵守：\n"
@@ -882,10 +897,15 @@ async def think_loop(
                     chosen = extract_route_choice(raw_text, pending_route)
                     target = chosen or target_from_anything(anything, adapter_key)
                     if target is not None:
-                        await deliver_text(target, pending_route_text)
+                        sent = await deliver_text(target, pending_route_text)
                         delivered_to = target.session_key + (
                             "" if chosen else "（路由解析失败，回退激活会话）"
                         )
+                        if sent:
+                            tool_chain.append({
+                                "role": "system",
+                                "content": _PROMPT_CONTENT_SENT,
+                            })
                 pending_route = None
                 pending_route_text = ""
                 if delivered_to:
@@ -1020,7 +1040,12 @@ async def think_loop(
                     else:
                         target = candidates[0] if candidates else target_from_anything(anything, adapter_key)
                         if target is not None:
-                            await deliver_text(target, raw_text)
+                            sent = await deliver_text(target, raw_text)
+                            if sent:
+                                tool_chain.append({
+                                    "role": "system",
+                                    "content": _PROMPT_CONTENT_SENT,
+                                })
                         execution_steps.append(
                             f"→ 第{iteration + 1}轮: 纯文本已投递到 {target.session_key}（本轮继续）"
                             if target and target.session_key
@@ -1116,6 +1141,24 @@ async def think_loop(
         tool_names = ", ".join(tc.name for tc in tool_calls)
         execution_steps.append(f"→ 第{iteration + 1}轮: 调用工具 [{tool_names}]")
 
+        # 投递成功 / 非输出工具后的上下文标记（帮助弱模型区分「已发出」与「仅自己可见」）
+        if mode == ThinkMode.REPLY:
+            if _round_output_sent_successfully(tool_chain, tool_calls):
+                tool_chain.append({
+                    "role": "system",
+                    "content": _PROMPT_CONTENT_SENT,
+                })
+            else:
+                called = {tc.name for tc in tool_calls}
+                if (
+                    not (called & _OUTPUT_TOOL_NAMES)
+                    and _END_REPLY_TOOL_NAME not in called
+                ):
+                    tool_chain.append({
+                        "role": "system",
+                        "content": _PROMPT_AFTER_NON_OUTPUT_TOOLS,
+                    })
+
         if consecutive_tool_errors >= 3:
             log(
                 f"连续 {consecutive_tool_errors} 轮工具全部报错，强制结束本轮",
@@ -1162,7 +1205,13 @@ async def think_loop(
                 ):
                     target = target_from_anything(anything, adapter_key)
                     if target is not None:
-                        await deliver_text(target, end_text)
+                        sent = await deliver_text(target, end_text)
+                        if sent:
+                            # 本轮即将结束，标记仍写入链，供 finish 摘要/调试一致
+                            tool_chain.append({
+                                "role": "system",
+                                "content": _PROMPT_CONTENT_SENT,
+                            })
                         execution_steps.append(
                             f"→ 第{iteration + 1}轮: end_reply 附带纯文本已投递到 {target.session_key}"
                         )
@@ -1329,6 +1378,26 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List[ToolCall]) 
         return ""
     lines = "\n".join(f"- {f}" for f in failures)
     return _PROMPT_END_BLOCKED_FAILURE.format(failures=lines)
+
+
+def _round_output_sent_successfully(
+        tool_chain: List[Dict], tool_calls: List[ToolCall],
+) -> bool:
+    """本轮是否已通过输出类工具成功发送（send_message / 媒体发送）。"""
+    tc_ids = {
+        tc.id for tc in tool_calls if tc.name in _OUTPUT_TOOL_NAMES
+    }
+    if not tc_ids:
+        return False
+    for msg in reversed(tool_chain):
+        if msg.get("role") != "tool":
+            break
+        if msg.get("tool_call_id") not in tc_ids:
+            continue
+        parsed = _parse_tool_result_json(msg.get("content", ""))
+        if isinstance(parsed, dict) and parsed.get("success") is not False:
+            return True
+    return False
 
 
 def _collect_reply_candidates(
