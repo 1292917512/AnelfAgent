@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional, Set, Union
 
 from core.entity import BaseEntity, EntityType
 from core.log import log
+from core.tags import strip_message_meta_tags
 
 from .base import BaseChannel, ChannelStatus
 
@@ -215,6 +216,8 @@ class ChannelManager(BaseEntity):
             channel_type = "private"
 
         reply_to = getattr(anything, "adapter_message_id", None) or None
+        # 剥离 LLM 可能模仿历史格式带入的元数据标签（[message_id:xxx] 等）
+        content = strip_message_meta_tags(content)
         await channel.send_text(chat_id, content, reply_to=reply_to, channel_type=channel_type)
 
     async def stream_start(self, anything: Any) -> None:

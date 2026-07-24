@@ -13,6 +13,8 @@ from core.log import log
 from core.path import ConfigPaths
 from services import AgentStatusService
 
+from agent.llm.reasoning import CANONICAL_EFFORTS
+
 router = APIRouter(prefix="/config", tags=["config"])
 
 _status_svc = AgentStatusService()
@@ -372,7 +374,7 @@ _TASK_DEFAULTS: Dict[str, Any] = {
 }
 
 _OPTIONAL_TASK_OVERRIDE_FIELDS = ("model_id", "reasoning_effort")
-_TASK_REASONING_EFFORTS = frozenset({"low", "medium", "high", "max"})
+_TASK_REASONING_EFFORTS = frozenset(CANONICAL_EFFORTS)
 
 
 def _to_bool(value: Any, *, default: bool = False) -> bool:

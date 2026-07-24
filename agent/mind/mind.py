@@ -1004,7 +1004,11 @@ class Mind:
         mc = self._get_mind_config()
         merged_options = dict(options or {})
         if mc.reasoning_effort and "reasoning_effort" not in merged_options:
-            merged_options["reasoning_effort"] = mc.reasoning_effort
+            from agent.llm.reasoning import normalize_effort
+            # 全局配置容错：非法值归一为空，避免污染每一次 LLM 调用
+            effort = normalize_effort(mc.reasoning_effort)
+            if effort:
+                merged_options["reasoning_effort"] = effort
         if self._session_llm_params:
             merged_options.update(self._session_llm_params)
 
@@ -1058,7 +1062,11 @@ class Mind:
         mc = self._get_mind_config()
         merged_options = dict(options or {})
         if mc.reasoning_effort and "reasoning_effort" not in merged_options:
-            merged_options["reasoning_effort"] = mc.reasoning_effort
+            from agent.llm.reasoning import normalize_effort
+            # 全局配置容错：非法值归一为空，避免污染每一次 LLM 调用
+            effort = normalize_effort(mc.reasoning_effort)
+            if effort:
+                merged_options["reasoning_effort"] = effort
         if self._session_llm_params:
             merged_options.update(self._session_llm_params)
         merged_options.pop("_model_id", None)

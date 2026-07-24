@@ -556,3 +556,324 @@ def test_supports_forced_tool_choice_serialization() -> None:
     # 旧配置无此字段时默认 True
     legacy = {k: v for k, v in config.to_dict().items() if k != "supports_forced_tool_choice"}
     assert LLMClientConfig.from_dict(legacy).supports_forced_tool_choice is True
+
+
+# ------------------------------------------------------------------
+# reasoning_effort：每模型专属、钳制、自动降级重试
+# ------------------------------------------------------------------
+
+
+def test_per_model_reasoning_effort_used_when_caller_omits() -> None:
+    """调用方未传 effort 时回落每模型专属等级。"""
+    client = LLMClient(LLMClientConfig(
+        model="o3", supports_reasoning=True, reasoning_effort="low",
+    ))
+    kwargs = client._build_kwargs([{"role": "user", "content": "hi"}])
+    assert kwargs["reasoning_effort"] == "low"
+
+
+def test_caller_effort_overrides_per_model() -> None:
+    client = LLMClient(LLMClientConfig(
+        model="o3", supports_reasoning=True, reasoning_effort="low",
+    ))
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hi"}], {"reasoning_effort": "high"},
+    )
+    assert kwargs["reasoning_effort"] == "high"
+
+
+def test_invalid_caller_effort_raises() -> None:
+    client = LLMClient(LLMClientConfig(model="o3", supports_reasoning=True))
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        client._build_kwargs(
+            [{"role": "user", "content": "hi"}], {"reasoning_effort": "ultra"},
+        )
+
+
+def test_config_normalizes_per_model_effort_in_constructor() -> None:
+    """__post_init__ 将非法每模型 effort 归一为空 + 合法值统一小写。"""
+    cfg = LLMClientConfig(model="o3", reasoning_effort="garbage")
+    assert cfg.reasoning_effort == ""
+    cfg = LLMClientConfig(model="o3", reasoning_effort=" XHigh ")
+    assert cfg.reasoning_effort == "xhigh"
+
+
+def test_to_model_dict_only_emits_reasoning_effort_when_non_empty() -> None:
+    cfg = LLMClientConfig(model="o3", supports_reasoning=True)
+    assert "reasoning_effort" not in cfg.to_model_dict()
+    cfg = LLMClientConfig(
+        model="o3", supports_reasoning=True, reasoning_effort="high",
+    )
+    assert cfg.to_model_dict()["reasoning_effort"] == "high"
+
+
+def test_off_maps_to_none_and_skips_anthropic_temperature() -> None:
+    """off（显式关闭）映射 litellm "none"；Anthropic 不强制 temperature=1。"""
+    client = LLMClient(LLMClientConfig(
+        model="claude-sonnet-4-5", api_type="anthropic", supports_reasoning=True,
+    ))
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hi"}], {"reasoning_effort": "off"},
+    )
+    assert kwargs["reasoning_effort"] == "none"
+    assert kwargs.get("temperature") != 1
+
+    # 启用档位仍强制 temperature=1
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hi"}], {"reasoning_effort": "high"},
+    )
+    assert kwargs["reasoning_effort"] == "high"
+    assert kwargs["temperature"] == 1
+
+
+def test_build_kwargs_clamps_max_for_non_adaptive_anthropic() -> None:
+    """claude-sonnet-4-5 不支持 max，钳制为 high（避免端点 400）。"""
+    client = LLMClient(LLMClientConfig(
+        model="claude-sonnet-4-5", api_type="anthropic", supports_reasoning=True,
+    ))
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hi"}], {"reasoning_effort": "max"},
+    )
+    assert kwargs["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_effort_rejection_walks_downgrade_ladder(monkeypatch) -> None:
+    """端点 400 拒绝 effort：沿阶梯逐级降级重试到底。"""
+    import litellm
+
+    client = LLMClient(LLMClientConfig(model="mystery-model", supports_reasoning=True))
+    seen: list[str | None] = []
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        effort = kwargs.get("reasoning_effort")
+        seen.append(effort)
+        if effort not in (None, "low", "minimal"):
+            raise litellm.BadRequestError(
+                f"Invalid reasoning_effort: {effort!r}",
+                model="m", llm_provider="openai",
+            )
+        return "ok"
+
+    monkeypatch.setattr(
+        "agent.llm.llm_client.litellm.acompletion", fake_acompletion,
+    )
+
+    kwargs = {"model": "m", "messages": [], "reasoning_effort": "high"}
+    assert await client._start_completion(kwargs) == "ok"
+    assert seen == ["high", "medium", "low"]
+
+
+@pytest.mark.asyncio
+async def test_effort_rejection_drops_param_at_ladder_bottom(monkeypatch) -> None:
+    """阶梯最低档（minimal）也被拒时，丢弃 reasoning_effort 参数最终重试。"""
+    import litellm
+
+    client = LLMClient(LLMClientConfig(model="mystery-model", supports_reasoning=True))
+    seen: list[str | None] = []
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        effort = kwargs.get("reasoning_effort")
+        seen.append(effort)
+        if effort is not None:
+            raise litellm.BadRequestError(
+                f"Invalid reasoning_effort: {effort!r}",
+                model="m", llm_provider="openai",
+            )
+        return "ok"
+
+    monkeypatch.setattr(
+        "agent.llm.llm_client.litellm.acompletion", fake_acompletion,
+    )
+
+    kwargs = {"model": "m", "messages": [], "reasoning_effort": "minimal"}
+    assert await client._start_completion(kwargs) == "ok"
+    assert seen == ["minimal", None]
+
+
+@pytest.mark.asyncio
+async def test_non_effort_bad_request_is_not_downgraded(monkeypatch) -> None:
+    """与思考参数无关的 400 不触发降级、不重试，原样抛出。"""
+    import litellm
+
+    client = LLMClient(LLMClientConfig(model="m", supports_reasoning=True))
+    calls = 0
+
+    async def fake_acompletion(**_kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        raise litellm.BadRequestError(
+            "messages: text content blocks must be non-empty",
+            model="m", llm_provider="openai",
+        )
+
+    monkeypatch.setattr(
+        "agent.llm.llm_client.litellm.acompletion", fake_acompletion,
+    )
+
+    kwargs = {"model": "m", "messages": [], "reasoning_effort": "high"}
+    with pytest.raises(litellm.BadRequestError):
+        await client._start_completion(kwargs)
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_effort_drop_restores_anthropic_temperature(monkeypatch) -> None:
+    """Anthropic 端点全阶梯被拒后：丢弃 effort 时恢复模型配置的 temperature。"""
+    import litellm
+
+    client = LLMClient(LLMClientConfig(
+        model="mystery-anthropic",
+        api_type="anthropic",
+        supports_reasoning=True,
+        temperature=0.4,
+    ))
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        if kwargs.get("reasoning_effort") is not None:
+            raise litellm.BadRequestError(
+                f"Invalid reasoning_effort: {kwargs['reasoning_effort']!r}",
+                model="m", llm_provider="anthropic",
+            )
+        return "ok"
+
+    monkeypatch.setattr(
+        "agent.llm.llm_client.litellm.acompletion", fake_acompletion,
+    )
+
+    kwargs: dict[str, Any] = {
+        "model": "m", "messages": [], "reasoning_effort": "minimal",
+    }
+    assert await client._start_completion(kwargs) == "ok"
+    # thinking 强制 temperature=1 已撤销，恢复模型配置值 0.4
+    assert kwargs["temperature"] == 0.4
+    assert "reasoning_effort" not in kwargs
+
+
+# ------------------------------------------------------------------
+# MiniMax / Kimi 供应商专项 payload 转换
+# ------------------------------------------------------------------
+
+
+def test_minimax_m3_high_maps_to_thinking_adaptive() -> None:
+    """M3 选 high：下发 thinking.type=adaptive，不下发 reasoning_effort。"""
+    client = LLMClient(LLMClientConfig(
+        model="MiniMax-M3", api_type="anthropic", supports_reasoning=True,
+    ))
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hi"}], {"reasoning_effort": "high"},
+    )
+    assert "reasoning_effort" not in kwargs
+    assert kwargs["extra_body"]["thinking"] == {"type": "adaptive"}
+
+
+def test_minimax_m3_off_maps_to_thinking_disabled() -> None:
+    """M3 选 off：下发 thinking.type=disabled（关闭思考）。"""
+    client = LLMClient(LLMClientConfig(
+        model="MiniMax-M3", api_type="anthropic", supports_reasoning=True,
+    ))
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hi"}], {"reasoning_effort": "off"},
+    )
+    assert "reasoning_effort" not in kwargs
+    assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+
+
+def test_minimax_m2x_all_levels_map_to_adaptive() -> None:
+    """M2.x thinking 强制开启，off/其他档位统一 → adaptive。"""
+    client = LLMClient(LLMClientConfig(
+        model="MiniMax-M2.7-highspeed",
+        api_type="anthropic", supports_reasoning=True,
+    ))
+    for effort in ("off", "low", "medium", "high", "max"):
+        kwargs = client._build_kwargs(
+            [{"role": "user", "content": "hi"}], {"reasoning_effort": effort},
+        )
+        assert "reasoning_effort" not in kwargs
+        assert kwargs["extra_body"]["thinking"] == {"type": "adaptive"}, effort
+
+
+def test_kimi_k3_max_uses_top_level_reasoning_effort() -> None:
+    """K3 选 max：下发 kwargs['reasoning_effort']='max'，不写 extra_body.thinking。"""
+    client = LLMClient(LLMClientConfig(
+        model="kimi-k3", api_type="anthropic", supports_reasoning=True,
+    ))
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hi"}], {"reasoning_effort": "max"},
+    )
+    assert kwargs["reasoning_effort"] == "max"
+    # K3 路径不写 extra_body.thinking
+    assert "thinking" not in kwargs.get("extra_body", {})
+
+
+def test_kimi_k3_high_xhigh_both_map_to_high() -> None:
+    """K3 选 high/xhigh → reasoning_effort=high（K3 无 xhigh）。"""
+    client = LLMClient(LLMClientConfig(
+        model="k3", api_type="anthropic", supports_reasoning=True,
+    ))
+    for effort in ("high", "xhigh"):
+        kwargs = client._build_kwargs(
+            [{"role": "user", "content": "hi"}], {"reasoning_effort": effort},
+        )
+        assert kwargs["reasoning_effort"] == "high", effort
+
+
+def test_kimi_k3_off_does_not_send_param() -> None:
+    """K3 选 off：不下发任何思考参数（K3 始终推理，无法关闭）。"""
+    client = LLMClient(LLMClientConfig(
+        model="k3", api_type="anthropic", supports_reasoning=True,
+    ))
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hi"}], {"reasoning_effort": "off"},
+    )
+    assert "reasoning_effort" not in kwargs
+    assert "thinking" not in kwargs.get("extra_body", {})
+
+
+def test_kimi_k27code_off_still_sends_thinking_enabled() -> None:
+    """K2.7-code 选 off：仍发 thinking.type=enabled（端点不支持 disabled）。"""
+    client = LLMClient(LLMClientConfig(
+        model="kimi-for-coding", api_type="anthropic", supports_reasoning=True,
+    ))
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hi"}], {"reasoning_effort": "off"},
+    )
+    assert "reasoning_effort" not in kwargs
+    assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+
+
+def test_kimi_k26_off_sends_thinking_disabled() -> None:
+    """K2.6 选 off：发 thinking.type=disabled（K2.6 支持关闭）。"""
+    client = LLMClient(LLMClientConfig(
+        model="kimi-k2.6", api_type="anthropic", supports_reasoning=True,
+    ))
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hi"}], {"reasoning_effort": "off"},
+    )
+    assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+
+
+def test_provider_specific_payload_merges_with_existing_extra_body() -> None:
+    """用户已配置 extra_body 字段时，thinking 与之合并而不是覆盖。"""
+    client = LLMClient(LLMClientConfig(
+        model="MiniMax-M3", api_type="anthropic", supports_reasoning=True,
+        extra_body={"custom_field": "value"},
+    ))
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hi"}], {"reasoning_effort": "high"},
+    )
+    assert kwargs["extra_body"]["thinking"] == {"type": "adaptive"}
+    assert kwargs["extra_body"]["custom_field"] == "value"
+
+
+def test_claude_unaffected_by_provider_specific_logic() -> None:
+    """Claude 仍走 litellm reasoning_effort 通用路径（不被供应商专项干扰）。"""
+    client = LLMClient(LLMClientConfig(
+        model="claude-sonnet-4-5", api_type="anthropic", supports_reasoning=True,
+    ))
+    kwargs = client._build_kwargs(
+        [{"role": "user", "content": "hi"}], {"reasoning_effort": "high"},
+    )
+    assert kwargs["reasoning_effort"] == "high"
+    assert kwargs["temperature"] == 1
+    assert "thinking" not in kwargs.get("extra_body", {})

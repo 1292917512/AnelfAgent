@@ -25,6 +25,8 @@ export interface ModelConfig {
   supports_forced_tool_choice: boolean;
   vision_format: string;
   supports_reasoning: boolean;
+  /** 每模型专属思考等级（off/minimal/low/medium/high/xhigh/max）；空串/缺省 = 跟随全局 */
+  reasoning_effort?: string;
   /** null = 不下发，由 provider/SDK 按模型默认决定 */
   temperature: number | null;
   /** null = 不下发，由 provider/SDK 按模型默认决定 */
@@ -63,6 +65,7 @@ export interface ModelPriorityItem {
   supports_vision: boolean;
   supports_tools: boolean;
   supports_reasoning: boolean;
+  reasoning_effort?: string;
   api_type: string;
   input_cost: number | null;
   output_cost: number | null;
@@ -71,7 +74,7 @@ export interface ModelPriorityItem {
 
 export type CogneeModelSource = "auto" | "model" | "custom";
 
-export type CogneeReasoningEffort = "" | "off" | "low" | "medium" | "high" | "max";
+export type CogneeReasoningEffort = "" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface CogneeChatModelConfig {
   source: CogneeModelSource;
@@ -532,7 +535,7 @@ export interface WebToolsConfig {
   proxy: string;
 }
 
-export type ReasoningEffort = "low" | "medium" | "high" | "max";
+export type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface HeartbeatConfig {
   enabled: boolean;

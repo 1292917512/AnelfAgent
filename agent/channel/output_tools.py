@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from entities._sdk import deferred_tool, activate_group
 from core.log import log
+from core.tags import strip_message_meta_tags
 
 # 会话记录引用（register_output_tools 注入，用于将 AI 回复写入对话历史）
 _conversation_data: Optional[Any] = None
@@ -28,21 +29,18 @@ def register_output_tools(conversation_data: Optional[Any] = None) -> None:
     log(f"统一输出工具已注册 ({count} 个)", tag="通道")
 
 
-async def _record_sent_reply(target_id: str, content: str, channel_type: str, message_id: str = "") -> None:
+async def _record_sent_reply(target_id: str, content: str, channel_type: str) -> None:
     """将 AI 发送的回复记录到对话历史（assistant 角色）。
 
     主流做法：对话历史应同时包含用户消息与 AI 回复，
     否则 AI 在历史中看不到自己说过什么，导致重复回复/上下文断裂。
-    message_id 非空时以 [message_id:xxx] 标签前缀入库，
-    使 AI 后续可对自发消息执行表情回应/撤回等引用操作。
+    内容原样入库，不附加元数据标签——assistant 消息带标签会
+    诱发模型模仿标签格式并泄漏到出站文本。
     """
     if _conversation_data is None or not content:
         return
     try:
         from agent.storage.storage_router import StorageDomain
-        if message_id:
-            from core.tags import tag_label
-            content = f"{tag_label('message_id', message_id)}{content}"
         scope_type = "group" if channel_type == "group" else "user"
         await _conversation_data.router.append(
             StorageDomain.CONVERSATION,
@@ -261,7 +259,10 @@ async def send_message(
         content: 消息文本内容（支持 [at_uid:xxx] 格式 @ 提及用户）
         reply_to_message_id: 可选，指定回复引用的消息 ID（为空则普通发送）
     """
-    if not content or not content.strip():
+    # 剥离 LLM 可能模仿历史格式带入的元数据标签（[message_id:xxx] 等），
+    # 清洗结果同时用于发送与对话历史入库，保证所见即所存
+    content = strip_message_meta_tags(content or "").strip()
+    if not content:
         return json.dumps({"success": False, "error": "content 参数不能为空，请提供要发送的消息内容"}, ensure_ascii=False)
 
     resolved_channel_type = "private"
@@ -291,14 +292,10 @@ async def send_message(
         success_suffix=f" ({len(content)}字)",
     )
 
-    # 发送成功后将 AI 回复记录到对话历史（assistant 角色），回填频道返回的 message_id
+    # 发送成功后将 AI 回复记录到对话历史（assistant 角色）
     try:
-        parsed_result = json.loads(result)
-        if parsed_result.get("success") is not False:
-            await _record_sent_reply(
-                resolved_target, content, resolved_channel_type,
-                message_id=str(parsed_result.get("message_id") or ""),
-            )
+        if json.loads(result).get("success") is not False:
+            await _record_sent_reply(resolved_target, content, resolved_channel_type)
     except (json.JSONDecodeError, TypeError):
         pass
     return result

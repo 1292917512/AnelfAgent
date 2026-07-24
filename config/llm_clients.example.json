@@ -71,6 +71,7 @@
           "temperature": 0.4,
           "context_window": 200000,
           "supports_reasoning": true,
+          "reasoning_effort": "",
           "chat_protocol": "chat_completions",
           "request_params": {},
           "extra_body": {}

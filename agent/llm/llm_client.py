@@ -26,6 +26,16 @@ import httpx
 import litellm
 
 from agent.llm.protocol import CHAT_PROTOCOLS, ChatProtocol, resolve_chat_protocol
+from agent.llm.reasoning import (
+    CANONICAL_EFFORTS,
+    clamp_effort,
+    downgrade_effort,
+    from_litellm_effort,
+    is_effort_rejection,
+    normalize_effort,
+    provider_specific_effort,
+    to_litellm_effort,
+)
 from agent.llm.types import (
     ChatResult, ChatStreamDelta, ImageContent, TextCompletionResult, ToolCall, UsageInfo,
 )
@@ -234,6 +244,9 @@ class LLMClientConfig:
     model_types: List[str] = field(default_factory=lambda: ["chat"])
     provider_id: str = ""
     supports_reasoning: bool = False
+    # 每模型专属思考等级（off/minimal/low/medium/high/xhigh/max）；
+    # 空=跟随全局/任务注入的等级。非法值在 __post_init__ 归一为 ""
+    reasoning_effort: str = ""
     context_window: int = 0
     request_params: Dict[str, Any] = field(default_factory=dict)
     extra_body: Dict[str, Any] = field(default_factory=dict)
@@ -273,6 +286,14 @@ class LLMClientConfig:
         ):
             if not isinstance(value, dict):
                 raise ValueError(f"{name} 必须是对象")
+        normalized_effort = normalize_effort(self.reasoning_effort)
+        if self.reasoning_effort and not normalized_effort:
+            log(
+                f"模型 [{self.name}] 配置了无效的 reasoning_effort="
+                f"{self.reasoning_effort!r}，已重置为跟随全局",
+                "WARNING", tag="模型",
+            )
+        self.reasoning_effort = normalized_effort
         collisions = _RESERVED_REQUEST_PARAMS.intersection(self.request_params)
         if collisions:
             raise ValueError(f"request_params 不允许覆盖保留参数: {sorted(collisions)}")
@@ -385,6 +406,8 @@ class LLMClientConfig:
             d["timeout"] = self.timeout
         if self.extra_params:
             d["extra_params"] = self.extra_params
+        if self.reasoning_effort:
+            d["reasoning_effort"] = self.reasoning_effort
         return d
 
     @classmethod
@@ -546,31 +569,70 @@ class LLMClient(BaseEntity):
         return cap if cap > 0 else None
 
     async def _start_completion(self, kwargs: Dict[str, Any]) -> Any:
-        """发起 litellm.acompletion：端点报错自适应学习后重试一次。
+        """发起 litellm.acompletion：端点报错自适应学习后重试。
 
-        两类可学习报错：强制 tool_choice 被拒（降级 auto）、max_tokens
-        超限（解析端点上限并钳制）。学习结果本次运行内缓存，同模型后续
-        请求直接规避，实现新模型零配置自适应（参考 hermes-agent
+        三类可学习报错：强制 tool_choice 被拒（降级 auto）、max_tokens
+        超限（解析端点上限并钳制）、思考等级被拒（沿降级阶梯逐档下降，
+        到底后丢弃参数）。学习结果本次运行内缓存，同模型后续请求直接
+        规避，实现新模型零配置自适应（参考 hermes-agent
         conversation_loop 的 available_tokens 报错解析重试）。
+        每类修复各自收敛（auto/上限/阶梯单调下降），循环不会无限重试。
         """
-        try:
-            return await litellm.acompletion(**kwargs)
-        except Exception as exc:
-            if self._learn_tool_choice_rejection(exc, kwargs):
-                kwargs["tool_choice"] = "auto"
+        while True:
+            try:
                 return await litellm.acompletion(**kwargs)
-            new_cap = self._parse_output_cap_from_error(exc)
-            current = kwargs.get("max_tokens")
-            if new_cap is None or not current or current <= new_cap:
+            except Exception as exc:
+                if self._learn_tool_choice_rejection(exc, kwargs):
+                    kwargs["tool_choice"] = "auto"
+                    continue
+                new_cap = self._parse_output_cap_from_error(exc)
+                current = kwargs.get("max_tokens")
+                if new_cap is not None and current and current > new_cap:
+                    self._learned_output_cap = new_cap
+                    kwargs["max_tokens"] = new_cap
+                    info(
+                        f"LLMClient [{self.config.name}] 端点限制 max_tokens ≤ {new_cap}"
+                        f"（原请求 {current}），已钳制并重试，本次运行内缓存",
+                        tag="模型",
+                    )
+                    continue
+                if self._downgrade_effort_on_rejection(exc, kwargs):
+                    continue
                 raise
-            self._learned_output_cap = new_cap
-            kwargs["max_tokens"] = new_cap
-            info(
-                f"LLMClient [{self.config.name}] 端点限制 max_tokens ≤ {new_cap}"
-                f"（原请求 {current}），已钳制并重试，本次运行内缓存",
-                tag="模型",
+
+    def _downgrade_effort_on_rejection(self, exc: Exception, kwargs: Dict[str, Any]) -> bool:
+        """端点 400 拒绝思考参数时沿降级阶梯降一档；最后一档丢弃参数。
+
+        clamp_effort 静态钳制之外的运行时兜底：litellm 模型能力表与子串
+        规则无法覆盖所有未知/新模型，降级保证思考参数不会导致整轮失败。
+        返回 True 表示已调整 kwargs，调用方应重试。
+        """
+        current = kwargs.get("reasoning_effort")
+        if not current or not is_effort_rejection(exc):
+            return False
+        effort = from_litellm_effort(str(current))
+        nxt = downgrade_effort(effort)
+        if nxt is not None:
+            kwargs["reasoning_effort"] = to_litellm_effort(nxt)
+            log(
+                f"端点拒绝 reasoning_effort={current}，已降级为 "
+                f"{kwargs['reasoning_effort']} 重试 (model={self.config.model})",
+                "WARNING", tag="LLM",
             )
-            return await litellm.acompletion(**kwargs)
+        else:
+            kwargs.pop("reasoning_effort", None)
+            if self.config.api_type == API_TYPE_ANTHROPIC:
+                # 撤销 thinking 强制的 temperature=1，恢复模型配置值
+                if self.config.temperature is not None:
+                    kwargs["temperature"] = self.config.temperature
+                else:
+                    kwargs.pop("temperature", None)
+            log(
+                f"端点拒绝 reasoning_effort={current}，已丢弃该参数重试 "
+                f"(model={self.config.model})",
+                "WARNING", tag="LLM",
+            )
+        return True
 
     def _learn_tool_choice_rejection(self, exc: Exception, kwargs: Dict[str, Any]) -> bool:
         """从端点 400 报错学习「不支持强制 tool_choice」。
@@ -618,11 +680,7 @@ class LLMClient(BaseEntity):
         """构建 litellm 调用参数。"""
         self._ensure_configured()
         params = self._gen_params(options)
-        effort = params.pop("reasoning_effort", None)
-        if effort is not None:
-            effort = str(effort).strip().lower()
-            if effort not in {"low", "medium", "high", "max"}:
-                raise ValueError(f"无效的 reasoning_effort: {effort}")
+        effort = self._resolve_effort(params)
         adapted = self._adapt_messages(messages)
 
         kwargs: Dict[str, Any] = {
@@ -664,14 +722,90 @@ class LLMClient(BaseEntity):
         if extra:
             kwargs["extra_body"] = extra
 
-        if effort and self._supports_effort():
-            kwargs["reasoning_effort"] = effort
-            if self.config.api_type == API_TYPE_ANTHROPIC:
-                kwargs["temperature"] = 1
-        elif effort:
-            self._warn_effort_dropped(effort)
+        if effort:
+            kwargs = self._apply_provider_specific_payload(effort, kwargs)
 
         return kwargs
+
+    def _apply_provider_specific_payload(
+            self, effort: str, kwargs: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """MiniMax / Kimi 等 anthropic 兼容通道的供应商专项 payload 转换。
+
+        这些供应商不识别 litellm 的 reasoning_effort kwarg，必须把档位
+        翻译到对应 API 字段后由 litellm 透传：
+          MiniMax (M3 / M2.x)  → extra_body.thinking = {type: adaptive|disabled}
+          Kimi K3                → kwargs["reasoning_effort"] = low/high/max
+          Kimi K2.7-code         → extra_body.thinking = {type: enabled}
+          Kimi K2.5/K2.6         → extra_body.thinking = {type: enabled|disabled}
+
+        非供应商专项模型走通用 litellm reasoning_effort 路径（保持原行为）。
+        native=None 表示供应商明确不支持该档位（如下发 K3 disabled / M2.x disabled），
+        静默不下发任何思考参数（避免端点 400）。
+        """
+        from agent.llm.reasoning import _is_provider_specific
+        is_provider_specific = _is_provider_specific(self.config.model.lower()) is not None
+        native = provider_specific_effort(effort, self.config.model) if is_provider_specific else None
+
+        if not is_provider_specific:
+            # 通用路径：把规范档翻译为 litellm 接受的 kwarg
+            kwargs["reasoning_effort"] = to_litellm_effort(effort)
+            if self.config.api_type == API_TYPE_ANTHROPIC and effort != "off":
+                kwargs["temperature"] = 1
+            return kwargs
+
+        if native is None:
+            # 供应商明确不支持该档位，静默丢弃
+            return kwargs
+
+        # 供应商专项路径：K3 用顶层 reasoning_effort，其他用 extra_body.thinking
+        if self._is_kimi_k3_path():
+            kwargs["reasoning_effort"] = native
+        else:
+            existing = dict(kwargs.get("extra_body") or {})
+            existing["thinking"] = {"type": native}
+            kwargs["extra_body"] = existing
+            if self.config.api_type == API_TYPE_ANTHROPIC and effort != "off":
+                kwargs["temperature"] = 1
+        return kwargs
+
+    def _is_kimi_k3_path(self) -> bool:
+        """判断当前模型是否走 Kimi K3 顶层 reasoning_effort 路径。
+
+        K3 模型特征：原生档为 low/high/max（与 K2.x 的 enabled/disabled 区分）。
+        """
+        from agent.llm.reasoning import _KIMI_K3_BARE_TOKEN, _matches_bare_token
+        model = self.config.model
+        ml = model.lower()
+        if any(s in ml for s in ("kimi-k3", "kimi_k3", "kimi.k3")):
+            return True
+        if _matches_bare_token(ml, _KIMI_K3_BARE_TOKEN):
+            return True
+        return False
+
+    def _resolve_effort(self, params: Dict[str, Any]) -> Optional[str]:
+        """解析本次调用的规范思考等级，并弹出 params 中的 reasoning_effort。
+
+        优先级：调用方 options > 每模型专属配置（config.reasoning_effort）；
+        全局等级由上层（Mind/任务/心跳）注入 options，不在此处理。
+        下发前经 clamp_effort 按供应商/模型静态钳制，确保参数合法。
+        返回 None 表示本次不下发 effort；调用方显式传入非法值抛 ValueError。
+        """
+        raw = params.pop("reasoning_effort", None)
+        if raw is not None:
+            effort = normalize_effort(raw)
+            if not effort and str(raw).strip():
+                raise ValueError(f"无效的 reasoning_effort: {raw}")
+        else:
+            effort = self.config.reasoning_effort
+        if not effort:
+            return None
+        if not self._supports_effort():
+            # off（显式关闭）对不支持思考的端点本就无需下发，静默丢弃
+            if effort != "off":
+                self._warn_effort_dropped(effort)
+            return None
+        return clamp_effort(effort, self.config.model, self.config.api_type)
 
     def _warn_effort_dropped(self, effort: str) -> None:
         """effort 不支持时降级为告警 + 丢弃（每客户端首次）。
@@ -895,14 +1029,7 @@ class LLMClient(BaseEntity):
         adapted = self._adapt_messages(messages)
         instructions, input_payload = messages_to_responses_input(adapted)
         params = self._gen_params(options)
-        effort = params.pop("reasoning_effort", None)
-        if effort is not None:
-            effort = str(effort).strip().lower()
-            if effort not in {"low", "medium", "high", "max"}:
-                raise ValueError(f"无效的 reasoning_effort: {effort}")
-            if not self._supports_effort():
-                self._warn_effort_dropped(effort)
-                effort = None
+        effort = self._resolve_effort(params)
         # 已学习到的端点输出上限：与 chat_completions 路径一致地钳制
         max_output_tokens = params.get("max_tokens")
         if max_output_tokens and self._learned_output_cap:
@@ -917,13 +1044,69 @@ class LLMClient(BaseEntity):
             "max_output_tokens": max_output_tokens,
         }
         if effort:
-            create_kwargs["extra"] = {"reasoning": {"effort": effort}}
+            create_kwargs = self._apply_provider_specific_responses(effort, create_kwargs)
         debug(
             f"LLM chat(via responses): {self.config.litellm_model}, msgs={len(adapted)}",
             tag="模型",
         )
-        result = await self.responses_create(**create_kwargs)
+        result = await self._responses_create_with_effort_fallback(create_kwargs)
         return result.to_chat_result()
+
+    def _apply_provider_specific_responses(
+            self, effort: str, create_kwargs: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Responses 协议路径的供应商专项思考参数转换（与 _apply_provider_specific_payload 平行）。
+
+        Responses 通道用 create_kwargs["extra"]["reasoning"]["effort"] 嵌套结构。
+        非供应商专项模型保持原 Responses 嵌套写法。
+        """
+        from agent.llm.reasoning import _is_provider_specific
+        if _is_provider_specific(self.config.model.lower()) is None:
+            create_kwargs["extra"] = {
+                "reasoning": {"effort": to_litellm_effort(effort)}
+            }
+            return create_kwargs
+        # 供应商专项模型在 Responses 通道下：用 extra_body.thinking 透传
+        # （litellm Responses 桥接层会把 extra_body 合并到请求中）
+        native = provider_specific_effort(effort, self.config.model)
+        if native is None:
+            # 供应商明确不支持该档位（如下发 K3 disabled）→ 静默丢弃
+            return create_kwargs
+        existing = dict(create_kwargs.get("extra") or {})
+        existing["thinking"] = {"type": native}
+        create_kwargs["extra"] = existing
+        return create_kwargs
+
+    async def _responses_create_with_effort_fallback(
+            self, create_kwargs: Dict[str, Any],
+    ) -> Any:
+        """Responses 通道的思考等级降级重试（与 _start_completion 同一兜底逻辑）。"""
+        while True:
+            try:
+                return await self.responses_create(**create_kwargs)
+            except Exception as exc:
+                extra = create_kwargs.get("extra") or {}
+                reasoning = extra.get("reasoning") or {}
+                current = reasoning.get("effort")
+                if not current or not is_effort_rejection(exc):
+                    raise
+                nxt = downgrade_effort(from_litellm_effort(str(current)))
+                if nxt is not None:
+                    create_kwargs["extra"] = {
+                        "reasoning": {"effort": to_litellm_effort(nxt)}
+                    }
+                    log(
+                        f"端点拒绝 reasoning.effort={current}，已降级为 "
+                        f"{to_litellm_effort(nxt)} 重试 (model={self.config.model})",
+                        "WARNING", tag="LLM",
+                    )
+                else:
+                    create_kwargs.pop("extra", None)
+                    log(
+                        f"端点拒绝 reasoning.effort={current}，已丢弃该参数重试 "
+                        f"(model={self.config.model})",
+                        "WARNING", tag="LLM",
+                    )
 
     async def chat(
             self,

@@ -84,7 +84,10 @@ class TestCollectRoundFailures:
 
 
 class TestRoundSentViaTool:
-    """同轮抑制：本轮 send_message 已成功发送时，end_reply 附带文本不再投递。"""
+    """_round_sent_via_tool 判断本轮是否已通过 send_message 成功发送。
+
+    保留该辅助用于日志/统计/同轮抑制类决策（防双发的输入信号）。
+    """
 
     def test_send_success_suppresses(self) -> None:
         tool_calls = [_tc("c1", "send_message"), _tc("c2", "end_reply")]
@@ -95,7 +98,6 @@ class TestRoundSentViaTool:
         assert _round_sent_via_tool(tool_chain, tool_calls) is True
 
     def test_send_failure_does_not_suppress(self) -> None:
-        """send_message 失败 → 不抑制（附带文本仍可兜底投递）。"""
         tool_calls = [_tc("c1", "send_message"), _tc("c2", "end_reply")]
         tool_chain = [
             _tool_msg("c1", {"success": False, "error": "频道未就绪"}),
@@ -109,7 +111,6 @@ class TestRoundSentViaTool:
         assert _round_sent_via_tool(tool_chain, tool_calls) is False
 
     def test_previous_round_send_does_not_suppress(self) -> None:
-        """只统计本轮 tool_calls，历史轮次的发送不影响。"""
         tool_calls = [_tc("c2", "end_reply")]
         tool_chain = [
             _tool_msg("c1", {"success": True, "target_id": "123"}),

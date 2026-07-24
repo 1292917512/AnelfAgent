@@ -40,6 +40,7 @@ export function toModelUpdate(model: ModelConfig): UpdateModelConfig {
     supports_forced_tool_choice: model.supports_forced_tool_choice,
     vision_format: model.vision_format,
     supports_reasoning: model.supports_reasoning,
+    reasoning_effort: model.reasoning_effort ?? "",
     temperature: model.temperature,
     context_window: model.context_window ?? 0,
     timeout: model.timeout ?? 120,

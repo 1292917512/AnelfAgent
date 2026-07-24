@@ -217,9 +217,12 @@ export function ConfigPanel() {
                       onChange={(e) => updateSchedule(idx, { reasoning_effort: e.target.value })}
                     >
                       <option value="">{t("schedule.globalEffort")}</option>
+                      <option value="off">{t("schedule.effortOff")}</option>
+                      <option value="minimal">{t("schedule.effortMinimal")}</option>
                       <option value="low">{t("schedule.effortLow")}</option>
                       <option value="medium">{t("schedule.effortMedium")}</option>
                       <option value="high">{t("schedule.effortHigh")}</option>
+                      <option value="xhigh">{t("schedule.effortXhigh")}</option>
                       <option value="max">{t("schedule.effortMax")}</option>
                     </Select>
                   </div>

@@ -78,3 +78,35 @@ class TestOutputPersistence:
         # 不真正触发超时，只验证钳制不报错
         result = _run("echo ok", timeout=99999)
         assert result["ok"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell 语义")
+class TestRedundantWorkspacePrefix:
+    def test_note_on_redundant_prefix(self, workspace):
+        result = _run(f"ls {workspace.name}/nope")
+        assert result["ok"] is False
+        assert any("前缀多余" in n for n in result.get("notes", []))
+
+    def test_no_note_without_prefix(self, workspace):
+        result = _run("ls nope_such_dir")
+        assert result["ok"] is False
+        assert not any("前缀多余" in n for n in result.get("notes", []))
+
+
+class TestRedundantWorkspacePrefixHelper:
+    def test_hit(self, workspace):
+        assert tools._redundant_workspace_prefix(f"ls {workspace.name}/x") == f"{workspace.name}/x"
+
+    def test_quoted_path(self, workspace):
+        cmd = f"ls '{workspace.name}/a b'"
+        assert tools._redundant_workspace_prefix(cmd) == f"{workspace.name}/a b"
+
+    def test_miss(self, workspace):
+        assert tools._redundant_workspace_prefix("ls x") is None
+        # 同名前缀但非路径（无斜杠）不误报
+        assert tools._redundant_workspace_prefix(f"cat {workspace.name}_notes.md") is None
+
+    def test_double_prefix_suggests_dot(self, workspace):
+        result = _run(f"ls {workspace.name}/{workspace.name}/")
+        assert result["ok"] is False
+        assert any("直接写 . 即可" in n for n in result.get("notes", []))

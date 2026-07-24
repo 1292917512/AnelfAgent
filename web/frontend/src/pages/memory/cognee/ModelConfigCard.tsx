@@ -20,7 +20,7 @@ type KindConfig = CogneeChatModelConfig | CogneeEmbeddingModelConfig;
 const CHAT_PROVIDERS = ["openai", "anthropic", "gemini", "ollama", "custom", "azure", "mistral", "bedrock"];
 const EMBED_PROVIDERS = ["openai", "ollama", "azure", "fastembed"];
 const INSTRUCTOR_MODES = ["json_mode", "json_schema_mode", "tools", "anthropic_tools", "mistral_tools"];
-const REASONING_EFFORTS: CogneeReasoningEffort[] = ["", "off", "low", "medium", "high", "max"];
+const REASONING_EFFORTS: CogneeReasoningEffort[] = ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 function Field({ label, desc, children }: { label: string; desc?: string; children: React.ReactNode }) {
   return (

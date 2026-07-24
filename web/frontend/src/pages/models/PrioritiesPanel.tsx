@@ -195,9 +195,12 @@ export function PrioritiesPanel() {
             onChange={e => effortMut.mutate(e.target.value)}
             className="bg-elevated border border-input rounded-md px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent">
             <option value="">{t("effortDefault")}</option>
+            <option value="off">{t("effortOff")}</option>
+            <option value="minimal">{t("effortMinimal")}</option>
             <option value="low">{t("effortLow")}</option>
             <option value="medium">{t("effortMedium")}</option>
             <option value="high">{t("effortHigh")}</option>
+            <option value="xhigh">{t("effortXhigh")}</option>
             <option value="max">{t("effortMax")}</option>
           </select>
         </div>

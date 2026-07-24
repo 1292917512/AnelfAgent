@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from agent.llm.reasoning import CANONICAL_EFFORTS
 from agent.memory.memory_types import MemoryType
 
 
@@ -30,7 +31,7 @@ _MEMORY_TYPE_MAP: Dict[str, MemoryType] = {
     "semantic": MemoryType.SEMANTIC,
     "entity": MemoryType.ENTITY,
 }
-_REASONING_EFFORT_VALUES = frozenset({"low", "medium", "high", "max"})
+_REASONING_EFFORT_VALUES = frozenset(CANONICAL_EFFORTS)
 
 
 def _to_bool(value: Any) -> bool:
@@ -45,7 +46,7 @@ def _to_bool(value: Any) -> bool:
 
 
 def _normalize_reasoning_effort(value: Any) -> Optional[str]:
-    """标准化 reasoning_effort：仅接受 low/medium/high/max。"""
+    """标准化 reasoning_effort：接受 7 级规范等级（见 agent.llm.reasoning）。"""
     if value is None:
         return None
     normalized = str(value).strip().lower()

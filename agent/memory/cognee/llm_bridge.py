@@ -64,9 +64,11 @@ _THINKING_BUDGET_TOKENS = 2048
 # 思考等级 → thinking budget_tokens 映射；与主 LLM 系统 reasoning_effort 档位对齐，
 # max 不封顶交由端点决定（None 表示不传 budget_tokens，仅启用思考）
 _EFFORT_TO_BUDGET: dict[str, Optional[int]] = {
+    "minimal": 512,
     "low": 1024,
     "medium": _THINKING_BUDGET_TOKENS,
     "high": 4096,
+    "xhigh": 8192,
     "max": None,
 }
 
