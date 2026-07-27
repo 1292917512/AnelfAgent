@@ -1,0 +1,30 @@
+{
+  "title": "实体",
+  "subtitle": "智能体的自治功能模块 — 每个实体拥有独立配置、工具和面板",
+  "loading": "加载中…",
+  "enabled": "已启用",
+  "disabled": "已禁用",
+  "tabs": {
+    "overview": "概览",
+    "config": "配置",
+    "tools": "工具",
+    "panel": "面板"
+  },
+  "overview": {
+    "basicInfo": "基本信息",
+    "name": "名称",
+    "group": "分组",
+    "type": "类型",
+    "source": "来源",
+    "tools": "工具数",
+    "apis": "API 数",
+    "providers": "上下文提供者"
+  },
+  "config": {
+    "empty": "该实体没有可配置项",
+    "save": "保存配置"
+  },
+  "tools": {
+    "empty": "该实体没有注册工具"
+  }
+}

@@ -19,6 +19,10 @@ class ConfigUpdateRequest(BaseModel):
     value: Any
 
 
+class ConfigBatchUpdateRequest(BaseModel):
+    updates: Dict[str, Any]
+
+
 class EnableRequest(BaseModel):
     enabled: bool
 
@@ -66,6 +70,17 @@ async def update_entity_config(
     if not ok:
         raise HTTPException(400, "更新失败：实体或配置项不存在")
     return {"status": "ok", "key": body.key, "value": body.value}
+
+
+@router.put("/{name}/config/batch")
+async def update_entity_config_batch(
+    name: str,
+    body: ConfigBatchUpdateRequest,
+) -> Dict[str, Any]:
+    count = _entity_svc.update_entity_config_batch(name, body.updates)
+    if not count:
+        raise HTTPException(400, "更新失败：无有效配置项")
+    return {"status": "ok", "updated": count}
 
 
 @router.post("/{name}/enable")

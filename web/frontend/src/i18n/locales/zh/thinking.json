@@ -61,5 +61,16 @@
   "fitView": "适应视图",
   "filterTypes": "类型过滤",
   "allTypes": "全部类型",
-  "expandDetail": "展开详情"
+  "expandDetail": "展开详情",
+  "contextProviders": {
+    "title": "上下文注入",
+    "budget": "Token 预算",
+    "peak": "峰值",
+    "empty": "暂无上下文提供者"
+  },
+  "snapshot": {
+    "title": "上下文快照",
+    "waiting": "等待捕获…",
+    "tools": "工具清单"
+  }
 }

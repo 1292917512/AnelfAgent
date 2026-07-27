@@ -197,6 +197,9 @@ def normalize_for_send(messages: List[Dict]) -> List[Dict]:
     _invoke_llm_unified 的唯一入口；新增发送边界规则只加在这里，
     不再散落到上下文组装各阶段。
     """
+    # 剥离内部分类标签（上下文快照用，LLM 不可见）
+    for m in messages:
+        m.pop("_layer", None)
     return fix_empty_tool_call_content(
         fix_trailing_assistant(normalize_roles(ensure_tool_result_pairing(messages)))
     )

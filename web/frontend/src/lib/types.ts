@@ -792,3 +792,137 @@ export interface DbQueryResult {
   elapsed_ms: number;
   truncated: boolean;
 }
+
+// ======================================================================
+// Context Providers（实体上下文注入）
+// ======================================================================
+
+export interface ProviderMetric {
+  name: string;
+  priority: number;
+  max_tokens: number;
+  scope_filter: string | null;
+  description: string;
+  tokens: number;
+  bytes: number;
+  cost_ms: number;
+  ready: boolean;
+  fetched_at: number;
+  last_error: string;
+  call_count: number;
+}
+
+export interface ContextProviderStatus {
+  total_budget: number;
+  static_estimate: number;
+  current_used: number;
+  peak_used: number;
+  providers: ProviderMetric[];
+}
+
+// ======================================================================
+// Context Snapshot（上下文快照）
+// ======================================================================
+
+export interface SnapshotMessage {
+  role: string;
+  content: string;
+  tool_calls?: unknown[] | null;
+  tool_call_id?: string | null;
+}
+
+export interface SnapshotSection {
+  layer: string;
+  label: string;
+  count: number;
+  messages: SnapshotMessage[];
+}
+
+export interface ContextSnapshotData {
+  captured_at: number;
+  model: string;
+  message_count: number;
+  tool_count: number;
+  tool_names: string[];
+  tools: Record<string, unknown>[];
+  sections: SnapshotSection[];
+}
+
+export interface SnapshotStatus {
+  armed: boolean;
+  has_snapshot: boolean;
+  captured_at: number | null;
+  model: string | null;
+  message_count: number | null;
+  tool_count: number | null;
+}
+
+export interface SnapshotResponse {
+  status: SnapshotStatus;
+  snapshot: ContextSnapshotData | null;
+}
+
+// ======================================================================
+// Entity APP（实体详情页）
+// ======================================================================
+
+export interface EntityManifest {
+  display_name: string;
+  icon: string;
+  description: string;
+  version: string;
+}
+
+export interface EntityConfigItem {
+  key: string;
+  description: string;
+  value_type: string;
+  default_value: unknown;
+  current_value: unknown;
+  editable: boolean;
+  enum_options?: string[];
+}
+
+export interface EntityToolInfo {
+  name: string;
+  enabled: boolean;
+  description: string;
+}
+
+export interface EntityProviderInfo {
+  name: string;
+  priority: number;
+  max_tokens: number;
+  description: string;
+}
+
+export interface EntityListItem {
+  name: string;
+  type: string;
+  description: string;
+  enabled: boolean;
+  group: string;
+  source: string;
+  tags: string[];
+  config_group: string;
+  has_instance: boolean;
+  manifest: EntityManifest;
+}
+
+export interface EntityDetail {
+  name: string;
+  type: string;
+  description: string;
+  enabled: boolean;
+  group: string;
+  source: string;
+  tags: string[];
+  config_group: string;
+  has_instance: boolean;
+  apis: string[];
+  config_items: EntityConfigItem[];
+  configs: Record<string, unknown>;
+  manifest: EntityManifest;
+  tools: EntityToolInfo[];
+  providers: EntityProviderInfo[];
+}

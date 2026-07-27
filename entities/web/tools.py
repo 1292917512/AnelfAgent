@@ -15,9 +15,15 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Tuple
 
-from entities._sdk import tool, entity
+from entities._sdk import tool, entity, entity_manifest
 
 entity("web", "网络工具 - 搜索引擎查询、网页正文抓取、HTTP 请求")
+entity_manifest(
+    display_name="网络工具",
+    icon="globe",
+    description="搜索引擎查询、网页正文抓取、HTTP 请求、文件下载",
+    version="1.0.0",
+)
 
 # ------------------------------------------------------------------
 # 配置注册

@@ -8,6 +8,7 @@ import {
   MessageCircle,
   Activity,
   Cpu,
+  Boxes,
   ListOrdered,
   Wrench,
   UserCircle,
@@ -52,6 +53,7 @@ export const ICON_MAP: Record<string, LucideIcon> = {
   Blocks,
   Smile,
   Database,
+  Boxes,
 };
 
 export const FALLBACK_NAV: NavItem[] = [
@@ -64,6 +66,7 @@ export const FALLBACK_NAV: NavItem[] = [
   { path: "/tasks", label: "tasks", icon: "ListChecks", group: "group_core" },
   { path: "/heartbeat", label: "heartbeat", icon: "HeartPulse", group: "group_core" },
   { path: "/tools", label: "tools", icon: "Wrench", group: "group_ability" },
+  { path: "/entities", label: "entities", icon: "Boxes", group: "group_ability" },
   { path: "/skills", label: "skills", icon: "GraduationCap", group: "group_ability" },
   { path: "/mcp", label: "mcp", icon: "Plug", group: "group_ability" },
   { path: "/tags", label: "tags", icon: "Tags", group: "group_ability" },

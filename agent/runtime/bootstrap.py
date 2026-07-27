@@ -330,6 +330,21 @@ def create_bootstrap() -> FlowMachine:
         log(f"实体就绪: tools={tool_count}, entities={entity_count}, groups={catalog_count}")
 
     @machine.node(skip_on_error=True)
+    async def start_context_providers():
+        """启动所有上下文提供者的生命周期（on_start）。"""
+        from core.context_provider import ContextProviderRegistry
+        from core.lifecycle import Lifecycle
+
+        await ContextProviderRegistry.start_all()
+        Lifecycle.register(
+            "context_providers", None,
+            cleanup=ContextProviderRegistry.stop_all,
+        )
+        provider_count = len(ContextProviderRegistry.get_all())
+        if provider_count:
+            log(f"上下文提供者已启动: {provider_count} 个", tag="启动")
+
+    @machine.node(skip_on_error=True)
     async def register_channels():
         """自动发现并注册所有已启用的频道。"""
         from channels import discover_channels

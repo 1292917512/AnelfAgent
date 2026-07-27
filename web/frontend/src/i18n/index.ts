@@ -9,6 +9,7 @@ import zhChat from "./locales/zh/chat.json";
 import zhStatus from "./locales/zh/status.json";
 import zhModels from "./locales/zh/models.json";
 import zhTools from "./locales/zh/tools.json";
+import zhEntities from "./locales/zh/entities.json";
 import zhPersonas from "./locales/zh/personas.json";
 import zhMemory from "./locales/zh/memory.json";
 import zhMcp from "./locales/zh/mcp.json";
@@ -33,6 +34,7 @@ import enChat from "./locales/en/chat.json";
 import enStatus from "./locales/en/status.json";
 import enModels from "./locales/en/models.json";
 import enTools from "./locales/en/tools.json";
+import enEntities from "./locales/en/entities.json";
 import enPersonas from "./locales/en/personas.json";
 import enMemory from "./locales/en/memory.json";
 import enMcp from "./locales/en/mcp.json";
@@ -59,6 +61,7 @@ const resources = {
     status: zhStatus,
     models: zhModels,
     tools: zhTools,
+    entities: zhEntities,
     personas: zhPersonas,
     memory: zhMemory,
     mcp: zhMcp,
@@ -84,6 +87,7 @@ const resources = {
     status: enStatus,
     models: enModels,
     tools: enTools,
+    entities: enEntities,
     personas: enPersonas,
     memory: enMemory,
     mcp: enMcp,
@@ -119,6 +123,7 @@ i18n
       "status",
       "models",
       "tools",
+      "entities",
       "personas",
       "memory",
       "mcp",

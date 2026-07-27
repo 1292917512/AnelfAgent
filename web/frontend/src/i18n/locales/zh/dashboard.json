@@ -42,5 +42,18 @@
     "stm": "短期记忆",
     "items": "{{count}} 条",
     "notReady": "运行时尚未初始化"
+  },
+  "contextProviders": {
+    "title": "上下文注入",
+    "subtitle": "实体向 LLM 上下文注入的实时数据",
+    "budget": "Token 预算",
+    "staticEstimate": "静态预估",
+    "peak": "历史峰值",
+    "tokens": "Token 占用",
+    "bytes": "字节数",
+    "costMs": "耗时 (ms)",
+    "callCount": "调用次数",
+    "ready": "已就绪",
+    "notReady": "未加载完"
   }
 }

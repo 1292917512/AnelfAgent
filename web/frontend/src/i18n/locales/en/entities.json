@@ -1,0 +1,30 @@
+{
+  "title": "Entities",
+  "subtitle": "Autonomous functional modules of the agent — each entity has its own config, tools, and panel",
+  "loading": "Loading…",
+  "enabled": "Enabled",
+  "disabled": "Disabled",
+  "tabs": {
+    "overview": "Overview",
+    "config": "Config",
+    "tools": "Tools",
+    "panel": "Panel"
+  },
+  "overview": {
+    "basicInfo": "Basic Info",
+    "name": "Name",
+    "group": "Group",
+    "type": "Type",
+    "source": "Source",
+    "tools": "Tools",
+    "apis": "APIs",
+    "providers": "Context Providers"
+  },
+  "config": {
+    "empty": "No configurable items for this entity",
+    "save": "Save Config"
+  },
+  "tools": {
+    "empty": "No tools registered for this entity"
+  }
+}

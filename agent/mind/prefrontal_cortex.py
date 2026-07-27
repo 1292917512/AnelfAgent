@@ -955,6 +955,7 @@ class PrefrontalCortex:
             models_summary: str = "",
             anthropic_breakpoint: bool = False,
             prefetched_conversation: Optional[List[Dict]] = None,
+            scope: str = "",
     ) -> List[Dict]:
         """组装完整 LLM 上下文（分层架构），每次调用实时从 DB 获取最新对话历史。
 
@@ -980,6 +981,15 @@ class PrefrontalCortex:
 
         # volatile 层：短期记忆片段（角色按存储原样使用，主流格式不做转换）
         volatile_msgs: List[Dict] = list(self.temporary)
+
+        # 上下文提供者注入（实体自驱数据，每轮拉取最新快照）
+        try:
+            from core.context_provider import ContextProviderRegistry
+            snippets, _provider_metrics = await ContextProviderRegistry.collect(scope)
+            for snippet in snippets:
+                volatile_msgs.append({"role": "system", "content": snippet})
+        except Exception as exc:
+            log(f"上下文提供者收集失败: {exc}", "DEBUG", tag="PFC")
 
         # 实时从 DB 获取最新对话历史（必须每轮重新获取，不可缓存或外部传入！
         # 多轮 think_loop 期间用户可能发送新消息，必须确保每轮都能拿到最新对话）
@@ -1031,6 +1041,20 @@ class PrefrontalCortex:
                 "- 建议使用 memorize 将对话中的重要信息存入长期记忆，避免遗忘\n"
                 "- 可通过 recall 检索长期记忆中的相关信息"
             )}]
+
+        # 上下文快照分类标签（normalize_for_send 发送前剥离，LLM 不可见）
+        for i, m in enumerate(system_msgs):
+            m["_layer"] = "stable" if i == 0 else "context"
+        for m in volatile_msgs:
+            m["_layer"] = "volatile"
+        for m in overflow_hint:
+            m["_layer"] = "overflow"
+        for m in security_hint:
+            m["_layer"] = "security"
+        for m in memory_msgs:
+            m["_layer"] = "memory"
+        for m in conversation_list:
+            m["_layer"] = "conversation"
 
         all_msgs = (
             system_msgs + volatile_msgs + overflow_hint + security_hint

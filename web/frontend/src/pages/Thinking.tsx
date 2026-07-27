@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ReactFlowProvider } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -10,10 +10,13 @@ import { useThinkingBootstrap } from "@/pages/chat/useThinkingBootstrap";
 import { SessionList } from "@/components/thinking/SessionList";
 import { NodeDetail } from "@/components/thinking/NodeDetail";
 import { ToolsPanel } from "@/components/thinking/ToolsPanel";
+import { ContextProvidersPanel } from "@/components/thinking/ContextProvidersPanel";
+import { SnapshotPanel } from "@/components/thinking/SnapshotPanel";
 import { FlowView } from "@/components/thinking/FlowView";
 import { TimelineView } from "@/components/thinking/TimelineView";
 import { useIsMobile } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
+import type { ContextSnapshotData } from "@/lib/types";
 import {
   Power,
   PowerOff,
@@ -25,6 +28,8 @@ import {
   Workflow,
   ListTree,
   Wrench,
+  Database,
+  Camera,
   X,
 } from "lucide-react";
 
@@ -69,7 +74,12 @@ function ThinkingFlow() {
 
   const [view, setView] = useState<ViewMode>("flow");
   const [showTools, setShowTools] = useState(false);
+  const [showProviders, setShowProviders] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
+  const [snapshotArmed, setSnapshotArmed] = useState(false);
+  const [snapshotData, setSnapshotData] = useState<ContextSnapshotData | null>(null);
+  const [showSnapshot, setShowSnapshot] = useState(false);
+  const snapshotPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isMobile = useIsMobile();
 
   // 服务端 enabled 状态只同步一次（首次加载），切换页面不重置用户的开关选择
@@ -81,6 +91,43 @@ function ThinkingFlow() {
       setSessions(r.data.sessions ?? []);
     }).catch((e) => console.warn("[API]", e));
   }, [setSessions]);
+
+  // 上下文快照：布防后轮询等待捕获完成
+  const handleSnapshotArm = useCallback(() => {
+    if (snapshotArmed) return;
+    thinkingApi.snapshotArm().then(() => {
+      setSnapshotArmed(true);
+      setSnapshotData(null);
+      setShowSnapshot(false);
+      // 轮询检查是否已捕获
+      snapshotPollRef.current = setInterval(async () => {
+        try {
+          const r = await thinkingApi.snapshotGet();
+          const data = r.data;
+          if (data.snapshot) {
+            setSnapshotData(data.snapshot);
+            setSnapshotArmed(false);
+            setShowSnapshot(true);
+            if (snapshotPollRef.current) clearInterval(snapshotPollRef.current);
+            snapshotPollRef.current = null;
+          }
+        } catch { /* ignore */ }
+      }, 800);
+    }).catch((e) => console.warn("[API]", e));
+  }, [snapshotArmed]);
+
+  const handleSnapshotClose = useCallback(() => {
+    setShowSnapshot(false);
+    setSnapshotData(null);
+    thinkingApi.snapshotClear().catch(() => {});
+  }, []);
+
+  // 组件卸载时清理轮询
+  useEffect(() => {
+    return () => {
+      if (snapshotPollRef.current) clearInterval(snapshotPollRef.current);
+    };
+  }, []);
 
   const handleToggle = useCallback(() => {
     const next = !enabled;
@@ -231,6 +278,38 @@ function ThinkingFlow() {
           </button>
 
           <button
+            onClick={() => setShowProviders(!showProviders)}
+            className={cn(
+              "flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium transition-all",
+              showProviders
+                ? "bg-accent-subtle text-accent"
+                : "text-muted hover:text-foreground",
+            )}
+            title={t("contextProviders.title")}
+          >
+            <Database size={11} />
+            <span className="hidden md:inline">{t("contextProviders.title")}</span>
+          </button>
+
+          <button
+            onClick={handleSnapshotArm}
+            className={cn(
+              "flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium transition-all",
+              snapshotArmed
+                ? "bg-accent-subtle text-accent animate-pulse"
+                : snapshotData
+                  ? "bg-ok-subtle text-ok"
+                  : "text-muted hover:text-foreground",
+            )}
+            title={t("snapshot.title")}
+          >
+            <Camera size={11} />
+            <span className="hidden md:inline">
+              {snapshotArmed ? t("snapshot.waiting") : t("snapshot.title")}
+            </span>
+          </button>
+
+          <button
             onClick={() => setAutoFollow(!autoFollow)}
             className={cn(
               "flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium transition-all",
@@ -275,6 +354,47 @@ function ThinkingFlow() {
                 <div className="flex-1 min-h-0">
                   <ToolsPanel tools={availableTools} />
                 </div>
+              </div>
+            </>
+          )}
+
+          {/* 上下文提供者面板（右侧） */}
+          {showProviders && !isMobile && (
+            <div className="w-56 shrink-0 border-l border-border bg-panel">
+              <ContextProvidersPanel />
+            </div>
+          )}
+          {showProviders && isMobile && (
+            <>
+              <div className="fixed inset-0 z-40 bg-black/50" onClick={() => setShowProviders(false)} />
+              <div className="fixed inset-y-0 right-0 z-50 w-64 border-l border-border bg-panel flex flex-col">
+                <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+                  <span className="text-xs font-semibold text-heading">{t("contextProviders.title")}</span>
+                  <button
+                    onClick={() => setShowProviders(false)}
+                    className="p-1 rounded-sm text-muted hover:text-foreground hover:bg-hover"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className="flex-1 min-h-0">
+                  <ContextProvidersPanel />
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* 上下文快照面板（右侧，优先级最高） */}
+          {showSnapshot && snapshotData && !isMobile && (
+            <div className="w-80 shrink-0 border-l border-border bg-panel">
+              <SnapshotPanel snapshot={snapshotData} onClose={handleSnapshotClose} />
+            </div>
+          )}
+          {showSnapshot && snapshotData && isMobile && (
+            <>
+              <div className="fixed inset-0 z-40 bg-black/50" onClick={handleSnapshotClose} />
+              <div className="fixed inset-y-0 right-0 z-50 w-full max-w-sm border-l border-border bg-panel flex flex-col">
+                <SnapshotPanel snapshot={snapshotData} onClose={handleSnapshotClose} />
               </div>
             </>
           )}

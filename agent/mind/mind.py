@@ -916,11 +916,16 @@ class Mind:
         stream=True 时优先走主客户端流式（增量经 on_delta 上报），
         流式失败自动回退非流式重试路径（行为与非流式完全一致）。
         """
+        model_name = self.llm.config.model if isinstance(self.llm, LLMClient) else "unknown"
+
+        # 上下文快照捕获（normalize 前，_layer 标签尚存；未布防时零开销）
+        from agent.mind.context_snapshot import context_snapshot
+        await context_snapshot.try_capture(messages, tools, model_name)
+
         # 发送边界统一规整（message_schema.normalize_for_send）：
         # 角色归一（头部提示词分层保持 system 供 Anthropic 前缀缓存，中途注入
         # 转 user 保留位置语义）+ 尾部 assistant prefill 修复
         messages = normalize_for_send(messages)
-        model_name = self.llm.config.model if isinstance(self.llm, LLMClient) else "unknown"
         log(f"调用 LLM: {model_name} msgs={len(messages)}", tag="思维")
         tool_names = [t.get("function", {}).get("name", "") for t in (tools or [])]
         await event_bus.emit(EVENT_THINKING_LLM_START, {
@@ -1326,6 +1331,7 @@ class Mind:
             models_summary=models_summary,
             anthropic_breakpoint=self._is_anthropic_model(),
             prefetched_conversation=conversation_list,
+            scope=entity_scope,
         )
 
     async def _match_skills(

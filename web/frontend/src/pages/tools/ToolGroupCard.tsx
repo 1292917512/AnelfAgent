@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Package, Pencil, ToggleLeft, ToggleRight, Wrench } from "lucide-react";
+import { ChevronDown, ChevronRight, Package, Pencil, ToggleLeft, ToggleRight, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ToolGroup, ToolItem } from "./types";
 
@@ -11,6 +11,7 @@ export function ToolGroupCard({
   onToggleGroup,
   onToggleTool,
   onEditTool,
+  onOpenEntity,
 }: {
   group: ToolGroup;
   isOpen: boolean;
@@ -18,6 +19,7 @@ export function ToolGroupCard({
   onToggleGroup: () => void;
   onToggleTool: (name: string) => void;
   onEditTool: (tool: ToolItem) => void;
+  onOpenEntity?: (group: string) => void;
 }) {
   const { t } = useTranslation("tools");
 
@@ -57,6 +59,15 @@ export function ToolGroupCard({
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+          {onOpenEntity && (
+            <button
+              onClick={() => onOpenEntity(group.group)}
+              className="text-muted hover:text-accent transition-colors p-1"
+              title={t("openEntity", { defaultValue: "实体详情" })}
+            >
+              <ChevronRight size={14} />
+            </button>
+          )}
           <button
             onClick={onToggleGroup}
             className={cn(

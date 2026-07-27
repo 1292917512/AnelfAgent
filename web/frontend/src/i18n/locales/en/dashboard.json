@@ -42,5 +42,18 @@
     "stm": "Short-term Memory",
     "items": "{{count}} items",
     "notReady": "Runtime not initialized yet"
+  },
+  "contextProviders": {
+    "title": "Context Injection",
+    "subtitle": "Real-time data injected into LLM context by entities",
+    "budget": "Token Budget",
+    "staticEstimate": "Static Estimate",
+    "peak": "Peak Usage",
+    "tokens": "Tokens",
+    "bytes": "Bytes",
+    "costMs": "Cost (ms)",
+    "callCount": "Calls",
+    "ready": "Ready",
+    "notReady": "Not Ready"
   }
 }

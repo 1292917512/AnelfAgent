@@ -19,6 +19,7 @@ import type {
   CogneeDataset,
   CogneeStatus,
   ConfigMetaGroup,
+  ContextProviderStatus,
   CreateModelConfig,
   CreateProviderConfig,
   DbInfo,
@@ -27,6 +28,8 @@ import type {
   DbRowsResult,
   DbSchemaResult,
   DbTableInfo,
+  EntityDetail,
+  EntityListItem,
   GlobalSearchResult,
   GoalStep,
   HeartbeatConfig,
@@ -48,6 +51,7 @@ import type {
   ProviderConfig,
   RemoteModelInfo,
   SkillItem,
+  SnapshotResponse,
   StickerItem,
   StickerListResult,
   StickerStats,
@@ -87,6 +91,7 @@ export type {
   ReasoningEffort,
   RemoteModelInfo,
   SkillItem,
+  SnapshotResponse,
   StickerItem,
   StickerListResult,
   StickerStats,
@@ -163,6 +168,7 @@ export const statusApi = {
   components: () => api.get("/status/components"),
   events: () => api.get("/status/events"),
   pfc: () => api.get("/status/pfc"),
+  contextProviders: () => api.get<ContextProviderStatus>("/status/context-providers"),
   mindConfig: () => api.get("/status/mind-config"),
   logs: (level?: string, tag?: string, keyword?: string, limit = 50) =>
     api.get<{ logs: LogEntry[]; count: number }>("/status/logs", { params: { level: level || undefined, tag: tag || undefined, keyword: keyword || undefined, limit } }),
@@ -226,6 +232,21 @@ export const toolsApi = {
     api.put(`/tools/${encodeURIComponent(name)}/meta`, data),
   reload: () => api.post("/tools/reload"),
   plugins: () => api.get("/tools/plugins"),
+};
+
+// Entities
+export const entitiesApi = {
+  list: () => api.get<EntityListItem[]>("/entities/"),
+  catalog: () => api.get("/entities/catalog"),
+  statistics: () => api.get("/entities/statistics"),
+  detail: (name: string) => api.get<EntityDetail>(`/entities/${encodeURIComponent(name)}`),
+  config: (name: string) => api.get(`/entities/${encodeURIComponent(name)}/config`),
+  updateConfig: (name: string, key: string, value: unknown) =>
+    api.put(`/entities/${encodeURIComponent(name)}/config`, { key, value }),
+  updateConfigBatch: (name: string, updates: Record<string, unknown>) =>
+    api.put(`/entities/${encodeURIComponent(name)}/config/batch`, { updates }),
+  toggle: (name: string, enabled: boolean) =>
+    api.post(`/entities/${encodeURIComponent(name)}/enable`, { enabled }),
 };
 
 // Personas
@@ -439,6 +460,9 @@ export const thinkingApi = {
   toggle: (enabled: boolean) => api.put("/thinking/toggle", { enabled }),
   sessions: (limit = 20) => api.get("/thinking/sessions", { params: { limit } }),
   session: (id: string) => api.get(`/thinking/sessions/${encodeURIComponent(id)}`),
+  snapshotArm: () => api.post("/thinking/snapshot/arm"),
+  snapshotGet: () => api.get<SnapshotResponse>("/thinking/snapshot"),
+  snapshotClear: () => api.post("/thinking/snapshot/clear"),
 };
 
 // Config

@@ -259,6 +259,13 @@ class HeartbeatEngine:
         if entity:
             await self._run_entity_analysis(entity)
 
+        # 上下文提供者 on_tick 钩子（实体自驱维护周期）
+        try:
+            from core.context_provider import ContextProviderRegistry
+            await ContextProviderRegistry.tick_all()
+        except Exception as e:
+            log(f"上下文提供者 tick 失败: {e}", "DEBUG", tag="心跳")
+
     async def _check_memory_health(self) -> List[str]:
         """记忆健康检查：纯逻辑检查阈值。"""
         if not self.mind.memory_store:

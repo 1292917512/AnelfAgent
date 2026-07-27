@@ -453,6 +453,7 @@ class EntityRegistry:
     _types: Dict[EntityType, List[str]] = {}
     _groups: Dict[str, List[str]] = {}
     _group_descriptions: Dict[str, str] = {}
+    _group_manifests: Dict[str, Dict[str, Any]] = {}
     # 工具名候选缓存（未知工具名纠错建议用），注册/注销时失效
     _names_cache: Optional[List[str]] = None
     # 注册表版本号：任何元数据变更（注册/注销/启停/属性覆盖）时递增，
@@ -603,6 +604,17 @@ class EntityRegistry:
         log(f"✅ 实体分组注册: {group}", "DEBUG")
 
     @classmethod
+    def register_group_manifest(cls, group: str, manifest: Dict[str, Any]) -> None:
+        """注册实体分组展示清单（display_name / icon / description / version）。"""
+        cls._group_manifests[group] = manifest
+        cls.bump_version()
+
+    @classmethod
+    def get_group_manifest(cls, group: str) -> Dict[str, Any]:
+        """获取分组展示清单，未注册时返回空字典。"""
+        return cls._group_manifests.get(group, {})
+
+    @classmethod
     def get_group_description(cls, group: str) -> str:
         """获取分组描述"""
         return cls._group_descriptions.get(group, "")
@@ -650,6 +662,7 @@ class EntityRegistry:
                 "group": group,
                 "description": cls._group_descriptions.get(group, ""),
                 "tool_count": tool_count,
+                "manifest": cls._group_manifests.get(group, {}),
             })
 
         def _sort_key(entry: Dict[str, Any]) -> tuple:
@@ -1212,6 +1225,7 @@ class EntityRegistry:
         cls._types.clear()
         cls._groups.clear()
         cls._group_descriptions.clear()
+        cls._group_manifests.clear()
         cls.bump_version()
         log("🧹 实体注册表已清空")
 

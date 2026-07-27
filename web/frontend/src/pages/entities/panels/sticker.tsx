@@ -1,0 +1,1 @@
+../../../../../../entities/sticker/panel.tsx

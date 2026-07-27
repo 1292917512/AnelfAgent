@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, RefreshCw, Search, Tag, X } from "lucide-react";
@@ -13,6 +14,7 @@ import type { EditState, PluginInfo, ToolGroup, ToolItem } from "./types";
 /** 工具列表面板：搜索 + 标签筛选 + 分组手风琴 + 插件 */
 export function ToolsListPanel() {
   const { t } = useTranslation(["tools", "common"]);
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
@@ -207,6 +209,7 @@ export function ToolsListPanel() {
               onEditTool={(tool: ToolItem) =>
                 setEditing({ name: tool.name, tags: [...tool.tags], description: tool.description })
               }
+              onOpenEntity={(group) => navigate(`/entities/${encodeURIComponent(group)}`)}
             />
           ))}
         </div>

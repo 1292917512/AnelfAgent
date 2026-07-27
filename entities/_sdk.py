@@ -230,3 +230,198 @@ def get_model_type_enum() -> Any:
     from agent.llm.llm_manager import ModelType
     return ModelType
 
+
+# ------------------------------------------------------------------
+# 上下文提供者（实体向 PFC volatile 层注入实时数据）
+# ------------------------------------------------------------------
+
+
+def get_provider_registry() -> Any:
+    """获取 ContextProviderRegistry（延迟导入 core.context_provider）。"""
+    from core.context_provider import ContextProviderRegistry
+    return ContextProviderRegistry
+
+
+def context_provider(
+    name: Optional[str] = None,
+    priority: int = 50,
+    max_tokens: int = 500,
+    scope: Optional[str] = None,
+) -> Callable:
+    """装饰器：将类或函数注册为上下文提供者。
+
+    PFC 每轮构建 volatile 层时拉取所有 provider 的最新快照，
+    实体自行管理更新节奏（RunTimeline），PFC 只做被动拉取。
+
+    类模式（有生命周期）::
+
+        @context_provider(name="health", priority=10, max_tokens=200)
+        class HealthWatcher:
+            async def on_start(self):
+                self._task = asyncio.create_task(self._collect_loop())
+
+            async def provide(self, scope: str) -> Optional[ProviderSnapshot]:
+                return self._snapshot  # 零 I/O，只读快照
+
+            async def on_tick(self):       # 可选：心跳 tick 时触发
+                ...
+
+            async def on_stop(self):       # 可选：shutdown 时触发
+                self._task.cancel()
+
+    函数模式（无状态）::
+
+        @context_provider(name="weather", priority=20)
+        async def weather(scope: str) -> Optional[str]:
+            return f"[天气] {await fetch_weather()}"
+
+    Args:
+        name: 提供者唯一标识（默认取类名/函数名）。
+        priority: 注入优先级（越小越优先，预算超限时低优先级先被截断）。
+        max_tokens: 静态预估上限（Web 展示 + 预算告警参考）。
+        scope: 作用域过滤。None=全局；"webui:*"=前缀匹配；"webui:u123"=精确匹配。
+    """
+    from core.context_provider import ContextProviderRegistry, ProviderMeta
+
+    def decorator(cls_or_func: Any) -> Any:
+        provider_name = name or getattr(cls_or_func, "__name__", str(cls_or_func))
+
+        if isinstance(cls_or_func, type):
+            # 类模式：实例化后注册
+            instance = cls_or_func()
+            meta = ProviderMeta(
+                name=provider_name,
+                priority=priority,
+                max_tokens=max_tokens,
+                scope_filter=scope,
+                instance=instance,
+                description=getattr(cls_or_func, "__doc__", "") or "",
+            )
+            ContextProviderRegistry.register(meta)
+            return cls_or_func
+        else:
+            # 函数模式
+            meta = ProviderMeta(
+                name=provider_name,
+                priority=priority,
+                max_tokens=max_tokens,
+                scope_filter=scope,
+                provide_fn=cls_or_func,
+                description=getattr(cls_or_func, "__doc__", "") or "",
+            )
+            ContextProviderRegistry.register(meta)
+            return cls_or_func
+
+    return decorator
+
+
+# ------------------------------------------------------------------
+# 实体清单与配置（实体 APP 化）
+# ------------------------------------------------------------------
+
+
+def entity_manifest(
+    display_name: str = "",
+    icon: str = "box",
+    description: str = "",
+    version: str = "1.0.0",
+) -> None:
+    """声明实体展示清单（前端详情页 + 实体列表页使用）。
+
+    在 entity() 之后调用，为当前分组注册展示元数据::
+
+        entity("web", "网络工具")
+        entity_manifest(
+            display_name="网络工具",
+            icon="globe",
+            description="网页搜索、内容提取、URL 抓取",
+        )
+
+    Args:
+        display_name: 前端展示名称（i18n 由前端按 group key 翻译）。
+        icon: lucide 图标名（如 globe / image / terminal）。
+        description: 实体功能描述。
+        version: 语义化版本号。
+    """
+    import inspect
+    # 从调用方栈帧推导 group（取最近一次 entity() 注册的分组）
+    # 简化实现：要求调用方在 entity() 之后立即调用，从 EntityRegistry 取最后注册的 group
+    from core.entity import EntityRegistry
+    groups = EntityRegistry.list_groups()
+    if not groups:
+        return
+    group = groups[-1]
+    EntityRegistry.register_group_manifest(group, {
+        "display_name": display_name,
+        "icon": icon,
+        "description": description,
+        "version": version,
+    })
+
+
+def entity_config(
+    configs: Dict[str, Dict[str, Dict[str, Any]]],
+    config_dir: str = "",
+) -> None:
+    """注册实体专属配置并管理 config.json 生命周期。
+
+    配置存储于实体目录下的 config.json（运行时，gitignored），
+    不存在时从 config.example.json 复制并填入默认值。
+
+    configs 格式与 core.config.register_configs 一致::
+
+        entity_config({
+            "搜索": {
+                "baidu_api_key": {
+                    "description": "百度搜索 API Key",
+                    "default": "",
+                    "value_type": "str",
+                },
+            },
+        })
+
+    Args:
+        configs: 配置 schema 字典 {group: {key: {description, default, ...}}}。
+        config_dir: 配置文件所在目录（默认自动推导为调用方所在目录）。
+    """
+    import inspect
+    import json
+    import os
+
+    from core.config import register_configs_safe, ConfigManager
+
+    # 注册到全局 ConfigRegistry（schema 层面）
+    register_configs_safe(configs)
+
+    # 推导配置目录
+    if not config_dir:
+        frame = inspect.stack()[1]
+        caller_file = frame.filename
+        config_dir = os.path.dirname(os.path.abspath(caller_file))
+
+    config_path = os.path.join(config_dir, "config.json")
+    example_path = os.path.join(config_dir, "config.example.json")
+
+    # 加载 config.json（不存在则从 example 或默认值创建）
+    values: Dict[str, Any] = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                values = json.load(f)
+        except Exception:
+            values = {}
+    elif os.path.exists(example_path):
+        try:
+            with open(example_path, "r", encoding="utf-8") as f:
+                values = json.load(f)
+        except Exception:
+            values = {}
+
+    # 将 config.json 中的值写入 ConfigManager（覆盖默认值）
+    for group_items in configs.values():
+        for key, item in group_items.items():
+            if key in values:
+                ConfigManager.set(key, values[key])
+            elif "default" in item:
+                ConfigManager.set(key, item["default"])
+

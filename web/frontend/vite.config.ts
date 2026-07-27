@@ -10,6 +10,9 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
+    // 实体面板通过软链接引入（entities/*/panel.tsx → src/pages/entities/panels/），
+    // preserveSymlinks 让 Vite 按链接路径（src/ 内）解析依赖，而非真实路径（entities/）
+    preserveSymlinks: true,
   },
   server: {
     port: 3000,

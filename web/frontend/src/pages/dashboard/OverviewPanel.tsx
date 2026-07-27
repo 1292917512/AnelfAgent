@@ -8,6 +8,7 @@ import { StatusDot } from "@/components/common/StatusDot";
 import { useAppStore } from "@/stores/app-store";
 import { AttentionPanel } from "@/pages/dashboard/AttentionPanel";
 import { ComponentInfoCard } from "@/pages/dashboard/ComponentInfoCard";
+import { ContextProvidersCard } from "@/pages/dashboard/ContextProvidersCard";
 import { ToolsInsightPanel } from "@/pages/dashboard/ToolsInsightPanel";
 import { EventsPanel } from "@/pages/dashboard/EventsPanel";
 
@@ -125,6 +126,8 @@ export function OverviewPanel() {
       </div>
 
       <ToolsInsightPanel />
+
+      <ContextProvidersCard />
 
       <EventsPanel />
     </div>

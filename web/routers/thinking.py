@@ -79,3 +79,34 @@ async def thinking_stream(request: Request) -> EventSourceResponse:
             thinking_tracer.unsubscribe(queue)
 
     return EventSourceResponse(event_generator())
+
+
+# ------------------------------------------------------------------
+# 上下文快照（一次性捕获下一次 LLM 调用的完整上下文）
+# ------------------------------------------------------------------
+
+
+@router.post("/snapshot/arm")
+async def arm_snapshot() -> Dict[str, Any]:
+    """布防：等待下一次 LLM 调用时捕获完整上下文。"""
+    from agent.mind.context_snapshot import context_snapshot
+    await context_snapshot.arm()
+    return {"armed": True}
+
+
+@router.get("/snapshot")
+async def get_snapshot() -> Dict[str, Any]:
+    """获取已捕获的上下文快照（含分类后的 sections）。"""
+    from agent.mind.context_snapshot import context_snapshot
+    snapshot = context_snapshot.get()
+    if snapshot is None:
+        return {"status": context_snapshot.get_status(), "snapshot": None}
+    return {"status": context_snapshot.get_status(), "snapshot": snapshot}
+
+
+@router.post("/snapshot/clear")
+async def clear_snapshot() -> Dict[str, Any]:
+    """清除快照 + 解除布防。"""
+    from agent.mind.context_snapshot import context_snapshot
+    context_snapshot.clear()
+    return {"armed": False, "has_snapshot": False}

@@ -61,5 +61,16 @@
   "fitView": "Fit View",
   "filterTypes": "Filter types",
   "allTypes": "All types",
-  "expandDetail": "Expand details"
+  "expandDetail": "Expand details",
+  "contextProviders": {
+    "title": "Context Injection",
+    "budget": "Token Budget",
+    "peak": "Peak",
+    "empty": "No context providers"
+  },
+  "snapshot": {
+    "title": "Context Snapshot",
+    "waiting": "Waiting…",
+    "tools": "Tools"
+  }
 }

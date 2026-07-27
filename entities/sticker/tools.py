@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from core.config import register_configs_safe
 from core.log import log
-from entities._sdk import tool, entity
+from entities._sdk import tool, entity, entity_manifest
 
 from .phash import compute_phash
 from .store import StickerStore, get_sticker_store
@@ -25,6 +25,12 @@ from .store import StickerStore, get_sticker_store
 entity(
     "sticker",
     "表情包与图片感知 - 收藏/语义检索/发送表情包，文搜图（全量图片语义检索）、图搜图（相似图片查找）",
+)
+entity_manifest(
+    display_name="表情包",
+    icon="sticker",
+    description="收藏/语义检索/发送表情包，文搜图、图搜图",
+    version="1.0.0",
 )
 
 _STICKER_CONFIGS = {
