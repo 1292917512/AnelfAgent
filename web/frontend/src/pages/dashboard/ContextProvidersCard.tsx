@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { statusApi } from "@/lib/api";
+import { contextApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import type { ContextProviderStatus } from "@/lib/types";
 
@@ -20,7 +20,7 @@ export function ContextProvidersCard() {
   const { t } = useTranslation("dashboard");
   const { data } = useQuery({
     queryKey: ["context-providers"],
-    queryFn: () => statusApi.contextProviders().then((r) => r.data as ContextProviderStatus),
+    queryFn: () => contextApi.providers().then((r) => r.data as ContextProviderStatus),
     refetchInterval: 3000,
   });
 

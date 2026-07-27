@@ -46,12 +46,21 @@ class EntityService:
         ]
 
     def get_entity_detail(self, name: str) -> Optional[Dict[str, Any]]:
-        """获取实体详情（含配置、API、工具列表和上下文提供者）。"""
+        """获取实体详情（含配置、API、工具列表和上下文提供者）。
+
+        支持按实体名或分组名查找：先按实体名精确匹配，
+        未命中时按分组名查找该组下第一个实体。
+        """
         from core.entity import EntityRegistry, EntityType
 
         metadata = EntityRegistry.get(name)
         if metadata is None:
-            return None
+            # 按分组名查找：取该组下第一个实体
+            group_entities = EntityRegistry.get_by_group(name)
+            if group_entities:
+                metadata = group_entities[0]
+            else:
+                return None
 
         group = metadata.group
 

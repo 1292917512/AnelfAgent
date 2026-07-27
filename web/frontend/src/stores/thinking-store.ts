@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { ContextSnapshotData } from "@/lib/types";
 
 const MAX_SESSIONS = 100;
 
@@ -93,6 +94,11 @@ interface ThinkingState {
   autoFollow: boolean;
   _statusSynced: boolean;
 
+  // 上下文快照（跨页面持久）
+  snapshotArmed: boolean;
+  snapshotData: ContextSnapshotData | null;
+  showSnapshot: boolean;
+
   setEnabled: (v: boolean) => void;
   setConnected: (v: boolean) => void;
   setSessions: (s: SessionSummary[]) => void;
@@ -103,6 +109,11 @@ interface ThinkingState {
   setStatusSynced: (v: boolean) => void;
   startSSE: () => void;
   stopSSE: () => void;
+
+  setSnapshotArmed: (v: boolean) => void;
+  setSnapshotData: (d: ContextSnapshotData | null) => void;
+  setShowSnapshot: (v: boolean) => void;
+  clearSnapshot: () => void;
 
   handleSessionStart: (data: { session: SessionSummary; node: TraceNode }) => void;
   handleSessionEnd: (data: { session_id: string; node: TraceNode; summary: SessionSummary }) => void;
@@ -121,6 +132,10 @@ export const useThinkingStore = create<ThinkingState>((set, get) => ({
   autoFollow: true,
   _statusSynced: false,
 
+  snapshotArmed: false,
+  snapshotData: null,
+  showSnapshot: false,
+
   setEnabled: (v) => set({ enabled: v }),
   setConnected: (v) => set({ connected: v }),
   setSessions: (s) => set({ sessions: s }),
@@ -129,6 +144,11 @@ export const useThinkingStore = create<ThinkingState>((set, get) => ({
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
   setAutoFollow: (v) => set({ autoFollow: v }),
   setStatusSynced: (v) => set({ _statusSynced: v }),
+
+  setSnapshotArmed: (v) => set({ snapshotArmed: v }),
+  setSnapshotData: (d) => set({ snapshotData: d }),
+  setShowSnapshot: (v) => set({ showSnapshot: v }),
+  clearSnapshot: () => set({ snapshotArmed: false, snapshotData: null, showSnapshot: false }),
 
   startSSE: () => {
     const state = get();

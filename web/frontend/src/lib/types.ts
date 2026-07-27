@@ -835,16 +835,20 @@ export interface SnapshotSection {
   layer: string;
   label: string;
   count: number;
+  chars: number;
+  estimated_tokens: number;
   messages: SnapshotMessage[];
 }
 
 export interface ContextSnapshotData {
   captured_at: number;
   model: string;
+  model_context_window: number;
+  estimated_tokens: number;
   message_count: number;
   tool_count: number;
   tool_names: string[];
-  tools: Record<string, unknown>[];
+  tools: unknown[];
   sections: SnapshotSection[];
 }
 
@@ -853,6 +857,8 @@ export interface SnapshotStatus {
   has_snapshot: boolean;
   captured_at: number | null;
   model: string | null;
+  model_context_window: number | null;
+  estimated_tokens: number | null;
   message_count: number | null;
   tool_count: number | null;
 }
@@ -860,6 +866,16 @@ export interface SnapshotStatus {
 export interface SnapshotResponse {
   status: SnapshotStatus;
   snapshot: ContextSnapshotData | null;
+}
+
+export interface SnapshotListItem {
+  filename: string;
+  captured_at: number;
+  model: string;
+  model_context_window: number;
+  estimated_tokens: number;
+  message_count: number;
+  tool_count: number;
 }
 
 // ======================================================================

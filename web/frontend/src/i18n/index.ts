@@ -10,6 +10,7 @@ import zhStatus from "./locales/zh/status.json";
 import zhModels from "./locales/zh/models.json";
 import zhTools from "./locales/zh/tools.json";
 import zhEntities from "./locales/zh/entities.json";
+import zhContext from "./locales/zh/context.json";
 import zhPersonas from "./locales/zh/personas.json";
 import zhMemory from "./locales/zh/memory.json";
 import zhMcp from "./locales/zh/mcp.json";
@@ -35,6 +36,7 @@ import enStatus from "./locales/en/status.json";
 import enModels from "./locales/en/models.json";
 import enTools from "./locales/en/tools.json";
 import enEntities from "./locales/en/entities.json";
+import enContext from "./locales/en/context.json";
 import enPersonas from "./locales/en/personas.json";
 import enMemory from "./locales/en/memory.json";
 import enMcp from "./locales/en/mcp.json";
@@ -62,6 +64,7 @@ const resources = {
     models: zhModels,
     tools: zhTools,
     entities: zhEntities,
+    context: zhContext,
     personas: zhPersonas,
     memory: zhMemory,
     mcp: zhMcp,
@@ -88,6 +91,7 @@ const resources = {
     models: enModels,
     tools: enTools,
     entities: enEntities,
+    context: enContext,
     personas: enPersonas,
     memory: enMemory,
     mcp: enMcp,
@@ -124,6 +128,7 @@ i18n
       "models",
       "tools",
       "entities",
+      "context",
       "personas",
       "memory",
       "mcp",

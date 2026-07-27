@@ -1,4 +1,4 @@
-import { useEffect, useState, Suspense, type ComponentType, type LazyExoticComponent } from "react";
+import { useEffect, useMemo, useState, Suspense } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -105,23 +105,34 @@ export default function EntityDetail() {
   const navigate = useNavigate();
   const { t } = useTranslation("entities");
   const [tab, setTab] = useState<EntityTab>("overview");
-  const [PanelComponent, setPanelComponent] = useState<LazyExoticComponent<ComponentType> | null>(null);
 
-  const { data: entity } = useQuery({
+  // 同步解析面板（import.meta.glob 在构建时已解析，无异步开销）
+  const PanelComponent = useMemo(
+    () => (name ? getEntityPanel(name) : null),
+    [name],
+  );
+
+  const { data: entity, isError } = useQuery({
     queryKey: ["entity-detail", name],
     queryFn: () => entitiesApi.detail(name!).then((r) => r.data as EntityDetailType),
     enabled: !!name,
+    retry: false,
   });
-
-  // 加载实体自定义面板
-  useEffect(() => {
-    if (!name) return;
-    setPanelComponent(getEntityPanel(name));
-  }, [name]);
 
   const toggleMutation = useMutation({
     mutationFn: (enabled: boolean) => entitiesApi.toggle(name!, enabled),
   });
+
+  if (isError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-sm text-muted">
+        <p>{t("notFound", { defaultValue: "未找到该实体" })}</p>
+        <button onClick={() => navigate("/tools")} className="text-accent hover:underline text-xs">
+          ← {t("backToTools", { defaultValue: "返回工具列表" })}
+        </button>
+      </div>
+    );
+  }
 
   if (!entity) {
     return (

@@ -9,6 +9,7 @@ from web.routers.channel_webui import router as channel_webui_router
 from web.routers.chat import router as chat_router
 from web.routers.config import router as config_router
 from web.routers.config_meta import router as config_meta_router
+from web.routers.context import router as context_router
 from web.routers.database import router as database_router
 from web.routers.entities import router as entities_router
 from web.routers.mcp import router as mcp_router
@@ -31,6 +32,7 @@ api_router = APIRouter(prefix="/api")
 api_router.include_router(auth_router)
 api_router.include_router(config_router)
 api_router.include_router(config_meta_router)
+api_router.include_router(context_router)
 api_router.include_router(chat_router)
 api_router.include_router(status_router)
 api_router.include_router(models_router)

@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, Package, Pencil, ToggleLeft, ToggleRight, Wrench } from "lucide-react";
+import { ChevronDown, ExternalLink, Package, Pencil, ToggleLeft, ToggleRight, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ToolGroup, ToolItem } from "./types";
 
@@ -62,10 +62,11 @@ export function ToolGroupCard({
           {onOpenEntity && (
             <button
               onClick={() => onOpenEntity(group.group)}
-              className="text-muted hover:text-accent transition-colors p-1"
-              title={t("openEntity", { defaultValue: "实体详情" })}
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium text-muted hover:text-accent hover:bg-accent-subtle border border-transparent hover:border-accent/30 transition-all"
+              title={t("openEntity", { defaultValue: "打开实体详情" })}
             >
-              <ChevronRight size={14} />
+              <ExternalLink size={11} />
+              <span className="hidden sm:inline">{t("entityPage", { defaultValue: "详情" })}</span>
             </button>
           )}
           <button

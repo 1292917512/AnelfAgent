@@ -137,7 +137,7 @@ class ContextProviderRegistry:
     async def collect(
         cls,
         scope: str = "",
-        budget: int = 2000,
+        budget: int = 8000,
     ) -> Tuple[List[str], List[ProviderMetric]]:
         """按 priority 排序拉取所有匹配 scope 的 provider 快照。
 

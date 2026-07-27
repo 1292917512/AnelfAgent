@@ -1,0 +1,44 @@
+{
+  "title": "Context Management",
+  "subtitle": "Monitor LLM context composition, capture snapshots, manage entity injection",
+  "tabs": {
+    "monitor": "Monitor",
+    "history": "History",
+    "providers": "Injection"
+  },
+  "monitor": {
+    "ready": "Ready to Capture",
+    "readyDesc": "Click below to arm. The system will capture the full context on the next LLM call",
+    "arm": "Start Capture",
+    "waiting": "Waiting for capture…",
+    "waitingDesc": "Armed. Waiting for the next LLM call to auto-capture",
+    "cancel": "Cancel",
+    "captured": "Snapshot Captured",
+    "discard": "Discard"
+  },
+  "history": {
+    "count": "{{count}} snapshots",
+    "empty": "No saved snapshots",
+    "back": "Back to list",
+    "clearAll": "Clear all"
+  },
+  "providers": {
+    "empty": "No context providers",
+    "budget": "Token Budget",
+    "used": "Current Usage",
+    "staticEstimate": "Static Estimate",
+    "peak": "Peak Usage"
+  },
+  "stats": {
+    "totalTokens": "Est. Tokens",
+    "modelUsage": "Model Usage",
+    "messages": "Messages",
+    "tools": "Tools"
+  },
+  "sections": {
+    "title": "Context Layers"
+  },
+  "tools": {
+    "title": "Tools"
+  }
+}

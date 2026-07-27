@@ -28,7 +28,6 @@ const Tags = lazy(() => import("./pages/Tags"));
 const Tasks = lazy(() => import("./pages/Tasks"));
 const Stickers = lazy(() => import("./pages/Stickers"));
 const Data = lazy(() => import("./pages/Data"));
-const Entities = lazy(() => import("./pages/Entities"));
 const EntityDetail = lazy(() => import("./pages/EntityDetail"));
 
 export default function App() {
@@ -57,7 +56,6 @@ export default function App() {
             <Route path="models" element={<Models />} />
             <Route path="capabilities" element={<Navigate to="/tools" replace />} />
             <Route path="tools" element={<Tools />} />
-            <Route path="entities" element={<Entities />} />
             <Route path="entities/:name" element={<EntityDetail />} />
             <Route path="skills" element={<Skills />} />
             <Route path="mcp" element={<Mcp />} />

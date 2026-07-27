@@ -20,6 +20,7 @@ import type {
   CogneeStatus,
   ConfigMetaGroup,
   ContextProviderStatus,
+  ContextSnapshotData,
   CreateModelConfig,
   CreateProviderConfig,
   DbInfo,
@@ -51,6 +52,7 @@ import type {
   ProviderConfig,
   RemoteModelInfo,
   SkillItem,
+  SnapshotListItem,
   SnapshotResponse,
   StickerItem,
   StickerListResult,
@@ -91,6 +93,7 @@ export type {
   ReasoningEffort,
   RemoteModelInfo,
   SkillItem,
+  SnapshotListItem,
   SnapshotResponse,
   StickerItem,
   StickerListResult,
@@ -168,7 +171,6 @@ export const statusApi = {
   components: () => api.get("/status/components"),
   events: () => api.get("/status/events"),
   pfc: () => api.get("/status/pfc"),
-  contextProviders: () => api.get<ContextProviderStatus>("/status/context-providers"),
   mindConfig: () => api.get("/status/mind-config"),
   logs: (level?: string, tag?: string, keyword?: string, limit = 50) =>
     api.get<{ logs: LogEntry[]; count: number }>("/status/logs", { params: { level: level || undefined, tag: tag || undefined, keyword: keyword || undefined, limit } }),
@@ -460,9 +462,19 @@ export const thinkingApi = {
   toggle: (enabled: boolean) => api.put("/thinking/toggle", { enabled }),
   sessions: (limit = 20) => api.get("/thinking/sessions", { params: { limit } }),
   session: (id: string) => api.get(`/thinking/sessions/${encodeURIComponent(id)}`),
-  snapshotArm: () => api.post("/thinking/snapshot/arm"),
-  snapshotGet: () => api.get<SnapshotResponse>("/thinking/snapshot"),
-  snapshotClear: () => api.post("/thinking/snapshot/clear"),
+};
+
+// Context（上下文管理）
+export const contextApi = {
+  snapshotArm: () => api.post("/context/snapshot/arm"),
+  snapshotDisarm: () => api.post("/context/snapshot/disarm"),
+  snapshotGet: () => api.get<SnapshotResponse>("/context/snapshot"),
+  snapshotClear: () => api.post("/context/snapshot/clear"),
+  snapshotsList: () => api.get<{ snapshots: SnapshotListItem[]; count: number }>("/context/snapshots"),
+  snapshotDetail: (filename: string) => api.get<ContextSnapshotData>(`/context/snapshots/${encodeURIComponent(filename)}`),
+  snapshotDelete: (filename: string) => api.delete(`/context/snapshots/${encodeURIComponent(filename)}`),
+  snapshotsClear: () => api.post("/context/snapshots/clear"),
+  providers: () => api.get<ContextProviderStatus>("/context/providers"),
 };
 
 // Config

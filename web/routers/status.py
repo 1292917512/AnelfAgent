@@ -60,13 +60,6 @@ async def get_pfc_status() -> Dict[str, Any]:
     return snapshot or {}
 
 
-@router.get("/context-providers")
-async def get_context_providers() -> Dict[str, Any]:
-    """上下文提供者状态（预算占用、峰值、每个 provider 指标）。"""
-    from core.context_provider import ContextProviderRegistry
-    return ContextProviderRegistry.get_status()
-
-
 @router.get("/logs")
 async def get_logs(
     level: Optional[str] = Query(None),

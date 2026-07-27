@@ -1,0 +1,44 @@
+{
+  "title": "上下文管理",
+  "subtitle": "监控 LLM 上下文构成、捕获快照、管理实体注入",
+  "tabs": {
+    "monitor": "实时监控",
+    "history": "快照历史",
+    "providers": "上下文注入"
+  },
+  "monitor": {
+    "ready": "准备捕获",
+    "readyDesc": "点击下方按钮布防，系统将在下一次 LLM 调用时捕获完整上下文",
+    "arm": "开始捕获",
+    "waiting": "等待捕获中…",
+    "waitingDesc": "已布防，等待下一次 LLM 调用自动捕获",
+    "cancel": "取消布防",
+    "captured": "已捕获快照",
+    "discard": "丢弃"
+  },
+  "history": {
+    "count": "共 {{count}} 个快照",
+    "empty": "暂无保存的快照",
+    "back": "返回列表",
+    "clearAll": "清空全部"
+  },
+  "providers": {
+    "empty": "暂无上下文提供者",
+    "budget": "Token 预算",
+    "used": "当前占用",
+    "staticEstimate": "静态预估",
+    "peak": "历史峰值"
+  },
+  "stats": {
+    "totalTokens": "估算 Tokens",
+    "modelUsage": "模型占比",
+    "messages": "消息数",
+    "tools": "工具数"
+  },
+  "sections": {
+    "title": "上下文分层"
+  },
+  "tools": {
+    "title": "工具清单"
+  }
+}
