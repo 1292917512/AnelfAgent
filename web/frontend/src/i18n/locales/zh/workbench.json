@@ -83,7 +83,9 @@
     "loading": "加载中…",
     "loadFailed": "文件树加载失败",
     "empty": "工作区为空",
-    "dragHint": "拖拽文件到输入框即可注入对话"
+    "dragHint": "拖拽文件到输入框即可注入对话",
+    "rootWorkspace": "工作区",
+    "rootProject": "项目"
   },
   "editor": {
     "save": "保存",
@@ -103,6 +105,8 @@
     "download": "下载",
     "closeAll": "全部关闭",
     "collapse": "收起面板（标签保留）",
+    "fullscreen": "全屏展开",
+    "exitFullscreen": "退出全屏",
     "discardTitle": "关闭未保存的文件",
     "discardConfirm": "存在未保存的修改，关闭后将丢失。确定关闭吗？",
     "saveFailed": "保存失败",

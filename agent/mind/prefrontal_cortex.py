@@ -178,6 +178,8 @@ class PrefrontalCortex:
         self._discovered_tools: set[str] = set()
         # 动态工具集版本号（tag 激活/动态发现变化时递增，供 think_loop 检测重建）
         self._tools_version: int = 0
+        # stable_fingerprint 版本门控缓存：(tools_version, models_summary, direct_vision) → hash
+        self._fp_cache: Optional[tuple[int, str, bool, str]] = None
 
     # ==================================================================
     # 待办持久化（pending_tasks 表双写，崩溃重启后 replay）
@@ -733,11 +735,29 @@ class PrefrontalCortex:
             if s.get("function", {}).get("name", "") in active_names
         ]
 
+        # 相关性排序：核心流程工具 → 高频工具（按使用次数降序）→ 其余按名称
+        all_schemas.sort(key=self._tool_sort_key)
+
         sources = ", ".join(f"{k}={v}" for k, v in source_counts.items())
         tool_names = [s.get("function", {}).get("name", "") for s in all_schemas]
         log(f"活跃工具集: {len(all_schemas)} 个 ({sources}) [{', '.join(tool_names)}]", "DEBUG", tag="PFC")
 
         return all_schemas
+
+    # 核心流程工具固定优先级（排序最前）
+    _CORE_TOOL_PRIORITY: dict[str, int] = {
+        "end_reply": 0, "send_message": 1, "multi_tool_invoke": 2,
+    }
+
+    def _tool_sort_key(self, schema: dict) -> tuple:
+        """工具排序键：核心流程 → 高频（降序）→ 其余按名称。"""
+        name = schema.get("function", {}).get("name", "")
+        if name in self._CORE_TOOL_PRIORITY:
+            return (0, self._CORE_TOOL_PRIORITY[name])
+        hot = self._tool_recall.get(name, 0)
+        if hot > 0:
+            return (1, -hot)
+        return (2, name)
 
     @staticmethod
     def _is_sleeping_tool(tool_name: str, sleepable_groups: dict, scope: str) -> bool:
@@ -906,8 +926,9 @@ class PrefrontalCortex:
             persona_parts: List[str],
             models_summary: str = "",
             direct_vision: bool = False,
+            static_guide: str = "",
     ) -> str:
-        """构建 stable 层：人设 + 工具系统提示（对话内字节级不变，供前缀缓存复用）。"""
+        """构建 stable 层：人设 + 工具系统提示 + 静态指南（对话内字节级不变，供前缀缓存复用）。"""
         parts = list(persona_parts)
         parts.append(_env_info_block())
         for msg in self.build_tool_system_prompt(
@@ -915,13 +936,20 @@ class PrefrontalCortex:
         ):
             if msg.get("content"):
                 parts.append(msg["content"])
+        if static_guide:
+            parts.append(static_guide)
         return "\n\n".join(parts)
 
     def stable_fingerprint(self, models_summary: str = "", direct_vision: bool = False) -> str:
         """计算 stable 层动态输入的指纹（任一输入变化即触发重建）。
 
         覆盖：工具目录、可沉睡分组及其激活状态、工具规则、模型摘要、媒体规则、运行环境。
+        以 _tools_version 门控：工具集未变时直接返回缓存哈希，跳过 json.dumps 开销。
         """
+        cache_key = (self._tools_version, models_summary, direct_vision)
+        if self._fp_cache is not None and self._fp_cache[:3] == cache_key:
+            return self._fp_cache[3]
+
         import json as _json
 
         from agent.mind.prompt_layers import prompt_cache_manager
@@ -932,7 +960,7 @@ class PrefrontalCortex:
         catalog = EntityRegistry.get_entity_catalog()
         sleepable = EntityRegistry.get_sleepable_groups()
         activated = tool_activation.active_groups()
-        return prompt_cache_manager.compute_hash(
+        result = prompt_cache_manager.compute_hash(
             _json.dumps(catalog, sort_keys=True, ensure_ascii=False),
             _json.dumps(sleepable, sort_keys=True, ensure_ascii=False),
             _json.dumps(sorted(activated.items()), ensure_ascii=False),
@@ -942,6 +970,8 @@ class PrefrontalCortex:
             str(_delegation_enabled()),
             _env_info_block(),
         )
+        self._fp_cache = (cache_key[0], cache_key[1], cache_key[2], result)
+        return result
 
     async def build_llm_context(
             self,

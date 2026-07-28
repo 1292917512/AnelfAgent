@@ -2,20 +2,21 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Download, MonitorX } from "lucide-react";
 import type Mpegts from "mpegts.js";
-import { workspaceApi, workspaceVideoSupport } from "@/lib/api";
+import { workspaceApi, workspaceVideoSupport, type WorkspaceRoot } from "@/lib/api";
 
 interface VideoPreviewProps {
   path: string;
   name: string;
+  root?: WorkspaceRoot;
 }
 
 /** 视频预览：mp4/webm/mov 原生播放，flv 经 mpegts.js（MSE）播放，mkv/avi 提示下载 */
-export function VideoPreview({ path, name }: VideoPreviewProps) {
+export function VideoPreview({ path, name, root = "workspace" }: VideoPreviewProps) {
   const { t } = useTranslation("workbench");
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [flvFailed, setFlvFailed] = useState(false);
   const support = workspaceVideoSupport(name);
-  const url = workspaceApi.rawUrl(path);
+  const url = workspaceApi.rawUrl(path, false, root);
 
   // flv 经 mpegts.js 转 MSE 播放（库按需动态加载），卸载时销毁播放器释放媒体资源
   useEffect(() => {

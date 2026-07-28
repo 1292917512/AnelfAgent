@@ -32,6 +32,7 @@ export default function Chat() {
   const toggleLeft = useWorkbenchStore((s) => s.toggleLeft);
   const toggleDock = useWorkbenchStore((s) => s.toggleDock);
   const hasOpenFiles = useWorkbenchStore((s) => s.openFiles.length > 0);
+  const filePanelExpanded = useWorkbenchStore((s) => s.filePanelExpanded);
 
   const { data: botName } = useQuery({
     queryKey: ["botName"],
@@ -57,8 +58,8 @@ export default function Chat() {
         </Suspense>
       )}
 
-      {/* 中栏：对话流 */}
-      <div className="flex-1 flex flex-col min-w-0 h-full p-3 md:p-4">
+      {/* 中栏：对话流（编辑器全屏且有打开文件时让位隐藏，文件树/Dock 保留） */}
+      <div className={cn("flex-1 flex flex-col min-w-0 h-full p-3 md:p-4", filePanelExpanded && hasOpenFiles && "hidden")}>
         {/* 头部 */}
         <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
           <div className="flex items-center gap-1 min-w-0">

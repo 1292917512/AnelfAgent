@@ -152,8 +152,11 @@ def list_expired_events(
 
 # 高优先级章节关键词：行为准则类内容必须完整保留
 _HIGH_PRIORITY_KEYWORDS = (
-    "主人教导", "权限", "待确认", "待跟进", "存储体系", "使用原则", "操作速查",
+    "主人教导", "权限", "待确认", "待跟进",
 )
+
+# 一级标题分界点：之前为静态指南（归 stable 层），之后为动态状态（归 context 层）
+_DYNAMIC_SPLIT_MARKER = "# 当前状态"
 
 _SECTION_SPLIT_RE = re.compile(r"(?=^## )", re.MULTILINE)
 
@@ -608,41 +611,66 @@ def _build_file_index() -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-def _load_skills_content() -> str:
-    """读取 skills.md 工作流手册，文件不存在返回空字符串。"""
-    p = get_memory_dir() / "skills.md"
-    if p.exists():
-        return p.read_text(encoding="utf-8")
-    return ""
 
 
-def build_notes_system_message() -> List[dict]:
-    """将便签内容构建为 system 消息列表。空便签时注入记录引导。
+def build_static_guide() -> str:
+    """构建静态指南内容（归入 stable 层，对话内冻结）。
 
-    主便签按注入预算智能裁剪（高优先级章节完整保留，其余折叠），
-    保证加载高效且不丢关键行为准则。
+    包含 memory.md 中「# 记忆系统指南」到「# 当前状态」之间的文档，
+    以及 skills.md 的常用工作流。这些内容在运行期间极少变化。
     """
     content = load_notes_content()
     if not content.strip():
-        return [{"role": "system", "content": _NOTES_EMPTY_HINT}]
+        return ""
+    # 以「# 当前状态」为分界，前半部分为静态指南
+    static_part = content.split(_DYNAMIC_SPLIT_MARKER, 1)[0].strip()
+    # skills.md 工作流手册
+    skills_path = get_memory_dir() / "skills.md"
+    skills_text = ""
+    if skills_path.exists():
+        skills_text = skills_path.read_text(encoding="utf-8").strip()
+    parts = [p for p in (static_part, skills_text) if p]
+    return "\n\n".join(parts)
+
+
+def build_dynamic_notes() -> str:
+    """构建动态便签内容（归入 context 层，便签编辑时重建）。
+
+    包含 memory.md 中「# 当前状态」之后的全部内容，
+    经 _smart_truncate_notes 按预算裁剪。
+    """
+    content = load_notes_content()
+    if not content.strip():
+        return ""
+    # 以「# 当前状态」为分界，后半部分为动态内容
+    parts = content.split(_DYNAMIC_SPLIT_MARKER, 1)
+    dynamic_part = (_DYNAMIC_SPLIT_MARKER + parts[1]) if len(parts) > 1 else ""
+    if not dynamic_part.strip():
+        return ""
     from core.config import get_config_int
-    content = _smart_truncate_notes(
-        content, get_config_int("notes_inject_max_chars", 6000),
+    return _smart_truncate_notes(
+        dynamic_part, get_config_int("notes_inject_max_chars", 5000),
     )
+
+
+def build_file_index_block() -> str:
+    """构建文件索引 + 生命周期提示（归入 context 层）。"""
     file_index = _build_file_index()
-    if file_index:
-        retention = get_config_int("notes_events_retention_days", 30)
-        lifecycle_hint = (
-            f"[便签生命周期] events/ 日期便签超过 {retention} 天会自动提炼进"
-            "数据库长期记忆后删除；有长期价值的事实请及时用 memorize 记录，"
-            "常青知识请维护在主便签或知识文件中，不要只留在日期便签里。"
-        )
-        content = f"{content}\n\n{file_index}\n{lifecycle_hint}"
-    msgs = [{"role": "system", "content": f"[个人笔记/便签记忆]\n{content}"}]
-    skills = _load_skills_content()
-    if skills.strip():
-        msgs.append({"role": "system", "content": skills})
-    return msgs
+    if not file_index:
+        return ""
+    from core.config import get_config_int
+    retention = get_config_int("notes_events_retention_days", 30)
+    lifecycle_hint = (
+        f"[便签生命周期] events/ 日期便签超过 {retention} 天会自动提炼进"
+        "数据库长期记忆后删除；有长期价值的事实请及时用 memorize 记录，"
+        "常青知识请维护在主便签或知识文件中，不要只留在日期便签里。"
+    )
+    return f"{file_index}\n{lifecycle_hint}"
+
+
+def build_notes_empty_hint() -> str:
+    """空便签时的引导提示。"""
+    return _NOTES_EMPTY_HINT
 
 
 def register_notes_tools(workspace_dir: Optional[Path] = None) -> None:

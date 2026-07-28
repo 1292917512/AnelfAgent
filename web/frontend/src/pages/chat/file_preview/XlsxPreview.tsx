@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
-import { workspaceApi } from "@/lib/api";
+import { workspaceApi, type WorkspaceRoot } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { PreviewFrame, wrapPreviewDocument } from "./PreviewFrame";
 
@@ -21,10 +21,11 @@ interface SheetDoc {
 interface XlsxPreviewProps {
   path: string;
   title: string;
+  root?: WorkspaceRoot;
 }
 
 /** XLSX 预览：SheetJS 解析工作簿，Sheet 标签切换 + 禁脚本沙箱表格渲染（库按需动态加载） */
-export function XlsxPreview({ path, title }: XlsxPreviewProps) {
+export function XlsxPreview({ path, title, root = "workspace" }: XlsxPreviewProps) {
   const { t } = useTranslation("workbench");
   const [sheets, setSheets] = useState<SheetDoc[] | null>(null);
   const [active, setActive] = useState(0);
@@ -37,7 +38,7 @@ export function XlsxPreview({ path, title }: XlsxPreviewProps) {
     setFailed(false);
     (async () => {
       try {
-        const resp = await fetch(workspaceApi.rawUrl(path));
+        const resp = await fetch(workspaceApi.rawUrl(path, false, root));
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const buf = await resp.arrayBuffer();
         const XLSX = await import("xlsx");
@@ -55,7 +56,7 @@ export function XlsxPreview({ path, title }: XlsxPreviewProps) {
       }
     })();
     return () => { cancelled = true; };
-  }, [path]);
+  }, [path, root]);
 
   if (failed) {
     return <p className="py-8 text-center text-sm text-danger">{t("editor.renderFailed")}</p>;

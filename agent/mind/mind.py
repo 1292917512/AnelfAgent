@@ -52,7 +52,10 @@ from agent.heartbeat.engine import HeartbeatEngine
 from agent.memory.embedder import Embedder
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_store import MemoryStore
-from agent.memory.notes import build_notes_system_message
+from agent.memory.notes import (
+    build_dynamic_notes, build_file_index_block, build_notes_empty_hint,
+    build_static_guide, get_memory_dir, get_notes_path,
+)
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.interrupt import (
     InterruptRegistry,
@@ -211,6 +214,10 @@ class Mind:
         # 当前模型上下文窗口缓存（tokens，0 = 未知）
         self._cached_context_length: int = 0
         self._cached_model_name: str = ""
+
+        # 文件型层 mtime 快检缓存（便签/索引文件未变时跳过 I/O）
+        from agent.mind.prompt_layers import FileLayerCache
+        self._file_cache = FileLayerCache()
 
         self._init_subsystems()
         self._register_core_tools()
@@ -1307,6 +1314,9 @@ class Mind:
         # 技能匹配注入（volatile 层）：当前对话语义匹配到的经验技能
         memory_msgs.extend(skill_msgs)
 
+        # memory 层预算截断：防止低相关召回/画像/技能过度占用上下文
+        memory_msgs = self._apply_memory_budget(memory_msgs)
+
         # Prompt 分层构建（参考 hermes 三层架构）：
         # stable 层（人设 + 工具提示）对话内冻结复用，context 层（便签）低频重建，
         # volatile 层（语义召回等）每轮构建并置于其后，保证前缀缓存命中。
@@ -1377,6 +1387,11 @@ class Mind:
     ) -> Tuple[str, str, bool, bool]:
         """构建 stable/context 两层提示（经 PromptCacheManager 缓存复用）。
 
+        stable 层：人设 + 工具提示 + 静态指南（记忆系统文档 + 工作流），对话内冻结。
+        context 层：动态便签（当前状态/教导/规则）+ 文件索引，仅编辑时重建。
+
+        文件型层通过 FileLayerCache 做 mtime O(1) 快检，未变时跳过 I/O。
+
         Returns:
             (stable_text, context_text, stable_hit, context_hit)
         """
@@ -1390,23 +1405,60 @@ class Mind:
             msg["content"] for msg in self.char.get_personality_msg() if msg.get("content")
         ]
         direct_vision = self._direct_vision()
+
+        # --- stable 层：人设 + 工具 + 静态指南 ---
+        notes_path = get_notes_path()
+        static_guide, _ = self._file_cache.get_or_load(notes_path, build_static_guide)
         stable_hash = prompt_cache_manager.compute_hash(
-            *persona_parts, self.pfc.stable_fingerprint(models_summary, direct_vision),
+            *persona_parts,
+            self.pfc.stable_fingerprint(models_summary, direct_vision),
+            static_guide,
         )
         stable_text, stable_hit = prompt_cache_manager.get_or_build(
             scope, LAYER_STABLE, stable_hash,
-            lambda: self.pfc.build_stable_layer(persona_parts, models_summary, direct_vision),
+            lambda: self.pfc.build_stable_layer(
+                persona_parts, models_summary, direct_vision, static_guide,
+            ),
         )
 
-        notes_parts = [
-            msg["content"] for msg in build_notes_system_message() if msg.get("content")
-        ]
-        context_hash = prompt_cache_manager.compute_hash(*notes_parts)
+        # --- context 层：动态便签 + 文件索引 ---
+        dynamic_notes, _ = self._file_cache.get_or_load(notes_path, build_dynamic_notes)
+        file_index, _ = self._file_cache.get_or_load(get_memory_dir(), build_file_index_block)
+        context_parts = [p for p in (dynamic_notes, file_index) if p]
+        if not context_parts:
+            context_parts = [build_notes_empty_hint()]
+        context_hash = prompt_cache_manager.compute_hash(*context_parts)
         context_text, context_hit = prompt_cache_manager.get_or_build(
             scope, LAYER_CONTEXT, context_hash,
-            lambda: "\n\n".join(notes_parts),
+            lambda: "[个人笔记/便签记忆]\n" + "\n\n".join(context_parts),
         )
         return stable_text, context_text, stable_hit, context_hit
+
+    @staticmethod
+    def _apply_memory_budget(msgs: List[Dict]) -> List[Dict]:
+        """按预算截断 memory 层，贪心保留先到的消息（高分召回优先）。
+
+        召回路径按 语义 → 跨频道 → 技能 顺序合并，先到的消息相关性更高。
+        超预算时截断当前消息并停止，保证总字符不超上限。
+        """
+        from core.config import get_config_int
+        budget = get_config_int("memory_inject_max_chars", 6000)
+        total = sum(len(m.get("content", "")) for m in msgs)
+        if total <= budget:
+            return msgs
+        kept: List[Dict] = []
+        used = 0
+        for m in msgs:
+            chars = len(m.get("content", ""))
+            if used + chars <= budget:
+                kept.append(m)
+                used += chars
+            else:
+                remaining = budget - used
+                if remaining > 200:
+                    kept.append({**m, "content": m["content"][:remaining] + "\n（已截断）"})
+                break
+        return kept
 
     @staticmethod
     def _skills_enabled() -> bool:

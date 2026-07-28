@@ -21,12 +21,13 @@ router = APIRouter(prefix="/workspace", tags=["workspace"])
 _MAX_READ_BYTES = 512 * 1024
 _MAX_WRITE_BYTES = 2 * 1024 * 1024
 _TREE_MAX_ENTRIES = 500
+_PROJECT_TREE_MAX_ENTRIES = 3000
 _SEARCH_MAX_RESULTS = 30
 _SEARCHABLE_EXTS = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".md", ".txt", ".yaml", ".yml",
     ".toml", ".cfg", ".ini", ".html", ".css", ".xml", ".sh", ".sql", ".csv",
 }
-_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".venv", "venv"}
+_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"}
 
 _TEXT_EXTS = _SEARCHABLE_EXTS | {
     ".log", ".env", ".gitignore", ".dockerfile", ".conf", ".prompt",
@@ -45,6 +46,19 @@ def _workspace_root() -> str:
     return root_abs
 
 
+def _project_root() -> str:
+    """返回项目根目录绝对路径（launch.py / pyproject.toml / .git 所在处）。"""
+    from core.path import project_root
+    return project_root()
+
+
+def _resolve_root(root: str) -> str:
+    """按 root 参数解析基准目录，仅支持 workspace / project。"""
+    if root == "project":
+        return _project_root()
+    return _workspace_root()
+
+
 def _safe_path(path: str) -> str:
     """委托 entities.filesystem 的沙箱路径解析。"""
     from entities.filesystem.tools import _safe_path as fs_safe_path
@@ -54,9 +68,26 @@ def _safe_path(path: str) -> str:
         raise HTTPException(status_code=403, detail=str(e)) from e
 
 
-def _rel(path: str) -> str:
-    """绝对路径转工作区相对路径（posix 风格）。"""
-    return os.path.relpath(path, _workspace_root()).replace(os.sep, "/")
+def _safe_project_path(path: str) -> str:
+    """项目根沙箱路径解析（限制在项目根内）。"""
+    root = _project_root()
+    abs_path = os.path.abspath(os.path.join(root, path)) if path else root
+    if abs_path != root and not abs_path.startswith(root + os.sep):
+        raise HTTPException(status_code=403, detail="路径超出项目根目录")
+    return abs_path
+
+
+def _resolve(path: str, root: str) -> str:
+    """按 root 统一解析路径：workspace 走工作区沙箱，project 限制在项目根内。"""
+    if root == "project":
+        return _safe_project_path(path)
+    return _safe_path(path) if path else _workspace_root()
+
+
+def _rel(path: str, *, root: str = "") -> str:
+    """绝对路径转相对路径（posix 风格）。"""
+    base = root or _workspace_root()
+    return os.path.relpath(path, base).replace(os.sep, "/")
 
 
 def _is_binary(path: str) -> bool:
@@ -72,7 +103,7 @@ def _is_binary(path: str) -> bool:
         return True
 
 
-def _entry(abs_path: str, *, with_children: bool, depth: int, budget: List[int]) -> Optional[Dict[str, Any]]:
+def _entry(abs_path: str, *, with_children: bool, depth: int, budget: List[int], root: str = "") -> Optional[Dict[str, Any]]:
     """构建单个目录树条目，budget[0] 为剩余条目配额。"""
     if budget[0] <= 0:
         return None
@@ -87,19 +118,19 @@ def _entry(abs_path: str, *, with_children: bool, depth: int, budget: List[int])
     budget[0] -= 1
     node: Dict[str, Any] = {
         "name": name,
-        "path": _rel(abs_path),
+        "path": _rel(abs_path, root=root),
         "type": "dir" if is_dir else "file",
         "modified": int(st.st_mtime),
     }
     if is_dir:
-        node["children"] = _list_dir(abs_path, depth=depth, budget=budget) if with_children and depth > 0 else []
+        node["children"] = _list_dir(abs_path, depth=depth - 1, budget=budget, root=root) if with_children and depth > 0 else []
     else:
         node["size"] = st.st_size
         node["binary"] = _is_binary(abs_path)
     return node
 
 
-def _list_dir(dir_abs: str, *, depth: int, budget: List[int]) -> List[Dict[str, Any]]:
+def _list_dir(dir_abs: str, *, depth: int, budget: List[int], root: str = "") -> List[Dict[str, Any]]:
     """列出一层目录（文件夹优先，按名称排序），按需递归。"""
     try:
         names = sorted(os.listdir(dir_abs), key=lambda n: (not os.path.isdir(os.path.join(dir_abs, n)), n.lower()))
@@ -109,7 +140,7 @@ def _list_dir(dir_abs: str, *, depth: int, budget: List[int]) -> List[Dict[str, 
     for name in names:
         if name.startswith("."):
             continue
-        node = _entry(os.path.join(dir_abs, name), with_children=True, depth=depth, budget=budget)
+        node = _entry(os.path.join(dir_abs, name), with_children=True, depth=depth, budget=budget, root=root)
         if node is None:
             continue
         nodes.append(node)
@@ -119,29 +150,37 @@ def _list_dir(dir_abs: str, *, depth: int, budget: List[int]) -> List[Dict[str, 
 
 
 @router.get("/tree")
-async def get_tree(path: str = Query(""), depth: int = Query(2, ge=1, le=6)) -> Dict[str, Any]:
-    """获取工作区目录树（默认两层，懒加载可传子路径）。"""
-    base = _safe_path(path) if path else _workspace_root()
+async def get_tree(
+    path: str = Query(""),
+    depth: int = Query(2, ge=1, le=6),
+    root: str = Query("workspace"),
+) -> Dict[str, Any]:
+    """获取目录树（默认两层，懒加载可传子路径）。
+
+    root=project 时浏览整个项目根目录，规则与工作区完全一致（仅基准目录不同）。
+    """
+    base_root = _resolve_root(root)
+    base = _resolve(path, root)
     if not os.path.isdir(base):
         raise HTTPException(status_code=404, detail="目录不存在")
-    budget = [_TREE_MAX_ENTRIES]
-    children = _list_dir(base, depth=depth, budget=budget)
+    budget = [_PROJECT_TREE_MAX_ENTRIES if root == "project" else _TREE_MAX_ENTRIES]
+    children = _list_dir(base, depth=depth, budget=budget, root=base_root)
     return {
-        "path": "" if base == _workspace_root() else _rel(base),
+        "path": "" if base == base_root else _rel(base, root=base_root),
         "children": children,
         "truncated": budget[0] <= 0,
     }
 
 
 @router.get("/file")
-async def read_file(path: str = Query(...)) -> Dict[str, Any]:
+async def read_file(path: str = Query(...), root: str = Query("workspace")) -> Dict[str, Any]:
     """读取文本文件内容（上限 512KB，二进制文件只返回元信息）。"""
-    fp = _safe_path(path)
+    fp = _resolve(path, root)
     if not os.path.isfile(fp):
         raise HTTPException(status_code=404, detail="文件不存在")
     size = os.path.getsize(fp)
     result: Dict[str, Any] = {
-        "path": _rel(fp),
+        "path": _rel(fp, root=_resolve_root(root)),
         "name": os.path.basename(fp),
         "size": size,
         "modified": int(os.path.getmtime(fp)),
@@ -161,13 +200,13 @@ async def read_file(path: str = Query(...)) -> Dict[str, Any]:
 
 
 @router.get("/raw")
-async def serve_raw_file(path: str = Query(...), inline: bool = False) -> Any:
-    """以原始字节服务工作区文件（图片/音视频/PDF 预览用），按扩展名推断 Content-Type。
+async def serve_raw_file(path: str = Query(...), inline: bool = False, root: str = Query("workspace")) -> Any:
+    """以原始字节服务文件（图片/音视频/PDF 预览用），按扩展名推断 Content-Type。
 
     inline=True 时以 inline 方式返回（供 iframe 内联渲染），默认 attachment（下载语义）。
     """
     from starlette.responses import FileResponse
-    fp = _safe_path(path)
+    fp = _resolve(path, root)
     if not os.path.isfile(fp):
         raise HTTPException(status_code=404, detail="文件不存在")
     return FileResponse(
@@ -180,6 +219,7 @@ async def serve_raw_file(path: str = Query(...), inline: bool = False) -> Any:
 class FileWriteRequest(BaseModel):
     path: str
     content: str
+    root: str = "workspace"
 
 
 @router.put("/file")
@@ -187,15 +227,15 @@ async def write_file(req: FileWriteRequest) -> Dict[str, Any]:
     """写入（新建或覆盖）文本文件。"""
     if len(req.content.encode("utf-8")) > _MAX_WRITE_BYTES:
         raise HTTPException(status_code=413, detail="文件内容超过 2MB 限制")
-    fp = _safe_path(req.path)
+    fp = _resolve(req.path, req.root)
     if os.path.isdir(fp):
         raise HTTPException(status_code=400, detail="目标是目录")
     try:
         await asyncio.to_thread(_write_text_file, fp, req.content)
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"写入失败: {e}") from e
-    log(f"工作台写入文件: {_rel(fp)}", "DEBUG", tag="工作区")
-    return {"status": "ok", "path": _rel(fp), "size": os.path.getsize(fp)}
+    log(f"工作台写入文件: {_rel(fp, root=_resolve_root(req.root))}", "DEBUG", tag="工作区")
+    return {"status": "ok", "path": _rel(fp, root=_resolve_root(req.root)), "size": os.path.getsize(fp)}
 
 
 def _write_text_file(fp: str, content: str) -> None:
@@ -206,21 +246,22 @@ def _write_text_file(fp: str, content: str) -> None:
 
 class MkdirRequest(BaseModel):
     path: str
+    root: str = "workspace"
 
 
 @router.post("/mkdir")
 async def make_dir(req: MkdirRequest) -> Dict[str, Any]:
-    fp = _safe_path(req.path)
+    fp = _resolve(req.path, req.root)
     try:
         os.makedirs(fp, exist_ok=True)
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"创建目录失败: {e}") from e
-    return {"status": "ok", "path": _rel(fp)}
+    return {"status": "ok", "path": _rel(fp, root=_resolve_root(req.root))}
 
 
 @router.delete("/file")
-async def delete_file(path: str = Query(...)) -> Dict[str, str]:
-    fp = _safe_path(path)
+async def delete_file(path: str = Query(...), root: str = Query("workspace")) -> Dict[str, str]:
+    fp = _resolve(path, root)
     if not os.path.exists(fp):
         raise HTTPException(status_code=404, detail="路径不存在")
     try:
@@ -231,7 +272,7 @@ async def delete_file(path: str = Query(...)) -> Dict[str, str]:
             os.remove(fp)
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"删除失败: {e}") from e
-    log(f"工作台删除: {_rel(fp)}", "DEBUG", tag="工作区")
+    log(f"工作台删除: {_rel(fp, root=_resolve_root(root))}", "DEBUG", tag="工作区")
     return {"status": "ok"}
 
 

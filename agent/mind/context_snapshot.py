@@ -24,8 +24,8 @@ _SNAPSHOT_DIR = os.path.join("logs", "context_snapshots")
 # ======================================================================
 
 LAYER_LABELS: Dict[str, str] = {
-    "stable": "人设 + 工具提示（stable 层）",
-    "context": "便签等低频内容（context 层）",
+    "stable": "人设 + 工具提示 + 静态指南（stable 层）",
+    "context": "动态便签 + 文件索引（context 层）",
     "volatile": "短期记忆 + 上下文注入（volatile 层）",
     "overflow": "上下文溢出提示",
     "security": "会话令牌安全标记",

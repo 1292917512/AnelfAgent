@@ -14,7 +14,8 @@
     "waitingDesc": "Armed. Waiting for the next LLM call to auto-capture",
     "cancel": "Cancel",
     "captured": "Snapshot Captured",
-    "discard": "Discard"
+    "discard": "Discard",
+    "export": "Export JSON"
   },
   "history": {
     "count": "{{count}} snapshots",

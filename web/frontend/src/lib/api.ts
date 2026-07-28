@@ -513,19 +513,22 @@ export const tasksApi = {
     api.post<{ status: string; task: string }>(`/config/tasks/trigger/${encodeURIComponent(name)}`, null, { params: { folder: folder || undefined } }),
 };
 
-// Workspace 文件浏览/编辑
+// Workspace 文件浏览/编辑（root: workspace 工作区 / project 项目根，规则一致仅基准不同）
+export type WorkspaceRoot = "workspace" | "project";
 export const workspaceApi = {
-  tree: (path = "", depth = 2) =>
-    api.get<{ path: string; children: WorkspaceNode[]; truncated: boolean }>("/workspace/tree", { params: { path: path || undefined, depth } }),
-  read: (path: string) => api.get<WorkspaceFile>("/workspace/file", { params: { path } }),
-  write: (path: string, content: string) => api.put("/workspace/file", { path, content }),
-  mkdir: (path: string) => api.post("/workspace/mkdir", { path }),
-  remove: (path: string) => api.delete("/workspace/file", { params: { path } }),
+  tree: (path = "", depth = 2, root: WorkspaceRoot = "workspace") =>
+    api.get<{ path: string; children: WorkspaceNode[]; truncated: boolean }>("/workspace/tree", { params: { path: path || undefined, depth, root } }),
+  read: (path: string, root: WorkspaceRoot = "workspace") =>
+    api.get<WorkspaceFile>("/workspace/file", { params: { path, root } }),
+  write: (path: string, content: string, root: WorkspaceRoot = "workspace") =>
+    api.put("/workspace/file", { path, content, root }),
+  mkdir: (path: string, root: WorkspaceRoot = "workspace") => api.post("/workspace/mkdir", { path, root }),
+  remove: (path: string, root: WorkspaceRoot = "workspace") => api.delete("/workspace/file", { params: { path, root } }),
   search: (q: string, limit = 30) =>
     api.get<{ query: string; files: WorkspaceSearchHit[] }>("/workspace/search", { params: { q, limit } }),
   /** 原始字节服务 URL（图片/音视频预览；inline 供 iframe 内联渲染，如 PDF） */
-  rawUrl: (path: string, inline = false) =>
-    `/api/workspace/raw?path=${encodeURIComponent(path)}${inline ? "&inline=1" : ""}`,
+  rawUrl: (path: string, inline = false, root: WorkspaceRoot = "workspace") =>
+    `/api/workspace/raw?path=${encodeURIComponent(path)}&root=${root}${inline ? "&inline=1" : ""}`,
 };
 
 /** 按文件名判断可预览的媒体类型 */

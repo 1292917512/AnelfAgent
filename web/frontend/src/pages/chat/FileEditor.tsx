@@ -10,7 +10,7 @@ import { yaml } from "@codemirror/lang-yaml";
 import { html } from "@codemirror/lang-html";
 import { css } from "@codemirror/lang-css";
 import {
-  Check, Code, Columns2, Copy, Download, Eye, ListX, Loader2, PanelLeftClose, Paperclip, Quote, Save, X,
+  Check, Code, Columns2, Copy, Download, Eye, ListX, Loader2, Maximize2, Minimize2, PanelLeftClose, Paperclip, Quote, Save, X,
 } from "lucide-react";
 import {
   isPreviewableBinary, workspaceApi, workspaceFileKind, workspaceMediaKind,
@@ -70,11 +70,14 @@ export function FileEditor() {
   const isMobile = useIsMobile();
   const openFiles = useWorkbenchStore((s) => s.openFiles);
   const openFilePath = useWorkbenchStore((s) => s.openFilePath);
+  const fileRoot = useWorkbenchStore((s) => s.fileRoot);
   const filePanelOpen = useWorkbenchStore((s) => s.filePanelOpen);
   const activateFile = useWorkbenchStore((s) => s.activateFile);
   const closeFile = useWorkbenchStore((s) => s.closeFile);
   const closeAllFiles = useWorkbenchStore((s) => s.closeAllFiles);
   const collapseFilePanel = useWorkbenchStore((s) => s.collapseFilePanel);
+  const filePanelExpanded = useWorkbenchStore((s) => s.filePanelExpanded);
+  const toggleFilePanelExpanded = useWorkbenchStore((s) => s.toggleFilePanelExpanded);
   const setInputDraft = useWorkbenchStore((s) => s.setDraft);
   const attachWorkspaceFile = useChatStore((s) => s.attachWorkspaceFile);
 
@@ -99,11 +102,13 @@ export function FileEditor() {
   }, []);
 
   const cur = openFilePath ? tabs.get(openFilePath) : undefined;
+  // 当前文件所属根目录（workspace / project），决定读/写/预览的基准
+  const curRoot = openFilePath ? fileRoot(openFilePath) : "workspace";
   // 富格式预览类型（markdown/html/csv/pdf/docx/xlsx），不命中为普通文本
   const kind: WorkspaceFileKind | null = openFilePath ? workspaceFileKind(openFilePath) : null;
   // 二进制媒体（图片/视频/音频）走预览而非文本编辑
   const mediaKind = cur?.file.binary ? workspaceMediaKind(cur.file.name) : null;
-  const rawUrl = cur ? workspaceApi.rawUrl(cur.file.path) : "";
+  const rawUrl = cur ? workspaceApi.rawUrl(cur.file.path, false, curRoot) : "";
   const dirty = cur !== undefined && cur.draft !== cur.file.content;
 
   // 激活标签首次加载内容；切换标签按文件类型重置默认视图与加载状态
@@ -113,7 +118,7 @@ export function FileEditor() {
     setLoading(false);
     if (!openFilePath || tabs.has(openFilePath)) return;
     setLoading(true);
-    workspaceApi.read(openFilePath).then((r) => {
+    workspaceApi.read(openFilePath, fileRoot(openFilePath)).then((r) => {
       setTabs((m) => new Map(m).set(openFilePath, { file: r.data, draft: r.data.content }));
     }).catch(() => {
       setLoadError(true);
@@ -146,7 +151,7 @@ export function FileEditor() {
     if (!cur || !dirty) return;
     setSaving(true);
     try {
-      await workspaceApi.write(cur.file.path, cur.draft);
+      await workspaceApi.write(cur.file.path, cur.draft, curRoot);
       setTabs((m) => new Map(m).set(cur.file.path, { file: { ...cur.file, content: cur.draft }, draft: cur.draft }));
       setSavedTick(true);
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
@@ -155,7 +160,7 @@ export function FileEditor() {
       toast.error(t("editor.saveFailed"));
     }
     finally { setSaving(false); }
-  }, [cur, dirty, t]);
+  }, [cur, dirty, curRoot, t]);
 
   // Ctrl/Cmd+S 保存
   useEffect(() => {
@@ -169,6 +174,16 @@ export function FileEditor() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [openFilePath, save]);
+
+  // 全屏展开时按 Esc 退出
+  useEffect(() => {
+    if (!filePanelExpanded || isMobile) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") toggleFilePanelExpanded();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [filePanelExpanded, isMobile, toggleFilePanelExpanded]);
 
   /** 关闭请求：含未保存修改时先弹确认 */
   const requestClose = useCallback((path?: string) => {
@@ -235,10 +250,12 @@ export function FileEditor() {
   const body = (
     <div
       className={cn(
-        "flex flex-col h-full bg-panel border-border shrink-0",
+        "flex flex-col h-full bg-panel border-border",
         isMobile
-          ? "w-[90vw] max-w-lg border-l shadow-xl"
-          : cn("border-r", splitWide ? "w-[40rem] xl:w-[48rem]" : "w-[24rem] xl:w-[28rem]"),
+          ? "w-[90vw] max-w-lg border-l shadow-xl shrink-0"
+          : filePanelExpanded
+            ? "flex-1 min-w-0"
+            : cn("shrink-0 border-r", splitWide ? "w-[40rem] xl:w-[48rem]" : "w-[24rem] xl:w-[28rem]"),
       )}
     >
       {/* 标签栏 */}
@@ -281,6 +298,16 @@ export function FileEditor() {
           className="p-1 rounded text-muted hover:text-foreground hover:bg-hover shrink-0 transition-colors"
         >
           <ListX size={14} />
+        </button>
+        <button
+          onClick={toggleFilePanelExpanded}
+          title={filePanelExpanded ? t("editor.exitFullscreen") : t("editor.fullscreen")}
+          className={cn(
+            "p-1 rounded shrink-0 transition-colors",
+            filePanelExpanded ? "text-accent bg-accent-subtle" : "text-muted hover:text-foreground hover:bg-hover",
+          )}
+        >
+          {filePanelExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
         </button>
         <button
           onClick={collapseFilePanel}
@@ -363,7 +390,7 @@ export function FileEditor() {
           </div>
         )}
         {cur && cur.file.binary && mediaKind === "video" && (
-          <VideoPreview path={cur.file.path} name={cur.file.name} />
+          <VideoPreview path={cur.file.path} name={cur.file.name} root={curRoot} />
         )}
         {cur && cur.file.binary && mediaKind === "audio" && (
           <div className="flex items-center justify-center py-12">
@@ -372,17 +399,17 @@ export function FileEditor() {
         )}
         {cur && cur.file.binary && kind === "pdf" && (
           <div className="flex-1 min-h-0">
-            <PdfPreview path={cur.file.path} title={cur.file.name} />
+            <PdfPreview path={cur.file.path} title={cur.file.name} root={curRoot} />
           </div>
         )}
         {cur && cur.file.binary && kind === "docx" && (
           <div className="flex-1 min-h-0">
-            <DocxPreview path={cur.file.path} title={cur.file.name} />
+            <DocxPreview path={cur.file.path} title={cur.file.name} root={curRoot} />
           </div>
         )}
         {cur && cur.file.binary && kind === "xlsx" && (
           <div className="flex-1 min-h-0 flex flex-col">
-            <XlsxPreview path={cur.file.path} title={cur.file.name} />
+            <XlsxPreview path={cur.file.path} title={cur.file.name} root={curRoot} />
           </div>
         )}
         {cur && cur.file.binary && !mediaKind && !isPreviewableBinary(cur.file.name) && (

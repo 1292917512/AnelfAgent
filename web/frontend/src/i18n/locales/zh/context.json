@@ -14,7 +14,8 @@
     "waitingDesc": "已布防，等待下一次 LLM 调用自动捕获",
     "cancel": "取消布防",
     "captured": "已捕获快照",
-    "discard": "丢弃"
+    "discard": "丢弃",
+    "export": "导出 JSON"
   },
   "history": {
     "count": "共 {{count}} 个快照",

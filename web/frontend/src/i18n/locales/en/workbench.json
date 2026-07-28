@@ -83,7 +83,9 @@
     "loading": "Loading…",
     "loadFailed": "Failed to load file tree",
     "empty": "Workspace is empty",
-    "dragHint": "Drag a file into the input to attach it"
+    "dragHint": "Drag a file into the input to attach it",
+    "rootWorkspace": "Workspace",
+    "rootProject": "Project"
   },
   "editor": {
     "save": "Save",
@@ -103,6 +105,8 @@
     "download": "Download",
     "closeAll": "Close all tabs",
     "collapse": "Collapse panel (tabs kept)",
+    "fullscreen": "Expand to fullscreen",
+    "exitFullscreen": "Exit fullscreen",
     "discardTitle": "Close unsaved file",
     "discardConfirm": "There are unsaved changes that will be lost. Close anyway?",
     "saveFailed": "Save failed",

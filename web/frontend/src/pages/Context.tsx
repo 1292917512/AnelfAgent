@@ -11,9 +11,19 @@ import { cn } from "@/lib/utils";
 import type { ContextSnapshotData, ContextProviderStatus, SnapshotListItem } from "@/lib/types";
 import { useShallow } from "zustand/react/shallow";
 import {
-  Camera, CameraOff, Trash2,
+  Camera, CameraOff, Trash2, Download,
   Activity, History, Database, ChevronRight,
 } from "lucide-react";
+
+function downloadJson(data: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 type ContextTab = "monitor" | "history" | "providers";
 
@@ -88,9 +98,17 @@ function MonitorTab() {
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <span className="text-sm font-semibold text-heading">{t("monitor.captured")}</span>
-          <button onClick={handleClear} className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] text-muted hover:text-danger hover:bg-danger-subtle transition-colors">
-            <Trash2 size={11} /> {t("monitor.discard")}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => downloadJson(snapshotData, `context_snapshot_${new Date(snapshotData.captured_at * 1000).toISOString().slice(0, 19).replace(/:/g, "")}.json`)}
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] text-muted hover:text-accent hover:bg-accent-subtle transition-colors"
+            >
+              <Download size={11} /> {t("monitor.export", { defaultValue: "导出" })}
+            </button>
+            <button onClick={handleClear} className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] text-muted hover:text-danger hover:bg-danger-subtle transition-colors">
+              <Trash2 size={11} /> {t("monitor.discard")}
+            </button>
+          </div>
         </div>
         <SnapshotDetail snapshot={snapshotData} />
       </div>
@@ -183,9 +201,17 @@ function HistoryTab() {
   if (selected && detail) {
     return (
       <div className="space-y-4">
-        <button onClick={() => { setSelected(null); setDetail(null); }} className="text-xs text-accent hover:underline">
-          ← {t("history.back")}
-        </button>
+        <div className="flex items-center justify-between">
+          <button onClick={() => { setSelected(null); setDetail(null); }} className="text-xs text-accent hover:underline">
+            ← {t("history.back")}
+          </button>
+          <button
+            onClick={() => downloadJson(detail, selected)}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] text-muted hover:text-accent hover:bg-accent-subtle transition-colors"
+          >
+            <Download size={11} /> {t("monitor.export", { defaultValue: "导出" })}
+          </button>
+        </div>
         <SnapshotDetail snapshot={detail} />
       </div>
     );

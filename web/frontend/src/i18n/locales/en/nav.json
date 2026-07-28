@@ -1,9 +1,9 @@
 {
   "dashboard": "Overview",
-  "chat": "Chat",
+  "chat": "Workspace",
   "models": "Models",
   "tools": "Tools",
-  "tags": "Tag System",
+  "tags": "Tags",
   "personas": "Personas",
   "memory": "Memory",
   "tasks": "Tasks",

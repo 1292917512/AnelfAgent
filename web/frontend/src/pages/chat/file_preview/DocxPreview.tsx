@@ -1,16 +1,17 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
-import { workspaceApi } from "@/lib/api";
+import { workspaceApi, type WorkspaceRoot } from "@/lib/api";
 import { PreviewFrame, wrapPreviewDocument } from "./PreviewFrame";
 
 interface DocxPreviewProps {
   path: string;
   title: string;
+  root?: WorkspaceRoot;
 }
 
 /** DOCX 预览：mammoth 转 HTML 后在禁脚本沙箱中渲染（库按需动态加载） */
-export function DocxPreview({ path, title }: DocxPreviewProps) {
+export function DocxPreview({ path, title, root = "workspace" }: DocxPreviewProps) {
   const { t } = useTranslation("workbench");
   const [doc, setDoc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -21,7 +22,7 @@ export function DocxPreview({ path, title }: DocxPreviewProps) {
     setFailed(false);
     (async () => {
       try {
-        const resp = await fetch(workspaceApi.rawUrl(path));
+        const resp = await fetch(workspaceApi.rawUrl(path, false, root));
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const arrayBuffer = await resp.arrayBuffer();
         const mammoth = await import("mammoth");
@@ -32,7 +33,7 @@ export function DocxPreview({ path, title }: DocxPreviewProps) {
       }
     })();
     return () => { cancelled = true; };
-  }, [path]);
+  }, [path, root]);
 
   if (failed) {
     return <p className="py-8 text-center text-sm text-danger">{t("editor.renderFailed")}</p>;
