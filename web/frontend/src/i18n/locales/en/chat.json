@@ -33,5 +33,14 @@
   },
   "fileLimit": "You can attach up to {{max}} files",
   "fileTooLarge": "File {{name}} exceeds the {{max}}MB size limit",
-  "sendTimeout": "Response timed out. Please send again."
+  "sendTimeout": "Response timed out. Please send again.",
+  "defaultChat": "Default Chat",
+  "newChat": "New Chat",
+  "tabs": {
+    "new": "New",
+    "rename": "Rename",
+    "close": "Close",
+    "confirm": "Confirm",
+    "unread": "{{count}} new messages"
+  }
 }

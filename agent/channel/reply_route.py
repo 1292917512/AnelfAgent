@@ -1,13 +1,11 @@
 """纯文本回复的自动路由（兜底投递）。
 
 对齐 hermes-agent：对当前用户的最终回复 = 无工具时的 assistant 正文，
-由运行时投递一次后结束本轮；send_message 仍可用于跨会话 / 媒体等旁路出站。
+由运行时投递一次后结束本轮。
 
-路由规则（系统优先，必要时问 AI 一轮）：
-1. 仅有一个候选（通常即来源会话：同一私聊 / 同一群）→ 直接投递回去
-2. 同时存在多个私聊 / 群待回复 → 反问 AI 选目标，解析失败回退到来源会话
-
-send_message 等工具仍可显式指定频道；本模块只处理未指定目标的纯文本终态。
+路由规则：纯文本终态无条件投递回来源会话（同一私聊 / 同一群 / 同一子会话）；
+其他会话由各自的 REPLY 周期处理，跨会话发送走 switch_session / send_message 工具。
+本模块只处理未指定目标的纯文本终态。
 """
 
 from __future__ import annotations
@@ -15,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
 from core.log import log
 from core.tags import strip_message_meta_tags
@@ -89,20 +87,12 @@ class ReplyTarget:
     channel_type: str = "private"  # "private" | "group"
     reply_to: str = ""  # 引用锚点（触发消息的 message_id，可选）
     label: str = ""  # 展示用短标签（如「当前触发」或待办预览）
+    session_id: str = ""  # 子会话标识（webui chat_id 等，路由到具体会话窗口）
 
     @property
     def session_key(self) -> str:
-        return f"{self.channel_id}:{self.channel_type}:{self.target_id}"
-
-    def describe(self) -> str:
-        kind = "群聊" if self.channel_type == "group" else "私聊"
-        base = f"{self.session_key}（{kind}，频道={self.channel_id}）"
-        if not self.label:
-            return base
-        preview = " ".join(self.label.split()).strip()
-        if len(preview) > 40:
-            preview = preview[:40] + "…"
-        return f"{base} — {preview}"
+        base = f"{self.channel_id}:{self.channel_type}:{self.target_id}"
+        return f"{base}#{self.session_id}" if self.session_id else base
 
 
 def target_from_anything(anything, adapter_key: str = "") -> Optional[ReplyTarget]:
@@ -130,20 +120,22 @@ def target_from_anything(anything, adapter_key: str = "") -> Optional[ReplyTarge
         channel_type=channel_type,
         reply_to=reply_to,
         label="当前触发会话",
+        session_id=str(getattr(anything, "session_id", "") or ""),
     )
 
 
 def target_from_scope(scope: str, adapter_key: str) -> Optional[ReplyTarget]:
-    """从 entity scope（"user_123" / "group_456"）构造候选目标（无引用锚点）。"""
-    if not scope or not adapter_key or "_" not in scope:
-        return None
-    scope_type, scope_id = scope.split("_", 1)
-    if not scope_id:
+    """从 entity scope（"user_123" / "group_456" / "user_123#chat_id"）构造候选目标（无引用锚点）。"""
+    from agent.messages import parse_entity_scope
+
+    scope_type, base_id, session_id = parse_entity_scope(scope)
+    if not scope_type or not adapter_key:
         return None
     return ReplyTarget(
         channel_id=adapter_key,
-        target_id=scope_id,
+        target_id=base_id,
         channel_type="group" if scope_type == "group" else "private",
+        session_id=session_id,
     )
 
 
@@ -168,6 +160,8 @@ async def deliver_text(target: ReplyTarget, content: str) -> bool:
         kwargs: dict = {"channel_type": channel_type}
         if target.reply_to:
             kwargs["reply_to"] = target.reply_to
+        if target.session_id:
+            kwargs["session_id"] = target.session_id
         return await ch.send_text(resolved_target_id, content, **kwargs)
 
     try:
@@ -198,28 +192,6 @@ async def deliver_text(target: ReplyTarget, content: str) -> bool:
         resolved.get("target_id", target.target_id),
         content,
         resolved.get("channel_type", target.channel_type),
+        session_id=target.session_id,
     )
     return True
-
-
-def extract_route_choice(text: str, candidates: List[ReplyTarget]) -> Optional[ReplyTarget]:
-    """从 AI 的路由回答中提取目标会话（纯逻辑提取，失败返回 None 由调用方回退）。
-
-    匹配优先级：完整 session_key > target_id > 编号（1-based）。
-    """
-    if not text or not candidates:
-        return None
-    normalized = " ".join(text.split())
-
-    for c in candidates:
-        if c.session_key in normalized:
-            return c
-    for c in candidates:
-        if c.target_id and c.target_id in normalized:
-            return c
-    m = re.search(r"(?:^|[^\d])(\d{1,2})(?:[^\d]|$)", normalized)
-    if m:
-        idx = int(m.group(1))
-        if 1 <= idx <= len(candidates):
-            return candidates[idx - 1]
-    return None

@@ -25,6 +25,10 @@ _WORKER_CONFIGS = {
             "description": "Embedding 后台 worker 空闲轮询间隔（秒）",
             "default": 30.0,
         },
+        "embedding_worker_batch_delay_seconds": {
+            "description": "Embedding 连续回填时的批次间隔（秒），平滑 API 压力，避免与对话路径争抢",
+            "default": 1.0,
+        },
         "conv_embed_backfill_days": {
             "description": "对话消息 embedding 回填的时间窗（天），远古消息不回填（0 = 不限）",
             "default": 30,
@@ -56,7 +60,8 @@ class EmbeddingWorker:
     """后台批量回填 embedding 的常驻任务。
 
     每轮依次处理 memories / chunks / conversation_messages 三类 backlog
-    各一批（批量 embed，单次 API 往返）；有空闲则睡眠等待 wake 或轮询超时。
+    各一批（批量 embed，单次 API 往返）；有积压时按批次间隔节流持续消化，
+    有空闲则睡眠等待 wake 或轮询超时。
     embedder 不可用时按指数退避，避免 embedding 服务故障时空转刷库。
     """
 
@@ -75,6 +80,10 @@ class EmbeddingWorker:
     @property
     def _interval_seconds(self) -> float:
         return max(5.0, get_config_float("embedding_worker_interval_seconds", 30.0))
+
+    @property
+    def _batch_delay_seconds(self) -> float:
+        return max(0.0, get_config_float("embedding_worker_batch_delay_seconds", 1.0))
 
     async def start(self) -> None:
         if self._task is None:
@@ -110,6 +119,11 @@ class EmbeddingWorker:
                 processed = await self._drain_once()
                 if processed:
                     self._backoff_seconds = 0.0
+                    # 积压未清时主动持续分批消化，但批与批之间按配置间隔节流：
+                    # 避免大批量回填瞬间打满 embedding 端点，与对话路径的交互式调用争抢
+                    delay = self._batch_delay_seconds
+                    if delay > 0:
+                        await asyncio.sleep(delay)
                     continue
                 self._backoff_seconds = 0.0
             except asyncio.CancelledError:

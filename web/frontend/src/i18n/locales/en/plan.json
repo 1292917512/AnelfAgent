@@ -1,0 +1,34 @@
+{
+  "panel": {
+    "untitled": "Execution Plan",
+    "collapse": "Collapse",
+    "close": "Close",
+    "cancel": "Cancel",
+    "cancelling": "Cancelling…"
+  },
+  "card": {
+    "untitled": "Execution Plan",
+    "files": "Files",
+    "risks": "Risks",
+    "workingOn": "Working on"
+  },
+  "status": {
+    "executing": "Executing",
+    "completed": "Completed",
+    "cancelled": "Cancelled",
+    "cancelledByUser": "Cancelled by user"
+  },
+  "delegation": {
+    "untitled": "Sub-agent Task",
+    "background": "Background",
+    "orchestrator": "orchestrator",
+    "context": "Context",
+    "output": "Output",
+    "error": "Error",
+    "completed": "Completed",
+    "failed": "Failed",
+    "running": "Running",
+    "role": "Role",
+    "depth": "Depth"
+  }
+}

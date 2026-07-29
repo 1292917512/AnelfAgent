@@ -14,6 +14,8 @@ import { StatusBar } from "./chat/StatusBar";
 import { Dock, LeftDock } from "./chat/Dock";
 import { UiCommandHost } from "./chat/UiCommandHost";
 import { ContextChip } from "./chat/ContextChip";
+import { ChatTabs } from "./chat/ChatTabs";
+import { PlanPanel } from "@/components/plan/PlanPanel";
 
 // CodeMirror 编辑器体积较大，仅在打开文件时按需加载
 const FileEditor = lazy(() =>
@@ -25,6 +27,7 @@ export default function Chat() {
   const { t } = useTranslation("chat");
   const loadHistory = useChatStore((s) => s.loadHistory);
   const startSSE = useChatStore((s) => s.startSSE);
+  const loadChats = useChatStore((s) => s.loadChats);
   const clearMessages = useChatStore((s) => s.clearMessages);
 
   const leftOpen = useWorkbenchStore((s) => s.leftOpen);
@@ -40,11 +43,12 @@ export default function Chat() {
   });
 
   useEffect(() => {
+    loadChats();
     loadHistory();
     startSSE();
     const stopReporting = startUiStateReporting();
     return stopReporting;
-  }, [loadHistory, startSSE]);
+  }, [loadChats, loadHistory, startSSE]);
 
   return (
     <div className="relative flex h-full min-h-0 -m-3 md:-m-6">
@@ -59,7 +63,7 @@ export default function Chat() {
       )}
 
       {/* 中栏：对话流（编辑器全屏且有打开文件时让位隐藏，文件树/Dock 保留） */}
-      <div className={cn("flex-1 flex flex-col min-w-0 h-full p-3 md:p-4", filePanelExpanded && hasOpenFiles && "hidden")}>
+      <div className={cn("flex-1 flex flex-col min-w-0 h-full p-3 md:p-4 relative", filePanelExpanded && hasOpenFiles && "hidden")}>
         {/* 头部 */}
         <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
           <div className="flex items-center gap-1 min-w-0">
@@ -95,9 +99,15 @@ export default function Chat() {
           </div>
         </div>
 
+        {/* 多会话 Tab */}
+        <ChatTabs />
+
         <MessageList />
         <StatusBar />
         <ChatInput />
+
+        {/* 对话窗口内嵌入式悬浮计划窗（absolute，相对中栏容器定位，可拖拽） */}
+        <PlanPanel />
       </div>
 
       {/* 右栏：功能 Dock */}

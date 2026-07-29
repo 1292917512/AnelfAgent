@@ -40,7 +40,7 @@ function toolTitle(name: string, args?: string): string {
 
 export function StreamingArea() {
   const { t } = useTranslation("chat");
-  const streaming = useChatStore((s) => s.streaming);
+  const streaming = useChatStore((s) => s.buckets[s.activeChatId]?.streaming ?? null);
   const [expanded, setExpanded] = useState(false);
 
   if (!streaming || (!streaming.text && !streaming.reasoning && streaming.tools.length === 0)) {

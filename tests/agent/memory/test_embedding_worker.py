@@ -230,3 +230,42 @@ class TestEmbeddingWorker:
     async def test_close_without_start(self, store: MemoryStore) -> None:
         worker = EmbeddingWorker(store, FakeEmbedder())  # type: ignore[arg-type]
         await worker.close()
+
+    async def test_batch_delay_reads_config(self, store: MemoryStore, monkeypatch) -> None:
+        import agent.memory.embedding_worker as worker_module
+
+        monkeypatch.setattr(
+            worker_module, "get_config_float",
+            lambda key, default=0.0: 2.5 if key == "embedding_worker_batch_delay_seconds" else default,
+        )
+        worker = EmbeddingWorker(store, FakeEmbedder())  # type: ignore[arg-type]
+        assert worker._batch_delay_seconds == 2.5
+
+    async def test_worker_throttles_between_batches(self, store: MemoryStore, monkeypatch) -> None:
+        """积压跨多批时，worker 按批次间隔节流消化（小批次 + 固定间隔）。"""
+        import agent.memory.embedding_worker as worker_module
+
+        monkeypatch.setattr(
+            worker_module, "get_config_int",
+            lambda key, default=0: 2 if key == "embedding_worker_batch_size" else default,
+        )
+        monkeypatch.setattr(
+            worker_module, "get_config_float",
+            lambda key, default=0.0: 0.15 if key == "embedding_worker_batch_delay_seconds" else default,
+        )
+        for i in range(5):
+            await store.add(_entry(f"节流回填 {i}"))
+
+        worker = EmbeddingWorker(store, FakeEmbedder())  # type: ignore[arg-type]
+        start = time.monotonic()
+        await worker.start()
+        try:
+            for _ in range(100):
+                if await _null_embedding_count(store) == 0:
+                    break
+                await asyncio.sleep(0.05)
+            assert await _null_embedding_count(store) == 0
+            # 5 条 / 每批 2 条 = 3 批，批间至少 2 次节流间隔
+            assert time.monotonic() - start >= 0.3
+        finally:
+            await worker.close()

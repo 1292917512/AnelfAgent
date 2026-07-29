@@ -243,6 +243,16 @@ def create_bootstrap() -> FlowMachine:
             cleanup=image_index_worker.close,
         )
 
+    @machine.node(skip_on_error=True)
+    async def register_entity_lifecycles():
+        """扫描并调用所有实体的 register_lifecycle() 启动钩子。
+
+        实体自治规范：entities/<name>/__init__.py 暴露 register_lifecycle()
+        即在此时被自动调用，无需在 bootstrap 中硬编码。
+        """
+        from entities import discover_entity_lifecycles
+        await discover_entity_lifecycles()
+
     @machine.node(skip_on_error=False)
     async def assemble_runtime():
         """纯组装：Mind -> Assistant -> Runtime -> set_runtime。"""
@@ -250,9 +260,10 @@ def create_bootstrap() -> FlowMachine:
         from agent.runtime.assistant import AgentAssistant
         from agent.runtime.runtime import AgentRuntime
         from agent.runtime.singleton import set_runtime
-        # 提前导入 scheduler 模块，使其 deferred 工具在 Mind 初始化
-        # activate_group("thinking") 时一并注册
+        # 提前导入 scheduler/session_tools 模块，使其 deferred 工具在 Mind 初始化
+        # activate_group("thinking"/"session") 时一并注册
         from agent.mind.tools.scheduler import set_mind
+        from agent.mind.tools import session_tools
 
         data_center = machine.get(BK.STORAGE)
         llm_data = machine.get(BK.LLM)
@@ -288,6 +299,7 @@ def create_bootstrap() -> FlowMachine:
         set_runtime(runtime)
 
         set_mind(mind)
+        session_tools.set_mind(mind)
 
         log(
             f"AgentRuntime 已组装: chat={llm_data['llm'].config.name} "

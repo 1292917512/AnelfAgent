@@ -138,14 +138,13 @@ def enqueue_scope_reply(pfc: Any, scope: str, channel: str, preview: str, prompt
     """注入系统提示并将目标 scope 排入回复队列（"完成即新 turn"的统一入口）。
 
     供延迟回复、定时提醒、后台任务完成通知等场景复用：
-    提示写入短期记忆，scope 入待处理队列，由调用方触发 try_execute_mind。
+    提示写入目标 scope 的短期记忆，scope 入待处理队列，由调用方触发 try_execute_mind。
     """
-    pfc.add_temporary({"role": "system", "content": prompt})
-    target = scope.split("_", 1)[1]
+    pfc.add_temporary({"role": "system", "content": prompt}, scope=scope)
     if scope.startswith("group_"):
-        pfc.pending_group.append(target)
+        pfc.pending_group.append(scope)
     else:
-        pfc.pending_user.append(target)
+        pfc.pending_user.append(scope)
     pfc._message_previews[scope] = preview
     if channel:
         pfc._task_adapter_keys[scope] = channel

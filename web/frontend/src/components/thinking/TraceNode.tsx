@@ -15,6 +15,8 @@ import {
   CheckCircle2,
   Loader2,
   ScanEye,
+  Target,
+  ListChecks,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { TFunction } from "i18next";
@@ -89,6 +91,20 @@ export const TYPE_STYLES: Record<string, { bg: string; border: string; icon: Rea
     icon: ScanEye,
     accent: "text-pink-400",
   },
+  // Plan 模式：present_plan 工具触发的根节点（含全部步骤摘要）
+  plan_root: {
+    bg: "bg-[var(--info)]/10",
+    border: "border-[var(--info)]",
+    icon: Target,
+    accent: "text-info",
+  },
+  // Plan 模式：单步骤节点（pending/in_progress/completed/skipped 由 STATUS_ICON 渲染）
+  plan_step: {
+    bg: "bg-accent-subtle/50",
+    border: "border-dashed border-accent/60",
+    icon: ListChecks,
+    accent: "text-accent",
+  },
 };
 
 const STATUS_ICON: Record<string, React.ElementType> = {
@@ -146,6 +162,17 @@ function getSubtitle(d: TraceNodeData, t: TFunction): string | null {
     case "introspection": {
       const entity = data.entity as string | undefined;
       return entity || null;
+    }
+    case "plan_root": {
+      const stepCount = data.step_count as number | undefined;
+      const goal = data.goal as string | undefined;
+      if (goal) return goal.slice(0, 60) + (goal.length > 60 ? "..." : "");
+      if (stepCount != null) return t("planStepsCount", { count: stepCount, defaultValue: `${stepCount} 步` });
+      return null;
+    }
+    case "plan_step": {
+      const note = data.note as string | undefined;
+      return note ? note.slice(0, 40) : null;
     }
     default:
       return null;

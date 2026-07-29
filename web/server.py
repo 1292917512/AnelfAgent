@@ -35,24 +35,30 @@ def _mount_nonebot(app: FastAPI) -> None:
         pass
 
 
-def _mount_channel_routers(app: FastAPI) -> None:
-    """挂载各频道包暴露的 HTTP 路由到 /api/channels/<id>。
+def _mount_module_routers(
+    app: FastAPI,
+    pkg_name: str,
+    entry_file: str,
+    prefix_tpl: str,
+    tag_tpl: str,
+) -> None:
+    """扫描 pkg_name/*/entry_file 中的 build_router() 并挂载（频道与实体通用）。
 
-    频道模块（channels.<name>.adapter）若提供模块级 ``build_router()``，
-    即被挂载 — 不要求频道已启用（例如微信扫码登录需在启用前可用）。
+    模块自带路由的标准入口：不要求模块已启用，import/挂载失败均静默降级，
+    仅 log WARNING 不中断启动。
     """
     import importlib
 
-    channels_dir = Path(__file__).resolve().parent.parent / "channels"
-    if not channels_dir.is_dir():
+    pkg_dir = Path(__file__).resolve().parent.parent / pkg_name
+    if not pkg_dir.is_dir():
         return
-    for item in sorted(channels_dir.iterdir()):
+    for item in sorted(pkg_dir.iterdir()):
         if not item.is_dir() or item.name.startswith("_"):
             continue
-        if not (item / "adapter.py").exists():
+        if not (item / entry_file).exists():
             continue
         try:
-            mod = importlib.import_module(f"channels.{item.name}.adapter")
+            mod = importlib.import_module(f"{pkg_name}.{item.name}.{entry_file[:-3]}")
         except Exception:
             continue
         build_router = getattr(mod, "build_router", None)
@@ -61,12 +67,42 @@ def _mount_channel_routers(app: FastAPI) -> None:
         try:
             app.include_router(
                 build_router(),
-                prefix=f"/api/channels/{item.name}",
-                tags=[f"channel-{item.name}"],
+                prefix=prefix_tpl.format(item.name),
+                tags=[tag_tpl.format(item.name)],
             )
-            log(f"频道路由已挂载: /api/channels/{item.name}")
+            log(f"模块路由已挂载: {prefix_tpl.format(item.name)}")
         except Exception as exc:
-            log(f"频道路由挂载失败: {item.name} - {exc}", "WARNING")
+            log(f"模块路由挂载失败: {item.name} - {exc}", "WARNING")
+
+
+def _mount_channel_routers(app: FastAPI) -> None:
+    """挂载各频道包暴露的 HTTP 路由到 /api/channels/<id>。
+
+    频道模块（channels.<name>.adapter）若提供模块级 ``build_router()``，
+    即被挂载 — 不要求频道已启用（例如微信扫码登录需在启用前可用）。
+    """
+    _mount_module_routers(
+        app,
+        pkg_name="channels",
+        entry_file="adapter.py",
+        prefix_tpl="/api/channels/{}",
+        tag_tpl="channel-{}",
+    )
+
+
+def _mount_entity_routers(app: FastAPI) -> None:
+    """挂载各实体包暴露的 HTTP 路由到 /api/entity/<group>。
+
+    实体模块（entities.<name>.router）若提供模块级 ``build_router()``，即被挂载。
+    前缀使用单数 /api/entity/ 以避开 web.routers.entities 的 /api/entities 命名空间。
+    """
+    _mount_module_routers(
+        app,
+        pkg_name="entities",
+        entry_file="router.py",
+        prefix_tpl="/api/entity/{}",
+        tag_tpl="entity-{}",
+    )
 
 
 def _make_token(password: str) -> str:
@@ -188,6 +224,7 @@ def create_app() -> FastAPI:
 
     _mount_nonebot(app)
     _mount_channel_routers(app)
+    _mount_entity_routers(app)
 
     @app.get("/health")
     async def health() -> Dict[str, str]:

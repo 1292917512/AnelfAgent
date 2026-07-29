@@ -174,7 +174,16 @@ class AgentApp:
         自动使用 run_coroutine_threadsafe 进行跨循环线程安全提交。
         """
         resolved_message_id = message_id or uuid.uuid4().hex[:16]
-        resolved_session_id = session_id or (str(group_id) if group_id not in (0, "0", "") else str(user_id))
+        # 多会话 chat_id：调用方显式提供时作为 entity_scope 后缀（实现多会话隔离）；
+        # 未提供时回退到旧行为：群聊 scope 用 group_id 区分，单聊为空。
+        # 注意：旧 webui 历史曾把 user_id 兜底为 session_id 导致 scope=user_{uid}#{uid}，
+        # 兼容起见 webui 频道未带 chat_id 时返回空（scope=user_{uid}），前端默认 chat 复用该 scope。
+        if session_id:
+            resolved_session_id = session_id
+        elif group_id not in (0, "0", ""):
+            resolved_session_id = str(group_id)
+        else:
+            resolved_session_id = ""
 
         payload: dict[str, Any] = {
             "user_id": user_id,

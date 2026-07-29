@@ -286,17 +286,13 @@ def load_rules(path: str = RULES_PATH) -> PermissionRuleSet:
 
 
 def default_rules() -> PermissionRuleSet:
-    """默认规则集（无配置文件时）：仅自发 Plan 确认默认询问。"""
-    return PermissionRuleSet(rules=[
-        PermissionRule(
-            pattern="present_plan",
-            effect=PermissionEffect.ASK,
-            risk_level=RiskLevel.MEDIUM,
-            timeout_seconds=300.0,
-            description="Agent 自发提交的执行计划，默认需用户确认",
-            created_by="builtin",
-        ),
-    ])
+    """默认规则集（无配置文件时）。
+
+    说明：``present_plan`` 历史曾是默认 ask 规则（plan 进入审批），现已改为
+    **直接执行 + SSE 公告**（参考 hermes 范式：Plan 是公告不是审批）。
+    真正的危险操作（删库/外发/系统命令）由各 channel/工具的权限规则管控。
+    """
+    return PermissionRuleSet(rules=[])
 
 
 def load_legacy_rules(path: str = LEGACY_PATH) -> Optional[PermissionRuleSet]:

@@ -12,6 +12,7 @@ import {
   BackgroundVariant,
 } from "@xyflow/react";
 import type { ThinkingSession } from "@/stores/thinking-store";
+import { useMergedActiveSessionNodes } from "@/stores/thinking-store";
 import { buildFlowElements } from "./flow-layout";
 import TraceNodeComponent from "./TraceNode";
 
@@ -25,14 +26,21 @@ interface Props {
   onNodeClick: (nodeId: string) => void;
 }
 
-/** 流程图视图：ReactFlow 画布 + 自动跟随最新节点 */
+/** 流程图视图：ReactFlow 画布 + 自动跟随最新节点；叠加 plan 虚拟节点 */
 export function FlowView({ session, autoFollow, onNodeClick }: Props) {
   const prevNodeCount = useRef(0);
   const { setCenter, fitView, getZoom } = useReactFlow();
 
+  // 合并 thinking trace + plan 虚拟节点（plan_root / plan_step）
+  const mergedNodes = useMergedActiveSessionNodes();
+  const mergedSession = useMemo<ThinkingSession>(() => ({
+    ...session,
+    nodes: mergedNodes,
+  }), [session, mergedNodes]);
+
   const { nodes: flowNodes, edges: flowEdges } = useMemo(
-    () => buildFlowElements(session),
-    [session],
+    () => buildFlowElements(mergedSession),
+    [mergedSession],
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(flowNodes);

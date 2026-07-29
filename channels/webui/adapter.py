@@ -78,6 +78,46 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         from core.stream_events import EVENT_FILE_DIFF, EVENT_CONTEXT_USAGE
         event_bus.on(EVENT_FILE_DIFF, self._on_file_diff, owner="channel:webui")
         event_bus.on(EVENT_CONTEXT_USAGE, self._on_context_usage, owner="channel:webui")
+        # Plan 模式 / 子代理：直接广播到前端（PlanPanel / PlanCard / DelegationCard）
+        from core.event_bus import (
+            EVENT_PLAN_SUBMITTED, EVENT_PLAN_STEP_UPDATED,
+            EVENT_PLAN_STATUS_CHANGED, EVENT_PLAN_CANCELLED,
+            EVENT_DELEGATION_STARTED, EVENT_DELEGATION_PROGRESS, EVENT_DELEGATION_RESOLVED,
+        )
+        event_bus.on(EVENT_PLAN_SUBMITTED, self._on_plan_submitted, owner="channel:webui")
+        event_bus.on(EVENT_PLAN_STEP_UPDATED, self._on_plan_step_updated, owner="channel:webui")
+        event_bus.on(EVENT_PLAN_STATUS_CHANGED, self._on_plan_status_changed, owner="channel:webui")
+        event_bus.on(EVENT_PLAN_CANCELLED, self._on_plan_cancelled, owner="channel:webui")
+        event_bus.on(EVENT_DELEGATION_STARTED, self._on_delegation_started, owner="channel:webui")
+        event_bus.on(EVENT_DELEGATION_PROGRESS, self._on_delegation_progress, owner="channel:webui")
+        event_bus.on(EVENT_DELEGATION_RESOLVED, self._on_delegation_resolved, owner="channel:webui")
+
+    # ------------------------------------------------------------------
+    # Plan 模式事件 → SSE
+    # ------------------------------------------------------------------
+    async def _on_plan_submitted(self, payload: dict) -> None:
+        self._broadcast_scoped("plan_submitted", payload)
+
+    async def _on_plan_step_updated(self, payload: dict) -> None:
+        self._broadcast_scoped("plan_step_updated", payload)
+
+    async def _on_plan_status_changed(self, payload: dict) -> None:
+        self._broadcast_scoped("plan_status_changed", payload)
+
+    async def _on_plan_cancelled(self, payload: dict) -> None:
+        self._broadcast_scoped("plan_cancelled", payload)
+
+    # ------------------------------------------------------------------
+    # 子代理事件 → SSE
+    # ------------------------------------------------------------------
+    async def _on_delegation_started(self, payload: dict) -> None:
+        self._broadcast_scoped("delegation_started", payload)
+
+    async def _on_delegation_progress(self, payload: dict) -> None:
+        self._broadcast_scoped("delegation_progress", payload)
+
+    async def _on_delegation_resolved(self, payload: dict) -> None:
+        self._broadcast_scoped("delegation_resolved", payload)
 
     async def _on_after_reply(self, payload: dict) -> None:
         """轮次结束 → turn_end 帧（前端清除发送态/流式气泡）。
@@ -85,14 +125,16 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         覆盖无 reply 帧的结束路径（[SILENT] 沉默、空输出、异常），
         避免前端 sending 状态空等看门狗超时。
         """
-        self._broadcast("turn_end", {"error": bool(payload.get("error"))})
+        self._broadcast_scoped("turn_end", {"scope": payload.get("scope", ""), "error": bool(payload.get("error"))})
 
     async def _on_assistant_delta(self, payload: dict) -> None:
         """assistant 文本增量 → 50ms 合帧后推送 SSE delta 帧。"""
         import asyncio
         turn_id = str(payload.get("turn_id", ""))
         buf = self._delta_buffers.setdefault(
-            turn_id, {"text": "", "reasoning": "", "scheduled": False})
+            turn_id, {"text": "", "reasoning": "", "scope": "", "scheduled": False})
+        if payload.get("scope"):
+            buf["scope"] = str(payload["scope"])
         key = "reasoning" if payload.get("reasoning") else "text"
         buf[key] += str(payload.get("delta", ""))
         if not buf["scheduled"]:
@@ -105,14 +147,16 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             return
         buf["scheduled"] = False
         text, reasoning = buf["text"], buf["reasoning"]
+        scope = buf.get("scope", "")
         buf["text"] = buf["reasoning"] = ""
         if reasoning:
-            self._broadcast("delta", {"turn_id": turn_id, "delta": reasoning, "reasoning": True})
+            self._broadcast_scoped("delta", {"scope": scope, "turn_id": turn_id, "delta": reasoning, "reasoning": True})
         if text:
-            self._broadcast("delta", {"turn_id": turn_id, "delta": text, "reasoning": False})
+            self._broadcast_scoped("delta", {"scope": scope, "turn_id": turn_id, "delta": text, "reasoning": False})
 
     async def _on_tool_start(self, payload: dict) -> None:
-        self._broadcast("tool_call", {
+        self._broadcast_scoped("tool_call", {
+            "scope": payload.get("scope", ""),
             "call_id": payload.get("tool_id", ""),
             "name": payload.get("tool_name", ""),
             "status": "running",
@@ -120,7 +164,8 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         })
 
     async def _on_context_usage(self, payload: dict) -> None:
-        self._broadcast("context_usage", {
+        self._broadcast_scoped("context_usage", {
+            "scope": payload.get("scope", ""),
             "tokens": payload.get("tokens", 0),
             "threshold": payload.get("threshold", 0),
             "window": payload.get("window", 0),
@@ -136,7 +181,8 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         })
 
     async def _on_tool_end(self, payload: dict) -> None:
-        self._broadcast("tool_call", {
+        self._broadcast_scoped("tool_call", {
+            "scope": payload.get("scope", ""),
             "call_id": payload.get("tool_id", ""),
             "name": payload.get("tool_name", ""),
             "status": "done" if payload.get("success") else "error",
@@ -144,8 +190,23 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             "duration_ms": payload.get("duration_ms", 0),
         })
 
+    @staticmethod
+    def _resolve_chat_id(target: str, kwargs: dict) -> str:
+        """从 session_id kwarg 或 target 的 # 后缀解析 webui 会话窗口 chat_id。"""
+        session = str(kwargs.get("session_id") or "")
+        if session:
+            return session
+        target = str(target or "")
+        if "#" in target:
+            return target.split("#", 1)[1]
+        return ""
+
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
-        self._broadcast("reply", {"content": text, "media_type": "text"})
+        self._broadcast("reply", {
+            "content": text,
+            "media_type": "text",
+            "chat_id": self._resolve_chat_id(chat_id, kwargs),
+        })
         return json.dumps({"success": True}, ensure_ascii=False)
 
     async def send_photo(self, chat_id: str, photo: str, caption: str = "", **kwargs: Any) -> str:
@@ -153,6 +214,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             "media_type": "image",
             "url": photo,
             "caption": caption,
+            "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
         return json.dumps({"success": True}, ensure_ascii=False)
 
@@ -160,6 +222,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         self._broadcast("media", {
             "media_type": "voice",
             "url": voice,
+            "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
         return json.dumps({"success": True}, ensure_ascii=False)
 
@@ -168,6 +231,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             "media_type": "audio",
             "url": audio,
             "caption": caption,
+            "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
         return json.dumps({"success": True}, ensure_ascii=False)
 
@@ -176,6 +240,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             "media_type": "video",
             "url": video,
             "caption": caption,
+            "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
         return json.dumps({"success": True}, ensure_ascii=False)
 
@@ -184,6 +249,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             "media_type": "file",
             "url": file_path,
             "caption": caption,
+            "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
         return json.dumps({"success": True}, ensure_ascii=False)
 
@@ -281,3 +347,13 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             "role": "assistant",
             **data,
         })
+
+    @staticmethod
+    def _broadcast_scoped(event: str, payload: dict) -> None:
+        """带 scope/chat_id 的广播：从 payload.scope 解析 chat_id 一并推给前端，
+        前端 buckets[chat_id] 据此路由。"""
+        scope = str(payload.get("scope") or "")
+        chat_id = str(payload.get("chat_id") or "")
+        if not chat_id and "#" in scope:
+            chat_id = scope.split("#", 1)[1]
+        WebUIChannel._broadcast(event, {**payload, "chat_id": chat_id})

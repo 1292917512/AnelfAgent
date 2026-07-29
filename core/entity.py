@@ -629,7 +629,7 @@ class EntityRegistry:
         "web": 5, "media": 6, "minimax": 7, "os": 8, "environment": 9,
         "model_control": 10, "ollama": 11, "logs": 12, "channel_ops": 13,
         "entity": 14, "mcp_manage": 15, "devops": 16,
-        "skills": 17, "delegation": 18, "ui": 19,
+        "skills": 17, "delegation": 18, "ui": 19, "session": 20,
     }
 
     @classmethod

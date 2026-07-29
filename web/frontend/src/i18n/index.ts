@@ -2,150 +2,36 @@ import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
 
-import zhCommon from "./locales/zh/common.json";
-import zhNav from "./locales/zh/nav.json";
-import zhDashboard from "./locales/zh/dashboard.json";
-import zhChat from "./locales/zh/chat.json";
-import zhStatus from "./locales/zh/status.json";
-import zhModels from "./locales/zh/models.json";
-import zhTools from "./locales/zh/tools.json";
-import zhEntities from "./locales/zh/entities.json";
-import zhContext from "./locales/zh/context.json";
-import zhPersonas from "./locales/zh/personas.json";
-import zhMemory from "./locales/zh/memory.json";
-import zhMcp from "./locales/zh/mcp.json";
-import zhChannels from "./locales/zh/channels.json";
-import zhApprovals from "./locales/zh/approvals.json";
-import zhThinking from "./locales/zh/thinking.json";
-import zhSettings from "./locales/zh/settings.json";
-import zhAppconfig from "./locales/zh/appconfig.json";
-import zhTags from "./locales/zh/tags.json";
-import zhHeartbeat from "./locales/zh/heartbeat.json";
-import zhConfig from "./locales/zh/config.json";
-import zhSkills from "./locales/zh/skills.json";
-import zhWorkbench from "./locales/zh/workbench.json";
-import zhStickers from "./locales/zh/stickers.json";
-import zhData from "./locales/zh/data.json";
-import zhPalette from "./locales/zh/palette.json";
+// 自动加载所有 locales/<lang>/<ns>.json，命名规则决定 namespace 名
+// 新增 namespace 只需新建文件，无需改动本模块
+const modules = import.meta.glob("./locales/*/*.json", { eager: true });
 
-import enCommon from "./locales/en/common.json";
-import enNav from "./locales/en/nav.json";
-import enDashboard from "./locales/en/dashboard.json";
-import enChat from "./locales/en/chat.json";
-import enStatus from "./locales/en/status.json";
-import enModels from "./locales/en/models.json";
-import enTools from "./locales/en/tools.json";
-import enEntities from "./locales/en/entities.json";
-import enContext from "./locales/en/context.json";
-import enPersonas from "./locales/en/personas.json";
-import enMemory from "./locales/en/memory.json";
-import enMcp from "./locales/en/mcp.json";
-import enChannels from "./locales/en/channels.json";
-import enApprovals from "./locales/en/approvals.json";
-import enThinking from "./locales/en/thinking.json";
-import enSettings from "./locales/en/settings.json";
-import enAppconfig from "./locales/en/appconfig.json";
-import enTags from "./locales/en/tags.json";
-import enHeartbeat from "./locales/en/heartbeat.json";
-import enConfig from "./locales/en/config.json";
-import enSkills from "./locales/en/skills.json";
-import enWorkbench from "./locales/en/workbench.json";
-import enStickers from "./locales/en/stickers.json";
-import enData from "./locales/en/data.json";
-import enPalette from "./locales/en/palette.json";
+interface LocaleModule {
+  default: Record<string, unknown>;
+}
 
-const resources = {
-  zh: {
-    common: zhCommon,
-    nav: zhNav,
-    dashboard: zhDashboard,
-    chat: zhChat,
-    status: zhStatus,
-    models: zhModels,
-    tools: zhTools,
-    entities: zhEntities,
-    context: zhContext,
-    personas: zhPersonas,
-    memory: zhMemory,
-    mcp: zhMcp,
-    channels: zhChannels,
-    approvals: zhApprovals,
-    thinking: zhThinking,
-    settings: zhSettings,
-    appconfig: zhAppconfig,
-    tags: zhTags,
-    heartbeat: zhHeartbeat,
-    skills: zhSkills,
-    config: zhConfig,
-    workbench: zhWorkbench,
-    stickers: zhStickers,
-    data: zhData,
-    palette: zhPalette,
-  },
-  en: {
-    common: enCommon,
-    nav: enNav,
-    dashboard: enDashboard,
-    chat: enChat,
-    status: enStatus,
-    models: enModels,
-    tools: enTools,
-    entities: enEntities,
-    context: enContext,
-    personas: enPersonas,
-    memory: enMemory,
-    mcp: enMcp,
-    channels: enChannels,
-    approvals: enApprovals,
-    thinking: enThinking,
-    settings: enSettings,
-    appconfig: enAppconfig,
-    tags: enTags,
-    heartbeat: enHeartbeat,
-    skills: enSkills,
-    config: enConfig,
-    workbench: enWorkbench,
-    stickers: enStickers,
-    data: enData,
-    palette: enPalette,
-  },
-};
+const resources: Record<string, Record<string, Record<string, unknown>>> = {};
+const namespaces = new Set<string>();
+
+for (const [path, mod] of Object.entries(modules)) {
+  const m = path.match(/\.\/locales\/([^/]+)\/([^/]+)\.json$/);
+  if (!m) continue;
+  const lang = m[1];
+  const ns = m[2];
+  if (!lang || !ns) continue;
+  (resources[lang] ??= {})[ns] = (mod as LocaleModule).default;
+  namespaces.add(ns);
+}
 
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
   .init({
-    resources,
+    resources: resources as never,
     fallbackLng: "zh",
     supportedLngs: ["zh", "en"],
     defaultNS: "common",
-    ns: [
-      "common",
-      "nav",
-      "dashboard",
-      "chat",
-      "status",
-      "models",
-      "tools",
-      "entities",
-      "context",
-      "personas",
-      "memory",
-      "mcp",
-      "channels",
-      "approvals",
-      "thinking",
-      "settings",
-      "appconfig",
-      "tags",
-      "heartbeat",
-      "skills",
-      "config",
-      "workbench",
-      "stickers",
-      "data",
-      "palette",
-    ],
+    ns: Array.from(namespaces),
     interpolation: {
       escapeValue: false,
     },

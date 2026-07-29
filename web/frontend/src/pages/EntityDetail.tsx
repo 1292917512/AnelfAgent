@@ -107,6 +107,7 @@ export default function EntityDetail() {
   const [tab, setTab] = useState<EntityTab>("overview");
 
   // 同步解析面板（import.meta.glob 在构建时已解析，无异步开销）
+  // 支持 group 名与目录名不一致的情况（如 file_share → share.tsx）
   const PanelComponent = useMemo(
     () => (name ? getEntityPanel(name) : null),
     [name],

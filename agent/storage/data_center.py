@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
-from agent.messages import EntityData, Everything, EverythingGroup
+from agent.messages import EntityData, Everything
 from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageDomain, StorageRouter
 from core.entity import EntityMetadata, EntityRegistry, EntityType
@@ -208,9 +208,8 @@ class ConversationData:
 
     @staticmethod
     def _scope_of(anything: Everything) -> tuple[str, str]:
-        if isinstance(anything, EverythingGroup) and anything.group_id not in (0, "0", "", None):
-            return "group", str(anything.group_id)
-        return "user", str(anything.uid)
+        """会话持久化键：与 entity_scope 同源（含子会话 #chat_id 后缀）。"""
+        return anything.scope_type, anything.scope_id
 
     async def search_conversation_vector(
         self,

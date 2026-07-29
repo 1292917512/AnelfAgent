@@ -1,0 +1,34 @@
+{
+  "panel": {
+    "untitled": "执行计划",
+    "collapse": "折叠",
+    "close": "关闭",
+    "cancel": "取消",
+    "cancelling": "取消中…"
+  },
+  "card": {
+    "untitled": "执行计划",
+    "files": "涉及",
+    "risks": "风险",
+    "workingOn": "进行中"
+  },
+  "status": {
+    "executing": "执行中",
+    "completed": "已完成",
+    "cancelled": "已取消",
+    "cancelledByUser": "用户取消"
+  },
+  "delegation": {
+    "untitled": "子代理任务",
+    "background": "后台",
+    "orchestrator": "orchestrator",
+    "context": "上下文",
+    "output": "结果",
+    "error": "错误",
+    "completed": "已完成",
+    "failed": "失败",
+    "running": "运行中",
+    "role": "角色",
+    "depth": "嵌套"
+  }
+}

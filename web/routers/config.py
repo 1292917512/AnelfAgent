@@ -45,8 +45,33 @@ def _load_webui_config() -> Dict[str, Any]:
 
 @router.get("/webui")
 async def get_webui_config() -> Dict[str, Any]:
-    """返回 WebUI 配置（品牌、主题、导航、配置索引）。"""
-    return _load_webui_config()
+    """返回 WebUI 配置（品牌、主题、导航、配置索引）。
+
+    导航由 webui.json 显式声明 + 实体 manifest 自动推导合并（显式优先）。
+    """
+    cfg = _load_webui_config()
+    nav: List[Dict[str, Any]] = list(cfg.get("navigation", []))
+    known = {item.get("path") for item in nav}
+    # 从已注册实体推导补充导航（不覆盖 webui.json 中的显式声明）
+    try:
+        from core.entity import EntityRegistry
+        for group in EntityRegistry.list_groups():
+            manifest = EntityRegistry.get_group_manifest(group) or {}
+            nav_meta = manifest.get("nav")
+            if not nav_meta:
+                continue
+            path = nav_meta.get("path") or f"/{group}"
+            if path in known:
+                continue
+            nav.append({
+                "path": path,
+                "label": nav_meta.get("label", group),
+                "icon": nav_meta.get("icon") or manifest.get("icon", "Box"),
+                "group": nav_meta.get("nav_group", "group_ability"),
+            })
+    except Exception as e:
+        log(f"实体导航推导失败: {e}", "DEBUG")
+    return {**cfg, "navigation": nav}
 
 
 @router.get("/webui/navigation")

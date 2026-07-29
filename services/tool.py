@@ -27,6 +27,7 @@ _GROUP_ORDER = {
     "skills": 17,
     "delegation": 18,
     "ui": 19,
+    "session": 20,
 }
 
 

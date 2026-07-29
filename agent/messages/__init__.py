@@ -1,6 +1,13 @@
 """Messages：统一消息模型（平台消息、内部事件、LLM messages）。"""
 
-from .everything import CharType, Everything, EverythingGroup, MsgType, Nothing
+from .everything import (
+    CharType,
+    Everything,
+    EverythingGroup,
+    MsgType,
+    Nothing,
+    parse_entity_scope,
+)
 from .presets import (
     MessageAssistant,
     MessageAssistantGroup,
@@ -27,5 +34,6 @@ __all__ = [
     "MessageMemory",
     "CharacterAgent",
     "EntityData",
+    "parse_entity_scope",
 ]
 

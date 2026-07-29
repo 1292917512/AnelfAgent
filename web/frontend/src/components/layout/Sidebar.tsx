@@ -29,6 +29,7 @@ import {
   Blocks,
   Smile,
   Database,
+  Share2,
   type LucideIcon,
 } from "lucide-react";
 
@@ -54,6 +55,7 @@ export const ICON_MAP: Record<string, LucideIcon> = {
   Blocks,
   Smile,
   Database,
+  Share2,
   Boxes,
   ScanText,
 };
@@ -70,6 +72,7 @@ export const FALLBACK_NAV: NavItem[] = [
   { path: "/skills", label: "skills", icon: "GraduationCap", group: "group_ability" },
   { path: "/mcp", label: "mcp", icon: "Plug", group: "group_ability" },
   { path: "/tags", label: "tags", icon: "Tags", group: "group_ability" },
+  { path: "/share", label: "share", icon: "Share2", group: "group_ability" },
   { path: "/channels", label: "channels", icon: "Radio", group: "group_ability" },
   { path: "/thinking", label: "thinking", icon: "Workflow", group: "group_ability" },
   { path: "/data", label: "data", icon: "Database", group: "group_system" },

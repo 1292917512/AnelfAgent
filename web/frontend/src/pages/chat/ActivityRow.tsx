@@ -16,7 +16,7 @@ function pickVerb(verbs: string[], seed: number) {
 
 export function ActivityRow() {
   const { t } = useTranslation("chat");
-  const sendingSince = useChatStore((s) => s.sendingSince);
+  const sendingSince = useChatStore((s) => s.buckets[s.activeChatId]?.sendingSince ?? null);
   const activeSession = useThinkingStore((s) => s.activeSession);
 
   const [elapsed, setElapsed] = useState(0);

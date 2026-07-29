@@ -1,0 +1,1 @@
+../../../../../../entities/share/panel.tsx

@@ -33,6 +33,10 @@ def main():
         from agent.runtime.bootstrap import create_bootstrap
         await create_bootstrap().execute()
 
+        # 触发所有 Lifecycle 注册的 on_start 钩子（实体自治的启动钩子入口）
+        from core.lifecycle import Lifecycle
+        await Lifecycle.start_all()
+
         # 初始化统一权限机制：加载规则 + 启动热更新监听
         # （新格式 config/permission_rules.json 优先，旧 approval_policies.json 自动转换）
         import os

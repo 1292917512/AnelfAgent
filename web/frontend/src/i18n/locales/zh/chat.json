@@ -33,5 +33,14 @@
   },
   "fileLimit": "最多附加 {{max}} 个文件",
   "fileTooLarge": "文件 {{name}} 超过 {{max}}MB 大小上限",
-  "sendTimeout": "响应超时，请重新发送"
+  "sendTimeout": "响应超时，请重新发送",
+  "defaultChat": "默认会话",
+  "newChat": "新会话",
+  "tabs": {
+    "new": "新建",
+    "rename": "重命名",
+    "close": "关闭",
+    "confirm": "确认",
+    "unread": "{{count}} 条新消息"
+  }
 }

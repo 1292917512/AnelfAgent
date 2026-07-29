@@ -383,7 +383,7 @@ class _DelegationMind:
         self.background_tasks = BackgroundTaskRegistry()
         self.try_execute_mind = AsyncMock()
         self.pfc = SimpleNamespace(
-            add_temporary=lambda clip: None,
+            add_temporary=lambda clip, scope="": None,
             pending_user=[],
             pending_group=[],
             _message_previews={},
@@ -409,7 +409,7 @@ class TestDelegationBackgroundIntegration:
         await asyncio.wait_for(task, timeout=5)
 
         # 完成即新 turn：scope 已排入回复队列，并触发新一轮
-        assert "123" in mind.pfc.pending_user
+        assert "user_123" in mind.pfc.pending_user
         mind.try_execute_mind.assert_called_once()
         # 事件已标记送达，后续 wait_any 不会重复返回
         result = await mind.background_tasks.wait_any("user_123", timeout=0.1)
@@ -432,7 +432,7 @@ class TestDelegationBackgroundIntegration:
         assert result.reason == "completed"
         assert result.completions[0].task_id == delegation_id
         # 轮内会合：不排入回复队列、不触发新一轮
-        assert "123" not in mind.pfc.pending_user
+        assert "user_123" not in mind.pfc.pending_user
         mind.try_execute_mind.assert_not_called()
         if bg is not None:
             await asyncio.wait_for(bg, timeout=5)

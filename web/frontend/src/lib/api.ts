@@ -23,6 +23,7 @@ import type {
   ContextSnapshotData,
   CreateModelConfig,
   CreateProviderConfig,
+  CreateShareRequest,
   DbInfo,
   DbQueryResult,
   DbRow,
@@ -51,6 +52,11 @@ import type {
   ProbeResult,
   ProviderConfig,
   RemoteModelInfo,
+  ShareConfig,
+  ShareLink,
+  ShareLinkListResult,
+  ShareStats,
+  DownloadLogListResult,
   SkillItem,
   SnapshotListItem,
   SnapshotResponse,
@@ -92,6 +98,10 @@ export type {
   ProbeResult,
   ReasoningEffort,
   RemoteModelInfo,
+  ShareConfig,
+  ShareLink,
+  ShareLinkListResult,
+  ShareStats,
   SkillItem,
   SnapshotListItem,
   SnapshotResponse,
@@ -146,11 +156,12 @@ export const authApi = {
 
 // Chat
 export const chatApi = {
-  send: (message: string, userId = "web_user", userName?: string, files?: string[]) =>
+  send: (message: string, userId = "web_user", userName?: string, files?: string[], chatId?: string) =>
     api.post("/chat/send", {
       message,
       user_id: userId,
       user_name: userName ?? i18n.t("user", { ns: "chat" }),
+      ...(chatId ? { chat_id: chatId } : {}),
       ...(files?.length ? { files } : {}),
     }),
   upload: (file: File) => {
@@ -160,8 +171,12 @@ export const chatApi = {
       headers: { "Content-Type": "multipart/form-data" },
     });
   },
-  history: (scopeId = "web_user", limit = 50) =>
-    api.get(`/chat/history`, { params: { scope_id: scopeId, limit } }),
+  history: (scopeId = "web_user", limit = 50, chatId?: string) =>
+    api.get(`/chat/history`, { params: { scope_id: scopeId, limit, ...(chatId ? { chat_id: chatId } : {}) } }),
+  chats: (userId = "web_user") =>
+    api.get<{ chats: Array<{ chat_id: string; scope_id: string; title: string; last_ts: number; message_count: number }> }>(
+      "/chat/chats", { params: { user_id: userId } },
+    ),
   botName: () => api.get<{ name: string }>("/chat/bot-name"),
 };
 
@@ -699,4 +714,22 @@ export const databaseApi = {
     ),
   query: (db: string, sql: string) =>
     api.post<DbQueryResult>(`/database/${encodeURIComponent(db)}/query`, { sql }),
+};
+
+// Share（文件分享推送）
+export const shareApi = {
+  list: (params: { status?: string; page?: number; page_size?: number; query?: string }) =>
+    api.get<ShareLinkListResult>("/entity/share/links", { params }),
+  create: (data: CreateShareRequest) =>
+    api.post<ShareLink>("/entity/share/links", data),
+  revoke: (token: string) =>
+    api.delete(`/entity/share/links/${encodeURIComponent(token)}`),
+  stats: () =>
+    api.get<ShareStats>("/entity/share/stats"),
+  getConfig: () =>
+    api.get<ShareConfig>("/entity/share/config"),
+  updateConfig: (data: ShareConfig) =>
+    api.put("/entity/share/config", data),
+  getLogs: (params: { token?: string; page?: number; page_size?: number }) =>
+    api.get<DownloadLogListResult>("/entity/share/logs", { params }),
 };

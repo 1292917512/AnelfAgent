@@ -22,7 +22,7 @@ export function ChatInput() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const pendingFiles = useChatStore((s) => s.pendingFiles);
+  const pendingFiles = useChatStore((s) => s.buckets[s.activeChatId]?.pendingFiles ?? []);
   const addFiles = useChatStore((s) => s.addFiles);
   const removeFile = useChatStore((s) => s.removeFile);
   const attachWorkspaceFile = useChatStore((s) => s.attachWorkspaceFile);

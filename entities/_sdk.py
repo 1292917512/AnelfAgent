@@ -32,7 +32,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from core.entity import EntityRegistry
 from core.tool_schema import extract_tool_params, get_first_line
@@ -325,8 +325,11 @@ def entity_manifest(
     icon: str = "box",
     description: str = "",
     version: str = "1.0.0",
+    order: int = 50,
+    nav: Optional[Dict[str, Any]] = None,
+    group: Optional[str] = None,
 ) -> None:
-    """声明实体展示清单（前端详情页 + 实体列表页使用）。
+    """声明实体展示清单（前端详情页 + 实体列表页 + 侧边栏导航使用）。
 
     在 entity() 之后调用，为当前分组注册展示元数据::
 
@@ -335,6 +338,8 @@ def entity_manifest(
             display_name="网络工具",
             icon="globe",
             description="网页搜索、内容提取、URL 抓取",
+            order=20,
+            nav={"path": "/web", "label": "web", "nav_group": "group_ability"},
         )
 
     Args:
@@ -342,21 +347,29 @@ def entity_manifest(
         icon: lucide 图标名（如 globe / image / terminal）。
         description: 实体功能描述。
         version: 语义化版本号。
+        order: 工具目录排序权重（越小越靠前，默认 50）。
+        nav: 侧边栏导航声明（可选），字段：
+            - path: 前端路由路径（默认 "/<group>"）
+            - label: i18n key（默认 group 名）
+            - nav_group: 导航分组（默认 "group_ability"）
+        group: 显式指定分组名（可选，默认取最近一次 entity() 注册的分组）。
     """
-    import inspect
-    # 从调用方栈帧推导 group（取最近一次 entity() 注册的分组）
-    # 简化实现：要求调用方在 entity() 之后立即调用，从 EntityRegistry 取最后注册的 group
     from core.entity import EntityRegistry
-    groups = EntityRegistry.list_groups()
-    if not groups:
-        return
-    group = groups[-1]
-    EntityRegistry.register_group_manifest(group, {
+    if group is None:
+        groups = EntityRegistry.list_groups()
+        if not groups:
+            return
+        group = groups[-1]
+    manifest: Dict[str, Any] = {
         "display_name": display_name,
         "icon": icon,
         "description": description,
         "version": version,
-    })
+        "order": order,
+    }
+    if nav is not None:
+        manifest["nav"] = nav
+    EntityRegistry.register_group_manifest(group, manifest)
 
 
 def entity_config(

@@ -1,0 +1,97 @@
+{
+  "tabs": {
+    "overview": "Overview",
+    "links": "Links",
+    "create": "Create",
+    "config": "Config",
+    "logs": "Download Logs"
+  },
+  "stats": {
+    "total": "Total Links",
+    "active": "Active",
+    "expired": "Expired",
+    "revoked": "Revoked",
+    "totalDownloads": "Total Downloads"
+  },
+  "fields": {
+    "token": "Token",
+    "fileName": "File Name",
+    "filePath": "File Path",
+    "fileSize": "Size",
+    "description": "Description",
+    "expiresAt": "Expires At",
+    "createdAt": "Created At",
+    "createdBy": "Created By",
+    "downloads": "Downloads",
+    "lastDownloadAt": "Last Download",
+    "maxDownloads": "Max Downloads",
+    "status": "Status",
+    "url": "Download URL",
+    "ip": "IP Address",
+    "userAgent": "User-Agent",
+    "downloadedAt": "Downloaded At"
+  },
+  "status": {
+    "active": "Active",
+    "expired": "Expired",
+    "revoked": "Revoked"
+  },
+  "actions": {
+    "create": "Create Share",
+    "revoke": "Revoke",
+    "copy": "Copy URL",
+    "copyToken": "Copy Token",
+    "download": "Download",
+    "refresh": "Refresh",
+    "search": "Search",
+    "filter": "Filter",
+    "reset": "Reset",
+    "save": "Save Config",
+    "browse": "Browse Files"
+  },
+  "expires": {
+    "1h": "1 Hour",
+    "6h": "6 Hours",
+    "24h": "24 Hours",
+    "7d": "7 Days",
+    "30d": "30 Days",
+    "never": "Never"
+  },
+  "messages": {
+    "createSuccess": "Share link created",
+    "createFailed": "Create failed",
+    "revokeSuccess": "Link revoked",
+    "revokeFailed": "Revoke failed",
+    "copySuccess": "Copied to clipboard",
+    "copyFailed": "Copy failed",
+    "loadFailed": "Load failed",
+    "saveSuccess": "Config saved",
+    "saveFailed": "Save failed",
+    "confirmRevoke": "Revoke this link? It will no longer be downloadable."
+  },
+  "empty": {
+    "title": "No share links",
+    "hint": "Switch to \"Create\" to get started",
+    "logs": "No download records"
+  },
+  "config": {
+    "defaultExpiresIn": "Default Expiration",
+    "tokenLength": "Token Length",
+    "aiAutoShare": "AI Auto Share",
+    "defaultMaxDownloads": "Default Max Downloads",
+    "auditEnabled": "Download Audit",
+    "saved": "Config saved",
+    "save": "Save Config"
+  },
+  "topFiles": "Top 10 Files",
+  "trend": "Creation Trend",
+  "downloadUrl": "Download URL",
+  "unlimited": "Unlimited",
+  "monitor": {
+    "title": "Share Monitor",
+    "activeLinks": "Active Links",
+    "todayDownloads": "Today's Downloads",
+    "recentDownloads": "Recent Downloads",
+    "storage": "Storage Usage"
+  }
+}

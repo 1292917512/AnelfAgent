@@ -23,6 +23,8 @@ from core.event_bus import (
     EVENT_THINKING_TOOL_END,
     EVENT_THINKING_REPLY_ROUND,
     EVENT_THINKING_FAKE_TOOL_CALL,
+    EVENT_PLAN_STEP_UPDATED,
+    EVENT_PLAN_STATUS_CHANGED,
 )
 from core.log import log
 
@@ -31,13 +33,10 @@ from agent.mind.tools.result_pipeline import (
     truncate_tool_output as _truncate_tool_output,
 )
 from agent.channel.reply_route import (
-    ReplyTarget,
     deliver_text,
-    extract_route_choice,
     looks_like_fake_tool_call,
     should_suppress,
     target_from_anything,
-    target_from_scope,
 )
 
 if TYPE_CHECKING:
@@ -97,15 +96,6 @@ _PROMPT_AFTER_NON_OUTPUT_TOOLS = (
     "若任务尚未完成 → 继续调用工具，不要输出过程话术。\n"
     "若已全部完成 → 输出最终回复正文或调用 send_message；"
     "无需回复则调用 end_reply（参数留空）。"
-)
-
-# 路由询问：仅当同时存在多个待回复私聊/群时，让 AI 选一轮目标
-_PROMPT_ROUTE_ASK = (
-    "[系统路由询问] 刚才的回复正文尚未投递。"
-    "当前同时存在多个待回复会话，请选择投递目标：\n"
-    "{sessions}\n"
-    "规则：同源私聊/同源群应回到该会话；"
-    "请仅回复编号（如 2）或完整 session_key，不要输出其他内容。"
 )
 
 # 反思模式的输出纪律（无 send_message，产出文本即反思结果，但动作必须走工具）
@@ -326,11 +316,8 @@ async def _inject_image_blocks(
 def _consume_pending_for_scope(mind: Mind, anything: Everything) -> None:
     """消费当前 scope 的待处理队列条目（新消息已并入当前循环，无需另起周期）。"""
     try:
-        from agent.messages import EverythingGroup
-        if isinstance(anything, EverythingGroup) and anything.is_group_scope:
-            mind.pfc.consume_group_task(anything.group_id)
-        else:
-            mind.pfc.consume_user_task(anything.uid)
+        from agent.mind.prefrontal_cortex import _safe_entity_scope
+        mind.pfc.consume_scope_task(_safe_entity_scope(anything))
     except Exception as exc:
         log(f"消费待处理队列失败: {exc}", "DEBUG", tag="思维")
 
@@ -576,9 +563,6 @@ async def think_loop(
     end_reply_interceptions = 0
     max_output_recoveries = 0
     last_prompt_tokens = 0
-    # 纯文本路由询问：多候选会话时挂起的候选列表与待投递正文
-    pending_route: Optional[List[ReplyTarget]] = None
-    pending_route_text = ""
     # 上一轮是否仅为输出类工具（send_message 等）且已成功发送：
     # 其后紧跟的纯文本不再代发，直接结束，避免重复出站
     prev_round_outbound_only = False
@@ -731,17 +715,13 @@ async def think_loop(
             adapter_key=adapter_key, safety_limit=safety_limit,
             anything=anything,
         )
-        # 纯工具模式（可选）且有可用工具时，API 级强制工具选择；
-        # 路由询问轮需要 AI 输出文字作答，不强制
-        require_tools = (
-            bool(active_tools) and pure_tool_mode and pending_route is None
+        # 纯工具模式（可选）且有可用工具时，API 级强制工具选择
+        require_tools = bool(active_tools) and pure_tool_mode
+        # 输出方式说明随执行上下文每轮注入
+        exec_context["content"] += "\n" + (
+            _PROMPT_REPLY_GUIDE if mode == ThinkMode.REPLY
+            else _PROMPT_REFLECT_OUTPUT_DISCIPLINE
         )
-        # 输出方式说明随执行上下文每轮注入（路由询问轮只保留路由询问提示）
-        if pending_route is None:
-            exec_context["content"] += "\n" + (
-                _PROMPT_REPLY_GUIDE if mode == ThinkMode.REPLY
-                else _PROMPT_REFLECT_OUTPUT_DISCIPLINE
-            )
         # exec_context（每轮动态）置于末尾：保持 stable/context/volatile/历史前缀
         # 字节稳定供 Prompt Caching 复用，且当前轮状态在模型注意力最强的末尾位置
         llm_messages = base_messages + tool_chain + [exec_context]
@@ -875,37 +855,6 @@ async def think_loop(
         if not tool_calls:
             raw_text = _strip_think_blocks(result.content or "").strip()
 
-            # 路由询问应答轮：AI 选择投递目标 → 投递挂起正文 → 本轮结束（Hermes 终态）
-            if pending_route is not None:
-                assistant_msg: Dict[str, Any] = {"role": "assistant", "content": raw_text}
-                preserve_reasoning_fields(assistant_msg, result)
-                tool_chain.append(assistant_msg)
-                delivered_to = ""
-                if mode == ThinkMode.REPLY and anything and pending_route_text:
-                    chosen = extract_route_choice(raw_text, pending_route)
-                    target = chosen or target_from_anything(anything, adapter_key)
-                    if target is not None:
-                        sent = await deliver_text(target, pending_route_text)
-                        delivered_to = target.session_key + (
-                            "" if chosen else "（路由解析失败，回退来源会话）"
-                        )
-                        execution_steps.append(
-                            f"→ 第{iteration + 1}轮: 路由投递到 {delivered_to}，本轮结束"
-                            if sent
-                            else f"→ 第{iteration + 1}轮: 路由投递失败（{delivered_to}），本轮结束"
-                        )
-                    else:
-                        execution_steps.append(
-                            f"→ 第{iteration + 1}轮: 路由无可用目标，本轮结束"
-                        )
-                pending_route = None
-                pending_route_text = ""
-                if mode == ThinkMode.REPLY and anything:
-                    await finish_think(
-                        mind, anything, execution_steps, iteration + 1, tool_chain,
-                    )
-                return
-
             if looks_like_fake_tool_call(raw_text):
                 # 伪造工具调用的文本：不投递，提示纠正，连续 2 次强制结束
                 consecutive_fake_calls += 1
@@ -1024,48 +973,28 @@ async def think_loop(
                         )
                         return
 
-                    # Hermes 终态：无工具正文 = 最终回复。
-                    # 单候选（同源私聊/群）直接投递后结束；多候选时问 AI 一轮再投递结束。
-                    candidates = _collect_reply_candidates(
-                        mind, anything, adapter_key, current_scope,
-                    )
-                    if len(candidates) > 1:
-                        pending_route = candidates
-                        pending_route_text = raw_text
-                        sessions_text = "\n".join(
-                            f"{i + 1}) {c.describe()}" for i, c in enumerate(candidates)
-                        )
-                        tool_chain.append({
-                            "role": "system",
-                            "content": _PROMPT_ROUTE_ASK.format(sessions=sessions_text),
-                        })
+                    # Hermes 终态：无工具正文 = 最终回复，默认投递回来源会话。
+                    # 其他会话由各自的 REPLY 周期处理；跨会话发送走 switch_session/send_message。
+                    target = target_from_anything(anything, adapter_key)
+                    if target is not None:
+                        sent = await deliver_text(target, raw_text)
                         execution_steps.append(
-                            f"→ 第{iteration + 1}轮: 存在 {len(candidates)} 个候选会话，等待路由选择"
+                            f"→ 第{iteration + 1}轮: 纯文本已投递到 "
+                            f"{target.session_key}，本轮结束"
+                            if sent
+                            else (
+                                f"→ 第{iteration + 1}轮: 纯文本投递失败"
+                                f"（{target.session_key}），本轮结束"
+                            )
                         )
                     else:
-                        target = (
-                            candidates[0] if candidates
-                            else target_from_anything(anything, adapter_key)
+                        execution_steps.append(
+                            f"→ 第{iteration + 1}轮: 纯文本无投递目标，本轮结束"
                         )
-                        if target is not None:
-                            sent = await deliver_text(target, raw_text)
-                            execution_steps.append(
-                                f"→ 第{iteration + 1}轮: 纯文本已投递到 "
-                                f"{target.session_key}，本轮结束"
-                                if sent
-                                else (
-                                    f"→ 第{iteration + 1}轮: 纯文本投递失败"
-                                    f"（{target.session_key}），本轮结束"
-                                )
-                            )
-                        else:
-                            execution_steps.append(
-                                f"→ 第{iteration + 1}轮: 纯文本无投递目标，本轮结束"
-                            )
-                        await finish_think(
-                            mind, anything, execution_steps, iteration + 1, tool_chain,
-                        )
-                        return
+                    await finish_think(
+                        mind, anything, execution_steps, iteration + 1, tool_chain,
+                    )
+                    return
                 else:
                     # 反思模式：连续纯文本达到上限即收束（产出已累积在 collected_text）
                     reflect_text_rounds += 1
@@ -1089,9 +1018,6 @@ async def think_loop(
         consecutive_fake_calls = 0
         consecutive_empty_calls = 0
         reflect_text_rounds = 0
-        # 路由询问轮改用工具响应：挂起的路由状态作废（原文不再投递，避免陈旧投递）
-        pending_route = None
-        pending_route_text = ""
         await execute_tool_calls(
             mind, tool_chain, result, tool_calls, iteration, anything,
             guardrail=guardrail, pipeline=pipeline,
@@ -1209,9 +1135,19 @@ async def think_loop(
                                 f"（{target.session_key}）"
                             )
             log(f"AI 主动结束{mode_label} (轮次 {iteration + 1})", tag="思维")
+            # Plan 收敛由 finish_think 统一处理（所有正常结束路径的必经之地）
             if mode == ThinkMode.REPLY and anything:
                 await finish_think(mind, anything, execution_steps, iteration + 1, tool_chain)
             return
+
+        # 每轮工具批次结束：程序级自动推进 plan 步骤（兜底）。
+        # 内部按 scope 过滤 + 无 active plan 时快速返回，成本可忽略；
+        # 仅当本轮确实调用了工具（called 非空）才尝试推进。
+        if mode == ThinkMode.REPLY and called:
+            try:
+                await _auto_advance_plan_steps(current_scope)
+            except Exception:
+                pass  # 自动推进失败不影响主流程
 
         iteration += 1
 
@@ -1373,6 +1309,157 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List[ToolCall]) 
     return _PROMPT_END_BLOCKED_FAILURE.format(failures=lines)
 
 
+# ------------------------------------------------------------------
+# Plan 程序级自动进度（不依赖 AI 调 update_goal）
+#
+# 设计原则（参考 hermes 的 progress callback / Claude Code 的
+# updateProgressFromMessage）：进度由程序从执行流自动推断，AI 不需要
+# 主动汇报；AI 调 update_goal 只是"可选的精确标记"，不是必要条件。
+#
+# 三层机制：
+# 1. present_plan 工具内：第 1 步立即 in_progress（见 planning/tools.py）
+# 2. 每轮工具批次后 _auto_advance_plan_steps：推进当前步骤（粗粒度兜底）
+# 3. think_loop 正常结束 _finalize_plan_on_turn_end：收敛终态（诚实语义）
+# ------------------------------------------------------------------
+
+
+async def _auto_advance_plan_steps(scope: str) -> None:
+    """程序级自动推进 plan 步骤（粗粒度兜底）：
+    - 当前 scope 有 active plan 且本轮调用了非 plan 工具
+    - 把当前 in_progress 步骤自动标记为 completed，推进下一步为 in_progress
+    - 前端 PlanPanel 浮窗实时看到步骤推进（不等 AI 调 update_goal）
+    """
+    try:
+        from agent.planning.tools import _store, _find_goal, _current_scope, _parse_scope_chat_id
+        if _store is None:
+            return
+        # 简化：仅当 scope 匹配时才推进（避免跨 chat 误推进）
+        current = _current_scope()
+        if current != scope:
+            return
+        from agent.memory.memory_types import MemoryType
+        entries = await _store.list_recent(
+            limit=5, memory_type=MemoryType.SEMANTIC, source="goal",
+        )
+        for entry in entries:
+            try:
+                goal = json.loads(entry.content)
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            if goal.get("status") != "active":
+                continue
+            meta = entry.metadata or {}
+            plan_scope = meta.get("scope", "")
+            if plan_scope and plan_scope != scope:
+                continue
+            steps = goal.get("steps", [])
+            # 找到第一个 in_progress 步骤，标记 completed + 推进下一步
+            for i, s in enumerate(steps):
+                if s.get("status") == "in_progress":
+                    s["status"] = "completed"
+                    # 推进下一步
+                    next_idx = i + 1
+                    if next_idx < len(steps) and steps[next_idx].get("status") == "pending":
+                        steps[next_idx]["status"] = "in_progress"
+                    # 同步 MemoryStore
+                    entry.content = json.dumps(goal, ensure_ascii=False)
+                    await _store.update(entry, clear_embedding=False)
+                    # 发射事件
+                    _user_scope, chat_id = _parse_scope_chat_id(scope)
+                    await event_bus.emit(EVENT_PLAN_STEP_UPDATED, {
+                        "scope": scope, "chat_id": chat_id,
+                        "plan_id": goal.get("goal_id", ""),
+                        "step_index": i,
+                        "step_status": "completed",
+                        "note": "自动推进",
+                    })
+                    if next_idx < len(steps) and steps[next_idx].get("status") == "in_progress":
+                        await event_bus.emit(EVENT_PLAN_STEP_UPDATED, {
+                            "scope": scope, "chat_id": chat_id,
+                            "plan_id": goal.get("goal_id", ""),
+                            "step_index": next_idx,
+                            "step_status": "in_progress",
+                            "note": "自动推进",
+                        })
+                    break
+            # 只处理第一个匹配的 plan
+            break
+    except Exception:
+        pass  # 自动推进失败不影响主流程
+
+
+async def _finalize_plan_on_turn_end(scope: str, success: bool) -> None:
+    """think_loop 正常结束时，把 plan 收敛到终态（诚实语义）。
+
+    - success=True（AI 主动 end_reply 表示任务收束）：
+      - in_progress → completed（当前正在做的视为做完）
+      - pending → skipped（没开始的就是没做，不假装完成）
+      - plan → completed（整个计划周期结束；若有 skipped 步骤，
+        前端会显示"3/5 完成 · 2 步跳过"而非虚假的全绿）
+    - success=False（中断/异常）：plan 保持 active（用户可继续）
+    """
+    if not success:
+        return
+    try:
+        from agent.planning.tools import _store, _parse_scope_chat_id
+        if _store is None:
+            return
+        from agent.memory.memory_types import MemoryType
+        entries = await _store.list_recent(
+            limit=5, memory_type=MemoryType.SEMANTIC, source="goal",
+        )
+        for entry in entries:
+            try:
+                goal = json.loads(entry.content)
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            if goal.get("status") != "active":
+                continue
+            meta = entry.metadata or {}
+            plan_scope = meta.get("scope", "")
+            if plan_scope and plan_scope != scope:
+                continue
+            steps = goal.get("steps", [])
+            changed = False
+            _user_scope, chat_id = _parse_scope_chat_id(scope)
+            plan_id = goal.get("goal_id", "")
+            for s in steps:
+                st = s.get("status")
+                if st == "in_progress":
+                    s["status"] = "completed"
+                    changed = True
+                    await event_bus.emit(EVENT_PLAN_STEP_UPDATED, {
+                        "scope": scope, "chat_id": chat_id,
+                        "plan_id": plan_id,
+                        "step_index": s.get("index", 0),
+                        "step_status": "completed",
+                        "note": "会话结束自动收束",
+                    })
+                elif st == "pending":
+                    s["status"] = "skipped"
+                    changed = True
+                    await event_bus.emit(EVENT_PLAN_STEP_UPDATED, {
+                        "scope": scope, "chat_id": chat_id,
+                        "plan_id": plan_id,
+                        "step_index": s.get("index", 0),
+                        "step_status": "skipped",
+                        "note": "会话结束未执行",
+                    })
+            if changed or goal.get("status") != "completed":
+                goal["status"] = "completed"
+                goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                entry.content = json.dumps(goal, ensure_ascii=False)
+                await _store.update(entry, clear_embedding=False)
+                await event_bus.emit(EVENT_PLAN_STATUS_CHANGED, {
+                    "scope": scope, "chat_id": chat_id,
+                    "plan_id": plan_id,
+                    "goal_status": "completed",
+                })
+            break
+    except Exception:
+        pass
+
+
 def _round_output_sent_successfully(
         tool_chain: List[Dict], tool_calls: List[ToolCall],
 ) -> bool:
@@ -1391,43 +1478,6 @@ def _round_output_sent_successfully(
         if isinstance(parsed, dict) and parsed.get("success") is not False:
             return True
     return False
-
-
-def _collect_reply_candidates(
-        mind: Mind,
-        anything: Everything,
-        adapter_key: str,
-        current_scope: str,
-) -> List[ReplyTarget]:
-    """收集纯文本投递候选：来源会话优先，再并入其他待处理会话（去重，上限 5）。
-
-    - 仅 1 个候选（同源私聊/同源群）→ 调用方直接投递回该会话
-    - 多个私聊/群并存 → 调用方反问 AI 选一轮目标，解析失败回退来源会话
-    """
-    candidates: List[ReplyTarget] = []
-    seen: set = set()
-
-    active = target_from_anything(anything, adapter_key)
-    if active is not None:
-        candidates.append(active)
-        seen.add(active.session_key)
-
-    try:
-        for scope, _uid, _gid, preview in mind.pfc.peek_all_tasks():
-            if len(candidates) >= 5:
-                break
-            if scope == current_scope:
-                continue
-            t = target_from_scope(scope, mind.pfc.get_adapter_key(scope))
-            if t is None or t.session_key in seen:
-                continue
-            if preview:
-                t.label = str(preview)
-            seen.add(t.session_key)
-            candidates.append(t)
-    except Exception:
-        pass
-    return candidates
 
 
 def _streaming_enabled() -> bool:
@@ -1617,8 +1667,10 @@ async def execute_one_tool(
     from agent.mind.autonomous import MindPhase
 
     mind._set_phase(MindPhase.TOOL_EXECUTING)
+    tool_scope = getattr(anything, "entity_scope", "") if anything is not None else ""
     await event_bus.emit(EVENT_TOOL_EXECUTED, {"tool": tc.name, "iteration": iteration})
     await event_bus.emit(EVENT_THINKING_TOOL_START, {
+        "scope": tool_scope,
         "tool_name": tc.name,
         "tool_id": tc.id,
         "arguments_preview": tc.arguments[:300] if tc.arguments else "",
@@ -1667,6 +1719,7 @@ async def execute_one_tool(
                     )
                     # 关闭链路中的工具节点，避免一直停留在执行中
                     await event_bus.emit(EVENT_THINKING_TOOL_END, {
+                        "scope": tool_scope,
                         "tool_name": tc.name,
                         "tool_id": tc.id,
                         "duration_ms": 0,
@@ -1690,6 +1743,7 @@ async def execute_one_tool(
         result = await mind.tool_executor(tc)  # type: ignore[misc]
         elapsed_ms = (time.time() - t0) * 1000
         await event_bus.emit(EVENT_THINKING_TOOL_END, {
+            "scope": tool_scope,
             "tool_name": tc.name,
             "tool_id": tc.id,
             "duration_ms": round(elapsed_ms),
@@ -1700,6 +1754,7 @@ async def execute_one_tool(
     except Exception as exc:
         elapsed_ms = (time.time() - t0) * 1000
         await event_bus.emit(EVENT_THINKING_TOOL_END, {
+            "scope": tool_scope,
             "tool_name": tc.name,
             "tool_id": tc.id,
             "duration_ms": round(elapsed_ms),
@@ -1787,7 +1842,23 @@ async def finish_think(
         iterations: int,
         tool_chain: Optional[List[Dict]] = None,
 ) -> None:
-    """思维循环结束处理：工具摘要入库 + 经 EVENT_AFTER_REPLY 交给技能评审。"""
+    """思维循环结束处理：plan 收敛 + 工具摘要入库 + 经 EVENT_AFTER_REPLY 交给技能评审。
+
+    Plan 收敛放在这里（而非各 return 分支散落调用）的原因：
+    think_loop 有 10+ 条正常结束路径（end_reply / 无工具纯文本 / 输出工具后纯文本 /
+    安全上限 / 连续错误强制结束等），finish_think 是所有正常路径的必经之地，
+    统一收敛保证任何结束方式下 plan 都能到达终态。
+    """
+    # Plan 收敛：正常结束的会话把 plan 标记到终态（in_progress→completed, pending→skipped）。
+    # 中断场景：cancel-plan 路由已把 plan 标记为 cancelled，_finalize 只处理
+    # status == "active" 的 goal，自然跳过不会覆盖。
+    try:
+        scope = mind._resolve_entity_scope(anything) if anything else ""
+        if scope:
+            await _finalize_plan_on_turn_end(scope, success=True)
+    except Exception:
+        pass  # 收敛失败不影响主流程
+
     execution_summary = _build_execution_summary(tool_chain, execution_steps)
     if execution_summary.startswith("[已执行操作摘要]"):
         # 工具执行记录持久化到对话历史（system 角色），
@@ -1888,6 +1959,7 @@ async def complete_reply(
     mind._reply_adapter_key = ""
 
     await event_bus.emit(EVENT_AFTER_REPLY, {
+        "scope": getattr(anything, "entity_scope", "") if anything is not None else "",
         "content": content[:100] if content else "",
         "iterations": iterations,
         "error": error,

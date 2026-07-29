@@ -942,3 +942,124 @@ export interface EntityDetail {
   tools: EntityToolInfo[];
   providers: EntityProviderInfo[];
 }
+
+// ── Share ──────────────────────────────────────────────────────
+
+export interface ShareLink {
+  token: string;
+  file_path: string;
+  file_name: string;
+  file_size: number;
+  description: string;
+  expires_at: number;
+  created_at: number;
+  created_by: string;
+  download_count: number;
+  last_download_at: number;
+  max_downloads: number;
+  status: "active" | "expired" | "revoked";
+  url: string;
+}
+
+export interface ShareLinkListResult {
+  items: ShareLink[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface ShareStats {
+  total: number;
+  active: number;
+  expired: number;
+  revoked: number;
+  total_downloads: number;
+  top_files: Array<{ file_path: string; file_name: string; count: number }>;
+}
+
+export interface CreateShareRequest {
+  path: string;
+  description?: string;
+  expires_in?: string;
+  max_downloads?: number;
+}
+
+export interface ShareConfig {
+  default_expires_in: string;
+  token_length: number;
+  ai_auto_share: boolean;
+  default_max_downloads: number;
+  audit_enabled: boolean;
+}
+
+export interface DownloadLogEntry {
+  id: number;
+  token: string;
+  ip: string;
+  user_agent: string;
+  downloaded_at: number;
+  file_name: string;
+  file_size: number;
+}
+
+export interface DownloadLogListResult {
+  items: DownloadLogEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+// ── Plan 模式（present_plan / update_goal 工具 → SSE 事件 → 前端 PlanPanel/PlanCard） ──
+
+export type PlanStepStatus = "pending" | "in_progress" | "completed" | "skipped";
+
+export interface PlanStep {
+  index: number;
+  content: string;
+  status: PlanStepStatus;
+  note: string;
+}
+
+export interface PlanRecord {
+  plan_id: string;
+  chat_id: string;
+  goal: string;
+  steps: PlanStep[];
+  files: string;
+  risks: string;
+  status: "executing" | "completed" | "cancelled";
+  created_at: number;
+  updated_at: number;
+  completed_at?: number;
+  cancel_reason?: string;
+}
+
+// ── 子代理（delegate_task 工具 → SSE 事件 → 前端 DelegationCard） ──
+
+export type DelegationStatus = "running" | "completed" | "failed" | "cancelled";
+
+export interface DelegationNode {
+  delegation_id: string;
+  chat_id: string;
+  goal: string;
+  context_preview: string;
+  role: "leaf" | "orchestrator";
+  task_index: number;
+  background: boolean;
+  depth: number;
+  status: DelegationStatus;
+  started_at: number;
+  resolved_at?: number;
+  output?: string;
+  error?: string;
+}
+
+// ── 多会话（chat_id 维度分桶） ──
+
+export interface ChatMeta {
+  chat_id: string;
+  title: string;
+  last_ts: number;
+  message_count: number;
+  unread?: number;
+}

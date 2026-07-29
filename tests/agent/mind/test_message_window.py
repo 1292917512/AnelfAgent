@@ -194,19 +194,16 @@ class _MergePfc:
     def expand_discovered_tools(self, tool_calls) -> None:
         pass
 
-    def consume_user_task(self, uid) -> bool:
-        self.consumed.append(uid)
+    def consume_scope_task(self, scope) -> bool:
+        self.consumed.append(scope)
         return True
 
-    def consume_group_task(self, group_id) -> bool:
-        return False
-
-    def collect_images(self) -> list:
+    def collect_images(self, scope: str = "") -> list:
         self.images_drained += 1
         images, self.pending_images = self.pending_images, []
         return images
 
-    def collect_media(self) -> list:
+    def collect_media(self, scope: str = "") -> list:
         self.media_drained += 1
         media, self.pending_media = self.pending_media, []
         return media
@@ -303,7 +300,7 @@ class TestThinkLoopMerge:
         flat = [m.get("content") for m in mind.seen_messages[0]]
         assert "第二条" in flat
         # 待处理条目已消费（不会另起周期重复回复）
-        assert mind.pfc.consumed == [1]
+        assert mind.pfc.consumed == ["user_1"]
         # 待处理媒体已清空（媒体标签随内容并入，不残留到后续周期）
         assert mind.pfc.images_drained == 1
         assert mind.pfc.media_drained == 1

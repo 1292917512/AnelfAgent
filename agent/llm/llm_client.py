@@ -899,32 +899,42 @@ class LLMClient(BaseEntity):
     def _adapt_messages(self, messages: list[dict]) -> list[dict]:
         """合并头部连续 system 消息为一条，非头部 system 转 user。
 
+        任一头部 system 携带 cache_control（Anthropic Prompt Caching 断点）时，
+        合并输出 content block 列表并逐块保留断点；否则维持字符串/块合并原行为。
         出口清洗：字符串内容过孤代理清理（lone surrogate 会让部分
         提供商直接 400，整轮作废）。仅在检出时浅拷贝，零污染原列表。
         """
-        head_systems: list[Any] = []
+        head_systems: list[dict] = []
         rest_start = 0
         for i, msg in enumerate(messages):
             if msg.get("role") == "system":
-                head_systems.append(msg.get("content", ""))
+                head_systems.append(msg)
                 rest_start = i + 1
             else:
                 break
 
         adapted: list[dict] = []
         if head_systems:
-            if all(isinstance(item, str) for item in head_systems):
-                merged: Any = "\n\n".join(item for item in head_systems if item)
+            contents = [m.get("content", "") for m in head_systems]
+            has_breakpoint = any(m.get("cache_control") for m in head_systems)
+            if not has_breakpoint and all(isinstance(item, str) for item in contents):
+                merged: Any = "\n\n".join(item for item in contents if item)
             else:
                 merged_parts: list[dict[str, Any]] = []
-                for item in head_systems:
+                for msg, item in zip(head_systems, contents):
+                    cache_control = msg.get("cache_control")
                     if isinstance(item, str):
                         if item:
-                            merged_parts.append({"type": "text", "text": item})
+                            part: dict[str, Any] = {"type": "text", "text": item}
+                            if cache_control:
+                                part["cache_control"] = cache_control
+                            merged_parts.append(part)
                     elif isinstance(item, list):
-                        merged_parts.extend(
-                            part for part in item if isinstance(part, dict)
-                        )
+                        parts = [p for p in item if isinstance(p, dict)]
+                        if cache_control and parts:
+                            # 断点作用于该消息的最后一个块（覆盖其全部前缀）
+                            parts[-1] = {**parts[-1], "cache_control": cache_control}
+                        merged_parts.extend(parts)
                 merged = merged_parts
             adapted.append({"role": "system", "content": merged})
 

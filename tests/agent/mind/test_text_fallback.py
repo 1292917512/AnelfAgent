@@ -1,7 +1,8 @@
 """纯文本终态投递 + 多频道路由（think_loop）单元测试。
 
 对齐 Hermes：无工具正文 = 最终回复，系统投递一次后结束本轮。
-路由：单候选（同源私聊/群）直回；多候选时问 AI 一轮再投递结束。
+路由：纯文本终态无条件投递回来源会话；其他会话由各自的 REPLY 周期处理，
+跨会话发送走 switch_session / send_message 工具。
 """
 
 from __future__ import annotations
@@ -306,50 +307,25 @@ async def test_bare_text_no_thought_label(anything, deliver_mock) -> None:
 
 
 # ==================================================================
-# 多候选路由
+# 多会话默认路由
 # ==================================================================
 
-async def test_multi_candidates_route_by_index(anything, deliver_mock) -> None:
-    """多候选：反问 AI → 投递到所选会话 → 本轮结束。"""
+async def test_multi_pending_still_delivers_to_source(anything, deliver_mock) -> None:
+    """存在其他待处理会话时：纯文本仍默认投递回来源会话，一轮结束，不作路由询问。"""
     mind = _FakeMind()
-    mind.pfc._pending = [("group_777", 0, 777, "群消息预览")]
+    mind.pfc._pending = [("group_777", "0", "777", "群消息预览")]
     mind.pfc._adapter_keys = {"group_777": "qq"}
-    mind._rounds = [
-        _text_result("大家好！"),
-        _text_result("2"),
-    ]
+    mind._rounds = [_text_result("大家好！")]
     steps: List[str] = []
     chain: List = []
     await _run(mind, anything, steps, chain)
 
-    assert mind.llm_calls == 2
-    assert any("路由询问" in m.get("content", "") for m in chain if m.get("role") == "system")
-    assert any("群消息预览" in m.get("content", "") for m in chain if m.get("role") == "system")
-    deliver_mock.assert_awaited_once()
-    first_deliver_target, first_content = deliver_mock.await_args.args
-    assert first_deliver_target.session_key == "qq:group:777"
-    assert first_content == "大家好！"
-    assert any("本轮结束" in s for s in steps)
-
-
-async def test_route_parse_failure_falls_back(anything, deliver_mock) -> None:
-    """路由解析失败：回退到来源会话投递后结束。"""
-    mind = _FakeMind()
-    mind.pfc._pending = [("group_777", 0, 777, "群消息预览")]
-    mind.pfc._adapter_keys = {"group_777": "qq"}
-    mind._rounds = [
-        _text_result("大家好！"),
-        _text_result("嗯……随便吧"),
-    ]
-    steps: List[str] = []
-    chain: List = []
-    await _run(mind, anything, steps, chain)
-
+    assert mind.llm_calls == 1
+    assert not any("路由询问" in m.get("content", "") for m in chain if m.get("role") == "system")
     deliver_mock.assert_awaited_once()
     first_deliver_target, first_content = deliver_mock.await_args.args
     assert first_deliver_target.session_key == "test:private:1"
     assert first_content == "大家好！"
-    assert any("回退来源会话" in s for s in steps)
     assert any("本轮结束" in s for s in steps)
 
 

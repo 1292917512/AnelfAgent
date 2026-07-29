@@ -235,3 +235,24 @@ EVENT_MULTI_TOOL_COMPLETE = "multi_tool_complete"
 
 # 界面交互命令（entities/ui 工具 → 前端工作台）
 EVENT_UI_COMMAND = "ui_command"
+
+# ------------------------------------------------------------------
+# Plan 模式（present_plan / update_goal 工具 → 前端 plan 浮窗与卡片）
+# ------------------------------------------------------------------
+# 计划提交：Agent 调 present_plan 工具时立即发射（不走 ApprovalGate），
+# 前端收到后插入 PlanCard + 弹出 PlanPanel 浮窗
+EVENT_PLAN_SUBMITTED = "plan_submitted"
+# 计划步骤状态变化：update_goal 工具调用成功后发射（pending/in_progress/completed/skipped）
+EVENT_PLAN_STEP_UPDATED = "plan_step_updated"
+# 计划整体状态变化（active/completed/cancelled）
+EVENT_PLAN_STATUS_CHANGED = "plan_status_changed"
+# 用户从前端取消计划（浮窗按钮 → 后端 interrupt scope）
+EVENT_PLAN_CANCELLED = "plan_cancelled"
+
+# ------------------------------------------------------------------
+# 子代理（delegate_task 工具 → 前端 delegation 卡片）
+# ------------------------------------------------------------------
+EVENT_DELEGATION_STARTED = "delegation_started"
+EVENT_DELEGATION_PROGRESS = "delegation_progress"
+EVENT_DELEGATION_RESOLVED = "delegation_resolved"
+

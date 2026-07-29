@@ -74,14 +74,30 @@ class Everything(Nothing):
         """返回 scope 类型：'user' 或 'group'。"""
         return "user"
 
+    def _session_suffix(self, base_id: str) -> str:
+        """返回 session 后缀（``"#chat_id"``），非子会话时返回空串。
+
+        仅当 session_id 是真正的子会话标识（非空且不同于自然 scope id）时才拼后缀：
+        webui 多标签页 chat_id 产生新键；telegram 私聊（session_id==uid）/
+        群聊（session_id==group_id）与默认会话保持不变，保证 DB 键连续。
+        """
+        session = str(self.session_id or "")
+        if session and session != base_id:
+            return f"#{session}"
+        return ""
+
     @property
     def scope_id(self) -> str:
-        """返回 scope 标识（uid 或 group_id 的字符串形式）。"""
-        return str(self.uid)
+        """返回 scope 标识（uid 或 group_id 的字符串形式，含子会话后缀）。"""
+        base = str(self.uid)
+        return f"{base}{self._session_suffix(base)}"
 
     @property
     def entity_scope(self) -> str:
-        """返回 'user_123' / 'group_456' 格式的实体 scope。"""
+        """返回 'user_123' / 'group_456' / 'user_123#chat_id' 格式的实体 scope。
+
+        直接基于 ``scope_id``（已含 ``session_id`` 后缀）构造，保证一致性。
+        """
         return f"{self.scope_type}_{self.scope_id}"
 
     def set_text_content(self, content: str) -> None:
@@ -156,5 +172,27 @@ class EverythingGroup(Everything):
 
     @property
     def scope_id(self) -> str:
-        return str(self.group_id) if self.is_group_scope else str(self.uid)
+        """群聊以 group_id 为基，私聊回退 uid；均按统一规则拼子会话后缀。"""
+        base = str(self.group_id) if self.is_group_scope else str(self.uid)
+        return f"{base}{self._session_suffix(base)}"
+
+
+def parse_entity_scope(scope: str) -> tuple[str, str, str]:
+    """解析实体 scope，返回 (scope_type, base_id, session_id)。
+
+    支持 ``user_123`` / ``group_456`` / ``user_123#chat_id`` 格式；
+    无法识别时返回 ("", "", "")。
+    """
+    if not scope or "_" not in scope:
+        return "", "", ""
+    scope_type, raw_id = scope.split("_", 1)
+    if scope_type not in ("user", "group") or not raw_id:
+        return "", "", ""
+    if "#" in raw_id:
+        base_id, session_id = raw_id.split("#", 1)
+    else:
+        base_id, session_id = raw_id, ""
+    if not base_id:
+        return "", "", ""
+    return scope_type, base_id, session_id
 

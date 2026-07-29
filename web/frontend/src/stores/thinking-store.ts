@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import type { ContextSnapshotData } from "@/lib/types";
+import { usePlanStore } from "./plan-store";
+import { useChatStore } from "./chat-store";
 
 const MAX_SESSIONS = 100;
 
@@ -225,3 +227,100 @@ export const useThinkingStore = create<ThinkingState>((set, get) => ({
     });
   },
 }));
+
+// ------------------------------------------------------------------
+// Plan 虚拟节点注入：把 plan-store 中的 plan 转为 TraceNode 拼到 activeSession.nodes
+// 使 FlowView 能看到"plan_root → plan_step × N"的子树
+// ------------------------------------------------------------------
+
+const PLAN_NODE_ID_PREFIX = "__plan__";
+
+function planRootNodeId(planId: string): string {
+  return `${PLAN_NODE_ID_PREFIX}root:${planId}`;
+}
+
+function planStepNodeId(planId: string, stepIndex: number): string {
+  return `${PLAN_NODE_ID_PREFIX}step:${planId}:${stepIndex}`;
+}
+
+function planStepStatusToNodeStatus(status: string): TraceNode["status"] {
+  if (status === "completed") return "completed";
+  if (status === "in_progress") return "running";
+  if (status === "skipped") return "error";
+  return "pending";
+}
+
+/**
+ * 把 plan-store 里该 chat 的 plan 转成 TraceNode[]，挂在 activeSession 末端。
+ * 保持幂等：以 plan_id 为 key，每次 plan-store 变化时全量重建。
+ */
+export function buildPlanVirtualNodes(chatId: string): TraceNode[] {
+  const chatPlans = usePlanStore.getState().plans[chatId];
+  if (!chatPlans) return [];
+  const plans = Object.values(chatPlans).sort((a, b) => a.created_at - b.created_at);
+  const nodes: TraceNode[] = [];
+  for (const plan of plans) {
+    const rootId = planRootNodeId(plan.plan_id);
+    nodes.push({
+      id: rootId,
+      type: "plan_root",
+      label: plan.goal || `Plan ${plan.plan_id}`,
+      status: plan.status === "completed" ? "completed"
+        : plan.status === "cancelled" ? "error"
+          : "running",
+      timestamp: plan.created_at,
+      duration_ms: plan.completed_at
+        ? Math.round((plan.completed_at - plan.created_at) * 1000)
+        : null,
+      data: {
+        plan_id: plan.plan_id,
+        goal: plan.goal,
+        step_count: plan.steps.length,
+        files: plan.files,
+        risks: plan.risks,
+      },
+      parent_id: null,
+    });
+    for (const step of plan.steps) {
+      nodes.push({
+        id: planStepNodeId(plan.plan_id, step.index),
+        type: "plan_step",
+        label: step.content,
+        status: planStepStatusToNodeStatus(step.status),
+        timestamp: plan.created_at + step.index * 0.001,
+        duration_ms: null,
+        data: {
+          plan_id: plan.plan_id,
+          step_index: step.index,
+          note: step.note,
+          step_status: step.status,
+        },
+        parent_id: rootId,
+      });
+    }
+  }
+  return nodes;
+}
+
+/**
+ * 订阅 plan-store 变化，把 plan 虚拟节点合并进 activeSession.nodes。
+ * 在 FlowView / TimelineView 渲染前调用，保证 plan 节点实时同步。
+ */
+export function useMergedActiveSessionNodes(): TraceNode[] {
+  const activeSession = useThinkingStore((s) => s.activeSession);
+  const activeChatId = useChatStore((s) => s.activeChatId);
+  // 订阅 plan-store 让组件在 plan 变化时重渲染（subscribe 触发但不直接使用值）
+  usePlanStore((s) => s.plans[activeChatId]);
+
+  if (!activeSession) {
+    // 即使没有 thinking session，也展示 plan 节点（让 PlanCard 也能在导图里看到）
+    return buildPlanVirtualNodes(activeChatId);
+  }
+
+  // 真实 trace 节点（剔除之前的 plan 虚拟节点，避免重复）
+  const realNodes = activeSession.nodes.filter((n) => !n.id.startsWith(PLAN_NODE_ID_PREFIX));
+  const planNodes = buildPlanVirtualNodes(activeChatId);
+  // 简单合并：plan 节点附加在末尾（FlowView 的递归布局会按 parent_id 自动放置）
+  return [...realNodes, ...planNodes];
+}
+

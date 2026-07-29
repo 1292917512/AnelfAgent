@@ -19,6 +19,7 @@ from agent.messages import (
     Everything,
     MessageAssistant,
     MessageAssistantGroup,
+    parse_entity_scope,
 )
 from agent.mind.autonomous import Decision, DecisionType
 from agent.heartbeat.log import append_entry as _hb_append
@@ -164,7 +165,10 @@ async def execute_proactive(mind: Mind, decision: Decision) -> None:
         f"你想表达的内容：{content}\n"
         "请用自然的语气表达，不要提及这是系统指令，像朋友一样自然地说话。"
     )
-    mind.pfc.add_temporary({"role": "user", "content": proactive_prompt})
+    mind.pfc.add_temporary(
+        {"role": "user", "content": proactive_prompt},
+        scope=anything.entity_scope,
+    )
 
     mind._reply_adapter_key = getattr(anything, "adapter_key", "") if anything else ""
     log(f"AI 主动消息: target={target}", tag="思维")
@@ -283,67 +287,66 @@ def build_proactive_target(mind: Mind, target: str) -> Optional[Everything]:
     return MessageAssistant(uid=uid, adapter_key=default_key)
 
 
+def _build_reply_message(mind: Mind, scope: str, *, require_pending: bool) -> Optional[Everything]:
+    """按 scope 消费待回复任务并构造带 session_id 的回复目标消息。"""
+    if scope in mind._active_scopes:
+        return None
+    scope_type, base_id, session_id = parse_entity_scope(scope)
+    if not scope_type:
+        return None
+    adapter_key = mind.pfc.get_adapter_key(scope)
+    consumed = mind.pfc.consume_scope_task(scope)
+    if require_pending and not consumed:
+        return None
+    target_id: Union[int, str] = base_id
+    try:
+        target_id = int(base_id)
+    except ValueError:
+        pass
+    if scope_type == "group":
+        return MessageAssistantGroup(group_id=target_id, adapter_key=adapter_key, session_id=session_id)
+    return MessageAssistant(uid=target_id, adapter_key=adapter_key, session_id=session_id)
+
+
 def resolve_reply_target(mind: Mind, target: str) -> Optional[Everything]:
     """根据 target 在已知路由中查找并消费对应任务。
 
-    支持格式：user_123 / group_456 / 纯 ID（自动补前缀）。
+    支持格式：user_123 / group_456 / user_123#chat_id / 纯 ID（自动补前缀）。
     判活前置：scope 已被占用时不消费队列条目（避免并行 scope 串台丢消息）。
     """
     if not target:
         return None
 
-    if target.startswith("group_"):
-        if target in mind._active_scopes:
-            return None
-        group_id: Union[int, str] = target[6:]
-        try:
-            group_id = int(group_id)
-        except ValueError:
-            pass
-        adapter_key = mind.pfc.get_adapter_key(target)
-        mind.pfc.consume_group_task(group_id)
-        return MessageAssistantGroup(group_id=group_id, adapter_key=adapter_key)
+    if target.startswith(("user_", "group_")):
+        return _build_reply_message(mind, target, require_pending=False)
 
-    if target.startswith("user_"):
-        if target in mind._active_scopes:
-            return None
-        uid: Union[int, str] = target[5:]
-        try:
-            uid = int(uid)
-        except ValueError:
-            pass
-        adapter_key = mind.pfc.get_adapter_key(target)
-        mind.pfc.consume_user_task(uid)
-        return MessageAssistant(uid=uid, adapter_key=adapter_key)
-
-    scope_user = f"user_{target}"
-    if scope_user in mind._active_scopes:
-        return None
-    adapter_key = mind.pfc.get_adapter_key(scope_user)
-    if mind.pfc.consume_user_task(target):
-        log(f"将 target '{target}' 补充 user_ 前缀匹配到 {scope_user}", tag="思维")
-        return MessageAssistant(uid=target, adapter_key=adapter_key)
-
-    scope_group = f"group_{target}"
-    if scope_group in mind._active_scopes:
-        return None
-    adapter_key = mind.pfc.get_adapter_key(scope_group)
-    if mind.pfc.consume_group_task(target):
-        log(f"将 target '{target}' 补充 group_ 前缀匹配到 {scope_group}", tag="思维")
-        return MessageAssistantGroup(group_id=target, adapter_key=adapter_key)
-
-    return None
+    msg = _build_reply_message(mind, f"user_{target}", require_pending=True)
+    if msg is not None:
+        log(f"将 target '{target}' 补充 user_ 前缀匹配到 user_{target}", tag="思维")
+        return msg
+    msg = _build_reply_message(mind, f"group_{target}", require_pending=True)
+    if msg is not None:
+        log(f"将 target '{target}' 补充 group_ 前缀匹配到 group_{target}", tag="思维")
+    return msg
 
 
 async def pop_next_reply_target(mind: Mind) -> Optional[Everything]:
-    """从 PFC 取出下一个待回复目标。"""
+    """从 PFC 取出下一个待回复目标（保留 session_id 传播）。"""
     tasks = mind.pfc.peek_all_tasks()
     if not tasks:
         return None
-    scope, uid, group_id, _ = tasks[0]
+    scope, _, _, _ = tasks[0]
     adapter_key = mind.pfc.get_adapter_key(scope)
-    if group_id and group_id not in (0, "0"):
+    scope_type, base_id, session_id = parse_entity_scope(scope)
+    if not scope_type:
+        return None
+    target_id: Union[int, str] = base_id
+    try:
+        target_id = int(base_id)
+    except ValueError:
+        pass
+    if scope_type == "group":
         await mind.pfc.pop_group_task()
-        return MessageAssistantGroup(group_id=group_id, adapter_key=adapter_key)
+        return MessageAssistantGroup(group_id=target_id, adapter_key=adapter_key, session_id=session_id)
     await mind.pfc.pop_user_task()
-    return MessageAssistant(uid=uid, adapter_key=adapter_key)
+    return MessageAssistant(uid=target_id, adapter_key=adapter_key, session_id=session_id)

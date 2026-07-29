@@ -83,6 +83,17 @@ _TOOL_USAGE_RULES = (
     "2. 同一任务连续两次出现未知工具后，必须停止继续猜测并改用已确认可用工具，或直接结束并说明限制。"
 )
 
+_PLAN_USAGE_RULES = (
+    "[计划前置指引]\n"
+    "1. 复杂多步任务（3 步以上）、文件修改、不可逆操作前，**先**调用 present_plan 公告计划，再开始执行。\n"
+    "   - present_plan(goal, steps, files, risks) 调用后立即返回 plan_id，无需等待用户批准，直接开始执行。\n"
+    "   - 步骤进度由系统**自动追踪**（每步完成自动打勾），你无需手动维护进度。\n"
+    "   - 如某步完成质量较好，**可选**调用 update_goal(goal_id=plan_id, step_index=i, step_status='completed', note='...') 精确标记（会覆盖自动推进）。\n"
+    "   - 任务完成后正常 end_reply 即可，系统会自动把计划收敛到终态（未做的步骤标记为 skipped）。\n"
+    "   - 用户可在浮窗中取消计划，你会收到中断信号，需立即停止后续步骤。\n"
+    "2. 简单单步任务、纯查询任务、纯对话无需调用 present_plan，直接执行。"
+)
+
 _MEMORY_USAGE_HINT = (
     "[记忆使用提示]\n"
     "便签文件是索引，数据库是详细存储。两者通过标签联动。\n"
@@ -125,6 +136,42 @@ _BACKGROUND_TASK_HINT = (
 
 _PENDING_HINT = "→ 处理消息或执行操作，空消息表示当前处于自主思考阶段，不是对方发送的，选择是继续调用流程还是直接结束会话，不要重复发送消息,完成后调用 end_reply"
 
+# 会话通知：其他会话的未读消息以"弹窗"形式提示（固定模板，动态内容在末尾 exec_context）
+_SESSION_NOTIFY_HINT = (
+    "→ 回复默认发往当前会话，无需选择投递目标；"
+    "如需处理其他会话的新消息，调用 switch_session(scope) 切换，"
+    "可先调用 list_sessions 查看全部会话"
+)
+
+
+def _format_scope_label(scope: str, adapter_key: str = "") -> str:
+    """格式化 scope 的通知展示标签：频道 + 私聊/群聊 + 基 id + 子会话。"""
+    from agent.messages import parse_entity_scope
+
+    scope_type, base_id, session_id = parse_entity_scope(scope)
+    if not scope_type:
+        return scope
+    kind = "群聊" if scope_type == "group" else "私聊"
+    parts = [adapter_key, kind, base_id] if adapter_key else [kind, base_id]
+    label = " ".join(parts)
+    if session_id:
+        label += f"#{session_id}"
+    return label
+
+
+def _safe_entity_scope(anything: object) -> str:
+    """兼容测试替身的 entity_scope 获取：缺失时按 uid/group_id 拼接。"""
+    if anything is None:
+        return ""
+    scope = getattr(anything, "entity_scope", None)
+    if scope:
+        return str(scope)
+    gid = getattr(anything, "group_id", 0)
+    if gid not in (0, "0", "", None):
+        return f"group_{gid}"
+    uid = getattr(anything, "uid", "")
+    return f"user_{uid}" if uid not in ("", 0, "0", None) else ""
+
 
 class PrefrontalCortex:
     """AI 工作记忆中枢：短期记忆、任务管理、工具召回与态势感知。
@@ -143,23 +190,26 @@ class PrefrontalCortex:
             channel_manager: Optional["ChannelManager"] = None,
             conversation_data: Optional["ConversationData"] = None,
     ) -> None:
-        self.temporary: list[Dict] = []
         self.record: dict[str, int] = {}
+        # 短期记忆按 scope 分桶（跨会话隔离，避免并行会话互相串内容）；
+        # 无 scope 的写入进 "_default" 全局桶，读取时与本 scope 桶合并。
+        self._temporary: dict[str, list[Dict]] = {}
         self.everything_data = everything_data
         self._channel_manager = channel_manager
         self._conversation_data = conversation_data
 
-        # 消息任务队列
-        self.pending_user: UniqueQueue[Union[int, str]] = UniqueQueue()
-        self.pending_group: UniqueQueue[Union[int, str]] = UniqueQueue()
+        # 消息任务队列（元素为 entity_scope 字符串，如 user_123 / user_123#chat_id）
+        self.pending_user: UniqueQueue[str] = UniqueQueue()
+        self.pending_group: UniqueQueue[str] = UniqueQueue()
         self.pending_analysis: UniqueQueue[tuple[Union[int, str], Union[int, str]]] = UniqueQueue()
         # 按 scope 分桶的待处理媒体（跨频道并行不串台）
         self._pending_images: dict[str, List[ImageContent]] = {}
         self._pending_media: dict[str, list] = {}
 
-        # scope → 消息预览 / adapter_key 路由
+        # scope → 消息预览 / adapter_key 路由 / 未读计数
         self._message_previews: dict[str, str] = {}
         self._task_adapter_keys: dict[str, str] = {}
+        self._unread_counts: dict[str, int] = {}
         # 群聊 scope → 最近发送者 [(uid, name), ...]
         self._group_recent_senders: dict[str, list[tuple[str, str]]] = {}
 
@@ -178,8 +228,8 @@ class PrefrontalCortex:
         self._discovered_tools: set[str] = set()
         # 动态工具集版本号（tag 激活/动态发现变化时递增，供 think_loop 检测重建）
         self._tools_version: int = 0
-        # stable_fingerprint 版本门控缓存：(tools_version, models_summary, direct_vision) → hash
-        self._fp_cache: Optional[tuple[int, str, bool, str]] = None
+        # stable_fingerprint 版本门控缓存：(tools_version, activation_version, models_summary, direct_vision) → hash
+        self._fp_cache: Optional[tuple[int, int, str, bool, str]] = None
 
     # ==================================================================
     # 待办持久化（pending_tasks 表双写，崩溃重启后 replay）
@@ -281,6 +331,21 @@ class PrefrontalCortex:
         return _get_mind_config().short_term_memory_size
 
     @property
+    def temporary(self) -> list[Dict]:
+        """全桶展开视图（管理接口/监控用；LLM 上下文请用 get_temporary(scope)）。"""
+        result: list[Dict] = []
+        for bucket in self._temporary.values():
+            result.extend(bucket)
+        return result
+
+    def get_temporary(self, scope: str = "") -> list[Dict]:
+        """指定 scope 的短期记忆（_default 全局桶 + 本 scope 桶）。"""
+        result = list(self._temporary.get("_default", []))
+        if scope and scope != "_default":
+            result.extend(self._temporary.get(scope, []))
+        return result
+
+    @property
     def _tool_recall_top_n(self) -> int:
         return _get_mind_config().tool_recall_top_n
 
@@ -299,9 +364,9 @@ class PrefrontalCortex:
         preview = anything.get_text_content()[:300] if hasattr(anything, "get_text_content") else str(anything)[:300]
         adapter_key = getattr(anything, "adapter_key", "") or ""
 
-        scope = anything.entity_scope
+        self._unread_counts[scope] = self._unread_counts.get(scope, 0) + 1
         if isinstance(anything, EverythingGroup) and anything.is_group_scope:
-            self.pending_group.append(anything.group_id)
+            self.pending_group.append(scope)
             self._message_previews[scope] = preview
             if adapter_key:
                 self._task_adapter_keys[scope] = adapter_key
@@ -316,7 +381,7 @@ class PrefrontalCortex:
                     senders[:] = senders[-10:]
             await self._handle_group_message(anything)
         else:
-            self.pending_user.append(anything.uid)
+            self.pending_user.append(scope)
             self._message_previews[scope] = preview
             if adapter_key:
                 self._task_adapter_keys[scope] = adapter_key
@@ -433,22 +498,27 @@ class PrefrontalCortex:
     # 消息任务消费
     # ==================================================================
 
-    async def pop_user_task(self) -> Optional[Union[int, str]]:
+    def _clear_scope_state(self, scope: str) -> None:
+        """清理 scope 消费后的关联状态（预览 / 路由 / 未读 / 群发送者）。"""
+        self._message_previews.pop(scope, None)
+        self._task_adapter_keys.pop(scope, None)
+        self._unread_counts.pop(scope, None)
+        self._group_recent_senders.pop(scope, None)
+
+    async def pop_user_task(self) -> Optional[str]:
+        """弹出下一个私聊待回复 scope（entity_scope 字符串）。"""
         if not self.pending_user.is_empty():
-            uid = self.pending_user.popleft()
-            scope = f"user_{uid}"
-            self._message_previews.pop(scope, None)
-            self._task_adapter_keys.pop(scope, None)
-            return uid
+            scope = self.pending_user.popleft()
+            self._clear_scope_state(scope)
+            return scope
         return None
 
-    async def pop_group_task(self) -> Optional[Union[int, str]]:
+    async def pop_group_task(self) -> Optional[str]:
+        """弹出下一个群聊待回复 scope（entity_scope 字符串）。"""
         if not self.pending_group.is_empty():
-            gid = self.pending_group.popleft()
-            scope = f"group_{gid}"
-            self._message_previews.pop(scope, None)
-            self._task_adapter_keys.pop(scope, None)
-            return gid
+            scope = self.pending_group.popleft()
+            self._clear_scope_state(scope)
+            return scope
         return None
 
     async def pop_analysis_task(self) -> Optional[EntityData]:
@@ -514,46 +584,47 @@ class PrefrontalCortex:
     # 态势感知
     # ==================================================================
 
-    def peek_all_tasks(self) -> List[Tuple[str, Union[int, str], Union[int, str], str]]:
-        """查看所有待处理消息任务（不消费）。"""
-        result: List[Tuple[str, Union[int, str], Union[int, str], str]] = []
-        for uid in self.pending_user.queue:
-            scope = f"user_{uid}"
+    def peek_all_tasks(self) -> List[Tuple[str, str, str, str]]:
+        """查看所有待处理消息任务（不消费）。
+
+        返回 (scope, base_uid, base_group_id, preview) 四元组；
+        base id 从 scope 解析（不含 #session 后缀），私聊项 group_id 为 "0"，反之亦然。
+        """
+        from agent.messages import parse_entity_scope
+
+        result: List[Tuple[str, str, str, str]] = []
+        for scope in self.pending_user.queue:
+            _, uid, _ = parse_entity_scope(scope)
             preview = self._message_previews.get(scope, "")
-            result.append((scope, uid, 0, preview))
-        for gid in self.pending_group.queue:
-            scope = f"group_{gid}"
+            result.append((scope, uid, "0", preview))
+        for scope in self.pending_group.queue:
+            _, gid, _ = parse_entity_scope(scope)
             preview = self._message_previews.get(scope, "")
-            result.append((scope, 0, gid, preview))
+            result.append((scope, "0", gid, preview))
         return result
 
-    def consume_user_task(self, uid: Union[int, str]) -> bool:
-        scope = f"user_{uid}"
-        self._message_previews.pop(scope, None)
-        self._task_adapter_keys.pop(scope, None)
-        return self._consume_from_queue(self.pending_user, uid)
+    def consume_scope_task(self, scope: str) -> bool:
+        """消费指定 scope 的待回复条目（含关联状态清理）。"""
+        if not scope:
+            return False
+        self._clear_scope_state(scope)
+        queue = self.pending_group if scope.startswith("group_") else self.pending_user
+        return self._consume_from_queue(queue, scope)
 
-    def consume_group_task(self, group_id: Union[int, str]) -> bool:
-        scope = f"group_{group_id}"
-        self._message_previews.pop(scope, None)
-        self._task_adapter_keys.pop(scope, None)
-        self._group_recent_senders.pop(scope, None)
-        return self._consume_from_queue(self.pending_group, group_id)
+    def get_unread_count(self, scope: str) -> int:
+        """指定 scope 的未读消息数（消费后清零）。"""
+        return self._unread_counts.get(scope, 0)
 
     @staticmethod
-    def _consume_from_queue(queue: UniqueQueue, key: Union[int, str]) -> bool:
-        """从去重队列中消费元素，兼容 int/str 类型差异。"""
-        candidates = {key, str(key)}
-        if isinstance(key, str) and key.lstrip("-").isdigit():
-            candidates.add(int(key))
-        for candidate in candidates:
-            if candidate in queue.seen:
-                queue.seen.discard(candidate)
-                try:
-                    queue.queue.remove(candidate)
-                except ValueError:
-                    pass
-                return True
+    def _consume_from_queue(queue: UniqueQueue, key: str) -> bool:
+        """从去重队列中消费元素。"""
+        if key in queue.seen:
+            queue.seen.discard(key)
+            try:
+                queue.queue.remove(key)
+            except ValueError:
+                pass
+            return True
         return False
 
     def has_pending_tasks(self) -> bool:
@@ -586,11 +657,11 @@ class PrefrontalCortex:
         return sum(self._tool_recall.values())
 
     def get_hot_tool_names(self) -> list[str]:
-        """返回 top-N 热工具名（按命中次数降序）。"""
+        """返回 top-N 热工具名（按命中次数选取，按名称排序返回保证字节序稳定）。"""
         if not self._tool_recall:
             return []
         sorted_tools = sorted(self._tool_recall.items(), key=lambda x: x[1], reverse=True)
-        hot = [name for name, _ in sorted_tools[:self._tool_recall_top_n]]
+        hot = sorted(name for name, _ in sorted_tools[:self._tool_recall_top_n])
         if hot:
             recall_detail = ", ".join(f"{n}({self._tool_recall[n]})" for n in hot)
             log(f"热工具 top-{self._tool_recall_top_n}: [{recall_detail}]", "DEBUG", tag="PFC")
@@ -632,7 +703,7 @@ class PrefrontalCortex:
         """返回当前因标签匹配而激活的工具 schema。"""
         if not self._tag_activated_tools:
             return []
-        return EntityRegistry.get_tool_schema_by_names(list(self._tag_activated_tools))
+        return EntityRegistry.get_tool_schema_by_names(sorted(self._tag_activated_tools))
 
     def expand_discovered_tools(self, tool_calls: list) -> None:
         """解析 list_entity_methods 调用结果，将发现的工具加入动态发现集。"""
@@ -705,7 +776,7 @@ class PrefrontalCortex:
 
         if self._discovered_tools:
             _merge(EntityRegistry.get_tool_schema_by_names(
-                list(self._discovered_tools)), "discovered")
+                sorted(self._discovered_tools)), "discovered")
 
         # 已激活的沉睡分组：补充其全部工具（即使未被上述渠道命中）
         activated = tool_activation.active_groups(scope)
@@ -750,13 +821,17 @@ class PrefrontalCortex:
     }
 
     def _tool_sort_key(self, schema: dict) -> tuple:
-        """工具排序键：核心流程 → 高频（降序）→ 其余按名称。"""
+        """工具排序键：核心流程 → 已使用工具 → 其余（层内均按名称）。
+
+        命中计数只决定分层归属（>0 即「已使用」），不参与层内排序——
+        计数持续递增，若参与排序会导致 tools schema 字节序跨轮漂移，
+        破坏 provider 侧前缀缓存复用。
+        """
         name = schema.get("function", {}).get("name", "")
         if name in self._CORE_TOOL_PRIORITY:
             return (0, self._CORE_TOOL_PRIORITY[name])
-        hot = self._tool_recall.get(name, 0)
-        if hot > 0:
-            return (1, -hot)
+        if self._tool_recall.get(name, 0) > 0:
+            return (1, name)
         return (2, name)
 
     @staticmethod
@@ -821,9 +896,11 @@ class PrefrontalCortex:
             lines.append("")
             lines.append(context_reading_rules)
 
-        # 工具使用指引 + 记忆使用提示（静态引导，归入 stable 层冻结复用）
+        # 工具使用指引 + 计划前置 + 记忆使用提示（静态引导，归入 stable 层冻结复用）
         lines.append("")
         lines.append(_TOOL_USAGE_RULES)
+        lines.append("")
+        lines.append(_PLAN_USAGE_RULES)
         lines.append("")
         lines.append(_MEMORY_USAGE_HINT)
 
@@ -944,16 +1021,18 @@ class PrefrontalCortex:
         """计算 stable 层动态输入的指纹（任一输入变化即触发重建）。
 
         覆盖：工具目录、可沉睡分组及其激活状态、工具规则、模型摘要、媒体规则、运行环境。
-        以 _tools_version 门控：工具集未变时直接返回缓存哈希，跳过 json.dumps 开销。
+        以 _tools_version + 激活版本门控：工具集与激活状态未变时直接返回缓存哈希，
+        跳过 json.dumps 开销（激活状态按 scope 隔离，版本号必须参与门控键，防跨 scope 串用）。
         """
-        cache_key = (self._tools_version, models_summary, direct_vision)
-        if self._fp_cache is not None and self._fp_cache[:3] == cache_key:
-            return self._fp_cache[3]
+        from agent.mind.tool_activation import tool_activation
+
+        cache_key = (self._tools_version, tool_activation.version, models_summary, direct_vision)
+        if self._fp_cache is not None and self._fp_cache[:4] == cache_key:
+            return self._fp_cache[4]
 
         import json as _json
 
         from agent.mind.prompt_layers import prompt_cache_manager
-        from agent.mind.tool_activation import tool_activation
 
         mc = _get_mind_config()
         rules = mc.tool_system_rules if hasattr(mc, "tool_system_rules") else []
@@ -970,7 +1049,7 @@ class PrefrontalCortex:
             str(_delegation_enabled()),
             _env_info_block(),
         )
-        self._fp_cache = (cache_key[0], cache_key[1], cache_key[2], result)
+        self._fp_cache = (cache_key[0], cache_key[1], cache_key[2], cache_key[3], result)
         return result
 
     async def build_llm_context(
@@ -1007,10 +1086,14 @@ class PrefrontalCortex:
                 stable_msg["cache_control"] = {"type": "ephemeral"}
             system_msgs.append(stable_msg)
         if context_text:
-            system_msgs.append({"role": "system", "content": context_text})
+            context_msg: Dict = {"role": "system", "content": context_text}
+            if anthropic_breakpoint:
+                # 第二断点：context 层（便签等低频内容）同样纳入缓存前缀
+                context_msg["cache_control"] = {"type": "ephemeral"}
+            system_msgs.append(context_msg)
 
-        # volatile 层：短期记忆片段（角色按存储原样使用，主流格式不做转换）
-        volatile_msgs: List[Dict] = list(self.temporary)
+        # volatile 层：本 scope 的短期记忆片段（角色按存储原样使用，主流格式不做转换）
+        volatile_msgs: List[Dict] = self.get_temporary(scope)
 
         # 上下文提供者注入（实体自驱数据，每轮拉取最新快照）
         try:
@@ -1115,8 +1198,7 @@ class PrefrontalCortex:
 
         if group_id and group_id not in (0, "0", ""):
             parts.append(f"群聊 group_id={group_id}")
-            scope = f"group_{group_id}"
-            senders = self._group_recent_senders.get(scope, [])
+            senders = self._group_recent_senders.get(_safe_entity_scope(anything), [])
             if senders:
                 desc = ", ".join(f"uid:{s[0]}({s[1]})" for s in senders if s[0])
                 if desc:
@@ -1136,10 +1218,13 @@ class PrefrontalCortex:
     # 短期记忆
     # ==================================================================
 
-    def add_temporary(self, temporary_clip: Dict) -> None:
-        self.temporary.append(temporary_clip)
-        if len(self.temporary) > self._max_temp:
-            self.temporary = self.temporary[-self._max_temp:]
+    def add_temporary(self, temporary_clip: Dict, scope: str = "") -> None:
+        """写入短期记忆到指定 scope 桶（空 scope 进 _default 全局桶）。"""
+        key = scope or "_default"
+        bucket = self._temporary.setdefault(key, [])
+        bucket.append(temporary_clip)
+        if len(bucket) > self._max_temp:
+            self._temporary[key] = bucket[-self._max_temp:]
 
     def build_execution_context(
             self,
@@ -1239,9 +1324,10 @@ class PrefrontalCortex:
                 cap_count = len(info.get("capabilities", []))
                 lines.append(f"[当前频道] {adapter_key} ({info.get('name', '?')}) | {cap_count} 项能力")
 
-        # 短期记忆状态
-        if self.temporary:
-            lines.append(f"[短期记忆] {len(self.temporary)}/{self._max_temp} 条")
+        # 短期记忆状态（本 scope 桶）
+        temp_count = len(self.get_temporary(_safe_entity_scope(anything)))
+        if temp_count:
+            lines.append(f"[短期记忆] {temp_count}/{self._max_temp} 条")
 
         if execution_steps:
             lines.append("[已完成步骤（以下操作已执行成功，请勿重复）]")
@@ -1249,11 +1335,17 @@ class PrefrontalCortex:
 
         pending = self.peek_all_tasks()
         if pending:
-            lines.append(f"[待处理消息] {len(pending)} 条：")
-            for scope, uid, group_id, preview in pending[:3]:
-                lines.append(f"  • {scope}: {preview}")
-            if len(pending) > 3:
-                lines.append(f"  • ...还有 {len(pending) - 3} 条")
+            current = _safe_entity_scope(anything)
+            lines.append(f"[会话通知] {len(pending)} 个会话有新消息待处理：")
+            for scope, _uid, _gid, preview in pending[:5]:
+                unread = self.get_unread_count(scope)
+                label = _format_scope_label(scope, self.get_adapter_key(scope))
+                marker = "（当前会话）" if scope == current else ""
+                unread_text = f"{unread} 条未读: " if unread > 0 else ""
+                lines.append(f"  • {label}{marker} — {unread_text}{preview[:80]}")
+            if len(pending) > 5:
+                lines.append(f"  • ...还有 {len(pending) - 5} 个会话")
+            lines.append(_SESSION_NOTIFY_HINT)
             lines.append(_PENDING_HINT)
         else:
             lines.append(_NO_PENDING_HINT)
@@ -1277,14 +1369,23 @@ class PrefrontalCortex:
     # ==================================================================
 
     def delete_temporary(self, index: int) -> bool:
-        if 0 <= index < len(self.temporary):
-            self.temporary.pop(index)
-            return True
+        """按全桶展开视图的索引删除一条短期记忆。"""
+        if index < 0:
+            return False
+        offset = index
+        for key in list(self._temporary.keys()):
+            bucket = self._temporary[key]
+            if offset < len(bucket):
+                bucket.pop(offset)
+                if not bucket:
+                    del self._temporary[key]
+                return True
+            offset -= len(bucket)
         return False
 
     def clear_temporary(self) -> int:
-        count = len(self.temporary)
-        self.temporary.clear()
+        count = sum(len(bucket) for bucket in self._temporary.values())
+        self._temporary.clear()
         return count
 
     def get_entity_list(self) -> List[Dict]:

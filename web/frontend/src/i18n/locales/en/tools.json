@@ -37,7 +37,9 @@
     "devops": "DevOps",
     "skills": "Skills",
     "delegation": "Sub-agents",
-    "ui": "UI Interaction"
+    "ui": "UI Interaction",
+    "session": "Session Manager",
+    "file_share": "File Share"
   },
   "reload": "Reload",
   "reloading": "Reloading...",

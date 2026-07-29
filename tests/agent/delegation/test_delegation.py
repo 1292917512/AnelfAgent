@@ -23,7 +23,7 @@ class _FakeMind:
 
     def __init__(self, output: str = "子任务完成报告") -> None:
         self.reflect = AsyncMock(return_value=output)
-        self.pfc = type("PFC", (), {"add_temporary": lambda self, clip: None})()
+        self.pfc = type("PFC", (), {"add_temporary": lambda self, clip, scope="": None})()
 
     def get_model_context_length(self) -> int:
         return 128_000

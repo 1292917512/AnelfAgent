@@ -7,6 +7,8 @@
 - 结果聚合：按 task_index 排序，摘要按父上下文剩余空间动态截断
 - 后台模式：登记 BackgroundTaskRegistry 后立即返回 delegation_id，
   结果按注册表路由（轮内会合注入 / 完成即新 turn 通知）
+- 事件发射：``EVENT_DELEGATION_STARTED`` / ``EVENT_DELEGATION_PROGRESS`` /
+  ``EVENT_DELEGATION_RESOLVED`` —— 前端据此渲染 DelegationCard 实时进度。
 """
 from __future__ import annotations
 
@@ -15,7 +17,12 @@ import json
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from core.event_bus import event_bus
+from core.event_bus import (
+    event_bus,
+    EVENT_DELEGATION_STARTED,
+    EVENT_DELEGATION_PROGRESS,
+    EVENT_DELEGATION_RESOLVED,
+)
 from core.log import log
 
 from agent.delegation.sub_agent import (
@@ -29,6 +36,23 @@ if TYPE_CHECKING:
     from agent.mind.mind import Mind
 
 EVENT_DELEGATION_COMPLETED = "delegation.completed"
+
+
+def _current_scope() -> str:
+    """读取当前对话 scope（用于 delegation 事件按 scope 路由到对应 chat_id）。"""
+    try:
+        from agent.mind.tool_activation import ToolActivationManager
+        return ToolActivationManager.current_scope()
+    except Exception:
+        return "_global"
+
+
+def _parse_scope_chat_id(scope: str) -> tuple[str, str]:
+    """从 scope 提取 (user_scope, chat_id)。"""
+    if "#" in scope:
+        base, chat_id = scope.split("#", 1)
+        return base, chat_id
+    return scope, ""
 
 # 结果摘要预算（参考 hermes：父上下文剩余空间的 50% 均分给各子任务）
 _SUMMARY_HEADROOM_FRACTION = 0.5
@@ -76,23 +100,68 @@ class DelegationManager:
         # 嵌套方持槽等待时不再竞争同一把信号量
         semaphore = self._semaphore if current_depth() < 1 else self._nested_semaphore
         timeout = _acquire_timeout_seconds()
+        delegation_id = uuid.uuid4().hex[:8]
+        scope = _current_scope()
+        _user_scope, chat_id = _parse_scope_chat_id(scope)
+
+        # 发射 started 事件（前端 DelegationCard 渲染）
+        try:
+            await event_bus.emit(EVENT_DELEGATION_STARTED, {
+                "scope": scope,
+                "chat_id": chat_id,
+                "delegation_id": delegation_id,
+                "goal": goal,
+                "context_preview": context[:200],
+                "role": normalize_role(role),
+                "task_index": task_index,
+                "background": False,
+                "depth": current_depth(),
+                "ts": asyncio.get_event_loop().time(),
+            })
+        except Exception:
+            pass
+
         try:
             await asyncio.wait_for(semaphore.acquire(), timeout)
         except asyncio.TimeoutError:
             log(f"委托并发槽获取超时（>{timeout:.0f}s）: {goal[:60]}", "WARNING", tag="委托")
-            return SubAgentResult(
+            fail_result = SubAgentResult(
                 goal=goal, success=False,
                 error=f"获取委托并发槽超时（>{timeout:.0f}s），子代理并发已满",
                 role=normalize_role(role), task_index=task_index,
             )
+            try:
+                await event_bus.emit(EVENT_DELEGATION_RESOLVED, {
+                    "scope": scope, "chat_id": chat_id,
+                    "delegation_id": delegation_id, "goal": goal,
+                    "success": False, "error": fail_result.error,
+                    "task_index": task_index,
+                })
+            except Exception:
+                pass
+            return fail_result
         try:
             agent = SubAgent(
                 self._mind, goal, context,
                 role=role, max_iterations=max_iterations, task_index=task_index,
             )
-            return await agent.run()
+            result = await agent.run()
         finally:
             semaphore.release()
+
+        # 发射 resolved 事件
+        try:
+            await event_bus.emit(EVENT_DELEGATION_RESOLVED, {
+                "scope": scope, "chat_id": chat_id,
+                "delegation_id": delegation_id, "goal": goal,
+                "success": result.success,
+                "output": result.output[:2000],
+                "error": result.error,
+                "task_index": task_index,
+            })
+        except Exception:
+            pass
+        return result
 
     async def delegate_batch(
             self,
@@ -154,6 +223,25 @@ class DelegationManager:
             delegation_id = registry.register(scope or "_global", "delegation", goal[:80])
         else:
             delegation_id = uuid.uuid4().hex[:8]
+
+        # 发射 started 事件
+        effective_scope = scope or _current_scope()
+        _user_scope, chat_id = _parse_scope_chat_id(effective_scope)
+        try:
+            asyncio.create_task(event_bus.emit(EVENT_DELEGATION_STARTED, {
+                "scope": effective_scope,
+                "chat_id": chat_id,
+                "delegation_id": delegation_id,
+                "goal": goal,
+                "context_preview": context[:200],
+                "role": normalize_role(role),
+                "task_index": 0,
+                "background": True,
+                "depth": current_depth(),
+            }))
+        except Exception:
+            pass
+
         task = asyncio.create_task(
             self._run_background(delegation_id, goal, context, role, max_iterations, scope),
             name=f"delegation.{delegation_id}",
@@ -187,6 +275,24 @@ class DelegationManager:
 
         status = "成功" if result.success else "失败"
         summary = (result.output if result.success else result.error) or ""
+
+        # 向 webui 前端推 resolved（DelegationCard 关闭/标完成）
+        effective_scope = scope or _current_scope()
+        _user_scope, chat_id = _parse_scope_chat_id(effective_scope)
+        try:
+            await event_bus.emit(EVENT_DELEGATION_RESOLVED, {
+                "scope": effective_scope,
+                "chat_id": chat_id,
+                "delegation_id": delegation_id,
+                "goal": goal,
+                "success": result.success,
+                "output": result.output[:2000],
+                "error": result.error,
+                "task_index": 0,
+                "background": True,
+            })
+        except Exception:
+            pass
         note = (
             f"[后台委托完成] id={delegation_id} 状态={status}\n"
             f"目标: {goal[:200]}\n结果: {summary[:1500]}"
@@ -208,7 +314,8 @@ class DelegationManager:
         else:
             # 轮内会合（等待者已收到注入）或无回复目标：结果写入短期记忆兜底，
             # 保证后续轮次可见、信息不丢失
-            self._mind.pfc.add_temporary({"role": "user", "content": note})
+            temp_scope = scope if scope.startswith(("user_", "group_")) else ""
+            self._mind.pfc.add_temporary({"role": "user", "content": note}, scope=temp_scope)
         log(f"后台委托完成: {delegation_id} ({status})", tag="委托")
 
     def background_tasks_snapshot(self, scope: str) -> Dict[str, Any]:

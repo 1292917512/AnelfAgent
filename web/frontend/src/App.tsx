@@ -1,4 +1,4 @@
-import { lazy, useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/layout/Layout";
 import { AuthGate } from "./components/AuthGate";
@@ -9,26 +9,50 @@ import { useAppStore } from "./stores/app-store";
 import { useChatStore } from "./stores/chat-store";
 import { configApi } from "./lib/api";
 
-// 页面级懒加载：重依赖（xyflow / CodeMirror 等）随路由按需拆分，避免全部打进主 chunk
-const Chat = lazy(() => import("./pages/Chat"));
-const Dashboard = lazy(() => import("./pages/Dashboard"));
-const Models = lazy(() => import("./pages/Models"));
-const Personas = lazy(() => import("./pages/Personas"));
-const Memory = lazy(() => import("./pages/Memory"));
-const Tools = lazy(() => import("./pages/Tools"));
-const Skills = lazy(() => import("./pages/Skills"));
-const Mcp = lazy(() => import("./pages/Mcp"));
-const Config = lazy(() => import("./pages/Config"));
-const Channels = lazy(() => import("./pages/Channels"));
-const Approvals = lazy(() => import("./pages/Approvals"));
-const Settings = lazy(() => import("./pages/Settings"));
-const Heartbeat = lazy(() => import("./pages/Heartbeat"));
-const Thinking = lazy(() => import("./pages/Thinking"));
-const Tags = lazy(() => import("./pages/Tags"));
-const Tasks = lazy(() => import("./pages/Tasks"));
-const Stickers = lazy(() => import("./pages/Stickers"));
-const Data = lazy(() => import("./pages/Data"));
-const EntityDetail = lazy(() => import("./pages/EntityDetail"));
+// 页面模块自动发现：pages/*.tsx 按文件名映射路由 path
+// 命名约定：Share.tsx → /share, Dashboard.tsx → /dashboard
+const pageModules = import.meta.glob("./pages/*.tsx");
+
+function lazyPage(name: string) {
+  const loader = pageModules[`./pages/${name}.tsx`];
+  return loader ? lazy(loader as () => Promise<{ default: React.ComponentType }>) : null;
+}
+
+// 核心路由注册表：声明式集中管理，新增页面只需在此追加一行
+// - index: true → 首页（path="/"）
+// - redirectTo → Navigate 重定向
+// - path 含 ":" → 参数路由（如 entities/:name）
+interface CoreRoute {
+  path?: string;
+  page: string;
+  index?: boolean;
+  redirectTo?: string;
+}
+
+const CORE_ROUTES: CoreRoute[] = [
+  { index: true, page: "Chat" },
+  { path: "dashboard", page: "Dashboard" },
+  { path: "status", page: "Chat", redirectTo: "/" },
+  { path: "models", page: "Models" },
+  { path: "capabilities", page: "Tools", redirectTo: "/tools" },
+  { path: "tools", page: "Tools" },
+  { path: "entities/:name", page: "EntityDetail" },
+  { path: "skills", page: "Skills" },
+  { path: "mcp", page: "Mcp" },
+  { path: "tags", page: "Tags" },
+  { path: "personas", page: "Personas" },
+  { path: "memory", page: "Memory" },
+  { path: "stickers", page: "Stickers" },
+  { path: "share", page: "Share" },
+  { path: "data", page: "Data" },
+  { path: "config", page: "Config" },
+  { path: "channels", page: "Channels" },
+  { path: "approvals", page: "Approvals" },
+  { path: "tasks", page: "Tasks" },
+  { path: "heartbeat", page: "Heartbeat" },
+  { path: "thinking", page: "Thinking" },
+  { path: "settings", page: "Settings" },
+];
 
 export default function App() {
   const setConfig = useAppStore((s) => s.setConfig);
@@ -49,28 +73,31 @@ export default function App() {
   return (
     <AuthGate>
       <BrowserRouter basename="/webui">
-        <Routes>          <Route element={<Layout />}>
-            <Route index element={<Chat />} />
-            <Route path="dashboard" element={<Dashboard />} />
-            <Route path="status" element={<Navigate to="/" replace />} />
-            <Route path="models" element={<Models />} />
-            <Route path="capabilities" element={<Navigate to="/tools" replace />} />
-            <Route path="tools" element={<Tools />} />
-            <Route path="entities/:name" element={<EntityDetail />} />
-            <Route path="skills" element={<Skills />} />
-            <Route path="mcp" element={<Mcp />} />
-            <Route path="tags" element={<Tags />} />
-            <Route path="personas" element={<Personas />} />
-            <Route path="memory" element={<Memory />} />
-            <Route path="stickers" element={<Stickers />} />
-            <Route path="data" element={<Data />} />
-            <Route path="config" element={<Config />} />
-            <Route path="channels" element={<Channels />} />
-            <Route path="approvals" element={<Approvals />} />
-            <Route path="tasks" element={<Tasks />} />
-            <Route path="heartbeat" element={<Heartbeat />} />
-            <Route path="thinking" element={<Thinking />} />
-            <Route path="settings" element={<Settings />} />
+        <Routes>
+          <Route element={<Layout />}>
+            {CORE_ROUTES.map((r) => {
+              const Page = lazyPage(r.page);
+              if (!Page) return null;
+              const element = (
+                <Suspense fallback={<div className="p-4 text-muted">加载中…</div>}>
+                  <Page />
+                </Suspense>
+              );
+              if (r.redirectTo) {
+                return (
+                  <Route
+                    key={r.path ?? "index"}
+                    path={r.path}
+                    element={<Navigate to={r.redirectTo} replace />}
+                  />
+                );
+              }
+              return r.index ? (
+                <Route key="index" index element={element} />
+              ) : (
+                <Route key={r.path} path={r.path} element={element} />
+              );
+            })}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

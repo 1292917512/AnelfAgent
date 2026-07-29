@@ -29,22 +29,26 @@ def register_output_tools(conversation_data: Optional[Any] = None) -> None:
     log(f"统一输出工具已注册 ({count} 个)", tag="通道")
 
 
-async def _record_sent_reply(target_id: str, content: str, channel_type: str) -> None:
+async def _record_sent_reply(target_id: str, content: str, channel_type: str, session_id: str = "") -> None:
     """将 AI 发送的回复记录到对话历史（assistant 角色）。
 
     主流做法：对话历史应同时包含用户消息与 AI 回复，
     否则 AI 在历史中看不到自己说过什么，导致重复回复/上下文断裂。
     内容原样入库，不附加元数据标签——assistant 消息带标签会
     诱发模型模仿标签格式并泄漏到出站文本。
+    session_id 非空时写入对应子会话分桶（与 entity_scope 规则一致）。
     """
     if _conversation_data is None or not content:
         return
     try:
         from agent.storage.storage_router import StorageDomain
         scope_type = "group" if channel_type == "group" else "user"
+        scope_id = str(target_id)
+        if session_id and session_id != scope_id:
+            scope_id = f"{scope_id}#{session_id}"
         await _conversation_data.router.append(
             StorageDomain.CONVERSATION,
-            scope_type=scope_type, scope_id=str(target_id),
+            scope_type=scope_type, scope_id=scope_id,
             role="assistant", content=content,
         )
     except Exception as exc:

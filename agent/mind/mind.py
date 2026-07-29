@@ -251,6 +251,10 @@ class Mind:
         if _END_REPLY_TOOL_NAME not in EntityRegistry.get_all_names():
             activate_group("thinking", "思维工具 - 对话流程控制与工具编排")
             log("思维工具已注册 (end_reply)", "DEBUG", tag="思维")
+        if "switch_session" not in EntityRegistry.get_all_names():
+            count = activate_group("session", "会话管理 — 多频道/多会话的发现与切换")
+            if count:
+                log(f"会话管理工具已注册 ({count} 个)", "DEBUG", tag="思维")
 
     def _resolve_adapter_key(self) -> str:
         """获取当前回复的 adapter_key。"""
@@ -1512,14 +1516,14 @@ class Mind:
 
     @staticmethod
     def _resolve_entity_scope(anything: Optional[Everything]) -> str:
-        """从消息对象解析实体 scope（如 user_123 / group_456）。"""
+        """从消息对象解析实体 scope（如 user_123 / group_456 / user_123#chat_id）。
+
+        使用 ``everything.entity_scope`` 属性（支持 session_id 多会话后缀），
+        而不是手工拼接——保证与 webui 多 chat_id 隔离一致。
+        """
         if not anything:
             return ""
-        if isinstance(anything, EverythingGroup) and anything.is_group_scope:
-            return f"group_{anything.group_id}"
-        if anything.uid:
-            return f"user_{anything.uid}"
-        return ""
+        return anything.entity_scope
 
     _RELATED_UID_RE = re.compile(r"\[(?:uid|at_uid):([^\]]+)\]")
 

@@ -33,9 +33,15 @@ class ChatService:
         media_segments: Optional[list] = None,
         user_id: str = "web_user",
         user_name: str = "用户",
+        chat_id: Optional[str] = None,
         adapter_key: str = "webui",
     ) -> None:
-        """通过 AgentApp 发送一条消息。"""
+        """通过 AgentApp 发送一条消息。
+
+        Args:
+            chat_id: 前端多会话标识；非空时写入 ``Everything.session_id``，
+                参与 ``entity_scope`` 计算实现同 uid 多会话隔离。
+        """
         app = get_agent_app()
         if app is None:
             raise RuntimeError("AgentApp 尚未初始化")
@@ -47,6 +53,7 @@ class ChatService:
             images=images or None,
             media_segments=media_segments or None,
             adapter_key=adapter_key,
+            session_id=chat_id or "",
         )
 
     def register_output(self, output: Any, adapter_key: str = "webui") -> None:
