@@ -124,8 +124,12 @@ async def upload_sticker(
     """上传表情包：description 留空时自动调用视觉模型生成。"""
     from entities.sticker.phash import compute_phash
     from entities.sticker.tools import (
-        _describe_sticker, _embed_for_index, _import_to_stickers_dir,
-        _md5_file, _parse_tags, _stickers_dir,
+        _describe_sticker,
+        _embed_for_index,
+        _import_to_stickers_dir,
+        _md5_file,
+        _parse_tags,
+        _stickers_dir,
     )
 
     ext = os.path.splitext(file.filename or "")[1].lower()
@@ -167,7 +171,7 @@ async def upload_sticker(
         try:
             os.remove(tmp_path)
         except OSError:
-            pass
+            log("upload_sticker 异常已忽略", "DEBUG")
 
 
 class StickerUpdate(BaseModel):

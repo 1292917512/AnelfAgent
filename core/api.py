@@ -1,14 +1,23 @@
 """
-简化的独立API注册系统 - 去除钩子函数和锁机制
+独立 API 注册系统（Deprecated）。
+
+.. deprecated::
+    本模块与 EntityRegistry（core/entity.py）功能大面积重叠，属遗留双轨，
+    唯一消费方是 bootstrap 中的 ``EntityRegistry.import_from_api_registry()``
+    （用于兼容旧版经 APIRegistry 注册的 PUBLIC API）。
+    新代码请直接使用 EntityRegistry.register_tool() 注册工具实体。
+
 提供统一的API装饰器系统，支持分组管理
 """
+import asyncio
 import inspect
 import time
-from typing import Dict, Any, Callable, Optional, List, Set
 from dataclasses import dataclass, field
 from enum import Enum
-from core.log import log
+from typing import Any, Callable, Dict, List, Optional, Set
+
 from core.exceptions import catch_exceptions
+from core.log import log
 
 
 class ApiType(Enum):
@@ -37,7 +46,7 @@ class ParameterInfo:
     default_value: Any = inspect.Parameter.empty
     required: bool = True
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.required = self.default_value == inspect.Parameter.empty
 
 
@@ -55,13 +64,13 @@ class ApiMetadata:
     return_type: str = "Any"
     enabled: bool = True
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """自动分析函数信息"""
-        if self.func and callable(self.func):
+        if self.func is not None and callable(self.func):
             self._analyze_function()
 
     @catch_exceptions()
-    def _analyze_function(self):
+    def _analyze_function(self) -> None:
         """分析函数信息"""
         sig = inspect.signature(self.func)
 
@@ -133,7 +142,7 @@ class APIRegistry:
         return cls._apis.get(name)
 
     @classmethod
-    async def call(cls, name: str, *args, **kwargs) -> Any:
+    async def call(cls, name: str, *args: Any, **kwargs: Any) -> Any:
         """调用API（ASYNC_FUNCTION 返回的协程会被自动 await）"""
         start_time = time.time()
 
@@ -147,9 +156,13 @@ class APIRegistry:
         stats['last_called'] = start_time
 
         try:
-            result = metadata.func(*args, **kwargs)
-            if inspect.iscoroutine(result):
-                result = await result
+            if inspect.iscoroutinefunction(metadata.func):
+                result = await metadata.func(*args, **kwargs)
+            else:
+                # 同步函数在线程中执行，避免阻塞事件循环
+                result = await asyncio.to_thread(metadata.func, *args, **kwargs)
+                if inspect.iscoroutine(result):
+                    result = await result
             stats['success_count'] += 1
             stats['total_time'] += time.time() - start_time
             return result
@@ -314,7 +327,7 @@ class APIRegistry:
 
 
 # 注册api 用此装饰器可以直接修饰函数 完成函数的封装
-def api(name: Optional[str] = None, scope: ApiScope = ApiScope.PUBLIC, group: str = "default", description: str = "", tags: Optional[List[str]] = None, enabled: bool = True):
+def api(name: Optional[str] = None, scope: ApiScope = ApiScope.PUBLIC, group: str = "default", description: str = "", tags: Optional[List[str]] = None, enabled: bool = True) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """简化的API装饰器"""
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         # 生成API名称

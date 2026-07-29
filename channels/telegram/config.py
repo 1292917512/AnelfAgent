@@ -33,6 +33,11 @@ TELEGRAM_CONFIGS: Dict[str, Dict[str, Any]] = {
             "default": False,
             "value_type": ConfigValueType.BOOLEAN,
         },
+        "channel_post_trigger": {
+            "description": "频道帖子是否触发思考（默认关闭，帖子仅感知入窗不唤醒 Mind）",
+            "default": False,
+            "value_type": ConfigValueType.BOOLEAN,
+        },
         "reply_to_mode": {
             "description": "回复引用策略",
             "default": "first",

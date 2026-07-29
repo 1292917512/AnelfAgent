@@ -256,7 +256,7 @@ class Embedder:
         vec = (
             results[0]
             if len(results) == 1
-            else [sum(vals) / len(results) for vals in zip(*results)]
+            else [sum(vals) / len(results) for vals in zip(*results, strict=False)]
         )
         log(f"Embedding 图片（{'融合' if text.strip() else '纯图'}）→ {len(vec)}维", "DEBUG", tag="思维")
         self._cache_put(key, vec)

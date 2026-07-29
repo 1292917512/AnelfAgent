@@ -35,7 +35,7 @@ async def toggle_tool(name: str) -> Dict[str, Any]:
         enabled = _tool_svc.toggle_tool(name)
         return {"name": name, "enabled": enabled}
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
 
 
 @router.put("/{name}/meta")
@@ -44,7 +44,7 @@ async def update_tool_meta(name: str, body: ToolMetaUpdate) -> Dict[str, Any]:
     try:
         ok = _tool_svc.update_tool_meta(name, tags=body.tags, description=body.description)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     if not ok:
         raise HTTPException(404, f"工具 '{name}' 不存在")
     return {"status": "ok", "name": name, "tags": body.tags, "description": body.description}

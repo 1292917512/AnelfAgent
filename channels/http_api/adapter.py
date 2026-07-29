@@ -7,27 +7,29 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import hmac
+import time
 import uuid
 from typing import Any, Dict, List, Optional, Set
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request
 from pydantic import BaseModel, Field
 
 from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
-from agent.channel.channel_types import ChannelCapability, ChannelStatus, _ok, _err
+from agent.channel.channel_types import ChannelCapability, ChannelStatus, _err, _ok
 from agent.channel.schemas import (
-    AdapterChannel, ChannelType, SendRequest, SendResponse, SendSegment,
-    ChannelInfo, ChannelUser, ChannelUserRole, HealthStatus,
+    ChannelInfo,
+    ChannelType,
+    ChannelUser,
+    ChannelUserRole,
+    HealthStatus,
+    SendRequest,
+    SendResponse,
 )
-import time
-from pydantic import Field
 from agent.llm.types import ImageContent
 from core.log import log
 
 from .config import HTTP_API_CONFIGS
-
 
 # ------------------------------------------------------------------
 # Request / Response
@@ -106,12 +108,18 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         host: str = self.config.host
         port: int = int(self.config.port)
 
+        if not self._is_loopback(host) and not self.config.api_token:
+            raise RuntimeError(
+                f"HTTP API 频道监听非回环地址 {host} 但未配置 api_token，"
+                "拒绝启动（外部请求将无法被认证）。请配置 api_token 或将 host 改为 127.0.0.1"
+            )
+
         app = self._create_app()
         config = uvicorn.Config(app, host=host, port=port, log_level="warning")
         self._server = uvicorn.Server(config)
         self._server_task = asyncio.create_task(self._server.serve())
         self._status = ChannelStatus.RUNNING
-        log(f"HTTP API 频道已启动: http://{host}:{port}")
+        log(f"HTTP API 频道已启动: http://{host}:{port}（认证: {'token' if self.config.api_token else '仅回环'}）")
 
     async def stop(self) -> None:
         if self._server:
@@ -120,7 +128,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             try:
                 await asyncio.wait_for(self._server_task, timeout=5.0)
             except (asyncio.TimeoutError, asyncio.CancelledError, KeyboardInterrupt):
-                pass
+                log("stop 异常已忽略", "DEBUG")
             self._server_task = None
         for fut in self._pending_replies.values():
             if not fut.done():
@@ -141,6 +149,21 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
     # 内部
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_loopback(host: str) -> bool:
+        return host in ("127.0.0.1", "localhost", "::1")
+
+    def _check_auth(self, request: Request) -> bool:
+        """校验 API Token（未配置时仅允许回环来源，启动时已强制）。"""
+        token = self.config.api_token
+        if not token:
+            return True
+        provided = request.headers.get("x-api-token", "")
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            provided = auth[7:].strip()
+        return bool(provided) and hmac.compare_digest(provided, token)
+
     def _expect_reply(self, reply_key: str) -> asyncio.Future[str]:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
@@ -153,16 +176,16 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         timeout: int = int(self.config.reply_timeout)
 
         fastapi_app = FastAPI(title="AnelfAgent HTTP API", version="1.0.0")
-        fastapi_app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
         adapter = self
 
         @fastapi_app.post("/api/chat", response_model=ChatResponse)
-        async def chat(req: ChatRequest) -> ChatResponse:
+        async def chat(req: ChatRequest, request: Request) -> ChatResponse:
+            if not adapter._check_auth(request):
+                return ChatResponse(
+                    request_id=req.request_id,
+                    status="error",
+                    error="未认证：缺少或错误的 API Token",
+                )
             agent_app = get_agent_app()
             reply_key = req.user_id if not req.group_id else req.group_id
             fut = adapter._expect_reply(reply_key)
@@ -192,6 +215,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             try:
                 reply = await asyncio.wait_for(fut, timeout=timeout)
             except asyncio.TimeoutError:
+                adapter._pending_replies.pop(reply_key, None)
                 return ChatResponse(
                     request_id=req.request_id,
                     status="timeout",
@@ -236,13 +260,6 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             is_bot=True,
         )
 
-    async def get_user_info(self, user_id: str, channel_id: str) -> ChannelUser:
-        return ChannelUser(
-            platform=self.channel_id,
-            user_id=user_id,
-            user_name=user_id,
-        )
-
     async def get_channel_info(self, channel_id: str) -> ChannelInfo:
         return ChannelInfo(
             channel_id=channel_id,
@@ -269,30 +286,4 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             healthy=True,
             detail=f"HTTP API listening on {self.config.host}:{self.config.port}",
             last_success_at=time.time(),
-        )
-
-    async def render_approval_prompt(self, ctx) -> SendRequest:
-        """渲染批准提示（HTTP API 文本提示）。"""
-        from agent.channel.base import ApprovalPromptRenderContext
-
-        text = (
-            f"⚠️ 工具调用需要批准\n"
-            f"工具: {ctx.tool_name}\n"
-            f"参数: {ctx.tool_args_summary[:200]}\n"
-            f"风险: {ctx.risk_level}\n"
-            f"原因: {ctx.reason}\n"
-            f"超时: {ctx.timeout_seconds:.0f}s\n"
-            f"\n"
-            f"回复以下命令之一：\n"
-            f"  approve {ctx.request_id}\n"
-            f"  deny {ctx.request_id}"
-        )
-
-        return SendRequest(
-            adapter_key=self.channel_id,
-            channel=AdapterChannel(
-                channel_id="",  # 由 approval/gate.py 填充
-                channel_type=ChannelType.PRIVATE,
-            ),
-            segments=[SendSegment(type="text", content=text)],
         )

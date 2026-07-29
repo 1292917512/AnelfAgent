@@ -43,15 +43,17 @@ def extract_tag_brackets(text: str) -> List[str]:
 
 def etag_all(text: str) -> List[Tuple[str, str]]:
     """提取所有 tag（支持转义字符），跳过非 key:value 格式的方括号。"""
-    text_tags = extract_tag_brackets(text)
-    unique_tags: dict[Tuple[str, str], Tuple[str, str]] = {}
-    for tag in text_tags:
+    seen: set[Tuple[str, str]] = set()
+    result: List[Tuple[str, str]] = []
+    for tag in extract_tag_brackets(text):
         try:
             tag_tuple = etag(tag)
         except ValueError:
             continue
-        unique_tags[(tag_tuple[0], tag_tuple[1])] = tag_tuple
-    return list(unique_tags.values())
+        if tag_tuple not in seen:
+            seen.add(tag_tuple)
+            result.append(tag_tuple)
+    return result
 
 
 def batch_remove_tags(text: str) -> str:
@@ -77,12 +79,15 @@ def strip_message_meta_tags(text: str) -> str:
     return _meta_tag_pattern.sub("", text)
 
 
-def get_current_time(time_format: str = "%Y年%m月%d日%H时%M分%S秒") -> str:
+DEFAULT_TIME_FORMAT = "%Y年%m月%d日%H时%M分%S秒"
+
+
+def get_current_time(time_format: str = DEFAULT_TIME_FORMAT) -> str:
     """返回当前时间的格式化字符串。"""
     return datetime.datetime.now().strftime(time_format)
 
 
-def format_time(ts_ns: int, time_format: str = "%Y年%m月%d日%H时%M分%S秒") -> str:
+def format_time(ts_ns: int, time_format: str = DEFAULT_TIME_FORMAT) -> str:
     """将纳秒时间戳格式化为时间字符串。"""
     return datetime.datetime.fromtimestamp(ts_ns / 1_000_000_000).strftime(time_format)
 
@@ -94,7 +99,7 @@ def get_time_tag(ts_ns: Optional[int] = None) -> str:
     return tag_label("time", format_time(ts_ns))
 
 
-async def rm_unless_text(text: str) -> str:
+def rm_unless_text(text: str) -> str:
     """清理 LLM 输出文本：移除 ``<think>...</think>`` 并去除首尾空白。"""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     return text.strip()

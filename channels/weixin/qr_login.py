@@ -238,7 +238,7 @@ class QrLoginManager:
             if not session.http_session.closed:
                 await session.http_session.close()
         except Exception:
-            pass
+            log("_close 异常已忽略", "DEBUG")
 
     async def discard(self, session_id: str) -> None:
         session = self._sessions.pop(session_id, None)

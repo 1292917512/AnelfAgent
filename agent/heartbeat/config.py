@@ -6,17 +6,14 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.llm.reasoning import CANONICAL_EFFORTS
 from core.log import log
 from core.path import ConfigPaths
-
-from agent.llm.reasoning import CANONICAL_EFFORTS
 
 _CONFIG_PATH = Path(ConfigPaths.HEARTBEAT_CONFIG)
 _REASONING_EFFORT_VALUES = frozenset(CANONICAL_EFFORTS)
@@ -154,23 +151,11 @@ class HeartbeatConfig:
         }
 
     def save(self, path: Optional[Path] = None) -> None:
+        from core.file_utils import atomic_write_text
+
         p = path or _CONFIG_PATH
-        p.parent.mkdir(parents=True, exist_ok=True)
         content = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
-        fd, tmp = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
-        try:
-            os.write(fd, content.encode("utf-8"))
-            os.close(fd)
-            fd = -1
-            os.replace(tmp, str(p))
-        except BaseException:
-            if fd >= 0:
-                os.close(fd)
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        atomic_write_text(p, content)
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> HeartbeatConfig:
@@ -217,7 +202,7 @@ def _try_migrate() -> HeartbeatConfig:
             from agent.config import get_config_provider
             old_interval = get_config_provider().mind.heartbeat_interval
         except Exception:
-            pass
+            log("_try_migrate 异常已忽略", "DEBUG")
         cfg.interval_seconds = old_interval
 
         reflect_hours = float(old.get("reflect_min_hours", 1.0))
@@ -235,7 +220,7 @@ def _try_migrate() -> HeartbeatConfig:
                         every_n_beats=reflect_beats,
                     ))
                 except Exception:
-                    pass
+                    log("_try_migrate 异常已忽略", "DEBUG")
 
         cfg.task_schedules.append(TaskSchedule(
             task_name="self_reflection",

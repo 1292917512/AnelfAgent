@@ -16,9 +16,9 @@ import uuid
 from typing import Any, AsyncIterator, Dict, Optional
 
 from core.event_bus import (
-    event_bus,
-    EVENT_THINKING_SESSION_START,
     EVENT_THINKING_SESSION_END,
+    EVENT_THINKING_SESSION_START,
+    event_bus,
 )
 
 #: 当前执行上下文所属的思维链路会话 id（无会话时为 None）

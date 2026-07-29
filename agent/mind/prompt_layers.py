@@ -25,8 +25,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
-from core.log import log
-
 # 层名常量
 LAYER_STABLE = "stable"
 LAYER_CONTEXT = "context"
@@ -169,6 +167,9 @@ class FileLayerCache:
     def get_or_load(self, path: Path, loader: Callable[[], str]) -> Tuple[str, bool]:
         """获取文件型层内容，mtime+size 未变时直接命中。
 
+        缓存键包含 loader 标识：同一路径可被不同 loader 构建出不同内容
+        （如 stable guide 与 dynamic notes 共用 notes 目录），必须分别缓存。
+
         Args:
             path: 用于 stat 检测的文件/目录路径。
             loader: 文件变化时调用的构建函数。
@@ -176,7 +177,7 @@ class FileLayerCache:
         Returns:
             (内容, 是否命中缓存)。
         """
-        key = str(path)
+        key = f"{path}::{getattr(loader, '__qualname__', repr(loader))}"
         try:
             st = os.stat(path)
             mtime_ns, size = st.st_mtime_ns, st.st_size
@@ -196,7 +197,9 @@ class FileLayerCache:
         if path is None:
             self._entries.clear()
         else:
-            self._entries.pop(str(path), None)
+            prefix = f"{path}::"
+            for key in [k for k in self._entries if k.startswith(prefix)]:
+                self._entries.pop(key, None)
 
 
 def is_prompt_cache_enabled() -> bool:

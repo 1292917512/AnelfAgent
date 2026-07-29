@@ -54,7 +54,7 @@ async def save_config(req: SaveConfigRequest) -> Dict[str, str]:
         await asyncio.to_thread(_mcp_svc.save_config_json, req.content)
         return {"status": "ok"}
     except Exception as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 @router.post("/")
@@ -66,12 +66,12 @@ async def add_server(req: CreateServerRequest) -> Dict[str, Any]:
     try:
         return await asyncio.to_thread(_mcp_svc.create_server, name, patch)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 @router.get("/{name}")
 async def get_server(name: str) -> Dict[str, Any]:
-    cfg = _mcp_svc.get_server_config(name)
+    cfg = _mcp_svc.get_server_config(name, mask_secrets=True)
     if cfg is None:
         raise HTTPException(404, f"服务器 '{name}' 不存在")
     return cfg
@@ -81,11 +81,15 @@ async def get_server(name: str) -> Dict[str, Any]:
 async def update_server(name: str, req: ServerConfigPayload) -> Dict[str, Any]:
     patch = req.model_dump(exclude_none=True)
     try:
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             _mcp_svc.update_server_config, name, patch, replace=True,
         )
+        # 响应同样脱敏，避免把真实密钥回显给前端
+        result["before"] = _mcp_svc.mask_secrets(result["before"])
+        result["after"] = _mcp_svc.mask_secrets(result["after"])
+        return result
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 @router.delete("/{name}")
@@ -94,7 +98,7 @@ async def remove_server(name: str) -> Dict[str, str]:
         await asyncio.to_thread(_mcp_svc.remove_server, name)
         return {"status": "ok"}
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
 
 
 @router.put("/{name}/toggle")
@@ -103,7 +107,7 @@ async def toggle_server(name: str) -> Dict[str, Any]:
     try:
         return await asyncio.shield(asyncio.to_thread(_mcp_svc.toggle_server, name))
     except asyncio.CancelledError:
-        raise HTTPException(503, "操作被中断，请重试")
+        raise HTTPException(503, "操作被中断，请重试") from None
 
 
 @router.get("/{name}/tools")

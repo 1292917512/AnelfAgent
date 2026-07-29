@@ -99,7 +99,7 @@ export function ConfigPanel() {
               onChange={(e) => update("token_length", parseInt(e.target.value, 10) || 22)}
               className="w-full px-3 py-2 text-sm rounded-md border border-border bg-elevated text-foreground focus:outline-none focus:ring-1 focus:ring-accent"
             />
-            <p className="text-xs text-muted mt-1">8 - 64 字符，默认 22</p>
+            <p className="text-xs text-muted mt-1">{t("tokenLengthHint")}</p>
           </div>
 
           {/* 默认下载上限 */}
@@ -124,7 +124,7 @@ export function ConfigPanel() {
                 {t("config.aiAutoShare")}
               </label>
               <p className="text-xs text-muted mt-0.5">
-                允许 AI 通过工具自动创建分享链接
+                {t("aiAutoShareDesc")}
               </p>
             </div>
             <button
@@ -148,7 +148,7 @@ export function ConfigPanel() {
                 {t("config.auditEnabled")}
               </label>
               <p className="text-xs text-muted mt-0.5">
-                记录每次下载的 IP / 时间 / User-Agent
+                {t("auditDesc")}
               </p>
             </div>
             <button

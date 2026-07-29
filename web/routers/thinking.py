@@ -10,6 +10,7 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from agent.mind.context_snapshot import context_snapshot
 from core.tracer import thinking_tracer
 
 router = APIRouter(prefix="/thinking", tags=["thinking"])
@@ -89,7 +90,6 @@ async def thinking_stream(request: Request) -> EventSourceResponse:
 @router.post("/snapshot/arm")
 async def arm_snapshot() -> Dict[str, Any]:
     """布防：等待下一次 LLM 调用时捕获完整上下文。"""
-    from agent.mind.context_snapshot import context_snapshot
     await context_snapshot.arm()
     return {"armed": True}
 
@@ -97,7 +97,6 @@ async def arm_snapshot() -> Dict[str, Any]:
 @router.get("/snapshot")
 async def get_snapshot() -> Dict[str, Any]:
     """获取已捕获的上下文快照（含分类后的 sections）。"""
-    from agent.mind.context_snapshot import context_snapshot
     snapshot = context_snapshot.get()
     if snapshot is None:
         return {"status": context_snapshot.get_status(), "snapshot": None}
@@ -107,6 +106,5 @@ async def get_snapshot() -> Dict[str, Any]:
 @router.post("/snapshot/clear")
 async def clear_snapshot() -> Dict[str, Any]:
     """清除快照 + 解除布防。"""
-    from agent.mind.context_snapshot import context_snapshot
     context_snapshot.clear()
     return {"armed": False, "has_snapshot": False}

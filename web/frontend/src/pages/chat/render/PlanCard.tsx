@@ -45,7 +45,7 @@ export function PlanCard({ plan }: Props) {
         >
           <Target size={14} className={cn("shrink-0", plan.status === "cancelled" ? "text-red-500" : "text-accent")} />
           <span className="text-sm font-medium text-foreground flex-1 min-w-0 truncate">
-            {plan.goal || t("card.untitled", { defaultValue: "执行计划" })}
+            {plan.goal || t("card.untitled")}
           </span>
           <span className="text-xs text-muted shrink-0 font-mono">
             {done}/{total}
@@ -89,7 +89,7 @@ export function PlanCard({ plan }: Props) {
               <PlanStatusBadge plan={plan} />
               {inProgress && (
                 <span className="text-muted">
-                  {t("card.workingOn", { defaultValue: "进行中" })}: {inProgress.content}
+                  {t("card.workingOn")}: {inProgress.content}
                 </span>
               )}
               {plan.cancel_reason && (

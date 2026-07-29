@@ -5,14 +5,16 @@ import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
 import { Check, Save, RotateCcw } from "lucide-react";
 import { AppField, type FieldMeta } from "@/pages/config/AppField";
+import type { ConfigValues } from "@/lib/types";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 
 export interface ConfigFormPanelProps {
   title: string;
   subtitle?: string;
   fields: FieldMeta[];
   queryKey: string;
-  fetchFn: () => Promise<Record<string, unknown>>;
-  saveFn: (data: Record<string, unknown>) => Promise<unknown>;
+  fetchFn: () => Promise<ConfigValues>;
+  saveFn: (data: ConfigValues) => Promise<unknown>;
   extraInvalidateKeys?: string[];
   note?: string;
 }
@@ -30,9 +32,9 @@ export function ConfigFormPanel({
   const { t: tc } = useTranslation("common");
   const { t: ta } = useTranslation("appconfig");
   const queryClient = useQueryClient();
-  const [form, setForm] = useState<Record<string, unknown>>({});
+  const [form, setForm] = useState<ConfigValues>({});
   const [hasChanges, setHasChanges] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saved, triggerSaved] = useCopyFeedback(2000);
 
   const { data, isLoading } = useQuery({
     queryKey: [queryKey],
@@ -44,15 +46,14 @@ export function ConfigFormPanel({
   }, [data]);
 
   const saveMutation = useMutation({
-    mutationFn: (values: Record<string, unknown>) => saveFn(values),
+    mutationFn: (values: ConfigValues) => saveFn(values),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [queryKey] });
       extraInvalidateKeys?.forEach((key) =>
         queryClient.invalidateQueries({ queryKey: [key] }),
       );
       setHasChanges(false);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      triggerSaved();
     },
   });
 

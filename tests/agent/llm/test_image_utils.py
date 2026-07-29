@@ -10,7 +10,6 @@ from __future__ import annotations
 import base64
 import io
 
-import pytest
 from PIL import Image
 
 from agent.llm.image_utils import load_image_from_bytes, optimize_for_vision

@@ -3,14 +3,55 @@
 提供统一的异步函数执行和线程池管理功能
 """
 import asyncio
+import os
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Coroutine, Callable, TypeVar
-from functools import wraps, partial
+from functools import partial, wraps
+from typing import Any, Callable, Coroutine, ParamSpec, Protocol, TypeVar, cast
 
 from core.log import log
 
 # 定义类型变量
 T = TypeVar('T')
+P = ParamSpec('P')
+R = TypeVar('R')
+
+
+class DualModeCallable(Protocol[P, R]):
+    """@dual_mode 装饰器返回的可调用对象：同步调用签名不变，并挂载 async_version 属性。"""
+
+    async_version: Callable[P, Coroutine[Any, Any, R]]
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+# 共享线程池的工作线程数：I/O 密集型任务按 CPU 核数放大
+_EXECUTOR_MAX_WORKERS = min(32, (os.cpu_count() or 4) + 4)
+
+# 模块级共享线程池：避免每次调用新建/销毁线程池的开销
+_shared_executor = ThreadPoolExecutor(
+    max_workers=_EXECUTOR_MAX_WORKERS,
+    thread_name_prefix="async_helper",
+)
+
+
+def shutdown_shared_executor() -> None:
+    """关闭共享线程池（进程退出时由 Lifecycle 调用）。"""
+    _shared_executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _register_shutdown_hook() -> None:
+    """将共享线程池的清理回调注册到 Lifecycle。"""
+    try:
+        from core.lifecycle import Lifecycle
+        Lifecycle.register(
+            "async_helper_executor",
+            _shared_executor,
+            cleanup=shutdown_shared_executor,
+        )
+    except Exception as e:
+        log(f"共享线程池关闭钩子注册失败: {e}", "DEBUG")
+
+
+_register_shutdown_hook()
 
 
 class AsyncHelper:
@@ -18,29 +59,28 @@ class AsyncHelper:
 
     @staticmethod
     async def run_in_executor(func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-        """在线程池中执行同步函数
-        
+        """在共享线程池中执行同步函数
+
         Args:
             func: 要执行的同步函数
             *args: 位置参数
             **kwargs: 关键字参数
-            
+
         Returns:
             函数执行结果
         """
         loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor() as executor:
-            try:
-                # 使用 functools.partial 处理 kwargs 参数
-                if kwargs:
-                    func_with_kwargs = partial(func, **kwargs)
-                    result = await loop.run_in_executor(executor, func_with_kwargs, *args)
-                else:
-                    result = await loop.run_in_executor(executor, func, *args)
-                return result
-            except Exception as e:
-                log(f"❌ 线程池执行函数失败: {func.__name__} - {str(e)}", "ERROR")
-                raise
+        try:
+            # 使用 functools.partial 处理 kwargs 参数
+            if kwargs:
+                func_with_kwargs = partial(func, **kwargs)
+                result = await loop.run_in_executor(_shared_executor, func_with_kwargs, *args)
+            else:
+                result = await loop.run_in_executor(_shared_executor, func, *args)
+            return result
+        except Exception as e:
+            log(f"❌ 线程池执行函数失败: {func.__name__} - {str(e)}", "ERROR")
+            raise
 
     @staticmethod
     def safe_run_async(coro_func: Callable[..., Any], *args: Any, timeout: float = 30, **kwargs: Any) -> Any:
@@ -94,7 +134,7 @@ class AsyncHelper:
         """在新线程中执行异步函数"""
         worker_loops: list = []
 
-        def _thread_worker():
+        def _thread_worker() -> Any:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             worker_loops.append(loop)
@@ -128,14 +168,14 @@ class AsyncHelper:
             executor.shutdown(wait=False)
 
     @staticmethod
-    def dual_mode(func: Callable[..., T]) -> Callable[..., T]:
+    def dual_mode(func: Callable[P, R]) -> DualModeCallable[P, R]:
         """为同步函数自动生成异步版本
-        
+
         使用方法：
             @dual_mode
             def my_function(arg1, arg2):
                 return result
-                
+
         生成：
             my_function() - 同步版本
             my_function.async_version() - 异步版本
@@ -143,13 +183,14 @@ class AsyncHelper:
 
         # 异步版本
         @wraps(func)
-        async def async_version(*args: Any, **kwargs: Any) -> T:
+        async def async_version(*args: P.args, **kwargs: P.kwargs) -> R:
             return await AsyncHelper.run_in_executor(func, *args, **kwargs)
 
         # 将异步版本设置为原函数的属性
-        func.async_version = async_version
+        wrapped = cast(DualModeCallable[P, R], func)
+        wrapped.async_version = async_version
 
-        return func
+        return wrapped
 
 
 # 便捷装饰器

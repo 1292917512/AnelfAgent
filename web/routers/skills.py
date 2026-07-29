@@ -24,7 +24,7 @@ async def get_skill(name: str) -> Dict[str, Any]:
     try:
         return _skill_svc.get_skill(name)
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
 
 
 class CreateSkillRequest(BaseModel):
@@ -57,7 +57,7 @@ async def update_skill(name: str, req: UpdateSkillRequest) -> Dict[str, Any]:
     try:
         return _skill_svc.update_skill(name, req.model_dump(exclude_none=True))
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
 
 
 @router.delete("/{name}")
@@ -76,7 +76,7 @@ async def set_skill_state(name: str, req: SetStateRequest) -> Dict[str, Any]:
     try:
         return _skill_svc.set_state(name, req.state)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 class SetPinnedRequest(BaseModel):
@@ -88,4 +88,4 @@ async def set_skill_pinned(name: str, req: SetPinnedRequest) -> Dict[str, Any]:
     try:
         return _skill_svc.set_pinned(name, req.pinned)
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e

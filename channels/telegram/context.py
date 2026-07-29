@@ -10,7 +10,6 @@ from typing import Any, Optional
 from .helpers import (
     build_sender_label,
     has_bot_mention,
-    has_entity_mention,
     resolve_thread_spec,
     strip_bot_mention,
 )
@@ -42,10 +41,8 @@ def build_message_context(
     sender_name = build_sender_label(user)
 
     raw_text = message.text or message.caption or ""
-    entities = message.entities or message.caption_entities or []
 
     explicit_mention = has_bot_mention(raw_text, bot_username)
-    any_mention = has_entity_mention(entities)
 
     bot_id = None
     try:

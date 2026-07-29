@@ -6,7 +6,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Callable, Dict, List, Optional
 
 from core.log import log
 
@@ -47,14 +47,15 @@ def result_key(node_name: str) -> str:
 class FlowMachine:
     """异步流程状态机"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.blackboard: Dict[str, Any] = {}
         self._nodes: List[tuple[str, Callable, dict]] = []
 
-    def node(self, func=None, *, skip_on_error: bool = False, timeout: Optional[float] = None):
+    def node(self, func: Optional[Callable[..., Any]] = None, *, skip_on_error: bool = False,
+             timeout: Optional[float] = None) -> Callable[..., Any]:
         """节点装饰器，支持 @flow.node 和 @flow.node(参数) 两种用法"""
 
-        def decorator(f: Callable) -> Callable:
+        def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
             options = {'skip_on_error': skip_on_error, 'timeout': timeout}
             self._nodes.append((f.__name__, f, options))
             log(f"📝 注册节点: {f.__name__}", "DEBUG")

@@ -26,6 +26,29 @@ from core.log import log
 
 EventHandler = Callable[[Dict[str, Any]], Awaitable[None]]
 
+# 单个事件处理器的执行超时（秒），超时记 WARNING 且不影响其他处理器
+HANDLER_TIMEOUT_SECONDS = 5.0
+
+
+def _handler_name(handler: Callable[..., Any]) -> str:
+    """处理器的可读名称（partial / 可调用对象无 __name__ 时回退 repr）。"""
+    return getattr(handler, "__qualname__", None) or repr(handler)
+
+
+def _same_handler(a: Callable[..., Any], b: Callable[..., Any]) -> bool:
+    """判断两个处理器是否指向同一回调（兼容绑定方法）。
+
+    绑定方法每次属性访问都会生成新对象，``is`` 比较永远失败，
+    需比较其 __self__ 与 __func__。
+    """
+    if a is b:
+        return True
+    a_self = getattr(a, "__self__", None)
+    b_self = getattr(b, "__self__", None)
+    if a_self is not None and b_self is not None:
+        return a_self is b_self and getattr(a, "__func__", None) is getattr(b, "__func__", None)
+    return False
+
 
 class EventBus:
     """异步事件总线，支持多处理器、优先级、一次性订阅和 owner 归属追踪。"""
@@ -73,7 +96,7 @@ class EventBus:
         if not subs:
             return False
         before = len(subs)
-        self._handlers[event] = [s for s in subs if s.handler is not handler]
+        self._handlers[event] = [s for s in subs if not _same_handler(s.handler, handler)]
         return len(self._handlers[event]) < before
 
     def off_all(self, event: Optional[str] = None) -> None:
@@ -96,8 +119,39 @@ class EventBus:
                 del self._handlers[event]
         return removed
 
+    async def _invoke_handler(
+        self, event: str, sub: "_Subscription", payload: Dict[str, Any],
+    ) -> Any:
+        """执行单个处理器（带超时保护），返回其结果。
+
+        超时/异常记 WARNING 并返回 None，不影响其他处理器。
+        """
+        try:
+            return await asyncio.wait_for(sub.handler(payload), timeout=HANDLER_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            log(
+                f"事件处理器超时 ({HANDLER_TIMEOUT_SECONDS}s): "
+                f"event={event} handler={_handler_name(sub.handler)}",
+                "WARNING",
+            )
+        except Exception:
+            log(
+                f"事件处理器异常: event={event} handler={_handler_name(sub.handler)}\n"
+                f"{_tb.format_exc()}",
+                "WARNING",
+            )
+        return None
+
+    def _prune_once(
+        self, subs: List["_Subscription"], batch: List["_Subscription"],
+    ) -> None:
+        """从订阅列表中移除已触发的 once 订阅。"""
+        for sub in batch:
+            if sub.once and sub in subs:
+                subs.remove(sub)
+
     async def emit(self, event: str, payload: Optional[Dict[str, Any]] = None) -> None:
-        """发射事件，依次调用所有已注册处理器。"""
+        """发射事件，并发调用所有已注册处理器（各自带超时保护）。"""
         payload = payload or {}
         self._stats[event] = self._stats.get(event, 0) + 1
 
@@ -105,22 +159,10 @@ class EventBus:
         if not subs:
             return
 
-        once_handlers: List[_Subscription] = []
-        for sub in list(subs):
-            try:
-                await sub.handler(payload)
-            except Exception:
-                log(
-                    f"事件处理器异常: event={event} handler={sub.handler.__name__}\n"
-                    f"{_tb.format_exc()}",
-                    "ERROR",
-                )
-            if sub.once:
-                once_handlers.append(sub)
-
-        for sub in once_handlers:
-            if sub in subs:
-                subs.remove(sub)
+        # 快照当前订阅列表，避免处理器执行期间注册/退订导致迭代错乱
+        batch = list(subs)
+        await asyncio.gather(*(self._invoke_handler(event, sub, payload) for sub in batch))
+        self._prune_once(subs, batch)
 
     async def emit_with_result(
         self, event: str, payload: Optional[Dict[str, Any]] = None,
@@ -137,26 +179,14 @@ class EventBus:
         if not subs:
             return True
 
-        once_handlers: List[_Subscription] = []
+        batch = list(subs)
         try:
-            for sub in list(subs):
-                result: Any = None
-                try:
-                    result = await sub.handler(payload)
-                except Exception:
-                    log(
-                        f"事件处理器异常: event={event} handler={sub.handler.__name__}\n"
-                        f"{_tb.format_exc()}",
-                        "ERROR",
-                    )
-                if sub.once:
-                    once_handlers.append(sub)
+            for sub in batch:
+                result = await self._invoke_handler(event, sub, payload)
                 if result is False:
                     return False
         finally:
-            for sub in once_handlers:
-                if sub in subs:
-                    subs.remove(sub)
+            self._prune_once(subs, batch)
 
         return True
 

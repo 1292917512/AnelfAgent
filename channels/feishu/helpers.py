@@ -8,7 +8,6 @@ from typing import List, Sequence
 
 from .types import FeishuMention, FeishuSenderId, PostContentResult
 
-
 # ------------------------------------------------------------------
 # 富文本 (post) 消息解析
 # ------------------------------------------------------------------
@@ -75,7 +74,6 @@ def parse_post_content(raw_content: str) -> PostContentResult:
                 line_parts.append(f"{text}({href})" if href else text)
             elif tag == "at":
                 user_id = element.get("user_id", "")
-                user_name = element.get("user_name", user_id)
                 result.at_open_ids.append(user_id)
                 line_parts.append(f"[at_uid:{user_id}]")
             elif tag == "img":
@@ -180,7 +178,7 @@ def strip_bot_mention(text: str, bot_open_id: str) -> str:
     if not bot_open_id:
         return text
     # 飞书文本中 @Bot 通常以 @Bot名称 或 at 标签出现
-    result = re.sub(rf"@\S*\s*", "", text, count=1).strip() if text else ""
+    result = re.sub(r"@\S*\s*", "", text, count=1).strip() if text else ""
     return result or text
 
 

@@ -80,8 +80,8 @@ class TestActivateToolGroupTool:
         assert "error" in result
 
     async def test_activate_sleepable_group(self) -> None:
-        from core.entity import EntityRegistry
         from agent.mind.tool_activation import _activate_tool_group_tool
+        from core.entity import EntityRegistry
 
         EntityRegistry.register_tool(
             name="act_sleepy", func=lambda: "s", group="act_sleepg",

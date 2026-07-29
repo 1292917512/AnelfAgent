@@ -78,6 +78,26 @@ def looks_like_fake_tool_call(text: str) -> bool:
     )
 
 
+# 内部注入上下文标记（exec_context / 输出方式提示等，仅供模型阅读）；
+# 出现在回复开头说明模型/网关复述了注入内容，禁止投递
+_CONTEXT_LEAK_MARKERS = (
+    "[系统提示]",
+    "[当前场景]",
+    "[工具态势]",
+    "[当前无外部消息]",
+    "[输出方式]",
+)
+_CONTEXT_LEAK_SCAN_CHARS = 300
+
+
+def looks_like_context_leak(text: str) -> bool:
+    """检测回复正文是否复述了内部注入的上下文块（不投递，由调用方纠正）。"""
+    if not text:
+        return False
+    head = text[:_CONTEXT_LEAK_SCAN_CHARS]
+    return any(marker in head for marker in _CONTEXT_LEAK_MARKERS)
+
+
 @dataclass
 class ReplyTarget:
     """一个可投递的会话目标。"""

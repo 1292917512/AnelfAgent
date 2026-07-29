@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { modelsApi, configApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { ModelPriorityItem } from "@/lib/types";
+import type { ModelPriorityItem, ConfigValues } from "@/lib/types";
 import { useModelPin, usePriorities } from "@/components/models/ModelSelect";
 import {
   Star, Eye, Wrench, Server, Brain, ChevronsUp, GripVertical, Layers, Pin,
@@ -25,6 +25,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { ReasoningEffortOptions } from "@/components/common/ReasoningEffortSelect";
 
 const TYPE_ORDER = ["chat", "vision", "embedding", "asr", "tts", "video", "rerank", "image_gen", "image_edit"];
 
@@ -137,7 +138,7 @@ export function PrioritiesPanel() {
 
   const { data: priorities = {} } = usePriorities();
 
-  const { data: mindConfig } = useQuery<Record<string, unknown>>({
+  const { data: mindConfig } = useQuery<ConfigValues>({
     queryKey: ["mindConfig"],
     queryFn: () => configApi.getMind().then(r => r.data?.config || r.data),
   });
@@ -195,13 +196,7 @@ export function PrioritiesPanel() {
             onChange={e => effortMut.mutate(e.target.value)}
             className="bg-elevated border border-input rounded-md px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent">
             <option value="">{t("effortDefault")}</option>
-            <option value="off">{t("effortOff")}</option>
-            <option value="minimal">{t("effortMinimal")}</option>
-            <option value="low">{t("effortLow")}</option>
-            <option value="medium">{t("effortMedium")}</option>
-            <option value="high">{t("effortHigh")}</option>
-            <option value="xhigh">{t("effortXhigh")}</option>
-            <option value="max">{t("effortMax")}</option>
+            <ReasoningEffortOptions t={t} />
           </select>
         </div>
       </div>

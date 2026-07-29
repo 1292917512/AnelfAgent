@@ -187,6 +187,9 @@ _MIND_SYNC_FIELDS: tuple[str, ...] = (
     "reasoning_effort",
 )
 
+# 公开别名：供 web 层等外部模块引用（私有名 _MIND_SYNC_FIELDS 保留内部使用）
+MIND_SYNC_FIELDS: tuple[str, ...] = _MIND_SYNC_FIELDS
+
 _ENV_MAPPING: Dict[str, str] = {
     "ANELF_LLM_STREAM_ENABLED": "llm_stream_enabled",
     "ANELF_PERSONAS_DIR": "personas_dir",
@@ -330,7 +333,7 @@ class BotConfigProvider:
                 try:
                     setattr(mc, attr, type(current)(val))
                 except (TypeError, ValueError):
-                    pass
+                    log("_load_from_cm 异常已忽略", "DEBUG")
 
     @property
     def mind_config_path(self) -> str:
@@ -453,7 +456,7 @@ class BotConfigProvider:
         if kwargs:
             self._update_llm_client(**kwargs)
 
-        from core.event_bus import event_bus, EVENT_CONFIG_CHANGED
+        from core.event_bus import EVENT_CONFIG_CHANGED, event_bus
         try:
             import asyncio
             loop = asyncio.get_running_loop()

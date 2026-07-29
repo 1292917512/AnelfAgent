@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from core.config import ConfigManager, ConfigRegistry, ConfigValueType
+from web.routers._errors import server_error
 
 router = APIRouter(prefix="/config", tags=["config"])
 
@@ -27,8 +28,8 @@ def _mind_fields() -> frozenset:
     global _MIND_FIELDS_CACHE
     if _MIND_FIELDS_CACHE is None:
         try:
-            from agent.config import _MIND_SYNC_FIELDS
-            _MIND_FIELDS_CACHE = frozenset((*_MIND_SYNC_FIELDS, "tool_system_rules"))
+            from agent.config import MIND_SYNC_FIELDS
+            _MIND_FIELDS_CACHE = frozenset((*MIND_SYNC_FIELDS, "tool_system_rules"))
         except Exception:
             _MIND_FIELDS_CACHE = frozenset()
     return _MIND_FIELDS_CACHE
@@ -102,7 +103,7 @@ def _coerce_value(key: str, value: Any, expected_type: str) -> Any:
             return value
         return str(value) if not isinstance(value, str) else value
     except (TypeError, ValueError):
-        raise HTTPException(400, f"配置项 {key} 的值类型错误（期望 {expected_type}）")
+        raise HTTPException(400, f"配置项 {key} 的值类型错误（期望 {expected_type}）") from None
 
 
 @router.put("/meta/{key}")
@@ -125,7 +126,7 @@ async def save_config_meta(key: str, data: ConfigValueUpdate) -> Dict[str, Any]:
             from agent.config import get_config_provider
             get_config_provider().save_mind_config(**{key: value})
         except Exception as exc:
-            raise HTTPException(500, f"保存 Mind 配置失败: {exc}")
+            raise server_error("保存 Mind 配置", exc) from exc
     else:
         ConfigManager.set(key, value)
         ConfigManager.save()

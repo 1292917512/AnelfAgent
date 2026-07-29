@@ -30,7 +30,7 @@ async def get_persona(key: str) -> Dict[str, Any]:
     try:
         return _persona_svc.get_persona(key)
     except Exception as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
 
 
 @router.put("/{key}")
@@ -49,7 +49,7 @@ async def create_persona(req: CreatePersonaRequest) -> Dict[str, str]:
         _persona_svc.create(req.key)
         return {"status": "ok", "key": req.key}
     except ValueError as e:
-        raise HTTPException(409, str(e))
+        raise HTTPException(409, str(e)) from e
 
 
 @router.delete("/{key}")

@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 
 from agent.config import (
+    _MIND_SYNC_FIELDS,
     BotConfig,
     BotConfigProvider,
-    _MIND_SYNC_FIELDS,
 )
 
 

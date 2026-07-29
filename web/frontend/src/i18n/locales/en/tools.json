@@ -50,5 +50,7 @@
   "pluginEnabled": "enabled",
   "pluginDisabled": "disabled",
   "tagCount": "{{count}} tags",
-  "tagActiveCount": " ({{count}} active)"
+  "tagActiveCount": " ({{count}} active)",
+  "openEntity": "Open entity details",
+  "entityPage": "Details"
 }

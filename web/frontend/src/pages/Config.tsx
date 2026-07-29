@@ -5,6 +5,7 @@ import { configMetaApi, type ConfigMetaItem } from "@/lib/api";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { cn } from "@/lib/utils";
 import { SlidersHorizontal, RotateCcw, Check, Loader2 } from "lucide-react";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 
 /** 分组展示顺序从 i18n groups 资源 key 顺序派生（未列出的组排最后） */
 function useGroupOrder(): string[] {
@@ -82,14 +83,13 @@ export default function Config() {
 function ConfigItemRow({ item, onSaved }: { item: ConfigMetaItem; onSaved: () => void }) {
   const { t } = useTranslation("config");
   const [value, setValue] = useState<unknown>(item.value);
-  const [saved, setSaved] = useState(false);
+  const [saved, triggerSaved] = useCopyFeedback(1500);
 
   const mutation = useMutation({
     mutationFn: (v: unknown) => configMetaApi.save(item.key, v),
     onSuccess: () => {
-      setSaved(true);
+      triggerSaved();
       onSaved();
-      setTimeout(() => setSaved(false), 1500);
     },
   });
 

@@ -10,6 +10,7 @@ import {
   Package,
   Circle,
 } from "lucide-react";
+import type { ConfigValues } from "@/lib/types";
 
 interface NbAdapter {
   key: string;
@@ -50,7 +51,7 @@ export function NoneBotPanel() {
     queryFn: () => nonebotApi.config().then((r) => r.data),
   });
 
-  const [configValues, setConfigValues] = useState<Record<string, unknown>>({});
+  const [configValues, setConfigValues] = useState<ConfigValues>({});
   const [configDirty, setConfigDirty] = useState(false);
 
   useEffect(() => {
@@ -61,7 +62,7 @@ export function NoneBotPanel() {
   }, [configData]);
 
   const saveMutation = useMutation({
-    mutationFn: (vals: Record<string, unknown>) => nonebotApi.saveConfig(vals),
+    mutationFn: (vals: ConfigValues) => nonebotApi.saveConfig(vals),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["nonebot-config"] });
       setConfigDirty(false);

@@ -168,10 +168,13 @@ async def proxy_channel_webui(channel_id: str, request: Request, path: str = "")
 async def proxy_channel_webui_ws(websocket: WebSocket, channel_id: str, path: str = "") -> None:
     """桥接频道 WebUI 的 WebSocket 连接（鉴权与 HTTP 代理一致）。"""
     # BaseHTTPMiddleware 不覆盖 ws scope，这里手动执行与 _AuthMiddleware 同等的校验
+    import hmac
+
     from web.server import _load_auth_password, _make_token
 
     password = _load_auth_password()
-    if password and websocket.cookies.get("_anelf_token", "") != _make_token(password):
+    token = websocket.cookies.get("_anelf_token", "")
+    if password and not (token and hmac.compare_digest(token, _make_token(password))):
         await websocket.close(code=4401)
         return
 
@@ -227,4 +230,4 @@ async def proxy_channel_webui_ws(websocket: WebSocket, channel_id: str, path: st
         try:
             await websocket.close()
         except Exception:
-            pass
+            log("upstream_to_client 异常已忽略", "DEBUG")

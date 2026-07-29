@@ -16,3 +16,20 @@ def _bypass_api_password(monkeypatch: pytest.MonkeyPatch) -> None:
     import web.server as server
 
     monkeypatch.setattr(server, "_load_auth_password", lambda: "")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_config_manager(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """隔离 ConfigManager：测试态指向临时配置文件并清空内存态。
+
+    配置元数据 API 会调用 ConfigManager.save() 全量回写配置文件；
+    未隔离时测试进程会把真实 config/app_config.json 覆盖为仅剩测试键。
+    """
+    from core.config import ConfigManager
+
+    monkeypatch.setattr(
+        ConfigManager, "_config_file", str(tmp_path / "app_config.json")
+    )
+    ConfigManager.clear()
+    yield
+    ConfigManager.clear()

@@ -6,8 +6,6 @@ import os
 from types import SimpleNamespace
 from typing import Dict, List
 
-import pytest
-
 from agent.mind.context_compressor import CompressionConfig, ContextCompressor
 
 

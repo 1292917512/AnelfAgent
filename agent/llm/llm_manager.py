@@ -12,17 +12,25 @@ import asyncio
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import litellm
 
 from agent.llm.llm_client import (
-    API_TYPES, DEFAULT_TIMEOUT, LLMClient, LLMClientConfig, LLMNotConfiguredError, ModelType,
+    API_TYPES,
+    DEFAULT_TIMEOUT,
+    LLMClient,
+    LLMClientConfig,
+    LLMNotConfiguredError,
+    ModelType,
 )
 from agent.llm.types import ChatResult
 from core.entity import BaseEntity, EntityType
-from core.log import info, warning, error
+from core.log import error, info, log, warning
 from core.path import ConfigPaths
+
+if TYPE_CHECKING:
+    from agent.llm.media_client import MediaClient
 
 _CONFIG_PATH = ConfigPaths.LLM_CLIENTS
 
@@ -125,7 +133,7 @@ class LLMManager(BaseEntity):
             for client in clients:
                 loop.create_task(client.close())
         except RuntimeError:
-            pass
+            log("_close_stale_clients 异常已忽略", "DEBUG")
 
     def _apply_config(self, data: Dict[str, Any]) -> None:
         # 重建客户端前关闭旧客户端持有的代理连接池，避免连接泄漏
@@ -248,7 +256,7 @@ class LLMManager(BaseEntity):
                 if not prov:
                     continue
                 models_out: List[Dict[str, Any]] = []
-                for mid, client in self._clients.items():
+                for client in self._clients.values():
                     if client.config.provider_id != pid:
                         continue
                     models_out.append(client.config.to_model_dict())
@@ -1055,7 +1063,7 @@ class LLMManager(BaseEntity):
                     rt.switch_llm(client)
                     info(f"chat 优先级首位变更，已热切换至: {new_first}", tag="模型")
             except Exception:
-                pass
+                log("_auto_switch_chat 异常已忽略", "DEBUG")
 
     def get_provider_models(self, provider_id: str) -> List[Dict[str, Any]]:
         """获取指定供应商下的所有模型配置（含价格信息）。"""

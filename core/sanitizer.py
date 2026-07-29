@@ -43,6 +43,18 @@ _PATTERNS: List[Tuple[str, "re.Pattern[str]", int]] = [
 
 _MASK = "****"
 
+# 脱敏快速预检：文本不含任何敏感特征子串时跳过全部正则（LLM 入向长文本高频路径）
+_SANITIZE_HINTS = (
+    "sk-", "akia", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "eyj", "bearer",
+    "api_key", "apikey", "api-key", "passwd", "password", "secret", "token",
+    "private key", "private_key", "begin ", "://",
+)
+
+
+def _may_contain_sensitive(text: str) -> bool:
+    lowered = text.lower()
+    return any(hint in lowered for hint in _SANITIZE_HINTS)
+
 
 def _mask_value(value: str, keep_prefix: int) -> str:
     """遮盖敏感值，保留少量前缀便于识别类型。"""
@@ -53,7 +65,7 @@ def _mask_value(value: str, keep_prefix: int) -> str:
 
 def sanitize_text(text: str) -> str:
     """检测并遮盖文本中的敏感信息（API Key、Token、密码、私钥等）。"""
-    if not text:
+    if not text or not _may_contain_sensitive(text):
         return text
 
     result = text

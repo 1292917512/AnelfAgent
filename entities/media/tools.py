@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Awaitable, Callable, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Optional
 
-from entities._sdk import tool, entity
+from entities._sdk import entity, tool
 
 entity("media", "多模态媒体 - 图片识别、语音转文字、文字转语音、图片生成、图片编辑、视频生成、文档重排序")
 
@@ -138,7 +138,7 @@ async def recognize_image(image_path: str = "", prompt: str = "", **kwargs: str)
         return json.dumps({"error": f"image_path 不需要 'image:' 前缀，请直接传路径: {image_path[6:]}"}, ensure_ascii=False)
     try:
         mgr = _mgr()
-        from entities._sdk import load_image_from_path, get_image_content_class, get_model_type_enum
+        from entities._sdk import get_image_content_class, get_model_type_enum, load_image_from_path
         ImageContent = get_image_content_class()
         ModelType = get_model_type_enum()
 
@@ -288,7 +288,8 @@ async def text_to_voice(
                 return json.dumps({"error": str(e)}, ensure_ascii=False)
             if not os.path.exists(resolved):
                 return json.dumps({"error": f"参考音频文件不存在: {audio_value}"}, ensure_ascii=False)
-            import base64, mimetypes
+            import base64
+            import mimetypes
             mime_type = mimetypes.guess_type(os.path.basename(resolved))[0] or "audio/mpeg"
             with open(resolved, "rb") as f:
                 raw = f.read()

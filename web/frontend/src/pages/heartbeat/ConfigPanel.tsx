@@ -3,16 +3,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { heartbeatApi, tasksApi, type HeartbeatConfig, type TaskSchedule, type TaskConfig } from "@/lib/api";
 import { Card } from "@/components/common/Card";
-import { Save, Plus, Trash2, RotateCcw, X, Clock } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { Button, Input, Select, Switch } from "@/components/ui";
-import { ModelSelect } from "@/components/models/ModelSelect";
-
-const MODE_OPTIONS = [
-  { value: "heartbeat", labelKey: "schedule.modeHeartbeat" },
-  { value: "scheduled", labelKey: "schedule.modeScheduled" },
-  { value: "manual", labelKey: "schedule.modeManual" },
-] as const;
+import { Save, Plus } from "lucide-react";
+import { Button, Input, Switch } from "@/components/ui";
+import { ScheduleRow } from "./ScheduleRow";
 
 export function ConfigPanel() {
   const { t } = useTranslation("heartbeat");
@@ -53,7 +46,7 @@ export function ConfigPanel() {
   const setField = <K extends keyof HeartbeatConfig>(key: K, value: HeartbeatConfig[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
-  const updateSchedule = (idx: number, patch: Record<string, unknown>) => {
+  const updateSchedule = (idx: number, patch: Partial<TaskSchedule>) => {
     const next = activeSchedules.map((s, i) => (i === idx ? { ...s, ...patch } : s));
     setSchedules(next);
     setForm((prev) => ({ ...prev, task_schedules: next }));
@@ -137,99 +130,16 @@ export function ConfigPanel() {
       {/* 任务调度绑定 */}
       <Card title={t("schedule.title")} subtitle={t("schedule.subtitle")}>
         <div className="space-y-2.5">
-          {activeSchedules.map((s, idx) => {
-            const task = (tasks as TaskConfig[]).find((t) => t.name === s.task_name);
-            return (
-              <div key={s.task_name} className="border border-border rounded-md p-3 bg-elevated">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", task?.enabled !== false ? "bg-ok" : "bg-muted")} />
-                    <span className="text-sm font-medium text-heading truncate">
-                      {task?.display_name || s.task_name}
-                    </span>
-                    <span className="text-[11px] text-muted">{s.task_name}</span>
-                  </div>
-                  <button onClick={() => removeSchedule(idx)} className="p-1 text-muted hover:text-danger transition-colors">
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-3">
-                  <Select
-                    className="w-32"
-                    value={s.mode}
-                    onChange={(e) => updateSchedule(idx, { mode: e.target.value })}
-                  >
-                    {MODE_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{t(o.labelKey)}</option>
-                    ))}
-                  </Select>
-
-                  {s.mode === "heartbeat" && (
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs text-muted">{t("schedule.every")}</span>
-                      <Input
-                        type="number" min={1} className="!w-16"
-                        value={s.every_n_beats ?? 10}
-                        onChange={(e) => updateSchedule(idx, { every_n_beats: parseInt(e.target.value) || 10 })}
-                      />
-                      <span className="text-xs text-muted">{t("schedule.beats")}</span>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-accent-subtle text-accent font-medium">
-                        ≈ {((s.every_n_beats ?? 10) * interval / 60).toFixed(0)} {t("config.minutes")}
-                      </span>
-                      {(s.beat_count ?? 0) > 0 && (
-                        <div className="flex items-center gap-1">
-                          <span className="text-[11px] text-muted">{t("schedule.progress")}: {s.beat_count}/{s.every_n_beats ?? 10}</span>
-                          <button
-                            onClick={() => updateSchedule(idx, { beat_count: 0 })}
-                            className="p-0.5 text-muted hover:text-accent"
-                            title={t("schedule.resetCounter")}
-                          >
-                            <RotateCcw size={11} />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {s.mode === "scheduled" && (
-                    <TimeChipList
-                      times={s.schedule_times ?? []}
-                      onChange={(times) => updateSchedule(idx, { schedule_times: times })}
-                    />
-                  )}
-
-                  {s.mode === "manual" && (
-                    <span className="text-xs text-muted italic">{t("schedule.manualOnly")}</span>
-                  )}
-
-                  <div className="flex items-center gap-2 ml-auto flex-wrap">
-                    <ModelSelect
-                      modelType="chat"
-                      allowEmpty
-                      value={s.model_id ?? ""}
-                      onChange={(id) => updateSchedule(idx, { model_id: id || null })}
-                      className="w-44"
-                    />
-                    <Select
-                      className="w-28"
-                      value={s.reasoning_effort ?? ""}
-                      onChange={(e) => updateSchedule(idx, { reasoning_effort: e.target.value })}
-                    >
-                      <option value="">{t("schedule.globalEffort")}</option>
-                      <option value="off">{t("schedule.effortOff")}</option>
-                      <option value="minimal">{t("schedule.effortMinimal")}</option>
-                      <option value="low">{t("schedule.effortLow")}</option>
-                      <option value="medium">{t("schedule.effortMedium")}</option>
-                      <option value="high">{t("schedule.effortHigh")}</option>
-                      <option value="xhigh">{t("schedule.effortXhigh")}</option>
-                      <option value="max">{t("schedule.effortMax")}</option>
-                    </Select>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+          {activeSchedules.map((s, idx) => (
+            <ScheduleRow
+              key={s.task_name}
+              schedule={s}
+              task={(tasks as TaskConfig[]).find((t) => t.name === s.task_name)}
+              interval={interval}
+              onUpdate={(patch) => updateSchedule(idx, patch)}
+              onRemove={() => removeSchedule(idx)}
+            />
+          ))}
 
           {unboundTasks.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap pt-1">
@@ -254,82 +164,6 @@ export function ConfigPanel() {
           <Save size={14} /> {saveMut.isPending ? t("config.saving") : t("config.save")}
         </Button>
       </div>
-    </div>
-  );
-}
-
-function TimeChipList({
-  times,
-  onChange,
-}: {
-  times: string[];
-  onChange: (times: string[]) => void;
-}) {
-  const { t } = useTranslation("heartbeat");
-  const [adding, setAdding] = useState(false);
-  const [newTime, setNewTime] = useState("08:00");
-
-  const addTime = () => {
-    if (!newTime) return;
-    const normalized = newTime.slice(0, 5);
-    if (!times.includes(normalized)) {
-      onChange([...times, normalized].sort());
-    }
-    setAdding(false);
-    setNewTime("08:00");
-  };
-
-  const removeTime = (idx: number) => {
-    onChange(times.filter((_, i) => i !== idx));
-  };
-
-  return (
-    <div className="flex items-center gap-2 flex-wrap">
-      <Clock size={13} className="text-muted flex-shrink-0" />
-
-      {times.map((time, idx) => (
-        <span
-          key={time}
-          className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-accent-subtle text-accent border border-accent/20"
-        >
-          {time}
-          <button
-            onClick={() => removeTime(idx)}
-            className="hover:text-danger transition-colors"
-          >
-            <X size={11} />
-          </button>
-        </span>
-      ))}
-
-      {adding ? (
-        <div className="flex items-center gap-1.5">
-          <Input
-            type="time"
-            className="!w-28 !h-7 !text-xs"
-            value={newTime}
-            onChange={(e) => setNewTime(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") addTime(); }}
-            autoFocus
-          />
-          <Button variant="primary" size="sm" onClick={addTime}>
-            {t("schedule.addTime")}
-          </Button>
-          <button
-            onClick={() => setAdding(false)}
-            className="p-1 text-muted hover:text-foreground"
-          >
-            <X size={13} />
-          </button>
-        </div>
-      ) : (
-        <button
-          onClick={() => setAdding(true)}
-          className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full border border-dashed border-border text-muted hover:border-accent hover:text-accent transition-colors"
-        >
-          <Plus size={11} /> {t("schedule.addTime")}
-        </button>
-      )}
     </div>
   );
 }

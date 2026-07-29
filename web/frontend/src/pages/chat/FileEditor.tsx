@@ -1,67 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import CodeMirror from "@uiw/react-codemirror";
-import type { Extension } from "@codemirror/state";
-import { python } from "@codemirror/lang-python";
-import { javascript } from "@codemirror/lang-javascript";
-import { json } from "@codemirror/lang-json";
-import { markdown } from "@codemirror/lang-markdown";
-import { yaml } from "@codemirror/lang-yaml";
-import { html } from "@codemirror/lang-html";
-import { css } from "@codemirror/lang-css";
 import {
-  Check, Code, Columns2, Copy, Download, Eye, ListX, Loader2, Maximize2, Minimize2, PanelLeftClose, Paperclip, Quote, Save, X,
-} from "lucide-react";
-import {
-  isPreviewableBinary, workspaceApi, workspaceFileKind, workspaceMediaKind,
-  type WorkspaceFile, type WorkspaceFileKind,
+  workspaceApi, workspaceFileKind, workspaceMediaKind,
+  type WorkspaceFileKind,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useChatStore } from "@/stores/chat-store";
-import { Button, ConfirmDialog, toast } from "@/components/ui";
+import { ConfirmDialog, toast } from "@/components/ui";
 import { useIsMobile } from "@/lib/use-media-query";
-import { Lightbox } from "./render/Lightbox";
-import { Markdown } from "./render/Markdown";
-import { CsvPreview } from "./file_preview/CsvPreview";
-import { DocxPreview } from "./file_preview/DocxPreview";
-import { HtmlPreview } from "./file_preview/HtmlPreview";
-import { PdfPreview } from "./file_preview/PdfPreview";
-import { VideoPreview } from "./file_preview/VideoPreview";
-import { XlsxPreview } from "./file_preview/XlsxPreview";
-
-/** 按扩展名映射 CodeMirror 语言包 */
-function langExtension(path: string): Extension[] {
-  const ext = path.split(".").pop()?.toLowerCase() || "";
-  switch (ext) {
-    case "py": return [python()];
-    case "js": case "jsx": case "mjs": case "cjs":
-      return [javascript({ jsx: true })];
-    case "ts": case "tsx":
-      return [javascript({ jsx: true, typescript: true })];
-    case "json": return [json()];
-    case "md": case "markdown": return [markdown()];
-    case "yaml": case "yml": return [yaml()];
-    case "html": case "htm": case "xml": case "svg": return [html()];
-    case "css": return [css()];
-    default: return [];
-  }
-}
-
-/** 单个标签页的编辑状态（file 为已保存内容，draft 为当前草稿） */
-interface TabState {
-  file: WorkspaceFile;
-  draft: string;
-}
-
-type ViewMode = "edit" | "preview" | "split";
-
-/** 文本类文件打开时的默认视图：可渲染格式（md/html/csv）默认预览，其余默认编辑 */
-function defaultViewMode(path: string): ViewMode {
-  const kind = workspaceFileKind(path);
-  return kind === "markdown" || kind === "html" || kind === "csv" ? "preview" : "edit";
-}
+import { FileEditorTabs } from "./FileEditorTabs";
+import { FileEditorToolbar } from "./FileEditorToolbar";
+import { FileEditorContent } from "./FileEditorContent";
+import { FileEditorFooter } from "./FileEditorFooter";
+import { defaultViewMode, langExtension, type TabState, type ViewMode } from "./fileEditorUtils";
 
 /** 工作区文件编辑器：多标签侧栏（非模态）+ CodeMirror + Markdown 预览 + 对话操作 */
 export function FileEditor() {
@@ -111,20 +65,25 @@ export function FileEditor() {
   const rawUrl = cur ? workspaceApi.rawUrl(cur.file.path, false, curRoot) : "";
   const dirty = cur !== undefined && cur.draft !== cur.file.content;
 
+  // tabs 的 ref 镜像：加载 effect 只随激活路径触发，通过 ref 读取缓存避免重复请求
+  const tabsRef = useRef(tabs);
+  useEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
+
   // 激活标签首次加载内容；切换标签按文件类型重置默认视图与加载状态
   useEffect(() => {
     setViewMode(openFilePath ? defaultViewMode(openFilePath) : "edit");
     setLoadError(false);
     setLoading(false);
-    if (!openFilePath || tabs.has(openFilePath)) return;
+    if (!openFilePath || tabsRef.current.has(openFilePath)) return;
     setLoading(true);
     workspaceApi.read(openFilePath, fileRoot(openFilePath)).then((r) => {
       setTabs((m) => new Map(m).set(openFilePath, { file: r.data, draft: r.data.content }));
     }).catch(() => {
       setLoadError(true);
     }).finally(() => setLoading(false));
-    // 仅以激活路径为触发，tabs 由 setTabs 函数式更新访问
-  }, [openFilePath]);
+  }, [openFilePath, fileRoot]);
 
   // 清理已关闭标签的缓存（保留未关闭标签的未保存草稿）
   useEffect(() => {
@@ -258,221 +217,55 @@ export function FileEditor() {
             : cn("shrink-0 border-r", splitWide ? "w-[40rem] xl:w-[48rem]" : "w-[24rem] xl:w-[28rem]"),
       )}
     >
-      {/* 标签栏 */}
-      <div className="flex items-center gap-1 pl-2 pr-1 py-1.5 border-b border-border shrink-0">
-        <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
-          {openFiles.map((p) => {
-            const tab = tabs.get(p);
-            const tabDirty = tab ? tab.draft !== tab.file.content : false;
-            const active = p === openFilePath;
-            return (
-              <span
-                key={p}
-                role="button"
-                tabIndex={0}
-                onClick={() => activateFile(p)}
-                onKeyDown={(e) => { if (e.key === "Enter") activateFile(p); }}
-                onAuxClick={(e) => { if (e.button === 1) requestClose(p); }}
-                title={p}
-                className={cn(
-                  "flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md text-xs cursor-pointer select-none shrink-0 max-w-[160px] transition-colors",
-                  active ? "bg-accent-subtle text-accent" : "text-muted hover:bg-hover hover:text-foreground",
-                )}
-              >
-                {tabDirty && <span className="w-1.5 h-1.5 rounded-full bg-warn shrink-0" aria-label="dirty" />}
-                <span className="truncate">{p.split("/").pop() || p}</span>
-                <button
-                  onClick={(e) => { e.stopPropagation(); requestClose(p); }}
-                  className="p-0.5 rounded hover:bg-hover shrink-0"
-                  aria-label="close tab"
-                >
-                  <X size={11} />
-                </button>
-              </span>
-            );
-          })}
-        </div>
-        <button
-          onClick={requestCloseAll}
-          title={t("editor.closeAll")}
-          className="p-1 rounded text-muted hover:text-foreground hover:bg-hover shrink-0 transition-colors"
-        >
-          <ListX size={14} />
-        </button>
-        <button
-          onClick={toggleFilePanelExpanded}
-          title={filePanelExpanded ? t("editor.exitFullscreen") : t("editor.fullscreen")}
-          className={cn(
-            "p-1 rounded shrink-0 transition-colors",
-            filePanelExpanded ? "text-accent bg-accent-subtle" : "text-muted hover:text-foreground hover:bg-hover",
-          )}
-        >
-          {filePanelExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-        </button>
-        <button
-          onClick={collapseFilePanel}
-          title={t("editor.collapse")}
-          className="p-1 rounded text-muted hover:text-foreground hover:bg-hover shrink-0 transition-colors"
-        >
-          <PanelLeftClose size={14} />
-        </button>
-      </div>
+      <FileEditorTabs
+        openFiles={openFiles}
+        tabs={tabs}
+        openFilePath={openFilePath}
+        onActivate={activateFile}
+        onRequestClose={requestClose}
+        onRequestCloseAll={requestCloseAll}
+        filePanelExpanded={filePanelExpanded}
+        onToggleExpanded={toggleFilePanelExpanded}
+        onCollapse={collapseFilePanel}
+      />
 
-      {/* 操作工具条 */}
       {cur && (
-        <div className="flex items-center gap-1 px-2 py-1 border-b border-border shrink-0">
-          {(kind === "markdown" || kind === "html" || kind === "csv") && !cur.file.binary && !cur.file.truncated && (
-            <div className="flex items-center rounded-md border border-border overflow-hidden mr-1">
-              {([
-                { mode: "edit" as ViewMode, icon: Code, label: t("editor.editView") },
-                { mode: "preview" as ViewMode, icon: Eye, label: t("editor.preview") },
-                // csv 表格不提供分屏（源码即结构化数据，分屏收益低）
-                ...(kind === "csv" ? [] : [{ mode: "split" as ViewMode, icon: Columns2, label: t("editor.split") }]),
-              ]).map(({ mode, icon: Icon, label }) => (
-                <button
-                  key={mode}
-                  onClick={() => setViewMode(mode)}
-                  title={label}
-                  className={cn(
-                    "flex items-center gap-1 px-2 py-1 text-xs transition-colors",
-                    viewMode === mode ? "bg-accent-subtle text-accent" : "text-muted hover:bg-hover hover:text-foreground",
-                  )}
-                >
-                  <Icon size={12} />
-                  <span className="hidden xl:inline">{label}</span>
-                </button>
-              ))}
-            </div>
-          )}
-          <span className="flex-1" />
-          <Button variant="ghost" size="icon" onClick={attachToChat} title={t("editor.attach")}>
-            <Paperclip size={14} />
-          </Button>
-          {!cur.file.binary && !cur.file.truncated && (
-            <>
-              <Button variant="ghost" size="icon" onClick={quoteToChat} title={t("editor.quote")}>
-                <Quote size={14} />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={copyContent} title={copied ? t("editor.copied") : t("editor.copy")}>
-                {copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
-              </Button>
-            </>
-          )}
-          <a
-            href={rawUrl}
-            download={cur.file.name}
-            title={t("editor.download")}
-            className="p-1.5 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors"
-          >
-            <Download size={14} />
-          </a>
-        </div>
+        <FileEditorToolbar
+          file={cur.file}
+          kind={kind}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          onAttach={attachToChat}
+          onQuote={quoteToChat}
+          onCopy={copyContent}
+          copied={copied}
+          rawUrl={rawUrl}
+        />
       )}
 
-      {/* 内容区 */}
-      <div className="flex-1 min-h-0 flex flex-col px-3 py-2">
-        {loading && (
-          <div className="flex items-center gap-2 py-8 justify-center text-sm text-muted">
-            <Loader2 size={16} className="animate-spin" /> {t("editor.loading")}
-          </div>
-        )}
-        {loadError && <p className="py-8 text-center text-sm text-danger">{t("editor.loadFailed")}</p>}
+      <FileEditorContent
+        cur={cur}
+        kind={kind}
+        mediaKind={mediaKind}
+        rawUrl={rawUrl}
+        curRoot={curRoot}
+        loading={loading}
+        loadError={loadError}
+        viewMode={viewMode}
+        editorNode={editorNode}
+        lightboxOpen={lightboxOpen}
+        onLightboxChange={setLightboxOpen}
+      />
 
-        {cur && cur.file.binary && mediaKind === "image" && (
-          <div className="flex items-center justify-center py-4 overflow-y-auto">
-            <img
-              src={rawUrl}
-              alt={cur.file.name}
-              onClick={() => setLightboxOpen(true)}
-              className="max-w-full max-h-[70vh] rounded-md border border-border cursor-zoom-in hover:opacity-90 transition-opacity"
-            />
-            {lightboxOpen && <Lightbox src={rawUrl} alt={cur.file.name} onClose={() => setLightboxOpen(false)} />}
-          </div>
-        )}
-        {cur && cur.file.binary && mediaKind === "video" && (
-          <VideoPreview path={cur.file.path} name={cur.file.name} root={curRoot} />
-        )}
-        {cur && cur.file.binary && mediaKind === "audio" && (
-          <div className="flex items-center justify-center py-12">
-            <audio controls src={rawUrl} className="w-full max-w-md" />
-          </div>
-        )}
-        {cur && cur.file.binary && kind === "pdf" && (
-          <div className="flex-1 min-h-0">
-            <PdfPreview path={cur.file.path} title={cur.file.name} root={curRoot} />
-          </div>
-        )}
-        {cur && cur.file.binary && kind === "docx" && (
-          <div className="flex-1 min-h-0">
-            <DocxPreview path={cur.file.path} title={cur.file.name} root={curRoot} />
-          </div>
-        )}
-        {cur && cur.file.binary && kind === "xlsx" && (
-          <div className="flex-1 min-h-0 flex flex-col">
-            <XlsxPreview path={cur.file.path} title={cur.file.name} root={curRoot} />
-          </div>
-        )}
-        {cur && cur.file.binary && !mediaKind && !isPreviewableBinary(cur.file.name) && (
-          <p className="py-8 text-center text-sm text-muted">{t("editor.binaryFile")}</p>
-        )}
-        {cur && cur.file.truncated && (
-          <p className="py-8 text-center text-sm text-muted">{t("editor.tooLarge")}</p>
-        )}
-
-        {cur && !cur.file.binary && !cur.file.truncated && (
-          kind === "markdown" && viewMode === "preview" ? (
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1">
-              <Markdown content={cur.draft} />
-            </div>
-          ) : kind === "markdown" && viewMode === "split" ? (
-            <div className="flex-1 min-h-0 grid grid-cols-2 gap-2">
-              <div className="min-h-0 h-full">{editorNode}</div>
-              <div className="min-h-0 h-full overflow-y-auto pr-1">
-                <Markdown content={cur.draft} />
-              </div>
-            </div>
-          ) : kind === "html" && viewMode === "preview" ? (
-            <div className="flex-1 min-h-0">
-              <HtmlPreview html={cur.draft} title={cur.file.name} />
-            </div>
-          ) : kind === "html" && viewMode === "split" ? (
-            <div className="flex-1 min-h-0 grid grid-cols-2 gap-2">
-              <div className="min-h-0 h-full">{editorNode}</div>
-              <div className="min-h-0 h-full">
-                <HtmlPreview html={cur.draft} title={cur.file.name} />
-              </div>
-            </div>
-          ) : kind === "csv" && viewMode === "preview" ? (
-            <CsvPreview
-              text={cur.draft}
-              delimiter={cur.file.name.toLowerCase().endsWith(".tsv") ? "\t" : ","}
-            />
-          ) : (
-            <div className="flex-1 min-h-0">{editorNode}</div>
-          )
-        )}
-      </div>
-
-      {/* 底栏 */}
       {cur && (
-        <div className="flex items-center gap-2 px-3 py-2 border-t border-border shrink-0">
-          <span className="text-[11px] text-muted mr-auto truncate">
-            {cur.file.path} · {(cur.file.size / 1024).toFixed(1)} KB
-            {savedTick && <span className="text-ok ml-2">{t("editor.saved")}</span>}
-          </span>
-          <Button variant="secondary" size="sm" onClick={() => requestClose()}>
-            {t("editor.close")}
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={save}
-            disabled={!dirty || saving || cur.file.binary || cur.file.truncated}
-          >
-            {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
-            {t("editor.save")}
-          </Button>
-        </div>
+        <FileEditorFooter
+          cur={cur}
+          dirty={dirty}
+          saving={saving}
+          savedTick={savedTick}
+          onClose={() => requestClose()}
+          onSave={save}
+        />
       )}
 
       <ConfirmDialog

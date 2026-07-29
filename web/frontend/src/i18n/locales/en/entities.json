@@ -26,5 +26,7 @@
   },
   "tools": {
     "empty": "No tools registered for this entity"
-  }
+  },
+  "notFound": "Entity not found",
+  "backToTools": "Back to tools"
 }

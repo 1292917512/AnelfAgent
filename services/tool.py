@@ -89,8 +89,8 @@ class ToolService:
 
     def toggle_tool(self, name: str) -> bool:
         """切换工具启用/禁用状态，并持久化。返回切换后是否启用。"""
-        from core.entity import EntityRegistry
         from core.config import ConfigManager
+        from core.entity import EntityRegistry
 
         e = EntityRegistry.get(name)
         if e is None:
@@ -112,8 +112,8 @@ class ToolService:
 
     def toggle_group(self, group: str) -> bool:
         """切换整个分组的启用/禁用状态，并持久化。返回切换后是否启用。"""
-        from core.entity import EntityRegistry, EntityType
         from core.config import ConfigManager
+        from core.entity import EntityRegistry, EntityType
 
         new_enabled = not EntityRegistry.is_group_enabled(group)
         if new_enabled:
@@ -142,8 +142,8 @@ class ToolService:
 
         tags 必须全部来自标签系统（core/tags.tag_list），不允许使用未注册的标签。
         """
-        from core.entity import EntityRegistry
         from core.config import ConfigManager
+        from core.entity import EntityRegistry
         from services.tag import TagService
 
         entity = EntityRegistry.get(name)
@@ -180,8 +180,8 @@ class ToolService:
     @staticmethod
     def apply_overrides() -> int:
         """启动时加载持久化的工具属性覆盖，返回应用的覆盖数量。"""
-        from core.entity import EntityRegistry
         from core.config import ConfigManager
+        from core.entity import EntityRegistry
 
         overrides: dict = ConfigManager.get("tool_overrides", {})
         if not isinstance(overrides, dict) or not overrides:

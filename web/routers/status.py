@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from services import AgentStatusService, is_ready
@@ -43,6 +42,7 @@ async def get_mind_config() -> Dict[str, Any]:
     return {"config": config or {}}
 
 
+from core.log import log
 from web.routers.schemas import MindConfigUpdate
 
 
@@ -92,6 +92,7 @@ async def log_stream(request: Request) -> EventSourceResponse:
     import asyncio
     import json
     import time as _time
+
     from core.log import add_listener, remove_listener
 
     queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=256)
@@ -100,7 +101,7 @@ async def log_stream(request: Request) -> EventSourceResponse:
         try:
             queue.put_nowait(data)
         except asyncio.QueueFull:
-            pass
+            log("on_log 异常已忽略", "DEBUG")
 
     add_listener(on_log)
 

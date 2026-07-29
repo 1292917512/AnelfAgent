@@ -9,6 +9,8 @@ import { Badge, Button, Input } from "@/components/ui";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { LiteLLMCostMapCard } from "@/pages/config/LiteLLMCostMapCard";
+import type { ConfigValues } from "@/lib/types";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 
 /** 系统配置面板：密码 / API Keys / 成本表 / Web 工具 / 网络 */
 export function SysConfigPanel() {
@@ -54,7 +56,7 @@ export function SysConfigPanel() {
         subtitle={t("sections.webToolsSubtitle")}
         fields={webToolsFields}
         queryKey="webToolsConfig"
-        fetchFn={() => configApi.getWebTools().then((r) => r.data as unknown as Record<string, unknown>)}
+        fetchFn={() => configApi.getWebTools().then((r) => r.data as unknown as ConfigValues)}
         saveFn={(values) => configApi.saveWebTools(values as unknown as Partial<WebToolsConfig>)}
       />
       <ConfigFormPanel
@@ -77,14 +79,13 @@ function PasswordCard() {
     queryFn: () => authApi.check().then((r) => r.data),
   });
   const [newPwd, setNewPwd] = useState("");
-  const [saved, setSaved] = useState(false);
+  const [saved, triggerSaved] = useCopyFeedback(2000);
 
   const mutation = useMutation({
     mutationFn: (pwd: string) => authApi.updatePassword(pwd),
     onSuccess: () => {
-      setSaved(true);
+      triggerSaved();
       setNewPwd("");
-      setTimeout(() => setSaved(false), 2000);
     },
   });
 
@@ -131,7 +132,7 @@ function ApiKeysCard() {
   const qc = useQueryClient();
   const [name, setName] = useState("default");
   const [revealed, setRevealed] = useState<ApiKeyCreated | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, triggerCopied, resetCopied] = useCopyFeedback(1500);
 
   const { data } = useQuery({
     queryKey: ["apiKeys"],
@@ -142,7 +143,7 @@ function ApiKeysCard() {
   const refresh = async (created?: ApiKeyCreated) => {
     if (created) {
       setRevealed(created);
-      setCopied(false);
+      resetCopied();
     }
     await qc.invalidateQueries({ queryKey: ["apiKeys"] });
   };
@@ -191,8 +192,7 @@ function ApiKeysCard() {
                 size="sm"
                 onClick={async () => {
                   await navigator.clipboard.writeText(revealed.api_key);
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1500);
+                  triggerCopied();
                 }}
               >
                 <Copy size={12} />

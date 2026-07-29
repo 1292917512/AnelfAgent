@@ -14,8 +14,6 @@ import os
 from contextvars import ContextVar
 from typing import Optional
 
-from core.log import log
-
 # 当前思维会话的令牌（contextvars 绑定，异步任务间隔离）
 _current_token: ContextVar[str] = ContextVar("security_session_token", default="")
 

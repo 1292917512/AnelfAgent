@@ -7,11 +7,10 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from core.log import log
-from entities._sdk import activate_group, deferred_tool
-
 from agent.skills.skill_matcher import SkillMatcher
 from agent.skills.skill_store import SkillStore
+from core.log import log
+from entities._sdk import activate_group, deferred_tool
 
 _store: Optional[SkillStore] = None
 _matcher: Optional[SkillMatcher] = None

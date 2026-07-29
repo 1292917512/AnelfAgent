@@ -93,5 +93,10 @@
     "todayDownloads": "Today's Downloads",
     "recentDownloads": "Recent Downloads",
     "storage": "Storage Usage"
-  }
+  },
+  "filePathHint": "Relative or absolute path inside the workspace sandbox",
+  "workspaceEmpty": "Workspace is empty",
+  "tokenLengthHint": "8 - 64 characters, default 22",
+  "aiAutoShareDesc": "Allow AI to create share links automatically via tools",
+  "auditDesc": "Record IP / time / User-Agent for each download"
 }

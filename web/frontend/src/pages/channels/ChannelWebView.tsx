@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { ExternalLink } from "lucide-react";
 import type { ConfigMeta } from "@/pages/channels/ConfigField";
+import type { ConfigValues } from "@/lib/types";
 
 export function ChannelWebView({
   channelKey,
@@ -11,7 +12,7 @@ export function ChannelWebView({
 }: {
   channelKey: string;
   configs: Array<[string, ConfigMeta]>;
-  values: Record<string, unknown>;
+  values: ConfigValues;
 }) {
   const { t } = useTranslation("channels");
   const [showIframe, setShowIframe] = useState(false);
@@ -26,15 +27,13 @@ export function ChannelWebView({
 
   // 一律经本站同源代理访问频道 WebUI（外网可达）；
   // 携带配置 URL 的 query/hash（如 NapCat 的 ?token= 自动登录）
-  const proxyUrl = useMemo(() => {
-    const base = `/api/channels/${channelKey}/webui/`;
-    try {
-      const u = new URL(url);
-      return `${base}${u.search}${u.hash}`;
-    } catch {
-      return base;
-    }
-  }, [channelKey, url]);
+  // 注意：不能在早退 return 之后调用 hook，这里为纯字符串计算，无需 useMemo
+  const proxyBase = `/api/channels/${channelKey}/webui/`;
+  let proxyUrl = proxyBase;
+  try {
+    const u = new URL(url);
+    proxyUrl = `${proxyBase}${u.search}${u.hash}`;
+  } catch { /* URL 非法时退回基础代理路径 */ }
 
   return (
     <div className="space-y-2">

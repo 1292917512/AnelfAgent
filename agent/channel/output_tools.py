@@ -13,9 +13,9 @@ from __future__ import annotations
 import json
 from typing import Any, Awaitable, Callable, Optional
 
-from entities._sdk import deferred_tool, activate_group
 from core.log import log
 from core.tags import strip_message_meta_tags
+from entities._sdk import activate_group, deferred_tool
 
 # 会话记录引用（register_output_tools 注入，用于将 AI 回复写入对话历史）
 _conversation_data: Optional[Any] = None
@@ -232,7 +232,7 @@ def list_channels() -> str:
         if not channels:
             return json.dumps({"channels": [], "hint": "当前无已连接频道"}, ensure_ascii=False)
         result = []
-        for cid, ch in channels.items():
+        for ch in channels.values():
             info = ch.get_status_info()
             result.append(info)
         return json.dumps({
@@ -301,7 +301,7 @@ async def send_message(
         if json.loads(result).get("success") is not False:
             await _record_sent_reply(resolved_target, content, resolved_channel_type)
     except (json.JSONDecodeError, TypeError):
-        pass
+        log("_enrich 异常已忽略", "DEBUG")
     return result
 
 

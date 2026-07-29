@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 
 import lark_oapi as lark
-
-from core.log import log
 
 from agent.channel.schemas import (
     AdapterChannel,
@@ -21,10 +17,11 @@ from agent.channel.schemas import (
     MessageSegment,
     SegmentType,
 )
+from core.log import log
+
 from .helpers import (
     check_bot_mentioned,
     extract_media_key,
-    parse_mentions_from_event,
     parse_message_content,
     parse_post_content,
 )
@@ -133,7 +130,6 @@ async def _handle_message_event(
     chat_id = message.chat_id or ""
     chat_type = message.chat_type or "p2p"
     parent_id = message.parent_id or ""
-    root_id = message.root_id or ""
 
     # 解析 mentions
     raw_mentions = getattr(message, "mentions", None)
@@ -176,9 +172,6 @@ async def _handle_message_event(
 
     # 发送者信息
     sender_name = ""
-    sender_user_id = sender_open_id
-    if sender and sender.sender_id:
-        sender_user_id = sender.sender_id.user_id or sender_open_id
 
     # 构建 AdapterMessage
     adapter_msg = AdapterMessage(

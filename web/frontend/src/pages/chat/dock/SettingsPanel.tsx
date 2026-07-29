@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Moon, Sun } from "lucide-react";
-import { thinkingApi, heartbeatApi } from "@/lib/api";
+import { warnApiError, thinkingApi, heartbeatApi } from "@/lib/api";
 import { useThinkingStore } from "@/stores/thinking-store";
 import { useAppStore } from "@/stores/app-store";
 import { useThinkingBootstrap } from "../useThinkingBootstrap";
@@ -32,7 +32,7 @@ export function SettingsPanel() {
       setEnabled(next);
       if (next) startSSE();
       else stopSSE();
-    }).catch((e) => console.warn("[API]", e));
+    }).catch(warnApiError);
   };
 
   return (

@@ -30,5 +30,10 @@
     "running": "运行中",
     "role": "角色",
     "depth": "嵌套"
-  }
+  },
+  "stepFallback": "步骤 {{index}}",
+  "stepProgress": "{{icon}} 计划步骤 {{index}}/{{total}}: {{step}}{{note}}",
+  "fallbackTitle": "计划",
+  "completedMsg": "✓ 计划完成：{{goal}}",
+  "cancelledMsg": "⊘ 计划已取消：{{goal}}"
 }

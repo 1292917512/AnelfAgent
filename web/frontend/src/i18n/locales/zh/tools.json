@@ -50,5 +50,7 @@
   "pluginEnabled": "已启用",
   "pluginDisabled": "已禁用",
   "tagCount": "{{count}} 个标签",
-  "tagActiveCount": "（已激活 {{count}} 个）"
+  "tagActiveCount": "（已激活 {{count}} 个）",
+  "openEntity": "打开实体详情",
+  "entityPage": "详情"
 }

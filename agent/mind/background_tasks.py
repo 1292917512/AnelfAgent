@@ -14,9 +14,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 import uuid
-import threading
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Dict, List, Optional
 
@@ -265,11 +265,16 @@ class BackgroundTaskRegistry:
                 try:
                     await asyncio.wait_for(event.wait(), timeout=min(_POLL_INTERVAL, remaining))
                 except asyncio.TimeoutError:
-                    pass
+                    pass  # 超时属正常等待结束（正常控制流，非异常）
                 if should_abort is not None and await should_abort():
                     return WaitResult(reason="interrupted")
         finally:
             self._waiting[scope] = max(0, self._waiting.get(scope, 1) - 1)
+            # scope 无等待者且无运行中任务时回收事件与计数，防按 scope 无限累积
+            if self._waiting[scope] == 0 and not self.running(scope):
+                self._waiting.pop(scope, None)
+                if not self._collect_undelivered(scope):
+                    self._events.pop(scope, None)
 
     # ------------------------------------------------------------------
     # 内部

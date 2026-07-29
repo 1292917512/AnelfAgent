@@ -25,7 +25,7 @@ async def create_message_tag(body: TagCreate) -> Dict[str, Any]:
     try:
         return _tag_svc.create_tag(body.name.strip(), body.description.strip())
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 @router.delete("/message/{name}")
@@ -37,7 +37,7 @@ async def delete_message_tag(name: str) -> Dict[str, Any]:
             raise HTTPException(404, f"标签 '{name}' 不存在")
         return {"status": "ok", "name": name}
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 @router.get("/tool")

@@ -25,6 +25,7 @@ entity_manifest(
 
 def register_lifecycle() -> None:
     from core.lifecycle import Lifecycle
+
     from .store import get_share_store
     store = get_share_store()
     Lifecycle.register(

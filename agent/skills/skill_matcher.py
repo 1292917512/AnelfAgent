@@ -19,7 +19,16 @@ _W_SEMANTIC = 0.6
 _MIN_SCORE = 0.15
 
 # 技能描述 embedding 缓存：按内容 hash 键控，内容变更即天然失效（新 hash 命中新键）。
+# 容量有界（FIFO 淘汰），避免技能反复修改导致旧键只增不减。
 _EMBEDDING_CACHE: Dict[str, List[float]] = {}
+_EMBEDDING_CACHE_MAX = 512
+
+
+def _cache_embedding(key: str, vec: List[float]) -> None:
+    if len(_EMBEDDING_CACHE) >= _EMBEDDING_CACHE_MAX:
+        oldest = next(iter(_EMBEDDING_CACHE))
+        _EMBEDDING_CACHE.pop(oldest, None)
+    _EMBEDDING_CACHE[key] = vec
 
 
 def clear_embedding_cache() -> None:
@@ -33,6 +42,20 @@ class SkillMatcher:
     def __init__(self, store: SkillStore, embedder: Optional[object] = None) -> None:
         self._store = store
         self._embedder = embedder
+        # 技能列表缓存：按 store.version 失效，避免每轮匹配同步遍历目录读全部 SKILL.md
+        self._list_cache: Optional[Tuple[int, List[Skill]]] = None
+
+    def _list_matchable_skills(self) -> List[Skill]:
+        """列出可匹配技能（ACTIVE/STALE），按版本号缓存。"""
+        version = self._store.version
+        if self._list_cache and self._list_cache[0] == version:
+            return self._list_cache[1]
+        skills = [
+            s for s in self._store.list_skills()
+            if s.state in (SkillState.ACTIVE, SkillState.STALE)
+        ]
+        self._list_cache = (version, skills)
+        return skills
 
     async def match(
             self,
@@ -51,10 +74,7 @@ class SkillMatcher:
             query_vec: 调用方预计算的查询向量（与记忆召回共享一次 embedding），
                 为 None 时内部按需自行计算
         """
-        skills = [
-            s for s in self._store.list_skills()
-            if s.state in (SkillState.ACTIVE, SkillState.STALE)
-        ]
+        skills = self._list_matchable_skills()
         if not skills or not query_texts:
             return []
 
@@ -108,5 +128,5 @@ class SkillMatcher:
             return cached
         vec = await embedder.embed_query(text)  # type: ignore[attr-defined]
         if vec:
-            _EMBEDDING_CACHE[key] = vec
+            _cache_embedding(key, vec)
         return vec

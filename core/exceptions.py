@@ -4,7 +4,7 @@
 """
 import asyncio
 from functools import wraps
-from typing import Any, Callable, Optional, Type, Tuple
+from typing import Any, Callable, Optional, Tuple, Type
 
 from core.log import error
 
@@ -38,7 +38,7 @@ def catch_exceptions(*, reraise: bool = True, default_value: Any = None, tag: Op
 
         # 根据设置处理异常
         if reraise:
-            raise e
+            raise
         return default_value
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:

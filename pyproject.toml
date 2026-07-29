@@ -63,11 +63,60 @@ default = true
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "pytest-timeout>=2.4.0",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.14.0",
+    "mypy>=1.18.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
+timeout = 120
 markers = [
     "integration: requires optional external services or credentials",
 ]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = [
+    ".venv",
+    "workspace",
+    "web/frontend/node_modules",
+    "config",
+]
+
+[tool.ruff.lint]
+# F: Pyflakes（死代码/未定义名）; E9: 语法错误; W6: 废弃用法; I: import 排序
+# UP: pyupgrade（渐进开启）; B: bugbear 常见坑
+select = ["F", "E9", "W6", "I", "B"]
+ignore = [
+    # 与项目 async 工具风格冲突（工具函数内部自捕获异常返回 JSON）
+    "B008",
+    # 允许 pytest fixture 风格参数同名遮蔽
+    "B023",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试中允许盲断言异常（pytest.raises(Exception) 语义明确）
+"tests/**" = ["B017"]
+
+[tool.mypy]
+python_version = "3.10"
+# 渐进严格：全仓跑基础检查，core 层逐步收紧
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+strict_optional = true
+exclude = "(\\.venv|workspace|web/frontend|config|tests)"
+
+[[tool.mypy.overrides]]
+module = "core.*"
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["litellm", "cognee", "lark_oapi.*", "nonebot.*", "nonebot_adapter_onebot.*"]
+ignore_missing_imports = true

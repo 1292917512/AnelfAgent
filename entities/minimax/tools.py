@@ -11,9 +11,12 @@ import json
 import mimetypes
 import os
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, Optional
 
-from entities._sdk import tool, entity
+from entities._sdk import entity, tool
+
+if TYPE_CHECKING:
+    from entities.minimax.client import MiniMaxClient
 
 entity("minimax", "MiniMax 多媒体 — 语音合成、图片生成、音色克隆与管理")
 
@@ -43,9 +46,16 @@ def _resolve_workspace_path(path: str) -> str:
     return candidate
 
 
+# MiniMaxClient 类缓存：延迟 import 避免循环依赖，缓存避免每次重复 import
+_mini_max_client_cls: Optional[type["MiniMaxClient"]] = None
+
+
 def _client() -> "MiniMaxClient":
-    from entities.minimax.client import MiniMaxClient
-    return MiniMaxClient()
+    global _mini_max_client_cls
+    if _mini_max_client_cls is None:
+        from entities.minimax.client import MiniMaxClient
+        _mini_max_client_cls = MiniMaxClient
+    return _mini_max_client_cls()
 
 
 def _ensure_configured() -> str | None:

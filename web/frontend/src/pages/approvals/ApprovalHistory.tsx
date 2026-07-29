@@ -18,6 +18,7 @@ import {
   ChevronUp,
   Search,
 } from "lucide-react";
+import type { TOptions } from "i18next";
 
 type DecisionFilter = "all" | "approved" | "denied" | "expired" | "cancelled";
 
@@ -42,7 +43,7 @@ const DECISION_ICON_COLOR: Record<string, string> = {
   cancelled: "text-muted",
 };
 
-function relativeTime(ts: number, t: (key: string, opts?: Record<string, unknown>) => string): string {
+function relativeTime(ts: number, t: (key: string, opts?: TOptions) => string): string {
   const diff = Math.max(0, Math.floor(Date.now() / 1000 - ts));
   if (diff < 60) return t("timeAgo.justNow");
   if (diff < 3600) return t("timeAgo.minutes", { count: Math.floor(diff / 60) });

@@ -44,7 +44,7 @@ class MediaPipeline:
                         if candidate:
                             submit_image(candidate, source="inbound")
                 except Exception:
-                    pass
+                    log("process_segments 异常已忽略", "DEBUG")
 
             if file_path and os.path.isfile(file_path):
                 tag_text = tag_label("media_file", f"{seg_type}:{file_path}")

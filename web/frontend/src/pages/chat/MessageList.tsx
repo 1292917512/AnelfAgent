@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
@@ -10,55 +10,91 @@ import { PlanCard } from "./render/PlanCard";
 import { DelegationCard } from "./render/DelegationCard";
 import { ActivityRow } from "./ActivityRow";
 import { StreamingArea } from "./StreamingArea";
-import type { PlanRecord, DelegationNode } from "@/lib/types";
+import type { ChatMessage, DelegationNode, PlanRecord } from "@/lib/types";
 
 type TimelineEntry =
-  | { kind: "message"; ts: number; key: string; data: import("@/stores/chat-store").ChatMessage }
+  | { kind: "message"; ts: number; key: string; data: ChatMessage }
   | { kind: "plan"; ts: number; key: string; data: PlanRecord }
   | { kind: "delegation"; ts: number; key: string; data: DelegationNode };
+
+/** 单条消息气泡（memo：流式 delta 更新时历史消息行不重渲染） */
+const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
+  const { t } = useTranslation("chat");
+  return (
+    <div className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
+      <div className={cn("max-w-[85%] sm:max-w-[80%]", msg.role === "user" ? "text-right" : "text-left")}>
+        {msg.media_type && <MediaBubble msg={msg} />}
+        {msg.content && (
+          <div
+            className={cn(
+              "rounded-lg px-4 py-2.5 text-sm leading-relaxed inline-block text-left",
+              msg.role === "user"
+                ? "bg-accent-subtle"
+                : msg.role === "system"
+                  ? "bg-danger-subtle text-danger"
+                  : "bg-secondary",
+              msg.queued && "border border-dashed border-muted-foreground/50 opacity-70",
+            )}
+          >
+            {msg.queued && (
+              <div className="text-[10px] text-muted mb-1">{t("queued")}</div>
+            )}
+            <Markdown content={msg.content} />
+          </div>
+        )}
+        {msg.timestamp && (
+          <div className="text-[11px] text-muted mt-0.5 px-1">{msg.timestamp}</div>
+        )}
+      </div>
+    </div>
+  );
+});
 
 /** 消息列表：气泡渲染 + 自动滚动；按时间序合并 plan / delegation 卡片 */
 export function MessageList() {
   const { t } = useTranslation("chat");
   const activeChatId = useChatStore((s) => s.activeChatId);
-  const bucket = useChatStore((s) => s.buckets[s.activeChatId]);
-  const messages = bucket?.messages ?? [];
-  const sending = bucket?.sending ?? false;
-  const historyLoaded = bucket?.historyLoaded ?? false;
+  // 细粒度 selector：只订阅本组件需要的字段，其他会话/字段变化不触发重渲染
+  const messages = useChatStore((s) => s.buckets[s.activeChatId]?.messages);
+  const sending = useChatStore((s) => s.buckets[s.activeChatId]?.sending ?? false);
+  const historyLoaded = useChatStore((s) => s.buckets[s.activeChatId]?.historyLoaded ?? false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialLoad = useRef(true);
 
   const chatPlans = usePlanStore((s) => s.plans[activeChatId]);
   const chatDelegations = useDelegationStore((s) => s.delegations[activeChatId]);
 
-  // 把 messages / plans / delegations 按时间序合并到同一条时间线
-  const timeline: TimelineEntry[] = [];
-  for (const m of messages) {
-    const ts = m.id ?? 0;
-    timeline.push({
-      kind: "message",
-      ts,
-      key: `msg-${m.id ?? m.cid ?? ts}-${m.role}`,
-      data: m,
-    });
-  }
-  for (const p of Object.values(chatPlans ?? {})) {
-    timeline.push({
-      kind: "plan",
-      ts: p.created_at,
-      key: `plan-${p.plan_id}`,
-      data: p,
-    });
-  }
-  for (const d of Object.values(chatDelegations ?? {})) {
-    timeline.push({
-      kind: "delegation",
-      ts: d.started_at,
-      key: `delegation-${d.delegation_id}`,
-      data: d,
-    });
-  }
-  timeline.sort((a, b) => a.ts - b.ts);
+  // 把 messages / plans / delegations 按时间序合并到同一条时间线（输入不变时复用结果）
+  const timeline = useMemo<TimelineEntry[]>(() => {
+    const entries: TimelineEntry[] = [];
+    for (const m of messages ?? []) {
+      const ts = m.id ?? 0;
+      entries.push({
+        kind: "message",
+        ts,
+        key: `msg-${m.id ?? m.cid ?? ts}-${m.role}`,
+        data: m,
+      });
+    }
+    for (const p of Object.values(chatPlans ?? {})) {
+      entries.push({
+        kind: "plan",
+        ts: p.created_at,
+        key: `plan-${p.plan_id}`,
+        data: p,
+      });
+    }
+    for (const d of Object.values(chatDelegations ?? {})) {
+      entries.push({
+        kind: "delegation",
+        ts: d.started_at,
+        key: `delegation-${d.delegation_id}`,
+        data: d,
+      });
+    }
+    entries.sort((a, b) => a.ts - b.ts);
+    return entries;
+  }, [messages, chatPlans, chatDelegations]);
 
   useEffect(() => {
     if (!historyLoaded) return;
@@ -89,38 +125,7 @@ export function MessageList() {
         if (entry.kind === "delegation") {
           return <DelegationCard key={entry.key} node={entry.data} />;
         }
-        const msg = entry.data;
-        return (
-          <div
-            key={entry.key}
-            className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}
-          >
-            <div className={cn("max-w-[85%] sm:max-w-[80%]", msg.role === "user" ? "text-right" : "text-left")}>
-              {msg.media_type && <MediaBubble msg={msg} />}
-              {msg.content && (
-                <div
-                  className={cn(
-                    "rounded-lg px-4 py-2.5 text-sm leading-relaxed inline-block text-left",
-                    msg.role === "user"
-                      ? "bg-accent-subtle"
-                      : msg.role === "system"
-                        ? "bg-danger-subtle text-danger"
-                        : "bg-secondary",
-                    msg.queued && "border border-dashed border-muted-foreground/50 opacity-70",
-                  )}
-                >
-                  {msg.queued && (
-                    <div className="text-[10px] text-muted mb-1">{t("queued", "排队中 · 将于当前回复后处理")}</div>
-                  )}
-                  <Markdown content={msg.content} />
-                </div>
-              )}
-              {msg.timestamp && (
-                <div className="text-[11px] text-muted mt-0.5 px-1">{msg.timestamp}</div>
-              )}
-            </div>
-          </div>
-        );
+        return <MessageRow key={entry.key} msg={entry.data} />;
       })}
       <StreamingArea />
       {sending && <ActivityRow />}

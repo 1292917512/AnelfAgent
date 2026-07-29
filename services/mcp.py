@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from core.log import log
 from core.path import ConfigPaths
 from core.sanitizer import is_sanitize_enabled, sanitize_text
+from services._parsing import to_bool
 
 # 配置文件读-改-写串行化锁：Web API、AI 工具、热重载等多条写路径共用，
 # 防止并发写互相覆盖丢更新。
@@ -45,6 +46,33 @@ class MCPService:
         "call_timeout",
     })
     _SERVER_ALLOWED_TRANSPORTS = frozenset({"stdio", "streamable_http", "sse"})
+    _SECRET_MASK = "********"
+    _SECRET_FIELDS = ("env", "headers")
+
+    @classmethod
+    def mask_secrets(cls, cfg: Dict[str, Any]) -> Dict[str, Any]:
+        """返回脱敏副本：env/headers 的值统一替换为占位符（供展示与表单回显）。"""
+        masked = dict(cfg)
+        for field in cls._SECRET_FIELDS:
+            val = masked.get(field)
+            if isinstance(val, dict):
+                masked[field] = {
+                    k: (cls._SECRET_MASK if v else v) for k, v in val.items()
+                }
+        return masked
+
+    @classmethod
+    def _restore_masked_secrets(
+        cls, patch: Dict[str, Any], existing: Dict[str, Any]
+    ) -> None:
+        """将 patch 中仍为占位符的 env/headers 值还原为现有真实值（原地修改）。"""
+        for field in cls._SECRET_FIELDS:
+            new_vals = patch.get(field)
+            old_vals = existing.get(field)
+            if isinstance(new_vals, dict) and isinstance(old_vals, dict):
+                for k, v in new_vals.items():
+                    if v == cls._SECRET_MASK and k in old_vals:
+                        new_vals[k] = old_vals[k]
 
     # ------------------------------------------------------------------
     # 配置读写
@@ -116,13 +144,7 @@ class MCPService:
 
     @staticmethod
     def _to_bool(value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        if value is None:
-            return False
-        return bool(value)
+        return to_bool(value)
 
     @staticmethod
     def _parse_object_like(value: Any, field_name: str) -> Dict[str, str]:
@@ -254,12 +276,13 @@ class MCPService:
             data = self.load_config()
         return list(data.get("mcpServers", {}).keys())
 
-    def get_server_config(self, name: str) -> Optional[Dict[str, Any]]:
-        """返回单个 server 的原始配置。"""
+    def get_server_config(self, name: str, *, mask_secrets: bool = False) -> Optional[Dict[str, Any]]:
+        """返回单个 server 的配置（可选脱敏 env/headers）。"""
         data = self.load_config()
         raw = data.get("mcpServers", {}).get(name)
         if isinstance(raw, dict):
-            return dict(raw)
+            cfg = dict(raw)
+            return self.mask_secrets(cfg) if mask_secrets else cfg
         return None
 
     def update_server_config(
@@ -291,6 +314,7 @@ class MCPService:
                     current.pop(f, None)
 
             normalized_patch = self._normalize_server_patch(patch)
+            self._restore_masked_secrets(normalized_patch, before)
             for key, val in normalized_patch.items():
                 if val is None:
                     current.pop(key, None)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from core.config import ConfigManager, ConfigRegistry, ConfigItem
+from core.config import ConfigItem, ConfigManager, ConfigRegistry
 
 
 @pytest.fixture

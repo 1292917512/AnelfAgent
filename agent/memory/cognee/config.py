@@ -7,10 +7,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from agent.llm.reasoning import CANONICAL_EFFORTS
 from core.log import log
 from core.path import ConfigPaths, project_root
-
-from agent.llm.reasoning import CANONICAL_EFFORTS
 
 # 模型来源：auto=自动映射 LLMManager / model=指定 LLMManager 模型 / custom=完全自定义
 MODEL_SOURCE_AUTO = "auto"

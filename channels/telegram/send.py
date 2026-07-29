@@ -10,9 +10,7 @@ from typing import Any, Dict, Optional, Union
 from core.log import log
 
 from .errors import (
-    TelegramSendError,
     is_chat_migrated,
-    is_forbidden,
     is_html_parse_error,
     is_thread_not_found,
     with_retry,
@@ -303,7 +301,7 @@ async def edit_message_text(
                 await bot.edit_message_text(**params)
                 return True
             except Exception:
-                pass
+                log("edit_message_text 异常已忽略", "DEBUG")
         log(f"editMessageText 失败: {exc}", "WARNING")
         return False
 

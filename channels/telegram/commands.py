@@ -5,10 +5,9 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any
 
 from core.log import log
-
 
 # 内置命令定义
 BUILTIN_COMMANDS = [

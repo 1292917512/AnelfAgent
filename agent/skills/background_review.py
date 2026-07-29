@@ -17,10 +17,9 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Optional
 
+from agent.skills.skill_store import SkillStore
 from core.event_bus import EVENT_AFTER_REPLY, event_bus
 from core.log import log
-
-from agent.skills.skill_store import SkillStore
 
 if TYPE_CHECKING:
     from agent.mind.mind import Mind

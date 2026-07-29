@@ -65,6 +65,16 @@ class _FakeManager:
     def get_default(self) -> Any:
         return self._clients[self._type_priorities["chat"][0]]
 
+    def get_client(self, name: str) -> Any:
+        return self._clients.get(name)
+
+    def get_all_by_type(self, model_type: Any) -> list:
+        value = getattr(model_type, "value", model_type)
+        return [
+            self._clients[mid] for mid in self._type_priorities.get(value, [])
+            if mid in self._clients
+        ]
+
     def get_embedding_client(self) -> Any:
         for client in self._clients.values():
             if "embedding" in client.config.model_types:

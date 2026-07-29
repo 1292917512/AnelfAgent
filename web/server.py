@@ -32,7 +32,7 @@ def _mount_nonebot(app: FastAPI) -> None:
         if is_initialized():
             mount_nonebot_app(app)
     except ImportError:
-        pass
+        log("_mount_nonebot 异常已忽略", "DEBUG")
 
 
 def _mount_module_routers(
@@ -201,11 +201,26 @@ class _V1BearerAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+def _register_domain_error_handlers(app: FastAPI) -> None:
+    """注册领域异常 → HTTP 响应的统一转换（路由内不再逐个 try/except）。"""
+    from services.data_migration import MigrationError
+    from services.database import DatabaseError
+
+    @app.exception_handler(DatabaseError)
+    async def _database_error_handler(request: Request, exc: DatabaseError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+
+    @app.exception_handler(MigrationError)
+    async def _migration_error_handler(request: Request, exc: MigrationError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+
+
 def create_app() -> FastAPI:
     """创建 WebUI FastAPI 应用。"""
     app = FastAPI(title="AnelfAgent WebUI", version="1.0.0")
 
     _ensure_strict_password()
+    _register_domain_error_handlers(app)
     app.add_middleware(_AuthMiddleware)
     app.add_middleware(_V1BearerAuthMiddleware)
     app.add_middleware(
@@ -310,6 +325,7 @@ async def start_web_server() -> None:
     """启动 WebUI 服务器，host/port 从 config/webui.json 读取。"""
     global _server
     import contextlib
+
     import uvicorn
 
     class _QuietServer(uvicorn.Server):

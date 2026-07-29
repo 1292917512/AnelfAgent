@@ -312,7 +312,7 @@ class PostgresAdapter(ExternalAdapter):
                 try:
                     await self._pool.close()
                 except Exception:
-                    pass
+                    log("close 异常已忽略", "DEBUG")
                 self._pool = None
 
     async def _fetch(self, sql: str, params: Tuple[Any, ...] = ()) -> Tuple[List[str], List[Tuple[Any, ...]]]:
@@ -423,7 +423,7 @@ class MysqlAdapter(ExternalAdapter):
                 try:
                     self._conn_obj.close()
                 except Exception:
-                    pass
+                    log("close 异常已忽略", "DEBUG")
                 self._conn_obj = None
 
     async def _fetch(self, sql: str, params: Tuple[Any, ...] = ()) -> Tuple[List[str], List[Tuple[Any, ...]]]:
@@ -579,7 +579,7 @@ class ConnectionStore:
                 loop = asyncio.get_running_loop()
                 loop.create_task(adapter.close())
             except RuntimeError:
-                pass
+                log("_drop_adapter 异常已忽略", "DEBUG")
 
     # ---------------- 适配器与测试 ----------------
 
@@ -603,7 +603,7 @@ class ConnectionStore:
             try:
                 draft.password = self.get(str(data["id"])).password
             except DatabaseError:
-                pass
+                log("test 异常已忽略", "DEBUG")
         adapter: ExternalAdapter = _ADAPTERS[draft.engine](draft)
         started = time.time()
         try:
@@ -622,40 +622,45 @@ class ConnectionStore:
             try:
                 await adapter.close()
             except Exception:
-                pass
+                log("test 异常已忽略", "DEBUG")
+
+    async def _probe_source_entry(self, conn: DbConnection) -> Dict[str, Any]:
+        """单个外部源的清单条目（含连通性探测）。"""
+        entry: Dict[str, Any] = {
+            "id": f"ext:{conn.id}",
+            "name": conn.name,
+            "description": f"{conn.engine} · {conn.host}:{conn.effective_port()}/{conn.database}",
+            "path": "",
+            "exists": False,
+            "external": True,
+            "engine": conn.engine,
+            "size_bytes": 0,
+            "table_count": 0,
+        }
+        try:
+            adapter = await self.adapter(conn.id)
+            await asyncio.wait_for(adapter.test(), timeout=_CONNECT_TIMEOUT)
+            entry["exists"] = True
+            tables = await adapter.list_tables()
+            entry["table_count"] = len(tables)
+        except Exception as exc:
+            entry["error"] = str(exc)
+        return entry
 
     async def list_source_entries(self) -> List[Dict[str, Any]]:
-        """供 DatabaseService.list_databases 追加的外部源条目（带连通性探测）。"""
-        entries: List[Dict[str, Any]] = []
-        for conn in self._items.values():
-            entry: Dict[str, Any] = {
-                "id": f"ext:{conn.id}",
-                "name": conn.name,
-                "description": f"{conn.engine} · {conn.host}:{conn.effective_port()}/{conn.database}",
-                "path": "",
-                "exists": False,
-                "external": True,
-                "engine": conn.engine,
-                "size_bytes": 0,
-                "table_count": 0,
-            }
-            try:
-                adapter = await self.adapter(conn.id)
-                result = await asyncio.wait_for(adapter.test(), timeout=_CONNECT_TIMEOUT)
-                entry["exists"] = True
-                tables = await adapter.list_tables()
-                entry["table_count"] = len(tables)
-            except Exception as exc:
-                entry["error"] = str(exc)
-            entries.append(entry)
-        return entries
+        """供 DatabaseService.list_databases 追加的外部源条目（并发连通性探测）。"""
+        if not self._items:
+            return []
+        return list(await asyncio.gather(
+            *(self._probe_source_entry(conn) for conn in self._items.values())
+        ))
 
     async def close_all(self) -> None:
         for adapter in self._adapters.values():
             try:
                 await adapter.close()
             except Exception:
-                pass
+                log("close_all 异常已忽略", "DEBUG")
         self._adapters.clear()
 
 

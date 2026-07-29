@@ -9,12 +9,14 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from core.log import log
+from web.routers._errors import server_error
+from web.routers._paths import safe_workspace_path
 
 router = APIRouter(prefix="/workspace", tags=["workspace"])
 
@@ -61,17 +63,16 @@ def _resolve_root(root: str) -> str:
 
 def _safe_path(path: str) -> str:
     """委托 entities.filesystem 的沙箱路径解析。"""
-    from entities.filesystem.tools import _safe_path as fs_safe_path
     try:
-        return fs_safe_path(path)
+        return safe_workspace_path(path)
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
 
 
 def _safe_project_path(path: str) -> str:
-    """项目根沙箱路径解析（限制在项目根内）。"""
-    root = _project_root()
-    abs_path = os.path.abspath(os.path.join(root, path)) if path else root
+    """项目根沙箱路径解析（限制在项目根内，符号链接解析后校验）。"""
+    root = os.path.realpath(_project_root())
+    abs_path = os.path.realpath(os.path.join(root, path)) if path else root
     if abs_path != root and not abs_path.startswith(root + os.sep):
         raise HTTPException(status_code=403, detail="路径超出项目根目录")
     return abs_path
@@ -195,7 +196,7 @@ async def read_file(path: str = Query(...), root: str = Query("workspace")) -> D
     try:
         result["content"] = await asyncio.to_thread(Path(fp).read_text, "utf-8", errors="replace")
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"读取失败: {e}") from e
+        raise server_error("读取文件", e) from e
     return result
 
 
@@ -233,7 +234,7 @@ async def write_file(req: FileWriteRequest) -> Dict[str, Any]:
     try:
         await asyncio.to_thread(_write_text_file, fp, req.content)
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"写入失败: {e}") from e
+        raise server_error("写入文件", e) from e
     log(f"工作台写入文件: {_rel(fp, root=_resolve_root(req.root))}", "DEBUG", tag="工作区")
     return {"status": "ok", "path": _rel(fp, root=_resolve_root(req.root)), "size": os.path.getsize(fp)}
 
@@ -255,7 +256,7 @@ async def make_dir(req: MkdirRequest) -> Dict[str, Any]:
     try:
         os.makedirs(fp, exist_ok=True)
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"创建目录失败: {e}") from e
+        raise server_error("创建目录", e) from e
     return {"status": "ok", "path": _rel(fp, root=_resolve_root(req.root))}
 
 
@@ -271,7 +272,7 @@ async def delete_file(path: str = Query(...), root: str = Query("workspace")) ->
         else:
             os.remove(fp)
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"删除失败: {e}") from e
+        raise server_error("删除", e) from e
     log(f"工作台删除: {_rel(fp, root=_resolve_root(root))}", "DEBUG", tag="工作区")
     return {"status": "ok"}
 
@@ -321,33 +322,5 @@ def _search_files_impl(root: str, q: str, limit: int) -> Dict[str, Any]:
 
 
 def search_workspace(q: str, limit: int = 10) -> List[Dict[str, Any]]:
-    """供全局搜索聚合复用的同步版本。"""
-    root = _workspace_root()
-    query = q.lower()
-    hits: List[Dict[str, Any]] = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
-        for fname in filenames:
-            if fname.startswith(".") or len(hits) >= limit:
-                continue
-            fp = os.path.join(dirpath, fname)
-            rel = _rel(fp)
-            if query in fname.lower():
-                hits.append({"path": rel, "name": fname, "match": "name"})
-                continue
-            if Path(fname).suffix.lower() not in _SEARCHABLE_EXTS:
-                continue
-            try:
-                if os.path.getsize(fp) > _MAX_READ_BYTES:
-                    continue
-                text = Path(fp).read_text("utf-8", errors="ignore")
-            except OSError:
-                continue
-            idx = text.lower().find(query)
-            if idx >= 0:
-                start = max(0, idx - 40)
-                snippet = text[start:idx + len(q) + 60].replace("\n", " ")
-                hits.append({"path": rel, "name": fname, "match": "content", "snippet": snippet})
-        if len(hits) >= limit:
-            break
-    return hits
+    """供全局搜索聚合复用的同步版本（与 /search 端点同一实现）。"""
+    return _search_files_impl(_workspace_root(), q, limit)["files"]

@@ -5,17 +5,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from agent.llm.llm_client import LLMClient, LLMClientConfig
-from agent.llm.protocol import TransportMode
+from agent.llm.protocol import ProviderCapability, TransportMode
 from agent.llm.responses.router import ResponsesRoute
 from agent.llm.responses.session import ResponseSessionStore
 from agent.llm.responses.types import ResponseResult, ResponseStreamEvent, ResponseUsage
-from agent.llm.protocol import ProviderCapability
 from web.auth_keys import create_api_key, hash_api_key
 
 
@@ -148,8 +147,8 @@ def client(api_key: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     from web.server import create_app
     app = create_app()
     # 确保服务层使用同一 session store
-    from web.routers import v1_responses as v1_mod
     from services.responses import ResponsesService
+    from web.routers import v1_responses as v1_mod
     v1_mod._svc = ResponsesService(session_store=store)
 
     return TestClient(app)

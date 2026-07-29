@@ -5,9 +5,8 @@ import "@xyflow/react/dist/style.css";
 import { useShallow } from "zustand/react/shallow";
 
 import { useThinkingStore } from "@/stores/thinking-store";
-import { thinkingApi } from "@/lib/api";
+import { warnApiError, thinkingApi } from "@/lib/api";
 import { useThinkingBootstrap } from "@/pages/chat/useThinkingBootstrap";
-import { SessionList } from "@/components/thinking/SessionList";
 import { NodeDetail } from "@/components/thinking/NodeDetail";
 import { ToolsPanel } from "@/components/thinking/ToolsPanel";
 import { ContextProvidersPanel } from "@/components/thinking/ContextProvidersPanel";
@@ -17,26 +16,14 @@ import { TabBar } from "@/components/common/TabBar";
 import Context from "@/pages/Context";
 import { useIsMobile } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
-import {
-  Power,
-  PowerOff,
-  Crosshair,
-  RefreshCw,
-  PanelLeftOpen,
-  PanelLeftClose,
-  List,
-  Workflow,
-  ListTree,
-  Wrench,
-  Database,
-  X,
-} from "lucide-react";
+import { X } from "lucide-react";
+import { ThinkingSessionsPanel } from "@/components/thinking/ThinkingSessionsPanel";
+import { ThinkingToolbar } from "@/components/thinking/ThinkingToolbar";
 
 type ViewMode = "flow" | "timeline";
 
 function ThinkingFlow() {
   const { t } = useTranslation("thinking");
-  const { t: tc } = useTranslation("common");
   const {
     enabled,
     connected,
@@ -84,7 +71,7 @@ function ThinkingFlow() {
   useEffect(() => {
     thinkingApi.sessions(50).then((r) => {
       setSessions(r.data.sessions ?? []);
-    }).catch((e) => console.warn("[API]", e));
+    }).catch(warnApiError);
   }, [setSessions]);
 
   const handleToggle = useCallback(() => {
@@ -96,7 +83,7 @@ function ThinkingFlow() {
       } else {
         stopSSE();
       }
-    }).catch((e) => console.warn("[API]", e));
+    }).catch(warnApiError);
   }, [enabled, setEnabled, startSSE, stopSSE]);
 
   const handleSelectSession = useCallback((id: string) => {
@@ -108,7 +95,7 @@ function ThinkingFlow() {
         if (r.data && !r.data.error) {
           setActiveSession(r.data);
         }
-      }).catch((e) => console.warn("[API]", e));
+      }).catch(warnApiError);
     }
   }, [sessions, activeSession, setActiveSessionId, setActiveSession, setSelectedNodeId]);
 
@@ -121,154 +108,36 @@ function ThinkingFlow() {
 
   return (
     <div className="flex h-full gap-0">
-      {/* 左侧：会话列表（桌面常驻，移动端抽屉） */}
-      {(!isMobile || showSessions) && (
-        <>
-          {isMobile && (
-            <div className="fixed inset-0 z-40 bg-black/50" onClick={() => setShowSessions(false)} />
-          )}
-          <div className={cn(
-            "border-r border-border bg-panel flex flex-col",
-            isMobile ? "fixed inset-y-0 left-0 z-50 w-64" : "w-56 shrink-0",
-          )}>
-            <div className="px-4 py-3 border-b border-border">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-heading uppercase tracking-wider">
-                  {t("sessionList")}
-                </span>
-                <button
-                  onClick={() => {
-                    thinkingApi.sessions(50).then((r) => setSessions(r.data.sessions ?? [])).catch((e) => console.warn("[API]", e));
-                  }}
-                  className="p-1 rounded-sm text-muted hover:text-foreground hover:bg-hover"
-                  title={t("refresh")}
-                >
-                  <RefreshCw size={12} />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              <SessionList
-                sessions={sessions}
-                activeId={activeSessionId}
-                onSelect={(id) => {
-                  handleSelectSession(id);
-                  if (isMobile) setShowSessions(false);
-                }}
-              />
-            </div>
-          </div>
-        </>
-      )}
+      <ThinkingSessionsPanel
+        sessions={sessions}
+        activeId={activeSessionId}
+        onSelect={handleSelectSession}
+        onRefresh={() => {
+          thinkingApi.sessions(50).then((r) => setSessions(r.data.sessions ?? [])).catch(warnApiError);
+        }}
+        isMobile={isMobile}
+        open={showSessions}
+        onClose={() => setShowSessions(false)}
+      />
 
       {/* 中间：工具栏 + 视图 */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* 工具栏 */}
-        <div className="flex items-center gap-2 px-3 md:px-4 py-2 border-b border-border bg-panel">
-          {isMobile && (
-            <button
-              onClick={() => setShowSessions(true)}
-              className="flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium text-muted hover:text-foreground transition-all"
-              title={t("sessionList")}
-            >
-              <List size={14} />
-            </button>
-          )}
-          <button
-            onClick={handleToggle}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
-              enabled
-                ? "bg-ok-subtle text-ok border border-ok"
-                : "bg-hover text-muted border border-border hover:border-border-strong",
-            )}
-          >
-            {enabled ? <Power size={12} /> : <PowerOff size={12} />}
-            <span className="hidden sm:inline">{enabled ? t("tracking") : t("disabled")}</span>
-          </button>
-
-          <div className="flex items-center gap-1 text-[10px] text-muted">
-            <div
-              className={cn(
-                "w-1.5 h-1.5 rounded-full",
-                connected ? "bg-ok" : "bg-danger",
-              )}
-            />
-            <span className="hidden md:inline">{connected ? tc("connected") : tc("disconnected")}</span>
-          </div>
-
-          {/* 视图切换 */}
-          <div className="flex items-center rounded-md border border-border overflow-hidden">
-            {(["flow", "timeline"] as ViewMode[]).map((v) => (
-              <button
-                key={v}
-                onClick={() => { setView(v); setSelectedNodeId(null); }}
-                className={cn(
-                  "flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-medium transition-all",
-                  view === v
-                    ? "bg-accent-subtle text-accent"
-                    : "text-muted hover:text-foreground",
-                )}
-                title={t(`views.${v}`)}
-              >
-                {v === "flow" ? <Workflow size={11} /> : <ListTree size={11} />}
-                <span className="hidden sm:inline">{t(`views.${v}`)}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className="flex-1" />
-
-          <button
-            onClick={() => setShowTools(!showTools)}
-            className={cn(
-              "flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium transition-all",
-              showTools
-                ? "bg-accent-subtle text-accent"
-                : "text-muted hover:text-foreground",
-            )}
-            title={t("toolsPanel")}
-          >
-            {isMobile
-              ? <Wrench size={11} />
-              : showTools ? <PanelLeftClose size={11} /> : <PanelLeftOpen size={11} />}
-            <span className="hidden md:inline">{t("toolsPanel")}</span>
-          </button>
-
-          <button
-            onClick={() => setShowProviders(!showProviders)}
-            className={cn(
-              "flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium transition-all",
-              showProviders
-                ? "bg-accent-subtle text-accent"
-                : "text-muted hover:text-foreground",
-            )}
-            title={t("contextProviders.title")}
-          >
-            <Database size={11} />
-            <span className="hidden md:inline">{t("contextProviders.title")}</span>
-          </button>
-
-          <button
-            onClick={() => setAutoFollow(!autoFollow)}
-            className={cn(
-              "flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-medium transition-all",
-              autoFollow
-                ? "bg-accent-subtle text-accent"
-                : "text-muted hover:text-foreground",
-            )}
-            title={t("autoFollow")}
-          >
-            <Crosshair size={11} />
-            <span className="hidden sm:inline">{t("autoFollow")}</span>
-          </button>
-
-          {activeSession && (
-            <div className="text-[10px] text-muted font-mono">
-              {t("nNodes", { count: activeSession.nodes.length })}
-            </div>
-          )}
-        </div>
+        <ThinkingToolbar
+          isMobile={isMobile}
+          onShowSessions={() => setShowSessions(true)}
+          enabled={enabled}
+          onToggle={handleToggle}
+          connected={connected}
+          view={view}
+          onViewChange={setView}
+          showTools={showTools}
+          onToggleTools={() => setShowTools(!showTools)}
+          showProviders={showProviders}
+          onToggleProviders={() => setShowProviders(!showProviders)}
+          autoFollow={autoFollow}
+          onToggleAutoFollow={() => setAutoFollow(!autoFollow)}
+          nodeCount={activeSession?.nodes.length}
+        />
 
         {/* 主区域：工具面板 + 视图 */}
         <div className="flex-1 flex min-h-0">
@@ -372,7 +241,7 @@ export default function Thinking() {
 
   const pageTabs = [
     { key: "chain" as const, label: t("title") },
-    { key: "context" as const, label: t("contextTab", { defaultValue: "上下文管理" }) },
+    { key: "context" as const, label: t("contextTab") },
   ];
 
   return (

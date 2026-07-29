@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.log import log
@@ -191,6 +191,9 @@ class ContextCompressor:
     })
     _MICROCOMPACT_PLACEHOLDER = "[旧工具结果已清理，需要时请重新调用工具获取]"
 
+    # token 估算结果缓存（内容字符串 → token 数），进程内共享
+    _token_est_cache: Dict[str, int] = {}
+
     def microcompact(self, tool_chain: List[Dict]) -> int:
         """清理工具链中较早的只读工具结果为占位符（对齐 Claude Code microCompact）。
 
@@ -255,6 +258,21 @@ class ContextCompressor:
             return int(effective * _SMALL_WINDOW_FALLBACK_RATIO)
         return threshold
 
+    # token 估算缓存：内容字符串 → token 数（str 自带缓存 hash，重复内容查找 O(1)）。
+    # 思维循环每轮对全上下文估算，缓存使命中消息免于重复 tiktoken 编码。
+    _TOKEN_EST_CACHE_MAX = 2048
+
+    @staticmethod
+    def _encode_part(enc: Any, part: str, cache: Dict[str, int]) -> int:
+        cached = cache.get(part)
+        if cached is not None:
+            return cached
+        count = len(enc.encode(part))
+        if len(cache) >= ContextCompressor._TOKEN_EST_CACHE_MAX:
+            cache.clear()
+        cache[part] = count
+        return count
+
     @staticmethod
     def estimate_tokens(messages: List[Dict]) -> int:
         """估算消息列表的 token 数（tiktoken cl100k_base 优先，chars/4 兜底）。
@@ -263,6 +281,7 @@ class ContextCompressor:
         会导致压缩触发过晚、撞上 provider 溢出走紧急压缩；
         cl100k_base 与主流模型分词接近，估算偏差显著更小。
         每条消息加计固定结构开销（角色/分隔符等）。
+        相同内容字符串的编码结果按进程内缓存复用（思考循环每轮全量估算场景）。
         """
         parts: List[str] = []
         total_chars = 0
@@ -278,12 +297,16 @@ class ContextCompressor:
                 try:
                     parts.append(json.dumps(tc, ensure_ascii=False))
                 except (TypeError, ValueError):
-                    pass
+                    log("estimate_tokens 异常已忽略", "DEBUG")
         total_chars = sum(len(p) for p in parts)
         enc = _get_tiktoken_encoding()
         if enc is not None:
             try:
-                return sum(len(enc.encode(p)) for p in parts) + _TOKENS_PER_MESSAGE * len(messages)
+                cache = ContextCompressor._token_est_cache
+                return (
+                    sum(ContextCompressor._encode_part(enc, p, cache) for p in parts)
+                    + _TOKENS_PER_MESSAGE * len(messages)
+                )
             except Exception:
                 pass  # 编码异常（如特殊 token 序列）回退字符估算
         return total_chars // _CHARS_PER_TOKEN
@@ -315,10 +338,18 @@ class ContextCompressor:
         """消费该 scope 的手动压缩请求，返回焦点主题（无请求返回 None）。"""
         return self._manual_requests.pop(scope, None)
 
+    _SCOPE_LOCKS_MAX = 256  # per-scope 锁表容量上限（防长运行进程按 scope 无限累积）
+
     def scope_lock(self, scope: str) -> asyncio.Lock:
-        """取该 scope 的压缩锁（惰性创建）。"""
+        """取该 scope 的压缩锁（惰性创建，容量有界，优先淘汰空闲锁）。"""
         lock = self._scope_locks.get(scope)
         if lock is None:
+            if len(self._scope_locks) >= self._SCOPE_LOCKS_MAX:
+                for key, old in list(self._scope_locks.items()):
+                    if not old.locked():
+                        self._scope_locks.pop(key, None)
+                    if len(self._scope_locks) < self._SCOPE_LOCKS_MAX:
+                        break
             lock = asyncio.Lock()
             self._scope_locks[scope] = lock
         return lock
@@ -446,7 +477,7 @@ class ContextCompressor:
             from agent.mind.prompt_layers import prompt_cache_manager
             prompt_cache_manager.invalidate(scope)
         except Exception:
-            pass
+            log("compress_messages 异常已忽略", "DEBUG")
 
         return new_base, new_chain
 
@@ -530,8 +561,12 @@ class ContextCompressor:
                 and isinstance(content, str)
                 and content.startswith(_COMPRESSION_FEEDBACK_PREFIX)
             ):
-                # 反馈格式：首行为说明头，第二行起为摘要正文
-                previous_parts.append(content.split("\n", 1)[-1])
+                # 反馈格式：首行为说明头，第二行起为摘要正文；
+                # 无换行时去除前缀头，避免把说明头当作摘要喂回 LLM
+                if "\n" in content:
+                    previous_parts.append(content.split("\n", 1)[1])
+                else:
+                    previous_parts.append(content[len(_COMPRESSION_FEEDBACK_PREFIX):].strip())
             else:
                 fresh.append(msg)
         return "\n".join(previous_parts), fresh

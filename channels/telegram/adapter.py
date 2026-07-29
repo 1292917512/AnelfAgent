@@ -7,37 +7,34 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
-from typing import Any, Dict, Optional, Set
+import time
+from typing import TYPE_CHECKING, Any, Dict, Optional, Set
 
-from core.log import log
+from pydantic import Field
 
 from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
-from agent.channel.channel_types import ChannelCapability, ChannelStatus, _ok, _err
-from agent.channel.tool_bridge import channel_tool
+from agent.channel.channel_types import ChannelCapability, ChannelStatus, _err, _ok
 from agent.channel.schemas import (
-    AdapterChannel, ChannelType, SendRequest, SendResponse, SendSegment,
-    ChannelInfo, ChannelUser, ChannelUserRole, HealthStatus,
+    AdapterChannel,
+    ChannelInfo,
+    ChannelType,
+    ChannelUser,
+    ChannelUserRole,
+    HealthStatus,
+    SendRequest,
+    SendResponse,
+    SendSegment,
 )
-import time
-from pydantic import Field
+from agent.channel.tool_bridge import channel_tool
+from agent.channel.utils.formatter import format_exception as _fmt_exc
+from core.log import log
+
 from .config import TELEGRAM_CONFIGS
 from .delivery import deliver_reply
 
-
-def _fmt_exc(exc: BaseException) -> str:
-    """格式化异常为可读消息。
-
-    httpx.ConnectError / telegram.error.NetworkError 包装的连接失败异常
-    str() 后消息为空，需特殊处理。
-    """
-    msg = str(exc).strip()
-    if not msg or msg.endswith(": "):
-        return f"网络连接失败（{type(exc).__name__}）：频道服务不可达"
-    return msg
-
-
+if TYPE_CHECKING:
+    from agent.channel.base import ApprovalPromptRenderContext
 
 
 class TelegramConfig(ChannelConfig):
@@ -47,6 +44,7 @@ class TelegramConfig(ChannelConfig):
     proxy_host: str = Field(default="", description="代理地址（留空不使用代理）")
     proxy_port: int = Field(default=7890, description="代理端口")
     require_mention: bool = Field(default=False, description="群聊中是否需要 @Bot 才触发思考")
+    channel_post_trigger: bool = Field(default=False, description="频道帖子是否触发思考（默认关闭，避免任何频道帖子都唤醒 Mind）")
     reply_to_mode: str = Field(default="first", description="回复引用策略 (first/all/off)")
     stream_mode: str = Field(default="off", description="流式输出模式 (off/draft)")
     parse_mode: str = Field(default="html", description="消息格式化模式 (html/markdown)")
@@ -168,11 +166,10 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         self._app.add_handler(CallbackQueryHandler(self._on_callback_query))
 
         try:
-            from telegram.ext import MessageHandler as MH
-            self._app.add_handler(MH(filters.UpdateType.EDITED_MESSAGE, self._on_edited_message))
-            self._app.add_handler(MH(filters.UpdateType.CHANNEL_POST, self._on_channel_post))
+            self._app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, self._on_edited_message))
+            self._app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, self._on_channel_post))
         except (AttributeError, TypeError):
-            pass
+            log("start 异常已忽略", "DEBUG")
 
         self._ready.clear()
         self._start_error = ""
@@ -569,16 +566,6 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
-    @channel_tool()
-    async def list_known_chats(self, **kwargs: Any) -> str:
-        """列出 Bot 已交互过的所有会话。"""
-        if not self._known_chats:
-            return _ok({
-                "chats": [],
-                "hint": "Bot 尚未与任何会话交互。当有人发消息给 Bot 后，会话信息会自动记录。",
-            })
-        return _ok({"chats": list(self._known_chats.values()), "count": len(self._known_chats)})
-
     @channel_tool(sensitive=True)
     async def ban_user(self, chat_id: str, user_id: str, **kwargs: Any) -> str:
         """封禁 Telegram 群组中的用户。"""
@@ -623,14 +610,21 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
+    # 已知会话容量上限（超出时按 LRU 淘汰最久未交互的会话）
+    _KNOWN_CHATS_MAX = 1000
+
     def _record_chat(self, chat_id: str, chat_type: str, title: str = "", username: str = "") -> None:
-        """记录已知会话。"""
+        """记录已知会话（LRU：重复记录刷新热度，超容量淘汰最旧）。"""
+        if chat_id in self._known_chats:
+            self._known_chats.move_to_end(chat_id)
         self._known_chats[chat_id] = {
             "chat_id": chat_id,
             "type": chat_type,
             "title": title,
             "username": username,
         }
+        while len(self._known_chats) > self._KNOWN_CHATS_MAX:
+            self._known_chats.popitem(last=False)
 
     def _track_chat(self, update: Any) -> None:
         """从 update 中自动记录会话信息。"""
@@ -646,14 +640,6 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------
-
-    async def send_message(self, request: Any) -> bool:
-        chat_id = request.channel.channel_id
-        text = request.content
-        reply_to = getattr(request, "reply_to", None)
-        result_json = await self.send_text(chat_id, text, reply_to=reply_to)
-        result = json.loads(result_json)
-        return result.get("success", False)
 
     # ------------------------------------------------------------------
     # 入站处理器
@@ -696,7 +682,11 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
 
     async def _on_channel_post(self, update: Any, context: Any) -> None:
         from .handlers import handle_channel_post
-        await handle_channel_post(update, context, on_message=self.on_message)
+        await handle_channel_post(
+            update, context,
+            on_message=self.on_message,
+            channel_post_trigger=bool(self.config.channel_post_trigger),
+        )
 
 
     # ------------------------------------------------------------------
@@ -704,74 +694,14 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
     # ------------------------------------------------------------------
 
     async def forward_message(self, request: SendRequest) -> SendResponse:
-        """统一发送入口。"""
-        try:
-            chat_id = request.channel.channel_id
-            reply_to = request.reply_to
-            parse_mode = request.parse_mode or self.config.parse_mode
-            message_ids: list[str] = []
-
-            for seg in request.segments:
-                seg_type = seg.type.value
-                if seg_type == "text":
-                    result_json = await self.send_text(
-                        chat_id, seg.content,
-                        reply_to=reply_to, parse_mode=parse_mode,
-                    )
-                    result = json.loads(result_json)
-                    if result.get("success") and result.get("message_ids"):
-                        message_ids.extend(result["message_ids"])
-                    elif result.get("success") and result.get("message_id"):
-                        message_ids.append(result["message_id"])
-                elif seg_type == "image":
-                    result_json = await self.send_photo(
-                        chat_id, seg.file_path, caption=seg.caption,
-                    )
-                    result = json.loads(result_json)
-                    if result.get("success") and result.get("message_id"):
-                        message_ids.append(result["message_id"])
-                elif seg_type == "video":
-                    result_json = await self.send_video(
-                        chat_id, seg.file_path, caption=seg.caption,
-                    )
-                    result = json.loads(result_json)
-                    if result.get("success") and result.get("message_id"):
-                        message_ids.append(result["message_id"])
-                elif seg_type == "audio":
-                    result_json = await self.send_audio(
-                        chat_id, seg.file_path, caption=seg.caption,
-                    )
-                    result = json.loads(result_json)
-                    if result.get("success") and result.get("message_id"):
-                        message_ids.append(result["message_id"])
-                elif seg_type == "voice":
-                    result_json = await self.send_voice(chat_id, seg.file_path)
-                    result = json.loads(result_json)
-                    if result.get("success") and result.get("message_id"):
-                        message_ids.append(result["message_id"])
-                elif seg_type == "file":
-                    result_json = await self.send_file(
-                        chat_id, seg.file_path, caption=seg.caption,
-                    )
-                    result = json.loads(result_json)
-                    if result.get("success") and result.get("message_id"):
-                        message_ids.append(result["message_id"])
-
-            if message_ids:
-                return SendResponse(
-                    success=True,
-                    message_id=message_ids[0],
-                    message_ids=message_ids,
-                )
-            return SendResponse(success=True, message_id="empty")
-        except Exception as exc:
-            return SendResponse(success=False, error=str(exc))
+        """统一发送入口（段分发模板见 BaseChannel._forward_via_segment_map）。"""
+        return await self._forward_via_segment_map(request)
 
     async def get_self_info(self) -> ChannelUser:
-        """获取 Bot 自身信息。"""
+        """获取 Bot 自身信息（经 _run_in_tg_loop 在 Telegram 事件循环中执行）。"""
         if not self._app or not self._app.bot:
             raise RuntimeError("Telegram 频道未初始化")
-        bot_info = await self._app.bot.get_me()
+        bot_info = await self._run_in_tg_loop(self._app.bot.get_me())
         return ChannelUser(
             platform=self.channel_id,
             user_id=str(bot_info.id),
@@ -833,8 +763,8 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
             member_count: Optional[int] = None
             try:
                 member_count = await self._app.bot.get_chat_member_count(chat_id_int)
-            except Exception:
-                pass
+            except Exception as exc:
+                log(f"获取群成员数失败 ({channel_id}): {exc}", "DEBUG")
             return ChannelInfo(
                 channel_id=channel_id,
                 channel_name=chat.title or chat.first_name or str(chat_id_int),
@@ -852,7 +782,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
             )
 
     async def health_check(self) -> HealthStatus:
-        """健康探针：调用 get_me 验证 Bot 可达。"""
+        """健康探针：调用 get_me 验证 Bot 可达（经 _run_in_tg_loop 跨线程执行）。"""
         if not self._app or not self._app.bot:
             return HealthStatus(
                 healthy=False,
@@ -861,7 +791,7 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
             )
         try:
             started = time.time()
-            await self._app.bot.get_me()
+            await self._run_in_tg_loop(self._app.bot.get_me())
             return HealthStatus(
                 healthy=True,
                 detail=f"@{self._bot_username} OK",
@@ -875,9 +805,8 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
                 last_error=str(exc),
             )
 
-    async def render_approval_prompt(self, ctx) -> SendRequest:
-        """渲染批准提示（Telegram InlineKeyboard）。"""
-        from agent.channel.base import ApprovalPromptRenderContext
+    async def render_approval_prompt(self, ctx: "ApprovalPromptRenderContext") -> SendRequest:
+        """渲染批准提示（Telegram InlineKeyboard，覆盖基类纯文本默认实现）。"""
 
         text = (
             f"⚠️ **工具调用需要批准**\n"

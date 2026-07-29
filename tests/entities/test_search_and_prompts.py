@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 
 import pytest
@@ -50,8 +49,8 @@ class TestSearchFiles:
 
 class TestLongPrompts:
     def test_schema_description_contains_usage_rules(self):
-        from core.entity import EntityRegistry
         import entities.filesystem.tools  # noqa: F401
+        from core.entity import EntityRegistry
 
         schemas = {s["function"]["name"]: s["function"]["description"]
                    for s in EntityRegistry.get_tool_schemas()}

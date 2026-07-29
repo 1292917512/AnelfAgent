@@ -11,7 +11,13 @@ import os
 import platform
 import shutil
 
-from entities._sdk import tool, entity
+from core.log import log
+from entities._sdk import entity, tool
+
+# 耦合点：读取文件系统实体的沙箱配置需访问其模块级私有成员
+# （entities 内部允许直接 import 模块级私有成员，集中在此声明）
+from entities.filesystem import shell_state as _shell_state
+from entities.filesystem import tools as _fs_tools
 
 _GIT_AVAILABLE = shutil.which("git") is not None
 
@@ -34,14 +40,11 @@ def get_workspace_info() -> str:
         shell_cwd = root
         sandbox = True
         try:
-            from entities.filesystem import shell_state
-            from entities.filesystem import tools as fs_tools
-
-            fs_tools._load_config()
-            sandbox = fs_tools._SANDBOX
-            shell_cwd = shell_state.get_cwd(root, sandbox=sandbox)
+            _fs_tools._load_config()
+            sandbox = _fs_tools._SANDBOX
+            shell_cwd = _shell_state.get_cwd(root, sandbox=sandbox)
         except Exception:
-            pass
+            log("get_workspace_info 异常已忽略", "DEBUG")
         return json.dumps({
             "workspace_root": root,
             "shell_cwd": shell_cwd,

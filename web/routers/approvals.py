@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from agent.approval import get_approval_gate, get_approval_manager
@@ -43,10 +43,10 @@ async def list_pending() -> Dict[str, Any]:
 
 
 @router.get("/history")
-async def list_history(limit: int = 50) -> Dict[str, Any]:
+async def list_history(limit: int = Query(50, ge=1, le=500)) -> Dict[str, Any]:
     """列出历史决策记录。"""
     manager = get_approval_manager()
-    history = manager._decision_history[-limit:]
+    history = await manager.list_decision_history(limit)
     return {
         "history": [
             {
@@ -137,6 +137,7 @@ async def save_policies(data: PolicyUpdateRequest) -> Dict[str, str]:
         # 保存到文件（触发 ConfigWatcher 自动重载）
         import json
         import os
+
         from core.path import ConfigPaths
         policies_path = ConfigPaths.APPROVAL_POLICIES
         os.makedirs(os.path.dirname(policies_path), exist_ok=True)
@@ -165,7 +166,7 @@ async def save_policies(data: PolicyUpdateRequest) -> Dict[str, str]:
 
         return {"status": "ok", "count": len(policies)}
     except Exception as exc:
-        raise HTTPException(400, f"Invalid policy data: {exc}")
+        raise HTTPException(400, f"Invalid policy data: {exc}") from exc
 
 
 # ------------------------------------------------------------------
@@ -185,8 +186,8 @@ async def get_rules() -> Dict[str, Any]:
     return {
         "default_effect": gate.get_rule_set().default_effect.value,
         "rules": [_rule_to_dict(r) for r in gate.get_rule_set().rules],
-        "persisted_count": len(gate.get_rule_set().rules) - len(gate._session_rules),
-        "session_count": len(gate._session_rules),
+        "persisted_count": len(gate.get_rule_set().rules) - gate.session_rule_count(),
+        "session_count": gate.session_rule_count(),
     }
 
 
@@ -198,7 +199,7 @@ class RuleSetUpdateRequest(BaseModel):
 @router.put("/rules")
 async def save_rule_set(data: RuleSetUpdateRequest) -> Dict[str, Any]:
     """整体保存规则集（写入 config/permission_rules.json，触发热重载）。"""
-    from agent.approval.rules import PermissionRule, PermissionRuleSet, PermissionEffect, save_rules
+    from agent.approval.rules import PermissionEffect, PermissionRule, PermissionRuleSet
 
     try:
         rule_set = PermissionRuleSet(
@@ -206,7 +207,7 @@ async def save_rule_set(data: RuleSetUpdateRequest) -> Dict[str, Any]:
             default_effect=PermissionEffect(data.default_effect),
         )
     except Exception as exc:
-        raise HTTPException(400, f"Invalid rule data: {exc}")
+        raise HTTPException(400, f"Invalid rule data: {exc}") from exc
     gate = get_approval_gate()
     gate.set_rule_set(rule_set, persist=True)
     return {"status": "ok", "count": len(rule_set.rules)}
@@ -226,7 +227,7 @@ class RuleCreateRequest(BaseModel):
 @router.post("/rules")
 async def add_rule(data: RuleCreateRequest) -> Dict[str, Any]:
     """添加单条规则（持久化）。"""
-    from agent.approval.rules import PermissionRule, PermissionEffect, RiskLevel
+    from agent.approval.rules import PermissionEffect, PermissionRule, RiskLevel
 
     try:
         rule = PermissionRule(
@@ -241,7 +242,7 @@ async def add_rule(data: RuleCreateRequest) -> Dict[str, Any]:
             created_by="webui",
         )
     except Exception as exc:
-        raise HTTPException(400, f"Invalid rule data: {exc}")
+        raise HTTPException(400, f"Invalid rule data: {exc}") from exc
     gate = get_approval_gate()
     gate.add_rule(rule, persist=True)
     return {"status": "ok", "rule_id": rule.id}
@@ -251,14 +252,6 @@ async def add_rule(data: RuleCreateRequest) -> Dict[str, Any]:
 async def delete_rule(rule_id: str) -> Dict[str, str]:
     """删除规则（先查持久规则，再查会话规则）。"""
     gate = get_approval_gate()
-    before = len(gate._rule_set.rules)
-    gate._rule_set.rules = [r for r in gate._rule_set.rules if r.id != rule_id]
-    if len(gate._rule_set.rules) != before:
-        from agent.approval.rules import save_rules
-        save_rules(gate._rule_set)
-        return {"status": "ok"}
-    before_session = len(gate._session_rules)
-    gate._session_rules = [r for r in gate._session_rules if r.id != rule_id]
-    if len(gate._session_rules) != before_session:
+    if gate.delete_rule(rule_id):
         return {"status": "ok"}
     raise HTTPException(404, "Rule not found")

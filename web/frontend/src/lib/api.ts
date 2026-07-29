@@ -6,6 +6,7 @@ import type {
   ApiKeyInfo,
   ApprovalHistoryResponse,
   ApprovalPendingResponse,
+  ApprovalPoliciesPayload,
   ApprovalPoliciesResponse,
   ApprovalRulesResponse,
   ApprovalStats,
@@ -19,6 +20,7 @@ import type {
   CogneeDataset,
   CogneeStatus,
   ConfigMetaGroup,
+  ConfigValues,
   ContextProviderStatus,
   ContextSnapshotData,
   CreateModelConfig,
@@ -34,6 +36,7 @@ import type {
   DbOptimizeResult,
   DbQueryResult,
   DbRow,
+  DbRowInput,
   DbRowsResult,
   DbSchemaResult,
   DbTableInfo,
@@ -59,6 +62,7 @@ import type {
   PersonaData,
   ProbeResult,
   ProviderConfig,
+  PythonPackage,
   RemoteModelInfo,
   RestartBuildState,
   ShareConfig,
@@ -74,6 +78,7 @@ import type {
   StickerStats,
   IndexedImageListResult,
   TaskConfig,
+  UiStateReport,
   UpdateModelConfig,
   UpdateProviderConfig,
   WebToolsConfig,
@@ -135,10 +140,22 @@ const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
+/** 可注入的全局 API 错误处理器（默认空实现；上层可接入 toast/日志） */
+export type ApiErrorHandler = (err: unknown) => void;
+let _apiErrorHandler: ApiErrorHandler | null = null;
+export function setApiErrorHandler(handler: ApiErrorHandler | null): void {
+  _apiErrorHandler = handler;
+}
+
+/** 非关键路径后台请求的统一失败日志（替代各处 .catch((e) => console.warn(...))） */
+export function warnApiError(e: unknown): void {
+  console.warn("[API]", e);
+}
+
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    console.error("[API Error]", err.response?.data || err.message);
+    _apiErrorHandler?.(err);
     return Promise.reject(err);
   },
 );
@@ -201,7 +218,7 @@ export const statusApi = {
     api.get<{ logs: LogEntry[]; count: number }>("/status/logs", { params: { level: level || undefined, tag: tag || undefined, keyword: keyword || undefined, limit } }),
   logStats: () => api.get<LogStats>("/status/log-stats"),
   clearLogs: () => api.post<{ status: string; cleared: number }>("/status/logs/clear"),
-  saveMindConfig: (data: Record<string, unknown>) => api.put("/status/mind-config", data),
+  saveMindConfig: (data: ConfigValues) => api.put("/status/mind-config", data),
 };
 
 // Providers
@@ -270,7 +287,7 @@ export const entitiesApi = {
   config: (name: string) => api.get(`/entities/${encodeURIComponent(name)}/config`),
   updateConfig: (name: string, key: string, value: unknown) =>
     api.put(`/entities/${encodeURIComponent(name)}/config`, { key, value }),
-  updateConfigBatch: (name: string, updates: Record<string, unknown>) =>
+  updateConfigBatch: (name: string, updates: ConfigValues) =>
     api.put(`/entities/${encodeURIComponent(name)}/config/batch`, { updates }),
   toggle: (name: string, enabled: boolean) =>
     api.post(`/entities/${encodeURIComponent(name)}/enable`, { enabled }),
@@ -426,7 +443,7 @@ export const adaptersApi = {
   list: () => api.get<AdapterListResult>("/adapters/"),
   toggle: (key: string) => api.put(`/adapters/${encodeURIComponent(key)}/toggle`),
   configs: () => api.get("/adapters/configs"),
-  saveConfigs: (values: Record<string, unknown>) => api.put("/adapters/configs", values),
+  saveConfigs: (values: ConfigValues) => api.put("/adapters/configs", values),
   testHealth: (key: string) =>
     api.post<ChannelTestHealthResult>(`/adapters/${encodeURIComponent(key)}/test/health`),
   testSend: (key: string, payload: { chat_id: string; text: string }) =>
@@ -437,7 +454,7 @@ export const adaptersApi = {
     api.put<ChannelToolToggleResult>(
       `/adapters/${encodeURIComponent(key)}/tools/${encodeURIComponent(name)}/toggle`,
     ),
-  testChannelTool: (key: string, name: string, args: Record<string, unknown>) =>
+  testChannelTool: (key: string, name: string, args: ConfigValues) =>
     api.post<ChannelToolTestResult>(
       `/adapters/${encodeURIComponent(key)}/tools/${encodeURIComponent(name)}/test`,
       { args },
@@ -459,7 +476,7 @@ export const nonebotApi = {
   adapters: () => api.get("/nonebot/adapters"),
   bots: () => api.get("/nonebot/bots"),
   config: () => api.get("/nonebot/config"),
-  saveConfig: (config: Record<string, unknown>) => api.put("/nonebot/config", config),
+  saveConfig: (config: ConfigValues) => api.put("/nonebot/config", config),
 };
 
 // Approvals
@@ -472,7 +489,7 @@ export const approvalsApi = {
     api.post(`/approvals/${encodeURIComponent(requestId)}/deny`, { reason }),
   stats: () => api.get<ApprovalStats>("/approvals/stats"),
   policies: () => api.get<ApprovalPoliciesResponse>("/approvals/policies"),
-  savePolicies: (policies: Record<string, unknown>) =>
+  savePolicies: (policies: ApprovalPoliciesPayload) =>
     api.put("/approvals/policies", policies),
   // 统一权限规则
   rules: () => api.get<ApprovalRulesResponse>("/approvals/rules"),
@@ -509,11 +526,11 @@ export const configApi = {
   webui: () => api.get("/config/webui"),
   navigation: () => api.get("/config/webui/navigation"),
   theme: () => api.get("/config/webui/theme"),
-  snapshot: () => api.get("/config/snapshot"),
-  getApp: () => api.get<Record<string, unknown>>("/config/app"),
-  saveApp: (data: Record<string, unknown>) => api.put("/config/app", data),
+  snapshot: () => api.get<ConfigValues>("/config/snapshot"),
+  getApp: () => api.get<ConfigValues>("/config/app"),
+  saveApp: (data: ConfigValues) => api.put("/config/app", data),
   getMind: () => api.get("/config/mind"),
-  saveMind: (data: Record<string, unknown>) => api.put("/config/mind", data),
+  saveMind: (data: ConfigValues) => api.put("/config/mind", data),
   getWebTools: () => api.get<WebToolsConfig>("/config/web-tools"),
   saveWebTools: (data: Partial<WebToolsConfig>) => api.put("/config/web-tools", data),
 };
@@ -607,7 +624,7 @@ export const searchApi = {
 export const uiApi = {
   answer: (askId: string, answer: string) =>
     api.post<{ status: string }>("/chat/ui-answer", { ask_id: askId, answer }),
-  reportState: (state: Record<string, unknown>) =>
+  reportState: (state: UiStateReport) =>
     api.post("/chat/ui-state", { state }),
 };
 
@@ -624,9 +641,9 @@ export const tagsApi = {
 // System
 export const systemApi = {
   info: () => api.get("/system/info"),
-  python: () => api.get("/system/python"),
-  pythonPackages: () => api.get("/system/python/packages"),
-  pipMirror: () => api.get("/system/python/pip-mirror"),
+  python: () => api.get<ConfigValues>("/system/python"),
+  pythonPackages: () => api.get<PythonPackage[]>("/system/python/packages"),
+  pipMirror: () => api.get<ConfigValues>("/system/python/pip-mirror"),
   setPipMirror: (mirrorName: string) => api.post("/system/python/pip-mirror", { mirror_name: mirrorName }),
   git: () => api.get("/system/git"),
   setGit: (key: string, value: string) => api.put("/system/git", { key, value }),
@@ -713,12 +730,12 @@ export const databaseApi = {
     api.get<DbRow>(
       `/database/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows/${rowid}`,
     ),
-  insertRow: (db: string, table: string, values: Record<string, unknown>) =>
+  insertRow: (db: string, table: string, values: DbRowInput) =>
     api.post<{ rowid: number }>(
       `/database/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows`,
       { values },
     ),
-  updateRow: (db: string, table: string, rowid: number, values: Record<string, unknown>) =>
+  updateRow: (db: string, table: string, rowid: number, values: DbRowInput) =>
     api.put<{ success: boolean }>(
       `/database/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows/${rowid}`,
       { values },

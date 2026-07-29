@@ -20,7 +20,6 @@ from agent.messages import parse_entity_scope
 from agent.messages.presets import MessageAssistant, MessageGroupUser, MessageUser
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 
-
 # ==================================================================
 # scope 后缀规则与解析
 # ==================================================================

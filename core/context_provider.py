@@ -18,11 +18,22 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.log import log
+
+# collect() 与 get_status() 共用的默认 token 预算
+DEFAULT_COLLECT_BUDGET = 8000
+# 单个 provider 快照的采集超时（秒）
+_PROVIDE_TIMEOUT_SECONDS = 1.0
+# 字符串长度 -> token 数的粗估除数
+_CHARS_PER_TOKEN = 4
+# 按 scope 统计状态（metrics/collect/peak/snippets）的容量上限，超出按 LRU 淘汰
+_MAX_TRACKED_SCOPES = 200
 
 
 # ======================================================================
@@ -102,9 +113,13 @@ class ContextProviderRegistry:
     _providers: Dict[str, ProviderMeta] = {}
     _call_counts: Dict[str, int] = {}
     _last_errors: Dict[str, str] = {}
-    _last_metrics: Dict[str, List[ProviderMetric]] = {}
-    _last_collect: Dict[str, Dict[str, Any]] = {}
-    _peak: Dict[str, int] = {}
+    # 按 scope 的统计状态（LRU，容量上限 _MAX_TRACKED_SCOPES）
+    _last_metrics: "OrderedDict[str, List[ProviderMetric]]" = OrderedDict()
+    _last_collect: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+    _last_snippets: "OrderedDict[str, List[str]]" = OrderedDict()
+    _peak: "OrderedDict[str, int]" = OrderedDict()
+    # scope -> 进行中的后台收集任务（同一 scope 同时只有一个收集任务）
+    _inflight: Dict[str, "asyncio.Task[None]"] = {}
 
     # ------------------------------------------------------------------
     # 注册 / 注销
@@ -137,80 +152,119 @@ class ContextProviderRegistry:
     async def collect(
         cls,
         scope: str = "",
-        budget: int = 8000,
+        budget: int = DEFAULT_COLLECT_BUDGET,
     ) -> Tuple[List[str], List[ProviderMetric]]:
-        """按 priority 排序拉取所有匹配 scope 的 provider 快照。
+        """返回上一轮已完成收集的缓存结果，并在后台触发新一轮收集。
+
+        不阻塞当前轮：provider 快照由后台任务异步采集，完成后供下一轮
+        collect 使用；首次调用（尚无缓存）返回空结果。同一 scope 同时
+        只有一个收集任务（in-flight 去重）。
 
         Args:
             scope: 当前对话 scope（用于过滤）。
-            budget: token 预算上限，超限日志警告并截断。
+            budget: token 预算上限，后台收集超限日志警告并截断。
 
         Returns:
             (snippets, metrics) — snippets 是注入文本列表，metrics 是监督指标。
         """
-        snippets: List[str] = []
-        metrics: List[ProviderMetric] = []
-        used_tokens = 0
-        used_bytes = 0
-
-        for meta in cls.get_all():
-            if not cls._match_scope(meta.scope_filter, scope):
-                continue
-
-            result = await cls._safe_provide(meta, scope)
-            if result is None:
-                continue
-            snap, cost_ms = result
-
-            # 未加载完：有兜底文案则注入占位，否则跳过
-            if not snap.ready:
-                if snap.default_when_not_ready:
-                    snippets.append(snap.default_when_not_ready)
-                continue
-
-            # 空内容跳过
-            if not snap.content:
-                continue
-
-            # 预算检查
-            if used_tokens + snap.tokens > budget:
-                log(
-                    f"上下文注入超预算: {used_tokens + snap.tokens}/{budget} "
-                    f"(provider={meta.name})",
-                    "WARNING",
-                    tag="Provider",
-                )
-                break
-
-            snippets.append(snap.content)
-            used_tokens += snap.tokens
-            used_bytes += snap.bytes
-
-            metrics.append(ProviderMetric(
-                name=meta.name,
-                tokens=snap.tokens,
-                bytes=snap.bytes,
-                cost_ms=cost_ms,
-                ready=snap.ready,
-                fetched_at=snap.fetched_at,
-                last_error=cls._last_errors.get(meta.name, ""),
-                call_count=cls._call_counts.get(meta.name, 0),
-            ))
-
-        # 记录本次收集结果（供 Web API 读取）
-        cls._last_metrics[scope] = metrics
-        cls._last_collect[scope] = {
-            "used_tokens": used_tokens,
-            "used_bytes": used_bytes,
-            "total_budget": budget,
-            "providers_count": len(metrics),
-        }
-        # 更新峰值
-        prev_peak = cls._peak.get(scope, 0)
-        if used_tokens > prev_peak:
-            cls._peak[scope] = used_tokens
-
+        cls._trigger_collect(scope, budget)
+        snippets = list(cls._last_snippets.get(scope, []))
+        metrics = list(cls._last_metrics.get(scope, []))
         return snippets, metrics
+
+    @classmethod
+    def _trigger_collect(cls, scope: str, budget: int) -> None:
+        """后台触发一轮收集；同 scope 已有进行中任务时跳过。"""
+        task = cls._inflight.get(scope)
+        if task is not None and not task.done():
+            return
+        task = asyncio.ensure_future(cls._collect_background(scope, budget))
+        cls._inflight[scope] = task
+
+        def _cleanup(done: "asyncio.Task[None]", key: str = scope) -> None:
+            if cls._inflight.get(key) is done:
+                del cls._inflight[key]
+
+        task.add_done_callback(_cleanup)
+
+    @classmethod
+    def _bounded_put(cls, store: "OrderedDict[str, Any]", key: str, value: Any) -> None:
+        """写入按 scope 统计的字典（LRU，超容量淘汰最久未用的条目）。"""
+        store[key] = value
+        store.move_to_end(key)
+        while len(store) > _MAX_TRACKED_SCOPES:
+            store.popitem(last=False)
+
+    @classmethod
+    async def _collect_background(cls, scope: str, budget: int) -> None:
+        """后台收集一轮所有匹配 scope 的 provider 快照并写入缓存。
+
+        任何异常记 DEBUG 不抛出（后台任务失败不影响主流程）。
+        """
+        try:
+            snippets: List[str] = []
+            metrics: List[ProviderMetric] = []
+            used_tokens = 0
+            used_bytes = 0
+
+            for meta in cls.get_all():
+                if not cls._match_scope(meta.scope_filter, scope):
+                    continue
+
+                result = await cls._safe_provide(meta, scope)
+                if result is None:
+                    continue
+                snap, cost_ms = result
+
+                # 未加载完：有兜底文案则注入占位，否则跳过
+                if not snap.ready:
+                    if snap.default_when_not_ready:
+                        snippets.append(snap.default_when_not_ready)
+                    continue
+
+                # 空内容跳过
+                if not snap.content:
+                    continue
+
+                # 预算检查
+                if used_tokens + snap.tokens > budget:
+                    log(
+                        f"上下文注入超预算: {used_tokens + snap.tokens}/{budget} "
+                        f"(provider={meta.name})",
+                        "WARNING",
+                        tag="Provider",
+                    )
+                    break
+
+                snippets.append(snap.content)
+                used_tokens += snap.tokens
+                used_bytes += snap.bytes
+
+                metrics.append(ProviderMetric(
+                    name=meta.name,
+                    tokens=snap.tokens,
+                    bytes=snap.bytes,
+                    cost_ms=cost_ms,
+                    ready=snap.ready,
+                    fetched_at=snap.fetched_at,
+                    last_error=cls._last_errors.get(meta.name, ""),
+                    call_count=cls._call_counts.get(meta.name, 0),
+                ))
+
+            # 记录本次收集结果（供下一轮 collect 与 Web API 读取）
+            cls._bounded_put(cls._last_snippets, scope, snippets)
+            cls._bounded_put(cls._last_metrics, scope, metrics)
+            cls._bounded_put(cls._last_collect, scope, {
+                "used_tokens": used_tokens,
+                "used_bytes": used_bytes,
+                "total_budget": budget,
+                "providers_count": len(metrics),
+            })
+            # 更新峰值
+            if used_tokens > cls._peak.get(scope, 0):
+                cls._bounded_put(cls._peak, scope, used_tokens)
+        except Exception as exc:
+            log(f"上下文后台收集异常: scope={scope!r} - {exc}", "DEBUG", tag="Provider")
 
     @classmethod
     async def _safe_provide(
@@ -230,12 +284,21 @@ class ContextProviderRegistry:
                 provide = getattr(meta.instance, "provide", None)
                 if provide is None:
                     return None
-                result = await asyncio.wait_for(provide(scope), timeout=1.0)
             elif meta.provide_fn is not None:
                 # 函数模式
-                result = await asyncio.wait_for(meta.provide_fn(scope), timeout=1.0)
+                provide = meta.provide_fn
             else:
                 return None
+
+            if asyncio.iscoroutinefunction(provide):
+                result = await asyncio.wait_for(provide(scope), timeout=_PROVIDE_TIMEOUT_SECONDS)
+            else:
+                # 同步 provider 在线程中执行，避免阻塞事件循环
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(provide, scope), timeout=_PROVIDE_TIMEOUT_SECONDS,
+                )
+                if inspect.isawaitable(result):
+                    result = await asyncio.wait_for(result, timeout=_PROVIDE_TIMEOUT_SECONDS)
 
             cost_ms = (time.perf_counter() - start) * 1000
             cls._call_counts[meta.name] = cls._call_counts.get(meta.name, 0) + 1
@@ -244,7 +307,7 @@ class ContextProviderRegistry:
             if isinstance(result, str):
                 snap = ProviderSnapshot(
                     content=result or None,
-                    tokens=len(result) // 4 if result else 0,
+                    tokens=len(result) // _CHARS_PER_TOKEN if result else 0,
                     bytes=len(result.encode("utf-8")) if result else 0,
                     fetched_at=time.time(),
                 )
@@ -339,7 +402,7 @@ class ContextProviderRegistry:
         # 当前占用：取最近一次 collect 的结果（指定 scope 或全局）
         collect_info = cls._last_collect.get(scope, cls._last_collect.get("", {}))
         current_used = collect_info.get("used_tokens", 0)
-        total_budget = collect_info.get("total_budget", 2000)
+        total_budget = collect_info.get("total_budget", DEFAULT_COLLECT_BUDGET)
 
         # 峰值
         peak = cls._peak.get(scope, cls._peak.get("", 0))
@@ -389,9 +452,13 @@ class ContextProviderRegistry:
     @classmethod
     def reset(cls) -> None:
         """清空所有注册（测试用）。"""
+        for task in cls._inflight.values():
+            task.cancel()
+        cls._inflight.clear()
         cls._providers.clear()
         cls._call_counts.clear()
         cls._last_errors.clear()
         cls._last_metrics.clear()
         cls._last_collect.clear()
+        cls._last_snippets.clear()
         cls._peak.clear()

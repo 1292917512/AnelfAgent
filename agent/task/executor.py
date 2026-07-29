@@ -9,8 +9,7 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.memory.memory_types import MemoryEntry, MemoryType
-
-from core.event_bus import event_bus, EVENT_THINKING_INTROSPECTION
+from core.event_bus import EVENT_THINKING_INTROSPECTION, event_bus
 from core.log import log
 
 from .model import TaskDefinition, TaskResult
@@ -41,7 +40,10 @@ class TaskExecutor:
         model_id: str = "",
         reasoning_effort: str = "",
     ) -> Optional[TaskResult]:
-        """执行一个任务，返回结果或 None。
+        """执行一个任务，返回结果；正常无产出返回 None，执行异常则抛出。
+
+        调用方据此区分「执行成功但无产出」（可推进调度标记）与「执行失败」
+        （应保留标记以便重试，实现 at-least-once）。
 
         model_id 优先级：参数传入 > task.model_id > 默认模型。
         reasoning_effort 优先级：参数传入 > task.reasoning_effort > 全局设置。
@@ -104,7 +106,7 @@ class TaskExecutor:
         except Exception as exc:
             log(f"任务 [{task.name}] 异常: {exc}", "WARNING", tag="任务")
             await self._emit("unit_error", task, entity, error=str(exc))
-            return None
+            raise
 
     @staticmethod
     def _build_task_suffix(allow_output_tools: bool) -> str:

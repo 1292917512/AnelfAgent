@@ -54,8 +54,7 @@ class MemoryService:
         pfc = rt.mind.pfc
         result: List[Dict[str, Any]] = []
 
-        for scope, preview in pfc._message_previews.items():
-            adapter_key = pfc._task_adapter_keys.get(scope, "")
+        for scope, (preview, adapter_key) in pfc.get_pending_message_previews().items():
             result.append({
                 "role": "pending",
                 "content": f"[待处理消息: {scope}] {preview}" + (f" [{adapter_key}]" if adapter_key else ""),
@@ -297,9 +296,8 @@ class MemoryService:
 
     @staticmethod
     def write_notes(content: str) -> None:
-        from agent.memory.notes import get_notes_path, _atomic_write
-        p = get_notes_path()
-        _atomic_write(p, content)
+        from agent.memory.notes import save_notes_content
+        save_notes_content(content)
 
     @staticmethod
     def get_notes_path() -> str:
@@ -549,22 +547,39 @@ class MemoryService:
             },
         }
 
-    @staticmethod
-    async def rebuild_cognee() -> Dict[str, Any]:
+    async def rebuild_cognee(self) -> Dict[str, Any]:
         """清空 cognee 数据并全量重建。
 
         切换 cognee embedding 模型后必须执行（向量空间不兼容）；
         重建需重新 cognify（LLM 抽取），成本与耗时较高，应低频手动触发。
+        流程：停同步 worker（避免 prune 与同步写入并发竞态）→ 清空投影
+        队列与 ID 映射（旧计数归零、避免陈旧映射引发伪失败）→ prune →
+        重启 worker → 全量重新入队。
         """
+        rt = require_runtime()
+        store = rt.mind.memory_store
         from agent.memory.cognee.runtime import get_cognee_client, get_cognee_coordinator
         client = get_cognee_client()
         coordinator = get_cognee_coordinator()
-        if not client or not coordinator:
+        if not client or not coordinator or not store:
             return {"error": "cognee 未初始化"}
+        await coordinator.close()
+        cleared = await store.reset_cognee_projection()
+        # 完全清场：元数据/图/向量/缓存 + 文件存储。
+        # 仅 prune_data 会留下指向已删文件的元数据记录，
+        # 重建 add 时按记录读文件报 FileNotFoundError
+        await client.prune_system(graph=True, vector=True, metadata=True, cache=True)
         await client.prune_data()
         result = await coordinator.backfill(limit=0, dry_run=False)
-        log("cognee 数据已清空并开始全量重建", tag="思维")
-        return {"ok": True, "backfill": result}
+        log(f"cognee 重建: 清空队列/映射 {cleared}，重新入队 {result}（需重启生效）", tag="思维")
+        return {
+            "ok": True,
+            "cleared": cleared,
+            "backfill": result,
+            # cognee 引擎单例在进程内持有已删除库的句柄/锁，进程内无法干净重置；
+            # 必须重启进程由 bootstrap 重建引擎后消化回填队列
+            "restart_required": True,
+        }
 
     @staticmethod
     def get_cognee_config() -> Dict[str, Any]:
@@ -655,9 +670,9 @@ class MemoryService:
         """
         from pathlib import Path
 
-        from core.path import ConfigPaths, PathManager
         from agent.memory.cognee.graph_html import sanitize_cognee_graph_html
         from agent.memory.cognee.runtime import get_cognee_client
+        from core.path import ConfigPaths, PathManager
 
         client = get_cognee_client()
         if not client:
@@ -699,44 +714,46 @@ class MemoryService:
 
     _GOAL_SOURCE = "goal"
 
+    async def _goal_entries(self, store: Any) -> List[tuple]:
+        """查询并解析全部目标条目，返回 [(MemoryEntry, goal_dict)]（单次操作内复用）。"""
+        import json
+
+        from agent.memory.memory_types import MemoryType
+        entries = await store.list_recent(limit=100, memory_type=MemoryType.SEMANTIC, source=self._GOAL_SOURCE)
+        parsed: List[tuple] = []
+        for entry in entries:
+            try:
+                goal = json.loads(entry.content)
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            if isinstance(goal, dict):
+                parsed.append((entry, goal))
+        return parsed
+
     async def list_goals(self, status: str = "all") -> List[Dict[str, Any]]:
         """列出所有目标计划。"""
-        import json
         rt = require_runtime()
         store = rt.mind.memory_store
         if not store:
             return []
-        from agent.memory.memory_types import MemoryType
-        entries = await store.list_recent(limit=100, memory_type=MemoryType.SEMANTIC, source=self._GOAL_SOURCE)
         goals: List[Dict[str, Any]] = []
-        for entry in entries:
-            try:
-                goal = json.loads(entry.content)
-                goal["memory_id"] = entry.id
-                goal["created_ts"] = entry.created_at
-                if status == "all" or goal.get("status") == status:
-                    goals.append(goal)
-            except (json.JSONDecodeError, AttributeError):
-                continue
+        for entry, goal in await self._goal_entries(store):
+            goal["memory_id"] = entry.id
+            goal["created_ts"] = entry.created_at
+            if status == "all" or goal.get("status") == status:
+                goals.append(goal)
         return goals
 
     async def get_goal(self, goal_id: str) -> Optional[Dict[str, Any]]:
         """获取单个目标详情。"""
-        import json
         rt = require_runtime()
         store = rt.mind.memory_store
         if not store:
             return None
-        from agent.memory.memory_types import MemoryType
-        entries = await store.list_recent(limit=100, memory_type=MemoryType.SEMANTIC, source=self._GOAL_SOURCE)
-        for entry in entries:
-            try:
-                goal = json.loads(entry.content)
-                if goal.get("goal_id") == goal_id:
-                    goal["memory_id"] = entry.id
-                    return goal
-            except (json.JSONDecodeError, AttributeError):
-                continue
+        for entry, goal in await self._goal_entries(store):
+            if goal.get("goal_id") == goal_id:
+                goal["memory_id"] = entry.id
+                return goal
         return None
 
     async def create_goal(
@@ -753,7 +770,7 @@ class MemoryService:
             return {"error": "记忆系统未初始化"}
         from agent.memory.memory_types import MemoryEntry, MemoryType
         goal: Dict[str, Any] = {
-            "goal_id": uuid.uuid4().hex[:8],
+            "goal_id": uuid.uuid4().hex[:16],
             "title": title,
             "description": description,
             "status": "active",
@@ -796,18 +813,13 @@ class MemoryService:
         if not store:
             return None
         from agent.memory.memory_types import MemoryEntry, MemoryType
-        entries = await store.list_recent(limit=100, memory_type=MemoryType.SEMANTIC, source=self._GOAL_SOURCE)
         target_entry = None
         target_goal = None
-        for entry in entries:
-            try:
-                goal = json.loads(entry.content)
-                if goal.get("goal_id") == goal_id:
-                    target_entry = entry
-                    target_goal = goal
-                    break
-            except (json.JSONDecodeError, AttributeError):
-                continue
+        for entry, goal in await self._goal_entries(store):
+            if goal.get("goal_id") == goal_id:
+                target_entry = entry
+                target_goal = goal
+                break
         if target_entry is None or target_goal is None:
             return None
         if title is not None:
@@ -829,8 +841,6 @@ class MemoryService:
         if steps is not None:
             target_goal["steps"] = steps
         target_goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        if target_entry.id:
-            await store.delete(target_entry.id)
         new_entry = MemoryEntry(
             memory_type=MemoryType.SEMANTIC,
             content=json.dumps(target_goal, ensure_ascii=False),
@@ -838,25 +848,23 @@ class MemoryService:
             importance=0.8 if target_goal["status"] == "active" else 0.3,
             metadata={"goal_id": goal_id, "status": target_goal["status"]},
         )
+        # 先写入新条目成功后再删旧条目，add 失败时目标不丢失
         new_id = await store.add(new_entry)
+        if not new_id:
+            return None
+        if target_entry.id:
+            await store.delete(target_entry.id)
         target_goal["memory_id"] = new_id
         return target_goal
 
     async def delete_goal(self, goal_id: str) -> bool:
         """删除目标。"""
-        import json
         rt = require_runtime()
         store = rt.mind.memory_store
         if not store:
             return False
-        from agent.memory.memory_types import MemoryType
-        entries = await store.list_recent(limit=100, memory_type=MemoryType.SEMANTIC, source=self._GOAL_SOURCE)
-        for entry in entries:
-            try:
-                goal = json.loads(entry.content)
-                if goal.get("goal_id") == goal_id and entry.id:
-                    await store.delete(entry.id)
-                    return True
-            except (json.JSONDecodeError, AttributeError):
-                continue
+        for entry, goal in await self._goal_entries(store):
+            if goal.get("goal_id") == goal_id and entry.id:
+                await store.delete(entry.id)
+                return True
         return False

@@ -3,8 +3,8 @@
 import time
 from typing import Any, Dict, Tuple
 
-from core.command import run_command
 from core.async_helper import AsyncHelper
+from core.command import run_command
 from core.log import log
 
 dual_mode = AsyncHelper.dual_mode

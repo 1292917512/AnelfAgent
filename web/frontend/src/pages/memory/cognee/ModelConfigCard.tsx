@@ -13,6 +13,7 @@ import type {
 } from "@/lib/types";
 import { Button, Input, Select } from "@/components/ui";
 import { ModelSelect, usePriorities } from "@/components/models/ModelSelect";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 
 type ModelKind = "chat" | "embedding";
 type KindConfig = CogneeChatModelConfig | CogneeEmbeddingModelConfig;
@@ -38,7 +39,7 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
   const queryClient = useQueryClient();
   const [form, setForm] = useState<KindConfig | null>(null);
   const [hasChanges, setHasChanges] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saved, triggerSaved] = useCopyFeedback(2000);
 
   const { data: config } = useQuery({
     queryKey: ["cogneeConfig"],
@@ -58,8 +59,7 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
       queryClient.invalidateQueries({ queryKey: ["cogneeStatus"] });
       queryClient.invalidateQueries({ queryKey: ["memoryHealth"] });
       setHasChanges(false);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      triggerSaved();
     },
   });
 

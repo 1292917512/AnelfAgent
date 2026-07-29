@@ -31,6 +31,9 @@ class TestInspectOnce:
         mgr = _FakeManager({"qq": ch})
         sup = ChannelSupervisor(mgr, interval=999, base_backoff=0)
         await sup._inspect_once()
+        # 重启经独立后台任务调度（不阻塞巡检循环），需等待任务完成
+        assert "qq" in sup._restart_tasks
+        await sup._restart_tasks["qq"]
         mgr.start_channel.assert_awaited_once_with("qq")
 
     async def test_running_channel_resets_fail_count(self) -> None:

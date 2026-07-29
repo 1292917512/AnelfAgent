@@ -87,7 +87,7 @@ class EntityService:
                         "description": p.description,
                     })
         except Exception:
-            pass
+            log("get_entity_detail 异常已忽略", "DEBUG")
 
         detail: Dict[str, Any] = {
             "name": metadata.name,
@@ -170,8 +170,8 @@ class EntityService:
 
     def set_entity_enabled(self, name: str, enabled: bool) -> bool:
         """启用/禁用实体，并持久化到 app_config.json。"""
-        from core.entity import EntityRegistry
         from core.config import ConfigManager
+        from core.entity import EntityRegistry
 
         if not EntityRegistry.exists(name):
             return False
@@ -189,8 +189,8 @@ class EntityService:
     @staticmethod
     def apply_entity_states() -> int:
         """启动时从 app_config.json 恢复实体启用/禁用状态，返回应用数量。"""
-        from core.entity import EntityRegistry
         from core.config import ConfigManager
+        from core.entity import EntityRegistry
 
         states: dict = ConfigManager.get("entity_states", {})
         if not isinstance(states, dict) or not states:
@@ -229,7 +229,6 @@ class EntityService:
     @staticmethod
     def _find_entity_dir(group: str) -> Optional[str]:
         """根据 group 名查找实体目录。"""
-        import os
         from pathlib import Path
         entities_dir = Path(__file__).parent.parent / "entities"
         candidate = entities_dir / group

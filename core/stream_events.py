@@ -1,6 +1,6 @@
 """流式与对话窗口事件契约 — 内核流式事件 + webui SSE 事件的统一定义。
 
-设计（P5-C3）：
+设计：
 - 内核事件（event_bus）：think_loop 流式产生的过程事件，通道按能力订阅
 - SSE 事件（webui 通道 → 前端）：webui 把内核事件翻译为 SSE 帧
 - 两侧 payload schema 在此集中定义（TypedDict），前后端共享契约
@@ -10,7 +10,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import TypedDict
 
 # ------------------------------------------------------------------
 # 内核事件名（event_bus）
@@ -88,7 +88,7 @@ class ContextUsagePayload(TypedDict, total=False):
 SSE_DELTA = "delta"                    # AssistantDeltaPayload 子集 {turn_id, delta, reasoning}
 SSE_TOOL_CALL = "tool_call"            # {turn_id, call_id, name, status, arguments?}
 SSE_CONTEXT_USAGE = "context_usage"    # ContextUsagePayload
-SSE_APPROVAL_REQUEST = "approval_request"  # 审批弹窗（P1.5 已实现）
+SSE_APPROVAL_REQUEST = "approval_request"  # 审批弹窗
 SSE_FILE_DIFF = "file_diff"                # FileDiffPayload
 
 

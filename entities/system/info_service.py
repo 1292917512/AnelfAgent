@@ -7,7 +7,8 @@ import platform
 import sys
 from typing import Any, Dict, List
 
-from core.command import which_tool, get_tool_version
+from core.command import get_tool_version, which_tool
+from core.log import log
 
 
 def get_system_info() -> Dict[str, Any]:
@@ -38,9 +39,9 @@ def get_system_info() -> Dict[str, Any]:
             info["disk_total_gb"] = round(disk.total / (1024 ** 3), 1)
             info["disk_used_gb"] = round(disk.used / (1024 ** 3), 1)
         except Exception:
-            pass
+            log("get_system_info 异常已忽略", "DEBUG")
     except ImportError:
-        pass
+        log("get_system_info 异常已忽略", "DEBUG")
 
     return info
 
@@ -94,6 +95,6 @@ def get_dev_tools() -> List[Dict[str, Any]]:
                 if version:
                     entry["version"] = version.split("\n")[0][:60]
         except Exception:
-            pass
+            log("get_dev_tools 异常已忽略", "DEBUG")
         results.append(entry)
     return results

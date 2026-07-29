@@ -13,15 +13,14 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from typing import Optional
 
 from pydantic import Field
 
 from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
-from agent.channel.schemas import ChannelType
 from agent.channel.schemas import (
     ChannelInfo,
+    ChannelType,
     ChannelUser,
     ChannelUserRole,
     HealthStatus,
@@ -102,13 +101,6 @@ class CLIChannel(BaseChannel[CLIConfig]):
             is_bot=True,
         )
 
-    async def get_user_info(self, user_id: str, channel_id: str) -> ChannelUser:
-        return ChannelUser(
-            platform=self.channel_id,
-            user_id=user_id,
-            user_name=user_id,
-        )
-
     async def get_channel_info(self, channel_id: str) -> ChannelInfo:
         return ChannelInfo(
             channel_id=channel_id,
@@ -132,8 +124,7 @@ class CLIChannel(BaseChannel[CLIConfig]):
     # ------------------------------------------------------------------
 
     async def render_approval_prompt(self, ctx) -> SendRequest:
-        """渲染批准提示（CLI y/n 提示）。"""
-        from agent.channel.base import ApprovalPromptRenderContext
+        """渲染批准提示（CLI y/n 提示，覆盖基类文本模板——终端交互需要 y/n 快捷输入）。"""
         from agent.channel.schemas import AdapterChannel, ChannelType, SendSegment
 
         text = (
@@ -202,7 +193,7 @@ async def run_cli(user_id: str = "cli_user", user_name: str = "用户") -> None:
     app = get_agent_app()
 
     print("=" * 50)
-    print(f"  AnelfAgent CLI 模式 (BaseChannel)")
+    print("  AnelfAgent CLI 模式 (BaseChannel)")
     print(f"  输入消息与 {channel._bot_name} 对话，输入 exit/quit/q 退出")
     print("=" * 50)
 

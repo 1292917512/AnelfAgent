@@ -113,3 +113,4 @@ web/frontend/node_modules/
 
 # === Misc ===
 /.other
+channels/weixin/channel_config.json

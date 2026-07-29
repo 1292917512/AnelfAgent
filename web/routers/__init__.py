@@ -2,9 +2,9 @@
 
 from fastapi import APIRouter
 
-from web.routers.auth import router as auth_router
 from web.routers.adapters import router as adapters_router
 from web.routers.approvals import router as approvals_router
+from web.routers.auth import router as auth_router
 from web.routers.channel_webui import router as channel_webui_router
 from web.routers.chat import router as chat_router
 from web.routers.config import router as config_router

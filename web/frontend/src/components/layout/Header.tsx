@@ -23,7 +23,7 @@ export function Header() {
         <button
           onClick={() => setMobileMenuOpen(true)}
           className="md:hidden p-2 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors"
-          aria-label="菜单"
+          aria-label={t("menu")}
         >
           <Menu size={20} />
         </button>

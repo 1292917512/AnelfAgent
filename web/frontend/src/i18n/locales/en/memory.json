@@ -217,6 +217,7 @@
     "backfillConfirm": "Enqueue all historical memories for Cognee sync? Large datasets will keep consuming model quota.",
     "rebuild": "Wipe & Rebuild",
     "rebuildConfirm": "This wipes ALL Cognee data and rebuilds from scratch (requires full LLM re-extraction — slow and quota-heavy). Required after changing the embedding model. Continue?",
+    "rebuildRestartConfirm": "Wipe complete and the rebuild queue is ready. Cognee requires an app restart to start rebuilding. Restart now?",
     "notResolved": "Not resolved",
     "chatModel": "Extraction model",
     "embeddingModel": "Embedding model",
@@ -280,5 +281,6 @@
     "chunks": "{{count}} chunks",
     "deleteTitle": "Delete Document",
     "deleteConfirm": "Delete document \"{{name}}\"? Its index and file on disk will also be removed."
-  }
+  },
+  "dimsValue": "{{dims}} dims"
 }

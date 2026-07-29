@@ -6,25 +6,17 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
-from core.event_bus import (
-    event_bus,
-    EVENT_THINKING_SESSION_START,
-    EVENT_THINKING_SESSION_END,
-    EVENT_THINKING_INTROSPECTION,
-)
+from agent.heartbeat.log import append_entry as _hb_append
+from agent.memory.memory_types import MemoryEntry, MemoryType
 from agent.messages import (
     Everything,
     MessageAssistant,
     MessageAssistantGroup,
     parse_entity_scope,
 )
-from agent.mind.autonomous import Decision, DecisionType
-from agent.heartbeat.log import append_entry as _hb_append
-from agent.memory.memory_types import MemoryEntry, MemoryType
-from agent.mind.autonomous import MindPhase
+from agent.mind.autonomous import Decision, DecisionType, MindPhase
 from core.log import log
 
 if TYPE_CHECKING:
@@ -60,7 +52,9 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
     if not anything:
         return
 
-    scope = target or mind._resolve_entity_scope(anything)
+    # scope 一律按解析后的实体规范化（target 可能是裸 ID "123"，
+    # 直接用会导致去重登记与中断匹配失效）
+    scope = mind._resolve_entity_scope(anything)
     if scope in mind._active_scopes:
         log(f"跳过重复回复: {scope}", "DEBUG", tag="思维")
         return
@@ -169,9 +163,10 @@ async def execute_proactive(mind: Mind, decision: Decision) -> None:
         scope=anything.entity_scope,
     )
 
-    mind._reply_adapter_key = getattr(anything, "adapter_key", "") if anything else ""
+    # adapter_key 按调用链显式传递（并行多 scope 回复时共享字段会串台）
+    adapter_key = getattr(anything, "adapter_key", "") if anything else ""
     log(f"AI 主动消息: target={target}", tag="思维")
-    await mind.reply(anything)
+    await mind.reply(anything, adapter_key=adapter_key)
 
 
 async def execute_tool_action(mind: Mind, decision: Decision) -> None:
@@ -275,14 +270,14 @@ def build_proactive_target(mind: Mind, target: str) -> Optional[Everything]:
         try:
             group_id = int(group_id)
         except ValueError:
-            pass
+            log("build_proactive_target 异常已忽略", "DEBUG")
         return MessageAssistantGroup(group_id=group_id, adapter_key=default_key)
 
     uid: Union[int, str] = target.removeprefix("user_")
     try:
         uid = int(uid)
     except ValueError:
-        pass
+        log("build_proactive_target 异常已忽略", "DEBUG")
     return MessageAssistant(uid=uid, adapter_key=default_key)
 
 
@@ -301,7 +296,7 @@ def _build_reply_message(mind: Mind, scope: str, *, require_pending: bool) -> Op
     try:
         target_id = int(base_id)
     except ValueError:
-        pass
+        log("_build_reply_message 异常已忽略", "DEBUG")
     if scope_type == "group":
         return MessageAssistantGroup(group_id=target_id, adapter_key=adapter_key, session_id=session_id)
     return MessageAssistant(uid=target_id, adapter_key=adapter_key, session_id=session_id)
@@ -343,7 +338,7 @@ async def pop_next_reply_target(mind: Mind) -> Optional[Everything]:
     try:
         target_id = int(base_id)
     except ValueError:
-        pass
+        log("pop_next_reply_target 异常已忽略", "DEBUG")
     if scope_type == "group":
         await mind.pfc.pop_group_task()
         return MessageAssistantGroup(group_id=target_id, adapter_key=adapter_key, session_id=session_id)

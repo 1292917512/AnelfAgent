@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Database } from "lucide-react";
 import { configApi } from "@/lib/api";
+import type { ConfigValues } from "@/lib/types";
 import { useAppStore } from "@/stores/app-store";
 import { Card } from "@/components/common/Card";
 import { Badge } from "@/components/ui";
@@ -25,7 +26,7 @@ export function ConfigStatusPanel() {
     { key: "personas", file: "personas.json" },
   ];
 
-  const mindConfig = snapshot?.mind as Record<string, unknown> | undefined;
+  const mindConfig = snapshot?.mind as ConfigValues | undefined;
 
   return (
     <div className="space-y-4">

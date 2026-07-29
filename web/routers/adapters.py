@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from services import AdapterService
+from web.routers._errors import server_error
 
 router = APIRouter(prefix="/adapters", tags=["adapters"])
 
@@ -43,7 +44,7 @@ async def toggle_adapter(key: str) -> Dict[str, str]:
         _adapter_svc.toggle_adapter(key, loop)
         return {"status": "ok"}
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise server_error("切换频道", e) from e
 
 
 @router.post("/{key}/test/health")
@@ -66,7 +67,7 @@ async def toggle_channel_tool(key: str, name: str) -> Dict[str, Any]:
     try:
         return _adapter_svc.toggle_channel_tool(key, name)
     except KeyError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
 
 
 @router.post("/{key}/tools/{name}/test")

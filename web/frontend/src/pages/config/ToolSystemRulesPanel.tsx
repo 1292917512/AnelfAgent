@@ -5,6 +5,8 @@ import { configApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
 import { Check, Save, Plus, Trash2, X, GripVertical } from "lucide-react";
+import type { ConfigValues } from "@/lib/types";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 
 const RULES_FIELD = "tool_system_rules";
 
@@ -18,15 +20,14 @@ export function ToolSystemRulesPanel() {
   });
 
   const [editRules, setEditRules] = useState<string[] | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [saved, triggerSaved] = useCopyFeedback(2000);
 
   const saveMutation = useMutation({
-    mutationFn: (data: Record<string, unknown>) => configApi.saveMind(data),
+    mutationFn: (data: ConfigValues) => configApi.saveMind(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["mindConfig"] });
       setEditRules(null);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      triggerSaved();
     },
   });
 

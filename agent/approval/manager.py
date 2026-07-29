@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Any, Dict, List, Optional
 
 from core.log import log
@@ -57,6 +56,11 @@ class ApprovalManager:
         if channel_id:
             sessions = [s for s in sessions if s.request.requester_channel == channel_id]
         return [s for s in sessions if s.is_pending()]
+
+    async def list_decision_history(self, limit: int = 100) -> List[ApprovalSession]:
+        """列出最近的决策历史（最多 limit 条，按时间正序，供 web 层展示）。"""
+        async with self._lock:
+            return list(self._decision_history[-limit:])
 
     # ------------------------------------------------------------------
     # 决策
@@ -173,7 +177,7 @@ class ApprovalManager:
             try:
                 await self._cleanup_task
             except asyncio.CancelledError:
-                pass
+                pass  # 取消属正常关闭流程（正常控制流，非异常）
         self._cleanup_task = None
 
     # ------------------------------------------------------------------

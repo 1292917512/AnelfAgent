@@ -7,14 +7,14 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from entities._sdk import deferred_tool, activate_group
 from core.log import log
+from entities._sdk import activate_group, deferred_tool
 
-from .memory_store import MemoryStore
-from .memory_types import MemoryEntry, MemoryType
 from .embedding import Embedder, wake_embedding_worker
+from .memory_store import MemoryStore
+from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
 
 _store: Optional[MemoryStore] = None
 _embedder: Optional[Embedder] = None
@@ -51,7 +51,7 @@ def _current_scope_tag() -> str:
         if scope.startswith("group_"):
             return f"group:{scope[6:]}"
     except Exception:
-        pass
+        log("_current_scope_tag 异常已忽略", "DEBUG")
     return ""
 
 
@@ -137,7 +137,7 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
         target.importance = importance
         # 内容已变更，清空旧向量，由后台 worker 重新生成
         target.embedding = None
-        await _store.update(target)
+        await _store.update(target, clear_embedding=True)
         wake_embedding_worker()
         return json.dumps({
             "ok": True, "id": target.id, "action": "updated",
@@ -239,11 +239,11 @@ async def recall(query: str, tags: str = "", limit: int = 5, min_score: float = 
 
 
 async def _recall_associations(
-        results: list,
+        results: list[MemorySearchResult],
         existing_mem_ids: list[int],
         *,
         max_related: int = 3,
-) -> list:
+) -> list[Dict[str, Any]]:
     """沿主结果的标签网络联想关联记忆（一跳扩展）。"""
     if not _store or not results:
         return []
@@ -389,7 +389,7 @@ async def update_memory(
         if content_changed:
             entry.embedding = None
 
-        ok = await _store.update(entry)
+        ok = await _store.update(entry, clear_embedding=content_changed)
         if ok and content_changed:
             wake_embedding_worker()
         return json.dumps({
@@ -477,16 +477,13 @@ async def get_conversation(scope_type: str, scope_id: str, limit: int = 30) -> s
         records = await sqlite.fetch_conversation_with_id(
             scope_type=scope_type, scope_id=scope_id, limit=limit,
         )
-        import datetime
         items = []
         for r in records:
-            ts_sec = r["ts_ns"] // 1_000_000_000
-            dt = datetime.datetime.fromtimestamp(ts_sec).strftime("%Y-%m-%d %H:%M:%S")
             items.append({
                 "id": r["id"],
                 "role": r["role"],
                 "content": r["content"],
-                "time": dt,
+                "time": _format_conversation_time(int(r["ts_ns"])),
             })
         return json.dumps({
             "scope": f"{scope_type}:{scope_id}",
@@ -498,6 +495,7 @@ async def get_conversation(scope_type: str, scope_id: str, limit: int = 30) -> s
 
 
 def _format_conversation_time(ts_ns: int) -> str:
+    """格式化纳秒时间戳为可读时间（对话工具统一格式）。"""
     import datetime
     return datetime.datetime.fromtimestamp(ts_ns // 1_000_000_000).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -519,7 +517,7 @@ def _resolve_lookup_scope(
         if scope.startswith("group_"):
             return "group", scope[6:]
     except Exception:
-        pass
+        log("_resolve_lookup_scope 异常已忽略", "DEBUG")
     return "", ""
 
 
@@ -855,13 +853,10 @@ async def recall_conversation(
 
         items = []
         for r in results:
-            ts_sec = r["ts_ns"] // 1_000_000_000
-            import datetime
-            dt = datetime.datetime.fromtimestamp(ts_sec).strftime("%Y-%m-%d %H:%M")
             items.append({
                 "role": r["role"],
                 "content": r["content"],
-                "time": dt,
+                "time": _format_conversation_time(int(r["ts_ns"])),
                 "score": round(r.get("score", 0.0), 3),
             })
 
@@ -1007,7 +1002,7 @@ async def memory_deep_search(page: int = 1, page_size: int = 20, memory_type: st
             try:
                 mt = MemoryType(memory_type)
             except ValueError:
-                pass
+                log("memory_deep_search 异常已忽略", "DEBUG")
         result = await _store.list_paginated(page=page, page_size=page_size, memory_type=mt)
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
@@ -1227,24 +1222,31 @@ async def delete_entity_profile(scope_type: str, scope_id: str) -> str:
     """
     try:
         sqlite = _get_sqlite()
-        existing = await sqlite.get_entity_personality(scope_type=scope_type, scope_id=scope_id)
+        # 与 update 路径一致：先解析别名到主身份，避免别名场景残留旧画像/记忆
+        primary = await sqlite.resolve_alias(scope_type, scope_id)
+        p_type, p_id = primary if primary else (scope_type, scope_id)
+
+        existing = await sqlite.get_entity_personality(scope_type=p_type, scope_id=p_id)
         if not existing:
             return json.dumps({"error": f"{scope_type}:{scope_id} 不存在"}, ensure_ascii=False)
 
-        await sqlite.delete_entity_profile(scope_type=scope_type, scope_id=scope_id)
+        await sqlite.delete_entity_profile(scope_type=p_type, scope_id=p_id)
 
-        # 清理内存缓存
+        # 清理内存缓存（primary + 所有 alias 的内存实体）
         try:
             from services._runtime import require_runtime
             rt = require_runtime()
-            key = f"{scope_type}_{scope_id}"
-            rt.data_center.everything_data.entities.pop(key, None)
+            entities = rt.data_center.everything_data.entities
+            entities.pop(f"{p_type}_{p_id}", None)
+            aliases = await sqlite.get_aliases_for_primary(p_type, p_id)
+            for a in aliases:
+                entities.pop(f"{a['scope_type']}_{a['scope_id']}", None)
         except Exception:
-            pass
+            log("delete_entity_profile 异常已忽略", "DEBUG")
 
         # 清理 MemoryStore 中的 ENTITY 记忆
         if _store:
-            source = f"entity_{scope_id}"
+            source = f"entity_{p_id}"
             old_entries = await _store.list_recent(
                 limit=5, memory_type=MemoryType.ENTITY, source=source,
             )
@@ -1305,7 +1307,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
                 if entity:
                     entity.set_personality(personality.strip())
         except Exception:
-            pass
+            log("update_entity_profile 异常已忽略", "DEBUG")
 
         # 同步更新 MemoryStore 中的 ENTITY 记忆
         if _store:

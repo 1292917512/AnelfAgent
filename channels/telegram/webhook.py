@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Optional
 
 from core.log import log
@@ -42,7 +41,7 @@ async def start_webhook(
         from aiohttp import web
     except ImportError:
         log("Webhook 模式需要 aiohttp，请安装: pip install aiohttp", "ERROR")
-        raise RuntimeError("缺少 aiohttp 依赖")
+        raise RuntimeError("缺少 aiohttp 依赖") from None
 
     webhook_url = f"{url.rstrip('/')}{listen_path}"
 

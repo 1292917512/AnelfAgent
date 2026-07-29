@@ -37,11 +37,30 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 from core.entity import EntityRegistry
 from core.tool_schema import extract_tool_params, get_first_line
 
-# 兼容别名：历史引用（含测试）使用私有名
+# 兼容别名：tests/entities/test_sdk_extract_params.py 仍引用该私有名，暂不能删除
 _extract_params = extract_tool_params
-_get_first_line = get_first_line
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def coerce_bool_arg(value: Any, default: bool) -> bool:
+    """将工具参数稳健转为 bool（兼容 LLM 误传字符串）。
+
+    entities 层统一的布尔容错解析实现（mcp/filesystem 等工具共用，
+    services/ 与 web/ 侧的对应副本由各自负责人收敛）。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+    return bool(value)
 
 
 def tool(
@@ -71,7 +90,7 @@ def tool(
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
-        tool_desc = description or _get_first_line(func.__doc__) or tool_name
+        tool_desc = description or get_first_line(func.__doc__) or tool_name
         params = _extract_params(func)
 
         meta = {}
@@ -136,7 +155,7 @@ def deferred_tool(
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
-        tool_desc = description or _get_first_line(func.__doc__) or tool_name
+        tool_desc = description or get_first_line(func.__doc__) or tool_name
         params = _extract_params(func)
 
         meta = {}
@@ -402,7 +421,7 @@ def entity_config(
     import json
     import os
 
-    from core.config import register_configs_safe, ConfigManager
+    from core.config import ConfigManager, register_configs_safe
 
     # 注册到全局 ConfigRegistry（schema 层面）
     register_configs_safe(configs)

@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
 
 from entities._sdk import entity, tool
 

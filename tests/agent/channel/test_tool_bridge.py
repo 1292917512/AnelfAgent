@@ -16,11 +16,18 @@ from agent.channel.base import BaseChannel, ChannelConfig
 from agent.channel.channel_types import ChannelCapability
 from agent.channel.context import bind_current_channel
 from agent.channel.schemas import (
-    ChannelInfo, ChannelUser, HealthStatus, SendRequest, SendResponse,
+    ChannelInfo,
+    ChannelUser,
+    HealthStatus,
+    SendRequest,
+    SendResponse,
 )
 from agent.channel.tool_bridge import (
-    channel_tool, register_channel_tools, unregister_channel_tools,
-    _collect_marked_methods, _sensitive_check,
+    _collect_marked_methods,
+    _sensitive_check,
+    channel_tool,
+    register_channel_tools,
+    unregister_channel_tools,
 )
 from core.config import ConfigManager
 from core.entity import EntityRegistry

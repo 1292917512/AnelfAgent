@@ -7,9 +7,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
-from typing import Any, Dict, Optional, Set
+from typing import Any, ClassVar, Dict, Optional, Set
 
 from pydantic import Field
 
@@ -21,14 +20,17 @@ from agent.channel.channel_types import (
     _ok,
 )
 from agent.channel.schemas import (
-    AdapterChannel, ChannelType, SendRequest, SendResponse, SendSegment,
-    ChannelInfo, ChannelUser, ChannelUserRole, HealthStatus,
+    ChannelInfo,
+    ChannelType,
+    ChannelUser,
+    ChannelUserRole,
+    HealthStatus,
+    SendRequest,
+    SendResponse,
 )
 from core.log import log
 
 from .config import NONEBOT_BRIDGE_CONFIGS
-
-
 
 
 class NoneBotBridgeConfig(ChannelConfig):
@@ -51,6 +53,11 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
     )
     _Configs = NoneBotBridgeConfig
     _adapter_configs = NONEBOT_BRIDGE_CONFIGS
+
+    # forward_message 段分发映射（NoneBot 桥接仅发送文本，见基类模板方法）
+    _SEGMENT_SENDERS: ClassVar[Dict[str, str]] = {
+        "text": "send_text",
+    }
 
     def __init__(self) -> None:
         self._hooks_installed: bool = False
@@ -125,14 +132,6 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
         return info
 
     # ------------------------------------------------------------------
-    # 配置读取
-    # ------------------------------------------------------------------
-
-    def _cfg(self, key: str, default: Any = None) -> Any:
-        """读取配置（使用 self.config）。"""
-        return getattr(self.config, key, default)
-
-    # ------------------------------------------------------------------
     # 事件钩子
     # ------------------------------------------------------------------
 
@@ -142,9 +141,9 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
             return
 
         try:
-            from nonebot.message import event_preprocessor
-            from nonebot.exception import IgnoredException
             from nonebot import get_driver
+            from nonebot.exception import IgnoredException
+            from nonebot.message import event_preprocessor
         except ImportError:
             log("NoneBot Bridge: 无法导入 nonebot 模块，钩子未安装", "ERROR")
             return
@@ -226,7 +225,7 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
             try:
                 return str(type(adapter).get_name()).lower().replace(" ", "_")
             except (AttributeError, TypeError):
-                pass
+                log("_get_adapter_name_for_bot 异常已忽略", "DEBUG")
         return "unknown"
 
     @staticmethod
@@ -248,7 +247,7 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
             await bot.send_msg(message=text, user_id=chat_id)
             return True
         except AttributeError:
-            pass
+            log("_send_via_bot 异常已忽略", "DEBUG")
 
         # 最终回退：call_api
         try:
@@ -263,18 +262,8 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
     # ------------------------------------------------------------------
 
     async def forward_message(self, request: SendRequest) -> SendResponse:
-        """统一发送入口。"""
-        try:
-            chat_id = request.channel.channel_id
-            text_parts = [seg.content for seg in request.segments if seg.type.value == "text"]
-            full_text = "\n".join(text_parts) if text_parts else ""
-            result_json = await self.send_text(chat_id, full_text)
-            result = json.loads(result_json)
-            if result.get("success"):
-                return SendResponse(success=True, message_id=result.get("message_id"))
-            return SendResponse(success=False, error=result.get("error", "unknown"))
-        except Exception as exc:
-            return SendResponse(success=False, error=str(exc))
+        """统一发送入口（段分发模板见 BaseChannel._forward_via_segment_map）。"""
+        return await self._forward_via_segment_map(request)
 
     async def get_self_info(self) -> ChannelUser:
         return ChannelUser(
@@ -285,13 +274,6 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
             is_bot=True,
         )
 
-    async def get_user_info(self, user_id: str, channel_id: str) -> ChannelUser:
-        return ChannelUser(
-            platform=self.channel_id,
-            user_id=user_id,
-            user_name=user_id,
-        )
-
     async def get_channel_info(self, channel_id: str) -> ChannelInfo:
         return ChannelInfo(
             channel_id=channel_id,
@@ -300,41 +282,36 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
         )
 
     async def health_check(self) -> HealthStatus:
+        """健康探针：真实探测 NoneBot 初始化状态与 Bot 连接数。"""
+        from .nonebot_init import is_initialized
+
+        if not is_initialized():
+            return HealthStatus(
+                healthy=False,
+                detail="NoneBot 未初始化",
+                last_error="not_initialized",
+            )
         try:
             started = time.time()
-            return HealthStatus(
-                healthy=True,
-                detail=f"NoneBot bridge OK: {self.config.nonebot_url}",
-                latency_ms=(time.time() - started) * 1000,
-                last_success_at=time.time(),
-            )
+            import nonebot
+            bots = nonebot.get_bots()
         except Exception as exc:
-            return HealthStatus(healthy=False, detail=str(exc), last_error=str(exc))
-
-    async def render_approval_prompt(self, ctx) -> SendRequest:
-        """渲染批准提示（NoneBot 文本提示）。"""
-        from agent.channel.base import ApprovalPromptRenderContext
-
-        text = (
-            f"⚠️ 工具调用需要批准\n"
-            f"工具: {ctx.tool_name}\n"
-            f"参数: {ctx.tool_args_summary[:200]}\n"
-            f"风险: {ctx.risk_level}\n"
-            f"原因: {ctx.reason}\n"
-            f"超时: {ctx.timeout_seconds:.0f}s\n"
-            f"\n"
-            f"回复以下命令之一：\n"
-            f"  approve {ctx.request_id}\n"
-            f"  deny {ctx.request_id}"
-        )
-
-        return SendRequest(
-            adapter_key=self.channel_id,
-            channel=AdapterChannel(
-                channel_id="",  # 由 approval/gate.py 填充
-                channel_type=ChannelType.PRIVATE,
-            ),
-            segments=[SendSegment(type="text", content=text)],
+            return HealthStatus(
+                healthy=False,
+                detail=f"NoneBot 探测异常: {exc}",
+                last_error=str(exc),
+            )
+        if not bots:
+            return HealthStatus(
+                healthy=False,
+                detail="NoneBot 已初始化但无已连接的 Bot",
+                last_error="no_bots_connected",
+            )
+        return HealthStatus(
+            healthy=True,
+            detail=f"NoneBot OK: {len(bots)} 个 Bot 已连接",
+            latency_ms=(time.time() - started) * 1000,
+            last_success_at=time.time(),
         )
 
 

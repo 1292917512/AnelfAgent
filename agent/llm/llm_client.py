@@ -11,12 +11,9 @@ LLMClient — 统一 LLM 客户端（基于 litellm）。
 
 from __future__ import annotations
 
-import json
+import asyncio
 import os
 import re
-import asyncio
-from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 # 必须在 import litellm 之前设置，阻止启动时拉取远端模型价格表
@@ -25,9 +22,41 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 import httpx
 import litellm
 
-from agent.llm.protocol import CHAT_PROTOCOLS, ChatProtocol, resolve_chat_protocol
+from agent.llm import model_info as _mi
+from agent.llm import probe as _probe
+from agent.llm import response_parsing as _rp
+from agent.llm.config import (
+    _RESERVED_REQUEST_PARAMS,
+    API_TYPE_ANTHROPIC,
+    API_TYPE_AZURE,
+    API_TYPE_BEDROCK,
+    API_TYPE_CEREBRAS,
+    API_TYPE_CLOUDFLARE,
+    API_TYPE_COHERE,
+    API_TYPE_DASHSCOPE,
+    API_TYPE_DEEPSEEK,
+    API_TYPE_FIREWORKS_AI,
+    API_TYPE_GEMINI,
+    API_TYPE_GROQ,
+    API_TYPE_HUGGINGFACE,
+    API_TYPE_MISTRAL,
+    API_TYPE_OLLAMA,
+    API_TYPE_OPENAI,
+    API_TYPE_OPENROUTER,
+    API_TYPE_PERPLEXITY,
+    API_TYPE_SAMBANOVA,
+    API_TYPE_TOGETHER_AI,
+    API_TYPE_VERTEX_AI,
+    API_TYPE_VOLCENGINE,
+    API_TYPE_XAI,
+    API_TYPES,
+    DEFAULT_TIMEOUT,
+    LLMClientConfig,
+    ModelType,
+)
+from agent.llm.protocol import ChatProtocol, resolve_chat_protocol
+from agent.llm.proxy import _PROXY_ENV_KEYS, _ProxyEnvLease, _ProxyHttpClient
 from agent.llm.reasoning import (
-    CANONICAL_EFFORTS,
     clamp_effort,
     downgrade_effort,
     from_litellm_effort,
@@ -37,7 +66,10 @@ from agent.llm.reasoning import (
     to_litellm_effort,
 )
 from agent.llm.types import (
-    ChatResult, ChatStreamDelta, ImageContent, TextCompletionResult, ToolCall, UsageInfo,
+    ChatResult,
+    ChatStreamDelta,
+    ImageContent,
+    TextCompletionResult,
 )
 from core.entity import BaseEntity, EntityType
 from core.log import debug, info, log
@@ -47,125 +79,37 @@ litellm.drop_params = True
 litellm.local_model_cost_map = True
 
 
-_PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
-_SENTINEL = object()
-_ANTHROPIC_PROXY_LOCK = asyncio.Lock()
-
-
-class _ProxyEnvContext:
-    """临时设置代理环境变量的上下文管理器，退出时还原原始值。"""
-
-    def __init__(self, proxy_url: str) -> None:
-        self._proxy_url = proxy_url
-        self._saved: Dict[str, Any] = {}
-        self._keys = (
-            ("HTTP_PROXY", "HTTPS_PROXY")
-            if os.name == "nt"
-            else _PROXY_ENV_KEYS
-        )
-
-    def __enter__(self) -> "_ProxyEnvContext":
-        for k in self._keys:
-            self._saved[k] = os.environ.get(k, _SENTINEL)
-            os.environ[k] = self._proxy_url
-        return self
-
-    def __exit__(self, *exc: Any) -> None:
-        for k in self._keys:
-            orig = self._saved.get(k, _SENTINEL)
-            if orig is _SENTINEL:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = orig  # type: ignore[assignment]
-
-
-class _ProxyHttpClient(httpx.AsyncClient):
-    """支持 deepcopy 的代理 HTTP 客户端（用于非 Anthropic Provider）。
-
-    继承 httpx.AsyncClient 并覆写 __deepcopy__ 返回自身引用以共享连接池，
-    规避 copy.deepcopy 时 _thread.RLock 无法序列化的问题。
-    Anthropic 通道因 litellm 内部 JSON 序列化限制，改由环境变量传递代理。
-    """
-
-    def __init__(self, proxy_url: str) -> None:
-        self._proxy_url = proxy_url
-        super().__init__(proxy=proxy_url)
-
-    def __deepcopy__(self, memo: dict) -> "_ProxyHttpClient":
-        return self
-
-
-_DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1"
-_DEFAULT_API_KEY = ""
-# 全局默认请求超时（秒）；模型配置仅在需要非默认值时才显式指定。
-# 取值须明显小于思维循环总预算（mind.llm_timeout，默认 120s），
-# 否则单次慢调用即耗尽共享预算，重试与回退模型永远无法执行
-DEFAULT_TIMEOUT = 60.0
-
-API_TYPE_OPENAI = "openai"
-API_TYPE_ANTHROPIC = "anthropic"
-API_TYPE_OLLAMA = "ollama"
-API_TYPE_GEMINI = "gemini"
-API_TYPE_AZURE = "azure"
-API_TYPE_DEEPSEEK = "deepseek"
-API_TYPE_GROQ = "groq"
-API_TYPE_BEDROCK = "bedrock"
-API_TYPE_VERTEX_AI = "vertex_ai"
-API_TYPE_MISTRAL = "mistral"
-API_TYPE_COHERE = "cohere"
-API_TYPE_HUGGINGFACE = "huggingface"
-API_TYPE_CLOUDFLARE = "cloudflare"
-API_TYPE_OPENROUTER = "openrouter"
-API_TYPE_TOGETHER_AI = "together_ai"
-API_TYPE_FIREWORKS_AI = "fireworks_ai"
-API_TYPE_PERPLEXITY = "perplexity"
-API_TYPE_CEREBRAS = "cerebras"
-API_TYPE_XAI = "xai"
-API_TYPE_SAMBANOVA = "sambanova"
-API_TYPE_VOLCENGINE = "volcengine"
-API_TYPE_DASHSCOPE = "dashscope"
-
-API_TYPES = (
-    API_TYPE_OPENAI, API_TYPE_ANTHROPIC, API_TYPE_OLLAMA,
-    API_TYPE_GEMINI, API_TYPE_AZURE, API_TYPE_DEEPSEEK,
-    API_TYPE_GROQ, API_TYPE_BEDROCK, API_TYPE_VERTEX_AI,
-    API_TYPE_MISTRAL, API_TYPE_COHERE, API_TYPE_HUGGINGFACE,
-    API_TYPE_CLOUDFLARE, API_TYPE_OPENROUTER, API_TYPE_TOGETHER_AI,
-    API_TYPE_FIREWORKS_AI, API_TYPE_PERPLEXITY, API_TYPE_CEREBRAS,
-    API_TYPE_XAI, API_TYPE_SAMBANOVA, API_TYPE_VOLCENGINE,
-    API_TYPE_DASHSCOPE,
-)
-
-_LITELLM_PREFIX_MAP: Dict[str, str] = {
-    API_TYPE_OPENAI: "openai",
-    API_TYPE_ANTHROPIC: "anthropic",
-    API_TYPE_OLLAMA: "ollama_chat",
-    API_TYPE_GEMINI: "gemini",
-    API_TYPE_AZURE: "azure",
-    API_TYPE_DEEPSEEK: "deepseek",
-    API_TYPE_GROQ: "groq",
-    API_TYPE_BEDROCK: "bedrock",
-    API_TYPE_VERTEX_AI: "vertex_ai",
-    API_TYPE_MISTRAL: "mistral",
-    API_TYPE_COHERE: "cohere_chat",
-    API_TYPE_HUGGINGFACE: "huggingface",
-    API_TYPE_CLOUDFLARE: "cloudflare",
-    API_TYPE_OPENROUTER: "openrouter",
-    API_TYPE_TOGETHER_AI: "together_ai",
-    API_TYPE_FIREWORKS_AI: "fireworks_ai",
-    API_TYPE_PERPLEXITY: "perplexity",
-    API_TYPE_CEREBRAS: "cerebras",
-    API_TYPE_XAI: "xai",
-    API_TYPE_SAMBANOVA: "sambanova",
-    API_TYPE_VOLCENGINE: "volcengine",
-    API_TYPE_DASHSCOPE: "dashscope",
-}
-
-_THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
-_RESERVED_REQUEST_PARAMS = frozenset({
-    "model", "messages", "prompt", "input", "tools", "tool_choice",
-    "stream", "api_key", "api_base", "http_client", "extra_body",
-})
+__all__ = [
+    "API_TYPE_ANTHROPIC",
+    "API_TYPE_AZURE",
+    "API_TYPE_BEDROCK",
+    "API_TYPE_CEREBRAS",
+    "API_TYPE_CLOUDFLARE",
+    "API_TYPE_COHERE",
+    "API_TYPE_DASHSCOPE",
+    "API_TYPE_DEEPSEEK",
+    "API_TYPE_FIREWORKS_AI",
+    "API_TYPE_GEMINI",
+    "API_TYPE_GROQ",
+    "API_TYPE_HUGGINGFACE",
+    "API_TYPE_MISTRAL",
+    "API_TYPE_OLLAMA",
+    "API_TYPE_OPENAI",
+    "API_TYPE_OPENROUTER",
+    "API_TYPE_PERPLEXITY",
+    "API_TYPE_SAMBANOVA",
+    "API_TYPE_TOGETHER_AI",
+    "API_TYPE_VERTEX_AI",
+    "API_TYPE_VOLCENGINE",
+    "API_TYPE_XAI",
+    "API_TYPES",
+    "DEFAULT_TIMEOUT",
+    "LLMClient",
+    "LLMClientConfig",
+    "LLMNotConfiguredError",
+    "ModelType",
+    "_PROXY_ENV_KEYS",
+]
 
 
 class LLMNotConfiguredError(RuntimeError):
@@ -202,236 +146,6 @@ def _clean_message_surrogates(msg: dict) -> dict:
     return msg
 
 
-class ModelType(str, Enum):
-    """模型能力类型。一个客户端可拥有多个类型。"""
-
-    CHAT = "chat"
-    VISION = "vision"
-    IMAGE_GEN = "image_gen"
-    IMAGE_EDIT = "image_edit"
-    VIDEO = "video"
-    ASR = "asr"
-    TTS = "tts"
-    EMBEDDING = "embedding"
-    RERANK = "rerank"
-
-
-@dataclass
-class LLMClientConfig:
-    """LLM 客户端连接与生成参数。"""
-
-    name: str = "default"
-    base_url: str = _DEFAULT_BASE_URL
-    api_key: str = _DEFAULT_API_KEY
-    model: str = ""
-    api_type: str = API_TYPE_OPENAI
-    # None 表示不下发，由 provider/SDK 按模型默认决定（参考 hermes/nekro/openclaw）
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    # 输出预算上限；None 表示不主动限制，由 provider/SDK 按模型默认决定
-    # （Anthropic 协议强制要求该参数，未配置时按模型能力自动推断）。
-    max_tokens: Optional[int] = None
-    frequency_penalty: float = 0.0
-    presence_penalty: float = 0.0
-    timeout: float = DEFAULT_TIMEOUT
-    proxy_url: str = ""
-    supports_vision: bool = False
-    supports_tools: bool = True
-    # 端点是否接受强制工具选择（tool_choice=required/any）；
-    # thinking 服务端常开的端点（如 Kimi）应置 False，强制值将降级为 auto
-    supports_forced_tool_choice: bool = True
-    vision_format: str = "base64"
-    model_types: List[str] = field(default_factory=lambda: ["chat"])
-    provider_id: str = ""
-    supports_reasoning: bool = False
-    # 每模型专属思考等级（off/minimal/low/medium/high/xhigh/max）；
-    # 空=跟随全局/任务注入的等级。非法值在 __post_init__ 归一为 ""
-    reasoning_effort: str = ""
-    context_window: int = 0
-    # embedding 请求的目标维度（Matryoshka 可变维度模型生效）；0 = 模型默认维度
-    embedding_dims: int = 0
-    # embedding 单批文本数上限（供应商限制，如 text-embedding-v4 限 10）；0 = 不限制
-    embedding_max_batch: int = 0
-    request_params: Dict[str, Any] = field(default_factory=dict)
-    extra_body: Dict[str, Any] = field(default_factory=dict)
-    extra_params: Dict[str, Any] = field(default_factory=dict)
-    chat_protocol: str = ChatProtocol.CHAT_COMPLETIONS.value
-    # 图片生成协议适配器名（见 agent.llm.image_adapters），空表示按 host 自动匹配。
-    media_protocol: str = ""
-
-    def __post_init__(self) -> None:
-        if self.api_type not in API_TYPES:
-            raise ValueError(f"不支持的 api_type: {self.api_type}")
-        if not isinstance(self.model_types, list) or not all(
-            isinstance(item, str) and item in {mt.value for mt in ModelType}
-            for item in self.model_types
-        ):
-            raise ValueError(f"无效的 model_types: {self.model_types!r}")
-        if self.temperature is not None and not 0 <= self.temperature <= 2:
-            raise ValueError("temperature 必须在 0~2 之间")
-        if self.top_p is not None and not 0 <= self.top_p <= 1:
-            raise ValueError("top_p 必须在 0~1 之间")
-        if self.max_tokens is not None and self.max_tokens < 0:
-            raise ValueError("max_tokens 不能小于 0")
-        if self.context_window < 0:
-            raise ValueError("context_window 不能小于 0")
-        if self.embedding_dims < 0:
-            raise ValueError("embedding_dims 不能小于 0")
-        if self.embedding_max_batch < 0:
-            raise ValueError("embedding_max_batch 不能小于 0")
-        if self.timeout <= 0:
-            raise ValueError("timeout 必须大于 0")
-        if self.vision_format not in {"base64", "url", "both"}:
-            raise ValueError(f"无效的 vision_format: {self.vision_format}")
-        protocol = (self.chat_protocol or ChatProtocol.CHAT_COMPLETIONS.value).strip().lower()
-        if protocol not in CHAT_PROTOCOLS:
-            raise ValueError(f"无效的 chat_protocol: {self.chat_protocol}")
-        self.chat_protocol = protocol
-        for name, value in (
-            ("request_params", self.request_params),
-            ("extra_body", self.extra_body),
-            ("extra_params", self.extra_params),
-        ):
-            if not isinstance(value, dict):
-                raise ValueError(f"{name} 必须是对象")
-        normalized_effort = normalize_effort(self.reasoning_effort)
-        if self.reasoning_effort and not normalized_effort:
-            log(
-                f"模型 [{self.name}] 配置了无效的 reasoning_effort="
-                f"{self.reasoning_effort!r}，已重置为跟随全局",
-                "WARNING", tag="模型",
-            )
-        self.reasoning_effort = normalized_effort
-        collisions = _RESERVED_REQUEST_PARAMS.intersection(self.request_params)
-        if collisions:
-            raise ValueError(f"request_params 不允许覆盖保留参数: {sorted(collisions)}")
-
-    @property
-    def effective_proxy(self) -> str:
-        """规范化代理地址：纯 ip:port 自动补全 http:// 前缀。"""
-        url = self.proxy_url.strip()
-        if not url:
-            return ""
-        if not url.startswith(("http://", "https://", "socks5://", "socks4://")):
-            url = f"http://{url}"
-        return url
-
-    @property
-    def litellm_model(self) -> str:
-        """计算 litellm 聊天模型标识符（provider_prefix/model）。"""
-        prefix = _LITELLM_PREFIX_MAP.get(self.api_type, "openai")
-        if self.model.startswith(f"{prefix}/"):
-            return self.model
-        return f"{prefix}/{self.model}"
-
-    @property
-    def litellm_embed_model(self) -> str:
-        """计算 litellm embedding 模型标识符（Ollama 使用 ollama/ 前缀）。"""
-        prefix = _LITELLM_PREFIX_MAP.get(self.api_type, "openai")
-        if prefix == "ollama_chat":
-            prefix = "ollama"
-        if self.model.startswith(f"{prefix}/"):
-            return self.model
-        return f"{prefix}/{self.model}"
-
-    @property
-    def use_flat_image_url(self) -> bool:
-        """Ollama 兼容端点需要扁平 image_url 格式。"""
-        return self.api_type == API_TYPE_OLLAMA
-
-    @property
-    def supports_base64_vision(self) -> bool:
-        return self.vision_format in ("base64", "both")
-
-    @property
-    def supports_url_vision(self) -> bool:
-        return self.vision_format in ("url", "both")
-
-    def has_type(self, mt: ModelType) -> bool:
-        return mt.value in self.model_types
-
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
-            "name": self.name,
-            "base_url": self.base_url,
-            "api_key": self.api_key,
-            "model": self.model,
-            "api_type": self.api_type,
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "max_tokens": self.max_tokens,
-            "frequency_penalty": self.frequency_penalty,
-            "presence_penalty": self.presence_penalty,
-            "timeout": self.timeout,
-            "proxy_url": self.proxy_url,
-            "supports_vision": self.supports_vision,
-            "supports_tools": self.supports_tools,
-            "supports_forced_tool_choice": self.supports_forced_tool_choice,
-            "vision_format": self.vision_format,
-            "model_types": self.model_types,
-            "provider_id": self.provider_id,
-            "supports_reasoning": self.supports_reasoning,
-            "context_window": self.context_window,
-            "request_params": self.request_params,
-            "extra_body": self.extra_body,
-            "chat_protocol": self.chat_protocol,
-            "media_protocol": self.media_protocol,
-        }
-        if self.extra_params:
-            d["extra_params"] = self.extra_params
-        return d
-
-    def to_model_dict(self) -> Dict[str, Any]:
-        """序列化为供应商-模型层级格式中的模型条目（不含供应商级字段）。"""
-        d: Dict[str, Any] = {
-            "id": self.name,
-            "name": self.name,
-            "model": self.model,
-            "model_types": self.model_types,
-            "supports_vision": self.supports_vision,
-            "supports_tools": self.supports_tools,
-            "supports_forced_tool_choice": self.supports_forced_tool_choice,
-            "vision_format": self.vision_format,
-            "supports_reasoning": self.supports_reasoning,
-            "context_window": self.context_window,
-            "request_params": self.request_params,
-            "extra_body": self.extra_body,
-            "chat_protocol": self.chat_protocol,
-            "media_protocol": self.media_protocol,
-        }
-        # 采样/超时参数为可选覆盖项：仅在显式配置（非默认）时写入，避免配置文件冗余
-        if self.temperature is not None:
-            d["temperature"] = self.temperature
-        if self.top_p is not None:
-            d["top_p"] = self.top_p
-        if self.max_tokens is not None:
-            d["max_tokens"] = self.max_tokens
-        if self.frequency_penalty:
-            d["frequency_penalty"] = self.frequency_penalty
-        if self.presence_penalty:
-            d["presence_penalty"] = self.presence_penalty
-        if self.timeout != DEFAULT_TIMEOUT:
-            d["timeout"] = self.timeout
-        if self.extra_params:
-            d["extra_params"] = self.extra_params
-        if self.reasoning_effort:
-            d["reasoning_effort"] = self.reasoning_effort
-        return d
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "LLMClientConfig":
-        filtered = {}
-        for k, v in data.items():
-            if k in cls.__dataclass_fields__:
-                filtered[k] = v
-        if "model_types" not in filtered:
-            types = ["chat"]
-            if data.get("supports_embedding"):
-                types.append("embedding")
-            filtered["model_types"] = types
-        return cls(**filtered)
-
-
 class LLMClient(BaseEntity):
     """统一 LLM 客户端（基于 litellm）。
 
@@ -451,6 +165,8 @@ class LLMClient(BaseEntity):
             "AI Services", "LLM", f"model:{self.config.model}",
         ]
         self._proxy_client: Optional[_ProxyHttpClient] = None
+        # DashScope 多模态向量专用 HTTP 客户端（懒创建，随 close 关闭）
+        self._embed_http_client: Optional[httpx.AsyncClient] = None
         # 从端点 400 报错中学习到的 max_tokens 实际上限（本次运行内有效）
         self._learned_output_cap: Optional[int] = None
         # 从端点 400 报错中学习到的「不支持强制 tool_choice」（本次运行内有效）
@@ -499,18 +215,19 @@ class LLMClient(BaseEntity):
             params.pop("top_p", None)
         return params
 
-    def _anthropic_proxy_ctx(self) -> _ProxyEnvContext | None:
-        """Anthropic 专用：返回临时代理环境变量上下文，无代理时返回 None。
+    def _anthropic_proxy_lease(self) -> "_ProxyEnvLease | None":
+        """Anthropic 专用：返回代理环境变量租约，无代理时返回 None。
 
         已知限制：litellm 的 anthropic 通道不接受 httpx 客户端注入
         （其 handler 仅接受 litellm 自有 AsyncHTTPHandler，且该类不支持
         proxy 参数），无法像其他 provider 一样通过 http_client 显式传代理，
-        因此保留环境变量方案，并以 _ANTHROPIC_PROXY_LOCK 串行化并发请求。
+        因此保留环境变量方案，经 _ProxyEnvLease 读写分离：
+        同代理请求并发，不同代理请求串行。
         """
         if self.config.api_type != API_TYPE_ANTHROPIC:
             return None
         proxy = self.config.effective_proxy
-        return _ProxyEnvContext(proxy) if proxy else None
+        return _ProxyEnvLease(proxy) if proxy else None
 
     # 已知 Anthropic 兼容端点模型家族的输出上限（模型名小写子串匹配）。
     # 参考 hermes-agent anthropic_adapter 的内置表；端点实际限制更小时，
@@ -717,11 +434,7 @@ class LLMClient(BaseEntity):
             if proxy_client:
                 kwargs["http_client"] = proxy_client
 
-        reserved = {
-            "model", "messages", "prompt", "input", "tools", "tool_choice",
-            "stream", "api_key", "api_base", "http_client", "extra_body",
-        }
-        self._merge_request_params(kwargs, reserved)
+        self._merge_request_params(kwargs, _RESERVED_REQUEST_PARAMS)
 
         extra = dict(self.config.extra_params)
         extra.update(self.config.extra_body)
@@ -929,7 +642,7 @@ class LLMClient(BaseEntity):
                 merged: Any = "\n\n".join(item for item in contents if item)
             else:
                 merged_parts: list[dict[str, Any]] = []
-                for msg, item in zip(head_systems, contents):
+                for msg, item in zip(head_systems, contents, strict=False):
                     cache_control = msg.get("cache_control")
                     if isinstance(item, str):
                         if item:
@@ -994,21 +707,14 @@ class LLMClient(BaseEntity):
     async def responses_stream(self, **kwargs: Any) -> AsyncGenerator[Any, None]:
         """流式 Responses 调用。"""
         client = self.responses_client()
-        ctx = self._anthropic_proxy_ctx()
-        lock_acquired = False
-        try:
-            if ctx:
-                await _ANTHROPIC_PROXY_LOCK.acquire()
-                lock_acquired = True
-                with ctx:
-                    async for event in client.stream(**kwargs):
-                        yield event
-            else:
+        lease = self._anthropic_proxy_lease()
+        if lease:
+            async with lease:
                 async for event in client.stream(**kwargs):
                     yield event
-        finally:
-            if lock_acquired:
-                _ANTHROPIC_PROXY_LOCK.release()
+        else:
+            async for event in client.stream(**kwargs):
+                yield event
 
     async def responses_get(self, response_id: str) -> Any:
         client = self.responses_client()
@@ -1027,11 +733,10 @@ class LLMClient(BaseEntity):
         return await self._call_with_proxy(client.compact(**kwargs))
 
     async def _call_with_proxy(self, awaitable: Any) -> Any:
-        ctx = self._anthropic_proxy_ctx()
-        if ctx:
-            async with _ANTHROPIC_PROXY_LOCK:
-                with ctx:
-                    return await awaitable
+        lease = self._anthropic_proxy_lease()
+        if lease:
+            async with lease:
+                return await awaitable
         return await awaitable
 
     async def _chat_via_responses(
@@ -1056,7 +761,8 @@ class LLMClient(BaseEntity):
             "input": input_payload,
             "instructions": instructions,
             "tools": convert_chat_tools(tools),
-            "tool_choice": tool_choice,
+            # 与 chat_completions 路径一致：端点不接受强制 tool_choice 时降级
+            "tool_choice": self._resolve_tool_choice(tool_choice),
             "temperature": params.get("temperature"),
             "top_p": params.get("top_p"),
             "max_output_tokens": max_output_tokens,
@@ -1147,11 +853,10 @@ class LLMClient(BaseEntity):
             f"LLM chat: {self.config.litellm_model}, msgs={len(kwargs['messages'])}",
             tag="模型",
         )
-        ctx = self._anthropic_proxy_ctx()
-        if ctx:
-            async with _ANTHROPIC_PROXY_LOCK:
-                with ctx:
-                    resp = await self._start_completion(kwargs)
+        lease = self._anthropic_proxy_lease()
+        if lease:
+            async with lease:
+                resp = await self._start_completion(kwargs)
         else:
             resp = await self._start_completion(kwargs)
         return self._parse_response(resp)
@@ -1178,17 +883,14 @@ class LLMClient(BaseEntity):
         """
         kwargs = self._build_kwargs(messages, options, tools, tool_choice, stream=True)
         kwargs["stream_options"] = {"include_usage": True}
-        ctx = self._anthropic_proxy_ctx()
-        lock_acquired = False
         stream: Any = None
         reasoning_buf = ""
         tc_bufs: Dict[int, Dict[str, str]] = {}
         last_finish = ""
         try:
-            if ctx:
-                await _ANTHROPIC_PROXY_LOCK.acquire()
-                lock_acquired = True
-                with ctx:
+            lease = self._anthropic_proxy_lease()
+            if lease:
+                async with lease:
                     stream = await self._start_completion(kwargs)
                     async for item in self._iter_stream(stream, reasoning_buf, tc_bufs):
                         reasoning_buf = item[1]
@@ -1207,8 +909,6 @@ class LLMClient(BaseEntity):
                 close_fn = getattr(stream, "aclose", None)
                 if close_fn:
                     await close_fn()
-            if lock_acquired:
-                _ANTHROPIC_PROXY_LOCK.release()
 
         if tc_bufs:
             if last_finish in ("tool_calls", "stop"):
@@ -1224,262 +924,19 @@ class LLMClient(BaseEntity):
                 )
                 tc_bufs.clear()
 
-    async def _iter_stream(
-        self,
-        stream: Any,
-        reasoning_buf: str,
-        tc_bufs: Dict[int, Dict[str, str]],
-    ) -> AsyncGenerator[tuple[ChatStreamDelta, str], None]:
-        """解析 LiteLLM 流，并保留跨 chunk 的工具与推理缓冲。"""
-        async for chunk in stream:
-            choices = getattr(chunk, "choices", None) or []
-            if not choices:
-                stream_usage = self._usage_from_object(getattr(chunk, "usage", None))
-                if stream_usage:
-                    yield ChatStreamDelta(usage=stream_usage), reasoning_buf
-                continue
-            choice = choices[0]
-            delta = getattr(choice, "delta", None)
-            if delta is None:
-                continue
-            content = getattr(delta, "content", None) or ""
-            finish = getattr(choice, "finish_reason", None) or ""
-            reasoning = ""
-            rc = getattr(delta, "reasoning_content", None)
-            if isinstance(rc, str) and rc:
-                reasoning = rc
-            else:
-                for detail in getattr(delta, "reasoning_details", None) or []:
-                    text = detail.get("text", "") if isinstance(detail, dict) else getattr(detail, "text", "")
-                    if text and len(text) > len(reasoning_buf):
-                        reasoning = text[len(reasoning_buf):]
-                        reasoning_buf = text
-
-            for tc_chunk in getattr(delta, "tool_calls", None) or []:
-                # 部分 provider 会把 index 返回为字符串，统一强转 int，
-                # 避免混合类型 key 在 sorted() 时炸 TypeError
-                idx = self._normalize_tc_index(
-                    getattr(tc_chunk, "index", None), len(tc_bufs)
-                )
-                buf = tc_bufs.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                tc_id = getattr(tc_chunk, "id", None)
-                if tc_id:
-                    buf["id"] = tc_id
-                func = getattr(tc_chunk, "function", None)
-                if func:
-                    if getattr(func, "name", None):
-                        buf["name"] = func.name
-                    arguments = getattr(func, "arguments", None)
-                    if arguments:
-                        buf["arguments"] += str(arguments)
-
-            completed_tools = (
-                self._complete_tool_buffers(tc_bufs)
-                if finish in ("tool_calls", "stop") and tc_bufs
-                else []
-            )
-            if completed_tools:
-                tc_bufs.clear()
-            elif finish == "length" and tc_bufs:
-                log(
-                    f"流式输出达到长度上限，丢弃 {len(tc_bufs)} 个不完整的 tool_call 缓冲",
-                    "WARNING", tag="模型",
-                )
-                tc_bufs.clear()
-            yield ChatStreamDelta(
-                content=content,
-                tool_calls=completed_tools,
-                finish_reason=finish,
-                reasoning_content=reasoning,
-                # usage 仅在最终 chunk 输出：带 finish 的 chunk 或无 choices 的
-                # usage-only chunk（上方分支），中间 chunk 的增量 usage 不下发
-                usage=self._usage_from_object(getattr(chunk, "usage", None)) if finish else None,
-            ), reasoning_buf
-
-    @staticmethod
-    def _normalize_tc_index(raw: Any, fallback: int) -> int:
-        """将流式 tool_call 的 index 归一化为 int，非法值回退为 fallback。"""
-        if raw is None:
-            return 0
-        try:
-            return int(raw)
-        except (TypeError, ValueError):
-            return fallback
-
-    @staticmethod
-    def _complete_tool_buffers(
-        tc_bufs: Dict[int, Dict[str, str]],
-    ) -> list[ToolCall]:
-        result: list[ToolCall] = []
-        for _, buf in sorted(tc_bufs.items()):
-            if not buf["name"]:
-                log(
-                    f"丢弃无名流式 tool_call 片段: id={buf['id']} args={buf['arguments'][:120]}",
-                    "WARNING", tag="模型",
-                )
-                continue
-            call_id = buf["id"] or f"tc_{len(result)}"
-            result.append(ToolCall(
-                id=call_id,
-                name=buf["name"],
-                arguments=buf["arguments"],
-                # raw 必须是 OpenAI 线格式完整结构 — think_loop 用它拼装
-                # assistant 历史消息（tool_calls 字段），缺 id 会破坏配对
-                raw={
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": buf["name"], "arguments": buf["arguments"]},
-                },
-            ))
-        return result
-
     # ------------------------------------------------------------------
-    # 响应解析
+    # 流式/响应解析（实现位于 agent.llm.response_parsing，绑定保持
+    # LLMClient._iter_stream / _parse_response / _parse_tool_calls 等访问兼容）
     # ------------------------------------------------------------------
 
-    def _parse_response(self, resp: Any) -> ChatResult:
-        """将 litellm 统一响应解析为 ChatResult（含 usage）。"""
-        choices = getattr(resp, "choices", None) or []
-        raw_dict: Optional[dict] = resp.model_dump() if hasattr(resp, "model_dump") else None
-        if not choices:
-            return ChatResult(
-                content="",
-                finish_reason="error",
-                raw=raw_dict,
-                usage=self._extract_usage(resp),
-                model=getattr(resp, "model", "") or "",
-            )
-        choice = choices[0]
-        msg = getattr(choice, "message", None)
-        if msg is None:
-            return ChatResult(
-                content="",
-                finish_reason=getattr(choice, "finish_reason", None) or "error",
-                raw=raw_dict,
-                usage=self._extract_usage(resp),
-                model=getattr(resp, "model", "") or "",
-            )
-
-        usage = self._extract_usage(resp)
-
-        return ChatResult(
-            content=msg.content or "",
-            tool_calls=self._parse_tool_calls(getattr(msg, "tool_calls", None)),
-            finish_reason=getattr(choice, "finish_reason", None) or "",
-            reasoning_content=self._extract_reasoning(msg, raw_dict),
-            raw=raw_dict,
-            usage=usage,
-            model=getattr(resp, "model", "") or "",
-        )
-
-    @staticmethod
-    def _extract_usage(resp: Any) -> Optional[UsageInfo]:
-        """从 litellm 响应中提取 token 用量。"""
-        return LLMClient._usage_from_object(getattr(resp, "usage", None))
-
-    @staticmethod
-    def _usage_from_object(usage: Any) -> Optional[UsageInfo]:
-        if not usage:
-            return None
-        result = UsageInfo(
-            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-            total_tokens=getattr(usage, "total_tokens", 0) or 0,
-        )
-        return result if result.total_tokens or result.prompt_tokens or result.completion_tokens else None
-
-    @staticmethod
-    def _extract_reasoning(msg: Any, raw_response: Optional[dict] = None) -> str:
-        """从响应中提取推理内容。
-
-        支持三种来源（按优先级）：
-        1. reasoning_content 字段（litellm 标准，Anthropic thinking blocks）
-        2. reasoning_details 字段（自定义累积格式）
-        3. <think> 标签（DeepSeek 等模型）
-        """
-        rc = getattr(msg, "reasoning_content", None)
-        if rc and isinstance(rc, str):
-            return rc
-
-        details = getattr(msg, "reasoning_details", None)
-        if not details and raw_response:
-            choices = raw_response.get("choices", [])
-            if choices:
-                msg_dict = choices[0].get("message", {})
-                if msg_dict.get("reasoning_content"):
-                    return str(msg_dict["reasoning_content"])
-                details = msg_dict.get("reasoning_details")
-
-        if details:
-            parts: list[str] = []
-            for d in details:
-                text = d.get("text", "") if isinstance(d, dict) else getattr(d, "text", "")
-                if text:
-                    parts.append(text)
-            if parts:
-                return "\n".join(parts)
-
-        content = getattr(msg, "content", "") or ""
-        m = _THINK_TAG_RE.search(content)
-        return m.group(1).strip() if m else ""
-
-    @staticmethod
-    def _parse_tool_calls(raw_tool_calls: Any) -> list[ToolCall]:
-        """解析 tool_calls，兼容 OpenAI 对象 / dict / anthropic tool_use 原始形态。
-
-        部分 anthropic 桥接端点返回的 tool_call 结构不标准（function 为 dict、
-        或 name 位于顶层），此处做多形态兜底；名字缺失的调用丢弃并输出原始
-        结构日志，避免空调用在思维循环中反复失败。
-        """
-        if not raw_tool_calls:
-            return []
-        result: list[ToolCall] = []
-        for i, tc in enumerate(raw_tool_calls):
-            raw_dict: dict = {}
-            if hasattr(tc, "model_dump"):
-                try:
-                    raw_dict = tc.model_dump()
-                except Exception:
-                    raw_dict = {}
-            elif isinstance(tc, dict):
-                raw_dict = tc
-
-            func = getattr(tc, "function", None)
-            if func is None and isinstance(tc, dict):
-                func = tc.get("function")
-
-            func_name: Any = None
-            func_args: Any = None
-            if isinstance(func, dict):
-                func_name = func.get("name")
-                func_args = func.get("arguments")
-            elif func is not None:
-                func_name = getattr(func, "name", None)
-                func_args = getattr(func, "arguments", None)
-            else:
-                # anthropic tool_use 原始形态：{type: "tool_use", name, input}
-                func_name = raw_dict.get("name")
-                func_args = raw_dict.get("input") if "input" in raw_dict else raw_dict.get("arguments")
-
-            name = func_name.strip() if isinstance(func_name, str) else ""
-            if not name:
-                log(
-                    f"丢弃无名 tool_call（端点返回结构异常）: {json.dumps(raw_dict, ensure_ascii=False)[:300]}",
-                    "WARNING", tag="模型",
-                )
-                continue
-
-            args_str = func_args if isinstance(func_args, str) else json.dumps(
-                func_args if func_args is not None else {}, ensure_ascii=False,
-            )
-            tc_id = getattr(tc, "id", None) or raw_dict.get("id") or f"tc_{i}"
-            result.append(ToolCall(
-                id=str(tc_id),
-                name=name,
-                arguments=args_str,
-                raw=raw_dict,
-            ))
-        return result
+    _iter_stream = staticmethod(_rp._iter_stream)
+    _normalize_tc_index = staticmethod(_rp._normalize_tc_index)
+    _complete_tool_buffers = staticmethod(_rp._complete_tool_buffers)
+    _parse_response = staticmethod(_rp._parse_response)
+    _extract_usage = staticmethod(_rp._extract_usage)
+    _usage_from_object = staticmethod(_rp._usage_from_object)
+    _extract_reasoning = staticmethod(_rp._extract_reasoning)
+    _parse_tool_calls = staticmethod(_rp._parse_tool_calls)
 
     # ------------------------------------------------------------------
     # 多模态消息处理
@@ -1560,11 +1017,10 @@ class LLMClient(BaseEntity):
         proxy_client = self._get_proxy_client()
         if proxy_client and self.config.api_type != API_TYPE_ANTHROPIC:
             kwargs["http_client"] = proxy_client
-        ctx = self._anthropic_proxy_ctx()
-        if ctx:
-            async with _ANTHROPIC_PROXY_LOCK:
-                with ctx:
-                    resp = await litellm.aembedding(**kwargs)
+        lease = self._anthropic_proxy_lease()
+        if lease:
+            async with lease:
+                resp = await litellm.aembedding(**kwargs)
         else:
             resp = await litellm.aembedding(**kwargs)
         return [item["embedding"] for item in resp.data]
@@ -1586,13 +1042,15 @@ class LLMClient(BaseEntity):
         payload: Dict[str, Any] = {"model": self.config.model, "input": {"contents": contents}}
         if self.config.embedding_dims > 0:
             payload["parameters"] = {"dimension": self.config.embedding_dims}
-        async with httpx.AsyncClient(
-            timeout=self.config.timeout,
-            proxy=self.config.proxy_url or None,
-        ) as http:
-            resp = await http.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
+        # 与其他路径一致使用 effective_proxy（自动补 scheme），并复用连接池
+        if self._embed_http_client is None or self._embed_http_client.is_closed:
+            self._embed_http_client = httpx.AsyncClient(
+                timeout=self.config.timeout,
+                proxy=self.config.effective_proxy or None,
+            )
+        resp = await self._embed_http_client.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
         embeddings = data.get("output", {}).get("embeddings", [])
         ordered = sorted(embeddings, key=lambda e: e.get("index", 0))
         return [e["embedding"] for e in ordered]
@@ -1632,11 +1090,10 @@ class LLMClient(BaseEntity):
         proxy_client = self._get_proxy_client()
         if proxy_client and self.config.api_type != API_TYPE_ANTHROPIC:
             kwargs["http_client"] = proxy_client
-        ctx = self._anthropic_proxy_ctx()
-        if ctx:
-            async with _ANTHROPIC_PROXY_LOCK:
-                with ctx:
-                    resp = await litellm.atext_completion(**kwargs)
+        lease = self._anthropic_proxy_lease()
+        if lease:
+            async with lease:
+                resp = await litellm.atext_completion(**kwargs)
         else:
             resp = await litellm.atext_completion(**kwargs)
         choices = getattr(resp, "choices", None) or []
@@ -1652,206 +1109,42 @@ class LLMClient(BaseEntity):
         )
 
     # ------------------------------------------------------------------
-    # Token 计数与模型信息工具
+    # Token 计数与模型信息（实现位于 agent.llm.model_info，绑定保持
+    # LLMClient.count_tokens / get_model_info 等访问兼容）
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def count_tokens(model: str, messages: list[dict]) -> int:
-        """计算消息列表的 token 数（基于模型的 tokenizer）。
-
-        tokenizer 不可用时返回字符数/4 的兜底估计并记录 DEBUG 日志，
-        避免静默返回 0 导致上游误判上下文为空。
-        """
-        try:
-            return litellm.token_counter(model=model, messages=messages)
-        except Exception as exc:
-            total = 0
-            for msg in messages:
-                content = msg.get("content")
-                if isinstance(content, str):
-                    total += len(content)
-                elif isinstance(content, list):
-                    total += sum(
-                        len(part["text"])
-                        for part in content
-                        if isinstance(part, dict) and isinstance(part.get("text"), str)
-                    )
-            debug(
-                f"token_counter 失败 ({type(exc).__name__}: {exc})，"
-                f"使用字符数/4 兜底估计 ({total} 字符)",
-                tag="模型",
-            )
-            return total // 4
-
-    @staticmethod
-    def count_text_tokens(model: str, text: str) -> int:
-        """计算纯文本的 token 数（失败时字符数/4 兜底估计）。"""
-        try:
-            return litellm.token_counter(model=model, text=text)
-        except Exception as exc:
-            debug(
-                f"token_counter 失败 ({type(exc).__name__}: {exc})，"
-                f"使用字符数/4 兜底估计 ({len(text)} 字符)",
-                tag="模型",
-            )
-            return len(text) // 4
-
-    @staticmethod
-    def get_max_tokens(model: str) -> Optional[int]:
-        """查询模型的最大上下文 token 数。"""
-        try:
-            return litellm.get_max_tokens(model)
-        except Exception:
-            return None
-
-    @staticmethod
-    def get_model_info(model: str) -> Dict[str, Any]:
-        """查询模型完整信息（上下文窗口 / 输出上限 / 能力 / 价格）。"""
-        try:
-            return litellm.get_model_info(model)
-        except Exception:
-            return {}
-
-    @staticmethod
-    def get_model_cost(model: str) -> Optional[Dict[str, Any]]:
-        """查询模型的价格信息（input_cost_per_token / output_cost_per_token 等）。"""
-        return litellm.model_cost.get(model)
+    count_tokens = staticmethod(_mi.count_tokens)
+    count_text_tokens = staticmethod(_mi.count_text_tokens)
+    get_max_tokens = staticmethod(_mi.get_max_tokens)
+    get_model_info = staticmethod(_mi.get_model_info)
+    get_model_cost = staticmethod(_mi.get_model_cost)
 
     # ------------------------------------------------------------------
-    # 能力探测
+    # 能力探测（实现位于 agent.llm.probe，绑定保持
+    # LLMClient.probe_capabilities / _make_test_png / _probe_* 访问兼容）
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _make_test_png(size: int = 64) -> bytes:
-        import struct
-        import zlib as _zlib
-
-        def _chunk(chunk_type: bytes, data: bytes) -> bytes:
-            crc = _zlib.crc32(chunk_type + data) & 0xFFFFFFFF
-            return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", crc)
-
-        ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
-        scanline = b"\x00" + (b"\xff\x00\x00" * size)
-        raw_data = scanline * size
-        idat = _zlib.compress(raw_data)
-        return (
-                b"\x89PNG\r\n\x1a\n"
-                + _chunk(b"IHDR", ihdr)
-                + _chunk(b"IDAT", idat)
-                + _chunk(b"IEND", b"")
-        )
-
-    @staticmethod
-    async def probe_capabilities(
-            base_url: str,
-            api_key: str,
-            model: str,
-            api_type: str = API_TYPE_OLLAMA,
-            timeout: float = 120.0,
-    ) -> Dict[str, Any]:
-        """探测模型是否支持 tools 和 vision（通过 litellm）。"""
-        prefix = _LITELLM_PREFIX_MAP.get(api_type, "openai")
-        litellm_model = f"{prefix}/{model}"
-        flat_url = (api_type == API_TYPE_OLLAMA)
-
-        probe_kw: Dict[str, Any] = {
-            "api_base": base_url,
-            "api_key": api_key or _DEFAULT_API_KEY,
-            "timeout": timeout,
-            "temperature": 0.7,
-        }
-
-        result: Dict[str, Any] = {
-            "supports_tools": False,
-            "tools_detail": "",
-            "supports_vision": False,
-            "vision_detail": "",
-        }
-
-        result.update(await LLMClient._probe_tools(litellm_model, probe_kw))
-        result.update(await LLMClient._probe_vision(litellm_model, probe_kw, flat_url, api_type))
-        return result
-
-    @staticmethod
-    async def _probe_tools(
-            litellm_model: str, probe_kw: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        test_tool = [{
-            "type": "function",
-            "function": {
-                "name": "get_current_time",
-                "description": "获取当前时间",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }]
-        try:
-            resp = await litellm.acompletion(
-                model=litellm_model,
-                messages=[{"role": "user", "content": "现在几点了？请调用工具获取。"}],
-                tools=test_tool,
-                tool_choice="auto",
-                max_tokens=2048,
-                **probe_kw,
-            )
-            has_calls = bool(resp.choices[0].message.tool_calls)
-            return {
-                "supports_tools": True,
-                "tools_detail": (
-                    "模型返回了 tool_calls，支持原生工具调用"
-                    if has_calls
-                    else "请求成功（模型接受了 tools 参数）"
-                ),
-            }
-        except Exception as exc:
-            status = getattr(exc, "status_code", "")
-            detail = f"不支持 (HTTP {status})" if status else f"检测失败: {exc}"
-            return {"supports_tools": False, "tools_detail": detail}
-
-    _BASE64_ONLY_TYPES = frozenset({API_TYPE_OLLAMA})
-
-    @staticmethod
-    async def _probe_vision(
-            litellm_model: str, probe_kw: Dict[str, Any],
-            flat_url: bool, api_type: str,
-    ) -> Dict[str, Any]:
-        import base64
-
-        b64_img = base64.b64encode(LLMClient._make_test_png()).decode()
-        data_uri = f"data:image/png;base64,{b64_img}"
-        img_value: Any = data_uri if flat_url else {"url": data_uri}
-        vision_content: list[dict] = [
-            {"type": "text", "text": "这张图片是什么颜色？用一个词回答。"},
-            {"type": "image_url", "image_url": img_value},
-        ]
-        try:
-            resp = await litellm.acompletion(
-                model=litellm_model,
-                messages=[{"role": "user", "content": vision_content}],
-                max_tokens=256,
-                **probe_kw,
-            )
-            answer = resp.choices[0].message.content or ""
-            fmt = "base64" if api_type in LLMClient._BASE64_ONLY_TYPES else "both"
-            return {
-                "supports_vision": True,
-                "vision_detail": f"模型正确处理了图片输入: \"{answer[:80]}\"",
-                "vision_format": fmt,
-            }
-        except Exception as exc:
-            status = getattr(exc, "status_code", "")
-            detail = f"不支持 (HTTP {status})" if status else f"不支持: {exc}"
-            return {"supports_vision": False, "vision_detail": detail}
+    _BASE64_ONLY_TYPES = _probe._BASE64_ONLY_TYPES
+    _URL_VISION_KNOWN_TYPES = _probe._URL_VISION_KNOWN_TYPES
+    _make_test_png = staticmethod(_probe._make_test_png)
+    probe_capabilities = staticmethod(_probe.probe_capabilities)
+    _probe_tools = staticmethod(_probe._probe_tools)
+    _probe_vision = staticmethod(_probe._probe_vision)
 
     # ------------------------------------------------------------------
     # 客户端生命周期
     # ------------------------------------------------------------------
 
     async def close(self) -> None:
-        """关闭按客户端持有的代理连接池。"""
+        """关闭按客户端持有的代理连接池与多模态向量客户端。"""
         client = self._proxy_client
         self._proxy_client = None
         if client is not None and not client.is_closed:
             await client.aclose()
+        embed_client = self._embed_http_client
+        self._embed_http_client = None
+        if embed_client is not None and not embed_client.is_closed:
+            await embed_client.aclose()
 
     def update_config(self, **kwargs: Any) -> None:
         old_proxy = self.config.effective_proxy
@@ -1878,6 +1171,15 @@ class LLMClient(BaseEntity):
             except RuntimeError:
                 # 无运行事件循环时，下次生命周期关闭仍无法复用旧客户端；
                 # httpx 会在对象回收时释放底层资源。
+                pass
+        if self._embed_http_client is not None:
+            # 代理/超时等连接参数可能已变化，丢弃旧客户端下次重建
+            stale_embed = self._embed_http_client
+            self._embed_http_client = None
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(stale_embed.aclose())
+            except RuntimeError:
                 pass
         info(f"LLMClient [{self.config.name}] 配置已更新", tag="模型")
 

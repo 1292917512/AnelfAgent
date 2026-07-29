@@ -15,7 +15,7 @@
 - **config**         — 集中配置提供器
 """
 
-from .runtime.agent_app import AgentApp, AgentEvent, AgentStatus, AgentStats, get_agent_app
+from .runtime.agent_app import AgentApp, AgentEvent, AgentStats, AgentStatus, get_agent_app
 
 __all__ = [
     "AgentApp",

@@ -185,7 +185,7 @@ class PermissionRuleSet(BaseModel):
             }[rule.effect]
             reason = f"命中规则 [{rule.pattern}]（{rule.scope}）"
             if rule.users:
-                reason += f"（限定用户）"
+                reason += "（限定用户）"
             if rule.description:
                 reason += f"：{rule.description}"
             return PermissionVerdict(decision=decision, rule=rule, reason=reason)
@@ -352,5 +352,5 @@ def save_rules(rule_set: PermissionRuleSet, path: str = RULES_PATH) -> None:
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            log("save_rules 异常已忽略", "DEBUG")
         raise

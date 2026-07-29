@@ -14,7 +14,8 @@ import os
 import platform
 from typing import List
 
-from entities._sdk import tool, entity
+from core.log import log
+from entities._sdk import entity, tool
 
 entity("devops", "运维管理 - 记忆备份同步、项目代码更新、应用重启")
 
@@ -181,9 +182,14 @@ def restart_app() -> str:
     }, ensure_ascii=False)
 
 
-def _build_frontend() -> None:
-    """尝试构建前端，失败不阻塞重启。"""
-    from core.log import log
+async def _build_frontend() -> None:
+    """异步构建前端（pnpm run build），失败不阻塞重启。
+
+    前端构建/重启逻辑以本模块为实现主体；services/system.py 存在
+    平行实现（npm 版本），由 services 侧负责人另行收敛，本文件不改动 services。
+    """
+    import asyncio
+
     root = _project_root()
     frontend_dir = os.path.join(root, "web", "frontend")
     pkg_json = os.path.join(frontend_dir, "package.json")
@@ -192,15 +198,30 @@ def _build_frontend() -> None:
 
     log("🔨 构建前端...", tag="运维")
     try:
-        result = _run(["pnpm", "run", "build"], cwd=frontend_dir, timeout=120)
-        if result["ok"]:
+        proc = await asyncio.create_subprocess_exec(
+            "pnpm", "run", "build",
+            cwd=frontend_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            log("⚠️ 前端构建超时（不阻塞重启）", "WARNING", tag="运维")
+            return
+        if proc.returncode == 0:
             log("✅ 前端构建完成", tag="运维")
         else:
-            log(f"⚠️ 前端构建失败（不阻塞重启）: {result['stderr'][:200]}", "WARNING", tag="运维")
+            err = (stderr or b"").decode(errors="replace").strip()[:200]
+            log(f"⚠️ 前端构建失败（不阻塞重启）: {err}", "WARNING", tag="运维")
     except Exception as e:
         log(f"⚠️ 前端构建异常（不阻塞重启）: {e}", "WARNING", tag="运维")
 
 
+# 与启动脚本（start.bat / start.sh）约定的重启退出码：
+# 进程以此码退出时由启动脚本重新拉起应用
 _RESTART_EXIT_CODE = 42
 
 
@@ -214,13 +235,13 @@ def _schedule_restart() -> bool:
         是否成功调度重启任务
     """
     import asyncio
-    from core.log import log
+
 
     async def _do_restart() -> None:
         log("🔄 应用重启流程启动...", tag="运维")
         await asyncio.sleep(2)
 
-        _build_frontend()
+        await _build_frontend()
 
         try:
             from core.lifecycle import Lifecycle
@@ -236,10 +257,12 @@ def _schedule_restart() -> bool:
         loop.create_task(_do_restart())
         return True
     except RuntimeError:
-        pass
+        log("_do_restart 异常已忽略", "DEBUG")
 
     from entities._sdk import get_background_registry
     registry = get_background_registry()
+    # BackgroundTaskRegistry（agent 层）未提供公开的事件循环访问器，
+    # 用 getattr 兜底读取其绑定的主循环；待 agent 层提供公开 API 后可收敛
     loop = getattr(registry, "_loop", None) if registry else None
     if loop and loop.is_running():
         loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_do_restart()))

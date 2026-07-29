@@ -4,7 +4,7 @@ import { useMutation } from "@tanstack/react-query";
 import CodeMirror from "@uiw/react-codemirror";
 import { json } from "@codemirror/lang-json";
 import { databaseApi } from "@/lib/api";
-import type { CellValue, DbColumnInfo, DbRow } from "@/lib/types";
+import type { CellValue, DbColumnInfo, DbRow, DbRowInput } from "@/lib/types";
 import { useAppStore } from "@/stores/app-store";
 import { Button, Input, Modal, Textarea, toast } from "@/components/ui";
 import { Pencil, Plus } from "lucide-react";
@@ -100,7 +100,7 @@ export function RowEditModal({
 
   const saveMut = useMutation({
     mutationFn: async () => {
-      const values: Record<string, unknown> = {};
+      const values: DbRowInput = {};
       for (const col of columns) {
         const field = fields[col.name];
         if (!field) continue;

@@ -15,7 +15,7 @@ import json
 import shutil
 from typing import TYPE_CHECKING, Any
 
-from entities._sdk import tool, entity
+from entities._sdk import entity, tool
 
 if TYPE_CHECKING:
     from agent.llm.llm_manager import LLMManager
@@ -104,9 +104,9 @@ def switch_model(model_name: str) -> str:
 def get_current_model() -> str:
     """查看当前使用的模型详情，包括名称、底层模型、温度、超时配置和会话临时参数。"""
     try:
-        from services._runtime import require_runtime
         from agent.llm import get_llm_manager
         from agent.llm.llm_client import LLMClient
+        from services._runtime import require_runtime
 
         rt = require_runtime()
         llm = rt.llm
@@ -114,6 +114,8 @@ def get_current_model() -> str:
 
         info: dict = {
             "current_model_name": manager.default_name,
+            # 耦合点：agent.mind.Mind._session_llm_params 为 mind 层私有字段，
+            # 由 set_session_params/clear_session_params 写入、mind 构建 LLM 选项时读取
             "session_params": rt.mind._session_llm_params,
         }
 
@@ -339,9 +341,8 @@ def _get_ollama():
     """获取 OllamaService 实例。"""
     import shutil
     import subprocess
-    import json as _json
-    from dataclasses import dataclass, field as dc_field
-    from typing import Any, Dict, List, Optional
+    from dataclasses import dataclass
+
     from core.log import log
 
     _DEFAULT_HOST = "http://127.0.0.1:11434"

@@ -1,5 +1,5 @@
-import asyncio
 import argparse
+import asyncio
 import contextlib
 import faulthandler
 import signal
@@ -7,8 +7,8 @@ import warnings
 
 warnings.filterwarnings("ignore", message="urllib3.*doesn't match a supported version")
 
-from core.log import set_log_level, level_emoji, log, enable_file_logging
 from core.config import ConfigManager
+from core.log import enable_file_logging, level_emoji, log, set_log_level
 
 
 def _setup_faulthandler() -> None:
@@ -40,8 +40,9 @@ def main():
         # 初始化统一权限机制：加载规则 + 启动热更新监听
         # （新格式 config/permission_rules.json 优先，旧 approval_policies.json 自动转换）
         import os
+
         from agent.approval import get_approval_gate
-        from agent.approval.rules import RULES_PATH, LEGACY_PATH
+        from agent.approval.rules import LEGACY_PATH, RULES_PATH
         from agent.channel.config_watcher import get_config_watcher
         gate = get_approval_gate()
         watcher = get_config_watcher()

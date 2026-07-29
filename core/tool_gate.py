@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from typing import Awaitable, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple, Union
 
 from core.config import get_config_bool, get_config_float, register_configs_safe
 from core.log import log
@@ -40,6 +40,8 @@ class ToolGate:
         self._cache: Dict[CheckFn, Tuple[float, bool]] = {}
         # check_fn -> 最近一次返回 True 的单调时钟时间戳
         self._last_good: Dict[CheckFn, float] = {}
+        # id(check_fn) -> 进行中的探测任务（单飞去重：同 key 并发探测共享同一个 Task）
+        self._inflight: Dict[int, asyncio.Task] = {}
 
     def _effective_ttl(self) -> float:
         return get_config_float("tool_gate_check_ttl_seconds", self.ttl_seconds)
@@ -48,9 +50,17 @@ class ToolGate:
         return get_config_float("tool_gate_check_grace_seconds", self.failure_grace_seconds)
 
     async def _run_check(self, fn: CheckFn) -> bool:
-        """执行 check_fn（兼容同步/异步，异步分支 5s 超时），异常一律视为检查失败。"""
+        """执行 check_fn（兼容同步/异步，统一 5s 超时），异常一律视为检查失败。
+
+        同步 check_fn 经 asyncio.to_thread 在线程中执行，避免阻塞事件循环。
+        """
         try:
-            result = fn()
+            if inspect.iscoroutinefunction(fn):
+                awaitable: Awaitable[Any] = fn()
+            else:
+                awaitable = asyncio.to_thread(fn)
+            result = await asyncio.wait_for(awaitable, timeout=_CHECK_FN_TIMEOUT_SECONDS)
+            # 同步函数返回协程对象的情况：继续 await 并同样受超时约束
             if inspect.isawaitable(result):
                 result = await asyncio.wait_for(result, timeout=_CHECK_FN_TIMEOUT_SECONDS)
             return bool(result)
@@ -60,6 +70,20 @@ class ToolGate:
         except Exception as exc:
             log(f"工具门控 check_fn 异常: {type(exc).__name__}: {exc}", "DEBUG", tag="门控")
             return False
+
+    async def _probe(self, fn: CheckFn) -> bool:
+        """探测 check_fn（单飞：同一 fn 的并发探测共享同一个任务）。"""
+        key = id(fn)
+        task = self._inflight.get(key)
+        if task is not None and not task.done():
+            return await task
+        task = asyncio.ensure_future(self._run_check(fn))
+        self._inflight[key] = task
+        try:
+            return await task
+        finally:
+            if self._inflight.get(key) is task:
+                del self._inflight[key]
 
     async def check(self, fn: Optional[CheckFn]) -> bool:
         """评估 check_fn（带 TTL 缓存与瞬态故障宽限）。fn 为 None 时视为通过。"""
@@ -76,7 +100,7 @@ class ToolGate:
             if now - ts < ttl:
                 return value
 
-        value = await self._run_check(fn)
+        value = await self._probe(fn)
 
         if value:
             self._last_good[fn] = now
@@ -114,15 +138,16 @@ class ToolGate:
         # 并发探测去重后的 fn；check 内部自管缓存，无需持锁串行 await
         keys = list(pending.keys())
         outcomes = await asyncio.gather(*(self.check(pending[k]) for k in keys))
-        fn_results = dict(zip(keys, outcomes))
+        fn_results = dict(zip(keys, outcomes, strict=False))
 
         for name, fn_key in name_to_key.items():
             results[name] = fn_results[fn_key]
         return results
 
     def invalidate(self) -> None:
-        """清空全部缓存（下一次评估强制重新探测）。"""
+        """清空全部缓存（含 last-good 记录，下一次评估强制重新探测）。"""
         self._cache.clear()
+        self._last_good.clear()
         log("工具门控缓存已失效", "DEBUG", tag="门控")
 
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from agent.llm.responses.types import ResponseResult
+from core.log import log
 
 
 @dataclass(slots=True)
@@ -138,7 +139,7 @@ class ResponseSessionStore:
             try:
                 await task
             except (asyncio.CancelledError, Exception):
-                pass
+                log("cancel 异常已忽略", "DEBUG")
         return session
 
     async def delete(self, response_id: str) -> bool:

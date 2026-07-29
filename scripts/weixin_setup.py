@@ -5,8 +5,8 @@
     uv run python scripts/weixin_setup.py
 
 流程：终端显示二维码 → 微信扫码并确认 → account_id/token 自动写入
-``channels/weixin/channel_config.json``（凭据同时备份到
-``workspace/weixin/accounts/``）→ 交互选择私聊/群聊策略。
+数据目录的频道配置（凭据同时备份到 ``workspace/weixin/accounts/``）
+→ 交互选择私聊/群聊策略。
 """
 
 from __future__ import annotations
@@ -19,9 +19,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from channels.weixin.adapter import _weixin_config_path  # noqa: E402
 from channels.weixin.qr_login import qr_login  # noqa: E402
 
-CONFIG_PATH = PROJECT_ROOT / "channels" / "weixin" / "channel_config.json"
+CONFIG_PATH = Path(_weixin_config_path(
+    str(PROJECT_ROOT / "channels" / "weixin" / "channel_config.json")
+))
 
 
 def _ask(prompt: str, options: list[str], default: str) -> str:

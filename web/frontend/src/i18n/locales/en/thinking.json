@@ -72,5 +72,7 @@
     "title": "Context Snapshot",
     "waiting": "Waiting…",
     "tools": "Tools"
-  }
+  },
+  "contextTab": "Context",
+  "planStepsCount": "{{count}} steps"
 }

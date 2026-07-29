@@ -77,7 +77,7 @@ class CogneeCoordinator:
             try:
                 await self._task
             except asyncio.CancelledError:
-                pass
+                pass  # 取消属正常关闭流程（正常控制流，非异常）
             self._task = None
 
     async def reconfigure(self, config: CogneeConfig) -> None:
@@ -100,7 +100,7 @@ class CogneeCoordinator:
             try:
                 await self._task
             except asyncio.CancelledError:
-                pass
+                pass  # 取消属正常关闭流程（正常控制流，非异常）
             self._task = None
 
         # 立即按新配置做一次初始化，让状态接口即时反馈解析结果
@@ -164,7 +164,7 @@ class CogneeCoordinator:
                     timeout=self.config.sync_interval_seconds,
                 )
             except asyncio.TimeoutError:
-                pass
+                pass  # 超时属正常等待结束（正常控制流，非异常）
 
     async def _process_batch(self, batch: list[dict[str, Any]]) -> None:
         availability = await self.client.initialize()

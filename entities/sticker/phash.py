@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from core.log import log
+
 _HASH_SIZE = 8  # 8x8 = 64 bit
 
 
@@ -20,7 +22,7 @@ def compute_phash(path: str) -> str:
             try:
                 img.seek(0)
             except EOFError:
-                pass
+                log("compute_phash 异常已忽略", "DEBUG")
             gray = img.convert("L").resize((_HASH_SIZE + 1, _HASH_SIZE), Image.LANCZOS)
             pixels = list(gray.getdata())
         bits = 0

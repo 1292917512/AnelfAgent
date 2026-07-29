@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, List, Optional
 
 from core.log import log
@@ -75,6 +74,9 @@ class ChatService:
             data = get_config_provider().get_persona_config()
             if data.get("name"):
                 return data["name"]
+            # 启发式兜底：在人设文本行中查找"名称"字样，取其后的内容作为 bot 名。
+            # 该解析依赖人设文本的自然语言书写格式，较为脆弱——任意一步匹配
+            # 失败都会落到默认名 "Bot"，不影响主流程。
             for line in data.get("personality", []):
                 if "名称" in line:
                     for sep in ("：", ":"):

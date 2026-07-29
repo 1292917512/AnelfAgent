@@ -62,6 +62,11 @@ def update_channel_snapshot(mind: Any, anything: "Everything") -> None:
     snap.active_scopes = {
         s: a for s, a in snap.active_scopes.items() if now - a.last_time < window
     }
+    # 窗口外完全沉寂的频道快照整体移除，防按频道/scope 永久残留
+    mind._channel_snapshots = {
+        key: s for key, s in mind._channel_snapshots.items()
+        if key == adapter_key or now - s.last_message_time < window
+    }
 
 
 def collect_channel_info(mind: Any) -> List[str]:

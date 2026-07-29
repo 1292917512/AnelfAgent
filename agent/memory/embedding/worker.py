@@ -118,7 +118,7 @@ class EmbeddingWorker:
             try:
                 await self._task
             except asyncio.CancelledError:
-                pass
+                pass  # 取消属正常关闭流程（正常控制流，非异常）
             self._task = None
 
     def wake(self) -> None:
@@ -151,7 +151,7 @@ class EmbeddingWorker:
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=self._interval_seconds)
             except asyncio.TimeoutError:
-                pass
+                pass  # 超时属正常等待结束（正常控制流，非异常）
 
     async def _drain_once(self) -> int:
         """每个已注册 backlog 各处理一批，返回本轮补全的向量总数。"""
@@ -170,4 +170,4 @@ class EmbeddingWorker:
         try:
             await asyncio.wait_for(self._wake.wait(), timeout=self._backoff_seconds)
         except asyncio.TimeoutError:
-            pass
+            pass  # 超时属正常等待结束（正常控制流，非异常）

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { personasApi } from "@/lib/api";
+import type { PersonaData } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { PageContainer } from "@/components/common/PageContainer";
 import { cn } from "@/lib/utils";
@@ -18,7 +19,7 @@ export default function Personas() {
   const { t } = useTranslation(["personas", "common"]);
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<string | null>(null);
-  const [editing, setEditing] = useState<Record<string, unknown> | null>(null);
+  const [editing, setEditing] = useState<PersonaData | null>(null);
   const [newKey, setNewKey] = useState("");
 
   const { data: personas = [] } = useQuery<PersonaItem[]>({
@@ -53,7 +54,7 @@ export default function Personas() {
   });
 
   const saveMutation = useMutation({
-    mutationFn: ({ key, data }: { key: string; data: Record<string, unknown> }) =>
+    mutationFn: ({ key, data }: { key: string; data: PersonaData }) =>
       personasApi.save(key, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["personas"] });

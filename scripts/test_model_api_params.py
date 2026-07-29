@@ -80,9 +80,10 @@ def _expect_fail(name: str, fn: Callable[[], Any], *exc_types: type[BaseExceptio
 # ---------------------------------------------------------------------------
 
 def run_config_suite() -> SuiteReport:
+    from pydantic import ValidationError
+
     from agent.llm.llm_client import API_TYPES, LLMClientConfig, ModelType
     from agent.llm.protocol import CHAT_PROTOCOLS
-    from pydantic import ValidationError
 
     report = SuiteReport(title="LLMClientConfig 配置契约")
 

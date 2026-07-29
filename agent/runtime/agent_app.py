@@ -7,21 +7,20 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional, Union
 
-from core.event_bus import (
-    event_bus,
-    EVENT_AGENT_STARTED,
-    EVENT_AGENT_STOPPED,
-    EVENT_ERROR_OCCURRED,
-    EVENT_MESSAGE_RECEIVED,
-)
 from agent.llm.types import ImageContent
 from agent.messages import (
     Everything,
-    EverythingGroup,
     MessageGroupUser,
     MessageUser,
 )
 from core.config import get_config, register_configs_safe
+from core.event_bus import (
+    EVENT_AGENT_STARTED,
+    EVENT_AGENT_STOPPED,
+    EVENT_ERROR_OCCURRED,
+    EVENT_MESSAGE_RECEIVED,
+    event_bus,
+)
 from core.log import log
 
 # 频道内审批授权白名单：非空时仅白名单用户可 approve/deny，其他用户指令按普通消息放行。
@@ -77,6 +76,11 @@ class AgentStats:
         return time.time() - self.start_time
 
 
+# 主事件队列容量上限：满时丢弃最旧事件并记 WARNING（不阻塞生产者，
+# 防止下游 Mind 卡死时内存无界增长）
+_EVENT_QUEUE_MAX_SIZE = 10000
+
+
 class AgentApp:
     """
     AnelfAgent 统一智能体运行时入口。
@@ -86,7 +90,7 @@ class AgentApp:
     """
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
+        self._queue: asyncio.Queue[AgentEvent] = asyncio.Queue(maxsize=_EVENT_QUEUE_MAX_SIZE)
         self._task: Optional[asyncio.Task[None]] = None
         self._running = False
         self._status = AgentStatus.STOPPED
@@ -136,7 +140,7 @@ class AgentApp:
             try:
                 await self._task
             except asyncio.CancelledError:
-                pass
+                pass  # 取消属正常关闭流程（正常控制流，非异常）
             self._task = None
         self._status = AgentStatus.STOPPED
         await event_bus.emit(EVENT_AGENT_STOPPED, {"uptime": self._stats.uptime})
@@ -148,7 +152,21 @@ class AgentApp:
     async def submit(self, event: AgentEvent) -> None:
         """向运行时提交通用事件（在当前事件循环中执行）。"""
         await self._ensure_started()
-        await self._queue.put(event)
+        self._enqueue(event)
+
+    def _enqueue(self, event: AgentEvent) -> None:
+        """非阻塞入队：队列满时丢弃最旧事件并记 WARNING（不阻塞生产者）。"""
+        if self._queue.full():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+                log(
+                    f"AgentApp 事件队列已满（{_EVENT_QUEUE_MAX_SIZE}），丢弃最旧事件",
+                    "WARNING",
+                )
+            except asyncio.QueueEmpty:
+                log("_enqueue 异常已忽略", "DEBUG")
+        self._queue.put_nowait(event)
 
     async def send_message(
         self,
@@ -219,9 +237,9 @@ class AgentApp:
             and self._main_loop is not current_loop
             and self._main_loop.is_running()
         ):
-            asyncio.run_coroutine_threadsafe(self._queue.put(event), self._main_loop)
+            self._main_loop.call_soon_threadsafe(self._enqueue, event)
         else:
-            await self._queue.put(event)
+            self._enqueue(event)
 
     # ------------------------------------------------------------------
     # 状态查询
@@ -234,7 +252,7 @@ class AgentApp:
             if self._runtime is not None:
                 mind_phase = self._runtime.mind.phase.value
         except Exception:
-            pass
+            log("get_status_info 异常已忽略", "DEBUG")
         return {
             "status": self._status.value,
             "mind_phase": mind_phase,
@@ -263,7 +281,6 @@ class AgentApp:
     async def _run_loop(self) -> None:
         while self._running:
             event = await self._queue.get()
-            prev_status = self._status
             self._status = AgentStatus.PROCESSING
             try:
                 if self._handler:
@@ -297,7 +314,7 @@ class AgentApp:
 
             anything = _build_message_everything(payload)
             anything.set_text_content(str(payload.get("content", "")))
-            await self.runtime.respond.accept_data(anything)
+            await self.runtime.pipeline.ingest(anything)
         else:
             log(f"未处理的事件类型: {event.type}", "DEBUG")
 
@@ -312,13 +329,16 @@ def _is_approval_admin(user_id: str, channel_id: str) -> bool:
     admins = get_config("approval_admin_users", []) or []
     if not isinstance(admins, (list, tuple)):
         admins = []
+    # 规整空白/大小写，避免配置中多一个空格导致静默失效
+    admins = [str(a).strip() for a in admins if str(a).strip()]
     if not admins:
         if not _approval_admin_hint_logged:
             log("approval_admin_users 未配置，频道内审批不限制操作者（任意用户可审批）",
                 "WARNING", tag="权限")
             _approval_admin_hint_logged = True
         return True
-    return user_id in admins or f"{channel_id}:{user_id}" in admins
+    uid = str(user_id).strip()
+    return uid in admins or f"{channel_id}:{uid}" in admins
 
 
 async def _try_resolve_approval(payload: dict) -> bool:
@@ -362,8 +382,8 @@ async def _try_resolve_approval(payload: dict) -> bool:
                 if callable(send_text):
                     await send_text(str(payload.get("group_id") or payload.get("user_id") or ""),
                                     f"{mark}: {session.request.tool_name} ({request_id})")
-        except Exception:
-            pass
+        except Exception as exc:
+            log(f"审批决策回执发送失败: {request_id}: {exc}", "WARNING", tag="权限")
         log(f"频道内批准决策: {request_id} -> {decision_str} (by {user_id})", tag="权限")
         return True
     return False

@@ -89,7 +89,7 @@ def _blob_to_embed(blob: bytes) -> List[float]:
 def _cosine(a: List[float], b: List[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = sum(x * x for x in a) ** 0.5
     nb = sum(x * x for x in b) ** 0.5
     if na == 0 or nb == 0:
@@ -265,7 +265,7 @@ class StickerStore:
             await db.execute(f"DELETE FROM {kind}_vec WHERE id=?", (item_id,))
             await db.commit()
         except Exception:
-            pass
+            log("_vec_delete 异常已忽略", "DEBUG")
 
     async def _vec_search(
         self, kind: str, query_vec: List[float], limit: int,

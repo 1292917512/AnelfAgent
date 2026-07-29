@@ -10,9 +10,8 @@ BaseChannel 提供默认文本渲染；子类可覆盖为：
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from agent.channel.schemas import SendSegment
 from agent.channel.base import ApprovalPromptRenderContext
 
 

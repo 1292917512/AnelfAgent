@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { adaptersApi, apiErrorMessage } from "@/lib/api";
-import type { ChannelToolInfo, ChannelToolTestResult } from "@/lib/types";
+import type { ChannelToolInfo, ChannelToolTestResult, ConfigValues } from "@/lib/types";
 import { Drawer } from "@/components/common/Drawer";
 import { Badge, Button, Input, LoadingBlock, Switch, toast } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -169,7 +169,7 @@ function ToolTestForm({ channelKey, tool }: { channelKey: string; tool: ChannelT
   const [result, setResult] = useState<ChannelToolTestResult | null>(null);
 
   const runMut = useMutation({
-    mutationFn: (args: Record<string, unknown>) =>
+    mutationFn: (args: ConfigValues) =>
       adaptersApi.testChannelTool(channelKey, tool.name, args).then((r) => r.data),
     onSuccess: setResult,
     onError: (e) =>
@@ -181,7 +181,7 @@ function ToolTestForm({ channelKey, tool }: { channelKey: string; tool: ChannelT
   );
 
   const run = () => {
-    const args: Record<string, unknown> = {};
+    const args: ConfigValues = {};
     for (const p of params) {
       const raw = (values[p.name] ?? "").trim();
       if (p.type === "boolean") {

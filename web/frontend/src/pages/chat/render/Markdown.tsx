@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { Check, Copy, ExternalLink, Link2 } from "lucide-react";
 import { useLightbox } from "./Lightbox";
 import { highlightCode } from "@/lib/shiki";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 
 /** 从 URL 提取域名（失败返回空串） */
 function domainOf(href: string): string {
@@ -56,7 +57,7 @@ function LinkCard({ href, children }: { href?: string; children?: ReactNode }) {
 
 /** 代码块：Shiki 语法高亮 + 语言标签 + 复制按钮（高亮完成前用纯文本占位，避免布局跳动） */
 function CodeBlock({ className, children }: { className?: string; children?: ReactNode }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, triggerCopied] = useCopyFeedback(1500);
   const match = /language-(\w+)/.exec(className || "");
   const lang = match?.[1] || "";
   const code = String(children ?? "").replace(/\n$/, "");
@@ -76,8 +77,7 @@ function CodeBlock({ className, children }: { className?: string; children?: Rea
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      triggerCopied();
     } catch { /* 剪贴板不可用时忽略 */ }
   };
 

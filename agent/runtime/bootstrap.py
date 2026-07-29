@@ -53,6 +53,7 @@ def create_bootstrap() -> FlowMachine:
     async def init_proxy():
         """将应用代理配置同步到环境变量，供 litellm 等库使用。"""
         import os
+
         from core.config import ConfigManager
 
         if not ConfigManager.get('proxy_enabled', False):
@@ -83,7 +84,7 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=False)
     async def init_channel_system():
         """初始化频道管理器和输入管道。"""
-        from agent.channel import ChannelManager, InputPipeline, get_channel_manager
+        from agent.channel import InputPipeline, get_channel_manager
         cm = get_channel_manager()
         pipeline = InputPipeline()
         return {"channel_manager": cm, "pipeline": pipeline}
@@ -128,8 +129,8 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=False)
     async def init_memory():
         from agent.memory.embedding import get_embedder
+        from agent.memory.memory_migrate import migrate_memories_to_md, needs_migration
         from agent.memory.memory_store import MemoryStore
-        from agent.memory.memory_migrate import needs_migration, migrate_memories_to_md
         from agent.memory.memory_sync import sync_files
         from agent.storage.sqlite_backend import default_sqlite_path
         from core.lifecycle import Lifecycle
@@ -216,10 +217,10 @@ def create_bootstrap() -> FlowMachine:
 
     @machine.node(skip_on_error=False)
     async def register_internal_tools():
+        from agent.channel.output_tools import register_output_tools
         from agent.memory.notes import register_notes_tools
         from agent.memory.tools import register_memory_tools
         from agent.planning import register_planning_tools
-        from agent.channel.output_tools import register_output_tools
         from agent.skills import SkillMatcher, SkillStore, register_skill_tools
 
         mem = machine.get(BK.MEMORY)
@@ -233,8 +234,8 @@ def create_bootstrap() -> FlowMachine:
         register_skill_tools(skill_store, SkillMatcher(skill_store, mem["embedder"]))
 
         # 图片感知索引 worker：入站图片后台沉淀（phash/描述/向量），支撑文搜图/图搜图
-        from entities.sticker.worker import ImageIndexWorker, set_image_index_worker
         from core.lifecycle import Lifecycle
+        from entities.sticker.worker import ImageIndexWorker, set_image_index_worker
         image_index_worker = ImageIndexWorker()
         await image_index_worker.start()
         set_image_index_worker(image_index_worker)
@@ -257,13 +258,14 @@ def create_bootstrap() -> FlowMachine:
     async def assemble_runtime():
         """纯组装：Mind -> Assistant -> Runtime -> set_runtime。"""
         from agent.mind import Mind
-        from agent.runtime.assistant import AgentAssistant
-        from agent.runtime.runtime import AgentRuntime
-        from agent.runtime.singleton import set_runtime
+        from agent.mind.tools import session_tools
+
         # 提前导入 scheduler/session_tools 模块，使其 deferred 工具在 Mind 初始化
         # activate_group("thinking"/"session") 时一并注册
         from agent.mind.tools.scheduler import set_mind
-        from agent.mind.tools import session_tools
+        from agent.runtime.assistant import AgentAssistant
+        from agent.runtime.runtime import AgentRuntime
+        from agent.runtime.singleton import set_runtime
 
         data_center = machine.get(BK.STORAGE)
         llm_data = machine.get(BK.LLM)
@@ -310,8 +312,8 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=False)
     async def start_agent():
         """启动 AgentApp 事件循环和 Assistant 心跳。"""
-        from agent.runtime.singleton import get_runtime
         from agent.runtime.agent_app import get_agent_app
+        from agent.runtime.singleton import get_runtime
         from core.lifecycle import Lifecycle
 
         runtime = get_runtime()
@@ -328,9 +330,9 @@ def create_bootstrap() -> FlowMachine:
     async def restore_states():
         """恢复持久化的工具/实体状态覆盖（失败不影响启动）。"""
         from core.entity import EntityRegistry, EntityType
-        from services.tool import ToolService
         from services.entity import EntityService
         from services.tag import TagService
+        from services.tool import ToolService
 
         ToolService.apply_overrides()
         EntityService.apply_entity_states()
@@ -359,8 +361,8 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=True)
     async def register_channels():
         """自动发现并注册所有已启用的频道。"""
-        from channels import discover_channels
         from agent.channel import get_channel_manager
+        from channels import discover_channels
         cm = get_channel_manager()
         for channel in discover_channels():
             cm.register(channel)
@@ -386,8 +388,9 @@ def create_bootstrap() -> FlowMachine:
 
     async def _do_recover_unanswered() -> None:
         import time
-        from core.config import get_config_bool, get_config_float
+
         from agent.runtime.singleton import get_runtime
+        from core.config import get_config_bool, get_config_float
 
         rt = get_runtime()
         mind = rt.mind
@@ -432,8 +435,8 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=True)
     async def check_health():
         """启动健康检查 — 验证关键组件就绪状态。"""
-        from core.entity import EntityRegistry, EntityType
         from agent.runtime.singleton import get_runtime
+        from core.entity import EntityRegistry, EntityType
 
         issues: list[str] = []
         rt = get_runtime()

@@ -7,27 +7,25 @@ AI 通过两级发现机制按需使用频道功能。
 from .base import BaseChannel, ChannelConfig, ChannelMetadata
 from .manager import ChannelManager, get_channel_manager
 from .pipeline import InputPipeline
-from .tool_bridge import channel_tool
 from .schemas import (
     AdapterChannel,
     AdapterMessage,
     AdapterSendRequest,
     AdapterUser,
-    ChannelType,
-    MessageSegment,
-    SegmentType,
-)
-from .schemas import (
     ChannelInfo,
+    ChannelType,
     ChannelUser,
     ChannelUserRole,
     CommandResponse,
     CommandResponseStatus,
     HealthStatus,
+    MessageSegment,
+    SegmentType,
     SendRequest,
     SendResponse,
     SendSegment,
 )
+from .tool_bridge import channel_tool
 
 __all__ = [
     "AdapterChannel",

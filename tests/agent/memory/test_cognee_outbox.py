@@ -84,3 +84,36 @@ async def test_delete_queues_projection_cleanup(tmp_path) -> None:
         assert mapping["data_id"] == "data-id"
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_reset_cognee_projection_clears_queue_and_mappings(tmp_path) -> None:
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    try:
+        memory_id = await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC,
+            content="to be reset",
+        ))
+        item = (await store.claim_cognee_sync_batch(1))[0]
+        await store.complete_cognee_sync(
+            item["queue_id"],
+            memory_id,
+            dataset_name="anelf_global",
+            dataset_id="dataset-id",
+            data_id="data-id",
+        )
+        # 一条已同步映射 + 一条待处理队列（delete 操作）
+        await store.delete(memory_id)
+        before = await store.get_cognee_sync_status()
+        assert before["synced"] == 1
+        assert before["pending"] == 1
+
+        cleared = await store.reset_cognee_projection()
+
+        assert cleared == {"queue": 1, "mappings": 1}
+        after = await store.get_cognee_sync_status()
+        assert after == {"pending": 0, "failed": 0, "synced": 0}
+        assert await store.get_cognee_mapping(memory_id) is None
+    finally:
+        await store.close()

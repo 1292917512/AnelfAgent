@@ -14,5 +14,6 @@
   "action_lang": "Switch language",
   "action_sidebar": "Toggle sidebar",
   "action_search": "Open global search",
-  "action_logout": "Log out"
+  "action_logout": "Log out",
+  "menu": "Menu"
 }

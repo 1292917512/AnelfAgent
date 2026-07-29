@@ -10,10 +10,10 @@ import asyncio
 import json
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from core.event_bus import EVENT_UI_COMMAND, event_bus
-from core.log import log
 from entities._sdk import entity, tool
 
 entity("ui", "界面交互 - 向 Web 工作台投递通知、弹窗提问、切换面板、注入草稿、查询界面状态")
@@ -21,19 +21,33 @@ entity("ui", "界面交互 - 向 Web 工作台投递通知、弹窗提问、切�
 _VALID_LEVELS = {"info", "success", "warning", "error"}
 _VALID_PANELS = {"status", "trace", "files", "tasks", "search", "settings"}
 
-# 挂起的提问：ask_id -> (Future, 创建时间)
-_pending_asks: Dict[str, asyncio.Future[str]] = {}
+
+@dataclass
+class _PendingAsk:
+    """挂起的提问：Future + 创建时间（替代对 Future 的猴子补丁）。"""
+
+    future: "asyncio.Future[str]"
+    created_at: float
+
+
+# 挂起的提问：ask_id -> _PendingAsk
+_pending_asks: Dict[str, _PendingAsk] = {}
 _ASK_MAX_AGE = 600.0
 
 # 前端上报的工作台状态快照
 _ui_state: Dict[str, Any] = {}
 
+# _ui_state / _pending_asks 读写锁（异步工具侧使用；
+# web 层同步入口 update_ui_state/resolve_ask 均为单次原子字典操作，不加锁）
+_state_lock = asyncio.Lock()
+
 
 def update_ui_state(state: Dict[str, Any]) -> None:
     """web 层调用：更新前端上报的工作台状态快照。"""
     global _ui_state
-    _ui_state = dict(state)
-    _ui_state["updated_at"] = time.time()
+    new_state = dict(state)
+    new_state["updated_at"] = time.time()
+    _ui_state = new_state
 
 
 def get_ui_state_snapshot() -> Dict[str, Any]:
@@ -43,21 +57,19 @@ def get_ui_state_snapshot() -> Dict[str, Any]:
 
 def resolve_ask(ask_id: str, answer: str) -> bool:
     """web 层调用：以用户回答解决挂起的提问，返回是否命中。"""
-    future = _pending_asks.pop(ask_id, None)
-    if future is None or future.done():
+    pending = _pending_asks.pop(ask_id, None)
+    if pending is None or pending.future.done():
         return False
-    future.set_result(answer)
+    pending.future.set_result(answer)
     return True
 
 
 def _cleanup_stale_asks() -> None:
-    """清理超龄仍未解决的提问。"""
+    """清理超龄仍未解决的提问（调用方需持有 _state_lock）。"""
     now = time.time()
-    # future 附带创建时间属性
-    for ask_id, future in list(_pending_asks.items()):
-        created = getattr(future, "_created_at", now)
-        if now - created > _ASK_MAX_AGE and not future.done():
-            future.cancel()
+    for ask_id, pending in list(_pending_asks.items()):
+        if now - pending.created_at > _ASK_MAX_AGE and not pending.future.done():
+            pending.future.cancel()
             _pending_asks.pop(ask_id, None)
 
 
@@ -101,12 +113,12 @@ async def ui_ask(question: str, options: Optional[List[str]] = None, timeout: in
         timeout: 等待回答的超时秒数（最大 600）
     """
     try:
-        _cleanup_stale_asks()
-        ask_id = uuid.uuid4().hex[:12]
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[str] = loop.create_future()
-        future._created_at = time.time()  # type: ignore[attr-defined]
-        _pending_asks[ask_id] = future
+        async with _state_lock:
+            _cleanup_stale_asks()
+            ask_id = uuid.uuid4().hex[:12]
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[str] = loop.create_future()
+            _pending_asks[ask_id] = _PendingAsk(future=future, created_at=time.time())
 
         await _emit("ask", {
             "ask_id": ask_id,
@@ -118,7 +130,8 @@ async def ui_ask(question: str, options: Optional[List[str]] = None, timeout: in
             answer = await asyncio.wait_for(future, timeout=min(max(timeout, 5), 600))
             return json.dumps({"success": True, "answer": answer}, ensure_ascii=False)
         except asyncio.TimeoutError:
-            _pending_asks.pop(ask_id, None)
+            async with _state_lock:
+                _pending_asks.pop(ask_id, None)
             return json.dumps({"timeout": True, "answer": ""}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -165,8 +178,10 @@ async def ui_compose(text: str) -> str:
 async def ui_get_state() -> str:
     """获取 Web 工作台界面状态快照（当前面板、打开的文件、输入框草稿等）。"""
     try:
-        if not _ui_state:
+        async with _state_lock:
+            snapshot = dict(_ui_state)
+        if not snapshot:
             return json.dumps({"available": False, "hint": "前端尚未上报状态"}, ensure_ascii=False)
-        return json.dumps({"available": True, "state": _ui_state}, ensure_ascii=False)
+        return json.dumps({"available": True, "state": snapshot}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)

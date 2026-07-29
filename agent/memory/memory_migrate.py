@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import json
-import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +15,7 @@ from typing import Any, Dict, List
 import aiosqlite
 
 from core.log import log
+
 from .memory_types import MemoryType
 
 
@@ -67,7 +67,7 @@ async def migrate_memories_to_md(db_path: str, workspace_dir: Path) -> int:
         try:
             tags = json.loads(tags_raw) if tags_raw else []
         except (json.JSONDecodeError, TypeError):
-            pass
+            log("migrate_memories_to_md 异常已忽略", "DEBUG")
 
         grouped[mem_type].append({
             "id": mem_id,

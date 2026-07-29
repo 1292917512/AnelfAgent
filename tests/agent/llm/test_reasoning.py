@@ -7,8 +7,6 @@ clamp_effort 优先采用 litellm 模型能力标志，未知模型走家族子�
 
 from __future__ import annotations
 
-import pytest
-
 from agent.llm.reasoning import (
     CANONICAL_EFFORTS,
     _matches_bare_token,
@@ -20,7 +18,6 @@ from agent.llm.reasoning import (
     provider_specific_effort,
     to_litellm_effort,
 )
-
 
 # ------------------------------------------------------------------
 # normalize

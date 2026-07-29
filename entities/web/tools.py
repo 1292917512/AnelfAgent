@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Tuple
 
-from entities._sdk import tool, entity, entity_manifest
+from entities._sdk import entity, entity_manifest, tool
 
 entity("web", "网络工具 - 搜索引擎查询、网页正文抓取、HTTP 请求")
 entity_manifest(
@@ -40,6 +40,7 @@ _WEB_CONFIGS = {
 }
 
 from core.config import register_configs_safe  # noqa: E402
+from core.log import log
 
 register_configs_safe(_WEB_CONFIGS)
 
@@ -437,7 +438,7 @@ def _download_to_file_checked(
                 try:
                     os.remove(dest_path)
                 except OSError:
-                    pass
+                    log("_download_to_file_checked 异常已忽略", "DEBUG")
                 raise ValueError(f"文件超过大小限制 ({max_bytes // 1024 // 1024}MB)")
             return resp.status_code, str(resp.url), written
     raise ValueError(f"重定向次数过多 (上限 {max_redirects})")
@@ -545,12 +546,12 @@ def _process_raw(body: str, url: str, content_type: str, start_index: int, max_c
 def _process_html(html: str, url: str, extract_mode: str, max_chars: int, start_index: int = 0) -> str:
     """处理 HTML：提取元数据 + 预清洗 + 正文提取 + 格式转换 + 分块截断。"""
     from entities.web.content_extractor import (
+        _bs4_to_text,
+        _simple_html_to_text,
         extract_page_metadata,
         extract_readable_content,
         html_to_markdown,
         truncate_text,
-        _bs4_to_text,
-        _simple_html_to_text,
     )
 
     meta = extract_page_metadata(html, url)

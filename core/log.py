@@ -2,10 +2,15 @@
 
 import os
 import sys
+import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Deque, List, Dict, Callable, Optional, Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional
+
+if TYPE_CHECKING:
+    # Record 仅在 loguru 的 __init__.pyi 存根中定义（运行时不可导入），故仅类型检查时引入
+    from loguru import Record
 
 
 def _resolve_log_stream() -> Any:
@@ -44,16 +49,35 @@ except ImportError:
     _fallback_logger.addHandler(_stdlib_handler)
     _fallback_logger.setLevel(_stdlib_logging.DEBUG)
 
-logger = _loguru_logger  # type: ignore[assignment]
+logger = _loguru_logger
 
 level_emoji = {"DEBUG": "🔍", "INFO": "ℹ️", "WARNING": "⚠️", "ERROR": "❌", "CRITICAL": "🚨"}
+# 合法日志级别集合
+_VALID_LEVELS = frozenset(level_emoji)
+
+# stdlib 降级路径的级别映射（log() 与 set_log_level() 共用）
+import logging as _logging
+
+_STDLIB_LEVEL_MAP = {
+    "DEBUG": _logging.DEBUG, "INFO": _logging.INFO, "WARNING": _logging.WARNING,
+    "ERROR": _logging.ERROR, "CRITICAL": _logging.CRITICAL,
+}
 
 # 监听器系统
 _listeners: Dict[str, List[Callable[[Dict[str, Any]], None]]] = {}
 _all_listeners: List[Callable[[Dict[str, Any]], None]] = []
+_listeners_lock = threading.Lock()
 
 
-def format_record(record: dict) -> str:
+def _internal_debug(message: str) -> None:
+    """日志模块内部 DEBUG 输出（直接写底层 logger，避免递归调用 log()）。"""
+    if _USE_LOGURU:
+        logger.opt(depth=1).debug(message.replace("{", "{{").replace("}", "}}"))
+    else:
+        _fallback_logger.debug(message)
+
+
+def format_record(record: "Record") -> str:
     """格式化日志记录"""
     emoji = level_emoji.get(record["level"].name, "📝")
     time_str = record["time"].strftime("%H:%M:%S")
@@ -68,35 +92,37 @@ if _USE_LOGURU:
     _stream_sink_id = logger.add(_DEFAULT_LOG_STREAM, format=format_record, level="DEBUG")
 
 
-def _notify_listeners(level: str, message: str, tag: Optional[str] = None):
+def _notify_listeners(level: str, message: str, tag: Optional[str] = None) -> None:
     """通知监听器"""
     log_data = {"level": level, "message": message, "tag": tag, "timestamp": time.time()}
 
-    # 通知所有监听器（无标签过滤）
-    for listener in _all_listeners:
+    with _listeners_lock:
+        all_listeners = list(_all_listeners)
+        tag_listeners = list(_listeners.get(tag, [])) if tag else []
+
+    # 通知所有监听器（无标签过滤）与特定标签的监听器；
+    # 监听器异常记 DEBUG，不影响主程序
+    for listener in all_listeners + tag_listeners:
         try:
             listener(log_data)
-        except Exception:
-            pass  # 监听器错误不应影响主程序
-
-    # 通知特定标签的监听器
-    if tag and tag in _listeners:
-        for listener in _listeners[tag]:
-            try:
-                listener(log_data)
-            except Exception:
-                pass
+        except Exception as e:
+            _internal_debug(f"日志监听器异常: {type(e).__name__}: {e}")
 
 
-def log(message: str, level: str = "INFO", tag: Optional[str] = None):
+def log(message: str, level: str = "INFO", tag: Optional[str] = None) -> None:
     """
     统一日志函数
 
     Args:
         message: 日志消息
-        level: 日志级别
+        level: 日志级别（非法级别回退 INFO 并记 DEBUG）
         tag: 标签，用于监听器过滤
     """
+    level = level.upper()
+    if level not in _VALID_LEVELS:
+        _internal_debug(f"非法日志级别 {level!r}，已回退为 INFO")
+        level = "INFO"
+
     message = _maybe_sanitize(message)
     with_exc = level in ["ERROR", "CRITICAL"] and sys.exc_info()[0] is not None
 
@@ -104,27 +130,16 @@ def log(message: str, level: str = "INFO", tag: Optional[str] = None):
         safe = message.replace("{", "{{").replace("}", "}}").replace("<", r"\<")
         getattr(logger.opt(depth=1, exception=with_exc), level.lower())(safe)
     else:
-        import logging as _logging
-        _level_map = {"DEBUG": _logging.DEBUG, "INFO": _logging.INFO, "WARNING": _logging.WARNING,
-                      "ERROR": _logging.ERROR, "CRITICAL": _logging.CRITICAL}
         _fallback_logger.log(
-            _level_map.get(level.upper(), _logging.INFO), message, exc_info=with_exc,
+            _STDLIB_LEVEL_MAP.get(level, _logging.INFO), message, exc_info=with_exc,
         )
     _notify_listeners(level, message, tag)
 
 
-# 日志脱敏快速预检标记（命中才执行完整正则脱敏，避免每条日志都跑正则）
-_SANITIZE_HINTS = ("sk-", "bearer", "akia", "eyj", "private key", "password",
-                   "passwd", "secret", "token", "api_key", "apikey")
-
-
 def _maybe_sanitize(message: str) -> str:
-    """日志消息脱敏：快速预检命中敏感标记时执行完整脱敏。"""
+    """日志消息脱敏（sanitize_text 内部含快速预检，无敏感特征时零正则开销）。"""
     try:
-        lowered = message.lower()
-        if not any(h in lowered for h in _SANITIZE_HINTS):
-            return message
-        from core.sanitizer import sanitize_text, is_sanitize_enabled
+        from core.sanitizer import is_sanitize_enabled, sanitize_text
         if not is_sanitize_enabled():
             return message
         return sanitize_text(message)
@@ -132,42 +147,42 @@ def _maybe_sanitize(message: str) -> str:
         return message
 
 
-def add_listener(callback: Callable[[Dict[str, Any]], None], tag: Optional[str] = None):
+def add_listener(callback: Callable[[Dict[str, Any]], None], tag: Optional[str] = None) -> None:
     """
     添加日志监听器
-    
+
     Args:
         callback: 回调函数，接收日志数据字典
         tag: 标签，None 表示监听所有日志
     """
-    if tag is None:
-        _all_listeners.append(callback)
-    else:
-        if tag not in _listeners:
-            _listeners[tag] = []
-        _listeners[tag].append(callback)
+    with _listeners_lock:
+        if tag is None:
+            _all_listeners.append(callback)
+        else:
+            _listeners.setdefault(tag, []).append(callback)
 
 
-def remove_listener(callback: Callable[[Dict[str, Any]], None], tag: Optional[str] = None):
+def remove_listener(callback: Callable[[Dict[str, Any]], None], tag: Optional[str] = None) -> None:
     """
     移除日志监听器
-    
+
     Args:
         callback: 要移除的回调函数
         tag: 标签，None 表示从全局监听器中移除
     """
-    if tag is None:
-        if callback in _all_listeners:
-            _all_listeners.remove(callback)
-    else:
-        if tag in _listeners and callback in _listeners[tag]:
-            _listeners[tag].remove(callback)
-            # 清理空列表
-            if not _listeners[tag]:
-                del _listeners[tag]
+    with _listeners_lock:
+        if tag is None:
+            if callback in _all_listeners:
+                _all_listeners.remove(callback)
+        else:
+            if tag in _listeners and callback in _listeners[tag]:
+                _listeners[tag].remove(callback)
+                # 清理空列表
+                if not _listeners[tag]:
+                    del _listeners[tag]
 
 
-def set_log_level(level: str):
+def set_log_level(level: str) -> None:
     """设置日志等级"""
     global _stream_sink_id
     if _USE_LOGURU:
@@ -176,10 +191,7 @@ def set_log_level(level: str):
             logger.remove(_stream_sink_id)
         _stream_sink_id = logger.add(_DEFAULT_LOG_STREAM, format=format_record, level=level.upper())
     else:
-        import logging as _logging
-        _level_map = {"DEBUG": _logging.DEBUG, "INFO": _logging.INFO, "WARNING": _logging.WARNING,
-                      "ERROR": _logging.ERROR, "CRITICAL": _logging.CRITICAL}
-        _fallback_logger.setLevel(_level_map.get(level.upper(), _logging.INFO))
+        _fallback_logger.setLevel(_STDLIB_LEVEL_MAP.get(level.upper(), _logging.INFO))
 
 
 # ======================================================================
@@ -199,7 +211,7 @@ _FILE_PATH = "logs/anelf.log"
 _file_sink_id: Optional[int] = None
 
 
-def _file_format(record: dict) -> str:
+def _file_format(record: "Record") -> str:
     """文件日志格式（不含 emoji，便于检索）"""
     time_str = record["time"].strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     level_name = f"{record['level'].name:<8}"
@@ -256,27 +268,27 @@ def enable_file_logging() -> bool:
 
 
 # 便捷函数
-def debug(message: str, tag: Optional[str] = None):
+def debug(message: str, tag: Optional[str] = None) -> None:
     """调试日志"""
     log(message, "DEBUG", tag)
 
 
-def info(message: str, tag: Optional[str] = None):
+def info(message: str, tag: Optional[str] = None) -> None:
     """信息日志"""
     log(message, "INFO", tag)
 
 
-def warning(message: str, tag: Optional[str] = None):
+def warning(message: str, tag: Optional[str] = None) -> None:
     """警告日志"""
     log(message, "WARNING", tag)
 
 
-def error(message: str, tag: Optional[str] = None):
+def error(message: str, tag: Optional[str] = None) -> None:
     """错误日志"""
     log(message, "ERROR", tag)
 
 
-def critical(message: str, tag: Optional[str] = None):
+def critical(message: str, tag: Optional[str] = None) -> None:
     """严重错误日志"""
     log(message, "CRITICAL", tag)
 

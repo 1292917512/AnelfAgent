@@ -15,11 +15,19 @@ import agent.channel.manager as mgr
 from agent.channel.base import BaseChannel, ChannelConfig
 from agent.channel.channel_types import ChannelCapability
 from agent.channel.schemas import (
-    ChannelInfo, ChannelUser, HealthStatus, SendRequest, SendResponse,
+    ChannelInfo,
+    ChannelUser,
+    HealthStatus,
+    SendRequest,
+    SendResponse,
 )
 from agent.channel.tool_bridge import (
-    channel_tool, register_channel_tools, unregister_channel_tools,
-    get_channel_tool_info, is_channel_tool_enabled, set_channel_tool_state,
+    channel_tool,
+    get_channel_tool_info,
+    is_channel_tool_enabled,
+    register_channel_tools,
+    set_channel_tool_state,
+    unregister_channel_tools,
 )
 from core.config import ConfigManager
 from core.entity import EntityRegistry

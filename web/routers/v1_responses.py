@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from agent.llm.responses.session import get_response_session_store
+from core.log import log
 from services.responses import ResponsesService, ResponsesServiceError
 
 router = APIRouter(prefix="/responses", tags=["v1-responses"])
@@ -44,8 +45,8 @@ def _error_response(exc: ResponsesServiceError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content=exc.to_openai_error())
 
 
+# FastAPI redirect_slashes 会让带尾斜杠的 /v1/responses/ 重定向到本路由，无需重复注册
 @router.post("")
-@router.post("/")
 async def create_response(
     req: CreateResponseReq,
     request: Request,
@@ -75,7 +76,7 @@ async def create_response(
                         try:
                             await _svc.cancel(response_id)
                         except Exception:
-                            pass
+                            log("event_gen 异常已忽略", "DEBUG")
                         break
                     yield _svc.encode_sse(event)
             except ResponsesServiceError as exc:

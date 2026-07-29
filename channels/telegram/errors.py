@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 from typing import Any, Awaitable, Callable, Optional, TypeVar
 
 from core.log import log
@@ -37,7 +36,7 @@ def is_rate_limited(exc: BaseException) -> bool:
         from telegram.error import RetryAfter
         return isinstance(exc, RetryAfter)
     except ImportError:
-        pass
+        log("is_rate_limited 异常已忽略", "DEBUG")
     return "429" in str(exc) or "flood" in str(exc).lower()
 
 
@@ -48,7 +47,7 @@ def get_retry_after(exc: BaseException) -> float:
         if isinstance(exc, RetryAfter):
             return float(exc.retry_after)
     except (ImportError, AttributeError):
-        pass
+        log("get_retry_after 异常已忽略", "DEBUG")
     return 5.0
 
 
@@ -69,7 +68,7 @@ def is_chat_migrated(exc: BaseException) -> Optional[int]:
         if isinstance(exc, ChatMigrated):
             return exc.new_chat_id
     except ImportError:
-        pass
+        log("is_chat_migrated 异常已忽略", "DEBUG")
     return None
 
 

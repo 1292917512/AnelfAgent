@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from core.log import log
 from core.path import ConfigPaths
 
 _API_KEY_PREFIX = "sk-anelf-"
@@ -45,7 +46,7 @@ def save_webui_config(cfg: dict[str, Any]) -> None:
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            log("save_webui_config 异常已忽略", "DEBUG")
         raise
 
 
@@ -177,7 +178,7 @@ def verify_bearer_api_key(token: str) -> bool:
         try:
             save_webui_config(cfg)
         except Exception:
-            pass
+            log("verify_bearer_api_key 异常已忽略", "DEBUG")
     return matched
 
 

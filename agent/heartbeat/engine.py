@@ -11,20 +11,19 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.memory.memory_types import MemoryEntry, MemoryType
+from agent.task.executor import TaskExecutor
+from agent.task.executor import _clean_llm_output as _clean_llm
 from agent.task.model import TaskDefinition, TaskResult
 from agent.task.registry import TaskRegistry
-from agent.task.executor import TaskExecutor
-
 from core.log import log
 from core.trace_session import thinking_session
 
-from .config import HeartbeatConfig, ScheduleMode, get_heartbeat_config
 from . import log as hb_log
+from .config import ScheduleMode, get_heartbeat_config
 
 if TYPE_CHECKING:
     from agent.messages import EntityData
@@ -56,12 +55,6 @@ _ENTITY_ANALYSIS_PROMPT = (
 )
 
 
-def _clean_llm(text: str) -> str:
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    text = re.sub(r"</?(?:minimax|invoke|parameter)[^>]*>", "", text)
-    return text.strip()
-
-
 _EVENT_DISTILL_PROMPT = (
     "以下是一天的事件便签内容，即将超过保留期被归档删除。\n"
     "请提取其中值得长期保留的事实、事件、约定、里程碑，"
@@ -80,6 +73,9 @@ _ARCHIVE_MAX_PER_TICK = 2
 class HeartbeatEngine:
     """心跳调度引擎。"""
 
+    _MAX_TASK_FAILURES = 3  # 任务连续失败上限，达到后放弃本轮调度标记
+    _MAX_ANALYSIS_ATTEMPTS = 3  # 实体画像分析连续未执行上限，达到后放弃该实体
+
     def __init__(self, mind: "Mind") -> None:
         self.mind = mind
         self.config = get_heartbeat_config()
@@ -87,6 +83,8 @@ class HeartbeatEngine:
         self.executor = TaskExecutor(mind)
         self._total_ticks: int = 0
         self._tick_lock = asyncio.Lock()
+        self._task_failures: Dict[str, int] = {}
+        self._analysis_attempts: Dict[tuple, int] = {}
 
     @property
     def total_ticks(self) -> int:
@@ -152,13 +150,29 @@ class HeartbeatEngine:
             schedule = self.config.task_schedules[pending_schedule_idx]
 
             entity = await self._pop_analysis_entity() if pending_task.scope.value == "entity" else None
-            await self.executor.run(
-                pending_task, entity,
-                temperature=self.config.analysis_temperature,
-                model_id=schedule.model_id,
-                reasoning_effort=schedule.reasoning_effort,
-            )
-            executed.append(pending_task.name)
+            try:
+                await self.executor.run(
+                    pending_task, entity,
+                    temperature=self.config.analysis_temperature,
+                    model_id=schedule.model_id,
+                    reasoning_effort=schedule.reasoning_effort,
+                )
+            except Exception as exc:
+                # at-least-once：执行失败不更新标记，下个 tick 重试；
+                # 连续失败超过上限则放弃本轮（避免故障任务卡死调度）
+                failures = self._task_failures.get(pending_task.name, 0) + 1
+                self._task_failures[pending_task.name] = failures
+                if failures < self._MAX_TASK_FAILURES:
+                    log(f"任务 [{pending_task.name}] 执行失败（第 {failures} 次），"
+                        f"保留标记待重试: {exc}", "WARNING", tag="心跳")
+                    if dirty:
+                        self.config.save()
+                    return executed
+                log(f"任务 [{pending_task.name}] 连续 {failures} 次失败，放弃本轮: {exc}",
+                    "ERROR", tag="心跳")
+            else:
+                self._task_failures.pop(pending_task.name, None)
+                executed.append(pending_task.name)
 
             # at-least-once：先执行任务，成功后才更新标记并原子落盘；
             # 若执行中途崩溃，标记未更新，下次 tick 会重新触发
@@ -177,7 +191,10 @@ class HeartbeatEngine:
     # ------------------------------------------------------------------
 
     async def run_task(self, task_name: str) -> Optional[str]:
-        """按名称执行指定任务，返回产出内容或 None。"""
+        """按名称执行指定任务，返回产出内容或 None。
+
+        与 tick 共用同一把锁，避免手动触发与调度心跳并发执行同一任务。
+        """
         task = self.task_registry.get(task_name)
         if not task:
             log(f"任务 [{task_name}] 不存在", "WARNING", tag="心跳")
@@ -190,15 +207,20 @@ class HeartbeatEngine:
 
         # 会话生命周期由 thinking_session 管理：退出（含异常）保证发射 SESSION_END，
         # 且与并发的思维会话按执行上下文隔离，互不干扰
-        async with thinking_session({
-            "is_heartbeat": True, "is_introspection": True, "entity": "任务执行",
-        }) as session:
-            session.end["reason"] = "task_completed"
-            entity = await self._pop_analysis_entity() if task.scope.value == "entity" else None
-            result = await self.executor.run(
-                task, entity, temperature=self.config.analysis_temperature,
-            )
-            return result.content if result else None
+        async with self._tick_lock:
+            async with thinking_session({
+                "is_heartbeat": True, "is_introspection": True, "entity": "任务执行",
+            }) as session:
+                session.end["reason"] = "task_completed"
+                entity = await self._pop_analysis_entity() if task.scope.value == "entity" else None
+                try:
+                    result = await self.executor.run(
+                        task, entity, temperature=self.config.analysis_temperature,
+                    )
+                except Exception as exc:
+                    log(f"手动任务 [{task_name}] 执行失败: {exc}", "WARNING", tag="心跳")
+                    return None
+                return result.content if result else None
 
     # ------------------------------------------------------------------
     # 内置维护
@@ -257,7 +279,26 @@ class HeartbeatEngine:
 
         entity = await self._pop_analysis_entity()
         if entity:
-            await self._run_entity_analysis(entity)
+            try:
+                result = await self._run_entity_analysis(entity)
+            except Exception as exc:
+                result = None
+                log(f"实体画像分析异常: {entity.get_entity_desc()} -> {exc}", "WARNING", tag="心跳")
+            if result is None:
+                # 分析未执行（对话不足/失败）：有限次重入队，超过上限放弃并显式记录
+                key = (entity.group_id or 0, entity.uid or 0)
+                attempts = self._analysis_attempts.get(key, 0) + 1
+                if attempts < self._MAX_ANALYSIS_ATTEMPTS:
+                    self._analysis_attempts[key] = attempts
+                    self.mind.pfc.requeue_analysis(key[0], key[1])
+                    log(f"实体画像分析推迟重试（第 {attempts} 次）: {entity.get_entity_desc()}",
+                        "DEBUG", tag="心跳")
+                else:
+                    self._analysis_attempts.pop(key, None)
+                    log(f"实体画像分析连续 {attempts} 次未执行，放弃: {entity.get_entity_desc()}",
+                        "WARNING", tag="心跳")
+            else:
+                self._analysis_attempts.pop((entity.group_id or 0, entity.uid or 0), None)
 
         # 上下文提供者 on_tick 钩子（实体自驱维护周期）
         try:
@@ -413,9 +454,12 @@ class HeartbeatEngine:
 
         prompt = _ENTITY_ANALYSIS_PROMPT.replace("{entity}", desc)
 
-        user_query_entity = MessageAssistant(uid=entity.uid or 0)
-        user_conv = await self.mind.get_conversation(user_query_entity)
-        combined = conversation + user_conv
+        # 仅用户实体需要额外拉取其私聊对话；群组实体无 uid，避免对不存在的 user 0 查询
+        combined = conversation
+        if entity.uid:
+            user_query_entity = MessageAssistant(uid=entity.uid)
+            user_conv = await self.mind.get_conversation(user_query_entity)
+            combined = conversation + user_conv
 
         alias_convs = await self._collect_alias_conversations(entity)
         if alias_convs:
@@ -479,7 +523,8 @@ class HeartbeatEngine:
     async def _pop_analysis_entity(self) -> Optional["EntityData"]:
         try:
             return await self.mind.pfc.pop_analysis_task()
-        except Exception:
+        except Exception as exc:
+            log(f"弹出画像分析实体失败: {exc}", "WARNING", tag="心跳")
             return None
 
     async def _collect_alias_conversations(self, entity: "EntityData") -> List[Dict[str, Any]]:
@@ -510,20 +555,31 @@ class HeartbeatEngine:
             log(f"alias 对话收集失败: {exc}", "WARNING", tag="心跳")
             return []
 
-    @staticmethod
-    def _is_scheduled_now(times: List[str], last_run_date: str) -> bool:
-        """检查当前时间是否匹配调度时间（且今天未执行过）。"""
+    def _is_scheduled_now(self, times: List[str], last_run_date: str) -> bool:
+        """检查当前时间是否匹配调度时间（且今天未执行过）。
+
+        支持跨午夜补触发：调度时间在昨日深夜且距今不超过一个 tick 间隔时
+        视为到期，避免 tick 恰好跨过（如 23:50 → 次日 00:05）导致当天任务错过。
+        """
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
         if last_run_date == today:
             return False
-        current_hm = now.strftime("%H:%M")
+        current_minutes = now.hour * 60 + now.minute
+        interval_minutes = max(1, int(getattr(self.config, "interval_seconds", 60)) // 60)
         for t in times:
             try:
-                if current_hm >= t:
-                    return True
+                hh, mm = str(t).strip().split(":", 1)
+                target = int(hh) * 60 + int(mm)
+                if not (0 <= target < 1440):
+                    continue
             except (ValueError, TypeError):
                 continue
+            if current_minutes >= target:
+                return True
+            # 跨午夜窗口：目标在昨日深夜，距今不超过一个 tick 间隔
+            if (1440 - target) + current_minutes <= interval_minutes:
+                return True
         return False
 
     def get_status(self) -> Dict[str, Any]:

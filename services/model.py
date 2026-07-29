@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from services._runtime import get_runtime
+
+if TYPE_CHECKING:
+    from agent.llm.llm_manager import LLMManager
 
 
 class ModelService:
     _API_KEY_MASK = "****"
 
     @staticmethod
-    def _manager() -> Any:
+    def _manager() -> "LLMManager":
         from agent.llm import get_llm_manager
         return get_llm_manager()
 
@@ -160,8 +163,33 @@ class ModelService:
     # 连接测试 / 能力探测
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _validate_remote_url(base_url: str, has_credentials: bool) -> None:
+        """校验远程 URL：仅允许 http/https；携带凭据时禁止云元数据等高危目标。
+
+        防止把已保存的 API Key 随请求发送到链接本地/元数据地址（凭据外泄）。
+        私网/回环地址本身允许（Ollama 等本地部署场景），但会记 WARNING。
+        """
+        from urllib.parse import urlparse
+
+        parsed = urlparse(base_url.strip())
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError(f"非法的 base_url: {base_url!r}（仅支持 http/https）")
+        host = parsed.hostname.lower()
+        if has_credentials:
+            blocked = ("169.254.169.254", "metadata.google.internal", "100.100.100.200")
+            if host in blocked or host.endswith(".internal"):
+                raise ValueError(f"禁止携带凭据访问元数据地址: {host}")
+            if host not in ("127.0.0.1", "localhost", "::1") and (
+                host.startswith(("10.", "192.168.", "169.254."))
+                or any(host.startswith(f"172.{i}.") for i in range(16, 32))
+            ):
+                from core.log import log
+                log(f"携带凭据访问私网地址 {host}，请确认目标可信", "WARNING")
+
     async def test_connection(self, base_url: str, api_key: str) -> str:
         import httpx
+        self._validate_remote_url(base_url, bool(api_key))
         headers: Dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -189,6 +217,7 @@ class ModelService:
         effective_url = base_url.strip() or self._DEFAULT_BASE_URLS.get(api_type, "")
         if not effective_url:
             return []
+        self._validate_remote_url(effective_url, bool(api_key))
 
         headers: Dict[str, str] = {}
         if api_key:

@@ -167,7 +167,7 @@ function getSubtitle(d: TraceNodeData, t: TFunction): string | null {
       const stepCount = data.step_count as number | undefined;
       const goal = data.goal as string | undefined;
       if (goal) return goal.slice(0, 60) + (goal.length > 60 ? "..." : "");
-      if (stepCount != null) return t("planStepsCount", { count: stepCount, defaultValue: `${stepCount} 步` });
+      if (stepCount != null) return t("planStepsCount", { count: stepCount });
       return null;
     }
     case "plan_step": {

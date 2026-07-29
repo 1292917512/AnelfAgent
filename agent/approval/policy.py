@@ -92,8 +92,8 @@ class ApprovalPolicy(BaseModel):
 _ARG_KEYS: Dict[str, tuple] = {
     "run_shell_command": ("command",),
     "python_exec": ("code",),
-    "read_file": ("path",),
-    "write_file": ("path",),
+    "read_file": ("file_path",),
+    "write_file": ("file_path",),
     "edit_file": ("file_path",),
     "append_file": ("path",),
     "delete_file": ("path",),
@@ -178,7 +178,7 @@ def matchable_arg_candidates(tool_name: str, tool_args: Optional[Dict[str, Any]]
             if rel != value:
                 candidates.append(rel)
         except Exception:
-            pass
+            log("matchable_arg_candidates 异常已忽略", "DEBUG")
     return candidates
 
 

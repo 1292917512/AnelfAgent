@@ -7,8 +7,8 @@ import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ModelConfigCard } from "@/pages/memory/cognee/ModelConfigCard";
 import { CogneeGraphCard } from "@/pages/memory/cognee/CogneeGraphCard";
-import { memoryApi } from "@/lib/api";
-import type { CogneeResolvedInfo } from "@/lib/types";
+import { memoryApi, systemApi } from "@/lib/api";
+import type { CogneeResolvedInfo, ConfigValues } from "@/lib/types";
 
 function ResolvedLine({ label, info }: { label: string; info?: CogneeResolvedInfo }) {
   const { t } = useTranslation("memory");
@@ -58,7 +58,17 @@ export function CogneePanel() {
   };
   const retryMutation = useMutation({ mutationFn: () => memoryApi.cognee.retry(), onSuccess: invalidate });
   const backfillMutation = useMutation({ mutationFn: () => memoryApi.cognee.backfill(0, false), onSuccess: invalidate });
-  const rebuildMutation = useMutation({ mutationFn: () => memoryApi.cognee.rebuild(), onSuccess: invalidate });
+  const rebuildMutation = useMutation({
+    mutationFn: () => memoryApi.cognee.rebuild(),
+    onSuccess: async (resp) => {
+      invalidate();
+      // 重建后 cognee 引擎句柄已失效，必须重启进程才能干净恢复
+      if ((resp?.data as { restart_required?: boolean } | undefined)?.restart_required &&
+          window.confirm(t("cognee.rebuildRestartConfirm"))) {
+        await systemApi.restart();
+      }
+    },
+  });
   const improveMutation = useMutation({
     mutationFn: (name: string) => memoryApi.cognee.improve(name),
     onSuccess: invalidate,
@@ -188,7 +198,7 @@ export function CogneePanel() {
         subtitle={t("cognee.generalSubtitle")}
         fields={generalFields}
         queryKey="cogneeConfig"
-        fetchFn={() => memoryApi.cognee.getConfig().then((r) => r.data as unknown as Record<string, unknown>)}
+        fetchFn={() => memoryApi.cognee.getConfig().then((r) => r.data as unknown as ConfigValues)}
         saveFn={(values) => memoryApi.cognee.saveConfig(values as Parameters<typeof memoryApi.cognee.saveConfig>[0])}
         extraInvalidateKeys={["cogneeStatus", "memoryHealth"]}
         note={t("cognee.hotApplyNote")}

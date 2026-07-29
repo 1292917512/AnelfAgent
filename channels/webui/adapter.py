@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import time
 from typing import Any, Set
 
-from pydantic import Field
-
 from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
 from agent.channel.schemas import (
-    AdapterChannel, ChannelType, SendRequest, SendResponse, SendSegment,
-    ChannelInfo, ChannelUser, ChannelUserRole, HealthStatus,
+    AdapterChannel,
+    ChannelInfo,
+    ChannelType,
+    ChannelUser,
+    ChannelUserRole,
+    HealthStatus,
+    SendRequest,
+    SendResponse,
 )
-from core.log import log
-
-
 
 
 class WebUIConfig(ChannelConfig):
@@ -69,21 +71,25 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     # ------------------------------------------------------------------
 
     def _subscribe_stream_events(self) -> None:
-        from core.event_bus import event_bus, EVENT_AFTER_REPLY
+        from core.event_bus import EVENT_AFTER_REPLY, event_bus
         from core.stream_events import EVENT_ASSISTANT_DELTA
         event_bus.on(EVENT_ASSISTANT_DELTA, self._on_assistant_delta, owner="channel:webui")
         event_bus.on("thinking_tool_start", self._on_tool_start, owner="channel:webui")
         event_bus.on("thinking_tool_end", self._on_tool_end, owner="channel:webui")
         event_bus.on(EVENT_AFTER_REPLY, self._on_after_reply, owner="channel:webui")
-        from core.stream_events import EVENT_FILE_DIFF, EVENT_CONTEXT_USAGE
+        from core.stream_events import EVENT_CONTEXT_USAGE, EVENT_FILE_DIFF
         event_bus.on(EVENT_FILE_DIFF, self._on_file_diff, owner="channel:webui")
         event_bus.on(EVENT_CONTEXT_USAGE, self._on_context_usage, owner="channel:webui")
         # Plan 模式 / 子代理：直接广播到前端（PlanPanel / PlanCard / DelegationCard）。
         # 事件名与 SSE 帧名一致，表驱动注册（handler 统一为 _broadcast_scoped 转发）。
         from core.event_bus import (
-            EVENT_PLAN_SUBMITTED, EVENT_PLAN_STEP_UPDATED,
-            EVENT_PLAN_STATUS_CHANGED, EVENT_PLAN_CANCELLED,
-            EVENT_DELEGATION_STARTED, EVENT_DELEGATION_PROGRESS, EVENT_DELEGATION_RESOLVED,
+            EVENT_DELEGATION_PROGRESS,
+            EVENT_DELEGATION_RESOLVED,
+            EVENT_DELEGATION_STARTED,
+            EVENT_PLAN_CANCELLED,
+            EVENT_PLAN_STATUS_CHANGED,
+            EVENT_PLAN_STEP_UPDATED,
+            EVENT_PLAN_SUBMITTED,
         )
         for evt in (
             EVENT_PLAN_SUBMITTED, EVENT_PLAN_STEP_UPDATED,
@@ -260,24 +266,9 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         )
 
     async def forward_message(self, request: SendRequest) -> SendResponse:
-        """统一发送入口。"""
-        try:
-            for seg in request.segments:
-                seg_type = seg.type.value
-                if seg_type == "text":
-                    self._broadcast("reply", {
-                        "content": seg.content,
-                        "media_type": "text",
-                    })
-                elif seg_type in ("image", "voice", "audio", "video", "file"):
-                    self._broadcast("media", {
-                        "media_type": seg_type,
-                        "url": seg.file_path or seg.content,
-                        "caption": seg.caption,
-                    })
-            return SendResponse(success=True, message_id=f"webui-{int(time.time() * 1000)}")
-        except Exception as exc:
-            return SendResponse(success=False, error=str(exc))
+        """统一发送入口（段分发模板见 BaseChannel._forward_via_segment_map，
+        各 send_* 方法内部即 SSE 广播）。"""
+        return await self._forward_via_segment_map(request)
 
     async def get_self_info(self) -> ChannelUser:
         return ChannelUser(
@@ -288,13 +279,6 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             is_bot=True,
         )
 
-    async def get_user_info(self, user_id: str, channel_id: str) -> ChannelUser:
-        return ChannelUser(
-            platform=self.channel_id,
-            user_id=user_id,
-            user_name=user_id,
-        )
-
     async def get_channel_info(self, channel_id: str) -> ChannelInfo:
         return ChannelInfo(
             channel_id=channel_id,
@@ -303,9 +287,10 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         )
 
     async def health_check(self) -> HealthStatus:
-        """WebUI 健康探针：检查 broadcast 函数可达。"""
+        """WebUI 健康探针：检查 broadcast 路由模块可达。"""
         try:
-            from web.routers.chat import broadcast_chat_event
+            if importlib.util.find_spec("web.routers.chat") is None:
+                raise ImportError("web.routers.chat 模块不存在")
             return HealthStatus(
                 healthy=True,
                 detail="WebUI broadcast channel reachable",

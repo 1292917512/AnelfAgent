@@ -2,104 +2,12 @@ import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { tagsApi } from "@/lib/api";
-import { cn } from "@/lib/utils";
 import type { UnifiedTag } from "@/lib/types";
 import { PageContainer } from "@/components/common/PageContainer";
-import { Button, ConfirmDialog, Input, LoadingBlock, Modal, Textarea } from "@/components/ui";
-import { Tag, Plus, Trash2, Lock, Search, MessageSquare, Wrench } from "lucide-react";
-
-function SourceBadge({ source, t }: { source: "message" | "tool"; t: (k: string) => string }) {
-  if (source === "message") {
-    return (
-      <span
-        title={t("sourceMessageTooltip")}
-        className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full
-          bg-accent-subtle text-info border border-info/20 cursor-help"
-      >
-        <MessageSquare size={8} />
-        {t("sourceMessage")}
-      </span>
-    );
-  }
-  return (
-    <span
-      title={t("sourceToolTooltip")}
-      className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full
-        bg-secondary text-muted border border-border cursor-help"
-    >
-      <Wrench size={8} />
-      {t("sourceTool")}
-    </span>
-  );
-}
-
-function TagCard({
-  tag,
-  onDelete,
-  t,
-}: {
-  tag: UnifiedTag;
-  onDelete?: () => void;
-  t: (k: string, opts?: Record<string, unknown>) => string;
-}) {
-  return (
-    <div
-      className={cn(
-        "group flex flex-col gap-1.5 p-3 rounded-md border transition-colors",
-        tag.builtin
-          ? "border-border bg-secondary hover:border-border-strong"
-          : "border-accent/30 bg-accent/5 hover:border-accent/50",
-      )}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <code className="text-xs font-mono font-semibold text-heading">
-              [{tag.name}]
-            </code>
-            {tag.builtin ? (
-              <span
-                title={t("builtinTooltip")}
-                className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full
-                  bg-secondary text-muted border border-border cursor-help"
-              >
-                <Lock size={8} />
-                {t("builtin")}
-              </span>
-            ) : (
-              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-accent/10 text-accent border border-accent/20">
-                {t("custom")}
-              </span>
-            )}
-            {tag.sources
-              .filter((s) => s !== "custom")
-              .map((s) => (
-                <SourceBadge key={s} source={s as "message" | "tool"} t={t} />
-              ))}
-          </div>
-          {tag.description ? (
-            <p className="text-[11px] text-muted mt-1 leading-relaxed">
-              {tag.description}
-            </p>
-          ) : (
-            <p className="text-[11px] text-muted/50 mt-1 italic">—</p>
-          )}
-        </div>
-        {/* 删除按钮（触屏常显） */}
-        {!tag.builtin && onDelete && (
-          <button
-            onClick={onDelete}
-            className="opacity-100 md:opacity-0 md:group-hover:opacity-100 flex-shrink-0 p-1 rounded
-              text-muted hover:text-danger hover:bg-danger/10 transition-all"
-            title={t("common:delete")}
-          >
-            <Trash2 size={13} />
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
+import { Button, ConfirmDialog, Input, LoadingBlock } from "@/components/ui";
+import { Tag, Plus, Lock, Search } from "lucide-react";
+import { TagCard } from "./tags/TagCard";
+import { CreateTagModal } from "./tags/CreateTagModal";
 
 export default function Tags() {
   const { t } = useTranslation(["tags", "common"]);
@@ -248,65 +156,14 @@ export default function Tags() {
         </div>
       )}
 
-      {/* 创建弹窗 */}
-      <Modal
+      <CreateTagModal
         open={showCreate}
         onClose={closeCreate}
-        width="max-w-md"
-        title={
-          <span className="flex items-center gap-2">
-            <Plus size={18} className="text-accent" />
-            {t("createTagTitle")}
-          </span>
-        }
-        footer={
-          <>
-            <Button variant="secondary" size="sm" onClick={closeCreate}>
-              {t("common:cancel")}
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => createMut.mutate()}
-              disabled={!form.name.trim()}
-              loading={createMut.isPending}
-            >
-              {createMut.isPending ? t("common:saving") : t("common:create")}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <div>
-            <label className="block text-xs font-medium text-muted mb-1">{t("tagName")}</label>
-            <Input
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder={t("tagNamePlaceholder")}
-              className="font-mono"
-            />
-            <p className="text-[10px] text-muted mt-1">{t("tagNameHint")}</p>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-muted mb-1">{t("tagDescription")}</label>
-            <Textarea
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-              placeholder={t("tagDescriptionPlaceholder")}
-              rows={3}
-              className="resize-none"
-            />
-          </div>
-          {form.name && (
-            <div className="p-2.5 rounded-md bg-secondary border border-border">
-              <p className="text-[10px] text-muted mb-1">{t("preview")}</p>
-              <code className="text-xs font-mono text-heading">
-                [{form.name}:{t("previewValue")}]
-              </code>
-            </div>
-          )}
-        </div>
-      </Modal>
+        form={form}
+        setForm={setForm}
+        pending={createMut.isPending}
+        onSubmit={() => createMut.mutate()}
+      />
 
       {/* 删除确认 */}
       <ConfirmDialog

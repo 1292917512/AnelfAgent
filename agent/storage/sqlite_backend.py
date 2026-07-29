@@ -74,7 +74,7 @@ class SqliteBackend:
                     try:
                         await self._db.close()
                     except Exception:
-                        pass
+                        log("_get_db 异常已忽略", "DEBUG")
                     self._db = None
 
             path = Path(self.db_path)
@@ -149,7 +149,7 @@ class SqliteBackend:
             try:
                 await self._db.close()
             except Exception:
-                pass
+                log("close 异常已忽略", "DEBUG")
             self._db = None
 
     async def _ensure_init(self) -> None:
@@ -394,6 +394,42 @@ class SqliteBackend:
         rows = await cursor.fetchall()
         return [{"scope_type": r[0], "scope_id": r[1], "count": r[2]} for r in rows]
 
+    async def list_user_chat_sessions(self, user_id: str) -> list[dict]:
+        """列出某用户的全部多会话（scope_id 为 user_id 或 user_id#chat_id）。
+
+        返回 [{scope_id, last_ts, message_count, last_user_content}]；
+        各会话标题取最近一条用户消息，整体两条 SQL 批量完成，避免逐会话查询。
+        """
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT scope_id, MAX(ts_ns) AS last_ts, COUNT(*) AS cnt "
+            "FROM conversation_messages "
+            "WHERE scope_type='user' AND (scope_id=? OR scope_id LIKE ?) "
+            "GROUP BY scope_id ORDER BY last_ts DESC",
+            (user_id, f"{user_id}#%"),
+        )
+        rows = await cursor.fetchall()
+        title_cursor = await db.execute(
+            "SELECT m.scope_id, m.content FROM conversation_messages m "
+            "JOIN ("
+            "  SELECT scope_id, MAX(ts_ns) AS max_ts FROM conversation_messages "
+            "  WHERE scope_type='user' AND role='user' AND (scope_id=? OR scope_id LIKE ?) "
+            "  GROUP BY scope_id"
+            ") t ON m.scope_id = t.scope_id AND m.ts_ns = t.max_ts "
+            "WHERE m.scope_type='user' AND m.role='user'",
+            (user_id, f"{user_id}#%"),
+        )
+        titles = {r[0]: r[1] for r in await title_cursor.fetchall()}
+        return [
+            {
+                "scope_id": r[0],
+                "last_ts": r[1],
+                "message_count": r[2],
+                "last_user_content": titles.get(r[0]),
+            }
+            for r in rows
+        ]
+
     async def fetch_conversation_with_id(
         self, *, scope_type: str, scope_id: str, limit: int = 100
     ) -> list[dict]:
@@ -633,7 +669,7 @@ class SqliteBackend:
             return 0
 
         count = 0
-        for row, vec in zip(rows, vecs):
+        for row, vec in zip(rows, vecs, strict=False):
             if not vec:
                 continue
             await db.execute(

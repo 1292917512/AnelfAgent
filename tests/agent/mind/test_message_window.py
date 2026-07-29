@@ -22,7 +22,6 @@ from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageDomain, StorageRouter
 from core.tags import format_time, get_time_tag
 
-
 # ------------------------------------------------------------------
 # 到达时间戳与时间标签
 # ------------------------------------------------------------------
@@ -374,8 +373,8 @@ class TestThinkLoopMerge:
 class TestActivateMediaTools:
     def test_activates_by_image_and_segment_type(self) -> None:
         """按图片与媒体段类型激活对应标签工具（recognize_image / voice_to_text）。"""
-        from core.entity import EntityRegistry
         from agent.mind.prefrontal_cortex import PrefrontalCortex
+        from core.entity import EntityRegistry
 
         EntityRegistry.register_tool(
             name="test_recognize_image_x", func=lambda: "s",

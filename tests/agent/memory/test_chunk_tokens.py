@@ -35,7 +35,7 @@ def test_overlap_lines_carried_to_next_chunk() -> None:
     lines = [f"unique-marker-{i} " + "x " * 20 for i in range(30)]
     chunks = chunk_markdown("\n".join(lines), chunk_tokens=80, overlap_tokens=30)
     assert len(chunks) > 1
-    for prev, nxt in zip(chunks, chunks[1:]):
+    for prev, nxt in zip(chunks, chunks[1:], strict=False):
         prev_lines = prev["text"].split("\n")
         nxt_first = nxt["text"].split("\n")[0]
         # 下一块开头来自上一块尾部（重叠保留）

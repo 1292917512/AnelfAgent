@@ -15,10 +15,9 @@ import json
 import os
 import shlex
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from entities._sdk import tool, entity
+from entities._sdk import coerce_bool_arg, entity, tool
 from entities.filesystem import edit_utils, file_state
 
 entity("os", "操作系统 - 文件读写、目录管理、Shell 命令、Python 执行")
@@ -154,19 +153,19 @@ def _add_line_numbers(content: str, start_line: int = 1) -> str:
 
 
 @tool(name="read_file", group="os", tags=["media:file"], concurrency_safe=True, description=_READ_FILE_PROMPT)
-def read_file(path: str, offset: int = 0, limit: int = 0, encoding: str = "utf-8") -> str:
+def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "utf-8") -> str:
     """读取文本文件内容，带行号输出（格式: 行号→内容）。大文件请用 offset/limit 分段读取。
 
     Args:
-        path: 文件路径（相对于 workspace 或绝对路径）
+        file_path: 文件路径（相对于 workspace 或绝对路径）
         offset: 起始行号（从 1 开始），0 表示从头读取
         limit: 最多读取行数，0 表示读取到上限（2000 行）
         encoding: 文件编码，默认 utf-8
     """
     try:
-        fp = _safe_path(path)
+        fp = _safe_path(file_path)
         if not os.path.isfile(fp):
-            return json.dumps({"error": f"文件不存在: {path}", "resolved": fp}, ensure_ascii=False)
+            return json.dumps({"error": f"文件不存在: {file_path}", "resolved": fp}, ensure_ascii=False)
         # Binary files: return metadata instead of trying to decode
         bin_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico",
                     ".mp3", ".wav", ".ogg", ".flac", ".m4a", ".opus", ".amr",
@@ -267,16 +266,16 @@ def read_file(path: str, offset: int = 0, limit: int = 0, encoding: str = "utf-8
 
 
 @tool(name="write_file", group="os", description=_WRITE_FILE_PROMPT)
-def write_file(path: str, content: str) -> str:
+def write_file(file_path: str, content: str) -> str:
     """写入文件（覆盖）。目录不存在时自动创建。修改已有文件前必须先用 read_file 读取；
     对已有文件的局部修改请优先使用 edit_file（只发送差异部分）。
 
     Args:
-        path: 文件路径（相对于 workspace）
+        file_path: 文件路径（相对于 workspace）
         content: 要写入的文本内容
     """
     try:
-        fp = _safe_path(path)
+        fp = _safe_path(file_path)
         if os.path.exists(fp):
             ok, message = file_state.check_writable(fp)
             if not ok:
@@ -312,8 +311,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
         replace_all: 是否替换所有出现处，默认 False
     """
     # 容忍模型传入字符串形式的布尔值（对齐 Claude Code semanticBoolean）
-    if isinstance(replace_all, str):
-        replace_all = replace_all.strip().lower() in ("true", "1", "yes")
+    replace_all = coerce_bool_arg(replace_all, False)
     try:
         fp = _safe_path(file_path)
     except Exception as e:
@@ -402,6 +400,7 @@ def _emit_file_diff(fp: str, old_content: str, new_content: str,
     """编辑成功后发出 diff 展示事件（过程性，不进模型上下文；webui 通道订阅）。"""
     try:
         import asyncio
+
         from core.event_bus import event_bus
         from core.stream_events import EVENT_FILE_DIFF
         from entities._sdk import get_current_scope
@@ -504,7 +503,7 @@ def list_directory(path: str = ".", recursive: bool = False, max_depth: int = 3)
                 try:
                     entry["size"] = os.path.getsize(full)
                 except OSError:
-                    pass
+                    log("list_directory 异常已忽略", "DEBUG")
             items.append(entry)
         return json.dumps({"path": fp, "count": len(items), "items": items[:200]}, ensure_ascii=False)
     except Exception as e:
@@ -529,10 +528,10 @@ def _build_tree(dir_path: str, max_depth: int, depth: int) -> List[Dict[str, Any
                 try:
                     entry["size"] = os.path.getsize(full)
                 except OSError:
-                    pass
+                    log("_build_tree 异常已忽略", "DEBUG")
             items.append(entry)
     except PermissionError:
-        pass
+        log("_build_tree 异常已忽略", "DEBUG")
     return items
 
 
@@ -555,7 +554,7 @@ def file_info(path: str) -> str:
                 info["size"] = stat.st_size
                 info["modified"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
             except OSError:
-                pass
+                log("file_info 异常已忽略", "DEBUG")
         return json.dumps(info, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -668,7 +667,7 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
                         entry["size"] = os.path.getsize(match)
                         entry["mtime"] = os.path.getmtime(match)
                     except OSError:
-                        pass
+                        log("search_files 异常已忽略", "DEBUG")
                 matches.append(entry)
             # 按修改时间倒序（最近修改在前，对齐 Claude Code Glob 语义）
             matches.sort(key=lambda e: e.get("mtime", 0), reverse=True)
@@ -758,8 +757,7 @@ def run_shell_command(command: str, timeout: int = 120, run_in_background: bool 
             和输出文件路径，完成后系统自动通知；期间可用 read_file 查看进度
     """
     # 容忍模型传入字符串形式的布尔值
-    if isinstance(run_in_background, str):
-        run_in_background = run_in_background.strip().lower() in ("true", "1", "yes")
+    run_in_background = coerce_bool_arg(run_in_background, False)
     try:
         from core.command import run_command
         from entities.filesystem import shell_state
@@ -876,4 +874,5 @@ def python_exec(code: str, timeout: int = 30) -> str:
         return json.dumps({"error": f"{type(e).__name__}: {e}"}, ensure_ascii=False)
 
 # 挂载同实体的 notebook 工具（discover_entities 只导入 tools.py）
+from core.log import log
 from entities.filesystem import notebook as _notebook  # noqa: F401,E402

@@ -31,7 +31,7 @@ export function OverviewPanel() {
   const pendingVectors = health?.embedding_pending?.total || 0;
   const domains = health?.embedding_domains || {};
   const domainValue = (d?: { model?: string; dims?: number | null }) =>
-    d?.model ? `${d.model}${d.dims ? ` (${d.dims}维)` : ""}` : t("common:unavailable");
+    d?.model ? `${d.model}${d.dims ? ` (${t("dimsValue", { dims: d.dims })})` : ""}` : t("common:unavailable");
   const cognee = health?.cognee;
   const cogneeAvailability = cognee?.availability;
   const cogneeSync = cognee?.sync;

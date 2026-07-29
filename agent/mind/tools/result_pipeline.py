@@ -14,14 +14,13 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
-from core.log import log
-
 from agent.mind.result_budget import (
     PINNED_TOOLS,
     ResultBudget,
     budget_for_context_window,
     resolve_result_limit,
 )
+from core.log import log
 
 if TYPE_CHECKING:
     from agent.mind.guardrails import GuardrailController
@@ -135,7 +134,7 @@ class ToolResultPipeline:
                     log("工具结果已脱敏", "DEBUG", tag="安全")
                 return sanitized
         except Exception:
-            pass
+            log("_sanitize 异常已忽略", "DEBUG")
         return output
 
     # ------------------------------------------------------------------
@@ -163,7 +162,7 @@ class ToolResultPipeline:
                     f"{output}"
                 )
         except Exception:
-            pass
+            log("_threat_scan 异常已忽略", "DEBUG")
         return output
 
     # ------------------------------------------------------------------
@@ -282,7 +281,7 @@ def _trim_json_value(value: Any) -> Any:
                     f"{nested_text[-tail_len:]}"
                 )
             except (json.JSONDecodeError, TypeError):
-                pass
+                log("_trim_json_value 异常已忽略", "DEBUG")
 
         head_len = int(_TOOL_JSON_STR_MAX_CHARS * _TOOL_RESULT_HEAD_RATIO)
         tail_len = _TOOL_JSON_STR_MAX_CHARS - head_len

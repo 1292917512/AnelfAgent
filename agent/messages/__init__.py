@@ -1,5 +1,6 @@
 """Messages：统一消息模型（平台消息、内部事件、LLM messages）。"""
 
+from .characters import CharacterAgent, EntityData
 from .everything import (
     CharType,
     Everything,
@@ -17,7 +18,6 @@ from .presets import (
     MessageToolResult,
     MessageUser,
 )
-from .characters import CharacterAgent, EntityData
 
 __all__ = [
     "CharType",

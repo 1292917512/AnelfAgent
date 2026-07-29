@@ -8,16 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
-import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from core.log import log
-from entities._sdk import deferred_tool, activate_group
+from entities._sdk import activate_group, deferred_tool
+
 from .memory_utils import list_workspace_md_files
 
 _workspace_dir: Optional[Path] = None
@@ -51,6 +50,11 @@ def load_notes_content() -> str:
     if p.exists():
         return p.read_text(encoding="utf-8")
     return ""
+
+
+def save_notes_content(content: str) -> None:
+    """覆盖写入主便签文件内容（原子写入，``_atomic_write`` 的公开入口）。"""
+    _atomic_write(get_notes_path(), content)
 
 
 # ------------------------------------------------------------------
@@ -208,21 +212,10 @@ def _smart_truncate_notes(content: str, max_chars: int) -> str:
 
 
 def _atomic_write(target: Path, content: str) -> None:
-    """原子写入文件：先写临时文件，再 os.replace 避免并发写入导致数据损坏。"""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(target.parent), suffix=".tmp", prefix=".notes_"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_path, str(target))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    """原子写入文件并调度该文件的 chunks 增量重新索引。"""
+    from core.file_utils import atomic_write_text
+
+    atomic_write_text(target, content)
     _schedule_file_resync(target)
 
 
@@ -237,7 +230,7 @@ def _schedule_file_resync(file_path: Path) -> None:
 
 
 async def _resync_single_file(file_path: Path) -> None:
-    """对单个 MD 文件重新生成 chunks 索引。"""
+    """对单个 MD 文件重新生成 chunks 索引（仅该文件，不做全工作区扫描）。"""
     try:
         from services._runtime import require_runtime
         rt = require_runtime()
@@ -246,8 +239,17 @@ async def _resync_single_file(file_path: Path) -> None:
         if not store:
             return
         ws = get_workspace_dir()
-        from agent.memory.memory_sync import sync_files
-        await sync_files(store, embedder, ws)
+        from agent.memory.memory_sync import index_single_file
+        try:
+            rel_path = file_path.relative_to(ws).as_posix()
+        except ValueError:
+            rel_path = file_path.as_posix()
+        indexed = {f["path"]: f for f in await store.list_files()}
+        existing = indexed.get(rel_path)
+        await index_single_file(
+            store, embedder, file_path, rel_path,
+            known_hash=existing["hash"] if existing else None,
+        )
     except Exception as e:
         from core.log import log as _log
         _log(f"文件索引增量同步失败: {e}", "DEBUG", tag="思维")
@@ -284,7 +286,7 @@ def _validate_md_path(file_path: str) -> Path:
     """验证文件路径在工作区内且为 .md 文件，返回解析后的绝对路径。"""
     ws = get_workspace_dir()
     target = (ws / file_path).resolve()
-    if not str(target).startswith(str(ws.resolve())):
+    if not target.is_relative_to(ws.resolve()):
         raise ValueError("路径不在工作区内")
     if target.suffix != ".md":
         raise ValueError("只允许操作 .md 文件")
@@ -292,10 +294,13 @@ def _validate_md_path(file_path: str) -> Path:
 
 
 def delete_memory_file(file_path: str) -> bool:
-    """删除指定 MD 便签文件，返回是否成功。不允许删除 data/ 目录下的数据库文件。"""
+    """删除指定 MD 便签文件，返回是否成功。不允许删除数据库目录下的文件。"""
     target = _validate_md_path(file_path)
-    if "data" in target.parts:
-        raise ValueError("不允许删除 data/ 目录下的文件")
+    # 只保护真正的数据目录（SQLite 所在），而非工作区内任何名为 data 的目录
+    from core.path import ConfigPaths
+    data_dir = Path(ConfigPaths.SQLITE_DB).resolve().parent
+    if target.is_relative_to(data_dir):
+        raise ValueError("不允许删除数据目录下的文件")
     if not target.exists():
         return False
     target.unlink()
@@ -342,7 +347,7 @@ def patch_memory_file_content(
     content = target.read_text(encoding="utf-8")
     total = content.count(old_text)
     if total == 0:
-        raise ValueError(f"未找到目标文本，替换失败")
+        raise ValueError("未找到目标文本，替换失败")
     if replace_all:
         new_content = content.replace(old_text, new_text)
         replaced = total
@@ -563,20 +568,24 @@ def consolidate_heartbeat(max_entries: Optional[int] = None) -> int:
         except Exception:
             max_entries = 50
 
-    heartbeat_path = get_memory_dir() / "heartbeat.md"
-    if not heartbeat_path.exists():
-        return 0
+    # 与 heartbeat.log 的 append/write 共用同一把锁，避免读-改-写竞态丢日志
+    from agent.heartbeat.log import heartbeat_log_lock
 
-    text = heartbeat_path.read_text(encoding="utf-8")
-    blocks = text.split("\n### ")
-    if len(blocks) <= max_entries + 1:
-        return 0
+    with heartbeat_log_lock():
+        heartbeat_path = get_memory_dir() / "heartbeat.md"
+        if not heartbeat_path.exists():
+            return 0
 
-    header = blocks[0]
-    kept = blocks[-max_entries:]
-    trimmed = len(blocks) - 1 - max_entries
-    new_text = header + "\n### " + "\n### ".join(kept)
-    _atomic_write(heartbeat_path, new_text)
+        text = heartbeat_path.read_text(encoding="utf-8")
+        blocks = text.split("\n### ")
+        if len(blocks) <= max_entries + 1:
+            return 0
+
+        header = blocks[0]
+        kept = blocks[-max_entries:]
+        trimmed = len(blocks) - 1 - max_entries
+        new_text = header + "\n### " + "\n### ".join(kept)
+        _atomic_write(heartbeat_path, new_text)
     log(f"heartbeat.md 整理: 裁剪 {trimmed} 条旧记录", tag="思维")
     return trimmed
 
@@ -598,7 +607,8 @@ def _build_file_index() -> str:
     """生成其他 MD 便签文件的索引摘要，让 AI 知道有哪些记忆文件可查阅。"""
     try:
         files = list_all_memory_files()
-    except Exception:
+    except Exception as exc:
+        log(f"便签文件索引构建失败: {exc}", "DEBUG", tag="记忆")
         return ""
     if not files:
         return ""

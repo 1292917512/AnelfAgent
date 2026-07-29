@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from agent.llm.reasoning import CANONICAL_EFFORTS
 from core.log import log
 from core.path import ConfigPaths
 from services import AgentStatusService
-
-from agent.llm.reasoning import CANONICAL_EFFORTS
+from services._parsing import to_bool as _to_bool
+from web.routers._errors import server_error
+from web.routers.schemas import MindConfigUpdate
 
 router = APIRouter(prefix="/config", tags=["config"])
 
@@ -173,7 +176,7 @@ async def get_app_config() -> Dict[str, Any]:
     try:
         data: Dict[str, Any] = json.loads(_APP_CONFIG_PATH.read_text("utf-8"))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"读取配置失败: {e}") from e
+        raise server_error("读取配置", e) from e
     return _mask_app_secrets(data)
 
 
@@ -280,9 +283,6 @@ async def save_app_config(data: AppConfigUpdate) -> Dict[str, str]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-from web.routers.schemas import MindConfigUpdate
-
-
 @router.get("/mind")
 async def get_mind_config() -> Dict[str, Any]:
     """返回 Mind 配置（代理到 AgentStatusService）。"""
@@ -321,7 +321,7 @@ class HeartbeatConfigUpdate(BaseModel):
 @router.put("/heartbeat")
 async def save_heartbeat_config(data: HeartbeatConfigUpdate) -> Dict[str, str]:
     """保存心跳配置并热重载。"""
-    from agent.heartbeat.config import get_heartbeat_config, TaskSchedule
+    from agent.heartbeat.config import TaskSchedule, get_heartbeat_config
 
     cfg = get_heartbeat_config()
     if data.enabled is not None:
@@ -358,6 +358,7 @@ async def get_heartbeat_status() -> Dict[str, Any]:
 async def trigger_heartbeat() -> Dict[str, str]:
     """手动触发一次心跳。"""
     import asyncio
+
     from services._runtime import get_runtime
     rt = get_runtime()
     if rt is None:
@@ -424,17 +425,6 @@ _OPTIONAL_TASK_OVERRIDE_FIELDS = ("model_id", "reasoning_effort")
 _TASK_REASONING_EFFORTS = frozenset(CANONICAL_EFFORTS)
 
 
-def _to_bool(value: Any, *, default: bool = False) -> bool:
-    """兼容字符串/数字的布尔值解析。"""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
-
-
 def _normalize_task(data: Dict[str, Any]) -> Dict[str, Any]:
     """确保任务数据包含所有必需字段。"""
     for k, v in _TASK_DEFAULTS.items():
@@ -480,7 +470,7 @@ def _load_task(name: str, folder: str = "") -> Dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"读取任务配置失败: {e}") from e
+        raise server_error("读取任务配置", e) from e
 
 
 @router.get("/tasks")
@@ -543,7 +533,7 @@ async def create_task(data: TaskCreate) -> Dict[str, Any]:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(task_data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"写入失败: {e}") from e
+        raise server_error("写入任务配置", e) from e
 
     _reload_task_registry()
     task_data["folder"] = folder
@@ -590,13 +580,21 @@ async def update_task(name: str, data: TaskUpdate, folder: str = Query("")) -> D
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        # 先写临时文件再 os.replace 原子替换；移动场景写新成功后才删旧，
+        # 写新失败时旧文件保持不动（tmp 清理后抛出）
+        tmp = target.with_name(target.name + ".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            os.replace(tmp, target)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
         if new_folder is not None and target != _task_path(name, old_folder):
             _task_path(name, old_folder).unlink()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"写入失败: {e}") from e
+        raise server_error("写入任务配置", e) from e
 
     _reload_task_registry()
     existing["folder"] = target_folder
@@ -611,7 +609,7 @@ async def delete_task(name: str, folder: str = Query("")) -> Dict[str, str]:
     try:
         p.unlink()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"删除失败: {e}") from e
+        raise server_error("删除任务", e) from e
 
     _reload_task_registry()
     return {"status": "ok"}

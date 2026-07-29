@@ -20,7 +20,9 @@ cognee、每模型专属）只产生/消费本模块定义的规范等级，由 
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Dict, Optional
+
+from core.log import log
 
 # 规范等级（不含空值）；顺序即强度升序，也是降级阶梯的依据
 CANONICAL_EFFORTS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -233,7 +235,7 @@ def _model_capability_flag(model: str, flag: str) -> Optional[bool]:
             if value is not None:
                 return bool(value)
     except Exception:
-        pass
+        log("_model_capability_flag 异常已忽略", "DEBUG")
     return None
 
 

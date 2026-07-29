@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FileText, Play } from "lucide-react";
-import type { ChatMessage } from "@/stores/chat-store";
+import type { ChatMessage } from "@/lib/types";
 import { Lightbox } from "./Lightbox";
 
 /** 媒体消息气泡：图片灯箱 / 视频弹层播放 / 音频 / 文件下载卡片 */

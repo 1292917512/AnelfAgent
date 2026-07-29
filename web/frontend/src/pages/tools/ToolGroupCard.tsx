@@ -63,10 +63,10 @@ export function ToolGroupCard({
             <button
               onClick={() => onOpenEntity(group.group)}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium text-muted hover:text-accent hover:bg-accent-subtle border border-transparent hover:border-accent/30 transition-all"
-              title={t("openEntity", { defaultValue: "打开实体详情" })}
+              title={t("openEntity")}
             >
               <ExternalLink size={11} />
-              <span className="hidden sm:inline">{t("entityPage", { defaultValue: "详情" })}</span>
+              <span className="hidden sm:inline">{t("entityPage")}</span>
             </button>
           )}
           <button

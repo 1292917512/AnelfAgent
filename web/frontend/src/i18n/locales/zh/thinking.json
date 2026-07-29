@@ -72,5 +72,7 @@
     "title": "上下文快照",
     "waiting": "等待捕获…",
     "tools": "工具清单"
-  }
+  },
+  "contextTab": "上下文管理",
+  "planStepsCount": "{{count}} 步"
 }

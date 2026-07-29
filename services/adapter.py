@@ -3,9 +3,35 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.log import log
 from services._runtime import is_ready
+
+
+def _channels_dir() -> Path:
+    """频道目录（基于项目根的绝对路径，不依赖进程 CWD）。"""
+    from core.path import project_root
+    return Path(project_root()) / "channels"
+
+
+def _read_channel_config(cfg_file: Path) -> Dict[str, Any]:
+    """读取 channel_config.json（不存在/损坏返回空 dict）。"""
+    if cfg_file.exists():
+        try:
+            data = json.loads(cfg_file.read_text("utf-8"))
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, OSError):
+            log("_read_channel_config 异常已忽略", "DEBUG")
+    return {}
+
+
+def _write_channel_config(cfg_file: Path, cfg: Dict[str, Any]) -> None:
+    """写回 channel_config.json。"""
+    cfg_file.write_bytes(json.dumps(cfg, indent=2, ensure_ascii=False).encode("utf-8"))
 
 
 class AdapterService:
@@ -97,25 +123,19 @@ class AdapterService:
     async def _activate_unregistered_channel(key: str, mgr: Any) -> None:
         """动态加载并启动一个未注册的频道。"""
         import importlib
-        import json
-        from pathlib import Path
+
         from core.log import log
 
-        channel_dir = Path("channels") / key
+        channel_dir = _channels_dir() / key
         if not channel_dir.is_dir():
             log(f"频道目录不存在: {channel_dir}", "WARNING")
             return
 
         # 更新 channel_config.json 设为 enabled
         cfg_file = channel_dir / "channel_config.json"
-        cfg: dict = {}
-        if cfg_file.exists():
-            try:
-                cfg = json.loads(cfg_file.read_text("utf-8"))
-            except (json.JSONDecodeError, OSError):
-                pass
+        cfg = _read_channel_config(cfg_file)
         cfg["enabled"] = True
-        cfg_file.write_bytes(json.dumps(cfg, indent=2, ensure_ascii=False).encode("utf-8"))
+        _write_channel_config(cfg_file, cfg)
 
         # 动态导入频道模块
         module_path = f"channels.{key}.adapter"
@@ -231,17 +251,12 @@ class AdapterService:
     @staticmethod
     def _set_channel_enabled(key: str, enabled: bool) -> None:
         """Update enabled flag in channel_config.json."""
-        import json
-        from pathlib import Path
-        cfg_file = Path("channels") / key / "channel_config.json"
+        cfg_file = _channels_dir() / key / "channel_config.json"
         if not cfg_file.exists():
             return
-        try:
-            cfg = json.loads(cfg_file.read_text("utf-8"))
-        except (json.JSONDecodeError, OSError):
-            cfg = {}
+        cfg = _read_channel_config(cfg_file)
         cfg["enabled"] = enabled
-        cfg_file.write_bytes(json.dumps(cfg, indent=2, ensure_ascii=False).encode("utf-8"))
+        _write_channel_config(cfg_file, cfg)
 
     @staticmethod
     def get_channel_webui_url(channel_id: str) -> Optional[str]:
@@ -250,16 +265,7 @@ class AdapterService:
         匹配 napcat_webui_url / webui_url / dashboard_url 配置项，
         供频道 WebUI 同源代理确定转发目标。
         """
-        import json
-        from pathlib import Path
-
-        cfg: Dict[str, Any] = {}
-        cfg_file = Path("channels") / channel_id / "channel_config.json"
-        if cfg_file.exists():
-            try:
-                cfg = json.loads(cfg_file.read_text("utf-8"))
-            except (json.JSONDecodeError, OSError):
-                cfg = {}
+        cfg = _read_channel_config(_channels_dir() / channel_id / "channel_config.json")
         meta = AdapterService._load_all_config_meta().get(channel_id, {})
         for suffix in ("napcat_webui_url", "webui_url", "dashboard_url"):
             value = cfg.get(suffix) or meta.get(suffix, {}).get("default")
@@ -371,10 +377,8 @@ class AdapterService:
     @staticmethod
     def _scan_channel_configs() -> Dict[str, Dict[str, Any]]:
         """扫描所有频道目录的 channel_config.json。"""
-        import json
-        from pathlib import Path
         result: Dict[str, Dict[str, Any]] = {}
-        channels_dir = Path("channels")
+        channels_dir = _channels_dir()
         if not channels_dir.is_dir():
             return result
         for item in sorted(channels_dir.iterdir()):
@@ -382,10 +386,7 @@ class AdapterService:
                 continue
             cfg_file = item / "channel_config.json"
             if cfg_file.exists():
-                try:
-                    result[item.name] = json.loads(cfg_file.read_text("utf-8"))
-                except (json.JSONDecodeError, OSError):
-                    pass
+                result[item.name] = _read_channel_config(cfg_file)
         return result
 
     def get_adapter_configs(self) -> Dict[str, Dict[str, Any]]:
@@ -441,10 +442,9 @@ class AdapterService:
         返回 {channel_name: {config_key: {description, value_type, options, tag, ...}}}
         """
         import importlib
-        from pathlib import Path
 
         result: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        channels_dir = Path("channels")
+        channels_dir = _channels_dir()
         if not channels_dir.is_dir():
             return result
 
@@ -474,9 +474,6 @@ class AdapterService:
 
     def save_adapter_configs(self, values: Dict[str, Any]) -> int:
         """保存适配器配置值到各频道的 channel_config.json，并热重载运行中的频道配置。"""
-        import json
-        from pathlib import Path
-
         updates: Dict[str, Dict[str, Any]] = {}
         for full_key, val in values.items():
             parts = full_key.split(".", 1)
@@ -491,23 +488,21 @@ class AdapterService:
         changed = 0
         affected_channels: list[str] = []
         for channel_name, new_values in updates.items():
-            cfg_file = Path("channels") / channel_name / "channel_config.json"
+            cfg_file = _channels_dir() / channel_name / "channel_config.json"
             if not cfg_file.exists():
                 continue
-            try:
-                existing = json.loads(cfg_file.read_text("utf-8"))
-            except (json.JSONDecodeError, OSError):
-                existing = {}
+            existing = _read_channel_config(cfg_file)
 
+            channel_changed = 0
             for k, v in new_values.items():
                 if existing.get(k) != v:
                     existing[k] = v
-                    changed += 1
+                    channel_changed += 1
 
-            with open(str(cfg_file), "wb") as f:
-                f.write(json.dumps(existing, indent=2, ensure_ascii=False).encode("utf-8"))
-
-            if changed:
+            _write_channel_config(cfg_file, existing)
+            changed += channel_changed
+            # 按频道独立判断，避免跨频道累积误标无变更的频道
+            if channel_changed:
                 affected_channels.append(channel_name)
 
         self._reload_affected_channels(affected_channels)
@@ -529,4 +524,4 @@ class AdapterService:
                     ch.reload_config()
                     log(f"频道配置已热重载: {name}", "DEBUG")
         except Exception:
-            pass
+            log("_reload_affected_channels 异常已忽略", "DEBUG")

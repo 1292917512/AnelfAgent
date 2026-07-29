@@ -1,5 +1,8 @@
-import { createHighlighterCore, type HighlighterCore } from "shiki/core";
+import { createHighlighterCore, type HighlighterCore, type LanguageRegistration } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+
+/** 语言语法模块的动态加载产物 */
+type LangModule = { default: LanguageRegistration | LanguageRegistration[] };
 
 /**
  * Shiki 高亮服务（懒加载单例）：
@@ -29,7 +32,7 @@ const LANG_LOADERS = {
   java: () => import("shiki/langs/java.mjs"),
   c: () => import("shiki/langs/c.mjs"),
   cpp: () => import("shiki/langs/cpp.mjs"),
-} satisfies Record<string, () => Promise<{ default: unknown }>>;
+} satisfies Record<string, () => Promise<LangModule>>;
 
 /** 常见别名归一化；返回空串表示按纯文本处理 */
 const LANG_ALIAS: Record<string, string> = {
@@ -95,8 +98,7 @@ export async function highlightCode(
       if (!pending) {
         pending = loader()
           .then(async (mod) => {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await highlighter.loadLanguage(mod.default as any);
+            await highlighter.loadLanguage(mod.default);
             loadedLangs.add(normalized);
             return true;
           })

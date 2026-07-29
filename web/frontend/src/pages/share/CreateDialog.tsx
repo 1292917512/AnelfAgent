@@ -158,7 +158,7 @@ export function CreateDialog() {
               </button>
             </div>
             <p className="text-xs text-muted mt-1">
-              {t("fields.filePath")} — workspace 沙箱内的相对路径或绝对路径
+              {t("fields.filePath")} — {t("filePathHint")}
             </p>
           </div>
 
@@ -171,7 +171,7 @@ export function CreateDialog() {
                     <FileTreeNode key={node.path} node={node} depth={0} onSelect={handleFileSelect} />
                   ))
                 ) : (
-                  <div className="p-4 text-sm text-muted text-center">workspace 为空</div>
+                  <div className="p-4 text-sm text-muted text-center">{t("workspaceEmpty")}</div>
                 )
               ) : (
                 <div className="p-4 text-sm text-muted text-center">{t("common:loading")}</div>

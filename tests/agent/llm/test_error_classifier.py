@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 
 import litellm
-import pytest
 
 from agent.llm.error_classifier import ErrorCategory, classify_llm_error
 from agent.llm.retry import jittered_backoff

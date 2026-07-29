@@ -87,7 +87,7 @@ class SkillService:
         try:
             skill_state = SkillState(state)
         except ValueError:
-            raise ValueError(f"无效状态: {state}（可选: active/stale/archived）")
+            raise ValueError(f"无效状态: {state}（可选: active/stale/archived）") from None
         skill = self._store.set_state(name, skill_state)
         if skill is None:
             raise ValueError(f"技能 '{name}' 不存在")

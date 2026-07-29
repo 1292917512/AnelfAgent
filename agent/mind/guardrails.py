@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Dict, Optional
 
 from core.log import log
 
@@ -157,7 +157,7 @@ def is_idempotent_tool(tool_name: str) -> bool:
         if entity is not None and "idempotent" in entity.meta:
             return bool(entity.meta["idempotent"])
     except Exception:
-        pass
+        log("is_idempotent_tool 异常已忽略", "DEBUG")
     lowered = tool_name.lower()
     return any(lowered.startswith(p) for p in _IDEMPOTENT_PREFIXES)
 

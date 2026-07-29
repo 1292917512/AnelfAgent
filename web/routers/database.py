@@ -1,21 +1,25 @@
-"""数据库管理 API 路由 — WebUI「数据管理」页的数据库 Tab。"""
+"""数据库管理 API 路由 — WebUI「数据管理」页的数据库 Tab。
+
+DatabaseError / MigrationError 由 web.server 装配处注册的
+exception_handler 统一转换为 HTTP 响应，路由内不再逐个 try/except。
+"""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from services.database import DatabaseError, DatabaseService
 from services.data_migration import (
-    MigrationError,
     check_target,
     get_location,
     migration_status,
     start_migration,
 )
+from services.database import DatabaseService
+from services.db_connections import get_connection_store
 
 router = APIRouter(prefix="/database", tags=["database"])
 
@@ -77,14 +81,6 @@ class MigrateRequest(BaseModel):
     target: str
 
 
-def _handle_error(exc: DatabaseError) -> HTTPException:
-    return HTTPException(status_code=exc.status_code, detail=str(exc))
-
-
-def _handle_migration_error(exc: MigrationError) -> HTTPException:
-    return HTTPException(status_code=exc.status_code, detail=str(exc))
-
-
 # ----------------------------------------------------------------------
 # 外部连接管理（声明在 /{db_id} 之前，避免被参数路由捕获）
 # ----------------------------------------------------------------------
@@ -92,47 +88,30 @@ def _handle_migration_error(exc: MigrationError) -> HTTPException:
 
 @router.get("/connections")
 async def list_connections() -> Dict[str, Any]:
-    from services.db_connections import get_connection_store
     return {"items": get_connection_store().list_public()}
 
 
 @router.post("/connections", status_code=201)
 async def create_connection(body: ConnectionUpsert) -> Dict[str, Any]:
-    from services.db_connections import get_connection_store
-    try:
-        conn = get_connection_store().add(body.model_dump())
-        return conn.to_public_dict()
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    conn = get_connection_store().add(body.model_dump())
+    return conn.to_public_dict()
 
 
 @router.put("/connections/{conn_id}")
 async def update_connection(conn_id: str, body: ConnectionUpsert) -> Dict[str, Any]:
-    from services.db_connections import get_connection_store
-    try:
-        conn = get_connection_store().update(conn_id, body.model_dump())
-        return conn.to_public_dict()
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    conn = get_connection_store().update(conn_id, body.model_dump())
+    return conn.to_public_dict()
 
 
 @router.delete("/connections/{conn_id}")
 async def delete_connection(conn_id: str) -> Dict[str, Any]:
-    from services.db_connections import get_connection_store
-    try:
-        get_connection_store().delete(conn_id)
-        return {"success": True}
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    get_connection_store().delete(conn_id)
+    return {"success": True}
 
 
 @router.post("/connections/test")
 async def test_connection(body: ConnectionTest) -> Dict[str, Any]:
-    from services.db_connections import get_connection_store
-    try:
-        return await get_connection_store().test(body.model_dump())
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    return await get_connection_store().test(body.model_dump())
 
 
 # ----------------------------------------------------------------------
@@ -152,10 +131,7 @@ async def data_location_check(body: TargetCheckRequest) -> Dict[str, Any]:
 
 @router.post("/migrate")
 async def data_migrate(body: MigrateRequest) -> Dict[str, Any]:
-    try:
-        return start_migration(body.target)
-    except MigrationError as exc:
-        raise _handle_migration_error(exc) from exc
+    return start_migration(body.target)
 
 
 @router.get("/migrate/status")
@@ -175,27 +151,18 @@ async def list_databases() -> Dict[str, Any]:
 
 @router.get("/{db_id}/health")
 async def database_health(db_id: str) -> Dict[str, Any]:
-    try:
-        return await _db_svc.database_health(db_id)
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    return await _db_svc.database_health(db_id)
 
 
 @router.post("/{db_id}/backup")
 async def backup_database(db_id: str) -> FileResponse:
-    try:
-        info = await _db_svc.backup_database(db_id)
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    info = await _db_svc.backup_database(db_id)
     return FileResponse(info["path"], filename=info["filename"])
 
 
 @router.post("/{db_id}/optimize")
 async def optimize_database(db_id: str, body: OptimizeRequest) -> Dict[str, Any]:
-    try:
-        return await _db_svc.optimize_database(db_id, body.actions)
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    return await _db_svc.optimize_database(db_id, body.actions)
 
 
 @router.get("/{db_id}/tables")
@@ -203,18 +170,12 @@ async def list_tables(
     db_id: str,
     include_shadow: bool = Query(False),
 ) -> Dict[str, Any]:
-    try:
-        return {"items": await _db_svc.list_tables(db_id, include_shadow=include_shadow)}
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    return {"items": await _db_svc.list_tables(db_id, include_shadow=include_shadow)}
 
 
 @router.get("/{db_id}/tables/{table}/schema")
 async def table_schema(db_id: str, table: str) -> Dict[str, Any]:
-    try:
-        return await _db_svc.table_schema(db_id, table)
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    return await _db_svc.table_schema(db_id, table)
 
 
 @router.get("/{db_id}/tables/{table}/rows")
@@ -228,58 +189,40 @@ async def browse_rows(
     filter_col: Optional[str] = Query(None),
     filter_text: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
-    try:
-        return await _db_svc.browse_rows(
-            db_id,
-            table,
-            page=page,
-            page_size=page_size,
-            sort=sort,
-            order=order,
-            filter_col=filter_col,
-            filter_text=filter_text,
-        )
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    return await _db_svc.browse_rows(
+        db_id,
+        table,
+        page=page,
+        page_size=page_size,
+        sort=sort,
+        order=order,
+        filter_col=filter_col,
+        filter_text=filter_text,
+    )
 
 
 @router.get("/{db_id}/tables/{table}/rows/{rowid}")
 async def get_row(db_id: str, table: str, rowid: int) -> Dict[str, Any]:
-    try:
-        return await _db_svc.get_row(db_id, table, rowid)
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    return await _db_svc.get_row(db_id, table, rowid)
 
 
 @router.post("/{db_id}/tables/{table}/rows")
 async def insert_row(db_id: str, table: str, body: RowValuesRequest) -> Dict[str, Any]:
-    try:
-        return await _db_svc.insert_row(db_id, table, body.values)
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    return await _db_svc.insert_row(db_id, table, body.values)
 
 
 @router.put("/{db_id}/tables/{table}/rows/{rowid}")
 async def update_row(db_id: str, table: str, rowid: int, body: RowValuesRequest) -> Dict[str, Any]:
-    try:
-        await _db_svc.update_row(db_id, table, rowid, body.values)
-        return {"success": True}
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    await _db_svc.update_row(db_id, table, rowid, body.values)
+    return {"success": True}
 
 
 @router.delete("/{db_id}/tables/{table}/rows/{rowid}")
 async def delete_row(db_id: str, table: str, rowid: int) -> Dict[str, Any]:
-    try:
-        await _db_svc.delete_row(db_id, table, rowid)
-        return {"success": True}
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    await _db_svc.delete_row(db_id, table, rowid)
+    return {"success": True}
 
 
 @router.post("/{db_id}/query")
 async def run_query(db_id: str, body: QueryRequest) -> Dict[str, Any]:
-    try:
-        return await _db_svc.run_query(db_id, body.sql)
-    except DatabaseError as exc:
-        raise _handle_error(exc) from exc
+    return await _db_svc.run_query(db_id, body.sql)

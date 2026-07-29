@@ -80,7 +80,9 @@ def _normalize_model_params(req: BaseModel) -> Dict[str, Any]:
 
     merged_extra = dict(legacy_extra)
     merged_extra.update(extra_body)
-    if structured_supplied or isinstance(req, CreateModelReq):
+    # type 判断而非 isinstance：UpdateModelReq 继承 CreateModelReq，
+    # 更新语义下未显式提供结构化字段时不得回填默认值
+    if structured_supplied or type(req) is CreateModelReq:
         params["request_params"] = request_params
         params["extra_body"] = merged_extra
         params["extra_params"] = {}
@@ -169,6 +171,9 @@ async def fetch_remote_models(pid: str) -> Dict[str, Any]:
         for m in models:
             m["already_added"] = m["id"] in existing
         return {"models": models}
+    except ValueError as e:
+        # 非法 base_url（_validate_remote_url）属于客户端输入错误
+        raise HTTPException(400, str(e)) from e
     except Exception as e:
         raise HTTPException(
             502,
@@ -190,6 +195,9 @@ async def fetch_remote_models_generic(req: FetchRemoteReq) -> Dict[str, Any]:
         for m in models:
             m["already_added"] = m["id"] in existing
         return {"models": models}
+    except ValueError as e:
+        # 非法 base_url（_validate_remote_url）属于客户端输入错误
+        raise HTTPException(400, str(e)) from e
     except Exception as e:
         raise HTTPException(
             502,
@@ -294,6 +302,9 @@ async def test_connection(req: TestConnectionReq) -> Dict[str, str]:
         api_key = _svc.resolve_provider_api_key(req.provider_id, req.api_key)
         result = await _svc.test_connection(req.base_url, api_key)
         return {"result": result}
+    except ValueError as e:
+        # 非法 base_url（_validate_remote_url）属于客户端输入错误
+        raise HTTPException(400, str(e)) from e
     except Exception as e:
         return {
             "result": f"连接失败: {_svc.sanitize_error(e, req.api_key)}",
@@ -367,7 +378,10 @@ async def update_cost_map(req: CostMapUpdateReq) -> Dict[str, Any]:
 # ── 模型（动态路径 /{model_id}，放最后避免吞掉固定路径） ────────────
 
 
-class UpdateModelReq(BaseModel):
+class UpdateModelReq(CreateModelReq):
+    """更新请求：字段与创建一致，全部改为可选（仅透传显式提供的字段）。"""
+
+    id: Optional[str] = None
     model: Optional[str] = None
     model_types: Optional[List[ModelTypeValue]] = None
     temperature: Optional[float] = Field(default=None, ge=0, le=2)
@@ -386,9 +400,7 @@ class UpdateModelReq(BaseModel):
     chat_protocol: Optional[ChatProtocolValue] = None
     request_params: Optional[RequestParams] = None
     extra_body: Optional[Dict[str, Any]] = None
-    extra_params: Optional[Dict[str, Any]] = Field(
-        default=None,
-    )
+    extra_params: Optional[Dict[str, Any]] = None
 
 
 @router.get("/{model_id}")
@@ -402,6 +414,7 @@ async def get_model(model_id: str) -> Dict[str, Any]:
 @router.put("/{model_id}")
 async def update_model(model_id: str, req: UpdateModelReq) -> Dict[str, str]:
     params = _normalize_model_params(req)
+    params.pop("id", None)  # 更新不允许改 id（继承自 CreateModelReq 的字段）
     if not _svc.update_model(model_id, **params):
         raise HTTPException(404, f"模型 '{model_id}' 不存在")
     return {"status": "ok"}

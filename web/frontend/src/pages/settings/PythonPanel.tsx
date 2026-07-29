@@ -25,7 +25,7 @@ export function PythonPanel() {
       {status && (
         <Card title={t("pythonEnvStatus")}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {Object.entries(status as Record<string, unknown>)
+            {Object.entries(status)
               .filter(([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean")
               .map(([k, v]) => (
                 <InfoRow key={k} label={<span className="font-mono">{k}</span>} value={String(v)} mono={false} />
@@ -37,7 +37,7 @@ export function PythonPanel() {
       {mirror && (
         <Card title={t("pipMirror")}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {Object.entries(mirror as Record<string, unknown>)
+            {Object.entries(mirror)
               .filter(([, v]) => typeof v === "string")
               .map(([k, v]) => (
                 <InfoRow key={k} label={k} value={String(v)} />
@@ -46,9 +46,9 @@ export function PythonPanel() {
         </Card>
       )}
 
-      <Card title={t("installedPackages")} subtitle={t("nPackages", { count: (packages as unknown[])?.length ?? 0 })}>
+      <Card title={t("installedPackages")} subtitle={t("nPackages", { count: packages?.length ?? 0 })}>
         <div className="max-h-80 overflow-y-auto space-y-1">
-          {(packages as Array<{ name: string; version: string }> ?? []).map((p) => (
+          {(packages ?? []).map((p) => (
             <div key={p.name} className="flex items-center justify-between py-1.5 px-3 rounded-sm hover:bg-hover transition-colors">
               <span className="text-sm text-foreground">{p.name}</span>
               <span className="text-xs text-muted font-mono">{p.version}</span>

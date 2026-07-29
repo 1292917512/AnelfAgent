@@ -8,7 +8,6 @@ import pytest
 from agent.memory.cognee.client import CogneeClient
 from agent.memory.cognee.config import CogneeConfig
 
-
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(

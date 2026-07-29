@@ -8,11 +8,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.llm.llm_client import (
+    _PROXY_ENV_KEYS,
     API_TYPES,
     LLMClient,
     LLMClientConfig,
     LLMNotConfiguredError,
-    _PROXY_ENV_KEYS,
 )
 
 

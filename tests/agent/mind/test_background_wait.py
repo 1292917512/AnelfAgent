@@ -382,12 +382,16 @@ class _DelegationMind:
         self.reflect = AsyncMock(return_value=output)
         self.background_tasks = BackgroundTaskRegistry()
         self.try_execute_mind = AsyncMock()
+        previews: dict = {}
+        adapter_keys: dict = {}
         self.pfc = SimpleNamespace(
             add_temporary=lambda clip, scope="": None,
             pending_user=[],
             pending_group=[],
-            _message_previews={},
-            _task_adapter_keys={},
+            _message_previews=previews,
+            _task_adapter_keys=adapter_keys,
+            set_message_preview=lambda scope, preview: previews.__setitem__(scope, preview),
+            set_adapter_key=lambda scope, key: adapter_keys.__setitem__(scope, key),
             get_adapter_key=lambda scope: "test",
         )
 
@@ -440,6 +444,7 @@ class TestDelegationBackgroundIntegration:
     async def test_check_background_tasks_tool(self) -> None:
         """check_background_tasks 工具返回运行中与已完成任务快照。"""
         import json
+
         from agent.delegation import delegate_tool
         from agent.delegation.delegation_manager import DelegationManager
 

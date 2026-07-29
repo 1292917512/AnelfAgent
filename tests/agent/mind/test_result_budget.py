@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from agent.mind.result_budget import (
-    PINNED_TOOLS,
     ResultBudget,
     budget_for_context_window,
     resolve_result_limit,

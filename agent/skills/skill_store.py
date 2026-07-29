@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import os
 import re
-import tempfile
 import threading
 import time
 from enum import Enum
@@ -161,21 +160,10 @@ _NAME_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
 def _atomic_write(target: Path, content: str) -> None:
-    """原子写入文件：先写临时文件，再 os.replace 避免并发写入导致数据损坏。"""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(target.parent), suffix=".tmp", prefix=".skill_"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_path, str(target))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    """原子写入文件（委托 core.file_utils 统一实现）。"""
+    from core.file_utils import atomic_write_text
+
+    atomic_write_text(target, content)
 
 
 class SkillStore:
@@ -187,8 +175,16 @@ class SkillStore:
             skills_dir = os.path.join(workspace_root(), "skills")
         self.skills_dir = Path(skills_dir)
         self.skills_dir.mkdir(parents=True, exist_ok=True)
-        # 读写锁：save 原子写 + get/delete 读取串行化，避免并发读写竞态
-        self._lock = threading.Lock()
+        # 读写锁（可重入）：save 原子写 + get/delete 读取串行化，
+        # record_use 等读-改-写操作需在同一把锁内完成，避免并发计数互相覆盖
+        self._lock = threading.RLock()
+        # 内容版本号：每次 save/delete 递增，供调用方做廉价缓存失效判断
+        self._version = 0
+
+    @property
+    def version(self) -> int:
+        """技能库内容版本号（单调递增）。"""
+        return self._version
 
     @staticmethod
     def normalize_name(name: str) -> str:
@@ -242,6 +238,7 @@ class SkillStore:
         path = self._skill_path(skill.name)
         with self._lock:
             _atomic_write(path, render_skill_md(skill))
+            self._version += 1
         log(f"💾 技能已保存: {skill.name} (state={skill.state.value})", "DEBUG", tag="技能")
         return skill
 
@@ -306,35 +303,42 @@ class SkillStore:
                 return False
             import shutil
             shutil.rmtree(path.parent)
+            self._version += 1
         log(f"🗑 技能已删除: {name}", tag="技能")
         return True
 
     def record_use(self, name: str) -> None:
         """记录一次使用（use_count +1，刷新活动时间）。"""
-        skill = self.get(name)
-        if skill is None:
-            return
-        skill.use_count += 1
-        skill.touch()
-        self.save(skill)
+        with self._lock:
+            skill = self.get(name)
+            if skill is None:
+                return
+            skill.use_count += 1
+            skill.touch()
+            self.save(skill)
 
     def set_state(self, name: str, state: SkillState) -> Optional[Skill]:
-        """变更技能状态（active/stale/archived）。"""
-        skill = self.get(name)
-        if skill is None:
-            return None
-        skill.state = state
-        skill.touch()
-        return self.save(skill)
+        """变更技能状态（active/stale/archived）。
+
+        状态迁移不刷新活动时间——curator 的自动降级/归档若 touch 会重置
+        闲置计时，导致同一技能永远无法进入下一状态阶段。
+        """
+        with self._lock:
+            skill = self.get(name)
+            if skill is None:
+                return None
+            skill.state = state
+            return self.save(skill)
 
     def set_pinned(self, name: str, pinned: bool) -> Optional[Skill]:
         """设置置顶（置顶技能豁免自动归档）。"""
-        skill = self.get(name)
-        if skill is None:
-            return None
-        skill.pinned = pinned
-        skill.touch()
-        return self.save(skill)
+        with self._lock:
+            skill = self.get(name)
+            if skill is None:
+                return None
+            skill.pinned = pinned
+            skill.touch()
+            return self.save(skill)
 
     @staticmethod
     def _skill_from_meta(meta: Dict[str, Any], body: str, *, fallback_name: str) -> Skill:

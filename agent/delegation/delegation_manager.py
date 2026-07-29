@@ -15,15 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
-
-from core.event_bus import (
-    event_bus,
-    EVENT_DELEGATION_STARTED,
-    EVENT_DELEGATION_PROGRESS,
-    EVENT_DELEGATION_RESOLVED,
-)
-from core.log import log
+from typing import TYPE_CHECKING, Any, Dict, List
 
 from agent.delegation.sub_agent import (
     SubAgent,
@@ -31,6 +23,12 @@ from agent.delegation.sub_agent import (
     current_depth,
     normalize_role,
 )
+from core.event_bus import (
+    EVENT_DELEGATION_RESOLVED,
+    EVENT_DELEGATION_STARTED,
+    event_bus,
+)
+from core.log import log
 
 if TYPE_CHECKING:
     from agent.mind.mind import Mind
@@ -40,6 +38,8 @@ EVENT_DELEGATION_COMPLETED = "delegation.completed"
 # scope 工具与 plan 模块共享（统一实现，避免逐字重复）
 from agent.planning.tracker import (  # noqa: E402
     current_scope as _current_scope,
+)
+from agent.planning.tracker import (
     parse_scope_chat_id as _parse_scope_chat_id,
 )
 
@@ -48,6 +48,11 @@ _SUMMARY_HEADROOM_FRACTION = 0.5
 _MIN_SUMMARY_CHARS = 2_000
 _MAX_SUMMARY_CHARS = 24_000
 _CHARS_PER_TOKEN = 4
+# 完成通知 / 事件中的摘要截断长度
+_SUMMARY_NOTICE_MAX_CHARS = 1_500
+_RESOLVED_OUTPUT_PREVIEW_CHARS = 2_000
+# 摘要截断保留比例（头部 75% + 尾部 25%）
+_TRIM_HEAD_FRACTION = 0.75
 
 
 def _max_concurrent() -> int:
@@ -105,10 +110,10 @@ class DelegationManager:
                 "task_index": task_index,
                 "background": False,
                 "depth": current_depth(),
-                "ts": asyncio.get_event_loop().time(),
+                "ts": asyncio.get_running_loop().time(),
             })
         except Exception:
-            pass
+            log("delegate 异常已忽略", "DEBUG")
 
         try:
             await asyncio.wait_for(semaphore.acquire(), timeout)
@@ -127,7 +132,7 @@ class DelegationManager:
                     "task_index": task_index,
                 })
             except Exception:
-                pass
+                log("delegate 异常已忽略", "DEBUG")
             return fail_result
         try:
             agent = SubAgent(
@@ -144,12 +149,12 @@ class DelegationManager:
                 "scope": scope, "chat_id": chat_id,
                 "delegation_id": delegation_id, "goal": goal,
                 "success": result.success,
-                "output": result.output[:2000],
+                "output": result.output[:_RESOLVED_OUTPUT_PREVIEW_CHARS],
                 "error": result.error,
                 "task_index": task_index,
             })
         except Exception:
-            pass
+            log("delegate 异常已忽略", "DEBUG")
         return result
 
     async def delegate_batch(
@@ -229,7 +234,7 @@ class DelegationManager:
                 "depth": current_depth(),
             }))
         except Exception:
-            pass
+            log("delegate_background 异常已忽略", "DEBUG")
 
         task = asyncio.create_task(
             self._run_background(delegation_id, goal, context, role, max_iterations, scope),
@@ -249,62 +254,92 @@ class DelegationManager:
             max_iterations: int,
             scope: str = "",
     ) -> None:
-        """后台执行委托并按注册表路由结果（轮内会合 / 完成即新 turn）。"""
-        result = await self.delegate(
-            goal, context, role=role, max_iterations=max_iterations,
-        )
-        payload = {
-            "delegation_id": delegation_id,
-            "goal": goal,
-            "success": result.success,
-            "output": result.output,
-            "error": result.error,
-        }
-        await event_bus.emit(EVENT_DELEGATION_COMPLETED, payload)
+        """后台执行委托并按注册表路由结果（轮内会合 / 完成即新 turn）。
+
+        异常兜底：delegate 或事件发射的任何异常都必须转化为失败结果并
+        完成 registry.complete() 登记，否则 delegation 会永久卡在 running。
+        """
+        try:
+            result = await self.delegate(
+                goal, context, role=role, max_iterations=max_iterations,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"后台委托执行异常: {delegation_id}: {exc}", "ERROR", tag="委托")
+            result = SubAgentResult(
+                goal=goal, success=False,
+                error=f"后台委托执行异常: {type(exc).__name__}: {exc}",
+                role=normalize_role(role),
+            )
 
         status = "成功" if result.success else "失败"
         summary = (result.output if result.success else result.error) or ""
 
-        # 向 webui 前端推 resolved（DelegationCard 关闭/标完成）
-        effective_scope = scope or _current_scope()
-        _user_scope, chat_id = _parse_scope_chat_id(effective_scope)
         try:
-            await event_bus.emit(EVENT_DELEGATION_RESOLVED, {
-                "scope": effective_scope,
-                "chat_id": chat_id,
+            await event_bus.emit(EVENT_DELEGATION_COMPLETED, {
                 "delegation_id": delegation_id,
                 "goal": goal,
                 "success": result.success,
-                "output": result.output[:2000],
+                "output": result.output,
                 "error": result.error,
-                "task_index": 0,
-                "background": True,
             })
-        except Exception:
-            pass
+
+            # 向 webui 前端推 resolved（DelegationCard 关闭/标完成）
+            effective_scope = scope or _current_scope()
+            _user_scope, chat_id = _parse_scope_chat_id(effective_scope)
+            try:
+                await event_bus.emit(EVENT_DELEGATION_RESOLVED, {
+                    "scope": effective_scope,
+                    "chat_id": chat_id,
+                    "delegation_id": delegation_id,
+                    "goal": goal,
+                    "success": result.success,
+                    "output": result.output[:_RESOLVED_OUTPUT_PREVIEW_CHARS],
+                    "error": result.error,
+                    "task_index": 0,
+                    "background": True,
+                })
+            except Exception:
+                log("_run_background 异常已忽略", "DEBUG")
+        except Exception as exc:
+            log(f"后台委托事件发射失败: {delegation_id}: {exc}", "WARNING", tag="委托")
+
         note = (
             f"[后台委托完成] id={delegation_id} 状态={status}\n"
-            f"目标: {goal[:200]}\n结果: {summary[:1500]}"
+            f"目标: {goal[:200]}\n结果: {summary[:_SUMMARY_NOTICE_MAX_CHARS]}"
         )
 
+        # 结果登记兜底：无论后续路由是否成功，registry 都必须完成，
+        # 否则 delegation 永久卡 running、等待者永远收不到会合注入
         registry = getattr(self._mind, "background_tasks", None)
-        claimed = registry.complete(delegation_id, result.success, summary[:1500]) if registry else False
-        if not claimed and scope.startswith(("user_", "group_")):
-            # 轮外完成（无等待者）：排入回复队列触发新一轮 REPLY，主动汇报结果
-            from agent.mind.tools.scheduler import enqueue_scope_reply
-            enqueue_scope_reply(
-                self._mind.pfc,
-                scope,
-                self._mind.pfc.get_adapter_key(scope),
-                f"后台委托完成: {goal[:60]}",
-                note + "\n请将结果告知用户，或根据结果继续未完成的操作。",
-            )
-            asyncio.create_task(self._mind.try_execute_mind())
-        else:
-            # 轮内会合（等待者已收到注入）或无回复目标：结果写入短期记忆兜底，
-            # 保证后续轮次可见、信息不丢失
-            temp_scope = scope if scope.startswith(("user_", "group_")) else ""
-            self._mind.pfc.add_temporary({"role": "user", "content": note}, scope=temp_scope)
+        claimed = False
+        try:
+            claimed = registry.complete(
+                delegation_id, result.success, summary[:_SUMMARY_NOTICE_MAX_CHARS],
+            ) if registry else False
+        except Exception as exc:
+            log(f"后台委托结果登记失败: {delegation_id}: {exc}", "ERROR", tag="委托")
+
+        try:
+            if not claimed and scope.startswith(("user_", "group_")):
+                # 轮外完成（无等待者）：排入回复队列触发新一轮 REPLY，主动汇报结果
+                from agent.mind.tools.scheduler import enqueue_scope_reply
+                enqueue_scope_reply(
+                    self._mind.pfc,
+                    scope,
+                    self._mind.pfc.get_adapter_key(scope),
+                    f"后台委托完成: {goal[:60]}",
+                    note + "\n请将结果告知用户，或根据结果继续未完成的操作。",
+                )
+                asyncio.create_task(self._mind.try_execute_mind())
+            else:
+                # 轮内会合（等待者已收到注入）或无回复目标：结果写入短期记忆兜底，
+                # 保证后续轮次可见、信息不丢失
+                temp_scope = scope if scope.startswith(("user_", "group_")) else ""
+                self._mind.pfc.add_temporary({"role": "user", "content": note}, scope=temp_scope)
+        except Exception as exc:
+            log(f"后台委托结果路由失败: {delegation_id}: {exc}", "ERROR", tag="委托")
         log(f"后台委托完成: {delegation_id} ({status})", tag="委托")
 
     def background_tasks_snapshot(self, scope: str) -> Dict[str, Any]:
@@ -354,7 +389,7 @@ class DelegationManager:
     @staticmethod
     def _trim_summary(text: str, budget: int) -> str:
         """摘要截断：保留头部 75% + 尾部 25% + 截断标记。"""
-        head = int(budget * 0.75)
+        head = int(budget * _TRIM_HEAD_FRACTION)
         tail = budget - head
         return (
             f"{text[:head]}\n"

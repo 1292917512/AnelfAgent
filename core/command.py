@@ -4,14 +4,23 @@
 """
 
 import os
+import platform
 import shutil
 import subprocess
-import platform
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from core.async_helper import dual_mode
 from core.log import log
+
+# 版本信息输出的最大长度（超出截断并追加省略号）
+_VERSION_OUTPUT_MAX_LEN = 50
+
+
+def _is_zsh_related(command: Union[str, List[str]]) -> bool:
+    """命令是否与 zsh 相关（决定是否需要注入 oh-my-zsh 安装防护环境变量）。"""
+    cmd_str = command if isinstance(command, str) else " ".join(command)
+    return "zsh" in cmd_str
 
 
 @dataclass
@@ -22,7 +31,8 @@ class CommandResult:
     stderr: str
 
 
-def _run_with_group_kill(command, timeout_sec: float, run_kwargs: dict):
+def _run_with_group_kill(command: Union[str, List[str]], timeout_sec: float,
+                         run_kwargs: Dict[str, Any]) -> "subprocess.CompletedProcess[str]":
     """POSIX 下以独立进程组执行，超时时 SIGTERM→SIGKILL 整组终止（防孙进程泄漏）。"""
     import signal
     kwargs = dict(run_kwargs)
@@ -41,7 +51,7 @@ def _run_with_group_kill(command, timeout_sec: float, run_kwargs: dict):
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
-                pass
+                log("_run_with_group_kill 异常已忽略", "DEBUG")
         proc.wait()
         raise
 
@@ -65,8 +75,10 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
         # 记录命令执行信息
         cmd_str = command if isinstance(command, str) else ' '.join(command)
 
-        # 准备环境变量
-        env = {**os.environ, "RUNZSH": "no", "CHSH": "no", "KEEP_ZSHRC": "yes"}
+        # 准备环境变量；oh-my-zsh 安装防护变量仅在 zsh 相关命令时注入
+        env = dict(os.environ)
+        if _is_zsh_related(command):
+            env.update({"RUNZSH": "no", "CHSH": "no", "KEEP_ZSHRC": "yes"})
         if env_vars:
             env.update(env_vars)
 
@@ -74,7 +86,7 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
         use_shell = isinstance(command, str) if shell is None else shell
 
         # 准备subprocess参数，在Windows下隐藏命令行窗口
-        run_kwargs = {
+        run_kwargs: Dict[str, Any] = {
             'shell': use_shell,
             'capture_output': True,
             'text': True,
@@ -87,7 +99,7 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
 
         is_windows = platform.system() == "Windows"
         if is_windows:
-            run_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            run_kwargs['creationflags'] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         else:
             # 独立进程组：超时时整组终止，避免 shell 子进程（孙进程）泄漏
             # （对齐 Claude Code tree-kill 语义；subprocess.run 只杀直接子进程）
@@ -140,7 +152,7 @@ def which_tool(tool: str) -> Optional[str]:
 
 
 @dual_mode
-def get_tool_version(tool: str, version_args: List[str] = None, timeout_sec: int = 3) -> str:
+def get_tool_version(tool: str, version_args: Optional[List[str]] = None, timeout_sec: int = 3) -> str:
     """获取工具版本信息
     
     Args:
@@ -164,7 +176,10 @@ def get_tool_version(tool: str, version_args: List[str] = None, timeout_sec: int
     if result.ok and result.stdout:
         # 取第一行作为版本信息并限制长度
         version = result.stdout.split('\n')[0]
-        truncated_version = version[:47] + "..." if len(version) > 50 else version
+        if len(version) > _VERSION_OUTPUT_MAX_LEN:
+            truncated_version = version[:_VERSION_OUTPUT_MAX_LEN - 3] + "..."
+        else:
+            truncated_version = version
         log(f"✅ 获取工具版本成功: {tool} -> {truncated_version}", "DEBUG")
         return truncated_version
     else:

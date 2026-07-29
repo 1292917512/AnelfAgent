@@ -69,7 +69,7 @@ export function ConfigField({
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
           rows={3}
-          placeholder={`${meta.description}（默认: ${meta.default || "空"}）`}
+          placeholder={`${meta.description}（${t("defaultPlaceholder", { value: meta.default || t("empty") })}）`}
           className={fieldCls + " resize-y"}
         />
       ) : vtype === "password" ? (
@@ -92,7 +92,7 @@ export function ConfigField({
                 : parseFloat(e.target.value);
             onChange(isNaN(n) ? meta.default : n);
           }}
-          placeholder={`默认: ${meta.default}`}
+          placeholder={t("defaultPlaceholder", { value: meta.default })}
           className={fieldCls}
         />
       ) : vtype === "enum" && meta.enum_options ? (
@@ -112,7 +112,7 @@ export function ConfigField({
           type="text"
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={`默认: ${meta.default || "空"}`}
+          placeholder={t("defaultPlaceholder", { value: meta.default || t("empty") })}
           autoComplete="off"
           className={fieldCls}
         />

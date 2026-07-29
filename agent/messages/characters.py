@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Union
+from typing import Dict, Optional, Union
 
 from pydantic import Field
 
-from .everything import CharType, EverythingGroup, MsgType
 from core.tags import Tag, group_id_tag, uid_tag
+
+from .everything import CharType, EverythingGroup, MsgType
 
 
 class CharacterAgent(EverythingGroup):

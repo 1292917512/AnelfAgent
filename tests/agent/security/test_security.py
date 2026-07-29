@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from core.sanitizer import contains_sensitive, sanitize_text
 from agent.security.session_token import (
     bind_token,
     build_token_rule_hint,
@@ -15,6 +14,7 @@ from agent.security.session_token import (
     wrap_history_content,
 )
 from agent.security.threat_scanner import first_threat_message, scan_for_threats
+from core.sanitizer import contains_sensitive, sanitize_text
 
 
 class TestSanitizer:

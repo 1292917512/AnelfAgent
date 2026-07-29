@@ -70,7 +70,7 @@ class ImageIndexWorker:
             try:
                 await self._task
             except asyncio.CancelledError:
-                pass
+                pass  # 取消属正常关闭流程（正常控制流，非异常）
             self._task = None
 
     def submit(self, path_or_url: str, source: str = "") -> None:
@@ -115,7 +115,9 @@ class ImageIndexWorker:
             return ""
         try:
             from entities._sdk import (
-                get_llm_manager, get_model_type_enum, load_image_from_path,
+                get_llm_manager,
+                get_model_type_enum,
+                load_image_from_path,
             )
             mgr = get_llm_manager()
             ModelType = get_model_type_enum()

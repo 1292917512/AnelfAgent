@@ -10,9 +10,8 @@ import asyncio
 import json
 import os
 import time
+from collections import OrderedDict
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
-
-from core.log import log
 
 from agent.channel.schemas import (
     AdapterChannel,
@@ -22,13 +21,65 @@ from agent.channel.schemas import (
     MessageSegment,
     SegmentType,
 )
-
+from core.log import log
 
 # API 回调类型：接收 action 和 params，返回 API 响应
 ApiCaller = Callable[[str, Dict[str, Any]], Awaitable[Optional[Dict[str, Any]]]]
 
-# 群成员名片缓存：{group_id: {user_id: nickname}}
-_group_member_cache: Dict[str, Dict[str, str]] = {}
+# 群成员名片缓存限制：单项 TTL（秒）、最大群数、每群最大成员数
+_MEMBER_CACHE_TTL_SECONDS = 3600.0
+_MEMBER_CACHE_MAX_GROUPS = 200
+_MEMBER_CACHE_MAX_MEMBERS_PER_GROUP = 500
+
+
+class _GroupMemberCache:
+    """群成员名片缓存：按群 LRU 淘汰 + 单项 TTL 过期，避免无界增长。"""
+
+    def __init__(
+        self,
+        ttl: float = _MEMBER_CACHE_TTL_SECONDS,
+        max_groups: int = _MEMBER_CACHE_MAX_GROUPS,
+        max_members: int = _MEMBER_CACHE_MAX_MEMBERS_PER_GROUP,
+    ) -> None:
+        self._ttl = ttl
+        self._max_groups = max_groups
+        self._max_members = max_members
+        # {group_id: OrderedDict{user_id: (nickname, 写入时间)}}
+        self._groups: OrderedDict[str, OrderedDict[str, Tuple[str, float]]] = OrderedDict()
+
+    def get(self, group_id: str, user_id: str) -> Optional[str]:
+        """读取缓存昵称，过期项即时清除，命中项提升 LRU 热度。"""
+        members = self._groups.get(group_id)
+        if not members:
+            return None
+        entry = members.get(user_id)
+        if entry is None:
+            return None
+        nickname, cached_at = entry
+        if time.monotonic() - cached_at > self._ttl:
+            del members[user_id]
+            return None
+        members.move_to_end(user_id)
+        self._groups.move_to_end(group_id)
+        return nickname
+
+    def set(self, group_id: str, user_id: str, nickname: str) -> None:
+        """写入缓存昵称，超出容量时淘汰最久未使用的群/成员。"""
+        members = self._groups.get(group_id)
+        if members is None:
+            members = OrderedDict()
+            self._groups[group_id] = members
+        members[user_id] = (nickname, time.monotonic())
+        members.move_to_end(user_id)
+        self._groups.move_to_end(group_id)
+        while len(members) > self._max_members:
+            members.popitem(last=False)
+        while len(self._groups) > self._max_groups:
+            self._groups.popitem(last=False)
+
+
+# 群成员名片缓存：{group_id: {user_id: nickname}}（带 TTL + LRU 上限）
+_group_member_cache = _GroupMemberCache()
 
 # 合并转发最大递归深度
 MAX_FORWARD_DEPTH = 3
@@ -36,14 +87,12 @@ MAX_FORWARD_DEPTH = 3
 
 def get_cached_nickname(group_id: str, user_id: str) -> Optional[str]:
     """从缓存中获取群成员昵称。"""
-    return _group_member_cache.get(group_id, {}).get(user_id)
+    return _group_member_cache.get(group_id, user_id)
 
 
 def cache_nickname(group_id: str, user_id: str, nickname: str) -> None:
     """缓存群成员昵称。"""
-    if group_id not in _group_member_cache:
-        _group_member_cache[group_id] = {}
-    _group_member_cache[group_id][user_id] = nickname
+    _group_member_cache.set(group_id, user_id, nickname)
 
 
 async def parse_event_async(
@@ -64,20 +113,6 @@ async def parse_event_async(
         return await _parse_message_event_async(data, api_caller)
     if post_type == "notice":
         return await _parse_notice_event(data, api_caller)
-    return None
-
-
-def parse_event(data: Dict[str, Any]) -> Optional[AdapterMessage]:
-    """同步解析 OneBot v11 事件（消息 + 通知）。
-
-    注意：此函数为兼容性保留，不支持获取引用消息内容、异步获取昵称和文件 URL。
-    建议使用 parse_event_async。
-    """
-    post_type = data.get("post_type")
-    if post_type == "message":
-        return _parse_message_event_sync(data)
-    if post_type == "notice":
-        return _parse_notice_event_sync(data)
     return None
 
 
@@ -143,57 +178,6 @@ async def _parse_message_event_async(
         timestamp=float(data.get("time", time.time())),
         reply_to_id=reply_to_id,
         reply_content=reply_content,
-    )
-
-
-def _parse_message_event_sync(data: Dict[str, Any]) -> AdapterMessage:
-    """同步解析 message 类型事件（不支持获取引用内容和异步昵称）。"""
-    message_type = data.get("message_type", "private")
-    user_id = str(data.get("user_id", ""))
-    message_id = str(data.get("message_id", ""))
-    self_id = str(data.get("self_id", ""))
-
-    sender_info = data.get("sender", {})
-    user_name = (
-        sender_info.get("card")
-        or sender_info.get("nickname")
-        or user_id
-    )
-
-    if message_type == "group":
-        group_id = str(data.get("group_id", ""))
-        channel = AdapterChannel(
-            channel_id=group_id,
-            channel_type=ChannelType.GROUP,
-        )
-        if user_name and user_name != user_id:
-            cache_nickname(group_id, user_id, user_name)
-    else:
-        group_id = ""
-        channel = AdapterChannel(
-            channel_id=user_id,
-            channel_type=ChannelType.PRIVATE,
-        )
-
-    raw_message = data.get("message", [])
-    content, segments = _parse_message_segments_sync(raw_message, group_id, self_id)
-    reply_to_id = _extract_reply_id(raw_message)
-
-    is_to_me = _check_to_me(data)
-
-    return AdapterMessage(
-        message_id=message_id,
-        sender=AdapterUser(
-            platform="qq",
-            user_id=user_id,
-            user_name=user_name,
-        ),
-        channel=channel,
-        content=content,
-        segments=segments,
-        is_to_me=is_to_me,
-        timestamp=float(data.get("time", time.time())),
-        reply_to_id=reply_to_id,
     )
 
 
@@ -670,107 +654,6 @@ def _parse_json_card(seg_data: Dict[str, Any]) -> str:
 # ======================================================================
 # 通知事件解析
 # ======================================================================
-
-
-def _parse_notice_event_sync(data: Dict[str, Any]) -> Optional[AdapterMessage]:
-    """同步解析通知事件（兼容性保留，不支持获取文件 URL）。"""
-    notice_text, is_to_me = _format_notice_sync(data)
-    if not notice_text:
-        return None
-
-    user_id = str(data.get("user_id", "system"))
-    group_id = data.get("group_id")
-
-    if group_id:
-        channel = AdapterChannel(
-            channel_id=str(group_id),
-            channel_type=ChannelType.GROUP,
-        )
-    else:
-        channel = AdapterChannel(
-            channel_id=user_id,
-            channel_type=ChannelType.PRIVATE,
-        )
-
-    return AdapterMessage(
-        sender=AdapterUser(
-            platform="qq",
-            user_id=user_id,
-            user_name="",
-        ),
-        channel=channel,
-        content=notice_text,
-        segments=[MessageSegment(type=SegmentType.TEXT, content=notice_text)],
-        is_to_me=is_to_me,
-        timestamp=float(data.get("time", time.time())),
-    )
-
-
-def _format_notice_sync(data: Dict[str, Any]) -> Tuple[str, bool]:
-    """同步版本的通知格式化（不支持文件 URL 获取）。"""
-    notice_type = data.get("notice_type", "")
-    sub_type = data.get("sub_type", "")
-    user_id = data.get("user_id", "")
-    operator_id = data.get("operator_id", "")
-    self_id = str(data.get("self_id", ""))
-
-    if notice_type == "notify" and sub_type == "poke":
-        target_id = str(data.get("target_id", ""))
-        raw_info = data.get("raw_info", [])
-        item2 = raw_info[2] if len(raw_info) > 2 else None
-        item4 = raw_info[4] if len(raw_info) > 4 else None
-        poke_style = item2.get("txt", "戳一戳") if isinstance(item2, dict) else "戳一戳"
-        poke_suffix = item4.get("txt", "") if isinstance(item4, dict) else ""
-
-        group_id = str(data.get("group_id", ""))
-        sender_nickname = get_cached_nickname(group_id, str(user_id)) if group_id else ""
-        sender_display = sender_nickname or f"用户{user_id}"
-
-        is_poke_me = target_id == self_id
-        if is_poke_me:
-            text = f"({sender_display} {poke_style} 你 {poke_suffix})".strip()
-        else:
-            target_nickname = get_cached_nickname(group_id, target_id) if group_id else ""
-            target_display = target_nickname or f"用户{target_id}"
-            text = f"({sender_display} {poke_style} {target_display} {poke_suffix})".strip()
-        return text, is_poke_me
-
-    if notice_type == "group_upload":
-        file_info = data.get("file", {})
-        file_name = file_info.get("name", "未知文件")
-        file_size = file_info.get("size", 0)
-        file_id = str(file_info.get("id", "") or "")
-        hint = f"，file_id: {file_id}，可用 qq_download_file 下载到本地" if file_id else ""
-        return (
-            f"(用户 {user_id} 上传了文件: {file_name}, "
-            f"大小: {_format_file_size(file_size)}{hint})"
-        ), False
-
-    if notice_type == "group_increase":
-        return f"(新成员 {user_id} 加入了群聊)", False
-
-    if notice_type == "group_decrease":
-        return f"(成员 {user_id} 离开了群聊)", False
-
-    if notice_type == "group_ban":
-        duration = data.get("duration", 0)
-        if duration == 0:
-            return f"(成员 {user_id} 被 {operator_id} 解除禁言)", False
-        return f"(成员 {user_id} 被 {operator_id} 禁言 {_format_duration(duration)})", False
-
-    if notice_type == "group_recall":
-        if str(user_id) == str(operator_id):
-            return f"(成员 {user_id} 撤回了一条消息)", False
-        return f"(成员 {user_id} 的消息被 {operator_id} 撤回)", False
-
-    if notice_type == "group_admin":
-        action = "被设为管理员" if sub_type == "set" else "被取消管理员"
-        return f"(成员 {user_id} {action})", False
-
-    if notice_type == "friend_add":
-        return f"(用户 {user_id} 已成为好友)", True
-
-    return "", False
 
 
 async def _parse_notice_event(

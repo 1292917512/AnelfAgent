@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hmac
+import time
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, Request
@@ -9,6 +11,26 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# 登录失败速率限制（内存态，按客户端 IP 计数）
+_LOGIN_MAX_FAILURES = 5
+_LOGIN_LOCKOUT_SECONDS = 60
+_login_failures: Dict[str, list] = {}
+
+
+def _check_login_allowed(client: str) -> bool:
+    """检查客户端是否处于锁定状态，并清理过期记录。"""
+    now = time.time()
+    fails = [t for t in _login_failures.get(client, []) if now - t < _LOGIN_LOCKOUT_SECONDS]
+    _login_failures[client] = fails
+    return len(fails) < _LOGIN_MAX_FAILURES
+
+
+def _record_login_result(client: str, success: bool) -> None:
+    if success:
+        _login_failures.pop(client, None)
+    else:
+        _login_failures.setdefault(client, []).append(time.time())
 
 
 class LoginRequest(BaseModel):
@@ -25,26 +47,37 @@ async def check_auth(request: Request) -> Dict[str, Any]:
         return {"required": False, "authenticated": True}
 
     token = request.cookies.get("_anelf_token", "")
-    return {"required": True, "authenticated": token == _make_token(password)}
+    expected = _make_token(password)
+    authenticated = bool(token) and hmac.compare_digest(token, expected)
+    return {"required": True, "authenticated": authenticated}
 
 
 @router.post("/login")
-async def login(body: LoginRequest) -> JSONResponse:
-    """验证密码并设置认证 cookie。"""
+async def login(body: LoginRequest, request: Request) -> JSONResponse:
+    """验证密码并设置认证 cookie。连续失败触发临时锁定。"""
     from web.server import _load_auth_password, _make_token
+
+    client = request.client.host if request.client else "unknown"
+    if not _check_login_allowed(client):
+        return JSONResponse(
+            {"error": "失败次数过多，请稍后再试"}, status_code=429,
+        )
 
     password = _load_auth_password()
     if not password:
         return JSONResponse({"status": "ok", "message": "无需密码"})
 
-    if body.password != password:
+    if not hmac.compare_digest(body.password, password):
+        _record_login_result(client, False)
         return JSONResponse({"error": "密码错误"}, status_code=403)
 
+    _record_login_result(client, True)
     token = _make_token(password)
     resp = JSONResponse({"status": "ok"})
     resp.set_cookie(
         "_anelf_token", token,
         httponly=True, samesite="lax", max_age=30 * 86400,
+        secure=request.url.scheme == "https",
     )
     return resp
 
@@ -62,7 +95,7 @@ class PasswordUpdate(BaseModel):
 
 
 @router.put("/password")
-async def update_password(body: PasswordUpdate) -> JSONResponse:
+async def update_password(body: PasswordUpdate, request: Request) -> JSONResponse:
     """修改访问密码。空字符串表示取消密码保护。修改后需重新登录。"""
     from web.auth_keys import load_webui_config, save_webui_config
     from web.server import _make_token
@@ -76,6 +109,7 @@ async def update_password(body: PasswordUpdate) -> JSONResponse:
         resp.set_cookie(
             "_anelf_token", _make_token(body.new_password),
             httponly=True, samesite="lax", max_age=30 * 86400,
+            secure=request.url.scheme == "https",
         )
     else:
         resp.delete_cookie("_anelf_token")

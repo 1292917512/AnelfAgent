@@ -18,10 +18,10 @@ from typing import Any, Dict, List, Optional
 
 from core.config import register_configs_safe
 from core.log import log
-from entities._sdk import tool, entity, entity_manifest
+from entities._sdk import entity, entity_manifest, tool
 
 from .phash import compute_phash
-from .store import StickerStore, get_sticker_store
+from .store import get_sticker_store
 
 entity(
     "sticker",
@@ -121,7 +121,9 @@ async def _describe_sticker(local_path: str) -> str:
     """VLM 生成表情包描述（遍历视觉客户端直到成功，失败返回空串）。"""
     try:
         from entities._sdk import (
-            get_llm_manager, get_model_type_enum, load_image_from_path,
+            get_llm_manager,
+            get_model_type_enum,
+            load_image_from_path,
         )
         mgr = get_llm_manager()
         ModelType = get_model_type_enum()
@@ -409,7 +411,7 @@ async def send_sticker(
         if json.loads(result).get("success") is not False:
             await store.touch_use(sticker_id)
     except (json.JSONDecodeError, TypeError):
-        pass
+        log("_enrich 异常已忽略", "DEBUG")
     return result
 
 
@@ -550,7 +552,7 @@ async def find_similar_image(image_path: str, limit: int = 5) -> str:
         self_hash = await asyncio.to_thread(_md5_file, local_path)
         items = [i for i in items if i.get("content_hash") != self_hash]
     except OSError:
-        pass
+        log("find_similar_image 异常已忽略", "DEBUG")
     if not items:
         return json.dumps({"results": [], "hint": "未找到相同或相似的图片"}, ensure_ascii=False)
     for item in items:

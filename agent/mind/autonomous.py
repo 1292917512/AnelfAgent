@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional, Union
 
 from core.log import log
 
-
 # ======================================================================
 # Mind 运行阶段
 # ======================================================================
@@ -287,11 +286,16 @@ def parse_decisions_from_tool_calls(
         except ValueError:
             continue
 
+        try:
+            priority = int(args.get("priority", 5))
+        except (TypeError, ValueError):
+            priority = 5
+
         decisions.append(Decision(
             type=dt,
             target=args.get("target"),
             reason=args.get("reason", ""),
-            priority=int(args.get("priority", 5)),
+            priority=priority,
             content=args.get("content", ""),
             params=args.get("params", {}),
         ))

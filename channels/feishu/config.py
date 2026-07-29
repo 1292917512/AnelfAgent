@@ -40,6 +40,11 @@ FEISHU_CONFIGS: Dict[str, Dict[str, Any]] = {
             "default": "",
             "value_type": ConfigValueType.PASSWORD,
         },
+        "webhook_host": {
+            "description": "Webhook 监听地址（仅 webhook 模式使用；非回环地址必须配置验证令牌或加密 Key，否则拒绝启动）",
+            "default": "127.0.0.1",
+            "value_type": ConfigValueType.STRING,
+        },
         "webhook_port": {
             "description": "Webhook 监听端口（仅 webhook 模式使用）",
             "default": 9321,

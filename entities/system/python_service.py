@@ -3,15 +3,16 @@ Python环境管理工具
 提供Python、Conda、uv等工具的检测、安装、配置和包管理功能
 """
 
+import json
 import os
 import platform
 import re
 import sys
-import json
-from typing import Dict, List, Tuple, Optional, Any
 from pathlib import Path
-from core.command import run_command, CommandResult, which_tool
+from typing import Any, Dict, List, Optional, Tuple
+
 from core.async_helper import AsyncHelper
+from core.command import CommandResult, run_command, which_tool
 from core.log import log
 
 dual_mode = AsyncHelper.dual_mode
@@ -24,7 +25,7 @@ _env_manager_cache: Dict[str, Dict[str, Any]] = {}
 
 # ==================== 环境管理器检测 ====================
 
-def detect_env_manager(python_path: str = None) -> Dict[str, Any]:
+def detect_env_manager(python_path: Optional[str] = None) -> Dict[str, Any]:
     """检测 Python 环境的管理工具（uv / conda / pip）。
 
     判定依据：venv 的 pyvenv.cfg 中 `uv = x.y.z` 标记（uv 创建 venv 时写入），
@@ -61,7 +62,7 @@ def detect_env_manager(python_path: str = None) -> Dict[str, Any]:
 # ==================== pip 工具检测 ====================
 
 @dual_mode
-def is_pip_available(python_path: str = None) -> bool:
+def is_pip_available(python_path: Optional[str] = None) -> bool:
     """检查指定Python环境中pip是否可用（带缓存）"""
     python_exe = python_path or sys.executable
     
@@ -258,6 +259,15 @@ def get_python_version_info(python_path: str) -> Optional[Dict[str, str]]:
 
 # ==================== Conda 环境检测 ====================
 
+# conda 环境目录名白名单（防 f-string 命令拼接注入）
+_CONDA_ENV_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _is_valid_conda_env_name(env_name: str) -> bool:
+    """校验 conda 环境名是否只含安全字符（字母/数字/_/./-）。"""
+    return bool(env_name) and bool(_CONDA_ENV_NAME_RE.match(env_name))
+
+
 @dual_mode
 def is_conda_installed() -> Tuple[bool, Optional[str], Optional[str]]:
     """检查系统是否安装了Conda"""
@@ -393,7 +403,7 @@ def list_conda_environments() -> List[Dict[str, Any]]:
 # ==================== 包管理 ====================
 
 @dual_mode
-def get_installed_packages(python_path: str = None) -> List[Dict[str, str]]:
+def get_installed_packages(python_path: Optional[str] = None) -> List[Dict[str, str]]:
     """获取指定Python环境中已安装的包列表"""
     python_exe = python_path or sys.executable
     log(f"📦 获取已安装包列表: {python_exe}", "DEBUG")
@@ -467,6 +477,10 @@ def _get_conda_packages(python_exe: str) -> List[Dict[str, str]]:
     if env_name in ['miniconda3', 'anaconda3', 'conda']:
         log("🔧 使用 'conda list --json' 获取base环境包", "DEBUG")
         result = run_command("conda list --json")
+    elif not _is_valid_conda_env_name(env_name):
+        # 环境名含注入字符，拒绝拼入命令，回退 pip 方式
+        log(f"❌ Conda环境名含非法字符，拒绝拼接命令: {env_name!r}", "ERROR")
+        return _get_standard_packages(python_exe)
     else:
         log(f"🔧 使用 'conda list -n {env_name} --json' 获取环境包", "DEBUG")
         result = run_command(f"conda list -n {env_name} --json")
@@ -551,7 +565,7 @@ def _get_standard_packages(python_exe: str) -> List[Dict[str, str]]:
 # ==================== uv 工具检测和安装 ====================
 
 @dual_mode
-def get_comprehensive_uv_info(python_path: str = None, packages: List[Dict[str, str]] = None) -> Dict[str, Any]:
+def get_comprehensive_uv_info(python_path: Optional[str] = None, packages: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
     """获取全面的 uv 安装信息 - 检测 pip 和 pipx 两种安装方式"""
     log("🔍 获取uv工具安装信息", "DEBUG")
     
@@ -676,10 +690,6 @@ def _detect_uv_install_method(uv_path: str) -> str:
         return '未知'
 
 
-# 更新原有函数以保持兼容性
-def get_uv_info_from_packages(packages: List[Dict[str, str]]) -> Dict[str, Any]:
-    """从包列表中获取 uv 信息 - 兼容性函数，现在调用新的全面检测"""
-    return get_comprehensive_uv_info(packages=packages)
 
 
 @dual_mode
@@ -695,136 +705,12 @@ def is_pipx_installed() -> Tuple[bool, Optional[str]]:
     # 检查是否通过 python -m pipx 可用
     result = run_command([sys.executable, "-m", "pipx", "--version"])
     if result.ok:
-        log(f"✅ pipx通过python模块可用", "DEBUG")
+        log("✅ pipx通过python模块可用", "DEBUG")
         return True, f"{sys.executable} -m pipx"
     
     log("❌ pipx未安装或不可用", "DEBUG")
     return False, None
 
-
-@dual_mode
-def install_pipx() -> CommandResult:
-    """安装 pipx"""
-    log("📥 安装pipx", "INFO")
-    
-    # 先尝试用 pip 安装 pipx
-    result = run_command([sys.executable, "-m", "pip", "install", "pipx"])
-    
-    if result.ok:
-        log("✅ pipx安装成功", "INFO")
-    else:
-        log(f"❌ pipx安装失败: {result.stderr}", "ERROR")
-    
-    return result
-
-
-@dual_mode
-def install_uv_with_pip(python_path: str = None) -> CommandResult:
-    """使用 pip 安装 uv"""
-    python_exe = python_path or sys.executable
-    log(f"📥 使用pip安装uv: {python_exe}", "INFO")
-    
-    # 检查pip可用性
-    if not is_pip_available(python_exe):
-        log(f"❌ pip不可用，无法安装uv: {python_exe}", "ERROR")
-        return CommandResult(
-            ok=False,
-            stdout="",
-            stderr="pip 不可用，无法安装 uv"
-        )
-    
-    result = run_command([python_exe, "-m", "pip", "install", "uv"], timeout_sec=60)
-    
-    if result.ok:
-        log("✅ uv通过pip安装成功", "INFO")
-    else:
-        log(f"❌ uv通过pip安装失败: {result.stderr}", "ERROR")
-    
-    return result
-
-
-@dual_mode
-def install_uv_with_pipx() -> CommandResult:
-    """使用 pipx 安装 uv"""
-    log("📥 使用pipx安装uv", "INFO")
-    
-    pipx_installed, pipx_cmd = is_pipx_installed()
-    
-    if not pipx_installed:
-        # 尝试安装 pipx
-        log("🔧 pipx未安装，尝试自动安装...", "INFO")
-        install_result = install_pipx()
-        if not install_result.ok:
-            log(f"❌ 无法安装pipx: {install_result.stderr}", "ERROR")
-            return CommandResult(
-                ok=False,
-                stdout="",
-                stderr=f"无法安装 pipx: {install_result.stderr}"
-            )
-        
-        # 重新检查 pipx
-        pipx_installed, pipx_cmd = is_pipx_installed()
-        if not pipx_installed:
-            log("❌ pipx安装后仍然不可用", "ERROR")
-            return CommandResult(
-                ok=False,
-                stdout="",
-                stderr="pipx 安装后仍然不可用"
-            )
-    
-    # 使用 pipx 安装 uv
-    if pipx_cmd.endswith("-m pipx"):
-        log("🔧 使用python -m pipx安装uv", "DEBUG")
-        result = run_command([sys.executable, "-m", "pipx", "install", "uv"])
-    else:
-        log("🔧 使用pipx命令安装uv", "DEBUG")
-        result = run_command(["pipx", "install", "uv"])
-    
-    if result.ok:
-        log("✅ uv通过pipx安装成功", "INFO")
-    else:
-        log(f"❌ uv通过pipx安装失败: {result.stderr}", "ERROR")
-    
-    return result
-
-
-@dual_mode
-def uninstall_uv_package(python_path: str = None) -> CommandResult:
-    """卸载 uv（智能检测安装方式）"""
-    python_exe = python_path or sys.executable
-    log(f"🗑️ 卸载uv: {python_exe}", "INFO")
-    
-    # 先尝试用 pip 卸载（从指定环境）
-    if is_pip_available(python_exe):
-        log("🔧 尝试用pip卸载uv", "DEBUG")
-        pip_result = run_command([python_exe, "-m", "pip", "uninstall", "uv", "-y"], timeout_sec=30)
-        if pip_result.ok:
-            log("✅ uv通过pip卸载成功", "INFO")
-            return pip_result
-        log("⚠️ pip卸载失败，尝试pipx卸载", "WARNING")
-    else:
-        log("⚠️ pip不可用，直接尝试pipx卸载", "WARNING")
-        pip_result = CommandResult(False, "", "pip 不可用")
-    
-    # 如果 pip 失败，尝试用 pipx 卸载（全局）
-    pipx_installed, pipx_cmd = is_pipx_installed()
-    if pipx_installed:
-        if pipx_cmd.endswith("-m pipx"):
-            log("🔧 使用python -m pipx卸载uv", "DEBUG")
-            result = run_command([sys.executable, "-m", "pipx", "uninstall", "uv"], timeout_sec=30)
-        else:
-            log("🔧 使用pipx命令卸载uv", "DEBUG")
-            result = run_command(["pipx", "uninstall", "uv"], timeout_sec=30)
-        
-        if result.ok:
-            log("✅ uv通过pipx卸载成功", "INFO")
-        else:
-            log(f"❌ uv通过pipx卸载失败: {result.stderr}", "ERROR")
-        
-        return result
-    
-    log("❌ 所有卸载方式都失败", "ERROR")
-    return pip_result  # 返回原始的 pip 错误
 
 
 # ==================== pip 镜像源管理 ====================
@@ -843,7 +729,7 @@ PIP_MIRRORS = {
 
 
 @dual_mode
-def get_pip_config(python_path: str = None) -> Dict[str, Any]:
+def get_pip_config(python_path: Optional[str] = None) -> Dict[str, Any]:
     """获取 pip 配置信息"""
     python_exe = python_path or sys.executable
     log(f"🔧 获取pip配置信息: {python_exe}", "DEBUG")
@@ -912,7 +798,7 @@ def get_pip_config(python_path: str = None) -> Dict[str, Any]:
 
 
 @dual_mode
-def set_pip_mirror(mirror_name: str, python_path: str = None) -> CommandResult:
+def set_pip_mirror(mirror_name: str, python_path: Optional[str] = None) -> CommandResult:
     """设置 pip 镜像源"""
     python_exe = python_path or sys.executable
     log(f"🔧 设置pip镜像源: {mirror_name} (Python: {python_exe})", "INFO")
@@ -981,7 +867,7 @@ def set_pip_mirror(mirror_name: str, python_path: str = None) -> CommandResult:
 
 
 @dual_mode
-def reset_pip_mirror(python_path: str = None) -> CommandResult:
+def reset_pip_mirror(python_path: Optional[str] = None) -> CommandResult:
     """重置 pip 镜像源到官方源"""
     python_exe = python_path or sys.executable
     log(f"🔄 重置pip镜像源到官方源: {python_exe}", "INFO")
@@ -998,11 +884,11 @@ def reset_pip_mirror(python_path: str = None) -> CommandResult:
     try:
         # 移除 index-url 配置
         log("🗑️ 移除index-url配置", "DEBUG")
-        result1 = run_command([python_exe, "-m", "pip", "config", "unset", "global.index-url"], timeout_sec=5)
-        
+        run_command([python_exe, "-m", "pip", "config", "unset", "global.index-url"], timeout_sec=5)
+
         # 移除 trusted-host 配置
         log("🗑️ 移除trusted-host配置", "DEBUG")
-        result2 = run_command([python_exe, "-m", "pip", "config", "unset", "global.trusted-host"], timeout_sec=5)
+        run_command([python_exe, "-m", "pip", "config", "unset", "global.trusted-host"], timeout_sec=5)
         
         # 即使部分命令失败也认为重置成功
         log("✅ pip镜像源重置完成", "INFO")
@@ -1019,40 +905,6 @@ def reset_pip_mirror(python_path: str = None) -> CommandResult:
             stdout="",
             stderr=f"重置镜像源失败: {str(e)}"
         )
-
-
-# ==================== 包管理 ====================
-
-@dual_mode
-def export_requirements(output_file: str = "requirements.txt", python_path: str = None) -> CommandResult:
-    """导出 requirements.txt"""
-    python_exe = python_path or sys.executable
-    log(f"📦 导出requirements.txt: {output_file} (Python: {python_exe})", "INFO")
-    
-    # 检查pip可用性
-    if not is_pip_available(python_exe):
-        log(f"❌ pip不可用，无法导出requirements.txt: {python_exe}", "ERROR")
-        return CommandResult(
-            ok=False,
-            stdout="",
-            stderr="pip 不可用，无法导出 requirements.txt"
-        )
-    
-    cmd = [python_exe, "-m", "pip", "freeze"]
-    
-    result = run_command(cmd, timeout_sec=15)
-    if result.ok:
-        try:
-            Path(output_file).write_text(result.stdout)
-            log(f"✅ requirements.txt导出成功: {output_file}", "INFO")
-            return CommandResult(ok=True, stdout=f"已导出到 {output_file}", stderr="")
-        except Exception as e:
-            log(f"❌ 写入requirements.txt失败: {str(e)}", "ERROR")
-            return CommandResult(ok=False, stdout="", stderr=str(e))
-    else:
-        log(f"❌ pip freeze命令失败: {result.stderr}", "ERROR")
-    
-    return result
 
 
 # ==================== 综合状态检查 ====================

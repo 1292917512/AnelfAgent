@@ -11,26 +11,27 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import inspect
 import json
+import re
+import threading
+import uuid
 from abc import ABC
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Type
 
-from core.event_bus import event_bus, EVENT_TRACE_CALL_START, EVENT_TRACE_CALL_END
+from core.event_bus import EVENT_TRACE_CALL_END, EVENT_TRACE_CALL_START, event_bus
 from core.exceptions import catch_exceptions
 from core.log import log
-
 
 # ======================================================================
 # JSON 容错修复
 # ======================================================================
 
-import re as _re
-
 # 非法控制字符（\x00-\x1f 中排除 \t \n \r）
-_CTRL_CHAR_RE = _re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_CTRL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
 def repair_json_arguments(arguments: str) -> str:
@@ -159,11 +160,11 @@ class EntityMetadata:
         return str(self.meta.get("sleep_brief") or "")
 
     def get_registered_apis(self) -> List[str]:
-        """获取实体对外暴露的接口列表"""
-        if self.instance and hasattr(self.instance, '_registered_apis'):
-            apis = self.instance._registered_apis
-            if apis:
-                return apis.copy()
+        """获取实体对外暴露的接口列表（优先取实例自身跟踪的 API 列表）"""
+        if self.instance is not None:
+            getter = getattr(self.instance, "get_registered_apis", None)
+            if callable(getter):
+                return list(getter())
         if self.entity_type == EntityType.TOOL and self.func is not None:
             return [self.name]
         return []
@@ -182,7 +183,7 @@ class EntityMetadata:
         """获取实体所属配置分组的所有配置项及其当前值"""
         if not self.config_group:
             return {}
-        from core.config import ConfigRegistry, ConfigManager
+        from core.config import ConfigManager, ConfigRegistry
         items = ConfigRegistry.get_group_items(self.config_group)
         return {
             item.key: ConfigManager.get(item.key, item.default_value)
@@ -193,7 +194,7 @@ class EntityMetadata:
         """获取实体配置项描述列表（含类型、默认值等元信息）"""
         if not self.config_group:
             return []
-        from core.config import ConfigRegistry, ConfigManager
+        from core.config import ConfigManager, ConfigRegistry
         items = ConfigRegistry.get_group_items(self.config_group)
         return [
             {
@@ -362,7 +363,13 @@ def _unwrap_nested_arguments(params: List[ToolParam], kwargs: Dict[str, Any]) ->
 # ======================================================================
 
 
-class BaseEntity(ABC):
+def _entity_instance_name(instance: Any) -> str:
+    """实体实例的注册名（模块.类名_对象id）。"""
+    cls = instance.__class__
+    return f"{cls.__module__}.{cls.__name__}_{id(instance)}"
+
+
+class BaseEntity(ABC):  # noqa: B024 — 标记型基类：子类经类属性声明元数据，无需抽象方法
     """实体基类 - 实例化时自动注册到 EntityRegistry"""
 
     def __init__(self) -> None:
@@ -373,7 +380,7 @@ class BaseEntity(ABC):
     @catch_exceptions()
     def _register_instance(self) -> None:
         cls = self.__class__
-        instance_name = f"{cls.__module__}.{cls.__name__}_{id(self)}"
+        instance_name = _entity_instance_name(self)
         self._register_entity_configs()
 
         entity_configs = getattr(cls, '_entity_configs', None)
@@ -398,8 +405,7 @@ class BaseEntity(ABC):
         EntityRegistry.activate_entity(instance_name)
 
     def get_entity_name(self) -> str:
-        cls = self.__class__
-        return f"{cls.__module__}.{cls.__name__}_{id(self)}"
+        return _entity_instance_name(self)
 
     @catch_exceptions()
     def _register_entity_configs(self) -> None:
@@ -412,12 +418,11 @@ class BaseEntity(ABC):
         from core.config import ConfigManager
         return ConfigManager.get(key, default)
 
-    def register_api(self, name: Optional[str] = None, description: str = ""):
+    def register_api(self, name: Optional[str] = None, description: str = "") -> Callable[..., Any]:
         """装饰器：将实体方法注册为可发现的 API"""
         @catch_exceptions(reraise=False, tag="entity")
-        def decorator(method):  # type: ignore[no-untyped-def]
+        def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
             api_name = name or f"{self.get_entity_name()}.{method.__name__}"
-            des = description or f"{self.__class__.__name__}的{method.__name__}方法"
             self._registered_apis.append(api_name)
             log(f"✅ 实体API注册: {api_name}", "DEBUG")
             return method
@@ -436,6 +441,38 @@ _SKIP_ENTITY_METHODS = frozenset({
     'get_entity_name', 'get_entity_config',
     'register_api', 'get_registered_apis',
 })
+# 未知工具名纠错建议：difflib 相似度阈值与候选数
+_SUGGEST_CUTOFF = 0.35
+_SUGGEST_MAX = 8
+# 日志/事件载荷中的参数与结果预览截断长度
+_LOG_ARGS_PREVIEW_LEN = 120
+_LOG_RESULT_PREVIEW_LEN = 150
+_EVENT_PREVIEW_LEN = 200
+_JSON_ERROR_PREVIEW_LEN = 200
+
+# 实体目录中未注册排序权重分组的兜底权重（按字母序排在已注册分组之后）
+_UNREGISTERED_GROUP_WEIGHT = 1000
+
+# 默认分组排序权重表（数字越小越靠前）。
+# 各业务模块注册工具分组时可通过 EntityRegistry.register_group_order() 覆盖；
+# 未在此表中的分组按字母序排在末尾。
+_DEFAULT_GROUP_ORDER: Dict[str, int] = {
+    "output": 0, "memory": 1, "notes": 2, "thinking": 3, "planning": 4,
+    "web": 5, "media": 6, "minimax": 7, "os": 8, "environment": 9,
+    "model_control": 10, "ollama": 11, "logs": 12, "channel_ops": 13,
+    "entity": 14, "mcp_manage": 15, "devops": 16,
+    "skills": 17, "delegation": 18, "ui": 19, "session": 20,
+}
+
+
+def register_default_group_orders() -> None:
+    """按 _DEFAULT_GROUP_ORDER 注册默认分组排序权重。
+
+    业务模块可在注册工具分组后调用 EntityRegistry.register_group_order()
+    覆盖任意分组的权重。
+    """
+    for group, weight in _DEFAULT_GROUP_ORDER.items():
+        EntityRegistry.register_group_order(group, weight)
 
 
 # ======================================================================
@@ -454,6 +491,8 @@ class EntityRegistry:
     _groups: Dict[str, List[str]] = {}
     _group_descriptions: Dict[str, str] = {}
     _group_manifests: Dict[str, Dict[str, Any]] = {}
+    # 分组排序权重（越小越靠前），经 register_group_order() 注册
+    _group_order_weights: Dict[str, int] = {}
     # 工具名候选缓存（未知工具名纠错建议用），注册/注销时失效
     _names_cache: Optional[List[str]] = None
     # 注册表版本号：任何元数据变更（注册/注销/启停/属性覆盖）时递增，
@@ -463,6 +502,8 @@ class EntityRegistry:
     _catalog_cache: Optional[List[Dict[str, Any]]] = None
     _sleepable_cache: Optional[Dict[str, Dict[str, Any]]] = None
     _schema_cache: Dict[str, Dict[str, Any]] = {}
+    # 写操作（注册/注销/启停/版本递增）互斥锁；读路径不加锁保持高性能
+    _lock = threading.RLock()
 
     @classmethod
     def bump_version(cls) -> None:
@@ -471,12 +512,13 @@ class EntityRegistry:
         注册表元数据的任何变更（含直接修改 EntityMetadata 属性，如 tags/description
         覆盖）都必须调用本方法，否则按版本缓存的派生数据会过期。
         """
-        cls._version += 1
-        cls._names_cache = None
-        cls._tag_index_cache = None
-        cls._catalog_cache = None
-        cls._sleepable_cache = None
-        cls._schema_cache.clear()
+        with cls._lock:
+            cls._version += 1
+            cls._names_cache = None
+            cls._tag_index_cache = None
+            cls._catalog_cache = None
+            cls._sleepable_cache = None
+            cls._schema_cache.clear()
 
     @classmethod
     def version(cls) -> int:
@@ -491,25 +533,26 @@ class EntityRegistry:
     @catch_exceptions(reraise=False, default_value=False, tag="entity")
     def register(cls, metadata: EntityMetadata) -> bool:
         """注册实体"""
-        if metadata.name in cls._entities:
-            existing = cls._entities[metadata.name]
-            if (existing.entity_class and metadata.entity_class
-                    and existing.entity_class != metadata.entity_class):
-                log(f"⚠️ 实体名称冲突: {metadata.name}", "WARNING")
-                return False
-            if existing.source != metadata.source:
-                log(
-                    f"⚠️ 实体名称冲突，已覆盖: {metadata.name} "
-                    f"({existing.source} → {metadata.source})",
-                    "WARNING",
-                )
-            cls._remove_from_indexes(metadata.name)
+        with cls._lock:
+            if metadata.name in cls._entities:
+                existing = cls._entities[metadata.name]
+                if (existing.entity_class and metadata.entity_class
+                        and existing.entity_class != metadata.entity_class):
+                    log(f"⚠️ 实体名称冲突: {metadata.name}", "WARNING")
+                    return False
+                if existing.source != metadata.source:
+                    log(
+                        f"⚠️ 实体名称冲突，已覆盖: {metadata.name} "
+                        f"({existing.source} → {metadata.source})",
+                        "WARNING",
+                    )
+                cls._remove_from_indexes(metadata.name)
 
-        cls._entities[metadata.name] = metadata
-        cls._types.setdefault(metadata.entity_type, []).append(metadata.name)
-        if metadata.group:
-            cls._groups.setdefault(metadata.group, []).append(metadata.name)
-        cls.bump_version()
+            cls._entities[metadata.name] = metadata
+            cls._types.setdefault(metadata.entity_type, []).append(metadata.name)
+            if metadata.group:
+                cls._groups.setdefault(metadata.group, []).append(metadata.name)
+            cls.bump_version()
 
         log(f"✅ 实体注册: {metadata.name} [{metadata.entity_type.value}]", "DEBUG")
         return True
@@ -523,26 +566,27 @@ class EntityRegistry:
             try:
                 cls._types[old.entity_type].remove(name)
             except ValueError:
-                pass
+                log("_remove_from_indexes 异常已忽略", "DEBUG")
         if old.group and old.group in cls._groups:
             try:
                 cls._groups[old.group].remove(name)
             except ValueError:
-                pass
+                log("_remove_from_indexes 异常已忽略", "DEBUG")
 
     @classmethod
     @catch_exceptions(reraise=False, default_value=False, tag="entity")
     def unregister(cls, name: str) -> bool:
         """注销实体"""
-        if name not in cls._entities:
-            return False
-        metadata = cls._entities[name]
-        if metadata.instance:
-            cls.deactivate_entity(name)
-        cls._remove_from_indexes(name)
-        del cls._entities[name]
-        cls.bump_version()
-        log(f"✅ 实体注销: {name}")
+        with cls._lock:
+            if name not in cls._entities:
+                return False
+            metadata = cls._entities[name]
+            if metadata.instance:
+                cls.deactivate_entity(name)
+            cls._remove_from_indexes(name)
+            del cls._entities[name]
+            cls.bump_version()
+        log(f"✅ 实体注销: {name}", "DEBUG")
         return True
 
     # ------------------------------------------------------------------
@@ -573,7 +617,7 @@ class EntityRegistry:
             allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief，激活后恢复完整 schema）。
             sleep_brief: 沉睡状态下展示给 AI 的简短描述。
         """
-        tool_meta = {"params": params or []}
+        tool_meta: Dict[str, Any] = {"params": params or []}
         if meta:
             tool_meta.update(meta)
         if check_fn is not None:
@@ -582,7 +626,7 @@ class EntityRegistry:
             tool_meta["allow_sleep"] = True
         if sleep_brief:
             tool_meta["sleep_brief"] = sleep_brief
-        
+
         return cls.register(EntityMetadata(
             name=name,
             entity_type=EntityType.TOOL,
@@ -624,13 +668,15 @@ class EntityRegistry:
         """返回所有已注册的分组名。"""
         return list(cls._groups.keys())
 
-    _CATALOG_ORDER: Dict[str, int] = {
-        "output": 0, "memory": 1, "notes": 2, "thinking": 3, "planning": 4,
-        "web": 5, "media": 6, "minimax": 7, "os": 8, "environment": 9,
-        "model_control": 10, "ollama": 11, "logs": 12, "channel_ops": 13,
-        "entity": 14, "mcp_manage": 15, "devops": 16,
-        "skills": 17, "delegation": 18, "ui": 19, "session": 20,
-    }
+    @classmethod
+    def register_group_order(cls, group: str, weight: int) -> None:
+        """注册分组在实体目录中的排序权重（越小越靠前）。
+
+        业务模块注册工具分组时可调用本方法覆盖默认顺序；
+        未注册权重的分组按字母序排在末尾。
+        """
+        cls._group_order_weights[group] = weight
+        cls._catalog_cache = None
 
     @classmethod
     def get_entity_catalog(cls) -> List[Dict[str, Any]]:
@@ -638,7 +684,7 @@ class EntityRegistry:
 
         只返回分组名、描述和工具数量，不含具体工具名。
         具体工具通过 list_entity_methods 按需查询。
-        按预定义顺序排列，mcp:* 动态分组排在末尾。
+        分组按 register_group_order() 注册的权重排列，未注册分组按字母序排尾。
         结果按注册表版本缓存，返回拷贝供调用方安全使用。
         """
         if cls._catalog_cache is not None:
@@ -667,9 +713,7 @@ class EntityRegistry:
 
         def _sort_key(entry: Dict[str, Any]) -> tuple:
             g = entry["group"]
-            if g.startswith("mcp:"):
-                return (200, g)
-            return (cls._CATALOG_ORDER.get(g, 100), g)
+            return (cls._group_order_weights.get(g, _UNREGISTERED_GROUP_WEIGHT), g)
 
         catalog.sort(key=_sort_key)
         cls._catalog_cache = catalog
@@ -679,7 +723,8 @@ class EntityRegistry:
     def import_from_api_registry(cls) -> int:
         """从 APIRegistry 批量导入 PUBLIC API 作为工具实体。
 
-        自 Phase 5 起，PUBLIC API 应直接通过 EntityRegistry.register_tool() 注册。
+        兼容旧版 APIRegistry 双轨注册的过渡入口；
+        PUBLIC API 应直接通过 EntityRegistry.register_tool() 注册。
         """
         try:
             from core.api import APIRegistry, ApiScope
@@ -851,7 +896,7 @@ class EntityRegistry:
             if (e := cls.get(n)) and e.entity_type == EntityType.TOOL and e.enabled and e.func
         ]
         try:
-            from core.tool_gate import tool_gate, is_gate_enabled
+            from core.tool_gate import is_gate_enabled, tool_gate
         except ImportError:
             return entities
         if not is_gate_enabled():
@@ -948,14 +993,15 @@ class EntityRegistry:
         """执行工具实体（带超时保护）。"""
         entity = cls.get(name)
         if entity is None:
-            import difflib
             catalog = cls.get_entity_catalog()
             groups = [
                 f"{e['group']}({e['tool_count']}个方法)"
                 for e in catalog
             ]
             all_tool_names = cls._get_all_names_cached()
-            suggested = difflib.get_close_matches(name, all_tool_names, n=8, cutoff=0.35)
+            suggested = difflib.get_close_matches(
+                name, all_tool_names, n=_SUGGEST_MAX, cutoff=_SUGGEST_CUTOFF,
+            )
             return json.dumps({
                 "error": f"工具 '{name}' 不存在或当前不可用，请勿猜测工具名。",
                 "hint": '请先调用 list_entity_methods({"group": "分组名"}) 查看该实体的具体方法名和参数。'
@@ -973,7 +1019,7 @@ class EntityRegistry:
             repaired = repair_json_arguments(arguments) if arguments else "{}"
             kwargs = json.loads(repaired) if arguments else {}
         except json.JSONDecodeError as e:
-            preview = arguments[:200] if arguments else ""
+            preview = arguments[:_JSON_ERROR_PREVIEW_LEN] if arguments else ""
             return json.dumps(
                 {"error": f"参数 JSON 解析失败: {e}", "args_preview": preview},
                 ensure_ascii=False,
@@ -1019,17 +1065,16 @@ class EntityRegistry:
         else:
             tool_timeout = timeout
 
-        import uuid as _uuid
-        call_id = _uuid.uuid4().hex[:8]
+        call_id = uuid.uuid4().hex[:8]
         t0 = asyncio.get_running_loop().time()
 
-        log(f"▶ 执行工具: {name}({arguments[:120] if arguments else ''})", "DEBUG", tag="实体")
+        log(f"▶ 执行工具: {name}({arguments[:_LOG_ARGS_PREVIEW_LEN] if arguments else ''})", "DEBUG", tag="实体")
         await event_bus.emit(EVENT_TRACE_CALL_START, {
             "call_id": call_id,
             "name": name,
             "group": entity.group,
             "entity_type": entity.entity_type.value,
-            "arguments_preview": arguments[:200] if arguments else "",
+            "arguments_preview": arguments[:_EVENT_PREVIEW_LEN] if arguments else "",
         })
 
         try:
@@ -1041,6 +1086,12 @@ class EntityRegistry:
         except asyncio.TimeoutError:
             dur = round((asyncio.get_running_loop().time() - t0) * 1000)
             log(f"工具执行超时 ({tool_timeout}s): {name}", "WARNING", tag="实体")
+            if not entity.is_async:
+                # 同步工具经线程执行，超时后底层线程无法强制终止，仍可能继续运行
+                log(
+                    f"同步工具超时后线程仍在执行 (timeout={tool_timeout}s): {name}",
+                    "WARNING", tag="实体",
+                )
             await event_bus.emit(EVENT_TRACE_CALL_END, {
                 "call_id": call_id,
                 "name": name,
@@ -1066,13 +1117,13 @@ class EntityRegistry:
 
         dur = round((asyncio.get_running_loop().time() - t0) * 1000)
         result_str = _serialize_result(result)
-        log(f"◀ 工具完成: {name} → {result_str[:150]}", "DEBUG", tag="实体")
+        log(f"◀ 工具完成: {name} → {result_str[:_LOG_RESULT_PREVIEW_LEN]}", "DEBUG", tag="实体")
         await event_bus.emit(EVENT_TRACE_CALL_END, {
             "call_id": call_id,
             "name": name,
             "duration_ms": dur,
             "success": True,
-            "result_preview": result_str[:200],
+            "result_preview": result_str[:_EVENT_PREVIEW_LEN],
         })
         return result_str
 
@@ -1087,27 +1138,29 @@ class EntityRegistry:
 
     @classmethod
     def enable(cls, name: str) -> bool:
-        if name in cls._entities:
-            if not cls._entities[name].enabled:
-                cls._entities[name].enabled = True
-                cls.bump_version()
-            log(f"✅ 实体已启用: {name}")
-            return True
-        return False
+        with cls._lock:
+            if name in cls._entities:
+                if not cls._entities[name].enabled:
+                    cls._entities[name].enabled = True
+                    cls.bump_version()
+                log(f"✅ 实体已启用: {name}", "DEBUG")
+                return True
+            return False
 
     @classmethod
     def disable(cls, name: str) -> bool:
-        if name in cls._entities:
-            if cls._entities[name].enabled:
-                cls._entities[name].enabled = False
-                cls.bump_version()
-            log(f"⚠️ 实体已禁用: {name}")
-            return True
-        return False
+        with cls._lock:
+            if name in cls._entities:
+                if cls._entities[name].enabled:
+                    cls._entities[name].enabled = False
+                    cls.bump_version()
+                log(f"⚠️ 实体已禁用: {name}", "DEBUG")
+                return True
+            return False
 
     @classmethod
     def enable_group(cls, group: str) -> int:
-        """Enable all entities in a group. Returns count affected."""
+        """启用分组内全部实体，返回受影响的实体数。"""
         names = cls._groups.get(group, [])
         count = 0
         for n in names:
@@ -1116,12 +1169,12 @@ class EntityRegistry:
                 count += 1
         if count:
             cls.bump_version()
-            log(f"✅ group enabled: {group} ({count} entities)")
+            log(f"✅ 分组已启用: {group} ({count} 个实体)", "DEBUG")
         return count
 
     @classmethod
     def disable_group(cls, group: str) -> int:
-        """Disable all entities in a group. Returns count affected."""
+        """禁用分组内全部实体，返回受影响的实体数。"""
         names = cls._groups.get(group, [])
         count = 0
         for n in names:
@@ -1130,12 +1183,12 @@ class EntityRegistry:
                 count += 1
         if count:
             cls.bump_version()
-            log(f"⚠️ group disabled: {group} ({count} entities)")
+            log(f"⚠️ 分组已禁用: {group} ({count} 个实体)", "DEBUG")
         return count
 
     @classmethod
     def unregister_group(cls, group: str) -> int:
-        """Unregister all entities in a group. Returns count removed."""
+        """注销分组内全部实体，返回移除的实体数。"""
         names = list(cls._groups.get(group, []))
         count = 0
         for n in names:
@@ -1144,12 +1197,12 @@ class EntityRegistry:
         cls._groups.pop(group, None)
         cls._group_descriptions.pop(group, None)
         if count:
-            log(f"🧹 group unregistered: {group} ({count} entities)")
+            log(f"🧹 分组已注销: {group} ({count} 个实体)", "DEBUG")
         return count
 
     @classmethod
     def is_group_enabled(cls, group: str) -> bool:
-        """Check if all TOOL entities in a group are enabled."""
+        """分组内所有 TOOL 实体是否均已启用。"""
         names = cls._groups.get(group, [])
         tools = [
             cls._entities[n] for n in names
@@ -1289,7 +1342,11 @@ _PYTHON_TYPE_MAP = {
 
 
 def _python_type_to_json_type(py_type: str) -> str:
-    low = py_type.lower().strip("<>\"'class ")
+    low = py_type.lower().strip()
+    # 去掉 repr 风格的包装（如 "<class 'str'>" -> "str"）
+    if low.startswith("<class") and low.endswith(">"):
+        low = low[len("<class"):-1].strip().strip("'\"")
+    low = low.strip("<>\"'").strip()
     # 先精确匹配（如 "str"、"list"）
     if low in _PYTHON_TYPE_MAP:
         return _PYTHON_TYPE_MAP[low]
@@ -1310,3 +1367,7 @@ def _serialize_result(result: Any) -> str:
         return json.dumps(result, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
         return str(result)
+
+
+# 注册默认分组排序权重（业务模块可经 register_group_order 覆盖）
+register_default_group_orders()

@@ -138,7 +138,7 @@ def _serialize_value(value: Any, column: str) -> Any:
                 info["dims"] = len(value) // 4
                 info["preview"] = [round(float(x), 4) for x in arr]
             except Exception:
-                pass
+                log("_serialize_value 异常已忽略", "DEBUG")
         return info
     if isinstance(value, (int, float)):
         # *_ns 纳秒时间戳列 → 附可读时间
@@ -163,7 +163,7 @@ def _serialize_value(value: Any, column: str) -> Any:
                 out["truncated"] = True
             return out
         except (ValueError, TypeError):
-            pass
+            log("_serialize_value 异常已忽略", "DEBUG")
     if len(text) > _CELL_TEXT_MAX:
         return {"__type__": "text", "text": text[:_CELL_TEXT_MAX], "truncated": True}
     return text
@@ -177,7 +177,7 @@ def _full_value(value: Any, column: str) -> Any:
             try:
                 return {"__type__": "json", "value": json.loads(stripped), "raw": value}
             except (ValueError, TypeError):
-                pass
+                log("_full_value 异常已忽略", "DEBUG")
         return {"__type__": "text", "text": value}
     return _serialize_value(value, column)
 
@@ -218,7 +218,7 @@ class DatabaseService:
                     try:
                         await conn.close()
                     except Exception:
-                        pass
+                        log("_get_conn 异常已忽略", "DEBUG")
                     self._connections.pop(db_id, None)
 
             path = self._db_path(db_id)
@@ -244,7 +244,7 @@ class DatabaseService:
             try:
                 await conn.close()
             except Exception:
-                pass
+                log("close_all 异常已忽略", "DEBUG")
         self._connections.clear()
 
     # ------------------------------------------------------------------
@@ -325,7 +325,7 @@ class DatabaseService:
                     row = await cursor.fetchone()
                     entry["table_count"] = row["c"] if row else 0
                 except DatabaseError:
-                    pass
+                    log("list_databases 异常已忽略", "DEBUG")
                 except Exception as exc:
                     entry["error"] = str(exc)
             result.append(entry)
@@ -619,8 +619,19 @@ class DatabaseService:
             ]
 
         try:
-            columns, rows = await asyncio.wait_for(_do(), timeout=_QUERY_TIMEOUT_SECONDS)
+            # shield：wait_for 的取消无法中断 aiosqlite 工作线程中正在执行的
+            # sqlite 查询；超时后放弃等待（查询仍在后台执行直至完成），并把当前
+            # 连接移出缓存异步关闭回收，后续请求自动重建新连接。
+            columns, rows = await asyncio.wait_for(asyncio.shield(_do()), timeout=_QUERY_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
+            stale = self._connections.pop(db_id, None)
+            if stale is not None:
+                async def _close_stale() -> None:
+                    try:
+                        await stale.close()
+                    except Exception:
+                        log("_close_stale 异常已忽略", "DEBUG")
+                asyncio.get_running_loop().create_task(_close_stale())
             raise DatabaseError(f"查询超时（{_QUERY_TIMEOUT_SECONDS:.0f}s）", status_code=400) from None
         except DatabaseError:
             raise

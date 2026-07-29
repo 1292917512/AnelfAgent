@@ -10,6 +10,7 @@ import json
 import os
 from typing import Any, Dict, List
 
+from core.log import log
 from entities._sdk import tool
 
 
@@ -120,7 +121,7 @@ def notebook_edit(path: str, cell_index: int, new_source: str = "",
                 with open(fp, "r", encoding="utf-8") as f:
                     file_state.record_write(fp, f.read(), os.path.getmtime(fp))
         except Exception:
-            pass
+            log("notebook_edit 异常已忽略", "DEBUG")
         return json.dumps({"ok": True, "path": fp, "message": message}, ensure_ascii=False)
     except json.JSONDecodeError as e:
         return json.dumps({"error": f"notebook JSON 解析失败: {e}"}, ensure_ascii=False)

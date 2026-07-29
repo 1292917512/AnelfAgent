@@ -16,6 +16,7 @@ import time
 import uuid
 from typing import Dict, Optional
 
+from core.log import log
 from entities._sdk import get_current_scope
 
 # 模型可见输出上限（对齐 Claude Code BASH_MAX_OUTPUT_LENGTH 默认 30000）
@@ -87,7 +88,7 @@ def read_captured_pwd(pwd_file: str) -> Optional[str]:
         try:
             os.unlink(pwd_file)
         except OSError:
-            pass
+            log("read_captured_pwd 异常已忽略", "DEBUG")
 
 
 def persist_output(output: str, workspace_root: str) -> str:

@@ -40,5 +40,12 @@
   "verifying": "Verifying…",
   "capabilitiesTitle": "Capabilities",
   "capabilitiesSubtitle": "Unified management of tools, skills and MCP servers",
-  "loginFailed": "Sign-in failed"
+  "loginFailed": "Sign-in failed",
+  "copy": "Copy",
+  "copied": "Copied",
+  "collapse": "Collapse",
+  "expandAll": "Expand all ({{count}} chars)",
+  "expand": "Expand",
+  "empty": "empty",
+  "defaultPlaceholder": "Default: {{value}}"
 }

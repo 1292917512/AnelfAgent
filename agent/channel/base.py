@@ -29,7 +29,6 @@
         async def stop(self): ...
         async def forward_message(self, request): ...
         async def get_self_info(self): ...
-        async def get_user_info(self, user_id, channel_id): ...
         async def get_channel_info(self, channel_id): ...
         async def health_check(self): ...
 """
@@ -37,12 +36,10 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import os
 import time
 from abc import ABC, abstractmethod
-from enum import Enum
 from typing import (
     Any,
     Awaitable,
@@ -65,10 +62,10 @@ from core.entity import BaseEntity, EntityType
 from core.log import log
 
 from .channel_types import ChannelCapability, ChannelStatus, _err, _ok
-from .tool_bridge import channel_tool
-from .schemas import AdapterChannel, ChannelType
 from .schemas import (
+    AdapterChannel,
     ChannelInfo,
+    ChannelType,
     ChannelUser,
     CommandResponse,
     HealthStatus,
@@ -76,7 +73,7 @@ from .schemas import (
     SendResponse,
     SendSegment,
 )
-
+from .tool_bridge import channel_tool
 
 # ======================================================================
 # 频道元数据 / 配置
@@ -184,7 +181,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
       - _Configs: ChannelConfig 子类
       - start() / stop()
       - forward_message()
-      - get_self_info() / get_user_info() / get_channel_info()
+      - get_self_info() / get_channel_info()
       - health_check()
 
     子类可选覆盖：
@@ -270,6 +267,91 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         Returns:
             统一发送响应（成功/失败 + message_id）
         """
+
+    # ------------------------------------------------------------------
+    # forward_message 模板实现（segment 类型 → send_* 方法统一分发）
+    # ------------------------------------------------------------------
+
+    # segment type → send_* 方法名。子类可覆盖本映射声明支持的段类型，
+    # 然后以 ``return await self._forward_via_segment_map(request)`` 实现 forward_message
+    _SEGMENT_SENDERS: ClassVar[Dict[str, str]] = {
+        "text": "send_text",
+        "image": "send_photo",
+        "video": "send_video",
+        "audio": "send_audio",
+        "voice": "send_voice",
+        "file": "send_file",
+    }
+
+    async def _forward_via_segment_map(self, request: SendRequest) -> SendResponse:
+        """forward_message 模板实现：按 _SEGMENT_SENDERS 逐段分发到 send_* 方法。
+
+        逐段调用映射的 send_* 方法，从 JSON 返回中收集 message_id
+        （单值 ``message_id`` 与列表 ``message_ids`` 均识别），
+        汇总为统一 SendResponse；单段失败不中断后续段。
+        """
+        try:
+            chat_id = request.channel.channel_id
+            message_ids: List[str] = []
+            for seg in request.segments:
+                seg_type = seg.type.value
+                method_name = self._SEGMENT_SENDERS.get(seg_type)
+                if not method_name:
+                    continue
+                method = getattr(self, method_name, None)
+                if method is None:
+                    continue
+                result_json = await self._call_segment_sender(method, seg, request, chat_id)
+                message_ids.extend(self._extract_message_ids(result_json))
+            if message_ids:
+                return SendResponse(
+                    success=True,
+                    message_id=message_ids[0],
+                    message_ids=message_ids,
+                )
+            return SendResponse(success=True, message_id="empty")
+        except Exception as exc:
+            return SendResponse(success=False, error=str(exc))
+
+    @staticmethod
+    async def _call_segment_sender(
+        method: Callable[..., Awaitable[str]],
+        seg: SendSegment,
+        request: SendRequest,
+        chat_id: str,
+    ) -> str:
+        """按段类型调用 send_* 方法（文本带 reply_to/parse_mode，媒体带 caption）。"""
+        seg_type = seg.type.value
+        kwargs: Dict[str, Any] = {}
+        if seg_type == "text":
+            args: Tuple[Any, ...] = (seg.content,)
+            if request.reply_to:
+                kwargs["reply_to"] = request.reply_to
+            parse_mode = request.parse_mode or seg.parse_mode
+            if parse_mode:
+                kwargs["parse_mode"] = parse_mode
+        else:
+            args = (seg.file_path or seg.content,)
+            if seg_type != "voice":
+                kwargs["caption"] = seg.caption
+        return await method(chat_id, *args, **kwargs)
+
+    @staticmethod
+    def _extract_message_ids(result_json: str) -> List[str]:
+        """从 send_* 的 JSON 返回中收集 message_id（message_id 单值 / message_ids 列表）。"""
+        try:
+            result = json.loads(result_json)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(result, dict) or not result.get("success"):
+            return []
+        ids: List[str] = []
+        for mid in result.get("message_ids") or []:
+            ids.append(str(mid))
+        single = result.get("message_id")
+        if single:
+            ids.append(str(single))
+        return ids
 
     # ------------------------------------------------------------------
     # 便捷发送方法（默认实现，内部走 forward_message）
@@ -394,6 +476,34 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     # 这些暂时仍走旧 BaseChannel 的默认 _err("不支持 ...")，等 Phase 2 重构各 adapter 时统一接入
 
     # ------------------------------------------------------------------
+    # 旧版兼容接口（各频道共用的薄封装，集中在基类维护）
+    # ------------------------------------------------------------------
+
+    async def send_message(self, request: Any) -> bool:
+        """旧版兼容发送接口：提取文本走 send_text，返回是否成功。"""
+        chat_id = request.channel.channel_id
+        text = request.content
+        reply_to = getattr(request, "reply_to", None)
+        result_json = await self.send_text(chat_id, text, reply_to=reply_to)
+        try:
+            result = json.loads(result_json)
+        except (TypeError, ValueError):
+            return False
+        return bool(result.get("success", False))
+
+    _KNOWN_CHATS_EMPTY_HINT = (
+        "Bot 尚未与任何会话交互。当有人发消息给 Bot 后，会话信息会自动记录。"
+    )
+
+    @channel_tool()
+    async def list_known_chats(self, **kwargs: Any) -> str:
+        """列出 Bot 已交互过的所有会话（数据由适配器的 _known_chats 维护）。"""
+        known: Dict[str, Dict[str, Any]] = getattr(self, "_known_chats", None) or {}
+        if not known:
+            return _ok({"chats": [], "hint": self._KNOWN_CHATS_EMPTY_HINT})
+        return _ok({"chats": list(known.values()), "count": len(known)})
+
+    # ------------------------------------------------------------------
     # 信息查询（抽象，借鉴 nekro-agent）
     # ------------------------------------------------------------------
 
@@ -401,9 +511,17 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     async def get_self_info(self) -> ChannelUser:
         """获取自身（Bot）信息。"""
 
-    @abstractmethod
     async def get_user_info(self, user_id: str, channel_id: str) -> ChannelUser:
-        """获取用户信息。"""
+        """获取用户信息。
+
+        默认实现：平台无用户查询能力时的占位返回；
+        有真实查询能力的频道（如 Telegram）覆盖本方法。
+        """
+        return ChannelUser(
+            platform=self.channel_id,
+            user_id=user_id,
+            user_name=user_id,
+        )
 
     @abstractmethod
     async def get_channel_info(self, channel_id: str) -> ChannelInfo:
@@ -529,17 +647,20 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     ) -> SendRequest:
         """渲染批准提示消息。
 
-        默认实现：纯文本提示，子类可覆盖（Telegram 用 InlineKeyboard、
-        WebUI 用按钮、CLI 用 y/n 提示等）。
+        默认实现：纯文本提示（微信 / 飞书 / HTTP API / NoneBot 等纯文本频道共用），
+        子类可覆盖（Telegram 用 InlineKeyboard、WebUI 用 SSE 弹窗、CLI 用 y/n 提示等）。
         """
         text = (
             f"⚠️ 工具调用需要批准\n"
             f"工具: {ctx.tool_name}\n"
-            f"参数: {ctx.tool_args_summary}\n"
+            f"参数: {ctx.tool_args_summary[:200]}\n"
             f"风险: {ctx.risk_level}\n"
             f"原因: {ctx.reason}\n"
-            f"超时: {ctx.timeout_seconds}s\n"
-            f"\n回复 'approve {ctx.request_id}' 或 'deny {ctx.request_id}'"
+            f"超时: {ctx.timeout_seconds:.0f}s\n"
+            f"\n"
+            f"回复以下命令之一：\n"
+            f"  approve {ctx.request_id}\n"
+            f"  deny {ctx.request_id}"
         )
         return self._build_send_request(
             chat_id="",  # 由 approval/gate.py 填充
@@ -629,6 +750,10 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     def config(self) -> TConfig:
         """属性方式访问配置。"""
         return self.get_config()
+
+    def _cfg(self, key: str, default: Any = None) -> Any:
+        """读取配置项（extra=allow 扩展字段缺失时返回 default）。"""
+        return getattr(self.config, key, default)
 
     def save_config(self) -> bool:
         """保存配置到 channel_config.json。"""

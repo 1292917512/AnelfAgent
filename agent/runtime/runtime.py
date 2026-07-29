@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from agent.channel import ChannelManager, InputPipeline
-from agent.llm import ChatModel, LLMClient, get_llm_manager
+from agent.llm import ChatModel, get_llm_manager
 from agent.messages import CharacterAgent
 from agent.mind import Mind
 from agent.runtime.assistant import AgentAssistant
@@ -39,24 +38,3 @@ class AgentRuntime:
             return False
         self.switch_llm(client)
         return True
-
-    @property
-    def respond(self):
-        return _RespondCompat(self.channel_manager, self.pipeline)
-
-
-class _RespondCompat:
-
-    def __init__(self, cm: ChannelManager, pipeline: InputPipeline) -> None:
-        self._cm = cm
-        self._pipeline = pipeline
-
-    async def accept_data(self, anything):
-        await self._pipeline.ingest(anything)
-
-    @property
-    def agent_action(self):
-        return self._cm
-
-    def register_agent(self, agent):
-        self._pipeline.register_agent(agent)

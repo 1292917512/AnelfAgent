@@ -8,10 +8,7 @@ from __future__ import annotations
 import os
 import re
 import time as _time
-from typing import Any, Awaitable, Callable, List, Optional
-
-from core.log import log
-from core.tags import forward_tag, tag_label
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional
 
 from agent.channel.schemas import (
     AdapterChannel,
@@ -21,9 +18,16 @@ from agent.channel.schemas import (
     MessageSegment,
     SegmentType,
 )
+from core.log import log
+from core.tags import forward_tag, tag_label
+
 from .context import build_message_context
 from .helpers import build_sender_label, strip_bot_mention
 from .types import ReplyTarget
+
+if TYPE_CHECKING:
+    from telegram import Update
+    from telegram.ext import ContextTypes
 
 
 def _safe_filename(name: str) -> str:
@@ -31,9 +35,36 @@ def _safe_filename(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*]', '_', name)
 
 
+def _upload_dir(type_dir: str) -> str:
+    """下载目录：<workspace_root>/uploads/<type_dir>（workspace_root 取 ConfigManager）。"""
+    try:
+        from core.config import ConfigManager
+        ws = str(ConfigManager.get("workspace_root", "workspace") or "workspace")
+    except Exception:
+        ws = "workspace"
+    dl_dir = os.path.abspath(os.path.join(ws, "uploads", type_dir))
+    os.makedirs(dl_dir, exist_ok=True)
+    return dl_dir
+
+
+_APPROVAL_CALLBACK_RE = re.compile(r"^(approve|deny|allow|reject)[:\s](\S+)$", re.IGNORECASE)
+
+
+def _normalize_approval_callback(data: str) -> str:
+    """InlineKeyboard 回调格式归一：approve:<id> / deny:<id> → approve <id> / deny <id>。
+
+    与文本审批命令（agent/approval/renderer.parse_approval_command）保持同一格式，
+    使按钮回调与手动输入走完全一致的解析路径。
+    """
+    m = _APPROVAL_CALLBACK_RE.match(data.strip())
+    if not m:
+        return data
+    return f"{m.group(1).lower()} {m.group(2)}"
+
+
 async def handle_message(
-    update: Any,
-    context: Any,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
     *,
     bot_username: str,
     require_mention: bool,
@@ -72,8 +103,8 @@ async def handle_message(
 
 
 async def handle_callback_query(
-    update: Any,
-    context: Any,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
     *,
     on_message: Callable[[AdapterMessage], Awaitable[None]],
 ) -> None:
@@ -86,13 +117,15 @@ async def handle_callback_query(
     except Exception as e:
         log(f"回调查询应答失败: {e}", "DEBUG")
 
-    adapter_msg = _build_adapter_message(update, query.data, is_to_me=True)
+    # 审批按钮回调（approve:<id>）归一为文本命令格式，与手动输入走同一解析路径
+    data = _normalize_approval_callback(query.data)
+    adapter_msg = _build_adapter_message(update, data, is_to_me=True)
     await on_message(adapter_msg)
 
 
 async def handle_edited_message(
-    update: Any,
-    context: Any,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
     *,
     bot_username: str,
     require_mention: bool,
@@ -122,12 +155,17 @@ async def handle_edited_message(
 
 
 async def handle_channel_post(
-    update: Any,
-    context: Any,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
     *,
     on_message: Callable[[AdapterMessage], Awaitable[None]],
+    channel_post_trigger: bool = False,
 ) -> None:
-    """频道消息处理。"""
+    """频道消息处理。
+
+    channel_post_trigger=False（默认）时帖子仅感知入窗、不唤醒 Mind，
+    避免任何频道帖子都触发思考；True 时按 @Bot 消息同等处理。
+    """
     post = update.channel_post
     if not post:
         return
@@ -165,7 +203,8 @@ async def handle_channel_post(
         ),
         content=content,
         segments=segments,
-        is_to_me=True,
+        is_to_me=channel_post_trigger,
+        trigger_mind=channel_post_trigger,
     )
     await on_message(adapter_msg)
 
@@ -175,14 +214,14 @@ async def handle_channel_post(
 # ------------------------------------------------------------------
 
 async def _tg_download(
-    context: Any,
+    context: ContextTypes.DEFAULT_TYPE,
     file_id: str,
     seg_type: SegmentType,
     unique_id: str = "",
     default_ext: str = "",
     hint_name: str = "",
 ) -> tuple[str, str]:
-    """从 Telegram Bot API 下载文件到本地 workspace/uploads/。
+    """从 Telegram Bot API 下载文件到本地 <workspace_root>/uploads/。
 
     返回 (local_path, tg_file_path)。失败返回 ("", "")。
     """
@@ -203,8 +242,7 @@ async def _tg_download(
             short = unique_id[:12] if unique_id else file_id[:12]
             safe_name = f"{int(_time.time() * 1000)}_{short}.{ext}"
 
-        dl_dir = os.path.abspath(os.path.join("workspace", "uploads", type_dir))
-        os.makedirs(dl_dir, exist_ok=True)
+        dl_dir = _upload_dir(type_dir)
         local_path = os.path.join(dl_dir, f"{int(_time.time() * 1000)}_{safe_name}")
         await file.download_to_drive(local_path)
         return local_path, tg_path
@@ -235,7 +273,7 @@ def _parse_mentions(text: str, entities: list, bot_id: int | None = None) -> str
 
 
 async def _async_extract(
-    message: Any, context: Any, bot_id: int | None = None
+    message: Any, context: ContextTypes.DEFAULT_TYPE, bot_id: int | None = None
 ) -> tuple[str, List[MessageSegment]]:
     """异步提取消息内容和媒体段。"""
     segments: List[MessageSegment] = []
@@ -392,7 +430,7 @@ def _extract_forward_origin_from_msg(msg: Any) -> Optional[str]:
 
 
 def _build_adapter_message(
-    update: Any,
+    update: Update,
     content: str,
     *,
     segments: Optional[List[MessageSegment]] = None,

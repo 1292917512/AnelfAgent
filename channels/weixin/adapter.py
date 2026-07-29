@@ -23,7 +23,7 @@ import secrets
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 from pydantic import Field
 
@@ -43,6 +43,7 @@ from agent.channel.schemas import (
     SendRequest,
     SendResponse,
 )
+from agent.channel.utils.media import MAX_OUTBOUND_FILE_BYTES, resolve_local_file_path
 from core.log import log
 
 from . import ilink_client as ilink
@@ -78,6 +79,26 @@ class WeixinConfig(ChannelConfig):
     text_batch_split_delay_seconds: float = Field(default=5.0, description="长片段合批静默期（秒）")
 
 
+def _weixin_config_path(legacy_path: str) -> str:
+    """微信频道配置路径：数据目录优先，首次发现仓库目录旧配置时自动迁移。"""
+    import shutil
+
+    from core.path import ConfigPaths
+
+    data_path = os.path.join(
+        os.path.dirname(str(ConfigPaths.SQLITE_DB)), "channels", "weixin.json",
+    )
+    if not os.path.exists(data_path) and os.path.exists(legacy_path):
+        try:
+            os.makedirs(os.path.dirname(data_path), exist_ok=True)
+            shutil.copy2(legacy_path, data_path)
+            log(f"微信: 频道配置已从仓库目录迁移到数据目录 {data_path}", tag="通道")
+        except Exception as exc:
+            log(f"微信: 配置迁移失败，回退旧路径 ({exc})", "WARNING", tag="通道")
+            return legacy_path
+    return data_path
+
+
 class WeixinChannel(BaseChannel[WeixinConfig]):
     """个人微信频道（iLink Bot API 长轮询）。"""
 
@@ -105,6 +126,10 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
     MAX_MESSAGE_LENGTH = ilink.MAX_MESSAGE_LENGTH
     _SPLIT_THRESHOLD = 1800  # iLink 自身约 2048 字符切片
 
+    def _default_config_path(self) -> str:
+        """配置改存数据目录（含扫码 token 凭据，不应落在仓库目录）。"""
+        return _weixin_config_path(super()._default_config_path())
+
     def __init__(self) -> None:
         self._poll_session: Optional[Any] = None
         self._send_session: Optional[Any] = None
@@ -118,6 +143,9 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
         self._rate_limit_events: List[float] = []
         self._pending_text_batches: Dict[str, AdapterMessage] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # fire-and-forget 后台任务集合（入站处理 / typing ticket / typing 提示），
+        # 持有引用避免任务被 GC 提前回收，stop() 时统一取消
+        self._background_tasks: Set[asyncio.Task] = set()
         self._last_chunk_lens: Dict[str, int] = {}
         self._known_groups: Set[str] = set()
         self._last_poll_ok: float = 0.0
@@ -128,11 +156,18 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
         super().__init__()
 
     # ------------------------------------------------------------------
-    # 配置读取
+    # 后台任务跟踪
     # ------------------------------------------------------------------
 
-    def _cfg(self, key: str, default: Any = None) -> Any:
-        return getattr(self.config, key, default)
+    def _spawn_background(self, coro: Any, name: str) -> None:
+        """创建 fire-and-forget 任务并登记到 _background_tasks（完成自动移除）。"""
+        task = asyncio.create_task(coro, name=name)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    # ------------------------------------------------------------------
+    # 配置读取
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _coerce_list(value: Any) -> List[str]:
@@ -207,12 +242,19 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
                 task.cancel()
         self._pending_text_batches.clear()
         self._pending_text_batch_tasks.clear()
+        # 取消 fire-and-forget 后台任务并等待退出
+        for task in self._background_tasks:
+            if not task.done():
+                task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        self._background_tasks.clear()
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
             try:
                 await self._poll_task
             except asyncio.CancelledError:
-                pass
+                pass  # 取消属正常关闭流程（正常控制流，非异常）
         self._poll_task = None
         if self._poll_session and not self._poll_session.closed:
             await self._poll_session.close()
@@ -227,7 +269,9 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
     # ------------------------------------------------------------------
 
     async def _poll_loop(self) -> None:
-        assert self._poll_session is not None
+        if self._poll_session is None:
+            log("微信: 轮询会话未初始化，退出轮询", "ERROR", tag="通道")
+            return
         sync_buf = load_sync_buf(self._account_id)
         timeout_ms = ilink.LONG_POLL_TIMEOUT_MS
         consecutive_failures = 0
@@ -281,7 +325,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
                     save_sync_buf(self._account_id, sync_buf)
 
                 for message in response.get("msgs") or []:
-                    asyncio.create_task(self._process_message_safe(message))
+                    self._spawn_background(self._process_message_safe(message), "weixin-msg")
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -330,7 +374,9 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
         return True  # open
 
     async def _process_message(self, message: Dict[str, Any]) -> None:
-        assert self._poll_session is not None
+        if self._poll_session is None:
+            log("微信: 轮询会话未初始化，丢弃入站消息", "DEBUG", tag="通道")
+            return
         sender_id = str(message.get("from_user_id") or "").strip()
         if not sender_id:
             return
@@ -363,7 +409,10 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             self._token_store.set(self._account_id, sender_id, context_token)
-        asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
+        self._spawn_background(
+            self._maybe_fetch_typing_ticket(sender_id, context_token or None),
+            "weixin-typing-ticket",
+        )
 
         segments: List[MessageSegment] = []
         for item in item_list:
@@ -406,7 +455,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
     async def _dispatch(self, message: AdapterMessage) -> None:
         """分发入站消息；将触发思考时先亮 typing。"""
         if message.trigger_mind and self._cfg("typing_indicator", True):
-            asyncio.create_task(self.send_typing(message.channel.channel_id))
+            self._spawn_background(self.send_typing(message.channel.channel_id), "weixin-typing")
         await self.on_message(message)
 
     # ------------------------------------------------------------------
@@ -453,7 +502,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
                 return
             await self._dispatch(message)
         except asyncio.CancelledError:
-            pass
+            pass  # 取消属正常关闭流程（正常控制流，非异常）
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
@@ -876,47 +925,20 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
                 )
                 if wait > 0:
                     await asyncio.sleep(wait)
-        assert last_error is not None
+        if last_error is None:
+            raise RuntimeError("iLink sendmessage 发送失败（未捕获到具体错误）")
         raise last_error
 
     # ------------------------------------------------------------------
     # 媒体发送（AES 加密上传管线）
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _resolve_local_file_path(path: str) -> str:
-        """解析媒体路径：绝对路径 / 项目相对路径 / workspace 相对路径（同 QQ 频道）。"""
-        raw = (path or "").strip()
-        if not raw:
-            return raw
-        if raw.startswith(("http://", "https://", "file://")):
-            return raw
-        expanded = os.path.expandvars(os.path.expanduser(raw))
-        if os.path.isabs(expanded):
-            return os.path.normpath(expanded)
-
-        candidates = [os.path.normpath(expanded)]
-        try:
-            from core.config import ConfigManager
-            workspace_root = str(ConfigManager.get("workspace_root", "workspace") or "workspace")
-        except Exception:
-            workspace_root = "workspace"
-        ws_norm = os.path.normpath(workspace_root)
-        norm_expanded = os.path.normpath(expanded)
-        if norm_expanded.startswith(ws_norm + os.sep) or norm_expanded == ws_norm:
-            candidates.append(norm_expanded)
-        else:
-            candidates.append(os.path.normpath(os.path.join(ws_norm, norm_expanded)))
-        for cand in candidates:
-            if os.path.isfile(cand):
-                return os.path.abspath(cand)
-        return os.path.abspath(candidates[-1])
-
     async def _download_remote_media(self, url: str) -> str:
         """下载远程媒体到本地临时文件（仅允许 http/https）。"""
         if not url.startswith(("http://", "https://")):
             raise ValueError(f"非法媒体 URL: {url}")
-        assert self._send_session is not None
+        if self._send_session is None:
+            raise RuntimeError("微信频道未连接（send session 未初始化）")
 
         async def _do_fetch() -> bytes:
             async with self._send_session.get(url) as response:
@@ -941,7 +963,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
             path = await self._download_remote_media(path)
             cleanup = True
         else:
-            path = self._resolve_local_file_path(path.replace("file://", ""))
+            path = resolve_local_file_path(path.replace("file://", ""))
         try:
             return await self._send_file(chat_id, path, caption, force_file_attachment=force_file_attachment)
         finally:
@@ -949,7 +971,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
                 try:
                     os.unlink(path)
                 except OSError:
-                    pass
+                    log("_send_media 异常已忽略", "DEBUG")
 
     async def _send_file(
         self,
@@ -959,7 +981,13 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
         force_file_attachment: bool = False,
     ) -> str:
         """完整上传流程：getuploadurl → AES 加密 → CDN POST → sendmessage。"""
-        assert self._send_session is not None and self._token is not None
+        if self._send_session is None or not self._token:
+            raise RuntimeError("微信频道未连接（send session 或 token 未初始化）")
+        size = os.path.getsize(path)
+        if size > MAX_OUTBOUND_FILE_BYTES:
+            raise ValueError(
+                f"文件过大（{size / 1024 / 1024:.1f}MB），超过出站发送上限 100MB: {path}"
+            )
         plaintext = Path(path).read_bytes()
         media_type, item_builder = self._outbound_media_builder(path, force_file_attachment=force_file_attachment)
         filekey = secrets.token_hex(16)
@@ -1126,13 +1154,6 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
             is_bot=True,
         )
 
-    async def get_user_info(self, user_id: str, channel_id: str) -> ChannelUser:
-        return ChannelUser(
-            platform=self.channel_id,
-            user_id=user_id,
-            user_name=user_id,
-        )
-
     async def get_channel_info(self, channel_id: str) -> ChannelInfo:
         return ChannelInfo(
             channel_id=channel_id,
@@ -1181,32 +1202,6 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
     def get_router(self) -> Optional[Any]:
         return build_router()
 
-    async def render_approval_prompt(self, ctx) -> SendRequest:
-        """渲染批准提示（微信纯文本 approve/deny，同 QQ 频道）。"""
-        from agent.channel.base import ApprovalPromptRenderContext  # noqa: F401
-        from agent.channel.schemas import AdapterChannel, ChannelType, SendSegment
-
-        text = (
-            f"⚠️ 工具调用需要批准\n"
-            f"工具: {ctx.tool_name}\n"
-            f"参数: {ctx.tool_args_summary[:200]}\n"
-            f"风险: {ctx.risk_level}\n"
-            f"原因: {ctx.reason}\n"
-            f"超时: {ctx.timeout_seconds:.0f}s\n"
-            f"\n"
-            f"回复以下命令之一：\n"
-            f"  approve {ctx.request_id}\n"
-            f"  deny {ctx.request_id}"
-        )
-        return SendRequest(
-            adapter_key=self.channel_id,
-            channel=AdapterChannel(
-                channel_id="",  # 由 approval/gate.py 填充
-                channel_type=ChannelType.PRIVATE,
-            ),
-            segments=[SendSegment(type="text", content=text)],
-        )
-
 
 CHANNEL_CLASS = WeixinChannel
 
@@ -1229,7 +1224,7 @@ def build_router() -> Any:
         try:
             return await get_qr_manager().start()
         except Exception as exc:
-            raise HTTPException(500, str(exc))
+            raise HTTPException(500, str(exc)) from exc
 
     @router.get("/qr/{session_id}/status")
     async def qr_status(session_id: str) -> Dict[str, Any]:
@@ -1249,15 +1244,16 @@ def build_router() -> Any:
 
 
 async def _apply_login_credential(credential: Dict[str, str]) -> None:
-    """扫码成功后：写 channel_config.json → 启用 → （重）启动频道。"""
+    """扫码成功后：写频道配置（数据目录）→ 启用 → （重）启动频道。"""
     import json
 
-    cfg_path = Path(__file__).parent / "channel_config.json"
+    cfg_path = Path(_weixin_config_path(str(Path(__file__).parent / "channel_config.json")))
     cfg: Dict[str, Any] = {}
     if cfg_path.exists():
         try:
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            log(f"微信: 现有频道配置解析失败，按空配置重建 ({cfg_path}): {exc}", "DEBUG", tag="通道")
             cfg = {}
     cfg["enabled"] = True
     cfg["account_id"] = credential["account_id"]

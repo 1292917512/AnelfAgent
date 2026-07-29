@@ -6,15 +6,22 @@ import json
 import os
 import re
 import threading
-from pathlib import Path
-from typing import Dict, Any, Optional, Union, List
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
 from core.log import log
 from core.path import ConfigPaths, PathManager
 
-
 _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+# 简单邮箱形态校验（用于配置值类型自动探测）
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# 字符串长度超过该阈值时自动探测为长文本类型
+_TEXT_LENGTH_THRESHOLD = 100
+# 未注册配置项在分组视图中的兜底分组名
+_UNGROUPED_CONFIG_GROUP = "其他"
 
 
 def parse_env_value(value: str) -> Any:
@@ -27,11 +34,11 @@ def parse_env_value(value: str) -> Any:
     try:
         return int(value)
     except ValueError:
-        pass
+        log("parse_env_value 异常已忽略", "DEBUG")
     try:
         return float(value)
     except ValueError:
-        pass
+        log("parse_env_value 异常已忽略", "DEBUG")
     return value
 
 
@@ -115,11 +122,11 @@ class ConfigItem:
         elif isinstance(value, str):
             if value.startswith(('http://', 'https://', 'ftp://')):
                 return ConfigValueType.URL
-            elif '@' in value and '.' in value:
+            elif _EMAIL_RE.match(value):
                 return ConfigValueType.EMAIL
-            elif '/' in value or '\\' in value:
+            elif value.startswith(('/', '~', '\\')) or os.sep in value:
                 return ConfigValueType.PATH
-            elif len(value) > 100:
+            elif len(value) > _TEXT_LENGTH_THRESHOLD:
                 return ConfigValueType.TEXT
             else:
                 return ConfigValueType.STRING
@@ -136,10 +143,12 @@ class ConfigRegistry:
 
     @classmethod
     def register(cls, item: ConfigItem):
-        """注册配置项"""
+        """注册配置项（重复注册更新定义，分组索引不累积重复 key）"""
         with cls._lock:
             cls._registry[item.key] = item
-            cls._groups.setdefault(item.group, []).append(item.key)
+            keys = cls._groups.setdefault(item.group, [])
+            if item.key not in keys:
+                keys.append(item.key)
 
     @classmethod
     def get_item(cls, key: str) -> Optional[ConfigItem]:
@@ -212,9 +221,15 @@ class ConfigManager:
     # 全局内存配置存储
     _config: Dict[str, Any] = {}
     _file_config: Dict[str, Any] = {}
-    _config_file: str = ConfigPaths.APP_CONFIG
+    # 显式指定的配置文件路径；None 时每次访问动态解析 ConfigPaths.APP_CONFIG
+    _config_file: Optional[str] = None
     _lock = threading.RLock()
     _initialized = False
+
+    @classmethod
+    def _get_config_file(cls) -> str:
+        """当前生效的配置文件路径（未显式指定时动态解析，避免 import 时冻结）。"""
+        return cls._config_file if cls._config_file is not None else ConfigPaths.APP_CONFIG
 
     @classmethod
     def initialize(cls, config_file: Optional[str] = None) -> bool:
@@ -228,7 +243,7 @@ class ConfigManager:
                     cls._config_file = config_file
 
                 # 确保配置目录存在
-                config_dir = PathManager.dirname(cls._config_file)
+                config_dir = PathManager.dirname(cls._get_config_file())
                 if config_dir and not PathManager.exists(config_dir):
                     PathManager.ensure_dir_exists(config_dir)
 
@@ -264,7 +279,7 @@ class ConfigManager:
         try:
             with cls._lock:
                 config_content = json.dumps(cls._file_config, indent=2, ensure_ascii=False)
-                success = PathManager.write_text(cls._config_file, config_content)
+                success = PathManager.write_text(cls._get_config_file(), config_content)
                 return success
         except Exception as e:
             log(f"❌ 保存配置异常: {str(e)}", "ERROR")
@@ -332,7 +347,7 @@ class ConfigManager:
         registered_keys = {item.key for item in ConfigRegistry.get_all_items()}
         unregistered = {k: v for k, v in cls._config.items() if k not in registered_keys}
         if unregistered:
-            grouped["其他"] = unregistered
+            grouped[_UNGROUPED_CONFIG_GROUP] = unregistered
 
         return grouped
 
@@ -340,7 +355,8 @@ class ConfigManager:
     def _load_config(cls) -> None:
         """从文件加载配置：展开 ${ENV_VAR} 引用后，再应用 ANELF_<KEY> 环境变量覆盖。"""
         try:
-            content = PathManager.read_text(cls._config_file) if PathManager.exists(cls._config_file) else ""
+            config_file = cls._get_config_file()
+            content = PathManager.read_text(config_file) if PathManager.exists(config_file) else ""
             raw = json.loads(content) if content.strip() else {}
             if not isinstance(raw, dict):
                 raw = {}
@@ -400,13 +416,18 @@ def get_config(key: str, default: Any = None) -> Any:
     """
     try:
         return ConfigManager.get(key, default)
-    except Exception:
+    except Exception as exc:
+        log(f"读取配置失败 {key}: {exc}", "DEBUG")
         return default
 
 
 def get_config_bool(key: str, default: bool = False) -> bool:
-    """安全读取布尔配置。"""
-    return bool(get_config(key, default))
+    """安全读取布尔配置（字符串 "false"/"0"/"no" 正确解析为 False）。"""
+    value = get_config(key, default)
+    if isinstance(value, str):
+        parsed = parse_env_value(value)
+        return bool(parsed) if isinstance(parsed, bool) else bool(value)
+    return bool(value)
 
 
 def get_config_int(key: str, default: int = 0) -> int:

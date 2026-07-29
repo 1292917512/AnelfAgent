@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Optional, Set, Union
+from typing import Any, Dict, Optional
 
 from core.entity import BaseEntity, EntityType
 from core.log import log
@@ -90,6 +90,8 @@ class ChannelManager(BaseEntity):
         """启动单个频道，捕获异常防止影响其他频道的并发启动。"""
         try:
             channel._status = ChannelStatus.STARTING
+            # 频道启动路径激活配置热更新监听（无事件循环期间登记的 watch 在此生效）
+            self._ensure_config_watcher_started()
             await channel.start()
             if channel._status == ChannelStatus.STARTING:
                 channel._status = ChannelStatus.RUNNING
@@ -114,6 +116,7 @@ class ChannelManager(BaseEntity):
             return False
         try:
             channel._status = ChannelStatus.STARTING
+            self._ensure_config_watcher_started()
             await channel.start()
             if channel._status == ChannelStatus.STARTING:
                 channel._status = ChannelStatus.RUNNING
@@ -173,6 +176,7 @@ class ChannelManager(BaseEntity):
             self._group_targets.add(channel_key)
 
         from agent.runtime.agent_app import get_agent_app
+
         from .schemas import ChannelType as CT
 
         images = self._extract_images(message)
@@ -220,13 +224,6 @@ class ChannelManager(BaseEntity):
         content = strip_message_meta_tags(content)
         await channel.send_text(chat_id, content, reply_to=reply_to, channel_type=channel_type)
 
-    async def stream_start(self, anything: Any) -> None:
-        """流式回复开始（仅对支持流式的频道有效）。"""
-        pass
-
-    async def stream_chunk(self, chunk: str, anything: Any = None) -> None:
-        pass
-
     async def stream_end(self, full_text: str, anything: Any = None) -> None:
         """流式回复结束，发送最终内容。"""
         if full_text.strip():
@@ -235,6 +232,15 @@ class ChannelManager(BaseEntity):
     # ------------------------------------------------------------------
     # 内部辅助
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ensure_config_watcher_started() -> None:
+        """激活配置热更新监听（best-effort，不影响频道启动）。"""
+        try:
+            from .config_watcher import get_config_watcher
+            get_config_watcher().ensure_started()
+        except Exception as exc:
+            log(f"配置监听激活失败: {exc}", "DEBUG", tag="通道")
 
     def resolve_channel_type(self, channel_id: str, target_id: str) -> str:
         """根据历史记录判断 target_id 是群聊还是私聊。
@@ -272,6 +278,7 @@ class ChannelManager(BaseEntity):
         import os
 
         from agent.llm.types import ImageContent
+
         from .schemas import SegmentType
 
         images: list = []

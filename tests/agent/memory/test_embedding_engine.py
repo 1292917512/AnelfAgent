@@ -7,8 +7,8 @@ import time
 
 from aiolimiter import AsyncLimiter
 
-from agent.memory.embedding import engine as engine_module
 from agent.memory.embedding import Embedder
+from agent.memory.embedding import engine as engine_module
 
 
 class FakeClient:

@@ -6,8 +6,6 @@ import asyncio
 from types import SimpleNamespace
 from typing import List
 
-import pytest
-
 from agent.llm.llm_client import LLMClient
 from agent.llm.types import ChatResult, ChatStreamDelta, ToolCall, UsageInfo
 from agent.mind.mind import Mind

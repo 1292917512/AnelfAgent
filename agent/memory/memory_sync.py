@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from core.log import log
+
 from .doc_extract import extract_document_text
 from .embedding import Embedder
 from .memory_store import MemoryStore

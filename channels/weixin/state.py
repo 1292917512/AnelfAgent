@@ -71,7 +71,7 @@ def save_weixin_account(
     try:
         path.chmod(0o600)
     except OSError:
-        pass
+        log("save_weixin_account 异常已忽略", "DEBUG")
 
 
 def load_weixin_account(account_id: str) -> Optional[Dict[str, Any]]:

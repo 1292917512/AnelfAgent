@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Brain, FileText, MessagesSquare, ScrollText, Search } from "lucide-react";
 import { searchApi, type GlobalSearchResult } from "@/lib/api";
@@ -24,7 +24,7 @@ export function SearchPanel() {
   const [result, setResult] = useState<GlobalSearchResult | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const runSearch = async (q: string) => {
+  const runSearch = useCallback(async (q: string) => {
     if (!q.trim()) return;
     setLoading(true);
     try {
@@ -35,7 +35,7 @@ export function SearchPanel() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   // AI ui_open_panel(search, payload) 预填搜索词
   useEffect(() => {
@@ -44,8 +44,7 @@ export function SearchPanel() {
       setSearchSeed("");
       runSearch(searchSeed);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchSeed]);
+  }, [searchSeed, setSearchSeed, runSearch]);
 
   const groups: { key: ResultGroup; count: number }[] = [
     { key: "memory", count: result?.memory.length ?? 0 },

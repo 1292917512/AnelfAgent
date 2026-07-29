@@ -7,36 +7,34 @@ WebSocket 模式在独立线程中运行 lark.ws.Client，Webhook 模式启动 a
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 import threading
-from typing import Any, Dict, Optional, Set
+import time
+from typing import Any, ClassVar, Dict, Optional, Set
 
 import lark_oapi as lark
-
-from core.log import log
+from pydantic import Field
 
 from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
-from agent.channel.channel_types import ChannelCapability, ChannelStatus, _ok, _err
-from agent.channel.tool_bridge import channel_tool
+from agent.channel.channel_types import ChannelCapability, ChannelStatus, _err, _ok
 from agent.channel.schemas import (
-    AdapterChannel, ChannelType, SendRequest, SendResponse, SendSegment,
-    ChannelInfo, ChannelUser, ChannelUserRole, HealthStatus,
+    ChannelInfo,
+    ChannelType,
+    ChannelUser,
+    ChannelUserRole,
+    HealthStatus,
+    SendRequest,
+    SendResponse,
 )
-import time
-from pydantic import Field
+from agent.channel.tool_bridge import channel_tool
+from agent.channel.utils.formatter import format_exception as _fmt_exc
+from core.log import log
+
 from .config import FEISHU_CONFIGS
 from .types import FeishuBotInfo
 
 _AT_RE = re.compile(r'\[at_uid:([^\]]+)\]')
-
-
-def _fmt_exc(exc: BaseException) -> str:
-    msg = str(exc).strip()
-    if not msg:
-        return f"飞书频道错误（{type(exc).__name__}）"
-    return msg
 
 
 
@@ -47,6 +45,7 @@ class FeishuConfig(ChannelConfig):
     app_id: str = Field(default="", description="飞书 App ID")
     app_secret: str = Field(default="", description="飞书 App Secret")
     connection_mode: str = Field(default="websocket", description="连接模式 (websocket/webhook)")
+    webhook_host: str = Field(default="127.0.0.1", description="Webhook 监听地址（非回环地址必须配置验证 Token 或加密 Key）")
     webhook_port: int = Field(default=8093, description="Webhook 监听端口")
     verification_token: str = Field(default="", description="Webhook 验证 Token")
     encrypt_key: str = Field(default="", description="Webhook 加密 Key")
@@ -68,6 +67,13 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
     _Configs = FeishuConfig
     _adapter_configs = FEISHU_CONFIGS
 
+    # forward_message 段分发映射（飞书支持文本/图片/文件，见基类模板方法）
+    _SEGMENT_SENDERS: ClassVar[Dict[str, str]] = {
+        "text": "send_text",
+        "image": "send_photo",
+        "file": "send_file",
+    }
+
     def __init__(self) -> None:
         self._client: Optional[lark.Client] = None
         self._ws_client: Optional[lark.ws.Client] = None
@@ -80,6 +86,8 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
         self._known_chats: Dict[str, Dict[str, Any]] = {}
         # Webhook 模式的 aiohttp runner
         self._webhook_runner: Optional[Any] = None
+        # WS 线程的事件循环（stop 时用于远程断开连接）
+        self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
         super().__init__()
 
     # ------------------------------------------------------------------
@@ -180,15 +188,25 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
 
     async def stop(self) -> None:
         self._status = ChannelStatus.STOPPED
-        # 停止 WebSocket 客户端
+        # 停止 WebSocket 客户端：先在 WS 线程的 loop 上断开连接，再停 loop 让线程退出
         if self._ws_client:
+            ws_loop = self._ws_loop
+            if ws_loop and not ws_loop.is_closed():
+                def _request_ws_stop() -> None:
+                    if self._ws_client:
+                        asyncio.ensure_future(self._ws_client._disconnect())
+                    ws_loop.call_later(0.5, ws_loop.stop)
+                try:
+                    ws_loop.call_soon_threadsafe(_request_ws_stop)
+                except Exception as exc:
+                    log(f"飞书: 请求 WS 停止失败 -> {exc}", "DEBUG")
             self._ws_client = None
         # 停止 Webhook 服务
         if self._webhook_runner:
             try:
                 await self._webhook_runner.cleanup()
-            except Exception:
-                pass
+            except Exception as exc:
+                log(f"飞书: 清理 Webhook runner 异常 -> {exc}", "DEBUG")
             self._webhook_runner = None
         if self._thread:
             self._thread.join(timeout=10)
@@ -282,6 +300,7 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        self._ws_loop = loop
         _lark_ws_module.loop = loop  # 重定向 SDK 模块级 loop 到本线程 loop
         if self._ws_client:
             self._ws_client._lock = asyncio.Lock()  # Lock 需绑定当前 loop
@@ -302,10 +321,14 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
                 self._ws_client.start()
                 log("飞书 WS 线程：start() 正常退出", "DEBUG")
         except Exception as exc:
-            self._start_error = str(exc)
-            self._ready.set()
-            log(f"飞书 WebSocket 异常退出: {exc}", "ERROR")
+            if self._status == ChannelStatus.STOPPED:
+                log(f"飞书 WS 线程：收到停止请求，退出 ({exc})", "DEBUG")
+            else:
+                self._start_error = str(exc)
+                log(f"飞书 WebSocket 异常退出: {exc}", "ERROR")
         finally:
+            self._ready.set()
+            self._ws_loop = None
             loop.close()
 
     # ------------------------------------------------------------------
@@ -318,8 +341,16 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
 
         encrypt_key: str = self.config.encrypt_key
         verification_token: str = self.config.verification_token
+        host: str = self.config.webhook_host
         port: int = int(self.config.webhook_port)
         require_mention = bool(self.config.require_mention)
+
+        if host not in ("127.0.0.1", "localhost", "::1") and not (verification_token or encrypt_key):
+            raise RuntimeError(
+                f"飞书 Webhook 监听非回环地址 {host} 但未配置 verification_token/encrypt_key，"
+                "拒绝启动（任何主机都可注入伪造飞书事件）。"
+                "请配置验证 Token / 加密 Key，或将 webhook_host 改为 127.0.0.1"
+            )
 
         from .handlers import build_message_handler
 
@@ -353,12 +384,13 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
         app.router.add_post("/feishu/webhook", _webhook_handler)
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", port)
+        site = web.TCPSite(runner, host, port)
         await site.start()
         self._webhook_runner = runner
 
         self._status = ChannelStatus.RUNNING
-        log(f"飞书频道已启动 (Webhook): {self._bot_info.app_name}, 端口 {port}")
+        log(f"飞书频道已启动 (Webhook): {self._bot_info.app_name}, {host}:{port}"
+            f"（验证: {'token/encrypt_key' if (verification_token or encrypt_key) else '仅回环'}）")
 
     # ------------------------------------------------------------------
     # 能力方法
@@ -544,58 +576,16 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
         except Exception as exc:
             return _err(_fmt_exc(exc))
 
-    @channel_tool()
-    async def list_known_chats(self, **kwargs: Any) -> str:
-        """列出已知会话。"""
-        if not self._known_chats:
-            return _ok({
-                "chats": [],
-                "hint": "Bot 尚未与任何会话交互。当有人发消息给 Bot 后，会话信息会自动记录。",
-            })
-        return _ok({"chats": list(self._known_chats.values()), "count": len(self._known_chats)})
-
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------
-
-    async def send_message(self, request: Any) -> bool:
-        chat_id = request.channel.channel_id
-        text = request.content
-        reply_to = getattr(request, "reply_to", None)
-        result_json = await self.send_text(chat_id, text, reply_to=reply_to)
-        result = json.loads(result_json)
-        return result.get("success", False)
 
     # ------------------------------------------------------------------
     # BaseChannel 协议方法
     # ------------------------------------------------------------------
 
     async def forward_message(self, request: SendRequest) -> SendResponse:
-        """统一发送入口。"""
-        try:
-            chat_id = request.channel.channel_id
-            message_ids: list[str] = []
-            for seg in request.segments:
-                seg_type = seg.type.value
-                if seg_type == "text":
-                    result_json = await self.send_text(chat_id, seg.content, reply_to=request.reply_to)
-                    result = json.loads(result_json)
-                    if result.get("success") and result.get("message_id"):
-                        message_ids.append(result["message_id"])
-                elif seg_type == "image":
-                    result_json = await self.send_photo(chat_id, seg.file_path, caption=seg.caption)
-                    result = json.loads(result_json)
-                    if result.get("success") and result.get("message_id"):
-                        message_ids.append(result["message_id"])
-                elif seg_type == "file":
-                    result_json = await self.send_file(chat_id, seg.file_path, caption=seg.caption)
-                    result = json.loads(result_json)
-                    if result.get("success") and result.get("message_id"):
-                        message_ids.append(result["message_id"])
-            if message_ids:
-                return SendResponse(success=True, message_id=message_ids[0], message_ids=message_ids)
-            return SendResponse(success=True, message_id="empty")
-        except Exception as exc:
-            return SendResponse(success=False, error=str(exc))
+        """统一发送入口（段分发模板见 BaseChannel._forward_via_segment_map）。"""
+        return await self._forward_via_segment_map(request)
 
     async def get_self_info(self) -> ChannelUser:
         if not self._bot_info or not self._bot_info.open_id:
@@ -606,13 +596,6 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             user_name=self._bot_info.app_name or "FeishuBot",
             role=ChannelUserRole.MEMBER,
             is_bot=True,
-        )
-
-    async def get_user_info(self, user_id: str, channel_id: str) -> ChannelUser:
-        return ChannelUser(
-            platform=self.channel_id,
-            user_id=user_id,
-            user_name=user_id,
         )
 
     async def get_channel_info(self, channel_id: str) -> ChannelInfo:
@@ -640,32 +623,6 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             return HealthStatus(healthy=False, detail="bot info missing", last_error="no_bot_info")
         except Exception as exc:
             return HealthStatus(healthy=False, detail=str(exc), last_error=str(exc))
-
-    async def render_approval_prompt(self, ctx) -> SendRequest:
-        """渲染批准提示（飞书卡片消息）。"""
-        from agent.channel.base import ApprovalPromptRenderContext
-
-        text = (
-            f"⚠️ 工具调用需要批准\n"
-            f"工具: {ctx.tool_name}\n"
-            f"参数: {ctx.tool_args_summary[:200]}\n"
-            f"风险: {ctx.risk_level}\n"
-            f"原因: {ctx.reason}\n"
-            f"超时: {ctx.timeout_seconds:.0f}s\n"
-            f"\n"
-            f"回复以下命令之一：\n"
-            f"  approve {ctx.request_id}\n"
-            f"  deny {ctx.request_id}"
-        )
-
-        return SendRequest(
-            adapter_key=self.channel_id,
-            channel=AdapterChannel(
-                channel_id="",  # 由 approval/gate.py 填充
-                channel_type=ChannelType.PRIVATE,
-            ),
-            segments=[SendSegment(type="text", content=text)],
-        )
 
 
 

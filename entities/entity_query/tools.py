@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 
-from entities._sdk import tool, entity
+from core.log import log
+from entities._sdk import entity, tool
 
 entity("entity", "实体系统自省 - 查询实体目录、方法详情和配置管理")
 
@@ -73,7 +74,8 @@ def list_entity_methods(group: str) -> str:
     try:
         import difflib
 
-        from core.entity import EntityRegistry, EntityType as ET
+        from core.entity import EntityRegistry
+        from core.entity import EntityType as ET
 
         entities = EntityRegistry.get_by_group(group)
         tools = [
@@ -171,7 +173,7 @@ def update_entity_config(key: str, value: str) -> str:
         try:
             parsed_value = json.loads(value)
         except (json.JSONDecodeError, TypeError):
-            pass
+            log("update_entity_config 异常已忽略", "DEBUG")
 
         ConfigManager.set(key, parsed_value)
         ConfigManager.save()

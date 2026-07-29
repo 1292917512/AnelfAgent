@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import json
 import mimetypes
 import re
@@ -23,8 +22,6 @@ import struct
 import textwrap
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlparse
-
-from core.log import log
 
 try:
     import aiohttp
@@ -159,12 +156,22 @@ def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:
 
 
 def _aes128_ecb_encrypt(plaintext: bytes, key: bytes) -> bytes:
+    """AES-128-ECB 加密（微信 CDN 媒体上传）。
+
+    警告：ECB 为微信 CDN 协议强制要求（iLink 媒体上传/下载接口规定），
+    不具备语义安全性，禁止将此工具函数用于其他场景。
+    """
     cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
     encryptor = cipher.encryptor()
     return encryptor.update(_pkcs7_pad(plaintext)) + encryptor.finalize()
 
 
 def _aes128_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
+    """AES-128-ECB 解密（微信 CDN 媒体下载）。
+
+    警告：ECB 为微信 CDN 协议强制要求（iLink 媒体上传/下载接口规定），
+    不具备语义安全性，禁止将此工具函数用于其他场景。
+    """
     cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
     decryptor = cipher.decryptor()
     padded = decryptor.update(ciphertext) + decryptor.finalize()
@@ -205,6 +212,7 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     """
     try:
         import ssl
+
         import certifi
     except ImportError:
         return None

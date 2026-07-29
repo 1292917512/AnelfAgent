@@ -76,7 +76,7 @@ def get_interrupt_keywords() -> tuple[str, ...]:
         if isinstance(raw, list) and raw:
             return tuple(str(k).strip() for k in raw if str(k).strip())
     except Exception:
-        pass
+        log("get_interrupt_keywords 异常已忽略", "DEBUG")
     return _DEFAULT_KEYWORDS
 
 

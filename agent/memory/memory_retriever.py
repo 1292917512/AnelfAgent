@@ -11,6 +11,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 from core.log import log
+
 from .embedding import Embedder
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
@@ -176,7 +177,7 @@ class MemoryRetriever:
             if primary:
                 return f"{primary[0]}_{primary[1]}"
         except Exception:
-            pass
+            log("_resolve_scope_alias 异常已忽略", "DEBUG")
         return scope
 
     async def _load_entity_profiles(self, scopes: List[str]) -> List[Dict]:
@@ -189,7 +190,7 @@ class MemoryRetriever:
             return []
         primaries = await asyncio.gather(*(self._resolve_scope_alias(s) for s in scopes))
         resolved_map: dict[str, str] = {}
-        for scope, primary in zip(scopes, primaries):
+        for scope, primary in zip(scopes, primaries, strict=False):
             if primary not in resolved_map:
                 resolved_map[primary] = scope
 
@@ -454,7 +455,7 @@ class MemoryRetriever:
                 from agent.llm import get_llm_manager
                 rerank_model = get_llm_manager().get_rerank_model() or ""
             except Exception:
-                pass
+                log("_apply_rerank 异常已忽略", "DEBUG")
 
             kwargs = {"query": query, "documents": documents, "top_n": top_k}
             if rerank_model:

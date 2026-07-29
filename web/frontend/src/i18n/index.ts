@@ -1,4 +1,5 @@
 import i18n from "i18next";
+import type { Resource, ResourceLanguage } from "i18next";
 import { initReactI18next } from "react-i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
 
@@ -7,10 +8,10 @@ import LanguageDetector from "i18next-browser-languagedetector";
 const modules = import.meta.glob("./locales/*/*.json", { eager: true });
 
 interface LocaleModule {
-  default: Record<string, unknown>;
+  default: ResourceLanguage;
 }
 
-const resources: Record<string, Record<string, Record<string, unknown>>> = {};
+const resources: Record<string, Record<string, ResourceLanguage>> = {};
 const namespaces = new Set<string>();
 
 for (const [path, mod] of Object.entries(modules)) {
@@ -27,7 +28,7 @@ i18n
   .use(LanguageDetector)
   .use(initReactI18next)
   .init({
-    resources: resources as never,
+    resources: resources as Resource,
     fallbackLng: "zh",
     supportedLngs: ["zh", "en"],
     defaultNS: "common",

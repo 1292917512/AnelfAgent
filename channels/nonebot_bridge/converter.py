@@ -9,8 +9,6 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.log import log
-
 from agent.channel.schemas import (
     AdapterChannel,
     AdapterMessage,
@@ -19,7 +17,7 @@ from agent.channel.schemas import (
     MessageSegment,
     SegmentType,
 )
-
+from core.log import log
 
 # 群成员名片缓存：{group_id: {user_id: nickname}}
 _group_member_cache: Dict[str, Dict[str, str]] = {}
@@ -71,9 +69,6 @@ def _get_session_info(event: Any) -> Tuple[str, ChannelType]:
     NoneBot 事件的 get_session_id() 格式因适配器而异，
     这里尝试多种方式提取 group_id 和 channel_type。
     """
-    channel_id = ""
-    channel_type = ChannelType.PRIVATE
-
     # 尝试从事件属性直接获取
     group_id = getattr(event, "group_id", None)
     if group_id is not None:
@@ -99,7 +94,7 @@ def _get_session_info(event: Any) -> Tuple[str, ChannelType]:
             return session_id, ChannelType.GROUP
         return session_id, ChannelType.PRIVATE
     except Exception:
-        pass
+        log("_get_session_info 异常已忽略", "DEBUG")
 
     # 最终回退
     try:
@@ -358,7 +353,7 @@ def _check_is_to_me(event: Any) -> bool:
     try:
         return bool(event.is_tome())
     except Exception:
-        pass
+        log("_check_is_to_me 异常已忽略", "DEBUG")
 
     # 私聊默认 to_me
     try:
@@ -366,7 +361,7 @@ def _check_is_to_me(event: Any) -> bool:
         if "group" not in session.lower() and "guild" not in session.lower():
             return True
     except Exception:
-        pass
+        log("_check_is_to_me 异常已忽略", "DEBUG")
 
     return False
 
@@ -379,5 +374,5 @@ def _extract_timestamp(event: Any) -> float:
             try:
                 return float(ts)
             except (ValueError, TypeError):
-                pass
+                log("_extract_timestamp 异常已忽略", "DEBUG")
     return time.time()

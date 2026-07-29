@@ -12,10 +12,10 @@ import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from agent.llm.types import ImageContent
-from agent.messages import Everything, EverythingGroup, EntityData
+from agent.messages import EntityData, Everything, EverythingGroup
 from agent.mind.autonomous import MindTask, TaskType
-from agent.utils.unique_queue import UniqueQueue
 from agent.storage.data_center import EverythingData
+from agent.utils.unique_queue import UniqueQueue
 from core.entity import EntityRegistry
 from core.log import log
 from core.tags import etag_all
@@ -463,16 +463,17 @@ class PrefrontalCortex:
             "task_key": key, "group_id": group_id, "uid": uid,
         })
 
+    def requeue_analysis(self, group_id: Union[int, str], uid: Union[int, str]) -> None:
+        """分析未能执行时重新入队（去重由 _enqueue_analysis 保证）。"""
+        self._enqueue_analysis(group_id, uid)
+
     async def _handle_group_message(self, anything: EverythingGroup) -> None:
         """群组消息达到阈值时加入画像分析队列，分析后重置计数实现周期性增量更新。"""
         group_entity = await self.everything_data.get_anything(anything.group_id, 0)
         conv_count = group_entity.add_conversations_num()
-        threshold = self._analysis_threshold()
-        if conv_count >= threshold:
-            has_personality = bool(group_entity.personality.get("personality"))
-            if conv_count > threshold or not has_personality:
-                self._enqueue_analysis(group_entity.group_id, group_entity.uid or 0)
-                group_entity.reset_conversations_num()
+        if conv_count >= self._analysis_threshold():
+            self._enqueue_analysis(group_entity.group_id, group_entity.uid or 0)
+            group_entity.reset_conversations_num()
 
     async def _handle_user_message(self, anything: Everything) -> None:
         """用户消息达到阈值时加入画像分析队列；首次出现的用户自动建档。
@@ -555,6 +556,13 @@ class PrefrontalCortex:
     def peek_general_tasks(self) -> list[MindTask]:
         return list(self._general_tasks)
 
+    def get_pending_message_previews(self) -> Dict[str, Tuple[str, str]]:
+        """待处理消息预览快照：{scope: (preview, adapter_key)}。"""
+        return {
+            scope: (preview, self._task_adapter_keys.get(scope, ""))
+            for scope, preview in self._message_previews.items()
+        }
+
     def consume_general_task(self, index: int) -> bool:
         if 0 <= index < len(self._general_tasks):
             self._general_tasks.pop(index)
@@ -626,7 +634,7 @@ class PrefrontalCortex:
             try:
                 queue.queue.remove(key)
             except ValueError:
-                pass
+                log("_consume_from_queue 异常已忽略", "DEBUG")
             return True
         return False
 
@@ -644,6 +652,11 @@ class PrefrontalCortex:
 
     def get_adapter_key(self, scope: str) -> str:
         return self._task_adapter_keys.get(scope, "")
+
+    def set_message_preview(self, scope: str, preview: str) -> None:
+        """登记 scope 的待处理消息预览（供态势收集与提示注入）。"""
+        if scope:
+            self._message_previews[scope] = preview
 
     # ==================================================================
     # 工具管理：召回 / 频道 / 标签 / 活跃集
@@ -1083,13 +1096,13 @@ class PrefrontalCortex:
         """
         system_msgs: List[Dict] = []
         if stable_text:
-            stable_msg: Dict = {"role": "system", "content": stable_text}
+            stable_msg: Dict = {"role": "system", "content": stable_text, "_layer": "stable"}
             if anthropic_breakpoint:
                 # Anthropic Prompt Caching 断点：stable 层标记为可缓存前缀
                 stable_msg["cache_control"] = {"type": "ephemeral"}
             system_msgs.append(stable_msg)
         if context_text:
-            context_msg: Dict = {"role": "system", "content": context_text}
+            context_msg: Dict = {"role": "system", "content": context_text, "_layer": "context"}
             if anthropic_breakpoint:
                 # 第二断点：context 层（便签等低频内容）同样纳入缓存前缀
                 context_msg["cache_control"] = {"type": "ephemeral"}
@@ -1125,7 +1138,9 @@ class PrefrontalCortex:
         security_hint: List[Dict] = []
         try:
             from agent.security.session_token import (
-                build_token_rule_hint, current_token, wrap_history_content,
+                build_token_rule_hint,
+                current_token,
+                wrap_history_content,
             )
             if current_token():
                 conversation_list = [
@@ -1136,8 +1151,9 @@ class PrefrontalCortex:
                 hint = build_token_rule_hint()
                 if hint:
                     security_hint = [{"role": "system", "content": hint}]
-        except Exception:
-            pass
+        except Exception as exc:
+            # 安全标记包裹失败 = 本轮历史无防注入保护，必须可见
+            log(f"会话令牌包裹失败（本轮历史无防伪标记）: {exc}", "WARNING", tag="安全")
 
         # 上下文溢出提示：对话历史达到窗口上限时，告知窗口外真实数量与检索路径
         # （窗口外消息仍完整存于 DB——软归档感知，而非沉默丢弃）
@@ -1159,8 +1175,7 @@ class PrefrontalCortex:
             )}]
 
         # 上下文快照分类标签（normalize_for_send 发送前剥离，LLM 不可见）
-        for i, m in enumerate(system_msgs):
-            m["_layer"] = "stable" if i == 0 else "context"
+        # stable/context 已在构建时标记，此处只标 volatile/overflow/security
         for m in volatile_msgs:
             m["_layer"] = "volatile"
         for m in overflow_hint:
@@ -1298,13 +1313,13 @@ class PrefrontalCortex:
 
         # 目标 nag 提醒（对齐 Claude Code todo_reminder：10 轮未更新才提醒）
         try:
-            from agent.planning.nag import maybe_nag
             from agent.mind.tool_activation import ToolActivationManager
+            from agent.planning.nag import maybe_nag
             nag_text = maybe_nag(ToolActivationManager.current_scope())
             if nag_text:
                 lines.append(nag_text)
         except Exception:
-            pass
+            log("build_execution_context 异常已忽略", "DEBUG")
 
         # 沉睡分组激活状态（剩余最后一轮时提示续期）
         from agent.mind.tool_activation import tool_activation

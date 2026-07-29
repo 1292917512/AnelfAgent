@@ -43,6 +43,10 @@ class ChannelSupervisor:
         self._fail_counts: Dict[str, int] = {}
         # 已降级（连挂停手）的频道
         self._degraded: set[str] = set()
+        # channel_id → 进行中的重启任务（in-flight 去重；
+        # 退避 sleep 在独立 task 中执行，巡检循环本身不等待，
+        # 避免单个频道退避期间其他 ERROR 频道得不到巡检）
+        self._restart_tasks: Dict[str, asyncio.Task] = {}
         self._task: Optional[asyncio.Task] = None
         self._stopping = False
 
@@ -66,12 +70,23 @@ class ChannelSupervisor:
     async def stop(self) -> None:
         """停止巡检（进程关停时调用）。"""
         self._stopping = True
+        for task in self._restart_tasks.values():
+            if not task.done():
+                task.cancel()
+        if self._restart_tasks:
+            await asyncio.gather(*self._restart_tasks.values(), return_exceptions=True)
+        self._restart_tasks.clear()
         if self._task and not self._task.done():
             self._task.cancel()
             try:
                 await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
+            except asyncio.CancelledError:
+                # 我们主动取消巡检任务：正常吞没；
+                # 若取消来自外部（stop 自身被取消）则必须向上传播
+                if not self._task.cancelled():
+                    raise
+            except Exception:
+                log("stop 异常已忽略", "DEBUG")
         self._task = None
 
     # ------------------------------------------------------------------
@@ -103,7 +118,28 @@ class ChannelSupervisor:
                 continue
             if cid in self._degraded:
                 continue
-            await self._restart_with_backoff(cid, channel)
+            self._schedule_restart(cid, channel)
+
+    def _schedule_restart(self, cid: str, channel: BaseChannel) -> None:
+        """在独立 task 中执行退避重启（in-flight 去重，巡检循环不等待）。"""
+        existing = self._restart_tasks.get(cid)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._restart_with_backoff(cid, channel),
+            name=f"agent.channel.supervisor.restart.{cid}",
+        )
+        self._restart_tasks[cid] = task
+        task.add_done_callback(lambda t, c=cid: self._on_restart_done(c, t))
+
+    def _on_restart_done(self, cid: str, task: asyncio.Task) -> None:
+        """重启任务收尾：清理登记并曝光未捕获异常。"""
+        self._restart_tasks.pop(cid, None)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log(f"看门狗重启任务异常 ({cid}): {exc}", "WARNING", tag="看门狗")
 
     async def _restart_with_backoff(self, cid: str, channel: BaseChannel) -> None:
         fails = self._fail_counts.get(cid, 0)
@@ -166,7 +202,7 @@ def start_channel_supervisor(manager: Any) -> ChannelSupervisor:
     """创建并启动看门狗（launch 流程调用，幂等）。"""
     global _supervisor
     if _supervisor is None:
-        from core.config import get_config_bool, get_config_float, get_config_int
+        from core.config import get_config_float, get_config_int
         _supervisor = ChannelSupervisor(
             manager,
             interval=get_config_float("channel_supervisor_interval", 10.0),

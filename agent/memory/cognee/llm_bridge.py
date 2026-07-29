@@ -105,12 +105,13 @@ def resolve_chat_llm_config(
 
 def _resolve_auto_chat(chat_cfg: CogneeChatModelConfig, manager: Any) -> dict[str, Any]:
     """自动映射：优先 openai 协议（兼容性最好），其次 cognee 支持的其他协议。"""
+    from agent.llm.llm_client import ModelType
+
     default = manager.get_default()
     candidates: list[Any] = []
     if default is not None:
         candidates.append(default)
-    for mid in getattr(manager, "_type_priorities", {}).get("chat", []):
-        client = manager._clients.get(mid)
+    for client in manager.get_all_by_type(ModelType.CHAT):
         if client is not None and client not in candidates:
             candidates.append(client)
 
@@ -287,16 +288,44 @@ def _ensure_extraction_budget(
         )
 
 
+# ANTHROPIC_BASE_URL 桥接状态：记录原始值以便换端点/换供应商时还原，
+# 避免进程级环境变量残留旧值污染其他调用方
+_anthropic_env_state: dict[str, Any] = {"active": False, "original": ""}
+
+
+def _restore_anthropic_env() -> None:
+    """还原 ANTHROPIC_BASE_URL 到桥接前状态（无桥接时幂等）。"""
+    import os
+    if not _anthropic_env_state["active"]:
+        return
+    original = _anthropic_env_state["original"]
+    if original:
+        os.environ["ANTHROPIC_BASE_URL"] = original
+    else:
+        os.environ.pop("ANTHROPIC_BASE_URL", None)
+    _anthropic_env_state["active"] = False
+    _anthropic_env_state["original"] = ""
+
+
 def anthropic_env_bridge(payload: dict[str, Any]) -> None:
-    """cognee 的 AnthropicAdapter 不接受 endpoint 参数，经环境变量桥接自定义端点。"""
+    """cognee 的 AnthropicAdapter 不接受 endpoint 参数，经环境变量桥接自定义端点。
+
+    桥接为进程级副作用：换端点或换供应商时会先还原原始值，不残留旧端点。
+    """
     if payload.get("llm_provider") != "anthropic":
+        _restore_anthropic_env()
         return
     endpoint = str(payload.get("llm_endpoint") or "").strip()
     if not endpoint or endpoint.rstrip("/") == _ANTHROPIC_OFFICIAL_ENDPOINT:
+        _restore_anthropic_env()
         return
     import os
-    os.environ["ANTHROPIC_BASE_URL"] = endpoint
-    log(f"Cognee: Anthropic 自定义端点经 ANTHROPIC_BASE_URL 桥接: {endpoint}", "DEBUG")
+    if os.environ.get("ANTHROPIC_BASE_URL") != endpoint:
+        if not _anthropic_env_state["active"]:
+            _anthropic_env_state["original"] = os.environ.get("ANTHROPIC_BASE_URL", "")
+        _anthropic_env_state["active"] = True
+        os.environ["ANTHROPIC_BASE_URL"] = endpoint
+        log(f"Cognee: Anthropic 自定义端点经 ANTHROPIC_BASE_URL 桥接: {endpoint}", "DEBUG")
 
 
 # ==================================================================
@@ -350,6 +379,11 @@ def _embed_payload_from_client(client: Any, dimensions: int = 0) -> dict[str, An
     dims = dimensions or getattr(client, "dimensions", 0) or 0
     if isinstance(dims, int) and dims > 0:
         payload["embedding_dimensions"] = dims
+    # cognee 默认批量 100，部分供应商单批上限更低（如 text-embedding-v4 限 10），
+    # 透传客户端配置的单批上限避免批量超限 400
+    max_batch = getattr(cfg, "embedding_max_batch", 0) or 0
+    if max_batch > 0:
+        payload["embedding_batch_size"] = max_batch
     return payload
 
 
@@ -371,7 +405,7 @@ def _find_client(manager: Any, model_id: str, model_type: str) -> Optional[Any]:
     """按 id 在 LLMManager 中查找指定类型的客户端。"""
     if not model_id:
         return None
-    client = manager._clients.get(model_id)
+    client = manager.get_client(model_id)
     if client is None:
         return None
     if model_type and model_type not in (client.config.model_types or []):

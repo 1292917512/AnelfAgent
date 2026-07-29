@@ -16,12 +16,11 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from entities._sdk import deferred_tool, activate_group
-
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
 from agent.planning import tracker
 from core.log import log
+from entities._sdk import activate_group, deferred_tool
 
 _GOAL_SOURCE = "goal"
 _GROUP = "planning"
@@ -38,7 +37,7 @@ def register_planning_tools(store: MemoryStore) -> None:
 
 
 async def _find_goal(
-    store: MemoryStore, goal_id: str,
+    goal_id: str,
 ) -> tuple[Optional[MemoryEntry], Optional[Dict[str, Any]]]:
     """按 goal_id 定位记忆条目与目标数据（委托 tracker 统一实现）。"""
     return await tracker.find_goal_by_id(goal_id)
@@ -135,7 +134,11 @@ async def list_goals(status: str = "active") -> str:
         except (json.JSONDecodeError, AttributeError):
             continue
 
-    return json.dumps({"goals": goals, "total": len(goals), "filter": status}, ensure_ascii=False)
+    result: Dict[str, Any] = {"goals": goals, "total": len(goals), "filter": status}
+    if len(entries) >= 50:
+        # 达到查询上限：目标可能未全部列出，提示清理而非静默截断
+        result["hint"] = "目标数量已达查询上限，可能有更早的目标未列出，建议删除已完成的目标"
+    return json.dumps(result, ensure_ascii=False)
 
 
 @deferred_tool(
@@ -165,7 +168,7 @@ async def update_goal(
     if _store is None:
         return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
 
-    target_entry, target_goal = await _find_goal(_store, goal_id)
+    target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is None or target_goal is None:
         return json.dumps({"error": f"目标 '{goal_id}' 不存在"}, ensure_ascii=False)
 
@@ -240,7 +243,7 @@ async def delete_goal(goal_id: str) -> str:
     if _store is None:
         return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
 
-    target_entry, target_goal = await _find_goal(_store, goal_id)
+    target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is not None and target_goal is not None and target_entry.id:
         await _store.delete(target_entry.id)
         return json.dumps({
@@ -262,7 +265,7 @@ async def get_goal(goal_id: str) -> str:
     if _store is None:
         return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
 
-    target_entry, target_goal = await _find_goal(_store, goal_id)
+    target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is not None and target_goal is not None:
         target_goal["memory_id"] = target_entry.id
         return json.dumps({"success": True, "goal": target_goal}, ensure_ascii=False)
@@ -320,8 +323,32 @@ async def present_plan(goal: str, steps: str, files: str = "", risks: str = "") 
 
     Notes:
         - 持久化与事件发射统一由 ``agent.planning.tracker.submit_plan`` 实现。
+        - 同 scope 已有 active plan 时**复用**而非新建（防止 AI 重复规划产生重复卡片）。
     """
     scope = tracker.current_scope()
+
+    # 复用：已有进行中计划时返回现有 plan，提示 AI 继续执行而非重新规划
+    existing = await tracker.get_active_plan(scope)
+    if existing is not None:
+        plan_id = existing.get("goal_id", "")
+        steps_list = existing.get("steps", [])
+        remaining = [s for s in steps_list if s.get("status") in ("pending", "in_progress")]
+        done = len(steps_list) - len(remaining)
+        lines = "\n".join(
+            f"  - 步骤 {s.get('index', 0) + 1}: {s.get('content', '')} ({s.get('status', 'pending')})"
+            for s in remaining
+        ) or "  （无剩余步骤）"
+        return json.dumps({
+            "ok": True,
+            "plan_id": plan_id,
+            "status": "executing",
+            "reused": True,
+            "message": (
+                f"已有进行中的计划 (plan_id={plan_id})，进度 {done}/{len(steps_list)}，"
+                f"请继续执行剩余步骤，不要重新规划：\n{lines}"
+            ),
+        }, ensure_ascii=False)
+
     step_objs = tracker.parse_steps(steps)
     plan_id = await tracker.submit_plan(scope, goal, step_objs, files=files, risks=risks)
 

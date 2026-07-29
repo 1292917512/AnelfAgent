@@ -30,5 +30,10 @@
     "running": "Running",
     "role": "Role",
     "depth": "Depth"
-  }
+  },
+  "stepFallback": "Step {{index}}",
+  "stepProgress": "{{icon}} Plan step {{index}}/{{total}}: {{step}}{{note}}",
+  "fallbackTitle": "Plan",
+  "completedMsg": "✓ Plan completed: {{goal}}",
+  "cancelledMsg": "⊘ Plan cancelled: {{goal}}"
 }

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Query
 
 from core.log import log, query_log_buffer
+from web.routers.workspace import search_workspace
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -61,9 +63,6 @@ async def global_search(
     limit: int = Query(10, ge=1, le=50),
 ) -> Dict[str, Any]:
     """全局搜索：聚合记忆 / 日志 / 工作区文件 / 会话记录。"""
-    import asyncio
-    from web.routers.workspace import search_workspace
-
     # 记忆 / 会话 / 文件三路搜索互相独立，并行执行（文件搜索走线程避免阻塞事件循环）
     memory, conversations, files = await asyncio.gather(
         _search_memory(q, limit),

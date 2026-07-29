@@ -52,12 +52,24 @@ class TestToolGate:
             return state["ok"]
 
         assert await gate.check(check) is True
-        gate.invalidate()
         state["ok"] = False
-        # 宽限期内：返回 last-good True，且失败不缓存
+        # 绕过 TTL 强制重新探测：宽限期内返回 last-good True，且失败不缓存
+        gate._cache.clear()
         assert await gate.check(check) is True
         # 宽限期过后（模拟 last_good 过期）→ 真实失败
         gate._last_good[check] = 0.0
+        assert await gate.check(check) is False
+
+    async def test_invalidate_clears_all_caches(self, gate: ToolGate) -> None:
+        """invalidate 清空全部缓存（含 _last_good），下一次评估强制重新探测。"""
+        state = {"ok": True}
+
+        def check() -> bool:
+            return state["ok"]
+
+        assert await gate.check(check) is True
+        state["ok"] = False
+        # invalidate 后 last_good 不再兜底：直接重新探测得到真实失败
         gate.invalidate()
         assert await gate.check(check) is False
 

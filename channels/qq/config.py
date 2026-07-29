@@ -35,6 +35,12 @@ ONEBOT_V11_CONFIGS = {
             "value_type": ConfigValueType.INTEGER,
             "tag": "forward",
         },
+        "reverse_ws_host": {
+            "description": "本地 WS Server 监听地址（非回环地址必须配置 access_token，否则拒绝启动）",
+            "default": "127.0.0.1",
+            "value_type": ConfigValueType.STRING,
+            "tag": "reverse",
+        },
         "reverse_ws_port": {
             "description": "本地 WS Server 监听端口（NapCat 连接此端口）",
             "default": 8095,

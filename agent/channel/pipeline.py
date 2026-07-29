@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Awaitable, Callable, List, Optional, Protocol
+from typing import List, Protocol
 
 from agent.messages import Everything
 from core.log import log

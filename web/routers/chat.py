@@ -5,20 +5,27 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, Query, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from core.log import log
 from core.path import ConfigPaths
 from services import ChatService
+from web.routers._errors import server_error
+from web.routers._paths import safe_workspace_path
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 _chat_svc = ChatService()
+
+# 消息内容内部标签（[tag:xxx]）剥离正则，历史清洗与会话标题共用
+_TAG_PREFIX_RE = re.compile(r"\[(?:[^:]+):(.*?)\]", flags=re.DOTALL)
 
 _UPLOAD_DIR = Path(ConfigPaths.UPLOAD_DIR).resolve()
 
@@ -50,7 +57,7 @@ def broadcast_chat_event(event: Dict[str, Any]) -> None:
         try:
             q.put_nowait(event)
         except asyncio.QueueFull:
-            pass
+            log("broadcast_chat_event 异常已忽略", "DEBUG")
 
 
 def _setup_ui_command_bridge() -> None:
@@ -128,20 +135,17 @@ def _resolve_media_path(file_path: str) -> str:
     if os.path.isabs(file_path) or os.path.exists(file_path):
         return file_path
     try:
-        from entities.filesystem.tools import _safe_path
-        resolved = _safe_path(file_path)
+        resolved = safe_workspace_path(file_path)
         if os.path.exists(resolved):
             return resolved
     except Exception:
-        pass
+        log("_resolve_media_path 异常已忽略", "DEBUG")
     return file_path
 
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
     """Upload a file to workspace/uploads/{type}/, return metadata."""
-    from fastapi import HTTPException
-
     filename = os.path.basename(file.filename or f"upload_{int(time.time())}")
     if not filename or ".." in filename:
         raise HTTPException(400, "Invalid filename")
@@ -177,7 +181,6 @@ async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
 @router.get("/files/{file_type}/{filename}")
 async def serve_uploaded_file(file_type: str, filename: str) -> Any:
     """Serve an uploaded file."""
-    from fastapi import HTTPException
     from starlette.responses import FileResponse
     if file_type not in _FILE_TYPES:
         raise HTTPException(404, "File not found")
@@ -193,8 +196,8 @@ async def serve_uploaded_file(file_type: str, filename: str) -> Any:
 @router.post("/send", response_model=SendMessageResponse)
 async def send_message(req: SendMessageRequest) -> SendMessageResponse:
     try:
-        from agent.llm.types import ImageContent
         from agent.channel.schemas import MessageSegment, SegmentType
+        from agent.llm.types import ImageContent
 
         images = None
         if req.images:
@@ -260,10 +263,8 @@ async def send_message(req: SendMessageRequest) -> SendMessageResponse:
 
 def _clean_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     """清理消息中的内部标签，返回干净的前端展示数据。"""
-    import re
     content = str(msg.get("content", ""))
-    content = re.sub(r"\[(?:[^:]+):(.*?)\]", r"\1", content, flags=re.DOTALL)
-    content = content.strip()
+    content = _TAG_PREFIX_RE.sub(r"\1", content).strip()
     result: Dict[str, Any] = {
         "role": msg.get("role", ""),
         "content": content,
@@ -294,53 +295,33 @@ async def list_chats(
     user_id: str = Query("web_user"),
 ) -> Dict[str, Any]:
     """列出该用户在 webui 频道下出现过的所有 chat_id（基于 conversation_messages 表去重）。"""
+    from services._runtime import get_runtime
+    rt = get_runtime()
+    if rt is None:
+        return {"chats": []}
     try:
-        from services._runtime import get_runtime
-        rt = get_runtime()
-        if rt is None:
-            return {"chats": []}
-        db = await rt.data_center.sqlite._get_db()
-        # scope_id 形如 "web_user" 或 "web_user#abc123"
-        cursor = await db.execute(
-            "SELECT scope_id, MAX(ts_ns) AS last_ts, COUNT(*) AS cnt "
-            "FROM conversation_messages "
-            "WHERE scope_type='user' AND (scope_id=? OR scope_id LIKE ?) "
-            "GROUP BY scope_id ORDER BY last_ts DESC",
-            (user_id, f"{user_id}#%"),
-        )
-        rows = await cursor.fetchall()
-        chats: List[Dict[str, Any]] = []
-        for r in rows:
-            sid = r[0]
-            if "#" in sid:
-                chat_id = sid.split("#", 1)[1]
-            else:
-                chat_id = "default"
-            # 拉最近一条用户消息作为标题
-            c2 = await db.execute(
-                "SELECT content FROM conversation_messages "
-                "WHERE scope_type='user' AND scope_id=? AND role='user' "
-                "ORDER BY ts_ns DESC LIMIT 1",
-                (sid,),
-            )
-            title_row = await c2.fetchone()
-            title = ""
-            if title_row:
-                content = str(title_row[0] or "")
-                # 去除 [tag:xxx] 前缀
-                import re as _re
-                content = _re.sub(r"\[(?:[^:]+):(.*?)\]", r"\1", content, flags=_re.DOTALL).strip()
-                title = content[:40] or "(空消息)"
-            chats.append({
-                "chat_id": chat_id,
-                "scope_id": sid,
-                "title": title or "新会话",
-                "last_ts": r[1],
-                "message_count": r[2],
-            })
-        return {"chats": chats}
+        sessions = await rt.data_center.sqlite.list_user_chat_sessions(user_id)
     except Exception as exc:
-        return {"chats": [], "error": str(exc)}
+        raise server_error("查询会话列表", exc) from exc
+    chats: List[Dict[str, Any]] = []
+    for s in sessions:
+        sid = s["scope_id"]
+        # scope_id 形如 "web_user" 或 "web_user#abc123"
+        chat_id = sid.split("#", 1)[1] if "#" in sid else "default"
+        title = "新会话"
+        raw_content = s.get("last_user_content")
+        if raw_content is not None:
+            # 最近一条用户消息去除 [tag:xxx] 前缀作为标题
+            content = _TAG_PREFIX_RE.sub(r"\1", str(raw_content)).strip()
+            title = content[:40] or "(空消息)"
+        chats.append({
+            "chat_id": chat_id,
+            "scope_id": sid,
+            "title": title,
+            "last_ts": s["last_ts"],
+            "message_count": s["message_count"],
+        })
+    return {"chats": chats}
 
 
 @router.get("/bot-name")

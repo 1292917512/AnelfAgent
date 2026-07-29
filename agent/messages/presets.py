@@ -4,7 +4,6 @@ from typing import Optional, Union
 
 from pydantic import Field
 
-from .everything import CharType, Everything, EverythingGroup, Nothing
 from core.tags import (
     Tag,
     channel_tag,
@@ -17,6 +16,8 @@ from core.tags import (
     time_tag,
     uid_tag,
 )
+
+from .everything import CharType, Everything, EverythingGroup, Nothing
 
 
 class MessageAssistant(Everything):

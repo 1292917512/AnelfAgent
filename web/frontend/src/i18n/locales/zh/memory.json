@@ -217,6 +217,7 @@
     "backfillConfirm": "将全部历史记忆加入 Cognee 同步队列？数据量较大时会持续消耗模型额度。",
     "rebuild": "清空重建",
     "rebuildConfirm": "将清空全部 Cognee 数据并重新构建（需重新 LLM 抽取，耗时与额度消耗较大）。切换向量化模型后必须执行，确定继续？",
+    "rebuildRestartConfirm": "清空完成，重建队列已就绪。Cognee 需要重启应用才能开始重建，是否立即重启？",
     "notResolved": "未解析",
     "chatModel": "抽取模型",
     "embeddingModel": "向量化模型",
@@ -280,5 +281,6 @@
     "chunks": "{{count}} 块",
     "deleteTitle": "删除文档",
     "deleteConfirm": "确定删除文档「{{name}}」吗？将同时移除其索引与磁盘文件。"
-  }
+  },
+  "dimsValue": "{{dims}} 维"
 }

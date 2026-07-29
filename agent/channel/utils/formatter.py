@@ -20,7 +20,6 @@ import html
 import re
 from typing import List
 
-
 # ----------------------------------------------------------------------
 # 通用长文本分割
 # ----------------------------------------------------------------------
@@ -172,3 +171,20 @@ def chunk_and_convert(
     chunks = chunk_text(text, max_len)
     fn = convert_fn or (lambda x: x)
     return [{"text": c, "converted": fn(c)} for c in chunks]
+
+
+# ----------------------------------------------------------------------
+# 异常格式化
+# ----------------------------------------------------------------------
+
+
+def format_exception(exc: BaseException) -> str:
+    """格式化异常为可读消息。
+
+    httpx.ConnectError / 各平台 SDK 网络异常 str() 后消息为空（或以 ": " 结尾），
+    需回退为带异常类型名的网络错误描述。
+    """
+    msg = str(exc).strip()
+    if not msg or msg.endswith(": "):
+        return f"网络连接失败（{type(exc).__name__}）：频道服务不可达"
+    return msg

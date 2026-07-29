@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/layout/Layout";
 import { AuthGate } from "./components/AuthGate";
@@ -6,8 +7,8 @@ import { Toaster } from "./components/ui/Toast";
 import { ApprovalDialog } from "./components/ApprovalDialog";
 import { CommandPalette } from "./components/palette/CommandPalette";
 import { useAppStore } from "./stores/app-store";
-import { useChatStore } from "./stores/chat-store";
 import { configApi } from "./lib/api";
+import { warnApiError } from "@/lib/api";
 
 // 页面模块自动发现：pages/*.tsx 按文件名映射路由 path
 // 命名约定：Share.tsx → /share, Dashboard.tsx → /dashboard
@@ -64,8 +65,8 @@ const CORE_ROUTES: CoreRoute[] = [
 ];
 
 export default function App() {
+  const { t } = useTranslation();
   const setConfig = useAppStore((s) => s.setConfig);
-  const startSSE = useChatStore((s) => s.startSSE);
 
   useEffect(() => {
     configApi.webui().then((r) => {
@@ -74,10 +75,9 @@ export default function App() {
         branding: data.branding,
         navigation: data.navigation,
       });
-    }).catch((e) => console.warn("[API]", e));
-    // 全局启动 chat SSE（幂等）：审批弹窗等事件不依赖 Chat 页
-    startSSE();
-  }, [setConfig, startSSE]);
+    }).catch(warnApiError);
+    // chat SSE 由 Chat 页启动（startSSE 幂等，重复进入不会重建连接）
+  }, [setConfig]);
 
   return (
     <AuthGate>
@@ -88,7 +88,7 @@ export default function App() {
               const Page = lazyPage(r.page);
               if (!Page) return null;
               const element = (
-                <Suspense fallback={<div className="p-4 text-muted">加载中…</div>}>
+                <Suspense fallback={<div className="p-4 text-muted">{t("common:loading")}</div>}>
                   <Page />
                 </Suspense>
               );

@@ -8,8 +8,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any, List, Optional, Union
 
-from core.log import log
-
 from . import send as tg_send
 from .format import markdown_to_telegram_html
 from .types import ThreadSpec

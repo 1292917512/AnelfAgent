@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+
+from web.routers._errors import server_error
 
 router = APIRouter(prefix="/nonebot", tags=["nonebot"])
 
@@ -97,7 +99,7 @@ async def save_bridge_config(config: Dict[str, Any]) -> Dict[str, str]:
         cfg_file.write_bytes(json.dumps(existing, indent=2, ensure_ascii=False).encode("utf-8"))
         return {"status": "ok"}
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise server_error("保存桥接配置", exc) from exc
 
 
 def _check_adapter_installed(import_path: str) -> bool:

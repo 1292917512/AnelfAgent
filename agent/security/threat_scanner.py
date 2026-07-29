@@ -7,10 +7,15 @@
 - 持久化（authorized_keys / 修改配置文件）
 - 隐形字符与全角同形绕过（NFKC 归一化）
 
-scope 三级（从严到宽）：all ⊂ context ⊂ strict
-- all:     所有场景通用
-- context: 上下文文件 / 工具结果 / 记忆召回
-- strict:  记忆写入 / 技能内容（最严格）
+scope 三级（从窄到宽）：all ⊂ context ⊂ strict
+- all:     所有场景通用（扫描任何级别都会检查）
+- context: 上下文文件 / 工具结果 / 记忆召回（包含 all + context 两级模式）
+- strict:  记忆写入 / 技能内容（包含全部三级模式，最严格）
+
+注：凭证类模式（credential_* / hardcoded_secret 等）只挂在 strict 级是有意设计——
+工具结果路径上的真实凭证由 core/sanitizer 负责遮盖，若再在 context 级扫描会
+对正常的配置文件读取产生大量误报；只有当内容要被持久化（记忆/技能）时才需要
+最严格的凭证拦截。
 """
 from __future__ import annotations
 

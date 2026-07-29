@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 
 from entities.filesystem import tools
 from entities.filesystem.shell_guard import check_command_safety
-
 
 WS = "/data/workspace"
 

@@ -7,11 +7,10 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from core.log import log
-from entities._sdk import activate_group, deferred_tool
-
 from agent.delegation.delegation_manager import DelegationManager
 from agent.delegation.sub_agent import current_depth, max_spawn_depth
+from core.log import log
+from entities._sdk import activate_group, deferred_tool
 
 _manager: Optional[DelegationManager] = None
 

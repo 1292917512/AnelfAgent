@@ -15,46 +15,48 @@ import contextlib
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from core.event_bus import (
-    event_bus,
-    EVENT_AGENT_STARTED,
-    EVENT_AGENT_STOPPED,
     EVENT_ADAPTER_STARTED,
     EVENT_ADAPTER_STOPPED,
+    EVENT_AGENT_STARTED,
+    EVENT_AGENT_STOPPED,
     EVENT_ERROR_OCCURRED,
-    EVENT_THINKING_SESSION_START,
-    EVENT_THINKING_SESSION_END,
-    EVENT_THINKING_PHASE_CHANGE,
-    EVENT_THINKING_SITUATION,
-    EVENT_THINKING_DECISION,
-    EVENT_THINKING_CONTEXT_BUILD,
-    EVENT_THINKING_LLM_START,
-    EVENT_THINKING_LLM_END,
-    EVENT_THINKING_TOOL_START,
-    EVENT_THINKING_TOOL_END,
-    EVENT_THINKING_REPLY_ROUND,
-    EVENT_THINKING_INTROSPECTION,
-    EVENT_THINKING_FAKE_TOOL_CALL,
+    EVENT_MULTI_TOOL_COMPLETE,
+    EVENT_MULTI_TOOL_PROGRESS,
     EVENT_PLUGIN_LOADED,
     EVENT_PLUGIN_UNLOADED,
-    EVENT_TRACE_CALL_START,
+    EVENT_THINKING_CONTEXT_BUILD,
+    EVENT_THINKING_DECISION,
+    EVENT_THINKING_FAKE_TOOL_CALL,
+    EVENT_THINKING_INTROSPECTION,
+    EVENT_THINKING_LLM_END,
+    EVENT_THINKING_LLM_START,
+    EVENT_THINKING_PHASE_CHANGE,
+    EVENT_THINKING_REPLY_ROUND,
+    EVENT_THINKING_SESSION_END,
+    EVENT_THINKING_SESSION_START,
+    EVENT_THINKING_SITUATION,
+    EVENT_THINKING_TOOL_END,
+    EVENT_THINKING_TOOL_START,
     EVENT_TRACE_CALL_END,
-    EVENT_MULTI_TOOL_PROGRESS,
-    EVENT_MULTI_TOOL_COMPLETE,
+    EVENT_TRACE_CALL_START,
+    event_bus,
 )
 from core.log import log
 from core.trace_session import current_session_id as _ctx_session_id
 
 _OWNER = "thinking_tracer"
 _MAX_SYSTEM_NODES = 200
+# 立即推送（不进入批量缓冲）的广播事件类型
+_IMMEDIATE_EVENTS = frozenset({"session_start", "session_end", "session_update"})
 
 
 class NodeType(str, Enum):
-    # Mind 思维节点（原有，保持不变）
+    # Mind 思维节点
     SESSION_START = "session_start"
     SESSION_END = "session_end"
     PHASE_CHANGE = "phase_change"
@@ -67,7 +69,7 @@ class NodeType(str, Enum):
     INTROSPECTION = "introspection"
     FAKE_TOOL_CALL = "fake_tool_call"
     TOOLS_CHANGED = "tools_changed"
-    # 系统级节点（新增）
+    # 系统级节点
     ENTITY_CALL = "entity_call"       # EntityRegistry 工具调用（无 Mind 会话时）
     AGENT_LIFECYCLE = "agent_lifecycle"  # 代理启停
     ADAPTER_EVENT = "adapter_event"   # 适配器启停
@@ -167,7 +169,7 @@ class Tracer:
         self._sse_subscribers: List[asyncio.Queue[Dict[str, Any]]] = []
         self._registered: bool = False
         self._active_entity_nodes: Dict[str, str] = {}
-        self._active_multi_tool_nodes: Dict[str, str] = {}
+        self._active_multi_tool_nodes: set[str] = set()
         self._system_nodes: List[TraceNode] = []
         self._pending_broadcasts: List[Dict[str, Any]] = []
         self._flush_task: Optional[asyncio.TimerHandle] = None
@@ -199,7 +201,6 @@ class Tracer:
         关键事件（会话开始/结束）立即推送；其他事件缓冲后批量推送。
         """
         payload = {"event": event_type, "data": data}
-        _IMMEDIATE_EVENTS = {"session_start", "session_end", "session_update"}
         if event_type in _IMMEDIATE_EVENTS:
             self._flush_pending()
             self._push_to_subscribers(payload)
@@ -212,7 +213,7 @@ class Tracer:
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
-                pass
+                log("思维追踪 SSE 订阅者队列已满，事件被丢弃", "DEBUG", tag="思维追踪")
 
     def _flush_pending(self) -> None:
         """将缓冲中的事件逐个推送。"""
@@ -293,20 +294,20 @@ class Tracer:
             self._broadcast("system_node", {"node": node.to_dict()})
 
     def _update_node(self, node_id: str, **updates: Any) -> None:
-        """更新当前思维会话内的节点。"""
+        """更新节点：优先在当前会话中查找，找不到则更新系统节点。"""
         session = self._current_session()
-        if not session:
-            return
-        for node in session.nodes:
-            if node.id == node_id:
-                for k, v in updates.items():
-                    setattr(node, k, v)
-                self._broadcast("node_updated", {
-                    "session_id": session.id,
-                    "node_id": node_id,
-                    "updates": {k: v.value if isinstance(v, Enum) else v for k, v in updates.items()},
-                })
-                break
+        if session:
+            for node in session.nodes:
+                if node.id == node_id:
+                    for k, v in updates.items():
+                        setattr(node, k, v)
+                    self._broadcast("node_updated", {
+                        "session_id": session.id,
+                        "node_id": node_id,
+                        "updates": {k: v.value if isinstance(v, Enum) else v for k, v in updates.items()},
+                    })
+                    return
+        self._update_system_node(node_id, **updates)
 
     def _update_system_node(self, node_id: str, **updates: Any) -> None:
         """更新系统节点列表中的节点（无会话路径使用）。"""
@@ -367,25 +368,17 @@ class Tracer:
         )
         in_session = self._current_session() is not None
         self._add_system_node(node)
+        status = NodeStatus.COMPLETED
         try:
             yield node
-            node.status = NodeStatus.COMPLETED
-            node.duration_ms = round((time.time() - node.timestamp) * 1000)
-            updates = {
-                "status": NodeStatus.COMPLETED,
-                "duration_ms": node.duration_ms,
-                "label": node.label,
-                "data": node.data,
-            }
-            if in_session:
-                self._update_node(node.id, **updates)
-            else:
-                self._update_system_node(node.id, **updates)
         except Exception:
-            node.status = NodeStatus.ERROR
+            status = NodeStatus.ERROR
+            raise
+        finally:
+            node.status = status
             node.duration_ms = round((time.time() - node.timestamp) * 1000)
             updates = {
-                "status": NodeStatus.ERROR,
+                "status": status,
                 "duration_ms": node.duration_ms,
                 "label": node.label,
                 "data": node.data,
@@ -394,7 +387,6 @@ class Tracer:
                 self._update_node(node.id, **updates)
             else:
                 self._update_system_node(node.id, **updates)
-            raise
 
     # ==================================================================
     # 会话 / 节点查询
@@ -445,7 +437,7 @@ class Tracer:
         # 插件事件
         event_bus.on(EVENT_PLUGIN_LOADED, self._on_plugin_loaded, owner=_OWNER)
         event_bus.on(EVENT_PLUGIN_UNLOADED, self._on_plugin_unloaded, owner=_OWNER)
-        # 系统级事件（新增）
+        # 系统级事件
         event_bus.on(EVENT_AGENT_STARTED, self._on_agent_started, owner=_OWNER)
         event_bus.on(EVENT_AGENT_STOPPED, self._on_agent_stopped, owner=_OWNER)
         event_bus.on(EVENT_ADAPTER_STARTED, self._on_adapter_started, owner=_OWNER)
@@ -467,7 +459,7 @@ class Tracer:
         log("思维追踪事件处理器已注销", "DEBUG", tag="思维追踪")
 
     # ==================================================================
-    # Mind 思维事件处理器（原有，保持不变）
+    # Mind 思维事件处理器
     # ==================================================================
 
     async def _on_session_start(self, payload: Dict[str, Any]) -> None:
@@ -513,7 +505,7 @@ class Tracer:
         session.end_time = time.time()
         reason = payload.get("reason", "")
         if session.is_introspection:
-            label = f"内省完成" + (f": {reason}" if reason and reason != "introspection_completed" else "")
+            label = "内省完成" + (f": {reason}" if reason and reason != "introspection_completed" else "")
         else:
             label = f"会话结束: {reason}"
         node = TraceNode(
@@ -666,129 +658,152 @@ class Tracer:
             data=payload,
         ))
 
+    # 内省阶段标签（unit_phase 阶段名 -> 展示文案）
+    _INTRO_PHASE_LABELS: Dict[str, str] = {
+        "context_build": "构建上下文",
+        "llm_start": "LLM 反思中…",
+        "llm_end": "反思完成",
+        "storing": "存储结果",
+    }
+
     async def _on_introspection(self, payload: Dict[str, Any]) -> None:
+        """内省事件分发：按 stage 路由到对应处理函数。"""
         stage = payload.get("stage", "")
+        handler = {
+            "start": self._on_intro_start,
+            "unit_start": self._on_intro_unit_start,
+            "unit_phase": self._on_intro_unit_phase,
+            "unit_end": self._on_intro_unit_end,
+            "unit_error": self._on_intro_unit_error,
+            "unit_skip": self._on_intro_unit_skip,
+            "end": self._on_intro_end,
+        }.get(stage)
+        if handler is not None:
+            handler(payload)
+
+    def _on_intro_start(self, payload: Dict[str, Any]) -> None:
         flow = self._flow()
+        nid = f"intro_{uuid.uuid4().hex[:8]}"
+        if flow:
+            flow.intro_id = nid
+        self._add_node(TraceNode(
+            id=nid,
+            type=NodeType.INTROSPECTION,
+            label=f"内省: {payload.get('entity', '')}",
+            status=NodeStatus.RUNNING,
+            data=payload,
+        ))
 
-        if stage == "start":
-            nid = f"intro_{uuid.uuid4().hex[:8]}"
-            if flow:
-                flow.intro_id = nid
-            self._add_node(TraceNode(
-                id=nid,
-                type=NodeType.INTROSPECTION,
-                label=f"内省: {payload.get('entity', '')}",
-                status=NodeStatus.RUNNING,
-                data=payload,
-            ))
+    def _on_intro_unit_start(self, payload: Dict[str, Any]) -> None:
+        flow = self._flow()
+        unit = payload.get("unit", "")
+        nid = f"intro_u_{uuid.uuid4().hex[:8]}"
+        if flow:
+            flow.intro_unit_id = nid
+        self._add_node(TraceNode(
+            id=nid,
+            type=NodeType.INTROSPECTION,
+            label=f"[{payload.get('scope', '')}] {unit}",
+            status=NodeStatus.RUNNING,
+            data=payload,
+            parent_id=flow.intro_id if flow else None,
+        ))
 
-        elif stage == "unit_start":
-            unit = payload.get("unit", "")
-            nid = f"intro_u_{uuid.uuid4().hex[:8]}"
-            if flow:
-                flow.intro_unit_id = nid
-            self._add_node(TraceNode(
-                id=nid,
-                type=NodeType.INTROSPECTION,
-                label=f"[{payload.get('scope', '')}] {unit}",
-                status=NodeStatus.RUNNING,
-                data=payload,
-                parent_id=flow.intro_id if flow else None,
-            ))
+    def _on_intro_unit_phase(self, payload: Dict[str, Any]) -> None:
+        flow = self._flow()
+        uid = flow.intro_unit_id if flow else None
+        phase = payload.get("phase", "")
+        label = self._INTRO_PHASE_LABELS.get(phase, phase)
+        preview = payload.get("content_preview", "")
+        entity_hint = payload.get("entity", "")
+        if preview:
+            label = f"{label} — {preview[:80]}"
+        elif entity_hint:
+            label = f"{label} ({entity_hint})"
+        phase_status = (
+            NodeStatus.COMPLETED
+            if phase in ("llm_end", "storing")
+            else NodeStatus.RUNNING
+        )
+        self._add_node(TraceNode(
+            id=f"intro_ph_{uuid.uuid4().hex[:8]}",
+            type=NodeType.INTROSPECTION,
+            label=label,
+            status=phase_status,
+            data=payload,
+            parent_id=uid,
+        ))
 
-        elif stage == "unit_phase":
-            uid = flow.intro_unit_id if flow else None
-            phase = payload.get("phase", "")
-            _PHASE_LABELS: Dict[str, str] = {
-                "context_build": "构建上下文",
-                "llm_start": "LLM 反思中…",
-                "llm_end": "反思完成",
-                "storing": "存储结果",
-            }
-            label = _PHASE_LABELS.get(phase, phase)
-            preview = payload.get("content_preview", "")
-            entity_hint = payload.get("entity", "")
+    def _on_intro_unit_end(self, payload: Dict[str, Any]) -> None:
+        flow = self._flow()
+        uid = flow.intro_unit_id if flow else None
+        if not uid:
+            return
+        has_output = payload.get("has_output", False)
+        unit = payload.get("unit", "")
+        desc = payload.get("description", "")
+        mem_type = payload.get("memory_type", "")
+        preview = payload.get("content_preview", "")
+        if has_output:
+            type_hint = f" [{mem_type}]" if mem_type else ""
+            label = f"[✓] {unit}{type_hint}"
             if preview:
-                label = f"{label} — {preview[:80]}"
-            elif entity_hint:
-                label = f"{label} ({entity_hint})"
-            phase_status = (
-                NodeStatus.COMPLETED
-                if phase in ("llm_end", "storing")
-                else NodeStatus.RUNNING
-            )
-            self._add_node(TraceNode(
-                id=f"intro_ph_{uuid.uuid4().hex[:8]}",
-                type=NodeType.INTROSPECTION,
-                label=label,
-                status=phase_status,
-                data=payload,
-                parent_id=uid,
-            ))
+                label = f"{label}: {preview[:60]}"
+        else:
+            label = f"[—] {unit}"
+            if desc:
+                label = f"{label} ({desc})"
+        self._update_node(
+            uid,
+            status=NodeStatus.COMPLETED,
+            label=label,
+            data=payload,
+            duration_ms=self._elapsed_ms(uid),
+        )
+        if flow:
+            flow.intro_unit_id = None
 
-        elif stage == "unit_end":
-            uid = flow.intro_unit_id if flow else None
-            if uid:
-                has_output = payload.get("has_output", False)
-                unit = payload.get("unit", "")
-                desc = payload.get("description", "")
-                mem_type = payload.get("memory_type", "")
-                preview = payload.get("content_preview", "")
-                if has_output:
-                    type_hint = f" [{mem_type}]" if mem_type else ""
-                    label = f"[✓] {unit}{type_hint}"
-                    if preview:
-                        label = f"{label}: {preview[:60]}"
-                else:
-                    label = f"[—] {unit}"
-                    if desc:
-                        label = f"{label} ({desc})"
-                self._update_node(
-                    uid,
-                    status=NodeStatus.COMPLETED,
-                    label=label,
-                    data=payload,
-                    duration_ms=self._elapsed_ms(uid),
-                )
-                if flow:
-                    flow.intro_unit_id = None
+    def _on_intro_unit_error(self, payload: Dict[str, Any]) -> None:
+        flow = self._flow()
+        uid = flow.intro_unit_id if flow else None
+        if not uid:
+            return
+        self._update_node(
+            uid,
+            status=NodeStatus.ERROR,
+            label=f"[✗] {payload.get('unit', '')}",
+            data=payload,
+            duration_ms=self._elapsed_ms(uid),
+        )
+        if flow:
+            flow.intro_unit_id = None
 
-        elif stage == "unit_error":
-            uid = flow.intro_unit_id if flow else None
-            if uid:
-                self._update_node(
-                    uid,
-                    status=NodeStatus.ERROR,
-                    label=f"[✗] {payload.get('unit', '')}",
-                    data=payload,
-                    duration_ms=self._elapsed_ms(uid),
-                )
-                if flow:
-                    flow.intro_unit_id = None
+    def _on_intro_unit_skip(self, payload: Dict[str, Any]) -> None:
+        flow = self._flow()
+        self._add_node(TraceNode(
+            id=f"intro_s_{uuid.uuid4().hex[:8]}",
+            type=NodeType.INTROSPECTION,
+            label=f"[跳过] {payload.get('unit', '')}",
+            status=NodeStatus.WARNING,
+            data=payload,
+            parent_id=flow.intro_id if flow else None,
+        ))
 
-        elif stage == "unit_skip":
-            self._add_node(TraceNode(
-                id=f"intro_s_{uuid.uuid4().hex[:8]}",
-                type=NodeType.INTROSPECTION,
-                label=f"[跳过] {payload.get('unit', '')}",
-                status=NodeStatus.WARNING,
-                data=payload,
-                parent_id=flow.intro_id if flow else None,
-            ))
-
-        elif stage == "end":
-            iid = flow.intro_id if flow else None
-            if iid:
-                module_count = payload.get("module_count", 0)
-                self._update_node(
-                    iid,
-                    status=NodeStatus.COMPLETED,
-                    label=f"内省完成: {payload.get('entity', '')} ({module_count} 产出)",
-                    data=payload,
-                    duration_ms=self._elapsed_ms(iid),
-                )
-                if flow:
-                    flow.intro_id = None
+    def _on_intro_end(self, payload: Dict[str, Any]) -> None:
+        flow = self._flow()
+        iid = flow.intro_id if flow else None
+        if not iid:
+            return
+        module_count = payload.get("module_count", 0)
+        self._update_node(
+            iid,
+            status=NodeStatus.COMPLETED,
+            label=f"内省完成: {payload.get('entity', '')} ({module_count} 产出)",
+            data=payload,
+            duration_ms=self._elapsed_ms(iid),
+        )
+        if flow:
+            flow.intro_id = None
 
     async def _on_fake_tool_call(self, payload: Dict[str, Any]) -> None:
         """将产生工具幻觉的 LLM 节点直接标红。"""
@@ -813,7 +828,7 @@ class Tracer:
             )
 
     # ==================================================================
-    # 系统级事件处理器（新增）
+    # 系统级事件处理器
     # ==================================================================
 
     async def _on_plugin_loaded(self, payload: Dict[str, Any]) -> None:
@@ -933,22 +948,6 @@ class Tracer:
     # 多工具批量调用事件处理器
     # ==================================================================
 
-    def _update_any_node(self, node_id: str, **updates: Any) -> None:
-        """更新节点：优先在当前会话中查找，找不到则更新系统节点。"""
-        session = self._current_session()
-        if session:
-            for node in session.nodes:
-                if node.id == node_id:
-                    for k, v in updates.items():
-                        setattr(node, k, v)
-                    self._broadcast("node_updated", {
-                        "session_id": session.id,
-                        "node_id": node_id,
-                        "updates": {k: v.value if isinstance(v, Enum) else v for k, v in updates.items()},
-                    })
-                    return
-        self._update_system_node(node_id, **updates)
-
     async def _on_multi_tool_progress(self, payload: Dict[str, Any]) -> None:
         """多工具子任务进度更新。"""
         task_id = payload.get("task_id", "")
@@ -959,7 +958,7 @@ class Tracer:
         nid = f"mt_{group_id}_{task_id}"
 
         if event_type == "start":
-            self._active_multi_tool_nodes[nid] = nid
+            self._active_multi_tool_nodes.add(nid)
             step = payload.get("step", 1)
             self._add_system_node(TraceNode(
                 id=nid,
@@ -969,7 +968,7 @@ class Tracer:
                 data=payload,
             ))
         elif event_type == "done":
-            self._active_multi_tool_nodes.pop(nid, None)
+            self._active_multi_tool_nodes.discard(nid)
             success = payload.get("success", True)
             dur = payload.get("duration_ms", 0)
             step = payload.get("step", 1)
@@ -977,7 +976,7 @@ class Tracer:
             label = f"[{group_id}] step{step}: {tool} ({dur}ms)"
             if not success:
                 label += " [失败]"
-            self._update_any_node(nid, status=status, duration_ms=dur, label=label, data=payload)
+            self._update_node(nid, status=status, duration_ms=dur, label=label, data=payload)
 
     async def _on_multi_tool_complete(self, payload: Dict[str, Any]) -> None:
         """多工具任务组全部完成。"""

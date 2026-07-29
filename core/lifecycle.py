@@ -47,14 +47,15 @@ class Lifecycle:
         同名重复注册时替换旧实例并丢弃旧回调，避免关闭时重复清理。
         """
         cls._instances[name] = instance
+        # 同名注册整体替换条目：无论新注册是否提供回调，旧回调一律丢弃
+        cls._cleanups = [(n, fn) for n, fn in cls._cleanups if n != name]
+        cls._start_hooks = [(n, fn) for n, fn in cls._start_hooks if n != name]
+        cls._tick_hooks = [(n, fn) for n, fn in cls._tick_hooks if n != name]
         if cleanup:
-            cls._cleanups = [(n, fn) for n, fn in cls._cleanups if n != name]
             cls._cleanups.append((name, cleanup))
         if on_start:
-            cls._start_hooks = [(n, fn) for n, fn in cls._start_hooks if n != name]
             cls._start_hooks.append((name, on_start))
         if on_tick:
-            cls._tick_hooks = [(n, fn) for n, fn in cls._tick_hooks if n != name]
             cls._tick_hooks.append((name, on_tick))
 
     @classmethod
@@ -84,7 +85,7 @@ class Lifecycle:
                 else:
                     fn()
             except Exception as e:
-                log(f"tick 钩子失败: {name} - {e}", "DEBUG")
+                log(f"tick 钩子失败: {name} - {e}", "WARNING")
 
     @classmethod
     async def shutdown_all(cls) -> None:

@@ -58,8 +58,11 @@ class AgentAssistant:
         self._ensure_started()
         try:
             await self.mind.accept_feel(anything)
-        except Exception:
-            log("消息感知处理失败", "ERROR", tag="运行时")
+        except Exception as exc:
+            # 感知写入失败的消息不再入队：accept_feel 未生效意味着该消息
+            # 未进入对话历史/PFC，入队只会让 Mind 基于缺失上下文决策；
+            # 丢弃并以 ERROR 日志告警（含异常详情），由上游频道重试语义兜底
+            log(f"消息感知处理失败: {exc}", "ERROR", tag="运行时")
             return
         await self._queue.put(anything)
 
@@ -84,7 +87,7 @@ class AgentAssistant:
                 try:
                     await task
                 except asyncio.CancelledError:
-                    pass
+                    pass  # 取消属正常关闭流程（正常控制流，非异常）
         self._task = None
         self._heartbeat_task = None
 

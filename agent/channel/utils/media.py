@@ -18,11 +18,9 @@ import mimetypes
 import os
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 from core.log import log
-
 
 # 全局媒体临时目录（所有频道共享）
 MEDIA_TEMP_DIR = os.path.join(tempfile.gettempdir(), "anelf_media")
@@ -191,7 +189,44 @@ def cleanup_old_files(max_age_seconds: float = 3600.0, subdir: str = "") -> int:
                     os.unlink(path)
                     removed += 1
                 except OSError:
-                    pass
+                    log("cleanup_old_files 异常已忽略", "DEBUG")
     except OSError:
-        pass
+        log("cleanup_old_files 异常已忽略", "DEBUG")
     return removed
+
+
+# 出站文件读取上限（100MB），防止整文件读入/base64 时打爆内存（与 QQ 频道语义一致）
+MAX_OUTBOUND_FILE_BYTES = 100 * 1024 * 1024
+
+
+def resolve_local_file_path(path: str) -> str:
+    """解析媒体路径：绝对路径 / 项目相对路径 / workspace 相对路径。
+
+    远程 URL（http/https/file://）原样返回；相对路径依次按项目根目录与
+    workspace 根目录解析，命中已存在文件者优先。
+    """
+    raw = (path or "").strip()
+    if not raw:
+        return raw
+    if raw.startswith(("http://", "https://", "file://")):
+        return raw
+    expanded = os.path.expandvars(os.path.expanduser(raw))
+    if os.path.isabs(expanded):
+        return os.path.normpath(expanded)
+
+    candidates = [os.path.normpath(expanded)]
+    try:
+        from core.config import ConfigManager
+        workspace_root = str(ConfigManager.get("workspace_root", "workspace") or "workspace")
+    except Exception:
+        workspace_root = "workspace"
+    ws_norm = os.path.normpath(workspace_root)
+    norm_expanded = os.path.normpath(expanded)
+    if norm_expanded.startswith(ws_norm + os.sep) or norm_expanded == ws_norm:
+        candidates.append(norm_expanded)
+    else:
+        candidates.append(os.path.normpath(os.path.join(ws_norm, norm_expanded)))
+    for cand in candidates:
+        if os.path.isfile(cand):
+            return os.path.abspath(cand)
+    return os.path.abspath(candidates[-1])

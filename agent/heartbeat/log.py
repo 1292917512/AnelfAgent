@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 import threading
 import time as _time
 from pathlib import Path
@@ -17,8 +15,13 @@ from core.path import ConfigPaths
 
 LOG_PATH = Path(ConfigPaths.HEARTBEAT_LOG)
 
-# 进程内锁：防止并发 tick 交错写入
+# 进程内锁：防止并发 tick 交错写入（notes.consolidate_heartbeat 共用同一把锁）
 _WRITE_LOCK = threading.Lock()
+
+
+def heartbeat_log_lock() -> threading.Lock:
+    """暴露心跳日志写锁，供其他读写 heartbeat.md 的模块共用。"""
+    return _WRITE_LOCK
 
 
 def _max_entries() -> int:
@@ -30,22 +33,10 @@ def _max_entries() -> int:
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    """原子写入：tmp + os.replace，避免并发读写到半截文件。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        os.write(fd, content.encode("utf-8"))
-        os.close(fd)
-        fd = -1
-        os.replace(tmp, str(path))
-    except BaseException:
-        if fd >= 0:
-            os.close(fd)
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    """原子写入（委托 core.file_utils 统一实现）。"""
+    from core.file_utils import atomic_write_text
+
+    atomic_write_text(path, content)
 
 
 def load_recent(count: int = 3) -> str:
@@ -62,12 +53,15 @@ def load_recent(count: int = 3) -> str:
 
 
 def append_entry(text: str) -> None:
-    """向最后一条心跳日志追加一行内容。"""
+    """向最后一条心跳日志追加一行内容。日志文件不存在时创建，避免条目静默丢失。"""
     try:
         with _WRITE_LOCK:
             if LOG_PATH.exists():
                 content = LOG_PATH.read_text("utf-8")
-                _atomic_write(LOG_PATH, content.rstrip() + f"\n- {text}\n")
+            else:
+                ts = _time.strftime("%Y-%m-%d %H:%M:%S")
+                content = f"# 心跳日志\n\n### {ts} 心跳"
+            _atomic_write(LOG_PATH, content.rstrip() + f"\n- {text}\n")
     except Exception as e:
         log(f"心跳日志追加失败: {e}", "DEBUG")
 

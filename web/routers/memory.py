@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import functools
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse
@@ -19,14 +20,30 @@ router = APIRouter(prefix="/memory", tags=["memory"])
 
 _mem_svc = MemoryService()
 
+# 运行时未初始化（RuntimeError）的统一兜底响应
+_FALLBACK_ERROR: Dict[str, Any] = {"error": "运行时未初始化"}
+_FALLBACK_LIST: List[Any] = []
+
+
+def _runtime_fallback(fallback: Any) -> Callable:
+    """RuntimeError（运行时未初始化）→ 静态兜底响应；fallback 可为值或与端点同签名的 callable。"""
+    def decorator(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await fn(*args, **kwargs)
+            except RuntimeError:
+                return fallback(*args, **kwargs) if callable(fallback) else fallback
+        return wrapper
+    return decorator
+
+
 # ── 状态与统计 ─────────────────────────────────────────────────────
 
 @router.get("/health")
+@_runtime_fallback(_FALLBACK_ERROR)
 async def get_health_status() -> Dict[str, Any]:
-    try:
-        return await _mem_svc.get_health_status()
-    except RuntimeError:
-        return {"error": "运行时未初始化"}
+    return await _mem_svc.get_health_status()
 
 
 @router.get("/cognee/status")
@@ -85,72 +102,60 @@ async def get_cognee_graph(
 
 
 @router.get("/ltm/stats")
+@_runtime_fallback({"type_counts": {}, "total": 0})
 async def get_ltm_stats() -> Dict[str, Any]:
-    try:
-        return await _mem_svc.get_ltm_stats()
-    except RuntimeError:
-        return {"type_counts": {}, "total": 0}
+    return await _mem_svc.get_ltm_stats()
 
 
 @router.get("/stm/status")
+@_runtime_fallback(_FALLBACK_LIST)
 async def get_pfc_status() -> List[Dict[str, Any]]:
-    try:
-        return _mem_svc.get_pfc_status()
-    except RuntimeError:
-        return []
+    return _mem_svc.get_pfc_status()
 
 
 @router.get("/index/status")
+@_runtime_fallback(_FALLBACK_ERROR)
 async def get_index_status() -> Dict[str, Any]:
-    try:
-        return await _mem_svc.get_index_status()
-    except RuntimeError:
-        return {"error": "运行时未初始化"}
+    return await _mem_svc.get_index_status()
 
 
 @router.post("/embedding/rebuild")
+@_runtime_fallback(_FALLBACK_ERROR)
 async def rebuild_embeddings() -> Dict[str, Any]:
     """清空全部向量数据并按当前配置的域模型后台重建（切换 embedding 模型后调用）。"""
-    try:
-        return await _mem_svc.rebuild_embeddings()
-    except RuntimeError:
-        return {"error": "运行时未初始化"}
+    return await _mem_svc.rebuild_embeddings()
 
 # ── 长期记忆 (LTM) ──────────────────────────────────────────────────
 
 @router.get("/ltm")
+@_runtime_fallback(_FALLBACK_LIST)
 async def list_ltm(
     memory_type: Optional[str] = Query(None),
     limit: int = Query(200, ge=1, le=1000),
 ) -> List[Dict[str, Any]]:
-    try:
-        return await _mem_svc.list_ltm(memory_type=memory_type, limit=limit)
-    except RuntimeError:
-        return []
+    return await _mem_svc.list_ltm(memory_type=memory_type, limit=limit)
 
 
 @router.get("/ltm/paginated")
+@_runtime_fallback(lambda page=1, page_size=50, memory_type=None: {
+    "items": [], "total": 0, "page": 1, "page_size": page_size, "pages": 0,
+})
 async def list_ltm_paginated(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     memory_type: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
-    try:
-        return await _mem_svc.list_ltm_paginated(page=page, page_size=page_size, memory_type=memory_type)
-    except RuntimeError:
-        return {"items": [], "total": 0, "page": 1, "page_size": page_size, "pages": 0}
+    return await _mem_svc.list_ltm_paginated(page=page, page_size=page_size, memory_type=memory_type)
 
 
 @router.get("/ltm/search")
+@_runtime_fallback(_FALLBACK_LIST)
 async def search_ltm(
     query: str = Query(...),
     tags: Optional[str] = Query(None),
     limit: int = Query(20, ge=1, le=100),
 ) -> List[Dict[str, Any]]:
-    try:
-        return await _mem_svc.search_ltm(query=query, tags=tags, limit=limit)
-    except RuntimeError:
-        return []
+    return await _mem_svc.search_ltm(query=query, tags=tags, limit=limit)
 
 
 @router.get("/ltm/{mem_id}")
@@ -192,11 +197,9 @@ class MergeLTMRequest(BaseModel):
 
 
 @router.post("/ltm/merge")
+@_runtime_fallback(_FALLBACK_ERROR)
 async def merge_ltm(req: MergeLTMRequest) -> Dict[str, Any]:
-    try:
-        return await _mem_svc.merge_ltm(req.ids, req.content)
-    except RuntimeError:
-        return {"error": "运行时未初始化"}
+    return await _mem_svc.merge_ltm(req.ids, req.content)
 
 
 @router.delete("/ltm/{mem_id}")
@@ -215,11 +218,9 @@ async def clear_ltm(
 # ── 短期记忆 (STM) ──────────────────────────────────────────────────
 
 @router.get("/stm")
+@_runtime_fallback(_FALLBACK_LIST)
 async def list_stm() -> List[Dict[str, Any]]:
-    try:
-        return _mem_svc.list_stm()
-    except RuntimeError:
-        return []
+    return _mem_svc.list_stm()
 
 
 @router.delete("/stm/{index}")
@@ -236,23 +237,19 @@ async def clear_stm() -> Dict[str, int]:
 # ── 会话记录 ─────────────────────────────────────────────────────────
 
 @router.get("/conversations/scopes")
+@_runtime_fallback(_FALLBACK_LIST)
 async def list_conv_scopes() -> List[Dict[str, Any]]:
-    try:
-        return await _mem_svc.list_conv_scopes()
-    except RuntimeError:
-        return []
+    return await _mem_svc.list_conv_scopes()
 
 
 @router.get("/conversations")
+@_runtime_fallback(_FALLBACK_LIST)
 async def list_conv_messages(
     scope_type: str = Query("user"),
     scope_id: str = Query(...),
     limit: int = Query(200, ge=1, le=1000),
 ) -> List[Dict[str, Any]]:
-    try:
-        return await _mem_svc.list_conv_messages(scope_type, scope_id, limit)
-    except RuntimeError:
-        return []
+    return await _mem_svc.list_conv_messages(scope_type, scope_id, limit)
 
 
 @router.delete("/conversations/{row_id}")
@@ -274,11 +271,9 @@ async def clear_conv(req: ClearConvRequest) -> Dict[str, int]:
 # ── 实体画像 ─────────────────────────────────────────────────────────
 
 @router.get("/entities")
+@_runtime_fallback(_FALLBACK_LIST)
 async def list_entities() -> List[Dict[str, Any]]:
-    try:
-        return await _mem_svc.list_entities()
-    except RuntimeError:
-        return []
+    return await _mem_svc.list_entities()
 
 
 class SaveEntityRequest(BaseModel):
@@ -305,11 +300,9 @@ async def delete_entity(req: DeleteEntityRequest) -> Dict[str, str]:
 
 
 @router.get("/entities/aliases")
+@_runtime_fallback(_FALLBACK_LIST)
 async def list_entity_aliases() -> List[Dict[str, Any]]:
-    try:
-        return await _mem_svc.list_entity_aliases()
-    except RuntimeError:
-        return []
+    return await _mem_svc.list_entity_aliases()
 
 
 class LinkEntityRequest(BaseModel):
@@ -389,14 +382,12 @@ async def delete_memory_file(path: str = Query(...)) -> Dict[str, str]:
 # ── 目标计划 ─────────────────────────────────────────────────────────
 
 @router.get("/goals")
+@_runtime_fallback(lambda status="all": {"goals": [], "total": 0, "filter": status})
 async def list_goals(
     status: str = Query("all", description="筛选状态: active / completed / cancelled / all"),
 ) -> Dict[str, Any]:
-    try:
-        goals = await _mem_svc.list_goals(status=status)
-        return {"goals": goals, "total": len(goals), "filter": status}
-    except RuntimeError:
-        return {"goals": [], "total": 0, "filter": status}
+    goals = await _mem_svc.list_goals(status=status)
+    return {"goals": goals, "total": len(goals), "filter": status}
 
 
 @router.get("/goals/{goal_id}")
@@ -420,7 +411,7 @@ async def create_goal(req: CreateGoalRequest) -> Dict[str, Any]:
     try:
         return await _mem_svc.create_goal(req.title, req.description, req.steps, req.due_time, req.recurring)
     except RuntimeError:
-        raise HTTPException(503, "运行时未初始化")
+        raise HTTPException(503, "运行时未初始化") from None
 
 
 class UpdateGoalRequest(BaseModel):
@@ -456,43 +447,33 @@ async def delete_goal(goal_id: str) -> Dict[str, Any]:
 # ── 文件索引 ─────────────────────────────────────────────────────────
 
 @router.post("/index/resync")
+@_runtime_fallback(_FALLBACK_ERROR)
 async def resync_files(force: bool = Query(False)) -> Dict[str, Any]:
-    try:
-        return await _mem_svc.resync_files(force=force)
-    except RuntimeError:
-        return {"error": "运行时未初始化"}
+    return await _mem_svc.resync_files(force=force)
 
 
 @router.post("/index/clean-cache")
+@_runtime_fallback(_FALLBACK_ERROR)
 async def clean_embedding_cache() -> Dict[str, Any]:
-    try:
-        return await _mem_svc.clean_embedding_cache()
-    except RuntimeError:
-        return {"error": "运行时未初始化"}
+    return await _mem_svc.clean_embedding_cache()
 
 
 # ── 文档索引 ─────────────────────────────────────────────────────────
 
 @router.post("/documents/upload")
+@_runtime_fallback(_FALLBACK_ERROR)
 async def upload_document(file: UploadFile = File(...)) -> Dict[str, Any]:
-    try:
-        content = await file.read()
-        return await _mem_svc.upload_document(file.filename or "document", content)
-    except RuntimeError:
-        return {"error": "运行时未初始化"}
+    content = await file.read()
+    return await _mem_svc.upload_document(file.filename or "document", content)
 
 
 @router.get("/documents")
+@_runtime_fallback(_FALLBACK_LIST)
 async def list_documents() -> List[Dict[str, Any]]:
-    try:
-        return await _mem_svc.list_documents()
-    except RuntimeError:
-        return []
+    return await _mem_svc.list_documents()
 
 
 @router.delete("/documents")
+@_runtime_fallback(_FALLBACK_ERROR)
 async def delete_document(path: str = Query(...)) -> Dict[str, Any]:
-    try:
-        return await _mem_svc.delete_document(path)
-    except RuntimeError:
-        return {"error": "运行时未初始化"}
+    return await _mem_svc.delete_document(path)

@@ -14,5 +14,6 @@
   "action_lang": "切换语言",
   "action_sidebar": "折叠/展开侧边栏",
   "action_search": "打开全局搜索",
-  "action_logout": "退出登录"
+  "action_logout": "退出登录",
+  "menu": "菜单"
 }

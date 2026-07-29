@@ -116,8 +116,8 @@ class ContextSnapshot:
             }
             self._armed = False
 
-            # 持久化
-            filename = self._save(self._snapshot)
+            # 持久化（同步文件写放工作线程，避免持锁阻塞事件循环）
+            filename = await asyncio.to_thread(self._save, self._snapshot)
 
             log(
                 f"上下文快照已捕获: {len(messages)} msgs, "
@@ -157,8 +157,8 @@ class ContextSnapshot:
     def _get_model_context_window() -> int:
         """获取当前激活模型的上下文窗口大小。"""
         try:
-            from agent.runtime.singleton import get_runtime
             from agent.llm.llm_client import LLMClient
+            from agent.runtime.singleton import get_runtime
             rt = get_runtime()
             llm = rt.mind.llm
             if isinstance(llm, LLMClient):
@@ -168,7 +168,7 @@ class ContextSnapshot:
                     ctx = llm.config.context_window or 0
                 return ctx
         except Exception:
-            pass
+            log("_get_model_context_window 异常已忽略", "DEBUG")
         return 0
 
     @staticmethod

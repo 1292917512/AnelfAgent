@@ -4,12 +4,7 @@
 """
 from __future__ import annotations
 
-import itertools
 import random
-import time
-
-# 全局计数器：为每次退避计算提供去相关的种子
-_tick_counter = itertools.count(1)
 
 
 def jittered_backoff(
@@ -29,6 +24,4 @@ def jittered_backoff(
     """
     attempt = max(1, attempt)
     delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
-    seed = (time.time_ns() ^ (next(_tick_counter) * 0x9E3779B9)) & 0xFFFFFFFF
-    jitter = random.Random(seed).uniform(0, jitter_ratio * delay)
-    return delay + jitter
+    return delay + random.uniform(0, jitter_ratio * delay)

@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import asyncio
 from contextvars import ContextVar
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional
 
 from core.log import log
 

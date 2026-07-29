@@ -23,11 +23,8 @@ from lark_oapi.api.im.v1 import (
     ReplyMessageRequestBody,
 )
 
-from core.log import log
-
 from .helpers import chunk_text
 from .media import upload_file, upload_image
-
 
 # ------------------------------------------------------------------
 # 发送文本消息

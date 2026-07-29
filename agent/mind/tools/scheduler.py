@@ -17,9 +17,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from entities._sdk import deferred_tool
 from core.log import log
 from core.path import ConfigPaths
+from entities._sdk import deferred_tool
 
 # ── 运行时引用（bootstrap 组装后通过 set_mind 注入）──
 
@@ -145,9 +145,9 @@ def enqueue_scope_reply(pfc: Any, scope: str, channel: str, preview: str, prompt
         pfc.pending_group.append(scope)
     else:
         pfc.pending_user.append(scope)
-    pfc._message_previews[scope] = preview
+    pfc.set_message_preview(scope, preview)
     if channel:
-        pfc._task_adapter_keys[scope] = channel
+        pfc.set_adapter_key(scope, channel)
 
 
 def _enqueue_reply(scope: str, channel: str, preview: str, prompt: str) -> None:
@@ -224,9 +224,9 @@ async def schedule_reminder(note: str, run_at: str = "", delay_seconds: int = 0)
         "channel": getattr(_pfc_ref, "get_adapter_key", lambda s: "")(scope) if _pfc_ref else "",
         "created_ts": time.time(),
     }
-    reminders = _load_reminders()
+    reminders = await asyncio.to_thread(_load_reminders)
     reminders.append(reminder)
-    _save_reminders(reminders)
+    await asyncio.to_thread(_save_reminders, reminders)
 
     run_at_str = datetime.fromtimestamp(run_at_ts).strftime("%Y-%m-%d %H:%M:%S")
     log(f"定时提醒已创建: id={reminder['id']} run_at={run_at_str} scope={scope} note={note[:50]}", tag="调度")
@@ -246,7 +246,7 @@ async def schedule_reminder(note: str, run_at: str = "", delay_seconds: int = 0)
 )
 async def list_reminders() -> str:
     """列出所有未触发的定时提醒（含提醒 ID、触发时间、内容）。"""
-    reminders = _load_reminders()
+    reminders = await asyncio.to_thread(_load_reminders)
     items = [{
         "id": r["id"],
         "note": r["note"],
@@ -266,11 +266,11 @@ async def cancel_reminder(reminder_id: str) -> str:
     Args:
         reminder_id: 提醒 ID（通过 list_reminders 获取）
     """
-    reminders = _load_reminders()
+    reminders = await asyncio.to_thread(_load_reminders)
     kept = [r for r in reminders if r["id"] != reminder_id]
     if len(kept) == len(reminders):
         return json.dumps({"error": f"提醒不存在: {reminder_id}"}, ensure_ascii=False)
-    _save_reminders(kept)
+    await asyncio.to_thread(_save_reminders, kept)
     log(f"定时提醒已取消: id={reminder_id}", tag="调度")
     return json.dumps({"ok": True, "message": f"提醒 {reminder_id} 已取消"}, ensure_ascii=False)
 
@@ -284,13 +284,13 @@ async def check_due_reminders() -> int:
         return 0
 
     now = time.time()
-    reminders = _load_reminders()
+    reminders = await asyncio.to_thread(_load_reminders)
     due = [r for r in reminders if r.get("run_at_ts", 0) <= now]
     if not due:
         return 0
 
     kept = [r for r in reminders if r.get("run_at_ts", 0) > now]
-    _save_reminders(kept)
+    await asyncio.to_thread(_save_reminders, kept)
 
     for r in due:
         scope = r.get("scope", "")

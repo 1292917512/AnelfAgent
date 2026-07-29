@@ -8,8 +8,8 @@ import time
 
 import pytest
 
-from entities.filesystem import shell_background, tools
 from agent.mind.background_tasks import BackgroundTaskRegistry
+from entities.filesystem import shell_background, tools
 
 
 @pytest.fixture()
@@ -48,7 +48,7 @@ class TestLaunchBackground:
         assert "done" in completed[0].summary
 
     def test_failure_exit_code_reported(self, workspace, registry):
-        result = shell_background.launch_background("exit 7", str(workspace), str(workspace))
+        shell_background.launch_background("exit 7", str(workspace), str(workspace))
         deadline = time.time() + 5
         while time.time() < deadline:
             if not registry.running("_global"):

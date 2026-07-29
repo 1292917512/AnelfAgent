@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
 from core.config import get_config_bool, get_config_float, get_config_int, register_configs_safe
 from core.log import log

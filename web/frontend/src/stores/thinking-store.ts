@@ -1,38 +1,12 @@
 import { create } from "zustand";
-import type { ContextSnapshotData } from "@/lib/types";
+import type { ContextSnapshotData, PlanRecord, SessionSummary, ThinkingSession, TraceNode } from "@/lib/types";
 import { usePlanStore } from "./plan-store";
 import { useChatStore } from "./chat-store";
 
+// 类型定义集中在 lib/types/thinking.ts，此处 re-export 兼容既有 import 路径
+export type { SessionSummary, ThinkingSession, TraceNode } from "@/lib/types";
+
 const MAX_SESSIONS = 100;
-
-// ── 类型定义 ────────────────────────────────────────────────────
-
-export interface TraceNode {
-  id: string;
-  type: string;
-  label: string;
-  status: "pending" | "running" | "completed" | "error";
-  timestamp: number;
-  duration_ms: number | null;
-  data: Record<string, unknown>;
-  parent_id: string | null;
-}
-
-export interface SessionSummary {
-  id: string;
-  start_time: number;
-  end_time: number | null;
-  is_heartbeat: boolean;
-  is_introspection?: boolean;
-  node_count: number;
-  ended: boolean;
-  duration_ms: number | null;
-}
-
-export interface ThinkingSession extends SessionSummary {
-  nodes: TraceNode[];
-  available_tools: string[];
-}
 
 // SSE 连接管理（全局单例，不随页面切换断开）
 let _eventSource: EventSource | null = null;
@@ -41,7 +15,7 @@ let _storeSetters: {
   handleSessionStart: (data: { session: SessionSummary; node: TraceNode }) => void;
   handleSessionEnd: (data: { session_id: string; node: TraceNode; summary: SessionSummary }) => void;
   handleNodeAdded: (data: { session_id: string; node: TraceNode }) => void;
-  handleNodeUpdated: (data: { session_id: string; node_id: string; updates: Record<string, unknown> }) => void;
+  handleNodeUpdated: (data: { session_id: string; node_id: string; updates: Partial<TraceNode> }) => void;
   handleToolsUpdated: (data: { session_id: string; tools: string[] }) => void;
 } | null = null;
 
@@ -120,7 +94,7 @@ interface ThinkingState {
   handleSessionStart: (data: { session: SessionSummary; node: TraceNode }) => void;
   handleSessionEnd: (data: { session_id: string; node: TraceNode; summary: SessionSummary }) => void;
   handleNodeAdded: (data: { session_id: string; node: TraceNode }) => void;
-  handleNodeUpdated: (data: { session_id: string; node_id: string; updates: Record<string, unknown> }) => void;
+  handleNodeUpdated: (data: { session_id: string; node_id: string; updates: Partial<TraceNode> }) => void;
   handleToolsUpdated: (data: { session_id: string; tools: string[] }) => void;
 }
 
@@ -251,11 +225,10 @@ function planStepStatusToNodeStatus(status: string): TraceNode["status"] {
 }
 
 /**
- * 把 plan-store 里该 chat 的 plan 转成 TraceNode[]，挂在 activeSession 末端。
+ * 把指定 chat 的 plan 转成 TraceNode[]，挂在 activeSession 末端。
  * 保持幂等：以 plan_id 为 key，每次 plan-store 变化时全量重建。
  */
-export function buildPlanVirtualNodes(chatId: string): TraceNode[] {
-  const chatPlans = usePlanStore.getState().plans[chatId];
+export function buildPlanVirtualNodes(chatPlans: Record<string, PlanRecord> | undefined): TraceNode[] {
   if (!chatPlans) return [];
   const plans = Object.values(chatPlans).sort((a, b) => a.created_at - b.created_at);
   const nodes: TraceNode[] = [];
@@ -302,6 +275,14 @@ export function buildPlanVirtualNodes(chatId: string): TraceNode[] {
   return nodes;
 }
 
+// useMergedActiveSessionNodes 的结果缓存：输入引用未变时返回同一数组引用，
+// 保证 FlowView 的 useMemo([session, mergedNodes]) 链不被无意义的新数组击穿。
+let _mergedCache: {
+  session: ThinkingSession | null;
+  chatPlans: Record<string, PlanRecord> | undefined;
+  result: TraceNode[];
+} | null = null;
+
 /**
  * 订阅 plan-store 变化，把 plan 虚拟节点合并进 activeSession.nodes。
  * 在 FlowView / TimelineView 渲染前调用，保证 plan 节点实时同步。
@@ -309,18 +290,25 @@ export function buildPlanVirtualNodes(chatId: string): TraceNode[] {
 export function useMergedActiveSessionNodes(): TraceNode[] {
   const activeSession = useThinkingStore((s) => s.activeSession);
   const activeChatId = useChatStore((s) => s.activeChatId);
-  // 订阅 plan-store 让组件在 plan 变化时重渲染（subscribe 触发但不直接使用值）
-  usePlanStore((s) => s.plans[activeChatId]);
+  const chatPlans = usePlanStore((s) => s.plans[activeChatId]);
 
-  if (!activeSession) {
-    // 即使没有 thinking session，也展示 plan 节点（让 PlanCard 也能在导图里看到）
-    return buildPlanVirtualNodes(activeChatId);
+  if (_mergedCache && _mergedCache.session === activeSession && _mergedCache.chatPlans === chatPlans) {
+    return _mergedCache.result;
   }
 
-  // 真实 trace 节点（剔除之前的 plan 虚拟节点，避免重复）
-  const realNodes = activeSession.nodes.filter((n) => !n.id.startsWith(PLAN_NODE_ID_PREFIX));
-  const planNodes = buildPlanVirtualNodes(activeChatId);
-  // 简单合并：plan 节点附加在末尾（FlowView 的递归布局会按 parent_id 自动放置）
-  return [...realNodes, ...planNodes];
+  let result: TraceNode[];
+  if (!activeSession) {
+    // 即使没有 thinking session，也展示 plan 节点（让 PlanCard 也能在导图里看到）
+    result = buildPlanVirtualNodes(chatPlans);
+  } else {
+    // 真实 trace 节点（剔除之前的 plan 虚拟节点，避免重复）
+    const realNodes = activeSession.nodes.filter((n) => !n.id.startsWith(PLAN_NODE_ID_PREFIX));
+    const planNodes = buildPlanVirtualNodes(chatPlans);
+    // 简单合并：plan 节点附加在末尾（FlowView 的递归布局会按 parent_id 自动放置）
+    result = [...realNodes, ...planNodes];
+  }
+  // eslint-disable-next-line react-hooks/globals -- 有意的模块级 memo：保证输入不变时返回同一引用，供 FlowView 的 useMemo 链复用
+  _mergedCache = { session: activeSession, chatPlans, result };
+  return result;
 }
 

@@ -26,5 +26,7 @@
   },
   "tools": {
     "empty": "该实体没有注册工具"
-  }
+  },
+  "notFound": "未找到该实体",
+  "backToTools": "返回工具列表"
 }

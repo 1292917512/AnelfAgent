@@ -4,6 +4,7 @@ import type { ModelConfig, UpdateModelConfig } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button, Input, Select, Textarea } from "@/components/ui";
 import { MODEL_TYPE_OPTIONS, ModelBadges, type JsonField } from "./shared";
+import { ReasoningEffortOptions } from "@/components/common/ReasoningEffortSelect";
 
 const EDITABLE_FIELDS = ["model", "temperature", "context_window", "timeout"] as const;
 
@@ -178,13 +179,7 @@ export function ModelCard({
                 title={t("reasoningEffort")}
               >
                 <option value="">{t("effortInherit")}</option>
-                <option value="off">{t("effortOff")}</option>
-                <option value="minimal">{t("effortMinimal")}</option>
-                <option value="low">{t("effortLow")}</option>
-                <option value="medium">{t("effortMedium")}</option>
-                <option value="high">{t("effortHigh")}</option>
-                <option value="xhigh">{t("effortXhigh")}</option>
-                <option value="max">{t("effortMax")}</option>
+                <ReasoningEffortOptions t={t} />
               </Select>
             )}
             <label className="flex items-center gap-2 cursor-pointer" title={t("forcedToolChoiceHint")}>

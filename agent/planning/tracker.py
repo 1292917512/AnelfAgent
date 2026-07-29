@@ -30,11 +30,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
 from core.event_bus import (
-    event_bus,
-    EVENT_PLAN_SUBMITTED,
-    EVENT_PLAN_STEP_UPDATED,
-    EVENT_PLAN_STATUS_CHANGED,
     EVENT_PLAN_CANCELLED,
+    EVENT_PLAN_STATUS_CHANGED,
+    EVENT_PLAN_STEP_UPDATED,
+    EVENT_PLAN_SUBMITTED,
+    event_bus,
 )
 from core.log import log
 
@@ -122,6 +122,15 @@ async def _find_active_plan(
             continue
         return entry, goal
     return None, None
+
+
+async def get_active_plan(scope: str) -> Optional[Dict[str, Any]]:
+    """公开查询：当前 scope 的 active plan（goal dict），无则 None。
+
+    present_plan 工具据此复用已有计划（防止 AI 重复规划）。
+    """
+    _, goal = await _find_active_plan(scope)
+    return goal
 
 
 async def _persist(entry: MemoryEntry, goal: Dict[str, Any]) -> None:
@@ -323,7 +332,7 @@ async def cancel_plan(scope: str, plan_id: str, reason: str = "用户取消") ->
                 "plan_id": plan_id, "reason": reason,
             })
         except Exception:
-            pass
+            log("cancel_plan 异常已忽略", "DEBUG")
         # 协作式中断当前 think_loop（Agent 下轮检查点停止）
         try:
             from services._runtime import get_runtime
@@ -332,7 +341,7 @@ async def cancel_plan(scope: str, plan_id: str, reason: str = "用户取消") ->
             if mind is not None and hasattr(mind, "interrupt"):
                 mind.interrupt(scope, reason=reason)
         except Exception:
-            pass
+            log("cancel_plan 异常已忽略", "DEBUG")
         return True
     except Exception:
         return False

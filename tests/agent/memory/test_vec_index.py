@@ -65,7 +65,7 @@ async def test_search_matches_fallback_order(store: MemoryStore) -> None:
         store._vec_available = True
 
     assert [r[0].id for r in vec_results] == [r[0].id for r in fb_results]
-    for (_, s1), (_, s2) in zip(vec_results, fb_results):
+    for (_, s1), (_, s2) in zip(vec_results, fb_results, strict=False):
         assert s1 == pytest.approx(s2, abs=1e-5)
 
 

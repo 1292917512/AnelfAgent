@@ -13,9 +13,9 @@ import json
 import time
 from typing import Any, Dict, List
 
-from entities._sdk import deferred_tool
 from agent.messages import parse_entity_scope
 from core.log import log
+from entities._sdk import deferred_tool
 
 # ── 运行时引用（bootstrap 组装后通过 set_mind 注入）──
 
@@ -100,7 +100,7 @@ async def list_sessions() -> str:
         from agent.config import get_mind_config
         window = get_mind_config().cross_channel_window_minutes * 60
     except Exception:
-        pass
+        log("list_sessions 异常已忽略", "DEBUG")
     for scope, act in activities.items():
         if scope in seen:
             continue

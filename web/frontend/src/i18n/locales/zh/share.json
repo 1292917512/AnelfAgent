@@ -93,5 +93,10 @@
     "todayDownloads": "今日下载",
     "recentDownloads": "最近下载",
     "storage": "存储占用"
-  }
+  },
+  "filePathHint": "workspace 沙箱内的相对路径或绝对路径",
+  "workspaceEmpty": "workspace 为空",
+  "tokenLengthHint": "8 - 64 字符，默认 22",
+  "aiAutoShareDesc": "允许 AI 通过工具自动创建分享链接",
+  "auditDesc": "记录每次下载的 IP / 时间 / User-Agent"
 }

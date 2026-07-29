@@ -8,10 +8,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, List, Optional, Union
 
-from core.log import log
-
 from . import send as tg_send
-from .format import chunk_html_text, markdown_to_telegram_html, plain_fallback
+from .format import chunk_html_text, markdown_to_telegram_html
 from .helpers import build_inline_keyboard, split_caption
 from .types import DeliveryResult, InlineKeyboard, ThreadSpec
 

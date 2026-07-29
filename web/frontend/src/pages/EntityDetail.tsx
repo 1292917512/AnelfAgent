@@ -7,7 +7,7 @@ import { TabBar } from "@/components/common/TabBar";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
 import { cn } from "@/lib/utils";
-import type { EntityDetail as EntityDetailType } from "@/lib/types";
+import type { ConfigValues, EntityDetail as EntityDetailType } from "@/lib/types";
 import { getEntityPanel } from "@/lib/entity-panels";
 import {
   ArrowLeft,
@@ -25,11 +25,11 @@ type EntityTab = "overview" | "config" | "tools" | "panel";
 function ConfigForm({ entity }: { entity: EntityDetailType }) {
   const { t } = useTranslation("entities");
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<Record<string, unknown>>({});
+  const [draft, setDraft] = useState<ConfigValues>({});
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
-    const initial: Record<string, unknown> = {};
+    const initial: ConfigValues = {};
     for (const item of entity.config_items) {
       initial[item.key] = entity.configs[item.key] ?? item.default_value;
     }
@@ -127,9 +127,9 @@ export default function EntityDetail() {
   if (isError) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3 text-sm text-muted">
-        <p>{t("notFound", { defaultValue: "未找到该实体" })}</p>
+        <p>{t("notFound")}</p>
         <button onClick={() => navigate("/tools")} className="text-accent hover:underline text-xs">
-          ← {t("backToTools", { defaultValue: "返回工具列表" })}
+          ← {t("backToTools")}
         </button>
       </div>
     );

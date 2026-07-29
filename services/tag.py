@@ -54,8 +54,9 @@ class TagService:
     def create_tag(self, name: str, description: str) -> Dict[str, Any]:
         """创建自定义标签，注册到标签系统并持久化到 config/tags.json。"""
         _ensure_custom_tags_loaded()
-        from core.tags import tag_list, Tag
         import re
+
+        from core.tags import Tag, tag_list
 
         if not name or not re.fullmatch(r"[a-z0-9_:\-]+", name):
             raise ValueError(f"标签名称 '{name}' 格式非法，只能包含小写字母、数字、下划线、连字符、冒号")
@@ -117,8 +118,8 @@ class TagService:
           - "custom":  用户自定义标签
         """
         _ensure_custom_tags_loaded()
-        from core.tags import tag_list
         from core.entity import EntityRegistry, EntityType
+        from core.tags import tag_list
 
         custom_tag_names: set[str] = set(_load_tags_file().keys())
 
@@ -160,7 +161,7 @@ class TagService:
     @staticmethod
     def load_custom_tags() -> int:
         """从 config/tags.json 加载自定义标签到内存 tag_list（幂等，首次调用时触发）。"""
-        from core.tags import tag_list, Tag
+        from core.tags import Tag, tag_list
 
         data = _load_tags_file()
         if not data:

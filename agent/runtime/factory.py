@@ -12,9 +12,9 @@ from core.log import log
 
 def load_persona():
     """从人设目录加载活跃人设。"""
+    from agent.config import get_config_provider
     from agent.messages import CharacterAgent
     from core.tags import get_tag_desc
-    from agent.config import get_config_provider
 
     provider = get_config_provider()
     persona_data = provider.get_persona_config()

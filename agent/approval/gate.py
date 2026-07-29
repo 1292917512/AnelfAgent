@@ -11,7 +11,7 @@
     gate = get_approval_gate()
     decision = await gate.request_approval(
         tool_name="write_file",
-        tool_args={"path": "/tmp/x", "content": "..."},
+        tool_args={"file_path": "/tmp/x", "content": "..."},
         reason="high risk write",
         channel=current_channel,
         chat_id="...",
@@ -23,23 +23,20 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from core.log import log
-
 from agent.channel.base import ApprovalPromptRenderContext, BaseChannel
+from core.log import log
 
 from .manager import ApprovalManager, get_approval_manager
 from .policy import ApprovalPolicySet
 from .rules import (
-    COMPOUND_CMD_RE,
-    COMMAND_TOOLS,
     PermissionDecision,
     PermissionEffect,
     PermissionRule,
     PermissionRuleSet,
-    PermissionVerdict,
     from_legacy_policyset,
     load_rules,
     save_rules,
@@ -67,7 +64,9 @@ class ApprovalGate:
         self._manager = manager or get_approval_manager()
         self._rule_set = rule_set if rule_set is not None else load_rules()
         # 会话级放行规则（重启失效）：(scope, tool_name) → rule
+        # 由 _session_rules_lock 保护（web 层等外部线程也会读写）
         self._session_rules: List[PermissionRule] = []
+        self._session_rules_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # 规则管理
@@ -75,8 +74,10 @@ class ApprovalGate:
 
     def get_rule_set(self) -> PermissionRuleSet:
         """获取当前规则集（含会话级规则）。"""
+        with self._session_rules_lock:
+            session_rules = list(self._session_rules)
         return PermissionRuleSet(
-            rules=[*self._session_rules, *self._rule_set.rules],
+            rules=[*session_rules, *self._rule_set.rules],
             default_effect=self._rule_set.default_effect,
             default_risk=self._rule_set.default_risk,
         )
@@ -98,7 +99,48 @@ class ApprovalGate:
             self._rule_set.rules.append(rule)
             save_rules(self._rule_set)
         else:
+            self.set_session_rule(rule)
+
+    def session_rule_count(self) -> int:
+        """会话级规则数量（用于区分持久规则与会话规则）。"""
+        with self._session_rules_lock:
+            return len(self._session_rules)
+
+    def list_session_rules(self) -> List[PermissionRule]:
+        """列出全部会话级放行规则（返回副本，供 web 层展示）。"""
+        with self._session_rules_lock:
+            return list(self._session_rules)
+
+    def set_session_rule(self, rule: PermissionRule) -> None:
+        """新增一条会话级放行规则（置于最前，优先生效；重启失效）。"""
+        with self._session_rules_lock:
             self._session_rules.insert(0, rule)
+        log(f"会话级放行规则已设置: [{rule.pattern}] scope={rule.scope}", tag="权限")
+
+    def delete_session_rule(self, pattern: str, scope: str = "") -> int:
+        """按 pattern（可选叠加 scope）删除会话级规则，返回删除条数。"""
+        with self._session_rules_lock:
+            before = len(self._session_rules)
+            self._session_rules = [
+                r for r in self._session_rules
+                if not (r.pattern == pattern and (not scope or r.scope == scope))
+            ]
+            removed = before - len(self._session_rules)
+        if removed:
+            log(f"会话级放行规则已删除: [{pattern}] scope={scope or '*'} x{removed}", tag="权限")
+        return removed
+
+    def delete_rule(self, rule_id: str) -> bool:
+        """按 ID 删除规则（先持久规则、后会话规则），返回是否删除成功。"""
+        before = len(self._rule_set.rules)
+        self._rule_set.rules = [r for r in self._rule_set.rules if r.id != rule_id]
+        if len(self._rule_set.rules) != before:
+            save_rules(self._rule_set)
+            return True
+        with self._session_rules_lock:
+            before_session = len(self._session_rules)
+            self._session_rules = [r for r in self._session_rules if r.id != rule_id]
+            return len(self._session_rules) != before_session
 
     # ---- 旧接口兼容（ApprovalPolicySet） ----
 
@@ -244,7 +286,7 @@ class ApprovalGate:
 
         - 命令类：取命令首 token 作 glob（`npm test` → `run_shell_command(npm *)`）；
           含 &&/|;/$()/反引号 的复合命令返回 None（降级为会话级）
-        - 文件类：取 path 参数精确值（`write_file(/exact/path)`）
+        - 文件类：取路径参数精确值（`write_file(/exact/path)`）
         - 其他工具：裸工具名
         """
         if tool_name in cls._COMMAND_TOOLS:
@@ -260,7 +302,7 @@ class ApprovalGate:
                 return None
             return f"{tool_name}({head} *)"
         if tool_name in cls._FILE_ARG_TOOLS:
-            path = str(tool_args.get("path") or "").strip()
+            path = str(tool_args.get("file_path") or tool_args.get("path") or "").strip()
             if not path or any(ch in path for ch in "()*"):
                 return None
             return f"{tool_name}({path})"
@@ -301,7 +343,8 @@ class ApprovalGate:
             except Exception as exc:
                 log(f"永久放行规则写入失败: {exc}", "ERROR", tag="权限")
         else:
-            self._session_rules.insert(0, rule)
+            with self._session_rules_lock:
+                self._session_rules.insert(0, rule)
         log(f"放行规则已创建: [{rule.pattern}] scope={rule.scope} "
             f"({'会话级' if effective == 'session' else '永久'})", tag="权限")
 

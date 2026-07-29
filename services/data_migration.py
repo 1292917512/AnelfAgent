@@ -14,7 +14,7 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import aiosqlite
 
@@ -69,7 +69,7 @@ def _data_dir_source() -> str:
         if str(ConfigManager.get("data_root", "") or "").strip():
             return "config"
     except Exception:
-        pass
+        log("_data_dir_source 异常已忽略", "DEBUG")
     return "default"
 
 
@@ -82,7 +82,7 @@ def _dir_size(root: Path) -> int:
             try:
                 total += os.path.getsize(os.path.join(dirpath, name))
             except OSError:
-                pass
+                log("_dir_size 异常已忽略", "DEBUG")
     return total
 
 
@@ -157,7 +157,7 @@ def check_target(target: str) -> Dict[str, Any]:
                         if usage.free < int(required * 1.1):
                             problems.append("insufficient_space")
                     except OSError:
-                        pass
+                        log("check_target 异常已忽略", "DEBUG")
     return {
         "target": resolved or raw,
         "ok": not problems,
