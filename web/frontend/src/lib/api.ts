@@ -24,12 +24,20 @@ import type {
   CreateModelConfig,
   CreateProviderConfig,
   CreateShareRequest,
+  DbConnection,
+  DbConnectionPayload,
+  DbConnectionTestResult,
+  DbHealth,
   DbInfo,
+  DbLocationInfo,
+  DbMigrationStatus,
+  DbOptimizeResult,
   DbQueryResult,
   DbRow,
   DbRowsResult,
   DbSchemaResult,
   DbTableInfo,
+  DbTargetCheck,
   EntityDetail,
   EntityListItem,
   GlobalSearchResult,
@@ -52,6 +60,7 @@ import type {
   ProbeResult,
   ProviderConfig,
   RemoteModelInfo,
+  RestartBuildState,
   ShareConfig,
   ShareLink,
   ShareLinkListResult,
@@ -98,6 +107,7 @@ export type {
   ProbeResult,
   ReasoningEffort,
   RemoteModelInfo,
+  RestartBuildState,
   ShareConfig,
   ShareLink,
   ShareLinkListResult,
@@ -286,6 +296,7 @@ export const memoryApi = {
     getConfig: () => api.get<CogneeConfig>("/memory/cognee/config"),
     saveConfig: (data: Partial<CogneeConfig>) => api.put<CogneeConfig>("/memory/cognee/config", data),
     retry: () => api.post("/memory/cognee/retry"),
+    rebuild: () => api.post("/memory/cognee/rebuild"),
     backfill: (limit = 0, dryRun = true) =>
       api.post("/memory/cognee/backfill", { limit, dry_run: dryRun }),
     datasets: () => api.get<CogneeDataset[]>("/memory/cognee/datasets"),
@@ -362,6 +373,7 @@ export const memoryApi = {
     status: () => api.get("/memory/index/status"),
     resync: (force = false) => api.post("/memory/index/resync", null, { params: { force } }),
     cleanCache: () => api.post("/memory/index/clean-cache"),
+    rebuildVectors: () => api.post("/memory/embedding/rebuild"),
   },
   documents: {
     list: () => api.get<MemoryDocument[]>("/memory/documents"),
@@ -619,6 +631,9 @@ export const systemApi = {
   git: () => api.get("/system/git"),
   setGit: (key: string, value: string) => api.put("/system/git", { key, value }),
   testGithub: () => api.post("/system/git/test"),
+  restart: () => api.post("/system/restart"),
+  buildAndRestart: () => api.post("/system/restart/build"),
+  restartStatus: () => api.get<RestartBuildState>("/system/restart/status"),
 };
 
 // Skills
@@ -714,6 +729,35 @@ export const databaseApi = {
     ),
   query: (db: string, sql: string) =>
     api.post<DbQueryResult>(`/database/${encodeURIComponent(db)}/query`, { sql }),
+  health: (db: string) => api.get<DbHealth>(`/database/${encodeURIComponent(db)}/health`),
+  backup: (db: string) =>
+    api.post<Blob>(`/database/${encodeURIComponent(db)}/backup`, null, {
+      responseType: "blob",
+      timeout: 300000,
+    }),
+  optimize: (db: string, actions: string[]) =>
+    api.post<DbOptimizeResult>(`/database/${encodeURIComponent(db)}/optimize`, { actions }),
+};
+
+// DbConnection（数据管理页 · 外部只读数据源）
+export const connectionApi = {
+  list: () => api.get<{ items: DbConnection[] }>("/database/connections"),
+  create: (data: DbConnectionPayload) => api.post<DbConnection>("/database/connections", data),
+  update: (id: string, data: DbConnectionPayload) =>
+    api.put<DbConnection>(`/database/connections/${encodeURIComponent(id)}`, data),
+  remove: (id: string) =>
+    api.delete<{ success: boolean }>(`/database/connections/${encodeURIComponent(id)}`),
+  test: (data: DbConnectionPayload & { id?: string }) =>
+    api.post<DbConnectionTestResult>("/database/connections/test", data),
+};
+
+// Storage（数据管理页 · 存储位置与迁移）
+export const storageApi = {
+  location: () => api.get<DbLocationInfo>("/database/location"),
+  checkTarget: (target: string) =>
+    api.post<DbTargetCheck>("/database/location/check", { target }),
+  migrate: (target: string) => api.post<DbMigrationStatus>("/database/migrate", { target }),
+  migrationStatus: () => api.get<DbMigrationStatus>("/database/migrate/status"),
 };
 
 // Share（文件分享推送）

@@ -248,6 +248,10 @@ class LLMClientConfig:
     # 空=跟随全局/任务注入的等级。非法值在 __post_init__ 归一为 ""
     reasoning_effort: str = ""
     context_window: int = 0
+    # embedding 请求的目标维度（Matryoshka 可变维度模型生效）；0 = 模型默认维度
+    embedding_dims: int = 0
+    # embedding 单批文本数上限（供应商限制，如 text-embedding-v4 限 10）；0 = 不限制
+    embedding_max_batch: int = 0
     request_params: Dict[str, Any] = field(default_factory=dict)
     extra_body: Dict[str, Any] = field(default_factory=dict)
     extra_params: Dict[str, Any] = field(default_factory=dict)
@@ -271,6 +275,10 @@ class LLMClientConfig:
             raise ValueError("max_tokens 不能小于 0")
         if self.context_window < 0:
             raise ValueError("context_window 不能小于 0")
+        if self.embedding_dims < 0:
+            raise ValueError("embedding_dims 不能小于 0")
+        if self.embedding_max_batch < 0:
+            raise ValueError("embedding_max_batch 不能小于 0")
         if self.timeout <= 0:
             raise ValueError("timeout 必须大于 0")
         if self.vision_format not in {"base64", "url", "both"}:
@@ -1498,15 +1506,45 @@ class LLMClient(BaseEntity):
     # Embedding
     # ------------------------------------------------------------------
 
+    # DashScope 原生多模态向量端点（OpenAI 兼容模式不支持该系列模型）
+    _DASHSCOPE_EMBED_PATH = "/services/embeddings/multimodal-embedding/multimodal-embedding"
+
+    def _is_dashscope_native(self) -> bool:
+        """是否为 DashScope 原生端点（非 OpenAI 兼容模式）。"""
+        url = self.config.base_url or ""
+        return "dashscope.aliyuncs.com" in url and "compatible-mode" not in url
+
+    @property
+    def supports_multimodal_embedding(self) -> bool:
+        """是否支持图片等多模态向量化（当前仅 DashScope 原生多模态向量 API）。"""
+        return self._is_dashscope_native() and self.config.supports_vision
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        """文本嵌入（通过 litellm 统一路由）。"""
+        """文本嵌入（默认通过 litellm 统一路由；DashScope 原生端点走多模态向量 API）。
+
+        配置 embedding_max_batch 时按供应商单批上限自动拆分请求并按序拼接。
+        """
         self._ensure_configured()
+        max_batch = self.config.embedding_max_batch
+        if max_batch > 0 and len(texts) > max_batch:
+            results: list[list[float]] = []
+            for i in range(0, len(texts), max_batch):
+                results.extend(await self.embed(texts[i:i + max_batch]))
+            return results
+        if self._is_dashscope_native():
+            if not self.config.supports_vision:
+                raise RuntimeError(
+                    "DashScope 原生端点仅用于多模态向量模型；文本向量模型请改用 compatible-mode 端点"
+                )
+            return await self.embed_multimodal([{"text": t} for t in texts])
         kwargs: Dict[str, Any] = {
             "model": self.config.litellm_embed_model,
             "input": texts,
             "timeout": self.config.timeout,
             "encoding_format": "float",
         }
+        if self.config.embedding_dims > 0:
+            kwargs["dimensions"] = self.config.embedding_dims
         if self.config.base_url:
             kwargs["api_base"] = self.config.base_url
         if self.config.api_key:
@@ -1530,6 +1568,34 @@ class LLMClient(BaseEntity):
         else:
             resp = await litellm.aembedding(**kwargs)
         return [item["embedding"] for item in resp.data]
+
+    async def embed_multimodal(self, contents: list[dict]) -> list[list[float]]:
+        """DashScope 原生多模态向量。
+
+        Args:
+            contents: {"text": "..."} / {"image": "URL 或 data URL"} 列表，
+                返回与 contents 按 index 对齐的向量列表。
+        """
+        self._ensure_configured()
+        if not self._is_dashscope_native():
+            raise RuntimeError("多模态向量当前仅支持 DashScope 原生端点")
+        url = self.config.base_url.rstrip("/") + self._DASHSCOPE_EMBED_PATH
+        headers = {"Content-Type": "application/json"}
+        if self.config.api_key:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        payload: Dict[str, Any] = {"model": self.config.model, "input": {"contents": contents}}
+        if self.config.embedding_dims > 0:
+            payload["parameters"] = {"dimension": self.config.embedding_dims}
+        async with httpx.AsyncClient(
+            timeout=self.config.timeout,
+            proxy=self.config.proxy_url or None,
+        ) as http:
+            resp = await http.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        embeddings = data.get("output", {}).get("embeddings", [])
+        ordered = sorted(embeddings, key=lambda e: e.get("index", 0))
+        return [e["embedding"] for e in ordered]
 
     # ------------------------------------------------------------------
     # Text Completion（/completions 端点）

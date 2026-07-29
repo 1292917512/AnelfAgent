@@ -32,6 +32,15 @@ _APP_SECRET_FIELDS = frozenset({"telegram_bot_token", "telegram_webhook_secret"}
 
 _WEBUI_CONFIG_PATH = Path(ConfigPaths.WEBUI_CONFIG)
 
+# snapshot 聚合时，已知配置 key 映射到 ConfigPaths 属性（动态解析，跟随目录配置）
+_SNAPSHOT_PATH_KEYS = {
+    "app": "APP_CONFIG",
+    "mind": "MIND_CONFIG",
+    "llm": "LLM_CLIENTS",
+    "mcp": "MCP_SERVERS",
+    "personas": "PERSONAS_INDEX",
+}
+
 
 def _load_webui_config() -> Dict[str, Any]:
     """加载 webui.json 配置（每次读取以支持热更新）。"""
@@ -93,7 +102,11 @@ async def get_theme() -> Dict[str, Any]:
 
 @router.get("/snapshot")
 async def get_config_snapshot() -> Dict[str, Any]:
-    """返回所有配置文件的聚合快照（不含敏感信息）。"""
+    """返回所有配置文件的聚合快照（不含敏感信息）。
+
+    已知配置 key 优先经 ConfigPaths 动态解析（跟随 ANELF_CONFIG_DIR 等目录配置），
+    webui.json configs 索引中的字面路径仅作为未知 key 的回退。
+    """
     webui = _load_webui_config()
     configs_index: Dict[str, str] = webui.get("configs", {})
 
@@ -103,7 +116,8 @@ async def get_config_snapshot() -> Dict[str, Any]:
     }
 
     for key, path_str in configs_index.items():
-        p = Path(path_str)
+        resolved = _SNAPSHOT_PATH_KEYS.get(key)
+        p = Path(getattr(ConfigPaths, resolved)) if resolved else Path(path_str)
         if not p.exists():
             snapshot[key] = None
             continue
@@ -182,6 +196,7 @@ class AppConfigUpdate(BaseModel):
     default_download_dir: Optional[str] = None
     llm_stream_enabled: Optional[bool] = None
     workspace_root: Optional[str] = None
+    data_root: Optional[str] = None
     sandbox_enabled: Optional[bool] = None
     heartbeat_interval: Optional[float] = None
     meta_decision_temperature: Optional[float] = None
@@ -204,6 +219,15 @@ class AppConfigUpdate(BaseModel):
     conv_recall_backfill_batch: Optional[int] = None
     conv_recall_min_score: Optional[float] = None
     conv_recall_max_results: Optional[int] = None
+    embedding_worker_batch_size: Optional[int] = None
+    conv_embed_backfill_days: Optional[int] = None
+    embedding_text_model: Optional[str] = None
+    embedding_vision_model: Optional[str] = None
+    embed_query_timeout_seconds: Optional[float] = None
+    embed_query_cache_ttl_seconds: Optional[float] = None
+    embed_rate_limit_requests: Optional[int] = None
+    embed_rate_limit_interval_seconds: Optional[float] = None
+    embed_max_retries: Optional[int] = None
     http_api_enabled: Optional[bool] = None
     http_api_host: Optional[str] = None
     http_api_port: Optional[int] = None
@@ -226,29 +250,27 @@ class AppConfigUpdate(BaseModel):
 
 @router.put("/app")
 async def save_app_config(data: AppConfigUpdate) -> Dict[str, str]:
-    """保存 app_config.json（只更新传入的非 None 字段，路径类字段不可修改）。"""
-    if not _APP_CONFIG_PATH.exists():
-        raise HTTPException(status_code=404, detail="app_config.json 不存在")
-    try:
-        existing: Dict[str, Any] = json.loads(_APP_CONFIG_PATH.read_text("utf-8"))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"读取配置失败: {e}") from e
+    """保存 app_config.json（只更新传入的非 None 字段，路径类字段不可修改）。
+
+    统一经由 ConfigManager 写内存 + 落盘，保证运行中的 Agent 立即读到新值，
+    避免文件与内存双真相源不一致。
+    """
+    from core.config import ConfigManager
 
     updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    filtered: Dict[str, Any] = {}
     for key, val in updates.items():
         if key in _APP_READONLY_FIELDS:
             continue
         # 敏感字段：若值仍是脱敏形式则跳过
         if key in _APP_SECRET_FIELDS and isinstance(val, str) and "****" in val:
             continue
-        existing[key] = val
+        filtered[key] = val
 
-    try:
-        _APP_CONFIG_PATH.write_text(
-            json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"写入配置失败: {e}") from e
+    ConfigManager.initialize()
+    ConfigManager.update(filtered)
+    if not ConfigManager.save():
+        raise HTTPException(status_code=500, detail="写入配置失败")
 
     return {"status": "ok"}
 

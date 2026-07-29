@@ -1,12 +1,17 @@
 import { cn } from "@/lib/utils";
+import { ModelSelect } from "@/components/models/ModelSelect";
 
-export type FieldType = "int" | "float" | "bool" | "string" | "password";
+export type FieldType = "int" | "float" | "bool" | "string" | "password" | "model";
 
 export interface FieldMeta {
   key: string;
   label: string;
   type: FieldType;
   desc?: string;
+  /** type === "model" 时的模型类型（chat / embedding / vision ...），默认 chat */
+  modelType?: string;
+  /** type === "model" 时是否提供「跟随默认」空选项 */
+  allowEmpty?: boolean;
 }
 
 interface AppFieldProps {
@@ -68,6 +73,18 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
           className={base}
           value={typeof value === "string" ? value : ""}
           onChange={(e) => onChange(e.target.value)}
+        />
+      );
+    }
+    if (meta.type === "model") {
+      return (
+        <ModelSelect
+          modelType={meta.modelType || "chat"}
+          value={typeof value === "string" ? value : ""}
+          onChange={(id) => onChange(id)}
+          allowEmpty={meta.allowEmpty ?? true}
+          allowPin={false}
+          showDefaultWhenEmpty={false}
         />
       );
     }

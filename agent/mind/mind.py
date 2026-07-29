@@ -49,7 +49,7 @@ from agent.heartbeat import (
     write_log as _hb_write,
 )
 from agent.heartbeat.engine import HeartbeatEngine
-from agent.memory.embedder import Embedder
+from agent.memory.embedding import get_embedder
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_store import MemoryStore
 from agent.memory.notes import (
@@ -170,7 +170,7 @@ class Mind:
         self.heartbeat_engine = HeartbeatEngine(self)
 
         self.memory_store = memory_store
-        self.embedder = Embedder()
+        self.embedder = get_embedder("text")
         self.retriever: Optional[MemoryRetriever] = None
         if self.memory_store:
             self.retriever = MemoryRetriever(self.memory_store, self.embedder)
@@ -1276,13 +1276,11 @@ class Mind:
         current_adapter = getattr(anything, "adapter_key", "") or ""
 
         # 查询提取与 embedding 每轮只做一次，三条召回路径（语义/跨频道/技能）共享
+        # （embed_query 内部自带超时与降级，永不阻塞对话路径）
         query = MemoryRetriever._extract_query(tail) if tail else ""
         query_vec: Optional[List[float]] = None
-        if query and self.embedder.available:
-            try:
-                query_vec = await self.embedder.embed_one(query)
-            except Exception as exc:
-                log(f"召回查询 embedding 失败: {exc}", "DEBUG", tag="思维")
+        if query:
+            query_vec = await self.embedder.embed_query(query)
 
         async def _recall_memory() -> List[Dict]:
             if not self.retriever:

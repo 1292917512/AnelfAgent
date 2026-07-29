@@ -449,6 +449,64 @@ class StickerStore:
         }
 
     # ------------------------------------------------------------------
+    # 向量重建（切换 embedding 模型 / 后台回填）
+    # ------------------------------------------------------------------
+
+    async def clear_embeddings(self) -> int:
+        """清空全部贴纸/图片向量与 vec 索引（维度在首次写入时按新模型重建）。"""
+        db = await self._get_db()
+        cleared = 0
+        for table in ("stickers", "images"):
+            cursor = await db.execute(
+                f"UPDATE {table} SET embedding=NULL WHERE embedding IS NOT NULL")
+            cleared += cursor.rowcount
+        for table in ("stickers_vec", "images_vec"):
+            await db.execute(f"DROP TABLE IF EXISTS {table}")
+        await db.execute(
+            "DELETE FROM meta WHERE key IN ('stickers_vec_dims', 'images_vec_dims')")
+        await db.commit()
+        return cleared
+
+    async def list_missing_embedding(self, limit: int) -> List[Dict[str, Any]]:
+        """列出待回填向量的行（stickers + images 合并，每行带 kind 与主键）。"""
+        db = await self._get_db()
+        rows: List[Dict[str, Any]] = []
+        cursor = await db.execute(
+            "SELECT id, description, tags_json, file_path FROM stickers "
+            "WHERE embedding IS NULL LIMIT ?", (limit,))
+        for r in await cursor.fetchall():
+            try:
+                tags = json.loads(r["tags_json"])
+            except Exception:
+                tags = []
+            rows.append({
+                "kind": "stickers", "id": r["id"],
+                "description": r["description"], "tags": tags,
+                "file_path": r["file_path"],
+            })
+        if len(rows) < limit:
+            cursor = await db.execute(
+                "SELECT path, description FROM images WHERE embedding IS NULL LIMIT ?",
+                (limit - len(rows),))
+            for r in await cursor.fetchall():
+                rows.append({
+                    "kind": "images", "id": r["path"],
+                    "description": r["description"], "tags": [],
+                    "file_path": r["path"],
+                })
+        return rows
+
+    async def set_embedding(self, kind: str, item_id: str, vec: List[float]) -> None:
+        """写入单条向量并同步 vec 索引。"""
+        db = await self._get_db()
+        id_col = "id" if kind == "stickers" else "path"
+        await db.execute(
+            f"UPDATE {kind} SET embedding=? WHERE {id_col}=?",
+            (_embed_to_blob(vec), item_id))
+        await db.commit()
+        await self._vec_upsert(kind, item_id, vec)
+
+    # ------------------------------------------------------------------
     # 检索（向量 → Python 余弦 → 模糊打分 三级降级）
     # ------------------------------------------------------------------
 

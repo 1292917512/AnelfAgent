@@ -178,7 +178,7 @@ class TaskExecutor:
             importance=result.importance,
         )
         await self.mind.memory_store.add(entry)
-        from agent.memory.embedding_worker import wake_embedding_worker
+        from agent.memory.embedding import wake_embedding_worker
         wake_embedding_worker()
         log(f"任务结果已存储: [{result.task_name}] {result.source}", tag="任务")
 

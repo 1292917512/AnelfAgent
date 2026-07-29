@@ -251,3 +251,91 @@ class TestRunQuery:
         with pytest.raises(DatabaseError) as e:
             await svc.run_query("agent", "SELECT * FROM no_such_table")
         assert e.value.status_code == 400
+
+
+# ======================================================================
+# 健康概览 / 备份 / 优化
+# ======================================================================
+
+
+class TestHealth:
+    async def test_health_basic(self, db_path, svc):
+        h = await svc.database_health("agent")
+        assert h["id"] == "agent"
+        assert h["size_bytes"] > 0
+        assert h["page_count"] > 0
+        assert 0.0 <= h["fragmentation"] <= 1.0
+        # 表规模 Top：items(3) 与 plain(10) 应出现
+        names = [t["name"] for t in h["top_tables"]]
+        assert "items" in names and "plain" in names
+        assert h["top_tables"][0]["name"] == "plain"  # 行数最多
+        # analyze 建议恒在
+        assert any(s["action"] == "analyze" for s in h["suggestions"])
+
+    async def test_health_external_forbidden(self, db_path, svc):
+        with pytest.raises(DatabaseError) as e:
+            await svc.database_health("ext:whatever")
+        assert e.value.status_code == 403
+
+
+class TestOptimize:
+    async def test_checkpoint_and_analyze(self, db_path, svc):
+        r = await svc.optimize_database("agent", ["checkpoint", "analyze"])
+        assert [a["action"] for a in r["actions"]] == ["checkpoint", "analyze"]
+        assert all(a["elapsed_ms"] >= 0 for a in r["actions"])
+
+    async def test_vacuum(self, db_path, svc):
+        r = await svc.optimize_database("agent", ["vacuum"])
+        assert r["actions"][0]["action"] == "vacuum"
+
+    async def test_unknown_action_rejected(self, db_path, svc):
+        with pytest.raises(DatabaseError) as e:
+            await svc.optimize_database("agent", ["drop"])
+        assert e.value.status_code == 400
+
+    async def test_empty_actions_rejected(self, db_path, svc):
+        with pytest.raises(DatabaseError) as e:
+            await svc.optimize_database("agent", [])
+        assert e.value.status_code == 400
+
+    async def test_external_forbidden(self, db_path, svc):
+        with pytest.raises(DatabaseError) as e:
+            await svc.optimize_database("ext:x", ["vacuum"])
+        assert e.value.status_code == 403
+
+
+class TestBackup:
+    async def test_backup_roundtrip(self, db_path, svc, tmp_path, monkeypatch):
+        monkeypatch.setattr("core.path.ConfigPaths.MEMORY_DIR", str(tmp_path / "mem"))
+        b = await svc.backup_database("agent")
+        dest = sqlite3.connect(b["path"])
+        try:
+            assert dest.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 3
+            assert dest.execute("SELECT COUNT(*) FROM plain").fetchone()[0] == 10
+        finally:
+            dest.close()
+        assert b["filename"].startswith("agent-") and b["filename"].endswith(".sqlite3")
+        assert b["size_bytes"] > 0
+
+    async def test_backup_external_forbidden(self, db_path, svc):
+        with pytest.raises(DatabaseError) as e:
+            await svc.backup_database("ext:x")
+        assert e.value.status_code == 403
+
+
+class TestExternalGuards:
+    async def test_row_writes_forbidden(self, db_path, svc):
+        with pytest.raises(DatabaseError) as e:
+            await svc.insert_row("ext:x", "t", {"a": 1})
+        assert e.value.status_code == 403
+        with pytest.raises(DatabaseError) as e:
+            await svc.update_row("ext:x", "t", 1, {"a": 1})
+        assert e.value.status_code == 403
+        with pytest.raises(DatabaseError) as e:
+            await svc.delete_row("ext:x", "t", 1)
+        assert e.value.status_code == 403
+
+    async def test_get_row_forbidden(self, db_path, svc):
+        with pytest.raises(DatabaseError) as e:
+            await svc.get_row("ext:x", "t", 1)
+        assert e.value.status_code == 403

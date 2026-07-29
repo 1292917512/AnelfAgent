@@ -137,7 +137,8 @@ async def save_policies(data: PolicyUpdateRequest) -> Dict[str, str]:
         # 保存到文件（触发 ConfigWatcher 自动重载）
         import json
         import os
-        policies_path = "config/approval_policies.json"
+        from core.path import ConfigPaths
+        policies_path = ConfigPaths.APPROVAL_POLICIES
         os.makedirs(os.path.dirname(policies_path), exist_ok=True)
         with open(policies_path, "w", encoding="utf-8") as f:
             json.dump(

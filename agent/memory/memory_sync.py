@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from core.log import log
 from .doc_extract import extract_document_text
-from .embedder import Embedder
+from .embedding import Embedder
 from .memory_store import MemoryStore
 from .memory_utils import hash_text, list_indexable_files, pack_embedding
 
@@ -225,7 +225,7 @@ async def sync_files(
             tag="思维",
         )
         if stats["chunks"]:
-            from .embedding_worker import wake_embedding_worker
+            from .embedding import wake_embedding_worker
             wake_embedding_worker()
 
     return stats

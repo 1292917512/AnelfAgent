@@ -39,7 +39,8 @@
     "delegation": "Sub-agents",
     "ui": "UI Interaction",
     "session": "Session Manager",
-    "file_share": "File Share"
+    "share": "File Share",
+    "sticker": "Stickers"
   },
   "reload": "Reload",
   "reloading": "Reloading...",

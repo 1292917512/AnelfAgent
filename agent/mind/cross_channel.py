@@ -136,7 +136,7 @@ async def recall_cross_channel(
         return [], recalled_scopes
 
     if query_vec is None:
-        query_vec = await mind.embedder.embed_one(query)
+        query_vec = await mind.embedder.embed_query(query)
     if not query_vec:
         return [], recalled_scopes
 

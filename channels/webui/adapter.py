@@ -78,46 +78,25 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         from core.stream_events import EVENT_FILE_DIFF, EVENT_CONTEXT_USAGE
         event_bus.on(EVENT_FILE_DIFF, self._on_file_diff, owner="channel:webui")
         event_bus.on(EVENT_CONTEXT_USAGE, self._on_context_usage, owner="channel:webui")
-        # Plan 模式 / 子代理：直接广播到前端（PlanPanel / PlanCard / DelegationCard）
+        # Plan 模式 / 子代理：直接广播到前端（PlanPanel / PlanCard / DelegationCard）。
+        # 事件名与 SSE 帧名一致，表驱动注册（handler 统一为 _broadcast_scoped 转发）。
         from core.event_bus import (
             EVENT_PLAN_SUBMITTED, EVENT_PLAN_STEP_UPDATED,
             EVENT_PLAN_STATUS_CHANGED, EVENT_PLAN_CANCELLED,
             EVENT_DELEGATION_STARTED, EVENT_DELEGATION_PROGRESS, EVENT_DELEGATION_RESOLVED,
         )
-        event_bus.on(EVENT_PLAN_SUBMITTED, self._on_plan_submitted, owner="channel:webui")
-        event_bus.on(EVENT_PLAN_STEP_UPDATED, self._on_plan_step_updated, owner="channel:webui")
-        event_bus.on(EVENT_PLAN_STATUS_CHANGED, self._on_plan_status_changed, owner="channel:webui")
-        event_bus.on(EVENT_PLAN_CANCELLED, self._on_plan_cancelled, owner="channel:webui")
-        event_bus.on(EVENT_DELEGATION_STARTED, self._on_delegation_started, owner="channel:webui")
-        event_bus.on(EVENT_DELEGATION_PROGRESS, self._on_delegation_progress, owner="channel:webui")
-        event_bus.on(EVENT_DELEGATION_RESOLVED, self._on_delegation_resolved, owner="channel:webui")
+        for evt in (
+            EVENT_PLAN_SUBMITTED, EVENT_PLAN_STEP_UPDATED,
+            EVENT_PLAN_STATUS_CHANGED, EVENT_PLAN_CANCELLED,
+            EVENT_DELEGATION_STARTED, EVENT_DELEGATION_PROGRESS, EVENT_DELEGATION_RESOLVED,
+        ):
+            event_bus.on(evt, self._make_scoped_forwarder(evt), owner="channel:webui")
 
-    # ------------------------------------------------------------------
-    # Plan 模式事件 → SSE
-    # ------------------------------------------------------------------
-    async def _on_plan_submitted(self, payload: dict) -> None:
-        self._broadcast_scoped("plan_submitted", payload)
-
-    async def _on_plan_step_updated(self, payload: dict) -> None:
-        self._broadcast_scoped("plan_step_updated", payload)
-
-    async def _on_plan_status_changed(self, payload: dict) -> None:
-        self._broadcast_scoped("plan_status_changed", payload)
-
-    async def _on_plan_cancelled(self, payload: dict) -> None:
-        self._broadcast_scoped("plan_cancelled", payload)
-
-    # ------------------------------------------------------------------
-    # 子代理事件 → SSE
-    # ------------------------------------------------------------------
-    async def _on_delegation_started(self, payload: dict) -> None:
-        self._broadcast_scoped("delegation_started", payload)
-
-    async def _on_delegation_progress(self, payload: dict) -> None:
-        self._broadcast_scoped("delegation_progress", payload)
-
-    async def _on_delegation_resolved(self, payload: dict) -> None:
-        self._broadcast_scoped("delegation_resolved", payload)
+    def _make_scoped_forwarder(self, event: str):
+        """生成把内核事件透传到 SSE 的 handler（帧名与事件名一致）。"""
+        async def _forward(payload: dict) -> None:
+            self._broadcast_scoped(event, payload)
+        return _forward
 
     async def _on_after_reply(self, payload: dict) -> None:
         """轮次结束 → turn_end 帧（前端清除发送态/流式气泡）。

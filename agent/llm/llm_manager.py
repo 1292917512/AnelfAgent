@@ -99,7 +99,8 @@ class LLMManager(BaseEntity):
             self.save_config()
             return
         try:
-            data = json.loads(self._config_path.read_text(encoding="utf-8"))
+            from core.config import expand_env_refs
+            data = expand_env_refs(json.loads(self._config_path.read_text(encoding="utf-8")))
             self._apply_config(data)
             info(
                 f"已加载 {len(self._clients)} 个模型 / {len(self._providers)} 个供应商 "
@@ -166,6 +167,8 @@ class LLMManager(BaseEntity):
                         supports_reasoning=mdata.get("supports_reasoning", False),
                         reasoning_effort=mdata.get("reasoning_effort", ""),
                         context_window=mdata.get("context_window", 0),
+                        embedding_dims=mdata.get("embedding_dims", 0),
+                        embedding_max_batch=mdata.get("embedding_max_batch", 0),
                         request_params=mdata.get("request_params", {}),
                         extra_body=mdata.get("extra_body", {}),
                         extra_params=mdata.get("extra_params", {}),
@@ -258,6 +261,7 @@ class LLMManager(BaseEntity):
                 "type_priorities": self._type_priorities,
                 "default_chat": self._default_chat,
             }
+            out = self._restore_env_refs(out)
             self._config_path.write_text(
                 json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8",
             )
@@ -266,6 +270,42 @@ class LLMManager(BaseEntity):
         except Exception as exc:
             error(f"保存 LLM 配置失败: {exc}", tag="模型")
             return False
+
+    def _restore_env_refs(self, out: Dict[str, Any]) -> Dict[str, Any]:
+        """回写配置时恢复磁盘上的 ${ENV_VAR} 引用。
+
+        内存中的 api_key 是引用展开后的值；若与磁盘引用的展开结果一致
+        （即用户未修改该字段），则保留磁盘上的引用语法，避免明文密钥落盘。
+        """
+        try:
+            if not self._config_path.exists():
+                return out
+            from core.config import expand_env_refs
+            disk = json.loads(self._config_path.read_text(encoding="utf-8"))
+        except Exception:
+            return out
+
+        def _restore(out_item: Dict[str, Any], disk_item: Dict[str, Any], field: str) -> None:
+            ref = disk_item.get(field)
+            if isinstance(ref, str) and "${" in ref and out_item.get(field) == expand_env_refs(ref):
+                out_item[field] = ref
+
+        disk_providers = {
+            p.get("id"): p for p in disk.get("providers", []) if isinstance(p, dict)
+        }
+        for prov in out.get("providers", []):
+            dp = disk_providers.get(prov.get("id"))
+            if not dp:
+                continue
+            _restore(prov, dp, "api_key")
+            disk_models = {
+                m.get("id", m.get("name")): m for m in dp.get("models", []) if isinstance(m, dict)
+            }
+            for model in prov.get("models", []):
+                dm = disk_models.get(model.get("id"))
+                if dm:
+                    _restore(model, dm, "api_key")
+        return out
 
     # ------------------------------------------------------------------
     # 按类型/能力查找（按 type_priorities 顺序）
@@ -310,7 +350,23 @@ class LLMManager(BaseEntity):
         """获取最高优先级的视觉模型（按 vision 优先级列表顺序）。"""
         return self.get_by_type(ModelType.VISION)
 
-    def get_embedding_client(self) -> Optional[LLMClient]:
+    def get_embedding_client(self, purpose: str = "text") -> Optional[LLMClient]:
+        """按用途域获取 embedding 客户端。
+
+        purpose="text"（记忆/对话等文本域）与 "vision"（贴纸/图片等视觉域）
+        分别由配置键 embedding_text_model / embedding_vision_model 指定模型；
+        未配置时统一回落到 embedding 类型优先级首位（退化为单模型行为）。
+        """
+        from core.config import get_config
+        configured = str(get_config(f"embedding_{purpose}_model", "") or "").strip()
+        if configured:
+            client = self._clients.get(configured)
+            if client and ModelType.EMBEDDING.value in client.config.model_types:
+                return client
+            warning(
+                f"embedding_{purpose}_model={configured} 未找到或不是 embedding 模型，"
+                f"回落到类型优先级", tag="模型",
+            )
         return self.get_by_type(ModelType.EMBEDDING)
 
     def get_rerank_client(self) -> Optional[LLMClient]:

@@ -1,4 +1,4 @@
-"""系统工具 API 路由 -- 系统信息、Python 环境、Git 配置。"""
+"""系统工具 API 路由 -- 系统信息、Python 环境、Git 配置、服务重启。"""
 
 from __future__ import annotations
 
@@ -93,3 +93,22 @@ async def unset_git_proxy() -> Dict[str, Any]:
 async def test_github() -> Dict[str, Any]:
     from entities.system.git_service import test_github_connectivity
     return test_github_connectivity()
+
+# ── 服务重启 ─────────────────────────────────────────────────────────
+
+@router.post("/restart")
+async def restart_service() -> Dict[str, Any]:
+    from services.system import request_restart
+    return request_restart()
+
+
+@router.post("/restart/build")
+async def build_frontend_and_restart() -> Dict[str, Any]:
+    from services.system import request_build_and_restart
+    return request_build_and_restart()
+
+
+@router.get("/restart/status")
+async def get_restart_status() -> Dict[str, Any]:
+    from services.system import get_build_state
+    return get_build_state()

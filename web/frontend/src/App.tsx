@@ -13,9 +13,18 @@ import { configApi } from "./lib/api";
 // 命名约定：Share.tsx → /share, Dashboard.tsx → /dashboard
 const pageModules = import.meta.glob("./pages/*.tsx");
 
+// lazy 组件必须模块级缓存：render 中重复调用 lazy() 会被 React 视为新组件类型，
+// 导致页面每次渲染都卸载重挂（状态丢失）
+const pageCache = new Map<string, React.LazyExoticComponent<React.ComponentType>>();
+
 function lazyPage(name: string) {
+  let comp = pageCache.get(name);
+  if (comp) return comp;
   const loader = pageModules[`./pages/${name}.tsx`];
-  return loader ? lazy(loader as () => Promise<{ default: React.ComponentType }>) : null;
+  if (!loader) return null;
+  comp = lazy(loader as () => Promise<{ default: React.ComponentType }>);
+  pageCache.set(name, comp);
+  return comp;
 }
 
 // 核心路由注册表：声明式集中管理，新增页面只需在此追加一行

@@ -39,7 +39,8 @@
     "delegation": "子代理",
     "ui": "界面交互",
     "session": "会话管理",
-    "file_share": "文件分享"
+    "share": "文件分享",
+    "sticker": "表情包"
   },
   "reload": "重新加载",
   "reloading": "重新加载中...",

@@ -15,7 +15,7 @@ from typing import Any, Dict
 
 from entities._sdk import entity, tool
 
-entity("file_share", "文件分享 - 将工作区文件生成为外部可下载链接")
+entity("share", "文件分享 - 将工作区文件生成为外部可下载链接")
 
 _CREATE_PROMPT = """为工作区内的文件生成分享链接（对外可下载）。
 
@@ -59,7 +59,7 @@ _REVOKE_PROMPT = """撤销（关闭）一个分享链接，使其立即失效。
 返回: {"token", "status": "revoked"} 或 {"error": "..."}"""
 
 
-@tool(name="create_share_link", group="file_share", description=_CREATE_PROMPT)
+@tool(name="create_share_link", group="share", description=_CREATE_PROMPT)
 async def create_share_link(path: str, description: str = "", expires_in: str = "24h", max_downloads: int = 0) -> str:
     """为工作区文件生成对外可下载的分享链接。
 
@@ -91,7 +91,7 @@ async def create_share_link(path: str, description: str = "", expires_in: str = 
         return json.dumps({"error": f"创建分享链接失败: {e}"}, ensure_ascii=False)
 
 
-@tool(name="list_share_links", group="file_share", description=_LIST_PROMPT, concurrency_safe=True)
+@tool(name="list_share_links", group="share", description=_LIST_PROMPT, concurrency_safe=True)
 async def list_share_links(status: str = "active", path_keyword: str = "", limit: int = 20) -> str:
     """列出当前所有分享链接。
 
@@ -110,7 +110,7 @@ async def list_share_links(status: str = "active", path_keyword: str = "", limit
         return json.dumps({"error": f"查询分享链接失败: {e}"}, ensure_ascii=False)
 
 
-@tool(name="revoke_share_link", group="file_share", description=_REVOKE_PROMPT)
+@tool(name="revoke_share_link", group="share", description=_REVOKE_PROMPT)
 async def revoke_share_link(token: str) -> str:
     """撤销一个分享链接。
 

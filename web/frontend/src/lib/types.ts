@@ -717,6 +717,8 @@ export interface DbInfo {
   exists: boolean;
   size_bytes: number;
   table_count: number;
+  external?: boolean;
+  engine?: string;
   error?: string;
 }
 
@@ -791,6 +793,100 @@ export interface DbQueryResult {
   row_count: number;
   elapsed_ms: number;
   truncated: boolean;
+}
+
+export interface DbSuggestion {
+  id: string;
+  level: "info" | "warn";
+  action: string;
+  detail: Record<string, unknown>;
+}
+
+export interface DbHealth {
+  id: string;
+  size_bytes: number;
+  wal_bytes: number;
+  page_count: number;
+  freelist_count: number;
+  fragmentation: number;
+  top_tables: { name: string; row_count: number }[];
+  suggestions: DbSuggestion[];
+}
+
+export interface DbOptimizeResult {
+  actions: { action: string; elapsed_ms: number; detail?: Record<string, unknown> }[];
+}
+
+// ======================================================================
+// 外部数据库连接（数据管理页 · 只读数据源）
+// ======================================================================
+
+export interface DbConnection {
+  id: string;
+  name: string;
+  engine: "postgresql" | "mysql";
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  password: string;
+  has_password: boolean;
+  created_at: number;
+}
+
+export interface DbConnectionPayload {
+  name: string;
+  engine: string;
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  password: string;
+}
+
+export interface DbConnectionTestResult {
+  ok: boolean;
+  version?: string;
+  error?: string;
+  latency_ms?: number;
+}
+
+// ======================================================================
+// 数据位置与迁移（数据管理页 · 存储位置 Tab）
+// ======================================================================
+
+export interface DbLocationEntry {
+  name: string;
+  kind: "dir" | "file";
+  size_bytes: number;
+}
+
+export interface DbLocationInfo {
+  path: string;
+  source: "env" | "config" | "default";
+  env_override: string;
+  exists: boolean;
+  total_bytes: number;
+  entries: DbLocationEntry[];
+}
+
+export interface DbTargetCheck {
+  target: string;
+  ok: boolean;
+  problems: string[];
+  warnings: string[];
+  required_bytes: number;
+}
+
+export interface DbMigrationStatus {
+  state: "idle" | "running" | "done" | "error";
+  target: string;
+  current_file: string;
+  done: number;
+  total: number;
+  started_at: number;
+  finished_at: number;
+  error: string;
 }
 
 // ======================================================================
@@ -1062,4 +1158,18 @@ export interface ChatMeta {
   last_ts: number;
   message_count: number;
   unread?: number;
+}
+
+// ── 服务重启（system 路由） ──
+
+export interface BuildResult {
+  ok: boolean;
+  duration: number;
+  finished_at: string;
+  log_tail: string;
+}
+
+export interface RestartBuildState {
+  building: boolean;
+  last: BuildResult | null;
 }

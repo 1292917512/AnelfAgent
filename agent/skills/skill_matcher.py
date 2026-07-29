@@ -62,14 +62,10 @@ class SkillMatcher:
         if not query:
             return []
 
-        # 语义路：查询向量（Embedder 不可用时跳过得 0 分；调用方已预计算则直接复用）
-        if query_vec is None:
-            embedder = self._embedder
-            if embedder is not None and getattr(embedder, "available", False):
-                try:
-                    query_vec = await embedder.embed_one(query)  # type: ignore[attr-defined]
-                except Exception as exc:
-                    log(f"技能匹配 embedding 失败: {exc}", "DEBUG", tag="技能")
+        # 语义路：查询向量（embed_query 内部自带降级，不可用时返回 None 得 0 分；
+        # 调用方已预计算则直接复用）
+        if query_vec is None and self._embedder is not None:
+            query_vec = await self._embedder.embed_query(query)  # type: ignore[attr-defined]
 
         scored: List[Tuple[Skill, float]] = []
         for skill in skills:
@@ -103,17 +99,14 @@ class SkillMatcher:
     async def _skill_embedding(self, skill: Skill) -> Optional[List[float]]:
         """技能描述向量（按内容 hash 缓存，避免每轮实时重算）。"""
         embedder = self._embedder
-        if embedder is None or not getattr(embedder, "available", False):
+        if embedder is None:
             return None
         text = f"{skill.name} {skill.description} {' '.join(skill.trigger_patterns)}"
         key = hash_text(text)
         cached = _EMBEDDING_CACHE.get(key)
         if cached is not None:
             return cached
-        try:
-            vec = await embedder.embed_one(text)  # type: ignore[attr-defined]
-        except Exception:
-            return None
+        vec = await embedder.embed_query(text)  # type: ignore[attr-defined]
         if vec:
             _EMBEDDING_CACHE[key] = vec
         return vec

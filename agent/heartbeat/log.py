@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import List, Optional
 
 from core.log import log
+from core.path import ConfigPaths
 
-LOG_PATH = Path("config/memory/heartbeat.md")
+LOG_PATH = Path(ConfigPaths.HEARTBEAT_LOG)
 
 # 进程内锁：防止并发 tick 交错写入
 _WRITE_LOCK = threading.Lock()

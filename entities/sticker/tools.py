@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -31,6 +32,7 @@ entity_manifest(
     icon="sticker",
     description="收藏/语义检索/发送表情包，文搜图、图搜图",
     version="1.0.0",
+    group="sticker",
 )
 
 _STICKER_CONFIGS = {
@@ -139,10 +141,11 @@ _embedder: Any = None
 
 
 def _get_embedder() -> Any:
+    """视觉域共享 Embedder（贴纸/图片索引与检索专用，与文本域向量空间隔离）。"""
     global _embedder
     if _embedder is None:
-        from agent.memory.embedder import Embedder
-        _embedder = Embedder()
+        from agent.memory.embedding import get_embedder
+        _embedder = get_embedder("vision")
     return _embedder
 
 
@@ -151,11 +154,70 @@ async def _embed_text(description: str, tags: List[str]) -> Optional[list]:
     text = f"{description} {' '.join(tags)}".strip()
     if not text:
         return None
-    try:
-        return await _get_embedder().embed_one(text)
-    except Exception as exc:
-        log(f"embedding 失败（降级关键词检索）: {exc}", "DEBUG", tag="贴纸")
+    return await _get_embedder().embed_query(text)
+
+
+_IMAGE_MIME = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+}
+
+
+async def _to_image_data_url(image_ref: str) -> Optional[str]:
+    """图片引用统一为可远程向量化的形式：http(s)/data URL 直传，本地文件转 data URL。"""
+    if not image_ref:
         return None
+    if image_ref.startswith(("http://", "https://", "data:")):
+        return image_ref
+    from core.path import project_root
+    path = image_ref if os.path.isabs(image_ref) else os.path.join(str(project_root()), image_ref)
+    if not os.path.isfile(path):
+        return None
+    mime = _IMAGE_MIME.get(os.path.splitext(path)[1].lower(), "image/jpeg")
+    data = await asyncio.to_thread(lambda: open(path, "rb").read())
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+
+
+async def _embed_for_index(
+    description: str,
+    tags: List[str],
+    image_ref: str = "",
+    *,
+    embedder: Any = None,
+) -> Optional[list]:
+    """索引向量：视觉嵌入可用时图片 + 描述文本融合嵌入（信息无损），否则回退纯文本嵌入。"""
+    embedder = embedder or _get_embedder()
+    if image_ref and getattr(embedder, "supports_vision_embedding", False):
+        data_url = await _to_image_data_url(image_ref)
+        if data_url:
+            vec = await embedder.embed_image(
+                data_url, text=f"{description} {' '.join(tags)}".strip()
+            )
+            if vec:
+                return vec
+    return await _embed_text(description, tags)
+
+
+async def _sticker_backfill(embedder: Any, batch_size: int) -> int:
+    """EmbeddingWorker backlog 处理器：回填贴纸/图片索引缺失的向量。"""
+    store = get_sticker_store()
+    rows = await store.list_missing_embedding(batch_size)
+    count = 0
+    for row in rows:
+        vec = await _embed_for_index(
+            row["description"], row["tags"], row["file_path"], embedder=embedder
+        )
+        if vec:
+            await store.set_embedding(row["kind"], row["id"], vec)
+            count += 1
+    return count
+
+
+try:
+    from agent.memory.embedding import register_embedding_backlog
+    register_embedding_backlog("stickers", _sticker_backfill)
+except Exception as _exc:
+    log(f"贴纸 embedding backlog 注册失败: {_exc}", "DEBUG", tag="贴纸")
 
 
 def _parse_tags(tags: str) -> List[str]:
@@ -246,7 +308,7 @@ async def collect_sticker(
                 }, ensure_ascii=False)
 
         dest = _import_to_stickers_dir(local_path, content_hash)
-        embedding = await _embed_text(description, tag_list)
+        embedding = await _embed_for_index(description, tag_list, dest)
 
         store = get_sticker_store()
         sticker = await store.add_sticker(
@@ -289,10 +351,7 @@ async def search_sticker(query: str, limit: int = 3) -> str:
         limit: 返回候选数量，默认 3
     """
     store = get_sticker_store()
-    try:
-        query_vec = await _get_embedder().embed_one(query)
-    except Exception:
-        query_vec = None
+    query_vec = await _get_embedder().embed_query(query)
     items = await store.search_stickers(query, query_vec=query_vec, limit=max(1, min(limit, 10)))
     if not items:
         return json.dumps({
@@ -404,7 +463,7 @@ async def update_sticker(
 
     new_desc = description.strip() or current["description"]
     new_tags = _parse_tags(tags) if tags.strip() else current["tags"]
-    embedding = await _embed_text(new_desc, new_tags)
+    embedding = await _embed_for_index(new_desc, new_tags, current["file_path"])
 
     updated = await store.update_sticker(
         sticker_id,
@@ -452,10 +511,7 @@ async def search_image(query: str, limit: int = 5) -> str:
         limit: 返回候选数量，默认 5
     """
     store = get_sticker_store()
-    try:
-        query_vec = await _get_embedder().embed_one(query)
-    except Exception:
-        query_vec = None
+    query_vec = await _get_embedder().embed_query(query)
     items = await store.search_images(query, query_vec=query_vec, limit=max(1, min(limit, 10)))
     if not items:
         return json.dumps({
@@ -528,7 +584,7 @@ async def index_image(image_path: str, description: str = "") -> str:
         phash = await asyncio.to_thread(compute_phash, local_path)
         if not description.strip():
             description = await _describe_sticker(local_path)
-        embedding = await _embed_text(description, [])
+        embedding = await _embed_for_index(description, [], local_path)
         await store.upsert_image(
             path=local_path,
             description=description,

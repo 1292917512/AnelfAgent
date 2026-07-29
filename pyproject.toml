@@ -50,6 +50,9 @@ dependencies = [
     # 个人微信（Weixin / iLink Bot API）频道
     "cryptography>=42.0.0",
     "qrcode>=7.4.0",
+    "aiolimiter>=1.2.1",
+    "asyncpg>=0.31.0",
+    "aiomysql>=0.3.2",
 ]
 
 [[tool.uv.index]]

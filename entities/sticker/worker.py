@@ -137,16 +137,6 @@ class ImageIndexWorker:
             log(f"图片描述不可用: {exc}", "DEBUG", tag="贴纸")
         return ""
 
-    async def _embed(self, text: str) -> Optional[list]:
-        if not text:
-            return None
-        try:
-            from agent.memory.embedder import Embedder
-            embedder = Embedder()
-            return await embedder.embed_one(text)
-        except Exception:
-            return None
-
     async def _index_one(self, path_or_url: str, source: str) -> None:
         local_path = await self._localize(path_or_url)
         if not local_path:
@@ -160,7 +150,8 @@ class ImageIndexWorker:
 
         phash = await asyncio.to_thread(compute_phash, local_path)
         description = await self._describe(local_path)
-        embedding = await self._embed(description)
+        from .tools import _embed_for_index
+        embedding = await _embed_for_index(description, [], local_path)
 
         await self.store.upsert_image(
             path=local_path,

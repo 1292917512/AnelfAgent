@@ -150,28 +150,10 @@ class ShareStore:
             await db.execute("PRAGMA busy_timeout=5000;")
             await db.executescript(_SCHEMA)
             await db.commit()
-            await self._migrate(db)
             self._db = db
             await self._load_config()
             log(f"ShareStore 就绪: {self._db_path}", tag="分享")
             return db
-
-    async def _migrate(self, db: aiosqlite.Connection) -> None:
-        """Schema 迁移：检测并添加缺失的列（SQLite ALTER TABLE ADD COLUMN）。"""
-        migrations = [
-            ("share_links", "max_downloads", "INTEGER NOT NULL DEFAULT 0"),
-            ("share_links", "content_hash", "TEXT NOT NULL DEFAULT ''"),
-        ]
-        for table, column, col_type in migrations:
-            try:
-                cursor = await db.execute(f"PRAGMA table_info({table})")
-                columns = {row["name"] for row in await cursor.fetchall()}
-                if column not in columns:
-                    await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-                    await db.commit()
-                    log(f"分享库迁移: {table}.{column} 已添加", "DEBUG", tag="分享")
-            except Exception as e:
-                log(f"分享库迁移失败 {table}.{column}: {e}", "WARNING", tag="分享")
 
     async def close(self) -> None:
         if self._db is not None:

@@ -24,11 +24,12 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from core.log import log
+from core.path import ConfigPaths
 
 from .policy import ApprovalPolicySet, RiskLevel, match_path_pattern, matchable_arg_candidates
 
-RULES_PATH = "config/permission_rules.json"
-LEGACY_PATH = "config/approval_policies.json"
+RULES_PATH = ConfigPaths.PERMISSION_RULES
+LEGACY_PATH = ConfigPaths.APPROVAL_POLICIES
 
 # 命令执行类工具：参数 glob 的比对对象是命令字符串
 COMMAND_TOOLS = frozenset({"run_shell_command", "python_exec"})

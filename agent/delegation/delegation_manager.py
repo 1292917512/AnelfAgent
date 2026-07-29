@@ -37,22 +37,11 @@ if TYPE_CHECKING:
 
 EVENT_DELEGATION_COMPLETED = "delegation.completed"
 
-
-def _current_scope() -> str:
-    """读取当前对话 scope（用于 delegation 事件按 scope 路由到对应 chat_id）。"""
-    try:
-        from agent.mind.tool_activation import ToolActivationManager
-        return ToolActivationManager.current_scope()
-    except Exception:
-        return "_global"
-
-
-def _parse_scope_chat_id(scope: str) -> tuple[str, str]:
-    """从 scope 提取 (user_scope, chat_id)。"""
-    if "#" in scope:
-        base, chat_id = scope.split("#", 1)
-        return base, chat_id
-    return scope, ""
+# scope 工具与 plan 模块共享（统一实现，避免逐字重复）
+from agent.planning.tracker import (  # noqa: E402
+    current_scope as _current_scope,
+    parse_scope_chat_id as _parse_scope_chat_id,
+)
 
 # 结果摘要预算（参考 hermes：父上下文剩余空间的 50% 均分给各子任务）
 _SUMMARY_HEADROOM_FRACTION = 0.5

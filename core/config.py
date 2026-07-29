@@ -3,12 +3,67 @@
 提供基于全局内存的简化配置管理功能
 """
 import json
+import os
+import re
 import threading
+from pathlib import Path
 from typing import Dict, Any, Optional, Union, List
 from dataclasses import dataclass
 from enum import Enum
 from core.log import log
 from core.path import ConfigPaths, PathManager
+
+
+_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def parse_env_value(value: str) -> Any:
+    """将环境变量字符串解析为合适的 Python 类型（bool/int/float/str）。"""
+    low = value.lower()
+    if low in ("true", "1", "yes"):
+        return True
+    if low in ("false", "0", "no"):
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
+
+
+def expand_env_refs(value: Any) -> Any:
+    """递归展开字符串值中的 ``${ENV_VAR}`` 引用（用于密钥外置到环境变量）。
+
+    未设置的变量替换为空字符串并记录 WARNING。dict/list 递归处理，其他类型原样返回。
+    """
+    if isinstance(value, str):
+        def _sub(match: "re.Match[str]") -> str:
+            var = match.group(1)
+            if var not in os.environ:
+                log(f"配置引用了未设置的环境变量: {var}", "WARNING")
+            return os.environ.get(var, "")
+        return _ENV_REF_RE.sub(_sub, value)
+    if isinstance(value, dict):
+        return {k: expand_env_refs(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [expand_env_refs(v) for v in value]
+    return value
+
+
+def load_json_config(path: Union[str, Path], default: Any = None) -> Any:
+    """读取 JSON 配置文件并展开 ${ENV_VAR} 引用；文件缺失或解析失败返回 default。"""
+    p = Path(path)
+    if not p.exists():
+        return default
+    try:
+        return expand_env_refs(json.loads(p.read_text("utf-8")))
+    except Exception as e:
+        log(f"JSON 配置加载失败 ({p}): {e}", "WARNING")
+        return default
 
 
 class ConfigValueType(Enum):
@@ -145,10 +200,18 @@ class ConfigRegistry:
 
 
 class ConfigManager:
-    """全局配置管理器"""
+    """全局配置管理器
+
+    双层级存储：
+    - ``_file_config``：文件原始值（保留 ``${ENV_VAR}`` 引用语法），save 时回写
+    - ``_config``：生效值（引用已展开、环境变量已覆盖），get 时读取
+
+    加载优先级（后者覆盖前者）：文件值 < ``ANELF_<KEY>`` 环境变量。
+    """
 
     # 全局内存配置存储
     _config: Dict[str, Any] = {}
+    _file_config: Dict[str, Any] = {}
     _config_file: str = ConfigPaths.APP_CONFIG
     _lock = threading.RLock()
     _initialized = False
@@ -185,9 +248,10 @@ class ConfigManager:
 
     @classmethod
     def set(cls, key: str, value: Any) -> None:
-        """设置配置值"""
+        """设置配置值（同时写入生效层与文件层，save 后持久化）"""
         with cls._lock:
             cls._config[key] = value
+            cls._file_config[key] = value
 
     @classmethod
     def has(cls, key: str) -> bool:
@@ -196,10 +260,10 @@ class ConfigManager:
 
     @classmethod
     def save(cls) -> bool:
-        """保存配置到JSON文件"""
+        """保存配置到JSON文件（回写文件原始层，保留 ${ENV_VAR} 引用语法）"""
         try:
             with cls._lock:
-                config_content = json.dumps(cls._config, indent=2, ensure_ascii=False)
+                config_content = json.dumps(cls._file_config, indent=2, ensure_ascii=False)
                 success = PathManager.write_text(cls._config_file, config_content)
                 return success
         except Exception as e:
@@ -222,12 +286,14 @@ class ConfigManager:
         """清空内存中的配置"""
         with cls._lock:
             cls._config.clear()
+            cls._file_config.clear()
 
     @classmethod
     def reset(cls) -> None:
         """完全重置到初始状态（测试用）。"""
         with cls._lock:
             cls._config.clear()
+            cls._file_config.clear()
             cls._initialized = False
 
     @classmethod
@@ -249,6 +315,7 @@ class ConfigManager:
         """批量更新配置"""
         with cls._lock:
             cls._config.update(config_dict)
+            cls._file_config.update(config_dict)
 
     @classmethod
     def get_grouped_configs(cls) -> Dict[str, Dict[str, Any]]:
@@ -271,14 +338,33 @@ class ConfigManager:
 
     @classmethod
     def _load_config(cls) -> None:
-        """从文件加载配置"""
+        """从文件加载配置：展开 ${ENV_VAR} 引用后，再应用 ANELF_<KEY> 环境变量覆盖。"""
         try:
-            # 简化文件加载逻辑
             content = PathManager.read_text(cls._config_file) if PathManager.exists(cls._config_file) else ""
-            cls._config = json.loads(content) if content.strip() else {}
+            raw = json.loads(content) if content.strip() else {}
+            if not isinstance(raw, dict):
+                raw = {}
+            cls._file_config = raw
+            cls._config = expand_env_refs(raw)
+            cls._apply_env_overrides()
         except Exception as e:
             log(f"配置文件加载失败: {e}", "WARNING")
             cls._config = {}
+            cls._file_config = {}
+
+    @classmethod
+    def _apply_env_overrides(cls) -> None:
+        """ANELF_<KEY> 环境变量覆盖文件已存在的同名配置项（仅作用于生效层，不回写文件）。"""
+        overridden: List[str] = []
+        for key in list(cls._config):
+            env_key = f"ANELF_{key.upper()}"
+            env_val = os.environ.get(env_key)
+            if env_val is None:
+                continue
+            cls._config[key] = parse_env_value(env_val)
+            overridden.append(env_key)
+        if overridden:
+            log(f"环境变量覆盖 {len(overridden)} 项配置: {', '.join(overridden)}")
 
 
 def register_configs(configs: Dict[str, Dict[str, Any]]) -> None:

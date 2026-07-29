@@ -11,7 +11,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 from core.log import log
-from .embedder import Embedder
+from .embedding import Embedder
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
 
@@ -86,8 +86,8 @@ class MemoryRetriever:
 
         async def _main_search() -> List[MemorySearchResult]:
             vec = query_vec
-            if vec is None and self._embedder.available:
-                vec = await self._embedder.embed_one(query)
+            if vec is None:
+                vec = await self._embedder.embed_query(query)
             from .cognee.fusion import federated_search
             from .cognee.runtime import get_cognee_client
             return await federated_search(
@@ -108,7 +108,7 @@ class MemoryRetriever:
         focus_query = self._extract_focus_query(conversation)
 
         async def _focus_search() -> List[MemorySearchResult]:
-            focus_vec = await self._embedder.embed_one(focus_query) if self._embedder.available else None
+            focus_vec = await self._embedder.embed_query(focus_query)
             return await self._store.search_unified(
                 query=focus_query,
                 query_vec=focus_vec,

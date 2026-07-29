@@ -3,7 +3,8 @@
   "subtitle": "Unified access to databases, stickers and other business data",
   "tabs": {
     "database": "Database",
-    "stickers": "Stickers"
+    "stickers": "Stickers",
+    "storage": "Storage"
   },
   "db": {
     "notCreated": "not created",
@@ -15,6 +16,8 @@
     "tabRows": "Rows",
     "tabSchema": "Schema",
     "tabQuery": "Query",
+    "localGroup": "Local",
+    "externalGroup": "External",
     "filterColumn": "Column…",
     "filterPlaceholder": "Contains text… (Enter to apply)",
     "filterApply": "Filter",
@@ -44,5 +47,77 @@
     "queryTruncated": "row limit reached",
     "queryFailed": "Query failed",
     "truncatedHint": "truncated, use view for full text"
+  },
+  "health": {
+    "title": "Health",
+    "size": "Size",
+    "wal": "WAL",
+    "fragmentation": "Fragmentation",
+    "topTables": "Top tables",
+    "backup": "Backup",
+    "backupOk": "Backup downloaded",
+    "backupFailed": "Backup failed",
+    "optimizeOk": "Maintenance completed",
+    "optimizeFailed": "Maintenance failed",
+    "suggest": {
+      "wal_oversize": "Large WAL, run Checkpoint",
+      "fragmented": "High fragmentation, run VACUUM",
+      "analyze": "Refresh statistics (ANALYZE)"
+    }
+  },
+  "conn": {
+    "add": "Add connection",
+    "edit": "Edit connection",
+    "empty": "No external connections yet. Add a PostgreSQL / MySQL read-only source.",
+    "name": "Name",
+    "engine": "Engine",
+    "host": "Host",
+    "port": "Port",
+    "database": "Database",
+    "username": "Username",
+    "password": "Password",
+    "passwordHint": "Password supports ${VAR} env references; leave empty or keep **** when editing to keep unchanged",
+    "test": "Test",
+    "testOk": "Connected",
+    "testFailed": "Connection failed",
+    "save": "Save",
+    "saved": "Connection saved",
+    "saveFailed": "Save failed",
+    "deleted": "Connection deleted",
+    "deleteFailed": "Delete failed",
+    "deleteConfirm": "Delete connection \"{{name}}\"?",
+    "unreachable": "unreachable"
+  },
+  "storage": {
+    "current": "Current data directory",
+    "source": {
+      "env": "env ANELF_DATA_DIR",
+      "config": "config data_root",
+      "default": "default"
+    },
+    "envWarning": "ANELF_DATA_DIR ({{value}}) is set and takes precedence over the data_root config; migration would have no effect. Remove the env var first.",
+    "restartHint": "Migration finished and data_root written ({{target}}). The new directory takes effect after restart; the source directory is kept and can be removed manually once verified.",
+    "errorHint": "Migration failed: {{error}}. Partially copied files remain in the target directory; fix and retry.",
+    "migrateTitle": "Data directory migration",
+    "targetPlaceholder": "Absolute target path, e.g. /Volumes/nas/anelf/data",
+    "check": "Check",
+    "checkOk": "Target usable, ~{{size}} required",
+    "problem": {
+      "empty": "Target path is required",
+      "not_absolute": "Target must be an absolute path",
+      "same_as_current": "Target must differ from the current data directory",
+      "inside_current": "Target cannot be inside the current data directory",
+      "contains_current": "Target cannot contain the current data directory",
+      "not_a_directory": "Target exists and is not a directory",
+      "not_writable": "Target directory is not writable",
+      "insufficient_space": "Insufficient disk space"
+    },
+    "warning": {
+      "not_empty": "Target directory is not empty; conflicting files will be overwritten"
+    },
+    "running": "Migrating {{done}} / {{total}}",
+    "migrate": "Start migration",
+    "migrateHint": "SQLite files are copied via online backup (safe while running); the source directory is kept. Restart required afterwards.",
+    "migrateFailed": "Failed to start migration"
   }
 }

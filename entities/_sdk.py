@@ -352,14 +352,15 @@ def entity_manifest(
             - path: 前端路由路径（默认 "/<group>"）
             - label: i18n key（默认 group 名）
             - nav_group: 导航分组（默认 "group_ability"）
-        group: 显式指定分组名（可选，默认取最近一次 entity() 注册的分组）。
+        group: 目标分组名（必传）。历史上缺省时按 list_groups()[-1] 推导，
+            但 _groups 仅收录已有工具的分组，推导结果不可靠（manifest 串组覆盖），
+            因此缺省时拒绝注册并告警。
     """
     from core.entity import EntityRegistry
+    from core.log import log
     if group is None:
-        groups = EntityRegistry.list_groups()
-        if not groups:
-            return
-        group = groups[-1]
+        log("entity_manifest 缺少 group 参数，已跳过注册（manifest 推导机制已移除）", "WARNING")
+        return
     manifest: Dict[str, Any] = {
         "display_name": display_name,
         "icon": icon,

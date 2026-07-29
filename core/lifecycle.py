@@ -19,6 +19,9 @@ from core.log import log
 CleanupFn = Union[Callable[[], None], Callable[[], Awaitable[None]]]
 HookFn = Union[Callable[[], None], Callable[[], Awaitable[None]]]
 
+# 与 start.sh / start.bat 重启循环约定的退出码：进程以该码退出时由外层脚本重新拉起
+RESTART_EXIT_CODE = 42
+
 
 class Lifecycle:
     """全局单例生命周期管理。"""
@@ -27,6 +30,8 @@ class Lifecycle:
     _cleanups: List[tuple[str, CleanupFn]] = []
     _start_hooks: List[tuple[str, HookFn]] = []
     _tick_hooks: List[tuple[str, HookFn]] = []
+    _shutdown_requester: Optional[Callable[[], None]] = None
+    _restart_requested: bool = False
 
     @classmethod
     def register(
@@ -105,3 +110,25 @@ class Lifecycle:
         cls._cleanups.clear()
         cls._start_hooks.clear()
         cls._tick_hooks.clear()
+        cls._shutdown_requester = None
+        cls._restart_requested = False
+
+    @classmethod
+    def set_shutdown_requester(cls, fn: Callable[[], None]) -> None:
+        """注册进程关闭触发器（由入口脚本注入，供 Web API 等请求优雅关闭/重启）。"""
+        cls._shutdown_requester = fn
+
+    @classmethod
+    def request_shutdown(cls, restart: bool = False) -> None:
+        """请求优雅关闭；restart=True 时标记重启意图，进程清理完毕后以 RESTART_EXIT_CODE 退出。"""
+        if restart:
+            cls._restart_requested = True
+        if cls._shutdown_requester is not None:
+            cls._shutdown_requester()
+        else:
+            log("收到关闭请求，但关闭触发器未注册", "WARNING")
+
+    @classmethod
+    def restart_requested(cls) -> bool:
+        """是否已标记重启意图。"""
+        return cls._restart_requested

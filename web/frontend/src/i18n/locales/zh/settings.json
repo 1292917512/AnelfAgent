@@ -76,5 +76,16 @@
     "cross_channel_recall_max_results": "跨频道召回数量",
     "cross_channel_recall_scan_limit": "跨频道扫描条数",
     "cross_channel_narrative_max_items": "跨频道叙事条数"
-  }
+  },
+  "serviceControl": "服务控制",
+  "serviceControlDesc": "重启服务，或重新构建前端后重启",
+  "restartService": "重启服务",
+  "buildAndRestart": "构建前端并重启",
+  "restartConfirm": "确定要重启服务吗？重启期间服务将短暂不可用。",
+  "buildRestartConfirm": "确定要重新构建前端并重启吗？构建期间服务保持运行，构建成功后自动重启。",
+  "restartingHint": "正在重启，服务恢复后页面将自动刷新…",
+  "buildingHint": "正在构建前端，构建完成后将自动重启…",
+  "buildInProgress": "已有构建任务进行中",
+  "frontendNotFound": "未找到前端目录",
+  "buildFailed": "构建失败"
 }

@@ -163,7 +163,8 @@ class CLIChannel(BaseChannel[CLIConfig]):
     def _load_bot_name_from_character(self) -> str:
         """从 config/character.json 读取角色名（保留旧逻辑）。"""
         try:
-            path = Path("config/character.json")
+            from core.path import config_dir
+            path = Path(config_dir()) / "character.json"
             if path.exists():
                 data = json.loads(path.read_text(encoding="utf-8"))
                 for line in data.get("personality", []):

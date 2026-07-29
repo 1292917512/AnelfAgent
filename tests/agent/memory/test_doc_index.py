@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agent.memory.doc_extract import extract_document_text
-from agent.memory.embedder import Embedder
+from agent.memory.embedding import Embedder
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_sync import sync_files
 from agent.memory.memory_utils import list_indexable_files

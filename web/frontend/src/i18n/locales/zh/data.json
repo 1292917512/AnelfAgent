@@ -3,7 +3,8 @@
   "subtitle": "数据库与表情包等业务数据的统一查看与维护入口",
   "tabs": {
     "database": "数据库",
-    "stickers": "表情包"
+    "stickers": "表情包",
+    "storage": "存储位置"
   },
   "db": {
     "notCreated": "未创建",
@@ -15,6 +16,8 @@
     "tabRows": "数据",
     "tabSchema": "结构",
     "tabQuery": "查询",
+    "localGroup": "本地库",
+    "externalGroup": "外部连接",
     "filterColumn": "选择列…",
     "filterPlaceholder": "包含文本…（回车应用）",
     "filterApply": "筛选",
@@ -44,5 +47,77 @@
     "queryTruncated": "已达行数上限",
     "queryFailed": "查询失败",
     "truncatedHint": "已截断，点查看按钮看全文"
+  },
+  "health": {
+    "title": "健康概览",
+    "size": "大小",
+    "wal": "WAL",
+    "fragmentation": "碎片化",
+    "topTables": "表规模 Top",
+    "backup": "备份",
+    "backupOk": "备份文件已下载",
+    "backupFailed": "备份失败",
+    "optimizeOk": "维护操作已完成",
+    "optimizeFailed": "维护操作失败",
+    "suggest": {
+      "wal_oversize": "WAL 过大，建议 Checkpoint",
+      "fragmented": "碎片化较高，建议 VACUUM",
+      "analyze": "更新统计信息 (ANALYZE)"
+    }
+  },
+  "conn": {
+    "add": "添加连接",
+    "edit": "编辑连接",
+    "empty": "暂无外部连接，可添加 PostgreSQL / MySQL 只读数据源",
+    "name": "名称",
+    "engine": "引擎",
+    "host": "主机",
+    "port": "端口",
+    "database": "数据库",
+    "username": "用户名",
+    "password": "密码",
+    "passwordHint": "密码支持 ${VAR} 环境变量引用；编辑时留空或保持 **** 则不修改",
+    "test": "测试连接",
+    "testOk": "连接成功",
+    "testFailed": "连接失败",
+    "save": "保存",
+    "saved": "连接已保存",
+    "saveFailed": "保存失败",
+    "deleted": "连接已删除",
+    "deleteFailed": "删除失败",
+    "deleteConfirm": "确定删除连接「{{name}}」吗？",
+    "unreachable": "不可达"
+  },
+  "storage": {
+    "current": "当前数据目录",
+    "source": {
+      "env": "环境变量 ANELF_DATA_DIR",
+      "config": "配置项 data_root",
+      "default": "默认目录"
+    },
+    "envWarning": "ANELF_DATA_DIR 环境变量（{{value}}）生效中，优先级高于 data_root 配置；迁移写入的配置不会生效，请先移除环境变量。",
+    "restartHint": "迁移已完成并写入 data_root（{{target}}）。新目录将在重启后生效；源目录已保留，确认无误后可手动删除。",
+    "errorHint": "迁移失败：{{error}}。已拷贝的部分文件保留在目标目录，可处理后重试。",
+    "migrateTitle": "数据目录迁移",
+    "targetPlaceholder": "目标目录绝对路径，如 /Volumes/nas/anelf/data",
+    "check": "校验",
+    "checkOk": "目标可用，需要空间约 {{size}}",
+    "problem": {
+      "empty": "目标路径不能为空",
+      "not_absolute": "目标必须是绝对路径",
+      "same_as_current": "目标不能与当前数据目录相同",
+      "inside_current": "目标不能位于当前数据目录内部",
+      "contains_current": "目标不能包含当前数据目录",
+      "not_a_directory": "目标已存在且不是目录",
+      "not_writable": "目标目录不可写",
+      "insufficient_space": "磁盘剩余空间不足"
+    },
+    "warning": {
+      "not_empty": "目标目录非空，同名文件将被覆盖"
+    },
+    "running": "迁移中 {{done}} / {{total}}",
+    "migrate": "开始迁移",
+    "migrateHint": "SQLite 走在线热备份（运行中安全），源目录保留不删；完成后需重启生效。",
+    "migrateFailed": "启动迁移失败"
   }
 }

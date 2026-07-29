@@ -6,10 +6,6 @@
  * 本文件通过 import.meta.glob 自动发现（Vite 构建时解析）。
  *
  * 新增实体面板后需重新执行 link_entity_panels.py 并重启 dev server。
- *
- * 面板查找支持两种命名：
- * 1. 精确匹配：group 名 = 目录名（如 "web" → web.tsx）
- * 2. 后缀剥离：group 名去下划线后缀（如 "file_share" → share.tsx）
  */
 import { lazy, type ComponentType, type LazyExoticComponent } from "react";
 
@@ -23,32 +19,19 @@ const panelCache = new Map<string, LazyExoticComponent<ComponentType>>();
 
 /**
  * 获取实体面板的懒加载组件。
- * @param name 实体 group 名（如 "web"、"sticker"、"file_share"）
+ * @param name 实体 group 名（如 "web"、"sticker"）
  * @returns 懒加载组件，或 null（无自定义面板）
  */
 export function getEntityPanel(name: string): LazyExoticComponent<ComponentType> | null {
   if (panelCache.has(name)) {
     return panelCache.get(name)!;
   }
-
-  // 尝试多种命名变体
-  const candidates = [name];
-  // file_share → share（去掉最后一个下划线后缀）
-  const lastUnderscore = name.lastIndexOf("_");
-  if (lastUnderscore > 0) {
-    candidates.push(name.slice(0, lastUnderscore));
-  }
-
-  for (const candidate of candidates) {
-    const path = `../pages/entities/panels/${candidate}.tsx`;
-    const loader = panelModules[path];
-    if (loader) {
-      const comp = lazy(loader);
-      panelCache.set(name, comp);
-      return comp;
-    }
-  }
-  return null;
+  const path = `../pages/entities/panels/${name}.tsx`;
+  const loader = panelModules[path];
+  if (!loader) return null;
+  const comp = lazy(loader);
+  panelCache.set(name, comp);
+  return comp;
 }
 
 /** 列出所有有自定义面板的实体名。 */

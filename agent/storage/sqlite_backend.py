@@ -34,6 +34,26 @@ class SqliteBackend:
         self._adapter_key_ready = False
         self._conn_lock = asyncio.Lock()
         self._last_health_check = 0.0
+        self._register_embedding_backlog()
+
+    def _register_embedding_backlog(self) -> None:
+        """向 embedding worker 挂接对话消息 backlog（worker 未就绪时挂起，不影响构造）。"""
+        try:
+            from agent.memory.embedding import register_embedding_backlog
+            register_embedding_backlog("conversations", self._conversation_backfill)
+        except Exception as exc:
+            log(f"对话 embedding backlog 注册失败: {exc}", "DEBUG")
+
+    async def _conversation_backfill(self, embedder: object, batch_size: int) -> int:
+        """EmbeddingWorker backlog 处理器：按配置批量回填对话消息向量。"""
+        from core.config import get_config_int
+        conv_batch = get_config_int("conv_recall_backfill_batch", batch_size)
+        max_age_days = get_config_int("conv_embed_backfill_days", 30)
+        return await self.backfill_conversation_embeddings(
+            embedder,
+            batch_size=conv_batch,
+            max_age_days=max_age_days,
+        )
 
     async def _get_db(self) -> aiosqlite.Connection:
         """获取持久连接，首次调用时创建并初始化表结构。
@@ -543,6 +563,32 @@ class SqliteBackend:
             await db.commit()
         self._conv_embed_ready = True
 
+    async def count_pending_conversation_embeddings(self, max_age_days: int = 30) -> int:
+        """统计时间窗内待回填向量的对话消息数（统计口径与回填条件一致）。"""
+        await self._ensure_conv_embedding_column()
+        db = await self._get_db()
+        conditions = ["embedding_blob IS NULL", "role IN ('user','assistant')"]
+        params: list = []
+        if max_age_days > 0:
+            conditions.append("ts_ns >= ?")
+            params.append(int((time.time() - max_age_days * 86400) * 1e9))
+        cursor = await db.execute(
+            f"SELECT COUNT(*) FROM conversation_messages WHERE {' AND '.join(conditions)}",
+            params,
+        )
+        return int((await cursor.fetchone())[0])
+
+    async def clear_conversation_embeddings(self) -> int:
+        """清空全部对话消息向量（切换 embedding 模型后由后台 worker 重建）。"""
+        await self._ensure_conv_embedding_column()
+        db = await self._get_db()
+        cursor = await db.execute(
+            "UPDATE conversation_messages SET embedding_blob=NULL "
+            "WHERE embedding_blob IS NOT NULL"
+        )
+        await db.commit()
+        return cursor.rowcount
+
     async def backfill_conversation_embeddings(
         self,
         embedder: object,
@@ -582,7 +628,7 @@ class SqliteBackend:
 
         from agent.memory.memory_utils import pack_embedding
 
-        vecs = await embedder.embed([row[1] for row in rows])  # type: ignore[attr-defined]
+        vecs = await embedder.embed_text([row[1] for row in rows])  # type: ignore[attr-defined]
         if len(vecs) != len(rows):
             return 0
 
@@ -726,7 +772,7 @@ class SqliteBackend:
         if cursor.rowcount == 0:
             return False
         await db.commit()
-        from agent.memory.embedding_worker import wake_embedding_worker
+        from agent.memory.embedding import wake_embedding_worker
         wake_embedding_worker()
         return True
 

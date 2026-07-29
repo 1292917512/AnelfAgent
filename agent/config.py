@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.config import parse_env_value as _parse_env_value
 from core.log import log
 from core.path import ConfigPaths
 
@@ -195,24 +196,6 @@ _ENV_MAPPING: Dict[str, str] = {
     "ANELF_MAX_CONVERSATION_SIZE": "max_conversation_size",
     "ANELF_MAX_TOOL_ITERATIONS": "max_tool_iterations",
 }
-
-
-def _parse_env_value(value: str) -> Any:
-    """将环境变量字符串解析为合适的 Python 类型。"""
-    low = value.lower()
-    if low in ("true", "1", "yes"):
-        return True
-    if low in ("false", "0", "no"):
-        return False
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    try:
-        return float(value)
-    except ValueError:
-        pass
-    return value
 
 
 @dataclass

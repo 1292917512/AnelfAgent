@@ -2,14 +2,16 @@
  * PlanCard — 消息流中的计划卡片。
  *
  * 渲染 PlanRecord 的完整结构化视图：goal / steps（带勾选）/ files / risks / 状态徽标。
- * 与 PlanPanel 浮窗共享 plan-store，状态实时同步。
+ * 与 PlanPanel 浮窗共享 plan-store 与展示子组件（PlanStepRow / PlanStatusBadge / PlanMeta）。
  */
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, FileText, Loader2, Target, XCircle, AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
+import { Target, ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import type { PlanRecord } from "@/lib/types";
 import { PlanStepRow } from "@/components/plan/PlanStepRow";
+import { PlanStatusBadge } from "@/components/plan/PlanStatusBadge";
+import { PlanMeta } from "@/components/plan/PlanMeta";
 
 interface Props {
   plan: PlanRecord;
@@ -78,24 +80,7 @@ export function PlanCard({ plan }: Props) {
             {/* 文件 / 风险 */}
             {(plan.files || plan.risks) && (
               <div className="pt-2 border-t border-border/50 space-y-1">
-                {plan.files && (
-                  <div className="flex items-start gap-2 text-xs">
-                    <FileText size={11} className="text-muted shrink-0 mt-0.5" />
-                    <div className="flex-1 min-w-0">
-                      <span className="text-muted mr-1.5">{t("card.files", { defaultValue: "涉及" })}</span>
-                      <span className="text-foreground/80 break-words">{plan.files}</span>
-                    </div>
-                  </div>
-                )}
-                {plan.risks && (
-                  <div className="flex items-start gap-2 text-xs">
-                    <AlertTriangle size={11} className="text-yellow-500 shrink-0 mt-0.5" />
-                    <div className="flex-1 min-w-0">
-                      <span className="text-muted mr-1.5">{t("card.risks", { defaultValue: "风险" })}</span>
-                      <span className="text-yellow-600 dark:text-yellow-400 break-words">{plan.risks}</span>
-                    </div>
-                  </div>
-                )}
+                <PlanMeta plan={plan} />
               </div>
             )}
 
@@ -117,31 +102,5 @@ export function PlanCard({ plan }: Props) {
         )}
       </div>
     </div>
-  );
-}
-
-function PlanStatusBadge({ plan }: { plan: PlanRecord }) {
-  const { t } = useTranslation("plan");
-  if (plan.status === "cancelled") {
-    return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-300">
-        <XCircle size={10} />
-        {t("status.cancelled", { defaultValue: "已取消" })}
-      </span>
-    );
-  }
-  if (plan.status === "completed") {
-    return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-300">
-        <CheckCircle2 size={10} />
-        {t("status.completed", { defaultValue: "已完成" })}
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent-subtle text-accent">
-      <Loader2 size={10} className="animate-spin" />
-      {t("status.executing", { defaultValue: "执行中" })}
-    </span>
   );
 }

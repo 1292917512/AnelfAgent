@@ -58,6 +58,7 @@ export function CogneePanel() {
   };
   const retryMutation = useMutation({ mutationFn: () => memoryApi.cognee.retry(), onSuccess: invalidate });
   const backfillMutation = useMutation({ mutationFn: () => memoryApi.cognee.backfill(0, false), onSuccess: invalidate });
+  const rebuildMutation = useMutation({ mutationFn: () => memoryApi.cognee.rebuild(), onSuccess: invalidate });
   const improveMutation = useMutation({
     mutationFn: (name: string) => memoryApi.cognee.improve(name),
     onSuccess: invalidate,
@@ -103,6 +104,13 @@ export function CogneePanel() {
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
             >
               <Upload size={14} /> {t("cognee.backfill")}
+            </button>
+            <button
+              onClick={() => { if (window.confirm(t("cognee.rebuildConfirm"))) rebuildMutation.mutate(); }}
+              disabled={rebuildMutation.isPending}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all"
+            >
+              <RefreshCw size={14} /> {t("cognee.rebuild")}
             </button>
           </div>
         }

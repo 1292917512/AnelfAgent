@@ -383,7 +383,7 @@ class HeartbeatEngine:
             importance=0.6,
         )
         await store.add(entry)
-        from agent.memory.embedding_worker import wake_embedding_worker
+        from agent.memory.embedding import wake_embedding_worker
         wake_embedding_worker()
 
     async def _resync_file_index(self) -> None:
@@ -463,7 +463,7 @@ class HeartbeatEngine:
                 importance=0.8,
             )
             await self.mind.memory_store.add(entry)
-            from agent.memory.embedding_worker import wake_embedding_worker
+            from agent.memory.embedding import wake_embedding_worker
             wake_embedding_worker()
 
         hb_log.append_entry(f"[entity_analysis] {desc}: {content[:100]}")

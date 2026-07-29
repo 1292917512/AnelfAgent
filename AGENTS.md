@@ -86,16 +86,28 @@ agent.planning → agent.memory
 
 #### ConfigPaths（core/path.py）
 
-配置路径常量集中管理，避免硬编码分散：
+配置路径集中管理（元类动态解析），避免硬编码分散。默认布局与历史一致
+（`config/` 配置 + `config/memory/` 数据），支持整体搬迁：
+
+- `ANELF_CONFIG_DIR` 环境变量：配置目录（纯 JSON 配置）
+- `ANELF_DATA_DIR` 环境变量：数据目录（SQLite / 便签 / cognee），优先级最高
+- app_config.json 的 `data_root`：数据目录，优先级低于 `ANELF_DATA_DIR`
 
 ```python
-ConfigPaths.APP_CONFIG          # config/app_config.json
+ConfigPaths.APP_CONFIG          # config/app_config.json（随 ANELF_CONFIG_DIR 变化）
 ConfigPaths.WEBUI_CONFIG        # config/webui.json
 ConfigPaths.MCP_SERVERS         # config/mcp_servers.json
 ConfigPaths.HEARTBEAT_CONFIG    # config/heartbeat.json
 ConfigPaths.TASKS_DIR           # config/tasks
+ConfigPaths.DB_CONNECTIONS      # config/db_connections.json（外部 SQL 连接注册表）
+ConfigPaths.SQLITE_DB           # <data_dir>/data/agent.sqlite3（随 ANELF_DATA_DIR/data_root 变化）
 ConfigPaths.UPLOAD_DIR          # workspace/uploads
 ```
+
+配置值支持 `${ENV_VAR}` 引用语法（密钥外置到环境变量，core/config.py 的
+`expand_env_refs` 展开，ConfigManager 与 LLMManager 回写时保留引用语法）；
+`ANELF_<KEY>` 环境变量可覆盖 app_config.json 中已存在的同名配置项
+（仅生效层，不回写文件）。
 
 #### 标签系统（core/tags.py）
 
@@ -245,12 +257,15 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/channel/context.py` | 当前会话频道 ContextVar（通用工具默认路由目标） |
 | `web/routers/config.py` | 心跳/任务 API + Mind 配置 API |
 | `web/routers/workspace.py` | 工作区文件 API（目录树 / 读写 / 搜索，沙箱复用 entities.filesystem） |
+| `web/routers/database.py` | 数据管理 API（SQLite 浏览/维护/备份 + 外部连接 CRUD + 数据目录迁移） |
 | `web/routers/search.py` | 全局搜索聚合 API（记忆 / 日志 / 文件 / 会话） |
+| `services/db_connections.py` | 外部 SQL 连接（注册表 + PG/MySQL 只读适配器，config/db_connections.json） |
+| `services/data_migration.py` | 数据目录迁移（在线热备份拷贝 + 校验 + data_root 切换） |
 | `entities/ui/tools.py` | 界面交互工具组（ui_notify / ui_ask / ui_open_panel / ui_compose / ui_get_state） |
 | `web/frontend/src/pages/chat/` | 对话工作凳子面板（Dock / StatusBar / FileEditor / UiCommandHost / render） |
 | `web/frontend/src/stores/chat-store.ts` | 对话状态 + 聊天 SSE（含 ui_command 分发） |
 | `web/frontend/src/stores/workbench-store.ts` | 工作台状态（Dock / 编辑器 / UI 命令收件箱 / 状态上报） |
-| `core/path.py` | PathManager + ConfigPaths 路径常量 |
+| `core/path.py` | PathManager + ConfigPaths 动态路径（config_dir/data_dir 可搬迁） |
 | `core/lifecycle.py` | 单例生命周期注册表（register / shutdown_all / reset） |
 
 ### 工具分组体系

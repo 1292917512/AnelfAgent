@@ -5,10 +5,8 @@
 
 Plan 模式（present_plan）：
 - Agent 自发提交计划后立即开始执行，**不**等待用户批准（不走 ApprovalGate）。
-- 工具调用时同步发射 ``EVENT_PLAN_SUBMITTED`` / ``EVENT_PLAN_STEP_UPDATED`` 事件，
-  前端据此渲染 PlanPanel 浮窗与 PlanCard 消息卡。
-- 用户通过浮窗"取消"按钮触发 ``EVENT_PLAN_CANCELLED``，由 webui adapter 路由
-  到对应 scope 的 interrupt，协作式停止后续工具链。
+- 计划状态机与事件发射统一由 ``agent.planning.tracker`` 实现（本文件只做工具包装）。
+- 用户通过浮窗"取消"按钮触发 ``EVENT_PLAN_CANCELLED``（cancel-plan 路由 → tracker.cancel_plan）。
 """
 
 from __future__ import annotations
@@ -22,34 +20,28 @@ from entities._sdk import deferred_tool, activate_group
 
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
-from core.event_bus import (
-    event_bus,
-    EVENT_PLAN_SUBMITTED,
-    EVENT_PLAN_STEP_UPDATED,
-    EVENT_PLAN_STATUS_CHANGED,
-)
+from agent.planning import tracker
 from core.log import log
 
-_store: Optional[MemoryStore] = None
 _GOAL_SOURCE = "goal"
 _GROUP = "planning"
 
-
-def _current_scope() -> str:
-    """读取当前对话 scope（用于 plan 事件按 scope 路由到对应 chat_id）。"""
-    try:
-        from agent.mind.tool_activation import ToolActivationManager
-        return ToolActivationManager.current_scope()
-    except Exception:
-        return "_global"
+_store: Optional[MemoryStore] = None
 
 
-def _parse_scope_chat_id(scope: str) -> tuple[str, str]:
-    """从 scope 提取 (user_scope, chat_id)。scope 形如 'user_web_user' 或 'user_web_user#abc123'。"""
-    if "#" in scope:
-        base, chat_id = scope.split("#", 1)
-        return base, chat_id
-    return scope, ""
+def register_planning_tools(store: MemoryStore) -> None:
+    """注入 MemoryStore 并批量注册规划工具。"""
+    global _store
+    _store = store
+    tracker.bind_store(store)
+    activate_group(_GROUP, "目标规划管理 - 创建执行计划、追踪目标进度")
+
+
+async def _find_goal(
+    store: MemoryStore, goal_id: str,
+) -> tuple[Optional[MemoryEntry], Optional[Dict[str, Any]]]:
+    """按 goal_id 定位记忆条目与目标数据（委托 tracker 统一实现）。"""
+    return await tracker.find_goal_by_id(goal_id)
 
 
 def _make_goal(
@@ -72,42 +64,6 @@ def _make_goal(
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
-
-
-def register_planning_tools(store: MemoryStore) -> None:
-    """注入 MemoryStore 并批量注册规划工具。"""
-    global _store
-    _store = store
-    activate_group(_GROUP, "目标规划管理 - 创建执行计划、追踪目标进度")
-
-
-async def _find_goal(
-    store: MemoryStore, goal_id: str,
-) -> tuple[Optional[MemoryEntry], Optional[Dict[str, Any]]]:
-    """按 source='goal' 分页查全，定位 goal_id 对应的记忆条目与目标数据。
-
-    目标数量可能超过单页，逐页扫描直到命中或遍历完毕。
-    """
-    page_size = 100
-    offset = 0
-    while True:
-        entries = await store.list_by_source(
-            _GOAL_SOURCE, memory_type=MemoryType.SEMANTIC,
-            limit=page_size, offset=offset,
-        )
-        if not entries:
-            break
-        for entry in entries:
-            try:
-                goal = json.loads(entry.content)
-            except (json.JSONDecodeError, AttributeError):
-                continue
-            if goal.get("goal_id") == goal_id:
-                return entry, goal
-        if len(entries) < page_size:
-            break
-        offset += page_size
-    return None, None
 
 
 # ------------------------------------------------------------------
@@ -238,48 +194,27 @@ async def update_goal(
     await _store.update(target_entry, clear_embedding=True)
     target_goal["memory_id"] = target_entry.id
 
-    # 发射步骤进度事件（前端 PlanPanel 浮窗据此打勾）
+    # 发射步骤进度事件（前端 PlanPanel 浮窗据此打勾）；
+    # 程序级联动：当前步骤 completed 后自动推进下一步为 in_progress
     try:
-        scope = _current_scope()
-        _user_scope, chat_id = _parse_scope_chat_id(scope)
+        scope = tracker.current_scope()
         if 0 <= step_index < len(target_goal.get("steps", [])):
-            await event_bus.emit(EVENT_PLAN_STEP_UPDATED, {
-                "scope": scope,
-                "chat_id": chat_id,
-                "plan_id": goal_id,
-                "step_index": step_index,
-                "step_status": step_status or target_goal["steps"][step_index].get("status", "pending"),
-                "note": note,
-                "ts": time.time(),
-            })
-
-            # 程序级自动推进：当前步骤 completed 后，自动把下一步 pending → in_progress
+            await tracker._emit_step(
+                scope, goal_id, step_index,
+                step_status or target_goal["steps"][step_index].get("status", "pending"),
+                note=note,
+            )
             if step_status == "completed":
                 next_idx = step_index + 1
                 steps = target_goal.get("steps", [])
                 if next_idx < len(steps) and steps[next_idx].get("status") == "pending":
                     steps[next_idx]["status"] = "in_progress"
-                    # 同步更新 MemoryStore（让 list_goals 也能看到）
                     target_entry.content = json.dumps(target_goal, ensure_ascii=False)
                     await _store.update(target_entry, clear_embedding=False)
-                    await event_bus.emit(EVENT_PLAN_STEP_UPDATED, {
-                        "scope": scope,
-                        "chat_id": chat_id,
-                        "plan_id": goal_id,
-                        "step_index": next_idx,
-                        "step_status": "in_progress",
-                        "note": "自动推进",
-                        "ts": time.time(),
-                    })
+                    await tracker._emit_step(scope, goal_id, next_idx, "in_progress", note="自动推进")
 
         if goal_status:
-            await event_bus.emit(EVENT_PLAN_STATUS_CHANGED, {
-                "scope": scope,
-                "chat_id": chat_id,
-                "plan_id": goal_id,
-                "goal_status": target_goal["status"],
-                "ts": time.time(),
-            })
+            await tracker._emit_status(scope, goal_id, target_goal["status"])
     except Exception as exc:
         log(f"update_goal 事件发射失败（不影响结果）: {exc}", "DEBUG", tag="规划")
 
@@ -362,11 +297,13 @@ async def collect_active_goals(store: MemoryStore) -> list[str]:
 @deferred_tool(
     group=_GROUP, tags=["planning", "always"],
     description=(
-        "在执行复杂任务前，把计划公告给用户（自发 Plan 模式）。"
-        "适用场景：多步骤任务、涉及文件修改、不可逆操作、需求有歧义。"
-        "调用后立即返回 plan_id，**无需等待用户批准**，按计划步骤继续执行。"
-        "执行中通过 update_goal 更新步骤状态，前端浮窗会实时展示进度。"
-        "如果用户取消计划，你会在后续轮次收到中断信号，需立即停止后续步骤。"
+        "把任务的执行计划公告给用户（Plan 模式）。"
+        "**默认行为：除最简单的单步问答外，所有任务都应先调用本工具再执行**——"
+        "用户能在浮窗中实时看到计划步骤与进度。"
+        "适用：多步骤任务、信息搜集分析、目录/文件操作、代码修改、任何需要 2 步以上的工作。"
+        "调用后立即返回 plan_id，无需等待批准，直接开始执行；"
+        "步骤进度由系统自动追踪，无需手动维护。"
+        "注意：调用本工具后必须用工具继续执行（禁止只输出文字），用户取消时会收到中断信号。"
     ),
 )
 async def present_plan(goal: str, steps: str, files: str = "", risks: str = "") -> str:
@@ -382,83 +319,11 @@ async def present_plan(goal: str, steps: str, files: str = "", risks: str = "") 
         JSON：``{"ok": True, "plan_id": ..., "status": "executing", "message": ...}``
 
     Notes:
-        - 同时向 MemoryStore 持久化目标（复用 create_goal 路径），便于 list_goals 追踪。
-        - 同步发射 ``EVENT_PLAN_SUBMITTED`` 事件（scope/plan_id/goal/steps/files/risks），
-          前端 PlanPanel 浮窗与 PlanCard 卡片据此渲染。
-        - 前端事件失败不影响工具返回（仅记日志）。
+        - 持久化与事件发射统一由 ``agent.planning.tracker.submit_plan`` 实现。
     """
-    scope = _current_scope()
-    _user_scope, chat_id = _parse_scope_chat_id(scope)
-    plan_id = uuid.uuid4().hex[:8]
-
-    # 步骤解析：兼容 \n 或 | 分隔
-    raw_steps = [
-        s.strip()
-        for s in (steps.replace("|", "\n").split("\n") if steps else [])
-        if s.strip()
-    ]
-    step_objs = [
-        {"index": i, "content": s, "status": "pending", "note": ""}
-        for i, s in enumerate(raw_steps)
-    ]
-    # 程序级自动推进：第 1 步立即标记为 in_progress（前端立即看到"正在执行"）
-    if step_objs:
-        step_objs[0]["status"] = "in_progress"
-
-    # 持久化到 MemoryStore（与 create_goal 同结构），便于 Agent 后续 update_goal
-    if _store is not None:
-        try:
-            goal_doc = _make_goal(goal, description="", steps=raw_steps, recurring=False)
-            # 覆盖 goal_id 为 plan_id，保持前后端 ID 一致
-            goal_doc["goal_id"] = plan_id
-            goal_doc["steps"] = step_objs  # 用已标记 in_progress 的步骤覆盖默认全 pending
-            goal_doc["files"] = files
-            goal_doc["risks"] = risks
-            entry = MemoryEntry(
-                memory_type=MemoryType.SEMANTIC,
-                content=json.dumps(goal_doc, ensure_ascii=False),
-                source=_GOAL_SOURCE,
-                importance=0.8,
-                metadata={
-                    "goal_id": plan_id,
-                    "status": "active",
-                    "kind": "present_plan",
-                    "scope": scope,
-                },
-            )
-            await _store.add(entry)
-        except Exception as exc:
-            log(f"present_plan 持久化失败（不影响执行）: {exc}", "WARNING", tag="规划")
-
-    # 发射 plan_submitted 事件（前端 PlanPanel / PlanCard 据此渲染）
-    try:
-        await event_bus.emit(EVENT_PLAN_SUBMITTED, {
-            "scope": scope,
-            "chat_id": chat_id,
-            "plan_id": plan_id,
-            "goal": goal,
-            "steps": step_objs,
-            "files": files,
-            "risks": risks,
-            "ts": time.time(),
-        })
-    except Exception as exc:
-        log(f"present_plan 事件发射失败（不影响执行）: {exc}", "DEBUG", tag="规划")
-
-    # 发射 step 0 in_progress 事件（与 MemoryStore 状态一致）
-    if step_objs:
-        try:
-            await event_bus.emit(EVENT_PLAN_STEP_UPDATED, {
-                "scope": scope,
-                "chat_id": chat_id,
-                "plan_id": plan_id,
-                "step_index": 0,
-                "step_status": "in_progress",
-                "note": "自动推进",
-                "ts": time.time(),
-            })
-        except Exception as exc:
-            log(f"present_plan 自动推进步骤失败（不影响执行）: {exc}", "DEBUG", tag="规划")
+    scope = tracker.current_scope()
+    step_objs = tracker.parse_steps(steps)
+    plan_id = await tracker.submit_plan(scope, goal, step_objs, files=files, risks=risks)
 
     return json.dumps({
         "ok": True,

@@ -7,8 +7,9 @@ import time
 
 import pytest
 
-from agent.memory.embedding_worker import (
+from agent.memory.embedding import (
     EmbeddingWorker,
+    register_embedding_backlog,
     set_embedding_worker,
     wake_embedding_worker,
 )
@@ -18,7 +19,7 @@ from agent.memory.memory_utils import hash_text
 
 
 class FakeEmbedder:
-    """确定性 embedding  stub：embed 返回固定维度的单位向量。"""
+    """确定性 embedding  stub：embed_text 返回固定维度的单位向量。"""
 
     def __init__(self, dims: int = 4) -> None:
         self.dims = dims
@@ -29,7 +30,7 @@ class FakeEmbedder:
     def available(self) -> bool:
         return self._available
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed_text(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(list(texts))
         return [[1.0] + [0.0] * (self.dims - 1) for _ in texts]
 
@@ -96,7 +97,7 @@ class TestBackfillEmbeddings:
         await store.add(_entry("待回填"))
 
         class FailEmbedder(FakeEmbedder):
-            async def embed(self, texts: list[str]) -> list[list[float]]:
+            async def embed_text(self, texts: list[str]) -> list[list[float]]:
                 return []
 
         count = await store.backfill_embeddings(FailEmbedder(), batch_size=32)
@@ -231,41 +232,44 @@ class TestEmbeddingWorker:
         worker = EmbeddingWorker(store, FakeEmbedder())  # type: ignore[arg-type]
         await worker.close()
 
-    async def test_batch_delay_reads_config(self, store: MemoryStore, monkeypatch) -> None:
-        import agent.memory.embedding_worker as worker_module
+    async def test_external_backlog_registration(self, store: MemoryStore) -> None:
+        """外部注册的 backlog 参与 drain；单个 handler 失败被隔离，不影响其他。"""
+        await store.add(_entry("注册式回填"))
 
-        monkeypatch.setattr(
-            worker_module, "get_config_float",
-            lambda key, default=0.0: 2.5 if key == "embedding_worker_batch_delay_seconds" else default,
-        )
-        worker = EmbeddingWorker(store, FakeEmbedder())  # type: ignore[arg-type]
-        assert worker._batch_delay_seconds == 2.5
+        calls: list[int] = []
 
-    async def test_worker_throttles_between_batches(self, store: MemoryStore, monkeypatch) -> None:
-        """积压跨多批时，worker 按批次间隔节流消化（小批次 + 固定间隔）。"""
-        import agent.memory.embedding_worker as worker_module
+        async def good_handler(embedder, batch_size: int) -> int:
+            calls.append(batch_size)
+            return 5
 
-        monkeypatch.setattr(
-            worker_module, "get_config_int",
-            lambda key, default=0: 2 if key == "embedding_worker_batch_size" else default,
-        )
-        monkeypatch.setattr(
-            worker_module, "get_config_float",
-            lambda key, default=0.0: 0.15 if key == "embedding_worker_batch_delay_seconds" else default,
-        )
-        for i in range(5):
-            await store.add(_entry(f"节流回填 {i}"))
+        async def bad_handler(embedder, batch_size: int) -> int:
+            raise RuntimeError("boom")
 
         worker = EmbeddingWorker(store, FakeEmbedder())  # type: ignore[arg-type]
-        start = time.monotonic()
-        await worker.start()
+        worker.register_backlog("external_good", good_handler)
+        worker.register_backlog("external_bad", bad_handler)
+
+        processed = await worker._drain_once()
+
+        # memories 1 + external 5；坏 handler 异常被吞（DEBUG 日志）
+        assert processed == 6
+        assert calls == [worker._batch_size]
+        assert await _null_embedding_count(store) == 0
+
+    async def test_pending_backlog_flushed_on_worker_set(self, store: MemoryStore) -> None:
+        """worker 未就绪时注册的 backlog 挂起，set_embedding_worker 后自动挂载且只挂一次。"""
+        async def handler(embedder, batch_size: int) -> int:
+            return 0
+
+        register_embedding_backlog("pending_test", handler)
         try:
-            for _ in range(100):
-                if await _null_embedding_count(store) == 0:
-                    break
-                await asyncio.sleep(0.05)
-            assert await _null_embedding_count(store) == 0
-            # 5 条 / 每批 2 条 = 3 批，批间至少 2 次节流间隔
-            assert time.monotonic() - start >= 0.3
+            worker = EmbeddingWorker(store, FakeEmbedder())  # type: ignore[arg-type]
+            set_embedding_worker(worker)
+            assert "pending_test" in worker._backlogs
+
+            # 挂起表已清空：后续新 worker 不再重复挂载
+            worker2 = EmbeddingWorker(store, FakeEmbedder())  # type: ignore[arg-type]
+            set_embedding_worker(worker2)
+            assert "pending_test" not in worker2._backlogs
         finally:
-            await worker.close()
+            set_embedding_worker(None)

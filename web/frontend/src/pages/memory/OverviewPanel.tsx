@@ -20,10 +20,18 @@ export function OverviewPanel() {
     mutationFn: () => memoryApi.cognee.retry(),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["memoryHealth"] }),
   });
+  const rebuildVectorsMutation = useMutation({
+    mutationFn: () => memoryApi.index.rebuildVectors(),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["memoryHealth"] }),
+  });
 
   const typeCounts = (health?.type_counts || {}) as Record<string, number>;
   const warnings = (health?.warnings || []) as string[];
   const warnThreshold = health?.warn_threshold || 200;
+  const pendingVectors = health?.embedding_pending?.total || 0;
+  const domains = health?.embedding_domains || {};
+  const domainValue = (d?: { model?: string; dims?: number | null }) =>
+    d?.model ? `${d.model}${d.dims ? ` (${d.dims}维)` : ""}` : t("common:unavailable");
   const cognee = health?.cognee;
   const cogneeAvailability = cognee?.availability;
   const cogneeSync = cognee?.sync;
@@ -33,7 +41,12 @@ export function OverviewPanel() {
       {(!health || health.error) ? (
         <Card title={t("healthTitle")}><p className="text-sm text-muted">{health?.error || t("common:loading")}</p></Card>
       ) : (
-        <Card title={t("healthSubtitle")} subtitle={t("totalMemories", { count: health.total_memories || 0 })}>
+        <Card title={t("healthSubtitle")} subtitle={t("totalMemories", { count: health.total_memories || 0 })} actions={
+          <button onClick={() => rebuildVectorsMutation.mutate()} disabled={rebuildVectorsMutation.isPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all">
+            <RefreshCw size={14} /> {t("rebuildVectors")}
+          </button>
+        }>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
             {Object.entries(typeCounts).map(([type, count]) => (
               <StatCard key={type} label={type} value={String(count)}
@@ -50,13 +63,18 @@ export function OverviewPanel() {
               ))}
             </div>
           )}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatCard label={t("embedding")} value={health.embedding_available ? `${t("common:available")} (${health.embedding_dims || "?"}维)` : t("common:unavailable")}
-              variant={health.embedding_available ? "ok" : "default"} />
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <StatCard label={t("embeddingText")} value={domainValue(domains.text)}
+              variant={domains.text?.available ? "ok" : domains.text?.model ? "warn" : "default"} />
+            <StatCard label={t("embeddingVision")} value={domainValue(domains.vision)}
+              variant={domains.vision?.available ? "ok" : domains.vision?.model ? "warn" : "default"} />
             <StatCard label={t("ftsSearch")} value={health.fts_available ? t("common:available") : t("common:unavailable")}
               variant={health.fts_available ? "ok" : "default"} />
             <StatCard label={t("fileIndex")} value={t("filesChunks", { files: health.files || 0, chunks: health.chunks || 0 })} />
             <StatCard label={t("cache")} value={t("cacheEntries", { count: health.embedding_cache || 0 })} />
+            <StatCard label={t("pendingVectors")}
+              value={pendingVectors > 0 ? t("pendingVectorsCount", { count: pendingVectors }) : t("pendingVectorsSynced")}
+              variant={pendingVectors > 0 ? (health.embedding_available ? "default" : "warn") : "ok"} />
           </div>
         </Card>
       )}

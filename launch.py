@@ -91,6 +91,9 @@ def main():
             if not shutdown_event.is_set():
                 shutdown_event.set()
 
+        # 供 Web API 等运行期入口触发优雅关闭/重启（core.lifecycle.Lifecycle.request_shutdown）
+        Lifecycle.set_shutdown_requester(_request_shutdown)
+
         def _on_signal() -> None:
             if shutdown_event.is_set():
                 for s in (signal.SIGINT, signal.SIGTERM):
@@ -163,6 +166,17 @@ def main():
         asyncio.run(_run())
     except (KeyboardInterrupt, SystemExit):
         pass
+
+    from core.lifecycle import RESTART_EXIT_CODE, Lifecycle
+    if Lifecycle.restart_requested():
+        log(f"收到重启请求，以退出码 {RESTART_EXIT_CODE} 退出（由外层启动脚本重新拉起）", tag="重启")
+        # 第三方库可能残留非守护线程（aiosqlite 等），SystemExit 会使解释器关闭时
+        # 永久阻塞在 threading._shutdown 的 join 上；此处业务资源已清理完毕，直接退出
+        import os
+        import sys
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(RESTART_EXIT_CODE)
 
 
 if __name__ == "__main__":

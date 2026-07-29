@@ -555,7 +555,7 @@ class MemoryStore(BaseEntity):
         if not rows:
             return 0
 
-        vecs = await embedder.embed([row["content"] for row in rows])
+        vecs = await embedder.embed_text([row["content"] for row in rows])
         if len(vecs) != len(rows):
             return 0
 
@@ -586,7 +586,7 @@ class MemoryStore(BaseEntity):
         if not rows:
             return 0
 
-        vecs = await embedder.embed([row["text"] for row in rows])
+        vecs = await embedder.embed_text([row["text"] for row in rows])
         if len(vecs) != len(rows):
             return 0
 
@@ -2235,6 +2235,39 @@ class MemoryStore(BaseEntity):
     # ------------------------------------------------------------------
     # Embedding 缓存
     # ------------------------------------------------------------------
+
+    async def count_pending_embeddings(self) -> Dict[str, int]:
+        """统计待后台 worker 回填向量的行数（memories / chunks）。"""
+        db = await self._get_db()
+        mem = (await (await db.execute(
+            "SELECT COUNT(*) as cnt FROM memories WHERE embedding_blob IS NULL"
+        )).fetchone())["cnt"]
+        chunks = (await (await db.execute(
+            "SELECT COUNT(*) as cnt FROM chunks WHERE embedding IS NULL"
+        )).fetchone())["cnt"]
+        return {"memories": mem, "chunks": chunks}
+
+    async def rebuild_embeddings(self) -> Dict[str, int]:
+        """清空全部向量数据（记忆 / chunk / 缓存 + vec 索引），供切换 embedding 模型后重建。
+
+        权威 BLOB 列置 NULL 后由后台 EmbeddingWorker 按新模型重新回填；
+        vec 索引表直接删除，维度在首次写入时按新向量惰性重建。
+        """
+        db = await self._get_db()
+        mem = (await (await db.execute(
+            "SELECT COUNT(*) as cnt FROM memories WHERE embedding_blob IS NOT NULL"
+        )).fetchone())["cnt"]
+        chunks = (await (await db.execute(
+            "SELECT COUNT(*) as cnt FROM chunks WHERE embedding IS NOT NULL"
+        )).fetchone())["cnt"]
+        await db.execute("UPDATE memories SET embedding_blob=NULL")
+        await db.execute("UPDATE chunks SET embedding=NULL")
+        await db.execute("DELETE FROM embedding_cache")
+        await db.execute("DROP TABLE IF EXISTS memories_vec")
+        await db.execute("DROP TABLE IF EXISTS chunks_vec")
+        await db.commit()
+        self._vec_dims = None
+        return {"memories": mem, "chunks": chunks}
 
     async def get_cached_embedding(self, text_hash: str) -> Optional[list[float]]:
         db = await self._get_db()

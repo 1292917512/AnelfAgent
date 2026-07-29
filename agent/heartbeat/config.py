@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.log import log
+from core.path import ConfigPaths
 
 from agent.llm.reasoning import CANONICAL_EFFORTS
 
-_CONFIG_PATH = Path("config/heartbeat.json")
+_CONFIG_PATH = Path(ConfigPaths.HEARTBEAT_CONFIG)
 _REASONING_EFFORT_VALUES = frozenset(CANONICAL_EFFORTS)
 
 
@@ -197,7 +198,7 @@ def _parse_config(raw: Dict[str, Any]) -> HeartbeatConfig:
 
 def _try_migrate() -> HeartbeatConfig:
     """首次运行：尝试从旧 introspection.json 迁移。"""
-    old_path = Path("config/introspection.json")
+    old_path = Path(ConfigPaths.INTROSPECTION_CONFIG)
     if not old_path.exists():
         cfg = HeartbeatConfig()
         cfg.save()
@@ -222,7 +223,7 @@ def _try_migrate() -> HeartbeatConfig:
         reflect_hours = float(old.get("reflect_min_hours", 1.0))
         reflect_beats = max(1, int(reflect_hours * 3600 / cfg.interval_seconds))
 
-        introspection_dir = Path("config/introspection")
+        introspection_dir = Path(ConfigPaths.INTROSPECTION_DIR)
         if introspection_dir.is_dir():
             for jf in sorted(introspection_dir.glob("*.json")):
                 try:

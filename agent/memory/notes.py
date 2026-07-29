@@ -24,14 +24,12 @@ _workspace_dir: Optional[Path] = None
 _file_lock = asyncio.Lock()
 
 
-def _repo_root() -> Path:
-    from core.path import project_root
-    return Path(project_root())
-
-
 def get_workspace_dir() -> Path:
-    """获取记忆工作区目录。"""
-    return _workspace_dir or (_repo_root() / "config")
+    """获取记忆工作区目录（数据目录的父目录，历史布局为项目 config/）。"""
+    if _workspace_dir:
+        return _workspace_dir
+    from core.path import ConfigPaths
+    return Path(ConfigPaths.MEMORY_DIR).parent
 
 
 def get_notes_path() -> Path:
@@ -40,8 +38,11 @@ def get_notes_path() -> Path:
 
 
 def get_memory_dir() -> Path:
-    """获取记忆文件目录（workspace/memory/）。"""
-    return get_workspace_dir() / "memory"
+    """获取记忆文件目录（数据目录，默认 config/memory/）。"""
+    if _workspace_dir:
+        return _workspace_dir / "memory"
+    from core.path import ConfigPaths
+    return Path(ConfigPaths.MEMORY_DIR)
 
 
 def load_notes_content() -> str:

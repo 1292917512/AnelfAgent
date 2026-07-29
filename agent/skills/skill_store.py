@@ -181,7 +181,10 @@ def _atomic_write(target: Path, content: str) -> None:
 class SkillStore:
     """技能库：workspace/skills/ 目录下的 SKILL.md 文件集合。"""
 
-    def __init__(self, skills_dir: str = "workspace/skills") -> None:
+    def __init__(self, skills_dir: Optional[str] = None) -> None:
+        if skills_dir is None:
+            from core.path import workspace_root
+            skills_dir = os.path.join(workspace_root(), "skills")
         self.skills_dir = Path(skills_dir)
         self.skills_dir.mkdir(parents=True, exist_ok=True)
         # 读写锁：save 原子写 + get/delete 读取串行化，避免并发读写竞态

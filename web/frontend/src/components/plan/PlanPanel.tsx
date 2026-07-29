@@ -12,13 +12,14 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  AlertTriangle, CheckCircle2, ChevronUp, FileText, GripVertical, Loader2, Target, X, XCircle,
+  ChevronUp, GripVertical, Loader2, Target, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePlanStore } from "@/stores/plan-store";
 import { useChatStore } from "@/stores/chat-store";
 import { PlanStepRow } from "./PlanStepRow";
-import type { PlanRecord } from "@/lib/types";
+import { PlanStatusBadge } from "./PlanStatusBadge";
+import { PlanMeta } from "./PlanMeta";
 
 const STORAGE_KEY = "anelf:planPanelPos";
 const DEFAULT_POS = { x: 16, y: 16 };  // 相对对话容器左上角的偏移
@@ -230,26 +231,7 @@ export function PlanPanel() {
       {/* 文件 / 风险 */}
       {(activePlan.files || activePlan.risks) && (
         <div className="px-3 pb-2 space-y-1 border-t border-border/50">
-          {activePlan.files && (
-            <div className="flex items-start gap-2 text-xs pt-1.5">
-              <FileText size={11} className="text-muted shrink-0 mt-0.5" />
-              <div className="flex-1 min-w-0">
-                <span className="text-muted mr-1">{t("card.files", { defaultValue: "涉及" })}</span>
-                <span className="text-foreground/80 break-words text-[11px]">{activePlan.files}</span>
-              </div>
-            </div>
-          )}
-          {activePlan.risks && (
-            <div className="flex items-start gap-2 text-xs">
-              <AlertTriangle size={11} className="text-yellow-500 shrink-0 mt-0.5" />
-              <div className="flex-1 min-w-0">
-                <span className="text-muted mr-1">{t("card.risks", { defaultValue: "风险" })}</span>
-                <span className="text-yellow-600 dark:text-yellow-400 break-words text-[11px]">
-                  {activePlan.risks}
-                </span>
-              </div>
-            </div>
-          )}
+          <PlanMeta plan={activePlan} />
         </div>
       )}
 
@@ -271,32 +253,6 @@ export function PlanPanel() {
         )}
       </div>
     </div>
-  );
-}
-
-function PlanStatusBadge({ plan }: { plan: PlanRecord }) {
-  const { t } = useTranslation("plan");
-  if (plan.status === "cancelled") {
-    return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-300 text-[11px]">
-        <XCircle size={10} />
-        {t("status.cancelled", { defaultValue: "已取消" })}
-      </span>
-    );
-  }
-  if (plan.status === "completed") {
-    return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-300 text-[11px]">
-        <CheckCircle2 size={10} />
-        {t("status.completed", { defaultValue: "已完成" })}
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent-subtle text-accent text-[11px]">
-      <Loader2 size={10} className="animate-spin" />
-      {t("status.executing", { defaultValue: "执行中" })}
-    </span>
   );
 }
 

@@ -163,11 +163,8 @@ class MemoryService:
             return []
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
         query_vec = None
-        try:
-            if rt.mind.embedder and rt.mind.embedder.available:
-                query_vec = await rt.mind.embedder.embed_one(query)
-        except Exception as e:
-            log(f"搜索记忆时 embedding 失败: {e}", "DEBUG")
+        if rt.mind.embedder:
+            query_vec = await rt.mind.embedder.embed_query(query)
         from agent.memory.cognee.config import load_cognee_config
         from agent.memory.cognee.fusion import federated_search
         from agent.memory.cognee.runtime import get_cognee_client
@@ -445,11 +442,67 @@ class MemoryService:
         if not store:
             return {"error": "记忆系统未初始化"}
         health = await store.get_health_status()
-        embedder = rt.mind.embedder
-        health["embedding_available"] = embedder.available if embedder else False
-        health["embedding_dims"] = embedder.dimensions if embedder else None
+        # 分域 embedding 状态：文本域（记忆/对话）与视觉域（贴纸/图片）各自指定模型
+        from agent.memory.embedding import get_embedder
+        text_embedder = get_embedder("text")
+        vision_embedder = get_embedder("vision")
+        health["embedding_domains"] = {
+            "text": {
+                "model": text_embedder.client_name,
+                "available": text_embedder.available,
+                "dims": text_embedder.dimensions,
+            },
+            "vision": {
+                "model": vision_embedder.client_name,
+                "available": vision_embedder.available,
+                "dims": vision_embedder.dimensions,
+            },
+        }
+        # 兼容旧字段（跟随文本域）
+        health["embedding_available"] = text_embedder.available
+        health["embedding_dims"] = text_embedder.dimensions
+        # 待后台 worker 回填的向量数（memories / chunks / 对话消息），让异步同步进度可见
+        pending = await store.count_pending_embeddings()
+        try:
+            from core.config import get_config_int
+            conv_days = get_config_int("conv_embed_backfill_days", 30)
+            pending["conversations"] = await rt.data_center.sqlite.count_pending_conversation_embeddings(conv_days)
+        except Exception as exc:
+            log(f"对话向量待回填统计失败: {exc}", "DEBUG")
+            pending["conversations"] = 0
+        pending["total"] = sum(pending.values())
+        health["embedding_pending"] = pending
         health["cognee"] = await self.get_cognee_status()
         return health
+
+    async def rebuild_embeddings(self) -> Dict[str, Any]:
+        """切换 embedding 模型后的全量向量重建。
+
+        清空记忆/chunk/对话/贴纸的旧向量与 vec 索引，embedder 状态重置，
+        后台 EmbeddingWorker 按新模型自动分批回填（含贴纸/图片 backlog）。
+        """
+        rt = require_runtime()
+        store = rt.mind.memory_store
+        if not store:
+            return {"error": "记忆系统未初始化"}
+        cleared = await store.rebuild_embeddings()
+        try:
+            cleared["conversations"] = await rt.data_center.sqlite.clear_conversation_embeddings()
+        except Exception as exc:
+            log(f"对话向量清空失败: {exc}", "WARNING")
+            cleared["conversations"] = 0
+        try:
+            from entities.sticker.store import get_sticker_store
+            cleared["stickers"] = await get_sticker_store().clear_embeddings()
+        except Exception as exc:
+            log(f"贴纸向量清空失败: {exc}", "DEBUG")
+        if rt.mind.embedder:
+            from agent.memory.embedding import invalidate_embedders
+            invalidate_embedders()
+        from agent.memory.embedding import wake_embedding_worker
+        wake_embedding_worker()
+        log(f"向量索引重建: 已清空 {cleared}，等待后台按新模型回填", tag="思维")
+        return {"ok": True, "cleared": cleared}
 
     # ==================================================================
     # Cognee 可选后端
@@ -495,6 +548,23 @@ class MemoryService:
                 "last_error": "",
             },
         }
+
+    @staticmethod
+    async def rebuild_cognee() -> Dict[str, Any]:
+        """清空 cognee 数据并全量重建。
+
+        切换 cognee embedding 模型后必须执行（向量空间不兼容）；
+        重建需重新 cognify（LLM 抽取），成本与耗时较高，应低频手动触发。
+        """
+        from agent.memory.cognee.runtime import get_cognee_client, get_cognee_coordinator
+        client = get_cognee_client()
+        coordinator = get_cognee_coordinator()
+        if not client or not coordinator:
+            return {"error": "cognee 未初始化"}
+        await client.prune_data()
+        result = await coordinator.backfill(limit=0, dry_run=False)
+        log("cognee 数据已清空并开始全量重建", tag="思维")
+        return {"ok": True, "backfill": result}
 
     @staticmethod
     def get_cognee_config() -> Dict[str, Any]:

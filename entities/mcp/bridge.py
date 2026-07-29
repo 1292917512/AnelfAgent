@@ -42,6 +42,7 @@ from typing import Any, Dict, List, Optional
 
 from core.log import log
 from core.entity import EntityMetadata, EntityRegistry, EntityType, ToolParam
+from core.path import ConfigPaths
 from core.sanitizer import is_sanitize_enabled, sanitize_text
 
 _MAX_LIFECYCLE_RETRIES = 5
@@ -118,7 +119,7 @@ def _resolve_config_path() -> Optional[str]:
             return str(p)
     except Exception as e:
         log(f"MCP 配置路径获取失败: {e}", "DEBUG")
-    for c in [Path("config/mcp_servers.json"), Path("mcp_servers.json")]:
+    for c in [Path(ConfigPaths.MCP_SERVERS), Path("mcp_servers.json")]:
         if c.exists():
             return str(c)
     return None

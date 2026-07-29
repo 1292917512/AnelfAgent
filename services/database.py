@@ -54,6 +54,12 @@ _SHADOW_PATTERNS = (
 # 只读查询允许的首关键字
 _QUERY_ALLOWED_KEYWORDS = ("select", "with", "explain", "pragma")
 
+# 维护操作白名单与阈值
+_OPTIMIZE_ACTIONS = ("checkpoint", "vacuum", "analyze")
+_WAL_WARN_BYTES = 32 * 1024 * 1024  # WAL 超过 32MB 建议 checkpoint
+_FRAGMENT_WARN_RATIO = 0.2  # 空闲页占比超过 20% 建议 VACUUM
+_FRAGMENT_MIN_PAGES = 100  # 小库不报碎片化（无意义）
+
 
 class DatabaseError(RuntimeError):
     """数据库管理操作错误（router 转成 HTTPException）。"""
@@ -305,6 +311,7 @@ class DatabaseService:
                 "description": info["description"],
                 "path": path,
                 "exists": exists,
+                "external": False,
                 "size_bytes": os.path.getsize(path) if exists else 0,
                 "table_count": 0,
             }
@@ -322,9 +329,26 @@ class DatabaseService:
                 except Exception as exc:
                     entry["error"] = str(exc)
             result.append(entry)
+        # 外部连接（PostgreSQL / MySQL，只读数据源）
+        try:
+            from services.db_connections import get_connection_store
+            result.extend(await get_connection_store().list_source_entries())
+        except Exception as exc:
+            log(f"外部连接清单获取失败: {exc}", "DEBUG", tag="数据库")
         return result
 
+    @staticmethod
+    def _is_external(db_id: str) -> bool:
+        return db_id.startswith("ext:")
+
+    @staticmethod
+    async def _external_adapter(db_id: str) -> Any:
+        from services.db_connections import get_connection_store
+        return await get_connection_store().adapter(db_id[len("ext:"):])
+
     async def list_tables(self, db_id: str, include_shadow: bool = False) -> List[Dict[str, Any]]:
+        if self._is_external(db_id):
+            return await (await self._external_adapter(db_id)).list_tables()
         conn = await self._get_conn(db_id)
         cursor = await conn.execute(
             "SELECT name, type, sql FROM sqlite_master "
@@ -359,6 +383,8 @@ class DatabaseService:
         return tables
 
     async def table_schema(self, db_id: str, table: str) -> Dict[str, Any]:
+        if self._is_external(db_id):
+            return await (await self._external_adapter(db_id)).table_schema(table)
         conn = await self._get_conn(db_id)
         meta = await self._table_meta(conn, table)
         columns = await self._table_columns(conn, table)
@@ -395,6 +421,16 @@ class DatabaseService:
         filter_col: Optional[str] = None,
         filter_text: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if self._is_external(db_id):
+            return await (await self._external_adapter(db_id)).browse_rows(
+                table,
+                page=page,
+                page_size=page_size,
+                sort=sort,
+                order=order,
+                filter_col=filter_col,
+                filter_text=filter_text,
+            )
         conn = await self._get_conn(db_id)
         meta = await self._table_meta(conn, table)
         columns = await self._table_columns(conn, table)
@@ -445,6 +481,8 @@ class DatabaseService:
         }
 
     async def get_row(self, db_id: str, table: str, rowid: int) -> Dict[str, Any]:
+        if self._is_external(db_id):
+            raise DatabaseError("外部连接无 rowid 语义，不支持单行详情", status_code=403)
         conn = await self._get_conn(db_id)
         await self._table_meta(conn, table)
         columns = await self._table_columns(conn, table)
@@ -488,6 +526,7 @@ class DatabaseService:
         return None
 
     async def insert_row(self, db_id: str, table: str, values: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_local(db_id)
         conn = await self._get_conn(db_id)
         columns = await self._require_writable(conn, table)
         self._validate_columns(columns, list(values.keys()))
@@ -505,6 +544,7 @@ class DatabaseService:
         return {"rowid": cursor.lastrowid}
 
     async def update_row(self, db_id: str, table: str, rowid: int, values: Dict[str, Any]) -> None:
+        self._require_local(db_id)
         conn = await self._get_conn(db_id)
         columns = await self._require_writable(conn, table)
         self._validate_columns(columns, list(values.keys()))
@@ -528,6 +568,7 @@ class DatabaseService:
         log(f"数据库管理: 更新行 {db_id}/{table} rowid={rowid} 列={list(values.keys())}", "DEBUG", tag="数据库")
 
     async def delete_row(self, db_id: str, table: str, rowid: int) -> None:
+        self._require_local(db_id)
         conn = await self._get_conn(db_id)
         await self._require_writable(conn, table)
         cursor = await conn.execute(f'DELETE FROM "{table}" WHERE rowid = ?', (rowid,))
@@ -563,6 +604,8 @@ class DatabaseService:
         return text
 
     async def run_query(self, db_id: str, sql: str) -> Dict[str, Any]:
+        if self._is_external(db_id):
+            return await (await self._external_adapter(db_id)).run_query(sql)
         conn = await self._get_conn(db_id)
         safe_sql = self._validate_readonly_sql(sql)
         started = time.time()
@@ -590,3 +633,121 @@ class DatabaseService:
             "elapsed_ms": round((time.time() - started) * 1000, 1),
             "truncated": len(rows) >= _QUERY_MAX_ROWS,
         }
+
+    # ------------------------------------------------------------------
+    # 健康概览 / 备份 / 优化（仅本地 SQLite）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _require_local(db_id: str) -> None:
+        """外部连接（ext:<id>）为只读数据源，不支持维护/写操作。"""
+        if db_id.startswith("ext:"):
+            raise DatabaseError("外部连接为只读数据源，不支持该操作", status_code=403)
+
+    async def database_health(self, db_id: str) -> Dict[str, Any]:
+        """库健康概览：体积 / WAL / 碎片化 / 表规模 / 维护建议。"""
+        self._require_local(db_id)
+        conn = await self._get_conn(db_id)
+        path = self._db_path(db_id)
+
+        size_bytes = os.path.getsize(path)
+        wal_path = f"{path}-wal"
+        wal_bytes = os.path.getsize(wal_path) if os.path.isfile(wal_path) else 0
+
+        page_count = (await (await conn.execute("PRAGMA page_count")).fetchone())[0]
+        freelist_count = (await (await conn.execute("PRAGMA freelist_count")).fetchone())[0]
+        fragmentation = round(freelist_count / page_count, 4) if page_count else 0.0
+
+        tables = await self.list_tables(db_id)
+        top_tables = sorted(
+            (t for t in tables if t["row_count"] >= 0),
+            key=lambda t: t["row_count"],
+            reverse=True,
+        )[:5]
+
+        suggestions: List[Dict[str, Any]] = []
+        if wal_bytes > _WAL_WARN_BYTES:
+            suggestions.append({
+                "id": "wal_oversize", "level": "warn", "action": "checkpoint",
+                "detail": {"wal_bytes": wal_bytes},
+            })
+        if page_count >= _FRAGMENT_MIN_PAGES and fragmentation > _FRAGMENT_WARN_RATIO:
+            suggestions.append({
+                "id": "fragmented", "level": "warn", "action": "vacuum",
+                "detail": {"fragmentation": fragmentation},
+            })
+        suggestions.append({"id": "analyze", "level": "info", "action": "analyze", "detail": {}})
+
+        return {
+            "id": db_id,
+            "size_bytes": size_bytes,
+            "wal_bytes": wal_bytes,
+            "page_count": page_count,
+            "freelist_count": freelist_count,
+            "fragmentation": fragmentation,
+            "top_tables": [
+                {"name": t["name"], "row_count": t["row_count"]} for t in top_tables
+            ],
+            "suggestions": suggestions,
+        }
+
+    async def backup_database(self, db_id: str) -> Dict[str, Any]:
+        """在线热备份（SQLite Backup API，运行中安全）到 <data_dir>/backups/。"""
+        self._require_local(db_id)
+        path = self._db_path(db_id)
+        from core.path import ConfigPaths, project_root
+        backup_dir = Path(project_root()) / ConfigPaths.MEMORY_DIR / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{db_id}-{time.strftime('%Y%m%d-%H%M%S')}.sqlite3"
+        dest = backup_dir / filename
+
+        started = time.time()
+        src = await aiosqlite.connect(path)
+        try:
+            target = await aiosqlite.connect(str(dest))
+            try:
+                await src.backup(target)
+            finally:
+                await target.close()
+        finally:
+            await src.close()
+
+        size = dest.stat().st_size
+        log(f"数据库管理: 备份 {db_id} -> {dest} ({size} 字节)", tag="数据库")
+        return {
+            "path": str(dest),
+            "filename": filename,
+            "size_bytes": size,
+            "elapsed_ms": round((time.time() - started) * 1000, 1),
+        }
+
+    async def optimize_database(self, db_id: str, actions: List[str]) -> Dict[str, Any]:
+        """执行维护操作（白名单：checkpoint / vacuum / analyze）。"""
+        self._require_local(db_id)
+        bad = [a for a in actions if a not in _OPTIMIZE_ACTIONS]
+        if bad:
+            raise DatabaseError(f"未知维护操作: {', '.join(bad)}", status_code=400)
+        if not actions:
+            raise DatabaseError("维护操作为空", status_code=400)
+
+        conn = await self._get_conn(db_id)
+        results: List[Dict[str, Any]] = []
+        for action in actions:
+            started = time.time()
+            entry: Dict[str, Any] = {"action": action}
+            if action == "checkpoint":
+                cursor = await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                row = await cursor.fetchone()
+                if row:
+                    entry["detail"] = {"busy": row[0], "wal_frames": row[1], "checkpointed": row[2]}
+            elif action == "vacuum":
+                # VACUUM 不能在事务内执行，先提交管理连接上的挂起事务
+                await conn.commit()
+                await conn.execute("VACUUM")
+            elif action == "analyze":
+                await conn.execute("ANALYZE")
+                await conn.commit()
+            entry["elapsed_ms"] = round((time.time() - started) * 1000, 1)
+            results.append(entry)
+            log(f"数据库管理: 优化 {db_id} [{action}] 完成 ({entry['elapsed_ms']}ms)", tag="数据库")
+        return {"actions": results}

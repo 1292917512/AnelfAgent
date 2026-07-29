@@ -124,7 +124,7 @@ async def execute_remember(mind: Mind, decision: Decision) -> None:
         importance=0.7,
     )
     await mind.memory_store.add(entry)
-    from agent.memory.embedding_worker import wake_embedding_worker
+    from agent.memory.embedding import wake_embedding_worker
     wake_embedding_worker()
     log(f"AI 主动记忆: {decision.content[:80]}", tag="思维")
 
@@ -133,13 +133,12 @@ async def is_duplicate_memory(mind: Mind, content: str) -> bool:
     """检查记忆是否与已有记忆高度相似。"""
     if not mind.memory_store:
         return False
-    if mind.embedder.available:
-        vec = await mind.embedder.embed_one(content)
-        if vec:
-            similar = await mind.memory_store.search_vector(vec, limit=3, min_score=0.80)
-            if similar:
-                log(f"记忆重复检测（向量 score={similar[0][1]:.2f}): {similar[0][0].content[:60]}", tag="思维")
-                return True
+    vec = await mind.embedder.embed_query(content)
+    if vec:
+        similar = await mind.memory_store.search_vector(vec, limit=3, min_score=0.80)
+        if similar:
+            log(f"记忆重复检测（向量 score={similar[0][1]:.2f}): {similar[0][0].content[:60]}", tag="思维")
+            return True
     if await mind.memory_store.has_similar_content(content):
         log("记忆重复检测（全文）", tag="思维")
         return True

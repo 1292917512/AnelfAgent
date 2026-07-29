@@ -21,6 +21,7 @@
   "default_download_dir": "./downloads",
   "llm_stream_enabled": true,
   "workspace_root": "workspace",
+  "data_root": "",
   "sandbox_enabled": true,
   "heartbeat_interval": 600.0,
   "meta_decision_temperature": 0.1,

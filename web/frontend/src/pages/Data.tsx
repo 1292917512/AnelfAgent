@@ -2,13 +2,14 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
-import { Database, Smile } from "lucide-react";
+import { Database, HardDrive, Smile } from "lucide-react";
 import { DatabasePanel } from "@/pages/database/DatabasePanel";
 import { StickersPanel } from "@/pages/stickers/StickersPanel";
+import { StoragePanel } from "@/pages/database/StoragePanel";
 
-type DataTab = "database" | "stickers";
+type DataTab = "database" | "stickers" | "storage";
 
-/** 数据管理 — 所有数据类功能的统一入口（数据库 / 表情包，后续可扩展新 Tab） */
+/** 数据管理 — 所有数据类功能的统一入口（数据库 / 表情包 / 存储位置） */
 export default function Data() {
   const { t } = useTranslation("data");
   const [tab, setTab] = useState<DataTab>("database");
@@ -16,6 +17,7 @@ export default function Data() {
   const TABS: TabItem<DataTab>[] = [
     { key: "database", label: t("tabs.database"), icon: Database },
     { key: "stickers", label: t("tabs.stickers"), icon: Smile },
+    { key: "storage", label: t("tabs.storage"), icon: HardDrive },
   ];
 
   return (
@@ -28,6 +30,7 @@ export default function Data() {
       <TabBar tabs={TABS} activeTab={tab} onChange={setTab} />
       {tab === "database" && <DatabasePanel />}
       {tab === "stickers" && <StickersPanel />}
+      {tab === "storage" && <StoragePanel />}
     </PageContainer>
   );
 }

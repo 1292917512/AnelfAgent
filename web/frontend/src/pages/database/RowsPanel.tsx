@@ -249,13 +249,15 @@ export function RowsPanel({ db, table }: { db: string; table: string }) {
                     </td>
                   ))}
                   <td className="px-2.5 py-1.5 whitespace-nowrap text-right">
-                    <button
-                      onClick={() => setViewRowid(row.__rowid__)}
-                      className="p-1 rounded text-muted hover:text-accent transition-colors"
-                      title={t("db.viewRow")}
-                    >
-                      <Eye size={13} />
-                    </button>
+                    {!db.startsWith("ext:") && (
+                      <button
+                        onClick={() => setViewRowid(row.__rowid__)}
+                        className="p-1 rounded text-muted hover:text-accent transition-colors"
+                        title={t("db.viewRow")}
+                      >
+                        <Eye size={13} />
+                      </button>
+                    )}
                     {!readonly && (
                       <>
                         <button

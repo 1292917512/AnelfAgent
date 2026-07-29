@@ -6,6 +6,7 @@ import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
 import { LoadingBlock } from "@/components/ui";
 import { InfoRow } from "./shared";
+import { RestartCard } from "./RestartCard";
 
 /** 系统信息面板：OS / CPU / 内存 / Python 环境 / 开发工具 */
 export function SystemPanel() {
@@ -15,7 +16,12 @@ export function SystemPanel() {
     queryFn: () => systemApi.info().then((r) => r.data),
   });
 
-  if (isLoading) return <Card><LoadingBlock /></Card>;
+  if (isLoading) return (
+    <div className="space-y-4">
+      <RestartCard />
+      <Card><LoadingBlock /></Card>
+    </div>
+  );
 
   const sys = data?.system;
   const py = data?.python;
@@ -25,6 +31,8 @@ export function SystemPanel() {
 
   return (
     <div className="space-y-4">
+      <RestartCard />
+
       {sys && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

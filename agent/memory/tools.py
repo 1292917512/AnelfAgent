@@ -14,8 +14,7 @@ from core.log import log
 
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry, MemoryType
-from .embedder import Embedder
-from .embedding_worker import wake_embedding_worker
+from .embedding import Embedder, wake_embedding_worker
 
 _store: Optional[MemoryStore] = None
 _embedder: Optional[Embedder] = None
@@ -180,8 +179,8 @@ async def recall(query: str, tags: str = "", limit: int = 5, min_score: float = 
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
 
         query_vec = None
-        if _embedder and _embedder.available:
-            query_vec = await _embedder.embed_one(query)
+        if _embedder:
+            query_vec = await _embedder.embed_query(query)
 
         from .cognee.config import load_cognee_config
         from .cognee.fusion import federated_search
@@ -828,8 +827,8 @@ async def recall_conversation(
         t0 = _time.monotonic()
         results: list[dict] = []
 
-        if _embedder and _embedder.available:
-            query_vec = await _embedder.embed_one(query)
+        if _embedder:
+            query_vec = await _embedder.embed_query(query)
             if query_vec:
                 results = await sqlite.search_conversation_vector(
                     scope_type, scope_id, query_vec,

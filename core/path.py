@@ -518,24 +518,103 @@ def workspace_root() -> str:
     return os.path.abspath(ConfigManager.get("workspace_root", "workspace"))
 
 
-class ConfigPaths:
-    """配置路径常量集中管理。"""
-    APP_CONFIG = "config/app_config.json"
-    WEBUI_CONFIG = "config/webui.json"
-    MIND_CONFIG = "config/mind_config.json"
-    LLM_CLIENTS = "config/llm_clients.json"
-    MCP_SERVERS = "config/mcp_servers.json"
-    HEARTBEAT_CONFIG = "config/heartbeat.json"
-    REMINDERS = "config/reminders.json"
-    INTROSPECTION_CONFIG = "config/introspection.json"
-    INTROSPECTION_DIR = "config/introspection"
-    TASKS_DIR = "config/tasks"
-    CUSTOM_TAGS = "config/tags.json"
-    PERSONAS_DIR = "config/personas"
-    PERSONAS_INDEX = "config/personas/index.json"
-    MEMORY_DIR = "config/memory"
-    COGNEE_CONFIG = "config/cognee.json"
-    COGNEE_DATA_DIR = "config/memory/cognee"
-    HEARTBEAT_LOG = "config/memory/heartbeat.md"
-    SQLITE_DB = "config/memory/data/agent.sqlite3"
-    UPLOAD_DIR = "workspace/uploads"
+def config_dir() -> str:
+    """获取配置目录（纯 JSON 配置）。
+
+    解析优先级：``ANELF_CONFIG_DIR`` 环境变量 > 默认 "config"。
+    """
+    return os.environ.get("ANELF_CONFIG_DIR", "config")
+
+
+def data_dir() -> str:
+    """获取数据目录（SQLite / 记忆便签 / cognee 等运行数据）。
+
+    解析优先级：``ANELF_DATA_DIR`` 环境变量 > app_config.json 的 ``data_root``
+    > 默认 ``<config_dir>/memory``（与历史布局一致）。
+    """
+    env = os.environ.get("ANELF_DATA_DIR", "").strip()
+    if env:
+        return env
+    try:
+        from core.config import ConfigManager
+        root = str(ConfigManager.get("data_root", "") or "").strip()
+        if root:
+            return root
+    except Exception as e:
+        log(f"data_root 配置读取失败: {e}", "DEBUG")
+    return os.path.join(config_dir(), "memory")
+
+
+# ConfigPaths 路径规格：name -> (scope, relpath)
+# scope: config=配置目录 data=数据目录 literal=字面量（不随目录配置变化）
+_PATH_SPECS: dict = {
+    "APP_CONFIG": ("config", "app_config.json"),
+    "WEBUI_CONFIG": ("config", "webui.json"),
+    "MIND_CONFIG": ("config", "mind_config.json"),
+    "LLM_CLIENTS": ("config", "llm_clients.json"),
+    "MCP_SERVERS": ("config", "mcp_servers.json"),
+    "HEARTBEAT_CONFIG": ("config", "heartbeat.json"),
+    "REMINDERS": ("config", "reminders.json"),
+    "INTROSPECTION_CONFIG": ("config", "introspection.json"),
+    "INTROSPECTION_DIR": ("config", "introspection"),
+    "TASKS_DIR": ("config", "tasks"),
+    "CUSTOM_TAGS": ("config", "tags.json"),
+    "PERSONAS_DIR": ("config", "personas"),
+    "PERSONAS_INDEX": ("config", "personas/index.json"),
+    "PERMISSION_RULES": ("config", "permission_rules.json"),
+    "APPROVAL_POLICIES": ("config", "approval_policies.json"),
+    "DB_CONNECTIONS": ("config", "db_connections.json"),
+    "COGNEE_CONFIG": ("config", "cognee.json"),
+    "MEMORY_DIR": ("data", ""),
+    "COGNEE_DATA_DIR": ("data", "cognee"),
+    "HEARTBEAT_LOG": ("data", "heartbeat.md"),
+    "SQLITE_DB": ("data", "data/agent.sqlite3"),
+    "UPLOAD_DIR": ("literal", "workspace/uploads"),
+}
+
+# 测试/脚本注入的路径覆盖（monkeypatch.setattr 或直接赋值）
+_PATH_OVERRIDES: dict = {}
+
+
+class _ConfigPathsMeta(type):
+    """ConfigPaths 元类：按 _PATH_SPECS 动态解析路径常量。
+
+    读取：优先 _PATH_OVERRIDES，否则基于 config_dir()/data_dir() 动态拼接。
+    赋值/删除：写入/清除 _PATH_OVERRIDES（兼容测试 monkeypatch 与脚本覆盖）。
+    """
+
+    def __getattr__(cls, name: str) -> str:
+        if name in _PATH_SPECS:
+            override = _PATH_OVERRIDES.get(name)
+            if override is not None:
+                return override
+            scope, rel = _PATH_SPECS[name]
+            if scope == "config":
+                return os.path.join(config_dir(), rel)
+            if scope == "data":
+                base = data_dir()
+                return base if not rel else os.path.join(base, rel)
+            return rel
+        raise AttributeError(f"type object 'ConfigPaths' has no attribute {name!r}")
+
+    def __setattr__(cls, name: str, value: object) -> None:
+        if name in _PATH_SPECS:
+            _PATH_OVERRIDES[name] = str(value)
+            return
+        super().__setattr__(name, value)
+
+    def __delattr__(cls, name: str) -> None:
+        if name in _PATH_SPECS:
+            _PATH_OVERRIDES.pop(name, None)
+            return
+        super().__delattr__(name)
+
+
+class ConfigPaths(metaclass=_ConfigPathsMeta):
+    """配置路径常量集中管理（动态解析）。
+
+    默认布局与历史一致（config/ + config/memory/），整体搬迁方式：
+    - ``ANELF_CONFIG_DIR``：配置目录（纯 JSON 配置）
+    - ``ANELF_DATA_DIR``：数据目录（SQLite / 便签 / cognee，优先级最高）
+    - app_config.json 的 ``data_root``：数据目录（优先级低于环境变量）
+    """

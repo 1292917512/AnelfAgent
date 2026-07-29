@@ -7,10 +7,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.log import log
+from core.path import ConfigPaths
 
 from .model import TaskDefinition
 
-_TASKS_DIR = Path("config/tasks")
+_TASKS_DIR = Path(ConfigPaths.TASKS_DIR)
 
 
 class TaskRegistry:

@@ -23,8 +23,6 @@ from core.event_bus import (
     EVENT_THINKING_TOOL_END,
     EVENT_THINKING_REPLY_ROUND,
     EVENT_THINKING_FAKE_TOOL_CALL,
-    EVENT_PLAN_STEP_UPDATED,
-    EVENT_PLAN_STATUS_CHANGED,
 )
 from core.log import log
 
@@ -561,6 +559,8 @@ async def think_loop(
     consecutive_overflow_compressions = 0
     reflect_text_rounds = 0
     end_reply_interceptions = 0
+    # 无工具正文守卫计数：有未完成 plan 时纯文本被拦截的次数（防死循环上限 2）
+    plan_text_guard_count = 0
     max_output_recoveries = 0
     last_prompt_tokens = 0
     # 上一轮是否仅为输出类工具（send_message 等）且已成功发送：
@@ -959,6 +959,26 @@ async def think_loop(
                     continue
 
                 if mode == ThinkMode.REPLY and anything:
+                    # Plan 守卫：有未完成 plan 时，纯文本不当最终回复——
+                    # 否则 AI 只是"说"了计划/过程话，循环就结束了，任务一步未做。
+                    # 参考 hermes todo reminder：程序级 nudge，上限 2 次防死循环。
+                    if plan_text_guard_count < 2:
+                        from agent.planning import tracker as _plan_tracker
+                        guard_feedback = await _plan_tracker.guard_feedback_for_text_only(current_scope)
+                        if guard_feedback:
+                            plan_text_guard_count += 1
+                            log(
+                                f"纯文本结束被 plan 守卫拦截: 计划未执行 "
+                                f"(轮次 {iteration + 1}, 第 {plan_text_guard_count} 次)",
+                                "WARNING", tag="思维",
+                            )
+                            tool_chain.append({"role": "system", "content": guard_feedback})
+                            execution_steps.append(
+                                f"→ 第{iteration + 1}轮: 纯文本被拦截（计划未执行），已提醒 AI 调工具"
+                            )
+                            iteration += 1
+                            continue
+
                     # send_message（仅输出类）成功后紧跟纯文本：消息已发出，不再代发，直接结束
                     if prev_round_outbound_only:
                         execution_steps.append(
@@ -1141,11 +1161,14 @@ async def think_loop(
             return
 
         # 每轮工具批次结束：程序级自动推进 plan 步骤（兜底）。
-        # 内部按 scope 过滤 + 无 active plan 时快速返回，成本可忽略；
-        # 仅当本轮确实调用了工具（called 非空）才尝试推进。
-        if mode == ThinkMode.REPLY and called:
+        # 仅当本轮调用了**非 plan 管理工具**（实际干活的工具）才推进——
+        # present_plan 当轮不推进（工作还没开始），update_goal 当轮不推进
+        # （AI 已精确标记，无需兜底）。tracker 内部按 scope 过滤 + 无 active plan
+        # 时快速返回，成本可忽略。
+        if mode == ThinkMode.REPLY and (called - _PLAN_MANAGEMENT_TOOL_NAMES):
             try:
-                await _auto_advance_plan_steps(current_scope)
+                from agent.planning import tracker as _plan_tracker
+                await _plan_tracker.advance_plan_step(current_scope)
             except Exception:
                 pass  # 自动推进失败不影响主流程
 
@@ -1316,148 +1339,20 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List[ToolCall]) 
 # updateProgressFromMessage）：进度由程序从执行流自动推断，AI 不需要
 # 主动汇报；AI 调 update_goal 只是"可选的精确标记"，不是必要条件。
 #
-# 三层机制：
-# 1. present_plan 工具内：第 1 步立即 in_progress（见 planning/tools.py）
-# 2. 每轮工具批次后 _auto_advance_plan_steps：推进当前步骤（粗粒度兜底）
-# 3. think_loop 正常结束 _finalize_plan_on_turn_end：收敛终态（诚实语义）
+# 全部状态机与事件发射统一由 ``agent.planning.tracker`` 实现：
+# - present_plan 工具 → tracker.submit_plan（公告 + 首步 in_progress）
+# - 每轮工具批次后 → tracker.advance_plan_step（粗粒度兜底）
+# - finish_think → tracker.finalize_plan（收敛终态，诚实语义）
+# - 无工具正文终态前 → tracker.guard_feedback_for_text_only（守卫）
+# - cancel-plan 路由 → tracker.cancel_plan
 # ------------------------------------------------------------------
 
+# 计划管理工具：调用它们不算"执行了一步"，不触发自动推进。
+# 否则 present_plan 当轮 step 0 就被误标完成（进度超前 bug）。
+_PLAN_MANAGEMENT_TOOL_NAMES = frozenset({
+    "present_plan", "update_goal", "create_goal", "list_goals", "get_goal", "delete_goal",
+})
 
-async def _auto_advance_plan_steps(scope: str) -> None:
-    """程序级自动推进 plan 步骤（粗粒度兜底）：
-    - 当前 scope 有 active plan 且本轮调用了非 plan 工具
-    - 把当前 in_progress 步骤自动标记为 completed，推进下一步为 in_progress
-    - 前端 PlanPanel 浮窗实时看到步骤推进（不等 AI 调 update_goal）
-    """
-    try:
-        from agent.planning.tools import _store, _find_goal, _current_scope, _parse_scope_chat_id
-        if _store is None:
-            return
-        # 简化：仅当 scope 匹配时才推进（避免跨 chat 误推进）
-        current = _current_scope()
-        if current != scope:
-            return
-        from agent.memory.memory_types import MemoryType
-        entries = await _store.list_recent(
-            limit=5, memory_type=MemoryType.SEMANTIC, source="goal",
-        )
-        for entry in entries:
-            try:
-                goal = json.loads(entry.content)
-            except (json.JSONDecodeError, AttributeError):
-                continue
-            if goal.get("status") != "active":
-                continue
-            meta = entry.metadata or {}
-            plan_scope = meta.get("scope", "")
-            if plan_scope and plan_scope != scope:
-                continue
-            steps = goal.get("steps", [])
-            # 找到第一个 in_progress 步骤，标记 completed + 推进下一步
-            for i, s in enumerate(steps):
-                if s.get("status") == "in_progress":
-                    s["status"] = "completed"
-                    # 推进下一步
-                    next_idx = i + 1
-                    if next_idx < len(steps) and steps[next_idx].get("status") == "pending":
-                        steps[next_idx]["status"] = "in_progress"
-                    # 同步 MemoryStore
-                    entry.content = json.dumps(goal, ensure_ascii=False)
-                    await _store.update(entry, clear_embedding=False)
-                    # 发射事件
-                    _user_scope, chat_id = _parse_scope_chat_id(scope)
-                    await event_bus.emit(EVENT_PLAN_STEP_UPDATED, {
-                        "scope": scope, "chat_id": chat_id,
-                        "plan_id": goal.get("goal_id", ""),
-                        "step_index": i,
-                        "step_status": "completed",
-                        "note": "自动推进",
-                    })
-                    if next_idx < len(steps) and steps[next_idx].get("status") == "in_progress":
-                        await event_bus.emit(EVENT_PLAN_STEP_UPDATED, {
-                            "scope": scope, "chat_id": chat_id,
-                            "plan_id": goal.get("goal_id", ""),
-                            "step_index": next_idx,
-                            "step_status": "in_progress",
-                            "note": "自动推进",
-                        })
-                    break
-            # 只处理第一个匹配的 plan
-            break
-    except Exception:
-        pass  # 自动推进失败不影响主流程
-
-
-async def _finalize_plan_on_turn_end(scope: str, success: bool) -> None:
-    """think_loop 正常结束时，把 plan 收敛到终态（诚实语义）。
-
-    - success=True（AI 主动 end_reply 表示任务收束）：
-      - in_progress → completed（当前正在做的视为做完）
-      - pending → skipped（没开始的就是没做，不假装完成）
-      - plan → completed（整个计划周期结束；若有 skipped 步骤，
-        前端会显示"3/5 完成 · 2 步跳过"而非虚假的全绿）
-    - success=False（中断/异常）：plan 保持 active（用户可继续）
-    """
-    if not success:
-        return
-    try:
-        from agent.planning.tools import _store, _parse_scope_chat_id
-        if _store is None:
-            return
-        from agent.memory.memory_types import MemoryType
-        entries = await _store.list_recent(
-            limit=5, memory_type=MemoryType.SEMANTIC, source="goal",
-        )
-        for entry in entries:
-            try:
-                goal = json.loads(entry.content)
-            except (json.JSONDecodeError, AttributeError):
-                continue
-            if goal.get("status") != "active":
-                continue
-            meta = entry.metadata or {}
-            plan_scope = meta.get("scope", "")
-            if plan_scope and plan_scope != scope:
-                continue
-            steps = goal.get("steps", [])
-            changed = False
-            _user_scope, chat_id = _parse_scope_chat_id(scope)
-            plan_id = goal.get("goal_id", "")
-            for s in steps:
-                st = s.get("status")
-                if st == "in_progress":
-                    s["status"] = "completed"
-                    changed = True
-                    await event_bus.emit(EVENT_PLAN_STEP_UPDATED, {
-                        "scope": scope, "chat_id": chat_id,
-                        "plan_id": plan_id,
-                        "step_index": s.get("index", 0),
-                        "step_status": "completed",
-                        "note": "会话结束自动收束",
-                    })
-                elif st == "pending":
-                    s["status"] = "skipped"
-                    changed = True
-                    await event_bus.emit(EVENT_PLAN_STEP_UPDATED, {
-                        "scope": scope, "chat_id": chat_id,
-                        "plan_id": plan_id,
-                        "step_index": s.get("index", 0),
-                        "step_status": "skipped",
-                        "note": "会话结束未执行",
-                    })
-            if changed or goal.get("status") != "completed":
-                goal["status"] = "completed"
-                goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                entry.content = json.dumps(goal, ensure_ascii=False)
-                await _store.update(entry, clear_embedding=False)
-                await event_bus.emit(EVENT_PLAN_STATUS_CHANGED, {
-                    "scope": scope, "chat_id": chat_id,
-                    "plan_id": plan_id,
-                    "goal_status": "completed",
-                })
-            break
-    except Exception:
-        pass
 
 
 def _round_output_sent_successfully(
@@ -1850,12 +1745,13 @@ async def finish_think(
     统一收敛保证任何结束方式下 plan 都能到达终态。
     """
     # Plan 收敛：正常结束的会话把 plan 标记到终态（in_progress→completed, pending→skipped）。
-    # 中断场景：cancel-plan 路由已把 plan 标记为 cancelled，_finalize 只处理
+    # 中断场景：cancel-plan 路由已把 plan 标记为 cancelled，tracker.finalize_plan 只处理
     # status == "active" 的 goal，自然跳过不会覆盖。
     try:
+        from agent.planning import tracker as _plan_tracker
         scope = mind._resolve_entity_scope(anything) if anything else ""
         if scope:
-            await _finalize_plan_on_turn_end(scope, success=True)
+            await _plan_tracker.finalize_plan(scope)
     except Exception:
         pass  # 收敛失败不影响主流程
 

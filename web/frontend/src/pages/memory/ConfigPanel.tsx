@@ -29,6 +29,18 @@ export function ConfigPanel() {
     { key: "conv_recall_max_results", label: ta("fields.conv_recall_max_results"), type: "int", desc: ta("descs.conv_recall_max_results") },
   ];
 
+  const embeddingFields: FieldMeta[] = [
+    { key: "embedding_text_model", label: ta("fields.embedding_text_model"), type: "model", modelType: "embedding", desc: ta("descs.embedding_text_model") },
+    { key: "embedding_vision_model", label: ta("fields.embedding_vision_model"), type: "model", modelType: "embedding", desc: ta("descs.embedding_vision_model") },
+    { key: "embed_query_timeout_seconds", label: ta("fields.embed_query_timeout_seconds"), type: "float", desc: ta("descs.embed_query_timeout_seconds") },
+    { key: "embed_query_cache_ttl_seconds", label: ta("fields.embed_query_cache_ttl_seconds"), type: "float", desc: ta("descs.embed_query_cache_ttl_seconds") },
+    { key: "embed_rate_limit_requests", label: ta("fields.embed_rate_limit_requests"), type: "int", desc: ta("descs.embed_rate_limit_requests") },
+    { key: "embed_rate_limit_interval_seconds", label: ta("fields.embed_rate_limit_interval_seconds"), type: "float", desc: ta("descs.embed_rate_limit_interval_seconds") },
+    { key: "embed_max_retries", label: ta("fields.embed_max_retries"), type: "int", desc: ta("descs.embed_max_retries") },
+    { key: "embedding_worker_batch_size", label: ta("fields.embedding_worker_batch_size"), type: "int", desc: ta("descs.embedding_worker_batch_size") },
+    { key: "conv_embed_backfill_days", label: ta("fields.conv_embed_backfill_days"), type: "int", desc: ta("descs.conv_embed_backfill_days") },
+  ];
+
   const crossChannelFields: FieldMeta[] = [
     { key: "cross_channel_enabled", label: ta("fields.cross_channel_enabled"), type: "bool", desc: ta("descs.cross_channel_enabled") },
     { key: "cross_channel_window_minutes", label: ta("fields.cross_channel_window_minutes"), type: "int", desc: ta("descs.cross_channel_window_minutes") },
@@ -52,6 +64,16 @@ export function ConfigPanel() {
         title={ta("sections.deepRecall")}
         subtitle={ta("sections.deepRecallSubtitle")}
         fields={recallFields}
+        queryKey="appConfig"
+        fetchFn={() => configApi.getApp().then((r) => r.data)}
+        saveFn={(values) => configApi.saveApp(values)}
+        extraInvalidateKeys={["configSnapshot"]}
+        note={ta("notes.restartRequired")}
+      />
+      <ConfigFormPanel
+        title={ta("sections.embeddingEngine")}
+        subtitle={ta("sections.embeddingEngineSubtitle")}
+        fields={embeddingFields}
         queryKey="appConfig"
         fetchFn={() => configApi.getApp().then((r) => r.data)}
         saveFn={(values) => configApi.saveApp(values)}

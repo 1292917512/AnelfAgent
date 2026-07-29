@@ -47,8 +47,14 @@ async def save_cognee_config(req: CogneeConfigUpdate) -> Dict[str, Any]:
 
 
 @router.post("/cognee/retry")
-async def retry_cognee_sync() -> Dict[str, int]:
+async def retry_cognee() -> Dict[str, Any]:
     return {"retried": await _mem_svc.retry_cognee_sync()}
+
+
+@router.post("/cognee/rebuild")
+async def rebuild_cognee() -> Dict[str, Any]:
+    """清空 cognee 数据并全量重建（切换 cognee embedding 模型后需要）。"""
+    return await _mem_svc.rebuild_cognee()
 
 
 @router.post("/cognee/backfill")
@@ -98,6 +104,15 @@ async def get_pfc_status() -> List[Dict[str, Any]]:
 async def get_index_status() -> Dict[str, Any]:
     try:
         return await _mem_svc.get_index_status()
+    except RuntimeError:
+        return {"error": "运行时未初始化"}
+
+
+@router.post("/embedding/rebuild")
+async def rebuild_embeddings() -> Dict[str, Any]:
+    """清空全部向量数据并按当前配置的域模型后台重建（切换 embedding 模型后调用）。"""
+    try:
+        return await _mem_svc.rebuild_embeddings()
     except RuntimeError:
         return {"error": "运行时未初始化"}
 

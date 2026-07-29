@@ -12,7 +12,7 @@ from agent.skills.skill_store import SkillState, SkillStore
 class SkillService:
     """技能 CRUD 与状态管理服务。"""
 
-    def __init__(self, skills_dir: str = "workspace/skills") -> None:
+    def __init__(self, skills_dir: Optional[str] = None) -> None:
         self._store = SkillStore(skills_dir)
 
     def list_skills(self, *, include_archived: bool = False) -> List[Dict[str, Any]]:

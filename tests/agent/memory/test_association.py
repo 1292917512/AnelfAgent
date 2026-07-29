@@ -77,7 +77,7 @@ class TestScopeBoost:
 
 class TestExpandAssociations:
     async def test_expands_related_memories(self, store: MemoryStore) -> None:
-        from agent.memory.embedder import Embedder
+        from agent.memory.embedding import Embedder
         main_id = await store.add(_entry("主结果", ["user:111", "topic:猫"]))
         await store.add(_entry("关联记忆", ["user:111", "topic:狗"]))
 
@@ -94,7 +94,7 @@ class TestExpandAssociations:
         assert assoc.score < 0.9  # 关联打折
 
     async def test_no_tags_no_expansion(self, store: MemoryStore) -> None:
-        from agent.memory.embedder import Embedder
+        from agent.memory.embedding import Embedder
         retriever = MemoryRetriever(store, Embedder())
         results = [MemorySearchResult(id="mem:1", snippet="a", score=0.9, tags=[])]
         expanded = await retriever._expand_associations(results, limit=5)

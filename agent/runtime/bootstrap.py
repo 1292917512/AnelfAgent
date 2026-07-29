@@ -127,7 +127,7 @@ def create_bootstrap() -> FlowMachine:
 
     @machine.node(skip_on_error=False)
     async def init_memory():
-        from agent.memory.embedder import Embedder
+        from agent.memory.embedding import get_embedder
         from agent.memory.memory_store import MemoryStore
         from agent.memory.memory_migrate import needs_migration, migrate_memories_to_md
         from agent.memory.memory_sync import sync_files
@@ -139,7 +139,7 @@ def create_bootstrap() -> FlowMachine:
         _main = Path(default_sqlite_path())
         db_path = str(_main.with_name(f"{_main.stem}_memory{_main.suffix or '.sqlite3'}"))
         store = MemoryStore(db_path=db_path)
-        embedder = Embedder()
+        embedder = get_embedder("text")
 
         await store._get_db()
         Lifecycle.register("memory_store", store, cleanup=store.close)
@@ -169,7 +169,7 @@ def create_bootstrap() -> FlowMachine:
         except Exception as exc:
             log(f"文件索引同步失败（不影响启动）: {exc}", "WARNING")
 
-        from agent.memory.embedding_worker import EmbeddingWorker, set_embedding_worker
+        from agent.memory.embedding import EmbeddingWorker, set_embedding_worker
 
         embedding_worker = EmbeddingWorker(store, embedder)
         await embedding_worker.start()

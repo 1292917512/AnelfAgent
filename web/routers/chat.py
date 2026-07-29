@@ -355,48 +355,20 @@ class CancelPlanRequest(BaseModel):
 
 @router.post("/cancel-plan")
 async def cancel_plan(req: CancelPlanRequest) -> Dict[str, Any]:
-    """用户从前端 PlanPanel 浮窗点击"取消"：中断当前 scope 的执行并标记 plan cancelled。
+    """用户从前端 PlanPanel 浮窗点击"取消"：标记 cancelled + interrupt scope + 发射事件。
 
-    路径：
-    1. 更新 MemoryStore 里的 goal status = "cancelled"（前端 PlanCard 显示）
-    2. 调用 mind.interrupt(scope) 协作式中断当前 think_loop（Agent 下轮检查点停止）
-    3. 发射 EVENT_PLAN_CANCELLED 事件（前端 PlanPanel 标灰）
+    全部状态机逻辑由 ``agent.planning.tracker.cancel_plan`` 统一实现，
+    路由层只做参数组装（chat_id → scope）。
     """
-    try:
-        from agent.planning.tools import _store, _find_goal, _parse_scope_chat_id
-        from core.event_bus import event_bus, EVENT_PLAN_CANCELLED
-        from services._runtime import get_runtime
-        import json as _json
+    from agent.planning import tracker as plan_tracker
 
-        scope = f"user_web_user#{req.chat_id}" if req.chat_id != "default" else "user_web_user"
-
-        # 1. 更新 MemoryStore
-        if _store is not None:
-            entry, goal = await _find_goal(_store, req.plan_id)
-            if entry is not None and goal is not None:
-                goal["status"] = "cancelled"
-                entry.content = _json.dumps(goal, ensure_ascii=False)
-                await _store.update(entry, clear_embedding=False)
-
-        # 2. 中断当前 scope 的执行（协作式，Agent 下轮检查点停止）
-        rt = get_runtime()
-        if rt is not None:
-            mind = getattr(rt, "mind", None)
-            if mind is not None and hasattr(mind, "interrupt"):
-                mind.interrupt(scope, reason="用户取消计划")
-
-        # 3. 发射事件
-        _user_scope, chat_id = _parse_scope_chat_id(scope)
-        await event_bus.emit(EVENT_PLAN_CANCELLED, {
-            "scope": scope,
-            "chat_id": chat_id,
-            "plan_id": req.plan_id,
-            "reason": "用户取消",
-        })
-
-        return {"status": "ok"}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+    scope = plan_tracker.make_scope(
+        "web_user", "" if req.chat_id == "default" else req.chat_id,
+    )
+    ok = await plan_tracker.cancel_plan(scope, req.plan_id, reason="用户取消")
+    if not ok:
+        return {"status": "error", "error": "plan 不存在或已结束"}
+    return {"status": "ok"}
 
 
 @router.get("/stream")

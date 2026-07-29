@@ -124,7 +124,7 @@ async def upload_sticker(
     """上传表情包：description 留空时自动调用视觉模型生成。"""
     from entities.sticker.phash import compute_phash
     from entities.sticker.tools import (
-        _describe_sticker, _embed_text, _import_to_stickers_dir,
+        _describe_sticker, _embed_for_index, _import_to_stickers_dir,
         _md5_file, _parse_tags, _stickers_dir,
     )
 
@@ -149,7 +149,7 @@ async def upload_sticker(
         if not description.strip():
             description = await _describe_sticker(tmp_path)
         dest = _import_to_stickers_dir(tmp_path, content_hash)
-        embedding = await _embed_text(description, tag_list)
+        embedding = await _embed_for_index(description, tag_list, dest)
 
         sticker = await _store().add_sticker(
             file_path=dest,
@@ -179,7 +179,7 @@ class StickerUpdate(BaseModel):
 @router.put("/{sticker_id}")
 async def update_sticker(sticker_id: str, body: StickerUpdate) -> Dict[str, Any]:
     """更新描述/标签/情绪（自动重新生成检索向量）。"""
-    from entities.sticker.tools import _embed_text
+    from entities.sticker.tools import _embed_for_index
 
     store = _store()
     current = await store.get_sticker(sticker_id)
@@ -188,7 +188,7 @@ async def update_sticker(sticker_id: str, body: StickerUpdate) -> Dict[str, Any]
 
     new_desc = body.description if body.description is not None else current["description"]
     new_tags = body.tags if body.tags is not None else current["tags"]
-    embedding = await _embed_text(new_desc, new_tags)
+    embedding = await _embed_for_index(new_desc, new_tags, current["file_path"])
 
     updated = await store.update_sticker(
         sticker_id,
@@ -203,7 +203,7 @@ async def update_sticker(sticker_id: str, body: StickerUpdate) -> Dict[str, Any]
 @router.post("/{sticker_id}/reindex")
 async def reindex_sticker(sticker_id: str) -> Dict[str, Any]:
     """重新生成描述与检索向量（视觉模型重描述）。"""
-    from entities.sticker.tools import _describe_sticker, _embed_text
+    from entities.sticker.tools import _describe_sticker, _embed_for_index
 
     store = _store()
     current = await store.get_sticker(sticker_id)
@@ -215,7 +215,7 @@ async def reindex_sticker(sticker_id: str) -> Dict[str, Any]:
     description = await _describe_sticker(current["file_path"])
     if not description:
         raise HTTPException(status_code=503, detail="无可用视觉模型，无法重新生成描述")
-    embedding = await _embed_text(description, current["tags"])
+    embedding = await _embed_for_index(description, current["tags"], current["file_path"])
     updated = await store.update_sticker(
         sticker_id, description=description, embedding=embedding)
     return {"success": True, "sticker": updated}

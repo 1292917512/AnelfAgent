@@ -18,10 +18,11 @@ from lark_oapi.api.im.v1 import (
 )
 
 from core.log import log
+from core.path import ConfigPaths
 
 from .types import FeishuMediaInfo
 
-_UPLOAD_DIR = os.path.join("workspace", "uploads")
+_UPLOAD_DIR = ConfigPaths.UPLOAD_DIR
 _MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 
 
