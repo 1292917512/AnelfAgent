@@ -2,9 +2,12 @@
 __pycache__/
 *.py[cod]
 *.mypy_cache
+.pytest_cache/
+.ruff_cache/
 
 # === IDE ===
 .idea/
+.vscode/
 *.ipr
 *.iws
 *.iml
@@ -54,9 +57,11 @@ config/app_config.json
 config/llm_clients.json
 config/mcp_servers.json
 config/mind_config.json
+config/approval_policies.json
 
 # === Personal runtime configs ===
 config/heartbeat.json
+config/cognee.json
 config/reminders.json
 config/webui.json
 config/permission_rules.json
