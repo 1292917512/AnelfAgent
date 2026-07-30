@@ -113,6 +113,11 @@ export default function EntityDetail() {
     [name],
   );
 
+  // 有专属面板的实体默认落在 panel 页签（实体页即其功能主入口）
+  useEffect(() => {
+    setTab(PanelComponent ? "panel" : "overview");
+  }, [PanelComponent]);
+
   const { data: entity, isError } = useQuery({
     queryKey: ["entity-detail", name],
     queryFn: () => entitiesApi.detail(name!).then((r) => r.data as EntityDetailType),
@@ -146,10 +151,10 @@ export default function EntityDetail() {
   const manifest = entity.manifest;
   const displayName = manifest?.display_name || entity.group || entity.name;
   const tabs = [
+    ...(PanelComponent ? [{ key: "panel" as EntityTab, label: t("tabs.panel"), icon: PanelRight }] : []),
     { key: "overview" as EntityTab, label: t("tabs.overview"), icon: LayoutDashboard },
     { key: "config" as EntityTab, label: t("tabs.config"), icon: Settings },
     { key: "tools" as EntityTab, label: t("tabs.tools"), icon: Wrench },
-    ...(PanelComponent ? [{ key: "panel" as EntityTab, label: t("tabs.panel"), icon: PanelRight }] : []),
   ];
 
   return (

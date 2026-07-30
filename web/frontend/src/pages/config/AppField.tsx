@@ -104,7 +104,11 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
         <label className="text-xs text-muted font-medium">{meta.label}</label>
         {meta.type === "bool" && renderInput()}
       </div>
-      {meta.desc && <p className="text-[11px] text-muted opacity-70">{meta.desc}</p>}
+      {meta.desc && (
+        <p className="text-[11px] text-muted opacity-70 line-clamp-2" title={meta.desc}>
+          {meta.desc}
+        </p>
+      )}
       {meta.type !== "bool" && renderInput()}
     </div>
   );

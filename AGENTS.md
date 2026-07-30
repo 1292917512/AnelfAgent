@@ -114,6 +114,16 @@ ConfigPaths.UPLOAD_DIR          # workspace/uploads
 `[key:value]` 统一数据编码。函数：`tag_label` / `etag` / `etag_all` / `batch_remove_tags`。
 16 种内置标签：time / uid / group_id / name / channel / platform / media_file / reply_to 等。
 
+#### 会话 scope 格式（agent/messages/everything.py）
+
+entity_scope 含频道 adapter 维度，跨频道同号实体（如 QQ uid 与 WebUI uid）天然隔离：
+`user_{adapter}:{uid}` / `group_{adapter}:{gid}` / `user_{adapter}:{uid}#{chat_id}`
+（如 `user_qq:123`、`user_webui:web_user#chat_1`）。构造一律用 `build_entity_scope()`，
+解析一律用 `parse_entity_scope()`（返回 scope_type/adapter/base_id/session_id，兼容无 adapter 旧格式），
+禁止手工 f-string 拼接。记忆标签同构：`user:{adapter}:{uid}`。存量数据由
+`agent/storage/scope_migrate.py` 启动时自动迁移（`legacy_adapter_default` 配置归属频道，默认 qq）；
+别名实体的跨频道历史合并由 `alias_merge_history` 配置（默认开）。
+
 #### entities/_sdk.py
 
 工具注册 SDK + LLM 桥接层。entities 层通过此模块访问 LLM 能力，不直接依赖 agent：
@@ -216,7 +226,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | 文件 | 职责 |
 |------|------|
 | `agent/mind/mind.py` | 思维核心、自主循环 |
-| `agent/mind/prefrontal_cortex.py` | 工作记忆、工具召回、上下文组装（分层缓存） |
+| `agent/mind/prefrontal_cortex.py` | 工作记忆门面（组合 work_memory / tool_assembly / context_assembly 三组件） |
 | `agent/mind/autonomous.py` | 决策类型、态势模型、元决策 prompt |
 | `agent/mind/prompt_layers.py` | Prompt 分层缓存（stable/context/volatile + PromptCacheManager） |
 | `agent/mind/guardrails.py` | 工具调用守卫（死循环检测 warn/block/halt） |
@@ -237,10 +247,13 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/delegation/sub_agent.py` | 子代理（leaf/orchestrator 角色 + 深度限制） |
 | `agent/delegation/delegation_manager.py` | 委托调度（并发上限/预算/聚合/后台模式） |
 | `agent/delegation/delegate_tool.py` | delegate_task 工具 |
-| `agent/mind/tools/multi_tool.py` | 多工具并行编排（multi_tool_invoke） |
+| `agent/mind/work_memory.py` | 工作记忆数据面（消息队列 / 待办持久化 / 短期记忆 / 态势路由，PFC 组件） |
+| `agent/mind/tool_assembly.py` | 工具装配（召回 / tag 激活 / schema 合并门控，PFC 组件） |
+| `agent/mind/context_assembly.py` | 上下文组装（系统提示 / Prompt 分层缓存 / 执行上下文，PFC 组件） |
 | `agent/mind/tools/decision_executor.py` | 决策执行分发（REPLY/REFLECT/PLAN 等） |
 | `agent/mind/tools/media_pipeline.py` | 媒体标签转换 |
 | `agent/memory/memory_store.py` | 长期记忆存储（SQLite + FTS5 + Embedding） |
+| `agent/storage/scope_migrate.py` | scope 迁移（旧格式键回填 adapter 维度，user_version 幂等 + 自动备份） |
 | `agent/memory/tools.py` | 记忆工具（memorize/recall/forget） |
 | `agent/memory/notes.py` | 便签文件系统 |
 | `agent/task/model.py` | 任务数据模型（TaskDefinition / TaskResult） |
@@ -291,7 +304,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `output` | 消息输出 | `channel/output_tools.py` | always |
 | `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/heartbeat |
 | `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
-| `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tools/multi_tool.py` + `agent/mind/tool_activation.py` + `agent/mind/context_compressor.py` | always |
+| `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tool_activation.py` + `agent/mind/context_compressor.py` | always |
 | `planning` | 目标规划 | `agent/planning/tools.py` | planning/goal/heartbeat |
 | `skills` | 技能 | `agent/skills/tools.py` | always |
 | `delegation` | 子代理 | `agent/delegation/delegate_tool.py` | always |
@@ -325,6 +338,8 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 **生命周期**：bootstrap 中创建的有状态单例须调用 `Lifecycle.register(name, instance, cleanup=close_fn)` 注册；关闭时 `Lifecycle.shutdown_all()` 逆序清理
 
 **包管理**：项目依赖由 uv 管理（`pyproject.toml` + `uv.lock`），安装依赖用 `uv add`，临时操作用 `uv pip install`；禁止对 `.venv` 使用 `pip install` / `ensurepip`（uv 创建的 venv 默认不含 pip，属正常状态而非故障，不要"修复"它）
+
+**测试体系**：`tests/` 分两层——`tests/unit/`（纯 mock/纯函数/tmp_path，快速）与 `tests/integration/`（真实应用组装或需外部凭证，需凭证的用例 env-gated 自动 skip）；目录归属由根 `tests/conftest.py` 自动打 `unit`/`integration` marker，无需手写。根 conftest 全局隔离 ConfigManager（指向 tmp_path），新测试不得读写真实 `config/`。运行：`uv run pytest`（全量）/ `uv run pytest tests/unit`（快速）/ `uv run pytest -m integration`。CI（`.github/workflows/ci.yml`）在 push/PR 时执行 ruff + mypy（core 必过、全量观察）+ pytest（含覆盖率）+ 前端 lint/build。
 
 **禁止**：直接 import openai/anthropic SDK（用 litellm）/ entities 直接 import agent（用 _sdk 桥接）
 

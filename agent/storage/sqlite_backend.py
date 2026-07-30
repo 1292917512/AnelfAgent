@@ -29,6 +29,7 @@ class SqliteBackend:
         self.db_path = db_path or default_sqlite_path()
         self._db: Optional[aiosqlite.Connection] = None
         self._initialized = False
+        self._scope_migrated = False
         self._conv_embed_ready = False
         self._entity_counter_ready = False
         self._adapter_key_ready = False
@@ -139,6 +140,15 @@ class SqliteBackend:
                 await db.commit()
                 self._initialized = True
 
+            # scope 迁移（user_version 幂等）：旧格式键统一回填 adapter 维度
+            if not self._scope_migrated:
+                from agent.storage.scope_migrate import get_legacy_adapter, migrate_main_db_scopes
+                try:
+                    await migrate_main_db_scopes(db, self.db_path, get_legacy_adapter())
+                except Exception as exc:
+                    log(f"scope 迁移失败（不影响启动，备份可恢复）: {exc}", "ERROR")
+                self._scope_migrated = True
+
             self._db = db
             self._last_health_check = time.monotonic()
             return db
@@ -237,6 +247,40 @@ class SqliteBackend:
         # 角色按存储原样返回（主流 OpenAI 格式：system/user/assistant/tool），
         # 不做 system→assistant 等特殊映射；ts_ns 由调用方用于时序水位，入库时间即消息到达时间。
         # 按列位置手工构造 dict，避免修改共享连接的 row_factory 引发并发竞态。
+        return [{"role": r[0], "content": r[1], "ts_ns": r[2]} for r in rows]
+
+    async def fetch_conversation_multi(
+        self, *, scopes: list[tuple[str, str]], limit: int
+    ) -> list[dict]:
+        """按多个 (scope_type, scope_id) 合并读取历史，按 ts_ns 归并取最近 limit 条。
+
+        用于别名实体的跨频道历史合并（同一个人在不同频道的会话并集）。
+        单 scope 时等价于 fetch_conversation。
+        """
+        if not scopes:
+            return []
+        if len(scopes) == 1:
+            return await self.fetch_conversation(
+                scope_type=scopes[0][0], scope_id=scopes[0][1], limit=limit
+            )
+        db = await self._get_db()
+        where = " OR ".join("(scope_type=? AND scope_id=?)" for _ in scopes)
+        params: list = []
+        for st, sid in scopes:
+            params.extend((st, sid))
+        params.append(int(limit))
+        cursor = await db.execute(
+            f"""
+            SELECT role, content, ts_ns
+            FROM conversation_messages
+            WHERE {where}
+            ORDER BY ts_ns DESC
+            LIMIT ?
+            """,
+            params,
+        )
+        rows = await cursor.fetchall()
+        rows = list(reversed(rows))
         return [{"role": r[0], "content": r[1], "ts_ns": r[2]} for r in rows]
 
     # ------------------------------------------------------------------

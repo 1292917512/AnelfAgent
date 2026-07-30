@@ -3,7 +3,6 @@
     "overview": "总览",
     "links": "链接列表",
     "create": "新建分享",
-    "config": "配置",
     "logs": "下载日志"
   },
   "stats": {
@@ -65,8 +64,6 @@
     "copySuccess": "已复制到剪贴板",
     "copyFailed": "复制失败",
     "loadFailed": "加载失败",
-    "saveSuccess": "配置已保存",
-    "saveFailed": "保存失败",
     "confirmRevoke": "确认撤销该链接？撤销后将无法下载。"
   },
   "empty": {
@@ -74,29 +71,10 @@
     "hint": "切换到「新建分享」开始",
     "logs": "暂无下载记录"
   },
-  "config": {
-    "defaultExpiresIn": "默认过期策略",
-    "tokenLength": "Token 长度",
-    "aiAutoShare": "AI 自动分享",
-    "defaultMaxDownloads": "默认下载上限",
-    "auditEnabled": "下载审计",
-    "saved": "配置已保存",
-    "save": "保存配置"
-  },
   "topFiles": "热门文件 Top 10",
   "trend": "创建趋势",
   "downloadUrl": "下载地址",
   "unlimited": "无限制",
-  "monitor": {
-    "title": "分享监控",
-    "activeLinks": "活跃链接",
-    "todayDownloads": "今日下载",
-    "recentDownloads": "最近下载",
-    "storage": "存储占用"
-  },
   "filePathHint": "workspace 沙箱内的相对路径或绝对路径",
-  "workspaceEmpty": "workspace 为空",
-  "tokenLengthHint": "8 - 64 字符，默认 22",
-  "aiAutoShareDesc": "允许 AI 通过工具自动创建分享链接",
-  "auditDesc": "记录每次下载的 IP / 时间 / User-Agent"
+  "workspaceEmpty": "workspace 为空"
 }

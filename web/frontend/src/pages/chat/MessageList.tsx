@@ -67,8 +67,11 @@ export function MessageList() {
   // 把 messages / plans / delegations 按时间序合并到同一条时间线（输入不变时复用结果）
   const timeline = useMemo<TimelineEntry[]>(() => {
     const entries: TimelineEntry[] = [];
+    // 本地新消息只有 cid 没有 DB id，继承前一条的 ts 保持追加在后（sort 稳定，同键保序）
+    let lastMsgTs = 0;
     for (const m of messages ?? []) {
-      const ts = m.id ?? 0;
+      const ts = m.id ?? lastMsgTs;
+      lastMsgTs = ts;
       entries.push({
         kind: "message",
         ts,

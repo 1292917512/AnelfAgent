@@ -92,21 +92,22 @@ async def get_recollection(
     memory_msgs = mind._apply_memory_budget(memory_msgs)
 
     # Prompt 分层构建（参考 hermes 三层架构）：
-    # stable 层（人设 + 工具提示）对话内冻结复用，context 层（便签）低频重建，
-    # volatile 层（语义召回等）每轮构建并置于其后，保证前缀缓存命中。
+    # stable 人设块（人设+环境+静态指南）长期冻结，stable 工具块（目录+规则）随工具集重建，
+    # context 层（便签）低频重建，volatile 层（语义召回等）每轮构建并置于其后，保证前缀缓存命中。
     models_summary = mind._get_models_summary()
-    stable_text, context_text, stable_hit, context_hit = await mind._build_layered_prompts(
-        anything, models_summary,
+    persona_text, tools_text, context_text, persona_hit, tools_hit, context_hit = (
+        await mind._build_layered_prompts(anything, models_summary)
     )
 
     await event_bus.emit(EVENT_THINKING_CONTEXT_BUILD, {
         "memory_msgs_count": len(memory_msgs),
-        "stable_cache_hit": stable_hit,
+        "stable_cache_hit": persona_hit and tools_hit,
         "context_cache_hit": context_hit,
     })
 
     return await mind.pfc.build_llm_context(
-        stable_text=stable_text,
+        persona_text=persona_text,
+        tools_text=tools_text,
         context_text=context_text,
         memory_msgs=memory_msgs,
         anything=anything,
@@ -160,20 +161,23 @@ async def _build_layered_prompts(
         mind: "Mind",
         anything: Optional["Everything"],
         models_summary: str,
-) -> Tuple[str, str, bool, bool]:
-    """构建 stable/context 两层提示（经 PromptCacheManager 缓存复用）。
+) -> Tuple[str, str, str, bool, bool, bool]:
+    """构建 stable 人设块 / stable 工具块 / context 层三段提示（经 PromptCacheManager 缓存复用）。
 
-    stable 层：人设 + 工具提示 + 静态指南（记忆系统文档 + 工作流），对话内冻结。
+    人设块：人设 + 运行环境 + 静态指南——与工具无关，指纹不含工具版本因子，
+    工具激活/发现/清理不会使其失效，长期命中（缓存前缀中最大最稳定的段）。
+    工具块：工具目录 + 使用规则 + 媒体规则——随工具集变化经 stable_fingerprint 重建。
     context 层：动态便签（当前状态/教导/规则）+ 文件索引，仅编辑时重建。
 
     文件型层通过 FileLayerCache 做 mtime O(1) 快检，未变时跳过 I/O。
 
     Returns:
-        (stable_text, context_text, stable_hit, context_hit)
+        (persona_text, tools_text, context_text, persona_hit, tools_hit, context_hit)
     """
     from agent.mind.prompt_layers import (
         LAYER_CONTEXT,
-        LAYER_STABLE,
+        LAYER_STABLE_PERSONA,
+        LAYER_STABLE_TOOLS,
         prompt_cache_manager,
     )
 
@@ -184,19 +188,25 @@ async def _build_layered_prompts(
     ]
     direct_vision = mind._direct_vision()
 
-    # --- stable 层：人设 + 工具 + 静态指南 ---
+    # --- stable 人设块：人设 + 环境 + 静态指南（指纹不含工具因子） ---
+    from agent.mind.context_assembly import _env_info_block
     notes_path = get_notes_path()
     static_guide, _ = mind._file_cache.get_or_load(notes_path, build_static_guide)
-    stable_hash = prompt_cache_manager.compute_hash(
-        *persona_parts,
-        mind.pfc.stable_fingerprint(models_summary, direct_vision),
-        static_guide,
+    persona_hash = prompt_cache_manager.compute_hash(
+        *persona_parts, static_guide, _env_info_block(),
     )
-    stable_text, stable_hit = prompt_cache_manager.get_or_build(
-        scope, LAYER_STABLE, stable_hash,
-        lambda: mind.pfc.build_stable_layer(
-            persona_parts, models_summary, direct_vision, static_guide,
-        ),
+    persona_text, persona_hit = prompt_cache_manager.get_or_build(
+        scope, LAYER_STABLE_PERSONA, persona_hash,
+        lambda: mind.pfc.context_assembly.build_persona_block(persona_parts, static_guide),
+    )
+
+    # --- stable 工具块：工具目录 + 规则（指纹含工具版本门控） ---
+    tools_hash = prompt_cache_manager.compute_hash(
+        mind.pfc.stable_fingerprint(models_summary, direct_vision),
+    )
+    tools_text, tools_hit = prompt_cache_manager.get_or_build(
+        scope, LAYER_STABLE_TOOLS, tools_hash,
+        lambda: mind.pfc.context_assembly.build_tools_block(models_summary, direct_vision),
     )
 
     # --- context 层：动态便签 + 文件索引 ---
@@ -210,7 +220,7 @@ async def _build_layered_prompts(
         scope, LAYER_CONTEXT, context_hash,
         lambda: "[个人笔记/便签记忆]\n" + "\n\n".join(context_parts),
     )
-    return stable_text, context_text, stable_hit, context_hit
+    return persona_text, tools_text, context_text, persona_hit, tools_hit, context_hit
 
 
 def _apply_memory_budget(msgs: List[Dict]) -> List[Dict]:
@@ -244,10 +254,12 @@ def _extract_related_scopes(
 ) -> List[str]:
     """从对话中提取涉及的用户 uid（发送者 [uid:] + @ 对象 [at_uid:]），构建画像加载列表。
 
-    仅在群聊场景下有意义。
+    仅在群聊场景下有意义。adapter 继承自当前群 scope（成员与群同频道）。
     """
     if not primary_scope.startswith("group_"):
         return []
+    from agent.messages import build_entity_scope, parse_entity_scope
+    _, adapter, _, _ = parse_entity_scope(primary_scope)
     seen: set[str] = {primary_scope}
     scopes: List[str] = []
     for msg in conversation_tail:
@@ -258,7 +270,7 @@ def _extract_related_scopes(
             uid = m.group(1)
             if uid == "all":
                 continue
-            scope = f"user_{uid}"
+            scope = build_entity_scope("user", adapter, uid)
             if scope not in seen:
                 seen.add(scope)
                 scopes.append(scope)
@@ -269,10 +281,12 @@ def _extract_scopes_from_anything(
         mind: "Mind", anything: "Everything", primary_scope: str,
 ) -> List[str]:
     """从当前消息对象提取发送者 uid 和 [at_uid:xxx] 中的 uid。"""
+    from agent.messages import build_entity_scope
+    adapter = str(getattr(anything, "adapter_key", "") or "")
     seen: set[str] = {primary_scope}
     scopes: List[str] = []
     if anything.uid and anything.uid not in (0, "0"):
-        scope = f"user_{anything.uid}"
+        scope = build_entity_scope("user", adapter, str(anything.uid))
         if scope not in seen:
             seen.add(scope)
             scopes.append(scope)
@@ -282,7 +296,7 @@ def _extract_scopes_from_anything(
             uid = m.group(1)
             if uid == "all":
                 continue
-            scope = f"user_{uid}"
+            scope = build_entity_scope("user", adapter, uid)
             if scope not in seen:
                 seen.add(scope)
                 scopes.append(scope)

@@ -8,6 +8,7 @@ import { Button, ConfirmDialog, Input, LoadingBlock, toast } from "@/components/
 import {
   Image as ImageIcon,
   Plus,
+  RefreshCw,
   Search,
   Smile,
 } from "lucide-react";
@@ -29,6 +30,7 @@ export function StickersPanel() {
   const [editTarget, setEditTarget] = useState<StickerItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<StickerItem | null>(null);
   const [removeImageTarget, setRemoveImageTarget] = useState<string | null>(null);
+  const [showRebuild, setShowRebuild] = useState(false);
   const [uploadForm, setUploadForm] = useState({ description: "", tags: "", emotion: "" });
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [editForm, setEditForm] = useState({ description: "", tags: "", emotion: "" });
@@ -117,6 +119,24 @@ export function StickersPanel() {
     },
   });
 
+  const rebuildMut = useMutation({
+    mutationFn: () => stickersApi.rebuildEmbeddings("mismatched"),
+    onSuccess: () => {
+      toast.success(t("rebuildStarted"));
+      setShowRebuild(false);
+      invalidate();
+    },
+    onError: () => toast.error(t("rebuildFailed")),
+  });
+
+  const embedding = stats?.embedding;
+  const mismatched = embedding?.mismatched ?? 0;
+  const pendingBackfill = embedding
+    ? (embedding.missing.stickers ?? 0) + (embedding.missing.images ?? 0)
+    : 0;
+  const vectorDims =
+    embedding?.model_dims ?? embedding?.vec_dims?.stickers ?? embedding?.vec_dims?.images ?? null;
+
   const openEdit = (s: StickerItem) => {
     setEditForm({ description: s.description, tags: s.tags.join(", "), emotion: s.emotion });
     setEditTarget(s);
@@ -161,13 +181,38 @@ export function StickersPanel() {
                 {stats.vec_available ? t("vecOn") : t("vecOff")}
               </span>
             )}
+            {embedding && mismatched > 0 && (
+              <span className="text-xs px-2 py-0.5 rounded-full border bg-warn-subtle text-warn border-warn/30">
+                {t("dimsMismatch", { count: mismatched })}
+              </span>
+            )}
+            {embedding && mismatched === 0 && vectorDims && (
+              <span className="text-xs px-2 py-0.5 rounded-full border bg-secondary text-muted border-border">
+                {t("vecDims", { dims: vectorDims })}
+              </span>
+            )}
+            {pendingBackfill > 0 && (
+              <span className="text-xs px-2 py-0.5 rounded-full border bg-secondary text-muted border-border">
+                {t("pendingBackfill", { count: pendingBackfill })}
+              </span>
+            )}
           </div>
           <p className="text-xs text-muted max-w-xl">{t("subtitle")}</p>
         </div>
-        <Button variant="primary" size="sm" onClick={() => setShowUpload(true)} className="shrink-0">
-          <Plus size={14} />
-          {t("uploadSticker")}
-        </Button>
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            variant={mismatched > 0 ? "primary" : "secondary"}
+            size="sm"
+            onClick={() => setShowRebuild(true)}
+          >
+            <RefreshCw size={14} />
+            {t("rebuildVectors")}
+          </Button>
+          <Button variant="primary" size="sm" onClick={() => setShowUpload(true)}>
+            <Plus size={14} />
+            {t("uploadSticker")}
+          </Button>
+        </div>
       </div>
 
       {/* Tab 切换 */}
@@ -288,6 +333,23 @@ export function StickersPanel() {
         cancelText={t("common:cancel")}
         danger
         loading={removeImageMut.isPending}
+      />
+
+      {/* 向量重建确认 */}
+      <ConfirmDialog
+        open={showRebuild}
+        onClose={() => setShowRebuild(false)}
+        onConfirm={() => rebuildMut.mutate()}
+        title={t("rebuildVectors")}
+        message={t("rebuildConfirm", {
+          count: mismatched,
+          model: embedding?.model || "?",
+          dims: vectorDims ?? "?",
+        })}
+        confirmText={rebuildMut.isPending ? t("common:saving") : t("rebuildVectors")}
+        cancelText={t("common:cancel")}
+        danger
+        loading={rebuildMut.isPending}
       />
     </>
   );

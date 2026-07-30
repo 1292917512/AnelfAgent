@@ -7,6 +7,8 @@ from .everything import (
     EverythingGroup,
     MsgType,
     Nothing,
+    build_entity_scope,
+    build_scope_id,
     parse_entity_scope,
 )
 from .presets import (
@@ -35,5 +37,7 @@ __all__ = [
     "CharacterAgent",
     "EntityData",
     "parse_entity_scope",
+    "build_entity_scope",
+    "build_scope_id",
 ]
 

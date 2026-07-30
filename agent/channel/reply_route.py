@@ -86,6 +86,7 @@ _CONTEXT_LEAK_MARKERS = (
     "[工具态势]",
     "[当前无外部消息]",
     "[输出方式]",
+    "[输出契约]",
 )
 _CONTEXT_LEAK_SCAN_CHARS = 300
 
@@ -96,6 +97,46 @@ def looks_like_context_leak(text: str) -> bool:
         return False
     head = text[:_CONTEXT_LEAK_SCAN_CHARS]
     return any(marker in head for marker in _CONTEXT_LEAK_MARKERS)
+
+
+# 前言（过程话术）检测：承诺即将执行动作但无实质结论的过渡文本。
+# 这类文本一旦按"纯文本终态"投递就会"只说不做"，由调用方拦截并纠正。
+_PREAMBLE_CN_RE = re.compile(
+    r"^(?:(?:好的?|OK|嗯+|收到|明白|没问题|稍等(?:一下|片刻)?|等我一下)[，,。！!~～\s]*)?"
+    r"(?:让?我|咱)(?:来|先|现在|马上|立即|就|去|这就|帮你|为你|给你)*\s*"
+    r"(?:看一?看|查一?查|查一下|看一下|找一?找|找一下|搜索|搜一?搜|试一?试|尝试|"
+    r"处理|分析|检查|确认|获取|打开|读取?|运行|执行|验证|研究|了解|调查|整理|统计|翻一?翻)"
+)
+_PREAMBLE_EN_RE = re.compile(
+    r"^(?:(?:sure|okay|ok|alright|got it)[,.!]?\s*)?"
+    r"(?:let me|i'll|i will|i'm going to|i am going to|allow me to)\s+"
+    r"(?:check|look|search|fetch|find|try|run|read|open|verify|investigate|"
+    r"analyze|analyse|take a look|gather|review)",
+    re.IGNORECASE,
+)
+# 前言通常短小；长文本即使以承诺式开头也往往自带结论，不误拦
+_PREAMBLE_MAX_LEN = 200
+
+
+def looks_like_preamble(text: str) -> bool:
+    """检测"前言/过程话术"：承诺即将执行动作但没有任何实质结论的过渡文本。"""
+    if not text:
+        return False
+    stripped = text.strip()
+    if not stripped or len(stripped) > _PREAMBLE_MAX_LEN:
+        return False
+    return bool(_PREAMBLE_CN_RE.match(stripped) or _PREAMBLE_EN_RE.match(stripped))
+
+
+# 输出工具成功后的短确认文本（"已发送"类）：无信息增量，丢弃防重复出站
+_SHORT_ACK_MAX_LEN = 40
+
+
+def is_short_ack(text: str) -> bool:
+    """判断纯文本是否为无信息增量的短确认（输出工具成功后的自言回执）。"""
+    if not text:
+        return True
+    return len(text.strip()) < _SHORT_ACK_MAX_LEN
 
 
 @dataclass
@@ -144,11 +185,15 @@ def target_from_anything(anything, adapter_key: str = "") -> Optional[ReplyTarge
     )
 
 
-def target_from_scope(scope: str, adapter_key: str) -> Optional[ReplyTarget]:
-    """从 entity scope（"user_123" / "group_456" / "user_123#chat_id"）构造候选目标（无引用锚点）。"""
+def target_from_scope(scope: str, adapter_key: str = "") -> Optional[ReplyTarget]:
+    """从 entity scope（"user_qq:123" / "group_qq:456" / "user_webui:u#chat"）构造候选目标（无引用锚点）。
+
+    adapter 段优先取 scope 内嵌值，参数仅作兜底（旧格式 scope 无 adapter 段时）。
+    """
     from agent.messages import parse_entity_scope
 
-    scope_type, base_id, session_id = parse_entity_scope(scope)
+    scope_type, scope_adapter, base_id, session_id = parse_entity_scope(scope)
+    adapter_key = scope_adapter or adapter_key
     if not scope_type or not adapter_key:
         return None
     return ReplyTarget(
@@ -213,5 +258,6 @@ async def deliver_text(target: ReplyTarget, content: str) -> bool:
         content,
         resolved.get("channel_type", target.channel_type),
         session_id=target.session_id,
+        adapter_key=target.channel_id,
     )
     return True

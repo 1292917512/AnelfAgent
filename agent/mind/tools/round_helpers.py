@@ -11,7 +11,7 @@ import json
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 
@@ -74,6 +74,10 @@ class _ThinkRoundState:
     end_reply_interceptions: int = 0
     # 无工具正文守卫计数：有未完成 plan 时纯文本被拦截的次数（防死循环上限 2）
     plan_text_guard_count: int = 0
+    # 前言守卫：承诺式过渡文本（"我来看看…"）被拦截的次数与暂存内容
+    # （防"只说不做"，上限 2；被拦的前言在终态投递时合并进最终回复，不丢表达）
+    preamble_guard_count: int = 0
+    preamble_parts: List[str] = field(default_factory=list)
     max_output_recoveries: int = 0
     last_prompt_tokens: int = 0
     # 上一轮是否仅为输出类工具（send_message 等）且已成功发送：
@@ -114,6 +118,9 @@ class _ThinkLoopCtx:
     turn_id: str
     delta_emitter: Callable[[str, bool], Awaitable[None]]
     supports_stream: bool
+    # 会话内冻结的工具顺序（首轮排序快照）：版本变化重建工具集时按此顺序重排，
+    # 新出现的工具按名称追加尾部——避免使用计数驱动的层间跳变击穿 provider 前缀缓存
+    frozen_tool_order: Optional[List[str]] = None
 
 
 # ==================================================================
@@ -154,6 +161,28 @@ def _probe_stream_support(mind: "Mind") -> bool:
         )
     except (TypeError, ValueError):
         return False
+
+
+def _tool_schema_name(schema: Dict) -> str:
+    """从 OpenAI function schema 取工具名。"""
+    return str(schema.get("function", {}).get("name", ""))
+
+
+def _apply_frozen_tool_order(schemas: List[Dict], frozen_order: Optional[List[str]]) -> List[Dict]:
+    """按会话首轮冻结的工具顺序重排重建后的工具集。
+
+    已消失的工具跳过，新出现的工具按名称排序追加尾部——
+    保持 tools 数组在会话内字节级稳定，避免击穿 provider 前缀缓存。
+    """
+    if not frozen_order:
+        return schemas
+    by_name = {_tool_schema_name(s): s for s in schemas}
+    ordered = [by_name[name] for name in frozen_order if name in by_name]
+    newcomers = sorted(
+        (s for name, s in by_name.items() if name not in set(frozen_order)),
+        key=_tool_schema_name,
+    )
+    return ordered + newcomers
 
 
 async def _prepare_think_context(
@@ -429,9 +458,10 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
         ctx.tool_chain = await apply_vision(mind, ctx.tool_chain, merged_images)
     if merged_images or merged_media:
         mind.pfc.activate_media_tools(merged_images, merged_media)
-        ctx.active_tools = await mind.pfc.get_active_tool_schemas(
+        rebuilt = await mind.pfc.get_active_tool_schemas(
             ctx.adapter_key, scope=mind._resolve_entity_scope(ctx.anything),
         )
+        ctx.active_tools = _apply_frozen_tool_order(rebuilt, ctx.frozen_tool_order)
     log(f"并入 {len(new_msgs)} 条循环期间新消息到当前上下文", tag="思维")
     ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮前: 并入 {len(new_msgs)} 条新消息")
 

@@ -446,7 +446,29 @@ class StickerStore:
             "indexed_images": images,
             "described_images": described,
             "vec_available": self._vec_available,
+            "embedding": await self._embedding_stats(db),
         }
+
+    async def _embedding_stats(self, db: aiosqlite.Connection) -> Dict[str, Any]:
+        """向量维度健康数据：各表 BLOB 实际维度分布、待回填数与 vec 索引维度。"""
+        stored_dims: Dict[str, Dict[str, int]] = {}
+        missing: Dict[str, int] = {}
+        for table in ("stickers", "images"):
+            cursor = await db.execute(
+                f"SELECT length(embedding)/4 AS d, COUNT(*) AS c FROM {table} "
+                "WHERE embedding IS NOT NULL GROUP BY d")
+            stored_dims[table] = {str(r["d"]): r["c"] for r in await cursor.fetchall()}
+            cursor = await db.execute(
+                f"SELECT COUNT(*) AS c FROM {table} WHERE embedding IS NULL")
+            missing_row = await cursor.fetchone()
+            missing[table] = missing_row["c"] if missing_row else 0
+        vec_dims: Dict[str, Optional[int]] = {}
+        for kind in ("stickers", "images"):
+            cursor = await db.execute(
+                "SELECT value FROM meta WHERE key=?", (f"{kind}_vec_dims",))
+            meta_row = await cursor.fetchone()
+            vec_dims[kind] = int(meta_row["value"]) if meta_row else None
+        return {"vec_dims": vec_dims, "stored_dims": stored_dims, "missing": missing}
 
     # ------------------------------------------------------------------
     # 向量重建（切换 embedding 模型 / 后台回填）
@@ -464,6 +486,26 @@ class StickerStore:
             await db.execute(f"DROP TABLE IF EXISTS {table}")
         await db.execute(
             "DELETE FROM meta WHERE key IN ('stickers_vec_dims', 'images_vec_dims')")
+        await db.commit()
+        return cleared
+
+    async def clear_mismatched_embeddings(self, target_dims: int) -> Dict[str, int]:
+        """选择性清空与目标维度不一致的向量（匹配的行保留），索引维度过时时一并重建。"""
+        db = await self._get_db()
+        cleared: Dict[str, int] = {}
+        for kind in ("stickers", "images"):
+            cursor = await db.execute(
+                f"UPDATE {kind} SET embedding=NULL "
+                "WHERE embedding IS NOT NULL AND length(embedding) != ?",
+                (target_dims * 4,))
+            cleared[kind] = cursor.rowcount
+            cursor = await db.execute(
+                "SELECT value FROM meta WHERE key=?", (f"{kind}_vec_dims",))
+            meta_row = await cursor.fetchone()
+            if meta_row and int(meta_row["value"]) != target_dims:
+                await db.execute(f"DROP TABLE IF EXISTS {kind}_vec")
+                await db.execute(
+                    "DELETE FROM meta WHERE key=?", (f"{kind}_vec_dims",))
         await db.commit()
         return cleared
 

@@ -67,7 +67,7 @@ async def login(body: LoginRequest, request: Request) -> JSONResponse:
     if not password:
         return JSONResponse({"status": "ok", "message": "无需密码"})
 
-    if not hmac.compare_digest(body.password, password):
+    if not hmac.compare_digest(body.password.encode("utf-8"), password.encode("utf-8")):
         _record_login_result(client, False)
         return JSONResponse({"error": "密码错误"}, status_code=403)
 

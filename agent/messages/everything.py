@@ -88,15 +88,19 @@ class Everything(Nothing):
 
     @property
     def scope_id(self) -> str:
-        """返回 scope 标识（uid 或 group_id 的字符串形式，含子会话后缀）。"""
+        """返回 scope 标识（``{adapter}:{uid}`` 形式，含子会话后缀）。
+
+        adapter 维度隔离不同频道的同号实体（如 QQ uid 与 WebUI uid 碰撞）；
+        adapter_key 缺失时退化为裸 base id，保证兜底路径可用。
+        """
         base = str(self.uid)
-        return f"{base}{self._session_suffix(base)}"
+        return build_scope_id(self.adapter_key, base, self._session_suffix(base))
 
     @property
     def entity_scope(self) -> str:
-        """返回 'user_123' / 'group_456' / 'user_123#chat_id' 格式的实体 scope。
+        """返回 'user_qq:123' / 'group_qq:456' / 'user_webui:web_user#chat_id' 格式的实体 scope。
 
-        直接基于 ``scope_id``（已含 ``session_id`` 后缀）构造，保证一致性。
+        直接基于 ``scope_id``（已含 adapter 前缀与 ``session_id`` 后缀）构造，保证一致性。
         """
         return f"{self.scope_type}_{self.scope_id}"
 
@@ -172,27 +176,51 @@ class EverythingGroup(Everything):
 
     @property
     def scope_id(self) -> str:
-        """群聊以 group_id 为基，私聊回退 uid；均按统一规则拼子会话后缀。"""
+        """群聊以 group_id 为基，私聊回退 uid；统一带 adapter 前缀与子会话后缀。"""
         base = str(self.group_id) if self.is_group_scope else str(self.uid)
-        return f"{base}{self._session_suffix(base)}"
+        return build_scope_id(self.adapter_key, base, self._session_suffix(base))
 
 
-def parse_entity_scope(scope: str) -> tuple[str, str, str]:
-    """解析实体 scope，返回 (scope_type, base_id, session_id)。
+def build_scope_id(adapter: str, base_id: str, session_suffix: str = "") -> str:
+    """构造 scope_id：``{adapter}:{base_id}{session_suffix}``。
 
-    支持 ``user_123`` / ``group_456`` / ``user_123#chat_id`` 格式；
-    无法识别时返回 ("", "", "")。
+    adapter 为空时退化为 ``{base_id}{session_suffix}``（旧格式，兜底路径）。
+    ``session_suffix`` 由调用方按 ``_session_suffix`` 规则生成（``"#chat_id"`` 或空串）。
+    """
+    prefix = f"{adapter}:" if adapter else ""
+    return f"{prefix}{base_id}{session_suffix}"
+
+
+def build_entity_scope(scope_type: str, adapter: str, base_id: str, session_id: str = "") -> str:
+    """统一构造 entity_scope：``user_qq:123`` / ``group_qq:456`` / ``user_webui:u#chat``。
+
+    全仓禁止手工 f-string 拼 scope，一律经此函数，保证格式单点定义。
+    session_id 为空或与 base_id 相同（自然会话）时不拼后缀。
+    """
+    suffix = f"#{session_id}" if session_id and session_id != base_id else ""
+    return f"{scope_type}_{build_scope_id(adapter, base_id, suffix)}"
+
+
+def parse_entity_scope(scope: str) -> tuple[str, str, str, str]:
+    """解析实体 scope，返回 (scope_type, adapter, base_id, session_id)。
+
+    支持新格式 ``user_qq:123`` / ``group_qq:456`` / ``user_webui:u#chat_id``
+    与旧格式 ``user_123`` / ``group_456``（旧格式 adapter 返回空串）；
+    无法识别时返回 ("", "", "", "")。
     """
     if not scope or "_" not in scope:
-        return "", "", ""
+        return "", "", "", ""
     scope_type, raw_id = scope.split("_", 1)
     if scope_type not in ("user", "group") or not raw_id:
-        return "", "", ""
+        return "", "", "", ""
+    adapter = ""
+    if ":" in raw_id:
+        adapter, raw_id = raw_id.split(":", 1)
     if "#" in raw_id:
         base_id, session_id = raw_id.split("#", 1)
     else:
         base_id, session_id = raw_id, ""
     if not base_id:
-        return "", "", ""
-    return scope_type, base_id, session_id
+        return "", "", "", ""
+    return scope_type, adapter, base_id, session_id
 

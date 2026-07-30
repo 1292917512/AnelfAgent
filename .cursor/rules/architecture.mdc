@@ -156,10 +156,12 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 | 文件 | 职责 |
 |------|------|
 | `agent/mind/mind.py` | 思维核心、自主循环 |
-| `agent/mind/prefrontal_cortex.py` | 工作记忆、工具召回、上下文组装 |
+| `agent/mind/prefrontal_cortex.py` | 工作记忆门面（组合 work_memory / tool_assembly / context_assembly） |
 | `agent/mind/autonomous.py` | 决策类型、态势模型、元决策 prompt |
 | `agent/mind/tools/think_loop.py` | 统一思维循环（多轮 LLM + 工具编排） |
-| `agent/mind/tools/multi_tool.py` | 多工具并行编排（multi_tool_invoke） |
+| `agent/mind/work_memory.py` | 工作记忆数据面（消息队列 / 待办持久化 / 短期记忆，PFC 组件） |
+| `agent/mind/tool_assembly.py` | 工具装配（召回 / tag 激活 / schema 合并门控，PFC 组件） |
+| `agent/mind/context_assembly.py` | 上下文组装（系统提示 / Prompt 分层缓存，PFC 组件） |
 | `agent/mind/tools/decision_executor.py` | 决策执行分发（REPLY/REFLECT/PLAN 等） |
 | `agent/mind/tools/media_pipeline.py` | 媒体标签转换 |
 | `agent/memory/memory_store.py` | 长期记忆存储（SQLite + FTS5 + Embedding） |
@@ -202,7 +204,7 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 | `output` | 消息输出 | `channel/output_tools.py` | always |
 | `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/heartbeat |
 | `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
-| `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tools/multi_tool.py` | always |
+| `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tool_activation.py` | always |
 | `planning` | 目标规划 | `agent/planning/tools.py` | planning/goal/heartbeat |
 | `web` | 网络工具 | `entities/web/tools.py` | web/search/fetch |
 | `media` | 多媒体 | `entities/media/tools.py` | media:* |

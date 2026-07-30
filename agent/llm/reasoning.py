@@ -22,8 +22,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from core.log import log
-
 # 规范等级（不含空值）；顺序即强度升序，也是降级阶梯的依据
 CANONICAL_EFFORTS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 
@@ -235,7 +233,7 @@ def _model_capability_flag(model: str, flag: str) -> Optional[bool]:
             if value is not None:
                 return bool(value)
     except Exception:
-        log("_model_capability_flag 异常已忽略", "DEBUG")
+        pass  # 自定义/本地模型未收录于 litellm 模型表是常态，返回 None 走启发式回退
     return None
 
 

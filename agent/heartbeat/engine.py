@@ -286,11 +286,11 @@ class HeartbeatEngine:
                 log(f"实体画像分析异常: {entity.get_entity_desc()} -> {exc}", "WARNING", tag="心跳")
             if result is None:
                 # 分析未执行（对话不足/失败）：有限次重入队，超过上限放弃并显式记录
-                key = (entity.group_id or 0, entity.uid or 0)
+                key = (entity.group_id or 0, entity.uid or 0, entity.adapter_key or "")
                 attempts = self._analysis_attempts.get(key, 0) + 1
                 if attempts < self._MAX_ANALYSIS_ATTEMPTS:
                     self._analysis_attempts[key] = attempts
-                    self.mind.pfc.requeue_analysis(key[0], key[1])
+                    self.mind.pfc.requeue_analysis(key[0], key[1], key[2])
                     log(f"实体画像分析推迟重试（第 {attempts} 次）: {entity.get_entity_desc()}",
                         "DEBUG", tag="心跳")
                 else:
@@ -298,7 +298,9 @@ class HeartbeatEngine:
                     log(f"实体画像分析连续 {attempts} 次未执行，放弃: {entity.get_entity_desc()}",
                         "WARNING", tag="心跳")
             else:
-                self._analysis_attempts.pop((entity.group_id or 0, entity.uid or 0), None)
+                self._analysis_attempts.pop(
+                    (entity.group_id or 0, entity.uid or 0, entity.adapter_key or ""), None
+                )
 
         # 上下文提供者 on_tick 钩子（实体自驱维护周期）
         try:
@@ -457,7 +459,7 @@ class HeartbeatEngine:
         # 仅用户实体需要额外拉取其私聊对话；群组实体无 uid，避免对不存在的 user 0 查询
         combined = conversation
         if entity.uid:
-            user_query_entity = MessageAssistant(uid=entity.uid)
+            user_query_entity = MessageAssistant(uid=entity.uid, adapter_key=entity.adapter_key)
             user_conv = await self.mind.get_conversation(user_query_entity)
             combined = conversation + user_conv
 
@@ -487,9 +489,10 @@ class HeartbeatEngine:
         await self.mind.everything_data.save_entity_personality(entity)
         log(f"实体画像更新: {desc} -> {content[:80]}", tag="心跳")
 
-        entity_id = str(entity.uid or entity.group_id)
-        source = f"entity_{entity_id}"
-        scope_tag = f"user:{entity_id}" if entity.uid else f"group:{entity_id}"
+        # 画像记忆以含 adapter 的身份 scope_id 为标识，跨频道同号实体互不串档
+        identity_type, identity_id = entity.identity_parts
+        source = f"entity_{identity_id}"
+        scope_tag = f"{identity_type}:{identity_id}"
 
         if self.mind.memory_store:
             old_entries = await self.mind.memory_store.list_recent(
@@ -532,8 +535,7 @@ class HeartbeatEngine:
         try:
             from agent.messages import MessageAssistant
             sqlite = self.mind.everything_data.router.sqlite
-            scope_type = "user" if entity.uid and entity.uid not in (0, "0") else "group"
-            scope_id = str(entity.uid) if scope_type == "user" else str(entity.group_id)
+            scope_type, scope_id = entity.identity_parts
             primary = await sqlite.resolve_alias(scope_type, scope_id)
             p_type, p_id = primary if primary else (scope_type, scope_id)
             aliases = await sqlite.get_aliases_for_primary(p_type, p_id)
@@ -543,6 +545,7 @@ class HeartbeatEngine:
             for id_type, id_id in all_ids:
                 if (id_type, id_id) == current:
                     continue
+                # id_id 已是含 adapter 前缀的 scope_id；以裸 adapter 构造使 scope_id 原样命中
                 alias_entity = MessageAssistant(
                     uid=id_id if id_type == "user" else 0,
                     group_id=id_id if id_type == "group" else 0,

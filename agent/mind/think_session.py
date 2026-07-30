@@ -32,6 +32,7 @@ def think_session(
         with_token: 是否生成一次性会话令牌（reflect 等内部会话可关闭）
         clear_dynamic_tools: 退出时是否清理 PFC 动态工具（tag 激活 + 动态发现）
     """
+    from agent.channel.context import clear_current_channel
     from agent.mind.tool_activation import bind_scope, reset_scope, tool_activation
     from agent.security.session_token import bind_token, generate_token, reset_token
 
@@ -45,6 +46,9 @@ def think_session(
         reset_scope(scope_token)
         if token_ctx is not None:
             reset_token(token_ctx)
+        # 频道 ContextVar 是"绑定后不复位"的隐性全局态（回退路径 mind._resolve_adapter_key），
+        # 会话结束统一清除，防止泄漏到本任务后续无关代码路径
+        clear_current_channel()
         if clear_dynamic_tools:
             # 传入 scope：非主会话（如后台评审 reflect）不清理全局动态工具，避免踩踏
             mind.pfc.clear_dynamic_tools(scope=scope)

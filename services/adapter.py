@@ -91,8 +91,8 @@ class AdapterService:
                 })
         return result
 
-    def toggle_adapter(self, key: str, loop: asyncio.AbstractEventLoop) -> None:
-        """启动或停止指定频道（同步阻塞直到完成）。
+    async def toggle_adapter(self, key: str) -> None:
+        """启动或停止指定频道（挂起直到完成或超时）。
 
         对于未注册的频道（config 中 enabled=false），先动态实例化并注册，
         再启动。这样前端点"激活"时可以启用一个之前未加载的频道。
@@ -102,22 +102,26 @@ class AdapterService:
         channel = mgr.get(key)
 
         if channel and channel.status.value == "running":
-            asyncio.run_coroutine_threadsafe(
-                mgr.stop_channel(key), loop,
-            ).result(timeout=10)
+            await self._with_timeout(mgr.stop_channel(key), 10, f"停止频道超时: {key}")
             self._set_channel_enabled(key, False)
             return
 
         if channel:
-            asyncio.run_coroutine_threadsafe(
-                mgr.start_channel(key), loop,
-            ).result(timeout=15)
+            await self._with_timeout(mgr.start_channel(key), 15, f"启动频道超时: {key}")
             return
 
         # 频道未注册：动态实例化、注册、启动
-        asyncio.run_coroutine_threadsafe(
-            self._activate_unregistered_channel(key, mgr), loop,
-        ).result(timeout=20)
+        await self._with_timeout(
+            self._activate_unregistered_channel(key, mgr), 20, f"激活频道超时: {key}",
+        )
+
+    @staticmethod
+    async def _with_timeout(coro: Any, timeout: float, message: str) -> Any:
+        """await 协程并施加超时，超时时抛出带明确原因的错误。"""
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except asyncio.TimeoutError:
+            raise RuntimeError(message) from None
 
     @staticmethod
     async def _activate_unregistered_channel(key: str, mgr: Any) -> None:

@@ -52,16 +52,6 @@ class CreateShareRequest(BaseModel):
     max_downloads: int = 0    # 0 表示无限制
 
 
-class ShareConfig(BaseModel):
-    """分享配置。"""
-
-    default_expires_in: str = "24h"
-    token_length: int = 22
-    ai_auto_share: bool = True
-    default_max_downloads: int = 0
-    audit_enabled: bool = True
-
-
 class DownloadLogEntry(BaseModel):
     """下载审计日志条目。"""
 

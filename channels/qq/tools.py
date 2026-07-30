@@ -796,10 +796,12 @@ class QQToolsMixin:
 
     @channel_tool()
     async def download_file(self, file_id: str, save_name: str = "", **kwargs: Any) -> str:
-        """下载文件到本地 workspace/uploads/file/，返回本地路径。
+        """下载文件/图片/语音到本地 workspace/uploads/，返回本地路径。
 
-        用于消息标签中标记「未下载」且带 [media_file_id:xxx] 的文件。
-        同机部署时直接复制 NapCat 本地缓存，否则从 URL 下载（上限 20MB）。
+        用于消息标签中标记「未下载」且带 [media_file_id:xxx] 的媒体。
+        file_id 按类型依次尝试 get_file（文件）→ get_image（图片）→ get_record（语音）
+        解析（三者协议各异，get_file 对图片/语音无效）。同机部署时直接复制
+        NapCat 本地缓存，否则从 URL 下载（上限 20MB）。
 
         Args:
             file_id: 文件 ID（消息标签 [media_file_id:xxx] 中的值）
@@ -807,20 +809,34 @@ class QQToolsMixin:
         """
         from agent.channel.media import download_to_uploads, get_upload_dir
 
-        data = await self._call_api_data("get_file", {"file_id": file_id})
-        if data is None:
-            return _err("获取文件信息失败")
+        from .parser import _strip_file_prefix
 
-        src_file = str(data.get("file", "") or "")
+        attempts = (
+            ("get_file", {"file_id": file_id}, SegmentType.FILE),
+            ("get_image", {"file": file_id}, SegmentType.IMAGE),
+            ("get_record", {"file": file_id, "out_format": "mp3"}, SegmentType.VOICE),
+        )
+        data: Optional[Dict[str, Any]] = None
+        seg_type = SegmentType.FILE
+        for action, params, cand_type in attempts:
+            result = await self._call_api_data(action, params)
+            if isinstance(result, dict) and (result.get("file") or result.get("url")):
+                data = result
+                seg_type = cand_type
+                break
+        if data is None:
+            return _err("获取文件信息失败（file_id 无效、已过期或不属于文件/图片/语音）")
+
+        src_file = _strip_file_prefix(str(data.get("file", "") or ""))
         url = str(data.get("url", "") or "")
         name = save_name.strip() or str(
-            data.get("file_name", "") or data.get("name", "") or "")
+            data.get("file_name", "") or data.get("filename", "") or data.get("name", "") or "")
 
-        # 同机部署：get_file 返回的本地路径直接复制，避免重复下载
+        # 同机部署：返回的本地路径直接复制，避免重复下载
         if src_file and os.path.isfile(src_file):
             if not name:
                 name = os.path.basename(src_file)
-            dl_dir = os.path.join(get_upload_dir(), "file")
+            dl_dir = os.path.join(get_upload_dir(), seg_type.value)
             os.makedirs(dl_dir, exist_ok=True)
             local_path = os.path.join(
                 dl_dir,
@@ -838,7 +854,7 @@ class QQToolsMixin:
             })
 
         if url.startswith(("http://", "https://")):
-            local_path = await download_to_uploads(url, SegmentType.FILE, save_name=name)
+            local_path = await download_to_uploads(url, seg_type, save_name=name)
             if local_path:
                 return _ok({
                     "path": local_path,

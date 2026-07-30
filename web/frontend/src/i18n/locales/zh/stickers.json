@@ -34,5 +34,12 @@
   "emotionPlaceholder": "如：开心 / 无语 / 阴阳怪气",
   "deleteConfirm": "确定删除表情包 {{id}} 吗？图片文件与索引将一并移除。",
   "removeFromIndex": "移出索引",
-  "removeImageConfirm": "确定将该图片移出索引吗？原文件不会被删除。"
+  "removeImageConfirm": "确定将该图片移出索引吗？原文件不会被删除。",
+  "vecDims": "向量 {{dims}} 维",
+  "dimsMismatch": "维度不一致 ×{{count}}",
+  "pendingBackfill": "待回填 {{count}}",
+  "rebuildVectors": "重建向量",
+  "rebuildConfirm": "将清空 {{count}} 条与当前模型（{{model}}，{{dims}} 维）不一致的向量，并由后台按当前模型重新生成，期间相关检索质量会暂时下降。",
+  "rebuildStarted": "重建已开始，后台将自动回填",
+  "rebuildFailed": "重建失败（无可用向量模型？）"
 }

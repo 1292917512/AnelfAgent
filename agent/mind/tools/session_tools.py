@@ -40,12 +40,12 @@ def _current_scope() -> str:
 
 
 def _scope_label(scope: str) -> str:
-    """生成 scope 的展示标签（私聊/群聊 + 基 id + 子会话）。"""
-    scope_type, base_id, session_id = parse_entity_scope(scope)
+    """生成 scope 的展示标签（频道 + 私聊/群聊 + 基 id + 子会话）。"""
+    scope_type, adapter, base_id, session_id = parse_entity_scope(scope)
     if not scope_type:
         return scope
     kind = "群聊" if scope_type == "group" else "私聊"
-    label = f"{kind} {base_id}"
+    label = f"{adapter} {kind} {base_id}" if adapter else f"{kind} {base_id}"
     if session_id:
         label += f"#{session_id}"
     return label
@@ -129,24 +129,24 @@ async def list_sessions() -> str:
 @deferred_tool(
     group="session", tags=["always"], source="mind.session",
     description="切换到另一个会话窗口处理其消息。目标会话将以独立上下文开启一轮新回复；"
-                "你当前的回复仍发往当前会话。scope 格式：user_123 / group_456 / user_123#chat_id。",
+                "你当前的回复仍发往当前会话。scope 格式：user_qq:123 / group_qq:456 / user_webui:u#chat_id。",
 )
 async def switch_session(scope: str, reason: str = "") -> str:
     """切换到指定会话窗口处理其未读消息。
 
     Args:
-        scope: 目标会话标识（user_123 / group_456 / user_123#chat_id，可由 list_sessions 获取）
+        scope: 目标会话标识（user_qq:123 / group_qq:456 / user_webui:u#chat_id，可由 list_sessions 获取）
         reason: 切换原因（可选，会作为提示注入目标会话的新一轮上下文）
     """
     if not _pfc_ref or not _mind_ref:
         return json.dumps({"error": "系统未就绪"}, ensure_ascii=False)
 
     scope = (scope or "").strip()
-    scope_type, _base_id, _session_id = parse_entity_scope(scope)
+    scope_type, scope_adapter, _base_id, _session_id = parse_entity_scope(scope)
     if not scope_type:
         return json.dumps({
             "error": f"无效的 scope: '{scope}'",
-            "hint": "格式应为 user_123 / group_456 / user_123#chat_id，可先调用 list_sessions 获取",
+            "hint": "格式应为 user_qq:123 / group_qq:456 / user_webui:u#chat_id，可先调用 list_sessions 获取",
         }, ensure_ascii=False)
 
     if scope == _current_scope():
@@ -161,8 +161,8 @@ async def switch_session(scope: str, reason: str = "") -> str:
             "hint": "该会话正在处理中，无需重复切换",
         }, ensure_ascii=False)
 
-    # 路由信息：优先待处理队列的 adapter_key，回退频道活动快照
-    adapter_key = _pfc_ref.get_adapter_key(scope)
+    # 路由信息：scope 自带 adapter 段优先，其次待处理队列，回退频道活动快照
+    adapter_key = scope_adapter or _pfc_ref.get_adapter_key(scope)
     preview = ""
     if not adapter_key:
         act = _snapshot_activities(_mind_ref).get(scope, {})

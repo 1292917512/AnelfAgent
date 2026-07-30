@@ -25,10 +25,16 @@ _CREATE_PROMPT = """为工作区内的文件生成分享链接（对外可下载
 - 相同文件重复分享会复用旧 token（避免链接泛滥）。
 - 返回的 url 可直接发送给他人，对方无需登录即可下载。
 
+重要纪律（必须遵守）:
+- 只能将返回结果中的 url 字段【原样】发给用户，禁止编造/猜测域名，禁止自行拼接或"美化"链接。
+- 返回结果含 error 字段时表示创建失败，必须如实告知用户失败原因，严禁谎称成功。
+- 返回结果含 url_incomplete 时，说明系统未配置公网基址，url 只是相对路径、外部无法访问，
+  必须提醒用户到 实体详情 → 配置 中填写 share_public_base_url。
+
 参数:
 - path: 工作区内的文件路径（必填）
 - description: 分享说明（可选）
-- expires_in: 有效期，可选值 "1h" / "6h" / "24h" / "7d" / "30d" / "never"，默认 "24h"
+- expires_in: 有效期，可选值 "1h" / "6h" / "24h" / "7d" / "30d" / "never"，缺省跟随实体配置 share_default_expires_in
 
 返回: {"token", "url", "expires_at", "file_name", "file_size"}"""
 
@@ -44,7 +50,8 @@ _LIST_PROMPT = """列出当前所有分享链接，支持按状态和路径过�
 - path_keyword: 路径关键词过滤（可选）
 - limit: 返回数量上限（默认 20，最大 100）
 
-返回: {"items": [...], "total": N}，每个 item 包含 token/file_name/file_size/expires_at/download_count/status"""
+返回: {"items": [...], "total": N}，每个 item 包含 token/url/file_name/file_size/expires_at/download_count/status
+（url 为完整分享链接，只可原样转发，禁止改动）"""
 
 _REVOKE_PROMPT = """撤销（关闭）一个分享链接，使其立即失效。
 
@@ -59,18 +66,27 @@ _REVOKE_PROMPT = """撤销（关闭）一个分享链接，使其立即失效。
 
 
 @tool(name="create_share_link", group="share", description=_CREATE_PROMPT)
-async def create_share_link(path: str, description: str = "", expires_in: str = "24h", max_downloads: int = 0) -> str:
+async def create_share_link(path: str, description: str = "", expires_in: str = "", max_downloads: int = -1) -> str:
     """为工作区文件生成对外可下载的分享链接。
 
     Args:
         path: 工作区内的文件路径（相对或绝对）
         description: 分享说明
-        expires_in: 有效期（1h/6h/24h/7d/30d/never）
-        max_downloads: 最大下载次数（0 表示无限制）
+        expires_in: 有效期（1h/6h/24h/7d/30d/never），空则跟随实体配置
+        max_downloads: 最大下载次数（0 表示无限制），负数则跟随实体配置
     """
-    from .store import get_share_store
+    from core.config import get_config, get_config_bool, get_config_int
+
+    from .store import build_download_url, get_public_base_url, get_share_store
 
     try:
+        if not get_config_bool("share_ai_auto_share", True):
+            return json.dumps({"error": "AI 自动分享已在实体配置中禁用"}, ensure_ascii=False)
+        if not expires_in:
+            expires_in = str(get_config("share_default_expires_in", "24h") or "24h")
+        if max_downloads < 0:
+            max_downloads = get_config_int("share_default_max_downloads", 0)
+
         store = get_share_store()
         entry = await store.create(
             file_path=path,
@@ -79,8 +95,14 @@ async def create_share_link(path: str, description: str = "", expires_in: str = 
             created_by="agent",
             max_downloads=max_downloads,
         )
-        # URL 由 router.py 在 HTTP 层拼接（需要 Request 对象），这里返回相对路径模板
-        entry["url"] = f"/api/entity/share/d/{entry['token']}"
+        base_url = get_public_base_url()
+        entry["url"] = build_download_url(entry["token"], base_url)
+        if not base_url.strip():
+            entry["url_incomplete"] = True
+            entry["warning"] = (
+                "未配置公网基址 share_public_base_url，url 为相对路径，外部无法访问；"
+                "请在实体详情的配置页填写公网基址（如 https://your-domain）"
+            )
         return json.dumps(entry, ensure_ascii=False)
     except FileNotFoundError as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -99,11 +121,15 @@ async def list_share_links(status: str = "active", path_keyword: str = "", limit
         path_keyword: 路径关键词过滤
         limit: 返回数量上限
     """
-    from .store import get_share_store
+    from .store import build_download_url, get_public_base_url, get_share_store
 
     try:
         store = get_share_store()
         result = await store.list(status=status, query=path_keyword, page_size=min(limit, 100))
+        # 与 create_share_link 一致：直接给出最终可用的完整链接
+        base_url = get_public_base_url()
+        for item in result["items"]:
+            item["url"] = build_download_url(item["token"], base_url)
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": f"查询分享链接失败: {e}"}, ensure_ascii=False)

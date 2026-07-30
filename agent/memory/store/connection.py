@@ -86,6 +86,12 @@ class MemoryConnectionManager:
 
             if not self.initialized:
                 await self._init_schema(db)
+                # 记忆标签/画像 source 的 scope 迁移（user_version 幂等）
+                try:
+                    from agent.storage.scope_migrate import get_legacy_adapter, migrate_memory_db_tags
+                    await migrate_memory_db_tags(db, self.db_path, get_legacy_adapter())
+                except Exception as exc:
+                    log(f"记忆标签迁移失败（不影响启动，备份可恢复）: {exc}", "ERROR", tag="记忆")
                 self.initialized = True
 
             self.db = db

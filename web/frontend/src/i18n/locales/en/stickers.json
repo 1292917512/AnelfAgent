@@ -34,5 +34,12 @@
   "emotionPlaceholder": "e.g.: happy / speechless / sarcastic",
   "deleteConfirm": "Delete sticker {{id}}? The image file and index will be removed.",
   "removeFromIndex": "Remove from index",
-  "removeImageConfirm": "Remove this image from the index? The original file will not be deleted."
+  "removeImageConfirm": "Remove this image from the index? The original file will not be deleted.",
+  "vecDims": "{{dims}}-dim vectors",
+  "dimsMismatch": "Dims mismatch ×{{count}}",
+  "pendingBackfill": "{{count}} pending",
+  "rebuildVectors": "Rebuild Vectors",
+  "rebuildConfirm": "This will clear {{count}} vectors that don't match the current model ({{model}}, {{dims}} dims) and regenerate them in the background. Search quality may degrade temporarily.",
+  "rebuildStarted": "Rebuild started; backfill will run in the background",
+  "rebuildFailed": "Rebuild failed (no embedding model available?)"
 }

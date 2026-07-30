@@ -29,6 +29,10 @@ _MIND_CONFIGS = {
             "description": "心跳间隔（秒）",
             "default": 300.0,
         },
+        "auto_cycle_base_delay": {
+            "description": "自主循环续轮退避基数（秒，指数封顶 8s）；有待回复消息时不退避",
+            "default": 0.5,
+        },
         "meta_decision_temperature": {
             "description": "元决策温度",
             "default": 0.3,
@@ -277,7 +281,6 @@ class BotConfig:
     mcp_config_path: str = ConfigPaths.MCP_SERVERS
     sqlite_path: str = ConfigPaths.SQLITE_DB
     max_conversation_size: int = 30
-    max_tool_iterations: int = 3
 
 
 class BotConfigProvider:

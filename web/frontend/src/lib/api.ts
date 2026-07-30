@@ -65,7 +65,6 @@ import type {
   PythonPackage,
   RemoteModelInfo,
   RestartBuildState,
-  ShareConfig,
   ShareLink,
   ShareLinkListResult,
   ShareStats,
@@ -113,7 +112,6 @@ export type {
   ReasoningEffort,
   RemoteModelInfo,
   RestartBuildState,
-  ShareConfig,
   ShareLink,
   ShareLinkListResult,
   ShareStats,
@@ -690,6 +688,9 @@ export const stickersApi = {
     api.put(`/stickers/${encodeURIComponent(id)}`, data),
   reindex: (id: string) =>
     api.post(`/stickers/${encodeURIComponent(id)}/reindex`, null, { timeout: 120000 }),
+  rebuildEmbeddings: (mode: "mismatched" | "all" = "mismatched") =>
+    api.post<{ ok: boolean; dims: number; cleared: Record<string, number> }>(
+      "/stickers/embedding/rebuild", { mode }, { timeout: 120000 }),
   remove: (id: string) => api.delete(`/stickers/${encodeURIComponent(id)}`),
   fileUrl: (id: string) => `/api/stickers/${encodeURIComponent(id)}/file`,
   listImages: (params: { page?: number; page_size?: number }) =>
@@ -787,10 +788,6 @@ export const shareApi = {
     api.delete(`/entity/share/links/${encodeURIComponent(token)}`),
   stats: () =>
     api.get<ShareStats>("/entity/share/stats"),
-  getConfig: () =>
-    api.get<ShareConfig>("/entity/share/config"),
-  updateConfig: (data: ShareConfig) =>
-    api.put("/entity/share/config", data),
   getLogs: (params: { token?: string; page?: number; page_size?: number }) =>
     api.get<DownloadLogListResult>("/entity/share/logs", { params }),
 };

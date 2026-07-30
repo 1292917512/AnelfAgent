@@ -29,27 +29,35 @@ def register_output_tools(conversation_data: Optional[Any] = None) -> None:
     log(f"统一输出工具已注册 ({count} 个)", tag="通道")
 
 
-async def _record_sent_reply(target_id: str, content: str, channel_type: str, session_id: str = "") -> None:
+async def _record_sent_reply(
+    target_id: str,
+    content: str,
+    channel_type: str,
+    session_id: str = "",
+    adapter_key: str = "",
+) -> None:
     """将 AI 发送的回复记录到对话历史（assistant 角色）。
 
     主流做法：对话历史应同时包含用户消息与 AI 回复，
     否则 AI 在历史中看不到自己说过什么，导致重复回复/上下文断裂。
     内容原样入库，不附加元数据标签——assistant 消息带标签会
     诱发模型模仿标签格式并泄漏到出站文本。
-    session_id 非空时写入对应子会话分桶（与 entity_scope 规则一致）。
+    session_id 非空时写入对应子会话分桶；scope_id 含 adapter 前缀（与 entity_scope 规则一致）。
     """
     if _conversation_data is None or not content:
         return
     try:
+        from agent.messages import build_scope_id
         from agent.storage.storage_router import StorageDomain
         scope_type = "group" if channel_type == "group" else "user"
-        scope_id = str(target_id)
-        if session_id and session_id != scope_id:
-            scope_id = f"{scope_id}#{session_id}"
+        base_id = str(target_id)
+        suffix = f"#{session_id}" if session_id and session_id != base_id else ""
+        scope_id = build_scope_id(adapter_key, base_id, suffix)
         await _conversation_data.router.append(
             StorageDomain.CONVERSATION,
             scope_type=scope_type, scope_id=scope_id,
             role="assistant", content=content,
+            adapter_key=adapter_key,
         )
     except Exception as exc:
         log(f"回复记录失败: {exc}", "DEBUG", tag="通道")
@@ -66,12 +74,28 @@ def _resolve_channel_type(channel_id: str, target_id: str) -> str:
 
 
 def _normalize_target_id(target_id: str) -> tuple[str, Optional[str]]:
-    """标准化目标会话 ID，兼容 user:/group: 前缀写法。
+    """标准化目标会话 ID：归一各种 AI 可能产生的写法，输出频道原生 ID。
+
+    兼容形式：
+    - ``user:123`` / ``group:456`` —— 显式类型前缀
+    - ``user_qq:123`` / ``group_qq:456`` —— 完整 entity_scope（AI 从会话上下文复制）
+    - ``qq:123`` / ``telegram:456`` —— scope_id 的 adapter 前缀形式（泄漏到目标）
+    - ``123`` / ``456`` —— 裸原生 ID（标准形式）
 
     LLM 可能将纯数字 ID 按 JSON number 传递，此处统一转 str 容错。
     """
     raw = (str(target_id) if target_id is not None else "").strip()
-    if not raw or ":" not in raw:
+    if not raw:
+        return raw, None
+
+    # 完整 entity_scope 形式：剥离为原生 ID + 明确类型
+    if raw.startswith(("user_", "group_")):
+        from agent.messages import parse_entity_scope
+        scope_type, _adapter, base_id, _session = parse_entity_scope(raw)
+        if scope_type and base_id:
+            return base_id, "group" if scope_type == "group" else "private"
+
+    if ":" not in raw:
         return raw, None
 
     prefix, rest = raw.split(":", 1)
@@ -84,6 +108,10 @@ def _normalize_target_id(target_id: str) -> tuple[str, Optional[str]]:
         return value, "private"
     if p in {"group", "gid"}:
         return value, "group"
+    # adapter 前缀形式（scope_id 泄漏）：频道原生 ID 不含冒号，命中已知频道即剥离
+    from .manager import get_channel_manager
+    if p in get_channel_manager().list_channels():
+        return value, None
     return raw, None
 
 
@@ -299,7 +327,9 @@ async def send_message(
     # 发送成功后将 AI 回复记录到对话历史（assistant 角色）
     try:
         if json.loads(result).get("success") is not False:
-            await _record_sent_reply(resolved_target, content, resolved_channel_type)
+            await _record_sent_reply(
+                resolved_target, content, resolved_channel_type, adapter_key=channel_id
+            )
     except (json.JSONDecodeError, TypeError):
         log("_enrich 异常已忽略", "DEBUG")
     return result

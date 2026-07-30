@@ -316,13 +316,15 @@ async def _think_and_decide(mind: "Mind", situation: SituationContext) -> List[D
     memory_ctx: List[Dict] = []
     if mind.retriever:
         if situation.pending_messages:
+            from agent.messages import build_entity_scope
             combined_preview = " ".join(pm.preview for pm in situation.pending_messages)
             first_pm = situation.pending_messages[0]
             entity_scope = ""
+            pm_adapter = str(getattr(first_pm, "adapter_key", "") or "")
             if first_pm.group_id:
-                entity_scope = f"group_{first_pm.group_id}"
+                entity_scope = build_entity_scope("group", pm_adapter, str(first_pm.group_id))
             elif first_pm.uid:
-                entity_scope = f"user_{first_pm.uid}"
+                entity_scope = build_entity_scope("user", pm_adapter, str(first_pm.uid))
             memory_ctx = await mind.retriever.recall(
                 [{"role": "user", "content": combined_preview}],
                 top_k=5, entity_scope=entity_scope,

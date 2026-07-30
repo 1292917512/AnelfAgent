@@ -107,6 +107,7 @@ class CogneeClient:
         # cognee 的 setup_logging() 接管了 stdlib root logger，
         # 限制其 handler 级别以避免 pipeline 状态持续刷屏
         _quieten_cognee_logger()
+        _patch_ladybug_concurrency()
         return self._module
 
     async def _configure(self, module: Any) -> None:
@@ -129,10 +130,27 @@ class CogneeClient:
             embedding_payload = resolve_embedding_llm_config(self.config.embedding, manager)
             if embedding_payload:
                 module.config.set_embedding_config(embedding_payload)
+                self._sanitize_embedding_dimensions()
             self._resolved_embedding = summarize_resolved(embedding_payload, kind="embedding")
         except Exception as exc:
             raise RuntimeError(f"无法映射 AnelfAgent 模型配置: {exc}") from exc
         self._configured = True
+
+    def _sanitize_embedding_dimensions(self) -> None:
+        """为 cognee 的 embedding 调用启用 litellm drop_params。
+
+        cognee 对未知模型推导维度失败时回落 3072 并透传给 litellm，而 litellm 对
+        非 "text-embedding-3" 命名的模型（DashScope 的 text-embedding-v3/v4 等
+        OpenAI 兼容端点）本地拒绝 dimensions 参数（UnsupportedParamsError，
+        经 litellm 重试放大为 30s 连接超时）。开启 drop_params 后该参数被自动
+        丢弃，请求成功；cognee 连接测试随后探测真实维度并写回配置与引擎。
+        对主 LLM 路径同样是容错增强（端点不支持的参数自动丢弃而非 400）。
+        """
+        try:
+            import litellm
+            litellm.drop_params = True
+        except Exception as exc:
+            log(f"litellm drop_params 设置失败（不影响主流程）: {exc}", "DEBUG", tag="记忆")
 
     async def _call(
         self,
@@ -357,6 +375,40 @@ def _quieten_cognee_logger() -> None:
             handler.setLevel(_logging.WARNING)
     # cognee 子 logger 也限制
     _logging.getLogger("cognee").setLevel(_logging.WARNING)
+
+
+def _patch_ladybug_concurrency() -> None:
+    """给 LadybugAdapter.query 包进程级串行锁（防 pybind 层段错误）。
+
+    ladybug/Kuzu 的 pybind connection 非线程安全，而 cognee 的非 shared-lock
+    查询路径（ladybug/adapter.py 非 shared_ladybug_lock 分支）明确让多个查询
+    在同一 connection 上并发 execute（"runs unlocked so multiple queries can
+    execute concurrently"），图谱抽取 pipeline 并发任务下在 macOS arm64 直接
+    Fatal Python error: Segmentation fault（进程崩溃，无法捕获）。
+    shared_ladybug_lock 依赖 Redis（本地部署不具备），故在入口处统一串行化——
+    图查询不是吞吐瓶颈，串行代价可接受，换进程不崩溃。
+    幂等：重复导入只包一次。
+    """
+    try:
+        from cognee.infrastructure.databases.graph.ladybug.adapter import LadybugAdapter
+    except Exception as exc:
+        log(f"ladybug 并发补丁跳过（不影响主流程）: {exc}", "DEBUG", tag="记忆")
+        return
+    if getattr(LadybugAdapter.query, "_anel_serialized", False):
+        return
+    import functools
+
+    lock = asyncio.Lock()
+    original = LadybugAdapter.query
+
+    @functools.wraps(original)
+    async def serialized_query(self: Any, query: str, params: Any = None) -> Any:
+        async with lock:
+            return await original(self, query, params)
+
+    serialized_query._anel_serialized = True  # type: ignore[attr-defined]
+    LadybugAdapter.query = serialized_query
+    log("ladybug 查询已串行化（防 pybind 并发段错误）", "DEBUG", tag="记忆")
 
 
 def _normalize_recall(raw_results: Any) -> list[CogneeRecallItem]:

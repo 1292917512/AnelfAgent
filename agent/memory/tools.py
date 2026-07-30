@@ -51,7 +51,7 @@ def _current_scope_tag() -> str:
         if scope.startswith("group_"):
             return f"group:{scope[6:]}"
     except Exception:
-        log("_current_scope_tag 异常已忽略", "DEBUG")
+        pass  # 非工具会话上下文（心跳/后台路径）无 scope 属常态，返回空串
     return ""
 
 
@@ -468,12 +468,13 @@ async def get_conversation(scope_type: str, scope_id: str, limit: int = 30) -> s
 
     Args:
         scope_type: 范围类型（user 或 group）
-        scope_id: 用户 ID 或群组 ID
+        scope_id: 用户 ID 或群组 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
         limit: 最大返回条数，默认 30，最大 100
     """
     try:
         sqlite = _get_sqlite()
         limit = max(1, min(limit, 100))
+        scope_id = _normalize_scope_id(scope_id)
         records = await sqlite.fetch_conversation_with_id(
             scope_type=scope_type, scope_id=scope_id, limit=limit,
         )
@@ -500,13 +501,35 @@ def _format_conversation_time(ts_ns: int) -> str:
     return datetime.datetime.fromtimestamp(ts_ns // 1_000_000_000).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _normalize_scope_id(scope_id: str) -> str:
+    """归一化 LLM 传入的 scope_id：裸 id 自动补当前会话的 adapter 前缀。
+
+    scope 新格式为 ``{adapter}:{base_id}``（如 ``qq:123``）。AI 从消息标签
+    （``[uid:123]``）取到的往往是裸 id，按新键直接查询会 miss——按当前思维
+    会话的 adapter 补全；已带前缀、含 ``#`` 子会话或当前无 scope（心跳/后台）
+    时原样返回。
+    """
+    sid = (scope_id or "").strip()
+    if not sid or ":" in sid.split("#", 1)[0]:
+        return sid
+    try:
+        from agent.messages import parse_entity_scope
+        from agent.mind.tool_activation import ToolActivationManager
+        _st, adapter, _base, _sess = parse_entity_scope(ToolActivationManager.current_scope())
+        if adapter:
+            return f"{adapter}:{sid}"
+    except Exception:
+        log("_normalize_scope_id 异常已忽略", "DEBUG")
+    return sid
+
+
 def _resolve_lookup_scope(
     scope_type: str,
     scope_id: str,
 ) -> tuple[str, str]:
     """解析查找 scope：显式参数优先，否则回落到当前对话 scope。"""
     st = (scope_type or "").strip()
-    sid = (scope_id or "").strip()
+    sid = _normalize_scope_id(scope_id)
     if st and sid:
         return st, sid
     try:
@@ -545,7 +568,7 @@ async def lookup_message(
     Args:
         message_id: 平台消息 ID（来自 [message_id:xxx] 或 [reply_to:xxx]）
         scope_type: 可选，user 或 group；为空则优先当前会话，仍无则跨会话搜索
-        scope_id: 可选，用户 ID 或群组 ID
+        scope_id: 可选，用户 ID 或群组 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
         context_before: 一并返回该消息之前的邻接条数，默认 2，最大 10
         context_after: 一并返回该消息之后的邻接条数，默认 2，最大 10
     """
@@ -647,7 +670,7 @@ async def add_conversation_message(
 
     Args:
         scope_type: 范围类型（user 或 group）
-        scope_id: 用户 ID 或群组 ID
+        scope_id: 用户 ID 或群组 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
         role: 消息角色（user 或 assistant）
         content: 消息内容
     """
@@ -657,6 +680,7 @@ async def add_conversation_message(
         if not content.strip():
             return json.dumps({"error": "content 不能为空"}, ensure_ascii=False)
         sqlite = _get_sqlite()
+        scope_id = _normalize_scope_id(scope_id)
         await sqlite.append_conversation(
             scope_type=scope_type, scope_id=scope_id,
             role=role, content=content,
@@ -770,10 +794,12 @@ async def clear_conversation(scope_type: str, scope_id: str) -> str:
 
     Args:
         scope_type: 范围类型（user 或 group）
-        scope_id: 用户 ID 或群组 ID
+        scope_id: 用户 ID 或群组 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
     """
     try:
-        count = await _get_sqlite().clear_conversation(scope_type=scope_type, scope_id=scope_id)
+        count = await _get_sqlite().clear_conversation(
+            scope_type=scope_type, scope_id=_normalize_scope_id(scope_id),
+        )
         return json.dumps({"ok": True, "cleared": count, "message": f"已清空 {scope_type}:{scope_id} 的 {count} 条记录"}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -798,7 +824,7 @@ async def recall_conversation(
     Args:
         query: 要搜索的内容（自然语言描述，如"上次讨论的旅行计划"）
         scope_type: 对话类型（user 或 group）
-        scope_id: 用户 ID 或群组 ID（可通过 list_conversations 查看）
+        scope_id: 用户 ID 或群组 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）（可通过 list_conversations 查看）
         limit: 最大返回条数，默认 5，最大 10
     """
     import time as _time
@@ -818,6 +844,7 @@ async def recall_conversation(
     try:
         sqlite = _get_sqlite()
         limit = max(1, min(limit, max_results))
+        scope_id = _normalize_scope_id(scope_id)
 
         # 通知后台 worker 补齐缺失的 embedding（不阻塞本次检索）
         wake_embedding_worker()
@@ -1179,10 +1206,11 @@ async def get_entity_profile(scope_type: str, scope_id: str) -> str:
 
     Args:
         scope_type: 范围类型（user 或 group）
-        scope_id: 用户 ID 或群组 ID
+        scope_id: 用户 ID 或群组 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
     """
     try:
         sqlite = _get_sqlite()
+        scope_id = _normalize_scope_id(scope_id)
         primary = await sqlite.resolve_alias(scope_type, scope_id)
         p_type, p_id = primary if primary else (scope_type, scope_id)
 
@@ -1218,10 +1246,11 @@ async def delete_entity_profile(scope_type: str, scope_id: str) -> str:
 
     Args:
         scope_type: 范围类型（user 或 group）
-        scope_id: 用户 ID 或群组 ID
+        scope_id: 用户 ID 或群组 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
     """
     try:
         sqlite = _get_sqlite()
+        scope_id = _normalize_scope_id(scope_id)
         # 与 update 路径一致：先解析别名到主身份，避免别名场景残留旧画像/记忆
         primary = await sqlite.resolve_alias(scope_type, scope_id)
         p_type, p_id = primary if primary else (scope_type, scope_id)
@@ -1275,7 +1304,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
 
     Args:
         scope_type: 范围类型（user 或 group）
-        scope_id: 用户 ID 或群组 ID
+        scope_id: 用户 ID 或群组 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
         personality: 新的画像内容（Markdown 格式的结构化描述）
     """
     try:
@@ -1283,6 +1312,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
             return json.dumps({"error": "画像内容不能为空"}, ensure_ascii=False)
 
         sqlite = _get_sqlite()
+        scope_id = _normalize_scope_id(scope_id)
         primary = await sqlite.resolve_alias(scope_type, scope_id)
         p_type, p_id = primary if primary else (scope_type, scope_id)
 
@@ -1364,15 +1394,17 @@ async def link_entity(
 
     Args:
         source_scope_type: 源实体类型（user 或 group）
-        source_scope_id: 源实体 ID
+        source_scope_id: 源实体 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
         target_scope_type: 目标实体类型（user 或 group）
-        target_scope_id: 目标实体 ID
+        target_scope_id: 目标实体 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
     """
     try:
         if source_scope_type == target_scope_type and source_scope_id == target_scope_id:
             return json.dumps({"error": "不能将实体关联到自身"}, ensure_ascii=False)
 
         sqlite = _get_sqlite()
+        source_scope_id = _normalize_scope_id(source_scope_id)
+        target_scope_id = _normalize_scope_id(target_scope_id)
 
         # 追踪 target 的最终 primary（避免链式别名）
         target_primary = await sqlite.resolve_alias(target_scope_type, target_scope_id)
@@ -1418,11 +1450,12 @@ async def unlink_entity(scope_type: str, scope_id: str, copy_profile: bool = Tru
 
     Args:
         scope_type: 实体类型（user 或 group）
-        scope_id: 实体 ID
+        scope_id: 实体 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
         copy_profile: 是否将当前主身份的画像复制一份给自己（默认 True）
     """
     try:
         sqlite = _get_sqlite()
+        scope_id = _normalize_scope_id(scope_id)
         primary = await sqlite.resolve_alias(scope_type, scope_id)
         if not primary:
             return json.dumps({

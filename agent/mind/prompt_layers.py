@@ -27,32 +27,33 @@ from typing import Callable, Dict, Optional, Tuple
 
 # 层名常量
 LAYER_STABLE = "stable"
+LAYER_STABLE_PERSONA = "stable_persona"
+LAYER_STABLE_TOOLS = "stable_tools"
 LAYER_CONTEXT = "context"
 
-# scope 缓存上限（LRU 淘汰）
-_MAX_CACHED_SCOPES = 64
+# 缓存条目上限（LRU 淘汰）
+_MAX_CACHED_ENTRIES = 256
 
 
 @dataclass
 class _LayerEntry:
-    """单层缓存条目。"""
+    """单层缓存条目（内容寻址：同一 (layer, hash) 全局面唯一副本）。"""
 
     content_hash: str = ""
     content: str = ""
-
-
-@dataclass
-class _ScopeCache:
-    """单个对话 scope 的分层缓存。"""
-
-    layers: Dict[str, _LayerEntry] = field(default_factory=dict)
+    # 引用本条目的 scope 集合（按 scope 失效与观测用）
+    scopes: set = field(default_factory=set)
 
 
 class PromptCacheManager:
-    """Prompt 分层缓存管理器（LRU 上限防内存泄漏）。"""
+    """Prompt 分层缓存管理器（内容寻址 + LRU 上限防内存泄漏）。
+
+    缓存键为 (layer, content_hash) 全局唯一：不同对话 scope 的相同层内容
+    （人设/工具目录等高度同质）只存一份，避免按 scope 复制 N 份副本。
+    """
 
     def __init__(self) -> None:
-        self._scopes: OrderedDict[str, _ScopeCache] = OrderedDict()
+        self._entries: "OrderedDict[tuple[str, str], _LayerEntry]" = OrderedDict()
         # 统计
         self.hits: int = 0
         self.misses: int = 0
@@ -82,22 +83,20 @@ class PromptCacheManager:
         if not is_prompt_cache_enabled():
             return builder(), False
 
-        cache = self._scopes.get(scope)
-        if cache is None:
-            cache = _ScopeCache()
-            self._scopes[scope] = cache
-            self._evict_if_needed()
-        else:
+        key = (layer, content_hash)
+        entry = self._entries.get(key)
+        if entry is not None:
             # LRU: 访问时移到末尾
-            self._scopes.move_to_end(scope)
-
-        entry = cache.layers.get(layer)
-        if entry is not None and entry.content_hash == content_hash:
+            self._entries.move_to_end(key)
+            entry.scopes.add(scope)
             self.hits += 1
             return entry.content, True
 
         content = builder()
-        cache.layers[layer] = _LayerEntry(content_hash=content_hash, content=content)
+        self._entries[key] = _LayerEntry(
+            content_hash=content_hash, content=content, scopes={scope},
+        )
+        self._evict_if_needed()
         self.misses += 1
         return content, False
 
@@ -105,19 +104,20 @@ class PromptCacheManager:
         """使缓存失效。
 
         Args:
-            scope: 对话 scope（空串表示全部）
-            layer: 指定层名（None 表示该 scope 的全部层）
+            scope: 对话 scope（空串表示全部）；内容寻址下仅删除该 scope 引用的条目
+            layer: 指定层名（None 表示全部层）
         """
         self.invalidations += 1
         if not scope:
-            self._scopes.clear()
+            if layer is None:
+                self._entries.clear()
+            else:
+                for key in [k for k in self._entries if k[0] == layer]:
+                    self._entries.pop(key, None)
             return
-        if layer is None:
-            self._scopes.pop(scope, None)
-        else:
-            cache = self._scopes.get(scope)
-            if cache:
-                cache.layers.pop(layer, None)
+        for key in [k for k, e in self._entries.items()
+                    if scope in e.scopes and (layer is None or k[0] == layer)]:
+            self._entries.pop(key, None)
 
     def stats(self) -> Dict[str, int]:
         """缓存统计（命中/未命中/失效次数）。"""
@@ -127,13 +127,13 @@ class PromptCacheManager:
             "misses": self.misses,
             "invalidations": self.invalidations,
             "hit_rate": round(self.hits / total, 3) if total else 0,
-            "cached_scopes": len(self._scopes),
+            "cached_entries": len(self._entries),
         }
 
     def _evict_if_needed(self) -> None:
-        """超出上限时淘汰最久未访问的 scope。"""
-        while len(self._scopes) > _MAX_CACHED_SCOPES:
-            self._scopes.popitem(last=False)
+        """超出上限时淘汰最久未访问的条目。"""
+        while len(self._entries) > _MAX_CACHED_ENTRIES:
+            self._entries.popitem(last=False)
 
 
 # 全局单例

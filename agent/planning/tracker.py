@@ -80,7 +80,11 @@ def parse_scope_chat_id(scope: str) -> Tuple[str, str]:
 
 
 def make_scope(user_id: str, chat_id: str = "") -> str:
-    """由 user_id / chat_id 构造 scope（cancel-plan 路由等外部调用方用）。"""
+    """由 user_id / chat_id 构造 scope（cancel-plan 路由等外部调用方用）。
+
+    user_id 为含 adapter 前缀的 scope 基 id（如 ``webui:web_user``），
+    产出与 entity_scope 同格式（``user_webui:web_user[#chat_id]``）。
+    """
     base = f"user_{user_id}"
     return f"{base}#{chat_id}" if chat_id else base
 

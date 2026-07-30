@@ -28,3 +28,8 @@ def get_current_channel() -> Optional[str]:
 def reset_current_channel(token: Token) -> None:
     """按 Token 复位上下文。"""
     _current_channel.reset(token)
+
+
+def clear_current_channel() -> None:
+    """无条件清除当前绑定（思维会话结束时调用，防止绑定泄漏到后续无关任务）。"""
+    _current_channel.set(None)

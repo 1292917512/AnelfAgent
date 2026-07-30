@@ -374,7 +374,7 @@ def _embed_payload_from_client(client: Any, dimensions: int = 0) -> dict[str, An
         "embedding_provider": provider,
         "embedding_model": cfg.litellm_embed_model,
         "embedding_api_key": cfg.api_key or None,
-        "embedding_endpoint": cfg.base_url,
+        "embedding_endpoint": _cognee_compatible_endpoint(cfg.base_url),
     }
     dims = dimensions or getattr(client, "dimensions", 0) or 0
     if isinstance(dims, int) and dims > 0:
@@ -385,6 +385,21 @@ def _embed_payload_from_client(client: Any, dimensions: int = 0) -> dict[str, An
     if max_batch > 0:
         payload["embedding_batch_size"] = max_batch
     return payload
+
+
+def _cognee_compatible_endpoint(base_url: str) -> str:
+    """把 DashScope 原生端点改写为 OpenAI 兼容模式端点（cognee 只走 litellm OpenAI 格式）。
+
+    AnelfAgent 主 embedding 对 DashScope 走原生 API（文本/多模态分流，见
+    llm_client._is_dashscope_native），base_url 必须保持原生形态；
+    cognee 的 LiteLLMEmbeddingEngine 只发 OpenAI 格式请求，
+    原生路径（/api/v1）会 404，须改写为 /compatible-mode/v1。
+    其余端点原样透传。
+    """
+    url = (base_url or "").strip()
+    if "dashscope.aliyuncs.com" in url and "compatible-mode" not in url:
+        return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    return url
 
 
 def _embed_provider_name(api_type: str) -> str:

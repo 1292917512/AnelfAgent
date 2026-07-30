@@ -281,13 +281,24 @@ def _clean_message(msg: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.get("/history")
 async def get_history(
-    scope_id: str = Query("web_user", description="基础 scope（不带 chat_id 时为兼容旧版）"),
+    scope_id: str = Query("webui:web_user", description="基础 scope（不含 adapter 前缀时自动补 webui:）"),
     chat_id: Optional[str] = Query(None, description="多会话 chat_id，拼接为 scope_id#{chat_id}"),
     limit: int = Query(50, ge=1, le=500),
 ) -> List[Dict[str, Any]]:
-    effective_scope = f"{scope_id}#{chat_id}" if chat_id else scope_id
+    base_scope = _normalize_web_scope_id(scope_id)
+    effective_scope = f"{base_scope}#{chat_id}" if chat_id else base_scope
     raw = await _chat_svc.load_history(scope_id=effective_scope, limit=limit)
     return [_clean_message(m) for m in raw]
+
+
+def _normalize_web_scope_id(scope_id: str) -> str:
+    """webui 历史查询的 scope_id 归一化：裸 user_id 自动补 adapter 前缀（兼容旧前端）。"""
+    sid = (scope_id or "").strip()
+    if not sid:
+        return "webui:web_user"
+    if ":" in sid.split("#", 1)[0]:
+        return sid
+    return f"webui:{sid}"
 
 
 @router.get("/chats")
@@ -300,13 +311,15 @@ async def list_chats(
     if rt is None:
         return {"chats": []}
     try:
-        sessions = await rt.data_center.sqlite.list_user_chat_sessions(user_id)
+        sessions = await rt.data_center.sqlite.list_user_chat_sessions(
+            _normalize_web_scope_id(user_id)
+        )
     except Exception as exc:
         raise server_error("查询会话列表", exc) from exc
     chats: List[Dict[str, Any]] = []
     for s in sessions:
         sid = s["scope_id"]
-        # scope_id 形如 "web_user" 或 "web_user#abc123"
+        # scope_id 形如 "webui:web_user" 或 "webui:web_user#abc123"
         chat_id = sid.split("#", 1)[1] if "#" in sid else "default"
         title = "新会话"
         raw_content = s.get("last_user_content")
@@ -344,7 +357,7 @@ async def cancel_plan(req: CancelPlanRequest) -> Dict[str, Any]:
     from agent.planning import tracker as plan_tracker
 
     scope = plan_tracker.make_scope(
-        "web_user", "" if req.chat_id == "default" else req.chat_id,
+        "webui:web_user", "" if req.chat_id == "default" else req.chat_id,
     )
     ok = await plan_tracker.cancel_plan(scope, req.plan_id, reason="用户取消")
     if not ok:

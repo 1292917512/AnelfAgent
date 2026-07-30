@@ -133,8 +133,12 @@ async def recall_cross_channel(
         for scope, activity in snap.active_scopes.items():
             if scope == current_scope or now - activity.last_time > window:
                 continue
-            scope_type = "group" if scope.startswith("group_") else "user"
-            scope_id = scope.split("_", 1)[1] if "_" in scope else scope
+            from agent.messages import parse_entity_scope
+            scope_type, _adp, base_id, session_id = parse_entity_scope(scope)
+            if not scope_type:
+                continue
+            suffix = f"#{session_id}" if session_id else ""
+            scope_id = f"{_adp}:{base_id}{suffix}" if _adp else f"{base_id}{suffix}"
             other_scopes.append((scope_type, scope_id, adapter_key))
 
     if not other_scopes:

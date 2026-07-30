@@ -3,6 +3,8 @@
 
 扫描 entities/*/panel.tsx，在 web/frontend/src/pages/entities/panels/ 下
 创建/更新软链接，使 Vite 的 import.meta.glob 能发现实体自定义面板。
+实体可将面板拆分为 entities/<name>/panels/ 子目录，整个目录会被软链为
+panels/<name>/，panel.tsx 内用相对导入（如 ./<name>/SubPanel）引用。
 
 用法：
     python scripts/link_entity_panels.py
@@ -25,34 +27,36 @@ def link_panels() -> list[str]:
     PANELS_DIR.mkdir(parents=True, exist_ok=True)
 
     linked: list[str] = []
-    # 清理无效链接
-    for existing in PANELS_DIR.iterdir():
-        if existing.suffix == ".tsx" and existing.is_symlink():
-            if not existing.resolve().exists():
-                existing.unlink()
-
+    # 期望的软链集合：链接名 → 相对目标
+    expected: dict[str, str] = {}
     for entity_dir in sorted(ENTITIES_DIR.iterdir()):
         if not entity_dir.is_dir() or entity_dir.name.startswith("_"):
             continue
         panel_src = entity_dir / "panel.tsx"
         if not panel_src.exists():
             continue
+        expected[f"{entity_dir.name}.tsx"] = os.path.relpath(panel_src, PANELS_DIR)
+        # 面板拆分子目录：entities/<name>/panels/ → panels/<name>/
+        sub_dir = entity_dir / "panels"
+        if sub_dir.is_dir():
+            expected[entity_dir.name] = os.path.relpath(sub_dir, PANELS_DIR)
+        linked.append(entity_dir.name)
 
-        link_name = f"{entity_dir.name}.tsx"
-        link_path = PANELS_DIR / link_name
+    # 清理：非期望集合或目标已失效的软链
+    for existing in PANELS_DIR.iterdir():
+        if not existing.is_symlink():
+            continue
+        if existing.name not in expected or not existing.exists():
+            existing.unlink()
 
-        # 计算相对路径（从 panels 目录到实体 panel.tsx）
-        rel = os.path.relpath(panel_src, PANELS_DIR)
-
-        if link_path.is_symlink():
-            current = os.readlink(link_path)
-            if current == rel:
-                linked.append(entity_dir.name)
+    # 创建/更新软链
+    for name, rel in expected.items():
+        link_path = PANELS_DIR / name
+        if link_path.exists():
+            if link_path.is_symlink() and os.readlink(link_path) == rel:
                 continue
             link_path.unlink()
-
-        link_path.symlink_to(rel)
-        linked.append(entity_dir.name)
+        link_path.symlink_to(rel, target_is_directory=(PANELS_DIR / rel).is_dir())
 
     return linked
 

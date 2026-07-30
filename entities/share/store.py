@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 import secrets
 import time
@@ -52,11 +51,6 @@ CREATE TABLE IF NOT EXISTS download_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_dl_token ON download_logs(token);
 CREATE INDEX IF NOT EXISTS idx_dl_time ON download_logs(downloaded_at);
-
-CREATE TABLE IF NOT EXISTS share_config (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
 """
 
 _EXPIRES_MAP: Dict[str, int] = {
@@ -68,13 +62,20 @@ _EXPIRES_MAP: Dict[str, int] = {
     "never": 0,  # 0 表示永不过期
 }
 
-_DEFAULT_CONFIG: Dict[str, Any] = {
-    "default_expires_in": "24h",
-    "token_length": 22,
-    "ai_auto_share": True,
-    "default_max_downloads": 0,
-    "audit_enabled": True,
-}
+# 下载路由路径（router.py 挂载点 + /d/{token}），工具层拼 URL 时复用
+DOWNLOAD_PATH = "/api/entity/share/d"
+
+
+def build_download_url(token: str, base_url: str = "") -> str:
+    """拼接下载链接。base_url 为公网基址，空则返回相对路径。"""
+    base = base_url.rstrip("/")
+    return f"{base}{DOWNLOAD_PATH}/{token}"
+
+
+def get_public_base_url() -> str:
+    """读取配置的公网基址（实体配置项 share_public_base_url）。"""
+    from core.config import get_config
+    return str(get_config("share_public_base_url", "") or "")
 
 
 def _default_db_path() -> str:
@@ -134,7 +135,6 @@ class ShareStore:
         self._db_path = db_path or _default_db_path()
         self._db: Optional[aiosqlite.Connection] = None
         self._lock = asyncio.Lock()
-        self._config: Dict[str, Any] = dict(_DEFAULT_CONFIG)
 
     async def _get_db(self) -> aiosqlite.Connection:
         if self._db is not None:
@@ -151,7 +151,6 @@ class ShareStore:
             await db.executescript(_SCHEMA)
             await db.commit()
             self._db = db
-            await self._load_config()
             log(f"ShareStore 就绪: {self._db_path}", tag="分享")
             return db
 
@@ -159,46 +158,6 @@ class ShareStore:
         if self._db is not None:
             await self._db.close()
             self._db = None
-
-    # ------------------------------------------------------------------
-    # 配置管理
-    # ------------------------------------------------------------------
-
-    async def _load_config(self) -> None:
-        """从 DB 加载配置，覆盖默认值。"""
-        db = self._db
-        if db is None:
-            return
-        try:
-            cursor = await db.execute("SELECT key, value FROM share_config")
-            for row in await cursor.fetchall():
-                key = row["key"]
-                if key in _DEFAULT_CONFIG:
-                    try:
-                        self._config[key] = json.loads(row["value"])
-                    except Exception:
-                        self._config[key] = row["value"]
-        except Exception as e:
-            log(f"分享配置加载失败: {e}", "DEBUG", tag="分享")
-
-    async def get_config(self) -> Dict[str, Any]:
-        """获取当前配置（含默认值）。"""
-        await self._get_db()
-        return dict(self._config)
-
-    async def set_config(self, key: str, value: Any) -> None:
-        """更新配置项。"""
-        if key not in _DEFAULT_CONFIG:
-            raise ValueError(f"未知配置项: {key}")
-        db = await self._get_db()
-        self._config[key] = value
-        await db.execute(
-            "INSERT INTO share_config(key, value) VALUES(?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, json.dumps(value)),
-        )
-        await db.commit()
-        log(f"分享配置已更新: {key}={value}", "DEBUG", tag="分享")
 
     # ------------------------------------------------------------------
     # CRUD
@@ -231,7 +190,8 @@ class ShareStore:
         file_name = os.path.basename(fp)
         expires_ms = _EXPIRES_MAP.get(expires_in, _EXPIRES_MAP["24h"])
         expires_at = now + expires_ms if expires_ms > 0 else 0
-        token_len = int(self._config.get("token_length", 22))
+        from core.config import get_config_int
+        token_len = max(8, min(64, get_config_int("share_token_length", 22)))
 
         # 查重：同路径同 hash 的 active 链接直接复用
         async with self._lock:
@@ -250,7 +210,7 @@ class ShareStore:
                 "INSERT INTO share_links(token, file_path, file_name, file_size, "
                 "content_hash, description, expires_at, created_at, created_by, "
                 "download_count, last_download_at, max_downloads, status) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,0,?,?)",
+                "VALUES(?,?,?,?,?,?,?,?,?,0,0,?,?)",
                 (token, file_path, file_name, file_size, content_hash,
                  description, expires_at, now, created_by, max_downloads, "active"),
             )
@@ -404,7 +364,8 @@ class ShareStore:
         file_size: int = 0,
     ) -> None:
         """记录下载审计日志。"""
-        if not self._config.get("audit_enabled", True):
+        from core.config import get_config_bool
+        if not get_config_bool("share_audit_enabled", True):
             return
         db = await self._get_db()
         await db.execute(

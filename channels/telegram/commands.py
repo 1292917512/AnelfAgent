@@ -108,12 +108,13 @@ async def _cmd_reset(bot: Any, chat_id: int, update: Any) -> None:
         from services._runtime import get_runtime
         rt = get_runtime()
         if rt:
+            from agent.messages import build_scope_id
             from agent.storage.storage_router import StorageDomain
             is_group = update.effective_chat.type in ("group", "supergroup")
             if is_group:
-                scope_type, scope_id = "group", str(chat_id)
+                scope_type, scope_id = "group", build_scope_id("telegram", str(chat_id))
             else:
-                scope_type, scope_id = "user", user_id
+                scope_type, scope_id = "user", build_scope_id("telegram", user_id)
             await rt.data_center.router.clear(
                 StorageDomain.CONVERSATION,
                 scope_type=scope_type,

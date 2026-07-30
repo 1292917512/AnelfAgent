@@ -3,7 +3,6 @@
     "overview": "Overview",
     "links": "Links",
     "create": "Create",
-    "config": "Config",
     "logs": "Download Logs"
   },
   "stats": {
@@ -65,8 +64,6 @@
     "copySuccess": "Copied to clipboard",
     "copyFailed": "Copy failed",
     "loadFailed": "Load failed",
-    "saveSuccess": "Config saved",
-    "saveFailed": "Save failed",
     "confirmRevoke": "Revoke this link? It will no longer be downloadable."
   },
   "empty": {
@@ -74,29 +71,10 @@
     "hint": "Switch to \"Create\" to get started",
     "logs": "No download records"
   },
-  "config": {
-    "defaultExpiresIn": "Default Expiration",
-    "tokenLength": "Token Length",
-    "aiAutoShare": "AI Auto Share",
-    "defaultMaxDownloads": "Default Max Downloads",
-    "auditEnabled": "Download Audit",
-    "saved": "Config saved",
-    "save": "Save Config"
-  },
   "topFiles": "Top 10 Files",
   "trend": "Creation Trend",
   "downloadUrl": "Download URL",
   "unlimited": "Unlimited",
-  "monitor": {
-    "title": "Share Monitor",
-    "activeLinks": "Active Links",
-    "todayDownloads": "Today's Downloads",
-    "recentDownloads": "Recent Downloads",
-    "storage": "Storage Usage"
-  },
   "filePathHint": "Relative or absolute path inside the workspace sandbox",
-  "workspaceEmpty": "Workspace is empty",
-  "tokenLengthHint": "8 - 64 characters, default 22",
-  "aiAutoShareDesc": "Allow AI to create share links automatically via tools",
-  "auditDesc": "Record IP / time / User-Agent for each download"
+  "workspaceEmpty": "Workspace is empty"
 }

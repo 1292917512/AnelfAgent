@@ -1,9 +1,15 @@
 # === Python ===
 __pycache__/
 *.py[cod]
-*.mypy_cache
+.mypy_cache/
 .pytest_cache/
 .ruff_cache/
+
+# === Test & coverage artifacts ===
+.coverage
+coverage.xml
+htmlcov/
+junit*.xml
 
 # === IDE ===
 .idea/

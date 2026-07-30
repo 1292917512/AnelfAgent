@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
@@ -39,9 +38,8 @@ async def list_adapters() -> Dict[str, Any]:
 
 @router.put("/{key}/toggle")
 async def toggle_adapter(key: str) -> Dict[str, str]:
-    loop = asyncio.get_running_loop()
     try:
-        _adapter_svc.toggle_adapter(key, loop)
+        await _adapter_svc.toggle_adapter(key)
         return {"status": "ok"}
     except Exception as e:
         raise server_error("切换频道", e) from e

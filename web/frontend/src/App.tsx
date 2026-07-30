@@ -30,11 +30,11 @@ function lazyPage(name: string) {
 
 // 核心路由注册表：声明式集中管理，新增页面只需在此追加一行
 // - index: true → 首页（path="/"）
-// - redirectTo → Navigate 重定向
+// - redirectTo → Navigate 重定向（无需 page）
 // - path 含 ":" → 参数路由（如 entities/:name）
 interface CoreRoute {
   path?: string;
-  page: string;
+  page?: string;
   index?: boolean;
   redirectTo?: string;
 }
@@ -53,7 +53,7 @@ const CORE_ROUTES: CoreRoute[] = [
   { path: "personas", page: "Personas" },
   { path: "memory", page: "Memory" },
   { path: "stickers", page: "Stickers" },
-  { path: "share", page: "Share" },
+  { path: "share", redirectTo: "/entities/share" },
   { path: "data", page: "Data" },
   { path: "config", page: "Config" },
   { path: "channels", page: "Channels" },
@@ -85,13 +85,6 @@ export default function App() {
         <Routes>
           <Route element={<Layout />}>
             {CORE_ROUTES.map((r) => {
-              const Page = lazyPage(r.page);
-              if (!Page) return null;
-              const element = (
-                <Suspense fallback={<div className="p-4 text-muted">{t("common:loading")}</div>}>
-                  <Page />
-                </Suspense>
-              );
               if (r.redirectTo) {
                 return (
                   <Route
@@ -101,6 +94,13 @@ export default function App() {
                   />
                 );
               }
+              const Page = r.page ? lazyPage(r.page) : null;
+              if (!Page) return null;
+              const element = (
+                <Suspense fallback={<div className="p-4 text-muted">{t("common:loading")}</div>}>
+                  <Page />
+                </Suspense>
+              );
               return r.index ? (
                 <Route key="index" index element={element} />
               ) : (

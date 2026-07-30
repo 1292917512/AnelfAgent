@@ -6,7 +6,7 @@ from pydantic import Field
 
 from core.tags import Tag, group_id_tag, uid_tag
 
-from .everything import CharType, EverythingGroup, MsgType
+from .everything import CharType, EverythingGroup, MsgType, build_scope_id
 
 
 class CharacterAgent(EverythingGroup):
@@ -49,6 +49,23 @@ class EntityData(EverythingGroup):
 
     # 注意：这里先用普通 dict，后续会接入持久化适配层
     personality: Dict = Field(default_factory=dict)
+
+    @property
+    def identity_parts(self) -> tuple[str, str]:
+        """实体身份键 (scope_type, scope_id)：用户实体（uid 非零）恒为 user 域。
+
+        与 entity_scope（会话语义：群消息归群）刻意区分——身份语义用于画像/计数/
+        内存实体键：同一个人无论在哪说话都是同一个 user 实体，不随群上下文漂移。
+        """
+        if self.uid not in (0, "0", None):
+            return "user", build_scope_id(self.adapter_key, str(self.uid))
+        return "group", build_scope_id(self.adapter_key, str(self.group_id))
+
+    @property
+    def identity_scope(self) -> str:
+        """实体身份 entity_scope（``user_qq:123`` / ``group_qq:456``）。"""
+        scope_type, scope_id = self.identity_parts
+        return f"{scope_type}_{scope_id}"
 
     def add_conversations_num(self) -> int:
         self._plus_element("conv_num")

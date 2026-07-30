@@ -20,12 +20,22 @@ export interface StickerListResult {
   page_size: number;
 }
 
+export interface StickerEmbeddingHealth {
+  model: string;
+  model_dims: number | null;
+  vec_dims: Record<string, number | null>;
+  stored_dims: Record<string, Record<string, number>>;
+  missing: Record<string, number>;
+  mismatched: number;
+}
+
 export interface StickerStats {
   stickers: number;
   total_uses: number;
   indexed_images: number;
   described_images: number;
   vec_available: boolean;
+  embedding: StickerEmbeddingHealth;
 }
 
 export interface IndexedImage {

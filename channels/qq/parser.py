@@ -156,13 +156,25 @@ async def _parse_message_event_async(
         raw_message, group_id, self_id, api_caller
     )
 
-    # 提取引用消息 ID 并获取内容
+    # 提取引用消息 ID 并获取内容与消息段
     reply_to_id = _extract_reply_id(raw_message)
     reply_content = ""
+    reply_segments: List[MessageSegment] = []
     if reply_to_id and api_caller:
-        reply_content = await _fetch_reply_content(reply_to_id, api_caller, group_id, self_id)
+        reply_content, reply_segments = await _fetch_reply_content(
+            reply_to_id, api_caller, group_id, self_id
+        )
 
     is_to_me = _check_to_me(data)
+
+    # 消息指向 bot（私聊 / @bot）时，自动下载本条及被回复消息中的图片到本地，
+    # AI 直接拿到本地路径，无需再手动调用下载工具
+    if is_to_me and api_caller:
+        await _auto_download_to_me_images(segments, api_caller)
+        reply_images = [s for s in reply_segments if s.type == SegmentType.IMAGE]
+        if reply_images:
+            await _auto_download_to_me_images(reply_images, api_caller)
+            segments.extend(reply_images)
 
     return AdapterMessage(
         message_id=message_id,
@@ -414,13 +426,13 @@ async def _fetch_reply_content(
     group_id: str = "",
     self_id: str = "",
     timeout: float = 3.0,
-) -> str:
-    """获取被引用消息的内容。
+) -> Tuple[str, List[MessageSegment]]:
+    """获取被引用消息的内容与消息段。
 
     为避免阻塞消息处理，API 调用有超时限制。
     """
     if not reply_id or not api_caller:
-        return ""
+        return "", []
 
     try:
         result = await asyncio.wait_for(
@@ -431,7 +443,7 @@ async def _fetch_reply_content(
             msg_data = result["data"]
             raw_message = msg_data.get("message", [])
             # 使用同步解析避免递归异步调用
-            content, _ = _parse_message_segments_sync(raw_message, group_id, self_id)
+            content, segments = _parse_message_segments_sync(raw_message, group_id, self_id)
             sender = msg_data.get("sender", {})
             sender_name = (
                 sender.get("card")
@@ -440,12 +452,58 @@ async def _fetch_reply_content(
             )
             # 截断过长内容
             content_preview = content[:200] if len(content) > 200 else content
-            return f"{sender_name}: {content_preview}"
+            return f"{sender_name}: {content_preview}", segments
     except asyncio.TimeoutError:
         log(f"获取引用消息超时: message_id={reply_id}", "DEBUG", tag="QQ")
     except Exception as exc:
         log(f"获取引用消息失败: {exc}", "DEBUG", tag="QQ")
-    return ""
+    return "", []
+
+
+async def _auto_download_to_me_images(
+    segments: List[MessageSegment],
+    api_caller: ApiCaller,
+    timeout: float = 8.0,
+) -> None:
+    """消息指向 bot 时自动下载其中的图片到本地，回填 ``seg.file_path``。
+
+    仅在 is_to_me 场景调用，避免全量下载群图片。优先取 NapCat 本地缓存
+    （同机零拷贝），否则从 URL 落盘到 workspace/uploads/image/。失败保持
+    原状，AI 后续仍可通过 qq_download_file / web_download 按需下载。
+    """
+    from agent.channel.media import download_to_uploads
+
+    async def _fetch_one(seg: MessageSegment) -> None:
+        if seg.file_path and os.path.isfile(seg.file_path):
+            return
+        url = seg.url if seg.url.startswith(("http://", "https://")) else ""
+        if not url and seg.file_id:
+            try:
+                result = await asyncio.wait_for(
+                    api_caller("get_image", {"file": seg.file_id}), timeout=timeout
+                )
+            except Exception as exc:
+                log(f"自动获取图片信息失败: {exc}", "DEBUG", tag="QQ")
+                result = None
+            info = result.get("data") if isinstance(result, dict) else None
+            if isinstance(info, dict):
+                local = _strip_file_prefix(str(info.get("file", "") or ""))
+                if local and os.path.isfile(local):
+                    seg.file_path = local
+                    log(f"@bot 图片就绪（本地缓存）: {local}", "DEBUG", tag="QQ")
+                    return
+                cand = str(info.get("url", "") or "")
+                if cand.startswith(("http://", "https://")):
+                    url = cand
+        if not url:
+            return
+        path = await download_to_uploads(url, SegmentType.IMAGE, save_name=seg.file_name)
+        if path:
+            seg.file_path = path
+
+    targets = [s for s in segments if s.type == SegmentType.IMAGE]
+    if targets:
+        await asyncio.gather(*(_fetch_one(s) for s in targets), return_exceptions=True)
 
 
 async def _parse_forward_message(

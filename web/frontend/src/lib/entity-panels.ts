@@ -2,8 +2,10 @@
  * 实体面板注册表。
  *
  * 实体在 entities/<name>/panel.tsx 中编写自定义面板组件，
- * 通过 scripts/link_entity_panels.py 软链接到 src/pages/entities/panels/，
- * 本文件通过 import.meta.glob 自动发现（Vite 构建时解析）。
+ * 通过 scripts/link_entity_panels.py（或 vite entity-panels 插件）软链接到
+ * src/pages/entities/panels/，本文件通过 import.meta.glob 自动发现（构建时解析）。
+ * 面板可按实体拆分为 entities/<name>/panels/ 子目录（整体软链为 panels/<name>/），
+ * panel.tsx 内用相对导入引用子组件。
  *
  * 新增实体面板后需重新执行 link_entity_panels.py 并重启 dev server。
  */

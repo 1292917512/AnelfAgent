@@ -963,8 +963,10 @@ class LLMClient(BaseEntity):
     # Embedding
     # ------------------------------------------------------------------
 
-    # DashScope 原生多模态向量端点（OpenAI 兼容模式不支持该系列模型）
+    # DashScope 原生向量端点（OpenAI 兼容模式不支持多模态系列模型）：
+    # 多模态模型（supports_vision）走 multimodal-embedding，纯文本模型走 text-embedding
     _DASHSCOPE_EMBED_PATH = "/services/embeddings/multimodal-embedding/multimodal-embedding"
+    _DASHSCOPE_TEXT_EMBED_PATH = "/services/embeddings/text-embedding/text-embedding"
 
     def _is_dashscope_native(self) -> bool:
         """是否为 DashScope 原生端点（非 OpenAI 兼容模式）。"""
@@ -977,7 +979,7 @@ class LLMClient(BaseEntity):
         return self._is_dashscope_native() and self.config.supports_vision
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        """文本嵌入（默认通过 litellm 统一路由；DashScope 原生端点走多模态向量 API）。
+        """文本嵌入（默认通过 litellm 统一路由；DashScope 原生端点按模型能力分流）。
 
         配置 embedding_max_batch 时按供应商单批上限自动拆分请求并按序拼接。
         """
@@ -989,11 +991,9 @@ class LLMClient(BaseEntity):
                 results.extend(await self.embed(texts[i:i + max_batch]))
             return results
         if self._is_dashscope_native():
-            if not self.config.supports_vision:
-                raise RuntimeError(
-                    "DashScope 原生端点仅用于多模态向量模型；文本向量模型请改用 compatible-mode 端点"
-                )
-            return await self.embed_multimodal([{"text": t} for t in texts])
+            if self.config.supports_vision:
+                return await self.embed_multimodal([{"text": t} for t in texts])
+            return await self._embed_dashscope_native_text(texts)
         kwargs: Dict[str, Any] = {
             "model": self.config.litellm_embed_model,
             "input": texts,
@@ -1036,13 +1036,30 @@ class LLMClient(BaseEntity):
         if not self._is_dashscope_native():
             raise RuntimeError("多模态向量当前仅支持 DashScope 原生端点")
         url = self.config.base_url.rstrip("/") + self._DASHSCOPE_EMBED_PATH
-        headers = {"Content-Type": "application/json"}
-        if self.config.api_key:
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
         payload: Dict[str, Any] = {"model": self.config.model, "input": {"contents": contents}}
         if self.config.embedding_dims > 0:
             payload["parameters"] = {"dimension": self.config.embedding_dims}
-        # 与其他路径一致使用 effective_proxy（自动补 scheme），并复用连接池
+        data = await self._dashscope_embed_request(url, payload)
+        embeddings = data.get("output", {}).get("embeddings", [])
+        ordered = sorted(embeddings, key=lambda e: e.get("index", 0))
+        return [e["embedding"] for e in ordered]
+
+    async def _embed_dashscope_native_text(self, texts: list[str]) -> list[list[float]]:
+        """DashScope 原生纯文本向量（text-embedding 端点）。"""
+        url = self.config.base_url.rstrip("/") + self._DASHSCOPE_TEXT_EMBED_PATH
+        payload: Dict[str, Any] = {"model": self.config.model, "input": {"texts": texts}}
+        if self.config.embedding_dims > 0:
+            payload["parameters"] = {"dimension": self.config.embedding_dims}
+        data = await self._dashscope_embed_request(url, payload)
+        embeddings = data.get("output", {}).get("embeddings", [])
+        ordered = sorted(embeddings, key=lambda e: e.get("index", 0))
+        return [e["embedding"] for e in ordered]
+
+    async def _dashscope_embed_request(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """DashScope 原生向量端点请求（复用连接池与有效代理）。"""
+        headers = {"Content-Type": "application/json"}
+        if self.config.api_key:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
         if self._embed_http_client is None or self._embed_http_client.is_closed:
             self._embed_http_client = httpx.AsyncClient(
                 timeout=self.config.timeout,
@@ -1050,10 +1067,7 @@ class LLMClient(BaseEntity):
             )
         resp = await self._embed_http_client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
-        data = resp.json()
-        embeddings = data.get("output", {}).get("embeddings", [])
-        ordered = sorted(embeddings, key=lambda e: e.get("index", 0))
-        return [e["embedding"] for e in ordered]
+        return resp.json()
 
     # ------------------------------------------------------------------
     # Text Completion（/completions 端点）

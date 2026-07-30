@@ -16,12 +16,11 @@ from core.log import log
 from .schemas import (
     CreateShareRequest,
     DownloadLogListResult,
-    ShareConfig,
     ShareLinkListResult,
     ShareLinkOut,
     ShareStats,
 )
-from .store import get_share_store
+from .store import build_download_url, get_public_base_url, get_share_store
 
 
 def build_router() -> APIRouter:
@@ -56,8 +55,12 @@ def build_router() -> APIRouter:
         except ValueError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
 
-        # 用 Request.url_for 拼接完整 URL，保证多 host / 反代场景正确
-        entry["url"] = str(request.url_for("download_share_file", token=entry["token"]))
+        # 优先用配置的公网基址拼接完整 URL，未配置则回退 Request.url_for（多 host / 反代场景正确）
+        base_url = get_public_base_url().strip()
+        if base_url:
+            entry["url"] = build_download_url(entry["token"], base_url)
+        else:
+            entry["url"] = str(request.url_for("download_share_file", token=entry["token"]))
         return ShareLinkOut(**entry)
 
     @router.delete("/links/{token}")
@@ -74,20 +77,6 @@ def build_router() -> APIRouter:
         """获取分享统计总览。"""
         store = get_share_store()
         return ShareStats(**(await store.stats()))
-
-    @router.get("/config", response_model=ShareConfig)
-    async def get_config() -> ShareConfig:
-        """获取分享配置。"""
-        store = get_share_store()
-        return ShareConfig(**(await store.get_config()))
-
-    @router.put("/config")
-    async def update_config(config: ShareConfig) -> dict:
-        """更新分享配置。"""
-        store = get_share_store()
-        for key, value in config.model_dump().items():
-            await store.set_config(key, value)
-        return {"status": "ok"}
 
     @router.get("/logs", response_model=DownloadLogListResult)
     async def get_logs(

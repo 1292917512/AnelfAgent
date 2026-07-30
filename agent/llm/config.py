@@ -286,6 +286,10 @@ class LLMClientConfig:
             d["top_p"] = self.top_p
         if self.max_tokens is not None:
             d["max_tokens"] = self.max_tokens
+        if self.embedding_dims:
+            d["embedding_dims"] = self.embedding_dims
+        if self.embedding_max_batch:
+            d["embedding_max_batch"] = self.embedding_max_batch
         if self.frequency_penalty:
             d["frequency_penalty"] = self.frequency_penalty
         if self.presence_penalty:

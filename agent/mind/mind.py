@@ -345,10 +345,19 @@ class Mind:
             self._update_channel_snapshot(anything)
 
     def _schedule_next_cycle(self, reason: str) -> None:
-        """以指数退避调度下一轮自主循环（1s/2s/4s/8s 封顶），避免紧凑重试。"""
-        delay = min(2.0 ** self._auto_cycle_retry, 8.0)
+        """以指数退避调度下一轮自主循环（默认 0.5s 起、8s 封顶），避免紧凑重试。
+
+        有待回复的用户消息时不退避——退避是为空闲自驱续轮防抖，
+        用户消息已在排队等待，延迟直接损害对话体验。
+        """
+        from core.config import get_config_float
+        base = get_config_float("auto_cycle_base_delay", 0.5)
+        if not self.pfc.pending_user.is_empty() or not self.pfc.pending_group.is_empty():
+            delay = 0.0
+        else:
+            delay = min(base * (2.0 ** self._auto_cycle_retry), 8.0)
         self._auto_cycle_retry += 1
-        log(f"{reason}，{delay:.0f}s 后自动触发新一轮 (第{self._auto_cycle_retry}次续轮)", tag="思维")
+        log(f"{reason}，{delay:.1f}s 后自动触发新一轮 (第{self._auto_cycle_retry}次续轮)", tag="思维")
 
         async def _later() -> None:
             await asyncio.sleep(delay)
@@ -795,8 +804,8 @@ class Mind:
             self,
             anything: Optional[Everything],
             models_summary: str,
-    ) -> Tuple[str, str, bool, bool]:
-        """构建 stable/context 两层提示（委托 recollection 模块）。"""
+    ) -> Tuple[str, str, str, bool, bool, bool]:
+        """构建 stable 人设块/工具块/context 层三段提示（委托 recollection 模块）。"""
         return await _recollection._build_layered_prompts(self, anything, models_summary)
 
     @staticmethod
@@ -847,6 +856,7 @@ class Mind:
             StorageDomain.CONVERSATION,
             scope_type=scope_type, scope_id=scope_id,
             role=role, content=content,
+            adapter_key=getattr(anything, "adapter_key", "") or "",
         )
 
     @staticmethod

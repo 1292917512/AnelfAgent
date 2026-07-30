@@ -181,10 +181,11 @@ class EntityMetadata:
 
     def get_all_configs(self) -> Dict[str, Any]:
         """获取实体所属配置分组的所有配置项及其当前值"""
-        if not self.config_group:
+        group = self.config_group or self.group
+        if not group:
             return {}
         from core.config import ConfigManager, ConfigRegistry
-        items = ConfigRegistry.get_group_items(self.config_group)
+        items = ConfigRegistry.get_group_items(group)
         return {
             item.key: ConfigManager.get(item.key, item.default_value)
             for item in items
@@ -192,10 +193,11 @@ class EntityMetadata:
 
     def get_config_items(self) -> List[Dict[str, Any]]:
         """获取实体配置项描述列表（含类型、默认值等元信息）"""
-        if not self.config_group:
+        group = self.config_group or self.group
+        if not group:
             return []
         from core.config import ConfigManager, ConfigRegistry
-        items = ConfigRegistry.get_group_items(self.config_group)
+        items = ConfigRegistry.get_group_items(group)
         return [
             {
                 "key": item.key,
@@ -205,6 +207,7 @@ class EntityMetadata:
                 "type": item.value_type.value if hasattr(item.value_type, 'value') else str(item.value_type),
                 "editable": item.editable,
                 "required": item.required,
+                "enum_options": item.enum_options,
             }
             for item in items
         ]

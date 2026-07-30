@@ -37,14 +37,6 @@ export interface CreateShareRequest {
   max_downloads?: number;
 }
 
-export interface ShareConfig {
-  default_expires_in: string;
-  token_length: number;
-  ai_auto_share: boolean;
-  default_max_downloads: number;
-  audit_enabled: boolean;
-}
-
 export interface DownloadLogEntry {
   id: number;
   token: string;

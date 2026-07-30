@@ -244,7 +244,7 @@ channels/ → agent.channel → core.entity
 | `services/` | 业务封装，供 Web API 调用 |
 | `web/` | FastAPI + React 前端 |
 | `config/` | JSON 配置 · SQLite 数据 · 人设 · 任务定义 |
-| `tests/` | pytest 用例 |
+| `tests/` | pytest 用例（`unit/` 单元 + `integration/` 集成分层） |
 
 ### 项目结构（摘要）
 
@@ -323,9 +323,15 @@ async def get_weather(city: str) -> str:
 
 ```bash
 uv sync                          # 安装依赖（含 Cognee 等）
-uv run pytest                    # 单元 / 异步测试
+uv run pytest                    # 全量测试（unit + 无需凭证的 integration）
+uv run pytest tests/unit         # 仅单元测试（快速）
+uv run pytest -m integration     # 仅集成测试（需凭证的用例自动跳过）
+uv run ruff check .              # Lint
+uv run mypy core/                # 类型检查（core 严格层）
 uv add <package>                 # 新增依赖（请勿对 uv venv 使用 pip install）
 ```
+
+CI（GitHub Actions，`.github/workflows/ci.yml`）：push/PR 自动执行 ruff → mypy（core 必过，全量观察）→ pytest + 覆盖率，以及前端 `npm run lint` + `npm run build`。
 
 更细的架构约定见仓库根目录 [`AGENTS.md`](AGENTS.md)（供编辑器 / Agent 注入的工作区指令，非运行时依赖）。
 

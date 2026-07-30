@@ -1,0 +1,8 @@
+{
+  "share_public_base_url": "https://anelf.cn:39925",
+  "share_default_expires_in": "24h",
+  "share_token_length": 22,
+  "share_default_max_downloads": 0,
+  "share_ai_auto_share": true,
+  "share_audit_enabled": true
+}

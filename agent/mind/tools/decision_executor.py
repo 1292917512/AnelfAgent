@@ -265,30 +265,36 @@ def build_proactive_target(mind: Mind, target: str) -> Optional[Everything]:
         return None
 
     default_key = next(iter(channel_keys))
-    if target.startswith("group_"):
-        group_id: Union[int, str] = target[6:]
+    scope_type, scope_adapter, base_id, session_id = parse_entity_scope(target)
+    adapter_key = scope_adapter or default_key
+    if scope_type == "group":
+        group_id: Union[int, str] = base_id
         try:
-            group_id = int(group_id)
+            group_id = int(base_id)
         except ValueError:
             log("build_proactive_target 异常已忽略", "DEBUG")
-        return MessageAssistantGroup(group_id=group_id, adapter_key=default_key)
+        return MessageAssistantGroup(
+            group_id=group_id, adapter_key=adapter_key, session_id=session_id
+        )
 
-    uid: Union[int, str] = target.removeprefix("user_")
+    # 兼容裸 group_/user_ 前缀之外的旧调用形态
+    raw = target.removeprefix("user_") if scope_type != "user" else base_id
+    uid: Union[int, str] = raw
     try:
-        uid = int(uid)
+        uid = int(raw)
     except ValueError:
         log("build_proactive_target 异常已忽略", "DEBUG")
-    return MessageAssistant(uid=uid, adapter_key=default_key)
+    return MessageAssistant(uid=uid, adapter_key=adapter_key, session_id=session_id)
 
 
 def _build_reply_message(mind: Mind, scope: str, *, require_pending: bool) -> Optional[Everything]:
     """按 scope 消费待回复任务并构造带 session_id 的回复目标消息。"""
     if scope in mind._active_scopes:
         return None
-    scope_type, base_id, session_id = parse_entity_scope(scope)
+    scope_type, scope_adapter, base_id, session_id = parse_entity_scope(scope)
     if not scope_type:
         return None
-    adapter_key = mind.pfc.get_adapter_key(scope)
+    adapter_key = scope_adapter or mind.pfc.get_adapter_key(scope)
     consumed = mind.pfc.consume_scope_task(scope)
     if require_pending and not consumed:
         return None
@@ -330,8 +336,8 @@ async def pop_next_reply_target(mind: Mind) -> Optional[Everything]:
     if not tasks:
         return None
     scope, _, _, _ = tasks[0]
-    adapter_key = mind.pfc.get_adapter_key(scope)
-    scope_type, base_id, session_id = parse_entity_scope(scope)
+    scope_type, scope_adapter, base_id, session_id = parse_entity_scope(scope)
+    adapter_key = scope_adapter or mind.pfc.get_adapter_key(scope)
     if not scope_type:
         return None
     target_id: Union[int, str] = base_id

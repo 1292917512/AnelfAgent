@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Optional, Union
 
-from agent.messages import EntityData, Everything
+from agent.messages import EntityData, Everything, build_entity_scope, build_scope_id
 from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageDomain, StorageRouter
 from core.entity import EntityMetadata, EntityRegistry, EntityType
@@ -30,38 +30,49 @@ class EverythingData:
         return lock
 
     def add_anything(self, entity: EntityData) -> None:
-        if entity.uid not in (0, "0", None):
-            self.entities[f"user_{entity.uid}"] = entity
-        else:
-            self.entities[f"group_{entity.group_id}"] = entity
+        # 内存实体键用身份语义（用户实体恒 user 域），与会话键（群消息归群）区分
+        self.entities[entity.identity_scope] = entity
 
-    async def get_anything(self, group_id: Union[int, str] = 0, uid: Union[int, str] = 0) -> EntityData:
+    async def get_anything(
+        self,
+        group_id: Union[int, str] = 0,
+        uid: Union[int, str] = 0,
+        adapter_key: str = "",
+    ) -> EntityData:
         if uid not in (0, "0", None):
-            user_key = f"user_{uid}"
+            user_key = build_entity_scope("user", adapter_key, str(uid))
             async with self._lock_for(user_key):
                 if user_key not in self.entities:
-                    entity = EntityData(uid=uid, group_id=group_id)
+                    entity = EntityData(uid=uid, group_id=group_id, adapter_key=adapter_key)
                     # 先加载自身 scope 的计数，再通过 alias 加载 primary 的画像
                     own_data = await self.router.get_one(
-                        StorageDomain.ENTITY_PROFILE, scope_type="user", scope_id=str(uid)
+                        StorageDomain.ENTITY_PROFILE,
+                        scope_type="user",
+                        scope_id=build_scope_id(adapter_key, str(uid)),
                     )
-                    primary_data = await self._load_primary_profile("user", str(uid))
+                    primary_data = await self._load_primary_profile(
+                        "user", build_scope_id(adapter_key, str(uid))
+                    )
                     self._restore_entity_with_alias(entity, own_data, primary_data)
                     self.add_anything(entity)
-        group_key = f"group_{group_id}"
+        group_key = build_entity_scope("group", adapter_key, str(group_id))
         async with self._lock_for(group_key):
             if group_key not in self.entities:
-                entity = EntityData(uid=0, group_id=group_id)
+                entity = EntityData(uid=0, group_id=group_id, adapter_key=adapter_key)
                 own_data = await self.router.get_one(
-                    StorageDomain.ENTITY_PROFILE, scope_type="group", scope_id=str(group_id)
+                    StorageDomain.ENTITY_PROFILE,
+                    scope_type="group",
+                    scope_id=build_scope_id(adapter_key, str(group_id)),
                 )
-                primary_data = await self._load_primary_profile("group", str(group_id))
+                primary_data = await self._load_primary_profile(
+                    "group", build_scope_id(adapter_key, str(group_id))
+                )
                 self._restore_entity_with_alias(entity, own_data, primary_data)
                 self.add_anything(entity)
 
         if uid not in (0, "0", None):
-            return self.entities[f"user_{uid}"]
-        return self.entities[f"group_{group_id}"]
+            return self.entities[build_entity_scope("user", adapter_key, str(uid))]
+        return self.entities[group_key]
 
     async def _load_primary_profile(self, scope_type: str, scope_id: str) -> Optional[dict]:
         """若存在 alias 映射，加载 primary 的画像数据。"""
@@ -126,10 +137,7 @@ class EverythingData:
         conv_num = int(entity.personality.get("conv_num", 0))
         conv_update_num = int(entity.personality.get("conv_update_num", 0))
 
-        if entity.uid not in (0, "0", None):
-            scope_type, scope_id = "user", str(entity.uid)
-        else:
-            scope_type, scope_id = "group", str(entity.group_id)
+        scope_type, scope_id = entity.identity_parts
 
         # 画像写入 primary scope
         p_type, p_id = await self.resolve_primary_scope(scope_type, scope_id)
@@ -143,10 +151,7 @@ class EverythingData:
         """仅持久化对话计数（不覆盖画像内容）。"""
         conv_num = int(entity.personality.get("conv_num", 0))
         conv_update_num = int(entity.personality.get("conv_update_num", 0))
-        if entity.uid not in (0, "0", None):
-            scope_type, scope_id = "user", str(entity.uid)
-        else:
-            scope_type, scope_id = "group", str(entity.group_id)
+        scope_type, scope_id = entity.identity_parts
         await self.router.sqlite.save_entity_counters(
             scope_type=scope_type, scope_id=scope_id,
             conv_num=conv_num, conv_update_num=conv_update_num,
@@ -160,10 +165,7 @@ class EverythingData:
             if conv_num <= 0:
                 continue
             conv_update_num = int(entity.personality.get("conv_update_num", 0))
-            if entity.uid not in (0, "0", None):
-                scope_type, scope_id = "user", str(entity.uid)
-            else:
-                scope_type, scope_id = "group", str(entity.group_id)
+            scope_type, scope_id = entity.identity_parts
             records.append((scope_type, scope_id, conv_num, conv_update_num))
         return await self.router.sqlite.save_entity_counters_batch(records)
 
@@ -180,10 +182,8 @@ class ConversationData:
 
     async def get_conversation_record_by_everything(self, anything: Everything) -> list[dict]:
         scope_type, scope_id = self._scope_of(anything)
-        rows = await self.router.fetch(
-            StorageDomain.CONVERSATION,
-            scope_type=scope_type, scope_id=scope_id, limit=self.max_size,
-        )
+        scopes = await self._alias_merged_scopes(scope_type, scope_id)
+        rows = await self.router.sqlite.fetch_conversation_multi(scopes=scopes, limit=self.max_size)
         # 记录快照水位（快照内最大 ts_ns），并剥离 ts_ns 避免泄漏进 LLM 消息
         max_ts = 0
         records: list[dict] = []
@@ -194,6 +194,35 @@ class ConversationData:
             records.append({"role": row["role"], "content": row["content"]})
         self._fetch_watermarks[f"{scope_type}_{scope_id}"] = max_ts
         return records
+
+    async def _alias_merged_scopes(self, scope_type: str, scope_id: str) -> list[tuple[str, str]]:
+        """解析别名关联，返回 (primary + 全部 alias) 的 scope 列表（当前 scope 在前）。
+
+        未启用或无别名时返回仅含自身的单元素列表。
+        """
+        try:
+            from agent.storage.scope_migrate import is_alias_merge_enabled
+            if not is_alias_merge_enabled():
+                return [(scope_type, scope_id)]
+            sqlite = self.router.sqlite
+            primary = await sqlite.resolve_alias(scope_type, scope_id)
+            p_type, p_id = primary if primary else (scope_type, scope_id)
+            aliases = await sqlite.get_aliases_for_primary(p_type, p_id)
+            merged = [(p_type, p_id)] + [
+                (str(a["scope_type"]), str(a["scope_id"])) for a in aliases
+            ]
+            current = (scope_type, scope_id)
+            ordered = [current] + [s for s in merged if s != current]
+            # 去重保持顺序
+            seen: set[tuple[str, str]] = set()
+            result: list[tuple[str, str]] = []
+            for s in ordered:
+                if s not in seen:
+                    seen.add(s)
+                    result.append(s)
+            return result
+        except Exception:
+            return [(scope_type, scope_id)]
 
     def get_fetch_watermark(self, scope_type: str, scope_id: str) -> Optional[int]:
         """返回指定 scope 最近一次历史快照的水位（最大 ts_ns），未快照过返回 None。"""

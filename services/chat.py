@@ -14,9 +14,9 @@ class ChatService:
         return is_ready()
 
     async def load_history(
-        self, scope_id: str = "web_user", limit: int = 50,
+        self, scope_id: str = "webui:web_user", limit: int = 50,
     ) -> List[dict]:
-        """加载指定用户的历史会话记录。"""
+        """加载指定用户的历史会话记录（scope_id 含 adapter 前缀，如 webui:web_user）。"""
         rt = get_runtime()
         if rt is None:
             return []

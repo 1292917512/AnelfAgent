@@ -86,6 +86,55 @@ async def delete_indexed_image(path: str) -> Dict[str, Any]:
 
 
 # ------------------------------------------------------------------
+# 向量维度健康与重建（静态前缀，先于 /{sticker_id} 注册）
+# ------------------------------------------------------------------
+
+def _mismatched_count(embedding: Dict[str, Any], model_dims: Optional[int]) -> int:
+    """统计与参考维度不一致的向量条数（参考维度优先取当前模型，其次 vec 索引维度）。"""
+    total = 0
+    for kind, dims_map in embedding["stored_dims"].items():
+        ref = model_dims or embedding["vec_dims"].get(kind)
+        if not ref:
+            continue
+        total += sum(c for d, c in dims_map.items() if int(d) != ref)
+    return total
+
+
+class EmbeddingRebuildRequest(BaseModel):
+    mode: str = "mismatched"  # mismatched：仅清维度不一致的向量；all：全量清空
+
+
+@router.post("/embedding/rebuild")
+async def rebuild_embeddings(body: EmbeddingRebuildRequest) -> Dict[str, Any]:
+    """切换向量模型后重建贴纸/图片向量：清理后由后台 EmbeddingWorker 按当前模型回填。"""
+    from entities.sticker.tools import _get_embedder
+
+    if body.mode not in ("mismatched", "all"):
+        raise HTTPException(status_code=400, detail=f"不支持的重建模式: {body.mode}")
+
+    embedder = _get_embedder()
+    dims = embedder.dimensions
+    if dims is None:
+        probe = await embedder.embed_query("dimension probe")
+        if probe:
+            dims = len(probe)
+    if not dims:
+        raise HTTPException(status_code=503, detail="无可用向量模型，无法重建")
+
+    store = _store()
+    cleared: Dict[str, Any]
+    if body.mode == "all":
+        cleared = {"total": await store.clear_embeddings()}
+    else:
+        cleared = await store.clear_mismatched_embeddings(dims)
+
+    from agent.memory.embedding import wake_embedding_worker
+    wake_embedding_worker()
+    log(f"贴纸向量重建（{body.mode}）: 目标维度 {dims}，已清空 {cleared}", tag="贴纸")
+    return {"ok": True, "dims": dims, "cleared": cleared}
+
+
+# ------------------------------------------------------------------
 # 表情包
 # ------------------------------------------------------------------
 
@@ -101,8 +150,22 @@ async def list_stickers(
 
 @router.get("/stats")
 async def sticker_stats() -> Dict[str, Any]:
-    """表情包与图片索引统计。"""
-    return await _store().stats()
+    """表情包与图片索引统计（含向量维度健康）。"""
+    stats = await _store().stats()
+    model = ""
+    model_dims: Optional[int] = None
+    try:
+        from entities.sticker.tools import _get_embedder
+        embedder = _get_embedder()
+        model = embedder.client_name
+        model_dims = embedder.dimensions
+    except Exception as exc:
+        log(f"获取向量模型信息失败: {exc}", "DEBUG", tag="贴纸")
+    embedding = stats["embedding"]
+    embedding["model"] = model
+    embedding["model_dims"] = model_dims
+    embedding["mismatched"] = _mismatched_count(embedding, model_dims)
+    return stats
 
 
 @router.get("/{sticker_id}/file")
