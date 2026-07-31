@@ -240,6 +240,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/security/threat_scanner.py` | 威胁模式扫描（prompt 注入检测） |
 | `core/sanitizer.py` | 敏感信息脱敏（API Key/Token/密码） |
 | `core/tool_gate.py` | 工具门控（check_fn TTL 缓存 + 瞬态宽限） |
+| `core/tool_errors.py` | 工具错误返回统一设施（tool_error / error_from_exception + ErrorCause 归因） |
 | `agent/skills/skill_store.py` | 技能存储（workspace/skills/SKILL.md） |
 | `agent/skills/skill_matcher.py` | 技能匹配（关键词 + 语义混合评分） |
 | `agent/skills/background_review.py` | 技能后台评审（对话后自动沉淀经验） |
@@ -329,7 +330,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 
 **异常处理**：关键路径（数据库连接、关闭）保持 `except Exception`；工具函数返回 JSON error；其他 `pass` 场景补充 DEBUG 日志
 
-**工具开发**：返回 `str`（JSON）、完整类型注解、Google docstring、内部捕获异常
+**工具开发**：返回 `str`（JSON）、完整类型注解、Google docstring、内部捕获异常；错误返回统一用 `core.tool_errors`（entities 经 `_sdk` 导入 `tool_error` / `error_from_exception` / `ErrorCause`），禁止裸 `{"error": str(e)}`
 
 **频道开发**：继承 BaseChannel、6 个必需接口（channel_id / display_name / capabilities / start / stop / send_text）
 

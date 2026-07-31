@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from core.log import log
 from core.path import ConfigPaths
+from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import deferred_tool
 
 # ── 运行时引用（bootstrap 组装后通过 set_mind 注入）──
@@ -27,6 +28,24 @@ _pfc_ref: Any = None
 _mind_ref: Any = None
 
 _MAX_DELAY = 600
+
+
+def _system_not_ready() -> str:
+    """调度系统未就绪的统一错误。"""
+    return tool_error(
+        "系统未就绪",
+        cause=ErrorCause.STATE, retryable=True,
+        hint="系统组件尚未完成初始化，请稍后重试",
+    )
+
+
+def _no_reply_target() -> str:
+    """无法确定回复目标的统一错误。"""
+    return tool_error(
+        "无法确定回复目标",
+        cause=ErrorCause.STATE, retryable=False,
+        hint="该工具需要在用户或群组会话上下文中调用",
+    )
 
 
 def set_mind(mind: Any) -> None:
@@ -48,13 +67,13 @@ async def schedule_reply(delay_seconds: int = 30, reason: str = "") -> str:
         reason: 延迟原因，会作为提示注入下一轮上下文
     """
     if not _pfc_ref or not _mind_ref:
-        return json.dumps({"error": "系统未就绪"}, ensure_ascii=False)
+        return _system_not_ready()
 
     delay = max(1, min(delay_seconds, _MAX_DELAY))
 
     scope = _current_scope()
     if not scope:
-        return json.dumps({"error": "无法确定回复目标"}, ensure_ascii=False)
+        return _no_reply_target()
 
     reply_channel = getattr(_pfc_ref, "get_adapter_key", lambda s: "")(scope) if _pfc_ref else ""
     log(f"计划 {delay}s 后触发回复: scope={scope} reason={reason}", tag="调度")
@@ -192,29 +211,31 @@ async def schedule_reminder(note: str, run_at: str = "", delay_seconds: int = 0)
         delay_seconds: 相对延迟秒数（可超过600，与 run_at 二选一）
     """
     if not _pfc_ref or not _mind_ref:
-        return json.dumps({"error": "系统未就绪"}, ensure_ascii=False)
+        return _system_not_ready()
     if not note.strip():
-        return json.dumps({"error": "提醒内容 note 不能为空"}, ensure_ascii=False)
+        return tool_error("提醒内容 note 不能为空", cause=ErrorCause.PARAM, retryable=False)
 
     if run_at.strip():
         run_at_ts = _parse_run_at(run_at)
         if run_at_ts is None:
-            return json.dumps({
-                "error": f"无法解析时间: {run_at!r}，请使用 'YYYY-MM-DD HH:MM' 或 'HH:MM' 格式",
-            }, ensure_ascii=False)
+            return tool_error(
+                f"无法解析时间: {run_at!r}，请使用 'YYYY-MM-DD HH:MM' 或 'HH:MM' 格式",
+                cause=ErrorCause.PARAM, retryable=False,
+            )
     elif delay_seconds > 0:
         run_at_ts = time.time() + delay_seconds
     else:
-        return json.dumps({
-            "error": "请提供 run_at（绝对时间）或 delay_seconds（相对延迟）之一",
-        }, ensure_ascii=False)
+        return tool_error(
+            "请提供 run_at（绝对时间）或 delay_seconds（相对延迟）之一",
+            cause=ErrorCause.PARAM, retryable=False,
+        )
 
     if run_at_ts <= time.time():
-        return json.dumps({"error": "触发时间必须晚于当前时间"}, ensure_ascii=False)
+        return tool_error("触发时间必须晚于当前时间", cause=ErrorCause.PARAM, retryable=False)
 
     scope = _current_scope()
     if not scope:
-        return json.dumps({"error": "无法确定回复目标"}, ensure_ascii=False)
+        return _no_reply_target()
 
     reminder = {
         "id": uuid.uuid4().hex[:8],
@@ -269,7 +290,7 @@ async def cancel_reminder(reminder_id: str) -> str:
     reminders = await asyncio.to_thread(_load_reminders)
     kept = [r for r in reminders if r["id"] != reminder_id]
     if len(kept) == len(reminders):
-        return json.dumps({"error": f"提醒不存在: {reminder_id}"}, ensure_ascii=False)
+        return tool_error(f"提醒不存在: {reminder_id}", cause=ErrorCause.NOT_FOUND, retryable=False)
     await asyncio.to_thread(_save_reminders, kept)
     log(f"定时提醒已取消: id={reminder_id}", tag="调度")
     return json.dumps({"ok": True, "message": f"提醒 {reminder_id} 已取消"}, ensure_ascii=False)

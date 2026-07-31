@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from core.log import log
+from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import activate_group, deferred_tool
 
 from .memory_utils import list_workspace_md_files
@@ -725,7 +726,7 @@ async def read_notes() -> str:
             ensure_ascii=False,
         )
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="读取便签")
 
 
 @deferred_tool(
@@ -753,7 +754,7 @@ async def write_notes(content: str) -> str:
             ensure_ascii=False,
         )
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="写入便签")
 
 
 @deferred_tool(
@@ -775,7 +776,7 @@ async def list_memory_files() -> str:
             "files": files,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="列出便签文件")
 
 
 @deferred_tool(
@@ -803,7 +804,7 @@ async def _tool_read_memory_file(file_path: str) -> str:
             ensure_ascii=False,
         )
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="读取记忆文件")
 
 
 @deferred_tool(
@@ -831,7 +832,7 @@ async def _tool_write_memory_file(file_path: str, content: str) -> str:
             ensure_ascii=False,
         )
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="写入记忆文件")
 
 
 @deferred_tool(
@@ -854,9 +855,9 @@ async def _tool_delete_memory_file(file_path: str) -> str:
         if removed:
             log(f"记忆文件已删除: {file_path}", tag="思维")
             return json.dumps({"ok": True, "path": file_path, "message": "文件已删除"}, ensure_ascii=False)
-        return json.dumps({"ok": False, "message": f"{file_path} 不存在"}, ensure_ascii=False)
+        return tool_error(f"文件 {file_path} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="删除记忆文件")
 
 
 @deferred_tool(
@@ -883,7 +884,7 @@ async def _tool_append_memory_file(file_path: str, content: str) -> str:
             ensure_ascii=False,
         )
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="追加记忆文件")
 
 
 @deferred_tool(
@@ -917,7 +918,7 @@ async def _tool_patch_memory_file(
             ensure_ascii=False,
         )
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="替换记忆文件内容")
 
 
 @deferred_tool(
@@ -957,7 +958,7 @@ async def _tool_edit_memory_lines(
             ensure_ascii=False,
         )
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="编辑记忆文件行")
 
 
 # ------------------------------------------------------------------
@@ -982,7 +983,7 @@ async def _tool_view_memory_outline(file_path: str) -> str:
         result = view_file_outline(file_path)
         return json.dumps({"ok": True, "path": file_path, **result}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="查看记忆文件大纲")
 
 
 @deferred_tool(
@@ -1006,7 +1007,7 @@ async def _tool_read_section(file_path: str, heading: str) -> str:
         result = read_section_content(file_path, heading)
         return json.dumps({"ok": True, "path": file_path, **result}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="读取段落")
 
 
 @deferred_tool(
@@ -1042,7 +1043,7 @@ async def _tool_write_section(
             ensure_ascii=False,
         )
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="写入段落")
 
 
 @deferred_tool(
@@ -1070,4 +1071,4 @@ async def _tool_delete_section(file_path: str, heading: str) -> str:
             ensure_ascii=False,
         )
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="删除段落")

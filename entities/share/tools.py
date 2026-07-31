@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 
-from entities._sdk import entity, tool
+from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
 
 entity("share", "文件分享 - 将工作区文件生成为外部可下载链接")
 
@@ -81,7 +81,9 @@ async def create_share_link(path: str, description: str = "", expires_in: str = 
 
     try:
         if not get_config_bool("share_ai_auto_share", True):
-            return json.dumps({"error": "AI 自动分享已在实体配置中禁用"}, ensure_ascii=False)
+            return tool_error("AI 自动分享已在实体配置中禁用",
+                              cause=ErrorCause.STATE, retryable=False,
+                              hint="如需使用，请在实体配置中开启 share_ai_auto_share")
         if not expires_in:
             expires_in = str(get_config("share_default_expires_in", "24h") or "24h")
         if max_downloads < 0:
@@ -105,11 +107,11 @@ async def create_share_link(path: str, description: str = "", expires_in: str = 
             )
         return json.dumps(entry, ensure_ascii=False)
     except FileNotFoundError as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="创建分享链接")
     except ValueError as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="创建分享链接")
     except Exception as e:
-        return json.dumps({"error": f"创建分享链接失败: {e}"}, ensure_ascii=False)
+        return error_from_exception(e, action="创建分享链接")
 
 
 @tool(name="list_share_links", group="share", description=_LIST_PROMPT, concurrency_safe=True)
@@ -132,7 +134,7 @@ async def list_share_links(status: str = "active", path_keyword: str = "", limit
             item["url"] = build_download_url(item["token"], base_url)
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": f"查询分享链接失败: {e}"}, ensure_ascii=False)
+        return error_from_exception(e, action="查询分享链接")
 
 
 @tool(name="revoke_share_link", group="share", description=_REVOKE_PROMPT)
@@ -148,7 +150,8 @@ async def revoke_share_link(token: str) -> str:
         store = get_share_store()
         entry = await store.revoke(token)
         if not entry:
-            return json.dumps({"error": "链接不存在或已失效"}, ensure_ascii=False)
+            return tool_error("链接不存在或已失效", cause=ErrorCause.NOT_FOUND,
+                              retryable=False, token=token)
         return json.dumps({"token": token, "status": "revoked"}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": f"撤销分享链接失败: {e}"}, ensure_ascii=False)
+        return error_from_exception(e, action="撤销分享链接")

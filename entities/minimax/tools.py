@@ -13,7 +13,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
-from entities._sdk import entity, tool
+from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
 
 if TYPE_CHECKING:
     from entities.minimax.client import MiniMaxClient
@@ -62,9 +62,10 @@ def _ensure_configured() -> str | None:
     """检查 API Key 是否已配置，未配置返回错误 JSON 字符串。"""
     c = _client()
     if not c.configured:
-        return json.dumps({
-            "error": "MiniMax 未配置 API Key，请编辑 entities/minimax/config.json 填入 api_key",
-        }, ensure_ascii=False)
+        return tool_error(
+            "MiniMax 未配置 API Key，请编辑 entities/minimax/config.json 填入 api_key",
+            cause=ErrorCause.CONFIG, retryable=False,
+        )
     return None
 
 
@@ -168,7 +169,7 @@ async def minimax_tts(
             "voice_id": voice_id or "(default)",
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="MiniMax 语音合成")
 
 
 # ==================================================================
@@ -199,7 +200,7 @@ async def minimax_generate_image(
             prompt, model=model, aspect_ratio=aspect_ratio, n=n,
         )
         if not image_urls:
-            return json.dumps({"error": "未返回图片结果"}, ensure_ascii=False)
+            return tool_error("未返回图片结果", cause=ErrorCause.INTERNAL, retryable=True)
         saved = await _save_images(image_urls)
         return json.dumps({
             "success": True,
@@ -207,7 +208,7 @@ async def minimax_generate_image(
             "prompt": prompt,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="MiniMax 图片生成")
 
 
 # ==================================================================
@@ -242,7 +243,7 @@ async def minimax_image_to_image(
             prompt, ref, aspect_ratio=aspect_ratio, n=n,
         )
         if not image_urls:
-            return json.dumps({"error": "未返回图片结果"}, ensure_ascii=False)
+            return tool_error("未返回图片结果", cause=ErrorCause.INTERNAL, retryable=True)
         saved = await _save_images(image_urls)
         return json.dumps({
             "success": True,
@@ -251,7 +252,7 @@ async def minimax_image_to_image(
             "reference_image": reference_image,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="MiniMax 图生图")
 
 
 # ==================================================================
@@ -291,7 +292,8 @@ async def minimax_clone_voice(
         else:
             resolved = _resolve_workspace_path(audio_path)
             if not os.path.exists(resolved):
-                return json.dumps({"error": f"音频文件不存在: {audio_path}"}, ensure_ascii=False)
+                return tool_error(f"音频文件不存在: {audio_path}",
+                                  cause=ErrorCause.NOT_FOUND, retryable=False)
             with open(resolved, "rb") as f:
                 file_data = f.read()
             filename = os.path.basename(resolved)
@@ -306,7 +308,7 @@ async def minimax_clone_voice(
             "hint": f"音色 '{voice_id}' 已注册，可在 minimax_tts 的 voice_id 参数中使用",
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="MiniMax 音色克隆")
 
 
 # ==================================================================
@@ -343,7 +345,7 @@ async def minimax_design_voice(
             "hint": f"音色 '{result['voice_id']}' 已生成，可在 minimax_tts 的 voice_id 参数中使用",
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="MiniMax 音色生成")
 
 
 # ==================================================================
@@ -377,7 +379,7 @@ async def minimax_list_voices(
                 }
         return json.dumps(summary, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="MiniMax 查询音色列表")
 
 
 # ==================================================================
@@ -407,4 +409,4 @@ async def minimax_delete_voice(
             "created_time": result.get("created_time", ""),
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="MiniMax 删除音色")

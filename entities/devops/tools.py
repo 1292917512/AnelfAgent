@@ -15,7 +15,7 @@ import platform
 from typing import List
 
 from core.log import log
-from entities._sdk import entity, tool
+from entities._sdk import ErrorCause, entity, tool, tool_error
 
 entity("devops", "运维管理 - 记忆备份同步、项目代码更新、应用重启")
 
@@ -67,7 +67,9 @@ def backup_memories(message: str = "") -> str:
     """
     script = _pick_script("secrets-backup")
     if not os.path.exists(script):
-        return json.dumps({"error": f"备份脚本不存在: {script}"}, ensure_ascii=False)
+        return tool_error(f"备份脚本不存在: {os.path.basename(script)}",
+                          cause=ErrorCause.NOT_FOUND, retryable=False,
+                          hint="请检查项目 scripts 目录是否完整")
 
     cmd = [script]
     if message:
@@ -152,6 +154,8 @@ def update_and_restart() -> str:
             "action": "update_and_restart",
             "ok": False,
             "error": "代码已更新，但无法调度重启任务：未找到运行中的事件循环，请手动重启",
+            "cause": ErrorCause.STATE.value,
+            "retryable": False,
         }, ensure_ascii=False)
     return json.dumps({
         "action": "update_and_restart",
@@ -174,6 +178,8 @@ def restart_app() -> str:
             "action": "restart_app",
             "ok": False,
             "error": "无法调度重启任务：未找到运行中的事件循环，请手动重启",
+            "cause": ErrorCause.STATE.value,
+            "retryable": False,
         }, ensure_ascii=False)
     return json.dumps({
         "action": "restart_app",

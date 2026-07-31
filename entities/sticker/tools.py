@@ -18,7 +18,14 @@ from typing import Any, Dict, List, Optional
 
 from core.config import register_configs_safe
 from core.log import log
-from entities._sdk import entity, entity_manifest, tool
+from entities._sdk import (
+    ErrorCause,
+    entity,
+    entity_manifest,
+    error_from_exception,
+    tool,
+    tool_error,
+)
 
 from .phash import compute_phash
 from .store import get_sticker_store
@@ -79,22 +86,29 @@ def _resolve_path(path: str) -> str:
 
 
 async def _localize_source(source_path: str) -> tuple[str, str]:
-    """将 URL / 本地路径落地为本地文件，返回 (local_path, error)。"""
+    """将 URL / 本地路径落地为本地文件，返回 (local_path, error)。
+
+    error 为可直接返回给调用方的错误 JSON 字符串（空串表示成功）。
+    """
     if not source_path:
-        return "", "source_path 不能为空"
+        return "", tool_error("source_path 不能为空", cause=ErrorCause.PARAM, retryable=False)
     if source_path.startswith(("http://", "https://")):
         from agent.channel.media import download_to_uploads
         from agent.channel.schemas import SegmentType
         local = await download_to_uploads(source_path, SegmentType.IMAGE)
         if not local:
-            return "", f"图片下载失败: {source_path}"
+            return "", tool_error(f"图片下载失败: {source_path}",
+                                  cause=ErrorCause.NETWORK, retryable=True,
+                                  hint="检查图片 URL 是否可访问后重试")
         return local, ""
     try:
         resolved = _resolve_path(source_path)
     except ValueError as e:
-        return "", str(e)
+        return "", tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
+                              hint="请使用工作目录（workspace）内的路径")
     if not os.path.exists(resolved):
-        return "", f"文件不存在: {source_path}"
+        return "", tool_error(f"文件不存在: {source_path}",
+                              cause=ErrorCause.NOT_FOUND, retryable=False)
     return resolved, ""
 
 
@@ -294,7 +308,7 @@ async def collect_sticker(
     """
     local_path, err = await _localize_source(source_path)
     if err:
-        return json.dumps({"error": err}, ensure_ascii=False)
+        return err
 
     try:
         content_hash = await asyncio.to_thread(_md5_file, local_path)
@@ -304,10 +318,11 @@ async def collect_sticker(
         if not description.strip():
             description = await _describe_sticker(local_path)
             if not description:
-                return json.dumps({
-                    "error": "未配置可用的视觉模型，无法自动生成描述；"
-                             "请提供 description 参数手动描述后重试",
-                }, ensure_ascii=False)
+                return tool_error(
+                    "未配置可用的视觉模型，无法自动生成描述；"
+                    "请提供 description 参数手动描述后重试",
+                    cause=ErrorCause.CONFIG, retryable=False,
+                )
 
         dest = _import_to_stickers_dir(local_path, content_hash)
         embedding = await _embed_for_index(description, tag_list, dest)
@@ -333,7 +348,7 @@ async def collect_sticker(
             "hint": "已通过 search_sticker 可检索；发送用 send_sticker",
         }, ensure_ascii=False)
     except Exception as exc:
-        return json.dumps({"error": f"收藏失败: {exc}"}, ensure_ascii=False)
+        return error_from_exception(exc, action="收藏表情包")
 
 
 # ==================================================================
@@ -381,13 +396,13 @@ async def send_sticker(
     store = get_sticker_store()
     sticker = await store.get_sticker(sticker_id)
     if not sticker:
-        return json.dumps({
-            "error": f"表情包不存在: {sticker_id}",
-            "hint": "请先用 search_sticker 或 list_stickers 确认可用 ID",
-        }, ensure_ascii=False)
+        return tool_error(f"表情包不存在: {sticker_id}",
+                          cause=ErrorCause.NOT_FOUND, retryable=False,
+                          hint="请先用 search_sticker 或 list_stickers 确认可用 ID")
     file_path = sticker["file_path"]
     if not os.path.exists(file_path):
-        return json.dumps({"error": f"表情包文件已丢失: {file_path}"}, ensure_ascii=False)
+        return tool_error("表情包文件已丢失，请重新收藏", cause=ErrorCause.NOT_FOUND,
+                          retryable=False, sticker_id=sticker_id)
 
     from agent.channel.output_tools import _execute_send_action
 
@@ -441,7 +456,10 @@ async def list_stickers(page: int = 1, page_size: int = 20) -> str:
     }, ensure_ascii=False)
 
 
-@tool(name="update_sticker", group="sticker", tags=["sticker"])
+@tool(
+    name="update_sticker", group="sticker", tags=["sticker"],
+    allow_sleep=True, sleep_brief="表情库管理（更新/移除表情包、手动索引图片）",
+)
 async def update_sticker(
     sticker_id: str,
     description: str = "",
@@ -461,7 +479,8 @@ async def update_sticker(
     store = get_sticker_store()
     current = await store.get_sticker(sticker_id)
     if not current:
-        return json.dumps({"error": f"表情包不存在: {sticker_id}"}, ensure_ascii=False)
+        return tool_error(f"表情包不存在: {sticker_id}",
+                          cause=ErrorCause.NOT_FOUND, retryable=False)
 
     new_desc = description.strip() or current["description"]
     new_tags = _parse_tags(tags) if tags.strip() else current["tags"]
@@ -477,7 +496,10 @@ async def update_sticker(
     return json.dumps({"success": True, "sticker": updated}, ensure_ascii=False)
 
 
-@tool(name="remove_sticker", group="sticker", tags=["sticker"])
+@tool(
+    name="remove_sticker", group="sticker", tags=["sticker"],
+    allow_sleep=True, sleep_brief="表情库管理（更新/移除表情包、手动索引图片）",
+)
 async def remove_sticker(sticker_id: str) -> str:
     """从表情库删除一个表情包（连同文件和索引一起移除）。
 
@@ -489,7 +511,8 @@ async def remove_sticker(sticker_id: str) -> str:
     store = get_sticker_store()
     removed = await store.delete_sticker(sticker_id)
     if not removed:
-        return json.dumps({"error": f"表情包不存在: {sticker_id}"}, ensure_ascii=False)
+        return tool_error(f"表情包不存在: {sticker_id}",
+                          cause=ErrorCause.NOT_FOUND, retryable=False)
     try:
         if os.path.exists(removed["file_path"]):
             os.remove(removed["file_path"])
@@ -539,11 +562,12 @@ async def find_similar_image(image_path: str, limit: int = 5) -> str:
     """
     local_path, err = await _localize_source(image_path)
     if err:
-        return json.dumps({"error": err}, ensure_ascii=False)
+        return err
 
     phash = await asyncio.to_thread(compute_phash, local_path)
     if not phash:
-        return json.dumps({"error": f"无法解析图片: {image_path}"}, ensure_ascii=False)
+        return tool_error(f"无法解析图片: {image_path}", cause=ErrorCause.PARAM,
+                          retryable=False, hint="请确认传入的是有效的图片文件")
 
     store = get_sticker_store()
     items = await store.find_similar_by_phash(phash, limit=max(1, min(limit, 10)))
@@ -565,7 +589,10 @@ async def find_similar_image(image_path: str, limit: int = 5) -> str:
     return _multimodal_result(items, f"找到 {len(items)} 张相同/相似图片：", "image")
 
 
-@tool(name="index_image", group="sticker", tags=["sticker"], timeout=120.0)
+@tool(
+    name="index_image", group="sticker", tags=["sticker"], timeout=120.0,
+    allow_sleep=True, sleep_brief="表情库管理（更新/移除表情包、手动索引图片）",
+)
 async def index_image(image_path: str, description: str = "") -> str:
     """手动把一张图片加入感知索引（通常无需调用——聊天中出现的图片会自动索引）。
 
@@ -575,7 +602,7 @@ async def index_image(image_path: str, description: str = "") -> str:
     """
     local_path, err = await _localize_source(image_path)
     if err:
-        return json.dumps({"error": err}, ensure_ascii=False)
+        return err
 
     try:
         content_hash = await asyncio.to_thread(_md5_file, local_path)
@@ -600,4 +627,4 @@ async def index_image(image_path: str, description: str = "") -> str:
             "description": description, "phash": phash,
         }, ensure_ascii=False)
     except Exception as exc:
-        return json.dumps({"error": f"索引失败: {exc}"}, ensure_ascii=False)
+        return error_from_exception(exc, action="索引图片")

@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Tuple
 
-from entities._sdk import entity, entity_manifest, tool
+from entities._sdk import entity, entity_manifest, error_from_exception, tool
 
 entity("web", "网络工具 - 搜索引擎查询、网页正文抓取、HTTP 请求")
 entity_manifest(
@@ -183,7 +183,7 @@ def web_search(query: str, max_results: int = 8, search_recency: str = "") -> st
             output["summary"] = result["summary"]
         return json.dumps(output, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": f"搜索失败: {e}"}, ensure_ascii=False)
+        return error_from_exception(e, action="搜索")
 
 
 # ==================================================================
@@ -240,12 +240,12 @@ def web_fetch(
                 final_url = str(resp.url)
                 ct = resp.headers.get("content-type", "")
                 body = resp.text
-    except httpx.TimeoutException:
-        return json.dumps({"error": f"请求超时 ({timeout}s): {url}"}, ensure_ascii=False)
+    except httpx.TimeoutException as e:
+        return error_from_exception(e, action=f"请求 {url}")
     except PermissionError as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action=f"请求 {url}")
     except Exception as e:
-        return json.dumps({"error": f"请求失败: {e}"}, ensure_ascii=False)
+        return error_from_exception(e, action=f"请求 {url}")
 
     if "application/json" in ct or extract_mode == "raw":
         return _process_raw(body, final_url, ct, start_index, max_chars)
@@ -292,10 +292,10 @@ def extract_page_links(
         links = extract_links(resp.text, base_url=final_url)
         total = len(links)
         return json.dumps({"url": final_url, "total_links": total, "returned": min(total, max_links), "links": links[:max_links]}, ensure_ascii=False)
-    except httpx.TimeoutException:
-        return json.dumps({"error": f"请求超时 ({timeout}s)"}, ensure_ascii=False)
+    except httpx.TimeoutException as e:
+        return error_from_exception(e, action=f"请求 {url}")
     except Exception as e:
-        return json.dumps({"error": f"请求失败: {e}"}, ensure_ascii=False)
+        return error_from_exception(e, action=f"请求 {url}")
 
 
 # ==================================================================
@@ -380,12 +380,12 @@ def web_request(
             "body": text,
             "truncated": truncated,
         }, ensure_ascii=False)
-    except httpx.TimeoutException:
-        return json.dumps({"error": f"请求超时 ({timeout}s)"}, ensure_ascii=False)
+    except httpx.TimeoutException as e:
+        return error_from_exception(e, action=f"请求 {url}")
     except PermissionError as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action=f"请求 {url}")
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action=f"请求 {url}")
 
 
 # ==================================================================
@@ -510,12 +510,12 @@ def web_download(
         ) as client:
             _, final_url, written = _download_to_file_checked(
                 client, url, local_path, max_bytes, ssrf)
-    except httpx.TimeoutException:
-        return json.dumps({"error": f"下载超时 ({timeout}s): {url}"}, ensure_ascii=False)
+    except httpx.TimeoutException as e:
+        return error_from_exception(e, action=f"下载 {url}")
     except PermissionError as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action=f"下载 {url}")
     except Exception as e:
-        return json.dumps({"error": f"下载失败: {e}"}, ensure_ascii=False)
+        return error_from_exception(e, action=f"下载 {url}")
 
     return json.dumps({
         "path": local_path,

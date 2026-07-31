@@ -101,6 +101,7 @@ from core.event_bus import (
     event_bus,
 )
 from core.log import log
+from core.tool_errors import error_from_exception
 
 if TYPE_CHECKING:
     from agent.llm import ChatResult, ToolCall
@@ -944,7 +945,7 @@ async def execute_tool_calls(
                 )
             except Exception as e:
                 # 配对铁律：结果加工失败也要保证 tool 消息落链
-                final_output = json.dumps({"error": f"结果加工异常: {e}"}, ensure_ascii=False)
+                final_output = error_from_exception(e, action=f"工具 {tc.name} 结果加工")
             tool_chain.append({"role": "tool", "tool_call_id": tc.id, "content": final_output})
             # 多模态工具结果：候选图片注入上下文，让视觉模型直接看到（如表情包检索）
             try:
@@ -1014,7 +1015,7 @@ async def execute_one_tool(
                 )
             except Exception:
                 pass
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False)
+        return error_from_exception(exc, action=f"工具 {tc.name} 执行")
 
 
 def preserve_reasoning_fields(msg: Dict[str, Any], result: ChatResult) -> None:

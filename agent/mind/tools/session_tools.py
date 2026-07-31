@@ -15,6 +15,7 @@ from typing import Any, Dict, List
 
 from agent.messages import parse_entity_scope
 from core.log import log
+from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import deferred_tool
 
 # ── 运行时引用（bootstrap 组装后通过 set_mind 注入）──
@@ -37,6 +38,15 @@ def _current_scope() -> str:
     if scope and scope != "_global" and scope.startswith(("user_", "group_")):
         return scope
     return ""
+
+
+def _system_not_ready() -> str:
+    """会话系统未就绪的统一错误。"""
+    return tool_error(
+        "系统未就绪",
+        cause=ErrorCause.STATE, retryable=True,
+        hint="系统组件尚未完成初始化，请稍后重试",
+    )
 
 
 def _scope_label(scope: str) -> str:
@@ -72,7 +82,7 @@ def _snapshot_activities(mind: Any) -> Dict[str, Dict[str, Any]]:
 async def list_sessions() -> str:
     """列出所有活跃会话窗口及其未读状态。"""
     if not _pfc_ref or not _mind_ref:
-        return json.dumps({"error": "系统未就绪"}, ensure_ascii=False)
+        return _system_not_ready()
 
     current = _current_scope()
     activities = _snapshot_activities(_mind_ref)
@@ -139,7 +149,7 @@ async def switch_session(scope: str, reason: str = "") -> str:
         reason: 切换原因（可选，会作为提示注入目标会话的新一轮上下文）
     """
     if not _pfc_ref or not _mind_ref:
-        return json.dumps({"error": "系统未就绪"}, ensure_ascii=False)
+        return _system_not_ready()
 
     scope = (scope or "").strip()
     scope_type, scope_adapter, _base_id, _session_id = parse_entity_scope(scope)

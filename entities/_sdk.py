@@ -35,7 +35,14 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from core.entity import EntityRegistry
+from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_schema import extract_tool_params, get_first_line
+
+__all__ = [
+    "tool", "deferred_tool", "entity", "activate_group",
+    "entity_manifest", "entity_config", "context_provider",
+    "tool_error", "error_from_exception", "ErrorCause",
+]
 
 # 兼容别名：tests/entities/test_sdk_extract_params.py 仍引用该私有名，暂不能删除
 _extract_params = extract_tool_params

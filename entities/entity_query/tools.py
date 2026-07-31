@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from core.log import log
-from entities._sdk import entity, tool
+from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
 
 entity("entity", "实体系统自省 - 查询实体目录、方法详情和配置管理")
 
@@ -61,7 +61,7 @@ def query_entities(keyword: str = "", include_disabled: bool = False) -> str:
             "entities": catalog,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="查询实体目录")
 
 
 @tool(name="list_entity_methods", group="entity", tags=["always"])
@@ -86,12 +86,10 @@ def list_entity_methods(group: str) -> str:
             catalog = EntityRegistry.get_entity_catalog()
             available = [c["group"] for c in catalog]
             suggestions = difflib.get_close_matches(group, available, n=3, cutoff=0.5)
-            return json.dumps({
-                "group": group,
-                "error": f"实体分组 '{group}' 不存在或无可用方法",
-                "available_groups": available,
-                "did_you_mean": suggestions or None,
-            }, ensure_ascii=False)
+            return tool_error(f"实体分组 '{group}' 不存在或无可用方法",
+                              cause=ErrorCause.NOT_FOUND, retryable=False,
+                              group=group, available_groups=available,
+                              did_you_mean=suggestions or None)
 
         description = EntityRegistry.get_group_description(group)
         methods = []
@@ -117,7 +115,7 @@ def list_entity_methods(group: str) -> str:
             "methods": methods,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="查询实体方法")
 
 
 @tool(name="get_entity_config", group="entity", tags=["core"])
@@ -135,10 +133,9 @@ def get_entity_config(entity_name: str) -> str:
             results = EntityRegistry.search(entity_name)
             with_config = [e for e in results if e.config_group]
             if not with_config:
-                return json.dumps({
-                    "error": f"未找到实体 '{entity_name}' 或该实体无配置",
-                    "hint": "可用 query_entities 搜索可用实体",
-                }, ensure_ascii=False)
+                return tool_error(f"未找到实体 '{entity_name}' 或该实体无配置",
+                                  cause=ErrorCause.NOT_FOUND, retryable=False,
+                                  hint="可用 query_entities 搜索可用实体")
             metadata = with_config[0]
 
         config_items = metadata.get_config_items()
@@ -149,7 +146,7 @@ def get_entity_config(entity_name: str) -> str:
             "config_items": config_items,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="获取实体配置")
 
 
 @tool(name="update_entity_config", group="entity", tags=["core"])
@@ -165,9 +162,9 @@ def update_entity_config(key: str, value: str) -> str:
 
         item = ConfigRegistry.get_item(key)
         if item is None:
-            return json.dumps({
-                "error": f"配置项 '{key}' 不存在",
-            }, ensure_ascii=False)
+            return tool_error(f"配置项 '{key}' 不存在", cause=ErrorCause.NOT_FOUND,
+                              retryable=False,
+                              hint="可用 get_entity_config 查看实体的可用配置项")
 
         parsed_value: object = value
         try:
@@ -185,7 +182,7 @@ def update_entity_config(key: str, value: str) -> str:
             "description": item.description,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="更新实体配置")
 
 
 @tool(name="get_entity_status", group="entity", tags=["core"])
@@ -206,9 +203,9 @@ def get_entity_status(entity_name: str = "") -> str:
         if metadata is None:
             results = EntityRegistry.search(entity_name)
             if not results:
-                return json.dumps({
-                    "error": f"未找到实体 '{entity_name}'",
-                }, ensure_ascii=False)
+                return tool_error(f"未找到实体 '{entity_name}'",
+                                  cause=ErrorCause.NOT_FOUND, retryable=False,
+                                  hint="可用 query_entities 搜索可用实体")
             metadata = results[0]
 
         info = {
@@ -228,7 +225,7 @@ def get_entity_status(entity_name: str = "") -> str:
 
         return json.dumps(info, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="查询实体状态")
 
 
 @tool(name="toggle_entity_group", group="entity", tags=["core"])
@@ -254,4 +251,4 @@ def toggle_entity_group(group: str, enabled: bool = True) -> str:
             "affected_count": count,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="切换实体分组状态")

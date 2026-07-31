@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from core.log import log
 from core.tags import strip_message_meta_tags
+from core.tool_errors import ErrorCause, error_from_exception
 from entities._sdk import activate_group, deferred_tool
 
 # 会话记录引用（register_output_tools 注入，用于将 AI 回复写入对话历史）
@@ -154,6 +155,7 @@ def _validate_channel(channel_id: str) -> tuple[Any, Optional[str]]:
         return None, json.dumps({
             "success": False,
             "error": "channel_id 参数不能为空",
+            "cause": ErrorCause.PARAM.value,
             "available_channels": _list_running_channels(),
             "hint": "请使用 list_channels 获取可用频道",
         }, ensure_ascii=False)
@@ -163,6 +165,7 @@ def _validate_channel(channel_id: str) -> tuple[Any, Optional[str]]:
         return None, json.dumps({
             "success": False,
             "error": f"频道 '{channel_id}' 不存在",
+            "cause": ErrorCause.NOT_FOUND.value,
             "available_channels": _list_running_channels(),
             "hint": "请使用 list_channels 获取可用频道",
         }, ensure_ascii=False)
@@ -171,6 +174,7 @@ def _validate_channel(channel_id: str) -> tuple[Any, Optional[str]]:
         return None, json.dumps({
             "success": False,
             "error": f"频道 '{channel_id}' 未就绪（当前状态: {ch.status.value}）",
+            "cause": ErrorCause.STATE.value,
             "hint": "频道未启动或连接已断开",
         }, ensure_ascii=False)
 
@@ -202,6 +206,7 @@ def _check_send_result(raw: Any, channel_id: str, target_id: str) -> tuple[dict,
     parsed["target_id"] = target_id
     ok = parsed.get("success") is not False
     if not ok and _is_network_unavailable(parsed.get("error", "")):
+        parsed.setdefault("cause", ErrorCause.NETWORK.value)
         parsed["retryable"] = False
         parsed["hint"] = "频道网络连接不可达，请勿重复发送，直接告知用户当前消息无法送达"
     return parsed, ok
@@ -240,12 +245,14 @@ async def _execute_send_action(
             log(f"{operation}发送失败: [{channel_id}] -> {target_id}: {parsed.get('error', '?')}", "WARNING", tag="通道")
         return json.dumps(parsed, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": f"发送{operation}失败: {e}",
-            "channel_id": channel_id,
-            "target_id": target_id,
-        }, ensure_ascii=False)
+        payload = json.loads(error_from_exception(e, action=f"发送{operation}"))
+        payload["success"] = False
+        payload["channel_id"] = channel_id
+        payload["target_id"] = target_id
+        if payload.get("cause") == ErrorCause.NETWORK.value:
+            payload["retryable"] = False
+            payload["hint"] = "频道网络连接不可达，请勿重复发送，直接告知用户当前消息无法送达"
+        return json.dumps(payload, ensure_ascii=False)
 
 
 # ── 工具实现 ─────────────────────────────────────────────────────────
@@ -269,7 +276,7 @@ def list_channels() -> str:
             "usage": "使用 send_message(channel_id, target_id, content) 发送消息",
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="列出频道")
 
 
 @deferred_tool(group="output", tags=["always", "send_text"], source="channel.output")
@@ -295,7 +302,11 @@ async def send_message(
     # 清洗结果同时用于发送与对话历史入库，保证所见即所存
     content = strip_message_meta_tags(content or "").strip()
     if not content:
-        return json.dumps({"success": False, "error": "content 参数不能为空，请提供要发送的消息内容"}, ensure_ascii=False)
+        return json.dumps({
+            "success": False,
+            "error": "content 参数不能为空，请提供要发送的消息内容",
+            "cause": ErrorCause.PARAM.value,
+        }, ensure_ascii=False)
 
     resolved_channel_type = "private"
     resolved_target = target_id

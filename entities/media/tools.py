@@ -6,7 +6,7 @@ import json
 import os
 from typing import Any, Awaitable, Callable, Optional
 
-from entities._sdk import entity, tool
+from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
 
 entity("media", "多模态媒体 - 图片识别、语音转文字、文字转语音、图片生成、图片编辑、视频生成、文档重排序")
 
@@ -95,7 +95,9 @@ async def _media_with_fallback(
     """
     pairs = _mgr().iter_media_for_type(model_type)
     if not pairs:
-        return json.dumps({"error": f"未配置 {label} 模型（{model_type}类型）"}, ensure_ascii=False)
+        return tool_error(f"未配置 {label} 模型（{model_type}类型）",
+                          cause=ErrorCause.CONFIG, retryable=False,
+                          hint="请先在模型配置中添加对应类型的模型")
 
     last_err = ""
     for model_name, client in pairs:
@@ -111,7 +113,8 @@ async def _media_with_fallback(
             log(f"{label}模型 {model_name} 调用失败，尝试下一个: {exc}", "WARNING", tag="媒体")
             continue
 
-    return json.dumps({"error": f"所有 {label} 模型均调用失败，最后错误: {last_err}"}, ensure_ascii=False)
+    return tool_error(f"所有 {label} 模型均调用失败，最后错误: {last_err}",
+                      retryable=True)
 
 
 # ==================================================================
@@ -135,7 +138,8 @@ async def recognize_image(image_path: str = "", prompt: str = "", **kwargs: str)
             or kwargs.get("url", "")
         )
     if image_path.startswith("image:"):
-        return json.dumps({"error": f"image_path 不需要 'image:' 前缀，请直接传路径: {image_path[6:]}"}, ensure_ascii=False)
+        return tool_error(f"image_path 不需要 'image:' 前缀，请直接传路径: {image_path[6:]}",
+                          cause=ErrorCause.PARAM, retryable=False)
     try:
         mgr = _mgr()
         from entities._sdk import get_image_content_class, get_model_type_enum, load_image_from_path
@@ -143,14 +147,16 @@ async def recognize_image(image_path: str = "", prompt: str = "", **kwargs: str)
         ModelType = get_model_type_enum()
 
         if not image_path:
-            return json.dumps({"error": "未提供图片路径或 URL，请使用 image_path 参数"}, ensure_ascii=False)
+            return tool_error("未提供图片路径或 URL，请使用 image_path 参数",
+                              cause=ErrorCause.PARAM, retryable=False)
 
         is_url = image_path.startswith(("http://", "https://"))
         desc_prompt = prompt or "请简要描述这张图片的内容。"
 
         all_vision = mgr.get_all_by_type(ModelType.VISION)
         if not all_vision:
-            return json.dumps({"error": "未配置视觉模型"}, ensure_ascii=False)
+            return tool_error("未配置视觉模型", cause=ErrorCause.CONFIG, retryable=False,
+                              hint="请先在模型配置中添加视觉（vision）模型")
 
         last_err = ""
 
@@ -169,7 +175,9 @@ async def recognize_image(image_path: str = "", prompt: str = "", **kwargs: str)
 
             b64_img = await download_image_to_base64(image_path)
             if not b64_img:
-                return json.dumps({"error": f"无法下载图片: {image_path}"}, ensure_ascii=False)
+                return tool_error(f"无法下载图片: {image_path}",
+                                  cause=ErrorCause.NETWORK, retryable=True,
+                                  hint="检查图片 URL 是否可访问后重试，或改用本地图片路径")
             b64_candidates = [c for c in all_vision if c.config.supports_base64_vision]
             for vc in (b64_candidates or all_vision):
                 try:
@@ -182,9 +190,11 @@ async def recognize_image(image_path: str = "", prompt: str = "", **kwargs: str)
             try:
                 resolved = _resolve_workspace_path(image_path)
             except ValueError as e:
-                return json.dumps({"error": str(e)}, ensure_ascii=False)
+                return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
+                                  hint="请使用工作目录（workspace）内的路径")
             if not os.path.exists(resolved):
-                return json.dumps({"error": f"文件不存在: {image_path}", "resolved": resolved}, ensure_ascii=False)
+                return tool_error(f"文件不存在: {image_path}", cause=ErrorCause.NOT_FOUND,
+                                  retryable=False, resolved=resolved)
             img = load_image_from_path(resolved)
             b64_candidates = [c for c in all_vision if c.config.supports_base64_vision]
             for vc in (b64_candidates or all_vision):
@@ -195,9 +205,9 @@ async def recognize_image(image_path: str = "", prompt: str = "", **kwargs: str)
                     last_err = str(exc)
                     continue
 
-        return json.dumps({"error": f"所有视觉模型均调用失败: {last_err}"}, ensure_ascii=False)
+        return tool_error(f"所有视觉模型均调用失败: {last_err}", retryable=True)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="识别图片")
 
 
 # ==================================================================
@@ -214,7 +224,7 @@ async def voice_to_text(audio_source: str = "", **kwargs: str) -> str:
     if not audio_source:
         audio_source = kwargs.get("path", "") or kwargs.get("file_path", "") or kwargs.get("url", "")
     if not audio_source:
-        return json.dumps({"error": "未提供音频路径或 URL"}, ensure_ascii=False)
+        return tool_error("未提供音频路径或 URL", cause=ErrorCause.PARAM, retryable=False)
 
     is_url = audio_source.startswith(("http://", "https://"))
 
@@ -222,9 +232,11 @@ async def voice_to_text(audio_source: str = "", **kwargs: str) -> str:
         try:
             resolved = _resolve_workspace_path(audio_source)
         except ValueError as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
+                              hint="请使用工作目录（workspace）内的路径")
         if not os.path.exists(resolved):
-            return json.dumps({"error": f"文件不存在: {audio_source}", "resolved": resolved}, ensure_ascii=False)
+            return tool_error(f"文件不存在: {audio_source}", cause=ErrorCause.NOT_FOUND,
+                              retryable=False, resolved=resolved)
     else:
         resolved = audio_source
 
@@ -276,7 +288,8 @@ async def text_to_voice(
             voice = cfg.get("default_voice", "")
 
     if reference_audio and not reference_text:
-        return json.dumps({"error": "使用声音克隆时必须提供 reference_text"}, ensure_ascii=False)
+        return tool_error("使用声音克隆时必须提供 reference_text",
+                          cause=ErrorCause.PARAM, retryable=False)
 
     references = None
     if reference_audio:
@@ -285,9 +298,11 @@ async def text_to_voice(
             try:
                 resolved = _resolve_workspace_path(audio_value)
             except ValueError as e:
-                return json.dumps({"error": str(e)}, ensure_ascii=False)
+                return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
+                                  hint="请使用工作目录（workspace）内的路径")
             if not os.path.exists(resolved):
-                return json.dumps({"error": f"参考音频文件不存在: {audio_value}"}, ensure_ascii=False)
+                return tool_error(f"参考音频文件不存在: {audio_value}",
+                                  cause=ErrorCause.NOT_FOUND, retryable=False)
             import base64
             import mimetypes
             mime_type = mimetypes.guess_type(os.path.basename(resolved))[0] or "audio/mpeg"
@@ -392,9 +407,11 @@ async def edit_image(
         try:
             resolved_image = _resolve_workspace_path(image_path)
         except ValueError as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
+                              hint="请使用工作目录（workspace）内的路径")
         if not os.path.exists(resolved_image):
-            return json.dumps({"error": f"图片不存在: {image_path}", "resolved": resolved_image}, ensure_ascii=False)
+            return tool_error(f"图片不存在: {image_path}", cause=ErrorCause.NOT_FOUND,
+                              retryable=False, resolved=resolved_image)
 
     ws_root = _get_workspace_root()
     save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "image")
@@ -427,7 +444,9 @@ async def rerank_search(query: str, documents: str) -> str:
     try:
         doc_list = json.loads(documents)
         if not isinstance(doc_list, list):
-            return json.dumps({"error": "documents 必须是 JSON 字符串数组"}, ensure_ascii=False)
+            return tool_error("documents 必须是 JSON 字符串数组",
+                              cause=ErrorCause.PARAM, retryable=False,
+                              hint="请传入形如 '[\"文档1\", \"文档2\"]' 的 JSON 字符串")
     except json.JSONDecodeError:
         doc_list = [d.strip() for d in documents.split("\n") if d.strip()]
 

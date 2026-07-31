@@ -11,7 +11,7 @@ import os
 from typing import Any, Dict, List
 
 from core.log import log
-from entities._sdk import tool
+from entities._sdk import ErrorCause, error_from_exception, tool, tool_error
 
 
 def _load_notebook(fp: str) -> Dict[str, Any]:
@@ -62,17 +62,19 @@ def notebook_edit(path: str, cell_index: int, new_source: str = "",
         from entities.filesystem.tools import _safe_path
         fp = _safe_path(path)
         if not fp.lower().endswith(".ipynb"):
-            return json.dumps({"error": "notebook_edit 仅支持 .ipynb 文件"}, ensure_ascii=False)
+            return tool_error("notebook_edit 仅支持 .ipynb 文件",
+                              cause=ErrorCause.PARAM, retryable=False)
         if not os.path.isfile(fp):
-            return json.dumps({"error": f"文件不存在: {path}"}, ensure_ascii=False)
+            return tool_error(f"文件不存在: {path}", cause=ErrorCause.NOT_FOUND,
+                              retryable=False)
 
         nb = _load_notebook(fp)
         cells: List[Dict[str, Any]] = nb["cells"]
 
         if edit_mode == "delete":
             if not (0 <= cell_index < len(cells)):
-                return json.dumps({"error": f"cell_index 越界: {cell_index}（共 {len(cells)} 个 cell）"},
-                                  ensure_ascii=False)
+                return tool_error(f"cell_index 越界: {cell_index}（共 {len(cells)} 个 cell）",
+                                  cause=ErrorCause.PARAM, retryable=False)
             removed = cells.pop(cell_index)
             _save_notebook(fp, nb)
             return json.dumps({"ok": True, "message": f"已删除 cell[{cell_index}]"
@@ -80,7 +82,8 @@ def notebook_edit(path: str, cell_index: int, new_source: str = "",
                               ensure_ascii=False)
 
         if cell_type not in ("", "code", "markdown"):
-            return json.dumps({"error": "cell_type 只能是 code 或 markdown"}, ensure_ascii=False)
+            return tool_error("cell_type 只能是 code 或 markdown",
+                              cause=ErrorCause.PARAM, retryable=False)
 
         new_cell = {
             "cell_type": cell_type or "code",
@@ -95,8 +98,8 @@ def notebook_edit(path: str, cell_index: int, new_source: str = "",
             message = f"已在索引 {cell_index} 处插入 {new_cell['cell_type']} cell"
         elif edit_mode == "replace":
             if not (0 <= cell_index < len(cells)):
-                return json.dumps({"error": f"cell_index 越界: {cell_index}（共 {len(cells)} 个 cell）"},
-                                  ensure_ascii=False)
+                return tool_error(f"cell_index 越界: {cell_index}（共 {len(cells)} 个 cell）",
+                                  cause=ErrorCause.PARAM, retryable=False)
             old = cells[cell_index]
             if not cell_type:
                 new_cell["cell_type"] = old.get("cell_type", "code")
@@ -110,8 +113,8 @@ def notebook_edit(path: str, cell_index: int, new_source: str = "",
             cells[cell_index] = new_cell
             message = f"已替换 cell[{cell_index}]（{new_cell['cell_type']}）"
         else:
-            return json.dumps({"error": f"未知的 edit_mode: {edit_mode}（支持 replace/insert/delete）"},
-                              ensure_ascii=False)
+            return tool_error(f"未知的 edit_mode: {edit_mode}（支持 replace/insert/delete）",
+                              cause=ErrorCause.PARAM, retryable=False)
 
         _save_notebook(fp, nb)
         # 刷新读取状态（若该文件被读过，避免后续操作误判过期）
@@ -124,6 +127,6 @@ def notebook_edit(path: str, cell_index: int, new_source: str = "",
             log("notebook_edit 异常已忽略", "DEBUG")
         return json.dumps({"ok": True, "path": fp, "message": message}, ensure_ascii=False)
     except json.JSONDecodeError as e:
-        return json.dumps({"error": f"notebook JSON 解析失败: {e}"}, ensure_ascii=False)
+        return error_from_exception(e, action="解析 notebook")
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="编辑 notebook")

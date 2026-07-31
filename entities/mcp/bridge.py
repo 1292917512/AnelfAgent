@@ -46,6 +46,7 @@ from core.entity import EntityMetadata, EntityRegistry, EntityType, ToolParam
 from core.log import log
 from core.path import ConfigPaths
 from core.sanitizer import is_sanitize_enabled, sanitize_text
+from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import coerce_bool_arg
 
 _MAX_LIFECYCLE_RETRIES = 5
@@ -543,7 +544,12 @@ class MCPBridge:
             parts = []
             for item in result.content:
                 parts.append(item.text if hasattr(item, "text") else str(item))
-            return "\n".join(parts) if parts else ""
+            text = "\n".join(parts) if parts else ""
+            # 远端 isError 标记恢复为结构化错误信号，供守卫/拦截机制识别
+            if getattr(result, "isError", False):
+                return tool_error(f"MCP 工具 '{tool_name}' 执行失败: {text or '远端未返回详情'}",
+                                  cause=ErrorCause.INTERNAL, retryable=False)
+            return text
         return str(result)
 
     def _find_server_config(self, name: str) -> Optional[MCPServerConfig]:
@@ -1092,8 +1098,8 @@ def register_mcp_tools() -> None:
 
 
 def _tool_error_json(exc: Exception) -> str:
-    """工具异常统一序列化为错误 JSON。"""
-    return json.dumps({"error": str(exc)}, ensure_ascii=False)
+    """工具异常统一序列化为归因明确的错误 JSON。"""
+    return error_from_exception(exc)
 
 
 def mcp_tool_call(require_bridge: bool = False) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -1109,7 +1115,8 @@ def mcp_tool_call(require_bridge: bool = False) -> Callable[[Callable[..., Any]]
                 if require_bridge:
                     bridge = get_mcp_bridge()
                     if not bridge:
-                        return json.dumps({"error": "MCP Bridge 未初始化"}, ensure_ascii=False)
+                        return tool_error("MCP Bridge 未初始化", cause=ErrorCause.STATE,
+                                          retryable=False, hint="请先在配置中启用并连接 MCP server")
                     kwargs["bridge"] = bridge
                 try:
                     return await func(*args, **kwargs)
@@ -1122,7 +1129,8 @@ def mcp_tool_call(require_bridge: bool = False) -> Callable[[Callable[..., Any]]
             if require_bridge:
                 bridge = get_mcp_bridge()
                 if not bridge:
-                    return json.dumps({"error": "MCP Bridge 未初始化"}, ensure_ascii=False)
+                    return tool_error("MCP Bridge 未初始化", cause=ErrorCause.STATE,
+                                      retryable=False, hint="请先在配置中启用并连接 MCP server")
                 kwargs["bridge"] = bridge
             try:
                 return func(*args, **kwargs)
@@ -1250,9 +1258,11 @@ async def _tool_update_mcp_server_config(
     try:
         patch = json.loads(patch_json or "{}")
     except json.JSONDecodeError as exc:
-        return json.dumps({"error": f"patch_json 不是合法 JSON: {exc}"}, ensure_ascii=False)
+        return error_from_exception(exc, action="解析 patch_json",
+                                    hint="请传入合法 JSON 对象字符串")
     if not isinstance(patch, dict):
-        return json.dumps({"error": "patch_json 必须是 JSON 对象字符串"}, ensure_ascii=False)
+        return tool_error("patch_json 必须是 JSON 对象字符串",
+                          cause=ErrorCause.PARAM, retryable=False)
 
     from services import MCPService
 

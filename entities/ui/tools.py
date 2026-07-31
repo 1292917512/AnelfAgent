@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from core.event_bus import EVENT_UI_COMMAND, event_bus
-from entities._sdk import entity, tool
+from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
 
 entity("ui", "界面交互 - 向 Web 工作台投递通知、弹窗提问、切换面板、注入草稿、查询界面状态")
 
@@ -100,7 +100,7 @@ async def ui_notify(title: str, content: str = "", level: str = "info") -> str:
         })
         return json.dumps({"success": True}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="投递界面通知")
 
 
 @tool(name="ui_ask", group="ui", tags=["always"], timeout=630.0)
@@ -134,7 +134,7 @@ async def ui_ask(question: str, options: Optional[List[str]] = None, timeout: in
                 _pending_asks.pop(ask_id, None)
             return json.dumps({"timeout": True, "answer": ""}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="弹窗提问")
 
 
 @tool(name="ui_open_panel", group="ui", tags=["always"])
@@ -148,14 +148,12 @@ async def ui_open_panel(panel: str, payload: str = "") -> str:
     try:
         normalized = panel.strip().lower()
         if normalized not in _VALID_PANELS:
-            return json.dumps(
-                {"error": f"未知面板: {panel}，可选: {sorted(_VALID_PANELS)}"},
-                ensure_ascii=False,
-            )
+            return tool_error(f"未知面板: {panel}，可选: {sorted(_VALID_PANELS)}",
+                              cause=ErrorCause.PARAM, retryable=False)
         await _emit("open_panel", {"panel": normalized, "payload": payload})
         return json.dumps({"success": True, "panel": normalized}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="打开界面面板")
 
 
 @tool(name="ui_compose", group="ui", tags=["always"])
@@ -167,11 +165,11 @@ async def ui_compose(text: str) -> str:
     """
     try:
         if not text.strip():
-            return json.dumps({"error": "草稿内容为空"}, ensure_ascii=False)
+            return tool_error("草稿内容为空", cause=ErrorCause.PARAM, retryable=False)
         await _emit("compose", {"text": text, "ts": time.time()})
         return json.dumps({"success": True}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="注入对话草稿")
 
 
 @tool(name="ui_get_state", group="ui", tags=["always"])
@@ -184,4 +182,4 @@ async def ui_get_state() -> str:
             return json.dumps({"available": False, "hint": "前端尚未上报状态"}, ensure_ascii=False)
         return json.dumps({"available": True, "state": snapshot}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="获取界面状态")

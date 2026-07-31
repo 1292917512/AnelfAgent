@@ -12,7 +12,7 @@ import platform
 import shutil
 
 from core.log import log
-from entities._sdk import entity, tool
+from entities._sdk import entity, error_from_exception, tool
 
 # 耦合点：读取文件系统实体的沙箱配置需访问其模块级私有成员
 # （entities 内部允许直接 import 模块级私有成员，集中在此声明）
@@ -52,7 +52,7 @@ def get_workspace_info() -> str:
             "sandbox_enabled": sandbox,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="获取工作区信息")
 
 
 @tool(name="get_system_info", group="environment")
@@ -71,7 +71,7 @@ def get_system_info() -> str:
         }
         return json.dumps(info, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="获取系统信息")
 
 
 # ── Python 环境 ──────────────────────────────────────────────────────
@@ -88,7 +88,7 @@ def get_python_status() -> str:
         from entities.system.python_service import get_python_status as _get
         return json.dumps(_get(), ensure_ascii=False, default=str)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="获取 Python 环境状态")
 
 
 @tool(name="list_python_packages", group="environment")
@@ -105,7 +105,7 @@ def list_python_packages() -> str:
             }, ensure_ascii=False)
         return json.dumps({"packages": packages, "total": len(packages)}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="列出已安装包")
 
 
 @tool(name="get_pip_mirror_info", group="environment")
@@ -115,7 +115,7 @@ def get_pip_mirror_info() -> str:
         from entities.system.python_service import get_pip_config
         return json.dumps(get_pip_config(), ensure_ascii=False, default=str)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="获取 pip 镜像配置")
 
 
 # ── Git 管理（仅在检测到 git 命令时注册）────────────────────────────
@@ -128,7 +128,7 @@ if _GIT_AVAILABLE:
             from entities.system.git_service import get_user_config
             return json.dumps(get_user_config(), ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return error_from_exception(e, action="获取 Git 配置")
 
     @tool(name="set_git_config", group="environment")
     def set_git_config(key: str, value: str) -> str:
@@ -143,7 +143,7 @@ if _GIT_AVAILABLE:
             ok, msg = git_config_set(key, value)
             return json.dumps({"ok": ok, "message": msg}, ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return error_from_exception(e, action="设置 Git 配置")
 
     @tool(name="unset_git_config", group="environment")
     def unset_git_config(key: str) -> str:
@@ -157,7 +157,7 @@ if _GIT_AVAILABLE:
             ok, msg = git_config_unset(key)
             return json.dumps({"ok": ok, "message": msg}, ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return error_from_exception(e, action="删除 Git 配置")
 
     @tool(name="set_git_proxy", group="environment")
     def set_git_proxy(http_proxy: str = "", https_proxy: str = "") -> str:
@@ -172,7 +172,7 @@ if _GIT_AVAILABLE:
             ok, msg = set_proxy(http_proxy=http_proxy, https_proxy=https_proxy or http_proxy)
             return json.dumps({"ok": ok, "message": msg}, ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return error_from_exception(e, action="设置 Git 代理")
 
     @tool(name="unset_git_proxy", group="environment")
     def unset_git_proxy() -> str:
@@ -182,7 +182,7 @@ if _GIT_AVAILABLE:
             ok, msg = unset_proxy()
             return json.dumps({"ok": ok, "message": msg}, ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return error_from_exception(e, action="清除 Git 代理")
 
     @tool(name="test_github_connection", group="environment")
     def test_github_connection() -> str:
@@ -191,7 +191,7 @@ if _GIT_AVAILABLE:
             from entities.system.git_service import test_github_connectivity
             return json.dumps(test_github_connectivity(), ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return error_from_exception(e, action="测试 GitHub 连通性")
 
 
 # ── 日志查询 ─────────────────────────────────────────────────────────
@@ -216,4 +216,4 @@ def query_logs(keyword: str = "", tag: str = "", level: str = "", limit: int = 2
         )
         return json.dumps({"count": len(logs), "logs": logs}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="查询日志")

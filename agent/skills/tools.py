@@ -10,6 +10,7 @@ from typing import Optional
 from agent.skills.skill_matcher import SkillMatcher
 from agent.skills.skill_store import SkillStore
 from core.log import log
+from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import activate_group, deferred_tool
 
 _store: Optional[SkillStore] = None
@@ -25,7 +26,11 @@ def register_skill_tools(store: SkillStore, matcher: SkillMatcher) -> None:
 
 
 def _not_ready() -> str:
-    return json.dumps({"error": "技能系统未初始化"}, ensure_ascii=False)
+    return tool_error(
+        "技能系统未初始化",
+        cause=ErrorCause.STATE, retryable=False,
+        hint="技能组件未初始化，请检查服务启动状态",
+    )
 
 
 @deferred_tool(
@@ -77,7 +82,7 @@ def update_skill(name: str, content: str = "", description: str = "", add_trigge
         add_trigger_patterns=patterns or None,
     )
     if skill is None:
-        return json.dumps({"error": f"技能 '{name}' 不存在"}, ensure_ascii=False)
+        return tool_error(f"技能 '{name}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
     return json.dumps({
         "ok": True, "name": skill.name, "patch_count": skill.patch_count,
         "message": f"技能 '{skill.name}' 已更新（第 {skill.patch_count} 次修订）",
@@ -152,7 +157,7 @@ def get_skill(name: str) -> str:
         return _not_ready()
     skill = _store.get(name)
     if skill is None:
-        return json.dumps({"error": f"技能 '{name}' 不存在"}, ensure_ascii=False)
+        return tool_error(f"技能 '{name}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
     return json.dumps({
         "ok": True,
         "name": skill.name,

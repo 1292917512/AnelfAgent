@@ -10,6 +10,7 @@ from typing import Optional
 from agent.delegation.delegation_manager import DelegationManager
 from agent.delegation.sub_agent import current_depth, max_spawn_depth
 from core.log import log
+from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import activate_group, deferred_tool
 
 _manager: Optional[DelegationManager] = None
@@ -26,6 +27,14 @@ def register_delegation_tools(manager: DelegationManager) -> None:
 def _delegation_enabled() -> bool:
     from core.config import get_config_bool
     return get_config_bool("delegation_enabled", True)
+
+
+def _manager_not_ready() -> str:
+    return tool_error(
+        "委托管理器未初始化",
+        cause=ErrorCause.STATE, retryable=False,
+        hint="委托组件未初始化，请检查服务启动状态",
+    )
 
 
 @deferred_tool(
@@ -54,17 +63,22 @@ async def delegate_task(
         max_iterations: 子代理迭代预算（轮次），默认 15
     """
     if not _delegation_enabled():
-        return json.dumps({"error": "子代理委托已禁用"}, ensure_ascii=False)
+        return tool_error(
+            "子代理委托已禁用",
+            cause=ErrorCause.STATE, retryable=False,
+            hint="如需启用，请将配置 delegation_enabled 设为 true",
+        )
     if _manager is None:
-        return json.dumps({"error": "委托管理器未初始化"}, ensure_ascii=False)
+        return _manager_not_ready()
 
     # 深度硬限制：超过 max_depth 禁止再委托
     depth = current_depth()
     max_depth = max_spawn_depth()
     if depth >= max_depth:
-        return json.dumps({
-            "error": f"委托深度已达上限（{depth}/{max_depth}），请直接完成任务而非继续委托。",
-        }, ensure_ascii=False)
+        return tool_error(
+            f"委托深度已达上限（{depth}/{max_depth}），请直接完成任务而非继续委托。",
+            cause=ErrorCause.STATE, retryable=False,
+        )
 
     # 并行模式：tasks 数组
     if tasks.strip():
@@ -76,7 +90,10 @@ async def delegate_task(
                 if not isinstance(t, dict) or not t.get("goal"):
                     raise ValueError("每个任务必须包含 goal 字段")
         except (json.JSONDecodeError, ValueError) as exc:
-            return json.dumps({"error": f"tasks 参数解析失败: {exc}"}, ensure_ascii=False)
+            return error_from_exception(
+                exc, action="解析 tasks 参数",
+                hint="tasks 应为 JSON 数组字符串，每个元素是含 goal 字段的对象",
+            )
 
         log(f"并行委托 {len(task_list)} 个子任务 (role={role})", tag="委托")
         try:
@@ -84,12 +101,12 @@ async def delegate_task(
                 task_list, role=role, max_iterations=max_iterations,
             )
         except ValueError as exc:
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return error_from_exception(exc, action="并行委托")
         return _manager.aggregate_results(results)
 
     # 单任务模式
     if not goal.strip():
-        return json.dumps({"error": "必须提供 goal 或 tasks 参数"}, ensure_ascii=False)
+        return tool_error("必须提供 goal 或 tasks 参数", cause=ErrorCause.PARAM, retryable=False)
 
     if background:
         from agent.mind.tool_activation import ToolActivationManager
@@ -119,7 +136,7 @@ async def delegate_task(
 async def check_background_tasks() -> str:
     """查看当前会话的后台任务状态（运行中 + 已完成）。"""
     if _manager is None:
-        return json.dumps({"error": "委托管理器未初始化"}, ensure_ascii=False)
+        return _manager_not_ready()
     from agent.mind.tool_activation import ToolActivationManager
     snapshot = _manager.background_tasks_snapshot(ToolActivationManager.current_scope())
     snapshot["hint"] = (

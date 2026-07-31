@@ -17,7 +17,14 @@ import shlex
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from entities._sdk import coerce_bool_arg, entity, tool
+from entities._sdk import (
+    ErrorCause,
+    coerce_bool_arg,
+    entity,
+    error_from_exception,
+    tool,
+    tool_error,
+)
 from entities.filesystem import edit_utils, file_state
 
 entity("os", "操作系统 - 文件读写、目录管理、Shell 命令、Python 执行")
@@ -165,7 +172,8 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
     try:
         fp = _safe_path(file_path)
         if not os.path.isfile(fp):
-            return json.dumps({"error": f"文件不存在: {file_path}", "resolved": fp}, ensure_ascii=False)
+            return tool_error(f"文件不存在: {file_path}", cause=ErrorCause.NOT_FOUND,
+                              retryable=False, resolved=fp)
         # Binary files: return metadata instead of trying to decode
         bin_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico",
                     ".mp3", ".wav", ".ogg", ".flac", ".m4a", ".opus", ".amr",
@@ -179,7 +187,7 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
             try:
                 return summarize_notebook(fp)
             except Exception as e:
-                return json.dumps({"error": f"notebook 读取失败: {e}"}, ensure_ascii=False)
+                return error_from_exception(e, action="读取 notebook")
         if ext in bin_exts:
             size = os.path.getsize(fp)
             return json.dumps({
@@ -192,11 +200,11 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
 
         size = os.path.getsize(fp)
         if size > _READ_MAX_BYTES and offset <= 0 and limit <= 0:
-            return json.dumps({
-                "error": f"文件过大（{size} 字节，上限 {_READ_MAX_BYTES}）。"
-                         "请使用 offset/limit 参数分段读取。",
-                "path": fp,
-            }, ensure_ascii=False)
+            return tool_error(
+                f"文件过大（{size} 字节，上限 {_READ_MAX_BYTES}）。"
+                "请使用 offset/limit 参数分段读取。",
+                cause=ErrorCause.PARAM, retryable=False, path=fp,
+            )
 
         content, _, _ = _read_text_with_metadata(fp, encoding)
         mtime = os.path.getmtime(fp)
@@ -262,7 +270,7 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
             "hint": "Binary file, cannot read as text",
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="读取文件")
 
 
 @tool(name="write_file", group="os", description=_WRITE_FILE_PROMPT)
@@ -279,14 +287,14 @@ def write_file(file_path: str, content: str) -> str:
         if os.path.exists(fp):
             ok, message = file_state.check_writable(fp)
             if not ok:
-                return json.dumps({"error": message, "path": fp}, ensure_ascii=False)
+                return tool_error(message, cause=ErrorCause.STATE, retryable=False, path=fp)
         os.makedirs(os.path.dirname(fp) or ".", exist_ok=True)
         with open(fp, "w", encoding="utf-8") as f:
             f.write(content)
         file_state.record_write(fp, content.replace("\r\n", "\n"), os.path.getmtime(fp))
         return json.dumps({"ok": True, "path": fp, "size": len(content)}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="写入文件")
 
 
 # 编辑文件大小上限（对齐 Claude Code MAX_EDIT_FILE_SIZE = 1GiB）
@@ -315,10 +323,10 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     try:
         fp = _safe_path(file_path)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="解析文件路径")
 
     def _err(message: str, code: int) -> str:
-        return json.dumps({"error": message, "code": code}, ensure_ascii=False)
+        return tool_error(message, code=code)
 
     if old_string == new_string:
         return _err("未做任何修改：old_string 与 new_string 完全相同。", 1)
@@ -471,7 +479,7 @@ def append_file(path: str, content: str) -> str:
             file_state.record_write(fp, new_content, os.path.getmtime(fp))
         return json.dumps({"ok": True, "path": fp}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="追加文件内容")
 
 
 @tool(name="list_directory", group="os", concurrency_safe=True)
@@ -486,7 +494,9 @@ def list_directory(path: str = ".", recursive: bool = False, max_depth: int = 3)
     try:
         fp = _safe_path(path)
         if not os.path.isdir(fp):
-            return json.dumps({"error": f"不是有效目录: {path}"}, ensure_ascii=False)
+            return tool_error(f"不是有效目录: {path}", cause=ErrorCause.PARAM,
+                              retryable=False,
+                              hint="请确认路径存在且为目录（可用 file_info 检查）")
 
         if recursive:
             tree = _build_tree(fp, max_depth, 0)
@@ -507,7 +517,7 @@ def list_directory(path: str = ".", recursive: bool = False, max_depth: int = 3)
             items.append(entry)
         return json.dumps({"path": fp, "count": len(items), "items": items[:200]}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="列出目录")
 
 
 def _build_tree(dir_path: str, max_depth: int, depth: int) -> List[Dict[str, Any]]:
@@ -557,7 +567,7 @@ def file_info(path: str) -> str:
                 log("file_info 异常已忽略", "DEBUG")
         return json.dumps(info, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="获取文件信息")
 
 
 @tool(name="copy_file", group="os")
@@ -573,12 +583,13 @@ def copy_file(src: str, dst: str) -> str:
         src_fp = _safe_path(src)
         dst_fp = _safe_path(dst)
         if not os.path.isfile(src_fp):
-            return json.dumps({"error": f"源文件不存在: {src}"}, ensure_ascii=False)
+            return tool_error(f"源文件不存在: {src}", cause=ErrorCause.NOT_FOUND,
+                              retryable=False)
         os.makedirs(os.path.dirname(dst_fp) or ".", exist_ok=True)
         shutil.copy2(src_fp, dst_fp)
         return json.dumps({"ok": True, "src": src, "dst": dst}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="复制文件")
 
 
 @tool(name="move_file", group="os")
@@ -594,12 +605,13 @@ def move_file(src: str, dst: str) -> str:
         src_fp = _safe_path(src)
         dst_fp = _safe_path(dst)
         if not os.path.exists(src_fp):
-            return json.dumps({"error": f"源路径不存在: {src}"}, ensure_ascii=False)
+            return tool_error(f"源路径不存在: {src}", cause=ErrorCause.NOT_FOUND,
+                              retryable=False)
         os.makedirs(os.path.dirname(dst_fp) or ".", exist_ok=True)
         shutil.move(src_fp, dst_fp)
         return json.dumps({"ok": True, "src": src, "dst": dst}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="移动文件")
 
 
 @tool(name="delete_file", group="os")
@@ -612,11 +624,12 @@ def delete_file(path: str) -> str:
     try:
         fp = _safe_path(path)
         if not os.path.isfile(fp):
-            return json.dumps({"error": f"文件不存在或不是文件: {path}"}, ensure_ascii=False)
+            return tool_error(f"文件不存在或不是文件: {path}",
+                              cause=ErrorCause.NOT_FOUND, retryable=False)
         os.remove(fp)
         return json.dumps({"ok": True, "deleted": path}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="删除文件")
 
 
 @tool(name="mkdir", group="os")
@@ -631,7 +644,7 @@ def mkdir(path: str) -> str:
         os.makedirs(fp, exist_ok=True)
         return json.dumps({"ok": True, "path": fp}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="创建目录")
 
 
 @tool(name="search_files", group="os", concurrency_safe=True)
@@ -649,7 +662,9 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
     try:
         fp = _safe_path(path)
         if not os.path.isdir(fp):
-            return json.dumps({"error": f"不是有效目录: {path}"}, ensure_ascii=False)
+            return tool_error(f"不是有效目录: {path}", cause=ErrorCause.PARAM,
+                              retryable=False,
+                              hint="请确认路径存在且为目录（可用 file_info 检查）")
 
         search_pattern = os.path.join(fp, pattern)
         candidates = [m for m in glob.iglob(search_pattern, recursive=True)]
@@ -686,7 +701,8 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
         try:
             regex = re.compile(content_pattern)
         except re.error as e:
-            return json.dumps({"error": f"无效的正则表达式: {e}"}, ensure_ascii=False)
+            return tool_error(f"无效的正则表达式: {e}", cause=ErrorCause.PARAM,
+                              retryable=False)
 
         results: List[Dict[str, Any]] = []
         for match in candidates:
@@ -714,7 +730,7 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
             "results": results,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="搜索文件")
 
 
 # ------------------------------------------------------------------
@@ -769,12 +785,13 @@ def run_shell_command(command: str, timeout: int = 120, run_in_background: bool 
             from entities.filesystem.shell_guard import check_command_safety
             violation = check_command_safety(command, _WORKSPACE)
             if violation:
-                return json.dumps({
-                    "error": f"沙箱拦截: {violation}。"
-                             "沙箱开启时不允许向 workspace 外写入。"
-                             "请改用 workspace 内路径，或由管理员关闭沙箱/该检查。",
-                    "sandbox_violation": True,
-                }, ensure_ascii=False)
+                return tool_error(
+                    f"沙箱拦截: {violation}。"
+                    "沙箱开启时不允许向 workspace 外写入。"
+                    "请改用 workspace 内路径，或由管理员关闭沙箱/该检查。",
+                    cause=ErrorCause.PERMISSION, retryable=False,
+                    sandbox_violation=True,
+                )
 
         cwd = shell_state.get_cwd(_WORKSPACE, sandbox=_SANDBOX)
 
@@ -828,7 +845,7 @@ def run_shell_command(command: str, timeout: int = 120, run_in_background: bool 
             payload["notes"] = notes
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="执行 shell 命令")
 
 
 @tool(name="python_exec", group="os")
@@ -869,9 +886,10 @@ def python_exec(code: str, timeout: int = 30) -> str:
             "returncode": result.returncode,
         }, ensure_ascii=False)
     except subprocess.TimeoutExpired:
-        return json.dumps({"error": f"执行超时 ({timeout}s)"}, ensure_ascii=False)
+        return tool_error(f"执行超时 ({timeout}s)", cause=ErrorCause.TIMEOUT,
+                          retryable=True, hint="可增大 timeout 参数或精简代码后重试")
     except Exception as e:
-        return json.dumps({"error": f"{type(e).__name__}: {e}"}, ensure_ascii=False)
+        return error_from_exception(e, action="执行 Python 代码")
 
 # 挂载同实体的 notebook 工具（discover_entities 只导入 tools.py）
 from core.log import log

@@ -32,6 +32,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from core.config import ConfigManager, get_config_bool, register_configs_safe
 from core.entity import EntityRegistry
 from core.log import log
+from core.tool_errors import ErrorCause, error_from_exception
 from core.tool_schema import extract_tool_params, get_first_line
 
 from .channel_types import ChannelCapability
@@ -322,6 +323,7 @@ def _make_specific_handler(channel_id: str, tool_name: str, bound: Callable) -> 
             return json.dumps({
                 "success": False,
                 "error": f"接口 {tool_name} 已在频道 '{channel_id}' 上被管理员禁用",
+                "cause": ErrorCause.STATE.value,
                 "channel_id": channel_id,
             }, ensure_ascii=False)
         try:
@@ -330,11 +332,10 @@ def _make_specific_handler(channel_id: str, tool_name: str, bound: Callable) -> 
                 raw = await raw
             return _normalize_result(raw, tool_name, channel_id)
         except Exception as exc:
-            return json.dumps({
-                "success": False,
-                "error": f"{tool_name} 执行失败: {exc}",
-                "channel_id": channel_id,
-            }, ensure_ascii=False)
+            payload = json.loads(error_from_exception(exc, action=f"执行 {tool_name}"))
+            payload["success"] = False
+            payload["channel_id"] = channel_id
+            return json.dumps(payload, ensure_ascii=False)
 
     _handler.__name__ = tool_name
     return _handler
@@ -435,6 +436,7 @@ def _make_common_handler(cap_value: str, method_name: str) -> Callable:
             return json.dumps({
                 "success": False,
                 "error": f"未确定目标频道（channel_id='{channel_id or '空'}'）",
+                "cause": ErrorCause.NOT_FOUND.value,
                 "supporting_channels": sorted(_common_methods.get(cap_value, {})),
                 "hint": "请显式传入 channel_id（可用 list_channels 查看）",
             }, ensure_ascii=False)
@@ -445,6 +447,7 @@ def _make_common_handler(cap_value: str, method_name: str) -> Callable:
             return json.dumps({
                 "success": False,
                 "error": f"频道 '{channel_id}' 不支持 {cap_value}",
+                "cause": ErrorCause.NOT_FOUND.value,
                 "supporting_channels": sorted(_common_methods.get(cap_value, {})),
             }, ensure_ascii=False)
 
@@ -452,6 +455,7 @@ def _make_common_handler(cap_value: str, method_name: str) -> Callable:
             return json.dumps({
                 "success": False,
                 "error": f"接口 {cap_value} 已在频道 '{channel_id}' 上被管理员禁用",
+                "cause": ErrorCause.STATE.value,
                 "channel_id": channel_id,
             }, ensure_ascii=False)
 
@@ -463,11 +467,10 @@ def _make_common_handler(cap_value: str, method_name: str) -> Callable:
                 raw = await raw
             return _normalize_result(raw, cap_value, channel_id)
         except Exception as exc:
-            return json.dumps({
-                "success": False,
-                "error": f"{cap_value} 执行失败: {exc}",
-                "channel_id": channel_id,
-            }, ensure_ascii=False)
+            payload = json.loads(error_from_exception(exc, action=f"执行 {cap_value}"))
+            payload["success"] = False
+            payload["channel_id"] = channel_id
+            return json.dumps(payload, ensure_ascii=False)
 
     _handler.__name__ = cap_value
     return _handler

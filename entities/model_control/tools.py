@@ -15,7 +15,7 @@ import json
 import shutil
 from typing import TYPE_CHECKING, Any
 
-from entities._sdk import entity, tool
+from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
 
 if TYPE_CHECKING:
     from agent.llm.llm_manager import LLMManager
@@ -57,7 +57,7 @@ def list_models() -> str:
             result["hint"] = "runtime_issues 为运行时临时自适应（重启失效），可用 update_model_config 固化修复"
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="列出模型")
 
 
 def _collect_runtime_issues(manager: "LLMManager") -> dict:
@@ -96,7 +96,7 @@ def switch_model(model_name: str) -> str:
             "message": f"切换失败：模型 '{model_name}' 不存在或不支持工具调用，请用 list_models 查看可用列表",
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action=f"切换模型 '{model_name}'")
 
 
 @tool(name="get_current_model", group="model_control", tags=["core"],
@@ -136,7 +136,7 @@ def get_current_model() -> str:
 
         return json.dumps(info, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="获取当前模型信息")
 
 
 @tool(name="set_session_params", group="model_control", tags=["core"],
@@ -179,7 +179,7 @@ def set_session_params(temperature: float = -1.0, max_tokens: int = -1, reasonin
             "note": "临时参数，仅本次运行有效，重启后恢复默认",
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="设置会话参数")
 
 
 @tool(name="clear_session_params", group="model_control", tags=["core"],
@@ -192,7 +192,7 @@ def clear_session_params() -> str:
         rt.mind._session_llm_params.clear()
         return json.dumps({"ok": True, "message": "已清除所有临时参数，恢复模型默认配置"}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="清除会话参数")
 
 
 # AI 可持久化修改的模型配置字段（保守白名单：仅端点行为类参数，
@@ -240,10 +240,8 @@ def update_model_config(model_name: str, field: str, value: str) -> str:
 
         old_value = getattr(client.config, field)
         if not manager.update_model(model_name, **{field: parsed}):
-            return json.dumps({
-                "ok": False,
-                "error": f"更新模型 '{model_name}' 失败",
-            }, ensure_ascii=False)
+            return tool_error(f"更新模型 '{model_name}' 失败，配置写入未生效",
+                              cause=ErrorCause.INTERNAL, retryable=False, ok=False)
 
         return json.dumps({
             "ok": True,
@@ -254,7 +252,7 @@ def update_model_config(model_name: str, field: str, value: str) -> str:
             "new": parsed,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action=f"更新模型 '{model_name}' 配置")
 
 
 def _parse_field_value(field: str, value: str) -> tuple[Any, str]:
@@ -302,7 +300,7 @@ def get_model_priority(model_type: str = "chat") -> str:
             "all_priorities": priorities,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="获取模型优先级")
 
 
 @tool(name="set_model_priority", group="model_control", tags=["core"],
@@ -329,7 +327,7 @@ def set_model_priority(model_type: str, model_ids: str) -> str:
             "message": "优先级已更新并持久化",
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="设置模型优先级")
 
 
 # ==================================================================
@@ -479,7 +477,7 @@ if _OLLAMA_AVAILABLE:
         try:
             return json.dumps(_get_ollama().get_status(), ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return error_from_exception(e, action="查询 Ollama 状态")
 
     @tool(name="ollama_list_models", group="ollama",
           description="列出本地 Ollama 已有的所有模型")
@@ -492,7 +490,7 @@ if _OLLAMA_AVAILABLE:
                 "models": [{"name": m.name, "size": m.size, "modified": m.modified} for m in models],
             }, ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return error_from_exception(e, action="列出 Ollama 模型")
 
     @tool(name="ollama_pull_model", group="ollama",
           description="拉取（下载）一个 Ollama 模型到本地，操作可能需要较长时间")
@@ -508,7 +506,7 @@ if _OLLAMA_AVAILABLE:
                 return json.dumps({"ok": True, "message": f"模型 {model_name} 拉取成功"}, ensure_ascii=False)
             return json.dumps({"ok": False, "error": result.stderr.strip()}, ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return error_from_exception(e, action=f"拉取模型 '{model_name}'")
 
     @tool(name="ollama_delete_model", group="ollama",
           description="删除本地已下载的 Ollama 模型")
@@ -524,7 +522,7 @@ if _OLLAMA_AVAILABLE:
                 return json.dumps({"ok": True, "message": f"模型 {model_name} 已删除"}, ensure_ascii=False)
             return json.dumps({"ok": False, "error": result.stderr.strip()}, ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return error_from_exception(e, action=f"删除模型 '{model_name}'")
 
     @tool(name="ollama_model_detail", group="ollama",
           description="查看本地 Ollama 模型的详细信息（参数量、量化级别、架构家族等）")
@@ -537,7 +535,9 @@ if _OLLAMA_AVAILABLE:
         try:
             detail = _get_ollama().show_model(model_name)
             if not detail:
-                return json.dumps({"error": f"无法获取模型 {model_name} 的详情"}, ensure_ascii=False)
+                return tool_error(f"无法获取模型 '{model_name}' 的详情",
+                                  cause=ErrorCause.NOT_FOUND, retryable=False,
+                                  hint="确认模型名称（ollama_list_models 查看）及 Ollama 服务是否运行")
             d = detail.get("details", {})
             return json.dumps({
                 "name": model_name,
@@ -548,4 +548,4 @@ if _OLLAMA_AVAILABLE:
                 "license": (detail.get("license", "") or "")[:200],
             }, ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return error_from_exception(e, action=f"获取模型 '{model_name}' 详情")

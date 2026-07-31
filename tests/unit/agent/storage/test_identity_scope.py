@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 
 from agent.messages.characters import EntityData
-from agent.messages.presets import MessageGroupUser, MessageUser
 from agent.storage.data_center import EverythingData
 from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageRouter

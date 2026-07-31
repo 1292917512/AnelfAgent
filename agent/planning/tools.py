@@ -20,12 +20,22 @@ from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
 from agent.planning import tracker
 from core.log import log
+from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import activate_group, deferred_tool
 
 _GOAL_SOURCE = "goal"
 _GROUP = "planning"
 
 _store: Optional[MemoryStore] = None
+
+
+def _store_not_ready() -> str:
+    """记忆存储未就绪的统一错误。"""
+    return tool_error(
+        "记忆存储组件未初始化",
+        cause=ErrorCause.STATE, retryable=False,
+        hint="MemoryStore 不可用，请检查服务启动状态",
+    )
 
 
 def register_planning_tools(store: MemoryStore) -> None:
@@ -89,7 +99,7 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
     注意：非循环目标完成后需调用 delete_goal(goal_id) 删除。
     """
     if _store is None:
-        return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
+        return _store_not_ready()
 
     step_list = [s.strip() for s in steps.split("|") if s.strip()] if steps else []
     goal = _make_goal(title, description, step_list, recurring)
@@ -120,7 +130,7 @@ async def list_goals(status: str = "active") -> str:
         status: 筛选状态，active（默认）/ completed / all
     """
     if _store is None:
-        return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
+        return _store_not_ready()
 
     entries = await _store.list_recent(limit=50, memory_type=MemoryType.SEMANTIC, source=_GOAL_SOURCE)
 
@@ -166,11 +176,11 @@ async def update_goal(
         goal_status: 整体目标状态（active / completed / cancelled），留空不更新
     """
     if _store is None:
-        return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
+        return _store_not_ready()
 
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is None or target_goal is None:
-        return json.dumps({"error": f"目标 '{goal_id}' 不存在"}, ensure_ascii=False)
+        return tool_error(f"目标 '{goal_id}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
 
     if 0 <= step_index < len(target_goal.get("steps", [])):
         if step_status:
@@ -241,7 +251,7 @@ async def delete_goal(goal_id: str) -> str:
         goal_id: 目标 ID
     """
     if _store is None:
-        return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
+        return _store_not_ready()
 
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is not None and target_goal is not None and target_entry.id:
@@ -252,7 +262,7 @@ async def delete_goal(goal_id: str) -> str:
             "deleted_goal": target_goal.get("title", ""),
         }, ensure_ascii=False)
 
-    return json.dumps({"error": f"目标 '{goal_id}' 不存在"}, ensure_ascii=False)
+    return tool_error(f"目标 '{goal_id}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
 
 
 @deferred_tool(group=_GROUP, tags=["planning", "heartbeat"])
@@ -263,14 +273,14 @@ async def get_goal(goal_id: str) -> str:
         goal_id: 目标 ID
     """
     if _store is None:
-        return json.dumps({"error": "MemoryStore 不可用"}, ensure_ascii=False)
+        return _store_not_ready()
 
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is not None and target_goal is not None:
         target_goal["memory_id"] = target_entry.id
         return json.dumps({"success": True, "goal": target_goal}, ensure_ascii=False)
 
-    return json.dumps({"error": f"目标 '{goal_id}' 不存在"}, ensure_ascii=False)
+    return tool_error(f"目标 '{goal_id}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
 
 
 # ------------------------------------------------------------------

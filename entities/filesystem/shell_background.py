@@ -12,6 +12,7 @@ call_soon_threadsafe 桥回到主循环（见 background_tasks.bind_loop）。
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import threading
@@ -19,6 +20,7 @@ import time
 from typing import Any, Dict, Optional
 
 from core.log import log
+from core.tool_errors import error_from_exception
 from entities._sdk import get_background_registry, get_current_scope
 
 # 完成通知摘要的最大长度（输出文件尾部摘录）
@@ -51,7 +53,7 @@ def launch_background(command: str, cwd: str, workspace: str,
         )
     except Exception as exc:
         out_fp.close()
-        return {"error": f"后台任务启动失败: {exc}"}
+        return json.loads(error_from_exception(exc, action="启动后台任务"))
 
     desc = description or command[:60]
     if registry is not None:

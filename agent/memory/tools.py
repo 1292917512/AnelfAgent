@@ -10,6 +10,7 @@ import json
 from typing import Any, Dict, Optional
 
 from core.log import log
+from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import activate_group, deferred_tool
 
 from .embedding import Embedder, wake_embedding_worker
@@ -27,6 +28,24 @@ _TYPE_MAP = {
     "entity": MemoryType.ENTITY,
     "permanent": MemoryType.PERMANENT,
 }
+
+
+def _store_not_ready() -> str:
+    """记忆存储未就绪的统一错误。"""
+    return tool_error(
+        "记忆系统未初始化",
+        cause=ErrorCause.STATE, retryable=False,
+        hint="记忆组件未初始化，请检查服务启动状态",
+    )
+
+
+def _cognee_not_ready() -> str:
+    """Cognee 后端未就绪的统一错误。"""
+    return tool_error(
+        "Cognee 运行时未初始化",
+        cause=ErrorCause.STATE, retryable=False,
+        hint="Cognee 为可选记忆后端，请确认其已启用并完成初始化",
+    )
 
 
 def register_memory_tools(store: MemoryStore, embedder: Embedder) -> None:
@@ -73,7 +92,7 @@ async def memorize(content: str, tags: str = "", importance: float = 0.7) -> str
     """
     try:
         if not _store:
-            return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
+            return _store_not_ready()
 
         # 威胁扫描：记忆写入是注入持久化的关键路径，命中威胁模式时拒绝写入
         from agent.security.threat_scanner import first_threat_message, is_threat_scan_enabled
@@ -81,9 +100,10 @@ async def memorize(content: str, tags: str = "", importance: float = 0.7) -> str
             threat = first_threat_message(content, scope="strict")
             if threat:
                 log(f"记忆写入被威胁扫描拦截: {threat}", "WARNING", tag="安全")
-                return json.dumps({
-                    "error": f"写入被拒绝：{threat}。请检查内容是否包含注入指令。",
-                }, ensure_ascii=False)
+                return tool_error(
+                    f"写入被拒绝：{threat}。请检查内容是否包含注入指令。",
+                    cause=ErrorCause.PERMISSION, retryable=False,
+                )
 
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
@@ -117,7 +137,7 @@ async def memorize(content: str, tags: str = "", importance: float = 0.7) -> str
         wake_embedding_worker()
         return json.dumps({"ok": True, "id": mid, "tags": tag_list}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="写入记忆")
 
 
 async def _upsert_permanent(content: str, tag_list: list[str], importance: float) -> str:
@@ -174,7 +194,7 @@ async def recall(query: str, tags: str = "", limit: int = 5, min_score: float = 
     """
     try:
         if not _store:
-            return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
+            return _store_not_ready()
 
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
 
@@ -235,7 +255,7 @@ async def recall(query: str, tags: str = "", limit: int = 5, min_score: float = 
             "related": related_items,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="搜索记忆")
 
 
 async def _recall_associations(
@@ -282,7 +302,7 @@ async def memory_index(tag: str = "") -> str:
     """
     try:
         if not _store:
-            return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
+            return _store_not_ready()
 
         if not tag:
             tag_counts = await _store.list_tags()
@@ -303,7 +323,7 @@ async def memory_index(tag: str = "") -> str:
         } for e in entries]
         return json.dumps({"tag": tag, "count": len(items), "memories": items}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="读取记忆索引")
 
 
 @deferred_tool(
@@ -318,10 +338,10 @@ async def get_memory(memory_id: int) -> str:
     """
     try:
         if not _store:
-            return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
+            return _store_not_ready()
         entry = await _store.get(memory_id)
         if not entry:
-            return json.dumps({"error": f"记忆 {memory_id} 不存在"}, ensure_ascii=False)
+            return tool_error(f"记忆 {memory_id} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
         return json.dumps({
             "id": entry.id,
             "type": entry.memory_type.value,
@@ -332,7 +352,7 @@ async def get_memory(memory_id: int) -> str:
             "access_count": entry.access_count,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="读取记忆")
 
 
 @deferred_tool(
@@ -358,11 +378,11 @@ async def update_memory(
     """
     try:
         if not _store:
-            return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
+            return _store_not_ready()
 
         entry = await _store.get(memory_id)
         if not entry:
-            return json.dumps({"error": f"记忆 {memory_id} 不存在"}, ensure_ascii=False)
+            return tool_error(f"记忆 {memory_id} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
 
         changed: list[str] = []
         content_changed = False
@@ -401,7 +421,7 @@ async def update_memory(
             "importance": round(entry.importance, 3),
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="更新记忆")
 
 
 @deferred_tool(group="memory", tags=["core", "heartbeat"], source="mind.memory")
@@ -413,11 +433,11 @@ async def forget(memory_id: int) -> str:
     """
     try:
         if not _store:
-            return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
+            return _store_not_ready()
         ok = await _store.delete(memory_id)
         return json.dumps({"ok": ok, "message": f"记忆 {memory_id} {'已遗忘' if ok else '不存在'}"}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="删除记忆")
 
 
 # ------------------------------------------------------------------
@@ -452,7 +472,7 @@ async def list_conversations() -> str:
         scopes = await _get_sqlite().list_conversation_scopes()
         return json.dumps({"scopes": scopes, "total": len(scopes)}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="列出会话")
 
 
 @deferred_tool(
@@ -492,7 +512,7 @@ async def get_conversation(scope_type: str, scope_id: str, limit: int = 30) -> s
             "messages": items,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="获取会话记录")
 
 
 def _format_conversation_time(ts_ns: int) -> str:
@@ -575,7 +595,7 @@ async def lookup_message(
     try:
         message_id = (message_id or "").strip()
         if not message_id:
-            return json.dumps({"error": "message_id 不能为空"}, ensure_ascii=False)
+            return tool_error("message_id 不能为空", cause=ErrorCause.PARAM, retryable=False)
 
         sqlite = _get_sqlite()
         st, sid = _resolve_lookup_scope(scope_type, scope_id)
@@ -649,7 +669,7 @@ async def lookup_message(
             ),
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="查找消息")
 
 
 @deferred_tool(
@@ -676,9 +696,9 @@ async def add_conversation_message(
     """
     try:
         if role not in ("user", "assistant"):
-            return json.dumps({"error": "role 必须是 user 或 assistant"}, ensure_ascii=False)
+            return tool_error("role 必须是 user 或 assistant", cause=ErrorCause.PARAM, retryable=False)
         if not content.strip():
-            return json.dumps({"error": "content 不能为空"}, ensure_ascii=False)
+            return tool_error("content 不能为空", cause=ErrorCause.PARAM, retryable=False)
         sqlite = _get_sqlite()
         scope_id = _normalize_scope_id(scope_id)
         await sqlite.append_conversation(
@@ -692,7 +712,7 @@ async def add_conversation_message(
             "content_preview": content[:100],
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="追加会话消息")
 
 
 @deferred_tool(
@@ -711,18 +731,18 @@ async def update_conversation_message(row_id: int, new_content: str) -> str:
     """
     try:
         if not new_content.strip():
-            return json.dumps({"error": "new_content 不能为空"}, ensure_ascii=False)
+            return tool_error("new_content 不能为空", cause=ErrorCause.PARAM, retryable=False)
         sqlite = _get_sqlite()
         updated = await sqlite.update_conversation_message(row_id, new_content)
         if not updated:
-            return json.dumps({"error": f"消息 {row_id} 不存在"}, ensure_ascii=False)
+            return tool_error(f"消息 {row_id} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
         return json.dumps({
             "ok": True,
             "message": f"消息 {row_id} 已更新",
             "new_content_preview": new_content[:100],
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="更新会话消息")
 
 
 @deferred_tool(
@@ -758,7 +778,7 @@ async def list_active_channels() -> str:
             "total": len(result),
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="列出频道")
 
 
 @deferred_tool(
@@ -778,7 +798,7 @@ async def delete_conversation_message(row_id: int) -> str:
         await _get_sqlite().delete_conversation_by_id(row_id)
         return json.dumps({"ok": True, "message": f"消息 {row_id} 已删除"}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="删除会话消息")
 
 
 @deferred_tool(
@@ -802,7 +822,7 @@ async def clear_conversation(scope_type: str, scope_id: str) -> str:
         )
         return json.dumps({"ok": True, "cleared": count, "message": f"已清空 {scope_type}:{scope_id} 的 {count} 条记录"}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="清空会话记录")
 
 
 @deferred_tool(
@@ -894,7 +914,7 @@ async def recall_conversation(
         }, ensure_ascii=False)
 
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="搜索历史对话")
 
 
 # ------------------------------------------------------------------
@@ -909,11 +929,11 @@ async def memory_stats() -> str:
     """查看记忆系统统计和健康状态。"""
     try:
         if not _store:
-            return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
+            return _store_not_ready()
         health = await _store.get_health_status()
         return json.dumps(health, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="读取记忆统计")
 
 
 @deferred_tool(
@@ -947,7 +967,7 @@ async def cognee_status() -> str:
             ensure_ascii=False,
         )
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="查询 Cognee 状态")
 
 
 @deferred_tool(
@@ -960,11 +980,11 @@ async def retry_cognee_sync() -> str:
         from .cognee.runtime import get_cognee_coordinator
         coordinator = get_cognee_coordinator()
         if not coordinator:
-            return json.dumps({"error": "Cognee 运行时未初始化"}, ensure_ascii=False)
+            return _cognee_not_ready()
         count = await coordinator.retry_failed()
         return json.dumps({"ok": True, "retried": count}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="重试 Cognee 同步")
 
 
 @deferred_tool(
@@ -977,7 +997,7 @@ async def list_cognee_datasets() -> str:
         from .cognee.runtime import get_cognee_client
         client = get_cognee_client()
         if not client:
-            return json.dumps({"error": "Cognee 运行时未初始化"}, ensure_ascii=False)
+            return _cognee_not_ready()
         values = await client.list_datasets()
         items = [
             value.model_dump(mode="json")
@@ -988,7 +1008,7 @@ async def list_cognee_datasets() -> str:
         ]
         return json.dumps({"datasets": items, "count": len(items)}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="列出 Cognee 数据集")
 
 
 @deferred_tool(
@@ -1001,12 +1021,12 @@ async def improve_cognee_dataset(dataset_name: str) -> str:
         from .cognee.runtime import get_cognee_coordinator
         coordinator = get_cognee_coordinator()
         if not coordinator:
-            return json.dumps({"error": "Cognee 运行时未初始化"}, ensure_ascii=False)
+            return _cognee_not_ready()
         result = await coordinator.improve(dataset_name)
         value = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
         return json.dumps({"ok": True, "result": value}, ensure_ascii=False, default=str)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="增强 Cognee 数据集")
 
 
 @deferred_tool(
@@ -1023,7 +1043,7 @@ async def memory_deep_search(page: int = 1, page_size: int = 20, memory_type: st
     """
     try:
         if not _store:
-            return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
+            return _store_not_ready()
         mt = None
         if memory_type:
             try:
@@ -1033,7 +1053,7 @@ async def memory_deep_search(page: int = 1, page_size: int = 20, memory_type: st
         result = await _store.list_paginated(page=page, page_size=page_size, memory_type=mt)
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="深度搜索记忆")
 
 
 @deferred_tool(
@@ -1049,7 +1069,7 @@ async def merge_memories(memory_ids: str, merged_content: str) -> str:
     """
     try:
         if not _store:
-            return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
+            return _store_not_ready()
 
         ids = []
         for s in memory_ids.split(","):
@@ -1057,13 +1077,17 @@ async def merge_memories(memory_ids: str, merged_content: str) -> str:
             if s.isdigit():
                 ids.append(int(s))
         if len(ids) < 2:
-            return json.dumps({"error": "至少需要 2 条记忆才能合并"}, ensure_ascii=False)
+            return tool_error("至少需要 2 条记忆才能合并", cause=ErrorCause.PARAM, retryable=False)
         if not merged_content.strip():
-            return json.dumps({"error": "合并内容不能为空"}, ensure_ascii=False)
+            return tool_error("合并内容不能为空", cause=ErrorCause.PARAM, retryable=False)
 
         new_id = await _store.merge_memories(ids, merged_content)
         if not new_id:
-            return json.dumps({"error": "合并失败，指定的记忆可能不存在"}, ensure_ascii=False)
+            return tool_error(
+                "合并失败：指定的记忆不存在",
+                cause=ErrorCause.NOT_FOUND, retryable=False,
+                hint="先用 memory_deep_search 确认要合并的记忆 ID 是否存在",
+            )
 
         wake_embedding_worker()
 
@@ -1073,7 +1097,7 @@ async def merge_memories(memory_ids: str, merged_content: str) -> str:
             "message": f"已将 {len(ids)} 条记忆合并为 id={new_id}",
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="合并记忆")
 
 
 # ------------------------------------------------------------------
@@ -1098,7 +1122,7 @@ async def log_to_heartbeat(content: str) -> str:
         append_entry(content)
         return json.dumps({"ok": True, "message": "已写入心跳日志"}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="写入心跳日志")
 
 
 # ------------------------------------------------------------------
@@ -1116,7 +1140,7 @@ async def list_tasks() -> str:
         tasks = require_runtime().mind.heartbeat_engine.task_registry.list_info()
         return json.dumps({"total": len(tasks), "tasks": tasks}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="列出任务")
 
 
 @deferred_tool(
@@ -1144,7 +1168,7 @@ async def execute_task(task_name: str) -> str:
             "preview": result[:200] if result else "",
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="执行任务")
 
 
 # ------------------------------------------------------------------
@@ -1191,7 +1215,7 @@ async def list_entity_profiles() -> str:
             items.append(item)
         return json.dumps({"total": len(items), "profiles": items}, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="列出实体画像")
 
 
 @deferred_tool(
@@ -1216,7 +1240,7 @@ async def get_entity_profile(scope_type: str, scope_id: str) -> str:
 
         data = await sqlite.get_entity_personality(scope_type=p_type, scope_id=p_id)
         if not data:
-            return json.dumps({"error": f"{scope_type}:{scope_id} 暂无画像"}, ensure_ascii=False)
+            return tool_error(f"{scope_type}:{scope_id} 暂无画像", cause=ErrorCause.NOT_FOUND, retryable=False)
 
         result: dict = {
             "scope": f"{p_type}:{p_id}",
@@ -1231,7 +1255,7 @@ async def get_entity_profile(scope_type: str, scope_id: str) -> str:
             result["aliases"] = [f"{a['scope_type']}:{a['scope_id']}" for a in aliases]
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="读取实体画像")
 
 
 @deferred_tool(
@@ -1257,7 +1281,7 @@ async def delete_entity_profile(scope_type: str, scope_id: str) -> str:
 
         existing = await sqlite.get_entity_personality(scope_type=p_type, scope_id=p_id)
         if not existing:
-            return json.dumps({"error": f"{scope_type}:{scope_id} 不存在"}, ensure_ascii=False)
+            return tool_error(f"{scope_type}:{scope_id} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
 
         await sqlite.delete_entity_profile(scope_type=p_type, scope_id=p_id)
 
@@ -1288,7 +1312,7 @@ async def delete_entity_profile(scope_type: str, scope_id: str) -> str:
             "message": f"已删除 {scope_type}:{scope_id} 的画像",
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="删除实体画像")
 
 
 @deferred_tool(
@@ -1309,7 +1333,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
     """
     try:
         if not personality.strip():
-            return json.dumps({"error": "画像内容不能为空"}, ensure_ascii=False)
+            return tool_error("画像内容不能为空", cause=ErrorCause.PARAM, retryable=False)
 
         sqlite = _get_sqlite()
         scope_id = _normalize_scope_id(scope_id)
@@ -1368,7 +1392,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
             "preview": personality.strip()[:100],
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="更新实体画像")
 
 
 # ------------------------------------------------------------------
@@ -1400,7 +1424,7 @@ async def link_entity(
     """
     try:
         if source_scope_type == target_scope_type and source_scope_id == target_scope_id:
-            return json.dumps({"error": "不能将实体关联到自身"}, ensure_ascii=False)
+            return tool_error("不能将实体关联到自身", cause=ErrorCause.PARAM, retryable=False)
 
         sqlite = _get_sqlite()
         source_scope_id = _normalize_scope_id(source_scope_id)
@@ -1413,12 +1437,11 @@ async def link_entity(
         # 检查 source 是否已有不同的 primary
         existing = await sqlite.resolve_alias(source_scope_type, source_scope_id)
         if existing and (existing[0] != final_type or existing[1] != final_id):
-            return json.dumps({
-                "error": (
-                    f"{source_scope_type}:{source_scope_id} 已关联到 "
-                    f"{existing[0]}:{existing[1]}，需先 unlink_entity 解除"
-                ),
-            }, ensure_ascii=False)
+            return tool_error(
+                f"{source_scope_type}:{source_scope_id} 已关联到 "
+                f"{existing[0]}:{existing[1]}，需先 unlink_entity 解除",
+                cause=ErrorCause.STATE, retryable=False,
+            )
 
         await sqlite.set_alias(
             scope_type=source_scope_type, scope_id=source_scope_id,
@@ -1435,7 +1458,7 @@ async def link_entity(
             "primary": f"{final_type}:{final_id}",
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="关联实体")
 
 
 @deferred_tool(
@@ -1458,9 +1481,10 @@ async def unlink_entity(scope_type: str, scope_id: str, copy_profile: bool = Tru
         scope_id = _normalize_scope_id(scope_id)
         primary = await sqlite.resolve_alias(scope_type, scope_id)
         if not primary:
-            return json.dumps({
-                "error": f"{scope_type}:{scope_id} 没有关联关系",
-            }, ensure_ascii=False)
+            return tool_error(
+                f"{scope_type}:{scope_id} 没有关联关系",
+                cause=ErrorCause.NOT_FOUND, retryable=False,
+            )
 
         # 复制 primary 的画像到自己名下
         if copy_profile:
@@ -1475,7 +1499,7 @@ async def unlink_entity(scope_type: str, scope_id: str, copy_profile: bool = Tru
 
         removed = await sqlite.remove_alias(scope_type=scope_type, scope_id=scope_id)
         if not removed:
-            return json.dumps({"error": "解除失败"}, ensure_ascii=False)
+            return tool_error("解除关联失败", cause=ErrorCause.INTERNAL)
 
         return json.dumps({
             "ok": True,
@@ -1486,7 +1510,7 @@ async def unlink_entity(scope_type: str, scope_id: str, copy_profile: bool = Tru
             "copied_profile": copy_profile,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="解除实体关联")
 
 
 # ------------------------------------------------------------------
@@ -1505,7 +1529,7 @@ async def recall_tool_errors(tool_name: str = "", limit: int = 20) -> str:
         limit: 返回条数上限，默认 20
     """
     if not _store:
-        return json.dumps({"error": "记忆系统未初始化"}, ensure_ascii=False)
+        return _store_not_ready()
     try:
         limit = int(limit)
         if not tool_name:
@@ -1518,4 +1542,4 @@ async def recall_tool_errors(tool_name: str = "", limit: int = 20) -> str:
             "errors": errors,
         }, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error_from_exception(e, action="查询工具错误历史")
