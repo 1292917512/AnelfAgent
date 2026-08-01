@@ -43,7 +43,7 @@ export function Dock() {
   const body = (
     <div className={cn(
       "flex flex-col h-full bg-panel border-border",
-      isMobile ? "w-[85vw] max-w-sm border-l shadow-xl" : "w-72 xl:w-80 border-l",
+      isMobile ? "w-[85vw] max-w-sm border-l shadow-xl" : "w-full min-w-0 border-l",
     )}>
       <div className="flex items-center shrink-0">
         <div className="flex-1 min-w-0">
@@ -83,7 +83,7 @@ export function LeftDock() {
   const body = (
     <div className={cn(
       "flex flex-col h-full bg-panel border-border",
-      isMobile ? "w-[80vw] max-w-xs border-r shadow-xl" : "w-60 border-r",
+      isMobile ? "w-[80vw] max-w-xs border-r shadow-xl" : "w-full min-w-0 border-r",
     )}>
       {isMobile && (
         <div className="flex justify-end p-1 border-b border-border shrink-0">

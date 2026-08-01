@@ -104,6 +104,7 @@
     "asr": "Speech Recognition",
     "tts": "Text-to-Speech",
     "video": "Video",
+    "music": "Music",
     "rerank": "Reranking"
   }
 }

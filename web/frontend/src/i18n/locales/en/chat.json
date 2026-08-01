@@ -42,5 +42,13 @@
     "close": "Close",
     "confirm": "Confirm",
     "unread": "{{count}} new messages"
-  }
+  },
+  "stop": "Stop",
+  "stopTitle": "Stop current generation (cooperative interrupt, includes running sub-agents)",
+  "toolSummary": "{{count}} actions executed",
+  "toolCalls": "{{count}} tool calls",
+  "toolCallsFailed": "with failures",
+  "expand": "Expand",
+  "collapse": "Collapse",
+  "loadEarlier": "Load earlier messages"
 }

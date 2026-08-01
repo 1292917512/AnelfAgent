@@ -1,13 +1,16 @@
 /**
  * DelegationCard — 消息流中的子代理执行卡片。
  *
- * 渲染 DelegationNode 的实时状态：goal / role / 状态徽标 / 完成输出 / 错误信息。
- * 与 delegation-store 同步，子代理完成时卡片自动标完成。
+ * 渲染 DelegationNode 的实时状态：goal / role / 状态徽标 / 实时进度
+ * （当前轮次 / 正在使用的工具）/ 完成输出 / 错误信息。
+ * 运行中可手动取消（取消后由后端 delegation_resolved 事件确认终态）。
  */
 import { useTranslation } from "react-i18next";
-import { Bot, CheckCircle2, ChevronDown, ChevronRight, Loader2, XCircle, Zap } from "lucide-react";
-import { useState } from "react";
+import { Bot, CheckCircle2, ChevronDown, ChevronRight, CircleSlash, Loader2, XCircle, Zap } from "lucide-react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { chatApi } from "@/lib/api";
+import { useDelegationStore } from "@/stores/delegation-store";
 import type { DelegationNode } from "@/lib/types";
 
 interface Props {
@@ -17,10 +20,24 @@ interface Props {
 export function DelegationCard({ node }: Props) {
   const { t } = useTranslation("plan");
   const [expanded, setExpanded] = useState(false);
+  const markCancelling = useDelegationStore((s) => s.markCancelling);
 
-  const durationSec = node.resolved_at
-    ? Math.round(node.resolved_at - node.started_at)
-    : Math.round(Date.now() / 1000 - node.started_at);
+  const running = node.status === "running";
+  // 运行中每秒钟刷新耗时（避免渲染期直接调用 Date.now）
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+  const durationSec = Math.round((node.resolved_at ?? now) - node.started_at);
+
+  const handleCancel = async () => {
+    markCancelling(node.chat_id, node.delegation_id);
+    try {
+      await chatApi.cancelDelegation(node.delegation_id);
+    } catch { /* 取消失败时由 delegation_resolved 或超时兜底 */ }
+  };
 
   return (
     <div className="flex justify-start">
@@ -31,7 +48,9 @@ export function DelegationCard({ node }: Props) {
             ? "border-red-400/40 bg-red-50/40 dark:bg-red-950/20"
             : node.status === "completed"
               ? "border-green-400/40 bg-green-50/20 dark:bg-green-950/10"
-              : "border-blue-400/40 bg-blue-50/30 dark:bg-blue-950/20",
+              : node.status === "cancelled"
+                ? "border-border/60 bg-muted/30"
+                : "border-blue-400/40 bg-blue-50/30 dark:bg-blue-950/20",
         )}
       >
         <button
@@ -41,9 +60,13 @@ export function DelegationCard({ node }: Props) {
           <Bot size={14} className={cn("shrink-0",
             node.status === "failed" ? "text-red-500"
               : node.status === "completed" ? "text-green-500"
-                : "text-blue-500",
+                : node.status === "cancelled" ? "text-muted"
+                  : "text-blue-500",
           )} />
-          <span className="text-sm font-medium text-foreground flex-1 min-w-0 truncate">
+          <span className={cn(
+            "text-sm font-medium flex-1 min-w-0 truncate",
+            node.status === "cancelled" ? "text-muted" : "text-foreground",
+          )}>
             {node.goal || t("delegation.untitled")}
           </span>
           <span className="text-xs text-muted shrink-0 font-mono">
@@ -62,6 +85,31 @@ export function DelegationCard({ node }: Props) {
           )}
           {expanded ? <ChevronDown size={14} className="text-muted" /> : <ChevronRight size={14} className="text-muted" />}
         </button>
+
+        {/* 运行中：实时进度行 + 取消按钮（常显，无需展开） */}
+        {running && (
+          <div className="flex items-center gap-2 px-3 py-1.5 border-t border-border/50 text-[11px] text-muted">
+            <Loader2 size={11} className="animate-spin shrink-0 text-blue-500" />
+            <span className="flex-1 min-w-0 truncate">
+              {node.cancelling
+                ? t("delegation.cancelling")
+                : node.current_tool
+                  ? t("delegation.progress.usingTool", { tool: node.current_tool })
+                  : node.iteration
+                    ? t("delegation.progress.round", { n: node.iteration })
+                    : t("delegation.running")}
+            </span>
+            {!node.cancelling && (
+              <button
+                onClick={handleCancel}
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-danger hover:bg-danger-subtle transition-colors shrink-0"
+              >
+                <CircleSlash size={11} />
+                {t("delegation.cancel")}
+              </button>
+            )}
+          </div>
+        )}
 
         {expanded && (
           <div className="px-3 pb-2 space-y-1.5 border-t border-border/50">
@@ -96,6 +144,12 @@ export function DelegationCard({ node }: Props) {
                 <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-300">
                   <XCircle size={10} />
                   {t("delegation.failed")}
+                </span>
+              )}
+              {node.status === "cancelled" && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-muted text-muted">
+                  <CircleSlash size={10} />
+                  {t("delegation.cancelled")}
                 </span>
               )}
               {node.status === "running" && (

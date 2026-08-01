@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
 
-entity("media", "多模态媒体 - 图片识别、语音转文字、文字转语音、图片生成、图片编辑、视频生成、文档重排序")
+entity("media", "多模态媒体 - 图片识别、语音转文字、文字转语音、音色管理、音乐生成、图片生成、图片编辑、视频生成、文档重排序")
 
 
 def _get_workspace_root() -> str:
@@ -84,6 +84,20 @@ def _apply_style(prompt: str, style: str) -> str:
     return f"{prompt}, {suffix}"
 
 
+def _classify_media_errors(errors: Dict[str, str]) -> Tuple[ErrorCause, bool, str]:
+    """根据各模型错误详情推断整体归因，让 AI 拿到可决策的 cause/hint。"""
+    detail = " ".join(errors.values()).lower()
+    if any(k in detail for k in ("http 401", "http 403", "(1004)", "(2049)", "invalid api key", "unauthorized")):
+        return (ErrorCause.CONFIG, False, "API Key 无效或无权限，请检查模型供应商的密钥配置")
+    if any(k in detail for k in ("http 402", "(1008)", "余额", "insufficient")):
+        return (ErrorCause.CONFIG, False, "账户余额不足，请充值后重试")
+    if any(k in detail for k in ("http 422", "(1026)", "(1027)", "敏感")):
+        return (ErrorCause.PARAM, False, "内容触发平台敏感审核，请调整提示词/素材后重试")
+    if "timeout" in detail or "超时" in detail:
+        return (ErrorCause.TIMEOUT, True, "可稍后重试")
+    return (ErrorCause.NETWORK, True, "可稍后重试，或在模型配置中调整该类型模型的优先级/更换模型")
+
+
 async def _media_with_fallback(
     model_type: str,
     label: str,
@@ -99,7 +113,7 @@ async def _media_with_fallback(
                           cause=ErrorCause.CONFIG, retryable=False,
                           hint="请先在模型配置中添加对应类型的模型")
 
-    last_err = ""
+    errors: Dict[str, str] = {}
     for model_name, client in pairs:
         try:
             result = await fn(model_name, client)
@@ -107,14 +121,21 @@ async def _media_with_fallback(
                 result.setdefault("model", model_name)
                 result.setdefault("success", True)
             return json.dumps(result, ensure_ascii=False)
+        except NotImplementedError:
+            # 协议本身不支持该操作（非单个模型故障），直接向上抛出
+            raise
         except Exception as exc:
-            last_err = f"{model_name}: {exc}"
+            detail = str(exc).strip() or type(exc).__name__
+            errors[model_name] = detail[:200]
             from core.log import log
-            log(f"{label}模型 {model_name} 调用失败，尝试下一个: {exc}", "WARNING", tag="媒体")
+            log(f"{label}模型 {model_name} 调用失败，尝试下一个: {detail}", "WARNING", tag="媒体")
             continue
 
-    return tool_error(f"所有 {label} 模型均调用失败，最后错误: {last_err}",
-                      retryable=True)
+    cause, retryable, hint = _classify_media_errors(errors)
+    summary = "; ".join(f"{m}: {e}" for m, e in errors.items())
+    return tool_error(f"所有 {label} 模型均调用失败（{summary}）",
+                      cause=cause, retryable=retryable, hint=hint,
+                      errors=errors)
 
 
 # ==================================================================
@@ -257,26 +278,32 @@ async def voice_to_text(audio_source: str = "", **kwargs: str) -> str:
 # 语音合成 TTS — 带回退
 # ==================================================================
 
-@tool(name="text_to_voice", group="media")
+@tool(name="text_to_voice", group="media", timeout=300.0)
 async def text_to_voice(
     text: str,
     voice: str = "",
     reference_audio: str = "",
     reference_text: str = "",
+    emotion: str = "",
+    speed: float = 0.0,
 ) -> str:
-    """将文字转换为语音音频（TTS 语音合成），返回生成的音频文件路径。
+    """将文字转换为语音音频（TTS 语音合成），保存到本地并返回文件路径。
 
-    有两种发声方式（二选一）：
-    1. 预置音色：通过 voice 参数选择，可选 alex/anna/bella/benjamin/charles/claire/david/diana
-    2. 声音克隆：通过 reference_audio 提供参考音频 + reference_text 对应文字
+    发声方式（二选一）：
+    1. 预置音色：voice 参数（MiniMax 如 male-qn-qingse/female-yujie，可用 list_voices 查询；
+       SiliconFlow 如 alex/anna/bella 等）
+    2. 声音克隆：reference_audio 参考音频 + reference_text 对应文字（仅 SiliconFlow）
 
-    两者都不传时，使用 config.json 中配置的默认音色（专属音色优先）。
+    两者都不传时，使用 config.json 中配置的默认音色。超过 3000 字的长文本
+    在支持的协议上自动走异步合成。
 
     Args:
         text: 要转换为语音的文字内容
-        voice: 预置音色名称
+        voice: 预置音色 ID
         reference_audio: 声音克隆的参考音频（URL 或本地路径），与 voice 互斥
         reference_text: 参考音频中的文字内容（克隆时必须提供）
+        emotion: 情绪（仅 MiniMax）：happy/sad/angry/fearful/disgusted/surprised/calm/fluent
+        speed: 语速 0.5~2.0，0 表示默认 1.0（仅 MiniMax）
     """
     if not voice and not reference_audio:
         cfg = _media_config()
@@ -311,39 +338,378 @@ async def text_to_voice(
             audio_value = f"data:{mime_type};base64,{base64.b64encode(raw).decode()}"
         references = [{"audio": audio_value, "text": reference_text}]
 
+    ws_root = _get_workspace_root()
+    save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "audio")
+
     async def _try(model: str, client: Any) -> dict:
-        voice_param = ""
-        if not references and voice:
-            voice_param = f"{model}:{voice}" if ":" not in voice else voice
         audio_bytes = await client.text_to_speech(
-            text, model=model, voice=voice_param, references=references,
+            text, model=model, voice=voice, references=references,
+            emotion=emotion, speed=speed or None,
         )
-        path = client.save_audio_temp(audio_bytes, suffix=".mp3")
+        path = client.save_audio_file(audio_bytes, save_dir, suffix=".mp3")
         return {"file_path": path, "size_bytes": len(audio_bytes)}
 
     return await _media_with_fallback("tts", "语音合成", _try)
 
 
 # ==================================================================
+# 音色管理（仅 MiniMax 协议支持）
+# ==================================================================
+
+@tool(name="clone_voice", group="media", timeout=300.0)
+async def clone_voice(
+    audio_path: str,
+    voice_id: str,
+    preview_text: str = "",
+) -> str:
+    """音色复刻：用一段音频克隆声音，之后可在 text_to_voice 的 voice 参数中使用该 voice_id。
+
+    Args:
+        audio_path: 克隆源音频（本地路径，mp3/m4a/wav，10 秒~5 分钟，≤20MB）
+        voice_id: 自定义音色 ID（8-256 字符，字母开头，可含数字/横线/下划线）
+        preview_text: 可选试听文本（克隆后用新音色朗读，≤1000 字）
+    """
+    if not voice_id.strip():
+        return tool_error("未提供 voice_id", cause=ErrorCause.PARAM, retryable=False)
+    try:
+        resolved = _resolve_workspace_path(audio_path)
+    except ValueError as e:
+        return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
+                          hint="请使用工作目录（workspace）内的路径")
+    if not os.path.exists(resolved):
+        return tool_error(f"音频文件不存在: {audio_path}", cause=ErrorCause.NOT_FOUND,
+                          retryable=False)
+
+    async def _try(model: str, client: Any) -> dict:
+        result = await client.voice_clone(
+            resolved, voice_id=voice_id.strip(), preview_text=preview_text, model=model,
+        )
+        return {"voice_id": voice_id.strip(), **result}
+
+    try:
+        return await _media_with_fallback("tts", "音色复刻", _try)
+    except NotImplementedError as e:
+        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
+                          hint="音色复刻仅 MiniMax 语音协议支持")
+
+
+@tool(name="design_voice", group="media", timeout=300.0)
+async def design_voice(prompt: str, preview_text: str, voice_id: str = "") -> str:
+    """音色设计：按文字描述生成新音色，返回 voice_id 与试听音频文件。
+
+    Args:
+        prompt: 音色描述（如"悬疑小说旁白，低沉磁性的男声"）
+        preview_text: 试听文本（≤500 字，用新音色朗读）
+        voice_id: 可选自定义音色 ID，留空自动生成
+    """
+    if not prompt.strip() or not preview_text.strip():
+        return tool_error("prompt 与 preview_text 均不能为空",
+                          cause=ErrorCause.PARAM, retryable=False)
+
+    ws_root = _get_workspace_root()
+    save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "audio")
+
+    async def _try(model: str, client: Any) -> dict:
+        result = await client.voice_design(
+            prompt=prompt, preview_text=preview_text, voice_id=voice_id.strip(),
+        )
+        out: dict = {"voice_id": result.get("voice_id", "")}
+        trial = result.get("trial_audio")
+        if trial:
+            out["preview_file_path"] = client.save_audio_file(trial, save_dir, suffix=".mp3")
+        return out
+
+    try:
+        return await _media_with_fallback("tts", "音色设计", _try)
+    except NotImplementedError as e:
+        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
+                          hint="音色设计仅 MiniMax 语音协议支持")
+
+
+@tool(name="list_voices", group="media")
+async def list_voices(voice_type: str = "all") -> str:
+    """查询可用音色列表（系统音色/复刻音色/设计音色）。
+
+    Args:
+        voice_type: system / voice_cloning / voice_generation / all
+    """
+
+    async def _try(model: str, client: Any) -> dict:
+        return await client.list_voices(voice_type.strip() or "all")
+
+    try:
+        return await _media_with_fallback("tts", "音色查询", _try)
+    except NotImplementedError as e:
+        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
+                          hint="音色管理仅 MiniMax 语音协议支持")
+
+
+@tool(name="delete_voice", group="media")
+async def delete_voice(voice_id: str, voice_type: str = "voice_cloning") -> str:
+    """删除复刻/设计的音色（不可恢复）。
+
+    Args:
+        voice_id: 要删除的音色 ID
+        voice_type: voice_cloning（复刻）或 voice_generation（设计）
+    """
+    if not voice_id.strip():
+        return tool_error("未提供 voice_id", cause=ErrorCause.PARAM, retryable=False)
+
+    async def _try(model: str, client: Any) -> dict:
+        return await client.delete_voice(voice_id.strip(), voice_type.strip() or "voice_cloning")
+
+    try:
+        return await _media_with_fallback("tts", "音色删除", _try)
+    except NotImplementedError as e:
+        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
+                          hint="音色管理仅 MiniMax 语音协议支持")
+
+
+# ==================================================================
+# 音乐生成（仅 MiniMax 协议支持）
+# ==================================================================
+
+@tool(name="generate_music", group="media", timeout=300.0)
+async def generate_music(
+    prompt: str = "",
+    lyrics: str = "",
+    is_instrumental: bool = False,
+) -> str:
+    """音乐/歌曲生成，结果保存到本地并返回文件路径。
+
+    三种模式：
+    - 歌曲：lyrics 必填（可用 generate_lyrics 先生成歌词），prompt 描述风格
+    - 纯音乐：is_instrumental=true，prompt 必填
+    - 翻唱：需先经 music_cover 流程（当前通过 prompt + 参考音频由平台处理）
+
+    Args:
+        prompt: 音乐风格/情绪描述（≤2000 字）
+        lyrics: 歌词（\\n 换行，支持 [Verse]/[Chorus] 等结构标签，≤3500 字）
+        is_instrumental: 是否纯音乐（默认否）
+    """
+    if not prompt.strip() and not lyrics.strip():
+        return tool_error("prompt 与 lyrics 至少提供一项",
+                          cause=ErrorCause.PARAM, retryable=False)
+
+    ws_root = _get_workspace_root()
+    save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "music")
+
+    async def _try(model: str, client: Any) -> dict:
+        result = await client.generate_music(
+            model=model, prompt=prompt, lyrics=lyrics,
+            is_instrumental=bool(is_instrumental),
+        )
+        path = client.save_audio_file(result.audio, save_dir, suffix=".mp3")
+        return {"file_path": path, "extra_info": result.extra_info}
+
+    try:
+        return await _media_with_fallback("music", "音乐生成", _try)
+    except NotImplementedError as e:
+        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
+                          hint="音乐生成仅 MiniMax 协议支持，请在模型配置中添加 music 类型的 MiniMax 模型")
+
+
+@tool(name="generate_lyrics", group="media")
+async def generate_lyrics(
+    prompt: str = "",
+    lyrics: str = "",
+    title: str = "",
+    mode: str = "write_full_song",
+) -> str:
+    """歌词生成：写整首歌词或修改已有歌词（结果可直接用于 generate_music）。
+
+    Args:
+        prompt: 歌曲主题/风格描述（≤2000 字）
+        lyrics: 已有歌词（mode=edit 时必填，≤3500 字）
+        title: 保留的歌名（可选）
+        mode: write_full_song（写整首）或 edit（修改已有歌词）
+    """
+
+    async def _try(model: str, client: Any) -> dict:
+        return await client.generate_lyrics(
+            mode=mode.strip() or "write_full_song",
+            prompt=prompt, lyrics=lyrics, title=title,
+        )
+
+    try:
+        return await _media_with_fallback("music", "歌词生成", _try)
+    except NotImplementedError as e:
+        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
+                          hint="歌词生成仅 MiniMax 协议支持，请在模型配置中添加 music 类型的 MiniMax 模型")
+
+
+# ==================================================================
 # 视频生成 — 带回退
 # ==================================================================
 
-@tool(name="generate_video", group="media")
-async def generate_video(prompt: str, image_url: str = "", style: str = "") -> str:
-    """根据文字描述生成视频（可选提供参考图片进行图生视频）。
+def _to_image_value(path_or_url: str) -> str:
+    """将图片输入规范化为 URL 或 data:base64；本地路径做沙箱校验并读文件转码。"""
+    if path_or_url.startswith(("http://", "https://", "data:image/", "mm_file://")):
+        return path_or_url
+    resolved = _resolve_workspace_path(path_or_url)
+    if not os.path.exists(resolved):
+        raise FileNotFoundError(f"图片不存在: {path_or_url}")
+    import base64
+    import mimetypes
+    mime_type = mimetypes.guess_type(os.path.basename(resolved))[0] or "image/png"
+    with open(resolved, "rb") as f:
+        raw = f.read()
+    return f"data:{mime_type};base64,{base64.b64encode(raw).decode()}"
+
+
+def _parse_subject_reference(value: str) -> List[str]:
+    """解析主体参考图片参数：支持单个路径/URL 或 JSON 字符串数组。"""
+    value = value.strip()
+    if not value:
+        return []
+    if value.startswith("["):
+        try:
+            items = json.loads(value)
+            if isinstance(items, list):
+                return [str(item) for item in items if str(item).strip()]
+        except json.JSONDecodeError:
+            pass
+    return [value]
+
+
+@tool(name="generate_video", group="media", timeout=620.0)
+async def generate_video(
+    prompt: str,
+    image_url: str = "",
+    first_frame_image: str = "",
+    last_frame_image: str = "",
+    subject_reference: str = "",
+    duration: int = 0,
+    resolution: str = "",
+    ratio: str = "",
+    style: str = "",
+) -> str:
+    """根据文字描述生成视频，结果下载到本地并返回文件路径。
+
+    支持文生视频、图生视频（首帧/尾帧）、主体参考视频，具体能力取决于
+    当前视频模型协议（MiniMax 支持全部参数，其他协议仅 prompt + 首帧图）。
 
     Args:
         prompt: 视频内容的文字描述
-        image_url: 可选的参考图片 URL（用于图生视频）
+        image_url: 首帧参考图（兼容参数，等同 first_frame_image），本地路径或 URL
+        first_frame_image: 首帧图片，本地路径或 URL（图生视频）
+        last_frame_image: 尾帧图片，本地路径或 URL（首尾帧视频，MiniMax）
+        subject_reference: 主体参考图片（MiniMax），单个路径/URL 或 JSON 数组字符串
+        duration: 视频时长（秒），0 表示由模型默认（MiniMax-H3: 4-15，Hailuo: 6 或 10）
+        resolution: 分辨率，如 "2K"（MiniMax-H3）或 "768P"/"1080P"（Hailuo）
+        ratio: 画面比例，如 "16:9"/"9:16"（仅 MiniMax-H3 文生视频有效）
         style: 可选风格预设名（见 config.json 的 style_presets）或自定义风格描述
     """
     prompt = _apply_style(prompt, style)
 
+    try:
+        first_frame = _to_image_value(first_frame_image or image_url) if (first_frame_image or image_url) else ""
+        last_frame = _to_image_value(last_frame_image) if last_frame_image else ""
+        subjects = [_to_image_value(item) for item in _parse_subject_reference(subject_reference)]
+    except ValueError as e:
+        return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
+                          hint="请使用工作目录（workspace）内的路径")
+    except FileNotFoundError as e:
+        return tool_error(str(e), cause=ErrorCause.NOT_FOUND, retryable=False)
+
+    ws_root = _get_workspace_root()
+    save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "video")
+
     async def _try(model: str, client: Any) -> dict:
-        video_url = await client.generate_video(prompt, model=model, image_url=image_url)
-        return {"video_url": video_url}
+        video_url = await client.generate_video(
+            prompt,
+            model=model,
+            first_frame_image=first_frame,
+            last_frame_image=last_frame,
+            subject_reference=subjects,
+            duration=duration or None,
+            resolution=resolution,
+            ratio=ratio,
+        )
+        if not video_url:
+            raise RuntimeError("未返回视频地址")
+        file_path = await client.download_and_save_video(video_url, save_dir)
+        return {"file_path": file_path, "video_url": video_url, "prompt": prompt}
 
     return await _media_with_fallback("video", "视频生成", _try)
+
+
+# ==================================================================
+# 视频任务管理（仅 MiniMax 协议支持）
+# ==================================================================
+
+@tool(name="query_video_task", group="media", timeout=300.0)
+async def query_video_task(task_id: str, download: bool = True) -> str:
+    """查询视频生成任务状态；任务成功时可下载视频到本地并返回文件路径。
+
+    Args:
+        task_id: 视频任务 ID（MiniMax 平台任务，由创建任务响应或任务列表获得）
+        download: 任务成功时是否下载视频到本地（默认是）
+    """
+    if not task_id.strip():
+        return tool_error("未提供 task_id", cause=ErrorCause.PARAM, retryable=False)
+    from entities._sdk import coerce_bool_arg
+    download = coerce_bool_arg(download, True)
+
+    ws_root = _get_workspace_root()
+    save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "video")
+
+    async def _try(model: str, client: Any) -> dict:
+        result = await client.query_video_task(task_id.strip(), model=model)
+        if result.get("status") == "succeeded" and download and result.get("video_url"):
+            result["file_path"] = await client.download_and_save_video(result["video_url"], save_dir)
+        return result
+
+    try:
+        return await _media_with_fallback("video", "视频任务查询", _try)
+    except NotImplementedError as e:
+        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
+                          hint="任务管理仅 MiniMax 视频协议支持")
+
+
+@tool(name="list_video_tasks", group="media")
+async def list_video_tasks(page_num: int = 1, page_size: int = 20, status: str = "") -> str:
+    """分页查询近 7 天的视频生成任务列表（仅 MiniMax-H3 协议支持）。
+
+    Args:
+        page_num: 页码，从 1 开始
+        page_size: 每页条数
+        status: 可选状态过滤：queued/running/succeeded/failed/cancelled/expired
+    """
+
+    async def _try(model: str, client: Any) -> dict:
+        return await client.list_video_tasks(
+            model=model,
+            page_num=max(1, int(page_num)),
+            page_size=max(1, int(page_size)),
+            status=status.strip(),
+        )
+
+    try:
+        return await _media_with_fallback("video", "视频任务列表", _try)
+    except NotImplementedError as e:
+        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
+                          hint="任务管理仅 MiniMax 视频协议支持")
+
+
+@tool(name="cancel_video_task", group="media")
+async def cancel_video_task(task_id: str) -> str:
+    """取消排队中的视频任务（不计费）或删除已终结的任务记录（仅 MiniMax-H3 协议支持）。
+
+    Args:
+        task_id: 视频任务 ID
+    """
+    if not task_id.strip():
+        return tool_error("未提供 task_id", cause=ErrorCause.PARAM, retryable=False)
+
+    async def _try(model: str, client: Any) -> dict:
+        return await client.cancel_or_delete_video_task(task_id.strip(), model=model)
+
+    try:
+        return await _media_with_fallback("video", "视频任务取消", _try)
+    except NotImplementedError as e:
+        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
+                          hint="任务管理仅 MiniMax 视频协议支持")
 
 
 # ==================================================================

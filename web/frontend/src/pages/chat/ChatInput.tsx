@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { FileText, Image as ImageIcon, Loader2, Music, Paperclip, Send, Video, X } from "lucide-react";
+import { FileText, Image as ImageIcon, Loader2, Music, Paperclip, Send, Square, Video, X } from "lucide-react";
 import { Button } from "@/components/ui";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -23,10 +23,12 @@ export function ChatInput() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const pendingFiles = useChatStore((s) => s.buckets[s.activeChatId]?.pendingFiles ?? []);
+  const sending = useChatStore((s) => s.buckets[s.activeChatId]?.sending ?? false);
   const addFiles = useChatStore((s) => s.addFiles);
   const removeFile = useChatStore((s) => s.removeFile);
   const attachWorkspaceFile = useChatStore((s) => s.attachWorkspaceFile);
   const send = useChatStore((s) => s.send);
+  const interrupt = useChatStore((s) => s.interrupt);
 
   const draftSeq = useWorkbenchStore((s) => s.draftSeq);
   const consumeDraft = useWorkbenchStore((s) => s.consumeDraft);
@@ -157,15 +159,27 @@ export function ChatInput() {
               <Paperclip size={18} />
             </Button>
           </div>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={handleSend}
-            disabled={!input.trim() && !pendingFiles.some((f) => f.path)}
-          >
-            <Send size={15} />
-            {t("send")}
-          </Button>
+          {sending ? (
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => void interrupt()}
+              title={t("stopTitle")}
+            >
+              <Square size={13} />
+              {t("stop")}
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleSend}
+              disabled={!input.trim() && !pendingFiles.some((f) => f.path)}
+            >
+              <Send size={15} />
+              {t("send")}
+            </Button>
+          )}
         </div>
       </div>
     </div>

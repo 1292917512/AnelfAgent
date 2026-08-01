@@ -1,0 +1,226 @@
+"""视频生成协议适配器（agent.llm.video_adapters）单元测试。"""
+
+from __future__ import annotations
+
+import pytest
+
+from agent.llm.video_adapters import (
+    MiniMaxV1Adapter,
+    MiniMaxV2Adapter,
+    OpenAIVideoAdapter,
+    VideoGenParams,
+    resolve_video_adapter,
+)
+
+
+def _params(**overrides: object) -> VideoGenParams:
+    base: dict = {"model": "m", "prompt": "p"}
+    base.update(overrides)
+    return VideoGenParams(**base)  # type: ignore[arg-type]
+
+
+class TestOpenAIVideoAdapter:
+    def test_create_request(self) -> None:
+        adapter = OpenAIVideoAdapter()
+        req = adapter.build_create_request(
+            "https://api.siliconflow.cn/v1",
+            _params(first_frame_image="https://x/a.png"),
+        )
+        assert req.url == "https://api.siliconflow.cn/v1/videos/generations"
+        assert req.method == "POST"
+        assert req.payload == {
+            "model": "m", "prompt": "p", "image_url": "https://x/a.png",
+        }
+
+    def test_extract_task_id_and_sync_url(self) -> None:
+        adapter = OpenAIVideoAdapter()
+        assert adapter.extract_task_id({"requestId": "r1"}) == "r1"
+        assert adapter.extract_task_id({"id": "r2"}) == "r2"
+        assert adapter.extract_task_id({"video": {"url": "https://x/v.mp4"}}) == ""
+        assert adapter.extract_sync_url({"video": {"url": "https://x/v.mp4"}}) == "https://x/v.mp4"
+
+    def test_parse_query_result(self) -> None:
+        adapter = OpenAIVideoAdapter()
+        ok = adapter.parse_query_result({"status": "succeeded", "video": {"url": "https://x/v.mp4"}})
+        assert ok.status == "succeeded"
+        assert ok.video_url == "https://x/v.mp4"
+        fail = adapter.parse_query_result({"status": "failed"})
+        assert fail.status == "failed"
+        running = adapter.parse_query_result({"status": "running"})
+        assert running.status == "processing"
+
+    def test_task_management_unsupported(self) -> None:
+        adapter = OpenAIVideoAdapter()
+        with pytest.raises(NotImplementedError):
+            adapter.build_list_request("https://x/v1", page_num=1, page_size=20)
+        with pytest.raises(NotImplementedError):
+            adapter.build_delete_request("https://x/v1", "t1")
+
+
+class TestMiniMaxV1Adapter:
+    def test_create_text_to_video(self) -> None:
+        adapter = MiniMaxV1Adapter()
+        req = adapter.build_create_request(
+            "https://api.minimaxi.com/v1",
+            _params(model="MiniMax-Hailuo-02", duration=6, resolution="768P"),
+        )
+        assert req.url == "https://api.minimaxi.com/v1/video_generation"
+        assert req.payload == {
+            "model": "MiniMax-Hailuo-02", "prompt": "p",
+            "duration": 6, "resolution": "768P",
+        }
+
+    def test_create_with_frames_and_subject(self) -> None:
+        adapter = MiniMaxV1Adapter()
+        req = adapter.build_create_request(
+            "https://api.minimaxi.com/v1",
+            _params(
+                first_frame_image="data:image/png;base64,AAA",
+                last_frame_image="https://x/b.png",
+                subject_reference=["https://x/c.png"],
+                prompt_optimizer=False,
+                aigc_watermark=True,
+            ),
+        )
+        payload = req.payload or {}
+        assert payload["first_frame_image"] == "data:image/png;base64,AAA"
+        assert payload["last_frame_image"] == "https://x/b.png"
+        assert payload["subject_reference"] == [
+            {"type": "character", "image": ["https://x/c.png"]}
+        ]
+        assert payload["prompt_optimizer"] is False
+        assert payload["aigc_watermark"] is True
+
+    def test_extract_task_id_checks_base_resp(self) -> None:
+        adapter = MiniMaxV1Adapter()
+        ok = {"task_id": "t1", "base_resp": {"status_code": 0, "status_msg": "success"}}
+        assert adapter.extract_task_id(ok) == "t1"
+        err = {"base_resp": {"status_code": 1008, "status_msg": "余额不足"}}
+        with pytest.raises(RuntimeError, match="1008"):
+            adapter.extract_task_id(err)
+
+    def test_parse_query_result(self) -> None:
+        adapter = MiniMaxV1Adapter()
+        processing = adapter.parse_query_result(
+            {"status": "Processing", "base_resp": {"status_code": 0}}
+        )
+        assert processing.status == "processing"
+        success = adapter.parse_query_result(
+            {"status": "Success", "file_id": 123, "base_resp": {"status_code": 0}}
+        )
+        assert success.status == "succeeded"
+        assert success.file_id == "123"
+        fail = adapter.parse_query_result(
+            {"status": "Fail", "base_resp": {"status_code": 1027, "status_msg": "敏感内容"}}
+        )
+        assert fail.status == "failed"
+        assert "敏感内容" in fail.error
+
+    def test_retrieve_request_and_download_url(self) -> None:
+        adapter = MiniMaxV1Adapter()
+        req = adapter.build_retrieve_request("https://api.minimaxi.com/v1", "123")
+        assert req.url == "https://api.minimaxi.com/v1/files/retrieve"
+        assert req.method == "GET"
+        assert req.params == {"file_id": "123"}
+        result = {
+            "file": {"file_id": 123, "download_url": "https://cdn/x.mp4"},
+            "base_resp": {"status_code": 0},
+        }
+        assert adapter.extract_download_url(result) == "https://cdn/x.mp4"
+
+
+class TestMiniMaxV2Adapter:
+    def test_create_text_to_video(self) -> None:
+        adapter = MiniMaxV2Adapter()
+        req = adapter.build_create_request(
+            "https://api.minimaxi.com/v1",
+            _params(model="MiniMax-H3", duration=8, ratio="9:16"),
+        )
+        assert req.url == "https://api.minimaxi.com/v2/video_generation"
+        payload = req.payload or {}
+        assert payload["model"] == "MiniMax-H3"
+        assert payload["content"] == [{"type": "text", "text": "p"}]
+        assert payload["resolution"] == "2K"
+        assert payload["duration"] == 8
+        assert payload["ratio"] == "9:16"
+
+    def test_create_image_to_video_forces_adaptive_ratio(self) -> None:
+        adapter = MiniMaxV2Adapter()
+        req = adapter.build_create_request(
+            "https://api.minimaxi.com",
+            _params(
+                model="MiniMax-H3",
+                first_frame_image="https://x/a.png",
+                last_frame_image="https://x/b.png",
+                subject_reference=["https://x/c.png"],
+                ratio="16:9",
+            ),
+        )
+        payload = req.payload or {}
+        assert payload["ratio"] == "adaptive"
+        roles = [item.get("role") for item in payload["content"][1:]]
+        assert roles == ["first_frame", "last_frame", "reference_image"]
+
+    def test_parse_query_result(self) -> None:
+        adapter = MiniMaxV2Adapter()
+        queued = adapter.parse_query_result({"task": {"status": "queued"}})
+        assert queued.status == "processing"
+        ok = adapter.parse_query_result(
+            {"task": {"status": "succeeded", "content": {"url": "https://cdn/x.mp4"}}}
+        )
+        assert ok.status == "succeeded"
+        assert ok.video_url == "https://cdn/x.mp4"
+        fail = adapter.parse_query_result(
+            {"task": {"status": "failed", "error": {"code": "1026", "message": "敏感内容"}}}
+        )
+        assert fail.status == "failed"
+        assert "敏感内容" in fail.error
+
+    def test_error_envelope_raises(self) -> None:
+        adapter = MiniMaxV2Adapter()
+        err = {"type": "error", "error": {"type": "authorized_error", "message": "invalid key"}}
+        with pytest.raises(RuntimeError, match="authorized_error"):
+            adapter.extract_task_id(err)
+
+    def test_list_request_and_result(self) -> None:
+        adapter = MiniMaxV2Adapter()
+        req = adapter.build_list_request(
+            "https://api.minimaxi.com/v1", page_num=2, page_size=10, status="succeeded",
+        )
+        assert req.url == "https://api.minimaxi.com/v2/query/video_generation"
+        assert req.method == "GET"
+        assert req.params == {"page_num": 2, "page_size": 10, "filter.status": "succeeded"}
+        parsed = adapter.parse_list_result({"items": [{"id": "t1"}], "total": 1})
+        assert parsed["total"] == 1
+        assert parsed["items"][0]["id"] == "t1"
+
+    def test_delete_request_and_result(self) -> None:
+        adapter = MiniMaxV2Adapter()
+        req = adapter.build_delete_request("https://api.minimaxi.com", "t1")
+        assert req.url == "https://api.minimaxi.com/v2/video_generation/t1"
+        assert req.method == "DELETE"
+        parsed = adapter.parse_delete_result(
+            {"task_id": "t1", "action": "cancel", "status": "cancelled"}
+        )
+        assert parsed == {"task_id": "t1", "action": "cancel", "status": "cancelled"}
+
+
+class TestResolveVideoAdapter:
+    def test_explicit_protocol(self) -> None:
+        assert resolve_video_adapter("https://x/v1", "minimax_v2").name == "minimax_v2"
+        assert resolve_video_adapter("https://x/v1", "openai").name == "openai"
+        with pytest.raises(ValueError, match="未知的视频协议"):
+            resolve_video_adapter("https://x/v1", "nope")
+
+    def test_minimax_protocol_split_by_model(self) -> None:
+        assert resolve_video_adapter("https://x/v1", "minimax", "MiniMax-H3").name == "minimax_v2"
+        assert resolve_video_adapter("https://x/v1", "minimax", "MiniMax-Hailuo-02").name == "minimax"
+
+    def test_host_rule_split_by_model(self) -> None:
+        h3 = resolve_video_adapter("https://api.minimaxi.com/v1", model="MiniMax-H3")
+        assert h3.name == "minimax_v2"
+        hailuo = resolve_video_adapter("https://api.minimaxi.com/v1", model="T2V-01")
+        assert hailuo.name == "minimax"
+
+    def test_default_fallback(self) -> None:
+        assert resolve_video_adapter("https://api.siliconflow.cn/v1").name == "openai"

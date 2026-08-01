@@ -42,5 +42,13 @@
     "close": "关闭",
     "confirm": "确认",
     "unread": "{{count}} 条新消息"
-  }
+  },
+  "stop": "停止",
+  "stopTitle": "停止当前生成（协作式中断，含运行中的子代理）",
+  "toolSummary": "已执行 {{count}} 项操作",
+  "toolCalls": "{{count}} 次工具调用",
+  "toolCallsFailed": "含失败",
+  "expand": "展开全文",
+  "collapse": "收起",
+  "loadEarlier": "加载更早消息"
 }

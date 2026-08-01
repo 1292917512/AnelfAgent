@@ -262,13 +262,29 @@ async def send_message(req: SendMessageRequest) -> SendMessageResponse:
 
 
 def _clean_message(msg: Dict[str, Any]) -> Dict[str, Any]:
-    """清理消息中的内部标签，返回干净的前端展示数据。"""
+    """清理消息中的内部标签，返回干净的前端展示数据。
+
+    清洗顺序：元数据标签（time/uid 等）与功能性标签（media_file 等）整段删除
+    ——保留值只会拼出乱码前缀；其余 [k:v] 标签保留值（兼容旧语义）。
+
+    kind 标记供前端结构化渲染：
+    - tool_summary：[已执行操作摘要] 工具执行记录 → 折叠工具卡片
+    - system_notice：[系统]/[执行步骤] 等系统元消息 → 居中细条
+    """
+    from core.tags import strip_functional_tags, strip_message_meta_tags
+
     content = str(msg.get("content", ""))
+    content = strip_message_meta_tags(content)
+    content = strip_functional_tags(content)
     content = _TAG_PREFIX_RE.sub(r"\1", content).strip()
     result: Dict[str, Any] = {
         "role": msg.get("role", ""),
         "content": content,
     }
+    if content.startswith("[已执行操作摘要]"):
+        result["kind"] = "tool_summary"
+    elif content.startswith(("[系统]", "[执行步骤]")):
+        result["kind"] = "system_notice"
     if "id" in msg:
         result["id"] = msg["id"]
     ts_ns = msg.get("ts_ns")
@@ -284,10 +300,11 @@ async def get_history(
     scope_id: str = Query("webui:web_user", description="基础 scope（不含 adapter 前缀时自动补 webui:）"),
     chat_id: Optional[str] = Query(None, description="多会话 chat_id，拼接为 scope_id#{chat_id}"),
     limit: int = Query(50, ge=1, le=500),
+    before_id: Optional[int] = Query(None, description="分页游标：仅取 id 早于该值的消息"),
 ) -> List[Dict[str, Any]]:
     base_scope = _normalize_web_scope_id(scope_id)
     effective_scope = f"{base_scope}#{chat_id}" if chat_id else base_scope
-    raw = await _chat_svc.load_history(scope_id=effective_scope, limit=limit)
+    raw = await _chat_svc.load_history(scope_id=effective_scope, limit=limit, before_id=before_id)
     return [_clean_message(m) for m in raw]
 
 
@@ -324,9 +341,8 @@ async def list_chats(
         title = "新会话"
         raw_content = s.get("last_user_content")
         if raw_content is not None:
-            # 最近一条用户消息去除 [tag:xxx] 前缀作为标题
-            content = _TAG_PREFIX_RE.sub(r"\1", str(raw_content)).strip()
-            title = content[:40] or "(空消息)"
+            # 最近一条用户消息作为标题（与历史清洗同规则：元数据/功能标签整段剥离）
+            title = _clean_message({"content": str(raw_content)})["content"][:40] or "(空消息)"
         chats.append({
             "chat_id": chat_id,
             "scope_id": sid,
@@ -362,6 +378,69 @@ async def cancel_plan(req: CancelPlanRequest) -> Dict[str, Any]:
     ok = await plan_tracker.cancel_plan(scope, req.plan_id, reason="用户取消")
     if not ok:
         return {"status": "error", "error": "plan 不存在或已结束"}
+    return {"status": "ok"}
+
+
+def _scope_for_chat(chat_id: str) -> str:
+    """chat_id → entity scope（与 cancel-plan 同一构造规则）。"""
+    from agent.planning.tracker import make_scope
+    return make_scope("webui:web_user", "" if chat_id == "default" else chat_id)
+
+
+class InterruptRequest(BaseModel):
+    chat_id: str = "default"
+
+
+@router.post("/interrupt")
+async def interrupt_chat(req: InterruptRequest) -> Dict[str, Any]:
+    """前端"停止生成"按钮：协作式中断当前回复 + 取消该会话运行中的子代理。
+
+    中断是协作式的（下一轮检查点安全收束），子代理取消会即时终止其执行任务，
+    delegate_task 工具结果携带 user_cancel 归因提示 AI 不要自动重试。
+    """
+    from services._runtime import get_runtime
+
+    rt = get_runtime()
+    if rt is None:
+        return {"status": "error", "error": "runtime 未就绪"}
+    scope = _scope_for_chat(req.chat_id)
+    interrupted = rt.mind.interrupt(scope, reason="用户点击停止生成")
+    cancelled = 0
+    dm = getattr(rt.mind, "delegation_manager", None)
+    if dm is not None:
+        cancelled = dm.cancel_scope(scope)
+    if not interrupted and cancelled == 0:
+        return {"status": "idle"}
+    return {"status": "ok", "interrupted": interrupted, "cancelled_delegations": cancelled}
+
+
+@router.get("/delegations")
+async def list_delegations(
+    chat_id: str = Query("default"),
+) -> Dict[str, Any]:
+    """列出该会话运行中的子代理委托（前端刷新后恢复 DelegationCard 进度）。"""
+    from services._runtime import get_runtime
+
+    rt = get_runtime()
+    if rt is None:
+        return {"running": []}
+    dm = getattr(rt.mind, "delegation_manager", None)
+    running = dm.running_snapshot(_scope_for_chat(chat_id)) if dm is not None else []
+    return {"running": running}
+
+
+@router.post("/delegations/{delegation_id}/cancel")
+async def cancel_delegation(delegation_id: str) -> Dict[str, Any]:
+    """取消运行中的子代理委托（DelegationCard 取消按钮）。"""
+    from services._runtime import get_runtime
+
+    rt = get_runtime()
+    if rt is None:
+        return {"status": "error", "error": "runtime 未就绪"}
+    dm = getattr(rt.mind, "delegation_manager", None)
+    ok = dm.cancel(delegation_id) if dm is not None else False
+    if not ok:
+        return {"status": "error", "error": "委托不存在或已结束"}
     return {"status": "ok"}
 
 

@@ -1,13 +1,17 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { usePlanStore } from "@/stores/plan-store";
 import { useDelegationStore } from "@/stores/delegation-store";
-import { Markdown } from "./render/Markdown";
 import { MediaBubble } from "./render/MediaBubble";
 import { PlanCard } from "./render/PlanCard";
 import { DelegationCard } from "./render/DelegationCard";
+import { SystemNotice } from "./render/SystemNotice";
+import { ToolSummaryCard } from "./render/ToolSummaryCard";
+import { ToolCallsCard } from "./render/ToolCallsCard";
+import { CollapsibleMarkdown } from "./render/CollapsibleMarkdown";
 import { ActivityRow } from "./ActivityRow";
 import { StreamingArea } from "./StreamingArea";
 import type { ChatMessage, DelegationNode, PlanRecord } from "@/lib/types";
@@ -20,26 +24,39 @@ type TimelineEntry =
 /** 单条消息气泡（memo：流式 delta 更新时历史消息行不重渲染） */
 const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
   const { t } = useTranslation("chat");
+
+  // 结构化消息：工具执行摘要卡片 / 系统提示细条（居中，不占气泡位）
+  if (msg.kind === "tool_summary") {
+    return <ToolSummaryCard content={msg.content} />;
+  }
+  if (msg.role === "system" || msg.kind === "system_notice") {
+    return <SystemNotice content={msg.content} tone={msg.tone} />;
+  }
+
+  const isUser = msg.role === "user";
   return (
-    <div className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
-      <div className={cn("max-w-[85%] sm:max-w-[80%]", msg.role === "user" ? "text-right" : "text-left")}>
+    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+      <div className={cn("max-w-[85%] sm:max-w-[80%]", isUser ? "text-right" : "text-left")}>
+        {/* 本轮工具调用记录（固化卡片，默认折叠） */}
+        {!isUser && msg.toolCalls && msg.toolCalls.length > 0 && (
+          <ToolCallsCard tools={msg.toolCalls} />
+        )}
         {msg.media_type && <MediaBubble msg={msg} />}
         {msg.content && (
           <div
             className={cn(
               "rounded-lg px-4 py-2.5 text-sm leading-relaxed inline-block text-left",
-              msg.role === "user"
-                ? "bg-accent-subtle"
-                : msg.role === "system"
-                  ? "bg-danger-subtle text-danger"
-                  : "bg-secondary",
+              isUser ? "bg-accent-subtle" : "bg-secondary",
               msg.queued && "border border-dashed border-muted-foreground/50 opacity-70",
             )}
           >
             {msg.queued && (
               <div className="text-[10px] text-muted mb-1">{t("queued")}</div>
             )}
-            <Markdown content={msg.content} />
+            <CollapsibleMarkdown
+              content={msg.content}
+              fadeClass={isUser ? "from-accent-subtle" : "from-secondary"}
+            />
           </div>
         )}
         {msg.timestamp && (
@@ -58,8 +75,15 @@ export function MessageList() {
   const messages = useChatStore((s) => s.buckets[s.activeChatId]?.messages);
   const sending = useChatStore((s) => s.buckets[s.activeChatId]?.sending ?? false);
   const historyLoaded = useChatStore((s) => s.buckets[s.activeChatId]?.historyLoaded ?? false);
+  const hasMore = useChatStore((s) => s.buckets[s.activeChatId]?.hasMore ?? false);
+  const loadingEarlier = useChatStore((s) => s.buckets[s.activeChatId]?.loadingEarlier ?? false);
+  const loadEarlier = useChatStore((s) => s.loadEarlier);
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialLoad = useRef(true);
+  // 滚动锚定：prepend 更早历史时保持视口位置不跳动
+  const prevFirstKey = useRef<string | null>(null);
+  const prevLastKey = useRef<string | null>(null);
+  const prevScrollHeight = useRef(0);
 
   const chatPlans = usePlanStore((s) => s.plans[activeChatId]);
   const chatDelegations = useDelegationStore((s) => s.delegations[activeChatId]);
@@ -100,22 +124,52 @@ export function MessageList() {
   }, [messages, chatPlans, chatDelegations]);
 
   useEffect(() => {
-    if (!historyLoaded) return;
+    const el = scrollRef.current;
+    if (!el || !historyLoaded) return;
+    const list = messages ?? [];
+    const first = list[0];
+    const last = list[list.length - 1];
+    const firstKey = first ? String(first.id ?? first.cid ?? "") : null;
+    const lastKey = last ? String(last.id ?? last.cid ?? "") : null;
+    // prepend 检测：首条变化且末条不变 → "加载更早"完成，恢复滚动锚点
+    const prepended =
+      prevFirstKey.current !== null &&
+      firstKey !== prevFirstKey.current &&
+      lastKey === prevLastKey.current;
     if (initialLoad.current) {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+      el.scrollTo({ top: el.scrollHeight });
       initialLoad.current = false;
-      return;
+    } else if (prepended) {
+      el.scrollTo({ top: el.scrollHeight - prevScrollHeight.current + el.scrollTop });
+    } else {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     }
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    prevFirstKey.current = firstKey;
+    prevLastKey.current = lastKey;
+    prevScrollHeight.current = el.scrollHeight;
   }, [messages, chatPlans, chatDelegations, historyLoaded]);
 
-  // 切换会话时重置滚动初始位
+  // 切换会话时重置滚动初始位与锚点
   useEffect(() => {
     initialLoad.current = true;
+    prevFirstKey.current = null;
+    prevLastKey.current = null;
   }, [activeChatId]);
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-3 pr-1 mb-3 min-h-0">
+      {hasMore && (
+        <div className="flex justify-center">
+          <button
+            onClick={() => void loadEarlier(activeChatId)}
+            disabled={loadingEarlier}
+            className="inline-flex items-center gap-1.5 text-[11px] text-muted hover:text-foreground transition-colors disabled:opacity-50 rounded-full bg-muted/50 px-3 py-1"
+          >
+            {loadingEarlier && <Loader2 size={11} className="animate-spin" />}
+            {t("loadEarlier")}
+          </button>
+        </div>
+      )}
       {timeline.length === 0 && (
         <div className="flex items-center justify-center h-full text-muted text-sm">
           {t("startConversation")}

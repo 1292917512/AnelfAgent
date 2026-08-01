@@ -475,15 +475,26 @@ class SqliteBackend:
         ]
 
     async def fetch_conversation_with_id(
-        self, *, scope_type: str, scope_id: str, limit: int = 100
+        self, *, scope_type: str, scope_id: str, limit: int = 100,
+        before_id: int | None = None,
     ) -> list[dict]:
-        """获取会话记录（含 row id，用于定向删除）。"""
+        """获取会话记录（含 row id，用于定向删除与向前翻页）。
+
+        before_id：分页游标，仅取 id 早于该值的消息（"加载更早"场景）。
+        """
         db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT id, role, content, ts_ns FROM conversation_messages "
-            "WHERE scope_type=? AND scope_id=? ORDER BY ts_ns DESC LIMIT ?",
-            (scope_type, scope_id, int(limit)),
-        )
+        if before_id is not None:
+            cursor = await db.execute(
+                "SELECT id, role, content, ts_ns FROM conversation_messages "
+                "WHERE scope_type=? AND scope_id=? AND id<? ORDER BY ts_ns DESC LIMIT ?",
+                (scope_type, scope_id, int(before_id), int(limit)),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT id, role, content, ts_ns FROM conversation_messages "
+                "WHERE scope_type=? AND scope_id=? ORDER BY ts_ns DESC LIMIT ?",
+                (scope_type, scope_id, int(limit)),
+            )
         rows = await cursor.fetchall()
         rows = list(reversed(rows))
         return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]

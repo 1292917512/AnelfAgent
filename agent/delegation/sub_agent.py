@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
 # 当前委托深度（主 Agent 为 0，每委托一层 +1）
 _delegate_depth: ContextVar[int] = ContextVar("delegate_depth", default=0)
+# 当前委托 ID（主 Agent 为空；子代理执行期间绑定，供进度事件归属）
+_delegate_id: ContextVar[str] = ContextVar("delegate_id", default="")
 
 _ROLE_LEAF = "leaf"
 _ROLE_ORCHESTRATOR = "orchestrator"
@@ -40,6 +42,7 @@ class SubAgentResult:
     error: str = ""
     role: str = _ROLE_LEAF
     task_index: int = 0
+    cancelled: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -49,12 +52,28 @@ class SubAgentResult:
             "error": self.error,
             "role": self.role,
             "task_index": self.task_index,
+            "cancelled": self.cancelled,
         }
 
 
 def current_depth() -> int:
     """当前委托深度（主 Agent 为 0）。"""
     return _delegate_depth.get()
+
+
+def current_delegation_id() -> str:
+    """当前委托 ID（主 Agent 为空字符串）。"""
+    return _delegate_id.get()
+
+
+def bind_delegation_id(delegation_id: str) -> Token:
+    """绑定当前委托 ID（DelegationManager 在启动子代理前调用）。"""
+    return _delegate_id.set(delegation_id)
+
+
+def reset_delegation_id(token: Token) -> None:
+    """恢复上一个委托 ID 绑定。"""
+    _delegate_id.reset(token)
 
 
 def normalize_role(role: Optional[str]) -> str:

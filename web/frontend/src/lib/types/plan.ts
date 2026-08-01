@@ -41,4 +41,20 @@ export interface DelegationNode {
   resolved_at?: number;
   output?: string;
   error?: string;
+  /** 实时进度：当前思考轮次（delegation_progress 事件） */
+  iteration?: number;
+  /** 实时进度：最近使用的工具名 */
+  current_tool?: string;
+  /** 用户已点击取消、等待后端 resolved 确认 */
+  cancelling?: boolean;
+}
+
+/** GET /chat/delegations 返回的运行中委托快照（刷新后恢复卡片用） */
+export interface RunningDelegation {
+  delegation_id: string;
+  goal: string;
+  role: "leaf" | "orchestrator";
+  task_index: number;
+  background: boolean;
+  elapsed_seconds: number;
 }

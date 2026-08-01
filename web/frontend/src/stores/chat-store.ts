@@ -40,6 +40,9 @@ import {
 // ── SSE 单例 ──────────────────────────────────────────────────
 let _eventSource: EventSource | null = null;
 
+/** 历史分页大小（首次加载与"加载更早"共用） */
+const HISTORY_PAGE_SIZE = 100;
+
 interface ChatState {
   buckets: Record<string, ChatBucket>;
   activeChatId: string;
@@ -56,6 +59,7 @@ interface ChatState {
 
   loadChats: () => Promise<void>;
   loadHistory: (chatId?: string) => Promise<void>;
+  loadEarlier: (chatId?: string) => Promise<void>;
   startSSE: () => void;
   stopSSE: () => void;
   clearMessages: () => void;
@@ -63,6 +67,7 @@ interface ChatState {
   attachWorkspaceFile: (path: string, name: string) => void;
   removeFile: (idx: number) => void;
   send: (text: string, userName: string) => Promise<boolean>;
+  interrupt: () => Promise<void>;
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -212,19 +217,76 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (bucket?.historyLoaded) return;
       try {
         const scopeId = "web_user";
-        const r = await chatApi.history(scopeId, 100, targetChatId === DEFAULT_CHAT_ID ? undefined : targetChatId);
+        const r = await chatApi.history(scopeId, HISTORY_PAGE_SIZE, targetChatId === DEFAULT_CHAT_ID ? undefined : targetChatId);
         if (r.data?.length) {
+          const list = r.data as ChatHistoryMessage[];
           updateBucket(targetChatId, () => ({
-            messages: (r.data as ChatHistoryMessage[]).map((m) => ({
+            messages: list.map((m) => ({
               role: m.role,
               content: m.content,
               timestamp: m.timestamp,
               id: m.id,
+              kind: m.kind,
             })),
+            earliestId: list[0]?.id,
+            hasMore: list.length >= HISTORY_PAGE_SIZE,
           }));
         }
       } catch { /* ignore */ }
       updateBucket(targetChatId, () => ({ historyLoaded: true }));
+      // 恢复运行中的子代理卡片（刷新页面后 SSE 不会重发 started 事件）
+      try {
+        const r = await chatApi.delegations(
+          targetChatId === DEFAULT_CHAT_ID ? undefined : targetChatId,
+        );
+        if (r.data?.running?.length) {
+          useDelegationStore.getState().rehydrate(targetChatId, r.data.running);
+        }
+      } catch { /* ignore */ }
+    },
+
+    loadEarlier: async (chatId) => {
+      const targetChatId = chatId ?? get().activeChatId;
+      const bucket = get().buckets[targetChatId];
+      if (!bucket || !bucket.hasMore || bucket.loadingEarlier || !bucket.earliestId) return;
+      updateBucket(targetChatId, () => ({ loadingEarlier: true }));
+      try {
+        const r = await chatApi.history(
+          "web_user", HISTORY_PAGE_SIZE,
+          targetChatId === DEFAULT_CHAT_ID ? undefined : targetChatId,
+          bucket.earliestId,
+        );
+        const list = (r.data ?? []) as ChatHistoryMessage[];
+        updateBucket(targetChatId, (b) => ({
+          messages: [
+            ...list.map((m) => ({
+              role: m.role,
+              content: m.content,
+              timestamp: m.timestamp,
+              id: m.id,
+              kind: m.kind,
+            })),
+            ...b.messages,
+          ],
+          earliestId: list[0]?.id ?? b.earliestId,
+          hasMore: list.length >= HISTORY_PAGE_SIZE,
+          loadingEarlier: false,
+        }));
+      } catch {
+        updateBucket(targetChatId, () => ({ loadingEarlier: false }));
+      }
+    },
+
+    interrupt: async () => {
+      const chatId = get().activeChatId;
+      try {
+        const r = await chatApi.interrupt(chatId === DEFAULT_CHAT_ID ? undefined : chatId);
+        // 无进行中的回复/子代理：本地直接复位发送态，避免空等 turn_end
+        if (r.data?.status === "idle") {
+          clearSendWatchdog();
+          updateBucket(chatId, () => ({ sending: false, sendingSince: null, streaming: null }));
+        }
+      } catch { /* 中断失败时由看门狗兜底复位 */ }
     },
 
     startSSE: () => {
@@ -337,7 +399,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           streaming: null,
           messages: [
             ...cur.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
-            { role: "system", content: i18n.t("sendTimeout", { ns: "chat" }), cid: nextCid() },
+            { role: "system", kind: "system_notice", tone: "warn", content: i18n.t("sendTimeout", { ns: "chat" }), cid: nextCid() },
           ],
         }));
       });
@@ -358,7 +420,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           sendingSince: null,
           messages: [
             ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
-            { role: "system", content: i18n.t("sendFailed", { ns: "chat" }), cid: nextCid() },
+            { role: "system", kind: "system_notice", tone: "warn", content: i18n.t("sendFailed", { ns: "chat" }), cid: nextCid() },
           ],
         }));
         return false;

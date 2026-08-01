@@ -29,7 +29,14 @@
     "failed": "Failed",
     "running": "Running",
     "role": "Role",
-    "depth": "Depth"
+    "depth": "Depth",
+    "cancel": "Cancel",
+    "cancelling": "Cancelling…",
+    "cancelled": "Cancelled",
+    "progress": {
+      "round": "Thinking round {{n}}",
+      "usingTool": "Using tool: {{tool}}"
+    }
   },
   "stepFallback": "Step {{index}}",
   "stepProgress": "{{icon}} Plan step {{index}}/{{total}}: {{step}}{{note}}",

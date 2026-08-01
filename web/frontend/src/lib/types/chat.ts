@@ -22,6 +22,12 @@ export interface ChatMessage {
   media_type?: string;
   url?: string;
   caption?: string;
+  /** 结构化消息种类：tool_summary=工具执行摘要卡片 / system_notice=系统提示细条 */
+  kind?: "tool_summary" | "system_notice";
+  /** 警示色调（发送超时/失败等 system_notice 用） */
+  tone?: "warn";
+  /** 本轮工具调用记录（reply 到达时从流式区固化，渲染为消息内折叠卡片） */
+  toolCalls?: ChatStreamingTool[];
 }
 
 export interface PendingFile {
@@ -65,6 +71,12 @@ export interface ChatBucket {
   historyLoaded: boolean;
   /** 非激活会话收到新消息时的未读计数（切换会话时清零） */
   unread: number;
+  /** 已加载历史中最早一条的 DB id（"加载更早"分页游标） */
+  earliestId?: number;
+  /** 是否可能还有更早历史（上次分页拉满 limit 时置真） */
+  hasMore?: boolean;
+  /** "加载更早"请求进行中 */
+  loadingEarlier?: boolean;
 }
 
 export interface ContextUsage {
@@ -198,11 +210,22 @@ export interface SseDelegationStartedEvent extends SseEventBase {
   ts?: number;
 }
 
+export interface SseDelegationProgressEvent extends SseEventBase {
+  delegation_id: string;
+  /** round=新思考轮次 / tool_start=工具开始 / tool_end=工具结束 */
+  kind?: "round" | "tool_start" | "tool_end";
+  iteration?: number;
+  tool?: string;
+  success?: boolean;
+  ts?: number;
+}
+
 export interface SseDelegationResolvedEvent extends SseEventBase {
   delegation_id: string;
   success?: boolean;
   output?: string;
   error?: string;
+  cancelled?: boolean;
 }
 
 /** SSE 事件名 → data 类型的判别映射（事件名为判别字段） */
@@ -221,6 +244,7 @@ export interface ChatSseEventMap {
   plan_status_changed: SsePlanStatusChangedEvent;
   plan_cancelled: SsePlanCancelledEvent;
   delegation_started: SseDelegationStartedEvent;
+  delegation_progress: SseDelegationProgressEvent;
   delegation_resolved: SseDelegationResolvedEvent;
 }
 
@@ -235,4 +259,5 @@ export interface ChatHistoryMessage {
   role: string;
   content: string;
   timestamp?: string;
+  kind?: "tool_summary" | "system_notice";
 }

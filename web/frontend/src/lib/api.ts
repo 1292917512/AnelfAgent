@@ -65,6 +65,7 @@ import type {
   PythonPackage,
   RemoteModelInfo,
   RestartBuildState,
+  RunningDelegation,
   ShareLink,
   ShareLinkListResult,
   ShareStats,
@@ -112,6 +113,7 @@ export type {
   ReasoningEffort,
   RemoteModelInfo,
   RestartBuildState,
+  RunningDelegation,
   ShareLink,
   ShareLinkListResult,
   ShareStats,
@@ -196,13 +198,29 @@ export const chatApi = {
       headers: { "Content-Type": "multipart/form-data" },
     });
   },
-  history: (scopeId = "web_user", limit = 50, chatId?: string) =>
-    api.get(`/chat/history`, { params: { scope_id: scopeId, limit, ...(chatId ? { chat_id: chatId } : {}) } }),
+  history: (scopeId = "web_user", limit = 50, chatId?: string, beforeId?: number) =>
+    api.get(`/chat/history`, {
+      params: {
+        scope_id: scopeId, limit,
+        ...(chatId ? { chat_id: chatId } : {}),
+        ...(beforeId ? { before_id: beforeId } : {}),
+      },
+    }),
   chats: (userId = "web_user") =>
     api.get<{ chats: Array<{ chat_id: string; scope_id: string; title: string; last_ts: number; message_count: number }> }>(
       "/chat/chats", { params: { user_id: userId } },
     ),
   botName: () => api.get<{ name: string }>("/chat/bot-name"),
+  interrupt: (chatId?: string) =>
+    api.post<{ status: string; interrupted?: boolean; cancelled_delegations?: number }>(
+      "/chat/interrupt", { chat_id: chatId ?? "default" },
+    ),
+  delegations: (chatId?: string) =>
+    api.get<{ running: RunningDelegation[] }>(
+      "/chat/delegations", { params: { chat_id: chatId ?? "default" } },
+    ),
+  cancelDelegation: (delegationId: string) =>
+    api.post<{ status: string; error?: string }>(`/chat/delegations/${delegationId}/cancel`),
 };
 
 // Status

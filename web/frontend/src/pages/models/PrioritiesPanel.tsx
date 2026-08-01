@@ -27,7 +27,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { ReasoningEffortOptions } from "@/components/common/ReasoningEffortSelect";
 
-const TYPE_ORDER = ["chat", "vision", "embedding", "asr", "tts", "video", "rerank", "image_gen", "image_edit"];
+const TYPE_ORDER = ["chat", "vision", "embedding", "asr", "tts", "video", "music", "rerank", "image_gen", "image_edit"];
 
 type PriorityItem = ModelPriorityItem;
 

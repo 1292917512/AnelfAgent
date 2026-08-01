@@ -79,6 +79,23 @@ def strip_message_meta_tags(text: str) -> str:
     return _meta_tag_pattern.sub("", text)
 
 
+# 功能性标签（媒体/交互/生成请求）：富媒体频道由独立结构携带，纯文本界面整段剥离
+_FUNC_TAG_NAMES = (
+    "media_file", "media_type", "media_path", "media_file_id",
+    "json_card", "tts", "video_gen", "at_uid", "poke", "reaction", "forward",
+)
+_func_tag_pattern = re.compile(r"\[(?:" + "|".join(_FUNC_TAG_NAMES) + r"):[^\]]*\]")
+
+
+def strip_functional_tags(text: str) -> str:
+    """移除文本中的功能性标签（整段删除，不保留值）。
+
+    用于 webui 等纯文本界面的出站/历史清洗：媒体内容由独立结构
+    （media 帧 / 附件字段）携带，正文中的标签语法不渲染。
+    """
+    return _func_tag_pattern.sub("", text)
+
+
 DEFAULT_TIME_FORMAT = "%Y年%m月%d日%H时%M分%S秒"
 
 

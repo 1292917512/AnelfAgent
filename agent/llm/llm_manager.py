@@ -387,7 +387,7 @@ class LLMManager(BaseEntity):
         未指定时按 asr → tts → video → rerank 顺序取首个可用。
         """
         from agent.llm.media_client import MediaClient
-        search_types = [model_type] if model_type else ["asr", "tts", "video", "rerank"]
+        search_types = [model_type] if model_type else ["asr", "tts", "video", "music", "rerank"]
         for mt in search_types:
             for mid in self._type_priorities.get(mt, []):
                 client = self._clients.get(mid)
@@ -398,7 +398,7 @@ class LLMManager(BaseEntity):
                     api_key=client.config.api_key,
                     timeout=client.config.timeout,
                     proxy_url=client.config.effective_proxy,
-                    image_protocol=client.config.media_protocol,
+                    media_protocol=client.config.media_protocol,
                 )
         return None
 
@@ -414,6 +414,9 @@ class LLMManager(BaseEntity):
 
     def get_video_model(self) -> Optional[str]:
         return self._find_model_by_type("video")
+
+    def get_music_model(self) -> Optional[str]:
+        return self._find_model_by_type("music")
 
     def get_rerank_model(self) -> Optional[str]:
         return self._find_model_by_type("rerank")
@@ -444,7 +447,7 @@ class LLMManager(BaseEntity):
                 api_key=client.config.api_key,
                 timeout=client.config.timeout,
                 proxy_url=client.config.effective_proxy,
-                image_protocol=client.config.media_protocol,
+                media_protocol=client.config.media_protocol,
             )
             result.append((client.config.model, mc))
         return result

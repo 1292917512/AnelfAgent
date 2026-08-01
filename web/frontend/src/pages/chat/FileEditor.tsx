@@ -204,17 +204,13 @@ export function FileEditor() {
     />
   );
 
-  const splitWide = (kind === "markdown" || kind === "html") && viewMode === "split";
-
   const body = (
     <div
       className={cn(
         "flex flex-col h-full bg-panel border-border",
         isMobile
           ? "w-[90vw] max-w-lg border-l shadow-xl shrink-0"
-          : filePanelExpanded
-            ? "flex-1 min-w-0"
-            : cn("shrink-0 border-r", splitWide ? "w-[40rem] xl:w-[48rem]" : "w-[24rem] xl:w-[28rem]"),
+          : "w-full min-w-0 border-r",
       )}
     >
       <FileEditorTabs

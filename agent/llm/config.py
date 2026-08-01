@@ -92,6 +92,7 @@ class ModelType(str, Enum):
     VIDEO = "video"
     ASR = "asr"
     TTS = "tts"
+    MUSIC = "music"
     EMBEDDING = "embedding"
     RERANK = "rerank"
 

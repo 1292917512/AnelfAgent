@@ -7,11 +7,14 @@
 import i18n from "@/i18n";
 import type {
   ChatBucket,
+  ChatMessage,
+  ChatStreamingTool,
   ContextUsage,
   DelegationNode,
   PlanRecord,
   SseApprovalRequestEvent,
   SseContextUsageEvent,
+  SseDelegationProgressEvent,
   SseDelegationResolvedEvent,
   SseDelegationStartedEvent,
   SseDeltaEvent,
@@ -33,21 +36,6 @@ import { usePlanStore } from "./plan-store";
 import { useWorkbenchStore } from "./workbench-store";
 import { clearSendWatchdog, nextCid, DEFAULT_CHAT_ID } from "./chat-shared";
 
-/**
- * 程序级自动事件的 note 文案白名单（"阶段反馈"系统消息据此过滤）。
- *
- * 注意：后端 agent/planning/tracker.py 的 plan_step_updated 事件 payload 仅有
- * note 文案、无结构化类型字段（scope/chat_id/plan_id/step_index/step_status/note/ts），
- * 且前端禁止改动 Python 文件，故这里只能依赖后端固定文案匹配。
- * "自动推进"（每轮兜底推进）、"会话结束自动收束"/"会话结束未执行"（finalize_plan
- * 收敛）由程序触发、每轮一次，全部插入会刷屏；PlanCard/PlanPanel 已实时反映状态。
- */
-const PLAN_STEP_AUTO_NOTES: readonly string[] = [
-  "自动推进",
-  "会话结束自动收束",
-  "会话结束未执行",
-];
-
 export interface ChatSseContext {
   updateBucket: (chatId: string, fn: (b: ChatBucket) => Partial<ChatBucket>) => void;
   getActiveChatId: () => string;
@@ -58,6 +46,15 @@ export interface ChatSseContext {
 
 export function routeChatId(data: SseEventBase): string {
   return typeof data.chat_id === "string" && data.chat_id ? data.chat_id : DEFAULT_CHAT_ID;
+}
+
+/**
+ * 把流式区的工具调用记录固化到正式消息上（reply/media 到达时调用）。
+ * 工具卡片随消息持久展示（默认折叠），刷新后由历史 [已执行操作摘要] 卡片接续。
+ */
+function solidifyToolCalls(b: ChatBucket): { toolCalls?: ChatStreamingTool[]; streaming: null } {
+  const tools = b.streaming?.tools;
+  return { toolCalls: tools && tools.length ? [...tools] : undefined, streaming: null };
 }
 
 function dispatchUiCommand(data: UiCommandPayload) {
@@ -101,16 +98,21 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       clearSendWatchdog();
       const chatId = routeChatId(data);
       const isBackground = chatId !== ctx.getActiveChatId();
-      updateBucket(chatId, (b) => ({
-        messages: [
-          ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
-          { role: "assistant", content: data.content, cid: nextCid() },
-        ],
-        sending: false,
-        sendingSince: null,
-        streaming: null,
-        unread: isBackground ? b.unread + 1 : b.unread,
-      }));
+      updateBucket(chatId, (b) => {
+        const { toolCalls, streaming } = solidifyToolCalls(b);
+        const msg: ChatMessage = { role: "assistant", content: data.content, cid: nextCid() };
+        if (toolCalls) msg.toolCalls = toolCalls;
+        return {
+          messages: [
+            ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
+            msg,
+          ],
+          sending: false,
+          sendingSince: null,
+          streaming,
+          unread: isBackground ? b.unread + 1 : b.unread,
+        };
+      });
     } catch { /* ignore */ }
   });
 
@@ -138,23 +140,28 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       clearSendWatchdog();
       const chatId = routeChatId(data);
       const isBackground = chatId !== ctx.getActiveChatId();
-      updateBucket(chatId, (b) => ({
-        messages: [
-          ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
-          {
-            role: "assistant",
-            content: data.caption || "",
-            cid: nextCid(),
-            media_type: data.media_type,
-            url: data.url,
-            caption: data.caption,
-          },
-        ],
-        sending: false,
-        sendingSince: null,
-        streaming: null,
-        unread: isBackground ? b.unread + 1 : b.unread,
-      }));
+      updateBucket(chatId, (b) => {
+        const { toolCalls, streaming } = solidifyToolCalls(b);
+        const msg: ChatMessage = {
+          role: "assistant",
+          content: data.caption || "",
+          cid: nextCid(),
+          media_type: data.media_type,
+          url: data.url,
+          caption: data.caption,
+        };
+        if (toolCalls) msg.toolCalls = toolCalls;
+        return {
+          messages: [
+            ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
+            msg,
+          ],
+          sending: false,
+          sendingSince: null,
+          streaming,
+          unread: isBackground ? b.unread + 1 : b.unread,
+        };
+      });
     } catch { /* ignore */ }
   });
 
@@ -293,6 +300,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     try {
       const data = JSON.parse(e.data) as SsePlanStepUpdatedEvent;
       const chatId = routeChatId(data);
+      // 步骤进度只更新 PlanCard/PlanPanel 浮窗，不再插入消息流（避免刷屏）
       usePlanStore.getState().updatePlanStep(
         chatId,
         data.plan_id,
@@ -300,33 +308,6 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
         data.step_status,
         data.note,
       );
-      // 阶段反馈：**只在 AI 精确标记时**插入系统消息；程序级自动事件
-      // （见 PLAN_STEP_AUTO_NOTES 注释）每轮一次，全部插入会刷屏。
-      if (data.note && PLAN_STEP_AUTO_NOTES.includes(data.note)) {
-        return;
-      }
-      const plan = usePlanStore.getState().plans[chatId]?.[data.plan_id];
-      if (plan && data.step_status !== "pending") {
-        const step = plan.steps.find((s) => s.index === data.step_index);
-        const stepText = step?.content ?? i18n.t("plan.stepFallback", { ns: "plan", index: (data.step_index ?? 0) + 1 });
-        const icon = data.step_status === "completed" ? "✓"
-          : data.step_status === "skipped" ? "⊘"
-            : "→";
-        updateBucket(chatId, (b) => ({
-          messages: [...b.messages, {
-            role: "system",
-            content: i18n.t("plan.stepProgress", {
-              ns: "plan",
-              icon,
-              index: (data.step_index ?? 0) + 1,
-              total: plan.steps.length,
-              step: stepText,
-              note: data.note ? ` — ${data.note}` : "",
-            }),
-            cid: nextCid(),
-          }],
-        }));
-      }
     } catch { /* ignore */ }
   });
 
@@ -340,13 +321,14 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
           ? "cancelled"
           : "executing";
       usePlanStore.getState().updatePlanStatus(chatId, data.plan_id, status);
-      // 整体完成/取消时插入消息
+      // 整体完成/取消时插入一条居中细条通知（进度过程不进消息流）
       if (status === "completed" || status === "cancelled") {
         const plan = usePlanStore.getState().plans[chatId]?.[data.plan_id];
         const goalText = plan?.goal ?? i18n.t("plan.fallbackTitle", { ns: "plan" });
         updateBucket(chatId, (b) => ({
           messages: [...b.messages, {
             role: "system",
+            kind: "system_notice",
             content: status === "completed"
               ? i18n.t("plan.completedMsg", { ns: "plan", goal: goalText })
               : i18n.t("plan.cancelledMsg", { ns: "plan", goal: goalText }),
@@ -386,6 +368,14 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
     } catch { /* ignore */ }
   });
 
+  es.addEventListener("delegation_progress", (e) => {
+    try {
+      const data = JSON.parse(e.data) as SseDelegationProgressEvent;
+      const chatId = routeChatId(data);
+      useDelegationStore.getState().updateProgress(chatId, data);
+    } catch { /* ignore */ }
+  });
+
   es.addEventListener("delegation_resolved", (e) => {
     try {
       const data = JSON.parse(e.data) as SseDelegationResolvedEvent;
@@ -396,6 +386,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
         !!data.success,
         data.output,
         data.error,
+        !!data.cancelled,
       );
     } catch { /* ignore */ }
   });

@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from core.log import log
+
 
 @dataclass(slots=True)
 class ImageGenRequest:
@@ -187,6 +189,92 @@ class DashScopeImagesAdapter(ImageGenAdapter):
         return out
 
 
+class MiniMaxImagesAdapter(ImageGenAdapter):
+    """MiniMax 图片生成（image-01 / image-01-live）：POST /v1/image_generation。
+
+    文生图直接走 prompt；图片编辑映射为主体参考（subject_reference character）。
+    接口挂在网关机根路径，始终从 host 根拼接。
+    """
+
+    name = "minimax"
+
+    @staticmethod
+    def _check_base_resp(result: Dict[str, Any]) -> None:
+        base_resp = result.get("base_resp") or {}
+        code = base_resp.get("status_code", 0)
+        if code != 0:
+            raise RuntimeError(f"MiniMax API 错误 ({code}): {base_resp.get('status_msg', '')}")
+
+    @staticmethod
+    def _aspect_ratio(image_size: str) -> str:
+        """将 "WxH" 尺寸换算为最近的 MiniMax 画幅比。"""
+        try:
+            w, h = image_size.lower().split("x", 1)
+            ratio = int(w) / int(h)
+        except (ValueError, ZeroDivisionError):
+            return "1:1"
+        candidates = {
+            "21:9": 21 / 9, "16:9": 16 / 9, "4:3": 4 / 3, "3:2": 3 / 2,
+            "1:1": 1.0, "2:3": 2 / 3, "3:4": 3 / 4, "9:16": 9 / 16,
+        }
+        return min(candidates, key=lambda k: abs(candidates[k] - ratio))
+
+    def build_generate_request(
+        self,
+        base_url: str,
+        *,
+        model: str,
+        prompt: str,
+        image_size: str,
+        num_inference_steps: int,
+        cfg: Optional[float],
+    ) -> ImageGenRequest:
+        parsed = urlparse(base_url)
+        payload: Dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "aspect_ratio": self._aspect_ratio(image_size),
+            "response_format": "url",
+            "n": 1,
+        }
+        return ImageGenRequest(
+            url=f"{parsed.scheme}://{parsed.netloc}/v1/image_generation", payload=payload,
+        )
+
+    def build_edit_request(
+        self,
+        base_url: str,
+        *,
+        model: str,
+        prompt: str,
+        image_content: str,
+        num_inference_steps: int,
+        cfg: float,
+    ) -> ImageGenRequest:
+        parsed = urlparse(base_url)
+        payload: Dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "subject_reference": [{"type": "character", "image_file": image_content}],
+            "response_format": "url",
+            "n": 1,
+        }
+        return ImageGenRequest(
+            url=f"{parsed.scheme}://{parsed.netloc}/v1/image_generation", payload=payload,
+        )
+
+    def extract_urls(self, result: Dict[str, Any]) -> List[str]:
+        self._check_base_resp(result)
+        data = result.get("data") or {}
+        out: List[str] = [u for u in data.get("image_urls", []) if u]
+        if not out:
+            out = [f"data:image/png;base64,{b}" for b in data.get("image_base64", []) if b]
+        metadata = result.get("metadata") or {}
+        if not out and metadata.get("failed_count"):
+            raise RuntimeError("图片生成被内容安全拦截（failed_count>0）")
+        return out
+
+
 _ADAPTERS: Dict[str, ImageGenAdapter] = {}
 _HOST_RULES: List[Tuple[str, str]] = []
 _default_adapter: str = ""
@@ -212,12 +300,16 @@ def register_image_adapter(
 
 
 def resolve_image_adapter(base_url: str, protocol: str = "") -> ImageGenAdapter:
-    """解析图片协议适配器：显式 protocol 优先，其次 host 规则，最后兜底。"""
+    """解析图片协议适配器：显式 protocol 优先，其次 host 规则，最后兜底。
+
+    media_protocol 字段为图片/视频协议共用，protocol 不属于图片协议时
+    不视为错误，回退 host 规则自动匹配。
+    """
     if protocol:
         adapter = _ADAPTERS.get(protocol)
-        if adapter is None:
-            raise ValueError(f"未知的图片协议: {protocol}（可用: {sorted(_ADAPTERS)}）")
-        return adapter
+        if adapter is not None:
+            return adapter
+        log(f"media_protocol '{protocol}' 不是图片协议，按 host 规则自动匹配", "DEBUG", tag="媒体")
     host = urlparse(base_url).netloc
     for keyword, name in _HOST_RULES:
         if keyword in host:
@@ -228,3 +320,4 @@ def resolve_image_adapter(base_url: str, protocol: str = "") -> ImageGenAdapter:
 register_image_adapter(SiliconFlowAdapter(), default=True)
 register_image_adapter(OpenAIImagesAdapter())
 register_image_adapter(DashScopeImagesAdapter(), host_keywords=("aliyuncs.com",))
+register_image_adapter(MiniMaxImagesAdapter(), host_keywords=("minimaxi.com", "minimax.io"))

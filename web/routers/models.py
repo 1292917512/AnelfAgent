@@ -37,7 +37,7 @@ ReasoningEffort = Annotated[str, AfterValidator(_validate_reasoning_effort)]
 ApiType = Annotated[str, AfterValidator(_validate_api_type)]
 ModelTypeValue = Literal[
     "chat", "vision", "embedding", "image_gen", "image_edit",
-    "asr", "tts", "video", "rerank",
+    "asr", "tts", "video", "music", "rerank",
 ]
 VisionFormat = Literal["base64", "url", "both"]
 ChatProtocolValue = Literal["chat_completions", "responses", "auto"]

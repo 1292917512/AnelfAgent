@@ -9,9 +9,9 @@ export const API_TYPE_OPTIONS = [
   "cloudflare", "openrouter", "together_ai", "fireworks_ai", "perplexity",
   "cerebras", "xai", "sambanova", "volcengine", "dashscope",
 ];
-export const MODEL_TYPE_OPTIONS = ["chat", "embedding", "image_gen", "image_edit", "asr", "tts", "video", "rerank"];
-// 图片生成协议适配器（对应后端 agent.llm.image_adapters 注册名），空串表示按 host 自动识别
-export const MEDIA_PROTOCOL_OPTIONS = ["siliconflow", "openai", "dashscope"];
+export const MODEL_TYPE_OPTIONS = ["chat", "embedding", "image_gen", "image_edit", "asr", "tts", "video", "music", "rerank"];
+// 图片/视频协议适配器（对应后端 agent.llm.image_adapters / video_adapters 注册名），空串表示按 host 自动识别
+export const MEDIA_PROTOCOL_OPTIONS = ["siliconflow", "openai", "dashscope", "minimax", "minimax_v2"];
 
 export interface ManualModelForm {
   id: string;

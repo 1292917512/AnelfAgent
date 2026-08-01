@@ -29,7 +29,14 @@
     "failed": "失败",
     "running": "运行中",
     "role": "角色",
-    "depth": "嵌套"
+    "depth": "嵌套",
+    "cancel": "取消",
+    "cancelling": "正在取消…",
+    "cancelled": "已取消",
+    "progress": {
+      "round": "第 {{n}} 轮思考中",
+      "usingTool": "正在使用工具: {{tool}}"
+    }
   },
   "stepFallback": "步骤 {{index}}",
   "stepProgress": "{{icon}} 计划步骤 {{index}}/{{total}}: {{step}}{{note}}",

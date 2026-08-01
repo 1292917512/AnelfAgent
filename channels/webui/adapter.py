@@ -19,6 +19,12 @@ from agent.channel.schemas import (
     SendRequest,
     SendResponse,
 )
+from core.tags import strip_functional_tags, strip_message_meta_tags
+
+
+def _clean_outbound(text: str) -> str:
+    """出站文本清洗：剥离元数据标签与功能性标签（对齐历史清洗语义）。"""
+    return strip_functional_tags(strip_message_meta_tags(text or "")).strip()
 
 
 class WebUIConfig(ChannelConfig):
@@ -187,6 +193,9 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         return ""
 
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
+        text = _clean_outbound(text)
+        if not text:
+            return json.dumps({"success": True}, ensure_ascii=False)
         self._broadcast("reply", {
             "content": text,
             "media_type": "text",
@@ -198,7 +207,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         self._broadcast("media", {
             "media_type": "image",
             "url": photo,
-            "caption": caption,
+            "caption": _clean_outbound(caption),
             "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
         return json.dumps({"success": True}, ensure_ascii=False)
@@ -215,7 +224,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         self._broadcast("media", {
             "media_type": "audio",
             "url": audio,
-            "caption": caption,
+            "caption": _clean_outbound(caption),
             "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
         return json.dumps({"success": True}, ensure_ascii=False)
@@ -224,7 +233,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         self._broadcast("media", {
             "media_type": "video",
             "url": video,
-            "caption": caption,
+            "caption": _clean_outbound(caption),
             "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
         return json.dumps({"success": True}, ensure_ascii=False)
@@ -233,7 +242,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         self._broadcast("media", {
             "media_type": "file",
             "url": file_path,
-            "caption": caption,
+            "caption": _clean_outbound(caption),
             "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
         return json.dumps({"success": True}, ensure_ascii=False)

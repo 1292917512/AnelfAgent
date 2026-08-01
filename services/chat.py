@@ -15,13 +15,17 @@ class ChatService:
 
     async def load_history(
         self, scope_id: str = "webui:web_user", limit: int = 50,
+        before_id: Optional[int] = None,
     ) -> List[dict]:
-        """加载指定用户的历史会话记录（scope_id 含 adapter 前缀，如 webui:web_user）。"""
+        """加载指定用户的历史会话记录（scope_id 含 adapter 前缀，如 webui:web_user）。
+
+        before_id：分页游标，仅取 id 早于该值的消息（"加载更早"向前翻页）。
+        """
         rt = get_runtime()
         if rt is None:
             return []
         return await rt.data_center.sqlite.fetch_conversation_with_id(
-            scope_type="user", scope_id=scope_id, limit=limit,
+            scope_type="user", scope_id=scope_id, limit=limit, before_id=before_id,
         )
 
     async def send_message(

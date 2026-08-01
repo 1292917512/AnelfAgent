@@ -32,6 +32,7 @@ class ErrorCause(str, Enum):
     NETWORK = "network"        # 网络问题
     TIMEOUT = "timeout"        # 超时
     STATE = "state"            # 前置状态不满足（组件未初始化/已禁用等）
+    USER_CANCEL = "user_cancel"  # 用户主动取消（禁止自动重试）
     INTERNAL = "internal"      # 内部错误
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
@@ -177,3 +178,124 @@ class TestRoleNormalization:
         assert normalize_role("orchestrator") == "orchestrator"
         assert normalize_role("unknown") == "leaf"
         assert normalize_role(None) == "leaf"
+
+
+def _slow_mind(seconds: float = 60.0) -> _FakeMind:
+    """reflect 长时间阻塞的 Mind 替身（取消场景用）。"""
+    mind = _FakeMind()
+
+    async def slow(*args: object, **kwargs: object) -> str:
+        await asyncio.sleep(seconds)
+        return "不应到达"
+
+    mind.reflect = slow
+    return mind
+
+
+class TestDelegationCancel:
+    async def test_cancel_running_sync_delegation(self) -> None:
+        manager = DelegationManager(_slow_mind())
+        task = asyncio.create_task(manager.delegate("长任务"))
+        await asyncio.sleep(0.1)
+        delegation_id = next(iter(manager._running))
+        assert manager.cancel(delegation_id) is True
+        result = await asyncio.wait_for(task, timeout=5)
+        assert not result.success
+        assert result.cancelled
+        assert "取消" in result.error
+        # 取消结果经聚合携带 user_cancel 归因，提示 AI 不要自动重试
+        aggregated = json.loads(manager.aggregate_results([result]))
+        item = aggregated["results"][0]
+        assert item["cause"] == "user_cancel"
+        assert item["retryable"] is False
+
+    async def test_cancel_unknown_returns_false(self, manager: DelegationManager) -> None:
+        assert manager.cancel("deadbeef") is False
+
+    async def test_cancel_scope_cancels_all(self) -> None:
+        manager = DelegationManager(_slow_mind())
+        t1 = asyncio.create_task(manager.delegate("任务1"))
+        t2 = asyncio.create_task(manager.delegate("任务2"))
+        await asyncio.sleep(0.1)
+        assert manager.cancel_scope("_global") == 2
+        r1, r2 = await asyncio.wait_for(asyncio.gather(t1, t2), timeout=5)
+        assert r1.cancelled and r2.cancelled
+        # 非目标 scope 不受影响
+        assert manager.cancel_scope("user_webui:web_user") == 0
+
+    async def test_running_snapshot(self) -> None:
+        manager = DelegationManager(_slow_mind())
+        task = asyncio.create_task(manager.delegate("快照任务"))
+        await asyncio.sleep(0.1)
+        snapshot = manager.running_snapshot("_global")
+        assert len(snapshot) == 1
+        assert snapshot[0]["goal"] == "快照任务"
+        assert snapshot[0]["role"] == "leaf"
+        manager.cancel(snapshot[0]["delegation_id"])
+        await asyncio.wait_for(task, timeout=5)
+        assert manager.running_snapshot("_global") == []
+
+    async def test_cancel_background_delegation(self) -> None:
+        manager = DelegationManager(_slow_mind())
+        delegation_id = manager.delegate_background(
+            "后台长任务", scope="user_webui:web_user",
+        )
+        await asyncio.sleep(0.1)
+        assert manager.cancel(delegation_id) is True
+        task = manager._background_tasks.get(delegation_id)
+        assert task is not None
+        # 取消被转化为取消结果并正常路由（任务正常结束，不抛 CancelledError）
+        await asyncio.wait_for(task, timeout=5)
+
+
+class TestDelegationProgress:
+    async def test_progress_events_emitted(self) -> None:
+        from core.event_bus import (
+            EVENT_DELEGATION_PROGRESS,
+            EVENT_THINKING_TOOL_START,
+            event_bus,
+        )
+
+        mind = _FakeMind()
+        received: list[dict] = []
+
+        async def capture(payload: dict) -> None:
+            received.append(payload)
+
+        event_bus.on(EVENT_DELEGATION_PROGRESS, capture, owner="test_delegation_progress")
+        try:
+            manager = DelegationManager(mind)
+
+            async def reflect_with_tool_event(*args: object, **kwargs: object) -> str:
+                await event_bus.emit(EVENT_THINKING_TOOL_START, {"tool_name": "web_search"})
+                return "ok"
+
+            mind.reflect = reflect_with_tool_event
+            result = await manager.delegate("进度任务")
+            assert result.success
+            starts = [p for p in received if p.get("kind") == "tool_start"]
+            assert len(starts) == 1
+            assert starts[0]["tool"] == "web_search"
+            assert starts[0]["delegation_id"]
+        finally:
+            event_bus.off_by_owner("test_delegation_progress")
+
+    async def test_no_progress_without_delegation(self, manager: DelegationManager) -> None:
+        from core.event_bus import (
+            EVENT_DELEGATION_PROGRESS,
+            EVENT_THINKING_TOOL_START,
+            event_bus,
+        )
+
+        received: list[dict] = []
+
+        async def capture(payload: dict) -> None:
+            received.append(payload)
+
+        event_bus.on(EVENT_DELEGATION_PROGRESS, capture, owner="test_delegation_idle")
+        try:
+            # 主 Agent 上下文（无委托 ID 绑定）发射工具事件 → 不产生进度事件
+            await event_bus.emit(EVENT_THINKING_TOOL_START, {"tool_name": "web_search"})
+            assert received == []
+        finally:
+            event_bus.off_by_owner("test_delegation_idle")
