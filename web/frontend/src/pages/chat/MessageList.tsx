@@ -24,16 +24,19 @@ type TimelineEntry =
 /** 单条消息气泡（memo：流式 delta 更新时历史消息行不重渲染） */
 const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
   const { t } = useTranslation("chat");
+  const isUser = msg.role === "user";
 
-  // 结构化消息：工具执行摘要卡片 / 系统提示细条（居中，不占气泡位）
-  if (msg.kind === "tool_summary") {
+  // 结构化消息：工具执行摘要卡片 / 系统提示细条（居中，不占气泡位）。
+  // kind 由后端历史清洗返回；缺失时按内容前缀兜底分类，
+  // 兼容未标记路径，避免执行记录落入普通气泡/系统细条
+  const head = msg.content.trimStart();
+  if (msg.kind === "tool_summary" || (!isUser && head.startsWith("[已执行操作摘要]"))) {
     return <ToolSummaryCard content={msg.content} />;
   }
-  if (msg.role === "system" || msg.kind === "system_notice") {
+  if (msg.role === "system" || msg.kind === "system_notice" || head.startsWith("[系统]") || head.startsWith("[执行步骤]")) {
     return <SystemNotice content={msg.content} tone={msg.tone} />;
   }
 
-  const isUser = msg.role === "user";
   return (
     <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
       <div className={cn("max-w-[85%] sm:max-w-[80%]", isUser ? "text-right" : "text-left")}>

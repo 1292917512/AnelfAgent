@@ -717,6 +717,45 @@ def _extract_error_text(payload: Any) -> str:
     return ""
 
 
+# 单条错误摘要的最大长度（日志可读性截断）
+_ERROR_BRIEF_MAX = 150
+
+
+def _collect_round_error_briefs(
+        tool_chain: List[Dict],
+        tool_calls: List["ToolCall"],
+) -> List[str]:
+    """收集本轮失败工具的「工具名: 错误摘要」列表。
+
+    遍历规则与 _check_tool_results_all_errors 一致（跳过尾部多模态注入消息）。
+    摘要按固定长度截断，供日志快速定位错误来源。
+    """
+    tc_ids = {tc.id for tc in tool_calls}
+    if not tc_ids:
+        return []
+    tc_names = {tc.id: tc.name for tc in tool_calls}
+
+    briefs: List[str] = []
+    matched_any = False
+    for msg in reversed(tool_chain):
+        if msg.get("role") != "tool":
+            if matched_any:
+                break
+            continue
+        tc_id = msg.get("tool_call_id")
+        if tc_id not in tc_ids:
+            continue
+        matched_any = True
+        content = msg.get("content", "")
+        err = _extract_error_text(content if isinstance(content, str) else "")
+        if err:
+            if len(err) > _ERROR_BRIEF_MAX:
+                err = err[:_ERROR_BRIEF_MAX] + "…"
+            briefs.append(f"{tc_names.get(tc_id, '?')}: {err}")
+    briefs.reverse()  # 恢复调用顺序
+    return briefs
+
+
 _PROMPT_END_BLOCKED_FAILURE = (
     "[系统拦截] 结束请求未生效：本轮以下工具执行失败，相关操作未完成：\n"
     "{failures}\n"

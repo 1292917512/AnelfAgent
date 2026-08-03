@@ -11,6 +11,7 @@ import json
 from agent.llm.types import ToolCall
 from agent.mind.tools.think_loop import (
     _check_tool_results_all_errors,
+    _collect_round_error_briefs,
     _parse_tool_result_json,
 )
 
@@ -77,3 +78,53 @@ class TestCheckToolResultsAllErrors:
     def test_results_collected_via_json_dumps(self) -> None:
         chain = _chain(json.dumps({"error": "x"}, ensure_ascii=False))
         assert _check_tool_results_all_errors(chain, _calls(1)) is True
+
+
+def _named_calls(*names: str) -> list[ToolCall]:
+    return [ToolCall(id=f"tc{i}", name=name, arguments="{}")
+            for i, name in enumerate(names)]
+
+
+class TestCollectRoundErrorBriefs:
+    def test_briefs_with_tool_names_in_call_order(self) -> None:
+        chain = _chain('{"error": "a"}', '{"error": "b"}')
+        briefs = _collect_round_error_briefs(chain, _named_calls("alpha", "beta"))
+        assert briefs == ["alpha: a", "beta: b"]
+
+    def test_success_false_without_error_key(self) -> None:
+        chain = _chain('{"success": false}')
+        briefs = _collect_round_error_briefs(chain, _named_calls("alpha"))
+        assert briefs == ["alpha: 未知错误"]
+
+    def test_long_error_truncated(self) -> None:
+        chain = _chain(json.dumps({"error": "x" * 300}, ensure_ascii=False))
+        briefs = _collect_round_error_briefs(chain, _named_calls("alpha"))
+        assert len(briefs) == 1
+        assert briefs[0] == f"alpha: {'x' * 150}…"
+
+    def test_trailing_user_message_skipped(self) -> None:
+        """尾部多模态注入的 user 消息不影响收集（与全错判定遍历规则一致）。"""
+        chain = _chain('{"error": "a"}')
+        chain.append({"role": "user", "content": "图片注入"})
+        briefs = _collect_round_error_briefs(chain, _named_calls("alpha"))
+        assert briefs == ["alpha: a"]
+
+    def test_round_boundary_stops_collection(self) -> None:
+        """非 tool 消息后（上一轮）的 tool 结果不属于本轮。"""
+        chain: list[dict] = [
+            {"role": "tool", "tool_call_id": "old0", "content": '{"error": "old"}'},
+            {"role": "assistant", "content": "上一轮"},
+            {"role": "tool", "tool_call_id": "tc0", "content": '{"error": "a"}'},
+        ]
+        calls = [ToolCall(id="tc0", name="alpha", arguments="{}"),
+                 ToolCall(id="old0", name="beta", arguments="{}")]
+        briefs = _collect_round_error_briefs(chain, calls)
+        assert briefs == ["alpha: a"]
+
+    def test_successful_result_not_in_briefs(self) -> None:
+        chain = _chain('{"error": "a"}', '{"success": true}')
+        briefs = _collect_round_error_briefs(chain, _named_calls("alpha", "beta"))
+        assert briefs == ["alpha: a"]
+
+    def test_empty_calls(self) -> None:
+        assert _collect_round_error_briefs(_chain('{"error": "a"}'), []) == []

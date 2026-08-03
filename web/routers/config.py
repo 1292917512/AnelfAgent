@@ -402,14 +402,18 @@ def _task_path(name: str, folder: str = "") -> Path:
         raise HTTPException(status_code=400, detail="非法的任务名称")
     base = _TASKS_DIR / folder if folder else _TASKS_DIR
     resolved = base.resolve()
-    if not str(resolved).startswith(str(_TASKS_DIR.resolve())):
+    if not resolved.is_relative_to(_TASKS_DIR.resolve()):
         raise HTTPException(status_code=400, detail="非法的任务文件夹路径")
     return resolved / f"{name}.json"
 
 
 def _task_folder_of(json_file: Path) -> str:
-    """由文件位置推导任务文件夹。"""
-    folder = json_file.parent.relative_to(_TASKS_DIR).as_posix()
+    """由文件位置推导任务文件夹。
+
+    _task_path 返回的是已 resolve 的绝对路径，而 rglob 给出相对路径，
+    统一 resolve 后再做 relative_to，避免绝对/相对混用抛 ValueError。
+    """
+    folder = json_file.parent.resolve().relative_to(_TASKS_DIR.resolve()).as_posix()
     return "" if folder == "." else folder
 
 

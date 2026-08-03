@@ -14,13 +14,15 @@ interface SummaryEntry {
   result: string;
 }
 
-/** 解析 "[已执行操作摘要] 本轮共执行 N 次工具\n  #1 name(args) → result" 格式 */
+/** 解析 "[已执行操作摘要] 本轮共执行 N 次工具\n  #1 name(args) → result" 格式。
+ *  call 段贪婪匹配到行内最后一个 →：工具参数（如 memorize 正文）可能自带 →，
+ *  生成端的分隔符是行末 result 前那一个。 */
 function parseSummary(content: string): { count: number; entries: SummaryEntry[] } {
   const lines = content.split("\n");
   const countMatch = /共执行\s*(\d+)\s*次/.exec(lines[0] ?? "");
   const entries: SummaryEntry[] = [];
   for (const line of lines.slice(1)) {
-    const m = /^\s*#(\d+)\s+(.*?)\s*→\s*(.*)$/.exec(line);
+    const m = /^\s*#(\d+)\s+(.*)\s*→\s*(.*)$/.exec(line);
     if (m) entries.push({ index: m[1] ?? "", call: m[2] ?? "", result: m[3] ?? "" });
     else if (line.trim()) entries.push({ index: "", call: line.trim(), result: "" });
   }

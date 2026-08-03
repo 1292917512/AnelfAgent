@@ -601,7 +601,7 @@ class LLMClient(BaseEntity):
     def _merge_request_params(
         self,
         kwargs: Dict[str, Any],
-        reserved: set[str],
+        reserved: "set[str] | frozenset[str]",
     ) -> None:
         collisions = reserved.intersection(self.config.request_params)
         if collisions:

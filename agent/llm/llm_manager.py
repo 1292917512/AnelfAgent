@@ -558,7 +558,6 @@ class LLMManager(BaseEntity):
                     )
                 index = nxt
                 continue
-            index += 1
 
         if last_exc is not None:
             raise last_exc

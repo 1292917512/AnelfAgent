@@ -20,7 +20,7 @@ cognee、每模型专属）只产生/消费本模块定义的规范等级，由 
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Mapping, Optional
 
 # 规范等级（不含空值）；顺序即强度升序，也是降级阶梯的依据
 CANONICAL_EFFORTS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -153,10 +153,6 @@ _KIMI_K3_BARE_TOKEN = "k3"
 _KIMI_K27CODE_SUBSTRINGS = ("k2.7-code", "k2_7_code", "k2-7-code", "kimi-k2.7",
                             "kimi-for-coding", "kimi-for-coding-highspeed")
 _KIMI_K25_K26_SUBSTRINGS = ("k2.5", "k2_5", "k2-5", "k2.6", "k2_6", "k2-6")
-# K2.7-code：用户配置别名 kimi-for-coding 也映射到这里（同一系列）
-_KIMI_K27CODE_SUBSTRINGS = ("k2.7-code", "k2_7_code", "k2-7-code", "kimi-k2.7",
-                            "kimi-for-coding", "kimi-for-coding-highspeed")
-_KIMI_K25_K26_SUBSTRINGS = ("k2.5", "k2_5", "k2-5", "k2.6", "k2_6", "k2-6")
 
 # MiniMax 模型代际子串
 _MINIMAX_M3_SUBSTRINGS = ("minimax-m3", "minimax-m-3", "minimax_m3", "minimax.m3")
@@ -166,10 +162,11 @@ _MINIMAX_M2X_SUBSTRINGS = ("minimax-m2", "minimax-m-2", "minimax_m2", "minimax.m
                            "minimax-m2.1-highspeed")
 
 
-def _is_provider_specific(model_lower: str) -> Optional[Dict[str, str]]:
+def _is_provider_specific(model_lower: str) -> Optional[Mapping[str, Optional[str]]]:
     """识别走 Anthropic 兼容通道但需要供应商专项 payload 转换的供应商。
 
-    返回供应商档位映射表（M3/M2.x/K3/K2.7-code/K2.5-K2.6）。
+    返回供应商档位映射表（M3/M2.x/K3/K2.7-code/K2.5-K2.6），值为 None
+    表示该档位与供应商语义冲突（调用方应静默跳过）。
     否则返回 None，表示走通用 litellm reasoning_effort 路径。
     """
     if any(s in model_lower for s in _MINIMAX_M3_SUBSTRINGS):

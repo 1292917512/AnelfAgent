@@ -85,6 +85,7 @@ class HeartbeatEngine:
         self._tick_lock = asyncio.Lock()
         self._task_failures: Dict[str, int] = {}
         self._analysis_attempts: Dict[tuple, int] = {}
+        self._warned_missing_tasks: set[str] = set()
 
     @property
     def total_ticks(self) -> int:
@@ -93,6 +94,7 @@ class HeartbeatEngine:
     def reload(self) -> None:
         """热重载任务注册表和心跳配置。"""
         self.task_registry.reload()
+        self._warned_missing_tasks.clear()
         from .config import reload_heartbeat_config
         self.config = reload_heartbeat_config()
 
@@ -131,7 +133,19 @@ class HeartbeatEngine:
 
         for idx, schedule in enumerate(self.config.task_schedules):
             task = self.task_registry.get(schedule.task_name)
-            if not task or not task.enabled:
+            if not task:
+                # 调度指向不存在的任务定义（如任务文件已删除但调度残留）：
+                # 无法执行也不应累积计数，每个任务名只告警一次避免刷屏
+                if schedule.task_name not in self._warned_missing_tasks:
+                    self._warned_missing_tasks.add(schedule.task_name)
+                    log(
+                        f"调度 [{schedule.task_name}] 无对应任务定义"
+                        "（config/tasks 下缺失），已跳过；"
+                        "请在心跳配置中移除该调度或补充任务文件",
+                        "WARNING", tag="心跳",
+                    )
+                continue
+            if not task.enabled:
                 continue
 
             if schedule.mode == ScheduleMode.HEARTBEAT:
@@ -533,7 +547,7 @@ class HeartbeatEngine:
     async def _collect_alias_conversations(self, entity: "EntityData") -> List[Dict[str, Any]]:
         """收集所有 alias 关联身份的对话记录。"""
         try:
-            from agent.messages import MessageAssistant
+            from agent.messages import MessageAssistant, MessageAssistantGroup
             sqlite = self.mind.everything_data.router.sqlite
             scope_type, scope_id = entity.identity_parts
             primary = await sqlite.resolve_alias(scope_type, scope_id)
@@ -546,9 +560,11 @@ class HeartbeatEngine:
                 if (id_type, id_id) == current:
                     continue
                 # id_id 已是含 adapter 前缀的 scope_id；以裸 adapter 构造使 scope_id 原样命中
-                alias_entity = MessageAssistant(
-                    uid=id_id if id_type == "user" else 0,
-                    group_id=id_id if id_type == "group" else 0,
+                # 群组身份用 MessageAssistantGroup（携带 group_id 字段），用户用 MessageAssistant
+                alias_entity = (
+                    MessageAssistantGroup(group_id=id_id)
+                    if id_type == "group"
+                    else MessageAssistant(uid=id_id)
                 )
                 conv = await self.mind.get_conversation(alias_entity)
                 if conv:

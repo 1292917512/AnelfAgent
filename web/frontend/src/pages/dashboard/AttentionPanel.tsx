@@ -150,7 +150,7 @@ export function AttentionPanel() {
       icon: ScrollText,
       title: log.message.length > 120 ? `${log.message.slice(0, 120)}…` : log.message,
       desc: [log.time, log.tag].filter(Boolean).join(" · "),
-      to: "/dashboard?tab=logs",
+      to: `/dashboard?tab=logs&jump=${encodeURIComponent(log.message)}`,
     });
   });
 

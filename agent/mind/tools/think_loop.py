@@ -50,6 +50,7 @@ from agent.mind.tools.round_helpers import (
     ThinkMode,
     _apply_frozen_tool_order,
     _check_tool_results_all_errors,
+    _collect_round_error_briefs,
     _collect_round_failures,
     _compress_context,
     _detect_token_leak,
@@ -755,9 +756,11 @@ async def _handle_tool_round(
     all_errors = _check_tool_results_all_errors(tool_chain, tool_calls)
     if all_errors:
         state.consecutive_tool_errors += 1
+        briefs = _collect_round_error_briefs(tool_chain, tool_calls)
+        detail = "; ".join(briefs) if briefs else "未知错误"
         log(
             f"全部工具调用返回错误 (轮次 {state.iteration + 1}, "
-            f"连续 {state.consecutive_tool_errors} 次)",
+            f"连续 {state.consecutive_tool_errors} 次): {detail}",
             "WARNING", tag="思维",
         )
     else:

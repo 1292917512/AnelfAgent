@@ -24,8 +24,10 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 _chat_svc = ChatService()
 
-# 消息内容内部标签（[tag:xxx]）剥离正则，历史清洗与会话标题共用
-_TAG_PREFIX_RE = re.compile(r"\[(?:[^:]+):(.*?)\]", flags=re.DOTALL)
+# 消息内容内部标签（[tag:xxx]）剥离正则，历史清洗与会话标题共用；
+# 键为单词字符（与 tag_label 生成一致），值禁止跨 [、] 与换行，
+# 防止多行正文（执行摘要等）被错误配对吞掉
+_TAG_PREFIX_RE = re.compile(r"\[(?:\w+):([^\[\]\n]*)\]")
 
 _UPLOAD_DIR = Path(ConfigPaths.UPLOAD_DIR).resolve()
 
@@ -276,15 +278,21 @@ def _clean_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     content = str(msg.get("content", ""))
     content = strip_message_meta_tags(content)
     content = strip_functional_tags(content)
+    # kind 判定先于通用标签剥离：结构化前缀一旦识别即锁定，
+    # 避免正文中的类标签片段干扰后续清洗导致前缀丢失
+    head = content.strip()
+    kind: Optional[str] = None
+    if head.startswith("[已执行操作摘要]"):
+        kind = "tool_summary"
+    elif head.startswith(("[系统]", "[执行步骤]")):
+        kind = "system_notice"
     content = _TAG_PREFIX_RE.sub(r"\1", content).strip()
     result: Dict[str, Any] = {
         "role": msg.get("role", ""),
         "content": content,
     }
-    if content.startswith("[已执行操作摘要]"):
-        result["kind"] = "tool_summary"
-    elif content.startswith(("[系统]", "[执行步骤]")):
-        result["kind"] = "system_notice"
+    if kind:
+        result["kind"] = kind
     if "id" in msg:
         result["id"] = msg["id"]
     ts_ns = msg.get("ts_ns")

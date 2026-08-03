@@ -46,11 +46,17 @@ export function LogList({
   keyword,
   scrollRef,
   onScroll,
+  highlightSeq,
+  rowRef,
 }: {
   filtered: LogRow[];
   keyword: string;
   scrollRef: Ref<HTMLDivElement>;
   onScroll: () => void;
+  /** 需要高亮定位的条目序号（无则不高亮） */
+  highlightSeq?: number | null;
+  /** 高亮行的 DOM 引用，供外部滚动定位 */
+  rowRef?: Ref<HTMLDivElement>;
 }) {
   const { t } = useTranslation("status");
   return (
@@ -66,7 +72,11 @@ export function LogList({
         {filtered.map((entry) => (
           <div
             key={entry.seq}
-            className="flex items-start gap-2 py-1 px-3 hover:bg-hover transition-colors"
+            ref={entry.seq === highlightSeq ? rowRef : undefined}
+            className={cn(
+              "flex items-start gap-2 py-1 px-3 hover:bg-hover transition-colors",
+              entry.seq === highlightSeq && "bg-accent-subtle",
+            )}
           >
             <span className="text-muted flex-shrink-0 w-16">{entry.time}</span>
             <span

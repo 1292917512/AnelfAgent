@@ -1,7 +1,7 @@
 {
   "name": "memory_consolidation",
   "display_name": "记忆整理",
-  "description": "审计记忆库，清理过期/重复记忆，更新过时信息",
+  "description": "全面审计记忆系统：逐类型清理长期记忆、巡检 MD 便签、消除两者内容重叠、整理目标堆积、核对标签与索引健康，并兜底处理心跳预警",
   "scope": "global",
   "enabled": true,
   "memory_type": "reflection",
@@ -12,13 +12,12 @@
   "source": "memory_consolidation",
   "null_keywords": [
     "记忆库健康",
-    "无需整理",
-    "整体健康"
+    "无需整理"
   ],
   "tool_tags": [
     "heartbeat"
   ],
-  "prompt": "进行记忆库健康审计与整理。重点是清理过期和重复的内容。\n\n【第一步：总览】\n调用 memory_stats 查看各类型记忆数量。\n\n【第二步：检查过期记忆】\n1. 调用 memory_deep_search 逐页查看所有记忆\n2. 对每条记忆判断是否已过期/失效：\n   - 记录了某个问题但问题可能已解决 → 用 get_conversation 查看相关会话确认是否已解决，已解决的 forget 删除\n   - 重复记录（同一件事记了多次）→ merge_memories 合并\n   - 内容空泛无实际信息 → forget 删除\n\n【第三步：合并同类记忆】\n- reflection 类型超过 5 条 → 查看并合并主题相似的\n- entity 类型同一实体有多条 → 仅保留最新完整的\n\n【第四步：巡检便签文件】\n1. list_memory_files → view_memory_outline 查看标题\n2. 已完成的计划/过期信息 → delete_section\n3. 需更新的 → write_section",
+  "prompt": "对记忆系统做一次全面整理，覆盖四个层面：数据库长期记忆、MD 便签（memory/*.md）、目标计划、系统健康状态。系统每次心跳已有确定性自动整理（低价值遗忘、类型上限、相似度 >0.92 自动合并），本任务负责它覆盖不到的语义级问题：过时信息、相似度未达阈值的重复、空泛内容、便签与长期记忆的内容重叠、目标堆积。\n\n【执行方式（必须遵守）】\n第一步先调用 memory_stats 了解整体状况，然后必须调用 present_plan(goal=..., steps=...) 公告本次整理计划（按下面四个层面中实际有工作可做的部分列出步骤），再逐步执行。\n\n【红线约束（必须遵守）】\n1. 本任务只整理、不新增：禁止调用 memorize，禁止往便签写入新内容来「备份」准备删除的记忆\n2. 同一信息只允许存在于一个地方：长期记忆和便签都有的重复内容，保留更合适的一处（便签适合长期稳定的知识与计划，长期记忆适合事实与事件），另一处删除；跨载体时只迁移不复制\n3. 任何删除/合并前必须先用 get_memory 或 read_memory_file 确认目标的完整内容，禁止凭列表预览直接操作\n4. 单次整理总共最多处理 15 个条目，宁缺毋滥；拿不准的一律保留\n\n【层面一：逐类型审查长期记忆】\n用 memory_deep_search 分页浏览，按类型分别处理：\n- episodic（事件）：已落幕且无后续参考价值的活动记录 → forget；仍有意义的保留\n- semantic（事实）：事实已过时（旧偏好、旧状态）→ update_memory 修正，无法修正则 forget；多条描述同一事实 → merge_memories\n- reflection（反思）：主题相似的多条反思 → merge_memories 合并为一条精华；空泛无物的套话 → forget\n- entity（画像记忆）：同一 source（entity_xxx）出现多条 → 只保留最新完整的一条\n- permanent（永久记忆）：永久记忆不会被自动遗忘，逐条复核是否仍然重要，不再重要的降级（update_memory 去掉 type:permanent 标签并调低 importance）\n- 记录了某个待办/问题但可能已解决 → get_conversation 或 recall_conversation 核实，已解决则 forget\n\n【层面二：便签巡检与重叠消除】\n1. list_memory_files 列出便签，view_memory_outline 查看各文件大纲\n2. 与层面一的记忆比对，找出两边都存在的重复内容：判断哪一侧更合适承载（见红线 2），删除另一侧\n3. 便签中已完成的计划、过期的待办、失效的章节 → delete_section；个别过时条目 → patch_memory_file 或 edit_memory_lines 精确修正\n\n【层面三：目标堆积清理】\nlist_goals(status='all') 查看目标：\n- 已完成/已取消但没删除的目标 → delete_goal\n- 长期无进展且已失去意义的目标 → delete_goal\n- 仍然有效的目标保留，不要改动其内容\n\n【层面四：系统健康兜底】\n1. 查看 memory_stats 返回的预警（如某类型数量超阈值、索引状态异常），预警指向的类型优先在层面一处理\n2. cognee_status 检查可选后端：若有失败同步项 → retry_cognee_sync 重试；仅失败项处理，不做其他操作\n\n【总结】\n调用 log_to_heartbeat 记录本次整理摘要（各层面删除/合并/修正了多少、处理了哪些重叠、兜底了什么），然后 end_reply 结束。\n最终回复只需一句话概括整理结果。若四个层面通查后确认可整理项为零，只回复：记忆库健康，无需整理",
   "allow_output_tools": false,
-  "save_result_to_memory": true
+  "save_result_to_memory": false
 }

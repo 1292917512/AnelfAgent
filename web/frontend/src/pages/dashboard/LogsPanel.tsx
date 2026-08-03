@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { statusApi } from "@/lib/api";
@@ -10,8 +11,11 @@ import { LogList, type LogRow } from "./LogList";
 const LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] as const;
 const ERROR_LEVELS = new Set(["ERROR", "CRITICAL"]);
 const MAX_LOG_ENTRIES = 2000;
-const BOTTOM_THRESHOLD = 48;export function LogsPanel() {
+const BOTTOM_THRESHOLD = 48;
+/** 高亮定位的持续时长（毫秒） */
+const HIGHLIGHT_DURATION_MS = 2500;export function LogsPanel() {
   const { t } = useTranslation("status");
+  const [searchParams] = useSearchParams();
   const [levels, setLevels] = useState<Set<string>>(new Set(LEVELS));
   const [onlyErrors, setOnlyErrors] = useState(false);
   const [tag, setTag] = useState("");
@@ -20,13 +24,17 @@ const BOTTOM_THRESHOLD = 48;export function LogsPanel() {
   const [paused, setPaused] = useState(false);
   const [following, setFollowing] = useState(true);
   const [pendingCount, setPendingCount] = useState(0);
-  const [confirmClear, setConfirmClear] = useState(false);  const pausedRef = useRef(paused);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [highlightSeq, setHighlightSeq] = useState<number | null>(null);  const pausedRef = useRef(paused);
   pausedRef.current = paused;
   const followingRef = useRef(following);
   followingRef.current = following;
   const backlogRef = useRef<LogRow[]>([]);
   const seqRef = useRef(0);
-  const scrollRef = useRef<HTMLDivElement>(null);  const queryClient = useQueryClient();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+  /** 跳转定位的消息内容（URL ?jump= 传入，仅消费一次） */
+  const jumpMsgRef = useRef<string | null>(searchParams.get("jump"));  const queryClient = useQueryClient();
   const { data: stats } = useQuery({
     queryKey: ["logStats"],
     queryFn: () => statusApi.logStats().then((r) => r.data),
@@ -34,10 +42,28 @@ const BOTTOM_THRESHOLD = 48;export function LogsPanel() {
   });  useEffect(() => {
     let cancelled = false;
     let es: EventSource | null = null;
-    statusApi.logs("", "", "", 500).then((r) => {
+    // 初始加载整个日志缓冲区（与后端容量一致），避免更早的日志不可见
+    statusApi.logs("", "", "", MAX_LOG_ENTRIES).then((r) => {
       if (cancelled) return;
       const rows = (r.data.logs ?? []).map((e) => ({ ...e, seq: ++seqRef.current }));
       setLogs(rows);
+      // 跳转定位：从「需要注意」进入时按消息内容定位最新匹配条目并高亮
+      // （Dashboard 切换标签页时会清除查询参数，无需在此移除 jump）
+      const jumpMsg = jumpMsgRef.current;
+      jumpMsgRef.current = null;
+      if (jumpMsg) {
+        // 从最新往前找首个匹配条目；先取消跟随，避免下方自动滚底 effect 抵消定位
+        let target: LogRow | undefined;
+        for (let i = rows.length - 1; i >= 0; i--) {
+          const row = rows[i];
+          if (row && row.message === jumpMsg) {
+            target = row;
+            break;
+          }
+        }
+        setFollowing(false);
+        if (target) setHighlightSeq(target.seq);
+      }
       es = new EventSource("/api/status/logs/stream");
       es.addEventListener("log", (e) => {
         try {
@@ -65,7 +91,16 @@ const BOTTOM_THRESHOLD = 48;export function LogsPanel() {
         if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       });
     }
-  }, [logs, following, paused]);  const handleScroll = () => {
+  }, [logs, following, paused]);  // 高亮行渲染后滚动至可见，短暂停留后取消高亮
+  useEffect(() => {
+    if (highlightSeq === null) return;
+    const el = rowRef.current;
+    if (el) {
+      requestAnimationFrame(() => el.scrollIntoView({ block: "center" }));
+    }
+    const timer = setTimeout(() => setHighlightSeq(null), HIGHLIGHT_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, [highlightSeq]);  const handleScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_THRESHOLD;
@@ -161,7 +196,14 @@ const BOTTOM_THRESHOLD = 48;export function LogsPanel() {
             <span>{t("logsView.bufferUsage", { used: stats.total, capacity: stats.capacity })}</span>
           </>
         )}
-      </div>      <LogList filtered={filtered} keyword={kw} scrollRef={scrollRef} onScroll={handleScroll} />      <ConfirmDialog
+      </div>      <LogList
+        filtered={filtered}
+        keyword={kw}
+        scrollRef={scrollRef}
+        onScroll={handleScroll}
+        highlightSeq={highlightSeq}
+        rowRef={rowRef}
+      />      <ConfirmDialog
         open={confirmClear}
         onClose={() => setConfirmClear(false)}
         onConfirm={clearLogs}
