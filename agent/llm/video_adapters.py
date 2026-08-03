@@ -53,6 +53,10 @@ class VideoGenAdapter(ABC):
     """视频生成协议适配器基类。"""
 
     name: str = ""
+    # 协议级能力位：所有走此协议的模型共享同一组能力
+    supports_first_last_frame: bool = False
+    supports_image_to_video: bool = True
+    supports_subject_reference: bool = True
 
     @abstractmethod
     def build_create_request(self, base_url: str, params: VideoGenParams) -> VideoGenRequest:
@@ -175,6 +179,11 @@ class MiniMaxV1Adapter(VideoGenAdapter):
             raise RuntimeError(f"MiniMax API 错误 ({code}): {base_resp.get('status_msg', '')}")
 
     def build_create_request(self, base_url: str, params: VideoGenParams) -> VideoGenRequest:
+        if params.last_frame_image and not self.supports_first_last_frame:
+            raise RuntimeError(
+                "当前视频协议不支持首尾帧（First-and-Last-Frame）模式，"
+                "请改用支持首尾帧的协议（minimax_v2）或不传 last_frame_image"
+            )
         payload: Dict[str, Any] = {"model": params.model}
         if params.prompt:
             payload["prompt"] = params.prompt
@@ -250,6 +259,7 @@ class MiniMaxV2Adapter(VideoGenAdapter):
     """
 
     name = "minimax_v2"
+    supports_first_last_frame = True  # v2 协议天然支持首尾帧
 
     @staticmethod
     def _check_error(result: Dict[str, Any]) -> None:
@@ -261,22 +271,23 @@ class MiniMaxV2Adapter(VideoGenAdapter):
 
     def build_create_request(self, base_url: str, params: VideoGenParams) -> VideoGenRequest:
         content: List[Dict[str, Any]] = [{"type": "text", "text": params.prompt}]
+        # v2 的 image_url / video_url / audio_url 都是对象结构 {url: "..."}，不是字符串
         if params.first_frame_image:
             content.append({
                 "type": "image_url",
-                "image_url": params.first_frame_image,
+                "image_url": {"url": params.first_frame_image},
                 "role": "first_frame",
             })
         if params.last_frame_image:
             content.append({
                 "type": "image_url",
-                "image_url": params.last_frame_image,
+                "image_url": {"url": params.last_frame_image},
                 "role": "last_frame",
             })
         for image in params.subject_reference:
             content.append({
                 "type": "image_url",
-                "image_url": image,
+                "image_url": {"url": image},
                 "role": "reference_image",
             })
         payload: Dict[str, Any] = {
@@ -284,8 +295,15 @@ class MiniMaxV2Adapter(VideoGenAdapter):
             "content": content,
             "resolution": params.resolution or "2K",
         }
-        if params.duration is not None:
-            payload["duration"] = params.duration
+        if params.duration is None:
+            raise ValueError(
+                "MiniMax-H3 v2 接口要求 duration 必填（4~15 秒），请在 generate_video 工具中传入"
+            )
+        if not 4 <= params.duration <= 15:
+            raise ValueError(
+                f"duration={params.duration} 超出 MiniMax-H3 v2 允许范围（4~15 秒）"
+            )
+        payload["duration"] = params.duration
         has_frames = bool(params.first_frame_image or params.last_frame_image)
         # 图生视频比例恒为 adaptive；文生视频必须显式指定比例
         payload["ratio"] = "adaptive" if has_frames else (params.ratio or "16:9")

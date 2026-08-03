@@ -77,7 +77,7 @@ def _internal_debug(message: str) -> None:
         _fallback_logger.debug(message)
 
 
-def format_record(record: "Record") -> str:
+def _format_record(record: Any) -> str:
     """格式化日志记录"""
     emoji = level_emoji.get(record["level"].name, "📝")
     time_str = record["time"].strftime("%H:%M:%S")
@@ -86,10 +86,47 @@ def format_record(record: "Record") -> str:
     return f"[{time_str}] {emoji} {level_name}: {message}\n"
 
 
+def _coerce_utf8_stream(stream: Any) -> Any:
+    """为非 UTF-8 stdout/stderr 加 utf-8 编码包装，避免中文/非 ASCII 写日志时触发 UnicodeEncodeError。
+
+    loguru 会把字符串经 sink 写回原 stream；若 stream 编码是 ASCII，抛 'ascii' codec 错并冒泡。
+    这里用 errors='replace' 兜底（极端情况无法用 utf-8 时用 ? 替代），确保日志写不出去也不影响业务。
+    """
+    enc = getattr(stream, "encoding", None)
+    if not enc or enc.lower().replace("-", "").startswith("utf"):
+        return stream
+    try:
+        import io
+        raw = getattr(stream, "buffer", None) or getattr(stream, "fileno", lambda: None)()
+        if raw is None:
+            return stream
+        return io.TextIOWrapper(raw, encoding="utf-8", errors="replace", line_buffering=True)
+    except Exception:
+        return stream
+
+
+def _emit_loguru(level: str, message: str, with_exc: bool) -> None:
+    """向 loguru 写入日志，自身异常被吞掉（绝不影响业务调用）。"""
+    if not _USE_LOGURU:
+        return
+    try:
+        safe = message.replace("{", "{{").replace("}", "}}").replace("<", r"\<")
+        getattr(_loguru_logger.opt(depth=1, exception=with_exc), level.lower())(safe)
+    except Exception:
+        # 日志系统故障不能影响业务调用，最末也避免被 fallback 链捕获
+        try:
+            sys.stderr.write(f"[log-error] {level}: {message}\n")
+        except Exception:
+            pass
+
+
 # 挂载默认 stream sink：非 launch.py 入口（未调用 set_log_level）也能正常输出日志，
 # 避免 remove() 清空内置 sink 后日志全部丢失。
+# 强制 UTF-8 编码并降级 errors='replace'，防止 stdout 默认编码为 ASCII（容器/CI/POSIX LANG=C）
+# 时中文/非 ASCII 内容触发 UnicodeEncodeError，避免日志自身的异常冒泡影响业务调用。
 if _USE_LOGURU:
-    _stream_sink_id = logger.add(_DEFAULT_LOG_STREAM, format=format_record, level="DEBUG")
+    _log_stream = _coerce_utf8_stream(_DEFAULT_LOG_STREAM)
+    _stream_sink_id = logger.add(_log_stream, format=_format_record, level="DEBUG")
 
 
 def _notify_listeners(level: str, message: str, tag: Optional[str] = None) -> None:
@@ -127,12 +164,18 @@ def log(message: str, level: str = "INFO", tag: Optional[str] = None) -> None:
     with_exc = level in ["ERROR", "CRITICAL"] and sys.exc_info()[0] is not None
 
     if _USE_LOGURU:
-        safe = message.replace("{", "{{").replace("}", "}}").replace("<", r"\<")
-        getattr(logger.opt(depth=1, exception=with_exc), level.lower())(safe)
+        _emit_loguru(level, message, with_exc)
     else:
-        _fallback_logger.log(
-            _STDLIB_LEVEL_MAP.get(level, _logging.INFO), message, exc_info=with_exc,
-        )
+        try:
+            _fallback_logger.log(
+                _STDLIB_LEVEL_MAP.get(level, _logging.INFO), message, exc_info=with_exc,
+            )
+        except Exception:
+            # 兜底：终端编码异常时 stdlib 也会抛 UnicodeEncodeError，绝不让日志炸业务
+            try:
+                sys.stderr.write(f"[log-fallback-error] {level}: {message}\n")
+            except Exception:
+                pass
     _notify_listeners(level, message, tag)
 
 
@@ -189,7 +232,7 @@ def set_log_level(level: str) -> None:
         # 重设等级前先移除旧 stream sink，避免重复 sink 导致日志双写
         if _stream_sink_id is not None:
             logger.remove(_stream_sink_id)
-        _stream_sink_id = logger.add(_DEFAULT_LOG_STREAM, format=format_record, level=level.upper())
+        _stream_sink_id = logger.add(_coerce_utf8_stream(_DEFAULT_LOG_STREAM), format=_format_record, level=level.upper())
     else:
         _fallback_logger.setLevel(_STDLIB_LEVEL_MAP.get(level.upper(), _logging.INFO))
 

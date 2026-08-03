@@ -209,7 +209,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "lark-oapi", specifier = ">=1.5.0" },
-    { name = "litellm", specifier = ">=1.93.0" },
+    { name = "litellm", specifier = ">=1.95.0,<2.0.0" },
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "lxml", specifier = ">=5.0.0" },
     { name = "markdownify", specifier = ">=0.14.1" },
@@ -1540,7 +1540,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.93.0"
+version = "1.95.0"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
 dependencies = [
     { name = "aiohttp" },
@@ -1556,12 +1556,14 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/93/e1/4f05ca4cbb4efb739c9e66a182ecd5c816bc05bf3665ec8e0fb4ab408379/litellm-1.93.0.tar.gz", hash = "sha256:140bf215e264c71601bca9c06d2436c5451bb59e1e195ea23fc2d3d87b6929ec", size = 15948866, upload-time = "2026-07-19T03:01:24.389Z" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/0e/96/8cdfb9aaf584b57af35a0423c111a1c1264a78b548cebbb5ed96defacdab/litellm-1.95.0.tar.gz", hash = "sha256:0ef126d52c7a559f8353e50d60fd0d5e7e6c8767ad54df25ddaf79b9edca1afc", size = 17513577, upload-time = "2026-08-02T02:52:49.465Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/5a/03/604e71df027a7a420dbf2078e522753e7cfd309cabeaf1492f5ee2ebcefa/litellm-1.93.0-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:5d84aead083d3d0619b2d293f8006ebbe75611bbdcef470d659c9e2d131d4454", size = 20168095, upload-time = "2026-07-19T03:00:52.962Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/0b/55/e5f7b567f73028ca743fdc0a2bb7db920bf90ebe533f8b8f83e2c9734b48/litellm-1.93.0-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:6b49f653e6205cbc725257da8797277f77065c69865fb3489bc5ed0896b66ee0", size = 20161816, upload-time = "2026-07-19T03:00:56.318Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/33/fa/36bbb088d4a70f610518012529f1e81445dc6e3868ed36a5b4f705f8dec0/litellm-1.93.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:952029d422c2cec8117b444d66d6de87ac970ecf0b2e1383b02788ef90ba3603", size = 20167087, upload-time = "2026-07-19T03:00:59.756Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/7d/15/52ee5e4743ad656a4d408ca6fcd8bca844b572b6a8e9776f1232bd7d9d8d/litellm-1.93.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:460001b7c88c5b6675ad482ae3cecba96e21f890604b4febb1a67807ace1c750", size = 20161646, upload-time = "2026-07-19T03:01:02.827Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/50/e3/4ba824200c235c56bc87759f05bde5c53223f8036282026b2c731af7eb9a/litellm-1.95.0-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:0106b3564b60d00cb5b2810824ebf5071f59c9f9262318884d9c6f040aa2c435", size = 26426637, upload-time = "2026-08-02T02:51:53.675Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/22/09/38d6a4a53be2cca1e4efa05a4233b791efe82ba92a10088630235132933f/litellm-1.95.0-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:053cea1a584bf92d5d44b422f99fa03715bf7c346c8fe080c29bf0c6bd71eddc", size = 26304372, upload-time = "2026-08-02T02:51:58.15Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/5c/dc/3c4c46343188fda4aa6b7294aff9969beb58dae400130a0f09c774d23f61/litellm-1.95.0-cp310-cp310-win_amd64.whl", hash = "sha256:667cc7cc58e05a9f9c4bf4588cd4ff5c785fd265060acdfb9147332b75b73ce9", size = 24920517, upload-time = "2026-08-02T02:52:01.547Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/83/c1/470070205a3b36c4d99d95046102468165a55bfd675f32c552566085e746/litellm-1.95.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:4bafa3494d503a3c6c1f2eeb785a2af364d85463c71a92cabaaa761c9227d62a", size = 26425608, upload-time = "2026-08-02T02:52:05.277Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/ec/c1/54c79849f4b60aab55772d69099557e49c86c6a43a863d65c1bc985246b3/litellm-1.95.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:4c2a06d2263a07a29228cd3af2b594cf86cd3a4182a7324c517cba88a9415969", size = 26303794, upload-time = "2026-08-02T02:52:08.675Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c5/52/31f2f50063e619b782c74df3ea8835270cce40f94dadaed350cf2f499aa0/litellm-1.95.0-cp311-cp311-win_amd64.whl", hash = "sha256:aac37bb6d2be191bafc0ce590ed06d21dd7e5a37599ffc1af1071899f6c74b73", size = 24921269, upload-time = "2026-08-02T02:52:12.281Z" },
 ]
 
 [[package]]

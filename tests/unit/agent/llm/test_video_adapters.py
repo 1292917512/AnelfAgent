@@ -71,25 +71,25 @@ class TestMiniMaxV1Adapter:
         }
 
     def test_create_with_frames_and_subject(self) -> None:
-        adapter = MiniMaxV1Adapter()
+        """v2 协议整体支持首尾帧+主体参考，组装 payload 字段应正确。"""
+        adapter = MiniMaxV2Adapter()
         req = adapter.build_create_request(
-            "https://api.minimaxi.com/v1",
+            "https://api.minimaxi.com",
             _params(
+                model="MiniMax-H3",
                 first_frame_image="data:image/png;base64,AAA",
                 last_frame_image="https://x/b.png",
                 subject_reference=["https://x/c.png"],
-                prompt_optimizer=False,
-                aigc_watermark=True,
+                duration=6,
             ),
         )
         payload = req.payload or {}
-        assert payload["first_frame_image"] == "data:image/png;base64,AAA"
-        assert payload["last_frame_image"] == "https://x/b.png"
-        assert payload["subject_reference"] == [
-            {"type": "character", "image": ["https://x/c.png"]}
-        ]
-        assert payload["prompt_optimizer"] is False
-        assert payload["aigc_watermark"] is True
+        assert payload["content"][0] == {"type": "text", "text": "p"}
+        items = payload["content"][1:]
+        assert [item["role"] for item in items] == ["first_frame", "last_frame", "reference_image"]
+        for item in items:
+            assert isinstance(item["image_url"], dict)
+            assert item["image_url"].get("url")
 
     def test_extract_task_id_checks_base_resp(self) -> None:
         adapter = MiniMaxV1Adapter()
@@ -128,8 +128,43 @@ class TestMiniMaxV1Adapter:
         }
         assert adapter.extract_download_url(result) == "https://cdn/x.mp4"
 
+    def test_first_last_frame_rejected_by_v1(self) -> None:
+        """v1 协议类属性 supports_first_last_frame=False，传 last_frame 直接拒收。"""
+        adapter = MiniMaxV1Adapter()
+        assert adapter.supports_first_last_frame is False
+        with pytest.raises(RuntimeError, match="当前视频协议不支持首尾帧"):
+            adapter.build_create_request(
+                "https://api.minimaxi.com/v1",
+                _params(
+                    model="MiniMax-Hailuo-2.3",
+                    first_frame_image="https://x/a.png",
+                    last_frame_image="https://x/b.png",
+                ),
+            )
+
 
 class TestMiniMaxV2Adapter:
+    def test_first_last_frame_accepted_by_v2(self) -> None:
+        """v2 协议类属性 supports_first_last_frame=True，正常构建。"""
+        adapter = MiniMaxV2Adapter()
+        assert adapter.supports_first_last_frame is True
+        req = adapter.build_create_request(
+            "https://api.minimaxi.com/v1",
+            _params(
+                model="MiniMax-H3",
+                first_frame_image="https://x/a.png",
+                last_frame_image="https://x/b.png",
+                duration=6,
+            ),
+        )
+        # v2 用 content 数组组装多模态，验证对象结构
+        assert req.payload["content"][0] == {"type": "text", "text": "p"}
+        items = req.payload["content"][1:]
+        assert [item["role"] for item in items] == ["first_frame", "last_frame"]
+        for item in items:
+            assert isinstance(item["image_url"], dict)
+            assert item["image_url"].get("url")
+
     def test_create_text_to_video(self) -> None:
         adapter = MiniMaxV2Adapter()
         req = adapter.build_create_request(
@@ -144,6 +179,21 @@ class TestMiniMaxV2Adapter:
         assert payload["duration"] == 8
         assert payload["ratio"] == "9:16"
 
+    def test_image_url_must_be_object(self) -> None:
+        """v2 的 content[].image_url 必须是对象 {url: ...}，不能是字符串。"""
+        adapter = MiniMaxV2Adapter()
+        req = adapter.build_create_request(
+            "https://api.minimaxi.com/v1",
+            _params(model="MiniMax-H3", first_frame_image="https://cdn/hero.png", duration=6),
+        )
+        item = req.payload["content"][1]
+        assert item["type"] == "image_url"
+        assert item["image_url"] == {"url": "https://cdn/hero.png"}
+        assert item["role"] == "first_frame"
+        # 有首帧 → 图生视频，比例自动 adaptive
+        assert req.payload["ratio"] == "adaptive"
+        assert req.payload["duration"] == 6
+
     def test_create_image_to_video_forces_adaptive_ratio(self) -> None:
         adapter = MiniMaxV2Adapter()
         req = adapter.build_create_request(
@@ -154,12 +204,17 @@ class TestMiniMaxV2Adapter:
                 last_frame_image="https://x/b.png",
                 subject_reference=["https://x/c.png"],
                 ratio="16:9",
+                duration=6,
             ),
         )
         payload = req.payload or {}
         assert payload["ratio"] == "adaptive"
-        roles = [item.get("role") for item in payload["content"][1:]]
-        assert roles == ["first_frame", "last_frame", "reference_image"]
+        # v2 content[].image_url 必须是对象 {url: ...}，不是字符串
+        frames = payload["content"][1:]
+        assert [item["role"] for item in frames] == ["first_frame", "last_frame", "reference_image"]
+        for item in frames:
+            assert isinstance(item["image_url"], dict)
+            assert item["image_url"].get("url")
 
     def test_parse_query_result(self) -> None:
         adapter = MiniMaxV2Adapter()
@@ -181,6 +236,29 @@ class TestMiniMaxV2Adapter:
         err = {"type": "error", "error": {"type": "authorized_error", "message": "invalid key"}}
         with pytest.raises(RuntimeError, match="authorized_error"):
             adapter.extract_task_id(err)
+
+    def test_duration_required(self) -> None:
+        """H3 v2 必填 duration，未传应明确报错。"""
+        adapter = MiniMaxV2Adapter()
+        with pytest.raises(ValueError, match="duration 必填"):
+            adapter.build_create_request(
+                "https://api.minimaxi.com/v1",
+                _params(model="MiniMax-H3", prompt="p"),
+            )
+
+    def test_duration_out_of_range(self) -> None:
+        """H3 v2 限定 4~15 秒，越界直接报错。"""
+        adapter = MiniMaxV2Adapter()
+        with pytest.raises(ValueError, match="超出.*允许范围"):
+            adapter.build_create_request(
+                "https://api.minimaxi.com/v1",
+                _params(model="MiniMax-H3", duration=3),
+            )
+        with pytest.raises(ValueError, match="超出.*允许范围"):
+            adapter.build_create_request(
+                "https://api.minimaxi.com/v1",
+                _params(model="MiniMax-H3", duration=30),
+            )
 
     def test_list_request_and_result(self) -> None:
         adapter = MiniMaxV2Adapter()
