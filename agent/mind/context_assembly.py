@@ -123,12 +123,14 @@ _PLAN_USAGE_RULES = (
 
 _MEMORY_USAGE_HINT = (
     "[记忆使用提示]\n"
-    "便签文件是索引，数据库是详细存储。两者通过标签联动。\n"
+    "便签文件是索引，数据库是详细存储，技能系统是经验手册。三者通过标签联动。\n"
     "- 看到人物 UID → get_entity_profile 查完整画像\n"
-    "- 想了解某话题 → recall 语义搜索 DB\n"
+    "- 想了解某话题 → recall 语义搜索 DB（找不到再加 depth=\"deep\" 深度召回；"
+    "结果带 source 标明出处：memory=数据库 / file=便签 / cognee_*=知识图谱）\n"
     "- 看到 [reply_to:id] / 已知 message_id 且需原文 → lookup_message 精确取回（含窗口外）\n"
     "- 翻阅窗口外旧对话（语义）→ recall_conversation\n"
-    "- 新信息 → memorize 存 DB（标签: type:/user:/group:/topic:），必要时更新便签索引\n"
+    "- 新事实/事件/人物信息 → memorize 存 DB（标签: type:/user:/group:/topic:），必要时更新便签索引\n"
+    "- 工具使用经验/工作流技巧 → create_skill / update_skill 沉淀为技能（不要写成记忆，避免双写漂移）\n"
     "- 工具出错 → recall_tool_errors 查历史错误\n"
     "- 整理记忆 → 先 view_memory_outline 看文件结构，按顶部分类标准写入"
 )

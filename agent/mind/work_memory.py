@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
@@ -212,12 +213,37 @@ class WorkMemory:
         return result
 
     def add_temporary(self, temporary_clip: Dict, scope: str = "") -> None:
-        """写入短期记忆到指定 scope 桶（空 scope 进 _default 全局桶）。"""
+        """写入短期记忆到指定 scope 桶（空 scope 进 _default 全局桶）。
+
+        溢出晋升：被容量截尾挤出的最老条目追加到当天 events 日期便签，
+        可被文件索引检索，避免静默丢失。
+        """
         key = scope or "_default"
         bucket = self._temporary.setdefault(key, [])
         bucket.append(temporary_clip)
         if len(bucket) > self._max_temp:
+            overflowed = bucket[:-self._max_temp]
             self._temporary[key] = bucket[-self._max_temp:]
+            self._promote_overflow(overflowed, key)
+
+    @staticmethod
+    def _promote_overflow(clips: List[Dict], bucket_key: str) -> None:
+        """将溢出的短期记忆条目追加到当天 events 日期便签（尽力而为，失败仅记日志）。"""
+        if not clips:
+            return
+        try:
+            from agent.memory.notes import append_to_memory_file
+            today = time.strftime("%Y-%m-%d")
+            now = time.strftime("%H:%M")
+            lines = [f"\n## 短期记忆溢出（{now}，桶 {bucket_key}）\n"]
+            for clip in clips:
+                content = str(clip.get("content", "")).strip().replace("\n", " ")[:500]
+                if content:
+                    lines.append(f"- {content}")
+            if len(lines) > 1:
+                append_to_memory_file(f"memory/events/{today}.md", "\n".join(lines) + "\n")
+        except Exception as exc:
+            log(f"短期记忆溢出晋升失败: {exc}", "DEBUG", tag="思维")
 
     def delete_temporary(self, index: int) -> bool:
         """按全桶展开视图的索引删除一条短期记忆。"""

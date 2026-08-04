@@ -34,7 +34,7 @@ export function TasksPanel() {
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["tasks"] });
 
-  const handleTrigger = async (name: string) => {
+  const handleTrigger = async (name: string, folder = "") => {
     setTriggerStates((s) => ({ ...s, [name]: "pending" }));
     const resetToIdle = () => {
       const prev = triggerTimersRef.current.get(name);
@@ -48,7 +48,7 @@ export function TasksPanel() {
       );
     };
     try {
-      await tasksApi.trigger(name);
+      await tasksApi.trigger(name, folder);
       setTriggerStates((s) => ({ ...s, [name]: "ok" }));
       resetToIdle();
     } catch {
@@ -63,12 +63,13 @@ export function TasksPanel() {
   });
 
   const updateMut = useMutation({
-    mutationFn: ({ name, data }: { name: string; data: Partial<TaskConfig> }) => tasksApi.update(name, data),
+    mutationFn: ({ name, data, folder }: { name: string; data: Partial<TaskConfig>; folder: string }) =>
+      tasksApi.update(name, data, folder),
     onSuccess: () => { invalidate(); setEditingTask(null); },
   });
 
   const deleteMut = useMutation({
-    mutationFn: (name: string) => tasksApi.delete(name),
+    mutationFn: ({ name, folder }: { name: string; folder: string }) => tasksApi.delete(name, folder),
     onSuccess: () => invalidate(),
   });
 
@@ -112,7 +113,7 @@ export function TasksPanel() {
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
                   <button
-                    onClick={() => handleTrigger(task.name)}
+                    onClick={() => handleTrigger(task.name, task.folder ?? "")}
                     disabled={state === "pending" || !task.enabled}
                     className={cn(
                       "flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-all",
@@ -154,8 +155,8 @@ export function TasksPanel() {
                       />
                       <div className="flex items-center gap-2">
                         <Button variant="primary" size="sm" onClick={() => {
-                          const { name, ...rest } = editingTask!;
-                          updateMut.mutate({ name, data: rest });
+                          const { name, folder, ...rest } = editingTask!;
+                          updateMut.mutate({ name, data: rest, folder: folder ?? "" });
                         }} loading={updateMut.isPending}>
                           <Save size={12} /> {updateMut.isPending ? t("actions.saving") : t("actions.save")}
                         </Button>
@@ -194,7 +195,7 @@ export function TasksPanel() {
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => {
-          if (deleteTarget) deleteMut.mutate(deleteTarget.name);
+          if (deleteTarget) deleteMut.mutate({ name: deleteTarget.name, folder: deleteTarget.folder ?? "" });
           setDeleteTarget(null);
         }}
         title={tc("delete")}

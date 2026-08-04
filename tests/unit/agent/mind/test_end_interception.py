@@ -31,6 +31,19 @@ class TestExtractErrorText:
     def test_ok_false_without_error(self) -> None:
         assert _extract_error_text({"ok": False}) == "未知错误"
 
+    def test_ok_false_falls_back_to_stderr(self) -> None:
+        """shell 类工具失败 payload 无 error 键，真实原因在 stderr。"""
+        payload = {"ok": False, "stdout": "", "stderr": "Connection closed by 127.0.0.1 port 7897"}
+        assert _extract_error_text(payload) == "Connection closed by 127.0.0.1 port 7897"
+
+    def test_ok_false_falls_back_to_message(self) -> None:
+        payload = {"ok": False, "message": "已存在相似记忆，跳过"}
+        assert _extract_error_text(payload) == "已存在相似记忆，跳过"
+
+    def test_error_key_takes_priority_over_fallback(self) -> None:
+        payload = {"success": False, "error": "主信号", "stderr": "噪音"}
+        assert _extract_error_text(payload) == "主信号"
+
     def test_error_key_present(self) -> None:
         assert _extract_error_text({"error": "bad args"}) == "bad args"
 

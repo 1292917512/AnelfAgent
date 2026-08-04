@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Dict, Optional
 
 from core.log import log
@@ -180,23 +181,38 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
 @deferred_tool(
     group="memory", tags=["always"], source="mind.memory",
     description="在长期记忆中语义搜索，返回最相关的记忆及其联想关联。"
-    "结果中 related=true 的是沿标签网络联想出的关联记忆。",
+    "每条结果带 source 标明出处（memory=数据库记忆 / file=便签文件 / cognee_graph|cognee_chunk=知识图谱）；"
+    "depth=deep 做深度召回（图谱检索+二跳联想，更全但更慢）；"
+    "filter_tags 为硬过滤（结果必须含全部指定标签），tags 仅作相关度加权。",
 )
-async def recall(query: str, tags: str = "", limit: int = 5, min_score: float = 0.0) -> str:
+async def recall(
+    query: str,
+    tags: str = "",
+    limit: int = 5,
+    min_score: float = 0.0,
+    depth: str = "shallow",
+    filter_tags: str = "",
+) -> str:
     """在长期记忆中语义搜索（同时检索 memories 表和 MD 文件索引）。
 
     Args:
         query: 搜索查询（自然语言）
-        tags: 可选标签过滤，逗号分隔（如 user:123）
+        tags: 可选标签加权，逗号分隔（如 user:123），命中加分但不过滤
         limit: 最大返回数量，默认 5
         min_score: 最低相关度过滤（0-1，相对最高分归一化）。默认 0 不过滤；
             需要精确模式减少噪音时建议 0.5~0.7，只保留高相关记忆
+        depth: 召回深度。shallow（默认）快速混合检索；deep 追加知识图谱检索、
+            扩大候选池并做二跳标签联想，覆盖更全但更慢，浅召回找不到时再用
+        filter_tags: 硬过滤标签，逗号分隔。结果必须包含全部指定标签；
+            启用后只返回数据库记忆（文件便签无标签体系）
     """
     try:
         if not _store:
             return _store_not_ready()
 
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+        hard_tags = [t.strip() for t in filter_tags.split(",") if t.strip()] if filter_tags else None
+        is_deep = depth.strip().lower() == "deep"
 
         query_vec = None
         if _embedder:
@@ -212,12 +228,14 @@ async def recall(query: str, tags: str = "", limit: int = 5, min_score: float = 
                 scope_type, scope_id = tag.split(":", 1)
                 entity_scope = f"{scope_type}_{scope_id}"
                 break
+        pool_multiplier = cognee_config.recall_pool_multiplier * (2 if is_deep else 1)
         results = await federated_search(
             _store.search_unified(
                 query=query,
                 query_vec=query_vec,
                 query_tags=tag_list,
-                limit=limit * cognee_config.recall_pool_multiplier,
+                limit=limit * pool_multiplier,
+                require_tags=hard_tags,
             ),
             query=query,
             client=get_cognee_client(),
@@ -225,6 +243,7 @@ async def recall(query: str, tags: str = "", limit: int = 5, min_score: float = 
             limit=limit,
             entity_scope=entity_scope,
             query_tags=tag_list,
+            deep=is_deep,
         )
 
         if min_score > 0:
@@ -240,17 +259,24 @@ async def recall(query: str, tags: str = "", limit: int = 5, min_score: float = 
 
         items = [{
             "id": r.id,
+            "source": r.source,
             "content": r.snippet[:300],
             "type": r.memory_type or "",
             "tags": r.tags,
             "score": round(r.score, 3),
+            **({"time": time.strftime("%Y-%m-%d %H:%M", time.localtime(r.timestamp))} if r.timestamp else {}),
             **({"path": r.path} if r.source == "file" else {}),
+            **({"dataset": r.dataset_name} if r.dataset_name else {}),
         } for r in results]
 
         # 关联扩展：沿标签网络联想相关记忆（想到一件事 → 唤起相关的事）
-        related_items = await _recall_associations(results, mem_ids)
+        if is_deep:
+            related_items = await _recall_associations_deep(results, mem_ids)
+        else:
+            related_items = await _recall_associations(results, mem_ids)
         return json.dumps({
             "count": len(items),
+            "depth": "deep" if is_deep else "shallow",
             "results": items,
             "related": related_items,
         }, ensure_ascii=False)
@@ -280,6 +306,7 @@ async def _recall_associations(
     return [
         {
             "id": f"mem:{entry.id}",
+            "source": "memory",
             "content": entry.content[:300],
             "type": entry.memory_type.value,
             "tags": entry.tags,
@@ -288,6 +315,72 @@ async def _recall_associations(
         }
         for entry, score in related
     ]
+
+
+async def _recall_associations_deep(
+        results: list[MemorySearchResult],
+        existing_mem_ids: list[int],
+        *,
+        max_related: int = 6,
+) -> list[Dict[str, Any]]:
+    """深度联想：在一跳基础上再做二跳扩展（联想链），第二跳分数打 0.75 折。
+
+    一跳种子除主结果标签外，还会从 cognee 高分命中（score ≥ 0.5）的
+    provenance.anelf_memory_id 回库取对应记忆的标签——图谱先找到方向，
+    再回向量库深潜提取相邻记忆。
+    """
+    seed_results = results
+    if _store:
+        extra_tags: list[str] = []
+        for r in results:
+            if not r.source.startswith("cognee") or r.score < 0.5:
+                continue
+            mem_id = r.provenance.get("anelf_memory_id")
+            if not mem_id:
+                continue
+            try:
+                entry = await _store.get(int(mem_id))
+            except (TypeError, ValueError):
+                continue
+            if entry:
+                for tag in entry.tags:
+                    if tag.startswith(("user:", "group:", "topic:")) and tag not in extra_tags:
+                        extra_tags.append(tag)
+        if extra_tags:
+            seed_results = list(results) + [
+                MemorySearchResult(id="seed", snippet="", score=0.0, tags=extra_tags)
+            ]
+
+    hop1 = await _recall_associations(seed_results, existing_mem_ids, max_related=max_related)
+    if not _store or len(hop1) >= max_related:
+        return hop1
+
+    seen_ids = set(existing_mem_ids)
+    hop1_tags: list[str] = []
+    for item in hop1:
+        mem_id = int(str(item["id"]).split(":")[1])
+        seen_ids.add(mem_id)
+        for tag in item["tags"]:
+            if tag.startswith(("user:", "group:", "topic:")) and tag not in hop1_tags:
+                hop1_tags.append(tag)
+    if not hop1_tags:
+        return hop1
+
+    hop2 = await _store.search_associative(
+        hop1_tags, exclude_ids=seen_ids, limit=max_related - len(hop1),
+    )
+    for entry, score in hop2:
+        hop1.append({
+            "id": f"mem:{entry.id}",
+            "source": "memory",
+            "content": entry.content[:300],
+            "type": entry.memory_type.value,
+            "tags": entry.tags,
+            "score": round(score * 0.75, 3),
+            "related": True,
+            "hop": 2,
+        })
+    return hop1
 
 
 @deferred_tool(
@@ -426,18 +519,21 @@ async def update_memory(
 
 @deferred_tool(group="memory", tags=["core", "heartbeat"], source="mind.memory")
 async def forget(memory_id: int) -> str:
-    """删除指定 ID 的记忆。
+    """遗忘指定 ID 的记忆（软删除：移入归档，不参与召回，可由系统恢复）。
 
     Args:
-        memory_id: 要删除的记忆 ID
+        memory_id: 要遗忘的记忆 ID
     """
     try:
         if not _store:
             return _store_not_ready()
-        ok = await _store.delete(memory_id)
-        return json.dumps({"ok": ok, "message": f"记忆 {memory_id} {'已遗忘' if ok else '不存在'}"}, ensure_ascii=False)
+        ok = await _store.archive_memory(memory_id, reason="manual_forget")
+        return json.dumps({
+            "ok": ok,
+            "message": f"记忆 {memory_id} {'已遗忘（归档，可恢复）' if ok else '不存在'}",
+        }, ensure_ascii=False)
     except Exception as e:
-        return error_from_exception(e, action="删除记忆")
+        return error_from_exception(e, action="遗忘记忆")
 
 
 # ------------------------------------------------------------------

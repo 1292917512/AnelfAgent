@@ -164,6 +164,37 @@ _HIGH_PRIORITY_KEYWORDS = (
 # 一级标题分界点：之前为静态指南（归 stable 层），之后为动态状态（归 context 层）
 _DYNAMIC_SPLIT_MARKER = "# 当前状态"
 
+# 主便签中的系统受管状态区块标记：区块内容仅由心跳维护重写，AI/用户手写部分不动
+AUTO_STATUS_BEGIN = "<!-- AUTO:memory-status BEGIN -->"
+AUTO_STATUS_END = "<!-- AUTO:memory-status END -->"
+
+
+def update_memory_status_block(body: str) -> bool:
+    """更新主便签中的自动记忆状态区块，返回是否发生写入。
+
+    区块固定位于 `# 当前状态` 动态分界之后（context 层），避免污染 stable
+    层提示缓存；内容未变化时不写文件（避免无意义重索引与缓存失效）。
+    """
+    path = get_notes_path()
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    block = f"{AUTO_STATUS_BEGIN}\n{body.rstrip()}\n{AUTO_STATUS_END}"
+    if AUTO_STATUS_BEGIN in text and AUTO_STATUS_END in text:
+        pre, rest = text.split(AUTO_STATUS_BEGIN, 1)
+        _, post = rest.split(AUTO_STATUS_END, 1)
+        new_text = pre + block + post
+    elif _DYNAMIC_SPLIT_MARKER in text:
+        new_text = text.replace(
+            _DYNAMIC_SPLIT_MARKER,
+            _DYNAMIC_SPLIT_MARKER + "\n\n" + block + "\n",
+            1,
+        )
+    else:
+        new_text = text.rstrip() + f"\n\n{_DYNAMIC_SPLIT_MARKER}\n\n{block}\n"
+    if new_text == text:
+        return False
+    _atomic_write(path, new_text)
+    return True
+
 _SECTION_SPLIT_RE = re.compile(r"(?=^## )", re.MULTILINE)
 
 

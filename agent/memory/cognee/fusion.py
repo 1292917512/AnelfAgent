@@ -26,14 +26,20 @@ async def federated_search(
     limit: int,
     entity_scope: str = "",
     query_tags: Optional[list[str]] = None,
+    deep: bool = False,
 ) -> list[MemorySearchResult]:
-    """并行搜索原生后端和 Cognee，失败时透明降级。"""
+    """并行搜索原生后端和 Cognee，失败时透明降级。
+
+    deep=True 时使用 config.deep_search_types（含图谱类检索）替代
+    config.search_types，覆盖更广但更慢；仅用于主动深度召回。
+    """
     if not config.enabled or not config.recall_enabled or client is None:
         return (await native_search)[:limit]
 
     datasets = datasets_for_scope(config, entity_scope, query_tags)
+    search_types = config.deep_search_types or config.search_types if deep else config.search_types
     cognee_task = asyncio.create_task(
-        _search_cognee(client, config, query, datasets, limit),
+        _search_cognee(client, config, query, datasets, limit, search_types),
         name="memory.cognee.recall",
     )
     native_result, cognee_result = await asyncio.gather(
@@ -62,13 +68,14 @@ async def _search_cognee(
     query: str,
     datasets: list[str],
     limit: int,
+    search_types: Optional[list[str]] = None,
 ) -> list[MemorySearchResult]:
     availability = await client.initialize()
     if not availability.ready:
         return []
     pool_size = max(limit, limit * config.recall_pool_multiplier)
     tasks: list[Awaitable] = []
-    for search_type_name in config.search_types:
+    for search_type_name in search_types or config.search_types:
         try:
             search_type = client.search_type(search_type_name)
         except (AttributeError, RuntimeError):

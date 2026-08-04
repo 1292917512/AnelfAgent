@@ -171,3 +171,67 @@ class TestSimilarMerge:
         assert await store.get(drop) is None
         merged = await store.get(keep)
         assert set(merged.tags) == {"topic:x", "topic:y"}
+
+
+class TestRelaxImportance:
+    async def test_stale_high_importance_relaxed(self, store: MemoryStore) -> None:
+        mid = await store.add(_entry("强化过的记忆", importance=0.9))
+        adjusted = await store.relax_importance(stale_days=14, rate=0.1)
+        assert adjusted == 1
+        entry = await store.get(mid)
+        # 0.5 + (0.9 - 0.5) * 0.9 = 0.86
+        assert entry.importance == pytest.approx(0.86, abs=0.001)
+
+    async def test_recently_accessed_exempt(self, store: MemoryStore) -> None:
+        mid = await store.add(_entry("刚被想起的记忆", importance=0.9))
+        await store.record_access([mid])
+        adjusted = await store.relax_importance(stale_days=14, rate=0.1)
+        assert adjusted == 0
+        entry = await store.get(mid)
+        assert entry.importance == pytest.approx(0.92, abs=0.001)
+
+    async def test_permanent_exempt(self, store: MemoryStore) -> None:
+        await store.add(_entry("永久记忆", memory_type=MemoryType.PERMANENT, importance=1.0))
+        assert await store.relax_importance(stale_days=14, rate=0.1) == 0
+
+    async def test_below_baseline_untouched(self, store: MemoryStore) -> None:
+        mid = await store.add(_entry("低重要性记忆", importance=0.3))
+        assert await store.relax_importance(stale_days=14, rate=0.1) == 0
+        entry = await store.get(mid)
+        assert entry.importance == pytest.approx(0.3, abs=0.001)
+
+    async def test_zero_rate_disabled(self, store: MemoryStore) -> None:
+        await store.add(_entry("记忆", importance=0.9))
+        assert await store.relax_importance(stale_days=14, rate=0.0) == 0
+
+
+class TestManualForgetArchived:
+    async def test_forget_archives_and_restorable(self, store: MemoryStore, monkeypatch) -> None:
+        import json
+
+        from agent.memory import tools as mem_tools
+
+        monkeypatch.setattr(mem_tools, "_store", store)
+        mid = await store.add(_entry("待遗忘的记忆", importance=0.7))
+
+        result = json.loads(await mem_tools.forget(mid))
+        assert result["ok"] is True
+        assert await store.get(mid) is None
+        archived = await store.list_archived()
+        assert any(a["id"] == mid and a["reason"] == "manual_forget" for a in archived)
+
+        assert await store.restore_memory(mid) is True
+        assert (await store.get(mid)).content == "待遗忘的记忆"
+
+
+class TestCleanupLowImportanceArchived:
+    async def test_cleanup_archives_instead_of_delete(self, store: MemoryStore) -> None:
+        mid = await store.add(_entry(
+            "极低重要性老记忆", importance=0.01, age_hours=24 * 100,
+        ))
+        removed = await store.cleanup_low_importance(threshold=0.05, max_age_hours=24 * 90)
+        assert removed == 1
+        assert await store.get(mid) is None
+        archived = await store.list_archived()
+        assert any(a["id"] == mid for a in archived)
+        assert await store.restore_memory(mid) is True

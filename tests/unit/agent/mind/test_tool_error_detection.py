@@ -96,6 +96,15 @@ class TestCollectRoundErrorBriefs:
         briefs = _collect_round_error_briefs(chain, _named_calls("alpha"))
         assert briefs == ["alpha: 未知错误"]
 
+    def test_ok_false_extracts_stderr(self) -> None:
+        """shell 类工具失败无 error 键时，摘要应取 stderr 而非"未知错误"。"""
+        chain = _chain(json.dumps(
+            {"ok": False, "stdout": "", "stderr": "Connection closed by 127.0.0.1 port 7897"},
+            ensure_ascii=False,
+        ))
+        briefs = _collect_round_error_briefs(chain, _named_calls("run_shell_command"))
+        assert briefs == ["run_shell_command: Connection closed by 127.0.0.1 port 7897"]
+
     def test_long_error_truncated(self) -> None:
         chain = _chain(json.dumps({"error": "x" * 300}, ensure_ascii=False))
         briefs = _collect_round_error_briefs(chain, _named_calls("alpha"))

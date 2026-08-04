@@ -739,7 +739,7 @@ class MemoryService:
         goals: List[Dict[str, Any]] = []
         for entry, goal in await self._goal_entries(store):
             goal["memory_id"] = entry.id
-            goal["created_ts"] = entry.created_at
+            goal["created_ts"] = entry.timestamp
             if status == "all" or goal.get("status") == status:
                 goals.append(goal)
         return goals

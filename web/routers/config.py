@@ -577,9 +577,14 @@ async def update_task(name: str, data: TaskUpdate, folder: str = Query("")) -> D
             existing.pop(field, None)
     existing.pop("folder", None)
 
-    target_folder = new_folder if new_folder is not None else old_folder
+    if new_folder is not None and new_folder != old_folder:
+        moving = True
+        target_folder = new_folder
+    else:
+        moving = False
+        target_folder = old_folder
     target = _task_path(name, target_folder)
-    if new_folder is not None and target.exists():
+    if moving and target.exists():
         raise HTTPException(status_code=409, detail=f"任务 [{name}] 在目标文件夹已存在")
 
     try:
@@ -595,7 +600,7 @@ async def update_task(name: str, data: TaskUpdate, folder: str = Query("")) -> D
         except Exception:
             tmp.unlink(missing_ok=True)
             raise
-        if new_folder is not None and target != _task_path(name, old_folder):
+        if moving:
             _task_path(name, old_folder).unlink()
     except Exception as e:
         raise server_error("写入任务配置", e) from e

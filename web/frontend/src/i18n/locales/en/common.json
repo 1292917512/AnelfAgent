@@ -10,6 +10,7 @@
   "notFound": "Not Found",
   "success": "Success",
   "failed": "Failed",
+  "requestFailed": "Request failed",
   "status": "Status",
   "name": "Name",
   "create": "Create",

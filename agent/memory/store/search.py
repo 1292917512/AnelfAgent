@@ -91,7 +91,8 @@ class SearchEngine:
         params: list[Any] = list(tags)
         params.append(limit)
         cursor = await db.execute(
-            f"SELECT {MEM_COLUMNS} FROM memories WHERE {conditions} ORDER BY ts_ns DESC LIMIT ?",
+            f"SELECT {MEM_COLUMNS} FROM memories WHERE importance > 0 AND {conditions} "
+            "ORDER BY ts_ns DESC LIMIT ?",
             params,
         )
         rows = await cursor.fetchall()
@@ -115,7 +116,7 @@ class SearchEngine:
         conditions = " OR ".join(r"tags_json LIKE ? ESCAPE '\'" for _ in tags)
         params: list[Any] = [f'%"{escape_like(t)}"%' for t in tags]
         cursor = await db.execute(
-            f"SELECT {MEM_COLUMNS} FROM memories WHERE ({conditions}) "
+            f"SELECT {MEM_COLUMNS} FROM memories WHERE importance > 0 AND ({conditions}) "
             "ORDER BY ts_ns DESC LIMIT 200",
             params,
         )
@@ -157,7 +158,7 @@ class SearchEngine:
                 SELECT {fts_select}, rank
                 FROM memories_fts f
                 JOIN memories m ON m.id = f.rowid
-                WHERE memories_fts MATCH ?
+                WHERE memories_fts MATCH ? AND m.importance > 0
                 ORDER BY rank
                 LIMIT ?
                 """,
@@ -185,7 +186,8 @@ class SearchEngine:
         params: list[Any] = [f"%{escape_like(kw)}%" for kw in keywords]
         params.append(limit)
         cursor = await db.execute(
-            f"SELECT {MEM_COLUMNS} FROM memories WHERE ({conditions}) ORDER BY ts_ns DESC LIMIT ?",
+            f"SELECT {MEM_COLUMNS} FROM memories WHERE importance > 0 AND ({conditions}) "
+            "ORDER BY ts_ns DESC LIMIT ?",
             params,
         )
         rows = await cursor.fetchall()
@@ -239,7 +241,7 @@ class SearchEngine:
         db = await self._conn.get_db()
         cursor = await db.execute(
             f"SELECT {MEM_COLUMNS} FROM memories WHERE embedding_blob IS NOT NULL "
-            "AND id > ? ORDER BY id LIMIT ?",
+            "AND importance > 0 AND id > ? ORDER BY id LIMIT ?",
             (last_id, batch_size),
         )
         rows = await cursor.fetchall()
@@ -283,7 +285,8 @@ class SearchEngine:
         ids = [int(r["rowid"]) for r in vec_rows]
         placeholders = ",".join("?" for _ in ids)
         cursor = await db.execute(
-            f"SELECT {MEM_COLUMNS} FROM memories WHERE id IN ({placeholders})", ids,
+            f"SELECT {MEM_COLUMNS} FROM memories WHERE importance > 0 AND id IN ({placeholders})",
+            ids,
         )
         entries = {int(row["id"]): row_to_entry(row) for row in await cursor.fetchall()}
 
@@ -309,12 +312,14 @@ class SearchEngine:
         query_tags: Optional[list[str]] = None,
         limit: int = 10,
         min_score: float = 0.1,
+        require_tags: Optional[list[str]] = None,
     ) -> list[tuple[MemoryEntry, float]]:
         """混合搜索：向量 + FTS 两路并行，取并集后统一评分。
 
         LIKE 全表扫描兜底由 search_fts 内部覆盖（FTS 不可用或异常时自动回退），
         不再作为独立一路重复执行（FTS 可用时 LIKE 与 FTS 命中高度重叠，
         却每次召回都付出一次全表扫描成本）。
+        require_tags 为硬过滤：记忆必须包含全部指定标签才进入评分。
         """
         pool_size = limit * 5
 
@@ -346,9 +351,12 @@ class SearchEngine:
                 candidates[eid] = (entry, vec_score, 0.0, 0.0)
 
         q_tags = query_tags or []
+        hard_tags = set(require_tags or [])
         results: list[tuple[MemoryEntry, float]] = []
 
         for entry, vec_score, fts_score, like_score in candidates.values():
+            if hard_tags and not hard_tags.issubset(entry.tags):
+                continue
             tag_score = tag_match_score(q_tags, entry.tags) if q_tags else 0.0
             text_score = max(fts_score, like_score)
             semantic = vec_score * _W_VEC + text_score * _W_FTS + tag_score * _W_TAG
@@ -375,8 +383,13 @@ class SearchEngine:
         query_tags: Optional[list[str]] = None,
         limit: int = 10,
         min_score: float = 0.1,
+        require_tags: Optional[list[str]] = None,
     ) -> list[MemorySearchResult]:
-        """统一搜索：同时检索 memories 表和 chunks 表，合并排序返回。"""
+        """统一搜索：同时检索 memories 表和 chunks 表，合并排序返回。
+
+        require_tags 为硬过滤（仅 memories 轨生效；文件 chunk 无标签体系，
+        启用硬过滤时不再返回文件结果）。
+        """
         pool_size = limit * 3
 
         # memories 搜索 + chunks 搜索并行执行
@@ -384,12 +397,21 @@ class SearchEngine:
         async def _empty_chunk_vec() -> list[Dict[str, Any]]:
             return []
 
+        async def _empty_chunk_fts() -> list[Dict[str, Any]]:
+            return []
+
         mem_coro = self.search_hybrid(
             query=query, query_vec=query_vec, query_tags=query_tags,
-            limit=pool_size, min_score=min_score,
+            limit=pool_size, min_score=min_score, require_tags=require_tags,
         )
-        chunk_vec_coro = self._file_index.search_chunks_vector(query_vec, limit=pool_size, min_score=0.05) if query_vec else _empty_chunk_vec()
-        chunk_fts_coro = self._file_index.search_chunks_fts(query, limit=pool_size)
+        chunk_vec_coro = (
+            self._file_index.search_chunks_vector(query_vec, limit=pool_size, min_score=0.05)
+            if query_vec and not require_tags else _empty_chunk_vec()
+        )
+        chunk_fts_coro = (
+            self._file_index.search_chunks_fts(query, limit=pool_size)
+            if not require_tags else _empty_chunk_fts()
+        )
 
         mem_results, chunk_vec_results, chunk_fts_results = await asyncio.gather(
             mem_coro, chunk_vec_coro, chunk_fts_coro,
@@ -433,6 +455,7 @@ class SearchEngine:
                 source="memory",
                 memory_type=entry.memory_type.value,
                 tags=entry.tags,
+                timestamp=entry.timestamp,
             ))
 
         unified.extend(chunk_results)

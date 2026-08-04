@@ -150,3 +150,40 @@ class TestDeleteExpiredEvent:
         assert notes.delete_memory_file(expired[0].path) is True
         assert not target.exists()
         assert notes.list_expired_events(30, today=_TODAY) == []
+
+
+# ==================================================================
+# 自动记忆状态区块（心跳受管区）
+# ==================================================================
+
+class TestUpdateMemoryStatusBlock:
+    def _write_main(self, memory_dir: Path, content: str) -> Path:
+        main = memory_dir / "memory.md"
+        main.write_text(content, encoding="utf-8")
+        return main
+
+    def test_insert_after_dynamic_marker(self, memory_dir: Path) -> None:
+        main = self._write_main(memory_dir, "# 指南\n\n# 当前状态\n\n## 手写区\n内容\n")
+        assert notes.update_memory_status_block("## 记忆系统状态\n- 活跃记忆：10 条") is True
+        text = main.read_text(encoding="utf-8")
+        assert text.index("# 当前状态") < text.index(notes.AUTO_STATUS_BEGIN)
+        assert "活跃记忆：10 条" in text
+        assert "## 手写区" in text  # 手写内容保留
+
+    def test_replace_existing_block_keeps_handwritten(self, memory_dir: Path) -> None:
+        main = self._write_main(
+            memory_dir,
+            "# 指南\n\n# 当前状态\n\n"
+            f"{notes.AUTO_STATUS_BEGIN}\n旧状态\n{notes.AUTO_STATUS_END}\n\n## 手写区\n内容\n",
+        )
+        notes.update_memory_status_block("新状态")
+        text = main.read_text(encoding="utf-8")
+        assert "新状态" in text and "旧状态" not in text
+        assert "## 手写区" in text
+
+    def test_no_change_no_write(self, memory_dir: Path) -> None:
+        main = self._write_main(memory_dir, "# 指南\n\n# 当前状态\n")
+        assert notes.update_memory_status_block("状态A") is True
+        mtime = main.stat().st_mtime_ns
+        assert notes.update_memory_status_block("状态A") is False
+        assert main.stat().st_mtime_ns == mtime

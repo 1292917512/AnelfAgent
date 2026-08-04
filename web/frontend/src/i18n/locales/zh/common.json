@@ -10,6 +10,7 @@
   "notFound": "未找到",
   "success": "成功",
   "failed": "失败",
+  "requestFailed": "请求失败",
   "status": "状态",
   "name": "名称",
   "create": "创建",

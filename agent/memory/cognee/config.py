@@ -107,6 +107,11 @@ class CogneeConfig:
     search_types: list[str] = field(
         default_factory=lambda: ["CHUNKS", "CHUNKS_LEXICAL"],
     )
+    # 深度召回（recall depth=deep）使用的搜索类型：在浅召回基础上追加图谱类检索。
+    # 不支持的类型在运行时被静默跳过，保持向后兼容。
+    deep_search_types: list[str] = field(
+        default_factory=lambda: ["CHUNKS", "CHUNKS_LEXICAL", "GRAPH_COMPLETION"],
+    )
     chat: CogneeChatModelConfig = field(default_factory=CogneeChatModelConfig)
     embedding: CogneeEmbeddingModelConfig = field(default_factory=CogneeEmbeddingModelConfig)
 
@@ -130,6 +135,7 @@ class CogneeConfig:
         self.recall_pool_multiplier = max(1, int(self.recall_pool_multiplier))
         self.dataset_prefix = self.dataset_prefix.strip() or "anelf"
         self.search_types = [str(item).strip().upper() for item in self.search_types if str(item).strip()]
+        self.deep_search_types = [str(item).strip().upper() for item in self.deep_search_types if str(item).strip()]
         if not isinstance(self.chat, CogneeChatModelConfig):
             self.chat = _build_nested(CogneeChatModelConfig, self.chat)
         if not isinstance(self.embedding, CogneeEmbeddingModelConfig):

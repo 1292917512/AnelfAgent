@@ -103,6 +103,30 @@ class TestTaskCrud:
         )
         assert r.status_code == 400
 
+    def test_update_with_same_folder_in_body(self, client: TestClient, sample_task: dict) -> None:
+        """回归：前端保存会把列表注入的 folder 字段一并 PUT 回来，
+        folder 未变化时不得误判为「移动到已有目录」而 409。"""
+        client.post("/api/config/tasks", json=sample_task)
+
+        r = client.put(
+            "/api/config/tasks/demo_task",
+            json={"description": "原地保存", "folder": ""},
+        )
+        assert r.status_code == 200
+        assert r.json()["description"] == "原地保存"
+        assert r.json()["folder"] == ""
+
+    def test_update_move_conflict_409(self, client: TestClient, sample_task: dict) -> None:
+        """仅在真正移动且目标位置已有同名任务时才返回 409。"""
+        client.post("/api/config/tasks", json=sample_task)
+        client.post("/api/config/tasks", json={**sample_task, "folder": "daily"})
+
+        r = client.put(
+            "/api/config/tasks/demo_task",
+            json={"folder": "daily"},
+        )
+        assert r.status_code == 409
+
     def test_delete(self, client: TestClient, sample_task: dict) -> None:
         client.post("/api/config/tasks", json=sample_task)
         r = client.delete("/api/config/tasks/demo_task")

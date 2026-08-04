@@ -261,16 +261,20 @@ class HeartbeatEngine:
 
         # 记忆整理：遗忘低价值记忆 + 类型上限 + 高相似合并 + cognee 同步（人脑"睡眠整理"）
         # 全量扫描成本较高，按每 N 个 tick 执行一次（默认 12，约每小时一次）
+        consolidate_report = None
         try:
             from core.config import get_config_int
             consolidate_every = max(1, get_config_int("memory_consolidate_every_n_ticks", 12))
             if self.mind.memory_store and self._total_ticks % consolidate_every == 0:
                 from agent.memory.consolidator import MemoryConsolidator
-                report = await MemoryConsolidator(self.mind.memory_store).consolidate()
-                for line in report.to_log_lines():
+                consolidate_report = await MemoryConsolidator(self.mind.memory_store).consolidate()
+                for line in consolidate_report.to_log_lines():
                     hb_log.append_entry(f"[记忆整理] {line}")
         except Exception as e:
             log(f"记忆整理失败: {e}", "DEBUG", tag="心跳")
+
+        # 主便签记忆状态区块：让 AI 随时了解自己的记忆情况（内容不变时不写）
+        await self._write_memory_status(consolidate_report)
 
         # 过期日期便签归档：提炼进长期记忆（自动同步 cognee）后删除文件
         try:
@@ -331,9 +335,11 @@ class HeartbeatEngine:
             log(f"Lifecycle tick 失败: {e}", "DEBUG", tag="心跳")
 
     async def _check_memory_health(self) -> List[str]:
-        """记忆健康检查：纯逻辑检查阈值。"""
+        """记忆健康检查：纯逻辑检查阈值（与 memory_stats 共用同一配置口径）。"""
         if not self.mind.memory_store:
             return []
+        from core.config import get_config_int
+        warn_threshold = get_config_int("memory_warn_threshold", 200)
         warnings: List[str] = []
         try:
             type_counts = await self.mind.memory_store.get_type_counts()
@@ -352,13 +358,74 @@ class HeartbeatEngine:
             for mem_type, count in type_counts.items():
                 if mem_type in ("entity", "reflection"):
                     continue
-                if count > 200:
-                    warnings.append(f"{mem_type} 记忆有 {count} 条（阈值 200），建议整理")
+                if count > warn_threshold:
+                    warnings.append(f"{mem_type} 记忆有 {count} 条（阈值 {warn_threshold}），建议整理")
         except Exception as exc:
             log(f"记忆阈值检查异常: {exc}", "WARNING", tag="心跳")
         if warnings:
             log(f"记忆阈值预警: {len(warnings)} 条", tag="心跳")
         return warnings
+
+    # 便签容量建议（行数），与主便签指南中的容量建议保持一致
+    _NOTES_CAPACITY = {
+        "knowledge.md": 500,
+        "reflections.md": 500,
+        "entities.md": 1000,
+    }
+
+    async def _write_memory_status(self, consolidate_report: Any = None) -> None:
+        """将记忆系统状态写入主便签受管区块（让 AI 随时了解自己的记忆情况）。"""
+        store = self.mind.memory_store
+        if not store:
+            return
+        try:
+            from agent.memory import notes as notes_mod
+            type_counts = await store.get_type_counts()
+            total = sum(type_counts.values())
+            archived = await store.count_archived()
+            dist = " / ".join(
+                f"{t} {c}" for t, c in sorted(type_counts.items(), key=lambda kv: -kv[1])
+            )
+            lines = [
+                "## 记忆系统状态（系统自动维护，勿手改）",
+                "",
+                f"- 活跃记忆：{total} 条（{dist}）",
+                f"- 已归档：{archived} 条（遗忘/手动归档，可由系统恢复）",
+            ]
+            try:
+                from agent.memory.cognee.config import load_cognee_config
+                if load_cognee_config().enabled:
+                    from agent.memory.cognee.runtime import get_cognee_coordinator
+                    coordinator = get_cognee_coordinator()
+                    pending = 0
+                    if coordinator is not None:
+                        status = await coordinator.status()
+                        pending = getattr(status, "pending", 0) or 0
+                    lines.append(f"- cognee 图谱：已启用，同步积压 {pending} 条")
+                else:
+                    lines.append("- cognee 图谱：未启用")
+            except Exception:
+                pass
+            if consolidate_report is not None:
+                parts: List[str] = []
+                if consolidate_report.forgotten_count:
+                    parts.append(f"遗忘 {consolidate_report.forgotten_count}")
+                if consolidate_report.relaxed_count:
+                    parts.append(f"松弛 {consolidate_report.relaxed_count}")
+                if consolidate_report.merged_count:
+                    parts.append(f"合并 {consolidate_report.merged_count}")
+                stamp = datetime.now().strftime("%m-%d %H:%M")
+                lines.append(f"- 最近整理（{stamp}）：{' · '.join(parts) if parts else '无需整理'}")
+            for fname, cap in self._NOTES_CAPACITY.items():
+                fpath = notes_mod.get_memory_dir() / fname
+                if fpath.exists():
+                    with fpath.open(encoding="utf-8") as fp:
+                        line_count = sum(1 for _ in fp)
+                    if line_count > cap:
+                        lines.append(f"- ⚠️ 便签超标：{fname} {line_count} 行（建议 ≤{cap}），需提炼压缩")
+            notes_mod.update_memory_status_block("\n".join(lines))
+        except Exception as exc:
+            log(f"记忆状态区块写入失败: {exc}", "DEBUG", tag="心跳")
 
     # ------------------------------------------------------------------
     # 过期日期便签归档

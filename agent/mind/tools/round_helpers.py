@@ -708,6 +708,11 @@ def _check_tool_results_all_errors(
     return True
 
 
+# 失败 payload 中错误描述字段的回退顺序（error 为统一主信号键，
+# 其余兼容未走 tool_error 的工具：shell 类用 stderr、部分业务工具用 message/detail）
+_ERROR_TEXT_KEYS = ("error", "message", "stderr", "detail")
+
+
 def _extract_error_text(payload: Any) -> str:
     """从工具结果 payload（dict 或 JSON 字符串）中提取错误文本，无错误返回空串。"""
     if isinstance(payload, str):
@@ -715,7 +720,11 @@ def _extract_error_text(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
     if payload.get("success") is False or payload.get("ok") is False:
-        return str(payload.get("error", "") or "未知错误")
+        for key in _ERROR_TEXT_KEYS:
+            value = payload.get(key)
+            if value:
+                return str(value)
+        return "未知错误"
     if payload.get("error"):
         return str(payload["error"])
     return ""

@@ -2,11 +2,12 @@
 
 每次心跳维护周期执行：
 1. 遗忘：清理低有效分的非永久记忆（importance × 时间衰减 × 访问强化）
-2. 上限：每类记忆超限时删除最低分条目
-3. 合并：向量相似度 > 阈值的高相似记忆自动合并
-4. 清理：过期 embedding 缓存
-5. 归档：物理删除超过保留期的归档记忆（防归档表无限增长）
-6. 同步：cognee 队列积压检查与唤醒
+2. 松弛：长期未访问记忆的 importance 向基线回归（对称化召回强化，防趋同）
+3. 上限：每类记忆超限时归档最低分条目
+4. 合并：向量相似度 > 阈值的高相似记忆自动合并
+5. 清理：过期 embedding 缓存
+6. 归档：物理删除超过保留期的归档记忆（防归档表无限增长）
+7. 同步：cognee 队列积压检查与唤醒
 
 全部确定性操作（无 LLM 调用），报告写入心跳日志。
 """
@@ -27,6 +28,7 @@ class ConsolidationReport:
 
     forgotten_count: int = 0
     forgotten_previews: List[str] = field(default_factory=list)
+    relaxed_count: int = 0
     limit_removed: Dict[str, int] = field(default_factory=dict)
     merged_count: int = 0
     cache_cleaned: int = 0
@@ -39,6 +41,8 @@ class ConsolidationReport:
         lines: List[str] = []
         if self.forgotten_count:
             lines.append(f"遗忘 {self.forgotten_count} 条低价值记忆")
+        if self.relaxed_count:
+            lines.append(f"重要性松弛 {self.relaxed_count} 条（向基线回归）")
         if self.limit_removed:
             detail = ", ".join(f"{t}:{n}" for t, n in self.limit_removed.items())
             lines.append(f"类型上限清理 {detail}")
@@ -82,14 +86,24 @@ class MemoryConsolidator:
             report.errors.append(f"遗忘执行失败: {exc}")
             log(f"记忆遗忘执行失败: {exc}", "WARNING", tag="记忆")
 
-        # 2. 类型上限强制
+        # 2. 重要性松弛（对称化 record_access 的单向强化，防止趋同 1.0）
+        try:
+            report.relaxed_count = await self._store.relax_importance(
+                stale_days=get_config_int("memory_importance_relax_days", 14),
+                rate=get_config_float("memory_importance_relax_rate", 0.05),
+            )
+        except Exception as exc:
+            report.errors.append(f"重要性松弛失败: {exc}")
+            log(f"记忆重要性松弛失败: {exc}", "WARNING", tag="记忆")
+
+        # 3. 类型上限强制
         try:
             report.limit_removed = await self._store.enforce_type_limits()
         except Exception as exc:
             report.errors.append(f"上限清理失败: {exc}")
             log(f"记忆上限清理失败: {exc}", "WARNING", tag="记忆")
 
-        # 3. 高相似记忆自动合并
+        # 4. 高相似记忆自动合并
         try:
             threshold = get_config_float("memory_merge_similarity", 0.92)
             pairs = await self._store.find_similar_memories(threshold)
@@ -107,13 +121,13 @@ class MemoryConsolidator:
             report.errors.append(f"相似合并失败: {exc}")
             log(f"记忆相似合并失败: {exc}", "WARNING", tag="记忆")
 
-        # 4. embedding 缓存清理
+        # 5. embedding 缓存清理
         try:
             report.cache_cleaned = await self._store.clean_embedding_cache()
         except Exception as exc:
             report.errors.append(f"缓存清理失败: {exc}")
 
-        # 5. 超期归档物理删除（0 = 永久保留归档）
+        # 6. 超期归档物理删除（0 = 永久保留归档）
         try:
             report.archive_purged = await self._store.purge_archived_memories(
                 get_config_int("memory_archive_retention_days", 90),
@@ -121,7 +135,7 @@ class MemoryConsolidator:
         except Exception as exc:
             report.errors.append(f"归档清理失败: {exc}")
 
-        # 6. cognee 同步队列检查与唤醒
+        # 7. cognee 同步队列检查与唤醒
         try:
             report.cognee_pending = await self._check_cognee_sync()
         except Exception as exc:
@@ -174,6 +188,14 @@ _CONSOLIDATOR_CONFIGS = {
         "memory_forget_score_threshold": {
             "description": "遗忘有效分阈值（低于此分且超过最小年龄的记忆被清理）",
             "default": 0.08,
+        },
+        "memory_importance_relax_days": {
+            "description": "重要性松弛：超过 N 天未被访问的记忆 importance 开始向基线 0.5 回归",
+            "default": 14,
+        },
+        "memory_importance_relax_rate": {
+            "description": "重要性松弛速率（每次整理向基线回归的比例，0-1，0 = 关闭）",
+            "default": 0.05,
         },
         "memory_merge_similarity": {
             "description": "高相似记忆自动合并的向量相似度阈值",

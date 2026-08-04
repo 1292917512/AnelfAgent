@@ -69,6 +69,8 @@ class MemorySearchResult(BaseModel):
     memory_type: Optional[str] = None
     """原始 MemoryType 值（仅 memory 来源有值）。"""
     tags: List[str] = Field(default_factory=list)
+    timestamp: float = 0.0
+    """记忆写入时间（Unix 秒，仅 memory 来源有值）。"""
     dataset_id: str = ""
     dataset_name: str = ""
     provenance: Dict[str, Any] = Field(default_factory=dict)

@@ -307,6 +307,16 @@ class MemoryStore(BaseEntity):
             # FTS 触发器会自动处理 DELETE
         return (cursor.rowcount or 0) > 0
 
+    async def archive_memory(self, memory_id: int, reason: str = "manual_forget") -> bool:
+        """软删除：将记忆移入归档表（不参与召回，可 restore_memory 恢复）。"""
+        entry = await self.get(memory_id)
+        if entry is None:
+            return False
+        db = await self._get_db()
+        async with self._tx(db):
+            await self._archive_entry(entry, reason)
+        return True
+
     async def clear(
         self,
         memory_type: Optional[MemoryType] = None,
@@ -422,6 +432,30 @@ class MemoryStore(BaseEntity):
                 (now_ns, *memory_ids),
             )
 
+    async def relax_importance(self, stale_days: int = 14, rate: float = 0.05) -> int:
+        """重要性松弛：长期未被访问的非永久记忆，importance 向基线 0.5 缓慢回归。
+
+        对称化 record_access 的 +0.02 强化——强化只升不降会导致 importance
+        长期趋同于 1.0 失去区分度。每次整理对超过 stale_days 未访问且高于
+        基线的记忆按比例下调；低于基线的交给有效分时间衰减与遗忘流程。
+        permanent 与已合并（importance=0）记忆豁免。
+        批量 SQL 不同步 cognee 投影（避免每轮整理产生大量投影重写），
+        投影中的 importance 随该记忆下一次正常写入刷新。
+        Returns: 调整条数。
+        """
+        if rate <= 0:
+            return 0
+        db = await self._get_db()
+        cutoff_ns = int((time.time() - stale_days * 86400) * 1e9)
+        async with self._tx(db):
+            cursor = await db.execute(
+                "UPDATE memories SET importance = 0.5 + (importance - 0.5) * (1.0 - ?) "
+                "WHERE importance > 0.5 AND type != 'permanent' "
+                "AND COALESCE(last_accessed_ns, ts_ns) < ?",
+                (min(rate, 1.0), cutoff_ns),
+            )
+        return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+
     # ------------------------------------------------------------------
     # 遗忘机制（有效分评估 + 自动清理）
     # ------------------------------------------------------------------
@@ -494,6 +528,13 @@ class MemoryStore(BaseEntity):
                     entry_projection_payload(entry, memory_id),
                 )
         return True
+
+    async def count_archived(self) -> int:
+        """归档表中的记忆条数（状态展示用）。"""
+        db = await self._get_db()
+        cursor = await db.execute("SELECT COUNT(*) AS cnt FROM memories_archive")
+        row = await cursor.fetchone()
+        return int(row["cnt"]) if row else 0
 
     async def list_archived(self, limit: int = 50) -> list[Dict[str, Any]]:
         """列出已归档的记忆（遗忘记录）。"""
@@ -810,11 +851,12 @@ class MemoryStore(BaseEntity):
         query_tags: Optional[list[str]] = None,
         limit: int = 10,
         min_score: float = 0.1,
+        require_tags: Optional[list[str]] = None,
     ) -> list[MemorySearchResult]:
         """统一搜索：同时检索 memories 表和 chunks 表，合并排序返回。"""
         return await self._search.search_unified(
             query=query, query_vec=query_vec, query_tags=query_tags,
-            limit=limit, min_score=min_score,
+            limit=limit, min_score=min_score, require_tags=require_tags,
         )
 
     async def has_similar_content(self, content: str, min_overlap: float = 0.6) -> bool:
@@ -947,22 +989,22 @@ class MemoryStore(BaseEntity):
         return new_id
 
     async def cleanup_low_importance(self, threshold: float = 0.05, max_age_hours: float = 24 * 90) -> int:
+        """清理极低重要性老记忆：移入归档（软删除，可 restore），而非物理删除。
+
+        与 forget_weak_memories 保持一致的归档语义；物理删除只发生在
+        purge_archived_memories 的归档超期清理。
+        """
         db = await self._get_db()
         cutoff_ts = int((time.time() - max_age_hours * 3600) * 1e9)
         ids_cursor = await db.execute(
-            "SELECT id FROM memories WHERE importance < ? AND ts_ns < ? AND type != ?",
+            f"SELECT {_MEM_COLUMNS} FROM memories WHERE importance < ? AND ts_ns < ? AND type != ?",
             (threshold, cutoff_ts, MemoryType.PERMANENT.value),
         )
-        memory_ids = [int(row["id"]) for row in await ids_cursor.fetchall()]
+        entries = [row_to_entry(row) for row in await ids_cursor.fetchall()]
         async with self._tx(db):
-            cursor = await db.execute(
-                "DELETE FROM memories WHERE importance < ? AND ts_ns < ? AND type != ?",
-                (threshold, cutoff_ts, MemoryType.PERMANENT.value),
-            )
-            await self._conn.vec_delete_memories(db, memory_ids)
-            for memory_id in memory_ids:
-                await self._cognee.enqueue_sync(db, memory_id, "delete")
-        return cursor.rowcount or 0
+            for entry in entries:
+                await self._archive_entry(entry, "极低重要性清理")
+        return len(entries)
 
     # ------------------------------------------------------------------
     # 健康状态
