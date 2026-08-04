@@ -85,7 +85,8 @@
     "empty": "工作区为空",
     "dragHint": "拖拽文件到输入框即可注入对话",
     "rootWorkspace": "工作区",
-    "rootProject": "项目"
+    "rootProject": "项目",
+    "truncated": "条目过多，仅显示部分内容"
   },
   "editor": {
     "save": "保存",

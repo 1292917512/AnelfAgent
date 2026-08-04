@@ -5,6 +5,20 @@
     "create": "Create",
     "logs": "Download Logs"
   },
+  "types": {
+    "file": {
+      "name": "File Download",
+      "desc": "Visitors download the file directly; works for any file"
+    },
+    "media": {
+      "name": "Media Render",
+      "desc": "Preview image/video/audio/PDF/HTML in browser, no download needed"
+    },
+    "link": {
+      "name": "Website Push",
+      "desc": "Share a deployed website as a card with preview and direct access"
+    }
+  },
   "stats": {
     "total": "Total Links",
     "active": "Active",
@@ -17,6 +31,7 @@
     "fileName": "File Name",
     "filePath": "File Path",
     "fileSize": "Size",
+    "targetUrl": "Target URL",
     "description": "Description",
     "expiresAt": "Expires At",
     "createdAt": "Created At",
@@ -41,6 +56,7 @@
     "copy": "Copy URL",
     "copyToken": "Copy Token",
     "download": "Download",
+    "openPreview": "Open Preview",
     "refresh": "Refresh",
     "search": "Search",
     "filter": "Filter",
@@ -59,6 +75,8 @@
   "messages": {
     "createSuccess": "Share link created",
     "createFailed": "Create failed",
+    "fileRequired": "File path is required",
+    "targetUrlRequired": "Target URL is required for link type",
     "revokeSuccess": "Link revoked",
     "revokeFailed": "Revoke failed",
     "copySuccess": "Copied to clipboard",
@@ -76,5 +94,6 @@
   "downloadUrl": "Download URL",
   "unlimited": "Unlimited",
   "filePathHint": "Relative or absolute path inside the workspace sandbox",
+  "targetUrlHint": "Must start with http:// or https://, e.g. http://127.0.0.1:8080",
   "workspaceEmpty": "Workspace is empty"
 }

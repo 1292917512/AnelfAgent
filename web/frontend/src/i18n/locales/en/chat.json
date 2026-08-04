@@ -7,6 +7,7 @@
   "user": "User",
   "sendFailed": "Send failed",
   "downloadFile": "Download file",
+  "mediaLoadFailed": "Media failed to load (link may be expired)",
   "queued": "Queued · will be handled after current reply",
   "activity": {
     "usingTool": "Using tool: {{tool}}",

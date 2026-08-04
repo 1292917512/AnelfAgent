@@ -8,6 +8,7 @@ import { useDelegationStore } from "@/stores/delegation-store";
 import { MediaBubble } from "./render/MediaBubble";
 import { PlanCard } from "./render/PlanCard";
 import { DelegationCard } from "./render/DelegationCard";
+import { ShareCard } from "./render/ShareCard";
 import { SystemNotice } from "./render/SystemNotice";
 import { ToolSummaryCard } from "./render/ToolSummaryCard";
 import { ToolCallsCard } from "./render/ToolCallsCard";
@@ -45,6 +46,7 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
           <ToolCallsCard tools={msg.toolCalls} />
         )}
         {msg.media_type && <MediaBubble msg={msg} />}
+        {!isUser && msg.share && <ShareCard share={msg.share} />}
         {msg.content && (
           <div
             className={cn(
@@ -87,19 +89,35 @@ export function MessageList() {
   const prevFirstKey = useRef<string | null>(null);
   const prevLastKey = useRef<string | null>(null);
   const prevScrollHeight = useRef(0);
+  // 用户是否停留在底部附近（吸底判定：上翻阅读时新消息不打断）
+  const nearBottomRef = useRef(true);
+
+  // 监听滚动维护 nearBottom 状态（被动监听，不影响滚动性能）
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
 
   const chatPlans = usePlanStore((s) => s.plans[activeChatId]);
   // 悬浮窗可见时计划由浮窗唯一展示，聊天流不重复渲染；关闭浮窗后回落到聊天流
   const panelHidden = usePlanStore((s) => s.panelHidden);
   const chatDelegations = useDelegationStore((s) => s.delegations[activeChatId]);
 
-  // 把 messages / plans / delegations 按时间序合并到同一条时间线（输入不变时复用结果）
+  // 把 messages / plans / delegations 按时间序合并到同一条时间线（输入不变时复用结果）。
+  // 排序键统一用 epoch 秒：历史消息由后端 ts_ns 换算返回，本地/SSE 消息打到达时刻，
+  // 与 plan.created_at / delegation.started_at 同源——此前消息误用 DB 自增 id，
+  // 与 epoch 数量级不一致导致 plan/delegation 卡片永远排在最底部
   const timeline = useMemo<TimelineEntry[]>(() => {
     const entries: TimelineEntry[] = [];
-    // 本地新消息只有 cid 没有 DB id，继承前一条的 ts 保持追加在后（sort 稳定，同键保序）
+    // 无 ts 的旧数据继承前一条的 ts，保持消息间相对顺序（sort 稳定，同键保序）
     let lastMsgTs = 0;
     for (const m of messages ?? []) {
-      const ts = m.id ?? lastMsgTs;
+      const ts = m.ts ?? lastMsgTs;
       lastMsgTs = ts;
       entries.push({
         kind: "message",
@@ -149,7 +167,13 @@ export function MessageList() {
     } else if (prepended) {
       el.scrollTo({ top: el.scrollHeight - prevScrollHeight.current + el.scrollTop });
     } else {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      // 吸底策略：本人刚发的消息强制吸底；其余仅当用户停留在底部附近才跟随，
+      // 上翻阅读历史时新消息/plan/delegation 更新不打断当前位置
+      const lastMsg = list[list.length - 1];
+      const sentByMe = lastMsg?.role === "user" && lastKey !== prevLastKey.current;
+      if (sentByMe || nearBottomRef.current) {
+        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      }
     }
     prevFirstKey.current = firstKey;
     prevLastKey.current = lastKey;

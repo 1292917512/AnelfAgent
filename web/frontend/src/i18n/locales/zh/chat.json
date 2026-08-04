@@ -7,6 +7,7 @@
   "user": "用户",
   "sendFailed": "发送失败",
   "downloadFile": "下载文件",
+  "mediaLoadFailed": "媒体加载失败（链接可能已失效）",
   "queued": "排队中 · 将于当前回复后处理",
   "activity": {
     "usingTool": "正在使用工具: {{tool}}",

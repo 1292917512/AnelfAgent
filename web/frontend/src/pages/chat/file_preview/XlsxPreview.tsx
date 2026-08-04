@@ -12,10 +12,14 @@ const TABLE_CSS = `
   td, th { padding: 3px 8px; white-space: nowrap; }
 `;
 
+/** 单 Sheet 预览的最大行数（超出部分省略，避免大工作簿卡死主线程） */
+const MAX_ROWS = 1000;
+
 /** 单个 Sheet 的渲染结果 */
 interface SheetDoc {
   name: string;
   doc: string;
+  truncated: boolean;
 }
 
 interface XlsxPreviewProps {
@@ -47,7 +51,24 @@ export function XlsxPreview({ path, title, root = "workspace" }: XlsxPreviewProp
         for (const name of wb.SheetNames) {
           const sheet = wb.Sheets[name];
           if (!sheet) continue;
-          parsed.push({ name, doc: wrapPreviewDocument(XLSX.utils.sheet_to_html(sheet), TABLE_CSS) });
+          // 行数截断：钳制 !ref 范围后转换，sheet_to_html 尊重 !ref（超出单元格不再渲染）
+          let target = sheet;
+          let truncated = false;
+          const ref = sheet["!ref"];
+          if (ref) {
+            const range = XLSX.utils.decode_range(ref);
+            if (range.e.r - range.s.r + 1 > MAX_ROWS) {
+              target = {
+                ...sheet,
+                "!ref": XLSX.utils.encode_range({
+                  s: range.s,
+                  e: { r: range.s.r + MAX_ROWS - 1, c: range.e.c },
+                }),
+              };
+              truncated = true;
+            }
+          }
+          parsed.push({ name, doc: wrapPreviewDocument(XLSX.utils.sheet_to_html(target), TABLE_CSS), truncated });
         }
         if (parsed.length === 0) throw new Error("no sheets");
         if (!cancelled) setSheets(parsed);
@@ -89,6 +110,9 @@ export function XlsxPreview({ path, title, root = "workspace" }: XlsxPreviewProp
         </div>
       )}
       {current && <PreviewFrame doc={current.doc} title={`${title} - ${current.name}`} />}
+      {current?.truncated && (
+        <p className="text-[11px] text-muted shrink-0">{t("editor.csvTruncated", { count: MAX_ROWS })}</p>
+      )}
     </div>
   );
 }

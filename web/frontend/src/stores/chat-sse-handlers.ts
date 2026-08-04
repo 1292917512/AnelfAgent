@@ -25,6 +25,7 @@ import type {
   SsePlanStepUpdatedEvent,
   SsePlanSubmittedEvent,
   SseReplyEvent,
+  SseShareEvent,
   SseToolCallEvent,
   SseTurnEndEvent,
   UiCommandPayload,
@@ -99,7 +100,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       const isBackground = chatId !== ctx.getActiveChatId();
       updateBucket(chatId, (b) => {
         const { toolCalls, streaming } = solidifyToolCalls(b);
-        const msg: ChatMessage = { role: "assistant", content: data.content, cid: nextCid() };
+        const msg: ChatMessage = { role: "assistant", content: data.content, cid: nextCid(), ts: Date.now() / 1000 };
         if (toolCalls) msg.toolCalls = toolCalls;
         return {
           messages: [
@@ -145,6 +146,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
           role: "assistant",
           content: data.caption || "",
           cid: nextCid(),
+          ts: Date.now() / 1000,
           media_type: data.media_type,
           url: data.url,
           caption: data.caption,
@@ -158,6 +160,41 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
           sending: false,
           sendingSince: null,
           streaming,
+          unread: isBackground ? b.unread + 1 : b.unread,
+        };
+      });
+    } catch { /* ignore */ }
+  });
+
+  es.addEventListener("share", (e) => {
+    try {
+      const data = JSON.parse(e.data) as SseShareEvent;
+      if (!data.token) return;
+      const chatId = routeChatId(data);
+      const isBackground = chatId !== ctx.getActiveChatId();
+      updateBucket(chatId, (b) => {
+        const msg: ChatMessage = {
+          role: "assistant",
+          content: "",
+          cid: nextCid(),
+          ts: Date.now() / 1000,
+          share: {
+            token: data.token,
+            url: data.url,
+            download_url: data.download_url,
+            share_type: data.share_type,
+            media_kind: data.media_kind,
+            target_url: data.target_url,
+            file_name: data.file_name,
+            file_size: data.file_size,
+            description: data.description,
+          },
+        };
+        return {
+          messages: [
+            ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
+            msg,
+          ],
           unread: isBackground ? b.unread + 1 : b.unread,
         };
       });

@@ -266,6 +266,9 @@ EVENT_MULTI_TOOL_COMPLETE = "multi_tool_complete"
 # 界面交互命令（entities/ui 工具 → 前端工作台）
 EVENT_UI_COMMAND = "ui_command"
 
+# 分享链接创建（entities/share → 聊天 SSE → 前端分享卡片）
+EVENT_SHARE_CREATED = "share_created"
+
 # ------------------------------------------------------------------
 # Plan 模式（present_plan / update_goal 工具 → 前端 plan 浮窗与卡片）
 # ------------------------------------------------------------------

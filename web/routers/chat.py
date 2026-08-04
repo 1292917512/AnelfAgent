@@ -71,7 +71,17 @@ def _setup_ui_command_bridge() -> None:
         broadcast_chat_event({"event": "ui_command", **payload})
 
 
+def _setup_share_event_bridge() -> None:
+    """订阅分享创建事件并桥接到聊天 SSE 流（前端渲染分享卡片）。"""
+    from core.event_bus import EVENT_SHARE_CREATED, event_bus
+
+    @event_bus.on(EVENT_SHARE_CREATED, owner="webui")
+    async def _forward_share_created(payload: Dict[str, Any]) -> None:
+        broadcast_chat_event({"event": "share", **payload})
+
+
 _setup_ui_command_bridge()
+_setup_share_event_bridge()
 
 
 class UiAnswerRequest(BaseModel):
@@ -299,6 +309,8 @@ def _clean_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     if ts_ns and isinstance(ts_ns, (int, float)) and ts_ns > 0:
         import datetime
         ts = ts_ns / 1e9 if ts_ns > 1e15 else ts_ns
+        # ts：epoch 秒（前端时间线合排 plan/delegation 卡片用，须与消息同源）
+        result["ts"] = ts
         result["timestamp"] = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
     return result
 

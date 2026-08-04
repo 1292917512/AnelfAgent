@@ -5,6 +5,20 @@
     "create": "新建分享",
     "logs": "下载日志"
   },
+  "types": {
+    "file": {
+      "name": "文件下载",
+      "desc": "对方打开链接直接下载文件，适合任意文件"
+    },
+    "media": {
+      "name": "媒体渲染",
+      "desc": "图片/视频/音频/PDF/HTML 打开即预览，无需下载"
+    },
+    "link": {
+      "name": "网址推送",
+      "desc": "把已部署的网站生成分享卡片，支持预览与直接访问"
+    }
+  },
   "stats": {
     "total": "总链接数",
     "active": "活跃中",
@@ -17,6 +31,7 @@
     "fileName": "文件名",
     "filePath": "文件路径",
     "fileSize": "大小",
+    "targetUrl": "目标网址",
     "description": "描述",
     "expiresAt": "过期时间",
     "createdAt": "创建时间",
@@ -41,6 +56,7 @@
     "copy": "复制链接",
     "copyToken": "复制 Token",
     "download": "下载",
+    "openPreview": "打开预览",
     "refresh": "刷新",
     "search": "搜索",
     "filter": "筛选",
@@ -59,6 +75,8 @@
   "messages": {
     "createSuccess": "分享链接已创建",
     "createFailed": "创建失败",
+    "fileRequired": "请填写文件路径",
+    "targetUrlRequired": "链接类型必须填写目标网址",
     "revokeSuccess": "链接已撤销",
     "revokeFailed": "撤销失败",
     "copySuccess": "已复制到剪贴板",
@@ -76,5 +94,6 @@
   "downloadUrl": "下载地址",
   "unlimited": "无限制",
   "filePathHint": "workspace 沙箱内的相对路径或绝对路径",
+  "targetUrlHint": "必须以 http:// 或 https:// 开头，如 http://127.0.0.1:8080",
   "workspaceEmpty": "workspace 为空"
 }

@@ -1,4 +1,4 @@
-"""文件分享实体的数据模型。"""
+"""分享实体的数据模型。"""
 
 from __future__ import annotations
 
@@ -17,10 +17,14 @@ class ShareLinkOut(BaseModel):
     created_at: int           # Unix ms
     created_by: str
     download_count: int
-    last_download_at: int     # Unix ms，0 表示未下载
+    last_download_at: int     # Unix ms，0 表示未访问
     max_downloads: int        # 0 表示无限制
     status: str               # active | expired | revoked
-    url: str = ""             # 完整下载 URL
+    share_type: str = "file"  # file | media | link
+    target_url: str = ""      # link 类型的目标网址
+    media_kind: str = ""      # media 类型的渲染种类（image/video/audio/pdf/html）
+    url: str = ""             # 主链接（file=下载 / media、link=预览页）
+    download_url: str = ""    # 下载链接（media/file 有效）
 
 
 class ShareLinkListResult(BaseModel):
@@ -46,7 +50,9 @@ class ShareStats(BaseModel):
 class CreateShareRequest(BaseModel):
     """创建分享链接请求。"""
 
-    path: str
+    share_type: str = "file"  # file | media | link
+    path: str = ""            # file/media 必填；link 忽略
+    target_url: str = ""      # link 必填；file/media 忽略
     description: str = ""
     expires_in: str = "24h"   # 1h | 6h | 24h | 7d | 30d | never
     max_downloads: int = 0    # 0 表示无限制

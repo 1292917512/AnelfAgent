@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, FileText, FolderClosed, FolderOpen, Loader2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -10,15 +10,19 @@ interface TreeNodeProps {
   node: WorkspaceNode;
   depth: number;
   root: WorkspaceRoot;
+  /** AI ui_open_panel(files, path) 下发的定位路径：祖先目录自动展开、目标滚动定位 */
+  focusPath: string | null;
 }
 
-function TreeNode({ node, depth, root }: TreeNodeProps) {
+function TreeNode({ node, depth, root, focusPath }: TreeNodeProps) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<WorkspaceNode[] | null>(node.children ?? null);
   const [loading, setLoading] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
   const openFiles = useWorkbenchStore((s) => s.openFiles);
   const openFilePath = useWorkbenchStore((s) => s.openFilePath);
   const openFile = useWorkbenchStore((s) => s.openFile);
+  const setFileTreeFocus = useWorkbenchStore((s) => s.setFileTreeFocus);
 
   const isDir = node.type === "dir";
   const isActive = openFilePath === node.path;
@@ -28,6 +32,9 @@ function TreeNode({ node, depth, root }: TreeNodeProps) {
   const openable = !node.binary || workspaceMediaKind(node.name) !== null || isPreviewableBinary(node.name);
   // 拖拽注入对话仅工作区可用（项目路径相对基准不同，注入后 agent 无法解析）
   const draggable = !isDir && root === "workspace";
+  // 焦点路径匹配：本节点是定位目标的祖先目录 / 目标本身
+  const isFocusAncestor = isDir && !!focusPath && focusPath.startsWith(node.path + "/");
+  const isFocusTarget = focusPath === node.path;
 
   const toggle = useCallback(async () => {
     if (!isDir) {
@@ -48,9 +55,23 @@ function TreeNode({ node, depth, root }: TreeNodeProps) {
     setExpanded((v) => !v);
   }, [isDir, expanded, children, node.path, openable, openFile, root]);
 
+  // 焦点路径祖先目录自动展开（toggle 处理了子级懒加载）
+  useEffect(() => {
+    if (isFocusAncestor && !expanded) void toggle();
+  }, [isFocusAncestor, expanded, toggle]);
+
+  // 焦点目标滚动定位并清除标记
+  useEffect(() => {
+    if (isFocusTarget && btnRef.current) {
+      btnRef.current.scrollIntoView({ block: "center" });
+      setFileTreeFocus(null);
+    }
+  }, [isFocusTarget, setFileTreeFocus]);
+
   return (
     <div>
       <button
+        ref={btnRef}
         onClick={toggle}
         draggable={draggable}
         onDragStart={(e) => {
@@ -60,7 +81,7 @@ function TreeNode({ node, depth, root }: TreeNodeProps) {
         }}
         className={cn(
           "flex items-center gap-1 w-full px-1.5 py-1 rounded text-left text-xs transition-colors",
-          isActive ? "bg-accent-subtle text-accent" : "text-foreground hover:bg-hover",
+          isActive || isFocusTarget ? "bg-accent-subtle text-accent" : "text-foreground hover:bg-hover",
           !openable && !isDir && "opacity-50",
         )}
         style={{ paddingLeft: `${6 + depth * 12}px` }}
@@ -89,7 +110,7 @@ function TreeNode({ node, depth, root }: TreeNodeProps) {
       {isDir && expanded && children && (
         <div>
           {children.map((c) => (
-            <TreeNode key={c.path} node={c} depth={depth + 1} root={root} />
+            <TreeNode key={c.path} node={c} depth={depth + 1} root={root} focusPath={focusPath} />
           ))}
           {children.length === 0 && (
             <div className="text-[10px] text-muted" style={{ paddingLeft: `${6 + (depth + 1) * 12}px` }}>—</div>
@@ -105,10 +126,10 @@ export function FileTreePanel() {
   const { t } = useTranslation("workbench");
   const [root, setRoot] = useState<WorkspaceRoot>("workspace");
   const [roots, setRoots] = useState<WorkspaceNode[]>([]);
+  const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const fileTreeFocus = useWorkbenchStore((s) => s.fileTreeFocus);
-  const setFileTreeFocus = useWorkbenchStore((s) => s.setFileTreeFocus);
 
   const load = useCallback(async (r: WorkspaceRoot) => {
     setLoading(true);
@@ -116,6 +137,7 @@ export function FileTreePanel() {
     try {
       const res = await workspaceApi.tree("", 2, r);
       setRoots(res.data.children);
+      setTruncated(res.data.truncated);
     } catch {
       setError(true);
     } finally {
@@ -124,11 +146,6 @@ export function FileTreePanel() {
   }, []);
 
   useEffect(() => { load(root); }, [load, root]);
-
-  // AI ui_open_panel(files, path) 定位后清除 focus 标记
-  useEffect(() => {
-    if (fileTreeFocus) setFileTreeFocus(null);
-  }, [fileTreeFocus, setFileTreeFocus]);
 
   return (
     <div className="flex flex-col h-full">
@@ -163,11 +180,11 @@ export function FileTreePanel() {
           <p className="px-2 py-3 text-xs text-muted">{t("files.empty")}</p>
         )}
         {!loading && !error && roots.map((n) => (
-          <TreeNode key={n.path} node={n} depth={0} root={root} />
+          <TreeNode key={n.path} node={n} depth={0} root={root} focusPath={fileTreeFocus} />
         ))}
       </div>
       <div className="px-3 py-2 border-t border-border text-[10px] text-muted shrink-0">
-        {t("files.dragHint")}
+        {truncated ? t("files.truncated") : t("files.dragHint")}
       </div>
     </div>
   );

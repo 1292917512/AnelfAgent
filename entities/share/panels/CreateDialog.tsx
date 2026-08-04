@@ -3,11 +3,17 @@ import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { shareApi, workspaceApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
-import { Copy, FileText, FolderOpen, Link2, Plus, ChevronRight, ChevronDown } from "lucide-react";
+import { Copy, Download, ExternalLink, FileText, FolderOpen, Globe, Image as ImageIcon, Link2, Plus, ChevronRight, ChevronDown } from "lucide-react";
 import { toast } from "@/stores/toast-store";
-import type { CreateShareRequest, ShareLink, WorkspaceNode } from "@/lib/types";
+import type { CreateShareRequest, ShareLink, ShareType, WorkspaceNode } from "@/lib/types";
 
 const EXPIRES_OPTIONS = ["1h", "6h", "24h", "7d", "30d", "never"] as const;
+
+const SHARE_TYPES: Array<{ value: ShareType; icon: typeof FileText }> = [
+  { value: "file", icon: Download },
+  { value: "media", icon: ImageIcon },
+  { value: "link", icon: Globe },
+];
 
 function FileTreeNode({
   node,
@@ -76,12 +82,16 @@ function FileTreeNode({
 export function CreateDialog() {
   const { t } = useTranslation("share");
   const queryClient = useQueryClient();
+  const [shareType, setShareType] = useState<ShareType>("file");
   const [path, setPath] = useState("");
+  const [targetUrl, setTargetUrl] = useState("");
   const [description, setDescription] = useState("");
   const [expiresIn, setExpiresIn] = useState<string>("24h");
   const [maxDownloads, setMaxDownloads] = useState(0);
   const [createdLink, setCreatedLink] = useState<ShareLink | null>(null);
   const [showBrowser, setShowBrowser] = useState(false);
+
+  const isLink = shareType === "link";
 
   const { data: treeData } = useQuery({
     queryKey: ["workspaceTree", ""],
@@ -105,12 +115,19 @@ export function CreateDialog() {
   });
 
   const handleCreate = () => {
-    if (!path.trim()) {
-      toast.error(t("messages.createFailed"));
+    if (isLink) {
+      if (!targetUrl.trim()) {
+        toast.error(t("messages.targetUrlRequired"));
+        return;
+      }
+    } else if (!path.trim()) {
+      toast.error(t("messages.fileRequired"));
       return;
     }
     createMutation.mutate({
-      path: path.trim(),
+      share_type: shareType,
+      path: isLink ? "" : path.trim(),
+      target_url: isLink ? targetUrl.trim() : "",
       description: description.trim(),
       expires_in: expiresIn,
       max_downloads: maxDownloads,
@@ -119,7 +136,7 @@ export function CreateDialog() {
 
   const copyUrl = () => {
     if (!createdLink) return;
-    const url = createdLink.url || `${window.location.origin}/api/entity/share/d/${createdLink.token}`;
+    const url = createdLink.url || `${window.location.origin}/api/entity/share/v/${createdLink.token}`;
     navigator.clipboard.writeText(url).then(
       () => toast.success(t("messages.copySuccess")),
       () => toast.error(t("messages.copyFailed")),
@@ -136,47 +153,89 @@ export function CreateDialog() {
     <div className="space-y-4">
       <Card title={t("tabs.create")} subtitle={t("messages.createSuccess")}>
         <div className="space-y-4">
-          {/* 文件路径 */}
+          {/* 分享类型 */}
           <div>
-            <label className="block text-sm font-medium text-heading mb-2">
-              {t("fields.filePath")}
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={path}
-                onChange={(e) => setPath(e.target.value)}
-                placeholder="uploads/example.pdf"
-                className="flex-1 px-3 py-2 text-sm rounded-md border border-border bg-elevated text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
-              />
-              <button
-                onClick={() => setShowBrowser(!showBrowser)}
-                className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
-              >
-                <FolderOpen size={16} />
-                {t("actions.browse")}
-              </button>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {SHARE_TYPES.map(({ value, icon: Icon }) => (
+                <button
+                  key={value}
+                  onClick={() => setShareType(value)}
+                  className={`flex flex-col items-start gap-1 px-3 py-2.5 rounded-md border text-left transition-all ${
+                    shareType === value
+                      ? "border-accent bg-accent-subtle"
+                      : "border-border bg-elevated hover:bg-hover"
+                  }`}
+                >
+                  <span className={`flex items-center gap-1.5 text-sm font-medium ${shareType === value ? "text-accent" : "text-heading"}`}>
+                    <Icon size={15} />
+                    {t(`types.${value}.name`)}
+                  </span>
+                  <span className="text-[11px] text-muted leading-snug">{t(`types.${value}.desc`)}</span>
+                </button>
+              ))}
             </div>
-            <p className="text-xs text-muted mt-1">
-              {t("fields.filePath")} — {t("filePathHint")}
-            </p>
           </div>
 
-          {/* 文件浏览器 */}
-          {showBrowser && (
-            <div className="border border-border rounded-md bg-elevated max-h-64 overflow-y-auto">
-              {treeData ? (
-                treeData.length > 0 ? (
-                  treeData.map((node) => (
-                    <FileTreeNode key={node.path} node={node} depth={0} onSelect={handleFileSelect} />
-                  ))
-                ) : (
-                  <div className="p-4 text-sm text-muted text-center">{t("workspaceEmpty")}</div>
-                )
-              ) : (
-                <div className="p-4 text-sm text-muted text-center">{t("common:loading")}</div>
-              )}
+          {/* 链接类型：目标网址 */}
+          {isLink ? (
+            <div>
+              <label className="block text-sm font-medium text-heading mb-2">
+                {t("fields.targetUrl")}
+              </label>
+              <input
+                type="text"
+                value={targetUrl}
+                onChange={(e) => setTargetUrl(e.target.value)}
+                placeholder="http://127.0.0.1:8080"
+                className="w-full px-3 py-2 text-sm rounded-md border border-border bg-elevated text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
+              />
+              <p className="text-xs text-muted mt-1">{t("targetUrlHint")}</p>
             </div>
+          ) : (
+            <>
+              {/* 文件路径 */}
+              <div>
+                <label className="block text-sm font-medium text-heading mb-2">
+                  {t("fields.filePath")}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={path}
+                    onChange={(e) => setPath(e.target.value)}
+                    placeholder="uploads/example.pdf"
+                    className="flex-1 px-3 py-2 text-sm rounded-md border border-border bg-elevated text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                  <button
+                    onClick={() => setShowBrowser(!showBrowser)}
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
+                  >
+                    <FolderOpen size={16} />
+                    {t("actions.browse")}
+                  </button>
+                </div>
+                <p className="text-xs text-muted mt-1">
+                  {t("fields.filePath")} — {t("filePathHint")}
+                </p>
+              </div>
+
+              {/* 文件浏览器 */}
+              {showBrowser && (
+                <div className="border border-border rounded-md bg-elevated max-h-64 overflow-y-auto">
+                  {treeData ? (
+                    treeData.length > 0 ? (
+                      treeData.map((node) => (
+                        <FileTreeNode key={node.path} node={node} depth={0} onSelect={handleFileSelect} />
+                      ))
+                    ) : (
+                      <div className="p-4 text-sm text-muted text-center">{t("workspaceEmpty")}</div>
+                    )
+                  ) : (
+                    <div className="p-4 text-sm text-muted text-center">{t("common:loading")}</div>
+                  )}
+                </div>
+              )}
+            </>
           )}
 
           {/* 描述 */}
@@ -211,7 +270,7 @@ export function CreateDialog() {
             </select>
           </div>
 
-          {/* 下载上限 */}
+          {/* 访问上限 */}
           <div>
             <label className="block text-sm font-medium text-heading mb-2">
               {t("fields.maxDownloads")}
@@ -229,7 +288,7 @@ export function CreateDialog() {
           {/* 创建按钮 */}
           <button
             onClick={handleCreate}
-            disabled={createMutation.isPending || !path.trim()}
+            disabled={createMutation.isPending || (isLink ? !targetUrl.trim() : !path.trim())}
             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-md bg-accent text-white hover:bg-accent-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Plus size={16} />
@@ -249,9 +308,19 @@ export function CreateDialog() {
                   {createdLink.file_name}
                 </div>
                 <div className="text-xs text-muted truncate">
-                  {createdLink.url || `/api/entity/share/d/${createdLink.token}`}
+                  {createdLink.url || `/api/entity/share/v/${createdLink.token}`}
                 </div>
               </div>
+              {createdLink.share_type !== "file" && (
+                <a
+                  href={createdLink.url || `/api/entity/share/v/${createdLink.token}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all flex-shrink-0"
+                >
+                  <ExternalLink size={14} /> {t("actions.openPreview")}
+                </a>
+              )}
               <button
                 onClick={copyUrl}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all flex-shrink-0"

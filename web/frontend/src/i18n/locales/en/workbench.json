@@ -85,7 +85,8 @@
     "empty": "Workspace is empty",
     "dragHint": "Drag a file into the input to attach it",
     "rootWorkspace": "Workspace",
-    "rootProject": "Project"
+    "rootProject": "Project",
+    "truncated": "Too many entries, showing partial content"
   },
   "editor": {
     "save": "Save",

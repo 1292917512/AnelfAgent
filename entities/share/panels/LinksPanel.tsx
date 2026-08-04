@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { shareApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
-import { Copy, Download, Link2, RefreshCw, Search, Trash2 } from "lucide-react";
+import { Copy, Download, ExternalLink, FileText, Globe, Image as ImageIcon, Link2, Music, RefreshCw, Search, Trash2, Video } from "lucide-react";
 import { toast } from "@/stores/toast-store";
 import type { ShareLink } from "@/lib/types";
 
@@ -25,6 +25,28 @@ function statusVariant(status: string): "ok" | "warn" | "danger" | "default" {
     case "revoked": return "danger";
     default: return "default";
   }
+}
+
+/** 分享类型徽标（图标 + 文案） */
+function TypeBadge({ link }: { link: ShareLink }) {
+  const { t } = useTranslation("share");
+  let icon = <FileText size={12} />;
+  let label = t("types.file.name");
+  if (link.share_type === "link") {
+    icon = <Globe size={12} />;
+    label = t("types.link.name");
+  } else if (link.share_type === "media") {
+    label = t("types.media.name");
+    icon = link.media_kind === "image" ? <ImageIcon size={12} />
+      : link.media_kind === "video" ? <Video size={12} />
+      : link.media_kind === "audio" ? <Music size={12} />
+      : <FileText size={12} />;
+  }
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] rounded bg-elevated border border-border text-muted whitespace-nowrap">
+      {icon} {label}
+    </span>
+  );
 }
 
 export function LinksPanel() {
@@ -52,7 +74,7 @@ export function LinksPanel() {
   });
 
   const copyUrl = (link: ShareLink) => {
-    const url = link.url || `${window.location.origin}/api/entity/share/d/${link.token}`;
+    const url = link.url || `${window.location.origin}/api/entity/share/v/${link.token}`;
     navigator.clipboard.writeText(url).then(
       () => toast.success(t("messages.copySuccess")),
       () => toast.error(t("messages.copyFailed")),
@@ -133,8 +155,11 @@ export function LinksPanel() {
                     >
                       <td className="py-3 pr-4">
                         <div className="font-medium text-heading">{link.file_name}</div>
-                        <div className="text-xs text-muted truncate max-w-[200px]">
-                          {link.description || link.file_path}
+                        <div className="flex items-center gap-1.5 mt-1">
+                          <TypeBadge link={link} />
+                        </div>
+                        <div className="text-xs text-muted truncate max-w-[200px] mt-0.5">
+                          {link.description || (link.share_type === "link" ? link.target_url : link.file_path)}
                         </div>
                       </td>
                       <td className="py-3 pr-4 text-muted">{formatSize(link.file_size)}</td>
@@ -166,15 +191,27 @@ export function LinksPanel() {
                           </button>
                           {link.status === "active" && (
                             <>
-                              <a
-                                href={link.url || `/api/entity/share/d/${link.token}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="p-1.5 rounded-md text-muted hover:text-foreground hover:bg-hover transition-all"
-                                title={t("actions.download")}
-                              >
-                                <Download size={14} />
-                              </a>
+                              {link.share_type === "file" ? (
+                                <a
+                                  href={link.download_url || link.url || `/api/entity/share/d/${link.token}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="p-1.5 rounded-md text-muted hover:text-foreground hover:bg-hover transition-all"
+                                  title={t("actions.download")}
+                                >
+                                  <Download size={14} />
+                                </a>
+                              ) : (
+                                <a
+                                  href={link.url || `/api/entity/share/v/${link.token}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="p-1.5 rounded-md text-muted hover:text-foreground hover:bg-hover transition-all"
+                                  title={t("actions.openPreview")}
+                                >
+                                  <ExternalLink size={14} />
+                                </a>
+                              )}
                               <button
                                 onClick={() => {
                                   if (window.confirm(t("messages.confirmRevoke"))) {

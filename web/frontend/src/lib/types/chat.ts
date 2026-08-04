@@ -1,4 +1,5 @@
 import type { PlanStepStatus } from "./plan";
+import type { ChatShareInfo } from "./share";
 
 // ── 多会话（chat_id 维度分桶） ──
 
@@ -16,6 +17,8 @@ export interface ChatMessage {
   role: string;
   content: string;
   timestamp?: string;
+  /** epoch 秒：历史消息来自后端 ts_ns，本地/SSE 消息为到达时刻；时间线合排用 */
+  ts?: number;
   id?: number;
   queued?: boolean;
   cid?: string;
@@ -28,6 +31,8 @@ export interface ChatMessage {
   tone?: "warn";
   /** 本轮工具调用记录（reply 到达时从流式区固化，渲染为消息内折叠卡片） */
   toolCalls?: ChatStreamingTool[];
+  /** 分享卡片信息（share SSE 事件到达时挂载，渲染为 ShareCard） */
+  share?: ChatShareInfo;
 }
 
 export interface PendingFile {
@@ -130,6 +135,8 @@ export interface SseMediaEvent extends SseEventBase {
   url?: string;
   caption?: string;
 }
+
+export type SseShareEvent = SseEventBase & ChatShareInfo;
 
 export interface SseDeltaEvent extends SseEventBase {
   turn_id: string;
@@ -235,6 +242,7 @@ export interface ChatSseEventMap {
   reply: SseReplyEvent;
   turn_end: SseTurnEndEvent;
   media: SseMediaEvent;
+  share: SseShareEvent;
   ui_command: UiCommandPayload;
   approval_request: SseApprovalRequestEvent;
   delta: SseDeltaEvent;
@@ -261,5 +269,7 @@ export interface ChatHistoryMessage {
   role: string;
   content: string;
   timestamp?: string;
+  /** epoch 秒（后端 ts_ns 换算），时间线合排用 */
+  ts?: number;
   kind?: "tool_summary" | "system_notice";
 }

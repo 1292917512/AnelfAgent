@@ -1,4 +1,6 @@
-"""文件分享推送实体。
+"""分享推送实体。
+
+支持三种分享类型：文件下载（file）/ 媒体渲染（media）/ 网址推送（link）。
 
 目录名 / group 名 / 面板名 / 路由名统一为 share，框架各发现机制自然对齐：
 - @entity: 注册 group（被 discover_entities 扫描 tools.py 时触发）
@@ -12,13 +14,13 @@
 from core.config import register_configs_safe
 from entities._sdk import entity, entity_manifest
 
-entity("share", "文件分享 - 将工作区文件生成为外部可下载链接")
+entity("share", "分享推送 - 文件下载 / 媒体渲染 / 网址推送，生成对外访问链接")
 
 entity_manifest(
-    display_name="文件分享",
+    display_name="分享推送",
     icon="Share2",
-    description="将工作区文件生成为外部可下载链接，支持过期策略与手动撤销",
-    version="1.0.0",
+    description="文件下载 / 媒体渲染 / 网址推送，支持过期策略与手动撤销",
+    version="1.1.0",
     order=35,
     group="share",
 )
@@ -40,7 +42,7 @@ register_configs_safe({
             "default": 22,
         },
         "share_default_max_downloads": {
-            "description": "默认最大下载次数（0 表示无限制）",
+            "description": "默认最大访问次数（0 表示无限制）",
             "default": 0,
         },
         "share_ai_auto_share": {
@@ -48,7 +50,11 @@ register_configs_safe({
             "default": True,
         },
         "share_audit_enabled": {
-            "description": "记录下载审计日志（IP / UA / 时间）",
+            "description": "记录访问审计日志（IP / UA / 时间）",
+            "default": True,
+        },
+        "share_view_embed_enabled": {
+            "description": "网址分享的预览页默认尝试 iframe 嵌入展示",
             "default": True,
         },
     }

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useDeferredValue } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { isPreviewableBinary, workspaceMediaKind, type WorkspaceFileKind, type WorkspaceRoot } from "@/lib/api";
@@ -39,6 +40,9 @@ export function FileEditorContent({
   onLightboxChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation("workbench");
+  // 预览内容延迟渲染：击键优先响应编辑器，预览（Markdown/Shiki 高亮、HTML iframe）
+  // 延迟到空闲帧更新，避免 split 模式下每次击键全量重解析/重建
+  const deferredDraft = useDeferredValue(cur?.draft ?? "");
   return (
     <div className="flex-1 min-h-0 flex flex-col px-3 py-2">
       {loading && (
@@ -92,29 +96,29 @@ export function FileEditorContent({
       {cur && !cur.file.binary && !cur.file.truncated && (
         kind === "markdown" && viewMode === "preview" ? (
           <div className="flex-1 min-h-0 overflow-y-auto pr-1">
-            <Markdown content={cur.draft} />
+            <Markdown content={deferredDraft} />
           </div>
         ) : kind === "markdown" && viewMode === "split" ? (
           <div className="flex-1 min-h-0 grid grid-cols-2 gap-2">
             <div className="min-h-0 h-full">{editorNode}</div>
             <div className="min-h-0 h-full overflow-y-auto pr-1">
-              <Markdown content={cur.draft} />
+              <Markdown content={deferredDraft} />
             </div>
           </div>
         ) : kind === "html" && viewMode === "preview" ? (
           <div className="flex-1 min-h-0">
-            <HtmlPreview html={cur.draft} title={cur.file.name} />
+            <HtmlPreview html={deferredDraft} title={cur.file.name} />
           </div>
         ) : kind === "html" && viewMode === "split" ? (
           <div className="flex-1 min-h-0 grid grid-cols-2 gap-2">
             <div className="min-h-0 h-full">{editorNode}</div>
             <div className="min-h-0 h-full">
-              <HtmlPreview html={cur.draft} title={cur.file.name} />
+              <HtmlPreview html={deferredDraft} title={cur.file.name} />
             </div>
           </div>
         ) : kind === "csv" && viewMode === "preview" ? (
           <CsvPreview
-            text={cur.draft}
+            text={deferredDraft}
             delimiter={cur.file.name.toLowerCase().endsWith(".tsv") ? "\t" : ","}
           />
         ) : (

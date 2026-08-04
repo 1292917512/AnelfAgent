@@ -15,6 +15,7 @@ import os
 import secrets
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import aiosqlite
 
@@ -34,7 +35,10 @@ CREATE TABLE IF NOT EXISTS share_links (
     download_count INTEGER NOT NULL DEFAULT 0,
     last_download_at INTEGER NOT NULL DEFAULT 0,
     max_downloads INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'active'
+    status TEXT NOT NULL DEFAULT 'active',
+    share_type TEXT NOT NULL DEFAULT 'file',
+    target_url TEXT NOT NULL DEFAULT '',
+    media_kind TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_share_status ON share_links(status);
 CREATE INDEX IF NOT EXISTS idx_share_created ON share_links(created_at);
@@ -53,6 +57,29 @@ CREATE INDEX IF NOT EXISTS idx_dl_token ON download_logs(token);
 CREATE INDEX IF NOT EXISTS idx_dl_time ON download_logs(downloaded_at);
 """
 
+# 旧库列迁移：缺列即补（幂等）
+_MIGRATE_COLUMNS = (
+    ("share_type", "TEXT NOT NULL DEFAULT 'file'"),
+    ("target_url", "TEXT NOT NULL DEFAULT ''"),
+    ("media_kind", "TEXT NOT NULL DEFAULT ''"),
+)
+
+# 分享类型
+SHARE_TYPE_FILE = "file"
+SHARE_TYPE_MEDIA = "media"
+SHARE_TYPE_LINK = "link"
+_SHARE_TYPES = (SHARE_TYPE_FILE, SHARE_TYPE_MEDIA, SHARE_TYPE_LINK)
+
+# 扩展名 → 媒体种类（预览页按此选择渲染方式）
+_MEDIA_EXT_MAP: Dict[str, str] = {
+    **{e: "image" for e in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg")},
+    **{e: "video" for e in (".mp4", ".webm", ".mov", ".mkv", ".avi", ".flv")},
+    **{e: "audio" for e in (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".amr", ".opus")},
+    ".pdf": "pdf",
+    ".html": "html",
+    ".htm": "html",
+}
+
 _EXPIRES_MAP: Dict[str, int] = {
     "1h": 3600_000,
     "6h": 6 * 3600_000,
@@ -64,12 +91,35 @@ _EXPIRES_MAP: Dict[str, int] = {
 
 # 下载路由路径（router.py 挂载点 + /d/{token}），工具层拼 URL 时复用
 DOWNLOAD_PATH = "/api/entity/share/d"
+# 预览页路由路径（/v/{token}），media/link 类型的主链接
+VIEW_PATH = "/api/entity/share/v"
 
 
 def build_download_url(token: str, base_url: str = "") -> str:
     """拼接下载链接。base_url 为公网基址，空则返回相对路径。"""
     base = base_url.rstrip("/")
     return f"{base}{DOWNLOAD_PATH}/{token}"
+
+
+def build_view_url(token: str, base_url: str = "") -> str:
+    """拼接预览页链接。base_url 为公网基址，空则返回相对路径。"""
+    base = base_url.rstrip("/")
+    return f"{base}{VIEW_PATH}/{token}"
+
+
+def detect_media_kind(file_name: str) -> str:
+    """按扩展名检测可渲染媒体种类（image/video/audio/pdf/html），不可渲染返回空串。"""
+    ext = os.path.splitext(file_name)[1].lower()
+    return _MEDIA_EXT_MAP.get(ext, "")
+
+
+def _link_name_from_url(url: str) -> str:
+    """从 URL 推导链接分享的展示名称（host + path 摘要）。"""
+    parts = urlsplit(url)
+    name = parts.netloc or url
+    if parts.path and parts.path != "/":
+        name = f"{name}{parts.path}"
+    return name[:120]
 
 
 def get_public_base_url() -> str:
@@ -125,6 +175,9 @@ def _row_to_entry(row: aiosqlite.Row) -> Dict[str, Any]:
         "last_download_at": row["last_download_at"],
         "max_downloads": row["max_downloads"],
         "status": row["status"],
+        "share_type": row["share_type"],
+        "target_url": row["target_url"],
+        "media_kind": row["media_kind"],
     }
 
 
@@ -149,10 +202,20 @@ class ShareStore:
             await db.execute("PRAGMA synchronous=NORMAL;")
             await db.execute("PRAGMA busy_timeout=5000;")
             await db.executescript(_SCHEMA)
+            await self._migrate_columns(db)
             await db.commit()
             self._db = db
             log(f"ShareStore 就绪: {self._db_path}", tag="分享")
             return db
+
+    @staticmethod
+    async def _migrate_columns(db: aiosqlite.Connection) -> None:
+        """旧库缺列补齐（幂等）：多类型分享新增的 3 列。"""
+        cursor = await db.execute("PRAGMA table_info(share_links)")
+        existing = {row["name"] for row in await cursor.fetchall()}
+        for col, col_type in _MIGRATE_COLUMNS:
+            if col not in existing:
+                await db.execute(f"ALTER TABLE share_links ADD COLUMN {col} {col_type}")
 
     async def close(self) -> None:
         if self._db is not None:
@@ -166,39 +229,86 @@ class ShareStore:
     async def create(
         self,
         *,
-        file_path: str,
+        file_path: str = "",
         description: str = "",
         expires_in: str = "24h",
         created_by: str = "",
         max_downloads: int = 0,
+        share_type: str = SHARE_TYPE_FILE,
+        target_url: str = "",
     ) -> Dict[str, Any]:
-        """创建分享链接。相同 (file_path, content_hash) 复用旧 token 避免重复。"""
+        """创建分享链接。
+
+        share_type 三种取值：
+        - file: 文件下载（沙箱校验 + 强制下载）
+        - media: 媒体渲染（按扩展名检测 media_kind，预览页内嵌渲染）
+        - link: 网址推送（target_url 必填，落地页 iframe 嵌入 + 直接访问）
+
+        相同内容复用旧 token 避免重复：file/media 按 (file_path, content_hash)，
+        link 按 target_url。
+        """
+        if share_type not in _SHARE_TYPES:
+            raise ValueError(f"不支持的分享类型: {share_type}（可选 {'/'.join(_SHARE_TYPES)}）")
+
         db = await self._get_db()
         now = _now_ms()
 
-        # 沙箱校验 + 文件存在性
-        from entities.filesystem.tools import _safe_path
-        try:
-            fp = _safe_path(file_path)
-        except ValueError as e:
-            raise ValueError(f"路径沙箱校验失败: {e}") from e
-        if not os.path.isfile(fp):
-            raise FileNotFoundError(f"文件不存在: {file_path}")
+        media_kind = ""
+        content_hash = ""
+        file_size = 0
 
-        file_size = os.path.getsize(fp)
-        content_hash = _hash_file(fp)
-        file_name = os.path.basename(fp)
+        if share_type == SHARE_TYPE_LINK:
+            url = target_url.strip()
+            if not url:
+                raise ValueError("link 类型分享必须提供 target_url")
+            if not (url.startswith("http://") or url.startswith("https://")):
+                raise ValueError("target_url 必须以 http:// 或 https:// 开头")
+            file_path = url
+            file_name = _link_name_from_url(url)
+        else:
+            if not file_path:
+                raise ValueError("file/media 类型分享必须提供 file_path")
+            # 沙箱校验 + 文件存在性
+            from entities.filesystem.tools import _safe_path
+            try:
+                fp = _safe_path(file_path)
+            except ValueError as e:
+                raise ValueError(f"路径沙箱校验失败: {e}") from e
+            if not os.path.isfile(fp):
+                raise FileNotFoundError(f"文件不存在: {file_path}")
+
+            file_size = os.path.getsize(fp)
+            content_hash = _hash_file(fp)
+            file_name = os.path.basename(fp)
+            if share_type == SHARE_TYPE_MEDIA:
+                media_kind = detect_media_kind(file_name)
+                if not media_kind:
+                    raise ValueError(
+                        f"该文件类型不可渲染（{file_name}），media 分享仅支持 "
+                        "图片/视频/音频/PDF/HTML，其他文件请用 file 类型下载分享"
+                    )
+
         expires_ms = _EXPIRES_MAP.get(expires_in, _EXPIRES_MAP["24h"])
         expires_at = now + expires_ms if expires_ms > 0 else 0
         from core.config import get_config_int
         token_len = max(8, min(64, get_config_int("share_token_length", 22)))
 
-        # 查重：同路径同 hash 的 active 链接直接复用
-        async with self._lock:
-            cursor = await db.execute(
-                "SELECT * FROM share_links WHERE file_path=? AND content_hash=? AND status='active'",
-                (file_path, content_hash),
+        # 查重：file/media 同路径同 hash、link 同目标 URL 的 active 链接直接复用
+        if share_type == SHARE_TYPE_LINK:
+            dedup_sql = (
+                "SELECT * FROM share_links WHERE share_type='link' "
+                "AND target_url=? AND status='active'"
             )
+            dedup_params: tuple = (target_url.strip(),)
+        else:
+            dedup_sql = (
+                "SELECT * FROM share_links WHERE file_path=? AND content_hash=? "
+                "AND share_type=? AND status='active'"
+            )
+            dedup_params = (file_path, content_hash, share_type)
+
+        async with self._lock:
+            cursor = await db.execute(dedup_sql, dedup_params)
             existing = await cursor.fetchone()
             if existing:
                 entry = _row_to_entry(existing)
@@ -209,14 +319,20 @@ class ShareStore:
             await db.execute(
                 "INSERT INTO share_links(token, file_path, file_name, file_size, "
                 "content_hash, description, expires_at, created_at, created_by, "
-                "download_count, last_download_at, max_downloads, status) "
-                "VALUES(?,?,?,?,?,?,?,?,?,0,0,?,?)",
+                "download_count, last_download_at, max_downloads, status, "
+                "share_type, target_url, media_kind) "
+                "VALUES(?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,?)",
                 (token, file_path, file_name, file_size, content_hash,
-                 description, expires_at, now, created_by, max_downloads, "active"),
+                 description, expires_at, now, created_by, max_downloads, "active",
+                 share_type, target_url.strip(), media_kind),
             )
             await db.commit()
 
-        log(f"分享链接已创建: {file_name} (token={token[:8]}..., expires={expires_in})", tag="分享")
+        log(
+            f"分享链接已创建: [{share_type}] {file_name} "
+            f"(token={token[:8]}..., expires={expires_in})",
+            tag="分享",
+        )
         return {
             "token": token,
             "file_path": file_path,
@@ -231,6 +347,9 @@ class ShareStore:
             "last_download_at": 0,
             "max_downloads": max_downloads,
             "status": "active",
+            "share_type": share_type,
+            "target_url": target_url.strip(),
+            "media_kind": media_kind,
         }
 
     async def get_by_token(self, token: str) -> Optional[Dict[str, Any]]:

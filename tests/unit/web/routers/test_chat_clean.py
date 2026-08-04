@@ -51,3 +51,19 @@ class TestCleanMessageKind:
         result = _clean_message({"role": "system", "content": _SUMMARY})
         assert "[time:" not in result["content"]
         assert "[uid:" not in result["content"]
+
+
+class TestCleanMessageTs:
+    def test_ts_ns_seconds_to_epoch(self) -> None:
+        result = _clean_message({"role": "user", "content": "hi", "ts_ns": 1785900000})
+        assert result["ts"] == 1785900000
+        assert result["timestamp"]
+
+    def test_ts_ns_nanoseconds_to_epoch(self) -> None:
+        result = _clean_message({"role": "user", "content": "hi", "ts_ns": 1785900000_000_000_000})
+        assert result["ts"] == 1785900000
+
+    def test_missing_ts_ns_no_ts(self) -> None:
+        result = _clean_message({"role": "user", "content": "hi"})
+        assert "ts" not in result
+        assert "timestamp" not in result

@@ -225,6 +225,7 @@ export const useChatStore = create<ChatState>((set, get) => {
               role: m.role,
               content: m.content,
               timestamp: m.timestamp,
+              ts: m.ts,
               id: m.id,
               kind: m.kind,
             })),
@@ -263,6 +264,7 @@ export const useChatStore = create<ChatState>((set, get) => {
               role: m.role,
               content: m.content,
               timestamp: m.timestamp,
+              ts: m.ts,
               id: m.id,
               kind: m.kind,
             })),
@@ -382,6 +384,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           role: "user",
           content: displayParts.join("\n"),
           cid: nextCid(),
+          ts: Date.now() / 1000,
           queued: b.sending || undefined,
         }],
         pendingFiles: [],
@@ -399,7 +402,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           streaming: null,
           messages: [
             ...cur.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
-            { role: "system", kind: "system_notice", tone: "warn", content: i18n.t("sendTimeout", { ns: "chat" }), cid: nextCid() },
+            { role: "system", kind: "system_notice", tone: "warn", content: i18n.t("sendTimeout", { ns: "chat" }), cid: nextCid(), ts: Date.now() / 1000 },
           ],
         }));
       });
@@ -420,7 +423,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           sendingSince: null,
           messages: [
             ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
-            { role: "system", kind: "system_notice", tone: "warn", content: i18n.t("sendFailed", { ns: "chat" }), cid: nextCid() },
+            { role: "system", kind: "system_notice", tone: "warn", content: i18n.t("sendFailed", { ns: "chat" }), cid: nextCid(), ts: Date.now() / 1000 },
           ],
         }));
         return false;

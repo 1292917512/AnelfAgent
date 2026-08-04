@@ -165,7 +165,8 @@ async def get_tree(
     if not os.path.isdir(base):
         raise HTTPException(status_code=404, detail="目录不存在")
     budget = [_PROJECT_TREE_MAX_ENTRIES if root == "project" else _TREE_MAX_ENTRIES]
-    children = _list_dir(base, depth=depth, budget=budget, root=base_root)
+    # 目录遍历为同步磁盘 I/O（项目根 3000 条配额），移入线程避免阻塞事件循环
+    children = await asyncio.to_thread(_list_dir, base, depth=depth, budget=budget, root=base_root)
     return {
         "path": "" if base == base_root else _rel(base, root=base_root),
         "children": children,

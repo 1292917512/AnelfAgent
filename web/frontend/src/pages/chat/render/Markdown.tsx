@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, Copy, ExternalLink, Link2 } from "lucide-react";
@@ -109,8 +109,8 @@ interface MarkdownProps {
   content: string;
 }
 
-/** 统一 Markdown 渲染：GFM + 代码高亮 + 链接卡片 + 图片灯箱 */
-export function Markdown({ content }: MarkdownProps) {
+/** 统一 Markdown 渲染：GFM + 代码高亮 + 链接卡片 + 图片灯箱（memo：content 稳定时不重解析） */
+export const Markdown = memo(function Markdown({ content }: MarkdownProps) {
   const { lightbox, openLightbox } = useLightbox();
 
   return (
@@ -156,4 +156,4 @@ export function Markdown({ content }: MarkdownProps) {
       {lightbox}
     </div>
   );
-}
+});

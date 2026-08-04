@@ -19,7 +19,8 @@ interface Props {
 
 export function PlanCard({ plan }: Props) {
   const { t } = useTranslation("plan");
-  const [expanded, setExpanded] = useState(true);
+  // 默认折叠：卡片是计划的过程记录，展开细节按需查看，避免长步骤列表刷屏
+  const [expanded, setExpanded] = useState(false);
 
   const total = plan.steps.length;
   const done = plan.steps.filter((s) => s.status === "completed").length;

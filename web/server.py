@@ -247,6 +247,9 @@ def create_app() -> FastAPI:
 
     if FRONTEND_DIST.exists():
         _index_html = (FRONTEND_DIST / "index.html").read_text("utf-8")
+        # index.html 禁缓存: 新构建会删除旧哈希chunk, 浏览器若缓存旧入口HTML
+        # 会引用已不存在的chunk导致白屏; assets/* 带哈希指纹可长期缓存
+        _NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate"}
 
         @app.get("/")
         async def root() -> RedirectResponse:
@@ -271,11 +274,11 @@ def create_app() -> FastAPI:
                 }.get(suffix, "application/octet-stream")
                 from starlette.responses import Response
                 return Response(content=content, media_type=media)
-            return HTMLResponse(_index_html)
+            return HTMLResponse(_index_html, headers=_NO_CACHE)
 
         @app.get("/webui")
         async def webui_root() -> HTMLResponse:
-            return HTMLResponse(_index_html)
+            return HTMLResponse(_index_html, headers=_NO_CACHE)
     else:
         @app.get("/")
         async def fallback() -> HTMLResponse:
