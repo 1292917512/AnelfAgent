@@ -134,6 +134,7 @@ export const useDelegationStore = create<DelegationState>((set, get) => ({
           task_index: r.task_index,
           background: r.background,
           depth: existing?.depth ?? 0,
+          model: r.model ?? existing?.model,
           status: "running",
           started_at: existing?.started_at ?? now - r.elapsed_seconds,
           iteration: existing?.iteration,

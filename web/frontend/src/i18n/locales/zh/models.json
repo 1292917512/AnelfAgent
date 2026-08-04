@@ -1,8 +1,11 @@
 {
   "tabs": {
     "config": "模型配置",
-    "priorities": "模型管理"
+    "priorities": "模型管理",
+    "delegation": "子代理模型"
   },
+  "disabled": "已停用",
+  "enableHint": "启用（停用后不参与任务执行）",
   "providersAndModels": "供应商与模型",
   "addProvider": "添加供应商",
   "newProvider": "新建供应商",
@@ -94,6 +97,21 @@
     "api_type": "API 类型",
     "proxy_url": "代理地址",
     "media_protocol": "图片生成协议"
+  },
+  "delegation": {
+    "desc": "为子代理配置性价比模型池：每挡手动添加已配置的模型，池内顺序即优先级。委托执行时 AI 仅标注任务难度，系统自动映射到对应挡位的模型。",
+    "fallbackHint": "挡位为空、全部停用或 AI 未标注难度时，子代理使用默认对话模型。",
+    "tier1": "挡位 1 · 简单",
+    "tier1Hint": "检索/格式化等机械任务（最经济）",
+    "tier2": "挡位 2 · 中等",
+    "tier2Hint": "常规分析/执行",
+    "tier3": "挡位 3 · 困难",
+    "tier3Hint": "复杂推理/多步规划（最强）",
+    "tierEmpty": "该挡未配置模型",
+    "selectModel": "选择模型",
+    "addModel": "加入该挡",
+    "remove": "移出",
+    "model": "模型"
   },
   "modelTypeLabels": {
     "chat": "对话",

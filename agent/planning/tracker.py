@@ -12,8 +12,9 @@ updateProgressFromMessage）：进度由程序从执行流自动推断，AI 不�
 三层进度机制：
 1. ``submit_plan``：present_plan 工具内调用，公告计划 + 首步 in_progress
 2. ``advance_plan_step``：每轮工具批次后推进当前步骤（粗粒度兜底）
-3. ``finalize_plan``：think_loop 正常结束时收敛终态（诚实语义：
-   in_progress → completed，pending → skipped，不假装完成）
+3. ``finalize_plan``：think_loop 全退出路径的唯一收敛入口（诚实语义：
+   正常结束 in_progress → completed；中断/取消 in_progress → skipped；
+   pending 一律 → skipped，不假装完成）
 
 守卫：``guard_feedback_for_text_only`` —— AI 有未完成 plan 却输出纯文本
 （无工具调用）时，think_loop 在"无工具正文 = 最终回复"终态前调用本函数
@@ -111,9 +112,10 @@ async def _find_active_plan(
         return None, None
     try:
         entries = await _store.list_recent(
-            limit=5, memory_type=MemoryType.SEMANTIC, source=GOAL_SOURCE,
+            limit=20, memory_type=MemoryType.SEMANTIC, source=GOAL_SOURCE,
         )
-    except Exception:
+    except Exception as exc:
+        log(f"active plan 查询失败: {exc}", "DEBUG", tag="规划")
         return None, None
     for entry in entries:
         try:
@@ -281,12 +283,40 @@ async def advance_plan_step(scope: str) -> None:
         pass  # 自动推进失败不影响主流程
 
 
-async def finalize_plan(scope: str) -> None:
-    """会话正常结束时收敛 plan 到终态（诚实语义）。
+async def _converge_steps(
+    scope: str, plan_id: str, steps: List[Dict[str, Any]], outcome: str,
+) -> bool:
+    """把未完成步骤按 outcome 收敛到终态并逐步发射事件。
 
-    - in_progress → completed（当前正在做的视为做完）
-    - pending → skipped（没开始的就是没做，不假装完成）
-    - plan → completed（整个计划周期结束）
+    - completed：in_progress → completed（当前正在做的视为做完），pending → skipped
+    - cancelled：in_progress / pending 统一 → skipped（中断的步骤不假装完成）
+
+    Returns:
+        是否有步骤变更。
+    """
+    note = "会话结束自动收束" if outcome == "completed" else "会话中断，步骤未执行"
+    changed = False
+    for s in steps:
+        st = s.get("status")
+        if st == "in_progress":
+            s["status"] = "completed" if outcome == "completed" else "skipped"
+            changed = True
+            await _emit_step(scope, plan_id, s.get("index", 0), s["status"], note=note)
+        elif st == "pending":
+            s["status"] = "skipped"
+            changed = True
+            await _emit_step(scope, plan_id, s.get("index", 0), "skipped", note=note)
+    return changed
+
+
+async def finalize_plan(scope: str, outcome: str = "completed") -> None:
+    """会话结束时收敛 active plan 到终态（全退出路径唯一收敛入口）。
+
+    - outcome="completed"（正常结束）：in_progress → completed，pending → skipped，
+      plan → completed
+    - outcome="cancelled"（中断 / 安全上限等异常结束）：in_progress / pending →
+      skipped，plan → cancelled
+    无 active plan 时零成本返回；状态机幂等，可在 finally 中安全调用。
     """
     if _store is None:
         return
@@ -294,25 +324,14 @@ async def finalize_plan(scope: str) -> None:
         entry, goal = await _find_active_plan(scope)
         if goal is None:
             return
-        steps = goal.get("steps", [])
         plan_id = goal.get("goal_id", "")
-        changed = False
-        for s in steps:
-            st = s.get("status")
-            if st == "in_progress":
-                s["status"] = "completed"
-                changed = True
-                await _emit_step(scope, plan_id, s.get("index", 0), "completed", note="会话结束自动收束")
-            elif st == "pending":
-                s["status"] = "skipped"
-                changed = True
-                await _emit_step(scope, plan_id, s.get("index", 0), "skipped", note="会话结束未执行")
-        if changed or goal.get("status") != "completed":
-            goal["status"] = "completed"
+        changed = await _converge_steps(scope, plan_id, goal.get("steps", []), outcome)
+        if changed or goal.get("status") != outcome:
+            goal["status"] = outcome
             await _persist(entry, goal)
-            await _emit_status(scope, plan_id, "completed")
-    except Exception:
-        pass  # 收敛失败不影响主流程
+            await _emit_status(scope, plan_id, outcome)
+    except Exception as exc:
+        log(f"plan 收敛失败（不影响主流程）: {exc}", "DEBUG", tag="规划")
 
 
 async def cancel_plan(scope: str, plan_id: str, reason: str = "用户取消") -> bool:
@@ -327,6 +346,8 @@ async def cancel_plan(scope: str, plan_id: str, reason: str = "用户取消") ->
         entry, goal = await _find_active_plan(scope)
         if goal is None or goal.get("goal_id") != plan_id:
             return False
+        # 步骤同步收敛到 skipped，避免前端残留 in_progress 转圈
+        await _converge_steps(scope, plan_id, goal.get("steps", []), "cancelled")
         goal["status"] = "cancelled"
         await _persist(entry, goal)
         _, chat_id = parse_scope_chat_id(scope)

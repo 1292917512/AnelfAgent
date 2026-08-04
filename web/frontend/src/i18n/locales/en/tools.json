@@ -40,7 +40,8 @@
     "ui": "UI Interaction",
     "session": "Session Manager",
     "share": "File Share",
-    "sticker": "Stickers"
+    "sticker": "Stickers",
+    "ssh": "SSH Remote"
   },
   "reload": "Reload",
   "reloading": "Reloading...",

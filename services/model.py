@@ -103,6 +103,7 @@ class ModelService:
         d["base_url"] = cfg.base_url
         d["api_key"] = self._mask_api_key(cfg.api_key)
         d["api_type"] = cfg.api_type
+        d["enabled"] = cfg.enabled
         return d
 
     def add_model(self, provider_id: str, model_id: str, **kwargs: Any) -> bool:
@@ -136,6 +137,16 @@ class ModelService:
 
     def move_model_priority(self, model_type: str, model_id: str, direction: int) -> bool:
         return self._manager().move_model_priority(model_type, model_id, direction)
+
+    # ------------------------------------------------------------------
+    # 子代理模型分级
+    # ------------------------------------------------------------------
+
+    def get_delegation_tiers(self) -> Dict[int, List[Dict[str, Any]]]:
+        return self._manager().get_delegation_tiers()
+
+    def set_delegation_tier(self, tier: int, model_ids: List[str]) -> bool:
+        return self._manager().set_delegation_tier(tier, model_ids)
 
     # ------------------------------------------------------------------
     # 默认 / 热切换

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { modelsApi, configApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { Switch } from "@/components/ui";
 import type { ModelPriorityItem, ConfigValues } from "@/lib/types";
 import { useModelPin, usePriorities } from "@/components/models/ModelSelect";
 import {
@@ -32,12 +33,13 @@ const TYPE_ORDER = ["chat", "vision", "embedding", "asr", "tts", "video", "music
 type PriorityItem = ModelPriorityItem;
 
 function SortableItem({
-  item, index, activeType, onPin,
+  item, index, activeType, onPin, onToggleEnabled,
 }: {
   item: PriorityItem;
   index: number;
   activeType: string;
   onPin: (id: string) => void;
+  onToggleEnabled: (id: string, enabled: boolean) => void;
 }) {
   const { t } = useTranslation(["models"]);
   const {
@@ -60,6 +62,7 @@ function SortableItem({
         "flex items-center justify-between gap-2 p-3 md:p-4 rounded-md border transition-all bg-card",
         isTop ? "border-warn shadow-[0_0_0_1px_var(--warn)]" : "border-border",
         isDragging && "shadow-lg ring-2 ring-accent",
+        item.enabled === false && "opacity-60",
       )}>
       <div className="flex items-center gap-2 md:gap-3 min-w-0">
         <button {...attributes} {...listeners}
@@ -75,6 +78,11 @@ function SortableItem({
               ? <Star size={14} className="text-warn fill-warn shrink-0" />
               : <Pin size={13} className="text-warn fill-warn shrink-0" />)}
             <span className="font-medium text-heading truncate">{item.id}</span>
+            {item.enabled === false && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-secondary text-muted border border-border shrink-0">
+                {t("disabled")}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             <span className="text-xs text-muted">{item.model}</span>
@@ -118,7 +126,13 @@ function SortableItem({
           </div>
         </div>
       </div>
-      <div className="flex items-center gap-1 shrink-0">
+      <div className="flex items-center gap-2 shrink-0">
+        <span title={t("enableHint")} className="flex items-center gap-1.5">
+          <Switch
+            checked={item.enabled !== false}
+            onChange={(v) => onToggleEnabled(item.id, v)}
+          />
+        </span>
         {!isTop && (
           <button onClick={() => onPin(item.id)}
             className="p-1.5 rounded text-muted hover:text-warn transition-colors"
@@ -157,6 +171,25 @@ export function PrioritiesPanel() {
       modelsApi.setPriority(modelType, modelIds),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["priorities"] }),
   });
+
+  const enabledMut = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      modelsApi.update(id, { enabled }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["priorities"] }),
+  });
+
+  // 乐观更新开关态，服务端落盘后 invalidate 对齐
+  const toggleEnabled = useCallback((id: string, enabled: boolean) => {
+    qc.setQueryData<Record<string, PriorityItem[]>>(["priorities"], old => {
+      if (!old) return old;
+      const next: Record<string, PriorityItem[]> = {};
+      for (const [k, list] of Object.entries(old)) {
+        next[k] = list.map(it => (it.id === id ? { ...it, enabled } : it));
+      }
+      return next;
+    });
+    enabledMut.mutate({ id, enabled });
+  }, [qc, enabledMut]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -226,6 +259,7 @@ export function PrioritiesPanel() {
                 index={idx}
                 activeType={activeType}
                 onPin={(id) => pinMut.mutate({ modelType: activeType, modelId: id })}
+                onToggleEnabled={toggleEnabled}
               />
             ))}
             {currentItems.length === 0 && availableTypes.length > 0 && (

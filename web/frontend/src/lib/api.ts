@@ -41,6 +41,7 @@ import type {
   DbSchemaResult,
   DbTableInfo,
   DbTargetCheck,
+  DelegationTiers,
   EntityDetail,
   EntityListItem,
   GlobalSearchResult,
@@ -73,6 +74,12 @@ import type {
   SkillItem,
   SnapshotListItem,
   SnapshotResponse,
+  SshConnection,
+  SshConnectionCreateRequest,
+  SshConnectionListResult,
+  SshConnectionUpdateRequest,
+  SshExecRequest,
+  SshExecResult,
   StickerItem,
   StickerListResult,
   StickerStats,
@@ -280,6 +287,9 @@ export const modelsApi = {
   costMapInfo: () => api.get<{ model_count: number }>("/models/cost-map/info"),
   updateCostMap: (proxyUrl = "") =>
     api.post<{ status: string; model_count: number }>("/models/cost-map/update", { proxy_url: proxyUrl }),
+  delegationTiers: () => api.get<{ tiers: DelegationTiers }>("/models/delegation-tiers"),
+  setDelegationTier: (tier: number, modelIds: string[]) =>
+    api.put(`/models/delegation-tiers/${tier}`, { model_ids: modelIds }),
 };
 
 // Tools
@@ -808,4 +818,24 @@ export const shareApi = {
     api.get<ShareStats>("/entity/share/stats"),
   getLogs: (params: { token?: string; page?: number; page_size?: number }) =>
     api.get<DownloadLogListResult>("/entity/share/logs", { params }),
+};
+
+// SSH（远程管理）
+export const sshApi = {
+  list: () =>
+    api.get<SshConnectionListResult>("/entity/ssh/connections"),
+  create: (data: SshConnectionCreateRequest) =>
+    api.post<SshConnection>("/entity/ssh/connections", data),
+  update: (name: string, data: SshConnectionUpdateRequest) =>
+    api.put<SshConnection>(`/entity/ssh/connections/${encodeURIComponent(name)}`, data),
+  remove: (name: string) =>
+    api.delete(`/entity/ssh/connections/${encodeURIComponent(name)}`),
+  connect: (name: string) =>
+    api.post<SshConnection>(`/entity/ssh/connections/${encodeURIComponent(name)}/connect`),
+  disconnect: (name: string) =>
+    api.post<SshConnection>(`/entity/ssh/connections/${encodeURIComponent(name)}/disconnect`),
+  setDefault: (name: string) =>
+    api.post("/entity/ssh/default", { name }),
+  exec: (name: string, data: SshExecRequest) =>
+    api.post<SshExecResult>(`/entity/ssh/connections/${encodeURIComponent(name)}/exec`, data),
 };

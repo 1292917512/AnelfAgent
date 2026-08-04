@@ -13,6 +13,7 @@ import { ModelSelect } from "@/components/models/ModelSelect";
 import { MessageList } from "./chat/MessageList";
 import { ChatInput } from "./chat/ChatInput";
 import { StatusBar } from "./chat/StatusBar";
+import { ActivityBar } from "./chat/ActivityBar";
 import { Dock, LeftDock } from "./chat/Dock";
 import { UiCommandHost } from "./chat/UiCommandHost";
 import { ContextChip } from "./chat/ContextChip";
@@ -131,6 +132,7 @@ export default function Chat() {
 
       <MessageList />
       <StatusBar />
+      <ActivityBar />
       <ChatInput />
 
       {/* 对话窗口内嵌入式悬浮计划窗（absolute，相对中栏容器定位，可拖拽） */}

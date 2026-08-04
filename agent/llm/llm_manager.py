@@ -94,6 +94,8 @@ class LLMManager(BaseEntity):
         self._clients: Dict[str, LLMClient] = {}
         self._type_priorities: Dict[str, List[str]] = {}
         self._default_chat: str = ""
+        # 子代理模型分级：难度挡位(1 简单/2 中等/3 困难) → 模型 ID 优先级列表
+        self._delegation_tiers: Dict[int, List[str]] = {1: [], 2: [], 3: []}
         self._load_config()
         super().__init__()
 
@@ -182,6 +184,7 @@ class LLMManager(BaseEntity):
                         extra_params=mdata.get("extra_params", {}),
                         chat_protocol=mdata.get("chat_protocol", "chat_completions"),
                         media_protocol=mdata.get("media_protocol", prov.media_protocol),
+                        enabled=mdata.get("enabled", True),
                     )
                     self._clients[mid] = LLMClient(config=cfg)
             except Exception as exc:
@@ -191,6 +194,17 @@ class LLMManager(BaseEntity):
             k: [mid for mid in v if mid in self._clients]
             for k, v in data.get("type_priorities", {}).items()
         }
+        self._delegation_tiers = {1: [], 2: [], 3: []}
+        for key, mids in (data.get("delegation_tiers") or {}).items():
+            try:
+                tier = int(key)
+            except (TypeError, ValueError):
+                continue
+            if tier in self._delegation_tiers and isinstance(mids, list):
+                self._delegation_tiers[tier] = [
+                    mid for mid in mids
+                    if isinstance(mid, str) and mid in self._clients
+                ]
         self._ensure_priorities_complete()
         self._register_unknown_models()
 
@@ -268,6 +282,12 @@ class LLMManager(BaseEntity):
                 "providers": providers_out,
                 "type_priorities": self._type_priorities,
                 "default_chat": self._default_chat,
+                # 仅写非空挡位，未配置时保持配置文件整洁
+                "delegation_tiers": {
+                    str(tier): mids
+                    for tier, mids in sorted(self._delegation_tiers.items())
+                    if mids
+                },
             }
             out = self._restore_env_refs(out)
             self._config_path.write_text(
@@ -330,10 +350,10 @@ class LLMManager(BaseEntity):
         require_tools: bool = False,
         require_vision: bool = False,
     ) -> Optional[LLMClient]:
-        """按类型获取最高优先级的客户端。"""
+        """按类型获取最高优先级的客户端（跳过已停用模型）。"""
         for mid in self._iter_by_type(model_type):
             client = self._clients.get(mid)
-            if not client:
+            if not client or not client.config.enabled:
                 continue
             if require_tools and not client.config.supports_tools:
                 continue
@@ -369,7 +389,10 @@ class LLMManager(BaseEntity):
         configured = str(get_config(f"embedding_{purpose}_model", "") or "").strip()
         if configured:
             client = self._clients.get(configured)
-            if client and ModelType.EMBEDDING.value in client.config.model_types:
+            if (
+                client and client.config.enabled
+                and ModelType.EMBEDDING.value in client.config.model_types
+            ):
                 return client
             warning(
                 f"embedding_{purpose}_model={configured} 未找到或不是 embedding 模型，"
@@ -391,7 +414,7 @@ class LLMManager(BaseEntity):
         for mt in search_types:
             for mid in self._type_priorities.get(mt, []):
                 client = self._clients.get(mid)
-                if not client:
+                if not client or not client.config.enabled:
                     continue
                 return MediaClient(
                     base_url=client.config.base_url,
@@ -440,7 +463,7 @@ class LLMManager(BaseEntity):
         result: List[tuple] = []
         for mid in self._type_priorities.get(model_type, []):
             client = self._clients.get(mid)
-            if not client:
+            if not client or not client.config.enabled:
                 continue
             mc = MediaClient(
                 base_url=client.config.base_url,
@@ -457,13 +480,13 @@ class LLMManager(BaseEntity):
         if keyword:
             for mid in priority:
                 client = self._clients.get(mid)
-                if not client:
+                if not client or not client.config.enabled:
                     continue
                 if keyword.lower() in client.config.model.lower() or keyword.lower() in mid.lower():
                     return client.config.model
         for mid in priority:
             client = self._clients.get(mid)
-            if client:
+            if client and client.config.enabled:
                 return client.config.model
         return None
 
@@ -474,13 +497,13 @@ class LLMManager(BaseEntity):
         require_tools: bool = False,
         require_vision: bool = False,
     ) -> List[LLMClient]:
-        """获取可用于回退的 chat 客户端列表（按优先级）。"""
+        """获取可用于回退的 chat 客户端列表（按优先级，跳过已停用）。"""
         result: List[LLMClient] = []
         for mid in self._iter_by_type(ModelType.CHAT):
             if mid == exclude:
                 continue
             client = self._clients.get(mid)
-            if not client:
+            if not client or not client.config.enabled:
                 continue
             if require_tools and not client.config.supports_tools:
                 continue
@@ -808,6 +831,13 @@ class LLMManager(BaseEntity):
     def get_client(self, name: str) -> Optional[LLMClient]:
         return self._clients.get(name)
 
+    def get_enabled_client(self, name: str) -> Optional[LLMClient]:
+        """执行路径查询：模型不存在或已停用时返回 None（调用方回退默认）。"""
+        client = self._clients.get(name)
+        if client is None or not client.config.enabled:
+            return None
+        return client
+
     def get_all_names(self) -> List[str]:
         """返回全部已注册模型 ID。"""
         return list(self._clients.keys())
@@ -822,30 +852,34 @@ class LLMManager(BaseEntity):
         if not name:
             return None
         direct = self._clients.get(name)
-        if direct is not None:
+        if direct is not None and direct.config.enabled:
             return direct
         matches = [
             client for client in self._clients.values()
-            if client.config.model == name
+            if client.config.model == name and client.config.enabled
         ]
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
             for mid in self._type_priorities.get("chat", []):
                 client = self._clients.get(mid)
-                if client is not None and client.config.model == name:
+                if (
+                    client is not None and client.config.enabled
+                    and client.config.model == name
+                ):
                     return client
             return matches[0]
         return None
 
     def get_default(self) -> LLMClient:
-        """按 chat 优先级列表顺序返回第一个可用的对话模型。
+        """按 chat 优先级列表顺序返回第一个可用的对话模型（跳过已停用）。
 
         优先选择 supports_tools 的模型，若无则回退到任意 chat 模型。
         """
         configured = self._clients.get(self._default_chat)
         if (
             configured is not None
+            and configured.config.enabled
             and "chat" in configured.config.model_types
             and configured.config.supports_tools
         ):
@@ -853,16 +887,16 @@ class LLMManager(BaseEntity):
         chat_prio = self._type_priorities.get("chat", [])
         for mid in chat_prio:
             client = self._clients.get(mid)
-            if client is not None and client.config.supports_tools:
+            if client is not None and client.config.enabled and client.config.supports_tools:
                 return client
         for mid in chat_prio:
             client = self._clients.get(mid)
-            if client is not None:
+            if client is not None and client.config.enabled:
                 warning(f"默认模型 '{mid}' 不支持工具调用，功能将受限", tag="模型")
                 return client
-        if self._clients:
-            first = next(iter(self._clients.values()))
-            return first
+        for client in self._clients.values():
+            if client.config.enabled:
+                return client
         dummy = LLMClient(config=LLMClientConfig(name="_empty", base_url=""))
         warning("无可用 LLM 客户端，调用时将返回明确配置错误", tag="模型")
         return dummy
@@ -872,6 +906,9 @@ class LLMManager(BaseEntity):
         client = self._clients.get(name)
         if not client:
             warning(f"模型 '{name}' 不存在，无法设为默认", tag="模型")
+            return False
+        if not client.config.enabled:
+            warning(f"模型 '{name}' 已停用，无法设为默认", tag="模型")
             return False
         if "chat" in client.config.model_types and not client.config.supports_tools:
             warning(f"模型 '{name}' 不支持工具调用（supports_tools=False），不允许设为默认对话模型", tag="模型")
@@ -934,6 +971,8 @@ class LLMManager(BaseEntity):
             if model_id in vision_list:
                 vision_list.remove(model_id)
         self.save_config()
+        if not client.config.enabled:
+            self._hot_switch_if_disabled(model_id)
         return True
 
     def rename_model(self, old_id: str, new_id: str) -> bool:
@@ -995,24 +1034,35 @@ class LLMManager(BaseEntity):
                 client = self._clients.get(mid)
                 if not client:
                     continue
-                if mid not in cost_cache:
-                    cost_cache[mid] = self._query_model_cost(client)
-                provider = self._providers.get(client.config.provider_id)
-                items.append({
-                    "id": mid,
-                    "model": client.config.model,
-                    "provider_id": client.config.provider_id,
-                    "provider_name": provider.name if provider is not None else "",
-                    "is_default": mt == "chat" and mid == default_chat,
-                    "supports_vision": client.config.supports_vision,
-                    "supports_tools": client.config.supports_tools,
-                    "supports_reasoning": client.config.supports_reasoning,
-                    "reasoning_effort": client.config.reasoning_effort,
-                    "api_type": client.config.api_type,
-                    **cost_cache[mid],
-                })
+                item = self._model_detail_item(mid, client, cost_cache)
+                item["is_default"] = mt == "chat" and mid == default_chat
+                items.append(item)
             result[mt] = items
         return result
+
+    def _model_detail_item(
+        self,
+        mid: str,
+        client: LLMClient,
+        cost_cache: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """模型详情条目（优先级列表 / 子代理分挡共享）。"""
+        if mid not in cost_cache:
+            cost_cache[mid] = self._query_model_cost(client)
+        provider = self._providers.get(client.config.provider_id)
+        return {
+            "id": mid,
+            "model": client.config.model,
+            "provider_id": client.config.provider_id,
+            "provider_name": provider.name if provider is not None else "",
+            "enabled": client.config.enabled,
+            "supports_vision": client.config.supports_vision,
+            "supports_tools": client.config.supports_tools,
+            "supports_reasoning": client.config.supports_reasoning,
+            "reasoning_effort": client.config.reasoning_effort,
+            "api_type": client.config.api_type,
+            **cost_cache[mid],
+        }
 
     def set_type_priority(self, model_type: str, model_ids: List[str]) -> None:
         """设置某类型的完整优先级顺序。"""
@@ -1045,12 +1095,27 @@ class LLMManager(BaseEntity):
         return True
 
     def _chat_first(self) -> Optional[str]:
-        """返回当前 chat 优先级列表中第一个支持工具调用的模型 ID。"""
+        """返回当前 chat 优先级列表中第一个启用且支持工具调用的模型 ID。"""
         for mid in self._type_priorities.get("chat", []):
             client = self._clients.get(mid)
-            if client and client.config.supports_tools:
+            if client and client.config.enabled and client.config.supports_tools:
                 return mid
         return None
+
+    def _hot_switch_if_disabled(self, model_id: str) -> None:
+        """禁用模型后，若其正是当前在用的默认客户端，热切换到下一可用模型。"""
+        try:
+            from services._runtime import get_runtime
+            rt = get_runtime()
+            if rt is None or getattr(rt, "mind", None) is None:
+                return
+            current = getattr(rt.mind.llm, "config", None)
+            if current is None or current.name != model_id:
+                return
+            rt.switch_llm(self.get_default())
+            info(f"模型 '{model_id}' 已停用，默认客户端已热切换", tag="模型")
+        except Exception:
+            log("_hot_switch_if_disabled 异常已忽略", "DEBUG")
 
     def _auto_switch_chat(self, old_first: Optional[str]) -> None:
         """chat 优先级变化后，若首位模型改变则自动热切换。"""
@@ -1075,11 +1140,67 @@ class LLMManager(BaseEntity):
             if client.config.provider_id != provider_id:
                 continue
             d = client.config.to_model_dict()
+            d["enabled"] = client.config.enabled
             d["is_default"] = (mid == default_chat
                                and "chat" in client.config.model_types)
             d.update(self._query_model_cost(client))
             result.append(d)
         return result
+
+    # ------------------------------------------------------------------
+    # 子代理模型分级
+    # ------------------------------------------------------------------
+
+    def get_delegation_tiers(self) -> Dict[int, List[Dict[str, Any]]]:
+        """返回三挡子代理模型池详情（1 简单/2 中等/3 困难，按池内优先级）。"""
+        cost_cache: Dict[str, Dict[str, Any]] = {}
+        return {
+            tier: [
+                self._model_detail_item(mid, client, cost_cache)
+                for mid in mids
+                if (client := self._clients.get(mid)) is not None
+            ]
+            for tier, mids in sorted(self._delegation_tiers.items())
+        }
+
+    def set_delegation_tier(self, tier: int, model_ids: List[str]) -> bool:
+        """设置某挡的完整模型池（校验挡位与模型合法性后持久化）。"""
+        if tier not in self._delegation_tiers:
+            warning(f"无效的子代理挡位: {tier}", tag="模型")
+            return False
+        valid: List[str] = []
+        for mid in model_ids:
+            client = self._clients.get(mid)
+            if client is None:
+                warning(f"子代理挡位 {tier} 忽略不存在的模型: {mid}", tag="模型")
+                continue
+            if "chat" not in client.config.model_types:
+                warning(f"子代理挡位 {tier} 忽略非 chat 模型: {mid}", tag="模型")
+                continue
+            if mid not in valid:
+                valid.append(mid)
+        self._delegation_tiers[tier] = valid
+        self.save_config()
+        return True
+
+    def resolve_delegation_model(self, difficulty: Any) -> Optional[str]:
+        """难度挡位 → 模型 ID 的唯一映射入口。
+
+        difficulty 非法（非 1-3 整数）→ None；挡位空或全停用 → 降挡（3→2→1）；
+        仍无可用 → None。None 语义：调用方使用默认模型（与未配置分级时一致）。
+        """
+        try:
+            tier = int(difficulty)
+        except (TypeError, ValueError):
+            return None
+        if tier not in self._delegation_tiers:
+            return None
+        for t in range(tier, 0, -1):
+            for mid in self._delegation_tiers.get(t, []):
+                client = self._clients.get(mid)
+                if client is not None and client.config.enabled:
+                    return mid
+        return None
 
     # ------------------------------------------------------------------
     # 属性

@@ -73,7 +73,12 @@ export function PlanCard({ plan }: Props) {
             {/* 步骤 */}
             <div className="space-y-0.5 mt-1">
               {plan.steps.map((step) => (
-                <PlanStepRow key={step.index} step={step} compact />
+                <PlanStepRow
+                  key={step.index}
+                  step={step}
+                  compact
+                  settled={plan.status !== "executing"}
+                />
               ))}
             </div>
 

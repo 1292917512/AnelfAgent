@@ -207,6 +207,8 @@ export interface SseDelegationStartedEvent extends SseEventBase {
   task_index?: number;
   background?: boolean;
   depth?: number;
+  /** 难度分级解析后的模型 ID；空串/缺省 = 默认模型 */
+  model?: string;
   ts?: number;
 }
 

@@ -50,6 +50,7 @@ async def delegate_task(
         role: str = "leaf",
         background: bool = False,
         max_iterations: int = 0,
+        difficulty: int = 0,
 ) -> str:
     """委托子任务给子代理执行。
 
@@ -61,6 +62,9 @@ async def delegate_task(
         background: 是否后台执行（立即返回 delegation_id；完成时系统自动通知并触发新一轮回复，
             期间可用 check_background_tasks 查询进度）
         max_iterations: 子代理迭代预算（轮次），默认 15
+        difficulty: 任务难度等级，用于自动匹配性价比模型：1=简单（检索/格式化等机械任务）
+            2=中等（常规分析/执行）3=困难（复杂推理/多步规划）。0/不传=使用默认模型。
+            只需按难度标注，无需关心具体模型。
     """
     if not _delegation_enabled():
         return tool_error(
@@ -99,6 +103,7 @@ async def delegate_task(
         try:
             results = await _manager.delegate_batch(
                 task_list, role=role, max_iterations=max_iterations,
+                difficulty=difficulty,
             )
         except ValueError as exc:
             return error_from_exception(exc, action="并行委托")
@@ -113,6 +118,7 @@ async def delegate_task(
         delegation_id = _manager.delegate_background(
             goal, context, role=role, max_iterations=max_iterations,
             scope=ToolActivationManager.current_scope(),
+            difficulty=difficulty,
         )
         return json.dumps({
             "ok": True,
@@ -123,6 +129,7 @@ async def delegate_task(
 
     result = await _manager.delegate(
         goal, context, role=role, max_iterations=max_iterations,
+        difficulty=difficulty,
     )
     return _manager.aggregate_results([result])
 

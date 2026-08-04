@@ -225,7 +225,12 @@ export function PlanPanel() {
       {/* 步骤列表 */}
       <div className="px-3 py-2 max-h-[280px] overflow-y-auto space-y-0.5">
         {activePlan.steps.map((step) => (
-          <PlanStepRow key={step.index} step={step} compact />
+          <PlanStepRow
+            key={step.index}
+            step={step}
+            compact
+            settled={activePlan.status !== "executing"}
+          />
         ))}
       </div>
 

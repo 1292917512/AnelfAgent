@@ -38,9 +38,12 @@
       "usingTool": "Using tool: {{tool}}"
     }
   },
-  "stepFallback": "Step {{index}}",
-  "stepProgress": "{{icon}} Plan step {{index}}/{{total}}: {{step}}{{note}}",
-  "fallbackTitle": "Plan",
-  "completedMsg": "✓ Plan completed: {{goal}}",
-  "cancelledMsg": "⊘ Plan cancelled: {{goal}}"
+  "activity": {
+    "title": "Activity",
+    "runningCount": "{{n}} sub-agents",
+    "plan": "Plan",
+    "delegations": "Sub-agents",
+    "empty": "Nothing running",
+    "close": "Collapse"
+  }
 }

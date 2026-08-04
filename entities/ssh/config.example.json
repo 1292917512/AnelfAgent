@@ -1,0 +1,7 @@
+{
+    "ssh_ai_enabled": true,
+    "ssh_default_timeout": 60,
+    "ssh_connect_timeout": 15,
+    "ssh_keepalive_interval": 30,
+    "ssh_verify_host_key": false
+}

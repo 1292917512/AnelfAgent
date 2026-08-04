@@ -233,9 +233,6 @@ async def think_loop(
     工具集由调用方构建并传入，确保模式差异在入口处理。
     主循环只保留：中断检查 → LLM 调用 → 分发到阶段函数 → 终止条件判断。
     """
-    from agent.mind.autonomous import MindPhase
-    from agent.mind.tool_activation import tool_activation as _tool_act_mgr
-
     ctx, state = await _prepare_think_context(
         mind, mode, tool_chain, execution_steps,
         collected_text, active_tools, anything, base_messages,
@@ -246,6 +243,38 @@ async def think_loop(
     # 使用计数驱动的层间跳变/热召回漂移会改变 tools 数组字节序，
     # 击穿 Anthropic/OpenAI 前缀缓存（tools 位于缓存前缀最前）。
     ctx.frozen_tool_order = [_tool_schema_name(t) for t in ctx.active_tools]
+
+    try:
+        await _run_think_rounds(ctx, state, safety_limit, start_time)
+    finally:
+        # plan 全退出路径唯一收敛点：正常结束已由 _finish_round 收敛（finalized
+        # 置位）；中断 / 安全上限等异常退出在此收敛——中断 → cancelled，其余 →
+        # completed。无 active plan 时 finalize_plan 零成本，幂等安全。
+        if not state.plan_finalized:
+            try:
+                from agent.planning import tracker as _plan_tracker
+                await _plan_tracker.finalize_plan(
+                    ctx.current_scope,
+                    "cancelled" if state.interrupted else "completed",
+                )
+            except Exception:
+                pass  # 收敛失败不影响主流程
+
+
+async def _run_think_rounds(
+        ctx: _ThinkLoopCtx,
+        state: _ThinkRoundState,
+        safety_limit: int,
+        start_time: float,
+) -> None:
+    """轮次主循环：中断检查 → LLM 调用 → 阶段分发 → 终止判断。"""
+    from agent.mind.autonomous import MindPhase
+    from agent.mind.tool_activation import tool_activation as _tool_act_mgr
+
+    mind = ctx.mind
+    anything = ctx.anything
+    mode = ctx.mode
+    execution_steps = ctx.execution_steps
 
     # 工具集版本快照：每轮检查版本变化，变了就重建 active_tools（保持 prefix 缓存友好）
     last_tools_version = (
@@ -369,6 +398,7 @@ async def _handle_interrupt(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bool
     ):
         return False
     reason = ctx.interrupts.consume(ctx.current_scope) or "未说明"
+    state.interrupted = True  # finally 收敛 plan 时按 cancelled 处理
     log(
         f"会话被中断 (轮次 {state.iteration + 1}): "
         f"scope={ctx.current_scope} reason={reason}",
@@ -443,14 +473,16 @@ async def _finish_round(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
 
     - plan 收敛：REPLY / REFLECT 正常结束都执行，scope 取自 ContextVar
     （``ctx.current_scope``），tracker 只处理当前 scope 的 active plan，无 plan 零成本。
+    收敛成功后置位 ``state.plan_finalized``，think_loop 的 finally 不再重复收敛。
     - finish_think：仅 REPLY（摘要入库 + complete_reply 需要 anything）。
-    异常路径（中断/安全上限）不走这里——直接调 finish_think，plan 保持 active 可续。
+    异常路径（中断/安全上限）不走这里，由 think_loop 的 finally 统一收敛。
     """
     try:
         from agent.planning import tracker as _plan_tracker
         await _plan_tracker.finalize_plan(ctx.current_scope)
+        state.plan_finalized = True
     except Exception:
-        pass  # 收敛失败不影响主流程
+        pass  # 收敛失败不影响主流程，finally 兜底重试
     if ctx.mode == ThinkMode.REPLY and ctx.anything:
         await finish_think(
             ctx.mind, ctx.anything, ctx.execution_steps, state.iteration + 1, ctx.tool_chain,

@@ -136,6 +136,7 @@ class SubAgent:
             role: str = _ROLE_LEAF,
             max_iterations: int = 0,
             task_index: int = 0,
+            model_id: str = "",
     ) -> None:
         self._mind = mind
         self.goal = goal
@@ -143,6 +144,8 @@ class SubAgent:
         self.role = normalize_role(role)
         self.max_iterations = clamp_iterations(max_iterations)
         self.task_index = task_index
+        # 难度分级解析后的模型 ID；空串 = 使用默认模型
+        self.model_id = model_id
 
     async def run(self) -> SubAgentResult:
         """执行子任务并返回结果摘要。"""
@@ -169,6 +172,8 @@ class SubAgent:
 
         token = _delegate_depth.set(depth + 1)
         timeout = delegation_timeout_seconds()
+        # 性价比模型：经已验证的 _model_id 覆盖管道注入（与 TaskExecutor 同路径）
+        options = {"_model_id": self.model_id} if self.model_id else None
         try:
             output = await asyncio.wait_for(
                 self._mind.reflect(
@@ -176,6 +181,7 @@ class SubAgent:
                     max_iterations=self.max_iterations,
                     allow_output_tools=False,
                     extra_blocked_tools=extra_blocked,
+                    options=options,
                 ),
                 timeout=timeout,
             )

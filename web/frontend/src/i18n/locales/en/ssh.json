@@ -1,0 +1,73 @@
+{
+  "tabs": {
+    "connections": "Connections",
+    "exec": "Run Command"
+  },
+  "status": {
+    "total": "Connections",
+    "empty": "No connections yet. Click \"Add\" in the top right to get started",
+    "default": "Default",
+    "connected": "Connected",
+    "connecting": "Connecting",
+    "disconnected": "Disconnected",
+    "error": "Error"
+  },
+  "fields": {
+    "name": "Name",
+    "host": "Host",
+    "port": "Port",
+    "username": "Username",
+    "password": "Password",
+    "passwordPlaceholder": "Login password (supports ${ENV_VAR})",
+    "passwordKeepHint": "Leave empty to keep unchanged",
+    "keyPath": "Private key path",
+    "passphrase": "Key passphrase",
+    "passphrasePlaceholder": "Optional",
+    "description": "Description",
+    "descriptionPlaceholder": "Purpose, e.g. Production web server"
+  },
+  "form": {
+    "createTitle": "New Connection",
+    "editTitle": "Edit Connection",
+    "authHint": "Provide at least one of password or private key; the key is preferred when both are set. Passwords support ${ENV_VAR} references to avoid plaintext storage."
+  },
+  "actions": {
+    "add": "Add",
+    "refresh": "Refresh",
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "setDefault": "Set as default",
+    "edit": "Edit",
+    "remove": "Delete",
+    "save": "Save",
+    "cancel": "Cancel"
+  },
+  "exec": {
+    "title": "Run Command",
+    "subtitle": "Execute a command on the selected connection and view structured output",
+    "connection": "Target connection",
+    "timeout": "Timeout (s)",
+    "command": "Command",
+    "noConnections": "No connections",
+    "run": "Run",
+    "running": "Running…",
+    "result": "Result",
+    "truncated": "Output truncated",
+    "noOutput": "Command produced no output"
+  },
+  "messages": {
+    "connectSuccess": "Connected",
+    "connectFailed": "Connection failed",
+    "disconnectSuccess": "Disconnected",
+    "disconnectFailed": "Disconnect failed",
+    "removeSuccess": "Connection removed",
+    "removeFailed": "Remove failed",
+    "defaultSuccess": "Set as default connection",
+    "defaultFailed": "Failed to set default",
+    "createSuccess": "Connection created",
+    "updateSuccess": "Connection updated",
+    "saveFailed": "Save failed",
+    "execFailed": "Execution failed",
+    "confirmRemove": "Delete connection \"{{name}}\"? This cannot be undone."
+  }
+}

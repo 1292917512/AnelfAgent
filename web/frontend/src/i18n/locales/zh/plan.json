@@ -38,9 +38,12 @@
       "usingTool": "正在使用工具: {{tool}}"
     }
   },
-  "stepFallback": "步骤 {{index}}",
-  "stepProgress": "{{icon}} 计划步骤 {{index}}/{{total}}: {{step}}{{note}}",
-  "fallbackTitle": "计划",
-  "completedMsg": "✓ 计划完成：{{goal}}",
-  "cancelledMsg": "⊘ 计划已取消：{{goal}}"
+  "activity": {
+    "title": "执行活动",
+    "runningCount": "{{n}} 个子代理",
+    "plan": "计划",
+    "delegations": "子代理",
+    "empty": "当前无执行中任务",
+    "close": "收起"
+  }
 }

@@ -86,7 +86,8 @@ export function ModelSelect({
   const { data: priorities = {} } = usePriorities();
   const pinMut = useModelPin();
 
-  const items = priorities[modelType] ?? [];
+  // 已停用模型不参与选择（模型管理页仍可管理）
+  const items = (priorities[modelType] ?? []).filter((i) => i.enabled !== false);
   const defaultItem = items.find((i) => i.is_default) ?? items[0];
   const selected = value ? items.find((i) => i.id === value) : undefined;
   // 未显式选择时：表单场景显示占位文案，否则回显全局默认

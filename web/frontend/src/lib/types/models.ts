@@ -34,6 +34,8 @@ export interface ModelConfig {
   extra_body: JsonObject;
   chat_protocol: "chat_completions" | "responses" | "auto";
   is_default: boolean;
+  /** 启用开关：禁用后不参与任何自动选择/回退/默认 */
+  enabled: boolean;
   input_cost: number | null;
   output_cost: number | null;
   context_window: number | null;
@@ -52,6 +54,7 @@ export interface ModelPriorityItem {
   provider_id: string;
   provider_name: string;
   is_default: boolean;
+  enabled: boolean;
   supports_vision: boolean;
   supports_tools: boolean;
   supports_reasoning: boolean;
@@ -61,6 +64,9 @@ export interface ModelPriorityItem {
   output_cost: number | null;
   context_window: number | null;
 }
+
+/** 子代理模型三挡池（1 简单/2 中等/3 困难） */
+export type DelegationTiers = Record<"1" | "2" | "3", ModelPriorityItem[]>;
 
 // ── Models (inline from api.ts) ────────────────────────────────
 

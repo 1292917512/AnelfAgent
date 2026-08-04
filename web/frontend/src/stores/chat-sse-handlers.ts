@@ -4,7 +4,6 @@
  * 从 chat-store 拆出：15 种事件的解析与分发；通过 ChatSseContext 回调操作
  * chat-store 状态，plan / delegation / approval 事件分流到对应 store。
  */
-import i18n from "@/i18n";
 import type {
   ChatBucket,
   ChatMessage,
@@ -320,22 +319,8 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
         : data.goal_status === "cancelled"
           ? "cancelled"
           : "executing";
+      // 终态反馈由悬浮窗/活动条/聊天卡徽标承担，不再插入消息流通知
       usePlanStore.getState().updatePlanStatus(chatId, data.plan_id, status);
-      // 整体完成/取消时插入一条居中细条通知（进度过程不进消息流）
-      if (status === "completed" || status === "cancelled") {
-        const plan = usePlanStore.getState().plans[chatId]?.[data.plan_id];
-        const goalText = plan?.goal ?? i18n.t("plan.fallbackTitle", { ns: "plan" });
-        updateBucket(chatId, (b) => ({
-          messages: [...b.messages, {
-            role: "system",
-            kind: "system_notice",
-            content: status === "completed"
-              ? i18n.t("plan.completedMsg", { ns: "plan", goal: goalText })
-              : i18n.t("plan.cancelledMsg", { ns: "plan", goal: goalText }),
-            cid: nextCid(),
-          }],
-        }));
-      }
     } catch { /* ignore */ }
   });
 
@@ -361,6 +346,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
         task_index: data.task_index ?? 0,
         background: !!data.background,
         depth: data.depth ?? 0,
+        model: data.model || undefined,
         status: "running",
         started_at: data.ts ?? Date.now() / 1000,
       };

@@ -166,6 +166,11 @@ export function DelegationCard({ node }: Props) {
                   {t("delegation.depth")}: {node.depth}
                 </span>
               )}
+              {node.model && (
+                <span className="text-muted truncate" title={node.model}>
+                  {t("delegation.model")}: {node.model}
+                </span>
+              )}
             </div>
           </div>
         )}

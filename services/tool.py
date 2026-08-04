@@ -28,6 +28,7 @@ _GROUP_ORDER = {
     "delegation": 18,
     "ui": 19,
     "session": 20,
+    "ssh": 21,
 }
 
 

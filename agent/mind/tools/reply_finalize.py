@@ -127,9 +127,9 @@ async def finish_think(
 ) -> None:
     """思维循环结束处理：工具摘要入库 + 经 EVENT_AFTER_REPLY 交给技能评审。
 
-    Plan 收敛不在此处：正常结束路径由 think_loop 的 ``_finish_round`` 在调用
-    本函数前统一执行 ``tracker.finalize_plan``；异常路径（中断/安全上限）
-    直接调本函数，plan 保持 active 可续——语义分层更准确。
+    Plan 收敛不在此处：正常结束由 think_loop 的 ``_finish_round`` 在调用本函数前
+    执行 ``tracker.finalize_plan``；异常路径（中断/安全上限）由 think_loop 顶层
+    finally 统一收敛（中断 → cancelled，其余 → completed）。
     """
     execution_summary = _build_execution_summary(tool_chain, execution_steps)
     if execution_summary.startswith("[已执行操作摘要]"):

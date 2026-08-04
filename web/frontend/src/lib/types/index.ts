@@ -18,6 +18,7 @@ export * from "./database";
 export * from "./context";
 export * from "./entities";
 export * from "./share";
+export * from "./ssh";
 export * from "./plan";
 export * from "./chat";
 export * from "./thinking";

@@ -54,6 +54,7 @@ const CORE_ROUTES: CoreRoute[] = [
   { path: "memory", page: "Memory" },
   { path: "stickers", page: "Stickers" },
   { path: "share", redirectTo: "/entities/share" },
+  { path: "ssh", redirectTo: "/entities/ssh" },
   { path: "data", page: "Data" },
   { path: "config", page: "Config" },
   { path: "channels", page: "Channels" },

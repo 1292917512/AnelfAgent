@@ -1,8 +1,11 @@
 {
   "tabs": {
     "config": "Model Config",
-    "priorities": "Model Management"
+    "priorities": "Model Management",
+    "delegation": "Sub-agent Models"
   },
+  "disabled": "Disabled",
+  "enableHint": "Enabled (disabled models are excluded from task execution)",
   "providersAndModels": "Providers & Models",
   "addProvider": "Add Provider",
   "newProvider": "New Provider",
@@ -94,6 +97,21 @@
     "api_type": "API Type",
     "proxy_url": "Proxy URL",
     "media_protocol": "Image Gen Protocol"
+  },
+  "delegation": {
+    "desc": "Configure cost-effective model pools for sub-agents: manually add configured models to each tier; pool order is priority. At delegation time the AI only labels task difficulty and the system maps it to the matching tier.",
+    "fallbackHint": "When a tier is empty, fully disabled, or difficulty is not labelled, sub-agents use the default chat model.",
+    "tier1": "Tier 1 · Simple",
+    "tier1Hint": "Mechanical tasks like retrieval/formatting (cheapest)",
+    "tier2": "Tier 2 · Medium",
+    "tier2Hint": "Regular analysis/execution",
+    "tier3": "Tier 3 · Hard",
+    "tier3Hint": "Complex reasoning/multi-step planning (strongest)",
+    "tierEmpty": "No models in this tier",
+    "selectModel": "Select model",
+    "addModel": "Add to tier",
+    "remove": "Remove",
+    "model": "Model"
   },
   "modelTypeLabels": {
     "chat": "Chat",

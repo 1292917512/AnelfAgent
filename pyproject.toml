@@ -53,6 +53,7 @@ dependencies = [
     "aiolimiter>=1.2.1",
     "asyncpg>=0.31.0",
     "aiomysql>=0.3.2",
+    "asyncssh>=2.24.0",
 ]
 
 [[tool.uv.index]]

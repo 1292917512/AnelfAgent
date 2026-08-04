@@ -36,6 +36,8 @@ export interface DelegationNode {
   task_index: number;
   background: boolean;
   depth: number;
+  /** 难度分级解析后的模型 ID；空串/缺省 = 默认模型 */
+  model?: string;
   status: DelegationStatus;
   started_at: number;
   resolved_at?: number;
@@ -56,5 +58,6 @@ export interface RunningDelegation {
   role: "leaf" | "orchestrator";
   task_index: number;
   background: boolean;
+  model?: string;
   elapsed_seconds: number;
 }

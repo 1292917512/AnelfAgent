@@ -197,13 +197,16 @@ async def _llm_chat_with_retry(
 
     if mind.llm_manager:
         if model_override_id:
-            primary = mind.llm_manager.get_client(model_override_id)
+            # 执行路径：覆盖模型不存在或已停用时回退默认
+            primary = mind.llm_manager.get_enabled_client(model_override_id)
             if not primary:
                 from core.log import log
-                log(f"指定模型 '{model_override_id}' 不存在，回退到默认模型", "WARNING", tag="思维")
+                log(f"指定模型 '{model_override_id}' 不可用（不存在或已停用），回退到默认模型", "WARNING", tag="思维")
                 primary = mind.llm if isinstance(mind.llm, LLMClient) else None
         else:
             primary = mind.llm if isinstance(mind.llm, LLMClient) else None
+        if primary is not None and not primary.config.enabled:
+            primary = mind.llm_manager.get_default()
         result = await mind.llm_manager.chat_with_fallback(
             messages,
             options=final_options,

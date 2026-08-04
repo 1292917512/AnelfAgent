@@ -1,0 +1,73 @@
+{
+  "tabs": {
+    "connections": "连接管理",
+    "exec": "命令执行"
+  },
+  "status": {
+    "total": "连接数",
+    "empty": "暂无连接配置，点击右上角「添加」开始",
+    "default": "默认",
+    "connected": "已连接",
+    "connecting": "连接中",
+    "disconnected": "未连接",
+    "error": "异常"
+  },
+  "fields": {
+    "name": "连接名称",
+    "host": "主机地址",
+    "port": "端口",
+    "username": "用户名",
+    "password": "密码",
+    "passwordPlaceholder": "登录密码（支持 ${ENV_VAR}）",
+    "passwordKeepHint": "留空保持不变",
+    "keyPath": "私钥路径",
+    "passphrase": "私钥口令",
+    "passphrasePlaceholder": "可选",
+    "description": "描述",
+    "descriptionPlaceholder": "用途说明，如：生产 Web 服务器"
+  },
+  "form": {
+    "createTitle": "新增连接",
+    "editTitle": "编辑连接",
+    "authHint": "密码与私钥至少提供一项；同时提供时优先使用私钥。密码支持 ${ENV_VAR} 引用以避开明文存储。"
+  },
+  "actions": {
+    "add": "添加",
+    "refresh": "刷新",
+    "connect": "连接",
+    "disconnect": "断开",
+    "setDefault": "设为默认",
+    "edit": "编辑",
+    "remove": "删除",
+    "save": "保存",
+    "cancel": "取消"
+  },
+  "exec": {
+    "title": "命令执行",
+    "subtitle": "在选定连接上执行命令并查看结构化输出",
+    "connection": "目标连接",
+    "timeout": "超时（秒）",
+    "command": "命令",
+    "noConnections": "暂无连接",
+    "run": "执行",
+    "running": "执行中…",
+    "result": "执行结果",
+    "truncated": "输出已截断",
+    "noOutput": "命令无输出"
+  },
+  "messages": {
+    "connectSuccess": "连接成功",
+    "connectFailed": "连接失败",
+    "disconnectSuccess": "已断开",
+    "disconnectFailed": "断开失败",
+    "removeSuccess": "连接已删除",
+    "removeFailed": "删除失败",
+    "defaultSuccess": "已设为默认连接",
+    "defaultFailed": "设置默认失败",
+    "createSuccess": "连接已创建",
+    "updateSuccess": "连接已更新",
+    "saveFailed": "保存失败",
+    "execFailed": "执行失败",
+    "confirmRemove": "确认删除连接「{{name}}」？此操作不可恢复。"
+  }
+}

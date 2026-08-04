@@ -89,6 +89,8 @@ export function MessageList() {
   const prevScrollHeight = useRef(0);
 
   const chatPlans = usePlanStore((s) => s.plans[activeChatId]);
+  // 悬浮窗可见时计划由浮窗唯一展示，聊天流不重复渲染；关闭浮窗后回落到聊天流
+  const panelHidden = usePlanStore((s) => s.panelHidden);
   const chatDelegations = useDelegationStore((s) => s.delegations[activeChatId]);
 
   // 把 messages / plans / delegations 按时间序合并到同一条时间线（输入不变时复用结果）
@@ -106,13 +108,15 @@ export function MessageList() {
         data: m,
       });
     }
-    for (const p of Object.values(chatPlans ?? {})) {
-      entries.push({
-        kind: "plan",
-        ts: p.created_at,
-        key: `plan-${p.plan_id}`,
-        data: p,
-      });
+    if (panelHidden) {
+      for (const p of Object.values(chatPlans ?? {})) {
+        entries.push({
+          kind: "plan",
+          ts: p.created_at,
+          key: `plan-${p.plan_id}`,
+          data: p,
+        });
+      }
     }
     for (const d of Object.values(chatDelegations ?? {})) {
       entries.push({
@@ -124,7 +128,7 @@ export function MessageList() {
     }
     entries.sort((a, b) => a.ts - b.ts);
     return entries;
-  }, [messages, chatPlans, chatDelegations]);
+  }, [messages, chatPlans, panelHidden, chatDelegations]);
 
   useEffect(() => {
     const el = scrollRef.current;

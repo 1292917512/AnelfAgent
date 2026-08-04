@@ -87,6 +87,10 @@ class _ThinkRoundState:
     wait_budget: float = 0.0
     # 新消息并入基线水位（快照内最大 ts_ns）
     last_merged_ts: int = 0
+    # plan 收敛标记：正常结束路径（_finish_round）已收敛时置位，finally 不重复收敛
+    plan_finalized: bool = False
+    # 本次会话是否被协作式中断终止（决定 finally 收敛 outcome）
+    interrupted: bool = False
 
 
 @dataclass

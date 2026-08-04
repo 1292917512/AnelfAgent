@@ -139,6 +139,8 @@ class LLMClientConfig:
     chat_protocol: str = ChatProtocol.CHAT_COMPLETIONS.value
     # 图片生成协议适配器名（见 agent.llm.image_adapters），空表示按 host 自动匹配。
     media_protocol: str = ""
+    # 启用开关：禁用后模型配置保留但不参与任何自动选择/回退/默认（模型激活）
+    enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.api_type not in API_TYPES:
@@ -257,6 +259,7 @@ class LLMClientConfig:
             "extra_body": self.extra_body,
             "chat_protocol": self.chat_protocol,
             "media_protocol": self.media_protocol,
+            "enabled": self.enabled,
         }
         if self.extra_params:
             d["extra_params"] = self.extra_params
@@ -301,6 +304,8 @@ class LLMClientConfig:
             d["extra_params"] = self.extra_params
         if self.reasoning_effort:
             d["reasoning_effort"] = self.reasoning_effort
+        if not self.enabled:
+            d["enabled"] = False
         return d
 
     @classmethod

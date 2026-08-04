@@ -248,6 +248,7 @@ class CreateModelReq(BaseModel):
     extra_params: Dict[str, Any] = Field(
         default_factory=dict,
     )
+    enabled: bool = True
 
 
 @router.post("/providers/{pid}/models")
@@ -286,7 +287,25 @@ class SetDefaultReq(BaseModel):
 async def set_default(req: SetDefaultReq) -> Dict[str, str]:
     ok = _svc.set_default(req.model_id)
     if not ok:
-        raise HTTPException(400, f"模型 '{req.model_id}' 不存在或不支持工具调用，无法设为默认对话模型")
+        raise HTTPException(400, f"模型 '{req.model_id}' 不存在、已停用或不支持工具调用，无法设为默认对话模型")
+    return {"status": "ok"}
+
+
+class SetDelegationTierReq(BaseModel):
+    model_ids: List[str]
+
+
+@router.get("/delegation-tiers")
+async def get_delegation_tiers() -> Dict[str, Any]:
+    """子代理模型三挡池（1 简单/2 中等/3 困难）。"""
+    return {"tiers": _svc.get_delegation_tiers()}
+
+
+@router.put("/delegation-tiers/{tier}")
+async def set_delegation_tier(tier: int, req: SetDelegationTierReq) -> Dict[str, str]:
+    ok = _svc.set_delegation_tier(tier, req.model_ids)
+    if not ok:
+        raise HTTPException(400, f"无效的子代理挡位: {tier}（须为 1/2/3）")
     return {"status": "ok"}
 
 

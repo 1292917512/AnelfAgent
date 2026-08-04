@@ -150,6 +150,7 @@ dependencies = [
     { name = "aiomysql" },
     { name = "aiosqlite" },
     { name = "asyncpg" },
+    { name = "asyncssh" },
     { name = "beautifulsoup4" },
     { name = "chardet" },
     { name = "cognee" },
@@ -201,6 +202,7 @@ requires-dist = [
     { name = "aiomysql", specifier = ">=0.3.2" },
     { name = "aiosqlite", specifier = "==0.21.0" },
     { name = "asyncpg", specifier = ">=0.31.0" },
+    { name = "asyncssh", specifier = ">=2.24.0" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
     { name = "chardet", specifier = ">=5,<6" },
     { name = "cognee", specifier = "==1.4.0" },
@@ -383,6 +385,19 @@ wheels = [
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/3e/f4/03ff1426acc87be0f4e8d40fa2bff5c3952bef0080062af9efc2212e3be8/asyncpg-0.31.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:37fc6c00a814e18eef51833545d1891cac9aa69140598bb076b4cd29b3e010b9", size = 2962574, upload-time = "2025-11-24T23:25:44.942Z" },
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c7/39/cc788dfca3d4060f9d93e67be396ceec458dfc429e26139059e58c2c244d/asyncpg-0.31.0-cp311-cp311-win32.whl", hash = "sha256:5a4af56edf82a701aece93190cc4e094d2df7d33f6e915c222fb09efbb5afc24", size = 521076, upload-time = "2025-11-24T23:25:46.486Z" },
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/28/fc/735af5384c029eb7f1ca60ccb8fa95521dbdaeef788edf4cecfc604c3cab/asyncpg-0.31.0-cp311-cp311-win_amd64.whl", hash = "sha256:480c4befbdf079c14c9ca43c8c5e1fe8b6296c96f1f927158d4f1e750aacc047", size = 584980, upload-time = "2025-11-24T23:25:47.938Z" },
+]
+
+[[package]]
+name = "asyncssh"
+version = "2.24.0"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/dd/7f/2d79247bacc562104f312d27efe541673aa177feac89de291bd61bca52be/asyncssh-2.24.0.tar.gz", hash = "sha256:4064c590e59ce2e8d82a2f66d35f3120d765828b4df5e3dbfb07b4a8c24686c9", size = 550148, upload-time = "2026-06-27T20:34:44.755Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/3e/29/908ce0ca5e8cae76662e354a0f08df552d6d221844748b9e5ca06051cc44/asyncssh-2.24.0-py3-none-any.whl", hash = "sha256:9abd46300adcb6d4b73269b34c53cd0d17a138b9a22b5b38008ce7d5808734b7", size = 381237, upload-time = "2026-06-27T20:34:43.198Z" },
 ]
 
 [[package]]

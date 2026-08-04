@@ -1,7 +1,9 @@
 /**
- * PlanStepRow — 单步骤行（用于 PlanCard / PlanPanel）。
+ * PlanStepRow — 单步骤行（用于 PlanCard / PlanPanel / ActivityPanel）。
  *
  * 状态图标 + 内容 + 备注 + 进行中标识。
+ * settled 表示 plan 已进入终态：残留的 in_progress 步骤按 skipped 渲染，
+ * 不再转圈（后端收敛为主，此为展示层兜底）。
  */
 import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -11,6 +13,7 @@ interface Props {
   step: PlanStep;
   compact?: boolean;
   showIndex?: boolean;
+  settled?: boolean;
 }
 
 const STATUS_ICON: Record<PlanStep["status"], typeof Circle> = {
@@ -27,16 +30,17 @@ const STATUS_COLOR: Record<PlanStep["status"], string> = {
   skipped: "text-muted line-through opacity-60",
 };
 
-export function PlanStepRow({ step, compact = false, showIndex = true }: Props) {
-  const Icon = STATUS_ICON[step.status] ?? Circle;
-  const color = STATUS_COLOR[step.status] ?? "text-muted";
+export function PlanStepRow({ step, compact = false, showIndex = true, settled = false }: Props) {
+  const status = settled && step.status === "in_progress" ? "skipped" : step.status;
+  const Icon = STATUS_ICON[status] ?? Circle;
+  const color = STATUS_COLOR[status] ?? "text-muted";
   return (
     <div
       className={cn(
         "flex items-start gap-2 text-xs",
         compact ? "py-0.5" : "py-1",
-        step.status === "completed" && "opacity-70",
-        step.status === "skipped" && "opacity-50",
+        status === "completed" && "opacity-70",
+        status === "skipped" && "opacity-50",
       )}
     >
       <Icon size={compact ? 11 : 13} className={cn("shrink-0 mt-0.5", color)} />
@@ -46,10 +50,10 @@ export function PlanStepRow({ step, compact = false, showIndex = true }: Props) 
       <span
         className={cn(
           "flex-1 min-w-0 break-words",
-          step.status === "skipped" && "line-through text-muted",
-          step.status === "completed" && "text-muted",
-          step.status === "in_progress" && "text-foreground font-medium",
-          step.status === "pending" && "text-foreground/80",
+          status === "skipped" && "line-through text-muted",
+          status === "completed" && "text-muted",
+          status === "in_progress" && "text-foreground font-medium",
+          status === "pending" && "text-foreground/80",
         )}
       >
         {step.content}

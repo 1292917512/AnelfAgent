@@ -681,8 +681,10 @@ class Mind:
         result = await self.llm_chat([{"role": "user", "content": prompt}])
         return (result.content or "").strip()
 
+    # 计划是主对话 scope 的状态机：reflect（子代理/心跳）不得创建或标记计划，
+    # 避免 scope="reflect" 的 plan 事件泄漏到前端
     _REFLECT_ALWAYS_BLOCKED = frozenset({
-        "list_channels", "schedule_reply",
+        "list_channels", "schedule_reply", "present_plan", "update_goal",
     })
     _REFLECT_OUTPUT_TOOLS = frozenset({
         "send_message", "send_photo", "send_voice", "send_file",
