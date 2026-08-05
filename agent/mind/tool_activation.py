@@ -15,7 +15,7 @@ from contextvars import ContextVar
 from typing import Dict, List, Optional
 
 from core.config import get_config_int
-from core.entity import EntityRegistry
+from core.entity import EntityRegistry, EntityType
 from core.log import log
 from entities._sdk import deferred_tool
 
@@ -146,6 +146,17 @@ def _activate_tool_group_tool(group: str, rounds: int = 0) -> str:
     """
     sleepable = EntityRegistry.get_sleepable_groups()
     if group not in sleepable:
+        # 分组存在但非沉睡管理：引导改用动态发现，避免 AI 反复重试激活
+        has_tools = any(
+            e.entity_type == EntityType.TOOL and e.enabled
+            for e in EntityRegistry.get_by_group(group)
+        )
+        if has_tools:
+            return json.dumps({
+                "error": f"分组 '{group}' 的工具不受沉睡管理，无法通过 activate_tool_group 唤醒。",
+                "hint": f"请改用 list_entity_methods(group=\"{group}\") 动态发现该分组的工具，"
+                        "发现后即可直接调用。",
+            }, ensure_ascii=False)
         available = ", ".join(sorted(sleepable.keys())) or "（无）"
         return json.dumps({
             "error": f"分组 '{group}' 不是可沉睡分组或不存在。",

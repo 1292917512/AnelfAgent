@@ -460,7 +460,7 @@ class MCPService:
 
     def toggle_server(self, name: str) -> Dict[str, Any]:
         """连接或断开 MCP 服务器，同时持久化 enabled 状态。返回结构化结果。"""
-        from entities.mcp.bridge import get_mcp_bridge
+        from entities.mcp.bridge import extract_exception_detail, get_mcp_bridge
         bridge = get_mcp_bridge()
         if not bridge:
             return {"success": False, "message": "MCP Bridge 未初始化"}
@@ -469,6 +469,11 @@ class MCPService:
                 bridge.disconnect_server_by_name(name)
                 self._set_enabled(name, False)
                 return {"success": True, "message": f"已断开 {name}"}
+            # 连接前先同步磁盘配置，避免配置被外部修改后内存副本过期导致连接失败
+            self._trigger_reload()
+            if name in bridge.get_connected_servers():
+                self._set_enabled(name, True)
+                return {"success": True, "message": f"已连接 {name}"}
             count = bridge.connect_server_by_name(name)
             self._set_enabled(name, True)
             return {
@@ -481,7 +486,7 @@ class MCPService:
         except ValueError as e:
             return {"success": False, "message": str(e)}
         except Exception as e:
-            return {"success": False, "message": f"操作失败: {e}"}
+            return {"success": False, "message": f"操作失败: {extract_exception_detail(e)}"}
 
     def _set_enabled(self, name: str, enabled: bool) -> None:
         """更新配置文件中指定 server 的 enabled 字段。"""

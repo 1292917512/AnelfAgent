@@ -182,7 +182,7 @@ def _is_connection_closed(exc: Exception) -> bool:
     return name in ("ClosedResourceError", "BrokenResourceError") or "closed" in str(exc).lower()
 
 
-def _extract_exception_detail(exc: Exception) -> str:
+def extract_exception_detail(exc: Exception) -> str:
     """从 ExceptionGroup 中递归提取真实的子异常信息。
 
     anyio 的 TaskGroup 在子任务失败时抛出 ExceptionGroup，
@@ -190,7 +190,7 @@ def _extract_exception_detail(exc: Exception) -> str:
     真正的原因（如 ConnectionRefused）藏在 .exceptions 中。
     """
     if hasattr(exc, "exceptions"):
-        causes = [_extract_exception_detail(sub) for sub in exc.exceptions]
+        causes = [extract_exception_detail(sub) for sub in exc.exceptions]
         return "; ".join(causes)
     return f"{type(exc).__name__}: {exc}"
 
@@ -347,7 +347,7 @@ class MCPBridge:
                     self.connect_server_by_name(name)
                     connected_names.append(name)
                 except Exception as exc:
-                    detail = _extract_exception_detail(exc)
+                    detail = extract_exception_detail(exc)
                     log(f"热重载: 连接 '{name}' 失败: {detail}", "WARNING")
 
         result = {
@@ -478,7 +478,7 @@ class MCPBridge:
             log(f"MCP server '{srv.name}' 已连接，发现 {count} 个工具")
             return count
         except Exception as exc:
-            detail = _extract_exception_detail(exc)
+            detail = extract_exception_detail(exc)
             log(f"MCP server '{srv.name}' 连接失败: {detail}", "WARNING")
             self._set_last_error(srv.name, detail)
             return 0
@@ -593,7 +593,7 @@ class MCPBridge:
             log(f"MCP server '{server_name}' 重连成功，发现 {count} 个工具")
             return True
         except Exception as exc:
-            detail = _extract_exception_detail(exc)
+            detail = extract_exception_detail(exc)
             log(f"MCP server '{server_name}' 重连失败: {detail}", "ERROR")
             return False
 
@@ -651,7 +651,7 @@ class MCPBridge:
             with self._lock:
                 self._stop_events.pop(srv.name, None)
                 self._lifecycle_tasks.pop(srv.name, None)
-            self._set_last_error(srv.name, _extract_exception_detail(result_box[0]))
+            self._set_last_error(srv.name, extract_exception_detail(result_box[0]))
             raise result_box[0]
 
         self._set_last_error(srv.name, "")
@@ -708,7 +708,7 @@ class MCPBridge:
                             return
 
                 except Exception as exc:
-                    detail = _extract_exception_detail(exc)
+                    detail = extract_exception_detail(exc)
                     if first_attempt:
                         log(f"MCP server '{srv.name}' lifecycle 异常: {detail}", "ERROR")
                         result_box.append(exc)

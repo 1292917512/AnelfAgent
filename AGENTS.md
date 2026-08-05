@@ -245,6 +245,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/skills/skill_matcher.py` | 技能匹配（关键词 + 语义混合评分） |
 | `agent/skills/background_review.py` | 技能后台评审（对话后自动沉淀经验） |
 | `agent/skills/curator.py` | 技能策展（自动降级/归档，挂心跳维护） |
+| `agent/skills/sources/` | 外部技能源（可插拔：SkillSource 抽象 + 注册表热插拔；内置 SkillHub 源，删模块即卸载） |
 | `agent/delegation/sub_agent.py` | 子代理（leaf/orchestrator 角色 + 深度限制） |
 | `agent/delegation/delegation_manager.py` | 委托调度（并发上限/预算/聚合/后台模式） |
 | `agent/delegation/delegate_tool.py` | delegate_task 工具 |
@@ -313,6 +314,8 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `web` | 网络工具 | `entities/web/tools.py` | web/search/fetch |
 | `media` | 多媒体 | `entities/media/tools.py` | media:* |
 | `os` | 操作系统 | `entities/filesystem/tools.py` | media:file |
+| `ssh` | SSH 远程管理 | `entities/ssh/tools.py` | —（整组 allow_sleep 沉睡，`activate_tool_group` 唤醒） |
+| `sticker` | 表情包 | `entities/sticker/tools.py` | always/media:image（部分工具 allow_sleep） |
 | `environment` | 环境信息 | `entities/system/tools.py` | — |
 | `model_control` | 模型控制 | `entities/model_control/tools.py` | core |
 | `ollama` | Ollama | `entities/model_control/tools.py` | — |

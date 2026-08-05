@@ -180,11 +180,37 @@ class SkillStore:
         self._lock = threading.RLock()
         # 内容版本号：每次 save/delete 递增，供调用方做廉价缓存失效判断
         self._version = 0
+        # 目录签名：外部途径（如 skillhub CLI / 手动拷贝）增删技能时检测变化
+        self._last_dir_signature = self._dir_signature()
 
     @property
     def version(self) -> int:
-        """技能库内容版本号（单调递增）。"""
-        return self._version
+        """技能库内容版本号（单调递增，含外部目录变更感知）。"""
+        with self._lock:
+            signature = self._dir_signature()
+            if signature != self._last_dir_signature:
+                self._last_dir_signature = signature
+                self._version += 1
+            return self._version
+
+    def _dir_signature(self) -> int:
+        """目录指纹：子目录名 + SKILL.md 大小/_mtime 的轻量签名。
+
+        matcher 按 version 缓存技能列表，仅 stat 不开文件，代价可忽略。
+        """
+        signature = 0
+        try:
+            for child in self.skills_dir.iterdir():
+                if not child.is_dir():
+                    continue
+                try:
+                    stat = (child / "SKILL.md").stat()
+                except OSError:
+                    continue
+                signature ^= hash((child.name, stat.st_size, stat.st_mtime_ns))
+        except OSError:
+            pass
+        return signature
 
     @staticmethod
     def normalize_name(name: str) -> str:
@@ -238,6 +264,7 @@ class SkillStore:
         path = self._skill_path(skill.name)
         with self._lock:
             _atomic_write(path, render_skill_md(skill))
+            self._last_dir_signature = self._dir_signature()
             self._version += 1
         log(f"💾 技能已保存: {skill.name} (state={skill.state.value})", "DEBUG", tag="技能")
         return skill
@@ -303,6 +330,7 @@ class SkillStore:
                 return False
             import shutil
             shutil.rmtree(path.parent)
+            self._last_dir_signature = self._dir_signature()
             self._version += 1
         log(f"🗑 技能已删除: {name}", tag="技能")
         return True

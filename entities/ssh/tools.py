@@ -1,6 +1,7 @@
 """SSH 远程管理实体工具 — 连接管理、命令执行、文件传输。
 
-工具经实体目录两级发现（query_entities → list_entity_methods(group="ssh")）。
+整组为可沉睡分组：默认仅目录展示 brief，AI 调用 activate_tool_group 唤醒后
+完整 schema 注入工具列表，激活轮数耗尽自动回到沉睡。
 所有操作类工具的 name 参数缺省时使用默认连接（ssh_set_default 可随时切换），
 实现"一条指令直达"的使用体验。
 """
@@ -19,6 +20,9 @@ from entities._sdk import (
 
 from .manager import get_ssh_manager
 from .store import get_ssh_store
+
+# 分组沉睡简介：目录中展示 [沉睡] 标记，AI 按需 activate_tool_group 唤醒
+_SLEEP_BRIEF = "SSH 远程管理（连接管理 / 命令执行 / 文件传输）"
 
 
 def _ai_enabled() -> bool:
@@ -39,7 +43,8 @@ def _gate() -> str:
     return ""
 
 
-@tool(name="ssh_list", group="ssh", concurrency_safe=True)
+@tool(name="ssh_list", group="ssh", concurrency_safe=True,
+      allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 def ssh_list() -> str:
     """列出所有 SSH 连接配置及其实时状态（含默认连接标记）。
 
@@ -55,7 +60,8 @@ def ssh_list() -> str:
     }, ensure_ascii=False)
 
 
-@tool(name="ssh_exec", group="ssh", timeout=300)
+@tool(name="ssh_exec", group="ssh", timeout=300,
+      allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str = "") -> str:
     """在 SSH 连接上执行命令，返回结构化结果（exit_code/stdout/stderr）。
 
@@ -82,7 +88,8 @@ async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str
         return error_from_exception(e, action=f"SSH 执行命令 [{command[:50]}]")
 
 
-@tool(name="ssh_upload", group="ssh", timeout=600)
+@tool(name="ssh_upload", group="ssh", timeout=600,
+      allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 async def ssh_upload(local_path: str, remote_path: str, name: str = "") -> str:
     """上传本地文件到远程服务器（SFTP）。
 
@@ -104,7 +111,8 @@ async def ssh_upload(local_path: str, remote_path: str, name: str = "") -> str:
         return error_from_exception(e, action="SSH 上传文件")
 
 
-@tool(name="ssh_download", group="ssh", timeout=600)
+@tool(name="ssh_download", group="ssh", timeout=600,
+      allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 async def ssh_download(remote_path: str, local_path: str, name: str = "") -> str:
     """下载远程文件到本地（SFTP）。
 
@@ -124,7 +132,8 @@ async def ssh_download(remote_path: str, local_path: str, name: str = "") -> str
         return error_from_exception(e, action="SSH 下载文件")
 
 
-@tool(name="ssh_connect", group="ssh", timeout=60)
+@tool(name="ssh_connect", group="ssh", timeout=60,
+      allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 async def ssh_connect(name: str = "") -> str:
     """建立 SSH 连接（连接池复用，已连接时直接返回）。
 
@@ -144,7 +153,8 @@ async def ssh_connect(name: str = "") -> str:
         return error_from_exception(e, action="SSH 连接")
 
 
-@tool(name="ssh_disconnect", group="ssh")
+@tool(name="ssh_disconnect", group="ssh",
+      allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 async def ssh_disconnect(name: str = "") -> str:
     """断开 SSH 连接。
 
@@ -162,7 +172,8 @@ async def ssh_disconnect(name: str = "") -> str:
         return tool_error(str(e), cause=ErrorCause.PARAM)
 
 
-@tool(name="ssh_set_default", group="ssh")
+@tool(name="ssh_set_default", group="ssh",
+      allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 async def ssh_set_default(name: str) -> str:
     """切换默认 SSH 连接（后续 ssh_exec 等工具缺省 name 时使用该连接）。
 
@@ -178,7 +189,8 @@ async def ssh_set_default(name: str) -> str:
         return tool_error(str(e), cause=ErrorCause.NOT_FOUND)
 
 
-@tool(name="ssh_add", group="ssh")
+@tool(name="ssh_add", group="ssh",
+      allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 async def ssh_add(
     name: str,
     host: str,
@@ -223,7 +235,8 @@ async def ssh_add(
         return error_from_exception(e, action="SSH 添加连接")
 
 
-@tool(name="ssh_remove", group="ssh")
+@tool(name="ssh_remove", group="ssh",
+      allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 async def ssh_remove(name: str) -> str:
     """删除 SSH 连接配置（同时断开对应连接）。
 

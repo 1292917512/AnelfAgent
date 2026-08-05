@@ -191,7 +191,7 @@ class TestSkillTools:
         assert updated["patch_count"] == 1
 
         searched = json.loads(await skill_tools.search_skills("测试"))
-        assert searched["count"] >= 1
+        assert len(searched["local"]) >= 1
 
 
 class TestSkillReviewerContract:

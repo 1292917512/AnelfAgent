@@ -79,6 +79,21 @@ class TestActivateToolGroupTool:
         result = json.loads(_activate_tool_group_tool(group="no_such_group_xyz"))
         assert "error" in result
 
+    async def test_activate_existing_non_sleepable_group_hints_discovery(self) -> None:
+        from agent.mind.tool_activation import _activate_tool_group_tool
+        from core.entity import EntityRegistry
+
+        EntityRegistry.register_tool(
+            name="act_awake_t", func=lambda: "a", group="act_awakeg",
+        )
+        try:
+            result = json.loads(_activate_tool_group_tool(group="act_awakeg"))
+            assert "error" in result
+            assert "list_entity_methods" in result["hint"]
+            assert not tool_activation.is_active("act_awakeg")
+        finally:
+            EntityRegistry.unregister("act_awake_t")
+
     async def test_activate_sleepable_group(self) -> None:
         from agent.mind.tool_activation import _activate_tool_group_tool
         from core.entity import EntityRegistry

@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from agent.skills import sources as skill_sources
 from agent.skills.skill_matcher import SkillMatcher
 from agent.skills.skill_store import SkillStore
 from core.log import log
@@ -21,7 +22,7 @@ def register_skill_tools(store: SkillStore, matcher: SkillMatcher) -> None:
     """注入运行时依赖并批量注册技能工具。"""
     global _store, _matcher
     _store, _matcher = store, matcher
-    count = activate_group("skills", "技能 - 经验技能的创建、检索、更新与管理")
+    count = activate_group("skills", "技能 - 经验技能的创建、检索、更新与管理，及外部技能源（可插拔商店）的搜索与安装")
     log(f"🎓 技能工具已注册 ({count} 个)", tag="技能")
 
 
@@ -91,29 +92,80 @@ def update_skill(name: str, content: str = "", description: str = "", add_trigge
 
 @deferred_tool(
     group="skills", tags=["always"], source="mind.skills",
-    description="搜索技能：按关键词和语义匹配已有技能，返回最相关的技能列表。",
+    description="搜索技能：默认搜本地技能库（关键词+语义匹配）；scope='external' 搜外部技能商店"
+                "（如 SkillHub，本地无匹配或用户想找现成技能时用），scope='all' 两者都搜。",
 )
-async def search_skills(query: str, top_k: int = 5) -> str:
+async def search_skills(query: str, top_k: int = 5, scope: str = "local", category: str = "") -> str:
     """搜索技能。
 
     Args:
-        query: 搜索关键词或描述
-        top_k: 最多返回数量，默认 5
+        query: 搜索关键词或描述（外部商店为分词搜索，建议用同义/上位词多次搜索后合并筛选）
+        top_k: 每类来源最多返回数量，默认 5
+        scope: 搜索范围：local（本地技能库，默认）/ external（外部技能商店）/ all（两者）
+        category: 外部商店的一级分类过滤（留空不过滤；可选值见 list_skill_sources 返回）
     """
     if not _store or not _matcher:
         return _not_ready()
-    matched = await _matcher.match([query], top_k=max(1, min(top_k, 20)), min_score=0.0)
-    results = [
-        {
-            "name": skill.name,
-            "description": skill.description,
-            "trigger_patterns": skill.trigger_patterns,
-            "use_count": skill.use_count,
-            "score": round(score, 3),
-        }
-        for skill, score in matched
-    ]
-    return json.dumps({"ok": True, "count": len(results), "skills": results}, ensure_ascii=False)
+    scope = (scope or "local").strip().lower()
+    if scope not in ("local", "external", "all"):
+        return tool_error(
+            f"无效的 scope: {scope}", cause=ErrorCause.PARAM, retryable=False,
+            hint="可选值：local / external / all",
+        )
+    limit = max(1, min(top_k, 20))
+    payload: Dict[str, Any] = {"ok": True, "scope": scope, "query": query}
+    if scope in ("local", "all"):
+        matched = await _matcher.match([query], top_k=limit, min_score=0.0)
+        payload["local"] = [
+            {
+                "name": skill.name,
+                "description": skill.description,
+                "trigger_patterns": skill.trigger_patterns,
+                "use_count": skill.use_count,
+                "score": round(score, 3),
+            }
+            for skill, score in matched
+        ]
+        if not matched:
+            payload["local_hint"] = (
+                "本地无匹配技能：可用 scope='external' 搜索外部技能商店，"
+                "或在任务完成后用 create_skill 沉淀经验"
+            )
+    if scope in ("external", "all"):
+        external, external_hint = await _search_external(query, limit, category)
+        payload["external"] = external
+        if external_hint:
+            payload["external_hint"] = external_hint
+    return json.dumps(payload, ensure_ascii=False)
+
+
+async def _search_external(query: str, limit: int, category: str) -> Tuple[List[Dict[str, Any]], str]:
+    """聚合全部可用外部技能源的搜索结果（按源 + slug 去重）。"""
+    sources = [s for s in skill_sources.list_sources() if s.is_available()]
+    if not sources:
+        return [], "未接入可用的外部技能源（agent/skills/sources/ 下无可用模块）"
+    merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    errors: List[str] = []
+    for source in sources:
+        try:
+            results = await source.search(query, category=category, top_k=limit)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        except Exception as exc:
+            log(f"外部技能源搜索失败 ({source.key}): {exc}", "WARNING", tag="技能")
+            errors.append(f"{source.display_name} 搜索失败: {exc}")
+            continue
+        for item in results:
+            merged[(source.key, item.slug)] = item.to_dict()
+    if not merged:
+        if errors:
+            return [], "；".join(errors)
+        return [], "外部技能商店无匹配结果，可去掉 category 或换同义/上位词重试"
+    hint = "安装外部技能前请先向用户说明并确认，再用 install_external_skill 安装"
+    if errors:
+        hint += f"（部分源搜索失败：{'；'.join(errors)}）"
+    return list(merged.values()), hint
 
 
 @deferred_tool(
@@ -142,6 +194,83 @@ def list_skills(include_archived: bool = False) -> str:
     ]
     return json.dumps({"ok": True, "count": len(results), "skills": results}, ensure_ascii=False)
 
+
+@deferred_tool(
+    group="skills", tags=["always"], source="mind.skills",
+    description="列出已接入的外部技能源（可插拔模块，如 SkillHub）及其可用状态与支持分类。",
+)
+def list_skill_sources() -> str:
+    """列出外部技能源。"""
+    sources = skill_sources.list_sources()
+    results = [
+        {
+            "key": s.key,
+            "name": s.display_name,
+            "description": s.description,
+            "available": s.is_available(),
+            "categories": list(s.categories),
+        }
+        for s in sources
+    ]
+    payload: Dict[str, Any] = {"ok": True, "count": len(results), "sources": results}
+    if not results:
+        payload["hint"] = "未接入外部技能源（agent/skills/sources/ 下无可用模块），仅本地技能库可用"
+    return json.dumps(payload, ensure_ascii=False)
+
+
+@deferred_tool(
+    group="skills", tags=["always"], source="mind.skills",
+    description="从外部技能源安装技能到本地技能库（workspace/skills/），安装后无需重启即可被"
+                "搜索与自动匹配。安装前应先向用户确认。",
+)
+def install_external_skill(slug: str, namespace: str = "", source: str = "") -> str:
+    """安装外部技能源中的技能。
+
+    Args:
+        slug: 技能 slug（search_skills scope='external' 结果中的 slug 字段）
+        namespace: 命名空间（结果中的 namespace 字段，无则留空）
+        source: 技能源 key（list_skill_sources 查看；只有一个可用源时可留空自动选择）
+    """
+    if not _store:
+        return _not_ready()
+    sources = {s.key: s for s in skill_sources.list_sources() if s.is_available()}
+    if not sources:
+        return tool_error(
+            "未接入可用的外部技能源", cause=ErrorCause.STATE, retryable=False,
+            hint="外部技能源为可插拔模块，位于 agent/skills/sources/",
+        )
+    if source:
+        chosen = sources.get(source)
+        if chosen is None:
+            return tool_error(
+                f"未知技能源: {source}", cause=ErrorCause.PARAM, retryable=False,
+                hint=f"可用技能源: {', '.join(sources)}",
+            )
+    elif len(sources) == 1:
+        chosen = next(iter(sources.values()))
+    else:
+        return tool_error(
+            "存在多个技能源，请用 source 参数指定", cause=ErrorCause.PARAM, retryable=False,
+            hint=f"可用技能源: {', '.join(sources)}",
+        )
+    if _store.exists(slug):
+        return tool_error(
+            f"技能 '{slug}' 已存在", cause=ErrorCause.STATE, retryable=False,
+            hint="如需更新可先删除旧技能再安装，或用 update_skill 修改现有技能",
+        )
+    result = chosen.install(slug=slug, namespace=namespace, skills_dir=_store.skills_dir)
+    if not result.ok:
+        return tool_error(
+            f"安装失败: {result.error}", cause=ErrorCause.INTERNAL, retryable=True,
+            hint=result.hint or chosen.install_hint(),
+        )
+    # 触发一次读取校验（同时让外部变更感知立即生效）
+    skill = _store.get(slug)
+    return json.dumps({
+        "ok": True, "name": slug, "source": chosen.key, "path": result.path,
+        "loaded": skill is not None,
+        "message": f"技能 '{slug}' 已从 {chosen.display_name} 安装，可被 search_skills 检索与自动匹配",
+    }, ensure_ascii=False)
 
 @deferred_tool(
     group="skills", tags=["always"], source="mind.skills",
