@@ -161,6 +161,9 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             "threshold": payload.get("threshold", 0),
             "window": payload.get("window", 0),
             "percent": payload.get("percent", 0),
+            "cache_read_input_tokens": payload.get("cache_read_input_tokens", 0),
+            "cache_creation_input_tokens": payload.get("cache_creation_input_tokens", 0),
+            "cache_hit_rate": payload.get("cache_hit_rate", 0.0),
         })
 
     async def _on_file_diff(self, payload: dict) -> None:

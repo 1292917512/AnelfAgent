@@ -107,9 +107,9 @@ async def _inject_image_blocks(
 ) -> List[Dict]:
     """将图片以多模态 content block 注入到最后一条 user 消息（视觉模型直传）。
 
-    按模型 vision_format 逐张协商图片形式：
-    - URL 且模型支持 url 视觉：原样引用，不下载
-    - 其余（本地路径 / base64 / 模型仅支持 base64）：统一归一为压缩后的 base64
+    URL 图片下载优先（端点直抓远程链接不稳定且超时不可控），
+    下载失败时 ensure_base64 保留原 URL 交由端点兜底；
+    本地路径 / base64 统一归一为压缩后的 base64。
 
     注入位置在对话尾部，stable/volatile 前缀字节不变，Prompt Caching 不受影响。
     """
@@ -118,14 +118,11 @@ async def _inject_image_blocks(
     prepared: List[ImageContent] = []
     failed: List[str] = []
     for img in images:
-        if img.is_url and config.supports_url_vision:
-            prepared.append(img)
+        converted = await ensure_base64([img])
+        if converted:
+            prepared.extend(converted)
         else:
-            converted = await ensure_base64([img])
-            if converted:
-                prepared.extend(converted)
-            else:
-                failed.append(img.data[:80])
+            failed.append(img.data[:80])
     blocks = [img.to_openai_block(flat_url=config.use_flat_image_url) for img in prepared]
     if failed:
         blocks.append({

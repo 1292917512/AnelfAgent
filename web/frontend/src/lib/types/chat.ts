@@ -89,6 +89,12 @@ export interface ContextUsage {
   threshold: number;
   window: number;
   percent: number;
+  /** 供应商侧缓存命中 tokens（最近一次 LLM 调用，无缓存协议时为 0） */
+  cache_read_input_tokens?: number;
+  /** 供应商侧缓存写入 tokens（最近一次 LLM 调用） */
+  cache_creation_input_tokens?: number;
+  /** 本轮 prompt 缓存命中率 0~1 */
+  cache_hit_rate?: number;
 }
 
 /** ui_command SSE 事件 payload（工作台交互指令） */

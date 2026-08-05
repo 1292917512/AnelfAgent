@@ -46,11 +46,33 @@ export function SysConfigPanel() {
     { key: "proxy", label: t("fields.web_proxy"), type: "string", desc: t("descs.web_proxy") },
   ];
 
+  const cacheContextFields: FieldMeta[] = [
+    { key: "max_conversation_size", label: t("fields.max_conversation_size"), type: "int", desc: t("descs.max_conversation_size") },
+    { key: "conversation_summary_enabled", label: t("fields.conversation_summary_enabled"), type: "bool", desc: t("descs.conversation_summary_enabled") },
+    { key: "conversation_raw_min", label: t("fields.conversation_raw_min"), type: "int", desc: t("descs.conversation_raw_min") },
+    { key: "conversation_summary_max_chars", label: t("fields.conversation_summary_max_chars"), type: "int", desc: t("descs.conversation_summary_max_chars") },
+    { key: "prompt_cache_enabled", label: t("fields.prompt_cache_enabled"), type: "bool", desc: t("descs.prompt_cache_enabled") },
+    { key: "prompt_cache_anthropic_breakpoint", label: t("fields.prompt_cache_anthropic_breakpoint"), type: "bool", desc: t("descs.prompt_cache_anthropic_breakpoint") },
+    { key: "prompt_cache_summary_breakpoint", label: t("fields.prompt_cache_summary_breakpoint"), type: "bool", desc: t("descs.prompt_cache_summary_breakpoint") },
+    { key: "context_tail_injection_enabled", label: t("fields.context_tail_injection_enabled"), type: "bool", desc: t("descs.context_tail_injection_enabled") },
+    { key: "tool_order_deterministic", label: t("fields.tool_order_deterministic"), type: "bool", desc: t("descs.tool_order_deterministic") },
+    { key: "tool_dynamic_sticky", label: t("fields.tool_dynamic_sticky"), type: "bool", desc: t("descs.tool_dynamic_sticky") },
+  ];
+
   return (
     <div className="space-y-4">
       <PasswordCard />
       <ApiKeysCard />
       <LiteLLMCostMapCard defaultProxy={proxyUrl} />
+      <ConfigFormPanel
+        title={t("sections.cacheContext")}
+        subtitle={t("sections.cacheContextSubtitle")}
+        fields={cacheContextFields}
+        queryKey="appConfig"
+        fetchFn={() => configApi.getApp().then((r) => r.data)}
+        saveFn={(values) => configApi.saveApp(values)}
+        extraInvalidateKeys={["configSnapshot"]}
+      />
       <ConfigFormPanel
         title={t("sections.webTools")}
         subtitle={t("sections.webToolsSubtitle")}

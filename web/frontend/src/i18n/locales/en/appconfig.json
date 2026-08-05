@@ -13,7 +13,9 @@
     "crossChannelSubtitle": "Control AI's ability to sense and correlate conversations across multiple channels",
     "network": "Network / Download",
     "webTools": "Search Engine",
-    "webToolsSubtitle": "Baidu AI Search API key & web scraping proxy settings"
+    "webToolsSubtitle": "Baidu AI Search API key & web scraping proxy settings",
+    "cacheContext": "Cache & Context",
+    "cacheContextSubtitle": "Prompt caching, conversation summary window and tool-set stability (affects provider prefix cache hit rate)"
   },
   "fields": {
     "heartbeat_interval": "Heartbeat Interval (s)",
@@ -26,7 +28,7 @@
     "tool_recall_top_n": "Tool Recall Top-N",
     "llm_timeout": "LLM Timeout (s)",
     "llm_max_retries": "LLM Max Retries",
-    "max_conversation_size": "Conversation History Limit",
+    "max_conversation_size": "History Window Limit (M)",
     "sandbox_enabled": "Sandbox Mode",
     "vector_search_batch_size": "Vector Search Batch Size",
     "memory_recall_top_k": "Semantic Recall Top-K",
@@ -73,13 +75,22 @@
     "default_download_dir": "Default Download Dir",
     "workspace_root": "Workspace Root",
     "baidu_api_key": "Baidu Search API Key",
-    "web_proxy": "Web Scraping Proxy"
+    "web_proxy": "Web Scraping Proxy",
+    "conversation_summary_enabled": "Summary Window",
+    "conversation_raw_min": "Raw Messages Min (x)",
+    "conversation_summary_max_chars": "Summary Max Chars",
+    "prompt_cache_enabled": "Prompt Layered Cache",
+    "prompt_cache_anthropic_breakpoint": "Anthropic Cache Breakpoints",
+    "prompt_cache_summary_breakpoint": "History-Tail Breakpoint",
+    "context_tail_injection_enabled": "Tail Dynamic Injection",
+    "tool_order_deterministic": "Deterministic Tool Order",
+    "tool_dynamic_sticky": "Sticky Dynamic Tools"
   },
   "descs": {
     "meta_decision_temperature": "LLM temperature for meta-level decision tasks",
     "max_tool_iterations": "Maximum tool call rounds per reply",
     "short_term_memory_size": "Max cached entries for tool results and other temporary info; oldest discarded when exceeded",
-    "max_conversation_size": "Max conversation history entries per LLM call; older messages can be retrieved via memory tools",
+    "max_conversation_size": "Max raw conversation messages; on reaching it, oldest M-x are folded into the summary",
     "vector_search_batch_size": "Split into parallel batches when exceeding this count",
     "memory_recall_top_k": "Maximum entries returned by passive memory recall",
     "memory_recall_min_score": "Memories below this score won't be recalled",
@@ -110,7 +121,16 @@
     "http_proxy": "e.g. http://127.0.0.1:7890",
     "https_proxy": "e.g. http://127.0.0.1:7890",
     "baidu_api_key": "Baidu AI Search API Key (bce-v3/...)",
-    "web_proxy": "Web scraping proxy, leave empty for direct, e.g. http://127.0.0.1:7890"
+    "web_proxy": "Web scraping proxy, leave empty for direct, e.g. http://127.0.0.1:7890",
+    "conversation_summary_enabled": "Fold old messages into a fixed summary block + append-only recent window, keeping history prefix byte-stable for cache hits; disable to restore sliding window",
+    "conversation_raw_min": "Recent raw messages kept after folding; window oscillates between x and M+x",
+    "conversation_summary_max_chars": "Character cap of the folded summary block",
+    "prompt_cache_enabled": "Freeze and reuse the stable layer within a session (local build cache)",
+    "prompt_cache_anthropic_breakpoint": "Inject cache_control breakpoints for Anthropic-protocol models",
+    "prompt_cache_summary_breakpoint": "4th breakpoint at the end of conversation history (falls back to summary block), bringing history into the cached prefix",
+    "context_tail_injection_enabled": "Move per-session rebuilt content (profiles/recall/short-term memory) after conversation history; disable for legacy layout",
+    "tool_order_deterministic": "Tool ordering independent of usage counts; byte-identical tool sets across sessions (tools are the largest prompt segment)",
+    "tool_dynamic_sticky": "Keep tag-activated/discovered tools for the process lifetime, avoiding tool-set flapping that busts the prefix cache"
   },
   "actions": {
     "save": "Save",

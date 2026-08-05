@@ -197,9 +197,13 @@ def normalize_for_send(messages: List[Dict]) -> List[Dict]:
     _invoke_llm_unified 的唯一入口；新增发送边界规则只加在这里，
     不再散落到上下文组装各阶段。
     """
-    # 剥离内部分类标签（上下文快照用，LLM 不可见）
-    for m in messages:
-        m.pop("_layer", None)
+    # 剥离内部分类标签（上下文快照用，LLM 不可见）。
+    # 注意必须非破坏式：llm_messages 与 ctx.base_messages 共享 dict 对象，
+    # 原地 pop 会导致首轮发送后 base_messages 永久丢失分层标签（快照分类失真）
+    stripped = [
+        {k: v for k, v in m.items() if k != "_layer"} if "_layer" in m else m
+        for m in messages
+    ]
     return fix_empty_tool_call_content(
-        fix_trailing_assistant(normalize_roles(ensure_tool_result_pairing(messages)))
+        fix_trailing_assistant(normalize_roles(ensure_tool_result_pairing(stripped)))
     )

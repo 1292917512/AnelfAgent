@@ -343,7 +343,7 @@ async def probe_capabilities(req: ProbeReq) -> Dict[str, Any]:
     try:
         api_key = _svc.resolve_provider_api_key(req.provider_id, req.api_key)
         return await _svc.probe_capabilities(
-            req.base_url, api_key, req.model, req.api_type,
+            req.base_url, api_key, req.model, req.api_type, provider_id=req.provider_id,
         )
     except Exception as e:
         return {"error": _svc.sanitize_error(e, req.api_key)}

@@ -43,7 +43,10 @@
     "completionTokens": "Completion Tokens",
     "totalTokens": "Total Tokens",
     "maxTokens": "Max Tokens",
-    "usagePercent": "Usage"
+    "usagePercent": "Usage",
+    "cacheRead": "Cache Read Tokens",
+    "cacheCreation": "Cache Creation Tokens",
+    "cacheHitRate": "Cache Hit Rate"
   },
   "detailData": "Detail Data",
   "availableTools": "Available Tools",

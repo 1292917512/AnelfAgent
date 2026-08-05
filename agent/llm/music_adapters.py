@@ -8,10 +8,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
-from urllib.parse import urlparse
+from typing import Any, Dict, Tuple
 
-from agent.llm.adapter_base import AdapterRequest, host_root
+from agent.llm.adapter_base import AdapterRegistry, AdapterRequest, check_base_resp, host_root
 
 
 @dataclass(slots=True)
@@ -77,13 +76,6 @@ class MiniMaxMusicAdapter(MusicAdapter):
 
     name = "minimax"
 
-    @staticmethod
-    def _check_base_resp(result: Dict[str, Any]) -> None:
-        base_resp = result.get("base_resp") or {}
-        code = base_resp.get("status_code", 0)
-        if code != 0:
-            raise RuntimeError(f"MiniMax API 错误 ({code}): {base_resp.get('status_msg', '')}")
-
     def build_music_request(self, base_url: str, params: MusicParams) -> AdapterRequest:
         payload: Dict[str, Any] = {
             "model": params.model,
@@ -105,7 +97,7 @@ class MiniMaxMusicAdapter(MusicAdapter):
         return AdapterRequest(url=f"{host_root(base_url)}/v1/music_generation", payload=payload)
 
     def extract_music(self, result: Dict[str, Any]) -> MusicResult:
-        self._check_base_resp(result)
+        check_base_resp(result)
         audio_hex = (result.get("data") or {}).get("audio", "")
         if not audio_hex:
             raise ValueError(f"音乐生成响应中无音频数据: {result}")
@@ -127,7 +119,7 @@ class MiniMaxMusicAdapter(MusicAdapter):
         return AdapterRequest(url=f"{host_root(base_url)}/v1/lyrics_generation", payload=payload)
 
     def parse_lyrics(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        self._check_base_resp(result)
+        check_base_resp(result)
         return {
             "song_title": result.get("song_title", ""),
             "style_tags": result.get("style_tags", ""),
@@ -147,7 +139,7 @@ class MiniMaxMusicAdapter(MusicAdapter):
         return AdapterRequest(url=f"{host_root(base_url)}/v1/music_cover_preprocess", payload=payload)
 
     def parse_cover_preprocess(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        self._check_base_resp(result)
+        check_base_resp(result)
         return {
             "cover_feature_id": result.get("cover_feature_id", ""),
             "formatted_lyrics": result.get("formatted_lyrics", ""),
@@ -156,8 +148,7 @@ class MiniMaxMusicAdapter(MusicAdapter):
         }
 
 
-_ADAPTERS: Dict[str, MusicAdapter] = {}
-_HOST_RULES: List[Tuple[str, str]] = []
+_REGISTRY: AdapterRegistry[MusicAdapter] = AdapterRegistry("音乐")
 
 
 def register_music_adapter(
@@ -166,23 +157,12 @@ def register_music_adapter(
     host_keywords: Tuple[str, ...] = (),
 ) -> None:
     """注册音乐协议适配器（无默认兜底：音乐能力并非所有供应商都提供）。"""
-    _ADAPTERS[adapter.name] = adapter
-    for keyword in host_keywords:
-        _HOST_RULES.append((keyword, adapter.name))
+    _REGISTRY.register(adapter, host_keywords=host_keywords)
 
 
 def resolve_music_adapter(base_url: str, protocol: str = "") -> MusicAdapter:
-    """解析音乐协议适配器：显式 protocol 优先，其次 host 规则，不支持则抛异常。"""
-    if protocol:
-        adapter = _ADAPTERS.get(protocol)
-        if adapter is not None:
-            return adapter
-    else:
-        host = urlparse(base_url).netloc
-        for keyword, name in _HOST_RULES:
-            if keyword in host:
-                return _ADAPTERS[name]
-    raise NotImplementedError("当前音乐模型供应商不支持音乐生成协议（仅 MiniMax 支持）")
+    """解析音乐协议适配器（语义见 AdapterRegistry.resolve，未命中抛异常）。"""
+    return _REGISTRY.resolve(base_url, protocol)
 
 
 register_music_adapter(MiniMaxMusicAdapter(), host_keywords=("minimaxi.com", "minimax.io"))

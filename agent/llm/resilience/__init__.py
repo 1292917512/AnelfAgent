@@ -6,8 +6,6 @@
 - classifier:   异常 → ErrorCategory + 策略标志（retryable/should_compress/should_fallback）
 - recovery:     策略标志 → 具体动作（退避重试 / 跳过无效回退 / 压缩后重试）
 - rate_limit:   配额窗口主动降频（未配置配额时零开销放行）
-
-旧路径 ``agent.llm.error_classifier`` 保留兼容导入，下版本移除。
 """
 
 from agent.llm.resilience.classifier import (  # noqa: F401

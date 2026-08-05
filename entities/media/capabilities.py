@@ -12,9 +12,9 @@ from typing import Any, Dict
 CAPABILITY_GUIDE: Dict[str, Dict[str, Any]] = {
     "vision": {
         "tools": ["recognize_image"],
-        "summary": "识别/分析图片内容（本地路径或 URL）",
+        "summary": "识别/分析图片或视频内容（本地路径或 URL）",
         "key_params": {
-            "image_path": "图片路径或 URL（必填）",
+            "image_path": "图片/视频路径或 URL（必填）",
             "prompt": "分析指令，如'描述图片中的文字'（可选）",
         },
         "example": 'recognize_image(image_path="workspace/uploads/image/xxx.png", prompt="描述图片")',

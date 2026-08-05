@@ -183,7 +183,7 @@ class ConversationData:
     async def get_conversation_record_by_everything(self, anything: Everything) -> list[dict]:
         scope_type, scope_id = self._scope_of(anything)
         scopes = await self._alias_merged_scopes(scope_type, scope_id)
-        rows = await self.router.sqlite.fetch_conversation_multi(scopes=scopes, limit=self.max_size)
+        rows = await self._fetch_window_rows(scope_type, scope_id, scopes)
         # 记录快照水位（快照内最大 ts_ns），并剥离 ts_ns 避免泄漏进 LLM 消息
         max_ts = 0
         records: list[dict] = []
@@ -194,6 +194,64 @@ class ConversationData:
             records.append({"role": row["role"], "content": row["content"]})
         self._fetch_watermarks[f"{scope_type}_{scope_id}"] = max_ts
         return records
+
+    async def _fetch_window_rows(
+        self,
+        scope_type: str,
+        scope_id: str,
+        scopes: list[tuple[str, str]],
+    ) -> list[dict]:
+        """摘要窗口取数：水位线后原始消息（纯追加增长），满窗触发后台折叠。
+
+        窗口在 x（conversation_raw_min）与 M+x 之间波动：到达 M 时触发折叠，
+        折叠在途允许宽限到 M+x（保持前缀只增不改）；折叠持续失败则硬降级为
+        原来的"最后 M 条滑动"，功能无损。
+        """
+        from agent.storage.conversation_fold import (
+            conversation_folder,
+            is_summary_enabled,
+            raw_min_messages,
+        )
+        sqlite = self.router.sqlite
+        if not is_summary_enabled():
+            return await sqlite.fetch_conversation_multi(scopes=scopes, limit=self.max_size)
+
+        summary_row = await sqlite.get_conversation_summary(
+            scope_type=scope_type, scope_id=scope_id,
+        )
+        watermarks = (summary_row or {}).get("watermarks", {})
+        raw_min = min(raw_min_messages(), self.max_size - 1)
+        if summary_row is None:
+            rows = await sqlite.fetch_conversation_multi(scopes=scopes, limit=self.max_size)
+        else:
+            # 多取 raw_min+1 条：≤ M+x 视为折叠在途宽限（保持追加语义），
+            # 超出则说明折叠持续失败，硬降级为最后 M 条滑动
+            rows = await sqlite.fetch_conversation_after_watermarks(
+                scopes=scopes, watermarks=watermarks,
+                limit=self.max_size + raw_min + 1,
+            )
+            if len(rows) > self.max_size + raw_min:
+                rows = rows[-self.max_size:]
+        if len(rows) >= self.max_size:
+            conversation_folder.maybe_schedule_fold(
+                self, scope_type, scope_id, scopes, watermarks,
+            )
+        return rows
+
+    async def get_conversation_summary(self, anything: Everything) -> Optional[dict]:
+        """读取该 scope 的对话摘要行（{summary, watermarks, folded_count}），未生成返回 None。"""
+        from agent.storage.conversation_fold import is_summary_enabled
+        if not is_summary_enabled():
+            return None
+        scope_type, scope_id = self._scope_of(anything)
+        try:
+            return await self.router.sqlite.get_conversation_summary(
+                scope_type=scope_type, scope_id=scope_id,
+            )
+        except Exception as exc:
+            from core.log import log
+            log(f"对话摘要读取失败: {exc}", "DEBUG", tag="存储")
+            return None
 
     async def _alias_merged_scopes(self, scope_type: str, scope_id: str) -> list[tuple[str, str]]:
         """解析别名关联，返回 (primary + 全部 alias) 的 scope 列表（当前 scope 在前）。

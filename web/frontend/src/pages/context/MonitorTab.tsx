@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation } from "@tanstack/react-query";
 import { useShallow } from "zustand/react/shallow";
-import { Camera, CameraOff, Download, Trash2 } from "lucide-react";
+import { Camera, CameraOff, Download, Trash2, Repeat } from "lucide-react";
 import { contextApi } from "@/lib/api";
 import { useThinkingStore } from "@/stores/thinking-store";
 import { SnapshotDetail } from "@/components/context/SnapshotDetail";
+import { Switch } from "@/components/ui/Switch";
 import { downloadJson } from "./downloadJson";
 
 export function MonitorTab() {
@@ -23,6 +24,8 @@ export function MonitorTab() {
     clearSnapshot: s.clearSnapshot,
   })));
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 连续捕获模式（后端状态为准，挂载时同步）
+  const [continuous, setContinuous] = useState(false);
 
   const startPoll = useCallback(() => {
     if (pollRef.current) return;
@@ -39,6 +42,33 @@ export function MonitorTab() {
       } catch { /* ignore */ }
     }, 800);
   }, [setSnapshotData, setSnapshotArmed, setShowSnapshot]);
+
+  // 挂载时同步连续捕获状态
+  useEffect(() => {
+    contextApi.snapshotGet()
+      .then((r) => setContinuous(r.data.status.continuous))
+      .catch(() => { /* 忽略 */ });
+  }, []);
+
+  const continuousMutation = useMutation({
+    mutationFn: (enabled: boolean) => contextApi.snapshotSetContinuous(enabled),
+    onSuccess: (r) => setContinuous(r.data.continuous),
+  });
+
+  // 连续捕获开启时：每 2s 自动刷新展示最新快照
+  useEffect(() => {
+    if (!continuous) return;
+    const timer = setInterval(async () => {
+      try {
+        const r = await contextApi.snapshotGet();
+        if (r.data.snapshot) {
+          setSnapshotData(r.data.snapshot);
+          setShowSnapshot(true);
+        }
+      } catch { /* ignore */ }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [continuous, setSnapshotData, setShowSnapshot]);
 
   const armMutation = useMutation({
     mutationFn: () => contextApi.snapshotArm(),
@@ -69,13 +99,33 @@ export function MonitorTab() {
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
   }, [snapshotArmed, startPoll]);
 
+  const continuousToggle = (
+    <div className="flex items-center gap-2">
+      <Repeat size={13} className="text-muted" />
+      <span className="text-xs text-muted">{t("monitor.continuous")}</span>
+      <Switch
+        checked={continuous}
+        onChange={(v) => continuousMutation.mutate(v)}
+        disabled={continuousMutation.isPending}
+      />
+    </div>
+  );
+
   // 已有快照时直接展示
   if (showSnapshot && snapshotData) {
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <span className="text-sm font-semibold text-heading">{t("monitor.captured")}</span>
+          <span className="text-sm font-semibold text-heading">
+            {t("monitor.captured")}
+            {continuous && (
+              <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/15 text-emerald-500">
+                {t("monitor.continuousOn")}
+              </span>
+            )}
+          </span>
           <div className="flex items-center gap-2">
+            {continuousToggle}
             <button
               onClick={() => downloadJson(snapshotData, `context_snapshot_${new Date(snapshotData.captured_at * 1000).toISOString().slice(0, 19).replace(/:/g, "")}.json`)}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] text-muted hover:text-accent hover:bg-accent-subtle transition-colors"
@@ -128,6 +178,10 @@ export function MonitorTab() {
             >
               <Camera size={13} /> {t("monitor.arm")}
             </button>
+            <div className="pt-2 space-y-1">
+              <div className="flex justify-center">{continuousToggle}</div>
+              <p className="text-[10px] text-muted">{t("monitor.continuousDesc")}</p>
+            </div>
           </>
         )}
       </div>

@@ -4,8 +4,29 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Trash2, ChevronRight } from "lucide-react";
 import { contextApi } from "@/lib/api";
 import { SnapshotDetail } from "@/components/context/SnapshotDetail";
+import { cn } from "@/lib/utils";
 import type { ContextSnapshotData, SnapshotListItem } from "@/lib/types";
 import { downloadJson } from "./downloadJson";
+
+/** 缓存命中率徽标：≥70% 绿 / ≥30% 黄 / 其余灰；无数据显示 — */
+function CacheHitBadge({ rate }: { rate?: number | null }) {
+  if (rate == null) return null;
+  const pct = Math.round(rate * 100);
+  return (
+    <span
+      className={cn(
+        "px-1.5 py-px rounded text-[9px] font-mono font-medium",
+        pct >= 70
+          ? "bg-emerald-500/15 text-emerald-500"
+          : pct >= 30
+            ? "bg-amber-500/15 text-amber-500"
+            : "bg-muted/15 text-muted",
+      )}
+    >
+      {pct}%
+    </span>
+  );
+}
 
 export function HistoryTab() {
   const { t } = useTranslation("context");
@@ -87,6 +108,7 @@ export function HistoryTab() {
               <button onClick={() => handleOpen(s.filename)} className="flex-1 min-w-0 text-left">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-mono text-foreground">{s.model}</span>
+                  <CacheHitBadge rate={s.cache_hit_rate} />
                   <span className="text-[10px] text-muted">{new Date(s.captured_at * 1000).toLocaleString()}</span>
                 </div>
                 <div className="flex items-center gap-3 mt-1 text-[10px] text-muted">
@@ -95,6 +117,11 @@ export function HistoryTab() {
                   <span>~{s.estimated_tokens}t</span>
                   {s.model_context_window > 0 && (
                     <span>{Math.round((s.estimated_tokens / s.model_context_window) * 100)}% ctx</span>
+                  )}
+                  {s.cache_read_input_tokens != null && s.cache_read_input_tokens > 0 && (
+                    <span className="text-emerald-500">
+                      {t("history.cacheRead", { tokens: s.cache_read_input_tokens.toLocaleString() })}
+                    </span>
                   )}
                 </div>
               </button>

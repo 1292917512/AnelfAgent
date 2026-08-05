@@ -10,19 +10,12 @@ MediaClient 不感知具体差异，统一通过适配器构建请求、解析�
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
 
-from core.log import log
+from agent.llm.adapter_base import AdapterRegistry, AdapterRequest, check_base_resp, host_root
 
-
-@dataclass(slots=True)
-class ImageGenRequest:
-    """一次图片生成 HTTP 请求（URL + JSON 请求体）。"""
-
-    url: str
-    payload: Dict[str, Any]
+# 图片请求与共享请求类型同构，直接复用（保留别名以兼容既有引用）
+ImageGenRequest = AdapterRequest
 
 
 class ImageGenAdapter(ABC):
@@ -114,7 +107,7 @@ class SiliconFlowAdapter(ImageGenAdapter):
         ]
         if out:
             return out
-        return OpenAIImagesAdapter.extract_urls(self, result)
+        return OpenAIImagesAdapter().extract_urls(result)
 
 
 class OpenAIImagesAdapter(ImageGenAdapter):
@@ -143,6 +136,8 @@ class OpenAIImagesAdapter(ImageGenAdapter):
     def extract_urls(self, result: Dict[str, Any]) -> List[str]:
         out: List[str] = []
         for item in result.get("data", []):
+            if not isinstance(item, dict):
+                continue
             if item.get("url"):
                 out.append(item["url"])
             elif item.get("b64_json"):
@@ -171,18 +166,17 @@ class DashScopeImagesAdapter(ImageGenAdapter):
         num_inference_steps: int,
         cfg: Optional[float],
     ) -> ImageGenRequest:
-        parsed = urlparse(base_url)
         payload: Dict[str, Any] = {
             "model": model,
             "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
             "parameters": {"size": image_size.replace("x", "*"), "n": 1},
         }
-        return ImageGenRequest(url=f"{parsed.scheme}://{parsed.netloc}{self._PATH}", payload=payload)
+        return ImageGenRequest(url=f"{host_root(base_url)}{self._PATH}", payload=payload)
 
     def extract_urls(self, result: Dict[str, Any]) -> List[str]:
         out: List[str] = []
         for choice in result.get("output", {}).get("choices", []):
-            content = choice.get("message", {}).get("content", [])
+            content = (choice.get("message") or {}).get("content", [])
             for item in content:
                 if isinstance(item, dict) and item.get("type") == "image" and item.get("image"):
                     out.append(item["image"])
@@ -197,13 +191,6 @@ class MiniMaxImagesAdapter(ImageGenAdapter):
     """
 
     name = "minimax"
-
-    @staticmethod
-    def _check_base_resp(result: Dict[str, Any]) -> None:
-        base_resp = result.get("base_resp") or {}
-        code = base_resp.get("status_code", 0)
-        if code != 0:
-            raise RuntimeError(f"MiniMax API 错误 ({code}): {base_resp.get('status_msg', '')}")
 
     @staticmethod
     def _aspect_ratio(image_size: str) -> str:
@@ -229,7 +216,6 @@ class MiniMaxImagesAdapter(ImageGenAdapter):
         num_inference_steps: int,
         cfg: Optional[float],
     ) -> ImageGenRequest:
-        parsed = urlparse(base_url)
         payload: Dict[str, Any] = {
             "model": model,
             "prompt": prompt,
@@ -238,7 +224,7 @@ class MiniMaxImagesAdapter(ImageGenAdapter):
             "n": 1,
         }
         return ImageGenRequest(
-            url=f"{parsed.scheme}://{parsed.netloc}/v1/image_generation", payload=payload,
+            url=f"{host_root(base_url)}/v1/image_generation", payload=payload,
         )
 
     def build_edit_request(
@@ -251,7 +237,6 @@ class MiniMaxImagesAdapter(ImageGenAdapter):
         num_inference_steps: int,
         cfg: float,
     ) -> ImageGenRequest:
-        parsed = urlparse(base_url)
         payload: Dict[str, Any] = {
             "model": model,
             "prompt": prompt,
@@ -260,11 +245,11 @@ class MiniMaxImagesAdapter(ImageGenAdapter):
             "n": 1,
         }
         return ImageGenRequest(
-            url=f"{parsed.scheme}://{parsed.netloc}/v1/image_generation", payload=payload,
+            url=f"{host_root(base_url)}/v1/image_generation", payload=payload,
         )
 
     def extract_urls(self, result: Dict[str, Any]) -> List[str]:
-        self._check_base_resp(result)
+        check_base_resp(result)
         data = result.get("data") or {}
         out: List[str] = [u for u in data.get("image_urls", []) if u]
         if not out:
@@ -275,9 +260,7 @@ class MiniMaxImagesAdapter(ImageGenAdapter):
         return out
 
 
-_ADAPTERS: Dict[str, ImageGenAdapter] = {}
-_HOST_RULES: List[Tuple[str, str]] = []
-_default_adapter: str = ""
+_REGISTRY: AdapterRegistry[ImageGenAdapter] = AdapterRegistry("图片")
 
 
 def register_image_adapter(
@@ -286,35 +269,13 @@ def register_image_adapter(
     host_keywords: Tuple[str, ...] = (),
     default: bool = False,
 ) -> None:
-    """注册图片协议适配器。
-
-    host_keywords: base_url 主机名包含任一关键字时自动匹配该适配器；
-    default: 未命中任何规则时的兜底适配器。
-    """
-    global _default_adapter
-    _ADAPTERS[adapter.name] = adapter
-    for keyword in host_keywords:
-        _HOST_RULES.append((keyword, adapter.name))
-    if default or not _default_adapter:
-        _default_adapter = adapter.name
+    """注册图片协议适配器（语义见 AdapterRegistry.register）。"""
+    _REGISTRY.register(adapter, host_keywords=host_keywords, default=default)
 
 
 def resolve_image_adapter(base_url: str, protocol: str = "") -> ImageGenAdapter:
-    """解析图片协议适配器：显式 protocol 优先，其次 host 规则，最后兜底。
-
-    media_protocol 字段为图片/视频协议共用，protocol 不属于图片协议时
-    不视为错误，回退 host 规则自动匹配。
-    """
-    if protocol:
-        adapter = _ADAPTERS.get(protocol)
-        if adapter is not None:
-            return adapter
-        log(f"media_protocol '{protocol}' 不是图片协议，按 host 规则自动匹配", "DEBUG", tag="媒体")
-    host = urlparse(base_url).netloc
-    for keyword, name in _HOST_RULES:
-        if keyword in host:
-            return _ADAPTERS[name]
-    return _ADAPTERS[_default_adapter]
+    """解析图片协议适配器（语义见 AdapterRegistry.resolve）。"""
+    return _REGISTRY.resolve(base_url, protocol)
 
 
 register_image_adapter(SiliconFlowAdapter(), default=True)

@@ -15,13 +15,17 @@
     "cancel": "取消布防",
     "captured": "已捕获快照",
     "discard": "丢弃",
-    "export": "导出 JSON"
+    "export": "导出 JSON",
+    "continuous": "连续捕获",
+    "continuousOn": "连续捕获中",
+    "continuousDesc": "开启后每次 LLM 调用都自动捕获快照并追加紧凑记录（调试用途，注意性能）；外部工具可经 GET /api/context/snapshot/records 轮询记录流"
   },
   "history": {
     "count": "共 {{count}} 个快照",
     "empty": "暂无保存的快照",
     "back": "返回列表",
-    "clearAll": "清空全部"
+    "clearAll": "清空全部",
+    "cacheRead": "命中 {{tokens}}t"
   },
   "providers": {
     "empty": "暂无上下文提供者",
@@ -37,9 +41,20 @@
     "tools": "工具数"
   },
   "sections": {
-    "title": "上下文分层"
+    "title": "上下文分层",
+    "changed": "已变更",
+    "unchanged": "未变更"
   },
   "tools": {
     "title": "工具清单"
+  },
+  "cache": {
+    "title": "缓存观测",
+    "lastHitRate": "上次调用命中率",
+    "lastReadTokens": "上次命中 Tokens",
+    "avgHitRate": "近 {{count}} 次平均命中率",
+    "stablePrefix": "本次可复用前缀（估算）",
+    "noData": "暂无缓存统计：快照展示的是捕获之前已完成调用的数据，请先正常对话几轮再布防抓取；每次重启后首次抓取无对比基线",
+    "noUsage": "已有 {{count}} 次调用未返回 usage 数据：当前模型端点（流式）可能不支持 include_usage，缓存命中统计不可用；可查看日志标签「思维」中的 DEBUG 记录确认"
   }
 }

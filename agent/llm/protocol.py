@@ -35,7 +35,6 @@ class ProviderCapability:
     compact: TransportMode
     previous_response_id: TransportMode
     builtin_tools: TransportMode
-    function_tools: TransportMode = TransportMode.NATIVE
 
 
 _NATIVE = ProviderCapability(
@@ -47,7 +46,6 @@ _NATIVE = ProviderCapability(
     compact=TransportMode.NATIVE,
     previous_response_id=TransportMode.NATIVE,
     builtin_tools=TransportMode.NATIVE,
-    function_tools=TransportMode.NATIVE,
 )
 
 _BRIDGE = ProviderCapability(
@@ -59,7 +57,6 @@ _BRIDGE = ProviderCapability(
     compact=TransportMode.UNSUPPORTED,
     previous_response_id=TransportMode.UNSUPPORTED,
     builtin_tools=TransportMode.UNSUPPORTED,
-    function_tools=TransportMode.BRIDGE,
 )
 
 _UNSUPPORTED = ProviderCapability(
@@ -71,7 +68,6 @@ _UNSUPPORTED = ProviderCapability(
     compact=TransportMode.UNSUPPORTED,
     previous_response_id=TransportMode.UNSUPPORTED,
     builtin_tools=TransportMode.UNSUPPORTED,
-    function_tools=TransportMode.UNSUPPORTED,
 )
 
 CHAT_PROTOCOLS: FrozenSet[str] = frozenset(item.value for item in ChatProtocol)

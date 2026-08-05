@@ -80,6 +80,10 @@ class _ThinkRoundState:
     preamble_parts: List[str] = field(default_factory=list)
     max_output_recoveries: int = 0
     last_prompt_tokens: int = 0
+    # 最近一次 LLM 调用的供应商侧缓存用量（context_usage 事件展示用）
+    last_cache_read_tokens: int = 0
+    last_cache_creation_tokens: int = 0
+    last_cache_hit_rate: float = 0.0
     # 上一轮是否仅为输出类工具（send_message 等）且已成功发送：
     # 其后紧跟的纯文本不再代发，直接结束，避免重复出站
     prev_round_outbound_only: bool = False
@@ -487,6 +491,9 @@ async def _emit_context_usage(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
                 "threshold": _threshold,
                 "window": _window,
                 "percent": round(_tokens / _threshold * 100, 1),
+                "cache_read_input_tokens": state.last_cache_read_tokens,
+                "cache_creation_input_tokens": state.last_cache_creation_tokens,
+                "cache_hit_rate": state.last_cache_hit_rate,
             })
     except Exception:
         pass  # 状态事件失败不影响主流程

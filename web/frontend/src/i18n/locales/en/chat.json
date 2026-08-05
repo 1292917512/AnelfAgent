@@ -26,7 +26,8 @@
   },
   "contextUsage": {
     "title": "Context usage {{tokens}} / compression threshold {{threshold}} tokens",
-    "label": "Context {{pct}}%"
+    "label": "Context {{pct}}%",
+    "cache": "cache {{pct}}%"
   },
   "stream": {
     "readonlyCollapsed": "{{count}} read-only tool calls, click to expand",

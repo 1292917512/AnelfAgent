@@ -1,0 +1,205 @@
+"""对话摘要窗口单元测试：水位线取数 / 折叠触发 / 折叠执行 / 失败降级。
+
+窗口语义：固定摘要块（水位线之前）+ 原始窗口（水位线之后纯追加，
+x 条起增长到 M 触发折叠，最旧 M-x 条并入摘要后窗口重置为 x）。
+"""
+
+from __future__ import annotations
+
+import time
+from types import SimpleNamespace
+
+import pytest
+
+from agent.storage import conversation_fold
+from agent.storage.conversation_fold import ConversationFolder
+from agent.storage.data_center import ConversationData
+from agent.storage.sqlite_backend import SqliteBackend
+from agent.storage.storage_router import StorageDomain, StorageRouter
+
+# 测试窗口参数：M=6，x=2（折叠周期 4 条）
+MAX_SIZE = 6
+RAW_MIN = 2
+
+
+@pytest.fixture(autouse=True)
+def _raw_min(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(conversation_fold, "raw_min_messages", lambda: RAW_MIN)
+
+
+@pytest.fixture
+async def conv_data(tmp_path):
+    sqlite = SqliteBackend(db_path=str(tmp_path / "test.sqlite3"))
+    data = ConversationData(StorageRouter(sqlite=sqlite), max_size=MAX_SIZE)
+    yield data
+    await sqlite.close()
+
+
+def _anything() -> SimpleNamespace:
+    return SimpleNamespace(scope_type="user", scope_id="1")
+
+
+async def _append(conv_data: ConversationData, contents: list[str], start_ts: int = 0) -> list[int]:
+    base = start_ts or time.time_ns()
+    ts_list = []
+    for i, content in enumerate(contents):
+        ts = base + i
+        await conv_data.router.append(
+            StorageDomain.CONVERSATION,
+            scope_type="user", scope_id="1", role="user", content=content, ts_ns=ts,
+        )
+        ts_list.append(ts)
+    return ts_list
+
+
+class TestWindowFetch:
+    async def test_below_window_returns_all(self, conv_data) -> None:
+        """窗口未满：返回全部消息（无摘要行时行为与旧逻辑一致）。"""
+        await _append(conv_data, ["m1", "m2", "m3"])
+        records = await conv_data.get_conversation_record_by_everything(_anything())
+        assert [r["content"] for r in records] == ["m1", "m2", "m3"]
+
+    async def test_full_window_triggers_fold_schedule(
+        self, conv_data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """水位线后消息数到达 M 时调度后台折叠。"""
+        scheduled: list[dict] = []
+        monkeypatch.setattr(
+            conversation_fold.conversation_folder, "maybe_schedule_fold",
+            lambda *a, **kw: scheduled.append({"args": a}) or True,
+        )
+        await _append(conv_data, [f"m{i}" for i in range(MAX_SIZE)])
+        records = await conv_data.get_conversation_record_by_everything(_anything())
+        assert len(records) == MAX_SIZE
+        assert len(scheduled) == 1
+
+    async def test_below_window_no_fold(self, conv_data, monkeypatch: pytest.MonkeyPatch) -> None:
+        scheduled: list = []
+        monkeypatch.setattr(
+            conversation_fold.conversation_folder, "maybe_schedule_fold",
+            lambda *a, **kw: scheduled.append(1) or True,
+        )
+        await _append(conv_data, ["m1", "m2"])
+        await conv_data.get_conversation_record_by_everything(_anything())
+        assert not scheduled
+
+    async def test_watermark_fetch_excludes_folded(self, conv_data) -> None:
+        """存在摘要行时只取水位线之后的消息。"""
+        ts_list = await _append(conv_data, [f"m{i}" for i in range(4)])
+        sqlite = conv_data.router.sqlite
+        await sqlite.upsert_conversation_summary(
+            scope_type="user", scope_id="1",
+            summary="旧摘要", watermarks={"user:1": ts_list[1]}, folded_count=2,
+        )
+        records = await conv_data.get_conversation_record_by_everything(_anything())
+        assert [r["content"] for r in records] == ["m2", "m3"]
+
+    async def test_grace_overflow_hard_degrades(self, conv_data) -> None:
+        """折叠持续失败导致窗口超过 M+x：硬降级为最后 M 条滑动。"""
+        ts_list = await _append(conv_data, [f"m{i}" for i in range(MAX_SIZE + RAW_MIN + 2)])
+        sqlite = conv_data.router.sqlite
+        await sqlite.upsert_conversation_summary(
+            scope_type="user", scope_id="1",
+            summary="旧摘要", watermarks={"user:1": ts_list[0] - 1}, folded_count=0,
+        )
+        records = await conv_data.get_conversation_record_by_everything(_anything())
+        assert len(records) == MAX_SIZE
+        assert records[0]["content"] == f"m{RAW_MIN + 2}"
+        assert records[-1]["content"] == f"m{MAX_SIZE + RAW_MIN + 1}"
+
+
+class TestFoldExecution:
+    async def _run_fold(self, conv_data: ConversationData, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def fake_summarizer(prompt: str) -> str:
+            return "折叠摘要内容"
+
+        async def resolve():
+            return fake_summarizer
+
+        monkeypatch.setattr(ConversationFolder, "_resolve_summarizer", staticmethod(resolve))
+        folder = ConversationFolder()
+        await folder._fold(
+            conv_data, "user", "1", [("user", "1")], {},
+        )
+
+    async def test_fold_advances_watermark_and_summary(
+        self, conv_data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """折叠最旧 M-x 条：摘要落库、水位线推进到折叠最大 ts、窗口重置为 x 条。"""
+        ts_list = await _append(conv_data, [f"m{i}" for i in range(MAX_SIZE)])
+        await self._run_fold(conv_data, monkeypatch)
+
+        row = await conv_data.router.sqlite.get_conversation_summary(
+            scope_type="user", scope_id="1",
+        )
+        assert row is not None
+        assert row["summary"] == "折叠摘要内容"
+        assert row["folded_count"] == MAX_SIZE - RAW_MIN
+        # 水位线推进到第 M-x 条的 ts
+        assert row["watermarks"]["user:1"] == ts_list[MAX_SIZE - RAW_MIN - 1]
+
+        records = await conv_data.get_conversation_record_by_everything(_anything())
+        assert [r["content"] for r in records] == [f"m{i}" for i in range(MAX_SIZE - RAW_MIN, MAX_SIZE)]
+
+    async def test_window_append_only_after_fold(
+        self, conv_data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """折叠后新消息纯追加：窗口前缀字节稳定（缓存命中的核心属性）。"""
+        await _append(conv_data, [f"m{i}" for i in range(MAX_SIZE)])
+        await self._run_fold(conv_data, monkeypatch)
+
+        before = await conv_data.get_conversation_record_by_everything(_anything())
+        await _append(conv_data, ["new1"], start_ts=time.time_ns() + 1000)
+        after = await conv_data.get_conversation_record_by_everything(_anything())
+
+        # 新窗口 = 旧窗口 + 新消息（头部不变，只追加）
+        assert after[: len(before)] == before
+        assert after[-1]["content"] == "new1"
+
+    async def test_fold_failure_keeps_state(
+        self, conv_data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """摘要生成失败：不落库、记退避，窗口维持滑动行为。"""
+        async def failing_summarizer(prompt: str) -> str:
+            raise RuntimeError("llm down")
+
+        async def resolve():
+            return failing_summarizer
+
+        monkeypatch.setattr(ConversationFolder, "_resolve_summarizer", staticmethod(resolve))
+        folder = ConversationFolder()
+        await _append(conv_data, [f"m{i}" for i in range(MAX_SIZE)])
+        await folder._fold(conv_data, "user", "1", [("user", "1")], {})
+
+        row = await conv_data.router.sqlite.get_conversation_summary(
+            scope_type="user", scope_id="1",
+        )
+        assert row is None
+        # 失败退避记录（60s 内不再调度）
+        assert folder._last_failure.get("user:1", 0) > 0
+
+    async def test_partial_batch_not_folded(
+        self, conv_data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """水位线后不足一批（M-x 条）时不折叠（防并发重复触发）。"""
+        await _append(conv_data, ["m1", "m2"])
+        await self._run_fold(conv_data, monkeypatch)
+        row = await conv_data.router.sqlite.get_conversation_summary(
+            scope_type="user", scope_id="1",
+        )
+        assert row is None
+
+
+class TestSummaryAccessor:
+    async def test_get_conversation_summary_none(self, conv_data) -> None:
+        assert await conv_data.get_conversation_summary(_anything()) is None
+
+    async def test_get_conversation_summary_row(self, conv_data) -> None:
+        await conv_data.router.sqlite.upsert_conversation_summary(
+            scope_type="user", scope_id="1",
+            summary="摘要", watermarks={"user:1": 123}, folded_count=5,
+        )
+        row = await conv_data.get_conversation_summary(_anything())
+        assert row is not None
+        assert row["summary"] == "摘要"
+        assert row["folded_count"] == 5

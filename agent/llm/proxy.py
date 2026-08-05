@@ -36,7 +36,7 @@ class _ProxyEnvContext:
             if orig is _SENTINEL:
                 os.environ.pop(k, None)
             else:
-                os.environ[k] = orig  # type: ignore[assignment]
+                os.environ[k] = orig
 
 
 class _ProxyEnvLease:

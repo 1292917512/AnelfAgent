@@ -52,7 +52,28 @@ class MemoryRetriever:
         related_scopes: Optional[List[str]] = None,
         query_vec: Optional[List[float]] = None,
     ) -> List[Dict]:
-        """根据对话上下文召回相关记忆，返回 messages 格式列表。
+        """根据对话上下文召回相关记忆，返回 messages 格式列表（画像在前）。"""
+        profile_msgs, memory_msgs = await self.recall_split(
+            conversation,
+            top_k=top_k, entity_scope=entity_scope,
+            related_scopes=related_scopes, query_vec=query_vec,
+        )
+        return profile_msgs + memory_msgs
+
+    async def recall_split(
+        self,
+        conversation: List[Dict],
+        *,
+        top_k: Optional[int] = None,
+        entity_scope: str = "",
+        related_scopes: Optional[List[str]] = None,
+        query_vec: Optional[List[float]] = None,
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """召回相关记忆，画像与检索结果分开返回 (profile_msgs, memory_msgs)。
+
+        画像与检索结果的变更频率不同（画像随实体沉淀低频变，检索结果随
+        每条消息变），分开返回让上下文组装能把它们放到不同的分层位置，
+        保证缓存前缀稳定。
 
         同时搜索 memories 表和 MD 文件 chunks（双轨统一召回）。
         related_scopes 用于群聊场景下加载活跃成员的画像。
@@ -81,7 +102,7 @@ class MemoryRetriever:
         if not query:
             log("💾 被动召回: 无有效查询，回退近期记忆", tag="思维")
             entity_msgs, fallback = await asyncio.gather(profiles_task, self._fallback_recent(k))
-            return entity_msgs + fallback
+            return entity_msgs, fallback
 
         log(f"💾 被动召回: \"{query[:50]}\" (embedding={'是' if self._embedder.available else '否'})", tag="思维")
 
@@ -138,7 +159,7 @@ class MemoryRetriever:
         if not results:
             log("💾 统一搜索无结果，回退近期记忆", tag="思维")
             fallback = await self._fallback_recent(k)
-            return entity_msgs + fallback
+            return entity_msgs, fallback
 
         # Rerank if available
         if self._rerank_client and len(results) > 1:
@@ -163,7 +184,7 @@ class MemoryRetriever:
             path_str = f" {r.path}" if r.path else ""
             log(f"  💡 {src_label}{tag_str}{path_str} score={r.score:.2f}: {r.snippet[:50]}", tag="思维")
 
-        return entity_msgs + self._format_unified_results(results)
+        return entity_msgs, self._format_unified_results(results)
 
     @staticmethod
     async def _resolve_scope_alias(scope: str) -> str:
@@ -210,22 +231,30 @@ class MemoryRetriever:
 
         loaded = await asyncio.gather(*(_load_one(p) for p in resolved_map))
 
-        all_parts: List[str] = []
-        for primary_scope, source, entries in loaded:
+        # 每实体一条独立消息、按 scope 排序：实体间字节互不干扰，
+        # 参与人不变时整块画像字节稳定（缓存/快照 diff 友好）
+        from core.sanitizer import sanitize_for_context
+        messages: List[Dict] = []
+        loaded_count = 0
+        for primary_scope, source, entries in sorted(loaded, key=lambda item: item[0]):
             if not entries:
                 continue
             entity_id = primary_scope.split("_", 1)[1] if "_" in primary_scope else primary_scope
             scope_label = f"[uid:{entity_id}]" if primary_scope.startswith("user_") else f"[group_id:{entity_id}]"
-            for e in entries:
-                all_parts.append(f"{scope_label}\n{e.content}")
+            body = "\n---\n".join(e.content for e in entries)
+            messages.append({
+                "role": "system",
+                "content": sanitize_for_context(
+                    f"[系统注入·人物画像] {scope_label} 的画像信息：\n{body}"
+                ),
+            })
+            loaded_count += len(entries)
             log(f"实体画像加载: {source} ({len(entries)} 条)", "DEBUG", tag="思维")
 
-        if not all_parts:
+        if not messages:
             return []
-        log(f"实体画像注入: {len(scopes)} 个 scope, {len(all_parts)} 条画像", tag="思维")
-        from core.sanitizer import sanitize_for_context
-        content = "[系统注入·人物画像] 以下为相关实体的画像信息：\n" + "\n---\n".join(all_parts)
-        return [{"role": "system", "content": sanitize_for_context(content)}]
+        log(f"实体画像注入: {len(scopes)} 个 scope, {loaded_count} 条画像", tag="思维")
+        return messages
 
     async def _fallback_recent(self, limit: int) -> List[Dict]:
         entries = await self._store.list_recent(limit=limit)
@@ -388,17 +417,35 @@ class MemoryRetriever:
         return results
 
     @staticmethod
-    def _format_unified_results(results: list[MemorySearchResult]) -> List[Dict]:
-        """将统一搜索结果格式化为注入消息，保留 score/type 元数据。"""
+    def _dedup_key(snippet: str) -> str:
+        """跨来源内容去重键：去空白后的前缀（memories 表与 cognee 图谱可能注入同一条内容）。"""
+        return re.sub(r"\s+", "", snippet)[:120]
+
+    @classmethod
+    def _format_unified_results(cls, results: list[MemorySearchResult]) -> List[Dict]:
+        """将统一搜索结果格式化为注入消息，保留 score/type 元数据。
+
+        跨来源内容去重：同一条记忆可能同时命中 memories 表与 cognee 图谱
+        （id 命名空间不同无法按 id 去重），按归一化内容前缀去重，
+        保留分数最高（最先出现）的一份，避免重复注入浪费 token。
+        """
         if not results:
             return []
 
         mem_lines: list[str] = []
         file_lines: list[str] = []
         graph_lines: list[str] = []
+        seen: set[str] = set()
+        deduped = 0
 
         for r in results:
             snippet = r.snippet[:500]
+            key = cls._dedup_key(snippet)
+            if key and key in seen:
+                deduped += 1
+                continue
+            if key:
+                seen.add(key)
             associated = r.provenance.get("associated") if r.provenance else False
             marker = "🔗" if associated else "💡"
             if r.source == "file":
@@ -411,10 +458,13 @@ class MemoryRetriever:
                 )
             else:
                 mtype = r.memory_type or "semantic"
-                tag_str = f" [{','.join(r.tags)}]" if r.tags else ""
+                tag_str = f" [{_cap_tags(r.tags)}]" if r.tags else ""
                 mem_lines.append(
                     f"{marker} [{mtype}]{tag_str} score={r.score:.2f}: {snippet}"
                 )
+
+        if deduped:
+            log(f"召回跨来源去重: 移除 {deduped} 条重复内容", "DEBUG", tag="思维")
 
         parts: list[str] = []
         if mem_lines:
@@ -479,6 +529,17 @@ class MemoryRetriever:
 
 
 _TAG_RE = re.compile(r"\[(?:time|uid|group_id|name|nickname):[^\]]*\]")
+
+
+def _cap_tags(tags: List[str], limit: int = 6) -> str:
+    """标签列表截断展示：超限显示前 limit 个 + 总数。
+
+    召回注入中标签仅作来源提示，长标签串（如逐次累积的 topic 标签）
+    对 AI 是纯噪声且浪费 token。
+    """
+    if len(tags) <= limit:
+        return ",".join(tags)
+    return f"{','.join(tags[:limit])} 等{len(tags)}个"
 
 
 def _strip_tags(text: str) -> str:

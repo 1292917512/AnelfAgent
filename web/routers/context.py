@@ -5,10 +5,15 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from agent.mind.context_snapshot import context_snapshot
 
 router = APIRouter(prefix="/context", tags=["context"])
+
+
+class _ContinuousToggle(BaseModel):
+    enabled: bool
 
 
 # ------------------------------------------------------------------
@@ -45,6 +50,20 @@ async def clear_snapshot() -> Dict[str, Any]:
     """清除当前内存快照 + 解除布防。"""
     context_snapshot.clear()
     return {"armed": False, "has_snapshot": False}
+
+
+@router.put("/snapshot/continuous")
+async def set_continuous(body: _ContinuousToggle) -> Dict[str, Any]:
+    """开关连续捕获模式：开启后每次 LLM 调用都捕获快照（性能考虑，调试用）。"""
+    context_snapshot.set_continuous(body.enabled)
+    return {"continuous": body.enabled}
+
+
+@router.get("/snapshot/records")
+async def list_snapshot_records(limit: int = 100) -> Dict[str, Any]:
+    """读取最近的连续捕获紧凑记录（分层统计 + 缓存观测，供外部调试工具轮询）。"""
+    records = context_snapshot.list_records(limit)
+    return {"records": records, "count": len(records)}
 
 
 # ------------------------------------------------------------------

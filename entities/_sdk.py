@@ -251,6 +251,30 @@ def get_image_content_class() -> type:
     return ImageContent
 
 
+def is_video_path(path: str) -> bool:
+    """判断路径或 URL 是否指向视频文件。"""
+    from agent.llm.image_utils import is_video_path as _is_video
+    return _is_video(path)
+
+
+def load_video_from_path(path: str) -> Any:
+    """从本地路径加载视频为 base64 VideoContent。"""
+    from agent.llm.image_utils import load_video_from_path as _load
+    return _load(path)
+
+
+def download_video_to_base64(url: str) -> Any:
+    """下载 URL 视频并转为 base64 VideoContent。"""
+    from agent.llm.image_utils import download_video_to_base64 as _dl
+    return _dl(url)
+
+
+def get_video_content_class() -> type:
+    """获取 VideoContent 类型。"""
+    from agent.llm.types import VideoContent
+    return VideoContent
+
+
 def get_model_type_enum() -> Any:
     """获取 ModelType 枚举。"""
     from agent.llm.llm_manager import ModelType

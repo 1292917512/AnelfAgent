@@ -290,6 +290,12 @@ class PrefrontalCortex:
         except Exception:
             cache_stats = {}
 
+        try:
+            from agent.mind.cache_stats import cache_usage_tracker
+            provider_cache = cache_usage_tracker.summary()
+        except Exception:
+            provider_cache = {}
+
         return {
             "tool_recall": [
                 {"name": n, "count": c} for n, c in self.tool_assembly.get_tool_recall_sorted()
@@ -303,4 +309,5 @@ class PrefrontalCortex:
             "short_term_memory_count": len(self.work_memory.temporary),
             "short_term_memory_max": self.work_memory.max_temp,
             "prompt_cache": cache_stats,
+            "provider_cache": provider_cache,
         }

@@ -50,7 +50,37 @@ class TestApplyVisionDirectInject:
         # 不污染原列表
         assert isinstance(messages[-1]["content"], str)
 
-    async def test_url_image_kept_when_url_supported(self) -> None:
+    async def test_url_image_downloaded_first(
+            self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """URL 图片下载优先：即使模型支持 url 视觉，也先下载转 base64。"""
+
+        async def _fake_download(url: str, timeout: float = 30.0) -> ImageContent:
+            return ImageContent(data=_TINY_B64, mime_type="image/jpeg")
+
+        monkeypatch.setattr(
+            "agent.llm.image_utils.download_image_to_base64", _fake_download,
+        )
+        config = LLMClientConfig(name="v", supports_vision=True, vision_format="both")
+        result = await apply_vision(
+            _make_mind(config), _make_messages(),
+            [ImageContent(data="https://example.com/a.jpg", is_url=True)],
+        )
+
+        block = result[-1]["content"][1]
+        assert block["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+    async def test_url_image_kept_as_fallback_when_download_fails(
+            self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """下载失败时保留原 URL 交由端点兜底。"""
+
+        async def _fail_download(url: str, timeout: float = 30.0) -> None:
+            return None
+
+        monkeypatch.setattr(
+            "agent.llm.image_utils.download_image_to_base64", _fail_download,
+        )
         config = LLMClientConfig(name="v", supports_vision=True, vision_format="both")
         result = await apply_vision(
             _make_mind(config), _make_messages(),

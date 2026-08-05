@@ -26,7 +26,8 @@
   },
   "contextUsage": {
     "title": "上下文用量 {{tokens}} / 压缩阈值 {{threshold}} tokens",
-    "label": "上下文 {{pct}}%"
+    "label": "上下文 {{pct}}%",
+    "cache": "缓存 {{pct}}%"
   },
   "stream": {
     "readonlyCollapsed": "已调用 {{count}} 个只读工具，点击展开",

@@ -228,9 +228,37 @@ _PROMPT_CACHE_CONFIGS = {
             "description": "是否为 Anthropic 模型注入 cache_control 缓存断点",
             "default": True,
         },
+        "prompt_cache_summary_breakpoint": {
+            "description": "是否在对话摘要块上注入第 4 个 Anthropic 缓存断点（摘要块在折叠周期内字节固定，是历史前缀的缓存锚点）",
+            "default": True,
+        },
+        "context_tail_injection_enabled": {
+            "description": "是否将画像/召回/技能/短期记忆等每会话重建内容移到对话历史之后注入（尾部动态区），使历史进入缓存前缀；关闭恢复旧布局",
+            "default": True,
+        },
+        "conversation_summary_enabled": {
+            "description": "是否启用对话摘要窗口（旧消息折叠为固定摘要块 + 最近消息纯追加，保持历史前缀字节稳定以命中缓存）",
+            "default": True,
+        },
+        "conversation_raw_min": {
+            "description": "摘要窗口的原始消息下限 x：折叠后保留的最近原始消息条数（窗口在 x ~ M+x 间波动）",
+            "default": 10,
+        },
+        "conversation_summary_max_chars": {
+            "description": "对话摘要块的字符上限",
+            "default": 4000,
+        },
         "memory_inject_max_chars": {
             "description": "memory 层（语义召回+画像+技能）注入的总字符预算上限",
             "default": 6000,
+        },
+        "tool_order_deterministic": {
+            "description": "工具排序确定性模式：与使用计数无关，同一工具集跨会话字节级一致（tools schema 是 prompt 最大头，其稳定性决定前缀缓存命中率上限）；关闭恢复「已使用优先」排序",
+            "default": True,
+        },
+        "tool_dynamic_sticky": {
+            "description": "动态工具粘性模式：tag 激活/动态发现的工具在空闲时保留而非清除（进程内工具集只增不减），避免工具集跨会话抖动击穿前缀缓存；关闭恢复每个会话结束清空",
+            "default": True,
         },
     },
 }

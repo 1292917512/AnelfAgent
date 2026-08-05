@@ -13,7 +13,9 @@
     "crossChannelSubtitle": "控制 AI 在多频道场景下的跨频道对话关联与感知能力",
     "network": "网络 / 下载",
     "webTools": "搜索引擎",
-    "webToolsSubtitle": "百度智能搜索 API 配置与网页抓取代理设置"
+    "webToolsSubtitle": "百度智能搜索 API 配置与网页抓取代理设置",
+    "cacheContext": "缓存与上下文",
+    "cacheContextSubtitle": "Prompt 缓存、对话摘要窗口与工具集稳定性（影响供应商侧前缀缓存命中率）"
   },
   "fields": {
     "heartbeat_interval": "心跳间隔（秒）",
@@ -26,7 +28,7 @@
     "tool_recall_top_n": "工具召回 Top-N",
     "llm_timeout": "LLM 超时（秒）",
     "llm_max_retries": "LLM 最大重试",
-    "max_conversation_size": "对话历史总条数",
+    "max_conversation_size": "对话历史窗口上限 (M)",
     "sandbox_enabled": "沙箱模式",
     "vector_search_batch_size": "向量搜索批大小",
     "memory_recall_top_k": "语义召回 Top-K",
@@ -73,13 +75,22 @@
     "default_download_dir": "默认下载目录",
     "workspace_root": "工作区根目录",
     "baidu_api_key": "百度搜索 API Key",
-    "web_proxy": "网页抓取代理"
+    "web_proxy": "网页抓取代理",
+    "conversation_summary_enabled": "对话摘要窗口",
+    "conversation_raw_min": "原始消息下限 (x)",
+    "conversation_summary_max_chars": "摘要字符上限",
+    "prompt_cache_enabled": "Prompt 分层缓存",
+    "prompt_cache_anthropic_breakpoint": "Anthropic 缓存断点",
+    "prompt_cache_summary_breakpoint": "历史末尾缓存断点",
+    "context_tail_injection_enabled": "尾部动态注入",
+    "tool_order_deterministic": "工具确定性排序",
+    "tool_dynamic_sticky": "动态工具粘性"
   },
   "descs": {
     "meta_decision_temperature": "元层面决策任务的 LLM 温度参数",
     "max_tool_iterations": "单次回复允许的最大工具调用轮数",
     "short_term_memory_size": "工具执行结果等临时信息的最大缓存条数，超出后丢弃最早的",
-    "max_conversation_size": "每次 LLM 调用携带的对话历史条数上限，超出部分可通过记忆工具检索",
+    "max_conversation_size": "原始对话窗口的最大条数；到达后触发折叠，最旧 M-x 条并入摘要",
     "vector_search_batch_size": "超过此数量时分批并行搜索",
     "memory_recall_top_k": "被动记忆召回返回的最大条目数",
     "memory_recall_min_score": "低于此分数的记忆不会被召回",
@@ -110,7 +121,16 @@
     "http_proxy": "例：http://127.0.0.1:7890",
     "https_proxy": "例：http://127.0.0.1:7890",
     "baidu_api_key": "百度智能搜索 API Key（bce-v3/...）",
-    "web_proxy": "网页抓取代理地址，留空直连，例：http://127.0.0.1:7890"
+    "web_proxy": "网页抓取代理地址，留空直连，例：http://127.0.0.1:7890",
+    "conversation_summary_enabled": "开启后旧对话折叠为固定摘要块 + 最近消息纯追加，保持历史前缀字节稳定以命中缓存；关闭恢复滑动窗口",
+    "conversation_raw_min": "折叠后保留的最近原始消息条数；窗口在 x ~ M+x 间波动",
+    "conversation_summary_max_chars": "早期对话摘要块的字符上限",
+    "prompt_cache_enabled": "stable 层对话内冻结复用（本地构建缓存）",
+    "prompt_cache_anthropic_breakpoint": "为 Anthropic 协议模型注入 cache_control 缓存断点",
+    "prompt_cache_summary_breakpoint": "第 4 断点打在对话历史末尾（无历史时落在摘要块），让历史进入缓存前缀",
+    "context_tail_injection_enabled": "画像/召回/短期记忆等每会话重建内容移到对话历史之后注入；关闭恢复旧布局",
+    "tool_order_deterministic": "工具排序与使用计数无关，同一工具集跨会话字节级一致（tools 是 prompt 最大头）",
+    "tool_dynamic_sticky": "tag 激活/动态发现的工具进程内保留，避免工具集跨会话抖动击穿缓存"
   },
   "actions": {
     "save": "保存",

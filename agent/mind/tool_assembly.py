@@ -168,9 +168,18 @@ class ToolAssembly:
         scope 非空时仅清除该 scope 相关的状态（后台评审等并行会话不踩踏主会话）。
         当前实现：动态工具是全局共享的（tag/discovered 不按 scope 分桶），
         因此仅在 scope 为空时执行全量清理；调用方应在 active_scopes 清空后再清。
+
+        粘性模式（tool_dynamic_sticky，默认开）：保留 tag 激活与动态发现——
+        它们是消息内容驱动的（如图片到达激活媒体工具），清掉会导致下个会话
+        重新激活、工具集在两个状态间反复抖动；tools 数组位于请求最前，
+        任何字节变化都会击穿其后的全部前缀缓存（实测单次重写 ~30K tokens）。
+        进程生命周期内工具集只增不减 + 确定性排序 = 跨会话字节稳定。
         """
         if scope:
             # 非主会话（如后台评审 reflect）：不清理全局动态工具，避免踩踏正在进行的对话
+            return
+        from core.config import get_config_bool
+        if get_config_bool("tool_dynamic_sticky", True):
             return
         self._tag_activated_tools.clear()
         self._discovered_tools.clear()
@@ -262,16 +271,21 @@ class ToolAssembly:
     }
 
     def _tool_sort_key(self, schema: dict) -> tuple:
-        """工具排序键：核心流程 → 已使用工具 → 其余（层内均按名称）。
+        """工具排序键：核心流程 → 其余按名称（确定性模式）/ 已使用分层（兼容模式）。
 
-        命中计数只决定分层归属（>0 即「已使用」），不参与层内排序——
-        计数持续递增，若参与排序会导致 tools schema 字节序跨轮漂移，
-        破坏 provider 侧前缀缓存复用。会话内层间跳变由 think_loop 的
-        冻结排序（frozen_tool_order）进一步消除。
+        确定性模式（tool_order_deterministic，默认开）：排序与使用计数完全无关，
+        同一工具集在任何会话、任何时刻产出字节级一致的 tools 数组——
+        tools schema 通常是 prompt 的最大头，其跨会话稳定性直接决定
+        provider 前缀缓存命中率上限。会话内稳定性由 think_loop 冻结排序保证。
+
+        兼容模式：核心流程 → 已使用工具 → 其余（层内均按名称）。
         """
         name = schema.get("function", {}).get("name", "")
         if name in self._CORE_TOOL_PRIORITY:
             return (0, self._CORE_TOOL_PRIORITY[name])
+        from core.config import get_config_bool
+        if get_config_bool("tool_order_deterministic", True):
+            return (1, name)
         if self._tool_recall.get(name, 0) > 0:
             return (1, name)
         return (2, name)

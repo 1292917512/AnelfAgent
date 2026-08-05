@@ -107,9 +107,11 @@ _ANTHROPIC_XHIGH_SUBSTRINGS = (
 # 官方文档仅声明 thinking: {type: adaptive|disabled}（MiniMax M3）或 thinking 强制开启
 # 不可关闭（MiniMax M2.x、Kimi anthropic）。任何非 off 档位若直接透传为 reasoning_effort
 # 将被端点拒绝（400）；clamp 全部降为 off，由 litellm 翻译为 thinking: disabled 即可。
+# 注意：已收录于 _is_provider_specific 的型号会先被拦截，此表仅兜底未来新型号；
+# 不放裸代际词（如 "k3"），避免朴素子串误中无关模型名。
 _NO_REASONING_EFFORT_SUBSTRINGS = (
     "minimax-m", "minimax-m2", "minimax-m3",
-    "kimi-", "kimi-for-coding", "k3",
+    "kimi-", "kimi-for-coding",
 )
 
 
@@ -255,9 +257,27 @@ def _clamp_anthropic(effort: str, model_lower: str, model: str) -> str:
     return effort
 
 
-def _clamp_generic_high(effort: str) -> str:
-    """通用钳制：max/xhigh 最高只保留到 high（OpenAI/Gemini/xAI 等家族）。"""
-    return "high" if effort in ("max", "xhigh") else effort
+# OpenAI 协议家族中官方文档声明原生支持 xhigh/max 档位的模型
+# （千问 compatible-mode 支持 reasoning_effort: low/medium/high/xhigh/max）；
+# 用于 litellm 能力表未收录（自定义注册模型无该 flag）时的放行依据。
+# 端点实际不支持时仍有运行时降级阶梯兜底，静态放行是安全方向。
+_EXTENDED_EFFORT_SUBSTRINGS = ("qwen",)
+
+
+def _clamp_generic_high(effort: str, model: str = "") -> str:
+    """通用钳制：max/xhigh 默认只保留到 high（OpenAI/Gemini/xAI 等家族）。
+
+    放行顺序：litellm 能力表显式声明支持该档位 → 已知扩展档位家族
+    （如千问）→ 保守钳到 high。
+    """
+    if effort not in ("max", "xhigh"):
+        return effort
+    if _model_capability_flag(model, f"supports_{effort}_reasoning_effort") is True:
+        return effort
+    model_lower = (model or "").lower()
+    if any(s in model_lower for s in _EXTENDED_EFFORT_SUBSTRINGS):
+        return effort
+    return "high"
 
 
 def clamp_effort(effort: str, model: str, api_type: str) -> str:
@@ -288,8 +308,8 @@ def clamp_effort(effort: str, model: str, api_type: str) -> str:
     if "gemini" in model_lower:
         if effort == "minimal":
             return "low"
-        return _clamp_generic_high(effort)
-    return _clamp_generic_high(effort)
+        return _clamp_generic_high(effort, model)
+    return _clamp_generic_high(effort, model)
 
 
 # ------------------------------------------------------------------

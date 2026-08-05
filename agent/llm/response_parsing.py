@@ -6,7 +6,13 @@ import json
 import re
 from typing import Any, AsyncGenerator, Dict, Optional
 
-from agent.llm.types import ChatResult, ChatStreamDelta, ToolCall, UsageInfo
+from agent.llm.types import (
+    ChatResult,
+    ChatStreamDelta,
+    ToolCall,
+    UsageInfo,
+    cache_tokens_from_usage,
+)
 from core.log import log
 
 _THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
@@ -73,17 +79,19 @@ async def _iter_stream(
                 "WARNING", tag="模型",
             )
             tc_bufs.clear()
+        # usage 通常在最终 chunk：带 finish 的 chunk 或无 choices 的 usage-only
+        # chunk（上方分支）；但部分端点（阿里 anthropic 网关）会在 finish chunk
+        # 之后再发一个带空 choice、finish=None 的 usage chunk——
+        # 只要 chunk 携带 usage 就一律透传，避免静默丢弃
+        chunk_usage = _usage_from_object(getattr(chunk, "usage", None))
         yield ChatStreamDelta(
             content=content,
             tool_calls=completed_tools,
             finish_reason=finish,
             reasoning_content=reasoning,
-            # usage 仅在最终 chunk 输出：带 finish 的 chunk 或无 choices 的
-            # usage-only chunk（上方分支），中间 chunk 的增量 usage 不下发
-            usage=_usage_from_object(getattr(chunk, "usage", None)) if finish else None,
+            usage=chunk_usage,
         ), reasoning_buf
 
-@staticmethod
 def _normalize_tc_index(raw: Any, fallback: int) -> int:
     """将流式 tool_call 的 index 归一化为 int，非法值回退为 fallback。"""
     if raw is None:
@@ -93,7 +101,6 @@ def _normalize_tc_index(raw: Any, fallback: int) -> int:
     except (TypeError, ValueError):
         return fallback
 
-@staticmethod
 def _complete_tool_buffers(
     tc_bufs: Dict[int, Dict[str, str]],
 ) -> list[ToolCall]:
@@ -110,13 +117,7 @@ def _complete_tool_buffers(
             id=call_id,
             name=buf["name"],
             arguments=buf["arguments"],
-            # raw 必须是 OpenAI 线格式完整结构 — think_loop 用它拼装
-            # assistant 历史消息（tool_calls 字段），缺 id 会破坏配对
-            raw={
-                "id": call_id,
-                "type": "function",
-                "function": {"name": buf["name"], "arguments": buf["arguments"]},
-            },
+            raw=ToolCall.wire_raw(call_id, buf["name"], buf["arguments"]),
         ))
     return result
 
@@ -152,23 +153,35 @@ def _parse_response(resp: Any) -> ChatResult:
         model=getattr(resp, "model", "") or "",
     )
 
-@staticmethod
 def _extract_usage(resp: Any) -> Optional[UsageInfo]:
     """从 litellm 响应中提取 token 用量。"""
     return _usage_from_object(getattr(resp, "usage", None))
 
-@staticmethod
 def _usage_from_object(usage: Any) -> Optional[UsageInfo]:
     if not usage:
         return None
+    cache_read, cache_creation = cache_tokens_from_usage(usage)
     result = UsageInfo(
-        prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-        completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-        total_tokens=getattr(usage, "total_tokens", 0) or 0,
+        prompt_tokens=_int_attr(usage, "prompt_tokens"),
+        completion_tokens=_int_attr(usage, "completion_tokens"),
+        total_tokens=_int_attr(usage, "total_tokens"),
+        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=cache_creation,
     )
     return result if result.total_tokens or result.prompt_tokens or result.completion_tokens else None
 
-@staticmethod
+
+def _int_attr(obj: Any, name: str) -> int:
+    """从对象或 dict 上安全提取 int 字段。"""
+    if isinstance(obj, dict):
+        value = obj.get(name, 0)
+    else:
+        value = getattr(obj, name, 0)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
 def _extract_reasoning(msg: Any, raw_response: Optional[dict] = None) -> str:
     """从响应中提取推理内容。
 
@@ -203,7 +216,6 @@ def _extract_reasoning(msg: Any, raw_response: Optional[dict] = None) -> str:
     m = _THINK_TAG_RE.search(content)
     return m.group(1).strip() if m else ""
 
-@staticmethod
 def _parse_tool_calls(raw_tool_calls: Any) -> list[ToolCall]:
     """解析 tool_calls，兼容 OpenAI 对象 / dict / anthropic tool_use 原始形态。
 

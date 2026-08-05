@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import threading
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -94,6 +97,10 @@ class LLMManager(BaseEntity):
         self._clients: Dict[str, LLMClient] = {}
         self._type_priorities: Dict[str, List[str]] = {}
         self._default_chat: str = ""
+        # 配置加载失败的原始错误（get_default 报错时附带，避免根因被掩埋）
+        self._load_error: str = ""
+        # 无可用模型时的共享占位客户端（避免每次 get_default 重建实体）
+        self._empty_client: Optional[LLMClient] = None
         # 子代理模型分级：难度挡位(1 简单/2 中等/3 困难) → 模型 ID 优先级列表
         self._delegation_tiers: Dict[int, List[str]] = {1: [], 2: [], 3: []}
         self._load_config()
@@ -118,7 +125,20 @@ class LLMManager(BaseEntity):
                 tag="模型",
             )
         except Exception as exc:
-            error(f"加载 LLM 配置失败: {exc}", tag="模型")
+            self._load_error = str(exc)
+            # 备份损坏文件，避免后续 save_config 覆盖掉可人工恢复的原始内容
+            try:
+                backup = self._config_path.with_suffix(
+                    self._config_path.suffix + f".corrupt-{int(time.time())}"
+                )
+                self._config_path.replace(backup)
+                error(
+                    f"加载 LLM 配置失败: {exc}（原文件已备份到 {backup.name}，"
+                    f"修复后可手动还原）",
+                    tag="模型",
+                )
+            except OSError:
+                error(f"加载 LLM 配置失败: {exc}（损坏文件备份失败）", tag="模型")
 
     @staticmethod
     def _close_stale_clients(clients: List[LLMClient]) -> None:
@@ -290,9 +310,12 @@ class LLMManager(BaseEntity):
                 },
             }
             out = self._restore_env_refs(out)
-            self._config_path.write_text(
+            # 原子写盘：临时文件 + os.replace，进程中断不会留下半截 JSON
+            tmp_path = self._config_path.with_name(self._config_path.name + ".tmp")
+            tmp_path.write_text(
                 json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8",
             )
+            os.replace(tmp_path, self._config_path)
             info("LLM 配置已保存", tag="模型")
             return True
         except Exception as exc:
@@ -788,6 +811,31 @@ class LLMManager(BaseEntity):
     # 模型 CRUD
     # ------------------------------------------------------------------
 
+    def _sync_priority_delta(
+        self,
+        model_id: str,
+        old_types: set[str],
+        old_supports_vision: bool,
+        cfg: LLMClientConfig,
+    ) -> None:
+        """按模型能力变化增量同步类型/vision 优先级列表成员。"""
+        new_types = set(cfg.model_types)
+        for mt in old_types - new_types:
+            plist = self._type_priorities.get(mt, [])
+            if model_id in plist:
+                plist.remove(model_id)
+        for mt in new_types - old_types:
+            plist = self._type_priorities.setdefault(mt, [])
+            if model_id not in plist:
+                plist.append(model_id)
+        # 同步 vision 优先级列表（supports_vision 的 chat 模型供视觉任务使用）
+        vision_list = self._type_priorities.setdefault("vision", [])
+        if cfg.supports_vision and "chat" in cfg.model_types:
+            if model_id not in vision_list:
+                vision_list.append(model_id)
+        elif not cfg.supports_vision and old_supports_vision and model_id in vision_list:
+            vision_list.remove(model_id)
+
     def create_model(
         self,
         provider_id: str,
@@ -799,8 +847,11 @@ class LLMManager(BaseEntity):
         if prov is None:
             warning(f"供应商 '{provider_id}' 不存在", tag="模型")
             return None
-        if model_id in self._clients:
+        old = self._clients.get(model_id)
+        if old is not None:
             warning(f"模型 '{model_id}' 已存在，将被覆盖", tag="模型")
+        old_types = set(old.config.model_types) if old is not None else set()
+        old_supports_vision = old.config.supports_vision if old is not None else False
 
         kwargs.setdefault("media_protocol", prov.media_protocol)
         cfg = LLMClientConfig(
@@ -818,10 +869,7 @@ class LLMManager(BaseEntity):
         )
         client = LLMClient(config=cfg)
         self._clients[model_id] = client
-        for mt in cfg.model_types:
-            plist = self._type_priorities.setdefault(mt, [])
-            if model_id not in plist:
-                plist.append(model_id)
+        self._sync_priority_delta(model_id, old_types, old_supports_vision, cfg)
         if not self._default_chat and "chat" in cfg.model_types and cfg.supports_tools:
             self._default_chat = model_id
         if "chat" in cfg.model_types and not cfg.supports_tools:
@@ -897,9 +945,11 @@ class LLMManager(BaseEntity):
         for client in self._clients.values():
             if client.config.enabled:
                 return client
-        dummy = LLMClient(config=LLMClientConfig(name="_empty", base_url=""))
-        warning("无可用 LLM 客户端，调用时将返回明确配置错误", tag="模型")
-        return dummy
+        detail = f"（配置加载失败: {self._load_error}）" if self._load_error else ""
+        warning(f"无可用 LLM 客户端{detail}，调用时将返回明确配置错误", tag="模型")
+        if self._empty_client is None:
+            self._empty_client = LLMClient(config=LLMClientConfig(name="_empty", base_url=""))
+        return self._empty_client
 
     def set_default(self, name: str) -> bool:
         """将模型移到 chat 优先级列表首位，使其成为默认对话模型。"""
@@ -949,27 +999,7 @@ class LLMManager(BaseEntity):
             "provider_id", "base_url", "api_key", "api_type", "proxy_url",
         }
         client.update_config(**{k: v for k, v in kwargs.items() if k in allowed})
-        new_types = set(client.config.model_types)
-        new_supports_vision = client.config.supports_vision
-        removed = old_types - new_types
-        added = new_types - old_types
-        for mt in removed:
-            plist = self._type_priorities.get(mt, [])
-            if model_id in plist:
-                plist.remove(model_id)
-        for mt in added:
-            plist = self._type_priorities.setdefault(mt, [])
-            if model_id not in plist:
-                plist.append(model_id)
-        # 同步 vision 优先级列表
-        is_chat_model = "chat" in client.config.model_types
-        vision_list = self._type_priorities.setdefault("vision", [])
-        if new_supports_vision and is_chat_model:
-            if model_id not in vision_list:
-                vision_list.append(model_id)
-        elif not new_supports_vision and old_supports_vision:
-            if model_id in vision_list:
-                vision_list.remove(model_id)
+        self._sync_priority_delta(model_id, old_types, old_supports_vision, client.config)
         self.save_config()
         if not client.config.enabled:
             self._hot_switch_if_disabled(model_id)
@@ -1234,13 +1264,16 @@ class LLMManager(BaseEntity):
 # ------------------------------------------------------------------
 
 _manager: Optional[LLMManager] = None
+_manager_lock = threading.Lock()
 
 
 def get_llm_manager(config_path: str = _CONFIG_PATH) -> LLMManager:
     global _manager
     if _manager is None:
-        _manager = LLMManager(config_path=config_path)
-    elif str(_manager._config_path) != config_path:
+        with _manager_lock:
+            if _manager is None:
+                _manager = LLMManager(config_path=config_path)
+    if str(_manager._config_path) != config_path:
         warning(
             f"get_llm_manager 已初始化 (config_path={_manager._config_path})，"
             f"忽略本次请求的 config_path={config_path}",

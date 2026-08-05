@@ -806,8 +806,12 @@ class Mind:
             self,
             anything: Optional[Everything],
             models_summary: str,
-    ) -> Tuple[str, str, str, bool, bool, bool]:
-        """构建 stable 人设块/工具块/context 层三段提示（委托 recollection 模块）。"""
+    ) -> Tuple[str, str, str, bool, bool, bool, str]:
+        """构建 stable 人设块/工具块/context 层三段提示（委托 recollection 模块）。
+
+        返回追加 status_text：心跳维护的记忆状态区块（尾部动态区独立注入，
+        不入 context 层，避免计数更新击穿缓存前缀）。
+        """
         return await _recollection._build_layered_prompts(self, anything, models_summary)
 
     @staticmethod

@@ -300,6 +300,9 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
         threshold: data.threshold,
         window: data.window,
         percent: data.percent,
+        cache_read_input_tokens: data.cache_read_input_tokens,
+        cache_creation_input_tokens: data.cache_creation_input_tokens,
+        cache_hit_rate: data.cache_hit_rate,
       });
     } catch { /* ignore */ }
   });

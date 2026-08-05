@@ -82,16 +82,12 @@ def _tool_call_from_item(item: dict[str, Any]) -> Optional[ToolCall]:
     arguments = item.get("arguments", "")
     if not isinstance(arguments, str):
         arguments = json.dumps(arguments, ensure_ascii=False)
-    call_id = str(item.get("call_id") or item.get("id") or "")
+    call_id = str(item.get("call_id") or item.get("id") or "") or f"fc_{name}"
     return ToolCall(
-        id=call_id or f"fc_{name}",
+        id=call_id,
         name=name,
         arguments=arguments,
-        raw={
-            "id": call_id or f"fc_{name}",
-            "type": "function",
-            "function": {"name": name, "arguments": arguments},
-        },
+        raw=ToolCall.wire_raw(call_id, name, arguments),
     )
 
 
@@ -171,6 +167,33 @@ def normalize_stream_event(event: Any) -> ResponseStreamEvent:
     )
 
 
+def _convert_content_parts(content: list[Any], role: str) -> list[dict[str, Any]]:
+    """将 Chat Completions 格式 content block 转为 Responses 格式部件。
+
+    text → input_text（user）/ output_text（assistant）；
+    image_url → input_image（字符串形式的 url 直取，兼容扁平字符串）。
+    未识别的部件原样透传。
+    """
+    text_type = "output_text" if role == "assistant" else "input_text"
+    parts: list[dict[str, Any]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        part_type = part.get("type")
+        if part_type in ("text", "input_text", "output_text"):
+            text = part.get("text") or ""
+            if text:
+                parts.append({"type": text_type, "text": str(text)})
+        elif part_type == "image_url":
+            image = part.get("image_url")
+            url = image.get("url") if isinstance(image, dict) else image
+            if isinstance(url, str) and url:
+                parts.append({"type": "input_image", "image_url": url})
+        else:
+            parts.append(part)
+    return parts
+
+
 def messages_to_responses_input(
     messages: list[dict[str, Any]],
 ) -> tuple[str, Union[str, list[dict[str, Any]]]]:
@@ -218,9 +241,11 @@ def messages_to_responses_input(
                 input_items.append({
                     "type": "message",
                     "role": "assistant",
-                    "content": content if not isinstance(content, str) else [
-                        {"type": "output_text", "text": content},
-                    ],
+                    "content": (
+                        [{"type": "output_text", "text": content}]
+                        if isinstance(content, str)
+                        else _convert_content_parts(content, role)
+                    ),
                 })
             continue
 
@@ -234,16 +259,21 @@ def messages_to_responses_input(
                 input_items.append({
                     "type": "message",
                     "role": role,
-                    "content": content,
+                    "content": _convert_content_parts(content, role),
                 })
 
     instructions = "\n\n".join(part for part in instructions_parts if part)
-    if len(input_items) == 1 and isinstance(input_items[0].get("content"), str):
+    # 单条 user 文本可折叠为裸 string；assistant 折叠会被按 user 处理，role 语义改变
+    if (
+        len(input_items) == 1
+        and input_items[0].get("role") == "user"
+        and isinstance(input_items[0].get("content"), str)
+    ):
         return instructions, str(input_items[0]["content"])
     return instructions, input_items
 
 
-def convert_chat_tools(tools: Optional[list[dict[str, Any]]]) -> Optional[list[dict[str, Any]]]:
+def convert_chat_tools(tools: Optional[list[Any]]) -> Optional[list[dict[str, Any]]]:
     """将 Chat Completions tools 转为 Responses function tools。"""
     if not tools:
         return None
@@ -420,7 +450,7 @@ class ResponsesClient:
         stream = await litellm.aresponses(**kwargs)
         saw_terminal = False
         try:
-            async for event in stream:  # type: ignore[union-attr]
+            async for event in stream:
                 normalized = normalize_stream_event(event)
                 if normalized.is_terminal:
                     saw_terminal = True

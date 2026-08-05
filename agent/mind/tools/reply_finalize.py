@@ -16,6 +16,9 @@ from agent.mind.tools.vision import apply_vision
 from core.event_bus import EVENT_AFTER_REPLY, EVENT_BEFORE_REPLY, event_bus
 from core.log import log
 
+# 入库执行摘要的字符上限（保头保尾截断；摘要持久化在 DB，每次窗口加载都计费）
+_EXEC_SUMMARY_MAX_CHARS = 4000
+
 if TYPE_CHECKING:
     from agent.llm import ImageContent
     from agent.messages import Everything
@@ -178,6 +181,10 @@ def _build_execution_summary(
                         )
                     except Exception:
                         args_preview = args_raw
+                    # 参数值截断：长文本参数（update_skill content 等）全量进摘要
+                    # 会让入库历史膨胀（摘要持久化在 DB，每次窗口加载都计费）
+                    if len(args_preview) > 200:
+                        args_preview = args_preview[:200] + "…"
                     call_map[tc_id] = f"{name}({args_preview})"
 
         result_lines: List[str] = []
@@ -193,9 +200,32 @@ def _build_execution_summary(
                 result_lines.append(f"  #{tool_idx} {call_sig} → {result}")
 
         if result_lines:
+            # 总量截断：多轮长会话的工具摘要可能上万字符，保头保尾 + 中间省略
+            summary_body = "\n".join(result_lines)
+            if len(summary_body) > _EXEC_SUMMARY_MAX_CHARS:
+                head_lines: List[str] = []
+                used = 0
+                for line in result_lines:
+                    if used + len(line) > _EXEC_SUMMARY_MAX_CHARS // 2:
+                        break
+                    head_lines.append(line)
+                    used += len(line)
+                tail_lines: List[str] = []
+                used = 0
+                for line in reversed(result_lines):
+                    if used + len(line) > _EXEC_SUMMARY_MAX_CHARS // 2:
+                        break
+                    tail_lines.append(line)
+                    used += len(line)
+                omitted = len(result_lines) - len(head_lines) - len(tail_lines)
+                summary_body = (
+                    "\n".join(head_lines)
+                    + f"\n  …（中间 {omitted} 条已省略）…\n"
+                    + "\n".join(reversed(tail_lines))
+                )
             return (
                 f"[已执行操作摘要] 本轮共执行 {len(result_lines)} 次工具\n"
-                + "\n".join(result_lines)
+                + summary_body
             )
 
     if execution_steps:

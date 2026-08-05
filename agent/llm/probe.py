@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import os
-from typing import Any, Dict
-
-# 必须在 import litellm 之前设置，阻止启动时拉取远端模型价格表
-os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+from typing import Any, Dict, Optional
 
 import litellm
 
 from agent.llm.config import (
-    _DEFAULT_API_KEY,
     _LITELLM_PREFIX_MAP,
     API_TYPE_ANTHROPIC,
     API_TYPE_AZURE,
@@ -19,9 +14,10 @@ from agent.llm.config import (
     API_TYPE_OLLAMA,
     API_TYPE_OPENAI,
 )
+from agent.llm.proxy import _ProxyEnvLease, _ProxyHttpClient
+from core.sanitizer import sanitize_text
 
 
-@staticmethod
 def _make_test_png(size: int = 64) -> bytes:
     import struct
     import zlib as _zlib
@@ -41,25 +37,36 @@ def _make_test_png(size: int = 64) -> bytes:
             + _chunk(b"IEND", b"")
     )
 
-@staticmethod
+
 async def probe_capabilities(
         base_url: str,
         api_key: str,
         model: str,
         api_type: str = API_TYPE_OLLAMA,
         timeout: float = 120.0,
+        proxy_url: str = "",
 ) -> Dict[str, Any]:
-    """探测模型是否支持 tools 和 vision（通过 litellm）。"""
+    """探测模型是否支持 tools 和 vision（通过 litellm）。
+
+    配置代理时：非 anthropic 通道注入 http_client，anthropic 通道
+    （litellm 不接受客户端注入）经 _ProxyEnvLease 环境变量租约。
+    返回的详情文本一律经脱敏，避免异常中夹带的凭证泄露到 Web 层。
+    """
     prefix = _LITELLM_PREFIX_MAP.get(api_type, "openai")
     litellm_model = f"{prefix}/{model}"
     flat_url = (api_type == API_TYPE_OLLAMA)
 
     probe_kw: Dict[str, Any] = {
         "api_base": base_url,
-        "api_key": api_key or _DEFAULT_API_KEY,
+        "api_key": api_key,
         "timeout": timeout,
         "temperature": 0.7,
     }
+
+    proxy_client: Optional[_ProxyHttpClient] = None
+    if proxy_url and api_type != API_TYPE_ANTHROPIC:
+        proxy_client = _ProxyHttpClient(proxy_url)
+        probe_kw["http_client"] = proxy_client
 
     result: Dict[str, Any] = {
         "supports_tools": False,
@@ -68,11 +75,29 @@ async def probe_capabilities(
         "vision_detail": "",
     }
 
-    result.update(await _probe_tools(litellm_model, probe_kw))
-    result.update(await _probe_vision(litellm_model, probe_kw, flat_url, api_type))
+    lease = _ProxyEnvLease(proxy_url) if proxy_url and api_type == API_TYPE_ANTHROPIC else None
+    try:
+        if lease:
+            async with lease:
+                result.update(await _probe_tools(litellm_model, probe_kw))
+                result.update(await _probe_vision(litellm_model, probe_kw, flat_url, api_type))
+        else:
+            result.update(await _probe_tools(litellm_model, probe_kw))
+            result.update(await _probe_vision(litellm_model, probe_kw, flat_url, api_type))
+    finally:
+        if proxy_client is not None and not proxy_client.is_closed:
+            await proxy_client.aclose()
     return result
 
-@staticmethod
+
+def _error_detail(exc: Exception, *, prefix: str = "检测失败") -> str:
+    """生成脱敏的探测失败详情（litellm 异常文本可能夹带凭证）。"""
+    status = getattr(exc, "status_code", "")
+    if status:
+        return f"不支持 (HTTP {status})"
+    return f"{prefix}: {sanitize_text(str(exc))}"
+
+
 async def _probe_tools(
         litellm_model: str, probe_kw: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -103,9 +128,8 @@ async def _probe_tools(
             ),
         }
     except Exception as exc:
-        status = getattr(exc, "status_code", "")
-        detail = f"不支持 (HTTP {status})" if status else f"检测失败: {exc}"
-        return {"supports_tools": False, "tools_detail": detail}
+        return {"supports_tools": False, "tools_detail": _error_detail(exc)}
+
 
 _BASE64_ONLY_TYPES = frozenset({API_TYPE_OLLAMA})
 # 已知支持 URL 形式图片输入的官方端点类型（探测只实测 base64，URL 按供应商能力推定）
@@ -113,7 +137,7 @@ _URL_VISION_KNOWN_TYPES = frozenset({
     API_TYPE_OPENAI, API_TYPE_AZURE, API_TYPE_GEMINI, API_TYPE_ANTHROPIC,
 })
 
-@staticmethod
+
 async def _probe_vision(
         litellm_model: str, probe_kw: Dict[str, Any],
         flat_url: bool, api_type: str,
@@ -150,6 +174,4 @@ async def _probe_vision(
             "vision_format": fmt,
         }
     except Exception as exc:
-        status = getattr(exc, "status_code", "")
-        detail = f"不支持 (HTTP {status})" if status else f"不支持: {exc}"
-        return {"supports_vision": False, "vision_detail": detail}
+        return {"supports_vision": False, "vision_detail": _error_detail(exc, prefix="不支持")}

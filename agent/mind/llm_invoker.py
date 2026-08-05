@@ -143,11 +143,31 @@ async def _invoke_llm_unified(
             "prompt_tokens": result.usage.prompt_tokens,
             "completion_tokens": result.usage.completion_tokens,
             "total_tokens": result.usage.total_tokens,
+            "cache_read_input_tokens": result.usage.cache_read_input_tokens,
+            "cache_creation_input_tokens": result.usage.cache_creation_input_tokens,
+            "cache_hit_rate": round(result.usage.cache_hit_rate, 4),
         }
+        from agent.mind.cache_stats import cache_usage_tracker
+        cache_usage_tracker.record(result.usage)
+        log(
+            f"LLM 用量: prompt={result.usage.prompt_tokens} "
+            f"cache_read={result.usage.cache_read_input_tokens} "
+            f"cache_creation={result.usage.cache_creation_input_tokens}",
+            "DEBUG", tag="思维",
+        )
         llm_client = mind.llm if isinstance(mind.llm, LLMClient) else None
         if llm_client:
             # 复用模型名缓存的上下文窗口查询，避免每次 LLM 调用重复 get_model_info
             max_ctx = mind.get_model_context_length()
+    else:
+        # usage 缺失埋点：流式端点/网关未返回 usage 时缓存统计不可用
+        from agent.mind.cache_stats import cache_usage_tracker
+        cache_usage_tracker.record_missing()
+        log(
+            f"LLM 调用未返回 usage（{result.model or model_name}），"
+            "缓存命中统计不可用；若为流式调用，端点可能未支持 include_usage",
+            "DEBUG", tag="思维",
+        )
     usage_percent: Optional[float] = None
     if usage_data.get("total_tokens") and max_ctx > 0:
         usage_percent = round(usage_data["total_tokens"] / max_ctx * 100, 1)

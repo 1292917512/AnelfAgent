@@ -14,11 +14,14 @@ import { ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
 export const LAYER_COLORS: Record<string, string> = {
   stable: "border-l-violet-500",
   context: "border-l-blue-500",
+  summary: "border-l-indigo-500",
+  conversation: "border-l-cyan-500",
+  profile: "border-l-fuchsia-500",
   volatile: "border-l-amber-500",
+  memory: "border-l-emerald-500",
+  provider: "border-l-sky-500",
   overflow: "border-l-red-500",
   security: "border-l-rose-500",
-  memory: "border-l-emerald-500",
-  conversation: "border-l-cyan-500",
   tool_chain: "border-l-orange-500",
   exec_context: "border-l-teal-500",
 };
@@ -26,11 +29,14 @@ export const LAYER_COLORS: Record<string, string> = {
 export const LAYER_BAR_COLORS: Record<string, string> = {
   stable: "bg-violet-500",
   context: "bg-blue-500",
+  summary: "bg-indigo-500",
+  conversation: "bg-cyan-500",
+  profile: "bg-fuchsia-500",
   volatile: "bg-amber-500",
+  memory: "bg-emerald-500",
+  provider: "bg-sky-500",
   overflow: "bg-red-500",
   security: "bg-rose-500",
-  memory: "bg-emerald-500",
-  conversation: "bg-cyan-500",
   tool_chain: "bg-orange-500",
   exec_context: "bg-teal-500",
 };
@@ -125,6 +131,7 @@ interface SnapshotSectionBlockProps {
 }
 
 export function SnapshotSectionBlock({ section, totalTokens, defaultOpen = false }: SnapshotSectionBlockProps) {
+  const { t } = useTranslation("context");
   const [open, setOpen] = useState(defaultOpen);
   const colorClass = LAYER_COLORS[section.layer] || "border-l-muted";
   const showTokens = typeof totalTokens === "number" && totalTokens > 0;
@@ -140,6 +147,16 @@ export function SnapshotSectionBlock({ section, totalTokens, defaultOpen = false
         {open ? <ChevronDown size={12} className="text-muted" /> : <ChevronRight size={12} className="text-muted" />}
         <span className="text-xs font-medium text-foreground">{section.label}</span>
         <span className="text-[10px] text-muted font-mono">×{section.count}</span>
+        {section.changed === true && (
+          <span className="px-1 py-px rounded text-[9px] font-medium bg-amber-500/15 text-amber-500">
+            {t("sections.changed")}
+          </span>
+        )}
+        {section.changed === false && (
+          <span className="px-1 py-px rounded text-[9px] font-medium bg-emerald-500/15 text-emerald-500">
+            {t("sections.unchanged")}
+          </span>
+        )}
         {showTokens && (
           <>
             <span className="flex-1" />

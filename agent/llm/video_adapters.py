@@ -11,10 +11,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from agent.llm.adapter_base import AdapterRequest
+from agent.llm.adapter_base import AdapterRegistry, AdapterRequest, check_base_resp, host_root
 
 
 @dataclass(slots=True)
@@ -110,12 +109,6 @@ class VideoGenAdapter(ABC):
         raise NotImplementedError(f"视频协议 '{self.name}' 不支持取消/删除任务")
 
 
-def _host_root(base_url: str) -> str:
-    """取 base_url 的 scheme://netloc 根（接口挂在网关机根路径的协议使用）。"""
-    parsed = urlparse(base_url)
-    return f"{parsed.scheme}://{parsed.netloc}"
-
-
 class OpenAIVideoAdapter(VideoGenAdapter):
     """OpenAI/SiliconFlow 风格：POST {base_url}/videos/generations + GET 轮询。"""
 
@@ -171,13 +164,6 @@ class MiniMaxV1Adapter(VideoGenAdapter):
 
     name = "minimax"
 
-    @staticmethod
-    def _check_base_resp(result: Dict[str, Any]) -> None:
-        base_resp = result.get("base_resp") or {}
-        code = base_resp.get("status_code", 0)
-        if code != 0:
-            raise RuntimeError(f"MiniMax API 错误 ({code}): {base_resp.get('status_msg', '')}")
-
     def build_create_request(self, base_url: str, params: VideoGenParams) -> VideoGenRequest:
         if params.last_frame_image and not self.supports_first_last_frame:
             raise RuntimeError(
@@ -205,15 +191,15 @@ class MiniMaxV1Adapter(VideoGenAdapter):
             payload["resolution"] = params.resolution
         if params.aigc_watermark is not None:
             payload["aigc_watermark"] = params.aigc_watermark
-        return VideoGenRequest(url=f"{_host_root(base_url)}/v1/video_generation", payload=payload)
+        return VideoGenRequest(url=f"{host_root(base_url)}/v1/video_generation", payload=payload)
 
     def extract_task_id(self, result: Dict[str, Any]) -> str:
-        self._check_base_resp(result)
+        check_base_resp(result)
         return result.get("task_id", "")
 
     def build_query_request(self, base_url: str, task_id: str) -> VideoGenRequest:
         return VideoGenRequest(
-            url=f"{_host_root(base_url)}/v1/query/video_generation",
+            url=f"{host_root(base_url)}/v1/query/video_generation",
             method="GET",
             params={"task_id": task_id},
         )
@@ -221,7 +207,7 @@ class MiniMaxV1Adapter(VideoGenAdapter):
     def parse_query_result(self, result: Dict[str, Any]) -> VideoTaskState:
         status = result.get("status", "")
         if status == "Success":
-            self._check_base_resp(result)
+            check_base_resp(result)
             return VideoTaskState(
                 status="succeeded",
                 file_id=str(result.get("file_id", "")),
@@ -235,18 +221,18 @@ class MiniMaxV1Adapter(VideoGenAdapter):
                 error=base_resp.get("status_msg", "") or f"视频生成失败: {result}",
                 raw=result,
             )
-        self._check_base_resp(result)
+        check_base_resp(result)
         return VideoTaskState(status="processing", raw=result)
 
     def build_retrieve_request(self, base_url: str, file_id: str) -> VideoGenRequest:
         return VideoGenRequest(
-            url=f"{_host_root(base_url)}/v1/files/retrieve",
+            url=f"{host_root(base_url)}/v1/files/retrieve",
             method="GET",
             params={"file_id": file_id},
         )
 
     def extract_download_url(self, result: Dict[str, Any]) -> str:
-        self._check_base_resp(result)
+        check_base_resp(result)
         file_obj = result.get("file") or {}
         return file_obj.get("download_url", "")
 
@@ -309,7 +295,7 @@ class MiniMaxV2Adapter(VideoGenAdapter):
         payload["ratio"] = "adaptive" if has_frames else (params.ratio or "16:9")
         if params.aigc_watermark is not None:
             payload["aigc_watermark"] = params.aigc_watermark
-        return VideoGenRequest(url=f"{_host_root(base_url)}/v2/video_generation", payload=payload)
+        return VideoGenRequest(url=f"{host_root(base_url)}/v2/video_generation", payload=payload)
 
     def extract_task_id(self, result: Dict[str, Any]) -> str:
         self._check_error(result)
@@ -317,7 +303,7 @@ class MiniMaxV2Adapter(VideoGenAdapter):
 
     def build_query_request(self, base_url: str, task_id: str) -> VideoGenRequest:
         return VideoGenRequest(
-            url=f"{_host_root(base_url)}/v2/query/video_generation/{task_id}",
+            url=f"{host_root(base_url)}/v2/query/video_generation/{task_id}",
             method="GET",
         )
 
@@ -351,7 +337,7 @@ class MiniMaxV2Adapter(VideoGenAdapter):
         if status:
             params["filter.status"] = status
         return VideoGenRequest(
-            url=f"{_host_root(base_url)}/v2/query/video_generation",
+            url=f"{host_root(base_url)}/v2/query/video_generation",
             method="GET",
             params=params,
         )
@@ -362,7 +348,7 @@ class MiniMaxV2Adapter(VideoGenAdapter):
 
     def build_delete_request(self, base_url: str, task_id: str) -> VideoGenRequest:
         return VideoGenRequest(
-            url=f"{_host_root(base_url)}/v2/video_generation/{task_id}",
+            url=f"{host_root(base_url)}/v2/video_generation/{task_id}",
             method="DELETE",
         )
 
@@ -375,28 +361,72 @@ class MiniMaxV2Adapter(VideoGenAdapter):
         }
 
 
-_ADAPTERS: Dict[str, VideoGenAdapter] = {}
-_HOST_RULES: List[Tuple[str, str]] = []
-_default_adapter: str = ""
+class DashScopeVideoAdapter(VideoGenAdapter):
+    """阿里云 DashScope 异步视频生成（HappyHorse / wan 系列）。
 
-
-def register_video_adapter(
-    adapter: VideoGenAdapter,
-    *,
-    host_keywords: Tuple[str, ...] = (),
-    default: bool = False,
-) -> None:
-    """注册视频协议适配器。
-
-    host_keywords: base_url 主机名包含任一关键字时自动匹配该适配器；
-    default: 未命中任何规则时的兜底适配器。
+    提交：POST {host_root}/api/v1/services/aigc/video-generation/video-synthesis
+    （必须携带 X-DashScope-Async: enable）；轮询：GET {host_root}/api/v1/tasks/{task_id}。
+    首帧与参考图统一经 input.media 传入（公网 URL 或 data:base64）：
+      首帧   → {"type": "first_frame", "url": ...}（i2v，比例自动跟随图片，不下发 ratio）
+      参考图 → {"type": "reference_image", "url": ...}（r2v，1~9 张）
+    接口挂在网关机根路径，与 base_url 中的聊天协议路径无关，始终从 host 根拼接。
     """
-    global _default_adapter
-    _ADAPTERS[adapter.name] = adapter
-    for keyword in host_keywords:
-        _HOST_RULES.append((keyword, adapter.name))
-    if default or not _default_adapter:
-        _default_adapter = adapter.name
+
+    name = "dashscope"
+    _CREATE_PATH = "/api/v1/services/aigc/video-generation/video-synthesis"
+
+    def build_create_request(self, base_url: str, params: VideoGenParams) -> VideoGenRequest:
+        input_: Dict[str, Any] = {"prompt": params.prompt}
+        media: List[Dict[str, Any]] = []
+        if params.first_frame_image:
+            media.append({"type": "first_frame", "url": params.first_frame_image})
+        for image in params.subject_reference:
+            media.append({"type": "reference_image", "url": image})
+        if media:
+            input_["media"] = media
+
+        parameters: Dict[str, Any] = {}
+        if params.resolution:
+            parameters["resolution"] = params.resolution
+        if params.duration is not None:
+            parameters["duration"] = params.duration
+        # i2v 输出比例恒跟随首帧图片，协议无 ratio 参数
+        if params.ratio and not params.first_frame_image:
+            parameters["ratio"] = params.ratio
+
+        payload: Dict[str, Any] = {"model": params.model, "input": input_}
+        if parameters:
+            payload["parameters"] = parameters
+        return VideoGenRequest(
+            url=f"{host_root(base_url)}{self._CREATE_PATH}",
+            payload=payload,
+            headers={"X-DashScope-Async": "enable"},
+        )
+
+    def extract_task_id(self, result: Dict[str, Any]) -> str:
+        return (result.get("output") or {}).get("task_id", "")
+
+    def build_query_request(self, base_url: str, task_id: str) -> VideoGenRequest:
+        return VideoGenRequest(
+            url=f"{host_root(base_url)}/api/v1/tasks/{task_id}",
+            method="GET",
+        )
+
+    def parse_query_result(self, result: Dict[str, Any]) -> VideoTaskState:
+        output = result.get("output") or {}
+        status = output.get("task_status", "")
+        if status == "SUCCEEDED":
+            video_url = output.get("video_url", "")
+            if not video_url:
+                return VideoTaskState(status="failed", error=f"任务完成但未返回视频地址: {result}", raw=result)
+            return VideoTaskState(status="succeeded", video_url=video_url, raw=result)
+        if status in ("FAILED", "CANCELED", "UNKNOWN"):
+            error = output.get("message", "") or f"视频任务 {status}"
+            return VideoTaskState(status="failed", error=error, raw=result)
+        return VideoTaskState(status="processing", raw=result)
+
+
+_REGISTRY: AdapterRegistry[VideoGenAdapter] = AdapterRegistry("视频")
 
 
 def _resolve_minimax_version(model: str) -> str:
@@ -404,24 +434,30 @@ def _resolve_minimax_version(model: str) -> str:
     return "minimax_v2" if model.strip().lower() == "minimax-h3" else "minimax"
 
 
+def register_video_adapter(
+    adapter: VideoGenAdapter,
+    *,
+    host_keywords: Tuple[str, ...] = (),
+    default: bool = False,
+    model_dispatch: Optional[Callable[[str], str]] = None,
+) -> None:
+    """注册视频协议适配器（语义见 AdapterRegistry.register）。"""
+    _REGISTRY.register(
+        adapter, host_keywords=host_keywords, default=default,
+        model_dispatch=model_dispatch,
+    )
+
+
 def resolve_video_adapter(base_url: str, protocol: str = "", model: str = "") -> VideoGenAdapter:
-    """解析视频协议适配器：显式 protocol 优先，其次 host 规则，最后兜底。"""
-    if protocol:
-        if protocol == "minimax":
-            return _ADAPTERS[_resolve_minimax_version(model)]
-        adapter = _ADAPTERS.get(protocol)
-        if adapter is None:
-            raise ValueError(f"未知的视频协议: {protocol}（可用: {sorted(_ADAPTERS)}）")
-        return adapter
-    host = urlparse(base_url).netloc
-    for keyword, name in _HOST_RULES:
-        if keyword in host:
-            if name == "minimax":
-                return _ADAPTERS[_resolve_minimax_version(model)]
-            return _ADAPTERS[name]
-    return _ADAPTERS[_default_adapter]
+    """解析视频协议适配器（语义见 AdapterRegistry.resolve，支持按模型分流）。"""
+    return _REGISTRY.resolve(base_url, protocol, model)
 
 
 register_video_adapter(OpenAIVideoAdapter(), default=True)
-register_video_adapter(MiniMaxV1Adapter(), host_keywords=("minimaxi.com", "minimax.io"))
+register_video_adapter(
+    MiniMaxV1Adapter(),
+    host_keywords=("minimaxi.com", "minimax.io"),
+    model_dispatch=_resolve_minimax_version,
+)
 register_video_adapter(MiniMaxV2Adapter())
+register_video_adapter(DashScopeVideoAdapter(), host_keywords=("aliyuncs.com",))

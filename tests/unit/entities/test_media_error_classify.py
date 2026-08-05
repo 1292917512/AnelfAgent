@@ -45,3 +45,12 @@ class TestClassifyMediaErrors:
         assert cause == ErrorCause.NETWORK
         assert retryable
         assert hint
+
+    def test_expired_link(self) -> None:
+        cause, retryable, hint = _classify_media_errors({
+            "models": "无法下载图片（链接可能已过期）: https://cdn.example.com/img?token=...",
+            "minimax": "图片下载失败（HTTP 400），链接已过期或失效",
+        })
+        assert cause == ErrorCause.NOT_FOUND
+        assert not retryable
+        assert "过期" in hint

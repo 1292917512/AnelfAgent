@@ -1,4 +1,4 @@
-"""LLM 错误分类器与退避工具（agent.llm.error_classifier / retry）单元测试。"""
+"""LLM 错误分类器与退避工具（agent.llm.resilience / retry）单元测试。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import asyncio
 
 import litellm
 
-from agent.llm.error_classifier import ErrorCategory, classify_llm_error
+from agent.llm.resilience import ErrorCategory, classify_llm_error
 from agent.llm.retry import jittered_backoff
 
 

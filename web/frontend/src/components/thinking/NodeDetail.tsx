@@ -44,15 +44,42 @@ export function NodeDetail({ node, onClose }: Props) {
         </div>
 
         {node.type === "llm_call" && (() => {
-          const usage = node.data.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+          const usage = node.data.usage as {
+            prompt_tokens?: number;
+            completion_tokens?: number;
+            total_tokens?: number;
+            cache_read_input_tokens?: number;
+            cache_creation_input_tokens?: number;
+            cache_hit_rate?: number;
+          } | undefined;
           const pct = node.data.usage_percent as number | undefined;
           const maxTokens = node.data.max_tokens as number | undefined;
           if (!usage?.total_tokens) return null;
+          const hasCache = (usage.cache_read_input_tokens ?? 0) > 0 || (usage.cache_creation_input_tokens ?? 0) > 0;
           return (
             <div className="space-y-1.5">
               <Row label={t("detailLabels.promptTokens", { defaultValue: "Prompt Tokens" })} value={String(usage.prompt_tokens ?? 0)} mono />
               <Row label={t("detailLabels.completionTokens", { defaultValue: "Completion Tokens" })} value={String(usage.completion_tokens ?? 0)} mono />
               <Row label={t("detailLabels.totalTokens", { defaultValue: "Total Tokens" })} value={String(usage.total_tokens)} mono />
+              {hasCache && (
+                <>
+                  <Row
+                    label={t("detailLabels.cacheRead", { defaultValue: "Cache Read" })}
+                    value={String(usage.cache_read_input_tokens ?? 0)}
+                    mono
+                  />
+                  <Row
+                    label={t("detailLabels.cacheCreation", { defaultValue: "Cache Write" })}
+                    value={String(usage.cache_creation_input_tokens ?? 0)}
+                    mono
+                  />
+                  <Row
+                    label={t("detailLabels.cacheHitRate", { defaultValue: "Cache Hit" })}
+                    value={`${Math.round((usage.cache_hit_rate ?? 0) * 100)}%`}
+                    mono
+                  />
+                </>
+              )}
               {maxTokens != null && maxTokens > 0 && (
                 <Row label={t("detailLabels.maxTokens", { defaultValue: "Max Tokens" })} value={String(maxTokens)} mono />
               )}

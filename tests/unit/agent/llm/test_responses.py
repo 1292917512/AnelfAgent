@@ -227,3 +227,100 @@ async def test_chat_bridges_to_responses_when_configured() -> None:
     client.responses_create.assert_awaited_once()
     kwargs: dict[str, Any] = client.responses_create.await_args.kwargs
     assert kwargs["input"] == "hi"
+
+
+def test_messages_multimodal_parts_converted() -> None:
+    """chat 格式 content block 应转换为 Responses 部件格式。"""
+    _, payload = messages_to_responses_input([
+        {"role": "user", "content": [
+            {"type": "text", "text": "看图"},
+            {"type": "image_url", "image_url": {"url": "https://x/a.png"}},
+        ]},
+        {"role": "assistant", "content": [{"type": "text", "text": "是一只猫"}]},
+    ])
+    assert isinstance(payload, list)
+    assert payload[0]["content"] == [
+        {"type": "input_text", "text": "看图"},
+        {"type": "input_image", "image_url": "https://x/a.png"},
+    ]
+    assert payload[1]["content"] == [{"type": "output_text", "text": "是一只猫"}]
+
+
+def test_messages_single_assistant_not_folded() -> None:
+    """单条 assistant 消息折叠为裸 string 会丢失 role（被按 user 处理），不应折叠。"""
+    _, payload = messages_to_responses_input([
+        {"role": "assistant", "content": "hi"},
+    ])
+    assert isinstance(payload, list)
+    assert payload[0]["role"] == "assistant"
+
+
+def test_messages_single_user_still_folded() -> None:
+    _, payload = messages_to_responses_input([{"role": "user", "content": "hi"}])
+    assert payload == "hi"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_via_responses() -> None:
+    """chat_protocol=responses 时 chat_stream 应走 Responses 事件流。"""
+    from agent.llm.responses.types import ResponseStreamEvent
+
+    client = LLMClient(LLMClientConfig(
+        model="gpt-4o",
+        api_type="openai",
+        base_url="https://api.openai.com/v1",
+        chat_protocol="responses",
+    ))
+
+    async def fake_stream(**kwargs: Any) -> Any:
+        yield ResponseStreamEvent(type="response.output_text.delta", data={"delta": "你"})
+        yield ResponseStreamEvent(type="response.output_text.delta", data={"delta": "好"})
+        yield ResponseStreamEvent(
+            type="response.reasoning_summary_text.delta", data={"delta": "想了一下"},
+        )
+        yield ResponseStreamEvent(type="response.completed", data={
+            "response": {
+                "id": "resp_1",
+                "status": "completed",
+                "model": "gpt-4o",
+                "output": [{
+                    "type": "function_call",
+                    "name": "lookup",
+                    "call_id": "c1",
+                    "arguments": "{}",
+                }],
+                "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+            },
+        })
+
+    client.responses_stream = fake_stream  # type: ignore[method-assign]
+    deltas = [d async for d in client.chat_stream([{"role": "user", "content": "hi"}])]
+    assert [d.content for d in deltas[:2]] == ["你", "好"]
+    assert deltas[2].reasoning_content == "想了一下"
+    final = deltas[-1]
+    assert final.finish_reason == "tool_calls"
+    assert final.tool_calls and final.tool_calls[0].name == "lookup"
+    assert final.usage is not None and final.usage.total_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_via_responses_failed_event() -> None:
+    """response.failed 终态事件应抛错而非静默结束。"""
+    from agent.llm.responses.types import ResponseStreamEvent
+
+    client = LLMClient(LLMClientConfig(
+        model="gpt-4o",
+        api_type="openai",
+        base_url="https://api.openai.com/v1",
+        chat_protocol="responses",
+    ))
+
+    async def fake_stream(**kwargs: Any) -> Any:
+        yield ResponseStreamEvent(type="response.failed", data={
+            "response": {"id": "r", "status": "failed", "error": {"message": "boom"}},
+        })
+
+    client.responses_stream = fake_stream  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="boom"):
+        async for _ in client.chat_stream([{"role": "user", "content": "hi"}]):
+            pass

@@ -124,11 +124,12 @@ class ModelsProvider(MediaProvider):
     async def _run_vision(self, image_path: str, prompt: str) -> Dict[str, Any]:
         from entities._sdk import (
             download_image_to_base64,
-            get_image_content_class,
             get_model_type_enum,
+            is_video_path,
             load_image_from_path,
         )
-        ImageContent = get_image_content_class()
+        if is_video_path(image_path):
+            return await self._run_video(image_path, prompt)
         ModelType = get_model_type_enum()
 
         all_vision = _mgr().get_all_by_type(ModelType.VISION)
@@ -150,15 +151,10 @@ class ModelsProvider(MediaProvider):
             return None
 
         if image_path.startswith(("http://", "https://")):
-            url_candidates = [c for c in all_vision if c.config.supports_url_vision]
-            if url_candidates:
-                url_img = ImageContent(data=image_path, is_url=True)
-                result = await _try_candidates(url_candidates, url_img)
-                if result is not None:
-                    return result
+            # URL 一律下载优先：端点直抓远程链接不稳定且超时不可控
             b64_img = await download_image_to_base64(image_path)
             if not b64_img:
-                raise RuntimeError(f"无法下载图片: {image_path}")
+                raise RuntimeError(f"无法下载图片（链接可能已过期）: {image_path[:100]}")
             candidates = [c for c in all_vision if c.config.supports_base64_vision] or all_vision
             result = await _try_candidates(candidates, b64_img)
             if result is not None:
@@ -167,6 +163,48 @@ class ModelsProvider(MediaProvider):
             img = load_image_from_path(image_path)
             candidates = [c for c in all_vision if c.config.supports_base64_vision] or all_vision
             result = await _try_candidates(candidates, img)
+            if result is not None:
+                return result
+        raise RuntimeError(f"所有视觉模型均调用失败: {last_err}")
+
+    async def _run_video(self, video_path: str, prompt: str) -> Dict[str, Any]:
+        """视频理解：按视觉模型优先级链逐个尝试 describe_video。"""
+        from entities._sdk import (
+            download_video_to_base64,
+            get_model_type_enum,
+            load_video_from_path,
+        )
+        ModelType = get_model_type_enum()
+
+        all_vision = _mgr().get_all_by_type(ModelType.VISION)
+        if not all_vision:
+            raise ProviderUnavailable("未配置视觉模型")
+
+        last_err = ""
+
+        async def _try_candidates(candidates: List[Any], vid: Any) -> Optional[Dict[str, Any]]:
+            nonlocal last_err
+            for vc in candidates:
+                try:
+                    description = await vc.describe_video(vid, prompt=prompt)
+                    return {"description": description, "model": vc.config.name}
+                except Exception as exc:
+                    last_err = str(exc)
+                    log(f"视觉模型 {vc.config.name} 视频识别失败，尝试下一个: {last_err}", "WARNING", tag="媒体")
+                    continue
+            return None
+
+        if video_path.startswith(("http://", "https://")):
+            # URL 一律下载优先：端点直抓远程链接不稳定且超时不可控
+            b64_vid = await download_video_to_base64(video_path)
+            if not b64_vid:
+                raise RuntimeError(f"无法下载视频（链接可能已过期）: {video_path[:100]}")
+            result = await _try_candidates(all_vision, b64_vid)
+            if result is not None:
+                return result
+        else:
+            vid = load_video_from_path(video_path)
+            result = await _try_candidates(all_vision, vid)
             if result is not None:
                 return result
         raise RuntimeError(f"所有视觉模型均调用失败: {last_err}")

@@ -13,6 +13,7 @@ from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.notes import (
     build_dynamic_notes,
     build_file_index_block,
+    build_memory_status_block,
     build_notes_empty_hint,
     build_static_guide,
     get_memory_dir,
@@ -54,24 +55,24 @@ async def get_recollection(
     if query:
         query_vec = await mind.embedder.embed_query(query)
 
-    async def _recall_memory() -> List[Dict]:
+    async def _recall_memory() -> Tuple[List[Dict], List[Dict]]:
         if not mind.retriever:
-            return []
+            return [], []
         scope_source = conversation_list[-30:] if len(conversation_list) > 30 else conversation_list
         related_scopes = mind._extract_related_scopes(scope_source, entity_scope)
         if anything:
             for s in mind._extract_scopes_from_anything(anything, entity_scope):
                 if s not in related_scopes:
                     related_scopes.insert(0, s)
-        msgs = await mind.retriever.recall(
+        profile_msgs, recall_msgs = await mind.retriever.recall_split(
             tail, entity_scope=entity_scope, related_scopes=related_scopes,
             query_vec=query_vec,
         )
-        log(f"语义召回: {len(msgs)} 条", tag="思维")
-        return msgs
+        log(f"语义召回: {len(recall_msgs)} 条, 画像: {len(profile_msgs)} 条", tag="思维")
+        return profile_msgs, recall_msgs
 
     # 三条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行
-    memory_msgs, (cross_recall_msgs, recalled_scopes), skill_msgs = await asyncio.gather(
+    (profile_msgs, memory_msgs), (cross_recall_msgs, recalled_scopes), skill_msgs = await asyncio.gather(
         _recall_memory(),
         mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec),
         mind._match_skills(tail, query_vec=query_vec),
@@ -89,13 +90,24 @@ async def get_recollection(
     memory_msgs.extend(skill_msgs)
 
     # memory 层预算截断：防止低相关召回/画像/技能过度占用上下文
-    memory_msgs = mind._apply_memory_budget(memory_msgs)
+    # （画像在前优先保留，预算从整体尾部截断）
+    combined = mind._apply_memory_budget(profile_msgs + memory_msgs)
+    profile_msgs = combined[:len(profile_msgs)]
+    memory_msgs = combined[len(profile_msgs):]
+
+    # 对话摘要窗口：固定摘要块（折叠周期内字节稳定，作历史前缀缓存锚点）
+    summary_row: Optional[Dict] = None
+    if anything:
+        try:
+            summary_row = await mind.conversation_data.get_conversation_summary(anything)
+        except Exception as exc:
+            log(f"对话摘要获取失败: {exc}", "DEBUG", tag="思维")
 
     # Prompt 分层构建（参考 hermes 三层架构）：
     # stable 人设块（人设+环境+静态指南）长期冻结，stable 工具块（目录+规则）随工具集重建，
     # context 层（便签）低频重建，volatile 层（语义召回等）每轮构建并置于其后，保证前缀缓存命中。
     models_summary = mind._get_models_summary()
-    persona_text, tools_text, context_text, persona_hit, tools_hit, context_hit = (
+    persona_text, tools_text, context_text, persona_hit, tools_hit, context_hit, status_text = (
         await mind._build_layered_prompts(anything, models_summary)
     )
 
@@ -117,6 +129,9 @@ async def get_recollection(
         anthropic_breakpoint=mind._is_anthropic_model(),
         prefetched_conversation=conversation_list,
         scope=entity_scope,
+        profile_msgs=profile_msgs,
+        summary_row=summary_row,
+        status_text=status_text,
     )
 
 
@@ -143,8 +158,11 @@ async def _match_skills(
             return []
         skill_lines = ["[相关技能] 以下经验可能适用于当前任务，可参考复用："]
         for skill, _score in matched_skills:
+            skill_body = skill.content[:800]
+            if len(skill.content) > 800:
+                skill_body += "\n（内容较长已截断，get_skill 可读全文）"
             skill_lines.append(
-                f"## {skill.name} — {skill.description}\n{skill.content[:800]}"
+                f"## {skill.name} — {skill.description}\n{skill_body}"
             )
             mind.skill_store.record_use(skill.name)
         log(f"技能注入: {', '.join(s.name for s, _ in matched_skills)}", "DEBUG", tag="技能")
@@ -172,7 +190,7 @@ async def _build_layered_prompts(
     文件型层通过 FileLayerCache 做 mtime O(1) 快检，未变时跳过 I/O。
 
     Returns:
-        (persona_text, tools_text, context_text, persona_hit, tools_hit, context_hit)
+        (persona_text, tools_text, context_text, persona_hit, tools_hit, context_hit, status_text)
     """
     from agent.mind.prompt_layers import (
         LAYER_CONTEXT,
@@ -212,6 +230,8 @@ async def _build_layered_prompts(
     # --- context 层：动态便签 + 文件索引 ---
     dynamic_notes, _ = mind._file_cache.get_or_load(notes_path, build_dynamic_notes)
     file_index, _ = mind._file_cache.get_or_load(get_memory_dir(), build_file_index_block)
+    # 记忆状态区块（心跳维护，周期性变化）不入 context 层，尾部动态区独立注入
+    status_text, _ = mind._file_cache.get_or_load(notes_path, build_memory_status_block)
     context_parts = [p for p in (dynamic_notes, file_index) if p]
     if not context_parts:
         context_parts = [build_notes_empty_hint()]
@@ -220,7 +240,7 @@ async def _build_layered_prompts(
         scope, LAYER_CONTEXT, context_hash,
         lambda: "[个人笔记/便签记忆]\n" + "\n\n".join(context_parts),
     )
-    return persona_text, tools_text, context_text, persona_hit, tools_hit, context_hit
+    return persona_text, tools_text, context_text, persona_hit, tools_hit, context_hit, status_text
 
 
 def _apply_memory_budget(msgs: List[Dict]) -> List[Dict]:

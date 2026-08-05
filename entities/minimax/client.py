@@ -596,8 +596,13 @@ async def image_to_data_url(image_source: str) -> str:
 
     if src.startswith(("http://", "https://")):
         async with httpx.AsyncClient(timeout=60.0) as hc:
-            resp = await hc.get(src, follow_redirects=True)
-            resp.raise_for_status()
+            try:
+                resp = await hc.get(src, follow_redirects=True)
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code
+                reason = "链接已过期或失效" if 400 <= code < 500 else "服务异常"
+                raise ValueError(f"图片下载失败（HTTP {code}），{reason}") from e
             if len(resp.content) > _IMAGE_MAX_BYTES:
                 raise ValueError("图片超过 10MB 上限")
             mime = resp.headers.get("content-type", "").split(";")[0].strip()

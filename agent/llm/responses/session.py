@@ -138,8 +138,14 @@ class ResponseSessionStore:
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):
-                log("cancel 异常已忽略", "DEBUG")
+            except asyncio.CancelledError:
+                # 任务响应了我们的取消属预期；若任务并未被取消，
+                # 说明取消来自当前协程自身，必须向上传播
+                if not task.cancelled():
+                    raise
+                log("任务已取消", "DEBUG")
+            except Exception:
+                log("cancel 等待任务结束异常已忽略", "DEBUG")
         return session
 
     async def delete(self, response_id: str) -> bool:

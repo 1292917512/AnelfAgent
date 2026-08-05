@@ -12,9 +12,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
 
-from agent.llm.adapter_base import AdapterRequest, host_root
+from agent.llm.adapter_base import AdapterRegistry, AdapterRequest, check_base_resp, host_root
 
 
 @dataclass(slots=True)
@@ -90,6 +89,17 @@ class SpeechAdapter(ABC):
     # 音色管理（可选）
     # ------------------------------------------------------------------
 
+    def build_upload_request(self, base_url: str, *, purpose: str) -> AdapterRequest:
+        """构建文件上传请求（音色复刻参考音频，multipart 发送）。
+
+        url 为上传端点；params 作为 multipart 表单字段；协议未实现时默认不支持。
+        """
+        raise NotImplementedError(f"语音协议 '{self.name}' 不支持文件上传")
+
+    def parse_upload_file_id(self, result: Dict[str, Any]) -> int:
+        """从文件上传响应提取 file_id。"""
+        raise NotImplementedError(f"语音协议 '{self.name}' 不支持文件上传")
+
     def build_voice_clone_request(
         self, base_url: str, *, file_id: int, voice_id: str,
         preview_text: str = "", model: str = "",
@@ -149,7 +159,9 @@ class OpenAISpeechAdapter(SpeechAdapter):
             payload["references"] = params.references
         else:
             voice = params.voice or (f"{params.model}:alex" if params.model else "alex")
-            payload["voice"] = voice if ":" in voice else f"{params.model}:{voice}"
+            if params.model and ":" not in voice:
+                voice = f"{params.model}:{voice}"
+            payload["voice"] = voice
         return AdapterRequest(url=f"{base_url}/audio/speech", payload=payload)
 
 
@@ -163,13 +175,6 @@ class MiniMaxSpeechAdapter(SpeechAdapter):
     supports_async = True
     supports_voice_mgmt = True
     _DEFAULT_VOICE = "male-qn-qingse"
-
-    @staticmethod
-    def _check_base_resp(result: Dict[str, Any]) -> None:
-        base_resp = result.get("base_resp") or {}
-        code = base_resp.get("status_code", 0)
-        if code != 0:
-            raise RuntimeError(f"MiniMax API 错误 ({code}): {base_resp.get('status_msg', '')}")
 
     @staticmethod
     def _voice_setting(params: SpeechParams) -> Dict[str, Any]:
@@ -198,7 +203,7 @@ class MiniMaxSpeechAdapter(SpeechAdapter):
         return AdapterRequest(url=f"{host_root(base_url)}/v1/t2a_v2", payload=payload)
 
     def extract_audio(self, result: Dict[str, Any]) -> bytes:
-        self._check_base_resp(result)
+        check_base_resp(result)
         audio_hex = (result.get("data") or {}).get("audio", "")
         if not audio_hex:
             raise ValueError(f"语音合成响应中无音频数据: {result}")
@@ -220,7 +225,7 @@ class MiniMaxSpeechAdapter(SpeechAdapter):
         return AdapterRequest(url=f"{host_root(base_url)}/v1/t2a_async_v2", payload=payload)
 
     def extract_async_task_id(self, result: Dict[str, Any]) -> str:
-        self._check_base_resp(result)
+        check_base_resp(result)
         return str(result.get("task_id", ""))
 
     def build_async_query_request(self, base_url: str, task_id: str) -> AdapterRequest:
@@ -231,7 +236,7 @@ class MiniMaxSpeechAdapter(SpeechAdapter):
         )
 
     def parse_async_query(self, result: Dict[str, Any]) -> TtsAsyncTaskState:
-        self._check_base_resp(result)
+        check_base_resp(result)
         status = str(result.get("status", "")).lower()
         if status == "success":
             return TtsAsyncTaskState(status="succeeded", file_id=str(result.get("file_id", "")))
@@ -251,13 +256,26 @@ class MiniMaxSpeechAdapter(SpeechAdapter):
         )
 
     def extract_download_url(self, result: Dict[str, Any]) -> str:
-        self._check_base_resp(result)
+        check_base_resp(result)
         file_obj = result.get("file") or {}
         return file_obj.get("download_url", "")
 
     # ------------------------------------------------------------------
     # 音色管理
     # ------------------------------------------------------------------
+
+    def build_upload_request(self, base_url: str, *, purpose: str) -> AdapterRequest:
+        return AdapterRequest(
+            url=f"{host_root(base_url)}/v1/files/upload",
+            params={"purpose": purpose},
+        )
+
+    def parse_upload_file_id(self, result: Dict[str, Any]) -> int:
+        check_base_resp(result)
+        file_id = (result.get("file") or {}).get("file_id")
+        if file_id is None:
+            raise ValueError(f"文件上传响应中无 file_id: {result}")
+        return int(file_id)
 
     def build_voice_clone_request(
         self, base_url: str, *, file_id: int, voice_id: str,
@@ -283,7 +301,7 @@ class MiniMaxSpeechAdapter(SpeechAdapter):
         return AdapterRequest(url=f"{host_root(base_url)}/v1/voice_clone", payload=payload)
 
     def parse_voice_clone(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        self._check_base_resp(result)
+        check_base_resp(result)
         return {
             "demo_audio": result.get("demo_audio", ""),
             "input_sensitive": result.get("input_sensitive"),
@@ -298,7 +316,7 @@ class MiniMaxSpeechAdapter(SpeechAdapter):
         return AdapterRequest(url=f"{host_root(base_url)}/v1/voice_design", payload=payload)
 
     def parse_voice_design(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        self._check_base_resp(result)
+        check_base_resp(result)
         trial_hex = result.get("trial_audio", "")
         return {
             "voice_id": result.get("voice_id", ""),
@@ -312,7 +330,7 @@ class MiniMaxSpeechAdapter(SpeechAdapter):
         )
 
     def parse_get_voice(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        self._check_base_resp(result)
+        check_base_resp(result)
         return {
             "system_voice": result.get("system_voice", []),
             "voice_cloning": result.get("voice_cloning", []),
@@ -328,16 +346,14 @@ class MiniMaxSpeechAdapter(SpeechAdapter):
         )
 
     def parse_delete_voice(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        self._check_base_resp(result)
+        check_base_resp(result)
         return {
             "voice_id": result.get("voice_id", ""),
             "created_time": result.get("created_time", ""),
         }
 
 
-_ADAPTERS: Dict[str, SpeechAdapter] = {}
-_HOST_RULES: List[Tuple[str, str]] = []
-_default_adapter: str = ""
+_REGISTRY: AdapterRegistry[SpeechAdapter] = AdapterRegistry("语音")
 
 
 def register_speech_adapter(
@@ -346,36 +362,13 @@ def register_speech_adapter(
     host_keywords: Tuple[str, ...] = (),
     default: bool = False,
 ) -> None:
-    """注册语音协议适配器。
-
-    host_keywords: base_url 主机名包含任一关键字时自动匹配该适配器；
-    default: 未命中任何规则时的兜底适配器。
-    """
-    global _default_adapter
-    _ADAPTERS[adapter.name] = adapter
-    for keyword in host_keywords:
-        _HOST_RULES.append((keyword, adapter.name))
-    if default or not _default_adapter:
-        _default_adapter = adapter.name
+    """注册语音协议适配器（语义见 AdapterRegistry.register）。"""
+    _REGISTRY.register(adapter, host_keywords=host_keywords, default=default)
 
 
 def resolve_speech_adapter(base_url: str, protocol: str = "") -> SpeechAdapter:
-    """解析语音协议适配器：显式 protocol 优先，其次 host 规则，最后兜底。
-
-    media_protocol 字段为各媒体协议共用，protocol 不属于语音协议时
-    不视为错误，回退 host 规则自动匹配。
-    """
-    if protocol:
-        adapter = _ADAPTERS.get(protocol)
-        if adapter is not None:
-            return adapter
-        from core.log import log
-        log(f"media_protocol '{protocol}' 不是语音协议，按 host 规则自动匹配", "DEBUG", tag="媒体")
-    host = urlparse(base_url).netloc
-    for keyword, name in _HOST_RULES:
-        if keyword in host:
-            return _ADAPTERS[name]
-    return _ADAPTERS[_default_adapter]
+    """解析语音协议适配器（语义见 AdapterRegistry.resolve）。"""
+    return _REGISTRY.resolve(base_url, protocol)
 
 
 register_speech_adapter(OpenAISpeechAdapter(), default=True)

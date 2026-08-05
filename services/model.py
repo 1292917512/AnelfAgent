@@ -323,6 +323,13 @@ class ModelService:
 
     async def probe_capabilities(
         self, base_url: str, api_key: str, model: str, api_type: str = "openai",
+        provider_id: str = "",
     ) -> Dict[str, Any]:
         from agent.llm.llm_client import LLMClient as _LC
-        return await _LC.probe_capabilities(base_url, api_key, model, api_type=api_type)
+        proxy_url = ""
+        if provider_id:
+            provider = self._manager().get_provider(provider_id)
+            proxy_url = provider.proxy_url if provider is not None else ""
+        return await _LC.probe_capabilities(
+            base_url, api_key, model, api_type=api_type, proxy_url=proxy_url,
+        )

@@ -681,6 +681,10 @@ def build_dynamic_notes() -> str:
 
     包含 memory.md 中「# 当前状态」之后的全部内容，
     经 _smart_truncate_notes 按预算裁剪。
+
+    AUTO:memory-status 区块（心跳维护的计数）被剥离——它随心跳/记忆写入
+    周期性变化，留在 context 层会击穿其后的摘要与历史缓存前缀；
+    该区块由 build_memory_status_block 单独注入尾部动态区。
     """
     content = load_notes_content()
     if not content.strip():
@@ -688,12 +692,35 @@ def build_dynamic_notes() -> str:
     # 以「# 当前状态」为分界，后半部分为动态内容
     parts = content.split(_DYNAMIC_SPLIT_MARKER, 1)
     dynamic_part = (_DYNAMIC_SPLIT_MARKER + parts[1]) if len(parts) > 1 else ""
+    dynamic_part = _strip_auto_status_block(dynamic_part)
     if not dynamic_part.strip():
         return ""
     from core.config import get_config_int
     return _smart_truncate_notes(
         dynamic_part, get_config_int("notes_inject_max_chars", 5000),
     )
+
+
+def _strip_auto_status_block(text: str) -> str:
+    """移除 AUTO:memory-status 区块（含标记行）。"""
+    if AUTO_STATUS_BEGIN not in text or AUTO_STATUS_END not in text:
+        return text
+    pre, rest = text.split(AUTO_STATUS_BEGIN, 1)
+    _, post = rest.split(AUTO_STATUS_END, 1)
+    return (pre.rstrip() + "\n" + post.lstrip()).strip()
+
+
+def build_memory_status_block() -> str:
+    """提取 AUTO:memory-status 区块内容（尾部动态区独立注入用）。"""
+    content = load_notes_content()
+    if AUTO_STATUS_BEGIN not in content or AUTO_STATUS_END not in content:
+        return ""
+    _, rest = content.split(AUTO_STATUS_BEGIN, 1)
+    body, _ = rest.split(AUTO_STATUS_END, 1)
+    body = body.strip()
+    if not body:
+        return ""
+    return f"[记忆系统状态]（心跳自动维护，memory_stats() 可查明细）\n{body}"
 
 
 def build_file_index_block() -> str:

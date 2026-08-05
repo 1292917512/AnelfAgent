@@ -12,12 +12,8 @@ LLMClient — 统一 LLM 客户端（基于 litellm）。
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional
-
-# 必须在 import litellm 之前设置，阻止启动时拉取远端模型价格表
-os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 import httpx
 import litellm
@@ -70,6 +66,7 @@ from agent.llm.types import (
     ChatStreamDelta,
     ImageContent,
     TextCompletionResult,
+    VideoContent,
 )
 from core.entity import BaseEntity, EntityType
 from core.log import debug, info, log
@@ -234,7 +231,6 @@ class LLMClient(BaseEntity):
     # 由 _start_completion 的报错自适应钳制兜底，无需手动维护完整表。
     _ANTHROPIC_OUTPUT_LIMITS = {
         "minimax": 131072,
-        "qwen": 65536,
     }
     # 未知模型的默认输出预算：激进取值（新模型输出能力通常只增不减），
     # 超出端点限制时会从报错中解析真实上限并缓存，后续请求自动钳制。
@@ -739,14 +735,14 @@ class LLMClient(BaseEntity):
                 return await awaitable
         return await awaitable
 
-    async def _chat_via_responses(
+    def _build_responses_kwargs(
             self,
             messages: list[dict],
-            *,
-            options: Optional[dict] = None,
-            tools: Optional[list[dict]] = None,
-            tool_choice: Optional[Any] = None,
-    ) -> ChatResult:
+            options: Optional[dict],
+            tools: Optional[list[dict]],
+            tool_choice: Optional[Any],
+    ) -> Dict[str, Any]:
+        """构建 Responses create/stream 共享的调用参数（含思考等级映射）。"""
         from agent.llm.responses.client import convert_chat_tools, messages_to_responses_input
 
         adapted = self._adapt_messages(messages)
@@ -773,6 +769,17 @@ class LLMClient(BaseEntity):
             f"LLM chat(via responses): {self.config.litellm_model}, msgs={len(adapted)}",
             tag="模型",
         )
+        return create_kwargs
+
+    async def _chat_via_responses(
+            self,
+            messages: list[dict],
+            *,
+            options: Optional[dict] = None,
+            tools: Optional[list[dict]] = None,
+            tool_choice: Optional[Any] = None,
+    ) -> ChatResult:
+        create_kwargs = self._build_responses_kwargs(messages, options, tools, tool_choice)
         result = await self._responses_create_with_effort_fallback(create_kwargs)
         return result.to_chat_result()
 
@@ -832,6 +839,49 @@ class LLMClient(BaseEntity):
                         "WARNING", tag="LLM",
                     )
 
+    async def _chat_stream_via_responses(
+            self,
+            messages: list[dict],
+            *,
+            options: Optional[dict] = None,
+            tools: Optional[list[dict]] = None,
+            tool_choice: Optional[Any] = None,
+    ) -> AsyncGenerator[ChatStreamDelta, None]:
+        """Responses 协议的流式聊天：事件流转 ChatStreamDelta。
+
+        文本/思考增量即时下发；工具调用与 usage 随终态事件
+        （response.completed）一并输出，与 chat_completions 流式契约一致
+        （工具调用仅在完整后下发，避免残缺 JSON arguments）。
+        """
+        from agent.llm.responses.client import parse_responses_payload
+
+        stream_kwargs = self._build_responses_kwargs(messages, options, tools, tool_choice)
+        async for event in self.responses_stream(**stream_kwargs):
+            if event.type == "response.output_text.delta":
+                text = str(event.data.get("delta") or "")
+                if text:
+                    yield ChatStreamDelta(content=text)
+            elif event.type in (
+                "response.reasoning_text.delta",
+                "response.reasoning_summary_text.delta",
+            ):
+                reasoning = str(event.data.get("delta") or "")
+                if reasoning:
+                    yield ChatStreamDelta(reasoning_content=reasoning)
+            elif event.type in ("response.completed", "response.incomplete"):
+                result = parse_responses_payload(event.data.get("response") or event.data)
+                chat_result = result.to_chat_result()
+                yield ChatStreamDelta(
+                    tool_calls=chat_result.tool_calls,
+                    finish_reason=chat_result.finish_reason or "stop",
+                    usage=chat_result.usage,
+                )
+            elif event.type in ("response.failed", "response.error", "error"):
+                result = parse_responses_payload(event.data.get("response") or event.data)
+                raise RuntimeError(
+                    f"Responses 流式调用失败: {result.error or event.data}"
+                )
+
     async def chat(
             self,
             messages: list[dict],
@@ -880,7 +930,17 @@ class LLMClient(BaseEntity):
         finish=="length" 或无 finish chunk 时视为输出被截断，丢弃不完整
         缓冲并记录 WARNING，避免下发出残缺 JSON arguments 的工具调用。
         usage 仅在最终 chunk（finish chunk 或无 choices 的 usage-only chunk）输出。
+        chat_protocol=responses 时分发到 Responses 流式实现。
         """
+        if self.resolved_chat_protocol == ChatProtocol.RESPONSES:
+            async for delta in self._chat_stream_via_responses(
+                messages,
+                options=options,
+                tools=tools,
+                tool_choice=tool_choice,
+            ):
+                yield delta
+            return
         kwargs = self._build_kwargs(messages, options, tools, tool_choice, stream=True)
         kwargs["stream_options"] = {"include_usage": True}
         stream: Any = None
@@ -958,6 +1018,68 @@ class LLMClient(BaseEntity):
             # 空结果视为调用失败，让上层回退到下一个视觉模型
             raise RuntimeError("视觉模型返回空结果")
         return text
+
+    async def describe_video(
+            self,
+            video: VideoContent,
+            prompt: str = "请简要描述这个视频的内容。",
+    ) -> str:
+        """视频理解：描述视频内容。
+
+        anthropic 类端点走原生 video content block 直连（litellm 的 Anthropic
+        转换层不认识 video block，会在消息校验阶段拒绝）；其余端点走 OpenAI
+        兼容的 video_url content block。
+        """
+        if self.config.api_type == API_TYPE_ANTHROPIC:
+            return await self._describe_video_anthropic(video, prompt)
+        content: list[dict] = [
+            {"type": "text", "text": prompt},
+            video.to_openai_block(),
+        ]
+        result = await self.chat([{"role": "user", "content": content}], options={"max_tokens": 1024})
+        text = (result.content or "").strip()
+        if not text:
+            # 空结果视为调用失败，让上层回退到下一个视觉模型
+            raise RuntimeError("视觉模型返回空结果")
+        return text
+
+    async def _describe_video_anthropic(self, video: VideoContent, prompt: str) -> str:
+        """Anthropic Messages 扩展 video block 直连请求。"""
+        self._ensure_configured()
+        url = self.config.base_url.rstrip("/") + "/v1/messages"
+        payload: Dict[str, Any] = {
+            "model": self.config.model,
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": [
+                video.to_anthropic_block(),
+                {"type": "text", "text": prompt},
+            ]}],
+        }
+        headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
+        if self.config.api_key:
+            headers["x-api-key"] = self.config.api_key
+        resp = await self._direct_http().post(url, json=payload, headers=headers)
+        if resp.status_code != 200:
+            raise RuntimeError(f"视频识别请求失败 (HTTP {resp.status_code}): {resp.text[:200]}")
+        data = resp.json()
+        text = "".join(
+            block.get("text", "")
+            for block in data.get("content", [])
+            if isinstance(block, dict) and block.get("type") == "text"
+        ).strip()
+        if not text:
+            # 空结果视为调用失败，让上层回退到下一个视觉模型
+            raise RuntimeError("视觉模型返回空结果")
+        return text
+
+    def _direct_http(self) -> httpx.AsyncClient:
+        """绕过 litellm 的直连请求共享连接池（原生向量 / 视频识别复用）。"""
+        if self._embed_http_client is None or self._embed_http_client.is_closed:
+            self._embed_http_client = httpx.AsyncClient(
+                timeout=self.config.timeout,
+                proxy=self.config.effective_proxy or None,
+            )
+        return self._embed_http_client
 
     # ------------------------------------------------------------------
     # Embedding
@@ -1056,16 +1178,11 @@ class LLMClient(BaseEntity):
         return [e["embedding"] for e in ordered]
 
     async def _dashscope_embed_request(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """DashScope 原生向量端点请求（复用连接池与有效代理）。"""
+        """DashScope 原生向量端点请求（复用直连连接池与有效代理）。"""
         headers = {"Content-Type": "application/json"}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
-        if self._embed_http_client is None or self._embed_http_client.is_closed:
-            self._embed_http_client = httpx.AsyncClient(
-                timeout=self.config.timeout,
-                proxy=self.config.effective_proxy or None,
-            )
-        resp = await self._embed_http_client.post(url, json=payload, headers=headers)
+        resp = await self._direct_http().post(url, json=payload, headers=headers)
         resp.raise_for_status()
         return resp.json()
 

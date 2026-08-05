@@ -44,10 +44,10 @@ def _dumps(out: Dict[str, Any]) -> str:
 
 @tool(name="recognize_image", group="media", tags=["media:image", "media:video"], timeout=120.0)
 async def recognize_image(image_path: str = "", prompt: str = "", provider: str = "auto", **kwargs: str) -> str:
-    """识别/分析图片内容。支持本地文件路径或 URL。
+    """识别/分析图片或视频内容。支持本地文件路径或 URL。
 
     Args:
-        image_path: 图片的绝对路径或 URL
+        image_path: 图片/视频的绝对路径或 URL
         prompt: 可选的分析提示，如"描述图片中的文字"
         provider: auto（默认，视觉模型链失败自动降级 MiniMax Coding Plan 订阅配额）/
             models / minimax（直连 Coding Plan，不占视觉模型调用）
@@ -70,6 +70,8 @@ async def recognize_image(image_path: str = "", prompt: str = "", provider: str 
     if err:
         return err
 
+    from entities._sdk import is_video_path
+    is_video = is_video_path(image_path)
     if not image_path.startswith(("http://", "https://", "data:image/")):
         try:
             resolved = utils.resolve_workspace_path(image_path)
@@ -81,10 +83,11 @@ async def recognize_image(image_path: str = "", prompt: str = "", provider: str 
                               retryable=False, resolved=resolved)
         image_path = resolved
 
-    desc_prompt = prompt or "请简要描述这张图片的内容。"
+    default_prompt = "请简要描述这个视频的内容。" if is_video else "请简要描述这张图片的内容。"
+    desc_prompt = prompt or default_prompt
     try:
         out = await run_capability(
-            "vision", "图片识别", provider=provider,
+            "vision", "视频识别" if is_video else "图片识别", provider=provider,
             image_path=image_path, prompt=desc_prompt,
         )
         if out.get("success"):

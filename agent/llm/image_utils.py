@@ -8,11 +8,10 @@ import mimetypes
 from pathlib import Path
 from typing import List, Optional
 
-from agent.llm.types import ImageContent
+from agent.llm.types import ImageContent, VideoContent
 
 _MAX_LONG_EDGE = 1568
 _MAX_IMAGE_KB = 1024
-_SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
 
 def _resolve_image_path(path: str) -> Path:
@@ -55,11 +54,6 @@ def load_image_from_bytes(
     return ImageContent(data=data, mime_type=mime_type)
 
 
-def load_image_from_url(url: str) -> ImageContent:
-    """从 URL 创建 ImageContent（不下载，直接引用）。"""
-    return ImageContent(data=url, is_url=True)
-
-
 async def download_image_to_base64(url: str, timeout: float = 30.0) -> Optional[ImageContent]:
     """下载 URL 图片并转为 base64 ImageContent。"""
     import httpx
@@ -83,14 +77,68 @@ async def download_image_to_base64(url: str, timeout: float = 30.0) -> Optional[
 # 常见图片格式的 base64 魔数前缀（避免把短 base64 误判为文件路径）
 _BASE64_MAGIC_PREFIXES = ("/9j/", "iVBOR", "R0lGOD", "UklGR", "Qk2", "SUkq")
 
+# 常见视频扩展名（用于把视频文件从图片识别链路分流到视频识别链路）
+_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".flv", ".wmv", ".3gp"}
+
+
+def is_video_path(path: str) -> bool:
+    """判断路径或 URL 是否指向视频文件（按扩展名/路径后缀识别）。"""
+    clean = str(path).split("?", 1)[0].split("#", 1)[0]
+    return Path(clean).suffix.lower() in _VIDEO_EXTENSIONS
+
+
+def load_video_from_path(path: str | Path) -> VideoContent:
+    """从文件路径加载视频并转为 base64 VideoContent（相对路径自动按工作区解析）。"""
+    p = _resolve_image_path(str(path))
+    if not p.exists():
+        raise FileNotFoundError(f"视频路径不存在: {p}")
+    if not p.is_file():
+        raise IsADirectoryError(f"路径不是文件: {p}")
+
+    mime_type, _ = mimetypes.guess_type(str(p))
+    if not mime_type or not mime_type.startswith("video/"):
+        mime_type = "video/mp4"
+
+    data = base64.b64encode(p.read_bytes()).decode("utf-8")
+    return VideoContent(data=data, mime_type=mime_type)
+
+
+async def download_video_to_base64(url: str, timeout: float = 120.0) -> Optional[VideoContent]:
+    """下载 URL 视频并转为 base64 VideoContent。"""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "")
+            mime = content_type.split(";")[0].strip()
+            if not mime.startswith("video/"):
+                guessed, _ = mimetypes.guess_type(url.split("?", 1)[0])
+                mime = guessed if guessed and guessed.startswith("video/") else "video/mp4"
+            data = base64.b64encode(resp.content).decode("utf-8")
+            return VideoContent(data=data, mime_type=mime)
+    except Exception as e:
+        from core.log import log as _log
+        _log(f"视频下载失败 ({url[:80]}): {e}", "DEBUG", tag="媒体")
+        return None
+
 
 def _looks_like_file_path(data: str) -> bool:
     """Detect if data string is a local file path rather than base64."""
-    if data.startswith(_BASE64_MAGIC_PREFIXES):
+    if data.startswith(_BASE64_MAGIC_PREFIXES) or data.startswith("data:"):
         return False
-    return (len(data) < 500
-            and ("/" in data or "\\" in data)
-            and not data.startswith("data:"))
+    if len(data) >= 500 or ("/" not in data and "\\" not in data):
+        return False
+    # 真实存在的路径优先；不存在时按 base64 特征二次判断，
+    # 避免不含魔数前缀的短 base64（小图标等）被误当路径丢弃
+    try:
+        if Path(data).exists():
+            return True
+        base64.b64decode(data, validate=True)
+        return False
+    except Exception:
+        return True
 
 
 async def ensure_base64(images: List[ImageContent]) -> List[ImageContent]:
@@ -154,7 +202,7 @@ def optimize_for_vision(
         return image
 
     try:
-        img = PILImage.open(io.BytesIO(raw))
+        img: "PILImage.Image" = PILImage.open(io.BytesIO(raw))
     except Exception:
         return image
 
@@ -196,32 +244,6 @@ def optimize_for_vision(
         "DEBUG", tag="媒体",
     )
     return ImageContent(data=base64.b64encode(compressed).decode("utf-8"), mime_type="image/jpeg")
-
-
-def qimage_to_image_content(qimage: object) -> Optional[ImageContent]:
-    """将 Qt QImage 转为 ImageContent（剪贴板粘贴场景）。"""
-    try:
-        from PySide6.QtCore import QBuffer, QIODevice
-        from PySide6.QtGui import QImage
-
-        if not isinstance(qimage, QImage) or qimage.isNull():
-            return None
-
-        buf = QBuffer()
-        buf.open(QIODevice.OpenModeFlag.WriteOnly)
-        qimage.save(buf, "PNG")
-        raw = bytes(buf.data())
-        buf.close()
-
-        data = base64.b64encode(raw).decode("utf-8")
-        return ImageContent(data=data, mime_type="image/png")
-    except ImportError:
-        return None
-
-
-def is_image_file(path: str | Path) -> bool:
-    """判断路径是否为支持的图片格式。"""
-    return Path(path).suffix.lower() in _SUPPORTED_EXTENSIONS
 
 
 def build_multimodal_content(

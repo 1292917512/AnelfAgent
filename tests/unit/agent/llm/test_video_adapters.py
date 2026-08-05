@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from agent.llm.video_adapters import (
+    DashScopeVideoAdapter,
     MiniMaxV1Adapter,
     MiniMaxV2Adapter,
     OpenAIVideoAdapter,
@@ -287,8 +288,15 @@ class TestResolveVideoAdapter:
     def test_explicit_protocol(self) -> None:
         assert resolve_video_adapter("https://x/v1", "minimax_v2").name == "minimax_v2"
         assert resolve_video_adapter("https://x/v1", "openai").name == "openai"
-        with pytest.raises(ValueError, match="未知的视频协议"):
-            resolve_video_adapter("https://x/v1", "nope")
+
+    def test_unknown_protocol_falls_back_to_host_and_default(self) -> None:
+        """media_protocol 为多类媒体协议共用：非视频协议名不视为错误，回退 host/兜底。"""
+        # host 命中 minimax → 按模型分流
+        assert resolve_video_adapter(
+            "https://api.minimaxi.com", "siliconflow", "MiniMax-H3",
+        ).name == "minimax_v2"
+        # host 也未命中 → 默认适配器
+        assert resolve_video_adapter("https://x/v1", "nope").name == "openai"
 
     def test_minimax_protocol_split_by_model(self) -> None:
         assert resolve_video_adapter("https://x/v1", "minimax", "MiniMax-H3").name == "minimax_v2"
@@ -302,3 +310,94 @@ class TestResolveVideoAdapter:
 
     def test_default_fallback(self) -> None:
         assert resolve_video_adapter("https://api.siliconflow.cn/v1").name == "openai"
+
+
+class TestDashScopeVideoAdapter:
+    def test_create_text_to_video(self) -> None:
+        adapter = DashScopeVideoAdapter()
+        req = adapter.build_create_request(
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            _params(model="happyhorse-1.1-t2v", resolution="720P", ratio="16:9", duration=5),
+        )
+        assert req.url == (
+            "https://token-plan.cn-beijing.maas.aliyuncs.com"
+            "/api/v1/services/aigc/video-generation/video-synthesis"
+        )
+        assert req.method == "POST"
+        assert req.headers == {"X-DashScope-Async": "enable"}
+        assert req.payload == {
+            "model": "happyhorse-1.1-t2v",
+            "input": {"prompt": "p"},
+            "parameters": {"resolution": "720P", "duration": 5, "ratio": "16:9"},
+        }
+
+    def test_create_image_to_video_omits_ratio(self) -> None:
+        """i2v 输出比例跟随首帧图，协议无 ratio 参数，首帧经 media.first_frame 传入。"""
+        adapter = DashScopeVideoAdapter()
+        req = adapter.build_create_request(
+            "https://dashscope.aliyuncs.com/api/v1",
+            _params(
+                model="happyhorse-1.1-i2v",
+                first_frame_image="data:image/png;base64,AAA",
+                ratio="16:9",
+            ),
+        )
+        assert req.payload == {
+            "model": "happyhorse-1.1-i2v",
+            "input": {
+                "prompt": "p",
+                "media": [{"type": "first_frame", "url": "data:image/png;base64,AAA"}],
+            },
+        }
+
+    def test_create_reference_to_video(self) -> None:
+        """r2v 参考图经 media.reference_image 传入，支持多张。"""
+        adapter = DashScopeVideoAdapter()
+        req = adapter.build_create_request(
+            "https://dashscope.aliyuncs.com/api/v1",
+            _params(
+                model="happyhorse-1.1-r2v",
+                subject_reference=["https://x/a.png", "https://x/b.png"],
+            ),
+        )
+        assert req.payload is not None
+        assert req.payload["input"]["media"] == [
+            {"type": "reference_image", "url": "https://x/a.png"},
+            {"type": "reference_image", "url": "https://x/b.png"},
+        ]
+
+    def test_extract_task_id(self) -> None:
+        adapter = DashScopeVideoAdapter()
+        assert adapter.extract_task_id({"output": {"task_id": "t1", "task_status": "PENDING"}}) == "t1"
+        assert adapter.extract_task_id({"output": {}}) == ""
+
+    def test_query_request_and_parse(self) -> None:
+        adapter = DashScopeVideoAdapter()
+        req = adapter.build_query_request("https://dashscope.aliyuncs.com/api/v1", "t1")
+        assert req.url == "https://dashscope.aliyuncs.com/api/v1/tasks/t1"
+        assert req.method == "GET"
+
+        ok = adapter.parse_query_result(
+            {"output": {"task_status": "SUCCEEDED", "video_url": "https://x/v.mp4"}}
+        )
+        assert ok.status == "succeeded"
+        assert ok.video_url == "https://x/v.mp4"
+
+        running = adapter.parse_query_result({"output": {"task_status": "RUNNING"}})
+        assert running.status == "processing"
+
+        failed = adapter.parse_query_result(
+            {"output": {"task_status": "FAILED", "message": "content filter"}}
+        )
+        assert failed.status == "failed"
+        assert failed.error == "content filter"
+
+        no_url = adapter.parse_query_result({"output": {"task_status": "SUCCEEDED"}})
+        assert no_url.status == "failed"
+
+    def test_host_rule(self) -> None:
+        adapter = resolve_video_adapter(
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            model="happyhorse-1.1-t2v",
+        )
+        assert adapter.name == "dashscope"

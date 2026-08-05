@@ -249,6 +249,16 @@ class AppConfigUpdate(BaseModel):
     telegram_webhook_url: Optional[str] = None
     telegram_webhook_secret: Optional[str] = None
     telegram_webhook_port: Optional[int] = None
+    # ── 缓存与上下文（Prompt 缓存/摘要窗口/工具稳定性） ──
+    prompt_cache_enabled: Optional[bool] = None
+    prompt_cache_anthropic_breakpoint: Optional[bool] = None
+    prompt_cache_summary_breakpoint: Optional[bool] = None
+    context_tail_injection_enabled: Optional[bool] = None
+    conversation_summary_enabled: Optional[bool] = None
+    conversation_raw_min: Optional[int] = None
+    conversation_summary_max_chars: Optional[int] = None
+    tool_order_deterministic: Optional[bool] = None
+    tool_dynamic_sticky: Optional[bool] = None
 
 
 @router.put("/app")

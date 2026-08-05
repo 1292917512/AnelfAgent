@@ -190,6 +190,7 @@ class ContextCompressor:
         "extract_page_links", "web_request", "recall", "get_conversation",
     })
     _MICROCOMPACT_PLACEHOLDER = "[旧工具结果已清理，需要时请重新调用工具获取]"
+    _DUP_HINT_PLACEHOLDER = "[重复的系统提示已折叠]"
 
     # token 估算结果缓存（内容字符串 → token 数），进程内共享
     _token_est_cache: Dict[str, int] = {}
@@ -204,6 +205,15 @@ class ContextCompressor:
         threshold = self.config.microcompact_chain_threshold
         if threshold <= 0 or len(tool_chain) < threshold:
             return 0
+        cleared = self._clear_stale_tool_results(tool_chain)
+        cleared += self._collapse_dup_hints(tool_chain)
+        cleared += self._clear_stale_image_blocks(tool_chain)
+        if cleared:
+            log(f"Microcompact: 清理 {cleared} 条旧结果/重复提示/历史图片块", "DEBUG", tag="压缩")
+        return cleared
+
+    def _clear_stale_tool_results(self, tool_chain: List[Dict]) -> int:
+        """把较早的只读工具结果替换为占位符（保留最新 keep_recent 条）。"""
         # 定位 role=tool 消息，保留最新 keep_recent 条不动
         tool_msg_indexes = [
             i for i, m in enumerate(tool_chain) if m.get("role") == "tool"
@@ -228,8 +238,74 @@ class ContextCompressor:
                     and content != self._MICROCOMPACT_PLACEHOLDER:
                 tool_chain[i] = {**msg, "content": self._MICROCOMPACT_PLACEHOLDER}
                 cleared += 1
-        if cleared:
-            log(f"Microcompact: 清理 {cleared} 条旧只读工具结果", "DEBUG", tag="压缩")
+        return cleared
+
+    def _collapse_dup_hints(self, tool_chain: List[Dict]) -> int:
+        """折叠链中内容完全相同的重复 system 提示（仅保留最新一条全文）。
+
+        多轮会话中每轮追加的引导提示（如"工具结果仅你可见"）内容相同，
+        旧副本对 AI 无增量信息，折叠为占位符；最新一条保留以维持引导强度。
+        """
+        last_index: Dict[str, int] = {}
+        for i, m in enumerate(tool_chain):
+            if m.get("role") == "system":
+                content = m.get("content")
+                if isinstance(content, str) and content:
+                    last_index[content] = i
+        collapsed = 0
+        for content, keep_i in last_index.items():
+            for i, m in enumerate(tool_chain):
+                if (
+                    i != keep_i
+                    and m.get("role") == "system"
+                    and m.get("content") == content
+                ):
+                    tool_chain[i] = {**m, "content": self._DUP_HINT_PLACEHOLDER}
+                    collapsed += 1
+        return collapsed
+
+    _IMAGE_BLOCK_PLACEHOLDER = (
+        "[历史图片块已折叠] 该图片已在前文加载过；消息中的 [media_path:...] "
+        "标签仍指向本地文件，确需重看时用 recognize_image/read_file 重新读取"
+    )
+
+    def _clear_stale_image_blocks(self, tool_chain: List[Dict]) -> int:
+        """折叠链中非最新的图片 base64 块（保留最新一条含图消息不动）。
+
+        视觉模型下图片以 base64 content block 驻留工具链（单张可达数百 KB
+        文本），之后每一轮 LLM 调用都全量重发。旧轮次的图片通常已完成讨论，
+        折叠为文本占位（media_path 标签仍在文本块中，可按需重读文件）。
+        """
+        image_msg_indexes: List[int] = []
+        for i, m in enumerate(tool_chain):
+            content = m.get("content")
+            if (
+                m.get("role") == "user"
+                and isinstance(content, list)
+                and any(
+                    isinstance(b, dict) and b.get("type") == "image_url"
+                    for b in content
+                )
+            ):
+                image_msg_indexes.append(i)
+        cleared = 0
+        for i in image_msg_indexes[:-1]:
+            msg = tool_chain[i]
+            new_blocks: List[Dict] = []
+            replaced = False
+            for block in msg["content"]:
+                if isinstance(block, dict) and block.get("type") == "image_url":
+                    if not replaced:
+                        new_blocks.append({
+                            "type": "text",
+                            "text": self._IMAGE_BLOCK_PLACEHOLDER,
+                        })
+                        replaced = True
+                    cleared += 1
+                else:
+                    new_blocks.append(block)
+            if replaced:
+                tool_chain[i] = {**msg, "content": new_blocks}
         return cleared
 
     def _record_compress_result(self, success: bool) -> None:

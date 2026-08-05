@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from agent.llm.types import ChatResult, ToolCall, UsageInfo
+from agent.llm.types import ChatResult, ToolCall, UsageInfo, cache_tokens_from_usage
 
 
 @dataclass(slots=True)
@@ -18,10 +18,13 @@ class ResponseUsage:
     raw: dict[str, Any] = field(default_factory=dict)
 
     def to_usage_info(self) -> UsageInfo:
+        cache_read, cache_creation = cache_tokens_from_usage(self.raw)
         return UsageInfo(
             prompt_tokens=self.input_tokens,
             completion_tokens=self.output_tokens,
             total_tokens=self.total_tokens or (self.input_tokens + self.output_tokens),
+            cache_read_input_tokens=cache_read,
+            cache_creation_input_tokens=cache_creation,
         )
 
 

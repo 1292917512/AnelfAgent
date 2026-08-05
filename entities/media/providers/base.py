@@ -100,6 +100,8 @@ def classify_media_errors(errors: Dict[str, str]) -> Tuple[ErrorCause, bool, str
         return (ErrorCause.CONFIG, False, "账户余额不足，请充值后重试")
     if any(k in detail for k in ("http 422", "(1026)", "[1026]", "(1027)", "[1027]", "敏感")):
         return (ErrorCause.PARAM, False, "内容触发平台敏感审核，请调整提示词/素材后重试")
+    if any(k in detail for k in ("无法下载", "已过期", "expired")):
+        return (ErrorCause.NOT_FOUND, False, "媒体链接已过期，无法恢复")
     if "http 429" in detail:
         return (ErrorCause.NETWORK, True, "触发平台限流，可稍后重试")
     if "timeout" in detail or "超时" in detail:

@@ -352,6 +352,10 @@ async def _run_think_rounds(
         state.consecutive_overflow_compressions = 0
         if result.usage and result.usage.prompt_tokens:
             state.last_prompt_tokens = result.usage.prompt_tokens
+        if result.usage:
+            state.last_cache_read_tokens = result.usage.cache_read_input_tokens
+            state.last_cache_creation_tokens = result.usage.cache_creation_input_tokens
+            state.last_cache_hit_rate = result.usage.cache_hit_rate
 
         # 上下文用量快照（usage 锚定：API 真实用量优先；供 webui 状态栏显示）
         await _emit_context_usage(ctx, state)

@@ -13,9 +13,13 @@
 """
 from __future__ import annotations
 
+import asyncio
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
+
+import litellm
 
 
 class ErrorCategory(str, Enum):
@@ -87,7 +91,14 @@ _STREAM_ERROR_PATTERNS = (
 
 
 def _match_any(text: str, patterns: tuple[str, ...]) -> bool:
-    return any(p in text for p in patterns)
+    """模式匹配：数字模式（HTTP 状态码）要求词边界，避免误中随机 hex/request_id。"""
+    for p in patterns:
+        if p.isdigit():
+            if re.search(rf"\b{p}\b", text):
+                return True
+        elif p in text:
+            return True
+    return False
 
 
 def _classify_quota_error(message: str, status_code: Optional[int]) -> ClassifiedError:
@@ -108,10 +119,6 @@ def classify_llm_error(exc: BaseException) -> ClassifiedError:
 
     分类优先级：litellm 异常类型 → HTTP 状态码 → 消息模式匹配 → unknown。
     """
-    import asyncio
-
-    import litellm
-
     message = str(exc)
     msg_lower = message.lower()
     status_code = getattr(exc, "status_code", None)

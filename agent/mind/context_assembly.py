@@ -36,6 +36,25 @@ def _delegation_enabled() -> bool:
     return get_config_bool("delegation_enabled", True)
 
 
+def _tail_injection_enabled() -> bool:
+    """尾部动态注入布局开关（动态内容置于对话历史之后，保持历史前缀缓存稳定）。"""
+    from core.config import get_config_bool
+    return get_config_bool("context_tail_injection_enabled", True)
+
+
+def _summary_breakpoint_enabled() -> bool:
+    """对话摘要块 Anthropic 缓存断点开关（第 4 断点）。"""
+    from core.config import get_config_bool
+    return get_config_bool("prompt_cache_summary_breakpoint", True)
+
+
+def _cap_names(names: List[str], limit: int = 8) -> str:
+    """工具名列表截断展示：超限显示前 limit 个 + 总数（AI 只需感知规模，无需全量名单）。"""
+    if len(names) <= limit:
+        return ", ".join(names)
+    return f"{', '.join(names[:limit])} 等 {len(names)} 个"
+
+
 def _env_info_block() -> str:
     """运行环境信息块（工作区绝对路径 + 平台），注入 stable 层让 AI 知晓自身工作位置。"""
     import platform as _platform
@@ -210,8 +229,9 @@ class ContextAssembly:
         rules = mc.tool_system_rules if hasattr(mc, "tool_system_rules") else []
         lines = list(rules) + ["# 工具分组目录"]
 
-        # 可沉睡分组：未激活时仅展示 brief，提示 AI 按需激活（节省 token）
-        from agent.mind.tool_activation import tool_activation
+        # 可沉睡分组：目录文案保持静态（不随激活状态变化）——激活状态是
+        # 按 scope 隔离的动态量，嵌进 stable 块会导致文本随 scope/激活波动，
+        # 击穿缓存前缀；当前激活状态由 exec_context 的 [已激活工具分组] 呈现
         sleepable_groups = EntityRegistry.get_sleepable_groups()
 
         for entry in catalog:
@@ -219,11 +239,11 @@ class ContextAssembly:
             desc = entry.get("description", "")
             desc_part = f" — {desc}" if desc else ""
             sleep_info = sleepable_groups.get(group)
-            if sleep_info and not tool_activation.is_active(group):
+            if sleep_info:
                 lines.append(
                     f"- {group} ({entry['tool_count']}){desc_part} "
-                    f"[沉睡] {sleep_info['brief']}"
-                    f"（需要时调用 activate_tool_group(group=\"{group}\") 激活）"
+                    f"[可沉睡] {sleep_info['brief']}"
+                    f"（完整工具默认沉睡，需要时调用 activate_tool_group(group=\"{group}\") 激活）"
                 )
             else:
                 lines.append(f"- {group} ({entry['tool_count']}){desc_part}")
@@ -391,9 +411,10 @@ class ContextAssembly:
     def stable_fingerprint(self, models_summary: str = "", direct_vision: bool = False) -> str:
         """计算 stable 层动态输入的指纹（任一输入变化即触发重建）。
 
-        覆盖：工具目录、可沉睡分组及其激活状态、工具规则、模型摘要、媒体规则、运行环境。
+        覆盖：工具目录、可沉睡分组、工具规则、模型摘要、媒体规则、运行环境。
+        不含激活状态（目录文案已静态化，激活状态由 exec_context 动态呈现）。
         以 _tools_version + 激活版本门控：工具集与激活状态未变时直接返回缓存哈希，
-        跳过 json.dumps 开销（激活状态按 scope 隔离，版本号必须参与门控键，防跨 scope 串用）。
+        跳过 json.dumps 开销（激活版本仍参与门控：schemas 成员随激活变化需重建检测）。
         """
         from agent.mind.tool_activation import tool_activation
 
@@ -412,11 +433,10 @@ class ContextAssembly:
         rules = mc.tool_system_rules if hasattr(mc, "tool_system_rules") else []
         catalog = EntityRegistry.get_entity_catalog()
         sleepable = EntityRegistry.get_sleepable_groups()
-        activated = tool_activation.active_groups()
+        # 指纹不含激活状态：目录文案已静态化，激活状态不再影响 stable 内容
         result = prompt_cache_manager.compute_hash(
             _json.dumps(catalog, sort_keys=True, ensure_ascii=False),
             _json.dumps(sleepable, sort_keys=True, ensure_ascii=False),
-            _json.dumps(sorted(activated.items()), ensure_ascii=False),
             "\n".join(rules),
             models_summary,
             self._build_media_rules(direct_vision),
@@ -440,20 +460,30 @@ class ContextAssembly:
             anthropic_breakpoint: bool = False,
             prefetched_conversation: Optional[List[Dict]] = None,
             scope: str = "",
+            profile_msgs: Optional[List[Dict]] = None,
+            summary_row: Optional[Dict] = None,
+            status_text: str = "",
     ) -> List[Dict]:
         """组装完整 LLM 上下文（分层架构），每次调用实时从 DB 获取最新对话历史。
 
-        消息顺序（stable 分块/context 层在前且字节稳定，供 Prompt Caching 前缀复用）：
-        1. stable-persona 块（人设 + 环境 + 静态指南，长期冻结）
-        2. stable-tools 块（工具目录 + 规则，随工具集变化重建）
-        3. context 层（便签等低频内容）
-        4. volatile 层（短期记忆 + 溢出提示 + 安全标记 + 语义召回）
-        5. 对话历史（最近 max_conversation_size 条）
+        消息顺序（按变更频率从静到动排列，供 Prompt Caching 前缀复用）：
+        1. stable-persona 块（人设 + 环境 + 静态指南，长期冻结）[断点1]
+        2. stable-tools 块（工具目录 + 规则，随工具集变化重建）[断点2]
+        3. context 层（便签等低频内容）[断点3]
+        4. 对话摘要块（折叠周期内字节固定）[断点4]
+        5. 对话历史原始窗口（水位线后纯追加，周期内前缀稳定）
+        6. 尾部动态区（tail_injection 开启时）：实体画像 → 短期记忆 →
+           语义召回/技能 → 上下文提供者 → 溢出/安全提示（每会话重建，
+           位于历史之后，不击穿历史前缀）
+        tail_injection 关闭时回退旧布局：动态内容在历史之前。
 
         Args:
             prefetched_conversation: 外部已获取的对话历史（避免重复拉取）。
                 若为 None，内部自动从 DB 获取。
+            profile_msgs: 实体画像消息（每实体一条，与 memory_msgs 分离放置）。
+            summary_row: 对话摘要行（{summary, watermarks, folded_count}）。
         """
+        profile_msgs = profile_msgs or []
         system_msgs: List[Dict] = []
         # 人设块与工具块各自独立断点：工具集变化只击穿工具块及其后内容，
         # 人设块（最大最稳定的前缀段）保持命中（Anthropic 断点限额 4 内用 3）
@@ -474,15 +504,42 @@ class ContextAssembly:
                 context_msg["cache_control"] = {"type": "ephemeral"}
             system_msgs.append(context_msg)
 
+        # 对话摘要块：折叠周期内字节固定，作为历史前缀的缓存锚点。
+        # 紧跟头部 system 块放置，发送时并入 system 参数且逐块保留断点
+        summary_msgs: List[Dict] = []
+        if summary_row and summary_row.get("summary"):
+            folded = int(summary_row.get("folded_count", 0) or 0)
+            summary_msg: Dict = {
+                "role": "system",
+                "content": (
+                    f"[早期对话摘要] 以下是本对话更早内容的摘要（共 {folded} 条已折叠，"
+                    "摘要随对话推进周期性更新）：\n"
+                    f"{summary_row['summary']}\n"
+                    "- 窗口外原文仍完整存于数据库：recall_conversation 按语义检索，"
+                    "lookup_message 按 message_id 精确取回"
+                ),
+                "_layer": "summary",
+            }
+            summary_msgs.append(summary_msg)
+
+        # 记忆状态区块（心跳维护，周期性变化）：尾部动态区独立注入，
+        # 留在 context 层会随每次计数更新击穿其后的摘要与历史前缀
+        status_msgs: List[Dict] = []
+        if status_text:
+            status_msgs.append({
+                "role": "system", "content": status_text, "_layer": "status",
+            })
+
         # volatile 层：本 scope 的短期记忆片段（角色按存储原样使用，主流格式不做转换）
         volatile_msgs: List[Dict] = self._work_memory.get_temporary(scope)
 
         # 上下文提供者注入（实体自驱数据，每轮拉取最新快照）
+        provider_msgs: List[Dict] = []
         try:
             from core.context_provider import ContextProviderRegistry
             snippets, _provider_metrics = await ContextProviderRegistry.collect(scope)
             for snippet in snippets:
-                volatile_msgs.append({"role": "system", "content": snippet})
+                provider_msgs.append({"role": "system", "content": snippet})
         except Exception as exc:
             log(f"上下文提供者收集失败: {exc}", "DEBUG", tag="PFC")
 
@@ -522,7 +579,8 @@ class ContextAssembly:
             log(f"会话令牌包裹失败（本轮历史无防伪标记）: {exc}", "WARNING", tag="安全")
 
         # 上下文溢出提示：对话历史达到窗口上限时，告知窗口外真实数量与检索路径
-        # （窗口外消息仍完整存于 DB——软归档感知，而非沉默丢弃）
+        # （窗口外消息仍完整存于 DB——软归档感知，而非沉默丢弃；
+        #  摘要窗口开启时已折叠部分由摘要块覆盖，口径需扣除避免与摘要块矛盾）
         overflow_hint: List[Dict] = []
         if max_size > 0 and len(conversation_list) >= max_size:
             hidden = 0
@@ -531,9 +589,18 @@ class ContextAssembly:
                 hidden = max(0, total - len(conversation_list))
             except Exception as exc:
                 log(f"窗口外消息计数失败: {exc}", "DEBUG", tag="PFC")
-            hidden_note = f"，另有 {hidden} 条更早消息在窗口外" if hidden else ""
+            folded = int((summary_row or {}).get("folded_count", 0) or 0)
+            uncovered = max(0, hidden - folded)
+            if folded:
+                hidden_note = (
+                    f"，另有 {uncovered} 条未覆盖消息在窗口外"
+                    f"（更早的 {folded} 条已折叠为上方摘要）" if uncovered
+                    else f"（更早的 {folded} 条已折叠为上方摘要）"
+                )
+            else:
+                hidden_note = f"，另有 {hidden} 条更早消息在窗口外" if hidden else ""
             overflow_hint = [{"role": "system", "content": (
-                f"[上下文溢出] 当前仅显示最近 {max_size} 条对话{hidden_note}，更早的消息已不在视野内。\n"
+                f"[上下文溢出] 当前仅显示最近 {max_size} 条对话{hidden_note}。\n"
                 "- 可通过 recall_conversation 按语义搜索窗口外的对话内容\n"
                 "- 看到 [reply_to:xxx] / 已知 message_id 时，用 lookup_message 精确取回该条（含窗口外）\n"
                 "- 建议使用 memorize 将对话中的重要信息存入长期记忆，避免遗忘\n"
@@ -541,9 +608,13 @@ class ContextAssembly:
             )}]
 
         # 上下文快照分类标签（normalize_for_send 发送前剥离，LLM 不可见）
-        # stable/context 已在构建时标记，此处只标 volatile/overflow/security
+        # stable/context/summary 已在构建时标记，此处标 profile/volatile/provider/overflow/security/memory/conversation
+        for m in profile_msgs:
+            m["_layer"] = "profile"
         for m in volatile_msgs:
             m["_layer"] = "volatile"
+        for m in provider_msgs:
+            m["_layer"] = "provider"
         for m in overflow_hint:
             m["_layer"] = "overflow"
         for m in security_hint:
@@ -553,10 +624,30 @@ class ContextAssembly:
         for m in conversation_list:
             m["_layer"] = "conversation"
 
-        all_msgs = (
-            system_msgs + volatile_msgs + overflow_hint + security_hint
-            + memory_msgs + conversation_list
-        )
+        # 第 4 缓存断点：打在对话历史末尾（原始窗口纯追加，断点随窗口前移，
+        # 下轮读取覆盖 tools+stable+摘要+历史整段前缀；仅折叠周期切换时重写）。
+        # 无历史时回退到摘要块。
+        if anthropic_breakpoint and _summary_breakpoint_enabled():
+            if conversation_list:
+                conversation_list[-1]["cache_control"] = {"type": "ephemeral"}
+            elif summary_msgs:
+                summary_msgs[0]["cache_control"] = {"type": "ephemeral"}
+
+        if _tail_injection_enabled():
+            # 动静分离布局：每会话重建的动态内容全部在历史之后，
+            # stable 三段 + 摘要块 + 原始窗口构成缓存前缀（上下文的 token 大头）
+            all_msgs = (
+                system_msgs + summary_msgs + conversation_list
+                + status_msgs + profile_msgs + volatile_msgs + memory_msgs + provider_msgs
+                + overflow_hint + security_hint
+            )
+        else:
+            # 旧布局回退：动态内容在历史之前
+            all_msgs = (
+                system_msgs + status_msgs + volatile_msgs + provider_msgs + overflow_hint
+                + security_hint + profile_msgs + memory_msgs
+                + summary_msgs + conversation_list
+            )
 
         # 确保最后一条非 system 消息不是 assistant 角色，防止 Anthropic prefill 400 错误。
         # （规则实现已收拢至 message_schema.fix_trailing_assistant，此处就地委托）
@@ -659,12 +750,12 @@ class ContextAssembly:
                         "建议优先完成核心操作，不必要的步骤可跳过。"
                     )
 
-        # 工具态势摘要
+        # 工具态势摘要（名单截断展示： exec_context 每轮重建，全量名单是纯增量 token）
         tool_parts: list[str] = []
         if ta.tag_activated_tools:
-            tool_parts.append(f"标签激活: {', '.join(sorted(ta.tag_activated_tools))}")
+            tool_parts.append(f"标签激活: {_cap_names(sorted(ta.tag_activated_tools))}")
         if ta.discovered_tools:
-            tool_parts.append(f"动态发现: {', '.join(sorted(ta.discovered_tools))}")
+            tool_parts.append(f"动态发现: {_cap_names(sorted(ta.discovered_tools))}")
         hot = ta.get_hot_tool_names()[:5]
         if hot:
             tool_parts.append(f"热工具: {', '.join(hot)}")
@@ -728,4 +819,4 @@ class ContextAssembly:
         else:
             lines.append(_NO_PENDING_HINT)
 
-        return {"role": "system", "content": "\n".join(lines)}
+        return {"role": "system", "content": "\n".join(lines), "_layer": "exec_context"}

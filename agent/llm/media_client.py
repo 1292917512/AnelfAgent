@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from agent.llm.adapter_base import AdapterRequest, host_root
+from agent.llm.adapter_base import AdapterRequest
 from agent.llm.image_adapters import ImageGenAdapter, resolve_image_adapter
 from agent.llm.music_adapters import MusicAdapter, MusicParams, MusicResult, resolve_music_adapter
 from agent.llm.speech_adapters import (
@@ -54,6 +54,9 @@ class MediaClient:
         media_protocol: str = "",
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        # host 规则匹配的适配器依赖 netloc 非空；缺 scheme 会静默落到兜底适配器
+        if self._base_url and not self._base_url.startswith(("http://", "https://")):
+            raise ValueError(f"媒体端点 base_url 缺少 http(s):// 前缀: {base_url!r}")
         self._api_key = api_key
         self._timeout = timeout
         self._proxy_url = proxy_url
@@ -124,7 +127,8 @@ class MediaClient:
         url = f"{self._base_url}/audio/transcriptions"
         async with self._http_client() as client:
             files = {"file": (file_name, audio_data, mime_type)}
-            data = {"model": model}
+            # 部分服务对空 model 字段报错，空时不传
+            data = {"model": model} if model else {}
             resp = await client.post(url, headers=self._headers(), files=files, data=data)
             self._check_resp(resp)
             result = resp.json()
@@ -194,7 +198,7 @@ class MediaClient:
             async with self._http_client() as client:
                 resp = await client.post(
                     req.url,
-                    headers={**self._headers(), "Content-Type": "application/json"},
+                    headers={**self._headers(), **(req.headers or {})},
                     json=req.payload,
                 )
                 self._check_resp(resp)
@@ -213,7 +217,11 @@ class MediaClient:
                 await asyncio.sleep(_TTS_ASYNC_POLL_INTERVAL)
                 req = adapter.build_async_query_request(self._base_url, task_id)
                 try:
-                    resp = await client.get(req.url, headers=self._headers(), params=req.params)
+                    resp = await client.get(
+                        req.url,
+                        headers={**self._headers(), **(req.headers or {})},
+                        params=req.params,
+                    )
                 except httpx.TransportError as exc:
                     log(f"tts async poll transport error: {exc}", "DEBUG", tag="媒体")
                     continue
@@ -242,26 +250,22 @@ class MediaClient:
     # ------------------------------------------------------------------
 
     async def upload_voice_file(self, file_path: str, purpose: str) -> int:
-        """上传音频文件（voice_clone / prompt_audio），返回 file_id。"""
+        """上传音频文件（voice_clone / prompt_audio），返回 file_id。
+
+        端点与响应解析由语音协议适配器收口；此处仅负责 multipart 发送。
+        """
+        adapter = self._speech_adapter()
+        req = adapter.build_upload_request(self._base_url, purpose=purpose)
         async with self._http_client(timeout=180.0) as client:
             with open(file_path, "rb") as f:
                 resp = await client.post(
-                    f"{host_root(self._base_url)}/v1/files/upload",
-                    headers=self._headers(),
+                    req.url,
+                    headers={**self._headers(), **(req.headers or {})},
                     files={"file": (os.path.basename(file_path), f)},
-                    data={"purpose": purpose},
+                    data=req.params,
                 )
             self._check_resp(resp)
-        result = resp.json()
-        base_resp = result.get("base_resp") or {}
-        if base_resp.get("status_code", 0) != 0:
-            raise RuntimeError(
-                f"MiniMax API 错误 ({base_resp.get('status_code')}): {base_resp.get('status_msg', '')}"
-            )
-        file_id = (result.get("file") or {}).get("file_id")
-        if file_id is None:
-            raise ValueError(f"文件上传响应中无 file_id: {result}")
-        return int(file_id)
+        return adapter.parse_upload_file_id(resp.json())
 
     async def voice_clone(
         self,
@@ -399,10 +403,7 @@ class MediaClient:
             "top_n": min(top_n, len(documents)),
         }
         async with self._http_client() as client:
-            resp = await client.post(
-                url, headers={**self._headers(), "Content-Type": "application/json"},
-                json=payload,
-            )
+            resp = await client.post(url, headers=self._headers(), json=payload)
             self._check_resp(resp)
             result = resp.json()
             return result.get("results", [])
@@ -417,19 +418,16 @@ class MediaClient:
 
     async def _send(self, req: AdapterRequest) -> Dict[str, Any]:
         """按适配器请求描述发送 HTTP 请求并返回响应 JSON。"""
+        headers = {**self._headers(), **(req.headers or {})}
         async with self._http_client() as client:
             if req.method == "GET":
-                resp = await client.get(req.url, headers=self._headers(), params=req.params)
+                resp = await client.get(req.url, headers=headers, params=req.params)
             elif req.method == "DELETE":
-                resp = await client.delete(req.url, headers=self._headers(), params=req.params)
+                resp = await client.delete(req.url, headers=headers, params=req.params)
             else:
-                resp = await client.post(
-                    req.url,
-                    headers={**self._headers(), "Content-Type": "application/json"},
-                    json=req.payload,
-                )
+                resp = await client.post(req.url, headers=headers, json=req.payload)
             self._check_resp(resp)
-        return resp.json()
+        return resp.json() if resp.content else {}
 
     async def generate_video(
         self,
@@ -485,7 +483,11 @@ class MediaClient:
                 await asyncio.sleep(_VIDEO_POLL_INTERVAL)
                 req = adapter.build_query_request(self._base_url, task_id)
                 try:
-                    resp = await client.get(req.url, headers=self._headers(), params=req.params)
+                    resp = await client.get(
+                        req.url,
+                        headers={**self._headers(), **(req.headers or {})},
+                        params=req.params,
+                    )
                 except httpx.TransportError as exc:
                     log(f"video poll transport error: {exc}", "DEBUG", tag="媒体")
                     continue
@@ -557,17 +559,6 @@ class MediaClient:
         """解析当前凭据对应的图片协议适配器。"""
         return resolve_image_adapter(self._base_url, self._media_protocol)
 
-    async def _post_json(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """发送 JSON POST 请求并返回响应 JSON。"""
-        async with self._http_client() as client:
-            resp = await client.post(
-                url,
-                headers={**self._headers(), "Content-Type": "application/json"},
-                json=payload,
-            )
-            self._check_resp(resp)
-        return resp.json()
-
     async def generate_image(
         self,
         prompt: str,
@@ -587,7 +578,7 @@ class MediaClient:
             num_inference_steps=num_inference_steps,
             cfg=cfg,
         )
-        return adapter.extract_urls(await self._post_json(req.url, req.payload))
+        return adapter.extract_urls(await self._send(req))
 
     async def edit_image(
         self,
@@ -617,7 +608,7 @@ class MediaClient:
             num_inference_steps=num_inference_steps,
             cfg=cfg,
         )
-        return adapter.extract_urls(await self._post_json(req.url, req.payload))
+        return adapter.extract_urls(await self._send(req))
 
     async def download_and_save_images(
         self,
@@ -678,10 +669,9 @@ class MediaClient:
         log(f"音频已保存: {rel} ({len(audio_bytes)} bytes)", "DEBUG", tag="媒体")
         return rel
 
-    @staticmethod
-    async def download_to_bytes(url: str) -> bytes:
-        """Download URL content to bytes."""
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(url)
-            MediaClient._check_resp(resp)
+    async def download_to_bytes(self, url: str) -> bytes:
+        """Download URL content to bytes（走客户端代理/超时配置）。"""
+        async with self._http_client(timeout=60.0) as client:
+            resp = await client.get(url, follow_redirects=True)
+            self._check_resp(resp)
             return resp.content

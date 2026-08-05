@@ -137,6 +137,19 @@ class SqliteBackend:
                     );
                     """
                 )
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS conversation_summary (
+                      scope_type TEXT NOT NULL,
+                      scope_id TEXT NOT NULL,
+                      summary TEXT NOT NULL DEFAULT '',
+                      watermarks_json TEXT NOT NULL DEFAULT '{}',
+                      folded_count INTEGER NOT NULL DEFAULT 0,
+                      updated_ts_ns INTEGER NOT NULL DEFAULT 0,
+                      PRIMARY KEY(scope_type, scope_id)
+                    );
+                    """
+                )
                 await db.commit()
                 self._initialized = True
 
@@ -282,6 +295,167 @@ class SqliteBackend:
         rows = await cursor.fetchall()
         rows = list(reversed(rows))
         return [{"role": r[0], "content": r[1], "ts_ns": r[2]} for r in rows]
+
+    # ------------------------------------------------------------------
+    # 对话摘要窗口（固定摘要块 + 水位线后原始消息）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _watermark_key(scope_type: str, scope_id: str) -> str:
+        """水位线字典键（成员 scope 维度）。"""
+        return f"{scope_type}:{scope_id}"
+
+    async def get_conversation_summary(
+        self, *, scope_type: str, scope_id: str
+    ) -> Optional[dict]:
+        """读取对话摘要行，返回 {summary, watermarks, folded_count} 或 None。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT summary, watermarks_json, folded_count FROM conversation_summary "
+            "WHERE scope_type=? AND scope_id=?",
+            (scope_type, scope_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        import json as _json
+        try:
+            watermarks = _json.loads(row[1] or "{}")
+            if not isinstance(watermarks, dict):
+                watermarks = {}
+        except (ValueError, TypeError):
+            watermarks = {}
+        return {
+            "summary": row[0] or "",
+            "watermarks": {str(k): int(v) for k, v in watermarks.items()},
+            "folded_count": int(row[2] or 0),
+        }
+
+    async def upsert_conversation_summary(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        summary: str,
+        watermarks: dict,
+        folded_count: int,
+    ) -> None:
+        """写入/更新对话摘要行（摘要文本 + 各成员 scope 水位线 + 累计折叠条数）。"""
+        import json as _json
+        db = await self._get_db()
+        await db.execute(
+            """
+            INSERT INTO conversation_summary(
+                scope_type, scope_id, summary, watermarks_json, folded_count, updated_ts_ns
+            ) VALUES(?,?,?,?,?,?)
+            ON CONFLICT(scope_type, scope_id) DO UPDATE SET
+              summary=excluded.summary,
+              watermarks_json=excluded.watermarks_json,
+              folded_count=excluded.folded_count,
+              updated_ts_ns=excluded.updated_ts_ns
+            """,
+            (
+                scope_type, scope_id, summary,
+                _json.dumps(watermarks, ensure_ascii=False),
+                int(folded_count), time.time_ns(),
+            ),
+        )
+        await db.commit()
+
+    @staticmethod
+    def _watermark_where(
+        scopes: list[tuple[str, str]], watermarks: Optional[dict]
+    ) -> tuple[str, list]:
+        """构造多 scope + 各 scope 水位线(ts_ns 下限)的 WHERE 子句与参数。"""
+        marks = watermarks or {}
+        clauses: list[str] = []
+        params: list = []
+        for st, sid in scopes:
+            clauses.append("(scope_type=? AND scope_id=? AND ts_ns>?)")
+            params.extend((st, sid, int(marks.get(f"{st}:{sid}", 0) or 0)))
+        return " OR ".join(clauses), params
+
+    async def fetch_conversation_after_watermarks(
+        self,
+        *,
+        scopes: list[tuple[str, str]],
+        watermarks: Optional[dict],
+        limit: int,
+    ) -> list[dict]:
+        """取各成员 scope 水位线之后的消息，合并按时间取最近 limit 条（正序返回）。"""
+        if not scopes:
+            return []
+        db = await self._get_db()
+        where, params = self._watermark_where(scopes, watermarks)
+        params.append(int(limit))
+        cursor = await db.execute(
+            f"""
+            SELECT scope_type, scope_id, role, content, ts_ns
+            FROM conversation_messages
+            WHERE {where}
+            ORDER BY ts_ns DESC
+            LIMIT ?
+            """,
+            params,
+        )
+        rows = list(reversed(await cursor.fetchall()))
+        return [
+            {
+                "scope_type": r[0], "scope_id": r[1], "role": r[2],
+                "content": r[3], "ts_ns": r[4],
+            }
+            for r in rows
+        ]
+
+    async def fetch_oldest_after_watermarks(
+        self,
+        *,
+        scopes: list[tuple[str, str]],
+        watermarks: Optional[dict],
+        limit: int,
+    ) -> list[dict]:
+        """取各成员 scope 水位线之后的最旧 limit 条（折叠摘要用，正序返回）。"""
+        if not scopes:
+            return []
+        db = await self._get_db()
+        where, params = self._watermark_where(scopes, watermarks)
+        params.append(int(limit))
+        cursor = await db.execute(
+            f"""
+            SELECT scope_type, scope_id, role, content, ts_ns
+            FROM conversation_messages
+            WHERE {where}
+            ORDER BY ts_ns ASC
+            LIMIT ?
+            """,
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "scope_type": r[0], "scope_id": r[1], "role": r[2],
+                "content": r[3], "ts_ns": r[4],
+            }
+            for r in rows
+        ]
+
+    async def count_after_watermarks(
+        self,
+        *,
+        scopes: list[tuple[str, str]],
+        watermarks: Optional[dict],
+    ) -> int:
+        """统计各成员 scope 水位线之后的消息总数（折叠触发判定用）。"""
+        if not scopes:
+            return 0
+        db = await self._get_db()
+        where, params = self._watermark_where(scopes, watermarks)
+        cursor = await db.execute(
+            f"SELECT COUNT(*) FROM conversation_messages WHERE {where}",
+            params,
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
 
     # ------------------------------------------------------------------
     # 实体画像

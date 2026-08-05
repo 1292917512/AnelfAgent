@@ -26,14 +26,25 @@ _SNAPSHOT_DIR = os.path.join("logs", "context_snapshots")
 LAYER_LABELS: Dict[str, str] = {
     "stable": "人设 + 工具提示 + 静态指南（stable 层）",
     "context": "动态便签 + 文件索引（context 层）",
-    "volatile": "短期记忆 + 上下文注入（volatile 层）",
+    "summary": "早期对话摘要（折叠周期内固定）",
+    "conversation": "对话历史（原始窗口）",
+    "status": "记忆系统状态（心跳维护）",
+    "profile": "实体画像注入",
+    "volatile": "短期记忆（volatile 层）",
+    "memory": "语义召回 + 跨频道 + 技能匹配",
+    "provider": "上下文提供者注入",
     "overflow": "上下文溢出提示",
     "security": "会话令牌安全标记",
-    "memory": "语义召回 + 跨频道 + 技能匹配",
-    "conversation": "对话历史",
     "tool_chain": "工具调用链",
     "exec_context": "执行状态上下文",
 }
+
+# 分层在消息序列中的固定顺序（快照 section 排序与缓存前缀估算共用）
+_LAYER_ORDER = [
+    "stable", "context", "summary", "conversation",
+    "status", "profile", "volatile", "memory", "provider",
+    "overflow", "security", "tool_chain", "exec_context",
+]
 
 
 # ======================================================================
@@ -42,16 +53,29 @@ LAYER_LABELS: Dict[str, str] = {
 
 
 class ContextSnapshot:
-    """上下文快照捕获器（单例）。"""
+    """上下文快照捕获器（单例）。
+
+    两种捕获模式：
+    - 一次性布防（arm）：下一次 LLM 调用捕获后自动解除
+    - 连续捕获（continuous）：开启后每次 LLM 调用都捕获并追加紧凑记录
+      （records.jsonl，供外部调试工具轮询），关闭即零开销
+    """
 
     def __init__(self) -> None:
         self._armed: bool = False
+        self._continuous: bool = False
         self._snapshot: Optional[Dict[str, Any]] = None
         self._lock = asyncio.Lock()
+        # 上一次快照的 section 哈希（layer → sha1 前缀），用于逐 section 变更对比
+        self._last_section_hashes: Dict[str, str] = {}
 
     @property
     def armed(self) -> bool:
         return self._armed
+
+    @property
+    def continuous(self) -> bool:
+        return self._continuous
 
     @property
     def has_snapshot(self) -> bool:
@@ -69,6 +93,11 @@ class ContextSnapshot:
             self._armed = False
             log("上下文快照已取消布防", "DEBUG", tag="快照")
 
+    def set_continuous(self, enabled: bool) -> None:
+        """开关连续捕获模式（每次 LLM 调用都捕获快照并追加记录）。"""
+        self._continuous = enabled
+        log(f"上下文快照连续捕获: {'开启' if enabled else '关闭'}", "DEBUG", tag="快照")
+
     async def try_capture(
         self,
         messages: List[Dict],
@@ -77,14 +106,15 @@ class ContextSnapshot:
     ) -> bool:
         """尝试捕获（在 _invoke_llm_unified 中 normalize 前调用）。
 
-        未布防时立即返回 False（零开销）。
-        捕获成功后自动解除布防（one-shot）并持久化。
+        未布防且未开启连续捕获时立即返回 False（零开销）。
+        一次性布防捕获后自动解除；连续模式持续捕获并追加紧凑记录。
         """
-        if not self._armed:
+        if not self._armed and not self._continuous:
             return False
 
         async with self._lock:
-            if not self._armed:
+            oneshot = self._armed
+            if not oneshot and not self._continuous:
                 return False
 
             sections = self._categorize(messages)
@@ -113,11 +143,14 @@ class ContextSnapshot:
                 "tool_names": tool_names,
                 "tools": tools or [],
                 "sections": sections,
+                "cache": self._build_cache_block(sections),
             }
             self._armed = False
 
             # 持久化（同步文件写放工作线程，避免持锁阻塞事件循环）
             filename = await asyncio.to_thread(self._save, self._snapshot)
+            if self._continuous:
+                await asyncio.to_thread(self._append_record, self._snapshot, filename)
 
             log(
                 f"上下文快照已捕获: {len(messages)} msgs, "
@@ -132,14 +165,16 @@ class ContextSnapshot:
         return self._snapshot
 
     def clear(self) -> None:
-        """清除内存快照 + 解除布防。"""
+        """清除内存快照 + 解除布防 + 重置 section 变更基线。"""
         self._armed = False
         self._snapshot = None
+        self._last_section_hashes = {}
 
     def get_status(self) -> Dict[str, Any]:
         """返回当前状态（API 用）。"""
         return {
             "armed": self._armed,
+            "continuous": self._continuous,
             "has_snapshot": self._snapshot is not None,
             "captured_at": self._snapshot.get("captured_at") if self._snapshot else None,
             "model": self._snapshot.get("model") if self._snapshot else None,
@@ -148,6 +183,68 @@ class ContextSnapshot:
             "message_count": self._snapshot.get("message_count") if self._snapshot else None,
             "tool_count": self._snapshot.get("tool_count") if self._snapshot else None,
         }
+
+    # ------------------------------------------------------------------
+    # 连续捕获记录（紧凑 JSONL，供外部调试工具轮询）
+    # ------------------------------------------------------------------
+
+    _RECORDS_FILE = "records.jsonl"
+
+    @classmethod
+    def _records_path(cls) -> str:
+        return os.path.join(_SNAPSHOT_DIR, cls._RECORDS_FILE)
+
+    @classmethod
+    def _append_record(cls, snapshot: Dict[str, Any], filename: str) -> None:
+        """追加一条紧凑捕获记录（不含消息正文，仅分层统计 + 缓存观测）。"""
+        try:
+            os.makedirs(_SNAPSHOT_DIR, exist_ok=True)
+            record = {
+                "captured_at": snapshot.get("captured_at"),
+                "file": filename,
+                "model": snapshot.get("model"),
+                "estimated_tokens": snapshot.get("estimated_tokens"),
+                "message_count": snapshot.get("message_count"),
+                "tool_count": snapshot.get("tool_count"),
+                "sections": [
+                    {
+                        "layer": s["layer"],
+                        "count": s["count"],
+                        "chars": s["chars"],
+                        "estimated_tokens": s["estimated_tokens"],
+                        "hash": s.get("hash"),
+                        "changed": s.get("changed"),
+                    }
+                    for s in snapshot.get("sections", [])
+                ],
+                "cache": snapshot.get("cache"),
+            }
+            with open(cls._records_path(), "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            log(f"快照记录追加失败: {exc}", "DEBUG", tag="快照")
+
+    @classmethod
+    def list_records(cls, limit: int = 100) -> List[Dict[str, Any]]:
+        """读取最近的连续捕获记录（JSONL 尾部，按时间正序返回）。"""
+        path = cls._records_path()
+        if not os.path.isfile(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            records: List[Dict[str, Any]] = []
+            for line in lines[-max(1, limit):]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except ValueError:
+                    continue
+            return records
+        except Exception:
+            return []
 
     # ------------------------------------------------------------------
     # 持久化
@@ -191,7 +288,7 @@ class ContextSnapshot:
 
     @staticmethod
     def list_snapshots() -> List[Dict[str, Any]]:
-        """列出所有已保存的快照（摘要信息）。"""
+        """列出所有已保存的快照（摘要信息 + 缓存命中简况，供列表直读与外部分析）。"""
         result: List[Dict[str, Any]] = []
         if not os.path.isdir(_SNAPSHOT_DIR):
             return result
@@ -202,6 +299,8 @@ class ContextSnapshot:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                cache = data.get("cache") or {}
+                last_call = cache.get("last_call") or {}
                 result.append({
                     "filename": fname,
                     "captured_at": data.get("captured_at", 0),
@@ -210,6 +309,13 @@ class ContextSnapshot:
                     "estimated_tokens": data.get("estimated_tokens", 0),
                     "message_count": data.get("message_count", 0),
                     "tool_count": data.get("tool_count", 0),
+                    # 缓存简况：捕获前最近一次调用的真实命中（无数据为 None）
+                    "cache_hit_rate": last_call.get("cache_hit_rate"),
+                    "cache_read_input_tokens": last_call.get("cache_read_input_tokens"),
+                    "cache_creation_input_tokens": last_call.get("cache_creation_input_tokens"),
+                    "estimated_cacheable_prefix_tokens": cache.get(
+                        "estimated_cacheable_prefix_tokens"
+                    ),
                 })
             except Exception:
                 continue
@@ -258,9 +364,10 @@ class ContextSnapshot:
     # 分类
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _categorize(messages: List[Dict]) -> List[Dict[str, Any]]:
-        """按 _layer 标签将消息分类为 sections。"""
+    def _categorize(self, messages: List[Dict]) -> List[Dict[str, Any]]:
+        """按 _layer 标签将消息分类为 sections（含内容哈希与上次快照的变更对比）。"""
+        import hashlib
+
         groups: Dict[str, List[Dict]] = {}
 
         for msg in messages:
@@ -288,38 +395,66 @@ class ContextSnapshot:
                 "tool_call_id": msg.get("tool_call_id"),
             })
 
-        ordered_layers = [
-            "stable", "context", "volatile", "overflow", "security",
-            "memory", "conversation", "tool_chain", "exec_context",
-        ]
+        new_hashes: Dict[str, str] = {}
         sections: List[Dict[str, Any]] = []
-        for layer in ordered_layers:
-            msgs = groups.get(layer)
-            if not msgs:
-                continue
+
+        def _make_section(layer: str, msgs: List[Dict]) -> Dict[str, Any]:
             section_chars = sum(m["chars"] for m in msgs)
-            sections.append({
+            digest = hashlib.sha1(
+                "".join(str(m["content"]) for m in msgs).encode("utf-8", errors="replace")
+            ).hexdigest()[:12]
+            new_hashes[layer] = digest
+            previous = self._last_section_hashes.get(layer)
+            return {
                 "layer": layer,
                 "label": LAYER_LABELS.get(layer, layer),
                 "count": len(msgs),
                 "chars": section_chars,
                 "estimated_tokens": section_chars // 4,
+                "hash": digest,
+                # 与上一次快照对比：None=首次快照无基线，True/False=是否变更
+                "changed": None if previous is None else previous != digest,
                 "messages": msgs,
-            })
+            }
+
+        for layer in _LAYER_ORDER:
+            msgs = groups.get(layer)
+            if msgs:
+                sections.append(_make_section(layer, msgs))
 
         for layer, msgs in groups.items():
-            if layer not in ordered_layers:
-                section_chars = sum(m["chars"] for m in msgs)
-                sections.append({
-                    "layer": layer,
-                    "label": layer,
-                    "count": len(msgs),
-                    "chars": section_chars,
-                    "estimated_tokens": section_chars // 4,
-                    "messages": msgs,
-                })
+            if layer not in _LAYER_ORDER:
+                sections.append(_make_section(layer, msgs))
 
+        self._last_section_hashes = new_hashes
         return sections
+
+    @staticmethod
+    def _build_cache_block(sections: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """构建缓存观测区块：上次调用真实缓存用量 + 本次快照的可命中前缀估算。
+
+        可命中前缀估算：从头连续未变更的 section 累计 tokens
+        （近似供应商前缀缓存的最长可复用前缀，供对比"这次变更差多少缓存"）。
+        首次快照无对比基线时为 None（前端显示 —，避免误导性的 0）。
+        """
+        prefix_tokens: Optional[int] = 0
+        for section in sections:
+            if section.get("changed") is False:
+                prefix_tokens += section["estimated_tokens"]
+            elif section.get("changed") is None:
+                # 首次快照无基线：无法判断稳定性
+                prefix_tokens = None
+                break
+            else:
+                break
+
+        from agent.mind.cache_stats import cache_usage_tracker
+        last_call = cache_usage_tracker.last()
+        return {
+            "last_call": last_call,
+            "recent": cache_usage_tracker.summary(),
+            "estimated_cacheable_prefix_tokens": prefix_tokens,
+        }
 
 
 # 全局单例

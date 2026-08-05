@@ -302,3 +302,18 @@ def test_provider_specific_returns_none_for_unsupported_models() -> None:
     assert provider_specific_effort("high", "grok-4") is None
     # 完全无档位时直接返回 None
     assert provider_specific_effort("", "MiniMax-M3") is None
+
+
+def test_clamp_openai_qwen_keeps_xhigh_and_max() -> None:
+    """千问 compatible-mode 官方支持 xhigh/max，通用钳制应放行。"""
+    assert clamp_effort("xhigh", "qwen3.8-max", "openai") == "xhigh"
+    assert clamp_effort("max", "qwen3.8-max", "openai") == "max"
+    assert clamp_effort("high", "qwen3.6-flash", "openai") == "high"
+
+
+def test_clamp_bare_k3_substring_no_false_positive() -> None:
+    """非 Kimi 模型名含 k3 子串时不应被误钳到 off。"""
+    assert clamp_effort("high", "ark3-pro", "openai") == "high"
+    assert clamp_effort("medium", "xx-k3s", "openai") == "medium"
+    # 真正的 Kimi 通道模型仍走供应商拦截（off）
+    assert clamp_effort("high", "kimi-k4", "anthropic") == "off"
