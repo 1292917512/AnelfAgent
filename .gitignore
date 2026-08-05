@@ -93,6 +93,7 @@ entities/minimax/config.json
 entities/ssh/config.json
 entities/ssh/connections.json
 entities/share/config.json
+entities/media/config.json
 
 # === Channel secrets (copy *.example.json and remove .example suffix) ===
 channels/telegram/channel_config.json
