@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from typing import Any, Dict, List, Optional
@@ -50,12 +51,44 @@ def get_config(key: str, default: Any = "") -> Any:
 
 
 class MiniMaxError(Exception):
-    """MiniMax API 错误，携带 status_code 和 status_msg。"""
+    """MiniMax API 错误，携带 status_code、status_msg 与 Trace-Id（排查用）。"""
 
-    def __init__(self, status_code: int, status_msg: str) -> None:
+    def __init__(self, status_code: int, status_msg: str, trace_id: str = "") -> None:
         self.status_code = status_code
         self.status_msg = status_msg
-        super().__init__(f"MiniMax API 错误 [{status_code}]: {status_msg}")
+        self.trace_id = trace_id
+        msg = f"MiniMax API 错误 [{status_code}]: {status_msg}"
+        if trace_id:
+            msg += f" (Trace-Id: {trace_id})"
+        super().__init__(msg)
+
+
+def normalize_search_results(data: Dict[str, Any], query: str, max_results: int) -> Dict[str, Any]:
+    """将 Coding Plan 搜索响应归一化为与 web_search 一致的结构。
+
+    web 实体的搜索兜底链路与媒体库 minimax provider 共用此归一化。
+    """
+    organic = data.get("organic", [])[:max_results]
+    refs = [
+        {
+            "title": item.get("title", ""),
+            "url": item.get("link", ""),
+            "snippet": item.get("snippet", ""),
+            **({"date": item["date"]} if item.get("date") else {}),
+        }
+        for item in organic
+    ]
+    output: Dict[str, Any] = {
+        "query": query,
+        "sources": len(refs),
+        "references": refs,
+    }
+    related = [r.get("query", "") for r in data.get("related_searches", []) if r.get("query")]
+    if related:
+        output["related_searches"] = related[:5]
+    if not refs:
+        output["hint"] = "无结果，建议更换关键词重写 query 后重试"
+    return output
 
 
 class MiniMaxClient:
@@ -85,12 +118,37 @@ class MiniMaxClient:
         }
 
     @staticmethod
-    def _check_resp(data: Dict[str, Any]) -> None:
+    def _check_resp(data: Dict[str, Any], trace_id: str = "") -> None:
         """检查 base_resp，非 0 则抛出 MiniMaxError。"""
         base = data.get("base_resp", {})
         code = base.get("status_code", 0)
         if code != 0:
-            raise MiniMaxError(code, base.get("status_msg", "unknown error"))
+            raise MiniMaxError(code, base.get("status_msg", "unknown error"), trace_id)
+
+    # ------------------------------------------------------------------
+    # 通用请求助手（新端点统一走此方法）
+    # ------------------------------------------------------------------
+
+    async def _post_json(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        *,
+        base_url: str = "",
+        headers: Optional[Dict[str, str]] = None,
+        timeout: float = _TIMEOUT,
+    ) -> Dict[str, Any]:
+        """POST JSON 并检查 base_resp，返回响应数据。"""
+        async with self._http_client(timeout) as client:
+            resp = await client.post(
+                f"{base_url or _BASE_URL}{path}",
+                headers=headers or self._json_headers(),
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self._check_resp(data, resp.headers.get("Trace-Id", ""))
+        return data
 
     # ------------------------------------------------------------------
     # TTS: 同步语音合成 POST /v1/t2a_v2
@@ -442,3 +500,158 @@ class MiniMaxClient:
             "voice_id": data.get("voice_id", voice_id),
             "created_time": data.get("created_time", ""),
         }
+
+    # ------------------------------------------------------------------
+    # Coding Plan: 网页搜索 / 图片理解（Token Plan 订阅配额，独立凭据）
+    # ------------------------------------------------------------------
+
+    @property
+    def coding_plan_configured(self) -> bool:
+        return bool(self._coding_plan_key())
+
+    @staticmethod
+    def _coding_plan_key() -> str:
+        """Coding Plan 凭据：coding_plan_api_key → api_key → MINIMAX_API_KEY 环境变量。"""
+        return (
+            get_config("coding_plan_api_key")
+            or get_config("api_key")
+            or os.environ.get("MINIMAX_API_KEY", "")
+        )
+
+    @staticmethod
+    def _coding_plan_host() -> str:
+        """Coding Plan 站点：coding_plan_api_host → MINIMAX_API_HOST 环境变量 → 国内站。"""
+        return (
+            get_config("coding_plan_api_host")
+            or os.environ.get("MINIMAX_API_HOST", "")
+            or _BASE_URL
+        )
+
+    def _coding_plan_headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._coding_plan_key()}",
+            "MM-API-Source": "AnelfAgent",
+            "Content-Type": "application/json",
+        }
+
+    async def coding_plan_search(self, query: str, timeout: float = _TIMEOUT) -> Dict[str, Any]:
+        """Coding Plan 网页搜索 POST /v1/coding_plan/search，返回完整响应数据。
+
+        Args:
+            query: 搜索关键词（3-5 个关键词效果最佳）
+            timeout: 超时秒数（兜底链路等场景可传更短超时）
+        """
+        return await self._post_json(
+            "/v1/coding_plan/search",
+            {"q": query},
+            base_url=self._coding_plan_host(),
+            headers=self._coding_plan_headers(),
+            timeout=timeout,
+        )
+
+    async def coding_plan_understand_image(self, prompt: str, image_data_url: str) -> str:
+        """Coding Plan 图片理解 POST /v1/coding_plan/vlm，返回分析文本。
+
+        Args:
+            prompt: 分析指令（描述要提取/理解的内容）
+            image_data_url: 图片的 base64 Data URL（仅支持 JPEG/PNG/WebP）
+        """
+        data = await self._post_json(
+            "/v1/coding_plan/vlm",
+            {"prompt": prompt, "image_url": image_data_url},
+            base_url=self._coding_plan_host(),
+            headers=self._coding_plan_headers(),
+        )
+        content = data.get("content", "")
+        if not content:
+            raise MiniMaxError(-1, "响应中无分析内容")
+        return content
+
+
+# ==================================================================
+# 模块级共享设施
+# ==================================================================
+
+_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # VLM 图片上限 10MB
+_IMAGE_MIME_BY_EXT = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+
+
+async def image_to_data_url(image_source: str) -> str:
+    """将图片输入统一转为 base64 Data URL（Coding Plan VLM 入参格式）。
+
+    支持 data URL 直通、http(s) URL 下载、本地绝对路径读取，
+    自动剥离路径前的 @ 前缀，并校验 JPEG/PNG/WebP 格式与大小上限。
+    调用方负责本地路径的预解析与沙箱校验。
+    """
+    src = image_source.strip()
+    if src.startswith("@"):
+        src = src[1:]
+    if src.startswith("data:image/"):
+        return src
+
+    if src.startswith(("http://", "https://")):
+        async with httpx.AsyncClient(timeout=60.0) as hc:
+            resp = await hc.get(src, follow_redirects=True)
+            resp.raise_for_status()
+            if len(resp.content) > _IMAGE_MAX_BYTES:
+                raise ValueError("图片超过 10MB 上限")
+            mime = resp.headers.get("content-type", "").split(";")[0].strip()
+            if mime not in ("image/jpeg", "image/png", "image/webp"):
+                raise ValueError(f"仅支持 JPEG/PNG/WebP 格式，收到: {mime or '未知'}")
+            return f"data:{mime};base64,{base64.b64encode(resp.content).decode()}"
+
+    resolved = src if os.path.isabs(src) else os.path.abspath(src)
+    if not os.path.exists(resolved):
+        raise FileNotFoundError(f"图片文件不存在: {image_source}")
+    ext = os.path.splitext(resolved)[1].lower()
+    mime = _IMAGE_MIME_BY_EXT.get(ext)
+    if mime is None:
+        raise ValueError(f"仅支持 JPEG/PNG/WebP 格式，收到: {ext or '无扩展名'}")
+    with open(resolved, "rb") as f:
+        raw = f.read()
+    if len(raw) > _IMAGE_MAX_BYTES:
+        raise ValueError("图片超过 10MB 上限")
+    return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+
+
+def minimax_error_response(exc: Exception, action: str, hint: str = "") -> str:
+    """MiniMax 错误归因为结构化工具错误 JSON：鉴权/限流/服务端错误精细分类。"""
+    from entities._sdk import ErrorCause, error_from_exception, tool_error
+    if isinstance(exc, MiniMaxError):
+        if exc.status_code == 1004:
+            return tool_error(
+                f"{action}鉴权失败: {exc.status_msg}",
+                cause=ErrorCause.CONFIG, retryable=False,
+                hint="检查 entities/minimax/config.json 的凭据是否与站点（国内/国际）匹配",
+            )
+        return tool_error(
+            f"{action}失败: {exc}",
+            cause=ErrorCause.INTERNAL, retryable=False,
+            hint=hint or None,
+        )
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code in (401, 403):
+            return tool_error(
+                f"{action}鉴权被拒绝 (HTTP {code})",
+                cause=ErrorCause.CONFIG, retryable=False,
+                hint="检查 entities/minimax/config.json 的凭据是否与站点（国内/国际）匹配",
+            )
+        if code == 429:
+            return tool_error(
+                f"{action}触发限流 (HTTP 429)",
+                cause=ErrorCause.NETWORK, retryable=True,
+                hint="稍后重试" + (f"，{hint}" if hint else ""),
+            )
+        if code >= 500:
+            return tool_error(
+                f"{action}服务端错误 (HTTP {code})",
+                cause=ErrorCause.NETWORK, retryable=True,
+                hint=hint or None,
+            )
+    return error_from_exception(exc, action=action, hint=hint or None)

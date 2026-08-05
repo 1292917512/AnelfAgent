@@ -3,5 +3,7 @@
   "default_voice_id": "male-qn-qingse",
   "default_tts_model": "speech-2.8-hd",
   "default_image_model": "image-01",
-  "proxy": ""
+  "proxy": "",
+  "coding_plan_api_key": "",
+  "coding_plan_api_host": ""
 }

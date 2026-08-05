@@ -165,12 +165,13 @@ class MediaClient:
         speed: Optional[float] = None,
         vol: Optional[float] = None,
         pitch: Optional[int] = None,
+        language_boost: str = "",
     ) -> bytes:
         """文字转语音，返回音频字节。
 
         长文本（超过 3000 字符）且协议支持时自动切换异步任务流程。
-        ``voice``/``emotion``/``speed``/``vol``/``pitch`` 由语音协议适配器按需取用；
-        ``references``（声音克隆参考音频）仅 OpenAI 风格协议支持。
+        ``voice``/``emotion``/``speed``/``vol``/``pitch``/``language_boost``
+        由语音协议适配器按需取用；``references``（声音克隆参考音频）仅 OpenAI 风格协议支持。
         """
         adapter = self._speech_adapter()
         params = SpeechParams(
@@ -182,6 +183,7 @@ class MediaClient:
             speed=speed,
             vol=vol,
             pitch=pitch,
+            language_boost=language_boost,
             references=references,
         )
         if adapter.supports_async and len(text) > _TTS_ASYNC_THRESHOLD:

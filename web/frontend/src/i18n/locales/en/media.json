@@ -1,0 +1,54 @@
+{
+  "tabs": {
+    "priority": "Capability Priority",
+    "defaults": "Voice & Defaults",
+    "styles": "Style Presets"
+  },
+  "caps": {
+    "vision": "Image Recognition",
+    "asr": "Speech Recognition",
+    "tts": "Text to Speech",
+    "voice_mgmt": "Voice Management",
+    "music": "Music Generation",
+    "video": "Video Generation",
+    "image_gen": "Image Generation",
+    "image_edit": "Image Editing",
+    "rerank": "Document Rerank"
+  },
+  "providers": {
+    "models": "Configured Models (llm_clients)",
+    "minimax": "MiniMax Direct Module"
+  },
+  "priority": {
+    "hint": "Adjust the provider call order for each capability: the top provider is tried first, with automatic fallback on failure. For model-level priority, use the Models page.",
+    "configured": "Configured",
+    "notConfigured": "Not configured"
+  },
+  "defaults": {
+    "voiceTitle": "Voice Settings",
+    "defaultVoice": "Default Voice ID",
+    "defaultVoiceHint": "Used when text_to_voice is called without a voice; query list_voices for options",
+    "referenceAudio": "Default Clone Reference Audio",
+    "referenceAudioHint": "Takes precedence over the default voice (voice cloning, OpenAI-style protocols on the models chain only)",
+    "referenceText": "Reference Audio Transcript",
+    "paramsTitle": "Default Parameters",
+    "imageSize": "Default Image Size",
+    "imageSizeHint": "Pixel format 1024x1024 or ratio format 1:1 / 16:9 / 9:16",
+    "videoResolution": "Default Video Resolution",
+    "videoResolutionHint": "e.g. 768P / 1080P (Hailuo) or 2K (MiniMax-H3); empty means model default",
+    "videoDuration": "Default Video Duration (seconds)",
+    "videoDurationHint": "0 means model default"
+  },
+  "styles": {
+    "hint": "Style presets are used by the style parameter of generate_image / generate_video: a preset name appends its suffix, otherwise the raw text is appended.",
+    "listTitle": "Presets",
+    "empty": "No style presets yet",
+    "addTitle": "Add Preset",
+    "namePlaceholder": "Preset name (e.g. nekomimi_maid)",
+    "suffixPlaceholder": "Style suffix (English description appended to the prompt)",
+    "add": "Add"
+  },
+  "common": {
+    "save": "Save"
+  }
+}

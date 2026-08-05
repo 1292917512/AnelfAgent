@@ -29,6 +29,7 @@ class SpeechParams:
     speed: Optional[float] = None
     vol: Optional[float] = None
     pitch: Optional[int] = None
+    language_boost: str = ""
     references: Optional[List[Dict[str, str]]] = None
 
 
@@ -192,6 +193,8 @@ class MiniMaxSpeechAdapter(SpeechAdapter):
             "audio_setting": {"format": params.response_format or "mp3"},
             "output_format": "hex",
         }
+        if params.language_boost:
+            payload["language_boost"] = params.language_boost
         return AdapterRequest(url=f"{host_root(base_url)}/v1/t2a_v2", payload=payload)
 
     def extract_audio(self, result: Dict[str, Any]) -> bytes:
@@ -212,6 +215,8 @@ class MiniMaxSpeechAdapter(SpeechAdapter):
             "voice_setting": self._voice_setting(params),
             "audio_setting": {"format": params.response_format or "mp3"},
         }
+        if params.language_boost:
+            payload["language_boost"] = params.language_boost
         return AdapterRequest(url=f"{host_root(base_url)}/v1/t2a_async_v2", payload=payload)
 
     def extract_async_task_id(self, result: Dict[str, Any]) -> str:

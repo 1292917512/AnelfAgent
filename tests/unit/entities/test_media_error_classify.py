@@ -1,9 +1,9 @@
-"""媒体工具错误归因（entities.media.tools._classify_media_errors）单元测试。"""
+"""媒体能力错误归因（entities.media.providers.base.classify_media_errors）单元测试。"""
 
 from __future__ import annotations
 
 from entities._sdk import ErrorCause
-from entities.media.tools import _classify_media_errors
+from entities.media.providers.base import classify_media_errors as _classify_media_errors
 
 
 class TestClassifyMediaErrors:

@@ -14,7 +14,6 @@ _GROUP_ORDER = {
     "planning": 4,
     "web": 5,
     "media": 6,
-    "minimax": 7,
     "os": 8,
     "environment": 9,
     "model_control": 10,

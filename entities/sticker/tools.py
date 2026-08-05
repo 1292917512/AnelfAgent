@@ -81,8 +81,8 @@ def _stickers_dir() -> str:
 
 def _resolve_path(path: str) -> str:
     """复用 media 实体的沙箱感知路径解析。"""
-    from entities.media.tools import _resolve_workspace_path
-    return _resolve_workspace_path(path)
+    from entities.media.utils import resolve_workspace_path
+    return resolve_workspace_path(path)
 
 
 async def _localize_source(source_path: str) -> tuple[str, str]:

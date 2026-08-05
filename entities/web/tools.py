@@ -15,7 +15,14 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Tuple
 
-from entities._sdk import entity, entity_manifest, error_from_exception, tool
+from entities._sdk import (
+    ErrorCause,
+    entity,
+    entity_manifest,
+    error_from_exception,
+    tool,
+    tool_error,
+)
 
 entity("web", "网络工具 - 搜索引擎查询、网页正文抓取、HTTP 请求")
 entity_manifest(
@@ -151,7 +158,7 @@ def _request_ssrf_checked(client: Any, method: str, url: str,
 
 
 @tool(name="web_search", group="web", tags=["web"], concurrency_safe=True)
-def web_search(query: str, max_results: int = 8, search_recency: str = "") -> str:
+def web_search(query: str, max_results: int = 8, search_recency: str = "", provider: str = "auto") -> str:
     """搜索关键词并智能总结，返回 AI 总结和参考来源列表。
 
     自动搜索全网信息并生成结构化总结，同时提供原始参考链接。
@@ -159,15 +166,35 @@ def web_search(query: str, max_results: int = 8, search_recency: str = "") -> st
     时间敏感的问题（比分、新闻、股价等）：query 中应显式包含当前日期/
     年份等时间词（如"2026年7月 世界杯决赛比分"），并配合 search_recency
     限定时间范围，避免搜出赛前预测等过时内容。
+    返回的 provider 字段标识实际数据来源。
 
     Args:
         query:           搜索关键词，支持自然语言；时间敏感问题请显式写入日期/年份
         max_results:     最多返回条数，默认 8，最大 20
         search_recency:  时间过滤，可选 week/month/semiyear/year，默认不限；
-                         注意指定后返回纯结果列表（无 AI 总结）
+                         注意指定后返回纯结果列表（无 AI 总结），且仅百度源支持
+        provider:        搜索源：auto（默认，百度主源失败自动降级 MiniMax 订阅配额源）、
+                         baidu（仅百度）、minimax（仅 MiniMax Coding Plan，不计 API 调用费）
     """
     from entities.web.baidu_search import search_prefer_deep
     max_results = min(max(1, max_results), 20)
+
+    if provider == "minimax":
+        from entities.minimax.client import minimax_error_response
+        from entities.web.search_fallback import minimax_search
+        try:
+            output = minimax_search(query.strip(), max_results)
+            output["provider"] = "minimax"
+            if search_recency:
+                output["note"] = "search_recency 时间过滤仅百度源支持，本次未按时间过滤"
+            return json.dumps(output, ensure_ascii=False)
+        except Exception as e:
+            return minimax_error_response(e, "MiniMax 网页搜索", hint="可改用 provider=auto 或 provider=baidu")
+
+    if provider not in ("auto", "baidu"):
+        return tool_error(f"未知搜索源: {provider}", cause=ErrorCause.PARAM, retryable=False,
+                          hint="可选: auto / baidu / minimax")
+
     try:
         result = search_prefer_deep(query, max_results, search_recency or None)
         refs = [
@@ -178,12 +205,31 @@ def web_search(query: str, max_results: int = 8, search_recency: str = "") -> st
             "query": query,
             "sources": len(refs),
             "references": refs,
+            "provider": "baidu",
         }
         if result["summary"]:
             output["summary"] = result["summary"]
         return json.dumps(output, ensure_ascii=False)
     except Exception as e:
-        return error_from_exception(e, action="搜索")
+        if provider == "baidu":
+            return error_from_exception(e, action="搜索")
+        baidu_err = e  # except-as 变量在块结束会被清除，转存供兜底分支使用
+        log(f"百度搜索失败，尝试 MiniMax 兜底: {baidu_err}", "WARNING", tag="web")
+
+    from entities.web.search_fallback import try_minimax_search
+    fallback = try_minimax_search(query, max_results)
+    if fallback is not None:
+        fallback["provider"] = "minimax"
+        fallback["fallback_from"] = "baidu"
+        fallback["primary_error"] = str(baidu_err)[:200]
+        if search_recency:
+            fallback["note"] = "search_recency 时间过滤仅百度源支持，兜底结果未按时间过滤"
+        return json.dumps(fallback, ensure_ascii=False)
+    return error_from_exception(
+        baidu_err, action="搜索",
+        hint="百度与 MiniMax 兜底均不可用：检查网络连通性，"
+             "以及 entities/web/config.json 的 baidu_api_key 与 entities/minimax/config.json 的 coding_plan_api_key",
+    )
 
 
 # ==================================================================
@@ -199,6 +245,7 @@ def web_fetch(
     timeout: int = 15,
     use_proxy: bool = False,
     start_index: int = 0,
+    respect_robots: bool = False,
 ) -> str:
     """获取指定 URL 的网页正文，自动提取可读内容。
 
@@ -206,12 +253,13 @@ def web_fetch(
     可用 start_index 传回 next_start_index 继续分块读取后续内容。
 
     Args:
-        url:          网页地址（必须以 http:// 或 https:// 开头）
-        extract_mode: 输出格式：markdown（默认，保留结构）、text（纯文本）或 raw（原始内容，不提取正文）
-        max_chars:    最大返回字符数，默认 8000
-        timeout:      超时秒数，默认 15
-        use_proxy:    是否使用代理，默认 False
-        start_index:  从该字符索引开始返回，默认 0，用于长页面分块续读
+        url:            网页地址（必须以 http:// 或 https:// 开头）
+        extract_mode:   输出格式：markdown（默认，保留结构）、text（纯文本）或 raw（原始内容，不提取正文）
+        max_chars:      最大返回字符数，默认 8000
+        timeout:        超时秒数，默认 15
+        use_proxy:      是否使用代理，默认 False
+        start_index:    从该字符索引开始返回，默认 0，用于长页面分块续读
+        respect_robots: 是否遵守目标站点 robots.txt 合规检查，默认 False
     """
     import httpx
     max_chars = int(max_chars)
@@ -219,6 +267,17 @@ def web_fetch(
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         return json.dumps({"error": f"仅支持 http/https，收到: {url[:50]}"}, ensure_ascii=False)
+
+    if respect_robots:
+        from entities.web.robots import is_allowed
+        allowed, detail = is_allowed(url, use_proxy=use_proxy)
+        if not allowed:
+            return tool_error(
+                f"robots.txt 合规检查未通过: {detail}",
+                cause=ErrorCause.PERMISSION, retryable=False,
+                robots_disallowed=True,
+                hint="如需强制抓取可传 respect_robots=false，请自行确认合规性",
+            )
 
     ssrf = _ssrf_protection_enabled()
     if ssrf:
@@ -276,20 +335,30 @@ def extract_page_links(
     if not url.startswith(("http://", "https://")):
         return json.dumps({"error": "仅支持 http/https"}, ensure_ascii=False)
 
+    ssrf = _ssrf_protection_enabled()
+    if ssrf:
+        err = _check_ssrf_url(url)
+        if err:
+            return json.dumps({"error": err}, ensure_ascii=False)
+
     try:
         with httpx.Client(
             timeout=float(timeout),
-            follow_redirects=True,
+            follow_redirects=not ssrf,
             headers={"User-Agent": _USER_AGENT},
             **_proxy_kwargs(use_proxy),
         ) as client:
-            resp = client.get(url)
-        ct = resp.headers.get("content-type", "")
+            if ssrf:
+                _, final_url, ct, body = _request_ssrf_checked(client, "GET", url)
+            else:
+                resp = client.get(url)
+                final_url = str(resp.url)
+                ct = resp.headers.get("content-type", "")
+                body = resp.text
         if "text/html" not in ct:
             return json.dumps({"error": f"非 HTML 页面: {ct}"}, ensure_ascii=False)
         from entities.web.content_extractor import extract_links
-        final_url = str(resp.url)
-        links = extract_links(resp.text, base_url=final_url)
+        links = extract_links(body, base_url=final_url)
         total = len(links)
         return json.dumps({"url": final_url, "total_links": total, "returned": min(total, max_links), "links": links[:max_links]}, ensure_ascii=False)
     except httpx.TimeoutException as e:

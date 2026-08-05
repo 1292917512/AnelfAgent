@@ -38,7 +38,6 @@ dependencies = [
     "lark-oapi>=1.5.0",
     "nonebot2[fastapi]>=2.4.4",
     "nonebot-adapter-onebot>=2.4.6",
-    "minimax-coding-plan-mcp>=0.0.4",
     # Cognee 知识图谱记忆后端（默认安装，uv sync 自动拉取）
     "cognee==1.4.0",
     "chardet>=5,<6",
@@ -46,7 +45,6 @@ dependencies = [
     "tiktoken>=0.12.0",
     "pypdf>=6.14.2",
     "python-docx>=1.2.0",
-    "mcp-server-fetch>=2026.7.10",
     # 个人微信（Weixin / iLink Bot API）频道
     "cryptography>=42.0.0",
     "qrcode>=7.4.0",

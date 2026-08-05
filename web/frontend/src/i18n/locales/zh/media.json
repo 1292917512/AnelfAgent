@@ -1,0 +1,54 @@
+{
+  "tabs": {
+    "priority": "能力优先级",
+    "defaults": "音色与默认参数",
+    "styles": "风格预设"
+  },
+  "caps": {
+    "vision": "图片识别",
+    "asr": "语音识别",
+    "tts": "语音合成",
+    "voice_mgmt": "音色管理",
+    "music": "音乐生成",
+    "video": "视频生成",
+    "image_gen": "图片生成",
+    "image_edit": "图片编辑",
+    "rerank": "文档重排序"
+  },
+  "providers": {
+    "models": "模型配置（llm_clients）",
+    "minimax": "MiniMax 直连模块"
+  },
+  "priority": {
+    "hint": "调整各能力的 provider 调用顺序：靠上优先，失败自动降级到下一个。模型级优先级请在「模型」页调整。",
+    "configured": "已配置",
+    "notConfigured": "未配置"
+  },
+  "defaults": {
+    "voiceTitle": "音色配置",
+    "defaultVoice": "默认音色 ID",
+    "defaultVoiceHint": "text_to_voice 未指定 voice 时使用；可用 list_voices 查询",
+    "referenceAudio": "默认克隆参考音频",
+    "referenceAudioHint": "填写后优先于默认音色（声音克隆链路，仅 models 链 OpenAI 风格协议）",
+    "referenceText": "参考音频对应文字",
+    "paramsTitle": "默认参数",
+    "imageSize": "默认图片尺寸",
+    "imageSizeHint": "像素格式 1024x1024 或比例格式 1:1 / 16:9 / 9:16",
+    "videoResolution": "默认视频分辨率",
+    "videoResolutionHint": "如 768P / 1080P（Hailuo）或 2K（MiniMax-H3），留空由模型默认",
+    "videoDuration": "默认视频时长（秒）",
+    "videoDurationHint": "0 表示由模型默认"
+  },
+  "styles": {
+    "hint": "风格预设用于 generate_image / generate_video 的 style 参数：命中预设名时拼接预设后缀，否则按原文拼接。",
+    "listTitle": "预设列表",
+    "empty": "暂无风格预设",
+    "addTitle": "新增预设",
+    "namePlaceholder": "预设名（如 nekomimi_maid）",
+    "suffixPlaceholder": "风格后缀（拼接到提示词末尾的英文描述）",
+    "add": "添加"
+  },
+  "common": {
+    "save": "保存"
+  }
+}

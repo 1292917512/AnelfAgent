@@ -1,154 +1,56 @@
-"""多模态媒体工具：图片识别、语音识别、语音合成、图片生成/编辑、视频生成、文档重排序。"""
+"""多模态媒体库 — 统一工具面。
+
+架构：tools.py（统一接口/参数归一/沙箱校验/产物落盘）
+  → providers.run_capability（按媒体库配置的 provider 优先级链路由）
+  → providers/models.py（llm_clients.json 已配置模型）/ providers/minimax.py（MiniMax 直连模块）
+
+provider 参数：auto（默认，按配置优先级链自动路由+失败降级）或指定 provider 名
+（models/minimax），可在媒体库配置面板调整各能力优先级。
+"""
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
+from entities._sdk import ErrorCause, error_from_exception, tool, tool_error
 
-entity("media", "多模态媒体 - 图片识别、语音转文字、文字转语音、音色管理、音乐生成、图片生成、图片编辑、视频生成、文档重排序")
-
-
-def _get_workspace_root() -> str:
-    try:
-        from core.config import ConfigManager
-        return ConfigManager.get("workspace_root", "workspace")
-    except Exception:
-        return "workspace"
+from . import utils
+from .config import apply_style, get_default, load_config
+from .providers import PROVIDER_NAMES, run_capability
 
 
-def _resolve_workspace_path(path: str) -> str:
-    """解析可能相对于 workspace 或 CWD 的路径。
-
-    沙箱开启时（含绝对路径）统一经 entities/filesystem/paths.py 解析并做沙箱校验，
-    越界时抛 ValueError；沙箱关闭时保持原有解析行为。
-    """
-    if not path:
-        return ""
-    from entities.filesystem import paths as _paths
-    if _paths.sandbox_enabled():
-        ws_abs = os.path.abspath(_get_workspace_root())
-        resolved = _paths.resolve_workspace_path(path, ws_abs)
-        if not _paths.check_sandbox(resolved, ws_abs):
-            raise ValueError(f"沙箱限制: {path} 不在工作目录内")
-        return resolved
-    if os.path.isabs(path):
-        return path
-    ws_root = _get_workspace_root()
-    ws_abs = os.path.abspath(ws_root)
-    candidate = os.path.join(os.getcwd(), path)
-    if os.path.exists(candidate):
-        return candidate
-    ws = os.path.join(ws_abs, path)
-    if os.path.exists(ws):
-        return ws
-    norm = os.path.normpath(path)
-    ws_norm = os.path.normpath(ws_root)
-    if norm.startswith(ws_norm + os.sep):
-        stripped = norm[len(ws_norm + os.sep):]
-        ws2 = os.path.join(ws_abs, stripped)
-        if os.path.exists(ws2):
-            return ws2
-    return candidate
+def _check_provider(provider: str) -> Optional[str]:
+    """校验 provider 参数合法性，非法返回错误 JSON。"""
+    if provider and provider != "auto" and provider not in PROVIDER_NAMES:
+        return tool_error(
+            f"未知 provider: {provider}",
+            cause=ErrorCause.PARAM, retryable=False,
+            hint=f"可选: auto / {' / '.join(PROVIDER_NAMES)}",
+        )
+    return None
 
 
-def _mgr():
-    from entities._sdk import get_llm_manager
-    return get_llm_manager()
-
-
-_MEDIA_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
-_media_config_cache: Optional[dict] = None
-
-
-def _media_config() -> dict:
-    """加载媒体工具配置（默认音色、风格预设），进程级缓存。"""
-    global _media_config_cache
-    if _media_config_cache is None:
-        try:
-            with open(_MEDIA_CONFIG_FILE, encoding="utf-8") as f:
-                _media_config_cache = json.load(f)
-        except Exception:
-            _media_config_cache = {}
-    return _media_config_cache
-
-
-def _apply_style(prompt: str, style: str) -> str:
-    """将风格预设拼接到提示词末尾；未命中预设时按原始风格描述拼接。"""
-    if not style.strip():
-        return prompt
-    presets = _media_config().get("style_presets", {}) or {}
-    suffix = presets.get(style.strip(), style.strip())
-    return f"{prompt}, {suffix}"
-
-
-def _classify_media_errors(errors: Dict[str, str]) -> Tuple[ErrorCause, bool, str]:
-    """根据各模型错误详情推断整体归因，让 AI 拿到可决策的 cause/hint。"""
-    detail = " ".join(errors.values()).lower()
-    if any(k in detail for k in ("http 401", "http 403", "(1004)", "(2049)", "invalid api key", "unauthorized")):
-        return (ErrorCause.CONFIG, False, "API Key 无效或无权限，请检查模型供应商的密钥配置")
-    if any(k in detail for k in ("http 402", "(1008)", "余额", "insufficient")):
-        return (ErrorCause.CONFIG, False, "账户余额不足，请充值后重试")
-    if any(k in detail for k in ("http 422", "(1026)", "(1027)", "敏感")):
-        return (ErrorCause.PARAM, False, "内容触发平台敏感审核，请调整提示词/素材后重试")
-    if "timeout" in detail or "超时" in detail:
-        return (ErrorCause.TIMEOUT, True, "可稍后重试")
-    return (ErrorCause.NETWORK, True, "可稍后重试，或在模型配置中调整该类型模型的优先级/更换模型")
-
-
-async def _media_with_fallback(
-    model_type: str,
-    label: str,
-    fn: Callable[[str, Any], Awaitable[Any]],
-) -> str:
-    """按优先级遍历指定类型的模型，依次尝试 fn(model, client)，第一个成功即返回。
-
-    fn 应返回一个可 JSON 序列化的 dict（含 success=True），或抛出异常触发回退。
-    """
-    pairs = _mgr().iter_media_for_type(model_type)
-    if not pairs:
-        return tool_error(f"未配置 {label} 模型（{model_type}类型）",
-                          cause=ErrorCause.CONFIG, retryable=False,
-                          hint="请先在模型配置中添加对应类型的模型")
-
-    errors: Dict[str, str] = {}
-    for model_name, client in pairs:
-        try:
-            result = await fn(model_name, client)
-            if isinstance(result, dict):
-                result.setdefault("model", model_name)
-                result.setdefault("success", True)
-            return json.dumps(result, ensure_ascii=False)
-        except NotImplementedError:
-            # 协议本身不支持该操作（非单个模型故障），直接向上抛出
-            raise
-        except Exception as exc:
-            detail = str(exc).strip() or type(exc).__name__
-            errors[model_name] = detail[:200]
-            from core.log import log
-            log(f"{label}模型 {model_name} 调用失败，尝试下一个: {detail}", "WARNING", tag="媒体")
-            continue
-
-    cause, retryable, hint = _classify_media_errors(errors)
-    summary = "; ".join(f"{m}: {e}" for m, e in errors.items())
-    return tool_error(f"所有 {label} 模型均调用失败（{summary}）",
-                      cause=cause, retryable=retryable, hint=hint,
-                      errors=errors)
+def _dumps(out: Dict[str, Any]) -> str:
+    return json.dumps(out, ensure_ascii=False)
 
 
 # ==================================================================
-# 图片识别（vision）— 已有回退机制，保持但统一风格
+# 图片识别（vision）
 # ==================================================================
 
 @tool(name="recognize_image", group="media", tags=["media:image", "media:video"], timeout=120.0)
-async def recognize_image(image_path: str = "", prompt: str = "", **kwargs: str) -> str:
+async def recognize_image(image_path: str = "", prompt: str = "", provider: str = "auto", **kwargs: str) -> str:
     """识别/分析图片内容。支持本地文件路径或 URL。
 
     Args:
         image_path: 图片的绝对路径或 URL
         prompt: 可选的分析提示，如"描述图片中的文字"
+        provider: auto（默认，视觉模型链失败自动降级 MiniMax Coding Plan 订阅配额）/
+            models / minimax（直连 Coding Plan，不占视觉模型调用）
     """
     if not image_path:
         image_path = (
@@ -161,97 +63,61 @@ async def recognize_image(image_path: str = "", prompt: str = "", **kwargs: str)
     if image_path.startswith("image:"):
         return tool_error(f"image_path 不需要 'image:' 前缀，请直接传路径: {image_path[6:]}",
                           cause=ErrorCause.PARAM, retryable=False)
+    if not image_path:
+        return tool_error("未提供图片路径或 URL，请使用 image_path 参数",
+                          cause=ErrorCause.PARAM, retryable=False)
+    err = _check_provider(provider)
+    if err:
+        return err
+
+    if not image_path.startswith(("http://", "https://", "data:image/")):
+        try:
+            resolved = utils.resolve_workspace_path(image_path)
+        except ValueError as e:
+            return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
+                              hint="请使用工作目录（workspace）内的路径")
+        if not os.path.exists(resolved):
+            return tool_error(f"文件不存在: {image_path}", cause=ErrorCause.NOT_FOUND,
+                              retryable=False, resolved=resolved)
+        image_path = resolved
+
+    desc_prompt = prompt or "请简要描述这张图片的内容。"
     try:
-        mgr = _mgr()
-        from entities._sdk import get_image_content_class, get_model_type_enum, load_image_from_path
-        ImageContent = get_image_content_class()
-        ModelType = get_model_type_enum()
-
-        if not image_path:
-            return tool_error("未提供图片路径或 URL，请使用 image_path 参数",
-                              cause=ErrorCause.PARAM, retryable=False)
-
-        is_url = image_path.startswith(("http://", "https://"))
-        desc_prompt = prompt or "请简要描述这张图片的内容。"
-
-        all_vision = mgr.get_all_by_type(ModelType.VISION)
-        if not all_vision:
-            return tool_error("未配置视觉模型", cause=ErrorCause.CONFIG, retryable=False,
-                              hint="请先在模型配置中添加视觉（vision）模型")
-
-        last_err = ""
-
-        if is_url:
-            from entities._sdk import download_image_to_base64
-            url_candidates = [c for c in all_vision if c.config.supports_url_vision]
-            if url_candidates:
-                url_img = ImageContent(data=image_path, is_url=True)
-                for vc in url_candidates:
-                    try:
-                        description = await vc.describe_images([url_img], prompt=desc_prompt)
-                        return json.dumps({"success": True, "description": description, "image_path": image_path, "model": vc.config.name}, ensure_ascii=False)
-                    except Exception as exc:
-                        last_err = str(exc)
-                        continue
-
-            b64_img = await download_image_to_base64(image_path)
-            if not b64_img:
-                return tool_error(f"无法下载图片: {image_path}",
-                                  cause=ErrorCause.NETWORK, retryable=True,
-                                  hint="检查图片 URL 是否可访问后重试，或改用本地图片路径")
-            b64_candidates = [c for c in all_vision if c.config.supports_base64_vision]
-            for vc in (b64_candidates or all_vision):
-                try:
-                    description = await vc.describe_images([b64_img], prompt=desc_prompt)
-                    return json.dumps({"success": True, "description": description, "image_path": image_path, "model": vc.config.name}, ensure_ascii=False)
-                except Exception as exc:
-                    last_err = str(exc)
-                    continue
-        else:
-            try:
-                resolved = _resolve_workspace_path(image_path)
-            except ValueError as e:
-                return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
-                                  hint="请使用工作目录（workspace）内的路径")
-            if not os.path.exists(resolved):
-                return tool_error(f"文件不存在: {image_path}", cause=ErrorCause.NOT_FOUND,
-                                  retryable=False, resolved=resolved)
-            img = load_image_from_path(resolved)
-            b64_candidates = [c for c in all_vision if c.config.supports_base64_vision]
-            for vc in (b64_candidates or all_vision):
-                try:
-                    description = await vc.describe_images([img], prompt=desc_prompt)
-                    return json.dumps({"success": True, "description": description, "image_path": image_path, "model": vc.config.name}, ensure_ascii=False)
-                except Exception as exc:
-                    last_err = str(exc)
-                    continue
-
-        return tool_error(f"所有视觉模型均调用失败: {last_err}", retryable=True)
+        out = await run_capability(
+            "vision", "图片识别", provider=provider,
+            image_path=image_path, prompt=desc_prompt,
+        )
+        if out.get("success"):
+            out["image_path"] = image_path
+        return _dumps(out)
     except Exception as e:
         return error_from_exception(e, action="识别图片")
 
 
 # ==================================================================
-# 语音识别 ASR — 带回退
+# 语音识别 ASR
 # ==================================================================
 
 @tool(name="voice_to_text", group="media", tags=["media:voice", "media:audio"])
-async def voice_to_text(audio_source: str = "", **kwargs: str) -> str:
+async def voice_to_text(audio_source: str = "", provider: str = "auto", **kwargs: str) -> str:
     """将语音/音频文件转写为文字（ASR 语音识别）。支持本地文件路径或 URL。
 
     Args:
         audio_source: 音频文件的本地路径（如 workspace/uploads/voice/xxx.ogg）或 URL
+        provider: auto（默认）/ models / minimax
     """
     if not audio_source:
         audio_source = kwargs.get("path", "") or kwargs.get("file_path", "") or kwargs.get("url", "")
     if not audio_source:
         return tool_error("未提供音频路径或 URL", cause=ErrorCause.PARAM, retryable=False)
+    err = _check_provider(provider)
+    if err:
+        return err
 
     is_url = audio_source.startswith(("http://", "https://"))
-
     if not is_url:
         try:
-            resolved = _resolve_workspace_path(audio_source)
+            resolved = utils.resolve_workspace_path(audio_source)
         except ValueError as e:
             return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
                               hint="请使用工作目录（workspace）内的路径")
@@ -261,21 +127,13 @@ async def voice_to_text(audio_source: str = "", **kwargs: str) -> str:
     else:
         resolved = audio_source
 
-    async def _try(model: str, client: Any) -> dict:
-        if is_url:
-            text = await client.transcribe_url(resolved, model=model)
-        else:
-            file_name = os.path.basename(resolved)
-            with open(resolved, "rb") as f:
-                audio_data = f.read()
-            text = await client.transcribe(audio_data, model=model, file_name=file_name)
-        return {"text": text}
-
-    return await _media_with_fallback("asr", "语音识别", _try)
+    return _dumps(await run_capability(
+        "asr", "语音识别", provider=provider, resolved=resolved, is_url=is_url,
+    ))
 
 
 # ==================================================================
-# 语音合成 TTS — 带回退
+# 语音合成 TTS
 # ==================================================================
 
 @tool(name="text_to_voice", group="media", timeout=300.0)
@@ -286,15 +144,18 @@ async def text_to_voice(
     reference_text: str = "",
     emotion: str = "",
     speed: float = 0.0,
+    pitch: int = 0,
+    language_boost: str = "",
+    provider: str = "auto",
 ) -> str:
     """将文字转换为语音音频（TTS 语音合成），保存到本地并返回文件路径。
 
     发声方式（二选一）：
     1. 预置音色：voice 参数（MiniMax 如 male-qn-qingse/female-yujie，可用 list_voices 查询；
        SiliconFlow 如 alex/anna/bella 等）
-    2. 声音克隆：reference_audio 参考音频 + reference_text 对应文字（仅 SiliconFlow）
+    2. 声音克隆：reference_audio 参考音频 + reference_text 对应文字（仅 models 链 OpenAI 风格协议）
 
-    两者都不传时，使用 config.json 中配置的默认音色。超过 3000 字的长文本
+    两者都不传时，使用媒体库配置中的默认音色。超过 3000 字的长文本
     在支持的协议上自动走异步合成。
 
     Args:
@@ -302,11 +163,17 @@ async def text_to_voice(
         voice: 预置音色 ID
         reference_audio: 声音克隆的参考音频（URL 或本地路径），与 voice 互斥
         reference_text: 参考音频中的文字内容（克隆时必须提供）
-        emotion: 情绪（仅 MiniMax）：happy/sad/angry/fearful/disgusted/surprised/calm/fluent
-        speed: 语速 0.5~2.0，0 表示默认 1.0（仅 MiniMax）
+        emotion: 情绪（仅 MiniMax 协议）：happy/sad/angry/fearful/disgusted/surprised/calm/fluent
+        speed: 语速 0.5~2.0，0 表示默认（仅 MiniMax 协议）
+        pitch: 语调 -12~12，0 表示原音色（仅 MiniMax 协议）
+        language_boost: 语种增强（仅 MiniMax 协议）：Chinese/English/Japanese/auto 等
+        provider: auto（默认）/ models / minimax
     """
+    err = _check_provider(provider)
+    if err:
+        return err
     if not voice and not reference_audio:
-        cfg = _media_config()
+        cfg = load_config()
         default_ref = cfg.get("default_reference_audio", "")
         if default_ref:
             reference_audio = default_ref
@@ -318,42 +185,38 @@ async def text_to_voice(
         return tool_error("使用声音克隆时必须提供 reference_text",
                           cause=ErrorCause.PARAM, retryable=False)
 
-    references = None
+    references: Optional[List[Dict[str, str]]] = None
     if reference_audio:
         audio_value = reference_audio
         if not audio_value.startswith(("http://", "https://", "data:audio/")):
             try:
-                resolved = _resolve_workspace_path(audio_value)
+                resolved = utils.resolve_workspace_path(audio_value)
             except ValueError as e:
                 return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
                                   hint="请使用工作目录（workspace）内的路径")
             if not os.path.exists(resolved):
                 return tool_error(f"参考音频文件不存在: {audio_value}",
                                   cause=ErrorCause.NOT_FOUND, retryable=False)
-            import base64
-            import mimetypes
             mime_type = mimetypes.guess_type(os.path.basename(resolved))[0] or "audio/mpeg"
             with open(resolved, "rb") as f:
                 raw = f.read()
             audio_value = f"data:{mime_type};base64,{base64.b64encode(raw).decode()}"
         references = [{"audio": audio_value, "text": reference_text}]
 
-    ws_root = _get_workspace_root()
-    save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "audio")
-
-    async def _try(model: str, client: Any) -> dict:
-        audio_bytes = await client.text_to_speech(
-            text, model=model, voice=voice, references=references,
-            emotion=emotion, speed=speed or None,
-        )
-        path = client.save_audio_file(audio_bytes, save_dir, suffix=".mp3")
-        return {"file_path": path, "size_bytes": len(audio_bytes)}
-
-    return await _media_with_fallback("tts", "语音合成", _try)
+    out = await run_capability(
+        "tts", "语音合成", provider=provider,
+        text=text, voice=voice, references=references,
+        emotion=emotion, speed=speed, pitch=pitch, language_boost=language_boost,
+    )
+    if out.get("success") and isinstance(out.get("audio_bytes"), bytes):
+        audio_bytes = out.pop("audio_bytes")
+        out["file_path"] = utils.save_audio(audio_bytes)
+        out["size_bytes"] = len(audio_bytes)
+    return _dumps(out)
 
 
 # ==================================================================
-# 音色管理（仅 MiniMax 协议支持）
+# 音色管理（MiniMax 协议/模块）
 # ==================================================================
 
 @tool(name="clone_voice", group="media", timeout=300.0)
@@ -361,112 +224,130 @@ async def clone_voice(
     audio_path: str,
     voice_id: str,
     preview_text: str = "",
+    provider: str = "auto",
 ) -> str:
     """音色复刻：用一段音频克隆声音，之后可在 text_to_voice 的 voice 参数中使用该 voice_id。
 
     Args:
-        audio_path: 克隆源音频（本地路径，mp3/m4a/wav，10 秒~5 分钟，≤20MB）
+        audio_path: 克隆源音频（本地路径或 URL，mp3/m4a/wav，10 秒~5 分钟，≤20MB）
         voice_id: 自定义音色 ID（8-256 字符，字母开头，可含数字/横线/下划线）
         preview_text: 可选试听文本（克隆后用新音色朗读，≤1000 字）
+        provider: auto（默认）/ models / minimax
     """
     if not voice_id.strip():
         return tool_error("未提供 voice_id", cause=ErrorCause.PARAM, retryable=False)
-    try:
-        resolved = _resolve_workspace_path(audio_path)
-    except ValueError as e:
-        return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
-                          hint="请使用工作目录（workspace）内的路径")
-    if not os.path.exists(resolved):
-        return tool_error(f"音频文件不存在: {audio_path}", cause=ErrorCause.NOT_FOUND,
-                          retryable=False)
+    err = _check_provider(provider)
+    if err:
+        return err
 
-    async def _try(model: str, client: Any) -> dict:
-        result = await client.voice_clone(
-            resolved, voice_id=voice_id.strip(), preview_text=preview_text, model=model,
-        )
-        return {"voice_id": voice_id.strip(), **result}
+    if audio_path.startswith(("http://", "https://")):
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as hc:
+                resp = await hc.get(audio_path, follow_redirects=True)
+                resp.raise_for_status()
+            resolved = os.path.abspath(utils.save_audio(resp.content, fmt="mp3", prefix="clone_src"))
+        except Exception as e:
+            return error_from_exception(e, action="下载克隆源音频")
+    else:
+        try:
+            resolved = utils.resolve_workspace_path(audio_path)
+        except ValueError as e:
+            return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
+                              hint="请使用工作目录（workspace）内的路径")
+        if not os.path.exists(resolved):
+            return tool_error(f"音频文件不存在: {audio_path}", cause=ErrorCause.NOT_FOUND,
+                              retryable=False)
 
-    try:
-        return await _media_with_fallback("tts", "音色复刻", _try)
-    except NotImplementedError as e:
-        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
-                          hint="音色复刻仅 MiniMax 语音协议支持")
+    return _dumps(await run_capability(
+        "voice_mgmt", "音色复刻", provider=provider,
+        op="clone", resolved=resolved, voice_id=voice_id.strip(), preview_text=preview_text,
+    ))
 
 
 @tool(name="design_voice", group="media", timeout=300.0)
-async def design_voice(prompt: str, preview_text: str, voice_id: str = "") -> str:
+async def design_voice(prompt: str, preview_text: str = "", voice_id: str = "", provider: str = "auto") -> str:
     """音色设计：按文字描述生成新音色，返回 voice_id 与试听音频文件。
 
     Args:
         prompt: 音色描述（如"悬疑小说旁白，低沉磁性的男声"）
-        preview_text: 试听文本（≤500 字，用新音色朗读）
+        preview_text: 试听文本（≤500 字，留空使用默认试听文本）
         voice_id: 可选自定义音色 ID，留空自动生成
+        provider: auto（默认）/ models / minimax
     """
-    if not prompt.strip() or not preview_text.strip():
-        return tool_error("prompt 与 preview_text 均不能为空",
-                          cause=ErrorCause.PARAM, retryable=False)
+    if not prompt.strip():
+        return tool_error("prompt 不能为空", cause=ErrorCause.PARAM, retryable=False)
+    err = _check_provider(provider)
+    if err:
+        return err
+    if not preview_text.strip():
+        preview_text = "你好，这是一段测试语音，用于预览音色效果。"
 
-    ws_root = _get_workspace_root()
-    save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "audio")
-
-    async def _try(model: str, client: Any) -> dict:
-        result = await client.voice_design(
-            prompt=prompt, preview_text=preview_text, voice_id=voice_id.strip(),
-        )
-        out: dict = {"voice_id": result.get("voice_id", "")}
-        trial = result.get("trial_audio")
-        if trial:
-            out["preview_file_path"] = client.save_audio_file(trial, save_dir, suffix=".mp3")
-        return out
-
-    try:
-        return await _media_with_fallback("tts", "音色设计", _try)
-    except NotImplementedError as e:
-        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
-                          hint="音色设计仅 MiniMax 语音协议支持")
+    out = await run_capability(
+        "voice_mgmt", "音色设计", provider=provider,
+        op="design", prompt=prompt, preview_text=preview_text, voice_id=voice_id.strip(),
+    )
+    if out.get("success"):
+        trial = out.pop("trial_audio_bytes", None)
+        if isinstance(trial, bytes):
+            out["preview_file_path"] = utils.save_audio(trial)
+        out.setdefault("hint", f"音色 '{out.get('voice_id')}' 已生成，可在 text_to_voice 的 voice 参数中使用")
+    return _dumps(out)
 
 
 @tool(name="list_voices", group="media")
-async def list_voices(voice_type: str = "all") -> str:
+async def list_voices(voice_type: str = "all", provider: str = "auto") -> str:
     """查询可用音色列表（系统音色/复刻音色/设计音色）。
 
     Args:
         voice_type: system / voice_cloning / voice_generation / all
+        provider: auto（默认）/ models / minimax
     """
-
-    async def _try(model: str, client: Any) -> dict:
-        return await client.list_voices(voice_type.strip() or "all")
-
-    try:
-        return await _media_with_fallback("tts", "音色查询", _try)
-    except NotImplementedError as e:
-        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
-                          hint="音色管理仅 MiniMax 语音协议支持")
+    err = _check_provider(provider)
+    if err:
+        return err
+    out = await run_capability(
+        "voice_mgmt", "音色查询", provider=provider,
+        op="list", voice_type=voice_type.strip() or "all",
+    )
+    if out.get("success"):
+        # 输出裁剪：每类最多 30 条、仅保留关键字段，避免上下文膨胀
+        for category in ("system_voice", "voice_cloning", "voice_generation"):
+            voices = out.get(category)
+            if isinstance(voices, list):
+                out[category] = {
+                    "count": len(voices),
+                    "voices": [
+                        {k: v for k, v in voice.items() if k in ("voice_id", "voice_name", "description", "created_time")}
+                        for voice in voices[:30]
+                    ],
+                }
+        out.setdefault("hint", "可用 media_config(\"set\", \"default_voice\", \"<voice_id>\") 将某个音色设为默认音色")
+    return _dumps(out)
 
 
 @tool(name="delete_voice", group="media")
-async def delete_voice(voice_id: str, voice_type: str = "voice_cloning") -> str:
+async def delete_voice(voice_id: str, voice_type: str = "voice_cloning", provider: str = "auto") -> str:
     """删除复刻/设计的音色（不可恢复）。
 
     Args:
         voice_id: 要删除的音色 ID
         voice_type: voice_cloning（复刻）或 voice_generation（设计）
+        provider: auto（默认）/ models / minimax
     """
     if not voice_id.strip():
         return tool_error("未提供 voice_id", cause=ErrorCause.PARAM, retryable=False)
-
-    async def _try(model: str, client: Any) -> dict:
-        return await client.delete_voice(voice_id.strip(), voice_type.strip() or "voice_cloning")
-
-    try:
-        return await _media_with_fallback("tts", "音色删除", _try)
-    except NotImplementedError as e:
-        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
-                          hint="音色管理仅 MiniMax 语音协议支持")
+    err = _check_provider(provider)
+    if err:
+        return err
+    return _dumps(await run_capability(
+        "voice_mgmt", "音色删除", provider=provider,
+        op="delete", voice_id=voice_id.strip(), voice_type=voice_type.strip() or "voice_cloning",
+    ))
 
 
 # ==================================================================
-# 音乐生成（仅 MiniMax 协议支持）
+# 音乐生成（MiniMax 协议）
 # ==================================================================
 
 @tool(name="generate_music", group="media", timeout=300.0)
@@ -474,6 +355,7 @@ async def generate_music(
     prompt: str = "",
     lyrics: str = "",
     is_instrumental: bool = False,
+    provider: str = "auto",
 ) -> str:
     """音乐/歌曲生成，结果保存到本地并返回文件路径。
 
@@ -486,27 +368,24 @@ async def generate_music(
         prompt: 音乐风格/情绪描述（≤2000 字）
         lyrics: 歌词（\\n 换行，支持 [Verse]/[Chorus] 等结构标签，≤3500 字）
         is_instrumental: 是否纯音乐（默认否）
+        provider: auto（默认）/ models
     """
     if not prompt.strip() and not lyrics.strip():
         return tool_error("prompt 与 lyrics 至少提供一项",
                           cause=ErrorCause.PARAM, retryable=False)
+    err = _check_provider(provider)
+    if err:
+        return err
 
-    ws_root = _get_workspace_root()
-    save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "music")
-
-    async def _try(model: str, client: Any) -> dict:
-        result = await client.generate_music(
-            model=model, prompt=prompt, lyrics=lyrics,
-            is_instrumental=bool(is_instrumental),
-        )
-        path = client.save_audio_file(result.audio, save_dir, suffix=".mp3")
-        return {"file_path": path, "extra_info": result.extra_info}
-
-    try:
-        return await _media_with_fallback("music", "音乐生成", _try)
-    except NotImplementedError as e:
-        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
-                          hint="音乐生成仅 MiniMax 协议支持，请在模型配置中添加 music 类型的 MiniMax 模型")
+    out = await run_capability(
+        "music", "音乐生成", provider=provider,
+        op="generate", prompt=prompt, lyrics=lyrics, is_instrumental=bool(is_instrumental),
+    )
+    if out.get("success") and isinstance(out.get("audio_bytes"), bytes):
+        audio_bytes = out.pop("audio_bytes")
+        out["file_path"] = utils.save_audio(audio_bytes)
+        out["size_bytes"] = len(audio_bytes)
+    return _dumps(out)
 
 
 @tool(name="generate_lyrics", group="media")
@@ -515,6 +394,7 @@ async def generate_lyrics(
     lyrics: str = "",
     title: str = "",
     mode: str = "write_full_song",
+    provider: str = "auto",
 ) -> str:
     """歌词生成：写整首歌词或修改已有歌词（结果可直接用于 generate_music）。
 
@@ -523,54 +403,20 @@ async def generate_lyrics(
         lyrics: 已有歌词（mode=edit 时必填，≤3500 字）
         title: 保留的歌名（可选）
         mode: write_full_song（写整首）或 edit（修改已有歌词）
+        provider: auto（默认）/ models
     """
-
-    async def _try(model: str, client: Any) -> dict:
-        return await client.generate_lyrics(
-            mode=mode.strip() or "write_full_song",
-            prompt=prompt, lyrics=lyrics, title=title,
-        )
-
-    try:
-        return await _media_with_fallback("music", "歌词生成", _try)
-    except NotImplementedError as e:
-        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
-                          hint="歌词生成仅 MiniMax 协议支持，请在模型配置中添加 music 类型的 MiniMax 模型")
+    err = _check_provider(provider)
+    if err:
+        return err
+    return _dumps(await run_capability(
+        "music", "歌词生成", provider=provider,
+        op="lyrics", prompt=prompt, lyrics=lyrics, title=title, mode=mode.strip() or "write_full_song",
+    ))
 
 
 # ==================================================================
-# 视频生成 — 带回退
+# 视频生成
 # ==================================================================
-
-def _to_image_value(path_or_url: str) -> str:
-    """将图片输入规范化为 URL 或 data:base64；本地路径做沙箱校验并读文件转码。"""
-    if path_or_url.startswith(("http://", "https://", "data:image/", "mm_file://")):
-        return path_or_url
-    resolved = _resolve_workspace_path(path_or_url)
-    if not os.path.exists(resolved):
-        raise FileNotFoundError(f"图片不存在: {path_or_url}")
-    import base64
-    import mimetypes
-    mime_type = mimetypes.guess_type(os.path.basename(resolved))[0] or "image/png"
-    with open(resolved, "rb") as f:
-        raw = f.read()
-    return f"data:{mime_type};base64,{base64.b64encode(raw).decode()}"
-
-
-def _parse_subject_reference(value: str) -> List[str]:
-    """解析主体参考图片参数：支持单个路径/URL 或 JSON 字符串数组。"""
-    value = value.strip()
-    if not value:
-        return []
-    if value.startswith("["):
-        try:
-            items = json.loads(value)
-            if isinstance(items, list):
-                return [str(item) for item in items if str(item).strip()]
-        except json.JSONDecodeError:
-            pass
-    return [value]
-
 
 @tool(name="generate_video", group="media", timeout=620.0)
 async def generate_video(
@@ -583,6 +429,7 @@ async def generate_video(
     resolution: str = "",
     ratio: str = "",
     style: str = "",
+    provider: str = "auto",
 ) -> str:
     """根据文字描述生成视频，结果下载到本地并返回文件路径。
 
@@ -595,163 +442,155 @@ async def generate_video(
         first_frame_image: 首帧图片，本地路径或 URL（图生视频）
         last_frame_image: 尾帧图片，本地路径或 URL（首尾帧视频，MiniMax）
         subject_reference: 主体参考图片（MiniMax），单个路径/URL 或 JSON 数组字符串
-        duration: 视频时长（秒），0 表示由模型默认（MiniMax-H3: 4-15，Hailuo: 6 或 10）
-        resolution: 分辨率，如 "2K"（MiniMax-H3）或 "768P"/"1080P"（Hailuo）
+        duration: 视频时长（秒），0 表示用媒体库配置默认或模型默认（MiniMax-H3: 4-15，Hailuo: 6 或 10）
+        resolution: 分辨率，留空用媒体库配置默认；如 "2K"（MiniMax-H3）或 "768P"/"1080P"（Hailuo）
         ratio: 画面比例，如 "16:9"/"9:16"（仅 MiniMax-H3 文生视频有效）
-        style: 可选风格预设名（见 config.json 的 style_presets）或自定义风格描述
+        style: 可选风格预设名（见媒体库配置的 style_presets）或自定义风格描述
+        provider: auto（默认）/ models
     """
-    prompt = _apply_style(prompt, style)
+    err = _check_provider(provider)
+    if err:
+        return err
+    prompt = apply_style(prompt, style)
+    duration = duration or int(get_default("video_duration", 0) or 0)
+    resolution = resolution or str(get_default("video_resolution", ""))
 
     try:
-        first_frame = _to_image_value(first_frame_image or image_url) if (first_frame_image or image_url) else ""
-        last_frame = _to_image_value(last_frame_image) if last_frame_image else ""
-        subjects = [_to_image_value(item) for item in _parse_subject_reference(subject_reference)]
+        first_frame = utils.to_image_value(first_frame_image or image_url) if (first_frame_image or image_url) else ""
+        last_frame = utils.to_image_value(last_frame_image) if last_frame_image else ""
+        subjects = [utils.to_image_value(item) for item in utils.parse_subject_reference(subject_reference)]
     except ValueError as e:
         return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
                           hint="请使用工作目录（workspace）内的路径")
     except FileNotFoundError as e:
         return tool_error(str(e), cause=ErrorCause.NOT_FOUND, retryable=False)
 
-    ws_root = _get_workspace_root()
-    save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "video")
-
-    async def _try(model: str, client: Any) -> dict:
-        video_url = await client.generate_video(
-            prompt,
-            model=model,
-            first_frame_image=first_frame,
-            last_frame_image=last_frame,
-            subject_reference=subjects,
-            duration=duration or None,
-            resolution=resolution,
-            ratio=ratio,
-        )
-        if not video_url:
-            raise RuntimeError("未返回视频地址")
-        file_path = await client.download_and_save_video(video_url, save_dir)
-        return {"file_path": file_path, "video_url": video_url, "prompt": prompt}
-
-    return await _media_with_fallback("video", "视频生成", _try)
+    out = await run_capability(
+        "video", "视频生成", provider=provider,
+        op="generate", prompt=prompt,
+        first_frame_image=first_frame, last_frame_image=last_frame,
+        subject_reference=subjects, duration=duration, resolution=resolution, ratio=ratio,
+    )
+    if out.get("success") and out.get("video_url"):
+        out["file_path"] = await utils.save_video(out["video_url"])
+    return _dumps(out)
 
 
 # ==================================================================
-# 视频任务管理（仅 MiniMax 协议支持）
+# 视频任务管理（MiniMax 协议）
 # ==================================================================
 
 @tool(name="query_video_task", group="media", timeout=300.0)
-async def query_video_task(task_id: str, download: bool = True) -> str:
+async def query_video_task(task_id: str, download: bool = True, provider: str = "auto") -> str:
     """查询视频生成任务状态；任务成功时可下载视频到本地并返回文件路径。
 
     Args:
         task_id: 视频任务 ID（MiniMax 平台任务，由创建任务响应或任务列表获得）
         download: 任务成功时是否下载视频到本地（默认是）
+        provider: auto（默认）/ models
     """
     if not task_id.strip():
         return tool_error("未提供 task_id", cause=ErrorCause.PARAM, retryable=False)
+    err = _check_provider(provider)
+    if err:
+        return err
     from entities._sdk import coerce_bool_arg
     download = coerce_bool_arg(download, True)
 
-    ws_root = _get_workspace_root()
-    save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "video")
-
-    async def _try(model: str, client: Any) -> dict:
-        result = await client.query_video_task(task_id.strip(), model=model)
-        if result.get("status") == "succeeded" and download and result.get("video_url"):
-            result["file_path"] = await client.download_and_save_video(result["video_url"], save_dir)
-        return result
-
-    try:
-        return await _media_with_fallback("video", "视频任务查询", _try)
-    except NotImplementedError as e:
-        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
-                          hint="任务管理仅 MiniMax 视频协议支持")
+    out = await run_capability(
+        "video", "视频任务查询", provider=provider, op="query", task_id=task_id.strip(),
+    )
+    if out.get("success") and out.get("status") == "succeeded" and download and out.get("video_url"):
+        out["file_path"] = await utils.save_video(out["video_url"])
+    return _dumps(out)
 
 
 @tool(name="list_video_tasks", group="media")
-async def list_video_tasks(page_num: int = 1, page_size: int = 20, status: str = "") -> str:
+async def list_video_tasks(page_num: int = 1, page_size: int = 20, status: str = "", provider: str = "auto") -> str:
     """分页查询近 7 天的视频生成任务列表（仅 MiniMax-H3 协议支持）。
 
     Args:
         page_num: 页码，从 1 开始
         page_size: 每页条数
         status: 可选状态过滤：queued/running/succeeded/failed/cancelled/expired
+        provider: auto（默认）/ models
     """
-
-    async def _try(model: str, client: Any) -> dict:
-        return await client.list_video_tasks(
-            model=model,
-            page_num=max(1, int(page_num)),
-            page_size=max(1, int(page_size)),
-            status=status.strip(),
-        )
-
-    try:
-        return await _media_with_fallback("video", "视频任务列表", _try)
-    except NotImplementedError as e:
-        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
-                          hint="任务管理仅 MiniMax 视频协议支持")
+    err = _check_provider(provider)
+    if err:
+        return err
+    return _dumps(await run_capability(
+        "video", "视频任务列表", provider=provider,
+        op="list", page_num=max(1, int(page_num)), page_size=max(1, int(page_size)), status=status.strip(),
+    ))
 
 
 @tool(name="cancel_video_task", group="media")
-async def cancel_video_task(task_id: str) -> str:
+async def cancel_video_task(task_id: str, provider: str = "auto") -> str:
     """取消排队中的视频任务（不计费）或删除已终结的任务记录（仅 MiniMax-H3 协议支持）。
 
     Args:
         task_id: 视频任务 ID
+        provider: auto（默认）/ models
     """
     if not task_id.strip():
         return tool_error("未提供 task_id", cause=ErrorCause.PARAM, retryable=False)
-
-    async def _try(model: str, client: Any) -> dict:
-        return await client.cancel_or_delete_video_task(task_id.strip(), model=model)
-
-    try:
-        return await _media_with_fallback("video", "视频任务取消", _try)
-    except NotImplementedError as e:
-        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False,
-                          hint="任务管理仅 MiniMax 视频协议支持")
+    err = _check_provider(provider)
+    if err:
+        return err
+    return _dumps(await run_capability(
+        "video", "视频任务取消", provider=provider, op="cancel", task_id=task_id.strip(),
+    ))
 
 
 # ==================================================================
-# 图片生成 — 带回退
+# 图片生成
 # ==================================================================
 
 @tool(name="generate_image", group="media", tags=["media:image_gen"])
 async def generate_image(
     prompt: str,
-    image_size: str = "1024x1024",
+    image_size: str = "",
+    n: int = 1,
     num_inference_steps: int = 20,
     style: str = "",
+    reference_image: str = "",
+    provider: str = "auto",
 ) -> str:
-    """根据文字描述生成图片（文生图）。生成结果保存到本地并返回文件路径。
+    """根据文字描述生成图片（文生图），生成结果保存到本地并返回文件路径。
+
+    reference_image 非空时转为人物参考图生图（保持人物特征，仅 minimax 模块支持）。
 
     Args:
         prompt: 图片内容的文字描述
-        image_size: 图片尺寸，如 "1024x1024"、"1664x928"(16:9)、"928x1664"(9:16)
-        num_inference_steps: 推理步数，默认 20，越高越精细但更慢
-        style: 可选风格预设名（见 config.json 的 style_presets，如 nekomimi_maid）
-            或自定义风格描述，用于锁定画风
+        image_size: 图片尺寸，留空用媒体库配置默认；支持像素格式 "1024x1024"、"1664x928"
+            或比例格式 "1:1"/"16:9"/"9:16"（minimax 模块按最近比例映射）
+        n: 生成数量 1~9（仅 minimax 模块生效，models 链由模型决定）
+        num_inference_steps: 推理步数，默认 20（仅 models 链生效），越高越精细但更慢
+        style: 可选风格预设名（见媒体库配置的 style_presets，如 nekomimi_maid）或自定义风格描述
+        reference_image: 人物参考照片的本地路径或 URL（非空=人物参考图生图，仅 minimax 模块）
+        provider: auto（默认）/ models / minimax
     """
-    prompt = _apply_style(prompt, style)
+    err = _check_provider(provider)
+    if err:
+        return err
+    prompt = apply_style(prompt, style)
+    image_size = image_size or str(get_default("image_size", "1024x1024"))
+    n = min(max(1, int(n)), 9)
 
-    ws_root = _get_workspace_root()
-    save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "image")
-
-    async def _try(model: str, client: Any) -> dict:
-        image_results = await client.generate_image(
-            prompt, model=model, image_size=image_size,
-            num_inference_steps=num_inference_steps,
-        )
-        if not image_results:
-            raise RuntimeError("未返回结果")
-        saved_paths = await client.download_and_save_images(image_results, save_dir)
-        return {"file_paths": saved_paths, "prompt": prompt}
-
-    return await _media_with_fallback("image_gen", "图片生成", _try)
+    out = await run_capability(
+        "image_gen", "图片生成", provider=provider,
+        prompt=prompt, image_size=image_size, n=n,
+        num_inference_steps=num_inference_steps, reference_image=reference_image,
+    )
+    if out.get("success") and isinstance(out.get("image_results"), list):
+        out["file_paths"] = await utils.save_images(out.pop("image_results"))
+        if n > 1 and out.get("provider") == "models":
+            out["note"] = "n 参数仅 minimax 模块生效，models 链生成数量由模型决定"
+    return _dumps(out)
 
 
 # ==================================================================
-# 图片编辑 — 带回退
+# 图片编辑
 # ==================================================================
 
 @tool(name="edit_image", group="media", tags=["media:image_edit"])
@@ -759,6 +598,7 @@ async def edit_image(
     image_path: str,
     prompt: str,
     num_inference_steps: int = 20,
+    provider: str = "auto",
 ) -> str:
     """对已有图片按文字指令进行编辑/修改，返回编辑后图片的文件路径。
 
@@ -766,12 +606,16 @@ async def edit_image(
         image_path: 要编辑的图片，本地路径或 URL
         prompt: 编辑指令，描述希望如何修改图片
         num_inference_steps: 推理步数，默认 20
+        provider: auto（默认）/ models
     """
+    err = _check_provider(provider)
+    if err:
+        return err
     if image_path.startswith(("http://", "https://")):
         resolved_image = image_path
     else:
         try:
-            resolved_image = _resolve_workspace_path(image_path)
+            resolved_image = utils.resolve_workspace_path(image_path)
         except ValueError as e:
             return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
                               hint="请使用工作目录（workspace）内的路径")
@@ -779,34 +623,135 @@ async def edit_image(
             return tool_error(f"图片不存在: {image_path}", cause=ErrorCause.NOT_FOUND,
                               retryable=False, resolved=resolved_image)
 
-    ws_root = _get_workspace_root()
-    save_dir = os.path.join(os.path.abspath(ws_root), "uploads", "image")
-
-    async def _try(model: str, client: Any) -> dict:
-        image_results = await client.edit_image(
-            prompt, model=model, image_path=resolved_image,
-            num_inference_steps=num_inference_steps,
-        )
-        if not image_results:
-            raise RuntimeError("未返回结果")
-        saved_paths = await client.download_and_save_images(image_results, save_dir)
-        return {"file_paths": saved_paths, "prompt": prompt, "source_image": image_path}
-
-    return await _media_with_fallback("image_edit", "图片编辑", _try)
+    out = await run_capability(
+        "image_edit", "图片编辑", provider=provider,
+        image_path=resolved_image, prompt=prompt, num_inference_steps=num_inference_steps,
+    )
+    if out.get("success") and isinstance(out.get("image_results"), list):
+        out["file_paths"] = await utils.save_images(out.pop("image_results"))
+        out["source_image"] = image_path
+    return _dumps(out)
 
 
 # ==================================================================
-# 文档重排序 — 带回退
+# 媒体库配置管理
+# ==================================================================
+
+@tool(name="media_config", group="media")
+async def media_config(action: str = "get", key: str = "", value: str = "") -> str:
+    """查看或修改媒体库配置，查询媒体能力矩阵与 provider 状态。
+
+    典型用法：
+    - 规划媒体任务前先 capabilities 查当前可用能力与调用示例
+    - design_voice/clone_voice 创建音色后，set default_voice <voice_id> 设为默认音色
+
+    Args:
+        action: get（全部配置，默认）/ capabilities（能力矩阵：工具选型+参数+示例+实时可用状态）/
+            providers（各 provider 能力与配置状态）/ set（修改指定键）
+        key: set 时必填。可选：default_voice / default_reference_audio / default_reference_text /
+            defaults.image_size / defaults.video_resolution / defaults.video_duration /
+            style_presets.<预设名>（value 为空=删除该预设）/
+            provider_priority.<能力名>（value 为 JSON 数组如 '["models","minimax"]'，
+            能力名: vision/asr/tts/voice_mgmt/music/video/image_gen/image_edit/rerank）
+        value: set 时必填，配置值（provider_priority 用 JSON 数组字符串）
+    """
+    from . import config as media_config_mod
+    action = action.strip().lower() or "get"
+    if action == "get":
+        return _dumps({"success": True, "config": media_config_mod.load_config()})
+    if action == "providers":
+        from .providers import provider_status
+        return _dumps({
+            "success": True,
+            "providers": provider_status(),
+            "provider_priority": media_config_mod.load_config().get("provider_priority", {}),
+        })
+    if action == "capabilities":
+        from .capabilities import CAPABILITY_GUIDE
+        from .providers import get_provider
+        matrix: Dict[str, Any] = {}
+        for cap, guide in CAPABILITY_GUIDE.items():
+            chain = media_config_mod.provider_chain(cap)
+            providers_info = []
+            available = False
+            for name in chain:
+                impl = get_provider(name)
+                if impl is None or cap not in impl.capabilities:
+                    providers_info.append({"name": name, "configured": False, "note": "不支持该能力"})
+                    continue
+                try:
+                    ready = impl.is_configured(cap)
+                except Exception:
+                    ready = False
+                providers_info.append({"name": name, "configured": ready})
+                available = available or ready
+            matrix[cap] = {
+                **guide,
+                "chain": chain,
+                "available": available,
+                "providers": providers_info,
+            }
+        return _dumps({
+            "success": True,
+            "capabilities": matrix,
+            "hint": "available=false 的能力说明链上 provider 均未配置，可用 providers 动作查看详情，"
+                    "或引导主人在媒体库配置面板/模型配置中补齐",
+        })
+    if action != "set":
+        return tool_error(f"未知操作: {action}", cause=ErrorCause.PARAM, retryable=False,
+                          hint="可选: get / capabilities / providers / set")
+    if not key.strip():
+        return tool_error("set 操作必须提供 key", cause=ErrorCause.PARAM, retryable=False)
+    key = key.strip()
+
+    parsed: Any = value
+    if key.startswith("provider_priority."):
+        from .providers.base import ALL_CAPABILITIES
+        cap = key.split(".", 1)[1].strip()
+        if cap not in ALL_CAPABILITIES:
+            return tool_error(f"未知能力名: {cap}", cause=ErrorCause.PARAM, retryable=False,
+                              hint=f"可选: {' / '.join(ALL_CAPABILITIES)}")
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            # 兼容逗号分隔写法
+            parsed = [p.strip() for p in value.split(",") if p.strip()]
+        unknown = [p for p in parsed if isinstance(p, str) and p not in PROVIDER_NAMES]
+        if not isinstance(parsed, list) or unknown:
+            return tool_error(
+                f"provider_priority 值非法: {value}",
+                cause=ErrorCause.PARAM, retryable=False,
+                hint=f"provider 可选: {' / '.join(PROVIDER_NAMES)}，示例 '[\"models\",\"minimax\"]'",
+            )
+
+    try:
+        saved = media_config_mod.update_key(key, parsed)
+    except ValueError as e:
+        return tool_error(str(e), cause=ErrorCause.PARAM, retryable=False)
+    result: Dict[str, Any] = {"success": True, "key": key}
+    top = key.split(".", 1)[0]
+    result["value"] = saved.get(top)
+    if key == "default_voice":
+        result["hint"] = "默认音色已更新，text_to_voice 不传 voice 时将使用该音色"
+    return _dumps(result)
+
+
+# ==================================================================
+# 文档重排序
 # ==================================================================
 
 @tool(name="rerank_search", group="media")
-async def rerank_search(query: str, documents: str) -> str:
+async def rerank_search(query: str, documents: str, provider: str = "auto") -> str:
     """按相关性对文档列表重新排序。documents 应为 JSON 字符串数组。
 
     Args:
         query: 查询语句
         documents: JSON 格式的文档字符串数组，如 '["文档1", "文档2"]'
+        provider: auto（默认）/ models
     """
+    err = _check_provider(provider)
+    if err:
+        return err
     try:
         doc_list = json.loads(documents)
         if not isinstance(doc_list, list):
@@ -816,8 +761,9 @@ async def rerank_search(query: str, documents: str) -> str:
     except json.JSONDecodeError:
         doc_list = [d.strip() for d in documents.split("\n") if d.strip()]
 
-    async def _try(model: str, client: Any) -> dict:
-        results = await client.rerank(query, doc_list, model=model)
-        return {"query": query, "results": results}
-
-    return await _media_with_fallback("rerank", "文档重排序", _try)
+    out = await run_capability(
+        "rerank", "文档重排序", provider=provider, query=query, documents=doc_list,
+    )
+    if out.get("success"):
+        out.setdefault("query", query)
+    return _dumps(out)
