@@ -42,12 +42,6 @@ def _tail_injection_enabled() -> bool:
     return get_config_bool("context_tail_injection_enabled", True)
 
 
-def _summary_breakpoint_enabled() -> bool:
-    """对话摘要块 Anthropic 缓存断点开关（第 4 断点）。"""
-    from core.config import get_config_bool
-    return get_config_bool("prompt_cache_summary_breakpoint", True)
-
-
 def _cap_names(names: List[str], limit: int = 8) -> str:
     """工具名列表截断展示：超限显示前 limit 个 + 总数（AI 只需感知规模，无需全量名单）。"""
     if len(names) <= limit:
@@ -192,6 +186,26 @@ _SESSION_NOTIFY_HINT = (
 )
 
 
+from agent.mind.context_pipeline import (
+    VOL_HISTORY,
+    VOL_LOW,
+    VOL_MESSAGE,
+    VOL_PERIODIC,
+    VOL_SESSION,
+    VOL_STABLE,
+    ContextInput,
+    ContextPipeline,
+    context_block,
+)
+
+# legacy 布局的变动率覆盖表（tail_injection 关闭时）：动态块移到历史之前
+_LEGACY_VOLATILITY: Dict[str, int] = {
+    "status": 24, "volatile": 25, "provider": 26, "overflow": 27,
+    "security": 28, "profile": 29, "memory": 30, "summary": 31,
+    "conversation": 32,
+}
+
+
 class ContextAssembly:
     """LLM 上下文组装（PFC 上下文面组件）。"""
 
@@ -208,6 +222,9 @@ class ContextAssembly:
         self._conversation_data = conversation_data
         # stable_fingerprint 版本门控缓存：(tools_version, activation_version, models_summary, direct_vision) → hash
         self._fp_cache: Optional[tuple[int, int, str, bool, str]] = None
+        # 上下文构建管线：默认布局（动态在历史之后）+ legacy 回退布局
+        self._pipeline = ContextPipeline(self)
+        self._pipeline_legacy = ContextPipeline(self, volatility_overrides=_LEGACY_VOLATILITY)
 
     # ==================================================================
     # 系统提示构建
@@ -326,9 +343,9 @@ class ContextAssembly:
     def _build_media_rules(direct_vision: bool = False) -> str:
         """根据 EntityRegistry 中的 media:TYPE 标签动态生成媒体处理规则。
 
-        Args:
-            direct_vision: 当前主模型支持视觉时，图片直接以多模态形式呈现，
-                无需强制调用图片识别工具（仍保留工具供深入分析）。
+        文案对视觉/非视觉模型保持静态一致（图片规则同时覆盖两种情形），
+        切换模型视觉能力不再改变 stable 层字节（缓存前缀稳定）；
+        direct_vision 参数保留仅为调用方签名兼容。
         """
         tag_tool_map: dict[str, list[str]] = {}
         for entity in EntityRegistry.get_all():
@@ -347,10 +364,10 @@ class ContextAssembly:
         ]
         for media_type, tool_names in sorted(tag_tool_map.items()):
             tools_str = " / ".join(tool_names)
-            if media_type == "image" and direct_vision:
+            if media_type == "image":
                 lines.append(
-                    f"- [media_type:image] → 图片已直接以视觉形式呈现给你，无需调用工具识别；"
-                    f"如需更深入分析（OCR/细节）仍可调用 {tools_str}"
+                    f"- [media_type:image] → 若图片已直接以视觉形式呈现则无需调用工具识别；"
+                    f"未直接呈现或需更深入分析（OCR/细节）时调用 {tools_str}"
                 )
             else:
                 lines.append(f"- [media_type:{media_type}] → {tools_str}")
@@ -464,190 +481,37 @@ class ContextAssembly:
             summary_row: Optional[Dict] = None,
             status_text: str = "",
     ) -> List[Dict]:
-        """组装完整 LLM 上下文（分层架构），每次调用实时从 DB 获取最新对话历史。
+        """组装完整 LLM 上下文（声明式管线），每次调用实时从 DB 获取最新对话历史。
 
-        消息顺序（按变更频率从静到动排列，供 Prompt Caching 前缀复用）：
-        1. stable-persona 块（人设 + 环境 + 静态指南，长期冻结）[断点1]
-        2. stable-tools 块（工具目录 + 规则，随工具集变化重建）[断点2]
-        3. context 层（便签等低频内容）[断点3]
-        4. 对话摘要块（折叠周期内字节固定）[断点4]
-        5. 对话历史原始窗口（水位线后纯追加，周期内前缀稳定）
-        6. 尾部动态区（tail_injection 开启时）：实体画像 → 短期记忆 →
-           语义召回/技能 → 上下文提供者 → 溢出/安全提示（每会话重建，
-           位于历史之后，不击穿历史前缀）
-        tail_injection 关闭时回退旧布局：动态内容在历史之前。
+        各内容块的顺序由 @context_block 声明的变动率决定（值越大变动越频繁，
+        排越靠后，见 context_pipeline）：
+        stable(0) → context(10) → summary(20) → conversation(30) →
+        status/profile/volatile/memory/provider(40+) → overflow/security(50+)
+        tail_injection 关闭时经变动率覆盖表回退旧布局（动态在历史之前）。
 
         Args:
             prefetched_conversation: 外部已获取的对话历史（避免重复拉取）。
                 若为 None，内部自动从 DB 获取。
             profile_msgs: 实体画像消息（每实体一条，与 memory_msgs 分离放置）。
             summary_row: 对话摘要行（{summary, watermarks, folded_count}）。
+            status_text: 记忆状态区块文本（心跳维护，尾部动态区注入）。
         """
-        profile_msgs = profile_msgs or []
-        system_msgs: List[Dict] = []
-        # 人设块与工具块各自独立断点：工具集变化只击穿工具块及其后内容，
-        # 人设块（最大最稳定的前缀段）保持命中（Anthropic 断点限额 4 内用 3）
-        if persona_text:
-            persona_msg: Dict = {"role": "system", "content": persona_text, "_layer": "stable"}
-            if anthropic_breakpoint:
-                persona_msg["cache_control"] = {"type": "ephemeral"}
-            system_msgs.append(persona_msg)
-        if tools_text:
-            tools_msg: Dict = {"role": "system", "content": tools_text, "_layer": "stable"}
-            if anthropic_breakpoint:
-                tools_msg["cache_control"] = {"type": "ephemeral"}
-            system_msgs.append(tools_msg)
-        if context_text:
-            context_msg: Dict = {"role": "system", "content": context_text, "_layer": "context"}
-            if anthropic_breakpoint:
-                # 第三断点：context 层（便签等低频内容）同样纳入缓存前缀
-                context_msg["cache_control"] = {"type": "ephemeral"}
-            system_msgs.append(context_msg)
-
-        # 对话摘要块：折叠周期内字节固定，作为历史前缀的缓存锚点。
-        # 紧跟头部 system 块放置，发送时并入 system 参数且逐块保留断点
-        summary_msgs: List[Dict] = []
-        if summary_row and summary_row.get("summary"):
-            folded = int(summary_row.get("folded_count", 0) or 0)
-            summary_msg: Dict = {
-                "role": "system",
-                "content": (
-                    f"[早期对话摘要] 以下是本对话更早内容的摘要（共 {folded} 条已折叠，"
-                    "摘要随对话推进周期性更新）：\n"
-                    f"{summary_row['summary']}\n"
-                    "- 窗口外原文仍完整存于数据库：recall_conversation 按语义检索，"
-                    "lookup_message 按 message_id 精确取回"
-                ),
-                "_layer": "summary",
-            }
-            summary_msgs.append(summary_msg)
-
-        # 记忆状态区块（心跳维护，周期性变化）：尾部动态区独立注入，
-        # 留在 context 层会随每次计数更新击穿其后的摘要与历史前缀
-        status_msgs: List[Dict] = []
-        if status_text:
-            status_msgs.append({
-                "role": "system", "content": status_text, "_layer": "status",
-            })
-
-        # volatile 层：本 scope 的短期记忆片段（角色按存储原样使用，主流格式不做转换）
-        volatile_msgs: List[Dict] = self._work_memory.get_temporary(scope)
-
-        # 上下文提供者注入（实体自驱数据，每轮拉取最新快照）
-        provider_msgs: List[Dict] = []
-        try:
-            from core.context_provider import ContextProviderRegistry
-            snippets, _provider_metrics = await ContextProviderRegistry.collect(scope)
-            for snippet in snippets:
-                provider_msgs.append({"role": "system", "content": snippet})
-        except Exception as exc:
-            log(f"上下文提供者收集失败: {exc}", "DEBUG", tag="PFC")
-
-        # 实时从 DB 获取最新对话历史（必须每轮重新获取，不可缓存或外部传入！
-        # 多轮 think_loop 期间用户可能发送新消息，必须确保每轮都能拿到最新对话）
-        # 若调用方已预取（避免同一次 get_recollection 内重复拉取），直接复用
-        conversation_list: List[Dict] = []
-        max_size = 0
-        if prefetched_conversation is not None:
-            conversation_list = prefetched_conversation
-            if self._conversation_data:
-                max_size = self._conversation_data.max_size
-        elif self._conversation_data and anything:
-            max_size = self._conversation_data.max_size
-            conversation_list = await self._conversation_data.get_conversation_record_by_everything(anything)
-            log(f"对话历史: {len(conversation_list)} 条 (窗口上限 {max_size})", "DEBUG", tag="PFC")
-
-        # 会话令牌：为历史消息包裹可信标记（防 prompt 注入伪造历史）
-        security_hint: List[Dict] = []
-        try:
-            from agent.security.session_token import (
-                build_token_rule_hint,
-                current_token,
-                wrap_history_content,
-            )
-            if current_token():
-                conversation_list = [
-                    {**m, "content": wrap_history_content(m["content"])}
-                    if isinstance(m.get("content"), str) else m
-                    for m in conversation_list
-                ]
-                hint = build_token_rule_hint()
-                if hint:
-                    security_hint = [{"role": "system", "content": hint}]
-        except Exception as exc:
-            # 安全标记包裹失败 = 本轮历史无防注入保护，必须可见
-            log(f"会话令牌包裹失败（本轮历史无防伪标记）: {exc}", "WARNING", tag="安全")
-
-        # 上下文溢出提示：对话历史达到窗口上限时，告知窗口外真实数量与检索路径
-        # （窗口外消息仍完整存于 DB——软归档感知，而非沉默丢弃；
-        #  摘要窗口开启时已折叠部分由摘要块覆盖，口径需扣除避免与摘要块矛盾）
-        overflow_hint: List[Dict] = []
-        if max_size > 0 and len(conversation_list) >= max_size:
-            hidden = 0
-            try:
-                total = await self._conversation_data.count_messages(anything)
-                hidden = max(0, total - len(conversation_list))
-            except Exception as exc:
-                log(f"窗口外消息计数失败: {exc}", "DEBUG", tag="PFC")
-            folded = int((summary_row or {}).get("folded_count", 0) or 0)
-            uncovered = max(0, hidden - folded)
-            if folded:
-                hidden_note = (
-                    f"，另有 {uncovered} 条未覆盖消息在窗口外"
-                    f"（更早的 {folded} 条已折叠为上方摘要）" if uncovered
-                    else f"（更早的 {folded} 条已折叠为上方摘要）"
-                )
-            else:
-                hidden_note = f"，另有 {hidden} 条更早消息在窗口外" if hidden else ""
-            overflow_hint = [{"role": "system", "content": (
-                f"[上下文溢出] 当前仅显示最近 {max_size} 条对话{hidden_note}。\n"
-                "- 可通过 recall_conversation 按语义搜索窗口外的对话内容\n"
-                "- 看到 [reply_to:xxx] / 已知 message_id 时，用 lookup_message 精确取回该条（含窗口外）\n"
-                "- 建议使用 memorize 将对话中的重要信息存入长期记忆，避免遗忘\n"
-                "- 可通过 recall 检索长期记忆中的相关信息"
-            )}]
-
-        # 上下文快照分类标签（normalize_for_send 发送前剥离，LLM 不可见）
-        # stable/context/summary 已在构建时标记，此处标 profile/volatile/provider/overflow/security/memory/conversation
-        for m in profile_msgs:
-            m["_layer"] = "profile"
-        for m in volatile_msgs:
-            m["_layer"] = "volatile"
-        for m in provider_msgs:
-            m["_layer"] = "provider"
-        for m in overflow_hint:
-            m["_layer"] = "overflow"
-        for m in security_hint:
-            m["_layer"] = "security"
-        for m in memory_msgs:
-            m["_layer"] = "memory"
-        for m in conversation_list:
-            m["_layer"] = "conversation"
-
-        # 第 4 缓存断点：打在对话历史末尾（原始窗口纯追加，断点随窗口前移，
-        # 下轮读取覆盖 tools+stable+摘要+历史整段前缀；仅折叠周期切换时重写）。
-        # 无历史时回退到摘要块。
-        if anthropic_breakpoint and _summary_breakpoint_enabled():
-            if conversation_list:
-                conversation_list[-1]["cache_control"] = {"type": "ephemeral"}
-            elif summary_msgs:
-                summary_msgs[0]["cache_control"] = {"type": "ephemeral"}
-
-        if _tail_injection_enabled():
-            # 动静分离布局：每会话重建的动态内容全部在历史之后，
-            # stable 三段 + 摘要块 + 原始窗口构成缓存前缀（上下文的 token 大头）
-            all_msgs = (
-                system_msgs + summary_msgs + conversation_list
-                + status_msgs + profile_msgs + volatile_msgs + memory_msgs + provider_msgs
-                + overflow_hint + security_hint
-            )
-        else:
-            # 旧布局回退：动态内容在历史之前
-            all_msgs = (
-                system_msgs + status_msgs + volatile_msgs + provider_msgs + overflow_hint
-                + security_hint + profile_msgs + memory_msgs
-                + summary_msgs + conversation_list
-            )
+        inp = ContextInput(
+            persona_text=persona_text,
+            tools_text=tools_text,
+            context_text=context_text,
+            status_text=status_text,
+            memory_msgs=memory_msgs,
+            profile_msgs=profile_msgs or [],
+            summary_row=summary_row,
+            anything=anything,
+            adapter_key=adapter_key,
+            scope=scope,
+            prefetched_conversation=prefetched_conversation,
+            anthropic_breakpoint=anthropic_breakpoint,
+        )
+        pipeline = self._pipeline if _tail_injection_enabled() else self._pipeline_legacy
+        all_msgs = await pipeline.build(inp)
 
         # 确保最后一条非 system 消息不是 assistant 角色，防止 Anthropic prefill 400 错误。
         # （规则实现已收拢至 message_schema.fix_trailing_assistant，此处就地委托）
@@ -655,6 +519,168 @@ class ContextAssembly:
         fix_trailing_assistant(all_msgs)
 
         return all_msgs
+
+    # ==================================================================
+    # 上下文内容块（@context_block 声明，管线按变动率从静到动组装）
+    # ==================================================================
+
+    @context_block("stable", VOL_STABLE, "人设 + 工具提示 + 静态指南（stable 层）")
+    def _blk_persona(self, inp: ContextInput) -> List[Dict]:
+        """人设块：人设 + 环境 + 静态指南（最稳定的前缀段，断点1）。"""
+        if not inp.persona_text:
+            return []
+        return [{"role": "system", "content": inp.persona_text}]
+
+    @context_block("stable", VOL_STABLE)
+    def _blk_tools(self, inp: ContextInput) -> List[Dict]:
+        """工具块：工具目录 + 使用规则 + 媒体规则（断点2）。"""
+        if not inp.tools_text:
+            return []
+        return [{"role": "system", "content": inp.tools_text}]
+
+    @context_block("context", VOL_LOW, "动态便签 + 文件索引（context 层）")
+    def _blk_notes(self, inp: ContextInput) -> List[Dict]:
+        """context 层：动态便签 + 文件索引（低频内容，断点3）。"""
+        if not inp.context_text:
+            return []
+        return [{"role": "system", "content": inp.context_text}]
+
+    @context_block("summary", VOL_PERIODIC, "早期对话摘要（折叠周期内固定）")
+    def _blk_summary(self, inp: ContextInput) -> List[Dict]:
+        """对话摘要块：折叠周期内字节固定，历史前缀的缓存锚点。"""
+        row = inp.summary_row
+        if not row or not row.get("summary"):
+            return []
+        folded = int(row.get("folded_count", 0) or 0)
+        return [{
+            "role": "system",
+            "content": (
+                f"[早期对话摘要] 以下是本对话更早内容的摘要（共 {folded} 条已折叠，"
+                "摘要随对话推进周期性更新）：\n"
+                f"{row['summary']}\n"
+                "- 窗口外原文仍完整存于数据库：recall_conversation 按语义检索，"
+                "lookup_message 按 message_id 精确取回"
+            ),
+        }]
+
+    @context_block("conversation", VOL_HISTORY, "对话历史（原始窗口）")
+    async def _blk_conversation(self, inp: ContextInput) -> List[Dict]:
+        """对话历史原始窗口（水位线后纯追加；实时从 DB 获取，不可缓存）。
+
+        多轮 think_loop 期间用户可能发送新消息，必须确保拿到最新对话；
+        调用方预取时直接复用（避免同一次 get_recollection 内重复拉取）。
+        """
+        conversation_list: List[Dict] = []
+        max_size = 0
+        if inp.prefetched_conversation is not None:
+            conversation_list = inp.prefetched_conversation
+            if self._conversation_data:
+                max_size = self._conversation_data.max_size
+        elif self._conversation_data and inp.anything:
+            max_size = self._conversation_data.max_size
+            conversation_list = await self._conversation_data.get_conversation_record_by_everything(
+                inp.anything,
+            )
+            log(f"对话历史: {len(conversation_list)} 条 (窗口上限 {max_size})", "DEBUG", tag="PFC")
+
+        # 会话令牌：为历史消息包裹可信标记（防 prompt 注入伪造历史）
+        try:
+            from agent.security.session_token import current_token, wrap_history_content
+            if current_token():
+                conversation_list = [
+                    {**m, "content": wrap_history_content(m["content"])}
+                    if isinstance(m.get("content"), str) else m
+                    for m in conversation_list
+                ]
+        except Exception as exc:
+            # 安全标记包裹失败 = 本轮历史无防注入保护，必须可见
+            log(f"会话令牌包裹失败（本轮历史无防伪标记）: {exc}", "WARNING", tag="安全")
+
+        # 写入中间态供 overflow 块使用
+        inp.conversation_list = conversation_list
+        inp.max_conversation_size = max_size
+        return conversation_list
+
+    @context_block("status", VOL_SESSION, "记忆系统状态（心跳维护）")
+    def _blk_status(self, inp: ContextInput) -> List[Dict]:
+        """记忆状态区块（心跳维护，周期性变化）：尾部动态区独立注入。"""
+        if not inp.status_text:
+            return []
+        return [{"role": "system", "content": inp.status_text}]
+
+    @context_block("profile", VOL_SESSION + 1, "实体画像注入")
+    def _blk_profile(self, inp: ContextInput) -> List[Dict]:
+        """实体画像（每实体一条，动态区中最稳定，放最前）。"""
+        return list(inp.profile_msgs)
+
+    @context_block("volatile", VOL_SESSION + 2, "短期记忆（volatile 层）")
+    def _blk_volatile(self, inp: ContextInput) -> List[Dict]:
+        """短期记忆桶（角色按存储原样使用，主流格式不做转换）。"""
+        return list(self._work_memory.get_temporary(inp.scope))
+
+    @context_block("memory", VOL_SESSION + 3, "语义召回 + 跨频道 + 技能匹配")
+    def _blk_memory(self, inp: ContextInput) -> List[Dict]:
+        """语义召回 + 跨频道 + 技能注入（每会话基于最新对话重建）。"""
+        return list(inp.memory_msgs)
+
+    @context_block("provider", VOL_SESSION + 4, "上下文提供者注入")
+    async def _blk_provider(self, inp: ContextInput) -> List[Dict]:
+        """上下文提供者注入（实体自驱数据，滞后一轮的后台快照）。"""
+        try:
+            from core.context_provider import ContextProviderRegistry
+            snippets, _provider_metrics = await ContextProviderRegistry.collect(inp.scope)
+            return [{"role": "system", "content": s} for s in snippets]
+        except Exception as exc:
+            log(f"上下文提供者收集失败: {exc}", "DEBUG", tag="PFC")
+            return []
+
+    @context_block("overflow", VOL_MESSAGE, "上下文溢出提示")
+    async def _blk_overflow(self, inp: ContextInput) -> List[Dict]:
+        """上下文溢出提示：窗口满时告知窗口外数量与检索路径。
+
+        软归档感知（窗口外消息完整存于 DB）；摘要窗口开启时已折叠部分
+        由摘要块覆盖，口径需扣除避免与摘要块矛盾。
+        """
+        max_size = inp.max_conversation_size
+        conversation_list = inp.conversation_list
+        if not (max_size > 0 and len(conversation_list) >= max_size):
+            return []
+        hidden = 0
+        try:
+            total = await self._conversation_data.count_messages(inp.anything)
+            hidden = max(0, total - len(conversation_list))
+        except Exception as exc:
+            log(f"窗口外消息计数失败: {exc}", "DEBUG", tag="PFC")
+        folded = int((inp.summary_row or {}).get("folded_count", 0) or 0)
+        uncovered = max(0, hidden - folded)
+        if folded:
+            hidden_note = (
+                f"，另有 {uncovered} 条未覆盖消息在窗口外"
+                f"（更早的 {folded} 条已折叠为上方摘要）" if uncovered
+                else f"（更早的 {folded} 条已折叠为上方摘要）"
+            )
+        else:
+            hidden_note = f"，另有 {hidden} 条更早消息在窗口外" if hidden else ""
+        return [{"role": "system", "content": (
+            f"[上下文溢出] 当前仅显示最近 {max_size} 条对话{hidden_note}。\n"
+            "- 可通过 recall_conversation 按语义搜索窗口外的对话内容\n"
+            "- 看到 [reply_to:xxx] / 已知 message_id 时，用 lookup_message 精确取回该条（含窗口外）\n"
+            "- 建议使用 memorize 将对话中的重要信息存入长期记忆，避免遗忘\n"
+            "- 可通过 recall 检索长期记忆中的相关信息"
+        )}]
+
+    @context_block("security", VOL_MESSAGE + 1, "会话令牌安全标记")
+    def _blk_security(self, inp: ContextInput) -> List[Dict]:
+        """会话令牌规则提示（防注入伪造历史；默认关闭，开启时注入）。"""
+        try:
+            from agent.security.session_token import build_token_rule_hint, current_token
+            if not current_token():
+                return []
+            hint = build_token_rule_hint()
+            return [{"role": "system", "content": hint}] if hint else []
+        except Exception as exc:
+            log(f"令牌提示构建失败: {exc}", "DEBUG", tag="安全")
+            return []
 
     def _build_scene_info(
         self,
@@ -792,6 +818,16 @@ class ContextAssembly:
                 info = channel.get_status_info()
                 cap_count = len(info.get("capabilities", []))
                 lines.append(f"[当前频道] {adapter_key} ({info.get('name', '?')}) | {cap_count} 项能力")
+
+        # 当前模型（动态呈现；stable 层的可用模型清单不再标注默认项，
+        # 避免 switch_model 改变 stable 字节击穿缓存前缀）
+        try:
+            from agent.llm import get_llm_manager
+            current_model = get_llm_manager().get_current_model_id()
+            if current_model:
+                lines.append(f"[当前模型] {current_model}")
+        except Exception:
+            log("当前模型信息获取失败", "DEBUG", tag="PFC")
 
         # 短期记忆状态（本 scope 桶）
         temp_count = len(wm.get_temporary(_safe_entity_scope(anything)))

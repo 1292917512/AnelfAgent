@@ -634,11 +634,17 @@ class Mind:
             options: Optional[Dict] = None,
             stream: bool = False,
             on_delta: Optional[Any] = None,
+            purpose: str = "reply",
     ) -> ChatResult:
-        """统一 LLM 调用（带重试、模型回退和事件追踪，委托 llm_invoker 模块）。"""
+        """统一 LLM 调用（带重试、模型回退和事件追踪，委托 llm_invoker 模块）。
+
+        purpose 标记调用用途（reply/reflect 等），缓存命中统计按用途分桶，
+        避免无共享前缀的辅助调用污染主对话命中率口径。
+        """
         return await _llm_invoker._invoke_llm_unified(
             self, messages, tools, anything,
             tool_choice=tool_choice, options=options, stream=stream, on_delta=on_delta,
+            purpose=purpose,
         )
 
     def _merge_llm_options(self, options: Optional[dict]) -> dict:

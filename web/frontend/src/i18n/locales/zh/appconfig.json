@@ -13,14 +13,11 @@
     "crossChannelSubtitle": "控制 AI 在多频道场景下的跨频道对话关联与感知能力",
     "network": "网络 / 下载",
     "webTools": "搜索引擎",
-    "webToolsSubtitle": "百度智能搜索 API 配置与网页抓取代理设置",
-    "cacheContext": "缓存与上下文",
-    "cacheContextSubtitle": "Prompt 缓存、对话摘要窗口与工具集稳定性（影响供应商侧前缀缓存命中率）"
+    "webToolsSubtitle": "百度智能搜索 API 配置与网页抓取代理设置"
   },
   "fields": {
     "heartbeat_interval": "心跳间隔（秒）",
     "meta_decision_temperature": "元决策温度",
-    "conversation_analysis_threshold": "对话分析阈值",
     "max_tool_iterations": "工具调用上限（轮）",
     "log_ai_output": "记录 AI 输出日志",
     "send_interim_text": "发送中间文本",
@@ -76,15 +73,7 @@
     "workspace_root": "工作区根目录",
     "baidu_api_key": "百度搜索 API Key",
     "web_proxy": "网页抓取代理",
-    "conversation_summary_enabled": "对话摘要窗口",
-    "conversation_raw_min": "原始消息下限 (x)",
-    "conversation_summary_max_chars": "摘要字符上限",
-    "prompt_cache_enabled": "Prompt 分层缓存",
-    "prompt_cache_anthropic_breakpoint": "Anthropic 缓存断点",
-    "prompt_cache_summary_breakpoint": "历史末尾缓存断点",
-    "context_tail_injection_enabled": "尾部动态注入",
-    "tool_order_deterministic": "工具确定性排序",
-    "tool_dynamic_sticky": "动态工具粘性"
+    "conversation_analysis_threshold": "对话分析阈值"
   },
   "descs": {
     "meta_decision_temperature": "元层面决策任务的 LLM 温度参数",
@@ -121,16 +110,7 @@
     "http_proxy": "例：http://127.0.0.1:7890",
     "https_proxy": "例：http://127.0.0.1:7890",
     "baidu_api_key": "百度智能搜索 API Key（bce-v3/...）",
-    "web_proxy": "网页抓取代理地址，留空直连，例：http://127.0.0.1:7890",
-    "conversation_summary_enabled": "开启后旧对话折叠为固定摘要块 + 最近消息纯追加，保持历史前缀字节稳定以命中缓存；关闭恢复滑动窗口",
-    "conversation_raw_min": "折叠后保留的最近原始消息条数；窗口在 x ~ M+x 间波动",
-    "conversation_summary_max_chars": "早期对话摘要块的字符上限",
-    "prompt_cache_enabled": "stable 层对话内冻结复用（本地构建缓存）",
-    "prompt_cache_anthropic_breakpoint": "为 Anthropic 协议模型注入 cache_control 缓存断点",
-    "prompt_cache_summary_breakpoint": "第 4 断点打在对话历史末尾（无历史时落在摘要块），让历史进入缓存前缀",
-    "context_tail_injection_enabled": "画像/召回/短期记忆等每会话重建内容移到对话历史之后注入；关闭恢复旧布局",
-    "tool_order_deterministic": "工具排序与使用计数无关，同一工具集跨会话字节级一致（tools 是 prompt 最大头）",
-    "tool_dynamic_sticky": "tag 激活/动态发现的工具进程内保留，避免工具集跨会话抖动击穿缓存"
+    "web_proxy": "网页抓取代理地址，留空直连，例：http://127.0.0.1:7890"
   },
   "actions": {
     "save": "保存",

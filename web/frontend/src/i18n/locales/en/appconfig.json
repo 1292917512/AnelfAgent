@@ -13,14 +13,11 @@
     "crossChannelSubtitle": "Control AI's ability to sense and correlate conversations across multiple channels",
     "network": "Network / Download",
     "webTools": "Search Engine",
-    "webToolsSubtitle": "Baidu AI Search API key & web scraping proxy settings",
-    "cacheContext": "Cache & Context",
-    "cacheContextSubtitle": "Prompt caching, conversation summary window and tool-set stability (affects provider prefix cache hit rate)"
+    "webToolsSubtitle": "Baidu AI Search API key & web scraping proxy settings"
   },
   "fields": {
     "heartbeat_interval": "Heartbeat Interval (s)",
     "meta_decision_temperature": "Meta Decision Temperature",
-    "conversation_analysis_threshold": "Conversation Analysis Threshold",
     "max_tool_iterations": "Max Tool Iterations",
     "log_ai_output": "Log AI Output",
     "send_interim_text": "Send Interim Text",
@@ -76,15 +73,7 @@
     "workspace_root": "Workspace Root",
     "baidu_api_key": "Baidu Search API Key",
     "web_proxy": "Web Scraping Proxy",
-    "conversation_summary_enabled": "Summary Window",
-    "conversation_raw_min": "Raw Messages Min (x)",
-    "conversation_summary_max_chars": "Summary Max Chars",
-    "prompt_cache_enabled": "Prompt Layered Cache",
-    "prompt_cache_anthropic_breakpoint": "Anthropic Cache Breakpoints",
-    "prompt_cache_summary_breakpoint": "History-Tail Breakpoint",
-    "context_tail_injection_enabled": "Tail Dynamic Injection",
-    "tool_order_deterministic": "Deterministic Tool Order",
-    "tool_dynamic_sticky": "Sticky Dynamic Tools"
+    "conversation_analysis_threshold": "Conversation Analysis Threshold"
   },
   "descs": {
     "meta_decision_temperature": "LLM temperature for meta-level decision tasks",
@@ -121,16 +110,7 @@
     "http_proxy": "e.g. http://127.0.0.1:7890",
     "https_proxy": "e.g. http://127.0.0.1:7890",
     "baidu_api_key": "Baidu AI Search API Key (bce-v3/...)",
-    "web_proxy": "Web scraping proxy, leave empty for direct, e.g. http://127.0.0.1:7890",
-    "conversation_summary_enabled": "Fold old messages into a fixed summary block + append-only recent window, keeping history prefix byte-stable for cache hits; disable to restore sliding window",
-    "conversation_raw_min": "Recent raw messages kept after folding; window oscillates between x and M+x",
-    "conversation_summary_max_chars": "Character cap of the folded summary block",
-    "prompt_cache_enabled": "Freeze and reuse the stable layer within a session (local build cache)",
-    "prompt_cache_anthropic_breakpoint": "Inject cache_control breakpoints for Anthropic-protocol models",
-    "prompt_cache_summary_breakpoint": "4th breakpoint at the end of conversation history (falls back to summary block), bringing history into the cached prefix",
-    "context_tail_injection_enabled": "Move per-session rebuilt content (profiles/recall/short-term memory) after conversation history; disable for legacy layout",
-    "tool_order_deterministic": "Tool ordering independent of usage counts; byte-identical tool sets across sessions (tools are the largest prompt segment)",
-    "tool_dynamic_sticky": "Keep tag-activated/discovered tools for the process lifetime, avoiding tool-set flapping that busts the prefix cache"
+    "web_proxy": "Web scraping proxy, leave empty for direct, e.g. http://127.0.0.1:7890"
   },
   "actions": {
     "save": "Save",

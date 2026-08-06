@@ -722,11 +722,17 @@ class LLMManager(BaseEntity):
                     caps.append("深度思考")
                 if client.config.reasoning_effort:
                     caps.append(f"思考等级:{client.config.reasoning_effort}")
-                default_mark = " (当前默认)" if mid == self._default_chat else ""
+                # 不标注"当前默认"：默认模型切换属动态状态，写进 stable 层文本
+                # 会导致每次 switch_model 都击穿全部会话的缓存前缀；
+                # 当前模型由 exec_context 的 [当前模型] 行动态呈现
                 lines.append(
-                    f"- {mid}{default_mark}: {client.config.model} [{', '.join(caps)}]"
+                    f"- {mid}: {client.config.model} [{', '.join(caps)}]"
                 )
         return "\n".join(lines)
+
+    def get_current_model_id(self) -> str:
+        """当前默认对话模型 id（exec_context 动态展示用）。"""
+        return self._default_chat
 
     # ------------------------------------------------------------------
     # 供应商 CRUD

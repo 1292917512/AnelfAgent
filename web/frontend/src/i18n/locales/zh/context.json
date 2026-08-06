@@ -43,7 +43,8 @@
   "sections": {
     "title": "上下文分层",
     "changed": "已变更",
-    "unchanged": "未变更"
+    "unchanged": "未变更",
+    "volatilityTitle": "变动率 {{value}}（值越大变动越频繁，排越靠后）"
   },
   "tools": {
     "title": "工具清单"

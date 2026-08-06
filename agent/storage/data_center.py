@@ -8,6 +8,7 @@ from agent.messages import EntityData, Everything, build_entity_scope, build_sco
 from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageDomain, StorageRouter
 from core.entity import EntityMetadata, EntityRegistry, EntityType
+from core.log import log
 
 MaxConversationSize = 30
 
@@ -173,12 +174,27 @@ class EverythingData:
 class ConversationData:
     """会话记录（通过 StorageRouter 写入 SQLite）。"""
 
-    def __init__(self, router: StorageRouter, max_size: int = MaxConversationSize) -> None:
+    def __init__(self, router: StorageRouter, max_size: Optional[int] = None) -> None:
         self.router = router
-        self.max_size = max_size
+        # 显式传入时固定（测试/定制）；None 时每次实时读配置（Web 调整即时生效）
+        self._max_size_override = max_size
         # scope_key("user_123"/"group_456") → 最近一次历史快照的最大 ts_ns（快照水位）。
-        # 水位与快照出自同一次 SELECT，think_loop 以此增量合并循环期间到达的新消息。
+        # 水位与快照出自同一次 SELECT，think_loop 以此增量合并循环期间新消息。
         self._fetch_watermarks: dict[str, int] = {}
+
+    @property
+    def max_size(self) -> int:
+        """对话窗口上限 M（未显式覆盖时实时读 ConfigManager，Web 调整立即生效）。"""
+        if self._max_size_override is not None:
+            return self._max_size_override
+        try:
+            from core.config import ConfigManager
+            val = ConfigManager.get("max_conversation_size")
+            if val is not None:
+                return int(val)
+        except Exception:
+            log("max_conversation_size 配置读取失败，使用默认值", "DEBUG")
+        return MaxConversationSize
 
     async def get_conversation_record_by_everything(self, anything: Everything) -> list[dict]:
         scope_type, scope_id = self._scope_of(anything)
@@ -380,19 +396,12 @@ def create_data_center(
     sqlite = sqlite or SqliteBackend()
     router = StorageRouter(sqlite=sqlite)
 
-    max_conv = MaxConversationSize
-    try:
-        from agent.config import get_config_provider
-        max_conv = get_config_provider().config.max_conversation_size
-    except Exception as e:
-        from core.log import log
-        log(f"会话大小配置加载失败，使用默认值 {max_conv}: {e}", "DEBUG")
-
     dc = DataCenter(
         sqlite=sqlite,
         router=router,
         everything_data=EverythingData(router),
-        conversation_data=ConversationData(router, max_size=max_conv),
+        # max_size 不传 → ConversationData 每次实时读配置（Web 调整窗口即时生效）
+        conversation_data=ConversationData(router),
     )
 
     EntityRegistry.register(EntityMetadata(

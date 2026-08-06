@@ -136,3 +136,32 @@ class TestStreamUsageChunk:
         assert final_usage, "usage chunk 必须透传"
         assert final_usage[-1].cache_read_input_tokens == 40
         assert final_usage[-1].prompt_tokens == 67
+
+
+class TestDeclarativeFieldTable:
+    def test_deepseek_fields(self) -> None:
+        """DeepSeek prompt_cache_hit_tokens 经注册表解析（零分支扩展）。"""
+        from agent.llm.types import cache_tokens_from_usage
+
+        read, creation = cache_tokens_from_usage(
+            SimpleNamespace(prompt_cache_hit_tokens=5120)
+        )
+        assert read == 5120 and creation == 0
+
+    def test_field_path_priority(self) -> None:
+        """多字段同时存在时按注册表声明顺序取第一个非零值。"""
+        from agent.llm.types import cache_tokens_from_usage
+
+        read, _ = cache_tokens_from_usage({
+            "cache_read_input_tokens": 100,
+            "prompt_cache_hit_tokens": 200,
+        })
+        assert read == 100
+
+    def test_nested_details_path(self) -> None:
+        from agent.llm.types import cache_tokens_from_usage
+
+        read, _ = cache_tokens_from_usage({
+            "prompt_tokens_details": {"cached_tokens": 256},
+        })
+        assert read == 256

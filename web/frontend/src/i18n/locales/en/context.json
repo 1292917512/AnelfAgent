@@ -43,7 +43,8 @@
   "sections": {
     "title": "Context Layers",
     "changed": "changed",
-    "unchanged": "unchanged"
+    "unchanged": "unchanged",
+    "volatilityTitle": "Volatility {{value}} (higher = changes more often, placed later)"
   },
   "tools": {
     "title": "Tools"

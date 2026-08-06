@@ -14,37 +14,23 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
+from agent.mind.context_pipeline import get_layer_meta, list_layer_metas
 from core.log import log
 
 _SNAPSHOT_DIR = os.path.join("logs", "context_snapshots")
 
 
 # ======================================================================
-# 分类定义
+# 分类定义（层标签/顺序的单一数据源在 context_pipeline 注册中心）
 # ======================================================================
 
-LAYER_LABELS: Dict[str, str] = {
-    "stable": "人设 + 工具提示 + 静态指南（stable 层）",
-    "context": "动态便签 + 文件索引（context 层）",
-    "summary": "早期对话摘要（折叠周期内固定）",
-    "conversation": "对话历史（原始窗口）",
-    "status": "记忆系统状态（心跳维护）",
-    "profile": "实体画像注入",
-    "volatile": "短期记忆（volatile 层）",
-    "memory": "语义召回 + 跨频道 + 技能匹配",
-    "provider": "上下文提供者注入",
-    "overflow": "上下文溢出提示",
-    "security": "会话令牌安全标记",
-    "tool_chain": "工具调用链",
-    "exec_context": "执行状态上下文",
-}
+def _layer_label(layer: str) -> str:
+    meta = get_layer_meta(layer)
+    return meta.label if meta else layer
 
-# 分层在消息序列中的固定顺序（快照 section 排序与缓存前缀估算共用）
-_LAYER_ORDER = [
-    "stable", "context", "summary", "conversation",
-    "status", "profile", "volatile", "memory", "provider",
-    "overflow", "security", "tool_chain", "exec_context",
-]
+
+def _layer_order() -> List[str]:
+    return [m.layer for m in list_layer_metas()]
 
 
 # ======================================================================
@@ -365,17 +351,28 @@ class ContextSnapshot:
     # ------------------------------------------------------------------
 
     def _categorize(self, messages: List[Dict]) -> List[Dict[str, Any]]:
-        """按 _layer 标签将消息分类为 sections（含内容哈希与上次快照的变更对比）。"""
+        """按 _layer 标签将消息分类为 sections（含内容哈希与上次快照的变更对比）。
+
+        无标签消息按位置推断：进入工具链区域（出现 tool/带 tool_calls 的
+        assistant）后，未标记的 system 消息（纠正提示/通知等）归入 tool_chain。
+        层标签与变动率元数据来自 context_pipeline 注册中心（单一数据源）。
+        """
         import hashlib
 
         groups: Dict[str, List[Dict]] = {}
+        in_chain = False
 
         for msg in messages:
             layer = msg.get("_layer", "")
             role = msg.get("role", "")
 
+            if role == "tool" or (role == "assistant" and msg.get("tool_calls")):
+                in_chain = True
             if not layer:
-                if role == "tool":
+                if in_chain and role == "system":
+                    # 链中注入的纠正/提示/通知（未打标签）归入工具链
+                    layer = "tool_chain"
+                elif role == "tool":
                     layer = "tool_chain"
                 elif role == "assistant" and msg.get("tool_calls"):
                     layer = "tool_chain"
@@ -405,25 +402,30 @@ class ContextSnapshot:
             ).hexdigest()[:12]
             new_hashes[layer] = digest
             previous = self._last_section_hashes.get(layer)
+            meta = get_layer_meta(layer)
             return {
                 "layer": layer,
-                "label": LAYER_LABELS.get(layer, layer),
+                "label": _layer_label(layer),
                 "count": len(msgs),
                 "chars": section_chars,
                 "estimated_tokens": section_chars // 4,
                 "hash": digest,
                 # 与上一次快照对比：None=首次快照无基线，True/False=是否变更
                 "changed": None if previous is None else previous != digest,
+                # 变动率元数据（注册中心；Web 展示缓存稳定性依据）
+                "volatility": meta.volatility if meta else None,
+                "volatility_label": meta.volatility_label if meta else None,
                 "messages": msgs,
             }
 
-        for layer in _LAYER_ORDER:
+        order = _layer_order()
+        for layer in order:
             msgs = groups.get(layer)
             if msgs:
                 sections.append(_make_section(layer, msgs))
 
         for layer, msgs in groups.items():
-            if layer not in _LAYER_ORDER:
+            if layer not in order:
                 sections.append(_make_section(layer, msgs))
 
         self._last_section_hashes = new_hashes
@@ -449,10 +451,13 @@ class ContextSnapshot:
                 break
 
         from agent.mind.cache_stats import cache_usage_tracker
-        last_call = cache_usage_tracker.last()
+        # 主口径只看主对话调用（reply）：reflect 评审/心跳分析等辅助调用
+        # 无共享前缀，命中率为 0 属正常，混入会误报"缓存崩了"
+        last_call = cache_usage_tracker.last(kind="reply")
         return {
             "last_call": last_call,
-            "recent": cache_usage_tracker.summary(),
+            "recent": cache_usage_tracker.summary(kind="reply"),
+            "recent_all": cache_usage_tracker.summary(),
             "estimated_cacheable_prefix_tokens": prefix_tokens,
         }
 

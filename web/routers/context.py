@@ -113,3 +113,21 @@ async def get_context_providers() -> Dict[str, Any]:
     """上下文提供者状态（预算占用、峰值、每个 provider 指标）。"""
     from core.context_provider import ContextProviderRegistry
     return ContextProviderRegistry.get_status()
+
+
+@router.get("/layers")
+async def list_context_layers() -> Dict[str, Any]:
+    """上下文层注册表（变动率/展示名/构建责任方，快照分层与展示的单一数据源）。"""
+    from agent.mind.context_pipeline import list_layer_metas
+    return {
+        "layers": [
+            {
+                "layer": m.layer,
+                "volatility": m.volatility,
+                "volatility_label": m.volatility_label,
+                "label": m.label,
+                "managed": m.managed,
+            }
+            for m in list_layer_metas()
+        ]
+    }

@@ -46,6 +46,10 @@ export interface SnapshotSection {
   hash?: string;
   /** 与上一次快照对比是否变更；null/undefined = 首次快照无基线 */
   changed?: boolean | null;
+  /** 变动率（值越大变动越频繁，来自构建管线注册中心） */
+  volatility?: number | null;
+  /** 变动率分档（静态/低频/周期/追加/每会话/每轮） */
+  volatility_label?: string | null;
   messages: SnapshotMessage[];
 }
 

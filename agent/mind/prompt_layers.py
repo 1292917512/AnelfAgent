@@ -220,6 +220,10 @@ def is_anthropic_breakpoint_enabled() -> bool:
 
 _PROMPT_CACHE_CONFIGS = {
     "Prompt缓存": {
+        "max_conversation_size": {
+            "description": "对话历史窗口上限 M（原始窗口最大条数，到达后触发摘要折叠）",
+            "default": 30,
+        },
         "prompt_cache_enabled": {
             "description": "是否启用 Prompt 分层缓存（stable 层对话内冻结复用）",
             "default": True,

@@ -18,34 +18,47 @@ _MAX_RECORDS = 100
 
 
 class CacheUsageTracker:
-    """最近 LLM 调用缓存用量的环形缓冲（全局单例）。"""
+    """最近 LLM 调用缓存用量的环形缓冲（全局单例）。
+
+    按用途分桶（kind）：主对话（reply）与辅助调用（reflect 评审/心跳分析等）
+    分开统计——辅助调用无共享前缀，命中率为 0 属正常，混入主口径会误报。
+    """
 
     def __init__(self) -> None:
         self._records: Deque[Dict[str, Any]] = deque(maxlen=_MAX_RECORDS)
         # 未返回 usage 的调用次数（区分"供应商不返 usage"与"返了但无缓存数据"）
         self.no_usage_count: int = 0
 
-    def record(self, usage: UsageInfo) -> None:
+    def record(self, usage: UsageInfo, *, kind: str = "reply") -> None:
         """记录一次调用的缓存用量（无缓存数据的供应商记 0，不影响平均值口径）。"""
         self._records.append({
             "ts": time.time(),
+            "kind": kind,
             "prompt_tokens": usage.prompt_tokens,
             "cache_read_input_tokens": usage.cache_read_input_tokens,
             "cache_creation_input_tokens": usage.cache_creation_input_tokens,
             "cache_hit_rate": round(usage.cache_hit_rate, 4),
         })
 
-    def record_missing(self) -> None:
+    def record_missing(self, *, kind: str = "reply") -> None:
         """记录一次未返回 usage 的调用（流式端点/网关可能丢弃 usage）。"""
         self.no_usage_count += 1
 
-    def last(self) -> Optional[Dict[str, Any]]:
-        """最近一次调用的缓存用量（快照附加展示用）。"""
-        return self._records[-1] if self._records else None
+    def last(self, *, kind: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """最近一次调用的缓存用量（可按用途过滤；快照展示用）。"""
+        if kind is None:
+            return self._records[-1] if self._records else None
+        for record in reversed(self._records):
+            if record["kind"] == kind:
+                return record
+        return None
 
-    def summary(self, window: int = 20) -> Dict[str, Any]:
-        """最近 window 次调用的聚合统计。"""
-        records = list(self._records)[-window:]
+    def summary(self, window: int = 20, *, kind: Optional[str] = None) -> Dict[str, Any]:
+        """最近 window 次调用的聚合统计（kind 指定时只统计该用途）。"""
+        records = list(self._records)
+        if kind is not None:
+            records = [r for r in records if r["kind"] == kind]
+        records = records[-window:]
         if not records:
             return {
                 "sample_count": 0,

@@ -180,7 +180,7 @@ class TestApplyVisionNonVisionModel:
 
 
 class TestMediaRulesDirectVision:
-    """媒体处理规则按模型视觉能力切换文案。"""
+    """媒体处理规则文案静态一致（覆盖视觉/非视觉两种情形，不随模型切换变化）。"""
 
     @pytest.fixture(autouse=True)
     def _fake_registry(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,12 +195,15 @@ class TestMediaRulesDirectVision:
             staticmethod(lambda: [entity]),
         )
 
-    def test_tool_mandatory_without_vision(self) -> None:
-        rules = PrefrontalCortex._build_media_rules(direct_vision=False)
-        assert "- [media_type:image] → recognize_image" in rules
-        assert "必须优先使用" in rules
+    def test_rules_static_across_vision_capability(self) -> None:
+        """direct_vision 取值不影响文案（stable 层字节稳定）。"""
+        rules_off = PrefrontalCortex._build_media_rules(direct_vision=False)
+        rules_on = PrefrontalCortex._build_media_rules(direct_vision=True)
+        assert rules_off == rules_on
 
-    def test_direct_present_with_vision(self) -> None:
+    def test_static_text_covers_both_cases(self) -> None:
+        """静态文案同时覆盖：已视觉呈现免工具 + 未呈现/深入分析用工具。"""
         rules = PrefrontalCortex._build_media_rules(direct_vision=True)
-        assert "图片已直接以视觉形式呈现" in rules
-        assert "仍可调用 recognize_image" in rules
+        assert "已直接以视觉形式呈现" in rules
+        assert "recognize_image" in rules
+        assert "必须优先使用" in rules

@@ -203,3 +203,28 @@ class TestSummaryAccessor:
         assert row is not None
         assert row["summary"] == "摘要"
         assert row["folded_count"] == 5
+
+
+class TestLiveMaxSize:
+    async def test_max_size_reads_config_live(self, conv_data) -> None:
+        """未显式覆盖时 max_size 实时读配置（Web 调整即时生效，无需重启）。"""
+        from core.config import ConfigManager
+
+        data = ConversationData(StorageRouter(sqlite=conv_data.router.sqlite))
+        ConfigManager.initialize()
+        ConfigManager.set("max_conversation_size", 42)
+        try:
+            assert data.max_size == 42
+        finally:
+            ConfigManager.set("max_conversation_size", MAX_SIZE)
+
+    async def test_explicit_override_wins(self, conv_data) -> None:
+        """显式传入的 max_size 固定（测试/定制路径）。"""
+        from core.config import ConfigManager
+
+        ConfigManager.initialize()
+        ConfigManager.set("max_conversation_size", 42)
+        try:
+            assert conv_data.max_size == MAX_SIZE  # 构造时显式传了 MAX_SIZE
+        finally:
+            ConfigManager.set("max_conversation_size", MAX_SIZE)

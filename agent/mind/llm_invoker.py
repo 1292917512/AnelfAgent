@@ -70,6 +70,7 @@ async def _invoke_llm_unified(
         options: Optional[Dict] = None,
         stream: bool = False,
         on_delta: Optional[Any] = None,
+        purpose: str = "reply",
 ) -> ChatResult:
     """统一 LLM 调用（带重试、模型回退和事件追踪）。
 
@@ -148,7 +149,7 @@ async def _invoke_llm_unified(
             "cache_hit_rate": round(result.usage.cache_hit_rate, 4),
         }
         from agent.mind.cache_stats import cache_usage_tracker
-        cache_usage_tracker.record(result.usage)
+        cache_usage_tracker.record(result.usage, kind=purpose)
         log(
             f"LLM 用量: prompt={result.usage.prompt_tokens} "
             f"cache_read={result.usage.cache_read_input_tokens} "
@@ -162,7 +163,7 @@ async def _invoke_llm_unified(
     else:
         # usage 缺失埋点：流式端点/网关未返回 usage 时缓存统计不可用
         from agent.mind.cache_stats import cache_usage_tracker
-        cache_usage_tracker.record_missing()
+        cache_usage_tracker.record_missing(kind=purpose)
         log(
             f"LLM 调用未返回 usage（{result.model or model_name}），"
             "缓存命中统计不可用；若为流式调用，端点可能未支持 include_usage",

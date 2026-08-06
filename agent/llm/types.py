@@ -57,37 +57,47 @@ MessageContent = Union[str, List[dict[str, Any]]]
 """消息 content 类型：纯文本字符串 或 OpenAI 多模态 content 数组。"""
 
 
-def _usage_int(obj: Any, name: str) -> int:
-    """从对象或 dict 上安全提取 int 字段。"""
-    value = obj.get(name, 0) if isinstance(obj, dict) else getattr(obj, name, 0)
+def _dig_int(obj: Any, dotted_path: str) -> int:
+    """按点分路径从对象/dict 提取 int（任一层缺失或非法返回 0）。"""
+    current = obj
+    for part in dotted_path.split("."):
+        if current is None:
+            return 0
+        current = current.get(part) if isinstance(current, dict) else getattr(current, part, None)
     try:
-        return int(value or 0)
+        return int(current or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _usage_int(obj: Any, name: str) -> int:
+    """从对象或 dict 上安全提取 int 字段。"""
+    return _dig_int(obj, name)
+
+
+# 缓存用量字段注册表（点分路径，按声明顺序取第一个非零值）。
+# 供应商差异全部沉淀在这张表里：接入新供应商只需登记字段路径，解析逻辑零分支。
+_CACHE_READ_PATHS: tuple[str, ...] = (
+    "cache_read_input_tokens",              # Anthropic Messages 协议
+    "prompt_cache_hit_tokens",              # DeepSeek 磁盘缓存（自动生效）
+    "prompt_tokens_details.cached_tokens",  # OpenAI Chat Completions
+    "input_tokens_details.cached_tokens",   # OpenAI Responses 协议
+)
+_CACHE_CREATION_PATHS: tuple[str, ...] = (
+    "cache_creation_input_tokens",          # Anthropic Messages 协议（显式缓存写入）
+)
 
 
 def cache_tokens_from_usage(usage: Any) -> tuple[int, int]:
     """从 usage 对象/dict 提取 (cache_read, cache_creation) tokens。
 
-    缓存命中：Anthropic 直出 cache_read_input_tokens；OpenAI 系走
-    prompt_tokens_details / input_tokens_details 的 cached_tokens。
     供 Chat Completions 与 Responses 两条解析路径共用。
     """
     if not usage:
         return 0, 0
-    cache_read = _usage_int(usage, "cache_read_input_tokens")
-    if not cache_read:
-        details = (
-            usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
-            if isinstance(usage, dict)
-            else (
-                getattr(usage, "prompt_tokens_details", None)
-                or getattr(usage, "input_tokens_details", None)
-            )
-        )
-        if details:
-            cache_read = _usage_int(details, "cached_tokens")
-    return cache_read, _usage_int(usage, "cache_creation_input_tokens")
+    cache_read = next((v for p in _CACHE_READ_PATHS if (v := _dig_int(usage, p))), 0)
+    cache_creation = next((v for p in _CACHE_CREATION_PATHS if (v := _dig_int(usage, p))), 0)
+    return cache_read, cache_creation
 
 
 @dataclass(slots=True)

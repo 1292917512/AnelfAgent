@@ -214,3 +214,24 @@ class TestSleepableCatalogStatic:
         assert 'activate_tool_group(group="ssh")' in text
         # 文案中不再出现依赖激活状态的分支标记
         assert "[沉睡]" not in text
+
+
+class TestCacheKindBucketing:
+    def test_kind_separated_stats(self) -> None:
+        """辅助调用（reflect）与主对话（reply）分桶统计，互不污染命中率口径。"""
+        from agent.llm.types import UsageInfo
+        from agent.mind.cache_stats import CacheUsageTracker
+
+        tracker = CacheUsageTracker()
+        tracker.record(UsageInfo(prompt_tokens=100, cache_read_input_tokens=95), kind="reply")
+        tracker.record(UsageInfo(prompt_tokens=50, cache_read_input_tokens=0), kind="reflect")
+
+        reply = tracker.summary(kind="reply")
+        assert reply["sample_count"] == 1
+        assert reply["avg_cache_hit_rate"] == 0.95
+        all_stats = tracker.summary()
+        assert all_stats["sample_count"] == 2
+        # last() 按用途过滤
+        assert tracker.last(kind="reply")["cache_hit_rate"] == 0.95
+        assert tracker.last(kind="reflect")["cache_hit_rate"] == 0.0
+        assert tracker.last()["kind"] == "reflect"

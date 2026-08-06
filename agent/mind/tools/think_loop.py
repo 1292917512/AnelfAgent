@@ -438,10 +438,12 @@ async def _invoke_llm_round(
             {"stream": _streaming_enabled(), "on_delta": ctx.delta_emitter}
             if ctx.supports_stream else {}
         )
+        purpose_kwargs = {"purpose": ctx.mode.value} if ctx.supports_purpose else {}
         return await mind._invoke_llm_unified(
             llm_messages, ctx.active_tools or None, ctx.anything,
             tool_choice="required" if require_tools else None,
             options=ctx.options,
+            **purpose_kwargs,
             **stream_kwargs,
         )
     except asyncio.TimeoutError:

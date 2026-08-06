@@ -147,6 +147,14 @@ export function SnapshotSectionBlock({ section, totalTokens, defaultOpen = false
         {open ? <ChevronDown size={12} className="text-muted" /> : <ChevronRight size={12} className="text-muted" />}
         <span className="text-xs font-medium text-foreground">{section.label}</span>
         <span className="text-[10px] text-muted font-mono">×{section.count}</span>
+        {section.volatility_label && (
+          <span
+            className="px-1 py-px rounded text-[9px] bg-sky-500/10 text-sky-500"
+            title={t("sections.volatilityTitle", { value: section.volatility })}
+          >
+            {section.volatility_label}
+          </span>
+        )}
         {section.changed === true && (
           <span className="px-1 py-px rounded text-[9px] font-medium bg-amber-500/15 text-amber-500">
             {t("sections.changed")}

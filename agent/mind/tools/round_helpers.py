@@ -126,6 +126,7 @@ class _ThinkLoopCtx:
     turn_id: str
     delta_emitter: Callable[[str, bool], Awaitable[None]]
     supports_stream: bool
+    supports_purpose: bool
     # 会话内冻结的工具顺序（首轮排序快照）：版本变化重建工具集时按此顺序重排，
     # 新出现的工具按名称追加尾部——避免使用计数驱动的层间跳变击穿 provider 前缀缓存
     frozen_tool_order: Optional[List[str]] = None
@@ -161,10 +162,15 @@ def _make_delta_emitter(
 
 def _probe_stream_support(mind: "Mind") -> bool:
     """替身 Mind（测试/子代理）可能仍是非流式签名：探测后按需传参。"""
+    return _probe_invoke_kwarg(mind, "stream")
+
+
+def _probe_invoke_kwarg(mind: "Mind", name: str) -> bool:
+    """探测替身 Mind 的 _invoke_llm_unified 是否支持指定关键字参数。"""
     try:
         import inspect as _inspect
         _invoke_params = _inspect.signature(mind._invoke_llm_unified).parameters
-        return "stream" in _invoke_params or any(
+        return name in _invoke_params or any(
             p.kind == _inspect.Parameter.VAR_KEYWORD for p in _invoke_params.values()
         )
     except (TypeError, ValueError):
@@ -272,6 +278,7 @@ async def _prepare_think_context(
         turn_id=turn_id,
         delta_emitter=_make_delta_emitter(current_scope, turn_id),
         supports_stream=_probe_stream_support(mind),
+        supports_purpose=_probe_invoke_kwarg(mind, "purpose"),
     )
     state = _ThinkRoundState(wait_budget=wait_budget, last_merged_ts=last_merged_ts)
     return ctx, state
