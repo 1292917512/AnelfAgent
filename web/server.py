@@ -153,7 +153,12 @@ def _ensure_strict_password() -> None:
     log("WebUI 严格模式已启用：已生成管理密码并写入 config/webui.json，请妥善保管", "WARNING")
 
 
-_AUTH_EXEMPT = frozenset({"/api/auth/login", "/api/auth/check"})
+_AUTH_EXEMPT = frozenset({
+    "/api/auth/login",
+    "/api/auth/check",
+    # 音源库 ingest 供外部 pipeline 推送，由端点自校验 X-Ingest-Token（fail-closed）
+    "/api/entity/voiceprint/ingest",
+})
 
 
 class _AuthMiddleware(BaseHTTPMiddleware):

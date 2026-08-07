@@ -1,0 +1,224 @@
+{
+  "subtitle": "Speaker voiceprint library: identify, attribute, and search voice transcripts",
+  "tabs": {
+    "overview": "Overview",
+    "speakers": "Speakers",
+    "recordings": "Recordings",
+    "timeline": "Timeline",
+    "transcripts": "Transcripts",
+    "ingest": "Ingest & Identify",
+    "settings": "Settings"
+  },
+  "timeline": {
+    "ranges": {
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "d3": "Last 3 days",
+      "d7": "Last 7 days",
+      "all": "Last 30 days"
+    },
+    "count": "{{count}} segments",
+    "empty": "No voice records in this range",
+    "emptyHint": "Try another range, or wait for directory sync to ingest new recordings",
+    "filterBySpeaker": "Only this speaker"
+  },
+  "overview": {
+    "recordings": "Recordings",
+    "samples": "Voiceprint samples",
+    "healthTitle": "Setup checklist",
+    "healthSubtitle": "Integration readiness with configuration hints",
+    "checkFunasr": "FunASR transcribe service",
+    "checkFunasrHint": "Configure voiceprint_funasr_endpoint in Settings",
+    "checkWatch": "Directory auto-sync",
+    "checkWatchHint": "Enable voiceprint_watch_enabled in Settings",
+    "checkWatchNoSource": "Enabled but no source (watch_dir or OpenList)",
+    "checkIngest": "Upstream push (ingest token)",
+    "checkIngestHint": "Optional: set voiceprint_ingest_token for external pipelines",
+    "checkIndex": "Search indexes",
+    "optional": "Optional",
+    "mirrorTitle": "Mirror sync",
+    "nasSide": "NAS source",
+    "libSide": "Voiceprint library",
+    "syncTitle": "Sync status",
+    "pendingTitle": "Pending sync",
+    "nasTotal": "NAS units",
+    "excluded": "Excluded",
+    "syncBusy": "Sync in progress, refresh soon…",
+    "syncingProgress": "Syncing {{done}}/{{total}}",
+    "allSynced": "All synced — NAS and voiceprint library are consistent ✓",
+    "result": {
+      "new": "New",
+      "ingested": "Ingested",
+      "deleted": "Deleted",
+      "no_speech": "No speech",
+      "failed": "Failed"
+    },
+    "reason": {
+      "new": "New",
+      "changed": "Changed",
+      "retry": "Retry"
+    },
+    "stage": {
+      "download": "Downloading",
+      "analyze": "Analyzing",
+      "merge": "Merging",
+      "transcribe": "Transcribing",
+      "ingest": "Ingesting"
+    }
+  },
+  "recordings": {
+    "files": "files",
+    "noSpeechHint": "No valid speech, no segments produced",
+    "rebuild": "Rebuild (delete and re-ingest)",
+    "rebuildOutcome": {
+      "done": "Rebuilt",
+      "deleted": "Gone from NAS, local copy cleaned",
+      "excluded": "Excluded by sync rules, skipped",
+      "no_speech": "Reprocessed: no speech",
+      "error": "Rebuild failed"
+    },
+    "deleteTitle": "Delete recording",
+    "deleteHint": "This deletes the recording at {{time}} with all its segments and linked voiceprint samples (speaker profiles are kept). This cannot be undone."
+  },
+  "filters": {
+    "allStatus": "All statuses",
+    "confirmed": "Confirmed",
+    "pending": "Pending",
+    "keyword": "Search name/role/key",
+    "searchPlaceholder": "Search transcripts (semantic)",
+    "allSpeakers": "All speakers",
+    "timeFrom": "From",
+    "timeTo": "To"
+  },
+  "empty": {
+    "speakers": "No speakers yet",
+    "speakersHint": "Wait for upstream voiceprints, or enroll a known speaker at top right",
+    "segments": "No transcripts",
+    "segmentsHint": "Adjust filters, or wait for the upstream pipeline to push segments",
+    "recordings": "No recordings yet",
+    "recordingsHint": "Enable directory sync in Settings and configure the NAS audio directory; new recordings will be ingested automatically"
+  },
+  "fields": {
+    "samples": "Samples",
+    "totalAudio": "Total audio",
+    "matches": "Matches",
+    "lastSeen": "Last seen",
+    "firstSeen": "First seen",
+    "name": "Name",
+    "rolePlaceholder": "Role tag (e.g. Family/Colleague)",
+    "thresholdPlaceholder": "Custom threshold (blank = global)",
+    "notes": "Notes",
+    "effectiveThreshold": "Effective threshold",
+    "samplePool": "Voiceprint sample pool",
+    "score": "Score",
+    "recentSegments": "Recent transcripts",
+    "noTranscript": "(no transcript)",
+    "unknownSpeaker": "Unknown speaker"
+  },
+  "actions": {
+    "enroll": "Enroll speaker",
+    "detail": "Detail",
+    "confirm": "Confirm",
+    "merge": "Merge",
+    "search": "Search",
+    "markAllRead": "Mark all read",
+    "prunePending": "Prune all",
+    "consolidate": "Smart merge",
+    "consolidateRun": "Merge ({{count}} people)",
+    "simmap": "Similarity map"
+  },
+  "groups": {
+    "pending": "Pending ({{count}})",
+    "confirmed": "Confirmed ({{count}})"
+  },
+  "modals": {
+    "confirmTitle": "Confirm speaker {{key}}",
+    "mergeTitle": "Merge {{key}} into…",
+    "mergeHint": "The source speaker's sample pool, transcripts and stats will be merged into the target; the source profile will be deleted.",
+    "mergeTarget": "Select target speaker",
+    "enrollTitle": "Enroll speaker (audio)",
+    "enrollHint": "Upload clear speech of this speaker; a voiceprint will be extracted via FunASR.",
+    "editTranscriptTitle": "Edit transcript",
+    "editTranscriptPlaceholder": "Corrected text (name/term fixes…)",
+    "editTranscriptHint": "Semantic vectors are rebuilt after saving; for batch fixes ask AI to run transcript_replace.",
+    "deleteTitle": "Delete speaker",
+    "deleteHint": "This deletes {{key}} and its voiceprint samples; its segments become unknown. This cannot be undone.",
+    "pruneTitle": "Prune all pending speakers",
+    "pruneHint": "This prunes {{count}} pending speakers with their voiceprint samples; related segments become unknown. This cannot be undone.",
+    "consolidateTitle": "Smart merge (by voiceprint similarity)",
+    "consolidateHint": "These pending speakers' centroid similarity ≥ {{threshold}} — likely the same person split apart. Green marks the profile kept after merge (longest audio).",
+    "consolidateKeep": "keep",
+    "consolidateEmpty": "No split speakers or insignificant profiles found",
+    "insignificantTitle": "Also prune {{count}} insignificant speakers (≤{{matches}} matches & ≤{{seconds}}s, likely ambience/passersby)"
+  },
+  "status": {
+    "confirmed": "Confirmed",
+    "pending": "Pending",
+    "newSpeaker": "New",
+    "unread": "Unread"
+  },
+  "stats": {
+    "speakers": "Speakers",
+    "pending": "Pending",
+    "segments": "Segments",
+    "unread": "Unread",
+    "notConfigured": "Not configured",
+    "threshold": "Threshold",
+    "embeddingModel": "Text embedding model"
+  },
+  "sync": {
+    "title": "Directory auto-sync",
+    "noSource": "No sync source (configure watch_dir or OpenList)",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "lastScan": "Last scan",
+    "runNow": "Sync now",
+    "enableHint": "Enable voiceprint_watch_enabled in Settings and configure watch_dir (NAS mount) or OpenList",
+    "segments": "segments",
+    "status": {
+      "done": "Ingested",
+      "no_speech": "No speech",
+      "error": "Failed"
+    },
+    "paused": "Paused",
+    "pause": "Pause sync",
+    "resume": "Resume sync"
+  },
+  "ingest": {
+    "tryTitle": "Try identifying an audio",
+    "trySubtitle": "Transcribe via FunASR and extract voiceprints, returning top candidates",
+    "ingestAfterIdentify": "Ingest after identify",
+    "run": "Identify",
+    "needFunasr": "Configure voiceprint_funasr_endpoint in Settings first",
+    "noSpeech": "No valid speech detected in the audio",
+    "noCandidate": "No candidates (empty library or no voiceprint extracted)",
+    "pipelineTitle": "Upstream pipeline contract"
+  },
+  "messages": {
+    "opFailed": "Operation failed",
+    "confirmSuccess": "Speaker confirmed",
+    "mergeSuccess": "Merged",
+    "deleteSuccess": "Deleted",
+    "enrollSuccess": "Enrolled with {{count}} samples",
+    "updateSuccess": "Saved",
+    "sampleDeleted": "Sample deleted",
+    "reassignSuccess": "Attribution updated",
+    "markedRead": "Marked {{count}} as read",
+    "ingestSuccess": "Ingested",
+    "configSaved": "Config saved",
+    "syncDone": "Sync done: {{new}} new files, {{ingested}} ingested",
+    "rebuildSuccess": "Rebuilt",
+    "pruneSuccess": "Pruned {{count}} pending speakers",
+    "consolidateSuccess": "Merged: {{clusters}} merges, {{count}} people consolidated",
+    "syncPaused": "Sync paused (persisted)",
+    "syncResumed": "Sync resumed"
+  },
+  "simmap": {
+    "title": "Voiceprint similarity map",
+    "empty": "No pending speakers",
+    "estimated": "Est. {{count}} persons",
+    "total": "{{count}} profiles",
+    "thresholdHint": "Green ≥ {{threshold}} = mergable",
+    "noSimilar": "No similar speakers"
+  }
+}

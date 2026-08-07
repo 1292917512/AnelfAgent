@@ -583,9 +583,11 @@ class LLMManager(BaseEntity):
                 raise
             except Exception as exc:
                 last_exc = exc
+                # TimeoutError 等异常 str() 为空，补类型名保证日志可诊断
+                safe = self._safe_error(exc, candidate) or type(exc).__name__
                 warning(
                     f"LLM [{candidate.config.name}] 最终失败: "
-                    f"{self._safe_error(exc, candidate)}",
+                    f"{type(exc).__name__}: {safe}",
                     tag="模型",
                 )
                 if asyncio.get_running_loop().time() >= deadline:

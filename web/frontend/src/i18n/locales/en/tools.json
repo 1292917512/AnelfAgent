@@ -40,7 +40,8 @@
     "session": "Session Manager",
     "share": "File Share",
     "sticker": "Stickers",
-    "ssh": "SSH Remote"
+    "ssh": "SSH Remote",
+    "voiceprint": "Voiceprint Library"
   },
   "reload": "Reload",
   "reloading": "Reloading...",

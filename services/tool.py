@@ -28,6 +28,7 @@ _GROUP_ORDER = {
     "ui": 19,
     "session": 20,
     "ssh": 21,
+    "voiceprint": 22,
 }
 
 

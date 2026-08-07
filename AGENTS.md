@@ -316,6 +316,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `media` | 多媒体 | `entities/media/tools.py` | media:* |
 | `os` | 操作系统 | `entities/filesystem/tools.py` | media:file |
 | `ssh` | SSH 远程管理 | `entities/ssh/tools.py` | —（整组 allow_sleep 沉睡，`activate_tool_group` 唤醒） |
+| `voiceprint` | 音源库 | `entities/voiceprint/tools.py` | always/core/media:voice/media:audio |
 | `sticker` | 表情包 | `entities/sticker/tools.py` | always/media:image（部分工具 allow_sleep） |
 | `environment` | 环境信息 | `entities/system/tools.py` | — |
 | `model_control` | 模型控制 | `entities/model_control/tools.py` | core |

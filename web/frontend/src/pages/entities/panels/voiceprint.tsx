@@ -1,0 +1,1 @@
+../../../../../../entities/voiceprint/panel.tsx

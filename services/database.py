@@ -106,6 +106,11 @@ def _database_registry() -> Dict[str, Dict[str, str]]:
             "path": f"{stem}_stickers.sqlite3",
             "description": "表情包 / 图片感知索引",
         },
+        "voiceprints": {
+            "name": "音源库",
+            "path": f"{stem}_voiceprints.sqlite3",
+            "description": "说话人档案 / 声纹样本池 / 语音转写片段 / 已同步文件登记",
+        },
         "cognee": {
             "name": "Cognee 关系库",
             "path": _cognee_db_path(),

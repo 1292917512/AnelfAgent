@@ -1,0 +1,224 @@
+{
+  "subtitle": "说话人声纹库：识别、归属管理、语音转写检索",
+  "tabs": {
+    "overview": "总览",
+    "speakers": "说话人",
+    "recordings": "录制",
+    "timeline": "时间线",
+    "transcripts": "话语检索",
+    "ingest": "入库与识别",
+    "settings": "设置"
+  },
+  "timeline": {
+    "ranges": {
+      "today": "今天",
+      "yesterday": "昨天",
+      "d3": "最近3天",
+      "d7": "最近7天",
+      "all": "最近30天"
+    },
+    "count": "共 {{count}} 段",
+    "empty": "该时间段没有语音记录",
+    "emptyHint": "换个时间段，或等待目录同步入库新的录制",
+    "filterBySpeaker": "只看此人"
+  },
+  "overview": {
+    "recordings": "录制",
+    "samples": "声纹样本",
+    "healthTitle": "配置体检",
+    "healthSubtitle": "各项对接是否就绪，未完成项附配置指引",
+    "checkFunasr": "FunASR 转写服务",
+    "checkFunasrHint": "在「设置」配置 voiceprint_funasr_endpoint",
+    "checkWatch": "目录自动同步",
+    "checkWatchHint": "在「设置」开启 voiceprint_watch_enabled",
+    "checkWatchNoSource": "已开启但未配置来源（watch_dir 或 OpenList）",
+    "checkIngest": "上游推送（ingest token）",
+    "checkIngestHint": "可选：配置 voiceprint_ingest_token 供外部 pipeline 推送",
+    "checkIndex": "检索索引",
+    "optional": "可选",
+    "mirrorTitle": "镜像同步对照",
+    "nasSide": "NAS 音源",
+    "libSide": "音源库",
+    "syncTitle": "同步实况",
+    "pendingTitle": "待同步",
+    "nasTotal": "NAS 单元",
+    "excluded": "已排除",
+    "syncBusy": "同步进行中，实时进度稍后自动刷新…",
+    "syncingProgress": "同步中 {{done}}/{{total}}",
+    "allSynced": "全部已同步，NAS 与音源库一致 ✓",
+    "result": {
+      "new": "新增",
+      "ingested": "入库",
+      "deleted": "删除",
+      "no_speech": "无人声",
+      "failed": "失败"
+    },
+    "reason": {
+      "new": "新增",
+      "changed": "有变更",
+      "retry": "待重试"
+    },
+    "stage": {
+      "download": "下载中",
+      "analyze": "分析中",
+      "merge": "合并中",
+      "transcribe": "转写中",
+      "ingest": "入库中"
+    }
+  },
+  "recordings": {
+    "files": "个文件",
+    "noSpeechHint": "无有效人声，未产生片段",
+    "rebuild": "删除重建（清理后重新入库）",
+    "rebuildOutcome": {
+      "done": "重建完成",
+      "deleted": "NAS 已不存在，已清理本地",
+      "excluded": "命中排除规则，未重建",
+      "no_speech": "重新处理：无人声",
+      "error": "重建失败"
+    },
+    "deleteTitle": "删除录制",
+    "deleteHint": "将删除 {{time}} 的录制及其全部语音片段与关联声纹样本（不影响说话人档案）。此操作不可恢复。"
+  },
+  "filters": {
+    "allStatus": "全部状态",
+    "confirmed": "已确认",
+    "pending": "待确认",
+    "keyword": "搜索姓名/角色/编号",
+    "searchPlaceholder": "搜索话语内容（语义检索）",
+    "allSpeakers": "全部说话人",
+    "timeFrom": "起始日期",
+    "timeTo": "结束日期"
+  },
+  "empty": {
+    "speakers": "暂无说话人",
+    "speakersHint": "等待上游推送新声纹，或点击右上角注册已知说话人",
+    "segments": "暂无话语记录",
+    "segmentsHint": "调整过滤条件，或等待上游 pipeline 推送语音片段",
+    "recordings": "暂无录制",
+    "recordingsHint": "在「设置」中开启目录同步并配置 NAS 音频目录，新增录制将自动入库"
+  },
+  "fields": {
+    "samples": "样本",
+    "totalAudio": "累计时长",
+    "matches": "命中",
+    "lastSeen": "最近出现",
+    "firstSeen": "首次出现",
+    "name": "姓名",
+    "rolePlaceholder": "角色标签（如 家人/同事）",
+    "thresholdPlaceholder": "独立阈值（留空用全局）",
+    "notes": "备注",
+    "effectiveThreshold": "有效阈值",
+    "samplePool": "声纹样本池",
+    "score": "得分",
+    "recentSegments": "近期话语",
+    "noTranscript": "（无转写文本）",
+    "unknownSpeaker": "未知说话人"
+  },
+  "actions": {
+    "enroll": "注册说话人",
+    "detail": "详情",
+    "confirm": "确认",
+    "merge": "合并",
+    "search": "搜索",
+    "markAllRead": "全部已读",
+    "prunePending": "全部剔除",
+    "consolidate": "智能合并",
+    "consolidateRun": "执行合并（{{count}} 人）",
+    "simmap": "分布图"
+  },
+  "groups": {
+    "pending": "待确认（{{count}}）",
+    "confirmed": "已确认（{{count}}）"
+  },
+  "modals": {
+    "confirmTitle": "确认说话人 {{key}}",
+    "mergeTitle": "合并 {{key}} 到…",
+    "mergeHint": "源说话人的样本池、话语记录与统计将并入目标，源档案将被删除。",
+    "mergeTarget": "选择目标说话人",
+    "enrollTitle": "注册说话人（音频）",
+    "enrollHint": "上传一段该说话人的清晰人声，将经 FunASR 提取声纹建档。",
+    "editTranscriptTitle": "修订转写文本",
+    "editTranscriptPlaceholder": "修正后的文本（人名/术语纠错…）",
+    "editTranscriptHint": "保存后语义检索向量将按新文本自动重建；批量修正可让 AI 用 transcript_replace 一次全改。",
+    "deleteTitle": "删除说话人",
+    "deleteHint": "将删除 {{key}} 及其声纹样本池，其话语片段标记为未知说话人。此操作不可恢复。",
+    "pruneTitle": "剔除全部待确认说话人",
+    "pruneHint": "将剔除 {{count}} 个待确认说话人及其声纹样本，相关话语片段标记为未知。此操作不可恢复。",
+    "consolidateTitle": "智能合并（按声纹相似度）",
+    "consolidateHint": "以下临时说话人的声纹质心相似度 ≥ {{threshold}}，疑似同一人被分裂；绿色为合并后保留的档案（累计时长最长）。",
+    "consolidateKeep": "保留",
+    "consolidateEmpty": "没有发现可合并的分裂说话人，也没有低价值档案",
+    "insignificantTitle": "一并清理 {{count}} 个低价值说话人（命中≤{{matches}}次 且 时长≤{{seconds}}s，多为环境音/路人）"
+  },
+  "status": {
+    "confirmed": "已确认",
+    "pending": "待确认",
+    "newSpeaker": "新人",
+    "unread": "未读"
+  },
+  "stats": {
+    "speakers": "说话人",
+    "pending": "待确认",
+    "segments": "语音片段",
+    "unread": "未读",
+    "notConfigured": "未配置",
+    "threshold": "阈值",
+    "embeddingModel": "文本向量模型"
+  },
+  "sync": {
+    "title": "目录自动同步",
+    "noSource": "未配置同步来源（设置 watch_dir 或 OpenList）",
+    "enabled": "已启用",
+    "disabled": "未启用",
+    "lastScan": "最近扫描",
+    "runNow": "立即同步",
+    "enableHint": "在「设置」中开启 voiceprint_watch_enabled 并配置 watch_dir（NAS 挂载目录）或 OpenList 连接",
+    "segments": "段",
+    "status": {
+      "done": "已入库",
+      "no_speech": "无人声",
+      "error": "失败"
+    },
+    "paused": "已暂停",
+    "pause": "暂停同步",
+    "resume": "恢复同步"
+  },
+  "ingest": {
+    "tryTitle": "上传音频试识别",
+    "trySubtitle": "经 FunASR 转写并提取声纹，返回 Top 候选匹配",
+    "ingestAfterIdentify": "识别后入库",
+    "run": "开始识别",
+    "needFunasr": "请先在「设置」中配置 voiceprint_funasr_endpoint",
+    "noSpeech": "音频中未检测到有效语音段",
+    "noCandidate": "无候选（库为空或未提取到声纹）",
+    "pipelineTitle": "上游 pipeline 对接契约"
+  },
+  "messages": {
+    "opFailed": "操作失败",
+    "confirmSuccess": "已确认说话人",
+    "mergeSuccess": "合并完成",
+    "deleteSuccess": "已删除",
+    "enrollSuccess": "注册成功，入库 {{count}} 条样本",
+    "updateSuccess": "已保存",
+    "sampleDeleted": "样本已删除",
+    "reassignSuccess": "归属已更新",
+    "markedRead": "已标记 {{count}} 条已读",
+    "ingestSuccess": "已入库",
+    "configSaved": "配置已保存",
+    "syncDone": "同步完成：新增 {{new}} 个文件，入库 {{ingested}} 个",
+    "rebuildSuccess": "重建完成",
+    "pruneSuccess": "已剔除 {{count}} 个待确认说话人",
+    "consolidateSuccess": "合并完成：{{clusters}} 次合并，{{count}} 人归并",
+    "syncPaused": "同步已暂停（配置已持久化）",
+    "syncResumed": "同步已恢复"
+  },
+  "simmap": {
+    "title": "声纹相似度分布图",
+    "empty": "暂无待确认说话人",
+    "estimated": "估计 {{count}} 人",
+    "total": "共 {{count}} 个档案",
+    "thresholdHint": "绿色 ≥ 阈值 {{threshold}} 为可合并",
+    "noSimilar": "无相似他人"
+  }
+}

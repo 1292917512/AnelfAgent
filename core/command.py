@@ -113,11 +113,15 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
         # 记录执行结果
         if result.returncode == 0:
             log(f"✅ 命令执行成功: {cmd_str[:50]}{'...' if len(cmd_str) > 50 else ''}", "DEBUG")
+        elif not result.stderr:
+            # 非零码 + 无错误输出：POSIX 语义多为否定结果（grep 无匹配 /
+            # 条件测试不成立），不是执行错误，降级为中性记录避免误导
+            log(f"命令以返回码 {result.returncode} 结束（无错误输出，搜索/测试类通常为无匹配）: "
+                f"{cmd_str[:50]}{'...' if len(cmd_str) > 50 else ''}", "DEBUG")
         else:
             log(f"❌ 命令执行失败 (返回码: {result.returncode}): {cmd_str[:50]}{'...' if len(cmd_str) > 50 else ''}",
                 "WARNING")
-            if result.stderr:
-                log(f"错误输出: {result.stderr[:200]}{'...' if len(result.stderr) > 200 else ''}", "DEBUG")
+            log(f"错误输出: {result.stderr[:200]}{'...' if len(result.stderr) > 200 else ''}", "DEBUG")
 
         return CommandResult(
             ok=result.returncode == 0,

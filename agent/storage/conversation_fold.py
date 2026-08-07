@@ -129,7 +129,10 @@ class ConversationFolder:
                 self._last_failure.pop(key, None)
             except Exception as exc:
                 self._last_failure[key] = time.monotonic()
-                log(f"对话折叠失败（窗口暂保持滑动行为）: {exc}", "WARNING", tag="存储")
+                # TimeoutError 等异常的 str() 为空，补类型名保证日志可诊断
+                exc_desc = str(exc) or type(exc).__name__
+                log(f"对话折叠失败（窗口暂保持滑动行为）: {type(exc).__name__}: {exc_desc}",
+                    "WARNING", tag="存储")
 
     async def _fold_locked(
         self,

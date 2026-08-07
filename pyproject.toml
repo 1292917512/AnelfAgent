@@ -52,6 +52,12 @@ dependencies = [
     "asyncpg>=0.31.0",
     "aiomysql>=0.3.2",
     "asyncssh>=2.24.0",
+    "funasr>=1.4.1",
+    "modelscope>=1.39.1",
+    "torch>=2.13.0",
+    "torchaudio>=2.11.0",
+    "soundfile>=0.14.0",
+    "opencc-python-reimplemented>=0.1.7",
 ]
 
 [[tool.uv.index]]

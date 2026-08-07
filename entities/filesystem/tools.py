@@ -93,28 +93,22 @@ _EDIT_FILE_PROMPT = """在文件中执行精确的字符串替换 — 修改已�
 - 优先编辑已有文件，除非明确要求否则不要新建文件。
 - 除非用户要求，不要在代码中添加 emoji。"""
 
-_SHELL_PROMPT = """在系统 shell 中执行命令并返回输出结果。
+_SHELL_PROMPT = """在系统 shell 中执行命令并返回输出。
 
-工作目录约定（重要）:
-- 初始工作目录就是工作区根目录（绝对路径见系统提示的 [运行环境]），
-  直接用 . 或相对路径即可，不要再进入 workspace/ 子目录（不存在嵌套的 workspace/workspace）。
-- 优先在工作区内进行操作（建项目、存文件、跑脚本），便于自身文件工具读写与管理；
-  需要访问系统其他位置时使用绝对路径，并在操作前确认目标存在（如先 ls 验证）。
-- 不知道当前目录时执行 pwd，不确定目标位置时先 ls 确认，禁止凭记忆猜测绝对路径。
+工作目录:
+- 初始目录即工作区根目录（绝对路径见系统提示 [运行环境]），直接用相对路径，不存在嵌套的 workspace/workspace。
+- 优先在工作区内操作；访问其他位置用绝对路径并先 ls 确认目标存在，禁止凭记忆猜路径。
 
-每次命令在独立进程中执行（shell 状态不持久，环境变量/alias 不保留），
-但工作目录在命令间持久（cd 对后续命令生效）；沙箱开启时漂出 workspace 自动重置。
-输出超过 30000 字符时完整内容自动落盘，返回预览和文件路径（用 read_file 查看）。
-超时默认 120 秒，最大 600 秒。
-长任务（构建/训练/大批量处理）请设置 run_in_background=True：立即返回任务 ID，
-完成后系统自动通知，避免阻塞当前对话轮。
+执行环境:
+- 每条命令独立进程（环境变量/alias 不保留），但 cd 对后续命令生效；沙箱下漂出 workspace 自动重置。
+- 输出超 30000 字符自动落盘，返回预览和文件路径（用 read_file 查看）。
+- 超时默认 120 秒，最大 600 秒；长任务设 run_in_background=True，完成后自动通知。
 
-工具偏好（不要用 shell 做这些事）:
-- 搜索文件: 用 search_files（而非 find/ls）
-- 读取文件: 用 read_file（而非 cat/head/tail）
-- 编辑文件: 用 edit_file（而非 sed/awk）
-- 写入文件: 用 write_file（而非 echo > 或 cat <<EOF）
-- 路径含空格务必加引号；避免使用 cd 进入无关目录。"""
+工具偏好（不要用 shell 做这些事）: 搜索用 search_files，读取用 read_file，编辑用 edit_file，写入用 write_file。
+
+注意事项:
+- 操作数据库（sqlite3 等）前先查表结构（.schema / PRAGMA table_info），禁止臆测表名和列名。
+- 路径含空格务必加引号。"""
 
 
 # ------------------------------------------------------------------
@@ -829,6 +823,13 @@ def run_shell_command(command: str, timeout: int = 120, run_in_background: bool 
             payload["persisted"] = persisted
         # 失败时附带真实 cwd 与工作区根，便于模型定位路径问题后自纠（而非猜测系统路径）
         if not result.ok:
+            # 非零码 + 无错误输出的语义提示（grep 无匹配/条件不成立 vs 真实错误，
+            # 避免模型把否定结果当故障盲目重试或谎报失败）
+            if not stderr:
+                notes.append(
+                    "注意: 命令以非零码结束但无错误输出——若是 grep/搜索/测试类命令，"
+                    "这通常表示无匹配或条件不成立，不是执行失败，无需重试"
+                )
             payload["cwd"] = shell_state.get_cwd(_WORKSPACE, sandbox=_SANDBOX)
             payload["workspace_root"] = os.path.abspath(_WORKSPACE)
             redundant = _redundant_workspace_prefix(command)

@@ -683,8 +683,18 @@ class Mind:
         return await self.llm.chat(request_messages, options=options)
 
     async def summarize_text(self, prompt: str) -> str:
-        """用主模型生成摘要文本（供上下文压缩等内部流程使用）。"""
-        result = await self.llm_chat([{"role": "user", "content": prompt}])
+        """生成摘要文本（供对话折叠/上下文压缩等内部流程使用）。
+
+        优先经 chat_with_fallback 调用：主模型超时/故障时自动回退其他可用
+        chat 模型，避免内部小任务被单点模型拖死（摘要输入小、对时效敏感）。
+        """
+        messages = [{"role": "user", "content": prompt}]
+        if self.llm_manager is not None:
+            result = await self.llm_manager.chat_with_fallback(
+                messages, max_retries=1, timeout=180.0,
+            )
+        else:
+            result = await self.llm_chat(messages)
         return (result.content or "").strip()
 
     # 计划是主对话 scope 的状态机：reflect（子代理/心跳）不得创建或标记计划，
