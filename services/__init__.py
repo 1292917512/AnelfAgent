@@ -5,6 +5,7 @@ from services.adapter import AdapterService
 from services.chat import ChatService
 from services.database import DatabaseService
 from services.entity import EntityService
+from services.graph import GraphService
 from services.mcp import MCPService
 from services.memory import MemoryService
 from services.model import ModelService
@@ -23,6 +24,7 @@ __all__ = [
     "ChatService",
     "DatabaseService",
     "EntityService",
+    "GraphService",
     "MCPService",
     "MemoryService",
     "ModelService",

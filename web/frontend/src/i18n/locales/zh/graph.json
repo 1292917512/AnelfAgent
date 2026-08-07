@@ -1,0 +1,66 @@
+{
+  "empty": {
+    "title": "关系图谱还是空的",
+    "description": "关系图谱记录「谁和谁/什么和什么 什么关系」。AI 会在对话中自动抽取，也可以手动添加第一条关系。"
+  },
+  "toolbar": {
+    "searchHint": "搜索节点（名称/标识）",
+    "allPredicates": "全部关系类型",
+    "allOrigins": "全部来源",
+    "stats": "{{nodes}} 节点 · {{edges}} 关系",
+    "refresh": "刷新",
+    "addRelation": "添加关系"
+  },
+  "hint": "实线=人工确认的关系，虚线=系统自动抽取；线越粗关系越强。点击节点查看详情。",
+  "origins": {
+    "manual_tool": "AI 记录",
+    "heartbeat_extract": "自动抽取",
+    "web_ui": "手动录入"
+  },
+  "nodeTypes": {
+    "user": "用户",
+    "group": "群组",
+    "person": "人物",
+    "topic": "话题",
+    "project": "项目",
+    "org": "组织",
+    "thing": "事物",
+    "concept": "概念",
+    "custom": "自定义"
+  },
+  "drawer": {
+    "nodeKey": "节点标识",
+    "nodeType": "类型",
+    "addFromHere": "从此节点添加关系",
+    "deleteNode": "归档节点",
+    "relations": "关系（{{count}}）",
+    "strength": "强度",
+    "edit": "编辑",
+    "delete": "删除",
+    "noRelations": "该节点暂无关系",
+    "label": "展示名",
+    "profileTitle": "实体画像",
+    "convCount": "{{count}} 次对话",
+    "noProfile": "暂无画像（画像由心跳按对话量自动分析生成）",
+    "primary": "主身份",
+    "aliases": "别名身份",
+    "merge": "合并",
+    "mergeHint": "合并到目标节点 key（如 user:qq:123）",
+    "mergeConfirm": "并入"
+  },
+  "form": {
+    "addTitle": "添加关系",
+    "editTitle": "编辑关系",
+    "subject": "主语节点",
+    "object": "宾语节点",
+    "predicate": "关系类型",
+    "predicateHint": "朋友/同事/喜欢/属于…",
+    "strength": "强度",
+    "symmetric": "对称关系（朋友/同事等相互关系）",
+    "evidence": "证据",
+    "evidenceHint": "从哪段对话/哪条记忆得出的（可选，建议填写）",
+    "cancel": "取消",
+    "confirm": "确定",
+    "submitting": "提交中…"
+  }
+}

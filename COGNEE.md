@@ -1,7 +1,7 @@
 # Cognee 记忆增强
 
 Cognee 是知识图谱投影与联邦召回后端，作为核心依赖随 `uv sync` 默认安装
-（`pyproject.toml` 固定 `cognee==1.3.0`）。SQLite、FTS5 和现有
+（`pyproject.toml` 固定 `cognee==1.4.1`）。SQLite、FTS5 和现有
 Embedding `MemoryStore` 始终是权威存储；Cognee 不替代 `EntityRegistry`。
 
 ## 启用
@@ -11,7 +11,7 @@ Embedding `MemoryStore` 始终是权威存储；Cognee 不替代 `EntityRegistry
 AnelfAgent 默认聊天模型和 Embedding 模型，不需要重复保存 API Key。
 
 默认数据目录是 `config/memory/cognee`，与现有 SQLite 文件完全隔离。
-Cognee v1.3.0 仍处于 Beta，因此依赖固定到该版本。
+Cognee 演进较快，依赖固定到具体版本并按补丁版本谨慎升级。
 
 ## 一致性与降级
 
@@ -27,6 +27,9 @@ Cognee v1.3.0 仍处于 Beta，因此依赖固定到该版本。
 - 未安装、未配置、超时或运行失败时自动返回原生召回结果。
 - user/group scope 使用不可逆哈希数据集名隔离，默认查询 global 与当前
   scope，避免跨用户或跨群组召回。
+- 关系图谱（graph_nodes/graph_edges，权威在记忆库）投影到全局共享的
+  `{prefix}_relations` 数据集：以节点邻域文档为单位先删后加，
+  对所有 scope 开放查询（关系网络天然跨实体）。
 
 ## 历史数据与回滚
 

@@ -136,14 +136,23 @@ _PLAN_USAGE_RULES = (
 
 _MEMORY_USAGE_HINT = (
     "[记忆使用提示]\n"
-    "便签文件是索引，数据库是详细存储，技能系统是经验手册。三者通过标签联动。\n"
-    "- 看到人物 UID → get_entity_profile 查完整画像\n"
+    "记忆系统职责边界（记什么用什么，禁止混写）：\n"
+    "- 数据库记忆（memorize/recall）= 「什么事」：事实 type:fact、事件 type:event、"
+    "反思 type:reflection、永久规则 type:permanent\n"
+    "- 实体画像（get/update_entity_profile）= 「谁」：单个实体的性格/偏好/互动风格，一人一份覆盖更新\n"
+    "- 关系图谱（graph_* 工具）= 「谁和谁/什么和什么 什么关系」：A 是 B 的同事、A 喜欢 C 这类"
+    "结构化关系一律 graph_add_relation 落库（必填 evidence），不要写进画像或记忆正文\n"
+    "- 便签文件 = 工作笔记与索引（规则/计划/教训/称呼速查），不堆详情、不复制画像全文\n"
+    "- 技能系统 = 工具使用经验/工作流技巧（create_skill，不要写成记忆，避免双写漂移）\n"
+    "- cognee 图谱 = 以上内容的语义投影层，仅供模糊检索增强，不是权威存储，不直接写入\n"
+    "查询路由：\n"
+    "- 看到人物 UID → get_entity_profile 查画像；想知道某人的关系网 → graph_query；"
+    "两实体的关系链 → graph_path\n"
     "- 想了解某话题 → recall 语义搜索 DB（找不到再加 depth=\"deep\" 深度召回；"
-    "结果带 source 标明出处：memory=数据库 / file=便签 / cognee_*=知识图谱）\n"
+    "结果带 source 标明出处：memory=数据库 / file=便签 / cognee_*=知识图谱投影）\n"
     "- 看到 [reply_to:id] / 已知 message_id 且需原文 → lookup_message 精确取回（含窗口外）\n"
     "- 翻阅窗口外旧对话（语义）→ recall_conversation\n"
-    "- 新事实/事件/人物信息 → memorize 存 DB（标签: type:/user:/group:/topic:），必要时更新便签索引\n"
-    "- 工具使用经验/工作流技巧 → create_skill / update_skill 沉淀为技能（不要写成记忆，避免双写漂移）\n"
+    "- 新事实/事件 → memorize 存 DB（标签: type:/user:/group:/topic:），必要时更新便签索引\n"
     "- 工具出错 → recall_tool_errors 查历史错误\n"
     "- 整理记忆 → 先 view_memory_outline 看文件结构，按顶部分类标准写入"
 )
@@ -201,8 +210,8 @@ from agent.mind.context_pipeline import (
 # legacy 布局的变动率覆盖表（tail_injection 关闭时）：动态块移到历史之前
 _LEGACY_VOLATILITY: Dict[str, int] = {
     "status": 24, "volatile": 25, "provider": 26, "overflow": 27,
-    "security": 28, "profile": 29, "memory": 30, "summary": 31,
-    "conversation": 32,
+    "security": 28, "profile": 29, "relation": 30, "memory": 31, "summary": 32,
+    "conversation": 33,
 }
 
 
@@ -478,6 +487,7 @@ class ContextAssembly:
             prefetched_conversation: Optional[List[Dict]] = None,
             scope: str = "",
             profile_msgs: Optional[List[Dict]] = None,
+            relation_msgs: Optional[List[Dict]] = None,
             summary_row: Optional[Dict] = None,
             status_text: str = "",
     ) -> List[Dict]:
@@ -503,6 +513,7 @@ class ContextAssembly:
             status_text=status_text,
             memory_msgs=memory_msgs,
             profile_msgs=profile_msgs or [],
+            relation_msgs=relation_msgs or [],
             summary_row=summary_row,
             anything=anything,
             adapter_key=adapter_key,
@@ -612,6 +623,11 @@ class ContextAssembly:
     def _blk_profile(self, inp: ContextInput) -> List[Dict]:
         """实体画像（每实体一条，动态区中最稳定，放最前）。"""
         return list(inp.profile_msgs)
+
+    @context_block("relation", VOL_SESSION + 2, "关系网络注入")
+    def _blk_relation(self, inp: ContextInput) -> List[Dict]:
+        """关系网络快照（当前会话相关实体的已知关系，随实体集合低频变）。"""
+        return list(inp.relation_msgs)
 
     @context_block("volatile", VOL_SESSION + 2, "短期记忆（volatile 层）")
     def _blk_volatile(self, inp: ContextInput) -> List[Dict]:

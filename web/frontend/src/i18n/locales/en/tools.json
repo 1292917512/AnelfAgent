@@ -20,6 +20,7 @@
   "groups": {
     "output": "Messaging",
     "memory": "Memory",
+    "graph": "Relation Graph",
     "notes": "Notes",
     "thinking": "Thinking",
     "planning": "Planning",

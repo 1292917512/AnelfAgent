@@ -38,7 +38,7 @@ from .store._shared import (
 from .store._shared import (
     get_memory_config_value as _get_memory_config_value,
 )
-from .store.cognee_queue import CogneeSyncQueue
+from .store.cognee_queue import ENTRY_KIND_MEMORY, CogneeSyncQueue
 from .store.connection import MemoryConnectionManager
 from .store.file_index import FileIndexStore
 from .store.search import SearchEngine
@@ -52,12 +52,15 @@ class MemoryStore(BaseEntity):
     _entity_description = "记忆存储 — 基于 SQLite FTS5 + Embedding 的统一记忆系统"
 
     def __init__(self, db_path: str) -> None:
+        from .graph import GraphStore
+
         self._db_path = db_path
         self._conn = MemoryConnectionManager(db_path)
         self._cognee = CogneeSyncQueue(self._conn)
         self._files = FileIndexStore(self._conn)
         self._tool_errors = ToolErrorTracker(self._conn)
         self._search = SearchEngine(self._conn, self._files)
+        self.graph = GraphStore(self._conn, self._cognee)
         super().__init__()
 
     # ------------------------------------------------------------------
@@ -196,7 +199,11 @@ class MemoryStore(BaseEntity):
     # ------------------------------------------------------------------
 
     async def add(self, entry: MemoryEntry) -> int:
-        """添加一条记忆，返回 id。"""
+        """添加一条记忆，返回 id。
+
+        migrated=1：新记忆诞生于现行体系，无需参与旧版 MD 转储迁移
+        （migrated=0 仅标识需要导出到便签的历史遗留行）。
+        """
         db = await self._get_db()
         ts_ns = int(entry.timestamp * 1e9) if entry.timestamp else int(time.time() * 1e9)
         blob = pack_embedding(entry.embedding) if entry.embedding else None
@@ -204,8 +211,8 @@ class MemoryStore(BaseEntity):
         async with self._tx(db):
             cursor = await db.execute(
                 "INSERT INTO memories"
-                "(type, content, source, importance, ts_ns, metadata_json, embedding_blob, tags_json, access_count, last_accessed_ns) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "(type, content, source, importance, ts_ns, metadata_json, embedding_blob, tags_json, access_count, last_accessed_ns, migrated) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,1)",
                 (
                     entry.memory_type.value,
                     entry.content,
@@ -364,15 +371,17 @@ class MemoryStore(BaseEntity):
     async def complete_cognee_sync(
         self,
         queue_id: int,
-        memory_id: int,
+        entry_id: int,
         *,
+        entry_kind: str = ENTRY_KIND_MEMORY,
         dataset_name: str = "",
         dataset_id: str = "",
         data_id: str = "",
         delete_mapping: bool = False,
     ) -> None:
         await self._cognee.complete(
-            queue_id, memory_id,
+            queue_id, entry_id,
+            entry_kind=entry_kind,
             dataset_name=dataset_name, dataset_id=dataset_id,
             data_id=data_id, delete_mapping=delete_mapping,
         )
@@ -390,8 +399,13 @@ class MemoryStore(BaseEntity):
             max_retries=max_retries, retry_delay_seconds=retry_delay_seconds,
         )
 
-    async def get_cognee_mapping(self, memory_id: int) -> Optional[Dict[str, Any]]:
-        return await self._cognee.get_mapping(memory_id)
+    async def get_cognee_mapping(
+        self,
+        entry_id: int,
+        *,
+        entry_kind: str = ENTRY_KIND_MEMORY,
+    ) -> Optional[Dict[str, Any]]:
+        return await self._cognee.get_mapping(entry_id, entry_kind=entry_kind)
 
     async def get_cognee_sync_status(self) -> Dict[str, int]:
         return await self._cognee.get_status()

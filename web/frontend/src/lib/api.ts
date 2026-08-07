@@ -38,6 +38,10 @@ import type {
   DbRow,
   DbRowInput,
   DbRowsResult,
+  GraphData,
+  GraphEdge,
+  GraphNode,
+  GraphNodeDetail,
   DbSchemaResult,
   DbTableInfo,
   DbTargetCheck,
@@ -936,4 +940,31 @@ export const voiceprintApi = {
   updateConfig: (updates: Record<string, unknown>) =>
     api.put<{ updated: number }>("/entity/voiceprint/config", { updates }),
   openlistStatus: () => api.get<OpenListStatus>("/entity/voiceprint/openlist/status"),
+};
+
+// ── 关系图谱（/memory/graph，权威存储在记忆库 graph_nodes/graph_edges） ──
+export const graphApi = {
+  get: (params?: { predicate?: string; origin?: string; include_archived?: boolean; limit?: number }) =>
+    api.get<GraphData>("/memory/graph", { params }),
+  nodeDetail: (node: string) =>
+    api.get<GraphNodeDetail>("/memory/graph/node_detail", { params: { node } }),
+  neighborhood: (node: string, depth = 1) =>
+    api.get<{ found: boolean; node: GraphNode | null; nodes: GraphNode[]; edges: GraphEdge[] }>(
+      "/memory/graph/neighborhood", { params: { node, depth } }),
+  upsertNode: (data: { node_key: string; label?: string; metadata?: Record<string, unknown> }) =>
+    api.post<{ ok: boolean; node: GraphNode }>("/memory/graph/nodes", data),
+  deleteNode: (node_key: string) =>
+    api.post<{ ok: boolean }>("/memory/graph/nodes/delete", { node_key }),
+  addEdge: (data: {
+    subject: string; predicate: string; object: string;
+    symmetric?: boolean; strength?: number; evidence?: string;
+  }) => api.post<{ ok: boolean; edge: GraphEdge }>("/memory/graph/edges", data),
+  updateEdge: (edgeId: number, data: {
+    predicate?: string; strength?: number; evidence?: string; symmetric?: boolean;
+  }) => api.put<{ ok: boolean; edge: GraphEdge }>(`/memory/graph/edges/${edgeId}`, data),
+  deleteEdge: (edgeId: number) =>
+    api.post<{ ok: boolean }>(`/memory/graph/edges/${edgeId}/delete`),
+  mergeNodes: (source_key: string, target_key: string) =>
+    api.post<{ ok: boolean; edges_moved: number; edges_merged: number }>(
+      "/memory/graph/merge", { source_key, target_key }),
 };

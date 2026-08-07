@@ -39,7 +39,7 @@ dependencies = [
     "nonebot2[fastapi]>=2.4.4",
     "nonebot-adapter-onebot>=2.4.6",
     # Cognee 知识图谱记忆后端（默认安装，uv sync 自动拉取）
-    "cognee==1.4.0",
+    "cognee==1.4.1",
     "chardet>=5,<6",
     "sqlite-vec>=0.1.9",
     "tiktoken>=0.12.0",

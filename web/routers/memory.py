@@ -9,7 +9,7 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from services import MemoryService
+from services import GraphService, MemoryService
 from web.routers.schemas import (
     CogneeBackfillRequest,
     CogneeConfigUpdate,
@@ -330,6 +330,128 @@ class UnlinkEntityRequest(BaseModel):
 async def unlink_entity(req: UnlinkEntityRequest) -> Dict[str, Any]:
     ok = await _mem_svc.unlink_entity(req.scope_type, req.scope_id)
     return {"ok": ok}
+
+# ── 关系图谱 ─────────────────────────────────────────────────────────
+
+_graph_svc = GraphService()
+
+
+@router.get("/graph")
+@_runtime_fallback(lambda **kw: {"nodes": [], "edges": [], "stats": {}})
+async def get_graph(
+    predicate: str = Query(default=""),
+    origin: str = Query(default=""),
+    include_archived: bool = Query(default=False),
+    limit: int = Query(default=500, le=2000),
+) -> Dict[str, Any]:
+    return await _graph_svc.get_graph(
+        predicate=predicate, origin=origin,
+        include_archived=include_archived, limit=limit,
+    )
+
+
+@router.get("/graph/neighborhood")
+@_runtime_fallback(lambda **kw: {"found": False, "node": None, "nodes": [], "edges": []})
+async def graph_neighborhood(
+    node: str = Query(...), depth: int = Query(default=1, ge=1, le=2),
+) -> Dict[str, Any]:
+    return await _graph_svc.query_neighborhood(node, depth=depth)
+
+
+@router.get("/graph/node_detail")
+@_runtime_fallback(lambda **kw: {"found": False})
+async def graph_node_detail(node: str = Query(...)) -> Dict[str, Any]:
+    return await _graph_svc.get_node_detail(node)
+
+
+class GraphNodeRequest(BaseModel):
+    node_key: str
+    label: str = ""
+    metadata: Optional[Dict[str, Any]] = None
+
+
+@router.post("/graph/nodes")
+async def upsert_graph_node(req: GraphNodeRequest) -> Dict[str, Any]:
+    try:
+        node = await _graph_svc.upsert_node(
+            req.node_key, label=req.label, metadata=req.metadata,
+        )
+        return {"ok": True, "node": node}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/graph/nodes/delete")
+async def delete_graph_node(req: GraphNodeRequest) -> Dict[str, Any]:
+    ok = await _graph_svc.delete_node(req.node_key)
+    if not ok:
+        raise HTTPException(status_code=404, detail="节点不存在")
+    return {"ok": True}
+
+
+class GraphEdgeRequest(BaseModel):
+    subject: str
+    predicate: str
+    object: str
+    symmetric: bool = False
+    strength: float = 0.7
+    evidence: str = ""
+
+
+@router.post("/graph/edges")
+async def add_graph_edge(req: GraphEdgeRequest) -> Dict[str, Any]:
+    try:
+        edge = await _graph_svc.add_edge(
+            req.subject, req.predicate, req.object,
+            symmetric=req.symmetric, strength=req.strength, evidence=req.evidence,
+        )
+        return {"ok": True, "edge": edge}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class GraphEdgeUpdateRequest(BaseModel):
+    predicate: Optional[str] = None
+    strength: Optional[float] = None
+    evidence: Optional[str] = None
+    symmetric: Optional[bool] = None
+
+
+@router.put("/graph/edges/{edge_id}")
+async def update_graph_edge(edge_id: int, req: GraphEdgeUpdateRequest) -> Dict[str, Any]:
+    try:
+        edge = await _graph_svc.update_edge(
+            edge_id,
+            predicate=req.predicate, strength=req.strength,
+            evidence=req.evidence, symmetric=req.symmetric,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if edge is None:
+        raise HTTPException(status_code=404, detail="关系边不存在")
+    return {"ok": True, "edge": edge}
+
+
+@router.post("/graph/edges/{edge_id}/delete")
+async def delete_graph_edge(edge_id: int) -> Dict[str, Any]:
+    ok = await _graph_svc.delete_edge(edge_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="关系边不存在")
+    return {"ok": True}
+
+
+class GraphMergeRequest(BaseModel):
+    source_key: str
+    target_key: str
+
+
+@router.post("/graph/merge")
+async def merge_graph_nodes(req: GraphMergeRequest) -> Dict[str, Any]:
+    try:
+        report = await _graph_svc.merge_nodes(req.source_key, req.target_key)
+        return {"ok": True, **report}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 # ── 便签记忆 ─────────────────────────────────────────────────────────
 

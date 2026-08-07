@@ -55,15 +55,17 @@ async def get_recollection(
     if query:
         query_vec = await mind.embedder.embed_query(query)
 
+    # 相关实体 scope（画像注入与关系网络注入共用同一份参与人集合）
+    scope_source = conversation_list[-30:] if len(conversation_list) > 30 else conversation_list
+    related_scopes = mind._extract_related_scopes(scope_source, entity_scope)
+    if anything:
+        for s in mind._extract_scopes_from_anything(anything, entity_scope):
+            if s not in related_scopes:
+                related_scopes.insert(0, s)
+
     async def _recall_memory() -> Tuple[List[Dict], List[Dict]]:
         if not mind.retriever:
             return [], []
-        scope_source = conversation_list[-30:] if len(conversation_list) > 30 else conversation_list
-        related_scopes = mind._extract_related_scopes(scope_source, entity_scope)
-        if anything:
-            for s in mind._extract_scopes_from_anything(anything, entity_scope):
-                if s not in related_scopes:
-                    related_scopes.insert(0, s)
         profile_msgs, recall_msgs = await mind.retriever.recall_split(
             tail, entity_scope=entity_scope, related_scopes=related_scopes,
             query_vec=query_vec,
@@ -71,9 +73,19 @@ async def get_recollection(
         log(f"语义召回: {len(recall_msgs)} 条, 画像: {len(profile_msgs)} 条", tag="思维")
         return profile_msgs, recall_msgs
 
-    # 三条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行
-    (profile_msgs, memory_msgs), (cross_recall_msgs, recalled_scopes), skill_msgs = await asyncio.gather(
+    async def _load_relations() -> List[Dict]:
+        """关系网络快照：当前会话参与实体之间的已知关系（独立注入块，不吃记忆预算）。"""
+        if not mind.retriever:
+            return []
+        all_scopes = ([entity_scope] if entity_scope else []) + [
+            s for s in related_scopes if s != entity_scope
+        ]
+        return await mind.retriever.load_relation_snippets(all_scopes)
+
+    # 四条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行
+    (profile_msgs, memory_msgs), relation_msgs, (cross_recall_msgs, recalled_scopes), skill_msgs = await asyncio.gather(
         _recall_memory(),
+        _load_relations(),
         mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec),
         mind._match_skills(tail, query_vec=query_vec),
     )
@@ -130,6 +142,7 @@ async def get_recollection(
         prefetched_conversation=conversation_list,
         scope=entity_scope,
         profile_msgs=profile_msgs,
+        relation_msgs=relation_msgs,
         summary_row=summary_row,
         status_text=status_text,
     )

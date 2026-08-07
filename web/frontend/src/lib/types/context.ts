@@ -56,10 +56,14 @@ export interface SnapshotSection {
 /** 单次 LLM 调用的缓存用量记录 */
 export interface CacheCallRecord {
   ts: number;
+  /** 调用用途（reply=主对话 / reflect=辅助调用） */
+  kind?: string;
   prompt_tokens: number;
   cache_read_input_tokens: number;
   cache_creation_input_tokens: number;
   cache_hit_rate: number;
+  /** 距快照捕获的秒数（回显过久的数据会被前端弱化展示） */
+  age_sec?: number;
 }
 
 /** 缓存聚合统计（最近若干次调用） */
@@ -75,10 +79,14 @@ export interface CacheStatsSummary {
 
 /** 快照的缓存观测区块 */
 export interface SnapshotCacheInfo {
-  /** 快照捕获前最近一次 LLM 调用的真实缓存用量 */
+  /** 捕获前最近一次主对话（reply）调用的真实缓存用量 */
   last_call: CacheCallRecord | null;
-  /** 最近 N 次调用聚合 */
+  /** 捕获前最近一次任意类型调用（含辅助调用，kind 字段区分） */
+  last_call_any?: CacheCallRecord | null;
+  /** 最近 N 次主对话调用聚合 */
   recent: CacheStatsSummary;
+  /** 最近 N 次全部调用聚合 */
+  recent_all?: CacheStatsSummary;
   /** 从头连续未变更 section 的估算 tokens（近似可复用缓存前缀）；null = 首次快照无基线 */
   estimated_cacheable_prefix_tokens: number | null;
 }

@@ -182,7 +182,7 @@ tick() 单次心跳：
 1. stable 层（人设 + 工具提示）—— 对话内冻结，PromptCacheManager 按 scope 缓存，
    字节级稳定供 Anthropic/OpenAI 前缀缓存复用（Anthropic 注入 cache_control 断点）
 2. context 层（便签）—— 低频重建
-3. volatile 层（短期记忆 + 溢出提示 + 安全标记 + 语义召回 + 技能注入）—— 每轮构建
+3. volatile 层（短期记忆 + 溢出提示 + 安全标记 + 语义召回 + 技能注入 + 画像/关系网络注入）—— 每轮构建
 4. 对话历史（实时从 DB 获取，禁止缓存）
 ```
 
@@ -256,6 +256,9 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/mind/tools/decision_executor.py` | 决策执行分发（REPLY/REFLECT/PLAN 等） |
 | `agent/mind/tools/media_pipeline.py` | 媒体标签转换 |
 | `agent/memory/memory_store.py` | 长期记忆存储（SQLite + FTS5 + Embedding；软归档遗忘 + importance 松弛回归） |
+| `agent/memory/graph/store.py` | 关系图谱权威存储（graph_nodes/graph_edges；(s,p,o) 唯一 upsert + 别名归一 + 软删 + cognee 投影入队） |
+| `agent/memory/graph/tools.py` | 关系图谱工具组（graph_add_relation / graph_query / graph_path / graph_merge_nodes 等，group=graph） |
+| `agent/memory/graph/extract.py` | 心跳关系抽取（对话 → JSON 候选解析 → 落库，origin=heartbeat_extract） |
 | `agent/storage/scope_migrate.py` | scope 迁移（旧格式键回填 adapter 维度，user_version 幂等 + 自动备份） |
 | `agent/memory/tools.py` | 记忆工具（memorize / recall（source 标志 + depth 浅深 + filter_tags 硬过滤）/ forget 软归档） |
 | `agent/memory/notes.py` | 便签文件系统 |
@@ -297,7 +300,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 修改分组名时必须同步更新：
 1. 后端 `@tool(group=...)` / `@deferred_tool(group=...)` / `entity(group, ...)` / `activate_group(group, ...)`
 2. 前端 `i18n/locales/zh/tools.json` 和 `en/tools.json` 的 `groups` 对象
-3. `core/entity.py` 的 `_CATALOG_ORDER`（LLM 工具目录排序）
+3. `core/entity.py` 的 `_DEFAULT_GROUP_ORDER`（LLM 工具目录排序）
 4. `services/tool.py` 的 `_GROUP_ORDER`（WebUI 工具列表排序）
 
 #### 当前分组索引
@@ -306,6 +309,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 |---|---|---|---|
 | `output` | 消息输出 | `channel/output_tools.py` | always |
 | `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/heartbeat |
+| `graph` | 关系图谱 | `agent/memory/graph/tools.py` | always/core/heartbeat |
 | `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
 | `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tool_activation.py` + `agent/mind/context_compressor.py` | always |
 | `planning` | 目标规划 | `agent/planning/tools.py` | planning/goal/heartbeat |

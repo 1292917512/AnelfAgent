@@ -37,7 +37,7 @@ async def migrate_memories_to_md(db_path: str, workspace_dir: Path) -> int:
 
     按 MemoryType 分类：
       - PERMANENT → memory.md（常青知识）
-      - ENTITY    → memory/entities.md
+      - ENTITY    → 不导出（画像归属实体画像系统与关系图谱），仅标记 migrated
       - REFLECTION → memory/reflections.md
       - EPISODIC  → memory/YYYY-MM-DD.md（按日期）
       - SEMANTIC  → memory/knowledge.md
@@ -89,14 +89,10 @@ async def migrate_memories_to_md(db_path: str, workspace_dir: Path) -> int:
         )
         migrated_ids.extend(e["id"] for e in entries)
 
-    # ENTITY → memory/entities.md
+    # ENTITY → 不导出便签（画像归属实体画像系统 + 关系图谱，便签不承载详情），
+    # 但仍标记 migrated 终止回灌（权威数据保留在 memories 表）
     if MemoryType.ENTITY.value in grouped:
-        entries = grouped[MemoryType.ENTITY.value]
-        _append_to_file(
-            memory_dir / "entities.md",
-            _format_section("实体画像", entries),
-        )
-        migrated_ids.extend(e["id"] for e in entries)
+        migrated_ids.extend(e["id"] for e in grouped[MemoryType.ENTITY.value])
 
     # REFLECTION → memory/reflections.md
     if MemoryType.REFLECTION.value in grouped:

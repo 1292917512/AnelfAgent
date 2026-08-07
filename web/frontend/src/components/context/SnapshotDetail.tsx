@@ -56,54 +56,63 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
       </div>
 
       {/* 缓存观测：上次调用真实命中 + 可复用前缀估算 */}
-      {snapshot.cache && (
-        <div className="p-3 rounded-lg bg-elevated border border-border space-y-2">
-          <p className="text-xs font-semibold text-heading">{t("cache.title")}</p>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
-            <div>
-              <p className="text-sm font-bold text-emerald-500 font-mono">
-                {snapshot.cache.last_call
-                  ? `${Math.round(snapshot.cache.last_call.cache_hit_rate * 100)}%`
-                  : "—"}
-              </p>
-              <p className="text-[10px] text-muted mt-0.5">{t("cache.lastHitRate")}</p>
+      {snapshot.cache && (() => {
+        const lastCall = snapshot.cache.last_call;
+        const stale = (lastCall?.age_sec ?? 0) > 120;
+        return (
+          <div className="p-3 rounded-lg bg-elevated border border-border space-y-2">
+            <p className="text-xs font-semibold text-heading">{t("cache.title")}</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+              <div>
+                <p className={cn("text-sm font-bold font-mono", stale ? "text-muted" : "text-emerald-500")}>
+                  {lastCall
+                    ? `${Math.round(lastCall.cache_hit_rate * 100)}%`
+                    : "—"}
+                </p>
+                <p className="text-[10px] text-muted mt-0.5">
+                  {t("cache.lastHitRate")}
+                  {lastCall && stale && (
+                    <span className="ml-1">{t("cache.staleMark", { min: Math.round((lastCall.age_sec ?? 0) / 60) })}</span>
+                  )}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm font-bold text-heading font-mono">
+                  {lastCall
+                    ? lastCall.cache_read_input_tokens.toLocaleString()
+                    : "—"}
+                </p>
+                <p className="text-[10px] text-muted mt-0.5">{t("cache.lastReadTokens")}</p>
+              </div>
+              <div>
+                <p className="text-sm font-bold text-heading font-mono">
+                  {snapshot.cache.recent.sample_count > 0
+                    ? `${Math.round(snapshot.cache.recent.avg_cache_hit_rate * 100)}%`
+                    : "—"}
+                </p>
+                <p className="text-[10px] text-muted mt-0.5">
+                  {t("cache.avgHitRate", { count: snapshot.cache.recent.sample_count })}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm font-bold text-heading font-mono">
+                  {snapshot.cache.estimated_cacheable_prefix_tokens != null
+                    ? `~${snapshot.cache.estimated_cacheable_prefix_tokens.toLocaleString()}t`
+                    : "—"}
+                </p>
+                <p className="text-[10px] text-muted mt-0.5">{t("cache.stablePrefix")}</p>
+              </div>
             </div>
-            <div>
-              <p className="text-sm font-bold text-heading font-mono">
-                {snapshot.cache.last_call
-                  ? snapshot.cache.last_call.cache_read_input_tokens.toLocaleString()
-                  : "—"}
+            {snapshot.cache.recent.sample_count === 0 && (
+              <p className="text-[10px] text-muted">
+                {snapshot.cache.recent.no_usage_count > 0
+                  ? t("cache.noUsage", { count: snapshot.cache.recent.no_usage_count })
+                  : t("cache.noData")}
               </p>
-              <p className="text-[10px] text-muted mt-0.5">{t("cache.lastReadTokens")}</p>
-            </div>
-            <div>
-              <p className="text-sm font-bold text-heading font-mono">
-                {snapshot.cache.recent.sample_count > 0
-                  ? `${Math.round(snapshot.cache.recent.avg_cache_hit_rate * 100)}%`
-                  : "—"}
-              </p>
-              <p className="text-[10px] text-muted mt-0.5">
-                {t("cache.avgHitRate", { count: snapshot.cache.recent.sample_count })}
-              </p>
-            </div>
-            <div>
-              <p className="text-sm font-bold text-heading font-mono">
-                {snapshot.cache.estimated_cacheable_prefix_tokens != null
-                  ? `~${snapshot.cache.estimated_cacheable_prefix_tokens.toLocaleString()}t`
-                  : "—"}
-              </p>
-              <p className="text-[10px] text-muted mt-0.5">{t("cache.stablePrefix")}</p>
-            </div>
+            )}
           </div>
-          {snapshot.cache.recent.sample_count === 0 && (
-            <p className="text-[10px] text-muted">
-              {snapshot.cache.recent.no_usage_count > 0
-                ? t("cache.noUsage", { count: snapshot.cache.recent.no_usage_count })
-                : t("cache.noData")}
-            </p>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
       {/* 工具清单 */}
       <div className="border border-border rounded-lg">

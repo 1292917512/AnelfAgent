@@ -1,8 +1,11 @@
-"""Cognee 异步投影队列：记忆变更 → cognee 知识图谱的持久化 outbox。
+"""Cognee 异步投影队列：记忆/关系节点变更 → cognee 知识图谱的持久化 outbox。
 
 写路径在业务事务内调用 enqueue_sync 压缩入队；后台 worker 经
 claim_batch / complete / fail 消费；reset/retry/backfill 供管理接口使用。
 连接与事务均由 MemoryConnectionManager 提供，本模块不自建连接。
+
+条目类型（entry_kind）：memory（记忆，entry_id=memories.id）/
+graph_node（关系图谱节点，entry_id=graph_nodes.id）。
 """
 
 from __future__ import annotations
@@ -18,9 +21,13 @@ from core.log import log
 from ._shared import MEM_COLUMNS, entry_projection_payload, row_to_entry
 from .connection import MemoryConnectionManager
 
+# 投影条目类型
+ENTRY_KIND_MEMORY = "memory"
+ENTRY_KIND_GRAPH_NODE = "graph_node"
+
 
 class CogneeSyncQueue:
-    """cognee_sync_queue + cognee_memory_map 两张表的全部读写。"""
+    """cognee_sync_queue + cognee_entry_map 两张表的全部读写。"""
 
     def __init__(self, conn: MemoryConnectionManager) -> None:
         self._conn = conn
@@ -37,25 +44,28 @@ class CogneeSyncQueue:
     async def enqueue_sync(
         self,
         db: aiosqlite.Connection,
-        memory_id: int,
+        entry_id: int,
         operation: str,
         payload: Optional[Dict[str, Any]] = None,
+        *,
+        entry_kind: str = ENTRY_KIND_MEMORY,
     ) -> None:
         """在当前事务中追加 Cognee 投影操作，并压缩尚未执行的旧操作。"""
-        if not self._projection_enabled or memory_id <= 0:
+        if not self._projection_enabled or entry_id <= 0:
             return
         now_ns = time.time_ns()
         await db.execute(
             "DELETE FROM cognee_sync_queue "
-            "WHERE memory_id=? AND status IN ('pending', 'failed')",
-            (memory_id,),
+            "WHERE entry_kind=? AND entry_id=? AND status IN ('pending', 'failed')",
+            (entry_kind, entry_id),
         )
         await db.execute(
             "INSERT INTO cognee_sync_queue"
-            "(memory_id, operation, payload_json, status, attempts, next_retry_ns, "
-            "last_error, created_ns, updated_ns) VALUES(?,?,?,'pending',0,0,'',?,?)",
+            "(entry_kind, entry_id, operation, payload_json, status, attempts, next_retry_ns, "
+            "last_error, created_ns, updated_ns) VALUES(?,?,?,?,'pending',0,0,'',?,?)",
             (
-                memory_id,
+                entry_kind,
+                entry_id,
                 operation,
                 json.dumps(payload or {}, ensure_ascii=False),
                 now_ns,
@@ -68,7 +78,7 @@ class CogneeSyncQueue:
         db = await self._conn.get_db()
         now_ns = time.time_ns()
         cursor = await db.execute(
-            "SELECT id, memory_id, operation, payload_json, attempts "
+            "SELECT id, entry_kind, entry_id, operation, payload_json, attempts "
             "FROM cognee_sync_queue "
             "WHERE status='pending' AND next_retry_ns<=? ORDER BY id LIMIT ?",
             (now_ns, max(1, limit)),
@@ -92,7 +102,8 @@ class CogneeSyncQueue:
                 payload = {}
             result.append({
                 "queue_id": int(row["id"]),
-                "memory_id": int(row["memory_id"]),
+                "entry_kind": str(row["entry_kind"]),
+                "entry_id": int(row["entry_id"]),
                 "operation": str(row["operation"]),
                 "payload": payload,
                 "attempts": int(row["attempts"]),
@@ -121,8 +132,9 @@ class CogneeSyncQueue:
     async def complete(
         self,
         queue_id: int,
-        memory_id: int,
+        entry_id: int,
         *,
+        entry_kind: str = ENTRY_KIND_MEMORY,
         dataset_name: str = "",
         dataset_id: str = "",
         data_id: str = "",
@@ -139,14 +151,15 @@ class CogneeSyncQueue:
                 return
             if delete_mapping:
                 await db.execute(
-                    "DELETE FROM cognee_memory_map WHERE memory_id=?", (memory_id,),
+                    "DELETE FROM cognee_entry_map WHERE entry_kind=? AND entry_id=?",
+                    (entry_kind, entry_id),
                 )
             elif dataset_name:
                 await db.execute(
-                    "INSERT OR REPLACE INTO cognee_memory_map"
-                    "(memory_id, dataset_name, dataset_id, data_id, synced_ns) "
-                    "VALUES(?,?,?,?,?)",
-                    (memory_id, dataset_name, dataset_id, data_id, time.time_ns()),
+                    "INSERT OR REPLACE INTO cognee_entry_map"
+                    "(entry_kind, entry_id, dataset_name, dataset_id, data_id, synced_ns) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (entry_kind, entry_id, dataset_name, dataset_id, data_id, time.time_ns()),
                 )
 
     async def fail(
@@ -174,12 +187,17 @@ class CogneeSyncQueue:
                 (status, attempts, next_retry_ns, error[:1000], time.time_ns(), queue_id),
             )
 
-    async def get_mapping(self, memory_id: int) -> Optional[Dict[str, Any]]:
+    async def get_mapping(
+        self,
+        entry_id: int,
+        *,
+        entry_kind: str = ENTRY_KIND_MEMORY,
+    ) -> Optional[Dict[str, Any]]:
         db = await self._conn.get_db()
         cursor = await db.execute(
-            "SELECT memory_id, dataset_name, dataset_id, data_id, synced_ns "
-            "FROM cognee_memory_map WHERE memory_id=?",
-            (memory_id,),
+            "SELECT entry_kind, entry_id, dataset_name, dataset_id, data_id, synced_ns "
+            "FROM cognee_entry_map WHERE entry_kind=? AND entry_id=?",
+            (entry_kind, entry_id),
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
@@ -190,7 +208,7 @@ class CogneeSyncQueue:
             "SELECT status, COUNT(*) AS cnt FROM cognee_sync_queue GROUP BY status"
         )
         counts = {str(row["status"]): int(row["cnt"]) for row in await cursor.fetchall()}
-        mapped = await db.execute("SELECT COUNT(*) AS cnt FROM cognee_memory_map")
+        mapped = await db.execute("SELECT COUNT(*) AS cnt FROM cognee_entry_map")
         mapped_row = await mapped.fetchone()
         return {
             "pending": counts.get("pending", 0) + counts.get("processing", 0),
@@ -209,11 +227,11 @@ class CogneeSyncQueue:
             "SELECT COUNT(*) AS c FROM cognee_sync_queue"
         )).fetchone())["c"]
         mapped = (await (await db.execute(
-            "SELECT COUNT(*) AS c FROM cognee_memory_map"
+            "SELECT COUNT(*) AS c FROM cognee_entry_map"
         )).fetchone())["c"]
         async with self._conn.tx(db):
             await db.execute("DELETE FROM cognee_sync_queue")
-            await db.execute("DELETE FROM cognee_memory_map")
+            await db.execute("DELETE FROM cognee_entry_map")
         return {"queue": queued, "mappings": mapped}
 
     async def retry_failed(self) -> int:

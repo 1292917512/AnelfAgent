@@ -460,12 +460,12 @@ _UNREGISTERED_GROUP_WEIGHT = 1000
 # 各业务模块注册工具分组时可通过 EntityRegistry.register_group_order() 覆盖；
 # 未在此表中的分组按字母序排在末尾。
 _DEFAULT_GROUP_ORDER: Dict[str, int] = {
-    "output": 0, "memory": 1, "notes": 2, "thinking": 3, "planning": 4,
-    "web": 5, "media": 6, "os": 8, "environment": 9,
-    "model_control": 10, "ollama": 11, "logs": 12, "channel_ops": 13,
-    "entity": 14, "mcp_manage": 15, "devops": 16,
-    "skills": 17, "delegation": 18, "ui": 19, "session": 20, "ssh": 21,
-    "voiceprint": 22,
+    "output": 0, "memory": 1, "graph": 2, "notes": 3, "thinking": 4,
+    "planning": 5, "web": 6, "media": 7, "os": 9, "environment": 10,
+    "model_control": 11, "ollama": 12, "logs": 13, "channel_ops": 14,
+    "entity": 15, "mcp_manage": 16, "devops": 17,
+    "skills": 18, "delegation": 19, "ui": 20, "session": 21, "ssh": 22,
+    "voiceprint": 23,
 }
 
 

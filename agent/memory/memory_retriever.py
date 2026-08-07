@@ -256,6 +256,62 @@ class MemoryRetriever:
         log(f"实体画像注入: {len(scopes)} 个 scope, {loaded_count} 条画像", tag="思维")
         return messages
 
+    async def load_relation_snippets(
+        self,
+        scopes: List[str],
+        *,
+        max_edges: int = 15,
+        max_chars: int = 2000,
+    ) -> List[Dict]:
+        """加载一组实体 scope 的关系网络快照（结构化关系事实注入块）。
+
+        scopes 为 entity_scope 格式（``user_qq:123``），内部转换为图谱节点 key
+        （``user:qq:123``，别名归一由 GraphStore 处理）。无图谱数据时返回空。
+        """
+        if not scopes:
+            return []
+        node_keys: List[str] = []
+        for scope in scopes:
+            if "_" not in scope:
+                continue
+            prefix, value = scope.split("_", 1)
+            if prefix in ("user", "group") and value:
+                key = f"{prefix}:{value}"
+                if key not in node_keys:
+                    node_keys.append(key)
+        if not node_keys:
+            return []
+        # 每轮直查（与画像加载同构：一次索引邻域查询）；node_keys 排序 +
+        # 边按强度确定性排序，参与人与图谱不变时注入内容字节级稳定
+        node_keys_sorted = sorted(node_keys)
+        try:
+            edges = await self._store.graph.edges_for_scopes(node_keys_sorted, limit=max_edges)
+        except Exception as exc:
+            log(f"关系网络快照加载失败: {exc}", "DEBUG", tag="思维")
+            return []
+        if not edges:
+            return []
+
+        from .graph import format_triple
+        lines = [
+            "[系统注入·关系网络] 以下为当前会话相关实体的已知关系"
+            "（结构化事实，非用户消息；完整网络可用 graph_query 查询）："
+        ]
+        used = len(lines[0])
+        for edge in edges:
+            line = f"- {format_triple(edge)}"
+            if edge["evidence"]:
+                line += f"（{edge['evidence'][:80]}）"
+            if used + len(line) > max_chars:
+                lines.append(f"- …（共 {len(edges)} 条，已截断，graph_query 可查全量）")
+                break
+            lines.append(line)
+            used += len(line)
+
+        from core.sanitizer import sanitize_for_context
+        log(f"关系网络注入: {len(scopes)} 个 scope, {len(lines) - 1} 条关系", tag="思维")
+        return [{"role": "system", "content": sanitize_for_context("\n".join(lines))}]
+
     async def _fallback_recent(self, limit: int) -> List[Dict]:
         entries = await self._store.list_recent(limit=limit)
         if entries:

@@ -454,8 +454,22 @@ class ContextSnapshot:
         # 主口径只看主对话调用（reply）：reflect 评审/心跳分析等辅助调用
         # 无共享前缀，命中率为 0 属正常，混入会误报"缓存崩了"
         last_call = cache_usage_tracker.last(kind="reply")
+        if last_call is not None:
+            # 标注调用年龄与类型：上次调用可能来自更早的会话（回声），
+            # 无年龄标记的 0% 会被误读为当前缓存失效
+            last_call = {
+                **last_call,
+                "age_sec": round(max(0.0, time.time() - last_call["ts"]), 1),
+            }
+        last_any = cache_usage_tracker.last()
+        if last_any is not None:
+            last_any = {
+                **last_any,
+                "age_sec": round(max(0.0, time.time() - last_any["ts"]), 1),
+            }
         return {
             "last_call": last_call,
+            "last_call_any": last_any,
             "recent": cache_usage_tracker.summary(kind="reply"),
             "recent_all": cache_usage_tracker.summary(),
             "estimated_cacheable_prefix_tokens": prefix_tokens,

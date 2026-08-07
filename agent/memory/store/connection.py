@@ -265,10 +265,12 @@ class MemoryConnectionManager:
         )
 
         # ---- Cognee 异步投影队列与 ID 映射 ----
+        # entry_kind 区分投影条目类型：memory（记忆）/ graph_node（关系节点）
         await db.execute("""
             CREATE TABLE IF NOT EXISTS cognee_sync_queue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                memory_id INTEGER NOT NULL,
+                entry_kind TEXT NOT NULL DEFAULT 'memory',
+                entry_id INTEGER NOT NULL,
                 operation TEXT NOT NULL,
                 payload_json TEXT NOT NULL DEFAULT '{}',
                 status TEXT NOT NULL DEFAULT 'pending',
@@ -283,23 +285,117 @@ class MemoryConnectionManager:
             "CREATE INDEX IF NOT EXISTS idx_cognee_queue_ready "
             "ON cognee_sync_queue(status, next_retry_ns, id);"
         )
+        # 旧表迁移：memory_id → entry_id + entry_kind（队列与映射均为派生数据，重建保留内容）
+        await self._migrate_cognee_queue_schema(db)
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS cognee_memory_map (
-                memory_id INTEGER PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS cognee_entry_map (
+                entry_kind TEXT NOT NULL DEFAULT 'memory',
+                entry_id INTEGER NOT NULL,
                 dataset_name TEXT NOT NULL,
                 dataset_id TEXT NOT NULL DEFAULT '',
                 data_id TEXT NOT NULL DEFAULT '',
-                synced_ns INTEGER NOT NULL
+                synced_ns INTEGER NOT NULL,
+                PRIMARY KEY (entry_kind, entry_id)
             );
         """)
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='cognee_memory_map'"
+        )
+        if await cursor.fetchone():
+            await db.execute(
+                "INSERT OR IGNORE INTO cognee_entry_map"
+                "(entry_kind, entry_id, dataset_name, dataset_id, data_id, synced_ns) "
+                "SELECT 'memory', memory_id, dataset_name, dataset_id, data_id, synced_ns "
+                "FROM cognee_memory_map"
+            )
+            await db.execute("DROP TABLE cognee_memory_map")
         # 上次进程异常退出时可能遗留 processing，启动后安全重试。
         await db.execute(
             "UPDATE cognee_sync_queue SET status='pending' WHERE status='processing'"
         )
 
+        # ---- 关系图谱（权威存储；cognee 仅为其投影层） ----
+        # 节点：实体型（user/group，key 与实体 scope 标签同构）+ 自由型（person/topic/...）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS graph_nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_key TEXT NOT NULL UNIQUE,
+                node_type TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_ns INTEGER NOT NULL,
+                updated_ns INTEGER NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0
+            );
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gn_type ON graph_nodes(node_type);"
+        )
+        # 边：(subject, predicate, object) 唯一，重复写入即更新强度与证据
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS graph_edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject_id INTEGER NOT NULL,
+                predicate TEXT NOT NULL,
+                object_id INTEGER NOT NULL,
+                symmetric INTEGER NOT NULL DEFAULT 0,
+                strength REAL NOT NULL DEFAULT 0.7,
+                evidence TEXT NOT NULL DEFAULT '',
+                source_memory_id INTEGER,
+                origin TEXT NOT NULL DEFAULT 'manual',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_ns INTEGER NOT NULL,
+                updated_ns INTEGER NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0,
+                UNIQUE (subject_id, predicate, object_id)
+            );
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ge_subject ON graph_edges(subject_id);"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ge_object ON graph_edges(object_id);"
+        )
+
         await self._init_vec_index(db)
 
         await db.commit()
+
+    async def _migrate_cognee_queue_schema(self, db: aiosqlite.Connection) -> None:
+        """cognee_sync_queue 旧结构（memory_id）迁移为泛化结构（entry_kind + entry_id）。"""
+        cursor = await db.execute("PRAGMA table_info(cognee_sync_queue)")
+        cols = {row["name"] for row in await cursor.fetchall()}
+        if "entry_kind" in cols or "memory_id" not in cols:
+            return
+        await db.execute("ALTER TABLE cognee_sync_queue RENAME TO cognee_sync_queue_old")
+        await db.execute("""
+            CREATE TABLE cognee_sync_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_kind TEXT NOT NULL DEFAULT 'memory',
+                entry_id INTEGER NOT NULL,
+                operation TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_retry_ns INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT '',
+                created_ns INTEGER NOT NULL,
+                updated_ns INTEGER NOT NULL
+            );
+        """)
+        await db.execute(
+            "INSERT INTO cognee_sync_queue"
+            "(id, entry_kind, entry_id, operation, payload_json, status, attempts, "
+            "next_retry_ns, last_error, created_ns, updated_ns) "
+            "SELECT id, 'memory', memory_id, operation, payload_json, status, attempts, "
+            "next_retry_ns, last_error, created_ns, updated_ns FROM cognee_sync_queue_old"
+        )
+        await db.execute("DROP TABLE cognee_sync_queue_old")
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cognee_queue_ready "
+            "ON cognee_sync_queue(status, next_retry_ns, id);"
+        )
+        log("cognee 投影队列 schema 已迁移为 entry_kind 泛化结构", tag="记忆")
 
     # ------------------------------------------------------------------
     # sqlite-vec 向量索引（embedding_blob 为权威数据，vec0 表为派生索引）

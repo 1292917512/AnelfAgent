@@ -13,6 +13,7 @@ from typing import Any, Optional
 from core.log import log
 
 from ..memory_store import MemoryStore
+from ..store.cognee_queue import ENTRY_KIND_GRAPH_NODE
 from .client import CogneeClient
 from .config import CogneeConfig
 from .types import CogneeSyncStatus
@@ -178,17 +179,26 @@ class CogneeCoordinator:
         for item in deletes:
             await self._process_delete(item)
 
-        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        memory_upserts: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        graph_upserts: list[dict[str, Any]] = []
         for item in upserts:
-            grouped[self.dataset_for_payload(item["payload"])].append(item)
-        for dataset_name, items in grouped.items():
+            if item["entry_kind"] == ENTRY_KIND_GRAPH_NODE:
+                graph_upserts.append(item)
+            else:
+                memory_upserts[self.dataset_for_payload(item["payload"])].append(item)
+        for dataset_name, items in memory_upserts.items():
             await self._process_upsert_group(dataset_name, items)
+        if graph_upserts:
+            await self._process_graph_upserts(graph_upserts)
 
     async def _process_delete(self, item: dict[str, Any]) -> None:
-        mapping = await self.store.get_cognee_mapping(item["memory_id"])
+        mapping = await self.store.get_cognee_mapping(
+            item["entry_id"], entry_kind=item["entry_kind"],
+        )
         if not mapping:
             await self.store.complete_cognee_sync(
-                item["queue_id"], item["memory_id"], delete_mapping=True,
+                item["queue_id"], item["entry_id"],
+                entry_kind=item["entry_kind"], delete_mapping=True,
             )
             return
         if not mapping.get("dataset_id") or not mapping.get("data_id"):
@@ -201,7 +211,8 @@ class CogneeCoordinator:
                 delete_dataset_if_empty=False,
             )
             await self.store.complete_cognee_sync(
-                item["queue_id"], item["memory_id"], delete_mapping=True,
+                item["queue_id"], item["entry_id"],
+                entry_kind=item["entry_kind"], delete_mapping=True,
             )
         except Exception as exc:
             await self._fail(item, _error_text(exc))
@@ -214,7 +225,9 @@ class CogneeCoordinator:
         # 先删后加实现更新语义；单条目删除失败仅隔离该条目，不毒化整组
         active: list[dict[str, Any]] = []
         for item in items:
-            mapping = await self.store.get_cognee_mapping(item["memory_id"])
+            mapping = await self.store.get_cognee_mapping(
+                item["entry_id"], entry_kind=item["entry_kind"],
+            )
             if mapping and mapping.get("dataset_id") and mapping.get("data_id"):
                 try:
                     await self.client.delete_data(
@@ -235,9 +248,9 @@ class CogneeCoordinator:
                 payload = item["payload"]
                 data_items.append(await self.client.make_data_item(
                     self._render_memory(payload),
-                    label=f"anelf-memory-{item['memory_id']}",
+                    label=f"anelf-memory-{item['entry_id']}",
                     external_metadata={
-                        "anelf_memory_id": str(item["memory_id"]),
+                        "anelf_memory_id": str(item["entry_id"]),
                         "memory_type": str(payload.get("type", "semantic")),
                         "source": str(payload.get("source", "")),
                     },
@@ -250,16 +263,17 @@ class CogneeCoordinator:
             )
             await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
             await self._maybe_improve(dataset_name)
-            identifiers = await self._resolve_data_ids(dataset_name)
+            identifiers = await self._resolve_data_ids(dataset_name, "anelf_memory_id")
 
             for item in active:
-                ids = identifiers.get(str(item["memory_id"]))
+                ids = identifiers.get(str(item["entry_id"]))
                 if not ids:
                     await self._fail(item, "无法解析 Cognee 数据 ID")
                     continue
                 await self.store.complete_cognee_sync(
                     item["queue_id"],
-                    item["memory_id"],
+                    item["entry_id"],
+                    entry_kind=item["entry_kind"],
                     dataset_name=dataset_name,
                     dataset_id=ids[0],
                     data_id=ids[1],
@@ -268,6 +282,82 @@ class CogneeCoordinator:
         except Exception as exc:
             self._last_error = _error_text(exc)
             for item in active:
+                await self._fail(item, self._last_error)
+
+    @property
+    def relations_dataset(self) -> str:
+        """关系图谱投影数据集（全图一个 dataset，关系天然跨实体不按 scope 拆）。"""
+        prefix = _SAFE_DATASET_RE.sub("_", self.config.dataset_prefix)
+        return f"{prefix}_relations"
+
+    async def _process_graph_upserts(self, items: list[dict[str, Any]]) -> None:
+        """关系节点投影：渲染最新邻域文档，先删后加到 relations 数据集。
+
+        入队负载仅是快照触发器，文档在消费时从权威库实时渲染，
+        保证投影内容不被入队后的后续变更过期。
+        """
+        dataset_name = self.relations_dataset
+        active: list[tuple[dict[str, Any], str]] = []
+        for item in items:
+            document = await self.store.graph.render_node_document(item["entry_id"])
+            if document is None:
+                # 节点已归档/不存在：按删除处理
+                await self._process_delete({**item, "operation": "delete"})
+                continue
+            mapping = await self.store.get_cognee_mapping(
+                item["entry_id"], entry_kind=item["entry_kind"],
+            )
+            if mapping and mapping.get("dataset_id") and mapping.get("data_id"):
+                try:
+                    await self.client.delete_data(
+                        mapping["dataset_id"],
+                        mapping["data_id"],
+                        delete_dataset_if_empty=False,
+                    )
+                except Exception as exc:
+                    await self._fail(item, f"清理旧投影失败: {_error_text(exc)}")
+                    continue
+            active.append((item, document))
+        if not active:
+            return
+
+        try:
+            data_items: list[Any] = []
+            for item, document in active:
+                data_items.append(await self.client.make_data_item(
+                    document,
+                    label=f"anelf-graph-node-{item['entry_id']}",
+                    external_metadata={
+                        "anelf_graph_node_id": str(item["entry_id"]),
+                        "memory_type": "graph_relation",
+                        "source": "graph",
+                    },
+                ))
+            await self.client.add(
+                data_items,
+                dataset_name=dataset_name,
+                incremental_loading=True,
+            )
+            await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
+            await self._maybe_improve(dataset_name)
+            identifiers = await self._resolve_data_ids(dataset_name, "anelf_graph_node_id")
+            for item, _doc in active:
+                ids = identifiers.get(str(item["entry_id"]))
+                if not ids:
+                    await self._fail(item, "无法解析 Cognee 数据 ID")
+                    continue
+                await self.store.complete_cognee_sync(
+                    item["queue_id"],
+                    item["entry_id"],
+                    entry_kind=item["entry_kind"],
+                    dataset_name=dataset_name,
+                    dataset_id=ids[0],
+                    data_id=ids[1],
+                )
+            self._last_error = ""
+        except Exception as exc:
+            self._last_error = _error_text(exc)
+            for item, _doc in active:
                 await self._fail(item, self._last_error)
 
     async def _maybe_improve(self, dataset_name: str) -> None:
@@ -294,7 +384,11 @@ class CogneeCoordinator:
                 tag="思维",
             )
 
-    async def _resolve_data_ids(self, dataset_name: str) -> dict[str, tuple[str, str]]:
+    async def _resolve_data_ids(
+        self,
+        dataset_name: str,
+        metadata_key: str = "anelf_memory_id",
+    ) -> dict[str, tuple[str, str]]:
         datasets = await self.client.list_datasets()
         dataset = next(
             (item for item in datasets if str(_value(item, "name", "")) == dataset_name),
@@ -314,10 +408,10 @@ class CogneeCoordinator:
                     metadata = {}
             if not isinstance(metadata, dict):
                 continue
-            memory_id = str(metadata.get("anelf_memory_id", ""))
+            entry_id = str(metadata.get(metadata_key, ""))
             data_id = str(_value(record, "id", ""))
-            if memory_id and data_id:
-                result[memory_id] = (dataset_id, data_id)
+            if entry_id and data_id:
+                result[entry_id] = (dataset_id, data_id)
         return result
 
     async def _fail(self, item: dict[str, Any], error: str) -> None:

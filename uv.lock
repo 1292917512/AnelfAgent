@@ -231,7 +231,7 @@ requires-dist = [
     { name = "asyncssh", specifier = ">=2.24.0" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
     { name = "chardet", specifier = ">=5,<6" },
-    { name = "cognee", specifier = "==1.4.0" },
+    { name = "cognee", specifier = "==1.4.1" },
     { name = "cryptography", specifier = ">=42.0.0" },
     { name = "fastapi", specifier = ">=0.116.2,<0.140.0" },
     { name = "funasr", specifier = ">=1.4.1" },
@@ -674,7 +674,7 @@ wheels = [
 
 [[package]]
 name = "cognee"
-version = "1.4.0"
+version = "1.4.1"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
 dependencies = [
     { name = "aiofiles" },
@@ -683,6 +683,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
     { name = "cbor2" },
+    { name = "cryptography" },
     { name = "datamodel-code-generator" },
     { name = "diskcache" },
     { name = "fakeredis", extra = ["lua"] },
@@ -723,9 +724,9 @@ dependencies = [
     { name = "uvicorn" },
     { name = "websockets" },
 ]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/aa/21/68e640d10ea9445b55b01715a8ae87a9d469e443614a87261c18c3e507e8/cognee-1.4.0.tar.gz", hash = "sha256:e783dd802ea25471b2c6feec317e8628fa99d67ed9223f22ca339add8fb7da1a", size = 23166925, upload-time = "2026-07-17T15:39:36.9Z" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/d8/93/1277ebad661581e4eee8182e80cb898d26ae8f60f8aae2cf33329281c4db/cognee-1.4.1.tar.gz", hash = "sha256:9206075539935ef0adfab82cf410af6799e83c42969ba7c8fae5065de9aba7c9", size = 26990336, upload-time = "2026-07-31T21:28:41.496Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/54/f7/2388c4307fb1c5a20e02dad9188fad96f62f28d46f930e12fa402462732a/cognee-1.4.0-py3-none-any.whl", hash = "sha256:51ed9f1f8ca5b5caf215b00f10522e6291e6f3e82f19aaf2864e21ec8176ee0d", size = 3555996, upload-time = "2026-07-17T15:39:33.348Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/34/8f/509d4fa55140129ae3f93a013f44f82e0842ef60e2f58168c2a38ae3e0a1/cognee-1.4.1-py3-none-any.whl", hash = "sha256:4c94285589db5a585365bf4bf9cfc8481494d7a8dec2e38d50f14484f69f48dc", size = 7448815, upload-time = "2026-07-31T21:28:38.213Z" },
 ]
 
 [[package]]

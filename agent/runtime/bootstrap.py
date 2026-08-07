@@ -218,6 +218,7 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=False)
     async def register_internal_tools():
         from agent.channel.output_tools import register_output_tools
+        from agent.memory.graph.tools import register_graph_tools
         from agent.memory.notes import register_notes_tools
         from agent.memory.tools import register_memory_tools
         from agent.planning import register_planning_tools
@@ -226,6 +227,7 @@ def create_bootstrap() -> FlowMachine:
         mem = machine.get(BK.MEMORY)
         data_center = machine.get(BK.STORAGE)
         register_memory_tools(mem["store"], mem["embedder"])
+        register_graph_tools(mem["store"])
         register_notes_tools(workspace_dir=mem.get("workspace_dir"))
         register_planning_tools(mem["store"])
         register_output_tools(data_center.conversation_data)

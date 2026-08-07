@@ -274,11 +274,30 @@ async def recall(
             related_items = await _recall_associations_deep(results, mem_ids)
         else:
             related_items = await _recall_associations(results, mem_ids)
+
+        # 深度召回追加关系网络邻域：查询涉及的实体在图谱中的已知关系
+        relations: list[str] = []
+        if is_deep:
+            node_keys = []
+            for tag in (tag_list or []):
+                if tag.startswith(("user:", "group:")):
+                    prefix, value = tag.split(":", 1)
+                    # 裸 uid 补当前频道前缀，与图谱节点 key 对齐
+                    node_keys.append(f"{prefix}:{_normalize_scope_id(value)}")
+            if entity_scope and not node_keys and "_" in entity_scope:
+                prefix, value = entity_scope.split("_", 1)
+                node_keys.append(f"{prefix}:{value}")
+            if node_keys:
+                from .graph import format_triple
+                edges = await _store.graph.edges_for_scopes(node_keys, limit=10)
+                relations = [format_triple(e) for e in edges]
+
         return json.dumps({
             "count": len(items),
             "depth": "deep" if is_deep else "shallow",
             "results": items,
             "related": related_items,
+            **({"relations": relations} if relations else {}),
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="搜索记忆")

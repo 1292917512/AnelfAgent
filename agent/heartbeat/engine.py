@@ -41,7 +41,8 @@ _ENTITY_ANALYSIS_PROMPT = (
     "## 基本信息\n- 名称/昵称：（从对话中提取的称呼）\n- 身份标识：{entity}\n"
     "## 性格印象\n（说话风格、性格特点、行为模式）\n"
     "## 兴趣爱好\n（话题偏好、关注领域）\n"
-    "## 关系与互动风格\n（与我的关系、互动特点、称呼习惯）\n"
+    "## 关系与互动风格\n（与我的关系、互动特点、称呼习惯；具体的人物关系事实由关系图谱维护，"
+    "此处只写互动风格，不罗列关系清单）\n"
     "## 重要事件\n（值得记住的对话内容、承诺、约定）\n"
     "## 注意事项\n（需要特别留意的偏好或禁忌）\n```\n\n"
     "## 群组画像模板（当 {entity} 为群组时使用）\n"
@@ -593,6 +594,16 @@ class HeartbeatEngine:
             await self.mind.memory_store.add(entry)
             from agent.memory.embedding import wake_embedding_worker
             wake_embedding_worker()
+
+        # 关系抽取：复用同一份对话材料提炼结构化关系事实（失败不影响画像产出）
+        if self.mind.memory_store:
+            try:
+                from agent.memory.graph.extract import extract_and_store_relations
+                added = await extract_and_store_relations(self.mind, entity, combined)
+                if added:
+                    hb_log.append_entry(f"[relation_extract] {desc}: +{added} 条关系")
+            except Exception as exc:
+                log(f"关系抽取失败: {desc} -> {exc}", "DEBUG", tag="心跳")
 
         hb_log.append_entry(f"[entity_analysis] {desc}: {content[:100]}")
         return TaskResult(

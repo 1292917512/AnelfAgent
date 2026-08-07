@@ -1,4 +1,4 @@
-"""Cognee v1.3 稳定公共 API 的懒加载门面。"""
+"""Cognee v1.4 稳定公共 API 的懒加载门面。"""
 
 from __future__ import annotations
 

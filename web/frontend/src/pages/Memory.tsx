@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer } from "@/components/common/PageContainer";
-import { Activity, HardDrive, Target, MessageSquare, StickyNote, Users, Database, Settings2, Network, CalendarDays, BookOpen } from "lucide-react";
+import { Activity, HardDrive, Target, MessageSquare, StickyNote, Users, Database, Settings2, Network, CalendarDays, BookOpen, Waypoints } from "lucide-react";
 import { OverviewPanel } from "@/pages/memory/OverviewPanel";
 import { STMPanel } from "@/pages/memory/STMPanel";
 import { LTMPanel } from "@/pages/memory/LTMPanel";
@@ -14,8 +14,9 @@ import { DailyNotesPanel } from "@/pages/memory/DailyNotesPanel";
 import { DocsPanel } from "@/pages/memory/DocsPanel";
 import { ConfigPanel } from "@/pages/memory/ConfigPanel";
 import { CogneePanel } from "@/pages/memory/cognee/CogneePanel";
+import { GraphPanel } from "@/pages/memory/graph/GraphPanel";
 
-type MemTab = "overview" | "stm" | "goals" | "conv" | "notes" | "daily" | "docs" | "entity" | "ltm" | "cognee" | "config";
+type MemTab = "overview" | "stm" | "goals" | "conv" | "notes" | "daily" | "docs" | "entity" | "ltm" | "graph" | "cognee" | "config";
 
 export default function Memory() {
   const { t } = useTranslation("memory");
@@ -31,6 +32,7 @@ export default function Memory() {
     { key: "docs", label: t("tabs.docs"), icon: BookOpen },
     { key: "entity", label: t("tabs.entity"), icon: Users },
     { key: "ltm", label: t("tabs.ltm"), icon: Database },
+    { key: "graph", label: t("tabs.graph"), icon: Waypoints },
     { key: "cognee", label: t("tabs.cognee"), icon: Network },
     { key: "config", label: t("tabs.config"), icon: Settings2 },
   ];
@@ -47,6 +49,7 @@ export default function Memory() {
       {tab === "docs" && <DocsPanel />}
       {tab === "entity" && <EntityPanel />}
       {tab === "ltm" && <LTMPanel />}
+      {tab === "graph" && <GraphPanel />}
       {tab === "cognee" && <CogneePanel />}
       {tab === "config" && <ConfigPanel />}
     </PageContainer>

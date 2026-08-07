@@ -159,8 +159,12 @@ def datasets_for_scope(
     entity_scope: str,
     query_tags: Optional[list[str]],
 ) -> list[str]:
-    """将 Anelf scope 映射为允许访问的 Cognee datasets。"""
-    datasets = [f"{config.dataset_prefix}_global"]
+    """将 Anelf scope 映射为允许访问的 Cognee datasets。
+
+    relations 数据集（关系网络投影）对所有 scope 开放：关系网络天然跨实体，
+    其价值正在于回答"甲和乙是什么关系"这类跨实体问题。
+    """
+    datasets = [f"{config.dataset_prefix}_global", f"{config.dataset_prefix}_relations"]
     scope_type = ""
     scope_id = ""
     if entity_scope and "_" in entity_scope:

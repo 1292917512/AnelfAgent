@@ -111,6 +111,7 @@ class ContextInput:
     # 召回产物
     memory_msgs: List[Dict] = field(default_factory=list)
     profile_msgs: List[Dict] = field(default_factory=list)
+    relation_msgs: List[Dict] = field(default_factory=list)
     summary_row: Optional[Dict] = None
     # 会话信息
     anything: Optional["Everything"] = None

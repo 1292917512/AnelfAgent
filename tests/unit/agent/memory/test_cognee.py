@@ -132,7 +132,8 @@ async def test_memory_write_and_projection_are_persisted_together(tmp_path) -> N
 
         assert entry is not None
         assert len(batch) == 1
-        assert batch[0]["memory_id"] == memory_id
+        assert batch[0]["entry_kind"] == "memory"
+        assert batch[0]["entry_id"] == memory_id
         assert batch[0]["operation"] == "upsert"
         assert batch[0]["payload"]["content"] == "remember this"
     finally:
@@ -300,6 +301,58 @@ async def test_coordinator_projects_and_deletes_memory(tmp_path) -> None:
         await store.close()
 
 
+class _GraphFakeClient(_FakeCogneeClient):
+    """relations 数据集假客户端（按 anelf_graph_node_id 反解数据 ID）。"""
+
+    async def list_datasets(self):
+        return [SimpleNamespace(id="rel-dataset-id", name="anelf_relations")]
+
+    async def list_data(self, _dataset_id):
+        return [
+            SimpleNamespace(
+                id=f"data-{item['external_metadata']['anelf_graph_node_id']}",
+                external_metadata=item["external_metadata"],
+            )
+            for item in self.items
+        ]
+
+
+@pytest.mark.asyncio
+async def test_coordinator_projects_graph_nodes(tmp_path) -> None:
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    client = _GraphFakeClient()
+    coordinator = CogneeCoordinator(
+        store,
+        client,
+        CogneeConfig(enabled=True, sync_enabled=True),
+    )
+    try:
+        edge = await store.graph.add_relation(
+            "user:qq:1", "朋友", "user:qq:2",
+            subject_label="阿辰", object_label="老王", evidence="常一起吃饭",
+        )
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+
+        # 两端节点均投影到 relations 数据集，文档含关系内容
+        for node_id in (edge["subject"]["id"], edge["object"]["id"]):
+            mapping = await store.get_cognee_mapping(node_id, entry_kind="graph_node")
+            assert mapping is not None
+            assert mapping["dataset_name"] == "anelf_relations"
+            assert mapping["data_id"] == f"data-{node_id}"
+        assert any("朋友" in item["data"] and "老王" in item["data"] for item in client.items)
+
+        # 节点归档 → 删除其投影
+        await store.graph.set_node_archived("user:qq:2", True)
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        assert ("rel-dataset-id", f"data-{edge['object']['id']}") in client.deleted
+        assert await store.get_cognee_mapping(
+            edge["object"]["id"], entry_kind="graph_node",
+        ) is None
+    finally:
+        await store.close()
+
+
 # ==================================================================
 # RRF 融合与数据集作用域
 # ==================================================================
@@ -311,9 +364,10 @@ def test_datasets_for_scope_isolated_and_hashed() -> None:
     second = datasets_for_scope(config, "user_other-id", None)
 
     assert first[0] == "test_global"
-    assert len(first) == 2
-    assert "sensitive-id" not in first[1]
-    assert first[1] != second[1]
+    assert first[1] == "test_relations"  # 关系网络数据集对所有 scope 开放
+    assert len(first) == 3
+    assert "sensitive-id" not in first[2]
+    assert first[2] != second[2]
 
 
 def test_rrf_deduplicates_projected_native_memory() -> None:

@@ -56,6 +56,7 @@
     "avgHitRate": "近 {{count}} 次平均命中率",
     "stablePrefix": "本次可复用前缀（估算）",
     "noData": "暂无缓存统计：快照展示的是捕获之前已完成调用的数据，请先正常对话几轮再布防抓取；每次重启后首次抓取无对比基线",
-    "noUsage": "已有 {{count}} 次调用未返回 usage 数据：当前模型端点（流式）可能不支持 include_usage，缓存命中统计不可用；可查看日志标签「思维」中的 DEBUG 记录确认"
+    "noUsage": "已有 {{count}} 次调用未返回 usage 数据：当前模型端点（流式）可能不支持 include_usage，缓存命中统计不可用；可查看日志标签「思维」中的 DEBUG 记录确认",
+    "staleMark": "（{{min}} 分钟前的调用）"
   }
 }
