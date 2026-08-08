@@ -198,44 +198,93 @@ class ModelService:
                 from core.log import log
                 log(f"携带凭据访问私网地址 {host}，请确认目标可信", "WARNING")
 
-    async def test_connection(self, base_url: str, api_key: str) -> str:
-        import httpx
-        self._validate_remote_url(base_url, bool(api_key))
-        headers: Dict[str, str] = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.get(f"{base_url.rstrip('/')}/models", headers=headers)
-            if r.status_code == 200:
-                data = r.json()
-                names = [m.get("id", "") for m in data.get("data", [])][:8]
-                return f"连接成功! 可用模型: {', '.join(names)}" if names else "连接成功 (无模型列表)"
-            return f"连接成功 (HTTP {r.status_code})"
-
-    _DEFAULT_BASE_URLS: Dict[str, str] = {
-        "anthropic": "https://api.anthropic.com/v1",
-        "gemini": "https://generativelanguage.googleapis.com/v1beta",
-        "ollama": "http://127.0.0.1:11434/v1",
-    }
-
-    async def fetch_remote_models(
+    async def test_connection(
         self, base_url: str, api_key: str, api_type: str = "openai",
-        proxy_url: str = "",
-    ) -> List[Dict[str, Any]]:
-        """从供应商 API 拉取远程可用模型列表，自动适配不同 api_type。"""
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> str:
         import httpx
 
-        effective_url = base_url.strip() or self._DEFAULT_BASE_URLS.get(api_type, "")
-        if not effective_url:
-            return []
-        self._validate_remote_url(effective_url, bool(api_key))
+        from agent.llm.url_utils import models_endpoint_candidates
 
+        self._validate_remote_url(base_url, bool(api_key))
+        headers = self._auth_headers(api_key, api_type, extra_headers)
+        candidates = models_endpoint_candidates(base_url)
+        if not candidates:
+            raise ValueError(f"非法的 base_url: {base_url!r}")
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = None
+            for url in candidates:
+                r = await c.get(url, headers=headers)
+                if r.status_code != 404:
+                    break
+            if r is not None and r.status_code == 200:
+                data = r.json()
+                names = [m.get("id") or m.get("name", "") for m in self._extract_model_entries(data)][:8]
+                names = [n for n in names if n]
+                return f"连接成功! 可用模型: {', '.join(names)}" if names else "连接成功 (无模型列表)"
+            return f"连接成功 (HTTP {r.status_code if r is not None else '无响应'})"
+
+    # 各 api_type 的默认接口地址：统一引用 agent.llm.config.DEFAULT_BASE_URLS，
+    # 消除多副本漂移（此前与 llm_client._LITELLM_PREFIX_MAP 已发生过漂移）
+    @staticmethod
+    def _default_base_urls() -> Dict[str, str]:
+        from agent.llm.config import DEFAULT_BASE_URLS
+        return DEFAULT_BASE_URLS
+
+    @staticmethod
+    def _auth_headers(
+        api_key: str, api_type: str = "openai",
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, str]:
+        """按 api_type 构造鉴权头，自定义请求头最后合并（可覆盖任意头）。"""
         headers: Dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         if api_type == "anthropic":
-            headers["x-api-key"] = api_key
+            # Anthropic 官方及中转站通常要求 x-api-key + 版本头（双头兼容）
+            if api_key:
+                headers["x-api-key"] = api_key
             headers["anthropic-version"] = "2023-06-01"
+        if extra_headers:
+            headers.update(extra_headers)
+        return headers
+
+    @staticmethod
+    def _extract_model_entries(data: Any) -> List[Dict[str, Any]]:
+        """从模型列表响应中提取模型条目。
+
+        兼容 OpenAI 形 {"data": [...]} 与 {"models": [...]}（Gemini 等），
+        条目 id 取 id 或 name 字段（参考 cursor-byok extractModelIDs）。
+        """
+        if not isinstance(data, dict):
+            return []
+        entries = data.get("data")
+        if not isinstance(entries, list):
+            entries = data.get("models")
+        if not isinstance(entries, list):
+            return []
+        return [m for m in entries if isinstance(m, dict)]
+
+    async def fetch_remote_models(
+        self, base_url: str, api_key: str, api_type: str = "openai",
+        proxy_url: str = "",
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """从供应商 API 拉取远程可用模型列表，自动适配不同 api_type。
+
+        端点候选回退（/models → /v1/models）；Anthropic 协议自动游标分页
+        （limit=1000 + after_id，has_more/last_id 驱动，最多 50 页）。
+        """
+        import httpx
+
+        from agent.llm.url_utils import models_endpoint_candidates
+
+        effective_url = base_url.strip() or self._default_base_urls().get(api_type, "")
+        if not effective_url:
+            return []
+        self._validate_remote_url(effective_url, bool(api_key))
+
+        headers = self._auth_headers(api_key, api_type, extra_headers)
 
         proxy: Optional[str] = None
         if proxy_url:
@@ -244,26 +293,45 @@ class ModelService:
                 p = f"http://{p}"
             proxy = p
 
+        candidates = models_endpoint_candidates(effective_url)
         async with httpx.AsyncClient(timeout=15.0, proxy=proxy) as c:
-            url = f"{effective_url.rstrip('/')}/models"
-            r = await c.get(url, headers=headers)
-
-            if r.status_code == 404:
-                from urllib.parse import urlparse, urlunparse
-                parsed = urlparse(effective_url)
-                fallback = urlunparse((
-                    parsed.scheme, parsed.netloc, "/v1/models", "", "", "",
-                ))
-                r = await c.get(fallback, headers=headers)
-
+            r = None
+            for url in candidates:
+                r = await c.get(url, headers=headers)
+                if r.status_code != 404:
+                    break
+            if r is None:
+                return []
             r.raise_for_status()
-            data = r.json()
-            models_raw = data.get("data", [])
+            entries = self._extract_model_entries(r.json())
+
+            # Anthropic 游标分页：首响应含 has_more/last_id 时继续翻页
+            if api_type == "anthropic":
+                data = r.json()
+                pages = 1
+                while (
+                    isinstance(data, dict)
+                    and data.get("has_more")
+                    and data.get("last_id")
+                    and pages < 50
+                ):
+                    r = await c.get(
+                        r.url,
+                        params={"limit": 1000, "after_id": data["last_id"]},
+                        headers=headers,
+                    )
+                    r.raise_for_status()
+                    data = r.json()
+                    entries.extend(self._extract_model_entries(data))
+                    pages += 1
+
+            seen: set = set()
             result: List[Dict[str, Any]] = []
-            for m in models_raw:
-                model_id = m.get("id", "")
-                if not model_id:
+            for m in entries:
+                model_id = m.get("id") or m.get("name") or ""
+                if not model_id or model_id in seen:
                     continue
+                seen.add(model_id)
                 result.append({
                     "id": model_id,
                     "owned_by": m.get("owned_by", m.get("created_by", "")),
@@ -289,18 +357,9 @@ class ModelService:
         """通过 litellm 查询模型的能力和参数上限。"""
         import litellm
 
-        prefix_map: Dict[str, str] = {
-            "openai": "openai", "anthropic": "anthropic",
-            "ollama": "ollama_chat", "gemini": "gemini",
-            "azure": "azure", "deepseek": "deepseek",
-            "groq": "groq", "mistral": "mistral",
-            "cohere": "cohere_chat", "bedrock": "bedrock",
-            "vertex_ai": "vertex_ai", "openrouter": "openrouter",
-            "together_ai": "together_ai", "fireworks_ai": "fireworks_ai",
-            "perplexity": "perplexity", "xai": "xai",
-            "cerebras": "cerebras", "cloudflare": "cloudflare",
-        }
-        prefix = prefix_map.get(api_type, "openai")
+        from agent.llm.config import _LITELLM_PREFIX_MAP
+
+        prefix = _LITELLM_PREFIX_MAP.get(api_type, "openai")
         litellm_model = f"{prefix}/{model}"
 
         try:
@@ -333,3 +392,93 @@ class ModelService:
         return await _LC.probe_capabilities(
             base_url, api_key, model, api_type=api_type, proxy_url=proxy_url,
         )
+
+    # 保存并测试的固定探针 prompt（参考 cursor-byok 的基准测试设计：
+    # 测的就是生产流式链路，而非单独的 ping）
+    _TEST_CHAT_PROMPT = "Output the numbers 1 through 50, separated by spaces."
+
+    async def test_chat(
+        self,
+        provider_id: str,
+        model_id: str = "",
+        draft: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """真实链路对话测试：流式请求测量首字延迟/总耗时/输出 token。
+
+        draft 为前端编辑中的模型草稿（模型级字段），与已保存配置合并后
+        构造临时客户端——测的就是用户即将保存的那份配置，而非线上旧配置。
+        连接参数（base_url/api_key/api_type/proxy_url）始终以供应商为准。
+        """
+        import time
+
+        from agent.llm.config import LLMClientConfig
+        from agent.llm.llm_client import LLMClient as _LC
+
+        mgr = self._manager()
+        prov = mgr.get_provider(provider_id)
+        if prov is None:
+            raise ValueError(f"供应商 '{provider_id}' 不存在")
+
+        cfg_dict: Dict[str, Any] = {}
+        existing = mgr.get_client(model_id) if model_id else None
+        if existing is not None:
+            cfg_dict = existing.config.to_dict()
+            # to_dict 未覆盖的字段显式补齐，保证测试配置与线上一致
+            cfg_dict["reasoning_effort"] = existing.config.reasoning_effort
+            cfg_dict["embedding_dims"] = existing.config.embedding_dims
+            cfg_dict["embedding_max_batch"] = existing.config.embedding_max_batch
+        cfg_dict.update({
+            "name": model_id or "__test__",
+            "base_url": prov.base_url,
+            "api_key": prov.api_key,
+            "api_type": prov.api_type,
+            "proxy_url": prov.proxy_url,
+            "provider_id": provider_id,
+        })
+        if draft:
+            cfg_dict.update({
+                k: v for k, v in draft.items()
+                if k in LLMClientConfig.__dataclass_fields__
+                and k not in ("name", "base_url", "api_key", "api_type", "proxy_url")
+            })
+        if not str(cfg_dict.get("model") or "").strip():
+            return {"ok": False, "error": "尚未填写模型标识"}
+
+        client = _LC(LLMClientConfig(**cfg_dict))
+        start = time.monotonic()
+        ttft: Optional[float] = None
+        text_parts: List[str] = []
+        output_tokens = 0
+        try:
+            stream = client.chat_stream(
+                [{"role": "user", "content": self._TEST_CHAT_PROMPT}],
+                options={"max_tokens": 256},
+            )
+            async for delta in stream:
+                if (delta.content or delta.reasoning_content) and ttft is None:
+                    ttft = time.monotonic() - start
+                if delta.content:
+                    text_parts.append(delta.content)
+                if delta.usage and delta.usage.completion_tokens:
+                    output_tokens = delta.usage.completion_tokens
+            total = time.monotonic() - start
+            text = "".join(text_parts).strip()
+            if not text:
+                return {"ok": False, "error": "模型返回空结果"}
+            # 端点未返回 usage 时按字符数估算并明确标注（参考 cursor-byok
+            # estimateBenchmarkTextTokens 的 tokensEstimated 语义）
+            tokens_estimated = output_tokens <= 0
+            if tokens_estimated:
+                output_tokens = max(1, round(len(text) / 4))
+            return {
+                "ok": True,
+                "ttft_ms": round((ttft if ttft is not None else total) * 1000),
+                "total_ms": round(total * 1000),
+                "output_tokens": output_tokens,
+                "tokens_estimated": tokens_estimated,
+                "reply_preview": text[:120],
+            }
+        except Exception as e:
+            return {"ok": False, "error": self.sanitize_error(e)}
+        finally:
+            await client.close()

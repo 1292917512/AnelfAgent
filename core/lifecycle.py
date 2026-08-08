@@ -31,6 +31,7 @@ class Lifecycle:
     _start_hooks: List[tuple[str, HookFn]] = []
     _tick_hooks: List[tuple[str, HookFn]] = []
     _shutdown_requester: Optional[Callable[[], None]] = None
+    _requester_loop: Optional[asyncio.AbstractEventLoop] = None
     _restart_requested: bool = False
 
     @classmethod
@@ -112,22 +113,39 @@ class Lifecycle:
         cls._start_hooks.clear()
         cls._tick_hooks.clear()
         cls._shutdown_requester = None
+        cls._requester_loop = None
         cls._restart_requested = False
 
     @classmethod
     def set_shutdown_requester(cls, fn: Callable[[], None]) -> None:
-        """注册进程关闭触发器（由入口脚本注入，供 Web API 等请求优雅关闭/重启）。"""
+        """注册进程关闭触发器（由入口脚本注入，供 Web API 等请求优雅关闭/重启）。
+
+        须在主事件循环线程内调用：捕获所属循环，使 request_shutdown 可跨线程安全触发。
+        """
         cls._shutdown_requester = fn
+        try:
+            cls._requester_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            cls._requester_loop = None
 
     @classmethod
     def request_shutdown(cls, restart: bool = False) -> None:
-        """请求优雅关闭；restart=True 时标记重启意图，进程清理完毕后以 RESTART_EXIT_CODE 退出。"""
+        """请求优雅关闭；restart=True 时标记重启意图，进程清理完毕后以 RESTART_EXIT_CODE 退出。
+
+        线程安全：任意线程（如工具工作线程）均可调用，
+        经捕获的主循环 call_soon_threadsafe 派发到循环线程执行。
+        """
         if restart:
             cls._restart_requested = True
-        if cls._shutdown_requester is not None:
-            cls._shutdown_requester()
-        else:
+        requester = cls._shutdown_requester
+        if requester is None:
             log("收到关闭请求，但关闭触发器未注册", "WARNING")
+            return
+        loop = cls._requester_loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(requester)
+        else:
+            requester()
 
     @classmethod
     def restart_requested(cls) -> bool:

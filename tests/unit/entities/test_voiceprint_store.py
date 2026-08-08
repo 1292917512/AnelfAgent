@@ -52,15 +52,15 @@ class TestSpeakerCrud:
         assert updated is not None
         assert updated["role"] == "同事" and updated["threshold"] == 0.8
 
-    async def test_delete_reassigns_segments(self, store: VoiceprintStore) -> None:
+    async def test_delete_cascades_segments(self, store: VoiceprintStore) -> None:
+        """级联删除：说话人删除时其话语片段一并删除（不产生未知孤儿）。"""
         s = await store.create_speaker(name="张三")
         await store.add_sample(s["id"], vec(0))
         seg_id = await store.add_segment(speaker_id=s["id"], transcript="你好")
         deleted = await store.delete_speaker(s["id"])
         assert deleted is not None
         assert await store.get_speaker(s["id"]) is None
-        seg = await store.get_segment(seg_id)
-        assert seg is not None and seg["speaker_id"] is None
+        assert await store.get_segment(seg_id) is None  # 片段随删，不再置 NULL
 
     async def test_list_filter(self, store: VoiceprintStore) -> None:
         await store.create_speaker(name="张三", role="家人")

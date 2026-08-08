@@ -109,6 +109,8 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
         content=json.dumps(goal, ensure_ascii=False),
         source=_GOAL_SOURCE,
         importance=0.8,
+        # goal:{id} 标签：记忆联想网络沿该标签把相关记忆与目标互链
+        tags=[f"goal:{goal['goal_id']}"],
         metadata={"goal_id": goal["goal_id"], "status": "active"},
     )
     entry_id = await _store.add(entry)
@@ -278,7 +280,14 @@ async def get_goal(goal_id: str) -> str:
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is not None and target_goal is not None:
         target_goal["memory_id"] = target_entry.id
-        return json.dumps({"success": True, "goal": target_goal}, ensure_ascii=False)
+        # 反查关联记忆（goal:{id} 标签双链），让 AI 看到目标下已沉淀的内容
+        related = await _store.search_by_tags([f"goal:{goal_id}"], limit=20)
+        related_count = sum(1 for e in related if e.id != target_entry.id)
+        return json.dumps({
+            "success": True,
+            "goal": target_goal,
+            "related_memory_count": related_count,
+        }, ensure_ascii=False)
 
     return tool_error(f"目标 '{goal_id}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
 
@@ -289,22 +298,66 @@ async def get_goal(goal_id: str) -> str:
 
 async def collect_active_goals(store: MemoryStore) -> list[str]:
     """从 MemoryStore 收集活跃目标摘要。"""
+    goals = await collect_active_goal_entries(store, limit=10)
+    return [f"{g['goal_id']}: {g['title']} ({g['done']}/{g['total']} 步)" for g in goals]
+
+
+async def collect_active_goal_entries(
+    store: MemoryStore,
+    *,
+    scope: str = "",
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
+    """收集活跃目标（结构化）：对话内计划（present_plan）按 scope 隔离，长期目标全局可见。"""
     try:
-        entries = await store.list_recent(
-            limit=10, memory_type=MemoryType.SEMANTIC, source=_GOAL_SOURCE,
+        entries = await store.list_by_source(
+            _GOAL_SOURCE, memory_type=MemoryType.SEMANTIC, limit=50,
         )
-        goals: list[str] = []
-        for entry in entries:
-            data = json.loads(entry.content)
-            if data.get("status") == "active":
-                title = data.get("title", "")
-                steps = data.get("steps", [])
-                done = sum(1 for s in steps if s.get("status") == "completed")
-                summary = f"{data.get('goal_id', '?')}: {title} ({done}/{len(steps)} 步)"
-                goals.append(summary)
-        return goals
     except Exception:
         return []
+    goals: List[Dict[str, Any]] = []
+    for entry in entries:
+        try:
+            data = json.loads(entry.content)
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if data.get("status") != "active":
+            continue
+        metadata = entry.metadata or {}
+        if metadata.get("kind") == "present_plan" and metadata.get("scope", "") != scope:
+            continue
+        steps = data.get("steps", [])
+        goals.append({
+            "goal_id": data.get("goal_id", ""),
+            "title": data.get("title", ""),
+            "done": sum(1 for s in steps if s.get("status") == "completed"),
+            "total": len(steps),
+        })
+        if len(goals) >= limit:
+            break
+    return goals
+
+
+async def build_goals_injection(
+    store: MemoryStore,
+    *,
+    scope: str = "",
+    limit: int = 5,
+) -> str:
+    """构建活跃目标注入块（每轮调用；内容仅在目标变更时字节变化）。"""
+    goals = await collect_active_goal_entries(store, scope=scope, limit=limit)
+    if not goals:
+        return ""
+    lines = [
+        f"[系统注入·活跃目标] 你当前有 {len(goals)} 个进行中的目标"
+        "（list_goals 查看全部，update_goal 推进，完成后 delete_goal 收敛）："
+    ]
+    for g in goals:
+        progress = f"（{g['done']}/{g['total']} 步）" if g["total"] else ""
+        title = g["title"][:60]
+        lines.append(f"- [{g['goal_id']}] {title}{progress}")
+    from core.sanitizer import sanitize_for_context
+    return sanitize_for_context("\n".join(lines))
 
 
 @deferred_tool(

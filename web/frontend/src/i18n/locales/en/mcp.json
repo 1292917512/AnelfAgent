@@ -9,13 +9,11 @@
   "noServersHint": "Click \"Add Server\" to connect a stdio / HTTP / SSE MCP server",
   "loadFailed": "Failed to load servers",
   "retry": "Retry",
-
   "nTools": "{{count}} tools",
   "showTools": "Show tools",
   "hideTools": "Hide tools",
   "noTools": "No tools registered for this server",
   "toolsLoadFailed": "Failed to load tool details",
-
   "connecting": "Connecting...",
   "disconnecting": "Disconnecting...",
   "connectedStatus": "Connected",
@@ -25,10 +23,8 @@
   "connect": "Connect",
   "disconnect": "Disconnect",
   "lastError": "Last error",
-
   "deleteTitle": "Delete Server",
   "deleteMessage": "Delete MCP server \"{{name}}\"? This disconnects it and removes it from the config file. This action cannot be undone.",
-
   "form": {
     "name": "Server Name",
     "namePlaceholder": "Unique identifier, e.g. amap-maps",
@@ -57,18 +53,22 @@
     "urlOrCommandRequired": "URL or command is required",
     "timeoutPositive": "Timeout must be greater than 0"
   },
-
   "jsonConfig": "JSON Config",
   "jsonHint": "Edit the raw mcpServers config; hot-reloads automatically after saving",
   "jsonSecretWarning": "The config may contain API keys and other secrets. Keep it safe and do not share it.",
   "format": "Format",
   "invalidJson": "Invalid JSON: {{message}}",
-
   "toast": {
     "serverAdded": "Server \"{{name}}\" added",
     "serverUpdated": "Server \"{{name}}\" updated",
     "serverDeleted": "Server \"{{name}}\" deleted",
     "configSaved": "JSON config saved and hot-reloaded",
     "requestFailed": "Request failed"
-  }
+  },
+  "sleepingBadge": "sleeping",
+  "awakeBadge": "always-on",
+  "stayAwakeOn": "Set to always-on: tools stay in the schema",
+  "stayAwakeOff": "Set to sleeping: only a brief remains, activate on demand",
+  "stayAwakeHintOn": "Pin as always-on (recommended for frequently used servers)",
+  "stayAwakeHintOff": "Let it sleep (shrinks context prefix, better cache hits)"
 }

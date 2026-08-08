@@ -33,6 +33,7 @@ class SqliteBackend:
         self._conv_embed_ready = False
         self._entity_counter_ready = False
         self._adapter_key_ready = False
+        self._summary_dropped_ready = False
         self._conn_lock = asyncio.Lock()
         self._last_health_check = 0.0
         self._register_embedding_backlog()
@@ -305,13 +306,28 @@ class SqliteBackend:
         """水位线字典键（成员 scope 维度）。"""
         return f"{scope_type}:{scope_id}"
 
+    async def _ensure_summary_columns(self) -> None:
+        """懒迁移：确保 conversation_summary 拥有 dropped_count 列（折叠失败丢弃计数）。"""
+        if self._summary_dropped_ready:
+            return
+        db = await self._get_db()
+        cursor = await db.execute("PRAGMA table_info(conversation_summary)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        if "dropped_count" not in cols:
+            await db.execute(
+                "ALTER TABLE conversation_summary ADD COLUMN dropped_count INTEGER NOT NULL DEFAULT 0"
+            )
+            await db.commit()
+        self._summary_dropped_ready = True
+
     async def get_conversation_summary(
         self, *, scope_type: str, scope_id: str
     ) -> Optional[dict]:
-        """读取对话摘要行，返回 {summary, watermarks, folded_count} 或 None。"""
+        """读取对话摘要行，返回 {summary, watermarks, folded_count, dropped_count} 或 None。"""
+        await self._ensure_summary_columns()
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT summary, watermarks_json, folded_count FROM conversation_summary "
+            "SELECT summary, watermarks_json, folded_count, dropped_count FROM conversation_summary "
             "WHERE scope_type=? AND scope_id=?",
             (scope_type, scope_id),
         )
@@ -329,6 +345,7 @@ class SqliteBackend:
             "summary": row[0] or "",
             "watermarks": {str(k): int(v) for k, v in watermarks.items()},
             "folded_count": int(row[2] or 0),
+            "dropped_count": int(row[3] or 0),
         }
 
     async def upsert_conversation_summary(
@@ -339,25 +356,28 @@ class SqliteBackend:
         summary: str,
         watermarks: dict,
         folded_count: int,
+        dropped_count: int = 0,
     ) -> None:
-        """写入/更新对话摘要行（摘要文本 + 各成员 scope 水位线 + 累计折叠条数）。"""
+        """写入/更新对话摘要行（摘要 + 各成员 scope 水位线 + 折叠/丢弃计数）。"""
+        await self._ensure_summary_columns()
         import json as _json
         db = await self._get_db()
         await db.execute(
             """
             INSERT INTO conversation_summary(
-                scope_type, scope_id, summary, watermarks_json, folded_count, updated_ts_ns
-            ) VALUES(?,?,?,?,?,?)
+                scope_type, scope_id, summary, watermarks_json, folded_count, dropped_count, updated_ts_ns
+            ) VALUES(?,?,?,?,?,?,?)
             ON CONFLICT(scope_type, scope_id) DO UPDATE SET
               summary=excluded.summary,
               watermarks_json=excluded.watermarks_json,
               folded_count=excluded.folded_count,
+              dropped_count=excluded.dropped_count,
               updated_ts_ns=excluded.updated_ts_ns
             """,
             (
                 scope_type, scope_id, summary,
                 _json.dumps(watermarks, ensure_ascii=False),
-                int(folded_count), time.time_ns(),
+                int(folded_count), int(dropped_count), time.time_ns(),
             ),
         )
         await db.commit()

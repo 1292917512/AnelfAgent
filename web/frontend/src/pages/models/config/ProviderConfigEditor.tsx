@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { Save, TestTube } from "lucide-react";
 import type { ProviderConfig, UpdateProviderConfig } from "@/lib/types";
 import { Button, Input, Select } from "@/components/ui";
-import { API_TYPE_OPTIONS, MEDIA_PROTOCOL_OPTIONS } from "./shared";
+import { ApiTypeSelect, MEDIA_PROTOCOL_OPTIONS } from "./shared";
 
 /** 供应商配置编辑块：名称 / base_url / api_key / api_type / 代理 / 媒体协议 + 测试 */
 export function ProviderConfigEditor({
@@ -65,14 +65,11 @@ export function ProviderConfigEditor({
         ))}
         <div className="space-y-1">
           <label className="text-xs font-medium text-muted">{t("providerFields.api_type", { defaultValue: "api_type" })}</label>
-          <Select
-            className="w-full"
+          <ApiTypeSelect
             value={pe.api_type}
             disabled={!providerEdit}
-            onChange={(e) => providerEdit && onEditChange({ ...providerEdit, api_type: e.target.value })}
-          >
-            {API_TYPE_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-          </Select>
+            onChange={(v) => providerEdit && onEditChange({ ...providerEdit, api_type: v })}
+          />
         </div>
         <div className="space-y-1">
           <label className="text-xs font-medium text-muted">{t("providerFields.proxy_url", { defaultValue: "proxy_url" })}</label>

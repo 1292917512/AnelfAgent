@@ -149,7 +149,7 @@ async def _invoke_llm_unified(
             "cache_hit_rate": round(result.usage.cache_hit_rate, 4),
         }
         from agent.mind.cache_stats import cache_usage_tracker
-        cache_usage_tracker.record(result.usage, kind=purpose)
+        cache_usage_tracker.record(result.usage, kind=purpose, model=result.model or model_name)
         log(
             f"LLM 用量: prompt={result.usage.prompt_tokens} "
             f"cache_read={result.usage.cache_read_input_tokens} "

@@ -44,6 +44,7 @@ class MCPService:
         "timeout",
         "sse_read_timeout",
         "call_timeout",
+        "stay_awake",
     })
     _SERVER_ALLOWED_TRANSPORTS = frozenset({"stdio", "streamable_http", "sse"})
     _SECRET_MASK = "********"
@@ -205,7 +206,7 @@ class MCPService:
                         f"transport 必须是 {', '.join(sorted(cls._SERVER_ALLOWED_TRANSPORTS))}"
                     )
                 continue
-            if key == "enabled":
+            if key in {"enabled", "stay_awake"}:
                 normalized[key] = cls._to_bool(val)
                 continue
             if key == "args":
@@ -388,6 +389,7 @@ class MCPService:
             enabled = cfg.get("enabled", True)
             raw_url = cfg.get("url", "") or cfg.get("command", "")
             tools = connected.get(name, [])
+            stay_awake = bool(cfg.get("stay_awake", False))
             result.append({
                 "name": name,
                 "url": _mask_display(raw_url),
@@ -397,8 +399,20 @@ class MCPService:
                 "tool_count": len(tools),
                 "tools": tools,
                 "last_error": errors.get(name, ""),
+                # 常驻开关（不沉睡，schema 常驻）+ 当前生效的沉睡状态
+                "stay_awake": stay_awake,
+                "sleeping": self._effective_sleeping(name),
             })
         return result
+
+    @staticmethod
+    def _effective_sleeping(name: str) -> bool:
+        """该服务当前生效的沉睡状态（策略求值；未连接时按配置策略返回）。"""
+        try:
+            from entities.mcp.bridge import _mcp_sleep_enabled
+            return _mcp_sleep_enabled(name)
+        except Exception:
+            return False
 
     def get_server_tools(self, name: str) -> List[str]:
         return self.get_connected_tools().get(name, [])

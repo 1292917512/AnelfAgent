@@ -130,7 +130,10 @@ class TestIngest:
         assert known.speaker_id == s["id"] and known.is_new_speaker is False
         assert known.similarity == pytest.approx(0.95, abs=1e-3)
         assert new.is_new_speaker is True and new.speaker_key.startswith("spk_tmp_")
-        assert no_vec.speaker_id is None
+        # 默认挂接（voiceprint_attach_unidentified）：无声纹段归入前一段的说话人
+        assert no_vec.speaker_id == new.speaker_id
+        seg_no_vec = await store.get_segment(no_vec.segment_id)
+        assert seg_no_vec is not None and seg_no_vec["speaker_id"] == new.speaker_id
         # 片段落库 + 未读计数 + 说话人时长累计
         assert await store.unread_count() == 3
         speaker = await store.get_speaker(s["id"])
@@ -190,7 +193,10 @@ class TestIngestQualityGate:
         assert speakers["total"] == 1  # 噪音段没有建第二个说话人
 
     async def test_short_segments_not_enrolled(self, store: VoiceprintStore) -> None:
-        """短于 min_voiceprint_ms 的段：文本留存但不匹配不建档（防过度分裂）。"""
+        """短于 min_voiceprint_ms 的段：不匹配不建档（防过度分裂）；
+        关闭挂接配置时归属为未知。"""
+        from core.config import ConfigManager
+        ConfigManager.set("voiceprint_attach_unidentified", False)
         result = await ingest_payload(IngestPayload(
             source_file="/nas/a.wav",
             segments=[
@@ -200,7 +206,7 @@ class TestIngestQualityGate:
         ), store=store)
         assert result.ingested == 2
         short, normal = result.results
-        assert short.speaker_id is None  # 短段未识别
+        assert short.speaker_id is None  # 短段未识别（挂接已关）
         assert normal.is_new_speaker is True
         speakers = await store.list_speakers()
         assert speakers["total"] == 1  # 短段没建档
@@ -209,23 +215,24 @@ class TestIngestQualityGate:
         assert by_text["嗯"]["transcript"] == "嗯"  # 文本仍留存可检索
         assert by_text["嗯"]["speaker_id"] is None
 
-    async def test_attach_short_segments_mode(self, store: VoiceprintStore) -> None:
-        """attach 模式：短段挂到同录制前一段的说话人（不采样不建档）。"""
-        from core.config import ConfigManager
-        ConfigManager.set("voiceprint_attach_short_segments", True)
+    async def test_attach_unidentified_default_on(self, store: VoiceprintStore) -> None:
+        """默认挂接：短段/无声纹段归入同录制最近的已归属段（不采样不建档）。"""
         result = await ingest_payload(IngestPayload(
             source_file="/nas/a.wav", recording_path="/nas/rec1",
             segments=[
-                SegmentIn(start_ms=0, end_ms=4000, text="长段", vector=vec(0)),
-                SegmentIn(start_ms=4000, end_ms=5000, text="对", vector=vec(1)),  # 1s 短段
+                SegmentIn(start_ms=0, end_ms=1000, text="前置短段", vector=None),  # 无向量
+                SegmentIn(start_ms=1000, end_ms=5000, text="长段", vector=vec(0)),
+                SegmentIn(start_ms=5000, end_ms=6000, text="对", vector=vec(1)),  # 1s 短段
             ],
         ), store=store)
-        long_seg, short_seg = result.results
+        first, long_seg, short_seg = result.results
         assert long_seg.speaker_id is not None
-        assert short_seg.speaker_id == long_seg.speaker_id  # 挂到前段说话人
+        # 前置无向量段挂到后面最近的已归属段；短段挂到前一段
+        assert first.speaker_id == long_seg.speaker_id
+        assert short_seg.speaker_id == long_seg.speaker_id
         speakers = await store.list_speakers()
-        assert speakers["total"] == 1  # 短段未新建档
-        # 短段未给该说话人新增样本（attach 不采样）
+        assert speakers["total"] == 1  # 都没新建档
+        # 挂接不采样：池中只有长段识别产生的 1 条样本
         assert len(await store.list_samples(long_seg.speaker_id)) == 1
 
 
@@ -241,7 +248,8 @@ class TestPrunePending:
         assert await store.get_speaker(confirmed["id"]) is not None
 
     async def test_prune_all_pending_with_samples(self, store: VoiceprintStore) -> None:
-        """include_with_samples=True：剔除全部 pending（有样本也删），confirmed 保留。"""
+        """include_with_samples=True：级联剔除全部 pending（样本+片段一并删除），
+        confirmed 保留。"""
         tmp = (await matcher.identify(store, vec(0)))["speaker"]  # pending 有样本
         seg_id = await store.add_segment(speaker_id=tmp["id"], transcript="片段")
         confirmed = await matcher.enroll(store, "张三", vec(1))
@@ -249,6 +257,5 @@ class TestPrunePending:
         assert [d["id"] for d in deleted] == [tmp["id"]]
         assert await store.get_speaker(tmp["id"]) is None
         assert await store.list_samples(tmp["id"]) == []
-        seg = await store.get_segment(seg_id)
-        assert seg is not None and seg["speaker_id"] is None  # 片段重指未知
+        assert await store.get_segment(seg_id) is None  # 片段级联删除
         assert await store.get_speaker(confirmed["id"]) is not None

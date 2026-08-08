@@ -5,7 +5,6 @@ import { Download, Plus } from "lucide-react";
 import { providersApi, modelsApi } from "@/lib/api";
 import type {
   CreateModelConfig,
-  JsonObject,
   ModelConfig,
   ProviderConfig,
   UpdateModelConfig,
@@ -13,8 +12,8 @@ import type {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui";
-import { toModelUpdate, type JsonField } from "./shared";
 import { ModelCard } from "./ModelCard";
+import { ModelEditorDialog } from "./ModelEditorDialog";
 import { ProviderConfigEditor } from "./ProviderConfigEditor";
 import { ManualAddForm } from "./ManualAddForm";
 import { RemoteModelPicker } from "./RemoteModelPicker";
@@ -22,6 +21,7 @@ import { RemoteModelPicker } from "./RemoteModelPicker";
 /**
  * 展开的供应商详情：配置编辑 + 模型列表 + 手动/远程添加。
  * 以 key 挂载在供应商卡片内，折叠时卸载，编辑状态自然重置。
+ * 模型编辑在 ModelEditorDialog 中进行；探测/自动配置直接落库。
  */
 export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
   const { t } = useTranslation(["models", "common"]);
@@ -31,12 +31,8 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
   const [providerEdit, setProviderEdit] = useState<UpdateProviderConfig | null>(null);
   const [testResult, setTestResult] = useState("");
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
-  const [modelEdit, setModelEdit] = useState<UpdateModelConfig | null>(null);
-  const [jsonDrafts, setJsonDrafts] = useState<Record<JsonField, string>>({
-    request_params: "{}",
-    extra_body: "{}",
-  });
-  const [jsonErrors, setJsonErrors] = useState<Partial<Record<JsonField, string>>>({});
+  const [editorModel, setEditorModel] = useState<ModelConfig | null>(null);
+  const [pendingModelId, setPendingModelId] = useState<string | null>(null);
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [showRemote, setShowRemote] = useState(false);
   const [addingRemote, setAddingRemote] = useState(false);
@@ -64,7 +60,7 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
   });
   const updateModelMut = useMutation({
     mutationFn: ({ mid, data }: { mid: string; data: UpdateModelConfig }) => modelsApi.update(mid, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["providerModels", pid] }); setModelEdit(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["providerModels", pid] }); setPendingModelId(null); },
   });
   const removeModelMut = useMutation({
     mutationFn: (mid: string) => modelsApi.remove(mid),
@@ -75,36 +71,27 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
 
   const handleTest = async () => {
     try {
-      const r = await modelsApi.test(provider.base_url, provider.api_key, pid);
+      const r = await modelsApi.test(provider.base_url, provider.api_key, pid, provider.api_type);
       setTestResult(r.data.result);
     } catch { setTestResult(t("connectionFailed")); }
   };
 
-  /** 探测/自动配置前确保编辑草稿存在，并把结果写回草稿 */
-  const ensureDraft = (m: ModelConfig): UpdateModelConfig => {
-    if (modelEdit) return modelEdit;
-    setJsonDrafts({
-      request_params: JSON.stringify(m.request_params, null, 2),
-      extra_body: JSON.stringify(m.extra_body, null, 2),
-    });
-    return toModelUpdate(m);
-  };
-
   const handleProbe = async (m: ModelConfig) => {
+    setPendingModelId(m.id);
     try {
       const r = await modelsApi.probe(provider.base_url, provider.api_key, m.model, provider.api_type, pid);
       const d = r.data;
       if (!d.error) {
         const patch: UpdateModelConfig = {
-          ...ensureDraft(m),
           supports_vision: d.supports_vision ?? false,
           supports_tools: d.supports_tools ?? false,
         };
         if (d.vision_format) patch.vision_format = d.vision_format;
-        setModelEdit(patch);
+        await updateModelMut.mutateAsync({ mid: m.id, data: patch });
         setTestResult(t("probeDone") + ": " + JSON.stringify(d));
       } else { setTestResult(t("probeFailed") + ": " + String(d.error)); }
     } catch { setTestResult(t("probeError")); }
+    setPendingModelId(null);
   };
 
   const handleAutoConfig = async (m: ModelConfig) => {
@@ -116,11 +103,11 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
         setTestResult(t("autoConfigNotFound"));
         return;
       }
-      const patch: UpdateModelConfig = { ...ensureDraft(m) };
+      const patch: UpdateModelConfig = {};
       if (info.max_input_tokens) patch.context_window = info.max_input_tokens;
       if (info.supports_vision !== undefined) patch.supports_vision = info.supports_vision;
       if (info.supports_tools !== undefined) patch.supports_tools = info.supports_tools;
-      setModelEdit(patch);
+      await updateModelMut.mutateAsync({ mid: m.id, data: patch });
       const parts: string[] = [];
       if (info.max_input_tokens) parts.push(`context=${info.max_input_tokens}`);
       if (info.supports_vision) parts.push("vision=true");
@@ -131,41 +118,6 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
     } catch {
       setTestResult(t("autoConfigError"));
     }
-  };
-
-  const startModelEdit = (m: ModelConfig) => {
-    setModelEdit(toModelUpdate(m));
-    setJsonDrafts({
-      request_params: JSON.stringify(m.request_params, null, 2),
-      extra_body: JSON.stringify(m.extra_body, null, 2),
-    });
-    setJsonErrors({});
-  };
-
-  const parseJsonObject = (field: JsonField): JsonObject | null => {
-    try {
-      const value: unknown = JSON.parse(jsonDrafts[field]);
-      if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        setJsonErrors((prev) => ({ ...prev, [field]: t("jsonObjectRequired") }));
-        return null;
-      }
-      setJsonErrors((prev) => ({ ...prev, [field]: undefined }));
-      return value as JsonObject;
-    } catch {
-      setJsonErrors((prev) => ({ ...prev, [field]: t("invalidJson") }));
-      return null;
-    }
-  };
-
-  const saveModel = (modelId: string) => {
-    if (!modelEdit) return;
-    const requestParams = parseJsonObject("request_params");
-    const extraBody = parseJsonObject("extra_body");
-    if (requestParams === null || extraBody === null) return;
-    updateModelMut.mutate({
-      mid: modelId,
-      data: { ...modelEdit, request_params: requestParams, extra_body: extraBody },
-    });
   };
 
   return (
@@ -214,6 +166,7 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
         <RemoteModelPicker
           providerId={pid}
           apiType={provider.api_type}
+          existingIds={providerModels.map((m) => m.id)}
           onAdd={async (data) => { await addModelMut.mutateAsync(data); }}
           isAdding={addingRemote}
           onAddingChange={setAddingRemote}
@@ -226,27 +179,26 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
           <ModelCard
             key={m.id}
             model={m}
-            editing={expandedModel === m.id ? modelEdit : null}
             expanded={expandedModel === m.id}
-            onToggle={() => { setExpandedModel(expandedModel === m.id ? null : m.id); setModelEdit(null); setTestResult(""); }}
-            onStartEdit={() => startModelEdit(m)}
-            onEditChange={(patch) => modelEdit && setModelEdit({ ...modelEdit, ...patch })}
-            onSave={() => saveModel(m.id)}
+            onToggle={() => { setExpandedModel(expandedModel === m.id ? null : m.id); setTestResult(""); }}
+            onEdit={() => setEditorModel(m)}
             onProbe={() => handleProbe(m)}
             onAutoConfig={() => handleAutoConfig(m)}
             onRemove={() => removeModelMut.mutate(m.id)}
-            jsonDrafts={jsonDrafts}
-            onJsonDraftChange={(field, value) => {
-              setJsonDrafts((prev) => ({ ...prev, [field]: value }));
-              setJsonErrors((prev) => ({ ...prev, [field]: undefined }));
-            }}
-            jsonErrors={jsonErrors}
             testResult={testResult}
-            isPending={updateModelMut.isPending}
+            isPending={pendingModelId === m.id && updateModelMut.isPending}
           />
         ))}
         {providerModels.length === 0 && <p className="text-sm text-muted py-4 text-center">{t("noModels")}</p>}
       </div>
+
+      {editorModel && (
+        <ModelEditorDialog
+          provider={provider}
+          model={editorModel}
+          onClose={() => setEditorModel(null)}
+        />
+      )}
     </div>
   );
 }

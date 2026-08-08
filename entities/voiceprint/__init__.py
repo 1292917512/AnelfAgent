@@ -89,10 +89,10 @@ register_configs_safe({
                            "只做转写留存不匹配不建档（防短段过度分裂），0=不限制",
             "default": 2000,
         },
-        "voiceprint_attach_short_segments": {
-            "description": "短段挂到同录制前一段的说话人（开启后短段不再置为未知，"
-                           "但不会用短段声纹采样/建档）",
-            "default": False,
+        "voiceprint_attach_unidentified": {
+            "description": "未识别段（短段/未提取到声纹）挂到同录制最近的已归属段"
+                           "（默认开：所有话语都有归属；关闭则未识别段标记为未知）",
+            "default": True,
         },
         "voiceprint_funasr_endpoint": {
             "description": "FunASR 服务地址（如 http://nas:10095），用于音频转写与声纹提取",

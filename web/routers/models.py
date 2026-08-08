@@ -44,6 +44,7 @@ ChatProtocolValue = Literal["chat_completions", "responses", "auto"]
 _RESERVED_REQUEST_PARAMS = frozenset({
     "model", "messages", "prompt", "input", "tools", "tool_choice",
     "stream", "api_key", "api_base", "http_client", "extra_body",
+    "extra_headers",
 })
 
 
@@ -54,7 +55,14 @@ def _validate_request_params(value: Dict[str, Any]) -> Dict[str, Any]:
     return value
 
 
+def _validate_extra_headers(value: Dict[str, str]) -> Dict[str, str]:
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise ValueError("extra_headers 必须是字符串键值对对象")
+    return value
+
+
 RequestParams = Annotated[Dict[str, Any], AfterValidator(_validate_request_params)]
+ExtraHeaders = Annotated[Dict[str, str], AfterValidator(_validate_extra_headers)]
 
 # 允许通过显式传 null 清除配置、恢复"由模型默认决定"的可选采样参数
 _CLEARABLE_PARAM_FIELDS = frozenset({"temperature", "top_p", "max_tokens"})
@@ -66,7 +74,7 @@ def _normalize_model_params(req: BaseModel) -> Dict[str, Any]:
     （temperature/max_tokens）需要透传给 update_config 以清除已有配置，
     恢复"由模型默认决定"的 auto 行为。
     """
-    structured_fields = {"request_params", "extra_body", "extra_params"}
+    structured_fields = {"request_params", "extra_body", "extra_params", "extra_headers"}
     structured_supplied = bool(req.model_fields_set & structured_fields)
     params = req.model_dump(exclude_unset=True)
     # null 仅对白名单字段（可清除回 auto 的采样参数）透传，其余字段 null 视为未提供
@@ -77,6 +85,7 @@ def _normalize_model_params(req: BaseModel) -> Dict[str, Any]:
     request_params = params.pop("request_params", {})
     extra_body = params.pop("extra_body", {})
     legacy_extra = params.pop("extra_params", {})
+    extra_headers = params.pop("extra_headers", {})
 
     merged_extra = dict(legacy_extra)
     merged_extra.update(extra_body)
@@ -86,6 +95,7 @@ def _normalize_model_params(req: BaseModel) -> Dict[str, Any]:
         params["request_params"] = request_params
         params["extra_body"] = merged_extra
         params["extra_params"] = {}
+        params["extra_headers"] = extra_headers
     return params
 
 
@@ -93,6 +103,7 @@ def _serialize_model_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """将内部模型格式转换为公开 API 格式。"""
     result = dict(config)
     result.setdefault("request_params", {})
+    result.setdefault("extra_headers", {})
     result.setdefault("chat_protocol", "chat_completions")
     legacy_extra = result.pop("extra_params", {})
     extra_body = dict(legacy_extra)
@@ -216,6 +227,23 @@ async def get_model_info(req: ModelInfoReq) -> Dict[str, Any]:
     return _svc.get_model_info(req.model, req.api_type)
 
 
+class ModelInfoBatchReq(BaseModel):
+    models: List[str] = Field(max_length=500)
+    api_type: ApiType = "openai"
+
+
+@router.post("/model-info/batch")
+async def get_model_info_batch(req: ModelInfoBatchReq) -> Dict[str, Any]:
+    """批量查询模型能力信息（litellm 本地模型表，一次请求返回全部）。
+
+    供远程模型浏览器的行内元数据展示与批量添加使用，
+    避免逐模型一次 HTTP 往返。
+    """
+    return {
+        "info": {m: _svc.get_model_info(m, req.api_type) for m in dict.fromkeys(req.models)}
+    }
+
+
 class CreateModelReq(BaseModel):
     id: str
     model: str = ""
@@ -247,6 +275,10 @@ class CreateModelReq(BaseModel):
     extra_body: Dict[str, Any] = Field(default_factory=dict)
     extra_params: Dict[str, Any] = Field(
         default_factory=dict,
+    )
+    extra_headers: ExtraHeaders = Field(
+        default_factory=dict,
+        description="自定义请求头，最后应用到 HTTP 请求（可覆盖鉴权头）",
     )
     enabled: bool = True
 
@@ -313,13 +345,22 @@ class TestConnectionReq(BaseModel):
     base_url: str
     api_key: str = ""
     provider_id: str = ""
+    api_type: ApiType = "openai"
+    extra_headers: ExtraHeaders = Field(default_factory=dict)
 
 
 @router.post("/test")
 async def test_connection(req: TestConnectionReq) -> Dict[str, str]:
     try:
         api_key = _svc.resolve_provider_api_key(req.provider_id, req.api_key)
-        result = await _svc.test_connection(req.base_url, api_key)
+        api_type = req.api_type
+        if req.provider_id:
+            prov = _svc.get_provider(req.provider_id)
+            if prov is not None:
+                api_type = prov.get("api_type", api_type)
+        result = await _svc.test_connection(
+            req.base_url, api_key, api_type, req.extra_headers or None,
+        )
         return {"result": result}
     except ValueError as e:
         # 非法 base_url（_validate_remote_url）属于客户端输入错误
@@ -328,6 +369,28 @@ async def test_connection(req: TestConnectionReq) -> Dict[str, str]:
         return {
             "result": f"连接失败: {_svc.sanitize_error(e, req.api_key)}",
         }
+
+
+@router.get("/api-types")
+async def list_api_types() -> Dict[str, Any]:
+    """返回支持的 api_type 列表（单一权威来源，前端不再硬编码）。
+
+    common 组（openai/anthropic）为两大主流协议，市面上绝大多数中转/
+    国产模型都是其兼容实现；其余归为 other。
+    """
+    from agent.llm.config import API_TYPES, DEFAULT_BASE_URLS
+
+    common = {"openai", "anthropic"}
+    return {
+        "api_types": [
+            {
+                "value": t,
+                "group": "common" if t in common else "other",
+                "default_base_url": DEFAULT_BASE_URLS.get(t, ""),
+            }
+            for t in API_TYPES
+        ]
+    }
 
 
 class ProbeReq(BaseModel):
@@ -420,6 +483,32 @@ class UpdateModelReq(CreateModelReq):
     request_params: Optional[RequestParams] = None
     extra_body: Optional[Dict[str, Any]] = None
     extra_params: Optional[Dict[str, Any]] = None
+    extra_headers: Optional[ExtraHeaders] = None
+
+
+class TestChatReq(BaseModel):
+    """真实链路对话测试（保存并测试）。
+
+    model_id 指向已保存模型时以其配置为基底；draft 为编辑中的模型草稿
+    （模型级字段），合并后构造临时客户端走真实流式链路。
+    """
+
+    provider_id: str
+    model_id: str = ""
+    draft: Optional[UpdateModelReq] = None
+
+
+@router.post("/test-chat")
+async def test_chat(req: TestChatReq) -> Dict[str, Any]:
+    try:
+        draft = _normalize_model_params(req.draft) if req.draft is not None else None
+        if draft is not None:
+            draft.pop("id", None)
+        return await _svc.test_chat(req.provider_id, req.model_id, draft)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        return {"ok": False, "error": _svc.sanitize_error(e)}
 
 
 @router.get("/{model_id}")

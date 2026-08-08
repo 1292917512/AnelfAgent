@@ -34,7 +34,12 @@ class TestToolActivationManager:
         rounds = manager.activate("web", rounds=999, scope="s1")
         assert rounds <= 20
 
-    def test_consume_round_expires(self, manager: ToolActivationManager) -> None:
+    def test_consume_round_expires(self, manager: ToolActivationManager, monkeypatch) -> None:
+        # 默认粘性模式不过期；显式关闭粘性后按轮次过期
+        monkeypatch.setattr(
+            "core.config.get_config_bool",
+            lambda k, d=False: False if k == "tool_activation_sticky" else d,
+        )
         manager.activate("web", rounds=2, scope="s1")
         assert manager.consume_round("s1") == []
         assert manager.is_active("web", "s1")

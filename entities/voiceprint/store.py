@@ -696,7 +696,11 @@ class VoiceprintStore:
         return await self.get_speaker(speaker_id)
 
     async def delete_speaker(self, speaker_id: int) -> Optional[Dict[str, Any]]:
-        """删除说话人（硬删除档案与样本池），其片段重指为未知（speaker_id=NULL）。"""
+        """删除说话人（级联）：档案 + 声纹样本池 + 其全部话语片段一并删除。
+
+        删除即整体移除相关内容——不产生"未知说话人"孤儿片段；
+        归属调整请走合并（speaker_merge/consolidate）或逐段改派。
+        """
         current = await self.get_speaker(speaker_id)
         if not current:
             return None
@@ -704,13 +708,17 @@ class VoiceprintStore:
         cursor = await db.execute(
             "SELECT id FROM voice_samples WHERE speaker_id=?", (speaker_id,))
         sample_ids = [r["id"] for r in await cursor.fetchall()]
+        cursor = await db.execute(
+            "SELECT id FROM voice_segments WHERE speaker_id=?", (speaker_id,))
+        segment_ids = [r["id"] for r in await cursor.fetchall()]
         await db.execute("DELETE FROM voice_samples WHERE speaker_id=?", (speaker_id,))
-        await db.execute(
-            "UPDATE voice_segments SET speaker_id=NULL WHERE speaker_id=?", (speaker_id,))
+        await db.execute("DELETE FROM voice_segments WHERE speaker_id=?", (speaker_id,))
         await db.execute("DELETE FROM speakers WHERE id=?", (speaker_id,))
         await db.commit()
         for sid in sample_ids:
             await self._vec_delete("samples", sid)
+        for seg_id in segment_ids:
+            await self._vec_delete("segments", seg_id)
         self._mark_dirty()
         return current
 
@@ -747,7 +755,8 @@ class VoiceprintStore:
     ) -> List[Dict[str, Any]]:
         """批量剔除临时（pending）说话人。
 
-        include_with_samples=False：只清理无样本的空壳档案（安全默认）；
+        include_with_samples=False：只清理无样本且**无片段**的空壳档案（安全默认，
+        有片段归属的 pending 绝不动，防归属被误置未知）；
         include_with_samples=True：剔除全部 pending（样本一并删除，片段重指未知）。
         返回被删除的说话人简报列表。
         """
@@ -758,7 +767,8 @@ class VoiceprintStore:
         else:
             cursor = await db.execute(
                 "SELECT s.* FROM speakers s WHERE s.archived=0 AND s.status='pending' "
-                "AND NOT EXISTS (SELECT 1 FROM voice_samples v WHERE v.speaker_id=s.id)")
+                "AND NOT EXISTS (SELECT 1 FROM voice_samples v WHERE v.speaker_id=s.id) "
+                "AND NOT EXISTS (SELECT 1 FROM voice_segments g WHERE g.speaker_id=s.id)")
         candidates = [_row_to_speaker(r) for r in await cursor.fetchall()]
         deleted: List[Dict[str, Any]] = []
         for speaker in candidates:

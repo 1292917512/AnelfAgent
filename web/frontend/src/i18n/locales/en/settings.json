@@ -76,16 +76,5 @@
     "cross_channel_recall_max_results": "Cross-channel recall max",
     "cross_channel_recall_scan_limit": "Cross-channel scan limit",
     "cross_channel_narrative_max_items": "Cross-channel narrative max"
-  },
-  "serviceControl": "Service Control",
-  "serviceControlDesc": "Restart the service, or rebuild the frontend and restart",
-  "restartService": "Restart Service",
-  "buildAndRestart": "Build Frontend & Restart",
-  "restartConfirm": "Restart the service? It will be briefly unavailable.",
-  "buildRestartConfirm": "Rebuild the frontend and restart? The service stays up during the build and restarts automatically once it succeeds.",
-  "restartingHint": "Restarting, the page will reload once the service is back…",
-  "buildingHint": "Building frontend, will restart automatically when done…",
-  "buildInProgress": "A build is already in progress",
-  "frontendNotFound": "Frontend directory not found",
-  "buildFailed": "Build failed"
+  }
 }

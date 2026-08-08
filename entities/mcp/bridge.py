@@ -70,7 +70,80 @@ _MCP_CONFIGS = {
             "default": False,
         },
     },
+    "Prompt缓存": {
+        "mcp_tools_sleep_default": {
+            "description": "MCP 服务工具组默认沉睡（不常驻 schema，需要时 AI 调 activate_tool_group 唤醒；显著缩小 tools 前缀、提升缓存命中）",
+            "default": True,
+        },
+        "mcp_sleep_excludes": {
+            "description": "不沉睡的 MCP 服务名单（逗号分隔的服务名，如 git,excel；高频使用的服务可常驻）",
+            "default": "",
+        },
+        "tool_activation_sticky": {
+            "description": "分组激活粘性：activate_tool_group 唤醒的分组进程内不再过期沉睡（工具集只增不减，避免激活/过期反复重写缓存前缀）",
+            "default": True,
+        },
+    },
 }
+
+
+def _server_stay_awake(server_name: str) -> bool:
+    """读取 mcp_servers.json 中该服务的 stay_awake 覆盖（每服务常驻开关）。"""
+    try:
+        import json as _json
+        import os as _os
+
+        from core.path import ConfigPaths
+        path = ConfigPaths.MCP_SERVERS
+        if not _os.path.isfile(path):
+            return False
+        with open(path, encoding="utf-8") as f:
+            data = _json.load(f)
+        cfg = (data.get("mcpServers") or {}).get(server_name) or {}
+        return bool(cfg.get("stay_awake"))
+    except Exception:
+        return False
+
+
+def _mcp_sleep_enabled(server_name: str) -> bool:
+    """该 MCP 服务的工具组是否沉睡。
+
+    优先级：每服务 stay_awake 覆盖（mcp_servers.json）> 全局排除名单 > 全局默认。
+    """
+    from core.config import get_config, get_config_bool
+    if not get_config_bool("mcp_tools_sleep_default", True):
+        return False
+    if _server_stay_awake(server_name):
+        return False
+    excludes = str(get_config("mcp_sleep_excludes", "") or "")
+    excluded = {s.strip() for s in excludes.split(",") if s.strip()}
+    return server_name not in excluded
+
+
+def apply_sleep_policy(server_name: str) -> bool:
+    """按当前策略刷新某服务已注册工具的沉睡标记（stay_awake 切换后即时生效）。
+
+    就地更新实体 meta 并推进注册表版本（无需重连/重启，
+    下一个会话的工具集装配自动应用新策略）。
+    """
+    sleep = _mcp_sleep_enabled(server_name)
+    group = f"mcp:{server_name}"
+    tools = [
+        e for e in EntityRegistry.get_by_group(group)
+        if e.entity_type == EntityType.TOOL
+    ]
+    if not tools:
+        return False
+    brief = f"MCP 服务 {server_name}（{len(tools)} 个工具）"
+    for e in tools:
+        e.meta["allow_sleep"] = sleep
+        e.meta["sleep_brief"] = brief if sleep else ""
+    EntityRegistry.bump_version()
+    log(
+        f"MCP 沉睡策略已应用: {server_name} → {'沉睡' if sleep else '常驻'} ({len(tools)} 工具)",
+        tag="MCP",
+    )
+    return True
 
 from core.config import register_configs_safe  # noqa: E402
 
@@ -797,7 +870,11 @@ class MCPBridge:
 
         工具名与现有实体（内置工具或其他 MCP 工具）冲突时，
         自动加 ``{server}__`` 前缀注册，避免覆盖同名实体。
+        默认沉睡策略（mcp_tools_sleep_default）：沉睡组不驻留 schema，
+        显著缩小 tools 前缀（缓存友好），AI 需要时 activate_tool_group 唤醒。
         """
+        sleep = _mcp_sleep_enabled(server_name)
+        sleep_brief = f"MCP 服务 {server_name}（{len(tools)} 个工具）" if sleep else ""
         registered: List[str] = []
         for t in tools:
             t_name, t_params = self._parse_mcp_tool(t)
@@ -823,6 +900,8 @@ class MCPBridge:
                 params=t_params,
                 tags=["mcp", server_name],
                 source="mcp",
+                allow_sleep=sleep,
+                sleep_brief=sleep_brief,
             )
             with self._lock:
                 self._tool_server_map[reg_name] = server_name

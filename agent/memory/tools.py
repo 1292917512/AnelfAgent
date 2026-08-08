@@ -88,7 +88,7 @@ async def memorize(content: str, tags: str = "", importance: float = 0.7) -> str
 
     Args:
         content: 要记住的内容（简洁扼要，一两句话）
-        tags: 标签，逗号分隔。推荐前缀：type:(fact/event/permanent) user:(uid) group:(id) topic:(主题) channel:(频道)。type:permanent 表示永久记忆
+        tags: 标签，逗号分隔。推荐前缀：type:(fact/event/permanent) user:(uid) group:(id) topic:(主题) channel:(频道) goal:(目标id)。type:permanent 表示永久记忆；与某目标相关的记忆打 goal:xxx 标签，可在目标视角串联召回
         importance: 重要性 0-1，默认 0.7。permanent 类型自动设为 1.0
     """
     try:
@@ -315,7 +315,7 @@ async def _recall_associations(
     assoc_tags: list[str] = []
     for r in results:
         for tag in r.tags:
-            if tag.startswith(("user:", "group:", "topic:")) and tag not in assoc_tags:
+            if tag.startswith(("user:", "group:", "topic:", "goal:")) and tag not in assoc_tags:
                 assoc_tags.append(tag)
     if not assoc_tags:
         return []
@@ -363,7 +363,7 @@ async def _recall_associations_deep(
                 continue
             if entry:
                 for tag in entry.tags:
-                    if tag.startswith(("user:", "group:", "topic:")) and tag not in extra_tags:
+                    if tag.startswith(("user:", "group:", "topic:", "goal:")) and tag not in extra_tags:
                         extra_tags.append(tag)
         if extra_tags:
             seed_results = list(results) + [
@@ -380,7 +380,7 @@ async def _recall_associations_deep(
         mem_id = int(str(item["id"]).split(":")[1])
         seen_ids.add(mem_id)
         for tag in item["tags"]:
-            if tag.startswith(("user:", "group:", "topic:")) and tag not in hop1_tags:
+            if tag.startswith(("user:", "group:", "topic:", "goal:")) and tag not in hop1_tags:
                 hop1_tags.append(tag)
     if not hop1_tags:
         return hop1

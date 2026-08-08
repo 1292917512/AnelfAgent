@@ -1,7 +1,9 @@
 import { useTranslation } from "react-i18next";
+import { useQuery } from "@tanstack/react-query";
 import { Eye, Wrench, Brain, Layers } from "lucide-react";
-import { Badge } from "@/components/ui";
-import type { ModelConfig, UpdateModelConfig } from "@/lib/types";
+import { Badge, Select } from "@/components/ui";
+import { modelsApi } from "@/lib/api";
+import type { ApiTypeInfo, ModelConfig } from "@/lib/types";
 
 export const API_TYPE_OPTIONS = [
   "openai", "anthropic", "ollama", "gemini", "azure", "deepseek",
@@ -12,6 +14,52 @@ export const API_TYPE_OPTIONS = [
 export const MODEL_TYPE_OPTIONS = ["chat", "embedding", "image_gen", "image_edit", "asr", "tts", "video", "music", "rerank"];
 // 图片/视频协议适配器（对应后端 agent.llm.image_adapters / video_adapters 注册名），空串表示按 host 自动识别
 export const MEDIA_PROTOCOL_OPTIONS = ["siliconflow", "openai", "dashscope", "minimax", "minimax_v2"];
+
+/** api_type 元信息：单一权威来源在后端 GET /models/api-types，前端不再硬编码 */
+export function useApiTypes(): ApiTypeInfo[] {
+  const { data } = useQuery({
+    queryKey: ["apiTypes"],
+    queryFn: () => modelsApi.apiTypes().then((r) => r.data.api_types),
+    staleTime: Infinity,
+  });
+  return data ?? API_TYPE_OPTIONS.map((v) => ({
+    value: v,
+    group: v === "openai" || v === "anthropic" ? "common" : "other",
+    default_base_url: "",
+  }));
+}
+
+/**
+ * api_type 下拉：主流协议（OpenAI/Anthropic 兼容）置顶分组。
+ * 市面上绝大多数中转/国产模型都是这两种协议的兼容实现。
+ */
+export function ApiTypeSelect({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string, info?: ApiTypeInfo) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation("models");
+  const types = useApiTypes();
+  const common = types.filter((x) => x.group === "common");
+  const other = types.filter((x) => x.group !== "common");
+  const select = (v: string) => onChange(v, types.find((x) => x.value === v));
+  return (
+    <Select className="w-full" value={value} disabled={disabled} onChange={(e) => select(e.target.value)}>
+      <optgroup label={t("apiTypeCommon")}>
+        {common.map((x) => <option key={x.value} value={x.value}>{x.value}</option>)}
+      </optgroup>
+      <optgroup label={t("apiTypeOther")}>
+        {other.map((x) => <option key={x.value} value={x.value}>{x.value}</option>)}
+        {/* 当前值不在列表时兜底显示，避免 select 显示错位 */}
+        {!types.some((x) => x.value === value) && <option value={value}>{value}</option>}
+      </optgroup>
+    </Select>
+  );
+}
 
 export interface ManualModelForm {
   id: string;
@@ -28,27 +76,6 @@ export const EMPTY_MANUAL_MODEL: ManualModelForm = {
   supports_tools: true, supports_vision: false, supports_reasoning: false,
   supports_forced_tool_choice: true,
 };
-
-export type JsonField = "request_params" | "extra_body";
-
-export function toModelUpdate(model: ModelConfig): UpdateModelConfig {
-  return {
-    model: model.model,
-    model_types: model.model_types,
-    supports_vision: model.supports_vision,
-    supports_tools: model.supports_tools,
-    supports_forced_tool_choice: model.supports_forced_tool_choice,
-    vision_format: model.vision_format,
-    supports_reasoning: model.supports_reasoning,
-    reasoning_effort: model.reasoning_effort ?? "",
-    temperature: model.temperature,
-    context_window: model.context_window ?? 0,
-    timeout: model.timeout ?? 120,
-    request_params: model.request_params,
-    extra_body: model.extra_body,
-    chat_protocol: model.chat_protocol ?? "chat_completions",
-  };
-}
 
 /** 模型能力/类型/上下文/成本徽标组 */
 export function ModelBadges({ model }: { model: ModelConfig }) {

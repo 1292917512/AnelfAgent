@@ -79,7 +79,30 @@ _LITELLM_PREFIX_MAP: Dict[str, str] = {
 _RESERVED_REQUEST_PARAMS = frozenset({
     "model", "messages", "prompt", "input", "tools", "tool_choice",
     "stream", "api_key", "api_base", "http_client", "extra_body",
+    "extra_headers",
 })
+
+# 各 api_type 的默认接口地址（留空 base_url 时的兜底，供 UI 与远程拉取共用）
+DEFAULT_BASE_URLS: Dict[str, str] = {
+    API_TYPE_OPENAI: "https://api.openai.com/v1",
+    API_TYPE_ANTHROPIC: "https://api.anthropic.com/v1",
+    API_TYPE_GEMINI: "https://generativelanguage.googleapis.com/v1beta",
+    API_TYPE_OLLAMA: "http://127.0.0.1:11434/v1",
+    API_TYPE_DEEPSEEK: "https://api.deepseek.com/v1",
+    API_TYPE_OPENROUTER: "https://openrouter.ai/api/v1",
+    API_TYPE_GROQ: "https://api.groq.com/openai/v1",
+    API_TYPE_XAI: "https://api.x.ai/v1",
+    API_TYPE_DASHSCOPE: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    API_TYPE_VOLCENGINE: "https://ark.cn-beijing.volces.com/api/v3",
+    API_TYPE_MISTRAL: "https://api.mistral.ai/v1",
+    API_TYPE_PERPLEXITY: "https://api.perplexity.ai",
+    API_TYPE_TOGETHER_AI: "https://api.together.xyz/v1",
+    API_TYPE_FIREWORKS_AI: "https://api.fireworks.ai/inference/v1",
+    API_TYPE_CEREBRAS: "https://api.cerebras.ai/v1",
+    API_TYPE_SAMBANOVA: "https://api.sambanova.ai/v1",
+    API_TYPE_COHERE: "https://api.cohere.com/v2",
+    API_TYPE_HUGGINGFACE: "https://router.huggingface.co/v1",
+}
 
 
 class ModelType(str, Enum):
@@ -136,6 +159,9 @@ class LLMClientConfig:
     request_params: Dict[str, Any] = field(default_factory=dict)
     extra_body: Dict[str, Any] = field(default_factory=dict)
     extra_params: Dict[str, Any] = field(default_factory=dict)
+    # 自定义请求头（最后应用到 HTTP 请求，可覆盖鉴权头等任意头；
+    # 对接需要特殊 header 的网关/中转站时使用）
+    extra_headers: Dict[str, str] = field(default_factory=dict)
     chat_protocol: str = ChatProtocol.CHAT_COMPLETIONS.value
     # 图片生成协议适配器名（见 agent.llm.image_adapters），空表示按 host 自动匹配。
     media_protocol: str = ""
@@ -177,6 +203,11 @@ class LLMClientConfig:
         ):
             if not isinstance(value, dict):
                 raise ValueError(f"{name} 必须是对象")
+        if not isinstance(self.extra_headers, dict) or not all(
+            isinstance(k, str) and isinstance(v, str)
+            for k, v in self.extra_headers.items()
+        ):
+            raise ValueError("extra_headers 必须是字符串键值对对象")
         normalized_effort = normalize_effort(self.reasoning_effort)
         if self.reasoning_effort and not normalized_effort:
             log(
@@ -263,6 +294,8 @@ class LLMClientConfig:
         }
         if self.extra_params:
             d["extra_params"] = self.extra_params
+        if self.extra_headers:
+            d["extra_headers"] = self.extra_headers
         return d
 
     def to_model_dict(self) -> Dict[str, Any]:
@@ -302,6 +335,8 @@ class LLMClientConfig:
             d["timeout"] = self.timeout
         if self.extra_params:
             d["extra_params"] = self.extra_params
+        if self.extra_headers:
+            d["extra_headers"] = self.extra_headers
         if self.reasoning_effort:
             d["reasoning_effort"] = self.reasoning_effort
         if not self.enabled:

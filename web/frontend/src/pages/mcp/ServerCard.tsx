@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pencil, Power, Trash2 } from "lucide-react";
+import { Loader2, MoonStar, Pencil, Pin, Power, Trash2 } from "lucide-react";
 import { apiErrorMessage, mcpApi } from "@/lib/api";
 import type { MCPServer } from "@/lib/types";
 import { StatusDot } from "@/components/common/StatusDot";
@@ -37,6 +37,19 @@ export function ServerCard({ server, onEdit, onDelete }: ServerCardProps) {
   });
 
   const isToggling = toggleMutation.isPending;
+
+  const stayAwakeMutation = useMutation({
+    mutationFn: (enabled: boolean) => mcpApi.setStayAwake(server.name, enabled).then((r) => r.data),
+    onSuccess: (data) => {
+      toast.success(t(data.stay_awake ? "stayAwakeOn" : "stayAwakeOff"));
+    },
+    onError: (err) => {
+      toast.error(apiErrorMessage(err, t("toast.requestFailed")));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["mcpServers"] });
+    },
+  });
   const status = isToggling ? "warn" : server.connected ? "ok" : "offline";
   const statusLabel = isToggling
     ? server.connected
@@ -78,6 +91,11 @@ export function ServerCard({ server, onEdit, onDelete }: ServerCardProps) {
                   {t("nTools", { count: server.tool_count })}
                 </Badge>
               )}
+              {server.sleeping ? (
+                <Badge variant="neutral">{t("sleepingBadge")}</Badge>
+              ) : (
+                <Badge variant="ok">{t("awakeBadge")}</Badge>
+              )}
             </div>
             {server.url && (
               <p className="text-xs text-muted mt-0.5 font-mono truncate">
@@ -93,6 +111,25 @@ export function ServerCard({ server, onEdit, onDelete }: ServerCardProps) {
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={() => stayAwakeMutation.mutate(!server.stay_awake)}
+            disabled={stayAwakeMutation.isPending}
+            title={server.stay_awake ? t("stayAwakeHintOff") : t("stayAwakeHintOn")}
+            className={cn(
+              "p-1.5 rounded transition-colors disabled:cursor-wait",
+              server.stay_awake
+                ? "text-accent hover:text-muted"
+                : "text-muted hover:text-accent",
+            )}
+          >
+            {stayAwakeMutation.isPending ? (
+              <Loader2 size={16} className="animate-spin text-warn" />
+            ) : server.stay_awake ? (
+              <Pin size={16} />
+            ) : (
+              <MoonStar size={16} />
+            )}
+          </button>
           <button
             onClick={() => toggleMutation.mutate()}
             disabled={isToggling}

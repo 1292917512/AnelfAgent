@@ -240,7 +240,7 @@ def build_router() -> APIRouter:
 
     @router.delete("/speakers/{speaker_id}")
     async def delete_speaker(speaker_id: int) -> Dict[str, Any]:
-        """删除说话人（样本池一并删除，片段标记为未知）。"""
+        """删除说话人（级联：样本池与全部话语片段一并删除）。"""
         store = get_voiceprint_store()
         deleted = await store.delete_speaker(speaker_id)
         if not deleted:

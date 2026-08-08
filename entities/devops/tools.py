@@ -1,168 +1,27 @@
-"""运维工具 — 记忆备份、项目更新、应用重启。
+"""运维工具 — 应用重启、前端构建、项目代码更新。
 
-提供 AI 自主管理部署流程的能力：
-- 记忆文件同步到私有 GitHub 仓库
-- 从远程拉取项目最新代码
-- 更新后自动重启应用（合并为一步操作）
+提供 AI 自主管理部署流程的能力，核心逻辑统一在 service.py（与 Web 面板同源）：
+- 重启应用（优雅关闭后由外层启动脚本按退出码 42 重新拉起）
+- 构建前端并重启（构建失败则不重启）
+- 从远程拉取项目最新代码，可一步完成更新并重启
 - 遇到 Git 冲突时提示联系主人
 """
 
 from __future__ import annotations
 
 import json
-import os
-import platform
-from typing import List
+from typing import Any
 
-from core.log import log
-from entities._sdk import ErrorCause, entity, tool, tool_error
+from entities._sdk import entity, tool
 
-entity("devops", "运维管理 - 记忆备份同步、项目代码更新、应用重启")
+from . import service
 
-
-def _project_root() -> str:
-    """获取项目根目录。"""
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+entity("devops", "运维管理 - 应用重启、前端构建、项目代码更新")
 
 
-def _run(command: List[str], cwd: str | None = None, timeout: int = 60) -> dict:
-    """执行命令并返回结构化结果，支持指定工作目录。
-
-    复用 core/command.py 的 run_command（参数列表形式，shell=False，
-    POSIX 下独立进程组、超时整组终止）。
-    """
-    from core.command import run_command
-    result = run_command(list(command), timeout_sec=timeout, cwd=cwd or _project_root())
-    return {
-        "ok": result.ok,
-        "stdout": (result.stdout or "").strip()[:3000],
-        "stderr": (result.stderr or "").strip()[:1000],
-    }
-
-
-def _pick_script(name: str) -> str:
-    """根据操作系统选择 .bat 或 .sh 脚本。"""
-    root = _project_root()
-    if platform.system() == "Windows":
-        return os.path.join(root, "scripts", f"{name}.bat")
-    return os.path.join(root, "scripts", f"{name}.sh")
-
-
-def _has_conflict(output: str) -> bool:
-    """检测 git pull 输出是否包含冲突标志。"""
-    conflict_markers = ("CONFLICT", "Automatic merge failed", "fix conflicts")
-    return any(m in output for m in conflict_markers)
-
-
-# ── 记忆备份 ──────────────────────────────────────────────────────────
-
-@tool(name="backup_memories", group="devops")
-def backup_memories(message: str = "") -> str:
-    """将记忆文件同步备份到私有 GitHub 仓库。
-
-    自动执行 secrets-backup 脚本：复制配置和记忆文件到 .secrets/，提交并推送。
-
-    Args:
-        message: 可选的提交信息，留空则使用默认格式（backup 日期时间）
-    """
-    script = _pick_script("secrets-backup")
-    if not os.path.exists(script):
-        return tool_error(f"备份脚本不存在: {os.path.basename(script)}",
-                          cause=ErrorCause.NOT_FOUND, retryable=False,
-                          hint="请检查项目 scripts 目录是否完整")
-
-    cmd = [script]
-    if message:
-        cmd.append(message)
-
-    result = _run(cmd, cwd=_project_root(), timeout=120)
-    return json.dumps({
-        "action": "backup_memories",
-        **result,
-    }, ensure_ascii=False)
-
-
-# ── 项目更新 ──────────────────────────────────────────────────────────
-
-@tool(name="update_project", group="devops")
-def update_project() -> str:
-    """从远程仓库拉取项目最新代码（git pull）。
-
-    如果遇到合并冲突，不会自动解决，请主动联系主人处理。
-    """
-    root = _project_root()
-
-    status = _run(["git", "status", "--porcelain"], cwd=root, timeout=15)
-    if status["ok"] and status["stdout"].strip():
-        return json.dumps({
-            "action": "update_project",
-            "ok": False,
-            "message": "工作区有未提交的修改，请先提交或暂存后再更新",
-            "dirty_files": status["stdout"][:500],
-        }, ensure_ascii=False)
-
-    result = _run(["git", "pull", "--ff-only"], cwd=root, timeout=120)
-
-    if not result["ok"] or _has_conflict(result["stdout"] + result["stderr"]):
-        return json.dumps({
-            "action": "update_project",
-            "ok": False,
-            "conflict": True,
-            "message": "代码更新遇到冲突，请主动联系主人解决，不要尝试自动处理！",
-            "detail": result["stdout"][:500],
-        }, ensure_ascii=False)
-
-    return json.dumps({
-        "action": "update_project",
-        **result,
-    }, ensure_ascii=False)
-
-
-# ── 更新并重启 ────────────────────────────────────────────────────────
-
-@tool(name="update_and_restart", group="devops")
-def update_and_restart() -> str:
-    """一步完成：拉取最新代码 + 重启应用。
-
-    流程：git pull → 检查冲突 → 无冲突则重启。
-    遇到冲突时不会重启，请主动联系主人解决。
-    """
-    root = _project_root()
-
-    status = _run(["git", "status", "--porcelain"], cwd=root, timeout=15)
-    if status["ok"] and status["stdout"].strip():
-        return json.dumps({
-            "action": "update_and_restart",
-            "ok": False,
-            "message": "工作区有未提交的修改，请先提交或暂存后再更新",
-            "dirty_files": status["stdout"][:500],
-        }, ensure_ascii=False)
-
-    pull = _run(["git", "pull", "--ff-only"], cwd=root, timeout=120)
-
-    if not pull["ok"] or _has_conflict(pull["stdout"] + pull["stderr"]):
-        return json.dumps({
-            "action": "update_and_restart",
-            "ok": False,
-            "conflict": True,
-            "message": "代码更新遇到冲突，不会重启！请主动联系主人解决！",
-            "detail": pull["stdout"][:500],
-        }, ensure_ascii=False)
-
-    if not _schedule_restart():
-        return json.dumps({
-            "action": "update_and_restart",
-            "ok": False,
-            "error": "代码已更新，但无法调度重启任务：未找到运行中的事件循环，请手动重启",
-            "cause": ErrorCause.STATE.value,
-            "retryable": False,
-        }, ensure_ascii=False)
-    return json.dumps({
-        "action": "update_and_restart",
-        "ok": True,
-        "pull_result": pull["stdout"][:300],
-        "message": "代码已更新，应用将在 2 秒后重启...",
-    }, ensure_ascii=False)
+def _result(action: str, **fields: Any) -> str:
+    """组装工具返回（统一携带 action 标识）。"""
+    return json.dumps({"action": action, **fields}, ensure_ascii=False)
 
 
 # ── 重启应用 ──────────────────────────────────────────────────────────
@@ -171,106 +30,63 @@ def update_and_restart() -> str:
 def restart_app() -> str:
     """重启应用进程。
 
-    通过 os.execv 原地替换当前进程实现热重启，保持相同的启动参数。
+    触发优雅关闭（完整清理 WebUI / 频道 / MCP 等资源）后退出，
+    由外层启动脚本（start.sh / start.bat）自动重新拉起应用。
     """
-    if not _schedule_restart():
-        return json.dumps({
-            "action": "restart_app",
-            "ok": False,
-            "error": "无法调度重启任务：未找到运行中的事件循环，请手动重启",
-            "cause": ErrorCause.STATE.value,
-            "retryable": False,
-        }, ensure_ascii=False)
-    return json.dumps({
-        "action": "restart_app",
-        "ok": True,
-        "message": "应用将在 2 秒后重启...",
-    }, ensure_ascii=False)
+    service.request_restart()
+    return _result("restart_app", ok=True, message="应用即将优雅重启...")
 
 
-async def _build_frontend() -> None:
-    """异步构建前端（pnpm run build），失败不阻塞重启。
+@tool(name="build_and_restart", group="devops", timeout=330)
+def build_and_restart() -> str:
+    """重新构建前端（npm run build）并重启应用。
 
-    前端构建/重启逻辑以本模块为实现主体；services/system.py 存在
-    平行实现（npm 版本），由 services 侧负责人另行收敛，本文件不改动 services。
+    构建成功后自动重启；构建失败则取消重启并返回构建日志尾部。
     """
-    import asyncio
-
-    root = _project_root()
-    frontend_dir = os.path.join(root, "web", "frontend")
-    pkg_json = os.path.join(frontend_dir, "package.json")
-    if not os.path.exists(pkg_json):
-        return
-
-    log("🔨 构建前端...", tag="运维")
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "pnpm", "run", "build",
-            cwd=frontend_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            log("⚠️ 前端构建超时（不阻塞重启）", "WARNING", tag="运维")
-            return
-        if proc.returncode == 0:
-            log("✅ 前端构建完成", tag="运维")
-        else:
-            err = (stderr or b"").decode(errors="replace").strip()[:200]
-            log(f"⚠️ 前端构建失败（不阻塞重启）: {err}", "WARNING", tag="运维")
-    except Exception as e:
-        log(f"⚠️ 前端构建异常（不阻塞重启）: {e}", "WARNING", tag="运维")
+    result = service.build_and_restart_blocking()
+    if result["ok"]:
+        return _result("build_and_restart", ok=True,
+                       message="前端构建成功，应用即将重启...",
+                       duration=result["build"]["duration"])
+    error = result.get("error")
+    if error == "build_failed":
+        return _result("build_and_restart", ok=False,
+                       message="前端构建失败，已取消重启",
+                       log_tail=result["build"]["log_tail"][-1000:])
+    messages = {"build_in_progress": "已有构建任务进行中", "frontend_not_found": "未找到前端目录"}
+    return _result("build_and_restart", ok=False, message=messages.get(error or "", error))
 
 
-# 与启动脚本（start.bat / start.sh）约定的重启退出码：
-# 进程以此码退出时由启动脚本重新拉起应用
-_RESTART_EXIT_CODE = 42
+# ── 项目更新 ──────────────────────────────────────────────────────────
 
+@tool(name="update_project", group="devops")
+def update_project() -> str:
+    """从远程仓库拉取项目最新代码（git pull --ff-only）。
 
-def _schedule_restart() -> bool:
-    """延迟 2 秒后执行：前端构建 → 生命周期清理 → 以退出码 42 退出触发重启。
-
-    启动脚本（start.bat / start.sh）检测到退出码 42 会自动重新启动应用。
-    同步工具在 to_thread 工作线程中执行时，经后台注册表绑定的主循环桥回调度。
-
-    Returns:
-        是否成功调度重启任务
+    如果遇到合并冲突，不会自动解决，请主动联系主人处理。
     """
-    import asyncio
+    result = service.git_pull()
+    return _result("update_project", **result)
 
 
-    async def _do_restart() -> None:
-        log("🔄 应用重启流程启动...", tag="运维")
-        await asyncio.sleep(2)
+@tool(name="update_and_restart", group="devops", timeout=330)
+def update_and_restart() -> str:
+    """一步完成：拉取最新代码 + 构建前端 + 重启应用。
 
-        await _build_frontend()
+    流程：git pull → 检查冲突 → 构建前端 → 构建成功则重启。
+    遇到冲突或构建失败时不会重启，请主动联系主人解决。
+    """
+    pull = service.git_pull()
+    if not pull["ok"]:
+        pull["message"] = f"{pull.get('message', '更新失败')}（不会重启）"
+        return _result("update_and_restart", **pull)
 
-        try:
-            from core.lifecycle import Lifecycle
-            await Lifecycle.shutdown_all()
-        except Exception as e:
-            log(f"⚠️ 重启前生命周期清理异常: {e}", "WARNING", tag="运维")
-
-        log(f"🔄 以退出码 {_RESTART_EXIT_CODE} 退出，等待启动脚本重启...", tag="运维")
-        os._exit(_RESTART_EXIT_CODE)
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_do_restart())
-        return True
-    except RuntimeError:
-        log("_do_restart 异常已忽略", "DEBUG")
-
-    from entities._sdk import get_background_registry
-    registry = get_background_registry()
-    # BackgroundTaskRegistry（agent 层）未提供公开的事件循环访问器，
-    # 用 getattr 兜底读取其绑定的主循环；待 agent 层提供公开 API 后可收敛
-    loop = getattr(registry, "_loop", None) if registry else None
-    if loop and loop.is_running():
-        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_do_restart()))
-        return True
-    return False
+    result = service.build_and_restart_blocking()
+    if result["ok"]:
+        return _result("update_and_restart", ok=True,
+                       pull_result=pull.get("pull_result"),
+                       message="代码已更新、前端已构建，应用即将重启...")
+    return _result("update_and_restart", ok=False,
+                   pull_result=pull.get("pull_result"),
+                   message="代码已更新，但前端构建失败，已取消重启",
+                   log_tail=(result.get("build") or {}).get("log_tail", "")[-1000:])

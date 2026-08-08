@@ -10,6 +10,10 @@ export interface MCPServer {
   tool_count: number;
   tools: string[];
   last_error: string;
+  /** 常驻开关：工具组不沉睡、始终出现在 schema */
+  stay_awake?: boolean;
+  /** 当前生效的沉睡状态（策略求值结果） */
+  sleeping?: boolean;
 }
 
 /** MCP server 完整配置（创建/编辑共用，字段均可选） */

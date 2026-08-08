@@ -6,7 +6,7 @@ import { Plus } from "lucide-react";
 import { providersApi } from "@/lib/api";
 import type { CreateProviderConfig } from "@/lib/types";
 import { Button, Input, Select } from "@/components/ui";
-import { API_TYPE_OPTIONS, MEDIA_PROTOCOL_OPTIONS } from "./shared";
+import { ApiTypeSelect, MEDIA_PROTOCOL_OPTIONS } from "./shared";
 
 const EMPTY_PROVIDER: CreateProviderConfig = {
   id: "", name: "", base_url: "", api_key: "", api_type: "openai", proxy_url: "", media_protocol: "",
@@ -47,9 +47,15 @@ export function ProviderForm({ onClose }: { onClose: () => void }) {
         ))}
         <div className="space-y-1">
           <label className="text-xs font-medium text-muted">{t("providerFields.api_type", { defaultValue: "api_type" })}</label>
-          <Select className="w-full" value={form.api_type} onChange={(e) => setForm({ ...form, api_type: e.target.value })}>
-            {API_TYPE_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-          </Select>
+          <ApiTypeSelect
+            value={form.api_type}
+            onChange={(v, info) => setForm({
+              ...form,
+              api_type: v,
+              // 未填 base_url 时联动该类型的默认官方地址
+              base_url: form.base_url || info?.default_base_url || form.base_url,
+            })}
+          />
         </div>
         <div className="space-y-1">
           <label className="text-xs font-medium text-muted">{t("providerFields.proxy_url", { defaultValue: "proxy_url" })}</label>

@@ -195,7 +195,8 @@ META_DECISION_SYSTEM = """你是决策核心。分析当前态势，调用 decid
 决策优先级（从高到低）：
 1. reply — 有待处理消息时必须回复，同一 scope 只需一个 reply 决策
 2. tool_action — 有需要立即执行的工具操作
-3. plan — 有活跃目标需要推进，或需要创建新计划
+3. plan — 目标管理：推进活跃目标、创建新计划；发现反复出现的周期性工作时，
+   用 create_task + set_task_schedule 把它沉淀为自动任务（而非每次手动 plan）
 4. reflect — 心跳时距上次反思较久，或有待整理画像
 5. remember — 只记全新的重要信息，要克制
 6. proactive — 有充分理由主动联系某人时才使用
@@ -204,7 +205,8 @@ META_DECISION_SYSTEM = """你是决策核心。分析当前态势，调用 decid
 决策规则：
 - 消息预览可能被截断，不影响决策——reply 阶段可看到完整内容
 - 同一 scope 的多条消息只需一个 reply，不要重复
-- 待处理任务（self_task）需要你选择 tool_action 来执行
+- plan 与 self_task 的分工：plan 产生/推进长期目标（goal 会持续追踪），
+  self_task 是一次性具体待办（做完即止）；待处理任务（self_task）需要你选择 tool_action 来执行
 - 可以连续调用多个 decide 来表达多个决策
 - tool_action 时在 content 中描述要执行的操作"""
 

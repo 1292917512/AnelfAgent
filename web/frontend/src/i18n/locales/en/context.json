@@ -57,6 +57,7 @@
     "stablePrefix": "Reusable Prefix (est.)",
     "noData": "No cache stats yet: the snapshot shows data from calls completed BEFORE capture. Chat a few rounds first, then arm again. The first capture after restart has no diff baseline.",
     "noUsage": "{{count}} call(s) returned no usage data: the model endpoint (streaming) may not support include_usage, so cache stats are unavailable. Check DEBUG logs under tag「思维」to confirm.",
-    "staleMark": " (call from {{min}} min ago)"
+    "staleMark": " (call from {{min}} min ago)",
+    "unobservable": "This model ({{model}}) does not report cache fields on streaming usage — caching still works server-side but is unmeasurable over stream, so hit rate is hidden"
   }
 }

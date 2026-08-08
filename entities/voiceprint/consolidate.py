@@ -308,10 +308,13 @@ async def consolidate(
                 except ValueError as exc:
                     log(f"合并跳过 [{member['speaker_key']}]: {exc}", "WARNING", tag="音源库")
 
-    # 低价值候选（执行合并后重新评估：被并入的不再出现）
-    merged_ids = {int(m["id"]) for c in clusters for m in c["members"]
-                  if int(m["id"]) != int(c["keep_id"])} if not dry_run else set()
-    insignificant = await find_insignificant(store, exclude_ids=merged_ids)
+    # 低价值候选（执行合并后重新评估）。合并涉及的所有人（被并掉的 + 保留者）
+    # 都必须排除：保留者若被误清，刚并入的片段会随删除级联变成未知说话人
+    if not dry_run:
+        cluster_ids = {int(m["id"]) for c in clusters for m in c["members"]}
+    else:
+        cluster_ids = set()
+    insignificant = await find_insignificant(store, exclude_ids=cluster_ids)
     pruned: List[Dict[str, Any]] = []
     if prune_insignificant and not dry_run and insignificant:
         for speaker in insignificant:

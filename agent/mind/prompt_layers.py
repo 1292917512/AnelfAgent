@@ -252,6 +252,14 @@ _PROMPT_CACHE_CONFIGS = {
             "description": "对话摘要块的字符上限",
             "default": 4000,
         },
+        "conversation_fold_hysteresis": {
+            "description": "折叠滞回 H：窗口到达 M+H 才触发折叠（批量更大、折叠更少，缓存重写频率更低）",
+            "default": 15,
+        },
+        "conversation_fold_drop_on_failure": {
+            "description": "折叠失败时丢弃该批并推进水位线（窗口头部不滑动，缓存前缀稳定；内容仍在 DB 可检索）。关闭则保持滑动直到折叠成功",
+            "default": True,
+        },
         "memory_inject_max_chars": {
             "description": "memory 层（语义召回+画像+技能）注入的总字符预算上限",
             "default": 6000,

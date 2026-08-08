@@ -316,7 +316,10 @@ async def speaker_merge(source: str, target: str) -> str:
 
 @tool(group=_group, tags=["core"])
 async def speaker_delete(speaker: str) -> str:
-    """删除说话人记录（样本池一并删除，其话语片段标记为未知说话人）。
+    """删除说话人记录（级联：声纹样本与全部话语片段一并删除）。
+
+    注意：删除即整体移除相关内容。想保留话语只改归属请用 speaker_merge 合并
+    或对片段逐条改派。
 
     Args:
         speaker: 说话人引用（id/key/姓名）
@@ -956,8 +959,8 @@ async def speaker_prune_pending(include_with_samples: bool = False) -> str:
     """批量剔除临时说话人（待确认归类清理）。
 
     Args:
-        include_with_samples: false 只清理无样本的空壳档案（安全）；
-            true 剔除全部待确认说话人（样本一并删除，其片段标记为未知）
+        include_with_samples: false 只清理无样本且无片段的空壳档案（安全）；
+            true 剔除全部待确认说话人（级联删除其样本与全部话语片段）
     """
     if (gate := _gate()):
         return gate

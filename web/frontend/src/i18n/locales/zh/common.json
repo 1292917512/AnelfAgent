@@ -48,5 +48,7 @@
   "expandAll": "展开全部 ({{count}} chars)",
   "expand": "展开",
   "empty": "空",
-  "defaultPlaceholder": "默认: {{value}}"
+  "defaultPlaceholder": "默认: {{value}}",
+  "refresh": "刷新",
+  "retry": "重试"
 }

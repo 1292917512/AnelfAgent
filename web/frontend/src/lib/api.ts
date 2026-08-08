@@ -4,6 +4,7 @@ import type {
   AdapterListResult,
   ApiKeyCreated,
   ApiKeyInfo,
+  ApiTypeInfo,
   ApprovalHistoryResponse,
   ApprovalPendingResponse,
   ApprovalPoliciesPayload,
@@ -46,6 +47,8 @@ import type {
   DbTableInfo,
   DbTargetCheck,
   DelegationTiers,
+  DevopsActionResult,
+  DevopsBuildState,
   EntityDetail,
   EntityListItem,
   GlobalSearchResult,
@@ -71,7 +74,6 @@ import type {
   ProviderConfig,
   PythonPackage,
   RemoteModelInfo,
-  RestartBuildState,
   RunningDelegation,
   ShareLink,
   ShareLinkListResult,
@@ -92,6 +94,7 @@ import type {
   StickerStats,
   IndexedImageListResult,
   TaskConfig,
+  TestChatResult,
   UiStateReport,
   UpdateModelConfig,
   UpdateProviderConfig,
@@ -142,7 +145,6 @@ export type {
   ProbeResult,
   ReasoningEffort,
   RemoteModelInfo,
-  RestartBuildState,
   RunningDelegation,
   ShareLink,
   ShareLinkListResult,
@@ -282,6 +284,9 @@ export const providersApi = {
     api.get<{ models: RemoteModelInfo[] }>(`/models/providers/${encodeURIComponent(pid)}/remote-models`),
   modelInfo: (model: string, apiType = "openai") =>
     api.post<ModelInfoResult>("/models/model-info", { model, api_type: apiType }),
+  /** 批量查询模型能力信息（litellm 本地表，一次往返） */
+  modelInfoBatch: (models: string[], apiType = "openai") =>
+    api.post<{ info: Record<string, ModelInfoResult> }>("/models/model-info/batch", { models, api_type: apiType }),
 };
 
 // Models
@@ -298,8 +303,16 @@ export const modelsApi = {
     api.put(`/models/priorities/${encodeURIComponent(modelType)}`, { model_ids: modelIds }),
   movePriority: (modelId: string, modelType: string, direction: number) =>
     api.put(`/models/${encodeURIComponent(modelId)}/priority-move/${encodeURIComponent(modelType)}`, { direction }),
-  test: (baseUrl: string, apiKey: string, providerId = "") =>
-    api.post("/models/test", { base_url: baseUrl, api_key: apiKey, provider_id: providerId }),
+  test: (baseUrl: string, apiKey: string, providerId = "", apiType = "openai") =>
+    api.post("/models/test", { base_url: baseUrl, api_key: apiKey, provider_id: providerId, api_type: apiType }),
+  /** 真实链路对话测试（保存并测试）：draft 为编辑中的模型草稿 */
+  testChat: (providerId: string, modelId = "", draft?: UpdateModelConfig) =>
+    api.post<TestChatResult>("/models/test-chat", {
+      provider_id: providerId,
+      model_id: modelId,
+      draft,
+    }),
+  apiTypes: () => api.get<{ api_types: ApiTypeInfo[] }>("/models/api-types"),
   probe: (baseUrl: string, apiKey: string, model: string, apiType = "openai", providerId = "") =>
     api.post<ProbeResult>("/models/probe", {
       base_url: baseUrl,
@@ -486,6 +499,10 @@ export const mcpApi = {
   remove: (name: string) => api.delete(`/mcp/${encodeURIComponent(name)}`),
   toggle: (name: string) =>
     api.put<MCPToggleResult>(`/mcp/${encodeURIComponent(name)}/toggle`, null, { timeout: 65000 }),
+  setStayAwake: (name: string, enabled: boolean) =>
+    api.put<{ status: string; stay_awake: boolean; applied: boolean }>(
+      `/mcp/${encodeURIComponent(name)}/stay-awake`, { enabled },
+    ),
   tools: (name: string) =>
     api.get<MCPToolInfo[]>(`/mcp/${encodeURIComponent(name)}/tools`),
 };
@@ -710,9 +727,15 @@ export const systemApi = {
   git: () => api.get("/system/git"),
   setGit: (key: string, value: string) => api.put("/system/git", { key, value }),
   testGithub: () => api.post("/system/git/test"),
-  restart: () => api.post("/system/restart"),
-  buildAndRestart: () => api.post("/system/restart/build"),
-  restartStatus: () => api.get<RestartBuildState>("/system/restart/status"),
+};
+
+// DevOps（运维管理实体专属路由 /api/entity/devops）
+export const devopsApi = {
+  restart: () => api.post<DevopsActionResult>("/entity/devops/restart"),
+  buildAndRestart: () => api.post<DevopsActionResult>("/entity/devops/build-restart"),
+  buildState: () => api.get<DevopsBuildState>("/entity/devops/build-state"),
+  update: () => api.post<DevopsActionResult>("/entity/devops/update"),
+  updateAndRestart: () => api.post<DevopsActionResult>("/entity/devops/update-restart"),
 };
 
 // Skills

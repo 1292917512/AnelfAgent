@@ -422,7 +422,7 @@ class MemoryRetriever:
         assoc_tags: list[str] = []
         for r in results[:limit]:
             for tag in r.tags:
-                if tag.startswith(("user:", "group:", "topic:")) and tag not in assoc_tags:
+                if tag.startswith(("user:", "group:", "topic:", "goal:")) and tag not in assoc_tags:
                     assoc_tags.append(tag)
         if not assoc_tags:
             return results

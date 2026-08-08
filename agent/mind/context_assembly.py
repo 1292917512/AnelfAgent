@@ -210,8 +210,8 @@ from agent.mind.context_pipeline import (
 # legacy 布局的变动率覆盖表（tail_injection 关闭时）：动态块移到历史之前
 _LEGACY_VOLATILITY: Dict[str, int] = {
     "status": 24, "volatile": 25, "provider": 26, "overflow": 27,
-    "security": 28, "profile": 29, "relation": 30, "memory": 31, "summary": 32,
-    "conversation": 33,
+    "security": 28, "profile": 29, "relation": 30, "goals": 31, "memory": 32,
+    "summary": 33, "conversation": 34,
 }
 
 
@@ -488,6 +488,7 @@ class ContextAssembly:
             scope: str = "",
             profile_msgs: Optional[List[Dict]] = None,
             relation_msgs: Optional[List[Dict]] = None,
+            goal_msgs: Optional[List[Dict]] = None,
             summary_row: Optional[Dict] = None,
             status_text: str = "",
     ) -> List[Dict]:
@@ -514,6 +515,7 @@ class ContextAssembly:
             memory_msgs=memory_msgs,
             profile_msgs=profile_msgs or [],
             relation_msgs=relation_msgs or [],
+            goal_msgs=goal_msgs or [],
             summary_row=summary_row,
             anything=anything,
             adapter_key=adapter_key,
@@ -563,6 +565,11 @@ class ContextAssembly:
         if not row or not row.get("summary"):
             return []
         folded = int(row.get("folded_count", 0) or 0)
+        dropped = int(row.get("dropped_count", 0) or 0)
+        dropped_note = (
+            f"\n- 另有 {dropped} 条因摘要生成失败未纳入上方摘要（仍可用上述检索取回）"
+            if dropped else ""
+        )
         return [{
             "role": "system",
             "content": (
@@ -571,6 +578,7 @@ class ContextAssembly:
                 f"{row['summary']}\n"
                 "- 窗口外原文仍完整存于数据库：recall_conversation 按语义检索，"
                 "lookup_message 按 message_id 精确取回"
+                f"{dropped_note}"
             ),
         }]
 
@@ -628,6 +636,11 @@ class ContextAssembly:
     def _blk_relation(self, inp: ContextInput) -> List[Dict]:
         """关系网络快照（当前会话相关实体的已知关系，随实体集合低频变）。"""
         return list(inp.relation_msgs)
+
+    @context_block("goals", VOL_SESSION + 2, "活跃目标注入")
+    def _blk_goals(self, inp: ContextInput) -> List[Dict]:
+        """活跃目标快照（仅目标 CRUD 时字节变化，对话轮次间完全稳定）。"""
+        return list(inp.goal_msgs)
 
     @context_block("volatile", VOL_SESSION + 2, "短期记忆（volatile 层）")
     def _blk_volatile(self, inp: ContextInput) -> List[Dict]:

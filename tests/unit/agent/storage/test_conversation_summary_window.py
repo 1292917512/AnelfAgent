@@ -25,6 +25,7 @@ RAW_MIN = 2
 @pytest.fixture(autouse=True)
 def _raw_min(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(conversation_fold, "raw_min_messages", lambda: RAW_MIN)
+    monkeypatch.setattr(conversation_fold, "fold_hysteresis", lambda: 0)
 
 
 @pytest.fixture
@@ -156,10 +157,39 @@ class TestFoldExecution:
         assert after[: len(before)] == before
         assert after[-1]["content"] == "new1"
 
-    async def test_fold_failure_keeps_state(
+    async def test_fold_failure_drops_batch(
         self, conv_data, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """摘要生成失败：不落库、记退避，窗口维持滑动行为。"""
+        """折叠失败默认丢批：水位线推进 + dropped_count，窗口头部不滑动。"""
+        async def failing_summarizer(prompt: str) -> str:
+            raise RuntimeError("llm down")
+
+        async def resolve():
+            return failing_summarizer
+
+        monkeypatch.setattr(ConversationFolder, "_resolve_summarizer", staticmethod(resolve))
+        folder = ConversationFolder()
+        ts_list = await _append(conv_data, [f"m{i}" for i in range(MAX_SIZE)])
+        await folder._fold(conv_data, "user", "1", [("user", "1")], {})
+
+        row = await conv_data.router.sqlite.get_conversation_summary(
+            scope_type="user", scope_id="1",
+        )
+        assert row is not None
+        assert row["dropped_count"] == MAX_SIZE - RAW_MIN
+        assert row["folded_count"] == 0
+        assert row["summary"] == ""  # 摘要未生成
+        # 水位线推进到丢弃批最大 ts：窗口头部不逐条滑动
+        assert row["watermarks"]["user:1"] == ts_list[MAX_SIZE - RAW_MIN - 1]
+        records = await conv_data.get_conversation_record_by_everything(_anything())
+        assert [r["content"] for r in records] == [f"m{i}" for i in range(MAX_SIZE - RAW_MIN, MAX_SIZE)]
+
+    async def test_fold_failure_no_drop_keeps_sliding(
+        self, conv_data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """关闭丢批时：不落库、记退避，窗口维持滑动行为。"""
+        monkeypatch.setattr(conversation_fold, "drop_on_failure", lambda: False)
+
         async def failing_summarizer(prompt: str) -> str:
             raise RuntimeError("llm down")
 
@@ -228,3 +258,24 @@ class TestLiveMaxSize:
             assert conv_data.max_size == MAX_SIZE  # 构造时显式传了 MAX_SIZE
         finally:
             ConfigManager.set("max_conversation_size", MAX_SIZE)
+
+
+class TestFoldHysteresis:
+    async def test_no_trigger_below_threshold(
+        self, conv_data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """滞回 H=3：窗口达到 M+H 才触发折叠（减少折叠频率/缓存重写）。"""
+        monkeypatch.setattr(conversation_fold, "fold_hysteresis", lambda: 3)
+        scheduled: list = []
+        monkeypatch.setattr(
+            conversation_fold.conversation_folder, "maybe_schedule_fold",
+            lambda *a, **kw: scheduled.append(1) or True,
+        )
+        # M+H-1 = 8 条：未达阈值不触发
+        await _append(conv_data, [f"m{i}" for i in range(MAX_SIZE + 3 - 1)])
+        await conv_data.get_conversation_record_by_everything(_anything())
+        assert not scheduled
+        # 达到 M+H = 9 条：触发
+        await _append(conv_data, ["mx"], start_ts=time.time_ns() + 1000)
+        await conv_data.get_conversation_record_by_everything(_anything())
+        assert len(scheduled) == 1

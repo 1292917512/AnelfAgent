@@ -141,18 +141,33 @@ async def get_active_plan(scope: str) -> Optional[Dict[str, Any]]:
 
 async def _persist(entry: MemoryEntry, goal: Dict[str, Any]) -> None:
     """写回 MemoryStore（不清 embedding，避免后台 worker 频繁重建）。"""
+    store = _store
+    if store is None:
+        return
     goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     entry.content = json.dumps(goal, ensure_ascii=False)
-    await _store.update(entry, clear_embedding=False)
+    await store.update(entry, clear_embedding=False)
 
 
 # ------------------------------------------------------------------
 # 内部：事件发射（统一 payload 构造 + scope/chat_id 解析）
 # ------------------------------------------------------------------
 
+# 非用户会话 scope：reflect（心跳/子代理）产生的 plan 只持久化、不发射前端事件，
+# 避免 scope="reflect" 的幽灵计划出现在 PlanPanel 浮窗
+_REFLECT_SCOPE = "reflect"
+
+
+def _is_user_facing(scope: str) -> bool:
+    """scope 是否对应真实用户会话（决定 plan 事件是否发射到前端）。"""
+    return scope != _REFLECT_SCOPE
+
+
 async def _emit_step(
     scope: str, plan_id: str, step_index: int, status: str, note: str = "",
 ) -> None:
+    if not _is_user_facing(scope):
+        return
     _, chat_id = parse_scope_chat_id(scope)
     try:
         await event_bus.emit(EVENT_PLAN_STEP_UPDATED, {
@@ -165,6 +180,8 @@ async def _emit_step(
 
 
 async def _emit_status(scope: str, plan_id: str, status: str) -> None:
+    if not _is_user_facing(scope):
+        return
     _, chat_id = parse_scope_chat_id(scope)
     try:
         await event_bus.emit(EVENT_PLAN_STATUS_CHANGED, {
@@ -226,6 +243,7 @@ async def submit_plan(
                 content=json.dumps(goal_doc, ensure_ascii=False),
                 source=GOAL_SOURCE,
                 importance=0.8,
+                tags=[f"goal:{plan_id}"],
                 metadata={
                     "goal_id": plan_id, "status": "active",
                     "kind": "present_plan", "scope": scope,
@@ -236,11 +254,12 @@ async def submit_plan(
             log(f"plan 持久化失败（不影响执行）: {exc}", "WARNING", tag="规划")
 
     try:
-        await event_bus.emit(EVENT_PLAN_SUBMITTED, {
-            "scope": scope, "chat_id": chat_id, "plan_id": plan_id,
-            "goal": goal, "steps": steps, "files": files, "risks": risks,
-            "ts": time.time(),
-        })
+        if _is_user_facing(scope):
+            await event_bus.emit(EVENT_PLAN_SUBMITTED, {
+                "scope": scope, "chat_id": chat_id, "plan_id": plan_id,
+                "goal": goal, "steps": steps, "files": files, "risks": risks,
+                "ts": time.time(),
+            })
     except Exception as exc:
         log(f"plan_submitted 事件发射失败（不影响执行）: {exc}", "DEBUG", tag="规划")
 
@@ -259,7 +278,7 @@ async def advance_plan_step(scope: str) -> None:
         return
     try:
         entry, goal = await _find_active_plan(scope)
-        if goal is None:
+        if entry is None or goal is None:
             return
         steps = goal.get("steps", [])
         for i, s in enumerate(steps):
@@ -322,12 +341,14 @@ async def finalize_plan(scope: str, outcome: str = "completed") -> None:
         return
     try:
         entry, goal = await _find_active_plan(scope)
-        if goal is None:
+        if entry is None or goal is None:
             return
         plan_id = goal.get("goal_id", "")
         changed = await _converge_steps(scope, plan_id, goal.get("steps", []), outcome)
         if changed or goal.get("status") != outcome:
             goal["status"] = outcome
+            # 终态 plan 重要性下调（与 update_goal 收敛路径一致），不再污染语义召回
+            entry.importance = 0.3
             await _persist(entry, goal)
             await _emit_status(scope, plan_id, outcome)
     except Exception as exc:
@@ -344,11 +365,12 @@ async def cancel_plan(scope: str, plan_id: str, reason: str = "用户取消") ->
         return False
     try:
         entry, goal = await _find_active_plan(scope)
-        if goal is None or goal.get("goal_id") != plan_id:
+        if entry is None or goal is None or goal.get("goal_id") != plan_id:
             return False
         # 步骤同步收敛到 skipped，避免前端残留 in_progress 转圈
         await _converge_steps(scope, plan_id, goal.get("steps", []), "cancelled")
         goal["status"] = "cancelled"
+        entry.importance = 0.3  # 与 finalize/update_goal 的终态重要性口径一致
         await _persist(entry, goal)
         _, chat_id = parse_scope_chat_id(scope)
         try:

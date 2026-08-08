@@ -697,10 +697,12 @@ class Mind:
             result = await self.llm_chat(messages)
         return (result.content or "").strip()
 
-    # 计划是主对话 scope 的状态机：reflect（子代理/心跳）不得创建或标记计划，
-    # 避免 scope="reflect" 的 plan 事件泄漏到前端
+    # reflect（子代理/心跳）不得操作频道调度类工具。
+    # present_plan/update_goal 已放行：tracker 对非用户 scope（reflect 等）
+    # 只持久化 goal、不发射前端事件（事件泄漏在 tracker 层根治），
+    # 心跳任务因此可以正常创建/推进自己的计划。
     _REFLECT_ALWAYS_BLOCKED = frozenset({
-        "list_channels", "schedule_reply", "present_plan", "update_goal",
+        "list_channels", "schedule_reply",
     })
     _REFLECT_OUTPUT_TOOLS = frozenset({
         "send_message", "send_photo", "send_voice", "send_file",

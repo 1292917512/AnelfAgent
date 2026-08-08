@@ -222,18 +222,19 @@ async def merge(
     if not source or not target:
         raise ValueError("合并源或目标说话人不存在")
 
-    # 样本融合：source 样本逐条入 target 池（add_sample 自带 FIFO 淘汰）
+    # 样本融合：source 样本逐条入 target 池（add_sample 自带淘汰策略）
     samples = await store.list_samples(source_id)
     moved = 0
     for sample in reversed(samples):  # 按时间正序入池，保留最近样本
         vector = await store.get_sample_vector(int(sample["id"]))
         if not vector:
             continue
-        await store.add_sample(
+        new_id = await store.add_sample(
             target_id, vector,
             segment_id=sample["segment_id"], score=sample["score"],
             source="merge", max_samples=max_samples_per_speaker())
-        moved += 1
+        if new_id > 0:  # -1 = outlier 策略判定为极端样本拒入
+            moved += 1
 
     # 片段重指向 + 统计量累加 + source 删除
     await store.reassign_segments(source_id, target_id)

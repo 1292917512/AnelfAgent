@@ -1,6 +1,6 @@
 """SSH 连接配置持久化存储。
 
-存储于实体目录 ``connections.json``（gitignored，secrets-backup 脚本备份），
+存储于实体目录 ``connections.json``（gitignored，由用户自行备份），
 与实体设置文件 config.json 分离（后者由 Web 实体配置页读-改-写，避免互相踩踏）。
 
 - 原子写（同目录临时文件 + os.replace），asyncio.Lock 保护并发

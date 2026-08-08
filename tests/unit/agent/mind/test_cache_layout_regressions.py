@@ -235,3 +235,63 @@ class TestCacheKindBucketing:
         assert tracker.last(kind="reply")["cache_hit_rate"] == 0.95
         assert tracker.last(kind="reflect")["cache_hit_rate"] == 0.0
         assert tracker.last()["kind"] == "reflect"
+
+
+class TestMcpSleepPolicy:
+    def test_default_sleeps_all_mcp(self, monkeypatch) -> None:
+        from core.config import ConfigManager
+        from entities.mcp.bridge import _mcp_sleep_enabled
+
+        ConfigManager.initialize()
+        ConfigManager.set("mcp_sleep_excludes", "")
+        assert _mcp_sleep_enabled("mind-map")
+        ConfigManager.set("mcp_sleep_excludes", "git, excel")
+        assert not _mcp_sleep_enabled("git")
+        assert _mcp_sleep_enabled("mind-map")
+
+
+class TestStickyActivation:
+    def test_sticky_activation_no_expiry(self) -> None:
+        """粘性模式（默认）：激活后 consume_round 不过期。"""
+        from agent.mind.tool_activation import ToolActivationManager
+
+        mgr = ToolActivationManager()
+        mgr.activate("ssh", rounds=1, scope="s1")
+        for _ in range(5):
+            assert mgr.consume_round("s1") == []
+        assert mgr.is_active("ssh", "s1")
+
+    def test_non_sticky_expires(self, monkeypatch) -> None:
+        """关闭粘性：恢复轮次过期。"""
+        monkeypatch.setattr(
+            "core.config.get_config_bool",
+            lambda k, d=False: False if k == "tool_activation_sticky" else d,
+        )
+        from agent.mind.tool_activation import ToolActivationManager
+
+        mgr = ToolActivationManager()
+        mgr.activate("ssh", rounds=1, scope="s1")
+        assert mgr.consume_round("s1") == ["ssh"]
+        assert not mgr.is_active("ssh", "s1")
+
+
+class TestStayAwakePolicy:
+    def test_stay_awake_override(self, monkeypatch, tmp_path) -> None:
+        """每服务 stay_awake 覆盖全局默认沉睡。"""
+        import json
+
+        import entities.mcp.bridge as bridge
+        from core.config import ConfigManager
+
+        cfg = tmp_path / "mcp_servers.json"
+        cfg.write_text(json.dumps({"mcpServers": {"git": {"stay_awake": True}}}), encoding="utf-8")
+        monkeypatch.setattr("core.path.ConfigPaths.MCP_SERVERS", str(cfg), raising=False)
+        ConfigManager.initialize()
+        ConfigManager.set("mcp_sleep_excludes", "")
+
+        assert not bridge._mcp_sleep_enabled("git")   # stay_awake 覆盖
+        assert bridge._mcp_sleep_enabled("mind-map")  # 未覆盖仍沉睡
+
+        # 关闭覆盖后恢复沉睡
+        cfg.write_text(json.dumps({"mcpServers": {"git": {"stay_awake": False}}}), encoding="utf-8")
+        assert bridge._mcp_sleep_enabled("git")

@@ -182,7 +182,7 @@ tick() 单次心跳：
 1. stable 层（人设 + 工具提示）—— 对话内冻结，PromptCacheManager 按 scope 缓存，
    字节级稳定供 Anthropic/OpenAI 前缀缓存复用（Anthropic 注入 cache_control 断点）
 2. context 层（便签）—— 低频重建
-3. volatile 层（短期记忆 + 溢出提示 + 安全标记 + 语义召回 + 技能注入 + 画像/关系网络注入）—— 每轮构建
+3. volatile 层（短期记忆 + 溢出提示 + 安全标记 + 语义召回 + 技能注入 + 画像/关系网络/活跃目标注入）—— 每轮构建
 4. 对话历史（实时从 DB 获取，禁止缓存）
 ```
 
@@ -265,6 +265,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/task/model.py` | 任务数据模型（TaskDefinition / TaskResult） |
 | `agent/task/registry.py` | 任务注册表（config/tasks/*.json 加载/CRUD） |
 | `agent/task/executor.py` | 任务执行器（LLM 调用 + 结果存储） |
+| `agent/task/tools.py` | 任务/调度自管理工具（create_task / update_task / delete_task / set_task_schedule，与 Web 管理面同路径热重载） |
 | `agent/heartbeat/engine.py` | 心跳调度引擎（tick 循环 + 内置维护 + 主便签 AUTO:memory-status 状态区块） |
 | `agent/heartbeat/config.py` | 心跳配置（HeartbeatConfig + TaskSchedule） |
 | `agent/heartbeat/log.py` | 心跳日志读写 |
@@ -312,7 +313,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `graph` | 关系图谱 | `agent/memory/graph/tools.py` | always/core/heartbeat |
 | `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
 | `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tool_activation.py` + `agent/mind/context_compressor.py` | always |
-| `planning` | 目标规划 | `agent/planning/tools.py` | planning/goal/heartbeat |
+| `planning` | 目标规划 | `agent/planning/tools.py` + `agent/task/tools.py`（任务/调度自管理） | planning/goal/heartbeat |
 | `skills` | 技能 | `agent/skills/tools.py` | always |
 | `delegation` | 子代理 | `agent/delegation/delegate_tool.py` | always |
 | `ui` | 界面交互 | `entities/ui/tools.py`（经 event_bus `EVENT_UI_COMMAND` → 聊天 SSE 桥接） | always |
@@ -330,6 +331,29 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `entity` | 实体管理 | `entities/entity_query/tools.py` | always/core |
 | `mcp_manage` | MCP 管理 | `entities/mcp/bridge.py`（动态） | — |
 | `mcp:*` | MCP 服务 | 动态注册 | — |
+| `devops` | 运维管理 | `entities/devops/tools.py`（重启/构建/git 更新，核心逻辑在 `service.py`，Web 面板经 `router.py` + `panel.tsx` 复用同一实现） | — |
+
+### 缓存命中率排查手册（ZCode 排障）
+
+LLM 前缀缓存命中率是本项目的核心成本/性能指标。排查时**先看数据再下结论**，不要默认"缓存崩了"：
+
+**数据来源**（按可信度排序）：
+- `logs/context_snapshots/records.jsonl`：每次 LLM 调用的紧凑缓存记录（prompt/read/creation/hit_rate/kind/model/age_sec/unobservable）。连续捕获模式下逐条写入。
+- 应用日志 `LLM 用量: prompt=... cache_read=...`（DEBUG，tag 思维）：单调用 ground truth。
+- Web 快照缓存面板（Context→快照）：`last_call`（主对话口径）/ `recent` / `recent_all`。
+
+**判读规则（避免误读）**：
+- `kind` 分桶：主对话 `reply` 与辅助 `reflect`（评审/心跳/折叠）分开。辅助调用无共享前缀，命中率 0 属正常，**不计入主口径**。
+- `age_sec`：`last_call` 可能回显更早会话的调用（回声）。>120s 视为过期，前端置灰标"（N 分钟前）"，不代表当前缓存失效。
+- `unobservable`：该模型流式 usage 缺缓存字段（见下表），缓存仍在服务端生效但**无法度量**，显示"—"而非 0%。
+- 单次 0% 的三大可解释原因：① 重启/空闲 >5 分钟的冷启动；② 工具集激活跳变（tools 数组变化击穿前缀）；③ 折叠/评审等辅助调用。稳态主对话应 90%+。
+
+**供应商缓存字段**（`agent/llm/types.py` 的 `_CACHE_*_PATHS` 注册表，新增供应商只登记字段路径）：
+- Anthropic：`cache_read_input_tokens` / `cache_creation_input_tokens`（需断点，`_is_anthropic_model` 时注入 cache_control）。
+- OpenAI 系：`prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens`。
+- DeepSeek：非流式回传 `prompt_cache_hit_tokens`；**流式不回传任何缓存字段**（`cache_stats.stream_cache_unobservable`），故流式下 DeepSeek 命中率不可观测。
+
+**架构不变量**（改动时勿破坏）：上下文按变动率排序组装（`agent/mind/context_pipeline.py` 的 `@context_block` 声明），stable→context→summary→conversation→动态区→exec_context；tools 数组是 prompt 最大头且需跨会话字节稳定（`tool_order_deterministic` / `tool_dynamic_sticky`）；stable 层不得嵌入动态状态（默认模型标记、视觉文案已移出）。
 
 ### 开发约定
 

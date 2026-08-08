@@ -7,7 +7,7 @@ import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ModelConfigCard } from "@/pages/memory/cognee/ModelConfigCard";
 import { CogneeGraphCard } from "@/pages/memory/cognee/CogneeGraphCard";
-import { memoryApi, systemApi } from "@/lib/api";
+import { devopsApi, memoryApi } from "@/lib/api";
 import type { CogneeResolvedInfo, ConfigValues } from "@/lib/types";
 
 function ResolvedLine({ label, info }: { label: string; info?: CogneeResolvedInfo }) {
@@ -65,7 +65,7 @@ export function CogneePanel() {
       // 重建后 cognee 引擎句柄已失效，必须重启进程才能干净恢复
       if ((resp?.data as { restart_required?: boolean } | undefined)?.restart_required &&
           window.confirm(t("cognee.rebuildRestartConfirm"))) {
-        await systemApi.restart();
+        await devopsApi.restart();
       }
     },
   });

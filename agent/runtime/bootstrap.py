@@ -217,6 +217,8 @@ def create_bootstrap() -> FlowMachine:
 
     @machine.node(skip_on_error=False)
     async def register_internal_tools():
+        # agent.task.tools 挂在 planning 组（deferred 注册按组弹出），须在 planning 激活前 import
+        import agent.task.tools  # noqa: F401
         from agent.channel.output_tools import register_output_tools
         from agent.memory.graph.tools import register_graph_tools
         from agent.memory.notes import register_notes_tools

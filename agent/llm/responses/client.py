@@ -307,6 +307,7 @@ class ResponsesClient:
         timeout: float = 120.0,
         request_params: Optional[dict[str, Any]] = None,
         extra_body: Optional[dict[str, Any]] = None,
+        extra_headers: Optional[dict[str, str]] = None,
         prefer_bridge_for_custom: bool = True,
         http_client: Any = None,
     ) -> None:
@@ -317,6 +318,7 @@ class ResponsesClient:
         self.timeout = timeout
         self.request_params = dict(request_params or {})
         self.extra_body = dict(extra_body or {})
+        self.extra_headers = dict(extra_headers or {})
         self.http_client = http_client
         self.route = resolve_responses_route(
             api_type=api_type,
@@ -350,6 +352,8 @@ class ResponsesClient:
         kwargs.update(self.request_params)
         if self.extra_body:
             kwargs["extra_body"] = dict(self.extra_body)
+        if self.extra_headers:
+            kwargs["extra_headers"] = dict(self.extra_headers)
         # custom_llm_provider=None 时删掉，避免 litellm 误判
         if kwargs.get("custom_llm_provider") is None:
             kwargs.pop("custom_llm_provider", None)

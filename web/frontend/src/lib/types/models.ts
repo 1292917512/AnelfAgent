@@ -27,11 +27,15 @@ export interface ModelConfig {
   temperature: number | null;
   /** null = 不下发，由 provider/SDK 按模型默认决定 */
   top_p: number | null;
+  /** null = 不主动限制，由 provider/SDK 按模型默认决定 */
+  max_tokens: number | null;
   frequency_penalty: number;
   presence_penalty: number;
   timeout: number;
   request_params: JsonObject;
   extra_body: JsonObject;
+  /** 自定义请求头（最后应用到 HTTP 请求，可覆盖鉴权头） */
+  extra_headers: Record<string, string>;
   chat_protocol: "chat_completions" | "responses" | "auto";
   is_default: boolean;
   /** 启用开关：禁用后不参与任何自动选择/回退/默认 */
@@ -92,4 +96,25 @@ export interface ProbeResult {
   supports_vision?: boolean;
   supports_tools?: boolean;
   vision_format?: string;
+}
+
+/** 真实链路对话测试结果（保存并测试） */
+export interface TestChatResult {
+  ok: boolean;
+  error?: string;
+  /** 首字延迟（毫秒） */
+  ttft_ms?: number;
+  /** 总耗时（毫秒） */
+  total_ms?: number;
+  output_tokens?: number;
+  /** 端点未返回 usage 时为本地估算值 */
+  tokens_estimated?: boolean;
+  reply_preview?: string;
+}
+
+/** api_type 元信息（GET /models/api-types，前端不再硬编码列表） */
+export interface ApiTypeInfo {
+  value: string;
+  group: "common" | "other";
+  default_base_url: string;
 }

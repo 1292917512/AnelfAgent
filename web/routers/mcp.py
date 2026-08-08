@@ -110,6 +110,26 @@ async def toggle_server(name: str) -> Dict[str, Any]:
         raise HTTPException(503, "操作被中断，请重试") from None
 
 
+class StayAwakeRequest(BaseModel):
+    enabled: bool
+
+
+@router.put("/{name}/stay-awake")
+async def set_stay_awake(name: str, req: StayAwakeRequest) -> Dict[str, Any]:
+    """设置该服务是否常驻（stay_awake）：常驻组工具始终出现在 schema，
+    非常驻组沉睡（仅目录 brief，需要时 AI 唤醒）。即时应用，无需重连。"""
+    try:
+        await asyncio.to_thread(
+            _mcp_svc.update_server_config, name,
+            {"stay_awake": req.enabled}, replace=False, reload=False,
+        )
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    from entities.mcp.bridge import apply_sleep_policy
+    applied = apply_sleep_policy(name)
+    return {"status": "ok", "stay_awake": req.enabled, "applied": applied}
+
+
 @router.get("/{name}/tools")
 async def get_server_tools(name: str) -> List[Dict[str, Any]]:
     return _mcp_svc.get_server_tool_details(name)

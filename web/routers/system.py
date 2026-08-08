@@ -1,7 +1,9 @@
-"""系统工具 API 路由 -- 系统信息、Python 环境、Git 配置、服务重启。
+"""系统工具 API 路由 -- 系统信息、Python 环境、Git 配置。
 
 python_service / git_service 内部串行起大量 subprocess，均为同步阻塞实现，
 async 处理器中一律经 asyncio.to_thread 移出事件循环。
+
+服务重启/前端构建已收敛至 devops 实体（/api/entity/devops，entities/devops/）。
 """
 
 from __future__ import annotations
@@ -103,22 +105,3 @@ async def unset_git_proxy() -> Dict[str, Any]:
 async def test_github() -> Dict[str, Any]:
     from entities.system.git_service import test_github_connectivity
     return await asyncio.to_thread(test_github_connectivity)
-
-# ── 服务重启 ─────────────────────────────────────────────────────────
-
-@router.post("/restart")
-async def restart_service() -> Dict[str, Any]:
-    from services.system import request_restart
-    return request_restart()
-
-
-@router.post("/restart/build")
-async def build_frontend_and_restart() -> Dict[str, Any]:
-    from services.system import request_build_and_restart
-    return request_build_and_restart()
-
-
-@router.get("/restart/status")
-async def get_restart_status() -> Dict[str, Any]:
-    from services.system import get_build_state
-    return get_build_state()

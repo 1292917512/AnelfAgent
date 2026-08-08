@@ -213,7 +213,10 @@ async def execute_plan(mind: Mind, decision: Decision) -> None:
 
     plan_prompt = (
         f"请根据以下规划说明：{content}\n"
-        "使用工具 create_goal、list_goals、update_goal 管理目标计划。"
+        "使用工具 create_goal、list_goals、update_goal 管理目标计划。\n"
+        "与该目标相关的重要产出用 memorize 记录时打上 goal:{goal_id} 标签（替换为实际 goal_id），便于目标视角串联召回。\n"
+        "若该规划是反复出现的周期性工作，用 create_task + set_task_schedule 沉淀为自动任务，"
+        "不要每次手动重复规划。\n"
         "需要时使用 web_search 搜索相关信息。"
     )
     messages = (

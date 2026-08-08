@@ -68,6 +68,7 @@ from agent.llm.types import (
     TextCompletionResult,
     VideoContent,
 )
+from agent.llm.url_utils import infer_chat_protocol, join_endpoint, split_endpoint_suffix
 from core.entity import BaseEntity, EntityType
 from core.log import debug, info, log
 
@@ -181,6 +182,23 @@ class LLMClient(BaseEntity):
     @property
     def model(self) -> str:
         return self.config.model
+
+    @property
+    def _litellm_api_base(self) -> str:
+        """归一化后的 api_base：剥离 base_url 尾部误带的端点路径。
+
+        用户可能把完整请求地址（.../v1/chat/completions、.../v1/responses）
+        粘贴进 base_url；litellm 会在 api_base 上自行拼接端点路径，不剥离
+        会双拼成 .../chat/completions/chat/completions（参考 cursor-byok
+        OpenAIEndpointURL 的防双拼规则）。
+        """
+        api_base, _ = split_endpoint_suffix(self.config.base_url)
+        return api_base
+
+    def _apply_extra_headers(self, kwargs: Dict[str, Any]) -> None:
+        """注入自定义请求头（最后应用，可覆盖鉴权头等任意头）。"""
+        if self.config.extra_headers:
+            kwargs["extra_headers"] = dict(self.config.extra_headers)
 
     # ------------------------------------------------------------------
     # litellm 调用参数构建
@@ -413,8 +431,9 @@ class LLMClient(BaseEntity):
         # 已学习到的端点输出上限：钳制一切来源（配置/会话覆盖）的 max_tokens
         if self._learned_output_cap and kwargs.get("max_tokens"):
             kwargs["max_tokens"] = min(kwargs["max_tokens"], self._learned_output_cap)
-        if self.config.base_url:
-            kwargs["api_base"] = self.config.base_url
+        api_base = self._litellm_api_base
+        if api_base:
+            kwargs["api_base"] = api_base
         if self.config.api_key:
             kwargs["api_key"] = self.config.api_key
         if tools:
@@ -430,17 +449,23 @@ class LLMClient(BaseEntity):
             if proxy_client:
                 kwargs["http_client"] = proxy_client
 
-        self._merge_request_params(kwargs, _RESERVED_REQUEST_PARAMS)
+        if effort:
+            kwargs = self._apply_provider_specific_payload(effort, kwargs)
 
+        # 用户扩展参数最后合并（参考 cursor-byok 的 applyExtraParams 设计）：
+        # body 完全构造（含思考方言适配）之后，用户 JSON 浅合并覆盖，
+        # 同名字段以用户配置为准——保证高级用户永远有最高优先级逃生舱。
         extra = dict(self.config.extra_params)
         extra.update(self.config.extra_body)
         if self.config.supports_reasoning and self.config.api_type != API_TYPE_ANTHROPIC:
-            extra.setdefault("reasoning_split", True)
+            # reasoning_split 为自动默认值，用户显式配置优先
+            extra = {"reasoning_split": True, **extra}
         if extra:
-            kwargs["extra_body"] = extra
-
-        if effort:
-            kwargs = self._apply_provider_specific_payload(effort, kwargs)
+            existing = dict(kwargs.get("extra_body") or {})
+            existing.update(extra)
+            kwargs["extra_body"] = existing
+        self._merge_request_params(kwargs, _RESERVED_REQUEST_PARAMS)
+        self._apply_extra_headers(kwargs)
 
         return kwargs
 
@@ -669,7 +694,15 @@ class LLMClient(BaseEntity):
 
     @property
     def resolved_chat_protocol(self) -> ChatProtocol:
-        """解析当前模型实际使用的对话协议。"""
+        """解析当前模型实际使用的对话协议。
+
+        base_url 显式携带端点路径时（.../responses、.../chat/completions），
+        URL 是端点形态的事实真相，优先于配置推断（参考 cursor-byok
+        OpenAIEndpointShape 的末段协议推断）。
+        """
+        inferred = infer_chat_protocol(self.config.base_url)
+        if inferred:
+            return ChatProtocol(inferred)
         return resolve_chat_protocol(
             self.config.chat_protocol,
             api_type=self.config.api_type,
@@ -686,11 +719,12 @@ class LLMClient(BaseEntity):
         return ResponsesClient(
             model=self.config.litellm_model,
             api_type=self.config.api_type,
-            api_base=self.config.base_url,
+            api_base=self._litellm_api_base,
             api_key=self.config.api_key,
             timeout=self.config.timeout,
             request_params=self.config.request_params,
             extra_body={**self.config.extra_params, **self.config.extra_body},
+            extra_headers=self.config.extra_headers or None,
             prefer_bridge_for_custom=True,
             http_client=http_client,
         )
@@ -1046,7 +1080,7 @@ class LLMClient(BaseEntity):
     async def _describe_video_anthropic(self, video: VideoContent, prompt: str) -> str:
         """Anthropic Messages 扩展 video block 直连请求。"""
         self._ensure_configured()
-        url = self.config.base_url.rstrip("/") + "/v1/messages"
+        url = join_endpoint(self.config.base_url, "/v1/messages")
         payload: Dict[str, Any] = {
             "model": self.config.model,
             "max_tokens": 1024,
@@ -1058,6 +1092,7 @@ class LLMClient(BaseEntity):
         headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
         if self.config.api_key:
             headers["x-api-key"] = self.config.api_key
+        headers.update(self.config.extra_headers)
         resp = await self._direct_http().post(url, json=payload, headers=headers)
         if resp.status_code != 200:
             raise RuntimeError(f"视频识别请求失败 (HTTP {resp.status_code}): {resp.text[:200]}")
@@ -1124,8 +1159,8 @@ class LLMClient(BaseEntity):
         }
         if self.config.embedding_dims > 0:
             kwargs["dimensions"] = self.config.embedding_dims
-        if self.config.base_url:
-            kwargs["api_base"] = self.config.base_url
+        if self._litellm_api_base:
+            kwargs["api_base"] = self._litellm_api_base
         if self.config.api_key:
             kwargs["api_key"] = self.config.api_key
         self._merge_request_params(
@@ -1136,6 +1171,7 @@ class LLMClient(BaseEntity):
         body.update(self.config.extra_body)
         if body:
             kwargs["extra_body"] = body
+        self._apply_extra_headers(kwargs)
         proxy_client = self._get_proxy_client()
         if proxy_client and self.config.api_type != API_TYPE_ANTHROPIC:
             kwargs["http_client"] = proxy_client
@@ -1182,6 +1218,7 @@ class LLMClient(BaseEntity):
         headers = {"Content-Type": "application/json"}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
+        headers.update(self.config.extra_headers)
         resp = await self._direct_http().post(url, json=payload, headers=headers)
         resp.raise_for_status()
         return resp.json()
@@ -1205,8 +1242,8 @@ class LLMClient(BaseEntity):
             "timeout": self.config.timeout,
             **params,
         }
-        if self.config.base_url:
-            kwargs["api_base"] = self.config.base_url
+        if self._litellm_api_base:
+            kwargs["api_base"] = self._litellm_api_base
         if self.config.api_key:
             kwargs["api_key"] = self.config.api_key
 
@@ -1218,6 +1255,7 @@ class LLMClient(BaseEntity):
         body.update(self.config.extra_body)
         if body:
             kwargs["extra_body"] = body
+        self._apply_extra_headers(kwargs)
         proxy_client = self._get_proxy_client()
         if proxy_client and self.config.api_type != API_TYPE_ANTHROPIC:
             kwargs["http_client"] = proxy_client

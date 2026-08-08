@@ -531,23 +531,41 @@ class VoiceprintWatcher:
     async def _analyze_files(
         self, paths: List[str],
     ) -> List[Dict[str, Any]]:
-        """并发分析音频文件（时长 + 平均音量），失败的文件按可用处理（不阻断）。"""
+        """并发分析音频文件（时长 + 平均音量）。
+
+        探测失败的文件做一次转码试探：仍失败判为损坏（corrupt=True，不进合并，
+        防止一个坏文件拖垮整目录）；转码可用则按可用处理。
+        """
         semaphore = asyncio.Semaphore(4)
 
         async def _one(path: str) -> Dict[str, Any]:
             async with semaphore:
                 duration_s = 0.0
                 volume: Optional[float] = None
+                corrupt = False
                 try:
                     duration_s = float((await ffmpeg.probe(path)).get("duration_s") or 0.0)
                 except Exception as exc:
-                    log(f"时长探测失败（按可用处理）: {path}: {exc}", "DEBUG", tag="音源库")
-                if _silence_skip_db() is not None:
+                    # 探测失败：转码试探，仍失败判损坏
+                    try:
+                        wav, converted = await ffmpeg.ensure_16k_mono_wav(path)
+                        if converted:
+                            try:
+                                os.unlink(wav)
+                            except OSError:
+                                pass
+                        log(f"探测失败但转码可用（按可用处理）: {path}: {exc}",
+                            "DEBUG", tag="音源库")
+                    except Exception:
+                        corrupt = True
+                        log(f"文件损坏（剔除出合并）: {path}: {exc}", "WARNING", tag="音源库")
+                if not corrupt and _silence_skip_db() is not None:
                     try:
                         volume = await ffmpeg.mean_volume_db(path)
                     except Exception as exc:
                         log(f"音量探测失败（按可用处理）: {path}: {exc}", "DEBUG", tag="音源库")
-                return {"path": path, "duration_s": duration_s, "volume_db": volume}
+                return {"path": path, "duration_s": duration_s,
+                        "volume_db": volume, "corrupt": corrupt}
 
         return await asyncio.gather(*(_one(p) for p in paths))
 
@@ -560,21 +578,33 @@ class VoiceprintWatcher:
             local_paths: List[str] = []
             if openlist.is_configured():
                 self._set_stage("download")
-                # unit["files"] 已按文件名排序，按序下载即保序
-                for f in unit["files"]:
-                    downloaded = await openlist.download(f["path"])
-                    downloads.append(downloaded)
-                local_paths = list(downloads)
+                # unit["files"] 已按文件名排序；并发下载、按序归位（保序合并），
+                # 已完成的下载即时登记，中途失败也能在 finally 清理
+                semaphore = asyncio.Semaphore(3)
+
+                async def _dl(index: int, remote: str) -> tuple[int, str]:
+                    async with semaphore:
+                        path = await openlist.download(remote)
+                        downloads.append(path)
+                        return index, path
+
+                pairs = await asyncio.gather(*(
+                    _dl(i, f["path"]) for i, f in enumerate(unit["files"])))
+                local_paths = [p for _, p in sorted(pairs, key=lambda x: x[0])]
             else:
                 local_paths = [f["path"] for f in unit["files"]]
 
-            # 分析：空音文件不参与合并（探测失败的按可用处理，不阻断）
+            # 分析：空音/损坏文件不参与合并（探测失败的先转码试探再判损）
             self._set_stage("analyze")
             analyzed = await self._analyze_files(local_paths)
             silence_db = _silence_skip_db()
             usable: List[Dict[str, Any]] = []
             skipped_silent = 0
+            skipped_corrupt = 0
             for item in analyzed:
+                if item.get("corrupt"):
+                    skipped_corrupt += 1
+                    continue
                 if silence_db is not None and item["volume_db"] is not None \
                         and item["volume_db"] < silence_db:
                     skipped_silent += 1
@@ -588,7 +618,7 @@ class VoiceprintWatcher:
                     path, kind=unit["kind"], fingerprint=unit["fingerprint"],
                     started_ns=started_ns, file_count=len(unit["files"]),
                     status="no_speech")
-                log(f"同步跳过（无人声）: {path}（空音 {skipped_silent}）", "DEBUG", tag="音源库")
+                log(f"同步跳过（无人声）: {path}（空音 {skipped_silent}，损坏 {skipped_corrupt}）", "DEBUG", tag="音源库")
                 return "no_speech"
 
             # 合并清单（源文件 → 合并后区间，回听定位用；OpenList 存远程路径）
@@ -609,12 +639,16 @@ class VoiceprintWatcher:
                 total_s = float((await ffmpeg.probe(merged_all)).get("duration_s") or 0.0)
             except Exception:
                 total_s = sum(f["duration_s"] for f in usable)
-            silences = await ffmpeg.detect_silences(
-                merged_all, noise_db=_split_silence_db(),
-                min_silence_s=_split_silence_min_s())
-            parts = plan_splits(total_s, silences,
-                                min_s=_merge_min_seconds(),
-                                max_s=_merge_max_seconds())
+            # 未超上限不切分：跳过全量静音检测（省一遍完整解码）
+            if total_s <= _merge_max_seconds():
+                parts = [(0.0, total_s)]
+            else:
+                silences = await ffmpeg.detect_silences(
+                    merged_all, noise_db=_split_silence_db(),
+                    min_silence_s=_split_silence_min_s())
+                parts = plan_splits(total_s, silences,
+                                    min_s=_merge_min_seconds(),
+                                    max_s=_merge_max_seconds())
 
             all_segments: List[tuple[int, Dict[str, Any]]] = []
             for batch_index, (part_start, part_end) in enumerate(parts):
@@ -637,7 +671,7 @@ class VoiceprintWatcher:
                     path, kind=unit["kind"], fingerprint=unit["fingerprint"],
                     started_ns=started_ns, file_count=len(unit["files"]),
                     status="no_speech")
-                log(f"同步跳过（无人声）: {path}（空音 {skipped_silent}）", "DEBUG", tag="音源库")
+                log(f"同步跳过（无人声）: {path}（空音 {skipped_silent}，损坏 {skipped_corrupt}）", "DEBUG", tag="音源库")
                 return "no_speech"
             self._set_stage("ingest")
             result = await ingest_payload(IngestPayload(
@@ -660,7 +694,7 @@ class VoiceprintWatcher:
             if manifest:
                 await self._store.set_recording_files(path, manifest)
             log(f"同步入库 {result.ingested} 段: {path}"
-                f"（批 {len(parts)}，空音跳过 {skipped_silent}）", tag="音源库")
+                f"（批 {len(parts)}，空音跳过 {skipped_silent}，损坏跳过 {skipped_corrupt}）", tag="音源库")
             return "done"
         except Exception as exc:
             await self._store.mark_recording(

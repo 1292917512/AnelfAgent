@@ -98,7 +98,15 @@ class ToolActivationManager:
         return dict(self._scope_rounds.get(scope, {}))
 
     def consume_round(self, scope: str = "") -> List[str]:
-        """对话会话结束时消耗一轮激活周期，返回本轮到期沉睡的分组列表。"""
+        """对话会话结束时消耗一轮激活周期，返回本轮到期沉睡的分组列表。
+
+        粘性模式（tool_activation_sticky，默认开）：激活的分组不再过期——
+        激活/过期会改变 tools 数组（位于请求最前），每次变化重写其后全部
+        缓存前缀；粘性行为让工具集只增不减，跨会话字节稳定。
+        """
+        from core.config import get_config_bool
+        if get_config_bool("tool_activation_sticky", True):
+            return []
         scope = scope or self.current_scope()
         groups = self._scope_rounds.get(scope)
         if not groups:

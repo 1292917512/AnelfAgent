@@ -408,15 +408,7 @@ CI（GitHub Actions，`.github/workflows/ci.yml`）：push/PR 自动执行 ruff 
 
 个人配置与框架代码通过 `.gitignore` 分离：API Key、Token、记忆库、心跳计数、频道密钥等不进仓库，仅保留 `*.example.json` 等模板。配置值支持 `${ENV_VAR}` 引用语法，把密钥外置到环境变量。
 
-可选将 `.secrets/` 作为独立私密仓库备份：
-
-```bash
-./scripts/secrets-backup.sh      # 同步并推送
-./scripts/secrets-restore.sh     # 恢复
-# Windows: scripts/secrets-backup.bat / secrets-restore.bat
-```
-
-备份范围：API 配置 / 心跳与任务 / 记忆数据 / 频道密钥 / 人设等。
+个人数据（API 配置 / 心跳与任务 / 记忆数据 / 频道密钥 / 人设等）的备份由用户自行负责（如 NAS 定期备份）。
 
 ---
 

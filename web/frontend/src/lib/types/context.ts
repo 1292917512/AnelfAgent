@@ -58,6 +58,10 @@ export interface CacheCallRecord {
   ts: number;
   /** 调用用途（reply=主对话 / reflect=辅助调用） */
   kind?: string;
+  /** 模型名 */
+  model?: string;
+  /** 该模型流式 usage 缺缓存字段（缓存生效但不可度量） */
+  unobservable?: boolean;
   prompt_tokens: number;
   cache_read_input_tokens: number;
   cache_creation_input_tokens: number;
@@ -75,6 +79,8 @@ export interface CacheStatsSummary {
   total_cache_creation_tokens: number;
   /** 未返回 usage 的调用次数（流式端点/网关可能丢弃 usage） */
   no_usage_count: number;
+  /** 流式缺缓存字段、无法度量的调用次数 */
+  unobservable_count?: number;
 }
 
 /** 快照的缓存观测区块 */

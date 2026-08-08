@@ -48,5 +48,7 @@
   "expandAll": "Expand all ({{count}} chars)",
   "expand": "Expand",
   "empty": "empty",
-  "defaultPlaceholder": "Default: {{value}}"
+  "defaultPlaceholder": "Default: {{value}}",
+  "refresh": "Refresh",
+  "retry": "Retry"
 }

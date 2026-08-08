@@ -217,14 +217,17 @@ class ConversationData:
         scope_id: str,
         scopes: list[tuple[str, str]],
     ) -> list[dict]:
-        """摘要窗口取数：水位线后原始消息（纯追加增长），满窗触发后台折叠。
+        """摘要窗口取数：水位线后原始消息（纯追加增长），到 M+H 触发后台折叠。
 
-        窗口在 x（conversation_raw_min）与 M+x 之间波动：到达 M 时触发折叠，
-        折叠在途允许宽限到 M+x（保持前缀只增不改）；折叠持续失败则硬降级为
-        原来的"最后 M 条滑动"，功能无损。
+        窗口在 x（conversation_raw_min）与 M+H 之间波动：到达 M+H（滞回 H，
+        conversation_fold_hysteresis）时触发折叠，折叠在途允许宽限到 M+H+x
+        （保持前缀只增不改）；折叠失败默认丢弃该批并推进水位线
+        （conversation_fold_drop_on_failure），窗口头部永不逐条滑动；
+        仅连续异常导致超出宽限时才硬降级为"最后 M 条滑动"。
         """
         from agent.storage.conversation_fold import (
             conversation_folder,
+            fold_hysteresis,
             is_summary_enabled,
             raw_min_messages,
         )
@@ -237,18 +240,16 @@ class ConversationData:
         )
         watermarks = (summary_row or {}).get("watermarks", {})
         raw_min = min(raw_min_messages(), self.max_size - 1)
-        if summary_row is None:
-            rows = await sqlite.fetch_conversation_multi(scopes=scopes, limit=self.max_size)
-        else:
-            # 多取 raw_min+1 条：≤ M+x 视为折叠在途宽限（保持追加语义），
-            # 超出则说明折叠持续失败，硬降级为最后 M 条滑动
-            rows = await sqlite.fetch_conversation_after_watermarks(
-                scopes=scopes, watermarks=watermarks,
-                limit=self.max_size + raw_min + 1,
-            )
-            if len(rows) > self.max_size + raw_min:
-                rows = rows[-self.max_size:]
-        if len(rows) >= self.max_size:
+        trigger = self.max_size + fold_hysteresis()
+        # 多取 raw_min+1 条：≤ trigger+x 视为折叠在途宽限（保持追加语义），
+        # 超出说明连续异常（折叠失败且未丢批），硬降级为最后 M 条滑动
+        grace = trigger + raw_min
+        rows = await sqlite.fetch_conversation_after_watermarks(
+            scopes=scopes, watermarks=watermarks, limit=grace + 1,
+        )
+        if len(rows) > grace:
+            rows = rows[-self.max_size:]
+        if len(rows) >= trigger:
             conversation_folder.maybe_schedule_fold(
                 self, scope_type, scope_id, scopes, watermarks,
             )

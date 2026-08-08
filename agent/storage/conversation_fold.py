@@ -58,6 +58,23 @@ def raw_min_messages() -> int:
     return max(1, get_config_int("conversation_raw_min", 10))
 
 
+def fold_hysteresis() -> int:
+    """折叠滞回 H：窗口到达 M+H 才触发折叠（批量 M+H-x，折叠更少、缓存更稳）。"""
+    from core.config import get_config_int
+    return max(0, get_config_int("conversation_fold_hysteresis", 15))
+
+
+def drop_on_failure() -> bool:
+    """折叠失败时是否丢弃该批（仍推进水位线）。
+
+    开启（默认）：失败批次不生成摘要但水位线照样前移——窗口头部不滑动，
+    缓存前缀稳定；内容仍完整存于 DB，可用 recall_conversation 检索。
+    关闭：保持滑动窗口直到折叠成功（每条新消息都改写历史前缀）。
+    """
+    from core.config import get_config_bool
+    return get_config_bool("conversation_fold_drop_on_failure", True)
+
+
 def summary_max_chars() -> int:
     """摘要文本字符上限。"""
     from core.config import get_config_int
@@ -145,40 +162,36 @@ class ConversationFolder:
         sqlite = conv_data.router.sqlite
         max_size = conv_data.max_size
         raw_min = min(raw_min_messages(), max_size - 1)
-        fold_count = max_size - raw_min
+        trigger = max_size + fold_hysteresis()
+
+        # 按实际余量决定批量：折到窗口回到 x 条（批量 = count - x ≥ trigger - x）
+        count_after = await sqlite.count_after_watermarks(
+            scopes=scopes, watermarks=watermarks,
+        )
+        if count_after < trigger:
+            return
+        fold_count = count_after - raw_min
         if fold_count <= 0:
             return
 
         folded_rows = await sqlite.fetch_oldest_after_watermarks(
             scopes=scopes, watermarks=watermarks, limit=fold_count,
         )
-        if len(folded_rows) < fold_count:
-            # 水位线已在他处推进（并发折叠/首次触发后窗口不足一批）
+        if not folded_rows:
             return
 
         old = await sqlite.get_conversation_summary(
             scope_type=scope_type, scope_id=scope_id,
         )
-        old_summary = (old or {}).get("summary", "") or "（无）"
+        old_summary = (old or {}).get("summary", "") or ""
         old_folded = int((old or {}).get("folded_count", 0) or 0)
+        old_dropped = int((old or {}).get("dropped_count", 0) or 0)
         # 并发守卫：若水位线已被其他折叠推进，放弃本次（下次触发会基于新水位线）
         current_marks = (old or {}).get("watermarks", {})
         if old is not None and current_marks != watermarks:
             return
 
-        prompt = _FOLD_PROMPT.format(
-            max_chars=summary_max_chars(),
-            old_summary=old_summary,
-            folded_text=_format_fold_messages(folded_rows),
-        )
-        summarizer = await self._resolve_summarizer()
-        new_summary = (await summarizer(prompt)).strip()
-        if not new_summary:
-            raise RuntimeError("摘要生成返回空内容")
-        if len(new_summary) > summary_max_chars():
-            new_summary = new_summary[: summary_max_chars()]
-
-        # 推进各成员 scope 水位线到本次折叠的最大 ts_ns
+        # 推进各成员 scope 水位线到本次折叠的最大 ts_ns（先算好，成败都用）
         new_marks = dict(watermarks)
         for row in folded_rows:
             mkey = f"{row['scope_type']}:{row['scope_id']}"
@@ -186,16 +199,45 @@ class ConversationFolder:
             if ts > int(new_marks.get(mkey, 0) or 0):
                 new_marks[mkey] = ts
 
+        succeeded = False
+        try:
+            prompt = _FOLD_PROMPT.format(
+                max_chars=summary_max_chars(),
+                old_summary=old_summary or "（无）",
+                folded_text=_format_fold_messages(folded_rows),
+            )
+            summarizer = await self._resolve_summarizer()
+            new_summary = (await summarizer(prompt)).strip()
+            if not new_summary:
+                raise RuntimeError("摘要生成返回空内容")
+            if len(new_summary) > summary_max_chars():
+                new_summary = new_summary[: summary_max_chars()]
+            succeeded = True
+        except Exception:
+            if not drop_on_failure():
+                raise
+            # 失败丢批：不生成摘要但水位线照样前移——窗口头部不滑动、
+            # 缓存前缀稳定；被丢批次仍完整存于 DB，可用 recall_conversation 检索
+            old_dropped += len(folded_rows)
+            new_summary = old_summary
+            log(
+                f"对话折叠失败，丢弃本批 {len(folded_rows)} 条以保持窗口稳定"
+                f"（内容仍在 DB，可 recall_conversation 检索）: {scope_type}:{scope_id}",
+                "WARNING", tag="存储",
+            )
+
         await sqlite.upsert_conversation_summary(
             scope_type=scope_type, scope_id=scope_id,
             summary=new_summary, watermarks=new_marks,
-            folded_count=old_folded + len(folded_rows),
+            folded_count=old_folded + (len(folded_rows) if succeeded else 0),
+            dropped_count=old_dropped,
         )
-        log(
-            f"对话折叠完成: {scope_type}:{scope_id} 折叠 {len(folded_rows)} 条 "
-            f"(累计 {old_folded + len(folded_rows)} 条)",
-            tag="存储",
-        )
+        if succeeded:
+            log(
+                f"对话折叠完成: {scope_type}:{scope_id} 折叠 {len(folded_rows)} 条 "
+                f"(累计 {old_folded + len(folded_rows)} 条)",
+                tag="存储",
+            )
 
     @staticmethod
     async def _resolve_summarizer() -> Callable[[str], Awaitable[str]]:

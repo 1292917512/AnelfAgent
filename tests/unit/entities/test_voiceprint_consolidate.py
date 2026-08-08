@@ -80,3 +80,23 @@ class TestClusters:
         clusters = await find_merge_clusters(store, status="")
         assert len(clusters) == 1
         assert any(m["id"] == confirmed["id"] for m in clusters[0]["members"])
+
+    async def test_keep_speaker_never_pruned_after_merge(
+        self, store: VoiceprintStore,
+    ) -> None:
+        """回归：合并的保留者即使低价值也不得被清理（防并入片段级联变未知）。"""
+        # 两个相似且都"低价值"的临时说话人（命中1次/时长2s）
+        a = await _mk_pending(store, vec(0), 2000)
+        b = await _mk_pending(store, near(0), 2000)
+        seg = await store.add_segment(speaker_id=b["id"], transcript="b 的话", ts_ns=1000)
+
+        result = await consolidate(store, dry_run=False, prune_insignificant=True)
+        # 合并发生：b 并入 a
+        assert len(result["merges"]) == 1
+        # a 是保留者且仍"低价值"（2次/4s），但绝不在 pruned 里
+        assert result["pruned"] == []
+        keep = await store.get_speaker(a["id"])
+        assert keep is not None
+        # b 的片段归属 a 而非 NULL
+        seg_after = await store.get_segment(seg)
+        assert seg_after is not None and seg_after["speaker_id"] == a["id"]

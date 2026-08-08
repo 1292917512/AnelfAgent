@@ -82,10 +82,26 @@ async def get_recollection(
         ]
         return await mind.retriever.load_relation_snippets(all_scopes)
 
-    # 四条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行
-    (profile_msgs, memory_msgs), relation_msgs, (cross_recall_msgs, recalled_scopes), skill_msgs = await asyncio.gather(
+    async def _load_goals() -> List[Dict]:
+        """活跃目标快照：让 AI 在普通对话中始终感知自己的进行中目标。"""
+        if not mind.memory_store:
+            return []
+        try:
+            from core.config import get_config_bool
+            if not get_config_bool("goals_inject_enabled", True):
+                return []
+            from agent.planning.tools import build_goals_injection
+            content = await build_goals_injection(mind.memory_store, scope=entity_scope)
+        except Exception as exc:
+            log(f"活跃目标注入构建失败: {exc}", "DEBUG", tag="思维")
+            return []
+        return [{"role": "system", "content": content}] if content else []
+
+    # 五条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行
+    (profile_msgs, memory_msgs), relation_msgs, goal_msgs, (cross_recall_msgs, recalled_scopes), skill_msgs = await asyncio.gather(
         _recall_memory(),
         _load_relations(),
+        _load_goals(),
         mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec),
         mind._match_skills(tail, query_vec=query_vec),
     )
@@ -143,6 +159,7 @@ async def get_recollection(
         scope=entity_scope,
         profile_msgs=profile_msgs,
         relation_msgs=relation_msgs,
+        goal_msgs=goal_msgs,
         summary_row=summary_row,
         status_text=status_text,
     )
@@ -192,7 +209,7 @@ async def _build_layered_prompts(
         mind: "Mind",
         anything: Optional["Everything"],
         models_summary: str,
-) -> Tuple[str, str, str, bool, bool, bool]:
+) -> Tuple[str, str, str, bool, bool, bool, str]:
     """构建 stable 人设块 / stable 工具块 / context 层三段提示（经 PromptCacheManager 缓存复用）。
 
     人设块：人设 + 运行环境 + 静态指南——与工具无关，指纹不含工具版本因子，
