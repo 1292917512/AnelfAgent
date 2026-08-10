@@ -30,10 +30,6 @@ class SqliteBackend:
         self._db: Optional[aiosqlite.Connection] = None
         self._initialized = False
         self._scope_migrated = False
-        self._conv_embed_ready = False
-        self._entity_counter_ready = False
-        self._adapter_key_ready = False
-        self._summary_dropped_ready = False
         self._conn_lock = asyncio.Lock()
         self._last_health_check = 0.0
         self._register_embedding_backlog()
@@ -96,7 +92,10 @@ class SqliteBackend:
                       scope_id TEXT NOT NULL,
                       role TEXT NOT NULL,
                       content TEXT NOT NULL,
-                      ts_ns INTEGER NOT NULL
+                      ts_ns INTEGER NOT NULL,
+                      adapter_key TEXT NOT NULL DEFAULT '',
+                      trigger_mind INTEGER NOT NULL DEFAULT 1,
+                      embedding_blob BLOB
                     );
                     """
                 )
@@ -111,6 +110,8 @@ class SqliteBackend:
                       scope_id TEXT NOT NULL,
                       personality TEXT,
                       updated_ts_ns INTEGER NOT NULL DEFAULT 0,
+                      conv_num INTEGER NOT NULL DEFAULT 0,
+                      conv_update_num INTEGER NOT NULL DEFAULT 0,
                       PRIMARY KEY(scope_type, scope_id)
                     );
                     """
@@ -146,6 +147,7 @@ class SqliteBackend:
                       summary TEXT NOT NULL DEFAULT '',
                       watermarks_json TEXT NOT NULL DEFAULT '{}',
                       folded_count INTEGER NOT NULL DEFAULT 0,
+                      dropped_count INTEGER NOT NULL DEFAULT 0,
                       updated_ts_ns INTEGER NOT NULL DEFAULT 0,
                       PRIMARY KEY(scope_type, scope_id)
                     );
@@ -183,20 +185,6 @@ class SqliteBackend:
     # 会话记录
     # ------------------------------------------------------------------
 
-    async def _ensure_adapter_key_column(self) -> None:
-        """懒迁移：确保 conversation_messages 拥有 adapter_key 列（消息来源频道）。"""
-        if self._adapter_key_ready:
-            return
-        db = await self._get_db()
-        cursor = await db.execute("PRAGMA table_info(conversation_messages)")
-        cols = {row[1] for row in await cursor.fetchall()}
-        if "adapter_key" not in cols:
-            await db.execute(
-                "ALTER TABLE conversation_messages ADD COLUMN adapter_key TEXT NOT NULL DEFAULT ''"
-            )
-            await db.commit()
-        self._adapter_key_ready = True
-
     async def append_conversation(
         self,
         *,
@@ -206,26 +194,25 @@ class SqliteBackend:
         content: str,
         ts_ns: Optional[int] = None,
         adapter_key: str = "",
+        trigger_mind: bool = True,
     ) -> None:
-        await self._ensure_adapter_key_column()
         db = await self._get_db()
         ts_ns = ts_ns or time.time_ns()
         await db.execute(
-            "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns, adapter_key) VALUES(?,?,?,?,?,?)",
-            (scope_type, scope_id, role, content, int(ts_ns), adapter_key or ""),
+            "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns, adapter_key, trigger_mind) VALUES(?,?,?,?,?,?,?)",
+            (scope_type, scope_id, role, content, int(ts_ns), adapter_key or "", 1 if trigger_mind else 0),
         )
         await db.commit()
 
     async def list_scopes_with_last_message(self) -> list[dict]:
         """列出每个 scope 的最后一条消息（启动时未回复恢复扫描用）。
 
-        返回 [{scope_type, scope_id, role, content, adapter_key, ts_ns}]。
+        返回 [{scope_type, scope_id, role, content, adapter_key, trigger_mind, ts_ns}]。
         """
-        await self._ensure_adapter_key_column()
         db = await self._get_db()
         cursor = await db.execute(
             """
-            SELECT m.scope_type, m.scope_id, m.role, m.content, m.adapter_key, m.ts_ns
+            SELECT m.scope_type, m.scope_id, m.role, m.content, m.adapter_key, m.trigger_mind, m.ts_ns
             FROM conversation_messages m
             JOIN (
               SELECT scope_type, scope_id, MAX(ts_ns) AS max_ts, MAX(id) AS max_id
@@ -237,7 +224,8 @@ class SqliteBackend:
         return [
             {
                 "scope_type": r[0], "scope_id": r[1], "role": r[2],
-                "content": r[3], "adapter_key": r[4] or "", "ts_ns": r[5],
+                "content": r[3], "adapter_key": r[4] or "",
+                "trigger_mind": bool(r[5]), "ts_ns": r[6],
             }
             for r in rows
         ]
@@ -306,25 +294,10 @@ class SqliteBackend:
         """水位线字典键（成员 scope 维度）。"""
         return f"{scope_type}:{scope_id}"
 
-    async def _ensure_summary_columns(self) -> None:
-        """懒迁移：确保 conversation_summary 拥有 dropped_count 列（折叠失败丢弃计数）。"""
-        if self._summary_dropped_ready:
-            return
-        db = await self._get_db()
-        cursor = await db.execute("PRAGMA table_info(conversation_summary)")
-        cols = {row[1] for row in await cursor.fetchall()}
-        if "dropped_count" not in cols:
-            await db.execute(
-                "ALTER TABLE conversation_summary ADD COLUMN dropped_count INTEGER NOT NULL DEFAULT 0"
-            )
-            await db.commit()
-        self._summary_dropped_ready = True
-
     async def get_conversation_summary(
         self, *, scope_type: str, scope_id: str
     ) -> Optional[dict]:
         """读取对话摘要行，返回 {summary, watermarks, folded_count, dropped_count} 或 None。"""
-        await self._ensure_summary_columns()
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT summary, watermarks_json, folded_count, dropped_count FROM conversation_summary "
@@ -359,7 +332,6 @@ class SqliteBackend:
         dropped_count: int = 0,
     ) -> None:
         """写入/更新对话摘要行（摘要 + 各成员 scope 水位线 + 折叠/丢弃计数）。"""
-        await self._ensure_summary_columns()
         import json as _json
         db = await self._get_db()
         await db.execute(
@@ -481,27 +453,8 @@ class SqliteBackend:
     # 实体画像
     # ------------------------------------------------------------------
 
-    async def _ensure_entity_counter_columns(self) -> None:
-        """懒迁移：确保 entity_profile 拥有 conv_num / conv_update_num 列。"""
-        if self._entity_counter_ready:
-            return
-        db = await self._get_db()
-        cursor = await db.execute("PRAGMA table_info(entity_profile)")
-        cols = {row[1] for row in await cursor.fetchall()}
-        altered = False
-        if "conv_num" not in cols:
-            await db.execute("ALTER TABLE entity_profile ADD COLUMN conv_num INTEGER NOT NULL DEFAULT 0")
-            altered = True
-        if "conv_update_num" not in cols:
-            await db.execute("ALTER TABLE entity_profile ADD COLUMN conv_update_num INTEGER NOT NULL DEFAULT 0")
-            altered = True
-        if altered:
-            await db.commit()
-        self._entity_counter_ready = True
-
     async def get_entity_personality(self, *, scope_type: str, scope_id: str) -> Optional[dict]:
         """返回 {personality, conv_num, conv_update_num} 或 None。"""
-        await self._ensure_entity_counter_columns()
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT personality, conv_num, conv_update_num FROM entity_profile "
@@ -526,7 +479,6 @@ class SqliteBackend:
         conv_num: int = 0,
         conv_update_num: int = 0,
     ) -> None:
-        await self._ensure_entity_counter_columns()
         db = await self._get_db()
         now = time.time_ns()
         await db.execute(
@@ -552,7 +504,6 @@ class SqliteBackend:
         conv_update_num: int,
     ) -> None:
         """仅更新对话计数（不覆盖 personality），若记录不存在则跳过。"""
-        await self._ensure_entity_counter_columns()
         db = await self._get_db()
         await db.execute(
             "UPDATE entity_profile SET conv_num=?, conv_update_num=? "
@@ -570,7 +521,6 @@ class SqliteBackend:
         """
         if not records:
             return 0
-        await self._ensure_entity_counter_columns()
         db = await self._get_db()
         await db.executemany(
             "UPDATE entity_profile SET conv_num=?, conv_update_num=? "
@@ -834,23 +784,8 @@ class SqliteBackend:
 
         return [_row(r) for r in older] + [_row(center_row)] + [_row(r) for r in newer]
 
-    async def _ensure_conv_embedding_column(self) -> None:
-        """懒迁移：确保 conversation_messages 拥有 embedding_blob 列。"""
-        if self._conv_embed_ready:
-            return
-        db = await self._get_db()
-        cursor = await db.execute("PRAGMA table_info(conversation_messages)")
-        cols = {row[1] for row in await cursor.fetchall()}
-        if "embedding_blob" not in cols:
-            await db.execute(
-                "ALTER TABLE conversation_messages ADD COLUMN embedding_blob BLOB"
-            )
-            await db.commit()
-        self._conv_embed_ready = True
-
     async def count_pending_conversation_embeddings(self, max_age_days: int = 30) -> int:
         """统计时间窗内待回填向量的对话消息数（统计口径与回填条件一致）。"""
-        await self._ensure_conv_embedding_column()
         db = await self._get_db()
         conditions = ["embedding_blob IS NULL", "role IN ('user','assistant')"]
         params: list = []
@@ -865,7 +800,6 @@ class SqliteBackend:
 
     async def clear_conversation_embeddings(self) -> int:
         """清空全部对话消息向量（切换 embedding 模型后由后台 worker 重建）。"""
-        await self._ensure_conv_embedding_column()
         db = await self._get_db()
         cursor = await db.execute(
             "UPDATE conversation_messages SET embedding_blob=NULL "
@@ -889,7 +823,6 @@ class SqliteBackend:
         支持限定 scope 加速局部回填；max_age_days>0 时只回填最近时间窗内的
         消息，避免为远古消息浪费 embedding 额度。
         """
-        await self._ensure_conv_embedding_column()
         db = await self._get_db()
 
         conditions = ["embedding_blob IS NULL", "role IN ('user','assistant')"]
@@ -946,7 +879,6 @@ class SqliteBackend:
 
         返回列表按相关度降序排列，每项包含 id / role / content / ts_ns / score。
         """
-        await self._ensure_conv_embedding_column()
         db = await self._get_db()
 
         # 计算时间截断点：第 skip_recent 条的 ts_ns
@@ -1048,7 +980,6 @@ class SqliteBackend:
         Returns:
             True 表示命中并更新了消息；False 表示 row_id 不存在。
         """
-        await self._ensure_conv_embedding_column()
         db = await self._get_db()
         cursor = await db.execute(
             "UPDATE conversation_messages SET content=?, embedding_blob=NULL WHERE id=?",
@@ -1073,7 +1004,6 @@ class SqliteBackend:
 
     async def list_entity_profiles(self) -> list[dict]:
         """列出所有实体画像（含对话计数）。"""
-        await self._ensure_entity_counter_columns()
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT scope_type, scope_id, personality, updated_ts_ns, conv_num, conv_update_num "

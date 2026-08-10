@@ -78,20 +78,14 @@ class TestPipelineOrdering:
 
 
 class TestBreakpointInjection:
-    async def test_head_anchors_and_history_tail(self) -> None:
-        """头部锚点 3 个 + 历史末尾第 4 断点。"""
+    async def test_pipeline_never_injects_breakpoints(self) -> None:
+        """管线只负责 _layer 标签：断点装饰统一在发送边界（llm/prompt_cache）。"""
         pipeline = ContextPipeline(_Host())
-        msgs = await pipeline.build(ContextInput(anthropic_breakpoint=True))
-        bp = [m for m in msgs if m.get("cache_control")]
-        # stable/context/conversation 末尾 = 3 个（_Host 只有一个 stable 块）
-        assert len(bp) == 3
-        assert msgs[-1]["_layer"] == "memory"  # 动态层无断点
-        history = next(m for m in msgs if m["_layer"] == "conversation")
-        assert history.get("cache_control") == {"type": "ephemeral"}
-
-    async def test_no_breakpoints_when_disabled(self) -> None:
-        msgs = await ContextPipeline(_Host()).build(ContextInput(anthropic_breakpoint=False))
+        msgs = await pipeline.build(ContextInput())
         assert not [m for m in msgs if m.get("cache_control")]
+        # 锚点选择所需的层标签完整
+        layers = [m["_layer"] for m in msgs]
+        assert "stable" in layers and "context" in layers and "conversation" in layers
 
 
 class TestLayerRegistry:

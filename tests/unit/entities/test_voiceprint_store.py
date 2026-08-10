@@ -76,6 +76,7 @@ class TestSpeakerCrud:
 class TestSamplePool:
     async def test_fifo_eviction(self, store: VoiceprintStore) -> None:
         from core.config import ConfigManager
+
         ConfigManager.set("voiceprint_sample_evict_strategy", "fifo")
         s = await store.create_speaker(name="张三")
         for i in range(4):
@@ -86,14 +87,14 @@ class TestSamplePool:
     async def test_outlier_eviction(self, store: VoiceprintStore) -> None:
         """outlier 策略：极端样本被淘汰（即使它更早入池），代表性样本保留。"""
         from core.config import ConfigManager
+
         ConfigManager.set("voiceprint_sample_evict_strategy", "outlier")
         s = await store.create_speaker(name="张三")
         # 3 个相似样本 + 1 个正交极端样本，池满后再来 1 个相似样本
         await store.add_sample(s["id"], vec(0), max_samples=3)
         await store.add_sample(s["id"], [0.99, 0.01] + [0.0] * 190, max_samples=3)
         await store.add_sample(s["id"], vec(5), max_samples=3)  # 极端样本
-        new_id = await store.add_sample(
-            s["id"], [0.98, 0.02] + [0.0] * 190, max_samples=3)
+        new_id = await store.add_sample(s["id"], [0.98, 0.02] + [0.0] * 190, max_samples=3)
         assert new_id > 0
         samples = await store.list_samples(s["id"])
         assert len(samples) == 3
@@ -104,6 +105,7 @@ class TestSamplePool:
     async def test_outlier_rejects_noisy_new_sample(self, store: VoiceprintStore) -> None:
         """outlier 策略：池满时噪音新样本与质心差异过大 → 拒绝入池。"""
         from core.config import ConfigManager
+
         ConfigManager.set("voiceprint_sample_evict_strategy", "outlier")
         s = await store.create_speaker(name="张三")
         await store.add_sample(s["id"], vec(0), max_samples=2)
@@ -234,11 +236,11 @@ class TestSegmentMerge:
         """相邻碎片合并：文本拼接 + 时间跨度 + 归属继承 + FTS 生效。"""
         s = await store.create_speaker(name="张三")
         id1 = await store.add_segment(
-            recording_path="/r1", speaker_id=s["id"], start_ms=0, end_ms=1000,
-            transcript="我们今天", ts_ns=1)
+            recording_path="/r1", speaker_id=s["id"], start_ms=0, end_ms=1000, transcript="我们今天", ts_ns=1
+        )
         id2 = await store.add_segment(
-            recording_path="/r1", speaker_id=s["id"], start_ms=1000, end_ms=2000,
-            transcript="去吃饭吧", ts_ns=2)
+            recording_path="/r1", speaker_id=s["id"], start_ms=1000, end_ms=2000, transcript="去吃饭吧", ts_ns=2
+        )
         merged = await store.merge_segments([id1, id2])
         assert merged is not None
         assert merged["id"] == id1
@@ -252,12 +254,9 @@ class TestSegmentMerge:
     async def test_merge_custom_text_and_speaker(self, store: VoiceprintStore) -> None:
         s1 = await store.create_speaker(name="张三")
         s2 = await store.create_speaker(name="李四")
-        id1 = await store.add_segment(
-            recording_path="/r1", speaker_id=s1["id"], transcript="错字连篇", ts_ns=1)
-        id2 = await store.add_segment(
-            recording_path="/r1", speaker_id=s1["id"], transcript="的第二段", ts_ns=2)
-        merged = await store.merge_segments(
-            [id1, id2], transcript="修正后的完整句子", speaker_id=s2["id"])
+        id1 = await store.add_segment(recording_path="/r1", speaker_id=s1["id"], transcript="错字连篇", ts_ns=1)
+        id2 = await store.add_segment(recording_path="/r1", speaker_id=s1["id"], transcript="的第二段", ts_ns=2)
+        merged = await store.merge_segments([id1, id2], transcript="修正后的完整句子", speaker_id=s2["id"])
         assert merged is not None
         assert merged["transcript"] == "修正后的完整句子"
         assert merged["speaker_id"] == s2["id"]
@@ -278,8 +277,14 @@ class TestSegmentSplit:
         """拆段：首段截断 + 次段继承（时间按切点顺延）。"""
         s = await store.create_speaker(name="张三")
         seg_id = await store.add_segment(
-            recording_path="/r1", speaker_id=s["id"], start_ms=0, end_ms=10000,
-            part_start_ms=5000, transcript="一整段话", ts_ns=1_000_000_000_000)
+            recording_path="/r1",
+            speaker_id=s["id"],
+            start_ms=0,
+            end_ms=10000,
+            part_start_ms=5000,
+            transcript="一整段话",
+            ts_ns=1_000_000_000_000,
+        )
         result = await store.split_segment(seg_id, 4000, text_second="后半句")
         assert result is not None
         first, second = result["first"], result["second"]
@@ -297,16 +302,14 @@ class TestSegmentSplit:
     async def test_split_unknown_speaker(self, store: VoiceprintStore) -> None:
         s = await store.create_speaker(name="张三")
         seg_id = await store.add_segment(
-            recording_path="/r1", speaker_id=s["id"],
-            start_ms=0, end_ms=5000, transcript="两人对话", ts_ns=1000)
-        result = await store.split_segment(
-            seg_id, 2000, speaker_second_id=None, speaker_second_set=True)
+            recording_path="/r1", speaker_id=s["id"], start_ms=0, end_ms=5000, transcript="两人对话", ts_ns=1000
+        )
+        result = await store.split_segment(seg_id, 2000, speaker_second_id=None, speaker_second_set=True)
         assert result is not None
         assert result["second"]["speaker_id"] is None
 
     async def test_split_invalid_point(self, store: VoiceprintStore) -> None:
-        seg_id = await store.add_segment(
-            recording_path="/r1", start_ms=0, end_ms=5000, transcript="x", ts_ns=1000)
+        seg_id = await store.add_segment(recording_path="/r1", start_ms=0, end_ms=5000, transcript="x", ts_ns=1000)
         with pytest.raises(ValueError):
             await store.split_segment(seg_id, 5000)
         with pytest.raises(ValueError):
@@ -322,43 +325,3 @@ class TestSummaryCache:
         assert second["confirmed_names"] == ["张三"]
         # 未写操作时应命中缓存（同一对象）
         assert await store.summary() is second
-
-
-class TestLegacyMigration:
-    async def test_old_schema_without_recording_path(self, tmp_path) -> None:
-        """旧库（voice_segments 无 recording_path 列）启动时惰性迁移且索引可建。"""
-        import aiosqlite
-        db_path = str(tmp_path / "voiceprints.sqlite3")
-        async with aiosqlite.connect(db_path) as db:
-            await db.execute("""
-                CREATE TABLE voice_segments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source_file TEXT NOT NULL DEFAULT '',
-                    device_source TEXT NOT NULL DEFAULT '',
-                    start_ms INTEGER NOT NULL DEFAULT 0,
-                    end_ms INTEGER NOT NULL DEFAULT 0,
-                    speaker_id INTEGER,
-                    is_new_speaker INTEGER NOT NULL DEFAULT 0,
-                    similarity REAL NOT NULL DEFAULT 0,
-                    transcript TEXT NOT NULL DEFAULT '',
-                    transcript_embedding BLOB,
-                    ts_ns INTEGER NOT NULL,
-                    read INTEGER NOT NULL DEFAULT 0
-                )""")
-            await db.execute(
-                "INSERT INTO voice_segments(transcript, ts_ns) VALUES('旧数据', 1000)")
-            await db.commit()
-
-        store = VoiceprintStore(db_path)
-        try:
-            # 触发建连：迁移补列 + 建索引不报错，旧数据可读
-            seg_id = await store.add_segment(
-                transcript="新数据", recording_path="/nas/audio_20260806143300")
-            found = await store.list_segments(
-                recording_path="/nas/audio_20260806143300")
-            assert found["total"] == 1 and found["items"][0]["id"] == seg_id
-            all_segments = await store.list_segments()
-            assert all_segments["total"] == 2  # 旧数据保留
-        finally:
-            await store.close()
-

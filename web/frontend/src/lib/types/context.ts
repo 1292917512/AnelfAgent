@@ -95,6 +95,8 @@ export interface SnapshotCacheInfo {
   recent_all?: CacheStatsSummary;
   /** 从头连续未变更 section 的估算 tokens（近似可复用缓存前缀）；null = 首次快照无基线 */
   estimated_cacheable_prefix_tokens: number | null;
+  /** 理论可命中前缀（断点锚点覆盖的字节稳定层 tokens 合计）；read 远低于它 ⇒ 非内容漂移 */
+  expected_prefix_tokens?: number | null;
 }
 
 export interface ContextSnapshotData {
@@ -164,4 +166,6 @@ export interface SnapshotListItem {
   cache_creation_input_tokens?: number | null;
   /** 从头连续未变更 section 的估算 tokens（近似可复用前缀） */
   estimated_cacheable_prefix_tokens?: number | null;
+  /** 理论可命中前缀（字节稳定层 tokens 合计） */
+  expected_prefix_tokens?: number | null;
 }

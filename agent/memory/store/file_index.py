@@ -82,10 +82,16 @@ class FileIndexStore:
         """批量写入 chunks（id 冲突时替换）。返回写入数量。"""
         if not chunks:
             return 0
+        from .tokenizer import tokenize_for_index
+
         db = await self._conn.get_db()
+        # 分词为 CPU 密集操作，批量放 worker 线程一次性完成
+        tokenized_texts = await asyncio.to_thread(
+            lambda: [tokenize_for_index(ch["text"]) for ch in chunks]
+        )
         count = 0
         async with self._conn.tx(db):
-            for ch in chunks:
+            for ch, fts_text in zip(chunks, tokenized_texts, strict=True):
                 await db.execute(
                     "INSERT OR REPLACE INTO chunks(id, path, start_line, end_line, hash, text, embedding, updated_ns) "
                     "VALUES(?,?,?,?,?,?,?,?)",
@@ -98,7 +104,7 @@ class FileIndexStore:
                         await db.execute("DELETE FROM chunks_fts WHERE id=?", (ch["id"],))
                         await db.execute(
                             "INSERT INTO chunks_fts(id, path, start_line, end_line, text) VALUES(?,?,?,?,?)",
-                            (ch["id"], ch["path"], ch["start_line"], ch["end_line"], ch["text"]),
+                            (ch["id"], ch["path"], ch["start_line"], ch["end_line"], fts_text),
                         )
                     except Exception as e:
                         log(f"chunks_fts 同步失败 [{ch['id']}]: {e}", "DEBUG")
@@ -250,7 +256,8 @@ class FileIndexStore:
                 {
                     "id": r["id"], "path": r["path"], "start_line": r["start_line"],
                     "end_line": r["end_line"], "snippet": r["text"][:700],
-                    "score": 1.0 / (1.0 + abs(r["rank"])),
+                    # FTS5 rank 为负值且越小越好，映射为 |rank|/(1+|rank|)
+                    "score": abs(r["rank"]) / (1.0 + abs(r["rank"])),
                     "source": "file",
                 }
                 for r in rows

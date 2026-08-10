@@ -371,13 +371,16 @@ class ConversationData:
 
         scope_type, scope_id = self._scope_of(anything)
         # 以消息到达时间入库，保证对话历史严格按到达时序排列；
-        # adapter_key 记录来源频道，供启动时未回复恢复定位回复路由
+        # adapter_key 记录来源频道，供启动时未回复恢复定位回复路由；
+        # trigger_mind 记录消息当时是否触发思考（非 @ 群消息记 False），
+        # 供启动恢复扫描排除"本就不该回复"的消息
         await self.router.append(
             StorageDomain.CONVERSATION,
             scope_type=scope_type, scope_id=scope_id,
             role=role, content=content,
             ts_ns=anything.created_ts_ns,
             adapter_key=getattr(anything, "adapter_key", "") or "",
+            trigger_mind=bool(getattr(anything, "trigger_mind", True)),
         )
 
 

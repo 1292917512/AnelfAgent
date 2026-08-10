@@ -35,6 +35,17 @@ class MemoryConnectionManager:
         self.vec_available = False
         self.vec_dims: Optional[int] = None
 
+    @staticmethod
+    async def _ensure_column(
+        db: aiosqlite.Connection, table: str, column: str, ddl: str,
+    ) -> None:
+        """幂等加列迁移：列不存在时 ALTER TABLE 添加。"""
+        cursor = await db.execute(f"PRAGMA table_info({table})")
+        columns = {row["name"] for row in await cursor.fetchall()}
+        if column not in columns:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+            log(f"记忆库迁移: {table} 新增列 {column}", tag="思维")
+
     @asynccontextmanager
     async def tx(self, db: aiosqlite.Connection) -> AsyncIterator[None]:
         """事务模板：复合写全部成功才 commit，任一异常 rollback。
@@ -134,27 +145,21 @@ class MemoryConnectionManager:
                 importance REAL NOT NULL DEFAULT 0.5,
                 ts_ns INTEGER NOT NULL,
                 metadata_json TEXT NOT NULL DEFAULT '{}',
-                embedding_blob BLOB
+                embedding_blob BLOB,
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                access_count INTEGER NOT NULL DEFAULT 0,
+                last_accessed_ns INTEGER NOT NULL DEFAULT 0,
+                migrated INTEGER NOT NULL DEFAULT 0
             );
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_type ON memories(type);")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_source ON memories(source);")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_ts ON memories(ts_ns);")
-
-        for stmt in (
-            "ALTER TABLE memories ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'",
-            "ALTER TABLE memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE memories ADD COLUMN last_accessed_ns INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE memories ADD COLUMN migrated INTEGER NOT NULL DEFAULT 0",
-        ):
-            try:
-                await db.execute(stmt)
-            except Exception as e:
-                log(f"Schema 迁移: {e}", "DEBUG")
-
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_mem_access ON memories(access_count);"
         )
+        # version 列迁移：内容修订版本号（update +1），审计与冲突排查用
+        await self._ensure_column(db, "memories", "version", "INTEGER NOT NULL DEFAULT 1")
 
         # ---- 遗忘归档表（归档记忆不参与召回，但可恢复） ----
         await db.execute("""
@@ -169,18 +174,12 @@ class MemoryConnectionManager:
                 tags_json TEXT NOT NULL DEFAULT '[]',
                 access_count INTEGER NOT NULL DEFAULT 0,
                 archived_at_ns INTEGER NOT NULL,
-                archive_reason TEXT NOT NULL DEFAULT ''
+                archive_reason TEXT NOT NULL DEFAULT '',
+                embedding_blob BLOB,
+                last_accessed_ns INTEGER NOT NULL DEFAULT 0
             );
         """)
-        # 懒迁移：归档保留向量与最近访问时间，恢复时可原样回填
-        cursor = await db.execute("PRAGMA table_info(memories_archive)")
-        archive_cols = {row["name"] for row in await cursor.fetchall()}
-        if "embedding_blob" not in archive_cols:
-            await db.execute("ALTER TABLE memories_archive ADD COLUMN embedding_blob BLOB")
-        if "last_accessed_ns" not in archive_cols:
-            await db.execute(
-                "ALTER TABLE memories_archive ADD COLUMN last_accessed_ns INTEGER NOT NULL DEFAULT 0"
-            )
+        await self._ensure_column(db, "memories_archive", "version", "INTEGER NOT NULL DEFAULT 1")
 
         # ---- 文件索引表 ----
         await db.execute("""
@@ -217,18 +216,25 @@ class MemoryConnectionManager:
             );
         """)
 
-        # ---- FTS5 虚拟表（使用 unicode61 tokenizer + 触发器自动同步） ----
+        # ---- schema 元信息表（分词器版本等迁移标记） ----
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS schema_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+        """)
+
+        # ---- FTS5 虚拟表（unicode61；内容为分词后文本，写路径手动同步） ----
+        # 历史版本为 external-content + 触发器同步原文，unicode61 下中文整句
+        # 单 token 导致 bigram 查询无法命中；现改为分词后文本手动同步，
+        # 分词器版本不一致时全量重建（见 _migrate_fts_indexes）。
         self.chunks_fts_available = False
         try:
             await db.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
-                USING fts5(content, content='memories', content_rowid='id',
-                           tokenize='unicode61 remove_diacritics 2');
+                USING fts5(content, tokenize='unicode61 remove_diacritics 2');
             """)
             self.fts_available = True
-            # 创建触发器保持 FTS 索引自动同步
-            await self._create_fts_triggers(db)
-            await self._sync_fts_index(db)
         except Exception as exc:
             log(f"FTS5 不可用，降级为纯 SQL LIKE 搜索: {exc}", "WARNING")
             self.fts_available = False
@@ -243,6 +249,37 @@ class MemoryConnectionManager:
             self.chunks_fts_available = True
         except Exception as exc:
             log(f"chunks_fts 创建失败: {exc}", "WARNING")
+
+        await self._migrate_fts_indexes(db)
+
+        # ---- 记忆审计（update/delete/archive/merge 事件流，只追加） ----
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS memory_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',
+                ts_ns INTEGER NOT NULL
+            );
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_mid ON memory_audit(memory_id);"
+        )
+
+        # ---- 自动捕获游标（每 scope 的提取进度，进程重启后续跑） ----
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS capture_cursors (
+                scope_key TEXT PRIMARY KEY,
+                last_msg_id INTEGER NOT NULL DEFAULT 0,
+                counted_msg_id INTEGER NOT NULL DEFAULT 0,
+                pending_turns INTEGER NOT NULL DEFAULT 0,
+                warmup_threshold INTEGER NOT NULL DEFAULT 1,
+                updated_ns INTEGER NOT NULL
+            );
+        """)
+        await self._ensure_column(
+            db, "capture_cursors", "counted_msg_id", "INTEGER NOT NULL DEFAULT 0"
+        )
 
         # ---- 工具错误追踪表 ----
         await db.execute("""
@@ -285,8 +322,6 @@ class MemoryConnectionManager:
             "CREATE INDEX IF NOT EXISTS idx_cognee_queue_ready "
             "ON cognee_sync_queue(status, next_retry_ns, id);"
         )
-        # 旧表迁移：memory_id → entry_id + entry_kind（队列与映射均为派生数据，重建保留内容）
-        await self._migrate_cognee_queue_schema(db)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS cognee_entry_map (
                 entry_kind TEXT NOT NULL DEFAULT 'memory',
@@ -298,17 +333,6 @@ class MemoryConnectionManager:
                 PRIMARY KEY (entry_kind, entry_id)
             );
         """)
-        cursor = await db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='cognee_memory_map'"
-        )
-        if await cursor.fetchone():
-            await db.execute(
-                "INSERT OR IGNORE INTO cognee_entry_map"
-                "(entry_kind, entry_id, dataset_name, dataset_id, data_id, synced_ns) "
-                "SELECT 'memory', memory_id, dataset_name, dataset_id, data_id, synced_ns "
-                "FROM cognee_memory_map"
-            )
-            await db.execute("DROP TABLE cognee_memory_map")
         # 上次进程异常退出时可能遗留 processing，启动后安全重试。
         await db.execute(
             "UPDATE cognee_sync_queue SET status='pending' WHERE status='processing'"
@@ -360,42 +384,6 @@ class MemoryConnectionManager:
         await self._init_vec_index(db)
 
         await db.commit()
-
-    async def _migrate_cognee_queue_schema(self, db: aiosqlite.Connection) -> None:
-        """cognee_sync_queue 旧结构（memory_id）迁移为泛化结构（entry_kind + entry_id）。"""
-        cursor = await db.execute("PRAGMA table_info(cognee_sync_queue)")
-        cols = {row["name"] for row in await cursor.fetchall()}
-        if "entry_kind" in cols or "memory_id" not in cols:
-            return
-        await db.execute("ALTER TABLE cognee_sync_queue RENAME TO cognee_sync_queue_old")
-        await db.execute("""
-            CREATE TABLE cognee_sync_queue (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                entry_kind TEXT NOT NULL DEFAULT 'memory',
-                entry_id INTEGER NOT NULL,
-                operation TEXT NOT NULL,
-                payload_json TEXT NOT NULL DEFAULT '{}',
-                status TEXT NOT NULL DEFAULT 'pending',
-                attempts INTEGER NOT NULL DEFAULT 0,
-                next_retry_ns INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT NOT NULL DEFAULT '',
-                created_ns INTEGER NOT NULL,
-                updated_ns INTEGER NOT NULL
-            );
-        """)
-        await db.execute(
-            "INSERT INTO cognee_sync_queue"
-            "(id, entry_kind, entry_id, operation, payload_json, status, attempts, "
-            "next_retry_ns, last_error, created_ns, updated_ns) "
-            "SELECT id, 'memory', memory_id, operation, payload_json, status, attempts, "
-            "next_retry_ns, last_error, created_ns, updated_ns FROM cognee_sync_queue_old"
-        )
-        await db.execute("DROP TABLE cognee_sync_queue_old")
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_cognee_queue_ready "
-            "ON cognee_sync_queue(status, next_retry_ns, id);"
-        )
-        log("cognee 投影队列 schema 已迁移为 entry_kind 泛化结构", tag="记忆")
 
     # ------------------------------------------------------------------
     # sqlite-vec 向量索引（embedding_blob 为权威数据，vec0 表为派生索引）
@@ -550,40 +538,146 @@ class MemoryConnectionManager:
         except Exception as exc:
             log(f"vec 索引按路径删除失败 [{path}]: {exc}", "DEBUG")
 
-    async def _create_fts_triggers(self, db: aiosqlite.Connection) -> None:
-        """为 memories_fts 创建自动同步触发器（INSERT/DELETE/UPDATE）。"""
-        triggers = [
-            """CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-                INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
-            END;""",
-            """CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-                INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
-            END;""",
-            """CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE OF content ON memories BEGIN
-                INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
-                INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
-            END;""",
-        ]
-        for sql in triggers:
-            try:
-                await db.execute(sql)
-            except Exception as e:
-                log(f"FTS 触发器创建: {e}", "DEBUG")
+    # ------------------------------------------------------------------
+    # FTS 索引（分词后文本，写路径手动同步；分词器版本变更全量重建）
+    # ------------------------------------------------------------------
 
-    async def _sync_fts_index(self, db: aiosqlite.Connection) -> None:
-        """确保所有记忆都在 FTS 索引中（修复旧记忆未被索引的问题）。"""
+    async def _migrate_fts_indexes(self, db: aiosqlite.Connection) -> None:
+        """FTS 索引迁移：清理旧触发器/旧表，版本不一致时全量重建分词索引。"""
+        from .tokenizer import FTS_TOKENIZER_VERSION
+
+        # 旧版（external-content + 触发器同步原文）残留清理
+        for trigger in ("memories_ai", "memories_ad", "memories_au"):
+            await db.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        if self.fts_available:
+            # external-content 表不支持手动增删，直接 drop 重建为独立表
+            cursor = await db.execute(
+                "SELECT sql FROM sqlite_master WHERE name='memories_fts'"
+            )
+            row = await cursor.fetchone()
+            if row and row["sql"] and "content='memories'" in str(row["sql"]):
+                await db.execute("DROP TABLE memories_fts")
+                await db.execute("""
+                    CREATE VIRTUAL TABLE memories_fts
+                    USING fts5(content, tokenize='unicode61 remove_diacritics 2');
+                """)
+
+        cursor = await db.execute(
+            "SELECT value FROM schema_meta WHERE key='fts_tokenizer_version'"
+        )
+        row = await cursor.fetchone()
+        stored_version = row["value"] if row else ""
+        if stored_version == FTS_TOKENIZER_VERSION:
+            return
+
+        await self._load_fts_vocab(db)
+        if self.fts_available:
+            await self._rebuild_memories_fts(db)
+        if self.chunks_fts_available:
+            await self._rebuild_chunks_fts(db)
+        await db.execute(
+            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('fts_tokenizer_version', ?)",
+            (FTS_TOKENIZER_VERSION,),
+        )
+        log(f"FTS 索引已按分词器 {FTS_TOKENIZER_VERSION} 重建", tag="思维")
+
+    async def _load_fts_vocab(self, db: aiosqlite.Connection) -> None:
+        """从图谱节点与既有标签构建自定义词典（昵称/专名不被切碎）。"""
+        import json as _json
+
+        from .tokenizer import add_words
+
+        words: set[str] = set()
         try:
             cursor = await db.execute(
-                "SELECT id, content FROM memories WHERE id NOT IN "
-                "(SELECT rowid FROM memories_fts)"
+                "SELECT label FROM graph_nodes WHERE label != '' AND archived = 0"
             )
-            missing = await cursor.fetchall()
-            if missing:
-                for row in missing:
-                    await db.execute(
-                        "INSERT INTO memories_fts(rowid, content) VALUES(?,?)",
-                        (row["id"], row["content"]),
-                    )
-                log(f"FTS 索引同步: 补充 {len(missing)} 条未索引的记忆", tag="思维")
+            words.update(str(r["label"]).strip() for r in await cursor.fetchall())
+        except Exception:
+            pass  # graph_nodes 可能尚未建表（首次初始化顺序），忽略即可
+        try:
+            cursor = await db.execute("SELECT tags_json FROM memories")
+            for r in await cursor.fetchall():
+                try:
+                    tags = _json.loads(r["tags_json"]) if r["tags_json"] else []
+                except (ValueError, TypeError):
+                    continue
+                for tag in tags:
+                    if isinstance(tag, str) and ":" in tag:
+                        words.add(tag.split(":", 1)[1].strip())
         except Exception as exc:
-            log(f"FTS 索引同步失败: {exc}", "WARNING", tag="思维")
+            log(f"FTS 词典构建（标签部分）失败: {exc}", "DEBUG")
+        words.discard("")
+        if words:
+            add_words(words)
+            log(f"FTS 自定义词典: {len(words)} 词", "DEBUG", tag="思维")
+
+    async def _rebuild_memories_fts(self, db: aiosqlite.Connection) -> None:
+        """全量重建 memories_fts（分词在 worker 线程执行，避免阻塞事件循环）。"""
+        from .tokenizer import tokenize_for_index
+
+        cursor = await db.execute("SELECT id, content FROM memories")
+        rows = await cursor.fetchall()
+        tokenized = await asyncio.to_thread(
+            lambda: [(int(r["id"]), tokenize_for_index(r["content"])) for r in rows]
+        )
+        await db.execute("DELETE FROM memories_fts")
+        await db.executemany(
+            "INSERT INTO memories_fts(rowid, content) VALUES(?, ?)", tokenized,
+        )
+        if tokenized:
+            log(f"memories_fts 重建: {len(tokenized)} 条", "DEBUG", tag="思维")
+
+    async def _rebuild_chunks_fts(self, db: aiosqlite.Connection) -> None:
+        """全量重建 chunks_fts（分词在 worker 线程执行）。"""
+        from .tokenizer import tokenize_for_index
+
+        cursor = await db.execute("SELECT id, path, start_line, end_line, text FROM chunks")
+        rows = await cursor.fetchall()
+        tokenized = await asyncio.to_thread(
+            lambda: [
+                (str(r["id"]), r["path"], r["start_line"], r["end_line"],
+                 tokenize_for_index(r["text"]))
+                for r in rows
+            ]
+        )
+        await db.execute("DELETE FROM chunks_fts")
+        await db.executemany(
+            "INSERT INTO chunks_fts(id, path, start_line, end_line, text) VALUES(?,?,?,?,?)",
+            tokenized,
+        )
+        if tokenized:
+            log(f"chunks_fts 重建: {len(tokenized)} 条", "DEBUG", tag="思维")
+
+    async def fts_upsert_memory(
+        self, db: aiosqlite.Connection, memory_id: int, content: str,
+    ) -> None:
+        """同步单条记忆到 FTS 索引（分词后文本；失败不影响主流程）。"""
+        if not self.fts_available or memory_id <= 0:
+            return
+        from .tokenizer import tokenize_for_index
+
+        try:
+            tokenized = await asyncio.to_thread(tokenize_for_index, content)
+            await db.execute("DELETE FROM memories_fts WHERE rowid=?", (memory_id,))
+            await db.execute(
+                "INSERT INTO memories_fts(rowid, content) VALUES(?, ?)",
+                (memory_id, tokenized),
+            )
+        except Exception as exc:
+            log(f"FTS 索引写入失败 id={memory_id}: {exc}", "DEBUG")
+
+    async def fts_delete_memories(
+        self, db: aiosqlite.Connection, memory_ids: list[int],
+    ) -> None:
+        """从 FTS 索引批量移除记忆。"""
+        if not self.fts_available or not memory_ids:
+            return
+        try:
+            placeholders = ",".join("?" for _ in memory_ids)
+            await db.execute(
+                f"DELETE FROM memories_fts WHERE rowid IN ({placeholders})",
+                memory_ids,
+            )
+        except Exception as exc:
+            log(f"FTS 索引删除失败: {exc}", "DEBUG")

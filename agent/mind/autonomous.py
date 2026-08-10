@@ -137,7 +137,7 @@ class SituationContext:
 
         if self.connected_channels:
             lines.append(f"[通信通道] {len(self.connected_channels)} 个：{', '.join(self.connected_channels)}")
-            lines.append("  提示：你可以通过 send_to 工具向任意通道主动发送消息")
+            lines.append("  提示：你可以通过 send_message 工具向任意通道主动发送消息")
         else:
             lines.append("[通信通道] 无已连接通道")
 
@@ -199,7 +199,9 @@ META_DECISION_SYSTEM = """你是决策核心。分析当前态势，调用 decid
    用 create_task + set_task_schedule 把它沉淀为自动任务（而非每次手动 plan）
 4. reflect — 心跳时距上次反思较久，或有待整理画像
 5. remember — 只记全新的重要信息，要克制
-6. proactive — 有充分理由主动联系某人时才使用
+6. proactive — 有充分理由主动联系某人时才使用；
+   群聊历史中没有 [to_me:1] 标签的消息是群员之间的对话，不是对你说的话，
+   不得当作欠你的回复、对你的提问或交给你的任务
 7. idle — 心跳无事可做时
 
 决策规则：

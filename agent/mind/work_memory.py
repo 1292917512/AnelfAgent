@@ -260,6 +260,32 @@ class WorkMemory:
             offset -= len(bucket)
         return False
 
+    def delete_temporary_in_scope(self, scope: str, index: int) -> bool:
+        """按 get_temporary(scope) 视图索引删除一条（先 _default 桶后本 scope 桶）。"""
+        if index < 0:
+            return False
+        default_bucket = self._temporary.get("_default", [])
+        if index < len(default_bucket):
+            default_bucket.pop(index)
+            if not default_bucket:
+                self._temporary.pop("_default", None)
+            return True
+        offset = index - len(default_bucket)
+        bucket = self._temporary.get(scope, [])
+        if scope and scope != "_default" and offset < len(bucket):
+            bucket.pop(offset)
+            if not bucket:
+                self._temporary.pop(scope, None)
+            return True
+        return False
+
+    def clear_temporary_in_scope(self, scope: str) -> int:
+        """清空 get_temporary(scope) 视图覆盖的桶（_default 桶 + 本 scope 桶），返回清除条数。"""
+        count = len(self._temporary.pop("_default", []))
+        if scope and scope != "_default":
+            count += len(self._temporary.pop(scope, []))
+        return count
+
     def clear_temporary(self) -> int:
         count = sum(len(bucket) for bucket in self._temporary.values())
         self._temporary.clear()

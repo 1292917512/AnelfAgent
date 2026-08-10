@@ -66,7 +66,7 @@ class TestForgetWeakMemories:
         fresh = _entry("新记忆", importance=0.1, age_hours=1, access_count=0)
         fresh_id = await store.add(fresh)
 
-        report = await store.forget_weak_memories(min_age_days=30, score_threshold=0.08)
+        report = await store.forget_weak_memories(min_age_days=30, score_threshold=0.08, min_keep_per_type=0)
         assert report["count"] == 1
         assert report["forgotten"][0]["id"] == weak_id
         assert await store.get(fresh_id) is not None
@@ -75,7 +75,7 @@ class TestForgetWeakMemories:
         weak_id = await store.add(_entry(
             "可恢复的记忆", importance=0.1, age_hours=90 * 24, access_count=0,
         ))
-        report = await store.forget_weak_memories(min_age_days=30, score_threshold=0.08)
+        report = await store.forget_weak_memories(min_age_days=30, score_threshold=0.08, min_keep_per_type=0)
         assert report["count"] == 1
         # 已归档：不在活跃库，但在归档表
         assert await store.get(weak_id) is None
@@ -92,7 +92,7 @@ class TestForgetWeakMemories:
             "永久规则", memory_type=MemoryType.PERMANENT,
             importance=0.1, age_hours=365 * 24, access_count=0,
         ))
-        report = await store.forget_weak_memories(min_age_days=1, score_threshold=0.99)
+        report = await store.forget_weak_memories(min_age_days=1, score_threshold=0.99, min_keep_per_type=0)
         assert report["count"] == 0
         assert await store.get(pid) is not None
 
@@ -100,7 +100,7 @@ class TestForgetWeakMemories:
         # 老记忆但频繁访问 → 有效分高 → 不遗忘
         strong = _entry("常用知识", importance=0.5, age_hours=60 * 24, access_count=100)
         strong_id = await store.add(strong)
-        report = await store.forget_weak_memories(min_age_days=30, score_threshold=0.08)
+        report = await store.forget_weak_memories(min_age_days=30, score_threshold=0.08, min_keep_per_type=0)
         assert report["count"] == 0
         assert await store.get(strong_id) is not None
 

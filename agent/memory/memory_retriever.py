@@ -15,6 +15,7 @@ from core.log import log
 from .embedding import Embedder
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
+from .store.tag_intel import ASSOC_PREFIXES, ENTITY_PREFIXES
 
 DEFAULT_TOP_K = 5
 DEFAULT_MIN_SCORE = 0.1
@@ -101,25 +102,42 @@ class MemoryRetriever:
         query = self._extract_query(conversation)
         if not query:
             log("💾 被动召回: 无有效查询，回退近期记忆", tag="思维")
+            pinned = await self._load_permanent_pins([])
             entity_msgs, fallback = await asyncio.gather(profiles_task, self._fallback_recent(k))
-            return entity_msgs, fallback
+            pinned_msgs = await self._format_unified_results(pinned) if pinned else []
+            return entity_msgs, pinned_msgs + fallback
 
         log(f"💾 被动召回: \"{query[:50]}\" (embedding={'是' if self._embedder.available else '否'})", tag="思维")
+
+        # 查询改写 + 查询提及识别：并行执行（互不依赖，都在检索关键路径上）
+        # 改写：口语化的对话尾部 → 检索友好形式（短超时，失败回退原查询）
+        # 提及识别：对话中提到的已知实体/话题 → 标签（主评分与联想种子）
+        async def _mentions() -> List[str]:
+            try:
+                return await self._store.extract_query_mentions(query)
+            except Exception as exc:
+                log(f"查询提及识别失败: {exc}", "DEBUG", tag="思维")
+                return []
+
+        search_query, mention_tags = await asyncio.gather(
+            self._rewrite_query(query), _mentions(),
+        )
 
         async def _main_search() -> List[MemorySearchResult]:
             vec = query_vec
             if vec is None:
-                vec = await self._embedder.embed_query(query)
+                vec = await self._embedder.embed_query(search_query)
             from .cognee.fusion import federated_search
             from .cognee.runtime import get_cognee_client
             return await federated_search(
                 self._store.search_unified(
-                    query=query,
+                    query=search_query,
                     query_vec=vec,
+                    query_tags=mention_tags or None,
                     limit=k * self._cognee_config.recall_pool_multiplier,
                     min_score=min_score,
                 ),
-                query=query,
+                query=search_query,
                 client=get_cognee_client(),
                 config=self._cognee_config,
                 limit=k,
@@ -139,12 +157,31 @@ class MemoryRetriever:
             )
 
         if focus_query and focus_query != query:
-            results, focus_results, entity_msgs = await asyncio.gather(
-                _main_search(), _focus_search(), profiles_task,
-            )
-            results = self._merge_results(results, focus_results, limit=k * 2)
+            async def _searches() -> List[MemorySearchResult]:
+                main, focus = await asyncio.gather(_main_search(), _focus_search())
+                return self._merge_results(main, focus, limit=k * 2)
         else:
-            results, entity_msgs = await asyncio.gather(_main_search(), profiles_task)
+            async def _searches() -> List[MemorySearchResult]:
+                return await _main_search()
+
+        # 召回总时限：检索路径整体超时后直接走回退，不阻塞对话主流程
+        recall_timeout = 5.0
+        try:
+            from core.config import get_config_float
+            recall_timeout = max(1.0, get_config_float("memory_recall_timeout_seconds", 5.0))
+        except Exception:
+            pass
+        try:
+            results = await asyncio.wait_for(_searches(), timeout=recall_timeout)
+        except asyncio.TimeoutError:
+            log(f"💾 被动召回超时（{recall_timeout}s），回退近期记忆", "WARNING", tag="思维")
+            try:
+                from . import metrics
+                metrics.incr("recall.timeout")
+            except Exception:
+                pass
+            results = []
+        entity_msgs = await profiles_task
 
         # 时间感知：检测到时间引用词时，提升事件记忆与近期记忆权重
         if self._detect_time_reference(query):
@@ -154,12 +191,14 @@ class MemoryRetriever:
         results = self._apply_scope_boost(results, all_scopes)
 
         # 关联扩展：沿标签网络发现一跳关联记忆（想到一件事 → 联想到相关的事）
-        results = await self._expand_associations(results, limit=k)
+        results = await self._expand_associations(results, limit=k, extra_seeds=mention_tags)
 
         if not results:
             log("💾 统一搜索无结果，回退近期记忆", tag="思维")
+            pinned = await self._load_permanent_pins([])
             fallback = await self._fallback_recent(k)
-            return entity_msgs, fallback
+            pinned_msgs = await self._format_unified_results(pinned) if pinned else []
+            return entity_msgs, pinned_msgs + fallback
 
         # Rerank if available
         if self._rerank_client and len(results) > 1:
@@ -174,6 +213,11 @@ class MemoryRetriever:
         if mem_ids:
             await self._store.record_access(mem_ids)
 
+        # 永久记忆置顶：主人教导/规则类记忆不参与打分竞争，每轮固定注入
+        pinned = await self._load_permanent_pins(results)
+        if pinned:
+            results = pinned + results
+
         for r in results:
             src_label = (
                 f"[{r.source}]"
@@ -184,7 +228,7 @@ class MemoryRetriever:
             path_str = f" {r.path}" if r.path else ""
             log(f"  💡 {src_label}{tag_str}{path_str} score={r.score:.2f}: {r.snippet[:50]}", tag="思维")
 
-        return entity_msgs, self._format_unified_results(results)
+        return entity_msgs, await self._format_unified_results(results)
 
     @staticmethod
     async def _resolve_scope_alias(scope: str) -> str:
@@ -359,6 +403,43 @@ class MemoryRetriever:
                 return cleaned[:max_chars]
         return ""
 
+    async def _rewrite_query(self, query: str) -> str:
+        """检索查询改写：对话尾部 → 检索友好的关键词/短句（失败回退原查询）。
+
+        被动召回的查询是从对话尾部拼接的口语上下文，包含大量与检索意图无关
+        的碎句；轻量改写提炼核心实体/话题/意图，向量与关键词两路同时受益。
+        """
+        try:
+            from core.config import get_config_bool
+            if not get_config_bool("memory_query_rewrite_enabled", True):
+                return query
+        except Exception:
+            return query
+        if len(query) < 20:
+            return query
+        try:
+            from .dedup import light_llm
+            rewritten = await asyncio.wait_for(
+                light_llm(
+                    "把以下对话上下文改写成适合记忆检索的查询：提取核心实体、话题和意图，"
+                    "输出简短的关键词组合或一句话，只输出改写结果，不要解释。\n\n" + query,
+                    temperature=0.1,
+                ),
+                timeout=8.0,
+            )
+            rewritten = (rewritten or "").strip().strip('"').split("\n")[0].strip()
+            if rewritten and 4 <= len(rewritten) <= 200:
+                try:
+                    from . import metrics
+                    metrics.incr("recall.query_rewritten")
+                except Exception:
+                    pass
+                log(f"💾 查询改写: \"{rewritten[:50]}\"", "DEBUG", tag="思维")
+                return rewritten
+        except Exception as exc:
+            log(f"查询改写失败，使用原查询: {exc}", "DEBUG", tag="思维")
+        return query
+
     @staticmethod
     def _merge_results(
             primary: list[MemorySearchResult],
@@ -409,23 +490,32 @@ class MemoryRetriever:
             *,
             limit: int,
             max_extra: int = 2,
+            extra_seeds: Optional[list[str]] = None,
     ) -> list[MemorySearchResult]:
-        """关联扩展：沿标签网络发现一跳关联记忆，追加到结果尾部。
+        """关联扩展：沿标签网络发现关联记忆，追加到结果尾部。
 
         人脑联想机制：想到一件事时，与之相关的人/事也会被唤起。
-        关联记忆分数打折（0.75），并标记 associated=True 供呈现层区分。
+        种子标签三层扩展：直接命中标签 → 图谱邻居（实体间已知关系）→
+        标签共现（常一起出现的话题/实体）。关联记忆分数打折（0.75），
+        并标记 associated=True 供呈现层区分。
         """
-        if not results:
+        if not results and not extra_seeds:
             return results
 
-        # 收集关联边：主结果中的实体/主题标签
+        # 收集关联边：主结果中的实体/主题标签 + 查询提及识别的种子
         assoc_tags: list[str] = []
         for r in results[:limit]:
             for tag in r.tags:
-                if tag.startswith(("user:", "group:", "topic:", "goal:")) and tag not in assoc_tags:
+                if tag.startswith(ASSOC_PREFIXES) and tag not in assoc_tags:
                     assoc_tags.append(tag)
+        for tag in extra_seeds or []:
+            if tag not in assoc_tags:
+                assoc_tags.append(tag)
         if not assoc_tags:
             return results
+
+        # 种子三层扩展（图谱邻居 + 标签共现），统一由门面实现
+        assoc_tags = await self._store.expand_tag_seeds(assoc_tags)
 
         existing_ids = {
             int(r.id.split(":")[1]) for r in results
@@ -442,7 +532,9 @@ class MemoryRetriever:
                 source="memory",
                 memory_type=entry.memory_type.value,
                 tags=entry.tags,
-                provenance={"associated": True, "timestamp": entry.timestamp},
+                timestamp=entry.timestamp,
+                sensitivity=str(entry.metadata.get("sensitivity", "normal")),
+                provenance={"associated": True},
             ))
         return results
 
@@ -466,78 +558,165 @@ class MemoryRetriever:
         for r in results:
             if r.memory_type == MemoryType.EPISODIC.value:
                 r.score *= episodic_boost
-            ts = r.provenance.get("timestamp", 0) if r.provenance else 0
-            if ts and (now - ts) / 3600.0 < recent_hours:
+            if r.timestamp and (now - r.timestamp) / 3600.0 < recent_hours:
                 r.score *= recent_boost
         results.sort(key=lambda r: r.score, reverse=True)
         return results
+
+    async def _load_permanent_pins(
+        self, results: list[MemorySearchResult],
+    ) -> list[MemorySearchResult]:
+        """加载永久记忆置顶位（与召回结果按 id 去重，标记 pinned 供分区呈现）。"""
+        try:
+            from core.config import get_config_int
+            pin_limit = get_config_int("memory_recall_permanent_pin", 3)
+        except Exception:
+            pin_limit = 3
+        if pin_limit <= 0:
+            return []
+        existing = {r.id for r in results}
+        try:
+            entries = await self._store.list_recent(
+                limit=pin_limit * 2, memory_type=MemoryType.PERMANENT,
+            )
+        except Exception as exc:
+            log(f"永久记忆置顶加载失败: {exc}", "DEBUG", tag="思维")
+            return []
+        out: list[MemorySearchResult] = []
+        # list_recent 窗口内按时间升序返回，反转为最新优先
+        for e in reversed(entries):
+            rid = f"mem:{e.id}"
+            if rid in existing:
+                continue
+            out.append(MemorySearchResult(
+                id=rid, snippet=e.content[:500], score=1.0, source="memory",
+                memory_type=e.memory_type.value, tags=e.tags,
+                timestamp=e.timestamp,
+                sensitivity=str(e.metadata.get("sensitivity", "normal")),
+                provenance={"pinned": True},
+            ))
+            if len(out) >= pin_limit:
+                break
+        return out
 
     @staticmethod
     def _dedup_key(snippet: str) -> str:
         """跨来源内容去重键：去空白后的前缀（memories 表与 cognee 图谱可能注入同一条内容）。"""
         return re.sub(r"\s+", "", snippet)[:120]
 
-    @classmethod
-    def _format_unified_results(cls, results: list[MemorySearchResult]) -> List[Dict]:
-        """将统一搜索结果格式化为注入消息，保留 score/type 元数据。
+    async def _humanize_entity_tags(self, tags: List[str]) -> List[str]:
+        """将记忆标签转为 AI 可读的归因词：实体标签解析为称呼，主题标签去前缀。
 
+        user:/group: 标签优先解析为图谱节点称呼（如"小李"），解析失败回退去
+        前缀原值；type:/merged/channel:/date: 等内部机制标签不展示。
+        """
+        display: List[str] = []
+        entity_tags: List[str] = []
+        for tag in tags:
+            if tag.startswith(ENTITY_PREFIXES):
+                entity_tags.append(tag)
+            elif tag.startswith(("topic:", "goal:")):
+                value = tag.split(":", 1)[1].strip()
+                if value and value not in display:
+                    display.append(value)
+            # type:/merged/channel:/date: 等内部标签对 AI 无信息量，不注入
+        for tag in entity_tags:
+            name = ""
+            try:
+                node = await self._store.graph.get_node(tag)
+                name = (node or {}).get("label", "").strip()
+            except Exception:
+                pass
+            if not name:
+                name = tag.split(":", 1)[1]
+            if name and name not in display:
+                display.append(name)
+        return display
+
+    @staticmethod
+    def _format_memory_time(ts: float) -> str:
+        """记忆时间的人类可读格式（年内省略年份）。"""
+        if not ts:
+            return ""
+        import time as _time
+        lt = _time.localtime(ts)
+        now = _time.localtime()
+        if lt.tm_year == now.tm_year:
+            return _time.strftime("%m-%d", lt)
+        return _time.strftime("%Y-%m-%d", lt)
+
+    async def _format_unified_results(self, results: list[MemorySearchResult]) -> List[Dict]:
+        """将统一搜索结果格式化为注入消息。
+
+        注入纪律：只保留对 AI 有信息量的内容——归因（谁的/什么主题）、正文、
+        记录时间；score/内部类型/来源数据集等调试信息只进 log 不进上下文。
         跨来源内容去重：同一条记忆可能同时命中 memories 表与 cognee 图谱
-        （id 命名空间不同无法按 id 去重），按归一化内容前缀去重，
-        保留分数最高（最先出现）的一份，避免重复注入浪费 token。
+        （id 命名空间不同无法按 id 去重），按归一化内容前缀去重。
         """
         if not results:
             return []
 
+        pinned_lines: list[str] = []
         mem_lines: list[str] = []
         file_lines: list[str] = []
-        graph_lines: list[str] = []
         seen: set[str] = set()
         deduped = 0
 
         for r in results:
             snippet = r.snippet[:500]
-            key = cls._dedup_key(snippet)
+            key = self._dedup_key(snippet)
             if key and key in seen:
                 deduped += 1
                 continue
             if key:
                 seen.add(key)
-            associated = r.provenance.get("associated") if r.provenance else False
-            marker = "🔗" if associated else "💡"
+            pinned = bool(r.provenance.get("pinned")) if r.provenance else False
+            associated = bool(r.provenance.get("associated")) if r.provenance else False
+            marker = "📌" if pinned else ("🔗" if associated else "💡")
             if r.source == "file":
                 loc = f"[{r.path}:{r.start_line}-{r.end_line}]" if r.path else ""
-                file_lines.append(f"{marker} {loc} score={r.score:.2f}: {snippet}")
-            elif r.source.startswith("cognee_"):
-                dataset = f" [{r.dataset_name}]" if r.dataset_name else ""
-                graph_lines.append(
-                    f"{marker} [{r.source}]{dataset} score={r.score:.2f}: {snippet}"
-                )
+                file_lines.append(f"{marker} {loc} {snippet}".replace("  ", " "))
+                continue
+            # memory / cognee_* 统一按记忆行呈现（cognee 只是投影层，对 AI 无区别）
+            tags = await self._humanize_entity_tags(r.tags) if r.tags else []
+            head = f"[{'·'.join(tags)}] " if tags else ""
+            ts = r.timestamp or (r.provenance.get("timestamp", 0) if r.provenance else 0)
+            tail_parts: list[str] = []
+            activity = r.provenance.get("activity_date", "") if r.provenance else ""
+            if activity:
+                tail_parts.append(f"发生于 {activity}")
             else:
-                mtype = r.memory_type or "semantic"
-                tag_str = f" [{_cap_tags(r.tags)}]" if r.tags else ""
-                mem_lines.append(
-                    f"{marker} [{mtype}]{tag_str} score={r.score:.2f}: {snippet}"
-                )
+                time_str = self._format_memory_time(ts)
+                if time_str:
+                    tail_parts.append(f"{time_str} 记")
+            if r.sensitivity in ("private", "secret"):
+                tail_parts.append("私事")
+            tail = f"（{'，'.join(tail_parts)}）" if tail_parts else ""
+            if pinned:
+                pinned_lines.append(f"{marker} {head}{snippet}{tail}")
+            else:
+                mem_lines.append(f"{marker} {head}{snippet}{tail}")
 
         if deduped:
             log(f"召回跨来源去重: 移除 {deduped} 条重复内容", "DEBUG", tag="思维")
 
         parts: list[str] = []
+        if pinned_lines:
+            parts.append(
+                "[系统注入·永久记忆] 以下为永久记忆（主人教导/既定规则），始终生效：\n"
+                + "\n".join(pinned_lines)
+            )
         if mem_lines:
             parts.append(
-                "[系统注入·记忆召回] 以下为系统自动检索的相关记忆，非用户消息"
-                "（💡=直接相关，🔗=联想关联）：\n"
+                "[系统注入·记忆召回] 以下为自动检索到的相关记忆，不代表当前任务进程，"
+                "仅作为参考（💡=直接相关，🔗=联想关联；标注「私事」的记忆不要向"
+                "第三方透露，除非对方就是当事人）：\n"
                 + "\n".join(mem_lines)
             )
         if file_lines:
             parts.append(
                 "[系统注入·知识检索] 以下为便签文件检索结果：\n"
                 + "\n".join(file_lines)
-            )
-        if graph_lines:
-            parts.append(
-                "[系统注入·知识图谱召回] 以下为 Cognee 图谱与语义检索结果：\n"
-                + "\n".join(graph_lines)
             )
 
         if not parts:
@@ -584,19 +763,7 @@ class MemoryRetriever:
             return results
 
 
-_TAG_RE = re.compile(r"\[(?:time|uid|group_id|name|nickname):[^\]]*\]")
-
-
-def _cap_tags(tags: List[str], limit: int = 6) -> str:
-    """标签列表截断展示：超限显示前 limit 个 + 总数。
-
-    召回注入中标签仅作来源提示，长标签串（如逐次累积的 topic 标签）
-    对 AI 是纯噪声且浪费 token。
-    """
-    if len(tags) <= limit:
-        return ",".join(tags)
-    return f"{','.join(tags[:limit])} 等{len(tags)}个"
-
-
 def _strip_tags(text: str) -> str:
-    return _TAG_RE.sub("", text).strip()
+    """剥离检索查询中的消息元数据标签（与出站清洗共用 core.tags 的 10 键清单）。"""
+    from core.tags import strip_message_meta_tags
+    return strip_message_meta_tags(text).strip()

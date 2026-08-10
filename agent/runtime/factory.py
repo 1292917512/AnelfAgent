@@ -21,7 +21,7 @@ def load_persona():
     # 拷贝一份，避免就地修改配置提供者返回的共享 personality 列表
     prompts: List[str] = list(persona_data.get("personality", []))
 
-    tag_prompt = f"[]里面的是标签内容。{get_tag_desc()}输出的对话中不要包含任何标签。"
+    tag_prompt = f"消息中的 [key:value] 是元数据标签：{get_tag_desc()}回复正文中不要输出任何标签。"
     if tag_prompt not in prompts:
         prompts.append(tag_prompt)
 

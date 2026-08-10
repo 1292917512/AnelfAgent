@@ -225,6 +225,14 @@ class Mind:
         # 轮外完成回调：后台任务完成且无等待者时，排入回复队列触发新 REPLY
         self.background_tasks.set_unclaimed_callback(self._on_bg_task_unclaimed)
 
+        # 实体推送中枢（[push:] 系统通知：短期记忆 + 入队唤醒 + 轮内弹窗）
+        from agent.mind.push import PushHub
+        self.push_hub = PushHub(self)
+        try:
+            self.push_hub.bind_loop(asyncio.get_running_loop())
+        except RuntimeError:
+            pass  # 非异步上下文（测试等）：跨线程推送退化为直接调用
+
         # 当前模型上下文窗口缓存（tokens，0 = 未知）
         self._cached_context_length: int = 0
         self._cached_model_name: str = ""
@@ -842,18 +850,6 @@ class Mind:
         """技能系统总开关。"""
         from core.config import get_config_bool
         return get_config_bool("skills_enabled", True)
-
-    def _is_anthropic_model(self) -> bool:
-        """当前主模型是否为 Anthropic（决定是否注入 cache_control 断点）。"""
-        from agent.mind.prompt_layers import is_anthropic_breakpoint_enabled
-        if not is_anthropic_breakpoint_enabled():
-            return False
-        llm_client = self.llm if isinstance(self.llm, LLMClient) else None
-        if llm_client is None:
-            return False
-        model = (llm_client.config.litellm_model or "").lower()
-        api_type = (getattr(llm_client.config, "api_type", "") or "").lower()
-        return "anthropic" in model or "claude" in model or api_type == "anthropic"
 
     def _direct_vision(self) -> bool:
         """当前主模型是否支持视觉（决定图片直传与媒体规则文案）。"""

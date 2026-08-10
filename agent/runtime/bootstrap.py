@@ -262,7 +262,7 @@ def create_bootstrap() -> FlowMachine:
     async def assemble_runtime():
         """纯组装：Mind -> Assistant -> Runtime -> set_runtime。"""
         from agent.mind import Mind
-        from agent.mind.tools import session_tools
+        from agent.mind.tools import session_tools, short_term_tools
 
         # 提前导入 scheduler/session_tools 模块，使其 deferred 工具在 Mind 初始化
         # activate_group("thinking"/"session") 时一并注册
@@ -306,6 +306,7 @@ def create_bootstrap() -> FlowMachine:
 
         set_mind(mind)
         session_tools.set_mind(mind)
+        short_term_tools.set_mind(mind)
 
         log(
             f"AgentRuntime 已组装: chat={llm_data['llm'].config.name} "
@@ -421,6 +422,10 @@ def create_bootstrap() -> FlowMachine:
         recovered = 0
         for row in last_msgs:
             if row["role"] != "user" or row["ts_ns"] < cutoff_ns:
+                continue
+            # 入库时 trigger_mind=False 的消息（如 require_mention 下非 @ 群消息）
+            # 当时就被判定为不触发思考，重启恢复不应补回
+            if not row.get("trigger_mind", True):
                 continue
             if not is_genuine_user_message({"role": "user", "content": row["content"]}):
                 continue

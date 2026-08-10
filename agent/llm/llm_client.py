@@ -114,6 +114,43 @@ class LLMNotConfiguredError(RuntimeError):
     """未配置可调用模型时抛出的明确异常。"""
 
 
+class _CacheAffinityHTTPHandler(litellm.AsyncHTTPHandler):
+    """小连接池 AsyncHTTPHandler（Anthropic 兼容端点的节点级缓存亲和）。
+
+    kimi coding 等 anthropic 兼容网关的 prompt 缓存是**节点本地**的，
+    按 TCP 连接亲和路由（实测：保活复用 100% 命中；每次新连接 8/8 全失）。
+    litellm 默认池（100 连接 / 20 保活）在并发下不断开新连接——每个
+    新连接大概率落到冷节点，整个前缀（含稳定层）全量 miss。限制池
+    大小即限制触达节点数，保活复用维持亲和；超出并发上限时排队。
+    """
+
+    def __init__(self, pool_size: int, timeout: Optional[float] = None) -> None:
+        self._pool_size = max(1, pool_size)
+        super().__init__(timeout=timeout)
+
+    def create_client(
+        self,
+        timeout: Any,
+        event_hooks: Any = None,
+        ssl_verify: Any = None,
+        shared_session: Any = None,
+    ) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_connections=self._pool_size,
+                max_keepalive_connections=self._pool_size,
+            ),
+            timeout=timeout or DEFAULT_TIMEOUT,
+            follow_redirects=True,
+        )
+
+
+def _cache_affinity_pool_size() -> int:
+    """缓存亲和连接池大小（配置 anthropic_cache_pool_size，默认 4）。"""
+    from core.config import get_config_int
+    return get_config_int("anthropic_cache_pool_size", 4)
+
+
 def _clean_message_surrogates(msg: dict) -> dict:
     """清洗消息中的孤代理字符（仅文本部分；图片等多模态部件不动）。
 
@@ -163,6 +200,8 @@ class LLMClient(BaseEntity):
             "AI Services", "LLM", f"model:{self.config.model}",
         ]
         self._proxy_client: Optional[_ProxyHttpClient] = None
+        # Anthropic 线缓存亲和小连接池（懒创建，随 close 关闭；见类 docstring）
+        self._cache_affinity_handler: Optional[_CacheAffinityHTTPHandler] = None
         # DashScope 多模态向量专用 HTTP 客户端（懒创建，随 close 关闭）
         self._embed_http_client: Optional[httpx.AsyncClient] = None
         # 从端点 400 报错中学习到的 max_tokens 实际上限（本次运行内有效）
@@ -196,9 +235,17 @@ class LLMClient(BaseEntity):
         return api_base
 
     def _apply_extra_headers(self, kwargs: Dict[str, Any]) -> None:
-        """注入自定义请求头（最后应用，可覆盖鉴权头等任意头）。"""
+        """注入自定义请求头（用户配置最后合并，可覆盖鉴权头等任意头）。
+
+        1h 缓存 TTL 时自动携带 Anthropic extended-cache-ttl beta 头
+        （官方端点缺此头会 400；见 llm/prompt_cache）。
+        """
+        from agent.llm.prompt_cache import anthropic_ttl_beta_headers
+        headers = anthropic_ttl_beta_headers(self.config.api_type)
         if self.config.extra_headers:
-            kwargs["extra_headers"] = dict(self.config.extra_headers)
+            headers.update(self.config.extra_headers)
+        if headers:
+            kwargs["extra_headers"] = headers
 
     # ------------------------------------------------------------------
     # litellm 调用参数构建
@@ -407,6 +454,19 @@ class LLMClient(BaseEntity):
             self._proxy_client = _ProxyHttpClient(proxy)
         return self._proxy_client
 
+    def _get_cache_affinity_handler(self) -> Optional[_CacheAffinityHTTPHandler]:
+        """Anthropic 线缓存亲和 handler（懒初始化；代理场景走 env lease，不接管）。"""
+        if self.config.api_type != API_TYPE_ANTHROPIC:
+            return None
+        if self.config.effective_proxy:
+            return None
+        if self._cache_affinity_handler is None:
+            self._cache_affinity_handler = _CacheAffinityHTTPHandler(
+                pool_size=_cache_affinity_pool_size(),
+                timeout=self.config.timeout,
+            )
+        return self._cache_affinity_handler
+
     def _build_kwargs(
             self,
             messages: list[dict],
@@ -437,7 +497,7 @@ class LLMClient(BaseEntity):
         if self.config.api_key:
             kwargs["api_key"] = self.config.api_key
         if tools:
-            kwargs["tools"] = tools
+            kwargs["tools"] = self._apply_tools_cache_breakpoint(tools, adapted)
         if tool_choice is not None:
             kwargs["tool_choice"] = self._resolve_tool_choice(tool_choice)
         if stream:
@@ -448,6 +508,9 @@ class LLMClient(BaseEntity):
             proxy_client = self._get_proxy_client()
             if proxy_client:
                 kwargs["http_client"] = proxy_client
+        affinity_handler = self._get_cache_affinity_handler()
+        if affinity_handler is not None:
+            kwargs["client"] = affinity_handler
 
         if effort:
             kwargs = self._apply_provider_specific_payload(effort, kwargs)
@@ -687,6 +750,33 @@ class LLMClient(BaseEntity):
                 adapted.append(msg)
 
         return [_clean_message_surrogates(m) for m in adapted]
+
+    def _apply_tools_cache_breakpoint(
+            self,
+            tools: list[dict],
+            adapted: list[dict],
+    ) -> list[dict]:
+        """wire tools 数组末尾注入缓存断点（自限额：消息侧断点未满才补位）。
+
+        仅 Anthropic 线生效。断点预算每请求 4 个（见 llm/prompt_cache）：
+        工具链轮次消息侧已满 4 个时跳过——stable 层末断点的前缀本就覆盖
+        tools 数组；首轮（无工具链断点）补位后，人设/目录文本变更时
+        工具数组前缀仍可命中缓存。
+        """
+        if self.config.api_type != API_TYPE_ANTHROPIC:
+            return tools
+        from agent.llm.prompt_cache import (
+            MAX_BREAKPOINTS,
+            apply_tools_breakpoint,
+            count_breakpoints,
+            is_tools_breakpoint_enabled,
+        )
+        if not is_tools_breakpoint_enabled():
+            return tools
+        if count_breakpoints(adapted) >= MAX_BREAKPOINTS:
+            return tools
+        result = apply_tools_breakpoint(tools)
+        return result if result is not None else tools
 
     # ------------------------------------------------------------------
     # ChatModel 协议：chat
@@ -1314,6 +1404,10 @@ class LLMClient(BaseEntity):
         self._embed_http_client = None
         if embed_client is not None and not embed_client.is_closed:
             await embed_client.aclose()
+        affinity_handler = self._cache_affinity_handler
+        self._cache_affinity_handler = None
+        if affinity_handler is not None and not affinity_handler.client.is_closed:
+            await affinity_handler.client.aclose()
 
     def update_config(self, **kwargs: Any) -> None:
         old_proxy = self.config.effective_proxy

@@ -274,6 +274,13 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"记忆整理失败: {e}", "DEBUG", tag="心跳")
 
+        # 自动记忆捕获：对话达轮数阈值或静默空闲时提取事实进长期记忆
+        try:
+            from agent.memory.auto_capture import run_auto_capture
+            await run_auto_capture(self.mind)
+        except Exception as e:
+            log(f"自动记忆捕获失败: {e}", "DEBUG", tag="心跳")
+
         # 主便签记忆状态区块：让 AI 随时了解自己的记忆情况（内容不变时不写）
         await self._write_memory_status(consolidate_report)
 
@@ -417,6 +424,25 @@ class HeartbeatEngine:
                     parts.append(f"合并 {consolidate_report.merged_count}")
                 stamp = datetime.now().strftime("%m-%d %H:%M")
                 lines.append(f"- 最近整理（{stamp}）：{' · '.join(parts) if parts else '无需整理'}")
+            # 运行指标（召回通道/写入去重/自动捕获累计计数）
+            try:
+                from agent.memory import metrics as memory_metrics
+                lines.extend(memory_metrics.render_status_lines())
+            except Exception:
+                pass
+            # 近 24h 记忆变更摘要（审计事件流消费口）
+            try:
+                audit = await store.get_audit_summary(hours=24)
+                if audit:
+                    action_names = {"update": "更新", "delete": "删除",
+                                    "archive": "归档", "merge": "合并"}
+                    detail = " · ".join(
+                        f"{action_names.get(a, a)} {n}"
+                        for a, n in sorted(audit.items(), key=lambda kv: -kv[1])
+                    )
+                    lines.append(f"- 近 24h 记忆变更：{detail}")
+            except Exception:
+                pass
             for fname, cap in self._NOTES_CAPACITY.items():
                 fpath = notes_mod.get_memory_dir() / fname
                 if fpath.exists():
@@ -566,6 +592,19 @@ class HeartbeatEngine:
         content = _clean_llm(raw)
         if not content:
             return None
+
+        # 覆盖式更新前备份旧画像（防坏写不可恢复）
+        try:
+            scope_type0, scope_id0 = entity.identity_parts
+            sqlite0 = self.mind.everything_data.router.sqlite
+            old_profile = await sqlite0.get_entity_personality(
+                scope_type=scope_type0, scope_id=scope_id0,
+            )
+            if old_profile and old_profile.get("personality"):
+                from agent.memory.profile_backup import backup_entity_profile
+                backup_entity_profile(scope_type0, scope_id0, old_profile["personality"])
+        except Exception as exc:
+            log(f"画像备份失败: {exc}", "DEBUG", tag="心跳")
 
         entity.set_personality(content)
         await self.mind.everything_data.save_entity_personality(entity)

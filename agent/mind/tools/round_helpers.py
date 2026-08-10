@@ -91,6 +91,8 @@ class _ThinkRoundState:
     wait_budget: float = 0.0
     # 新消息并入基线水位（快照内最大 ts_ns）
     last_merged_ts: int = 0
+    # 实体推送并入水位（快照后到达的推送才轮内注入，之前的已随短期记忆进 base）
+    push_watermark: int = 0
     # plan 收敛标记：正常结束路径（_finish_round）已收敛时置位，finally 不重复收敛
     plan_finalized: bool = False
     # 本次会话是否被协作式中断终止（决定 finally 收敛 outcome）
@@ -238,6 +240,12 @@ async def _prepare_think_context(
     pipeline = ToolResultPipeline(mind, guardrail)
     # 会话期间 scope 不变，循环外解析一次
     current_scope = ToolActivationManager.current_scope()
+    # 实体推送并入水位：base 快照之后到达的推送才轮内注入（防与短期记忆重复）
+    push_watermark = 0
+    if mode == ThinkMode.REPLY:
+        push_hub = getattr(mind, "push_hub", None)
+        if push_hub is not None:
+            push_watermark = push_hub.current_seq(current_scope)
     # 新消息并入基线：以历史快照水位（快照内最大 ts_ns）为起点，
     # 循环期间到达的用户消息（到达时已实时入库）将并入当前上下文，而非另起周期
     last_merged_ts = time.time_ns()
@@ -280,7 +288,11 @@ async def _prepare_think_context(
         supports_stream=_probe_stream_support(mind),
         supports_purpose=_probe_invoke_kwarg(mind, "purpose"),
     )
-    state = _ThinkRoundState(wait_budget=wait_budget, last_merged_ts=last_merged_ts)
+    state = _ThinkRoundState(
+        wait_budget=wait_budget,
+        last_merged_ts=last_merged_ts,
+        push_watermark=push_watermark,
+    )
     return ctx, state
 
 
@@ -479,6 +491,34 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
         ctx.active_tools = _apply_frozen_tool_order(rebuilt, ctx.frozen_tool_order)
     log(f"并入 {len(new_msgs)} 条循环期间新消息到当前上下文", tag="思维")
     ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮前: 并入 {len(new_msgs)} 条新消息")
+
+
+async def _merge_pushes(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
+    """并入循环期间到达的实体推送（[push:] 系统通知），实现轮内弹窗。
+
+    推送到达时已写入短期记忆（后续会话可见）；此处将快照后新到的推送
+    直接注入当前轮工具链尾部，AI 无需等会话结束即可感知，与手机弹窗同语义。
+    """
+    mind = ctx.mind
+    if not (ctx.mode == ThinkMode.REPLY and ctx.anything):
+        return
+    push_hub = getattr(mind, "push_hub", None)
+    if push_hub is None:
+        return
+    texts = push_hub.drain_inflight(ctx.current_scope, since=state.push_watermark)
+    if not texts:
+        return
+    lines = ["[实体推送] 以下系统通知在你回复过程中到达（[push:来源] 标签，非用户消息）："]
+    lines.extend(f"- {text}" for text in texts)
+    lines.append("可按需响应，或继续完成当前对话；无需处理则忽略并继续。")
+    ctx.tool_chain.append({"role": "system", "content": "\n".join(lines)})
+    # 消费对应的待处理队列条目，避免当前轮结束后又空转一个周期
+    try:
+        mind.pfc.consume_scope_task(ctx.current_scope)
+    except Exception as exc:
+        log(f"消费推送待处理队列失败: {exc}", "DEBUG", tag="思维")
+    log(f"并入 {len(texts)} 条实体推送到当前上下文", tag="思维")
+    ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮前: 并入 {len(texts)} 条实体推送")
 
 
 async def _emit_context_usage(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:

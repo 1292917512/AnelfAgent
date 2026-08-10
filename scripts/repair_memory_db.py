@@ -79,19 +79,12 @@ SCHEMA_STATEMENTS: list[str] = [
         dims INTEGER,
         updated_ns INTEGER NOT NULL
     )""",
+    """CREATE TABLE IF NOT EXISTS schema_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )""",
     """CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
-        USING fts5(content, content='memories', content_rowid='id',
-                   tokenize='unicode61 remove_diacritics 2')""",
-    """CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-        INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
-    END""",
-    """CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-        INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
-    END""",
-    """CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE OF content ON memories BEGIN
-        INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
-        INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
-    END""",
+        USING fts5(content, tokenize='unicode61 remove_diacritics 2')""",
     """CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
         USING fts5(text, id UNINDEXED, path UNINDEXED,
                    start_line UNINDEXED, end_line UNINDEXED,
@@ -101,14 +94,14 @@ SCHEMA_STATEMENTS: list[str] = [
 MEMORIES_COLUMNS = [
     "id", "type", "content", "source", "importance", "ts_ns",
     "metadata_json", "embedding_blob", "tags_json",
-    "access_count", "last_accessed_ns", "migrated",
+    "access_count", "last_accessed_ns", "migrated", "version",
 ]
 
 TABLE_INSERT: dict[str, str] = {
     "memories": (
         "INSERT OR REPLACE INTO memories "
         "(id,type,content,source,importance,ts_ns,metadata_json,embedding_blob,"
-        "tags_json,access_count,last_accessed_ns,migrated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+        "tags_json,access_count,last_accessed_ns,migrated,version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
     ),
     "files": (
         "INSERT OR REPLACE INTO files (path,hash,mtime_ns,size) VALUES (?,?,?,?)"
@@ -229,6 +222,7 @@ def normalize_memories_row(columns: list[str], row: tuple) -> tuple:
         "importance": 0.5, "ts_ns": int(time.time() * 1e9),
         "metadata_json": "{}", "embedding_blob": None,
         "tags_json": "[]", "access_count": 0, "last_accessed_ns": 0, "migrated": 0,
+        "version": 1,
     }
     return tuple(
         row[col_map[c]] if c in col_map else defaults[c]
@@ -260,10 +254,32 @@ def insert_table(
 
 
 def rebuild_fts(conn: sqlite3.Connection) -> None:
+    """按当前分词器（jieba，降级 bigram）重建两张 FTS 表，并写入版本标记。"""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     try:
-        conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+        from agent.memory.store.tokenizer import (
+            FTS_TOKENIZER_VERSION,
+            tokenize_for_index,
+        )
+    except Exception as e:
+        WARN(f"分词器不可用，跳过 FTS 重建: {e}")
+        return
+    try:
+        rows = conn.execute("SELECT id, content FROM memories").fetchall()
+        conn.execute("DELETE FROM memories_fts")
+        for r in rows:
+            conn.execute(
+                "INSERT INTO memories_fts(rowid, content) VALUES(?,?)",
+                (r[0], tokenize_for_index(r[1])),
+            )
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta(key, value) "
+            "VALUES('fts_tokenizer_version', ?)",
+            (FTS_TOKENIZER_VERSION,),
+        )
         conn.commit()
-        OK("memories_fts 索引重建完成")
+        OK(f"memories_fts 索引重建完成 ({len(rows)} 条)")
     except Exception as e:
         WARN(f"memories_fts 重建失败: {e}")
     try:
@@ -272,7 +288,7 @@ def rebuild_fts(conn: sqlite3.Connection) -> None:
         for r in rows:
             conn.execute(
                 "INSERT INTO chunks_fts(id,path,start_line,end_line,text) VALUES(?,?,?,?,?)",
-                (r[0], r[1], r[2], r[3], r[4]),
+                (r[0], r[1], r[2], r[3], tokenize_for_index(r[4])),
             )
         conn.commit()
         OK(f"chunks_fts 索引重建完成 ({len(rows)} 条)")

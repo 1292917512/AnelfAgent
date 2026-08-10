@@ -8,7 +8,8 @@
 - 每个构建块用 @context_block(layer, volatility, label) 装饰器声明，
   装饰时自动注册层元数据（单一数据源，Web 展示/快照分层以此为依据）
 - volatility 越大变动越频繁，排序越靠后（稳定前缀 → 缓存命中）
-- 管线统一负责：排序组装、_layer 标签、Anthropic 断点注入、布局回退
+- 管线统一负责：排序组装、_layer 标签、布局回退
+  （缓存断点不在此注入——发送边界由 llm/prompt_cache 按 _layer 统一装饰）
 - think_loop 逐轮管理的层（tool_chain/exec_context）同样注册在案
   （managed="think_loop"），全集即完整上下文
 
@@ -35,9 +36,6 @@ VOL_SESSION = 40      # 状态/画像/短期记忆/召回/技能/Provider：每�
 VOL_MESSAGE = 50      # 溢出提示 / 安全提示：随消息状态变
 VOL_CHAIN = 60        # 工具调用链：每轮追加（think_loop 管理，不经管线）
 VOL_ROUND = 90        # exec_context：每轮重建（think_loop 追加在尾部）
-
-# 头部缓存锚点层（Anthropic 断点 1~3，按序）
-_HEAD_ANCHOR_LAYERS = ("stable", "context")
 
 
 # ------------------------------------------------------------------
@@ -119,7 +117,6 @@ class ContextInput:
     adapter_key: str = ""
     scope: str = ""
     prefetched_conversation: Optional[List[Dict]] = None
-    anthropic_breakpoint: bool = False
     # 构建期中间态（conversation 块写入，overflow 块读取）
     conversation_list: List[Dict] = field(default_factory=list)
     max_conversation_size: int = 0
@@ -173,7 +170,7 @@ class ContextPipeline:
         self._builders = builders
 
     async def build(self, inp: ContextInput) -> List[Dict]:
-        """按变动率从静到动组装全部内容块，注入 _layer 标签与缓存断点。"""
+        """按变动率从静到动组装全部内容块，注入 _layer 标签。"""
         import inspect
 
         messages: List[Dict] = []
@@ -191,8 +188,6 @@ class ContextPipeline:
             # legacy 布局：按覆盖的变动率重排（块内容不变）
             messages.sort(key=lambda m: self._sort_key(m["_layer"]))
 
-        if inp.anthropic_breakpoint:
-            self._inject_breakpoints(messages)
         return messages
 
     def _sort_key(self, layer: str) -> tuple[int, str]:
@@ -203,26 +198,3 @@ class ContextPipeline:
             if l == layer:
                 return (v, layer)
         return (VOL_MESSAGE, layer)
-
-    @staticmethod
-    def _inject_breakpoints(messages: List[Dict]) -> None:
-        """注入 Anthropic 缓存断点（限额 4）：头部锚点 3 个 + 历史末尾 1 个。"""
-        anchors = 0
-        for msg in messages:
-            if msg.get("_layer") in _HEAD_ANCHOR_LAYERS and anchors < 3:
-                msg["cache_control"] = {"type": "ephemeral"}
-                anchors += 1
-        # 第 4 断点：对话历史末尾（纯追加窗口，断点随之前移）；无历史回退摘要块
-        from core.config import get_config_bool
-        if not get_config_bool("prompt_cache_summary_breakpoint", True):
-            return
-        target: Optional[Dict] = None
-        for msg in messages:
-            if msg.get("_layer") == "conversation":
-                target = msg  # 迭代结束即最后一条历史
-        if target is None:
-            for msg in messages:
-                if msg.get("_layer") == "summary":
-                    target = msg
-        if target is not None:
-            target["cache_control"] = {"type": "ephemeral"}

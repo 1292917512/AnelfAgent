@@ -112,7 +112,9 @@ ConfigPaths.UPLOAD_DIR          # workspace/uploads
 #### 标签系统（core/tags.py）
 
 `[key:value]` 统一数据编码。函数：`tag_label` / `etag` / `etag_all` / `batch_remove_tags`。
-16 种内置标签：time / uid / group_id / name / channel / platform / media_file / reply_to 等。
+内置标签：time / uid / group_id / name / channel / platform / media_file / reply_to / to_me / push 等
+（to_me 标识"群消息 @ 了机器人"，仅 @ 时渲染，无此标签的群消息 = 群员间对话而非对她的请求；
+push 为实体推送通知标签，标识"非用户消息"；两者出站时随元数据标签一并剥离）。
 
 #### 会话 scope 格式（agent/messages/everything.py）
 
@@ -131,6 +133,7 @@ entity_scope 含频道 adapter 维度，跨频道同号实体（如 QQ uid 与 W
 ```python
 from entities._sdk import tool, entity                     # 工具注册
 from entities._sdk import get_llm_manager                   # LLM 访问
+from entities._sdk import push_notify                       # 向 AI 推送系统通知（[push:] 标签，手机弹窗语义）
 from entities._sdk import load_image_from_path              # 图片加载
 from entities._sdk import get_image_content_class, get_model_type_enum  # 类型获取
 ```
@@ -235,6 +238,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/mind/tool_activation.py` | 工具沉睡/激活状态机（activate_tool_group） |
 | `agent/mind/tools/think_loop.py` | 统一思维循环（多轮 LLM + 工具编排） |
 | `agent/llm/error_classifier.py` | LLM 错误分类（驱动重试/压缩/回退策略） |
+| `agent/llm/prompt_cache.py` | Anthropic 缓存断点唯一权威（线型判定 / 发送边界装饰 decorate_messages / 锚点表 / strip 副本 / TTL marker / CACHEABLE_PREFIX_LAYERS 分析口径） |
 | `agent/llm/retry.py` | 自适应退避（指数 + 抖动） |
 | `agent/security/session_token.py` | 一次性会话令牌（防注入伪造历史） |
 | `agent/security/threat_scanner.py` | 威胁模式扫描（prompt 注入检测） |
@@ -254,11 +258,13 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/mind/context_assembly.py` | 上下文组装（系统提示 / Prompt 分层缓存 / 执行上下文，PFC 组件） |
 | `agent/mind/context_pipeline.py` | 上下文构建管线（@context_block 声明层+变动率 / 变动率排序组装 / 缓存断点注入 / legacy 布局覆盖表；新增内容块只需声明式注册） |
 | `agent/mind/tools/decision_executor.py` | 决策执行分发（REPLY/REFLECT/PLAN 等） |
+| `agent/mind/push.py` | 实体推送中枢 PushHub（[push:] 标签包装 + 短期记忆 + 入队唤醒 + 轮内弹窗 drain_inflight；entities 经 _sdk.push_notify 桥接） |
 | `agent/mind/tools/media_pipeline.py` | 媒体标签转换 |
 | `agent/memory/memory_store.py` | 长期记忆存储（SQLite + FTS5 + Embedding；软归档遗忘 + importance 松弛回归） |
 | `agent/memory/graph/store.py` | 关系图谱权威存储（graph_nodes/graph_edges；(s,p,o) 唯一 upsert + 别名归一 + 软删 + cognee 投影入队） |
 | `agent/memory/graph/tools.py` | 关系图谱工具组（graph_add_relation / graph_query / graph_path / graph_merge_nodes 等，group=graph） |
 | `agent/memory/graph/extract.py` | 心跳关系抽取（对话 → JSON 候选解析 → 落库，origin=heartbeat_extract） |
+| `agent/memory/store/tag_intel.py` | 标签智能（df/共现图谱/提及词表 TTL 缓存；IDF 评分、共现与图谱邻居联想、查询提及识别的统一驱动层） |
 | `agent/storage/scope_migrate.py` | scope 迁移（旧格式键回填 adapter 维度，user_version 幂等 + 自动备份） |
 | `agent/memory/tools.py` | 记忆工具（memorize / recall（source 标志 + depth 浅深 + filter_tags 硬过滤）/ forget 软归档） |
 | `agent/memory/notes.py` | 便签文件系统 |
@@ -312,7 +318,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/heartbeat |
 | `graph` | 关系图谱 | `agent/memory/graph/tools.py` | always/core/heartbeat |
 | `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
-| `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tool_activation.py` + `agent/mind/context_compressor.py` | always |
+| `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tool_activation.py` + `agent/mind/context_compressor.py` + `agent/mind/tools/short_term_tools.py`（短期记忆自管理） | always |
 | `planning` | 目标规划 | `agent/planning/tools.py` + `agent/task/tools.py`（任务/调度自管理） | planning/goal/heartbeat |
 | `skills` | 技能 | `agent/skills/tools.py` | always |
 | `delegation` | 子代理 | `agent/delegation/delegate_tool.py` | always |
@@ -346,7 +352,9 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。排查时**�
 - `kind` 分桶：主对话 `reply` 与辅助 `reflect`（评审/心跳/折叠）分开。辅助调用无共享前缀，命中率 0 属正常，**不计入主口径**。
 - `age_sec`：`last_call` 可能回显更早会话的调用（回声）。>120s 视为过期，前端置灰标"（N 分钟前）"，不代表当前缓存失效。
 - `unobservable`：该模型流式 usage 缺缓存字段（见下表），缓存仍在服务端生效但**无法度量**，显示"—"而非 0%。
-- 单次 0% 的三大可解释原因：① 重启/空闲 >5 分钟的冷启动；② 工具集激活跳变（tools 数组变化击穿前缀）；③ 折叠/评审等辅助调用。稳态主对话应 90%+。
+- `expected_prefix_tokens`（快照 cache 区块）：断点锚点覆盖的字节稳定层（stable+context+summary）理论可命中前缀。**与实际 cache_read 对比是首要判读工具**：expected 高而 read=0 ⇒ 前缀内容没变、问题在网关侧（节点亲和/TTL/端点行为）；expected 本身下降 ⇒ 前缀内容漂移，去查 section diff。
+- 单次 0% 的四大可解释原因：① 重启/空闲 >5 分钟的冷启动；② 工具集激活跳变（tools 数组变化击穿前缀）；③ 折叠/评审等辅助调用；④ **节点亲和失配**（kimi coding 等网关：缓存节点本地 + TCP 连接亲和，并发迫使新连接 = 冷节点全量 miss——已由 `_CacheAffinityHTTPHandler` 小连接池收敛，`anthropic_cache_pool_size` 配置池大小，默认 4；仍出现成簇 0% 且排除①②③时怀疑此项）。稳态主对话应 90%+。
+- **kimi coding 端点特性**（实测）：仅流式请求有缓存读写（非流式 usage 恒 read=0/creation=0，主对话全走流式不受影响，流式失败降级非流式的罕见路径会丢缓存）；缓存按 TCP 连接亲和。
 
 **供应商缓存字段**（`agent/llm/types.py` 的 `_CACHE_*_PATHS` 注册表，新增供应商只登记字段路径）：
 - Anthropic：`cache_read_input_tokens` / `cache_creation_input_tokens`（需断点，`_is_anthropic_model` 时注入 cache_control）。
@@ -354,6 +362,10 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。排查时**�
 - DeepSeek：非流式回传 `prompt_cache_hit_tokens`；**流式不回传任何缓存字段**（`cache_stats.stream_cache_unobservable`），故流式下 DeepSeek 命中率不可观测。
 
 **架构不变量**（改动时勿破坏）：上下文按变动率排序组装（`agent/mind/context_pipeline.py` 的 `@context_block` 声明），stable→context→summary→conversation→动态区→exec_context；tools 数组是 prompt 最大头且需跨会话字节稳定（`tool_order_deterministic` / `tool_dynamic_sticky`）；stable 层不得嵌入动态状态（默认模型标记、视觉文案已移出）。
+
+**Anthropic 断点预算**（每请求 ≤4，设施集中在 `agent/llm/prompt_cache.py`，借鉴 Hermes prompt_caching.py）：**唯一装饰点是发送边界的 `decorate_messages`**（llm_invoker 在 normalize 前、`_layer` 标签尚存时调用），按声明式锚点表放置：stable 层末 + context 层末 + 对话历史末（无历史回退摘要块）+ 链尾（无 `_layer` 的末消息，天然随工具链增长前移）；管线/think_loop/内容构建侧只打 `_layer` 标签，**谁都不写 cache_control**。wire `tools[-1]` 断点是传输层权威（llm_client 按消息侧计数门控补位，满 4 让位）。装饰全部 copy-on-write，共享上下文字典永不被改写。TTL 由 `prompt_cache_anthropic_ttl`（5m/1h）驱动；`prompt_cache_tools_breakpoint` 控制 tools 断点。
+
+**跨供应商回退**：cache_control 是 Anthropic 专属字段。`chat_with_fallback` 回退到非 Anthropic 候选时经 `strip_cache_control_copy` 发剥离副本（原列表与 think_loop 共享，禁止原地剥离）；回退到 Anthropic 候选则原样保留。1h TTL 时 llm_client 自动携带 `extended-cache-ttl` beta 头（官方端点缺头 400）。
 
 ### 开发约定
 

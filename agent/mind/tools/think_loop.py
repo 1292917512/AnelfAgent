@@ -60,6 +60,7 @@ from agent.mind.tools.round_helpers import (
     _handle_length_recovery,
     _handle_overflow,
     _merge_new_messages,
+    _merge_pushes,
     _partition_tool_calls,
     _prepare_think_context,
     _request_tool_approval,
@@ -326,6 +327,8 @@ async def _run_think_rounds(
         # 并入循环期间到达的新用户消息（让 AI 在当前回复中一并处理，
         # 而非另起周期导致上下文断裂/忘记已回复）
         await _merge_new_messages(ctx, state)
+        # 并入循环期间到达的实体推送（[push:] 系统通知，轮内弹窗）
+        await _merge_pushes(ctx, state)
 
         exec_context = mind.pfc.build_execution_context(
             execution_steps, start_time, state.iteration,
@@ -341,6 +344,8 @@ async def _run_think_rounds(
         )
         # exec_context（每轮动态）置于末尾：保持 stable/context/volatile/历史前缀
         # 字节稳定供 Prompt Caching 复用，且当前轮状态在模型注意力最强的末尾位置
+        # （缓存断点不在此注入——发送边界由 llm/prompt_cache 按 _layer 统一装饰，
+        # 链尾锚点天然随链增长前移）
         llm_messages = ctx.base_messages + ctx.tool_chain + [exec_context]
 
         mind._set_phase(MindPhase.LLM_CALLING)

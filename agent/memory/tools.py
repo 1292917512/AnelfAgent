@@ -17,6 +17,7 @@ from entities._sdk import activate_group, deferred_tool
 from .embedding import Embedder, wake_embedding_worker
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
+from .store.tag_intel import ASSOC_PREFIXES, ENTITY_PREFIXES
 
 _store: Optional[MemoryStore] = None
 _embedder: Optional[Embedder] = None
@@ -83,13 +84,20 @@ def _current_scope_tag() -> str:
     group="memory", tags=["always"], source="mind.memory",
     description="将一条关键信息存入长期记忆。内容应简洁精炼。使用 type:permanent 标签可存储永远不会被遗忘的重要信息。",
 )
-async def memorize(content: str, tags: str = "", importance: float = 0.7) -> str:
+async def memorize(
+    content: str,
+    tags: str = "",
+    importance: float = 0.7,
+    sensitivity: str = "normal",
+) -> str:
     """将一条关键信息存入长期记忆。
 
     Args:
         content: 要记住的内容（简洁扼要，一两句话）
         tags: 标签，逗号分隔。推荐前缀：type:(fact/event/permanent) user:(uid) group:(id) topic:(主题) channel:(频道) goal:(目标id)。type:permanent 表示永久记忆；与某目标相关的记忆打 goal:xxx 标签，可在目标视角串联召回
         importance: 重要性 0-1，默认 0.7。permanent 类型自动设为 1.0
+        sensitivity: 私密度。normal（默认）/ private（他人私事，不向第三方透露）/ secret（高度敏感）。
+            记住「全记得但不什么都说」：private/secret 的记忆照常参与召回，仅在向他人转述时克制
     """
     try:
         if not _store:
@@ -106,10 +114,10 @@ async def memorize(content: str, tags: str = "", importance: float = 0.7) -> str
                     cause=ErrorCause.PERMISSION, retryable=False,
                 )
 
-        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+        tag_list = _normalize_tags(tags)
 
         # 自动关联：未指定实体标签时，用当前对话 scope 补充（记忆自动挂到关联网络）
-        if not any(t.startswith(("user:", "group:")) for t in tag_list):
+        if not any(t.startswith(ENTITY_PREFIXES) for t in tag_list):
             scope_tag = _current_scope_tag()
             if scope_tag:
                 tag_list.append(scope_tag)
@@ -124,21 +132,100 @@ async def memorize(content: str, tags: str = "", importance: float = 0.7) -> str
             importance = 1.0
             return await _upsert_permanent(content, tag_list, importance)
 
+        sensitivity = (sensitivity or "normal").strip().lower()
+        if sensitivity not in ("normal", "private", "secret"):
+            sensitivity = "normal"
+
+        # 第一级：规则判重（子串/字面高相似，零成本快速拦截）
         if await _store.has_similar_content(content):
+            from . import metrics
+            metrics.incr("write.dedup_rule_skip")
             return json.dumps({"ok": False, "message": "已存在相似记忆，跳过"}, ensure_ascii=False)
+
+        # 第二级：LLM 语义裁决（事实演进 update / 语义重复 skip / 无重复 store）
+        from . import metrics
+        from .dedup import apply_update, gather_dedup_candidates, judge_write
+        candidates = await gather_dedup_candidates(_store, _embedder, content)
+        decision = await judge_write(content, candidates)
+        action = decision.get("action", "store")
+        metrics.incr(f"write.dedup_llm_{action}")
+        if action == "skip":
+            return json.dumps({
+                "ok": False,
+                "message": f"已有等价记忆，跳过（{decision.get('reason', '语义重复')}）",
+            }, ensure_ascii=False)
+        if action == "update" and decision.get("target_id"):
+            updated = await apply_update(
+                _store, int(decision["target_id"]),
+                str(decision.get("content") or content), tag_list,
+            )
+            if updated is not None:
+                if sensitivity != "normal":
+                    updated.metadata["sensitivity"] = sensitivity
+                    await _store.update(updated)
+                wake_embedding_worker()
+                return json.dumps({
+                    "ok": True, "id": updated.id, "action": "updated",
+                    "message": "与既有记忆为同一事实，已合并更新",
+                    "content_preview": updated.content[:100],
+                }, ensure_ascii=False)
+            # 目标已不存在等异常：回退为正常写入
 
         entry = MemoryEntry(
             memory_type=mem_type,
             content=content,
             tags=tag_list,
             importance=max(0.0, min(1.0, importance)),
+            metadata=({"sensitivity": sensitivity} if sensitivity != "normal" else {}),
         )
 
+        # 近重复提示须在写入前计算（写入后新标签已进入统计，会被误判为既有标签）
+        hints = await _tag_near_duplicate_hints(tag_list)
         mid = await _store.add(entry)
         wake_embedding_worker()
-        return json.dumps({"ok": True, "id": mid, "tags": tag_list}, ensure_ascii=False)
+        result: Dict[str, Any] = {"ok": True, "id": mid, "tags": tag_list}
+        if hints:
+            result["tag_hints"] = hints
+        return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="写入记忆")
+
+
+def _normalize_tags(tags: str) -> list[str]:
+    """标签规范化：trim、全角逗号/冒号归一、折叠内部空白、去重保序。"""
+    import re
+    out: list[str] = []
+    for raw in re.split(r"[,，]", tags):
+        tag = re.sub(r"\s+", " ", raw.strip().replace("：", ":"))
+        if tag and tag not in out:
+            out.append(tag)
+    return out
+
+
+async def _tag_near_duplicate_hints(tag_list: list[str]) -> list[str]:
+    """新 topic: 标签与既有高频标签存在包含关系时给出归并建议（只提示不改数据）。"""
+    new_topics = [t for t in tag_list if t.startswith("topic:")]
+    if not new_topics or not _store:
+        return []
+    try:
+        tag_df = await _store.list_tags()
+    except Exception:
+        return []
+    hints: list[str] = []
+    for tag in new_topics:
+        if tag in tag_df:
+            continue  # 已存在的标签不算新
+        name = tag[len("topic:"):]
+        for existing, count in sorted(tag_df.items(), key=lambda kv: -kv[1]):
+            if not existing.startswith("topic:") or count < 2:
+                continue
+            other = existing[len("topic:"):]
+            if name and other and (name in other or other in name):
+                hints.append(f"新标签 {tag} 与既有 {existing}（{count} 次）相近，建议统一用后者")
+                break
+        if len(hints) >= 3:
+            break
+    return hints
 
 
 async def _upsert_permanent(content: str, tag_list: list[str], importance: float) -> str:
@@ -210,9 +297,14 @@ async def recall(
         if not _store:
             return _store_not_ready()
 
-        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
-        hard_tags = [t.strip() for t in filter_tags.split(",") if t.strip()] if filter_tags else None
+        tag_list = _normalize_tags(tags) or None
+        hard_tags = _normalize_tags(filter_tags) or None
         is_deep = depth.strip().lower() == "deep"
+
+        # 查询提及识别：查询文本中提到的已知实体/话题自动转为标签加权
+        mention_tags = await _store.extract_query_mentions(query)
+        if mention_tags:
+            tag_list = list(dict.fromkeys((tag_list or []) + mention_tags))
 
         query_vec = None
         if _embedder:
@@ -224,7 +316,7 @@ async def recall(
         cognee_config = load_cognee_config()
         entity_scope = ""
         for tag in tag_list or []:
-            if tag.startswith(("user:", "group:")):
+            if tag.startswith(ENTITY_PREFIXES):
                 scope_type, scope_id = tag.split(":", 1)
                 entity_scope = f"{scope_type}_{scope_id}"
                 break
@@ -265,6 +357,7 @@ async def recall(
             "tags": r.tags,
             "score": round(r.score, 3),
             **({"time": time.strftime("%Y-%m-%d %H:%M", time.localtime(r.timestamp))} if r.timestamp else {}),
+            **({"sensitivity": r.sensitivity} if r.sensitivity != "normal" else {}),
             **({"path": r.path} if r.source == "file" else {}),
             **({"dataset": r.dataset_name} if r.dataset_name else {}),
         } for r in results]
@@ -280,7 +373,7 @@ async def recall(
         if is_deep:
             node_keys = []
             for tag in (tag_list or []):
-                if tag.startswith(("user:", "group:")):
+                if tag.startswith(ENTITY_PREFIXES):
                     prefix, value = tag.split(":", 1)
                     # 裸 uid 补当前频道前缀，与图谱节点 key 对齐
                     node_keys.append(f"{prefix}:{_normalize_scope_id(value)}")
@@ -315,10 +408,12 @@ async def _recall_associations(
     assoc_tags: list[str] = []
     for r in results:
         for tag in r.tags:
-            if tag.startswith(("user:", "group:", "topic:", "goal:")) and tag not in assoc_tags:
+            if tag.startswith(ASSOC_PREFIXES) and tag not in assoc_tags:
                 assoc_tags.append(tag)
     if not assoc_tags:
         return []
+    # 种子三层扩展（图谱邻居 + 标签共现）
+    assoc_tags = await _store.expand_tag_seeds(assoc_tags)
     related = await _store.search_associative(
         assoc_tags, exclude_ids=set(existing_mem_ids), limit=max_related,
     )
@@ -363,7 +458,7 @@ async def _recall_associations_deep(
                 continue
             if entry:
                 for tag in entry.tags:
-                    if tag.startswith(("user:", "group:", "topic:", "goal:")) and tag not in extra_tags:
+                    if tag.startswith(ASSOC_PREFIXES) and tag not in extra_tags:
                         extra_tags.append(tag)
         if extra_tags:
             seed_results = list(results) + [
@@ -380,7 +475,7 @@ async def _recall_associations_deep(
         mem_id = int(str(item["id"]).split(":")[1])
         seen_ids.add(mem_id)
         for tag in item["tags"]:
-            if tag.startswith(("user:", "group:", "topic:", "goal:")) and tag not in hop1_tags:
+            if tag.startswith(ASSOC_PREFIXES) and tag not in hop1_tags:
                 hop1_tags.append(tag)
     if not hop1_tags:
         return hop1
@@ -462,6 +557,8 @@ async def get_memory(memory_id: int) -> str:
             "importance": round(entry.importance, 3),
             "source": entry.source,
             "access_count": entry.access_count,
+            "version": entry.version,
+            "sensitivity": entry.metadata.get("sensitivity", "normal"),
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="读取记忆")
@@ -479,6 +576,7 @@ async def update_memory(
     content: str = "",
     tags: str = "",
     importance: float = -1.0,
+    sensitivity: str = "",
 ) -> str:
     """原地更新一条记忆（保留 id 和创建时间戳）。
 
@@ -487,6 +585,7 @@ async def update_memory(
         content: 新的记忆内容（留空则保持原内容不变）
         tags: 新的标签，逗号分隔（留空则保持原标签不变）
         importance: 新的重要性 0-1（传 -1 则保持原值不变）
+        sensitivity: 新的私密度 normal/private/secret（留空则保持原值不变）
     """
     try:
         if not _store:
@@ -505,7 +604,7 @@ async def update_memory(
             content_changed = True
 
         if tags.strip():
-            new_tags = [t.strip() for t in tags.split(",") if t.strip()]
+            new_tags = _normalize_tags(tags)
             if new_tags != entry.tags:
                 entry.tags = new_tags
                 changed.append("tags")
@@ -513,6 +612,17 @@ async def update_memory(
         if 0.0 <= importance <= 1.0 and round(importance, 3) != round(entry.importance, 3):
             entry.importance = importance
             changed.append("importance")
+
+        if sensitivity.strip():
+            new_sens = sensitivity.strip().lower()
+            if new_sens in ("normal", "private", "secret"):
+                old_sens = entry.metadata.get("sensitivity", "normal")
+                if new_sens != old_sens:
+                    if new_sens == "normal":
+                        entry.metadata.pop("sensitivity", None)
+                    else:
+                        entry.metadata["sensitivity"] = new_sens
+                    changed.append("sensitivity")
 
         if not changed:
             return json.dumps({"ok": True, "message": "无变更"}, ensure_ascii=False)
@@ -996,9 +1106,11 @@ async def recall_conversation(
                     min_score=min_score, scan_limit=scan_limit,
                 )
 
-        # embedding 不可用或无结果时降级为关键词搜索
+        # embedding 不可用或无结果时降级为关键词搜索（jieba 词级切分，
+        # 中文对话无空格，按空格拆词基本拿不到有效关键词）
         if not results:
-            keywords = [w.strip() for w in query.split() if len(w.strip()) >= 2][:5]
+            from .store.tokenizer import tokenize_for_query
+            keywords = tokenize_for_query(query)[:8]
             results = await sqlite.search_conversation_keyword(
                 scope_type, scope_id, keywords, limit=limit, skip_recent=skip_recent,
             )
@@ -1457,6 +1569,11 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
 
         old = await sqlite.get_entity_personality(scope_type=p_type, scope_id=p_id)
         conv_num = old.get("conv_num", 0) if old else 0
+
+        # 覆盖式更新前备份旧画像（防坏写不可恢复）
+        if old and old.get("personality"):
+            from .profile_backup import backup_entity_profile
+            backup_entity_profile(p_type, p_id, old["personality"])
 
         await sqlite.set_entity_personality(
             scope_type=p_type, scope_id=p_id, personality=personality.strip(),

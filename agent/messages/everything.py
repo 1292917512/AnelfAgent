@@ -16,6 +16,7 @@ from core.tags import (
     reply_to_tag,
     tag_label,
     time_tag,
+    to_me_tag,
     uid_tag,
 )
 
@@ -135,12 +136,20 @@ class Everything(Nothing):
                 text_tags += get_time_tag(self.created_ts_ns)
             elif tag_name == reply_to_tag.get_tag_name():
                 text_tags += self._render_reply_to_label()
+            elif tag_name == to_me_tag.get_tag_name():
+                text_tags += self._render_to_me_label()
             else:
                 field = self._tag_field_map.get(tag_name, tag_name)
                 val = getattr(self, field, None)
                 if val is not None and val != "":
                     text_tags += tag.generate_label(str(val))
         return text_tags
+
+    def _render_to_me_label(self) -> str:
+        """渲染 [to_me:1] 标记：仅群消息 @ 自己时出现，无标记的群消息即群员间对话。"""
+        if not bool(getattr(self, "to_me", False)):
+            return ""
+        return tag_label(to_me_tag.get_tag_name(), "1")
 
     def _render_reply_to_label(self) -> str:
         """渲染 [reply_to:xxx] 标签及引用预览（压缩空白后截取前 200 字符）。"""

@@ -57,13 +57,6 @@ CREATE INDEX IF NOT EXISTS idx_dl_token ON download_logs(token);
 CREATE INDEX IF NOT EXISTS idx_dl_time ON download_logs(downloaded_at);
 """
 
-# 旧库列迁移：缺列即补（幂等）
-_MIGRATE_COLUMNS = (
-    ("share_type", "TEXT NOT NULL DEFAULT 'file'"),
-    ("target_url", "TEXT NOT NULL DEFAULT ''"),
-    ("media_kind", "TEXT NOT NULL DEFAULT ''"),
-)
-
 # 分享类型
 SHARE_TYPE_FILE = "file"
 SHARE_TYPE_MEDIA = "media"
@@ -202,20 +195,10 @@ class ShareStore:
             await db.execute("PRAGMA synchronous=NORMAL;")
             await db.execute("PRAGMA busy_timeout=5000;")
             await db.executescript(_SCHEMA)
-            await self._migrate_columns(db)
             await db.commit()
             self._db = db
             log(f"ShareStore 就绪: {self._db_path}", tag="分享")
             return db
-
-    @staticmethod
-    async def _migrate_columns(db: aiosqlite.Connection) -> None:
-        """旧库缺列补齐（幂等）：多类型分享新增的 3 列。"""
-        cursor = await db.execute("PRAGMA table_info(share_links)")
-        existing = {row["name"] for row in await cursor.fetchall()}
-        for col, col_type in _MIGRATE_COLUMNS:
-            if col not in existing:
-                await db.execute(f"ALTER TABLE share_links ADD COLUMN {col} {col_type}")
 
     async def close(self) -> None:
         if self._db is not None:

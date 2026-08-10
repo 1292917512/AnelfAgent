@@ -97,22 +97,26 @@ class TestMergedExclusion:
 
 class TestDeepAssociations:
     async def test_two_hop_association_chain(self, bound_store, store: MemoryStore) -> None:
-        """A -(topic:x)-> B -(topic:y)-> C：深度召回应经二跳联想想出 C。"""
+        """A -(topic:x)-> B -(topic:y)-> C：深度召回应沿标签关联想出 C。
+
+        标签智能（共现/图谱邻居）扩展种子后，C 可能在一跳即被共现种子命中
+        （不带 hop=2 标记）——新契约只断言 C 出现在关联结果中，不断言跳数归属。
+        """
         await store.add(_entry("startanchor 起点记忆", ["user:1", "topic:x"]))
         await store.add(_entry("一跳关联", ["topic:x", "topic:y"]))
         await store.add(_entry("二跳关联", ["topic:y"]))
 
         result = json.loads(await bound_store.recall("startanchor", depth="deep"))
         related = result["related"]
-        hop2 = [r for r in related if r.get("hop") == 2]
-        assert any("二跳关联" in r["content"] for r in hop2)
+        assert any("二跳关联" in r["content"] for r in related)
 
-    async def test_shallow_only_one_hop(self, bound_store, store: MemoryStore) -> None:
+    async def test_shallow_association_expands_via_tag_intel(self, bound_store, store: MemoryStore) -> None:
+        """浅召回经标签共现扩展种子：topic:y 与 topic:x 共现 → 只带 y 的记忆可被联想。"""
         await store.add(_entry("startanchor 起点记忆", ["user:1", "topic:x"]))
         await store.add(_entry("一跳关联", ["topic:x", "topic:y"]))
-        await store.add(_entry("二跳关联", ["topic:y"]))
+        await store.add(_entry("共现关联", ["topic:y"]))
 
         result = json.loads(await bound_store.recall("startanchor"))
         contents = [r["content"] for r in result["related"]]
         assert any("一跳关联" in c for c in contents)
-        assert not any("二跳关联" in c for c in contents)
+        assert any("共现关联" in c for c in contents)

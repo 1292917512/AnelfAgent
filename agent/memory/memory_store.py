@@ -42,6 +42,7 @@ from .store.cognee_queue import ENTRY_KIND_MEMORY, CogneeSyncQueue
 from .store.connection import MemoryConnectionManager
 from .store.file_index import FileIndexStore
 from .store.search import SearchEngine
+from .store.tag_intel import ENTITY_PREFIXES
 from .store.tool_errors import ToolErrorTracker
 
 
@@ -228,13 +229,13 @@ class MemoryStore(BaseEntity):
             )
             row_id = cursor.lastrowid or 0
             await self._conn.vec_upsert_memory(db, row_id, blob)
+            await self._conn.fts_upsert_memory(db, row_id, entry.content)
             await self._cognee.enqueue_sync(
                 db,
                 row_id,
                 "upsert",
                 entry_projection_payload(entry, row_id),
             )
-            # FTS 触发器会自动同步，无需手动插入 memories_fts
         tag_hint = f" tags={entry.tags}" if entry.tags else ""
         log(f"📝 记忆写入 [{entry.memory_type.value}] id={row_id}{tag_hint}: {entry.content[:50]}", tag="思维")
         return row_id
@@ -266,7 +267,7 @@ class MemoryStore(BaseEntity):
         if not entry.id:
             return False
         db = await self._get_db()
-        set_clause = "content=?, importance=?, metadata_json=?, tags_json=?"
+        set_clause = "content=?, importance=?, metadata_json=?, tags_json=?, version=version+1"
         params: list[Any] = [
             entry.content,
             entry.importance,
@@ -292,13 +293,14 @@ class MemoryStore(BaseEntity):
             if (cursor.rowcount or 0) > 0:
                 if embedding_touched:
                     await self._conn.vec_upsert_memory(db, entry.id or 0, blob)
+                await self._conn.fts_upsert_memory(db, entry.id or 0, entry.content)
+                await self._record_audit(db, entry.id or 0, "update", entry.content[:80])
                 await self._cognee.enqueue_sync(
                     db,
                     entry.id,
                     "upsert",
                     entry_projection_payload(entry, entry.id),
                 )
-            # FTS 触发器会自动处理 UPDATE OF content
         updated = (cursor.rowcount or 0) > 0
         if updated:
             log(f"📝 记忆更新 [{entry.memory_type.value}] id={entry.id}: {entry.content[:50]}", tag="思维")
@@ -310,8 +312,9 @@ class MemoryStore(BaseEntity):
             cursor = await db.execute("DELETE FROM memories WHERE id=?", (memory_id,))
             if (cursor.rowcount or 0) > 0:
                 await self._conn.vec_delete_memories(db, [memory_id])
+                await self._conn.fts_delete_memories(db, [memory_id])
+                await self._record_audit(db, memory_id, "delete")
                 await self._cognee.enqueue_sync(db, memory_id, "delete")
-            # FTS 触发器会自动处理 DELETE
         return (cursor.rowcount or 0) > 0
 
     async def archive_memory(self, memory_id: int, reason: str = "manual_forget") -> bool:
@@ -351,10 +354,58 @@ class MemoryStore(BaseEntity):
         async with self._tx(db):
             cursor = await db.execute(delete_sql, delete_params)
             await self._conn.vec_delete_memories(db, memory_ids)
+            await self._conn.fts_delete_memories(db, memory_ids)
             for memory_id in memory_ids:
                 await self._cognee.enqueue_sync(db, memory_id, "delete")
-            # FTS 触发器会自动同步删除
         return cursor.rowcount or 0
+
+    # ------------------------------------------------------------------
+    # 审计（事件流只追加：谁改了哪条、何时、因何）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _record_audit(
+        db: aiosqlite.Connection, memory_id: int, action: str, detail: str = "",
+    ) -> None:
+        """追加一条记忆审计事件（失败不影响主流程）。"""
+        try:
+            await db.execute(
+                "INSERT INTO memory_audit(memory_id, action, detail, ts_ns) VALUES(?,?,?,?)",
+                (memory_id, action, detail[:200], int(time.time() * 1e9)),
+            )
+        except Exception as exc:
+            log(f"记忆审计写入失败: {exc}", "DEBUG")
+
+    async def get_audit_summary(self, hours: float = 24.0) -> Dict[str, int]:
+        """近 N 小时的审计事件统计（按动作分类计数）。"""
+        db = await self._get_db()
+        cutoff = int((time.time() - hours * 3600) * 1e9)
+        cursor = await db.execute(
+            "SELECT action, COUNT(*) AS c FROM memory_audit WHERE ts_ns > ? GROUP BY action",
+            (cutoff,),
+        )
+        return {str(r["action"]): int(r["c"]) for r in await cursor.fetchall()}
+
+    async def list_audit(self, memory_id: int = 0, limit: int = 50) -> list[Dict[str, Any]]:
+        """查询审计事件（memory_id=0 时返回全局最近事件）。"""
+        db = await self._get_db()
+        if memory_id:
+            cursor = await db.execute(
+                "SELECT memory_id, action, detail, ts_ns FROM memory_audit "
+                "WHERE memory_id=? ORDER BY id DESC LIMIT ?",
+                (memory_id, limit),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT memory_id, action, detail, ts_ns FROM memory_audit "
+                "ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+        return [
+            {"memory_id": r["memory_id"], "action": r["action"],
+             "detail": r["detail"], "timestamp": r["ts_ns"] / 1e9}
+            for r in await cursor.fetchall()
+        ]
 
     # ------------------------------------------------------------------
     # Cognee 投影队列（委托 CogneeSyncQueue）
@@ -453,21 +504,35 @@ class MemoryStore(BaseEntity):
         长期趋同于 1.0 失去区分度。每次整理对超过 stale_days 未访问且高于
         基线的记忆按比例下调；低于基线的交给有效分时间衰减与遗忘流程。
         permanent 与已合并（importance=0）记忆豁免。
-        批量 SQL 不同步 cognee 投影（避免每轮整理产生大量投影重写），
-        投影中的 importance 随该记忆下一次正常写入刷新。
+        批量调整后对受影响条目补 cognee 投影（上限 200 条/轮，防投影风暴），
+        保证权威层与投影层不长期漂移。
         Returns: 调整条数。
         """
         if rate <= 0:
             return 0
         db = await self._get_db()
         cutoff_ns = int((time.time() - stale_days * 86400) * 1e9)
+        where = ("importance > 0.5 AND type != 'permanent' "
+                 "AND COALESCE(last_accessed_ns, ts_ns) < ?")
+        # 先取受影响行（投影同步需要条快照），再批量更新
+        cursor = await db.execute(
+            f"SELECT {_MEM_COLUMNS} FROM memories WHERE {where} LIMIT 500",
+            (cutoff_ns,),
+        )
+        affected = [row_to_entry(r) for r in await cursor.fetchall()]
         async with self._tx(db):
             cursor = await db.execute(
                 "UPDATE memories SET importance = 0.5 + (importance - 0.5) * (1.0 - ?) "
-                "WHERE importance > 0.5 AND type != 'permanent' "
-                "AND COALESCE(last_accessed_ns, ts_ns) < ?",
+                f"WHERE {where}",
                 (min(rate, 1.0), cutoff_ns),
             )
+            # 投影同步：用更新后的 importance 重建负载（封顶防风暴）
+            for entry in affected[:200]:
+                entry.importance = 0.5 + (entry.importance - 0.5) * (1.0 - min(rate, 1.0))
+                await self._cognee.enqueue_sync(
+                    db, entry.id, "upsert",
+                    entry_projection_payload(entry, entry.id),
+                )
         return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
 
     # ------------------------------------------------------------------
@@ -492,8 +557,8 @@ class MemoryStore(BaseEntity):
             "INSERT OR REPLACE INTO memories_archive "
             "(id, type, content, source, importance, ts_ns, metadata_json, "
             "tags_json, access_count, archived_at_ns, archive_reason, "
-            "embedding_blob, last_accessed_ns) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "embedding_blob, last_accessed_ns, version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.id, entry.memory_type.value, entry.content, entry.source,
                 entry.importance, int(entry.timestamp * 1e9),
@@ -502,10 +567,13 @@ class MemoryStore(BaseEntity):
                 entry.access_count, int(time.time() * 1e9), reason,
                 pack_embedding(entry.embedding) if entry.embedding else None,
                 int(entry.last_accessed * 1e9),
+                entry.version,
             ),
         )
         await db.execute("DELETE FROM memories WHERE id = ?", (entry.id,))
         await self._conn.vec_delete_memories(db, [entry.id])
+        await self._conn.fts_delete_memories(db, [entry.id])
+        await self._record_audit(db, entry.id, "archive", reason)
         await self._cognee.enqueue_sync(db, entry.id, "delete")
 
     async def restore_memory(self, memory_id: int) -> bool:
@@ -519,20 +587,23 @@ class MemoryStore(BaseEntity):
             return False
         blob: Optional[bytes] = row["embedding_blob"] if "embedding_blob" in row.keys() else None
         last_accessed_ns = row["last_accessed_ns"] if "last_accessed_ns" in row.keys() else 0
+        version = int(row["version"]) if "version" in row.keys() and row["version"] else 1
         async with self._tx(db):
             await db.execute(
                 "INSERT OR REPLACE INTO memories "
                 "(id, type, content, source, importance, ts_ns, metadata_json, "
-                "embedding_blob, tags_json, access_count, last_accessed_ns, migrated) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                "embedding_blob, tags_json, access_count, last_accessed_ns, migrated, version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
                 (
                     row["id"], row["type"], row["content"], row["source"],
                     row["importance"], row["ts_ns"], row["metadata_json"],
                     blob,
                     row["tags_json"], row["access_count"], last_accessed_ns,
+                    version,
                 ),
             )
             await self._conn.vec_upsert_memory(db, memory_id, blob)
+            await self._conn.fts_upsert_memory(db, memory_id, row["content"])
             await db.execute("DELETE FROM memories_archive WHERE id = ?", (memory_id,))
             # 归档时入队了 delete，恢复必须补 upsert，否则 cognee 侧残留已删除状态
             entry = await self.get(memory_id)
@@ -598,10 +669,12 @@ class MemoryStore(BaseEntity):
             min_age_days: int = 30,
             score_threshold: float = 0.08,
             limit: int = 100,
+            min_keep_per_type: Optional[int] = None,
     ) -> Dict[str, Any]:
         """遗忘低价值记忆：有效分低于阈值且超过最小年龄的非永久记忆。
 
-        保守策略：permanent 豁免 + 最小年龄保护（新记忆不遗忘）。
+        保守策略：permanent 豁免 + 最小年龄保护（新记忆不遗忘）+
+        每类最小保留护栏（min_keep_per_type，None 时读配置，默认 20）。
         遗忘为归档制（memories_archive）：不参与召回，但可通过 restore_memory 恢复。
         Returns:
             遗忘报告 {forgotten: [{id, type, score}], count}
@@ -617,10 +690,20 @@ class MemoryStore(BaseEntity):
 
         forgotten: list[Dict[str, Any]] = []
         to_archive: list[tuple[MemoryEntry, float]] = []
+        # 最小保留护栏：每类活跃记忆低于下限后不再遗忘（防极端清理掏空小类）
+        min_keep = (
+            min_keep_per_type if min_keep_per_type is not None
+            else int(_get_memory_config_value("memory_forget_min_keep_per_type", 20))
+        )
+        type_counts = await self.get_type_counts()
         for row in rows:
             entry = row_to_entry(row)
             score = self.compute_effective_score(entry, now)
             if score < score_threshold and entry.id is not None:
+                remaining = type_counts.get(entry.memory_type.value, 0)
+                if remaining <= min_keep:
+                    continue
+                type_counts[entry.memory_type.value] = remaining - 1
                 forgotten.append({
                     "id": entry.id,
                     "type": entry.memory_type.value,
@@ -747,6 +830,8 @@ class MemoryStore(BaseEntity):
             )
             await db.execute("DELETE FROM memories WHERE id = ?", (drop_id,))
             await self._conn.vec_delete_memories(db, [drop_id])
+            await self._conn.fts_delete_memories(db, [drop_id])
+            await self._record_audit(db, drop_id, "merge", f"并入 #{keep_id}")
             await self._cognee.enqueue_sync(db, drop_id, "delete")
         return True
 
@@ -816,6 +901,52 @@ class MemoryStore(BaseEntity):
     async def list_tags(self) -> Dict[str, int]:
         """聚合所有标签及其出现次数。"""
         return await self._search.list_tags()
+
+    async def cooccurring_tags(
+        self, seed_tags: list[str], *, limit: int = 3,
+    ) -> list[tuple[str, float]]:
+        """共现联想：与种子标签同现过的其他关联标签（共现次数×IDF 降序）。"""
+        return await self._search.cooccurring_tags(seed_tags, limit=limit)
+
+    async def extract_query_mentions(
+        self, query: str, *, limit: int = 3,
+    ) -> list[str]:
+        """从查询文本识别已知实体/话题提及，返回对应标签。"""
+        return await self._search.extract_query_mentions(query, limit=limit)
+
+    async def expand_tag_seeds(
+        self,
+        seeds: list[str],
+        *,
+        graph_limit: int = 2,
+        cooc_limit: int = 2,
+    ) -> list[str]:
+        """联想种子三层扩展：直接标签 → 图谱邻居 → 共现标签（保序去重）。
+
+        图谱邻居：种子实体在关系图谱中的相邻节点（user:/group: 标签）；
+        共现标签：与种子常一起出现的稀有标签（共现次数×IDF 排序）。
+        """
+        out = list(seeds)
+        entity_seeds = [t for t in out if t.startswith(ENTITY_PREFIXES)]
+        if entity_seeds:
+            try:
+                added = 0
+                for edge in await self.graph.edges_for_scopes(entity_seeds, limit=10):
+                    for endpoint in (edge["subject"], edge["object"]):
+                        key = endpoint["node_key"]
+                        if (key.startswith(ENTITY_PREFIXES) and key not in out
+                                and added < graph_limit):
+                            out.append(key)
+                            added += 1
+            except Exception as exc:
+                log(f"图谱邻居种子扩展失败: {exc}", "DEBUG", tag="思维")
+        try:
+            for tag, _score in await self._search.cooccurring_tags(out, limit=cooc_limit):
+                if tag not in out:
+                    out.append(tag)
+        except Exception as exc:
+            log(f"共现种子扩展失败: {exc}", "DEBUG", tag="思维")
+        return out
 
     async def search_by_tags(self, tags: list[str], limit: int = 20) -> list[MemoryEntry]:
         """按标签交集筛选记忆（返回包含所有指定标签的记忆）。"""

@@ -34,6 +34,7 @@ class ConsolidationReport:
     cache_cleaned: int = 0
     archive_purged: int = 0
     cognee_pending: int = 0
+    vocab_refreshed: int = 0
     errors: List[str] = field(default_factory=list)
 
     def to_log_lines(self) -> List[str]:
@@ -54,6 +55,8 @@ class ConsolidationReport:
             lines.append(f"物理删除 {self.archive_purged} 条超期归档记忆")
         if self.cognee_pending:
             lines.append(f"cognee 同步积压 {self.cognee_pending} 条（已唤醒）")
+        if self.vocab_refreshed:
+            lines.append(f"FTS 词典刷新 {self.vocab_refreshed} 词")
         if self.errors:
             lines.append(f"异常 {len(self.errors)} 项: {'; '.join(self.errors[:3])}")
         return lines
@@ -141,6 +144,13 @@ class MemoryConsolidator:
         except Exception as exc:
             report.errors.append(f"cognee 检查失败: {exc}")
 
+        # 8. jieba 自定义词典刷新：图谱节点称呼 + 高频标签喂给分词器，
+        #    新实体/新话题的专名不被切碎（作用于后续写入与查询两侧）
+        try:
+            report.vocab_refreshed = await self._refresh_fts_vocab()
+        except Exception as exc:
+            report.errors.append(f"词典刷新失败: {exc}")
+
         if report.forgotten_count or report.merged_count or report.limit_removed:
             log(
                 f"记忆整理完成: 遗忘 {report.forgotten_count}, 合并 {report.merged_count}, "
@@ -166,6 +176,35 @@ class MemoryConsolidator:
         except Exception:
             return 0
 
+    async def _refresh_fts_vocab(self) -> int:
+        """刷新 FTS 自定义词典（图谱节点称呼 + 高频标签词），返回词条数。"""
+        from .store.tokenizer import add_words
+
+        words: set[str] = set()
+        try:
+            tag_df = await self._store.list_tags()
+            for tag, count in tag_df.items():
+                if count >= 2 and ":" in tag:
+                    value = tag.split(":", 1)[1].strip()
+                    if len(value) >= 2:
+                        words.add(value)
+        except Exception:
+            pass
+        try:
+            db = await self._store._get_db()
+            cursor = await db.execute(
+                "SELECT label FROM graph_nodes WHERE label != '' AND archived = 0"
+            )
+            words.update(
+                str(r["label"]).strip() for r in await cursor.fetchall()
+                if len(str(r["label"]).strip()) >= 2
+            )
+        except Exception:
+            pass
+        if words:
+            add_words(words)
+        return len(words)
+
 
 # ------------------------------------------------------------------
 # 配置注册
@@ -189,6 +228,10 @@ _CONSOLIDATOR_CONFIGS = {
             "description": "遗忘有效分阈值（低于此分且超过最小年龄的记忆被清理）",
             "default": 0.08,
         },
+        "memory_forget_min_keep_per_type": {
+            "description": "遗忘最小保留：每类活跃记忆低于该数量后不再遗忘（护栏）",
+            "default": 20,
+        },
         "memory_importance_relax_days": {
             "description": "重要性松弛：超过 N 天未被访问的记忆 importance 开始向基线 0.5 回归",
             "default": 14,
@@ -204,6 +247,18 @@ _CONSOLIDATOR_CONFIGS = {
         "memory_archive_retention_days": {
             "description": "归档记忆保留天数（超期物理删除，0 = 永久保留）",
             "default": 90,
+        },
+        "memory_recall_timeout_seconds": {
+            "description": "被动召回检索整体超时（秒），超时回退近期记忆不阻塞对话",
+            "default": 5.0,
+        },
+        "memory_recall_permanent_pin": {
+            "description": "永久记忆置顶注入条数（0 = 关闭；主人教导/规则类每轮固定注入）",
+            "default": 3,
+        },
+        "memory_query_rewrite_enabled": {
+            "description": "被动召回前是否用轻量 LLM 改写检索查询（口语上下文→检索友好形式）",
+            "default": True,
         },
         "notes_inject_max_chars": {
             "description": "主便签注入上下文的最大字符数（超出按章节优先级裁剪）",

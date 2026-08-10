@@ -143,8 +143,13 @@ _MEMORY_USAGE_HINT = (
     "- 关系图谱（graph_* 工具）= 「谁和谁/什么和什么 什么关系」：A 是 B 的同事、A 喜欢 C 这类"
     "结构化关系一律 graph_add_relation 落库（必填 evidence），不要写进画像或记忆正文\n"
     "- 便签文件 = 工作笔记与索引（规则/计划/教训/称呼速查），不堆详情、不复制画像全文\n"
+    "- 短期记忆 = 临时提醒区（任务指令/定时提醒/推送），事项完成后用 remove_short_term_memory 清理，不堆积\n"
     "- 技能系统 = 工具使用经验/工作流技巧（create_skill，不要写成记忆，避免双写漂移）\n"
     "- cognee 图谱 = 以上内容的语义投影层，仅供模糊检索增强，不是权威存储，不直接写入\n"
+    "披露边界（全记得，但不什么都说）：\n"
+    "- 记忆按来源人归属，对任何人的对话都可用于理解上下文与联想；但标注「私事」的记忆"
+    "（sensitivity=private/secret）不要向第三方透露，除非对方就是当事人或本人明确同意\n"
+    "- 谈及他人的私事前先想清楚「这话该不该由我告诉这个人」；拿捏不准就含糊带过\n"
     "查询路由：\n"
     "- 看到人物 UID → get_entity_profile 查画像；想知道某人的关系网 → graph_query；"
     "两实体的关系链 → graph_path\n"
@@ -167,7 +172,7 @@ _URGENT_ROUND_WARNING = (
     "避免在此阶段开启复杂工具链。"
 )
 
-_NO_PENDING_HINT = "[当前无外部消息] 当前处于自主思考阶段，可执行工具操作或调用 end_reply 结束，必须使用工具"
+_NO_PENDING_HINT = "[当前无外部消息] 自主思考阶段：可执行工具操作，或调用 end_reply 结束"
 
 _PARALLEL_CALL_HINT = (
     "# 并行工具调用\n"
@@ -185,7 +190,7 @@ _BACKGROUND_TASK_HINT = (
     "- 想等结果 → 告知用户后调用 end_reply 结束本轮，完成时你会被自动唤醒"
 )
 
-_PENDING_HINT = "→ 处理消息或执行操作，空消息表示当前处于自主思考阶段，不是对方发送的，选择是继续调用流程还是直接结束会话，不要重复发送消息,完成后调用 end_reply"
+_PENDING_HINT = "→ 处理消息或执行操作，完成后调用 end_reply。空消息表示自主思考阶段（非对方发送），不要重复发送消息"
 
 # 会话通知：其他会话的未读消息以"弹窗"形式提示（固定模板，动态内容在末尾 exec_context）
 _SESSION_NOTIFY_HINT = (
@@ -483,7 +488,6 @@ class ContextAssembly:
             adapter_key: str = "",
             target_id: str = "",
             models_summary: str = "",
-            anthropic_breakpoint: bool = False,
             prefetched_conversation: Optional[List[Dict]] = None,
             scope: str = "",
             profile_msgs: Optional[List[Dict]] = None,
@@ -521,7 +525,6 @@ class ContextAssembly:
             adapter_key=adapter_key,
             scope=scope,
             prefetched_conversation=prefetched_conversation,
-            anthropic_breakpoint=anthropic_breakpoint,
         )
         pipeline = self._pipeline if _tail_injection_enabled() else self._pipeline_legacy
         all_msgs = await pipeline.build(inp)
@@ -645,7 +648,15 @@ class ContextAssembly:
     @context_block("volatile", VOL_SESSION + 2, "短期记忆（volatile 层）")
     def _blk_volatile(self, inp: ContextInput) -> List[Dict]:
         """短期记忆桶（角色按存储原样使用，主流格式不做转换）。"""
-        return list(self._work_memory.get_temporary(inp.scope))
+        clips = list(self._work_memory.get_temporary(inp.scope))
+        if not clips:
+            return []
+        header = {
+            "role": "system",
+            "content": "[短期记忆] 以下是临时提醒区内容（任务指令/定时提醒/系统推送等，按顺序对应索引 0 起）；"
+                       "对应事项完成后用 remove_short_term_memory 清理，避免堆积。",
+        }
+        return [header] + clips
 
     @context_block("memory", VOL_SESSION + 3, "语义召回 + 跨频道 + 技能匹配")
     def _blk_memory(self, inp: ContextInput) -> List[Dict]:

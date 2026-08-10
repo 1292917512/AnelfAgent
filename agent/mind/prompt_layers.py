@@ -208,12 +208,6 @@ def is_prompt_cache_enabled() -> bool:
     return get_config_bool("prompt_cache_enabled", True)
 
 
-def is_anthropic_breakpoint_enabled() -> bool:
-    """Anthropic cache_control 断点注入开关。"""
-    from core.config import get_config_bool
-    return get_config_bool("prompt_cache_anthropic_breakpoint", True)
-
-
 # ------------------------------------------------------------------
 # 配置注册
 # ------------------------------------------------------------------
@@ -233,8 +227,20 @@ _PROMPT_CACHE_CONFIGS = {
             "default": True,
         },
         "prompt_cache_summary_breakpoint": {
-            "description": "是否在对话摘要块上注入第 4 个 Anthropic 缓存断点（摘要块在折叠周期内字节固定，是历史前缀的缓存锚点）",
+            "description": "是否在对话摘要块上注入缓存断点（摘要块在折叠周期内字节固定，是历史前缀的缓存锚点）",
             "default": True,
+        },
+        "prompt_cache_tools_breakpoint": {
+            "description": "是否在 wire tools 数组末尾注入缓存断点（整个工具 schema 前缀进缓存；消息侧断点满 4 个时自动让位，仅 Anthropic 线生效）",
+            "default": True,
+        },
+        "prompt_cache_anthropic_ttl": {
+            "description": "Anthropic 缓存断点 TTL：5m（默认，写入 1.25x）或 1h（写入 2x，适合会话间隔 >5min；部分兼容网关不支持，被拒绝时调回 5m）",
+            "default": "5m",
+        },
+        "anthropic_cache_pool_size": {
+            "description": "Anthropic 线缓存亲和连接池大小：kimi coding 等网关的 prompt 缓存是节点本地 + TCP 连接亲和，池越小触达节点越少、命中越稳；并发超出池大小时排队（修改后需重建模型客户端生效）",
+            "default": 4,
         },
         "context_tail_injection_enabled": {
             "description": "是否将画像/召回/技能/短期记忆等每会话重建内容移到对话历史之后注入（尾部动态区），使历史进入缓存前缀；关闭恢复旧布局",

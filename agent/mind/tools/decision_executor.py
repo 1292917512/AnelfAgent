@@ -112,10 +112,20 @@ async def execute_remember(mind: Mind, decision: Decision) -> None:
     if await is_duplicate_memory(mind, decision.content):
         log(f"记忆去重跳过: {decision.content[:80]}", tag="思维")
         return
+    # 决策记忆接入标签网络：type:fact + 当前 scope 标签（联想/上下文加权生效）
+    tags = ["type:fact"]
+    try:
+        from agent.memory.tools import _current_scope_tag
+        scope_tag = _current_scope_tag()
+        if scope_tag:
+            tags.append(scope_tag)
+    except Exception:
+        pass
     entry = MemoryEntry(
         memory_type=MemoryType.SEMANTIC,
         content=decision.content,
         importance=0.7,
+        tags=tags,
     )
     await mind.memory_store.add(entry)
     from agent.memory.embedding import wake_embedding_worker

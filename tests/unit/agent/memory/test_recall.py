@@ -18,7 +18,7 @@ from agent.memory.memory_types import MemorySearchResult, MemoryType
 def _result(rid: str, score: float, mtype: str = "semantic", ts: float = 0.0) -> MemorySearchResult:
     return MemorySearchResult(
         id=rid, snippet=f"内容{rid}", score=score, memory_type=mtype,
-        provenance={"timestamp": ts} if ts else {},
+        timestamp=ts,
     )
 
 

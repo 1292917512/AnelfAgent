@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import litellm
 
 from agent.llm.llm_client import (
+    API_TYPE_ANTHROPIC,
     API_TYPES,
     DEFAULT_TIMEOUT,
     LLMClient,
@@ -561,6 +562,9 @@ class LLMManager(BaseEntity):
         index = 0
         while index < len(candidates):
             candidate = candidates[index]
+            # 跨供应商回退：cache_control 断点是 Anthropic 专属字段，
+            # 非 Anthropic 候选必须收到剥离副本（原列表与调用方共享，禁止原地改）
+            candidate_messages = self._messages_for_candidate(candidate, messages)
             if index:
                 info(
                     f"尝试回退: {candidate.config.name} ({candidate.config.model})",
@@ -569,7 +573,7 @@ class LLMManager(BaseEntity):
             try:
                 result = await self._chat_candidate(
                     candidate,
-                    messages,
+                    candidate_messages,
                     options=options,
                     tools=tools,
                     tool_choice=tool_choice,
@@ -610,6 +614,30 @@ class LLMManager(BaseEntity):
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("没有可用的 LLM 候选模型")
+
+    @staticmethod
+    def _messages_for_candidate(
+        candidate: LLMClient,
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """按候选供应商适配消息：非 Anthropic 候选剥离缓存断点副本。
+
+        断点由主模型（Anthropic 线）注入；回退到 OpenAI 兼容端点时
+        泄露的 cache_control 可能被严格校验拒绝。无断点或非回退场景
+        原样返回（零拷贝）。
+        """
+        from agent.llm.prompt_cache import count_breakpoints, strip_cache_control_copy
+
+        if candidate.config.api_type == API_TYPE_ANTHROPIC:
+            return messages
+        if count_breakpoints(messages) == 0:
+            return messages
+        info(
+            f"回退候选 {candidate.config.name} 非 Anthropic 线，"
+            "已剥离缓存断点（Anthropic 专属字段）",
+            tag="模型",
+        )
+        return strip_cache_control_copy(messages)
 
     async def _chat_candidate(
         self,

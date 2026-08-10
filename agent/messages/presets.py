@@ -14,6 +14,7 @@ from core.tags import (
     reply_to_tag,
     session_id_tag,
     time_tag,
+    to_me_tag,
     uid_tag,
 )
 
@@ -43,7 +44,7 @@ class MessageGroupUser(EverythingGroup):
     user_name: str = ""
     char_type: CharType = CharType.USER
     to_me: bool = False
-    tag_list: list[Tag] = Field(default_factory=lambda: [time_tag, channel_tag, session_id_tag, message_id_tag, group_id_tag, uid_tag, name_tag, nickname_tag, reply_to_tag])
+    tag_list: list[Tag] = Field(default_factory=lambda: [time_tag, channel_tag, session_id_tag, message_id_tag, group_id_tag, uid_tag, name_tag, nickname_tag, to_me_tag, reply_to_tag])
 
 
 class MessageQuestion(Nothing):

@@ -52,33 +52,44 @@ class TestTailInjectionLayout:
         ]
 
     async def test_summary_breakpoint_injected(self) -> None:
-        """Anthropic 模式下第 4 断点打在对话历史末尾（历史纯追加，断点随之前移）。"""
+        """发送边界装饰：断点打在 stable/context 层末 + 对话历史末尾。"""
+        from agent.llm.prompt_cache import decorate_messages
         pfc = _pfc()
-        msgs = await pfc.build_llm_context(**_BASE_KWARGS, anthropic_breakpoint=True)
+        msgs = await pfc.build_llm_context(**_BASE_KWARGS)
+        assert not [m for m in msgs if m.get("cache_control")]  # 管线不注入
+        msgs = decorate_messages(msgs, anthropic=True)
         conversation = [m for m in msgs if m.get("_layer") == "conversation"]
         assert conversation[-1].get("cache_control") == {"type": "ephemeral"}
         summary = next(m for m in msgs if m.get("_layer") == "summary")
         assert "cache_control" not in summary
         breakpoints = [m for m in msgs if m.get("cache_control")]
-        # 人设/工具/便签/历史末尾 = 4 个断点（Anthropic 上限）
-        assert len(breakpoints) == 4
+        # stable 层末（工具块）/context 层末（便签）/历史末尾 = 3 个，
+        # 第 4 个预留给工具链尾锚点（Anthropic 上限 4）
+        assert len(breakpoints) == 3
+        assert breakpoints[0]["_layer"] == "stable"
+        assert breakpoints[1]["_layer"] == "context"
+        assert breakpoints[2]["_layer"] == "conversation"
 
     async def test_breakpoint_falls_back_to_summary(self) -> None:
-        """无对话历史时第 4 断点回退到摘要块。"""
+        """无对话历史时历史锚点回退到摘要块。"""
+        from agent.llm.prompt_cache import decorate_messages
         pfc = _pfc()
         kwargs = {**_BASE_KWARGS, "prefetched_conversation": []}
-        msgs = await pfc.build_llm_context(**kwargs, anthropic_breakpoint=True)
+        msgs = await pfc.build_llm_context(**kwargs)
+        msgs = decorate_messages(msgs, anthropic=True)
         summary = next(m for m in msgs if m.get("_layer") == "summary")
         assert summary.get("cache_control") == {"type": "ephemeral"}
 
     async def test_no_summary_breakpoint_on_history(self) -> None:
-        """无摘要行时无摘要块，第 4 断点落在对话历史末尾。"""
+        """无摘要行时无摘要块，历史锚点落在对话历史最后一条。"""
+        from agent.llm.prompt_cache import decorate_messages
         pfc = _pfc()
         kwargs = {**_BASE_KWARGS, "summary_row": None}
-        msgs = await pfc.build_llm_context(**kwargs, anthropic_breakpoint=True)
+        msgs = await pfc.build_llm_context(**kwargs)
+        msgs = decorate_messages(msgs, anthropic=True)
         assert not [m for m in msgs if m.get("_layer") == "summary"]
         breakpoints = [m for m in msgs if m.get("cache_control")]
-        assert len(breakpoints) == 4
+        assert len(breakpoints) == 3
         conversation = [m for m in msgs if m.get("_layer") == "conversation"]
         assert conversation[-1].get("cache_control") == {"type": "ephemeral"}
 

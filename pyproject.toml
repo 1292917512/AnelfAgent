@@ -43,6 +43,7 @@ dependencies = [
     "chardet>=5,<6",
     "sqlite-vec>=0.1.9",
     "tiktoken>=0.12.0",
+    "jieba>=0.42.1",
     "pypdf>=6.14.2",
     "python-docx>=1.2.0",
     # 个人微信（Weixin / iLink Bot API）频道

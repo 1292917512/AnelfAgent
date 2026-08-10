@@ -154,7 +154,6 @@ async def get_recollection(
         adapter_key=getattr(anything, "adapter_key", ""),
         target_id=mind._resolve_target_id(anything),
         models_summary=models_summary,
-        anthropic_breakpoint=mind._is_anthropic_model(),
         prefetched_conversation=conversation_list,
         scope=entity_scope,
         profile_msgs=profile_msgs,

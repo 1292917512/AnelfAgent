@@ -84,6 +84,16 @@ async def _invoke_llm_unified(
     from agent.mind.context_snapshot import context_snapshot
     await context_snapshot.try_capture(messages, tools, model_name)
 
+    # 缓存断点装饰（唯一装饰点，_layer 标签尚存时按锚点表放置；
+    # 按主客户端线型判定，回退候选的供应商适配在 llm_manager）
+    from agent.llm.prompt_cache import decorate_messages, is_anthropic_wire
+    _llm = getattr(mind, "llm", None)
+    _llm_cfg = getattr(_llm, "config", None)
+    messages = decorate_messages(messages, anthropic=is_anthropic_wire(
+        getattr(_llm_cfg, "litellm_model", "") or "",
+        getattr(_llm_cfg, "api_type", "") or "",
+    ))
+
     # 发送边界统一规整（message_schema.normalize_for_send）：
     # 角色归一（头部提示词分层保持 system 供 Anthropic 前缀缓存，中途注入
     # 转 user 保留位置语义）+ 尾部 assistant prefill 修复

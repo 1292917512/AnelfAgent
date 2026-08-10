@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS voice_segments (
 CREATE INDEX IF NOT EXISTS idx_seg_speaker_ts ON voice_segments(speaker_id, ts_ns);
 CREATE INDEX IF NOT EXISTS idx_seg_ts ON voice_segments(ts_ns);
 CREATE INDEX IF NOT EXISTS idx_seg_read ON voice_segments(read);
+CREATE INDEX IF NOT EXISTS idx_seg_recording ON voice_segments(recording_path);
 
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -300,7 +301,6 @@ class VoiceprintStore:
                 await db.execute("PRAGMA busy_timeout=5000;")
                 self._vec_available = await self._load_vec_extension(db)
                 await db.executescript(_SCHEMA)
-                await self._migrate(db)
                 await self._init_fts(db)
                 await db.commit()
                 self._db = db
@@ -339,28 +339,6 @@ class VoiceprintStore:
         except Exception as exc:
             log(f"FTS5 不可用，转写检索降级为 LIKE: {exc}", "WARNING", tag="音源库")
             self.fts_available = False
-
-    async def _migrate(self, db: aiosqlite.Connection) -> None:
-        """惰性迁移：为旧库补齐新增列与其索引（幂等，新库同样经此建索引）。"""
-        cursor = await db.execute("PRAGMA table_info(voice_segments)")
-        columns = {row["name"] for row in await cursor.fetchall()}
-        if "recording_path" not in columns:
-            await db.execute(
-                "ALTER TABLE voice_segments ADD COLUMN recording_path TEXT NOT NULL DEFAULT ''")
-            log("voice_segments 迁移: +recording_path", tag="音源库")
-        if "part_start_ms" not in columns:
-            await db.execute(
-                "ALTER TABLE voice_segments ADD COLUMN part_start_ms "
-                "INTEGER NOT NULL DEFAULT 0")
-            log("voice_segments 迁移: +part_start_ms", tag="音源库")
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_seg_recording ON voice_segments(recording_path)")
-        cursor = await db.execute("PRAGMA table_info(recordings)")
-        rec_columns = {row["name"] for row in await cursor.fetchall()}
-        if "files_json" not in rec_columns:
-            await db.execute(
-                "ALTER TABLE recordings ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'")
-            log("recordings 迁移: +files_json", tag="音源库")
 
     async def close(self) -> None:
         if self._db is not None:

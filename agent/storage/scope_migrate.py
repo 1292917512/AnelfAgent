@@ -171,15 +171,6 @@ async def migrate_main_db_scopes(
     if await _user_version(db) >= MAIN_SCOPE_MIGRATION_VERSION:
         return False
 
-    # adapter_key 列是懒迁移列，此处先行确保，供归属判定使用
-    cursor = await db.execute("PRAGMA table_info(conversation_messages)")
-    cols = {row[1] for row in await cursor.fetchall()}
-    if "adapter_key" not in cols:
-        await db.execute(
-            "ALTER TABLE conversation_messages ADD COLUMN adapter_key TEXT NOT NULL DEFAULT ''"
-        )
-        await db.commit()
-
     await _backup_db(db, db_path, ".pre-scope-migration.bak")
     try:
         # 会话表：scope 级归属映射（空 adapter 行跟随同 scope 的既有频道）

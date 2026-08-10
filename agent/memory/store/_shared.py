@@ -18,7 +18,8 @@ from ..memory_utils import unpack_embedding
 # memories 表显式列名（避免 SELECT * 对顺序的依赖）
 MEM_COLUMNS = (
     "id, type, content, source, importance, ts_ns, "
-    "metadata_json, embedding_blob, tags_json, access_count, last_accessed_ns, migrated"
+    "metadata_json, embedding_blob, tags_json, access_count, last_accessed_ns, "
+    "migrated, version"
 )
 
 
@@ -31,21 +32,41 @@ def get_memory_config_value(field: str, default: Any = None) -> Any:
         return default
 
 
-def time_decay(ts: float, half_life_hours: Optional[float] = None) -> float:
-    """基于时间的衰减因子，越新越接近 1。"""
+def time_decay(
+    ts: float,
+    half_life_hours: Optional[float] = None,
+    now: Optional[float] = None,
+) -> float:
+    """基于时间的衰减因子，越新越接近 1（艾宾浩斯式半衰期指数衰减）。"""
     if half_life_hours is None:
         days = float(get_memory_config_value("memory_time_decay_days", 30))
         half_life_hours = max(1.0, days * 24)
-    age_hours = (time.time() - ts) / 3600.0
-    return 0.5 ** (age_hours / half_life_hours)
+    age_hours = ((now or time.time()) - ts) / 3600.0
+    return 0.5 ** (max(0.0, age_hours) / half_life_hours)
 
 
-def tag_match_score(query_tags: list[str], memory_tags: list[str]) -> float:
-    """标签匹配得分：查询标签在记忆标签中的命中比例。"""
+def idf_tag_score(
+    query_tags: list[str],
+    memory_tags: list[str],
+    tag_df: Dict[str, int],
+    total_docs: int,
+) -> float:
+    """IDF 加权标签匹配分：命中标签的 IDF 和 / 查询标签的 IDF 和（0~1）。
+
+    高频标签（如全局 user: 标签）区分度低、权重小；稀有标签（如某次事件的
+    topic:）信息量高、权重大。查询标签不在统计中时按 0 文档计（最高权重）。
+    """
     if not query_tags or not memory_tags:
         return 0.0
-    hits = sum(1 for t in query_tags if t in memory_tags)
-    return hits / len(query_tags)
+    mem_set = set(memory_tags)
+    total = 0.0
+    hits = 0.0
+    for tag in query_tags:
+        weight = math.log(1.0 + total_docs / (1.0 + tag_df.get(tag, 0)))
+        total += weight
+        if tag in mem_set:
+            hits += weight
+    return hits / total if total > 0 else 0.0
 
 
 def frequency_boost(access_count: int, max_access: int) -> float:
@@ -83,14 +104,12 @@ def compute_effective_score(entry: MemoryEntry, now: Optional[float] = None) -> 
 
     有效分模拟人脑遗忘曲线：重要性是基础，时间推移衰减，
     频繁访问的记忆获得强化抵抗遗忘。permanent 永远返回 1.0（不遗忘）。
+    时间衰减项与检索评分共用 time_decay（同一半衰期配置，单一实现）。
     """
     if entry.memory_type == MemoryType.PERMANENT:
         return 1.0
     now = now or time.time()
-    age_hours = max(0.0, (now - entry.timestamp) / 3600.0)
-    days = float(get_memory_config_value("memory_time_decay_days", 30))
-    half_life_hours = max(1.0, days * 24)
-    decay = 0.5 ** (age_hours / half_life_hours)
+    decay = time_decay(entry.timestamp, now=now)
     reinforcement = 1.0 + math.log1p(entry.access_count) * 0.15
     return entry.importance * decay * reinforcement
 
@@ -113,6 +132,11 @@ def row_to_entry(row: Any) -> MemoryEntry:
         last_accessed = (row["last_accessed_ns"] or 0) / 1e9
     except (TypeError, KeyError):
         pass
+    version = 1
+    try:
+        version = int(row["version"] or 1)
+    except (TypeError, KeyError, ValueError):
+        pass
 
     return MemoryEntry(
         id=row["id"],
@@ -126,6 +150,7 @@ def row_to_entry(row: Any) -> MemoryEntry:
         tags=tags,
         access_count=access_count,
         last_accessed=last_accessed,
+        version=version,
     )
 
 
@@ -144,36 +169,13 @@ def entry_projection_payload(entry: MemoryEntry, memory_id: int) -> Dict[str, An
 
 
 def build_fts_query(raw: str) -> Optional[str]:
-    """构建 FTS5 查询：中文 bigram 切分 + 英文原词，使用 OR 组合。"""
-    raw = raw.strip()
-    if not raw:
-        return None
+    """构建 FTS5 查询：分词（jieba，降级 bigram）+ 短语引用，OR 组合。"""
+    from .tokenizer import tokenize_for_query
 
-    tokens: list[str] = []
-    for word in raw.split():
-        word = word.replace('"', '""')
-        cjk_chars = [ch for ch in word if '\u4e00' <= ch <= '\u9fff']
-        if len(cjk_chars) >= 2:
-            # bigram 切分中文（跳步=2 减少噪声 token）
-            for i in range(0, len(cjk_chars) - 1, 2):
-                end = min(i + 2, len(cjk_chars))
-                if end - i >= 2:
-                    tokens.append("".join(cjk_chars[i:end]))
-            # 确保尾部不丢失
-            if len(cjk_chars) > 2 and len(cjk_chars) % 2 == 1:
-                tokens.append("".join(cjk_chars[-2:]))
-        elif len(word) >= 2:
-            tokens.append(word)
-
+    tokens = tokenize_for_query(raw)
     if not tokens:
         return None
-    seen: set[str] = set()
-    unique: list[str] = []
-    for t in tokens:
-        if t not in seen:
-            seen.add(t)
-            unique.append(t)
-    return " OR ".join(f'"{t}"' for t in unique)
+    return " OR ".join(f'"{t}"' for t in tokens)
 
 
 def escape_like(value: str) -> str:

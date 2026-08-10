@@ -65,7 +65,7 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
         return (
           <div className="p-3 rounded-lg bg-elevated border border-border space-y-2">
             <p className="text-xs font-semibold text-heading">{t("cache.title")}</p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
               <div>
                 <p className={cn("text-sm font-bold font-mono", (stale || unobs) ? "text-muted" : "text-emerald-500")}>
                   {unobs ? "—" : lastCall ? `${Math.round(lastCall.cache_hit_rate * 100)}%` : "—"}
@@ -100,6 +100,20 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
                     : "—"}
                 </p>
                 <p className="text-[10px] text-muted mt-0.5">{t("cache.stablePrefix")}</p>
+              </div>
+              <div>
+                <p className={cn(
+                  "text-sm font-bold font-mono",
+                  lastCall && !unobs && snapshot.cache.expected_prefix_tokens != null
+                    && lastCall.cache_read_input_tokens < snapshot.cache.expected_prefix_tokens * 0.5
+                    ? "text-amber-500"
+                    : "text-heading",
+                )}>
+                  {snapshot.cache.expected_prefix_tokens != null
+                    ? `~${snapshot.cache.expected_prefix_tokens.toLocaleString()}t`
+                    : "—"}
+                </p>
+                <p className="text-[10px] text-muted mt-0.5">{t("cache.expectedPrefix")}</p>
               </div>
             </div>
             {unobs && (

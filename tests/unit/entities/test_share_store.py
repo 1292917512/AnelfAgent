@@ -1,10 +1,9 @@
-"""ShareStore 多类型分享测试（file / media / link + 列迁移 + 查重）。"""
+"""ShareStore 多类型分享测试（file / media / link + 建表幂等 + 查重）。"""
 
 from __future__ import annotations
 
 import os
 
-import aiosqlite
 import pytest
 
 from core.config import ConfigManager
@@ -14,24 +13,6 @@ from entities.share.store import (
     build_view_url,
     detect_media_kind,
 )
-
-_OLD_SCHEMA = """
-CREATE TABLE share_links (
-    token TEXT PRIMARY KEY,
-    file_path TEXT NOT NULL,
-    file_name TEXT NOT NULL,
-    file_size INTEGER NOT NULL DEFAULT 0,
-    content_hash TEXT NOT NULL DEFAULT '',
-    description TEXT NOT NULL DEFAULT '',
-    expires_at INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,
-    created_by TEXT NOT NULL DEFAULT '',
-    download_count INTEGER NOT NULL DEFAULT 0,
-    last_download_at INTEGER NOT NULL DEFAULT 0,
-    max_downloads INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'active'
-);
-"""
 
 
 @pytest.fixture
@@ -127,33 +108,7 @@ class TestDeduplication:
         assert first["token"] == second["token"]
 
 
-class TestMigration:
-    async def test_old_schema_columns_added(self, tmp_path) -> None:
-        db_path = str(tmp_path / "legacy.sqlite3")
-        async with aiosqlite.connect(db_path) as db:
-            await db.executescript(_OLD_SCHEMA)
-            await db.execute(
-                "INSERT INTO share_links(token, file_path, file_name, file_size, "
-                "content_hash, description, expires_at, created_at, created_by, "
-                "download_count, last_download_at, max_downloads, status) "
-                "VALUES('tok_legacy', 'a.txt', 'a.txt', 1, 'h', '', 0, 0, '', 0, 0, 0, 'active')"
-            )
-            await db.commit()
-
-        s = ShareStore(db_path)
-        try:
-            entry = await s.get_by_token("tok_legacy")
-            assert entry is not None
-            # 旧行按默认值回填新列
-            assert entry["share_type"] == "file"
-            assert entry["target_url"] == ""
-            assert entry["media_kind"] == ""
-            # 迁移幂等：二次打开不报错
-            rows = await s.list(status="all")
-            assert rows["total"] == 1
-        finally:
-            await s.close()
-
+class TestSchemaIdempotent:
     async def test_migration_idempotent(self, tmp_path) -> None:
         db_path = str(tmp_path / "idem.sqlite3")
         s1 = ShareStore(db_path)

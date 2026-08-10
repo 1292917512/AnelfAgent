@@ -302,6 +302,7 @@ class ContextSnapshot:
                     "estimated_cacheable_prefix_tokens": cache.get(
                         "estimated_cacheable_prefix_tokens"
                     ),
+                    "expected_prefix_tokens": cache.get("expected_prefix_tokens"),
                 })
             except Exception:
                 continue
@@ -433,11 +434,14 @@ class ContextSnapshot:
 
     @staticmethod
     def _build_cache_block(sections: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """构建缓存观测区块：上次调用真实缓存用量 + 本次快照的可命中前缀估算。
+        """构建缓存观测区块：上次调用真实缓存用量 + 两种前缀口径。
 
-        可命中前缀估算：从头连续未变更的 section 累计 tokens
-        （近似供应商前缀缓存的最长可复用前缀，供对比"这次变更差多少缓存"）。
-        首次快照无对比基线时为 None（前端显示 —，避免误导性的 0）。
+        - estimated_cacheable_prefix_tokens：从头连续未变更的 section 累计
+          （近似最长可复用前缀，供对比"这次变更差多少缓存"），无基线时 None
+        - expected_prefix_tokens：按断点锚点布局的理论可命中前缀
+          （CACHEABLE_PREFIX_LAYERS 字节稳定层的 tokens 合计）——与本次
+          cache_read 对比即可秒判：expected 高而 read=0 ⇒ 非内容漂移
+          （网关侧/连接亲和问题）；expected 与 read 同步降 ⇒ 前缀内容变更
         """
         prefix_tokens: Optional[int] = 0
         for section in sections:
@@ -449,6 +453,12 @@ class ContextSnapshot:
                 break
             else:
                 break
+
+        from agent.llm.prompt_cache import CACHEABLE_PREFIX_LAYERS
+        expected_tokens = sum(
+            s["estimated_tokens"] for s in sections
+            if s.get("layer") in CACHEABLE_PREFIX_LAYERS
+        )
 
         from agent.mind.cache_stats import cache_usage_tracker
         # 主口径只看主对话调用（reply）：reflect 评审/心跳分析等辅助调用
@@ -473,6 +483,7 @@ class ContextSnapshot:
             "recent": cache_usage_tracker.summary(kind="reply"),
             "recent_all": cache_usage_tracker.summary(),
             "estimated_cacheable_prefix_tokens": prefix_tokens,
+            "expected_prefix_tokens": expected_tokens,
         }
 
 

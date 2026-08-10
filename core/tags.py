@@ -69,7 +69,7 @@ def batch_remove_tags(text: str) -> str:
 # 消息上下文元数据标签（渲染进对话历史、仅作系统元数据，禁止出现在出站文本中）
 _META_TAG_NAMES = (
     "time", "channel", "session_id", "message_id",
-    "group_id", "uid", "name", "nickname", "reply_to",
+    "group_id", "uid", "name", "nickname", "reply_to", "to_me", "push",
 )
 _meta_tag_pattern = re.compile(r"\[(?:" + "|".join(_META_TAG_NAMES) + r"):[^\]]*\]")
 
@@ -218,6 +218,12 @@ channel_tag = Tag(tag_name="channel", tag_name_desc="来源频道标识")
 session_id_tag = Tag(tag_name="session_id", tag_name_desc="会话 ID（同一频道会话上下文标识）")
 platform_tag = Tag(tag_name="platform", tag_name_desc="来源平台（qq/telegram/web 等）")
 message_id_tag = Tag(tag_name="message_id", tag_name_desc="当前消息 ID")
+to_me_tag = Tag(
+    tag_name="to_me",
+    tag_name_desc="本条群消息 @ 了你、是直接对你说的话；"
+                  "群聊历史中没有此标签的消息是群员之间的对话，不是发给你的请求，"
+                  "无需回应，也不要当作对你的提问、托付或欠下的待办（私聊消息默认都是对你说，无需此标签）",
+)
 avatar_tag = Tag(tag_name="avatar", tag_name_desc="用户头像 URL")
 
 # 媒体标签
@@ -248,6 +254,13 @@ forward_tag = Tag(tag_name="forward", tag_name_desc="转发消息的来源（原
 
 # 富文本内容标签
 json_card_tag = Tag(tag_name="json_card", tag_name_desc="JSON 卡片消息（QQ 分享链接、小程序卡片等），格式 [json_card:摘要文本]")
+
+# 推送标签（实体主动推送给 AI 的系统通知，区别于用户消息）
+push_tag = Tag(
+    tag_name="push",
+    tag_name_desc="实体推送的系统通知（非用户消息），格式 [push:来源实体]，"
+                  "如同手机弹窗；可按需响应或忽略，回复用户前自行判断是否需要提及",
+)
 
 # 生成请求标签
 tts_tag = Tag(tag_name="tts", tag_name_desc="文本转语音输出请求")

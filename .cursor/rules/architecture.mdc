@@ -70,7 +70,7 @@ ConfigPaths.UPLOAD_DIR          # workspace/uploads
 ### 标签系统（core/tags.py）
 
 `[key:value]` 统一数据编码。函数：`tag_label` / `etag` / `etag_all` / `batch_remove_tags`。
-16 种内置标签：time / uid / group_id / name / channel / platform / media_file / reply_to 等。
+内置标签：time / uid / group_id / name / channel / platform / media_file / reply_to / to_me / push 等（to_me 标识"群消息 @ 了机器人"，仅 @ 时渲染；push 标识实体推送的"非用户消息"）。
 
 ### entities/_sdk.py
 
@@ -204,7 +204,7 @@ i18n/locales/{zh,en}/         # 14 个 namespace
 | `output` | 消息输出 | `channel/output_tools.py` | always |
 | `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/heartbeat |
 | `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
-| `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tool_activation.py` | always |
+| `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tool_activation.py` + `agent/mind/context_compressor.py` + `agent/mind/tools/short_term_tools.py`（短期记忆自管理） | always |
 | `planning` | 目标规划 | `agent/planning/tools.py` | planning/goal/heartbeat |
 | `web` | 网络工具 | `entities/web/tools.py` | web/search/fetch |
 | `media` | 多媒体 | `entities/media/tools.py` | media:* |

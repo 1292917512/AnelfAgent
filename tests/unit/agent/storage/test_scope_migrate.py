@@ -38,12 +38,13 @@ class TestTagRewrite:
 
 
 async def _make_main_db(db_path: str) -> aiosqlite.Connection:
+    """构造含当前 schema 的主库（scope 迁移是数据迁移，假定列已随建表就位）。"""
     db = await aiosqlite.connect(db_path)
     await db.execute(
         "CREATE TABLE conversation_messages ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, scope_type TEXT NOT NULL,"
         "scope_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,"
-        "ts_ns INTEGER NOT NULL)"
+        "ts_ns INTEGER NOT NULL, adapter_key TEXT NOT NULL DEFAULT '')"
     )
     await db.execute(
         "CREATE TABLE entity_profile ("
@@ -69,10 +70,6 @@ class TestMainDbMigration:
     async def test_migrates_all_tables(self, tmp_path) -> None:
         db_path = str(tmp_path / "main.sqlite3")
         db = await _make_main_db(db_path)
-        # 模拟懒迁移后的库：adapter_key 列已存在
-        await db.execute(
-            "ALTER TABLE conversation_messages ADD COLUMN adapter_key TEXT NOT NULL DEFAULT ''"
-        )
         await db.execute(
             "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns, adapter_key)"
             " VALUES('user','123','user','hi',1,'qq')"
@@ -84,8 +81,7 @@ class TestMainDbMigration:
         await db.execute("INSERT INTO entity_profile VALUES('user','123','nice',0)")
         await db.execute("INSERT INTO entity_alias VALUES('user','789','user','123',0)")
         await db.execute(
-            "INSERT INTO pending_tasks(scope, kind, payload_json, ts_ns)"
-            " VALUES('user_123','general',?,3)",
+            "INSERT INTO pending_tasks(scope, kind, payload_json, ts_ns) VALUES('user_123','general',?,3)",
             (json.dumps({"scope": "user_123", "adapter_key": "qq"}),),
         )
         await db.commit()
@@ -93,23 +89,19 @@ class TestMainDbMigration:
         done = await migrate_main_db_scopes(db, db_path, "qq")
         assert done
 
-        rows = [r[0] for r in await (await db.execute(
-            "SELECT scope_id FROM conversation_messages ORDER BY id"
-        )).fetchall()]
+        rows = [
+            r[0] for r in await (await db.execute("SELECT scope_id FROM conversation_messages ORDER BY id")).fetchall()
+        ]
         # 有 adapter_key 的行按行内频道归属；空值回落 legacy
         assert rows == ["qq:123", "qq:456"]
 
         row = await (await db.execute("SELECT scope_id FROM entity_profile")).fetchone()
         assert row[0] == "qq:123"
 
-        row = await (await db.execute(
-            "SELECT scope_id, primary_scope_id FROM entity_alias"
-        )).fetchone()
+        row = await (await db.execute("SELECT scope_id, primary_scope_id FROM entity_alias")).fetchone()
         assert tuple(row) == ("qq:789", "qq:123")
 
-        row = await (await db.execute(
-            "SELECT scope, payload_json FROM pending_tasks"
-        )).fetchone()
+        row = await (await db.execute("SELECT scope, payload_json FROM pending_tasks")).fetchone()
         assert row[0] == "user_qq:123"
         assert "user_qq:123" in row[1]
 
@@ -123,9 +115,6 @@ class TestMainDbMigration:
         """
         db_path = str(tmp_path / "main.sqlite3")
         db = await _make_main_db(db_path)
-        await db.execute(
-            "ALTER TABLE conversation_messages ADD COLUMN adapter_key TEXT NOT NULL DEFAULT ''"
-        )
         # 用户消息带 adapter，assistant 回复不带（旧代码行为）
         await db.execute(
             "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns, adapter_key)"
@@ -144,9 +133,10 @@ class TestMainDbMigration:
 
         assert await migrate_main_db_scopes(db, db_path, "qq")
 
-        rows = [tuple(r) for r in await (await db.execute(
-            "SELECT scope_id, role FROM conversation_messages ORDER BY id"
-        )).fetchall()]
+        rows = [
+            tuple(r)
+            for r in await (await db.execute("SELECT scope_id, role FROM conversation_messages ORDER BY id")).fetchall()
+        ]
         assert rows == [
             ("webui:web_user", "user"),
             ("webui:web_user", "assistant"),  # 跟随同 scope 频道，不撕裂
@@ -157,27 +147,12 @@ class TestMainDbMigration:
 
     async def test_idempotent_and_backup(self, tmp_path) -> None:
         import os
+
         db_path = str(tmp_path / "main.sqlite3")
         db = await _make_main_db(db_path)
         assert await migrate_main_db_scopes(db, db_path, "qq")
         assert not await migrate_main_db_scopes(db, db_path, "qq")
         assert os.path.exists(db_path + ".pre-scope-migration.bak")
-        await db.close()
-
-    async def test_no_adapter_key_column_still_works(self, tmp_path) -> None:
-        """adapter_key 列缺失（未经历懒迁移的旧库）时迁移自行补列。"""
-        db_path = str(tmp_path / "main.sqlite3")
-        db = await _make_main_db(db_path)
-        await db.execute(
-            "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns)"
-            " VALUES('user','123','user','hi',1)"
-        )
-        await db.commit()
-        assert await migrate_main_db_scopes(db, db_path, "qq")
-        row = await (await db.execute(
-            "SELECT scope_id FROM conversation_messages"
-        )).fetchone()
-        assert row[0] == "qq:123"
         await db.close()
 
 
@@ -205,15 +180,11 @@ class TestMemoryDbMigration:
 
         assert await migrate_memory_db_tags(db, db_path, "qq")
 
-        row = await (await db.execute(
-            "SELECT source, tags_json FROM memories WHERE id=1"
-        )).fetchone()
+        row = await (await db.execute("SELECT source, tags_json FROM memories WHERE id=1")).fetchone()
         assert row[0] == "entity_qq:123"
         assert json.loads(row[1]) == ["user:qq:123", "type:profile"]
 
-        row = await (await db.execute(
-            "SELECT source, tags_json FROM memories WHERE id=2"
-        )).fetchone()
+        row = await (await db.execute("SELECT source, tags_json FROM memories WHERE id=2")).fetchone()
         assert row[0] == ""
         assert json.loads(row[1]) == ["topic:a"]
 

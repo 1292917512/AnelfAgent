@@ -41,6 +41,7 @@ from core.tool_schema import extract_tool_params, get_first_line
 __all__ = [
     "tool", "deferred_tool", "entity", "activate_group",
     "entity_manifest", "entity_config", "context_provider",
+    "push_notify",
     "tool_error", "error_from_exception", "ErrorCause",
 ]
 
@@ -231,6 +232,43 @@ def get_background_registry() -> Any:
         return get_runtime().mind.background_tasks
     except Exception:
         return None
+
+
+def push_notify(
+    content: str,
+    source: str,
+    scope: str = "",
+    channel: str = "",
+    trigger: bool = True,
+) -> bool:
+    """向 AI 推送一条系统通知（[push:来源] 标签，区别于用户消息）。
+
+    语义对齐手机弹窗：通知写入目标会话短期记忆，trigger=True 时
+    唤醒一轮思维；对话进行中到达则由思维循环轮内并入当前上下文。
+
+    Args:
+        content: 通知正文。
+        source: 推送来源标识（实体名，渲染为 [push:来源]）。
+        scope: 目标会话 scope；缺省取当前会话 ContextVar，
+            无法解析时写入全局短期记忆桶（不触发回复）。
+        channel: 回复路由 adapter_key（缺省沿用该 scope 已登记的路由）。
+        trigger: 是否立即唤醒一轮思维（False 则仅留待后续轮次看到）。
+
+    Returns:
+        推送是否受理（系统未初始化或内容为空时返回 False）。
+    """
+    if not content or not content.strip():
+        return False
+    try:
+        if not scope:
+            scope = get_current_scope()
+            if scope == "_global":
+                scope = ""
+        from agent.runtime.singleton import get_runtime
+        return bool(get_runtime().mind.push_hub.push(
+            scope, source, content, channel=channel, trigger=trigger))
+    except Exception:
+        return False
 
 
 def load_image_from_path(path: str) -> Any:

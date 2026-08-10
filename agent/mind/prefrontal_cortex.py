@@ -156,6 +156,12 @@ class PrefrontalCortex:
     def clear_temporary(self) -> int:
         return self.work_memory.clear_temporary()
 
+    def delete_temporary_in_scope(self, scope: str, index: int) -> bool:
+        return self.work_memory.delete_temporary_in_scope(scope, index)
+
+    def clear_temporary_in_scope(self, scope: str) -> int:
+        return self.work_memory.clear_temporary_in_scope(scope)
+
     def collect_images(self, scope: str = "") -> List[ImageContent]:
         return self.work_memory.collect_images(scope)
 

@@ -40,6 +40,8 @@ class MemoryEntry(BaseModel):
     timestamp: float = Field(default_factory=time.time)
     access_count: int = 0
     last_accessed: float = 0.0
+    version: int = 1
+    """内容修订版本号：update/合并演进时 +1，审计与冲突排查用。"""
     metadata: Dict[str, Any] = Field(default_factory=dict)
     embedding: Optional[List[float]] = None
 
@@ -71,6 +73,8 @@ class MemorySearchResult(BaseModel):
     tags: List[str] = Field(default_factory=list)
     timestamp: float = 0.0
     """记忆写入时间（Unix 秒，仅 memory 来源有值）。"""
+    sensitivity: str = "normal"
+    """私密度：normal / private / secret（仅 memory 来源有值，注入侧标注用）。"""
     dataset_id: str = ""
     dataset_name: str = ""
     provenance: Dict[str, Any] = Field(default_factory=dict)

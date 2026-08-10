@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from core.tags import (
     batch_remove_tags,
+    get_tag_desc,
     strip_functional_tags,
     strip_message_meta_tags,
 )
@@ -56,3 +57,23 @@ class TestStripTags:
     def test_meta_strip_leaves_summary_prefix(self) -> None:
         text = "[time:2026年08月03日][channel:webui] [已执行操作摘要] 本轮共执行 1 次工具"
         assert strip_message_meta_tags(text).strip().startswith("[已执行操作摘要]")
+
+    def test_push_tag_removed_from_outbound(self) -> None:
+        """出站文本中 LLM 模仿的 [push:xxx] 标签须剥离，防泄漏给用户。"""
+        text = "[push:voiceprint][time:2026年08月08日] 正文"
+        assert strip_message_meta_tags(text) == " 正文"
+
+    def test_push_tag_desc_visible_to_llm(self) -> None:
+        """push 标签描述注入人设提示，AI 据此识别推送与用户消息的区别。"""
+        assert "push标签表示" in get_tag_desc()
+        assert "非用户消息" in get_tag_desc()
+
+    def test_to_me_tag_removed_from_outbound(self) -> None:
+        """出站文本中 LLM 模仿的 [to_me:1] 标记须剥离，防泄漏给用户。"""
+        text = "[to_me:1][time:2026年08月10日] 正文"
+        assert strip_message_meta_tags(text) == " 正文"
+
+    def test_to_me_tag_desc_visible_to_llm(self) -> None:
+        """to_me 标签描述注入人设提示，AI 据此区分 @ 自己的消息与群员闲聊。"""
+        assert "to_me标签表示" in get_tag_desc()
+        assert "群员之间的对话" in get_tag_desc()
