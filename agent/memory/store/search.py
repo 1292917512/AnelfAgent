@@ -34,6 +34,7 @@ from .connection import MemoryConnectionManager
 from .file_index import FileIndexStore
 from .tag_intel import TagIntelligence
 
+
 # 混合评分权重：动态配置（core.config 注册表），默认值见文件底部注册
 def _w(name: str, default: float) -> float:
     try:
