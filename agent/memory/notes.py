@@ -7,12 +7,13 @@ Agent 每次对话时自动读取注入到上下文，并可通过工具随时�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from core.log import log
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
@@ -195,6 +196,16 @@ def update_memory_status_block(body: str) -> bool:
     _atomic_write(path, new_text)
     return True
 
+
+async def update_memory_status_block_async(body: str) -> bool:
+    """update_memory_status_block 的加锁异步变体。
+
+    与 AI 便签工具共用 _file_lock，避免心跳读-改-写与工具写入互踩
+    （last-write-wins 丢更新）。
+    """
+    async with _file_lock:
+        return update_memory_status_block(body)
+
 _SECTION_SPLIT_RE = re.compile(r"(?=^## )", re.MULTILINE)
 
 
@@ -249,6 +260,26 @@ def _atomic_write(target: Path, content: str) -> None:
 
     atomic_write_text(target, content)
     _schedule_file_resync(target)
+
+
+@contextlib.contextmanager
+def _heartbeat_write_guard(file_path: str) -> Any:
+    """heartbeat.md 写守卫：与心跳日志写入（threading.Lock）互斥。
+
+    AI 便签工具走 _file_lock（asyncio），心跳日志走 heartbeat_log_lock
+    （threading），两把锁互不相识时并发写同一文件会 last-write-wins 丢更新；
+    目标为 heartbeat.md 时同时持有心跳锁，消除 split-brain。
+    """
+    if Path(file_path).name == "heartbeat.md":
+        from agent.heartbeat.log import heartbeat_log_lock
+        lock = heartbeat_log_lock()
+        lock.acquire()
+        try:
+            yield
+        finally:
+            lock.release()
+    else:
+        yield
 
 
 def _schedule_file_resync(file_path: Path) -> None:
@@ -335,7 +366,8 @@ def delete_memory_file(file_path: str) -> bool:
         raise ValueError("不允许删除数据目录下的文件")
     if not target.exists():
         return False
-    target.unlink()
+    with _heartbeat_write_guard(file_path):
+        target.unlink()
     return True
 
 
@@ -350,18 +382,20 @@ def read_memory_file(file_path: str) -> str:
 def write_memory_file(file_path: str, content: str) -> int:
     """写入指定记忆文件（原子写入），返回行数。"""
     target = _validate_md_path(file_path)
-    _atomic_write(target, content)
+    with _heartbeat_write_guard(file_path):
+        _atomic_write(target, content)
     return content.count("\n") + 1
 
 
 def append_to_memory_file(file_path: str, content: str) -> int:
     """在指定记忆文件末尾追加内容，返回追加后的总行数。文件不存在时自动创建。"""
     target = _validate_md_path(file_path)
-    existing = target.read_text(encoding="utf-8") if target.exists() else ""
-    if existing and not existing.endswith("\n"):
-        existing += "\n"
-    new_content = existing + content
-    _atomic_write(target, new_content)
+    with _heartbeat_write_guard(file_path):
+        existing = target.read_text(encoding="utf-8") if target.exists() else ""
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+        new_content = existing + content
+        _atomic_write(target, new_content)
     return new_content.count("\n") + 1
 
 
@@ -376,17 +410,18 @@ def patch_memory_file_content(
     target = _validate_md_path(file_path)
     if not target.exists():
         raise FileNotFoundError(f"{file_path} 不存在")
-    content = target.read_text(encoding="utf-8")
-    total = content.count(old_text)
-    if total == 0:
-        raise ValueError("未找到目标文本，替换失败")
-    if replace_all:
-        new_content = content.replace(old_text, new_text)
-        replaced = total
-    else:
-        new_content = content.replace(old_text, new_text, 1)
-        replaced = 1
-    _atomic_write(target, new_content)
+    with _heartbeat_write_guard(file_path):
+        content = target.read_text(encoding="utf-8")
+        total = content.count(old_text)
+        if total == 0:
+            raise ValueError("未找到目标文本，替换失败")
+        if replace_all:
+            new_content = content.replace(old_text, new_text)
+            replaced = total
+        else:
+            new_content = content.replace(old_text, new_text, 1)
+            replaced = 1
+        _atomic_write(target, new_content)
     return {"replaced": replaced, "total_occurrences": total}
 
 
@@ -402,7 +437,8 @@ def edit_file_lines(
     target = _validate_md_path(file_path)
     if not target.exists():
         raise FileNotFoundError(f"{file_path} 不存在")
-    lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
+    with _heartbeat_write_guard(file_path):
+        lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
     total = len(lines)
     if end_line < 0:
         end_line = total
@@ -410,13 +446,13 @@ def edit_file_lines(
     end_line = min(end_line, total)
     if start_line > end_line + 1:
         raise ValueError(f"start_line ({start_line}) 超出有效范围（end_line={end_line}）")
-    replacement: list[str] = []
-    if new_content:
-        if not new_content.endswith("\n"):
-            new_content += "\n"
-        replacement = new_content.splitlines(keepends=True)
-    new_lines = lines[: start_line - 1] + replacement + lines[end_line:]
-    _atomic_write(target, "".join(new_lines))
+        replacement: list[str] = []
+        if new_content:
+            if not new_content.endswith("\n"):
+                new_content += "\n"
+            replacement = new_content.splitlines(keepends=True)
+        new_lines = lines[: start_line - 1] + replacement + lines[end_line:]
+        _atomic_write(target, "".join(new_lines))
     return {"total_lines": len(new_lines)}
 
 
@@ -1092,7 +1128,8 @@ async def _tool_write_section(
     """
     try:
         async with _file_lock:
-            result = write_section_content(file_path, heading, content, after)
+            with _heartbeat_write_guard(file_path):
+                result = write_section_content(file_path, heading, content, after)
         action = "替换" if result["action"] == "replaced" else "创建"
         log(f"记忆段落{action}: {file_path} [{heading}] -> 共 {result['total_lines']} 行", tag="思维")
         msg = f"段落 {heading} 已{action}（当前共 {result['total_lines']} 行）"
@@ -1121,7 +1158,8 @@ async def _tool_delete_section(file_path: str, heading: str) -> str:
     """
     try:
         async with _file_lock:
-            result = delete_section_content(file_path, heading)
+            with _heartbeat_write_guard(file_path):
+                result = delete_section_content(file_path, heading)
         log(f"记忆段落删除: {file_path} [{heading}] 删除 {result['deleted_lines']} 行", tag="思维")
         msg = f"段落 {heading} 已删除（{result['deleted_lines']} 行，当前共 {result['total_lines']} 行）"
         return json.dumps(

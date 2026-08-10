@@ -23,13 +23,13 @@ def bridge() -> Generator[MCPBridge, None, None]:
 
 def _register_internal_web_search() -> None:
     def web_search(query: str) -> str:
-        """内置百度搜索工具。"""
+        """内置网页搜索工具。"""
         return "{}"
 
     EntityRegistry.register_tool(
         name="web_search",
         func=web_search,
-        description="内置百度搜索",
+        description="内置网页搜索",
         group="web",
         source="internal",
     )

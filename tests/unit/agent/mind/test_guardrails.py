@@ -66,6 +66,12 @@ class TestFailureClassification:
     def test_error_prefix_text(self) -> None:
         assert classify_tool_failure("error: something broke") is True
 
+    def test_null_error_field_is_success(self) -> None:
+        """成功结果携带 {"error": null/""} 字段不得误判为失败。"""
+        assert classify_tool_failure('{"error": null, "data": 1}') is False
+        assert classify_tool_failure('{"error": "", "data": 1}') is False
+        assert classify_tool_failure('{"error": "真实错误"}') is True
+
 
 class TestGuardrailController:
     def test_exact_failure_warn(self) -> None:
@@ -109,6 +115,15 @@ class TestGuardrailController:
         d = ctl.after_call("get_user", args, result)
         assert d.action == "warn"
         assert d.reason == "idempotent_no_progress_warning"
+
+    def test_no_progress_exempt_for_polling_tool(self) -> None:
+        """check_background_tasks 是被系统提示鼓励的轮询工具，同结果不告警。"""
+        ctl = GuardrailController(_config())
+        args = "{}"
+        result = json.dumps({"running": [], "completed": []})
+        for _ in range(4):
+            d = ctl.after_call("check_background_tasks", args, result)
+            assert d.action == "allow"
 
     def test_no_progress_not_triggered_by_different_results(self) -> None:
         ctl = GuardrailController(_config())

@@ -87,6 +87,9 @@ class HeartbeatEngine:
         self._task_failures: Dict[str, int] = {}
         self._analysis_attempts: Dict[tuple, int] = {}
         self._warned_missing_tasks: set[str] = set()
+        # 空闲折叠跟踪：scope → 最近一次见到的最新消息 ts / 连续无新消息心跳数
+        self._fold_activity_ts: Dict[str, int] = {}
+        self._fold_idle_beats: Dict[str, int] = {}
 
     @property
     def total_ticks(self) -> int:
@@ -241,6 +244,46 @@ class HeartbeatEngine:
     # 内置维护
     # ------------------------------------------------------------------
 
+    async def _maintain_conversation_folds(self) -> None:
+        """空闲自动折叠：连续 N 个心跳无外部新消息的会话，把窗口积压折进摘要。
+
+        把折叠（摘要块重写 = 缓存前缀断点）从活跃对话期转移到无人时段：
+        空闲判定按心跳计数（conversation_fold_idle_beats）且只认外部消息
+        （list_scope_activity 只统计 role=user，任务/系统写入不算）；
+        积压阈值派生自窗口参数（ConversationData.fold_idle_min = M−x）。
+        折叠完成由 folder 钩子自动预热缓存。
+        """
+        try:
+            from agent.storage.conversation_fold import (
+                fold_idle_beats,
+                is_summary_enabled,
+            )
+            if not is_summary_enabled():
+                return
+            conv_data = self.mind.conversation_data
+            activity = await conv_data.list_scope_activity()
+            seen: Dict[str, int] = self._fold_activity_ts
+            for scope_type, scope_id, max_ts in activity:
+                key = f"{scope_type}:{scope_id}"
+                beats = self._fold_idle_beats
+                if max_ts > seen.get(key, 0):
+                    seen[key] = max_ts
+                    beats[key] = 0
+                    continue
+                beats[key] = beats.get(key, 0) + 1
+                if beats[key] < fold_idle_beats():
+                    continue
+                backlog = await conv_data.scope_backlog(scope_type, scope_id)
+                if backlog < conv_data.fold_idle_min:
+                    continue
+                if await conv_data.schedule_fold(scope_type, scope_id):
+                    log(
+                        f"空闲自动折叠: {key}（{beats[key]} 心跳无新消息，积压 {backlog} 条）",
+                        "DEBUG", tag="心跳",
+                    )
+        except Exception as e:
+            log(f"空闲折叠扫描失败: {e}", "DEBUG", tag="心跳")
+
     async def _run_maintenance(self) -> None:
         """内置维护步骤（不可由用户配置为任务）。"""
         try:
@@ -249,6 +292,8 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"心跳日志合并失败: {e}", "DEBUG", tag="心跳")
 
+        await self._maintain_conversation_folds()
+
         try:
             saved = await self.mind.everything_data.save_all_entity_counters()
             if saved:
@@ -256,7 +301,15 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"实体计数持久化失败: {e}", "DEBUG", tag="心跳")
 
-        memory_warnings = await self._check_memory_health()
+        # 类型计数在同 tick 内被健康检查与状态区块复用，只查一次；
+        # 整理 tick 计数可能变化，状态区块到时重查（见 _write_memory_status）
+        type_counts: Optional[Dict[str, int]] = None
+        if self.mind.memory_store:
+            try:
+                type_counts = await self.mind.memory_store.get_type_counts()
+            except Exception:
+                type_counts = None
+        memory_warnings = await self._check_memory_health(type_counts)
         for warn in memory_warnings:
             hb_log.append_entry(f"[记忆预警] {warn}")
 
@@ -282,7 +335,7 @@ class HeartbeatEngine:
             log(f"自动记忆捕获失败: {e}", "DEBUG", tag="心跳")
 
         # 主便签记忆状态区块：让 AI 随时了解自己的记忆情况（内容不变时不写）
-        await self._write_memory_status(consolidate_report)
+        await self._write_memory_status(consolidate_report, type_counts)
 
         # 过期日期便签归档：提炼进长期记忆（自动同步 cognee）后删除文件
         try:
@@ -342,7 +395,9 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"Lifecycle tick 失败: {e}", "DEBUG", tag="心跳")
 
-    async def _check_memory_health(self) -> List[str]:
+    async def _check_memory_health(
+        self, type_counts: Optional[Dict[str, int]] = None,
+    ) -> List[str]:
         """记忆健康检查：纯逻辑检查阈值（与 memory_stats 共用同一配置口径）。"""
         if not self.mind.memory_store:
             return []
@@ -350,7 +405,8 @@ class HeartbeatEngine:
         warn_threshold = get_config_int("memory_warn_threshold", 200)
         warnings: List[str] = []
         try:
-            type_counts = await self.mind.memory_store.get_type_counts()
+            if type_counts is None:
+                type_counts = await self.mind.memory_store.get_type_counts()
             entity_count = type_counts.get("entity", 0)
             if entity_count > 5:
                 warnings.append(
@@ -381,14 +437,19 @@ class HeartbeatEngine:
         "entities.md": 1000,
     }
 
-    async def _write_memory_status(self, consolidate_report: Any = None) -> None:
+    async def _write_memory_status(
+        self, consolidate_report: Any = None,
+        type_counts: Optional[Dict[str, int]] = None,
+    ) -> None:
         """将记忆系统状态写入主便签受管区块（让 AI 随时了解自己的记忆情况）。"""
         store = self.mind.memory_store
         if not store:
             return
         try:
             from agent.memory import notes as notes_mod
-            type_counts = await store.get_type_counts()
+            # 整理 tick 计数可能已变化，需重查；其余 tick 复用健康检查的结果
+            if type_counts is None or consolidate_report is not None:
+                type_counts = await store.get_type_counts()
             total = sum(type_counts.values())
             archived = await store.count_archived()
             dist = " / ".join(
@@ -450,7 +511,7 @@ class HeartbeatEngine:
                         line_count = sum(1 for _ in fp)
                     if line_count > cap:
                         lines.append(f"- ⚠️ 便签超标：{fname} {line_count} 行（建议 ≤{cap}），需提炼压缩")
-            notes_mod.update_memory_status_block("\n".join(lines))
+            await notes_mod.update_memory_status_block_async("\n".join(lines))
         except Exception as exc:
             log(f"记忆状态区块写入失败: {exc}", "DEBUG", tag="心跳")
 
@@ -522,15 +583,51 @@ class HeartbeatEngine:
         return text
 
     async def _store_distilled_event(self, note_date: str, distilled: str) -> None:
-        """将提炼要点写入数据库长期记忆（自动进入 cognee 投影队列）。"""
+        """将提炼要点写入数据库长期记忆（自动进入 cognee 投影队列）。
+
+        经 LLM 去重裁决：auto_capture 可能已从原始对话提取过相同事实，
+        直接写入会产生重复（语义重复 skip / 事实演进 update / 无重复 store）。
+        """
         store = self.mind.memory_store
         if not store:
             return
+        content = f"[{note_date} 事件归档]\n{distilled}"
+        tags = ["type:event", f"date:{note_date}"]
+        try:
+            from agent.memory import metrics
+            from agent.memory.dedup import (
+                apply_update,
+                gather_dedup_candidates,
+                judge_write,
+            )
+            candidates = await gather_dedup_candidates(store, self.mind.embedder, content)
+            decision = await judge_write(content, candidates)
+            action = decision.get("action", "store")
+            metrics.incr(f"write.dedup_llm_{action}")
+            if action == "skip":
+                log(f"事件归档去重: {note_date} 已有等价记忆，跳过", "DEBUG", tag="心跳")
+                return
+            if action == "update" and decision.get("target_id"):
+                updated = await apply_update(
+                    store, int(decision["target_id"]),
+                    str(decision.get("content") or content), tags,
+                )
+                if updated is not None:
+                    return
+            if action == "merge" and decision.get("target_ids"):
+                new_id = await store.merge_memories(
+                    [int(i) for i in decision["target_ids"]],
+                    str(decision.get("content") or content),
+                )
+                if new_id:
+                    return
+        except Exception as exc:
+            log(f"事件归档去重裁决失败，直接写入: {exc}", "DEBUG", tag="心跳")
         entry = MemoryEntry(
             memory_type=MemoryType.EPISODIC,
-            content=f"[{note_date} 事件归档]\n{distilled}",
+            content=content,
             source="events_archive",
-            tags=["type:event", f"date:{note_date}"],
+            tags=tags,
             importance=0.6,
         )
         await store.add(entry)

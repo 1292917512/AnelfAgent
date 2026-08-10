@@ -9,7 +9,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+import time
+from typing import Any, Dict, Optional, Tuple
 
 from core.log import log
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
@@ -19,6 +20,16 @@ from ..memory_store import MemoryStore
 from .store import NODE_TYPES, format_triple, parse_node_key
 
 _store: Optional[MemoryStore] = None
+
+# 别名解析进程内缓存：别名极少变更，图谱每次读写都解析，直查主库是热路径开销
+_ALIAS_CACHE_TTL = 300.0
+_ALIAS_CACHE_MAX = 1024
+_alias_cache: Dict[Tuple[str, str], Tuple[float, Optional[tuple[str, str]]]] = {}
+
+
+def invalidate_alias_cache() -> None:
+    """清空别名解析缓存（别名登记/移除后调用）。"""
+    _alias_cache.clear()
 
 
 def register_graph_tools(store: MemoryStore) -> None:
@@ -31,12 +42,23 @@ def register_graph_tools(store: MemoryStore) -> None:
 
 
 async def _resolve_alias(scope_type: str, scope_id: str) -> Optional[tuple[str, str]]:
-    """别名解析桥：惰性访问运行时 sqlite（心跳/测试环境无运行时则放弃归一）。"""
+    """别名解析桥：惰性访问运行时 sqlite（心跳/测试环境无运行时则放弃归一）。
+
+    进程内 TTL 缓存（别名极少变更）；登记/移除别名时经 invalidate_alias_cache 失效。
+    """
+    key = (scope_type, scope_id)
+    cached = _alias_cache.get(key)
+    if cached is not None and time.monotonic() - cached[0] < _ALIAS_CACHE_TTL:
+        return cached[1]
     try:
         from services._runtime import require_runtime
-        return await require_runtime().data_center.sqlite.resolve_alias(scope_type, scope_id)
+        result = await require_runtime().data_center.sqlite.resolve_alias(scope_type, scope_id)
     except Exception:
         return None
+    if len(_alias_cache) >= _ALIAS_CACHE_MAX:
+        _alias_cache.clear()
+    _alias_cache[key] = (time.monotonic(), result)
+    return result
 
 
 def _graph() -> Any:

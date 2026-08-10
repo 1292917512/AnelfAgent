@@ -12,22 +12,89 @@ from agent.llm.types import (
     ToolCall,
     UsageInfo,
     cache_tokens_from_usage,
+    usage_has_cache_fields,
 )
 from core.log import log
 
 _THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 
+def install_usage_tap(stream: Any) -> Optional[Dict[str, Any]]:
+    """给 litellm 流式包装器装原始 usage 旁路，返回汇合槽（无旁路时 None）。
+
+    litellm 的流式 chunk 转换会丢弃供应商扩展 usage 字段（DeepSeek
+    prompt_cache_hit_tokens 等——openai SDK 层字段完好，litellm 1.95/1.96
+    均丢）。本函数以透明转发生成器替换包装器的 completion_stream：
+    转发每个原始 chunk 前把其 usage 的缓存字段挖进汇合槽；下游构造
+    UsageInfo 时以槽内值补全。litellm 内部结构变化（属性缺失）时
+    不装旁路，优雅降级为现状（字段缺失 = 不可观测），零侵入风险。
+
+    汇合槽键：seen=原始流出现过 usage；fields=usage 携带缓存字段
+    （存在性，与值无关）；read/creation=非零缓存值。
+    """
+    raw = getattr(stream, "completion_stream", None)
+    if raw is None or not hasattr(raw, "__aiter__"):
+        return None
+    sink: Dict[str, Any] = {}
+
+    async def _tapped() -> AsyncGenerator[Any, None]:
+        async for raw_chunk in raw:
+            usage = getattr(raw_chunk, "usage", None)
+            if usage is not None:
+                sink["seen"] = True
+                if usage_has_cache_fields(usage):
+                    sink["fields"] = True
+                read, creation = cache_tokens_from_usage(usage)
+                if read:
+                    sink["read"] = read
+                if creation:
+                    sink["creation"] = creation
+            yield raw_chunk
+
+    stream.completion_stream = _tapped()
+    return sink
+
+
+def _merge_sink(usage: Optional[UsageInfo], sink: Optional[Dict[str, Any]]) -> Optional[UsageInfo]:
+    """用旁路汇合槽补全 UsageInfo：缓存字段值 + 可观测性动态判定。
+
+    可观测性：旁路见过原始 usage 但其上无缓存字段 ⇒ 端点流式不回报
+    （不可观测，而非真实 0%）；主路有值时一律不动。
+    """
+    if usage is None or not sink:
+        return usage
+    read = usage.cache_read_input_tokens or sink.get("read", 0)
+    creation = usage.cache_creation_input_tokens or sink.get("creation", 0)
+    observable = usage.cache_observable or bool(sink.get("fields"))
+    if (
+        read == usage.cache_read_input_tokens
+        and creation == usage.cache_creation_input_tokens
+        and observable == usage.cache_observable
+    ):
+        return usage
+    return UsageInfo(
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens,
+        total_tokens=usage.total_tokens,
+        cache_read_input_tokens=read,
+        cache_creation_input_tokens=creation,
+        cache_observable=observable,
+    )
+
+
 async def _iter_stream(
     stream: Any,
     reasoning_buf: str,
     tc_bufs: Dict[int, Dict[str, str]],
+    usage_sink: Optional[Dict[str, int]] = None,
 ) -> AsyncGenerator[tuple[ChatStreamDelta, str], None]:
     """解析 LiteLLM 流，并保留跨 chunk 的工具与推理缓冲。"""
     async for chunk in stream:
         choices = getattr(chunk, "choices", None) or []
         if not choices:
-            stream_usage = _usage_from_object(getattr(chunk, "usage", None))
+            stream_usage = _merge_sink(
+                _usage_from_object(getattr(chunk, "usage", None)), usage_sink,
+            )
             if stream_usage:
                 yield ChatStreamDelta(usage=stream_usage), reasoning_buf
             continue
@@ -83,7 +150,9 @@ async def _iter_stream(
         # chunk（上方分支）；但部分端点（阿里 anthropic 网关）会在 finish chunk
         # 之后再发一个带空 choice、finish=None 的 usage chunk——
         # 只要 chunk 携带 usage 就一律透传，避免静默丢弃
-        chunk_usage = _usage_from_object(getattr(chunk, "usage", None))
+        chunk_usage = _merge_sink(
+            _usage_from_object(getattr(chunk, "usage", None)), usage_sink,
+        )
         yield ChatStreamDelta(
             content=content,
             tool_calls=completed_tools,
@@ -167,6 +236,8 @@ def _usage_from_object(usage: Any) -> Optional[UsageInfo]:
         total_tokens=_int_attr(usage, "total_tokens"),
         cache_read_input_tokens=cache_read,
         cache_creation_input_tokens=cache_creation,
+        # 字段存在性即观测性：字段在值为 0 = 真实未命中；字段缺失 = 端点不回报
+        cache_observable=usage_has_cache_fields(usage),
     )
     return result if result.total_tokens or result.prompt_tokens or result.completion_tokens else None
 

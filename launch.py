@@ -119,6 +119,16 @@ def main():
 
         log("正在关闭...")
 
+        # 记忆自动捕获兜底：退出前强制提取各会话待定内容（限时 30s，不阻塞关停）
+        try:
+            from agent.memory.auto_capture import flush_auto_capture
+            from services._runtime import require_runtime
+            await asyncio.wait_for(
+                flush_auto_capture(require_runtime().mind), timeout=30.0,
+            )
+        except Exception:
+            pass
+
         import logging
         logging.getLogger("uvicorn.error").disabled = True
         loop.set_exception_handler(lambda _l, _c: None)

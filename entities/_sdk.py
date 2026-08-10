@@ -277,6 +277,18 @@ def load_image_from_path(path: str) -> Any:
     return _load(path)
 
 
+def optimize_image_for_vision(image: Any) -> Any:
+    """对发送给视觉模型的图片做分辨率/体积优化（幂等）。"""
+    from agent.llm.image_utils import optimize_for_vision
+    return optimize_for_vision(image)
+
+
+def is_content_policy_error(exc: BaseException) -> bool:
+    """判断异常是否为内容审核拒绝（确定性，同模型重试无意义）。"""
+    from agent.llm.resilience import ErrorCategory, classify_llm_error
+    return classify_llm_error(exc).category is ErrorCategory.CONTENT_POLICY
+
+
 def download_image_to_base64(url: str) -> Any:
     """下载 URL 图片并转为 base64 ImageContent。"""
     from agent.llm.image_utils import download_image_to_base64 as _dl
@@ -473,9 +485,9 @@ def entity_config(
     configs 格式与 core.config.register_configs 一致::
 
         entity_config({
-            "搜索": {
-                "baidu_api_key": {
-                    "description": "百度搜索 API Key",
+            "连接": {
+                "api_key": {
+                    "description": "API Key",
                     "default": "",
                     "value_type": "str",
                 },

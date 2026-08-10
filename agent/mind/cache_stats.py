@@ -16,15 +16,6 @@ from agent.llm.types import UsageInfo
 
 _MAX_RECORDS = 100
 
-# 已知流式响应不返回缓存统计的供应商（按模型名前缀登记；其缓存仍在服务端生效，
-# 仅流式 usage 缺字段导致不可观测——展示为"不可观测"而非谎报 0%）
-_STREAM_CACHE_UNOBSERVABLE: tuple[str, ...] = ("deepseek",)
-
-
-def stream_cache_unobservable(model: str) -> bool:
-    """该模型的流式 usage 是否缺失缓存统计字段（登记式，非特判分支）。"""
-    return model.lower().startswith(_STREAM_CACHE_UNOBSERVABLE)
-
 
 class CacheUsageTracker:
     """最近 LLM 调用缓存用量的环形缓冲（全局单例）。
@@ -41,14 +32,11 @@ class CacheUsageTracker:
     def record(self, usage: UsageInfo, *, kind: str = "reply", model: str = "") -> None:
         """记录一次调用的缓存用量。
 
-        对已知流式缺缓存字段的供应商标记 unobservable，前端显示"不可观测"
-        而非误导性的 0%（缓存实际仍在服务端生效，仅无法度量）。
+        可观测性由解析层动态判定（usage.cache_observable：流式旁路按原始
+        chunk 的缓存字段存在性识别）：不可观测时前端显示"—"而非谎报 0%
+        （缓存实际仍在服务端生效，仅无法度量）。
         """
-        has_cache_field = (
-            usage.cache_read_input_tokens > 0
-            or usage.cache_creation_input_tokens > 0
-        )
-        unobservable = bool(model) and stream_cache_unobservable(model) and not has_cache_field
+        unobservable = not usage.cache_observable
         self._records.append({
             "ts": time.time(),
             "kind": kind,
@@ -98,9 +86,13 @@ class CacheUsageTracker:
         total_prompt = sum(r["prompt_tokens"] for r in measurable)
         total_read = sum(r["cache_read_input_tokens"] for r in measurable)
         total_creation = sum(r["cache_creation_input_tokens"] for r in measurable)
+        # 均值按单次命中率（record 时已钳到 ≤1.0）算术平均，而非总 read/总 prompt——
+        # Anthropic 记账口径下 input_tokens 不含缓存部分，read 可大于 prompt，
+        # 按总量重算会把窗口均值放大到 100% 以上（两种口径混窗时更明显）
+        rates = [r["cache_hit_rate"] for r in measurable]
         return {
             "sample_count": len(records),
-            "avg_cache_hit_rate": round(total_read / total_prompt, 4) if total_prompt else 0.0,
+            "avg_cache_hit_rate": round(sum(rates) / len(rates), 4) if rates else 0.0,
             "total_prompt_tokens": total_prompt,
             "total_cache_read_tokens": total_read,
             "total_cache_creation_tokens": total_creation,

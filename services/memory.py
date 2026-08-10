@@ -278,12 +278,18 @@ class MemoryService:
             scope_type=source_scope_type, scope_id=source_scope_id,
             primary_scope_type=p_type, primary_scope_id=p_id,
         )
+        from agent.memory.graph.tools import invalidate_alias_cache
+        invalidate_alias_cache()
 
     async def unlink_entity(self, scope_type: str, scope_id: str) -> bool:
         rt = require_runtime()
-        return await rt.data_center.sqlite.remove_alias(
+        removed = await rt.data_center.sqlite.remove_alias(
             scope_type=scope_type, scope_id=scope_id,
         )
+        if removed:
+            from agent.memory.graph.tools import invalidate_alias_cache
+            invalidate_alias_cache()
+        return removed
 
     # ==================================================================
     # 便签记忆（memory.md + memory/）

@@ -28,7 +28,13 @@ class MemoryConnectionManager:
         self.db_path = db_path
         self.db: Optional[aiosqlite.Connection] = None
         self.connect_lock = asyncio.Lock()
+        # 写事务串行锁：单连接上所有未提交写共处同一 SQLite 事务，
+        # 任一协程 rollback 会连带回滚其他协程已成功的写入；tx 持锁后写事务互斥
+        self.write_lock = asyncio.Lock()
         self.last_health_check = 0.0
+        # 记忆标签迁移状态：失败不置完成标志，60s 退避后重试
+        self._tags_migrated = False
+        self._tags_migrate_retry_after = 0.0
         self.initialized = False
         self.fts_available = False
         self.chunks_fts_available = False
@@ -51,18 +57,21 @@ class MemoryConnectionManager:
         """事务模板：复合写全部成功才 commit，任一异常 rollback。
 
         共享连接上未提交的半成品事务会被后续无关调用的 commit 一并落盘，
-        因此所有多步写必须经此模板保证原子性。
+        因此所有多步写必须经此模板保证原子性；写锁串行化并发事务，
+        防止一个协程的 rollback 连带回滚另一协程已成功的写入。
+        注意：不可嵌套使用（写锁不可重入）。
         """
-        try:
-            yield
-        except Exception:
+        async with self.write_lock:
             try:
-                await db.rollback()
-            except Exception as rb_exc:
-                log(f"记忆库事务回滚失败: {rb_exc}", "DEBUG", tag="记忆")
-            raise
-        else:
-            await db.commit()
+                yield
+            except Exception:
+                try:
+                    await db.rollback()
+                except Exception as rb_exc:
+                    log(f"记忆库事务回滚失败: {rb_exc}", "DEBUG", tag="记忆")
+                raise
+            else:
+                await db.commit()
 
     async def get_db(self) -> aiosqlite.Connection:
         # 健康检查失败后的关闭/重建全程走 connect_lock：
@@ -77,13 +86,15 @@ class MemoryConnectionManager:
                 try:
                     await self.db.execute("SELECT 1")
                     self.last_health_check = now
-                    return self.db
                 except Exception:
                     try:
                         await self.db.close()
                     except Exception:
                         pass
                     self.db = None
+                else:
+                    await self._retry_tag_migration(self.db)
+                    return self.db
 
             from pathlib import Path
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -97,16 +108,24 @@ class MemoryConnectionManager:
 
             if not self.initialized:
                 await self._init_schema(db)
-                # 记忆标签/画像 source 的 scope 迁移（user_version 幂等）
-                try:
-                    from agent.storage.scope_migrate import get_legacy_adapter, migrate_memory_db_tags
-                    await migrate_memory_db_tags(db, self.db_path, get_legacy_adapter())
-                except Exception as exc:
-                    log(f"记忆标签迁移失败（不影响启动，备份可恢复）: {exc}", "ERROR", tag="记忆")
                 self.initialized = True
+            # 记忆标签/画像 source 的 scope 迁移（user_version 幂等，失败退避重试）
+            await self._retry_tag_migration(db)
 
             self.db = db
             return db
+
+    async def _retry_tag_migration(self, db: aiosqlite.Connection) -> None:
+        """记忆标签迁移尝试：失败不置完成标志，60s 退避后在后续周期重试。自身不抛异常。"""
+        if self._tags_migrated or time.monotonic() < self._tags_migrate_retry_after:
+            return
+        try:
+            from agent.storage.scope_migrate import get_legacy_adapter, migrate_memory_db_tags
+            await migrate_memory_db_tags(db, self.db_path, get_legacy_adapter())
+            self._tags_migrated = True
+        except Exception as exc:
+            log(f"记忆标签迁移失败（60s 后重试，备份可恢复）: {exc}", "ERROR", tag="记忆")
+            self._tags_migrate_retry_after = time.monotonic() + 60.0
 
     async def close(self) -> None:
         # 与 get_db 的健康检查/重建共用同一把锁，避免关闭途中被其他协程复用
@@ -265,6 +284,9 @@ class MemoryConnectionManager:
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_audit_mid ON memory_audit(memory_id);"
         )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_ts ON memory_audit(ts_ns);"
+        )
 
         # ---- 自动捕获游标（每 scope 的提取进度，进程重启后续跑） ----
         await db.execute("""
@@ -279,6 +301,9 @@ class MemoryConnectionManager:
         """)
         await self._ensure_column(
             db, "capture_cursors", "counted_msg_id", "INTEGER NOT NULL DEFAULT 0"
+        )
+        await self._ensure_column(
+            db, "capture_cursors", "last_batch_sig", "TEXT NOT NULL DEFAULT ''"
         )
 
         # ---- 工具错误追踪表 ----
@@ -490,7 +515,16 @@ class MemoryConnectionManager:
                 (memory_id, blob),
             )
         except Exception as exc:
-            log(f"vec 索引写入失败 id={memory_id}: {exc}", "DEBUG")
+            # 升级 WARNING：运行期失败会使该记忆永久不可向量检索；
+            # 置 NULL embedding 让 backfill_embeddings 后续重试自愈
+            log(f"vec 索引写入失败 id={memory_id}: {exc}", "WARNING", tag="记忆")
+            if blob is not None:
+                try:
+                    await db.execute(
+                        "UPDATE memories SET embedding_blob=NULL WHERE id=?", (memory_id,),
+                    )
+                except Exception:
+                    pass
 
     async def vec_delete_memories(self, db: aiosqlite.Connection, memory_ids: list[int]) -> None:
         """从 vec 索引批量移除记忆。"""
@@ -568,6 +602,19 @@ class MemoryConnectionManager:
         row = await cursor.fetchone()
         stored_version = row["value"] if row else ""
         if stored_version == FTS_TOKENIZER_VERSION:
+            # 计数对账：运行期单条 FTS 写入失败会使该记忆永久不可检索，
+            # 启动时计数不一致则全量重建兜底
+            if self.fts_available:
+                src = await (await db.execute("SELECT COUNT(*) AS c FROM memories")).fetchone()
+                idx = await (await db.execute("SELECT COUNT(*) AS c FROM memories_fts")).fetchone()
+                if (src["c"] if src else 0) != (idx["c"] if idx else 0):
+                    await self._load_fts_vocab(db)
+                    await self._rebuild_memories_fts(db)
+                    log(
+                        f"memories_fts 计数对账不一致（{src['c'] if src else 0} vs "
+                        f"{idx['c'] if idx else 0}），已全量重建",
+                        "WARNING", tag="思维",
+                    )
             return
 
         await self._load_fts_vocab(db)
@@ -665,7 +712,9 @@ class MemoryConnectionManager:
                 (memory_id, tokenized),
             )
         except Exception as exc:
-            log(f"FTS 索引写入失败 id={memory_id}: {exc}", "DEBUG")
+            # 升级 WARNING：运行期失败会使该记忆永久不可全文检索
+            # （启动时计数对账会全量重建兜底）
+            log(f"FTS 索引写入失败 id={memory_id}: {exc}", "WARNING", tag="记忆")
 
     async def fts_delete_memories(
         self, db: aiosqlite.Connection, memory_ids: list[int],

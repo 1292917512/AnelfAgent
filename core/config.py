@@ -275,12 +275,13 @@ class ConfigManager:
 
     @classmethod
     def save(cls) -> bool:
-        """保存配置到JSON文件（回写文件原始层，保留 ${ENV_VAR} 引用语法）"""
+        """保存配置到JSON文件（回写文件原始层，保留 ${ENV_VAR} 引用语法；原子写避免半截文件）"""
         try:
             with cls._lock:
+                from core.file_utils import atomic_write_text
                 config_content = json.dumps(cls._file_config, indent=2, ensure_ascii=False)
-                success = PathManager.write_text(cls._get_config_file(), config_content)
-                return success
+                atomic_write_text(Path(cls._get_config_file()), config_content)
+                return True
         except Exception as e:
             log(f"❌ 保存配置异常: {str(e)}", "ERROR")
             return False
@@ -364,9 +365,9 @@ class ConfigManager:
             cls._config = expand_env_refs(raw)
             cls._apply_env_overrides()
         except Exception as e:
-            log(f"配置文件加载失败: {e}", "WARNING")
-            cls._config = {}
-            cls._file_config = {}
+            # 加载失败（如文件损坏）时保留内存现有配置：
+            # 清空 _file_config 会导致后续 save() 把空配置覆盖落盘，造成全量配置丢失
+            log(f"配置文件加载失败（保留当前内存配置）: {e}", "ERROR")
 
     @classmethod
     def _apply_env_overrides(cls) -> None:

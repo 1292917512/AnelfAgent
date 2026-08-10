@@ -519,11 +519,12 @@ class TaskCreate(BaseModel):
 
 @router.post("/tasks", status_code=201)
 async def create_task(data: TaskCreate) -> Dict[str, Any]:
+    from agent.task.registry import task_files_lock
+    from core.file_utils import atomic_write_text
+
     _ensure_tasks_dir()
     folder = _sanitize_folder(data.folder)
     p = _task_path(data.name, folder)
-    if p.exists():
-        raise HTTPException(status_code=409, detail=f"任务 [{data.name}] 已存在")
 
     task_data = _normalize_optional_task_overrides(data.model_dump())
     task_data.pop("folder", None)
@@ -534,8 +535,13 @@ async def create_task(data: TaskCreate) -> Dict[str, Any]:
     _normalize_task(task_data)
 
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(task_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        async with task_files_lock:
+            if p.exists():
+                raise HTTPException(status_code=409, detail=f"任务 [{data.name}] 已存在")
+            p.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(p, json.dumps(task_data, ensure_ascii=False, indent=2))
+    except HTTPException:
+        raise
     except Exception as e:
         raise server_error("写入任务配置", e) from e
 
@@ -565,45 +571,48 @@ class TaskUpdate(BaseModel):
 
 @router.put("/tasks/{name}")
 async def update_task(name: str, data: TaskUpdate, folder: str = Query("")) -> Dict[str, Any]:
+    from agent.task.registry import task_files_lock
+
     old_folder = _sanitize_folder(folder)
-    existing = _load_task(name, old_folder)
-    provided_fields = set(data.model_fields_set)
-    updates = data.model_dump(exclude_unset=True)
-    new_folder = _sanitize_folder(updates.pop("folder")) if "folder" in updates else None
-    updates = _normalize_optional_task_overrides(updates)
-    existing.update(updates)
-    for field in _OPTIONAL_TASK_OVERRIDE_FIELDS:
-        if field in provided_fields and field not in updates:
-            existing.pop(field, None)
-    existing.pop("folder", None)
+    async with task_files_lock:
+        existing = _load_task(name, old_folder)
+        provided_fields = set(data.model_fields_set)
+        updates = data.model_dump(exclude_unset=True)
+        new_folder = _sanitize_folder(updates.pop("folder")) if "folder" in updates else None
+        updates = _normalize_optional_task_overrides(updates)
+        existing.update(updates)
+        for field in _OPTIONAL_TASK_OVERRIDE_FIELDS:
+            if field in provided_fields and field not in updates:
+                existing.pop(field, None)
+        existing.pop("folder", None)
 
-    if new_folder is not None and new_folder != old_folder:
-        moving = True
-        target_folder = new_folder
-    else:
-        moving = False
-        target_folder = old_folder
-    target = _task_path(name, target_folder)
-    if moving and target.exists():
-        raise HTTPException(status_code=409, detail=f"任务 [{name}] 在目标文件夹已存在")
+        if new_folder is not None and new_folder != old_folder:
+            moving = True
+            target_folder = new_folder
+        else:
+            moving = False
+            target_folder = old_folder
+        target = _task_path(name, target_folder)
+        if moving and target.exists():
+            raise HTTPException(status_code=409, detail=f"任务 [{name}] 在目标文件夹已存在")
 
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        # 先写临时文件再 os.replace 原子替换；移动场景写新成功后才删旧，
-        # 写新失败时旧文件保持不动（tmp 清理后抛出）
-        tmp = target.with_name(target.name + ".tmp")
         try:
-            tmp.write_text(
-                json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            os.replace(tmp, target)
-        except Exception:
-            tmp.unlink(missing_ok=True)
-            raise
-        if moving:
-            _task_path(name, old_folder).unlink()
-    except Exception as e:
-        raise server_error("写入任务配置", e) from e
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # 先写临时文件再 os.replace 原子替换；移动场景写新成功后才删旧，
+            # 写新失败时旧文件保持不动（tmp 清理后抛出）
+            tmp = target.with_name(target.name + ".tmp")
+            try:
+                tmp.write_text(
+                    json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                os.replace(tmp, target)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
+            if moving:
+                _task_path(name, old_folder).unlink()
+        except Exception as e:
+            raise server_error("写入任务配置", e) from e
 
     _reload_task_registry()
     existing["folder"] = target_folder
@@ -612,13 +621,15 @@ async def update_task(name: str, data: TaskUpdate, folder: str = Query("")) -> D
 
 @router.delete("/tasks/{name}")
 async def delete_task(name: str, folder: str = Query("")) -> Dict[str, str]:
-    p = _task_path(name, _sanitize_folder(folder))
-    if not p.exists():
-        raise HTTPException(status_code=404, detail=f"任务 [{name}] 不存在")
-    try:
-        p.unlink()
-    except Exception as e:
-        raise server_error("删除任务", e) from e
+    from agent.task.registry import task_files_lock
+    async with task_files_lock:
+        p = _task_path(name, _sanitize_folder(folder))
+        if not p.exists():
+            raise HTTPException(status_code=404, detail=f"任务 [{name}] 不存在")
+        try:
+            p.unlink()
+        except Exception as e:
+            raise server_error("删除任务", e) from e
 
     _reload_task_registry()
     return {"status": "ok"}
@@ -667,29 +678,23 @@ def _reload_task_registry() -> None:
 
 
 class WebToolsConfigUpdate(BaseModel):
-    baidu_api_key: Optional[str] = None
     proxy: Optional[str] = None
 
 
 @router.get("/web-tools")
 async def get_web_tools_config() -> Dict[str, Any]:
-    """返回 Web 工具配置（API Key 已脱敏）。"""
-    from entities.web.baidu_search import get_config
-    config = get_config()
-    if config.get("baidu_api_key"):
-        config["baidu_api_key"] = _mask_key(config["baidu_api_key"])
-    return config
+    """返回 Web 工具配置。"""
+    from entities.web.web_config import get_config
+    return get_config()
 
 
 @router.put("/web-tools")
 async def save_web_tools_config(data: WebToolsConfigUpdate) -> Dict[str, str]:
-    """保存 Web 工具配置（代理、API Key 等）。"""
-    from entities.web.baidu_search import update_config
+    """保存 Web 工具配置（代理等）。"""
+    from entities.web.web_config import update_config
     updates: Dict[str, Any] = {}
     if data.proxy is not None:
         updates["proxy"] = data.proxy
-    if data.baidu_api_key is not None and "****" not in data.baidu_api_key:
-        updates["baidu_api_key"] = data.baidu_api_key
     if not updates:
         return {"status": "ok", "message": "无变更"}
     update_config(updates)

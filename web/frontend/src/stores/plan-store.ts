@@ -35,6 +35,8 @@ interface PlanState {
     status: PlanRecord["status"],
     reason?: string,
   ) => void;
+  /** 移除已删除的 plan（delete_goal 工具 → plan_deleted 事件） */
+  removePlan: (chatId: string, planId: string) => void;
   setActivePlan: (chatId: string, planId: string) => void;
   getActivePlan: (chatId: string) => PlanRecord | null;
   getChatPlans: (chatId: string) => PlanRecord[];
@@ -113,6 +115,17 @@ export const usePlanStore = create<PlanState>((set, get) => ({
           },
         },
       };
+    }),
+
+  removePlan: (chatId, planId) =>
+    set((s) => {
+      const chatPlans = s.plans[chatId];
+      if (!chatPlans?.[planId]) return {};
+      const rest = { ...chatPlans };
+      delete rest[planId];
+      const active = { ...s.activePlanByChat };
+      if (active[chatId] === planId) delete active[chatId];
+      return { plans: { ...s.plans, [chatId]: rest }, activePlanByChat: active };
     }),
 
   setActivePlan: (chatId, planId) =>

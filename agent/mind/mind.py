@@ -9,6 +9,7 @@ import asyncio
 import json
 import re
 import time
+import uuid
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from agent.channel.manager import ChannelManager
@@ -705,6 +706,63 @@ class Mind:
             result = await self.llm_chat(messages)
         return (result.content or "").strip()
 
+    async def prewarm_scope_cache(self, scope_type: str, scope_id: str) -> None:
+        """折叠后预热：用该会话的新前缀发一次 1-token 轻调用写热缓存。
+
+        折叠重写摘要块 = 缓存前缀断点；预热把"断点后首次全价预读"转移到
+        空闲后台，用户发起的下一轮真实调用直接命中。只构建前缀段
+        （tools + stable/context/summary/conversation），召回/动态区不参与
+        （它们在真实调用的前缀匹配范围之外）。预热成本即下一轮真实调用
+        本应付的全价预读，净零额外开销；失败静默（下次真实调用自然回温）。
+        """
+        from agent.messages import Everything, EverythingGroup
+
+        adapter, _, base_id = scope_id.partition(":")
+        anything: Everything
+        if scope_type == "group":
+            anything = EverythingGroup(group_id=base_id, adapter_key=adapter)
+        else:
+            anything = Everything(uid=base_id, adapter_key=adapter)
+        entity_scope = self._resolve_entity_scope(anything)
+
+        # 永久块（真实流程经召回提升进 context 层；预热不跑检索，直接取 pins 组装）
+        permanent_text = ""
+        if self.retriever is not None:
+            pinned = await self.retriever._load_permanent_pins([])
+            pin_msgs = await self.retriever._format_unified_results(pinned) if pinned else []
+            permanent_text = str(pin_msgs[0]["content"]) if pin_msgs else ""
+
+        models_summary = self._get_models_summary()
+        layered = await self._build_layered_prompts(anything, models_summary, permanent_text)
+        persona_text, tools_text, context_text = layered[0], layered[1], layered[2]
+        summary_row = await self.conversation_data.get_conversation_summary(anything)
+        conversation = await self.conversation_data.get_conversation_record_by_everything(anything)
+        messages = await self.pfc.build_llm_context(
+            persona_text=persona_text,
+            tools_text=tools_text,
+            context_text=context_text,
+            memory_msgs=[],
+            anything=anything,
+            adapter_key=adapter,
+            summary_row=summary_row,
+            prefetched_conversation=conversation,
+            scope=entity_scope,
+        )
+        llm_client = self.llm if isinstance(self.llm, LLMClient) else None
+        if llm_client is None:
+            return
+        from agent.llm.prompt_cache import decorate_messages, is_anthropic_wire
+        messages = decorate_messages(messages, anthropic=is_anthropic_wire(
+            llm_client.config.litellm_model or "",
+            getattr(llm_client.config, "api_type", "") or "",
+        ))
+        # tools 数组是请求最前段，必须与真实调用一致（缺它前缀从第 0 字节就不匹配）
+        tools = await self.pfc.get_active_tool_schemas(adapter, scope=entity_scope)
+        async for _delta in llm_client.chat_stream(
+            messages, options={"max_tokens": 1}, tools=tools or None,
+        ):
+            pass
+
     # reflect（子代理/心跳）不得操作频道调度类工具。
     # present_plan/update_goal 已放行：tracker 对非用户 scope（reflect 等）
     # 只持久化 goal、不发射前端事件（事件泄漏在 tracker 层根治），
@@ -751,7 +809,10 @@ class Mind:
         if extra_blocked_tools:
             blocked_tools = blocked_tools | set(extra_blocked_tools)
 
-        base_tools = await self.pfc.get_active_tool_schemas(adapter_key, scope="reflect")
+        # 每次反思会话使用唯一 scope：并行子代理/心跳 reflect 的 plan 与
+        # 工具激活状态按 scope 隔离，共享字面量会互相串扰
+        reflect_scope = f"reflect:{uuid.uuid4().hex[:8]}"
+        base_tools = await self.pfc.get_active_tool_schemas(adapter_key, scope=reflect_scope)
         active_tools = [
             s for s in base_tools
             if s.get("function", {}).get("name", "") not in blocked_tools
@@ -784,7 +845,7 @@ class Mind:
         log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
 
         from agent.mind.think_session import think_session
-        with think_session(self, "reflect", with_token=False):
+        with think_session(self, reflect_scope, with_token=False):
             await self._think_loop(
                 mode=ThinkMode.REFLECT,
                 tool_chain=[],
@@ -832,13 +893,17 @@ class Mind:
             self,
             anything: Optional[Everything],
             models_summary: str,
+            permanent_text: str = "",
     ) -> Tuple[str, str, str, bool, bool, bool, str]:
         """构建 stable 人设块/工具块/context 层三段提示（委托 recollection 模块）。
 
-        返回追加 status_text：心跳维护的记忆状态区块（尾部动态区独立注入，
-        不入 context 层，避免计数更新击穿缓存前缀）。
+        permanent_text：永久记忆置顶块（召回路径剥离，字节稳定），并入 context 层
+        走内容寻址缓存。返回追加 status_text：心跳维护的记忆状态区块（尾部动态区
+        独立注入，不入 context 层，避免计数更新击穿缓存前缀）。
         """
-        return await _recollection._build_layered_prompts(self, anything, models_summary)
+        return await _recollection._build_layered_prompts(
+            self, anything, models_summary, permanent_text,
+        )
 
     @staticmethod
     def _apply_memory_budget(msgs: List[Dict]) -> List[Dict]:

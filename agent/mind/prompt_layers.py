@@ -250,20 +250,28 @@ _PROMPT_CACHE_CONFIGS = {
             "description": "是否启用对话摘要窗口（旧消息折叠为固定摘要块 + 最近消息纯追加，保持历史前缀字节稳定以命中缓存）",
             "default": True,
         },
-        "conversation_raw_min": {
-            "description": "摘要窗口的原始消息下限 x：折叠后保留的最近原始消息条数（窗口在 x ~ M+x 间波动）",
-            "default": 10,
+        "conversation_raw_keep_percent": {
+            "description": "折叠后保留的原文比例（%）：窗口积满后折叠，最近该比例的消息保留原文，更早的并入固定摘要块",
+            "default": 33,
         },
         "conversation_summary_max_chars": {
             "description": "对话摘要块的字符上限",
             "default": 4000,
         },
-        "conversation_fold_hysteresis": {
-            "description": "折叠滞回 H：窗口到达 M+H 才触发折叠（批量更大、折叠更少，缓存重写频率更低）",
-            "default": 15,
-        },
         "conversation_fold_drop_on_failure": {
             "description": "折叠失败时丢弃该批并推进水位线（窗口头部不滑动，缓存前缀稳定；内容仍在 DB 可检索）。关闭则保持滑动直到折叠成功",
+            "default": True,
+        },
+        "conversation_fold_batch_max": {
+            "description": "单次折叠批量上限：积压恢复时分批消化（摘要提示词有界、单批失败最多丢这批）；日常批量等于总窗口条数，通常远低于此上限",
+            "default": 100,
+        },
+        "conversation_fold_idle_beats": {
+            "description": "空闲自动折叠：某会话连续 N 个心跳无外部新消息（任务/系统写入不计）时，把窗口内消息折进摘要（把缓存断点移到无人时段）。积压阈值随窗口参数自动联动，无需配置",
+            "default": 6,
+        },
+        "conversation_fold_prewarm": {
+            "description": "折叠完成后主动预热：用新前缀发一次 1-token 轻调用把缓存写热，消除折叠后的首轮命中低谷（成本 = 下一轮真实调用本应付的全价预读，净零额外开销）",
             "default": True,
         },
         "memory_inject_max_chars": {
@@ -272,6 +280,10 @@ _PROMPT_CACHE_CONFIGS = {
         },
         "tool_order_deterministic": {
             "description": "工具排序确定性模式：与使用计数无关，同一工具集跨会话字节级一致（tools schema 是 prompt 最大头，其稳定性决定前缀缓存命中率上限）；关闭恢复「已使用优先」排序",
+            "default": True,
+        },
+        "tool_order_frozen": {
+            "description": "跨回复追加式冻结 tools 数组顺序：首轮建立顺序后新工具只追加尾部、来源成员变化（热召回换血等）不剔除——回复间前缀字节稳定；关闭则每回复按双桶排序键重排（需确定性模式开启）",
             "default": True,
         },
         "tool_dynamic_sticky": {

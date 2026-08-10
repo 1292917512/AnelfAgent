@@ -394,6 +394,16 @@ class _DelegationMind:
             set_adapter_key=lambda scope, key: adapter_keys.__setitem__(scope, key),
             get_adapter_key=lambda scope: "test",
         )
+        # 镜像 Mind._on_bg_task_unclaimed：轮外完成经回调排入回复队列并触发新一轮
+        self.background_tasks.set_unclaimed_callback(self._on_bg_task_unclaimed)
+
+    def _on_bg_task_unclaimed(self, scope: str, description: str, summary: str) -> None:
+        from agent.mind.tools.scheduler import enqueue_scope_reply
+        enqueue_scope_reply(
+            self.pfc, scope, self.pfc.get_adapter_key(scope),
+            f"后台任务完成: {description[:60]}", summary,
+        )
+        asyncio.create_task(self.try_execute_mind())
 
     def get_model_context_length(self) -> int:
         return 128_000

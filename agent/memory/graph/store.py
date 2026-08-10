@@ -15,7 +15,7 @@ import json
 import re
 import sqlite3
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import aiosqlite
 
@@ -194,21 +194,28 @@ class GraphStore:
             return node
         ntype, name = parse_node_key(key)
         now_ns = time.time_ns()
+        # ON CONFLICT 兜底并发建档：另一协程可能已插入同 key 节点，冲突时重读
         cursor = await db.execute(
             "INSERT INTO graph_nodes(node_key, node_type, label, metadata_json, "
-            "created_ns, updated_ns, archived) VALUES(?,?,?,'{}',?,?,0)",
+            "created_ns, updated_ns, archived) VALUES(?,?,?,'{}',?,?,0) "
+            "ON CONFLICT(node_key) DO NOTHING",
             (key, ntype, (label or name).strip(), now_ns, now_ns),
         )
-        return {
-            "id": int(cursor.lastrowid or 0),
-            "node_key": key,
-            "node_type": ntype,
-            "label": (label or name).strip(),
-            "metadata": {},
-            "created": now_ns / 1e9,
-            "updated": now_ns / 1e9,
-            "archived": False,
-        }
+        if (cursor.rowcount or 0) > 0:
+            return {
+                "id": int(cursor.lastrowid or 0),
+                "node_key": key,
+                "node_type": ntype,
+                "label": (label or name).strip(),
+                "metadata": {},
+                "created": now_ns / 1e9,
+                "updated": now_ns / 1e9,
+                "archived": False,
+            }
+        node = await self._get_node_row(db, key)
+        if node is None:
+            raise RuntimeError(f"图谱节点写入后读取失败: {key}")
+        return node
 
     async def _neighbor_node_ids(self, db: aiosqlite.Connection, node_id: int) -> list[int]:
         cursor = await db.execute(
@@ -296,6 +303,39 @@ class GraphStore:
         db = await self._conn.get_db()
         key = await self._normalize_entity_key(node_key)
         return await self._get_node_row(db, key)
+
+    async def get_nodes_by_keys(self, node_keys: List[str]) -> Dict[str, Optional[Dict[str, Any]]]:
+        """按键批量取节点（含别名归一），返回 {原始 key: node 或 None}。
+
+        单条 IN 查询替代逐键往返（召回后处理的实体标签人类化场景）。
+        """
+        if not node_keys:
+            return {}
+        db = await self._conn.get_db()
+        norm_map: Dict[str, str] = {}
+        for k in node_keys:
+            norm_map[k] = await self._normalize_entity_key(k)
+        unique_keys = sorted(set(norm_map.values()))
+        placeholders = ",".join("?" for _ in unique_keys)
+        cursor = await db.execute(
+            f"SELECT * FROM graph_nodes WHERE node_key IN ({placeholders})",
+            unique_keys,
+        )
+        found = {str(r["node_key"]): self._row_to_node(r) for r in await cursor.fetchall()}
+        return {k: found.get(norm_map[k]) for k in node_keys}
+
+    async def get_nodes_by_ids(self, node_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """按 id 批量取节点，返回 {id: node}（单条 IN 查询替代逐条往返）。"""
+        if not node_ids:
+            return {}
+        db = await self._conn.get_db()
+        unique_ids = sorted({int(i) for i in node_ids})
+        placeholders = ",".join("?" for _ in unique_ids)
+        cursor = await db.execute(
+            f"SELECT * FROM graph_nodes WHERE id IN ({placeholders})",
+            unique_ids,
+        )
+        return {int(r["id"]): self._row_to_node(r) for r in await cursor.fetchall()}
 
     async def get_node_by_id(self, node_id: int) -> Optional[Dict[str, Any]]:
         db = await self._conn.get_db()
@@ -524,12 +564,8 @@ class GraphStore:
         for edge in edges:
             node_ids.add(edge["subject"]["id"])
             node_ids.add(edge["object"]["id"])
-        nodes = [
-            edge_endpoint
-            for nid in sorted(node_ids)
-            for edge_endpoint in [await self.get_node_by_id(nid)]
-            if edge_endpoint is not None
-        ]
+        node_map = await self.get_nodes_by_ids(sorted(node_ids))
+        nodes = [node_map[nid] for nid in sorted(node_ids) if nid in node_map]
         return {"found": True, "node": node, "nodes": nodes, "edges": edges}
 
     async def edges_for_scopes(

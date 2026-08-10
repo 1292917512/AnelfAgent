@@ -29,6 +29,9 @@ from .store._shared import (
     MEM_COLUMNS as _MEM_COLUMNS,
 )
 from .store._shared import (
+    MEM_COLUMNS_NO_EMB as _MEM_COLUMNS_NO_EMB,
+)
+from .store._shared import (
     compute_effective_score as _compute_effective_score,
 )
 from .store._shared import (
@@ -514,12 +517,13 @@ class MemoryStore(BaseEntity):
         cutoff_ns = int((time.time() - stale_days * 86400) * 1e9)
         where = ("importance > 0.5 AND type != 'permanent' "
                  "AND COALESCE(last_accessed_ns, ts_ns) < ?")
-        # 先取受影响行（投影同步需要条快照），再批量更新
+        # 先取受影响行（投影同步需要条快照），再批量更新；
+        # 无向量列：投影负载不含 embedding，跳过多余解包
         cursor = await db.execute(
-            f"SELECT {_MEM_COLUMNS} FROM memories WHERE {where} LIMIT 500",
+            f"SELECT {_MEM_COLUMNS_NO_EMB} FROM memories WHERE {where} LIMIT 500",
             (cutoff_ns,),
         )
-        affected = [row_to_entry(r) for r in await cursor.fetchall()]
+        affected = [row_to_entry(r, with_embedding=False) for r in await cursor.fetchall()]
         async with self._tx(db):
             cursor = await db.execute(
                 "UPDATE memories SET importance = 0.5 + (importance - 0.5) * (1.0 - ?) "
@@ -682,9 +686,14 @@ class MemoryStore(BaseEntity):
         db = await self._get_db()
         now = time.time()
         min_ts = now - min_age_days * 86400
+        # 无向量列 + 候选上限：有效分计算不需要 embedding，
+        # 候选放大到 limit 的 3 倍足够覆盖护栏跳过的条目
+        candidate_limit = max(limit * 3, limit + 50)
         cursor = await db.execute(
-            f"SELECT {_MEM_COLUMNS} FROM memories WHERE type != 'permanent' AND ts_ns < ?",
-            (int(min_ts * 1e9),),
+            f"SELECT {_MEM_COLUMNS_NO_EMB} FROM memories "
+            "WHERE type != 'permanent' AND ts_ns < ? "
+            "ORDER BY importance ASC, last_accessed_ns ASC LIMIT ?",
+            (int(min_ts * 1e9), candidate_limit),
         )
         rows = await cursor.fetchall()
 
@@ -697,7 +706,7 @@ class MemoryStore(BaseEntity):
         )
         type_counts = await self.get_type_counts()
         for row in rows:
-            entry = row_to_entry(row)
+            entry = row_to_entry(row, with_embedding=False)
             score = self.compute_effective_score(entry, now)
             if score < score_threshold and entry.id is not None:
                 remaining = type_counts.get(entry.memory_type.value, 0)
@@ -713,6 +722,21 @@ class MemoryStore(BaseEntity):
                 to_archive.append((entry, score))
                 if len(forgotten) >= limit:
                     break
+
+        # 归档保留向量（恢复时无需重嵌）：仅对待归档子集批量取向量
+        if to_archive:
+            from .memory_utils import unpack_embedding
+            archive_ids = [e.id for e, _ in to_archive if e.id is not None]
+            placeholders = ",".join("?" for _ in archive_ids)
+            emb_cursor = await db.execute(
+                f"SELECT id, embedding_blob FROM memories WHERE id IN ({placeholders})",
+                archive_ids,
+            )
+            emb_map = {int(r["id"]): r["embedding_blob"] for r in await emb_cursor.fetchall()}
+            for entry, _ in to_archive:
+                blob = emb_map.get(entry.id or 0)
+                if blob:
+                    entry.embedding = unpack_embedding(blob)
 
         # 复用第一轮已取出的行，不再逐条 get()
         async with self._tx(db):
@@ -771,6 +795,9 @@ class MemoryStore(BaseEntity):
         Returns: [(entry_a, entry_b, similarity)] 按相似度降序。
         """
         db = await self._get_db()
+        if self._conn.vec_available and self._conn.vec_dims:
+            # ANN 邻居法：每条向量查 k 近邻（O(n·k)），替代全配对 O(n²) 纯 Python 余弦
+            return await self._find_similar_pairs_ann(db, similarity_threshold, limit)
         cursor = await db.execute(
             f"SELECT {_MEM_COLUMNS} FROM memories WHERE embedding_blob IS NOT NULL "
             "AND type != 'permanent' ORDER BY ts_ns DESC LIMIT 500"
@@ -786,6 +813,58 @@ class MemoryStore(BaseEntity):
         return await asyncio.to_thread(
             self._find_similar_pairs, entry_list, vecs, similarity_threshold, limit,
         )
+
+    async def _find_similar_pairs_ann(
+            self,
+            db: aiosqlite.Connection,
+            similarity_threshold: float,
+            limit: int,
+    ) -> list[tuple[MemoryEntry, MemoryEntry, float]]:
+        """ANN 邻居法相似对查找：每条向量查 k 近邻，阈值过滤后按相似度降序。"""
+        cursor = await db.execute(
+            "SELECT id, type, embedding_blob FROM memories WHERE embedding_blob IS NOT NULL "
+            "AND type != 'permanent' ORDER BY ts_ns DESC LIMIT 500"
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            return []
+        type_map = {int(r["id"]): r["type"] for r in rows}
+        # 候选对聚合：同对去重保留最大相似度（k=自身+5 邻居）
+        pair_sims: Dict[tuple[int, int], float] = {}
+        for r in rows:
+            rid = int(r["id"])
+            cur = await db.execute(
+                "SELECT rowid, distance FROM memories_vec "
+                "WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+                (r["embedding_blob"], 6),
+            )
+            for nr in await cur.fetchall():
+                nid = int(nr["rowid"])
+                if nid == rid or nid not in type_map:
+                    continue
+                if type_map[nid] != type_map[rid]:
+                    continue
+                sim = 1.0 - float(nr["distance"])
+                if sim < similarity_threshold:
+                    continue
+                key = (min(rid, nid), max(rid, nid))
+                if sim > pair_sims.get(key, 0.0):
+                    pair_sims[key] = sim
+        if not pair_sims:
+            return []
+        ranked = sorted(pair_sims.items(), key=lambda kv: -kv[1])[:limit]
+        involved = sorted({i for (a, b), _ in ranked for i in (a, b)})
+        placeholders = ",".join("?" for _ in involved)
+        cur = await db.execute(
+            f"SELECT {_MEM_COLUMNS} FROM memories WHERE id IN ({placeholders})",
+            involved,
+        )
+        entry_map = {int(r["id"]): row_to_entry(r) for r in await cur.fetchall()}
+        return [
+            (entry_map[a], entry_map[b], sim)
+            for (a, b), sim in ranked
+            if a in entry_map and b in entry_map
+        ]
 
     @staticmethod
     def _find_similar_pairs(
@@ -1110,8 +1189,8 @@ class MemoryStore(BaseEntity):
                 pass
             max_importance = max(max_importance, r["importance"])
 
-        # 将旧记忆标记为已合并（importance=0）——先于 add 提交，
-        # 避免共享连接上未提交的标记被 add 的事务意外回滚
+        # 将旧记忆标记为已合并（importance=0）；记录原重要性用于失败补偿
+        old_importance = {int(r["id"]): float(r["importance"]) for r in rows}
         async with self._tx(db):
             await db.execute(
                 f"UPDATE memories SET importance = 0 WHERE id IN ({placeholders})",
@@ -1129,7 +1208,17 @@ class MemoryStore(BaseEntity):
             importance=max_importance,
             metadata={"merged_from": ids},
         )
-        new_id = await self.add(entry)
+        try:
+            new_id = await self.add(entry)
+        except Exception:
+            # 补偿：新记忆写入失败时恢复旧记忆重要性，
+            # 避免旧记忆被全部检索路径过滤造成数据"假丢失"
+            async with self._tx(db):
+                for old_id, imp in old_importance.items():
+                    await db.execute(
+                        "UPDATE memories SET importance=? WHERE id=?", (imp, old_id),
+                    )
+            raise
         log(f"🔗 记忆合并: {ids} → id={new_id}", tag="思维")
         return new_id
 
@@ -1235,6 +1324,16 @@ class MemoryStore(BaseEntity):
     async def clean_embedding_cache(self) -> int:
         """清理不再被 chunks 引用的过期 embedding 缓存。"""
         return await self._files.clean_embedding_cache()
+
+    async def purge_audit_log(self, older_than_days: int = 30) -> int:
+        """清理过期审计日志（表只追加，不清理会让每 tick 的汇总查询线性恶化）。"""
+        db = await self._get_db()
+        cutoff = int((time.time() - older_than_days * 86400) * 1e9)
+        async with self._tx(db):
+            cursor = await db.execute(
+                "DELETE FROM memory_audit WHERE ts_ns < ?", (cutoff,),
+            )
+        return int(cursor.rowcount or 0)
 
     # ------------------------------------------------------------------
     # Embedding 管理

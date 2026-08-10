@@ -7,6 +7,7 @@ Mind 类持有一行薄委托，调用方签名零变化。
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -24,6 +25,9 @@ if TYPE_CHECKING:
 
     from agent.messages import Everything
     from agent.mind.mind import Mind
+
+# asyncio.timeout 需 3.11+（无 per-chunk Task 创建开销）；3.10 回退 wait_for
+_HAS_ASYNCIO_TIMEOUT = sys.version_info >= (3, 11)
 
 
 def _mind_module() -> "ModuleType":
@@ -92,7 +96,7 @@ async def _invoke_llm_unified(
     messages = decorate_messages(messages, anthropic=is_anthropic_wire(
         getattr(_llm_cfg, "litellm_model", "") or "",
         getattr(_llm_cfg, "api_type", "") or "",
-    ))
+    ), api_type=getattr(_llm_cfg, "api_type", "") or "")
 
     # 发送边界统一规整（message_schema.normalize_for_send）：
     # 角色归一（头部提示词分层保持 system 供 Anthropic 前缀缓存，中途注入
@@ -116,6 +120,13 @@ async def _invoke_llm_unified(
                 )
             except Exception as stream_exc:
                 log(f"流式调用失败，回退非流式: {stream_exc}", "DEBUG", tag="思维")
+                # 已下发的增量文本在重试全量文本到达后会重复显示，先通知通道重置
+                reset_fn = getattr(on_delta, "reset", None) if on_delta is not None else None
+                if reset_fn is not None:
+                    try:
+                        await reset_fn()
+                    except Exception:
+                        pass  # 重置通知失败不影响回退
                 result = await mind._llm_chat_with_retry(
                     messages, tools, tool_choice=tool_choice, options=options,
                 )
@@ -291,8 +302,13 @@ async def _llm_chat_stream_once(
     ).__aiter__()
     while True:
         try:
-            # 每个 chunk 独立计时（停滞流保护；asyncio.timeout 需 3.11+，用 wait_for 兼容 3.10）
-            delta = await asyncio.wait_for(stream_iter.__anext__(), timeout=mc.llm_timeout)
+            # 每个 chunk 独立计时（停滞流保护）。3.11+ 用 asyncio.timeout
+            # （无 per-chunk Task 创建开销）；3.10 回退 wait_for
+            if _HAS_ASYNCIO_TIMEOUT:
+                async with asyncio.timeout(mc.llm_timeout):
+                    delta = await stream_iter.__anext__()
+            else:
+                delta = await asyncio.wait_for(stream_iter.__anext__(), timeout=mc.llm_timeout)
         except StopAsyncIteration:
             break
         if delta.content:

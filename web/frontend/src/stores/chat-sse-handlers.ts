@@ -21,6 +21,7 @@ import type {
   SseFileDiffEvent,
   SseMediaEvent,
   SsePlanCancelledEvent,
+  SsePlanDeletedEvent,
   SsePlanStatusChangedEvent,
   SsePlanStepUpdatedEvent,
   SsePlanSubmittedEvent,
@@ -231,11 +232,16 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
         const cur = b.streaming && b.streaming.turnId === data.turn_id
           ? b.streaming
           : { turnId: data.turn_id, text: "", reasoning: "", tools: [], diffs: [] };
+        if (data.reset) {
+          // 流式回退重试：清空已渲染增量，等待全量文本重新到达
+          return { streaming: { ...cur, text: "", reasoning: "" } };
+        }
+        const delta = data.delta ?? "";
         return {
           streaming: {
             ...cur,
-            text: data.reasoning ? cur.text : cur.text + data.delta,
-            reasoning: data.reasoning ? cur.reasoning + data.delta : cur.reasoning,
+            text: data.reasoning ? cur.text : cur.text + delta,
+            reasoning: data.reasoning ? cur.reasoning + delta : cur.reasoning,
           },
         };
       });
@@ -369,6 +375,14 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
       const data = JSON.parse(e.data) as SsePlanCancelledEvent;
       const chatId = routeChatId(data);
       usePlanStore.getState().updatePlanStatus(chatId, data.plan_id, "cancelled", data.reason);
+    } catch { /* ignore */ }
+  });
+
+  es.addEventListener("plan_deleted", (e) => {
+    try {
+      const data = JSON.parse(e.data) as SsePlanDeletedEvent;
+      const chatId = routeChatId(data);
+      usePlanStore.getState().removePlan(chatId, data.plan_id);
     } catch { /* ignore */ }
   });
 

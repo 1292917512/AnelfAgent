@@ -100,6 +100,28 @@ def cache_tokens_from_usage(usage: Any) -> tuple[int, int]:
     return cache_read, cache_creation
 
 
+def _dig_present(obj: Any, dotted_path: str) -> bool:
+    """按点分路径判断字段是否存在（值为 0 也算存在，区别于 _dig_int）。"""
+    current = obj
+    for part in dotted_path.split("."):
+        if current is None:
+            return False
+        current = current.get(part) if isinstance(current, dict) else getattr(current, part, None)
+    return current is not None
+
+
+def usage_has_cache_fields(usage: Any) -> bool:
+    """usage 是否携带缓存统计字段（存在性判定，与命中值无关）。
+
+    用于区分"端点真实未命中"（字段在、值为 0）与"端点不回报"
+    （字段缺失 = 不可观测）——前者显示 0%，后者显示"不可观测"。
+    """
+    if not usage:
+        return False
+    paths = _CACHE_READ_PATHS + _CACHE_CREATION_PATHS
+    return any(_dig_present(usage, p) for p in paths)
+
+
 @dataclass(slots=True)
 class UsageInfo:
     """LLM 调用的 token 用量统计。"""
@@ -110,6 +132,9 @@ class UsageInfo:
     cache_read_input_tokens: int = 0
     # 供应商侧缓存写入量（仅 Anthropic 等显式缓存协议提供）
     cache_creation_input_tokens: int = 0
+    # 端点是否回报缓存统计字段（False = 不可观测，展示"—"而非谎报 0%；
+    # 由流式旁路按原始 chunk 字段存在性动态判定，替代供应商名静态登记）
+    cache_observable: bool = True
 
     @property
     def cache_hit_rate(self) -> float:

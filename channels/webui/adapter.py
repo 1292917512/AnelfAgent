@@ -93,13 +93,14 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             EVENT_DELEGATION_RESOLVED,
             EVENT_DELEGATION_STARTED,
             EVENT_PLAN_CANCELLED,
+            EVENT_PLAN_DELETED,
             EVENT_PLAN_STATUS_CHANGED,
             EVENT_PLAN_STEP_UPDATED,
             EVENT_PLAN_SUBMITTED,
         )
         for evt in (
             EVENT_PLAN_SUBMITTED, EVENT_PLAN_STEP_UPDATED,
-            EVENT_PLAN_STATUS_CHANGED, EVENT_PLAN_CANCELLED,
+            EVENT_PLAN_STATUS_CHANGED, EVENT_PLAN_CANCELLED, EVENT_PLAN_DELETED,
             EVENT_DELEGATION_STARTED, EVENT_DELEGATION_PROGRESS, EVENT_DELEGATION_RESOLVED,
         ):
             event_bus.on(evt, self._make_scoped_forwarder(evt), owner="channel:webui")
@@ -122,6 +123,13 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         """assistant 文本增量 → 50ms 合帧后推送 SSE delta 帧。"""
         import asyncio
         turn_id = str(payload.get("turn_id", ""))
+        if payload.get("reset"):
+            # 流式中途失败回退重试：清空该 turn 缓冲并通知前端重置增量渲染
+            self._delta_buffers.pop(turn_id, None)
+            self._broadcast_scoped("delta", {
+                "scope": str(payload.get("scope", "")), "turn_id": turn_id, "reset": True,
+            })
+            return
         buf = self._delta_buffers.setdefault(
             turn_id, {"text": "", "reasoning": "", "scope": "", "scheduled": False})
         if payload.get("scope"):

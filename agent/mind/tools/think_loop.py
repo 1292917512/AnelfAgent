@@ -48,7 +48,6 @@ from agent.mind.tools.round_helpers import (
     _OUTPUT_TOOL_NAMES,
     _PLAN_MANAGEMENT_TOOL_NAMES,
     ThinkMode,
-    _apply_frozen_tool_order,
     _check_tool_results_all_errors,
     _collect_round_error_briefs,
     _collect_round_failures,
@@ -71,7 +70,6 @@ from agent.mind.tools.round_helpers import (
     _suspend_for_background,
     _ThinkLoopCtx,
     _ThinkRoundState,
-    _tool_schema_name,
     resolve_tool_calls,
     should_end_reply,
 )
@@ -240,10 +238,8 @@ async def think_loop(
         options, adapter_key,
     )
 
-    # 工具顺序会话内冻结：以首轮排序为基准快照，会话内重建时按冻结顺序重排。
-    # 使用计数驱动的层间跳变/热召回漂移会改变 tools 数组字节序，
-    # 击穿 Anthropic/OpenAI 前缀缓存（tools 位于缓存前缀最前）。
-    ctx.frozen_tool_order = [_tool_schema_name(t) for t in ctx.active_tools]
+    # 工具数组顺序由 ToolAssembly 跨回复追加式冻结（见 tool_assembly），
+    # 会话内/回复间均字节稳定，无需在此再冻结。
 
     try:
         await _run_think_rounds(ctx, state, safety_limit, start_time)
@@ -288,14 +284,14 @@ async def _run_think_rounds(
         if await _handle_interrupt(ctx, state):
             return
 
-        # 工具集版本检查：激活/发现变化时重建 active_tools（字节稳定时不重建，prefix 缓存友好）
+        # 工具集版本检查：激活/发现变化时重建 active_tools
+        # （ToolAssembly 追加式冻结保证重建结果前缀字节稳定，prefix 缓存友好）
         cur_tools_version = (getattr(mind.pfc, "tools_version", 0), _tool_act_mgr.version)
         if cur_tools_version != last_tools_version:
             last_tools_version = cur_tools_version
-            rebuilt = await mind.pfc.get_active_tool_schemas(
+            ctx.active_tools = await mind.pfc.get_active_tool_schemas(
                 ctx.adapter_key, scope=ctx.current_scope,
             )
-            ctx.active_tools = _apply_frozen_tool_order(rebuilt, ctx.frozen_tool_order)
             log(f"工具集版本变化，重建 active_tools: {len(ctx.active_tools)} 个", "DEBUG", tag="思维")
 
         await event_bus.emit(EVENT_THINKING_REPLY_ROUND, {
@@ -316,13 +312,19 @@ async def _run_think_rounds(
             last_prompt_tokens=state.last_prompt_tokens,
             scope=ctx.current_scope,
         ):
-            async with mind.compressor.scope_lock(ctx.current_scope):
-                ctx.base_messages, ctx.tool_chain = await _compress_context(
-                    mind, ctx.base_messages, ctx.tool_chain, ctx.current_scope,
-                )
-            # 压缩后旧真用量已失真，清零避免下轮以过期值重复触发压缩
-            state.last_prompt_tokens = 0
-            execution_steps.append(f"→ 第{state.iteration + 1}轮前: 上下文已压缩")
+            try:
+                async with mind.compressor.scope_lock(ctx.current_scope):
+                    ctx.base_messages, ctx.tool_chain = await _compress_context(
+                        mind, ctx.base_messages, ctx.tool_chain, ctx.current_scope,
+                    )
+            except Exception as exc:
+                # 估算/手动触发的压缩失败不应杀死整轮回复：
+                # 本轮不压缩继续（硬溢出路径由 _handle_overflow 另行处理，保留原语义）
+                log(f"上下文压缩失败，本轮不压缩继续: {exc}", "WARNING", tag="压缩")
+            else:
+                # 压缩后旧真用量已失真，清零避免下轮以过期值重复触发压缩
+                state.last_prompt_tokens = 0
+                execution_steps.append(f"→ 第{state.iteration + 1}轮前: 上下文已压缩")
 
         # 并入循环期间到达的新用户消息（让 AI 在当前回复中一并处理，
         # 而非另起周期导致上下文断裂/忘记已回复）
@@ -473,7 +475,13 @@ def _append_assistant_msg(
         result: ChatResult,
         content: str,
 ) -> None:
-    """追加 assistant 消息并保留推理字段（维持多轮思维链连续性）。"""
+    """追加 assistant 消息并保留推理字段（维持多轮思维链连续性）。
+
+    空 content 且无 tool_calls 时不入链：litellm 会对空文本注入占位文本
+    常驻历史并被模型复述。
+    """
+    if not content and not result.tool_calls:
+        return
     assistant_msg = {"role": "assistant", "content": content}
     preserve_reasoning_fields(assistant_msg, result)
     tool_chain.append(assistant_msg)
@@ -622,6 +630,7 @@ async def _handle_text_only_round(
             reason, completions, elapsed = await _suspend_for_background(
                 mind, ctx.anything, ctx.background, ctx.current_scope,
                 state.last_merged_ts, min(ctx.wait_per_round, state.wait_budget), ctx.interrupts,
+                since_id=state.last_merged_id,
             )
             execution_steps.append(
                 f"→ 第{state.iteration + 1}轮: 等待后台任务（{reason}，{elapsed:.0f}s）"
@@ -980,6 +989,10 @@ async def execute_tool_calls(
             outputs = await asyncio.gather(*[_run_guarded(tc) for tc in batch])
         else:
             outputs = [await _run_guarded(tc) for tc in batch]
+        # 先按序追加全部 tool 结果，再统一注入多模态图片：
+        # 逐条交错注入会在并行批次中形成 tool(A)→user(图)→tool(B)，
+        # 破坏 Anthropic tool_result 邻接性导致会话级 400
+        final_outputs: List[str] = []
         for tc, output in zip(batch, outputs, strict=False):
             if isinstance(output, BaseException):
                 output = json.dumps({"error": str(output)}, ensure_ascii=False)
@@ -993,6 +1006,8 @@ async def execute_tool_calls(
                 # 配对铁律：结果加工失败也要保证 tool 消息落链
                 final_output = error_from_exception(e, action=f"工具 {tc.name} 结果加工")
             tool_chain.append({"role": "tool", "tool_call_id": tc.id, "content": final_output})
+            final_outputs.append(final_output)
+        for final_output in final_outputs:
             # 多模态工具结果：候选图片注入上下文，让视觉模型直接看到（如表情包检索）
             try:
                 await _append_multimodal_result(mind, tool_chain, final_output)

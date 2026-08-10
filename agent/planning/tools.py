@@ -205,7 +205,13 @@ async def update_goal(
     # 原地更新（保留 id 与时间戳），内容变更后清空旧向量待后台 worker 重建
     target_entry.content = json.dumps(target_goal, ensure_ascii=False)
     target_entry.importance = 0.8 if target_goal["status"] == "active" else 0.3
-    target_entry.metadata = {"goal_id": goal_id, "status": target_goal["status"]}
+    # 合并更新 metadata：保留 kind/scope 等既有键（present_plan 的 scope 隔离依赖它们），
+    # 整体覆盖会导致计划跨 scope 泄漏
+    target_entry.metadata = {
+        **(target_entry.metadata or {}),
+        "goal_id": goal_id,
+        "status": target_goal["status"],
+    }
     await _store.update(target_entry, clear_embedding=True)
     target_goal["memory_id"] = target_entry.id
 
@@ -258,6 +264,16 @@ async def delete_goal(goal_id: str) -> str:
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is not None and target_goal is not None and target_entry.id:
         await _store.delete(target_entry.id)
+        # 通知前端移除计划卡片（否则 PlanPanel 残留已删除的计划）
+        try:
+            from core.event_bus import EVENT_PLAN_DELETED, event_bus
+            scope = tracker.current_scope()
+            _, chat_id = tracker.parse_scope_chat_id(scope)
+            await event_bus.emit(EVENT_PLAN_DELETED, {
+                "scope": scope, "chat_id": chat_id, "plan_id": goal_id,
+            })
+        except Exception as exc:
+            log(f"delete_goal 事件发射失败（不影响结果）: {exc}", "DEBUG", tag="规划")
         return json.dumps({
             "success": True,
             "message": f"目标 '{goal_id}' 已删除",

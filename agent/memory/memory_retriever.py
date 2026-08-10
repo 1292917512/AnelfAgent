@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.log import log
 
@@ -106,6 +106,15 @@ class MemoryRetriever:
             entity_msgs, fallback = await asyncio.gather(profiles_task, self._fallback_recent(k))
             pinned_msgs = await self._format_unified_results(pinned) if pinned else []
             return entity_msgs, pinned_msgs + fallback
+
+        # 平凡消息节流：纯客套/短回复轮跳过检索与改写（省一次改写 LLM 调用
+        # + embedding + 多路检索），画像与永久记忆照常注入
+        if self._is_trivial_turn(conversation):
+            log("💾 被动召回: 平凡消息轮，跳过检索", "DEBUG", tag="思维")
+            pinned = await self._load_permanent_pins([])
+            entity_msgs = await profiles_task
+            pinned_msgs = await self._format_unified_results(pinned) if pinned else []
+            return entity_msgs, pinned_msgs
 
         log(f"💾 被动召回: \"{query[:50]}\" (embedding={'是' if self._embedder.available else '否'})", tag="思维")
 
@@ -539,6 +548,37 @@ class MemoryRetriever:
         return results
 
     @classmethod
+    def _is_trivial_turn(cls, conversation: List[Dict]) -> bool:
+        """平凡消息轮判定：最近一条用户消息为纯客套/短回复时跳过检索。
+
+        保守阈值：仅当消息 ≤6 个字符、不含时间引用词、不含问号时才跳过——
+        "我钥匙放哪了"这类短但记忆相关的查询不受影响。
+        """
+        try:
+            from core.config import get_config_bool
+            if not get_config_bool("memory_recall_skip_trivial", True):
+                return False
+        except Exception:
+            return False
+        for msg in reversed(conversation):
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                return False
+            cleaned = _strip_tags(content).strip()
+            if not cleaned:
+                return False
+            if len(cleaned) > 6:
+                return False
+            if "?" in cleaned or "？" in cleaned:
+                return False
+            if cls._detect_time_reference(cleaned):
+                return False
+            return True
+        return False
+
+    @classmethod
     def _detect_time_reference(cls, query: str) -> bool:
         """检测查询中是否包含时间引用（用户在回忆过去的事件）。"""
         lowered = query.lower()
@@ -619,14 +659,19 @@ class MemoryRetriever:
                 value = tag.split(":", 1)[1].strip()
                 if value and value not in display:
                     display.append(value)
-            # type:/merged/channel:/date: 等内部标签对 AI 无信息量，不注入
+            # 内部标签（type/merged/channel/date 等）对 AI 无信息量，不注入
+        # 批量取节点（单条 IN 查询），替代逐标签串行往返
+        node_map: Dict[str, Any] = {}
+        if entity_tags:
+            try:
+                node_map = await self._store.graph.get_nodes_by_keys(entity_tags)
+            except Exception:
+                node_map = {}
         for tag in entity_tags:
             name = ""
-            try:
-                node = await self._store.graph.get_node(tag)
-                name = (node or {}).get("label", "").strip()
-            except Exception:
-                pass
+            node = node_map.get(tag)
+            if node:
+                name = str(node.get("label", "")).strip()
             if not name:
                 name = tag.split(":", 1)[1]
             if name and name not in display:
@@ -700,30 +745,41 @@ class MemoryRetriever:
         if deduped:
             log(f"召回跨来源去重: 移除 {deduped} 条重复内容", "DEBUG", tag="思维")
 
-        parts: list[str] = []
+        # LLM 出向边界：统一脱敏（记忆中可能存过密钥/URL凭证）+ 孤代理清理 + 中部截断
+        from core.sanitizer import sanitize_for_context
+        # 永久记忆与召回/检索分消息返回：永久块字节稳定（仅增删时变化），
+        # 会被 recollection 提升进 context 层走内容寻址缓存；召回/检索逐条
+        # 消息变化，留在尾部动态区——合并成一条会把每轮变化的召回内容带进
+        # context 层，击穿其后摘要与对话历史的缓存前缀（实测每轮新回复
+        # 命中恒被截断在同一位置）
+        messages: List[Dict] = []
         if pinned_lines:
-            parts.append(
-                "[系统注入·永久记忆] 以下为永久记忆（主人教导/既定规则），始终生效：\n"
-                + "\n".join(pinned_lines)
-            )
+            messages.append({
+                "role": "system",
+                "content": sanitize_for_context(
+                    "[系统注入·永久记忆] 以下为永久记忆（主人教导/既定规则），始终生效：\n"
+                    + "\n".join(pinned_lines)
+                ),
+            })
+        dynamic_lines: list[str] = []
         if mem_lines:
-            parts.append(
+            dynamic_lines.append(
                 "[系统注入·记忆召回] 以下为自动检索到的相关记忆，不代表当前任务进程，"
                 "仅作为参考（💡=直接相关，🔗=联想关联；标注「私事」的记忆不要向"
                 "第三方透露，除非对方就是当事人）：\n"
                 + "\n".join(mem_lines)
             )
         if file_lines:
-            parts.append(
+            dynamic_lines.append(
                 "[系统注入·知识检索] 以下为便签文件检索结果：\n"
                 + "\n".join(file_lines)
             )
-
-        if not parts:
-            return []
-        # LLM 出向边界：统一脱敏（记忆中可能存过密钥/URL凭证）+ 孤代理清理 + 中部截断
-        from core.sanitizer import sanitize_for_context
-        return [{"role": "system", "content": sanitize_for_context("\n\n".join(parts))}]
+        if dynamic_lines:
+            messages.append({
+                "role": "system",
+                "content": sanitize_for_context("\n\n".join(dynamic_lines)),
+            })
+        return messages
 
 
     async def _apply_rerank(

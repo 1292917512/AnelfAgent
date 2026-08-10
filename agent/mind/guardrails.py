@@ -148,6 +148,10 @@ _IDEMPOTENT_PREFIXES = (
     "check", "describe", "peek", "view", "find", "lookup",
 )
 
+# 无进展检测豁免：系统提示明确鼓励用这些工具轮询等待，
+# 同参数同结果是正常等待行为而非死循环
+_NO_PROGRESS_EXEMPT_TOOLS = frozenset({"check_background_tasks"})
+
 
 def is_idempotent_tool(tool_name: str) -> bool:
     """判断工具是否幂等（优先读实体 meta 声明，回退名称启发式）。"""
@@ -173,7 +177,8 @@ def classify_tool_failure(result: str) -> bool:
         except (json.JSONDecodeError, TypeError):
             parsed = None
         if isinstance(parsed, dict):
-            if "error" in parsed:
+            # 真值判断：{"error": null/""} 是成功结果的常见字段形态，不算失败
+            if parsed.get("error"):
                 return True
             if parsed.get("success") is False or parsed.get("ok") is False:
                 return True
@@ -335,7 +340,7 @@ class GuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        if not is_idempotent_tool(tool_name):
+        if not is_idempotent_tool(tool_name) or tool_name in _NO_PROGRESS_EXEMPT_TOOLS:
             return _ALLOW
 
         # 幂等工具：同签名同结果 = 无进展

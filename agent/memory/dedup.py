@@ -35,11 +35,13 @@ _DEDUP_JUDGE_PROMPT = """\
 - skip：已被某条候选完整覆盖（同一事实且无新信息），放弃写入
 - update：是对某条候选的更新/补充/修正（同一事实的新进展或更准确的表述），
   应合并进该候选，而不是新增一条造成两条矛盾或冗余的记录
+- merge：与多条候选互为片段/重复，应把它们与新内容合并为一条完整记忆
 
 只输出 JSON（不要输出任何其他内容）：
-{{"action": "store" 或 "skip" 或 "update",
+{{"action": "store" 或 "skip" 或 "update" 或 "merge",
   "target_id": 候选编号（action 为 update 时必填）,
-  "content": "合并后的完整记忆内容，一两句话（action 为 update 时必填）",
+  "target_ids": [候选编号列表]（action 为 merge 时必填，至少 1 个）,
+  "content": "合并后的完整记忆内容，一两句话（action 为 update/merge 时必填）",
   "reason": "一句话理由"}}
 
 【新记忆】
@@ -116,20 +118,39 @@ def parse_judgement(raw: str, candidate_ids: set[int]) -> Optional[Dict[str, Any
     if not isinstance(data, dict):
         return None
     action = str(data.get("action", "")).strip().lower()
-    if action not in ("store", "skip", "update"):
+    if action not in ("store", "skip", "update", "merge"):
         return None
-    if action == "update":
-        try:
-            target_id = int(data.get("target_id") or 0)
-        except (TypeError, ValueError):
-            target_id = 0
+    if action in ("update", "merge"):
         content = str(data.get("content", "")).strip()
-        if target_id not in candidate_ids or not content:
-            action = "store"
-            data["target_id"] = None
-        else:
-            data["target_id"] = target_id
-            data["content"] = content
+        if action == "update":
+            try:
+                target_id = int(data.get("target_id") or 0)
+            except (TypeError, ValueError):
+                target_id = 0
+            if target_id not in candidate_ids or not content:
+                action = "store"
+                data["target_id"] = None
+            else:
+                data["target_id"] = target_id
+                data["content"] = content
+        else:  # merge：target_ids 至少命中一个有效候选
+            raw_ids = data.get("target_ids") or []
+            if not isinstance(raw_ids, list):
+                raw_ids = [raw_ids]
+            target_ids: list[int] = []
+            for v in raw_ids:
+                try:
+                    vid = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if vid in candidate_ids and vid not in target_ids:
+                    target_ids.append(vid)
+            if not target_ids or not content:
+                action = "store"
+                data["target_ids"] = []
+            else:
+                data["target_ids"] = target_ids
+                data["content"] = content
     data["action"] = action
     return data
 

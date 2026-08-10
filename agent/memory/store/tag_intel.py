@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import time
@@ -38,25 +39,21 @@ class TagIntelligence:
         self._total: int = 0
         self._cooc: Dict[tuple[str, str], int] = {}
         self._vocab: Dict[str, str] = {}  # 提及词（小写）→ 标签
+        # 重建互斥锁：TTL 刚好过期时并发调用方各自全表重建（cache stampede）
+        self._rebuild_lock = asyncio.Lock()
 
     def _is_assoc_tag(self, tag: str) -> bool:
         return tag.startswith(_COOC_PREFIX_FILTER)
 
-    async def _ensure_fresh(self) -> None:
-        now = time.monotonic()
-        if self._df and now - self._built_at < _TTL_SECONDS:
-            return
-        db = await self._conn.get_db()
-        cursor = await db.execute(
-            "SELECT tags_json FROM memories WHERE importance > 0"
-        )
-        rows = list(await cursor.fetchall())
-
+    def _compute(
+        self, tag_rows: List[str], node_rows: List[tuple[str, str]],
+    ) -> tuple[Dict[str, int], Dict[tuple[str, str], int], Dict[str, str]]:
+        """纯计算部分（worker 线程执行）：df + 共现对 + 提及词表。"""
         df: Dict[str, int] = {}
         cooc: Dict[tuple[str, str], int] = {}
-        for row in rows:
+        for tags_json in tag_rows:
             try:
-                tags = json.loads(row["tags_json"]) if row["tags_json"] else []
+                tags = json.loads(tags_json) if tags_json else []
             except (json.JSONDecodeError, TypeError):
                 continue
             if not isinstance(tags, list):
@@ -78,29 +75,50 @@ class TagIntelligence:
                 if len(name) >= 2:
                     vocab[name.casefold()] = tag
         # 图谱节点 label/key 词表（user/group/topic 节点 → 同名记忆标签）
-        try:
-            cursor = await db.execute(
-                "SELECT node_key, label FROM graph_nodes WHERE archived=0"
-            )
-            for nrow in await cursor.fetchall():
-                key = str(nrow["node_key"])
-                if not key.startswith(ASSOC_PREFIXES):
-                    continue
-                label = str(nrow["label"] or "").strip()
-                if len(label) >= 2:
-                    vocab.setdefault(label.casefold(), key)
-                # key 的话题名段也可被提及（如 topic:火锅 的"火锅"）
-                name = key.split(":", 1)[1]
-                if key.startswith("topic:") and len(name) >= 2:
-                    vocab.setdefault(name.casefold(), key)
-        except Exception:
-            pass  # graph_nodes 表尚未创建（旧库）时仅用词表
+        for key, label in node_rows:
+            if not key.startswith(ASSOC_PREFIXES):
+                continue
+            label = label.strip()
+            if len(label) >= 2:
+                vocab.setdefault(label.casefold(), key)
+            # key 的话题名段也可被提及（如 topic:火锅 的"火锅"）
+            name = key.split(":", 1)[1]
+            if key.startswith("topic:") and len(name) >= 2:
+                vocab.setdefault(name.casefold(), key)
+        return df, cooc, vocab
 
-        self._df = df
-        self._cooc = cooc
-        self._vocab = vocab
-        self._total = len(rows)
-        self._built_at = now
+    async def _ensure_fresh(self) -> None:
+        # 空表也记录构建时间：无记忆时不至于每次调用都全表重建
+        if time.monotonic() - self._built_at < _TTL_SECONDS:
+            return
+        async with self._rebuild_lock:
+            # 双检：等待锁期间可能已有并发重建完成
+            now = time.monotonic()
+            if now - self._built_at < _TTL_SECONDS:
+                return
+            db = await self._conn.get_db()
+            cursor = await db.execute(
+                "SELECT tags_json FROM memories WHERE importance > 0"
+            )
+            tag_rows = [str(r["tags_json"]) for r in await cursor.fetchall()]
+            try:
+                cursor = await db.execute(
+                    "SELECT node_key, label FROM graph_nodes WHERE archived=0"
+                )
+                node_rows = [
+                    (str(r["node_key"]), str(r["label"] or ""))
+                    for r in await cursor.fetchall()
+                ]
+            except Exception:
+                node_rows = []  # graph_nodes 表尚未创建（旧库）时仅用词表
+
+            # 逐行 JSON 解析 + 共现组合在 worker 线程执行，避免阻塞事件循环
+            df, cooc, vocab = await asyncio.to_thread(self._compute, tag_rows, node_rows)
+            self._df = df
+            self._cooc = cooc
+            self._vocab = vocab
+            self._total = len(tag_rows)
+            self._built_at = now
 
     async def tag_stats(self) -> tuple[Dict[str, int], int]:
         """(标签文档频率, 活跃记忆总数)。"""

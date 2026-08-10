@@ -91,6 +91,8 @@ class _ThinkRoundState:
     wait_budget: float = 0.0
     # 新消息并入基线水位（快照内最大 ts_ns）
     last_merged_ts: int = 0
+    # 新消息并入 id 水位（同 ts_ns 并列的消息靠 id 精确决胜，0 表示无 id 水位回退 ts）
+    last_merged_id: int = 0
     # 实体推送并入水位（快照后到达的推送才轮内注入，之前的已随短期记忆进 base）
     push_watermark: int = 0
     # plan 收敛标记：正常结束路径（_finish_round）已收敛时置位，finally 不重复收敛
@@ -129,9 +131,6 @@ class _ThinkLoopCtx:
     delta_emitter: Callable[[str, bool], Awaitable[None]]
     supports_stream: bool
     supports_purpose: bool
-    # 会话内冻结的工具顺序（首轮排序快照）：版本变化重建工具集时按此顺序重排，
-    # 新出现的工具按名称追加尾部——避免使用计数驱动的层间跳变击穿 provider 前缀缓存
-    frozen_tool_order: Optional[List[str]] = None
 
 
 # ==================================================================
@@ -142,7 +141,11 @@ def _make_delta_emitter(
         current_scope: str,
         turn_id: str,
 ) -> Callable[[str, bool], Awaitable[None]]:
-    """构造流式过程事件发射器（增量事件供通道订阅，webui 流式渲染）。"""
+    """构造流式过程事件发射器（增量事件供通道订阅，webui 流式渲染）。
+
+    返回的函数附带 ``reset`` 协程属性：流式中途失败回退非流式重试前调用，
+    通知通道清空已渲染的增量文本，避免重试全量文本到达后重复显示。
+    """
     accumulated = {"text": "", "reasoning": ""}
 
     async def delta_emitter(delta: str, reasoning: bool) -> None:
@@ -159,6 +162,18 @@ def _make_delta_emitter(
         except Exception:
             pass  # 过程事件失败不影响主流程
 
+    async def reset_stream() -> None:
+        accumulated["text"] = accumulated["reasoning"] = ""
+        try:
+            await event_bus.emit(EVENT_ASSISTANT_DELTA, {
+                "scope": current_scope,
+                "turn_id": turn_id,
+                "reset": True,
+            })
+        except Exception:
+            pass  # 过程事件失败不影响主流程
+
+    delta_emitter.reset = reset_stream  # type: ignore[attr-defined]
     return delta_emitter
 
 
@@ -182,23 +197,6 @@ def _probe_invoke_kwarg(mind: "Mind", name: str) -> bool:
 def _tool_schema_name(schema: Dict) -> str:
     """从 OpenAI function schema 取工具名。"""
     return str(schema.get("function", {}).get("name", ""))
-
-
-def _apply_frozen_tool_order(schemas: List[Dict], frozen_order: Optional[List[str]]) -> List[Dict]:
-    """按会话首轮冻结的工具顺序重排重建后的工具集。
-
-    已消失的工具跳过，新出现的工具按名称排序追加尾部——
-    保持 tools 数组在会话内字节级稳定，避免击穿 provider 前缀缓存。
-    """
-    if not frozen_order:
-        return schemas
-    by_name = {_tool_schema_name(s): s for s in schemas}
-    ordered = [by_name[name] for name in frozen_order if name in by_name]
-    newcomers = sorted(
-        (s for name, s in by_name.items() if name not in set(frozen_order)),
-        key=_tool_schema_name,
-    )
-    return ordered + newcomers
 
 
 async def _prepare_think_context(
@@ -240,21 +238,26 @@ async def _prepare_think_context(
     pipeline = ToolResultPipeline(mind, guardrail)
     # 会话期间 scope 不变，循环外解析一次
     current_scope = ToolActivationManager.current_scope()
-    # 实体推送并入水位：base 快照之后到达的推送才轮内注入（防与短期记忆重复）
+    # 实体推送并入水位：base 快照之前到达的推送已随短期记忆进 base，
+    # 仅快照后到达的推送轮内注入（防重复）。优先使用调用方在快照前读取的水位。
     push_watermark = 0
     if mode == ThinkMode.REPLY:
-        push_hub = getattr(mind, "push_hub", None)
-        if push_hub is not None:
-            push_watermark = push_hub.current_seq(current_scope)
+        push_watermark = int((options or {}).get("push_watermark", 0) or 0)
+        if push_watermark <= 0:
+            push_hub = getattr(mind, "push_hub", None)
+            if push_hub is not None:
+                push_watermark = push_hub.current_seq(current_scope)
     # 新消息并入基线：以历史快照水位（快照内最大 ts_ns）为起点，
     # 循环期间到达的用户消息（到达时已实时入库）将并入当前上下文，而非另起周期
     last_merged_ts = time.time_ns()
+    last_merged_id = 0
     if mode == ThinkMode.REPLY and anything:
         try:
             scope_type, scope_id = mind._resolve_scope(anything)
             watermark = mind.conversation_data.get_fetch_watermark(scope_type, scope_id)
             if watermark is not None:
                 last_merged_ts = watermark
+            last_merged_id = mind.conversation_data.get_fetch_watermark_id(scope_type, scope_id)
         except Exception as exc:
             log(f"快照水位获取失败，按当前时间并入: {exc}", "DEBUG", tag="思维")
 
@@ -291,6 +294,7 @@ async def _prepare_think_context(
     state = _ThinkRoundState(
         wait_budget=wait_budget,
         last_merged_ts=last_merged_ts,
+        last_merged_id=last_merged_id,
         push_watermark=push_watermark,
     )
     return ctx, state
@@ -313,24 +317,34 @@ async def _fetch_new_user_messages(
         mind: "Mind",
         anything: "Everything",
         since_ts: int,
+        since_id: int = 0,
 ) -> List[Dict]:
     """获取循环期间到达的新用户消息（role=user，按时间升序）。
 
     用于将新消息并入当前 think_loop 上下文，避免图片+文字等连续消息
     被拆成独立周期导致 AI 忘记已回复/丢失上下文关联。
+    since_id > 0 时按 id 水位精确决胜（同 ts_ns 并列不丢消息），否则回退 ts 水位。
     """
     try:
         scope_type, scope_id = mind._resolve_scope(anything)
         sqlite = mind.conversation_data.router.sqlite
         db = await sqlite._get_db()
-        cursor = await db.execute(
-            "SELECT role, content, ts_ns FROM conversation_messages "
-            "WHERE scope_type=? AND scope_id=? AND ts_ns > ? AND role = 'user' "
-            "ORDER BY ts_ns ASC",
-            (scope_type, scope_id, int(since_ts)),
-        )
+        if since_id > 0:
+            cursor = await db.execute(
+                "SELECT id, role, content, ts_ns FROM conversation_messages "
+                "WHERE scope_type=? AND scope_id=? AND id > ? AND role = 'user' "
+                "ORDER BY id ASC",
+                (scope_type, scope_id, int(since_id)),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT id, role, content, ts_ns FROM conversation_messages "
+                "WHERE scope_type=? AND scope_id=? AND ts_ns > ? AND role = 'user' "
+                "ORDER BY ts_ns ASC, id ASC",
+                (scope_type, scope_id, int(since_ts)),
+            )
         rows = await cursor.fetchall()
-        return [{"role": r[0], "content": r[1], "ts_ns": r[2]} for r in rows]
+        return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
     except Exception as exc:
         log(f"获取新消息失败: {exc}", "DEBUG", tag="思维")
         return []
@@ -440,6 +454,7 @@ async def _suspend_for_background(
         since_ts: int,
         timeout: float,
         interrupts,
+        since_id: int = 0,
 ) -> tuple[str, List["TaskCompletion"], float]:
     """挂起等待后台任务完成，返回 (reason, completions, elapsed)。
 
@@ -452,7 +467,7 @@ async def _suspend_for_background(
     async def _aborted() -> bool:
         if interrupts is not None and interrupts.is_requested(scope):
             return True
-        return bool(await _fetch_new_user_messages(mind, anything, since_ts))
+        return bool(await _fetch_new_user_messages(mind, anything, since_ts, since_id))
 
     t0 = time.monotonic()
     result = await registry.wait_any(scope, timeout=timeout, should_abort=_aborted)
@@ -464,12 +479,16 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
     mind = ctx.mind
     if not (ctx.mode == ThinkMode.REPLY and ctx.anything):
         return
-    new_msgs = await _fetch_new_user_messages(mind, ctx.anything, state.last_merged_ts)
+    new_msgs = await _fetch_new_user_messages(
+        mind, ctx.anything, state.last_merged_ts, state.last_merged_id,
+    )
     if not new_msgs:
         return
     for m in new_msgs:
         ctx.tool_chain.append({"role": "user", "content": m["content"]})
     state.last_merged_ts = new_msgs[-1]["ts_ns"]
+    if new_msgs[-1].get("id"):
+        state.last_merged_id = int(new_msgs[-1]["id"])
     # 消费掉对应的待处理队列条目，避免该消息之后另起独立周期
     _consume_pending_for_scope(mind, ctx.anything)
     # 新消息携带的媒体：激活对应媒体工具并重建工具集供后续轮次使用
@@ -485,10 +504,9 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
         ctx.tool_chain = await apply_vision(mind, ctx.tool_chain, merged_images)
     if merged_images or merged_media:
         mind.pfc.activate_media_tools(merged_images, merged_media)
-        rebuilt = await mind.pfc.get_active_tool_schemas(
+        ctx.active_tools = await mind.pfc.get_active_tool_schemas(
             ctx.adapter_key, scope=mind._resolve_entity_scope(ctx.anything),
         )
-        ctx.active_tools = _apply_frozen_tool_order(rebuilt, ctx.frozen_tool_order)
     log(f"并入 {len(new_msgs)} 条循环期间新消息到当前上下文", tag="思维")
     ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮前: 并入 {len(new_msgs)} 条新消息")
 
@@ -750,8 +768,8 @@ def _check_tool_results_all_errors(
         if not isinstance(parsed, dict):
             # 非 JSON dict 内容视为非错误（纯文本结果）
             return False
-        # 有 error 键 → 错误，继续检查下一个
-        if "error" in parsed:
+        # 有 error 真值 → 错误，继续检查下一个（{"error": null/""} 视为成功）
+        if parsed.get("error"):
             continue
         # success=false / ok=false → 错误，继续检查下一个
         if parsed.get("success") is False or parsed.get("ok") is False:
@@ -840,12 +858,17 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List["ToolCall"]
     tc_names = {tc.id: tc.name for tc in tool_calls}
 
     failures: List[str] = []
+    matched_any = False
     for msg in reversed(tool_chain):
         if msg.get("role") != "tool":
-            break
+            # 跳过尾部多模态注入的 user 消息；已遇本轮结果后再出链即收尾
+            if matched_any:
+                break
+            continue
         tc_id = msg.get("tool_call_id")
         if tc_id not in tc_ids:
             continue
+        matched_any = True
         content = msg.get("content", "")
         if not isinstance(content, str):
             continue

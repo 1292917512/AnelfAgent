@@ -140,13 +140,13 @@ async def get_active_plan(scope: str) -> Optional[Dict[str, Any]]:
 
 
 async def _persist(entry: MemoryEntry, goal: Dict[str, Any]) -> None:
-    """写回 MemoryStore（不清 embedding，避免后台 worker 频繁重建）。"""
+    """写回 MemoryStore（内容已变更，清空旧向量待后台 worker 重建）。"""
     store = _store
     if store is None:
         return
     goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     entry.content = json.dumps(goal, ensure_ascii=False)
-    await store.update(entry, clear_embedding=False)
+    await store.update(entry, clear_embedding=True)
 
 
 # ------------------------------------------------------------------
@@ -160,7 +160,7 @@ _REFLECT_SCOPE = "reflect"
 
 def _is_user_facing(scope: str) -> bool:
     """scope 是否对应真实用户会话（决定 plan 事件是否发射到前端）。"""
-    return scope != _REFLECT_SCOPE
+    return scope != _REFLECT_SCOPE and not scope.startswith(_REFLECT_SCOPE + ":")
 
 
 async def _emit_step(

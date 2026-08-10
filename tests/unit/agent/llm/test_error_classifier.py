@@ -76,6 +76,30 @@ class TestClassifyByExceptionType:
         assert c.retryable
         assert c.should_fallback
 
+    def test_content_policy_violation_type(self) -> None:
+        """ContentPolicyViolationError 是 BadRequestError 子类，须优先归 CONTENT_POLICY。"""
+        exc = litellm.ContentPolicyViolationError(
+            "content_policy_violation", model="m", llm_provider="openai",
+        )
+        c = classify_llm_error(exc)
+        assert c.category == ErrorCategory.CONTENT_POLICY
+        assert not c.retryable
+        assert c.should_fallback
+
+    def test_content_policy_wrapped_as_server_error(self) -> None:
+        """MiniMax 等网关把审核拒绝包装成 500（InternalServerError），按消息模式识别。"""
+        exc = litellm.InternalServerError(
+            'AnthropicException - {"type":"error","error":{"type":"api_error",'
+            '"message":"input new_sensitive, messages[0]\'s content[1] image is '
+            'sensitive, please check your input (1026)"},'
+            '"request_id":"06c8ce2a5ee8882b8bae5f40f8ee8913"}',
+            model="m", llm_provider="anthropic",
+        )
+        c = classify_llm_error(exc)
+        assert c.category == ErrorCategory.CONTENT_POLICY
+        assert not c.retryable
+        assert c.should_fallback
+
 
 class TestClassifyByMessagePattern:
     def test_wrapped_context_error(self) -> None:

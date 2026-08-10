@@ -181,6 +181,8 @@ class ConversationData:
         # scope_key("user_123"/"group_456") → 最近一次历史快照的最大 ts_ns（快照水位）。
         # 水位与快照出自同一次 SELECT，think_loop 以此增量合并循环期间新消息。
         self._fetch_watermarks: dict[str, int] = {}
+        # id 水位：与 ts 水位同次快照记录，同 ts_ns 并列的消息靠 id 精确决胜
+        self._fetch_watermark_ids: dict[str, int] = {}
 
     @property
     def max_size(self) -> int:
@@ -200,15 +202,20 @@ class ConversationData:
         scope_type, scope_id = self._scope_of(anything)
         scopes = await self._alias_merged_scopes(scope_type, scope_id)
         rows = await self._fetch_window_rows(scope_type, scope_id, scopes)
-        # 记录快照水位（快照内最大 ts_ns），并剥离 ts_ns 避免泄漏进 LLM 消息
+        # 记录快照水位（快照内最大 ts_ns 与最大 id），并剥离 ts_ns/id 避免泄漏进 LLM 消息
         max_ts = 0
+        max_id = 0
         records: list[dict] = []
         for row in rows:
             ts = int(row.get("ts_ns", 0) or 0)
             if ts > max_ts:
                 max_ts = ts
+            rid = int(row.get("id", 0) or 0)
+            if rid > max_id:
+                max_id = rid
             records.append({"role": row["role"], "content": row["content"]})
         self._fetch_watermarks[f"{scope_type}_{scope_id}"] = max_ts
+        self._fetch_watermark_ids[f"{scope_type}_{scope_id}"] = max_id
         return records
 
     async def _fetch_window_rows(
@@ -219,8 +226,8 @@ class ConversationData:
     ) -> list[dict]:
         """摘要窗口取数：水位线后原始消息（纯追加增长），到 M+H 触发后台折叠。
 
-        窗口在 x（conversation_raw_min）与 M+H 之间波动：到达 M+H（滞回 H，
-        conversation_fold_hysteresis）时触发折叠，折叠在途允许宽限到 M+H+x
+        窗口在 x（保留比例派生）与 M+x 之间波动：到达 M+x（滞回 H=x，
+        每批折 M 条）时触发折叠，折叠在途允许宽限到 M+2x
         （保持前缀只增不改）；折叠失败默认丢弃该批并推进水位线
         （conversation_fold_drop_on_failure），窗口头部永不逐条滑动；
         仅连续异常导致超出宽限时才硬降级为"最后 M 条滑动"。
@@ -239,6 +246,7 @@ class ConversationData:
             scope_type=scope_type, scope_id=scope_id,
         )
         watermarks = (summary_row or {}).get("watermarks", {})
+        watermark_ids = (summary_row or {}).get("watermark_ids", {})
         raw_min = min(raw_min_messages(), self.max_size - 1)
         trigger = self.max_size + fold_hysteresis()
         # 多取 raw_min+1 条：≤ trigger+x 视为折叠在途宽限（保持追加语义），
@@ -246,12 +254,18 @@ class ConversationData:
         grace = trigger + raw_min
         rows = await sqlite.fetch_conversation_after_watermarks(
             scopes=scopes, watermarks=watermarks, limit=grace + 1,
+            watermark_ids=watermark_ids,
         )
+        # 折叠调度判定必须用截断前的行数：若先截断到 M 再判定，
+        # 积压一旦超过宽限（折叠在途/失败/重启期间消息继续到达），
+        # 截断后恒 < trigger 永不调度——水位线停滞、窗口逐条滑动、
+        # 缓存前缀每条消息断裂的永久死态（曾致折叠停摆两天）
+        needs_fold = len(rows) >= trigger
         if len(rows) > grace:
             rows = rows[-self.max_size:]
-        if len(rows) >= trigger:
+        if needs_fold:
             conversation_folder.maybe_schedule_fold(
-                self, scope_type, scope_id, scopes, watermarks,
+                self, scope_type, scope_id, scopes, watermarks, watermark_ids,
             )
         return rows
 
@@ -299,9 +313,56 @@ class ConversationData:
         except Exception:
             return [(scope_type, scope_id)]
 
+    # ------------------------------------------------------------------
+    # 折叠调度（空闲自动折叠 / AI 主动整理共用入口）
+    # ------------------------------------------------------------------
+
+    @property
+    def fold_idle_min(self) -> int:
+        """空闲折叠阈值（派生自窗口参数：窗口上限 M − 折叠后保留 x）。
+
+        语义：窗口积满到 M 即达到"应该折叠"的大小，空闲期到 M−x 就值得折
+        （折完回到 x，与活跃期滞回触发错开）。不单独配置，随窗口参数联动。
+        """
+        from agent.storage.conversation_fold import raw_min_messages
+        return max(1, self.max_size - raw_min_messages())
+
+    async def list_scope_activity(self) -> list[tuple[str, str, int]]:
+        """列出全部会话 scope 及最新外部消息 ts_ns（空闲折叠扫描用）。"""
+        return await self.router.sqlite.list_scope_activity()
+
+    async def scope_backlog(self, scope_type: str, scope_id: str) -> int:
+        """该 scope 水位线后的未折叠消息数（别名合并口径）。"""
+        scopes = await self._alias_merged_scopes(scope_type, scope_id)
+        summary_row = await self.router.sqlite.get_conversation_summary(
+            scope_type=scope_type, scope_id=scope_id,
+        )
+        return await self.router.sqlite.count_after_watermarks(
+            scopes=scopes,
+            watermarks=(summary_row or {}).get("watermarks", {}),
+            watermark_ids=(summary_row or {}).get("watermark_ids", {}),
+        )
+
+    async def schedule_fold(self, scope_type: str, scope_id: str) -> bool:
+        """调度一次后台折叠（别名合并 + 水位线解析在此收敛）；已在折叠/退避中返回 False。"""
+        from agent.storage.conversation_fold import conversation_folder
+        scopes = await self._alias_merged_scopes(scope_type, scope_id)
+        summary_row = await self.router.sqlite.get_conversation_summary(
+            scope_type=scope_type, scope_id=scope_id,
+        )
+        return conversation_folder.maybe_schedule_fold(
+            self, scope_type, scope_id, scopes,
+            (summary_row or {}).get("watermarks", {}),
+            (summary_row or {}).get("watermark_ids", {}),
+        )
+
     def get_fetch_watermark(self, scope_type: str, scope_id: str) -> Optional[int]:
         """返回指定 scope 最近一次历史快照的水位（最大 ts_ns），未快照过返回 None。"""
         return self._fetch_watermarks.get(f"{scope_type}_{scope_id}")
+
+    def get_fetch_watermark_id(self, scope_type: str, scope_id: str) -> int:
+        """返回指定 scope 最近一次历史快照的 id 水位（最大行 id），未快照过返回 0。"""
+        return self._fetch_watermark_ids.get(f"{scope_type}_{scope_id}", 0)
 
     async def count_messages(self, anything: Everything) -> int:
         """该 scope 的对话消息总数（含窗口外历史，溢出提示感知用）。"""

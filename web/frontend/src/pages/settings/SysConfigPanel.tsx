@@ -42,7 +42,6 @@ export function SysConfigPanel() {
   ];
 
   const webToolsFields: FieldMeta[] = [
-    { key: "baidu_api_key", label: t("fields.baidu_api_key"), type: "password", desc: t("descs.baidu_api_key") },
     { key: "proxy", label: t("fields.web_proxy"), type: "string", desc: t("descs.web_proxy") },
   ];
 

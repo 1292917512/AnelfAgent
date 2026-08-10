@@ -22,6 +22,14 @@ MEM_COLUMNS = (
     "migrated, version"
 )
 
+# 无向量列清单：评分/投影/遗忘扫描等不需要向量的路径使用，
+# 避免逐行 unpack_embedding 的无效 IO 与 CPU
+MEM_COLUMNS_NO_EMB = (
+    "id, type, content, source, importance, ts_ns, "
+    "metadata_json, tags_json, access_count, last_accessed_ns, "
+    "migrated, version"
+)
+
 
 def get_memory_config_value(field: str, default: Any = None) -> Any:
     """从 MindConfig 安全读取配置值。"""
@@ -114,9 +122,14 @@ def compute_effective_score(entry: MemoryEntry, now: Optional[float] = None) -> 
     return entry.importance * decay * reinforcement
 
 
-def row_to_entry(row: Any) -> MemoryEntry:
-    """将数据库行转换为 MemoryEntry（按列名访问，不依赖列顺序）。"""
-    embedding = unpack_embedding(row["embedding_blob"]) if row["embedding_blob"] else None
+def row_to_entry(row: Any, *, with_embedding: bool = True) -> MemoryEntry:
+    """将数据库行转换为 MemoryEntry（按列名访问，不依赖列顺序）。
+
+    with_embedding=False 时跳过向量解包（配合 MEM_COLUMNS_NO_EMB 查询）。
+    """
+    embedding = None
+    if with_embedding:
+        embedding = unpack_embedding(row["embedding_blob"]) if row["embedding_blob"] else None
     tags: list[str] = []
     access_count = 0
     last_accessed = 0.0

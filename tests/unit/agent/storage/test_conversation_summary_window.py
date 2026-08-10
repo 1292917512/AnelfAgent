@@ -108,6 +108,31 @@ class TestWindowFetch:
         assert records[0]["content"] == f"m{RAW_MIN + 2}"
         assert records[-1]["content"] == f"m{MAX_SIZE + RAW_MIN + 1}"
 
+    async def test_overflow_still_schedules_fold(
+        self, conv_data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """积压超过宽限（折叠在途/重启期间消息继续到达）也必须调度折叠。
+
+        回归：调度判定曾用截断后行数——积压超宽限时截到 M 条恒 < trigger，
+        永不调度，水位线停滞、窗口逐条滑动（缓存前缀每条消息断裂的死态）。
+        """
+        scheduled: list = []
+        monkeypatch.setattr(
+            conversation_fold.conversation_folder, "maybe_schedule_fold",
+            lambda *a, **kw: scheduled.append(1) or True,
+        )
+        sqlite = conv_data.router.sqlite
+        from agent.storage.conversation_fold import fold_hysteresis
+        grace = MAX_SIZE + fold_hysteresis() + RAW_MIN
+        ts_list = await _append(conv_data, [f"m{i}" for i in range(grace + 5)])
+        await sqlite.upsert_conversation_summary(
+            scope_type="user", scope_id="1",
+            summary="旧摘要", watermarks={"user:1": ts_list[0] - 1}, folded_count=0,
+        )
+        records = await conv_data.get_conversation_record_by_everything(_anything())
+        assert len(records) == MAX_SIZE  # 返回仍硬降级为最后 M 条
+        assert len(scheduled) == 1       # 但折叠必须被调度
+
 
 class TestFoldExecution:
     async def _run_fold(self, conv_data: ConversationData, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -141,6 +166,20 @@ class TestFoldExecution:
 
         records = await conv_data.get_conversation_record_by_everything(_anything())
         assert [r["content"] for r in records] == [f"m{i}" for i in range(MAX_SIZE - RAW_MIN, MAX_SIZE)]
+
+    async def test_fold_batch_capped(self, conv_data, monkeypatch: pytest.MonkeyPatch) -> None:
+        """积压恢复时单批不超过上限：分多批消化，摘要提示词有界。"""
+        from agent.storage import conversation_fold
+        monkeypatch.setattr(conversation_fold, "fold_batch_max", lambda: 3)
+        ts_list = await _append(conv_data, [f"m{i}" for i in range(MAX_SIZE)])
+        await self._run_fold(conv_data, monkeypatch)
+        row = await conv_data.router.sqlite.get_conversation_summary(
+            scope_type="user", scope_id="1",
+        )
+        assert row is not None
+        # 批量上限 3：只折最旧 3 条（无上限时为 M-x=4），水位线只推进到第 3 条
+        assert row["folded_count"] == 3
+        assert row["watermarks"]["user:1"] == ts_list[2]
 
     async def test_window_append_only_after_fold(
         self, conv_data, monkeypatch: pytest.MonkeyPatch

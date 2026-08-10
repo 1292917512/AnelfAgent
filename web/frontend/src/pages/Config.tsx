@@ -6,6 +6,11 @@ import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { cn } from "@/lib/utils";
 import { SlidersHorizontal, RotateCcw, Check, Loader2 } from "lucide-react";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
+import { ConversationWindowRow } from "@/pages/config/ConversationWindowRow";
+
+/** 对话窗口复合行收编的键（一行配置：总条数 + 保留比例滑条） */
+const WINDOW_SIZE_KEY = "max_conversation_size";
+const WINDOW_PERCENT_KEY = "conversation_raw_keep_percent";
 
 /** 分组展示顺序从 i18n groups 资源 key 顺序派生（未列出的组排最后） */
 function useGroupOrder(): string[] {
@@ -71,9 +76,28 @@ export default function Config() {
         </div>
       ) : (
         <div className="grid gap-2.5">
-          {current?.items.map((item) => (
-            <ConfigItemRow key={item.key} item={item} onSaved={() => queryClient.invalidateQueries({ queryKey: ["configMeta"] })} />
-          ))}
+          {(() => {
+            const items = current?.items ?? [];
+            const sizeItem = items.find((i) => i.key === WINDOW_SIZE_KEY);
+            const percentItem = items.find((i) => i.key === WINDOW_PERCENT_KEY);
+            const rest = items.filter(
+              (i) => i.key !== WINDOW_SIZE_KEY && i.key !== WINDOW_PERCENT_KEY,
+            );
+            return (
+              <>
+                {sizeItem && percentItem && (
+                  <ConversationWindowRow
+                    sizeItem={sizeItem}
+                    percentItem={percentItem}
+                    onSaved={() => queryClient.invalidateQueries({ queryKey: ["configMeta"] })}
+                  />
+                )}
+                {rest.map((item) => (
+                  <ConfigItemRow key={item.key} item={item} onSaved={() => queryClient.invalidateQueries({ queryKey: ["configMeta"] })} />
+                ))}
+              </>
+            );
+          })()}
         </div>
       )}
     </PageContainer>

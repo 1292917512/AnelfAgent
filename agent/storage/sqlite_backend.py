@@ -30,7 +30,11 @@ class SqliteBackend:
         self._db: Optional[aiosqlite.Connection] = None
         self._initialized = False
         self._scope_migrated = False
+        self._scope_migrate_retry_after = 0.0
         self._conn_lock = asyncio.Lock()
+        # 多步写串行锁：单连接上批量写循环（如 embedding 回填）期间，
+        # 其他协程的 commit 会把半成品批次一并落盘；持锁后多步写互斥
+        self._write_lock = asyncio.Lock()
         self._last_health_check = 0.0
         self._register_embedding_backlog()
 
@@ -53,6 +57,22 @@ class SqliteBackend:
             max_age_days=max_age_days,
         )
 
+    async def _retry_scope_migration(self, db: aiosqlite.Connection) -> None:
+        """scope 迁移尝试：失败不置完成标志，60s 退避后在后续周期重试。
+
+        避免迁移失败（如备份磁盘满）后旧格式数据在本进程内永久不可见、
+        必须重启才能恢复。自身不抛异常。
+        """
+        if self._scope_migrated or time.monotonic() < self._scope_migrate_retry_after:
+            return
+        from agent.storage.scope_migrate import get_legacy_adapter, migrate_main_db_scopes
+        try:
+            await migrate_main_db_scopes(db, self.db_path, get_legacy_adapter())
+            self._scope_migrated = True
+        except Exception as exc:
+            log(f"scope 迁移失败（60s 后重试，备份可恢复）: {exc}", "ERROR")
+            self._scope_migrate_retry_after = time.monotonic() + 60.0
+
     async def _get_db(self) -> aiosqlite.Connection:
         """获取持久连接，首次调用时创建并初始化表结构。
 
@@ -67,13 +87,15 @@ class SqliteBackend:
                 try:
                     await self._db.execute("SELECT 1")
                     self._last_health_check = now
-                    return self._db
                 except Exception:
                     try:
                         await self._db.close()
                     except Exception:
                         log("_get_db 异常已忽略", "DEBUG")
                     self._db = None
+                else:
+                    await self._retry_scope_migration(self._db)
+                    return self._db
 
             path = Path(self.db_path)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -153,17 +175,19 @@ class SqliteBackend:
                     );
                     """
                 )
+                # id 水位线列：同 ts_ns 并列的消息靠 id 决胜，避免边界消息永久不可见
+                cursor = await db.execute("PRAGMA table_info(conversation_summary)")
+                summary_cols = {row[1] for row in await cursor.fetchall()}
+                if "watermark_ids_json" not in summary_cols:
+                    await db.execute(
+                        "ALTER TABLE conversation_summary "
+                        "ADD COLUMN watermark_ids_json TEXT NOT NULL DEFAULT '{}'"
+                    )
                 await db.commit()
                 self._initialized = True
 
             # scope 迁移（user_version 幂等）：旧格式键统一回填 adapter 维度
-            if not self._scope_migrated:
-                from agent.storage.scope_migrate import get_legacy_adapter, migrate_main_db_scopes
-                try:
-                    await migrate_main_db_scopes(db, self.db_path, get_legacy_adapter())
-                except Exception as exc:
-                    log(f"scope 迁移失败（不影响启动，备份可恢复）: {exc}", "ERROR")
-                self._scope_migrated = True
+            await self._retry_scope_migration(db)
 
             self._db = db
             self._last_health_check = time.monotonic()
@@ -236,10 +260,10 @@ class SqliteBackend:
         db = await self._get_db()
         cursor = await db.execute(
             """
-            SELECT role, content, ts_ns
+            SELECT id, role, content, ts_ns
             FROM conversation_messages
             WHERE scope_type=? AND scope_id=?
-            ORDER BY ts_ns DESC
+            ORDER BY ts_ns DESC, id DESC
             LIMIT ?
             """,
             (scope_type, scope_id, int(limit)),
@@ -249,7 +273,7 @@ class SqliteBackend:
         # 角色按存储原样返回（主流 OpenAI 格式：system/user/assistant/tool），
         # 不做 system→assistant 等特殊映射；ts_ns 由调用方用于时序水位，入库时间即消息到达时间。
         # 按列位置手工构造 dict，避免修改共享连接的 row_factory 引发并发竞态。
-        return [{"role": r[0], "content": r[1], "ts_ns": r[2]} for r in rows]
+        return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
 
     async def fetch_conversation_multi(
         self, *, scopes: list[tuple[str, str]], limit: int
@@ -273,17 +297,17 @@ class SqliteBackend:
         params.append(int(limit))
         cursor = await db.execute(
             f"""
-            SELECT role, content, ts_ns
+            SELECT id, role, content, ts_ns
             FROM conversation_messages
             WHERE {where}
-            ORDER BY ts_ns DESC
+            ORDER BY ts_ns DESC, id DESC
             LIMIT ?
             """,
             params,
         )
         rows = await cursor.fetchall()
         rows = list(reversed(rows))
-        return [{"role": r[0], "content": r[1], "ts_ns": r[2]} for r in rows]
+        return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
 
     # ------------------------------------------------------------------
     # 对话摘要窗口（固定摘要块 + 水位线后原始消息）
@@ -297,10 +321,10 @@ class SqliteBackend:
     async def get_conversation_summary(
         self, *, scope_type: str, scope_id: str
     ) -> Optional[dict]:
-        """读取对话摘要行，返回 {summary, watermarks, folded_count, dropped_count} 或 None。"""
+        """读取对话摘要行，返回 {summary, watermarks, watermark_ids, folded_count, dropped_count} 或 None。"""
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT summary, watermarks_json, folded_count, dropped_count FROM conversation_summary "
+            "SELECT summary, watermarks_json, watermark_ids_json, folded_count, dropped_count FROM conversation_summary "
             "WHERE scope_type=? AND scope_id=?",
             (scope_type, scope_id),
         )
@@ -308,17 +332,22 @@ class SqliteBackend:
         if not row:
             return None
         import json as _json
-        try:
-            watermarks = _json.loads(row[1] or "{}")
-            if not isinstance(watermarks, dict):
-                watermarks = {}
-        except (ValueError, TypeError):
-            watermarks = {}
+
+        def _parse_marks(raw: object) -> dict:
+            try:
+                marks = _json.loads(raw or "{}")
+                if not isinstance(marks, dict):
+                    return {}
+            except (ValueError, TypeError):
+                return {}
+            return {str(k): int(v) for k, v in marks.items()}
+
         return {
             "summary": row[0] or "",
-            "watermarks": {str(k): int(v) for k, v in watermarks.items()},
-            "folded_count": int(row[2] or 0),
-            "dropped_count": int(row[3] or 0),
+            "watermarks": _parse_marks(row[1]),
+            "watermark_ids": _parse_marks(row[2]),
+            "folded_count": int(row[3] or 0),
+            "dropped_count": int(row[4] or 0),
         }
 
     async def upsert_conversation_summary(
@@ -330,6 +359,7 @@ class SqliteBackend:
         watermarks: dict,
         folded_count: int,
         dropped_count: int = 0,
+        watermark_ids: Optional[dict] = None,
     ) -> None:
         """写入/更新对话摘要行（摘要 + 各成员 scope 水位线 + 折叠/丢弃计数）。"""
         import json as _json
@@ -337,11 +367,13 @@ class SqliteBackend:
         await db.execute(
             """
             INSERT INTO conversation_summary(
-                scope_type, scope_id, summary, watermarks_json, folded_count, dropped_count, updated_ts_ns
-            ) VALUES(?,?,?,?,?,?,?)
+                scope_type, scope_id, summary, watermarks_json, watermark_ids_json,
+                folded_count, dropped_count, updated_ts_ns
+            ) VALUES(?,?,?,?,?,?,?,?)
             ON CONFLICT(scope_type, scope_id) DO UPDATE SET
               summary=excluded.summary,
               watermarks_json=excluded.watermarks_json,
+              watermark_ids_json=excluded.watermark_ids_json,
               folded_count=excluded.folded_count,
               dropped_count=excluded.dropped_count,
               updated_ts_ns=excluded.updated_ts_ns
@@ -349,6 +381,7 @@ class SqliteBackend:
             (
                 scope_type, scope_id, summary,
                 _json.dumps(watermarks, ensure_ascii=False),
+                _json.dumps(watermark_ids or {}, ensure_ascii=False),
                 int(folded_count), int(dropped_count), time.time_ns(),
             ),
         )
@@ -356,15 +389,28 @@ class SqliteBackend:
 
     @staticmethod
     def _watermark_where(
-        scopes: list[tuple[str, str]], watermarks: Optional[dict]
+        scopes: list[tuple[str, str]],
+        watermarks: Optional[dict],
+        watermark_ids: Optional[dict] = None,
     ) -> tuple[str, list]:
-        """构造多 scope + 各 scope 水位线(ts_ns 下限)的 WHERE 子句与参数。"""
+        """构造多 scope + 各 scope 水位线下限的 WHERE 子句与参数。
+
+        优先使用 id 水位线（AUTOINCREMENT 单调无并列）；无 id 水位线
+        （旧数据）回退 ts_ns 水位线。
+        """
         marks = watermarks or {}
+        id_marks = watermark_ids or {}
         clauses: list[str] = []
         params: list = []
         for st, sid in scopes:
-            clauses.append("(scope_type=? AND scope_id=? AND ts_ns>?)")
-            params.extend((st, sid, int(marks.get(f"{st}:{sid}", 0) or 0)))
+            key = f"{st}:{sid}"
+            id_mark = int(id_marks.get(key, 0) or 0)
+            if id_mark > 0:
+                clauses.append("(scope_type=? AND scope_id=? AND id>?)")
+                params.extend((st, sid, id_mark))
+            else:
+                clauses.append("(scope_type=? AND scope_id=? AND ts_ns>?)")
+                params.extend((st, sid, int(marks.get(key, 0) or 0)))
         return " OR ".join(clauses), params
 
     async def fetch_conversation_after_watermarks(
@@ -373,19 +419,20 @@ class SqliteBackend:
         scopes: list[tuple[str, str]],
         watermarks: Optional[dict],
         limit: int,
+        watermark_ids: Optional[dict] = None,
     ) -> list[dict]:
         """取各成员 scope 水位线之后的消息，合并按时间取最近 limit 条（正序返回）。"""
         if not scopes:
             return []
         db = await self._get_db()
-        where, params = self._watermark_where(scopes, watermarks)
+        where, params = self._watermark_where(scopes, watermarks, watermark_ids)
         params.append(int(limit))
         cursor = await db.execute(
             f"""
-            SELECT scope_type, scope_id, role, content, ts_ns
+            SELECT id, scope_type, scope_id, role, content, ts_ns
             FROM conversation_messages
             WHERE {where}
-            ORDER BY ts_ns DESC
+            ORDER BY ts_ns DESC, id DESC
             LIMIT ?
             """,
             params,
@@ -393,8 +440,8 @@ class SqliteBackend:
         rows = list(reversed(await cursor.fetchall()))
         return [
             {
-                "scope_type": r[0], "scope_id": r[1], "role": r[2],
-                "content": r[3], "ts_ns": r[4],
+                "id": r[0], "scope_type": r[1], "scope_id": r[2], "role": r[3],
+                "content": r[4], "ts_ns": r[5],
             }
             for r in rows
         ]
@@ -405,19 +452,20 @@ class SqliteBackend:
         scopes: list[tuple[str, str]],
         watermarks: Optional[dict],
         limit: int,
+        watermark_ids: Optional[dict] = None,
     ) -> list[dict]:
         """取各成员 scope 水位线之后的最旧 limit 条（折叠摘要用，正序返回）。"""
         if not scopes:
             return []
         db = await self._get_db()
-        where, params = self._watermark_where(scopes, watermarks)
+        where, params = self._watermark_where(scopes, watermarks, watermark_ids)
         params.append(int(limit))
         cursor = await db.execute(
             f"""
-            SELECT scope_type, scope_id, role, content, ts_ns
+            SELECT id, scope_type, scope_id, role, content, ts_ns
             FROM conversation_messages
             WHERE {where}
-            ORDER BY ts_ns ASC
+            ORDER BY ts_ns ASC, id ASC
             LIMIT ?
             """,
             params,
@@ -425,8 +473,8 @@ class SqliteBackend:
         rows = await cursor.fetchall()
         return [
             {
-                "scope_type": r[0], "scope_id": r[1], "role": r[2],
-                "content": r[3], "ts_ns": r[4],
+                "id": r[0], "scope_type": r[1], "scope_id": r[2], "role": r[3],
+                "content": r[4], "ts_ns": r[5],
             }
             for r in rows
         ]
@@ -436,18 +484,37 @@ class SqliteBackend:
         *,
         scopes: list[tuple[str, str]],
         watermarks: Optional[dict],
+        watermark_ids: Optional[dict] = None,
     ) -> int:
         """统计各成员 scope 水位线之后的消息总数（折叠触发判定用）。"""
         if not scopes:
             return 0
         db = await self._get_db()
-        where, params = self._watermark_where(scopes, watermarks)
+        where, params = self._watermark_where(scopes, watermarks, watermark_ids)
         cursor = await db.execute(
             f"SELECT COUNT(*) FROM conversation_messages WHERE {where}",
             params,
         )
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
+
+    async def list_scope_activity(self) -> list[tuple[str, str, int]]:
+        """列出全部会话 scope 及其最新**外部消息** ts_ns（空闲折叠扫描用）。
+
+        只统计 role='user'（频道外部到达）；助手回复/系统上下文/任务写入
+        不计入活跃度——否则心跳任务写入会无限推迟空闲判定。
+        返回 [(scope_type, scope_id, max_ts_ns)]，按最新消息降序。
+        """
+        db = await self._get_db()
+        cursor = await db.execute(
+            """
+            SELECT scope_type, scope_id, MAX(ts_ns) FROM conversation_messages
+            WHERE role='user'
+            GROUP BY scope_type, scope_id
+            ORDER BY MAX(ts_ns) DESC
+            """
+        )
+        return [(r[0], r[1], int(r[2] or 0)) for r in await cursor.fetchall()]
 
     # ------------------------------------------------------------------
     # 实体画像
@@ -582,6 +649,16 @@ class SqliteBackend:
         rows = await cursor.fetchall()
         return [{"scope_type": r[0], "scope_id": r[1], "count": r[2]} for r in rows]
 
+    async def list_conversation_scope_keys(self) -> list[dict]:
+        """列出所有会话 scope（不含计数）：每 tick 的自动捕获扫描用，
+        避免对全表做 COUNT GROUP BY（消息表是增长最快的表）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT DISTINCT scope_type, scope_id FROM conversation_messages"
+        )
+        rows = await cursor.fetchall()
+        return [{"scope_type": r[0], "scope_id": r[1]} for r in rows]
+
     async def list_user_chat_sessions(self, user_id: str) -> list[dict]:
         """列出某用户的全部多会话（scope_id 为 user_id 或 user_id#chat_id）。
 
@@ -621,12 +698,23 @@ class SqliteBackend:
     async def fetch_conversation_with_id(
         self, *, scope_type: str, scope_id: str, limit: int = 100,
         before_id: int | None = None,
+        after_id: int | None = None,
     ) -> list[dict]:
-        """获取会话记录（含 row id，用于定向删除与向前翻页）。
+        """获取会话记录（含 row id，用于定向删除与翻页/增量拉取）。
 
         before_id：分页游标，仅取 id 早于该值的消息（"加载更早"场景）。
+        after_id：增量游标，仅取 id 晚于该值的消息并按 id 升序返回
+        （自动捕获等按游标逐批消费场景，不会因窗口截断漏消息）。
         """
         db = await self._get_db()
+        if after_id is not None:
+            cursor = await db.execute(
+                "SELECT id, role, content, ts_ns FROM conversation_messages "
+                "WHERE scope_type=? AND scope_id=? AND id>? ORDER BY id ASC LIMIT ?",
+                (scope_type, scope_id, int(after_id), int(limit)),
+            )
+            rows = await cursor.fetchall()
+            return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
         if before_id is not None:
             cursor = await db.execute(
                 "SELECT id, role, content, ts_ns FROM conversation_messages "
@@ -851,16 +939,18 @@ class SqliteBackend:
             return 0
 
         count = 0
-        for row, vec in zip(rows, vecs, strict=False):
-            if not vec:
-                continue
-            await db.execute(
-                "UPDATE conversation_messages SET embedding_blob=? WHERE id=?",
-                (pack_embedding(vec), row[0]),
-            )
-            count += 1
-        if count:
-            await db.commit()
+        # 多步写持锁：整批 UPDATE + commit 与其他写入互斥，避免半成品批次被提前落盘
+        async with self._write_lock:
+            for row, vec in zip(rows, vecs, strict=False):
+                if not vec:
+                    continue
+                await db.execute(
+                    "UPDATE conversation_messages SET embedding_blob=? WHERE id=?",
+                    (pack_embedding(vec), row[0]),
+                )
+                count += 1
+            if count:
+                await db.commit()
             log(f"对话 embedding 批量回填: {count} 条", "DEBUG", tag="存储")
         return count
 
@@ -905,25 +995,29 @@ class SqliteBackend:
 
         from agent.memory.memory_utils import cosine_similarity, unpack_embedding
 
-        scored: list[dict] = []
-        for row in rows:
-            try:
-                vec = unpack_embedding(row[4])
-                score = cosine_similarity(query_vec, vec)
-                if score >= min_score:
-                    scored.append({
-                        "id": row[0],
-                        "role": row[1],
-                        "content": row[2],
-                        "ts_ns": row[3],
-                        "score": score,
-                    })
-            except Exception as e:
-                log(f"对话向量解析失败 (id={row[0]}): {e}", "DEBUG")
-                continue
+        def _score_rows() -> list[dict]:
+            # 纯 Python 余弦（500×1024 维约 50 万次乘加）：在 worker 线程执行，
+            # 避免阻塞事件循环
+            scored: list[dict] = []
+            for row in rows:
+                try:
+                    vec = unpack_embedding(row[4])
+                    score = cosine_similarity(query_vec, vec)
+                    if score >= min_score:
+                        scored.append({
+                            "id": row[0],
+                            "role": row[1],
+                            "content": row[2],
+                            "ts_ns": row[3],
+                            "score": score,
+                        })
+                except Exception as e:
+                    log(f"对话向量解析失败 (id={row[0]}): {e}", "DEBUG")
+                    continue
+            scored.sort(key=lambda x: x["score"], reverse=True)
+            return scored[:limit]
 
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        return await asyncio.to_thread(_score_rows)
 
     async def search_conversation_keyword(
         self,

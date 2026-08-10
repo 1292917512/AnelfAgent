@@ -156,12 +156,24 @@ from entities._sdk import get_image_content_class, get_model_type_enum  # 类型
 ```
 tick() 单次心跳：
   1. 内置维护：日志合并 + 实体计数持久化 + 记忆健康检查 + 实体画像分析
+     + 空闲自动折叠（连续 conversation_fold_idle_beats 个心跳无新消息
+     且积压 ≥ conversation_fold_idle_min 的会话 → 后台折叠 + 折后预热，
+     把缓存断点移到无人时段）
   2. 遍历 task_schedules，递增 beat_count
   3. 选取一个到期任务 → TaskExecutor.run() → 结果记入心跳日志
   4. 持久化计数器到 config/heartbeat.json
 ```
 
 三种触发模式：heartbeat（每 N 次心跳）/ scheduled（每天指定时间）/ manual（仅手动）
+
+对话折叠三入口共用 `ConversationData.schedule_fold`：窗口滞回触发（取数路径）/
+心跳空闲折叠 / AI 工具 `fold_conversations`（memory 组，整理当前或全部会话）。
+折叠成功后经注入的预热钩子（`mind.prewarm_scope_cache`，bootstrap 注册，
+`conversation_fold_prewarm` 开关）发 1-token 轻调用写热新前缀。
+窗口配置收敛为两个：**总条数** `max_conversation_size` + **保留百分比**
+`conversation_raw_keep_percent`（保留条数 x 与滞回 H 均派生：x=M×百分比、H=x，
+窗口在 x~M+x 波动、每批折 M 条）；Web 配置页以一行复合组件呈现
+（数字输入 + 滑条 + 折叠段比例条，见 `pages/config/ConversationWindowRow.tsx`）。
 
 #### 工具注入（PFC 多路合并 + 门控）
 
@@ -194,7 +206,7 @@ tick() 单次心跳：
 | 机制 | 文件 | 说明 |
 |------|------|------|
 | 工具守卫 | `agent/mind/guardrails.py` | 精确失败重复/同工具连续失败/无进展循环检测，动作 warn/block/halt |
-| 错误分类 | `agent/llm/error_classifier.py` | LLM 错误分类（rate_limit/context_overflow/auth 等）驱动重试策略 |
+| 错误分类 | `agent/llm/resilience/classifier.py` | LLM 错误分类（rate_limit/context_overflow/auth 等）驱动重试策略 |
 | 自适应重试 | `agent/llm/retry.py` | 指数退避 + 抖动（jittered_backoff） |
 | 上下文压缩 | `agent/mind/context_compressor.py` | 溢出检测（真实 usage 优先）→ 保头保尾 + LLM 摘要 → 压缩反馈注入 |
 | 结果预算 | `agent/mind/result_budget.py` | 按模型窗口动态截断工具结果（15% 单条 / 30% 整轮） |
@@ -237,7 +249,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/mind/result_budget.py` | 工具结果预算截断（按模型窗口动态计算） |
 | `agent/mind/tool_activation.py` | 工具沉睡/激活状态机（activate_tool_group） |
 | `agent/mind/tools/think_loop.py` | 统一思维循环（多轮 LLM + 工具编排） |
-| `agent/llm/error_classifier.py` | LLM 错误分类（驱动重试/压缩/回退策略） |
+| `agent/llm/resilience/classifier.py` | LLM 错误分类（驱动重试/压缩/回退策略） |
 | `agent/llm/prompt_cache.py` | Anthropic 缓存断点唯一权威（线型判定 / 发送边界装饰 decorate_messages / 锚点表 / strip 副本 / TTL marker / CACHEABLE_PREFIX_LAYERS 分析口径） |
 | `agent/llm/retry.py` | 自适应退避（指数 + 抖动） |
 | `agent/security/session_token.py` | 一次性会话令牌（防注入伪造历史） |
@@ -354,14 +366,16 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。排查时**�
 - `unobservable`：该模型流式 usage 缺缓存字段（见下表），缓存仍在服务端生效但**无法度量**，显示"—"而非 0%。
 - `expected_prefix_tokens`（快照 cache 区块）：断点锚点覆盖的字节稳定层（stable+context+summary）理论可命中前缀。**与实际 cache_read 对比是首要判读工具**：expected 高而 read=0 ⇒ 前缀内容没变、问题在网关侧（节点亲和/TTL/端点行为）；expected 本身下降 ⇒ 前缀内容漂移，去查 section diff。
 - 单次 0% 的四大可解释原因：① 重启/空闲 >5 分钟的冷启动；② 工具集激活跳变（tools 数组变化击穿前缀）；③ 折叠/评审等辅助调用；④ **节点亲和失配**（kimi coding 等网关：缓存节点本地 + TCP 连接亲和，并发迫使新连接 = 冷节点全量 miss——已由 `_CacheAffinityHTTPHandler` 小连接池收敛，`anthropic_cache_pool_size` 配置池大小，默认 4；仍出现成簇 0% 且排除①②③时怀疑此项）。稳态主对话应 90%+。
+- **每个新回复第 1 轮恒定低位平台（轮 2 起恢复）= 历史前缀在固定位置断裂**：查快照 section diff 从上往下定位首个变更层。已根治的两类：召回内容混入 context 层（永久块与召回合并成一条被 startswith 提升——必须分消息返回）；**折叠死态**（调度判定误用截断后行数，积压超宽限即永不调度 → 窗口逐条滑动 → conversation 层每回复都变；判读特征：`conversation_summary` 表 folded_count 长期停滞 + dropped_count 不增 + 无任何折叠日志）。
 - **kimi coding 端点特性**（实测）：仅流式请求有缓存读写（非流式 usage 恒 read=0/creation=0，主对话全走流式不受影响，流式失败降级非流式的罕见路径会丢缓存）；缓存按 TCP 连接亲和。
 
 **供应商缓存字段**（`agent/llm/types.py` 的 `_CACHE_*_PATHS` 注册表，新增供应商只登记字段路径）：
-- Anthropic：`cache_read_input_tokens` / `cache_creation_input_tokens`（需断点，`_is_anthropic_model` 时注入 cache_control）。
+- Anthropic：`cache_read_input_tokens` / `cache_creation_input_tokens`（需断点，发送边界 `decorate_messages` 注入 cache_control）。
 - OpenAI 系：`prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens`。
-- DeepSeek：非流式回传 `prompt_cache_hit_tokens`；**流式不回传任何缓存字段**（`cache_stats.stream_cache_unobservable`），故流式下 DeepSeek 命中率不可观测。
+- DeepSeek：`prompt_cache_hit_tokens`（磁盘缓存自动生效）。**litellm 流式 chunk 转换会丢弃供应商扩展 usage 字段**（SDK 层完好，1.95/1.96 均丢），由 `response_parsing.install_usage_tap` 旁路（包装 `completion_stream` 从原始 chunk 挖字段汇合）恢复可观测性。
+- **可观测性是动态判定**（`UsageInfo.cache_observable` = 原始 usage 是否携带缓存字段，存在性与值无关）：字段在值为 0 = 真实未命中（显示 0%）；字段缺失 = 端点不回报（显示"—"，不计入均值）。不要再按供应商名静态登记。
 
-**架构不变量**（改动时勿破坏）：上下文按变动率排序组装（`agent/mind/context_pipeline.py` 的 `@context_block` 声明），stable→context→summary→conversation→动态区→exec_context；tools 数组是 prompt 最大头且需跨会话字节稳定（`tool_order_deterministic` / `tool_dynamic_sticky`）；stable 层不得嵌入动态状态（默认模型标记、视觉文案已移出）。
+**架构不变量**（改动时勿破坏）：上下文按变动率排序组装（`agent/mind/context_pipeline.py` 的 `@context_block` 声明），stable→context→summary→conversation→动态区→exec_context；tools 数组是 prompt 最大头且需跨会话字节稳定——三层保障：确定性双桶排序（`tool_order_deterministic`，作用域工具沉尾，跨 scope 共享头部）→ 进程内粘性（`tool_dynamic_sticky`）→ **跨回复追加式冻结**（`tool_order_frozen`，ToolAssembly 持有冻结名单：新工具只追加尾部、热召回换血/来源成员变化不剔除，数组只增不改）；stable 层不得嵌入动态状态（默认模型标记、视觉文案已移出）；**context 层只准放低频内容**（便签/文件索引/纯永久记忆块）——召回/检索结果每条消息都变，必须与永久块分消息返回（memory_retriever._format_unified_results），recollection 的 startswith 提升只捕获纯永久块，召回留在尾部动态区。
 
 **Anthropic 断点预算**（每请求 ≤4，设施集中在 `agent/llm/prompt_cache.py`，借鉴 Hermes prompt_caching.py）：**唯一装饰点是发送边界的 `decorate_messages`**（llm_invoker 在 normalize 前、`_layer` 标签尚存时调用），按声明式锚点表放置：stable 层末 + context 层末 + 对话历史末（无历史回退摘要块）+ 链尾（无 `_layer` 的末消息，天然随工具链增长前移）；管线/think_loop/内容构建侧只打 `_layer` 标签，**谁都不写 cache_control**。wire `tools[-1]` 断点是传输层权威（llm_client 按消息侧计数门控补位，满 4 让位）。装饰全部 copy-on-write，共享上下文字典永不被改写。TTL 由 `prompt_cache_anthropic_ttl`（5m/1h）驱动；`prompt_cache_tools_breakpoint` 控制 tools 断点。
 

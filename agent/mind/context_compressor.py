@@ -16,8 +16,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -192,8 +194,10 @@ class ContextCompressor:
     _MICROCOMPACT_PLACEHOLDER = "[旧工具结果已清理，需要时请重新调用工具获取]"
     _DUP_HINT_PLACEHOLDER = "[重复的系统提示已折叠]"
 
-    # token 估算结果缓存（内容字符串 → token 数），进程内共享
-    _token_est_cache: Dict[str, int] = {}
+    # token 估算结果缓存（内容哈希 → token 数），进程内共享。
+    # OrderedDict LRU 逐条淘汰（悬崖式全清会造成下一轮全上下文重编码突发；
+    # 键存哈希而非全文，避免大内容驻留内存）
+    _token_est_cache: "OrderedDict[str, int]" = OrderedDict()
 
     def microcompact(self, tool_chain: List[Dict]) -> int:
         """清理工具链中较早的只读工具结果为占位符（对齐 Claude Code microCompact）。
@@ -253,15 +257,14 @@ class ContextCompressor:
                 if isinstance(content, str) and content:
                     last_index[content] = i
         collapsed = 0
-        for content, keep_i in last_index.items():
-            for i, m in enumerate(tool_chain):
-                if (
-                    i != keep_i
-                    and m.get("role") == "system"
-                    and m.get("content") == content
-                ):
-                    tool_chain[i] = {**m, "content": self._DUP_HINT_PLACEHOLDER}
-                    collapsed += 1
+        # 单遍替换：非最后出现的重复内容折叠为占位符（与嵌套扫描结果一致）
+        for i, m in enumerate(tool_chain):
+            if m.get("role") != "system":
+                continue
+            content = m.get("content")
+            if isinstance(content, str) and content and last_index.get(content) != i:
+                tool_chain[i] = {**m, "content": self._DUP_HINT_PLACEHOLDER}
+                collapsed += 1
         return collapsed
 
     _IMAGE_BLOCK_PLACEHOLDER = (
@@ -334,19 +337,22 @@ class ContextCompressor:
             return int(effective * _SMALL_WINDOW_FALLBACK_RATIO)
         return threshold
 
-    # token 估算缓存：内容字符串 → token 数（str 自带缓存 hash，重复内容查找 O(1)）。
+    # token 估算缓存：内容哈希 → token 数（重复内容查找 O(1)）。
     # 思维循环每轮对全上下文估算，缓存使命中消息免于重复 tiktoken 编码。
     _TOKEN_EST_CACHE_MAX = 2048
 
     @staticmethod
-    def _encode_part(enc: Any, part: str, cache: Dict[str, int]) -> int:
-        cached = cache.get(part)
+    def _encode_part(enc: Any, part: str, cache: "OrderedDict[str, int]") -> int:
+        key = hashlib.sha1(part.encode("utf-8", errors="replace")).hexdigest()
+        cached = cache.get(key)
         if cached is not None:
+            cache.move_to_end(key)
             return cached
         count = len(enc.encode(part))
-        if len(cache) >= ContextCompressor._TOKEN_EST_CACHE_MAX:
-            cache.clear()
-        cache[part] = count
+        cache[key] = count
+        cache.move_to_end(key)
+        while len(cache) > ContextCompressor._TOKEN_EST_CACHE_MAX:
+            cache.popitem(last=False)
         return count
 
     @staticmethod
@@ -539,6 +545,15 @@ class ContextCompressor:
         new_base += preserved_users
         new_chain = tail
 
+        # 配对断言：压缩产物中不允许存在结果残缺的工具组
+        # （正常由 _repair_head_orphans 保证；残留残缺组由发送边界合成兜底结果）
+        incomplete = self._find_incomplete_group(new_base + new_chain)
+        if incomplete is not None:
+            log(
+                f"压缩后存在结果不完整的工具组（发送边界将合成兜底结果）: {incomplete}",
+                "WARNING", tag="压缩",
+            )
+
         after_tokens = self.estimate_tokens(new_base + new_chain)
         self.metrics.record(before_tokens, after_tokens)
         log(
@@ -558,6 +573,23 @@ class ContextCompressor:
         return new_base, new_chain
 
     @staticmethod
+    def _find_incomplete_group(messages: List[Dict]) -> Optional[str]:
+        """返回首个结果不完整的 tool_call id（全部配对完整则 None）。"""
+        pending: List[str] = []
+        for m in messages:
+            if m.get("tool_calls"):
+                pending.extend(
+                    tc.get("id")
+                    for tc in m.get("tool_calls") or []
+                    if isinstance(tc, dict) and tc.get("id")
+                )
+            elif m.get("role") == "tool":
+                tcid = m.get("tool_call_id")
+                if tcid in pending:
+                    pending.remove(tcid)
+        return pending[0] if pending else None
+
+    @staticmethod
     def _repair_head_orphans(
             head: List[Dict],
             middle: List[Dict],
@@ -566,16 +598,49 @@ class ContextCompressor:
 
         不变量：压缩后的消息序列中，每个携带 tool_calls 的 assistant 消息
         之后必须紧跟其全部 tool 结果消息，否则 provider 拒绝整个请求。
+        按 tool_call id 配对处理整组：缺失结果在 middle 开头则全部并入 head，
+        对不上则整组（assistant + 部分结果）下放到 middle 进摘要；
+        组内顺序与全局消息顺序保持不变。
         """
         head = list(head)
         middle = list(middle)
-        while head and head[-1].get("tool_calls"):
-            if middle and middle[0].get("role") == "tool":
-                # 结果紧跟其后，一并保留进 head
+        while True:
+            # 找 head 尾部最后一个携带 tool_calls 的 assistant（组起点）
+            idx = -1
+            for i in range(len(head) - 1, -1, -1):
+                if head[i].get("tool_calls"):
+                    idx = i
+                    break
+            if idx < 0:
+                break
+            needed = [
+                tc.get("id")
+                for tc in head[idx].get("tool_calls") or []
+                if isinstance(tc, dict) and tc.get("id")
+            ]
+            present = {
+                m.get("tool_call_id")
+                for m in head[idx + 1:]
+                if m.get("role") == "tool"
+            }
+            missing = [tid for tid in needed if tid not in present]
+            if not missing:
+                break  # 最近的工具组完整；更早的组处于稳定历史中视为完整
+            # 缺失结果在 middle 开头（边界切在组内）→ 按配对整组并入 head
+            moved = False
+            while (
+                middle
+                and middle[0].get("role") == "tool"
+                and middle[0].get("tool_call_id") in missing
+            ):
                 head.append(middle.pop(0))
-                continue
-            # 结果不在 middle 开头（已被更早切走）→ 下放到 middle 进摘要
-            middle.insert(0, head.pop())
+                moved = True
+            if moved:
+                continue  # 重新校验该组完整性
+            # 缺失结果不在 middle 开头 → 整组下放到 middle 进摘要（保持顺序）
+            group = head[idx:]
+            del head[idx:]
+            middle = group + middle
         return head, middle
 
     async def _summarize(

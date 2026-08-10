@@ -1,4 +1,4 @@
-"""工具顺序冻结（frozen_tool_order）与 stable 分块缓存单元测试。"""
+"""工具数组跨回复追加式冻结（ToolAssembly）与 stable 分块缓存单元测试。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 from agent.mind.context_assembly import ContextAssembly
 from agent.mind.tool_assembly import ToolAssembly
-from agent.mind.tools.round_helpers import _apply_frozen_tool_order, _tool_schema_name
 from agent.mind.work_memory import WorkMemory
 
 
@@ -14,32 +13,53 @@ def _schema(name: str) -> dict:
     return {"type": "function", "function": {"name": name, "parameters": {}}}
 
 
-class TestFrozenToolOrder:
-    def test_reorder_by_frozen(self) -> None:
-        """重建结果按首轮冻结顺序重排（使用计数跳变不影响字节序）。"""
-        frozen = ["end_reply", "send_message", "recall", "memorize"]
-        rebuilt = [_schema(n) for n in ["memorize", "send_message", "recall", "end_reply"]]
-        ordered = _apply_frozen_tool_order(rebuilt, frozen)
-        assert [_tool_schema_name(s) for s in ordered] == frozen
+def _names(schemas: list[dict]) -> list[str]:
+    return [s["function"]["name"] for s in schemas]
 
-    def test_newcomers_appended_sorted(self) -> None:
-        """新出现的工具按名称排序追加尾部（如媒体工具激活）。"""
-        frozen = ["end_reply", "recall"]
-        rebuilt = [_schema(n) for n in ["recall", "recognize_image", "end_reply", "voice_to_text"]]
-        ordered = _apply_frozen_tool_order(rebuilt, frozen)
-        assert [_tool_schema_name(s) for s in ordered] == [
-            "end_reply", "recall", "recognize_image", "voice_to_text",
-        ]
 
-    def test_vanished_tools_skipped(self) -> None:
-        frozen = ["end_reply", "gone_tool", "recall"]
-        rebuilt = [_schema(n) for n in ["recall", "end_reply"]]
-        ordered = _apply_frozen_tool_order(rebuilt, frozen)
-        assert [_tool_schema_name(s) for s in ordered] == ["end_reply", "recall"]
+def _assembly_ta() -> ToolAssembly:
+    ta = ToolAssembly.__new__(ToolAssembly)
+    ta._frozen_tool_names = []
+    ta._tool_recall = {}
+    return ta
 
-    def test_no_frozen_order_passthrough(self) -> None:
-        rebuilt = [_schema("b"), _schema("a")]
-        assert _apply_frozen_tool_order(rebuilt, None) is rebuilt
+
+class TestAppendOnlyFreeze:
+    def test_first_round_establishes_two_bucket_order(self) -> None:
+        """首轮按双桶排序键建立冻结序（共享核心在前，作用域工具沉尾）。"""
+        ta = _assembly_ta()
+        schemas = [_schema(n) for n in ["send_message", "recall", "end_reply", "memorize"]]
+        ordered = ta._apply_append_only_freeze(schemas, {"send_message"})
+        assert _names(ordered) == ["end_reply", "memorize", "recall", "send_message"]
+
+    def test_order_stable_across_replies(self) -> None:
+        """第二轮来源顺序打乱/计数变化：输出与首轮逐字节一致。"""
+        ta = _assembly_ta()
+        first = ta._apply_append_only_freeze(
+            [_schema(n) for n in ["b_tool", "a_tool", "c_tool"]], set(),
+        )
+        second = ta._apply_append_only_freeze(
+            [_schema(n) for n in ["c_tool", "b_tool", "a_tool"]], set(),
+        )
+        assert _names(first) == _names(second) == ["a_tool", "b_tool", "c_tool"]
+
+    def test_newcomers_appended_not_inserted(self) -> None:
+        """新工具（热召回换血/新发现）追加尾部，已有前缀位置不变。"""
+        ta = _assembly_ta()
+        first = ta._apply_append_only_freeze([_schema(n) for n in ["a", "c"]], set())
+        second = ta._apply_append_only_freeze(
+            [_schema(n) for n in ["a", "b_new", "c"]], set(),
+        )
+        assert _names(first) == ["a", "c"]
+        assert _names(second) == ["a", "c", "b_new"]  # 追加而非插入
+
+    def test_vanished_tools_dropped(self) -> None:
+        """注销/门控排除的工具从输出消失（冻结名单残留无害）。"""
+        ta = _assembly_ta()
+        ta._apply_append_only_freeze([_schema(n) for n in ["a", "gone"]], set())
+        out = ta._apply_append_only_freeze([_schema("a")], set())
+        assert _names(out) == ["a"]
+        assert "gone" in ta._frozen_tool_names  # 名单残留，不影响输出
 
 
 class TestStableBlocks:

@@ -80,6 +80,15 @@ async def reply_loop(
         _interrupts = getattr(mind, "interrupts", None)
         if scope and _interrupts is not None:
             _interrupts.clear(scope)
+        # 推送水位必须在 base 快照之前读取：快照与水位读取之间的到达窗口内，
+        # 推送既不随短期记忆进 base、又被 drain_inflight 按 seq≤水位 丢弃，导致吞推送
+        push_watermark = 0
+        push_hub = getattr(mind, "push_hub", None)
+        if push_hub is not None and scope:
+            try:
+                push_watermark = push_hub.current_seq(scope)
+            except Exception:
+                push_watermark = 0
         active_tools = await mind.pfc.get_active_tool_schemas(adapter_key, scope=scope)
         base_messages = await mind.get_recollection(anything=anything)
         # 历史快照已覆盖该 scope 当前全部消息：消费到达时入队的待处理条目，
@@ -100,6 +109,7 @@ async def reply_loop(
             active_tools=active_tools,
             anything=anything,
             base_messages=base_messages,
+            options={"push_watermark": push_watermark} if push_watermark else None,
             adapter_key=adapter_key,
         )
 

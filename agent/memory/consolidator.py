@@ -138,6 +138,14 @@ class MemoryConsolidator:
         except Exception as exc:
             report.errors.append(f"归档清理失败: {exc}")
 
+        # 6.5 审计日志保留期清理（表只追加，不清理会随运行时间线性膨胀）
+        try:
+            await self._store.purge_audit_log(
+                get_config_int("memory_audit_retention_days", 30),
+            )
+        except Exception as exc:
+            report.errors.append(f"审计日志清理失败: {exc}")
+
         # 7. cognee 同步队列检查与唤醒
         try:
             report.cognee_pending = await self._check_cognee_sync()
@@ -258,6 +266,10 @@ _CONSOLIDATOR_CONFIGS = {
         },
         "memory_query_rewrite_enabled": {
             "description": "被动召回前是否用轻量 LLM 改写检索查询（口语上下文→检索友好形式）",
+            "default": True,
+        },
+        "memory_recall_skip_trivial": {
+            "description": "平凡消息（≤6 字符的纯客套/短回复）跳过记忆检索与查询改写",
             "default": True,
         },
         "notes_inject_max_chars": {

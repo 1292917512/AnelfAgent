@@ -13,7 +13,7 @@
     "crossChannelSubtitle": "Control AI's ability to sense and correlate conversations across multiple channels",
     "network": "Network / Download",
     "webTools": "Search Engine",
-    "webToolsSubtitle": "Baidu AI Search API key & web scraping proxy settings"
+    "webToolsSubtitle": "Web scraping proxy settings (search via MiniMax Coding Plan)"
   },
   "fields": {
     "heartbeat_interval": "Heartbeat Interval (s)",
@@ -71,7 +71,6 @@
     "verify_download": "Verify Download Integrity",
     "default_download_dir": "Default Download Dir",
     "workspace_root": "Workspace Root",
-    "baidu_api_key": "Baidu Search API Key",
     "web_proxy": "Web Scraping Proxy",
     "conversation_analysis_threshold": "Conversation Analysis Threshold"
   },
@@ -109,7 +108,6 @@
     "cross_channel_narrative_max_items": "Max cross-channel narrative items shown per reply; 0 disables narrative",
     "http_proxy": "e.g. http://127.0.0.1:7890",
     "https_proxy": "e.g. http://127.0.0.1:7890",
-    "baidu_api_key": "Baidu AI Search API Key (bce-v3/...)",
     "web_proxy": "Web scraping proxy, leave empty for direct, e.g. http://127.0.0.1:7890"
   },
   "actions": {

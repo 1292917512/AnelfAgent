@@ -1,5 +1,4 @@
 export interface WebToolsConfig {
-  baidu_api_key: string;
   proxy: string;
 }
 

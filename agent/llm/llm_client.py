@@ -775,7 +775,7 @@ class LLMClient(BaseEntity):
             return tools
         if count_breakpoints(adapted) >= MAX_BREAKPOINTS:
             return tools
-        result = apply_tools_breakpoint(tools)
+        result = apply_tools_breakpoint(tools, api_type=self.config.api_type)
         return result if result is not None else tools
 
     # ------------------------------------------------------------------
@@ -1076,14 +1076,16 @@ class LLMClient(BaseEntity):
             if lease:
                 async with lease:
                     stream = await self._start_completion(kwargs)
-                    async for item in self._iter_stream(stream, reasoning_buf, tc_bufs):
+                    sink = _rp.install_usage_tap(stream)
+                    async for item in self._iter_stream(stream, reasoning_buf, tc_bufs, sink):
                         reasoning_buf = item[1]
                         if item[0].finish_reason:
                             last_finish = item[0].finish_reason
                         yield item[0]
             else:
                 stream = await self._start_completion(kwargs)
-                async for item in self._iter_stream(stream, reasoning_buf, tc_bufs):
+                sink = _rp.install_usage_tap(stream)
+                async for item in self._iter_stream(stream, reasoning_buf, tc_bufs, sink):
                     reasoning_buf = item[1]
                     if item[0].finish_reason:
                         last_finish = item[0].finish_reason

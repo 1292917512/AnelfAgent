@@ -108,29 +108,31 @@ async def create_task(
                 f"memory_type 须为 {sorted(_TASK_MEMORY_TYPES)} 之一",
                 cause=ErrorCause.PARAM, retryable=False,
             )
-        if _task_path(name).exists():
-            return tool_error(
-                f"任务 [{name}] 已存在，修改请用 update_task",
-                cause=ErrorCause.STATE, retryable=False,
-            )
+        from .registry import task_files_lock
+        async with task_files_lock:
+            if _task_path(name).exists():
+                return tool_error(
+                    f"任务 [{name}] 已存在，修改请用 update_task",
+                    cause=ErrorCause.STATE, retryable=False,
+                )
 
-        data: Dict[str, Any] = {
-            "name": name,
-            "display_name": display_name.strip() or name,
-            "description": description.strip(),
-            "scope": "global",
-            "enabled": True,
-            "memory_type": memory_type,
-            "importance": max(0.0, min(1.0, importance)),
-            "tags": _split_csv(tags),
-            "source": name,
-            "null_keywords": [],
-            "tool_tags": _split_csv(tool_tags) or ["heartbeat"],
-            "prompt": prompt.strip(),
-            "allow_output_tools": allow_output_tools,
-            "save_result_to_memory": save_result_to_memory,
-        }
-        _write_task_data(name, data)
+            data: Dict[str, Any] = {
+                "name": name,
+                "display_name": display_name.strip() or name,
+                "description": description.strip(),
+                "scope": "global",
+                "enabled": True,
+                "memory_type": memory_type,
+                "importance": max(0.0, min(1.0, importance)),
+                "tags": _split_csv(tags),
+                "source": name,
+                "null_keywords": [],
+                "tool_tags": _split_csv(tool_tags) or ["heartbeat"],
+                "prompt": prompt.strip(),
+                "allow_output_tools": allow_output_tools,
+                "save_result_to_memory": save_result_to_memory,
+            }
+            _write_task_data(name, data)
         _reload_engine()
         log(f"🛠 AI 创建任务: {name}", tag="任务")
         return json.dumps({
@@ -171,44 +173,46 @@ async def update_task(
         tool_tags: 执行工具标签（空串不变，逗号分隔，整体替换）
     """
     try:
-        data = _load_task_data(name)
-        if data is None:
-            return tool_error(f"任务 [{name}] 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
-        if memory_type and memory_type not in _TASK_MEMORY_TYPES:
-            return tool_error(
-                f"memory_type 须为 {sorted(_TASK_MEMORY_TYPES)} 之一",
-                cause=ErrorCause.PARAM, retryable=False,
-            )
+        from .registry import task_files_lock
+        async with task_files_lock:
+            data = _load_task_data(name)
+            if data is None:
+                return tool_error(f"任务 [{name}] 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
+            if memory_type and memory_type not in _TASK_MEMORY_TYPES:
+                return tool_error(
+                    f"memory_type 须为 {sorted(_TASK_MEMORY_TYPES)} 之一",
+                    cause=ErrorCause.PARAM, retryable=False,
+                )
 
-        changed: List[str] = []
-        if prompt.strip():
-            data["prompt"] = prompt.strip()
-            changed.append("prompt")
-        if display_name.strip():
-            data["display_name"] = display_name.strip()
-            changed.append("display_name")
-        if description.strip():
-            data["description"] = description.strip()
-            changed.append("description")
-        if enabled.strip().lower() in ("true", "false"):
-            data["enabled"] = enabled.strip().lower() == "true"
-            changed.append("enabled")
-        if memory_type:
-            data["memory_type"] = memory_type
-            changed.append("memory_type")
-        if importance >= 0:
-            data["importance"] = max(0.0, min(1.0, importance))
-            changed.append("importance")
-        if tags.strip():
-            data["tags"] = _split_csv(tags)
-            changed.append("tags")
-        if tool_tags.strip():
-            data["tool_tags"] = _split_csv(tool_tags)
-            changed.append("tool_tags")
-        if not changed:
-            return tool_error("没有任何字段需要更新", cause=ErrorCause.PARAM, retryable=False)
+            changed: List[str] = []
+            if prompt.strip():
+                data["prompt"] = prompt.strip()
+                changed.append("prompt")
+            if display_name.strip():
+                data["display_name"] = display_name.strip()
+                changed.append("display_name")
+            if description.strip():
+                data["description"] = description.strip()
+                changed.append("description")
+            if enabled.strip().lower() in ("true", "false"):
+                data["enabled"] = enabled.strip().lower() == "true"
+                changed.append("enabled")
+            if memory_type:
+                data["memory_type"] = memory_type
+                changed.append("memory_type")
+            if importance >= 0:
+                data["importance"] = max(0.0, min(1.0, importance))
+                changed.append("importance")
+            if tags.strip():
+                data["tags"] = _split_csv(tags)
+                changed.append("tags")
+            if tool_tags.strip():
+                data["tool_tags"] = _split_csv(tool_tags)
+                changed.append("tool_tags")
+            if not changed:
+                return tool_error("没有任何字段需要更新", cause=ErrorCause.PARAM, retryable=False)
 
-        _write_task_data(name, data)
+            _write_task_data(name, data)
         _reload_engine()
         log(f"🛠 AI 更新任务: {name} ({', '.join(changed)})", tag="任务")
         return json.dumps({"ok": True, "task": name, "changed": changed}, ensure_ascii=False)
@@ -227,10 +231,12 @@ async def delete_task(name: str) -> str:
         name: 任务标识
     """
     try:
-        path = _task_path(name)
-        if not path.exists():
-            return tool_error(f"任务 [{name}] 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
-        path.unlink()
+        from .registry import task_files_lock
+        async with task_files_lock:
+            path = _task_path(name)
+            if not path.exists():
+                return tool_error(f"任务 [{name}] 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
+            path.unlink()
 
         # 同步移除调度绑定，避免孤儿调度项
         from agent.heartbeat.config import get_heartbeat_config

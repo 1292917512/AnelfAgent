@@ -109,6 +109,39 @@ class TestDeterministicToolOrder:
         # 确定性模式：纯按名称排序，与使用计数无关
         assert sorted(names, key=key) == ["alpha", "beta", "zeta"]
 
+    def test_scoped_tools_sort_after_shared(self) -> None:
+        """作用域工具（频道能力/scope 激活分组）沉到共享核心之后：
+        不同 scope 的 tools 数组共享最长公共头部（跨 scope 前缀缓存命中）。"""
+        from agent.mind.tool_assembly import ToolAssembly
+
+        ta = ToolAssembly.__new__(ToolAssembly)
+        ta._tool_recall = {}
+        scoped = {"send_message", "ban_user"}
+
+        def key(n: str):
+            return ta._tool_sort_key({"function": {"name": n}}, scoped)
+
+        names = ["send_message", "zeta_shared", "ban_user", "alpha_shared", "end_reply"]
+        ordered = sorted(names, key=key)
+        # 共享桶：end_reply（核心优先 0）→ 名称序；作用域桶同规则（ban_user 名称在send_message 前）
+        assert ordered == ["end_reply", "alpha_shared", "zeta_shared", "ban_user", "send_message"]
+
+    def test_scope_subset_is_prefix_of_superset(self) -> None:
+        """无频道工具的 scope 数组是有频道工具 scope 的前缀（缓存共享最大化）。"""
+        from agent.mind.tool_assembly import ToolAssembly
+
+        ta = ToolAssembly.__new__(ToolAssembly)
+        ta._tool_recall = {}
+        qq_scoped = {"send_message", "send_file"}
+
+        def build(names, scoped):
+            return sorted(names, key=lambda n: ta._tool_sort_key({"function": {"name": n}}, scoped))
+
+        shared = ["end_reply", "recall", "memorize"]
+        webui = build(shared, set())
+        qq = build(shared + ["send_message", "send_file"], qq_scoped)
+        assert qq[:len(webui)] == webui  # webui 数组是 qq 数组的严格前缀
+
 
 class TestClearStaleImageBlocks:
     def test_old_image_blocks_collapsed(self) -> None:
@@ -235,6 +268,26 @@ class TestCacheKindBucketing:
         assert tracker.last(kind="reply")["cache_hit_rate"] == 0.95
         assert tracker.last(kind="reflect")["cache_hit_rate"] == 0.0
         assert tracker.last()["kind"] == "reflect"
+
+
+class TestCacheRateAggregation:
+    def test_avg_never_exceeds_full_hit(self) -> None:
+        """Anthropic 口径（input 不含缓存，read 可大于 prompt）混窗时均值仍 ≤1。
+
+        record 时单次命中率已钳到 1.0，聚合必须沿用该口径算术平均；
+        按总 read/总 prompt 重算会把均值放大到 100% 以上。
+        """
+        from agent.llm.types import UsageInfo
+        from agent.mind.cache_stats import CacheUsageTracker
+
+        tracker = CacheUsageTracker()
+        # Anthropic 记账：input_tokens 仅未缓存部分，read 远大于它
+        tracker.record(UsageInfo(prompt_tokens=50, cache_read_input_tokens=200), kind="reflect")
+        tracker.record(UsageInfo(prompt_tokens=100, cache_read_input_tokens=50), kind="reply")
+
+        stats = tracker.summary()
+        assert stats["avg_cache_hit_rate"] == 0.75  # (1.0 + 0.5) / 2
+        assert stats["avg_cache_hit_rate"] <= 1.0
 
 
 class TestMcpSleepPolicy:

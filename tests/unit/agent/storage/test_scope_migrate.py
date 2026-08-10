@@ -62,6 +62,14 @@ async def _make_main_db(db_path: str) -> aiosqlite.Connection:
         "id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL, kind TEXT NOT NULL,"
         "payload_json TEXT NOT NULL DEFAULT '{}', ts_ns INTEGER NOT NULL)"
     )
+    await db.execute(
+        "CREATE TABLE conversation_summary ("
+        "scope_type TEXT NOT NULL, scope_id TEXT NOT NULL,"
+        "summary TEXT NOT NULL DEFAULT '', watermarks_json TEXT NOT NULL DEFAULT '{}',"
+        "watermark_ids_json TEXT NOT NULL DEFAULT '{}',"
+        "folded_count INTEGER NOT NULL DEFAULT 0, dropped_count INTEGER NOT NULL DEFAULT 0,"
+        "updated_ts_ns INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(scope_type, scope_id))"
+    )
     await db.commit()
     return db
 
@@ -84,6 +92,11 @@ class TestMainDbMigration:
             "INSERT INTO pending_tasks(scope, kind, payload_json, ts_ns) VALUES('user_123','general',?,3)",
             (json.dumps({"scope": "user_123", "adapter_key": "qq"}),),
         )
+        await db.execute(
+            "INSERT INTO conversation_summary(scope_type, scope_id, summary, watermarks_json)"
+            " VALUES('user','123','摘要',?)",
+            (json.dumps({"user:123": 5, "user:qq:9": 7}),),
+        )
         await db.commit()
 
         done = await migrate_main_db_scopes(db, db_path, "qq")
@@ -104,6 +117,13 @@ class TestMainDbMigration:
         row = await (await db.execute("SELECT scope, payload_json FROM pending_tasks")).fetchone()
         assert row[0] == "user_qq:123"
         assert "user_qq:123" in row[1]
+
+        # 摘要表：scope_id 迁移 + 水位线键同步改写（已迁移键保持不变）
+        row = await (await db.execute(
+            "SELECT scope_id, watermarks_json FROM conversation_summary"
+        )).fetchone()
+        assert row[0] == "qq:123"
+        assert json.loads(row[1]) == {"user:qq:123": 5, "user:qq:9": 7}
 
         await db.close()
 

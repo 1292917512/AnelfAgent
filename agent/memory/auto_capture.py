@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -38,6 +39,17 @@ _MAX_NEW_MESSAGES = 12
 _MAX_BACKGROUND_MESSAGES = 3
 # 连续提取失败上限：达到后放弃本批（游标推进，避免毒批次卡死管线）
 _MAX_BATCH_FAILURES = 5
+# 待提取消息的单批拉取窗口与单 tick 处理上限（积压超限时后续 tick 继续消费）
+_PENDING_BATCH_SIZE = 40
+_MAX_PENDING_PER_TICK = 200
+
+
+def _batch_signature(rows: List[Dict[str, Any]]) -> str:
+    """批次指纹：消息 id 序列哈希，用于崩溃恢复后的重复提取识别。"""
+    if not rows:
+        return ""
+    ids = ",".join(str(int(r["id"])) for r in rows)
+    return hashlib.sha1(ids.encode()).hexdigest()
 
 _EXTRACT_PROMPT = """\
 你是记忆提取器。从以下对话片段中提取值得长期记住的信息，输出 JSON 数组。
@@ -127,7 +139,7 @@ class _ScopeState:
     """
 
     __slots__ = ("last_msg_id", "counted_msg_id", "pending_turns",
-                 "warmup_threshold", "failures")
+                 "warmup_threshold", "failures", "last_batch_sig")
 
     def __init__(
         self,
@@ -136,12 +148,15 @@ class _ScopeState:
         pending_turns: int = 0,
         warmup_threshold: int = 1,
         failures: int = 0,
+        last_batch_sig: str = "",
     ) -> None:
         self.last_msg_id = last_msg_id
         self.counted_msg_id = counted_msg_id
         self.pending_turns = pending_turns
         self.warmup_threshold = warmup_threshold
         self.failures = failures
+        # 最近成功提取批次的消息 id 指纹：崩溃恢复后同批次跳过重复提取
+        self.last_batch_sig = last_batch_sig
 
 
 class AutoCapturePipeline:
@@ -164,7 +179,7 @@ class AutoCapturePipeline:
             try:
                 db = await store._get_db()
                 cursor = await db.execute(
-                    "SELECT last_msg_id, counted_msg_id, pending_turns, warmup_threshold "
+                    "SELECT last_msg_id, counted_msg_id, pending_turns, warmup_threshold, last_batch_sig "
                     "FROM capture_cursors WHERE scope_key=?",
                     (scope_key,),
                 )
@@ -175,6 +190,7 @@ class AutoCapturePipeline:
                         counted_msg_id=int(row["counted_msg_id"]),
                         pending_turns=int(row["pending_turns"]),
                         warmup_threshold=int(row["warmup_threshold"]),
+                        last_batch_sig=str(row["last_batch_sig"] or ""),
                     )
             except Exception as exc:
                 log(f"捕获游标读取失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")
@@ -190,10 +206,11 @@ class AutoCapturePipeline:
             async with store._tx(db):
                 await db.execute(
                     "INSERT OR REPLACE INTO capture_cursors"
-                    "(scope_key, last_msg_id, counted_msg_id, pending_turns, warmup_threshold, updated_ns) "
-                    "VALUES(?,?,?,?,?,?)",
+                    "(scope_key, last_msg_id, counted_msg_id, pending_turns, warmup_threshold, last_batch_sig, updated_ns) "
+                    "VALUES(?,?,?,?,?,?,?)",
                     (scope_key, state.last_msg_id, state.counted_msg_id,
-                     state.pending_turns, state.warmup_threshold, time.time_ns()),
+                     state.pending_turns, state.warmup_threshold, state.last_batch_sig,
+                     time.time_ns()),
                 )
         except Exception as exc:
             log(f"捕获游标保存失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")
@@ -212,7 +229,8 @@ class AutoCapturePipeline:
         try:
             from services._runtime import require_runtime
             sqlite = require_runtime().data_center.sqlite
-            scopes = await sqlite.list_conversation_scopes()
+            # 轻量枚举（无 COUNT）：每 tick 调用，避免全表 GROUP BY
+            scopes = await sqlite.list_conversation_scope_keys()
         except Exception as exc:
             log(f"自动捕获 scope 枚举失败: {exc}", "DEBUG", tag="记忆")
             return
@@ -238,6 +256,29 @@ class AutoCapturePipeline:
                     "DEBUG", tag="记忆",
                 )
 
+    async def _fetch_pending(
+        self,
+        sqlite: Any,
+        scope_type: str,
+        scope_id: str,
+        after_id: int,
+    ) -> List[Dict[str, Any]]:
+        """按提取游标分批拉取待处理消息（id 升序），单 tick 上限 _MAX_PENDING_PER_TICK。"""
+        rows: List[Dict[str, Any]] = []
+        cursor = after_id
+        while len(rows) < _MAX_PENDING_PER_TICK:
+            batch = await sqlite.fetch_conversation_with_id(
+                scope_type=scope_type, scope_id=scope_id,
+                limit=_PENDING_BATCH_SIZE, after_id=cursor,
+            )
+            if not batch:
+                break
+            rows.extend(batch)
+            cursor = int(batch[-1]["id"])
+            if len(batch) < _PENDING_BATCH_SIZE:
+                break
+        return rows[:_MAX_PENDING_PER_TICK]
+
     async def _process_scope(
         self,
         sqlite: Any,
@@ -252,15 +293,16 @@ class AutoCapturePipeline:
         scope_key = f"{scope_type}:{scope_id}"
         state = await self._load_state(scope_key)
 
-        rows = await sqlite.fetch_conversation_with_id(
-            scope_type=scope_type, scope_id=scope_id, limit=40,
+        # 按提取游标分批拉取（id 升序）：积压超过单批窗口时逐批消费，
+        # 游标只推进到实际处理的最大 id，不会因窗口截断永久漏提
+        rows = await self._fetch_pending(
+            sqlite, scope_type, scope_id, state.last_msg_id,
         )
         uncounted = [r for r in rows if int(r["id"]) > state.counted_msg_id]
         if not uncounted and not state.pending_turns:
             return False
         latest_id = int(rows[-1]["id"]) if rows else state.counted_msg_id
-        pending_rows = [r for r in rows if int(r["id"]) > state.last_msg_id]
-        pending_rows.sort(key=lambda r: int(r["id"]))
+        pending_rows = rows
         if not pending_rows:
             return False
         latest_ts = int(pending_rows[-1]["ts_ns"]) / 1e9
@@ -294,6 +336,16 @@ class AutoCapturePipeline:
             await self._save_state(scope_key, state)
             return False
 
+        batch_sig = _batch_signature(pending_rows)
+        if batch_sig and batch_sig == state.last_batch_sig:
+            # 崩溃恢复：该批次已提取落库但游标未及保存，直接推进避免重复提取
+            state.last_msg_id = latest_id
+            state.pending_turns = 0
+            state.failures = 0
+            await self._save_state(scope_key, state)
+            log(f"自动捕获 [{scope_key}]: 批次已提取（崩溃恢复），跳过重复提取", "DEBUG", tag="记忆")
+            return False
+
         extracted = await self._extract_and_store(scope_key, messages)
         metrics.incr("capture.batches")
         if extracted is None:
@@ -314,6 +366,7 @@ class AutoCapturePipeline:
         state.last_msg_id = latest_id
         state.pending_turns = 0
         state.failures = 0
+        state.last_batch_sig = batch_sig
         state.warmup_threshold = min(state.warmup_threshold * 2, every_n)
         await self._save_state(scope_key, state)
         if extracted:
@@ -376,6 +429,14 @@ class AutoCapturePipeline:
                         str(decision.get("content") or item["content"]), tags,
                     )
                     if updated is not None:
+                        stored += 1
+                        continue
+                if action == "merge" and decision.get("target_ids"):
+                    new_id = await store.merge_memories(
+                        [int(i) for i in decision["target_ids"]],
+                        str(decision.get("content") or item["content"]),
+                    )
+                    if new_id:
                         stored += 1
                         continue
                 metadata: Dict[str, Any] = {}
@@ -464,6 +525,40 @@ async def run_auto_capture(mind: "Mind") -> None:
     if _pipeline is None:
         _pipeline = AutoCapturePipeline(mind)
     await _pipeline.run()
+
+
+async def flush_auto_capture(mind: "Mind") -> None:
+    """进程退出前的兜底提取：所有有待提取内容的 scope 立即处理（不等阈值/空闲）。
+
+    对应触发器的第三轨（shutdown flush）：未达轮数阈值且未满空闲时间的
+    对话批次，在优雅关停时强制提取，避免短期会话的记忆随进程退出丢失。
+    """
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = AutoCapturePipeline(mind)
+    store = mind.memory_store
+    if not store or not get_config_bool("memory_auto_capture_enabled", True):
+        return
+    try:
+        from services._runtime import require_runtime
+        sqlite = require_runtime().data_center.sqlite
+        scopes = await sqlite.list_conversation_scope_keys()
+    except Exception:
+        return
+    every_n = max(1, get_config_int("memory_auto_capture_every_n", 5))
+    now = time.time()
+    for scope in scopes:
+        try:
+            state = await _pipeline._load_state(f"{scope['scope_type']}:{scope['scope_id']}")
+            if state.pending_turns <= 0:
+                continue
+            # idle_seconds=0：有待提取内容即视为到期
+            await _pipeline._process_scope(
+                sqlite, scope["scope_type"], scope["scope_id"],
+                every_n=every_n, idle_seconds=0, now=now,
+            )
+        except Exception as exc:
+            log(f"关停兜底提取失败 [{scope.get('scope_id')}]: {exc}", "DEBUG", tag="记忆")
 
 
 _CAPTURE_CONFIGS = {

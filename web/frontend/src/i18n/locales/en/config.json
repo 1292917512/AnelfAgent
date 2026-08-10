@@ -13,5 +13,14 @@
     "上下文压缩": "Compression",
     "技能": "Skills",
     "子代理": "Delegation"
+  },
+  "window": {
+    "title": "Conversation Window",
+    "desc": "Total size + keep-after-fold ratio. When full, older messages fold into a fixed summary block while the newest share stays raw — byte-stable prefix for maximum cache hits",
+    "size": "Window size",
+    "keepPercent": "Keep after fold",
+    "keepSeg": "Keep {{count}} raw",
+    "foldSeg": "Fold {{count}}/batch",
+    "range": "Window {{min}} ~ {{max}}"
   }
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,6 +13,10 @@ from core.path import ConfigPaths
 from .model import TaskDefinition
 
 _TASKS_DIR = Path(ConfigPaths.TASKS_DIR)
+
+# 任务文件写锁：AI 工具（agent/task/tools.py）与 Web API（web/routers/config.py）
+# 同进程并发 CRUD 的 read-modify-write 互斥，防后写者覆盖先写者的字段
+task_files_lock = asyncio.Lock()
 
 
 class TaskRegistry:

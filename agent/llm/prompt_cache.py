@@ -36,14 +36,16 @@ _HISTORY_ANCHOR_LAYERS = ("conversation", "summary")
 CACHEABLE_PREFIX_LAYERS = ("stable", "context", "summary")
 
 
-def cache_marker() -> Dict[str, Any]:
+def cache_marker(api_type: str = "") -> Dict[str, Any]:
     """构造 cache_control marker（TTL 由配置驱动，默认 5m 短缓存）。
 
     prompt_cache_anthropic_ttl="1h" 时携带 ttl 字段（写入成本 2x vs 1.25x，
-    适合会话间隔 >5min 的场景；部分兼容网关不支持，拒绝时调回 5m）。
+    适合会话间隔 >5min 的场景）。ttl 标记仅真 Anthropic 线（api_type=="anthropic"）
+    注入：兼容网关缺少 extended-cache-ttl beta 头会 400
+    （与 anthropic_ttl_beta_headers 的判定口径保持一致）。
     """
     ttl = str(get_config("prompt_cache_anthropic_ttl", "5m")).strip().lower()
-    if ttl == "1h":
+    if ttl == "1h" and (api_type or "").lower() == "anthropic":
         return {"type": "ephemeral", "ttl": "1h"}
     return {"type": "ephemeral"}
 
@@ -76,7 +78,9 @@ def count_breakpoints(messages: List[Dict]) -> int:
     return count
 
 
-def apply_tools_breakpoint(tools: Optional[List[Dict]]) -> Optional[List[Dict]]:
+def apply_tools_breakpoint(
+    tools: Optional[List[Dict]], *, api_type: str = ""
+) -> Optional[List[Dict]]:
     """在 wire tools 数组末尾 schema 注入断点（不改写入参，返回新列表）。
 
     整个工具数组随末 schema 进入缓存：配合工具排序确定性 + sticky 激活，
@@ -85,7 +89,7 @@ def apply_tools_breakpoint(tools: Optional[List[Dict]]) -> Optional[List[Dict]]:
     """
     if not tools:
         return tools
-    return [*tools[:-1], {**tools[-1], "cache_control": cache_marker()}]
+    return [*tools[:-1], {**tools[-1], "cache_control": cache_marker(api_type)}]
 
 
 def _select_anchor_targets(messages: List[Dict]) -> List[Dict]:
@@ -126,7 +130,9 @@ def _select_anchor_targets(messages: List[Dict]) -> List[Dict]:
     return targets[:MAX_BREAKPOINTS]
 
 
-def decorate_messages(messages: List[Dict], *, anthropic: bool) -> List[Dict]:
+def decorate_messages(
+    messages: List[Dict], *, anthropic: bool, api_type: str = ""
+) -> List[Dict]:
     """消息缓存断点装饰的唯一入口（发送边界调用，copy-on-write，零拷贝优先）。
 
     - 非 Anthropic 线：消息带断点时返回剥离副本（防御），否则原样返回
@@ -161,7 +167,7 @@ def decorate_messages(messages: List[Dict], *, anthropic: bool) -> List[Dict]:
                 for p in content
             ]
         if is_target:
-            copied["cache_control"] = cache_marker()
+            copied["cache_control"] = cache_marker(api_type)
         decorated.append(copied)
     return decorated
 

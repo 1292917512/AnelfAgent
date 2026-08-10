@@ -233,6 +233,8 @@ def create_bootstrap() -> FlowMachine:
         register_notes_tools(workspace_dir=mem.get("workspace_dir"))
         register_planning_tools(mem["store"])
         register_output_tools(data_center.conversation_data)
+        from agent.storage.conversation_fold import register_fold_tools
+        register_fold_tools(data_center.conversation_data)
 
         skill_store = SkillStore()
         register_skill_tools(skill_store, SkillMatcher(skill_store, mem["embedder"]))
@@ -303,6 +305,10 @@ def create_bootstrap() -> FlowMachine:
             data_center=data_center,
         )
         set_runtime(runtime)
+
+        # 折后预热钩子（storage 层不反向依赖 mind，经注入解耦）
+        from agent.storage.conversation_fold import conversation_folder
+        conversation_folder.set_prewarm_hook(mind.prewarm_scope_cache)
 
         set_mind(mind)
         session_tools.set_mind(mind)

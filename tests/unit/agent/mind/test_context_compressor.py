@@ -505,3 +505,63 @@ class TestHeadOrphanRepair:
         new_head, new_middle = ContextCompressor._repair_head_orphans(head, middle)
         assert not new_head[-1].get("tool_calls")
         assert new_middle[0].get("tool_calls"), "被下放的 assistant 应在 middle 开头"
+
+    def test_repair_moves_all_parallel_results(self) -> None:
+        """并行工具组（多 tool_calls）边界切在组内：全部结果并入 head，不只一条。"""
+        head = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}, {"id": "c2"}]},
+        ]
+        middle = [
+            {"role": "tool", "tool_call_id": "c1", "content": "r1"},
+            {"role": "tool", "tool_call_id": "c2", "content": "r2"},
+            {"role": "assistant", "content": "a"},
+        ]
+        new_head, new_middle = ContextCompressor._repair_head_orphans(head, middle)
+        assert len(new_head) == 4, "assistant + 两条 tool 结果都应保留在 head"
+        assert [m.get("tool_call_id") for m in new_head[2:]] == ["c1", "c2"]
+        assert len(new_middle) == 1
+
+    def test_repair_boundary_inside_result_sequence(self) -> None:
+        """边界切在结果序列中间（head 尾部已是部分 tool 结果）：
+        middle 开头的剩余结果并入 head 补齐整组。"""
+        head = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}, {"id": "c2"}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "r1"},
+        ]
+        middle = [
+            {"role": "tool", "tool_call_id": "c2", "content": "r2"},
+            {"role": "assistant", "content": "a"},
+        ]
+        new_head, new_middle = ContextCompressor._repair_head_orphans(head, middle)
+        assert len(new_head) == 4
+        assert new_head[-1].get("tool_call_id") == "c2"
+        assert len(new_middle) == 1
+
+    def test_repair_demotes_unrepairable_group_keeps_order(self) -> None:
+        """结果完全缺失时整组下放 middle，且全局消息顺序不变。"""
+        head = [
+            {"role": "user", "content": "q0"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}, {"id": "c2"}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "r1"},
+        ]
+        middle = [{"role": "user", "content": "q1"}]
+        new_head, new_middle = ContextCompressor._repair_head_orphans(head, middle)
+        assert len(new_head) == 1
+        # 下放保持原顺序：assistant → tool(c1) → 原 middle
+        assert [m["role"] for m in new_middle] == ["assistant", "tool", "user"]
+
+    def test_find_incomplete_group(self) -> None:
+        """配对断言辅助：完整序列返回 None，残缺返回缺失的 call id。"""
+        complete = [
+            {"role": "assistant", "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "r"},
+        ]
+        assert ContextCompressor._find_incomplete_group(complete) is None
+        broken = [
+            {"role": "assistant", "tool_calls": [{"id": "c1"}, {"id": "c2"}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "r"},
+        ]
+        assert ContextCompressor._find_incomplete_group(broken) == "c2"
+

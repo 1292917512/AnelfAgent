@@ -35,6 +35,9 @@ class ToolAssembly:
         self._discovered_tools: set[str] = set()
         # 动态工具集版本号（tag 激活/动态发现变化时递增，供 think_loop 检测重建）
         self._tools_version: int = 0
+        # 跨回复冻结的 tools 数组顺序（追加式：只增不改，缓存前缀稳定的最终防线；
+        # 仅存名字，注销工具由存在性检查自然滤除，无害残留）
+        self._frozen_tool_names: list[str] = []
 
     @property
     def tools_version(self) -> int:
@@ -202,14 +205,21 @@ class ToolAssembly:
         seen_names: set[str] = set()
         all_schemas: list[dict] = []
         source_counts: dict[str, int] = {}
+        # 作用域相关工具（频道能力/tag 激活/scope 激活分组）名集合：
+        # 排序时沉到共享核心工具之后，让不同 scope 的 tools 数组共享最长
+        # 公共头部（隐式前缀缓存按字节前缀匹配——QQ 与 webui 的工具集差异
+        # 若在头部出现，跨 scope 命中会在第一个差异工具处截断）
+        scoped_names: set[str] = set()
 
-        def _merge(schemas: list[dict], source: str) -> None:
+        def _merge(schemas: list[dict], source: str, *, scoped: bool = False) -> None:
             added = 0
             for s in schemas:
                 name = s.get("function", {}).get("name", "")
                 if name and name not in seen_names:
                     seen_names.add(name)
                     all_schemas.append(s)
+                    if scoped:
+                        scoped_names.add(name)
                     added += 1
             if added:
                 source_counts[source] = added
@@ -217,9 +227,9 @@ class ToolAssembly:
         _merge(EntityRegistry.get_tool_schema_by_tags(["always"]), "always")
 
         if adapter_key:
-            _merge(self.get_channel_tool_schemas(adapter_key), f"channel:{adapter_key}")
+            _merge(self.get_channel_tool_schemas(adapter_key), f"channel:{adapter_key}", scoped=True)
             _merge(EntityRegistry.get_tool_schema_by_tags([adapter_key]),
-                   f"channel_tag:{adapter_key}")
+                   f"channel_tag:{adapter_key}", scoped=True)
 
         _merge(self.resolve_tag_tool_schemas(), "tag_match")
         _merge(self.get_hot_tool_schemas(), "hot_recall")
@@ -231,7 +241,18 @@ class ToolAssembly:
         # 已激活的沉睡分组：补充其全部工具（即使未被上述渠道命中）
         activated = tool_activation.active_groups(scope)
         for group in activated:
-            _merge(EntityRegistry.get_tool_schemas_by_group(group), f"activated:{group}")
+            _merge(EntityRegistry.get_tool_schemas_by_group(group), f"activated:{group}", scoped=True)
+
+        # 冻结结转：历史冻结工具仍注册在案则并回候选——热召回 top-N 换血、
+        # tag/发现集变化不再导致数组元素消失（消失会把缓存前缀在该位置截断）；
+        # 沉睡过滤与 check_fn 门控在下方照常适用于结转工具
+        if self._frozen_tool_names:
+            carryover = sorted(n for n in self._frozen_tool_names if n not in seen_names)
+            if carryover:
+                _merge(
+                    EntityRegistry.get_tool_schema_by_names(carryover),
+                    "frozen_carryover",
+                )
 
         # 沉睡过滤：移除未激活分组中的可沉睡工具
         sleepable_groups = EntityRegistry.get_sleepable_groups()
@@ -256,8 +277,16 @@ class ToolAssembly:
             if s.get("function", {}).get("name", "") in active_names
         ]
 
-        # 相关性排序：核心流程工具 → 高频工具（按使用次数降序）→ 其余按名称
-        all_schemas.sort(key=self._tool_sort_key)
+        # 排序：追加式冻结（默认）保证回复间字节稳定；否则按双桶排序键
+        from core.config import get_config_bool
+        deterministic = get_config_bool("tool_order_deterministic", True)
+        if get_config_bool("tool_order_frozen", True) and deterministic:
+            all_schemas = self._apply_append_only_freeze(all_schemas, scoped_names)
+        else:
+            # 配置在排序前读一次，排序键不再逐元素读取
+            all_schemas.sort(
+                key=lambda s: self._tool_sort_key(s, scoped_names, deterministic=deterministic)
+            )
 
         sources = ", ".join(f"{k}={v}" for k, v in source_counts.items())
         tool_names = [s.get("function", {}).get("name", "") for s in all_schemas]
@@ -265,30 +294,68 @@ class ToolAssembly:
 
         return all_schemas
 
-    # 核心流程工具固定优先级（排序最前）
+    # 核心流程工具固定优先级（同桶内排序最前）
     _CORE_TOOL_PRIORITY: dict[str, int] = {
         "end_reply": 0, "send_message": 1,
     }
 
-    def _tool_sort_key(self, schema: dict) -> tuple:
-        """工具排序键：核心流程 → 其余按名称（确定性模式）/ 已使用分层（兼容模式）。
+    def _tool_sort_key(
+        self,
+        schema: dict,
+        scoped_names: frozenset | set = frozenset(),
+        *,
+        deterministic: bool = True,
+    ) -> tuple:
+        """工具排序键：共享核心桶 → 作用域桶；桶内核心流程优先、其余按名称。
 
         确定性模式（tool_order_deterministic，默认开）：排序与使用计数完全无关，
         同一工具集在任何会话、任何时刻产出字节级一致的 tools 数组——
         tools schema 通常是 prompt 的最大头，其跨会话稳定性直接决定
         provider 前缀缓存命中率上限。会话内稳定性由 think_loop 冻结排序保证。
 
-        兼容模式：核心流程 → 已使用工具 → 其余（层内均按名称）。
+        双桶设计：作用域相关工具（频道能力/scope 激活分组，scoped_names）
+        沉到共享核心工具之后——不同 scope 的 tools 数组只在尾部不同，
+        隐式前缀缓存（DeepSeek/OpenAI）的跨 scope 命中延伸到整个共享头部，
+        而不是在第一个频道工具处截断（实测位置 1 分叉 = 新会话仅命中 ~30%）。
+
+        兼容模式：核心流程 → 已使用工具 → 其余（层内均按名称），不分桶。
         """
         name = schema.get("function", {}).get("name", "")
-        if name in self._CORE_TOOL_PRIORITY:
-            return (0, self._CORE_TOOL_PRIORITY[name])
-        from core.config import get_config_bool
-        if get_config_bool("tool_order_deterministic", True):
-            return (1, name)
-        if self._tool_recall.get(name, 0) > 0:
-            return (1, name)
-        return (2, name)
+        if not deterministic:
+            if name in self._CORE_TOOL_PRIORITY:
+                return (0, self._CORE_TOOL_PRIORITY[name])
+            if self._tool_recall.get(name, 0) > 0:
+                return (1, name)
+            return (2, name)
+        bucket = 1 if name in scoped_names else 0
+        return (bucket, self._CORE_TOOL_PRIORITY.get(name, 1), name)
+
+    def _apply_append_only_freeze(self, schemas: list[dict], scoped_names: set) -> list[dict]:
+        """跨回复追加式冻结 tools 数组顺序（缓存前缀稳定的最终防线）。
+
+        首轮（冻结名单为空）按双桶排序键建立冻结序；此后每次组装：
+        仍在本轮活跃集中的冻结工具按冻结序输出，新工具按（桶/核心优先级/
+        名称）排序追加尾部——数组只增不改，热召回 top-N 换血、tag/发现集
+        变化都不再改变已有前缀字节（实测热工具换血会把每轮新回复的缓存
+        命中截断在固定位置）。工具注销/门控排除由存在性检查自然滤除。
+        """
+        by_name: dict[str, dict] = {}
+        for s in schemas:
+            name = s.get("function", {}).get("name", "")
+            if name:
+                by_name[name] = s
+        frozen_set = set(self._frozen_tool_names)
+        ordered = [by_name[n] for n in self._frozen_tool_names if n in by_name]
+        newcomers = sorted(
+            (n for n in by_name if n not in frozen_set),
+            key=lambda n: (
+                1 if n in scoped_names else 0,
+                self._CORE_TOOL_PRIORITY.get(n, 1),
+                n,
+            ),
+        )
+        self._frozen_tool_names += newcomers
+        return ordered + [by_name[n] for n in newcomers]
 
     @staticmethod
     def _is_sleeping_tool(tool_name: str, sleepable_groups: dict, scope: str) -> bool:

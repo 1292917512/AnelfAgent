@@ -87,3 +87,72 @@ class TestParseJudgement:
     def test_garbage_returns_none(self) -> None:
         assert parse_judgement("不是JSON", {1}) is None
         assert parse_judgement('{"action": "explode"}', {1}) is None
+
+
+class TestBatchSignature:
+    def test_same_ids_same_sig(self) -> None:
+        from agent.memory.auto_capture import _batch_signature
+        rows = [{"id": 1}, {"id": 2}, {"id": 3}]
+        assert _batch_signature(rows) == _batch_signature([dict(r) for r in rows])
+
+    def test_different_ids_different_sig(self) -> None:
+        from agent.memory.auto_capture import _batch_signature
+        a = _batch_signature([{"id": 1}, {"id": 2}])
+        b = _batch_signature([{"id": 1}, {"id": 3}])
+        assert a != b
+        assert _batch_signature([]) == ""
+
+
+class _FakeSqlite:
+    """按 after_id 游标返回 id 升序消息的最小假实现。"""
+
+    def __init__(self, rows: list) -> None:
+        self._rows = rows
+
+    async def fetch_conversation_with_id(
+        self, *, scope_type, scope_id, limit=100, before_id=None, after_id=None,
+    ):
+        if after_id is not None:
+            return [r for r in self._rows if r["id"] > after_id][:limit]
+        return self._rows[-limit:]
+
+
+class TestFetchPending:
+    async def test_backlog_fully_consumed_in_batches(self) -> None:
+        """积压超过单批窗口时按游标分批取全量（不再永久漏提）。"""
+        from agent.memory.auto_capture import (
+            _PENDING_BATCH_SIZE,
+            AutoCapturePipeline,
+        )
+        rows = [
+            {"id": i, "role": "user", "content": f"m{i}", "ts_ns": i * 10**9}
+            for i in range(1, _PENDING_BATCH_SIZE * 2 + 5)
+        ]
+        pipeline = AutoCapturePipeline.__new__(AutoCapturePipeline)
+        result = await pipeline._fetch_pending(_FakeSqlite(rows), "user", "s1", 0)
+        assert len(result) == len(rows)
+        assert [r["id"] for r in result] == [r["id"] for r in rows]
+
+    async def test_cursor_resumes_after_id(self) -> None:
+        from agent.memory.auto_capture import AutoCapturePipeline
+        rows = [
+            {"id": i, "role": "user", "content": f"m{i}", "ts_ns": i * 10**9}
+            for i in range(1, 10)
+        ]
+        pipeline = AutoCapturePipeline.__new__(AutoCapturePipeline)
+        result = await pipeline._fetch_pending(_FakeSqlite(rows), "user", "s1", 5)
+        assert [r["id"] for r in result] == [6, 7, 8, 9]
+
+    async def test_per_tick_cap(self) -> None:
+        from agent.memory.auto_capture import (
+            _MAX_PENDING_PER_TICK,
+            AutoCapturePipeline,
+        )
+        rows = [
+            {"id": i, "role": "user", "content": f"m{i}", "ts_ns": i * 10**9}
+            for i in range(1, _MAX_PENDING_PER_TICK + 50)
+        ]
+        pipeline = AutoCapturePipeline.__new__(AutoCapturePipeline)
+        result = await pipeline._fetch_pending(_FakeSqlite(rows), "user", "s1", 0)
+        assert len(result) == _MAX_PENDING_PER_TICK
+        assert result[-1]["id"] == _MAX_PENDING_PER_TICK

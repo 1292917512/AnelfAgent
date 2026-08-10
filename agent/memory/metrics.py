@@ -34,22 +34,26 @@ def render_status_lines() -> list[str]:
         fts = _counters.get("recall.fts_hits", 0)
         tag = _counters.get("recall.tag_hits", 0)
         fts_empty = _counters.get("recall.fts_empty", 0)
+        latency_total = _counters.get("recall.latency_ms_total", 0)
+        latency_avg = latency_total // max(1, requests)
         lines.append(
             f"- 召回通道（本次启动累计 {requests} 轮）："
-            f"向量命中 {vec} · 关键词命中 {fts} · 标签命中 {tag} · 关键词空结果 {fts_empty} 次"
+            f"向量命中 {vec} · 关键词命中 {fts} · 标签命中 {tag} · "
+            f"关键词空结果 {fts_empty} 次 · 平均耗时 {latency_avg}ms"
         )
 
     rule_skip = _counters.get("write.dedup_rule_skip", 0)
     llm_store = _counters.get("write.dedup_llm_store", 0)
     llm_skip = _counters.get("write.dedup_llm_skip", 0)
     llm_update = _counters.get("write.dedup_llm_update", 0)
-    if rule_skip or llm_store or llm_skip or llm_update:
+    llm_merge = _counters.get("write.dedup_llm_merge", 0)
+    if rule_skip or llm_store or llm_skip or llm_update or llm_merge:
         parts = []
         if rule_skip:
             parts.append(f"规则拦截 {rule_skip}")
-        if llm_store or llm_skip or llm_update:
+        if llm_store or llm_skip or llm_update or llm_merge:
             parts.append(
-                f"LLM 判定 存 {llm_store}/跳 {llm_skip}/改 {llm_update}"
+                f"LLM 判定 存 {llm_store}/跳 {llm_skip}/改 {llm_update}/并 {llm_merge}"
             )
         lines.append(f"- 写入去重：{' · '.join(parts)}")
 

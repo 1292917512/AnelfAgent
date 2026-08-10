@@ -9,6 +9,7 @@
 - auth:              不重试（凭证问题重试无意义）
 - param_error:       不重试，直接反馈 AI 修正参数
 - not_found:         不重试，切换备用模型
+- content_policy:    不重试（同模型确定性拒绝），切换备用模型（供应商审核尺度不同）
 - unknown:           保守重试一次
 """
 from __future__ import annotations
@@ -33,6 +34,7 @@ class ErrorCategory(str, Enum):
     AUTH = "auth"
     PARAM_ERROR = "param_error"
     NOT_FOUND = "not_found"
+    CONTENT_POLICY = "content_policy"
     UNKNOWN = "unknown"
 
 
@@ -82,6 +84,14 @@ _AUTH_PATTERNS = (
 _PARAM_ERROR_PATTERNS = (
     "invalid parameter", "invalid request", "bad request", "400",
     "validation error", "malformed", "invalid schema",
+)
+
+# 内容审核拒绝（OpenAI content_policy / Azure content_filter / MiniMax sensitive 等）：
+# 对同一模型+同一内容是确定性拒绝，重试无意义；不同供应商审核尺度不同，回退可能放行
+_CONTENT_POLICY_PATTERNS = (
+    "content_policy", "content policy", "content_filter",
+    "is sensitive", "sensitive content", "new_sensitive",
+    "moderation", "unsafe content",
 )
 
 # 流式响应体内的错误载荷（litellm 以通用异常抛出，无类型与状态码）
@@ -157,6 +167,18 @@ def classify_llm_error(exc: BaseException) -> ClassifiedError:
         return ClassifiedError(
             ErrorCategory.AUTH, retryable=False, message=message,
             status_code=status_code or 401,
+        )
+
+    # ---- 内容审核拒绝（不重试，切换备用模型）----
+    # 保持在 BadRequestError/InternalServerError 类型判断之前：
+    # ContentPolicyViolationError 是 BadRequestError 子类，且 MiniMax 等网关
+    # 会把审核拒绝（如 image is sensitive, 1026）包装成 500 语义错误
+    if isinstance(exc, litellm.ContentPolicyViolationError) or _match_any(
+        msg_lower, _CONTENT_POLICY_PATTERNS
+    ):
+        return ClassifiedError(
+            ErrorCategory.CONTENT_POLICY, retryable=False, should_fallback=True,
+            message=message, status_code=status_code,
         )
 
     # ---- 模型不存在（切换备用模型）----

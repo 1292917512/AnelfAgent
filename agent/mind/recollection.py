@@ -117,6 +117,19 @@ async def get_recollection(
     # 技能匹配注入（volatile 层）：当前对话语义匹配到的经验技能
     memory_msgs.extend(skill_msgs)
 
+    # 永久记忆置顶块从每轮重建的会话区剥离：其内容字节稳定（仅 permanent
+    # 增删时变化），移交 context 层走内容寻址缓存，不再每轮占用未缓存区段
+    pin_msgs = [
+        m for m in memory_msgs
+        if str(m.get("content", "")).startswith("[系统注入·永久记忆]")
+    ]
+    if pin_msgs:
+        memory_msgs = [
+            m for m in memory_msgs
+            if not str(m.get("content", "")).startswith("[系统注入·永久记忆]")
+        ]
+    permanent_text = str(pin_msgs[0]["content"]) if pin_msgs else ""
+
     # memory 层预算截断：防止低相关召回/画像/技能过度占用上下文
     # （画像在前优先保留，预算从整体尾部截断）
     combined = mind._apply_memory_budget(profile_msgs + memory_msgs)
@@ -136,7 +149,7 @@ async def get_recollection(
     # context 层（便签）低频重建，volatile 层（语义召回等）每轮构建并置于其后，保证前缀缓存命中。
     models_summary = mind._get_models_summary()
     persona_text, tools_text, context_text, persona_hit, tools_hit, context_hit, status_text = (
-        await mind._build_layered_prompts(anything, models_summary)
+        await mind._build_layered_prompts(anything, models_summary, permanent_text)
     )
 
     await event_bus.emit(EVENT_THINKING_CONTEXT_BUILD, {
@@ -208,13 +221,14 @@ async def _build_layered_prompts(
         mind: "Mind",
         anything: Optional["Everything"],
         models_summary: str,
+        permanent_text: str = "",
 ) -> Tuple[str, str, str, bool, bool, bool, str]:
     """构建 stable 人设块 / stable 工具块 / context 层三段提示（经 PromptCacheManager 缓存复用）。
 
     人设块：人设 + 运行环境 + 静态指南——与工具无关，指纹不含工具版本因子，
     工具激活/发现/清理不会使其失效，长期命中（缓存前缀中最大最稳定的段）。
     工具块：工具目录 + 使用规则 + 媒体规则——随工具集变化经 stable_fingerprint 重建。
-    context 层：动态便签（当前状态/教导/规则）+ 文件索引，仅编辑时重建。
+    context 层：动态便签 + 永久记忆块 + 文件索引，仅编辑/永久记忆增删时重建。
 
     文件型层通过 FileLayerCache 做 mtime O(1) 快检，未变时跳过 I/O。
 
@@ -261,7 +275,7 @@ async def _build_layered_prompts(
     file_index, _ = mind._file_cache.get_or_load(get_memory_dir(), build_file_index_block)
     # 记忆状态区块（心跳维护，周期性变化）不入 context 层，尾部动态区独立注入
     status_text, _ = mind._file_cache.get_or_load(notes_path, build_memory_status_block)
-    context_parts = [p for p in (dynamic_notes, file_index) if p]
+    context_parts = [p for p in (dynamic_notes, permanent_text, file_index) if p]
     if not context_parts:
         context_parts = [build_notes_empty_hint()]
     context_hash = prompt_cache_manager.compute_hash(*context_parts)

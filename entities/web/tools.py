@@ -1,9 +1,9 @@
 """网络工具实体 — 搜索、抓取、HTTP 请求。
 
-搜索策略：优先使用百度高性能版（含 AI 总结），额度用尽自动降级到标准版。
+搜索经 MiniMax Coding Plan（订阅配额，不计 API 调用费）。
 
 提供完整的 Web 访问工具集：
-- web_search:         搜索 + AI 总结，优先高性能版，自动降级
+- web_search:         搜索关键词，返回结构化结果列表
 - web_fetch:          抓取指定 URL 的可读正文
 - web_request:        通用 HTTP 请求（GET/POST，自定义 Header）
 - extract_page_links: 提取页面所有链接
@@ -62,7 +62,7 @@ def _proxy_kwargs(use_proxy: bool) -> dict[str, str]:
     """构建 httpx 代理参数。始终禁止读取环境变量代理，避免被 LLM 代理污染。"""
     if not use_proxy:
         return {"trust_env": False}
-    from entities.web.baidu_search import get_proxy
+    from entities.web.web_config import get_proxy
     proxy = get_proxy()
     result: dict = {"trust_env": False}
     if proxy:
@@ -158,78 +158,30 @@ def _request_ssrf_checked(client: Any, method: str, url: str,
 
 
 @tool(name="web_search", group="web", tags=["web"], concurrency_safe=True)
-def web_search(query: str, max_results: int = 8, search_recency: str = "", provider: str = "auto") -> str:
-    """搜索关键词并智能总结，返回 AI 总结和参考来源列表。
+def web_search(query: str, max_results: int = 8) -> str:
+    """搜索关键词，返回结构化结果列表（标题/链接/摘要）。
 
-    自动搜索全网信息并生成结构化总结，同时提供原始参考链接。
+    经 MiniMax Coding Plan 搜索全网信息（订阅配额，不计 API 调用费）。
     若需要某个页面的完整内容，请配合 web_fetch 使用。
     时间敏感的问题（比分、新闻、股价等）：query 中应显式包含当前日期/
-    年份等时间词（如"2026年7月 世界杯决赛比分"），并配合 search_recency
-    限定时间范围，避免搜出赛前预测等过时内容。
-    返回的 provider 字段标识实际数据来源。
+    年份等时间词（如"2026年7月 世界杯决赛比分"），避免搜出过时内容。
 
     Args:
-        query:           搜索关键词，支持自然语言；时间敏感问题请显式写入日期/年份
-        max_results:     最多返回条数，默认 8，最大 20
-        search_recency:  时间过滤，可选 week/month/semiyear/year，默认不限；
-                         注意指定后返回纯结果列表（无 AI 总结），且仅百度源支持
-        provider:        搜索源：auto（默认，百度主源失败自动降级 MiniMax 订阅配额源）、
-                         baidu（仅百度）、minimax（仅 MiniMax Coding Plan，不计 API 调用费）
+        query:       搜索关键词，支持自然语言；时间敏感问题请显式写入日期/年份
+        max_results: 最多返回条数，默认 8，最大 20
     """
-    from entities.web.baidu_search import search_prefer_deep
+    from entities.minimax.client import minimax_error_response
+    from entities.web.search import minimax_search
     max_results = min(max(1, max_results), 20)
-
-    if provider == "minimax":
-        from entities.minimax.client import minimax_error_response
-        from entities.web.search_fallback import minimax_search
-        try:
-            output = minimax_search(query.strip(), max_results)
-            output["provider"] = "minimax"
-            if search_recency:
-                output["note"] = "search_recency 时间过滤仅百度源支持，本次未按时间过滤"
-            return json.dumps(output, ensure_ascii=False)
-        except Exception as e:
-            return minimax_error_response(e, "MiniMax 网页搜索", hint="可改用 provider=auto 或 provider=baidu")
-
-    if provider not in ("auto", "baidu"):
-        return tool_error(f"未知搜索源: {provider}", cause=ErrorCause.PARAM, retryable=False,
-                          hint="可选: auto / baidu / minimax")
-
     try:
-        result = search_prefer_deep(query, max_results, search_recency or None)
-        refs = [
-            {"title": r["title"], "url": r["url"], "snippet": r["snippet"]}
-            for r in result["references"]
-        ]
-        output: dict = {
-            "query": query,
-            "sources": len(refs),
-            "references": refs,
-            "provider": "baidu",
-        }
-        if result["summary"]:
-            output["summary"] = result["summary"]
+        output = minimax_search(query.strip(), max_results)
+        output["provider"] = "minimax"
         return json.dumps(output, ensure_ascii=False)
     except Exception as e:
-        if provider == "baidu":
-            return error_from_exception(e, action="搜索")
-        baidu_err = e  # except-as 变量在块结束会被清除，转存供兜底分支使用
-        log(f"百度搜索失败，尝试 MiniMax 兜底: {baidu_err}", "WARNING", tag="web")
-
-    from entities.web.search_fallback import try_minimax_search
-    fallback = try_minimax_search(query, max_results)
-    if fallback is not None:
-        fallback["provider"] = "minimax"
-        fallback["fallback_from"] = "baidu"
-        fallback["primary_error"] = str(baidu_err)[:200]
-        if search_recency:
-            fallback["note"] = "search_recency 时间过滤仅百度源支持，兜底结果未按时间过滤"
-        return json.dumps(fallback, ensure_ascii=False)
-    return error_from_exception(
-        baidu_err, action="搜索",
-        hint="百度与 MiniMax 兜底均不可用：检查网络连通性，"
-             "以及 entities/web/config.json 的 baidu_api_key 与 entities/minimax/config.json 的 coding_plan_api_key",
-    )
+        return minimax_error_response(
+            e, "网页搜索",
+            hint="检查网络连通性，以及 entities/minimax/config.json 的 coding_plan_api_key",
+        )
 
 
 # ==================================================================

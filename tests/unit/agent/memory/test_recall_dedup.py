@@ -50,6 +50,34 @@ class TestCrossSourceDedup:
         assert len(msgs) == 1
         assert "内容甲" in msgs[0]["content"] and "内容乙" in msgs[0]["content"]
 
+
+class TestPinnedRecallSplit:
+    async def test_pinned_and_recall_are_separate_messages(self) -> None:
+        """永久记忆与召回/检索必须分消息：合并成一条会让 recollection 的
+        startswith 提升把每轮变化的召回内容带进 context 层，击穿缓存前缀。"""
+        pinned = _result("mem:1", "memory", "主人教导：称呼铁律", 0.99)
+        pinned.provenance = {"pinned": True}
+        results = [
+            pinned,
+            _result("mem:2", "memory", "本轮相关记忆", 0.9),
+            _result("file:1", "file", "便签检索结果", 0.8),
+        ]
+        msgs = await _format(results)
+        assert len(msgs) == 2
+        permanent, recall = msgs
+        assert permanent["content"].startswith("[系统注入·永久记忆]")
+        assert "记忆召回" not in permanent["content"]  # 永久块不混入召回内容
+        assert "本轮相关记忆" not in permanent["content"]
+        assert "记忆召回" in recall["content"]
+        assert "知识检索" in recall["content"]
+
+    async def test_pinned_only_single_message(self) -> None:
+        pinned = _result("mem:1", "memory", "主人教导", 0.99)
+        pinned.provenance = {"pinned": True}
+        msgs = await _format([pinned])
+        assert len(msgs) == 1
+        assert msgs[0]["content"].startswith("[系统注入·永久记忆]")
+
     async def test_no_debug_noise_injected(self) -> None:
         """注入文本不含 score/来源数据集等调试噪音，保留归因与记录时间。"""
         results = [

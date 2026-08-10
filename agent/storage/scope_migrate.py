@@ -218,6 +218,47 @@ async def migrate_main_db_scopes(
             )
 
         pending_count = await _migrate_pending_tasks(db, legacy_adapter)
+
+        # 摘要表：scope_id 与水位线键同步迁移（遗漏会导致旧摘要成孤儿不可见、
+        # 水位线归零后全量历史重新折叠）
+        cursor = await db.execute(
+            "SELECT scope_type, scope_id, watermarks_json, watermark_ids_json "
+            "FROM conversation_summary WHERE instr(scope_id, ':') = 0"
+        )
+        summary_rows = await cursor.fetchall()
+
+        def _remap_marks(raw: Any) -> str:
+            try:
+                marks = json.loads(raw or "{}")
+            except (ValueError, TypeError):
+                return raw or "{}"
+            if not isinstance(marks, dict):
+                return raw or "{}"
+            out: dict = {}
+            for mkey, val in marks.items():
+                st, _, msid = str(mkey).partition(":")
+                if msid and ":" not in msid:
+                    base = msid.split("#", 1)[0]
+                    m_adapter = resolve_scope_adapter(
+                        base, scope_adapters.get((st, msid), ""), legacy_adapter,
+                    )
+                    mkey = f"{st}:{m_adapter}:{msid}"
+                out[mkey] = val
+            return json.dumps(out, ensure_ascii=False)
+
+        for scope_type, scope_id, wm_raw, wid_raw in summary_rows:
+            base_id = scope_id.split("#", 1)[0]
+            adapter = resolve_scope_adapter(
+                base_id, scope_adapters.get((scope_type, scope_id), ""), legacy_adapter,
+            )
+            await db.execute(
+                "UPDATE conversation_summary SET scope_id = ? || ':' || scope_id, "
+                "watermarks_json = ?, watermark_ids_json = ? "
+                "WHERE scope_type = ? AND scope_id = ?",
+                (adapter, _remap_marks(wm_raw), _remap_marks(wid_raw),
+                 scope_type, scope_id),
+            )
+
         await db.execute(f"PRAGMA user_version = {MAIN_SCOPE_MIGRATION_VERSION}")
         await db.commit()
     except Exception:

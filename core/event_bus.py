@@ -281,6 +281,8 @@ EVENT_PLAN_STEP_UPDATED = "plan_step_updated"
 EVENT_PLAN_STATUS_CHANGED = "plan_status_changed"
 # 用户从前端取消计划（浮窗按钮 → 后端 interrupt scope）
 EVENT_PLAN_CANCELLED = "plan_cancelled"
+# 计划被删除（delete_goal 工具）：前端移除对应 PlanCard/浮窗记录
+EVENT_PLAN_DELETED = "plan_deleted"
 
 # ------------------------------------------------------------------
 # 子代理（delegate_task 工具 → 前端 delegation 卡片）

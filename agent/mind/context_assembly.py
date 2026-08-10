@@ -159,7 +159,9 @@ _MEMORY_USAGE_HINT = (
     "- 翻阅窗口外旧对话（语义）→ recall_conversation\n"
     "- 新事实/事件 → memorize 存 DB（标签: type:/user:/group:/topic:），必要时更新便签索引\n"
     "- 工具出错 → recall_tool_errors 查历史错误\n"
-    "- 整理记忆 → 先 view_memory_outline 看文件结构，按顶部分类标准写入"
+    "- 整理记忆 → 先 view_memory_outline 看文件结构，按顶部分类标准写入\n"
+    "检索纪律：recall 等检索类工具每轮合计最多调用 3 次；"
+    "浅召回找不到再加 depth=\"deep\"，不要连环检索碰运气"
 )
 
 _FINAL_ROUND_WARNING = (

@@ -340,6 +340,7 @@ class SearchEngine:
         require_tags 为硬过滤：记忆必须包含全部指定标签才进入评分。
         """
         pool_size = limit * 5
+        t0 = time.monotonic()
 
         async def _empty_vec() -> list[tuple[MemoryEntry, float]]:
             return []
@@ -356,6 +357,7 @@ class SearchEngine:
             metrics.incr("recall.requests")
             metrics.incr("recall.vec_hits", len(vec_results))
             metrics.incr("recall.fts_hits", len(fts_results))
+            metrics.incr("recall.latency_ms_total", int((time.monotonic() - t0) * 1000))
             if not fts_results:
                 metrics.incr("recall.fts_empty")
         except Exception:

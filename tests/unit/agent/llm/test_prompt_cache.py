@@ -27,7 +27,11 @@ class TestCacheMarker:
     def test_1h_ttl_carries_field(self) -> None:
         ConfigManager.set("prompt_cache_anthropic_ttl", "1h")
         try:
-            assert cache_marker() == {"type": "ephemeral", "ttl": "1h"}
+            # ttl 标记仅真 Anthropic 线注入（与 beta 头判定口径一致）
+            assert cache_marker("anthropic") == {"type": "ephemeral", "ttl": "1h"}
+            # 网关 claude（api_type 非 anthropic）不带 ttl，避免缺 beta 头 400
+            assert cache_marker("openai") == {"type": "ephemeral"}
+            assert cache_marker() == {"type": "ephemeral"}
         finally:
             ConfigManager.set("prompt_cache_anthropic_ttl", "5m")
 
@@ -277,6 +281,108 @@ class TestTtlBetaHeaders:
             assert headers["X-Custom"] == "1"
         finally:
             ConfigManager.set("prompt_cache_anthropic_ttl", "5m")
+
+
+class TestStreamUsageTap:
+    """流式 usage 旁路：litellm 丢弃的供应商缓存字段从原始 chunk 救援。"""
+
+    @staticmethod
+    def _raw_chunk(usage: object = None, content: str = "") -> SimpleNamespace:
+        choice = SimpleNamespace(
+            delta=SimpleNamespace(content=content, reasoning_content=None,
+                                  reasoning_details=None, tool_calls=None),
+            finish_reason=None,
+        )
+        return SimpleNamespace(usage=usage, choices=[choice])
+
+    async def test_tap_recovers_deepseek_fields(self) -> None:
+        """DeepSeek 模式：litellm chunk 无缓存字段，原始 chunk 有 → 合并补全。"""
+        from agent.llm.response_parsing import _iter_stream, install_usage_tap
+
+        raw_usage = SimpleNamespace(
+            prompt_tokens=17623, completion_tokens=8, total_tokens=17631,
+            prompt_cache_hit_tokens=16000, prompt_cache_miss_tokens=1623,
+        )
+        raw_chunks = [
+            self._raw_chunk(content="好"),
+            self._raw_chunk(usage=raw_usage),
+        ]
+
+        async def raw_stream():
+            for c in raw_chunks:
+                yield c
+
+        # 模拟 litellm CustomStreamWrapper：completion_stream 是原始流，
+        # 自身迭代产出转换后 chunk（usage 丢字段）
+        class _FakeWrapper:
+            def __init__(self) -> None:
+                self.completion_stream = raw_stream()
+
+            def __aiter__(self):
+                return self._gen()
+
+            async def _gen(self):
+                async for raw in self.completion_stream:
+                    converted = SimpleNamespace(
+                        choices=getattr(raw, "choices", []),
+                        usage=SimpleNamespace(  # litellm 转换后丢扩展字段
+                            prompt_tokens=17623, completion_tokens=8,
+                            total_tokens=17631,
+                        ) if raw.usage is not None else None,
+                    )
+                    yield converted
+
+        wrapper = _FakeWrapper()
+        sink = install_usage_tap(wrapper)
+        assert sink is not None
+        usages = []
+        async for delta, _buf in _iter_stream(wrapper, "", {}, sink):
+            if delta.usage:
+                usages.append(delta.usage)
+        assert usages, "应有 usage delta"
+        final = usages[-1]
+        assert final.cache_read_input_tokens == 16000
+        assert final.cache_observable is True
+
+    async def test_tap_marks_unobservable_when_fields_absent(self) -> None:
+        """端点流式不回报缓存字段：动态标记不可观测（显示—而非谎报 0%）。"""
+        from agent.llm.response_parsing import _iter_stream, install_usage_tap
+
+        raw_usage = SimpleNamespace(
+            prompt_tokens=100, completion_tokens=5, total_tokens=105,
+        )
+
+        async def raw_stream():
+            yield self._raw_chunk(usage=raw_usage)
+
+        class _FakeWrapper:
+            def __init__(self) -> None:
+                self.completion_stream = raw_stream()
+
+            def __aiter__(self):
+                return self._gen()
+
+            async def _gen(self):
+                async for raw in self.completion_stream:
+                    yield SimpleNamespace(
+                        choices=getattr(raw, "choices", []),
+                        usage=SimpleNamespace(
+                            prompt_tokens=100, completion_tokens=5, total_tokens=105,
+                        ) if raw.usage is not None else None,
+                    )
+
+        wrapper = _FakeWrapper()
+        sink = install_usage_tap(wrapper)
+        usages = []
+        async for delta, _buf in _iter_stream(wrapper, "", {}, sink):
+            if delta.usage:
+                usages.append(delta.usage)
+        assert usages and usages[-1].cache_observable is False
+
+    def test_install_tap_graceful_without_attr(self) -> None:
+        """litellm 内部结构变化（无 completion_stream）：不装旁路，返回 None。"""
+        from agent.llm.response_parsing import install_usage_tap
+        assert install_usage_tap(object()) is None
 
 
 class TestCacheAffinityHandler:

@@ -146,8 +146,10 @@ export type SseShareEvent = SseEventBase & ChatShareInfo;
 
 export interface SseDeltaEvent extends SseEventBase {
   turn_id: string;
-  delta: string;
+  delta?: string;
   reasoning?: boolean;
+  /** 流式中途失败回退重试：清空该 turn 已渲染的增量文本 */
+  reset?: boolean;
 }
 
 export interface SseToolCallEvent extends SseEventBase {
@@ -212,6 +214,10 @@ export interface SsePlanCancelledEvent extends SseEventBase {
   reason?: string;
 }
 
+export interface SsePlanDeletedEvent extends SseEventBase {
+  plan_id: string;
+}
+
 export interface SseDelegationStartedEvent extends SseEventBase {
   delegation_id: string;
   goal?: string;
@@ -259,6 +265,7 @@ export interface ChatSseEventMap {
   plan_step_updated: SsePlanStepUpdatedEvent;
   plan_status_changed: SsePlanStatusChangedEvent;
   plan_cancelled: SsePlanCancelledEvent;
+  plan_deleted: SsePlanDeletedEvent;
   delegation_started: SseDelegationStartedEvent;
   delegation_progress: SseDelegationProgressEvent;
   delegation_resolved: SseDelegationResolvedEvent;

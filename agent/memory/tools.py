@@ -170,6 +170,18 @@ async def memorize(
                     "content_preview": updated.content[:100],
                 }, ensure_ascii=False)
             # 目标已不存在等异常：回退为正常写入
+        if action == "merge" and decision.get("target_ids"):
+            merge_ids = [int(i) for i in decision["target_ids"]]
+            merged_content = str(decision.get("content") or content)
+            new_id = await _store.merge_memories(merge_ids, merged_content)
+            if new_id:
+                wake_embedding_worker()
+                return json.dumps({
+                    "ok": True, "id": new_id, "action": "merged",
+                    "message": f"已与 {len(merge_ids)} 条既有记忆合并为一条",
+                    "merged_from": merge_ids,
+                }, ensure_ascii=False)
+            # 合并目标失效：回退为正常写入
 
         entry = MemoryEntry(
             memory_type=mem_type,
@@ -1679,6 +1691,8 @@ async def link_entity(
             scope_type=source_scope_type, scope_id=source_scope_id,
             primary_scope_type=final_type, primary_scope_id=final_id,
         )
+        from .graph.tools import invalidate_alias_cache
+        invalidate_alias_cache()
 
         return json.dumps({
             "ok": True,
@@ -1732,6 +1746,8 @@ async def unlink_entity(scope_type: str, scope_id: str, copy_profile: bool = Tru
         removed = await sqlite.remove_alias(scope_type=scope_type, scope_id=scope_id)
         if not removed:
             return tool_error("解除关联失败", cause=ErrorCause.INTERNAL)
+        from .graph.tools import invalidate_alias_cache
+        invalidate_alias_cache()
 
         return json.dumps({
             "ok": True,

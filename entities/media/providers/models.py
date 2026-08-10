@@ -125,8 +125,10 @@ class ModelsProvider(MediaProvider):
         from entities._sdk import (
             download_image_to_base64,
             get_model_type_enum,
+            is_content_policy_error,
             is_video_path,
             load_image_from_path,
+            optimize_image_for_vision,
         )
         if is_video_path(image_path):
             return await self._run_video(image_path, prompt)
@@ -137,15 +139,21 @@ class ModelsProvider(MediaProvider):
             raise ProviderUnavailable("未配置视觉模型")
 
         last_err = ""
+        attempts = 0
+        policy_rejects = 0
 
         async def _try_candidates(candidates: List[Any], img: Any) -> Optional[Dict[str, Any]]:
-            nonlocal last_err
+            nonlocal last_err, attempts, policy_rejects
             for vc in candidates:
+                attempts += 1
                 try:
                     description = await vc.describe_images([img], prompt=prompt)
                     return {"description": description, "model": vc.config.name}
                 except Exception as exc:
                     last_err = str(exc)
+                    # 内容审核是同模型确定性拒绝，但不同供应商审核尺度不同，继续回退
+                    if is_content_policy_error(exc):
+                        policy_rejects += 1
                     log(f"视觉模型 {vc.config.name} 识别失败，尝试下一个: {last_err}", "WARNING", tag="媒体")
                     continue
             return None
@@ -156,15 +164,18 @@ class ModelsProvider(MediaProvider):
             if not b64_img:
                 raise RuntimeError(f"无法下载图片（链接可能已过期）: {image_path[:100]}")
             candidates = [c for c in all_vision if c.config.supports_base64_vision] or all_vision
-            result = await _try_candidates(candidates, b64_img)
+            result = await _try_candidates(candidates, optimize_image_for_vision(b64_img))
             if result is not None:
                 return result
         else:
-            img = load_image_from_path(image_path)
+            # 候选循环外优化一次：describe_images 内部优化对已优化图幂等直通
+            img = optimize_image_for_vision(load_image_from_path(image_path))
             candidates = [c for c in all_vision if c.config.supports_base64_vision] or all_vision
             result = await _try_candidates(candidates, img)
             if result is not None:
                 return result
+        if attempts and policy_rejects == attempts:
+            raise RuntimeError(f"所有视觉模型均因内容审核拒绝处理该图片: {last_err}")
         raise RuntimeError(f"所有视觉模型均调用失败: {last_err}")
 
     async def _run_video(self, video_path: str, prompt: str) -> Dict[str, Any]:
@@ -172,6 +183,7 @@ class ModelsProvider(MediaProvider):
         from entities._sdk import (
             download_video_to_base64,
             get_model_type_enum,
+            is_content_policy_error,
             load_video_from_path,
         )
         ModelType = get_model_type_enum()
@@ -181,15 +193,20 @@ class ModelsProvider(MediaProvider):
             raise ProviderUnavailable("未配置视觉模型")
 
         last_err = ""
+        attempts = 0
+        policy_rejects = 0
 
         async def _try_candidates(candidates: List[Any], vid: Any) -> Optional[Dict[str, Any]]:
-            nonlocal last_err
+            nonlocal last_err, attempts, policy_rejects
             for vc in candidates:
+                attempts += 1
                 try:
                     description = await vc.describe_video(vid, prompt=prompt)
                     return {"description": description, "model": vc.config.name}
                 except Exception as exc:
                     last_err = str(exc)
+                    if is_content_policy_error(exc):
+                        policy_rejects += 1
                     log(f"视觉模型 {vc.config.name} 视频识别失败，尝试下一个: {last_err}", "WARNING", tag="媒体")
                     continue
             return None
@@ -207,6 +224,8 @@ class ModelsProvider(MediaProvider):
             result = await _try_candidates(all_vision, vid)
             if result is not None:
                 return result
+        if attempts and policy_rejects == attempts:
+            raise RuntimeError(f"所有视觉模型均因内容审核拒绝处理该视频: {last_err}")
         raise RuntimeError(f"所有视觉模型均调用失败: {last_err}")
 
     async def _asr(self, model: str, client: Any, *, resolved: str, is_url: bool) -> Dict[str, Any]:

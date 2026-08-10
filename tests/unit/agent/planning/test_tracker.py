@@ -145,3 +145,32 @@ class TestCancelPlan:
             assert await tracker.cancel_plan(SCOPE, "nope") is False
         finally:
             await _teardown(store)
+
+
+class TestUpdateGoalMetadata:
+    async def test_metadata_merge_preserves_kind_scope(self, tmp_path):
+        """update_goal 合并 metadata：kind/scope 不被覆盖（防计划跨 scope 泄漏）。"""
+        store, tracker = await _setup(tmp_path)
+        try:
+            from agent.planning import tools as planning_tools
+            planning_tools._store = store
+            plan_id = await tracker.submit_plan(
+                SCOPE, "目标", tracker.parse_steps("a|b"),
+            )
+            await planning_tools.update_goal(plan_id, step_index=0, step_status="completed")
+            entry, goal = await tracker.find_goal_by_id(plan_id)
+            assert entry is not None
+            assert entry.metadata.get("kind") == "present_plan"
+            assert entry.metadata.get("scope") == SCOPE
+            assert entry.metadata.get("goal_id") == plan_id
+        finally:
+            from agent.planning import tools as planning_tools
+            planning_tools._store = None
+            await _teardown(store)
+
+    async def test_reflect_scope_prefix_not_user_facing(self) -> None:
+        """reflect:<id> 唯一 scope 同样视为非用户会话（不发射前端事件）。"""
+        from agent.planning.tracker import _is_user_facing
+        assert not _is_user_facing("reflect")
+        assert not _is_user_facing("reflect:abc12345")
+        assert _is_user_facing("user_webui:u1")

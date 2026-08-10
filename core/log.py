@@ -126,7 +126,9 @@ def _emit_loguru(level: str, message: str, with_exc: bool) -> None:
 # 时中文/非 ASCII 内容触发 UnicodeEncodeError，避免日志自身的异常冒泡影响业务调用。
 if _USE_LOGURU:
     _log_stream = _coerce_utf8_stream(_DEFAULT_LOG_STREAM)
-    _stream_sink_id = logger.add(_log_stream, format=_format_record, level="DEBUG")
+    # enqueue=True：日志经队列线程异步写出，高频路径（工具调用/LLM 调用/delta 事件）
+    # 不再在事件循环线程同步 write stdout
+    _stream_sink_id = logger.add(_log_stream, format=_format_record, level="DEBUG", enqueue=True)
 
 
 def _notify_listeners(level: str, message: str, tag: Optional[str] = None) -> None:
@@ -232,7 +234,7 @@ def set_log_level(level: str) -> None:
         # 重设等级前先移除旧 stream sink，避免重复 sink 导致日志双写
         if _stream_sink_id is not None:
             logger.remove(_stream_sink_id)
-        _stream_sink_id = logger.add(_coerce_utf8_stream(_DEFAULT_LOG_STREAM), format=_format_record, level=level.upper())
+        _stream_sink_id = logger.add(_coerce_utf8_stream(_DEFAULT_LOG_STREAM), format=_format_record, level=level.upper(), enqueue=True)
     else:
         _fallback_logger.setLevel(_STDLIB_LEVEL_MAP.get(level.upper(), _logging.INFO))
 
