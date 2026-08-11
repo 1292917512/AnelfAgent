@@ -607,7 +607,6 @@ export const configApi = {
   theme: () => api.get("/config/webui/theme"),
   snapshot: () => api.get<ConfigValues>("/config/snapshot"),
   getApp: () => api.get<ConfigValues>("/config/app"),
-  saveApp: (data: ConfigValues) => api.put("/config/app", data),
   getMind: () => api.get("/config/mind"),
   saveMind: (data: ConfigValues) => api.put("/config/mind", data),
   getWebTools: () => api.get<WebToolsConfig>("/config/web-tools"),

@@ -66,7 +66,7 @@ class SkillCurator:
 # ------------------------------------------------------------------
 
 _CURATOR_CONFIGS = {
-    "技能": {
+    "skills/core": {
         "skills_enabled": {
             "description": "是否启用技能自学习系统",
             "default": True,
@@ -78,14 +78,20 @@ _CURATOR_CONFIGS = {
         "skills_match_top_k": {
             "description": "技能匹配注入的最大数量",
             "default": 3,
+            "advanced": True,
+            "unit": "个",
         },
         "skills_stale_after_days": {
             "description": "技能无活动降级为 stale 的天数",
             "default": 30,
+            "advanced": True,
+            "unit": "天",
         },
         "skills_archive_after_days": {
             "description": "技能无活动归档的天数",
             "default": 90,
+            "advanced": True,
+            "unit": "天",
         },
     },
 }

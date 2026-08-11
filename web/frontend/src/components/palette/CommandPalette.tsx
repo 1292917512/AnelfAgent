@@ -1,16 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
+import { useQuery } from "@tanstack/react-query";
 import { Command } from "cmdk";
-import { Search, LayoutDashboard } from "lucide-react";
+import { Search, LayoutDashboard, SlidersHorizontal } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { PaletteResults } from "./PaletteResults";
 import { PaletteActions } from "./PaletteActions";
 import { groupCls, itemCls } from "./paletteStyles";
 import { FALLBACK_NAV, ICON_MAP } from "../layout/Sidebar";
-import { searchApi } from "@/lib/api";
+import { configMetaApi, searchApi } from "@/lib/api";
 import type { GlobalSearchResult } from "@/lib/types";
 
 /** 全局命令面板（⌘K / Ctrl+K）：页面导航 + 快捷操作 + 全局搜索 */
@@ -22,6 +23,17 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GlobalSearchResult | null>(null);
   const seqRef = useRef(0);
+
+  // 配置项索引（⌘K 直接定位配置，跳转 /config?key= 深链）
+  const { data: configMeta } = useQuery({
+    queryKey: ["configMeta"],
+    queryFn: () => configMetaApi.list().then((r) => r.data),
+    staleTime: 60_000,
+  });
+  const configItems = useMemo(
+    () => (configMeta?.groups ?? []).flatMap((g) => g.items),
+    [configMeta],
+  );
 
   const navigate = useNavigate();
   const { t } = useTranslation("palette");
@@ -159,6 +171,27 @@ export function CommandPalette() {
             </Command.Group>
 
             <PaletteActions onClose={close} onOpenSearchPanel={openSearchPanel} />
+
+            {/* 配置项索引：仅在输入查询时参与过滤，跳转配置中心深链 */}
+            {query.trim().length > 0 && (
+              <Command.Group heading={t("group_config")} className={groupCls}>
+                {configItems.map((item) => (
+                  <Command.Item
+                    key={item.key}
+                    value={`${item.description} ${item.key}`}
+                    keywords={[item.key]}
+                    className={itemCls}
+                    onSelect={() => go(`/config?key=${encodeURIComponent(item.key)}`)}
+                  >
+                    <SlidersHorizontal size={15} className="shrink-0 text-muted" />
+                    <span>{item.description}</span>
+                    <span className="ml-auto shrink-0 text-[10px] font-mono text-muted">
+                      {item.key}
+                    </span>
+                  </Command.Item>
+                ))}
+              </Command.Group>
+            )}
           </Command.List>
         </Command>
       </div>

@@ -32,66 +32,83 @@ entity_manifest(
     group="voiceprint",
 )
 
-# 实体配置项：分组名与实体 group 一致，实体详情页配置 tab 自动展示
+# 实体配置项：分组名 entity/voiceprint，实体详情页配置 tab 自动展示
 register_configs_safe({
-    "voiceprint": {
+    "entity/voiceprint": {
         "voiceprint_ai_enabled": {
-            "description": "允许 AI 调用音源库工具（说话人管理/识别/检索）",
+            "description": "是否允许 AI 调用音源库工具（说话人管理/识别/检索）",
             "default": True,
         },
         "voiceprint_match_threshold": {
-            "description": "全局声纹匹配阈值（0~1，相似度 ≥ 阈值判为已知人）",
+            "description": "声纹匹配阈值（相似度 ≥ 阈值判为已知人）",
             "default": 0.75,
+            "advanced": True,
+            "value_type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
         },
         "voiceprint_merge_threshold": {
-            "description": "相似度合并阈值（0~1）：离线整理时质心相似度 ≥ 此值的临时说话人"
-                           "被聚为一簇建议合并（比匹配阈值宽松，默认 0.70）",
+            "description": "合并阈值：离线整理时质心相似度 ≥ 此值的临时说话人"
+                           "建议合并（比匹配阈值宽松）",
             "default": 0.70,
+            "advanced": True,
+            "value_type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
         },
         "voiceprint_insignificant_max_matches": {
-            "description": "低价值说话人判定：命中次数 ≤ 此值（配合时长条件，"
-                           "多为环境音/背景人声，智能合并时可一并清理）",
+            "description": "低价值判定：命中次数 ≤ 此值（配合时长条件；"
+                           "智能合并时可一并清理）",
             "default": 2,
+            "advanced": True,
+            "unit": "次",
         },
         "voiceprint_insignificant_max_audio_ms": {
-            "description": "低价值说话人判定：累计音频时长 ≤ 此毫秒数"
-                           "（与命中次数同时满足才判定为低价值）",
+            "description": "低价值判定：累计音频时长上限"
+                           "（与命中次数同时满足才算低价值）",
             "default": 5000,
+            "advanced": True,
+            "unit": "毫秒",
         },
         "voiceprint_max_samples_per_speaker": {
             "description": "每说话人声纹样本池上限（超出时按淘汰策略清理）",
             "default": 5,
+            "advanced": True,
+            "unit": "条",
         },
         "voiceprint_sample_evict_strategy": {
-            "description": "样本淘汰策略：outlier=淘汰与质心最不相似的极端样本"
-                           "（噪音新样本也会被拒入，池子自我优化）；fifo=淘汰最早样本",
+            "description": "样本淘汰策略：outlier=淘汰与质心最不相似的样本"
+                           "（噪音新样本也会被拒入）；fifo=淘汰最早样本",
             "default": "outlier",
         },
         "voiceprint_centroid_match": {
-            "description": "质心匹配：说话人得分取 max(最佳样本, 均值向量) 相似度，"
-                           "抑制单样本噪音提升稳定性",
+            "description": "是否启用质心匹配（得分取 max(最佳样本, 均值向量)，"
+                           "抑制单样本噪音提升稳定性）",
             "default": True,
         },
         "voiceprint_auto_accumulate": {
-            "description": "命中已知人时自动将新声纹样本累积入其样本池",
+            "description": "是否在命中已知人时自动累积新声纹样本入其样本池",
             "default": True,
         },
         "voiceprint_auto_create_unknown": {
-            "description": "未匹配到已知人时自动创建临时说话人（待确认）",
+            "description": "是否自动为未匹配人声创建临时说话人（待确认）",
             "default": True,
         },
         "voiceprint_skip_noise_segments": {
-            "description": "跳过纯标点/空白文本的语音段（不建档不计片段，防噪音建档）",
+            "description": "是否跳过纯标点/空白语音段（不建档不计片段，防噪音建档）",
             "default": True,
         },
         "voiceprint_min_voiceprint_ms": {
-            "description": "参与声纹识别的最小段时长（毫秒）：短于此值的段声纹不可靠，"
-                           "只做转写留存不匹配不建档（防短段过度分裂），0=不限制",
+            "description": "参与声纹识别的最小段时长（短于此只转写留存、不匹配不建档，0=不限制）",
             "default": 2000,
+            "advanced": True,
+            "unit": "毫秒",
         },
         "voiceprint_attach_unidentified": {
-            "description": "未识别段（短段/未提取到声纹）挂到同录制最近的已归属段"
-                           "（默认开：所有话语都有归属；关闭则未识别段标记为未知）",
+            "description": "是否将未识别段挂到同录制最近的已归属段"
+                           "（关闭则未识别段标记为未知）",
             "default": True,
         },
         "voiceprint_funasr_endpoint": {
@@ -99,8 +116,10 @@ register_configs_safe({
             "default": "",
         },
         "voiceprint_funasr_timeout": {
-            "description": "FunASR 服务调用超时（秒）",
+            "description": "FunASR 服务调用超时",
             "default": 120,
+            "advanced": True,
+            "unit": "秒",
         },
         "voiceprint_ingest_token": {
             "description": "上游 pipeline 推送令牌（X-Ingest-Token 头，留空则 /ingest 关闭）",
@@ -111,16 +130,15 @@ register_configs_safe({
             "default": "",
         },
         "voiceprint_context_inject": {
-            "description": "向 AI 上下文注入音源库摘要（说话人名单/待确认/未读）",
+            "description": "是否向 AI 上下文注入音源库摘要（说话人名单/待确认/未读）",
             "default": True,
         },
         "voiceprint_watch_enabled": {
-            "description": "启用目录自动同步（周期扫描音频目录，新增文件自动转写入库）",
+            "description": "是否启用目录自动同步（周期扫描，新增文件自动转写入库）",
             "default": False,
         },
         "voiceprint_watch_paused": {
-            "description": "暂停同步（持久化）：开启后周期扫描与手动同步都暂停，"
-                           "配置/删除重建/入库等其余功能不受影响",
+            "description": "是否暂停同步（周期扫描与手动同步都暂停，其余功能不受影响）",
             "default": False,
         },
         "voiceprint_watch_dir": {
@@ -128,25 +146,31 @@ register_configs_safe({
             "default": "",
         },
         "voiceprint_watch_recursive": {
-            "description": "递归扫描子目录",
+            "description": "是否递归扫描子目录",
             "default": True,
         },
         "voiceprint_watch_interval_seconds": {
-            "description": "目录扫描周期（秒，最小 10）",
+            "description": "目录扫描周期",
             "default": 60,
+            "advanced": True,
+            "unit": "秒",
         },
         "voiceprint_watch_max_per_scan": {
             "description": "单轮扫描最多处理的录制单元数（防积压时长时间占用）",
             "default": 50,
+            "advanced": True,
+            "unit": "个",
         },
         "voiceprint_error_retry_seconds": {
-            "description": "失败单元的自动重试冷却（秒，最小 60）：超时后即使内容未变也重试"
-                           "（自愈 FunASR 重启/网络抖动等瞬时故障）",
+            "description": "失败单元的自动重试冷却（超时后即使内容未变也重试，"
+                           "自愈 FunASR 重启/网络抖动等瞬时故障）",
             "default": 3600,
+            "advanced": True,
+            "unit": "秒",
         },
         "voiceprint_watch_exclude": {
             "description": "同步排除规则（逗号分隔 glob，如 tmp_*,*.tmp,*测试*；"
-                           "命中的目录/文件不同步且不参与镜像删除）",
+                           "命中项不同步且不参与镜像删除）",
             "default": "",
         },
         "voiceprint_audio_extensions": {
@@ -170,26 +194,34 @@ register_configs_safe({
             "default": "ffmpeg",
         },
         "voiceprint_merge_max_seconds": {
-            "description": "单批音频的最大时长（秒，最小 60）：静音截断无法命中时的硬上限",
+            "description": "单批音频最大时长（静音截断无法命中时的硬上限）",
             "default": 600,
+            "advanced": True,
+            "unit": "秒",
         },
         "voiceprint_merge_min_seconds": {
-            "description": "单批音频的最小时长（秒，最小 10）：静音截断的下限，"
-                           "过短尾巴并入前一批",
+            "description": "单批音频最小时长（静音截断下限，过短尾巴并入前一批）",
             "default": 60,
+            "advanced": True,
+            "unit": "秒",
         },
         "voiceprint_split_silence_db": {
-            "description": "静音截断的噪音阈值（dB）：低于此音量且持续达标的区间作为切点",
+            "description": "静音截断的噪音阈值（低于此音量且持续达标的区间作为切点）",
             "default": -40.0,
+            "advanced": True,
+            "unit": "dB",
         },
         "voiceprint_split_silence_min_s": {
-            "description": "静音截断的最小静音时长（秒）：短于此的停顿不作为切点",
+            "description": "静音截断的最小时长（短于此的停顿不作为切点）",
             "default": 1.0,
+            "advanced": True,
+            "unit": "秒",
         },
         "voiceprint_silence_skip_db": {
-            "description": "空音跳过阈值（平均音量 dB）：低于此值的文件不参与合并"
-                           "（如 -45；设为 0 关闭空音检测）",
+            "description": "空音跳过的平均音量阈值（低于此值不参与合并，0=关闭空音检测）",
             "default": -45.0,
+            "advanced": True,
+            "unit": "dB",
         },
     }
 })

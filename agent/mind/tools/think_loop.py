@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, AbstractSet, Any, Dict, List, Optional, Set
 
 from agent.channel.reply_route import (
     deliver_text,
@@ -221,6 +221,7 @@ async def think_loop(
         options: Optional[Dict] = None,
         *,
         adapter_key: str = "",
+        blocked_tools: Optional[Set[str]] = None,
 ) -> None:
     """统一思维循环：对话和反思共享同一流程。
 
@@ -230,12 +231,14 @@ async def think_loop(
 
     base_messages 仅首轮获取，后续轮次复用缓存。
     工具集由调用方构建并传入，确保模式差异在入口处理。
+    blocked_tools 为模式级禁用工具：schema 保留在数组中（跨调用前缀一致），
+    执行侧拦截返回合成错误结果（可见性与权限分离）。
     主循环只保留：中断检查 → LLM 调用 → 分发到阶段函数 → 终止条件判断。
     """
     ctx, state = await _prepare_think_context(
         mind, mode, tool_chain, execution_steps,
         collected_text, active_tools, anything, base_messages,
-        options, adapter_key,
+        options, adapter_key, blocked_tools,
     )
 
     # 工具数组顺序由 ToolAssembly 跨回复追加式冻结（见 tool_assembly），
@@ -786,7 +789,7 @@ async def _handle_tool_round(
     state.reflect_text_rounds = 0
     await execute_tool_calls(
         mind, tool_chain, result, tool_calls, state.iteration, ctx.anything,
-        guardrail=guardrail, pipeline=ctx.pipeline,
+        guardrail=guardrail, pipeline=ctx.pipeline, blocked_tools=ctx.blocked_tools,
     )
 
     # 记录目标工具使用（goal nag 提醒的计数依据）
@@ -936,12 +939,14 @@ async def execute_tool_calls(
         *,
         guardrail: Optional["GuardrailController"] = None,
         pipeline: Optional["ToolResultPipeline"] = None,
+        blocked_tools: Optional[AbstractSet[str]] = None,
 ) -> None:
     """执行工具调用并将 assistant + tool 消息追加到 tool_chain。
 
     保留 content 和推理字段以维持多轮思维链连续性。
     实际发送内容由工具（如 send_message）的 _record_to_context 负责写入 DB。
     结果加工（脱敏/扫描/守卫/截断）由 ToolResultPipeline 统一处理。
+    blocked_tools 为模式级禁用工具：执行侧拦截返回合成错误（可见性与权限分离）。
     """
     from agent.mind.guardrails import synthetic_block_result
 
@@ -958,9 +963,22 @@ async def execute_tool_calls(
     tool_chain.append(assistant_msg)
 
     # 守卫执行前检查：已知必败/无进展的调用直接返回合成结果，不执行真实工具
+    # 模式级禁用工具（内部任务禁外发等）同样在此拦截：schema 保留在数组中
+    # 保持前缀缓存一致，执行侧统一兜底（可见性与权限分离）
     blocked_results: Dict[str, str] = {}
+    for tc in tool_calls:
+        if blocked_tools and tc.name in blocked_tools:
+            from core.tool_errors import ErrorCause, tool_error
+            blocked_results[tc.id] = tool_error(
+                f"工具 {tc.name} 在当前模式（内部任务/受限角色）下不可用",
+                cause=ErrorCause.PERMISSION, retryable=False,
+                hint="该工具仅被限制而非必需：请改用允许的工具完成任务，勿重复调用",
+            )
+            log(f"模式禁用工具拦截: {tc.name}", "DEBUG", tag="思维")
     if guardrail is not None:
         for tc in tool_calls:
+            if tc.id in blocked_results:
+                continue
             decision = guardrail.before_call(tc.name, tc.arguments or "")
             if decision.should_block:
                 blocked_results[tc.id] = synthetic_block_result(decision)

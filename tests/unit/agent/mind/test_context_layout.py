@@ -41,18 +41,19 @@ _BASE_KWARGS = dict(
 
 class TestTailInjectionLayout:
     async def test_dynamic_zone_after_history(self) -> None:
-        """默认布局：stable → 摘要 → 历史 → 尾部动态区（画像/召回在历史之后）。"""
+        """默认布局：stable → 摘要 → 历史 → 尾部动态区（便签在最前，画像/召回随后）。"""
         pfc = _pfc()
         msgs = await pfc.build_llm_context(**_BASE_KWARGS)
         assert _layers(msgs) == [
-            "stable", "stable", "context",
+            "stable", "stable",
             "summary",
             "conversation",
+            "context",
             "profile", "memory",
         ]
 
     async def test_summary_breakpoint_injected(self) -> None:
-        """发送边界装饰：断点打在 stable/context 层末 + 对话历史末尾。"""
+        """发送边界装饰：断点打在 stable 层末 + 对话历史末尾（便签在尾部不占断点）。"""
         from agent.llm.prompt_cache import decorate_messages
         pfc = _pfc()
         msgs = await pfc.build_llm_context(**_BASE_KWARGS)
@@ -62,13 +63,14 @@ class TestTailInjectionLayout:
         assert conversation[-1].get("cache_control") == {"type": "ephemeral"}
         summary = next(m for m in msgs if m.get("_layer") == "summary")
         assert "cache_control" not in summary
+        context = next(m for m in msgs if m.get("_layer") == "context")
+        assert "cache_control" not in context
         breakpoints = [m for m in msgs if m.get("cache_control")]
-        # stable 层末（工具块）/context 层末（便签）/历史末尾 = 3 个，
-        # 第 4 个预留给工具链尾锚点（Anthropic 上限 4）
-        assert len(breakpoints) == 3
+        # stable 层末（工具块）/历史末尾 = 2 个，
+        # 余量预留给工具链尾锚点与 tools 数组断点（Anthropic 上限 4）
+        assert len(breakpoints) == 2
         assert breakpoints[0]["_layer"] == "stable"
-        assert breakpoints[1]["_layer"] == "context"
-        assert breakpoints[2]["_layer"] == "conversation"
+        assert breakpoints[1]["_layer"] == "conversation"
 
     async def test_breakpoint_falls_back_to_summary(self) -> None:
         """无对话历史时历史锚点回退到摘要块。"""
@@ -89,7 +91,7 @@ class TestTailInjectionLayout:
         msgs = decorate_messages(msgs, anthropic=True)
         assert not [m for m in msgs if m.get("_layer") == "summary"]
         breakpoints = [m for m in msgs if m.get("cache_control")]
-        assert len(breakpoints) == 3
+        assert len(breakpoints) == 2
         conversation = [m for m in msgs if m.get("_layer") == "conversation"]
         assert conversation[-1].get("cache_control") == {"type": "ephemeral"}
 

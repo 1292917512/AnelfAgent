@@ -64,15 +64,13 @@ _TOOL_RESULT_LIST_LIMIT = 50
 # ------------------------------------------------------------------
 
 _MCP_CONFIGS = {
-    "安全": {
+    "entity/mcp": {
         "mcp_stdio_passthrough_env": {
-            "description": "MCP stdio 子进程是否透传全量环境变量（默认仅白名单）",
+            "description": "是否向 stdio 子进程透传全量环境变量（默认仅白名单）",
             "default": False,
         },
-    },
-    "Prompt缓存": {
         "mcp_tools_sleep_default": {
-            "description": "MCP 服务工具组默认沉睡（不常驻 schema，需要时 AI 调 activate_tool_group 唤醒；显著缩小 tools 前缀、提升缓存命中）",
+            "description": "是否默认沉睡 MCP 服务工具组（需要时调 activate_tool_group 唤醒；缩小 tools 前缀提升缓存命中）",
             "default": True,
         },
         "mcp_sleep_excludes": {
@@ -80,7 +78,7 @@ _MCP_CONFIGS = {
             "default": "",
         },
         "tool_activation_sticky": {
-            "description": "分组激活粘性：activate_tool_group 唤醒的分组进程内不再过期沉睡（工具集只增不减，避免激活/过期反复重写缓存前缀）",
+            "description": "是否让激活的分组保持粘性不再过期沉睡（避免激活/过期反复重写缓存前缀）",
             "default": True,
         },
     },

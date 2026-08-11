@@ -24,13 +24,7 @@ _status_svc = AgentStatusService()
 
 _APP_CONFIG_PATH = Path(ConfigPaths.APP_CONFIG)
 
-# 不允许通过 Web 修改的路径类字段（避免误改导致启动失败）
-_APP_READONLY_FIELDS = frozenset({
-    "personas_dir", "personas_config_path", "mcp_config_path",
-    "mind_config_path", "sqlite_path",
-})
-
-# 敏感字段，保存时若值含 **** 则跳过
+# 敏感字段，读取时脱敏
 _APP_SECRET_FIELDS = frozenset({"telegram_bot_token", "telegram_webhook_secret"})
 
 _WEBUI_CONFIG_PATH = Path(ConfigPaths.WEBUI_CONFIG)
@@ -178,104 +172,6 @@ async def get_app_config() -> Dict[str, Any]:
     except Exception as e:
         raise server_error("读取配置", e) from e
     return _mask_app_secrets(data)
-
-
-class AppConfigUpdate(BaseModel):
-    max_conversation_size: Optional[int] = None
-    max_tool_iterations: Optional[int] = None
-    connect_timeout: Optional[float] = None
-    read_timeout: Optional[float] = None
-    total_timeout: Optional[float] = None
-    retry_count: Optional[int] = None
-    retry_delay: Optional[float] = None
-    backoff_factor: Optional[float] = None
-    http_proxy: Optional[str] = None
-    https_proxy: Optional[str] = None
-    proxy_enabled: Optional[bool] = None
-    chunk_size: Optional[int] = None
-    user_agent: Optional[str] = None
-    overwrite_existing: Optional[bool] = None
-    verify_download: Optional[bool] = None
-    default_download_dir: Optional[str] = None
-    llm_stream_enabled: Optional[bool] = None
-    workspace_root: Optional[str] = None
-    data_root: Optional[str] = None
-    sandbox_enabled: Optional[bool] = None
-    heartbeat_interval: Optional[float] = None
-    meta_decision_temperature: Optional[float] = None
-    analysis_temperature: Optional[float] = None
-    reflect_min_hours: Optional[float] = None
-    conversation_analysis_threshold: Optional[int] = None
-    log_ai_output: Optional[bool] = None
-    send_interim_text: Optional[bool] = None
-    vector_search_batch_size: Optional[int] = None
-    memory_recall_top_k: Optional[int] = None
-    memory_recall_min_score: Optional[float] = None
-    memory_time_decay_days: Optional[int] = None
-    memory_warn_threshold: Optional[int] = None
-    memory_max_per_type: Optional[int] = None
-    entity_merge_threshold: Optional[int] = None
-    reflection_merge_threshold: Optional[int] = None
-    heartbeat_max_entries: Optional[int] = None
-    auto_consolidate_enabled: Optional[bool] = None
-    conv_recall_scan_limit: Optional[int] = None
-    conv_recall_backfill_batch: Optional[int] = None
-    conv_recall_min_score: Optional[float] = None
-    conv_recall_max_results: Optional[int] = None
-    embedding_worker_batch_size: Optional[int] = None
-    conv_embed_backfill_days: Optional[int] = None
-    embedding_text_model: Optional[str] = None
-    embedding_vision_model: Optional[str] = None
-    embed_query_timeout_seconds: Optional[float] = None
-    embed_query_cache_ttl_seconds: Optional[float] = None
-    embed_rate_limit_requests: Optional[int] = None
-    embed_rate_limit_interval_seconds: Optional[float] = None
-    embed_max_retries: Optional[int] = None
-    http_api_enabled: Optional[bool] = None
-    http_api_host: Optional[str] = None
-    http_api_port: Optional[int] = None
-    http_api_reply_timeout: Optional[int] = None
-    telegram_enabled: Optional[bool] = None
-    telegram_bot_token: Optional[str] = None
-    telegram_proxy_host: Optional[str] = None
-    telegram_proxy_port: Optional[int] = None
-    telegram_require_mention: Optional[bool] = None
-    telegram_reply_to_mode: Optional[str] = None
-    telegram_stream_mode: Optional[str] = None
-    telegram_parse_mode: Optional[str] = None
-    telegram_link_preview: Optional[bool] = None
-    telegram_text_limit: Optional[int] = None
-    telegram_webhook_enabled: Optional[bool] = None
-    telegram_webhook_url: Optional[str] = None
-    telegram_webhook_secret: Optional[str] = None
-    telegram_webhook_port: Optional[int] = None
-
-
-@router.put("/app")
-async def save_app_config(data: AppConfigUpdate) -> Dict[str, str]:
-    """保存 app_config.json（只更新传入的非 None 字段，路径类字段不可修改）。
-
-    统一经由 ConfigManager 写内存 + 落盘，保证运行中的 Agent 立即读到新值，
-    避免文件与内存双真相源不一致。
-    """
-    from core.config import ConfigManager
-
-    updates = {k: v for k, v in data.model_dump().items() if v is not None}
-    filtered: Dict[str, Any] = {}
-    for key, val in updates.items():
-        if key in _APP_READONLY_FIELDS:
-            continue
-        # 敏感字段：若值仍是脱敏形式则跳过
-        if key in _APP_SECRET_FIELDS and isinstance(val, str) and "****" in val:
-            continue
-        filtered[key] = val
-
-    ConfigManager.initialize()
-    ConfigManager.update(filtered)
-    if not ConfigManager.save():
-        raise HTTPException(status_code=500, detail="写入配置失败")
-
-    return {"status": "ok"}
 
 
 # ──────────────────────────────────────────────────────────────────────────────

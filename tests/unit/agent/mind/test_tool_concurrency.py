@@ -101,3 +101,16 @@ class TestExecuteToolCalls:
         await tl.execute_tool_calls(mind, tool_chain, result, [_tc("write_file", "a")], 1)
         tool_msg = [m for m in tool_chain if m["role"] == "tool"][0]
         assert "炸了" in tool_msg["content"]
+
+    async def test_mode_blocked_tool_gets_synthetic_error(self, mock_mind):
+        """模式禁用工具：不执行真实工具，返回合成权限错误（可见性与权限分离）。"""
+        mind, result, records = mock_mind
+        tool_chain: List[dict] = []
+        await tl.execute_tool_calls(
+            mind, tool_chain, result, [_tc("send_message", "a")], 1,
+            blocked_tools=frozenset({"send_message"}),
+        )
+        assert records == []  # 真实工具未执行
+        tool_msg = [m for m in tool_chain if m["role"] == "tool"][0]
+        assert "不可用" in tool_msg["content"]
+        assert "permission" in tool_msg["content"]

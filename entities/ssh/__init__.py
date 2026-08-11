@@ -30,27 +30,33 @@ entity_manifest(
     group="ssh",
 )
 
-# 实体配置项：分组名与实体 group 一致，实体详情页配置 tab 自动展示
+# 实体配置项：分组名 entity/ssh，实体详情页配置 tab 自动展示
 register_configs_safe({
-    "ssh": {
+    "entity/ssh": {
         "ssh_ai_enabled": {
-            "description": "允许 AI 调用 SSH 工具（连接/执行/传输）",
+            "description": "是否允许 AI 调用 SSH 工具（连接/执行/传输）",
             "default": True,
         },
         "ssh_default_timeout": {
-            "description": "命令执行默认超时（秒）",
+            "description": "命令执行默认超时",
             "default": 60,
+            "advanced": True,
+            "unit": "秒",
         },
         "ssh_connect_timeout": {
-            "description": "建立连接超时（秒）",
+            "description": "建立连接超时",
             "default": 15,
+            "advanced": True,
+            "unit": "秒",
         },
         "ssh_keepalive_interval": {
-            "description": "连接保活间隔（秒），用于死链检测",
+            "description": "连接保活间隔（用于死链检测）",
             "default": 30,
+            "advanced": True,
+            "unit": "秒",
         },
         "ssh_verify_host_key": {
-            "description": "校验主机密钥（关闭则信任所有主机，适合内网/自管服务器）",
+            "description": "是否校验主机密钥（关闭则信任所有主机，适合内网/自管服务器）",
             "default": False,
         },
     }

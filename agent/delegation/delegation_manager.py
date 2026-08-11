@@ -678,7 +678,7 @@ class DelegationManager:
 # ------------------------------------------------------------------
 
 _DELEGATION_CONFIGS = {
-    "子代理": {
+    "delegation/core": {
         "delegation_enabled": {
             "description": "是否启用子代理委托",
             "default": True,
@@ -686,26 +686,38 @@ _DELEGATION_CONFIGS = {
         "delegation_max_depth": {
             "description": "最大委托深度（orchestrator 可再委托的层数）",
             "default": 2,
+            "advanced": True,
+            "unit": "层",
         },
         "delegation_max_concurrent": {
             "description": "子代理并发上限",
             "default": 3,
+            "advanced": True,
+            "unit": "个",
         },
         "delegation_default_iterations": {
-            "description": "子代理默认迭代预算（轮次）",
+            "description": "子代理默认迭代预算",
             "default": 15,
+            "advanced": True,
+            "unit": "轮",
         },
         "delegation_max_iterations_cap": {
-            "description": "子代理迭代预算硬上限（轮次）",
+            "description": "子代理迭代预算硬上限",
             "default": 50,
+            "advanced": True,
+            "unit": "轮",
         },
         "delegation_timeout_seconds": {
-            "description": "单个子代理整体执行超时（秒）",
+            "description": "单个子代理整体执行超时",
             "default": 600,
+            "advanced": True,
+            "unit": "秒",
         },
         "delegation_acquire_timeout_seconds": {
-            "description": "委托并发槽获取超时（秒），超时返回失败而非永久阻塞",
+            "description": "委托并发槽获取超时（超时返回失败而非永久阻塞）",
             "default": 300,
+            "advanced": True,
+            "unit": "秒",
         },
     },
 }

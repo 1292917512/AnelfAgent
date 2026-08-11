@@ -239,7 +239,7 @@ def is_threat_scan_enabled() -> bool:
 # ------------------------------------------------------------------
 
 _THREAT_SCAN_CONFIGS = {
-    "安全": {
+    "security/core": {
         "security_threat_scan_enabled": {
             "description": "是否启用威胁模式扫描（prompt 注入检测）",
             "default": True,

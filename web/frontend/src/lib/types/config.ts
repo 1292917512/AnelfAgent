@@ -62,6 +62,14 @@ export interface ConfigMetaItem {
   default: unknown;
   editable: boolean;
   options: string[] | null;
+  /** 高级项（折叠到高级区，基础项直接展示） */
+  advanced: boolean;
+  /** RANGE 类型滑条边界与步进（未声明为 null） */
+  min: number | null;
+  max: number | null;
+  step: number | null;
+  /** 单位展示（秒/%/条/分钟…） */
+  unit: string;
   source: "mind" | "config_manager";
 }
 

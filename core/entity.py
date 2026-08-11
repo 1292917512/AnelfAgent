@@ -142,7 +142,10 @@ class EntityMetadata:
 
     meta: Dict[str, Any] = field(default_factory=dict)
 
-    config_group: str = ""
+    @property
+    def config_group(self) -> str:
+        """实体配置分组（约定：ConfigRegistry 中的 entity/<group>）。"""
+        return f"entity/{self.group}" if self.group else ""
 
     @property
     def check_fn(self) -> Optional[Callable]:
@@ -181,11 +184,10 @@ class EntityMetadata:
 
     def get_all_configs(self) -> Dict[str, Any]:
         """获取实体所属配置分组的所有配置项及其当前值"""
-        group = self.config_group or self.group
-        if not group:
+        if not self.config_group:
             return {}
         from core.config import ConfigManager, ConfigRegistry
-        items = ConfigRegistry.get_group_items(group)
+        items = ConfigRegistry.get_group_items(self.config_group)
         return {
             item.key: ConfigManager.get(item.key, item.default_value)
             for item in items
@@ -193,11 +195,10 @@ class EntityMetadata:
 
     def get_config_items(self) -> List[Dict[str, Any]]:
         """获取实体配置项描述列表（含类型、默认值等元信息）"""
-        group = self.config_group or self.group
-        if not group:
+        if not self.config_group:
             return []
         from core.config import ConfigManager, ConfigRegistry
-        items = ConfigRegistry.get_group_items(group)
+        items = ConfigRegistry.get_group_items(self.config_group)
         return [
             {
                 "key": item.key,
@@ -384,12 +385,6 @@ class BaseEntity(ABC):  # noqa: B024 — 标记型基类：子类经类属性声
     def _register_instance(self) -> None:
         cls = self.__class__
         instance_name = _entity_instance_name(self)
-        self._register_entity_configs()
-
-        entity_configs = getattr(cls, '_entity_configs', None)
-        cfg_group = ""
-        if entity_configs:
-            cfg_group = next(iter(entity_configs), "")
 
         metadata = EntityMetadata(
             name=instance_name,
@@ -402,20 +397,12 @@ class BaseEntity(ABC):  # noqa: B024 — 标记型基类：子类经类属性声
             ),
             enabled=True,
             instance=self,
-            config_group=cfg_group,
         )
         EntityRegistry.register(metadata)
         EntityRegistry.activate_entity(instance_name)
 
     def get_entity_name(self) -> str:
         return _entity_instance_name(self)
-
-    @catch_exceptions()
-    def _register_entity_configs(self) -> None:
-        entity_configs = getattr(self.__class__, '_entity_configs', None)
-        if entity_configs:
-            from core.config import register_configs
-            register_configs(entity_configs)
 
     def get_entity_config(self, key: str, default: Any = None) -> Any:
         from core.config import ConfigManager

@@ -31,26 +31,36 @@ from core.log import log
 from ..memory_utils import hash_text
 
 _ENGINE_CONFIGS = {
-    "记忆": {
+    "memory/embedding": {
         "embed_query_timeout_seconds": {
-            "description": "交互式 embedding（召回查询等单条调用）的超时时间（秒），超时降级为 FTS-only",
+            "description": "交互式 embedding（召回查询等单条调用）超时，超时降级为 FTS-only",
             "default": 15.0,
+            "advanced": True,
+            "unit": "秒",
         },
         "embed_query_cache_ttl_seconds": {
-            "description": "交互式 embedding 查询向量的缓存时间（秒），相同查询命中缓存不再调用端点",
+            "description": "交互式查询向量的缓存时长（相同查询命中缓存不再调用端点）",
             "default": 300.0,
+            "advanced": True,
+            "unit": "秒",
         },
         "embed_rate_limit_requests": {
-            "description": "后台批量 embedding 限速：每个时间窗内允许的 API 请求数",
+            "description": "批量限速：每个时间窗内允许的 API 请求数",
             "default": 60,
+            "advanced": True,
+            "unit": "次",
         },
         "embed_rate_limit_interval_seconds": {
-            "description": "后台批量 embedding 限速时间窗（秒）",
+            "description": "批量限速时间窗",
             "default": 60.0,
+            "advanced": True,
+            "unit": "秒",
         },
         "embed_max_retries": {
-            "description": "后台批量 embedding 失败重试次数（指数退避 + 抖动）",
+            "description": "批量失败重试次数（指数退避 + 抖动）",
             "default": 2,
+            "advanced": True,
+            "unit": "次",
         },
         "embedding_text_model": {
             "description": "文本域（记忆/对话/技能）使用的 embedding 模型 ID，空 = embedding 优先级首位",

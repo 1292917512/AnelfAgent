@@ -13,7 +13,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Set
 
 from agent.mind.tools.result_pipeline import ToolResultPipeline
 from agent.mind.tools.vision import apply_vision
@@ -131,6 +131,10 @@ class _ThinkLoopCtx:
     delta_emitter: Callable[[str, bool], Awaitable[None]]
     supports_stream: bool
     supports_purpose: bool
+    # 模式级禁用工具（内部任务禁外发 / leaf 禁委托）：执行侧拦截返回合成错误，
+    # 不从 tools 数组移除——可见性（schema 数组全量冻结、跨调用字节一致）
+    # 与权限（执行时拦截）分离，保证工具数组前缀缓存跨模式共享
+    blocked_tools: frozenset = frozenset()
 
 
 # ==================================================================
@@ -210,6 +214,7 @@ async def _prepare_think_context(
         base_messages: Optional[List[Dict]],
         options: Optional[Dict],
         adapter_key: str,
+        blocked_tools: Optional[Set[str]] = None,
 ) -> tuple[_ThinkLoopCtx, _ThinkRoundState]:
     """think_loop 会话初始化：adapter/基线消息/快照水位/守卫/管线/流式探测。"""
     from agent.mind.guardrails import GuardrailController
@@ -290,6 +295,7 @@ async def _prepare_think_context(
         delta_emitter=_make_delta_emitter(current_scope, turn_id),
         supports_stream=_probe_stream_support(mind),
         supports_purpose=_probe_invoke_kwarg(mind, "purpose"),
+        blocked_tools=frozenset(blocked_tools or ()),
     )
     state = _ThinkRoundState(
         wait_budget=wait_budget,

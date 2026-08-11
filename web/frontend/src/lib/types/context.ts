@@ -23,6 +23,10 @@ export interface ContextProviderStatus {
   current_used: number;
   peak_used: number;
   providers: ProviderMetric[];
+  /** 面板口径：数据归属的会话 scope（全 scope 最近一次收集；无记录为空） */
+  scope?: string;
+  /** 该次收集的时间（epoch 秒，0=尚无收集记录） */
+  collected_at?: number;
 }
 
 // ======================================================================
@@ -154,6 +158,10 @@ export interface SnapshotListItem {
   filename: string;
   captured_at: number;
   model: string;
+  /** 调用用途（reply=主对话 / reflect=任务·反思等辅助调用；旧快照为空） */
+  kind?: string;
+  /** 前缀字节是否稳定（除工具链/执行态外所有 section 未变；null=无基线） */
+  prefix_stable?: boolean | null;
   model_context_window: number;
   estimated_tokens: number;
   message_count: number;

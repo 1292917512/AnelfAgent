@@ -25,14 +25,20 @@
     "empty": "No saved snapshots",
     "back": "Back to list",
     "clearAll": "Clear all",
-    "cacheRead": "cached {{tokens}}t"
+    "cacheRead": "cached {{tokens}}t",
+    "kind": {
+      "reflect": "task"
+    },
+    "jitter": "provider jitter",
+    "jitterDesc": "Prefix bytes unchanged but hit dropped — provider-side cache write propagation delay/jitter; self-recovers in 1-2 rounds, no action needed"
   },
   "providers": {
     "empty": "No context providers",
     "budget": "Token Budget",
     "used": "Current Usage",
     "staticEstimate": "Static Estimate",
-    "peak": "Peak Usage"
+    "peak": "Peak",
+    "lastCollect": "Last collect: {{scope}} · {{time}}"
   },
   "stats": {
     "totalTokens": "Est. Tokens",

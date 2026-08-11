@@ -81,3 +81,43 @@ class TestSaveMeta:
         ConfigManager.set("meta_test_int2", 1)
         r = client.put("/api/config/meta/meta_test_int2", json={"value": "abc"})
         assert r.status_code == 400
+
+
+class TestRangeMeta:
+    @pytest.fixture
+    def range_config(self):
+        """注册一个 RANGE 配置项（int default + 边界）。"""
+        ConfigRegistry.register(ConfigItem(
+            key="meta_test_range", group="测试组",
+            description="比例", default_value=50,
+            value_type="range", advanced=True,
+            min_value=0, max_value=100, step=1, unit="%",
+        ))
+        ConfigManager.set("meta_test_range", 50)
+        yield "meta_test_range"
+        ConfigManager.set("meta_test_range", 50)
+
+    def test_serialize_extended_fields(self, client, range_config) -> None:
+        r = client.get("/api/config/meta")
+        assert r.status_code == 200
+        item = next(
+            i
+            for g in r.json()["groups"]
+            for i in g["items"]
+            if i["key"] == range_config
+        )
+        assert item["type"] == "range"
+        assert item["advanced"] is True
+        assert (item["min"], item["max"], item["step"]) == (0, 100, 1)
+        assert item["unit"] == "%"
+
+    def test_range_keeps_int_type(self, client, range_config) -> None:
+        r = client.put(f"/api/config/meta/{range_config}", json={"value": "66"})
+        assert r.status_code == 200
+        assert r.json()["value"] == 66
+        assert isinstance(r.json()["value"], int)
+
+    def test_range_clamped_to_bounds(self, client, range_config) -> None:
+        r = client.put(f"/api/config/meta/{range_config}", json={"value": 150})
+        assert r.status_code == 200
+        assert r.json()["value"] == 100

@@ -482,14 +482,13 @@ def entity_config(
     配置存储于实体目录下的 config.json（运行时，gitignored），
     不存在时从 config.example.json 复制并填入默认值。
 
-    configs 格式与 core.config.register_configs 一致::
+    configs 格式与 core.config.register_configs 一致，分组名约定为 ``entity/<实体组名>``::
 
         entity_config({
-            "连接": {
-                "api_key": {
-                    "description": "API Key",
-                    "default": "",
-                    "value_type": "str",
+            "entity/ssh": {
+                "ssh_ai_enabled": {
+                    "description": "允许 AI 调用 SSH 工具",
+                    "default": True,
                 },
             },
         })

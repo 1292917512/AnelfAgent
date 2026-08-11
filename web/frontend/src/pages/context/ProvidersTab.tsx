@@ -39,6 +39,14 @@ export function ProvidersTab() {
           <span>{t("providers.staticEstimate")}: {data.static_estimate}</span>
           <span>{t("providers.peak")}: {data.peak_used}</span>
         </div>
+        {(data.collected_at ?? 0) > 0 && (
+          <p className="text-[10px] text-muted mt-1 opacity-70">
+            {t("providers.lastCollect", {
+              scope: data.scope || "-",
+              time: new Date((data.collected_at ?? 0) * 1000).toLocaleTimeString(),
+            })}
+          </p>
+        )}
       </Card>
 
       <div className="space-y-2">

@@ -59,14 +59,14 @@ class TestAnthropicWire:
 
 
 def _layered_messages() -> list[dict]:
-    """模拟真实管线输出 + think_loop 追加（带层标签）。"""
+    """模拟真实管线输出 + think_loop 追加（带层标签，尾部动态区布局）。"""
     return [
         {"role": "system", "content": "人设", "_layer": "stable"},
         {"role": "system", "content": "工具目录", "_layer": "stable"},
-        {"role": "system", "content": "便签", "_layer": "context"},
         {"role": "system", "content": "摘要", "_layer": "summary"},
         {"role": "user", "content": "历史1", "_layer": "conversation"},
         {"role": "assistant", "content": "历史2", "_layer": "conversation"},
+        {"role": "system", "content": "便签", "_layer": "context"},
         {"role": "system", "content": "画像", "_layer": "profile"},
         {"role": "assistant", "content": "调用工具"},              # 工具链（无标签）
         {"role": "tool", "tool_call_id": "1", "content": "结果"},  # 链尾
@@ -76,14 +76,13 @@ def _layered_messages() -> list[dict]:
 
 class TestDecorateMessages:
     def test_anchor_layout(self) -> None:
-        """锚点：stable 末 / context 末 / 历史末 / 链尾 = 4 个（上限内）。"""
+        """锚点：stable 末 / 历史末 / 链尾 = 3 个（便签在尾部动态区，不占断点）。"""
         msgs = decorate_messages(_layered_messages(), anthropic=True)
         bp = [m for m in msgs if m.get("cache_control")]
-        assert len(bp) == MAX_BREAKPOINTS
+        assert len(bp) == 3
         assert bp[0]["content"] == "工具目录"    # stable 层末（人设不单独占额）
-        assert bp[1]["content"] == "便签"        # context 层末
-        assert bp[2]["content"] == "历史2"       # conversation 末
-        assert bp[3]["content"] == "结果"        # 链尾（exec_context 无断点）
+        assert bp[1]["content"] == "历史2"       # conversation 末
+        assert bp[2]["content"] == "结果"        # 链尾（exec_context 无断点）
 
     def test_chain_tail_moves_forward(self) -> None:
         """链增长后重新装饰：链尾锚点前移，旧位置无残留（幂等）。"""
@@ -97,17 +96,17 @@ class TestDecorateMessages:
         ]
         decorated2 = decorate_messages(round2, anthropic=True)
         bp = [m for m in decorated2 if m.get("cache_control")]
-        assert len(bp) == MAX_BREAKPOINTS
+        assert len(bp) == 3
         assert bp[-1]["content"] == "结果2"
         # 第 1 轮的装饰不污染共享原消息
         assert count_breakpoints(round1) == 0
         assert decorated1[-2]["content"] == "结果"  # 第 1 轮链尾快照不受影响
 
-    def test_empty_chain_round1_three_anchors(self) -> None:
-        """无工具链（首轮）：3 个锚点，tools 断点由传输层补位到 4。"""
+    def test_empty_chain_round1_two_anchors(self) -> None:
+        """无工具链（首轮）：2 个锚点（stable 末 + 历史末），余量留给 tools 断点。"""
         msgs = [m for m in _layered_messages() if m.get("_layer") is not None]
         decorated = decorate_messages(msgs, anthropic=True)
-        assert count_breakpoints(decorated) == 3
+        assert count_breakpoints(decorated) == 2
 
     def test_no_history_falls_back_to_summary(self) -> None:
         msgs = [m for m in _layered_messages() if m.get("_layer") != "conversation"]
@@ -139,7 +138,7 @@ class TestDecorateMessages:
         """已装饰消息再次装饰：剥旧放新，总数不累积。"""
         once = decorate_messages(_layered_messages(), anthropic=True)
         twice = decorate_messages(once, anthropic=True)
-        assert count_breakpoints(twice) == MAX_BREAKPOINTS
+        assert count_breakpoints(twice) == 3
 
     def test_unlayered_aux_call_marks_last_message(self) -> None:
         """无层标签的辅助调用（折叠/评审）：末消息锚点兜底。"""

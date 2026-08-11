@@ -599,13 +599,14 @@ class Mind:
             options: Optional[Dict] = None,
             *,
             adapter_key: str = "",
+            blocked_tools: Optional[Set[str]] = None,
     ) -> None:
         """统一思维循环。"""
         await _tl_think_loop(
             self, mode, tool_chain, execution_steps, start_time,
             safety_limit, collected_text, active_tools,
             anything, base_messages, options,
-            adapter_key=adapter_key,
+            adapter_key=adapter_key, blocked_tools=blocked_tools,
         )
 
     @staticmethod
@@ -710,10 +711,11 @@ class Mind:
         """折叠后预热：用该会话的新前缀发一次 1-token 轻调用写热缓存。
 
         折叠重写摘要块 = 缓存前缀断点；预热把"断点后首次全价预读"转移到
-        空闲后台，用户发起的下一轮真实调用直接命中。只构建前缀段
-        （tools + stable/context/summary/conversation），召回/动态区不参与
-        （它们在真实调用的前缀匹配范围之外）。预热成本即下一轮真实调用
-        本应付的全价预读，净零额外开销；失败静默（下次真实调用自然回温）。
+        空闲后台，用户发起的下一轮真实调用直接命中。经 build_llm_context
+        走同一组装管线（tools + stable/summary/conversation/context 便签），
+        召回/画像等每会话动态区不参与（它们在真实调用的前缀匹配范围之外）。
+        预热成本即下一轮真实调用本应付的全价预读，净零额外开销；
+        失败静默（下次真实调用自然回温）。
         """
         from agent.messages import Everything, EverythingGroup
 
@@ -813,10 +815,10 @@ class Mind:
         # 工具激活状态按 scope 隔离，共享字面量会互相串扰
         reflect_scope = f"reflect:{uuid.uuid4().hex[:8]}"
         base_tools = await self.pfc.get_active_tool_schemas(adapter_key, scope=reflect_scope)
-        active_tools = [
-            s for s in base_tools
-            if s.get("function", {}).get("name", "") not in blocked_tools
-        ]
+        # 可见性与权限分离：schema 数组全量保留（与回复调用共享同一冻结
+        # 前缀，tools 是 prompt 最大头，裁剪会在数组早期位置断裂缓存）；
+        # 禁用工具由 think_loop 执行侧拦截（合成错误结果，模型自我纠正）
+        active_tools = list(base_tools)
 
         extra_selectors = tool_tags if tool_tags else ["heartbeat"]
         existing_names = {s.get("function", {}).get("name", "") for s in active_tools}
@@ -857,6 +859,7 @@ class Mind:
                 anything=None,
                 base_messages=messages,
                 options=options,
+                blocked_tools=blocked_tools,
             )
 
         total = "\n".join(collected_text)
@@ -876,9 +879,15 @@ class Mind:
             self,
             conversation_list: Optional[List[Dict]] = None,
             anything: Optional[Everything] = None,
+            *,
+            lean: bool = False,
     ) -> List[Dict]:
-        """构建完整 LLM 上下文（人设 + 工作记忆 + 语义召回 + 对话历史，委托 recollection 模块）。"""
-        return await _recollection.get_recollection(self, conversation_list, anything)
+        """构建完整 LLM 上下文（人设 + 工作记忆 + 语义召回 + 对话历史，委托 recollection 模块）。
+
+        lean=True 为任务精简模式：只保留人设 + 工具 + 永久记忆，
+        不做环境注入（便签/召回/状态），任务按规则经工具按需取数。
+        """
+        return await _recollection.get_recollection(self, conversation_list, anything, lean=lean)
 
     async def _match_skills(
             self,
@@ -894,15 +903,18 @@ class Mind:
             anything: Optional[Everything],
             models_summary: str,
             permanent_text: str = "",
+            *,
+            lean: bool = False,
     ) -> Tuple[str, str, str, bool, bool, bool, str]:
         """构建 stable 人设块/工具块/context 层三段提示（委托 recollection 模块）。
 
         permanent_text：永久记忆置顶块（召回路径剥离，字节稳定），并入 context 层
         走内容寻址缓存。返回追加 status_text：心跳维护的记忆状态区块（尾部动态区
         独立注入，不入 context 层，避免计数更新击穿缓存前缀）。
+        lean 为任务精简模式：context 层只留永久记忆块，status_text 留空。
         """
         return await _recollection._build_layered_prompts(
-            self, anything, models_summary, permanent_text,
+            self, anything, models_summary, permanent_text, lean=lean,
         )
 
     @staticmethod

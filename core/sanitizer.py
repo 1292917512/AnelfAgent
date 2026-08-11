@@ -166,7 +166,7 @@ def sanitize_for_context(text: str, max_chars: int = 6000) -> str:
 # ------------------------------------------------------------------
 
 _SANITIZER_CONFIGS = {
-    "安全": {
+    "security/core": {
         "security_sanitize_enabled": {
             "description": "是否对工具返回结果和日志自动脱敏（API Key/Token/密码遮盖）",
             "default": True,

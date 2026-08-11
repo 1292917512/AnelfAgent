@@ -5,7 +5,7 @@
 目录名 / group 名 / 面板名 / 路由名统一为 share，框架各发现机制自然对齐：
 - @entity: 注册 group（被 discover_entities 扫描 tools.py 时触发）
 - entity_manifest: 自报展示信息（名称/图标/排序）
-- register_configs_safe: 实体配置项（分组名 = group，实体详情页配置 tab 展示）
+- register_configs_safe: 实体配置项（分组名 entity/share，实体详情页配置 tab 展示）
 - register_lifecycle: 启动钩子（被 discover_entity_lifecycles 扫描）
 - router.py: build_router()（被 _mount_entity_routers 挂载到 /api/entity/share）
 - panel.tsx: 实体管理面板（被 entity-panels glob 发现，经实体详情页进入）
@@ -25,9 +25,9 @@ entity_manifest(
     group="share",
 )
 
-# 实体配置项：分组名与实体 group 一致，实体详情页配置 tab 自动展示
+# 实体配置项：分组名 entity/share，实体详情页配置 tab 自动展示
 register_configs_safe({
-    "share": {
+    "entity/share": {
         "share_public_base_url": {
             "description": "公网基址（如 https://your-domain），空则生成相对路径、外部无法访问",
             "default": "",
@@ -38,23 +38,30 @@ register_configs_safe({
             "options": ["1h", "6h", "24h", "7d", "30d", "never"],
         },
         "share_token_length": {
-            "description": "分享链接 token 长度（8-64）",
+            "description": "分享链接 token 长度",
             "default": 22,
+            "advanced": True,
+            "value_type": "range",
+            "min": 8,
+            "max": 64,
+            "step": 1,
         },
         "share_default_max_downloads": {
             "description": "默认最大访问次数（0 表示无限制）",
             "default": 0,
+            "advanced": True,
+            "unit": "次",
         },
         "share_ai_auto_share": {
-            "description": "允许 AI 主动调用工具创建分享链接",
+            "description": "是否允许 AI 主动调用工具创建分享链接",
             "default": True,
         },
         "share_audit_enabled": {
-            "description": "记录访问审计日志（IP / UA / 时间）",
+            "description": "是否记录访问审计日志（IP / UA / 时间）",
             "default": True,
         },
         "share_view_embed_enabled": {
-            "description": "网址分享的预览页默认尝试 iframe 嵌入展示",
+            "description": "是否在网址分享预览页尝试 iframe 嵌入展示",
             "default": True,
         },
     }

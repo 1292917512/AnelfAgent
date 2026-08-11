@@ -213,10 +213,11 @@ def is_prompt_cache_enabled() -> bool:
 # ------------------------------------------------------------------
 
 _PROMPT_CACHE_CONFIGS = {
-    "Prompt缓存": {
+    "cache/prompt": {
         "max_conversation_size": {
-            "description": "对话历史窗口上限 M（原始窗口最大条数，到达后触发摘要折叠）",
+            "description": "对话历史窗口上限（原始窗口最大条数，到达后触发摘要折叠）",
             "default": 30,
+            "unit": "条",
         },
         "prompt_cache_enabled": {
             "description": "是否启用 Prompt 分层缓存（stable 层对话内冻结复用）",
@@ -235,12 +236,14 @@ _PROMPT_CACHE_CONFIGS = {
             "default": True,
         },
         "prompt_cache_anthropic_ttl": {
-            "description": "Anthropic 缓存断点 TTL：5m（默认，写入 1.25x）或 1h（写入 2x，适合会话间隔 >5min；部分兼容网关不支持，被拒绝时调回 5m）",
+            "description": "Anthropic 缓存断点 TTL：5m（默认）或 1h（写入费 2x，部分网关不支持，被拒时回退 5m）",
             "default": "5m",
         },
         "anthropic_cache_pool_size": {
-            "description": "Anthropic 线缓存亲和连接池大小：kimi coding 等网关的 prompt 缓存是节点本地 + TCP 连接亲和，池越小触达节点越少、命中越稳；并发超出池大小时排队（修改后需重建模型客户端生效）",
+            "description": "Anthropic 缓存亲和连接池大小（池小命中稳，超出排队；修改后需重建模型客户端生效）",
             "default": 4,
+            "advanced": True,
+            "unit": "个",
         },
         "context_tail_injection_enabled": {
             "description": "是否将画像/召回/技能/短期记忆等每会话重建内容移到对话历史之后注入（尾部动态区），使历史进入缓存前缀；关闭恢复旧布局",
@@ -251,32 +254,44 @@ _PROMPT_CACHE_CONFIGS = {
             "default": True,
         },
         "conversation_raw_keep_percent": {
-            "description": "折叠后保留的原文比例（%）：窗口积满后折叠，最近该比例的消息保留原文，更早的并入固定摘要块",
+            "description": "折叠后保留原文的比例（%）：窗口积满后最近该比例保留原文，更早的并入摘要块",
             "default": 33,
         },
         "conversation_summary_max_chars": {
             "description": "对话摘要块的字符上限",
             "default": 4000,
+            "advanced": True,
+            "unit": "字符",
         },
         "conversation_fold_drop_on_failure": {
-            "description": "折叠失败时丢弃该批并推进水位线（窗口头部不滑动，缓存前缀稳定；内容仍在 DB 可检索）。关闭则保持滑动直到折叠成功",
+            "description": "折叠失败时是否丢弃该批并推进水位线（缓存前缀稳定，内容仍在 DB 可检索）；关闭则保持滑动直到折叠成功",
             "default": True,
         },
         "conversation_fold_batch_max": {
             "description": "单次折叠批量上限：积压恢复时分批消化（摘要提示词有界、单批失败最多丢这批）；日常批量等于总窗口条数，通常远低于此上限",
             "default": 100,
+            "advanced": True,
+            "unit": "条",
         },
         "conversation_fold_idle_beats": {
             "description": "空闲自动折叠：某会话连续 N 个心跳无外部新消息（任务/系统写入不计）时，把窗口内消息折进摘要（把缓存断点移到无人时段）。积压阈值随窗口参数自动联动，无需配置",
             "default": 6,
+            "advanced": True,
+            "unit": "次",
         },
         "conversation_fold_prewarm": {
             "description": "折叠完成后主动预热：用新前缀发一次 1-token 轻调用把缓存写热，消除折叠后的首轮命中低谷（成本 = 下一轮真实调用本应付的全价预读，净零额外开销）",
             "default": True,
         },
+        "task_lean_context": {
+            "description": "任务/反思调用使用精简上下文（人设+工具+永久记忆+任务指令）：环境便签/召回/状态对批处理任务是冗余（任务规则要求用 recall/get_conversation 按需取回），且任务每轮都会写便签使其漂移——带上既撑大每轮 prompt 又让下次任务首轮缓存从便签处断裂；关闭恢复完整环境注入",
+            "default": True,
+        },
         "memory_inject_max_chars": {
             "description": "memory 层（语义召回+画像+技能）注入的总字符预算上限",
             "default": 6000,
+            "advanced": True,
+            "unit": "字符",
         },
         "tool_order_deterministic": {
             "description": "工具排序确定性模式：与使用计数无关，同一工具集跨会话字节级一致（tools schema 是 prompt 最大头，其稳定性决定前缀缓存命中率上限）；关闭恢复「已使用优先」排序",

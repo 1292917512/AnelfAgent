@@ -259,6 +259,7 @@ class ContextProviderRegistry:
                 "used_bytes": used_bytes,
                 "total_budget": budget,
                 "providers_count": len(metrics),
+                "collected_at": time.time(),
             })
             # 更新峰值
             if used_tokens > cls._peak.get(scope, 0):
@@ -395,17 +396,36 @@ class ContextProviderRegistry:
 
     @classmethod
     def get_status(cls, scope: str = "") -> Dict[str, Any]:
-        """返回预算占用、峰值、每个 provider 的指标（供 Web API 使用）。"""
+        """返回预算占用、峰值、每个 provider 的指标（供 Web API 使用）。
+
+        收集按真实会话 scope 分桶（user_qq:xxx / reflect:xxx 等），Web 面板
+        不带 scope：取全 scope 中时间最近的一次收集（读 "" 桶只会拿到
+        陈旧/零值）；峰值取全 scope 历史最大。响应携带数据归属的 scope
+        与收集时间，供面板标注。
+        """
         # 静态预估：所有 provider 的 max_tokens 之和
         static_estimate = sum(m.max_tokens for m in cls._providers.values())
 
-        # 当前占用：取最近一次 collect 的结果（指定 scope 或全局）
-        collect_info = cls._last_collect.get(scope, cls._last_collect.get("", {}))
+        if scope:
+            effective_scope = scope
+        else:
+            # 全 scope 最近一次收集（无收集记录时回退 "" 桶）
+            effective_scope = ""
+            latest_ts = -1.0
+            for s, info in cls._last_collect.items():
+                ts = float(info.get("collected_at", 0))
+                if ts > latest_ts:
+                    latest_ts, effective_scope = ts, s
+
+        collect_info = cls._last_collect.get(effective_scope, {})
         current_used = collect_info.get("used_tokens", 0)
         total_budget = collect_info.get("total_budget", DEFAULT_COLLECT_BUDGET)
 
-        # 峰值
-        peak = cls._peak.get(scope, cls._peak.get("", 0))
+        # 峰值：指定 scope 取其峰值；面板口径取全 scope 历史最大
+        if scope:
+            peak = cls._peak.get(scope, 0)
+        else:
+            peak = max(cls._peak.values(), default=0)
 
         # 每个 provider 的指标
         provider_metrics = []
@@ -426,7 +446,7 @@ class ContextProviderRegistry:
             })
 
         # 用最近一次 collect 的 metrics 覆盖实际值
-        last_metrics = cls._last_metrics.get(scope, cls._last_metrics.get("", []))
+        last_metrics = cls._last_metrics.get(effective_scope, [])
         metrics_map = {m.name: m for m in last_metrics}
         for pm in provider_metrics:
             if pm["name"] in metrics_map:
@@ -443,6 +463,9 @@ class ContextProviderRegistry:
             "current_used": current_used,
             "peak_used": peak,
             "providers": provider_metrics,
+            # 面板口径：数据归属的 scope 与该次收集时间（无收集记录时为空/0）
+            "scope": effective_scope,
+            "collected_at": float(collect_info.get("collected_at", 0)),
         }
 
     # ------------------------------------------------------------------

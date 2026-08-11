@@ -31,6 +31,8 @@ async def get_recollection(
         mind: "Mind",
         conversation_list: Optional[List[Dict]] = None,
         anything: Optional["Everything"] = None,
+        *,
+        lean: bool = False,
 ) -> List[Dict]:
     """构建完整 LLM 上下文（人设 + 工作记忆 + 语义召回 + 对话历史）。
 
@@ -38,6 +40,12 @@ async def get_recollection(
         conversation_list: 外部传入的对话历史（Introspection 场景）。
             若为 None，内部自动从 DB 获取最新对话。
         anything: 消息对象，用于确定对话 scope。
+        lean: 精简模式（心跳任务/子代理）：只保留人设 + 工具 + 永久记忆，
+            不做环境注入（动态便签/文件索引/状态/召回/画像/目标）。批处理
+            任务按规则经 recall/get_conversation 工具按需取数，环境块对它们
+            是冗余；且任务每轮都会写便签/文件使其漂移——带上既撑大每轮
+            prompt，又让下一次任务首轮缓存从便签处断裂（首轮 ~66% 的
+            结构下限来源）。精简后任务间共享同一稳定前缀。
     """
     # 若未传入对话历史，从 DB 实时获取
     if conversation_list is None:
@@ -49,11 +57,12 @@ async def get_recollection(
     current_adapter = getattr(anything, "adapter_key", "") or ""
 
     # 查询提取与 embedding 每轮只做一次，三条召回路径（语义/跨频道/技能）共享
-    # （embed_query 内部自带超时与降级，永不阻塞对话路径）
-    query = MemoryRetriever._extract_query(tail) if tail else ""
+    # （embed_query 内部自带超时与降级，永不阻塞对话路径）；精简模式不召回，跳过
     query_vec: Optional[List[float]] = None
-    if query:
-        query_vec = await mind.embedder.embed_query(query)
+    if not lean:
+        query = MemoryRetriever._extract_query(tail) if tail else ""
+        if query:
+            query_vec = await mind.embedder.embed_query(query)
 
     # 相关实体 scope（画像注入与关系网络注入共用同一份参与人集合）
     scope_source = conversation_list[-30:] if len(conversation_list) > 30 else conversation_list
@@ -97,44 +106,53 @@ async def get_recollection(
             return []
         return [{"role": "system", "content": content}] if content else []
 
-    # 五条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行
-    (profile_msgs, memory_msgs), relation_msgs, goal_msgs, (cross_recall_msgs, recalled_scopes), skill_msgs = await asyncio.gather(
-        _recall_memory(),
-        _load_relations(),
-        _load_goals(),
-        mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec),
-        mind._match_skills(tail, query_vec=query_vec),
-    )
+    if lean:
+        memory_msgs, profile_msgs, relation_msgs, goal_msgs = [], [], [], []
+        # 永久记忆直接取 pins（不跑检索）：内容字节稳定，并入 context 层
+        pin_msgs: List[Dict] = []
+        if mind.retriever is not None:
+            pinned = await mind.retriever._load_permanent_pins([])
+            pin_msgs = await mind.retriever._format_unified_results(pinned) if pinned else []
+        permanent_text = str(pin_msgs[0]["content"]) if pin_msgs else ""
+    else:
+        # 五条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行
+        (profile_msgs, memory_msgs), relation_msgs, goal_msgs, (cross_recall_msgs, recalled_scopes), skill_msgs = await asyncio.gather(
+            _recall_memory(),
+            _load_relations(),
+            _load_goals(),
+            mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec),
+            mind._match_skills(tail, query_vec=query_vec),
+        )
 
-    # 跨频道语义召回 + 叙事面包屑
-    memory_msgs.extend(cross_recall_msgs)
-    narrative = mind._build_cross_channel_narrative(
-        current_adapter, entity_scope, recalled_scopes,
-    )
-    if narrative:
-        memory_msgs.append({"role": "system", "content": narrative})
+        # 跨频道语义召回 + 叙事面包屑
+        memory_msgs.extend(cross_recall_msgs)
+        narrative = mind._build_cross_channel_narrative(
+            current_adapter, entity_scope, recalled_scopes,
+        )
+        if narrative:
+            memory_msgs.append({"role": "system", "content": narrative})
 
-    # 技能匹配注入（volatile 层）：当前对话语义匹配到的经验技能
-    memory_msgs.extend(skill_msgs)
+        # 技能匹配注入（volatile 层）：当前对话语义匹配到的经验技能
+        memory_msgs.extend(skill_msgs)
 
-    # 永久记忆置顶块从每轮重建的会话区剥离：其内容字节稳定（仅 permanent
-    # 增删时变化），移交 context 层走内容寻址缓存，不再每轮占用未缓存区段
-    pin_msgs = [
-        m for m in memory_msgs
-        if str(m.get("content", "")).startswith("[系统注入·永久记忆]")
-    ]
-    if pin_msgs:
-        memory_msgs = [
+        # 永久记忆置顶块从每轮重建的会话区剥离：其内容字节稳定（仅 permanent
+        # 增删时变化），移交 context 层走内容寻址缓存，不再每轮占用未缓存区段
+        pin_msgs = [
             m for m in memory_msgs
-            if not str(m.get("content", "")).startswith("[系统注入·永久记忆]")
+            if str(m.get("content", "")).startswith("[系统注入·永久记忆]")
         ]
-    permanent_text = str(pin_msgs[0]["content"]) if pin_msgs else ""
+        if pin_msgs:
+            memory_msgs = [
+                m for m in memory_msgs
+                if not str(m.get("content", "")).startswith("[系统注入·永久记忆]")
+            ]
+        permanent_text = str(pin_msgs[0]["content"]) if pin_msgs else ""
 
-    # memory 层预算截断：防止低相关召回/画像/技能过度占用上下文
-    # （画像在前优先保留，预算从整体尾部截断）
-    combined = mind._apply_memory_budget(profile_msgs + memory_msgs)
-    profile_msgs = combined[:len(profile_msgs)]
-    memory_msgs = combined[len(profile_msgs):]
+        # memory 层预算截断：防止低相关召回/画像/技能过度占用上下文
+        # （画像在前优先保留，预算从整体尾部截断）
+        combined = mind._apply_memory_budget(profile_msgs + memory_msgs)
+        profile_msgs = combined[:len(profile_msgs)]
+        memory_msgs = combined[len(profile_msgs):]
 
     # 对话摘要窗口：固定摘要块（折叠周期内字节稳定，作历史前缀缓存锚点）
     summary_row: Optional[Dict] = None
@@ -149,7 +167,7 @@ async def get_recollection(
     # context 层（便签）低频重建，volatile 层（语义召回等）每轮构建并置于其后，保证前缀缓存命中。
     models_summary = mind._get_models_summary()
     persona_text, tools_text, context_text, persona_hit, tools_hit, context_hit, status_text = (
-        await mind._build_layered_prompts(anything, models_summary, permanent_text)
+        await mind._build_layered_prompts(anything, models_summary, permanent_text, lean=lean)
     )
 
     await event_bus.emit(EVENT_THINKING_CONTEXT_BUILD, {
@@ -222,13 +240,16 @@ async def _build_layered_prompts(
         anything: Optional["Everything"],
         models_summary: str,
         permanent_text: str = "",
+        *,
+        lean: bool = False,
 ) -> Tuple[str, str, str, bool, bool, bool, str]:
     """构建 stable 人设块 / stable 工具块 / context 层三段提示（经 PromptCacheManager 缓存复用）。
 
     人设块：人设 + 运行环境 + 静态指南——与工具无关，指纹不含工具版本因子，
     工具激活/发现/清理不会使其失效，长期命中（缓存前缀中最大最稳定的段）。
     工具块：工具目录 + 使用规则 + 媒体规则——随工具集变化经 stable_fingerprint 重建。
-    context 层：动态便签 + 永久记忆块 + 文件索引，仅编辑/永久记忆增删时重建。
+    context 层：动态便签 + 永久记忆块 + 文件索引，仅编辑/永久记忆增删时重建；
+    lean（任务精简）模式只含永久记忆块，且状态区块留空。
 
     文件型层通过 FileLayerCache 做 mtime O(1) 快检，未变时跳过 I/O。
 
@@ -270,12 +291,19 @@ async def _build_layered_prompts(
         lambda: mind.pfc.context_assembly.build_tools_block(models_summary, direct_vision),
     )
 
-    # --- context 层：动态便签 + 文件索引 ---
-    dynamic_notes, _ = mind._file_cache.get_or_load(notes_path, build_dynamic_notes)
-    file_index, _ = mind._file_cache.get_or_load(get_memory_dir(), build_file_index_block)
-    # 记忆状态区块（心跳维护，周期性变化）不入 context 层，尾部动态区独立注入
-    status_text, _ = mind._file_cache.get_or_load(notes_path, build_memory_status_block)
-    context_parts = [p for p in (dynamic_notes, permanent_text, file_index) if p]
+    # --- context 层：动态便签 + 文件索引（lean 模式只留永久记忆块） ---
+    if lean:
+        status_text = ""
+        context_parts = [p for p in (permanent_text,) if p]
+    else:
+        dynamic_notes, _ = mind._file_cache.get_or_load(notes_path, build_dynamic_notes)
+        file_index, _ = mind._file_cache.get_or_load(get_memory_dir(), build_file_index_block)
+        # 记忆状态区块（心跳维护，周期性变化）不入 context 层，尾部动态区独立注入
+        status_text, _ = mind._file_cache.get_or_load(notes_path, build_memory_status_block)
+        context_parts = [p for p in (dynamic_notes, permanent_text, file_index) if p]
+    if lean and not context_parts:
+        # 任务精简模式无永久记忆时不注入空便签提示（任务用不到便签系统）
+        return persona_text, tools_text, "", persona_hit, tools_hit, False, status_text
     if not context_parts:
         context_parts = [build_notes_empty_hint()]
     context_hash = prompt_cache_manager.compute_hash(*context_parts)

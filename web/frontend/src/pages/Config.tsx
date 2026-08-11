@@ -1,213 +1,203 @@
-import { useMemo, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { configMetaApi, type ConfigMetaItem } from "@/lib/api";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
-import { cn } from "@/lib/utils";
-import { SlidersHorizontal, RotateCcw, Check, Loader2 } from "lucide-react";
-import { useCopyFeedback } from "@/hooks/useCopyFeedback";
+import { Loader2, Search, SlidersHorizontal, X } from "lucide-react";
+import { buildConfigTree, findGroupOfKey, searchConfigItems } from "@/pages/config/configTree";
+import { ConfigSidebar } from "@/pages/config/ConfigSidebar";
+import { ConfigSection } from "@/pages/config/ConfigSection";
+import { ConfigDetailDrawer } from "@/pages/config/ConfigDetailDrawer";
 import { ConversationWindowRow } from "@/pages/config/ConversationWindowRow";
 
 /** 对话窗口复合行收编的键（一行配置：总条数 + 保留比例滑条） */
-const WINDOW_SIZE_KEY = "max_conversation_size";
-const WINDOW_PERCENT_KEY = "conversation_raw_keep_percent";
+const WINDOW_KEYS = new Set(["max_conversation_size", "conversation_raw_keep_percent"]);
 
-/** 分组展示顺序从 i18n groups 资源 key 顺序派生（未列出的组排最后） */
-function useGroupOrder(): string[] {
+/** i18n 资源 key 顺序驱动模块/分组展示顺序（未列出的排最后） */
+function useConfigOrder(): { moduleOrder: string[]; sectionOrder: string[] } {
   const { i18n } = useTranslation("config");
+  const language = i18n.language;
   return useMemo(() => {
-    const bundle = i18n.getResourceBundle(i18n.language, "config") as { groups?: Record<string, string> } | undefined;
-    return Object.keys(bundle?.groups ?? {});
-  }, [i18n, i18n.language]);
+    const bundle = i18n.getResourceBundle(language, "config") as
+      | { modules?: Record<string, string>; sections?: Record<string, string> }
+      | undefined;
+    return {
+      moduleOrder: Object.keys(bundle?.modules ?? {}),
+      sectionOrder: Object.keys(bundle?.sections ?? {}),
+    };
+  }, [i18n, language]);
 }
 
 export default function Config() {
   const { t } = useTranslation(["config", "common"]);
-  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
-  const groupOrder = useGroupOrder();
+  const [query, setQuery] = useState("");
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  const [detail, setDetail] = useState<{ item: ConfigMetaItem; group: string } | null>(null);
+  const { moduleOrder, sectionOrder } = useConfigOrder();
 
   const { data, isLoading } = useQuery({
     queryKey: ["configMeta"],
     queryFn: () => configMetaApi.list().then((r) => r.data),
   });
 
-  const groups = useMemo(() => {
-    const list = data?.groups ?? [];
-    return [...list].sort((a, b) => {
-      const ia = groupOrder.indexOf(a.group);
-      const ib = groupOrder.indexOf(b.group);
-      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
-    });
-  }, [data, groupOrder]);
+  const tree = useMemo(
+    () => buildConfigTree(data?.groups ?? [], moduleOrder, sectionOrder),
+    [data, moduleOrder, sectionOrder],
+  );
 
-  const current = groups.find((g) => g.group === activeGroup) ?? groups[0];
+  // 深链定位：?key=xxx → 切到所属分组 + 高亮 + 滚动定位
+  useEffect(() => {
+    const key = searchParams.get("key");
+    if (!key || tree.length === 0) return;
+    const group = findGroupOfKey(tree, key);
+    if (group) {
+      setActiveGroup(group);
+      setFocusKey(key);
+      setQuery("");
+    }
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams, tree]);
+
+  // 高亮行滚动定位
+  useEffect(() => {
+    if (!focusKey) return;
+    const raf = requestAnimationFrame(() => {
+      document
+        .getElementById(`config-item-${focusKey}`)
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [focusKey, activeGroup]);
+
+  const searching = query.trim().length > 0;
+  const searchResults = useMemo(
+    () => (searching ? searchConfigItems(tree, query) : []),
+    [tree, query, searching],
+  );
+
+  const currentGroup =
+    tree.flatMap((m) => m.sections).find((s) => s.group === activeGroup) ??
+    tree[0]?.sections[0] ??
+    null;
+
+  // 对话窗口复合行：当前分组同时含两个窗口键时收编为一行
+  const windowItems = useMemo(() => {
+    const items = currentGroup?.items ?? [];
+    const sizeItem = items.find((i) => i.key === "max_conversation_size");
+    const percentItem = items.find((i) => i.key === "conversation_raw_keep_percent");
+    return sizeItem && percentItem ? { sizeItem, percentItem } : null;
+  }, [currentGroup]);
 
   return (
-    <PageContainer>
+    <PageContainer wide>
       <PageHeader
         icon={<SlidersHorizontal size={22} />}
         title={t("title")}
         subtitle={t("subtitle")}
       />
 
-      {/* 分组 Tab */}
-      <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
-        {groups.map((g) => (
-          <button
-            key={g.group}
-            onClick={() => setActiveGroup(g.group)}
-            className={cn(
-              "shrink-0 px-3 py-1.5 text-sm font-medium rounded-md border transition-all",
-              (current?.group === g.group)
-                ? "bg-accent-subtle text-accent border-accent"
-                : "text-muted border-border hover:text-foreground hover:border-border-strong",
-            )}
-          >
-            {t(`groups.${g.group}`, { defaultValue: g.group })}
-          </button>
-        ))}
-      </div>
+      <div className="flex gap-5 items-start">
+        {/* 左侧模块树（移动端隐藏，改用下拉选择） */}
+        <aside className="hidden md:block w-52 shrink-0 sticky top-4">
+          <ConfigSidebar tree={tree} active={currentGroup?.group ?? null} onSelect={setActiveGroup} />
+        </aside>
 
-      {/* 配置项列表 */}
-      {isLoading ? (
-        <div className="flex justify-center py-12 text-muted">
-          <Loader2 size={24} className="animate-spin" />
-        </div>
-      ) : (
-        <div className="grid gap-2.5">
-          {(() => {
-            const items = current?.items ?? [];
-            const sizeItem = items.find((i) => i.key === WINDOW_SIZE_KEY);
-            const percentItem = items.find((i) => i.key === WINDOW_PERCENT_KEY);
-            const rest = items.filter(
-              (i) => i.key !== WINDOW_SIZE_KEY && i.key !== WINDOW_PERCENT_KEY,
-            );
-            return (
-              <>
-                {sizeItem && percentItem && (
-                  <ConversationWindowRow
-                    sizeItem={sizeItem}
-                    percentItem={percentItem}
-                    onSaved={() => queryClient.invalidateQueries({ queryKey: ["configMeta"] })}
-                  />
-                )}
-                {rest.map((item) => (
-                  <ConfigItemRow key={item.key} item={item} onSaved={() => queryClient.invalidateQueries({ queryKey: ["configMeta"] })} />
-                ))}
-              </>
-            );
-          })()}
-        </div>
-      )}
-    </PageContainer>
-  );
-}
-
-function ConfigItemRow({ item, onSaved }: { item: ConfigMetaItem; onSaved: () => void }) {
-  const { t } = useTranslation("config");
-  const [value, setValue] = useState<unknown>(item.value);
-  const [saved, triggerSaved] = useCopyFeedback(1500);
-
-  const mutation = useMutation({
-    mutationFn: (v: unknown) => configMetaApi.save(item.key, v),
-    onSuccess: () => {
-      triggerSaved();
-      onSaved();
-    },
-  });
-
-  const dirty = JSON.stringify(value) !== JSON.stringify(item.value);
-  const isDefault = JSON.stringify(value) === JSON.stringify(item.default);
-
-  const save = (v: unknown) => {
-    setValue(v);
-    mutation.mutate(v);
-  };
-
-  return (
-    <div className="flex items-center gap-3 p-3 rounded-md border border-border bg-card">
-      <div className="flex-1 min-w-0">
-        <div className="text-sm text-heading">{item.description}</div>
-        <div className="text-xs text-muted font-mono truncate">{item.key}</div>
-      </div>
-
-      <div className="flex items-center gap-2 shrink-0">
-        {/* 类型适配控件 */}
-        {item.type === "boolean" ? (
-          <button
-            role="switch"
-            aria-checked={!!value}
-            disabled={!item.editable || mutation.isPending}
-            onClick={() => save(!value)}
-            className={cn(
-              "w-11 h-6 rounded-full transition-colors relative",
-              value ? "bg-accent" : "bg-secondary",
-              "disabled:opacity-50",
-            )}
-          >
-            <span
-              className={cn(
-                "absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform",
-                value ? "translate-x-5" : "translate-x-0",
-              )}
+        <div className="flex-1 min-w-0 space-y-4">
+          {/* 搜索框 */}
+          <div className="relative">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t("searchPlaceholder")}
+              className="w-full bg-card border border-border rounded-md pl-9 pr-9 py-2 text-sm text-foreground outline-none focus:border-ring placeholder:text-muted"
             />
-          </button>
-        ) : item.type === "enum" && item.options ? (
-          <select
-            value={String(value ?? "")}
-            disabled={!item.editable || mutation.isPending}
-            onChange={(e) => save(e.target.value)}
-            className="bg-bg border border-input rounded-md px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring"
-          >
-            {item.options.map((opt) => (
-              <option key={opt} value={opt}>{opt}</option>
-            ))}
-          </select>
-        ) : (
-          <input
-            type={item.type === "integer" || item.type === "float" ? "number" : "text"}
-            value={value === null || value === undefined ? "" : String(value)}
-            disabled={!item.editable}
-            onChange={(e) => {
-              const raw = e.target.value;
-              if (item.type === "integer") setValue(raw === "" ? "" : parseInt(raw, 10));
-              else if (item.type === "float") setValue(raw === "" ? "" : parseFloat(raw));
-              else setValue(raw);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && dirty && !mutation.isPending) mutation.mutate(value);
-            }}
-            className="w-36 bg-bg border border-input rounded-md px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring disabled:opacity-50"
-          />
-        )}
+            {searching && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                aria-label={t("common:close")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-foreground"
+              >
+                <X size={15} />
+              </button>
+            )}
+          </div>
 
-        {/* 非布尔类型：保存按钮 */}
-        {item.type !== "boolean" && dirty && (
-          <button
-            onClick={() => mutation.mutate(value)}
-            disabled={mutation.isPending}
-            className="px-3 py-1.5 text-sm font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-all"
-          >
-            {mutation.isPending ? <Loader2 size={14} className="animate-spin" /> : t("common:save")}
-          </button>
-        )}
+          {/* 移动端分组下拉 */}
+          {!searching && (
+            <select
+              value={currentGroup?.group ?? ""}
+              onChange={(e) => setActiveGroup(e.target.value)}
+              className="md:hidden w-full bg-card border border-border rounded-md px-3 py-2 text-sm text-foreground outline-none focus:border-ring"
+            >
+              {tree.flatMap((m) =>
+                m.sections.map((s) => (
+                  <option key={s.group} value={s.group}>
+                    {t(`modules.${m.module}`, { defaultValue: m.module })} ·{" "}
+                    {t(`sections.${s.group}`, { defaultValue: s.group })}
+                  </option>
+                )),
+              )}
+            </select>
+          )}
 
-        {/* 保存成功反馈 */}
-        {saved && <Check size={16} className="text-ok" />}
-
-        {/* 重置为默认值 */}
-        {!isDefault && item.editable && (
-          <button
-            title={t("resetToDefault")}
-            onClick={() => save(item.default)}
-            disabled={mutation.isPending}
-            className="p-1.5 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors disabled:opacity-50"
-          >
-            <RotateCcw size={14} />
-          </button>
-        )}
+          {isLoading ? (
+            <div className="flex justify-center py-12 text-muted">
+              <Loader2 size={24} className="animate-spin" />
+            </div>
+          ) : searching ? (
+            /* 搜索结果：按分组聚合，高级区默认展开 */
+            <div className="space-y-5">
+              <div className="text-xs text-muted">
+                {t("searchResults", { count: searchResults.reduce((n, s) => n + s.items.length, 0) })}
+              </div>
+              {searchResults.length === 0 && (
+                <div className="py-12 text-center text-sm text-muted">{t("noResult")}</div>
+              )}
+              {searchResults.map((s) => (
+                <div key={s.group} className="space-y-2.5">
+                  <div className="text-xs font-medium text-muted">
+                    {t(`sections.${s.group}`, { defaultValue: s.group })}
+                  </div>
+                  <ConfigSection
+                    items={s.items}
+                    expandAdvanced
+                    onOpenDetail={(item) => setDetail({ item, group: s.group })}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : currentGroup ? (
+            <div className="space-y-2.5">
+              {windowItems && (
+                <div id="config-item-max_conversation_size">
+                  <ConversationWindowRow
+                    sizeItem={windowItems.sizeItem}
+                    percentItem={windowItems.percentItem}
+                  />
+                </div>
+              )}
+              <ConfigSection
+                items={currentGroup.items}
+                focusKey={focusKey}
+                renderRow={(item, defaultRow) => (WINDOW_KEYS.has(item.key) ? null : defaultRow)}
+                onOpenDetail={(item) => setDetail({ item, group: currentGroup.group })}
+              />
+            </div>
+          ) : null}
+        </div>
       </div>
-    </div>
+
+      <ConfigDetailDrawer
+        item={detail?.item ?? null}
+        group={detail?.group}
+        onClose={() => setDetail(null)}
+      />
+    </PageContainer>
   );
 }

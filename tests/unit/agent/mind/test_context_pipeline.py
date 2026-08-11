@@ -163,9 +163,9 @@ class TestGoldenOrder:
         )
         layers = [m["_layer"] for m in msgs]
         assert layers == [
-            "stable", "stable", "context", "summary",
+            "stable", "stable", "summary",
             "conversation", "conversation",
-            "status", "profile", "memory",
+            "context", "status", "profile", "memory",
         ], layers
         # 会话消息角色保持 DB 原样（尾部为 user，不触发 prefill 修复）
         conv = [m for m in msgs if m["_layer"] == "conversation"]

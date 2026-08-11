@@ -204,11 +204,11 @@ _SESSION_NOTIFY_HINT = (
 
 from agent.mind.context_pipeline import (
     VOL_HISTORY,
-    VOL_LOW,
     VOL_MESSAGE,
     VOL_PERIODIC,
     VOL_SESSION,
     VOL_STABLE,
+    VOL_TAIL_HEAD,
     ContextInput,
     ContextPipeline,
     context_block,
@@ -216,6 +216,7 @@ from agent.mind.context_pipeline import (
 
 # legacy 布局的变动率覆盖表（tail_injection 关闭时）：动态块移到历史之前
 _LEGACY_VOLATILITY: Dict[str, int] = {
+    "context": 10,
     "status": 24, "volatile": 25, "provider": 26, "overflow": 27,
     "security": 28, "profile": 29, "relation": 30, "goals": 31, "memory": 32,
     "summary": 33, "conversation": 34,
@@ -556,9 +557,15 @@ class ContextAssembly:
             return []
         return [{"role": "system", "content": inp.tools_text}]
 
-    @context_block("context", VOL_LOW, "动态便签 + 文件索引（context 层）")
+    @context_block("context", VOL_TAIL_HEAD, "动态便签 + 文件索引（尾部动态区最前）")
     def _blk_notes(self, inp: ContextInput) -> List[Dict]:
-        """context 层：动态便签 + 文件索引（低频内容，断点3）。"""
+        """context 层：动态便签 + 文件索引（尾部动态区最稳定的内容，放最前）。
+
+        不放前缀锚点位：心跳任务/技能评审/记忆写入都会改便签与文件索引，
+        若置于历史之前，每次漂移会让其后 20-40K 的摘要+对话前缀缓存整体
+        失效（空闲后首轮命中率跌到稳定层量级）；放尾部则漂移只损尾部增量，
+        内容经 PromptCacheManager 内容寻址缓存，未变时字节级稳定。
+        """
         if not inp.context_text:
             return []
         return [{"role": "system", "content": inp.context_text}]
@@ -686,6 +693,8 @@ class ContextAssembly:
         max_size = inp.max_conversation_size
         conversation_list = inp.conversation_list
         if not (max_size > 0 and len(conversation_list) >= max_size):
+            return []
+        if self._conversation_data is None or inp.anything is None:
             return []
         hidden = 0
         try:

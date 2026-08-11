@@ -25,14 +25,20 @@
     "empty": "暂无保存的快照",
     "back": "返回列表",
     "clearAll": "清空全部",
-    "cacheRead": "命中 {{tokens}}t"
+    "cacheRead": "命中 {{tokens}}t",
+    "kind": {
+      "reflect": "任务"
+    },
+    "jitter": "平台波动",
+    "jitterDesc": "前缀字节完全未变但命中下降——供应商侧缓存读写传播延迟/抖动，1~2 轮自动恢复，无需处理"
   },
   "providers": {
     "empty": "暂无上下文提供者",
     "budget": "Token 预算",
     "used": "当前占用",
     "staticEstimate": "静态预估",
-    "peak": "历史峰值"
+    "peak": "历史峰值",
+    "lastCollect": "最近一次收集：{{scope}} · {{time}}"
   },
   "stats": {
     "totalTokens": "估算 Tokens",

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, KeyRound, RefreshCw, Shield, Trash2 } from "lucide-react";
+import { ArrowRight, Copy, KeyRound, RefreshCw, Shield, Trash2 } from "lucide-react";
 import { authApi, configApi, type ApiKeyCreated, type ApiKeyInfo, type WebToolsConfig } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
@@ -12,7 +13,7 @@ import { LiteLLMCostMapCard } from "@/pages/config/LiteLLMCostMapCard";
 import type { ConfigValues } from "@/lib/types";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 
-/** 系统配置面板：密码 / API Keys / 成本表 / Web 工具 / 网络 */
+/** 系统配置面板：密码 / API Keys / 成本表 / Web 工具（网络与下载配置已收编进配置中心） */
 export function SysConfigPanel() {
   const { t } = useTranslation("appconfig");
 
@@ -22,24 +23,6 @@ export function SysConfigPanel() {
   });
 
   const proxyUrl = typeof data?.["https_proxy"] === "string" ? (data["https_proxy"] as string) : "";
-
-  const networkFields: FieldMeta[] = [
-    { key: "proxy_enabled", label: t("fields.proxy_enabled"), type: "bool" },
-    { key: "http_proxy", label: t("fields.http_proxy"), type: "string", desc: t("descs.http_proxy") },
-    { key: "https_proxy", label: t("fields.https_proxy"), type: "string", desc: t("descs.https_proxy") },
-    { key: "connect_timeout", label: t("fields.connect_timeout"), type: "float" },
-    { key: "read_timeout", label: t("fields.read_timeout"), type: "float" },
-    { key: "total_timeout", label: t("fields.total_timeout"), type: "float" },
-    { key: "retry_count", label: t("fields.retry_count"), type: "int" },
-    { key: "retry_delay", label: t("fields.retry_delay"), type: "float" },
-    { key: "backoff_factor", label: t("fields.backoff_factor"), type: "float" },
-    { key: "chunk_size", label: t("fields.chunk_size"), type: "int" },
-    { key: "user_agent", label: t("fields.user_agent"), type: "string" },
-    { key: "overwrite_existing", label: t("fields.overwrite_existing"), type: "bool" },
-    { key: "verify_download", label: t("fields.verify_download"), type: "bool" },
-    { key: "default_download_dir", label: t("fields.default_download_dir"), type: "string" },
-    { key: "workspace_root", label: t("fields.workspace_root"), type: "string" },
-  ];
 
   const webToolsFields: FieldMeta[] = [
     { key: "proxy", label: t("fields.web_proxy"), type: "string", desc: t("descs.web_proxy") },
@@ -58,15 +41,15 @@ export function SysConfigPanel() {
         fetchFn={() => configApi.getWebTools().then((r) => r.data as unknown as ConfigValues)}
         saveFn={(values) => configApi.saveWebTools(values as unknown as Partial<WebToolsConfig>)}
       />
-      <ConfigFormPanel
-        title={t("sections.network")}
-        fields={networkFields}
-        queryKey="appConfig"
-        fetchFn={() => configApi.getApp().then((r) => r.data)}
-        saveFn={(values) => configApi.saveApp(values)}
-        extraInvalidateKeys={["configSnapshot"]}
-        note={t("notes.restartRequired")}
-      />
+      <Card title={t("sections.network")} subtitle={t("sections.networkMoved")}>
+        <Link
+          to="/config?key=proxy_enabled"
+          className="inline-flex items-center gap-1.5 text-sm text-accent hover:underline"
+        >
+          {t("sections.networkMovedAction")}
+          <ArrowRight size={14} />
+        </Link>
+      </Card>
     </div>
   );
 }

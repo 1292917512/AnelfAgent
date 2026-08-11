@@ -219,66 +219,104 @@ class MemoryConsolidator:
 # ------------------------------------------------------------------
 
 _CONSOLIDATOR_CONFIGS = {
-    "记忆": {
+    "memory/consolidation": {
         "memory_forget_enabled": {
             "description": "是否启用自动遗忘（心跳时清理低价值记忆）",
             "default": True,
         },
         "memory_consolidate_every_n_ticks": {
-            "description": "记忆整理执行间隔（每 N 次心跳执行一次全量整理）",
+            "description": "整理执行间隔（每 N 次心跳一次全量整理）",
             "default": 12,
+            "advanced": True,
+            "unit": "次",
         },
         "memory_forget_min_age_days": {
-            "description": "记忆最小保留天数（早于此年龄的记忆不遗忘）",
+            "description": "记忆最小保留天数（早于此年龄不遗忘）",
             "default": 30,
+            "advanced": True,
+            "unit": "天",
         },
         "memory_forget_score_threshold": {
-            "description": "遗忘有效分阈值（低于此分且超过最小年龄的记忆被清理）",
+            "description": "遗忘有效分阈值（低于此分且超龄的记忆被清理）",
             "default": 0.08,
+            "advanced": True,
+            "value_type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
         },
         "memory_forget_min_keep_per_type": {
-            "description": "遗忘最小保留：每类活跃记忆低于该数量后不再遗忘（护栏）",
+            "description": "每类活跃记忆低于该数量后不再遗忘（护栏）",
             "default": 20,
+            "advanced": True,
+            "unit": "条",
         },
         "memory_importance_relax_days": {
-            "description": "重要性松弛：超过 N 天未被访问的记忆 importance 开始向基线 0.5 回归",
+            "description": "重要性松弛：超过 N 天未访问的记忆向基线 0.5 回归",
             "default": 14,
+            "advanced": True,
+            "unit": "天",
         },
         "memory_importance_relax_rate": {
-            "description": "重要性松弛速率（每次整理向基线回归的比例，0-1，0 = 关闭）",
+            "description": "重要性松弛速率（每次整理回归基线的比例，0 = 关闭）",
             "default": 0.05,
+            "advanced": True,
+            "value_type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
         },
         "memory_merge_similarity": {
-            "description": "高相似记忆自动合并的向量相似度阈值",
+            "description": "高相似记忆自动合并的相似度阈值",
             "default": 0.92,
+            "advanced": True,
+            "value_type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
         },
         "memory_archive_retention_days": {
             "description": "归档记忆保留天数（超期物理删除，0 = 永久保留）",
             "default": 90,
+            "advanced": True,
+            "unit": "天",
+        },
+        "cognee_sync_stale_seconds": {
+            "description": "Cognee 投影任务卡死判定（超时自动重新入队）",
+            "default": 900.0,
+            "advanced": True,
+            "unit": "秒",
+        },
+    },
+    "memory/recall": {
+        "memory_query_rewrite_enabled": {
+            "description": "召回前是否用轻量 LLM 改写检索查询（口语→检索友好形式）",
+            "default": True,
         },
         "memory_recall_timeout_seconds": {
-            "description": "被动召回检索整体超时（秒），超时回退近期记忆不阻塞对话",
+            "description": "召回检索整体超时（超时回退近期记忆，不阻塞对话）",
             "default": 5.0,
+            "advanced": True,
+            "unit": "秒",
         },
         "memory_recall_permanent_pin": {
-            "description": "永久记忆置顶注入条数（0 = 关闭；主人教导/规则类每轮固定注入）",
+            "description": "永久记忆置顶注入条数（0 = 关闭；教导/规则类每轮固定注入）",
             "default": 3,
-        },
-        "memory_query_rewrite_enabled": {
-            "description": "被动召回前是否用轻量 LLM 改写检索查询（口语上下文→检索友好形式）",
-            "default": True,
+            "advanced": True,
+            "unit": "条",
         },
         "memory_recall_skip_trivial": {
-            "description": "平凡消息（≤6 字符的纯客套/短回复）跳过记忆检索与查询改写",
+            "description": "平凡消息（≤6 字符客套话）跳过检索与查询改写",
             "default": True,
+            "advanced": True,
         },
+    },
+    "memory/notes": {
         "notes_inject_max_chars": {
             "description": "主便签注入上下文的最大字符数（超出按章节优先级裁剪）",
             "default": 6000,
-        },
-        "cognee_sync_stale_seconds": {
-            "description": "Cognee 投影任务卡死判定时长（秒），超过后自动重新入队",
-            "default": 900.0,
+            "advanced": True,
+            "unit": "字符",
         },
     },
 }

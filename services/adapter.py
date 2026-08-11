@@ -162,8 +162,8 @@ class AdapterService:
             return
 
         try:
+            # 配置在 BaseChannel.__init__ 中自动加载（channels/<id>/channel_config.json）
             instance = channel_cls()
-            instance.load_channel_config(str(channel_dir))
             mgr.register(instance)
             await mgr.start_channel(key)
             log(f"频道动态启用: {key}")

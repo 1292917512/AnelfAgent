@@ -562,30 +562,39 @@ async def flush_auto_capture(mind: "Mind") -> None:
 
 
 _CAPTURE_CONFIGS = {
-    "记忆": {
+    "memory/capture": {
         "memory_auto_capture_enabled": {
-            "description": "自动记忆捕获：对话达阈值/空闲时自动提取事实进长期记忆",
+            "description": "是否在对话达阈值/空闲时自动提取事实进长期记忆",
             "default": True,
         },
         "memory_auto_capture_every_n": {
-            "description": "自动捕获：每积累 N 轮新对话触发一次提取",
+            "description": "每积累 N 轮新对话触发一次提取",
             "default": 5,
+            "advanced": True,
+            "unit": "次",
         },
         "memory_auto_capture_idle_seconds": {
-            "description": "自动捕获：会话静默超过该秒数后提取待定内容（空闲防抖）",
+            "description": "会话静默超过该时长后提取待定内容（空闲防抖）",
             "default": 600,
+            "advanced": True,
+            "unit": "秒",
         },
         "memory_auto_capture_max_scopes": {
-            "description": "自动捕获：单次心跳最多处理的会话数",
+            "description": "单次心跳最多处理的会话数",
             "default": 5,
+            "advanced": True,
+            "unit": "个",
         },
         "memory_auto_capture_max_per_batch": {
-            "description": "自动捕获：单批最多提取的记忆条数",
+            "description": "单批最多提取的记忆条数",
             "default": 6,
+            "advanced": True,
+            "unit": "条",
         },
         "memory_auto_capture_extract_relations": {
-            "description": "自动捕获：提取事实的同时抽取实体关系进图谱",
+            "description": "是否在提取事实的同时抽取实体关系进图谱",
             "default": True,
+            "advanced": True,
         },
     },
 }

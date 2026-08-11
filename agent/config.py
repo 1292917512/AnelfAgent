@@ -15,51 +15,75 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.config import ConfigValueType
 from core.config import parse_env_value as _parse_env_value
 from core.log import log
 from core.path import ConfigPaths
 
 _ENV_PREFIX = "ANELF_"
 
-_LLM_CONFIGS: Dict[str, Dict[str, Dict[str, Any]]] = {}
-
 _MIND_CONFIGS = {
-    "AnelfAgent/Mind": {
+    "mind/core": {
+        "llm_stream_enabled": {
+            "description": "LLM 流式输出（关闭则整段返回；前缀缓存读写仅在流式下可观测）",
+            "default": True,
+        },
         "heartbeat_interval": {
-            "description": "心跳间隔（秒）",
+            "description": "心跳间隔",
             "default": 300.0,
+            "advanced": True,
+            "min": 60,
+            "unit": "秒",
         },
         "auto_cycle_base_delay": {
-            "description": "自主循环续轮退避基数（秒，指数封顶 8s）；有待回复消息时不退避",
+            "description": "自主循环续轮退避基数（指数封顶 8s）；有待回复消息时不退避",
             "default": 0.5,
+            "advanced": True,
+            "unit": "秒",
         },
         "meta_decision_temperature": {
             "description": "元决策温度",
             "default": 0.3,
+            "advanced": True,
+            "value_type": ConfigValueType.RANGE,
+            "min": 0,
+            "max": 2,
+            "step": 0.1,
         },
         "conversation_analysis_threshold": {
             "description": "对话分析阈值（消息数）",
             "default": 5,
+            "advanced": True,
+            "unit": "条",
         },
         "max_tool_iterations": {
             "description": "最大工具调用轮次",
             "default": 8,
+            "advanced": True,
+            "unit": "轮",
         },
         "force_tool_use": {
-            "description": "纯工具模式：思维循环中 LLM 调用强制工具选择（tool_choice=required）。默认关闭——纯文本输出会自动投递到当前会话，无需强制",
+            "description": "纯工具模式：强制 LLM 工具选择（tool_choice=required）；纯文本本就会自动投递，通常无需开启",
             "default": False,
+            "advanced": True,
         },
         "background_wait_timeout": {
-            "description": "后台任务等待：等待意图挂起的单次上限（秒）",
+            "description": "后台任务等待：单次挂起上限",
             "default": 30.0,
+            "advanced": True,
+            "unit": "秒",
         },
         "background_wait_budget": {
-            "description": "后台任务等待：单轮回复累计挂起预算（秒），耗尽后等待意图按普通纯文本投递处理",
+            "description": "后台任务等待：单轮累计挂起预算，耗尽后按普通文本投递",
             "default": 120.0,
+            "advanced": True,
+            "unit": "秒",
         },
         "text_without_tool_limit": {
-            "description": "纯文本（无工具调用）连续上限：超过则强制结束本轮，避免兜底死循环",
+            "description": "连续纯文本（无工具调用）上限，超过强制结束本轮防死循环",
             "default": 5,
+            "advanced": True,
+            "unit": "轮",
         },
         "log_ai_output": {
             "description": "是否记录 AI 输出日志",
@@ -70,102 +94,185 @@ _MIND_CONFIGS = {
             "default": False,
         },
     },
-    "AnelfAgent/Mind/Memory": {
-        "vector_search_batch_size": {
-            "description": "向量搜索批量大小",
-            "default": 500,
+    "mind/llm": {
+        "llm_timeout": {
+            "description": "单次调用超时（秒）",
+            "default": 120.0,
+            "advanced": True,
+            "unit": "秒",
         },
+        "llm_max_retries": {
+            "description": "调用失败最大重试次数",
+            "default": 2,
+            "advanced": True,
+            "unit": "次",
+        },
+    },
+    "memory/recall": {
         "memory_recall_top_k": {
-            "description": "记忆召回 Top-K",
+            "description": "召回返回的最大条目数",
             "default": 5,
         },
         "memory_recall_min_score": {
-            "description": "记忆召回最低分数",
+            "description": "召回最低相关分（0~1，越高越严格）",
             "default": 0.1,
-        },
-        "memory_time_decay_days": {
-            "description": "记忆时间衰减天数",
-            "default": 30,
-        },
-        "memory_warn_threshold": {
-            "description": "记忆数量警告阈值",
-            "default": 200,
-        },
-        "memory_max_per_type": {
-            "description": "每类记忆最大数量",
-            "default": 500,
-        },
-        "heartbeat_max_entries": {
-            "description": "心跳便签最大条目数",
-            "default": 50,
-        },
-        "auto_consolidate_enabled": {
-            "description": "是否自动整理便签",
-            "default": True,
-        },
-        "notes_events_retention_days": {
-            "description": "events 日期便签保留天数，超期自动提炼归档后删除文件",
-            "default": 30,
-        },
-        "notes_events_distill_enabled": {
-            "description": "过期日期便签删除前是否先提炼进长期记忆（关闭则直接删除）",
-            "default": True,
+            "value_type": ConfigValueType.RANGE,
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
         },
         "short_term_memory_size": {
-            "description": "短期记忆容量",
+            "description": "短期记忆容量（条）",
             "default": 10,
+        },
+        "vector_search_batch_size": {
+            "description": "向量搜索批量大小",
+            "default": 500,
+            "advanced": True,
         },
         "tool_recall_top_n": {
             "description": "工具召回保留的 Top-N 数量",
             "default": 10,
-        },
-        "llm_timeout": {
-            "description": "LLM 调用超时时间（秒）",
-            "default": 120.0,
-        },
-        "llm_max_retries": {
-            "description": "LLM 调用最大重试次数",
-            "default": 2,
+            "advanced": True,
         },
         "conv_recall_scan_limit": {
-            "description": "深度对话检索：向量扫描的最大历史消息条数",
+            "description": "深度检索：向量扫描的最大历史消息条数",
             "default": 500,
+            "advanced": True,
         },
         "conv_recall_backfill_batch": {
-            "description": "深度对话检索：每次工具调用的 embedding 回填批次大小",
+            "description": "深度检索：每次工具调用的向量回填批次大小",
             "default": 30,
+            "advanced": True,
         },
         "conv_recall_min_score": {
-            "description": "深度对话检索：向量相似度最低分（低于此值的结果被丢弃）",
+            "description": "深度检索：最低相似度（0~1，低于则丢弃）",
             "default": 0.25,
+            "advanced": True,
+            "value_type": ConfigValueType.RANGE,
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
         },
         "conv_recall_max_results": {
-            "description": "深度对话检索：recall_conversation 工具最大返回条数",
+            "description": "深度检索：单次最大返回条数",
             "default": 10,
+            "advanced": True,
+            "unit": "条",
         },
+    },
+    "memory/cross_channel": {
         "cross_channel_enabled": {
-            "description": "跨频道感知：是否启用跨频道对话关联",
+            "description": "是否启用跨频道对话关联感知",
             "default": True,
         },
         "cross_channel_window_minutes": {
-            "description": "跨频道感知：活动感知时间窗口（分钟）",
+            "description": "活动感知时间窗口（分钟）",
             "default": 30,
+            "advanced": True,
+            "unit": "分钟",
         },
         "cross_channel_recall_min_score": {
-            "description": "跨频道感知：语义召回最低相似度（0~1）",
+            "description": "语义召回最低相似度（0~1）",
             "default": 0.45,
+            "advanced": True,
+            "value_type": ConfigValueType.RANGE,
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
         },
         "cross_channel_recall_max_results": {
-            "description": "跨频道感知：语义召回最大条数",
+            "description": "语义召回最大条数",
             "default": 3,
+            "advanced": True,
+            "unit": "条",
         },
         "cross_channel_recall_scan_limit": {
-            "description": "跨频道感知：每 scope 扫描消息数",
+            "description": "每会话扫描消息数",
             "default": 50,
+            "advanced": True,
         },
         "cross_channel_narrative_max_items": {
-            "description": "跨频道感知：近况叙事最大条数",
+            "description": "近况叙事最大条数",
             "default": 3,
+            "advanced": True,
+            "unit": "条",
+        },
+    },
+    "memory/notes": {
+        "auto_consolidate_enabled": {
+            "description": "心跳时是否自动整理便签",
+            "default": True,
+        },
+        "heartbeat_max_entries": {
+            "description": "心跳便签最大条目数",
+            "default": 50,
+            "advanced": True,
+            "unit": "条",
+        },
+        "notes_events_retention_days": {
+            "description": "events 日期便签保留天数，超期提炼归档后删除",
+            "default": 30,
+            "advanced": True,
+            "unit": "天",
+        },
+        "notes_events_distill_enabled": {
+            "description": "过期日期便签删除前是否先提炼进长期记忆",
+            "default": True,
+            "advanced": True,
+        },
+    },
+    "memory/limits": {
+        "memory_time_decay_days": {
+            "description": "记忆时间衰减天数",
+            "default": 30,
+            "advanced": True,
+            "unit": "天",
+        },
+        "memory_warn_threshold": {
+            "description": "记忆数量警告阈值",
+            "default": 200,
+            "advanced": True,
+            "unit": "条",
+        },
+        "memory_max_per_type": {
+            "description": "每类记忆最大数量",
+            "default": 500,
+            "advanced": True,
+            "unit": "条",
+        },
+    },
+}
+
+# 网络与工作区配置（原 Settings 页直改 app_config，收编进统一配置注册表）
+_NETWORK_CONFIGS = {
+    "network/proxy": {
+        "proxy_enabled": {
+            "description": "是否启用全局网络代理（启动时写入 HTTP(S)_PROXY 环境变量）",
+            "default": False,
+        },
+        "http_proxy": {
+            "description": "HTTP 代理地址（如 http://127.0.0.1:7890）",
+            "default": "",
+        },
+        "https_proxy": {
+            "description": "HTTPS 代理地址（留空则复用 HTTP 代理）",
+            "default": "",
+        },
+    },
+    "system/workspace": {
+        "workspace_root": {
+            "description": "工作区根目录（相对路径基于进程启动目录解析）",
+            "default": "workspace",
+        },
+        "sandbox_enabled": {
+            "description": "文件系统沙箱：限制文件工具只能访问工作区内路径",
+            "default": True,
+        },
+        "sandbox_shell_write_check": {
+            "description": "沙箱写检查：shell 命令涉及工作区外写入时拦截",
+            "default": True,
+            "advanced": True,
         },
     },
 }
@@ -305,8 +412,8 @@ class BotConfigProvider:
     def _register_configs() -> None:
         try:
             from core.config import register_configs
-            register_configs(_LLM_CONFIGS)
             register_configs(_MIND_CONFIGS)
+            register_configs(_NETWORK_CONFIGS)
         except Exception:
             log("配置注册跳过（ConfigManager 不可用）", "DEBUG")
 

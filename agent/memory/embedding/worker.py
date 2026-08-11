@@ -24,18 +24,24 @@ BacklogHandler = Callable[[Embedder, int], Awaitable[int]]
 """回填处理器：接收 embedder 与批次大小，返回本轮补全的向量数。"""
 
 _WORKER_CONFIGS = {
-    "记忆": {
+    "memory/embedding": {
         "embedding_worker_batch_size": {
-            "description": "Embedding 后台回填的单批文本数（单次 API 调用）",
+            "description": "后台回填的单批文本数（单次 API 调用）",
             "default": 32,
+            "advanced": True,
+            "unit": "条",
         },
         "embedding_worker_interval_seconds": {
-            "description": "Embedding 后台 worker 空闲轮询间隔（秒）",
+            "description": "后台 worker 空闲轮询间隔",
             "default": 30.0,
+            "advanced": True,
+            "unit": "秒",
         },
         "conv_embed_backfill_days": {
-            "description": "对话消息 embedding 回填的时间窗（天），远古消息不回填（0 = 不限）",
+            "description": "对话消息回填的时间窗，远古消息不回填（0 = 不限）",
             "default": 30,
+            "advanced": True,
+            "unit": "天",
         },
     },
 }

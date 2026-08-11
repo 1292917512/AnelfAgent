@@ -85,8 +85,10 @@ async def _invoke_llm_unified(
     _mm = _mind_module()
 
     # 上下文快照捕获（normalize 前，_layer 标签尚存；未布防时零开销）
+    # kind=调用用途（reply/reflect…）：列表行按用途区分主对话与任务调用，
+    # 任务首轮的结构性低命中不再被误读为主对话缓存故障
     from agent.mind.context_snapshot import context_snapshot
-    await context_snapshot.try_capture(messages, tools, model_name)
+    await context_snapshot.try_capture(messages, tools, model_name, kind=purpose)
 
     # 缓存断点装饰（唯一装饰点，_layer 标签尚存时按锚点表放置；
     # 按主客户端线型判定，回退候选的供应商适配在 llm_manager）

@@ -89,11 +89,14 @@ class ContextSnapshot:
         messages: List[Dict],
         tools: Optional[List[Dict]],
         model: str,
+        *,
+        kind: str = "",
     ) -> bool:
         """尝试捕获（在 _invoke_llm_unified 中 normalize 前调用）。
 
         未布防且未开启连续捕获时立即返回 False（零开销）。
         一次性布防捕获后自动解除；连续模式持续捕获并追加紧凑记录。
+        kind 为调用用途（reply/reflect…），随快照记录供列表按用途解读命中率。
         """
         if not self._armed and not self._continuous:
             return False
@@ -122,6 +125,7 @@ class ContextSnapshot:
             self._snapshot = {
                 "captured_at": time.time(),
                 "model": model,
+                "kind": kind,
                 "model_context_window": model_context_window,
                 "estimated_tokens": estimated_tokens,
                 "message_count": len(messages),
@@ -189,6 +193,7 @@ class ContextSnapshot:
                 "captured_at": snapshot.get("captured_at"),
                 "file": filename,
                 "model": snapshot.get("model"),
+                "kind": snapshot.get("kind"),
                 "estimated_tokens": snapshot.get("estimated_tokens"),
                 "message_count": snapshot.get("message_count"),
                 "tool_count": snapshot.get("tool_count"),
@@ -286,11 +291,30 @@ class ContextSnapshot:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 cache = data.get("cache") or {}
-                last_call = cache.get("last_call") or {}
+                # 列表徽标取捕获时点最近的一次调用（不限用途）：若只看 reply
+                # 主口径，一次低命中会粘性盖在随后一串辅助调用捕获行上，
+                # 被误读为"连续多次低命中"
+                last_call = cache.get("last_call_any") or cache.get("last_call") or {}
+                # 前缀字节是否稳定：除每轮必变的工具链/执行态外所有 section 未变
+                # （None=无基线无法判定）。命中低而前缀稳定 ⇒ 供应商侧缓存波动，
+                # 列表以"平台波动"标识，与内容断裂导致的真实低命中区分
+                tail_layers = {"tool_chain", "exec_context"}
+                prefix_flags = [
+                    s.get("changed") for s in data.get("sections", [])
+                    if s.get("layer") not in tail_layers
+                ]
+                prefix_stable: Optional[bool] = None
+                if prefix_flags:
+                    if all(f is False for f in prefix_flags):
+                        prefix_stable = True
+                    elif any(f is True for f in prefix_flags):
+                        prefix_stable = False
                 result.append({
                     "filename": fname,
                     "captured_at": data.get("captured_at", 0),
                     "model": data.get("model", ""),
+                    "kind": data.get("kind", ""),
+                    "prefix_stable": prefix_stable,
                     "model_context_window": data.get("model_context_window", 0),
                     "estimated_tokens": data.get("estimated_tokens", 0),
                     "message_count": data.get("message_count", 0),

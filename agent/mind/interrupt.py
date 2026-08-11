@@ -100,7 +100,7 @@ def match_interrupt_keyword(text: str) -> bool:
 # ------------------------------------------------------------------
 
 _INTERRUPT_CONFIGS = {
-    "中断控制": {
+    "mind/interrupt": {
         "interrupt_enabled": {
             "description": "是否启用会话中断（用户发送中断关键词可停止进行中的回复）",
             "default": True,

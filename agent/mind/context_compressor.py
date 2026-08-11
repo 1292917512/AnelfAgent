@@ -914,7 +914,7 @@ def _compress_context_tool(reason: str = "", focus_topic: str = "") -> str:
 # ------------------------------------------------------------------
 
 _COMPRESSION_CONFIGS = {
-    "上下文压缩": {
+    "context/compression": {
         "compression_enabled": {
             "description": "是否启用上下文自动压缩",
             "default": True,
@@ -922,22 +922,35 @@ _COMPRESSION_CONFIGS = {
         "compression_threshold_percent": {
             "description": "压缩触发阈值（占模型上下文窗口比例）",
             "default": 0.75,
+            "advanced": True,
+            "value_type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
         },
         "compression_protect_first_n": {
             "description": "压缩时保留的首部消息数",
             "default": 2,
+            "advanced": True,
+            "unit": "条",
         },
         "compression_protect_last_n": {
             "description": "压缩时保留的尾部消息数",
             "default": 10,
+            "advanced": True,
+            "unit": "条",
         },
         "compression_summary_max_chars": {
             "description": "压缩摘要最大字符数",
             "default": 2000,
+            "advanced": True,
+            "unit": "字符",
         },
         "compression_tool_fold_keep": {
             "description": "压缩时尾部保留完整原文的最新工具结果条数（更早的折叠为单行摘要）",
             "default": 4,
+            "advanced": True,
+            "unit": "条",
         },
         "compression_keep_user_messages": {
             "description": "压缩时保留中间段 user 消息原文（用户承诺/偏好不经摘要有损转述）",
@@ -946,6 +959,8 @@ _COMPRESSION_CONFIGS = {
         "compression_user_max_chars": {
             "description": "压缩时保留的 user 消息单条字符上限（0 = 不截断）",
             "default": 2000,
+            "advanced": True,
+            "unit": "字符",
         },
     },
 }

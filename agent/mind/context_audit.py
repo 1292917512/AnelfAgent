@@ -157,7 +157,7 @@ async def record_exchange(
 # ------------------------------------------------------------------
 
 _AUDIT_CONFIGS = {
-    "上下文审计": {
+    "context/audit": {
         "context_audit_enabled": {
             "description": "是否开启请求级全量审计日志（记录完整对话内容，仅供本地调试）",
             "default": False,
@@ -167,7 +167,7 @@ _AUDIT_CONFIGS = {
             "default": _DEFAULT_AUDIT_DIR,
         },
         "context_audit_log_tools": {
-            "description": "审计日志是否记录完整工具 schema（默认仅工具名，体积更小）",
+            "description": "是否在审计日志中记录完整工具 schema（默认仅工具名，体积更小）",
             "default": False,
         },
     },

@@ -26,7 +26,7 @@ from core.log import log
 # 频道内审批授权白名单：非空时仅白名单用户可 approve/deny，其他用户指令按普通消息放行。
 # 条目格式："user_id"（全局）或 "channel:user_id"（限定频道）；默认空=不启用校验。
 _APPROVAL_CONFIGS = {
-    "审批": {
+    "security/approval": {
         "approval_admin_users": {
             "description": "频道内审批授权白名单（user_id 或 channel:user_id），空=不限制",
             "default": [],

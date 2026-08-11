@@ -1,7 +1,20 @@
 import { useTranslation } from "react-i18next";
-import { configApi } from "@/lib/api";
+import { configMetaApi } from "@/lib/api";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
+import type { ConfigValues } from "@/lib/types";
+
+/** 经统一配置元数据 API 读取指定 keys 的当前值 */
+const metaFetch = (keys: string[]) => async (): Promise<ConfigValues> => {
+  const { data } = await configMetaApi.list();
+  const items = new Map(data.groups.flatMap((g) => g.items.map((i) => [i.key, i.value])));
+  return Object.fromEntries(keys.map((k) => [k, items.get(k) ?? null]));
+};
+
+/** 经统一配置元数据 API 保存（热更生效；Mind 字段服务端自动路由双轨同步） */
+const metaSave = async (values: ConfigValues) => {
+  await Promise.all(Object.entries(values).map(([k, v]) => configMetaApi.save(k, v)));
+};
 
 export function ConfigPanel() {
   const { t } = useTranslation("memory");
@@ -14,8 +27,6 @@ export function ConfigPanel() {
     { key: "memory_time_decay_days", label: t("configFields.memory_time_decay_days"), type: "int", desc: t("configDescs.memory_time_decay_days") },
     { key: "memory_warn_threshold", label: t("configFields.memory_warn_threshold"), type: "int", desc: t("configDescs.memory_warn_threshold") },
     { key: "memory_max_per_type", label: t("configFields.memory_max_per_type"), type: "int", desc: t("configDescs.memory_max_per_type") },
-    { key: "entity_merge_threshold", label: t("configFields.entity_merge_threshold"), type: "int", desc: t("configDescs.entity_merge_threshold") },
-    { key: "reflection_merge_threshold", label: t("configFields.reflection_merge_threshold"), type: "int", desc: t("configDescs.reflection_merge_threshold") },
     { key: "heartbeat_max_entries", label: t("configFields.heartbeat_max_entries"), type: "int", desc: t("configDescs.heartbeat_max_entries") },
     { key: "auto_consolidate_enabled", label: t("configFields.auto_consolidate_enabled"), type: "bool", desc: t("configDescs.auto_consolidate_enabled") },
     { key: "notes_events_retention_days", label: t("configFields.notes_events_retention_days"), type: "int", desc: t("configDescs.notes_events_retention_days") },
@@ -50,44 +61,27 @@ export function ConfigPanel() {
     { key: "cross_channel_narrative_max_items", label: ta("fields.cross_channel_narrative_max_items"), type: "int", desc: ta("descs.cross_channel_narrative_max_items") },
   ];
 
+  const panels: { title: string; subtitle: string; fields: FieldMeta[] }[] = [
+    { title: t("memoryConfig"), subtitle: t("memoryConfigSubtitle"), fields: memoryFields },
+    { title: ta("sections.deepRecall"), subtitle: ta("sections.deepRecallSubtitle"), fields: recallFields },
+    { title: ta("sections.embeddingEngine"), subtitle: ta("sections.embeddingEngineSubtitle"), fields: embeddingFields },
+    { title: ta("sections.crossChannel"), subtitle: ta("sections.crossChannelSubtitle"), fields: crossChannelFields },
+  ];
+
   return (
     <div className="space-y-4">
-      <ConfigFormPanel
-        title={t("memoryConfig")}
-        subtitle={t("memoryConfigSubtitle")}
-        fields={memoryFields}
-        queryKey="mindConfig"
-        fetchFn={() => configApi.getMind().then((r) => r.data?.config || r.data)}
-        saveFn={(values) => configApi.saveMind(values)}
-      />
-      <ConfigFormPanel
-        title={ta("sections.deepRecall")}
-        subtitle={ta("sections.deepRecallSubtitle")}
-        fields={recallFields}
-        queryKey="appConfig"
-        fetchFn={() => configApi.getApp().then((r) => r.data)}
-        saveFn={(values) => configApi.saveApp(values)}
-        extraInvalidateKeys={["configSnapshot"]}
-        note={ta("notes.restartRequired")}
-      />
-      <ConfigFormPanel
-        title={ta("sections.embeddingEngine")}
-        subtitle={ta("sections.embeddingEngineSubtitle")}
-        fields={embeddingFields}
-        queryKey="appConfig"
-        fetchFn={() => configApi.getApp().then((r) => r.data)}
-        saveFn={(values) => configApi.saveApp(values)}
-        extraInvalidateKeys={["configSnapshot"]}
-        note={ta("notes.restartRequired")}
-      />
-      <ConfigFormPanel
-        title={ta("sections.crossChannel")}
-        subtitle={ta("sections.crossChannelSubtitle")}
-        fields={crossChannelFields}
-        queryKey="mindConfig"
-        fetchFn={() => configApi.getMind().then((r) => r.data?.config || r.data)}
-        saveFn={(values) => configApi.saveMind(values)}
-      />
+      {panels.map((p) => (
+        <ConfigFormPanel
+          key={p.title}
+          title={p.title}
+          subtitle={p.subtitle}
+          fields={p.fields}
+          queryKey="configMeta"
+          fetchFn={metaFetch(p.fields.map((f) => f.key))}
+          saveFn={metaSave}
+          extraInvalidateKeys={["configSnapshot"]}
+        />
+      ))}
     </div>
   );
 }

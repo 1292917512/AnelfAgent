@@ -33,7 +33,7 @@ export function ConfigFormPanel({
   const { t: ta } = useTranslation("appconfig");
   const queryClient = useQueryClient();
   const [form, setForm] = useState<ConfigValues>({});
-  const [hasChanges, setHasChanges] = useState(false);
+  const [dirtyKeys, setDirtyKeys] = useState<Set<string>>(new Set());
   const [saved, triggerSaved] = useCopyFeedback(2000);
 
   const { data, isLoading } = useQuery({
@@ -46,31 +46,33 @@ export function ConfigFormPanel({
   }, [data]);
 
   const saveMutation = useMutation({
-    mutationFn: (values: ConfigValues) => saveFn(values),
+    // 仅提交变更过的字段，避免全量回写
+    mutationFn: (values: ConfigValues) =>
+      saveFn(Object.fromEntries([...dirtyKeys].map((k) => [k, values[k]]))),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [queryKey] });
       extraInvalidateKeys?.forEach((key) =>
         queryClient.invalidateQueries({ queryKey: [key] }),
       );
-      setHasChanges(false);
+      setDirtyKeys(new Set());
       triggerSaved();
     },
   });
 
   const handleChange = (key: string, value: unknown) => {
     setForm((prev) => ({ ...prev, [key]: value }));
-    setHasChanges(true);
+    setDirtyKeys((prev) => new Set(prev).add(key));
   };
 
   const handleSave = () => {
-    if (!hasChanges) return;
+    if (dirtyKeys.size === 0) return;
     saveMutation.mutate(form);
   };
 
   const handleReset = () => {
     if (data) {
       setForm(data);
-      setHasChanges(false);
+      setDirtyKeys(new Set());
     }
   };
 
@@ -86,13 +88,13 @@ export function ConfigFormPanel({
       <div className="flex items-center gap-3 pt-3">
         <button
           onClick={handleSave}
-          disabled={!hasChanges || saveMutation.isPending}
+          disabled={dirtyKeys.size === 0 || saveMutation.isPending}
           className={cn(
             "flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-md transition-all",
             saved
               ? "bg-ok text-white border border-[var(--ok)]"
               : "bg-accent text-white border border-accent hover:opacity-90",
-            (!hasChanges || saveMutation.isPending) && "opacity-50 cursor-not-allowed",
+            (dirtyKeys.size === 0 || saveMutation.isPending) && "opacity-50 cursor-not-allowed",
           )}
         >
           {saved ? <Check size={14} /> : <Save size={14} />}

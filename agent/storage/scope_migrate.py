@@ -316,13 +316,13 @@ async def migrate_memory_db_tags(
 # ------------------------------------------------------------------
 
 _SCOPE_MIGRATION_CONFIGS = {
-    "Scope迁移": {
+    "system/migration": {
         "legacy_adapter_default": {
             "description": "存量无频道信息的数据（历史消息/画像/记忆标签）迁移时归属的默认频道 adapter key",
             "default": "qq",
         },
         "alias_merge_history": {
-            "description": "读取对话历史时是否合并别名实体的跨频道历史（认出同一个人）",
+            "description": "是否合并别名实体的跨频道对话历史（认出同一个人）",
             "default": True,
         },
     },

@@ -138,7 +138,11 @@ class TaskExecutor:
         if entity:
             conversation_list = await self.mind.get_conversation(entity)
 
-        base_messages = await self.mind.get_recollection(conversation_list)
+        # 任务精简上下文（task_lean_context）：人设+工具+永久记忆+任务指令；
+        # 环境便签/召回/状态由任务按系统规则经 recall/get_conversation 按需取回
+        from core.config import get_config_bool
+        lean = get_config_bool("task_lean_context", True)
+        base_messages = await self.mind.get_recollection(conversation_list, lean=lean)
         prompt_msg: Dict[str, str] = {
             "role": "user",
             "content": (

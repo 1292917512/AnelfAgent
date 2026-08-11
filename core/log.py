@@ -244,10 +244,10 @@ def set_log_level(level: str) -> None:
 # ======================================================================
 
 _LOG_CONFIGS = {
-    "日志": {
+    "system/logging": {
         "log_file_enabled": {
             "default": False,
-            "description": "将日志持久化输出到文件（logs/anelf.log）",
+            "description": "是否将日志持久化到文件（logs/anelf.log）",
         },
     }
 }

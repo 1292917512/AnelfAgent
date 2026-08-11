@@ -201,18 +201,25 @@ async def apply_update(
 
 
 _DEDUP_CONFIGS = {
-    "记忆": {
+    "memory/dedup": {
         "memory_llm_dedup_enabled": {
-            "description": "写入去重：规则判重后是否再经 LLM 裁决（store/skip/update）",
+            "description": "规则判重后是否再经 LLM 裁决（store/skip/update）",
             "default": True,
         },
         "memory_dedup_candidate_limit": {
-            "description": "写入去重裁决的最大候选条数",
+            "description": "判重裁决的最大候选条数",
             "default": 8,
+            "advanced": True,
+            "unit": "条",
         },
         "memory_dedup_vec_min_score": {
-            "description": "写入去重向量候选的最低相似度",
+            "description": "向量候选的最低相似度",
             "default": 0.45,
+            "advanced": True,
+            "value_type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
         },
     },
 }

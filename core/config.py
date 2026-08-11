@@ -20,8 +20,6 @@ _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # 字符串长度超过该阈值时自动探测为长文本类型
 _TEXT_LENGTH_THRESHOLD = 100
-# 未注册配置项在分组视图中的兜底分组名
-_UNGROUPED_CONFIG_GROUP = "其他"
 
 
 def parse_env_value(value: str) -> Any:
@@ -103,11 +101,26 @@ class ConfigItem:
     # 基本约束
     enum_options: Optional[List[str]] = None  # 枚举选项
     required: bool = False  # 是否必填
-    tag: str = ""  # 条件显示标签（如 "forward"/"reverse"）
+    # 展示与交互元数据
+    advanced: bool = False  # 高级项（UI 折叠到高级区，基础项直接展示）
+    min_value: Optional[float] = None  # RANGE 类型下界
+    max_value: Optional[float] = None  # RANGE 类型上界
+    step: Optional[float] = None  # RANGE 类型步进
+    unit: str = ""  # 单位展示（秒/%/条/分钟…）
 
     def __post_init__(self):
         if self.value_type == ConfigValueType.AUTO or self.value_type == "auto":
             self.value_type = self._detect_type(self.default_value)
+
+    def clamp(self, value: Any) -> Any:
+        """按声明的 min/max 边界收敛数值（未声明边界时原样返回）。"""
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return value
+        if self.min_value is not None and value < self.min_value:
+            return self.min_value
+        if self.max_value is not None and value > self.max_value:
+            return self.max_value
+        return value
 
     def _detect_type(self, value: object) -> ConfigValueType:
         """自动检测值类型"""
@@ -178,34 +191,6 @@ class ConfigRegistry:
         for group_name in cls._groups:
             grouped[group_name] = cls.get_group_items(group_name)
         return grouped
-
-    @classmethod
-    def get_hierarchical_items(cls) -> Dict[str, Any]:
-        """获取按层次结构组织的配置项 - 简化版本，直接返回嵌套字典"""
-        hierarchical = {}
-        grouped_items = cls.get_grouped_items()
-
-        for group_name, items in grouped_items.items():
-            # 处理多级分组路径
-            if '/' in group_name:
-                parts = group_name.split('/')
-                current = hierarchical
-
-                # 构建嵌套结构 - 简化，不使用_children层
-                for i, part in enumerate(parts):
-                    if i == len(parts) - 1:
-                        # 最后一级，直接设置配置项
-                        current[part] = items
-                    else:
-                        # 中间层级，确保存在字典
-                        if part not in current:
-                            current[part] = {}
-                        current = current[part]
-            else:
-                # 单级分组，直接设置
-                hierarchical[group_name] = items
-
-        return hierarchical
 
 
 class ConfigManager:
@@ -313,15 +298,6 @@ class ConfigManager:
             cls._initialized = False
 
     @classmethod
-    def get_statistics(cls) -> Dict[str, Any]:
-        """获取统计信息"""
-        return {
-            'total_configs': len(cls._config),
-            'total_groups': len(ConfigRegistry._groups),
-            'total_items': len(ConfigRegistry._registry)
-        }
-
-    @classmethod
     def get_all(cls) -> Dict[str, Any]:
         """获取所有配置"""
         return cls._config.copy()
@@ -332,25 +308,6 @@ class ConfigManager:
         with cls._lock:
             cls._config.update(config_dict)
             cls._file_config.update(config_dict)
-
-    @classmethod
-    def get_grouped_configs(cls) -> Dict[str, Dict[str, Any]]:
-        """获取按分组组织的配置"""
-        grouped_items = ConfigRegistry.get_grouped_items()
-
-        # 使用字典推导式简化
-        grouped = {
-            group_name: {item.key: cls.get(item.key, item.default_value) for item in items}
-            for group_name, items in grouped_items.items()
-        }
-
-        # 添加未注册的配置
-        registered_keys = {item.key for item in ConfigRegistry.get_all_items()}
-        unregistered = {k: v for k, v in cls._config.items() if k not in registered_keys}
-        if unregistered:
-            grouped[_UNGROUPED_CONFIG_GROUP] = unregistered
-
-        return grouped
 
     @classmethod
     def _load_config(cls) -> None:
@@ -396,7 +353,11 @@ def register_configs(configs: Dict[str, Dict[str, Any]]) -> None:
                 value_type=config_info.get("value_type", ConfigValueType.AUTO),
                 enum_options=config_info.get("options"),
                 required=config_info.get("required", False),
-                tag=config_info.get("tag", ""),
+                advanced=config_info.get("advanced", False),
+                min_value=config_info.get("min"),
+                max_value=config_info.get("max"),
+                step=config_info.get("step"),
+                unit=config_info.get("unit", ""),
             )
 
             # 注册配置项并初始化默认值

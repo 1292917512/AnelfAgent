@@ -490,17 +490,19 @@ def create_bootstrap() -> FlowMachine:
 # ------------------------------------------------------------------
 
 _RECOVERY_CONFIGS = {
-    "启动恢复": {
+    "system/recovery": {
         "recovery_unanswered_enabled": {
-            "description": "启动时扫描各对话窗口，补回重启前收到但尚未回复的消息",
+            "description": "是否在启动时补回重启前收到但尚未回复的消息",
             "default": True,
         },
         "recovery_max_age_hours": {
-            "description": "未回复消息恢复的最大消息年龄（小时），超龄消息不再补回",
+            "description": "未回复消息补回的最大年龄，超龄不再补回",
             "default": 24.0,
+            "advanced": True,
+            "unit": "小时",
         },
         "pfc_persist_enabled": {
-            "description": "PFC 待办（画像分析/通用任务）持久化，重启后自动恢复执行",
+            "description": "是否持久化 PFC 待办（画像分析/通用任务），重启后自动恢复执行",
             "default": True,
         },
     },

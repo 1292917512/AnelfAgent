@@ -43,18 +43,20 @@ entity_manifest(
 )
 
 _STICKER_CONFIGS = {
-    "贴纸": {
+    "entity/sticker": {
         "image_index_enabled": {
-            "description": "入站图片自动建立感知索引（phash + 描述 + 向量），支撑文搜图/图搜图",
+            "description": "是否自动为入站图片建立感知索引（phash + 描述 + 向量，支撑文搜图/图搜图）",
             "default": True,
         },
         "image_index_describe_enabled": {
-            "description": "索引时为图片调用视觉模型生成文字描述（关闭则仅保留 phash 索引，省 token）",
+            "description": "是否调用视觉模型为图片生成文字描述（关闭则仅保留 phash 索引，省 token）",
             "default": True,
         },
         "image_index_describe_timeout": {
-            "description": "索引单张图片描述的超时时间（秒）",
+            "description": "单张图片描述的超时时间",
             "default": 60.0,
+            "advanced": True,
+            "unit": "秒",
         },
     },
 }

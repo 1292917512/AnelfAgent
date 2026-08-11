@@ -160,18 +160,22 @@ tool_gate = ToolGate()
 # ------------------------------------------------------------------
 
 _TOOL_GATE_CONFIGS = {
-    "工具门控": {
+    "tools/gate": {
         "tool_gate_enabled": {
             "description": "是否启用工具门控（check_fn 前置条件过滤）",
             "default": True,
         },
         "tool_gate_check_ttl_seconds": {
-            "description": "check_fn 检查结果缓存时长（秒）",
+            "description": "check_fn 检查结果缓存时长",
             "default": _CHECK_FN_TTL_SECONDS,
+            "advanced": True,
+            "unit": "秒",
         },
         "tool_gate_check_grace_seconds": {
-            "description": "check_fn 瞬态故障宽限窗口（秒）",
+            "description": "check_fn 瞬态故障宽限窗口",
             "default": _CHECK_FN_FAILURE_GRACE_SECONDS,
+            "advanced": True,
+            "unit": "秒",
         },
         "tool_gate_sleep_enabled": {
             "description": "是否启用工具沉睡/激活模式",
@@ -180,10 +184,14 @@ _TOOL_GATE_CONFIGS = {
         "tool_gate_default_active_rounds": {
             "description": "工具分组激活后的默认持续轮数",
             "default": 3,
+            "advanced": True,
+            "unit": "轮",
         },
         "tool_gate_max_active_rounds": {
             "description": "工具分组激活持续轮数上限",
             "default": 20,
+            "advanced": True,
+            "unit": "轮",
         },
     },
 }

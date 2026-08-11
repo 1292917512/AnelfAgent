@@ -8,10 +8,22 @@ import { cn } from "@/lib/utils";
 import type { ContextSnapshotData, SnapshotListItem } from "@/lib/types";
 import { downloadJson } from "./downloadJson";
 
-/** 缓存命中率徽标：≥70% 绿 / ≥30% 黄 / 其余灰；无数据显示 — */
-function CacheHitBadge({ rate }: { rate?: number | null }) {
+/** 缓存命中率徽标：≥70% 绿 / ≥30% 黄 / 其余灰；
+ *  前缀字节稳定但命中低 = 供应商侧缓存波动（非内容断裂），单独标识 */
+function CacheHitBadge({ rate, prefixStable }: { rate?: number | null; prefixStable?: boolean | null }) {
+  const { t } = useTranslation("context");
   if (rate == null) return null;
   const pct = Math.round(rate * 100);
+  if (pct < 70 && prefixStable === true) {
+    return (
+      <span
+        className="px-1.5 py-px rounded text-[9px] font-medium bg-sky-500/15 text-sky-500"
+        title={t("history.jitterDesc")}
+      >
+        {pct}% · {t("history.jitter")}
+      </span>
+    );
+  }
   return (
     <span
       className={cn(
@@ -24,6 +36,17 @@ function CacheHitBadge({ rate }: { rate?: number | null }) {
       )}
     >
       {pct}%
+    </span>
+  );
+}
+
+/** 调用用途徽标：辅助调用（任务/反思）首轮低命中是结构下限，与主对话区分展示 */
+function KindBadge({ kind }: { kind?: string }) {
+  const { t } = useTranslation("context");
+  if (!kind || kind === "reply") return null;
+  return (
+    <span className="px-1.5 py-px rounded text-[9px] font-medium bg-accent/15 text-accent">
+      {t(`history.kind.${kind}`, { defaultValue: kind })}
     </span>
   );
 }
@@ -108,7 +131,8 @@ export function HistoryTab() {
               <button onClick={() => handleOpen(s.filename)} className="flex-1 min-w-0 text-left">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-mono text-foreground">{s.model}</span>
-                  <CacheHitBadge rate={s.cache_hit_rate} />
+                  <KindBadge kind={s.kind} />
+                  <CacheHitBadge rate={s.cache_hit_rate} prefixStable={s.prefix_stable} />
                   <span className="text-[10px] text-muted">{new Date(s.captured_at * 1000).toLocaleString()}</span>
                 </div>
                 <div className="flex items-center gap-3 mt-1 text-[10px] text-muted">

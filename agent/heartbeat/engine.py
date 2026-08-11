@@ -672,7 +672,10 @@ class HeartbeatEngine:
         if alias_convs:
             combined = combined + alias_convs
 
-        base_messages = await self.mind.get_recollection(combined)
+        from core.config import get_config_bool
+        base_messages = await self.mind.get_recollection(
+            combined, lean=get_config_bool("task_lean_context", True),
+        )
         personality_desc = entity.get_personality_desc()
         analysis_messages = list(base_messages)
         if personality_desc:

@@ -224,18 +224,22 @@ async def stop_channel_supervisor() -> None:
 # ------------------------------------------------------------------
 
 _SUPERVISOR_CONFIGS = {
-    "频道看门狗": {
+    "channel/supervision": {
         "channel_supervisor_enabled": {
             "description": "是否启用频道看门狗（ERROR 频道自动退避重启）",
             "default": True,
         },
         "channel_supervisor_interval": {
-            "description": "看门狗巡检间隔（秒）",
+            "description": "看门狗巡检间隔",
             "default": 10.0,
+            "advanced": True,
+            "unit": "秒",
         },
         "channel_supervisor_max_restarts": {
             "description": "单频道连续重启失败上限（超过则降级停手）",
             "default": 5,
+            "advanced": True,
+            "unit": "次",
         },
     },
 }

@@ -131,7 +131,7 @@ def get_entity_config(entity_name: str) -> str:
         metadata = EntityRegistry.get(entity_name)
         if metadata is None:
             results = EntityRegistry.search(entity_name)
-            with_config = [e for e in results if e.config_group]
+            with_config = [e for e in results if e.get_config_items()]
             if not with_config:
                 return tool_error(f"未找到实体 '{entity_name}' 或该实体无配置",
                                   cause=ErrorCause.NOT_FOUND, retryable=False,
@@ -220,8 +220,8 @@ def get_entity_status(entity_name: str = "") -> str:
             "has_instance": metadata.instance is not None,
             "apis": metadata.get_registered_apis(),
         }
-        if metadata.config_group:
-            info["configs"] = metadata.get_all_configs()
+        if configs := metadata.get_all_configs():
+            info["configs"] = configs
 
         return json.dumps(info, ensure_ascii=False)
     except Exception as e:

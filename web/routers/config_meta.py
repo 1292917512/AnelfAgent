@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from core.config import ConfigManager, ConfigRegistry, ConfigValueType
+from core.config import ConfigItem, ConfigManager, ConfigRegistry, ConfigValueType
 from web.routers._errors import server_error
 
 router = APIRouter(prefix="/config", tags=["config"])
@@ -35,36 +35,28 @@ def _mind_fields() -> frozenset:
     return _MIND_FIELDS_CACHE
 
 
-def _infer_type(item: Any, value: Any) -> str:
-    """推断配置项的前端控件类型。"""
+def _item_type(item: ConfigItem) -> str:
+    """配置项的前端控件类型（ConfigItem 构造时已解析 AUTO，直接取声明类型）。"""
     vt = item.value_type
-    vt_value = vt.value if isinstance(vt, ConfigValueType) else str(vt)
-    if vt_value and vt_value != "auto":
-        return vt_value
-    if item.enum_options:
-        return "enum"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, int):
-        return "integer"
-    if isinstance(value, float):
-        return "float"
-    if isinstance(value, (list, dict)):
-        return "json"
-    return "string"
+    return vt.value if isinstance(vt, ConfigValueType) else str(vt)
 
 
-def _serialize_item(item: Any) -> Dict[str, Any]:
+def _serialize_item(item: ConfigItem) -> Dict[str, Any]:
     """将 ConfigItem 序列化为前端可用的元数据。"""
     value = ConfigManager.get(item.key, item.default_value)
     return {
         "key": item.key,
         "description": item.description or item.key,
-        "type": _infer_type(item, value),
+        "type": _item_type(item),
         "value": value,
         "default": item.default_value,
         "editable": item.editable,
         "options": item.enum_options,
+        "advanced": item.advanced,
+        "min": item.min_value,
+        "max": item.max_value,
+        "step": item.step,
+        "unit": item.unit,
         "source": "mind" if item.key in _mind_fields() else "config_manager",
     }
 
@@ -84,7 +76,7 @@ class ConfigValueUpdate(BaseModel):
     value: Any
 
 
-def _coerce_value(key: str, value: Any, expected_type: str) -> Any:
+def _coerce_value(key: str, value: Any, expected_type: str, default: Any = None) -> Any:
     """按声明类型校验并转换配置值，非法值抛 400。"""
     try:
         if expected_type == "boolean":
@@ -96,7 +88,9 @@ def _coerce_value(key: str, value: Any, expected_type: str) -> Any:
         if expected_type == "integer":
             return int(value)
         if expected_type in ("float", "range"):
-            return float(value)
+            number = float(value)
+            # range 与默认值保持同型（整型默认值不产生浮点值）
+            return int(number) if expected_type == "range" and isinstance(default, int) else number
         if expected_type == "enum":
             return str(value)
         if expected_type == "json":
@@ -115,8 +109,8 @@ async def save_config_meta(key: str, data: ConfigValueUpdate) -> Dict[str, Any]:
     if not item.editable:
         raise HTTPException(403, f"配置项不可编辑: {key}")
 
-    expected_type = _infer_type(item, ConfigManager.get(key, item.default_value))
-    value = _coerce_value(key, data.value, expected_type)
+    expected_type = _item_type(item)
+    value = item.clamp(_coerce_value(key, data.value, expected_type, item.default_value))
     if expected_type == "enum" and item.enum_options and value not in item.enum_options:
         raise HTTPException(400, f"配置项 {key} 的值必须是 {item.enum_options} 之一")
 

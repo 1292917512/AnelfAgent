@@ -38,9 +38,9 @@ entity_manifest(
 # ------------------------------------------------------------------
 
 _WEB_CONFIGS = {
-    "安全": {
+    "entity/web": {
         "web_ssrf_protection": {
-            "description": "网络工具 SSRF 防护：拒绝访问回环/内网/链路本地等受限地址",
+            "description": "是否开启 SSRF 防护（拒绝访问回环/内网/链路本地等受限地址）",
             "default": True,
         },
     },

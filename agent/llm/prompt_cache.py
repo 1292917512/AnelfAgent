@@ -27,13 +27,15 @@ from core.config import get_config, get_config_bool
 MAX_BREAKPOINTS = 4
 
 # 头部锚点层（断点打在各层**末消息**上，覆盖整层前缀；按序消耗预算）
-_ANCHOR_LAYERS = ("stable", "context")
+# 便签（context 层）不做锚点：它在尾部动态区（后台任务会写，属漂移内容），
+# 锚点打漂移内容既浪费断点预算又把易变字节固化进缓存前缀
+_ANCHOR_LAYERS = ("stable",)
 
 # 历史锚点层（conversation 末尾，无历史时回退 summary；由配置门控）
 _HISTORY_ANCHOR_LAYERS = ("conversation", "summary")
 
 # 理论可命中前缀层（快照分析口径：这些层字节稳定，其 tokens 即预期 cache_read 下限）
-CACHEABLE_PREFIX_LAYERS = ("stable", "context", "summary")
+CACHEABLE_PREFIX_LAYERS = ("stable", "summary")
 
 
 def cache_marker(api_type: str = "") -> Dict[str, Any]:

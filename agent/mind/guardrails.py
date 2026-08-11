@@ -398,7 +398,7 @@ def synthetic_block_result(decision: GuardrailDecision) -> str:
 # ------------------------------------------------------------------
 
 _GUARDRAIL_CONFIGS = {
-    "错误守卫": {
+    "mind/guardrails": {
         "guardrails_enabled": {
             "description": "是否启用工具调用守卫（死循环检测）",
             "default": True,
@@ -410,26 +410,38 @@ _GUARDRAIL_CONFIGS = {
         "guardrails_exact_failure_warn_after": {
             "description": "同工具同参数连续失败警告阈值",
             "default": 2,
+            "advanced": True,
+            "unit": "次",
         },
         "guardrails_exact_failure_block_after": {
             "description": "同工具同参数连续失败拦截阈值（需开启硬拦截）",
             "default": 5,
+            "advanced": True,
+            "unit": "次",
         },
         "guardrails_same_tool_failure_warn_after": {
             "description": "同工具连续失败警告阈值",
             "default": 3,
+            "advanced": True,
+            "unit": "次",
         },
         "guardrails_same_tool_failure_halt_after": {
             "description": "同工具连续失败强制结束阈值",
             "default": 8,
+            "advanced": True,
+            "unit": "次",
         },
         "guardrails_no_progress_warn_after": {
             "description": "幂等工具无进展警告阈值",
             "default": 2,
+            "advanced": True,
+            "unit": "次",
         },
         "guardrails_no_progress_block_after": {
             "description": "幂等工具无进展拦截阈值（需开启硬拦截）",
             "default": 5,
+            "advanced": True,
+            "unit": "次",
         },
     },
 }

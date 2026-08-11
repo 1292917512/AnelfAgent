@@ -79,9 +79,9 @@ def build_token_rule_hint(token: Optional[str] = None) -> str:
 # ------------------------------------------------------------------
 
 _SESSION_TOKEN_CONFIGS = {
-    "安全": {
+    "security/core": {
         "security_session_token_enabled": {
-            "description": "是否启用一次性会话令牌（防 prompt 注入伪造历史）。默认关闭：每条历史消息包裹令牌会导致 AI 模仿令牌格式，反而拦截正常回复",
+            "description": "是否启用一次性会话令牌（防注入伪造历史；开启可能误拦正常回复，默认关闭）",
             "default": False,
         },
     },
