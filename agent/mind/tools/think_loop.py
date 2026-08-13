@@ -61,6 +61,7 @@ from agent.mind.tools.round_helpers import (
     _merge_new_messages,
     _merge_pushes,
     _partition_tool_calls,
+    _precompact_flush,
     _prepare_think_context,
     _request_tool_approval,
     _round_output_sent_successfully,
@@ -317,6 +318,13 @@ async def _run_think_rounds(
         ):
             try:
                 async with mind.compressor.scope_lock(ctx.current_scope):
+                    # PreCompact flush：压缩前把该会话的待定对话抢跑沉淀为
+                    # 长期记忆，防止压缩摘要丢弃未提取的细节（信息不失帧）；
+                    # fail-open，提取失败/超时绝不阻断压缩
+                    if await _precompact_flush(mind, ctx.current_scope):
+                        execution_steps.append(
+                            f"→ 第{state.iteration + 1}轮前: 压缩前已沉淀待定记忆"
+                        )
                     ctx.base_messages, ctx.tool_chain = await _compress_context(
                         mind, ctx.base_messages, ctx.tool_chain, ctx.current_scope,
                     )

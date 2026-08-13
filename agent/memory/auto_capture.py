@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -165,6 +166,9 @@ class AutoCapturePipeline:
     def __init__(self, mind: "Mind") -> None:
         self._mind = mind
         self._states: Dict[str, _ScopeState] = {}
+        # 每 scope 一把锁：心跳 tick 与压缩前抢跑（PreCompact flush）可能并发
+        # 处理同一 scope，串行化避免同批次被重复提取
+        self._scope_locks: Dict[str, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------
     # 游标持久化（memory DB 的 capture_cursors 表）
@@ -280,6 +284,24 @@ class AutoCapturePipeline:
         return rows[:_MAX_PENDING_PER_TICK]
 
     async def _process_scope(
+        self,
+        sqlite: Any,
+        scope_type: str,
+        scope_id: str,
+        *,
+        every_n: int,
+        idle_seconds: int,
+        now: float,
+    ) -> bool:
+        """处理单个 scope（每 scope 串行）；实际执行了提取返回 True。"""
+        lock = self._scope_locks.setdefault(f"{scope_type}:{scope_id}", asyncio.Lock())
+        async with lock:
+            return await self._process_scope_locked(
+                sqlite, scope_type, scope_id,
+                every_n=every_n, idle_seconds=idle_seconds, now=now,
+            )
+
+    async def _process_scope_locked(
         self,
         sqlite: Any,
         scope_type: str,
@@ -561,6 +583,37 @@ async def flush_auto_capture(mind: "Mind") -> None:
             log(f"关停兜底提取失败 [{scope.get('scope_id')}]: {exc}", "DEBUG", tag="记忆")
 
 
+async def flush_scope_capture(mind: "Mind", scope_key: str) -> bool:
+    """单 scope 强制提取：上下文压缩前抢跑沉淀（PreCompact flush）。
+
+    上下文压缩只裁剪内存中的消息链，但被裁掉的细节若尚未经 auto_capture
+    沉淀，本会话后续轮次就无法召回——抢在压缩前把该 scope 的待定对话
+    提取为长期记忆（信息不失帧）。idle_seconds=0：有待提取内容即视为
+    到期（与关停兜底路径同语义）。
+
+    fail-open：未启用 / 无待提取内容 / 运行时不可用均返回 False，
+    是否记录日志由调用方决定。实际执行了提取返回 True。
+    """
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = AutoCapturePipeline(mind)
+    if not mind.memory_store or not get_config_bool("memory_auto_capture_enabled", True):
+        return False
+    scope_type, _, scope_id = scope_key.partition(":")
+    if scope_type not in ("user", "group") or not scope_id:
+        return False
+    try:
+        from services._runtime import require_runtime
+        sqlite = require_runtime().data_center.sqlite
+    except Exception:
+        return False
+    every_n = max(1, get_config_int("memory_auto_capture_every_n", 5))
+    return await _pipeline._process_scope(
+        sqlite, scope_type, scope_id,
+        every_n=every_n, idle_seconds=0, now=time.time(),
+    )
+
+
 _CAPTURE_CONFIGS = {
     "memory/capture": {
         "memory_auto_capture_enabled": {
@@ -595,6 +648,16 @@ _CAPTURE_CONFIGS = {
             "description": "是否在提取事实的同时抽取实体关系进图谱",
             "default": True,
             "advanced": True,
+        },
+        "memory_precompact_flush_enabled": {
+            "description": "上下文压缩前先强制提取该会话的待定记忆（防止压缩摘要丢失未沉淀的细节）",
+            "default": True,
+        },
+        "memory_precompact_flush_timeout": {
+            "description": "压缩前记忆提取的最大等待时长（超时直接压缩，不阻塞对话）",
+            "default": 20,
+            "advanced": True,
+            "unit": "秒",
         },
     },
 }

@@ -78,6 +78,7 @@ config/introspection/
 
 # === Personal data & memory ===
 config/memory/
+config/config/
 
 # === Personal tasks (memory_consolidation.json kept as example) ===
 config/tasks/*

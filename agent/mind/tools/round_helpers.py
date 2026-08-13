@@ -356,6 +356,53 @@ async def _fetch_new_user_messages(
         return []
 
 
+async def _precompact_flush(mind: "Mind", current_scope: str) -> bool:
+    """上下文压缩前抢跑记忆提取（PreCompact flush）。
+
+    压缩只裁剪内存中的消息链；被裁掉的细节若尚未经 auto_capture 沉淀，
+    本会话后续轮次就无法召回。抢在压缩前把该 scope 的待定对话提取为
+    长期记忆（信息不失帧）。实际执行了提取返回 True。
+
+    fail-open：异常/超时仅记日志与指标，绝不阻断压缩；
+    只写记忆 DB，不触碰任何 prompt 分层内容（不影响缓存前缀）。
+    """
+    try:
+        from core.config import get_config_bool
+        if not get_config_bool("memory_precompact_flush_enabled", True):
+            return False
+    except Exception:
+        pass
+    if not current_scope:
+        return False
+    # think_loop 的 scope 是 entity_scope 形态（user_qq:123），
+    # auto_capture 游标键为 user:qq:123
+    scope_key = current_scope.replace("_", ":", 1)
+    if not scope_key.startswith(("user:", "group:")):
+        return False
+    from agent.memory import metrics
+    timeout = 20.0
+    try:
+        from core.config import get_config_float
+        timeout = max(1.0, get_config_float("memory_precompact_flush_timeout", 20.0))
+    except Exception:
+        pass
+    try:
+        from agent.memory.auto_capture import flush_scope_capture
+        done = await asyncio.wait_for(flush_scope_capture(mind, scope_key), timeout=timeout)
+    except asyncio.TimeoutError:
+        metrics.incr("capture.precompact_flush_timeout")
+        log(f"压缩前记忆提取超时（{timeout:.0f}s），直接压缩", "WARNING", tag="压缩")
+        return False
+    except Exception as exc:
+        metrics.incr("capture.precompact_flush_failed")
+        log(f"压缩前记忆提取失败（不阻断压缩）: {exc}", "WARNING", tag="压缩")
+        return False
+    metrics.incr("capture.precompact_flush" if done else "capture.precompact_flush_skipped")
+    if done:
+        log(f"压缩前记忆提取完成 [{scope_key}]", tag="压缩")
+    return bool(done)
+
+
 async def _compress_context(
         mind: "Mind",
         base_messages: List[Dict],

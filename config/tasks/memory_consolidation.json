@@ -15,9 +15,12 @@
     "无需整理"
   ],
   "tool_tags": [
-    "heartbeat"
+    "heartbeat",
+    "memory",
+    "notes",
+    "graph"
   ],
-  "prompt": "全面审计记忆系统：逐类型清理长期记忆、巡检 MD 便签、消除两者内容重叠、整理目标堆积、核对标签与索引健康，并兜底处理心跳预警。注意：完整合并整理仅在周日（每周日）执行；其他日期若被触发只做轻量巡检（快速核对索引与预警），不做深度合并，避免过度消耗资源。深度整理输出打 goal:174cec23 标签便于目标视角召回。",
+  "prompt": "【工具使用（必须遵守）】本任务已注册 memory/notes/graph 等工具组，直接调用记忆工具完成工作（recall/memorize/memory_index/read_memory_file/write_section/patch_memory_file/view_memory_outline 等），禁止用 shell 命令或手动编辑文件的方式读写记忆库。\n\n全面审计记忆系统：逐类型清理长期记忆、巡检 MD 便签、消除两者内容重叠、整理目标堆积、核对标签与索引健康，并兜底处理心跳预警。注意：完整合并整理仅在周日（每周日）执行；其他日期若被触发只做轻量巡检（快速核对索引与预警），不做深度合并，避免过度消耗资源。深度整理输出打 goal:174cec23 标签便于目标视角召回。",
   "allow_output_tools": false,
   "save_result_to_memory": false
 }

@@ -106,12 +106,17 @@ async def execute_reflect(mind: Mind, decision: Optional[Decision] = None, *, sk
 
 
 async def execute_remember(mind: Mind, decision: Decision) -> None:
-    """将决策内容存入语义记忆（去重后）。"""
+    """将决策内容存入语义记忆——与 memorize 工具同一套去重裁决管线。
+
+    save honesty：裁决结果写入心跳日志（模型在后续自省/心跳中可见），
+    重复跳过/合并更新都不是"新记一条"，避免静默吞没导致的谎报。
+    """
     if not decision.content or not mind.memory_store:
         return
-    if await is_duplicate_memory(mind, decision.content):
-        log(f"记忆去重跳过: {decision.content[:80]}", tag="思维")
-        return
+    from agent.memory import metrics
+    store = mind.memory_store
+    content = decision.content
+
     # 决策记忆接入标签网络：type:fact + 当前 scope 标签（联想/上下文加权生效）
     tags = ["type:fact"]
     try:
@@ -121,32 +126,61 @@ async def execute_remember(mind: Mind, decision: Decision) -> None:
             tags.append(scope_tag)
     except Exception:
         pass
-    entry = MemoryEntry(
-        memory_type=MemoryType.SEMANTIC,
-        content=decision.content,
-        importance=0.7,
-        tags=tags,
-    )
-    await mind.memory_store.add(entry)
-    from agent.memory.embedding import wake_embedding_worker
-    wake_embedding_worker()
-    log(f"AI 主动记忆: {decision.content[:80]}", tag="思维")
 
+    try:
+        # 第一级：规则判重（零成本快速拦截）
+        if await store.has_similar_content(content):
+            metrics.incr("write.dedup_rule_skip")
+            log(f"AI 主动记忆裁决: 重复跳过（规则）: {content[:80]}", tag="思维")
+            _hb_append(f"主动记忆裁决: 与既有记忆重复，未写入 - {content[:60]}")
+            return
 
-async def is_duplicate_memory(mind: Mind, content: str) -> bool:
-    """检查记忆是否与已有记忆高度相似。"""
-    if not mind.memory_store:
-        return False
-    vec = await mind.embedder.embed_query(content)
-    if vec:
-        similar = await mind.memory_store.search_vector(vec, limit=3, min_score=0.80)
-        if similar:
-            log(f"记忆重复检测（向量 score={similar[0][1]:.2f}): {similar[0][0].content[:60]}", tag="思维")
-            return True
-    if await mind.memory_store.has_similar_content(content):
-        log("记忆重复检测（全文）", tag="思维")
-        return True
-    return False
+        # 第二级：LLM 语义裁决（store / skip / update / merge）
+        from agent.memory.dedup import apply_update, gather_dedup_candidates, judge_write
+        candidates = await gather_dedup_candidates(store, mind.embedder, content)
+        verdict = await judge_write(content, candidates)
+        action = verdict.get("action", "store")
+        metrics.incr(f"write.dedup_llm_{action}")
+
+        from agent.memory.embedding import wake_embedding_worker
+        if action == "skip":
+            log(f"AI 主动记忆裁决: 重复跳过（{verdict.get('reason', '语义重复')}）", tag="思维")
+            _hb_append(f"主动记忆裁决: 已有等价记忆，未写入 - {content[:60]}")
+            return
+        if action == "update" and verdict.get("target_id"):
+            updated = await apply_update(
+                store, int(verdict["target_id"]),
+                str(verdict.get("content") or content), tags,
+            )
+            if updated is not None:
+                wake_embedding_worker()
+                log(f"AI 主动记忆裁决: 合并更新到记忆 #{updated.id}", tag="思维")
+                _hb_append(f"主动记忆裁决: 已合并更新既有记忆 #{updated.id} - {content[:60]}")
+                return
+            # 目标已不存在等异常：回退为正常写入
+        if action == "merge" and verdict.get("target_ids"):
+            merge_ids = [int(i) for i in verdict["target_ids"]]
+            new_id = await store.merge_memories(merge_ids, str(verdict.get("content") or content))
+            if new_id:
+                wake_embedding_worker()
+                log(f"AI 主动记忆裁决: 合并 {len(merge_ids)} 条为新记忆 #{new_id}", tag="思维")
+                _hb_append(f"主动记忆裁决: 已合并为记忆 #{new_id} - {content[:60]}")
+                return
+
+        entry = MemoryEntry(
+            memory_type=MemoryType.SEMANTIC,
+            content=content,
+            importance=0.7,
+            tags=tags,
+        )
+        mid = await store.add(entry)
+        wake_embedding_worker()
+        log(f"AI 主动记忆: 已记住 #{mid}: {content[:80]}", tag="思维")
+        _hb_append(f"主动记忆裁决: 已记住 #{mid} - {content[:60]}")
+    except Exception as exc:
+        # 裁决管线故障不应杀死决策执行：记日志并放弃本次记忆（不静默谎报）
+        log(f"AI 主动记忆失败: {exc}", "WARNING", tag="思维")
+        _hb_append(f"主动记忆裁决: 写入失败（{exc}），未记住 - {content[:60]}")
 
 
 async def execute_proactive(mind: Mind, decision: Decision) -> None:

@@ -106,7 +106,7 @@ class QQSender:
         raw = (path or "").strip()
         if not raw:
             return raw
-        if raw.startswith(("http://", "https://", "base64://", "data:", "file://")):
+        if raw.startswith(("http://", "https://", "base64://", "data:", "file://", "nas://")):
             return raw
 
         expanded = os.path.expandvars(os.path.expanduser(raw))
@@ -135,6 +135,19 @@ class QQSender:
         return os.path.abspath(candidates[-1])
 
     @staticmethod
+    def _check_local_media(path: str) -> Optional[str]:
+        """预检本地媒体文件是否存在，缺失时返回给 AI 的明确错误文案（URL/base64 放行）。"""
+        raw = (path or "").strip()
+        if not raw:
+            return "发送失败: 文件路径为空"
+        if raw.startswith(("http://", "https://", "base64://", "data:", "file://", "nas://")):
+            return None
+        resolved = QQSender._resolve_local_file_path(raw)
+        if os.path.isfile(resolved):
+            return None
+        return f"发送失败: 本地文件不存在: {resolved}（原始路径: {raw}），请确认文件已生成且路径正确"
+
+    @staticmethod
     async def _to_ob_file(path: str) -> str:
         """将本地文件路径转为 OneBot ``base64://`` 格式，URL 和已有 base64 格式原样返回。
 
@@ -142,7 +155,7 @@ class QQSender:
         转为 base64 可彻底绕过文件权限与沙箱限制。
         大文件读取 + base64 编码移入线程，避免阻塞事件循环。
         """
-        if path.startswith(("http://", "https://", "base64://", "data:")):
+        if path.startswith(("http://", "https://", "base64://", "data:", "nas://")):
             return path
         resolved = QQSender._resolve_local_file_path(path)
         if os.path.isfile(resolved):
@@ -151,7 +164,16 @@ class QQSender:
 
     @staticmethod
     def _to_ob_upload_uri(path: str) -> str:
-        """将文件路径转为 OneBot upload_*_file 可识别的 URI。"""
+        """将文件路径转为 OneBot upload_*_file 可识别的 URI。
+
+        ``nas://`` 伪协议：映射为 napcat 容器内的 AIGC 挂载路径
+        （NAS AIGC 目录已挂载到容器 /data/AIGC），让容器内 NapCat 直接读 NAS 文件，
+        彻底绕开 Mac 侧路径不可达问题。
+        例：nas://AIGC/video/x.mp4 -> file:///data/AIGC/video/x.mp4
+        """
+        if path.startswith("nas://"):
+            rel = path[len("nas://"):].lstrip("/")
+            return f"file:///data/{rel}"
         if path.startswith(("http://", "https://", "file://", "base64://", "data:")):
             return path
         resolved = QQSender._resolve_local_file_path(path)
@@ -161,6 +183,10 @@ class QQSender:
 
     async def send_photo(self, chat_id: str, photo: str, caption: str = "", **kwargs: Any) -> str:
         """发送图片消息（本地文件自动转 base64）。"""
+        missing = self._check_local_media(photo)
+        if missing:
+            log(f"QQ send_photo 预检失败: {missing}", "WARNING", tag="通道")
+            return _err(missing)
         channel_type = kwargs.get("channel_type", "private")
         file_value = await self._to_ob_file(photo)
         ob_message: list = [{"type": "image", "data": {"file": file_value}}]
@@ -174,6 +200,10 @@ class QQSender:
 
     async def send_voice(self, chat_id: str, voice: str, caption: str = "", **kwargs: Any) -> str:
         """发送语音消息（本地文件自动转 base64）。"""
+        missing = self._check_local_media(voice)
+        if missing:
+            log(f"QQ send_voice 预检失败: {missing}", "WARNING", tag="通道")
+            return _err(missing)
         channel_type = kwargs.get("channel_type", "private")
         file_value = await self._to_ob_file(voice)
         ob_message = [{"type": "record", "data": {"file": file_value}}]
@@ -187,6 +217,10 @@ class QQSender:
             cid = int(chat_id)
         except (ValueError, TypeError):
             return _err(f"无效的 ID: {chat_id}")
+        missing = self._check_local_media(file_path)
+        if missing:
+            log(f"QQ send_file 预检失败: {missing}", "WARNING", tag="通道")
+            return _err(missing)
         file_value = self._to_ob_upload_uri(file_path)
         resolved = self._resolve_local_file_path(file_path)
         file_name = os.path.basename(resolved if os.path.isfile(resolved) else file_path) or "file"
@@ -205,20 +239,22 @@ class QQSender:
 
         # NapCat 在 macOS App Sandbox 下可能无法直接读取外部本地路径（EPERM），
         # 回退到 base64:// 可绕过路径权限问题。
-        message = ""
-        wording = ""
         if result:
             message = str(result.get("message") or "")
             wording = str(result.get("wording") or "")
-        if "EPERM" in f"{message} {wording}" and os.path.isfile(resolved):
-            params["file"] = await self._to_ob_file(resolved)
-            log("QQ send_file 检测到 EPERM，回退 base64 上传", "WARNING", tag="通道")
-            result = await self._ch._call_api_raw(action, params)
-            if result and result.get("retcode") == 0:
-                return self._send_result(chat_id, result.get("data") or {}, "发送文件失败")
+            if any(k in f"{message} {wording}" for k in ("EPERM", "ENOENT")) and os.path.isfile(resolved):
+                params["file"] = await self._to_ob_file(resolved)
+                log("QQ send_file 检测到 EPERM，回退 base64 上传", "WARNING", tag="通道")
+                result = await self._ch._call_api_raw(action, params)
+                if result and result.get("retcode") == 0:
+                    return self._send_result(chat_id, result.get("data") or {}, "发送文件失败")
 
         if result:
             log(f"OneBot v11 API 失败: {action} -> {result}", "WARNING")
+            # 透传 NapCat 的具体错误（wording 通常含底层原因，如 ENOENT/EPERM），让 AI 能据此修正
+            detail = str(result.get("wording") or result.get("message") or "")
+            if detail:
+                return _err(f"发送文件失败: {detail}")
         return _err("发送文件失败")
 
     async def _send_to(self, chat_id: str, channel_type: str, ob_message: list) -> Optional[Any]:

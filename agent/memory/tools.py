@@ -82,7 +82,9 @@ def _current_scope_tag() -> str:
 
 @deferred_tool(
     group="memory", tags=["always"], source="mind.memory",
-    description="将一条关键信息存入长期记忆。内容应简洁精炼。使用 type:permanent 标签可存储永远不会被遗忘的重要信息。",
+    description="将一条关键信息存入长期记忆。内容应简洁精炼。使用 type:permanent 标签可存储永远不会被遗忘的重要信息。"
+    "返回 verdict 字段即最终裁决：stored/updated/merged 才是真的记住了；"
+    "skipped_duplicate 表示与既有记忆重复、未写入——此时不要对用户声称「已记住」，也不要原样重试。",
 )
 async def memorize(
     content: str,
@@ -98,6 +100,12 @@ async def memorize(
         importance: 重要性 0-1，默认 0.7。permanent 类型自动设为 1.0
         sensitivity: 私密度。normal（默认）/ private（他人私事，不向第三方透露）/ secret（高度敏感）。
             记住「全记得但不什么都说」：private/secret 的记忆照常参与召回，仅在向他人转述时克制
+
+    Returns:
+        JSON 字符串。verdict 为落盘裁决：stored（新写入）/ updated（合并更新既有记忆）/
+        merged（多条合并）/ skipped_duplicate（重复，未写入）。
+        只有 stored/updated/merged 才算真正记住；skipped_duplicate 或 error 时必须如实告知，
+        禁止谎称"已记住"，禁止不做变更地自动重试相同内容。
     """
     try:
         if not _store:
@@ -140,7 +148,10 @@ async def memorize(
         if await _store.has_similar_content(content):
             from . import metrics
             metrics.incr("write.dedup_rule_skip")
-            return json.dumps({"ok": False, "message": "已存在相似记忆，跳过"}, ensure_ascii=False)
+            return json.dumps({
+                "ok": False, "verdict": "skipped_duplicate",
+                "message": "已存在相似记忆，跳过（未重复写入）",
+            }, ensure_ascii=False)
 
         # 第二级：LLM 语义裁决（事实演进 update / 语义重复 skip / 无重复 store）
         from . import metrics
@@ -151,8 +162,8 @@ async def memorize(
         metrics.incr(f"write.dedup_llm_{action}")
         if action == "skip":
             return json.dumps({
-                "ok": False,
-                "message": f"已有等价记忆，跳过（{decision.get('reason', '语义重复')}）",
+                "ok": False, "verdict": "skipped_duplicate",
+                "message": f"已有等价记忆，跳过（{decision.get('reason', '语义重复')}）（未重复写入）",
             }, ensure_ascii=False)
         if action == "update" and decision.get("target_id"):
             updated = await apply_update(
@@ -165,7 +176,7 @@ async def memorize(
                     await _store.update(updated)
                 wake_embedding_worker()
                 return json.dumps({
-                    "ok": True, "id": updated.id, "action": "updated",
+                    "ok": True, "id": updated.id, "action": "updated", "verdict": "updated",
                     "message": "与既有记忆为同一事实，已合并更新",
                     "content_preview": updated.content[:100],
                 }, ensure_ascii=False)
@@ -177,7 +188,7 @@ async def memorize(
             if new_id:
                 wake_embedding_worker()
                 return json.dumps({
-                    "ok": True, "id": new_id, "action": "merged",
+                    "ok": True, "id": new_id, "action": "merged", "verdict": "merged",
                     "message": f"已与 {len(merge_ids)} 条既有记忆合并为一条",
                     "merged_from": merge_ids,
                 }, ensure_ascii=False)
@@ -195,7 +206,7 @@ async def memorize(
         hints = await _tag_near_duplicate_hints(tag_list)
         mid = await _store.add(entry)
         wake_embedding_worker()
-        result: Dict[str, Any] = {"ok": True, "id": mid, "tags": tag_list}
+        result: Dict[str, Any] = {"ok": True, "id": mid, "verdict": "stored", "tags": tag_list}
         if hints:
             result["tag_hints"] = hints
         return json.dumps(result, ensure_ascii=False)
@@ -260,7 +271,7 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
         await _store.update(target, clear_embedding=True)
         wake_embedding_worker()
         return json.dumps({
-            "ok": True, "id": target.id, "action": "updated",
+            "ok": True, "id": target.id, "action": "updated", "verdict": "updated",
             "old_preview": old_preview, "tags": tag_list,
         }, ensure_ascii=False)
 
@@ -273,7 +284,7 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
     mid = await _store.add(entry)
     wake_embedding_worker()
     return json.dumps({
-        "ok": True, "id": mid, "action": "created", "tags": tag_list,
+        "ok": True, "id": mid, "action": "created", "verdict": "stored", "tags": tag_list,
     }, ensure_ascii=False)
 
 

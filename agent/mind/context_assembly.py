@@ -160,6 +160,11 @@ _MEMORY_USAGE_HINT = (
     "- 新事实/事件 → memorize 存 DB（标签: type:/user:/group:/topic:），必要时更新便签索引\n"
     "- 工具出错 → recall_tool_errors 查历史错误\n"
     "- 整理记忆 → 先 view_memory_outline 看文件结构，按顶部分类标准写入\n"
+    "落盘诚实（禁止谎报已记住）：\n"
+    "- 记忆写入工具的 verdict 字段是最终裁决：只有 stored/updated/merged 才算真正记住\n"
+    "- verdict=skipped_duplicate（重复未写入）或返回 error 时，禁止向用户声称「已记住」；"
+    "应如实说明（如「这条和我已有的记忆重复，没有重复存储」）\n"
+    "- 写入被跳过/失败后，禁止不做内容变更地自动重试相同内容\n"
     "检索纪律：recall 等检索类工具每轮合计最多调用 3 次；"
     "浅召回找不到再加 depth=\"deep\"，不要连环检索碰运气"
 )
