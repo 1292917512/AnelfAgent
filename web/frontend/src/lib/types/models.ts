@@ -37,6 +37,8 @@ export interface ModelConfig {
   /** 自定义请求头（最后应用到 HTTP 请求，可覆盖鉴权头） */
   extra_headers: Record<string, string>;
   chat_protocol: "chat_completions" | "responses" | "auto";
+  /** 供应商内置工具声明（服务端执行，如 web_search）；与本地同名工具冲突时内置优先 */
+  builtin_tools: Array<string | JsonObject>;
   is_default: boolean;
   /** 启用开关：禁用后不参与任何自动选择/回退/默认 */
   enabled: boolean;

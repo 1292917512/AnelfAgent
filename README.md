@@ -25,7 +25,7 @@ AnelfAgent 是面向个人与团队的开源 AI 智能体运行时：内置自�
 | **持续进化** | 技能自学习闭环 + 心跳任务调度 + 目标规划 |
 | **安全可控** | 统一权限引擎（allow / ask / deny）+ 频道化批准 + WebUI 认证 + 敏感信息脱敏 |
 | **自运维** | SSH 远程管理 / 记忆备份 / 项目更新 / 文件分享 — AI 可自主管理自身部署 |
-| **多端接入** | Telegram / QQ / 飞书 / 微信 / WebUI / HTTP / CLI / NoneBot 桥接 + OpenAI 兼容 Responses API |
+| **多端接入** | QQ / 飞书 / 微信 / WebUI / HTTP / CLI / NoneBot 桥接 + OpenAI 兼容 Responses API |
 
 ---
 
@@ -163,7 +163,6 @@ Embedding + FTS5 + 标签匹配 + 时间衰减的混合评分；记忆类型覆�
 
 | 平台 | 要点 |
 |---|---|
-| **Telegram** | 文本 / 媒体 / 内联键盘 / 流式推送等 |
 | **QQ** | NoneBot2 + OneBot v11 + NapCat |
 | **飞书** | WebSocket 事件驱动 |
 | **微信** | iLink Bot API，扫码登录，无需公网 webhook（详见 [`channels/weixin/README.md`](channels/weixin/README.md)） |
@@ -233,10 +232,6 @@ uv run python launch.py --no-webui   # 仅 Agent，不启动 WebUI
 ### 接入频道（示例）
 
 ```bash
-# Telegram
-cp channels/telegram/channel_config.example.json channels/telegram/channel_config.json
-# 编辑填入 Bot Token，设置 enabled: true
-
 # 微信：WebUI → 通道管理 → 扫码登录（推荐）
 # 或：uv run python scripts/weixin_setup.py
 ```
@@ -328,7 +323,7 @@ AnelfAgent/
 │   ├── skills/ · delegation/ · approval/ · security/
 │   ├── heartbeat/ · task/ · planning/ · messages/
 │   ├── channel/ · runtime/ · storage/
-├── channels/                 # telegram / qq / feishu / weixin / webui / http_api / cli / nonebot_bridge
+├── channels/                 # qq / feishu / weixin / webui / http_api / cli / nonebot_bridge
 ├── entities/                 # filesystem / web / media / minimax / sticker / ui / ssh / devops / share / mcp / ...
 ├── services/ · web/ · config/ · scripts/ · tests/
 └── workspace/                # 运行时工作区（上传 / 技能等，本地生成）
@@ -425,7 +420,6 @@ AnelfAgent 的多平台能力建立在这些优秀开源项目之上：
 | [litellm](https://github.com/BerriAI/litellm) | 统一 LLM API | MIT |
 | [NoneBot2](https://github.com/nonebot/nonebot2) | 跨平台机器人框架 / 桥接 | MIT |
 | [NapCatQQ](https://github.com/NapNeko/NapCatQQ) | QQ OneBot v11 协议端 | 混合协议 |
-| [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) | Telegram Bot API | LGPL-3.0 |
 | [lark-oapi](https://github.com/larksuite/oapi-sdk-python) | 飞书 / Lark SDK | MIT |
 | [FastAPI](https://github.com/fastapi/fastapi) / [MCP](https://modelcontextprotocol.io/) | Web 与工具协议 | MIT |
 

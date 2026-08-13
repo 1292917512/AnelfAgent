@@ -105,6 +105,7 @@ def _serialize_model_config(config: Dict[str, Any]) -> Dict[str, Any]:
     result.setdefault("request_params", {})
     result.setdefault("extra_headers", {})
     result.setdefault("chat_protocol", "chat_completions")
+    result.setdefault("builtin_tools", [])
     legacy_extra = result.pop("extra_params", {})
     extra_body = dict(legacy_extra)
     extra_body.update(result.get("extra_body", {}))
@@ -271,6 +272,10 @@ class CreateModelReq(BaseModel):
     supports_reasoning: bool = False
     reasoning_effort: ReasoningEffort = ""
     chat_protocol: ChatProtocolValue = "chat_completions"
+    builtin_tools: List[Any] = Field(
+        default_factory=list,
+        description="供应商内置工具声明（服务端执行，如 web_search/code_interpreter）；与本地同名工具冲突时内置优先",
+    )
     request_params: RequestParams = Field(default_factory=dict)
     extra_body: Dict[str, Any] = Field(default_factory=dict)
     extra_params: Dict[str, Any] = Field(
@@ -480,6 +485,7 @@ class UpdateModelReq(CreateModelReq):
     supports_reasoning: Optional[bool] = None
     reasoning_effort: Optional[ReasoningEffort] = None
     chat_protocol: Optional[ChatProtocolValue] = None
+    builtin_tools: Optional[List[Any]] = None
     request_params: Optional[RequestParams] = None
     extra_body: Optional[Dict[str, Any]] = None
     extra_params: Optional[Dict[str, Any]] = None

@@ -163,6 +163,10 @@ class LLMClientConfig:
     # 对接需要特殊 header 的网关/中转站时使用）
     extra_headers: Dict[str, str] = field(default_factory=dict)
     chat_protocol: str = ChatProtocol.CHAT_COMPLETIONS.value
+    # 供应商内置工具声明（如百炼 web_search/code_interpreter）：服务端执行、
+    # 客户端不收到 tool_call；与本地同名 function 工具冲突时内置优先
+    # （wire 层剔除本地 schema）。每项为工具名字符串或 {"type": ..., ...} dict
+    builtin_tools: List[Any] = field(default_factory=list)
     # 图片生成协议适配器名（见 agent.llm.image_adapters），空表示按 host 自动匹配。
     media_protocol: str = ""
     # 启用开关：禁用后模型配置保留但不参与任何自动选择/回退/默认（模型激活）
@@ -208,6 +212,12 @@ class LLMClientConfig:
             for k, v in self.extra_headers.items()
         ):
             raise ValueError("extra_headers 必须是字符串键值对对象")
+        if not isinstance(self.builtin_tools, list) or not all(
+            (isinstance(item, str) and item.strip())
+            or (isinstance(item, dict) and isinstance(item.get("type"), str) and item["type"].strip())
+            for item in self.builtin_tools
+        ):
+            raise ValueError("builtin_tools 每项必须是工具名字符串或含 type 的对象")
         normalized_effort = normalize_effort(self.reasoning_effort)
         if self.reasoning_effort and not normalized_effort:
             log(
@@ -264,6 +274,20 @@ class LLMClientConfig:
     def has_type(self, mt: ModelType) -> bool:
         return mt.value in self.model_types
 
+    def normalized_builtin_tools(self) -> List[Dict[str, Any]]:
+        """归一化内置工具声明：字符串转 {"type": name}，dict 浅拷贝返回。
+
+        copy-on-write：返回的副本供 wire 层自由加工（如注入缓存断点），
+        共享配置对象永不被改写。
+        """
+        result: List[Dict[str, Any]] = []
+        for item in self.builtin_tools:
+            if isinstance(item, str):
+                result.append({"type": item.strip()})
+            else:
+                result.append(dict(item))
+        return result
+
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
             "name": self.name,
@@ -289,6 +313,7 @@ class LLMClientConfig:
             "request_params": self.request_params,
             "extra_body": self.extra_body,
             "chat_protocol": self.chat_protocol,
+            "builtin_tools": self.builtin_tools,
             "media_protocol": self.media_protocol,
             "enabled": self.enabled,
         }
@@ -316,6 +341,8 @@ class LLMClientConfig:
             "chat_protocol": self.chat_protocol,
             "media_protocol": self.media_protocol,
         }
+        if self.builtin_tools:
+            d["builtin_tools"] = self.builtin_tools
         # 采样/超时参数为可选覆盖项：仅在显式配置（非默认）时写入，避免配置文件冗余
         if self.temperature is not None:
             d["temperature"] = self.temperature

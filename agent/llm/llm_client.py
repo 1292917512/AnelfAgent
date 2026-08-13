@@ -497,7 +497,9 @@ class LLMClient(BaseEntity):
         if self.config.api_key:
             kwargs["api_key"] = self.config.api_key
         if tools:
-            kwargs["tools"] = self._apply_tools_cache_breakpoint(tools, adapted)
+            kwargs["tools"] = self._apply_tools_cache_breakpoint(
+                self._merge_builtin_tools(tools), adapted,
+            )
         if tool_choice is not None:
             kwargs["tool_choice"] = self._resolve_tool_choice(tool_choice)
         if stream:
@@ -750,6 +752,30 @@ class LLMClient(BaseEntity):
                 adapted.append(msg)
 
         return [_clean_message_surrogates(m) for m in adapted]
+
+    def _merge_builtin_tools(self, tools: list[dict]) -> list[dict]:
+        """把 per-model 配置的供应商内置工具声明合并进 wire tools 数组。
+
+        内置工具由供应商服务端执行（如百炼 web_search/code_interpreter），
+        客户端不收到 tool_call。与本地 function 工具同名时内置优先——
+        剔除本地 schema 后由内置声明接管；内置声明追加在数组尾部，
+        位置随模型配置静态固定，不破坏 tools 字节稳定与前缀缓存。
+        无配置时原样返回传入列表（同一对象）。
+        """
+        builtins = self.config.normalized_builtin_tools()
+        if not builtins:
+            return tools
+        builtin_types = {b["type"] for b in builtins}
+        merged = [
+            t for t in tools
+            if not (
+                t.get("type") == "function"
+                and isinstance(t.get("function"), dict)
+                and t["function"].get("name") in builtin_types
+            )
+        ]
+        merged.extend(builtins)
+        return merged
 
     def _apply_tools_cache_breakpoint(
             self,

@@ -220,8 +220,16 @@ export function ModelEditorDialog({
   }));
   const [jsonErrors, setJsonErrors] = useState<Partial<Record<JsonField, string>>>({});
 
+  // 内置工具：逗号分隔的工具名；dict 形态（带参数）以 JSON 原文保留
+  const [builtinToolsText, setBuiltinToolsText] = useState<string>(() =>
+    (model.builtin_tools ?? [])
+      .map((item) => (typeof item === "string" ? item : JSON.stringify(item)))
+      .join(", "),
+  );
+  const [builtinToolsError, setBuiltinToolsError] = useState<string>();
+
   // 配置指纹：测试后任何变更都使结果过期（stale）
-  const currentHash = fnv1a(JSON.stringify({ draft, jsonEnabled, jsonDrafts }));
+  const currentHash = fnv1a(JSON.stringify({ draft, jsonEnabled, jsonDrafts, builtinToolsText }));
   const [test, setTest] = useState<TestState>({ status: "idle" });
   const stale = test.status !== "idle" && test.hash !== undefined && test.hash !== currentHash;
 
@@ -262,17 +270,44 @@ export function ModelEditorDialog({
     }
   };
 
+  /** 解析内置工具文本：非法 JSON 片段报错并返回 null */
+  const parseBuiltinTools = (): Array<string | JsonObject> | null => {
+    const tokens = builtinToolsText.split(",").map((s) => s.trim()).filter(Boolean);
+    const items: Array<string | JsonObject> = [];
+    for (const token of tokens) {
+      if (token.startsWith("{")) {
+        try {
+          const value: unknown = JSON.parse(token);
+          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            setBuiltinToolsError(t("jsonObjectRequired"));
+            return null;
+          }
+          items.push(value as JsonObject);
+        } catch {
+          setBuiltinToolsError(t("invalidJson"));
+          return null;
+        }
+      } else {
+        items.push(token);
+      }
+    }
+    setBuiltinToolsError(undefined);
+    return items;
+  };
+
   /** 组装提交载荷；JSON 校验失败返回 null */
   const buildPayload = (): UpdateModelConfig | null => {
     const requestParams = parseJson("request_params");
     const extraBody = parseJson("extra_body");
     const extraHeaders = parseJson("extra_headers");
-    if (requestParams === null || extraBody === null || extraHeaders === null) return null;
+    const builtinTools = parseBuiltinTools();
+    if (requestParams === null || extraBody === null || extraHeaders === null || builtinTools === null) return null;
     return {
       ...draft,
       request_params: requestParams,
       extra_body: extraBody,
       extra_headers: extraHeaders as Record<string, string>,
+      builtin_tools: builtinTools,
     };
   };
 
@@ -456,6 +491,23 @@ export function ModelEditorDialog({
               onChange={(e) => patch({ top_p: e.target.value === "" ? null : Number(e.target.value) })}
             />
           </div>
+        </div>
+
+        {/* 供应商内置工具 */}
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-muted" title={t("modelFields.builtin_toolsHint")}>
+            {t("modelFields.builtin_tools")}
+          </label>
+          <Input
+            value={builtinToolsText}
+            placeholder="web_search, code_interpreter"
+            onChange={(e) => { setBuiltinToolsText(e.target.value); setBuiltinToolsError(undefined); }}
+            className={cn("font-mono text-xs", builtinToolsError && "border-danger")}
+            spellCheck={false}
+          />
+          <p className={cn("text-[11px]", builtinToolsError ? "text-danger" : "text-muted opacity-70")}>
+            {builtinToolsError ?? t("modelFields.builtin_toolsHint")}
+          </p>
         </div>
 
         {/* 可勾选启用的 JSON 区块 */}

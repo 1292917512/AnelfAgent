@@ -115,7 +115,9 @@
     "max_tokens": "Max Output Tokens",
     "chat_protocol": "Chat Protocol",
     "chat_protocolHint": "Mind still uses Chat Completions by default; responses bridges internally",
-    "temperatureHint": "Leave empty = not sent, model default applies"
+    "temperatureHint": "Leave empty = not sent, model default applies",
+    "builtin_tools": "Built-in Tools",
+    "builtin_toolsHint": "Provider server-side built-in tools (comma-separated); same-name local tools are overridden. Common: web_search, web_extractor, code_interpreter, t2i_search, i2i_search"
   },
   "chatProtocol": {
     "chat_completions": "Chat Completions",

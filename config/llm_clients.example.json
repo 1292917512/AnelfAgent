@@ -109,6 +109,35 @@
           }
         }
       ]
+    },
+    {
+      "id": "dashscope",
+      "name": "阿里云百炼",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key": "",
+      "api_type": "dashscope",
+      "proxy_url": "",
+      "models": [
+        {
+          "id": "qwen-max",
+          "name": "Qwen Max",
+          "model": "qwen-max",
+          "model_types": [
+            "chat"
+          ],
+          "supports_vision": false,
+          "supports_tools": true,
+          "vision_format": "base64",
+          "context_window": 131072,
+          "supports_reasoning": false,
+          "chat_protocol": "chat_completions",
+          "builtin_tools": [
+            "web_search"
+          ],
+          "request_params": {},
+          "extra_body": {}
+        }
+      ]
     }
   ],
   "type_priorities": {

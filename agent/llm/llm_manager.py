@@ -204,6 +204,7 @@ class LLMManager(BaseEntity):
                         extra_body=mdata.get("extra_body", {}),
                         extra_params=mdata.get("extra_params", {}),
                         chat_protocol=mdata.get("chat_protocol", "chat_completions"),
+                        builtin_tools=mdata.get("builtin_tools", []),
                         media_protocol=mdata.get("media_protocol", prov.media_protocol),
                         enabled=mdata.get("enabled", True),
                     )
