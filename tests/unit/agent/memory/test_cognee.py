@@ -78,6 +78,47 @@ async def test_client_normalizes_public_recall(monkeypatch, tmp_path) -> None:
     assert results[0].content == "graph answer"
 
 
+def test_wal_recovery_patch_defaults_to_tolerant(monkeypatch) -> None:
+    """WAL 容错补丁：默认注入 throw_on_wal_replay_failure=False 且幂等。"""
+    import sys
+    from types import ModuleType
+
+    from agent.memory.cognee.client import _patch_ladybug_wal_recovery
+
+    class _FakeDatabase:
+        def __init__(self, database_path=None, **kwargs) -> None:
+            self.database_path = database_path
+            self.throw_on_wal_replay_failure = kwargs.get(
+                "throw_on_wal_replay_failure", True,
+            )
+
+    fake_adapter = ModuleType("cognee.infrastructure.databases.graph.ladybug.adapter")
+    fake_adapter.Database = _FakeDatabase  # type: ignore[attr-defined]
+    fake_package = ModuleType("cognee.infrastructure.databases.graph.ladybug")
+    fake_package.adapter = fake_adapter  # type: ignore[attr-defined]
+    monkeypatch.setitem(
+        sys.modules, "cognee.infrastructure.databases.graph.ladybug", fake_package,
+    )
+    monkeypatch.setitem(
+        sys.modules, "cognee.infrastructure.databases.graph.ladybug.adapter",
+        fake_adapter,
+    )
+
+    _patch_ladybug_wal_recovery()
+    patched = fake_adapter.Database  # type: ignore[attr-defined]
+
+    assert patched is not _FakeDatabase
+    assert getattr(patched, "_anel_wal_tolerant", False)
+    assert issubclass(patched, _FakeDatabase)
+    assert patched("/tmp/x.lbug").throw_on_wal_replay_failure is False
+    explicit = patched("/tmp/x.lbug", throw_on_wal_replay_failure=True)
+    assert explicit.throw_on_wal_replay_failure is True
+
+    # 幂等：重复调用不再二次包装
+    _patch_ladybug_wal_recovery()
+    assert fake_adapter.Database is patched  # type: ignore[attr-defined]
+
+
 def test_client_exposes_documented_public_boundary() -> None:
     expected = {
         "remember", "recall", "improve", "forget", "serve", "disconnect",

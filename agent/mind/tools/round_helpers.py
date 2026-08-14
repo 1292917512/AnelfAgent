@@ -408,18 +408,23 @@ async def _compress_context(
         base_messages: List[Dict],
         tool_chain: List[Dict],
         scope: str,
+        tools: Optional[List[Dict]] = None,
 ) -> tuple[List[Dict], List[Dict]]:
     """执行上下文压缩（保头保尾 + 中间摘要），返回新的 (base_messages, tool_chain)。
 
     压缩成败记录到熔断器（连续失败 3 次停止尝试）；
     成功后执行 rehydration：重读压缩前正在处理的文件，恢复工作现场
     （对齐 Claude Code post-compact rehydration，消费 file_state 缓存）。
+
+    tools: 当前激活工具 schema 数组，传入时启用前缀复用摘要
+    （摘要调用复用主对话前缀命中 KV 缓存）。
     """
     try:
         new_base, new_chain = await mind.compressor.compress_messages(
             base_messages, tool_chain,
             scope=scope,
             summarizer=mind.summarize_text,
+            tools=tools,
         )
     except Exception as exc:
         mind.compressor._record_compress_result(False)
@@ -645,6 +650,7 @@ async def _handle_overflow(
     async with mind.compressor.scope_lock(ctx.current_scope):
         ctx.base_messages, ctx.tool_chain = await _compress_context(
             mind, ctx.base_messages, ctx.tool_chain, ctx.current_scope,
+            tools=ctx.active_tools,
         )
     # 紧急压缩后旧真用量已失真，清零防止下轮误判再次溢出
     state.last_prompt_tokens = 0

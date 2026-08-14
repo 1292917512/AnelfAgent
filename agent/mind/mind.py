@@ -758,8 +758,16 @@ class Mind:
             llm_client.config.litellm_model or "",
             getattr(llm_client.config, "api_type", "") or "",
         ))
+        # 发送边界统一规整：与 _invoke_llm_unified 一致（decorate 之后 normalize），
+        # 剥离 _layer 标签——缺此步会把内部分类标签泄露给供应商（潜在 400）
+        messages = normalize_for_send(messages)
         # tools 数组是请求最前段，必须与真实调用一致（缺它前缀从第 0 字节就不匹配）
         tools = await self.pfc.get_active_tool_schemas(adapter, scope=entity_scope)
+        log(
+            f"缓存预热 [{entity_scope}]: model={llm_client.config.model} "
+            f"msgs={len(messages)} tools={len(tools or [])}",
+            "DEBUG", tag="缓存",
+        )
         async for _delta in llm_client.chat_stream(
             messages, options={"max_tokens": 1}, tools=tools or None,
         ):

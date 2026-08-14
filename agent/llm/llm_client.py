@@ -208,6 +208,8 @@ class LLMClient(BaseEntity):
         self._learned_output_cap: Optional[int] = None
         # 从端点 400 报错中学习到的「不支持强制 tool_choice」（本次运行内有效）
         self._learned_no_forced_tool_choice: bool = False
+        # chat_completions 不支持的内置工具类型已告警标记（每客户端只告警一次）
+        self._builtin_chat_warned: bool = False
         super().__init__()
         proxy = self.config.effective_proxy
         info(
@@ -497,9 +499,12 @@ class LLMClient(BaseEntity):
         if self.config.api_key:
             kwargs["api_key"] = self.config.api_key
         if tools:
-            kwargs["tools"] = self._apply_tools_cache_breakpoint(
-                self._merge_builtin_tools(tools), adapted,
-            )
+            merged_tools, builtin_patch = self._merge_builtin_tools(tools)
+            kwargs["tools"] = self._apply_tools_cache_breakpoint(merged_tools, adapted)
+            if builtin_patch:
+                # 内置工具转译产物（enable_search 等）先行播种，
+                # 后续思考方言适配与用户 extra_body 依次覆盖，用户配置最高优先
+                kwargs["extra_body"] = {**builtin_patch, **(kwargs.get("extra_body") or {})}
         if tool_choice is not None:
             kwargs["tool_choice"] = self._resolve_tool_choice(tool_choice)
         if stream:
@@ -753,14 +758,58 @@ class LLMClient(BaseEntity):
 
         return [_clean_message_surrogates(m) for m in adapted]
 
-    def _merge_builtin_tools(self, tools: list[dict]) -> list[dict]:
-        """把 per-model 配置的供应商内置工具声明合并进 wire tools 数组。
+    def _merge_builtin_tools(self, tools: list[dict]) -> tuple[list[dict], Dict[str, Any]]:
+        """chat_completions 路径：按端点能力转译内置工具，返回 (wire tools, extra_body 补丁)。
 
-        内置工具由供应商服务端执行（如百炼 web_search/code_interpreter），
-        客户端不收到 tool_call。与本地 function 工具同名时内置优先——
-        剔除本地 schema 后由内置声明接管；内置声明追加在数组尾部，
-        位置随模型配置静态固定，不破坏 tools 字节稳定与前缀缓存。
-        无配置时原样返回传入列表（同一对象）。
+        OpenAI 兼容 chat 端点的 tools 数组仅接受 function 类型，裸
+        {"type": "web_search"} 声明会被 400 拒绝（'function' is required）：
+        - web_search 转译为 extra_body enable_search: true（百炼兼容模式官方
+          参数；dict 形态可携带 search_options 一并下发）
+        - 其余内置类型（web_extractor/code_interpreter/t2i_search/i2i_search）
+          在 chat 端点无对应能力，跳过并告警一次——需要时把模型
+          chat_protocol 切到 responses，由 Responses tools 声明承载
+        - 与生效内置工具同名的本地 function schema 被剔除（内置优先）
+        无配置时原样返回 (tools, {})（同一对象）。
+        """
+        builtins = self.config.normalized_builtin_tools()
+        if not builtins:
+            return tools, {}
+        patch: Dict[str, Any] = {}
+        active_types: set[str] = set()
+        skipped: list[str] = []
+        for b in builtins:
+            btype = b["type"]
+            if btype == "web_search":
+                patch["enable_search"] = True
+                if isinstance(b.get("search_options"), dict):
+                    patch["search_options"] = dict(b["search_options"])
+                active_types.add(btype)
+            else:
+                skipped.append(btype)
+        if skipped and not self._builtin_chat_warned:
+            self._builtin_chat_warned = True
+            log(
+                f"模型 [{self.config.name}] 的内置工具 {skipped} 在 chat_completions "
+                "端点不被接受（tools 仅支持 function），已跳过；"
+                "如需启用请将 chat_protocol 切换为 responses",
+                "WARNING", tag="模型",
+            )
+        merged = [
+            t for t in tools
+            if not (
+                t.get("type") == "function"
+                and isinstance(t.get("function"), dict)
+                and t["function"].get("name") in active_types
+            )
+        ]
+        return merged, patch
+
+    def _merge_responses_builtin_tools(self, tools: list[dict]) -> list[dict]:
+        """Responses 路径：内置工具以 {"type": ...} 声明追加进 tools 数组。
+
+        Responses API 原生支持内置工具声明（百炼兼容模式同样走 tools 数组）。
+        与本地 function 工具同名时内置优先——剔除本地 schema；
+        内置声明追加在尾部，位置随模型配置静态固定。
         """
         builtins = self.config.normalized_builtin_tools()
         if not builtins:
@@ -906,7 +955,9 @@ class LLMClient(BaseEntity):
         create_kwargs: Dict[str, Any] = {
             "input": input_payload,
             "instructions": instructions,
-            "tools": convert_chat_tools(tools),
+            "tools": convert_chat_tools(
+                self._merge_responses_builtin_tools(tools) if tools else tools,
+            ),
             # 与 chat_completions 路径一致：端点不接受强制 tool_choice 时降级
             "tool_choice": self._resolve_tool_choice(tool_choice),
             "temperature": params.get("temperature"),

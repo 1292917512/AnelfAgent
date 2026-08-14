@@ -565,3 +565,108 @@ class TestHeadOrphanRepair:
         ]
         assert ContextCompressor._find_incomplete_group(broken) == "c2"
 
+
+
+class TestPrefixReuseSummary:
+    """前缀复用摘要：压缩摘要调用复用主对话 system+tools+消息前缀命中 KV 缓存。
+
+    对齐 dsh compaction-basic/summarizer 设计——摘要指令作为末条 user 消息
+    追加在主对话前缀之后，使辅助调用成为上一次真实请求的字节级前缀扩展。
+    """
+
+    class _InvokeMind(_FakeMind):
+        """带 _invoke_llm_unified 的 Mind 替身，记录调用参数。"""
+
+        def __init__(self, context_length: int = 10_000, content: str = "【前缀摘要】要点") -> None:
+            super().__init__(context_length)
+            self._content = content
+            self.invoke_calls: list = []
+
+        async def _invoke_llm_unified(self, messages, tools, anything=None, **kwargs):
+            self.invoke_calls.append({"messages": messages, "tools": tools, "kwargs": kwargs})
+            from types import SimpleNamespace
+            return SimpleNamespace(content=self._content)
+
+    def _compressor(self, mind, **cfg) -> ContextCompressor:
+        return ContextCompressor(mind, CompressionConfig(
+            enabled=True, protect_first_n=1, protect_last_n=2, min_compressible=4, **cfg,
+        ))
+
+    async def test_prefix_reuse_invokes_unified(self) -> None:
+        mind = self._InvokeMind()
+        c = self._compressor(mind)
+        base = [{"role": "system", "content": "sys"}] + _make_messages(10)
+        tools = [{"type": "function", "function": {"name": "t1"}}]
+        new_base, _ = await c.compress_messages(base, [], scope="s", tools=tools)
+        # 前缀复用路径被使用
+        assert len(mind.invoke_calls) == 1
+        assert len(mind.summarize_text.call_args_list) == 0
+        # 摘要文本注入反馈
+        feedback = [m for m in new_base if "上下文压缩" in str(m.get("content", ""))]
+        assert feedback and "【前缀摘要】" in feedback[0]["content"]
+
+    async def test_prefix_is_bytewise_prefix_of_base(self) -> None:
+        mind = self._InvokeMind()
+        c = self._compressor(mind)
+        base = [{"role": "system", "content": "sys"}] + _make_messages(10)
+        tools = [{"type": "function", "function": {"name": "t1"}}]
+        await c.compress_messages(base, [], scope="s", tools=tools)
+        sent = mind.invoke_calls[0]["messages"]
+        # 末条是指令（user），其余是 base 的前缀
+        assert sent[-1]["role"] == "user"
+        assert "压缩" in sent[-1]["content"]
+        prefix = sent[:-1]
+        assert prefix == base[: len(prefix)], "前缀须与 base_messages 逐条一致"
+
+    async def test_directive_passes_tool_choice_and_purpose(self) -> None:
+        mind = self._InvokeMind()
+        c = self._compressor(mind)
+        base = [{"role": "system", "content": "sys"}] + _make_messages(10)
+        tools = [{"type": "function", "function": {"name": "t1"}}]
+        await c.compress_messages(base, [], scope="s", tools=tools)
+        kwargs = mind.invoke_calls[0]["kwargs"]
+        assert kwargs.get("tool_choice") == "none"
+        assert kwargs.get("purpose") == "compress"
+
+    async def test_prefix_reuse_disabled_by_config(self) -> None:
+        mind = self._InvokeMind()
+        c = self._compressor(mind, prefix_reuse=False)
+        base = [{"role": "system", "content": "sys"}] + _make_messages(10)
+        tools = [{"type": "function", "function": {"name": "t1"}}]
+        await c.compress_messages(base, [], scope="s", tools=tools)
+        assert len(mind.invoke_calls) == 0
+        assert len(mind.summarize_text.call_args_list) == 1
+
+    async def test_no_tools_uses_text_path(self) -> None:
+        mind = self._InvokeMind()
+        c = self._compressor(mind)
+        base = [{"role": "system", "content": "sys"}] + _make_messages(10)
+        await c.compress_messages(base, [], scope="s")
+        assert len(mind.invoke_calls) == 0
+        assert len(mind.summarize_text.call_args_list) == 1
+
+    async def test_invoke_failure_falls_back_to_text(self) -> None:
+        mind = self._InvokeMind()
+
+        async def _boom(*a, **k):
+            raise RuntimeError("LLM 不可用")
+
+        mind._invoke_llm_unified = _boom
+        c = self._compressor(mind)
+        base = [{"role": "system", "content": "sys"}] + _make_messages(10)
+        tools = [{"type": "function", "function": {"name": "t1"}}]
+        new_base, _ = await c.compress_messages(base, [], scope="s", tools=tools)
+        # 前缀路径失败后回退文本渲染路径（summarize_text 被调用）
+        assert len(mind.summarize_text.call_args_list) == 1
+        assert c.metrics.failures >= 1
+        feedback = [m for m in new_base if "上下文压缩" in str(m.get("content", ""))]
+        assert feedback, "回退后仍应产出摘要反馈"
+
+    async def test_empty_invoke_result_falls_back_to_text(self) -> None:
+        mind = self._InvokeMind(content="")
+        c = self._compressor(mind)
+        base = [{"role": "system", "content": "sys"}] + _make_messages(10)
+        tools = [{"type": "function", "function": {"name": "t1"}}]
+        await c.compress_messages(base, [], scope="s", tools=tools)
+        # 前缀路径返回空 → 回退文本路径
+        assert len(mind.summarize_text.call_args_list) == 1

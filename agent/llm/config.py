@@ -164,8 +164,10 @@ class LLMClientConfig:
     extra_headers: Dict[str, str] = field(default_factory=dict)
     chat_protocol: str = ChatProtocol.CHAT_COMPLETIONS.value
     # 供应商内置工具声明（如百炼 web_search/code_interpreter）：服务端执行、
-    # 客户端不收到 tool_call；与本地同名 function 工具冲突时内置优先
-    # （wire 层剔除本地 schema）。每项为工具名字符串或 {"type": ..., ...} dict
+    # 客户端不收到 tool_call；与本地同名 function 工具冲突时内置优先。
+    # 每项为工具名字符串或 {"type": ..., ...} dict（web_search 可带 search_options）。
+    # chat_completions 路径：web_search 转译为 enable_search（chat 端点 tools 仅收
+    # function），其余类型跳过；responses 路径：以 {"type": ...} 声明透传进 tools
     builtin_tools: List[Any] = field(default_factory=list)
     # 图片生成协议适配器名（见 agent.llm.image_adapters），空表示按 host 自动匹配。
     media_protocol: str = ""

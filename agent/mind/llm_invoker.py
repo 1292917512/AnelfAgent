@@ -84,11 +84,32 @@ async def _invoke_llm_unified(
     model_name = mind.llm.config.model if isinstance(mind.llm, LLMClient) else "unknown"
     _mm = _mind_module()
 
+    # 前缀稳定性守卫（normalize 前，_layer 标签尚存）：对前缀层消息逐条哈希
+    # 与同 scope 上一次调用比对，首个不一致位置即缓存断裂点。仅观测不阻断，
+    # 归因随快照落盘 records.jsonl（对齐 dsh 运行时不变式的"独立校验前缀"
+    # 思想，适配为轻量观测版）。须先于 try_capture 计算，归因才能并入本次快照。
+    from agent.mind.prefix_guard import prefix_guard
+    _guard_scope = ""
+    if anything is not None:
+        _guard_scope = getattr(anything, "entity_scope", "") or ""
+    if not _guard_scope:
+        try:
+            from agent.mind.tool_activation import ToolActivationManager
+            _guard_scope = ToolActivationManager.current_scope()
+        except Exception:
+            _guard_scope = ""
+    prefix_drift = (
+        prefix_guard.check(_guard_scope, messages, kind=purpose)
+        if _guard_scope else None
+    )
+
     # 上下文快照捕获（normalize 前，_layer 标签尚存；未布防时零开销）
     # kind=调用用途（reply/reflect…）：列表行按用途区分主对话与任务调用，
     # 任务首轮的结构性低命中不再被误读为主对话缓存故障
     from agent.mind.context_snapshot import context_snapshot
-    await context_snapshot.try_capture(messages, tools, model_name, kind=purpose)
+    await context_snapshot.try_capture(
+        messages, tools, model_name, kind=purpose, prefix_drift=prefix_drift,
+    )
 
     # 缓存断点装饰（唯一装饰点，_layer 标签尚存时按锚点表放置；
     # 按主客户端线型判定，回退候选的供应商适配在 llm_manager）

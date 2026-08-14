@@ -85,18 +85,21 @@ class ContextSnapshot:
         log(f"上下文快照连续捕获: {'开启' if enabled else '关闭'}", "DEBUG", tag="快照")
 
     async def try_capture(
-        self,
-        messages: List[Dict],
-        tools: Optional[List[Dict]],
-        model: str,
-        *,
-        kind: str = "",
+            self,
+            messages: List[Dict],
+            tools: Optional[List[Dict]],
+            model: str,
+            *,
+            kind: str = "",
+            prefix_drift: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """尝试捕获（在 _invoke_llm_unified 中 normalize 前调用）。
 
         未布防且未开启连续捕获时立即返回 False（零开销）。
         一次性布防捕获后自动解除；连续模式持续捕获并追加紧凑记录。
         kind 为调用用途（reply/reflect…），随快照记录供列表按用途解读命中率。
+        prefix_drift 为 PrefixGuard 的前缀断裂归因（None=前缀稳定/无基线），
+        随快照落盘供缓存命中率下跌归因。
         """
         if not self._armed and not self._continuous:
             return False
@@ -134,6 +137,7 @@ class ContextSnapshot:
                 "tools": tools or [],
                 "sections": sections,
                 "cache": self._build_cache_block(sections),
+                "prefix_drift": prefix_drift,
             }
             self._armed = False
 
@@ -209,6 +213,7 @@ class ContextSnapshot:
                     for s in snapshot.get("sections", [])
                 ],
                 "cache": snapshot.get("cache"),
+                "prefix_drift": snapshot.get("prefix_drift"),
             }
             with open(cls._records_path(), "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")

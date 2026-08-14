@@ -327,6 +327,7 @@ async def _run_think_rounds(
                         )
                     ctx.base_messages, ctx.tool_chain = await _compress_context(
                         mind, ctx.base_messages, ctx.tool_chain, ctx.current_scope,
+                        tools=ctx.active_tools,
                     )
             except Exception as exc:
                 # 估算/手动触发的压缩失败不应杀死整轮回复：

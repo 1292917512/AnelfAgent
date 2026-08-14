@@ -302,8 +302,13 @@ _PROMPT_CACHE_CONFIGS = {
             "default": True,
         },
         "tool_dynamic_sticky": {
-            "description": "动态工具粘性模式：tag 激活/动态发现的工具在空闲时保留而非清除（进程内工具集只增不减），避免工具集跨会话抖动击穿前缀缓存；关闭恢复每个会话结束清空",
+            "description": "动态工具粘性模式：tag 激活/动态发现的工具在空闲时保留而非清除（进程内工具集只增不减），避免工具集跨会话抖动击穿前缀缓存；关闭则每个会话结束清空",
             "default": True,
+        },
+        "prefix_guard_layers": {
+            "description": "前缀稳定性守卫（PrefixGuard）校验的层清单（逗号分隔）；默认稳定前缀三层 stable,summary,conversation。守卫在每次 LLM 调用前逐条哈希比对同 scope 上一次调用，首个不一致位置即缓存断裂点，归因落盘 records.jsonl 的 prefix_drift 字段（仅观测不阻断）",
+            "default": "",
+            "advanced": True,
         },
     },
 }

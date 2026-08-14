@@ -108,6 +108,7 @@ class CogneeClient:
         # 限制其 handler 级别以避免 pipeline 状态持续刷屏
         _quieten_cognee_logger()
         _patch_ladybug_concurrency()
+        _patch_ladybug_wal_recovery()
         return self._module
 
     async def _configure(self, module: Any) -> None:
@@ -409,6 +410,39 @@ def _patch_ladybug_concurrency() -> None:
     serialized_query._anel_serialized = True  # type: ignore[attr-defined]
     LadybugAdapter.query = serialized_query
     log("ladybug 查询已串行化（防 pybind 并发段错误）", "DEBUG", tag="记忆")
+
+
+def _patch_ladybug_wal_recovery() -> None:
+    """让 cognee 以容错模式打开 ladybug 库（WAL 损坏时恢复而非抛错）。
+
+    checkpoint 进行到一半进程被杀时，冻结 WAL（.wal.checkpoint）尾部留下半条
+    记录，打开回放读到非法记录类型触发 wal_record.cpp 的 UNREACHABLE_CODE
+    断言。cognee 自带兜底只删活动 WAL（<db>.wal），覆盖不到冻结 WAL，该
+    数据集图库从此永久无法打开。throw_on_wal_replay_failure=False 是 ladybug
+    官方恢复语义：回放到损坏点前最后一个已提交事务，仅丢失被中断的事务，
+    比 cognee 删整个 WAL 的兜底损失更小；WAL 完好时行为完全不变。
+    幂等：重复导入只包一次。
+    """
+    try:
+        from cognee.infrastructure.databases.graph.ladybug import adapter as ladybug_adapter
+    except Exception as exc:
+        log(f"ladybug WAL 恢复补丁跳过（不影响主流程）: {exc}", "DEBUG", tag="记忆")
+        return
+    original = ladybug_adapter.Database
+    if getattr(original, "_anel_wal_tolerant", False):
+        return
+
+    class _WalTolerantDatabase(original):  # type: ignore[valid-type, misc]
+        """默认容错回放的 Database 包装（保留显式传参覆盖）。"""
+
+        _anel_wal_tolerant = True
+
+        def __init__(self, database_path: Any = None, **kwargs: Any) -> None:
+            kwargs.setdefault("throw_on_wal_replay_failure", False)
+            super().__init__(database_path, **kwargs)
+
+    ladybug_adapter.Database = _WalTolerantDatabase
+    log("ladybug 已启用 WAL 容错恢复（损坏时回放到最后提交点）", "DEBUG", tag="记忆")
 
 
 def _normalize_recall(raw_results: Any) -> list[CogneeRecallItem]:

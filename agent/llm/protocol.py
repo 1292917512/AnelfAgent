@@ -109,6 +109,10 @@ BUILTIN_TOOL_TYPES: FrozenSet[str] = frozenset({
     "local_shell",
     "shell",
     "apply_patch",
+    # 百炼系扩展内置工具（Responses tools 声明原样透传，由端点校验）
+    "web_extractor",
+    "t2i_search",
+    "i2i_search",
 })
 
 

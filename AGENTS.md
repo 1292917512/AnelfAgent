@@ -183,7 +183,9 @@ tick() 单次心跳：
 对话折叠三入口共用 `ConversationData.schedule_fold`：窗口滞回触发（取数路径）/
 心跳空闲折叠 / AI 工具 `fold_conversations`（memory 组，整理当前或全部会话）。
 折叠成功后经注入的预热钩子（`mind.prewarm_scope_cache`，bootstrap 注册，
-`conversation_fold_prewarm` 开关）发 1-token 轻调用写热新前缀。
+`conversation_fold_prewarm` 开关）发 1-token 轻调用写热新前缀。预热在
+`decorate_messages` 之后必须经 `normalize_for_send` 再发（与 `_invoke_llm_unified`
+一致），否则 `_layer` 内部分类标签会泄露给供应商（严格校验端点潜在 400）。
 窗口配置收敛为两个：**总条数** `max_conversation_size` + **保留百分比**
 `conversation_raw_keep_percent`（保留条数 x 与滞回 H 均派生：x=M×百分比、H=x，
 窗口在 x~M+x 波动、每批折 M 条）；Web 配置页以一行复合组件呈现
@@ -375,9 +377,11 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程分三层责任，排查时**先定位层再下结论**，不要默认"缓存崩了"：
 
 **三层责任模型**：
-1. **客户端字节稳定性**（完全可控，已接近极限）：变动率排序组装 + tools 冻结 + 摘要窗口 + 单一装饰点。验证手段 = 快照 section 哈希 diff。
+1. **客户端字节稳定性**（完全可控，已接近极限）：变动率排序组装 + tools 冻结 + 摘要窗口 + 单一装饰点。验证手段 = 快照 section 哈希 diff + **PrefixGuard 运行时哈希链**（见下）。
 2. **供应商缓存行为**（不可控）：DeepSeek 磁盘缓存的写入→可读传播延迟、条目驱逐、节点亲和。**判读特征：prefix_stable=True（前缀字节完全未变）而 read 上下浮动，1~2 轮自愈**——客户端无能为力，列表已以"平台波动"徽标自动标识，不计为故障。
 3. **统计与展示口径**：kind 分桶 / age_sec 回声 / unobservable / 均值按单次钳制率平均（防 Anthropic 口径 read>prompt 放大超 100%）。
+
+**PrefixGuard 前缀稳定性运行时守卫**（`agent/mind/prefix_guard.py`，对齐 dsh agent-loop/invariant 的运行时不变式思想、适配为轻量观测版）：每次 LLM 调用前（`_invoke_llm_unified` normalize 前、`_layer` 尚存时）对守卫层消息逐条哈希（复用 `PromptCacheManager.compute_hash`），与同 (scope, kind) 上一次调用的哈希链比对，**首个不一致位置即缓存断裂点**（比快照层聚合 sha1 更细——能定位到层内第几条消息变了）。基线按 (scope, kind) 分键隔离前缀族，conversation 纯追加免疫（只报既有位置改动）。**仅观测不阻断**（fail-open），归因写入 records.jsonl 的 `prefix_drift` 字段（`{broken_at_index, layer, prev_hash, cur_hash}`；链收缩时 `reason=guarded_chain_shrunk`）。守卫层由 `prefix_guard_layers` 配置（逗号分隔，默认 `stable,summary,conversation`）。判读：`prefix_drift` 非空即该次调用前缀断裂，`layer` 指认漂移层；压缩/折叠/人设切换是合法断裂源（可 `prefix_guard.reset(scope)` 清基线避免误报）。
 
 **诊断决策树**（对任意一次低命中）：
 - 前缀稳定（快照 sections 除 tool_chain/exec_context 均未变）+ 命中低 ⇒ **平台波动**，看下一轮是否自愈，是则结案
@@ -386,7 +390,7 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
 - 重启后首轮低 ⇒ 冷启动（布局变更会使旧缓存条目按新层序失效，一次性）
 
 **数据来源**（按可信度排序）：
-- `logs/context_snapshots/records.jsonl`：每次 LLM 调用的紧凑缓存记录（prompt/read/creation/hit_rate/kind/model/age_sec/unobservable）。连续捕获模式下逐条写入。
+- `logs/context_snapshots/records.jsonl`：每次 LLM 调用的紧凑缓存记录（prompt/read/creation/hit_rate/kind/model/age_sec/unobservable/**prefix_drift**）。连续捕获模式下逐条写入。`prefix_drift` 为 PrefixGuard 断裂归因（null=前缀稳定），是命中率下跌时定位"哪层哪条消息漂移"的第一手证据。
 - 应用日志 `LLM 用量: prompt=... cache_read=...`（DEBUG，tag 思维）：单调用 ground truth。
 - Web 快照缓存面板（Context→快照）：`last_call`（主对话口径）/ `recent` / `recent_all`。
 
@@ -411,6 +415,10 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
 **Anthropic 断点预算**（每请求 ≤4，设施集中在 `agent/llm/prompt_cache.py`，借鉴 Hermes prompt_caching.py）：**唯一装饰点是发送边界的 `decorate_messages`**（llm_invoker 在 normalize 前、`_layer` 标签尚存时调用），按声明式锚点表放置：stable 层末 + 对话历史末（无历史回退摘要块）+ 链尾（无 `_layer` 的末消息，天然随工具链增长前移）；便签层在尾部动态区不打锚点（漂移内容占断点既浪费预算又固化易变字节）；管线/think_loop/内容构建侧只打 `_layer` 标签，**谁都不写 cache_control**。wire `tools[-1]` 断点是传输层权威（llm_client 按消息侧计数门控补位，满 4 让位）。装饰全部 copy-on-write，共享上下文字典永不被改写。TTL 由 `prompt_cache_anthropic_ttl`（5m/1h）驱动；`prompt_cache_tools_breakpoint` 控制 tools 断点。
 
 **跨供应商回退**：cache_control 是 Anthropic 专属字段。`chat_with_fallback` 回退到非 Anthropic 候选时经 `strip_cache_control_copy` 发剥离副本（原列表与 think_loop 共享，禁止原地剥离）；回退到 Anthropic 候选则原样保留。1h TTL 时 llm_client 自动携带 `extended-cache-ttl` beta 头（官方端点缺头 400）。
+
+**压缩摘要前缀复用**（`context_compressor._summarize_with_prefix`，对齐 dsh compaction-basic/summarizer 的 COMPACTION_INSTRUCTION 设计）：上下文压缩的摘要调用不再发独立的文本渲染请求（与主前缀零共享、全价计费），而是把 `head_system + head + middle`（= `base_messages + tool_chain` 截去保尾段的**字节级前缀**，亦即上一次真实请求的前缀）原样作为消息前缀，摘要指令作为末条 user 消息追加，经 `_invoke_llm_unified`（`purpose="compress"` 分桶、`tool_choice="none"` 禁止工具调用）发出——辅助调用成为上一次请求的前缀扩展，命中 KV 缓存。**tools 数组随前缀传入**（`round_helpers._compress_context` 透传 `ctx.active_tools`，缺它前缀从第 0 字节就不匹配）。`_extract_previous_summary`/`_extract_user_messages` 只做视图过滤不改前缀字节，故前缀在 extraction 前捕获即正确。失败逐级回退：前缀路径 → 文本渲染路径（`summarize_text`）→ 确定性摘要。配置 `compression_prefix_reuse`（默认 True）可整体回退旧行为。注意：conversation_fold 的折叠摘要处理窗口外旧消息（不在当前请求前缀内），**不复用前缀**，仍走 `summarize_text`。
+
+**缓存命中 e2e 回归**（`tests/integration/test_llm_cache_hit_e2e.py`，env-gated 默认 skip）：`LLM_CACHE_E2E=1` + `ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY` 时，同一前缀连续两次 `chat_stream`（max_tokens=1），断言第二次 `cache_read_input_tokens > 0`——把"前缀字节稳定性"的最终证明锁进回归门（对齐 dsh request-cache.e2e.ts）。`cache_observable=False` 的端点自动 skip（不误报）。
 
 **记忆系统红线清单**（改动记忆/召回/画像注入时逐条自查；前四条有不变量测试锁定，见 `tests/unit/agent/mind/test_cache_layer_invariants.py`）：
 1. **vol ≤ 30 禁入**：记忆召回/画像/关系/技能/状态/短期记忆内容块的 volatility 必须 > VOL_HISTORY(30)（stable/summary/conversation 是缓存前缀，一个字节变化即断裂）。新增 `@context_block` 时先想"这块多久变一次"。

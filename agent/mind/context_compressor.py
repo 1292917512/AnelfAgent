@@ -71,6 +71,8 @@ class CompressionConfig:
     microcompact_keep_recent: int = 6
     # 连续压缩失败熔断次数（对齐 Claude Code MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES）
     max_consecutive_failures: int = 3
+    # 前缀复用摘要：摘要调用复用主对话前缀（system+tools+消息）以命中 KV 缓存
+    prefix_reuse: bool = True
 
     @classmethod
     def from_config_manager(cls) -> "CompressionConfig":
@@ -86,6 +88,7 @@ class CompressionConfig:
             user_max_chars=get_config_int("compression_user_max_chars", 2000),
             microcompact_chain_threshold=get_config_int("compression_microcompact_threshold", 40),
             microcompact_keep_recent=get_config_int("compression_microcompact_keep", 6),
+            prefix_reuse=get_config_bool("compression_prefix_reuse", True),
         )
 
 
@@ -129,6 +132,20 @@ _SUMMARY_PROMPT = """请将以下对话片段压缩为结构化摘要。必须�
 
 [待压缩对话]
 {conversation}"""
+
+# 前缀复用摘要指令：作为"最后一条 user 消息"追加在主对话前缀之后，
+# 使摘要调用成为上一次真实请求的字节级前缀扩展，复用供应商 KV 缓存
+# （对齐 dsh compaction-basic/summarizer 的 COMPACTION_INSTRUCTION 设计）。
+# 与 _SUMMARY_PROMPT 的区别：不带 {conversation} 占位（对话原文已在前缀中），
+# 指令文案引导模型压缩"上方对话"而非内联文本块。
+_SUMMARY_DIRECTIVE = """请将上方对话片段压缩为结构化摘要。必须保留：
+1. 未完成的任务、计划与待办事项
+2. 用户明确表达的偏好与要求
+3. 关键实体（人名、用户ID、群组ID）与记忆 ID
+4. 重要的决定、结论与事实
+5. 最近使用的工具及其关键结果
+{focus_directive}{previous_block}
+要求：分点列出，简洁准确，不超过 {max_chars} 字。直接输出摘要内容，不要额外解释，不要调用任何工具。"""
 
 _FOCUS_DIRECTIVE = (
     "\n【压缩焦点】本次压缩由你主动发起，焦点主题：「{focus_topic}」。"
@@ -448,6 +465,7 @@ class ContextCompressor:
             scope: str = "",
             focus_topic: str = "",
             summarizer: Optional[Callable[[str], Any]] = None,
+            tools: Optional[List[Dict]] = None,
     ) -> Tuple[List[Dict], List[Dict]]:
         """压缩上下文：保头保尾，中间轮次生成摘要。
 
@@ -457,6 +475,8 @@ class ContextCompressor:
             scope: 对话 scope（用于缓存失效与手动请求消费）
             focus_topic: 手动压缩的焦点主题（该主题相关信息优先保留）
             summarizer: 摘要生成函数（默认用 mind.llm_chat）
+            tools: 当前激活工具 schema 数组（传入时启用前缀复用摘要：
+                摘要调用复用主对话 system+tools+消息前缀命中 KV 缓存）
 
         Returns:
             (新的 base_messages, 新的 tool_chain)
@@ -501,6 +521,15 @@ class ContextCompressor:
         head, middle = self._repair_head_orphans(head, middle)
         compressed_count = len(middle)
 
+        # 2.55 捕获前缀复用摘要所需的请求前缀（须在 extraction 改写 middle 之前）：
+        # head_system + head + middle 是 base_messages + tool_chain 的字节级前缀，
+        # 亦即上一次真实请求（base + chain + exec_context）的前缀——摘要调用以此
+        # 为前缀追加指令，即可复用供应商 KV 缓存（_extract_* 只做视图过滤，
+        # 不改变前缀字节）。
+        prefix_messages: Optional[List[Dict]] = None
+        if self.config.prefix_reuse and tools:
+            prefix_messages = head_system + head + middle
+
         # 2.6 分离前次压缩摘要：迭代更新而非"摘要的摘要"（参考 hermes _previous_summary）
         previous_summary, middle = self._extract_previous_summary(middle)
 
@@ -519,6 +548,7 @@ class ContextCompressor:
             summary = await self._summarize(
                 middle, summarizer,
                 focus_topic=focus_topic, previous_summary=previous_summary,
+                prefix_messages=prefix_messages, tools=tools,
             )
 
         # 4. 清理尾部孤儿 tool 消息（其 assistant 调用已被压缩），
@@ -650,15 +680,18 @@ class ContextCompressor:
             *,
             focus_topic: str = "",
             previous_summary: str = "",
+            prefix_messages: Optional[List[Dict]] = None,
+            tools: Optional[List[Dict]] = None,
     ) -> str:
         """生成中间轮次摘要（LLM 优先，失败回退确定性拼接）。
 
         previous_summary 非空时走迭代更新：LLM 将既有摘要与本次片段合并，
         避免多次压缩退化为"摘要的摘要"（参考 hermes _previous_summary）。
+
+        prefix_messages + tools 非空时走前缀复用路径：摘要调用复用主对话
+        system+tools+消息前缀（字节级命中 KV 缓存），指令作为末条 user 消息；
+        该路径失败时先回退文本渲染路径，再回退确定性摘要。
         """
-        if summarizer is None:
-            summarizer = getattr(self._mind, "summarize_text", None)
-        conversation_text = self._render_for_summary(middle)
         focus_directive = (
             _FOCUS_DIRECTIVE.format(focus_topic=focus_topic) if focus_topic else ""
         )
@@ -666,6 +699,25 @@ class ContextCompressor:
             _PREVIOUS_SUMMARY_BLOCK.format(previous_summary=previous_summary)
             if previous_summary else ""
         )
+
+        # 前缀复用路径（对齐 dsh compaction-basic：辅助调用复用前缀而非独立请求）
+        if prefix_messages and tools:
+            try:
+                text = await self._summarize_with_prefix(
+                    prefix_messages, tools, focus_directive, previous_block,
+                )
+                if text:
+                    return text
+            except Exception as exc:
+                self.metrics.failures += 1
+                log(
+                    f"前缀复用摘要失败，回退文本渲染路径: {exc}",
+                    "WARNING", tag="压缩",
+                )
+
+        if summarizer is None:
+            summarizer = getattr(self._mind, "summarize_text", None)
+        conversation_text = self._render_for_summary(middle)
         try:
             if summarizer is not None:
                 result = summarizer(
@@ -689,6 +741,59 @@ class ContextCompressor:
         if previous_summary:
             return f"{previous_summary}\n{fallback}"
         return fallback
+
+    async def _summarize_with_prefix(
+            self,
+            prefix_messages: List[Dict],
+            tools: List[Dict],
+            focus_directive: str,
+            previous_block: str,
+    ) -> str:
+        """前缀复用摘要：主对话前缀 + 摘要指令（末条 user 消息）经统一入口调用。
+
+        与 dsh summarizer 的关键对齐：保留会话自身的 system/tools/消息前缀，
+        摘要调用即上一次真实请求的字节级前缀扩展，供应商 KV 缓存被复用而非
+        失效；唯一的新增输入是末尾的压缩指令。经 _invoke_llm_unified 走
+        decorate_messages（断点按 _layer 锚点放置）+ normalize_for_send
+        （剥离 _layer）+ purpose="compress" 分桶统计。
+
+        Returns:
+            摘要文本（截断至 summary_max_chars）；空串表示调用成功但无输出，
+            由调用方决定回退。
+
+        Raises:
+            Exception: LLM 调用失败（mind 未就绪/网络/模型异常），
+            由 _summarize 捕获并回退文本渲染路径。
+        """
+        mind = self._mind
+        invoke = getattr(mind, "_invoke_llm_unified", None)
+        if invoke is None:
+            raise RuntimeError("mind 不支持 _invoke_llm_unified")
+        directive = {
+            "role": "user",
+            "content": _SUMMARY_DIRECTIVE.format(
+                max_chars=self.config.summary_max_chars,
+                focus_directive=focus_directive,
+                previous_block=previous_block,
+            ),
+        }
+        # tool_choice="none"：tools 数组随前缀保留（缺它前缀从第 0 字节就不匹配），
+        # 但禁止摘要模型发起工具调用；指令文案亦明确要求只输出摘要
+        result = await invoke(
+            prefix_messages + [directive],
+            tools,
+            None,
+            tool_choice="none",
+            purpose="compress",
+        )
+        text = (getattr(result, "content", "") or "").strip()
+        if text:
+            log(
+                f"前缀复用摘要完成: 前缀 {len(prefix_messages)} 条消息, "
+                f"输出 {len(text)} 字符",
+                "DEBUG", tag="压缩",
+            )
+        return text[: self.config.summary_max_chars]
 
     @staticmethod
     def _extract_previous_summary(middle: List[Dict]) -> Tuple[str, List[Dict]]:
@@ -918,6 +1023,12 @@ _COMPRESSION_CONFIGS = {
         "compression_enabled": {
             "description": "是否启用上下文自动压缩",
             "default": True,
+        },
+        "compression_prefix_reuse": {
+            "description": "压缩摘要调用复用主对话前缀（system+tools+消息）以命中 KV 缓存；"
+                           "关闭则回退独立的文本渲染摘要请求",
+            "default": True,
+            "advanced": True,
         },
         "compression_threshold_percent": {
             "description": "压缩触发阈值（占模型上下文窗口比例）",
