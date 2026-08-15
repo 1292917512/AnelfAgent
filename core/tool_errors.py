@@ -108,8 +108,7 @@ def error_from_exception(exc: BaseException, *, action: Optional[str] = None,
 
     if _is_timeout(exc):
         return tool_error(f"{prefix}操作超时 ({detail})",
-                          cause=ErrorCause.TIMEOUT, retryable=True,
-                          hint=hint or "可稍后重试，或增大超时时间/缩小操作范围")
+                          cause=ErrorCause.TIMEOUT, retryable=True, hint=hint)
     if isinstance(exc, PermissionError):
         return tool_error(f"{prefix}权限不足 ({detail})",
                           cause=ErrorCause.PERMISSION, retryable=False,

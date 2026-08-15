@@ -532,6 +532,11 @@ class _FakePfc:
     def get_adapter_key(self, scope: str) -> str:
         return ""
 
+    async def get_active_tool_schemas(self, adapter_key: str = "", scope: str = "") -> list:
+        # think_loop 版本元组含 EntityRegistry.version()：注册表在测试过程中
+        # 被其他用例增删时会触发 active_tools 重建，打桩需提供该方法
+        return []
+
 
 def _tool_round_result(name: str) -> SimpleNamespace:
     return SimpleNamespace(

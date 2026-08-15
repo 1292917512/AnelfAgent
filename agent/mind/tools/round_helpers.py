@@ -867,9 +867,17 @@ def _check_tool_results_all_errors(
 # 其余兼容未走 tool_error 的工具：shell 类用 stderr、部分业务工具用 message/detail）
 _ERROR_TEXT_KEYS = ("error", "message", "stderr", "detail")
 
+# 回退摘要的最大长度（notes 拼接统一截断，供日志与拦截反馈）
+_FALLBACK_BRIEF_MAX = 150
+
 
 def _extract_error_text(payload: Any) -> str:
-    """从工具结果 payload（dict 或 JSON 字符串）中提取错误文本，无错误返回空串。"""
+    """从工具结果 payload（dict 或 JSON 字符串）中提取错误文本，无错误返回空串。
+
+    回退链（仅失败分支内）：error/message/stderr/detail → notes（工具自身的
+    语义解释，如 shell"非零码+无输出通常为无匹配"）→ returncode（命令退出码）。
+    避免把"搜索无匹配"这类否定结果渲染成无信息的"未知错误"。
+    """
     if isinstance(payload, str):
         payload = _parse_tool_result_json(payload)
     if not isinstance(payload, dict):
@@ -879,7 +887,15 @@ def _extract_error_text(payload: Any) -> str:
             value = payload.get(key)
             if value:
                 return str(value)
-        return "未知错误"
+        notes = payload.get("notes")
+        if isinstance(notes, list) and notes:
+            text = "；".join(str(n) for n in notes if n)
+            if text:
+                return text[:_FALLBACK_BRIEF_MAX] + ("…" if len(text) > _FALLBACK_BRIEF_MAX else "")
+        rc = payload.get("returncode")
+        if rc is not None:
+            return f"命令退出码 {rc}（无错误输出）"
+        return "工具返回失败但未提供错误详情"
     if payload.get("error"):
         return str(payload["error"])
     return ""

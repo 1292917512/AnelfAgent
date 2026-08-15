@@ -94,7 +94,7 @@ class TestCollectRoundErrorBriefs:
     def test_success_false_without_error_key(self) -> None:
         chain = _chain('{"success": false}')
         briefs = _collect_round_error_briefs(chain, _named_calls("alpha"))
-        assert briefs == ["alpha: 未知错误"]
+        assert briefs == ["alpha: 工具返回失败但未提供错误详情"]
 
     def test_ok_false_extracts_stderr(self) -> None:
         """shell 类工具失败无 error 键时，摘要应取 stderr 而非"未知错误"。"""

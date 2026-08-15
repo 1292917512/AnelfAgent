@@ -139,7 +139,7 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
 
     except subprocess.TimeoutExpired:
         log(f"⏰ 命令执行超时 ({timeout_sec}s): {cmd_str[:50]}{'...' if len(cmd_str) > 50 else ''}", "WARNING")
-        return CommandResult(False, "", "命令超时")
+        return CommandResult(False, "", f"命令超时 ({timeout_sec}s)")
     except FileNotFoundError:
         log(f"命令未找到: {cmd_str[:50]}{'...' if len(cmd_str) > 50 else ''}", "DEBUG")
         return CommandResult(False, "", f"命令未找到: {cmd_str.split()[0] if cmd_str else ''}")

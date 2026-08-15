@@ -270,16 +270,20 @@ async def _run_think_rounds(
     """轮次主循环：中断检查 → LLM 调用 → 阶段分发 → 终止判断。"""
     from agent.mind.autonomous import MindPhase
     from agent.mind.tool_activation import tool_activation as _tool_act_mgr
+    from core.entity import EntityRegistry
 
     mind = ctx.mind
     anything = ctx.anything
     mode = ctx.mode
     execution_steps = ctx.execution_steps
 
-    # 工具集版本快照：每轮检查版本变化，变了就重建 active_tools（保持 prefix 缓存友好）
+    # 工具集版本快照：每轮检查版本变化，变了就重建 active_tools（保持 prefix 缓存友好）。
+    # registry 版本覆盖运行期注册表增删（MCP 热同步/reload/entities 重载/WebUI 开关）——
+    # 否则粘性激活的 stay_awake 服务在回复进行中新增工具，要等下一个版本事件才可见
     last_tools_version = (
         getattr(mind.pfc, "tools_version", 0),
         _tool_act_mgr.version,
+        EntityRegistry.version(),
     )
 
     while state.iteration < safety_limit:
@@ -287,9 +291,13 @@ async def _run_think_rounds(
         if await _handle_interrupt(ctx, state):
             return
 
-        # 工具集版本检查：激活/发现变化时重建 active_tools
+        # 工具集版本检查：激活/发现/注册表变化时重建 active_tools
         # （ToolAssembly 追加式冻结保证重建结果前缀字节稳定，prefix 缓存友好）
-        cur_tools_version = (getattr(mind.pfc, "tools_version", 0), _tool_act_mgr.version)
+        cur_tools_version = (
+            getattr(mind.pfc, "tools_version", 0),
+            _tool_act_mgr.version,
+            EntityRegistry.version(),
+        )
         if cur_tools_version != last_tools_version:
             last_tools_version = cur_tools_version
             ctx.active_tools = await mind.pfc.get_active_tool_schemas(
@@ -823,10 +831,10 @@ async def _handle_tool_round(
     if all_errors:
         state.consecutive_tool_errors += 1
         briefs = _collect_round_error_briefs(tool_chain, tool_calls)
-        detail = "; ".join(briefs) if briefs else "未知错误"
+        detail = "; ".join(briefs) if briefs else "工具返回失败但未提供错误详情"
         log(
-            f"全部工具调用返回错误 (轮次 {state.iteration + 1}, "
-            f"连续 {state.consecutive_tool_errors} 次): {detail}",
+            f"本轮工具调用全部失败 (轮次 {state.iteration + 1}, "
+            f"连续 {state.consecutive_tool_errors} 轮): {detail}",
             "WARNING", tag="思维",
         )
     else:
@@ -860,11 +868,11 @@ async def _handle_tool_round(
 
     if state.consecutive_tool_errors >= 3:
         log(
-            f"连续 {state.consecutive_tool_errors} 轮工具全部报错，强制结束本轮",
+            f"连续 {state.consecutive_tool_errors} 轮工具调用全部失败，强制结束本轮",
             "WARNING", tag="思维",
         )
         execution_steps.append(
-            f"→ 第{state.iteration + 1}轮: 连续工具错误 {state.consecutive_tool_errors} 次，强制结束"
+            f"→ 第{state.iteration + 1}轮: 连续 {state.consecutive_tool_errors} 轮工具全部失败，强制结束"
         )
         await _finish_round(ctx, state)
         return _StageOutcome.BREAK

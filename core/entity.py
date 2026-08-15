@@ -364,6 +364,24 @@ def _unwrap_nested_arguments(params: List[ToolParam], kwargs: Dict[str, Any]) ->
     return kwargs
 
 
+def _resolve_inner_timeout(entity: EntityMetadata, kwargs: Dict[str, Any]) -> float:
+    """解析工具 timeout 形参的生效值（AI 传值 > 签名默认值），未声明该形参返回 0。
+
+    自带 timeout 形参的工具（shell/子进程/HTTP 类）在内部自行管理执行超时
+    并结构化返回（如整组终止进程），实体层兜底超时须让位于它——否则 AI 按
+    工具声明传入更大的 timeout 会被外层 wait_for 提前掐断。
+    """
+    declared = next(
+        (p for p in entity.meta.get("params") or [] if p.name == "timeout"), None,
+    )
+    if declared is None:
+        return 0.0
+    value = kwargs.get("timeout", declared.default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
 # ======================================================================
 # ======================================================================
 
@@ -428,6 +446,8 @@ class BaseEntity(ABC):  # noqa: B024 — 标记型基类：子类经类属性声
 # ======================================================================
 
 _DEFAULT_TOOL_TIMEOUT = 60.0
+# 工具内部 timeout 形参生效值之外，留给收尾（进程组终止/输出落盘）的余量（秒）
+_INNER_TIMEOUT_MARGIN = 15.0
 _SKIP_ENTITY_METHODS = frozenset({
     'get_entity_name', 'get_entity_config',
     'register_api', 'get_registered_apis',
@@ -1057,6 +1077,12 @@ class EntityRegistry:
         else:
             tool_timeout = timeout
 
+        # 工具自带 timeout 形参时，以其生效值 + 收尾余量为兜底下限：
+        # 超时的判定与终止交由工具自身的超时管理，决定权在 AI 传参
+        inner_timeout = _resolve_inner_timeout(entity, kwargs)
+        if inner_timeout > 0:
+            tool_timeout = max(tool_timeout, inner_timeout + _INNER_TIMEOUT_MARGIN)
+
         call_id = uuid.uuid4().hex[:8]
         t0 = asyncio.get_running_loop().time()
 
@@ -1077,13 +1103,9 @@ class EntityRegistry:
             result = await asyncio.wait_for(coro, timeout=tool_timeout)
         except asyncio.TimeoutError:
             dur = round((asyncio.get_running_loop().time() - t0) * 1000)
-            log(f"工具执行超时 ({tool_timeout}s): {name}", "WARNING", tag="实体")
-            if not entity.is_async:
-                # 同步工具经线程执行，超时后底层线程无法强制终止，仍可能继续运行
-                log(
-                    f"同步工具超时后线程仍在执行 (timeout={tool_timeout}s): {name}",
-                    "WARNING", tag="实体",
-                )
+            # 同步工具经线程执行，超时后底层线程无法强制终止，仍可能继续运行至自行结束
+            sync_note = "" if entity.is_async else "（同步工具底层线程将继续运行至自行结束）"
+            log(f"工具执行超时 ({tool_timeout}s){sync_note}: {name}", "WARNING", tag="实体")
             await event_bus.emit(EVENT_TRACE_CALL_END, {
                 "call_id": call_id,
                 "name": name,
@@ -1091,14 +1113,17 @@ class EntityRegistry:
                 "success": False,
                 "error": f"执行超时 ({tool_timeout}s)",
             })
-            # 结构化错误（cause/retryable/hint + 稳定 code）：守卫/重试/前端
-            # 按 cause 路由，不解析 message（对齐 dsh HarnessError.code 契约）
+            # 结构化错误（cause/retryable + 稳定 code）：守卫/重试/前端按 cause
+            # 路由，不解析 message（对齐 dsh HarnessError.code 契约）。
+            # 只陈述事实（哪个调用、执行上限多久），处置决策留给 AI。
+            # Model Experience: 超时错误附 args_preview 纯事实增量（仅错误路径，
+            # token 影响可忽略）；tool 结果属 tool_chain 动态区，不触碰前缀缓存层
             return tool_error(
                 f"工具执行超时 ({tool_timeout}s): {name}",
                 cause=ErrorCause.TIMEOUT,
                 retryable=True,
-                hint="可稍后重试，或用 _timeout 参数增大超时时间/缩小操作范围",
                 code="TOOL_TIMEOUT",
+                args_preview=arguments[:_LOG_ARGS_PREVIEW_LEN] if arguments else "",
             )
         except Exception as exc:
             dur = round((asyncio.get_running_loop().time() - t0) * 1000)

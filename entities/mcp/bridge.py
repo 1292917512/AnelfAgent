@@ -34,13 +34,16 @@ MCP（Model Context Protocol）桥接模块。
 from __future__ import annotations
 
 import functools
+import hashlib
 import inspect
 import json
 import os
+import re
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.entity import EntityMetadata, EntityRegistry, EntityType, ToolParam
 from core.log import log
@@ -51,6 +54,17 @@ from entities._sdk import coerce_bool_arg
 
 _MAX_LIFECYCLE_RETRIES = 5
 _DEFAULT_CALL_TIMEOUT = 300.0
+# OpenAI function-calling 工具名上限：超限会导致供应商拒绝整个 tools 数组
+_MAX_TOOL_NAME_LEN = 64
+# 单次 MCP 工具结果允许注入的图片数上限（防上下文膨胀）
+_MAX_RESULT_IMAGES = 4
+# 单张注入图片的解码字节上限（防超大图灌满磁盘与多模态管道）
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+# 工具列表变更通知的同步防抖（秒）：server 可能连发多条通知，合并为一次同步
+_TOOL_SYNC_DEBOUNCE_SEC = 1.0
+# 连接稳定运行该时长后，重连重试预算复位（秒）：
+# 长期运行的服务偶发抖动不应累计耗尽预算而永久死亡（对齐 dsh 稳定窗口复位）
+_RECONNECT_BUDGET_RESET_SEC = 300.0
 
 # 分组目录描述的截断上限
 _GROUP_DESC_TOOL_LIMIT = 8        # 描述中列出的工具数量上限
@@ -79,6 +93,16 @@ _MCP_CONFIGS = {
         },
         "tool_activation_sticky": {
             "description": "是否让激活的分组保持粘性不再过期沉睡（避免激活/过期反复重写缓存前缀）",
+            "default": True,
+        },
+        "mcp_tool_list_sync": {
+            "description": "收到 server 的工具列表变更通知时自动重同步注册"
+                           "（关闭则仅在重连/手动 reload 时刷新）",
+            "default": True,
+        },
+        "mcp_image_passthrough": {
+            "description": "MCP 工具返回的图片落盘并经多模态约定注入"
+                           "（视觉模型可直接看到截图；关闭则仅保留文本占位）",
             "default": True,
         },
     },
@@ -289,6 +313,39 @@ async def _list_roots_callback(context: Any) -> Any:
     )
 
 
+class _RetryBudget:
+    """重连重试预算：连续失败计数，稳定连接超过窗口后复位。
+
+    对齐 dsh reconnect 的 budget-reset-after-stability：没有复位时，
+    长期运行的服务偶发抖动累计 N 次后永久放弃（工具全部注销），
+    需要人工 reload 才能恢复——稳定期过后的失败应重新计满预算。
+    """
+
+    def __init__(self, max_retries: int, reset_after_sec: float) -> None:
+        self._max = max_retries
+        self._reset_after = reset_after_sec
+        self.attempt = 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.attempt >= self._max
+
+    def record_failure(self, stable_seconds: float = 0.0) -> float:
+        """记录一次失败，返回退避等待秒数。
+
+        stable_seconds 为该次失败前连接的稳定运行时长；达到复位窗口时
+        预算清零重计（本次失败即新预算的第 1 次），退避也从最短档重来。
+        """
+        if stable_seconds >= self._reset_after:
+            self.attempt = 0
+            log(
+                f"连接稳定运行 {int(stable_seconds)}s 后失败，重连重试预算已复位",
+                "DEBUG", tag="MCP",
+            )
+        self.attempt += 1
+        return float(min(2 ** (self.attempt - 1), 60))
+
+
 # ------------------------------------------------------------------
 # MCP Bridge
 # ------------------------------------------------------------------
@@ -313,6 +370,7 @@ class MCPBridge:
         self._tool_original_names: Dict[str, str] = {}  # 注册名 -> MCP 原始工具名（仅冲突重命名时记录）
         self._last_errors: Dict[str, str] = {}          # name -> 最近一次连接错误详情
         self._op_locks: Dict[str, threading.Lock] = {}  # name -> 连接/断开操作串行锁
+        self._sync_pending: set = set()                 # name -> 工具列表同步防抖中
         self._lock = threading.Lock()
 
         self._loop = asyncio.new_event_loop()
@@ -483,9 +541,10 @@ class MCPBridge:
             has_session = server_name in self._sessions if server_name else False
             original_name = self._tool_original_names.get(tool_name, tool_name)
         if not server_name or not has_session:
-            return json.dumps(
-                {"error": f"MCP 工具未找到对应 server: {tool_name}"},
-                ensure_ascii=False,
+            return tool_error(
+                f"MCP 工具未找到对应 server: {tool_name}",
+                cause=ErrorCause.NOT_FOUND, retryable=False,
+                hint="可先调用 list_mcp_servers 查看已连接服务及其工具",
             )
         try:
             import asyncio
@@ -499,9 +558,8 @@ class MCPBridge:
                 )
                 return await asyncio.wrap_future(future)
         except Exception as exc:
-            err_msg = str(exc) or f"{type(exc).__name__}: MCP 连接异常"
-            log(f"MCP tool call 失败: {tool_name} → {err_msg}", "ERROR")
-            return json.dumps({"error": err_msg}, ensure_ascii=False)
+            log(f"MCP tool call 失败: {tool_name} → {exc}", "ERROR")
+            return error_from_exception(exc, action=f"MCP 调用 {tool_name}")
 
     # ------------------------------------------------------------------
     # 内部异步方法（在 MCP 事件循环中运行）
@@ -567,7 +625,11 @@ class MCPBridge:
         with self._lock:
             session = self._sessions.get(server_name)
         if not session:
-            return json.dumps({"error": f"MCP server '{server_name}' 未连接"}, ensure_ascii=False)
+            return tool_error(
+                f"MCP server '{server_name}' 未连接",
+                cause=ErrorCause.STATE, retryable=True,
+                hint="服务断开后会自动重连，请稍后重试",
+            )
 
         srv = self._find_server_config(server_name)
         timeout = srv.call_timeout if srv else _DEFAULT_CALL_TIMEOUT
@@ -580,25 +642,28 @@ class MCPBridge:
             )
         except asyncio.TimeoutError:
             log(f"MCP tool call 超时 ({timeout}s): {tool_name}", "ERROR")
-            return json.dumps(
-                {"error": f"MCP 工具调用超时 ({timeout}s): {tool_name}"},
-                ensure_ascii=False,
+            return tool_error(
+                f"MCP 工具调用超时 ({timeout}s): {tool_name}",
+                cause=ErrorCause.TIMEOUT, retryable=True, code="TOOL_TIMEOUT",
+                hint="可缩小参数范围重试，或经 update_mcp_server_config 调大 call_timeout",
             )
         except Exception as first_exc:
             if not _is_connection_closed(first_exc):
                 raise
             log(f"MCP server '{server_name}' 连接已断开，尝试重连...", "WARNING")
             if not await self._try_reconnect(server_name):
-                return json.dumps(
-                    {"error": f"MCP server '{server_name}' 连接已断开且重连失败"},
-                    ensure_ascii=False,
+                return tool_error(
+                    f"MCP server '{server_name}' 连接已断开且重连失败",
+                    cause=ErrorCause.NETWORK, retryable=True,
+                    hint="服务会继续自动重连，请稍后重试",
                 )
             with self._lock:
                 session = self._sessions.get(server_name)
             if not session:
-                return json.dumps(
-                    {"error": f"MCP server '{server_name}' 重连后 session 不可用"},
-                    ensure_ascii=False,
+                return tool_error(
+                    f"MCP server '{server_name}' 重连后 session 不可用",
+                    cause=ErrorCause.NETWORK, retryable=True,
+                    hint="请稍后重试",
                 )
             try:
                 result = await asyncio.wait_for(
@@ -606,22 +671,143 @@ class MCPBridge:
                     timeout=timeout,
                 )
             except asyncio.TimeoutError:
-                return json.dumps(
-                    {"error": f"MCP 工具调用超时 ({timeout}s): {tool_name}"},
-                    ensure_ascii=False,
+                return tool_error(
+                    f"MCP 工具调用超时 ({timeout}s): {tool_name}",
+                    cause=ErrorCause.TIMEOUT, retryable=True, code="TOOL_TIMEOUT",
+                    hint="可缩小参数范围重试，或经 update_mcp_server_config 调大 call_timeout",
                 )
 
-        if hasattr(result, "content"):
-            parts = []
-            for item in result.content:
-                parts.append(item.text if hasattr(item, "text") else str(item))
-            text = "\n".join(parts) if parts else ""
-            # 远端 isError 标记恢复为结构化错误信号，供守卫/拦截机制识别
-            if getattr(result, "isError", False):
-                return tool_error(f"MCP 工具 '{tool_name}' 执行失败: {text or '远端未返回详情'}",
-                                  cause=ErrorCause.INTERNAL, retryable=False)
-            return text
-        return str(result)
+        if not hasattr(result, "content"):
+            return str(result)
+        # 远端 isError 标记恢复为结构化错误信号，供守卫/拦截机制识别
+        if getattr(result, "isError", False):
+            text = self._extract_text_blocks(result)
+            return tool_error(
+                f"MCP 工具 '{tool_name}' 执行失败: {text or '远端未返回详情'}",
+                cause=ErrorCause.INTERNAL, retryable=False,
+            )
+        return await self._render_call_result(result)
+
+    async def _render_call_result(self, result: Any) -> str:
+        """MCP CallToolResult → 工具结果文本。
+
+        内容块分派（对齐 dsh 的保真转换，图片更进一步直传）：
+        - text 块按序拼接；
+        - image 块落盘为文件并经 ``_multimodal`` 约定返回——视觉模型在
+          think_loop 侧直接"看到"图片（chrome-devtools/playwright 截图场景），
+          非视觉模型读文本占位中的路径（可经 recognize_image 读取）；
+          base64 原文绝不进入上下文（此前 str(item) 会倾倒整段 pydantic repr）；
+        - audio/resource 块以短占位说明（防二进制灌入上下文）；
+        - structuredContent 在无任何文本时兜底输出 JSON。
+
+        模型可见性：无图片时输出纯文本（与旧版一致）；有图片时输出
+        ``{"_multimodal": true, "text": ..., "images": [...]}`` JSON，由
+        think_loop._append_multimodal_result 消费注入，注入位置在对话尾部
+        user 消息，不影响缓存前缀。
+        """
+        import asyncio
+
+        from core.config import get_config_bool
+
+        passthrough = get_config_bool("mcp_image_passthrough", True)
+        text_parts: List[str] = []
+        placeholders: List[str] = []
+        image_paths: List[str] = []
+        dropped_images = 0
+
+        for item in list(getattr(result, "content", None) or []):
+            btype = getattr(item, "type", "")
+            if btype == "text" or (not btype and hasattr(item, "text")):
+                text_parts.append(str(getattr(item, "text", "") or ""))
+            elif btype == "image":
+                if not passthrough:
+                    dropped_images += 1
+                    continue
+                data = str(getattr(item, "data", "") or "")
+                mime = str(getattr(item, "mimeType", "") or "image/png")
+                # 落盘放工作线程，避免大 base64 解码阻塞 bridge 事件循环
+                path = await asyncio.to_thread(self._save_mcp_image, data, mime)
+                if path and len(image_paths) < _MAX_RESULT_IMAGES:
+                    image_paths.append(path)
+                elif path:
+                    dropped_images += 1
+                else:
+                    placeholders.append(f"[image: {mime}，数据解码失败或过大已丢弃]")
+            elif btype == "audio":
+                kb = len(str(getattr(item, "data", "") or "")) // 1024
+                placeholders.append(
+                    f"[audio: {getattr(item, 'mimeType', '音频')}，约 {kb}KB 音频数据已丢弃]"
+                )
+            elif btype == "resource_link":
+                placeholders.append(f"[resource: {getattr(item, 'uri', '')}]")
+            elif btype == "resource":
+                placeholders.append(self._render_embedded_resource(item))
+            else:
+                placeholders.append(f"[未知内容块: {btype or type(item).__name__}]")
+
+        if dropped_images:
+            placeholders.append(
+                f"[另有 {dropped_images} 张图片未注入"
+                f"（超出单次上限 {_MAX_RESULT_IMAGES} 或已关闭 mcp_image_passthrough）]"
+            )
+
+        text = "\n".join(p for p in text_parts if p)
+        if placeholders:
+            text = (text + "\n" if text else "") + "\n".join(placeholders)
+
+        structured = getattr(result, "structuredContent", None)
+        if not text and isinstance(structured, dict) and structured:
+            return json.dumps(structured, ensure_ascii=False)
+
+        if image_paths:
+            return json.dumps({
+                "_multimodal": True,
+                "text": text or "[系统] 上方工具返回了图片，请查看后继续。",
+                "images": image_paths,
+            }, ensure_ascii=False)
+        return text
+
+    @staticmethod
+    def _extract_text_blocks(result: Any) -> str:
+        """提取结果中的全部 text 块（isError 路径用，不含占位与图片）。"""
+        parts: List[str] = []
+        for item in list(getattr(result, "content", None) or []):
+            text = getattr(item, "text", None)
+            if text:
+                parts.append(str(text))
+        return "\n".join(parts)
+
+    @staticmethod
+    def _render_embedded_resource(item: Any) -> str:
+        """EmbeddedResource 块 → 文本提取或占位（blob 不进上下文）。"""
+        res = getattr(item, "resource", None)
+        uri = str(getattr(res, "uri", "") or "") if res is not None else ""
+        if res is not None and getattr(res, "text", None):
+            return f"[resource: {uri}]\n{res.text}"
+        if res is not None and getattr(res, "blob", None):
+            kb = len(str(res.blob)) // 1024
+            return f"[resource: {uri}，二进制内容约 {kb}KB 已丢弃]"
+        return f"[resource: {uri}]"
+
+    @staticmethod
+    def _save_mcp_image(data_b64: str, mime_type: str) -> Optional[str]:
+        """base64 图片落盘到 uploads/mcp/，返回路径；空数据/超大/解码失败返回 None。"""
+        import base64
+        import uuid as _uuid
+
+        try:
+            raw = base64.b64decode(data_b64 or "", validate=False)
+        except Exception:
+            return None
+        if not raw or len(raw) > _MAX_IMAGE_BYTES:
+            return None
+        ext = "jpg" if "jpeg" in mime_type else mime_type.split("/")[-1] if "/" in mime_type else "png"
+        ext = re.sub(r"[^A-Za-z0-9]", "", ext)[:8] or "png"
+        folder = Path(ConfigPaths.UPLOAD_DIR) / "mcp"
+        folder.mkdir(parents=True, exist_ok=True)
+        fname = f"mcp_{int(time.time() * 1000)}_{_uuid.uuid4().hex[:6]}.{ext}"
+        (folder / fname).write_bytes(raw)
+        return str(folder / fname)
 
     def _find_server_config(self, name: str) -> Optional[MCPServerConfig]:
         """按名称查找 server 配置。"""
@@ -739,16 +925,22 @@ class MCPBridge:
 
         transport context manager 的 __aenter__ / __aexit__ 全部在此 task 内执行，
         彻底避免 anyio cancel scope 跨 task 的 RuntimeError。
-        首次连接失败直接报错；后续连接断开自动重试（指数退避）。
+        首次连接失败直接报错；后续连接断开自动重试（指数退避；连接稳定
+        运行超过 _RECONNECT_BUDGET_RESET_SEC 后重试预算复位，偶发抖动
+        不会累计耗尽预算导致服务永久死亡）。
         """
         import asyncio
 
         from mcp import ClientSession
 
         first_attempt = True
+        budget = _RetryBudget(_MAX_LIFECYCLE_RETRIES, _RECONNECT_BUDGET_RESET_SEC)
+        connected_at = 0.0
+        iteration = 0
 
         try:
-            for attempt in range(_MAX_LIFECYCLE_RETRIES):
+            while not budget.exhausted:
+                iteration += 1
                 if stop_event.is_set():
                     break
                 try:
@@ -758,11 +950,12 @@ class MCPBridge:
                         async with ClientSession(
                             read_stream,
                             write_stream,
-                            list_roots_callback=_list_roots_callback,
+                            **self._session_kwargs(srv.name),
                         ) as session:
                             await session.initialize()
                             with self._lock:
                                 self._sessions[srv.name] = session
+                            connected_at = time.monotonic()
 
                             if first_attempt:
                                 count = await self._register_server_tools(srv, session)
@@ -773,7 +966,7 @@ class MCPBridge:
                                 self._cleanup_server_entities(srv.name)
                                 count = await self._register_server_tools(srv, session)
                                 self._set_last_error(srv.name, "")
-                                log(f"MCP server '{srv.name}' 自动重连成功 (第 {attempt + 1} 次)，{count} 个工具")
+                                log(f"MCP server '{srv.name}' 自动重连成功 (第 {iteration} 次)，{count} 个工具")
 
                             await stop_event.wait()
                             return
@@ -793,10 +986,11 @@ class MCPBridge:
                         self._sessions.pop(srv.name, None)
                     self._set_last_error(srv.name, f"连接断开: {detail}")
 
-                    wait = min(2 ** attempt, 60)
+                    stable = (time.monotonic() - connected_at) if connected_at else 0.0
+                    wait = budget.record_failure(stable)
                     log(
                         f"MCP server '{srv.name}' 连接断开: {detail}，"
-                        f"{wait}s 后重试 ({attempt + 1}/{_MAX_LIFECYCLE_RETRIES})",
+                        f"{wait}s 后重试 ({budget.attempt}/{_MAX_LIFECYCLE_RETRIES})",
                         "WARNING",
                     )
                     try:
@@ -814,6 +1008,155 @@ class MCPBridge:
                 self._lifecycle_tasks.pop(srv.name, None)
             if not first_attempt:
                 self._cleanup_server_entities(srv.name)
+
+    def _session_kwargs(self, server_name: str) -> Dict[str, Any]:
+        """构造 ClientSession 关键字参数。
+
+        message_handler（拦截工具列表变更通知）仅在新版 mcp SDK 存在该
+        参数时注入——旧版 SDK 无此参数时退回仅 roots 回调，保证兼容。
+        """
+        kwargs: Dict[str, Any] = {"list_roots_callback": _list_roots_callback}
+        try:
+            from mcp import ClientSession
+            if "message_handler" in inspect.signature(ClientSession.__init__).parameters:
+                kwargs["message_handler"] = self._make_message_handler(server_name)
+        except Exception:
+            log("ClientSession 不支持 message_handler，跳过工具列表热同步", "DEBUG", tag="MCP")
+        return kwargs
+
+    def _make_message_handler(self, server_name: str) -> Callable[[Any], Any]:
+        """构造注入 ClientSession 的消息处理器（运行在 bridge 事件循环）。
+
+        仅拦截 tools/list_changed 通知安排增量同步；其余消息零干预，
+        末尾让出控制权保持 SDK 默认处理器的 checkpoint 语义。
+        BaseSession 在接收循环中直接 await 本处理器，异常必须内部吞掉。
+        """
+        async def _handler(message: Any) -> None:
+            import asyncio
+            try:
+                self._on_session_message(server_name, message)
+            except Exception:
+                log("MCP session 消息处理异常已忽略", "DEBUG", tag="MCP")
+            await asyncio.sleep(0)
+        return _handler
+
+    def _on_session_message(self, server_name: str, message: Any) -> None:
+        """会话消息分发：工具列表变更 → 防抖登记同步任务。
+
+        SDK 默认把 ToolListChangedNotification 静默丢弃（client/session.py
+        的 ``case _: pass``），这里经 message_handler 拦截补上（对齐 dsh
+        的 ToolListChanged 重同步）。server 可能连发多条通知，防抖窗口
+        内合并为一次同步。
+        """
+        if not self._is_tool_list_changed(message):
+            return
+        from core.config import get_config_bool
+        if not get_config_bool("mcp_tool_list_sync", True):
+            return
+        with self._lock:
+            if server_name in self._sync_pending:
+                return
+            self._sync_pending.add(server_name)
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            with self._lock:
+                self._sync_pending.discard(server_name)
+            return
+        loop.call_later(_TOOL_SYNC_DEBOUNCE_SEC, self._spawn_tool_sync, server_name)
+        log(
+            f"MCP server '{server_name}' 通知工具列表变更，"
+            f"{_TOOL_SYNC_DEBOUNCE_SEC}s 后同步", "DEBUG", tag="MCP",
+        )
+
+    @staticmethod
+    def _is_tool_list_changed(message: Any) -> bool:
+        """判定消息是否为 server 的工具列表变更通知。"""
+        try:
+            from mcp import types
+        except Exception:
+            return False
+        return isinstance(message, types.ServerNotification) and isinstance(
+            message.root, types.ToolListChangedNotification,
+        )
+
+    def _spawn_tool_sync(self, server_name: str) -> None:
+        """防抖到期：在 bridge 循环上启动同步任务（call_later 回调）。"""
+        import asyncio
+        asyncio.ensure_future(self._sync_server_tools(server_name))
+
+    async def _sync_server_tools(self, server_name: str) -> None:
+        """按 server 最新 tools/list 增量重同步注册表（增删，不改名）。
+
+        与断线重连的全量重注册互补：server 端动态增删工具（升级/热更新）
+        时，注册表不再漂移到下次断线重连。list_tools 后复检会话仍在——
+        同步期间 server 断开则放弃本轮（残留注册由 lifecycle 清理路径收走）。
+        同名工具的描述/参数变更不在此处理（重连/reload 全量覆盖），
+        保持增量最小、避免无谓的 tools 前缀缓存失效。
+        """
+        try:
+            with self._lock:
+                session = self._sessions.get(server_name)
+            if session is None:
+                return
+            tools_result = await session.list_tools()
+            mcp_tools = list(tools_result.tools)
+            with self._lock:
+                if server_name not in self._sessions:
+                    return  # 同步期间已断开，交还给 lifecycle 清理
+                current: Dict[str, str] = {
+                    reg: self._tool_original_names.get(reg, reg)
+                    for reg, owner in self._tool_server_map.items()
+                    if owner == server_name
+                }
+            new_by_name: Dict[str, Any] = {
+                getattr(t, "name", ""): t for t in mcp_tools if getattr(t, "name", "")
+            }
+            existing = set(current.values())
+            removed = [reg for reg, orig in current.items() if orig not in new_by_name]
+            added = [t for orig, t in new_by_name.items() if orig not in existing]
+
+            for reg in removed:
+                with self._lock:
+                    self._tool_server_map.pop(reg, None)
+                    self._tool_original_names.pop(reg, None)
+                try:
+                    EntityRegistry.unregister(reg)
+                except (KeyError, ValueError):
+                    log("_sync_server_tools 异常已忽略", "DEBUG")
+            if added:
+                srv = self._find_server_config(server_name)
+                call_timeout = srv.call_timeout if srv else _DEFAULT_CALL_TIMEOUT
+                self._register_tool_entries(server_name, added, call_timeout=call_timeout)
+
+            # 分组目录与实体工具清单刷新（目录描述反映最新工具列表）
+            EntityRegistry.register_group(
+                f"mcp:{server_name}",
+                self._build_group_description(server_name, mcp_tools),
+            )
+            mcp_entity = EntityRegistry.get(f"mcp:{server_name}")
+            if mcp_entity is not None:
+                with self._lock:
+                    mcp_entity.meta["tools"] = [
+                        reg for reg, owner in self._tool_server_map.items()
+                        if owner == server_name
+                    ]
+            EntityRegistry.bump_version()
+            if removed or added:
+                log(
+                    f"MCP server '{server_name}' 工具列表已同步: "
+                    f"+{len(added)} -{len(removed)}",
+                    tag="MCP",
+                )
+        except Exception as exc:
+            log(
+                f"MCP 工具列表同步失败 ({server_name}): {extract_exception_detail(exc)}",
+                "WARNING", tag="MCP",
+            )
+        finally:
+            with self._lock:
+                self._sync_pending.discard(server_name)
 
     async def _register_server_tools(self, srv: MCPServerConfig, session: Any) -> int:
         """注册 MCP server 实体和其工具到 EntityRegistry。"""
@@ -837,7 +1180,10 @@ class MCPBridge:
 
         tools_result = await session.list_tools()
         mcp_tools = list(tools_result.tools)
-        tool_names = self._register_tool_entries(srv.name, mcp_tools)
+        tool_names = self._register_tool_entries(
+            srv.name, mcp_tools,
+            call_timeout=getattr(srv, "call_timeout", _DEFAULT_CALL_TIMEOUT),
+        )
 
         # 分组目录描述：让 AI 在工具分组目录中识别该服务的用途
         EntityRegistry.register_group(
@@ -863,29 +1209,44 @@ class MCPBridge:
         desc = f"MCP 服务 {server_name}，工具: {', '.join(briefs)}{suffix}"
         return desc[:_GROUP_DESC_MAX_LEN]
 
-    def _register_tool_entries(self, server_name: str, tools: List[Any]) -> List[str]:
+    def _register_tool_entries(
+        self,
+        server_name: str,
+        tools: List[Any],
+        call_timeout: Optional[float] = None,
+    ) -> List[str]:
         """将 server 的工具批量注册到 EntityRegistry，返回注册名列表。
 
         工具名与现有实体（内置工具或其他 MCP 工具）冲突时，
         自动加 ``{server}__`` 前缀注册，避免覆盖同名实体。
+        注册名统一做供应商函数名约束整形（非法字符替换 + 64 字符上限，
+        超限截断并追加短哈希防撞）——OpenAI 风格端点会拒绝含非法字符或
+        超长函数名的整个 tools 数组，一个坏名字会导致全会话不可用。
+        call_timeout 透传为工具执行超时：MCP 调用常比内置工具慢，
+        不传则落入全局默认 60s，会在 bridge 超时（默认 300s）之前被
+        执行层提前掐断（用户配置的 call_timeout 变成死配置）。
         默认沉睡策略（mcp_tools_sleep_default）：沉睡组不驻留 schema，
         显著缩小 tools 前缀（缓存友好），AI 需要时 activate_tool_group 唤醒。
         """
         sleep = _mcp_sleep_enabled(server_name)
         sleep_brief = f"MCP 服务 {server_name}（{len(tools)} 个工具）" if sleep else ""
+        meta: Optional[Dict[str, Any]] = None
+        if call_timeout is not None and call_timeout > 0:
+            meta = {"timeout": float(call_timeout)}
         registered: List[str] = []
         for t in tools:
             t_name, t_params = self._parse_mcp_tool(t)
             bridge = self
 
-            reg_name = t_name
+            reg_name = self._sanitize_tool_name(t_name)
             if EntityRegistry.exists(reg_name):
-                reg_name = f"{server_name}__{t_name}"
+                prefixed = self._sanitize_tool_name(f"{server_name}__{t_name}")
                 log(
-                    f"MCP 工具名冲突: '{t_name}' 已被占用，"
-                    f"server '{server_name}' 的工具注册为 '{reg_name}'",
+                    f"MCP 工具名冲突: '{reg_name}' 已被占用，"
+                    f"server '{server_name}' 的工具注册为 '{prefixed}'",
                     "WARNING",
                 )
+                reg_name = prefixed
 
             async def _proxy(_name: str = reg_name, **kwargs: Any) -> str:
                 return await bridge.call_tool(_name, kwargs)
@@ -900,6 +1261,7 @@ class MCPBridge:
                 source="mcp",
                 allow_sleep=sleep,
                 sleep_brief=sleep_brief,
+                meta=meta,
             )
             with self._lock:
                 self._tool_server_map[reg_name] = server_name
@@ -907,6 +1269,20 @@ class MCPBridge:
                     self._tool_original_names[reg_name] = t_name
             registered.append(reg_name)
         return registered
+
+    @staticmethod
+    def _sanitize_tool_name(name: str) -> str:
+        """注册名整形为供应商合法的函数名（[A-Za-z0-9_-]{1,64}）。
+
+        非法字符（server 名含点号等）替换为下划线；超长截断并追加
+        注册名 SHA-256 前 8 位十六进制防截断撞名。整形后名字变化时，
+        原始名由调用方的 ``_tool_original_names`` 映射兜底还原。
+        """
+        sanitized = re.sub(r"[^A-Za-z0-9_-]", "_", name)
+        if len(sanitized) > _MAX_TOOL_NAME_LEN:
+            digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+            sanitized = f"{sanitized[:_MAX_TOOL_NAME_LEN - 9]}_{digest}"
+        return sanitized
 
     # stdio 子进程环境变量白名单（防止敏感 env 泄露给第三方 MCP server）
     _STDIO_ENV_WHITELIST = frozenset({
@@ -979,7 +1355,13 @@ class MCPBridge:
 
     @staticmethod
     def _parse_mcp_tool(mcp_tool: Any) -> tuple[str, List[ToolParam]]:
-        """解析 MCP Tool 对象为名称和参数列表。"""
+        """解析 MCP Tool 对象为名称和参数列表。
+
+        参数 schema 保真：type 缺失的联合类型写法（anyOf/oneOf，MCP server
+        表达可选参数的惯用法）解引用取非 null 分支；default/items 等
+        附加键经 schema_extra 直通 wire schema——模型由此看到默认值与
+        数组元素结构，而不是被静默丢弃后按 string 兜底猜参数。
+        """
         name = mcp_tool.name
         params: List[ToolParam] = []
         input_schema = getattr(mcp_tool, "inputSchema", None) or {}
@@ -987,14 +1369,50 @@ class MCPBridge:
             properties = input_schema.get("properties", {})
             required_list = input_schema.get("required", [])
             for p_name, p_schema in properties.items():
+                if not isinstance(p_schema, dict):
+                    params.append(ToolParam(name=p_name, required=p_name in required_list))
+                    continue
+                p_type, schema_extra = MCPBridge._parse_param_schema(p_schema)
                 params.append(ToolParam(
                     name=p_name,
                     description=p_schema.get("description", ""),
-                    type=p_schema.get("type", "string"),
+                    type=p_type,
                     required=p_name in required_list,
                     enum=p_schema.get("enum"),
+                    schema_extra=schema_extra or None,
                 ))
         return name, params
+
+    @staticmethod
+    def _parse_param_schema(p_schema: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        """解析单个参数的 JSON Schema 片段为 (type, schema_extra)。
+
+        - type 缺失而 anyOf/oneOf 存在 → 取首个非 null 分支的 type；
+        - default/items/数值范围等附加键保留进 schema_extra（随 ToolParam
+          直通 wire schema 的 properties 字段）。
+        """
+        extra: Dict[str, Any] = {}
+        p_type = str(p_schema.get("type", "") or "")
+        if not p_type:
+            for union_key in ("anyOf", "oneOf"):
+                union = p_schema.get(union_key)
+                if isinstance(union, list):
+                    for branch in union:
+                        if (
+                            isinstance(branch, dict)
+                            and branch.get("type")
+                            and branch.get("type") != "null"
+                        ):
+                            p_type = str(branch["type"])
+                            break
+                if p_type:
+                    break
+        if not p_type:
+            p_type = "string"  # 保持既有兜底行为
+        for key in ("default", "items", "minimum", "maximum", "pattern", "format"):
+            if key in p_schema:
+                extra[key] = p_schema[key]
+        return p_type, extra
 
 
 # 全局单例

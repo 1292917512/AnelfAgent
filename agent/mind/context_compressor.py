@@ -900,7 +900,9 @@ class ContextCompressor:
         if isinstance(parsed, dict):
             err = parsed.get("error")
             if err or parsed.get("success") is False or parsed.get("ok") is False:
-                return f"[工具结果] {name}: 执行失败: {str(err or '未知错误')[:150]}"
+                # 复用统一错误提取（含 notes/returncode 回退），与思维环路口径一致
+                from agent.mind.tools.round_helpers import _extract_error_text
+                return f"[工具结果] {name}: 执行失败: {_extract_error_text(parsed)[:150]}"
         head = text[:120].replace("\n", " ")
         suffix = f"…（原文 {len(text)} 字符）" if len(text) > 120 else ""
         return f"[工具结果] {name}: {head}{suffix}"

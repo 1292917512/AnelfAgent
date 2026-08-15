@@ -102,7 +102,7 @@ _SHELL_PROMPT = """在系统 shell 中执行命令并返回输出。
 执行环境:
 - 每条命令独立进程（环境变量/alias 不保留），但 cd 对后续命令生效；沙箱下漂出 workspace 自动重置。
 - 输出超 30000 字符自动落盘，返回预览和文件路径（用 read_file 查看）。
-- 超时默认 120 秒，最大 600 秒；长任务设 run_in_background=True，完成后自动通知。
+- 超时默认 120 秒，由 timeout 参数指定；run_in_background=True 后台执行，完成后自动通知。
 
 工具偏好（不要用 shell 做这些事）: 搜索用 search_files，读取用 read_file，编辑用 edit_file，写入用 write_file。
 
@@ -770,7 +770,7 @@ def run_shell_command(command: str, timeout: int = 120, run_in_background: bool 
 
     Args:
         command: 要执行的 shell 命令字符串
-        timeout: 超时时间（秒），默认 120，最大 600
+        timeout: 超时时间（秒），默认 120
         run_in_background: 是否后台执行（构建/训练等长任务）。立即返回任务 ID
             和输出文件路径，完成后系统自动通知；期间可用 read_file 查看进度
     """
@@ -804,7 +804,7 @@ def run_shell_command(command: str, timeout: int = 120, run_in_background: bool 
                 ensure_ascii=False,
             )
 
-        timeout = max(1, min(int(timeout), 600))
+        timeout = max(1, int(timeout))
 
         pwd_file = ""
         run_cmd = command
@@ -831,6 +831,9 @@ def run_shell_command(command: str, timeout: int = 120, run_in_background: bool 
             payload["persisted"] = persisted
         # 失败时附带真实 cwd 与工作区根，便于模型定位路径问题后自纠（而非猜测系统路径）
         if not result.ok:
+            # 退出码帮助模型区分否定结果与真实错误（如 grep: 1=无匹配, 2=用法错误）
+            if result.returncode is not None:
+                payload["returncode"] = result.returncode
             # 非零码 + 无错误输出的语义提示（grep 无匹配/条件不成立 vs 真实错误，
             # 避免模型把否定结果当故障盲目重试或谎报失败）
             if not stderr:
@@ -872,6 +875,7 @@ def python_exec(code: str, timeout: int = 30) -> str:
     import sys
     try:
         _load_config()
+        timeout = max(1, int(timeout))
         run_kwargs: Dict[str, Any] = {}
         if _SANDBOX:
             ws_abs = os.path.abspath(_WORKSPACE)
@@ -896,7 +900,7 @@ def python_exec(code: str, timeout: int = 30) -> str:
         }, ensure_ascii=False)
     except subprocess.TimeoutExpired:
         return tool_error(f"执行超时 ({timeout}s)", cause=ErrorCause.TIMEOUT,
-                          retryable=True, hint="可增大 timeout 参数或精简代码后重试")
+                          retryable=True)
     except Exception as e:
         return error_from_exception(e, action="执行 Python 代码")
 

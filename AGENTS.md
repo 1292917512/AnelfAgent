@@ -264,6 +264,19 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 心跳忙碌延后 | `assistant._heartbeat_loop` | 回复/反思/上轮 tick 未收尾时不跳过整轮，按 `heartbeat_busy_defer_seconds`（默认 60s）短间隔轮询、空闲即补跑；延后期间不递增任何计数器 |
 | 同任务排队去重 | `HeartbeatEngine._task_inflight` | tick/manual/AI 四路径共用的执行中集合，排队里同一种任务只允许一条 |
 
+#### MCP 工具面细节（第四轮新增，均在 `entities/mcp/bridge.py`）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 结果内容块分派 | `MCPBridge._render_call_result` | text 拼接；**image 落盘（uploads/mcp/）+ `_multimodal` 约定**——视觉模型经 think_loop 注入直接"看到"MCP 截图（chrome-devtools 等场景），非视觉模型读路径占位；base64 原文绝不进上下文（此前 `str(item)` 倾倒整段 pydantic repr）；audio/resource_link/embedded resource 短占位；无文本时 structuredContent 兜底。模型可见性：有图输出 `{"_multimodal": true, "text", "images"}` JSON，无图输出纯文本（与旧版一致） |
+| 工具列表热同步 | `message_handler` 注入 + `_sync_server_tools` | SDK 默认静默丢弃 `ToolListChangedNotification`；经 ClientSession 公开 `message_handler` 参数拦截（旧版 SDK 无此参数自动跳过）→ 1s 防抖 → **增量**增删注册（同名描述变更不动，避免无谓 tools 前缀缓存失效）。`mcp_tool_list_sync` 可关 |
+| 注册超时对齐 | `_register_tool_entries(call_timeout=...)` | server 的 `call_timeout` 透传为工具执行超时 meta——修复此前落入全局默认 60s、在 bridge 超时（默认 300s）之前被提前掐断的错配（用户配置的 call_timeout 曾是死配置） |
+| 参数 schema 保真 | `_parse_param_schema` | anyOf/oneOf 可选参数解引用取非 null 分支的 type；`default/items/minimum/...` 经 `schema_extra` 直通 wire schema（模型看到默认值与数组元素结构，不再按 string 兜底猜） |
+| 注册名整形 | `_sanitize_tool_name` | 冲突检测在整形后的名字上进行；非法字符替换下划线 + 64 字符上限（超限截断 + SHA-256 前 8 位防撞）——OpenAI 风格端点会拒绝整组 tools 数组，一个坏名字曾可导致全会话不可用 |
+| 结构化错误 | `call_tool`/`_do_call_tool` | 未命中 → not_found；超时 → timeout + `code=TOOL_TIMEOUT` + retryable；断线 → network + retryable（对齐 core/tool_errors 纪律，供守卫与模型重试决策消费） |
+| 重连预算复位 | `_RetryBudget`（稳定窗口 300s） | 连接稳定运行超窗口后失败，重试计数清零重计——长期服务偶发抖动不再累计耗尽 5 次预算而永久死亡；退避序列 1/2/4/8/16s 与旧行为一致 |
+| 装配重建触发器贯通 | `think_loop` 工具集版本元组 | 版本元组新增 `EntityRegistry.version()`（注意是 classmethod 调用而非属性）——热同步/reload/重载/WebUI 开关等注册表增删后，**回复进行中**的下一轮即重建 active_tools（此前仅 (assembly, activation) 双版本，粘性激活的常驻服务要等下一个版本事件）；每个新回复本就重新装配。重建经追加式冻结保持前缀字节稳定 |
+
 ### 前端结构
 
 页面采用壳组件 + 子面板目录拆分模式，通用 TabBar 切换：

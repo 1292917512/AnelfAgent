@@ -1,11 +1,12 @@
 # === Python ===
 __pycache__/
 *.py[cod]
+*.egg-info/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
 
-# === Test & coverage artifacts ===
+# === Test & coverage ===
 .coverage
 coverage.xml
 htmlcov/
@@ -14,57 +15,45 @@ junit*.xml
 # === IDE ===
 .idea/
 .vscode/
-*.ipr
-*.iws
-*.iml
-.classpath
-.project
-.settings/
-.springBeans
-.metadata/
-.zcode/plans/
+.cursor/
 .zcode/
 .agents/
 .codex/
-*.swp
-*.swo
-*.swn
+*.ipr *.iws *.iml
+.classpath .project .settings/
+.springBeans .metadata/
+*.swp *.swo *.swn
 
 # === OS ===
-*.DS_Store
+.DS_Store
 Thumbs.db
 
 # === Environment ===
 .env
 .env.*
 .venv/
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
 
-# === Logs & Runtime ===
+# === Logs & runtime ===
 logs/
 nohup.out
 *.log
 .mindmap-cache/
 
-# === Database ===
+# === Database (local SQLite & fixtures) ===
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
 *.sqlite
 *.db
 
-# === Sensitive configs (copy *.example.json and remove .example suffix) ===
+# === Sensitive configs (copy *.example.json and rename) ===
+# 核心配置
 config/app_config.json
 config/llm_clients.json
 config/mcp_servers.json
 config/mind_config.json
 config/approval_policies.json
-
-# === Personal runtime configs ===
+# 运行时配置
 config/heartbeat.json
 config/cognee.json
 config/reminders.json
@@ -79,15 +68,18 @@ config/introspection/
 config/memory/
 config/config/
 
-# === Personal tasks (memory_consolidation.json kept as example) ===
+# === Personal tasks (keep memory_consolidation.json as example) ===
 config/tasks/*
 !config/tasks/memory_consolidation.json
 
-# === Persona (personal characters; default.json is the template) ===
+# === Personal personas (default.json is the template) ===
 config/personas/mengli.json
 config/personas/yanyi.json
 
-# === Entity secrets (copy *.example.json and remove .example suffix) ===
+# === Personal character assets ===
+config/mengli_aigc/
+
+# === Entity secrets (each entity has its own config.json) ===
 entities/web/config.json
 entities/minimax/config.json
 entities/ssh/config.json
@@ -96,7 +88,7 @@ entities/share/config.json
 entities/media/config.json
 entities/voiceprint/config.json
 
-# === Channel secrets (copy *.example.json and remove .example suffix) ===
+# === Channel secrets ===
 channels/telegram/channel_config.json
 channels/qq/channel_config.json
 channels/feishu/channel_config.json
@@ -112,6 +104,7 @@ web/frontend/node_modules/
 # === Build & packaging ===
 /build/
 /dist/
+# Note: /bulid/ below is intentional (typo guard for legacy paths)
 /bulid/
 /upx/
 /pack/
@@ -123,9 +116,6 @@ web/frontend/node_modules/
 # === Workspace & uploads ===
 /workspace/
 /uploads/
-
-# === Personal character assets (research notes / output artifacts) ===
-config/mengli_aigc/
 
 # === Misc ===
 /.other
