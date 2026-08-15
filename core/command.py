@@ -29,6 +29,8 @@ class CommandResult:
     ok: bool
     stdout: str
     stderr: str
+    # 原始退出码（被异常拦截的路径为 None）：hook 类调用方按码路由
+    returncode: Optional[int] = None
 
 
 def _run_with_group_kill(command: Union[str, List[str]], timeout_sec: float,
@@ -39,9 +41,10 @@ def _run_with_group_kill(command: Union[str, List[str]], timeout_sec: float,
     if kwargs.pop("capture_output", False):
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
-    proc = subprocess.Popen(command, **kwargs)
+    stdin_data = kwargs.pop("input", None)
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE if stdin_data is not None else None, **kwargs)
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_sec)
+        stdout, stderr = proc.communicate(input=stdin_data, timeout=timeout_sec)
         return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
     except subprocess.TimeoutExpired:
         try:
@@ -58,7 +61,8 @@ def _run_with_group_kill(command: Union[str, List[str]], timeout_sec: float,
 
 @dual_mode
 def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars: Optional[Dict[str, str]] = None,
-                shell: Optional[bool] = None, cwd: Optional[str] = None) -> CommandResult:
+                shell: Optional[bool] = None, cwd: Optional[str] = None,
+                stdin_data: Optional[str] = None) -> CommandResult:
     """执行系统命令
 
     Args:
@@ -67,6 +71,7 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
         env_vars: 额外的环境变量
         shell: 是否使用shell模式，None时自动判断
         cwd: 工作目录，None 时继承当前进程目录
+        stdin_data: 可选，写入子进程 stdin 的文本（hook 类调用经此传 JSON payload）
 
     Returns:
         CommandResult: 执行结果
@@ -96,6 +101,8 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
         }
         if cwd:
             run_kwargs['cwd'] = cwd
+        if stdin_data is not None:
+            run_kwargs['input'] = stdin_data
 
         is_windows = platform.system() == "Windows"
         if is_windows:
@@ -126,7 +133,8 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
         return CommandResult(
             ok=result.returncode == 0,
             stdout=result.stdout.strip() if result.stdout else "",
-            stderr=result.stderr.strip() if result.stderr else ""
+            stderr=result.stderr.strip() if result.stderr else "",
+            returncode=result.returncode,
         )
 
     except subprocess.TimeoutExpired:

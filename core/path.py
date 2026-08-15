@@ -500,6 +500,7 @@ _PATH_SPECS: Dict[str, Tuple[str, str]] = {
     "PERSONAS_DIR": ("config", "personas"),
     "PERSONAS_INDEX": ("config", "personas/index.json"),
     "PERMISSION_RULES": ("config", "permission_rules.json"),
+    "HOOKS": ("config", "hooks.json"),
     "APPROVAL_POLICIES": ("config", "approval_policies.json"),
     "DB_CONNECTIONS": ("config", "db_connections.json"),
     "COGNEE_CONFIG": ("config", "cognee.json"),

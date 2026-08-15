@@ -121,7 +121,7 @@ async def get_recollection(
             _load_relations(),
             _load_goals(),
             mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec),
-            mind._match_skills(tail, query_vec=query_vec),
+            mind._match_skills(tail, query_vec=query_vec, scope=entity_scope),
         )
 
         # 跨频道语义召回 + 叙事面包屑
@@ -200,11 +200,41 @@ async def _match_skills(
         tail: List[Dict],
         *,
         query_vec: Optional[List[float]] = None,
+        scope: str = "",
 ) -> List[Dict]:
-    """匹配当前对话相关的技能（并记录使用次数），返回注入消息列表。"""
+    """匹配当前对话相关的技能（并记录使用次数），返回注入消息列表。
+
+    scope 非空时先消费 /name 用户手势：登记过的技能名绕过评分确定性注入
+    （对齐 dsh SKILL_GESTURE 的确定性触发），不存在的名字经短期记忆提示
+    模型可回应用户。
+    """
     if not mind._skills_enabled() or not tail:
         return []
     try:
+        forced: List = []
+        gesture_names = mind._pending_skill_gestures.pop(scope, []) if scope else []
+        if gesture_names:
+            from agent.skills.skill_store import SkillState
+            for name in gesture_names:
+                skill = mind.skill_store.get(name)
+                if skill is not None and skill.state == SkillState.ACTIVE:
+                    if skill.user_invocable:
+                        forced.append(skill)
+                        log(f"技能手势命中: /{name}（确定性注入，跳过评分）", tag="技能")
+                    else:
+                        log(f"技能 /{name} 已关闭用户手势调用（user_invocable=false）", "DEBUG", tag="技能")
+                else:
+                    # 不存在：写短期记忆提示，模型可回应用户而非沉默忽略
+                    try:
+                        mind.pfc.add_temporary({
+                            "role": "system",
+                            "content": f"[系统] 用户请求的技能 /{name} 不存在或未启用，"
+                                       f"可用技能可用 list_skills 查看。请向用户说明。",
+                        }, scope=scope)
+                    except Exception:
+                        pass
+                    log(f"技能手势未命中: /{name}（不存在或非 active）", "DEBUG", tag="技能")
+
         query_texts = [
             m.get("content", "") for m in tail
             if isinstance(m.get("content"), str)
@@ -214,6 +244,11 @@ async def _match_skills(
         matched_skills = await mind.skill_matcher.match(
             query_texts, top_k=top_k, query_vec=query_vec,
         )
+        # 手势命中优先置顶（不与评分结果去重冲突：按名剔除重复）
+        if forced:
+            forced_names = {s.name for s in forced}
+            matched_skills = [(s, sc) for s, sc in matched_skills if s.name not in forced_names]
+            matched_skills = [(s, 1.0) for s in forced] + matched_skills
         if not matched_skills:
             return []
         skill_lines = ["[相关技能] 以下经验可能适用于当前任务，可参考复用："]

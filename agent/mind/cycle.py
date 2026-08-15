@@ -172,7 +172,7 @@ async def _execute_decisions_and_finalize(
     immediate = [d for d in sorted_decisions if d.type not in mind._DEFERRED_DECISIONS]
     deferred = [d for d in sorted_decisions if d.type in mind._DEFERRED_DECISIONS]
 
-    if mind._reflecting:
+    if mind._reflecting or mind.heartbeat_engine.reflection_pending:
         deferred = [d for d in deferred if d.type != DecisionType.REFLECT]
 
     for d in deferred:

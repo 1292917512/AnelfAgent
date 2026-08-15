@@ -1,6 +1,11 @@
 """TaskExecutor：执行单个任务（LLM 调用 + 结果存储）。
 
 从 introspection units 的执行逻辑提取，提供统一的任务执行流程。
+
+Model Experience:
+- 模型看到：extra_note（idle 反思触发原因等）追加在任务指令（最后一条消息）尾部
+- token 影响：极小（数十 token，仅 idle 触发带原因时）
+- KV Cache 影响：纯尾部追加，任务稳定前缀（人设+工具+永久记忆+指令锚点）字节不变
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ class TaskExecutor:
         temperature: float = 0.7,
         model_id: str = "",
         reasoning_effort: str = "",
+        extra_note: str = "",
     ) -> Optional[TaskResult]:
         """执行一个任务，返回结果；正常无产出返回 None，执行异常则抛出。
 
@@ -47,6 +53,8 @@ class TaskExecutor:
 
         model_id 优先级：参数传入 > task.model_id > 默认模型。
         reasoning_effort 优先级：参数传入 > task.reasoning_effort > 全局设置。
+        extra_note：追加到任务指令之后的动态备注（如 idle 反思触发原因）——
+        位于最后一条消息内，属纯尾部追加，不影响任务稳定前缀的缓存命中。
         """
         if not task.prompt:
             log(f"任务 [{task.name}] prompt 为空，跳过", "WARNING", tag="任务")
@@ -62,7 +70,10 @@ class TaskExecutor:
 
         try:
             tool_hits_before = self.mind.pfc.get_tool_use_total()
-            content = await self._execute_llm(task, entity, temperature, effective_model, effective_effort)
+            content = await self._execute_llm(
+                task, entity, temperature, effective_model, effective_effort,
+                extra_note=extra_note,
+            )
             tool_hits_after = self.mind.pfc.get_tool_use_total()
             synthesized_tool_result = False
             if not content:
@@ -109,7 +120,7 @@ class TaskExecutor:
             raise
 
     @staticmethod
-    def _build_task_suffix(allow_output_tools: bool) -> str:
+    def _build_task_suffix(allow_output_tools: bool, handoff: bool = False) -> str:
         """按任务配置构建系统规则后缀。"""
         rule_1 = (
             "1. 这是内部任务，仅可在任务明确要求时使用 send_message/send_file/send_photo/send_voice 外发结果，"
@@ -117,13 +128,22 @@ class TaskExecutor:
             if allow_output_tools
             else "1. 这是内部任务，严禁向任何频道/用户发送消息，严禁泄露任何用户隐私信息"
         )
-        return (
-            "\n\n[系统规则]\n"
-            f"{rule_1}\n"
-            "2. 要了解会话内容必须用 get_conversation 实际读取消息，而非只看 scope 列表\n"
-            "3. 操作前先用 recall/list_goals 检查已有记忆和目标，避免重复记录和重复提问\n"
-            "4. 完成后调用 log_to_heartbeat 记录操作总结，然后 end_reply 结束"
-        )
+        rules = [
+            "\n\n[系统规则]\n",
+            f"{rule_1}\n",
+            "2. 要了解会话内容必须用 get_conversation 实际读取消息，而非只看 scope 列表\n",
+            "3. 操作前先用 recall/list_goals 检查已有记忆和目标，避免重复记录和重复提问\n",
+            "4. 完成后调用 log_to_heartbeat 记录操作总结，然后 end_reply 结束",
+        ]
+        if handoff:
+            # 长任务交接：输出末尾追加结构化块，供下次运行确定性接力
+            # （策略进指令而非全局人设——只有 handoff 任务看到，对齐 dsh "策略进工具自带 section"）
+            rules.append(
+                "\n5. 本任务为多轮接力任务：在输出最末尾追加一段以 \"# HANDOFF\" 行起始的"
+                "交接块（JSON：{\"summary\": 本轮进展, \"next_steps\": [下一步…], "
+                "\"blocker\": 阻塞或null}），供下次运行接续；其余输出不要包含该块"
+            )
+        return "".join(rules)
 
     async def _execute_llm(
         self,
@@ -132,9 +152,11 @@ class TaskExecutor:
         temperature: float,
         model_id: str = "",
         reasoning_effort: str = "",
+        *,
+        extra_note: str = "",
     ) -> str:
         """构建消息 -> LLM reflect -> 清洗输出。"""
-        conversation_list: List[Dict[str, Any]] = []
+        conversation_list: List[Dict] = []
         if entity:
             conversation_list = await self.mind.get_conversation(entity)
 
@@ -143,11 +165,20 @@ class TaskExecutor:
         from core.config import get_config_bool
         lean = get_config_bool("task_lean_context", True)
         base_messages = await self.mind.get_recollection(conversation_list, lean=lean)
+
+        # 长任务交接注入：上次运行留下的 "# HANDOFF" 块（确定性接力，recall 之外的信息通道）
+        handoff_prefix = ""
+        if task.handoff:
+            from agent.task.handoff import load_handoff
+            prev = load_handoff(task.name)
+            if prev:
+                handoff_prefix = f"\n\n[上次交接]\n{prev}\n（请在此基础上继续，工作区文件是权威状态）"
         prompt_msg: Dict[str, str] = {
             "role": "user",
             "content": (
                 f"[系统任务 - {task.name}]\n"
-                f"{task.prompt}{self._build_task_suffix(task.allow_output_tools)}"
+                f"{task.prompt}{handoff_prefix}{extra_note}"
+                f"{self._build_task_suffix(task.allow_output_tools, handoff=task.handoff)}"
             ),
         }
         messages = list(base_messages) + [prompt_msg]
@@ -164,7 +195,15 @@ class TaskExecutor:
             tool_tags=task.tool_tags or None,
             allow_output_tools=task.allow_output_tools,
         )
-        return _clean_llm_output(raw)
+        cleaned = _clean_llm_output(raw)
+        if not task.handoff:
+            return cleaned
+        # 提取交接块：干净输出走原流程，handoff 持久化供下次注入
+        from agent.task.handoff import extract_handoff, save_handoff
+        clean_output, handoff_text = extract_handoff(cleaned)
+        if handoff_text:
+            save_handoff(task.name, handoff_text)
+        return clean_output
 
     async def _store_result(self, result: TaskResult) -> None:
         """将任务结果存入 MemoryStore。"""

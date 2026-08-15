@@ -230,8 +230,7 @@ class LLMClient(BaseEntity):
 
         用户可能把完整请求地址（.../v1/chat/completions、.../v1/responses）
         粘贴进 base_url；litellm 会在 api_base 上自行拼接端点路径，不剥离
-        会双拼成 .../chat/completions/chat/completions（参考 cursor-byok
-        OpenAIEndpointURL 的防双拼规则）。
+        会双拼成 .../chat/completions/chat/completions。
         """
         api_base, _ = split_endpoint_suffix(self.config.base_url)
         return api_base
@@ -522,7 +521,7 @@ class LLMClient(BaseEntity):
         if effort:
             kwargs = self._apply_provider_specific_payload(effort, kwargs)
 
-        # 用户扩展参数最后合并（参考 cursor-byok 的 applyExtraParams 设计）：
+        # 用户扩展参数最后合并：
         # body 完全构造（含思考方言适配）之后，用户 JSON 浅合并覆盖，
         # 同名字段以用户配置为准——保证高级用户永远有最高优先级逃生舱。
         extra = dict(self.config.extra_params)
@@ -862,8 +861,7 @@ class LLMClient(BaseEntity):
         """解析当前模型实际使用的对话协议。
 
         base_url 显式携带端点路径时（.../responses、.../chat/completions），
-        URL 是端点形态的事实真相，优先于配置推断（参考 cursor-byok
-        OpenAIEndpointShape 的末段协议推断）。
+        URL 是端点形态的事实真相，优先于配置推断。
         """
         inferred = infer_chat_protocol(self.config.base_url)
         if inferred:

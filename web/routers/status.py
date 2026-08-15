@@ -22,6 +22,17 @@ async def get_status() -> Dict[str, Any]:
     return {"ready": True, "status": status}
 
 
+@router.get("/usage")
+async def get_usage(limit: int = Query(50, ge=1, le=500)) -> Dict[str, Any]:
+    """会话级用量统计：per-scope 累计 LLM 调用与 token（成本追踪）。"""
+    from services.usage import UsageService
+    svc = UsageService()
+    return {
+        "summary": svc.summary(),
+        "scopes": svc.list_usage(limit),
+    }
+
+
 @router.get("/components")
 async def get_components() -> Dict[str, Any]:
     return {

@@ -53,7 +53,9 @@ def _msg_fingerprint(msg: Dict) -> str:
             content = json.dumps(content, ensure_ascii=False, sort_keys=True, default=str)
         except Exception:
             content = str(content)
-    extra = {k: v for k, v in msg.items() if k not in ("role", "content", "_layer")}
+    # _source 为系统注入来源标记（发送前剥离的元数据），不纳入指纹——
+    # 其出现/消失不改变发往 LLM 的字节，不应制造前缀断裂误报
+    extra = {k: v for k, v in msg.items() if k not in ("role", "content", "_layer", "_source")}
     try:
         extra_str = json.dumps(extra, ensure_ascii=False, sort_keys=True, default=str)
     except Exception:

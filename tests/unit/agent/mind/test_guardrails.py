@@ -195,3 +195,56 @@ class TestIdempotentHeuristic:
         assert is_idempotent_tool("recall")
         assert not is_idempotent_tool("send_message")
         assert not is_idempotent_tool("memorize")
+
+
+class TestGraduatedReminder:
+    """分级提醒文案（对齐 dsh repeat-tool-reminder）：首次达阈温和提示，
+    之后给出完整报告（工具名 + 连续次数 + 有界参数预览）。"""
+
+    def test_first_warn_is_gentle(self) -> None:
+        ctl = GuardrailController(_config(exact_failure_warn_after=2))
+        args = '{"path": "/a"}'
+        ctl.after_call("read_file", args, _ERROR_RESULT)
+        d = ctl.after_call("read_file", args, _ERROR_RESULT)  # 第 2 次达阈
+        assert d.action == "warn"
+        assert "没有取得进展" in d.message
+        # 首次温和提示不带详细报告（无次数/参数清单）
+        assert "连续失败次数" not in d.message
+        assert "重复的工具调用" not in d.message
+
+    def test_subsequent_warn_has_full_report(self) -> None:
+        ctl = GuardrailController(_config(exact_failure_warn_after=2))
+        args = '{"path": "/a"}'
+        for _ in range(2):
+            ctl.after_call("read_file", args, _ERROR_RESULT)
+        d = ctl.after_call("read_file", args, _ERROR_RESULT)  # 第 3 次，超阈
+        assert d.action == "warn"
+        assert "重复的工具调用" in d.message
+        assert "连续失败次数: 3" in d.message
+        assert "/a" in d.message  # 参数预览在场
+        assert "请勿再以完全相同的参数调用" in d.message
+
+    def test_args_preview_caps_long_arguments(self) -> None:
+        from agent.mind.guardrails import _ARGS_PREVIEW_CHARS, _args_preview
+        long_args = '{"data": "' + "x" * 2000 + '"}'
+        preview = _args_preview(long_args)
+        assert len(preview) <= _ARGS_PREVIEW_CHARS + 1  # +1 省略号
+        assert preview.endswith("…")
+
+    def test_args_preview_short_verbatim(self) -> None:
+        from agent.mind.guardrails import _args_preview
+        assert _args_preview('{"a": 1}') == '{"a":1}'
+
+
+class TestGuardrailReset:
+    """reset 清空全部计数（用户插话重置链场景调用）。"""
+
+    def test_reset_clears_failure_counts(self) -> None:
+        ctl = GuardrailController(_config(exact_failure_warn_after=2))
+        args = '{"q": "x"}'
+        ctl.after_call("web_search", args, _ERROR_RESULT)
+        ctl.after_call("web_search", args, _ERROR_RESULT)  # 达 warn 阈
+        ctl.reset()
+        # 重置后重新从 0 计数：第 1 次失败不触发 warn
+        d = ctl.after_call("web_search", args, _ERROR_RESULT)
+        assert d.action == "allow"

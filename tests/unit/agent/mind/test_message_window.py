@@ -409,3 +409,41 @@ class TestActivateMediaTools:
         )
         pfc.activate_media_tools([], [])
         assert not pfc.tool_assembly.tag_activated_tools
+
+
+class TestInterjectionGuardrailReset:
+    """用户插话重置工具守卫链（对齐 dsh repeat-tool-reminder）。"""
+
+    @staticmethod
+    def _genuine_user_msg(text: str) -> dict:
+        """真实渠道到达的用户消息（带到达元数据标签）。"""
+        return {"role": "user", "content": f"[time:2026年08月14日][uid:10001] {text}"}
+
+    def test_genuine_user_message_resets_guardrail(self) -> None:
+        from agent.mind.guardrails import GuardrailConfig, GuardrailController
+        from agent.mind.tools.round_helpers import _maybe_reset_guardrail_for_interjection
+        ctl = GuardrailController(GuardrailConfig(enabled=True, exact_failure_warn_after=2))
+        # 先累积失败计数
+        ctl.after_call("read_file", '{"p": "/a"}', '{"error": "x"}')
+        assert _maybe_reset_guardrail_for_interjection(ctl, [self._genuine_user_msg("等一下")])
+        # 重置后计数归零：再失败一次不触发 warn（阈值 2）
+        d = ctl.after_call("read_file", '{"p": "/a"}', '{"error": "x"}')
+        assert d.action == "allow"
+
+    def test_machine_user_message_no_reset(self) -> None:
+        from agent.mind.guardrails import GuardrailConfig, GuardrailController
+        from agent.mind.tools.round_helpers import _maybe_reset_guardrail_for_interjection
+        ctl = GuardrailController(GuardrailConfig(enabled=True, exact_failure_warn_after=2))
+        ctl.after_call("read_file", '{"p": "/a"}', '{"error": "x"}')
+        # 机器生成的 user 消息（无到达标签）不触发重置
+        assert not _maybe_reset_guardrail_for_interjection(
+            ctl, [{"role": "user", "content": "[系统任务] 继续"}])
+        # 计数仍在：再失败一次即达 warn 阈
+        d = ctl.after_call("read_file", '{"p": "/a"}', '{"error": "x"}')
+        assert d.action == "warn"
+
+    def test_empty_msgs_no_reset(self) -> None:
+        from agent.mind.guardrails import GuardrailConfig, GuardrailController
+        from agent.mind.tools.round_helpers import _maybe_reset_guardrail_for_interjection
+        ctl = GuardrailController(GuardrailConfig(enabled=True))
+        assert not _maybe_reset_guardrail_for_interjection(ctl, [])

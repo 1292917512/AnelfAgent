@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from core.log import log
 
@@ -66,6 +66,8 @@ class _TaskRecord:
     finished_at: float = 0.0
     # 已送达：完成事件已通过轮内注入或轮外通知送达 AI，wait_any 不再重复返回
     delivered: bool = False
+    # 任务输出文件（可选，如后台 shell 的日志）——增量读取游标的数据源
+    output_file: Optional[str] = None
 
     def to_completion(self) -> TaskCompletion:
         return TaskCompletion(
@@ -97,6 +99,8 @@ class BackgroundTaskRegistry:
         self._events: Dict[str, asyncio.Event] = {}
         # scope -> 正在 wait_any 中挂起的等待者数量（轮内会合判定依据）
         self._waiting: Dict[str, int] = {}
+        # task_id -> 增量输出已消费的字节偏移（read_task_output 单游标）
+        self._output_cursors: Dict[str, int] = {}
         # 主事件循环（bind_loop 绑定；工作线程完成任务时经 call_soon_threadsafe 回到循环）
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         # 轮外完成回调（无等待者时触发，由 Mind 注册，避免 entities 层直接 import agent.mind）
@@ -133,6 +137,86 @@ class BackgroundTaskRegistry:
         self._purge_completed(scope or "_global")
         log(f"后台任务已登记: {task_id} [{kind}] {description[:60]}", tag="后台")
         return task_id
+
+    # ------------------------------------------------------------------
+    # 增量输出读取（单游标消费型，对齐 dsh jobs readOutput）
+    # ------------------------------------------------------------------
+    # task_id -> 已消费的字节偏移。游标留在注册表侧（生产者只管写文件），
+    # 单读者语义：一个任务只有一个模型读者，每次读取只返回自上次以来的增量，
+    # 轮询长任务输出不再全量重发。进程内生命周期与任务一致（重启即新任务）。
+
+    def attach_output_file(self, task_id: str, output_file: str) -> None:
+        """为任务关联输出文件（启动方调用，read_task_output 的数据源）。"""
+        rec = self._records.get(task_id)
+        if rec is not None and output_file:
+            rec.output_file = output_file
+
+    @staticmethod
+    def _cut_utf8(data: bytes, max_chars: int) -> "tuple[bytes, bool]":
+        """按码点数在字节边界截断，返回 (截断字节, 是否截断)。
+
+        逐码点步进（按 UTF-8 首字节推断序列长度），保证游标按字节精确推进、
+        不在多字节字符中间切断。
+        """
+        count = 0
+        i = 0
+        n = len(data)
+        while i < n:
+            if count >= max_chars:
+                return data[:i], True
+            b = data[i]
+            if b < 0x80:
+                step = 1
+            elif b & 0xE0 == 0xC0:
+                step = 2
+            elif b & 0xF0 == 0xE0:
+                step = 3
+            elif b & 0xF8 == 0xF0:
+                step = 4
+            else:
+                step = 1  # 非法首字节按单字节消费（配合 errors=replace 语义）
+            i += min(step, n - i)
+            count += 1
+        return data, False
+
+    def read_task_output(self, scope: str, task_id: str, max_chars: int = 8000) -> Dict[str, Any]:
+        """消费任务自上次读取以来的增量输出（单游标，读后即推进）。
+
+        Returns:
+            {"ok": True, "task_id", "delta", "consumed_bytes", "truncated", "done"} 或
+            {"ok": False, "error"}（任务不存在 / 跨会话 / 无输出文件 / 读取失败）。
+            delta 为空串表示暂无新输出（轮询正常态）。
+        """
+        rec = self._records.get(task_id)
+        if rec is None:
+            return {"ok": False, "error": f"任务不存在: {task_id}"}
+        if rec.info.scope != (scope or "_global"):
+            return {"ok": False, "error": f"任务 {task_id} 不属于当前会话"}
+        if not rec.output_file:
+            return {"ok": False, "error": f"任务 {task_id} 无关联输出文件（仅 shell 类任务支持增量读取）"}
+        offset = self._output_cursors.get(task_id, 0)
+        try:
+            with open(rec.output_file, "rb") as f:
+                f.seek(offset)
+                chunk = f.read(max_chars * 4 + 16)
+        except OSError as exc:
+            return {"ok": False, "error": f"读取任务输出失败: {exc}"}
+        # 回退尾部可能不完整的多字节序列（文件仍在写入时最后一字符可能被截半）
+        safe = chunk
+        while safe and (safe[-1] & 0xC0) == 0x80:
+            safe = safe[:-1]
+        consumed, truncated = self._cut_utf8(safe, max_chars)
+        delta = consumed.decode("utf-8", errors="replace")
+        self._output_cursors[task_id] = offset + len(consumed)
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "delta": delta,
+            "consumed_bytes": offset + len(consumed),
+            "truncated": truncated,
+            "done": rec.done,
+            "hint": "delta 为本次新增输出（消费型读取，重复调用不会重发旧内容）；truncated=true 表示还有未读。" if delta else "暂无新输出，可稍后再查或等待完成通知。",
+        }
 
     def complete(self, task_id: str, success: bool, summary: str) -> bool:
         """标记任务完成并唤醒等待者（线程安全）。
@@ -297,3 +381,4 @@ class BackgroundTaskRegistry:
         done.sort(key=lambda rec: rec.finished_at)
         for rec in done[: len(done) - _MAX_COMPLETED_PER_SCOPE]:
             self._records.pop(rec.info.task_id, None)
+            self._output_cursors.pop(rec.info.task_id, None)

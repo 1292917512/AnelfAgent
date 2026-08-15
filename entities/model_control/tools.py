@@ -1,4 +1,4 @@
-"""模型控制实体 — 列出/切换/参数调整/优先级控制 + Ollama 本地模型管理。
+"""模型控制实体 — 列出/切换/参数调整/优先级控制 + 子代理统一注册表 + Ollama 本地模型管理。
 
 AI 通过这些工具可以自主完成：
 - 查看所有可用模型及其能力（含运行时学习到的端点限制）
@@ -6,7 +6,15 @@ AI 通过这些工具可以自主完成：
 - 临时调整当前会话的模型参数（temperature、max_tokens）
 - 持久化修复模型配置（update_model_config，固化端点行为问题的修复）
 - 查看/修改模型优先级顺序
+- 子代理统一注册表增删改查：内置难度档（easy/medium/hard，delegate_task 的
+  difficulty 参数是其语法糖）与自定义档案同套 CRUD，候选池有序可含降级链
 - 管理 Ollama 本地模型（状态、拉取、删除、详情）— 仅在检测到本地安装 Ollama 时才注册
+
+Model Experience:
+- 模型看到：本组工具 schema（静态注册）；档案内容不注入任何 prompt 层，
+  AI 经 list_sub_agents 按需查询
+- token 影响：工具 schema 增量（一次性），档案查询按需
+- KV Cache 影响：无持续影响 — 无动态内容进入前缀层，档案变更不触碰任何缓存字节
 """
 
 from __future__ import annotations
@@ -195,26 +203,33 @@ def clear_session_params() -> str:
         return error_from_exception(e, action="清除会话参数")
 
 
-# AI 可持久化修改的模型配置字段（保守白名单：仅端点行为类参数，
-# 连接/结构字段 api_key/base_url/model_types 等不开放）
+# AI 可持久化修改的模型配置字段（保守白名单：仅端点行为与能力声明类参数，
+# 连接/密钥字段 api_key/base_url/model 等不开放）
 _UPDATABLE_FIELDS = {
     "timeout": float,
     "max_tokens": int,
+    "context_window": int,
     "supports_forced_tool_choice": bool,
     "supports_reasoning": bool,
+    "supports_vision": bool,
+    "supports_tools": bool,
+    "reasoning_effort": str,
 }
 
 
 @tool(name="update_model_config", group="model_control", tags=["core"],
-      description="持久化修改指定模型的配置参数（timeout/max_tokens/supports_forced_tool_choice/supports_reasoning），"
-                  "用于固化端点行为问题的修复（如 list_models 中 runtime_issues 提示的问题），重启后仍生效")
+      description="持久化修改指定模型的配置参数"
+                  "（timeout/max_tokens/context_window/supports_forced_tool_choice/supports_reasoning"
+                  "/supports_vision/supports_tools/reasoning_effort），"
+                  "用于固化端点行为与能力声明（如 list_models 中 runtime_issues 提示的问题），重启后仍生效")
 def update_model_config(model_name: str, field: str, value: str) -> str:
     """持久化修改模型配置并写入配置文件，立即生效。
 
     Args:
         model_name: 模型名称（通过 list_models 查看）
-        field: 配置字段，可选值: timeout（秒，如 "60"）、max_tokens（如 "8192"）、
-            supports_forced_tool_choice / supports_reasoning（"true"/"false"）
+        field: 配置字段，可选值: timeout（秒）、max_tokens、context_window、
+            supports_forced_tool_choice / supports_reasoning / supports_vision / supports_tools（布尔）、
+            reasoning_effort（low/medium/high 或空串清除）
         value: 新值（按字段类型解析）
     """
     try:
@@ -266,6 +281,12 @@ def _parse_field_value(field: str, value: str) -> tuple[Any, str]:
         if lowered in ("false", "0", "no"):
             return False, ""
         return None, f"字段 {field} 需要布尔值（true/false），收到: {value!r}"
+    if ptype is str:
+        from agent.llm.reasoning import CANONICAL_EFFORTS
+        lowered = text.lower()
+        if lowered in CANONICAL_EFFORTS or not lowered:
+            return lowered, ""
+        return None, f"字段 {field} 可选值: {sorted(CANONICAL_EFFORTS)} 或空串清除，收到: {value!r}"
     try:
         parsed = ptype(text)
     except (TypeError, ValueError):
@@ -328,6 +349,103 @@ def set_model_priority(model_type: str, model_ids: str) -> str:
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="设置模型优先级")
+
+
+# ==================================================================
+# 子代理统一注册表（内置难度档 + 自定义档案，与 Web 管理面同路径，热更新生效）
+# ==================================================================
+
+
+@tool(name="list_sub_agents", group="model_control", tags=["core"],
+      description="查看全部子代理档案（名称 → 有序模型候选池 + 描述）。"
+                  "delegate_task 传 agent_name 即可使用对应档案；内置 easy/medium/hard "
+                  "即难度三挡（difficulty 1/2/3 的语法糖），可直接指定或调整其模型池")
+def list_sub_agents() -> str:
+    """列出全部子代理档案，供 delegate_task 的 agent_name 参数选用。"""
+    try:
+        from services.model import ModelService
+        profiles = ModelService().list_sub_agents()
+        return json.dumps({
+            "sub_agents": profiles,
+            "usage": "delegate_task(agent_name=档案名) 使用；difficulty 1/2/3 等价于 "
+                     "agent_name=easy/medium/hard；内置档可用 update_sub_agent 调整模型池",
+            "count": len(profiles),
+        }, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action="查看子代理档案")
+
+
+@tool(name="create_sub_agent", group="model_control", tags=["core"],
+      description="创建自定义子代理档案（名称 + 绑定模型 + 描述），持久化并热生效。"
+                  "创建后 delegate_task(agent_name=名称) 即使用该档案")
+def create_sub_agent(name: str, model_id: str, description: str = "") -> str:
+    """创建自定义子代理档案并持久化，立即生效。
+
+    Args:
+        name: 档案名（英文字母开头，仅字母/数字/下划线/连字符，≤32 字符，如 researcher；
+            easy/medium/hard 为内置难度档保留名，不可创建）
+        model_id: 绑定的模型 ID（须为已配置的 chat 模型，通过 list_models 查看）
+        description: 用途描述（可选，帮助后续选用）
+    """
+    try:
+        from services.model import ModelService
+        ok, message = ModelService().create_sub_agent(name, model_id, description)
+        if not ok:
+            return tool_error(message, cause=ErrorCause.PARAM, retryable=False)
+        return json.dumps({"ok": True, "message": message, "name": name, "model_id": model_id},
+                          ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"创建子代理档案 '{name}'")
+
+
+@tool(name="update_sub_agent", group="model_control", tags=["core"],
+      description="更新子代理档案（换绑模型/调整候选池/改描述），空参数保持原值，持久化并热生效。"
+                  "内置难度档（easy/medium/hard）可经 models 调整其完整模型池（池内顺序即优先级，"
+                  "前面的不可用时依次回退）")
+def update_sub_agent(
+        name: str,
+        model_id: str = "",
+        models: str = "",
+        description: str = "",
+) -> str:
+    """更新子代理档案并持久化，立即生效。
+
+    Args:
+        name: 档案名（通过 list_sub_agents 查看，含内置 easy/medium/hard）
+        model_id: 单模型快捷写法（与 models 互斥，后者优先；空 = 不变）
+        models: 逗号分隔的完整候选池（如 "glm-flash,qwen-max"），整体替换、
+            池内顺序即优先级；空 = 不变（清空池请经 Web 界面）
+        description: 新描述（空 = 不变）
+    """
+    try:
+        from services.model import ModelService
+        pool = [s.strip() for s in models.split(",") if s.strip()] if models else None
+        ok, message = ModelService().update_sub_agent(
+            name, model_id=model_id, models=pool, description=description,
+        )
+        if not ok:
+            return tool_error(message, cause=ErrorCause.PARAM, retryable=False)
+        return json.dumps({"ok": True, "message": message, "name": name}, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"更新子代理档案 '{name}'")
+
+
+@tool(name="delete_sub_agent", group="model_control", tags=["core"],
+      description="删除自定义子代理档案，持久化并热生效（内置难度档 easy/medium/hard 受保护不可删除）")
+def delete_sub_agent(name: str) -> str:
+    """删除自定义子代理档案并持久化。
+
+    Args:
+        name: 档案名（通过 list_sub_agents 查看）
+    """
+    try:
+        from services.model import ModelService
+        ok, message = ModelService().remove_sub_agent(name)
+        if not ok:
+            return tool_error(message, cause=ErrorCause.PARAM, retryable=False)
+        return json.dumps({"ok": True, "message": message}, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"删除子代理档案 '{name}'")
 
 
 # ==================================================================

@@ -159,12 +159,33 @@ class AgentAssistant:
         except Exception:
             return self._heartbeat_interval
 
+    def _busy_defer_seconds(self) -> float:
+        """心跳忙碌延后轮询间隔（配置 heartbeat_busy_defer_seconds，热读取）。"""
+        try:
+            from agent.config import get_config_provider
+            return max(5.0, get_config_provider().mind.heartbeat_busy_defer_seconds)
+        except Exception:
+            return 60.0
+
+    def _mind_busy(self) -> bool:
+        """Mind 是否正在执行中（回复/反思/上一轮心跳 tick 未收尾）。
+
+        忙碌时心跳不整轮跳过，而是按 _busy_defer_seconds 短间隔轮询，
+        空闲后立即补跑——被延后的 tick 不递增任何计数器。
+        """
+        m = self.mind
+        return bool(m.is_reply or m.is_reflecting or m._heartbeat_running)
+
     async def _heartbeat_loop(self) -> None:
-        """定期触发 Mind 自主思考（反思、主动行为、目标推进等）。"""
+        """定期触发 Mind 自主思考（反思、主动行为、目标推进等）。
+
+        AI 执行中（非空闲）时延后心跳而非跳过整轮：短间隔轮询忙碌状态，
+        空闲后立即补跑，保证空闲思考（idle 调度）与维护不被长对话饿死。
+        """
         while True:
             await asyncio.sleep(self._current_heartbeat_interval())
-            if self.mind.is_reply:
-                continue
+            while self._mind_busy():
+                await asyncio.sleep(self._busy_defer_seconds())
             try:
                 await self.mind.execute_mind(is_heartbeat=True)
             except Exception:

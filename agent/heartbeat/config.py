@@ -60,6 +60,15 @@ class ScheduleMode(str, Enum):
     SCHEDULED = "scheduled"
     """每天指定时间执行。"""
 
+    IDLE = "idle"
+    """连续 N 次心跳无思考活动后执行（反思 + 自由活动），全局仅允许一条。
+
+    计数维度是"距上次思考的空闲心跳数"：任何真实思考（回复/反思/任务执行，
+    含本任务自身）都会清零计数——因此 idle 任务天然单例串行，只会在 AI 空闲时
+    触发，不打断对话节奏。every_n_beats 应短于所有 heartbeat 任务的循环拍数，
+    保证空闲窗口优先让给反思与自由活动。
+    """
+
     MANUAL = "manual"
     """仅手动触发（Web / AI 工具）。"""
 
@@ -84,7 +93,7 @@ class TaskSchedule:
             "task_name": self.task_name,
             "mode": self.mode.value,
         }
-        if self.mode == ScheduleMode.HEARTBEAT:
+        if self.mode in (ScheduleMode.HEARTBEAT, ScheduleMode.IDLE):
             d["every_n_beats"] = self.every_n_beats
             d["beat_count"] = self.beat_count
         elif self.mode == ScheduleMode.SCHEDULED:
@@ -170,8 +179,36 @@ class HeartbeatConfig:
             return cls()
 
 
+def validate_schedules(schedules: List["TaskSchedule"]) -> Optional[str]:
+    """写入前校验调度列表，返回错误描述（None = 通过）。
+
+    idle 模式全局仅允许一条：思考会刷新空闲计数（含 idle 任务自身），
+    多条 idle 调度会互相抢占计数语义，必须在写入侧拒绝。
+    """
+    idle_names = [s.task_name for s in schedules if s.mode == ScheduleMode.IDLE]
+    if len(idle_names) > 1:
+        return f"idle 模式调度仅允许一条（思考会刷新空闲计数，多条会互相抢占），当前有: {idle_names}"
+    return None
+
+
+def _dedupe_idle_schedules(schedules: List[TaskSchedule]) -> List[TaskSchedule]:
+    """加载时宽容去重：idle 调度保留首条，多余条目告警丢弃（防手改文件失误卡死加载）。"""
+    seen_idle = False
+    result: List[TaskSchedule] = []
+    for s in schedules:
+        if s.mode == ScheduleMode.IDLE:
+            if seen_idle:
+                log(f"idle 调度仅允许一条，已丢弃重复项: {s.task_name}", "WARNING", tag="心跳")
+                continue
+            seen_idle = True
+        result.append(s)
+    return result
+
+
 def _parse_config(raw: Dict[str, Any]) -> HeartbeatConfig:
-    schedules = [TaskSchedule.from_dict(s) for s in raw.get("task_schedules", [])]
+    schedules = _dedupe_idle_schedules(
+        [TaskSchedule.from_dict(s) for s in raw.get("task_schedules", [])]
+    )
     return HeartbeatConfig(
         enabled=raw.get("enabled", True),
         interval_seconds=int(raw.get("interval_seconds", 300)),

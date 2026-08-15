@@ -71,6 +71,11 @@ _CURATOR_CONFIGS = {
             "description": "是否启用技能自学习系统",
             "default": True,
         },
+        "skill_user_gesture_enabled": {
+            "description": "启用 /技能名 用户手势：真实用户消息正文以 /技能名 开头时绕过语义评分"
+                           "确定性加载该技能（防伪造：仅外部消息路径检测）",
+            "default": True,
+        },
         "skills_review_enabled": {
             "description": "是否启用对话后后台技能评审",
             "default": True,

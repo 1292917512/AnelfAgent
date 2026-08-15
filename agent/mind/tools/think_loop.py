@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from typing import TYPE_CHECKING, AbstractSet, Any, Dict, List, Optional, Set
 
@@ -472,6 +471,7 @@ async def _invoke_llm_round(
         ctx.tool_chain.append({
             "role": "system",
             "content": _PROMPT_TIMEOUT.format(timeout=timeout_val),
+            "_source": {"origin": "timeout_recovery"},
         })
         state.iteration += 1
         return None
@@ -654,6 +654,7 @@ async def _handle_text_only_round(
                     "content": _format_task_completions(
                         completions, ctx.background.running(ctx.current_scope),
                     ),
+                    "_source": {"origin": "background_task"},
                 })
             elif reason == "timeout":
                 state.wait_budget = 0.0
@@ -662,6 +663,7 @@ async def _handle_text_only_round(
                     "content": _PROMPT_TASKS_STILL_RUNNING.format(
                         tasks=_format_running_tasks(running_bg),
                     ),
+                    "_source": {"origin": "background_task"},
                 })
             # interrupted：不追加提示，循环顶部统一并入新消息 / 处理中断
             state.iteration += 1
@@ -968,7 +970,7 @@ async def execute_tool_calls(
         "content": _strip_think_blocks(result.content or ""),
         "tool_calls": [tc.raw for tc in tool_calls],
     }
-    preserve_reasoning_fields(assistant_msg, result)
+    preserve_reasoning_fields(assistant_msg, result, tool_turn=True)
     tool_chain.append(assistant_msg)
 
     # 守卫执行前检查：已知必败/无进展的调用直接返回合成结果，不执行真实工具
@@ -1022,7 +1024,8 @@ async def execute_tool_calls(
         final_outputs: List[str] = []
         for tc, output in zip(batch, outputs, strict=False):
             if isinstance(output, BaseException):
-                output = json.dumps({"error": str(output)}, ensure_ascii=False)
+                # 统一走归因映射（超时/网络/权限…），不裸抛 str(exc)
+                output = error_from_exception(output, action=f"工具 {tc.name} 执行")
             output_str = output if isinstance(output, str) else str(output)
             try:
                 final_output = pipeline.process(
@@ -1081,6 +1084,19 @@ async def execute_one_tool(
             "result_preview": result[:300] if result else "",
             "success": True,
         })
+        # 用户 hook（tool_post）：fire 型事件，阻塞语义对工具结果无意义，
+        # 只投递预览（记录/通知类脚本的挂点）。空配置零开销短路
+        from agent.hooks import hooks_active, run_event_hooks
+        if hooks_active("tool_post"):
+            try:
+                await run_event_hooks(
+                    "tool_post", tool_name=tc.name,
+                    arguments=(tc.arguments or "")[:500],
+                    scope=tool_scope,
+                    result_preview=result[:400] if isinstance(result, str) else "",
+                )
+            except Exception:
+                pass  # hook 失败不影响已产出的工具结果
         return result
     except Exception as exc:
         elapsed_ms = (time.time() - t0) * 1000
@@ -1106,13 +1122,18 @@ async def execute_one_tool(
         return error_from_exception(exc, action=f"工具 {tc.name} 执行")
 
 
-def preserve_reasoning_fields(msg: Dict[str, Any], result: ChatResult) -> None:
+def preserve_reasoning_fields(msg: Dict[str, Any], result: ChatResult,
+                              tool_turn: bool = False) -> None:
     """从 ChatResult.raw 中提取推理字段到 assistant 消息，维持多轮思维链。
 
     litellm 统一返回 OpenAI 格式，按协议覆盖两种载体：
-    - reasoning_details：OpenRouter 风格，litellm 请求侧原样回传
+    - reasoning_details：OpenRouter 风格，litellm 请求侧原样回传。
+      **仅 tool_turn=True（工具调用轮）挂载**——DeepSeek 官方 thinking 规则
+      要求工具轮回传、纯文本轮服务端直接忽略，普通轮回传纯属 token 浪费
+      （对齐 dsh serialize.ts 的条件回传；REFLECT 连续文本轮场景收益最大）
     - thinking_blocks：Anthropic 协议 thinking 块（含 signature/redacted），
-      litellm 请求侧据此重构 thinking 块（交错思考 + tool_use 场景必需）
+      litellm 请求侧据此重构 thinking 块（交错思考 + tool_use 场景必需）。
+      签名块语义微妙，保持无条件保留（不随本参数收紧，单独评估）
     均以响应实际存在为条件，不返回推理字段的模型行为不变。
     """
     if not result.raw or not result.reasoning_content:
@@ -1124,9 +1145,10 @@ def preserve_reasoning_fields(msg: Dict[str, Any], result: ChatResult) -> None:
         message = choices[0].get("message", {})
         if not isinstance(message, dict):
             return
-        rd = message.get("reasoning_details")
-        if rd:
-            msg["reasoning_details"] = rd
+        if tool_turn:
+            rd = message.get("reasoning_details")
+            if rd:
+                msg["reasoning_details"] = rd
         tb = message.get("thinking_blocks")
         if tb:
             msg["thinking_blocks"] = tb

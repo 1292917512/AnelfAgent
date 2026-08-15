@@ -401,6 +401,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
         background: !!data.background,
         depth: data.depth ?? 0,
         model: data.model || undefined,
+        agent: data.agent || undefined,
         status: "running",
         started_at: data.ts ?? Date.now() / 1000,
       };

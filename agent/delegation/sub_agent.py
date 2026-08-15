@@ -137,6 +137,7 @@ class SubAgent:
             max_iterations: int = 0,
             task_index: int = 0,
             model_id: str = "",
+            agent_name: str = "",
     ) -> None:
         self._mind = mind
         self.goal = goal
@@ -144,14 +145,17 @@ class SubAgent:
         self.role = normalize_role(role)
         self.max_iterations = clamp_iterations(max_iterations)
         self.task_index = task_index
-        # 难度分级解析后的模型 ID；空串 = 使用默认模型
+        # 命名档案/难度分级解析后的模型 ID；空串 = 使用默认模型
         self.model_id = model_id
+        # 命名子代理档案名（日志/事件归因，空 = 未指定）
+        self.agent_name = agent_name
 
     async def run(self) -> SubAgentResult:
         """执行子任务并返回结果摘要。"""
         depth = current_depth()
+        agent_tag = f", agent={self.agent_name}" if self.agent_name else ""
         log(
-            f"子代理启动 (depth={depth}, role={self.role}, 预算={self.max_iterations}轮): "
+            f"子代理启动 (depth={depth}, role={self.role}{agent_tag}, 预算={self.max_iterations}轮): "
             f"{self.goal[:80]}",
             tag="委托",
         )

@@ -214,7 +214,7 @@ def _resolve_config_path() -> Optional[str]:
 
 
 def _parse_mcp_data(data: Dict[str, Any]) -> List[MCPServerConfig]:
-    """从 JSON dict 解析 server 列表（兼容 Cursor mcpServers 格式和旧格式）。"""
+    """从 JSON dict 解析 server 列表（兼容 mcpServers 包装格式和旧版 servers 列表格式）。"""
     servers: List[MCPServerConfig] = []
     if "mcpServers" in data:
         for name, cfg in data["mcpServers"].items():

@@ -194,6 +194,10 @@ async def _invoke_llm_unified(
         }
         from agent.mind.cache_stats import cache_usage_tracker
         cache_usage_tracker.record(result.usage, kind=purpose, model=result.model or model_name)
+        # 会话级用量累计（成本账本；fail-open，scope 取 prefix_guard 已算出的值）
+        if _guard_scope:
+            from agent.mind.scope_usage import scope_usage_stats
+            scope_usage_stats.record(_guard_scope, purpose, result.usage)
         log(
             f"LLM 用量: prompt={result.usage.prompt_tokens} "
             f"cache_read={result.usage.cache_read_input_tokens} "

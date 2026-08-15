@@ -36,8 +36,10 @@ export interface DelegationNode {
   task_index: number;
   background: boolean;
   depth: number;
-  /** 难度分级解析后的模型 ID；空串/缺省 = 默认模型 */
+  /** 难度分级/命名档案解析后的模型 ID；空串/缺省 = 默认模型 */
   model?: string;
+  /** 命名子代理档案名（delegate_task.agent_name，空 = 未指定） */
+  agent?: string;
   status: DelegationStatus;
   started_at: number;
   resolved_at?: number;
@@ -59,5 +61,7 @@ export interface RunningDelegation {
   task_index: number;
   background: boolean;
   model?: string;
+  /** 命名子代理档案名（delegate_task.agent_name，空 = 未指定） */
+  agent?: string;
   elapsed_seconds: number;
 }

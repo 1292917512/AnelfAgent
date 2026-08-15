@@ -59,6 +59,15 @@ def main():
         else:
             log("权限规则文件不存在，使用默认（全部放行）", "WARNING", tag="权限")
 
+        # 用户 hook 事件面：加载 config/hooks.json + 热更新监听（与权限规则同款）
+        from agent.hooks import reload_hooks
+        from core.path import ConfigPaths
+        hooks_path = str(ConfigPaths.HOOKS)
+        if os.path.exists(hooks_path):
+            reload_hooks(hooks_path)
+            watcher.watch(hooks_path, lambda p=hooks_path: reload_hooks(p))
+            log(f"用户 hooks 热更新监听已启动: {hooks_path}", tag="Hook")
+
         # 尽早拉起 WebUI：HTTP 端口不再等待频道网络登录。
         # 频道支持运行期热启动/停止，且有看门狗退避重启兜底，后台启动安全。
         web_task: asyncio.Task[None] | None = None

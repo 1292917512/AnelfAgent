@@ -2,7 +2,7 @@
   "tabs": {
     "config": "模型配置",
     "priorities": "模型管理",
-    "delegation": "子代理模型"
+    "subagents": "子代理"
   },
   "disabled": "已停用",
   "enableHint": "启用（停用后不参与任务执行）",
@@ -133,20 +133,39 @@
     "proxy_url": "代理地址",
     "media_protocol": "图片生成协议"
   },
-  "delegation": {
-    "desc": "为子代理配置性价比模型池：每挡手动添加已配置的模型，池内顺序即优先级。委托执行时 AI 仅标注任务难度，系统自动映射到对应挡位的模型。",
-    "fallbackHint": "挡位为空、全部停用或 AI 未标注难度时，子代理使用默认对话模型。",
+  "subagents": {
+    "desc": "子代理统一档案：每个档案绑定有序模型候选池，delegate_task 指定 agent_name 即使用对应档案（池内顺序即优先级，前者不可用依次回退）。",
+    "usageHint": "内置难度档 easy/medium/hard 与自定义档案同套管理：difficulty 1/2/3 是内置档的语法糖，也可直接 agent_name=easy 等指定。增删改即时生效。",
+    "builtinTitle": "内置难度档",
+    "builtinHint": "delegate_task 的 difficulty 1/2/3 分别映射到 easy/medium/hard；本档全不可用时自动降挡到低档。",
+    "builtinBadge": "内置",
     "tier1": "挡位 1 · 简单",
     "tier1Hint": "检索/格式化等机械任务（最经济）",
     "tier2": "挡位 2 · 中等",
     "tier2Hint": "常规分析/执行",
     "tier3": "挡位 3 · 困难",
     "tier3Hint": "复杂推理/多步规划（最强）",
-    "tierEmpty": "该挡未配置模型",
-    "selectModel": "选择模型",
-    "addModel": "加入该挡",
+    "tierCustom": "难度档",
+    "tierCustomHint": "",
+    "poolEmpty": "该档案未配置模型（difficulty 触发时将降挡到低档或使用默认模型）",
+    "fallbackNext": "已停用·回退",
+    "addToPool": "加入候选池",
     "remove": "移出",
-    "model": "模型"
+    "customTitle": "自定义档案",
+    "customHint": "为常用工作类型创建「名称 → 模型」绑定（如 researcher），delegate_task 指定 agent_name 使用。",
+    "createTitle": "新建档案",
+    "namePlaceholder": "名称，如 researcher",
+    "nameHint": "名称以英文字母开头，仅含字母/数字/下划线/连字符，≤32 字符；easy/medium/hard 为内置档保留名",
+    "selectModel": "选择模型",
+    "descPlaceholder": "用途描述（可选，如 资料调研专员）",
+    "create": "创建",
+    "edit": "编辑",
+    "save": "保存",
+    "delete": "删除",
+    "confirmDelete": "确认删除",
+    "modelMissing": "模型缺失",
+    "unavailable": "无可用模型",
+    "empty": "暂无自定义档案，可在上方创建"
   },
   "modelTypeLabels": {
     "chat": "对话",

@@ -161,6 +161,36 @@ class SqliteBackend:
                     );
                     """
                 )
+                # 回复检查点（崩溃尾部修复）：think_loop 进行中按 scope 写一行，
+                # 正常/协作中断结束在 finally 清除；进程崩溃/SIGKILL 残留的行，
+                # 下次启动由 recover_interrupted 扫描并向会话注入"上次被中断"元消息
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS reply_checkpoints (
+                      scope_key TEXT PRIMARY KEY,
+                      adapter_key TEXT NOT NULL DEFAULT '',
+                      phase TEXT NOT NULL DEFAULT '',
+                      iteration INTEGER NOT NULL DEFAULT 0,
+                      started_ns INTEGER NOT NULL
+                    );
+                    """
+                )
+                # 会话级用量统计（增量累加账本）：per-scope 累计 LLM 调用与 token
+                # 用量，complete_reply / 每 N 次调用经 upsert_scope_usage 累加写入
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scope_usage (
+                      scope_key TEXT PRIMARY KEY,
+                      turns INTEGER NOT NULL DEFAULT 0,
+                      llm_calls INTEGER NOT NULL DEFAULT 0,
+                      prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                      completion_tokens INTEGER NOT NULL DEFAULT 0,
+                      total_tokens INTEGER NOT NULL DEFAULT 0,
+                      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                      updated_ns INTEGER NOT NULL DEFAULT 0
+                    );
+                    """
+                )
                 await db.execute(
                     """
                     CREATE TABLE IF NOT EXISTS conversation_summary (
@@ -632,6 +662,106 @@ class SqliteBackend:
         rows = await cursor.fetchall()
         return [
             {"id": r[0], "scope": r[1], "kind": r[2], "payload_json": r[3], "ts_ns": r[4]}
+            for r in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # 回复检查点（崩溃尾部修复）
+    # ------------------------------------------------------------------
+
+    async def record_reply_checkpoint(
+            self, scope_key: str, adapter_key: str = "",
+            phase: str = "", iteration: int = 0,
+    ) -> None:
+        """登记/更新某 scope 的进行中回复检查点（INSERT OR REPLACE）。"""
+        if not scope_key:
+            return
+        db = await self._get_db()
+        await db.execute(
+            "INSERT OR REPLACE INTO reply_checkpoints"
+            "(scope_key, adapter_key, phase, iteration, started_ns) VALUES(?,?,?,?,?)",
+            (scope_key, adapter_key, phase, iteration, time.time_ns()),
+        )
+        await db.commit()
+
+    async def clear_reply_checkpoint(self, scope_key: str) -> None:
+        """回复正常/协作中断结束时清除检查点。"""
+        if not scope_key:
+            return
+        db = await self._get_db()
+        await db.execute("DELETE FROM reply_checkpoints WHERE scope_key=?", (scope_key,))
+        await db.commit()
+
+    async def load_reply_checkpoints(self) -> list[dict]:
+        """加载全部检查点。启动时调用——此时无任何进行中回复，存在的行
+        必为上一次进程崩溃/SIGKILL 的残留（正常/协作中断结束已在 finally 清除）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT scope_key, adapter_key, phase, iteration, started_ns "
+            "FROM reply_checkpoints ORDER BY started_ns ASC"
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"scope_key": r[0], "adapter_key": r[1], "phase": r[2],
+             "iteration": r[3], "started_ns": r[4]}
+            for r in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # 会话级用量统计（增量累加账本）
+    # ------------------------------------------------------------------
+
+    async def upsert_scope_usage(self, scope_key: str, delta: dict) -> None:
+        """把一个 scope 的用量增量累加写入（不存在则建行）。
+
+        delta 键：turns/llm_calls/prompt_tokens/completion_tokens/total_tokens/
+        cache_read_tokens（缺失按 0）。累加语义——多次 flush 幂等于总和。
+        """
+        if not scope_key:
+            return
+        db = await self._get_db()
+        async with self._write_lock:
+            await db.execute(
+                """
+                INSERT INTO scope_usage(scope_key, turns, llm_calls, prompt_tokens,
+                                        completion_tokens, total_tokens, cache_read_tokens, updated_ns)
+                VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(scope_key) DO UPDATE SET
+                    turns = turns + excluded.turns,
+                    llm_calls = llm_calls + excluded.llm_calls,
+                    prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+                    completion_tokens = completion_tokens + excluded.completion_tokens,
+                    total_tokens = total_tokens + excluded.total_tokens,
+                    cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+                    updated_ns = excluded.updated_ns
+                """,
+                (
+                    scope_key,
+                    int(delta.get("turns", 0) or 0),
+                    int(delta.get("llm_calls", 0) or 0),
+                    int(delta.get("prompt_tokens", 0) or 0),
+                    int(delta.get("completion_tokens", 0) or 0),
+                    int(delta.get("total_tokens", 0) or 0),
+                    int(delta.get("cache_read_tokens", 0) or 0),
+                    time.time_ns(),
+                ),
+            )
+            await db.commit()
+
+    async def list_scope_usage(self, limit: int = 100) -> list[dict]:
+        """按总 token 用量降序列出会话统计（API 用）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT scope_key, turns, llm_calls, prompt_tokens, completion_tokens, "
+            "total_tokens, cache_read_tokens, updated_ns "
+            "FROM scope_usage ORDER BY total_tokens DESC LIMIT ?",
+            (max(1, int(limit)),),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"scope_key": r[0], "turns": r[1], "llm_calls": r[2],
+             "prompt_tokens": r[3], "completion_tokens": r[4], "total_tokens": r[5],
+             "cache_read_tokens": r[6], "updated_ns": r[7]}
             for r in rows
         ]
 

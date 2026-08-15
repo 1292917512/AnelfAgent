@@ -328,22 +328,54 @@ async def set_default(req: SetDefaultReq) -> Dict[str, str]:
     return {"status": "ok"}
 
 
-class SetDelegationTierReq(BaseModel):
-    model_ids: List[str]
+# ── 子代理统一注册表（内置难度档 + 自定义档案） ──────────────────────
 
 
-@router.get("/delegation-tiers")
-async def get_delegation_tiers() -> Dict[str, Any]:
-    """子代理模型三挡池（1 简单/2 中等/3 困难）。"""
-    return {"tiers": _svc.get_delegation_tiers()}
+@router.get("/sub-agents")
+async def list_sub_agents() -> Dict[str, Any]:
+    """全部子代理档案（内置难度档在前，含模型可用性标记）。"""
+    return {"sub_agents": _svc.list_sub_agents()}
 
 
-@router.put("/delegation-tiers/{tier}")
-async def set_delegation_tier(tier: int, req: SetDelegationTierReq) -> Dict[str, str]:
-    ok = _svc.set_delegation_tier(tier, req.model_ids)
+class SubAgentCreateReq(BaseModel):
+    name: str
+    model_id: str
+    description: str = ""
+
+
+@router.post("/sub-agents")
+async def create_sub_agent(req: SubAgentCreateReq) -> Dict[str, Any]:
+    ok, message = _svc.create_sub_agent(req.name, req.model_id, req.description)
     if not ok:
-        raise HTTPException(400, f"无效的子代理挡位: {tier}（须为 1/2/3）")
-    return {"status": "ok"}
+        raise HTTPException(400, message)
+    return {"status": "ok", "message": message}
+
+
+class SubAgentUpdateReq(BaseModel):
+    model_id: Optional[str] = None
+    models: Optional[List[str]] = None
+    description: Optional[str] = None
+
+
+@router.put("/sub-agents/{name}")
+async def update_sub_agent(name: str, req: SubAgentUpdateReq) -> Dict[str, Any]:
+    ok, message = _svc.update_sub_agent(
+        name,
+        model_id=req.model_id or "",
+        models=req.models,
+        description=req.description or "",
+    )
+    if not ok:
+        raise HTTPException(404, message)
+    return {"status": "ok", "message": message}
+
+
+@router.delete("/sub-agents/{name}")
+async def delete_sub_agent(name: str) -> Dict[str, str]:
+    ok, message = _svc.remove_sub_agent(name)
+    if not ok:
+        raise HTTPException(404 if "不存在" in message else 400, message)
+    return {"status": "ok", "message": message}
 
 
 class TestConnectionReq(BaseModel):

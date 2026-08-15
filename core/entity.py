@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Type
 from core.event_bus import EVENT_TRACE_CALL_END, EVENT_TRACE_CALL_START, event_bus
 from core.exceptions import catch_exceptions
 from core.log import log
+from core.tool_errors import ErrorCause, error_from_exception, tool_error
 
 # ======================================================================
 # JSON 容错修复
@@ -1090,9 +1091,14 @@ class EntityRegistry:
                 "success": False,
                 "error": f"执行超时 ({tool_timeout}s)",
             })
-            return json.dumps(
-                {"error": f"工具执行超时 ({tool_timeout}s): {name}"},
-                ensure_ascii=False,
+            # 结构化错误（cause/retryable/hint + 稳定 code）：守卫/重试/前端
+            # 按 cause 路由，不解析 message（对齐 dsh HarnessError.code 契约）
+            return tool_error(
+                f"工具执行超时 ({tool_timeout}s): {name}",
+                cause=ErrorCause.TIMEOUT,
+                retryable=True,
+                hint="可稍后重试，或用 _timeout 参数增大超时时间/缩小操作范围",
+                code="TOOL_TIMEOUT",
             )
         except Exception as exc:
             dur = round((asyncio.get_running_loop().time() - t0) * 1000)
@@ -1104,7 +1110,8 @@ class EntityRegistry:
                 "success": False,
                 "error": str(exc),
             })
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            # 统一走归因映射（超时/权限/未找到/网络/参数…），不裸抛 str(exc)
+            return error_from_exception(exc, action=f"工具 {name} 执行")
 
         dur = round((asyncio.get_running_loop().time() - t0) * 1000)
         result_str = _serialize_result(result)

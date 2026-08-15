@@ -14,7 +14,7 @@ export interface HeartbeatConfig {
 
 export interface TaskSchedule {
   task_name: string;
-  mode: "heartbeat" | "scheduled" | "manual";
+  mode: "heartbeat" | "scheduled" | "idle" | "manual";
   every_n_beats?: number;
   beat_count?: number;
   schedule_times?: string[];
@@ -29,6 +29,10 @@ export interface HeartbeatStatus {
   total_ticks: number;
   task_count: number;
   schedule_count: number;
+  /** 距上次真实思考的秒数（null = 进程启动后尚未思考） */
+  last_activity_sec?: number | null;
+  /** 是否存在待空闲窗口消费的反思 */
+  reflection_pending?: boolean;
   schedules: (TaskSchedule & { task_exists: boolean; task_enabled: boolean })[];
 }
 

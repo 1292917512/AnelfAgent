@@ -23,6 +23,26 @@ class TestNormalizeNonMutating:
         assert msgs[0]["_layer"] == "stable"
         assert msgs[1]["_layer"] == "conversation"
 
+    def test_source_tags_stripped_and_preserved(self) -> None:
+        """_source 来源标记：发送副本剥离，原消息保留（与 _layer 对称）。"""
+        msgs = [
+            {"role": "system", "content": "人设", "_layer": "stable"},
+            {"role": "system", "content": "[系统] 超时提示",
+             "_source": {"origin": "timeout_recovery"}},
+        ]
+        out = normalize_for_send(msgs)
+        # 发送副本无 _source（LLM 不可见）
+        assert all("_source" not in m for m in out)
+        # 原消息 _source 保留（归因/审计依赖）
+        assert msgs[1]["_source"] == {"origin": "timeout_recovery"}
+        # 同时带 _layer 与 _source 的消息两者都被剥离
+        mixed = [{"role": "system", "content": "x", "_layer": "stable",
+                  "_source": {"origin": "compression"}}]
+        out2 = normalize_for_send(mixed)
+        assert "_layer" not in out2[0] and "_source" not in out2[0]
+        assert mixed[0]["_layer"] == "stable"
+        assert mixed[0]["_source"] == {"origin": "compression"}
+
 
 def _compressor() -> ContextCompressor:
     config = SimpleNamespace(

@@ -1,4 +1,4 @@
-"""LLM 端点 URL 智能归一化（参考 cursor-byok 的端点自适应设计）。
+"""LLM 端点 URL 智能归一化。
 
 用户填写的 base_url 形态各异：可能只填到域名、填到 /v1、填到 /v4
 （Z.AI 等非 v1 版本段），甚至直接粘贴包含端点路径的完整请求地址
@@ -86,7 +86,7 @@ def join_endpoint(base_url: str, path: str) -> str:
     if tail and lower.endswith("/" + tail.lower()):
         return base
     # base 以 /vN 结尾且 path 自带版本前缀：剥离 path 的版本段防双版本
-    # （覆盖 Z.AI /v4 这类非 v1 渠道，参考 cursor-byok 规则 2）
+    # （覆盖 Z.AI /v4 这类非 v1 渠道）
     if _VERSION_TAIL_RE.search(lower):
         stripped = _VERSION_HEAD_RE.sub("", path)
         if stripped and stripped != path:
@@ -97,7 +97,7 @@ def join_endpoint(base_url: str, path: str) -> str:
 def models_endpoint_candidates(base_url: str) -> List[str]:
     """模型列表端点候选地址（按优先级去重）。
 
-    策略（参考 cursor-byok buildModelListEndpointCandidates）：
+    策略：
     1. 剥离尾部已知端点路径（/chat/completions、/responses、/messages）；
     2. 末段已是 /models → 直接使用；
     3. 否则先试 <base>/models，再回退 <base>/v1/models

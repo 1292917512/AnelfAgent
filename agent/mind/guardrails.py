@@ -138,6 +138,20 @@ def _hash_result(result: str) -> str:
     return hashlib.sha256((result or "").encode("utf-8")).hexdigest()[:16]
 
 
+# 分级提醒中参数预览的字符上限（对齐 dsh argumentsPreviewChars）：
+# 截断的只是给模型看的文本，检测永远用全量 canonical 串比较
+# ——"cap bounds the reminder, never the detection"
+_ARGS_PREVIEW_CHARS = 500
+
+
+def _args_preview(arguments: str) -> str:
+    """生成有界的参数预览文本（供分级提醒的详细报告使用）。"""
+    canonical = _canonical_args(arguments)
+    if len(canonical) <= _ARGS_PREVIEW_CHARS:
+        return canonical
+    return canonical[:_ARGS_PREVIEW_CHARS] + "…"
+
+
 # ------------------------------------------------------------------
 # 失败判定与幂等性
 # ------------------------------------------------------------------
@@ -266,7 +280,13 @@ class GuardrailController:
             *,
             failed: Optional[bool] = None,
     ) -> GuardrailDecision:
-        """工具执行后检查，返回处置决策。"""
+        """工具执行后检查，返回处置决策。
+
+        被拒调用也计数（对齐 dsh repeat-tool-reminder）：审批拒绝/权限拦截
+        返回的 error 结果经 classify_tool_failure 判为失败并累加——"模型猛锤
+        一个被拒的调用，正是要打破的循环"。守卫自身拦截（before_call block）
+        的合成结果在上游以 skip_guardrail 跳过本方法，避免同一调用双重计数。
+        """
         if not self.config.enabled:
             return _ALLOW
 
@@ -275,10 +295,12 @@ class GuardrailController:
         signature = ToolCallSignature.from_call(tool_name, arguments)
 
         if failed:
-            return self._on_failure(signature, tool_name)
+            return self._on_failure(signature, tool_name, arguments)
         return self._on_success(signature, tool_name, result)
 
-    def _on_failure(self, signature: ToolCallSignature, tool_name: str) -> GuardrailDecision:
+    def _on_failure(
+            self, signature: ToolCallSignature, tool_name: str, arguments: str,
+    ) -> GuardrailDecision:
         cfg = self.config
         # 失败路径：清除无进展记录，累加两类失败计数
         self._no_progress.pop(signature, None)
@@ -311,10 +333,7 @@ class GuardrailController:
             return GuardrailDecision(
                 action=_ACTION_WARN,
                 reason="repeated_exact_failure_warning",
-                message=(
-                    f"你已以相同参数连续调用 {tool_name} 失败 {exact_count} 次。"
-                    "重复相同调用不会改变结果，请更换参数、换用其他工具，或调用 end_reply 结束。"
-                ),
+                message=self._graduate_exact_message(tool_name, arguments, exact_count),
                 count=exact_count,
                 tool_name=tool_name,
             )
@@ -332,6 +351,25 @@ class GuardrailController:
                 tool_name=tool_name,
             )
         return _ALLOW
+
+    def _graduate_exact_message(self, tool_name: str, arguments: str, count: int) -> str:
+        """分级提醒文案（对齐 dsh repeat-tool-reminder）：首次达阈温和提示，
+        之后给出完整报告（工具名 + 连续次数 + 参数预览），并明令停止该调用。"""
+        if count <= self.config.exact_failure_warn_after:
+            # 首次达阈：温和提醒，鼓励换思路
+            return (
+                f"调用 {tool_name} 似乎没有取得进展。"
+                "建议换一种方式：调整参数、换用其他工具，或调用 end_reply 结束。"
+            )
+        # 后续：详细报告 + 明确禁令
+        return (
+            f"检测到重复的工具调用：\n"
+            f"- 工具: {tool_name}\n"
+            f"- 连续失败次数: {count}\n"
+            f"- 参数: {_args_preview(arguments)}\n"
+            "重复调用不会产生不同结果。请勿再以完全相同的参数调用该工具，"
+            "换用其他方法或调用 end_reply 结束。"
+        )
 
     def _on_success(
             self, signature: ToolCallSignature, tool_name: str, result: str,

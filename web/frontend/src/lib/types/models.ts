@@ -71,8 +71,25 @@ export interface ModelPriorityItem {
   context_window: number | null;
 }
 
-/** 子代理模型三挡池（1 简单/2 中等/3 困难） */
-export type DelegationTiers = Record<"1" | "2" | "3", ModelPriorityItem[]>;
+/**
+ * 子代理统一档案：名称 → 有序模型候选池。
+ * 内置难度档（easy/medium/hard，tier 1-3）是 delegate_task.difficulty 的映射目标；
+ * 自定义档案（tier 0）经 agent_name 直指。池内顺序即优先级，前者不可用依次回退。
+ */
+export interface SubAgentProfile {
+  name: string;
+  models: string[];
+  description: string;
+  /** 难度挡位：0 = 自定义档案；1/2/3 = 内置难度档 */
+  tier: number;
+  builtin: boolean;
+  /** 池内首个可用模型（池空/全不可用时为 null） */
+  first_available: string | null;
+  /** 池内存在已删除的模型引用 */
+  model_missing: boolean;
+  /** 池内是否存在可用模型 */
+  model_enabled: boolean;
+}
 
 // ── Models (inline from api.ts) ────────────────────────────────
 

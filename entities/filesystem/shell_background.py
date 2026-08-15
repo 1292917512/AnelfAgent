@@ -58,6 +58,9 @@ def launch_background(command: str, cwd: str, workspace: str,
     desc = description or command[:60]
     if registry is not None:
         task_id = registry.register(scope, "shell", desc)
+        # 关联输出文件：check_background_tasks(task_id=...) 即可增量消费输出，
+        # 轮询长任务不再全量重读日志文件（对齐 dsh job_output 单游标语义）
+        registry.attach_output_file(task_id, output_file)
     else:
         # 注册表不可用（如独立测试）：退化为仅输出文件跟踪
         task_id = f"local-{proc.pid}"
@@ -78,7 +81,8 @@ def launch_background(command: str, cwd: str, workspace: str,
         "pid": proc.pid,
         "output_file": output_file,
         "message": "命令已在后台执行。完成后系统会自动通知你；"
-                   "期间可用 read_file 查看输出文件进度，或用 check_background_tasks 查询状态。",
+                   "期间用 check_background_tasks(task_id=...) 可增量查看新输出"
+                   "（每次只返回上次以来的新增，不会重复），或查询任务状态。",
     }
 
 

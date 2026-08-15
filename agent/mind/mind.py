@@ -200,6 +200,8 @@ class Mind:
         self._reply_idle_event.set()
         self.phase: MindPhase = MindPhase.IDLE
         self._last_reflect_time: float = 0.0
+        # 最近一次真实思考活动时间戳（idle 空闲计数锚点，见 last_activity_ts）
+        self._last_activity_ts: float = 0.0
         # 会话级 LLM 参数覆盖（model_control 工具经此下发 temperature 等，随会话存活）
         self._session_llm_params: dict = {}
 
@@ -216,6 +218,14 @@ class Mind:
 
         # scope 级中断信号（think_loop 每轮检查，用户可刹车失控回复）
         self.interrupts = InterruptRegistry()
+
+        # 后台任务自动唤醒预算（防"完成→回复→又启后台任务"的自我激励循环；
+        # 真人输入到达即重置，见 wake_budget 模块说明）
+        from agent.mind.wake_budget import WakeBudgetTracker
+        self.wake_budget = WakeBudgetTracker()
+
+        # /name 技能手势待注入队列（scope -> [技能名]，recollection 消费后清空）
+        self._pending_skill_gestures: Dict[str, List[str]] = {}
 
         # scope 级后台任务注册表（等待意图挂起 / 完成通知新轮次的统一原语）
         self.background_tasks = BackgroundTaskRegistry()
@@ -348,10 +358,34 @@ class Mind:
         ):
             log(f"反思中忽略非 @ 群消息: {anything.entity_scope}", "DEBUG", tag="思维")
         if should_enqueue:
-            # 真实外部事件：重置自动续轮退避
+            # 真实外部事件：重置自动续轮退避 + 后台任务唤醒预算（真人参与
+            # 后自动唤醒链路重新合法，对齐 dsh maxConsecutiveWakes 的重置语义）
             self._auto_cycle_retry = 0
+            self.wake_budget.reset(scope)
+            # /name 技能手势：真实外部消息正文以 /技能名 开头 → 确定性触发
+            # （防伪造：仅此路径检测，工具结果/子代理输出里的 "/x" 不构成手势）
+            self._detect_skill_gesture(anything, scope)
             await self.pfc.add_task(anything)
             self._update_channel_snapshot(anything)
+
+    def _detect_skill_gesture(self, anything: Everything, scope: str) -> None:
+        """检测 /name 技能手势并登记待注入（recollection 消费后清空）。"""
+        try:
+            from core.config import get_config_bool
+            if not get_config_bool("skill_user_gesture_enabled", True):
+                return
+            from agent.skills.gesture import parse_skill_gesture
+            from core.tags import strip_message_meta_tags
+            text = strip_message_meta_tags(anything.get_text_content() or "").strip()
+            name = parse_skill_gesture(text)
+            if not name:
+                return
+            pending = self._pending_skill_gestures.setdefault(scope, [])
+            if len(pending) < 3 and name not in pending:
+                pending.append(name)
+                log(f"识别到技能手势 /{name}，将在召回时确定性注入: {scope}", "DEBUG", tag="技能")
+        except Exception:
+            pass  # 手势检测失败不影响消息入队
 
     def _schedule_next_cycle(self, reason: str) -> None:
         """以指数退避调度下一轮自主循环（默认 0.5s 起、8s 封顶），避免紧凑重试。
@@ -379,7 +413,12 @@ class Mind:
         _cc_update_snapshot(self, anything)
 
     def _on_bg_task_unclaimed(self, scope: str, description: str, summary: str) -> None:
-        """后台任务轮外完成回调：排入回复队列触发新 REPLY（与 delegation_manager 同路径）。"""
+        """后台任务轮外完成回调：排入回复队列触发新 REPLY（与 delegation_manager 同路径）。
+
+        唤醒预算：连续自动唤醒超过 background_wake_budget（默认 3，0=关闭）时
+        不再触发新周期（防"完成→回复→又启后台任务→完成"的自我激励循环），
+        完成信息仍写短期记忆，下次真人消息触发时模型可见，信息不丢。
+        """
         from agent.mind.tools.scheduler import enqueue_scope_reply
         prompt = (
             f"[后台任务完成] {description}\n"
@@ -392,6 +431,10 @@ class Mind:
             f"后台任务完成: {description[:60]}",
             prompt,
         )
+        if not self.wake_budget.allow(scope):
+            self.wake_budget.note_suppressed(scope, description)
+            return
+        self.wake_budget.consume(scope)
         asyncio.create_task(self.try_execute_mind())
 
     @property
@@ -401,6 +444,19 @@ class Mind:
     @property
     def is_reflecting(self) -> bool:
         return self._reflecting
+
+    @property
+    def last_activity_ts(self) -> float:
+        """最近一次真实思考活动的时间戳（epoch 秒；0 = 进程启动后尚未思考）。
+
+        由 note_activity 在 reply()/reflect() 入口刷新，供心跳引擎的 idle
+        空闲计数消费；心跳元决策自身的 LLM 调用不经 reflect，不会刷新它。
+        """
+        return self._last_activity_ts
+
+    def note_activity(self) -> None:
+        """标记一次真实思考活动（回复/反思/任务执行/子代理均覆盖）。"""
+        self._last_activity_ts = time.time()
 
     def interrupt(self, scope: str, reason: str = "") -> bool:
         """请求中断指定 scope 的进行中会话（协作式，下一轮检查点生效）。
@@ -558,6 +614,7 @@ class Mind:
             adapter_key: str = "",
     ) -> None:
         """执行回复，异常时发送错误提示。"""
+        self.note_activity()
         await _tl_reply(self, anything, images, adapter_key=adapter_key)
 
     def _collect_pending_images(self, scope: str = "") -> List[ImageContent]:
@@ -813,6 +870,7 @@ class Mind:
         Returns:
             LLM 产出的文本内容（所有轮次输出的合并）。
         """
+        self.note_activity()
         mc = self._get_mind_config()
         safety_limit = max_iterations or mc.max_tool_iterations
         blocked_tools = self._build_reflect_blocklist(allow_output_tools)
@@ -902,9 +960,10 @@ class Mind:
             tail: List[Dict],
             *,
             query_vec: Optional[List[float]] = None,
+            scope: str = "",
     ) -> List[Dict]:
         """匹配当前对话相关的技能（委托 recollection 模块）。"""
-        return await _recollection._match_skills(self, tail, query_vec=query_vec)
+        return await _recollection._match_skills(self, tail, query_vec=query_vec, scope=scope)
 
     async def _build_layered_prompts(
             self,

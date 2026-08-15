@@ -216,24 +216,34 @@ class DelegationManager:
                 "task_index": int(info.get("task_index", 0)),
                 "background": bool(info.get("background")),
                 "model": str(info.get("model", "")),
+                "agent": str(info.get("agent", "")),
                 "elapsed_seconds": int(now - float(info.get("started_at", now))),
             }
             for did, info in self._running.items()
             if info.get("scope") == scope
         ]
 
-    def _resolve_model_for_difficulty(self, difficulty: Any) -> str:
-        """难度挡位 → 子代理模型 ID；未标注/非法/未配置时返回 ""（用默认模型）。"""
-        if not difficulty:
-            return ""
+    def _resolve_model(self, agent_name: str, difficulty: Any) -> str:
+        """子代理模型解析：命名档案 > 内置难度档 > 默认模型。
+
+        统一注册表语义：agent_name 直指档案（含内置 easy/medium/hard）；
+        difficulty 是内置难度档的语法糖。档案未命中/池不可用时降级到难度档
+        （工具层已前置拦截未知名称，此处降级是直连调用方的防御路径）；
+        未标注/非法/未配置时返回 ""（用默认模型）。
+        """
         mgr = getattr(self._mind, "llm_manager", None)
         if mgr is None:
             return ""
         try:
-            return mgr.resolve_delegation_model(difficulty) or ""
+            if agent_name:
+                resolved = mgr.resolve_sub_agent_model(agent_name)
+                if resolved:
+                    return resolved
+            if difficulty:
+                return mgr.resolve_delegation_model(difficulty) or ""
         except Exception:
             log("子代理模型解析失败，使用默认模型", "DEBUG", tag="委托")
-            return ""
+        return ""
 
     # ------------------------------------------------------------------
     # 同步委托
@@ -250,6 +260,7 @@ class DelegationManager:
             scope_hint: str = "",
             difficulty: int = 0,
             delegation_id: str = "",
+            agent_name: str = "",
             emit_events: bool = True,
     ) -> SubAgentResult:
         """委托单个子任务（阻塞至完成）。
@@ -259,6 +270,7 @@ class DelegationManager:
         - cancel() 取消该 Task 时转化为"用户取消"结果返回给调用方，
           而不是让 CancelledError 击穿父级思维循环
         delegation_id：外部预登记的 id（后台委托路径透传，全程单一 id）；
+        agent_name：命名子代理档案（模型解析优先于 difficulty）；
         emit_events=False 时 started/resolved 事件由调用方负责（防重复发射）。
         """
         # 顶层委托（depth 0）与嵌套委托（depth>=1）分离并发槽，
@@ -269,7 +281,7 @@ class DelegationManager:
             delegation_id = uuid.uuid4().hex[:8]
         scope = scope_hint or _current_scope()
         _user_scope, chat_id = _parse_scope_chat_id(scope)
-        model_id = self._resolve_model_for_difficulty(difficulty)
+        model_id = self._resolve_model(agent_name, difficulty)
         # 父子登记：嵌套委托归属当前委托，取消时级联
         parent_id = current_delegation_id()
         if parent_id:
@@ -289,6 +301,7 @@ class DelegationManager:
                     "background": bool(scope_hint),
                     "depth": current_depth(),
                     "model": model_id,
+                    "agent": agent_name,
                     "ts": asyncio.get_running_loop().time(),
                 })
             except Exception:
@@ -339,7 +352,7 @@ class DelegationManager:
             agent = SubAgent(
                 self._mind, goal, context,
                 role=role, max_iterations=max_iterations, task_index=task_index,
-                model_id=model_id,
+                model_id=model_id, agent_name=agent_name,
             )
             run_task = asyncio.create_task(
                 agent.run(), name=f"delegation.run.{delegation_id}",
@@ -353,6 +366,7 @@ class DelegationManager:
                 "task_index": task_index,
                 "background": bool(scope_hint),
                 "model": model_id,
+                "agent": agent_name,
                 "started_at": time.time(),
             }
             try:
@@ -405,10 +419,11 @@ class DelegationManager:
             role: str = "leaf",
             max_iterations: int = 0,
             difficulty: int = 0,
+            agent_name: str = "",
     ) -> List[SubAgentResult]:
         """并行委托多个子任务，结果按 task_index 排序。
 
-        单任务可携带自己的 difficulty（缺省继承顶层参数）。
+        单任务可携带自己的 difficulty / agent（缺省继承顶层参数）。
         """
         if len(tasks) > _max_concurrent() * 3:
             raise ValueError(
@@ -422,6 +437,7 @@ class DelegationManager:
                     max_iterations=max_iterations,
                     task_index=i,
                     difficulty=t.get("difficulty", difficulty),
+                    agent_name=str(t.get("agent") or agent_name),
                 )
                 for i, t in enumerate(tasks)
             ),
@@ -452,6 +468,7 @@ class DelegationManager:
             max_iterations: int = 0,
             scope: str = "",
             difficulty: int = 0,
+            agent_name: str = "",
     ) -> str:
         """后台委托：登记注册表后立即返回 delegation_id，结果异步送达。
 
@@ -468,7 +485,7 @@ class DelegationManager:
         # 发射 started 事件
         effective_scope = scope or _current_scope()
         _user_scope, chat_id = _parse_scope_chat_id(effective_scope)
-        model_id = self._resolve_model_for_difficulty(difficulty)
+        model_id = self._resolve_model(agent_name, difficulty)
         try:
             asyncio.create_task(event_bus.emit(EVENT_DELEGATION_STARTED, {
                 "scope": effective_scope,
@@ -481,6 +498,7 @@ class DelegationManager:
                 "background": True,
                 "depth": current_depth(),
                 "model": model_id,
+                "agent": agent_name,
             }))
         except Exception:
             log("delegate_background 异常已忽略", "DEBUG")
@@ -488,7 +506,7 @@ class DelegationManager:
         task = asyncio.create_task(
             self._run_background(
                 delegation_id, goal, context, role, max_iterations, scope,
-                difficulty=difficulty,
+                difficulty=difficulty, agent_name=agent_name,
             ),
             name=f"delegation.{delegation_id}",
         )
@@ -507,6 +525,7 @@ class DelegationManager:
             scope: str = "",
             *,
             difficulty: int = 0,
+            agent_name: str = "",
     ) -> None:
         """后台执行委托并按注册表路由结果（轮内会合 / 完成即新 turn）。
 
@@ -517,7 +536,8 @@ class DelegationManager:
             result = await self.delegate(
                 goal, context, role=role, max_iterations=max_iterations,
                 scope_hint=scope, difficulty=difficulty,
-                delegation_id=delegation_id, emit_events=False,
+                delegation_id=delegation_id, agent_name=agent_name,
+                emit_events=False,
             )
         except asyncio.CancelledError:
             # 用户取消（含并发槽等待阶段）：转化为取消结果继续走正常路由；

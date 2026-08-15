@@ -1,10 +1,10 @@
-"""模型启用开关与子代理模型分级测试。
+"""模型启用开关与子代理统一注册表测试。
 
 覆盖：
 - 禁用模型不参与 get_by_type / get_default / fallback / 执行路径查询
 - 禁用状态持久化（回读配置生效）
 - set_default 拒绝禁用模型
-- delegation_tiers：set 校验 / resolve 映射 / 传错回默认 / 全禁用降挡
+- 子代理注册表：池校验 / resolve 映射 / 传错回默认 / 全禁用降挡
 - DelegationManager 难度 → 模型透传
 """
 
@@ -68,12 +68,14 @@ class TestModelEnableSwitch:
         assert by_id["cheap"]["enabled"] is True
 
 
-class TestDelegationTiers:
+class TestSubAgentRegistry:
+    """内置难度档（统一注册表）的池校验 / 映射 / 降挡 / 持久化。"""
+
     def _with_tiers(self, tmp_path) -> LLMManager:
         mgr = _make_manager(tmp_path)
-        assert mgr.set_delegation_tier(1, ["cheap"]) is True
-        assert mgr.set_delegation_tier(2, ["mid"]) is True
-        assert mgr.set_delegation_tier(3, ["smart"]) is True
+        assert mgr.update_sub_agent("easy", models=["cheap"])[0]
+        assert mgr.update_sub_agent("medium", models=["mid"])[0]
+        assert mgr.update_sub_agent("hard", models=["smart"])[0]
         return mgr
 
     def test_resolve_maps_difficulty_to_tier(self, tmp_path):
@@ -99,20 +101,25 @@ class TestDelegationTiers:
         # 挡位 3 全禁用 → 降挡到 2
         assert mgr.resolve_delegation_model(3) == "mid"
 
-    def test_set_tier_rejects_invalid_tier_and_non_chat(self, tmp_path):
+    def test_update_rejects_unknown_builtin_and_non_chat(self, tmp_path):
         mgr = _make_manager(tmp_path)
-        assert mgr.set_delegation_tier(4, ["cheap"]) is False
         mgr.create_model("p1", "emb", model="e", model_types=["embedding"])
-        mgr.set_delegation_tier(1, ["emb", "cheap", "nope"])
-        assert [i["id"] for i in mgr.get_delegation_tiers()[1]] == ["cheap"]
+        # 非内置档案名不存在
+        assert mgr.update_sub_agent("tier4", models=["cheap"])[0] is False
+        # 非 chat 模型拒绝（整池不落盘）
+        ok, msg = mgr.update_sub_agent("easy", models=["emb", "cheap"])
+        assert not ok and "chat 类型" in msg
+        # 悬空模型引用同样拒绝（写入路径强校验）
+        assert mgr.update_sub_agent("easy", models=["cheap", "nope"])[0] is False
 
     def test_tiers_persisted_to_config(self, tmp_path):
         mgr = _make_manager(tmp_path)
-        mgr.set_delegation_tier(2, ["mid"])
+        mgr.update_sub_agent("medium", models=["mid"])
 
         reloaded = LLMManager(str(tmp_path / "llm.json"))
-        assert [i["id"] for i in reloaded.get_delegation_tiers()[2]] == ["mid"]
-        assert reloaded.get_delegation_tiers()[1] == []
+        profiles = {p["name"]: p for p in reloaded.list_sub_agents()}
+        assert profiles["medium"]["models"] == ["mid"]
+        assert profiles["easy"]["models"] == []
 
 
 class TestDelegationDifficultyWiring:
@@ -123,8 +130,8 @@ class TestDelegationDifficultyWiring:
             llm_manager = _make_manager(tmp_path)
 
         mgr = DelegationManager(_StubMind())  # type: ignore[arg-type]
-        mgr._mind.llm_manager.set_delegation_tier(1, ["cheap"])
+        mgr._mind.llm_manager.update_sub_agent("easy", models=["cheap"])
 
-        assert mgr._resolve_model_for_difficulty(0) == ""
-        assert mgr._resolve_model_for_difficulty(1) == "cheap"
-        assert mgr._resolve_model_for_difficulty(9) == ""
+        assert mgr._resolve_model("", 0) == ""
+        assert mgr._resolve_model("", 1) == "cheap"
+        assert mgr._resolve_model("", 9) == ""

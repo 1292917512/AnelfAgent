@@ -10,6 +10,7 @@ import { TimeChipList } from "./TimeChipList";
 const MODE_OPTIONS = [
   { value: "heartbeat", labelKey: "schedule.modeHeartbeat" },
   { value: "scheduled", labelKey: "schedule.modeScheduled" },
+  { value: "idle", labelKey: "schedule.modeIdle" },
   { value: "manual", labelKey: "schedule.modeManual" },
 ] as const;
 
@@ -78,6 +79,23 @@ export function ScheduleRow({
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {s.mode === "idle" && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-muted">{t("schedule.idleAfter")}</span>
+            <Input
+              type="number" min={1} className="!w-16"
+              value={s.every_n_beats ?? 4}
+              onChange={(e) => onUpdate({ every_n_beats: parseInt(e.target.value) || 4 })}
+            />
+            <span className="text-xs text-muted">{t("schedule.idleBeats")}</span>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-accent-subtle text-accent font-medium">
+              ≈ {((s.every_n_beats ?? 4) * interval / 60).toFixed(0)} {t("config.minutes")}
+            </span>
+            <span className="text-[11px] text-muted">{t("schedule.idleProgress")}: {s.beat_count ?? 0}/{s.every_n_beats ?? 4}</span>
+            <span className="text-[11px] text-muted hidden lg:inline">{t("schedule.idleHint")}</span>
           </div>
         )}
 

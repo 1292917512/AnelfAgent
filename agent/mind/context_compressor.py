@@ -566,12 +566,13 @@ class ContextCompressor:
             )
             if preserved_users:
                 feedback_content += "\n（该时段内用户的原话未压缩，已完整保留在下方）"
-            new_base.append({"role": "system", "content": feedback_content})
+            new_base.append({"role": "system", "content": feedback_content,
+                             "_source": {"origin": "compression"}})
         elif preserved_users:
             new_base.append({"role": "system", "content": (
                 f"{_COMPRESSION_FEEDBACK_PREFIX} 为节省上下文空间，早期 {compressed_count} 条执行过程已省略，"
                 "期间用户的原话完整保留在下方。"
-            )})
+            ), "_source": {"origin": "compression"}})
         new_base += preserved_users
         new_chain = tail
 

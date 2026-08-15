@@ -142,11 +142,29 @@ class ModelService:
     # 子代理模型分级
     # ------------------------------------------------------------------
 
-    def get_delegation_tiers(self) -> Dict[int, List[Dict[str, Any]]]:
-        return self._manager().get_delegation_tiers()
+    # ------------------------------------------------------------------
+    # 子代理统一注册表（内置难度档 + 自定义档案；内存态 + 落盘即热生效）
+    # ------------------------------------------------------------------
 
-    def set_delegation_tier(self, tier: int, model_ids: List[str]) -> bool:
-        return self._manager().set_delegation_tier(tier, model_ids)
+    def list_sub_agents(self) -> List[Dict[str, Any]]:
+        return self._manager().list_sub_agents()
+
+    def create_sub_agent(self, name: str, model_id: str, description: str = "") -> tuple[bool, str]:
+        return self._manager().create_sub_agent(name, model_id, description)
+
+    def update_sub_agent(
+        self,
+        name: str,
+        model_id: str = "",
+        models: Optional[List[str]] = None,
+        description: str = "",
+    ) -> tuple[bool, str]:
+        return self._manager().update_sub_agent(
+            name, model_id=model_id, models=models, description=description,
+        )
+
+    def remove_sub_agent(self, name: str) -> tuple[bool, str]:
+        return self._manager().remove_sub_agent(name)
 
     # ------------------------------------------------------------------
     # 默认 / 热切换
@@ -254,7 +272,7 @@ class ModelService:
         """从模型列表响应中提取模型条目。
 
         兼容 OpenAI 形 {"data": [...]} 与 {"models": [...]}（Gemini 等），
-        条目 id 取 id 或 name 字段（参考 cursor-byok extractModelIDs）。
+        条目 id 取 id 或 name 字段。
         """
         if not isinstance(data, dict):
             return []
@@ -393,8 +411,7 @@ class ModelService:
             base_url, api_key, model, api_type=api_type, proxy_url=proxy_url,
         )
 
-    # 保存并测试的固定探针 prompt（参考 cursor-byok 的基准测试设计：
-    # 测的就是生产流式链路，而非单独的 ping）
+    # 保存并测试的固定探针 prompt（测的就是生产流式链路，而非单独的 ping）
     _TEST_CHAT_PROMPT = "Output the numbers 1 through 50, separated by spaces."
 
     async def test_chat(
@@ -465,8 +482,7 @@ class ModelService:
             text = "".join(text_parts).strip()
             if not text:
                 return {"ok": False, "error": "模型返回空结果"}
-            # 端点未返回 usage 时按字符数估算并明确标注（参考 cursor-byok
-            # estimateBenchmarkTextTokens 的 tokensEstimated 语义）
+            # 端点未返回 usage 时按字符数估算并明确标注
             tokens_estimated = output_tokens <= 0
             if tokens_estimated:
                 output_tokens = max(1, round(len(text) / 4))

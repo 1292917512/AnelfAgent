@@ -21,7 +21,7 @@ from entities._sdk import deferred_tool
 
 _TASK_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _TASK_MEMORY_TYPES = {"reflection", "semantic", "episodic"}
-_SCHEDULE_MODES = {"heartbeat", "scheduled", "manual"}
+_SCHEDULE_MODES = {"heartbeat", "scheduled", "idle", "manual"}
 
 
 def _tasks_dir() -> Path:
@@ -257,7 +257,9 @@ async def delete_task(name: str) -> str:
     group="planning", tags=["planning", "heartbeat"], source="mind.task",
     description=(
         "绑定/调整任务的心跳调度：heartbeat=每 N 次心跳执行，scheduled=每天指定时间，"
-        "manual=仅手动（移除自动调度）。创建任务后用它让任务自动跑起来。"
+        "idle=连续 N 次心跳无思考活动后执行（全局仅一条，承载反思+自由活动，"
+        "须短于所有 heartbeat 任务的循环），manual=仅手动（移除自动调度）。"
+        "创建任务后用它让任务自动跑起来。"
     ),
 )
 async def set_task_schedule(
@@ -270,8 +272,11 @@ async def set_task_schedule(
 
     Args:
         task_name: 任务标识
-        mode: 调度模式 heartbeat（每 N 次心跳）/ scheduled（每日定时）/ manual（仅手动，移除调度）
-        every_n_beats: heartbeat 模式的间隔心跳数（默认 10）
+        mode: 调度模式 heartbeat（每 N 次心跳）/ scheduled（每日定时）/
+            idle（连续 N 次心跳空闲后执行，全局仅允许一条，任何思考活动都会重置计数）/
+            manual（仅手动，移除调度）
+        every_n_beats: heartbeat/idle 模式的间隔心跳数（heartbeat 默认 10；
+            idle 建议 3-6，且须短于所有 heartbeat 任务的循环拍数）
         schedule_times: scheduled 模式的触发时间，逗号分隔 HH:MM（如 "09:00,21:30"）
     """
     try:
@@ -287,7 +292,12 @@ async def set_task_schedule(
                 cause=ErrorCause.NOT_FOUND, retryable=False,
             )
 
-        from agent.heartbeat.config import ScheduleMode, TaskSchedule, get_heartbeat_config
+        from agent.heartbeat.config import (
+            ScheduleMode,
+            TaskSchedule,
+            get_heartbeat_config,
+            validate_schedules,
+        )
         cfg = get_heartbeat_config()
         if mode == "manual":
             removed = cfg.remove_schedule(task_name)
@@ -311,13 +321,22 @@ async def set_task_schedule(
             every_n_beats=max(1, every_n_beats),
             schedule_times=times,
         )
+        # idle 单例校验：替换视角模拟写入后的调度列表（set_schedule 为 upsert）
+        next_schedules = [
+            schedule if s.task_name == task_name else s
+            for s in cfg.task_schedules
+        ]
+        if schedule not in next_schedules:
+            next_schedules.append(schedule)
+        if err := validate_schedules(next_schedules):
+            return tool_error(err, cause=ErrorCause.PARAM, retryable=False)
         cfg.set_schedule(schedule)
         cfg.save()
         _reload_engine()
         log(f"🛠 AI 调整任务调度: {task_name} -> {mode}", tag="任务")
         return json.dumps({
             "ok": True, "task": task_name, "mode": mode,
-            "every_n_beats": every_n_beats if mode == "heartbeat" else None,
+            "every_n_beats": every_n_beats if mode in ("heartbeat", "idle") else None,
             "schedule_times": times if mode == "scheduled" else None,
         }, ensure_ascii=False)
     except Exception as e:

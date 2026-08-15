@@ -5,9 +5,9 @@ import { PageContainer } from "@/components/common/PageContainer";
 import { Bot, Cpu, ListOrdered } from "lucide-react";
 import { ConfigPanel } from "@/pages/models/ConfigPanel";
 import { PrioritiesPanel } from "@/pages/models/PrioritiesPanel";
-import { DelegationPanel } from "@/pages/models/DelegationPanel";
+import { SubAgentsPanel } from "@/pages/models/SubAgentsPanel";
 
-type ModelTab = "config" | "priorities" | "delegation";
+type ModelTab = "config" | "priorities" | "subagents";
 
 export default function Models() {
   const { t } = useTranslation(["models", "common"]);
@@ -16,7 +16,7 @@ export default function Models() {
   const tabs: TabItem<ModelTab>[] = [
     { key: "config", label: t("tabs.config"), icon: Cpu },
     { key: "priorities", label: t("tabs.priorities"), icon: ListOrdered },
-    { key: "delegation", label: t("tabs.delegation"), icon: Bot },
+    { key: "subagents", label: t("tabs.subagents"), icon: Bot },
   ];
 
   return (
@@ -25,7 +25,7 @@ export default function Models() {
 
       {activeTab === "config" && <ConfigPanel />}
       {activeTab === "priorities" && <PrioritiesPanel />}
-      {activeTab === "delegation" && <DelegationPanel />}
+      {activeTab === "subagents" && <SubAgentsPanel />}
     </PageContainer>
   );
 }

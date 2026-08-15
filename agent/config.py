@@ -35,6 +35,13 @@ _MIND_CONFIGS = {
             "min": 60,
             "unit": "秒",
         },
+        "heartbeat_busy_defer_seconds": {
+            "description": "心跳忙碌延后轮询间隔（AI 回复/反思执行中时按此间隔轮询，空闲后立即补跑心跳）",
+            "default": 60.0,
+            "advanced": True,
+            "min": 5,
+            "unit": "秒",
+        },
         "auto_cycle_base_delay": {
             "description": "自主循环续轮退避基数（指数封顶 8s）；有待回复消息时不退避",
             "default": 0.5,
@@ -278,7 +285,8 @@ _NETWORK_CONFIGS = {
 }
 
 _MIND_SYNC_FIELDS: tuple[str, ...] = (
-    "heartbeat_interval", "meta_decision_temperature",
+    "heartbeat_interval", "heartbeat_busy_defer_seconds",
+    "meta_decision_temperature",
     "conversation_analysis_threshold", "max_tool_iterations",
     "log_ai_output", "send_interim_text", "force_tool_use",
     "background_wait_timeout", "background_wait_budget",
@@ -326,6 +334,8 @@ class MindConfig:
     由 IntrospectionConfig 管理。
     """
     heartbeat_interval: float = 300.0
+    # 心跳忙碌延后轮询间隔：AI 执行中时按此间隔轮询，空闲后立即补跑
+    heartbeat_busy_defer_seconds: float = 60.0
     meta_decision_temperature: float = 0.3
     conversation_analysis_threshold: int = 5
     max_tool_iterations: int = 8

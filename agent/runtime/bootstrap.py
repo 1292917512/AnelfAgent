@@ -310,6 +310,11 @@ def create_bootstrap() -> FlowMachine:
         from agent.storage.conversation_fold import conversation_folder
         conversation_folder.set_prewarm_hook(mind.prewarm_scope_cache)
 
+        # 会话用量账本接线：scope_usage 只暴露回调接口，落盘由主库实现
+        # （分层纪律：agent/mind 不直接依赖 storage 层）
+        from agent.mind.scope_usage import wire_scope_usage
+        wire_scope_usage(data_center.router.sqlite.upsert_scope_usage)
+
         set_mind(mind)
         session_tools.set_mind(mind)
         short_term_tools.set_mind(mind)
@@ -448,6 +453,24 @@ def create_bootstrap() -> FlowMachine:
             _spawn_background(mind.try_execute_mind(), name="recover-mind-execute")
 
     @machine.node(skip_on_error=True)
+    async def recover_interrupted():
+        """崩溃尾部恢复（后台执行）：扫描上一次进程崩溃/SIGKILL 残留的
+        回复检查点，向对应会话注入"上次被中断"元消息（写 DB，下次会话可见）。
+        与 recover_unanswered 职责分离：这里只保证模型知道上次中断了。"""
+        _spawn_background(_recover_interrupted(), name="recover-interrupted")
+
+    async def _recover_interrupted() -> None:
+        from core.config import get_config_bool
+        if not get_config_bool("recovery_interrupted_enabled", True):
+            return
+        from agent.mind.crash_recovery import recover_interrupted_replies
+        from agent.runtime.singleton import get_runtime
+        try:
+            await recover_interrupted_replies(get_runtime().mind)
+        except Exception as exc:
+            log(f"崩溃尾部恢复失败: {exc}", "ERROR", tag="启动")
+
+    @machine.node(skip_on_error=True)
     async def check_health():
         """启动健康检查 — 验证关键组件就绪状态。"""
         from agent.runtime.singleton import get_runtime
@@ -493,6 +516,10 @@ _RECOVERY_CONFIGS = {
     "system/recovery": {
         "recovery_unanswered_enabled": {
             "description": "是否在启动时补回重启前收到但尚未回复的消息",
+            "default": True,
+        },
+        "recovery_interrupted_enabled": {
+            "description": "是否在启动时向崩溃残留的会话注入'上次回复被中断'元消息（崩溃尾部修复）",
             "default": True,
         },
         "recovery_max_age_hours": {

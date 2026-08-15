@@ -75,6 +75,12 @@ export function ConfigPanel() {
     if (schedules !== null) {
       payload.task_schedules = schedules;
     }
+    // idle 单例校验（后端 PUT 亦强校验兜底）：思考会刷新空闲计数，多条会互相抢占
+    const idleCount = (payload.task_schedules ?? []).filter((s) => s.mode === "idle").length;
+    if (idleCount > 1) {
+      window.alert(t("schedule.idleSingleError"));
+      return;
+    }
     saveMut.mutate(payload);
   };
 

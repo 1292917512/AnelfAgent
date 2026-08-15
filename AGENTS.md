@@ -1,13 +1,10 @@
 ---
-description: "AnelfAgent 项目指令 — 开发规范与架构速查（由 .cursor/rules/*.mdc 迁移而来，对所有提示全量注入）"
+description: "AnelfAgent 项目指令 — 开发规范与架构速查（对所有提示全量注入）"
 ---
 
 # AnelfAgent — 项目指令
 
-本文件由 `.cursor/rules/global.mdc` 与 `.cursor/rules/architecture.mdc` 合并而来。
-Cursor 用户继续读取 `.cursor/rules/*.mdc`，ZCode 读取本文件，互不影响。
-
-> **定位说明**：本文件是供 AI 代码编辑器（ZCode / Cursor）读取的**工作区指令文件**，
+> **定位说明**：本文件是供 AI 代码编辑器（ZCode）读取的**工作区指令文件**，
 > 用于向编辑器描述本项目的开发规范与架构，**不属于 AnelfAgent 产品的运行时代码或交付内容**，
 > 不会被程序加载，也不影响任何运行逻辑。修改本文件仅改变编辑器对项目的理解。
 
@@ -178,7 +175,24 @@ tick() 单次心跳：
   4. 持久化计数器到 config/heartbeat.json
 ```
 
-三种触发模式：heartbeat（每 N 次心跳）/ scheduled（每天指定时间）/ manual（仅手动）
+四种触发模式：heartbeat（每 N 次心跳）/ scheduled（每天指定时间）/
+idle（连续 N 次心跳无思考活动后，全局仅一条）/ manual（仅手动）。
+
+**idle 空闲调度**：计数维度是"距上次思考的连续空闲心跳数"——`mind.last_activity_ts`
+锚点（`reply()`/`reflect()` 入口刷新，覆盖对话/任务/子代理/反思，**含 idle 任务自身**；
+心跳元决策的 LLM 调用不经 reflect 故不计）。本 tick 无确定性到期任务时才评估触发，
+空闲窗口让位给 scheduled/heartbeat；元决策 REFLECT 不再立即执行，改为
+`engine.mark_reflection_pending(reason)` 登记，由 idle 任务在空闲窗口消费（原因经
+`TaskExecutor.run(extra_note=...)` 尾部追加注入，缓存前缀不动）。思考刷新计数保证
+idle 天然单例串行——写入侧 `validate_schedules` 强校验仅一条，AI/Web 双路径同规则。
+
+**心跳忙碌延后**（`assistant._heartbeat_loop`）：`is_reply / is_reflecting /
+_heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_seconds`
+（默认 60s，热读取）短间隔轮询，空闲后立即补跑；被延后的 tick 不递增任何计数器。
+
+**同任务排队去重**：引擎 `_task_inflight` 集合（asyncio 单线程 check-then-set 无竞态）
+——`run_task` 锁前查重拒绝重复触发，tick 选 task 时跳过 inflight 名称，
+保证排队里同一种任务只有一条（手动连点/Web trigger/AI 触发/tick 四路径共用）。
 
 对话折叠三入口共用 `ConversationData.schedule_fold`：窗口滞回触发（取数路径）/
 心跳空闲折叠 / AI 工具 `fold_conversations`（memory 组，整理当前或全部会话）。
@@ -223,14 +237,32 @@ tick() 单次心跳：
 
 | 机制 | 文件 | 说明 |
 |------|------|------|
-| 工具守卫 | `agent/mind/guardrails.py` | 精确失败重复/同工具连续失败/无进展循环检测，动作 warn/block/halt |
+| 工具守卫 | `agent/mind/guardrails.py` | 精确失败重复/同工具连续失败/无进展循环检测，动作 warn/block/halt；分级提醒（首次温和、后续附参数预览）；用户插话重置计数 |
 | 错误分类 | `agent/llm/resilience/classifier.py` | LLM 错误分类（rate_limit/context_overflow/auth 等）驱动重试策略 |
 | 自适应重试 | `agent/llm/retry.py` | 指数退避 + 抖动（jittered_backoff） |
-| 上下文压缩 | `agent/mind/context_compressor.py` | 溢出检测（真实 usage 优先）→ 保头保尾 + LLM 摘要 → 压缩反馈注入 |
+| 上下文压缩 | `agent/mind/context_compressor.py` | 溢出检测（真实 usage 优先）→ 保头保尾 + LLM 摘要 → 压缩反馈注入；摘要调用复用主前缀命中 KV 缓存 |
 | 结果预算 | `agent/mind/result_budget.py` | 按模型窗口动态截断工具结果（15% 单条 / 30% 整轮） |
 | 会话令牌 | `agent/security/session_token.py` | 一次性令牌标记可信历史，泄露即 SECURITY 停止 |
 | 威胁扫描 | `agent/security/threat_scanner.py` | 注入模式扫描（工具结果标记 / 记忆写入拦截） |
 | 结果脱敏 | `core/sanitizer.py` | API Key/Token/密码自动遮盖（工具结果 + 日志） |
+| 崩溃尾部修复 | `agent/mind/crash_recovery.py` | 回复检查点落盘（`reply_checkpoints` 表），启动扫描崩溃残留注入"上次被中断"元消息 |
+| reasoning 条件回传 | `think_loop.preserve_reasoning_fields` | `reasoning_details` 仅工具轮回传（DeepSeek 官方规则：普通轮服务端忽略），纯文本轮省 token；`thinking_blocks` 无条件保留 |
+
+#### 运行时机制速览（第三轮新增）
+
+| 机制 | 文件 | 说明 |
+|------|------|------|
+| 后台任务增量输出 | `background_tasks.read_task_output` | 单游标消费型：`check_background_tasks(task_id=...)` 每次只返回新增输出，轮询长任务不再全量重读日志 |
+| 唤醒预算 | `agent/mind/wake_budget.py` | 连续自动唤醒超 `background_wake_budget`（默认 3）不再触发新周期（防自我激励循环），真人输入重置 |
+| 会话用量统计 | `agent/mind/scope_usage.py` | per-scope 累计 LLM 用量与 turns（`scope_usage` 表增量累加），`GET /api/status/usage` 查询 |
+| /name 技能手势 | `agent/skills/gesture.py` | 真实用户消息以 `/技能名` 开头 → 绕过语义评分确定性注入（防伪造：仅外部消息路径检测） |
+| 用户 hook 事件面 | `agent/hooks/` | `config/hooks.json` 声明 tool_pre/tool_post/reply_end 脚本；exit 2 阻塞（stderr 为理由）、串行、deny 胜过一切；空配置零开销 |
+| 长任务交接 | `agent/task/handoff.py` | 任务定义 `handoff: true` 时：输出末尾 `# HANDOFF` 块持久化，下次运行注入（确定性接力） |
+| 消息来源打标 | `_source` 键 | 系统注入消息带 `{"origin": ...}`，`normalize_for_send` 与 `_layer` 一并剥离（LLM 不可见，供归因） |
+| 子代理统一注册表 | `LLMManager._sub_agents` + `delegate_task(agent_name=...)` | 一套档案体系（llm_clients.json 顶层 `sub_agents` 键）：名称 → 有序模型候选池（前者不可用依次回退）。**内置难度档 easy/medium/hard（tier 1-3，受保护）就是 difficulty 1/2/3 的语法糖**，与自定义档案（tier 0）同构存储、同套 CRUD；解析优先级 agent_name > difficulty > 默认，本档全不可用降挡。AI 经 model_control 组 4 个工具增删改查（list/create/update/delete_sub_agents，update 的 models 参数整池替换），Web 经 `/models/sub-agents`，双路径同 LLMManager 内存态 + 原子落盘即热生效；legacy `delegation_tiers` 键加载时自动迁移；档案内容不注入 prompt 层（AI 按需 list 查询，零缓存影响） |
+| idle 空闲调度 | `agent/heartbeat/` IDLE 模式 | 连续 N 拍无思考活动（`mind.last_activity_ts` 锚点，任务自身执行也刷新）触发唯一空闲任务（反思+自由活动，如 self_reflection）；确定性调度优先，REFLECT 元决策延迟登记由其消费；`validate_schedules` 强校验全局仅一条 |
+| 心跳忙碌延后 | `assistant._heartbeat_loop` | 回复/反思/上轮 tick 未收尾时不跳过整轮，按 `heartbeat_busy_defer_seconds`（默认 60s）短间隔轮询、空闲即补跑；延后期间不递增任何计数器 |
+| 同任务排队去重 | `HeartbeatEngine._task_inflight` | tick/manual/AI 四路径共用的执行中集合，排队里同一种任务只允许一条 |
 
 ### 前端结构
 
@@ -284,7 +316,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/skills/sources/` | 外部技能源（可插拔：SkillSource 抽象 + 注册表热插拔；内置 SkillHub 源，删模块即卸载） |
 | `agent/delegation/sub_agent.py` | 子代理（leaf/orchestrator 角色 + 深度限制） |
 | `agent/delegation/delegation_manager.py` | 委托调度（并发上限/预算/聚合/后台模式） |
-| `agent/delegation/delegate_tool.py` | delegate_task 工具 |
+| `agent/delegation/delegate_tool.py` | delegate_task 工具（agent_name 直指子代理档案；difficulty 1/2/3 为内置档案语法糖） |
 | `agent/mind/work_memory.py` | 工作记忆数据面（消息队列 / 待办持久化 / 短期记忆（溢出晋升 events 便签）/ 态势路由，PFC 组件） |
 | `agent/mind/tool_assembly.py` | 工具装配（召回 / tag 激活 / schema 合并门控，PFC 组件） |
 | `agent/mind/context_assembly.py` | 上下文组装（系统提示 / Prompt 分层缓存 / 执行上下文，PFC 组件） |
@@ -302,7 +334,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/memory/notes.py` | 便签文件系统 |
 | `agent/task/model.py` | 任务数据模型（TaskDefinition / TaskResult） |
 | `agent/task/registry.py` | 任务注册表（config/tasks/*.json 加载/CRUD） |
-| `agent/task/executor.py` | 任务执行器（LLM 调用 + 结果存储；`task_lean_context` 精简上下文：人设+工具+永久记忆+任务指令，环境便签/召回/状态由任务按规则经工具取回——任务间共享稳定前缀、每轮 prompt 更小） |
+| `agent/task/executor.py` | 任务执行器（LLM 调用 + 结果存储；`task_lean_context` 精简上下文：人设+工具+永久记忆+任务指令，环境便签/召回/状态由任务按规则经工具取回——任务间共享稳定前缀、每轮 prompt 更小；`extra_note` 尾部追加动态备注，idle 反思原因注入不破前缀） |
 | `agent/task/tools.py` | 任务/调度自管理工具（create_task / update_task / delete_task / set_task_schedule，与 Web 管理面同路径热重载） |
 | `agent/heartbeat/engine.py` | 心跳调度引擎（tick 循环 + 内置维护 + 主便签 AUTO:memory-status 状态区块） |
 | `agent/heartbeat/config.py` | 心跳配置（HeartbeatConfig + TaskSchedule） |
@@ -376,49 +408,11 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 
 LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程分三层责任，排查时**先定位层再下结论**，不要默认"缓存崩了"：
 
-**三层责任模型**：
-1. **客户端字节稳定性**（完全可控，已接近极限）：变动率排序组装 + tools 冻结 + 摘要窗口 + 单一装饰点。验证手段 = 快照 section 哈希 diff + **PrefixGuard 运行时哈希链**（见下）。
-2. **供应商缓存行为**（不可控）：DeepSeek 磁盘缓存的写入→可读传播延迟、条目驱逐、节点亲和。**判读特征：prefix_stable=True（前缀字节完全未变）而 read 上下浮动，1~2 轮自愈**——客户端无能为力，列表已以"平台波动"徽标自动标识，不计为故障。
-3. **统计与展示口径**：kind 分桶 / age_sec 回声 / unobservable / 均值按单次钳制率平均（防 Anthropic 口径 read>prompt 放大超 100%）。
+1. **客户端字节稳定性**（完全可控）：变动率排序组装 + tools 冻结 + 摘要窗口 + 单一装饰点。验证 = 快照 section 哈希 diff + **PrefixGuard 运行时哈希链**（records.jsonl 的 `prefix_drift` 字段定位首个断裂消息）。
+2. **供应商缓存行为**（不可控）：磁盘缓存传播延迟/驱逐/节点亲和。判读特征 = prefix_stable=True 而 read 浮动、1~2 轮自愈。
+3. **统计与展示口径**：kind 分桶 / age_sec 回声 / unobservable / 单次钳制率平均。
 
-**PrefixGuard 前缀稳定性运行时守卫**（`agent/mind/prefix_guard.py`，对齐 dsh agent-loop/invariant 的运行时不变式思想、适配为轻量观测版）：每次 LLM 调用前（`_invoke_llm_unified` normalize 前、`_layer` 尚存时）对守卫层消息逐条哈希（复用 `PromptCacheManager.compute_hash`），与同 (scope, kind) 上一次调用的哈希链比对，**首个不一致位置即缓存断裂点**（比快照层聚合 sha1 更细——能定位到层内第几条消息变了）。基线按 (scope, kind) 分键隔离前缀族，conversation 纯追加免疫（只报既有位置改动）。**仅观测不阻断**（fail-open），归因写入 records.jsonl 的 `prefix_drift` 字段（`{broken_at_index, layer, prev_hash, cur_hash}`；链收缩时 `reason=guarded_chain_shrunk`）。守卫层由 `prefix_guard_layers` 配置（逗号分隔，默认 `stable,summary,conversation`）。判读：`prefix_drift` 非空即该次调用前缀断裂，`layer` 指认漂移层；压缩/折叠/人设切换是合法断裂源（可 `prefix_guard.reset(scope)` 清基线避免误报）。
-
-**诊断决策树**（对任意一次低命中）：
-- 前缀稳定（快照 sections 除 tool_chain/exec_context 均未变）+ 命中低 ⇒ **平台波动**，看下一轮是否自愈，是则结案
-- 某前缀 section 变更 ⇒ 首个变更层即断点位置，查该层写入方（便签=心跳任务/技能评审；summary=折叠；tools=激活跳变）
-- kind=reflect 且首轮 ~90% 以下 ⇒ 任务结构下限（lean 模式下仅剩任务指令差异）
-- 重启后首轮低 ⇒ 冷启动（布局变更会使旧缓存条目按新层序失效，一次性）
-
-**数据来源**（按可信度排序）：
-- `logs/context_snapshots/records.jsonl`：每次 LLM 调用的紧凑缓存记录（prompt/read/creation/hit_rate/kind/model/age_sec/unobservable/**prefix_drift**）。连续捕获模式下逐条写入。`prefix_drift` 为 PrefixGuard 断裂归因（null=前缀稳定），是命中率下跌时定位"哪层哪条消息漂移"的第一手证据。
-- 应用日志 `LLM 用量: prompt=... cache_read=...`（DEBUG，tag 思维）：单调用 ground truth。
-- Web 快照缓存面板（Context→快照）：`last_call`（主对话口径）/ `recent` / `recent_all`。
-
-**判读规则（避免误读）**：
-- `kind` 分桶：主对话 `reply` 与辅助 `reflect`（评审/心跳/折叠）分开。辅助调用无共享前缀，命中率 0 属正常，**不计入主口径**。
-- `age_sec`：`last_call` 可能回显更早会话的调用（回声）。>120s 视为过期，前端置灰标"（N 分钟前）"，不代表当前缓存失效。
-- `unobservable`：该模型流式 usage 缺缓存字段（见下表），缓存仍在服务端生效但**无法度量**，显示"—"而非 0%。
-- `expected_prefix_tokens`（快照 cache 区块）：断点锚点覆盖的字节稳定层（stable+context+summary）理论可命中前缀。**与实际 cache_read 对比是首要判读工具**：expected 高而 read=0 ⇒ 前缀内容没变、问题在网关侧（节点亲和/TTL/端点行为）；expected 本身下降 ⇒ 前缀内容漂移，去查 section diff。
-- 单次 0% 的四大可解释原因：① 重启/空闲 >5 分钟的冷启动；② 工具集激活跳变（tools 数组变化击穿前缀）；③ 折叠/评审等辅助调用；④ **节点亲和失配**（kimi coding 等网关：缓存节点本地 + TCP 连接亲和，并发迫使新连接 = 冷节点全量 miss——已由 `_CacheAffinityHTTPHandler` 小连接池收敛，`anthropic_cache_pool_size` 配置池大小，默认 4；仍出现成簇 0% 且排除①②③时怀疑此项）。稳态主对话应 90%+。
-- **每个新回复第 1 轮恒定低位平台（轮 2 起恢复）= 历史前缀在固定位置断裂**：查快照 section diff 从上往下定位首个变更层。已根治的两类：召回内容混入 context 层（永久块与召回合并成一条被 startswith 提升——必须分消息返回）；**折叠死态**（调度判定误用截断后行数，积压超宽限即永不调度 → 窗口逐条滑动 → conversation 层每回复都变；判读特征：`conversation_summary` 表 folded_count 长期停滞 + dropped_count 不增 + 无任何折叠日志）。
-- **任务/reflect 调用首轮 ~66% 是结构下限的判读**：任务每轮都写便签/文件使其漂移，环境注入块随任务上下文携带时首轮只能命中 tools+stable 共享头。已由 `task_lean_context`（默认开）根治：任务上下文精简为人设+工具+永久记忆+任务指令。快照/记录带 `kind`（reply/reflect），历史列表以 kind 徽标区分主对话与任务调用，任务行的低命中不再误读为主对话故障。
-- **kimi coding 端点特性**（实测）：仅流式请求有缓存读写（非流式 usage 恒 read=0/creation=0，主对话全走流式不受影响，流式失败降级非流式的罕见路径会丢缓存）；缓存按 TCP 连接亲和。
-
-**供应商缓存字段**（`agent/llm/types.py` 的 `_CACHE_*_PATHS` 注册表，新增供应商只登记字段路径）：
-- Anthropic：`cache_read_input_tokens` / `cache_creation_input_tokens`（需断点，发送边界 `decorate_messages` 注入 cache_control）。
-- OpenAI 系：`prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens`。
-- DeepSeek：`prompt_cache_hit_tokens`（磁盘缓存自动生效）。**litellm 流式 chunk 转换会丢弃供应商扩展 usage 字段**（SDK 层完好，1.95/1.96 均丢），由 `response_parsing.install_usage_tap` 旁路（包装 `completion_stream` 从原始 chunk 挖字段汇合）恢复可观测性。
-- **可观测性是动态判定**（`UsageInfo.cache_observable` = 原始 usage 是否携带缓存字段，存在性与值无关）：字段在值为 0 = 真实未命中（显示 0%）；字段缺失 = 端点不回报（显示"—"，不计入均值）。不要再按供应商名静态登记。
-
-**架构不变量**（改动时勿破坏）：上下文按变动率排序组装（`agent/mind/context_pipeline.py` 的 `@context_block` 声明），stable→summary→conversation→context(便签)→动态区→exec_context；tools 数组是 prompt 最大头且需跨会话字节稳定——三层保障：确定性双桶排序（`tool_order_deterministic`，作用域工具沉尾，跨 scope 共享头部）→ 进程内粘性（`tool_dynamic_sticky`）→ **跨回复追加式冻结**（`tool_order_frozen`，ToolAssembly 持有冻结名单：新工具只追加尾部、热召回换血/来源成员变化不剔除，数组只增不改）；**工具可见性与权限分离**（reflect/受限角色不从数组裁剪 schema——裁剪会在 tools 前缀早期位置断裂跨模式共享缓存——禁用工具由 think_loop `blocked_tools` 执行侧拦截返回合成错误）；stable 层不得嵌入动态状态（默认模型标记、视觉文案已移出）；**context 层（便签/文件索引/纯永久记忆块）放尾部动态区最前，不得移回前缀锚点位**——心跳任务/技能评审/记忆写入都会改便签，在前缀时每条漂移作废其后 20-40K 历史缓存（空闲后首轮跌到稳定层量级 ~30% 的判读特征）；召回/检索结果每条消息都变，必须与永久块分消息返回（memory_retriever._format_unified_results），recollection 的 startswith 提升只捕获纯永久块，召回留在尾部动态区。
-
-**Anthropic 断点预算**（每请求 ≤4，设施集中在 `agent/llm/prompt_cache.py`，借鉴 Hermes prompt_caching.py）：**唯一装饰点是发送边界的 `decorate_messages`**（llm_invoker 在 normalize 前、`_layer` 标签尚存时调用），按声明式锚点表放置：stable 层末 + 对话历史末（无历史回退摘要块）+ 链尾（无 `_layer` 的末消息，天然随工具链增长前移）；便签层在尾部动态区不打锚点（漂移内容占断点既浪费预算又固化易变字节）；管线/think_loop/内容构建侧只打 `_layer` 标签，**谁都不写 cache_control**。wire `tools[-1]` 断点是传输层权威（llm_client 按消息侧计数门控补位，满 4 让位）。装饰全部 copy-on-write，共享上下文字典永不被改写。TTL 由 `prompt_cache_anthropic_ttl`（5m/1h）驱动；`prompt_cache_tools_breakpoint` 控制 tools 断点。
-
-**跨供应商回退**：cache_control 是 Anthropic 专属字段。`chat_with_fallback` 回退到非 Anthropic 候选时经 `strip_cache_control_copy` 发剥离副本（原列表与 think_loop 共享，禁止原地剥离）；回退到 Anthropic 候选则原样保留。1h TTL 时 llm_client 自动携带 `extended-cache-ttl` beta 头（官方端点缺头 400）。
-
-**压缩摘要前缀复用**（`context_compressor._summarize_with_prefix`，对齐 dsh compaction-basic/summarizer 的 COMPACTION_INSTRUCTION 设计）：上下文压缩的摘要调用不再发独立的文本渲染请求（与主前缀零共享、全价计费），而是把 `head_system + head + middle`（= `base_messages + tool_chain` 截去保尾段的**字节级前缀**，亦即上一次真实请求的前缀）原样作为消息前缀，摘要指令作为末条 user 消息追加，经 `_invoke_llm_unified`（`purpose="compress"` 分桶、`tool_choice="none"` 禁止工具调用）发出——辅助调用成为上一次请求的前缀扩展，命中 KV 缓存。**tools 数组随前缀传入**（`round_helpers._compress_context` 透传 `ctx.active_tools`，缺它前缀从第 0 字节就不匹配）。`_extract_previous_summary`/`_extract_user_messages` 只做视图过滤不改前缀字节，故前缀在 extraction 前捕获即正确。失败逐级回退：前缀路径 → 文本渲染路径（`summarize_text`）→ 确定性摘要。配置 `compression_prefix_reuse`（默认 True）可整体回退旧行为。注意：conversation_fold 的折叠摘要处理窗口外旧消息（不在当前请求前缀内），**不复用前缀**，仍走 `summarize_text`。
-
-**缓存命中 e2e 回归**（`tests/integration/test_llm_cache_hit_e2e.py`，env-gated 默认 skip）：`LLM_CACHE_E2E=1` + `ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY` 时，同一前缀连续两次 `chat_stream`（max_tokens=1），断言第二次 `cache_read_input_tokens > 0`——把"前缀字节稳定性"的最终证明锁进回归门（对齐 dsh request-cache.e2e.ts）。`cache_observable=False` 的端点自动 skip（不误报）。
+> **完整手册**（诊断决策树、PrefixGuard、断点预算、压缩前缀复用、e2e 回归、供应商字段）见 [`docs/cache-troubleshooting.md`](docs/cache-troubleshooting.md)。
 
 **记忆系统红线清单**（改动记忆/召回/画像注入时逐条自查；前四条有不变量测试锁定，见 `tests/unit/agent/mind/test_cache_layer_invariants.py`）：
 1. **vol ≤ 30 禁入**：记忆召回/画像/关系/技能/状态/短期记忆内容块的 volatility 必须 > VOL_HISTORY(30)（stable/summary/conversation 是缓存前缀，一个字节变化即断裂）。新增 `@context_block` 时先想"这块多久变一次"。
@@ -440,6 +434,10 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
 
 **工具开发**：返回 `str`（JSON）、完整类型注解、Google docstring、内部捕获异常；错误返回统一用 `core.tool_errors`（entities 经 `_sdk` 导入 `tool_error` / `error_from_exception` / `ErrorCause`），禁止裸 `{"error": str(e)}`
 
+**系统注入消息必须带 `_source` 来源标记**：think_loop / round_helpers / context_compressor 向消息链注入的 system 元消息（压缩反馈、rehydration、超时恢复、长度恢复、后台任务、实体推送等）须附 `"_source": {"origin": "<词汇>"}`，发送前由 `normalize_for_send` 与 `_layer` 一并剥离（LLM 不可见，供快照归因/审计）。已用词汇：`compression` / `rehydration` / `timeout_recovery` / `length_recovery` / `background_task` / `push`；新增注入点复用或扩充词汇表，勿省略标记。注意 `_source` 不进 DB（对话历史只存 role/content），仅作用于内存消息链。
+
+**Model Experience 三行声明（新功能必答）**：任何影响模型输入/输出的新功能，须在其模块 docstring 或本表登记三件事——① 模型看到什么（注入了什么内容、走哪个通道）② token 影响（增量还是节省、量级）③ 缓存影响（是否触碰前缀层；volatile/tool_chain 尾部动态区则注明不破前缀）。对齐 dsh 每 README 必答 "Model Experience / Token effect / KV Cache effect" 的纪律——缓存是本项目一等指标，新功能不声明即视为未评估。
+
 **频道开发**：继承 BaseChannel、6 个必需接口（channel_id / display_name / capabilities / start / stop / send_text）
 
 **前端**：页面超过 300 行拆为子面板目录、统一用 TabBar、i18n 覆盖所有文本、`Record<string, unknown>` 替换为 `lib/types.ts` 接口
@@ -454,16 +452,20 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
 
 ---
 
-## 三、与原 Cursor 规则的差异说明
+## 已否决的设计替代方案（防止重新发明轮子）
 
-- 原 `.cursor/rules/*.mdc` 文件使用 Cursor 专属 frontmatter（`globs`、`alwaysApply`），这些字段在 ZCode 中无对应。
-- 本 AGENTS.md 默认就是「全量注入」（等价于 `alwaysApply: true` 的语义），不存在按文件路径触发的「globs」机制。
-- 若后续需要按需触发的细分规则（例如「只在改前端时调用」），可拆到 `.zcode/skills/<name>/SKILL.md`，通过 frontmatter `description` 中的关键词由模型自由触发。
-- `.cursor/rules/*.mdc` 原文件保留，便于 Cursor 客户端继续使用，**两者不冲突**。
+记录对比 deepseek-harness 等成熟项目时**评估过但否决**的方案，以及重审条件。决策依据详见 git 历史与 `docs/`。
+
+1. **事件溯源架构（Model-visible ⟺ Logged，append-only 事件日志 + 纯函数投影）**：dsh 用它让"前缀缓存稳定"成为涌现性质、resume/fork/replay 免费。否决理由：AnelfAgent 的心跳/便签/多通道/记忆召回带来高动态性，全量事件溯源成本远超收益。已吸收其结论（崩溃尾部修复 `crash_recovery.py`、PrefixGuard 观测），不搬实现。**重审条件**：若未来收敛为单会话低动态模型。
+2. **exec_context 跨轮去重**：dsh runtime-context"值不变不写入"。否决理由：AnelfAgent 的 exec_context 含 `elapsed:.2f` 时间戳与轮次号，每轮字节必变，去重无命中空间。
+3. **Code Mode（run_code 折叠工具目录为生成 SDK）**：dsh 用它压缩模型侧 tool-catalog 体积。否决理由：IM 场景工具调用短平快，引入新执行面（代码生成 + 子 dispatch）复杂度不划算。
+4. **os 级沙箱（sandbox-exec/bwrap/landlock/Windows ACL）**：否决理由：个人助理跑在自有机器、为单一用户服务，`shell_guard` 应用层预检 + 统一审批规则引擎（allow/ask/deny + 参数 glob）是更匹配的信任模型。
+5. **数字错误 code 体系**：dsh `HarnessError.code` 数字契约。否决理由：`ErrorCause` 字符串枚举（`core/tool_errors.py`）+ edit_file 的 context 数字 code 已够用，双体系并行是负担；已对齐其"按 cause 路由、不解析 message"的核心纪律（工具超时/异常统一走 `tool_error`/`error_from_exception`）。
+6. **write_file/edit_file 自动建基线（refresh 放宽 read-before-write）**：曾拟在缓存缺失时自动读入文件解除"尚未读取"拒绝。否决理由：会架空 read-before-write 防盲写语义（已有测试 `test_existing_file_requires_read` 锁定严格门）；最终仅 append_file 与 write_file 保持严格门，`file_state` 不提供自动放宽。
 
 ---
 
-## 四、项目级 skill 扩展点
+## 三、项目级 skill 扩展点
 
 未来如需新增项目级 skill，放置位置（按优先级从高到低）：
 

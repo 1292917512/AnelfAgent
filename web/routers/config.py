@@ -217,7 +217,11 @@ class HeartbeatConfigUpdate(BaseModel):
 @router.put("/heartbeat")
 async def save_heartbeat_config(data: HeartbeatConfigUpdate) -> Dict[str, str]:
     """保存心跳配置并热重载。"""
-    from agent.heartbeat.config import TaskSchedule, get_heartbeat_config
+    from agent.heartbeat.config import (
+        TaskSchedule,
+        get_heartbeat_config,
+        validate_schedules,
+    )
 
     cfg = get_heartbeat_config()
     if data.enabled is not None:
@@ -229,7 +233,10 @@ async def save_heartbeat_config(data: HeartbeatConfigUpdate) -> Dict[str, str]:
     if data.min_conversations_for_analysis is not None:
         cfg.min_conversations_for_analysis = data.min_conversations_for_analysis
     if data.task_schedules is not None:
-        cfg.task_schedules = [TaskSchedule.from_dict(s) for s in data.task_schedules]
+        schedules = [TaskSchedule.from_dict(s) for s in data.task_schedules]
+        if err := validate_schedules(schedules):
+            raise HTTPException(400, err)
+        cfg.task_schedules = schedules
     cfg.save()
 
     from services._runtime import get_runtime

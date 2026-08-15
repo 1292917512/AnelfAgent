@@ -110,6 +110,9 @@ class TaskDefinition(BaseModel):
     """任务级思考等级覆盖（low/medium/high/max），为空时使用全局设置。"""
     folder: str = ""
     """任务所在文件夹（config/tasks 下的相对路径），由文件位置决定。"""
+    handoff: bool = False
+    """长任务结构化交接：运行结束时从输出提取 "# HANDOFF" 块存为下次运行的
+    上次交接（对齐 dsh ralph 的有界 handoff——每轮全新上下文 + 确定性接力）。"""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> TaskDefinition:
@@ -135,6 +138,7 @@ class TaskDefinition(BaseModel):
             model_id=data.get("model_id") or None,
             reasoning_effort=_normalize_reasoning_effort(data.get("reasoning_effort")),
             folder=str(data.get("folder", "") or "").strip("/"),
+            handoff=_to_bool(data.get("handoff", False)),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -155,6 +159,8 @@ class TaskDefinition(BaseModel):
         }
         if self.tool_tags:
             result["tool_tags"] = self.tool_tags
+        if self.handoff:
+            result["handoff"] = True
         if self.model_id:
             result["model_id"] = self.model_id
         normalized_effort = _normalize_reasoning_effort(self.reasoning_effort)

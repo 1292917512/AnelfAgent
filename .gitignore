@@ -22,7 +22,6 @@ junit*.xml
 .settings/
 .springBeans
 .metadata/
-.cursor/plans/
 .zcode/plans/
 .zcode/
 .agents/
@@ -123,6 +122,10 @@ web/frontend/node_modules/
 
 # === Workspace & uploads ===
 /workspace/
+/uploads/
+
+# === Personal character assets (research notes / output artifacts) ===
+config/mengli_aigc/
 
 # === Misc ===
 /.other

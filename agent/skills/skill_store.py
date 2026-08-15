@@ -62,6 +62,8 @@ class Skill(BaseModel):
     patch_count: int = 0
     state: SkillState = SkillState.ACTIVE
     pinned: bool = False
+    # 用户手势可调用（/name 确定性触发；False = 仅语义/关键词匹配可见）
+    user_invocable: bool = True
     created_at: float = Field(default_factory=time.time)
     last_activity_at: float = Field(default_factory=time.time)
 
@@ -78,7 +80,7 @@ _FRONTMATTER_RE = re.compile(r"\A\s*---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 
 _META_FIELDS = (
     "name", "description", "trigger_patterns", "created_by",
-    "use_count", "patch_count", "state", "pinned",
+    "use_count", "patch_count", "state", "pinned", "user_invocable",
     "created_at", "last_activity_at",
 )
 
@@ -137,6 +139,7 @@ def render_skill_md(skill: Skill) -> str:
         "patch_count": skill.patch_count,
         "state": skill.state.value,
         "pinned": skill.pinned,
+        "user_invocable": skill.user_invocable,
         "created_at": skill.created_at,
         "last_activity_at": skill.last_activity_at,
     }

@@ -59,7 +59,7 @@ export function StatusPanel() {
   return (
     <div className="space-y-4">
       {/* 顶部状态指标 */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <div className="flex items-center gap-3 p-3 rounded-md border border-border bg-card">
           <StatusDot status={isRunning && hbStatus?.enabled ? "ok" : "offline"} />
           <div>
@@ -80,6 +80,15 @@ export function StatusPanel() {
         <div className="p-3 rounded-md border border-border bg-card">
           <p className="text-[10px] text-muted uppercase tracking-wide">{t("status.scheduledTasks")}</p>
           <p className="text-sm font-semibold text-heading">{schedules.length}</p>
+        </div>
+        <div className="p-3 rounded-md border border-border bg-card">
+          <p className="text-[10px] text-muted uppercase tracking-wide">
+            {t("status.lastActivity")}
+            {hbStatus?.reflection_pending ? ` · ${t("status.reflectionPending")}` : ""}
+          </p>
+          <p className="text-sm font-semibold text-heading">
+            {hbStatus?.last_activity_sec != null ? formatTime(hbStatus.last_activity_sec) : "—"}
+          </p>
         </div>
         {agentStatus?.uptime != null && (
           <div className="p-3 rounded-md border border-border bg-card">
@@ -126,13 +135,14 @@ export function StatusPanel() {
                         "text-[10px] px-1.5 py-0.5 rounded-full",
                         s.mode === "heartbeat" ? "bg-blue-500/10 text-blue-500" :
                         s.mode === "scheduled" ? "bg-amber-500/10 text-amber-500" :
+                        s.mode === "idle" ? "bg-emerald-500/10 text-emerald-500" :
                         "bg-gray-500/10 text-gray-400",
                       )}>
                         {t(`schedule.mode${s.mode.charAt(0).toUpperCase()}${s.mode.slice(1)}`)}
                       </span>
                     </div>
 
-                    {s.mode === "heartbeat" && (
+                    {(s.mode === "heartbeat" || s.mode === "idle") && (
                       <div className="flex items-center gap-2 mt-1">
                         <div className="flex-1 h-1.5 rounded-full bg-[var(--border)] overflow-hidden max-w-[200px]">
                           <div

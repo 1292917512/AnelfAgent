@@ -25,7 +25,7 @@ import { MODEL_TYPE_OPTIONS } from "./shared";
 
 type JsonField = "request_params" | "extra_body" | "extra_headers";
 
-/** FNV-1a 配置指纹：判断测试结果是否因配置变更而过期（与 cursor-byok 前后端哈希同思路） */
+/** FNV-1a 配置指纹：判断测试结果是否因配置变更而过期 */
 function fnv1a(str: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < str.length; i++) {
@@ -120,7 +120,7 @@ function ModelCombobox({
   );
 }
 
-/** 可勾选启用的 JSON 编辑区块（参考 cursor-byok 的额外参数/自定义请求头设计） */
+/** 可勾选启用的 JSON 编辑区块 */
 function JsonSection({
   label,
   hint,
@@ -172,7 +172,7 @@ function JsonSection({
 }
 
 /**
- * 模型编辑对话框（交互对齐 cursor-byok ModelEditor）：
+ * 模型编辑对话框：
  * 模型标识 Combobox + 获取模型、思考强度独立下拉、接口端点选择、
  * 额外参数/请求头勾选启用、保存并测试（真实链路）+ 配置变更过期检测。
  */

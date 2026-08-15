@@ -191,6 +191,12 @@ def ensure_tool_result_pairing(messages: List[Dict]) -> List[Dict]:
     return repaired
 
 
+# 发送前剥离的内部元数据键（LLM 不可见）：
+# - _layer：上下文分层标签（快照分类 / 缓存断点锚点用）
+# - _source：系统注入消息的结构化来源标记（归因 / 审计用，对齐 dsh MessageSource）
+_STRIP_KEYS = ("_layer", "_source")
+
+
 def normalize_for_send(messages: List[Dict]) -> List[Dict]:
     """发送边界统一规整：配对修复 + 角色归一 + 尾部 prefill 修复 + 空 content 修复。
 
@@ -201,7 +207,8 @@ def normalize_for_send(messages: List[Dict]) -> List[Dict]:
     # 注意必须非破坏式：llm_messages 与 ctx.base_messages 共享 dict 对象，
     # 原地 pop 会导致首轮发送后 base_messages 永久丢失分层标签（快照分类失真）
     stripped = [
-        {k: v for k, v in m.items() if k != "_layer"} if "_layer" in m else m
+        {k: v for k, v in m.items() if k not in _STRIP_KEYS}
+        if any(k in m for k in _STRIP_KEYS) else m
         for m in messages
     ]
     return fix_empty_tool_call_content(

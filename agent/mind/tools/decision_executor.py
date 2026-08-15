@@ -60,6 +60,17 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
         return
     mind._active_scopes.add(scope)
     mind._reply_idle_event.clear()
+    # 崩溃尾部修复：登记进行中回复检查点（正常/协作中断结束在 finally 清除；
+    # 进程崩溃/SIGKILL 残留的行由启动 recover_interrupted 扫描并注入中断元消息）
+    _checkpoint_registered = False
+    try:
+        await mind.conversation_data.router.sqlite.record_reply_checkpoint(
+            scope, adapter_key=getattr(anything, "adapter_key", "") or "",
+            phase="reply",
+        )
+        _checkpoint_registered = True
+    except Exception as exc:
+        log(f"回复检查点登记失败（不影响回复）: {exc}", "DEBUG", tag="思维")
     try:
         adapter_key = getattr(anything, "adapter_key", "") or ""
         mind._set_phase(MindPhase.RECALLING)
@@ -81,18 +92,40 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
         await mind.reply(anything, pending_images, adapter_key=adapter_key)
     finally:
         mind._active_scopes.discard(scope)
+        if _checkpoint_registered:
+            # 清除检查点（正常结束/协作中断/异常都算收束）。关停取消场景
+            # 若清除未完成，残留行下次启动注入"被中断"提示——语义上同样成立
+            try:
+                await mind.conversation_data.router.sqlite.clear_reply_checkpoint(scope)
+            except Exception as exc:
+                log(f"回复检查点清除失败（已忽略）: {exc}", "DEBUG", tag="思维")
         if not mind._active_scopes:
             mind._reply_idle_event.set()
             mind._set_phase(MindPhase.IDLE)
 
 
 async def execute_reflect(mind: Mind, decision: Optional[Decision] = None, *, skip_interval: bool = False) -> int:
-    """执行反思决策：通过心跳引擎运行自我反思任务。"""
+    """执行反思决策：登记待执行标记，由 idle 调度在空闲心跳消费。
+
+    配置了 idle 调度时不再立即执行（反思不打断对话节奏）：标记挂在心跳引擎，
+    下个空闲 tick（活动刷新计数归零、无其他到期任务）时运行 self_reflection，
+    反思原因经 executor extra_note 注入任务指令尾部。
+    未配置 idle 调度时回退为立即执行（兼容旧部署）。
+    """
+    reason = decision.reason if decision else ""
+    engine = mind.heartbeat_engine
+
+    if engine.has_idle_schedule():
+        engine.mark_reflection_pending(reason)
+        _hb_append(f"反思已登记，待空闲心跳执行: {reason[:60] or '元决策'}")
+        log(f"反思延迟到空闲窗口（原因: {reason[:60]}）", tag="思维")
+        return 0
+
     mind._reflecting = True
     mind._set_phase(MindPhase.INTROSPECTING)
 
     try:
-        result = await mind.heartbeat_engine.run_task("self_reflection")
+        result = await engine.run_task("self_reflection")
         count = 1 if result else 0
         _hb_append(f"反思完成: {'有产出' if result else '无产出'}")
         return count

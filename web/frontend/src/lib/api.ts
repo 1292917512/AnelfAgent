@@ -46,7 +46,6 @@ import type {
   DbSchemaResult,
   DbTableInfo,
   DbTargetCheck,
-  DelegationTiers,
   DevopsActionResult,
   DevopsBuildState,
   EntityDetail,
@@ -55,6 +54,7 @@ import type {
   GoalStep,
   HeartbeatConfig,
   HeartbeatStatus,
+  SubAgentProfile,
   LogEntry,
   LogStats,
   MediaConfig,
@@ -324,9 +324,17 @@ export const modelsApi = {
   costMapInfo: () => api.get<{ model_count: number }>("/models/cost-map/info"),
   updateCostMap: (proxyUrl = "") =>
     api.post<{ status: string; model_count: number }>("/models/cost-map/update", { proxy_url: proxyUrl }),
-  delegationTiers: () => api.get<{ tiers: DelegationTiers }>("/models/delegation-tiers"),
-  setDelegationTier: (tier: number, modelIds: string[]) =>
-    api.put(`/models/delegation-tiers/${tier}`, { model_ids: modelIds }),
+};
+
+// 子代理统一注册表（内置难度档 + 自定义档案）
+export const subAgentsApi = {
+  list: () => api.get<{ sub_agents: SubAgentProfile[] }>("/models/sub-agents"),
+  create: (data: { name: string; model_id: string; description?: string }) =>
+    api.post<{ status: string; message: string }>("/models/sub-agents", data),
+  update: (name: string, data: { model_id?: string; models?: string[]; description?: string }) =>
+    api.put(`/models/sub-agents/${encodeURIComponent(name)}`, data),
+  remove: (name: string) =>
+    api.delete(`/models/sub-agents/${encodeURIComponent(name)}`),
 };
 
 // Tools

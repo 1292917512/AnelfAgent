@@ -319,8 +319,8 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     except Exception as e:
         return error_from_exception(e, action="解析文件路径")
 
-    def _err(message: str, code: int) -> str:
-        return tool_error(message, code=code)
+    def _err(message: str, code: int, cause: Optional[ErrorCause] = None) -> str:
+        return tool_error(message, code=code, cause=cause)
 
     if old_string == new_string:
         return _err("未做任何修改：old_string 与 new_string 完全相同。", 1)
@@ -356,7 +356,8 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
 
     ok, message = file_state.check_writable(fp)
     if not ok:
-        return _err(message, 6)
+        # 与 write_file 对齐：补结构化 cause（守卫/重试按 cause 路由）
+        return _err(message, 6, cause=ErrorCause.STATE)
 
     # new_string 逐行去尾空格（markdown 的尾空格是硬换行语法，跳过）
     if not file_path.lower().endswith((".md", ".mdx")):
@@ -464,6 +465,13 @@ def append_file(path: str, content: str) -> str:
     """
     try:
         fp = _safe_path(path)
+        # 追加同样会改写文件：与 write_file/edit_file 一致接入严格 read-before-write 门
+        # （不自动建基线——未读取过的已有文件须先 read_file，防止盲追加重复/错位内容；
+        # 已读取后外部修改仍被 check_writable 的 mtime+内容比对捕获）
+        if os.path.exists(fp):
+            ok, message = file_state.check_writable(fp)
+            if not ok:
+                return tool_error(message, cause=ErrorCause.STATE, retryable=False, path=fp)
         os.makedirs(os.path.dirname(fp) or ".", exist_ok=True)
         with open(fp, "a", encoding="utf-8") as f:
             f.write(content)

@@ -2,7 +2,7 @@
   "tabs": {
     "config": "Model Config",
     "priorities": "Model Management",
-    "delegation": "Sub-agent Models"
+    "subagents": "Sub-agents"
   },
   "disabled": "Disabled",
   "enableHint": "Enabled (disabled models are excluded from task execution)",
@@ -133,20 +133,39 @@
     "proxy_url": "Proxy URL",
     "media_protocol": "Image Gen Protocol"
   },
-  "delegation": {
-    "desc": "Configure cost-effective model pools for sub-agents: manually add configured models to each tier; pool order is priority. At delegation time the AI only labels task difficulty and the system maps it to the matching tier.",
-    "fallbackHint": "When a tier is empty, fully disabled, or difficulty is not labelled, sub-agents use the default chat model.",
+  "subagents": {
+    "desc": "Unified sub-agent profiles: each profile binds an ordered model pool; delegate_task with agent_name uses that profile (pool order is priority, falls through on unavailable models).",
+    "usageHint": "Built-in difficulty tiers easy/medium/hard and custom profiles share one registry: difficulty 1/2/3 is sugar for the built-ins, agent_name=easy also works. Changes take effect immediately.",
+    "builtinTitle": "Built-in Difficulty Tiers",
+    "builtinHint": "delegate_task difficulty 1/2/3 maps to easy/medium/hard; an exhausted tier falls down to the lower tier.",
+    "builtinBadge": "Built-in",
     "tier1": "Tier 1 · Simple",
     "tier1Hint": "Mechanical tasks like retrieval/formatting (cheapest)",
     "tier2": "Tier 2 · Medium",
     "tier2Hint": "Regular analysis/execution",
     "tier3": "Tier 3 · Hard",
     "tier3Hint": "Complex reasoning/multi-step planning (strongest)",
-    "tierEmpty": "No models in this tier",
-    "selectModel": "Select model",
-    "addModel": "Add to tier",
+    "tierCustom": "Tier",
+    "tierCustomHint": "",
+    "poolEmpty": "No models in this profile (difficulty routing falls to lower tiers or the default model)",
+    "fallbackNext": "Disabled·fallback",
+    "addToPool": "Add to pool",
     "remove": "Remove",
-    "model": "Model"
+    "customTitle": "Custom Profiles",
+    "customHint": "Create \"name → model\" bindings for common work types (e.g. researcher); use via delegate_task agent_name.",
+    "createTitle": "Create profile",
+    "namePlaceholder": "Name, e.g. researcher",
+    "nameHint": "Starts with a letter; letters/digits/underscore/hyphen only, ≤32 chars; easy/medium/hard are reserved for built-ins",
+    "selectModel": "Select model",
+    "descPlaceholder": "Purpose description (optional, e.g. research specialist)",
+    "create": "Create",
+    "edit": "Edit",
+    "save": "Save",
+    "delete": "Delete",
+    "confirmDelete": "Confirm",
+    "modelMissing": "Model missing",
+    "unavailable": "No available model",
+    "empty": "No custom profiles yet; create one above"
   },
   "modelTypeLabels": {
     "chat": "Chat",

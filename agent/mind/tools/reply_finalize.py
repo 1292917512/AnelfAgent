@@ -288,8 +288,31 @@ async def complete_reply(
     mind._set_phase(MindPhase.REPLYING)
     content = (content or "").strip()
 
+    # 会话用量账本：REPLY 完成 turns+1 并把该会话累计增量落盘
+    # （fail-open：统计失败绝不影响回复完成路径）
+    _scope = getattr(anything, "entity_scope", "") if anything is not None else ""
+    if _scope:
+        try:
+            from agent.mind.scope_usage import scope_usage_stats
+            scope_usage_stats.turn(_scope)
+            await scope_usage_stats.flush(_scope)
+        except Exception:
+            pass  # 统计失败不影响主流程
+
+    # 用户 hook（reply_end）：fire 型事件（记录/通知类脚本挂点）。空配置零开销
+    from agent.hooks import hooks_active, run_event_hooks
+    if hooks_active("reply_end"):
+        try:
+            await run_event_hooks(
+                "reply_end", scope=_scope,
+                iterations=iterations, error=error,
+                summary=execution_summary[:400],
+            )
+        except Exception:
+            pass  # hook 失败不影响回复完成
+
     await event_bus.emit(EVENT_AFTER_REPLY, {
-        "scope": getattr(anything, "entity_scope", "") if anything is not None else "",
+        "scope": _scope,
         "content": content[:100] if content else "",
         "iterations": iterations,
         "error": error,

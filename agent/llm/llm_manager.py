@@ -11,9 +11,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -82,6 +83,48 @@ class ProviderConfig:
         )
 
 
+@dataclass
+class SubAgentProfile:
+    """子代理档案：名称 → 有序模型候选池。
+
+    统一注册表：内置难度档（easy/medium/hard，tier 1-3，delegate_task 的
+    difficulty 参数是其语法糖）与自定义档案（tier 0）同构存储、同套 CRUD。
+    解析时按池内顺序取首个可用模型；内置难度档保留降挡（hard→medium→easy）。
+    """
+
+    name: str
+    models: List[str] = field(default_factory=list)
+    description: str = ""
+    tier: int = 0
+    """难度挡位：0 = 自定义档案；1/2/3 = 内置难度档（受保护，不可删除/改名）。"""
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "models": list(self.models),
+            "description": self.description,
+        }
+        if self.tier:
+            d["tier"] = self.tier
+        return d
+
+
+# 内置难度档：difficulty 参数 → 档案名的唯一映射（语义糖）
+_DIFFICULTY_AGENTS: Dict[int, str] = {1: "easy", 2: "medium", 3: "hard"}
+_DIFFICULTY_DESCRIPTIONS: Dict[int, str] = {
+    1: "简单任务（检索/格式化等机械工作，最经济）",
+    2: "中等任务（常规分析/执行）",
+    3: "困难任务（复杂推理/多步规划，最强）",
+}
+_BUILTIN_AGENT_NAMES = frozenset(_DIFFICULTY_AGENTS.values())
+
+# 命名子代理的合法名称：英文字母开头，字母/数字/下划线/连字符，≤32 字符
+_SUB_AGENT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
+
+
+def _valid_sub_agent_name(name: str) -> bool:
+    return bool(_SUB_AGENT_NAME_RE.match(name or ""))
+
+
 class LLMManager(BaseEntity):
     """管理多个供应商和 LLMClient 实例。
 
@@ -102,8 +145,9 @@ class LLMManager(BaseEntity):
         self._load_error: str = ""
         # 无可用模型时的共享占位客户端（避免每次 get_default 重建实体）
         self._empty_client: Optional[LLMClient] = None
-        # 子代理模型分级：难度挡位(1 简单/2 中等/3 困难) → 模型 ID 优先级列表
-        self._delegation_tiers: Dict[int, List[str]] = {1: [], 2: [], 3: []}
+        # 子代理统一注册表：内置难度档 + 自定义档案（_apply_config 填充；
+        # 空配置首存时 save_config 也依赖此初始值）
+        self._sub_agents: Dict[str, SubAgentProfile] = {}
         self._load_config()
         super().__init__()
 
@@ -114,6 +158,8 @@ class LLMManager(BaseEntity):
     def _load_config(self) -> None:
         if not self._config_path.exists():
             info("LLM 客户端配置不存在，创建空配置", tag="模型")
+            # 空配置也要经 _apply_config：合成内置难度档等注册表初始结构
+            self._apply_config({})
             self.save_config()
             return
         try:
@@ -216,17 +262,57 @@ class LLMManager(BaseEntity):
             k: [mid for mid in v if mid in self._clients]
             for k, v in data.get("type_priorities", {}).items()
         }
-        self._delegation_tiers = {1: [], 2: [], 3: []}
+        # 子代理统一注册表：内置难度档（easy/medium/hard）始终在前且必然存在；
+        # 自定义档案按文件顺序追加。加载容忍引用缺失模型（保留条目防数据丢失，
+        # 缺失/停用由 resolve 池走查回退，list 输出标记）
+        self._sub_agents = {
+            name: SubAgentProfile(
+                name=name, tier=tier,
+                description=_DIFFICULTY_DESCRIPTIONS[tier],
+            )
+            for tier, name in sorted(_DIFFICULTY_AGENTS.items())
+        }
+        seen_builtin: set[str] = set()
+        for raw_name, item in (data.get("sub_agents") or {}).items():
+            if not isinstance(item, dict):
+                continue
+            name = str(raw_name)
+            if name in _BUILTIN_AGENT_NAMES:
+                # 内置难度档：新格式（models 列表），描述缺省保留默认
+                profile = self._sub_agents[name]
+                profile.models = self._clean_pool(item.get("models"))
+                if item.get("description"):
+                    profile.description = str(item["description"])
+                seen_builtin.add(name)
+                continue
+            if not _valid_sub_agent_name(name):
+                warning(f"子代理档案名称非法，已跳过: {name!r}", tag="模型")
+                continue
+            models = self._clean_pool(item.get("models"))
+            if not models:
+                # 兼容旧版单模型字段 model_id
+                legacy_single = str(item.get("model_id", "") or "")
+                models = [legacy_single] if legacy_single else []
+            if not models:
+                continue
+            self._sub_agents[name] = SubAgentProfile(
+                name=name, models=models,
+                description=str(item.get("description", "") or ""),
+            )
+        # legacy delegation_tiers 迁移：仅填充未以新格式出现的内置难度档
+        # （首次加载后 save_config 写统一格式，legacy 键自然消失）
         for key, mids in (data.get("delegation_tiers") or {}).items():
             try:
                 tier = int(key)
             except (TypeError, ValueError):
                 continue
-            if tier in self._delegation_tiers and isinstance(mids, list):
-                self._delegation_tiers[tier] = [
-                    mid for mid in mids
-                    if isinstance(mid, str) and mid in self._clients
-                ]
+            builtin_name = _DIFFICULTY_AGENTS.get(tier)
+            if builtin_name is None or builtin_name in seen_builtin or not isinstance(mids, list):
+                continue
+            self._sub_agents[builtin_name].models = [
+                mid for mid in mids
+                if isinstance(mid, str) and mid in self._clients
+            ]
         self._ensure_priorities_complete()
         self._register_unknown_models()
 
@@ -304,12 +390,12 @@ class LLMManager(BaseEntity):
                 "providers": providers_out,
                 "type_priorities": self._type_priorities,
                 "default_chat": self._default_chat,
-                # 仅写非空挡位，未配置时保持配置文件整洁
-                "delegation_tiers": {
-                    str(tier): mids
-                    for tier, mids in sorted(self._delegation_tiers.items())
-                    if mids
-                },
+            }
+            # 子代理统一注册表：内置难度档始终写出（空池也保留条目，注册表视图稳定），
+            # 自定义档案按需；legacy delegation_tiers 键不再写出（加载时自动迁移）
+            out["sub_agents"] = {
+                profile.name: profile.to_dict()
+                for profile in self._sub_agents.values()
             }
             out = self._restore_env_refs(out)
             # 原子写盘：临时文件 + os.replace，进程中断不会留下半截 JSON
@@ -1054,6 +1140,9 @@ class LLMManager(BaseEntity):
                     plist[i] = new_id
         if self._default_chat == old_id:
             self._default_chat = new_id
+        # 子代理档案候选池同步重映射（防止重命名打断绑定）
+        for profile in self._sub_agents.values():
+            profile.models = [new_id if mid == old_id else mid for mid in profile.models]
         self.save_config()
         return True
 
@@ -1113,7 +1202,7 @@ class LLMManager(BaseEntity):
         client: LLMClient,
         cost_cache: Dict[str, Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """模型详情条目（优先级列表 / 子代理分挡共享）。"""
+        """模型详情条目（优先级列表共享）。"""
         if mid not in cost_cache:
             cost_cache[mid] = self._query_model_cost(client)
         provider = self._providers.get(client.config.provider_id)
@@ -1215,58 +1304,170 @@ class LLMManager(BaseEntity):
         return result
 
     # ------------------------------------------------------------------
-    # 子代理模型分级
+    # 子代理统一注册表（内置难度档 + 自定义档案）
     # ------------------------------------------------------------------
 
-    def get_delegation_tiers(self) -> Dict[int, List[Dict[str, Any]]]:
-        """返回三挡子代理模型池详情（1 简单/2 中等/3 困难，按池内优先级）。"""
-        cost_cache: Dict[str, Dict[str, Any]] = {}
-        return {
-            tier: [
-                self._model_detail_item(mid, client, cost_cache)
-                for mid in mids
-                if (client := self._clients.get(mid)) is not None
-            ]
-            for tier, mids in sorted(self._delegation_tiers.items())
-        }
+    @staticmethod
+    def _clean_pool(raw: Any) -> List[str]:
+        """清洗模型池输入为去重字符串列表（不校验存在性，容忍悬空引用）。"""
+        if not isinstance(raw, list):
+            return []
+        pool: List[str] = []
+        for mid in raw:
+            mid = str(mid)
+            if mid and mid not in pool:
+                pool.append(mid)
+        return pool
 
-    def set_delegation_tier(self, tier: int, model_ids: List[str]) -> bool:
-        """设置某挡的完整模型池（校验挡位与模型合法性后持久化）。"""
-        if tier not in self._delegation_tiers:
-            warning(f"无效的子代理挡位: {tier}", tag="模型")
-            return False
-        valid: List[str] = []
-        for mid in model_ids:
-            client = self._clients.get(mid)
-            if client is None:
-                warning(f"子代理挡位 {tier} 忽略不存在的模型: {mid}", tag="模型")
-                continue
-            if "chat" not in client.config.model_types:
-                warning(f"子代理挡位 {tier} 忽略非 chat 模型: {mid}", tag="模型")
-                continue
-            if mid not in valid:
-                valid.append(mid)
-        self._delegation_tiers[tier] = valid
+    def _validate_sub_agent_model(self, model_id: str) -> Optional[str]:
+        """校验模型可用于子代理，返回错误描述或 None（须存在且为 chat 类型）。"""
+        client = self._clients.get(model_id)
+        if client is None:
+            return f"模型 '{model_id}' 不存在"
+        if "chat" not in client.config.model_types:
+            return f"模型 '{model_id}' 不是 chat 类型"
+        return None
+
+    def _validate_pool(self, models: List[str]) -> Optional[str]:
+        """校证候选池全部可用，返回首个错误描述或 None。"""
+        for mid in models:
+            if err := self._validate_sub_agent_model(mid):
+                return err
+        return None
+
+    def list_sub_agents(self) -> List[Dict[str, Any]]:
+        """返回全部子代理档案（内置难度档在前，含模型可用性标记）。"""
+        result: List[Dict[str, Any]] = []
+        for profile in self._sub_agents.values():
+            first_available = next(
+                (mid for mid in profile.models
+                 if (c := self._clients.get(mid)) is not None and c.config.enabled),
+                None,
+            )
+            result.append({
+                "name": profile.name,
+                "models": list(profile.models),
+                "description": profile.description,
+                "tier": profile.tier,
+                "builtin": profile.tier > 0,
+                "first_available": first_available,
+                "model_missing": any(mid not in self._clients for mid in profile.models),
+                "model_enabled": first_available is not None,
+            })
+        return result
+
+    def create_sub_agent(
+        self, name: str, model_id: str, description: str = "",
+    ) -> tuple[bool, str]:
+        """创建自定义子代理档案（校验名称唯一与模型合法性后持久化）。"""
+        name = (name or "").strip()
+        if name in _BUILTIN_AGENT_NAMES:
+            return False, (
+                f"'{name}' 是内置难度档名称（difficulty 参数的映射目标），"
+                "不可创建同名自定义档案；如需调整其模型池请用 update_sub_agent"
+            )
+        if not _valid_sub_agent_name(name):
+            return False, (
+                "名称需以英文字母开头，仅含字母/数字/下划线/连字符，长度 1-32"
+            )
+        if name in self._sub_agents:
+            return False, f"子代理档案 '{name}' 已存在"
+        if err := self._validate_sub_agent_model(model_id):
+            return False, err
+        self._sub_agents[name] = SubAgentProfile(
+            name=name, models=[model_id], description=description or "",
+        )
         self.save_config()
-        return True
+        info(f"子代理档案 '{name}' 已创建 (model={model_id})", tag="模型")
+        return True, f"子代理档案 '{name}' 已创建，绑定模型 {model_id}"
+
+    def update_sub_agent(
+        self,
+        name: str,
+        model_id: str = "",
+        models: Optional[List[str]] = None,
+        description: str = "",
+    ) -> tuple[bool, str]:
+        """更新子代理档案（内置难度档可改池/描述；空参数保持原值）。
+
+        models 显式列表整体替换候选池（内置难度档多模型、自定义档案
+        降级链均由此设置）；model_id 为单模型快捷写法（与 models 互斥，后者优先）。
+        """
+        profile = self._sub_agents.get((name or "").strip())
+        if profile is None:
+            return False, f"子代理档案 '{name}' 不存在"
+        next_pool: Optional[List[str]] = None
+        if models is not None:
+            next_pool = self._clean_pool(models)
+        elif model_id:
+            next_pool = [model_id]
+        if next_pool is not None:
+            if err := self._validate_pool(next_pool):
+                return False, err
+            profile.models = next_pool
+        if description:
+            profile.description = description
+        self.save_config()
+        return True, f"子代理档案 '{name}' 已更新"
+
+    def remove_sub_agent(self, name: str) -> tuple[bool, str]:
+        """删除自定义子代理档案（内置难度档受保护）。"""
+        name = (name or "").strip()
+        if name in _BUILTIN_AGENT_NAMES:
+            return False, (
+                f"'{name}' 是内置难度档，不可删除；"
+                "如需停用可清空其模型池（update_sub_agent(models=[])）"
+            )
+        removed = self._sub_agents.pop(name, None)
+        if removed is None:
+            return False, f"子代理档案 '{name}' 不存在"
+        self.save_config()
+        info(f"子代理档案 '{name}' 已删除", tag="模型")
+        return True, f"子代理档案 '{name}' 已删除"
+
+    def _first_enabled_in_pool(self, profile: SubAgentProfile) -> Optional[str]:
+        """按池内顺序取首个存在且启用的模型。"""
+        for mid in profile.models:
+            client = self._clients.get(mid)
+            if client is not None and client.config.enabled:
+                return mid
+        return None
+
+    def resolve_sub_agent_model(self, name: str) -> Optional[str]:
+        """子代理档案 → 模型 ID 的唯一映射入口（池走查）。
+
+        档案不存在 / 池空或全不可用 → None。None 语义：调用方使用默认模型。
+        """
+        profile = self._sub_agents.get((name or "").strip())
+        if profile is None:
+            return None
+        resolved = self._first_enabled_in_pool(profile)
+        if resolved is None:
+            warning(
+                f"子代理档案 '{name}' 无可用模型（池 {profile.models}），回退默认模型",
+                tag="模型",
+            )
+        return resolved
 
     def resolve_delegation_model(self, difficulty: Any) -> Optional[str]:
-        """难度挡位 → 模型 ID 的唯一映射入口。
+        """难度挡位 → 模型 ID 的映射入口（difficulty 是内置档案的语法糖）。
 
-        difficulty 非法（非 1-3 整数）→ None；挡位空或全停用 → 降挡（3→2→1）；
-        仍无可用 → None。None 语义：调用方使用默认模型（与未配置分级时一致）。
+        difficulty 非法（非 1-3 整数）→ None；对应内置档案池空/全停用 →
+        降挡（hard→medium→easy）；仍无可用 → None。None 语义：调用方使用默认模型。
         """
         try:
             tier = int(difficulty)
         except (TypeError, ValueError):
             return None
-        if tier not in self._delegation_tiers:
+        if tier not in _DIFFICULTY_AGENTS:
             return None
         for t in range(tier, 0, -1):
-            for mid in self._delegation_tiers.get(t, []):
-                client = self._clients.get(mid)
-                if client is not None and client.config.enabled:
-                    return mid
+            profile = self._sub_agents.get(_DIFFICULTY_AGENTS[t])
+            if profile is None:
+                continue
+            resolved = self._first_enabled_in_pool(profile)
+            if resolved is not None:
+                return resolved
         return None
 
     # ------------------------------------------------------------------

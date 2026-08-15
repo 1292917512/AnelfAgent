@@ -266,3 +266,15 @@ class TestAppendFile:
         assert json.loads(tools.append_file(str(fp), " world"))["ok"]
         # 追加后缓存已刷新，edit 不应报过期
         assert _edit(fp, "world", "there")["ok"]
+
+    def test_new_file_appends_directly(self, workspace):
+        result = json.loads(tools.append_file(str(workspace / "new.txt"), "data"))
+        assert result["ok"]
+
+    def test_existing_file_requires_read(self, workspace):
+        """追加同样受 read-before-write 门约束（与 write_file 一致，防盲追加）。"""
+        fp = workspace / "a.txt"
+        fp.write_text("old")
+        result = json.loads(tools.append_file(str(fp), " more"))
+        assert "尚未读取" in result["error"]
+        assert result.get("cause") == "state"

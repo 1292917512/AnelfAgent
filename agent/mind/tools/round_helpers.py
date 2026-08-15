@@ -433,7 +433,8 @@ async def _compress_context(
     mind.compressor._record_compress_result(True)
     rehydrated = await asyncio.to_thread(_rehydrate_recent_files, scope)
     if rehydrated:
-        new_chain = [*new_chain, {"role": "system", "content": rehydrated}]
+        new_chain = [*new_chain, {"role": "system", "content": rehydrated,
+                                  "_source": {"origin": "rehydration"}}]
     return new_base, new_chain
 
 
@@ -532,6 +533,22 @@ async def _suspend_for_background(
     return result.reason, result.completions, time.monotonic() - t0
 
 
+def _maybe_reset_guardrail_for_interjection(guardrail, new_msgs: List[Dict]) -> bool:
+    """用户插话时重置工具守卫链（对齐 dsh repeat-tool-reminder）。
+
+    仅认真实渠道到达的用户消息（带到达元数据标签）为插话；机器生成的
+    user 角色消息（proactive 指令/prefill 独白）不触发重置。返回是否重置。
+    """
+    from agent.mind.context_compressor import is_genuine_user_message
+    if any(
+        is_genuine_user_message({"role": "user", "content": m.get("content")})
+        for m in new_msgs
+    ):
+        guardrail.reset()
+        return True
+    return False
+
+
 async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
     """并入循环期间到达的新用户消息（含携带媒体），更新工具集与并入水位。"""
     mind = ctx.mind
@@ -544,6 +561,10 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
         return
     for m in new_msgs:
         ctx.tool_chain.append({"role": "user", "content": m["content"]})
+    # 用户插话重置守卫链（对齐 dsh repeat-tool-reminder）：用户新消息改变了语境，
+    # 跨插话的"重复调用"不再构成死循环
+    if _maybe_reset_guardrail_for_interjection(ctx.guardrail, new_msgs):
+        log("用户插话，重置工具守卫链", "DEBUG", tag="守卫")
     state.last_merged_ts = new_msgs[-1]["ts_ns"]
     if new_msgs[-1].get("id"):
         state.last_merged_id = int(new_msgs[-1]["id"])
@@ -587,7 +608,8 @@ async def _merge_pushes(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
     lines = ["[实体推送] 以下系统通知在你回复过程中到达（[push:来源] 标签，非用户消息）："]
     lines.extend(f"- {text}" for text in texts)
     lines.append("可按需响应，或继续完成当前对话；无需处理则忽略并继续。")
-    ctx.tool_chain.append({"role": "system", "content": "\n".join(lines)})
+    ctx.tool_chain.append({"role": "system", "content": "\n".join(lines),
+                           "_source": {"origin": "push"}})
     # 消费对应的待处理队列条目，避免当前轮结束后又空转一个周期
     try:
         mind.pfc.consume_scope_task(ctx.current_scope)
@@ -697,7 +719,8 @@ def _handle_length_recovery(
             truncated_msg: Dict[str, Any] = {"role": "assistant", "content": partial_text}
             preserve_reasoning_fields(truncated_msg, result)
             ctx.tool_chain.append(truncated_msg)
-        ctx.tool_chain.append({"role": "system", "content": _PROMPT_MAX_OUTPUT_CONTINUE})
+        ctx.tool_chain.append({"role": "system", "content": _PROMPT_MAX_OUTPUT_CONTINUE,
+                               "_source": {"origin": "length_recovery"}})
         ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮: 输出截断，已注入续写提示")
         state.iteration += 1
         return _StageOutcome.CONTINUE
@@ -713,6 +736,7 @@ def _handle_length_recovery(
         "role": "system",
         "content": "[系统] 输出多次被截断，本轮工具调用参数可能不完整，已跳过执行。"
                    "请拆分为更小的步骤或调用 end_reply 结束。",
+        "_source": {"origin": "length_recovery"},
     })
     ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮: 截断恢复耗尽，跳过 tool_calls")
     state.iteration += 1
@@ -1052,6 +1076,29 @@ async def _request_tool_approval(
         return None
     try:
         from agent.approval import ApprovalDecision, get_approval_gate
+
+        # 用户 hook（tool_pre）：只能在审批规则之上收紧（exit 2 阻塞），
+        # 不能放宽 DENY/ASK——hook 放行不构成授权。空配置时零开销短路
+        from agent.hooks import hooks_active, run_event_hooks
+        if hooks_active("tool_pre"):
+            outcome = await run_event_hooks(
+                "tool_pre", tool_name=tc.name, arguments=tc.arguments or "",
+                scope=tool_scope,
+            )
+            if not outcome.allowed:
+                await event_bus.emit(EVENT_THINKING_TOOL_END, {
+                    "scope": tool_scope,
+                    "tool_name": tc.name,
+                    "tool_id": tc.id,
+                    "duration_ms": 0,
+                    "error": f"hook 阻塞: {outcome.reason[:80]}",
+                    "success": False,
+                })
+                return json.dumps({
+                    "error": f"工具调用被用户 hook 阻塞: {outcome.reason}",
+                    "hook_blocked": True,
+                    "retryable": False,
+                }, ensure_ascii=False)
 
         gate = get_approval_gate()
         # 从 anything 提取上下文
