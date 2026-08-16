@@ -1,4 +1,4 @@
-"""运维核心逻辑 — 应用重启、前端构建、项目代码更新（单一实现主体）。
+"""运维核心逻辑 — 应用重启、崩溃信息、前端构建、项目代码更新（单一实现主体）。
 
 重启依赖外层启动脚本（start.sh / start.bat）的退出码 42 重启循环：
 本模块仅标记重启意图并触发优雅关闭（core.lifecycle.Lifecycle.request_shutdown，
@@ -50,6 +50,31 @@ def request_restart() -> Dict[str, Any]:
     log("收到重启请求，即将优雅关闭并重启", tag="运维")
     schedule_restart()
     return {"ok": True, "restarting": True}
+
+
+# ── 崩溃信息 ─────────────────────────────────────────────────────────
+
+
+def get_crash_info() -> Dict[str, Any]:
+    """查询最近一次进程崩溃信息（只读，不消费崩溃状态）。
+
+    数据源：启动脚本守护循环写入的 logs/crash_state.json（崩溃退出码
+    自动拉起时落盘）+ macOS 系统崩溃报告（DiagnosticReports .ips）关联。
+    """
+    from core import crash_report
+
+    state = crash_report.read_crash_state()
+    if state is None:
+        return {"ok": True, "has_crash": False}
+    crash = dict(state)
+    if not crash.get("ips"):
+        crash["ips"] = crash_report.find_related_ips(str(crash.get("crashed_at") or ""))
+    return {
+        "ok": True,
+        "has_crash": True,
+        "crash": crash,
+        "summary": crash_report.format_crash_summary(crash),
+    }
 
 
 # ── 前端构建 ─────────────────────────────────────────────────────────

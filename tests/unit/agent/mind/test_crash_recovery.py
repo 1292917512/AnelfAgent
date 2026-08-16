@@ -1,19 +1,26 @@
 """崩溃尾部修复（agent.mind.crash_recovery）单元测试。
 
 覆盖：检查点表的写/清/加载、崩溃残留扫描注入中断元消息、非法 scope 处理、
-注入失败保留行（at-least-once）。
+注入失败保留行（at-least-once）、崩溃上下文随元消息注入。
 """
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from agent.mind.crash_recovery import INTERRUPTED_NOTICE, recover_interrupted_replies
+from agent.mind.crash_recovery import (
+    INTERRUPTED_NOTICE,
+    build_interrupted_notice,
+    collect_crash_context,
+    recover_interrupted_replies,
+)
 from agent.storage.data_center import ConversationData
 from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageRouter
+from core import crash_report
 
 
 @pytest.fixture()
@@ -98,3 +105,52 @@ class TestRecoverInterrupted:
         row = await cursor.fetchone()
         assert row is not None
         assert row[0] == 0
+
+    async def test_crash_context_attached_to_notice(self, conv_data) -> None:
+        """有崩溃上下文时，元消息附带崩溃信息。"""
+        sqlite = conv_data.router.sqlite
+        await sqlite.record_reply_checkpoint("user_qq:123", adapter_key="qq")
+        context = "上一次进程崩溃：SIGSEGV（ladybug 段错误）"
+        recovered = await recover_interrupted_replies(_mind(conv_data), context)
+        assert recovered == 1
+        msgs = await sqlite.fetch_conversation(scope_type="user", scope_id="qq:123", limit=10)
+        injected = [m["content"] for m in msgs if m["role"] == "system"]
+        assert len(injected) == 1
+        assert injected[0].startswith(INTERRUPTED_NOTICE)
+        assert context in injected[0]
+
+
+class TestCrashContext:
+    def test_notice_without_context_unchanged(self) -> None:
+        assert build_interrupted_notice() == INTERRUPTED_NOTICE
+        assert build_interrupted_notice("") == INTERRUPTED_NOTICE
+
+    def test_notice_with_context_appends(self) -> None:
+        notice = build_interrupted_notice("崩溃摘要")
+        assert notice.startswith(INTERRUPTED_NOTICE)
+        assert "崩溃摘要" in notice
+
+    async def test_collect_context_consumes_state(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        state_path = tmp_path / "crash_state.json"
+        state_path.write_text(json.dumps({
+            "exit_code": 139,
+            "signal": "SIGSEGV",
+            "crashed_at": "2026-08-16T08:08:00+0800",
+            "crash_count": 1,
+        }), encoding="utf-8")
+        monkeypatch.setattr(crash_report, "CRASH_STATE_PATH", state_path)
+        monkeypatch.setattr(crash_report, "_diagnostic_report_dirs", lambda: [])
+
+        context = collect_crash_context()
+        assert "SIGSEGV" in context
+        assert "139" in context
+        # 已消费：重复收集返回空串（不重复注入）
+        assert collect_crash_context() == ""
+
+    def test_collect_context_no_state(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            crash_report, "CRASH_STATE_PATH", tmp_path / "absent.json",
+        )
+        assert collect_crash_context() == ""

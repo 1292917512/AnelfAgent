@@ -22,5 +22,8 @@
   "pullFailed": "Pull failed",
   "conflictHint": "Update hit conflicts, please resolve them manually",
   "dirtyHint": "Uncommitted changes in the workspace, please commit or stash first",
-  "lastBuild": "Last build"
+  "lastBuild": "Last build",
+  "crashInfo": "Last Crash",
+  "crashInfoDesc": "The start script supervisor auto-restarts the process after a crash and records the crash state",
+  "crashAutoRestartHint": "On fatal exits (e.g. segfaults) the supervisor restarts automatically with growing backoff; after 5 consecutive crashes it stops and needs manual inspection."
 }

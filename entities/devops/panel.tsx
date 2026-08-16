@@ -50,6 +50,12 @@ export default function DevopsPanel() {
     refetchInterval: 15000,
   });
 
+  const { data: crashInfo } = useQuery({
+    queryKey: ["devops-crash-info"],
+    queryFn: () => devopsApi.crashInfo().then((r) => r.data),
+    refetchInterval: 60000,
+  });
+
   const busy = phase === "restarting" || phase === "building" || phase === "pulling";
 
   const waitAndReload = async () => {
@@ -199,6 +205,15 @@ export default function DevopsPanel() {
           </p>
         )}
       </Card>
+
+      {crashInfo?.has_crash && crashInfo.summary && (
+        <Card title={t("crashInfo")} subtitle={t("crashInfoDesc")}>
+          <pre className="text-xs font-mono text-foreground bg-elevated border border-border rounded-md p-3 overflow-auto max-h-56 whitespace-pre-wrap">
+            {crashInfo.summary}
+          </pre>
+          <p className="mt-2 text-xs text-muted">{t("crashAutoRestartHint")}</p>
+        </Card>
+      )}
 
       <Card title={t("projectUpdate")} subtitle={t("projectUpdateDesc")}>
         <div className="flex flex-wrap items-center gap-3">

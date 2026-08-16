@@ -52,17 +52,97 @@ echo "  按 Ctrl+C 停止服务"
 echo "  ─────────────────────────────────────────"
 echo ""
 
+# ── 崩溃守护 ─────────────────────────────────────────────────────────
+# 崩溃退出码（128+信号号）自动重新拉起；SIGKILL=137 / SIGTERM=143 属
+# 外部主动终止（含 restart.sh 替换），不自动重启。SIGBUS 编号平台不同。
+if [ "$(uname -s)" = "Linux" ]; then
+    CRASH_CODES="132 133 134 135 136 139"
+    SIGBUS_CODE=135
+else
+    CRASH_CODES="132 133 134 136 138 139"
+    SIGBUS_CODE=138
+fi
+MAX_CRASH_COUNT=5        # 连续崩溃达上限后停止自动拉起（防崩溃循环烧资源）
+STABLE_RUN_SECONDS=600   # 运行超过该时长视为偶发崩溃，重置崩溃计数
+
+_signal_name() {
+    case $1 in
+        132) echo "SIGILL" ;;
+        133) echo "SIGTRAP" ;;
+        134) echo "SIGABRT" ;;
+        136) echo "SIGFPE" ;;
+        "$SIGBUS_CODE") echo "SIGBUS" ;;
+        139) echo "SIGSEGV" ;;
+        *) echo "" ;;
+    esac
+}
+
+_write_crash_state() {
+    # 供重启后 AI 上下文注入（core/crash_report.py collect_previous_crash）与运维面板展示
+    mkdir -p "$ROOT/logs"
+    printf '{"exit_code": %d, "signal": "%s", "crashed_at": "%s", "crash_count": %d}\n' \
+        "$1" "$2" "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$3" > "$ROOT/logs/crash_state.json"
+}
+
+CRASH_COUNT=0
 while true; do
+    START_TS=$(date +%s)
     $RUN_CMD launch.py "$@"
     EXIT_CODE=$?
 
     if [ $EXIT_CODE -eq 42 ]; then
         echo ""
         echo "  [重启] 收到重启信号，3 秒后重新启动..."
+        CRASH_COUNT=0
         sleep 3
         echo "  [重启] 正在重新启动..."
         echo ""
         continue
+    fi
+
+    IS_CRASH=0
+    for code in $CRASH_CODES; do
+        if [ $EXIT_CODE -eq $code ]; then
+            IS_CRASH=1
+            break
+        fi
+    done
+
+    if [ $IS_CRASH -eq 1 ]; then
+        END_TS=$(date +%s)
+        if [ $((END_TS - START_TS)) -ge $STABLE_RUN_SECONDS ]; then
+            CRASH_COUNT=1   # 长时间稳定运行后的单次崩溃：重新计数
+        else
+            CRASH_COUNT=$((CRASH_COUNT + 1))
+        fi
+        SIG_NAME=$(_signal_name "$EXIT_CODE")
+        _write_crash_state "$EXIT_CODE" "$SIG_NAME" "$CRASH_COUNT"
+        if [ $CRASH_COUNT -ge $MAX_CRASH_COUNT ]; then
+            echo ""
+            echo "  [!] 崩溃保护：连续 $CRASH_COUNT 次崩溃（${SIG_NAME:-退出码 $EXIT_CODE}），停止自动拉起"
+            echo "      崩溃状态已写入 logs/crash_state.json，请排查后手动启动"
+            break
+        fi
+        BACKOFF=$((5 * CRASH_COUNT))
+        [ $BACKOFF -gt 60 ] && BACKOFF=60
+        echo ""
+        echo "  [!] 进程崩溃（${SIG_NAME:-未知信号}，退出码 $EXIT_CODE），${BACKOFF}s 后自动重新拉起（连续第 $CRASH_COUNT 次）"
+        sleep $BACKOFF
+        echo "  [重启] 正在重新启动..."
+        echo ""
+        continue
+    fi
+
+    if [ $EXIT_CODE -eq 130 ] || [ $EXIT_CODE -eq 143 ]; then
+        echo ""
+        echo "  [停止] 服务已停止（退出码 $EXIT_CODE）"
+        break
+    fi
+
+    if [ $EXIT_CODE -eq 137 ]; then
+        echo ""
+        echo "  [停止] 进程被外部终止（SIGKILL），不自动重启"
+        break
     fi
 
     if [ $EXIT_CODE -ne 0 ]; then

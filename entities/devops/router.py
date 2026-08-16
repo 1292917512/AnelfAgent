@@ -34,6 +34,11 @@ def build_router() -> APIRouter:
         """查询前端构建状态（building / 最近一次构建结果）。"""
         return service.get_build_state()
 
+    @router.get("/crash-info")
+    async def crash_info() -> Dict[str, Any]:
+        """查询最近一次进程崩溃信息（守护循环落盘的崩溃状态 + 系统崩溃报告）。"""
+        return await asyncio.to_thread(service.get_crash_info)
+
     @router.post("/update")
     async def update() -> Dict[str, Any]:
         """从远程仓库拉取项目最新代码（git pull --ff-only）。"""

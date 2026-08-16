@@ -48,6 +48,7 @@ import type {
   DbTargetCheck,
   DevopsActionResult,
   DevopsBuildState,
+  DevopsCrashInfo,
   EntityDetail,
   EntityListItem,
   GlobalSearchResult,
@@ -761,6 +762,7 @@ export const systemApi = {
 // DevOps（运维管理实体专属路由 /api/entity/devops）
 export const devopsApi = {
   restart: () => api.post<DevopsActionResult>("/entity/devops/restart"),
+  crashInfo: () => api.get<DevopsCrashInfo>("/entity/devops/crash-info"),
   buildAndRestart: () => api.post<DevopsActionResult>("/entity/devops/build-restart"),
   buildState: () => api.get<DevopsBuildState>("/entity/devops/build-state"),
   update: () => api.post<DevopsActionResult>("/entity/devops/update"),

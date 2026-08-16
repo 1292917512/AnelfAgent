@@ -160,11 +160,13 @@ class CogneeClient:
         timeout: Optional[float] = None,
         **kwargs: Any,
     ) -> Any:
-        if self._module is None or not self._configured:
+        module = self._module
+        if module is None or not self._configured:
             availability = await self.initialize()
-            if not availability.ready:
+            if not availability.ready or self._module is None:
                 raise RuntimeError(availability.reason or "Cognee 未就绪")
-        target = self._module
+            module = self._module
+        target: Any = module
         for part in dotted_name.split("."):
             target = getattr(target, part)
         result = target(*args, **kwargs)
@@ -379,37 +381,66 @@ def _quieten_cognee_logger() -> None:
 
 
 def _patch_ladybug_concurrency() -> None:
-    """给 LadybugAdapter.query 包进程级串行锁（防 pybind 层段错误）。
+    """以进程级线程锁串行所有 ladybug native 执行（防 pybind 层段错误）。
 
-    ladybug/Kuzu 的 pybind connection 非线程安全，而 cognee 的非 shared-lock
-    查询路径（ladybug/adapter.py 非 shared_ladybug_lock 分支）明确让多个查询
-    在同一 connection 上并发 execute（"runs unlocked so multiple queries can
-    execute concurrently"），图谱抽取 pipeline 并发任务下在 macOS arm64 直接
-    Fatal Python error: Segmentation fault（进程崩溃，无法捕获）。
-    shared_ladybug_lock 依赖 Redis（本地部署不具备），故在入口处统一串行化——
-    图查询不是吞吐瓶颈，串行代价可接受，换进程不崩溃。
-    幂等：重复导入只包一次。
+    ladybug/Kuzu 的 pybind connection 非线程安全，两个补丁点：
+
+    1. ``_submit_to_executor_locked``：提交到线程池的 native 任务（execute +
+       结果消费全程）包上全局线程锁。关键在于 asyncio.wait_for 超时场景——
+       取消只能中止 Python 协程，native 查询仍在线程池中运行；旧版 asyncio.Lock
+       随协程解锁，下一条查询会与孤儿查询并发使用同一 connection，直接
+       Segmentation fault（2026-08 实测：NodeTableScanState::scanNext 空指针）。
+       线程锁由执行线程持有，native 真正跑完才释放，孤儿查询天然安全，
+       且跨事件循环/跨 adapter 实例生效（threading.Lock 无循环绑定）。
+    2. ``_drop_native_resources``：释放句柄前先取同一把锁，保证 delete_graph /
+       close 拆除资源时没有 native 执行在途——基于 open_connections 计数的
+       drain 看不到被取消协程遗留的孤儿 native 执行，曾导致扫描中途句柄被拆。
+
+    图查询不是吞吐瓶颈，串行代价可接受，换进程不崩溃。幂等：重复导入只包一次。
     """
     try:
-        from cognee.infrastructure.databases.graph.ladybug.adapter import LadybugAdapter
+        from cognee.infrastructure.databases.graph.ladybug import adapter as ladybug_adapter
     except Exception as exc:
         log(f"ladybug 并发补丁跳过（不影响主流程）: {exc}", "DEBUG", tag="记忆")
         return
-    if getattr(LadybugAdapter.query, "_anel_serialized", False):
-        return
+    if _apply_native_gate(ladybug_adapter.LadybugAdapter):
+        log("ladybug native 执行已串行走线程锁（孤儿查询安全）", "DEBUG", tag="记忆")
+
+
+def _apply_native_gate(adapter_cls: type) -> bool:
+    """给 LadybugAdapter 类安装 native 执行串行门（幂等，返回是否本次安装）。"""
+    if getattr(adapter_cls, "_anel_native_gate", False):
+        return False
     import functools
+    import threading
 
-    lock = asyncio.Lock()
-    original = LadybugAdapter.query
+    gate = threading.Lock()
 
-    @functools.wraps(original)
-    async def serialized_query(self: Any, query: str, params: Any = None) -> Any:
-        async with lock:
-            return await original(self, query, params)
+    # cognee 私有方法挂载：补丁点为第三方内部实现，类型系统不可见
+    original_submit = adapter_cls._submit_to_executor_locked  # type: ignore[attr-defined]
 
-    serialized_query._anel_serialized = True  # type: ignore[attr-defined]
-    LadybugAdapter.query = serialized_query
-    log("ladybug 查询已串行化（防 pybind 并发段错误）", "DEBUG", tag="记忆")
+    @functools.wraps(original_submit)
+    def gated_submit(self: Any, fn: Any, *args: Any) -> Any:
+        @functools.wraps(fn)
+        def guarded(*call_args: Any, **call_kwargs: Any) -> Any:
+            with gate:
+                return fn(*call_args, **call_kwargs)
+
+        return original_submit(self, guarded, *args)
+
+    original_drop = adapter_cls._drop_native_resources  # type: ignore[attr-defined]
+
+    @functools.wraps(original_drop)
+    def gated_drop(self: Any) -> None:
+        # 等待在途 native 执行（含孤儿）结束后再释放句柄；
+        # 极端情况下会短暂阻塞调用线程，优于拆掉正在扫描的连接导致段错误
+        with gate:
+            original_drop(self)
+
+    adapter_cls._submit_to_executor_locked = gated_submit  # type: ignore[attr-defined]
+    adapter_cls._drop_native_resources = gated_drop  # type: ignore[attr-defined]
+    adapter_cls._anel_native_gate = True  # type: ignore[attr-defined]
+    return True
 
 
 def _patch_ladybug_wal_recovery() -> None:

@@ -1,7 +1,8 @@
-"""运维工具 — 应用重启、前端构建、项目代码更新。
+"""运维工具 — 应用重启、前端构建、项目代码更新、崩溃信息查询。
 
 提供 AI 自主管理部署流程的能力，核心逻辑统一在 service.py（与 Web 面板同源）：
 - 重启应用（优雅关闭后由外层启动脚本按退出码 42 重新拉起）
+- 查询最近一次进程崩溃信息（崩溃退出码由守护循环自动拉起并落盘）
 - 构建前端并重启（构建失败则不重启）
 - 从远程拉取项目最新代码，可一步完成更新并重启
 - 遇到 Git 冲突时提示联系主人
@@ -35,6 +36,17 @@ def restart_app() -> str:
     """
     service.request_restart()
     return _result("restart_app", ok=True, message="应用即将优雅重启...")
+
+
+@tool(name="get_crash_report", group="devops")
+def get_crash_report() -> str:
+    """查询最近一次进程崩溃信息（退出码/信号/系统崩溃报告摘要）。
+
+    异常重启后可用于排查崩溃原因；启动脚本守护循环会在进程以段错误等
+    致命信号退出时自动重新拉起，并把崩溃状态落盘供本工具读取。
+    无崩溃记录时返回 has_crash=false。
+    """
+    return _result("get_crash_report", **service.get_crash_info())
 
 
 @tool(name="build_and_restart", group="devops", timeout=330)

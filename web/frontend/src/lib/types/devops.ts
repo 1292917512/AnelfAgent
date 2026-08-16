@@ -22,3 +22,30 @@ export interface DevopsActionResult {
   pull_result?: string;
   dirty_files?: string;
 }
+
+export interface DevopsCrashIps {
+  process: string;
+  capture_time: string;
+  exception_type: string;
+  signal: string;
+  codes: string;
+  faulting_module: string;
+  stack: string[];
+  report_path?: string;
+}
+
+export interface DevopsCrashState {
+  exit_code: number;
+  signal?: string;
+  crashed_at: string;
+  crash_count?: number;
+  reported?: boolean;
+  ips?: DevopsCrashIps | null;
+}
+
+export interface DevopsCrashInfo {
+  ok: boolean;
+  has_crash: boolean;
+  crash?: DevopsCrashState;
+  summary?: string;
+}

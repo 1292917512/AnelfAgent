@@ -463,10 +463,26 @@ def create_bootstrap() -> FlowMachine:
         from core.config import get_config_bool
         if not get_config_bool("recovery_interrupted_enabled", True):
             return
-        from agent.mind.crash_recovery import recover_interrupted_replies
+        from agent.mind.crash_recovery import (
+            collect_crash_context,
+            recover_interrupted_replies,
+        )
         from agent.runtime.singleton import get_runtime
         try:
-            await recover_interrupted_replies(get_runtime().mind)
+            mind = get_runtime().mind
+            # 消费上次崩溃状态（守护脚本写入 + 系统崩溃报告关联），仅注入一次
+            crash_context = collect_crash_context()
+            recovered = await recover_interrupted_replies(mind, crash_context)
+            if crash_context and not recovered:
+                # 无进行中的回复检查点（如空闲时崩溃）：推送全局通知让她知晓崩溃经过，
+                # 并唤醒一轮思维（她的重启报到技能会接管后续向主人报平安）
+                mind.push_hub.push(
+                    "", "system",
+                    f"进程异常重启完成。{crash_context}\n"
+                    "请检查自身状态并向主人报到（可经 devops 工具 get_crash_report 复查详情）。",
+                    trigger=False,
+                )
+                _spawn_background(mind.try_execute_mind(), name="crash-notify-mind")
         except Exception as exc:
             log(f"崩溃尾部恢复失败: {exc}", "ERROR", tag="启动")
 
