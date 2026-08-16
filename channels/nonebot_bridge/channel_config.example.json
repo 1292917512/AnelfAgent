@@ -13,5 +13,6 @@
   "worker_port": 8198,
   "auto_restart": true,
   "pip_index_url": "",
-  "pip_proxy": ""
+  "pip_proxy": "",
+  "sources_dir": ""
 }

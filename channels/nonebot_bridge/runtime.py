@@ -146,9 +146,16 @@ def parse_git_spec(spec: str) -> Optional[tuple]:
     return url, ref
 
 
-def sources_dir() -> Path:
-    """git 源本地检出目录（<数据目录>/nonebot/repos，随数据目录被 git 忽略）。"""
-    return runtime_dir() / "repos"
+def sources_dir(override: str = "") -> Path:
+    """git 源本地检出目录（纯函数）。
+
+    默认 ``channels/nonebot_bridge/sources/``（频道目录下，已被 .gitignore
+    忽略、ruff/mypy 排除 —— 方便直接浏览修改源码做二次开发）；
+    可经配置 ``sources_dir`` 覆盖为任意路径（如数据目录或外部工作区）。
+    """
+    if override.strip():
+        return Path(override.strip()).resolve()
+    return Path(__file__).parent / "sources"
 
 
 def build_install_command(
@@ -300,39 +307,74 @@ def format_env_value(value: Any) -> str:
     return text
 
 
+def adapter_entry_key(entry: Any) -> str:
+    """从 adapters 条目提取 key（纯函数；string 直取，dict 取 key 字段）。"""
+    if isinstance(entry, dict):
+        return str(entry.get("key", "") or "")
+    return str(entry)
+
+
+def normalize_adapter_entries(entries: List[Any]) -> List[Dict[str, str]]:
+    """adapters 条目归一化（纯函数，可测试）。
+
+    兼容两种写法（外部工具/AI 可能直接写 worker 格式进频道配置）：
+    - 字符串 key：经 KNOWN_ADAPTERS 解析；``nonebot.adapters.*`` 视为模块路径；
+    - dict ``{key, import, class}``：完整声明直通（fork/自研适配器用）。
+    未知项跳过并告警。
+    """
+    resolved: List[Dict[str, str]] = []
+    for entry in entries or []:
+        if isinstance(entry, dict):
+            import_path = str(entry.get("import", "") or "")
+            key = str(entry.get("key", "") or import_path.rsplit(".", 1)[-1])
+            if import_path:
+                resolved.append({
+                    "key": key,
+                    "import": import_path,
+                    "class": str(entry.get("class", "") or "Adapter"),
+                })
+            else:
+                log(f"NoneBot Bridge: 适配器 dict 条目缺少 import，已跳过: {entry}", "WARNING")
+            continue
+
+        key = str(entry)
+        info = KNOWN_ADAPTERS.get(key)
+        if info is not None:
+            resolved.append({"key": key, "import": info["import"], "class": info["class"]})
+        elif key.startswith("nonebot.adapters."):
+            # 注册表动态适配器：模块路径即导入目标
+            resolved.append({"key": key, "import": key, "class": "Adapter"})
+        else:
+            log(f"NoneBot Bridge: 未知适配器 key '{key}'，已跳过", "WARNING")
+    return resolved
+
+
 def build_worker_files(cfg: Dict[str, Any]) -> Dict[str, str]:
     """根据频道配置生成 worker 文件内容（.env / config.json）。
 
     Args:
         cfg: 频道配置字典（adapters / plugins / nonebot_env / intercept_all /
-            worker_host / worker_port 等）
+            worker_host / worker_port 等）；adapters 条目兼容字符串 key 与
+            ``{key, import, class}`` dict（见 normalize_adapter_entries）
 
     Returns:
         ``{".env": 文本, "config.json": 文本}``
     """
-    adapter_keys: List[str] = list(cfg.get("adapters") or [])
-    adapter_entries: List[Dict[str, str]] = []
-    for key in adapter_keys:
-        info = KNOWN_ADAPTERS.get(key)
-        if info is not None:
-            adapter_entries.append(
-                {"key": key, "import": info["import"], "class": info["class"]}
-            )
-        elif key.startswith("nonebot.adapters."):
-            # 注册表动态适配器：模块路径即导入目标
-            adapter_entries.append({"key": key, "import": key, "class": "Adapter"})
-        else:
-            log(f"NoneBot Bridge: 未知适配器 key '{key}'，已跳过", "WARNING")
+    adapter_entries: List[Dict[str, str]] = normalize_adapter_entries(
+        list(cfg.get("adapters") or [])
+    )
 
-    env_lines: List[str] = [
-        "# 由 AnelfAgent NoneBot Bridge 自动生成，勿手工编辑",
-        "DRIVER=~fastapi+~aiohttp",
-        f"HOST={cfg.get('worker_host', '127.0.0.1')}",
-        f"PORT={int(cfg.get('worker_port', 8198))}",
-        "LOG_LEVEL=INFO",
-    ]
+    # 保留字（DRIVER/HOST/PORT/LOG_LEVEL）：用户显式配置覆盖默认值，而非重复写行
+    env_pairs: Dict[str, str] = {
+        "DRIVER": "~fastapi+~aiohttp",
+        "HOST": str(cfg.get("worker_host", "127.0.0.1")),
+        "PORT": str(int(cfg.get("worker_port", 8198))),
+        "LOG_LEVEL": "INFO",
+    }
     for env_key, env_value in (cfg.get("nonebot_env") or {}).items():
-        env_lines.append(f"{env_key}={format_env_value(env_value)}")
+        env_pairs[str(env_key)] = format_env_value(env_value)
+    env_lines: List[str] = ["# 由 AnelfAgent NoneBot Bridge 自动生成，勿手工编辑"]
+    env_lines.extend(f"{key}={value}" for key, value in env_pairs.items())
 
     worker_config = {
         "wire_version": 3,
@@ -609,7 +651,9 @@ class NoneBotRuntime:
         output = await self._run_capture(build_list_command(uv, venv_python()))
         return parse_package_list(output) if output is not None else []
 
-    async def sync_git_source(self, spec: str, proxy: str = "") -> Dict[str, Any]:
+    async def sync_git_source(
+        self, spec: str, proxy: str = "", sources_override: str = ""
+    ) -> Dict[str, Any]:
         """把 git 源克隆/更新到本地仓库目录（sources_dir/<仓库名>）。
 
         - 首次：``git clone [--branch ref] <url> <dir>``；
@@ -622,13 +666,13 @@ class NoneBotRuntime:
             return {"success": False, "error": f"非 git 安装源: {spec}"}
         url, ref = parsed
         name = derive_package_name(spec)
-        target = sources_dir() / name
+        target = sources_dir(sources_override) / name
         env = install_subprocess_env(proxy)
         cloned = not target.exists()
 
         try:
             if cloned:
-                sources_dir().mkdir(parents=True, exist_ok=True)
+                target.parent.mkdir(parents=True, exist_ok=True)
                 cmd = ["git", "clone"]
                 if ref:
                     cmd += ["--branch", ref]

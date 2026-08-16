@@ -296,6 +296,7 @@ class NoneBotService:
             "auto_restart": True,
             "pip_index_url": "",
             "pip_proxy": "",
+            "sources_dir": "",
             "package_specs": {},
         }
         defaults.update(cfg)
@@ -340,6 +341,7 @@ class NoneBotService:
         "worker_host": str,
         "pip_index_url": str,
         "pip_proxy": str,
+        "sources_dir": str,
     }
 
     def get_config_masked(self) -> Dict[str, Any]:
@@ -417,12 +419,17 @@ class NoneBotService:
     # ------------------------------------------------------------------
 
     def set_adapter_enabled(self, key: str, enabled: bool) -> Dict[str, Any]:
-        """启用/停用适配器（仅调整加载列表，不动包）。"""
+        """启用/停用适配器（仅调整加载列表，不动包；兼容 dict 条目按 key 匹配）。"""
+        from channels.nonebot_bridge.runtime import adapter_entry_key
+
         def _mutate(cfg: Dict[str, Any]) -> None:
-            adapters = [a for a in (cfg.get("adapters") or []) if a != key]
+            kept = [
+                a for a in (cfg.get("adapters") or [])
+                if adapter_entry_key(a) != key
+            ]
             if enabled:
-                adapters.append(key)
-            cfg["adapters"] = adapters
+                kept.append(key)
+            cfg["adapters"] = kept
 
         cfg = self.update_worker_config(_mutate)
         return {"success": True, "key": key, "enabled": enabled,
@@ -447,9 +454,12 @@ class NoneBotService:
     def list_adapters(self) -> List[Dict[str, Any]]:
         """内置 ∪ 注册表适配器列表（含安装状态与启用状态）。"""
         from channels.nonebot_bridge.config import KNOWN_ADAPTERS
+        from channels.nonebot_bridge.runtime import adapter_entry_key
 
         cfg = _read_channel_config()
-        enabled_keys = set(cfg.get("adapters") or [])
+        enabled_keys = {
+            adapter_entry_key(entry) for entry in (cfg.get("adapters") or [])
+        } - {""}
 
         entries: List[Dict[str, Any]] = []
         modules: List[str] = []
@@ -489,6 +499,29 @@ class NoneBotService:
         for entry in entries:
             entry["installed"] = installed.get(entry["module"], False)
             entry["enabled"] = entry["module"] in enabled_keys or entry["key"] in enabled_keys
+        # dict 声明的自定义适配器（fork/自研，不在内置与注册表）也补进列表
+        from channels.nonebot_bridge.runtime import normalize_adapter_entries
+
+        known_modules = {e["module"] for e in entries}
+        for custom in normalize_adapter_entries(list(cfg.get("adapters") or [])):
+            if custom["import"] in known_modules:
+                continue
+            entries.append({
+                "key": custom["key"],
+                "label": custom["key"],
+                "package": "",
+                "module": custom["import"],
+                "builtin": False,
+                "version": "",
+                "setup": {
+                    "difficulty": "medium",
+                    "env_keys": [],
+                    "notes": "自定义适配器声明（fork/自研，经配置 dict 条目接入）",
+                    "docs": "",
+                },
+                "installed": self._probe_installed([custom["import"]]).get(custom["import"], False),
+                "enabled": True,
+            })
 
         return entries
 
@@ -499,6 +532,10 @@ class NoneBotService:
     def _pip_proxy(self) -> str:
         """读取安装代理（空=继承系统；off/none=强制直连；其余=使用该代理）。"""
         return str(_read_channel_config().get("pip_proxy", "") or "").strip()
+
+    def _sources_override(self) -> str:
+        """读取源码检出目录覆盖（空 = 默认 channels/nonebot_bridge/sources）。"""
+        return str(_read_channel_config().get("sources_dir", "") or "").strip()
 
     def _record_package_spec(self, name_key: str, spec: str) -> None:
         """记录安装溯源（非默认 PyPI 源时，供卸载/重装推导分发名）。"""
@@ -550,7 +587,9 @@ class NoneBotService:
 
         if parse_git_spec(spec) is None:
             return spec
-        result = await get_nonebot_runtime().sync_git_source(spec, proxy=self._pip_proxy())
+        result = await get_nonebot_runtime().sync_git_source(
+            spec, proxy=self._pip_proxy(), sources_override=self._sources_override()
+        )
         if not result.get("success"):
             raise RuntimeError(f"git 源同步失败: {result.get('error')}")
         return str(result["path"])
@@ -592,13 +631,12 @@ class NoneBotService:
 
     def get_sources_status(self) -> Dict[str, Any]:
         """git/本地源安装项清单（溯源记录 + 本地检出路径存在性）。"""
-        from channels.nonebot_bridge.runtime import sources_dir
+        from channels.nonebot_bridge.runtime import derive_package_name, sources_dir
 
         specs = dict(_read_channel_config().get("package_specs") or {})
         items = []
         for name_key, spec in sorted(specs.items()):
-            repo_name = spec.rstrip("/").rsplit("/", 1)[-1]
-            local = sources_dir() / (repo_name[:-4] if repo_name.endswith(".git") else repo_name)
+            local = sources_dir(self._sources_override()) / derive_package_name(spec)
             items.append({
                 "key": name_key,
                 "spec": spec,
@@ -681,7 +719,14 @@ class NoneBotService:
         if entry is None:
             return {"success": False, "error": f"未知适配器: {key}"}
 
-        self.update_worker_config(lambda cfg: self._remove_item(cfg, "adapters", key))
+        from channels.nonebot_bridge.runtime import adapter_entry_key
+
+        def _drop(cfg: Dict[str, Any]) -> None:
+            cfg["adapters"] = [
+                a for a in (cfg.get("adapters") or []) if adapter_entry_key(a) != key
+            ]
+
+        self.update_worker_config(_drop)
         spec = self._pop_package_spec(f"adapter:{key}")
         candidates = [derive_package_name(spec)] if spec else []
         candidates += [entry["package"], key.replace("_", "-")]

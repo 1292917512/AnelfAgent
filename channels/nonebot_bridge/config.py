@@ -322,6 +322,11 @@ NONEBOT_BRIDGE_CONFIGS: Dict[str, Dict[str, Any]] = {
             "default": "",
             "advanced": True,
         },
+        "sources_dir": {
+            "description": "git 源本地检出目录（空 = channels/nonebot_bridge/sources，已被 git 忽略）",
+            "default": "",
+            "advanced": True,
+        },
         "python_exec": {
             "description": "创建 worker venv 所用 Python 覆盖（缺省用当前解释器）",
             "default": "",

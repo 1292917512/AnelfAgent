@@ -516,3 +516,36 @@ class TestRestartAfterEnvChange:
         result = await NoneBotService().resync_sources()
         assert result["updated"] == 0 and result["restarted"] is False
         assert restarted == []
+
+
+class TestDictAdaptersInService:
+    """服务层对 dict 条目适配器配置的兼容（AI 手写 worker 格式场景）。"""
+
+    def test_list_adapters_no_crash_with_dict_entries(
+        self, isolated_config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_channel_config({
+            "adapters": [{"key": "bilibili", "import": "nonebot.adapters.bilibili", "class": "Adapter"}],
+        })
+        # 未命中缓存直接探测会 spawn venv python —— 隔离 NONEBOT_DIR 使 venv 未就绪
+        from core.path import ConfigPaths
+        monkeypatch.setattr(ConfigPaths, "NONEBOT_DIR", str(isolated_config / "nonebot"))
+
+        adapters = NoneBotService().list_adapters()
+        by_key = {a["key"]: a for a in adapters}
+        assert by_key["bilibili"]["enabled"] is True  # dict 声明视为启用
+        assert by_key["onebot_v11"]["enabled"] is False  # 不再 unhashable 崩溃
+
+    def test_set_adapter_enabled_matches_dict_by_key(self, isolated_config) -> None:
+        _write_channel_config({
+            "adapters": [
+                {"key": "bilibili", "import": "nonebot.adapters.bilibili", "class": "Adapter"},
+                "onebot_v11",
+            ],
+        })
+        svc = NoneBotService()
+        result = svc.set_adapter_enabled("bilibili", False)
+        assert result["adapters"] == ["onebot_v11"]  # dict 条目按 key 移除
+
+        result = svc.set_adapter_enabled("bilibili", True)
+        assert result["adapters"] == ["onebot_v11", "bilibili"]

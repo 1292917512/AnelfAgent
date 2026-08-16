@@ -68,6 +68,9 @@ config/introspection/
 config/memory/
 config/config/
 
+# === NoneBot 桥接源码检出（git 源安装的本地仓库，二次开发用） ===
+channels/nonebot_bridge/sources/
+
 # === Personal tasks (keep memory_consolidation.json as example) ===
 config/tasks/*
 !config/tasks/memory_consolidation.json

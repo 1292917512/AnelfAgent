@@ -465,3 +465,77 @@ class TestFormatEnvValue:
             "adapters": [], "nonebot_env": {"TOKEN": "a#b'c"},
         })
         assert "TOKEN=\"a#b'c\"" in files[".env"]
+
+
+class TestSourcesDir:
+    """源码检出目录：默认频道目录下（git 忽略），支持配置覆盖。"""
+
+    def test_default_under_channel(self) -> None:
+        from channels.nonebot_bridge import runtime as rt
+
+        expected = Path(rt.__file__).parent / "sources"
+        assert rt.sources_dir() == expected
+
+    def test_override_resolved(self, tmp_path: Path) -> None:
+        from channels.nonebot_bridge import runtime as rt
+
+        target = tmp_path / "my-repos"
+        assert rt.sources_dir(str(target)) == target.resolve()
+
+    def test_override_blank_uses_default(self) -> None:
+        from channels.nonebot_bridge import runtime as rt
+
+        assert rt.sources_dir("  ") == rt.sources_dir()
+
+
+class TestDictAdapterEntries:
+    """adapters 兼容 dict 条目（外部工具/AI 直接写 worker 格式的场景）。"""
+
+    def test_dict_entry_passthrough(self) -> None:
+        files = build_worker_files({
+            "adapters": [{"key": "bilibili", "import": "nonebot.adapters.bilibili", "class": "Adapter"}],
+        })
+        cfg = json.loads(files["config.json"])
+        assert cfg["adapters"] == [
+            {"key": "bilibili", "import": "nonebot.adapters.bilibili", "class": "Adapter"},
+        ]
+
+    def test_mixed_string_and_dict(self) -> None:
+        files = build_worker_files({
+            "adapters": [
+                "onebot_v11",
+                {"key": "custom", "import": "my.custom.adapter", "class": "MyAdapter"},
+            ],
+        })
+        cfg = json.loads(files["config.json"])
+        assert cfg["adapters"] == [
+            {"key": "onebot_v11", "import": "nonebot.adapters.onebot.v11", "class": "Adapter"},
+            {"key": "custom", "import": "my.custom.adapter", "class": "MyAdapter"},
+        ]
+
+    def test_dict_without_import_skipped(self) -> None:
+        files = build_worker_files({"adapters": [{"key": "broken"}]})
+        assert json.loads(files["config.json"])["adapters"] == []
+
+    def test_dict_defaults_class_adapter(self) -> None:
+        files = build_worker_files({
+            "adapters": [{"key": "x", "import": "pkg.mod"}],
+        })
+        cfg = json.loads(files["config.json"])
+        assert cfg["adapters"][0]["class"] == "Adapter"
+
+    def test_adapter_entry_key_extraction(self) -> None:
+        assert nb_runtime.adapter_entry_key("onebot_v11") == "onebot_v11"
+        assert nb_runtime.adapter_entry_key({"key": "bilibili"}) == "bilibili"
+        assert nb_runtime.adapter_entry_key({}) == ""
+
+    def test_env_reserved_keys_overridden_not_duplicated(self) -> None:
+        files = build_worker_files({
+            "adapters": [],
+            "nonebot_env": {"DRIVER": "~fastapi+~websockets"},
+            "worker_port": 9000,
+        })
+        env = files[".env"]
+        assert env.count("DRIVER=") == 1
+        assert "DRIVER=~fastapi+~websockets" in env
+        assert "PORT=9000" in env
