@@ -76,7 +76,9 @@ class TestWorkerFiles:
         ]
         assert cfg["plugins"] == ["nonebot_plugin_status"]
         assert cfg["intercept_all"] is False
-        assert cfg["wire_version"] == 3
+        assert cfg["wire_version"] == nb_runtime.__dict__.get("WIRE_VERSION") or 4
+        from channels.nonebot_bridge.worker.protocol import WIRE_VERSION
+        assert cfg["wire_version"] == WIRE_VERSION
 
     def test_env_file_content(self) -> None:
         files = build_worker_files({

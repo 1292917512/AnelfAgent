@@ -376,8 +376,10 @@ def build_worker_files(cfg: Dict[str, Any]) -> Dict[str, str]:
     env_lines: List[str] = ["# 由 AnelfAgent NoneBot Bridge 自动生成，勿手工编辑"]
     env_lines.extend(f"{key}={value}" for key, value in env_pairs.items())
 
+    from .worker.protocol import WIRE_VERSION
+
     worker_config = {
-        "wire_version": 3,
+        "wire_version": WIRE_VERSION,
         "adapters": adapter_entries,
         "plugins": list(cfg.get("plugins") or []),
         "intercept_all": bool(cfg.get("intercept_all", False)),
