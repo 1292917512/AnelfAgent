@@ -58,6 +58,7 @@ const CORE_ROUTES: CoreRoute[] = [
   { path: "data", page: "Data" },
   { path: "config", page: "Config" },
   { path: "channels", page: "Channels" },
+  { path: "nonebot", page: "Nonebot" },
   { path: "approvals", page: "Approvals" },
   { path: "tasks", page: "Tasks" },
   { path: "heartbeat", page: "Heartbeat" },

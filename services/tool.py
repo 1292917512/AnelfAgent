@@ -30,6 +30,7 @@ _GROUP_ORDER = {
     "session": 21,
     "ssh": 22,
     "voiceprint": 23,
+    "nonebot": 24,
 }
 
 

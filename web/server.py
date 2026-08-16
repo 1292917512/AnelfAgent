@@ -25,16 +25,6 @@ FRONTEND_DIST = _WEB_DIR / "frontend" / "dist"
 _FALLBACK_HTML = (_WEB_DIR / "fallback.html").read_text("utf-8")
 
 
-def _mount_nonebot(app: FastAPI) -> None:
-    """如果 NoneBot 桥接已初始化，挂载其 ASGI 路由到 /nonebot。"""
-    try:
-        from channels.nonebot_bridge.nonebot_init import is_initialized, mount_nonebot_app
-        if is_initialized():
-            mount_nonebot_app(app)
-    except ImportError:
-        log("_mount_nonebot 异常已忽略", "DEBUG")
-
-
 def _mount_module_routers(
     app: FastAPI,
     pkg_name: str,
@@ -242,7 +232,6 @@ def create_app() -> FastAPI:
     app.include_router(api_router)
     app.include_router(v1_responses_router, prefix="/v1")
 
-    _mount_nonebot(app)
     _mount_channel_routers(app)
     _mount_entity_routers(app)
 

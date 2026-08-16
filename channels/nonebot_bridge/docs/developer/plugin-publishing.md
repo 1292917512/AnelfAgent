@@ -1,441 +1,555 @@
+<!-- source: https://nonebot.dev/docs/developer/plugin-publishing -->
+
 # 发布插件
 
-本文档介绍如何开发、打包并发布一个 NoneBot 插件到 PyPI 和 NoneBot 插件商店。
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
 
-## 命名规范
+NoneBot 为开发者提供了分享插件的官方商店。本指南囊括**从创建项目到发布到 PyPI，最终提交商店审核**的全过程。
 
-NoneBot 插件遵循以下命名约定：
+:::warning[警告]
+如果你的插件只是满足自用需求，则完全可以选择**不发布插件**。发布插件**不是**使用插件的必要条件。
 
-| 格式 | 用途 | 示例 |
-|------|------|------|
-| `nonebot-plugin-xxx` | PyPI 包名（连字符） | `nonebot-plugin-weather` |
-| `nonebot_plugin_xxx` | Python 包名（下划线） | `nonebot_plugin_weather` |
+NoneBot 社区对于插件有一定质量要求，对于不符合要求的插件，社区成员将会要求修改，直至符合要求后才能通过审核；如果长期未更新修改，社区将会关闭当前请求，之后如需发布请重新提交发布插件请求。相应的要求会在本章节以下部分介绍。
+:::
 
-> **注意**：PyPI 包名和 Python 包名必须保持一致（仅连字符与下划线的区别）。
+:::tip[提示]
+本章节仅包含插件发布流程指导，插件开发请查阅前述章节。
+:::
 
-## 项目结构
+## 准备工作
 
-标准的 NoneBot 插件项目结构：
+### 插件命名规范
 
-```
-nonebot-plugin-xxx/
-├── nonebot_plugin_xxx/
-│   ├── __init__.py          # 插件入口
-│   ├── config.py            # 插件配置
-│   ├── model.py             # 数据模型（可选）
-│   └── ...
-├── tests/
-│   ├── conftest.py
-│   └── test_xxx.py
-├── pyproject.toml           # 项目配置
-├── README.md                # 项目说明
-└── LICENSE                  # 开源许可证
-```
+NoneBot 插件使用下述命名规范：
 
-### `__init__.py` 示例
+- 对于**项目名**，建议统一以 `nonebot-plugin-` 开头，之后为拟定的插件名字，词间用横杠 `-` 分隔；
+  - **项目名**用于代码仓库名称、PyPI 包的发布名称等；
+  - 本文使用 `nonebot-plugin-{your-plugin-name}` 为例。
+- 对于**模块名**，建议与**项目名**一致，但词间用下划线 `_` 分隔，即统一以 `nonebot_plugin_` 开头，之后为拟定的插件名字；
+  - **模块名**用于程序导入使用，应为插件文件（夹）的名称；
+  - 本文使用 `nonebot_plugin_{your_plugin_name}` 为例。
 
-```python
-from nonebot import get_plugin_config, require
-from nonebot.plugin import PluginMetadata
+### 项目结构
 
-from .config import Config
+:::tip[提示]
+本段所述的项目结构仅作推荐，不做强制要求。
+:::
 
-__plugin_meta__ = PluginMetadata(
-    name="示例插件",
-    description="这是一个示例插件",
-    usage="使用 /hello 命令",
-    type="application",
-    homepage="https://github.com/username/nonebot-plugin-xxx",
-    config=Config,
-    supported_adapters=None,  # None 表示支持所有适配器
-)
+插件程序本身结构可参考[插件结构](../tutorial/create-plugin.md#插件结构)一节，唯一区别在于，插件包可以直接处于项目顶层。
 
-plugin_config = get_plugin_config(Config)
+插件项目的一种组织结构如下：
+
+```tree
+📦 nonebot-plugin-{your-plugin-name}
+├── 📂 nonebot_plugin_{your_plugin_name}
+│   ├── 📜 __init__.py
+│   └── 📜 config.py
+├── 📜 pyproject.toml
+└── 📜 README.md
 ```
 
-## 项目模板
+功能开发可以在 `__init__.py` 中进行或在包内部创建其他模块并在 `__init__.py` 中导入。
 
-社区提供了多种项目模板，可以快速初始化插件项目：
+### 从项目模板开始
 
-### RF-Tar-Railt/nonebot-plugin-template（PDM）
+为降低新手门槛，我们提供三条清晰、完整、可复制的发布路径。
+
+:::tip[提示]
+你只需选择一条与你习惯一致的路径，**完整跟随即可成功发布**。无需在不同工具间切换或猜测配置。
+:::
+
+NoneBot 生态目前有如下插件项目模板：
+
+- [RF-Tar-Railt/nonebot-plugin-template](https://github.com/RF-Tar-Railt/nonebot-plugin-template)
+
+  此路径使用 **PDM** 项目管理器，符合 PEP 621 标准，自动化程度高。
+
+- [fllesser/nonebot-plugin-template](https://github.com/fllesser/nonebot-plugin-template)
+
+  此路径使用 **uv** 项目管理器和 **PoeThePoet** 任务运行器，构建速度快，适合追求效率的开发者。
+
+- [A-kirami/nonebot-plugin-template](https://github.com/A-kirami/nonebot-plugin-template)
+
+  此路径使用 **Poetry** 项目管理器，适合熟悉传统 Python 生态的开发者。
+
+#### 1. 创建项目
+
+1. 访问上述三个模板之一。
+2. 点击 **“Use this template”** → **“Create a new repository”**。
+3. 仓库名称填写：`nonebot-plugin-{your-plugin-name}`（此部分以 `nonebot-plugin-weather` 为例）。
+4. 点击 **“Create repository from template”**。
+
+#### 2. 配置发布权限
+
+1. 进入新仓库 → **Settings** → **Actions** → **General**。
+2. 在 **Workflow permissions** 下，勾选 **“Read and write permissions”** → 点击 **Save**。
+
+#### 3. 全局替换项目信息
+
+在仓库中点击 **“Add file”** → **“Create new file”**，创建一个空文件 `LICENSE`，选择开源协议并提交（此操作会触发工作流）。
+
+然后在本地克隆仓库，使用编辑器对以下内容进行**全局替换**：
+
+:::tip[提示]
+此部分以“天气插件”为例，实际的替换内容应该根据你所创建的插件名称等相应调整。
+:::
+
+| 原内容                         | 替换为                             |
+| ------------------------------ | ---------------------------------- |
+| `nonebot-plugin-template`      | `nonebot-plugin-weather`           |
+| `nonebot_plugin_template`      | `nonebot_plugin_weather`           |
+| `<your_plugin_humanized_name>` | `天气查询`                         |
+| `<your_plugin_description>`    | `查询指定城市的实时天气与未来预报` |
+| `<your_github>`                | `你的GitHub用户名`                 |
+| `<your_email>`                 | `你的邮箱`                         |
+
+#### 4. 安装依赖与开发
+
+<Tabs groupId="publish-path" defaultValue="pdm" values={[
+  {label: 'PDM + RF-Tar-Railt 模板', value: 'pdm'},
+  {label: 'uv + fllesser 模板', value: 'uv'},
+  {label: 'Poetry + A-kirami 模板', value: 'poetry'},
+]}>
+  <TabItem value="pdm" label="PDM + RF-Tar-Railt 模板">
 
 ```bash
-# 使用 PDM 管理依赖
-pdm init --copier gh:RF-Tar-Railt/nonebot-plugin-template
+# 安装 PDM（若未安装）
+curl -sSL https://pdm-project.org/install-pdm.py | python3 -
+
+# 安装项目依赖（自动创建虚拟环境）
+pdm sync
+
+# 添加新依赖（如 httpx）
+pdm add httpx
 ```
 
-### fllesser/nonebot-plugin-template（uv）
+</TabItem>
+
+  <TabItem value="uv" label="uv + fllesser 模板">
 
 ```bash
-# 使用 uv 管理依赖
-uvx copier copy gh:fllesser/nonebot-plugin-template ./my-plugin
+# 安装 uv（Windows）
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 安装 uv（macOS/Linux）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 安装所有依赖（含 dev）
+uv sync --all-groups -p 3.12
+
+# 添加新依赖
+uv add httpx
 ```
 
-### A-kirami/nonebot-plugin-template（Poetry）
+</TabItem>
+
+  <TabItem value="poetry" label="Poetry + A-kirami 模板">
 
 ```bash
-# 使用 Poetry 管理依赖
-# 通过 GitHub 仓库模板创建
-# 访问 https://github.com/A-kirami/nonebot-plugin-template
-# 点击 "Use this template"
-```
+# 安装 Poetry（推荐方式）
+curl -sSL https://install.python-poetry.org | python3 -
 
-## 从零开始创建
-
-### 1. 创建项目
-
-```bash
-# 使用 PDM
-mkdir nonebot-plugin-xxx && cd nonebot-plugin-xxx
-pdm init
-mkdir nonebot_plugin_xxx
-touch nonebot_plugin_xxx/__init__.py
-
-# 使用 Poetry
-poetry new nonebot-plugin-xxx
-mv nonebot_plugin_xxx/ nonebot-plugin-xxx/nonebot_plugin_xxx/
-
-# 使用 uv
-uv init nonebot-plugin-xxx
-cd nonebot-plugin-xxx
-mkdir nonebot_plugin_xxx
-touch nonebot_plugin_xxx/__init__.py
-```
-
-### 2. 配置 pyproject.toml
-
-```toml
-[project]
-name = "nonebot-plugin-xxx"
-version = "0.1.0"
-description = "NoneBot 示例插件"
-readme = "README.md"
-license = {text = "MIT"}
-requires-python = ">=3.10"
-authors = [
-    {name = "Your Name", email = "your@email.com"},
-]
-dependencies = [
-    "nonebot2>=2.3.0",
-]
-
-[project.urls]
-Homepage = "https://github.com/username/nonebot-plugin-xxx"
-Repository = "https://github.com/username/nonebot-plugin-xxx"
-
-[build-system]
-requires = ["pdm-backend"]
-build-backend = "pdm.backend"
-```
-
-### 3. 配置 GitHub Actions 权限
-
-在仓库的 `Settings > Actions > General > Workflow permissions` 中：
-
-- 选择 **Read and write permissions**
-- 勾选 **Allow GitHub Actions to create and approve pull requests**
-
-### 4. 全局替换
-
-在模板项目中执行全局替换：
-
-| 占位符 | 替换为 | 示例 |
-|--------|--------|------|
-| `plugin-xxx` | 你的插件名（连字符） | `plugin-weather` |
-| `plugin_xxx` | 你的插件名（下划线） | `plugin_weather` |
-| `username` | 你的 GitHub 用户名 | `myname` |
-| `your@email.com` | 你的邮箱 | `me@example.com` |
-
-### 5. 安装依赖
-
-```bash
-# PDM
-pdm install
-
-# Poetry
+# 安装项目依赖
 poetry install
 
-# uv
-uv sync
+# 添加新依赖
+poetry add httpx
 ```
 
-### 6. 版本管理
+</TabItem>
+</Tabs>
 
-#### 使用 bump-my-version
+#### 5. 更新版本并发布
+
+<Tabs
+  groupId="publish-path-bump"
+  defaultValue="bump-my-version"
+  values={[
+    { label: "使用 bump-my-version", value: "bump-my-version" },
+    { label: "使用项目管理器", value: "bump-manager" },
+    { label: "手动更新版本", value: "bump-manual" },
+  ]}
+>
+  <TabItem value="bump-my-version" label="使用 bump-my-version">
+
+[bump-my-version](https://github.com/callowayproject/bump-my-version) 是一个功能强大、可配置的 Python 项目版本更新工具，支持自动提交到 Git 等 VCS。
+
+<Tabs groupId="publish-path" defaultValue="pdm" values={[
+  {label: 'PDM + RF-Tar-Railt 模板', value: 'pdm'},
+  {label: 'uv + fllesser 模板', value: 'uv'},
+  {label: 'Poetry + A-kirami 模板', value: 'poetry'},
+]}>
+  <TabItem value="pdm" label="PDM + RF-Tar-Railt 模板">
 
 ```bash
-pip install bump-my-version
+# 安装 bump-my-version
+pdm add --dev bump-my-version
 
-# pyproject.toml 配置
+# 更新 patch 版本
+pdm run bump patch
+
+# 推送 tag 触发发布
+git push origin --tags
 ```
 
-```toml
-[tool.bumpversion]
-current_version = "0.1.0"
-commit = true
-tag = true
+</TabItem>
 
-[[tool.bumpversion.files]]
-filename = "pyproject.toml"
-search = 'version = "{current_version}"'
-replace = 'version = "{new_version}"'
-
-[[tool.bumpversion.files]]
-filename = "nonebot_plugin_xxx/__init__.py"
-search = '__version__ = "{current_version}"'
-replace = '__version__ = "{new_version}"'
-```
+  <TabItem value="uv" label="uv + fllesser 模板">
 
 ```bash
-# 升级补丁版本 0.1.0 -> 0.1.1
-bump-my-version bump patch
+# 更新 patch 版本
+uv run poe bump patch
 
-# 升级次版本 0.1.1 -> 0.2.0
-bump-my-version bump minor
-
-# 升级主版本 0.2.0 -> 1.0.0
-bump-my-version bump major
+# 推送 tag 触发发布
+git push origin --tags
 ```
 
-#### 使用 pdm-bump
+</TabItem>
+
+  <TabItem value="poetry" label="Poetry + A-kirami 模板">
 
 ```bash
-pdm plugin add pdm-bump
+# 安装 bump-my-version
+poetry add --dev bump-my-version
 
-# 升级版本
-pdm bump patch  # 0.1.0 -> 0.1.1
-pdm bump minor  # 0.1.1 -> 0.2.0
-pdm bump major  # 0.2.0 -> 1.0.0
+# 更新 patch 版本
+poetry run bump patch
+
+# 推送 tag 触发发布
+git push origin --tags
 ```
 
-#### 手动管理
+</TabItem>
+</Tabs>
 
-直接修改 `pyproject.toml` 中的 `version` 字段。
+</TabItem>
+  <TabItem value="bump-manager" label="使用项目管理器">
 
-### 7. 发布到 PyPI
+<Tabs groupId="publish-path" defaultValue="pdm" values={[
+  {label: 'PDM + RF-Tar-Railt 模板', value: 'pdm'},
+  {label: 'uv + fllesser 模板', value: 'uv'},
+  {label: 'Poetry + A-kirami 模板', value: 'poetry'},
+]}>
+  <TabItem value="pdm" label="PDM + RF-Tar-Railt 模板">
+
+需要安装 PDM 插件 [pdm-bump](https://github.com/carstencodes/pdm-bump)。
 
 ```bash
-# PDM
-pdm publish
+# 安装 pdm-bump
+pdm self add pdm-bump
 
-# Poetry
-poetry publish --build
+# 更新 patch 版本
+pdm bump patch
 
-# 使用 twine
-pip install build twine
-python -m build
-twine upload dist/*
+# 推送 tag 触发发布
+git push origin --tags
 ```
 
-#### GitHub Actions 自动发布
+</TabItem>
 
-```yaml
-# .github/workflows/publish.yml
-name: Publish to PyPI
+  <TabItem value="uv" label="uv + fllesser 模板">
 
-on:
-  release:
-    types: [published]
+```bash
+# 更新 patch 版本
+uv version --bump patch
 
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install build tools
-        run: pip install build
-      - name: Build
-        run: python -m build
-      - name: Publish
-        uses: pypa/gh-action-pypi-publish@release/v1
+# 创建相应提交与标签
+git add pyproject.toml
+git commit -m "chore: release v0.1.1"  # 替换为实际的版本号
+git tag v0.1.1  # 替换为实际的版本号
+
+# 推送 tag 触发发布
+git push origin --tags
 ```
+
+</TabItem>
+
+  <TabItem value="poetry" label="Poetry + A-kirami 模板">
+
+```bash
+# 更新版本（自动提交并打标签）
+poetry version patch
+
+# 推送 tag 触发发布
+git push origin --tags
+```
+
+</TabItem>
+</Tabs>
+
+</TabItem>
+  <TabItem value="bump-manual" label="手动更新版本">
+
+手动更新 `pyproject.toml` 中的 `version` 字段，然后推送 tag 触发发布工作流
+
+```bash
+git add pyproject.toml
+git commit -m "chore: release v0.1.1"  # 替换为实际的版本号
+git tag v0.1.1  # 替换为实际的版本号
+git push origin --tags
+```
+
+</TabItem>
+</Tabs>
+
+推送 `v*` 标签后，模板提供的 GitHub Actions 工作流将自动构建并发布到 PyPI。
+
+#### 6. 发布到 [PyPI](https://pypi.org)
+
+<Tabs groupId="publish-method" defaultValue="template" values={[
+  {label: '使用模板的自动发布工作流', value: 'template'},
+  {label: '手动发布', value: 'manual'},
+]}>
+  <TabItem value="template" label="使用模板的自动发布工作流">
+不同模板使用的发布方式可能不同，具体配置流程参考对应模板的详细使用指南。
+</TabItem>
+
+  <TabItem value="manual" label="手动发布">
+根据选用的构建系统，在项目的 `pyproject.toml` 中填入必要信息后进行构建与发布。
+
+:::tip[提示]
+不同构建工具的使用可能存在差别。本文仅以 [`pdm`](https://pdm-project.org/zh/latest/),
+[`poetry`](https://python-poetry.org/docs/), [`setuptools`](https://setuptools.pypa.io/en/latest/)
+构建系统**本地构建与发布**为示例讲解，其余构建/管理工具等和自动化构建的用法请读者自行探索。
+:::
+
+<Tabs groupId="publishMethod">
+  <TabItem value="poetry" label="Poetry" default>
+
+```bash
+poetry publish --build  # 构建并发布
+
+# 等效于以下两个命令
+poetry build            # 只构建
+poetry publish          # 只发布先前的构建
+```
+
+  </TabItem>
+
+  <TabItem value="pdm" label="PDM" default>
+
+```bash
+pdm publish             # 构建并发布
+
+# 等效于以下两个命令
+pdm build               # 只构建
+pdm publish --no-build  # 只发布先前的构建
+```
+
+  </TabItem>
+
+  <TabItem value="setuptools" label="Setuptools (PEP 517)" default>
+
+```bash
+pip install build twine             # 安装通用构建与发布工具
+
+python -m build --sdist --wheel .   # 只构建
+twine upload dist/*                 # 只发布先前的构建
+```
+
+  </TabItem>
+</Tabs>
+
+</TabItem>
+</Tabs>
+
+:::tip[提示]
+发布前建议自行测试构建包是否可用，避免遗漏代码文件或资源文件等问题。
+:::
 
 ## 基本要求
 
-### 正确加载
+无论你选择哪条路径，以下内容**必须**完成，否则无法通过商店自动检查：
 
-插件必须能够通过以下方式正确加载：
+### 能够正确加载
 
-```python
-nonebot.load_plugin("nonebot_plugin_xxx")
-```
+插件包必须能够被 NoneBot 正确加载，在商店审核中会通过 **NoneFlow** 自动化加载测试进行。
 
-### 使用 require() 声明依赖
+#### 依赖其他插件
 
-如果插件依赖其他 NoneBot 插件，必须使用 `require()` 显式声明：
+如果插件依赖其他插件提供的功能，则**必须**在代码中使用 `require()` 来引入该插件，然后才能 `import` 该插件提供的功能。具体细节参阅[跨插件访问](../advanced/requiring.md)。
 
-```python
+使用示例如下：
+
+```python title=nonebot_plugin_weather/__init__.py
 from nonebot import require
 
-# 在导入依赖插件之前调用 require()
-require("nonebot_plugin_localstore")
-require("nonebot_plugin_orm")
+require("nonebot_plugin_apscheduler")
 
-import nonebot_plugin_localstore as store
-from nonebot_plugin_orm import Model
+from nonebot_plugin_apscheduler import scheduler
 ```
 
-### 零配置加载
+#### 不能零配置加载的插件
 
-插件应该在不配置任何选项的情况下也能正常加载（即使功能受限）。可以在配置中提供合理的默认值：
+如果插件需要必要配置项才能正常导入，则**必须**在商店提交表单中填写必要的配置项内容。
 
-```python
-from pydantic import BaseModel
+但一种更好的做法是，**将插件设计为零配置即可加载**（允许缺少必要配置项时插件仍能正常导入，但不执行需要相应配置项的功能），尤其是对于一些必要配置含有敏感信息（如密钥、Token、API Key 等）的插件。这样可以避免在商店提交表单时填写敏感信息的风险。
 
-class Config(BaseModel):
-    weather_api_key: str = ""  # 空字符串作为默认值
-    weather_default_city: str = "北京"
-```
+### 插件元数据
 
-### PluginMetadata
+插件包**必须**填写元数据才能通过 **NoneFlow** 自动化检查。
 
-每个插件必须在 `__init__.py` 中声明 `PluginMetadata`：
+下面是一个示例：
 
-```python
+```python title=nonebot_plugin_weather/__init__.py
 from nonebot.plugin import PluginMetadata
 
 from .config import Config
 
 __plugin_meta__ = PluginMetadata(
-    name="天气查询",
-    description="查询指定城市的天气信息",
-    usage="发送 /天气 <城市名> 查询天气",
-    type="application",
-    homepage="https://github.com/username/nonebot-plugin-weather",
+    # 基本信息（必填）
+    name="天气查询",  # 插件名称
+    description="查询指定城市的实时天气与未来预报",  # 插件介绍
+    usage="发送【天气 城市名】获取天气信息",  # 插件用法
+
+    # 发布额外信息
+    type="application",  # 插件分类
+    # 发布必填，当前有效类型有：`library`（为其他插件编写提供功能），`application`（向机器人用户提供功能）。
+
+    homepage="https://github.com/你的用户名/nonebot-plugin-weather",
+    # 发布必填。
+
     config=Config,
-    supported_adapters=None,
+    # 插件配置项类，如果有配置类则必须填写。
+
+    supported_adapters={"~onebot.v11"},
+    # 支持的适配器集合，其中 `~` 在此处代表前缀 `nonebot.adapters.`，其余适配器亦按此格式填写。
+    # 若插件只使用了 NoneBot 基本抽象，应显式填写 None，否则应该列出插件支持的适配器。
 )
 ```
 
-字段说明：
+:::warning[注意]
+`__plugin_meta__` 变量**必须**处于插件最外层（如 `__init__.py` 中），否则无法正常识别。
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `name` | `str` | 是 | 插件显示名称 |
-| `description` | `str` | 是 | 插件简短描述 |
-| `usage` | `str` | 是 | 使用说明 |
-| `type` | `str` | 否 | 插件类型：`application`（功能插件）或 `library`（库插件） |
-| `homepage` | `str` | 否 | 插件主页 URL |
-| `config` | `type[BaseModel]` | 否 | 配置类 |
-| `supported_adapters` | `set[str] \| None` | 否 | 支持的适配器集合，`None` 表示全部 |
-| `extra` | `dict` | 否 | 额外信息 |
+一般做法是在 `__init__.py` 中定义 `__plugin_meta__`。
+:::
 
-### inherit_supported_adapters()
+#### 继承其他插件支持的适配器
 
-如果插件依赖了限定适配器的插件，使用 `inherit_supported_adapters()` 自动继承适配器支持范围：
+如果你的插件依赖于其他插件提供的支持功能，而其他插件可能支持更少的适配器，这时就应该使用
+[inherit_supported_adapters()](../api/plugin/load#inherit-supported-adapters) 函数来继承其他插件支持的适配器。
 
-```python
+示例用法如下：
+
+```python title=nonebot_plugin_weather/__init__.py
+from nonebot import require
 from nonebot.plugin import PluginMetadata, inherit_supported_adapters
 
+from .config import Config
+
+require("nonebot_plugin_alconna")  # 必须先 require 才能被 inherit_supported_adapters 处理
+
 __plugin_meta__ = PluginMetadata(
-    name="示例插件",
-    description="依赖 OneBot 适配器的插件",
-    usage="/hello",
+    name="天气查询",
+    description="查询指定城市的实时天气与未来预报",
+    usage="发送【天气 城市名】获取天气信息",
     type="application",
-    homepage="https://github.com/username/nonebot-plugin-xxx",
+    homepage="https://github.com/你的用户名/nonebot-plugin-weather",
     config=Config,
-    supported_adapters=inherit_supported_adapters(
-        "nonebot.adapters.onebot.v11",
-        "nonebot.adapters.onebot.v12",
-    ),
+
+    supported_adapters=inherit_supported_adapters("nonebot_plugin_alconna"),
+    # 继承 nonebot_plugin_alconna 插件的适配器支持列表
 )
 ```
 
-### README 要求
+### 准备项目主页
 
-README.md 应包含以下内容：
+通常可以使用 GitHub 项目页面作为项目主页，在 `README.md` 文件中编写插件介绍等内容。
 
-- 插件名称和描述
+内容大致包括：
+
+- 插件功能介绍；
 - 安装方法
-- 配置说明（列出所有配置项及默认值）
-- 使用方法和命令列表
-- 示例截图（可选）
-- 许可证
+  - **必须**有 NB-CLI 方式安装
+  - 可选依赖可以给出其他安装方式
+  - **不得**使用旧式的 `bot.py` 配置
+- 插件配置项（如 `Config` 类字段，若无可跳过）
+- 插件设置的触发规则（若无可跳过）
+- 插件的其它用法（按需编写）
+- 效果图、权限说明（按需编写）
 
 ## 质量要求
 
-### 依赖管理
+以下内容**强烈建议**完成，否则社区成员将会要求修改：
 
-- 在 `pyproject.toml` 中正确声明所有运行时依赖
-- 使用版本范围约束（如 `nonebot2>=2.3.0`），避免锁定特定版本
-- 不要依赖未发布或私有包
+### 依赖管理原则
 
-### 禁止同步阻塞操作
+- **必须**包含 `nonebot2`。
+- **必须**将插件直接使用的适配器加入依赖列表，如：使用 OneBot 适配器的插件应添加 `nonebot-adapter-onebot` 依赖；
+- **禁止**使用 `==` 锁定单一版本，使用 `>=` 或 `~=`。
+- **禁止**添加 `nonebot`（V1）作为依赖。
+- 所有在代码中 `import` 的第三方库，必须在 `pyproject.toml` 的 `dependencies` 中列出。
 
-插件中的所有 I/O 操作必须使用异步方式：
+### 避免误用同步操作
 
-```python
-# 错误：同步 HTTP 请求
-import requests
-resp = requests.get("https://api.example.com")
+NoneBot 是一个异步框架，插件中**禁止**使用任何可能阻塞事件循环的同步操作，例如：
 
-# 正确：异步 HTTP 请求
-import httpx
-async with httpx.AsyncClient() as client:
-    resp = await client.get("https://api.example.com")
-```
+- 同步 HTTP 请求（如 `requests` 库）；
 
-```python
-# 错误：同步文件操作（大文件）
-with open("large_file.txt") as f:
-    data = f.read()
+  **推荐**操作（以 `httpx` 为例）：
 
-# 正确：使用 anyio 异步文件操作
-import anyio
-data = await anyio.Path("large_file.txt").read_text()
-```
+  ```python
+  import httpx
 
-### 使用 localstore 管理文件存储
+  async with httpx.AsyncClient() as client:
+      response = await client.get("https://api.example.com/data")  # 异步操作，不阻塞机器人
+  ```
 
-插件的持久化文件应使用 `nonebot-plugin-localstore` 管理路径：
+  **禁止**操作：
 
-```python
+  ```python
+  import requests
+
+  requests.get("https://api.example.com/data")  # 同步操作，会阻塞机器人
+  ```
+
+- 其他可能长时间运行阻塞事件循环的操作。
+
+### 本地文件存储
+
+如果插件需要在本地存储数据、配置或缓存文件，**必须**使用 [`nonebot-plugin-localstore`](https://github.com/nonebot/plugin-localstore) 管理，具体细节参阅[本地存储](../best-practice/data-storing.md)章节。
+
+参考示例：
+
+```python title=nonebot_plugin_weather/__init__.py
+from pathlib import Path
 from nonebot import require
 require("nonebot_plugin_localstore")
 
 import nonebot_plugin_localstore as store
 
-# 获取插件数据目录
-data_dir = store.get_plugin_data_dir()
-cache_dir = store.get_plugin_cache_dir()
+# 获取插件缓存文件（夹）路径
+weather_cache_dir: Path = store.get_plugin_cache_dir()
+weather_cache_file: Path = store.get_plugin_cache_file("cache.json")
 
-# 在数据目录中读写文件
-data_file = data_dir / "data.json"
+# 获取插件配置文件（夹）路径
+weather_config_dir: Path = store.get_plugin_config_dir()
+weather_config_file: Path = store.get_plugin_config_file("config.toml")
+
+# 获取插件数据文件（夹）路径
+weather_data_dir: Path = store.get_plugin_data_dir()
+weather_data_file: Path = store.get_plugin_data_file("resource-index.json")
 ```
 
-## 提交到插件商店
+## 商店审核
 
-### 前提条件
+### 提交申请
 
-1. 插件已发布到 PyPI
-2. 满足上述所有基本要求和质量要求
-3. 有完善的 README
+完成在 PyPI 的插件发布流程后，前往[商店](/store/plugins)页面，切换到插件页签，点击 **发布插件** 按钮。
 
-### 提交流程
+在弹出的插件信息提交表单内，填入您所要发布的相应插件信息。请注意，如果插件需要必要配置项才能正常导入，请在“插件配置项”中填写必要的内容（请勿填写密钥等敏感信息）。
 
-1. 前往 [NoneBot 商店](https://nonebot.dev/store/plugins)
-2. 点击「发布插件」
-3. 填写插件信息：
-   - **PyPI 包名**：如 `nonebot-plugin-weather`
-   - **import 包名**：如 `nonebot_plugin_weather`
-   - **项目主页**：GitHub 仓库地址
-   - **标签**：为插件添加合适的分类标签
-4. 提交后会自动创建 Pull Request 到 [nonebot/registry](https://github.com/nonebot/registry)
-5. 自动化检查通过后，等待维护者审核合并
+完成填写后，点击 **发布** 按钮，这将自动跳转 NoneBot 仓库内的“发布插件”页面。确认信息无误后点击页面下方的 `Submit new issue` 按钮进行最终提交即可。
 
-### 自动化检查项
+### 等待插件审核
 
-商店会对提交的插件执行以下自动化检查：
+插件发布 Issue 创建后，将会经过 **NoneFlow Bot** 的自动前置检查，以确保插件信息正确无误、插件能被正确加载。
 
-- 包是否能在 PyPI 上找到
-- 插件是否能正确加载
-- 是否声明了 `PluginMetadata`
-- 配置类是否可用
-- 支持的适配器是否正确
+:::tip[提示]
+若插件检查未通过或信息有误，**不必**关闭当前 Issue。只需更新插件并上传到 PyPI/修改信息后勾选插件测试勾选框即可重新触发插件检查。
+:::
 
-如果检查未通过，请根据错误提示修复问题后重新提交。
+之后，NoneBot 的维护者和一些志愿者会初步检查插件代码，帮助减少该插件的问题。
+
+完成这些步骤后，您的插件将会被自动合并到[商店](/store/plugins)，而您也将成为 [**NoneBot 贡献者**](https://github.com/nonebot/nonebot2/graphs/contributors)的一员。

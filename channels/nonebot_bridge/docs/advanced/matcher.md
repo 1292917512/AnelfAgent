@@ -1,422 +1,334 @@
+<!-- source: https://nonebot.dev/docs/advanced/matcher -->
+
 # 事件响应器进阶
 
-事件响应器（Matcher）是 NoneBot 事件处理的核心组件。本文详细介绍 Matcher 的高级用法，包括组成要素、内置规则和分组。
+在[指南](../tutorial/matcher.md)与[深入](../appendices/rule.md)中，我们已经介绍了事件响应器的基本用法以及响应规则、权限控制等功能。在这一节中，我们将介绍事件响应器的组成，内置的响应规则，与第三方响应规则拓展。
 
-## Matcher 的组成要素
+:::tip[提示]
+事件响应器允许继承，你可以通过直接继承 `Matcher` 类来创建一个新的事件响应器。
+:::
 
-创建 Matcher 时可以指定以下参数：
+## 事件响应器组成
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `type` | `str` | 响应的事件类型 |
-| `rule` | `Rule \| T_RuleChecker` | 事件响应规则 |
-| `permission` | `Permission \| T_PermissionChecker` | 事件触发权限 |
-| `priority` | `int` | 优先级（数字越小越优先，默认 `1`） |
-| `block` | `bool` | 是否阻止更低优先级的 Matcher |
-| `temp` | `bool` | 是否为临时 Matcher（响应一次后销毁） |
-| `expire_time` | `datetime \| timedelta \| None` | 过期时间 |
-| `default_state` | `T_State \| None` | 默认状态字典 |
+### 事件响应器类型
 
-### type — 事件类型
+事件响应器类型 `type` 即是该响应器所要响应的事件类型，只有在接收到的事件类型与该响应器的类型相同时，才会触发该响应器。如果类型为空字符串 `""`，则响应器将会响应所有类型的事件。事件响应器类型的检查在所有其他检查（权限控制、响应规则）之前进行。
 
-```python
-from nonebot import on
+NoneBot 内置了四种常用事件类型：`meta_event`、`message`、`notice`、`request`，分别对应元事件、消息、通知、请求。通常情况下，协议适配器会将事件合理地分类至这四种类型中。如果有其他类型的事件需要响应，可以自行定义新的类型。
 
-# 仅响应消息事件
-matcher = on("message")
+### 事件触发权限
 
-# 仅响应通知事件
-matcher = on("notice")
+事件触发权限 `permission` 是一个 `Permission` 对象，这在[权限控制](../appendices/permission.mdx)一节中已经介绍过。事件触发权限会在事件响应器的类型检查通过后进行检查，如果权限检查通过，则执行响应规则检查。
 
-# 仅响应请求事件
-matcher = on("request")
+### 事件响应规则
 
-# 响应所有事件（空字符串）
-matcher = on("")
-```
+事件响应规则 `rule` 是一个 `Rule` 对象，这在[响应规则](../appendices/rule.md)一节中已经介绍过。事件响应器的响应规则会在事件响应器的权限检查通过后进行匹配，如果响应规则检查通过，则触发该响应器。
 
-常用的快捷方式已预定义了 `type`：
+### 响应优先级
 
-| 快捷函数 | 等价 type |
-|---------|----------|
-| `on_message()` | `"message"` |
-| `on_notice()` | `"notice"` |
-| `on_request()` | `"request"` |
-| `on_metaevent()` | `"meta_event"` |
+响应优先级 `priority` 是一个正整数，用于指定响应器的优先级。响应器的优先级越小，越先被触发。如果响应器的优先级相同，则按照响应器的注册顺序进行触发。
 
-### priority — 优先级
+### 阻断
 
-```python
-from nonebot import on_message
+阻断 `block` 是一个布尔值，用于指定响应器是否阻断事件的传播。如果阻断为 `True`，则在该响应器被触发后，事件将不会再传播给其他下一优先级的响应器。
 
-# 高优先级（先执行）
-high = on_message(priority=1)
+NoneBot 内置的事件响应器中，所有非 `command` 规则的 `message` 类型的事件响应器都会阻断事件传递，其他则不会。
 
-# 低优先级（后执行）
-low = on_message(priority=10)
-```
+在部分情况中，可以使用 [`stop_propagation`](../appendices/session-control.mdx#stop_propagation) 方法动态阻止事件传播，该方法需要 handler 在参数中获取 matcher 实例后调用方法。
 
-### block — 阻断传播
+### 有效期
 
-```python
-from nonebot import on_command
+事件响应器的有效期分为 `temp` 和 `expire_time` 。`temp` 是一个布尔值，用于指定响应器是否为临时响应器。如果为 `True`，则该响应器在被触发后会被自动销毁。`expire_time` 是一个 `datetime` 对象，用于指定响应器的过期时间。如果 `expire_time` 不为 `None`，则在该时间点后，该响应器会被自动销毁。
 
-# block=True：响应后阻止低优先级 Matcher
-cmd = on_command("help", priority=5, block=True)
+### 默认状态
 
-# block=False：响应后继续传播到更低优先级
-cmd2 = on_command("hello", priority=5, block=False)
-```
+事件响应器的默认状态 `default_state` 是一个 `dict` 对象，用于指定响应器的默认状态。在响应器被触发时，响应器将会初始化默认状态然后开始执行事件处理流程。
 
-> `on_command()` 等快捷函数默认 `block=True`。
+## 基本辅助函数
 
-### temp — 临时 Matcher
+NoneBot 为四种类型的事件响应器提供了五个基本的辅助函数：
 
-```python
-from nonebot import on_message
+- `on`：创建任何类型的事件响应器。
+- `on_metaevent`：创建元事件响应器。
+- `on_message`：创建消息事件响应器。
+- `on_request`：创建请求事件响应器。
+- `on_notice`：创建通知事件响应器。
 
-# 响应一次后自动销毁
-temp_matcher = on_message(temp=True)
-```
+除了 `on` 函数具有一个 `type` 参数外，其余参数均相同：
 
-### expire_time — 过期时间
+- `rule`：响应规则，可以是 `Rule` 对象或者 `RuleChecker` 函数。
+- `permission`：事件触发权限，可以是 `Permission` 对象或者 `PermissionChecker` 函数。
+- `handlers`：事件处理函数列表。
+- `temp`：是否为临时响应器。
+- `expire_time`：响应器的过期时间。
+- `priority`：响应器的优先级。
+- `block`：是否阻断事件传播。
+- `state`：响应器的默认状态。
 
-```python
-from datetime import datetime, timedelta
-from nonebot import on_message
-
-# 10 分钟后过期
-matcher = on_message(
-    temp=True,
-    expire_time=timedelta(minutes=10),
-)
-
-# 指定具体过期时间
-matcher = on_message(
-    temp=True,
-    expire_time=datetime(2025, 12, 31, 23, 59, 59),
-)
-```
-
-### default_state — 默认状态
-
-```python
-from nonebot import on_command
-
-cmd = on_command("greet", default_state={"greeting": "你好"})
-
-@cmd.handle()
-async def handle(state: dict):
-    greeting = state.get("greeting", "Hi")
-    await cmd.finish(greeting)
-```
+在消息类型的事件响应器的基础上，NoneBot 还内置了一些常用的响应规则，并结合为辅助函数来方便我们快速创建指定功能的响应器。下面我们逐个介绍。
 
 ## 内置响应规则
 
-NoneBot 提供了丰富的内置响应规则，可单独使用或组合使用。
+:::tip
+响应规则的使用方法可以参考 [深入 - 响应规则](../appendices/rule.md)。
+:::
 
-### startswith — 消息前缀匹配
+### `startswith`
+
+`startswith` 响应规则用于匹配消息纯文本部分的开头是否与指定字符串（或一系列字符串）相同。可选参数 `ignorecase` 用于指定是否忽略大小写，默认为 `False`。
+
+例如，我们可以创建一个匹配消息开头为 `!` 或者 `/` 的规则：
+
+```python
+from nonebot.rule import startswith
+
+rule = startswith(("!", "/"), ignorecase=False)
+```
+
+也可以直接使用辅助函数新建一个响应器：
 
 ```python
 from nonebot import on_startswith
 
-# 匹配以 "你好" 开头的消息
-matcher = on_startswith("你好")
-
-# 匹配多个前缀
-matcher = on_startswith(("你好", "hello", "hi"))
-
-# 忽略大小写
-matcher = on_startswith("hello", ignorecase=True)
+matcher = on_startswith(("!", "/"), ignorecase=False)
 ```
 
-### endswith — 消息后缀匹配
+### `endswith`
+
+`endswith` 响应规则用于匹配消息纯文本部分的结尾是否与指定字符串（或一系列字符串）相同。可选参数 `ignorecase` 用于指定是否忽略大小写，默认为 `False`。
+
+例如，我们可以创建一个匹配消息结尾为 `.` 或者 `。` 的规则：
+
+```python
+from nonebot.rule import endswith
+
+rule = endswith((".", "。"), ignorecase=False)
+```
+
+也可以直接使用辅助函数新建一个响应器：
 
 ```python
 from nonebot import on_endswith
 
-# 匹配以 "吗" 结尾的消息
-matcher = on_endswith("吗")
-
-# 匹配多个后缀
-matcher = on_endswith(("吗", "呢", "啊"))
+matcher = on_endswith((".", "。"), ignorecase=False)
 ```
 
-### fullmatch — 完整匹配
+### `fullmatch`
+
+`fullmatch` 响应规则用于匹配消息纯文本部分是否与指定字符串（或一系列字符串）完全相同。可选参数 `ignorecase` 用于指定是否忽略大小写，默认为 `False`。
+
+例如，我们可以创建一个匹配消息为 `ping` 或者 `pong` 的规则：
+
+```python
+from nonebot.rule import fullmatch
+
+rule = fullmatch(("ping", "pong"), ignorecase=False)
+```
+
+也可以直接使用辅助函数新建一个响应器：
 
 ```python
 from nonebot import on_fullmatch
 
-# 完整匹配 "签到"
-matcher = on_fullmatch("签到")
-
-# 匹配多个
-matcher = on_fullmatch(("签到", "打卡"))
-
-# 忽略大小写
-matcher = on_fullmatch("Hello", ignorecase=True)
+matcher = on_fullmatch(("ping", "pong"), ignorecase=False)
 ```
 
-### keyword — 关键词匹配
+### `keyword`
+
+`keyword` 响应规则用于匹配消息纯文本部分是否包含指定字符串（或一系列字符串）。
+
+例如，我们可以创建一个匹配消息中包含 `hello` 或者 `hi` 的规则：
+
+```python
+from nonebot.rule import keyword
+
+rule = keyword("hello", "hi")
+```
+
+也可以直接使用辅助函数新建一个响应器：
 
 ```python
 from nonebot import on_keyword
 
-# 消息中包含任一关键词即触发
-matcher = on_keyword({"天气", "气温", "下雨"})
+matcher = on_keyword({"hello", "hi"})
 ```
 
-### command — 命令匹配
+### `command`
+
+`command` 是最常用的响应规则，它用于匹配消息是否为命令。它会根据配置中的 [Command Start 和 Command Separator](../appendices/config.mdx#command-start-和-command-separator) 来判断消息是否为命令。
+
+例如，当我们配置了 `Command Start` 为 `/`，`Command Separator` 为 `.` 时：
+
+```python
+from nonebot.rule import command
+
+# 匹配 "/help" 或者 "/帮助" 开头的消息
+rule = command("help", "帮助")
+# 匹配 "/help.cmd" 开头的消息
+rule = command(("help", "cmd"))
+```
+
+也可以直接使用辅助函数新建一个响应器：
 
 ```python
 from nonebot import on_command
 
-# 匹配 /help 命令
-matcher = on_command("help")
-
-# 命令别名
-matcher = on_command("help", aliases={"帮助", "usage"})
-
-# 多级命令
-matcher = on_command(("admin", "ban"))  # 匹配 /admin.ban
+matcher = on_command("help", aliases={"帮助"})
 ```
 
-命令前缀由 `COMMAND_START` 配置决定：
+此外，`command` 响应规则默认允许消息命令与参数间不加空格，如果需要严格匹配命令与参数间的空白符，可以使用 `command` 函数的 `force_whitespace` 参数。`force_whitespace` 参数可以是 bool 类型或者具体的字符串，默认为 `False`。如果为 `True`，则命令与参数间必须有任意个数的空白符；如果为字符串，则命令与参数间必须有且与给定字符串一致的空白符。
 
-```dotenv
-COMMAND_START=["/", "!", ""]
-COMMAND_SEP=["."]
+```python
+rule = command("help", force_whitespace=True)
+rule = command("help", force_whitespace=" ")
 ```
 
-### shell_command — Shell 风格命令
+命令解析后的结果可以通过 [`Command`](./dependency.mdx#command)、[`RawCommand`](./dependency.mdx#rawcommand)、[`CommandArg`](./dependency.mdx#commandarg)、[`CommandStart`](./dependency.mdx#commandstart)、[`CommandWhitespace`](./dependency.mdx#commandwhitespace) 依赖注入获取。
+
+### `shell_command`
+
+`shell_command` 响应规则用于匹配类 shell 命令形式的消息。它首先与 [`command`](#command) 响应规则一样进行命令匹配，如果匹配成功，则会进行进一步的参数解析。参数解析采用 `argparse` 标准库进行，在此基础上添加了消息序列 `Message` 支持。
+
+例如，我们可以创建一个匹配 `/cmd` 命令并且带有 `-v` 选项与默认 `-h` 帮助选项的规则：
+
+```python
+from nonebot.rule import shell_command, ArgumentParser
+
+parser = ArgumentParser()
+parser.add_argument("-v", "--verbose", action="store_true")
+
+rule = shell_command("cmd", parser=parser)
+```
+
+更多关于 `argparse` 的使用方法请参考 [argparse 文档](https://docs.python.org/zh-cn/3/library/argparse.html)。我们也可以选择不提供 `parser` 参数，这样 `shell_command` 将不会解析参数，但会提供参数列表 `argv`。
+
+直接使用辅助函数新建一个响应器：
 
 ```python
 from nonebot import on_shell_command
 from nonebot.rule import ArgumentParser
 
 parser = ArgumentParser()
-parser.add_argument("name", type=str)
-parser.add_argument("-t", "--times", type=int, default=1)
-parser.add_argument("-f", "--flag", action="store_true")
+parser.add_argument("-v", "--verbose", action="store_true")
 
-matcher = on_shell_command("greet", parser=parser)
+matcher = on_shell_command("cmd", parser=parser)
 ```
 
-### regex — 正则匹配
+参数解析后的结果可以通过 [`ShellCommandArgv`](./dependency.mdx#shellcommandargv)、[`ShellCommandArgs`](./dependency.mdx#shellcommandargs) 依赖注入获取。
+
+### `regex`
+
+`regex` 响应规则用于匹配消息是否与指定正则表达式匹配。
+
+:::tip[提示]
+正则表达式匹配使用 search 而非 match，如需从头匹配请使用 `r"^xxx"` 模式来确保匹配开头。
+:::
+
+例如，我们可以创建一个匹配消息中包含字母并且忽略大小写的规则：
+
+```python
+from nonebot.rule import regex
+
+rule = regex(r"[a-z]+", flags=re.IGNORECASE)
+```
+
+也可以直接使用辅助函数新建一个响应器：
 
 ```python
 from nonebot import on_regex
 
-# 正则匹配
-matcher = on_regex(r"^(\d+)\s*\+\s*(\d+)$")
-
-# 忽略大小写
-matcher = on_regex(r"^hello\s+(\w+)$", flags=re.IGNORECASE)
+matcher = on_regex(r"[a-z]+", flags=re.IGNORECASE)
 ```
 
-### to_me — @机器人
+正则匹配后的结果可以通过 [`RegexStr`](./dependency.mdx#regexstr)、[`RegexGroup`](./dependency.mdx#regexgroup)、[`RegexDict`](./dependency.mdx#regexdict) 依赖注入获取。
+
+### `to_me`
+
+`to_me` 响应规则用于匹配事件是否与机器人相关。
+
+例如：
 
 ```python
-from nonebot import on_message
 from nonebot.rule import to_me
 
-# 仅当 @机器人 时触发
-matcher = on_message(rule=to_me())
+rule = to_me()
 ```
 
-### is_type — 事件类型匹配
+### `is_type`
+
+`is_type` 响应规则用于匹配事件类型是否为指定类型（或者一系列类型）。
+
+例如，我们可以创建一个匹配 OneBot v11 私聊和群聊消息事件的规则：
 
 ```python
-from nonebot import on
 from nonebot.rule import is_type
-from nonebot.adapters.onebot.v11 import GroupMessageEvent
+from nonebot.adapters.onebot.v11 import PrivateMessageEvent, GroupMessageEvent
 
-# 仅匹配群消息事件
-matcher = on(rule=is_type(GroupMessageEvent))
+rule = is_type(PrivateMessageEvent, GroupMessageEvent)
 ```
 
-## 规则组合
+## 响应器组
 
-规则之间可以使用 `&`（与）、`|`（或）、`~`（非）组合：
+为了更方便的管理一系列功能相近的响应器，NoneBot 提供了两种响应器组，它们可以帮助我们进行响应器的统一管理。
 
-```python
-from nonebot import on_message
-from nonebot.rule import to_me, keyword, startswith
+### `CommandGroup`
 
-# 同时满足 @机器人 和 包含关键词
-matcher = on_message(rule=to_me() & keyword("你好"))
+`CommandGroup` 可以用于管理一系列具有相同前置命令的子命令响应器。
 
-# 满足任一条件
-matcher = on_message(rule=startswith("!") | startswith("/"))
-
-# 取反
-matcher = on_message(rule=~to_me())  # 非 @机器人
-```
-
-## CommandGroup — 命令组
-
-`CommandGroup` 用于创建一组共享前缀的命令。
+例如，我们创建 `/cmd`、`/cmd.sub`、`/cmd.help` 三个命令，他们具有相同的优先级：
 
 ```python
 from nonebot import CommandGroup
 
-# 创建命令组，共享配置
-weather = CommandGroup(
-    "weather",
-    priority=5,
-    block=True,
-)
+group = CommandGroup("cmd", priority=10)
 
-# 创建子命令：/weather.query
-query = weather.command("query", aliases={"查询"})
-
-# 创建子命令：/weather.sub
-subscribe = weather.command("sub", aliases={"订阅"})
-
-# 创建子命令：/weather.unsub
-unsubscribe = weather.command("unsub", aliases={"取消订阅"})
-
-@query.handle()
-async def handle_query():
-    await query.finish("天气查询功能")
-
-@subscribe.handle()
-async def handle_sub():
-    await subscribe.finish("已订阅天气")
-
-@unsubscribe.handle()
-async def handle_unsub():
-    await unsubscribe.finish("已取消订阅")
+cmd = group.command(tuple())
+sub_cmd = group.command("sub")
+help_cmd = group.command("help")
 ```
 
-### CommandGroup 参数
+命令别名 aliases 默认不会添加 `CommandGroup` 设定的前缀，如果需要为 aliases 添加前缀，可以添加 `prefix_aliases=True` 参数:
 
 ```python
-group = CommandGroup(
-    "admin",
-    prefix_aliases=True,  # 是否共享前缀别名
-    # 以下参数会被所有子命令继承
-    rule=to_me(),
-    permission=SUPERUSER,
-    priority=1,
-    block=True,
-)
+from nonebot import CommandGroup
 
-# 子命令可以覆盖继承的参数
-ban = group.command("ban", priority=2)
-kick = group.command("kick", permission=None)
+group = CommandGroup("cmd", prefix_aliases=True)
+
+cmd = group.command(tuple())
+help_cmd = group.command("help", aliases={"帮助"})
 ```
 
-## MatcherGroup — 响应器组
+这样就能成功匹配 `/cmd`、`/cmd.help`、`/cmd.帮助` 命令。如果未设置，将默认匹配 `/cmd`、`/cmd.help`、`/帮助` 命令。
 
-`MatcherGroup` 用于创建一组共享配置的事件响应器。
+### `MatcherGroup`
+
+`MatcherGroup` 可以用于管理一系列具有相同属性的响应器。
+
+例如，我们创建一个具有相同响应规则的响应器组：
 
 ```python
+from nonebot.rule import to_me
 from nonebot import MatcherGroup
 
-# 创建响应器组
-group = MatcherGroup(
-    priority=10,
-    block=True,
-)
+group = MatcherGroup(rule=to_me())
 
-# 使用不同的快捷方式创建 Matcher
-cmd = group.on_command("hello")
-msg = group.on_message()
-kw = group.on_keyword({"test"})
-
-# 所有 Matcher 共享 priority=10 和 block=True
+matcher1 = group.on_message()
+matcher2 = group.on_message()
 ```
 
-### MatcherGroup 支持的方法
+## 第三方响应规则
 
-```python
-group = MatcherGroup(priority=5)
+### Alconna
 
-group.on()                    # 通用 Matcher
-group.on_message()            # 消息事件
-group.on_notice()             # 通知事件
-group.on_request()            # 请求事件
-group.on_metaevent()          # 元事件
-group.on_startswith("hi")     # 前缀匹配
-group.on_endswith("bye")      # 后缀匹配
-group.on_fullmatch("ok")     # 完整匹配
-group.on_keyword({"test"})   # 关键词匹配
-group.on_command("cmd")       # 命令匹配
-group.on_shell_command("sh")  # Shell 命令
-group.on_regex(r"pattern")    # 正则匹配
-```
+[`nonebot-plugin-alconna`](https://github.com/nonebot/plugin-alconna) 是一类提供了拓展响应规则的插件。
+该插件使用 [Alconna](https://github.com/ArcletProject/Alconna) 作为命令解析器，
+是一个简单、灵活、高效的命令参数解析器, 并且不局限于解析命令式字符串。
 
-## Alconna 第三方规则
+该插件提供了一类新的事件响应器辅助函数 `on_alconna`，以及 `AlconnaResult` 等依赖注入函数。
 
-[nonebot-plugin-alconna](https://github.com/nonebot/plugin-alconna) 提供了更强大的命令解析能力：
+基于 `Alconna` 的特性，该插件同时提供了一系列便捷的消息段标注。
+标注可用于在 `Alconna` 中匹配消息中除 text 外的其他消息段，也可用于快速创建各适配器下的消息段。所有标注位于 `nonebot_plugin_alconna.adapters` 中。
 
-```python
-from nonebot import require
+该插件同时通过提供 `UniMessage` (通用消息模型) 实现了**跨平台接收和发送消息**的功能。
 
-require("nonebot_plugin_alconna")
-
-from nonebot_plugin_alconna import on_alconna, UniMessage
-from arclet.alconna import Alconna, Args, Option, Subcommand
-
-# 定义命令
-alc = Alconna(
-    "weather",
-    Args["city", str],
-    Option("-d|--days", Args["days", int, 3]),
-)
-
-matcher = on_alconna(alc)
-
-@matcher.handle()
-async def handle(city: str, days: int = 3):
-    await matcher.finish(f"查询 {city} 未来 {days} 天的天气")
-```
-
-### Alconna 的优势
-
-| 特性 | 内置 command | Alconna |
-|------|-------------|---------|
-| 参数类型检查 | ❌ | ✅ |
-| 子命令 | 需手动实现 | ✅ 原生支持 |
-| 选项/标志 | 需 shell_command | ✅ 更灵活 |
-| 模糊匹配 | ❌ | ✅ |
-| 自动补全 | ❌ | ✅ |
-| 跨适配器消息 | ❌ | ✅ UniMessage |
-| 帮助信息生成 | 需手动 | ✅ 自动 |
-
-### Alconna 复杂命令示例
-
-```python
-from arclet.alconna import Alconna, Args, Option, Subcommand
-
-cmd = Alconna(
-    "admin",
-    Subcommand(
-        "user",
-        Subcommand(
-            "ban",
-            Args["target", str]["duration?", int],
-            Option("--reason|-r", Args["reason", str]),
-        ),
-        Subcommand(
-            "unban",
-            Args["target", str],
-        ),
-        Subcommand(
-            "info",
-            Args["target", str],
-        ),
-    ),
-    Subcommand(
-        "config",
-        Option("--set|-s", Args["key", str]["value", str]),
-        Option("--get|-g", Args["key", str]),
-    ),
-)
-
-# 可匹配：
-# /admin user ban @user 3600 --reason 违规
-# /admin user unban @user
-# /admin config --set welcome_msg "欢迎！"
-```
+详情请阅读最佳实践中的 [命令解析拓展](../best-practice/alconna/README.mdx) 章节。

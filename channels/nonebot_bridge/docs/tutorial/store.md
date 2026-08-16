@@ -2,156 +2,261 @@
 
 # 获取商店内容
 
-> 如果你暂时没有获取商店内容的需求，可以跳过本章节。
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+import Asciinema from "@site/src/components/Asciinema";
 
-NoneBot 提供了一个 [商店](https://nonebot.dev/store/plugins)，商店内容均由社区开发者贡献。你可以在商店中查找你需要的适配器和插件等，进行安装或者参考其文档。
+:::tip[提示]
 
-商店中每个内容的卡片都包含了其名称和简介等信息，点击卡片右上角链接图标即可跳转到其主页。
+如果你暂时没有获取商店内容的需求，可以跳过本章节。
 
-NB-CLI 也提供了一个 TUI 版本的商店界面，可通过以下命令进入：
+:::
 
-```bash
-nb adapter store   # 适配器商店
-nb plugin store    # 插件商店
-nb driver store    # 驱动器商店
-```
+NoneBot 提供了一个[商店](/store/plugins)，商店内容均由社区开发者贡献。你可以在商店中查找你需要的适配器和插件等，进行安装或者参考其文档等。
+
+商店中每个内容的卡片都包含了其名称和简介等信息，点击**卡片右上角**链接图标即可跳转到其主页。
+
+与此同时，NB-CLI 也提供了一个 TUI 版本的商店界面，可通过 `nb adapter store`、`nb plugin store`、`nb driver store` 命令或 CLI
+交互式界面进入。其提供了接近网页商店的体验，同时允许快捷安装到当前项目。
 
 ## 安装插件
 
-### 使用 nb-cli 命令安装
+<Asciinema
+  url="https://asciinema.org/a/569650.cast"
+  options={{ theme: "monokai", poster: "npt:16.8" }}
+/>
+
+在商店插件页面中，点击你需要安装的插件下方的 `点击复制安装命令` 按钮，即可复制 `nb-cli` 命令。
+
+请在你的**项目目录**下执行该命令。`nb-cli` 会自动安装插件并将其添加到加载列表中。
+
+<Tabs groupId="cli-install">
+  <TabItem value="cli" label="使用命令" default>
 
 ```bash
 nb plugin install <插件名称>
 ```
 
-### 使用交互式安装
+  </TabItem>
+  <TabItem value="interactive" label="交互式安装">
 
 ```bash
-nb plugin install
-# 进入交互式界面选择插件
+$ nb plugin install
+[?] 想要安装的插件名称: <插件名称>
 ```
 
-### 使用 pip 安装
+  </TabItem>
+  <TabItem value="pip" label="使用 pip">
 
 ```bash
 pip install <插件包名>
 ```
 
-> 使用 pip 安装时，你需要手动将插件添加到加载列表中。
+插件包名可以在商店插件卡片中找到，或者使用 `nb-cli` 搜索插件显示的详情中找到。安装完成后，需要参考[加载插件章节](./create-plugin.md#加载插件)自行加载。
 
-### 查看插件列表
+  </TabItem>
+</Tabs>
+
+如果想要查看插件列表，可以使用以下命令
 
 ```bash
 # 列出商店所有插件
 nb plugin list
-
 # 搜索商店插件
 nb plugin search [可选关键词]
 ```
 
-### 升级插件
+升级和卸载插件可以使用以下命令
+
+<Tabs groupId="cli-install">
+  <TabItem value="cli" label="使用命令" default>
 
 ```bash
-# 使用 nb-cli
 nb plugin update <插件名称>
-
-# 使用 pip
-pip install --upgrade <插件包名>
+nb plugin uninstall <插件名称>
 ```
 
-### 卸载插件
+  </TabItem>
+  <TabItem value="interactive" label="交互式安装">
 
 ```bash
-# 使用 nb-cli
-nb plugin uninstall <插件名称>
+$ nb plugin update
+[?] 想要安装的插件名称: <插件名称>
+$ nb plugin uninstall
+[?] 想要卸载的插件名称: <插件名称>
+```
 
-# 使用 pip
+  </TabItem>
+  <TabItem value="pip" label="使用 pip">
+
+```bash
+pip install --upgrade <插件包名>
 pip uninstall <插件包名>
 ```
 
+插件包名可以在商店插件卡片中找到，或者使用 `nb-cli` 搜索插件显示的详情中找到。卸载完成后，需要自行移除插件加载。
+
+  </TabItem>
+</Tabs>
+
 ## 安装适配器
 
-安装适配器与安装插件类似，只是将命令换为 `nb adapter`。
+<Asciinema
+  url="https://asciinema.org/a/569664.cast"
+  options={{ theme: "monokai", poster: "npt:12.0" }}
+/>
 
-### 使用 nb-cli 命令安装
+安装适配器与安装插件类似，只是将命令换为 `nb adapter`，这里就不再赘述。
+
+请在你的**项目目录**下执行该命令。`nb-cli` 会自动安装适配器并将其添加到注册列表中。
+
+<Tabs groupId="cli-install">
+  <TabItem value="cli" label="使用命令" default>
 
 ```bash
 nb adapter install <适配器名称>
 ```
 
-`nb-cli` 会自动安装适配器并将其添加到注册列表中。
+  </TabItem>
+  <TabItem value="interactive" label="交互式安装">
 
-### 使用 pip 安装
+```bash
+$ nb adapter install
+[?] 想要安装的适配器名称: <适配器名称>
+```
+
+  </TabItem>
+  <TabItem value="pip" label="使用 pip">
 
 ```bash
 pip install <适配器包名>
 ```
 
-### 查看适配器列表
+适配器包名可以在商店适配器卡片中找到，或者使用 `nb-cli` 搜索适配器显示的详情中找到。安装完成后，需要参考[注册适配器章节](../advanced/adapter.md#注册适配器)自行注册。
+
+  </TabItem>
+</Tabs>
+
+如果想要查看适配器列表，可以使用以下命令
 
 ```bash
 # 列出商店所有适配器
 nb adapter list
-
 # 搜索商店适配器
 nb adapter search [可选关键词]
 ```
 
-### 升级和卸载适配器
+升级和卸载适配器可以使用以下命令
+
+<Tabs groupId="cli-install">
+  <TabItem value="cli" label="使用命令" default>
 
 ```bash
-# 升级
 nb adapter update <适配器名称>
-
-# 卸载
 nb adapter uninstall <适配器名称>
 ```
 
+  </TabItem>
+  <TabItem value="interactive" label="交互式安装">
+
+```bash
+$ nb adapter update
+[?] 想要安装的适配器名称: <适配器名称>
+$ nb adapter uninstall
+[?] 想要卸载的适配器名称: <适配器名称>
+```
+
+  </TabItem>
+  <TabItem value="pip" label="使用 pip">
+
+```bash
+pip install --upgrade <适配器包名>
+pip uninstall <适配器包名>
+```
+
+适配器包名可以在商店适配器卡片中找到，或者使用 `nb-cli` 搜索适配器显示的详情中找到。卸载完成后，需要自行移除适配器加载。
+
+  </TabItem>
+</Tabs>
+
 ## 安装驱动器
 
-安装驱动器与安装插件同样类似，只是将命令换为 `nb driver`。
+<Asciinema
+  url="https://asciinema.org/a/569665.cast"
+  options={{ theme: "monokai", poster: "npt:14.0" }}
+/>
 
-### 使用 nb-cli 命令安装
+安装驱动器与安装插件同样类似，只是将命令换为 `nb driver`，这里就不再赘述。
+
+如果你使用了虚拟环境，请在你的**项目目录**下执行该命令，`nb-cli` 会自动安装驱动器到虚拟环境中。
+
+请注意 `nb-cli` 并不会在安装驱动器后修改项目所使用的驱动器，请自行参考[配置方法](../appendices/config.mdx)章节以及 [`DRIVER` 配置项](../appendices/config.mdx#driver)修改驱动器。
+
+<Tabs groupId="cli-install">
+  <TabItem value="cli" label="使用命令" default>
 
 ```bash
 nb driver install <驱动器名称>
 ```
 
-> **注意**：`nb-cli` 并不会在安装驱动器后修改项目所使用的驱动器，请自行在 `.env` 配置文件中修改 `DRIVER` 配置项。
+  </TabItem>
+  <TabItem value="interactive" label="交互式安装">
 
-### 使用 pip 安装
+```bash
+$ nb driver install
+[?] 想要安装的驱动器名称: <驱动器名称>
+```
+
+  </TabItem>
+  <TabItem value="pip" label="使用 pip">
 
 ```bash
 pip install <驱动器包名>
 ```
 
-### 查看驱动器列表
+驱动器包名可以在商店驱动器卡片中找到，或者使用 `nb-cli` 搜索驱动器显示的详情中找到。
+
+  </TabItem>
+</Tabs>
+
+如果想要查看驱动器列表，可以使用以下命令
 
 ```bash
 # 列出商店所有驱动器
 nb driver list
-
 # 搜索商店驱动器
 nb driver search [可选关键词]
 ```
 
-### 升级和卸载驱动器
+升级和卸载驱动器可以使用以下命令
+
+<Tabs groupId="cli-install">
+  <TabItem value="cli" label="使用命令" default>
 
 ```bash
-# 升级
 nb driver update <驱动器名称>
-
-# 卸载
 nb driver uninstall <驱动器名称>
 ```
 
-## nb-cli 命令速查表
+  </TabItem>
+  <TabItem value="interactive" label="交互式安装">
 
-| 操作 | 插件 | 适配器 | 驱动器 |
-|------|------|--------|--------|
-| 安装 | `nb plugin install <name>` | `nb adapter install <name>` | `nb driver install <name>` |
-| 卸载 | `nb plugin uninstall <name>` | `nb adapter uninstall <name>` | `nb driver uninstall <name>` |
-| 升级 | `nb plugin update <name>` | `nb adapter update <name>` | `nb driver update <name>` |
-| 列表 | `nb plugin list` | `nb adapter list` | `nb driver list` |
-| 搜索 | `nb plugin search [kw]` | `nb adapter search [kw]` | `nb driver search [kw]` |
-| 商店 | `nb plugin store` | `nb adapter store` | `nb driver store` |
+```bash
+$ nb driver update
+[?] 想要安装的驱动器名称: <驱动器名称>
+$ nb driver uninstall
+[?] 想要卸载的驱动器名称: <驱动器名称>
+```
+
+  </TabItem>
+  <TabItem value="pip" label="使用 pip">
+
+```bash
+pip install --upgrade <驱动器包名>
+pip uninstall <驱动器包名>
+```
+
+驱动器包名可以在商店驱动器卡片中找到，或者使用 `nb-cli` 搜索驱动器显示的详情中找到。卸载完成后，需要自行移除适配器加载。
+
+  </TabItem>
+</Tabs>

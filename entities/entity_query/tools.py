@@ -5,7 +5,14 @@ from __future__ import annotations
 import json
 
 from core.log import log
-from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
+from entities._sdk import (
+    ErrorCause,
+    entity,
+    error_from_exception,
+    tool,
+    tool_error,
+    tool_group_rounds_left,
+)
 
 entity("entity", "实体系统自省 - 查询实体目录、方法详情和配置管理")
 
@@ -111,11 +118,33 @@ def list_entity_methods(group: str) -> str:
         return json.dumps({
             "group": group,
             "description": description,
+            **_sleep_state(group),
             "method_count": len(methods),
             "methods": methods,
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="查询实体方法")
+
+
+def _sleep_state(group: str) -> dict:
+    """可沉睡分组的当前激活状态标注（非可沉睡分组返回空）。
+
+    沉睡中的分组方法未注入工具列表，AI 无法直接调用——必须显式告知，
+    否则 AI 会误以为方法可用而在"发现→调用失败→再发现"间死循环。
+    """
+    from core.entity import EntityRegistry
+
+    if group not in EntityRegistry.get_sleepable_groups():
+        return {}
+    rounds_left = tool_group_rounds_left(group)
+    if rounds_left > 0:
+        return {"sleeping": False, "active_rounds_left": rounds_left}
+    return {
+        "sleeping": True,
+        "hint": f"该分组当前处于沉睡状态，以下方法未注入工具列表、无法直接调用。"
+                f"请先调用 activate_tool_group(group=\"{group}\") 唤醒，"
+                f"激活后即可直接调用这些方法。",
+    }
 
 
 @tool(name="get_entity_config", group="entity", tags=["core"])

@@ -1,28 +1,26 @@
+<!-- source: https://nonebot.dev/docs/best-practice/scheduler -->
+
 # 定时任务
 
-[`nonebot-plugin-apscheduler`](https://github.com/nonebot/plugin-apscheduler) 是对 [APScheduler](https://apscheduler.readthedocs.io/en/3.x/) 的 NoneBot 封装，提供基于装饰器和函数调用的定时任务能力。
+[APScheduler](https://apscheduler.readthedocs.io/en/3.x/) (Advanced Python Scheduler) 是一个 Python 第三方库，其强大的定时任务功能被广泛应用于各个场景。在 NoneBot 中，定时任务作为一个额外功能，依赖于基于 APScheduler 开发的 [`nonebot-plugin-apscheduler`](https://github.com/nonebot/plugin-apscheduler) 插件进行支持。
 
-## 安装
+## 安装插件
+
+在使用前请先安装 `nonebot-plugin-apscheduler` 插件至项目环境中，可参考[获取商店插件](../tutorial/store.mdx#安装插件)来了解并选择安装插件的方式。如：
+
+在**项目目录**下执行以下命令：
 
 ```bash
-# nb-cli
 nb plugin install nonebot-plugin-apscheduler
-
-# pip
-pip install nonebot-plugin-apscheduler
-
-# poetry
-poetry add nonebot-plugin-apscheduler
-
-# pdm
-pdm add nonebot-plugin-apscheduler
 ```
 
-## 快速开始
+## 使用插件
 
-### 声明依赖
+`nonebot-plugin-apscheduler` 本质上是对 [APScheduler](https://apscheduler.readthedocs.io/en/3.x/) 进行了封装以适用于 NoneBot 开发，因此其使用方式与 APScheduler 本身并无显著区别。在此我们会简要介绍其调用方法，更多的使用方面的功能请参考[APScheduler 官方文档](https://apscheduler.readthedocs.io/en/3.x/userguide.html)。
 
-在插件中使用前，需要通过 `require` 声明对 `nonebot_plugin_apscheduler` 的依赖：
+### 导入调度器
+
+由于 `nonebot_plugin_apscheduler` 作为插件，因此需要在使用前对其进行**加载**并**导入**其中的 `scheduler` 调度器来创建定时任务。使用 `require` 方法可轻松完成这一过程，可参考 [跨插件访问](../advanced/requiring.md) 一节进行了解。
 
 ```python
 from nonebot import require
@@ -32,34 +30,9 @@ require("nonebot_plugin_apscheduler")
 from nonebot_plugin_apscheduler import scheduler
 ```
 
-> **注意**：`require` 必须在 `import scheduler` 之前调用，否则可能因插件未加载而导入失败。
+### 添加定时任务
 
-### 使用装饰器添加任务
-
-```python
-from nonebot import require
-
-require("nonebot_plugin_apscheduler")
-
-from nonebot_plugin_apscheduler import scheduler
-
-
-@scheduler.scheduled_job("cron", hour="*/2", id="my_task")
-async def my_task():
-    print("每两小时执行一次")
-
-
-@scheduler.scheduled_job("interval", minutes=30, id="interval_task")
-async def interval_task():
-    print("每30分钟执行一次")
-
-
-@scheduler.scheduled_job("date", run_date="2025-12-31 23:59:59", id="once_task")
-async def once_task():
-    print("在指定时间执行一次")
-```
-
-### 使用 add_job 动态添加任务
+在 [APScheduler 官方文档](https://apscheduler.readthedocs.io/en/3.x/userguide.html#adding-jobs) 中提供了以下两种直接添加任务的方式：
 
 ```python
 from nonebot import require
@@ -68,257 +41,53 @@ require("nonebot_plugin_apscheduler")
 
 from nonebot_plugin_apscheduler import scheduler
 
+# 基于装饰器的方式
+@scheduler.scheduled_job("cron", hour="*/2", id="job_0", args=[1], kwargs={arg2: 2})
+async def run_every_2_hour(arg1: int, arg2: int):
+    pass
 
-async def my_dynamic_task():
-    print("动态添加的任务")
+# 基于 add_job 方法的方式
+def run_every_day(arg1: int, arg2: int):
+    pass
 
-
-# 在事件处理函数或其他位置动态添加
 scheduler.add_job(
-    my_dynamic_task,
-    "interval",
-    seconds=60,
-    id="dynamic_task",
-    replace_existing=True,
+    run_every_day, "interval", days=1, id="job_1", args=[1], kwargs={arg2: 2}
 )
 ```
 
-## 触发器类型
+:::warning[注意]
+由于 APScheduler 的定时任务并不是**由事件响应器所触发的事件**，因此其任务函数无法同[事件处理函数](../tutorial/handler.mdx#事件处理函数)一样通过[依赖注入](../tutorial/event-data.mdx#认识依赖注入)获取上下文信息，也无法通过事件响应器对象的方法进行任何操作，因此我们需要使用[调用平台 API](../appendices/api-calling.mdx#调用平台-api)的方式来获取信息或收发消息。
 
-### Cron 触发器
+相对于事件处理依赖而言，编写定时任务更像是编写普通的函数，需要我们自行获取信息以及发送信息，请**不要**将事件处理依赖的特殊语法用于定时任务！
+:::
 
-基于 cron 表达式，适合固定时间点的周期性任务。
+关于 APScheduler 的更多使用方法，可以参考 [APScheduler 官方文档](https://apscheduler.readthedocs.io/en/3.x/index.html) 进行了解。
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `year` | `int\|str` | 年（4位数字） |
-| `month` | `int\|str` | 月（1-12） |
-| `day` | `int\|str` | 日（1-31） |
-| `week` | `int\|str` | ISO 周数（1-53） |
-| `day_of_week` | `int\|str` | 星期几（0-6 或 mon-sun） |
-| `hour` | `int\|str` | 时（0-23） |
-| `minute` | `int\|str` | 分（0-59） |
-| `second` | `int\|str` | 秒（0-59） |
-| `start_date` | `datetime\|str` | 最早触发时间 |
-| `end_date` | `datetime\|str` | 最晚触发时间 |
-| `timezone` | `tzinfo\|str` | 时区 |
-| `jitter` | `int` | 随机延迟秒数（防止任务扎堆） |
+### 配置项
 
-**Cron 表达式语法**：
+#### apscheduler_autostart
 
-| 表达式 | 说明 | 示例 |
-|--------|------|------|
-| `*` | 匹配所有值 | `hour="*"` 每小时 |
-| `*/n` | 每隔 n | `minute="*/5"` 每5分钟 |
-| `a-b` | 范围 | `hour="9-17"` 9点到17点 |
-| `a,b,c` | 枚举 | `day_of_week="mon,wed,fri"` |
-| `last` | 最后一个 | `day="last"` 每月最后一天 |
+- **类型**: `bool`
+- **默认值**: `True`
 
-```python
-# 每天早上 8:30 执行
-@scheduler.scheduled_job("cron", hour=8, minute=30, id="morning_report")
-async def morning_report():
-    ...
+是否自动启动 `scheduler` ，若不启动需要自行调用 `scheduler.start()`。
 
-# 每周一、三、五 18:00 执行
-@scheduler.scheduled_job("cron", day_of_week="mon,wed,fri", hour=18, id="weekly_task")
-async def weekly_task():
-    ...
+#### apscheduler_log_level
 
-# 每月 1 号 0:00 执行
-@scheduler.scheduled_job("cron", day=1, hour=0, minute=0, id="monthly_task")
-async def monthly_task():
-    ...
-```
+- **类型**: `int`
+- **默认值**: `30`
 
-### Interval 触发器
+apscheduler 输出的日志等级
 
-固定时间间隔执行。
+- `WARNING` = `30` (默认)
+- `INFO` = `20`
+- `DEBUG` = `10` (只有在开启 nonebot 的 debug 模式才会显示 debug 日志)
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `weeks` | `int` | 间隔周数 |
-| `days` | `int` | 间隔天数 |
-| `hours` | `int` | 间隔小时数 |
-| `minutes` | `int` | 间隔分钟数 |
-| `seconds` | `int` | 间隔秒数 |
-| `start_date` | `datetime\|str` | 开始时间 |
-| `end_date` | `datetime\|str` | 结束时间 |
-| `timezone` | `tzinfo\|str` | 时区 |
-| `jitter` | `int` | 随机延迟秒数 |
+#### apscheduler_config
 
-```python
-# 每 10 分钟执行一次
-@scheduler.scheduled_job("interval", minutes=10, id="check_update")
-async def check_update():
-    ...
+- **类型**: `dict`
+- **默认值**: `{ "apscheduler.timezone": "Asia/Shanghai" }`
 
-# 每 2 小时 30 分钟执行一次
-@scheduler.scheduled_job("interval", hours=2, minutes=30, id="long_interval")
-async def long_interval():
-    ...
-```
+`apscheduler` 的相关配置。参考[配置调度器](https://apscheduler.readthedocs.io/en/latest/userguide.html#scheduler-config), [配置参数](https://apscheduler.readthedocs.io/en/latest/modules/schedulers/base.html#apscheduler.schedulers.base.BaseScheduler)
 
-### Date 触发器
-
-在指定时间执行一次。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `run_date` | `datetime\|str` | 执行时间 |
-| `timezone` | `tzinfo\|str` | 时区 |
-
-```python
-from datetime import datetime
-
-@scheduler.scheduled_job("date", run_date=datetime(2025, 12, 31, 23, 59, 59), id="new_year")
-async def new_year():
-    print("新年快乐！")
-```
-
-## 任务管理
-
-```python
-# 暂停任务
-scheduler.pause_job("my_task")
-
-# 恢复任务
-scheduler.resume_job("my_task")
-
-# 删除任务
-scheduler.remove_job("my_task")
-
-# 修改任务触发器
-scheduler.reschedule_job("my_task", trigger="cron", hour=6)
-
-# 获取所有任务
-jobs = scheduler.get_jobs()
-for job in jobs:
-    print(f"任务: {job.id}, 下次执行: {job.next_run_time}")
-```
-
-## 在定时任务中发送消息
-
-定时任务中没有事件上下文，需要通过 Bot 对象直接调用 API 发送消息：
-
-```python
-import nonebot
-from nonebot import require
-from nonebot.adapters.onebot.v11 import Bot
-
-require("nonebot_plugin_apscheduler")
-
-from nonebot_plugin_apscheduler import scheduler
-
-
-@scheduler.scheduled_job("cron", hour=8, id="daily_greeting")
-async def daily_greeting():
-    bot: Bot = nonebot.get_bot()
-    await bot.send_group_msg(group_id=123456, message="早上好！")
-```
-
-如果有多个 Bot 实例：
-
-```python
-@scheduler.scheduled_job("cron", hour=8, id="daily_greeting_all")
-async def daily_greeting_all():
-    bots = nonebot.get_bots()
-    for bot_id, bot in bots.items():
-        try:
-            await bot.send_group_msg(group_id=123456, message="早上好！")
-        except Exception as e:
-            print(f"Bot {bot_id} 发送失败: {e}")
-```
-
-## 配置项
-
-在 `.env` 文件或 `nonebot` 配置中设置：
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `apscheduler_autostart` | `bool` | `True` | 是否在 NoneBot 启动时自动启动调度器 |
-| `apscheduler_log_level` | `int` | `30`（WARNING） | APScheduler 日志级别 |
-| `apscheduler_config` | `dict` | `{}` | APScheduler 底层配置字典 |
-
-```dotenv
-# .env 示例
-APSCHEDULER_AUTOSTART=true
-APSCHEDULER_LOG_LEVEL=30
-APSCHEDULER_CONFIG={"apscheduler.timezone": "Asia/Shanghai"}
-```
-
-### 日志级别参考
-
-| 级别 | 值 |
-|------|-----|
-| DEBUG | 10 |
-| INFO | 20 |
-| WARNING | 30 |
-| ERROR | 40 |
-| CRITICAL | 50 |
-
-### APScheduler 底层配置
-
-`apscheduler_config` 支持传入 APScheduler 原生配置项，例如：
-
-```dotenv
-APSCHEDULER_CONFIG={"apscheduler.timezone": "Asia/Shanghai", "apscheduler.job_defaults.misfire_grace_time": 60}
-```
-
-常用底层配置：
-
-| 配置键 | 说明 |
-|--------|------|
-| `apscheduler.timezone` | 调度器时区 |
-| `apscheduler.job_defaults.coalesce` | 是否合并错过的执行（默认 `True`） |
-| `apscheduler.job_defaults.max_instances` | 同一任务最大并发实例数（默认 `1`） |
-| `apscheduler.job_defaults.misfire_grace_time` | 错过执行的容错秒数 |
-
-## 完整示例
-
-```python
-from nonebot import get_plugin_config, require
-from nonebot.plugin import PluginMetadata
-from pydantic import BaseModel
-
-require("nonebot_plugin_apscheduler")
-
-from nonebot_plugin_apscheduler import scheduler
-
-
-class Config(BaseModel):
-    report_group_id: int = 0
-
-
-__plugin_meta__ = PluginMetadata(
-    name="定时报告",
-    description="定时发送群报告",
-    usage="自动运行，无需命令",
-    config=Config,
-)
-
-config = get_plugin_config(Config)
-
-
-@scheduler.scheduled_job("cron", hour=8, minute=0, id="daily_report")
-async def daily_report():
-    import nonebot
-
-    if not config.report_group_id:
-        return
-
-    bot = nonebot.get_bot()
-    await bot.send_group_msg(
-        group_id=config.report_group_id,
-        message="早安！今天也要元气满满哦~",
-    )
-
-
-@scheduler.scheduled_job("interval", minutes=5, id="health_check")
-async def health_check():
-    import nonebot
-
-    bots = nonebot.get_bots()
-    if not bots:
-        nonebot.logger.warning("当前没有已连接的 Bot")
-```
+配置需要包含 `apscheduler.` 作为前缀，例如 `apscheduler.timezone`。

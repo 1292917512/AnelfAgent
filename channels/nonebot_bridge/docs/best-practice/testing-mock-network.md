@@ -1,350 +1,93 @@
+<!-- source: https://nonebot.dev/docs/best-practice/testing/mock-network -->
+
 # 模拟网络通信
 
-NoneBot 的适配器通常通过 HTTP 或 WebSocket 与外部通信。NoneBug 提供了模拟网络通信的能力，用于测试驱动器的 HTTP/WebSocket 服务端行为。
+NoneBot 驱动器提供了多种方法来帮助适配器进行网络通信，主要包括客户端和服务端两种类型。模拟网络通信可以帮助我们更加接近实际机器人应用场景，进行更加真实的集成测试。同时，通过这种途径，我们还可以完成对适配器的测试。
 
-## 基础设置
+NoneBot 中的网络通信主要包括以下几种：
 
-```python
-import pytest
+- HTTP 服务端（WebHook）
+- WebSocket 服务端
+- HTTP 客户端
+- WebSocket 客户端
+
+下面我们将分别介绍如何使用 NoneBug 来模拟这几种通信方式。
+
+## 测试 HTTP 服务端
+
+当 NoneBot 作为 ASGI 服务端应用时，我们可以定义一系列的路由来处理 HTTP 请求，适配器同样也可以通过定义路由来响应机器人相关的网络通信。下面假设我们使用了一个适配器 `fake` ，它定义了一个路由 `/fake/http` ，用于接收平台 WebHook 并处理。实际应用测试时，应将该路由地址替换为**真实适配器注册的路由地址**。
+
+我们首先需要获取测试用模拟客户端：
+
+```python {5,6} title=tests/test_http_server.py
 from nonebug import App
 
-
-@pytest.fixture
-async def app():
-    yield App()
+@pytest.mark.asyncio
+async def test_http_server(app: App):
+    async with app.test_server() as ctx:
+        client = ctx.get_client()
 ```
 
-## HTTP 服务端测试
-
-### app.test_server()
-
-`app.test_server()` 创建一个测试上下文，可以获取 HTTP 客户端并向 NoneBot 的内置服务器发送请求。
+默认情况下，`app.test_server()` 会通过 `nonebot.get_asgi` 获取测试对象，我们也可以通过参数指定 ASGI 应用：
 
 ```python
+async with app.test_server(asgi=asgi_app) as ctx:
+    ...
+```
+
+获取到模拟客户端后，即可像 `requests`、`httpx` 等库类似的方法进行使用：
+
+```python {3,11-14,16} title=tests/test_http_server.py
+import nonebot
 from nonebug import App
+from nonebot.adapters.fake import Adapter
 
+@pytest.mark.asyncio
+async def test_http_server(app: App):
+    adapter = nonebot.get_adapter(Adapter)
 
-async def test_http_post(app: App):
     async with app.test_server() as ctx:
         client = ctx.get_client()
+        response = await client.post("/fake/http", json={"bot_id": "fake"})
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+        assert "fake" in nonebot.get_bots()
 
-        # 发送 POST 请求
-        resp = await client.post(
-            "/onebot/v11/",
-            json={
-                "post_type": "message",
-                "message_type": "private",
-                "sub_type": "friend",
-                "user_id": 10001,
-                "message": [{"type": "text", "data": {"text": "hello"}}],
-                "raw_message": "hello",
-                "self_id": 1,
-                "time": 1000000,
-                "message_id": 1,
-                "font": 0,
-                "sender": {"user_id": 10001, "nickname": "test"},
-            },
-            headers={"X-Self-ID": "1"},
-        )
-
-        assert resp.status_code == 204
+    adapter.bot_disconnect(nonebot.get_bot("fake"))
 ```
 
-### 带鉴权的 HTTP 请求
+在上面的测试中，我们向 `/fake/http` 发送了一个模拟 POST 请求，适配器将会对该请求进行处理，我们可以通过检查请求返回是否正确、Bot 对象是否创建等途径来验证机器人是否正确运行。在完成测试后，我们通常需要对 Bot 对象进行清理，以避免对其他测试产生影响。
 
-```python
-async def test_http_with_token(app: App):
-    async with app.test_server() as ctx:
-        client = ctx.get_client()
+## 测试 WebSocket 服务端
 
-        # 携带 Access Token
-        resp = await client.post(
-            "/onebot/v11/",
-            json={...},
-            headers={
-                "X-Self-ID": "1",
-                "Authorization": "Bearer your-access-token",
-            },
-        )
+当 NoneBot 作为 ASGI 服务端应用时，我们还可以定义一系列的路由来处理 WebSocket 通信。下面假设我们使用了一个适配器 `fake` ，它定义了一个路由 `/fake/ws` ，用于处理平台 WebSocket 连接信息。实际应用测试时，应将该路由地址替换为**真实适配器注册的路由地址**。
 
-        assert resp.status_code == 204
-```
+我们同样需要通过 `app.test_server()` 获取测试用模拟客户端，这里就不再赘述。在获取到模拟客户端后，我们可以通过 `client.websocket_connect` 方法来模拟 WebSocket 连接：
 
-### 测试自定义路由
-
-如果在 NoneBot 中注册了自定义 HTTP 路由，也可以通过 test_server 测试：
-
-```python
-async def test_custom_route(app: App):
-    async with app.test_server() as ctx:
-        client = ctx.get_client()
-
-        # GET 请求
-        resp = await client.get("/api/status")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "status" in data
-
-        # POST 请求
-        resp = await client.post(
-            "/api/config",
-            json={"key": "value"},
-        )
-        assert resp.status_code == 200
-```
-
-### 测试 GET 请求
-
-```python
-async def test_http_get(app: App):
-    async with app.test_server() as ctx:
-        client = ctx.get_client()
-
-        resp = await client.get("/health")
-        assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
-```
-
-## WebSocket 服务端测试
-
-### websocket_connect
-
-通过 `ctx.websocket_connect()` 创建一个 WebSocket 连接，模拟适配器的 WebSocket 交互。
-
-```python
-async def test_ws_connection(app: App):
-    async with app.test_server() as ctx:
-        async with ctx.websocket_connect(
-            "/onebot/v11/ws",
-            headers={"X-Self-ID": "1"},
-        ) as ws:
-            # 发送事件数据
-            await ws.send_json(
-                {
-                    "post_type": "meta_event",
-                    "meta_event_type": "lifecycle",
-                    "sub_type": "connect",
-                    "self_id": 1,
-                    "time": 1000000,
-                }
-            )
-
-            # 发送消息事件
-            await ws.send_json(
-                {
-                    "post_type": "message",
-                    "message_type": "private",
-                    "sub_type": "friend",
-                    "user_id": 10001,
-                    "message": [{"type": "text", "data": {"text": "/hello"}}],
-                    "raw_message": "/hello",
-                    "self_id": 1,
-                    "time": 1000001,
-                    "message_id": 1,
-                    "font": 0,
-                    "sender": {"user_id": 10001, "nickname": "test"},
-                }
-            )
-
-            # 接收 Bot 的 API 调用响应
-            data = await ws.receive_json()
-            assert data["action"] == "send_msg"
-```
-
-### WebSocket 多次交互
-
-```python
-async def test_ws_multi_message(app: App):
-    async with app.test_server() as ctx:
-        async with ctx.websocket_connect(
-            "/onebot/v11/ws",
-            headers={"X-Self-ID": "1"},
-        ) as ws:
-            # 发送生命周期事件
-            await ws.send_json(
-                {
-                    "post_type": "meta_event",
-                    "meta_event_type": "lifecycle",
-                    "sub_type": "connect",
-                    "self_id": 1,
-                    "time": 1000000,
-                }
-            )
-
-            # 连续发送多条消息
-            for i in range(3):
-                await ws.send_json(
-                    {
-                        "post_type": "message",
-                        "message_type": "private",
-                        "sub_type": "friend",
-                        "user_id": 10001,
-                        "message": [
-                            {"type": "text", "data": {"text": f"/echo 消息{i}"}}
-                        ],
-                        "raw_message": f"/echo 消息{i}",
-                        "self_id": 1,
-                        "time": 1000001 + i,
-                        "message_id": i + 1,
-                        "font": 0,
-                        "sender": {"user_id": 10001, "nickname": "test"},
-                    }
-                )
-```
-
-### 带鉴权的 WebSocket 连接
-
-```python
-async def test_ws_with_token(app: App):
-    async with app.test_server() as ctx:
-        async with ctx.websocket_connect(
-            "/onebot/v11/ws",
-            headers={
-                "X-Self-ID": "1",
-                "Authorization": "Bearer your-access-token",
-            },
-        ) as ws:
-            await ws.send_json({...})
-```
-
-## HTTP / WebSocket 客户端测试
-
-> **注意**：NoneBug 目前暂不支持 HTTP / WebSocket 客户端（即 NoneBot 主动向外发起请求）的模拟测试。这部分功能在未来版本中可能会添加。
-
-对于需要测试外部 HTTP 请求的场景，推荐使用以下替代方案：
-
-### 使用 respx 模拟 HTTP 请求
-
-```bash
-pip install respx
-```
-
-```python
-import httpx
-import respx
-
-
-@respx.mock
-async def test_external_api():
-    # 模拟外部 API 响应
-    respx.get("https://api.example.com/weather").mock(
-        return_value=httpx.Response(
-            200,
-            json={"city": "北京", "temp": 25, "weather": "晴"},
-        )
-    )
-
-    # 在这里运行你的代码，httpx 请求会被拦截
-    async with httpx.AsyncClient() as client:
-        resp = await client.get("https://api.example.com/weather")
-        assert resp.json()["city"] == "北京"
-```
-
-### 使用 pytest-httpx
-
-```bash
-pip install pytest-httpx
-```
-
-```python
-import httpx
-from pytest_httpx import HTTPXMock
-
-
-async def test_with_httpx_mock(httpx_mock: HTTPXMock):
-    httpx_mock.add_response(
-        url="https://api.example.com/data",
-        json={"result": "success"},
-    )
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.get("https://api.example.com/data")
-        assert resp.json()["result"] == "success"
-```
-
-## 完整测试示例
-
-```python
-import pytest
+```python {3,11-15} title=tests/test_ws_server.py
+import nonebot
 from nonebug import App
+from nonebot.adapters.fake import Adapter
 
+@pytest.mark.asyncio
+async def test_ws_server(app: App):
+    adapter = nonebot.get_adapter(Adapter)
 
-@pytest.fixture
-async def app():
-    yield App()
-
-
-async def test_onebot_http_event(app: App):
-    """测试 OneBot V11 HTTP 上报"""
     async with app.test_server() as ctx:
         client = ctx.get_client()
-
-        resp = await client.post(
-            "/onebot/v11/",
-            json={
-                "post_type": "message",
-                "message_type": "private",
-                "sub_type": "friend",
-                "user_id": 10001,
-                "message": [{"type": "text", "data": {"text": "/ping"}}],
-                "raw_message": "/ping",
-                "self_id": 1,
-                "time": 1000000,
-                "message_id": 1,
-                "font": 0,
-                "sender": {"user_id": 10001, "nickname": "test"},
-            },
-            headers={"X-Self-ID": "1"},
-        )
-        assert resp.status_code in (200, 204)
-
-
-async def test_onebot_ws_event(app: App):
-    """测试 OneBot V11 WebSocket 连接"""
-    async with app.test_server() as ctx:
-        async with ctx.websocket_connect(
-            "/onebot/v11/ws",
-            headers={"X-Self-ID": "1"},
-        ) as ws:
-            await ws.send_json(
-                {
-                    "post_type": "meta_event",
-                    "meta_event_type": "lifecycle",
-                    "sub_type": "connect",
-                    "self_id": 1,
-                    "time": 1000000,
-                }
-            )
-
-            await ws.send_json(
-                {
-                    "post_type": "message",
-                    "message_type": "private",
-                    "sub_type": "friend",
-                    "user_id": 10001,
-                    "message": [{"type": "text", "data": {"text": "/ping"}}],
-                    "raw_message": "/ping",
-                    "self_id": 1,
-                    "time": 1000001,
-                    "message_id": 1,
-                    "font": 0,
-                    "sender": {"user_id": 10001, "nickname": "test"},
-                }
-            )
+        async with client.websocket_connect("/fake/ws") as ws:
+            await ws.send_json({"bot_id": "fake"})
+            response = await ws.receive_json()
+            assert response == {"status": "success"}
+            assert "fake" in nonebot.get_bots()
 ```
 
-## API 汇总
+在上面的测试中，我们向 `/fake/ws` 进行了 WebSocket 模拟通信，通过发送消息与机器人进行交互，然后检查机器人发送的信息是否正确。
 
-| 方法 | 说明 |
-|------|------|
-| `app.test_server()` | 创建服务端测试上下文 |
-| `ctx.get_client()` | 获取 HTTP 测试客户端 |
-| `client.get(url, **kwargs)` | 发送 GET 请求 |
-| `client.post(url, **kwargs)` | 发送 POST 请求 |
-| `ctx.websocket_connect(url, **kwargs)` | 创建 WebSocket 连接 |
-| `ws.send_json(data)` | 发送 JSON 数据 |
-| `ws.send_text(data)` | 发送文本数据 |
-| `ws.send_bytes(data)` | 发送二进制数据 |
-| `ws.receive_json()` | 接收 JSON 数据 |
-| `ws.receive_text()` | 接收文本数据 |
-| `ws.receive_bytes()` | 接收二进制数据 |
+## 测试 HTTP 客户端
+
+~~暂不支持~~
+
+## 测试 WebSocket 客户端
+
+~~暂不支持~~

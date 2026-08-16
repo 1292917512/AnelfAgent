@@ -1,326 +1,205 @@
+<!-- source: https://nonebot.dev/docs/best-practice/multi-adapter -->
+
 # 插件跨平台支持
 
-NoneBot 支持同时加载多个适配器（OneBot V11、Telegram、QQ 官方、Kaiheila 等），插件如何编写才能兼容多个平台是一个重要课题。
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
 
-## 方式一：使用基类方法（推荐）
+## 使用 NoneBot 本身
 
-NoneBot 的事件基类 `Event` 提供了一系列平台无关的方法，直接使用基类即可天然跨平台：
+由于不同平台的事件与接口之间，存在着极大的差异性，NoneBot 通过[重载](../appendices/overload.md)的方式，使得插件可以在不同平台上正确响应。但为了减少跨平台的兼容性问题，我们应该尽可能的使用基类方法实现原生跨平台，而不是使用特定平台的方法。当基类方法无法满足需求时，我们可以使用依赖注入的方式，将特定平台的事件或机器人注入到事件处理函数中，实现针对特定平台的处理。
+
+:::tip[提示]
+如果需要在多平台上**使用**跨平台插件，首先应该根据[注册适配器](../advanced/adapter.md#注册适配器)一节，为机器人注册各平台对应的适配器。
+:::
+
+### 基于基类的跨平台
+
+在[事件通用信息](../advanced/adapter.md#获取事件通用信息)中，我们了解了事件基类能够提供的通用信息。同时，[事件响应器操作](../appendices/session-control.mdx#更多事件响应器操作)也为我们提供了基本的用户交互方式。使用这些方法，可以让我们的插件运行在任何平台上。例如，一个简单的命令处理插件：
+
+```python {5,11}
+from nonebot import on_command
+from nonebot.adapters import Event
+
+async def is_blacklisted(event: Event) -> bool:
+    return event.get_user_id() not in BLACKLIST
+
+weather = on_command("天气", rule=is_blacklisted, priority=10, block=True)
+
+@weather.handle()
+async def handle_function():
+    await weather.finish("今天的天气是...")
+```
+
+由于此插件仅使用了事件通用信息和事件响应器操作的纯文本交互方式，这些方法不使用特定平台的信息或接口，因此是原生跨平台的，并不需要额外处理。但在一些较为复杂的需求下，例如发送图片消息时，并非所有平台都具有统一的接口，因此基类便无能为力，我们需要引入特定平台的适配器了。
+
+### 基于重载的跨平台
+
+重载是 NoneBot 跨平台操作的核心，在[事件类型与重载](../appendices/overload.md#重载)一节中，我们初步了解了如何通过类型注解来实现针对不同平台事件的处理方式。在[依赖注入](../advanced/dependency.mdx)一节中，我们又对依赖注入的使用方法进行了详细的介绍。结合这两节内容，我们可以实现更复杂的跨平台操作。
+
+#### 处理近似事件
+
+对于一系列**差异不大**的事件，我们往往具有相同的处理逻辑。这时，我们不希望将相同的逻辑编写两遍，而应该复用代码，以实现在同一个事件处理函数中处理多个近似事件。我们可以使用[事件重载](../advanced/dependency.mdx#event)的特性来实现这一功能。例如：
+
+<Tabs groupId="python">
+  <TabItem value="3.10" label="Python 3.10+" default>
 
 ```python
 from nonebot import on_command
-from nonebot.adapters import Event, Bot, Message
+from nonebot.adapters import Message
 from nonebot.params import CommandArg
+from nonebot.adapters.onebot.v11 import MessageEvent as OnebotV11MessageEvent
+from nonebot.adapters.onebot.v12 import MessageEvent as OnebotV12MessageEvent
 
-hello = on_command("hello")
+echo = on_command("echo", priority=10, block=True)
 
-
-@hello.handle()
-async def handle_hello(bot: Bot, event: Event, args: Message = CommandArg()):
-    user_id = event.get_user_id()         # 获取用户 ID
-    session_id = event.get_session_id()   # 获取会话 ID
-    message = event.get_message()         # 获取消息对象
-    plaintext = event.get_plaintext()     # 获取纯文本
-    event_type = event.get_type()         # 获取事件类型
-    event_name = event.get_event_name()   # 获取事件名称
-    event_desc = event.get_event_description()  # 获取事件描述
-    is_to_me = event.is_tome()            # 是否 @bot
-
-    await bot.send(event, f"你好，{user_id}！")
+@echo.handle()
+async def handle_function(event: OnebotV11MessageEvent | OnebotV12MessageEvent, args: Message = CommandArg()):
+    await echo.finish(args)
 ```
 
-### Event 基类通用方法
-
-| 方法 | 返回类型 | 说明 |
-|------|----------|------|
-| `get_type()` | `str` | 事件类型（`message`、`notice`、`request`、`meta_event`） |
-| `get_event_name()` | `str` | 事件名称 |
-| `get_event_description()` | `str` | 事件描述文本 |
-| `get_message()` | `Message` | 事件关联的消息对象 |
-| `get_plaintext()` | `str` | 事件关联的纯文本 |
-| `get_user_id()` | `str` | 触发事件的用户 ID |
-| `get_session_id()` | `str` | 会话 ID（用户 + 群组等信息的组合） |
-| `is_tome()` | `bool` | 事件是否与 Bot 相关（如 @Bot） |
-
-### Bot 基类通用方法
-
-| 方法 | 说明 |
-|------|------|
-| `bot.send(event, message)` | 向事件来源发送消息 |
-| `bot.call_api(api, **kwargs)` | 调用底层 API |
-
-## 方式二：使用 Overload 处理不同平台
-
-当需要为不同平台编写差异化逻辑时，使用类型注解的 overload 机制：
-
-```python
-from nonebot import on_command
-from nonebot.adapters import Event, Bot
-
-greet = on_command("greet")
-
-
-# OneBot V11 专用处理
-from nonebot.adapters.onebot.v11 import Bot as OBBot
-from nonebot.adapters.onebot.v11 import MessageEvent as OBMessageEvent
-
-
-@greet.handle()
-async def handle_ob(bot: OBBot, event: OBMessageEvent):
-    nickname = event.sender.nickname or "未知"
-    await bot.send(event, f"你好呀 {nickname}！(来自 QQ)")
-
-
-# Telegram 专用处理
-from nonebot.adapters.telegram import Bot as TGBot
-from nonebot.adapters.telegram.event import MessageEvent as TGMessageEvent
-
-
-@greet.handle()
-async def handle_tg(bot: TGBot, event: TGMessageEvent):
-    first_name = event.from_.first_name if event.from_ else "Unknown"
-    await bot.send(event, f"Hello {first_name}! (from Telegram)")
-
-
-# 兜底：其他平台
-@greet.handle()
-async def handle_fallback(bot: Bot, event: Event):
-    user_id = event.get_user_id()
-    await bot.send(event, f"你好 {user_id}！")
-```
-
-NoneBot 会根据事件和 Bot 的实际类型自动匹配最精确的处理函数。匹配优先级：精确类型 > 父类类型 > 基类。
-
-## 方式三：Union 类型处理相似事件
-
-当多个平台的事件逻辑相同时，使用 `Union` 减少重复代码：
+  </TabItem>
+  <TabItem value="3.9" label="Python 3.9">
 
 ```python
 from typing import Union
 
 from nonebot import on_command
-from nonebot.adapters.onebot.v11 import GroupMessageEvent as OBGroupEvent
-from nonebot.adapters.telegram.event import GroupMessageEvent as TGGroupEvent
+from nonebot.adapters import Message
+from nonebot.params import CommandArg
+from nonebot.adapters.onebot.v11 import MessageEvent as OnebotV11MessageEvent
+from nonebot.adapters.onebot.v12 import MessageEvent as OnebotV12MessageEvent
 
-group_cmd = on_command("info")
+echo = on_command("echo", priority=10, block=True)
 
-
-@group_cmd.handle()
-async def handle_group(event: Union[OBGroupEvent, TGGroupEvent]):
-    user_id = event.get_user_id()
-    await group_cmd.finish(f"群消息来自用户: {user_id}")
+@echo.handle()
+async def handle_function(event: Union[OnebotV11MessageEvent, OnebotV12MessageEvent], args: Message = CommandArg()):
+    await echo.finish(args)
 ```
 
-## 方式四：依赖注入判断适配器
+  </TabItem>
+</Tabs>
 
-通过依赖注入获取 Bot 类型，在同一个处理函数中分支处理：
+#### 在依赖注入中使用重载
+
+NoneBot 依赖注入系统提供了自定义子依赖的方法，子依赖的类型同样会影响到事件处理函数的重载行为。例如：
 
 ```python
+from datetime import datetime
+
 from nonebot import on_command
-from nonebot.adapters import Bot, Event
+from nonebot.adapters.console import MessageEvent
 
-adapter_info = on_command("adapter")
+echo = on_command("echo", priority=10, block=True)
 
+def get_event_time(event: MessageEvent):
+    return event.time
 
-@adapter_info.handle()
-async def handle_adapter(bot: Bot, event: Event):
-    adapter_name = bot.adapter.get_name()
-    await bot.send(event, f"当前适配器: {adapter_name}")
+# 处理控制台消息事件
+@echo.handle()
+async def handle_function(time: datetime = Depends(get_event_time)):
+    await echo.finish(time.strftime("%Y-%m-%d %H:%M:%S"))
 ```
 
-也可以用 `isinstance` 进行精确判断：
+示例中 ，我们为 `handle_function` 事件处理函数注入了自定义的 `get_event_time` 子依赖，而此子依赖注入参数为 Console 适配器的 `MessageEvent`。因此 `handle_function` 仅会响应 Console 适配器的 `MessageEvent` ，而不能响应其他事件。
+
+#### 处理多平台事件
+
+不同平台的事件之间，往往存在着极大的差异性。为了满足我们插件的跨平台运行，通常我们需要抽离业务逻辑，以保证代码的复用性。一个合理的做法是，在事件响应器的处理流程中，首先先针对不同平台的事件分别进行处理，提取出核心业务逻辑所需要的信息；然后再将这些信息传递给业务逻辑处理函数；最后将业务逻辑的输出以各平台合适的方式返回给用户。也就是说，与平台绑定的处理部分应该与平台无关部分尽量分离。例如：
 
 ```python
+import inspect
+
 from nonebot import on_command
-from nonebot.adapters import Bot, Event
+from nonebot.typing import T_State
+from nonebot.matcher import Matcher
+from nonebot.adapters import Message
+from nonebot.params import CommandArg, ArgPlainText
+from nonebot.adapters.console import Bot as ConsoleBot
+from nonebot.adapters.onebot.v11 import Bot as OnebotBot
+from nonebot.adapters.console import MessageSegment as ConsoleMessageSegment
 
-smart_reply = on_command("reply")
-
-
-@smart_reply.handle()
-async def handle_smart(bot: Bot, event: Event):
-    try:
-        from nonebot.adapters.onebot.v11 import Bot as OBBot
-
-        if isinstance(bot, OBBot):
-            await bot.send_group_forward_msg(
-                group_id=event.group_id,
-                messages=[...],
-            )
-            return
-    except ImportError:
-        pass
-
-    # 通用回退
-    await bot.send(event, "这是一条普通回复")
-```
-
-## 跨平台插件推荐
-
-以下插件专门为跨平台场景设计，可以大幅简化多适配器兼容工作：
-
-### nonebot-plugin-alconna
-
-基于 [Alconna](https://github.com/ArcletProject/Alconna) 的命令解析框架，提供跨平台的命令定义和消息构建。
-
-```bash
-pip install nonebot-plugin-alconna
-```
-
-```python
-from nonebot import require
-
-require("nonebot_plugin_alconna")
-
-from nonebot_plugin_alconna import Alconna, Args, UniMessage, on_alconna
-
-alc = Alconna("weather", Args["city", str])
-weather = on_alconna(alc)
-
+weather = on_command("天气", priority=10, block=True)
 
 @weather.handle()
-async def handle_weather(city: str):
-    # UniMessage 自动适配各平台消息格式
-    msg = UniMessage()
-    msg += f"🌤 {city} 天气：晴\n"
-    msg += "温度：25°C"
-    await msg.send()
-```
-
-**核心能力**：
-
-| 功能 | 说明 |
-|------|------|
-| `Alconna` | 跨平台命令定义 |
-| `UniMessage` | 通用消息构建 |
-| `on_alconna` | 创建响应器 |
-| `Image` / `At` / `Text` | 通用消息段 |
-
-### nonebot-plugin-send-anything-anywhere (SAA)
-
-提供统一的消息发送接口，屏蔽各适配器差异。
-
-```bash
-pip install nonebot-plugin-saa
-```
-
-```python
-from nonebot import on_command, require
-
-require("nonebot_plugin_saa")
-
-from nonebot_plugin_saa import Image, MessageFactory, Text
-
-hello = on_command("hello")
+async def handle_function(matcher: Matcher, args: Message = CommandArg()):
+    if args.extract_plain_text():
+        matcher.set_arg("location", args)
 
 
-@hello.handle()
-async def handle():
-    msg = MessageFactory([Text("你好！"), Image("https://example.com/img.png")])
-    await msg.send()
-```
+async def get_weather(state: T_State, location: str = ArgPlainText()):
+    if location not in ["北京", "上海", "广州", "深圳"]:
+        await weather.reject(f"你想查询的城市 {location} 暂不支持，请重新输入！")
 
-### nonebot-plugin-uninfo
-
-统一的用户/群组/频道信息获取接口。
-
-```bash
-pip install nonebot-plugin-uninfo
-```
-
-```python
-from nonebot import on_command, require
-
-require("nonebot_plugin_uninfo")
-
-from nonebot_plugin_uninfo import Uninfo
-
-info = on_command("myinfo")
+    state["weather"] = "⛅ 多云 20℃~24℃"
 
 
-@info.handle()
-async def handle(user_info: Uninfo):
-    await info.finish(
-        f"用户: {user_info.user.name}\n"
-        f"ID: {user_info.user.id}\n"
-        f"场景: {user_info.scene.type}"
+# 处理控制台询问
+@weather.got(
+    "location",
+    prompt=ConsoleMessageSegment.emoji("question") + "请输入地名",
+    parameterless=[Depends(get_weather)],
+)
+async def handle_console(bot: ConsoleBot):
+    pass
+
+# 处理 OneBot 询问
+@weather.got(
+    "location",
+    prompt="请输入地名",
+    parameterless=[Depends(get_weather)],
+)
+async def handle_onebot(bot: OnebotBot):
+    pass
+
+# 通过依赖注入或事件处理函数来进行业务逻辑处理
+
+# 处理控制台回复
+@weather.handle()
+async def handle_console_reply(bot: ConsoleBot, state: T_State, location: str = ArgPlainText()):
+    await weather.send(
+        ConsoleMessageSegment.markdown(
+            inspect.cleandoc(
+                f"""
+                # {location}
+
+                - 今天
+
+                   {state['weather']}
+                """
+            )
+        )
     )
+
+# 处理 OneBot 回复
+@weather.handle()
+async def handle_onebot_reply(bot: OnebotBot, state: T_State, location: str = ArgPlainText()):
+    await weather.send(f"今天{location}的天气是{state['weather']}")
 ```
 
-### nonebot-plugin-session
+## 使用插件
 
-跨平台的会话信息提取。
+得益于众多开发者为 NoneBot 社区做出的贡献，我们可以通过一系列插件来完成跨平台插件的开发。
 
-```bash
-pip install nonebot-plugin-session
-```
+这些插件可以分为三类：
 
-```python
-from nonebot import on_command, require
+### 事件处理
 
-require("nonebot_plugin_session")
+- [all4one](https://github.com/nonepkg/nonebot-plugin-all4one): 将不同平台的事件转为符合 OneBot V12 协议的插件
+  - 支持的适配器: OneBot V11/V12, Discord, QQ, Telegram
 
-from nonebot_plugin_session import EventSession, SessionLevel
+### 消息处理
 
-session_cmd = on_command("session")
+- [alconna](https://github.com/nonebot/plugin-alconna): 对几乎所有适配器中消息的收发、撤回、编辑、表态的统一插件
+  - 支持的适配器: OneBot V11/V12, Telegram, Feishu, Github, QQ, Ding, Console, Kaiheila, Mirai, NtChat, Minecraft, Discord, Satori, Red, Dodo, Kritor, Tailchat, Mail, WXMP, Heybox, Gewechat
+- [send-anything-anywhere](https://github.com/felinae98/nonebot-plugin-send-anything-anywhere): 帮助处理不同适配器消息的适配和发送的插件
+  - 支持的适配器: OneBot V11/V12, Kaiheila, Telegram, Feishu, Red, DoDo, Satori, QQ, Discord
 
+### 会话信息提取
 
-@session_cmd.handle()
-async def handle(session: EventSession):
-    level = session.level
-    msg = f"会话级别: {level.name}\n"
-    msg += f"平台: {session.platform}\n"
-    msg += f"用户 ID: {session.id1}\n"
-
-    if level == SessionLevel.GROUP:
-        msg += f"群组 ID: {session.id2}\n"
-
-    await session_cmd.finish(msg)
-```
-
-### nonebot-plugin-userinfo
-
-跨平台的用户信息获取（头像、昵称等）。
-
-```bash
-pip install nonebot-plugin-userinfo
-```
-
-```python
-from nonebot import on_command, require
-
-require("nonebot_plugin_userinfo")
-
-from nonebot_plugin_userinfo import EventUserInfo, UserInfo
-
-user_cmd = on_command("user")
-
-
-@user_cmd.handle()
-async def handle(user_info: UserInfo = EventUserInfo()):
-    msg = f"昵称: {user_info.user_name}\n"
-    if user_info.user_avatar:
-        msg += f"头像: {user_info.user_avatar.url}\n"
-    await user_cmd.finish(msg)
-```
-
-### nonebot-plugin-all4one
-
-基于 OneBot 12 协议，将其他适配器的 Bot 转换为 OneBot 12 协议 Bot，从而实现一次编写多平台运行。
-
-```bash
-pip install nonebot-plugin-all4one
-```
-
-```dotenv
-# .env
-ONEBOT12_ACCESS_TOKEN=your-token
-ALL4ONE_OBIMPL={"onebot.v11": {"heartbeat_interval": 5000}}
-```
-
-## 跨平台开发最佳实践
-
-1. **优先使用基类方法**：`Event.get_user_id()`、`Bot.send()` 等基类方法覆盖了大多数场景。
-2. **仅在必要时使用 overload**：只有需要调用平台特有 API 时才使用特定适配器类型。
-3. **使用 UniMessage / SAA**：发送包含图片、@ 等富文本消息时，使用跨平台消息库。
-4. **try-except ImportError**：对可选适配器的引用使用 try-except 保护，避免未安装时报错。
-5. **添加兜底处理函数**：始终提供一个使用基类参数的处理函数作为兜底。
+- [uninfo](https://github.com/RF-Tar-Railt/nonebot-plugin-uninfo): 多平台的会话信息(用户、群组、频道)获取插件
+  - 支持的适配器: OneBot V11/V12, Telegram, Feishu, QQ, Console, Kaiheila, Mirai, Minecraft, Discord, Satori, Dodo, Kritor, Mail, WXMP, Gewechat
+- [session](https://github.com/noneplugin/nonebot-plugin-session): 会话信息提取与会话 id 定义插件
+  - 支持的适配器: OneBot V11/V12, Console, Kaiheila, Telegram, Feishu, Red, DoDo, Satori, QQ, Discord
+- [userinfo](https://github.com/noneplugin/nonebot-plugin-userinfo: 用户信息获取插件
+  - 支持的适配器: OneBot V11/V12, Console, Kaiheila, Telegram, Feishu, Red, DoDo, Satori, QQ, Discord

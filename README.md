@@ -163,13 +163,13 @@ Embedding + FTS5 + 标签匹配 + 时间衰减的混合评分；记忆类型覆�
 
 | 平台 | 要点 |
 |---|---|
-| **QQ** | NoneBot2 + OneBot v11 + NapCat |
+| **QQ** | OneBot v11 + NapCat（直连） |
 | **飞书** | WebSocket 事件驱动 |
 | **微信** | iLink Bot API，扫码登录，无需公网 webhook（详见 [`channels/weixin/README.md`](channels/weixin/README.md)） |
 | **WebUI** | SSE 推送；三栏对话工作台（文件树 / 对话流 / Dock） |
 | **HTTP API** | 同步请求-响应 |
 | **CLI** | 终端调试 |
-| **NoneBot 桥接** | 扩展更多平台 |
+| **NoneBot 桥接** | 完整 NoneBot 子进程客户端（独立 venv）：装适配器接 QQ 官方/Telegram/Discord/KOOK 等平台、浏览安装插件商店、AI 可触发插件命令（详见 [`channels/nonebot_bridge/README.md`](channels/nonebot_bridge/README.md)） |
 | **Responses API** | OpenAI 兼容网关（`/v1/responses`），可把 AnelfAgent 当作模型服务对外提供 |
 
 WebUI 对话工作台支持 AI **反向驱动界面**（`ui_notify` / `ui_ask` / `ui_open_panel` 等 → SSE `ui_command`）。
@@ -425,7 +425,7 @@ AnelfAgent 的多平台能力建立在这些优秀开源项目之上：
 
 特别感谢 [Nekro Agent](https://github.com/KroMiose/nekro-agent) 在多平台智能体架构与多模态候选注入体验上的参考与启发。
 
-> **协议说明**：AnelfAgent 通过 OneBot v11 WebSocket 与 NapCatQQ 通信，不包含也不修改 NapCat 源码。NoneBot2 作为依赖引入，遵循其 MIT 协议。微信频道对接腾讯 iLink Bot API，协议实现参考社区适配器实践。
+> **协议说明**：AnelfAgent 通过 OneBot v11 WebSocket 与 NapCatQQ 通信，不包含也不修改 NapCat 源码。NoneBot2 经 NoneBot 桥接频道以独立子进程运行（worker 隔离 venv），遵循其 MIT 协议。微信频道对接腾讯 iLink Bot API，协议实现参考社区适配器实践。
 
 ### 参与贡献
 

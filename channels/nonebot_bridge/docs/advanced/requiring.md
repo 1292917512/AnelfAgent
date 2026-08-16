@@ -1,211 +1,29 @@
+<!-- source: https://nonebot.dev/docs/advanced/requiring -->
+
 # 跨插件访问
 
-NoneBot 提供 `require()` 函数用于在插件间建立依赖关系，实现跨插件的模块导入。
+NoneBot 插件化系统的设计使得插件之间可以功能独立、各司其职，我们可以更好地维护和扩展插件。但是，有时候我们可能需要在不同插件之间调用功能。NoneBot 生态中就有一类插件，它们专为其他插件提供功能支持，如：[定时任务插件](../best-practice/scheduler.md)、[数据存储插件](../best-practice/data-storing.md)等。这时候我们就需要在插件之间进行跨插件访问。
 
-## 为什么需要 require()
+## 插件跟踪
 
-NoneBot 使用 Import Hook 机制来追踪插件的加载状态。直接使用 `import` 语句导入其他插件的模块可能导致：
+由于 NoneBot 插件系统通过 [Import Hooks](https://docs.python.org/3/reference/import.html#import-hooks) 的方式实现插件加载与跟踪管理，因此我们**不能**在 NoneBot 跟踪插件前进行模块 import，这会导致插件加载失败。即，我们不能在使用 NoneBot 提供的加载插件方法前，直接使用 `import` 语句导入插件。
 
-1. 目标插件尚未加载，导入失败
-2. 插件依赖关系无法被 NoneBot 正确追踪
-3. 加载顺序不可预测
+对于在项目目录下的插件，我们通常直接使用 `load_from_toml` 等方法一次性加载所有插件。由于这些插件已经被声明，即便插件导入顺序不同，NoneBot 也能正确跟踪插件。此时，我们不需要对跨插件访问进行特殊处理。但当我们使用了外部插件，如果没有事先声明或加载插件，NoneBot 并不会将其当作插件进行跟踪，可能会出现意料之外的错误出现。
 
-因此，**必须先调用 `require()` 再进行 `import`**。
+简单来说，我们必须在 `import` 外部插件之前，确保依赖的外部插件已经被声明或加载。
 
-## 基本用法
+## 插件依赖声明
 
-### require() 函数
+NoneBot 提供了一种方法来确保我们依赖的插件已经被正确加载，即使用 `require` 函数。通过 `require` 函数，我们可以在当前插件中声明依赖的插件，NoneBot 会在加载当前插件时，检查依赖的插件是否已经被加载，如果没有，会尝试优先加载依赖的插件。
 
-```python
+假设我们有一个插件 `a` 依赖于插件 `b`，我们可以在插件 `a` 中使用 `require` 函数声明其依赖于插件 `b`：
+
+```python {3} title=a/__init__.py
 from nonebot import require
 
-# 声明依赖并确保插件已加载
-require("nonebot_plugin_apscheduler")
+require("b")
 
-# 然后才能安全导入
-from nonebot_plugin_apscheduler import scheduler
+from b import some_function
 ```
 
-### 完整示例
-
-```python
-# my_plugin/__init__.py
-from nonebot import require, on_command
-from nonebot.plugin import PluginMetadata
-
-# 声明依赖
-require("nonebot_plugin_apscheduler")
-require("nonebot_plugin_datastore")
-
-# 安全导入依赖插件的内容
-from nonebot_plugin_apscheduler import scheduler
-from nonebot_plugin_datastore import get_data_file
-
-__plugin_meta__ = PluginMetadata(
-    name="定时提醒",
-    description="定时提醒功能",
-    usage="/remind <时间> <内容>",
-)
-
-# 使用依赖插件提供的功能
-@scheduler.scheduled_job("interval", minutes=30)
-async def check_reminders():
-    data_file = get_data_file("reminders.json")
-    # ...处理提醒逻辑
-```
-
-## require() 的工作流程
-
-1. 检查目标插件是否已加载
-2. 如果未加载，尝试加载该插件
-3. 如果加载失败，抛出异常
-4. 返回目标插件的 `Plugin` 对象
-
-```python
-from nonebot import require
-
-# require() 返回 Plugin 对象
-plugin = require("nonebot_plugin_apscheduler")
-print(plugin.name)       # 插件名
-print(plugin.module)     # 插件模块
-print(plugin.metadata)   # 插件元数据
-```
-
-## 常见使用模式
-
-### 使用第三方插件的调度器
-
-```python
-from nonebot import require
-
-require("nonebot_plugin_apscheduler")
-
-from nonebot_plugin_apscheduler import scheduler
-
-@scheduler.scheduled_job("cron", hour=8, minute=0)
-async def morning_greeting():
-    # 每天早上8点执行
-    ...
-```
-
-### 使用数据存储插件
-
-```python
-from nonebot import require
-
-require("nonebot_plugin_localstore")
-
-from nonebot_plugin_localstore import get_cache_dir, get_data_dir, get_config_dir
-
-cache_dir = get_cache_dir("my_plugin")
-data_dir = get_data_dir("my_plugin")
-```
-
-### 使用通用消息插件
-
-```python
-from nonebot import require
-
-require("nonebot_plugin_alconna")
-
-from nonebot_plugin_alconna import UniMessage, on_alconna
-from arclet.alconna import Alconna, Args
-```
-
-## 错误处理
-
-### 插件不存在
-
-```python
-from nonebot import require
-
-try:
-    require("nonexistent_plugin")
-except RuntimeError as e:
-    print(f"插件加载失败: {e}")
-```
-
-### 常见错误
-
-| 错误 | 原因 | 解决方法 |
-|------|------|---------|
-| `RuntimeError` | 插件未安装或找不到 | 确认插件已安装 (`pip install`) |
-| `ImportError` | 在 `require()` 之前 `import` | 将 `import` 移到 `require()` 之后 |
-| 循环依赖 | 插件 A 依赖 B，B 又依赖 A | 重构代码，消除循环 |
-
-## 重要规则
-
-### 必须先 require() 再 import
-
-```python
-# ❌ 错误：直接导入可能在插件未加载时失败
-from nonebot_plugin_apscheduler import scheduler
-
-# ✅ 正确：先 require 确保插件已加载
-from nonebot import require
-require("nonebot_plugin_apscheduler")
-from nonebot_plugin_apscheduler import scheduler
-```
-
-### require() 应在模块顶层调用
-
-```python
-# ✅ 正确：在模块顶层调用
-from nonebot import require
-require("nonebot_plugin_apscheduler")
-from nonebot_plugin_apscheduler import scheduler
-
-# ❌ 错误：在函数内部延迟调用（可能遗漏）
-async def handler():
-    require("nonebot_plugin_apscheduler")
-    from nonebot_plugin_apscheduler import scheduler
-    ...
-```
-
-### 每个依赖只需 require 一次
-
-```python
-# ✅ 正确
-require("nonebot_plugin_apscheduler")
-from nonebot_plugin_apscheduler import scheduler
-
-# ⚠️ 多次 require 不会报错，但没有必要
-require("nonebot_plugin_apscheduler")
-require("nonebot_plugin_apscheduler")  # 冗余
-```
-
-## Import Hook 机制
-
-NoneBot 使用 Python 的 Import Hook（`sys.meta_path`）来拦截插件模块的导入行为：
-
-1. 当加载插件时，NoneBot 注册一个自定义 Finder
-2. 该 Finder 拦截所有对插件模块的 `import` 操作
-3. 记录导入关系，建立插件依赖图
-4. 确保插件的加载生命周期被正确管理
-
-这就是为什么需要使用 `require()` 而非直接 `import` 的根本原因 — 它确保 NoneBot 能正确追踪和管理插件间的依赖关系。
-
-## 与 inherit_supported_adapters 配合
-
-声明依赖的同时，可以使用 `inherit_supported_adapters()` 继承依赖插件的适配器支持：
-
-```python
-from nonebot import require
-from nonebot.plugin import PluginMetadata, inherit_supported_adapters
-
-require("nonebot_plugin_alconna")
-require("nonebot_plugin_apscheduler")
-
-from nonebot_plugin_alconna import UniMessage
-from nonebot_plugin_apscheduler import scheduler
-
-__plugin_meta__ = PluginMetadata(
-    name="我的插件",
-    description="...",
-    usage="...",
-    supported_adapters=inherit_supported_adapters(
-        "nonebot_plugin_alconna",
-        "nonebot_plugin_apscheduler",
-    ),
-)
-```
+其中，`require` 函数的参数为插件索引名称或者外部插件的模块名称。在完成依赖声明后，我们可以在插件 `a` 中直接导入插件 `b` 所提供的功能。

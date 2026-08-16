@@ -42,7 +42,8 @@
     "share": "File Share",
     "sticker": "Stickers",
     "ssh": "SSH Remote",
-    "voiceprint": "Voiceprint Library"
+    "voiceprint": "Voiceprint Library",
+    "nonebot": "NoneBot Bridge"
   },
   "reload": "Reload",
   "reloading": "Reloading...",

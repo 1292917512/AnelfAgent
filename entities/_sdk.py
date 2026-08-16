@@ -222,6 +222,19 @@ def get_current_scope() -> str:
         return "_global"
 
 
+def tool_group_rounds_left(group: str) -> int:
+    """查询可沉睡分组在当前会话 scope 下的剩余激活轮数（0 = 沉睡中）。
+
+    供 entities 层展示工具分组的真实可调用状态（如 list_entity_methods
+    标注沉睡并引导 activate_tool_group），延迟导入 agent.mind。
+    """
+    try:
+        from agent.mind.tool_activation import tool_activation
+        return tool_activation.rounds_left(group)
+    except Exception:
+        return 0
+
+
 def get_background_registry() -> Any:
     """获取后台任务注册表（延迟导入 agent.runtime，未初始化返回 None）。
 

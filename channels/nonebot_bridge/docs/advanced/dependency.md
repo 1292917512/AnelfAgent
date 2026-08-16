@@ -1,575 +1,1451 @@
+<!-- source: https://nonebot.dev/docs/advanced/dependency -->
+
 # 依赖注入
 
-NoneBot 拥有一套完善的依赖注入（Dependency Injection, DI）系统，可以让事件处理函数自动获取所需的上下文信息。
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
 
-## 基本概念
+在事件处理流程中，事件响应器具有自己独立的上下文，例如：当前的事件、机器人等信息。在 NoneBot 中，这些信息通过依赖注入的方式提供给事件处理函数，可以让代码更加整洁可读、提升复用能力。
 
-依赖注入通过函数参数的**类型注解**或**默认值**声明需要的依赖。NoneBot 在调用处理函数时会自动解析并注入这些依赖。
+在了解如何使用依赖注入获取上下文信息之前，我们需要先了解两个概念：
 
-```python
+- `Dependent`：使用依赖注入的函数或其他任意可调用对象。如：事件处理函数、自定义的依赖函数等。
+- `Dependency`：依赖注入的对象。如：当前事件、机器人等。
+
+在之前的文档中，我们已经多次使用了依赖注入来获取事件信息。通过对函数参数依照一定规则填写类型注解，即可获得想要的上下文信息。任何一个事件处理函数在添加到事件处理流程时，都会根据一定规则提前将其解析成一个 `Dependent` 对象，方便运行时进行注入。如果遇到无法解析的参数，将会抛出 `ValueError("Unknown parameter")` 的异常。整个依赖注入系统可以分为两部分：
+
+- 参数解析
+  - 依据一定规则解析函数参数，识别 `Dependency` 依赖。
+  - 生成 `Dependent` 对象。
+- 执行
+  - 根据已经解析的 `Dependency` 依赖，执行调用。
+  - 将所有 `Dependency` 的返回值根据参数名传入并调用 `Dependent` 。
+
+:::danger[警告]
+在依赖注入中，类型注解是非常重要的，因为它不仅可以决定依赖注入的对象，还可以触发[重载机制](../appendices/overload.md#重载)。如果类型注解与实际获得数据类型不一致，将会跳过当前 `Dependent` 对象（即事件处理函数）。
+:::
+
+:::tip[提示]
+如果对于依赖注入的解析流程有疑问，可以调整[日志等级配置项](../appendices/config.mdx#log-level)为 `TRACE`，查看依赖解析日志。
+:::
+
+## 同步支持
+
+对于依赖注入系统中的 `Dependent` 或者 `Dependency` 对象，均支持同步类型的函数或可调用对象。例如：
+
+```python {6,10}
 from nonebot import on_command
-from nonebot.adapters import Bot, Event
+from nonebot.params import Depends
 
-cmd = on_command("hello")
+matcher = on_command("foo")
 
-@cmd.handle()
-async def handle(bot: Bot, event: Event):
-    # bot 和 event 由 NoneBot 自动注入
-    await bot.send(event, "Hello!")
+def dependency() -> str:
+    return "something"
+
+@matcher.handle()
+def _(result: str = Depends(dependency)):
+    ...
 ```
 
-## 内置依赖注入
+## 非依赖参数
 
-### Bot — 机器人实例
+在依赖注入解析中，任何无法解析的参数如果带有默认值，将会被视为非依赖参数。这些参数在依赖运行时将不会被注入而使用函数默认值。例如：
+
+```python
+async def _(foo: str = "bar"): ...
+```
+
+## 类型依赖注入
+
+这一类的依赖注入仅需要在函数参数中添加对应的类型注解即可。
+
+### Bot
+
+获取当前事件的 Bot 对象。
+
+通过标注参数为 `Bot` 类型，或者一系列 `Bot` 类型，即可获取到当前事件的 Bot 对象。为兼容性考虑，如果参数名为 `bot` 且无类型注解，也会视为 Bot 依赖注入。
+
+Bot 依赖注入支持重载（即：可以标注参数为子类型）且具有[重载优先检查权](../appendices/overload.md#重载)。
+
+<Tabs groupId="python">
+  <TabItem value="3.10" label="Python 3.10+" default>
 
 ```python
 from nonebot.adapters import Bot
+from nonebot.adapters.console import Bot as ConsoleBot
+from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
 
-@cmd.handle()
-async def handle(bot: Bot):
-    await bot.send(event, "Hello!")
+async def _(foo: Bot): ...
+async def _(foo: ConsoleBot | OneBotV11Bot): ...
+async def _(bot): ...  # 兼容性处理
 ```
 
-也可以使用具体适配器的 Bot 类型进行过滤：
+  </TabItem>
+  <TabItem value="3.9" label="Python 3.9">
 
 ```python
-from nonebot.adapters.onebot.v11 import Bot as V11Bot
+from typing import Union
 
-@cmd.handle()
-async def handle(bot: V11Bot):
-    # 仅当 Bot 是 OneBot V11 类型时才触发
-    await bot.send_group_msg(group_id=123456, message="Hello!")
+from nonebot.adapters import Bot
+from nonebot.adapters.console import Bot as ConsoleBot
+from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
+
+async def _(foo: Bot): ...
+async def _(foo: Union[ConsoleBot, OneBotV11Bot]): ...
+async def _(bot): ...  # 兼容性处理
 ```
 
-### Event — 事件对象
+  </TabItem>
+</Tabs>
+
+### Event
+
+获取当前事件。
+
+通过标注参数为 `Event` 类型，或者一系列 `Event` 类型，即可获取到当前事件。为兼容性考虑，如果参数名为 `event` 且无类型注解，也会视为 Event 依赖注入。
+
+Event 依赖注入支持重载（即：可以标注参数为子类型）且具有[重载优先检查权](../appendices/overload.md#重载)。
+
+<Tabs groupId="python">
+  <TabItem value="3.10" label="Python 3.10+" default>
 
 ```python
 from nonebot.adapters import Event
+from nonebot.adapters.onebot.v11 import PrivateMessageEvent, GroupMessageEvent
 
-@cmd.handle()
-async def handle(event: Event):
-    user_id = event.get_user_id()
-    session_id = event.get_session_id()
-    msg = event.get_message()
+async def _(foo: Event): ...
+async def _(foo: PrivateMessageEvent | GroupMessageEvent): ...
+async def _(event): ...  # 兼容性处理
 ```
 
-使用具体事件类型：
+  </TabItem>
+  <TabItem value="3.9" label="Python 3.9">
 
 ```python
-from nonebot.adapters.onebot.v11 import GroupMessageEvent
+from typing import Union
 
-@cmd.handle()
-async def handle(event: GroupMessageEvent):
-    # 仅当事件是群消息时触发
-    group_id = event.group_id
-    user_id = event.user_id
+from nonebot.adapters import Event
+from nonebot.adapters.onebot.v11 import PrivateMessageEvent, GroupMessageEvent
+
+async def _(foo: Event): ...
+async def _(foo: Union[PrivateMessageEvent, GroupMessageEvent]): ...
+async def _(event): ...  # 兼容性处理
 ```
 
-### State — 状态字典
+  </TabItem>
+</Tabs>
+
+### State
+
+获取当前[会话状态](../appendices/session-state.md)。
+
+通过标注参数为 `T_State` 类型，即可获取到当前会话状态。为兼容性考虑，如果参数名为 `state` 且无类型注解，也会视为 State 依赖注入。
 
 ```python
 from nonebot.typing import T_State
 
-@cmd.handle()
-async def handle(state: T_State):
-    state["count"] = state.get("count", 0) + 1
+async def _(foo: T_State): ...
 ```
 
-### Matcher — 当前响应器
+### Matcher
+
+获取当前事件响应器实例。常用于使用[事件响应器操作](../appendices/session-control.mdx)。
+
+通过标注参数为 `Matcher` 类型，或者一系列 `Matcher` 类型，即可获取到当前事件。为兼容性考虑，如果参数名为 `matcher` 且无类型注解，也会视为 Matcher 依赖注入。
+
+Matcher 依赖注入支持重载（即：可以标注参数为子类型）且具有[重载优先检查权](../appendices/overload.md#重载)。
 
 ```python
 from nonebot.matcher import Matcher
 
-@cmd.handle()
-async def handle(matcher: Matcher):
-    await matcher.send("处理中...")
-    await matcher.finish("完成！")
+async def _(foo: Matcher): ...
+async def _(matcher): ...  # 兼容性处理
 ```
 
-### Exception — 异常注入
+### Exception
 
-用于 `run_postprocessor` 中获取处理过程中的异常：
+获取事件响应器运行中抛出的异常。该依赖注入目前仅在事件响应器运行后处理 Hook 中可用。
 
-```python
+通过标注参数为异常类型，或者一系列异常类型，即可获取到事件响应器运行中抛出的异常。
+
+<Tabs groupId="python">
+  <TabItem value="3.10" label="Python 3.10+" default>
+
+```python {5,8}
 from nonebot.message import run_postprocessor
+from nonebot.exception import ActionFailed, NetworkError
 
 @run_postprocessor
-async def post(exception: Exception | None):
-    if exception:
-        print(f"处理异常: {exception}")
+async def _(e: Exception): ...
+
+@run_postprocessor
+async def _(e: ActionFailed | NetworkError): ...
 ```
 
-## Depends — 子依赖
+  </TabItem>
+  <TabItem value="3.9" label="Python 3.9">
 
-`Depends()` 允许你定义可复用的依赖函数。
+```python {6,9}
+from typing import Union
+from nonebot.message import run_postprocessor
+from nonebot.exception import ActionFailed, NetworkError
 
-### 基本用法
+@run_postprocessor
+async def _(e: Exception): ...
 
-```python
-from nonebot.params import Depends
-
-async def get_user_info(event: Event) -> dict:
-    return {
-        "user_id": event.get_user_id(),
-        "session_id": event.get_session_id(),
-    }
-
-@cmd.handle()
-async def handle(user_info: dict = Depends(get_user_info)):
-    print(user_info["user_id"])
+@run_postprocessor
+async def _(e: Union[ActionFailed, NetworkError]): ...
 ```
 
-### 嵌套子依赖
+  </TabItem>
+</Tabs>
 
-```python
-from nonebot.params import Depends
-from nonebot.adapters import Event
+## 子依赖
 
-async def get_user_id(event: Event) -> str:
-    return event.get_user_id()
+在依赖注入系统中，我们可以定义一个子依赖，来执行自定义的操作，提高代码复用性以及处理性能。
 
-async def get_user_name(user_id: str = Depends(get_user_id)) -> str:
-    # 子依赖也可以有自己的依赖
-    return f"User_{user_id}"
+### 定义子依赖
 
-@cmd.handle()
-async def handle(name: str = Depends(get_user_name)):
-    await cmd.finish(f"你好, {name}")
-```
+子依赖使用 `Depends` 标记进行定义，其参数即依赖的函数或可调用对象，同样会被解析为 `Dependent` 对象，将会在依赖注入期间执行。我们来看一个例子：
 
-### use_cache — 依赖缓存
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
 
-默认情况下 `Depends` 会缓存同一事件处理中的依赖结果（`use_cache=True`）。
-
-```python
-async def expensive_operation() -> str:
-    # 耗时操作，同一事件处理中只执行一次
-    return await fetch_data()
-
-@cmd.handle()
-async def handle(
-    data1: str = Depends(expensive_operation),
-    data2: str = Depends(expensive_operation),
-):
-    # data1 和 data2 是同一个结果（缓存命中）
-    assert data1 is data2
-```
-
-禁用缓存：
-
-```python
-@cmd.handle()
-async def handle(
-    data: str = Depends(expensive_operation, use_cache=False),
-):
-    # 每次都会重新执行
-    ...
-```
-
-## 类型验证
-
-NoneBot 会对注入的依赖进行类型验证，不匹配时跳过该处理函数。
-
-```python
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, PrivateMessageEvent
-
-@cmd.handle()
-async def group_handler(event: GroupMessageEvent):
-    # 只处理群消息
-    await cmd.finish("这是群消息")
-
-@cmd.handle()
-async def private_handler(event: PrivateMessageEvent):
-    # 只处理私聊消息
-    await cmd.finish("这是私聊消息")
-```
-
-## 类依赖
-
-类也可以作为依赖使用，NoneBot 会将其 `__init__` 的参数作为子依赖解析。
-
-```python
-from nonebot.params import Depends
-from nonebot.adapters import Bot, Event
-
-class UserContext:
-    def __init__(self, bot: Bot, event: Event):
-        self.bot = bot
-        self.user_id = event.get_user_id()
-
-    async def get_nickname(self) -> str:
-        info = await self.bot.call_api("get_stranger_info", user_id=int(self.user_id))
-        return info.get("nickname", "未知")
-
-@cmd.handle()
-async def handle(ctx: UserContext = Depends(UserContext)):
-    nickname = await ctx.get_nickname()
-    await cmd.finish(f"你好, {nickname}")
-```
-
-## 生成器依赖
-
-生成器函数可以用作依赖，`yield` 之前的代码在处理前执行，`yield` 之后的代码在处理后执行（类似 contextmanager）。
-
-```python
-from nonebot.params import Depends
-
-async def database_session():
-    session = await create_session()
-    try:
-        yield session
-    finally:
-        await session.close()
-
-@cmd.handle()
-async def handle(session = Depends(database_session)):
-    await session.execute("SELECT ...")
-    # session 会在处理结束后自动关闭
-```
-
-## 可调用对象依赖
-
-任何实现了 `__call__` 的对象都可以作为依赖：
-
-```python
-from nonebot.params import Depends
-from nonebot.adapters import Event
-
-class PermissionChecker:
-    def __init__(self, required_level: int):
-        self.required_level = required_level
-
-    async def __call__(self, event: Event) -> bool:
-        user_id = event.get_user_id()
-        user_level = await get_user_level(user_id)
-        return user_level >= self.required_level
-
-@cmd.handle()
-async def handle(is_admin: bool = Depends(PermissionChecker(5))):
-    if not is_admin:
-        await cmd.finish("权限不足")
-    await cmd.finish("管理员操作成功")
-```
-
-## 内置辅助注入器
-
-NoneBot 提供了大量内置注入器，位于 `nonebot.params` 模块。
-
-### 事件信息注入器
-
-| 注入器 | 类型 | 说明 |
-|--------|------|------|
-| `EventType()` | `str` | 事件类型字符串 |
-| `EventMessage()` | `Message` | 事件消息对象 |
-| `EventPlainText()` | `str` | 事件消息纯文本 |
-| `EventToMe()` | `bool` | 是否 @机器人 |
-
-```python
-from nonebot.params import EventType, EventMessage, EventPlainText, EventToMe
-
-@cmd.handle()
-async def handle(
-    event_type: str = EventType(),
-    message: Message = EventMessage(),
-    plain_text: str = EventPlainText(),
-    to_me: bool = EventToMe(),
-):
-    print(f"类型: {event_type}")
-    print(f"消息: {message}")
-    print(f"纯文本: {plain_text}")
-    print(f"@我: {to_me}")
-```
-
-### 命令注入器
-
-| 注入器 | 类型 | 说明 |
-|--------|------|------|
-| `Command()` | `tuple[str, ...]` | 命令元组（如 `("help",)`） |
-| `RawCommand()` | `str` | 原始命令文本（如 `"/help"`） |
-| `CommandArg()` | `Message` | 命令参数消息 |
-| `CommandStart()` | `str` | 命令前缀（如 `"/"`） |
-| `CommandWhitespace()` | `str` | 命令与参数间的空白字符 |
-
-```python
-from nonebot.params import Command, RawCommand, CommandArg, CommandStart, CommandWhitespace
-from nonebot.adapters import Message
-
-@cmd.handle()
-async def handle(
-    command: tuple[str, ...] = Command(),
-    raw_command: str = RawCommand(),
-    args: Message = CommandArg(),
-    start: str = CommandStart(),
-    whitespace: str = CommandWhitespace(),
-):
-    print(f"命令: {command}")        # ("help",)
-    print(f"原始: {raw_command}")     # "/help"
-    print(f"参数: {args}")           # "topic"
-    print(f"前缀: {start}")          # "/"
-    print(f"空白: {whitespace!r}")   # " "
-```
-
-### Shell 命令注入器
-
-| 注入器 | 类型 | 说明 |
-|--------|------|------|
-| `ShellCommandArgv()` | `list[str]` | Shell 命令参数列表 |
-| `ShellCommandArgs()` | `Namespace` | 解析后的参数对象 |
-
-```python
-from nonebot.params import ShellCommandArgv, ShellCommandArgs
-
-@shell_cmd.handle()
-async def handle(
-    argv: list[str] = ShellCommandArgv(),
-    args: Namespace = ShellCommandArgs(),
-):
-    print(f"参数列表: {argv}")   # ["name", "-t", "3"]
-    print(f"解析结果: {args}")   # Namespace(name="name", times=3)
-```
-
-### 正则注入器
-
-| 注入器 | 类型 | 说明 |
-|--------|------|------|
-| `RegexMatched()` | `re.Match` | 正则匹配对象 |
-| `RegexStr()` | `str` | 完整匹配字符串 |
-| `RegexGroup()` | `tuple[Any, ...]` | 匹配的分组元组 |
-| `RegexDict()` | `dict[str, Any]` | 命名分组字典 |
-
-```python
-from nonebot import on_regex
-from nonebot.params import RegexMatched, RegexStr, RegexGroup, RegexDict
-import re
-
-matcher = on_regex(r"^(?P<cmd>\w+)\s+(?P<arg>.+)$")
-
-@matcher.handle()
-async def handle(
-    matched: re.Match = RegexMatched(),
-    full_match: str = RegexStr(),
-    groups: tuple = RegexGroup(),
-    group_dict: dict = RegexDict(),
-):
-    print(f"匹配对象: {matched}")
-    print(f"完整匹配: {full_match}")
-    print(f"分组: {groups}")           # ("hello", "world")
-    print(f"命名分组: {group_dict}")    # {"cmd": "hello", "arg": "world"}
-```
-
-### 文本匹配注入器
-
-| 注入器 | 类型 | 说明 |
-|--------|------|------|
-| `Startswith()` | `str` | startswith 匹配到的前缀 |
-| `Endswith()` | `str` | endswith 匹配到的后缀 |
-| `Fullmatch()` | `str` | fullmatch 匹配到的完整文本 |
-| `Keyword()` | `str` | keyword 匹配到的关键词 |
-
-```python
-from nonebot import on_startswith, on_endswith, on_fullmatch, on_keyword
-from nonebot.params import Startswith, Endswith, Fullmatch, Keyword
-
-sw = on_startswith("你好")
-
-@sw.handle()
-async def handle_sw(prefix: str = Startswith()):
-    print(f"匹配前缀: {prefix}")  # "你好"
-
-ew = on_endswith("吗")
-
-@ew.handle()
-async def handle_ew(suffix: str = Endswith()):
-    print(f"匹配后缀: {suffix}")  # "吗"
-
-fm = on_fullmatch("签到")
-
-@fm.handle()
-async def handle_fm(text: str = Fullmatch()):
-    print(f"完整匹配: {text}")  # "签到"
-
-kw = on_keyword({"天气"})
-
-@kw.handle()
-async def handle_kw(word: str = Keyword()):
-    print(f"关键词: {word}")  # "天气"
-```
-
-### 会话交互注入器
-
-| 注入器 | 类型 | 说明 |
-|--------|------|------|
-| `Received()` | `Event` | `receive()` 接收到的事件 |
-| `LastReceived()` | `Event` | 最近一次 `receive()` 的事件 |
-| `Arg()` | `Message` | `got()` 获取到的参数消息 |
-| `ArgStr()` | `str` | `got()` 获取到的参数纯文本 |
-| `ArgPlainText()` | `str` | `got()` 获取到的参数纯文本（等同 ArgStr） |
-
-```python
-from nonebot.params import Arg, ArgStr, ArgPlainText
-
-cmd = on_command("order")
-
-@cmd.got("food", prompt="你想吃什么？")
-async def handle_food(
-    food: Message = Arg(),
-    food_str: str = ArgStr(),
-    food_text: str = ArgPlainText(),
-):
-    print(f"消息对象: {food}")
-    print(f"字符串: {food_str}")
-    print(f"纯文本: {food_text}")
-    await cmd.finish(f"好的，{food_text}！")
-```
-
-指定键名：
-
-```python
-@cmd.got("name", prompt="你叫什么？")
-@cmd.got("age", prompt="你几岁？")
-async def handle(
-    name: str = ArgStr("name"),
-    age: str = ArgStr("age"),
-):
-    await cmd.finish(f"{name}，{age}岁")
-```
-
-`Received` 示例：
-
-```python
-from nonebot.params import Received, LastReceived
-from nonebot.adapters import Event
-
-@cmd.receive("confirmation")
-async def handle(
-    event: Event = Received("confirmation"),
-    last: Event = LastReceived(),
-):
-    # event 是 receive("confirmation") 收到的事件
-    # last 是最后一次 receive 收到的事件
-    ...
-```
-
-## Annotated 语法
-
-NoneBot 支持使用 `typing.Annotated`（Python 3.9+）来声明依赖，使代码更简洁。
-
-### 基本 Annotated 用法
-
-```python
+```python {5,15}
 from typing import Annotated
-from nonebot.adapters import Event, Message
-from nonebot.params import EventPlainText, CommandArg, Depends
 
-@cmd.handle()
-async def handle(
-    plain_text: Annotated[str, EventPlainText()],
-    args: Annotated[Message, CommandArg()],
-):
-    ...
-```
-
-### Annotated 与 Depends
-
-```python
-from typing import Annotated
-from nonebot.params import Depends
-
-async def get_user_id(event: Event) -> str:
-    return event.get_user_id()
-
-UserId = Annotated[str, Depends(get_user_id)]
-
-@cmd.handle()
-async def handle(user_id: UserId):
-    await cmd.finish(f"用户: {user_id}")
-```
-
-### 预定义 Annotated 类型
-
-NoneBot 预定义了一些常用的 Annotated 类型：
-
-```python
-from nonebot.params import (
-    EventType,
-    EventMessage,
-    EventPlainText,
-    EventToMe,
-    Command,
-    RawCommand,
-    CommandArg,
-    CommandStart,
-    CommandWhitespace,
-    ShellCommandArgv,
-    ShellCommandArgs,
-    RegexMatched,
-    RegexStr,
-    RegexGroup,
-    RegexDict,
-    Startswith,
-    Endswith,
-    Fullmatch,
-    Keyword,
-    Received,
-    LastReceived,
-    Arg,
-    ArgStr,
-    ArgPlainText,
-)
-```
-
-## 综合示例
-
-### 完整的命令处理
-
-```python
-from typing import Annotated
 from nonebot import on_command
-from nonebot.adapters import Bot, Event, Message
-from nonebot.params import CommandArg, Depends, ArgStr
+from nonebot.adapters import Event
+from nonebot.params import Depends
+
+test = on_command("test")
+
+async def check(event: Event) -> Event:
+    if event.get_user_id() in BLACKLIST:
+        await test.finish()
+    return event
+
+@test.handle()
+async def _(event: Annotated[Event, Depends(check)]):
+    ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {3,13}
+from nonebot import on_command
+from nonebot.adapters import Event
+from nonebot.params import Depends
+
+test = on_command("test")
+
+async def check(event: Event) -> Event:
+    if event.get_user_id() in BLACKLIST:
+        await test.finish()
+    return event
+
+@test.handle()
+async def _(event: Event = Depends(check)):
+    ...
+```
+
+  </TabItem>
+</Tabs>
+
+在上面的代码中，我们使用 `Depends` 标记定义了一个子依赖 `check`。它判断事件主体用户是否在黑名单中，如果在，则直接结束事件处理流程。如果不在，则返回事件对象，以便事件处理函数可以继续执行。
+
+通过将 `Depends` 包裹的子依赖作为参数的默认值，我们就可以在执行事件处理函数之前执行子依赖，并将其返回值作为参数传入事件处理函数。子依赖和普通的事件处理函数并没有区别，同样可以使用依赖注入，并且可以返回任何类型的值。但需要注意的是，如果事件处理函数参数的类型注解与子依赖返回值的类型**不一致**，将会触发[重载](../appendices/overload.md)而跳过当前事件处理函数。
+
+特别的，我们可以为 `Dependent` 对象定义一系列前置子依赖，它们会在参数执行前被顺序执行，且返回值将会被忽略，例如：
+
+```python {11}
+from nonebot import on_command
+from nonebot.adapters import Event
+from nonebot.params import Depends
+
+test = on_command("test")
+
+async def check(event: Event):
+    if event.get_user_id() in BLACKLIST:
+        await test.finish()
+
+@test.handle(parameterless=[Depends(check)])
+async def _():
+    ...
+```
+
+### 依赖缓存
+
+NoneBot 在执行子依赖时，会将其返回值缓存起来。当我们在使用子依赖时，`Depends` 具有一个参数 `use_cache`，默认为 `True`。此时在事件处理流程中，多次使用同一个子依赖时，将会使用缓存中的结果而不会重复执行。这在很多情景中非常有用，例如：
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {7}
+import random
+from typing import Annotated
+
+async def random_result() -> int:
+    return random.randint(1, 100)
+
+async def _(x: Annotated[int, Depends(random_result)]):
+    print(x)
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {6}
+import random
+
+async def random_result() -> int:
+    return random.randint(1, 100)
+
+async def _(x: int = Depends(random_result)):
+    print(x)
+```
+
+  </TabItem>
+</Tabs>
+
+此时，在同一事件处理流程中，这个随机函数的返回值将会保持一致。如果我们希望每次都重新执行子依赖，可以将 `use_cache` 设置为 `False`。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {7}
+import random
+from typing import Annotated
+
+async def random_result() -> int:
+    return random.randint(1, 100)
+
+async def _(x: Annotated[int, Depends(random_result, use_cache=False)]):
+    print(x)
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {6}
+import random
+
+async def random_result() -> int:
+    return random.randint(1, 100)
+
+async def _(x: int = Depends(random_result, use_cache=False)):
+    print(x)
+```
+
+  </TabItem>
+</Tabs>
+
+:::tip[提示]
+缓存的生命周期与当前接收到的事件相同。接收到事件后，子依赖在首次执行时缓存，在该事件处理完成后，缓存就会被清除。
+:::
+
+### 类型转换与校验
+
+在依赖注入系统中，我们可以对子依赖的返回值进行自动类型转换与校验。这个功能由 Pydantic 支持，因此我们通过参数类型注解自动使用 Pydantic 支持的类型转换。例如：
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {6,9}
+from typing import Annotated
+
+from nonebot.params import Depends
+from nonebot.adapters import Event
+
+def get_user_id(event: Event) -> str:
+    return event.get_user_id()
+
+async def _(user_id: Annotated[int, Depends(get_user_id, validate=True)]):
+    print(user_id)
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {4,7}
+from nonebot.params import Depends
+from nonebot.adapters import Event
+
+def get_user_id(event: Event) -> str:
+    return event.get_user_id()
+
+async def _(user_id: int = Depends(get_user_id, validate=True)):
+    print(user_id)
+```
+
+  </TabItem>
+</Tabs>
+
+在进行类型自动转换的同时，Pydantic 还支持对数据进行更多的限制，如：大于、小于、长度等。使用方法如下：
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {7,10}
+from typing import Annotated
+
+from pydantic import Field
+from nonebot.params import Depends
+from nonebot.adapters import Event
+
+def get_user_id(event: Event) -> str:
+    return event.get_user_id()
+
+async def _(user_id: Annotated[int, Depends(get_user_id, validate=Field(gt=100))]):
+    print(user_id)
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {5,8}
+from pydantic import Field
+from nonebot.params import Depends
+from nonebot.adapters import Event
+
+def get_user_id(event: Event) -> str:
+    return event.get_user_id()
+
+async def _(user_id: int = Depends(get_user_id, validate=Field(gt=100))):
+    print(user_id)
+```
+
+  </TabItem>
+</Tabs>
+
+### 类作为依赖
+
+在前面的事例中，我们使用了函数作为子依赖。实际上，我们还可以使用类作为依赖。当我们在实例化一个类的时候，其实我们就在调用它，类本身也是一个可调用对象。例如：
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {16}
+from typing import Annotated
+from dataclasses import dataclass
+
+from nonebot.params import Depends
+from nonebot.adapters import Event
 from nonebot.typing import T_State
 
-async def parse_target(args: Message = CommandArg()) -> str | None:
-    text = args.extract_plain_text().strip()
-    return text if text else None
+def get_context(state: T_State) -> dict:
+    return state.setdefault("context", {})
 
-cmd = on_command("info")
+@dataclass
+class ClassDependency:
+    event: Event
+    context: dict = Depends(get_context)
 
-@cmd.handle()
-async def first_receive(
-    target: Annotated[str | None, Depends(parse_target)],
-    state: T_State,
-):
-    if target:
-        state["target"] = target
-    # 如果没有参数，会继续到 got
-
-@cmd.got("target", prompt="请输入查询目标：")
-async def handle(
-    bot: Bot,
-    event: Event,
-    target: str = ArgStr("target"),
-):
-    result = await fetch_info(target)
-    await cmd.finish(f"查询结果: {result}")
+async def _(data: Annotated[ClassDependency, Depends(ClassDependency)]):
+    print(data.event, data.context)
 ```
 
-### 可复用的权限依赖
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {15}
+from dataclasses import dataclass
+
+from nonebot.params import Depends
+from nonebot.adapters import Event
+from nonebot.typing import T_State
+
+def get_context(state: T_State) -> dict:
+    return state.setdefault("context", {})
+
+@dataclass
+class ClassDependency:
+    event: Event
+    context: dict = Depends(get_context)
+
+async def _(data: ClassDependency = Depends(ClassDependency)):
+    print(data.event, data.context)
+```
+
+  </TabItem>
+</Tabs>
+
+可以看到，我们使用 `dataclass` 定义了一个类。由于这个类的 `__init__` 方法可以被依赖注入系统解析，因此，我们可以将其作为子依赖进行声明。特别地，对于类依赖，`Depends` 的参数可以为空，NoneBot 将会使用参数的类型注解进行解析与推断：
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
 
 ```python
 from typing import Annotated
+
+async def _(data: Annotated[ClassDependency, Depends()]):
+    print(data.event, data.context)
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python
+async def _(data: ClassDependency = Depends()):
+    print(data.event, data.context)
+```
+
+  </TabItem>
+</Tabs>
+
+### 生成器作为依赖
+
+NoneBot 的依赖注入支持依赖项在事件处理流程结束后进行一些额外的工作，比如数据库 session 或者网络 IO 的关闭，互斥锁的解锁等等。同时，由于[依赖缓存](#依赖缓存)的存在，我们可以通过这种方式来实现共享一个 session 等功能。
+
+要实现上述功能，我们可以用生成器函数作为依赖项，我们用 `yield` 关键字取代 `return` 关键字，并在 `yield` 之后进行额外的工作。
+
+我们可以看下述代码段, 使用 `httpx.AsyncClient` 异步网络 IO，并在事件处理流程中共用一个 client：
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {15}
+from typing import Annotated
+from collections.abc import AsyncGenerator
+
+import httpx
 from nonebot.params import Depends
+
+async def get_client() -> AsyncGenerator[httpx.AsyncClient, None]:
+    try:
+        async with httpx.AsyncClient() as client:
+            yield client
+    finally:
+        # 在这里进行额外的工作
+
+
+@test.handle()
+async def _(x: Annotated[httpx.AsyncClient, Depends(get_client)]):
+    resp = await x.get("https://nonebot.dev")
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {15}
+from collections.abc import AsyncGenerator
+
+import httpx
+from nonebot.params import Depends
+
+async def get_client() -> AsyncGenerator[httpx.AsyncClient, None]:
+    try:
+        async with httpx.AsyncClient() as client:
+            yield client
+    finally:
+        # 在这里进行额外的工作
+
+
+@test.handle()
+async def _(x: httpx.AsyncClient = Depends(get_client)):
+    resp = await x.get("https://nonebot.dev")
+```
+
+  </TabItem>
+</Tabs>
+
+:::warning[注意]
+生成器作为依赖时，其中只能进行一次 `yield`，否则将会触发异常。如果对此有疑问并想探究原因，可以参考 [contextmanager](https://docs.python.org/zh-cn/3/library/contextlib.html#contextlib.contextmanager) 和 [asynccontextmanager](https://docs.python.org/zh-cn/3/library/contextlib.html#contextlib.asynccontextmanager) 文档。事实上，NoneBot 内部就使用了这两个装饰器。
+:::
+
+### 可调用对象作为依赖
+
+在 Python 里，为类定义 `__call__` 方法就可以使得这个类的实例成为一个可调用对象。因此，我们也可以将定义了 `__call__` 方法的类的实例作为依赖。事实上，NoneBot 的[内置响应规则](./matcher.md#内置响应规则)就广泛使用了这种方式，以 `is_type` 规则为例：
+
+```python
 from nonebot.adapters import Event
 
-async def require_admin(event: Event) -> bool:
-    user_id = event.get_user_id()
-    if user_id not in ADMIN_LIST:
-        raise PermissionError("权限不足")
-    return True
+class IsTypeRule:
+    def __init__(self, *types: type[Event]):
+        self.types = types
 
-IsAdmin = Annotated[bool, Depends(require_admin)]
-
-@cmd.handle()
-async def admin_only(is_admin: IsAdmin):
-    await cmd.finish("管理员操作成功")
+    async def __call__(self, event: Event) -> bool:
+        return isinstance(event, self.types)
 ```
+
+我们在使用 `is_type` 时，即实例化了 `IsTypeRule` 类，然后将实例作为响应规则依赖项传入。
+
+## 其他依赖注入
+
+这一类的依赖注入通常基于子依赖编写，为我们开发者提供更方便的途径获取上下文信息。
+
+### EventType
+
+获取当前事件的类型。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Annotated
+from nonebot.params import EventType
+
+async def _(foo: Annotated[str, EventType()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {3}
+from nonebot.params import EventType
+
+async def _(foo: str = EventType()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### EventMessage
+
+获取当前事件的消息。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {5}
+from typing import Annotated
+from nonebot.adapters import Message
+from nonebot.params import EventMessage
+
+async def _(foo: Annotated[Message, EventMessage()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {4}
+from nonebot.adapters import Message
+from nonebot.params import EventMessage
+
+async def _(foo: Message = EventMessage()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### EventPlainText
+
+获取当前事件的消息纯文本部分。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Annotated
+from nonebot.params import EventPlainText
+
+async def _(foo: Annotated[str, EventPlainText()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {3}
+from nonebot.params import EventPlainText
+
+async def _(foo: str = EventPlainText()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### EventToMe
+
+获取当前事件是否与机器人相关。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Annotated
+from nonebot.params import EventToMe
+
+async def _(foo: Annotated[bool, EventToMe()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {3}
+from nonebot.params import EventToMe
+
+async def _(foo: bool = EventToMe()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### Command
+
+获取当前命令型消息的元组形式命令名。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Annotated
+from nonebot.params import Command
+
+async def _(foo: Annotated[tuple[str, ...], Command()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {4}
+from nonebot.params import Command
+
+async def _(foo: tuple[str, ...] = Command()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+:::tip[提示]
+命令详情只能在**触发命令型事件响应器时**获取。如果在事件处理后续流程中获取，则会获取到不同的值。
+:::
+
+### RawCommand
+
+获取当前命令型消息的文本形式命令名。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Annotated
+from nonebot.params import RawCommand
+
+async def _(foo: Annotated[str, RawCommand()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {3}
+from nonebot.params import RawCommand
+
+async def _(foo: str = RawCommand()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+:::tip[提示]
+命令详情只能在**触发命令型事件响应器时**获取。如果在事件处理后续流程中获取，则会获取到不同的值。
+:::
+
+### CommandArg
+
+获取命令型消息命令后跟随的参数。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {5}
+from typing import Annotated
+from nonebot.adapters import Message
+from nonebot.params import CommandArg
+
+async def _(foo: Annotated[Message, CommandArg()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {4}
+from nonebot.adapters import Message
+from nonebot.params import CommandArg
+
+async def _(foo: Message = CommandArg()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+:::tip[提示]
+命令详情只能在**触发命令型事件响应器时**获取。如果在事件处理后续流程中获取，则会获取到不同的值。
+:::
+
+### CommandStart
+
+获取命令型消息命令前缀。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Annotated
+from nonebot.params import CommandStart
+
+async def _(foo: Annotated[str, CommandStart()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {3}
+from nonebot.params import CommandStart
+
+async def _(foo: str = CommandStart()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+:::tip[提示]
+命令详情只能在**触发命令型事件响应器时**获取。如果在事件处理后续流程中获取，则会获取到不同的值。
+:::
+
+### CommandWhitespace
+
+获取命令型消息命令与参数间空白符。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Annotated
+from nonebot.params import CommandWhitespace
+
+async def _(foo: Annotated[str, CommandWhitespace()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {3}
+from nonebot.params import CommandWhitespace
+
+async def _(foo: str = CommandWhitespace()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+:::tip[提示]
+命令详情只能在**触发命令型事件响应器时**获取。如果在事件处理后续流程中获取，则会获取到不同的值。
+:::
+
+### ShellCommandArgv
+
+获取 shell 命令解析前的参数列表，列表中可能包含文本字符串和富文本消息段（如：图片）。当词法解析出错的时候，返回值将为 `None`。通过重载机制即可处理两种不同的情况。
+
+<Tabs groupId="python">
+  <TabItem value="3.10" label="Python 3.10+" default>
+
+```python {4}
+from typing import Annotated
+from nonebot import on_shell_command
+from nonebot.params import ShellCommandArgv
+
+matcher = on_shell_command("cmd")
+
+# 解析失败
+@matcher.handle()
+async def _(foo: Annotated[None, ShellCommandArgv()]): ...
+
+# 解析成功
+@matcher.handle()
+async def _(foo: Annotated[list[str | MessageSegment], ShellCommandArgv()]): ...
+```
+
+```python {4}
+from nonebot import on_shell_command
+from nonebot.params import ShellCommandArgv
+
+matcher = on_shell_command("cmd")
+
+# 解析失败
+@matcher.handle()
+async def _(foo: None = ShellCommandArgv()): ...
+
+# 解析成功
+@matcher.handle()
+async def _(foo: list[str | MessageSegment] = ShellCommandArgv()): ...
+```
+
+  </TabItem>
+  <TabItem value="3.9" label="Python 3.9">
+
+```python {4}
+from typing import Union, Annotated
+from nonebot import on_shell_command
+from nonebot.params import ShellCommandArgv
+
+matcher = on_shell_command("cmd")
+
+# 解析失败
+@matcher.handle()
+async def _(foo: Annotated[None, ShellCommandArgv()]): ...
+
+# 解析成功
+@matcher.handle()
+async def _(foo: Annotated[list[Union[str, MessageSegment]], ShellCommandArgv()]): ...
+```
+
+```python {4}
+from typing import Union
+from nonebot import on_shell_command
+from nonebot.params import ShellCommandArgv
+
+matcher = on_shell_command("cmd")
+
+# 解析失败
+@matcher.handle()
+async def _(foo: None = ShellCommandArgv()): ...
+
+# 解析成功
+@matcher.handle()
+async def _(foo: list[Union[str, MessageSegment]] = ShellCommandArgv()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### ShellCommandArgs
+
+获取 shell 命令解析后的参数 Namespace，支持 MessageSegment 富文本（如：图片）。
+
+:::tip[提示]
+如果参数解析成功，则为 parser 返回的 Namespace；如果参数解析失败，则为 [`ParserExit`](../api/exception.md#ParserExit) 异常，并携带错误码与错误信息。在前置词法解析失败时，返回值也为 [`ParserExit`](../api/exception.md#ParserExit) 异常。通过重载机制即可处理两种不同的情况。
+
+由于 `ArgumentParser` 在解析到 `--help` 参数时也会抛出异常，这种情况下错误码为 `0` 且错误信息即为帮助信息。
+:::
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {14,22}
+from typing import Annotated
+
+from nonebot import on_shell_command
+from nonebot.exception import ParserExit
+from nonebot.params import ShellCommandArgs
+from nonebot.rule import Namespace, ArgumentParser
+
+parser = ArgumentParser("demo")
+# parser.add_argument ...
+matcher = on_shell_command("cmd", parser=parser)
+
+# 解析失败
+@matcher.handle()
+async def _(foo: Annotated[ParserExit, ShellCommandArgs()]):
+    if foo.status == 0:
+        foo.message  # help message
+    else:
+        foo.message  # error message
+
+# 解析成功
+@matcher.handle()
+async def _(foo: Annotated[Namespace, ShellCommandArgs()]):
+    arg_dict = vars(foo)
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {12,20}
+from nonebot import on_shell_command
+from nonebot.exception import ParserExit
+from nonebot.params import ShellCommandArgs
+from nonebot.rule import Namespace, ArgumentParser
+
+parser = ArgumentParser("demo")
+# parser.add_argument ...
+matcher = on_shell_command("cmd", parser=parser)
+
+# 解析失败
+@matcher.handle()
+async def _(foo: ParserExit = ShellCommandArgs()):
+    if foo.status == 0:
+        foo.message  # help message
+    else:
+        foo.message  # error message
+
+# 解析成功
+@matcher.handle()
+async def _(foo: Namespace = ShellCommandArgs()):
+    arg_dict = vars(foo)
+```
+
+  </TabItem>
+</Tabs>
+
+### RegexMatched
+
+获取正则匹配结果的对象。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {5}
+from re import Match
+from typing import Annotated
+from nonebot.params import RegexMatched
+
+async def _(foo: Annotated[Match[str], RegexMatched()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {4}
+from re import Match
+from nonebot.params import RegexMatched
+
+async def _(foo: Match[str] = RegexMatched()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### RegexStr
+
+获取正则匹配结果的文本。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Annotated
+from nonebot.params import RegexStr
+
+async def _(foo: Annotated[str, RegexStr()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {3}
+from nonebot.params import RegexStr
+
+async def _(foo: str = RegexStr()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### RegexGroup
+
+获取正则匹配结果的 group 元组。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Any, Annotated
+from nonebot.params import RegexGroup
+
+async def _(foo: Annotated[tuple[Any, ...], RegexGroup()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {4}
+from typing import Any
+from nonebot.params import RegexGroup
+
+async def _(foo: tuple[Any, ...] = RegexGroup()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### RegexDict
+
+获取正则匹配结果的 group 字典。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Any, Annotated
+from nonebot.params import RegexDict
+
+async def _(foo: Annotated[dict[str, Any], RegexDict()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {4}
+from typing import Any
+from nonebot.params import RegexDict
+
+async def _(foo: dict[str, Any] = RegexDict()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### Startswith
+
+获取触发响应器的消息前缀字符串。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Annotated
+from nonebot.params import Startswith
+
+async def _(foo: Annotated[str, Startswith()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {3}
+from nonebot.params import Startswith
+
+async def _(foo: str = Startswith()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### Endswith
+
+获取触发响应器的消息后缀字符串。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Annotated
+from nonebot.params import Endswith
+
+async def _(foo: Annotated[str, Endswith()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {3}
+from nonebot.params import Endswith
+
+async def _(foo: str = Endswith()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### Fullmatch
+
+获取触发响应器的消息字符串。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Annotated
+from nonebot.params import Fullmatch
+
+async def _(foo: Annotated[str, Fullmatch()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {3}
+from nonebot.params import Fullmatch
+
+async def _(foo: str = Fullmatch()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### Keyword
+
+获取触发响应器的关键字字符串。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {4}
+from typing import Annotated
+from nonebot.params import Keyword
+
+async def _(foo: Annotated[str, Keyword()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {3}
+from nonebot.params import Keyword
+
+async def _(foo: str = Keyword()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### Received
+
+获取某次 `receive` 接收的事件。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {7}
+from typing import Annotated
+
+from nonebot.adapters import Event
+from nonebot.params import Received
+
+@matcher.receive("id")
+async def _(foo: Annotated[Event, Received("id")]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {5}
+from nonebot.adapters import Event
+from nonebot.params import Received
+
+@matcher.receive("id")
+async def _(foo: Event = Received("id")): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### LastReceived
+
+获取最近一次 `receive` 接收的事件。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {7}
+from typing import Annotated
+
+from nonebot.adapters import Event
+from nonebot.params import LastReceived
+
+@matcher.receive("any")
+async def _(foo: Annotated[Event, LastReceived()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {5}
+from nonebot.adapters import Event
+from nonebot.params import LastReceived
+
+@matcher.receive("any")
+async def _(foo: Event = LastReceived()): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### ReceivePromptResult
+
+获取某次 `receive` 发送提示消息的结果。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {6}
+from typing import Any, Annotated
+
+from nonebot.params import ReceivePromptResult
+
+@matcher.receive("id", prompt="prompt")
+async def _(result: Annotated[Any, ReceivePromptResult("id")]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {6}
+from typing import Any
+
+from nonebot.params import ReceivePromptResult
+
+@matcher.receive("id", prompt="prompt")
+async def _(result: Any = ReceivePromptResult("id")): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### Arg
+
+获取某次 `got` 接收的参数。如果 `Arg` 参数留空，则使用函数的参数名作为要获取的参数。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {7,8}
+from typing import Annotated
+
+from nonebot.params import Arg
+from nonebot.adapters import Message
+
+@matcher.got("key")
+async def _(key: Annotated[Message, Arg()]): ...
+async def _(foo: Annotated[Message, Arg("key")]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {5,6}
+from nonebot.params import Arg
+from nonebot.adapters import Message
+
+@matcher.got("key")
+async def _(key: Message = Arg()): ...
+async def _(foo: Message = Arg("key")): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### ArgStr
+
+获取某次 `got` 接收的参数，并转换为字符串。如果 `Arg` 参数留空，则使用函数的参数名作为要获取的参数。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {6,7}
+from typing import Annotated
+
+from nonebot.params import ArgStr
+
+@matcher.got("key")
+async def _(key: Annotated[str, ArgStr()]): ...
+async def _(foo: Annotated[str, ArgStr("key")]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {4,5}
+from nonebot.params import ArgStr
+
+@matcher.got("key")
+async def _(key: str = ArgStr()): ...
+async def _(foo: str = ArgStr("key")): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### ArgPlainText
+
+获取某次 `got` 接收的参数的纯文本部分。如果 `Arg` 参数留空，则使用函数的参数名作为要获取的参数。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {6,7}
+from typing import Annotated
+
+from nonebot.params import ArgPlainText
+
+@matcher.got("key")
+async def _(key: Annotated[str, ArgPlainText()]): ...
+async def _(foo: Annotated[str, ArgPlainText("key")]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {4,5}
+from nonebot.params import ArgPlainText
+
+@matcher.got("key")
+async def _(key: str = ArgPlainText()): ...
+async def _(foo: str = ArgPlainText("key")): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### ArgPromptResult
+
+获取某次 `got` 发送提示消息的结果。如果 `Arg` 参数留空，则使用函数的参数名作为要获取的参数。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {6,7}
+from typing import Any, Annotated
+
+from nonebot.params import ArgPromptResult
+
+@matcher.got("key", prompt="prompt")
+async def _(result: Annotated[Any, ArgPromptResult()]): ...
+async def _(result: Annotated[Any, ArgPromptResult("key")]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {6,7}
+from typing import Any
+
+from nonebot.params import ArgPromptResult
+
+@matcher.got("key", prompt="prompt")
+async def _(result: Any = ArgPromptResult()): ...
+async def _(result: Any = ArgPromptResult("key")): ...
+```
+
+  </TabItem>
+</Tabs>
+
+### PausePromptResult
+
+获取最近一次 `pause` 发送提示消息的结果。
+
+<Tabs groupId="annotated">
+  <TabItem value="annotated" label="Use Annotated" default>
+
+```python {6}
+from typing import Any, Annotated
+
+from nonebot.params import PausePromptResult
+
+@matcher.handle()
+async def _():
+    await matcher.pause(prompt="prompt")
+
+@matcher.handle()
+async def _(result: Annotated[Any, PausePromptResult()]): ...
+```
+
+  </TabItem>
+  <TabItem value="no-annotated" label="Without Annotated">
+
+```python {6}
+from typing import Any
+
+from nonebot.params import PausePromptResult
+
+@matcher.handle()
+async def _():
+    await matcher.pause(prompt="prompt")
+
+@matcher.handle()
+async def _(result: Any = PausePromptResult()): ...
+```
+
+  </TabItem>
+</Tabs>

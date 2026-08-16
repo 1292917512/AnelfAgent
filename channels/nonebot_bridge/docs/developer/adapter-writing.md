@@ -1,749 +1,607 @@
+<!-- source: https://nonebot.dev/docs/developer/adapter-writing -->
+
 # 编写适配器
 
-本文档介绍如何为 NoneBot 编写自定义适配器，将 NoneBot 连接到不同的聊天平台。
+在编写适配器之前，我们需要先了解[适配器的功能与组成](../advanced/adapter#适配器功能与组成)，适配器通常由 `Adapter`、`Bot`、`Event` 和 `Message` 四个部分组成，在编写适配器时，我们需要继承 NoneBot 中的基类，并根据实际平台来编写每个部分功能。
 
-## 概述
+## 组织结构
 
-NoneBot 适配器负责：
+NoneBot 适配器项目通常以 `nonebot-adapter-{adapter-name}` 作为项目名，并以**命名空间包**的形式编写，即在 `nonebot/adapters/{adapter-name}` 目录中编写实际代码，例如：
 
-1. 与平台建立连接（WebSocket、HTTP 等）
-2. 接收并转换平台事件为 NoneBot 事件
-3. 将 NoneBot 的 API 调用转换为平台 API 请求
-4. 定义消息段类型和消息构造方式
-
-## 适配器组织结构
-
-NoneBot 适配器使用 [命名空间包](https://peps.python.org/pep-0420/) 组织，统一放在 `nonebot.adapters` 命名空间下：
-
-```
-nonebot-adapter-xxx/
-├── nonebot/
-│   └── adapters/
-│       └── xxx/
-│           ├── __init__.py      # 导出公共 API
-│           ├── adapter.py       # 适配器主类
-│           ├── bot.py           # Bot 类
-│           ├── config.py        # 配置类
-│           ├── event.py         # 事件类
-│           ├── message.py       # 消息类
-│           └── utils.py         # 工具函数
-├── pyproject.toml
-├── README.md
-└── LICENSE
+```tree
+📦 nonebot-adapter-{adapter-name}
+├── 📂 nonebot
+│   ├── 📂 adapters
+│   │   ├── 📂 {adapter-name}
+│   │   │   ├── 📜 __init__.py
+│   │   │   ├── 📜 adapter.py
+│   │   │   ├── 📜 bot.py
+│   │   │   ├── 📜 config.py
+│   │   │   ├── 📜 event.py
+│   │   │   └── 📜 message.py
+├── 📜 pyproject.toml
+└── 📜 README.md
 ```
 
-> **重要**：`nonebot/` 和 `nonebot/adapters/` 目录下 **不能** 有 `__init__.py` 文件，否则会破坏命名空间包机制。
+:::tip[提示]
 
-### 使用 nb-cli 创建
+上述的项目结构仅作推荐，不做强制要求，保证实际可用性即可。
 
-```bash
+:::
+
+### 使用 NB-CLI 创建项目
+
+我们可以使用脚手架快速创建项目：
+
+```shell
 nb adapter create
 ```
 
-按照向导填写适配器名称等信息后，会自动生成项目骨架。
+按照指引，输入适配器名称以及存储位置，即可创建一个带有基本结构的适配器项目。
 
-## 适配器组件
+## 组成部分
 
-### Log（日志）
+:::tip[提示]
 
-使用 `nonebot.utils.logger_wrapper` 创建适配器专用日志记录器：
+本章节的代码中提到的 `Adapter`、`Bot`、`Event` 和 `Message` 等，均为下文中适配器所编写的类，而非 NoneBot 中的基类。
 
-```python
+:::
+
+### Log
+
+适配器在处理时通常需要打印日志，但直接使用 NoneBot 的默认 `logger` 不方便区分适配器输出和其它日志。因此我们可以使用 NoneBot 提供的 `logger_wrapper` 方法，自定义一个 `log` 函数用于快捷打印适配器日志：
+
+```python {3} title=log.py
 from nonebot.utils import logger_wrapper
 
-log = logger_wrapper("XXX")
-
-# 使用
-log("DEBUG", "Received event")
-log("INFO", "Connected to server")
-log("ERROR", f"Connection failed: {e}")
+log = logger_wrapper("your_adapter_name")
 ```
 
-`logger_wrapper` 会自动添加适配器名称前缀，便于在日志中区分不同适配器的输出。
-
-### Config（配置）
-
-使用 Pydantic `BaseModel` 定义适配器配置：
+这个 `log` 函数会在默认 `logger` 中添加适配器名称前缀，它接收三个参数：日志等级、日志内容以及可选的异常，具体用法如下：
 
 ```python
-from pydantic import BaseModel, Field
+from .log import log
+
+log("DEBUG", "A DEBUG log.")
+log("INFO", "A INFO log.")
+
+try:
+    ...
+except Exception as e:
+    log("ERROR", "something error.", e)
+```
+
+### Config
+
+通常适配器需要一些配置项，例如平台连接密钥等。适配器的配置方法与[插件配置](../appendices/config#%E6%8F%92%E4%BB%B6%E9%85%8D%E7%BD%AE)类似，例如：
+
+```python title=config.py
+from pydantic import BaseModel
 
 class Config(BaseModel):
-    xxx_api_url: str = "https://api.example.com"
-    xxx_access_token: str = ""
-    xxx_secret: str = ""
-    xxx_reconnect_interval: int = Field(default=3, ge=1)
-    xxx_max_retry: int = Field(default=5, ge=0)
+    xxx_id: str
+    xxx_token: str
 ```
 
-在适配器中加载配置：
+配置项的读取将在下方 [Adapter](#adapter) 中介绍。
 
-```python
-from nonebot import get_driver
+### Adapter
 
-config = Config.model_validate(get_driver().config.model_dump())
-```
+Adapter 负责转换事件、调用接口，以及正确创建 Bot 对象并注册到 NoneBot 中。在编写平台相关内容之前，我们需要继承基类，并实现适配器的基本信息：
 
-### Adapter（适配器主类）
+```python {9,11,14,18} title=adapter.py
+from typing import Any
+from typing_extensions import override
 
-适配器主类继承 `nonebot.adapters.Adapter`（即 `BaseAdapter`），负责管理与平台的连接。
-
-#### 基本结构
-
-```python
-from nonebot.adapters import Adapter as BaseAdapter
 from nonebot.drivers import Driver
+from nonebot import get_plugin_config
+from nonebot.adapters import Adapter as BaseAdapter
 
 from .config import Config
-from .utils import log
 
 class Adapter(BaseAdapter):
-    @classmethod
-    def get_name(cls) -> str:
-        return "XXX"
-
-    def __init__(self, driver: Driver, **kwargs):
+    @override
+    def __init__(self, driver: Driver, **kwargs: Any):
         super().__init__(driver, **kwargs)
-        self.config = Config.model_validate(driver.config.model_dump())
-        self.setup()
+        # 读取适配器所需的配置项
+        self.adapter_config: Config = get_plugin_config(Config)
 
-    def setup(self):
-        # 注册启动和关闭钩子
-        self.driver.on_startup(self._start)
-        self.driver.on_shutdown(self._stop)
+    @classmethod
+    @override
+    def get_name(cls) -> str:
+        """适配器名称"""
+        return "your_adapter_name"
 ```
 
-#### 客户端 WebSocket 连接
+#### 与平台交互
 
-适配器作为客户端主动连接到平台的 WebSocket 服务器：
+NoneBot 提供了多种 [Driver](../advanced/driver) 来帮助适配器进行网络通信，主要分为客户端和服务端两种类型。我们需要**根据平台文档和特性**选择合适的通信方式，并编写相关方法用于初始化适配器，与平台建立连接和进行交互：
 
-```python
-from nonebot.drivers import (
-    ForwardDriver,
-    URL,
-    WebSocket,
-    WebSocketClientMixin,
-)
+##### 客户端通信方式
+
+```python {12,23,24} title=adapter.py
+import asyncio
+from typing_extensions import override
+
+from nonebot import get_plugin_config
+from nonebot.exception import WebSocketClosed
+from nonebot.drivers import Request, WebSocketClientMixin
 
 class Adapter(BaseAdapter):
-    def __init__(self, driver: Driver, **kwargs):
+    @override
+    def __init__(self, driver: Driver, **kwargs: Any):
         super().__init__(driver, **kwargs)
-        self.config = Config.model_validate(driver.config.model_dump())
-        self.task: Optional[asyncio.Task] = None
+        self.adapter_config: Config = get_plugin_config(Config)
+        self.task: Optional[asyncio.Task] = None  # 存储 ws 任务
         self.setup()
 
-    def setup(self):
+    def setup(self) -> None:
         if not isinstance(self.driver, WebSocketClientMixin):
+            # 判断用户配置的Driver类型是否符合适配器要求，不符合时应抛出异常
             raise RuntimeError(
-                f"Current driver {self.config.driver} does not support WebSocket client."
-                " Please use a driver that supports WebSocket client, such as 'httpx+websockets'."
+                f"Current driver {self.config.driver} doesn't support websocket client connections!"
+                f"{self.get_name()} Adapter need a WebSocket Client Driver to work."
             )
-        self.driver.on_startup(self._start)
-        self.driver.on_shutdown(self._stop)
+        # 在 NoneBot 启动和关闭时进行相关操作
+        self.driver.on_startup(self.startup)
+        self.driver.on_shutdown(self.shutdown)
 
-    async def _start(self):
-        self.task = asyncio.create_task(self._forward_ws())
-
-    async def _stop(self):
-        if self.task:
-            self.task.cancel()
+    async def startup(self) -> None:
+        """定义启动时的操作，例如和平台建立连接"""
+        self.task = asyncio.create_task(self._forward_ws())  # 建立 ws 连接
 
     async def _forward_ws(self):
+        request = Request(
+            method="GET",
+            url="your_platform_websocket_url",
+            headers={"token": "..."},  # 鉴权请求头
+        )
         while True:
             try:
-                url = URL(self.config.xxx_ws_url)
-                async with self.websocket(url) as ws:
-                    log("INFO", f"Connected to {url}")
-
-                    # 认证
-                    bot = await self._authenticate(ws)
-                    self.bot_connect(bot)
-
+                async with self.websocket(request) as ws:
                     try:
-                        while True:
-                            data = await ws.receive()
-                            event = self._parse_event(data)
-                            if event:
-                                asyncio.create_task(bot.handle_event(event))
+                        # 处理 websocket
+                        ...
+                    except WebSocketClosed as e:
+                        log(
+                            "ERROR",
+                            "<r><bg #f8bbd0>WebSocket Closed</bg #f8bbd0></r>",
+                            e,
+                        )
+                    except Exception as e:
+                        log(
+                            "ERROR",
+                            "<r><bg #f8bbd0>Error while process data from "
+                            "websocket platform_websocket_url. "
+                            "Trying to reconnect...</bg #f8bbd0></r>",
+                            e,
+                        )
                     finally:
-                        self.bot_disconnect(bot)
+                        # 这里要断开 Bot 连接
             except Exception as e:
-                log("ERROR", f"WebSocket error: {e}")
-                await asyncio.sleep(self.config.xxx_reconnect_interval)
+                # 尝试重连
+                log(
+                    "ERROR",
+                    "<r><bg #f8bbd0>Error while setup websocket to "
+                    "platform_websocket_url. Trying to reconnect...</bg #f8bbd0></r>",
+                    e,
+                )
+                await asyncio.sleep(3)  # 重连间隔
 
-    async def _authenticate(self, ws: WebSocket) -> "Bot":
-        # 发送认证信息
-        await ws.send(json.dumps({"token": self.config.xxx_access_token}))
-        resp = json.loads(await ws.receive())
-        bot_id = resp["bot_id"]
-        return Bot(self, bot_id)
+    async def shutdown(self) -> None:
+        """定义关闭时的操作，例如停止任务、断开连接"""
+
+        # 断开 ws 连接
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
 ```
 
-#### 服务端 WebSocket/HTTP 连接
+##### 服务端通信方式
 
-适配器作为服务端，接收平台的 WebSocket 连接或 HTTP 回调：
-
-```python
+```python {30,38} title=adapter.py
+from nonebot import get_plugin_config
 from nonebot.drivers import (
-    ReverseDriver,
-    ASGIMixin,
     Request,
-    Response,
-    WebSocket as BaseWebSocket,
+    ASGIMixin,
+    WebSocket,
+    HTTPServerSetup,
+    WebSocketServerSetup
 )
 
 class Adapter(BaseAdapter):
-    def __init__(self, driver: Driver, **kwargs):
+    @override
+    def __init__(self, driver: Driver, **kwargs: Any):
         super().__init__(driver, **kwargs)
-        self.config = Config.model_validate(driver.config.model_dump())
+        self.adapter_config: Config = get_plugin_config(Config)
         self.setup()
 
-    def setup(self):
+    def setup(self) -> None:
         if not isinstance(self.driver, ASGIMixin):
             raise RuntimeError(
-                "Current driver does not support ASGI."
-                " Please use a reverse driver, such as 'fastapi'."
+                f"Current driver {self.config.driver} doesn't support asgi server!"
+                f"{self.get_name()} Adapter need a asgi server driver to work."
             )
-        # 注册 HTTP 回调路由
-        self.driver.on_startup(self._register_routes)
+        # 建立服务端路由
+        # HTTP Webhook 路由
+        http_setup = HTTPServerSetup(
+            URL("your_webhook_url"),  # 路由地址
+            "POST",  # 接收的方法
+            "WEBHOOK name",  # 路由名称
+            self._handle_http,  # 处理函数
+        )
+        self.setup_http_server(http_setup)
 
-    async def _register_routes(self):
-        # HTTP POST 回调
-        @self.driver.server_app.post("/xxx/callback")
-        async def handle_http(request: Request):
-            data = request.content
-            if not self._verify_signature(request, data):
-                return Response(403, content="Invalid signature")
+        # 反向 Websocket 路由
+        ws_setup = WebSocketServerSetup(
+            URL("your_websocket_url"),  # 路由地址
+            "WebSocket name",  # 路由名称
+            self._handle_ws,  # 处理函数
+        )
+        self.setup_websocket_server(ws_setup)
 
-            event = self._parse_event(json.loads(data))
-            bot = self.bots.get(event.self_id)
-            if bot:
-                asyncio.create_task(bot.handle_event(event))
-            return Response(200, content="ok")
 
-        # WebSocket 连接
-        @self.driver.server_app.websocket("/xxx/ws")
-        async def handle_ws(ws: BaseWebSocket):
-            await ws.accept()
-            bot_id = await self._ws_authenticate(ws)
-            bot = Bot(self, bot_id)
-            self.bot_connect(bot)
+    async def _handle_http(self, request: Request) -> Response:
+        """HTTP 路由处理函数，只有一个类型为 Request 的参数，且返回值类型为 Response"""
+        ...
+        return Response(
+            status_code=200,  # 状态码
+            headers={"something": "something"},  # 响应头
+            content="xxx",  # 响应内容
+        )
 
-            try:
-                while True:
-                    data = await ws.receive()
-                    event = self._parse_event(data)
-                    if event:
-                        asyncio.create_task(bot.handle_event(event))
-            except Exception:
-                pass
-            finally:
-                self.bot_disconnect(bot)
-
-    def _verify_signature(self, request: Request, data: bytes) -> bool:
-        signature = request.headers.get("X-Signature")
-        expected = hmac.new(
-            self.config.xxx_secret.encode(),
-            data,
-            hashlib.sha256
-        ).hexdigest()
-        return hmac.compare_digest(signature or "", expected)
+    async def _handle_ws(self, websocket: WebSocket) -> Any:
+        """WebSocket 路由处理函数，只有一个类型为 WebSocket 的参数"""
+        ...
 ```
 
-#### bot_connect / bot_disconnect
+更多通信交互方式可以参考以下适配器：
 
-当 Bot 上线或下线时，必须调用这两个方法通知 NoneBot 框架：
+- [OneBot](https://github.com/nonebot/adapter-onebot/blob/master/nonebot/adapters/onebot/v11/adapter.py) - `WebSocket 客户端`、`WebSocket 服务端`、`HTTP WEBHOOK`、`HTTP POST`
+- [QQ](https://github.com/nonebot/adapter-qq/blob/master/nonebot/adapters/qq/adapter.py) - `WebSocket 服务端`、`HTTP WEBHOOK`
+- [Telegram](https://github.com/nonebot/adapter-telegram/blob/beta/nonebot/adapters/telegram/adapter.py) - `HTTP WEBHOOK`
 
-```python
-# Bot 上线
-bot = Bot(self, bot_id)
-self.bot_connect(bot)
-log("INFO", f"Bot {bot_id} connected")
+#### 建立 Bot 连接
 
-# Bot 下线
-self.bot_disconnect(bot)
-log("INFO", f"Bot {bot_id} disconnected")
-```
+在与平台建立连接后，我们需要将 [Bot](#bot) 实例化，并调用适配器提供的的 `bot_connect` 方法告知 NoneBot 建立了 Bot 连接。在与平台断开连接或出现某些异常进行重连时，我们需要调用 `bot_disconnect` 方法告知 NoneBot 断开了 Bot 连接。
 
-#### _call_api
+```python {7,8,11} title=adapter.py
+from .bot import Bot
 
-实现平台 API 调用。根据连接方式不同，有 HTTP 和 WebSocket 两种实现：
-
-**HTTP 方式**：
-
-```python
 class Adapter(BaseAdapter):
-    async def _call_api(self, bot: "Bot", api: str, **data) -> Any:
-        url = f"{self.config.xxx_api_url}/{api}"
-        headers = {
-            "Authorization": f"Bearer {self.config.xxx_access_token}",
-            "Content-Type": "application/json",
-        }
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(url, json=data, headers=headers)
-            result = resp.json()
+    def _handle_connect(self):
+        bot_id = ...  # 通过配置或者平台 API 等方式，获取到 Bot 的 ID
+        bot = Bot(self, self_id=bot_id)  # 实例化 Bot
+        self.bot_connect(bot)  # 建立 Bot 连接
 
-            if result.get("retcode") != 0:
-                raise ActionFailed(
-                    retcode=result["retcode"],
-                    message=result.get("message", ""),
-                )
-            return result.get("data")
+    def _handle_disconnect(self):
+        self.bot_disconnect(bot)  # 断开 Bot 连接
 ```
 
-**WebSocket 方式**：
+#### 转换 Event 事件
 
-```python
+在接收到来自平台的事件数据后，我们需要将其转为适配器的 [Event](#event)，并调用 Bot 的 `handle_event` 方法来让 Bot 对事件进行处理：
+
+```python title=adapter.py
+import asyncio
+from typing import Any, Dict
+
+from nonebot.compat import type_validate_python
+
+from .bot import Bot
+from .event import Event
+from .log import log
+
 class Adapter(BaseAdapter):
-    def __init__(self, driver: Driver, **kwargs):
-        super().__init__(driver, **kwargs)
-        self._ws: Optional[WebSocket] = None
-        self._api_response: dict[str, asyncio.Future] = {}
 
-    async def _call_api(self, bot: "Bot", api: str, **data) -> Any:
-        if not self._ws:
-            raise RuntimeError("WebSocket not connected")
+    @classmethod
+    def payload_to_event(cls, payload: Dict[str, Any]) -> Event:
+        """根据平台事件的特性，转换平台 payload 为具体 Event
 
-        echo = str(uuid.uuid4())
-        payload = {"action": api, "params": data, "echo": echo}
+        Event 模型继承自 pydantic.BaseModel，具体请参考 pydantic 文档
+        """
 
-        future = asyncio.get_event_loop().create_future()
-        self._api_response[echo] = future
-
+        # 做一层异常处理，以应对平台事件数据的变更
         try:
-            await self._ws.send(json.dumps(payload))
-            result = await asyncio.wait_for(future, timeout=30)
-        finally:
-            self._api_response.pop(echo, None)
-
-        if result.get("retcode") != 0:
-            raise ActionFailed(
-                retcode=result["retcode"],
-                message=result.get("message", ""),
+            return type_validate_python(your_event_class, payload)
+        except Exception as e:
+            # 无法正常解析为具体 Event 时，给出日志提示
+            log(
+                "WARNING",
+                f"Parse event error: {str(payload)}",
             )
-        return result.get("data")
+            # 也可以尝试转为基础 Event 进行处理
+            return type_validate_python(Event, payload)
+
+
+    async def _forward(self, bot: Bot):
+
+        payload: Dict[str, Any]  # 接收到的事件数据
+        event = self.payload_to_event(payload)
+        # 让 bot 对事件进行处理
+        asyncio.create_task(bot.handle_event(event))
 ```
 
-### Bot（机器人类）
+#### 调用平台 API
 
-Bot 类继承 `nonebot.adapters.Bot`（即 `BaseBot`），代表一个机器人实例：
+我们需要实现 `Adapter` 的 `_call_api` 方法，使开发者能够调用平台提供的 API。如果通过 WebSocket 通信可以通过 `send` 方法来发送数据，如果采用 HTTP 请求，则需要通过 NoneBot 提供的 `Request` 对象，调用 `driver` 的 `request` 方法来发送请求。
 
-```python
+```python {11} title=adapter.py
+from typing import Any
+from typing_extensions import override
+
+from nonebot.drivers import Request, WebSocket
+
+from .bot import Bot
+
+class Adapter(BaseAdapter):
+
+    @override
+    async def _call_api(self, bot: Bot, api: str, **data: Any) -> Any:
+        log("DEBUG", f"Calling API <y>{api}</y>")  # 给予日志提示
+        platform_data = your_handle_data_method(data)  # 自行将数据转为平台所需要的格式
+
+        # 采用 HTTP 请求的方式，需要构造一个 Request 对象
+        request = Request(
+            method="GET",  # 请求方法
+            url=api,  # 接口地址
+            headers=...,  # 请求头，通常需要包含鉴权信息
+            params=platform_data,  # 自行处理数据的传输形式
+            # json=platform_data,
+            # data=platform_data,
+        )
+        # 发送请求，返回结果
+        return await self.driver.request(request)
+
+
+        # 采用 WebSocket 通信的方式，可以直接调用 send 方法发送数据
+        # 通过某种方式获取到 bot 对应的 websocket 对象
+        ws: WebSocket = your_get_websocket_method(bot.self_id)
+
+        await ws.send_text(platform_data)  # 发送 str 类型的数据
+        await ws.send_bytes(platform_data)  # 发送 bytes 类型的数据
+        await ws.send(platform_data)  # 是以上两种方式的合体
+
+        # 接收并返回结果，同样的，也有 str 和 bytes 的区别
+        return await ws.receive_text()
+        return await ws.receive_bytes()
+        return await ws.receive()
+```
+
+`调用平台 API` 实现方式具体可以参考以下适配器：
+
+Websocket:
+
+- [OneBot V11](https://github.com/nonebot/adapter-onebot/blob/54270edbbdb2a71332d744f90b1a3d7f4bf6463a/nonebot/adapters/onebot/v11/adapter.py#L167-L177)
+- [OneBot V12](https://github.com/nonebot/adapter-onebot/blob/54270edbbdb2a71332d744f90b1a3d7f4bf6463a/nonebot/adapters/onebot/v12/adapter.py#L204-L218)
+
+HTTP:
+
+- [OneBot V11](https://github.com/nonebot/adapter-onebot/blob/54270edbbdb2a71332d744f90b1a3d7f4bf6463a/nonebot/adapters/onebot/v11/adapter.py#L179-L215)
+- [OneBot V12](https://github.com/nonebot/adapter-onebot/blob/54270edbbdb2a71332d744f90b1a3d7f4bf6463a/nonebot/adapters/onebot/v12/adapter.py#L220-L266)
+- [QQ](https://github.com/nonebot/adapter-qq/blob/dc5d437e101f0e3db542de3300758a035ed7036e/nonebot/adapters/qq/adapter.py#L599-L605)
+- [Telegram](https://github.com/nonebot/adapter-telegram/blob/4a8633627e619245516767f5503dec2f58fe2193/nonebot/adapters/telegram/adapter.py#L148-L253)
+- [飞书](https://github.com/nonebot/adapter-feishu/blob/f8ab05e6d57a5e9013b944b0d019ca777725dfb0/nonebot/adapters/feishu/adapter.py#L201-L218)
+
+### Bot
+
+Bot 是机器人开发者能够直接获取并使用的核心对象，负责存储平台机器人相关信息，并提供回复事件、调用 API 的上层方法。我们需要继承基类 `Bot`，并实现相关方法：
+
+```python {20,25,34} title=bot.py
+from typing import TYPE_CHECKING, Any, Union
+from typing_extensions import override
+
+from nonebot.message import handle_event
 from nonebot.adapters import Bot as BaseBot
-from nonebot.adapters import Event, Message, MessageSegment
+
+from .event import Event
+from .message import Message, MessageSegment
+
+if TYPE_CHECKING:
+    from .adapter import Adapter
+
 
 class Bot(BaseBot):
+    """
+    your_adapter_name 协议 Bot 适配。
+    """
+
+    @override
+    def __init__(self, adapter: Adapter, self_id: str, **kwargs: Any):
+        super().__init__(adapter, self_id)
+        self.adapter: Adapter = adapter
+        # 一些有关 Bot 的信息也可以在此定义和存储
+
+    async def handle_event(self, event: Event):
+        # 根据需要，对事件进行某些预处理，例如：
+        # 检查事件是否和机器人有关操作，去除事件消息首尾的 @bot
+        # 检查事件是否有回复消息，调用平台 API 获取原始消息的消息内容
+        ...
+        # 调用 handle_event 让 NoneBot 对事件进行处理
+        await handle_event(self, event)
+
+    @override
     async def send(
         self,
         event: Event,
-        message: str | Message | MessageSegment,
-        **kwargs,
+        message: Union[str, Message, MessageSegment],
+        **kwargs: Any,
     ) -> Any:
-        if isinstance(message, str):
-            message = Message(message)
-        elif isinstance(message, MessageSegment):
-            message = Message([message])
+        # 根据平台实现 Bot 回复事件的方法
 
-        # 根据事件类型选择发送目标
-        if hasattr(event, "group_id"):
-            return await self.call_api(
-                "send_group_message",
-                group_id=event.group_id,
-                message=message.to_dict(),
-            )
-        else:
-            return await self.call_api(
-                "send_private_message",
-                user_id=event.get_user_id(),
-                message=message.to_dict(),
-            )
-
-    async def handle_event(self, event: Event) -> None:
-        await handle_event(self, event)
+        # 将消息处理为平台所需的格式后，调用发送消息接口进行发送，例如：
+        data = message_to_platform_data(message)
+        await self.send_message(
+            data=data,
+            ...
+        )
 ```
 
-`send` 方法是最核心的方法，用于向用户或群组发送消息。NoneBot 的 `matcher.send()` / `matcher.finish()` 最终都会调用此方法。
+### Event
 
-### Event（事件类）
+Event 是 NoneBot 中的事件主体对象，所有平台消息在进入处理流程前需要转换为 NoneBot 事件。我们需要继承基类 `Event`，并实现相关方法：
 
-事件类继承 `nonebot.adapters.Event`（即 `BaseEvent`），需要实现以下抽象方法：
+```python {5,8,13,18,23,28,33} title=event.py
+from typing_extensions import override
 
-```python
+from nonebot.compat import model_dump
 from nonebot.adapters import Event as BaseEvent
-from nonebot.utils import escape_tag
 
 class Event(BaseEvent):
-    # 通用字段
-    post_type: str
-    timestamp: int
 
-    def get_type(self) -> str:
-        """获取事件类型，如 'message', 'notice', 'request', 'meta_event'"""
-        return self.post_type
-
+    @override
     def get_event_name(self) -> str:
-        """获取事件名称，用于日志显示"""
-        return self.post_type
+        # 返回事件的名称，用于日志打印
+        return "event name"
 
+    @override
     def get_event_description(self) -> str:
-        """获取事件描述，用于日志显示"""
-        return escape_tag(str(self.model_dump()))
+        # 返回事件的描述，用于日志打印，请注意转义 loguru tag
+        return escape_tag(repr(model_dump(self)))
 
-    def get_message(self) -> "Message":
-        """获取事件消息（仅消息事件需要实现）"""
-        raise ValueError("Event has no message")
+    @override
+    def get_message(self):
+        # 获取事件消息的方法，根据事件具体实现，如果事件非消息类型事件，则抛出异常
+        raise ValueError("Event has no message!")
 
+    @override
     def get_user_id(self) -> str:
-        """获取触发事件的用户 ID"""
-        raise ValueError("Event has no user_id")
+        # 获取用户 ID 的方法，根据事件具体实现，如果事件没有用户 ID，则抛出异常
+        raise ValueError("Event has no context!")
 
+    @override
     def get_session_id(self) -> str:
-        """获取会话 ID，用于标识唯一会话"""
-        raise ValueError("Event has no session_id")
+        # 获取事件会话 ID 的方法，根据事件具体实现，如果事件没有相关 ID，则抛出异常
+        raise ValueError("Event has no context!")
 
+    @override
     def is_tome(self) -> bool:
-        """判断事件是否与 Bot 相关（如 @机器人）"""
+        # 判断事件是否和机器人有关
         return False
 ```
 
-#### 事件类型示例
+然后根据平台消息的类型，编写各种不同的事件，并且注意要根据事件类型实现 `get_type` 方法，具体请参考[事件类型](../advanced/adapter#事件类型)。消息类型事件还应重写 `get_message` 和 `get_user_id` 等方法，例如：
 
-**心跳事件**：
+```python {7,16,20,25,34,42} title=event.py
+from .message import Message
 
-```python
 class HeartbeatEvent(Event):
-    post_type: str = "meta_event"
-    meta_event_type: str = "heartbeat"
-    interval: int
+    """心跳时间，通常为元事件"""
 
+    @override
     def get_type(self) -> str:
         return "meta_event"
 
-    def get_event_name(self) -> str:
-        return "meta_event.heartbeat"
-
-    def get_event_description(self) -> str:
-        return f"Heartbeat (interval={self.interval}ms)"
-
-    def get_user_id(self) -> str:
-        raise ValueError("HeartbeatEvent has no user_id")
-
-    def get_session_id(self) -> str:
-        raise ValueError("HeartbeatEvent has no session_id")
-```
-
-**消息事件**：
-
-```python
-from typing import Optional
-
 class MessageEvent(Event):
-    post_type: str = "message"
-    message_type: str
+    """消息事件"""
     message_id: str
     user_id: str
-    message: Message
-    raw_message: str
 
+    @override
     def get_type(self) -> str:
         return "message"
 
-    def get_event_name(self) -> str:
-        return f"message.{self.message_type}"
-
-    def get_event_description(self) -> str:
-        return (
-            f"Message {self.message_id} from {self.user_id}: "
-            f"{escape_tag(self.raw_message[:50])}"
-        )
-
+    @override
     def get_message(self) -> Message:
+        # 返回事件消息对应的 NoneBot Message 对象
         return self.message
 
+    @override
     def get_user_id(self) -> str:
         return self.user_id
 
-    def get_session_id(self) -> str:
-        return self.user_id
-
-    def is_tome(self) -> bool:
-        return self._is_tome
-
-class PrivateMessageEvent(MessageEvent):
-    message_type: str = "private"
-
-    def get_event_name(self) -> str:
-        return "message.private"
-
-    def get_session_id(self) -> str:
-        return f"private_{self.user_id}"
-
-class GroupMessageEvent(MessageEvent):
-    message_type: str = "group"
-    group_id: str
-
-    def get_event_name(self) -> str:
-        return "message.group"
-
-    def get_session_id(self) -> str:
-        return f"group_{self.group_id}_{self.user_id}"
-```
-
-**加群事件**：
-
-```python
 class JoinRoomEvent(Event):
-    post_type: str = "notice"
-    notice_type: str = "group_increase"
-    group_id: str
+    """加入房间事件，通常为通知事件"""
     user_id: str
-    operator_id: Optional[str] = None
+    room_id: str
 
+    @override
     def get_type(self) -> str:
         return "notice"
 
-    def get_event_name(self) -> str:
-        return "notice.group_increase"
-
-    def get_event_description(self) -> str:
-        return f"User {self.user_id} joined group {self.group_id}"
-
-    def get_user_id(self) -> str:
-        return self.user_id
-
-    def get_session_id(self) -> str:
-        return f"group_{self.group_id}_{self.user_id}"
-```
-
-**加好友请求事件**：
-
-```python
 class ApplyAddFriendEvent(Event):
-    post_type: str = "request"
-    request_type: str = "friend"
+    """申请添加好友事件，通常为请求事件"""
     user_id: str
-    comment: str = ""
-    flag: str
 
+    @override
     def get_type(self) -> str:
         return "request"
-
-    def get_event_name(self) -> str:
-        return "request.friend"
-
-    def get_event_description(self) -> str:
-        return f"Friend request from {self.user_id}: {self.comment}"
-
-    def get_user_id(self) -> str:
-        return self.user_id
-
-    def get_session_id(self) -> str:
-        return f"request_{self.user_id}"
 ```
 
-#### 事件转换
+### Message
 
-在适配器中将平台原始数据转换为事件对象：
+Message 负责正确序列化消息，以便机器人插件处理。我们需要继承 `MessageSegment` 和 `Message` 两个类，并实现相关方法：
 
-```python
-class Adapter(BaseAdapter):
-    def _parse_event(self, data: str | bytes) -> Optional[Event]:
-        payload = json.loads(data) if isinstance(data, (str, bytes)) else data
-        post_type = payload.get("post_type")
+```python {9,12,17,22,27,30,36} title=message.py
+from typing import Type, Iterable
+from typing_extensions import override
 
-        try:
-            if post_type == "meta_event":
-                return HeartbeatEvent.model_validate(payload)
-            elif post_type == "message":
-                msg_type = payload.get("message_type")
-                if msg_type == "private":
-                    return PrivateMessageEvent.model_validate(payload)
-                elif msg_type == "group":
-                    return GroupMessageEvent.model_validate(payload)
-            elif post_type == "notice":
-                return JoinRoomEvent.model_validate(payload)
-            elif post_type == "request":
-                return ApplyAddFriendEvent.model_validate(payload)
-        except Exception as e:
-            log("WARNING", f"Failed to parse event: {e}")
-            return None
+from nonebot.utils import escape_tag
 
-        log("DEBUG", f"Unknown event type: {post_type}")
-        return None
-```
-
-### Message（消息类）
-
-#### MessageSegment（消息段）
-
-消息段是消息的基本组成单元，继承 `nonebot.adapters.MessageSegment`：
-
-```python
+from nonebot.adapters import Message as BaseMessage
 from nonebot.adapters import MessageSegment as BaseMessageSegment
 
 class MessageSegment(BaseMessageSegment["Message"]):
     @classmethod
-    def get_message_class(cls) -> type["Message"]:
+    @override
+    def get_message_class(cls) -> Type["Message"]:
+        # 返回适配器的 Message 类型本身
         return Message
 
+    @override
     def __str__(self) -> str:
-        if self.is_text():
-            return self.data.get("text", "")
-        return f"[{self.type}]"
+        # 返回该消息段的纯文本表现形式，通常在日志中展示
+        return "text of MessageSegment"
 
+    @override
     def is_text(self) -> bool:
+        # 判断该消息段是否为纯文本
         return self.type == "text"
 
-    # 构造方法
-    @staticmethod
-    def text(text: str) -> "MessageSegment":
-        return MessageSegment(type="text", data={"text": text})
-
-    @staticmethod
-    def image(url: str) -> "MessageSegment":
-        return MessageSegment(type="image", data={"url": url})
-
-    @staticmethod
-    def image_file(file: bytes) -> "MessageSegment":
-        import base64
-        b64 = base64.b64encode(file).decode()
-        return MessageSegment(type="image", data={"file": f"base64://{b64}"})
-
-    @staticmethod
-    def at(user_id: str) -> "MessageSegment":
-        return MessageSegment(type="at", data={"user_id": user_id})
-
-    @staticmethod
-    def reply(message_id: str) -> "MessageSegment":
-        return MessageSegment(type="reply", data={"message_id": message_id})
-
-    @staticmethod
-    def face(face_id: int) -> "MessageSegment":
-        return MessageSegment(type="face", data={"id": str(face_id)})
-
-    @staticmethod
-    def record(url: str) -> "MessageSegment":
-        return MessageSegment(type="record", data={"url": url})
-
-    @staticmethod
-    def video(url: str) -> "MessageSegment":
-        return MessageSegment(type="video", data={"url": url})
-```
-
-#### Message（消息）
-
-消息类是消息段的有序容器，继承 `nonebot.adapters.Message`：
-
-```python
-from typing import Iterable, Union
-from nonebot.adapters import Message as BaseMessage
 
 class Message(BaseMessage[MessageSegment]):
     @classmethod
-    def get_segment_class(cls) -> type[MessageSegment]:
+    @override
+    def get_segment_class(cls) -> Type[MessageSegment]:
+        # 返回适配器的 MessageSegment 类型本身
         return MessageSegment
 
     @staticmethod
+    @override
     def _construct(msg: str) -> Iterable[MessageSegment]:
-        """将字符串解析为消息段列表"""
-        import re
-
-        # 匹配 CQ 码格式 [CQ:type,key=value,...]
-        pattern = r"\[CQ:(\w+)(?:,([^\]]*))?\]"
-
-        last_end = 0
-        for match in re.finditer(pattern, msg):
-            # 前面的文本部分
-            if match.start() > last_end:
-                yield MessageSegment.text(msg[last_end:match.start()])
-
-            # 解析 CQ 码
-            seg_type = match.group(1)
-            params = {}
-            if match.group(2):
-                for param in match.group(2).split(","):
-                    key, _, value = param.partition("=")
-                    params[key] = value
-
-            yield MessageSegment(type=seg_type, data=params)
-            last_end = match.end()
-
-        # 剩余的文本
-        if last_end < len(msg):
-            yield MessageSegment.text(msg[last_end:])
-
-    def to_dict(self) -> list[dict]:
-        """序列化为可发送的格式"""
-        return [
-            {"type": seg.type, "data": seg.data}
-            for seg in self
-        ]
+        # 实现从字符串中构造消息数组，如无字符串嵌入格式可直接返回文本类型 MessageSegment
+        ...
 ```
 
-#### 使用示例
+然后根据平台具体的消息类型，来实现各种 `MessageSegment` 消息段，具体可以参考以下适配器：
 
-```python
-# 构造消息
-msg = Message()
-msg += MessageSegment.at("12345")
-msg += MessageSegment.text(" 你好！")
-msg += MessageSegment.image("https://example.com/img.png")
+- [OneBot V11](https://github.com/nonebot/adapter-onebot/blob/54270edbbdb2a71332d744f90b1a3d7f4bf6463a/nonebot/adapters/onebot/v11/message.py#L25-L259)
+- [QQ](https://github.com/nonebot/adapter-qq/blob/dc5d437e101f0e3db542de3300758a035ed7036e/nonebot/adapters/qq/message.py#L30-L520)
+- [Telegram](https://github.com/nonebot/adapter-telegram/blob/4a8633627e619245516767f5503dec2f58fe2193/nonebot/adapters/telegram/message.py#L13-L414)
 
-# 从字符串构造
-msg = Message("Hello [CQ:at,qq=12345] World")
+## 适配器测试
 
-# 提取纯文本
-text = msg.extract_plain_text()
+关于适配器测试相关内容在这里不再展开，开发者可以根据需要进行合适的测试。这里为开发者提供几个常见问题的解决方法：
 
-# 过滤特定类型
-images = msg["image"]  # 获取所有图片消息段
-```
+1. 在测试中无法导入 editable 模式安装的适配器代码。在 pytest 的 `conftest.py` 内添加如下代码：
 
-## 测试适配器
+   ```python title=tests/conftest.py
+   from pathlib import Path
+   import nonebot.adapters
+   nonebot.adapters.__path__.append(  # type: ignore
+       str((Path(__file__).parent.parent / "nonebot" / "adapters").resolve())
+   )
+   ```
 
-使用 `nonebug` 测试适配器功能：
+2. 需要计算适配器测试覆盖率，请在 `pyproject.toml` 中添加 pytest 配置：
 
-```python
-import pytest
-from nonebug import App
-from nonebot.adapters.xxx import Adapter, Bot, Message, MessageEvent
+   ```toml title=pyproject.toml
+   [tool.pytest.ini_options]
+   addopts = "--cov nonebot/adapters/{adapter-name} --cov-report term-missing"
+   ```
 
-@pytest.fixture
-async def app():
-    nonebot.init()
-    driver = nonebot.get_driver()
-    driver.register_adapter(Adapter)
-    yield App()
+## 后续工作
 
-@pytest.mark.asyncio
-async def test_send_message(app: App):
-    async with app.test_api() as ctx:
-        bot = ctx.create_bot(base=Bot, self_id="test_bot")
-        ctx.should_call_api(
-            "send_private_message",
-            {"user_id": "12345", "message": [{"type": "text", "data": {"text": "hello"}}]},
-            {"message_id": "1"},
-        )
-        await bot.send_msg(user_id="12345", message=Message("hello"))
-```
+在完成适配器代码的编写后，如果想要将适配器发布到 NoneBot 商店，我们需要将适配器发布到 PyPI 中，然后前往[商店](/store/adapters)页面，切换到适配器页签，点击**发布适配器**按钮，填写适配器相关信息并提交。
 
-## 发布适配器
-
-适配器的发布流程与插件类似，但提交到 [适配器商店](https://nonebot.dev/store/adapters)：
-
-1. 发布到 PyPI（包名格式：`nonebot-adapter-xxx`）
-2. 前往 NoneBot 商店提交适配器信息
-3. 等待审核合并
-
-```toml
-# pyproject.toml 示例
-[project]
-name = "nonebot-adapter-xxx"
-version = "0.1.0"
-description = "NoneBot XXX Adapter"
-requires-python = ">=3.10"
-dependencies = [
-    "nonebot2>=2.3.0",
-]
-```
+另外建议编写适配器文档或者一些插件开发示例，以便其他开发者使用我们的适配器。

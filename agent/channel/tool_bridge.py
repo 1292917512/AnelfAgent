@@ -61,9 +61,12 @@ class ChannelToolMeta:
     """@channel_tool 标记的元数据。"""
 
     name: Optional[str] = None
+    """工具名覆盖（显式提供时原样生效，不再追加 {channel_id}_ 前缀）"""
     description: Optional[str] = None
     sensitive: bool = False
     extra_tags: List[str] = field(default_factory=list)
+    group: Optional[str] = None
+    """工具分组覆盖（缺省 channel_ops）"""
 
 
 def channel_tool(
@@ -71,19 +74,22 @@ def channel_tool(
     description: Optional[str] = None,
     sensitive: bool = False,
     extra_tags: Optional[List[str]] = None,
+    group: Optional[str] = None,
 ) -> Callable:
     """标记频道适配器方法为 AI 可见工具（仅打标记，注册在频道注册时发生）。
 
     Args:
-        name: 工具名覆盖（特有工具仍会自动加 {channel_id}_ 前缀）
+        name: 工具名覆盖（显式提供时原样生效；缺省为 ``{channel_id}_{方法名}``）
         description: 工具描述（缺省取 docstring 首行）
         sensitive: 是否敏感操作（受 channel_tools_allow_sensitive 配置门控）
         extra_tags: 附加 tag（channel_id / capability tag 自动添加）
+        group: 工具分组覆盖（缺省 channel_ops）
     """
     def decorator(func: Callable) -> Callable:
         setattr(func, _CHANNEL_TOOL_ATTR, ChannelToolMeta(
             name=name, description=description,
             sensitive=sensitive, extra_tags=list(extra_tags or []),
+            group=group,
         ))
         return func
     return decorator
@@ -289,10 +295,12 @@ def _serialize_params(entity: Any) -> List[Dict[str, Any]]:
 
 
 def _register_specific_tool(channel_id: str, bound: Callable, meta: ChannelToolMeta) -> bool:
-    """注册频道特有工具：{channel_id}_{method}，tags=[channel_id]。"""
-    base_name = meta.name or getattr(bound, "__name__", "tool")
-    prefix = f"{channel_id}_"
-    tool_name = base_name if base_name.startswith(prefix) else f"{prefix}{base_name}"
+    """注册频道特有工具：显式名称原样生效，缺省 ``{channel_id}_{方法名}``。"""
+    if meta.name:
+        tool_name = meta.name
+    else:
+        base_name = getattr(bound, "__name__", "tool")
+        tool_name = f"{channel_id}_{base_name}"
 
     description = meta.description or get_first_line(getattr(bound, "__doc__", None)) or tool_name
     tags = [channel_id, *meta.extra_tags]
@@ -301,7 +309,7 @@ def _register_specific_tool(channel_id: str, bound: Callable, meta: ChannelToolM
         name=tool_name,
         func=_make_specific_handler(channel_id, tool_name, bound),
         description=description,
-        group="channel_ops",
+        group=meta.group or "channel_ops",
         params=_normalize_target_params(extract_tool_params(bound)),
         tags=tags,
         source=f"channel.{channel_id}",

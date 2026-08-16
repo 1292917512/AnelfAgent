@@ -1,6 +1,11 @@
 {
   "enabled": false,
   "adapters": [],
+  "plugins": [],
   "nonebot_env": {},
-  "intercept_all": true
+  "intercept_all": false,
+  "bridge_ws_port": 8197,
+  "worker_host": "127.0.0.1",
+  "worker_port": 8198,
+  "auto_restart": true
 }

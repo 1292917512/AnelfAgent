@@ -1,449 +1,380 @@
+<!-- source: https://nonebot.dev/docs/best-practice/database/developer/ -->
+
 # 开发者指南
 
-本文档面向 NoneBot 插件开发者，介绍如何使用 `nonebot-plugin-orm` 定义数据模型、生成迁移脚本、管理 Session。
+开发者指南内容较多，故分为了一个示例以及数个专题。
+阅读（并且最好跟随实践）示例后，你将会对使用 `nonebot-plugin-orm` 开发插件有一个基本的认识。
+如果想要更深入地学习关于 [SQLAlchemy](https://www.sqlalchemy.org/) 和 [Alembic](https://alembic.sqlalchemy.org/) 的知识，或者在使用过程中遇到了问题，可以查阅专题以及其官方文档。
 
-## 模型定义
+## 示例
 
-### 基本模型
+### 模型定义
 
-使用 `nonebot_plugin_orm` 提供的 `Model` 基类定义模型，它基于 SQLAlchemy 2.0 的声明式映射：
+首先，我们需要设计存储的数据的结构。
+例如天气插件，需要存储**什么地方 (`location`)** 的**天气是什么 (`weather`)**。
+其中，一个地方只会有一种天气，而不同地方可能有相同的天气。
+所以，我们可以设计出如下的模型：
 
-```python
+```python title=weather/__init__.py showLineNumbers
 from nonebot_plugin_orm import Model
 from sqlalchemy.orm import Mapped, mapped_column
 
-class User(Model):
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str]
-    score: Mapped[int] = mapped_column(default=0)
+
+class Weather(Model):
+    location: Mapped[str] = mapped_column(primary_key=True)
+    weather: Mapped[str]
 ```
 
-### 自动表名
+其中，`primary_key=True` 意味着此列 (`location`) 是主键，即内容是唯一的且非空的。
+每一个模型必须有至少一个主键。
 
-`Model` 基类会根据类名自动生成表名，规则为将驼峰命名转换为蛇形命名，并加上插件名前缀：
-
-| 类名 | 生成的表名 |
-|------|-----------|
-| `User` | `nonebot_plugin_xxx_user` |
-| `GameScore` | `nonebot_plugin_xxx_game_score` |
-| `HTTPLog` | `nonebot_plugin_xxx_http_log` |
-
-也可以手动指定表名：
+我们可以用以下代码检查模型生成的数据库模式是否正确：
 
 ```python
-class User(Model):
-    __tablename__ = "my_custom_table"
+from sqlalchemy.schema import CreateTable
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str]
+print(CreateTable(Weather.__table__))
 ```
 
-### 字段类型
-
-SQLAlchemy 常用类型映射：
-
-| Python 类型 | SQLAlchemy 类型 | 数据库类型（SQLite） |
-|-------------|----------------|---------------------|
-| `int` | `Integer` | `INTEGER` |
-| `str` | `String` | `VARCHAR` |
-| `float` | `Float` | `FLOAT` |
-| `bool` | `Boolean` | `BOOLEAN` |
-| `datetime` | `DateTime` | `DATETIME` |
-| `bytes` | `LargeBinary` | `BLOB` |
-| `Decimal` | `Numeric` | `NUMERIC` |
-
-### 可选字段
-
-使用 `Optional` 表示可为 `NULL` 的字段：
-
-```python
-from typing import Optional
-from datetime import datetime
-
-class User(Model):
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str]
-    email: Mapped[Optional[str]] = mapped_column(default=None)
-    created_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+```sql
+CREATE TABLE weather_weather (
+        location VARCHAR NOT NULL,
+        weather VARCHAR NOT NULL,
+        CONSTRAINT pk_weather_weather PRIMARY KEY (location)
+)
 ```
 
-### 完整模型示例
+可以注意到表名是 `weather_weather` 而不是 `Weather` 或者 `weather`。
+这是因为 `nonebot-plugin-orm` 会自动为模型生成一个表名，规则是：`<插件模块名>_<类名小写>`。
 
-```python
-from datetime import datetime
-from typing import Optional
+你也可以通过指定 `__tablename__` 属性来自定义表名：
 
-from nonebot_plugin_orm import Model
-from sqlalchemy import String, Text
-from sqlalchemy.orm import Mapped, mapped_column
-
-class User(Model):
-    id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[str] = mapped_column(String(64), unique=True)
-    nickname: Mapped[str] = mapped_column(String(128))
-    bio: Mapped[Optional[str]] = mapped_column(Text, default=None)
-    score: Mapped[int] = mapped_column(default=0)
-    is_active: Mapped[bool] = mapped_column(default=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.now)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(default=None, onupdate=datetime.now)
+```python {2}
+class Weather(Model):
+    __tablename__ = "weather"
+    ...
 ```
 
-### 关联关系
-
-```python
-from nonebot_plugin_orm import Model
-from sqlalchemy import ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-class User(Model):
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str]
-    posts: Mapped[list["Post"]] = relationship(back_populates="author")
-
-class Post(Model):
-    id: Mapped[int] = mapped_column(primary_key=True)
-    title: Mapped[str]
-    author_id: Mapped[int] = mapped_column(ForeignKey("nonebot_plugin_xxx_user.id"))
-    author: Mapped["User"] = relationship(back_populates="posts")
+```sql {1}
+CREATE TABLE weather (
+    ...
+)
 ```
 
-## 数据库迁移
+但是，并不推荐你这么做，因为这可能会导致不同插件间的表名重复，引发冲突。
+特别是当你会发布插件时，你并不知道其他插件会不会使用相同的表名。
 
 ### 首次迁移
 
-定义好模型后，生成首次迁移脚本：
+我们成功定义了模型，现在启动机器人试试吧：
 
-```bash
-nb orm revision --autogenerate -m "initial migration"
+```shell
+$ nb run
+01-02 15:04:05 [SUCCESS] nonebot | NoneBot is initializing...
+01-02 15:04:05 [ERROR] nonebot_plugin_orm | 启动检查失败
+01-02 15:04:05 [ERROR] nonebot | Application startup failed. Exiting.
+Traceback (most recent call last):
+  ...
+click.exceptions.UsageError: 检测到新的升级操作:
+[('add_table',
+  Table('weather', MetaData(), Column('location', String(), table=<weather>, primary_key=True, nullable=False), Column('weather', String(), table=<weather>, nullable=False), schema=None))]
 ```
 
-该命令会在插件目录下生成迁移脚本，通常位于 `<plugin>/migrations/versions/` 目录中。
+咦，发生了什么？
+`nonebot-plugin-orm` 试图阻止我们启动机器人。
+原来是我们定义了模型，但是数据库中并没有对应的表，这会导致插件不能正常运行。
+所以，我们需要迁移数据库。
 
-### 迁移脚本结构
+首先，我们需要创建一个迁移脚本：
 
-生成的迁移脚本结构如下：
+```shell
+nb orm revision -m "first revision" --branch-label weather
+```
 
-```python
-"""initial migration
+其中，`-m` 参数是迁移脚本的描述，`--branch-label` 参数是迁移脚本的分支，一般为插件模块名。
+执行命令过后，出现了一个 `weather/migrations` 目录，其中有一个 `xxxxxxxxxxxx_first_revision.py` 文件：
 
-Revision ID: abc123def456
-Revises:
-Create Date: 2024-01-01 00:00:00.000000
+```shell {4,5}
+weather
+├── __init__.py
+├── config.py
+└── migrations
+    └── xxxxxxxxxxxx_first_revision.py
+```
+
+这就是我们创建的迁移脚本，它记录了数据库模式的变化。
+我们可以查看一下它的内容：
+
+```python title=weather/migrations/xxxxxxxxxxxx_first_revision.py {25-33,39-41} showLineNumbers
+"""first revision
+
+迁移 ID: xxxxxxxxxxxx
+父迁移:
+创建时间: 2006-01-02 15:04:05.999999
 
 """
-from alembic import op
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
 import sqlalchemy as sa
+from alembic import op
 
-# revision identifiers
-revision = "abc123def456"
-down_revision = None
-branch_labels = ("nonebot_plugin_xxx",)
-depends_on = None
+revision: str = "xxxxxxxxxxxx"
+down_revision: str | Sequence[str] | None = None
+branch_labels: str | Sequence[str] | None = ("weather",)
+depends_on: str | Sequence[str] | None = None
 
 
-def upgrade() -> None:
+def upgrade(name: str = "") -> None:
+    if name:
+        return
+    # ### commands auto generated by Alembic - please adjust! ###
     op.create_table(
-        "nonebot_plugin_xxx_user",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("name", sa.String(), nullable=False),
-        sa.Column("score", sa.Integer(), nullable=False),
-        sa.PrimaryKeyConstraint("id"),
+        "weather_weather",
+        sa.Column("location", sa.String(), nullable=False),
+        sa.Column("weather", sa.String(), nullable=False),
+        sa.PrimaryKeyConstraint("location", name=op.f("pk_weather_weather")),
+        info={"bind_key": "weather"},
     )
+    # ### end Alembic commands ###
 
 
-def downgrade() -> None:
-    op.drop_table("nonebot_plugin_xxx_user")
+def downgrade(name: str = "") -> None:
+    if name:
+        return
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_table("weather_weather")
+    # ### end Alembic commands ###
 ```
 
-关键要素：
-
-- `revision`：迁移版本的唯一标识
-- `down_revision`：上一个迁移版本（`None` 表示首次迁移）
-- `branch_labels`：迁移分支标签，通常为插件包名
-- `upgrade()`：升级操作（创建表、添加列等）
-- `downgrade()`：降级操作（删除表、移除列等，用于回滚）
-
-### 后续迁移
-
-修改模型后，生成新的迁移脚本：
-
-```bash
-# 修改了 User 模型，添加了 email 字段
-nb orm revision --autogenerate -m "add email to user"
-```
-
-生成的迁移脚本：
+可以注意到脚本的主体部分（其余是模版代码，请勿修改）是：
 
 ```python
-def upgrade() -> None:
-    op.add_column(
-        "nonebot_plugin_xxx_user",
-        sa.Column("email", sa.String(), nullable=True),
-    )
-
-def downgrade() -> None:
-    op.drop_column("nonebot_plugin_xxx_user", "email")
+# ### commands auto generated by Alembic - please adjust! ###
+op.create_table(  # CREATE TABLE
+    "weather_weather",  # weather_weather
+    sa.Column("location", sa.String(), nullable=False),  # location VARCHAR NOT NULL,
+    sa.Column("weather", sa.String(), nullable=False),  # weather VARCHAR NOT NULL,
+    sa.PrimaryKeyConstraint("location", name=op.f("pk_weather_weather")),  # CONSTRAINT pk_weather_weather PRIMARY KEY (location)
+    info={"bind_key": "weather"},
+)
+# ### end Alembic commands ###
 ```
 
-### 开发环境跳过启动检查
+```python
+# ### commands auto generated by Alembic - please adjust! ###
+op.drop_table("weather_weather")  # DROP TABLE weather_weather;
+# ### end Alembic commands ###
+```
 
-在开发阶段，如果频繁修改模型但不想每次都生成迁移脚本，可以设置环境变量跳过启动时的迁移检查：
+虽然我们不是很懂这些代码的意思，但是可以注意到它们几乎与 SQL 语句 (DDL) 一一对应。
+显然，它们是用来创建和删除表的。
 
-```dotenv
+我们还可以注意到，`upgrade()` 和 `downgrade()` 函数中的代码是**互逆**的。
+也就是说，执行一次 `upgrade()` 函数，再执行一次 `downgrade()` 函数后，数据库的模式就会回到原来的状态。
+
+这就是迁移脚本的作用：记录数据库模式的变化，以便我们在不同的环境中（例如开发环境和生产环境）**可复现地**、**可逆地**同步数据库模式，正如 git 对我们的代码做的事情那样。
+
+对了，不要忘记还有一段注释：`commands auto generated by Alembic - please adjust!`。
+它在提醒我们，这些代码是由 Alembic 自动生成的，我们应该检查它们，并且根据需要进行调整。
+
+:::warning[注意]
+迁移脚本冗长且繁琐，我们一般不会手写它们，而是由 Alembic 自动生成。
+一般情况下，Alembic 足够智能，可以正确地生成迁移脚本。
+但是，在复杂或有歧义的情况下，我们可能需要手动调整迁移脚本。
+所以，**永远要检查迁移脚本，并且在开发环境中测试！**
+
+**迁移脚本中任何一处错误都足以使数据付之东流！**
+:::
+
+确定迁移脚本正确后，我们就可以执行迁移脚本，将数据库模式同步到数据库中：
+
+```shell
+nb orm upgrade
+```
+
+现在，我们可以正常启动机器人了。
+
+开发过程中，我们可能会频繁地修改模型，这意味着我们需要频繁地创建并执行迁移脚本，非常繁琐。
+实际上，此时我们不在乎数据安全，只需要数据库模式与模型定义一致即可。
+所以，我们可以关闭 `nonebot-plugin-orm` 的启动检查：
+
+```shell title=.env.dev
 ALEMBIC_STARTUP_CHECK=false
 ```
 
-> **警告**：仅在开发环境中使用此配置！生产环境务必保持启动检查开启，以确保数据库 schema 与模型一致。
+现在，每次启动机器人时，数据库模式会自动与模型定义同步，无需手动迁移。
 
-## Session 管理
+### 会话管理
 
-### 通过依赖注入获取 Session
+我们已经成功定义了模型，并且迁移了数据库，现在可以开始使用数据库了……吗？
+并不能，因为模型只是数据结构的定义，并不能通过它操作数据（如果你曾经使用过 [Tortoise ORM](https://tortoise.github.io/)，可能会知道 `await Weather.get(location="上海")` 这样的面向对象编程。
+但是 SQLAlchemy 不同，选择了命令式编程）。
+我们需要使用**会话**操作数据：
 
-`nonebot-plugin-orm` 提供了 `async_scoped_session` 类型，可以通过 NoneBot 的依赖注入系统自动获取：
-
-```python
+```python title=weather/__init__.py {10,13} showLineNumbers
 from nonebot import on_command
+from nonebot.adapters import Message
+from nonebot.params import CommandArg
 from nonebot_plugin_orm import async_scoped_session
 
-from .model import User
+weather = on_command("天气")
 
-cmd = on_command("get_user")
 
-@cmd.handle()
-async def handle(session: async_scoped_session):
-    user = await session.get(User, 1)
-    if user:
-        await cmd.finish(f"User: {user.name}, Score: {user.score}")
-    else:
-        await cmd.finish("User not found")
+@weather.handle()
+async def _(session: async_scoped_session, args: Message = CommandArg()):
+    location = args.extract_plain_text()
+
+    if wea := await session.get(Weather, location):
+        await weather.finish(f"今天{location}的天气是{wea.weather}")
+
+    await weather.finish(f"未查询到{location}的天气")
 ```
 
-### 基本 CRUD 操作
+我们通过 `session: async_scoped_session` 依赖注入获得了一个会话，然后使用 `await session.get(Weather, location)` 查询数据库。
+`async_scoped_session` 是一个有作用域限制的会话，作用域为当前事件、当前事件响应器。
+会话产生的模型实例（例如此处的 `wea := await session.get(Weather, location)`）作用域与会话相同。
 
-#### 查询
+:::warning[注意]
+此处提到的“会话”指的是 ORM 会话，而非 [NoneBot 会话](../../../appendices/session-control)，两者的生命周期也是不同的（NoneBot 会话的生命周期中可能包含多个事件，不同的事件也会有不同的事件响应器）。
+具体而言，就是不要将 ORM 会话和模型实例存储在 NoneBot 会话状态中：
 
-```python
+```python {12}
+from nonebot.params import ArgPlainText
+from nonebot.typing import T_State
+
+
+@weather.got("location", prompt="请输入地名")
+async def _(state: T_State, session: async_scoped_session, location: str = ArgPlainText()):
+    wea = await session.get(Weather, location)
+
+    if not wea:
+        await weather.finish(f"未查询到{location}的天气")
+
+    state["weather"] = wea  # 不要这么做，除非你知道自己在做什么
+```
+
+当然非要这么做也不是不可以：
+
+```python {6}
+@weather.handle()
+async def _(state: T_State, session: async_scoped_session):
+    # 通过 await session.merge(state["weather"]) 获得了此 ORM 会话中的相应模型实例，
+    # 而非直接使用会话状态中的模型实例，
+    # 因为先前的 ORM 会话已经关闭了。
+    wea = await session.merge(state["weather"])
+    await weather.finish(f"今天{state['location']}的天气是{wea.weather}")
+```
+
+:::
+
+当有数据更改时，我们需要提交事务，也要注意会话作用域问题：
+
+```python title=weather/__init__.py {12,20} showLineNumbers
+from nonebot.params import Depends
+
+
+async def get_weather(
+    session: async_scoped_session, args: Message = CommandArg()
+) -> Weather:
+    location = args.extract_plain_text()
+
+    if not (wea := await session.get(Weather, location)):
+        wea = Weather(location=location, weather="未知")
+        session.add(wea)
+        # await session.commit()  # 不应该在其他地方提交事务
+
+    return wea
+
+
+@weather.handle()
+async def _(session: async_scoped_session, wea: Weather = Depends(get_weather)):
+    await weather.send(f"今天的天气是{wea.weather}")
+    await session.commit()  # 而应该在事件响应器结束前提交事务
+```
+
+当然我们也可以获得一个新的会话，不过此时就要手动管理会话了：
+
+```python title=weather/__init__.py {5-6} showLineNumbers
+from nonebot_plugin_orm import get_session
+
+
+async def get_weather(location: str) -> str:
+    session = get_session()
+    async with session.begin():
+        wea = await session.get(Weather, location)
+
+        if not wea:
+            wea = Weather(location=location, weather="未知")
+            session.add(wea)
+
+        return wea.weather
+
+
+@weather.handle()
+async def _(args: Message = CommandArg()):
+    wea = await get_weather(args.extract_plain_text())
+    await weather.send(f"今天的天气是{wea}")
+```
+
+### 依赖注入
+
+在上面的示例中，我们都是通过会话获得数据的。
+不过，我们也可以通过依赖注入获得数据：
+
+```python title=weather/__init__.py {12-14} showLineNumbers
 from sqlalchemy import select
-
-@cmd.handle()
-async def handle(session: async_scoped_session):
-    # 按主键查询
-    user = await session.get(User, 1)
-
-    # 条件查询
-    stmt = select(User).where(User.name == "Alice")
-    result = await session.execute(stmt)
-    user = result.scalar_one_or_none()
-
-    # 查询多条记录
-    stmt = select(User).where(User.score > 100)
-    result = await session.execute(stmt)
-    users = result.scalars().all()
-
-    # 排序与分页
-    stmt = select(User).order_by(User.score.desc()).limit(10).offset(0)
-    result = await session.execute(stmt)
-    top_users = result.scalars().all()
-```
-
-#### 新增
-
-```python
-@cmd.handle()
-async def handle(session: async_scoped_session):
-    user = User(name="Alice", score=100)
-    session.add(user)
-    await session.commit()
-    await cmd.finish(f"Created user: {user.name}")
-```
-
-#### 更新
-
-```python
-@cmd.handle()
-async def handle(session: async_scoped_session):
-    user = await session.get(User, 1)
-    if user:
-        user.score += 10
-        await session.commit()
-        await cmd.finish(f"Updated score: {user.score}")
-```
-
-#### 删除
-
-```python
-@cmd.handle()
-async def handle(session: async_scoped_session):
-    user = await session.get(User, 1)
-    if user:
-        await session.delete(user)
-        await session.commit()
-        await cmd.finish(f"Deleted user: {user.name}")
-```
-
-### Session 生命周期
-
-> **重要**：`nonebot-plugin-orm` 的 Session 作用域与事件处理的生命周期绑定。在同一次事件处理中，通过依赖注入获取的 Session 是同一个实例，事件处理结束后 Session 会自动关闭。
-
-```python
-from nonebot import on_command
-from nonebot_plugin_orm import async_scoped_session
-
-cmd = on_command("test")
-
-@cmd.handle()
-async def step1(session: async_scoped_session):
-    user = User(name="Test")
-    session.add(user)
-    await session.commit()
-
-@cmd.got("confirm")
-async def step2(session: async_scoped_session):
-    # 此处的 session 与 step1 中的是同一个实例
-    users = (await session.execute(select(User))).scalars().all()
-```
-
-> **警告**：ORM 的 Session 与 NoneBot 的 Session（会话状态管理）是完全不同的概念，不要混淆。ORM Session 管理数据库连接和事务，NoneBot Session 管理用户交互状态。
-
-### 异常处理
-
-```python
-from sqlalchemy.exc import IntegrityError
-
-@cmd.handle()
-async def handle(session: async_scoped_session):
-    try:
-        user = User(user_id="12345", name="Alice")
-        session.add(user)
-        await session.commit()
-    except IntegrityError:
-        await session.rollback()
-        await cmd.finish("User already exists")
-```
-
-## 依赖注入
-
-`nonebot-plugin-orm` 提供了 `SQLDepends` 辅助函数，简化常见的查询操作。
-
-### 基本用法
-
-```python
 from nonebot.params import Depends
 from nonebot_plugin_orm import SQLDepends
-from sqlalchemy import select
 
-from .model import User
 
-async def get_user(
-    user: User = SQLDepends(select(User).where(User.user_id == "12345"))
+def extract_arg_plain_text(args: Message = CommandArg()) -> str:
+    return args.extract_plain_text()
+
+
+@weather.handle()
+async def _(
+    wea: Weather = SQLDepends(
+        select(Weather).where(Weather.location == Depends(extract_arg_plain_text))
+    ),
 ):
-    return user
+    await weather.send(f"今天的天气是{wea.weather}")
 ```
 
-### 结合事件参数
+其中，`SQLDepends` 是一个特殊的依赖注入，它会根据类型标注和 SQL 语句提供数据，SQL 语句中也可以有子依赖。
 
-```python
-from nonebot.adapters import Event
-from nonebot.params import Depends
-from nonebot_plugin_orm import SQLDepends
-from sqlalchemy import select
+不同的类型标注也会获得不同形式的数据：
 
-from .model import User
+```python title=weather/__init__.py {5} showLineNumbers
+from collections.abc import Sequence
 
-def get_user_query(event: Event):
-    return select(User).where(User.user_id == event.get_user_id())
-
-@cmd.handle()
-async def handle(
-    user: User | None = SQLDepends(get_user_query)
+@weather.handle()
+async def _(
+    weas: Sequence[Weather] = SQLDepends(
+        select(Weather).where(Weather.weather == Depends(extract_arg_plain_text))
+    ),
 ):
-    if user:
-        await cmd.finish(f"Welcome back, {user.name}!")
-    else:
-        await cmd.finish("New user detected!")
+    await weather.send(f"今天的天气是{weas[0].weather}的城市有{'，'.join(wea.location for wea in weas)}")
 ```
 
-### 类依赖
+支持的类型标注请参见 [依赖注入](dependency)。
 
-```python
-from nonebot.adapters import Event
-from nonebot.params import Depends
-from nonebot_plugin_orm import async_scoped_session
-from sqlalchemy import select
+我们也可以像 [类作为依赖](../../../advanced/dependency#类作为依赖) 那样，在类属性中声明子依赖：
 
-from .model import User
+```python title=weather/__init__.py {5-6,10} showLineNumbers
+from collections.abc import Sequence
 
-class UserDep:
-    def __init__(self, event: Event, session: async_scoped_session):
-        self.event = event
-        self.session = session
+class Weather(Model):
+    location: Mapped[str] = mapped_column(primary_key=True)
+    weather: Mapped[str] = Depends(extract_arg_plain_text)
+    # weather: Annotated[Mapped[str], Depends(extract_arg_plain_text)]  # Annotated 支持
 
-    async def __call__(self) -> User | None:
-        stmt = select(User).where(User.user_id == self.event.get_user_id())
-        result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
-```
 
-更多依赖注入的高级用法，请参阅 [依赖注入](./database-developer-dependency.md)。
-
-## 完整插件示例
-
-```python
-from nonebot import require, on_command
-from nonebot.adapters import Event
-
-require("nonebot_plugin_orm")
-
-from nonebot_plugin_orm import Model, async_scoped_session
-from sqlalchemy import String, select
-from sqlalchemy.orm import Mapped, mapped_column
-
-class Score(Model):
-    id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[str] = mapped_column(String(64), unique=True)
-    value: Mapped[int] = mapped_column(default=0)
-
-add_score = on_command("加分")
-show_score = on_command("积分")
-rank = on_command("排行榜")
-
-@add_score.handle()
-async def handle_add(event: Event, session: async_scoped_session):
-    user_id = event.get_user_id()
-    stmt = select(Score).where(Score.user_id == user_id)
-    result = await session.execute(stmt)
-    score = result.scalar_one_or_none()
-
-    if score is None:
-        score = Score(user_id=user_id, value=1)
-        session.add(score)
-    else:
-        score.value += 1
-
-    await session.commit()
-    await add_score.finish(f"当前积分: {score.value}")
-
-@show_score.handle()
-async def handle_show(event: Event, session: async_scoped_session):
-    user_id = event.get_user_id()
-    score = (await session.execute(
-        select(Score).where(Score.user_id == user_id)
-    )).scalar_one_or_none()
-
-    if score:
-        await show_score.finish(f"你的积分: {score.value}")
-    else:
-        await show_score.finish("你还没有积分")
-
-@rank.handle()
-async def handle_rank(session: async_scoped_session):
-    stmt = select(Score).order_by(Score.value.desc()).limit(10)
-    result = await session.execute(stmt)
-    scores = result.scalars().all()
-
-    if not scores:
-        await rank.finish("暂无排行数据")
-
-    lines = [f"{i+1}. {s.user_id}: {s.value}" for i, s in enumerate(scores)]
-    await rank.finish("积分排行榜:\n" + "\n".join(lines))
+@weather.handle()
+async def _(weas: Sequence[Weather]):
+    await weather.send(
+        f"今天的天气是{weas[0].weather}的城市有{'，'.join(wea.location for wea in weas)}"
+    )
 ```

@@ -1,6 +1,7 @@
 # NoneBot 完整文档索引
 
-> NoneBot2 v2.4.4 官方文档本地化整理，供 NoneBot Bridge 开发参考。
+> NoneBot2 官方文档本地化整理（经 `scripts/sync_nonebot_docs.py` 同步至上游最新版，
+> 各文件头部 `source:` 标注官方链接），供 NoneBot Bridge 开发参考。
 > 官方文档: https://nonebot.dev/
 
 ---
@@ -133,15 +134,19 @@
 | 商店 (Store) | 4 |
 | **总计** | **58** |
 
-## 与 AnelfTools NoneBot Bridge 的关系
+## 与 AnelfAgent NoneBot Bridge 的关系
 
-本文档目录所属的 `nonebot_bridge` 频道通过以下机制将 NoneBot 生态接入 AnelfTools：
+本文档目录是 `nonebot_bridge` 频道的**本地参考文档**（NoneBot2 官方文档 vendor 副本 +
+本地撰写的商店说明）。桥接本身采用**子进程 + 独立 venv** 架构（v3）：
 
-1. **`nonebot_init.py`** -- NoneBot 初始化与适配器动态注册
-2. **`converter.py`** -- NoneBot Event/Message 与 AdapterMessage 双向转换
-3. **`adapter.py`** -- NoneBotBridgeChannel（继承 BaseChannel），通过 `event_preprocessor` 钩子统一拦截
-4. **`config.py`** -- 10 个已知适配器注册表与桥接配置
-5. **Web API** -- `/api/nonebot/*` 端点管理适配器和 Bot 状态
-6. **前端** -- Channels 页面 "NoneBot Bridge" Tab 提供可视化管理
+1. **`worker/`** — worker 子进程入口（`bot.py` 加载 NoneBot2 / 适配器 / 插件，
+   `wire_out.py` 事件转换，`bridge_client.py` 桥接客户端，`protocol.py` 线协议）
+2. **`runtime.py`** — worker venv 引导 / 进程管理 / 包安装 / 日志环
+3. **`adapter.py`** — NoneBotBridgeChannel（继承 BaseChannel），桥接 WS 服务端 +
+   粘性路由 + AI 工具
+4. **`config.py`** — 内置适配器注册表（含各平台接入元数据）与桥接配置 schema
+5. **Web API** — `/api/nonebot/*`：状态 / 适配器安装 / 插件商店 / 配置 / 日志 / 重启
+6. **前端** — `/nonebot` 独立管理页（总览 / 适配器 / 插件 / 商店 / 环境配置 / 日志）
 
-详见 `channels/nonebot_bridge/` 目录下的源码文件。
+架构与使用说明详见 [`channels/nonebot_bridge/README.md`](../README.md)；
+文档同步执行 `python scripts/sync_nonebot_docs.py`。

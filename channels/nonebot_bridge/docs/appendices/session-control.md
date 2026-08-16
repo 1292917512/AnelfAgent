@@ -1,382 +1,389 @@
+<!-- source: https://nonebot.dev/docs/appendices/session-control -->
+
 # 会话控制
 
-NoneBot 提供了强大的多轮会话控制功能，允许在一个事件响应器中进行多步交互。通过 `got()`、`receive()`、`pause()`、`reject()` 等方法实现。
+import Messenger from "@site/src/components/Messenger";
 
----
+在[指南](../tutorial/event-data.mdx#使用依赖注入)的 `weather` 插件中，我们使用依赖注入获取了机器人用户发送的地名参数，并根据地名参数进行相应的回复。但是，一问一答的对话模式仅仅适用于简单的对话场景，如果我们想要实现更复杂的对话模式，就需要使用会话控制。
 
-## 核心概念
+## 询问并获取用户输入
 
-### 会话流程
+在 `weather` 插件中，我们对于用户未输入地名参数的情况直接回复了 `请输入地名` 并结束了事件流程。但是，这样用户体验并不好，需要重新输入指令和地名参数才能获取天气回复。我们现在来实现询问并获取用户地名参数的功能。
 
-一个事件响应器的完整生命周期：
+### 询问用户
 
-```
-用户发送消息 → 规则匹配 → handle() → [got/receive 暂停等待] → 用户再次发送 → 继续处理 → finish()
-```
+我们可以使用事件响应器操作中的 `got` 装饰器来表示当前事件处理流程需要询问并获取用户输入的消息：
 
-NoneBot 使用装饰器来定义处理流程中的各个步骤，事件响应器会按装饰器的注册顺序依次执行处理函数。
+```python {6} title=weather/__init__.py
+@weather.handle()
+async def handle_function(args: Message = CommandArg()):
+    if location := args.extract_plain_text():
+        await weather.finish(f"今天{location}的天气是...")
 
----
-
-## 流程控制方法
-
-### handle()
-
-注册一个处理函数，按顺序执行：
-
-```python
-from nonebot import on_command
-
-cmd = on_command("multi", priority=10, block=True)
-
-
-@cmd.handle()
-async def step1():
-    """第一步"""
-    await cmd.send("第一步完成！")
-
-
-@cmd.handle()
-async def step2():
-    """第二步，紧接着执行"""
-    await cmd.finish("第二步完成，结束！")
+@weather.got("location", prompt="请输入地名")
+async def got_location():
+    ...
 ```
 
-### got()
+在上面的代码中，我们使用 `got` 事件响应器操作来向用户发送 `prompt` 消息，并等待用户的回复。用户的回复消息将会被作为 `location` 参数存储于事件响应器状态中。
 
-暂停当前会话，等待用户输入并将输入存储到 `state` 中：
+:::tip[提示]
+事件处理函数根据定义的顺序依次执行。
+:::
 
-```python
-from nonebot import on_command
-from nonebot.adapters import Message
+### 获取用户输入
+
+在询问以及用户回复之后，我们就可以获取到我们需要的 `location` 参数了。我们使用 `ArgPlainText` 依赖注入来获取参数纯文本信息：
+
+```python {9} title=weather/__init__.py
 from nonebot.params import ArgPlainText
 
-cmd = on_command("ask", priority=10, block=True)
+@weather.handle()
+async def handle_function(args: Message = CommandArg()):
+    if location := args.extract_plain_text():
+        await weather.finish(f"今天{location}的天气是...")
 
-
-@cmd.got("name", prompt="请输入你的名字：")
-async def handle_name(name: str = ArgPlainText()):
-    await cmd.finish(f"你好，{name}！")
+@weather.got("location", prompt="请输入地名")
+async def got_location(location: str = ArgPlainText()):
+    await weather.finish(f"今天{location}的天气是...")
 ```
 
-#### got() 参数说明
+<Messenger
+  msgs={[
+    { position: "right", msg: "/天气" },
+    { position: "left", msg: "请输入地名" },
+    { position: "right", msg: "北京" },
+    { position: "left", msg: "今天北京的天气是..." },
+  ]}
+/>
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `key` | `str` | 存储到 state 中的键名 |
-| `prompt` | `str \| Message \| MessageSegment \| MessageTemplate \| None` | 提示用户的消息 |
-| `parameterless` | `Iterable[Any] \| None` | 附加的无参依赖 |
+在上面的代码中，我们在 `got_location` 函数中定义了一个依赖注入参数 `location`，他的值将会是用户回复的消息纯文本信息。获取到用户输入的地名参数后，我们就可以进行天气查询并回复了。
 
-#### 获取 got() 的输入
+:::tip[提示]
+如果想要获取用户回复的消息对象 `Message` ，可以使用 `Arg` 依赖注入。
+:::
+
+### 跳过询问
+
+在上面的代码中，如果用户在输入天气指令时，同时提供了地名参数，我们直接回复了天气信息，这部分的逻辑是和询问用户地名参数之后的逻辑一致的。如果在复杂的业务场景下，我们希望这部分代码应该复用以减少代码冗余。我们可以使用事件响应器操作中的 `set_arg` 来主动设置一个参数：
+
+```python {4,6} title=weather/__init__.py
+from nonebot.matcher import Matcher
+
+@weather.handle()
+async def handle_function(matcher: Matcher, args: Message = CommandArg()):
+    if args.extract_plain_text():
+        matcher.set_arg("location", args)
+
+@weather.got("location", prompt="请输入地名")
+async def got_location(location: str = ArgPlainText()):
+    await weather.finish(f"今天{location}的天气是...")
+```
+
+请注意，设置参数需要使用依赖注入来获取 `Matcher` 实例以确保上下文正确，且参数值应为 `Message` 对象。
+
+在 `location` 参数被设置之后，`got` 事件响应器操作将不再会询问并等待用户的回复，而是直接进入 `got_location` 函数。
+
+## 请求重新输入
+
+在实际的业务场景中，用户的输入很有可能并非是我们所期望的，而结束事件处理流程让用户重新发送指令也不是一个好的体验。这时我们可以使用 `reject` 事件响应器操作来请求用户重新输入：
+
+```python {8,9} title=weather/__init__.py
+@weather.handle()
+async def handle_function(matcher: Matcher, args: Message = CommandArg()):
+    if args.extract_plain_text():
+        matcher.set_arg("location", args)
+
+@weather.got("location", prompt="请输入地名")
+async def got_location(location: str = ArgPlainText()):
+    if location not in ["北京", "上海", "广州", "深圳"]:
+        await weather.reject(f"你想查询的城市 {location} 暂不支持，请重新输入！")
+    await weather.finish(f"今天{location}的天气是...")
+```
+
+<Messenger
+  msgs={[
+    { position: "right", msg: "/天气" },
+    { position: "left", msg: "请输入地名" },
+    { position: "right", msg: "南京" },
+    { position: "left", msg: "你想查询的城市 南京 暂不支持，请重新输入！" },
+    { position: "right", msg: "北京" },
+    { position: "left", msg: "今天北京的天气是..." },
+  ]}
+/>
+
+在上面的代码中，我们在 `got_location` 函数中判断用户输入的地名是否在支持的城市列表中，如果不在，则使用 `reject` 事件响应器操作。操作将会向用户发送 `reject` 参数中的消息，并等待用户回复后，重新执行 `got_location` 函数。通过 `got` 和 `reject` 事件响应器操作，我们实现了类似于**循环**的执行方式。
+
+`reject` 事件响应器操作与 `finish` 类似，NoneBot 会在向机器人用户发送消息内容后抛出 `RejectedException` 异常来暂停事件响应流程以等待用户输入。也就是说，在 `reject` 被执行后，后续的程序同样是不会被执行的。
+
+## 更多事件响应器操作
+
+在之前的章节中，我们已经大致了解了五个事件响应器操作：`handle`、`got`、`finish`、`send` 和 `reject`。现在我们来完整地介绍一下这些操作。
+
+事件响应器操作可以分为两大类：**交互操作**和**流程控制操作**。我们可以通过交互操作来与用户进行交互，而流程控制操作则可以用来控制事件处理流程的执行。
+
+:::tip[提示]
+事件处理流程按照事件处理函数添加顺序执行，已经结束的事件处理函数不可能被恢复执行。
+:::
+
+### handle
+
+`handle` 事件响应器操作是一个装饰器，用于向事件处理流程添加一个事件处理函数。
 
 ```python
-from nonebot.params import Arg, ArgStr, ArgPlainText
-
-@cmd.got("city", prompt="请输入城市名：")
-async def handle(
-    city: Message = Arg(),               # 原始 Message 对象
-    city_str: str = ArgStr(),             # 消息的字符串表示
-    city_text: str = ArgPlainText(),      # 消息的纯文本（去掉非文本段）
-):
-    pass
+@matcher.handle()
+async def handle_func():
+    ...
 ```
 
-指定获取某个 key 的参数：
+`handle` 装饰器支持嵌套操作，即一个事件处理函数可以被添加多次：
 
 ```python
-@cmd.got("city", prompt="请输入城市名：")
-async def handle(
-    city_text: str = ArgPlainText("city"),     # 指定获取 "city" 键
-):
-    pass
+@matcher.handle()
+@matcher.handle()
+async def handle_func():
+    # 这个函数会被执行两次
+    ...
 ```
 
-### receive()
+### got
 
-暂停当前会话，等待用户发送下一条消息（作为完整事件接收）：
+`got` 事件响应器操作也是一个装饰器，它会在当前装饰的事件处理函数运行之前，中断当前事件处理流程，等待接收一个新的事件。它可以通过 `prompt` 参数来向用户发送询问消息，然后等待用户的回复消息，贴近对话形式会话。
+
+`got` 装饰器接受一个参数 `key` 和一个可选参数 `prompt`。当会话状态中不存在 `key` 对应的消息时，会向用户发送 `prompt` 参数的消息，并等待用户回复。`prompt` 参数的类型和 [`send`](#send) 事件响应器操作的参数类型一致。
+
+在事件处理函数中，可以通过依赖注入的方式来获取接收到的消息，参考：[`Arg`](../advanced/dependency.mdx#arg)、[`ArgStr`](../advanced/dependency.mdx#argstr)、[`ArgPlainText`](../advanced/dependency.mdx#argplaintext)。
 
 ```python
-from nonebot import on_command
-from nonebot.adapters import Event
-from nonebot.params import Received
-
-cmd = on_command("confirm", priority=10, block=True)
-
-
-@cmd.handle()
-async def step1():
-    await cmd.send("请发送需要确认的内容：")
-
-
-@cmd.receive("content")
-async def step2(event: Event = Received("content")):
-    text = event.get_plaintext()
-    await cmd.send(f"你发送了：{text}\n确认吗？请回复 是/否")
-
-
-@cmd.receive("confirm")
-async def step3(event: Event = Received("confirm")):
-    if event.get_plaintext().strip() == "是":
-        await cmd.finish("已确认！")
-    else:
-        await cmd.finish("已取消。")
+@matcher.got("key", prompt="请输入...")
+async def got_func(key: Message = Arg()):
+    ...
 ```
 
-### pause()
-
-暂停当前会话，等待用户下一条消息后 **继续执行当前处理函数的后续代码**：
+`got` 装饰器支持与 `got` 和 `receive` 装饰器嵌套操作，即一个事件处理函数可以在接收多个事件或消息后执行：
 
 ```python
-from nonebot import on_command
-
-cmd = on_command("step", priority=10, block=True)
-
-
-@cmd.handle()
-async def handle():
-    await cmd.send("第一步完成，请发送任意消息继续...")
-    await cmd.pause()
-
-
-@cmd.handle()
-async def handle2():
-    await cmd.finish("第二步完成！")
+@matcher.got("key1", prompt="请输入key1...")
+@matcher.got("key2", prompt="请输入key2...")
+@matcher.receive("key3")
+async def got_func(key1: Message = Arg(), key2: Message = Arg(), key3: Event = Received("key3")):
+    ...
 ```
 
-> **注意**：`pause()` 会抛出异常中断当前函数，下一条消息会触发下一个 `handle()` 装饰的函数。
+### receive
 
-### reject()
+`receive` 事件响应器操作也是一个装饰器，它会在当前装饰的事件处理函数运行之前，中断当前事件处理流程，等待接收一个新的事件。与 `got` 不同的是，`receive` 不会向用户发送询问消息，并且等待一个用户事件。可以接收的事件类型取决于[会话更新](../advanced/session-updating.md)。
 
-拒绝当前 `got()` 或 `receive()` 接收到的输入，要求用户重新输入：
+`receive` 装饰器接受一个可选参数 id，用于标识当前需要接收的事件，如果不指定，则默认为空 `""`。
+
+在事件处理函数中，可以通过依赖注入的方式来获取接收到的事件，参考：[`Received`](../advanced/dependency.mdx#received)、[`LastReceived`](../advanced/dependency.mdx#lastreceived)。
 
 ```python
-from nonebot import on_command
-from nonebot.params import ArgPlainText
-
-cmd = on_command("age", priority=10, block=True)
-
-
-@cmd.got("age", prompt="请输入你的年龄：")
-async def handle_age(age: str = ArgPlainText()):
-    if not age.isdigit() or not (0 < int(age) < 150):
-        await cmd.reject("年龄无效，请重新输入一个合理的数字：")
-    await cmd.finish(f"你的年龄是 {age} 岁。")
+@matcher.receive("id")
+async def receive_func(event: Event = Received("id")):
+    ...
 ```
 
-#### reject 变体
+`receive` 装饰器支持与 `got` 和 `receive` 装饰器嵌套操作，即一个事件处理函数可以在接收多个事件或消息后执行：
 
 ```python
-# reject() - 使用 got/receive 中定义的 prompt 重新提问
-await cmd.reject()
-
-# reject("提示文本") - 使用自定义提示重新提问
-await cmd.reject("输入不正确，请重新输入：")
-
-# reject_arg("key", "提示") - 拒绝指定 key 的输入
-await cmd.reject_arg("name", "名字不能为空，请重新输入：")
-
-# reject_receive("id", "提示") - 拒绝指定 receive 的输入
-await cmd.reject_receive("content", "内容不正确，请重新发送：")
+@matcher.receive("key1")
+@matcher.got("key2", prompt="请输入key2...")
+@matcher.got("key3", prompt="请输入key3...")
+async def receive_func(key1: Event = Received("key1"), key2: Message = Arg(), key3: Message = Arg()):
+    ...
 ```
 
-### send()
+### send
 
-发送消息但不结束会话：
+`send` 事件响应器操作用于向用户回复一条消息。协议适配器会根据当前 event 选择回复的途径。
+
+`send` 操作接受一个参数 message 和其他任何协议适配器接受的参数。message 参数类型可以是字符串、消息序列、消息段或者消息模板。消息模板将会使用会话状态字典进行渲染后发送。
+
+这个操作等同于使用 `bot.send(event, message, **kwargs)`，但不需要自行传入 `event`。
 
 ```python
-await cmd.send("处理中...")
+@matcher.handle()
+async def _():
+    await matcher.send("Hello world!")
 ```
 
-### finish()
+### finish
 
-发送消息并结束当前会话：
+向用户回复一条消息（可选），并立即结束**整个处理流程**。
+
+参数与 [`send`](#send) 相同。
 
 ```python
-await cmd.finish("完成！")
-await cmd.finish()  # 不发送消息直接结束
+@matcher.handle()
+async def _():
+    await matcher.finish("Hello world!")
+    # 下面的代码不会被执行
 ```
 
-### skip()
+### pause
 
-跳过当前处理函数，执行下一个：
+向用户回复一条消息（可选），立即结束**当前**事件处理函数，等待接收一个新的事件后进入**下一个**事件处理函数。
+
+参数与 [`send`](#send) 相同。
 
 ```python
-from nonebot import on_command
-from nonebot.params import ArgPlainText
+@matcher.handle()
+async def _():
+    if need_confirm:
+        await matcher.pause("请在两分钟内确认执行")
 
-cmd = on_command("test", priority=10, block=True)
-
-
-@cmd.handle()
-async def step1():
-    await cmd.send("跳过下一步...")
-
-
-@cmd.handle()
-async def step2():
-    await cmd.skip()  # 跳过此函数
-
-
-@cmd.handle()
-async def step3():
-    await cmd.finish("直接到第三步了！")
+@matcher.handle()
+async def _():
+    ...
 ```
 
----
+### reject
 
-## 完整示例
+向用户回复一条消息（可选），立即结束**当前**事件处理函数，等待接收一个新的事件后再次执行**当前**事件处理函数。
 
-### 多步表单：用户注册
+`reject` 可以用于拒绝当前 `receive` 接收的事件或 `got` 接收的参数。通常在用户回复不符合格式或标准需要重新输入，或者用于循环进行用户交互。
+
+参数与 [`send`](#send) 相同。
 
 ```python
-from nonebot import on_command
-from nonebot.params import ArgPlainText
-from nonebot.typing import T_State
-
-register = on_command("注册", priority=10, block=True)
-
-
-@register.handle()
-async def start():
-    await register.send("欢迎注册！请按提示填写信息。")
-
-
-@register.got("username", prompt="请输入用户名（3-20个字符）：")
-async def get_username(username: str = ArgPlainText()):
-    username = username.strip()
-    if len(username) < 3 or len(username) > 20:
-        await register.reject("用户名长度需要在 3-20 个字符之间，请重新输入：")
-
-
-@register.got("age", prompt="请输入年龄：")
-async def get_age(age: str = ArgPlainText()):
-    if not age.strip().isdigit():
-        await register.reject("请输入有效的数字：")
-    age_num = int(age.strip())
-    if age_num < 1 or age_num > 150:
-        await register.reject("年龄范围 1-150，请重新输入：")
-
-
-@register.got("email", prompt="请输入邮箱地址：")
-async def get_email(email: str = ArgPlainText()):
-    import re
-    if not re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email.strip()):
-        await register.reject("邮箱格式不正确，请重新输入：")
-
-
-@register.got("confirm", prompt="确认注册吗？（是/否）")
-async def confirm(
-    state: T_State,
-    confirm_text: str = ArgPlainText("confirm"),
-):
-    if confirm_text.strip() != "是":
-        await register.finish("已取消注册。")
-
-    username = state["username"].extract_plain_text()
-    age = state["age"].extract_plain_text()
-    email = state["email"].extract_plain_text()
-
-    await register.finish(
-        f"注册成功！\n"
-        f"用户名：{username}\n"
-        f"年龄：{age}\n"
-        f"邮箱：{email}"
-    )
+@matcher.got("arg")
+async def _(arg: str = ArgPlainText()):
+    if not is_valid(arg):
+        await matcher.reject("Invalid arg!")
 ```
 
-### 多轮对话：猜数字游戏
+### reject_arg
+
+向用户回复一条消息（可选），立即结束**当前**事件处理函数，等待接收一个新的消息后再次执行**当前**事件处理函数。
+
+`reject_arg` 用于拒绝指定 `got` 接收的参数，通常在嵌套装饰器时使用。
+
+`reject_arg` 操作接受一个 key 参数以及可选的 prompt 参数。prompt 参数与 [`send`](#send) 相同。
 
 ```python
-import random
-from nonebot import on_command
-from nonebot.params import ArgPlainText
-from nonebot.typing import T_State
-
-guess = on_command("猜数字", priority=10, block=True)
-
-
-@guess.handle()
-async def start(state: T_State):
-    state["answer"] = random.randint(1, 100)
-    state["attempts"] = 0
-    await guess.send("我想了一个 1-100 的数字，来猜猜看！")
-
-
-@guess.got("number", prompt="请输入你猜的数字：")
-async def handle_guess(state: T_State, number: str = ArgPlainText()):
-    if not number.strip().isdigit():
-        await guess.reject("请输入一个有效的数字：")
-
-    num = int(number.strip())
-    answer = state["answer"]
-    state["attempts"] += 1
-
-    if num < answer:
-        await guess.reject(f"太小了！已猜 {state['attempts']} 次，再试试：")
-    elif num > answer:
-        await guess.reject(f"太大了！已猜 {state['attempts']} 次，再试试：")
-    else:
-        await guess.finish(
-            f"恭喜你猜对了！答案就是 {answer}，你一共猜了 {state['attempts']} 次。"
-        )
+@matcher.got("a")
+@matcher.got("b")
+async def _(a: str = ArgPlainText(), b: str = ArgPlainText()):
+    if a not in b:
+        await matcher.reject_arg("a", "Invalid a!")
 ```
 
-### 带超时的会话
+### reject_receive
+
+向用户回复一条消息（可选），立即结束**当前**事件处理函数，等待接收一个新的事件后再次执行**当前**事件处理函数。
+
+`reject_receive` 用于拒绝指定 `receive` 接收的事件，通常在嵌套装饰器时使用。
+
+`reject_receive` 操作接受一个可选的 id 参数以及可选的 prompt 参数。id 参数默认为空 `""`，prompt 参数与 [`send`](#send) 相同。
 
 ```python
-from nonebot import on_command
-from nonebot.params import ArgPlainText
-
-cmd = on_command("timeout_test", priority=10, block=True)
-
-
-@cmd.got("input", prompt="请在 30 秒内输入内容：")
-async def handle(input_text: str = ArgPlainText()):
-    await cmd.finish(f"你输入了：{input_text}")
+@matcher.receive("a")
+@matcher.receive("b")
+async def _(a: Event = Received("a"), b: Event = Received("b")):
+    if a.get_user_id() != b.get_user_id():
+        await matcher.reject_receive("a")
 ```
 
-> **注意**：NoneBot 默认的会话超时由 `SESSION_EXPIRE_TIMEOUT` 配置控制（默认 120 秒）。超时后会话自动结束。
+### skip
 
-### 使用 receive 处理图片
+立即结束当前事件处理函数，进入下一个事件处理函数。
+
+通常在依赖注入中使用，用于跳过当前事件处理函数的执行。
 
 ```python
-from nonebot import on_command
-from nonebot.adapters import Event
-from nonebot.adapters.onebot.v11 import MessageSegment
-from nonebot.params import Received
+from nonebot.params import Depends
 
-img_cmd = on_command("识图", priority=10, block=True)
+async def dependency():
+    matcher.skip()
 
-
-@img_cmd.handle()
-async def ask_image():
-    await img_cmd.send("请发送你要识别的图片：")
-
-
-@img_cmd.receive("image")
-async def handle_image(event: Event = Received("image")):
-    message = event.get_message()
-    images = [seg for seg in message if seg.type == "image"]
-    if not images:
-        await img_cmd.reject_receive("image", "没有检测到图片，请重新发送：")
-
-    image_url = images[0].data.get("url", "")
-    await img_cmd.finish(f"收到图片：{image_url}\n正在识别中...")
+@matcher.handle()
+async def _(check=Depends(dependency)):
+    # 这个函数不会被执行
 ```
 
----
+### stop_propagation
 
-## 流程控制速查
+阻止事件向更低优先级的事件响应器传播。
 
-| 方法 | 作用 | 发送消息 | 结束会话 |
-|------|------|---------|---------|
-| `handle()` | 注册处理函数 | — | — |
-| `got(key, prompt)` | 等待用户输入并存储 | 发送 prompt | 否 |
-| `receive(id)` | 等待用户下一条消息 | 可选 prompt | 否 |
-| `send(msg)` | 发送消息 | 是 | 否 |
-| `finish(msg)` | 发送消息并结束 | 是 | 是 |
-| `pause(prompt)` | 暂停等待下一条消息 | 可选 prompt | 否 |
-| `reject(prompt)` | 拒绝输入，要求重新输入 | 可选 prompt | 否 |
-| `reject_arg(key, prompt)` | 拒绝指定 key 的输入 | 可选 prompt | 否 |
-| `reject_receive(id, prompt)` | 拒绝指定 receive 的输入 | 可选 prompt | 否 |
-| `skip()` | 跳过当前处理函数 | 否 | 否 |
+```python
+from nonebot.matcher import Matcher
+
+@foo.handle()
+async def _(matcher: Matcher):
+    matcher.stop_propagation()
+```
+
+:::warning[注意]
+`stop_propagation` 操作是实例方法，需要先通过依赖注入获取事件响应器实例再进行调用。
+:::
+
+### get_arg
+
+获取一个 `got` 接收的参数。
+
+`get_arg` 操作接受一个 key 参数和一个可选的 default 参数。当参数不存在时，将返回 default 或 `None`。
+
+```python
+from nonebot.matcher import Matcher
+
+@matcher.handle()
+async def _(matcher: Matcher):
+    key = matcher.get_arg("key", default=None)
+```
+
+### set_arg
+
+设置 / 覆盖一个 `got` 接收的参数。
+
+`set_arg` 操作接受一个 key 参数和一个 value 参数。请注意，value 参数必须是消息序列对象，如需存储其他数据请使用[会话状态](./session-state.md)。
+
+```python
+from nonebot.matcher import Matcher
+
+@matcher.handle()
+async def _(matcher: Matcher):
+    matcher.set_arg("key", Message("value"))
+```
+
+### get_receive
+
+获取一个 `receive` 接收的事件。
+
+`get_receive` 操作接受一个 id 参数和一个可选的 default 参数。当事件不存在时，将返回 default 或 `None`。
+
+```python
+from nonebot.matcher import Matcher
+
+@matcher.handle()
+async def _(matcher: Matcher):
+    event = matcher.get_receive("id", default=None)
+```
+
+### get_last_receive
+
+获取最近的一个 `receive` 接收的事件。
+
+`get_last_receive` 操作接受一个可选的 default 参数。当事件不存在时，将返回 default 或 `None`。
+
+```python
+from nonebot.matcher import Matcher
+
+@matcher.handle()
+async def _(matcher: Matcher):
+    event = matcher.get_last_receive(default=None)
+```
+
+### set_receive
+
+设置 / 覆盖一个 `receive` 接收的事件。
+
+`set_receive` 操作接受一个 id 参数和一个 event 参数。请注意，event 参数必须是事件对象，如需存储其他数据请使用[会话状态](./session-state.md)。
+
+```python
+from nonebot.matcher import Matcher
+
+@matcher.handle()
+async def _(matcher: Matcher):
+    matcher.set_receive("key", Event())
+```

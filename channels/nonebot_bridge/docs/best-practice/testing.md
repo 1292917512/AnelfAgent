@@ -1,310 +1,235 @@
+<!-- source: https://nonebot.dev/docs/best-practice/testing/ -->
+
 # 配置与测试事件响应器
 
-[NoneBug](https://github.com/nonebot/nonebug) 是 NoneBot 官方测试框架，基于 [pytest](https://docs.pytest.org/) 和 [anyio](https://anyio.readthedocs.io/)，提供对事件响应器、消息收发、API 调用等的模拟测试能力。
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
 
-## 安装
+> 在计算机编程中，单元测试（Unit Testing）又称为模块测试，是针对程序模块（软件设计的最小单位）来进行正确性检验的测试工作。
+
+为了保证代码的正确运行，我们不仅需要对错误进行跟踪，还需要对代码进行正确性检验，也就是测试。NoneBot 提供了一个测试工具——NoneBug，它是一个 [pytest](https://docs.pytest.org/en/stable/) 插件，可以帮助我们便捷地进行单元测试。
+
+:::tip[提示]
+建议在阅读本文档前先阅读 [pytest 官方文档](https://docs.pytest.org/en/stable/)来了解 pytest 的相关术语和基本用法。
+:::
+
+## 安装 NoneBug
+
+在**项目目录**下激活虚拟环境后运行以下命令安装 NoneBug：
+
+<Tabs groupId="tool">
+  <TabItem value="poetry" label="Poetry" default>
 
 ```bash
-# pip
-pip install nonebug pytest-asyncio
-
-# poetry
-poetry add --group dev nonebug pytest-asyncio
-
-# pdm
-pdm add -dG dev nonebug pytest-asyncio
+poetry add nonebug -G test
 ```
 
-## 配置 pytest
+  </TabItem>
+  <TabItem value="pdm" label="PDM">
 
-### pytest.ini / pyproject.toml
+```bash
+pdm add nonebug -dG test
+```
+
+  </TabItem>
+  <TabItem value="pip" label="pip">
+
+```bash
+pip install nonebug
+```
+
+  </TabItem>
+</Tabs>
+
+要运行 NoneBug 测试，还需要额外安装 pytest 异步插件 `pytest-asyncio` 或 `anyio` 以支持异步测试。文档中，我们以 `pytest-asyncio` 为例：
+
+<Tabs groupId="tool">
+  <TabItem value="poetry" label="Poetry" default>
+
+```bash
+poetry add pytest-asyncio -G test
+```
+
+  </TabItem>
+  <TabItem value="pdm" label="PDM">
+
+```bash
+pdm add pytest-asyncio -dG test
+```
+
+  </TabItem>
+  <TabItem value="pip" label="pip">
+
+```bash
+pip install pytest-asyncio
+```
+
+  </TabItem>
+</Tabs>
+
+## 配置测试
+
+在开始测试之前，我们需要对测试进行一些配置，以正确启动我们的机器人。
+
+首先我们需要配置 pytest-asyncio，在 `pyproject.toml` 的 pytest 配置部分添加：
 
 ```toml
-# pyproject.toml
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
 ```
 
-或 `pytest.ini`：
+然后，我们在 `tests` 目录下新建 `conftest.py` 文件，添加以下内容：
 
-```ini
-[pytest]
-asyncio_mode = auto
-```
-
-`asyncio_mode = "auto"` 会让所有 `async def test_*` 函数自动以异步方式运行，无需手动加 `@pytest.mark.asyncio`。
-
-## conftest.py 配置
-
-在项目根目录的 `tests/` 文件夹下创建 `conftest.py`：
-
-```python
-from pathlib import Path
-
-import pytest
-from nonebug import App
-
-
-# 加载 NoneBot 配置和插件
-@pytest.fixture
-async def app(tmp_path: Path):
-    from nonebot import require
-
-    yield App()
-```
-
-如果需要自定义配置：
-
-```python
-from pathlib import Path
-
+```python title=tests/conftest.py
 import pytest
 import nonebot
-from nonebug import App
+from pytest_asyncio import is_async_test
+# 导入适配器
+from nonebot.adapters.console import Adapter as ConsoleAdapter
 
+def pytest_collection_modifyitems(items: list[pytest.Item]):
+    pytest_asyncio_tests = (item for item in items if is_async_test(item))
+    session_scope_marker = pytest.mark.asyncio(loop_scope="session")
+    for async_test in pytest_asyncio_tests:
+        async_test.add_marker(session_scope_marker, append=False)
 
 @pytest.fixture(scope="session", autouse=True)
-def _load_bot():
-    """在测试会话开始时初始化 NoneBot"""
-    nonebot.init(
-        driver="~none",
-        command_start={"/"},
-        command_sep={"."},
-    )
-    # 加载要测试的插件
-    nonebot.load_plugins("my_bot/plugins")
+async def after_nonebot_init(after_nonebot_init: None):
+    # 加载适配器
+    driver = nonebot.get_driver()
+    driver.register_adapter(ConsoleAdapter)
 
-
-@pytest.fixture
-async def app():
-    yield App()
+    # 加载插件
+    nonebot.load_from_toml("pyproject.toml")
 ```
 
-## 基础测试
+这样，我们就可以在测试中使用机器人的插件了。通常，我们不需要自行初始化 NoneBot，NoneBug 已经为我们运行了 `nonebot.init()`。如果需要自定义 NoneBot 初始化的参数，我们可以在 `conftest.py` 中添加 `pytest_configure` 钩子函数。例如，我们可以修改 NoneBot 配置环境为 `test` 并从环境变量中输入配置：
 
-### test_matcher 上下文
+```python {4,6,8-10} title=tests/conftest.py
+import os
 
-`app.test_matcher()` 创建一个测试上下文，在该上下文中可以模拟 Bot、事件、消息发送等：
+import pytest
+from nonebug import NONEBOT_INIT_KWARGS
 
-```python
-from nonebug import App
+os.environ["ENVIRONMENT"] = "test"
 
-
-async def test_hello(app: App):
-    from my_bot.plugins.hello import hello_handler  # 导入你的 matcher
-
-    async with app.test_matcher(hello_handler) as ctx:
-        bot = ctx.create_bot()
-        event = make_event("/hello")  # 构造事件
-        ctx.receive_event(bot, event)
-        ctx.should_call_send(event, "你好！", result=None)
-        ctx.should_finished(hello_handler)
+def pytest_configure(config: pytest.Config):
+    config.stash[NONEBOT_INIT_KWARGS] = {"secret": os.getenv("INPUT_SECRET")}
 ```
 
-### 创建 Bot
-
-```python
-async with app.test_matcher(matcher) as ctx:
-    # 创建默认 Bot
-    bot = ctx.create_bot()
-
-    # 创建指定适配器的 Bot
-    from nonebot.adapters.onebot.v11 import Adapter, Bot
-
-    bot = ctx.create_bot(base=Bot, adapter=Adapter, self_id="12345")
-```
-
-### 构造事件
-
-不同适配器有不同的事件类，以 OneBot V11 为例：
-
-```python
-from nonebot.adapters.onebot.v11 import (
-    GroupMessageEvent,
-    Message,
-    MessageSegment,
-    PrivateMessageEvent,
-)
-from nonebot.adapters.onebot.v11.event import Sender
-
-
-def make_private_event(text: str, user_id: int = 10001) -> PrivateMessageEvent:
-    return PrivateMessageEvent(
-        time=1000000,
-        self_id=1,
-        post_type="message",
-        sub_type="friend",
-        user_id=user_id,
-        message_type="private",
-        message_id=1,
-        message=Message(text),
-        original_message=Message(text),
-        raw_message=text,
-        font=0,
-        sender=Sender(user_id=user_id, nickname="test"),
-    )
-
-
-def make_group_event(
-    text: str, user_id: int = 10001, group_id: int = 10000
-) -> GroupMessageEvent:
-    return GroupMessageEvent(
-        time=1000000,
-        self_id=1,
-        post_type="message",
-        sub_type="normal",
-        user_id=user_id,
-        message_type="group",
-        message_id=1,
-        message=Message(text),
-        original_message=Message(text),
-        raw_message=text,
-        font=0,
-        sender=Sender(user_id=user_id, nickname="test"),
-        group_id=group_id,
-    )
-```
-
-### receive_event
-
-将构造好的事件发送给 matcher：
-
-```python
-async with app.test_matcher(matcher) as ctx:
-    bot = ctx.create_bot()
-    event = make_private_event("/hello")
-    ctx.receive_event(bot, event)
-```
-
-### should_call_send
-
-断言 matcher 应该发送指定消息：
-
-```python
-ctx.should_call_send(
-    event,           # 关联的事件
-    "你好！",         # 期望发送的消息（str 或 Message）
-    result=None,     # send 的返回值
-    bot=bot,         # 可选：指定 Bot
-)
-```
-
-消息匹配支持多种方式：
-
-```python
-# 精确匹配字符串
-ctx.should_call_send(event, "精确内容", result=None)
-
-# 匹配 Message 对象
-from nonebot.adapters.onebot.v11 import Message
-
-ctx.should_call_send(event, Message("消息内容"), result=None)
-
-# 匹配包含 MessageSegment 的消息
-from nonebot.adapters.onebot.v11 import MessageSegment
-
-msg = Message([MessageSegment.text("你好"), MessageSegment.face(1)])
-ctx.should_call_send(event, msg, result=None)
-```
-
-### should_finished
-
-断言 matcher 应该结束（调用了 `matcher.finish()`）：
-
-```python
-ctx.should_finished(matcher)
-```
-
-## 天气插件测试完整示例
-
-### 被测试的插件 weather.py
-
-```python
-from nonebot import on_command
-from nonebot.adapters import Message
-from nonebot.params import CommandArg
-
-weather = on_command("天气", aliases={"weather"})
-
-
-@weather.handle()
-async def handle_weather(args: Message = CommandArg()):
-    city = args.extract_plain_text().strip()
-    if not city:
-        await weather.finish("请输入城市名，如：/天气 北京")
-
-    # 模拟天气查询
-    weather_info = f"{city}：晴，25°C，湿度 40%"
-    await weather.finish(weather_info)
-```
-
-### 测试文件 test_weather.py
+NoneBug 默认也会为我们管理 lifespan 的 startup 与 shutdown。如果不希望 NoneBug 管理 lifespan，你可以在 `pytest_configure` 里添加以下配置：
 
 ```python
 import pytest
+from nonebug import NONEBOT_START_LIFESPAN
+
+def pytest_configure(config: pytest.Config):
+    config.stash[NONEBOT_START_LIFESPAN] = False
+```
+
+## 编写插件测试
+
+在配置完成插件加载后，我们就可以在测试中使用插件了。NoneBug 通过 pytest fixture `app` 提供各种测试方法，我们可以在测试中使用它来测试插件。现在，我们创建一个测试脚本来测试[深入指南](../../appendices/session-control.mdx)中编写的天气插件。首先，我们先要导入我们需要的模块：
+
+<details>
+  <summary>插件示例</summary>
+
+```python title=weather/__init__.py
+from nonebot import on_command
+from nonebot.rule import to_me
+from nonebot.matcher import Matcher
+from nonebot.adapters import Message
+from nonebot.params import CommandArg, ArgPlainText
+
+weather = on_command("天气", rule=to_me(), aliases={"weather", "天气预报"})
+
+@weather.handle()
+async def handle_function(matcher: Matcher, args: Message = CommandArg()):
+    if args.extract_plain_text():
+        matcher.set_arg("location", args)
+
+@weather.got("location", prompt="请输入地名")
+async def got_location(location: str = ArgPlainText()):
+    if location not in ["北京", "上海", "广州", "深圳"]:
+        await weather.reject(f"你想查询的城市 {location} 暂不支持，请重新输入！")
+    await weather.finish(f"今天{location}的天气是...")
+```
+
+</details>
+
+```python {4,5,9,11-16} title=tests/test_weather.py
+from datetime import datetime
+
+import pytest
 from nonebug import App
+from nonebot.adapters.console import User, Message, MessageEvent
 
+@pytest.mark.asyncio
+async def test_weather(app: App):
+    from awesome_bot.plugins.weather import weather
 
-@pytest.fixture
-async def app():
-    yield App()
+    event = MessageEvent(
+        time=datetime.now(),
+        self_id="test",
+        message=Message("/天气 北京"),
+        user=User(id="user"),
+    )
+```
 
+在上面的代码中，我们引入了 NoneBug 的测试 `App` 对象，以及必要的适配器消息与事件定义等。在测试函数 `test_weather` 中，我们导入了要进行测试的事件响应器 `weather`。请注意，由于需要等待 NoneBot 初始化并加载插件完毕，插件内容必须在**测试函数内部**进行导入。然后，我们创建了一个 `MessageEvent` 事件对象，它模拟了一个用户发送了 `/天气 北京` 的消息。接下来，我们使用 `app.test_matcher` 方法来测试 `weather` 事件响应器：
 
-async def test_weather_with_city(app: App):
-    """测试正常天气查询"""
-    from nonebot.adapters.onebot.v11 import Adapter, Bot
+```python {11-15} title=tests/test_weather.py
+@pytest.mark.asyncio
+async def test_weather(app: App):
+    from awesome_bot.plugins.weather import weather
 
-    from my_bot.plugins.weather import weather
+    event = MessageEvent(
+        time=datetime.now(),
+        self_id="test",
+        message=Message("/天气 北京"),
+        user=User(id="user"),
+    )
+    async with app.test_matcher(weather) as ctx:
+        bot = ctx.create_bot()
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(event, "今天北京的天气是...", result=None)
+        ctx.should_finished(weather)
+```
+
+这里我们使用 `async with` 语句并通过参数指定要测试的事件响应器 `weather` 来进入测试上下文。在测试上下文中，我们可以使用 `ctx.create_bot` 方法创建一个虚拟的机器人实例，并使用 `ctx.receive_event` 方法来模拟机器人接收到消息事件。然后，我们就可以定义预期行为来测试机器人是否正确运行。在上面的代码中，我们使用 `ctx.should_call_send` 方法来断言机器人应该发送 `今天北京的天气是...` 这条消息，并且将发送函数的调用结果作为第三个参数返回给事件处理函数。如果断言失败，测试将会不通过。我们也可以使用 `ctx.should_finished` 方法来断言机器人应该结束会话。
+
+为了测试更复杂的情况，我们可以为添加更多的测试用例。例如，我们可以测试用户输入了一个不支持的地名时机器人的反应：
+
+```python {17-21,23-26} title=tests/test_weather.py
+def make_event(message: str = "") -> MessageEvent:
+    return MessageEvent(
+        time=datetime.now(),
+        self_id="test",
+        message=Message(message),
+        user=User(id="user"),
+    )
+
+@pytest.mark.asyncio
+async def test_weather(app: App):
+    from awesome_bot.plugins.weather import weather
 
     async with app.test_matcher(weather) as ctx:
-        bot = ctx.create_bot(base=Bot, adapter=Adapter, self_id="1")
-        event = make_private_event("/天气 北京")
-        ctx.receive_event(bot, event)
-        ctx.should_call_send(event, "北京：晴，25°C，湿度 40%", result=None)
-        ctx.should_finished(weather)
-
-
-async def test_weather_without_city(app: App):
-    """测试未提供城市名"""
-    from nonebot.adapters.onebot.v11 import Adapter, Bot
-
-    from my_bot.plugins.weather import weather
+        ...  # 省略前面的测试用例
 
     async with app.test_matcher(weather) as ctx:
-        bot = ctx.create_bot(base=Bot, adapter=Adapter, self_id="1")
-        event = make_private_event("/天气")
+        bot = ctx.create_bot()
+        event = make_event("/天气 南京")
         ctx.receive_event(bot, event)
-        ctx.should_call_send(event, "请输入城市名，如：/天气 北京", result=None)
+        ctx.should_call_send(event, "你想查询的城市 南京 暂不支持，请重新输入！", result=None)
+        ctx.should_rejected(weather)
+
+        event = make_event("北京")
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(event, "今天北京的天气是...", result=None)
         ctx.should_finished(weather)
 ```
 
-## 测试目录结构
+在上面的代码中，我们使用 `ctx.should_rejected` 来断言机器人应该请求用户重新输入。然后，我们再次使用 `ctx.receive_event` 方法来模拟用户回复了 `北京`，并使用 `ctx.should_finished` 来断言机器人应该结束会话。
 
-```
-my_bot/
-├── my_bot/
-│   └── plugins/
-│       └── weather.py
-├── tests/
-│   ├── conftest.py
-│   ├── test_weather.py
-│   └── utils.py          # 事件构造辅助函数
-├── pyproject.toml
-└── bot.py
-```
-
-## 运行测试
-
-```bash
-# 运行所有测试
-pytest tests/ -v
-
-# 运行单个测试文件
-pytest tests/test_weather.py -v
-
-# 运行指定测试函数
-pytest tests/test_weather.py::test_weather_with_city -v
-
-# 显示详细输出
-pytest tests/ -v -s
-```
+更多的 NoneBug 用法将在后续章节中介绍。

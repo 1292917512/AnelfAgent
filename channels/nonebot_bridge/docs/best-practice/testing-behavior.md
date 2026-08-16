@@ -1,429 +1,287 @@
+<!-- source: https://nonebot.dev/docs/best-practice/testing/behavior -->
+
 # 测试事件响应与会话操作
 
-在掌握了基础测试方法后，本文档深入介绍如何测试事件匹配规则、权限校验、会话控制流（`finish`/`reject`/`pause`）以及 API 调用。
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
 
-## 规则测试
+在 NoneBot 接收到事件时，事件响应器根据优先级依次通过权限、响应规则来判断当前事件是否应该触发。事件响应流程中，机器人可能会通过 `send` 发送消息或者调用平台接口来执行预期的操作。因此，我们需要对这两种操作进行单元测试。
 
-### should_pass_rule
+在上一节中，我们对单个事件响应器进行了简单测试。但是在实际场景中，机器人可能定义了多个事件响应器，由于优先级和响应规则的存在，预期的事件响应器可能并不会被触发。NoneBug 支持同时测试多个事件响应器，以此来测试机器人的整体行为。
 
-断言事件应该通过 matcher 的规则检查：
+## 测试事件响应
 
-```python
-async with app.test_matcher(matcher) as ctx:
-    bot = ctx.create_bot()
-    event = make_event("/hello")
-    ctx.receive_event(bot, event)
-    ctx.should_pass_rule(matcher)
-```
+NoneBug 提供了六种定义 `Rule` 和 `Permission` 预期行为的方法：
 
-### should_not_pass_rule
+- `should_pass_rule`
+- `should_not_pass_rule`
+- `should_ignore_rule`
+- `should_pass_permission`
+- `should_not_pass_permission`
+- `should_ignore_permission`
 
-断言事件不应通过规则检查：
+:::tip[提示]
+事件响应器类型的检查属于 `Permission` 的一部分，因此可以通过 `should_pass_permission` 和 `should_not_pass_permission` 方法来断言事件响应器类型的检查。
+:::
 
-```python
-async with app.test_matcher(matcher) as ctx:
-    bot = ctx.create_bot()
-    event = make_event("not a command")
-    ctx.receive_event(bot, event)
-    ctx.should_not_pass_rule(matcher)
-```
+下面我们根据插件示例来测试事件响应行为，我们首先定义两个事件响应器作为测试的对象：
 
-### should_ignore_rule
-
-断言规则检查应被忽略（用于测试优先级等场景）：
-
-```python
-async with app.test_matcher(matcher) as ctx:
-    bot = ctx.create_bot()
-    event = make_event("/hello")
-    ctx.receive_event(bot, event)
-    ctx.should_ignore_rule(matcher)
-```
-
-## 权限测试
-
-### should_pass_permission
-
-断言事件应该通过权限检查：
-
-```python
-from nonebot.permission import SUPERUSER
-
-admin_cmd = on_command("admin", permission=SUPERUSER)
-
-
-async def test_admin_permission(app: App):
-    async with app.test_matcher(admin_cmd) as ctx:
-        bot = ctx.create_bot()
-        event = make_event("/admin", user_id=superuser_id)
-        ctx.receive_event(bot, event)
-        ctx.should_pass_permission(admin_cmd)
-```
-
-### should_not_pass_permission
-
-断言事件不应通过权限检查：
-
-```python
-async def test_admin_no_permission(app: App):
-    async with app.test_matcher(admin_cmd) as ctx:
-        bot = ctx.create_bot()
-        event = make_event("/admin", user_id=normal_user_id)
-        ctx.receive_event(bot, event)
-        ctx.should_not_pass_permission(admin_cmd)
-```
-
-### should_ignore_permission
-
-断言权限检查应被忽略：
-
-```python
-async with app.test_matcher(matcher) as ctx:
-    bot = ctx.create_bot()
-    event = make_event("/cmd")
-    ctx.receive_event(bot, event)
-    ctx.should_ignore_permission(matcher)
-```
-
-## 消息发送断言
-
-### should_call_send
-
-断言 matcher 应该向事件来源发送消息：
-
-```python
-ctx.should_call_send(
-    event,           # 关联事件
-    "消息内容",       # 期望的消息（str / Message / MessageSegment）
-    result=None,     # send API 的模拟返回值
-    bot=bot,         # 可选：指定 Bot 对象
-)
-```
-
-多次发送：
-
-```python
-async with app.test_matcher(matcher) as ctx:
-    bot = ctx.create_bot()
-    event = make_event("/multi")
-    ctx.receive_event(bot, event)
-    ctx.should_call_send(event, "第一条消息", result=None)
-    ctx.should_call_send(event, "第二条消息", result=None)
-    ctx.should_finished(matcher)
-```
-
-### should_call_api
-
-断言 matcher 应该调用某个底层 API：
-
-```python
-ctx.should_call_api(
-    "get_group_member_info",                    # API 名称
-    {"group_id": 10000, "user_id": 10001},      # 调用参数
-    {"nickname": "test", "card": "测试"},         # 模拟返回值
-)
-```
-
-完整示例：
-
-```python
-async def test_api_call(app: App):
-    from my_bot.plugins.info import info_cmd
-
-    async with app.test_matcher(info_cmd) as ctx:
-        bot = ctx.create_bot()
-        event = make_group_event("/info", user_id=10001, group_id=10000)
-        ctx.receive_event(bot, event)
-
-        # 模拟 API 调用返回
-        ctx.should_call_api(
-            "get_group_member_info",
-            {"group_id": 10000, "user_id": 10001, "no_cache": False},
-            {"nickname": "Alice", "card": "管理员Alice", "role": "admin"},
-        )
-
-        ctx.should_call_send(event, "昵称: Alice\n群名片: 管理员Alice", result=None)
-        ctx.should_finished(info_cmd)
-```
-
-## 会话控制流断言
-
-### should_finished
-
-断言 matcher 应该结束处理（调用了 `matcher.finish()`）：
-
-```python
-ctx.should_finished(matcher)
-```
-
-### should_rejected
-
-断言 matcher 应该拒绝当前处理并等待用户重新输入（调用了 `matcher.reject()`）：
-
-```python
-# 被测插件
-@form.got("name", prompt="请输入你的名字：")
-async def handle_name(name: str = ArgPlainText()):
-    if len(name) < 2:
-        await form.reject("名字太短了，请重新输入：")
-    await form.finish(f"你好，{name}！")
-
-
-# 测试
-async def test_reject(app: App):
-    from my_bot.plugins.form import form
-
-    async with app.test_matcher(form) as ctx:
-        bot = ctx.create_bot()
-
-        # 第一次：触发命令
-        event1 = make_event("/form")
-        ctx.receive_event(bot, event1)
-        ctx.should_call_send(event1, "请输入你的名字：", result=None)
-        ctx.should_rejected(form)
-
-        # 第二次：输入过短，被 reject
-        event2 = make_event("A")
-        ctx.receive_event(bot, event2)
-        ctx.should_call_send(event2, "名字太短了，请重新输入：", result=None)
-        ctx.should_rejected(form)
-
-        # 第三次：输入合法
-        event3 = make_event("Alice")
-        ctx.receive_event(bot, event3)
-        ctx.should_call_send(event3, "你好，Alice！", result=None)
-        ctx.should_finished(form)
-```
-
-### should_paused
-
-断言 matcher 应该暂停处理并等待下一条消息（调用了 `matcher.pause()`）：
-
-```python
-# 被测插件
-@multi_step.handle()
-async def step1():
-    await multi_step.send("第一步完成，请发送任意内容继续...")
-    await multi_step.pause()
-
-
-@multi_step.handle()
-async def step2():
-    await multi_step.finish("所有步骤完成！")
-
-
-# 测试
-async def test_pause(app: App):
-    from my_bot.plugins.multi import multi_step
-
-    async with app.test_matcher(multi_step) as ctx:
-        bot = ctx.create_bot()
-
-        event1 = make_event("/multi")
-        ctx.receive_event(bot, event1)
-        ctx.should_call_send(event1, "第一步完成，请发送任意内容继续...", result=None)
-        ctx.should_paused(multi_step)
-
-        event2 = make_event("继续")
-        ctx.receive_event(bot, event2)
-        ctx.should_call_send(event2, "所有步骤完成！", result=None)
-        ctx.should_finished(multi_step)
-```
-
-## 独立测试 vs 集成测试
-
-### 独立测试
-
-只测试单个 matcher 的行为，通过 `app.test_matcher()` 隔离：
-
-```python
-async def test_single_matcher(app: App):
-    """独立测试：仅测试目标 matcher"""
-    from my_bot.plugins.echo import echo
-
-    async with app.test_matcher(echo) as ctx:
-        bot = ctx.create_bot()
-        event = make_event("/echo hello")
-        ctx.receive_event(bot, event)
-        ctx.should_call_send(event, "hello", result=None)
-        ctx.should_finished(echo)
-```
-
-### 集成测试
-
-测试多个 matcher 在同一事件下的交互行为，使用 `app.test_matcher()` 传入多个 matcher：
-
-```python
-async def test_multiple_matchers(app: App):
-    """集成测试：测试多个 matcher 对同一事件的响应"""
-    from my_bot.plugins.echo import echo
-    from my_bot.plugins.log import log_handler
-
-    async with app.test_matcher(echo, log_handler) as ctx:
-        bot = ctx.create_bot()
-        event = make_event("/echo hello")
-        ctx.receive_event(bot, event)
-
-        # echo matcher 的行为
-        ctx.should_call_send(event, "hello", result=None)
-        ctx.should_finished(echo)
-
-        # log_handler 应该也处理了该事件
-        ctx.should_pass_rule(log_handler)
-```
-
-## 完整示例：密码验证插件测试
-
-### 插件代码 password.py
-
-```python
+```python title=example.py
 from nonebot import on_command
-from nonebot.adapters import Event
-from nonebot.params import ArgPlainText
 
-password_cmd = on_command("setpwd")
+def never_pass():
+    return False
 
-
-@password_cmd.handle()
-async def ask_password():
-    await password_cmd.send("请输入新密码（6-20位，包含字母和数字）：")
-
-
-@password_cmd.got("password")
-async def validate_password(event: Event, password: str = ArgPlainText()):
-    if len(password) < 6:
-        await password_cmd.reject("密码太短，至少需要 6 位，请重新输入：")
-
-    if len(password) > 20:
-        await password_cmd.reject("密码太长，最多 20 位，请重新输入：")
-
-    has_letter = any(c.isalpha() for c in password)
-    has_digit = any(c.isdigit() for c in password)
-    if not (has_letter and has_digit):
-        await password_cmd.reject("密码必须同时包含字母和数字，请重新输入：")
-
-    user_id = event.get_user_id()
-    # save_password(user_id, password)  # 实际业务逻辑
-    await password_cmd.finish(f"密码设置成功！")
+foo = on_command("foo")
+bar = on_command("bar", permission=never_pass)
 ```
 
-### 测试代码 test_password.py
+在这两个事件响应器中，`foo` 当收到 `/foo` 消息时会执行，而 `bar` 则不会执行。我们使用 NoneBug 来测试它们：
 
-```python
+<Tabs groupId="testScope">
+  <TabItem value="separate" label="独立测试" default>
+
+```python {21,22,28,29} title=tests/test_example.py
+from datetime import datetime
+
 import pytest
 from nonebug import App
+from nonebot.adapters.console import User, Message, MessageEvent
 
-from tests.utils import make_private_event
+def make_event(message: str = "") -> MessageEvent:
+    return MessageEvent(
+        time=datetime.now(),
+        self_id="test",
+        message=Message(message),
+        user=User(id="user"),
+    )
 
+@pytest.mark.asyncio
+async def test_example(app: App):
+    from awesome_bot.plugins.example import foo, bar
 
-@pytest.fixture
-async def app():
-    yield App()
-
-
-async def test_password_success(app: App):
-    """测试密码设置成功"""
-    from my_bot.plugins.password import password_cmd
-
-    async with app.test_matcher(password_cmd) as ctx:
+    async with app.test_matcher(foo) as ctx:
         bot = ctx.create_bot()
+        event = make_event("/foo")
+        ctx.receive_event(bot, event)
+        ctx.should_pass_rule()
+        ctx.should_pass_permission()
 
-        # 触发命令
-        event1 = make_private_event("/setpwd")
-        ctx.receive_event(bot, event1)
-        ctx.should_call_send(event1, "请输入新密码（6-20位，包含字母和数字）：", result=None)
-        ctx.should_rejected(password_cmd)
-
-        # 输入合法密码
-        event2 = make_private_event("Hello123")
-        ctx.receive_event(bot, event2)
-        ctx.should_call_send(event2, "密码设置成功！", result=None)
-        ctx.should_finished(password_cmd)
-
-
-async def test_password_too_short(app: App):
-    """测试密码过短"""
-    from my_bot.plugins.password import password_cmd
-
-    async with app.test_matcher(password_cmd) as ctx:
+    async with app.test_matcher(bar) as ctx:
         bot = ctx.create_bot()
-
-        event1 = make_private_event("/setpwd")
-        ctx.receive_event(bot, event1)
-        ctx.should_call_send(event1, "请输入新密码（6-20位，包含字母和数字）：", result=None)
-        ctx.should_rejected(password_cmd)
-
-        # 输入过短密码
-        event2 = make_private_event("Ab1")
-        ctx.receive_event(bot, event2)
-        ctx.should_call_send(event2, "密码太短，至少需要 6 位，请重新输入：", result=None)
-        ctx.should_rejected(password_cmd)
-
-        # 重新输入合法密码
-        event3 = make_private_event("Abc12345")
-        ctx.receive_event(bot, event3)
-        ctx.should_call_send(event3, "密码设置成功！", result=None)
-        ctx.should_finished(password_cmd)
-
-
-async def test_password_no_digit(app: App):
-    """测试密码不含数字"""
-    from my_bot.plugins.password import password_cmd
-
-    async with app.test_matcher(password_cmd) as ctx:
-        bot = ctx.create_bot()
-
-        event1 = make_private_event("/setpwd")
-        ctx.receive_event(bot, event1)
-        ctx.should_call_send(event1, "请输入新密码（6-20位，包含字母和数字）：", result=None)
-        ctx.should_rejected(password_cmd)
-
-        # 输入无数字密码
-        event2 = make_private_event("abcdefgh")
-        ctx.receive_event(bot, event2)
-        ctx.should_call_send(
-            event2, "密码必须同时包含字母和数字，请重新输入：", result=None
-        )
-        ctx.should_rejected(password_cmd)
-
-        # 输入合法密码
-        event3 = make_private_event("abc12345")
-        ctx.receive_event(bot, event3)
-        ctx.should_call_send(event3, "密码设置成功！", result=None)
-        ctx.should_finished(password_cmd)
-
-
-async def test_password_too_long(app: App):
-    """测试密码过长"""
-    from my_bot.plugins.password import password_cmd
-
-    async with app.test_matcher(password_cmd) as ctx:
-        bot = ctx.create_bot()
-
-        event1 = make_private_event("/setpwd")
-        ctx.receive_event(bot, event1)
-        ctx.should_call_send(event1, "请输入新密码（6-20位，包含字母和数字）：", result=None)
-        ctx.should_rejected(password_cmd)
-
-        # 输入过长密码
-        event2 = make_private_event("a1" * 15)
-        ctx.receive_event(bot, event2)
-        ctx.should_call_send(event2, "密码太长，最多 20 位，请重新输入：", result=None)
-        ctx.should_rejected(password_cmd)
+        event = make_event("/foo")
+        ctx.receive_event(bot, event)
+        ctx.should_not_pass_rule()
+        ctx.should_not_pass_permission()
 ```
 
-## 断言方法汇总
+在上面的代码中，我们分别对 `foo` 和 `bar` 事件响应器进行响应测试。我们使用 `ctx.should_pass_rule` 和 `ctx.should_pass_permission` 断言 `foo` 事件响应器应该被触发，使用 `ctx.should_not_pass_rule` 和 `ctx.should_not_pass_permission` 断言 `bar` 事件响应器应该被忽略。
 
-| 方法 | 用途 |
-|------|------|
-| `should_pass_rule(matcher)` | 事件应通过规则 |
-| `should_not_pass_rule(matcher)` | 事件不应通过规则 |
-| `should_ignore_rule(matcher)` | 规则检查应被忽略 |
-| `should_pass_permission(matcher)` | 事件应通过权限 |
-| `should_not_pass_permission(matcher)` | 事件不应通过权限 |
-| `should_ignore_permission(matcher)` | 权限检查应被忽略 |
-| `should_call_send(event, msg, result)` | 应发送消息 |
-| `should_call_api(api, data, result)` | 应调用 API |
-| `should_finished(matcher)` | matcher 应结束 |
-| `should_rejected(matcher)` | matcher 应拒绝并等待重新输入 |
-| `should_paused(matcher)` | matcher 应暂停并等待下一条消息 |
+  </TabItem>
+  <TabItem value="global" label="集成测试">
+
+```python title=tests/test_example.py
+from datetime import datetime
+
+import pytest
+from nonebug import App
+from nonebot.adapters.console import User, Message, MessageEvent
+
+def make_event(message: str = "") -> MessageEvent:
+    return MessageEvent(
+        time=datetime.now(),
+        self_id="test",
+        message=Message(message),
+        user=User(id="user"),
+    )
+
+@pytest.mark.asyncio
+async def test_example(app: App):
+    from awesome_bot.plugins.example import foo, bar
+
+    async with app.test_matcher() as ctx:
+        bot = ctx.create_bot()
+        event = make_event("/foo")
+        ctx.receive_event(bot, event)
+        ctx.should_pass_rule(foo)
+        ctx.should_pass_permission(foo)
+        ctx.should_not_pass_rule(bar)
+        ctx.should_not_pass_permission(bar)
+```
+
+在上面的代码中，我们对 `foo` 和 `bar` 事件响应器一起进行响应测试。我们使用 `ctx.should_pass_rule` 和 `ctx.should_pass_permission` 断言 `foo` 事件响应器应该被触发，使用 `ctx.should_not_pass_rule` 和 `ctx.should_not_pass_permission` 断言 `bar` 事件响应器应该被忽略。通过参数，我们可以指定断言的事件响应器。
+
+  </TabItem>
+</Tabs>
+
+当然，如果需要忽略某个事件响应器的响应规则和权限检查，强行进入响应流程，我们可以使用 `should_ignore_rule` 和 `should_ignore_permission` 方法：
+
+```python {21,22} title=tests/test_example.py
+from datetime import datetime
+
+import pytest
+from nonebug import App
+from nonebot.adapters.console import User, Message, MessageEvent
+
+def make_event(message: str = "") -> MessageEvent:
+    return MessageEvent(
+        time=datetime.now(),
+        self_id="test",
+        message=Message(message),
+        user=User(id="user"),
+    )
+
+@pytest.mark.asyncio
+async def test_example(app: App):
+    from awesome_bot.plugins.example import foo, bar
+
+    async with app.test_matcher(bar) as ctx:
+        bot = ctx.create_bot()
+        event = make_event("/foo")
+        ctx.receive_event(bot, event)
+        ctx.should_ignore_rule(bar)
+        ctx.should_ignore_permission(bar)
+```
+
+在忽略了响应规则和权限检查之后，就会进入 `bar` 事件响应器的响应流程。
+
+## 测试平台接口使用
+
+上一节的示例插件测试中，我们已经尝试了测试插件对事件的消息回复。通常情况下，事件处理流程中对平台接口的使用会通过事件响应器操作或者调用平台 API 两种途径进行。针对这两种途径，NoneBug 分别提供了 `ctx.should_call_send` 和 `ctx.should_call_api` 方法来测试平台接口的使用情况。
+
+1. `should_call_send`
+
+   定义事件响应器预期发送的消息，即通过[事件响应器操作 send](../../appendices/session-control.mdx#send)进行的操作。`should_call_send` 有四个参数：
+   - `event`：回复的目标事件。
+   - `message`：预期的消息对象，可以是 `str`、`Message` 或 `MessageSegment`。
+   - `result`：send 的返回值，将会返回给插件。
+   - `bot`（可选）：发送消息的 bot 对象。
+   - `**kwargs`：send 方法的额外参数。
+
+2. `should_call_api`
+   定义事件响应器预期调用的平台 API 接口，即通过[调用平台 API](../../appendices/api-calling.mdx#调用平台-api)进行的操作。`should_call_api` 有四个参数：
+   - `api`：API 名称。
+   - `data`：预期的请求数据。
+   - `result`：call_api 的返回值，将会返回给插件。
+   - `adapter`（可选）：调用 API 的平台适配器对象。
+   - `**kwargs`：call_api 方法的额外参数。
+
+下面是一个使用 `should_call_send` 和 `should_call_api` 方法的示例：
+
+我们先定义一个测试插件，在响应流程中向用户发送一条消息并调用 `Console` 适配器的 `bell` API。
+
+```python {8,9} title=example.py
+from nonebot import on_command
+from nonebot.adapters.console import Bot
+
+foo = on_command("foo")
+
+@foo.handle()
+async def _(bot: Bot):
+    await foo.send("message")
+    await bot.bell()
+```
+
+然后我们对该插件进行测试：
+
+```python title=tests/test_example.py
+from datetime import datetime
+
+import pytest
+import nonebot
+from nonebug import App
+from nonebot.adapters.console import Bot, User, Adapter, Message, MessageEvent
+
+def make_event(message: str = "") -> MessageEvent:
+    return MessageEvent(
+        time=datetime.now(),
+        self_id="test",
+        message=Message(message),
+        user=User(id="user"),
+    )
+
+@pytest.mark.asyncio
+async def test_example(app: App):
+    from awesome_bot.plugins.example import foo
+
+    async with app.test_matcher(foo) as ctx:
+        # highlight-start
+        adapter = nonebot.get_adapter(Adapter)
+        bot = ctx.create_bot(base=Bot, adapter=adapter)
+        # highlight-end
+        event = make_event("/foo")
+        ctx.receive_event(bot, event)
+        # highlight-start
+        ctx.should_call_send(event, "message", result=None, bot=bot)
+        ctx.should_call_api("bell", {}, result=None, adapter=adapter)
+        # highlight-end
+```
+
+请注意，对于在依赖注入中使用了非基类对象的情况，我们需要在 `create_bot` 方法中指定 `base` 和 `adapter` 参数，确保不会因为重载功能而出现非预期情况。
+
+## 测试会话控制
+
+在[会话控制](../../appendices/session-control.mdx)一节中，我们介绍了如何使用事件响应器操作来实现对用户的交互式会话。在上一节的示例插件测试中，我们其实已经使用了 `ctx.should_finished` 来断言会话结束。NoneBug 针对各种流程控制操作分别提供了相应的方法来定义预期的会话处理行为。它们分别是：
+
+- `should_finished`：断言会话结束，对应 `matcher.finish` 操作。
+- `should_rejected`：断言会话等待用户输入并重新执行当前事件处理函数，对应 `matcher.reject` 系列操作。
+- `should_paused`: 断言会话等待用户输入并执行下一个事件处理函数，对应 `matcher.pause` 操作。
+
+我们仅需在测试用例中的正确位置调用这些方法，就可以断言会话的预期行为。例如：
+
+```python title=example.py
+from nonebot import on_command
+from nonebot.typing import T_State
+
+foo = on_command("foo")
+
+@foo.got("key", prompt="请输入密码")
+async def _(state: T_State, key: str = ArgPlainText()):
+    if key != "some password":
+        try_count = state.get("try_count", 1)
+        if try_count >= 3:
+            await foo.finish("密码错误次数过多")
+        else:
+            state["try_count"] = try_count + 1
+            await foo.reject("密码错误，请重新输入")
+    await foo.finish("密码正确")
+```
+
+```python title=tests/test_example.py
+from datetime import datetime
+
+import pytest
+from nonebug import App
+from nonebot.adapters.console import User, Message, MessageEvent
+
+def make_event(message: str = "") -> MessageEvent:
+    return MessageEvent(
+        time=datetime.now(),
+        self_id="test",
+        message=Message(message),
+        user=User(id="user"),
+    )
+
+@pytest.mark.asyncio
+async def test_example(app: App):
+    from awesome_bot.plugins.example import foo
+
+    async with app.test_matcher(foo) as ctx:
+        bot = ctx.create_bot()
+        event = make_event("/foo")
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(event, "请输入密码", result=None)
+        ctx.should_rejected(foo)
+        event = make_event("wrong password")
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(event, "密码错误，请重新输入", result=None)
+        ctx.should_rejected(foo)
+        event = make_event("wrong password")
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(event, "密码错误，请重新输入", result=None)
+        ctx.should_rejected(foo)
+        event = make_event("wrong password")
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(event, "密码错误次数过多", result=None)
+        ctx.should_finished(foo)
+```

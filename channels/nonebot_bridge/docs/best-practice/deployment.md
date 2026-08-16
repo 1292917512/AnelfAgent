@@ -1,510 +1,297 @@
+<!-- source: https://nonebot.dev/docs/best-practice/deployment -->
+
 # 部署
 
-本文档介绍 NoneBot 项目从依赖管理、Docker 打包到 CI/CD 的完整部署流程。
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
 
-## 项目依赖管理
+在编写完成各类插件后，我们需要长期运行机器人来使得用户能够正常使用。通常，我们会使用云服务器来部署机器人。
 
-### Poetry
+我们在开发插件时，机器人运行的环境称为开发环境；而在部署后，机器人运行的环境称为生产环境。与开发环境不同的是，在生产环境中，开发者通常不能随意地修改/添加/删除代码，开启或停止服务。
+
+## 部署前准备
+
+### 项目依赖管理
+
+由于部署后的机器人运行在生产环境中，因此，为确保机器人能够正常运行，我们需要保证机器人的运行环境与开发环境一致。我们可以通过以下几种方式来进行依赖管理：
+
+<Tabs groupId="tool">
+  <TabItem value="poetry" label="Poetry" default>
+
+[Poetry](https://python-poetry.org/) 是一个 Python 项目的依赖管理工具。它可以通过声明项目所依赖的库，为你管理（安装/更新）它们。Poetry 提供了一个 `poetry.lock` 文件，以确保可重复安装，并可以构建用于分发的项目。
+
+Poetry 会在安装依赖时自动生成 `poetry.lock` 文件，在**项目目录**下执行以下命令：
 
 ```bash
-# 安装 Poetry
-pip install poetry
-
-# 初始化项目
+# 初始化 poetry 配置
 poetry init
-
-# 添加依赖
-poetry add nonebot2
-poetry add nonebot-adapter-onebot
-
-# 添加开发依赖
-poetry add --group dev pytest nonebug
-
-# 安装所有依赖
-poetry install
-
-# 导出 requirements.txt（用于 Docker）
-poetry export -f requirements.txt -o requirements.txt --without-hashes
+# 添加项目依赖，这里以 nonebot2[fastapi] 为例
+poetry add nonebot2[fastapi]
 ```
 
-`pyproject.toml` 示例（Poetry）：
+  </TabItem>
+  <TabItem value="pdm" label="PDM">
 
-```toml
-[tool.poetry]
-name = "my-bot"
-version = "0.1.0"
-description = "My NoneBot Bot"
-authors = ["Author <author@example.com>"]
+[PDM](https://pdm.fming.dev/) 是一个现代 Python 项目的依赖管理工具。它采用 [PEP621](https://www.python.org/dev/peps/pep-0621/) 标准，依赖解析快速；同时支持 [PEP582](https://www.python.org/dev/peps/pep-0582/) 和 [virtualenv](https://virtualenv.pypa.io/)。PDM 提供了一个 `pdm.lock` 文件，以确保可重复安装，并可以构建用于分发的项目。
 
-[tool.poetry.dependencies]
-python = "^3.10"
-nonebot2 = "^2.4.0"
-nonebot-adapter-onebot = "^2.4.0"
-nonebot-plugin-apscheduler = "^0.5.0"
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.0"
-nonebug = "^0.4.0"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-```
-
-### PDM
+PDM 会在安装依赖时自动生成 `pdm.lock` 文件，在**项目目录**下执行以下命令：
 
 ```bash
-# 安装 PDM
-pip install pdm
-
-# 初始化项目
+# 初始化 pdm 配置
 pdm init
-
-# 添加依赖
-pdm add nonebot2
-pdm add nonebot-adapter-onebot
-
-# 添加开发依赖
-pdm add -dG dev pytest nonebug
-
-# 安装
-pdm install
-
-# 导出 requirements.txt
-pdm export -f requirements -o requirements.txt --no-hashes
+# 添加项目依赖，这里以 nonebot2[fastapi] 为例
+pdm add nonebot2[fastapi]
 ```
 
-### pip
+  </TabItem>
+  <TabItem value="pip" label="pip">
+
+[pip](https://pip.pypa.io/) 是 Python 包管理工具。他并不是一个依赖管理工具，为了尽可能保证环境的一致性，我们可以使用 `requirements.txt` 文件来声明依赖。
 
 ```bash
-# 使用 requirements.txt
-pip install -r requirements.txt
-
-# 生成 requirements.txt
 pip freeze > requirements.txt
 ```
 
-`requirements.txt` 示例：
+  </TabItem>
+</Tabs>
 
+### 安装 Docker
+
+[Docker](https://www.docker.com/) 是一个应用容器引擎，可以让开发者打包应用以及依赖包到一个可移植的镜像中，然后发布到服务器上。
+
+我们可以参考 [Docker 官方文档](https://docs.docker.com/get-docker/) 来安装 Docker 。
+
+在 Linux 上，我们可以使用以下一键脚本来安装 Docker 以及 Docker Compose Plugin：
+
+```bash
+curl -fsSL https://get.docker.com | sh -s -- --mirror Aliyun
 ```
-nonebot2>=2.4.0
-nonebot-adapter-onebot>=2.4.0
-nonebot-plugin-apscheduler>=0.5.0
-httpx>=0.27.0
+
+在 Windows/macOS 上，我们可以使用 [Docker Desktop](https://docs.docker.com/desktop/) 来安装 Docker 以及 Docker Compose Plugin。
+
+### 安装脚手架 Docker 插件
+
+我们可以使用 [nb-cli-plugin-docker](https://github.com/nonebot/cli-plugin-docker) 来快速部署机器人。
+
+插件可以帮助我们生成配置文件并构建 Docker 镜像，以及启动/停止/重启机器人。使用以下命令安装脚手架 Docker 插件：
+
+```bash
+nb self install nb-cli-plugin-docker
 ```
 
 ## Docker 部署
 
-### 安装 Docker
+### 快速部署
+
+使用脚手架命令即可一键生成配置并部署：
 
 ```bash
-# Ubuntu / Debian
-curl -fsSL https://get.docker.com | sh
-sudo systemctl enable docker
-sudo systemctl start docker
-
-# 验证安装
-docker --version
-docker compose version
-```
-
-### 使用 nb-cli-plugin-docker
-
-`nb-cli` 提供了 Docker 插件来简化容器化部署：
-
-```bash
-# 安装 docker 插件
-nb plugin install nb-cli-plugin-docker
-
-# 生成 Dockerfile 和 docker-compose.yml
-nb docker generate
-
-# 构建并启动（前台）
 nb docker up
-
-# 后台运行
-nb docker up -d
-
-# 查看日志
-nb docker logs
-nb docker logs -f  # 持续查看
-
-# 停止
-nb docker down
-
-# 重新构建
-nb docker build
-nb docker up -d --build
 ```
 
-### 自定义 Dockerfile
+当看到 `Running` 字样时，说明机器人已经启动成功。我们可以通过以下命令来查看机器人的运行日志：
 
-如果需要更细粒度的控制，可以手写 Dockerfile：
-
-```dockerfile
-FROM python:3.10-slim
-
-WORKDIR /app
-
-# 系统依赖（根据需要调整）
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc && \
-    rm -rf /var/lib/apt/lists/*
-
-# 安装 Python 依赖
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 复制项目文件
-COPY . .
-
-# 暴露端口（根据实际配置）
-EXPOSE 8080
-
-# 启动命令
-CMD ["python", "bot.py"]
-```
-
-多阶段构建（减小镜像体积）：
-
-```dockerfile
-# 构建阶段
-FROM python:3.10-slim AS builder
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
-
-# 运行阶段
-FROM python:3.10-slim
-
-WORKDIR /app
-
-COPY --from=builder /install /usr/local
-COPY . .
-
-EXPOSE 8080
-
-CMD ["python", "bot.py"]
-```
-
-### docker-compose.yml
-
-```yaml
-version: "3.8"
-
-services:
-  nonebot:
-    build: .
-    container_name: nonebot
-    restart: always
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./data:/app/data         # 持久化数据
-      - ./.env.prod:/app/.env    # 生产环境配置
-    environment:
-      - TZ=Asia/Shanghai
-    networks:
-      - bot-network
-
-  # 如需 Redis
-  redis:
-    image: redis:7-alpine
-    container_name: bot-redis
-    restart: always
-    volumes:
-      - redis-data:/data
-    networks:
-      - bot-network
-
-networks:
-  bot-network:
-    driver: bridge
-
-volumes:
-  redis-data:
-```
-
-### 常用 Docker 命令
+<Tabs groupId="deploy-tool">
+  <TabItem value="nb-cli" label="NB CLI" default>
 
 ```bash
-# 构建镜像
-docker compose build
+nb docker logs
+```
 
-# 启动服务
-docker compose up -d
+  </TabItem>
+  <TabItem value="docker-compose" label="Docker Compose">
 
-# 查看运行状态
-docker compose ps
+```bash
+docker compose logs
+```
 
-# 查看日志
-docker compose logs -f nonebot
+  </TabItem>
+</Tabs>
 
-# 重启服务
-docker compose restart nonebot
+如果需要停止机器人，我们可以使用以下命令：
 
-# 停止并移除
+<Tabs groupId="deploy-tool">
+  <TabItem value="nb-cli" label="NB CLI" default>
+
+```bash
+nb docker down
+```
+
+  </TabItem>
+  <TabItem value="docker-compose" label="Docker Compose">
+
+```bash
 docker compose down
-
-# 进入容器调试
-docker compose exec nonebot bash
 ```
 
-## CI/CD
+  </TabItem>
+</Tabs>
 
-### GitHub Actions - 自动测试
+### 自定义部署
 
-`.github/workflows/test.yml`：
+在部分情况下，我们需要事先生成 Docker 配置文件，再到生产环境进行部署；或者自动生成的配置文件并不能满足复杂场景，需要根据实际需求手动修改配置文件。我们可以使用以下命令来生成基础配置文件：
 
-```yaml
-name: Test
+```bash
+nb docker generate
+```
+
+nb-cli 将会在项目目录下生成 `docker-compose.yml` 和 `Dockerfile` 等配置文件。在 nb-cli 完成配置文件的生成后，我们可以根据部署环境的实际情况使用 nb-cli 或者 Docker Compose 来启动机器人。
+
+我们可以参考 [Dockerfile 文件规范](https://docs.docker.com/engine/reference/builder/)和 [Compose 文件规范](https://docs.docker.com/compose/compose-file/)修改这两个文件。
+
+修改完成后我们可以直接启动或者手动构建镜像：
+
+<Tabs groupId="deploy-tool">
+  <TabItem value="nb-cli" label="NB CLI" default>
+
+```bash
+# 启动机器人
+nb docker up
+# 手动构建镜像
+nb docker build
+```
+
+  </TabItem>
+  <TabItem value="docker-compose" label="Docker Compose">
+
+```bash
+# 启动机器人
+docker compose up -d
+# 手动构建镜像
+docker compose build
+```
+
+  </TabItem>
+</Tabs>
+
+### 持续集成
+
+我们可以使用 GitHub Actions 来实现持续集成（CI），我们只需要在 GitHub 上发布 Release 即可自动构建镜像并推送至镜像仓库。
+
+首先，我们需要在 [Docker Hub](https://hub.docker.com/) （或者其他平台，如：[GitHub Packages](https://github.com/features/packages)、[阿里云容器镜像服务](https://www.alibabacloud.com/zh/product/container-registry)等）上创建镜像仓库，用于存放镜像。
+
+前往项目仓库的 `Settings` > `Secrets` > `actions` 栏目 `New Repository Secret` 添加构建所需的密钥：
+
+- `DOCKERHUB_USERNAME`: 你的 Docker Hub 用户名
+- `DOCKERHUB_TOKEN`: 你的 Docker Hub PAT（[创建方法](https://docs.docker.com/docker-hub/access-tokens/)）
+
+将以下文件添加至**项目目录**下的 `.github/workflows/` 目录下，并将文件中高亮行中的仓库名称替换为你的仓库名称：
+
+```yaml title=.github/workflows/build.yml
+name: Docker Hub Release
 
 on:
   push:
-    branches: [main, dev]
-  pull_request:
-    branches: [main]
+    tags:
+      - "v*"
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest nonebug pytest-asyncio
-
-      - name: Run tests
-        run: pytest tests/ -v
-```
-
-### GitHub Actions - 构建并推送 Docker Hub
-
-`.github/workflows/docker-publish.yml`：
-
-```yaml
-name: Docker Publish
-
-on:
-  push:
-    tags: ["v*"]
-
-jobs:
-  publish:
+  docker:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
+      - name: Setup Docker
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
+      - name: Generate Tags
+        uses: docker/metadata-action@v4
+        id: metadata
         with:
-          images: myuser/my-bot
+          images: |
+            # highlight-next-line
+            {organization}/{repository}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
+            type=raw,value=latest
 
-      - name: Build and push
-        uses: docker/build-push-action@v5
+      - name: Build and Publish
+        uses: docker/build-push-action@v4
         with:
           context: .
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 ```
 
-### GitHub Actions - 持续部署（SSH）
+### 持续部署
 
-`.github/workflows/deploy.yml`：
+在完成发布并构建镜像后，我们可以自动将镜像部署到服务器上。
 
-```yaml
+前往项目仓库的 `Settings` > `Secrets` > `actions` 栏目 `New Repository Secret` 添加部署所需的密钥：
+
+- `DEPLOY_HOST`: 部署服务器的 SSH 地址
+- `DEPLOY_USER`: 部署服务器用户名
+- `DEPLOY_KEY`: 部署服务器私钥（[创建方法](https://github.com/appleboy/ssh-action#setting-up-a-ssh-key)）
+- `DEPLOY_PATH`: 部署服务器上的项目路径
+
+将以下文件添加至**项目目录**下的 `.github/workflows/` 目录下，在构建成功后触发部署：
+
+```yaml title=.github/workflows/deploy.yml
 name: Deploy
 
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows:
+      - Docker Hub Release
+    types:
+      - completed
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Deploy to server via SSH
-        uses: appleboy/ssh-action@v1
+      - name: Start Deployment
+        uses: bobheadxi/deployments@v1
+        id: deployment
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT }}
+          step: start
+          token: ${{ secrets.GITHUB_TOKEN }}
+          env: bot
+
+      - name: Run Remote SSH Command
+        uses: appleboy/ssh-action@master
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          envs: DEPLOY_PATH
           script: |
-            cd /opt/my-bot
-            git pull origin main
-            docker compose build
-            docker compose up -d
-            docker compose logs --tail 20
-```
+            cd $DEPLOY_PATH
+            docker compose up -d --pull always
 
-需要在 GitHub 仓库的 Settings > Secrets 中配置：
-
-| Secret 名 | 说明 |
-|-----------|------|
-| `SSH_HOST` | 服务器 IP 或域名 |
-| `SSH_USERNAME` | SSH 用户名 |
-| `SSH_KEY` | SSH 私钥 |
-| `SSH_PORT` | SSH 端口（默认 22） |
-| `DOCKER_USERNAME` | Docker Hub 用户名 |
-| `DOCKER_PASSWORD` | Docker Hub 密码或 Access Token |
-
-### 完整 CI/CD 流程
-
-```yaml
-name: CI/CD
-
-on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
-    branches: [main]
-
-jobs:
-  # 1. 测试
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: update deployment status
+        uses: bobheadxi/deployments@v0.6.2
+        if: always()
         with:
-          python-version: "3.10"
-      - run: pip install -r requirements.txt && pip install pytest nonebug pytest-asyncio
-      - run: pytest tests/ -v
-
-  # 2. 构建推送镜像（仅 tag 触发）
-  build:
-    needs: test
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-      - uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: myuser/my-bot:${{ github.ref_name }},myuser/my-bot:latest
-
-  # 3. 部署到服务器（仅 main 分支）
-  deploy:
-    needs: test
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          script: |
-            cd /opt/my-bot
-            git pull origin main
-            docker compose up -d --build
+          step: finish
+          token: ${{ secrets.GITHUB_TOKEN }}
+          status: ${{ job.status }}
+          env: ${{ steps.deployment.outputs.env }}
+          deployment_id: ${{ steps.deployment.outputs.deployment_id }}
 ```
 
-## 生产环境建议
+将上一部分的 `docker-compose.yml` 文件以及 `.env.prod` 配置文件添加至 `DEPLOY_PATH` 目录下，并修改 `docker-compose.yml` 文件中的镜像配置，替换为 Docker Hub 的仓库名称：
 
-### .env 配置分离
-
-```
-.env          # 公共配置
-.env.dev      # 开发环境
-.env.prod     # 生产环境
-```
-
-```dotenv
-# .env.prod
-DRIVER=~fastapi
-HOST=0.0.0.0
-PORT=8080
-LOG_LEVEL=WARNING
-ENVIRONMENT=production
-
-# 适配器配置
-ONEBOT_ACCESS_TOKEN=your-secret-token
-```
-
-### 日志持久化
-
-```yaml
-services:
-  nonebot:
-    # ...
-    volumes:
-      - ./logs:/app/logs
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-```
-
-### 健康检查
-
-```yaml
-services:
-  nonebot:
-    # ...
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-```
-
-### 资源限制
-
-```yaml
-services:
-  nonebot:
-    # ...
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 512M
-        reservations:
-          cpus: "0.25"
-          memory: 128M
+```diff
+- build: .
++ image: {organization}/{repository}:latest
 ```

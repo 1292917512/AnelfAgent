@@ -1,7 +1,6 @@
 {
   "tabs": {
     "channels": "Channel Management",
-    "nonebot": "NoneBot Bridge",
     "approvals": "Approvals",
     "test": "API Test"
   },
@@ -20,18 +19,6 @@
   "openNewWindow": "Open in New Window",
   "collapse": "Collapse",
   "inlinePreview": "Inline Preview",
-  "nonebotInitialized": "NoneBot Initialized",
-  "nonebotNotStarted": "NoneBot Not Started",
-  "registered": "Registered",
-  "onlineBots": "Online Bots",
-  "availableAdapters": "Available Adapters",
-  "notInstalled": "Not Installed",
-  "bridgeConfig": "Bridge Config",
-  "enableBridge": "Enable Bridge",
-  "interceptMode": "Intercept Mode",
-  "interceptDesc": "Intercept all events and delegate to AnelfTools",
-  "fullIntercept": "Full Intercept",
-  "passthrough": "Passthrough",
   "channelConfig": "{{name}} Config",
   "tools": {
     "title": "{{name}} APIs",

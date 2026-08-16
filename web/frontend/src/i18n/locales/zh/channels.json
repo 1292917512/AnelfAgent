@@ -1,7 +1,6 @@
 {
   "tabs": {
     "channels": "通道管理",
-    "nonebot": "NoneBot Bridge",
     "approvals": "批准管理",
     "test": "接口测试"
   },
@@ -20,18 +19,6 @@
   "openNewWindow": "新窗口打开",
   "collapse": "收起",
   "inlinePreview": "内嵌预览",
-  "nonebotInitialized": "NoneBot 已初始化",
-  "nonebotNotStarted": "NoneBot 未启动",
-  "registered": "已注册",
-  "onlineBots": "在线 Bot",
-  "availableAdapters": "可用适配器",
-  "notInstalled": "未安装",
-  "bridgeConfig": "桥接配置",
-  "enableBridge": "启用桥接",
-  "interceptMode": "拦截模式",
-  "interceptDesc": "拦截所有事件交由 AnelfTools 处理",
-  "fullIntercept": "完全拦截",
-  "passthrough": "透传模式",
   "channelConfig": "{{name}} 配置",
   "tools": {
     "title": "{{name}} 接口",

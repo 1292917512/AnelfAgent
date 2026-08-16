@@ -1,361 +1,109 @@
+<!-- source: https://nonebot.dev/docs/appendices/permission -->
+
 # 权限控制
 
-权限（Permission）用于控制 **谁** 可以触发事件响应器。与规则（Rule）不同，权限只在首次响应时检查，会话期间的后续消息不再检查权限。
+import Messenger from "@site/src/components/Messenger";
 
----
+**权限控制**是机器人在实际应用中需要解决的重点问题之一，NoneBot 提供了灵活的权限控制机制 —— `Permission`。
 
-## 基本概念
+类似于响应规则 `Rule`，`Permission` 是由非负整数个 `PermissionChecker` 所共同组成的**用于筛选事件**的对象。但需要特别说明的是，权限和响应规则有如下区别：
 
-### Permission 与 Rule 的区别
+1. 权限检查**先于**响应规则检查
+2. `Permission` 只需**其中一个** `PermissionChecker` 返回 `True` 时就会检查通过
+3. 权限检查进行时，上下文中并不存在会话状态 `state`
+4. `Rule` 仅在**初次触发**事件响应器时进行检查，在余下的会话中并不会限制事件；而 `Permission` 会**持续生效**，在连续对话中一直对事件主体加以限制。
 
-| 特性 | Rule（规则） | Permission（权限） |
-|------|-------------|-------------------|
-| 作用 | 检查 **事件内容** 是否匹配 | 检查 **用户身份** 是否有权限 |
-| 检查时机 | 每次事件都检查 | 仅首次触发时检查 |
-| 会话期间 | 每条消息都检查 | 会话中后续消息不再检查 |
-| 组合方式 | `&`（与）、`\|`（或） | `\|`（或）、不支持 `&` |
+## 基础使用
 
-### Permission 类
+通常情况下，`Permission` 更侧重于对于**触发事件的机器人用户**的筛选，例如由 NoneBot 自身提供的 `SUPERUSER` 权限，便是筛选出会话发起者是否为超级用户。它可以对输入的用户进行鉴别，如果符合要求则会被认为通过并返回 `True`，反之则返回 `False`。
 
-```python
-from nonebot.permission import Permission
-```
+简单来说，`Permission` 是一个用于筛选出符合要求的用户的机制，可以通过 `Permission` 精确的控制响应对象的覆盖范围，从而拒绝掉我们所不希望的事件。
 
-`Permission` 包含一组权限检查函数（`PermissionChecker`），**任一** 检查函数返回 `True` 即视为有权限（或关系）。
+例如，我们可以在 `weather` 插件中添加一个超级用户可用的指令：
 
----
-
-## 内置权限
-
-### SUPERUSER
-
-超级用户权限，匹配 `SUPERUSERS` 配置中的用户 ID：
-
-```python
-from nonebot import on_command
+```python {3,9} title=weather/__init__.py
+from typing import Tuple
+from nonebot.params import Command
 from nonebot.permission import SUPERUSER
 
-admin_cmd = on_command("admin", permission=SUPERUSER, priority=1, block=True)
-
-
-@admin_cmd.handle()
-async def handle():
-    await admin_cmd.finish("你是超级管理员！")
-```
-
-对应的 `.env` 配置：
-
-```dotenv
-SUPERUSERS=["123456789", "987654321"]
-```
-
-### 适配器特定权限
-
-OneBot v11 提供了以下内置权限：
-
-```python
-from nonebot.adapters.onebot.v11.permission import (
-    GROUP,              # 群消息
-    GROUP_ADMIN,        # 群管理员
-    GROUP_MEMBER,       # 群成员
-    GROUP_OWNER,        # 群主
-    PRIVATE,            # 私聊
-    PRIVATE_FRIEND,     # 好友私聊
-    PRIVATE_GROUP,      # 临时会话
-    PRIVATE_OTHER,      # 其他私聊
+manage = on_command(
+    ("天气", "启用"),
+    rule=to_me(),
+    aliases={("天气", "禁用")},
+    permission=SUPERUSER,
 )
+
+@manage.handle()
+async def control(cmd: Tuple[str, str] = Command()):
+    _, action = cmd
+    if action == "启用":
+        plugin_config.weather_plugin_enabled = True
+    elif action == "禁用":
+        plugin_config.weather_plugin_enabled = False
+    await manage.finish(f"天气插件已{action}")
 ```
 
-使用示例：
+如上方示例所示，在注册事件响应器时，我们设置了 `permission` 参数，那么这个事件处理器在触发事件前的检查阶段会对用户身份进行验证，如果不符合我们设置的条件（此处即为**超级用户**）则不会响应。此时，我们向机器人发送 `/天气.禁用` 指令，机器人不会有任何响应，因为我们还不是机器人的超级管理员。我们在 dotenv 文件中设置了 `SUPERUSERS` 配置项之后，机器人就会响应我们的指令了。
 
-```python
-from nonebot import on_command
-from nonebot.adapters.onebot.v11.permission import GROUP_ADMIN, GROUP_OWNER
-
-# 仅群管理员和群主可触发
-admin_cmd = on_command("管理", permission=GROUP_ADMIN | GROUP_OWNER, priority=5, block=True)
-
-
-@admin_cmd.handle()
-async def handle():
-    await admin_cmd.finish("管理员命令已执行！")
+```dotenv title=.env
+SUPERUSERS=["console_user"]
 ```
 
----
+<Messenger
+  msgs={[
+    { position: "right", msg: "/天气.禁用" },
+    { position: "left", msg: "天气插件已禁用" },
+    { position: "right", msg: "/天气.启用" },
+    { position: "left", msg: "天气插件已启用" },
+  ]}
+/>
 
 ## 自定义权限
 
-### PermissionChecker
+与事件响应规则类似，`PermissionChecker` 也是一个返回值为 `bool` 类型的依赖函数，即 `PermissionChecker` 支持依赖注入。例如，我们可以限制用户的指令调用次数：
 
-权限检查函数是一个异步函数，接收 `Bot` 和 `Event`，返回 `bool`：
+```python title=weather/__init__.py
+from nonebot.adapters import Event
 
-```python
-from nonebot.adapters import Bot, Event
-from nonebot.permission import Permission
+fake_db: Dict[str, int] = {}
 
+async def limit_permission(event: Event):
+    count = fake_db.setdefault(event.get_user_id(), 100)
+    if count > 0:
+        fake_db[event.get_user_id()] -= 1
+        return True
+    return False
 
-async def check_vip(bot: Bot, event: Event) -> bool:
-    """检查用户是否为 VIP"""
-    vip_list = {"111111", "222222", "333333"}
-    return event.get_user_id() in vip_list
-
-
-# 创建权限对象
-VIP = Permission(check_vip)
+weather = on_command("天气", permission=limit_permission)
 ```
 
-### 在事件响应器中使用
+## 权限组合
 
-```python
-from nonebot import on_command
-from nonebot.adapters import Bot, Event
-from nonebot.permission import Permission
+权限之间可以通过 `|` 运算符进行组合，使得任意一个权限检查返回 `True` 时通过。例如：
 
+```python {4-6}
+perm1 = Permission(foo_checker)
+perm2 = Permission(bar_checker)
 
-async def is_vip(bot: Bot, event: Event) -> bool:
-    vip_users = {"123456", "789012"}
-    return event.get_user_id() in vip_users
-
-VIP = Permission(is_vip)
-
-vip_cmd = on_command("vip", permission=VIP, priority=5, block=True)
-
-
-@vip_cmd.handle()
-async def handle():
-    await vip_cmd.finish("欢迎 VIP 用户！")
+perm = perm1 | perm2
+perm = perm1 | bar_checker
+perm = foo_checker | perm2
 ```
 
-### 基于外部数据的权限
+同样的，我们也无需担心组合了一个 `None` 值，`Permission` 会自动忽略 `None` 值。
 
 ```python
-from nonebot.adapters import Bot, Event
-from nonebot.permission import Permission
-
-
-async def is_allowed_user(bot: Bot, event: Event) -> bool:
-    """从数据库或文件中读取白名单"""
-    # 实际中可以从数据库读取
-    whitelist = load_whitelist()
-    return event.get_user_id() in whitelist
-
-
-ALLOWED = Permission(is_allowed_user)
+assert (perm | None) is perm
 ```
 
-### 基于群角色的权限
+## 主动使用权限
 
-```python
-from nonebot.adapters import Bot, Event
-from nonebot.permission import Permission
+除了在事件响应器中使用权限外，我们也可以主动使用权限来判断事件是否符合条件。例如：
 
+```python {3}
+perm = Permission(some_checker)
 
-async def is_group_admin_or_owner(bot: Bot, event: Event) -> bool:
-    """检查是否为群管理员或群主"""
-    try:
-        session = event.get_session_id()
-        if "group" not in session:
-            return False
-
-        user_id = event.get_user_id()
-        group_id = session.split("_")[1]
-        member_info = await bot.call_api(
-            "get_group_member_info",
-            group_id=int(group_id),
-            user_id=int(user_id),
-        )
-        return member_info.get("role") in ("admin", "owner")
-    except Exception:
-        return False
-
-
-GROUP_ADMIN_CUSTOM = Permission(is_group_admin_or_owner)
+result: bool = await perm(bot, event)
 ```
 
----
-
-## 组合权限
-
-### 使用 `|`（或）
-
-```python
-from nonebot import on_command
-from nonebot.permission import SUPERUSER, Permission
-
-
-async def is_vip(bot, event) -> bool:
-    return event.get_user_id() in {"111", "222"}
-
-VIP = Permission(is_vip)
-
-# 超级用户 或 VIP 都可以触发
-special_cmd = on_command("special", permission=SUPERUSER | VIP, priority=5, block=True)
-
-
-@special_cmd.handle()
-async def handle():
-    await special_cmd.finish("特殊用户命令！")
-```
-
-### 组合多个权限
-
-```python
-from nonebot.adapters.onebot.v11.permission import GROUP_ADMIN, GROUP_OWNER, PRIVATE_FRIEND
-
-# 群管理员 或 群主 或 好友私聊
-mixed = GROUP_ADMIN | GROUP_OWNER | PRIVATE_FRIEND
-
-cmd = on_command("cmd", permission=mixed, priority=5, block=True)
-```
-
-> **注意**：Permission 不支持 `&`（与）运算符。如果需要同时满足多个条件，应在一个 PermissionChecker 函数内部实现。
-
-```python
-async def admin_and_vip(bot: Bot, event: Event) -> bool:
-    """同时检查多个条件"""
-    is_admin = await check_admin(bot, event)
-    is_vip = event.get_user_id() in vip_list
-    return is_admin and is_vip
-
-ADMIN_VIP = Permission(admin_and_vip)
-```
-
----
-
-## 权限与会话
-
-### 首次触发 vs 后续消息
-
-权限只在事件首次匹配响应器时检查。一旦会话开始（进入 `got()` / `receive()`），后续消息不再检查权限：
-
-```python
-from nonebot import on_command
-from nonebot.permission import SUPERUSER
-from nonebot.params import ArgPlainText
-
-admin = on_command("admin_op", permission=SUPERUSER, priority=1, block=True)
-
-
-@admin.got("action", prompt="请输入操作：")
-async def handle(action: str = ArgPlainText()):
-    # 这里不会再次检查 SUPERUSER 权限
-    # 但 NoneBot 会确保后续消息来自同一个用户
-    await admin.finish(f"执行操作：{action}")
-```
-
-### 指定会话中的权限
-
-可以通过 `permission` 参数控制 `got()` / `receive()` 在等待时谁可以继续会话：
-
-```python
-from nonebot import on_command
-from nonebot.permission import SUPERUSER
-
-cmd = on_command("test", priority=10, block=True)
-
-
-@cmd.handle()
-async def step1():
-    await cmd.send("请输入内容：")
-
-
-@cmd.receive("data")
-async def step2():
-    await cmd.finish("收到！")
-```
-
----
-
-## 实用示例
-
-### 多级权限管理
-
-```python
-from nonebot import on_command
-from nonebot.adapters import Bot, Event
-from nonebot.permission import SUPERUSER, Permission
-
-
-async def is_admin(bot: Bot, event: Event) -> bool:
-    admin_list = {"100001", "100002"}
-    return event.get_user_id() in admin_list
-
-
-async def is_moderator(bot: Bot, event: Event) -> bool:
-    mod_list = {"200001", "200002", "200003"}
-    return event.get_user_id() in mod_list
-
-
-ADMIN = Permission(is_admin)
-MODERATOR = Permission(is_moderator)
-
-# 超管命令：仅超级用户
-su_cmd = on_command("su", permission=SUPERUSER, priority=1, block=True)
-
-# 管理命令：超级用户 或 管理员
-admin_cmd = on_command("manage", permission=SUPERUSER | ADMIN, priority=2, block=True)
-
-# 版主命令：超级用户 或 管理员 或 版主
-mod_cmd = on_command("mod", permission=SUPERUSER | ADMIN | MODERATOR, priority=3, block=True)
-
-
-@su_cmd.handle()
-async def handle_su():
-    await su_cmd.finish("超管命令已执行")
-
-@admin_cmd.handle()
-async def handle_admin():
-    await admin_cmd.finish("管理命令已执行")
-
-@mod_cmd.handle()
-async def handle_mod():
-    await mod_cmd.finish("版主命令已执行")
-```
-
-### 动态权限
-
-```python
-from nonebot import on_command
-from nonebot.adapters import Bot, Event
-from nonebot.permission import Permission
-
-enabled_users: set[str] = set()
-
-
-async def is_enabled(bot: Bot, event: Event) -> bool:
-    return event.get_user_id() in enabled_users
-
-
-ENABLED = Permission(is_enabled)
-
-# 管理命令：添加/移除授权用户
-from nonebot.permission import SUPERUSER
-from nonebot.params import CommandArg
-from nonebot.adapters import Message
-
-auth = on_command("authorize", permission=SUPERUSER, priority=1, block=True)
-
-
-@auth.handle()
-async def handle_auth(args: Message = CommandArg()):
-    parts = args.extract_plain_text().strip().split()
-    if len(parts) != 2 or parts[0] not in ("add", "remove"):
-        await auth.finish("用法：/authorize add|remove <user_id>")
-
-    action, user_id = parts
-    if action == "add":
-        enabled_users.add(user_id)
-        await auth.finish(f"已授权用户 {user_id}")
-    else:
-        enabled_users.discard(user_id)
-        await auth.finish(f"已取消用户 {user_id} 的授权")
-
-
-# 需要授权才能使用的命令
-special = on_command("special", permission=ENABLED | SUPERUSER, priority=5, block=True)
-
-
-@special.handle()
-async def handle_special():
-    await special.finish("授权命令已执行！")
-```
+我们只需要传入 `Bot` 实例、事件，`Permission` 会并发调用所有 `PermissionChecker` 进行检查，并返回结果。

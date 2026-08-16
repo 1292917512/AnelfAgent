@@ -9,6 +9,7 @@ from services.graph import GraphService
 from services.mcp import MCPService
 from services.memory import MemoryService
 from services.model import ModelService
+from services.nonebot import NoneBotService
 from services.persona import PersonaService
 from services.responses import ResponsesService
 from services.status import AgentStatusService
@@ -28,6 +29,7 @@ __all__ = [
     "MCPService",
     "MemoryService",
     "ModelService",
+    "NoneBotService",
     "PersonaService",
     "ResponsesService",
     "AgentStatusService",
