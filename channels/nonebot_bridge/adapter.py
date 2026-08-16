@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import time
-from typing import Any, ClassVar, Dict, List, Optional, Set
+from typing import Any, ClassVar, Dict, Optional, Set
 
 import aiohttp
 from aiohttp import web
@@ -38,7 +38,6 @@ from agent.channel.schemas import (
     SendRequest,
     SendResponse,
 )
-from agent.channel.tool_bridge import channel_tool
 from core.log import log
 
 from .config import NONEBOT_BRIDGE_CONFIGS
@@ -56,6 +55,7 @@ from .worker.protocol import (
     MSG_SEND,
     MSG_SEND_RESULT,
     MSG_STATUS,
+    WIRE_VERSION,
     decode,
     encode,
 )
@@ -87,6 +87,9 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
     _SEGMENT_SENDERS: ClassVar[Dict[str, str]] = {
         "text": "send_text",
         "image": "send_photo",
+        "voice": "send_voice",
+        "video": "send_video",
+        "file": "send_file",
     }
 
     channel_id = "nonebot_bridge"
@@ -95,6 +98,9 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
     capabilities: Set[ChannelCapability] = {
         ChannelCapability.SEND_TEXT,
         ChannelCapability.SEND_PHOTO,
+        ChannelCapability.SEND_VOICE,
+        ChannelCapability.SEND_VIDEO,
+        ChannelCapability.SEND_FILE,
     }
 
     def __init__(self) -> None:
@@ -304,6 +310,14 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
                 await self._process_inbound(message, payload)
         elif msg_type in (MSG_HELLO, MSG_STATUS):
             self._worker_snapshot = payload
+            worker_version = payload.get("wire_version")
+            if worker_version != WIRE_VERSION:
+                log(
+                    f"NoneBot Bridge: 线协议版本不匹配 worker={worker_version} "
+                    f"parent={WIRE_VERSION}，如遇异常请重启 worker（配置变更会自动触发）",
+                    "WARNING", tag="通道",
+                )
+                self._worker_snapshot["wire_mismatch"] = True
         elif msg_type == MSG_LOG:
             get_nonebot_runtime().append_log(str(payload.get("line", "")))
         elif msg_type == MSG_SEND_RESULT:
@@ -330,23 +344,27 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
         await self.on_message(message)
 
     async def _auto_download_images(self, message: AdapterMessage) -> None:
-        """to_me 消息的图片自动下载到 uploads（供视觉模型直接读取）。"""
+        """to_me 消息的图片并发下载到 uploads（供视觉模型直接读取）。"""
         from agent.channel.media import download_to_uploads
         from agent.channel.schemas import SegmentType
 
-        for seg in message.segments:
-            if seg.type != SegmentType.IMAGE:
-                continue
-            if seg.file_path and not seg.url.startswith(("http://", "https://")):
-                continue
-            if not seg.url.startswith(("http://", "https://")):
-                continue
+        targets = [
+            seg for seg in message.segments
+            if seg.type == SegmentType.IMAGE
+            and seg.url.startswith(("http://", "https://"))
+            and not (seg.file_path and not seg.url.startswith(("http://", "https://")))
+        ]
+
+        async def _download(seg: Any) -> None:
             try:
                 path = await download_to_uploads(seg.url, SegmentType.IMAGE)
                 if path:
                     seg.file_path = path
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - 单张失败不影响其余
                 log(f"NoneBot Bridge: 图片下载失败 -> {exc}", "DEBUG", tag="通道")
+
+        if targets:
+            await asyncio.gather(*(_download(seg) for seg in targets))
 
     @staticmethod
     def _set_sticky(store: Dict[str, Any], key: str, value: Any) -> None:
@@ -425,7 +443,11 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
         channel_type: str = "private",
         **kwargs: Any,
     ) -> str:
-        """经 worker 向平台发送文本（粘性路由选 Bot）。"""
+        """经 worker 向平台发送文本（粘性路由选 Bot）。
+
+        [at_uid:x] 标签原样透传：worker 按平台转换（OneBot → at 消息段，
+        其余平台 → 纯文本 @x）。
+        """
         channel_type = channel_type or (
             "group" if self.is_known_group(chat_id) else "private"
         )
@@ -435,8 +457,39 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
             "adapter": str(kwargs.get("adapter", "") or ""),
             "target": chat_id,
             "channel_type": channel_type,
-            "text": self.normalize_at_mentions(text),
+            "text": text,
             "reply_to": reply_to or "",
+        })
+        if result and result.get("ok"):
+            return _ok({
+                "chat_id": chat_id,
+                "message_id": str(result.get("message_id", "") or ""),
+            })
+        return _err(str((result or {}).get("error") or "发送失败"))
+
+    async def send_media(
+        self,
+        chat_id: str,
+        kind: str,
+        source: str,
+        caption: str = "",
+        name: str = "",
+        **kwargs: Any,
+    ) -> str:
+        """经 worker 向平台发送媒体（kind: image/voice/video/file，本地路径或 URL）。"""
+        if kind not in ("image", "voice", "video", "file"):
+            return _err(f"不支持的媒体类型: {kind}")
+        channel_type = str(kwargs.get("channel_type", "") or "") or (
+            "group" if self.is_known_group(chat_id) else "private"
+        )
+        result = await self._ws_request({
+            "type": MSG_SEND,
+            "bot_id": self._resolve_bot_id(chat_id, **kwargs),
+            "adapter": str(kwargs.get("adapter", "") or ""),
+            "target": chat_id,
+            "channel_type": channel_type,
+            "text": caption,
+            "media": {"kind": kind, "source": source, "name": name},
         })
         if result and result.get("ok"):
             return _ok({
@@ -453,24 +506,25 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
         **kwargs: Any,
     ) -> str:
         """经 worker 向平台发送图片（本地路径或 URL）。"""
-        channel_type = str(kwargs.get("channel_type", "") or "") or (
-            "group" if self.is_known_group(chat_id) else "private"
-        )
-        result = await self._ws_request({
-            "type": MSG_SEND,
-            "bot_id": self._resolve_bot_id(chat_id, **kwargs),
-            "adapter": str(kwargs.get("adapter", "") or ""),
-            "target": chat_id,
-            "channel_type": channel_type,
-            "text": self.normalize_at_mentions(caption),
-            "image": photo,
-        })
-        if result and result.get("ok"):
-            return _ok({
-                "chat_id": chat_id,
-                "message_id": str(result.get("message_id", "") or ""),
-            })
-        return _err(str((result or {}).get("error") or "发送失败"))
+        return await self.send_media(chat_id, "image", photo, caption=caption, **kwargs)
+
+    async def send_voice(
+        self, chat_id: str, voice: str, caption: str = "", **kwargs: Any
+    ) -> str:
+        """经 worker 向平台发送语音（本地路径/URL/file_id；caption 协议端忽略）。"""
+        return await self.send_media(chat_id, "voice", voice, **kwargs)
+
+    async def send_video(
+        self, chat_id: str, video: str, caption: str = "", **kwargs: Any
+    ) -> str:
+        """经 worker 向平台发送视频（本地路径/URL/file_id）。"""
+        return await self.send_media(chat_id, "video", video, caption=caption, **kwargs)
+
+    async def send_file(
+        self, chat_id: str, file_path: str, caption: str = "", **kwargs: Any
+    ) -> str:
+        """经 worker 向平台发送文件（本地路径；caption 作为文件名覆盖）。"""
+        return await self.send_media(chat_id, "file", file_path, name=caption, **kwargs)
 
     # ------------------------------------------------------------------
     # BaseChannel 协议方法
@@ -610,129 +664,5 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
                 continue
             if time.time() - self._last_pong > _PING_INTERVAL * 3:
                 log("NoneBot Bridge: worker 心跳超时", "WARNING", tag="通道")
-
-    # ------------------------------------------------------------------
-    # AI 工具（@channel_tool，group=nonebot）
-    # ------------------------------------------------------------------
-
-    @channel_tool(
-        name="nonebot_status",
-        group="nonebot",
-        extra_tags=["always"],
-        description="查询 NoneBot 桥接状态：worker 进程、在线 Bot、已加载适配器与插件",
-    )
-    async def tool_nonebot_status(self) -> str:
-        """查询 NoneBot 桥接运行状态（进程 / Bot / 适配器 / 插件全景）。"""
-        snapshot = await self.fetch_worker_status()
-        runtime = get_nonebot_runtime()
-        return _ok({
-            "process": runtime.get_process_status(),
-            "nonebot_version": snapshot.get("nonebot_version", ""),
-            "adapters": snapshot.get("adapters", []),
-            "bots": snapshot.get("bots", []),
-            "plugins": [
-                p.get("module", "") for p in snapshot.get("plugins", []) if isinstance(p, dict)
-            ],
-            "intercept_all": bool(self._cfg("intercept_all", False)),
-        })
-
-    @channel_tool(
-        name="nonebot_restart",
-        group="nonebot",
-        extra_tags=["always"],
-        sensitive=True,
-        description="重启 NoneBot worker 子进程（适配器/插件/env 配置变更后生效）",
-    )
-    async def tool_nonebot_restart(self) -> str:
-        """重启 NoneBot worker 子进程。"""
-        return await self.restart_worker()
-
-    @channel_tool(
-        name="nonebot_list_plugins",
-        group="nonebot",
-        extra_tags=["always"],
-        description="列出 NoneBot 已加载插件及其功能说明与用法",
-    )
-    async def tool_nonebot_list_plugins(self) -> str:
-        """列出 worker 中已加载的 NoneBot 插件（含用法说明）。"""
-        snapshot = await self.fetch_worker_status()
-        plugins: List[Dict[str, Any]] = [
-            p for p in snapshot.get("plugins", []) if isinstance(p, dict)
-        ]
-        if not plugins:
-            return _ok({"plugins": [], "hint": "暂无已加载插件，可用 nonebot_install_plugin 安装"})
-        return _ok({"count": len(plugins), "plugins": plugins})
-
-    @channel_tool(
-        name="nonebot_store_search",
-        group="nonebot",
-        extra_tags=["always"],
-        description="搜索 NoneBot 插件商店（registry.nonebot.dev），返回名称/描述/作者/版本",
-    )
-    async def tool_nonebot_store_search(self, keyword: str, limit: int = 8) -> str:
-        """按关键词搜索 NoneBot 插件商店。"""
-        from services.nonebot import NoneBotService
-
-        results = await NoneBotService().search_store_plugins(keyword, limit=limit)
-        if not results:
-            return _ok({"keyword": keyword, "results": [], "hint": "未找到匹配插件"})
-        return _ok({"keyword": keyword, "count": len(results), "results": results})
-
-    @channel_tool(
-        name="nonebot_install_plugin",
-        group="nonebot",
-        extra_tags=["always"],
-        sensitive=True,
-        description="从 NoneBot 插件商店安装插件到 worker 并重启生效",
-    )
-    async def tool_nonebot_install_plugin(self, module_name: str) -> str:
-        """安装商店插件（module_name 需与商店一致，如 nonebot_plugin_status）。"""
-        from services.nonebot import NoneBotService
-
-        result = await NoneBotService().install_plugin(module_name)
-        return _ok(result) if result.get("success") else _err(str(result.get("error") or "安装失败"))
-
-    @channel_tool(
-        name="nonebot_run_command",
-        group="nonebot",
-        extra_tags=["always"],
-        description="以虚拟用户身份触发 NoneBot 插件命令并捕获回复（不发送到平台）",
-    )
-    async def tool_nonebot_run_command(
-        self, command: str, bot_id: str = "", adapter: str = ""
-    ) -> str:
-        """触发插件命令（如 /status），返回插件捕获的回复。"""
-        result = await self.run_worker_command(command, bot_id=bot_id, adapter=adapter)
-        if not result.get("ok"):
-            return _err(str(result.get("error") or "命令执行失败"))
-        return _ok({
-            "command": command,
-            "replies": result.get("replies", []),
-            "timeout": bool(result.get("timeout", False)),
-        })
-
-    @channel_tool(
-        name="nonebot_send",
-        group="nonebot",
-        extra_tags=["always"],
-        description="经 NoneBot 桥接向指定平台目标发送消息（可指定 bot_id / adapter）",
-    )
-    async def tool_nonebot_send(
-        self,
-        chat_id: str,
-        text: str,
-        channel_type: str = "private",
-        bot_id: str = "",
-        adapter: str = "",
-    ) -> str:
-        """向桥接平台显式发送消息（目标为群号/用户号，channel_type 为 group/private）。"""
-        return await self.send_text(
-            chat_id,
-            text,
-            channel_type=channel_type,
-            bot_id=bot_id,
-            adapter=adapter,
-        )
-
 
 CHANNEL_CLASS = NoneBotBridgeChannel

@@ -14,13 +14,6 @@ from agent.memory.memory_utils import list_indexable_files
 
 
 @pytest.fixture
-async def store(tmp_path):
-    s = MemoryStore(str(tmp_path / "memory.sqlite3"))
-    yield s
-    await s.close()
-
-
-@pytest.fixture
 def workspace(tmp_path) -> Path:
     ws = tmp_path / "config"
     (ws / "memory").mkdir(parents=True)

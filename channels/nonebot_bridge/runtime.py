@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import secrets
 import shutil
 import sys
@@ -84,13 +85,102 @@ def build_venv_create_command(uv_exec: Optional[str], python_exec: str, target: 
     return [sys.executable, "-m", "venv", str(target)]
 
 
+def normalize_install_spec(source: str) -> str:
+    """安装源规范化（纯函数，可测试）。
+
+    - ``git+https://...`` 直通（支持 ``@branch`` / ``#subpath``）；
+    - ``https://....git`` → 自动补 ``git+`` 前缀；
+    - ``user/repo`` 简写 → ``git+https://github.com/user/repo``；
+    - 本地路径（绝对或已存在的相对路径）直通；
+    - 其余按 PyPI 包名直通。
+    """
+    source = source.strip()
+    if not source:
+        return ""
+    if source.startswith(("git+", "git@", "ssh://", "file://", "http://", "https://", "/")):
+        if source.startswith(("http://", "https://")) and source.endswith(".git"):
+            return f"git+{source}"
+        return source
+    if re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", source):
+        return f"git+https://github.com/{source}"
+    if re.match(r"^[./~]", source):
+        return str(Path(source).resolve())
+    return source
+
+
+def derive_package_name(spec: str) -> str:
+    """从安装源推导分发名（git URL 取仓库名去 .git；路径取末段；PyPI 名原样）。"""
+    spec = spec.strip()
+    if not spec:
+        return ""
+    tail = spec.split("#")[0].split("@")[0].rstrip("/")
+    name = tail.rsplit("/", 1)[-1]
+    return name[:-4] if name.endswith(".git") else name
+
+
+def parse_git_spec(spec: str) -> Optional[tuple]:
+    """解析 git 安装源为 (url, ref)（纯函数，可测试）。
+
+    支持 ``git+https://host/repo.git@dev`` / ``https://host/repo.git`` /
+    ``git+file:///path/repo``；非 git 源返回 None。#subpath 后缀剥离保留。
+    """
+    spec = spec.strip()
+    subpath = ""
+    if "#" in spec:
+        spec, subpath = spec.split("#", 1)
+    if spec.startswith("git+"):
+        url = spec[4:]
+    elif spec.startswith(("https://", "http://")) and spec.endswith(".git"):
+        url = spec
+    else:
+        return None
+
+    ref = ""
+    # ref 取最后一个 @（且不在 :// 协议分隔符内）
+    at = url.rfind("@")
+    if at > url.find("://") + 2:
+        url, ref = url[:at], url[at + 1:]
+    url = url.rstrip("/")
+    if subpath:
+        url = f"{url}#{subpath}"
+    return url, ref
+
+
+def sources_dir() -> Path:
+    """git 源本地检出目录（<数据目录>/nonebot/repos，随数据目录被 git 忽略）。"""
+    return runtime_dir() / "repos"
+
+
 def build_install_command(
-    uv_exec: Optional[str], python: Path, packages: List[str]
+    uv_exec: Optional[str],
+    python: Path,
+    packages: List[str],
+    index_url: str = "",
+    editable: bool = False,
+    proxy: str = "",
+    refresh: bool = False,
 ) -> List[str]:
-    """构造包安装命令（uv 存在走 uv pip --python，否则 venv 自带 pip）。"""
+    """构造包安装命令（uv 优先；自定义源 / 本地可编辑 / 代理 / 强制刷新）。
+
+    refresh 强制重取（uv ``--refresh`` / pip ``--force-reinstall``），
+    git 源更新后重装必用（否则判定已安装而跳过）。
+    """
     if uv_exec:
-        return [uv_exec, "pip", "install", "--python", str(python), *packages]
-    return [str(python), "-m", "pip", "install", *packages]
+        # 代理不进命令行：uv 不支持 --proxy 旗标，经 install_subprocess_env 注入
+        cmd = [uv_exec, "pip", "install", "--python", str(python)]
+        if refresh:
+            cmd.append("--refresh")
+    else:
+        cmd = [str(python), "-m", "pip", "install"]
+        if refresh:
+            cmd.append("--force-reinstall")
+    if index_url:
+        cmd += ["--index-url", index_url]
+    if not uv_exec and proxy:
+        cmd += ["--proxy", proxy]
+    if editable:
+        cmd.append("-e")
+    return [*cmd, *packages]
 
 
 def build_uninstall_command(
@@ -100,6 +190,114 @@ def build_uninstall_command(
     if uv_exec:
         return [uv_exec, "pip", "uninstall", "--python", str(python), "-y", *packages]
     return [str(python), "-m", "pip", "uninstall", "-y", *packages]
+
+
+def build_list_command(uv_exec: Optional[str], python: Path) -> List[str]:
+    """构造已安装包列表命令。"""
+    if uv_exec:
+        return [uv_exec, "pip", "list", "--python", str(python)]
+    return [str(python), "-m", "pip", "list"]
+
+
+def build_upgrade_command(
+    uv_exec: Optional[str],
+    python: Path,
+    packages: List[str],
+    index_url: str = "",
+    proxy: str = "",
+) -> List[str]:
+    """构造包升级命令（-U 尽量升级到最新兼容版本）。"""
+    if uv_exec:
+        cmd = [uv_exec, "pip", "install", "--python", str(python), "-U"]
+    else:
+        cmd = [str(python), "-m", "pip", "install", "-U"]
+    if index_url:
+        cmd += ["--index-url", index_url]
+    if not uv_exec and proxy:
+        cmd += ["--proxy", proxy]
+    return [*cmd, *packages]
+
+
+_PROXY_ENV_KEYS = (
+    "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+    "all_proxy", "ALL_PROXY",
+)
+
+
+def install_subprocess_env(proxy: str = "") -> Dict[str, str]:
+    """安装子进程环境（纯函数，可测试）。
+
+    pip_proxy 语义：空 = 继承系统；``off``/``none`` = 强制直连（剥离代理环境
+    变量并用 GIT_CONFIG_* 覆盖 git 全局配置里的坏代理）；其余值 = 使用该代理
+    （注入环境变量 + GIT_CONFIG_* 同步，git 优先级最高）。
+    """
+    env = dict(os.environ)
+    value = proxy.strip()
+    if not value:
+        return env
+    if value.lower() in ("off", "none"):
+        for key in _PROXY_ENV_KEYS:
+            env.pop(key, None)
+        env["GIT_CONFIG_COUNT"] = "1"
+        env["GIT_CONFIG_KEY_0"] = "http.proxy"
+        env["GIT_CONFIG_VALUE_0"] = ""
+        return env
+    for key in _PROXY_ENV_KEYS:
+        env[key] = value
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "http.proxy"
+    env["GIT_CONFIG_VALUE_0"] = value
+    return env
+
+
+def parse_package_list(output: str) -> List[Dict[str, str]]:
+    """解析 pip list / uv pip list 的表格输出为 [{name, version}]。
+
+    纯函数：跳过表头与分隔线，按空白切分取前两列。
+    """
+    packages: List[Dict[str, str]] = []
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or parts[0] in ("Package", "-----") or set(parts[0]) == {"-"}:
+            continue
+        packages.append({"name": parts[0], "version": parts[1]})
+    return packages
+
+
+def remove_venv_dir() -> bool:
+    """删除 venv 目录（uv 创建的目录为只执行权限，先放权再删）。"""
+    target = venv_dir()
+    if not target.exists():
+        return True
+    try:
+        for path in [target, *target.rglob("*")]:
+            try:
+                path.chmod(0o700)
+            except OSError:
+                pass
+        shutil.rmtree(target)
+        return True
+    except OSError as exc:
+        log(f"NoneBot Bridge: venv 删除失败 - {exc}", "ERROR")
+        return False
+
+
+def format_env_value(value: Any) -> str:
+    """把配置值格式化为 dotenv 行值（纯函数，可测试）。
+
+    - list/dict → JSON 字面量（json.dumps，合法且稳定）；
+    - str 含特殊字符（``#``/引号/空白/``=``/换行）→ 双引号包裹 + 转义
+      （python-dotenv 支持双引号与 ``\\n`` 展开）；
+    - 其余 str 原样（保持 .env 可读）。
+    """
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    text = str(value)
+    if not text:
+        return '""'
+    if any(ch in text for ch in '#\'"\n=') or text != text.strip():
+        return json.dumps(text, ensure_ascii=False)
+    return text
 
 
 def build_worker_files(cfg: Dict[str, Any]) -> Dict[str, str]:
@@ -134,10 +332,7 @@ def build_worker_files(cfg: Dict[str, Any]) -> Dict[str, str]:
         "LOG_LEVEL=INFO",
     ]
     for env_key, env_value in (cfg.get("nonebot_env") or {}).items():
-        if isinstance(env_value, (list, dict)):
-            env_lines.append(f"{env_key}={env_value!r}".replace("'", '"'))
-        else:
-            env_lines.append(f"{env_key}={env_value}")
+        env_lines.append(f"{env_key}={format_env_value(env_value)}")
 
     worker_config = {
         "wire_version": 3,
@@ -175,6 +370,7 @@ class NoneBotRuntime:
 
         self._uv_exec_cache: Optional[str] = None
         self._uv_probed: bool = False
+        self._uv_version_cache: str = ""
 
         # 崩溃自动重启回调（频道适配注入：刷新 worker 文件并重新 spawn）
         self.on_worker_restart: Optional[Callable[[], Awaitable[None]]] = None
@@ -193,7 +389,7 @@ class NoneBotRuntime:
         except OSError:
             return False
 
-    async def ensure_venv(self, python_exec: str = "", uv_exec: str = "") -> None:
+    async def ensure_venv(self, python_exec: str = "", uv_exec: str = "", proxy: str = "") -> None:
         """创建/修复 worker venv 并安装基线包（幂等，已就绪时零开销）。"""
         if self.is_venv_ready():
             return
@@ -208,11 +404,11 @@ class NoneBotRuntime:
             None, lambda: target.mkdir(parents=True, exist_ok=True)
         )
         create_cmd = build_venv_create_command(uv, python, target)
-        await self._run_setup_command(create_cmd, "venv 创建")
+        await self._run_setup_command(create_cmd, "venv 创建", proxy=proxy)
 
         self._log(f"安装基线包: {', '.join(_BASELINE_PACKAGES)}")
         install_cmd = build_install_command(uv, venv_python(), list(_BASELINE_PACKAGES))
-        await self._run_setup_command(install_cmd, "基线包安装")
+        await self._run_setup_command(install_cmd, "基线包安装", proxy=proxy)
 
         marker = _baseline_marker_path()
         marker.write_text("\n".join(_BASELINE_PACKAGES), "utf-8")
@@ -304,18 +500,36 @@ class NoneBotRuntime:
     # 包安装（适配器 / 插件）
     # ------------------------------------------------------------------
 
-    async def install_packages(self, packages: List[str], uv_exec: str = "") -> Dict[str, Any]:
-        """向 worker venv 安装包（串行化，状态可轮询）。"""
+    async def install_packages(
+        self,
+        packages: List[str],
+        uv_exec: str = "",
+        index_url: str = "",
+        editable: bool = False,
+        proxy: str = "",
+        refresh: bool = False,
+    ) -> Dict[str, Any]:
+        """向 worker venv 安装包（串行化，状态可轮询）。
+
+        packages 支持 PyPI 包名 / git 源（git+URL[@branch]）/ 本地路径；
+        editable 仅对本地路径有意义（可编辑安装，仓库代码改动即时生效）；
+        proxy：空=继承系统，off/none=强制直连，其余值=使用该代理。
+        """
         async with self._install_lock:
             self._install_state = {
                 "running": True, "packages": list(packages), "logs": [], "error": "", "ok": None,
             }
             try:
                 uv = self._resolve_uv(uv_exec)
-                cmd = build_install_command(uv, venv_python(), packages)
-                result = await self._run_install_command(cmd)
+                cmd = build_install_command(
+                    uv, venv_python(), packages,
+                    index_url=index_url, editable=editable, proxy=proxy,
+                    refresh=refresh,
+                )
+                result = await self._run_install_command(cmd, proxy=proxy)
                 self._install_state.update(
-                    ok=result, running=False, finished_at=time.time()
+                    ok=result, running=False, finished_at=time.time(),
+                    error="" if result else "安装命令失败（详见 logs 尾部）",
                 )
                 return {"success": result, **self._install_state_snapshot()}
             except Exception as exc:
@@ -333,7 +547,10 @@ class NoneBotRuntime:
                 uv = self._resolve_uv(uv_exec)
                 cmd = build_uninstall_command(uv, venv_python(), packages)
                 result = await self._run_install_command(cmd)
-                self._install_state.update(ok=result, running=False, finished_at=time.time())
+                self._install_state.update(
+                    ok=result, running=False, finished_at=time.time(),
+                    error="" if result else "卸载命令失败（详见 logs 尾部）",
+                )
                 return {"success": result, **self._install_state_snapshot()}
             except Exception as exc:
                 self._install_state.update(ok=False, running=False, error=str(exc))
@@ -347,6 +564,157 @@ class NoneBotRuntime:
         state = dict(self._install_state)
         state["logs"] = list(state.get("logs") or [])[-50:]
         return state
+
+    # ------------------------------------------------------------------
+    # 环境探测与升级（uv 管理）
+    # ------------------------------------------------------------------
+
+    def get_uv_version(self) -> str:
+        """探测 uv 版本（缓存，如 "uv 0.8.4"）。"""
+        uv = self._resolve_uv()
+        if not uv:
+            return ""
+        if self._uv_version_cache:
+            return self._uv_version_cache
+        import subprocess
+
+        try:
+            proc = subprocess.run(
+                [uv, "--version"], capture_output=True, text=True, timeout=15
+            )
+            self._uv_version_cache = proc.stdout.strip() if proc.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            self._uv_version_cache = ""
+        return self._uv_version_cache
+
+    async def get_python_version(self) -> str:
+        """worker venv Python 版本（venv 未就绪返回空串）。"""
+        if not venv_python().exists():
+            return ""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                str(venv_python()), "--version",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            return out.decode("utf-8", "replace").strip()
+        except (OSError, asyncio.TimeoutError):
+            return ""
+
+    async def list_installed_packages(self, uv_exec: str = "") -> List[Dict[str, str]]:
+        """列出 worker venv 已安装包（名称 + 版本）。"""
+        if not self.is_venv_ready():
+            return []
+        uv = self._resolve_uv(uv_exec)
+        output = await self._run_capture(build_list_command(uv, venv_python()))
+        return parse_package_list(output) if output is not None else []
+
+    async def sync_git_source(self, spec: str, proxy: str = "") -> Dict[str, Any]:
+        """把 git 源克隆/更新到本地仓库目录（sources_dir/<仓库名>）。
+
+        - 首次：``git clone [--branch ref] <url> <dir>``；
+        - 已存在：固定 ref 时 checkout，随后 ``pull --ff-only``
+          （快进合并，本地有提交/改动时失败而非强推 —— 保护用户对源码的修改）。
+        返回 ``{"success", "path", "cloned", "detail"}``，本地路径供安装使用。
+        """
+        parsed = parse_git_spec(spec)
+        if parsed is None:
+            return {"success": False, "error": f"非 git 安装源: {spec}"}
+        url, ref = parsed
+        name = derive_package_name(spec)
+        target = sources_dir() / name
+        env = install_subprocess_env(proxy)
+        cloned = not target.exists()
+
+        try:
+            if cloned:
+                sources_dir().mkdir(parents=True, exist_ok=True)
+                cmd = ["git", "clone"]
+                if ref:
+                    cmd += ["--branch", ref]
+                cmd += [url, str(target)]
+                await self._run_git(cmd, env)
+            else:
+                if ref:
+                    await self._run_git(["git", "-C", str(target), "fetch", "origin", ref], env)
+                    await self._run_git(["git", "-C", str(target), "checkout", ref], env)
+                else:
+                    await self._run_git(["git", "-C", str(target), "fetch", "origin"], env)
+                    await self._run_git(["git", "-C", str(target), "pull", "--ff-only"], env)
+        except RuntimeError as exc:
+            return {"success": False, "error": str(exc), "path": str(target)}
+
+        self._log(f"git 源{'克隆' if cloned else '更新'}完成: {name} -> {target}")
+        return {"success": True, "path": str(target), "cloned": cloned, "ref": ref}
+
+    async def _run_git(self, cmd: List[str], env: Dict[str, str]) -> None:
+        """执行 git 命令，非零退出抛 RuntimeError（输出进日志环）。"""
+        self._log("$ " + " ".join(cmd))
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=300.0)
+        for line in (out or b"").decode("utf-8", "replace").splitlines():
+            self._log(line)
+        if proc.returncode != 0:
+            raise RuntimeError(f"git 命令失败 (exit={proc.returncode})")
+
+    async def upgrade_packages(
+        self, packages: List[str], uv_exec: str = "", index_url: str = "", proxy: str = ""
+    ) -> Dict[str, Any]:
+        """升级包（NoneBot 本体升级 = 升级 _BASELINE_PACKAGES）。"""
+        async with self._install_lock:
+            self._install_state = {
+                "running": True, "packages": list(packages), "logs": [],
+                "error": "", "ok": None, "upgrade": True,
+            }
+            try:
+                uv = self._resolve_uv(uv_exec)
+                cmd = build_upgrade_command(
+                    uv, venv_python(), packages, index_url=index_url, proxy=proxy
+                )
+                result = await self._run_install_command(cmd, proxy=proxy)
+                self._install_state.update(
+                    ok=result, running=False, finished_at=time.time(),
+                    error="" if result else "升级命令失败（详见 logs 尾部）",
+                )
+                return {"success": result, **self._install_state_snapshot()}
+            except Exception as exc:
+                self._install_state.update(ok=False, running=False, error=str(exc))
+                raise
+
+    async def rebuild_venv(self, python_exec: str = "", uv_exec: str = "", proxy: str = "") -> None:
+        """删除并重建 worker venv（调用方须先停 worker）。"""
+        if self.is_process_alive():
+            raise RuntimeError("worker 正在运行，请先停止后再重建 venv")
+        if not remove_venv_dir():
+            raise RuntimeError("venv 目录删除失败，请检查文件权限")
+        marker = _baseline_marker_path()
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+        await self.ensure_venv(python_exec=python_exec, uv_exec=uv_exec, proxy=proxy)
+
+    async def _run_capture(self, cmd: List[str], timeout: float = 60.0) -> Optional[str]:
+        """执行命令并捕获 stdout（失败返回 None）。"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=str(runtime_dir()),
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            if proc.returncode != 0:
+                return None
+            return out.decode("utf-8", "replace")
+        except (OSError, asyncio.TimeoutError) as exc:
+            log(f"NoneBot Bridge: 命令执行失败 ({cmd[0]}) - {exc}", "WARNING")
+            return None
 
     # ------------------------------------------------------------------
     # 日志环
@@ -386,7 +754,7 @@ class NoneBotRuntime:
         self.append_log(message)
         log(f"NoneBot Bridge: {message}", "DEBUG", tag="通道")
 
-    async def _run_setup_command(self, cmd: List[str], label: str) -> None:
+    async def _run_setup_command(self, cmd: List[str], label: str, proxy: str = "") -> None:
         """执行 venv 引导命令，失败抛 RuntimeError。"""
         self._log(f"$ {' '.join(cmd)}")
         proc = await asyncio.create_subprocess_exec(
@@ -394,6 +762,7 @@ class NoneBotRuntime:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(runtime_dir()),
+            env=install_subprocess_env(proxy),
         )
         output, _ = await proc.communicate()
         for line in (output or b"").decode("utf-8", "replace").splitlines():
@@ -401,7 +770,7 @@ class NoneBotRuntime:
         if proc.returncode != 0:
             raise RuntimeError(f"{label}失败 (exit={proc.returncode})")
 
-    async def _run_install_command(self, cmd: List[str]) -> bool:
+    async def _run_install_command(self, cmd: List[str], proxy: str = "") -> bool:
         """执行安装命令并流式记录输出，返回是否成功。"""
         self._install_state["logs"].append("$ " + " ".join(cmd))
         proc = await asyncio.create_subprocess_exec(
@@ -409,6 +778,7 @@ class NoneBotRuntime:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(runtime_dir()),
+            env=install_subprocess_env(proxy),
         )
         assert proc.stdout is not None
         async for raw in proc.stdout:

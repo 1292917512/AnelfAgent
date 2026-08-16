@@ -5,15 +5,6 @@ from __future__ import annotations
 import pytest
 
 from agent.memory.graph import format_triple, parse_node_key
-from agent.memory.memory_store import MemoryStore
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = MemoryStore(str(tmp_path / "memory.sqlite3"))
-    yield s
-    await s.close()
-
 
 # ==================================================================
 # node_key 解析

@@ -20,7 +20,7 @@ export default function Models() {
   ];
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
 
       {activeTab === "config" && <ConfigPanel />}

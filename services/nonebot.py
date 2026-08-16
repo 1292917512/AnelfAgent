@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -25,7 +26,9 @@ _PLUGINS_JSON = f"{_REGISTRY_BASE}/plugins.json"
 _ADAPTERS_JSON = f"{_REGISTRY_BASE}/adapters.json"
 _FETCH_TIMEOUT = 20.0
 _STORE_TTL = 600.0
+_FETCH_RETRY_INTERVAL = 60.0
 _PROBE_TIMEOUT = 30.0
+_SECRET_ENV_RE = re.compile(r"token|secret|password|key", re.I)
 
 # find_spec 探测脚本（在 worker venv 中执行）
 _PROBE_SCRIPT = (
@@ -74,6 +77,8 @@ class NoneBotService:
     _adapters_cache: Optional[List[Dict[str, Any]]] = None
     _plugins_fetched_at: float = 0.0
     _adapters_fetched_at: float = 0.0
+    # 注册表最近一次拉取尝试（含失败，驱动 ensure 的退避）
+    _adapters_attempt_at: float = 0.0
     # 适配器安装探测缓存（安装/卸载后失效）
     _installed_cache: Dict[str, bool] = {}
 
@@ -81,17 +86,24 @@ class NoneBotService:
     # 状态与重启
     # ------------------------------------------------------------------
 
-    def get_status(self) -> Dict[str, Any]:
-        """汇总桥接全景状态。"""
+    async def get_status(self) -> Dict[str, Any]:
+        """汇总桥接全景状态（含环境概要；uv 版本探测走线程不阻塞循环）。"""
         from channels.nonebot_bridge.runtime import get_nonebot_runtime
 
         channel = _get_channel()
         cfg = _read_channel_config()
+        runtime = get_nonebot_runtime()
+        uv_version = await asyncio.to_thread(runtime.get_uv_version)
         return {
             "enabled": bool(cfg.get("enabled", False)),
             "registered": channel is not None,
             "channel_status": channel.get_status_info() if channel else None,
-            "install": get_nonebot_runtime().get_install_state(),
+            "install": runtime.get_install_state(),
+            "env": {
+                "venv_ready": runtime.is_venv_ready(),
+                "uv": uv_version,
+                "uv_found": runtime._resolve_uv() is not None,  # noqa: SLF001 - 同域内部探测
+            },
         }
 
     async def restart(self) -> Dict[str, Any]:
@@ -105,6 +117,165 @@ class NoneBotService:
         except (TypeError, ValueError):
             payload = {"success": False, "error": result}
         return payload
+
+    async def start_worker(self) -> Dict[str, Any]:
+        """启动 worker 子进程（频道须已启用）。"""
+        channel = _get_channel()
+        if channel is None:
+            return {"success": False, "error": "桥接频道未启用，请先在通道页启用"}
+        from channels.nonebot_bridge.runtime import get_nonebot_runtime
+
+        if get_nonebot_runtime().is_process_alive():
+            return {"success": True, "message": "worker 已在运行"}
+        result = await channel.restart_worker()
+        try:
+            payload = json.loads(result)
+        except (TypeError, ValueError):
+            payload = {"success": False, "error": result}
+        return payload
+
+    async def stop_worker(self) -> Dict[str, Any]:
+        """停止 worker 子进程（不停止频道本身，可随时再启动）。"""
+        from channels.nonebot_bridge.runtime import get_nonebot_runtime
+
+        await get_nonebot_runtime().stop_worker()
+        return {"success": True, "message": "worker 已停止"}
+
+    async def _restart_worker_if_alive(self) -> bool:
+        """worker 正在运行则重启（环境/包变更后让新代码立即生效）。"""
+        from channels.nonebot_bridge.runtime import get_nonebot_runtime
+
+        channel = _get_channel()
+        if channel is None or not get_nonebot_runtime().is_process_alive():
+            return False
+        await channel.restart_worker()
+        return True
+
+    async def send_to_platform(
+        self,
+        chat_id: str,
+        text: str,
+        channel_type: str = "private",
+        bot_id: str = "",
+        adapter: str = "",
+    ) -> Dict[str, Any]:
+        """经桥接频道向平台目标发送消息（AI 工具 / 调试共用）。"""
+        channel = _get_channel()
+        if channel is None:
+            return {"success": False, "error": "桥接频道未启用"}
+        result = await channel.send_text(
+            chat_id, text, channel_type=channel_type, bot_id=bot_id, adapter=adapter
+        )
+        try:
+            payload = json.loads(result)
+        except (TypeError, ValueError):
+            payload = {"success": False, "error": str(result)}
+        return payload
+
+    async def send_media_to_platform(
+        self,
+        chat_id: str,
+        kind: str,
+        source: str,
+        caption: str = "",
+        name: str = "",
+        channel_type: str = "private",
+        bot_id: str = "",
+        adapter: str = "",
+    ) -> Dict[str, Any]:
+        """经桥接频道向平台目标发送媒体（image/voice/video/file）。"""
+        channel = _get_channel()
+        if channel is None:
+            return {"success": False, "error": "桥接频道未启用"}
+        result = await channel.send_media(
+            chat_id, kind, source, caption=caption, name=name,
+            channel_type=channel_type, bot_id=bot_id, adapter=adapter,
+        )
+        try:
+            payload = json.loads(result)
+        except (TypeError, ValueError):
+            payload = {"success": False, "error": str(result)}
+        return payload
+
+    # ------------------------------------------------------------------
+    # 环境管理（uv / venv / 包）
+    # ------------------------------------------------------------------
+
+    async def bootstrap_env(self) -> Dict[str, Any]:
+        """显式引导 worker venv（不依赖频道启用）。"""
+        from channels.nonebot_bridge.runtime import get_nonebot_runtime
+
+        runtime = get_nonebot_runtime()
+        if runtime.is_venv_ready():
+            return {"success": True, "message": "环境已就绪", "already": True}
+        try:
+            await runtime.ensure_venv(proxy=self._pip_proxy())
+        except Exception as exc:  # noqa: BLE001 - 引导失败如实回传
+            return {"success": False, "error": f"环境引导失败: {exc}"}
+        return {"success": True, "message": "环境初始化完成"}
+
+    async def get_env_status(self) -> Dict[str, Any]:
+        """环境详情：uv / Python 版本、基线包、venv 就绪态、安装进度。"""
+        from channels.nonebot_bridge import runtime as nb_runtime
+        from channels.nonebot_bridge.runtime import get_nonebot_runtime
+
+        rt = get_nonebot_runtime()
+        return {
+            "venv_ready": rt.is_venv_ready(),
+            "uv_found": rt._resolve_uv() is not None,  # noqa: SLF001 - 同域内部探测
+            "uv_version": await asyncio.to_thread(rt.get_uv_version),
+            "python_version": await rt.get_python_version(),
+            "baseline": list(nb_runtime._BASELINE_PACKAGES),  # noqa: SLF001 - 模块常量读取
+            "venv_path": str(nb_runtime.venv_dir()),
+            "runtime_dir": str(nb_runtime.runtime_dir()),
+            "install": rt.get_install_state(),
+        }
+
+    async def list_packages(self) -> Dict[str, Any]:
+        """列出 worker venv 已安装包（名称 + 版本）。"""
+        from channels.nonebot_bridge.runtime import get_nonebot_runtime
+
+        packages = await get_nonebot_runtime().list_installed_packages()
+        return {"success": True, "count": len(packages), "packages": packages}
+
+    async def upgrade_env(self, packages: Optional[List[str]] = None) -> Dict[str, Any]:
+        """升级包（缺省升级 NoneBot 基线，即 nonebot2 本体更新）。"""
+        from channels.nonebot_bridge import runtime as nb_runtime
+        from channels.nonebot_bridge.runtime import get_nonebot_runtime
+
+        rt = get_nonebot_runtime()
+        if not rt.is_venv_ready():
+            try:
+                await rt.ensure_venv(proxy=self._pip_proxy())
+            except Exception as exc:  # noqa: BLE001
+                return {"success": False, "error": f"venv 引导失败: {exc}"}
+        targets = (
+            list(packages) if packages
+            else list(nb_runtime._BASELINE_PACKAGES)  # noqa: SLF001 - 模块常量读取
+        )
+        result = await rt.upgrade_packages(targets, index_url=self._pip_index(), proxy=self._pip_proxy())
+        if result.get("success"):
+            # 包已更新：重启 worker 让新代码生效（未运行则跳过，下次启动自然生效）
+            result["restarted"] = await self._restart_worker_if_alive()
+        return result
+
+    async def rebuild_env(self) -> Dict[str, Any]:
+        """删除并重建 worker venv（运行中先停止，重建后自动恢复）。"""
+        from channels.nonebot_bridge.runtime import get_nonebot_runtime
+
+        runtime = get_nonebot_runtime()
+        was_alive = runtime.is_process_alive()
+        channel = _get_channel()
+        if was_alive:
+            await runtime.stop_worker()
+        try:
+            await runtime.rebuild_venv(proxy=self._pip_proxy())
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "error": f"重建失败: {exc}"}
+        if was_alive and channel is not None:
+            await channel.restart_worker()
+        message = "环境已重建" + ("，worker 恢复中" if was_alive else "")
+        return {"success": True, "message": message}
 
     # ------------------------------------------------------------------
     # 配置
@@ -123,6 +294,9 @@ class NoneBotService:
             "worker_host": "127.0.0.1",
             "worker_port": 8198,
             "auto_restart": True,
+            "pip_index_url": "",
+            "pip_proxy": "",
+            "package_specs": {},
         }
         defaults.update(cfg)
         return defaults
@@ -154,6 +328,117 @@ class NoneBotService:
         if channel is not None:
             channel.reload_config()
         return cfg
+
+    # 顶层配置项的类型规格（set_config_value 校验/强转用）
+    _TOP_KEY_SPEC: Dict[str, type] = {
+        "adapters": list,
+        "plugins": list,
+        "intercept_all": bool,
+        "auto_restart": bool,
+        "bridge_ws_port": int,
+        "worker_port": int,
+        "worker_host": str,
+        "pip_index_url": str,
+        "pip_proxy": str,
+    }
+
+    def get_config_masked(self) -> Dict[str, Any]:
+        """读取配置（敏感环境变量值遮盖，供 AI / 展示使用）。"""
+        cfg = self.get_config()
+        env = dict(cfg.get("nonebot_env") or {})
+        for key in list(env.keys()):
+            if _SECRET_ENV_RE.search(key):
+                env[key] = "********" if str(env[key]) else ""
+        cfg["nonebot_env"] = env
+        return cfg
+
+    def set_config_value(self, key: str, value: Any) -> Dict[str, Any]:
+        """按 key 原子写配置项（支持 ``nonebot_env.<ENV_KEY>`` 点路径，空值删除）。
+
+        顶层 key 按 _TOP_KEY_SPEC 校验并强转；worker 相关项变更触发热重启。
+        """
+        spec = type(self)._TOP_KEY_SPEC
+
+        if key.startswith("nonebot_env."):
+            env_key = key[len("nonebot_env."):]
+            if not env_key:
+                return {"success": False, "error": "环境变量名为空"}
+
+            def _mutate_env(cfg: Dict[str, Any]) -> None:
+                env = dict(cfg.get("nonebot_env") or {})
+                if value is None or str(value) == "":
+                    env.pop(env_key, None)
+                else:
+                    env[env_key] = str(value)
+                cfg["nonebot_env"] = env
+
+            cfg = self.update_worker_config(_mutate_env)
+            return {"success": True, "key": key, "config": cfg}
+
+        if key not in spec:
+            return {
+                "success": False,
+                "error": f"未知配置项 '{key}'，支持: {sorted(spec)}, nonebot_env.<ENV_KEY>",
+            }
+        coerced = self._coerce_config_value(spec[key], value)
+        if coerced is None:
+            return {"success": False, "error": f"配置项 '{key}' 的值类型不合法: {value!r}"}
+
+        def _mutate_top(cfg: Dict[str, Any]) -> None:
+            cfg[key] = coerced
+
+        cfg = self.update_worker_config(_mutate_top)
+        return {"success": True, "key": key, "value": coerced, "config": cfg}
+
+    @staticmethod
+    def _coerce_config_value(expected: type, value: Any) -> Any:
+        """按期望类型强转配置值（失败返回 None）。"""
+        if expected is bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str) and value.lower() in ("true", "false"):
+                return value.lower() == "true"
+            return None
+        if expected is int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+        if expected is list:
+            if isinstance(value, list):
+                return [str(v) for v in value]
+            if isinstance(value, str) and value.strip():
+                return [part.strip() for part in value.split(",") if part.strip()]
+            return []
+        return str(value)
+
+    # ------------------------------------------------------------------
+    # 启用 / 停用（不装卸包）
+    # ------------------------------------------------------------------
+
+    def set_adapter_enabled(self, key: str, enabled: bool) -> Dict[str, Any]:
+        """启用/停用适配器（仅调整加载列表，不动包）。"""
+        def _mutate(cfg: Dict[str, Any]) -> None:
+            adapters = [a for a in (cfg.get("adapters") or []) if a != key]
+            if enabled:
+                adapters.append(key)
+            cfg["adapters"] = adapters
+
+        cfg = self.update_worker_config(_mutate)
+        return {"success": True, "key": key, "enabled": enabled,
+                "adapters": cfg.get("adapters")}
+
+    def set_plugin_enabled(self, module: str, enabled: bool) -> Dict[str, Any]:
+        """启用/停用插件（仅调整加载列表，保留已安装包）。"""
+        def _mutate(cfg: Dict[str, Any]) -> None:
+            plugins = [p for p in (cfg.get("plugins") or []) if p != module]
+            if enabled:
+                plugins.append(module)
+            cfg["plugins"] = plugins
+
+        cfg = self.update_worker_config(_mutate)
+        return {"success": True, "module": module, "enabled": enabled,
+                "plugins": cfg.get("plugins")}
 
     # ------------------------------------------------------------------
     # 适配器
@@ -207,44 +492,200 @@ class NoneBotService:
 
         return entries
 
-    async def install_adapter(self, key: str, enable: bool = True) -> Dict[str, Any]:
-        """安装适配器包到 worker venv（可选同时加入启用列表）。"""
+    def _pip_index(self) -> str:
+        """读取自定义 PyPI 安装源（空 = 默认源）。"""
+        return str(_read_channel_config().get("pip_index_url", "") or "")
+
+    def _pip_proxy(self) -> str:
+        """读取安装代理（空=继承系统；off/none=强制直连；其余=使用该代理）。"""
+        return str(_read_channel_config().get("pip_proxy", "") or "").strip()
+
+    def _record_package_spec(self, name_key: str, spec: str) -> None:
+        """记录安装溯源（非默认 PyPI 源时，供卸载/重装推导分发名）。"""
+        def _mutate(cfg: Dict[str, Any]) -> None:
+            specs = dict(cfg.get("package_specs") or {})
+            specs[name_key] = spec
+            cfg["package_specs"] = specs
+
+        self.update_worker_config(_mutate)
+
+    def _pop_package_spec(self, name_key: str) -> str:
+        """移除溯源记录并返回 spec（无记录返回空串）。"""
+        cfg = _read_channel_config()
+        spec = str((cfg.get("package_specs") or {}).get(name_key, "") or "")
+
+        def _mutate(c: Dict[str, Any]) -> None:
+            specs = dict(c.get("package_specs") or {})
+            specs.pop(name_key, None)
+            c["package_specs"] = specs
+
+        self.update_worker_config(_mutate)
+        return spec
+
+    async def _install_with_source(
+        self, spec: str, editable: bool, refresh: bool = False
+    ) -> Dict[str, Any]:
+        """按安装源执行安装（含 venv 引导与自定义索引）。"""
         from channels.nonebot_bridge.runtime import get_nonebot_runtime
 
+        runtime = get_nonebot_runtime()
+        proxy = self._pip_proxy()
+        if not runtime.is_venv_ready():
+            try:
+                await runtime.ensure_venv(proxy=proxy)
+            except Exception as exc:  # noqa: BLE001
+                return {"success": False, "error": f"venv 引导失败: {exc}"}
+        return await runtime.install_packages(
+            [spec], index_url=self._pip_index(), editable=editable, proxy=proxy,
+            refresh=refresh,
+        )
+
+    async def _localize_git_source(self, spec: str) -> str:
+        """git 源 → 本地仓库目录检出，返回本地路径（非 git 源原样返回）。
+
+        检出目录 <数据目录>/nonebot/repos/<仓库名>（随数据目录被 git 忽略），
+        用户可直接浏览/修改源码；pull --ff-only 保证更新不覆盖本地修改。
+        """
+        from channels.nonebot_bridge.runtime import get_nonebot_runtime, parse_git_spec
+
+        if parse_git_spec(spec) is None:
+            return spec
+        result = await get_nonebot_runtime().sync_git_source(spec, proxy=self._pip_proxy())
+        if not result.get("success"):
+            raise RuntimeError(f"git 源同步失败: {result.get('error')}")
+        return str(result["path"])
+
+    async def resync_sources(self) -> Dict[str, Any]:
+        """按溯源记录更新全部 git 源安装项：拉取最新代码 + 强制重装。
+
+        可编辑安装项跳过重装（本就直连源码目录，改代码即时生效）。
+        """
+        specs = dict(_read_channel_config().get("package_specs") or {})
+        results: List[Dict[str, Any]] = []
+        updated = 0
+        for name_key, spec in specs.items():
+            from channels.nonebot_bridge.runtime import parse_git_spec
+
+            if parse_git_spec(spec) is None:
+                continue
+            try:
+                local = await self._localize_git_source(spec)
+                # refresh=True：强制重取重装（否则 uv 判定已安装跳过）
+                install = await self._install_with_source(local, editable=False, refresh=True)
+                install.update({"source": name_key, "path": local})
+                results.append(install)
+                if install.get("success"):
+                    updated += 1
+            except Exception as exc:  # noqa: BLE001 - 单项失败不中断其余
+                results.append({"success": False, "source": name_key, "error": str(exc)})
+        restarted = False
+        if updated:
+            # 源码已更新并重装：重启 worker 加载新代码
+            restarted = await self._restart_worker_if_alive()
+        return {
+            "success": all(r.get("success") for r in results) if results else True,
+            "total": len(results),
+            "updated": updated,
+            "restarted": restarted,
+            "results": results,
+        }
+
+    def get_sources_status(self) -> Dict[str, Any]:
+        """git/本地源安装项清单（溯源记录 + 本地检出路径存在性）。"""
+        from channels.nonebot_bridge.runtime import sources_dir
+
+        specs = dict(_read_channel_config().get("package_specs") or {})
+        items = []
+        for name_key, spec in sorted(specs.items()):
+            repo_name = spec.rstrip("/").rsplit("/", 1)[-1]
+            local = sources_dir() / (repo_name[:-4] if repo_name.endswith(".git") else repo_name)
+            items.append({
+                "key": name_key,
+                "spec": spec,
+                "kind": "git" if spec.startswith(("git+", "https://", "http://")) else "path",
+                "repo_path": str(local),
+                "repo_exists": local.exists(),
+            })
+        return {"sources_dir": str(sources_dir()), "items": items}
+
+    async def _uninstall_with_candidates(self, candidates: List[str]) -> Dict[str, Any]:
+        """按候选分发名卸载（git 仓库名 ≠ dist 名的兜底）。
+
+        先与已装包清单做规范化名称匹配（连字符/下划线等价），只对真实
+        存在的候选执行卸载 —— uv 对不存在的包名会静默成功（exit 0），
+        不能用"命令成功"作为候选命中的判据。
+        """
+        from channels.nonebot_bridge.runtime import get_nonebot_runtime
+
+        runtime = get_nonebot_runtime()
+
+        def _norm(name: str) -> str:
+            return name.strip().lower().replace("_", "-")
+
+        installed = await runtime.list_installed_packages()
+        norm_map = {_norm(p["name"]): p["name"] for p in installed}
+        for candidate in dict.fromkeys(c for c in candidates if c):
+            target = norm_map.get(_norm(candidate))
+            if target is None:
+                continue
+            result = await runtime.uninstall_packages([target])
+            if result.get("success"):
+                return result
+        tried = "、".join(c for c in candidates if c)
+        return {"success": False, "error": f"包未安装（候选：{tried}）"}
+
+
+    async def install_adapter(
+        self, key: str, enable: bool = True, source: str = ""
+    ) -> Dict[str, Any]:
+        """安装适配器包到 worker venv（可选同时加入启用列表）。
+
+        source：空 = PyPI 包名（注册表）；否则为 git 源（git+URL / user/repo /
+        https://x.git）或本地路径 —— 适配器源码仓库自己管理时使用。
+        """
+        from channels.nonebot_bridge.runtime import normalize_install_spec
+
+        # 社区适配器条目来自注册表，冷缓存时先尽力加载（AI 直接安装场景）
+        await self.ensure_adapters_loaded()
         entry = self._find_adapter_entry(key)
         if entry is None:
             return {"success": False, "error": f"未知适配器: {key}"}
         package = entry["package"]
-        if not package:
+        if not package and not source:
             return {"success": False, "error": "该适配器缺少包名信息"}
 
-        runtime = get_nonebot_runtime()
-        if not runtime.is_venv_ready():
-            try:
-                await runtime.ensure_venv()
-            except Exception as exc:  # noqa: BLE001 - venv 引导失败如实回传
-                return {"success": False, "error": f"venv 引导失败: {exc}"}
-
-        result = await runtime.install_packages([package])
+        spec = normalize_install_spec(source) if source.strip() else (package or "")
+        try:
+            install_spec = await self._localize_git_source(spec)
+        except RuntimeError as exc:
+            return {"success": False, "error": str(exc)}
+        result = await self._install_with_source(install_spec, editable=False)
         type(self)._installed_cache.clear()
 
-        if result.get("success") and enable:
-            self.update_worker_config(
-                lambda cfg: self._append_unique(cfg, "adapters", key)
-            )
+        if result.get("success"):
+            if source.strip():
+                self._record_package_spec(f"adapter:{key}", spec)
+            if enable:
+                self.update_worker_config(
+                    lambda cfg: self._append_unique(cfg, "adapters", key)
+                )
         return result
 
     async def uninstall_adapter(self, key: str) -> Dict[str, Any]:
-        """卸载适配器包并从启用列表移除。"""
-        from channels.nonebot_bridge.runtime import get_nonebot_runtime
+        """卸载适配器包并从启用列表移除（分发名：溯源 spec > 注册表包名）。"""
+        from channels.nonebot_bridge.runtime import (
+            derive_package_name,
+        )
 
         entry = self._find_adapter_entry(key)
         if entry is None:
             return {"success": False, "error": f"未知适配器: {key}"}
 
         self.update_worker_config(lambda cfg: self._remove_item(cfg, "adapters", key))
-        runtime = get_nonebot_runtime()
-        result = await runtime.uninstall_packages([entry["package"]])
+        spec = self._pop_package_spec(f"adapter:{key}")
+        candidates = [derive_package_name(spec)] if spec else []
+        candidates += [entry["package"], key.replace("_", "-")]
+        result = await self._uninstall_with_candidates(candidates)
         type(self)._installed_cache.clear()
         return result
 
@@ -260,57 +701,76 @@ class NoneBotService:
         snapshot = await channel.fetch_worker_status()
         return {"success": True, "plugins": snapshot.get("plugins", [])}
 
-    async def install_plugin(self, module_name: str) -> Dict[str, Any]:
-        """从商店安装插件：装包 → 加入 plugins 配置 → 热重启生效。"""
-        store_entry = await self._find_store_plugin(module_name)
-        if store_entry is None:
-            return {
-                "success": False,
-                "error": f"商店中未找到插件 {module_name}，可先用 nonebot_store_search 检索",
-            }
-        project = str(store_entry.get("project_link", "") or "")
-        if not project:
-            return {"success": False, "error": "该插件缺少 PyPI 包名"}
+    async def install_plugin(
+        self, module_name: str, source: str = "", editable: bool = False
+    ) -> Dict[str, Any]:
+        """安装插件：装包 → 加入 plugins 配置 → 热重启生效。
 
-        from channels.nonebot_bridge.runtime import get_nonebot_runtime
+        source：空 = 商店 PyPI 包名；否则为 git 源（git+URL / user/repo /
+        https://x.git）或本地路径。editable 仅对本地路径有意义（可编辑安装，
+        仓库代码改动即时生效，适合自维护插件开发）。
+        """
+        from channels.nonebot_bridge.runtime import normalize_install_spec
 
-        runtime = get_nonebot_runtime()
-        if not runtime.is_venv_ready():
-            try:
-                await runtime.ensure_venv()
-            except Exception as exc:  # noqa: BLE001
-                return {"success": False, "error": f"venv 引导失败: {exc}"}
+        store_entry = await self._find_store_plugin(module_name) if not source.strip() else None
+        project = str((store_entry or {}).get("project_link", "") or "")
+        if not source.strip():
+            if store_entry is None:
+                return {
+                    "success": False,
+                    "error": f"商店中未找到插件 {module_name}，可先用 nonebot_store_search 检索",
+                }
+            if not project:
+                return {"success": False, "error": "该插件缺少 PyPI 包名"}
 
-        result = await runtime.install_packages([project])
+        spec = normalize_install_spec(source) if source.strip() else project
+        try:
+            install_spec = await self._localize_git_source(spec)
+        except RuntimeError as exc:
+            return {"success": False, "error": str(exc)}
+        result = await self._install_with_source(install_spec, editable=editable)
         if not result.get("success"):
             return result
 
-        self.update_worker_config(
-            lambda cfg: self._append_unique(cfg, "plugins", module_name)
-        )
+        def _mutate(cfg: Dict[str, Any]) -> None:
+            self._append_unique(cfg, "plugins", module_name)
+            if source.strip():
+                specs = dict(cfg.get("package_specs") or {})
+                specs[module_name] = spec
+                cfg["package_specs"] = specs
+
+        self.update_worker_config(_mutate)
         return {
             "success": True,
             "module": module_name,
-            "package": project,
+            "package": spec,
             "restarted": True,
             "install": result,
         }
 
     async def uninstall_plugin(self, module_name: str) -> Dict[str, Any]:
-        """卸载插件：移出 plugins 配置 → 卸载包 → 热重启生效。"""
-        from channels.nonebot_bridge.runtime import get_nonebot_runtime
+        """卸载插件：移出 plugins 配置 → 卸载包 → 热重启生效。
+
+        分发名推导：溯源 spec（git/本地安装时记录）> 商店包名 > 模块名兜底。
+        """
+        from channels.nonebot_bridge.runtime import derive_package_name
 
         store_entry = await self._find_store_plugin(module_name)
         project = str((store_entry or {}).get("project_link", "") or "")
+        spec = self._pop_package_spec(module_name)
 
-        self.update_worker_config(
-            lambda cfg: self._remove_item(cfg, "plugins", module_name)
-        )
+        def _mutate(cfg: Dict[str, Any]) -> None:
+            self._remove_item(cfg, "plugins", module_name)
+            specs = dict(cfg.get("package_specs") or {})
+            specs.pop(module_name, None)
+            cfg["package_specs"] = specs
+
+        self.update_worker_config(_mutate)
         result: Dict[str, Any] = {"success": True, "module": module_name, "restarted": True}
-        if project:
-            uninstall = await get_nonebot_runtime().uninstall_packages([project])
-            type(self)._installed_cache.clear()
-            result["uninstall"] = uninstall
+        candidates = [derive_package_name(spec)] if spec else []
+        candidates += [project, module_name.replace("_", "-")]
+        result["uninstall"] = await self._uninstall_with_candidates(candidates)
+        type(self)._installed_cache.clear()
         return result
 
     # ------------------------------------------------------------------
@@ -337,6 +797,7 @@ class NoneBotService:
         now = time.time()
         if not force and self._adapters_cache and now - self._adapters_fetched_at < _STORE_TTL:
             return self._adapters_cache
+        type(self)._adapters_attempt_at = now
         data = await self._fetch_json(_ADAPTERS_JSON)
         if data is not None:
             type(self)._adapters_cache = data
@@ -346,6 +807,26 @@ class NoneBotService:
         if self._adapters_cache:
             return self._adapters_cache
         return self._load_snapshot("adapters.json")
+
+    async def ensure_adapters_loaded(self, wait: float = 6.0) -> None:
+        """确保适配器注册表已加载（供适配器列表/安装路径调用）。
+
+        尽力而为：缓存新鲜直接返回；距上次尝试过近（含失败）按退避跳过；
+        网络拉取限时 ``wait`` 秒，超时不中断后台刷新（asyncio.shield）。
+        """
+        now = time.time()
+        if self._adapters_cache and now - self._adapters_fetched_at < _STORE_TTL:
+            return
+        if now - type(self)._adapters_attempt_at < _FETCH_RETRY_INTERVAL:
+            return
+
+        task = asyncio.create_task(self.fetch_store_adapters(force=True))
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=wait)
+        except asyncio.TimeoutError:
+            pass  # 超时放行：后台任务继续，成功后写缓存与快照
+        except Exception:  # noqa: BLE001 - 拉取失败走快照/内置兜底
+            task.cancel()
 
     async def search_store_plugins(self, keyword: str, limit: int = 8) -> List[Dict[str, Any]]:
         """按关键词搜索商店插件（名称/描述/模块/作者/标签）。"""

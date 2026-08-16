@@ -8,13 +8,6 @@ from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = MemoryStore(str(tmp_path / "memory.sqlite3"))
-    yield s
-    await s.close()
-
-
 async def _seed(store: MemoryStore) -> None:
     """构造共现场景：火锅×聚餐 高频共现；主人—苗苗 图谱边。"""
     for i in range(3):

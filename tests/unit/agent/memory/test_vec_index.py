@@ -14,13 +14,6 @@ from agent.memory.memory_utils import pack_embedding
 _DIMS = 8
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = MemoryStore(str(tmp_path / "memory.sqlite3"))
-    yield s
-    await s.close()
-
-
 def _unit_vec(i: int) -> list[float]:
     """第 i 维为 1 的单位向量。"""
     v = [0.0] * _DIMS

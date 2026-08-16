@@ -16,17 +16,22 @@ from typing import List, Optional
 from unittest.mock import AsyncMock
 
 import pytest
+from helpers.think_loop_fakes import (
+    FakeMind,
+    end_reply_result,
+    run_think_loop,
+    text_result,
+)
 
 from agent.mind.background_tasks import BackgroundTaskRegistry
-from agent.mind.tools import think_loop as tl
-from agent.mind.tools.think_loop import ThinkMode, think_loop
+from agent.mind.tools.think_loop import ThinkMode
 
 
 @pytest.fixture(autouse=True)
-def _mock_deliver(monkeypatch):
+def deliver_mock(monkeypatch):
     """拦截纯文本投递，避免真实频道发送。"""
     mock = AsyncMock(return_value=True)
-    monkeypatch.setattr(tl, "deliver_text", mock)
+    monkeypatch.setattr("agent.mind.tools.think_loop.deliver_text", mock)
     return mock
 
 
@@ -132,102 +137,36 @@ class TestBackgroundTaskRegistry:
 # think_loop 挂起点测试
 # ==================================================================
 
-class _FakePfc:
-    def build_execution_context(self, *a, **kw) -> dict:
-        return {"role": "system", "content": "exec"}
-
-    def add_temporary(self, clip) -> None:
-        pass
-
-    def clear_dynamic_tools(self) -> None:
-        pass
-
-    def record_tool_use(self, name: str) -> None:
-        pass
-
-    def expand_discovered_tools(self, tool_calls) -> None:
-        pass
-
-
-def _text_result(text: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        content=text, tool_calls=[], reasoning_content="",
-        usage=None, raw=None, model="fake",
-    )
-
-
-def _end_reply_result() -> SimpleNamespace:
-    return SimpleNamespace(
-        content="",
-        tool_calls=[SimpleNamespace(
-            id="tc1", name="end_reply", arguments="{}",
-            raw={"id": "tc1", "type": "function",
-                 "function": {"name": "end_reply", "arguments": "{}"}},
-        )],
-        reasoning_content="", usage=None, raw=None, model="fake",
-    )
-
-
-class _WaitMind:
+class _WaitMind(FakeMind):
     """Mind 替身：首轮输出等待意图文本，之后按队列返回结果。"""
 
     def __init__(self, wait_text: str = "子代理的后台任务还在跑喵～") -> None:
-        self.pfc = _FakePfc()
-        self.compressor = None
+        super().__init__(config_overrides={
+            "force_tool_use": True,
+            "background_wait_timeout": 0.2,
+            "background_wait_budget": 0.25,
+        })
         self.background_tasks = BackgroundTaskRegistry()
         self.interrupts = None
-        self.llm_calls = 0
         self._wait_text = wait_text
-        self._queue: List[SimpleNamespace] = []
-        self._add_system_context = AsyncMock()
-        self._reply_adapter_key = ""
-
-    def _resolve_adapter_key(self) -> str:
-        return ""
-
-    @property
-    def tool_executor(self):
-        async def _exec(tc) -> str:
-            return '{"ok": true}'
-        return _exec
-
-    def _set_phase(self, phase) -> None:
-        pass
-
-    def _get_mind_config(self):
-        return SimpleNamespace(
-            llm_timeout=10.0, force_tool_use=True,
-            background_wait_timeout=0.2, background_wait_budget=0.25,
-        )
-
-    def get_model_context_length(self) -> int:
-        return 0
+        self._queue: List = []
 
     async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None):
         self.llm_calls += 1
         if self.llm_calls == 1:
-            return _text_result(self._wait_text)
+            return text_result(self._wait_text)
         if self._queue:
             return self._queue.pop(0)
-        return _end_reply_result()
+        return end_reply_result()
 
 
-@pytest.fixture
-def anything():
-    return SimpleNamespace(adapter_key="test", uid=1, group_id=0)
+_SEND_MESSAGE_TOOL = [{"type": "function", "function": {"name": "send_message"}}]
 
 
 def _run_reply(mind, anything, steps: Optional[List[str]] = None, chain: Optional[List] = None):
-    return think_loop(
-        mind,
-        mode=ThinkMode.REPLY,
-        tool_chain=chain if chain is not None else [],
-        execution_steps=steps if steps is not None else [],
-        start_time=time.time(),
-        safety_limit=10,
-        collected_text=[],
-        active_tools=[{"type": "function", "function": {"name": "send_message"}}],
-        anything=anything,
+    return run_think_loop(
+        mind, anything=anything, steps=steps, chain=chain,
+        safety_limit=10, tools=_SEND_MESSAGE_TOOL,
         base_messages=[{"role": "user", "content": "图片好了吗"}],
     )
 
@@ -270,7 +209,7 @@ class TestWaitSuspension:
         """挂起超时后预算清零：后续纯文本按 Hermes 终态投递并结束。"""
         mind = _WaitMind()
         mind.background_tasks.register("_global", "delegation", "生成图片")
-        mind._queue = [_text_result(mind._wait_text) for _ in range(5)]
+        mind._queue = [text_result(mind._wait_text) for _ in range(5)]
         steps: List[str] = []
         chain: List = []
         await _run_reply(mind, anything, steps, chain)
@@ -288,7 +227,7 @@ class TestWaitSuspension:
         """有后台任务时任意纯文本都先挂起一次；预算耗尽后纯文本终态投递。"""
         mind = _WaitMind(wait_text="我今天心情不太好喵，想随便聊聊")
         mind.background_tasks.register("_global", "delegation", "生成图片")
-        mind._queue = [_text_result("我还是不太舒服") for _ in range(5)]
+        mind._queue = [text_result("我还是不太舒服") for _ in range(5)]
         steps: List[str] = []
         chain: List = []
         await _run_reply(mind, anything, steps, chain)
@@ -302,7 +241,7 @@ class TestWaitSuspension:
     async def test_no_tasks_text_delivers_and_ends(self, anything) -> None:
         """无后台任务时纯文本投递一次并结束本轮。"""
         mind = _WaitMind()
-        mind._queue = [_text_result(mind._wait_text) for _ in range(6)]
+        mind._queue = [text_result(mind._wait_text) for _ in range(6)]
         steps: List[str] = []
         chain: List = []
         await _run_reply(mind, anything, steps, chain)
@@ -324,19 +263,12 @@ class TestReflectGuards:
     async def test_reflect_pure_text_stops_at_three(self, anything) -> None:
         """REFLECT 持续输出纯文本：恰好 3 次后结束循环，产出累积在 collected_text。"""
         mind = _WaitMind(wait_text="内心反思草稿")
-        mind._queue = [_text_result("继续反思") for _ in range(10)]
+        mind._queue = [text_result("继续反思") for _ in range(10)]
         collected: List[str] = []
         steps: List[str] = []
-        await think_loop(
-            mind,
-            mode=ThinkMode.REFLECT,
-            tool_chain=[],
-            execution_steps=steps,
-            start_time=time.time(),
-            safety_limit=100,
-            collected_text=collected,
-            active_tools=[{"type": "function", "function": {"name": "recall"}}],
-            anything=None,
+        await run_think_loop(
+            mind, mode=ThinkMode.REFLECT, steps=steps, collected_text=collected,
+            safety_limit=100, tools=[{"type": "function", "function": {"name": "recall"}}],
             base_messages=[{"role": "user", "content": "反思一下"}],
         )
         assert len(collected) == 3
@@ -355,16 +287,9 @@ class TestReflectGuards:
             return await original(messages, tools, anything, tool_choice=tool_choice, options=options)
 
         mind._invoke_llm_unified = spy
-        await think_loop(
-            mind,
-            mode=ThinkMode.REFLECT,
-            tool_chain=[],
-            execution_steps=[],
-            start_time=time.time(),
-            safety_limit=2,
-            collected_text=[],
-            active_tools=[{"type": "function", "function": {"name": "recall"}}],
-            anything=None,
+        await run_think_loop(
+            mind, mode=ThinkMode.REFLECT, safety_limit=2,
+            tools=[{"type": "function", "function": {"name": "recall"}}],
             base_messages=[{"role": "user", "content": "反思一下"}],
         )
         assert seen

@@ -6,17 +6,13 @@ import pytest
 
 from agent.messages.presets import MessageUser
 from agent.storage.data_center import ConversationData
-from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageDomain, StorageRouter
 
 
 @pytest.fixture
-async def conv(tmp_path):
-    """临时库 ConversationData（用后关闭连接，防止 aiosqlite 线程残留阻塞退出）。"""
-    sqlite = SqliteBackend(db_path=str(tmp_path / "agent.sqlite3"))
-    router = StorageRouter(sqlite=sqlite)
-    yield sqlite, ConversationData(router, max_size=30)
-    await sqlite.close()
+async def conv(sqlite):
+    """临时库 ConversationData（连接随 sqlite 基座关闭）。"""
+    yield sqlite, ConversationData(StorageRouter(sqlite=sqlite), max_size=30)
 
 
 class TestAliasMergedHistory:

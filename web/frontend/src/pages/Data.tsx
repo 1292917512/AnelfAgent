@@ -21,7 +21,7 @@ export default function Data() {
   ];
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       <PageHeader
         icon={<Database size={20} className="text-accent" />}
         title={t("title")}

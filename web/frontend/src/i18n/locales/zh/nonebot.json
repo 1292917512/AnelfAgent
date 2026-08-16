@@ -1,19 +1,26 @@
 {
   "title": "NoneBot 客户端",
-  "subtitle": "完整 NoneBot 子进程桥接：适配器接入 · 插件生态 · 多平台消息汇总",
+  "subtitle": "完整 NoneBot 子进程桥接：环境管理 · 适配器 · 插件生态 · 多平台消息汇总，Web 与 AI 双通道自主管理",
   "tab": {
     "overview": "总览",
     "adapters": "适配器",
     "plugins": "插件",
     "store": "插件商店",
-    "env": "环境配置",
+    "config": "配置",
+    "runtime": "环境",
     "logs": "日志"
   },
   "loadFailed": "状态加载失败",
   "retry": "重试",
+  "guide": {
+    "title": "开始使用 NoneBot 客户端",
+    "step1": "点击下方按钮初始化 worker 环境（独立 venv + NoneBot2，约 1 分钟）",
+    "step2": "在「适配器」页安装平台适配器并填写凭据（如 OneBot V11 / Telegram）",
+    "step3": "到「通道」页启用 NoneBot 桥接频道，worker 自动启动",
+    "step4": "在「插件商店」浏览安装插件，AI 也可通过 nonebot_* 工具全程管理"
+  },
   "overview": {
     "disabled": "桥接未启用",
-    "enableHint": "在通道页面启用 NoneBot 桥接频道后，这里将展示客户端状态。",
     "status": {
       "running": "运行中",
       "starting": "启动中",
@@ -21,7 +28,11 @@
       "error": "异常",
       "stopped": "已停止"
     },
-    "restart": "重启 worker",
+    "restart": "重启",
+    "start": "启动",
+    "stop": "停止",
+    "startWorker": "启动 worker 子进程",
+    "stopWorker": "停止 worker 子进程（可随时再启动）",
     "processAlive": "进程存活",
     "venvReady": "venv 就绪",
     "bridgeConnected": "桥接已连接",
@@ -59,14 +70,21 @@
     "setupTitle": "平台接入配置（写入 worker .env）",
     "saveEnv": "保存配置",
     "uninstallTitle": "卸载适配器",
-    "uninstallMessage": "确认卸载 {{name}}？已启用时将从加载列表移除并重启 worker。"
+    "uninstallMessage": "确认卸载 {{name}}？已启用时将从加载列表移除并重启 worker。",
+    "advancedInstall": "高级安装（Git / 本地路径）",
+    "advKeyPlaceholder": "适配器 key（如 onebot_v11 / ding）",
+    "searchPlaceholder": "搜索适配器（key / 名称 / 包名）…"
   },
   "plugins": {
     "bridgeDisabled": "桥接未启用",
     "bridgeDisabledHint": "启用 NoneBot 桥接后可查看已加载插件。",
     "empty": "暂无已加载插件",
-    "emptyHint": "到插件商店浏览并安装，或经 AI 使用 nonebot_install_plugin。",
+    "emptyHint": "到插件商店浏览并安装，或经 AI 使用 nonebot_manage_plugin 安装。",
     "matchers": "{{count}} 个响应器",
+    "loaded": "已加载",
+    "notLoaded": "未加载",
+    "notLoadedHint": "已启用但 worker 未上报（worker 未运行或加载失败，见日志）",
+    "enableToggle": "启用（关闭则从加载列表移除，保留安装包）",
     "uninstallTitle": "卸载插件",
     "uninstallMessage": "确认卸载 {{name}}？worker 将重启并移除该插件。"
   },
@@ -85,7 +103,49 @@
     "author": "作者",
     "installed": "已安装",
     "install": "安装",
-    "installing": "安装中…"
+    "installing": "安装中…",
+    "advancedInstall": "高级安装（Git / 本地路径）",
+    "advancedInstallHint": "自维护仓库代码的插件/适配器从这里装",
+    "advModulePlaceholder": "插件模块名（如 nonebot_plugin_my）",
+    "advSourcePlaceholder": "git+https://github.com/你/仓库.git@分支 或本地路径 /path/to/repo",
+    "editable": "可编辑安装（本地路径，改代码即时生效）",
+    "loadMore": "加载更多",
+    "unvalidatedTitle": "安装未验证插件",
+    "unvalidatedMessage": "插件 {{name}} 未通过 NoneBot 官方注册表测试（可能不兼容当前版本或已停更）。仍要安装吗？"
+  },
+  "runtime": {
+    "title": "worker 运行环境（独立 venv）",
+    "ready": "环境就绪",
+    "notReady": "未初始化",
+    "bootstrap": "初始化环境",
+    "bootstrapped": "环境初始化完成",
+    "upgradeBaseline": "升级 NoneBot 基线",
+    "upgradeDone": "升级完成",
+    "upgradeOne": "升级",
+    "upgradePlaceholder": "包名（如 nonebot2）",
+    "rebuild": "重建",
+    "rebuilt": "环境已重建",
+    "rebuildTitle": "重建 worker venv",
+    "rebuildMessage": "将删除整个 worker venv 并重新安装基线包（已装适配器/插件需重装），确认继续？",
+    "found": "已找到",
+    "uvMissing": "未找到 uv",
+    "uvMissingHint": "未找到 uv（将回退 python -m venv，较慢且无依赖加速）。建议安装：curl -LsSf https://astral.sh/uv/install.sh | sh",
+    "pythonPkgs": "已安装包",
+    "venvPath": "venv 路径",
+    "packages": "已安装包",
+    "packagesHint": "升级单包后建议重启 worker 使其生效",
+    "noPackages": "暂无包信息",
+    "pkgName": "包名",
+    "pkgVersion": "版本",
+    "pkgActions": "操作",
+    "installing": "正在处理: {{packages}}",
+    "sourceTitle": "安装源与代理",
+    "sourceDesc": "适配器/插件安装使用的 PyPI 源与代理（git 源克隆同样生效）；off = 强制直连。AI 可经 nonebot_config_set 同权修改。",
+    "sourcesTitle": "源码仓库（git 源本地检出）",
+    "sourcesHint": "位于 {{dir}}（已被 git 忽略），可直接改代码",
+    "resync": "拉取并重装",
+    "resyncDone": "已更新 {{count}} 个 git 源安装项",
+    "sourcesNote": "「拉取并重装」对每个仓库执行 git pull --ff-only（不覆盖你的本地修改）后强制重装；可编辑安装项改代码即时生效，无需重装。"
   },
   "env": {
     "interceptTitle": "消息处理模式",
@@ -100,7 +160,11 @@
     "saveHint": "保存后 worker 自动热重启生效",
     "bridgeWsPort": "桥接 WS 端口",
     "workerHost": "worker 监听地址",
-    "workerPort": "worker 监听端口"
+    "workerPort": "worker 监听端口",
+    "indexTitle": "包安装源（pip_index_url）",
+    "indexDesc": "worker venv 安装适配器/插件时使用的 PyPI 源（如自建 devpi / 镜像），留空用默认源。",
+    "indexPlaceholder": "https://pypi.example.com/simple（留空 = 默认）",
+    "proxyPlaceholder": "http://127.0.0.1:7897 或 off（留空 = 继承系统）"
   },
   "logs": {
     "empty": "暂无日志",
@@ -110,6 +174,7 @@
   },
   "toast": {
     "requestFailed": "请求失败",
+    "done": "操作成功",
     "restartTriggered": "worker 重启已触发",
     "restartFailed": "重启失败",
     "adapterInstalled": "适配器 {{key}} 安装成功",

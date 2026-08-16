@@ -146,7 +146,8 @@
    粘性路由 + AI 工具
 4. **`config.py`** — 内置适配器注册表（含各平台接入元数据）与桥接配置 schema
 5. **Web API** — `/api/nonebot/*`：状态 / 适配器安装 / 插件商店 / 配置 / 日志 / 重启
-6. **前端** — `/nonebot` 独立管理页（总览 / 适配器 / 插件 / 商店 / 环境配置 / 日志）
+6. **前端** — `/nonebot` 独立管理页（总览 / 适配器 / 插件 / 商店 / 配置 / 环境 / 日志），
+   与 13 个 `nonebot_*` AI 工具（`channels/nonebot_bridge/tools.py`）共用同一服务层
 
 架构与使用说明详见 [`channels/nonebot_bridge/README.md`](../README.md)；
 文档同步执行 `python scripts/sync_nonebot_docs.py`。

@@ -18,7 +18,7 @@ export default function Heartbeat() {
   ];
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       <TabBar tabs={TABS} activeTab={tab} onChange={setTab} />
       {tab === "status" && <StatusPanel />}
       {tab === "config" && <ConfigPanel />}

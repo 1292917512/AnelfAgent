@@ -8,19 +8,10 @@
 
 from __future__ import annotations
 
-import pytest
-
 from agent.messages.everything import Everything
 from agent.storage.data_center import ConversationData
 from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageRouter
-
-
-@pytest.fixture
-async def sqlite(tmp_path):
-    backend = SqliteBackend(db_path=str(tmp_path / "agent.sqlite3"))
-    yield backend
-    await backend.close()
 
 
 class TestTriggerMindColumn:

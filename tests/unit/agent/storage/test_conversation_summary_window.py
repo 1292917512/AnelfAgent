@@ -14,7 +14,6 @@ import pytest
 from agent.storage import conversation_fold
 from agent.storage.conversation_fold import ConversationFolder
 from agent.storage.data_center import ConversationData
-from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageDomain, StorageRouter
 
 # 测试窗口参数：M=6，x=2（折叠周期 4 条）
@@ -29,11 +28,8 @@ def _raw_min(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture
-async def conv_data(tmp_path):
-    sqlite = SqliteBackend(db_path=str(tmp_path / "test.sqlite3"))
-    data = ConversationData(StorageRouter(sqlite=sqlite), max_size=MAX_SIZE)
-    yield data
-    await sqlite.close()
+async def conv_data(sqlite):
+    yield ConversationData(StorageRouter(sqlite=sqlite), max_size=MAX_SIZE)
 
 
 def _anything() -> SimpleNamespace:

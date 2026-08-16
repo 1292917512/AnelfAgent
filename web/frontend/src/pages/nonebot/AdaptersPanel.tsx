@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Download, Link, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, GitBranch, Link, Search, Trash2 } from "lucide-react";
 import { apiErrorMessage, nonebotApi } from "@/lib/api";
 import type { NoneBotAdapterInfo } from "@/lib/types";
 import { StatusDot } from "@/components/common/StatusDot";
 import { Badge, Button, ConfirmDialog, EmptyState, Input, LoadingBlock, Switch, Textarea, toast } from "@/components/ui";
+import { InstallProgressBanner } from "@/pages/nonebot/InstallProgressBanner";
 
 function difficultyVariant(difficulty: string): "ok" | "warn" | "danger" {
   if (difficulty === "easy") return "ok";
@@ -21,6 +22,10 @@ export function AdaptersPanel() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [uninstalling, setUninstalling] = useState<NoneBotAdapterInfo | null>(null);
   const [envDraft, setEnvDraft] = useState<Record<string, string>>({});
+  const [advOpen, setAdvOpen] = useState(false);
+  const [advKey, setAdvKey] = useState("");
+  const [advSource, setAdvSource] = useState("");
+  const [search, setSearch] = useState("");
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["nonebotAdapters"] });
@@ -65,15 +70,27 @@ export function AdaptersPanel() {
     onError: (err) => toast.error(apiErrorMessage(err, t("toast.uninstallFailed"))),
   });
 
-  const toggleMutation = useMutation({
-    mutationFn: ({ key, enabled }: { key: string; enabled: boolean }) => {
-      // 启用/禁用走 adapters 配置列表（save_config 内部热重启）
-      const adapters = (config?.adapters || []).filter((a) => a !== key);
-      if (enabled) adapters.push(key);
-      return nonebotApi.saveConfig({ adapters });
+  const advInstallMutation = useMutation({
+    mutationFn: () =>
+      nonebotApi.installAdapter(advKey.trim(), true, advSource.trim()),
+    onSuccess: (r) => {
+      if (r.data?.success) {
+        toast.success(t("toast.adapterInstalled", { key: advKey.trim() }));
+        setAdvKey("");
+        setAdvSource("");
+      } else {
+        toast.error(r.data?.error || t("toast.installFailed"));
+      }
+      invalidate();
     },
+    onError: (err) => toast.error(apiErrorMessage(err, t("toast.installFailed"))),
+  });
+
+  const toggleMutation = useMutation({
+    mutationFn: ({ key, enabled }: { key: string; enabled: boolean }) =>
+      nonebotApi.enableAdapter(key, enabled),
     onSuccess: () => {
-      toast.success(t("toast.configSaved"));
+      toast.success(t("toast.done"));
       invalidate();
       queryClient.invalidateQueries({ queryKey: ["nonebotConfig"] });
     },
@@ -107,18 +124,85 @@ export function AdaptersPanel() {
     );
   }
 
-  const adapters = data?.adapters || [];
+  const allAdapters = data?.adapters || [];
+  const keyword = search.trim().toLowerCase();
+  const adapters = keyword
+    ? allAdapters.filter((a) =>
+        [a.key, a.label, a.package, a.module].some((v) => v?.toLowerCase().includes(keyword)))
+    : allAdapters;
   const workerBase = status?.channel_status?.worker_base_url;
 
   return (
     <div className="space-y-3">
+      <InstallProgressBanner />
+
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <Input
+            className="pl-8"
+            placeholder={t("adapters.searchPlaceholder")}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <span className="shrink-0 text-xs text-muted">
+          {adapters.length}/{allAdapters.length}
+        </span>
+      </div>
+
       {workerBase && (
         <div className="rounded-lg border border-accent/30 bg-accent-subtle px-4 py-3 text-xs text-accent">
           {t("adapters.reverseWsHint", { base: workerBase })}
         </div>
       )}
 
-      {adapters.length === 0 ? (
+      {/* 高级安装：git 源 / 本地路径（适配器） */}
+      <div className="rounded-lg border border-border bg-panel p-4">
+        <button
+          className="flex w-full items-center gap-2 text-left text-sm font-medium"
+          onClick={() => setAdvOpen((v) => !v)}
+        >
+          <GitBranch size={15} className="text-accent" />
+          {t("adapters.advancedInstall")}
+          <span className="text-xs font-normal text-muted">{t("store.advancedInstallHint")}</span>
+        </button>
+        {advOpen && (
+          <form
+            className="mt-3 flex flex-col gap-2 sm:flex-row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (advKey.trim() && advSource.trim()) advInstallMutation.mutate();
+            }}
+          >
+            <Input
+              className="sm:w-52"
+              placeholder={t("adapters.advKeyPlaceholder")}
+              value={advKey}
+              onChange={(e) => setAdvKey(e.target.value)}
+            />
+            <Input
+              className="min-w-0 flex-1 font-mono text-xs"
+              placeholder={t("store.advSourcePlaceholder")}
+              value={advSource}
+              onChange={(e) => setAdvSource(e.target.value)}
+            />
+            <Button
+              variant="primary"
+              size="sm"
+              type="submit"
+              disabled={advInstallMutation.isPending || !advKey.trim() || !advSource.trim()}
+            >
+              <Download size={14} />
+              {advInstallMutation.isPending ? t("adapters.installing") : t("adapters.install")}
+            </Button>
+          </form>
+        )}
+      </div>
+
+      {adapters.length === 0 && keyword ? (
+        <EmptyState icon={Link} title={t("store.noResults")} description={t("store.noResultsHint")} />
+      ) : adapters.length === 0 ? (
         <EmptyState icon={Link} title={t("adapters.empty")} description={t("adapters.emptyHint")} />
       ) : (
         <div className="grid gap-3">

@@ -64,7 +64,7 @@ export default function Personas() {
   });
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       {/* 新建 */}
       <div className="flex gap-2">
         <Input

@@ -18,7 +18,7 @@ export default function Tools() {
   ];
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       <PageHeader
         icon={<Wrench size={20} className="text-accent" />}
         title={t("tools:title")}

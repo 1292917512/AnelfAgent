@@ -18,7 +18,7 @@ export default function Mcp() {
   ];
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       <PageHeader
         icon={<Plug size={20} className="text-accent" />}
         title={t("mcp:title")}

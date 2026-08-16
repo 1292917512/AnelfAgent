@@ -7,7 +7,7 @@ export default function Skills() {
   const { t } = useTranslation(["skills"]);
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       <PageHeader
         icon={<GraduationCap size={20} className="text-accent" />}
         title={t("skills:title")}

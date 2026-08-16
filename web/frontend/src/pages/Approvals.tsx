@@ -36,7 +36,7 @@ export default function Approvals() {
   ];
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       <PageHeader
         icon={<Shield size={20} className="text-accent" />}
         title={t("pageTitle")}

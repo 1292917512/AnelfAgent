@@ -89,7 +89,36 @@ export interface NoneBotStatus {
   registered: boolean;
   channel_status: NoneBotChannelStatus | null;
   install: NoneBotInstallState;
+  env?: NoneBotStatusEnv;
   error?: string;
+}
+
+export interface NoneBotStatusEnv {
+  venv_ready: boolean;
+  uv: string;
+  uv_found: boolean;
+}
+
+export interface NoneBotEnvStatus {
+  venv_ready: boolean;
+  uv_found: boolean;
+  uv_version: string;
+  python_version: string;
+  baseline: string[];
+  venv_path: string;
+  runtime_dir: string;
+  install: NoneBotInstallState;
+}
+
+export interface NoneBotPackageInfo {
+  name: string;
+  version: string;
+}
+
+export interface NoneBotPackagesResult {
+  success: boolean;
+  count: number;
+  packages: NoneBotPackageInfo[];
 }
 
 export interface NoneBotConfig {
@@ -102,6 +131,9 @@ export interface NoneBotConfig {
   worker_host: string;
   worker_port: number;
   auto_restart: boolean;
+  pip_index_url?: string;
+  pip_proxy?: string;
+  package_specs?: Record<string, string>;
 }
 
 export interface NoneBotStorePlugin {
@@ -137,4 +169,17 @@ export interface NoneBotOpResult {
   message?: string;
   restarted?: boolean;
   [k: string]: unknown;
+}
+
+export interface NoneBotSourceItem {
+  key: string;
+  spec: string;
+  kind: "git" | "path" | string;
+  repo_path: string;
+  repo_exists: boolean;
+}
+
+export interface NoneBotSourcesResult {
+  sources_dir: string;
+  items: NoneBotSourceItem[];
 }

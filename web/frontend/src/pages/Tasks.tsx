@@ -3,7 +3,7 @@ import { PageContainer } from "@/components/common/PageContainer";
 
 export default function Tasks() {
   return (
-    <PageContainer wide>
+    <PageContainer>
       <TasksPanel />
     </PageContainer>
   );

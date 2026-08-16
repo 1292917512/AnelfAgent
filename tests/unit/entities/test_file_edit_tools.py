@@ -1,8 +1,5 @@
-"""edit_file / read_file / write_file 工具集成测试。
-
-移植自 Claude Code FileEditTool/FileReadTool/FileWriteTool 的校验语义，
-见 docs/refactor/01-claudecode-tools.md。
-"""
+"""filesystem 工具集成测试：edit/read/write（移植自 Claude Code 校验语义，
+见 docs/refactor/01-claudecode-tools.md）+ search_files 检索与工具 prompt。"""
 
 from __future__ import annotations
 
@@ -278,3 +275,49 @@ class TestAppendFile:
         result = json.loads(tools.append_file(str(fp), " more"))
         assert "尚未读取" in result["error"]
         assert result.get("cause") == "state"
+
+
+# ------------------------------------------------------------------
+# search_files：glob/内容检索
+# ------------------------------------------------------------------
+
+class TestSearchFiles:
+    def test_glob_mode_sorted_by_mtime(self, workspace):
+        old = workspace / "old.txt"
+        new = workspace / "new.txt"
+        old.write_text("x")
+        time.sleep(0.01)
+        new.write_text("x")
+        result = json.loads(tools.search_files(str(workspace), "*.txt"))
+        assert result["results"][0]["name"] == "new.txt"
+
+    def test_content_pattern_finds_hits(self, workspace):
+        (workspace / "a.py").write_text("def foo():\n    pass\n# TODO: fix\n")
+        (workspace / "b.py").write_text("def bar():\n    pass\n")
+        result = json.loads(tools.search_files(str(workspace), "**/*.py", content_pattern="TODO"))
+        assert result["count"] == 1
+        assert result["results"][0]["matches"] == ["3:# TODO: fix"]
+
+    def test_content_pattern_invalid_regex(self, workspace):
+        result = json.loads(tools.search_files(str(workspace), "*", content_pattern="(["))
+        assert "正则" in result["error"]
+
+    def test_content_pattern_no_duplicates_dirs(self, workspace):
+        (workspace / "sub").mkdir()
+        (workspace / "sub/x.txt").write_text("needle\n")
+        result = json.loads(tools.search_files(str(workspace), "**/*", content_pattern="needle"))
+        assert result["count"] == 1
+        assert result["results"][0]["path"].endswith("x.txt")
+
+
+class TestLongPrompts:
+    def test_schema_description_contains_usage_rules(self):
+        import entities.filesystem.tools  # noqa: F401
+        from core.entity import EntityRegistry
+
+        schemas = {s["function"]["name"]: s["function"]["description"]
+                   for s in EntityRegistry.get_tool_schemas()}
+        assert "行号前缀" in schemas["read_file"]
+        assert "replace_all" in schemas["edit_file"]
+        assert "search_files" in schemas["run_shell_command"]  # 工具偏好表
+        assert "edit_file" in schemas["write_file"]  # 优先用 edit 的引导

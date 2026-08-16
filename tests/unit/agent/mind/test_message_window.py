@@ -10,15 +10,13 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 from typing import List
-from unittest.mock import AsyncMock
 
 import pytest
+from helpers.think_loop_fakes import FakeMind, FakePfc, run_think_loop
 
 from agent.llm.types import ImageContent, ToolCall
 from agent.messages import MessageUser
-from agent.mind.tools.think_loop import ThinkMode, think_loop
 from agent.storage.data_center import ConversationData
-from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageDomain, StorageRouter
 from core.tags import format_time, get_time_tag
 
@@ -52,11 +50,8 @@ class TestArrivalTimestamp:
 # ------------------------------------------------------------------
 
 @pytest.fixture
-async def conv_data(tmp_path):
-    sqlite = SqliteBackend(db_path=str(tmp_path / "test.sqlite3"))
-    data = ConversationData(StorageRouter(sqlite=sqlite))
-    yield data
-    await sqlite.close()
+async def conv_data(sqlite):
+    yield ConversationData(StorageRouter(sqlite=sqlite))
 
 
 class TestConversationOrdering:
@@ -168,8 +163,11 @@ class TestFeelImmediateAccept:
 # think_loop 循环内合并
 # ------------------------------------------------------------------
 
-class _MergePfc:
+class _MergePfc(FakePfc):
+    """记录媒体收集/工具重建调用次数的 PFC 替身。"""
+
     def __init__(self) -> None:
+        super().__init__()
         self.consumed: List[int] = []
         self.images_drained = 0
         self.media_drained = 0
@@ -177,21 +175,6 @@ class _MergePfc:
         self.pending_media: list = []
         self.media_activated: List[tuple] = []
         self.tools_rebuilt = 0
-
-    def build_execution_context(self, *a, **kw) -> dict:
-        return {"role": "system", "content": "exec"}
-
-    def add_temporary(self, clip) -> None:
-        pass
-
-    def clear_dynamic_tools(self) -> None:
-        pass
-
-    def record_tool_use(self, name: str) -> None:
-        pass
-
-    def expand_discovered_tools(self, tool_calls) -> None:
-        pass
 
     def consume_scope_task(self, scope) -> bool:
         self.consumed.append(scope)
@@ -215,15 +198,16 @@ class _MergePfc:
         return []
 
 
-class _MergeMind:
+class _MergeMind(FakeMind):
     """LLM 首轮即 end_reply 的 Mind 替身，conversation_data 为真实临时库。"""
 
     def __init__(self, conv_data: ConversationData) -> None:
-        self.pfc = _MergePfc()
-        self.compressor = None
+        super().__init__(
+            pfc=_MergePfc(),
+            config_overrides={"force_tool_use": True},
+            tool_results={"end_reply": '{"ok": true, "action": "end_reply"}'},
+        )
         self.conversation_data = conv_data
-        self._add_system_context = AsyncMock()
-        self.seen_messages: List[List[dict]] = []
 
     def _resolve_adapter_key(self) -> str:
         return "test"
@@ -236,23 +220,9 @@ class _MergeMind:
     def _resolve_entity_scope(anything) -> str:
         return f"user_{anything.uid}" if anything else ""
 
-    @property
-    def tool_executor(self):
-        async def _exec(tc) -> str:
-            return '{"ok": true, "action": "end_reply"}'
-        return _exec
-
-    def _set_phase(self, phase) -> None:
-        pass
-
-    def _get_mind_config(self):
-        return SimpleNamespace(llm_timeout=10.0, force_tool_use=True)
-
-    def get_model_context_length(self) -> int:
-        return 0
-
     async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None):
-        self.seen_messages.append(list(messages))
+        self.llm_calls += 1
+        self.sent_messages.append(list(messages))
         return SimpleNamespace(
             content="",
             tool_calls=[ToolCall(id="c1", name="end_reply", arguments="{}")],
@@ -282,21 +252,13 @@ class TestThinkLoopMerge:
         )
 
         mind = _MergeMind(conv_data)
-        await think_loop(
-            mind,
-            mode=ThinkMode.REPLY,
-            tool_chain=[],
-            execution_steps=[],
-            start_time=time.time(),
-            safety_limit=5,
-            collected_text=[],
-            active_tools=[],
-            anything=MessageUser(uid=1),
-            base_messages=list(base_records),
+        await run_think_loop(
+            mind, anything=MessageUser(uid=1),
+            safety_limit=5, base_messages=list(base_records),
         )
 
         # LLM 收到的上下文中包含第二条消息
-        flat = [m.get("content") for m in mind.seen_messages[0]]
+        flat = [m.get("content") for m in mind.sent_messages[0]]
         assert "第二条" in flat
         # 待处理条目已消费（不会另起周期重复回复）
         assert mind.pfc.consumed == ["user_1"]
@@ -314,20 +276,12 @@ class TestThinkLoopMerge:
         base_records = await conv_data.get_conversation_record_by_everything(MessageUser(uid=1))
 
         mind = _MergeMind(conv_data)
-        await think_loop(
-            mind,
-            mode=ThinkMode.REPLY,
-            tool_chain=[],
-            execution_steps=[],
-            start_time=time.time(),
-            safety_limit=5,
-            collected_text=[],
-            active_tools=[],
-            anything=MessageUser(uid=1),
-            base_messages=list(base_records),
+        await run_think_loop(
+            mind, anything=MessageUser(uid=1),
+            safety_limit=5, base_messages=list(base_records),
         )
 
-        flat = [m.get("content") for m in mind.seen_messages[0]]
+        flat = [m.get("content") for m in mind.sent_messages[0]]
         assert flat.count("第一条") == 1
         assert mind.pfc.consumed == []
 
@@ -347,17 +301,9 @@ class TestThinkLoopMerge:
 
         mind = _MergeMind(conv_data)
         mind.pfc.pending_images = [ImageContent(data="/tmp/x.jpg")]
-        await think_loop(
-            mind,
-            mode=ThinkMode.REPLY,
-            tool_chain=[],
-            execution_steps=[],
-            start_time=time.time(),
-            safety_limit=5,
-            collected_text=[],
-            active_tools=[],
-            anything=MessageUser(uid=1),
-            base_messages=list(base_records),
+        await run_think_loop(
+            mind, anything=MessageUser(uid=1),
+            safety_limit=5, base_messages=list(base_records),
         )
 
         # 媒体工具已激活且工具集已重建

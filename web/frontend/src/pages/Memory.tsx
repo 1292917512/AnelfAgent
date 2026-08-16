@@ -38,7 +38,7 @@ export default function Memory() {
   ];
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       <TabBar tabs={TAB_KEYS} activeTab={tab} onChange={setTab} />
       {tab === "overview" && <OverviewPanel />}
       {tab === "stm" && <STMPanel />}

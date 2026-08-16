@@ -12,7 +12,57 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional, Type
 
-from protocol import MSG_EVENT
+try:  # worker 脚本运行：同目录裸导入
+    from protocol import MSG_EVENT
+except ImportError:  # 主环境包上下文（单元测试）
+    from .protocol import MSG_EVENT
+
+# 群成员昵称缓存：{group_id: {user_id: nickname}}（cap 200 群 × 上限裁剪）
+_NICKNAME_CACHE_CAP = 200
+_group_member_cache: Dict[str, Dict[str, str]] = {}
+
+
+def get_cached_nickname(group_id: str, user_id: str) -> Optional[str]:
+    """从缓存中获取群成员昵称。"""
+    return _group_member_cache.get(group_id, {}).get(user_id)
+
+
+def cache_nickname(group_id: str, user_id: str, nickname: str) -> None:
+    """缓存群成员昵称（超限淘汰最早群组）。"""
+    if group_id not in _group_member_cache:
+        if len(_group_member_cache) >= _NICKNAME_CACHE_CAP:
+            for stale in list(_group_member_cache.keys())[:1]:
+                _group_member_cache.pop(stale, None)
+        _group_member_cache[group_id] = {}
+    _group_member_cache[group_id][user_id] = nickname
+
+
+def extract_message_text(data: Any) -> str:
+    """从 OneBot get_msg 返回的数据提取纯文本（纯函数，可测试）。
+
+    优先 raw_message；其次 message 段列表中的 text 段；message 为 str 时直取。
+    """
+    if isinstance(data, str):
+        return data
+    if not isinstance(data, dict):
+        try:
+            return str(data)
+        except Exception:  # noqa: BLE001 - 兜底
+            return ""
+    raw = str(data.get("raw_message", "") or "")
+    if raw:
+        return raw
+    message = data.get("message")
+    if isinstance(message, str):
+        return message
+    if isinstance(message, list):
+        parts = [
+            str(seg.get("data", {}).get("text", ""))
+            for seg in message
+            if isinstance(seg, dict) and seg.get("type") == "text"
+        ]
+        return "".join(parts)
+    return ""
 
 # 消息段类型 → 线协议段类型
 _SEGMENT_TYPE_MAP: Dict[str, str] = {
@@ -85,6 +135,13 @@ def _convert_message_event(
     adapter_key = get_adapter_key(bot, adapter_keys)
     session_id, session_type = _get_session_info(event)
     user_name = _extract_user_name(event, user_id)
+
+    # 群聊：昵称双向往返（有则缓存，无则回捞历史缓存）
+    if session_type == "group":
+        if user_name and user_name != user_id:
+            cache_nickname(session_id, user_id, user_name)
+        elif not user_name:
+            user_name = get_cached_nickname(session_id, user_id) or ""
 
     if session_type == "private":
         session_id = user_id

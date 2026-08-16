@@ -113,3 +113,39 @@ class TestWireEventConversion:
         assert msg.content == "(poke)"
         assert msg.is_to_me is True
         assert msg.timestamp > 0  # 0 视为无效回退当前时间
+
+
+class TestWireV4Fields:
+    """线协议 v4 新字段：reply_content 与图片段 local 零拷贝路径。"""
+
+    def test_reply_content_mapped(self) -> None:
+        payload = _group_event()
+        payload["reply_content"] = "被回复的原文"
+        msg = wire_event_to_adapter_message(payload)
+        assert msg is not None
+        assert msg.reply_to_id == "12345"
+        assert msg.reply_content == "被回复的原文"
+
+    def test_reply_content_default_empty(self) -> None:
+        msg = wire_event_to_adapter_message(_group_event())
+        assert msg is not None
+        assert msg.reply_content == ""
+
+    def test_image_local_path_preferred(self) -> None:
+        payload = _group_event()
+        payload["segments"] = [{
+            "seg": "image", "url": "https://example.com/a.jpg",
+            "file": "ABC.image", "local": "/napcat/cache/ABC.jpg",
+        }]
+        msg = wire_event_to_adapter_message(payload)
+        assert msg is not None
+        seg = msg.segments[0]
+        assert seg.url == "https://example.com/a.jpg"
+        assert seg.file_path == "/napcat/cache/ABC.jpg"
+
+    def test_image_without_local_falls_back_to_file_field(self) -> None:
+        payload = _group_event()
+        payload["segments"] = [{"seg": "image", "url": "https://x/a.jpg", "file": "ABC.image"}]
+        msg = wire_event_to_adapter_message(payload)
+        assert msg is not None
+        assert msg.segments[0].file_path == "ABC.image"

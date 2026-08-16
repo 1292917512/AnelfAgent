@@ -26,7 +26,7 @@ export default function Dashboard() {
   ];
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       <TabBar tabs={TAB_KEYS} activeTab={tab} onChange={changeTab} />
       {tab === "overview" && <OverviewPanel />}
       {tab === "logs" && <LogsPanel />}

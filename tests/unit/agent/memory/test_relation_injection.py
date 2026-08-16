@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from agent.memory.memory_retriever import MemoryRetriever
-from agent.memory.memory_store import MemoryStore
 
 
 class _NullEmbedder:
@@ -13,13 +12,6 @@ class _NullEmbedder:
 
     async def embed_query(self, _query: str):
         return None
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = MemoryStore(str(tmp_path / "memory.sqlite3"))
-    yield s
-    await s.close()
 
 
 @pytest.mark.asyncio

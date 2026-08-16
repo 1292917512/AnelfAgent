@@ -9,17 +9,16 @@
 
 from __future__ import annotations
 
-import time
+import asyncio
 from types import SimpleNamespace
 from typing import List
 from unittest.mock import AsyncMock
 
 import pytest
+from helpers.think_loop_fakes import FakeMind, FakePfc, run_think_loop, text_result
 
 from agent.channel.reply_route import is_short_ack, looks_like_preamble
 from agent.messages.presets import MessageUser
-from agent.mind.tools.round_helpers import ThinkMode
-from agent.mind.tools.think_loop import think_loop
 
 
 class TestLooksLikePreamble:
@@ -67,48 +66,14 @@ class TestIsShortAck:
 # think_loop 级：替身 Mind
 # ------------------------------------------------------------------
 
-class _PreamblePfc:
-    def build_execution_context(self, *a, **kw) -> dict:
-        return {"role": "system", "content": "exec"}
-
-    def add_temporary(self, clip) -> None:
-        pass
-
-    def clear_dynamic_tools(self) -> None:
-        pass
-
-    def record_tool_use(self, name: str) -> None:
-        pass
-
-    def expand_discovered_tools(self, tool_calls) -> None:
-        pass
-
-    def consume_scope_task(self, scope) -> bool:
-        return True
-
-    def collect_images(self, scope: str = "") -> list:
-        return []
-
-    def collect_media(self, scope: str = "") -> list:
-        return []
-
-    def activate_media_tools(self, images: list, media_segments: list) -> None:
-        pass
-
-    async def get_active_tool_schemas(self, adapter_key: str = "", scope: str = "") -> list:
-        return []
-
-
-class _ScriptedMind:
-    """按脚本依次返回 LLM 结果的 Mind 替身。"""
+class _ScriptedMind(FakeMind):
+    """按脚本依次返回文本的 Mind 替身（脚本耗尽后重复末条，防越界）。"""
 
     def __init__(self, script: List[str]) -> None:
-        self.pfc = _PreamblePfc()
-        self.compressor = None
+        super().__init__(default_text=None, pfc=FakePfc())
         self.conversation_data = SimpleNamespace(
             get_fetch_watermark=lambda st, sid: None,
         )
-        self._add_system_context = AsyncMock()
         self._script = list(script)
         self.calls = 0
 
@@ -123,45 +88,21 @@ class _ScriptedMind:
     def _resolve_entity_scope(anything) -> str:
         return anything.entity_scope if anything else ""
 
-    @property
-    def tool_executor(self):
-        async def _exec(tc) -> str:
-            return '{"ok": true}'
-        return _exec
-
-    def _set_phase(self, phase) -> None:
-        pass
-
-    def _get_mind_config(self):
-        return SimpleNamespace(llm_timeout=10.0, force_tool_use=False)
-
-    def get_model_context_length(self) -> int:
-        return 0
-
     async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None):
         content = self._script[min(self.calls, len(self._script) - 1)]
         self.calls += 1
-        return SimpleNamespace(
-            content=content, tool_calls=[], reasoning_content="",
-            usage=None, raw=None, model="fake",
-        )
+        self.sent_messages.append(list(messages))
+        return text_result(content)
 
 
 def _run_loop(mind) -> list[str]:
     steps: list[str] = []
-    import asyncio
 
     async def _go() -> None:
-        await think_loop(
+        await run_think_loop(
             mind,
-            mode=ThinkMode.REPLY,
-            tool_chain=[],
-            execution_steps=steps,
-            start_time=time.time(),
-            safety_limit=8,
-            collected_text=[],
-            active_tools=[],
             anything=MessageUser(uid=1, adapter_key="test"),
+            steps=steps, safety_limit=8,
             base_messages=[{"role": "user", "content": "帮我查一下"}],
         )
 
@@ -187,17 +128,9 @@ class TestPreambleGuard:
 
         mind = _ScriptedMind(["好的，我来帮你查一下。", "查到了：答案是 42。"])
         steps: list[str] = []
-        await think_loop(
-            mind,
-            mode=ThinkMode.REPLY,
-            tool_chain=[],
-            execution_steps=steps,
-            start_time=time.time(),
-            safety_limit=8,
-            collected_text=[],
-            active_tools=[],
-            anything=MessageUser(uid=1, adapter_key="test"),
-            base_messages=[{"role": "user", "content": "帮我查一下"}],
+        await run_think_loop(
+            mind, anything=MessageUser(uid=1, adapter_key="test"), steps=steps,
+            safety_limit=8, base_messages=[{"role": "user", "content": "帮我查一下"}],
         )
 
         assert len(delivered) == 1, "前言不应单独投递"
@@ -220,17 +153,9 @@ class TestPreambleGuard:
         )
 
         mind = _ScriptedMind(["我来看看", "让我查查", "我去找找"])
-        await think_loop(
-            mind,
-            mode=ThinkMode.REPLY,
-            tool_chain=[],
-            execution_steps=[],
-            start_time=time.time(),
-            safety_limit=8,
-            collected_text=[],
-            active_tools=[],
-            anything=MessageUser(uid=1, adapter_key="test"),
-            base_messages=[{"role": "user", "content": "hi"}],
+        await run_think_loop(
+            mind, anything=MessageUser(uid=1, adapter_key="test"),
+            safety_limit=8, base_messages=[{"role": "user", "content": "hi"}],
         )
 
         assert len(delivered) == 1, "上限后应放行投递并结束"
@@ -251,17 +176,9 @@ class TestPreambleGuard:
         )
 
         mind = _ScriptedMind(["今天天气不错。"])
-        await think_loop(
-            mind,
-            mode=ThinkMode.REPLY,
-            tool_chain=[],
-            execution_steps=[],
-            start_time=time.time(),
-            safety_limit=8,
-            collected_text=[],
-            active_tools=[],
-            anything=MessageUser(uid=1, adapter_key="test"),
-            base_messages=[{"role": "user", "content": "hi"}],
+        await run_think_loop(
+            mind, anything=MessageUser(uid=1, adapter_key="test"),
+            safety_limit=8, base_messages=[{"role": "user", "content": "hi"}],
         )
 
         assert delivered == ["今天天气不错。"]

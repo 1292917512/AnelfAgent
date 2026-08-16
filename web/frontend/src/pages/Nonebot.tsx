@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, Puzzle, Radio, ScrollText, Settings2, Store } from "lucide-react";
+import { Bot, Boxes, Puzzle, Radio, ScrollText, Settings2, Store } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { OverviewPanel } from "@/pages/nonebot/OverviewPanel";
@@ -8,9 +8,10 @@ import { AdaptersPanel } from "@/pages/nonebot/AdaptersPanel";
 import { PluginsPanel } from "@/pages/nonebot/PluginsPanel";
 import { StorePanel } from "@/pages/nonebot/StorePanel";
 import { EnvPanel } from "@/pages/nonebot/EnvPanel";
+import { EnvironmentPanel } from "@/pages/nonebot/EnvironmentPanel";
 import { LogsPanel } from "@/pages/nonebot/LogsPanel";
 
-type NonebotTab = "overview" | "adapters" | "plugins" | "store" | "env" | "logs";
+type NonebotTab = "overview" | "adapters" | "plugins" | "store" | "config" | "runtime" | "logs";
 
 export default function Nonebot() {
   const { t } = useTranslation("nonebot");
@@ -21,12 +22,13 @@ export default function Nonebot() {
     { key: "adapters", label: t("tab.adapters"), icon: Radio },
     { key: "plugins", label: t("tab.plugins"), icon: Puzzle },
     { key: "store", label: t("tab.store"), icon: Store },
-    { key: "env", label: t("tab.env"), icon: Settings2 },
+    { key: "config", label: t("tab.config"), icon: Settings2 },
+    { key: "runtime", label: t("tab.runtime"), icon: Boxes },
     { key: "logs", label: t("tab.logs"), icon: ScrollText },
   ];
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       <PageHeader
         icon={<Bot size={20} className="text-accent" />}
         title={t("title")}
@@ -38,7 +40,8 @@ export default function Nonebot() {
         {tab === "adapters" && <AdaptersPanel />}
         {tab === "plugins" && <PluginsPanel />}
         {tab === "store" && <StorePanel />}
-        {tab === "env" && <EnvPanel />}
+        {tab === "config" && <EnvPanel />}
+        {tab === "runtime" && <EnvironmentPanel />}
         {tab === "logs" && <LogsPanel />}
       </div>
     </PageContainer>

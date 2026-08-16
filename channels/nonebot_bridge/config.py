@@ -312,6 +312,16 @@ NONEBOT_BRIDGE_CONFIGS: Dict[str, Dict[str, Any]] = {
             "default": "",
             "advanced": True,
         },
+        "pip_index_url": {
+            "description": "worker venv 包安装自定义 PyPI 源（空 = 默认源）",
+            "default": "",
+            "advanced": True,
+        },
+        "pip_proxy": {
+            "description": "包安装代理（空=继承系统；off=强制直连；其余如 http://127.0.0.1:7897）",
+            "default": "",
+            "advanced": True,
+        },
         "python_exec": {
             "description": "创建 worker venv 所用 Python 覆盖（缺省用当前解释器）",
             "default": "",

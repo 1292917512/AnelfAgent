@@ -23,7 +23,7 @@ export default function Settings() {
   ];
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       <TabBar tabs={TAB_KEYS} activeTab={tab} onChange={setTab} />
 
       {tab === "sysConfig" && <SysConfigPanel />}

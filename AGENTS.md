@@ -416,7 +416,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `ollama` | Ollama | `entities/model_control/tools.py` | — |
 | `logs` | 日志查询 | `entities/logs/tools.py` | — |
 | `channel_ops` | 频道操作 | `agent/channel/tool_bridge.py`（@channel_tool 动态） | capability/channel_id |
-| `nonebot` | NoneBot 桥接 | `channels/nonebot_bridge/adapter.py`（@channel_tool，worker 子进程客户端） | always/nonebot_bridge（restart/install 敏感门控） |
+| `nonebot` | NoneBot 桥接 | `channels/nonebot_bridge/tools.py`（模块级注册，Web/AI 双通道自主管理：环境/适配器/插件/配置/生命周期） | always（装卸/升级/重建/配置写/生命周期 敏感门控） |
 | `entity` | 实体管理 | `entities/entity_query/tools.py` | always/core |
 | `mcp_manage` | MCP 管理 | `entities/mcp/bridge.py`（动态） | — |
 | `mcp:*` | MCP 服务 | 动态注册 | — |
@@ -464,7 +464,14 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
 
 **包管理**：项目依赖由 uv 管理（`pyproject.toml` + `uv.lock`），安装依赖用 `uv add`，临时操作用 `uv pip install`；禁止对 `.venv` 使用 `pip install` / `ensurepip`（uv 创建的 venv 默认不含 pip，属正常状态而非故障，不要"修复"它）
 
-**测试体系**：`tests/` 分两层——`tests/unit/`（纯 mock/纯函数/tmp_path，快速）与 `tests/integration/`（真实应用组装或需外部凭证，需凭证的用例 env-gated 自动 skip）；目录归属由根 `tests/conftest.py` 自动打 `unit`/`integration` marker，无需手写。根 conftest 全局隔离 ConfigManager（指向 tmp_path），新测试不得读写真实 `config/`。运行：`uv run pytest`（全量）/ `uv run pytest tests/unit`（快速）/ `uv run pytest -m integration`。CI（`.github/workflows/ci.yml`）在 push/PR 时执行 ruff + mypy（core 必过、全量观察）+ pytest（含覆盖率）+ 前端 lint/build。
+**测试体系**：`tests/` 分两层——`tests/unit/`（纯 mock/纯函数/tmp_path，快速）与 `tests/integration/`（真实应用组装或需外部凭证，需凭证的用例 env-gated 自动 skip）；目录归属由根 `tests/conftest.py` 自动打 `unit`/`integration` marker，无需手写。根 conftest 全局隔离 ConfigManager（指向 tmp_path），新测试不得读写真实 `config/`。运行：`uv run pytest`（全量）/ `uv run pytest tests/unit`（快速）/ `uv run pytest -m integration`；加 `-n auto` 并行（已装 pytest-xdist，全量约 64s→26s，CI 已启用；单测调试/`--pdb` 时去掉）。CI（`.github/workflows/ci.yml`）在 push/PR 时执行 ruff + mypy（core 必过、全量观察）+ pytest（并行含覆盖率）+ 前端 lint/build，双 job 均有 timeout-minutes 挂起护栏。
+
+**测试防膨胀规约**（写新测试前逐条自查）：
+1. **先查共享层再动手**：think_loop 替身用 `tests/helpers/think_loop_fakes.py`（FakeMind/FakePfc/text_result/tool_result/run_think_loop），禁止在新文件复制这些样板；Mind 替身的特化行为以子类扩展实现
+2. **fixture 分层复用**：`tests/unit/conftest.py` 提供 `store`（MemoryStore），`tests/unit/agent/conftest.py` 提供 `sqlite` 基座，`tests/unit/agent/mind/conftest.py` 提供 `anything`/`deliver_mock`——同名需求直接注入，禁止本地重建同构 fixture
+3. **同主题微测试并入既有文件**，不新建文件；跨目录测别的模块的测试放在被测模块目录下（如 think_loop 集成测试归 mind/，不进 llm/）
+4. **被新用例取代的旧用例必须删除**；死代码（生产零调用的函数）不保留测试覆盖
+5. 合并 = 移动 + 去样板，断言语义不缩水；语义各异的替身/工厂不强行合并（合并产物比各自更复杂时不合并）
 
 **禁止**：直接 import openai/anthropic SDK（用 litellm）/ entities 直接 import agent（用 _sdk 桥接）
 

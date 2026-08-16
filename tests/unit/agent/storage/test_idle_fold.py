@@ -11,18 +11,14 @@ import pytest
 from agent.storage import conversation_fold
 from agent.storage.conversation_fold import ConversationFolder
 from agent.storage.data_center import ConversationData
-from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageDomain, StorageRouter
 from core.config import ConfigManager
 
 
 @pytest.fixture
-async def conv_data(tmp_path, monkeypatch: pytest.MonkeyPatch):
+async def conv_data(sqlite, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(conversation_fold, "raw_min_messages", lambda: 2)
-    sqlite = SqliteBackend(db_path=str(tmp_path / "test.sqlite3"))
-    data = ConversationData(StorageRouter(sqlite=sqlite), max_size=6)
-    yield data
-    await sqlite.close()
+    yield ConversationData(StorageRouter(sqlite=sqlite), max_size=6)
 
 
 def _anything() -> SimpleNamespace:

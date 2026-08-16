@@ -92,7 +92,7 @@ export default function Config() {
   }, [currentGroup]);
 
   return (
-    <PageContainer wide>
+    <PageContainer>
       <PageHeader
         icon={<SlidersHorizontal size={22} />}
         title={t("title")}

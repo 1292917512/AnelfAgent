@@ -1,25 +1,16 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
-/** 统一页面容器：max-width + 间距 + 移动端适配 */
+/** 统一页面容器：自适应占满主区域 + 间距 + 移动端适配 */
 export function PageContainer({
   children,
   className,
-  wide = false,
 }: {
   children: ReactNode;
   className?: string;
-  /** 宽版页面（表格/仪表盘类） */
-  wide?: boolean;
 }) {
   return (
-    <div
-      className={cn(
-        "mx-auto w-full space-y-4 md:space-y-6",
-        wide ? "max-w-7xl" : "max-w-5xl",
-        className,
-      )}
-    >
+    <div className={cn("w-full space-y-4 md:space-y-6", className)}>
       {children}
     </div>
   );

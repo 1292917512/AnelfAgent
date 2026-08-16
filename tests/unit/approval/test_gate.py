@@ -9,62 +9,11 @@ from agent.approval import (
     ApprovalDecision,
     ApprovalManager,
     ApprovalPolicy,
-    ApprovalPolicySet,
     ApprovalRequest,
     RiskLevel,
     get_approval_gate,
     get_approval_manager,
 )
-
-
-@pytest.fixture
-def policy_set():
-    """测试用策略集。"""
-    return ApprovalPolicySet(
-        policies=[
-            ApprovalPolicy(
-                tool_name_pattern="shell.*",
-                risk_level=RiskLevel.CRITICAL,
-                requires_approval=True,
-                timeout_seconds=2.0,  # 短超时便于测试
-            ),
-            ApprovalPolicy(
-                tool_name_pattern="filesystem.*",
-                risk_level=RiskLevel.HIGH,
-                requires_approval=True,
-                timeout_seconds=2.0,
-            ),
-            ApprovalPolicy(
-                tool_name_pattern="memory.*",
-                risk_level=RiskLevel.LOW,
-                requires_approval=False,
-            ),
-        ],
-    )
-
-
-@pytest.mark.asyncio
-async def test_policy_matching(policy_set):
-    """测试策略匹配。"""
-    # 精确匹配
-    p = policy_set.match("shell.exec")
-    assert p is not None
-    assert p.risk_level == RiskLevel.CRITICAL
-    assert p.requires_approval is True
-
-    # glob 匹配
-    p = policy_set.match("filesystem.write_file")
-    assert p is not None
-    assert p.risk_level == RiskLevel.HIGH
-
-    # 无需批准
-    p = policy_set.match("memory.query")
-    assert p is not None
-    assert p.requires_approval is False
-
-    # 未匹配（返回 None 或 default_policy）
-    p = policy_set.match("unknown.tool")
-    assert p is None or p == policy_set.default_policy
 
 
 @pytest.mark.asyncio

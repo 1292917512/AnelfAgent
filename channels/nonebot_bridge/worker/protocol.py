@@ -41,7 +41,8 @@ ENV_BRIDGE_WS_URL = "ANELF_BRIDGE_WS_URL"
 ENV_BRIDGE_TOKEN = "ANELF_BRIDGE_TOKEN"
 
 # 线协议版本（不兼容变更时递增，两端校验）
-WIRE_VERSION = 3
+# v4: send 载荷 media{kind,source,name} 取代 image 字段；event 增 reply_content；图片段增 local
+WIRE_VERSION = 4
 
 
 def encode(payload: Dict[str, Any]) -> str:

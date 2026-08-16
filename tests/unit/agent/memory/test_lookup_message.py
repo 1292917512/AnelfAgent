@@ -6,18 +6,9 @@ import json
 import time
 from unittest.mock import patch
 
-import pytest
-
 from agent.memory import tools as memory_tools
 from agent.storage.sqlite_backend import SqliteBackend
 from core.tags import tag_label
-
-
-@pytest.fixture
-async def sqlite(tmp_path):
-    backend = SqliteBackend(db_path=str(tmp_path / "lookup.sqlite3"))
-    yield backend
-    await backend.close()
 
 
 def _msg(message_id: str, body: str, *, reply_to: str = "") -> str:

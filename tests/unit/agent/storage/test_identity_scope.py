@@ -11,7 +11,6 @@ import pytest
 
 from agent.messages.characters import EntityData
 from agent.storage.data_center import EverythingData
-from agent.storage.sqlite_backend import SqliteBackend
 from agent.storage.storage_router import StorageRouter
 
 
@@ -34,10 +33,8 @@ class TestIdentityScope:
 
 
 @pytest.fixture
-async def everything_data(tmp_path):
-    sqlite = SqliteBackend(db_path=str(tmp_path / "agent.sqlite3"))
+async def everything_data(sqlite):
     yield EverythingData(StorageRouter(sqlite=sqlite))
-    await sqlite.close()
 
 
 class TestEverythingDataRoundTrip:

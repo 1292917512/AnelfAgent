@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 
-import pytest
-
 from agent.memory.embedding import (
     EmbeddingWorker,
     register_embedding_backlog,
@@ -36,13 +34,6 @@ class FakeEmbedder:
 
     async def probe(self) -> bool:
         return self._available
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = MemoryStore(str(tmp_path / "memory.sqlite3"))
-    yield s
-    await s.close()
 
 
 def _entry(content: str) -> MemoryEntry:

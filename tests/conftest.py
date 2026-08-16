@@ -101,9 +101,18 @@ def pytest_runtest_call(item: pytest.Item):
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """报告退出时仍存活的非守护线程（会阻塞进程退出的泄漏）。"""
+    # 共享线程池（async_helper 等）是刻意的长生命周期设计，Lifecycle 已注册
+    # 关闭钩子；会话收尾主动关闭并从泄漏报告中排除，避免误报与归因错乱。
+    try:
+        from core.async_helper import shutdown_shared_executor
+
+        shutdown_shared_executor()
+    except Exception:
+        pass
     leaked = [
         t for t in threading.enumerate()
         if t.is_alive() and not t.daemon and t is not threading.main_thread()
+        and not t.name.startswith("async_helper")
     ]
     if leaked:
         print(f"\n[thread-leak] {len(leaked)} 个非守护线程仍存活，将阻塞 pytest 退出：")

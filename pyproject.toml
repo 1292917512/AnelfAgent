@@ -71,10 +71,11 @@ dev = [
     "pytest-cov>=7.0.0",
     "ruff>=0.14.0",
     "mypy>=1.18.0",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", "tests"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 timeout = 120

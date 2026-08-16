@@ -12,113 +12,28 @@ think_loop 回放并断言三件套——
 
 from __future__ import annotations
 
-import time
-from types import SimpleNamespace
-from typing import List
-from unittest.mock import AsyncMock
-
 import pytest
+from helpers.think_loop_fakes import (
+    FakeMind,
+    FakePfc,
+    run_think_loop,
+    text_result,
+    tool_result,
+)
 
-from agent.mind.tools import think_loop as tl
-from agent.mind.tools.think_loop import ThinkMode, think_loop
-
-
-def _tool_round(name: str, arguments: str = "{}") -> SimpleNamespace:
-    """一轮 LLM 响应：发起单个工具调用。"""
-    return SimpleNamespace(
-        content="", reasoning_content="", usage=None, raw=None, model="fake",
-        tool_calls=[SimpleNamespace(
-            id=f"tc_{name}", name=name, arguments=arguments,
-            raw={"id": f"tc_{name}", "type": "function",
-                 "function": {"name": name, "arguments": arguments}},
-        )],
-    )
+from agent.messages import MessageUser
 
 
-def _text_round(text: str) -> SimpleNamespace:
-    """一轮 LLM 响应：纯文本（无工具调用 → 收敛回复）。"""
-    return SimpleNamespace(
-        content=text, tool_calls=[], reasoning_content="",
-        usage=None, raw=None, model="fake",
-    )
+class _ReplayMind(FakeMind):
+    """脚本化 Mind 替身：按 _rounds 队列逐轮响应（轮次耗尽即失败）。"""
 
-
-class _ReplayPfc:
-    def build_execution_context(self, *a, **kw) -> dict:
-        # 对齐真实 build_execution_context：返回带 _layer 标签的执行上下文
-        return {"role": "system", "content": "exec", "_layer": "exec_context"}
-
-    def add_temporary(self, clip) -> None:
-        pass
-
-    def clear_dynamic_tools(self) -> None:
-        pass
-
-    def record_tool_use(self, name: str) -> None:
-        pass
-
-    def expand_discovered_tools(self, tool_calls) -> None:
-        pass
-
-    def peek_all_tasks(self) -> list:
-        return []
-
-    def get_adapter_key(self, scope: str) -> str:
-        return ""
-
-
-class _ReplayMind:
-    """脚本化 Mind 替身：按 _rounds 队列逐轮响应，捕获 sent_messages 与工具执行。"""
-
-    def __init__(self, rounds: List[SimpleNamespace]) -> None:
-        self.pfc = _ReplayPfc()
-        self.compressor = None
-        self._rounds = list(rounds)
-        self.sent_messages: List[list] = []
-        self.executed_tools: List[str] = []
-        self._add_system_context = AsyncMock()
-        self._reply_adapter_key = ""
-
-    def _resolve_adapter_key(self) -> str:
-        return ""
-
-    @property
-    def tool_executor(self):
-        async def _exec(tc) -> str:
-            self.executed_tools.append(tc.name)
-            return '{"ok": true}'
-        return _exec
-
-    def _set_phase(self, phase) -> None:
-        pass
-
-    def _get_mind_config(self):
-        return SimpleNamespace(
-            llm_timeout=10.0, force_tool_use=False,
-            text_without_tool_limit=5,
-            background_wait_timeout=30.0, background_wait_budget=120.0,
-        )
-
-    def get_model_context_length(self) -> int:
-        return 0
-
-    async def _invoke_llm_unified(self, messages, tools, anything=None, *,
-                                  tool_choice=None, options=None, **_kw):
-        self.sent_messages.append(list(messages))
-        return self._rounds.pop(0)
+    def __init__(self, rounds: list) -> None:
+        super().__init__(rounds=rounds, default_text=None, pfc=FakePfc(exec_layer=True))
 
 
 @pytest.fixture
-def anything():
-    from agent.messages import MessageUser
+def replay_anything():
     return MessageUser(uid=1)
-
-
-@pytest.fixture
-def deliver_mock(monkeypatch):
-    mock = AsyncMock(return_value=True)
-    monkeypatch.setattr(tl, "deliver_text", mock)
-    return mock
 
 
 def _base() -> list:
@@ -131,13 +46,10 @@ def _base() -> list:
 class TestScenarioPureText:
     """场景 1：纯文本回复（单轮收敛）。"""
 
-    async def test_replay(self, anything, deliver_mock) -> None:
-        mind = _ReplayMind([_text_round("你好呀～")])
-        await think_loop(
-            mind, mode=ThinkMode.REPLY, tool_chain=[], execution_steps=[],
-            start_time=time.time(), safety_limit=20, collected_text=[],
-            active_tools=[], anything=anything, base_messages=_base(),
-            adapter_key="test",
+    async def test_replay(self, replay_anything, deliver_mock) -> None:
+        mind = _ReplayMind([text_result("你好呀～")])
+        await run_think_loop(
+            mind, anything=replay_anything, base_messages=_base(), adapter_key="test",
         )
         # 布局：单轮调用，base(2) + exec_context(1)
         assert len(mind.sent_messages) == 1
@@ -155,13 +67,10 @@ class TestScenarioPureText:
 class TestScenarioSingleTool:
     """场景 2：单工具调用后文本收敛。"""
 
-    async def test_replay(self, anything, deliver_mock) -> None:
-        mind = _ReplayMind([_tool_round("recall"), _text_round("查到了")])
-        await think_loop(
-            mind, mode=ThinkMode.REPLY, tool_chain=[], execution_steps=[],
-            start_time=time.time(), safety_limit=20, collected_text=[],
-            active_tools=[], anything=anything, base_messages=_base(),
-            adapter_key="test",
+    async def test_replay(self, replay_anything, deliver_mock) -> None:
+        mind = _ReplayMind([tool_result("", ["recall"]), text_result("查到了")])
+        await run_think_loop(
+            mind, anything=replay_anything, base_messages=_base(), adapter_key="test",
         )
         # 两轮 LLM 调用
         assert len(mind.sent_messages) == 2
@@ -177,17 +86,14 @@ class TestScenarioSingleTool:
 class TestScenarioMultiToolChain:
     """场景 3：多轮工具链（顺序保持）。"""
 
-    async def test_replay(self, anything, deliver_mock) -> None:
+    async def test_replay(self, replay_anything, deliver_mock) -> None:
         mind = _ReplayMind([
-            _tool_round("recall"),
-            _tool_round("get_conversation"),
-            _text_round("都办好了"),
+            tool_result("", ["recall"]),
+            tool_result("", ["get_conversation"]),
+            text_result("都办好了"),
         ])
-        await think_loop(
-            mind, mode=ThinkMode.REPLY, tool_chain=[], execution_steps=[],
-            start_time=time.time(), safety_limit=20, collected_text=[],
-            active_tools=[], anything=anything, base_messages=_base(),
-            adapter_key="test",
+        await run_think_loop(
+            mind, anything=replay_anything, base_messages=_base(), adapter_key="test",
         )
         # 三轮 LLM 调用
         assert len(mind.sent_messages) == 3

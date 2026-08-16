@@ -1,9 +1,9 @@
-"""models provider 视觉链：内容审核拒绝的回退语义与优化提升。"""
+"""models provider 视觉链单元测试（内容审核回退 / URL 下载优先 / 视频分流）。"""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import List
+from typing import List, Optional
 
 import litellm
 import pytest
@@ -14,6 +14,7 @@ from entities.media.providers import models as models_mod
 from entities.media.providers.models import ModelsProvider
 
 _LOCAL = "/tmp/fake_photo.png"
+_URL = "https://cdn.example.com/photo.jpg?token=abc"
 
 
 def _sensitive_error() -> litellm.InternalServerError:
@@ -26,7 +27,7 @@ def _sensitive_error() -> litellm.InternalServerError:
 
 
 class _FakeVisionClient:
-    """按预设行为响应的视觉模型桩。"""
+    """视觉模型桩：可注入异常，记录调用次数与收到的图片形态。"""
 
     def __init__(self, name: str, error: Exception | None = None) -> None:
         self.config = SimpleNamespace(
@@ -34,21 +35,28 @@ class _FakeVisionClient:
         )
         self._error = error
         self.calls = 0
+        self.seen_is_url: List[bool] = []
 
     async def describe_images(self, images: list, prompt: str = "") -> str:
         self.calls += 1
+        self.seen_is_url.append(bool(images[0].is_url))
         if self._error is not None:
             raise self._error
         return f"desc-by-{self.config.name}"
 
 
-def _patch_common(monkeypatch: pytest.MonkeyPatch, clients: list) -> List[int]:
-    """装配桩：模型管理器 + 本地加载 + 计数版优化。"""
+def _patch_mgr(monkeypatch: pytest.MonkeyPatch, clients: list) -> None:
+    """装配最小模型管理器桩。"""
     monkeypatch.setattr(
         models_mod, "_mgr",
         lambda: SimpleNamespace(get_all_by_type=lambda _t: clients),
     )
     monkeypatch.setattr(sdk, "get_model_type_enum", lambda: SimpleNamespace(VISION="vision"))
+
+
+def _patch_common(monkeypatch: pytest.MonkeyPatch, clients: list) -> List[int]:
+    """装配桩：模型管理器 + 本地加载 + 计数版优化。"""
+    _patch_mgr(monkeypatch, clients)
     monkeypatch.setattr(sdk, "is_video_path", lambda _p: False)
     monkeypatch.setattr(
         sdk, "load_image_from_path",
@@ -119,3 +127,63 @@ class TestVisionContentPolicy:
         with pytest.raises(RuntimeError):
             await ModelsProvider()._run_vision(_LOCAL, "描述")
         assert len(optimize_calls) == 1
+
+
+class TestVisionDownloadFirst:
+    @pytest.mark.asyncio
+    async def test_url_converted_to_base64_before_models(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """即使模型支持 url 视觉，URL 也先下载转 base64，不直传给端点。"""
+        client = _FakeVisionClient("m1")
+        _patch_mgr(monkeypatch, [client])
+
+        async def _fake_download(url: str) -> ImageContent:
+            return ImageContent(data="aGk=", is_url=False)
+
+        monkeypatch.setattr(sdk, "download_image_to_base64", _fake_download)
+        out = await ModelsProvider()._run_vision(_URL, "描述")
+        assert out["description"] == "desc-by-m1"
+        assert client.seen_is_url == [False]
+
+    @pytest.mark.asyncio
+    async def test_download_failure_raises_expired_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """下载失败直接抛'链接可能已过期'，不再逐个模型空转。"""
+
+        async def _fail_download(url: str) -> Optional[ImageContent]:
+            return None
+
+        _patch_mgr(monkeypatch, [_FakeVisionClient("m1")])
+        monkeypatch.setattr(sdk, "download_image_to_base64", _fail_download)
+        with pytest.raises(RuntimeError, match="已过期"):
+            await ModelsProvider()._run_vision(_URL, "描述")
+
+
+class TestVisionVideoRouting:
+    @pytest.mark.asyncio
+    async def test_video_path_routes_to_run_video(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider = ModelsProvider()
+        called = {}
+
+        async def _fake_run_video(video_path: str, prompt: str) -> dict:
+            called["video_path"] = video_path
+            called["prompt"] = prompt
+            return {"description": "ok", "model": "m"}
+
+        monkeypatch.setattr(provider, "_run_video", _fake_run_video)
+        out = await provider._run_vision("workspace/uploads/video/a.mp4", "描述")
+        assert out["description"] == "ok"
+        assert called == {"video_path": "workspace/uploads/video/a.mp4", "prompt": "描述"}
+
+    @pytest.mark.asyncio
+    async def test_video_url_routes_to_run_video(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider = ModelsProvider()
+
+        async def _fake_run_video(video_path: str, prompt: str) -> dict:
+            return {"description": "ok"}
+
+        monkeypatch.setattr(provider, "_run_video", _fake_run_video)
+        out = await provider._run_vision("https://example.com/a.webm?x=1", "描述")
+        assert out["description"] == "ok"

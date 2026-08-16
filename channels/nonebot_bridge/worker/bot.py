@@ -34,7 +34,17 @@ from nonebot.exception import IgnoredException
 from nonebot.message import event_preprocessor
 from nonebot.message import handle_event as nb_handle_event
 from protocol import CMD_GET_PLUGINS, CMD_GET_STATUS, CMD_RUN_COMMAND, WIRE_VERSION
-from wire_out import convert_event_to_wire
+from segments import (
+    file_display_name,
+    plain_at_text,
+    resolve_media_source,
+    split_at_segments,
+)
+from wire_out import (
+    convert_event_to_wire,
+    extract_message_text,
+    get_adapter_key,
+)
 
 RUNTIME_DIR = Path.cwd()
 CONFIG_PATH = RUNTIME_DIR / "config.json"
@@ -48,6 +58,9 @@ client: Optional[BridgeClient] = None
 _capture_buffer: ContextVar[Optional[List[str]]] = ContextVar("nb_capture", default=None)
 
 _COMMAND_TIMEOUT = 60.0
+# 事件增强预算：单查询超时与整体并发窗口（秒）；最多增强前 N 张图
+_ENRICH_BUDGET = 5.0
+_ENRICH_MAX_IMAGES = 4
 
 
 # ------------------------------------------------------------------
@@ -140,52 +153,185 @@ def _bot_adapter_key(bot: Any) -> str:
     return adapter_keys.get(type(adapter)) or ""
 
 
+async def _enrich_onebot_event(bot: Any, wire: Dict[str, Any]) -> None:
+    """OneBot v11 事件深度增强（best-effort，运行在事件预处理器内）。
+
+    1. 回复引用回捞：get_msg 取被回复消息的文本 → ``reply_content``；
+    2. NapCat 本地图片零拷贝：to_me 消息的图片段经 get_image 解析出
+       协议端本地路径 → 段 ``local`` 字段（父进程直接用作本地文件，免下载）。
+
+    全部查询并发执行且带总预算（_ENRICH_BUDGET），多图消息不再逐张串行
+    阻塞事件管线；超预算直接放弃增强，走 URL 下载兜底。
+    """
+    image_segs = [
+        seg for seg in (wire.get("segments") or [])
+        if isinstance(seg, dict) and seg.get("seg") == "image" and seg.get("file")
+    ][:_ENRICH_MAX_IMAGES]
+
+    async def _fetch_reply() -> None:
+        reply_to = str(wire.get("reply_to", "") or "")
+        if not reply_to or wire.get("reply_content"):
+            return
+        data = await asyncio.wait_for(
+            bot.call_api("get_msg", message_id=int(reply_to)),
+            timeout=_ENRICH_BUDGET,
+        )
+        wire["reply_content"] = extract_message_text(data)[:500]
+
+    async def _fetch_local(seg: Dict[str, Any]) -> None:
+        data = await asyncio.wait_for(
+            bot.call_api("get_image", file=str(seg.get("file", ""))),
+            timeout=_ENRICH_BUDGET,
+        )
+        local = str((data or {}).get("file", "") or "")
+        if local and Path(local).is_absolute():
+            seg["local"] = local
+
+    tasks: List[Any] = []
+    if wire.get("reply_to"):
+        tasks.append(_fetch_reply())
+    if wire.get("is_to_me"):
+        tasks.extend(_fetch_local(seg) for seg in image_segs)
+    if not tasks:
+        return
+
+    try:
+        # gather 并发 + 整体预算；单任务失败不影响其余（URL 下载兜底）
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=_ENRICH_BUDGET + 1.0,
+        )
+    except asyncio.TimeoutError:
+        pass
+
+
+# ------------------------------------------------------------------
+# 出站发送器注册表 —— 新增平台支持 = 实现一个 sender + 注册一行
+# ------------------------------------------------------------------
+
+
+class SendContext:
+    """单次发送请求的上下文（bot / 目标 / 文本 / 媒体）。"""
+
+    __slots__ = ("bot", "adapter_key", "target", "channel_type", "text",
+                 "reply_to", "media_kind", "media_source", "media_name")
+
+    def __init__(self, payload: Dict[str, Any], bot: Any, adapter_key: str) -> None:
+        media = payload.get("media") or {}
+        self.bot = bot
+        self.adapter_key = adapter_key
+        self.target = str(payload.get("target", ""))
+        self.channel_type = str(payload.get("channel_type", "private"))
+        self.text = str(payload.get("text", ""))
+        self.reply_to = str(payload.get("reply_to", "") or "")
+        self.media_kind = str(media.get("kind", "") or "")
+        self.media_source = str(media.get("source", "") or "")
+        self.media_name = str(media.get("name", "") or "")
+
+
+# 适配器 key → sender（ctx → message_id）；未注册的适配器走 _send_generic
+_SENDERS: Dict[str, Any] = {}
+
+
+def _sender(adapter_key: str):
+    """注册发送器装饰器。"""
+    def decorator(func: Any) -> Any:
+        _SENDERS[adapter_key] = func
+        return func
+    return decorator
+
+
 async def handle_send(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """处理父进程下行的发送请求。"""
+    """处理父进程下行的发送请求。
+
+    media 载荷：``{"kind": "image|voice|video|file", "source": 路径或URL或file_id, "name": 覆盖名}``
+    按适配器 key 查 ``_SENDERS`` 注册表分发；新增平台无需改动本函数。
+    """
     bot = _resolve_bot(str(payload.get("bot_id", "")), str(payload.get("adapter", "")))
     if bot is None:
         return {"ok": False, "error": "没有在线的 Bot"}
 
-    target = str(payload.get("target", ""))
-    channel_type = str(payload.get("channel_type", "private"))
-    text = str(payload.get("text", ""))
-    reply_to = str(payload.get("reply_to", "") or "")
-    image = str(payload.get("image", "") or "")
-
-    key = _bot_adapter_key(bot)
+    ctx = SendContext(payload, bot, _bot_adapter_key(bot))
+    sender = _SENDERS.get(ctx.adapter_key, _send_generic_ctx)
     try:
-        if key == "onebot_v11":
-            message_id = await _send_onebot_v11(bot, target, channel_type, text, reply_to, image)
-        elif key == "onebot_v12":
-            message_id = await _send_onebot_v12(bot, target, channel_type, text, reply_to, image)
-        elif key == "telegram":
-            message_id = await _send_telegram(bot, target, text, reply_to, image)
-        elif key == "discord":
-            await bot.call_api("create_message", channel_id=int(target), content=text)
-            message_id = ""
-        else:
-            message_id = await _send_generic(bot, target, channel_type, text)
+        message_id = await sender(ctx)
         return {"ok": True, "message_id": message_id}
     except Exception as exc:  # noqa: BLE001 - 发送异常如实回传父进程
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
-async def _send_onebot_v11(
-    bot: Any, target: str, channel_type: str, text: str, reply_to: str, image: str
-) -> str:
-    """OneBot V11 精确发送（支持图片与回复引用）。"""
+async def _send_generic_ctx(ctx: "SendContext") -> str:
+    """通用兜底发送（未注册专属 sender 的适配器）。"""
+    return await _send_generic(ctx.bot, ctx.target, ctx.channel_type, ctx.text)
+
+
+@_sender("discord")
+async def _send_discord(ctx: "SendContext") -> str:
+    """Discord 文本发送（媒体暂不支持，错误如实抛出）。"""
+    if ctx.media_kind:
+        raise RuntimeError("Discord 媒体发送暂未实现，请经 nonebot 插件生态处理")
+    await ctx.bot.call_api(
+        "create_message", channel_id=int(ctx.target), content=plain_at_text(ctx.text)
+    )
+    return ""
+
+
+async def _resolve_source(source: str) -> str:
+    """媒体源解析（本地文件读取放线程，避免大文件阻塞事件循环）。"""
+    if not source:
+        return ""
+    return await asyncio.to_thread(resolve_media_source, source)
+
+
+@_sender("onebot_v11")
+async def _send_onebot_v11(ctx: "SendContext") -> str:
+    """OneBot V11 精确发送：at 段 / 回复引用 / 图片 / 语音 / 视频 / 文件。
+
+    - 文本中的 [at_uid:x] 转为真正的 at 消息段（@全体成员）；
+    - 图片/语音/视频本地文件 base64 内联（URL/file_id 直传）；
+    - 文件走 upload_group_file/upload_private_file（群文件/私聊文件 API）。
+    """
     from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
-    segments: List[Any] = []
-    if reply_to:
-        segments.append(MessageSegment.reply(reply_to))
-    if image:
-        segments.append(MessageSegment.image(image))
-    if text:
-        segments.append(MessageSegment.text(text))
-    message = Message(segments)
+    bot, target = ctx.bot, ctx.target
 
-    if channel_type == "group":
+    # 文件类：独立上传 API，不进消息段
+    if ctx.media_kind == "file" and ctx.media_source:
+        name = file_display_name(ctx.media_source, ctx.media_name)
+        if ctx.channel_type == "group":
+            await bot.call_api(
+                "upload_group_file", group_id=int(target), file=ctx.media_source, name=name
+            )
+        else:
+            await bot.call_api(
+                "upload_private_file", user_id=int(target), file=ctx.media_source, name=name
+            )
+        return ""
+
+    segments: List[Any] = []
+    if ctx.reply_to:
+        segments.append(MessageSegment.reply(ctx.reply_to))
+
+    if ctx.media_kind in ("image", "voice", "video") and ctx.media_source:
+        source = await _resolve_source(ctx.media_source)
+        if ctx.media_kind == "image":
+            segments.append(MessageSegment.image(source))
+        elif ctx.media_kind == "voice":
+            segments.append(MessageSegment.record(source))
+        else:
+            segments.append(MessageSegment.video(source))
+
+    # 文本 → at/text 有序段
+    for seg_kind, value in split_at_segments(ctx.text):
+        if seg_kind == "at":
+            segments.append(
+                MessageSegment.at("all" if value == "all" else int(value))
+            )
+        elif value:
+            segments.append(MessageSegment.text(value))
+
+    message = Message(segments)
+    if ctx.channel_type == "group":
         result = await bot.call_api("send_group_msg", group_id=int(target), message=message)
     else:
         result = await bot.call_api(
@@ -194,55 +340,71 @@ async def _send_onebot_v11(
     return str((result or {}).get("message_id", ""))
 
 
-async def _send_onebot_v12(
-    bot: Any, target: str, channel_type: str, text: str, reply_to: str, image: str
-) -> str:
-    """OneBot V12 统一 send_message 发送。"""
+@_sender("onebot_v12")
+async def _send_onebot_v12(ctx: "SendContext") -> str:
+    """OneBot V12 统一 send_message 发送（媒体图片/语音/视频内联，at 文本化）。"""
     from nonebot.adapters.onebot.v12 import Message, MessageSegment
 
     segments: List[Any] = []
-    if image:
-        segments.append(MessageSegment.image(image))
-    if text:
-        segments.append(MessageSegment.text(text))
-    params: Dict[str, Any] = {"message": Message(segments), "detail_type": channel_type}
-    if channel_type == "group":
-        params["group_id"] = target
+    if ctx.media_kind in ("image", "voice", "video") and ctx.media_source:
+        source = await _resolve_source(ctx.media_source)
+        if ctx.media_kind == "image":
+            segments.append(MessageSegment.image(source))
+        elif ctx.media_kind == "voice":
+            segments.append(MessageSegment.audio(source))
+        else:
+            segments.append(MessageSegment.video(source))
+    plain = plain_at_text(ctx.text)
+    if plain:
+        segments.append(MessageSegment.text(plain))
+    params: Dict[str, Any] = {"message": Message(segments), "detail_type": ctx.channel_type}
+    if ctx.channel_type == "group":
+        params["group_id"] = ctx.target
     else:
-        params["user_id"] = target
-    result = await bot.call_api("send_message", **params)
+        params["user_id"] = ctx.target
+    result = await ctx.bot.call_api("send_message", **params)
     return str((result or {}).get("message_id", ""))
 
 
-async def _send_telegram(bot: Any, target: str, text: str, reply_to: str, image: str) -> str:
-    """Telegram 发送（图片 URL 直传，本地文件读入字节）。"""
-    chat_id: Any = target
+@_sender("telegram")
+async def _send_telegram(ctx: "SendContext") -> str:
+    """Telegram 发送：图片/语音/视频/文档 + 文本（URL 直传，本地读字节）。"""
+    chat_id: Any = ctx.target
     try:
-        chat_id = int(target)
+        chat_id = int(ctx.target)
     except ValueError:
         pass
 
-    if image:
-        photo: Any = image
-        if not image.startswith(("http://", "https://")):
-            photo = Path(image).read_bytes()
-        await bot.call_api("sendPhoto", chat_id=chat_id, photo=photo)
+    if ctx.media_kind and ctx.media_source:
+        payload: Any = ctx.media_source
+        if not ctx.media_source.startswith(("http://", "https://")):
+            payload = await asyncio.to_thread(Path(ctx.media_source).read_bytes)
+        api = {
+            "image": ("sendPhoto", {"photo": payload}),
+            "voice": ("sendVoice", {"voice": payload}),
+            "video": ("sendVideo", {"video": payload}),
+            "file": ("sendDocument", {"document": payload}),
+        }.get(ctx.media_kind)
+        if api is None:
+            raise RuntimeError(f"Telegram 不支持媒体类型 {ctx.media_kind}")
+        await ctx.bot.call_api(api[0], chat_id=chat_id, **api[1])
 
-    params: Dict[str, Any] = {"chat_id": chat_id, "text": text or " "}
-    if reply_to:
+    params: Dict[str, Any] = {"chat_id": chat_id, "text": plain_at_text(ctx.text) or " "}
+    if ctx.reply_to:
         try:
-            params["reply_to_message_id"] = int(reply_to)
+            params["reply_to_message_id"] = int(ctx.reply_to)
         except ValueError:
             pass
-    result = await bot.call_api("sendMessage", **params)
+    result = await ctx.bot.call_api("sendMessage", **params)
     return str((result or {}).get("message_id", ""))
 
 
 async def _send_generic(bot: Any, target: str, channel_type: str, text: str) -> str:
-    """通用适配器尽力而为发送：依次尝试常见 API 参数形态。"""
+    """通用适配器尽力而为发送：依次尝试常见 API 参数形态（at 文本化）。"""
+    plain = plain_at_text(text)
     attempts: List[Dict[str, Any]] = [
-        {"target": target, "message": text},
-        {"chat_id": target, "text": text},
+        {"target": target, "message": plain},
+        {"chat_id": target, "text": plain},
     ]
     last_error: Optional[Exception] = None
     for params in attempts:
@@ -397,12 +559,16 @@ def main() -> None:
         """平台事件 → 线协议上报父进程；intercept_all 时拦截插件处理。
 
         注意：NoneBot 依赖注入按参数类型解析，钩子签名必须使用 Bot/Event 注解。
+        OneBot v11 额外做深度增强：回复内容回捞（get_msg）与
+        NapCat 本地图片零拷贝（get_image），对齐直连 QQ 频道体验。
         """
         if client is None:
             return
         wire = convert_event_to_wire(bot, event, adapter_keys)
         if wire is None:
             return
+        if get_adapter_key(bot, adapter_keys) == "onebot_v11":
+            await _enrich_onebot_event(bot, wire)
         await client.send_event(wire)
         if intercept_all:
             raise IgnoredException("Handled by AnelfAgent NoneBot Bridge")

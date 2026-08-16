@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, RefreshCw } from "lucide-react";
+import { Bot, Play, RefreshCw, Square } from "lucide-react";
 import { apiErrorMessage, nonebotApi } from "@/lib/api";
 import { StatusDot } from "@/components/common/StatusDot";
 import { Badge, Button, EmptyState, LoadingBlock, toast } from "@/components/ui";
@@ -12,7 +12,7 @@ function statusDotOf(status: string): "ok" | "warn" | "danger" | "offline" {
   return "offline";
 }
 
-/** NoneBot 客户端总览：worker 进程 / 桥接连接 / 在线 Bot / 重启 */
+/** NoneBot 客户端总览：worker 进程 / 桥接连接 / 在线 Bot / 生命周期控制 */
 export function OverviewPanel() {
   const { t } = useTranslation("nonebot");
   const queryClient = useQueryClient();
@@ -23,12 +23,38 @@ export function OverviewPanel() {
     refetchInterval: 5000,
   });
 
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["nonebotStatus"] });
+    queryClient.invalidateQueries({ queryKey: ["nonebotEnv"] });
+  };
+
+  const bootstrapMutation = useMutation({
+    mutationFn: () => nonebotApi.envBootstrap(),
+    onSuccess: (r) => {
+      if (r.data?.success) toast.success(r.data.message || t("runtime.bootstrapped"));
+      else toast.error(r.data?.error || t("toast.requestFailed"));
+      invalidate();
+    },
+    onError: (err) => toast.error(apiErrorMessage(err, t("toast.requestFailed"))),
+  });
+
   const restartMutation = useMutation({
     mutationFn: () => nonebotApi.restart(),
     onSuccess: (r) => {
       if (r.data?.success) toast.success(t("toast.restartTriggered"));
       else toast.error(r.data?.error || t("toast.restartFailed"));
-      queryClient.invalidateQueries({ queryKey: ["nonebotStatus"] });
+      invalidate();
+    },
+    onError: (err) => toast.error(apiErrorMessage(err, t("toast.requestFailed"))),
+  });
+
+  const lifecycleMutation = useMutation({
+    mutationFn: (action: "start" | "stop") =>
+      action === "start" ? nonebotApi.workerStart() : nonebotApi.workerStop(),
+    onSuccess: (r) => {
+      if (r.data?.success) toast.success(r.data.message || t("toast.done"));
+      else toast.error(r.data?.error || t("toast.requestFailed"));
+      invalidate();
     },
     onError: (err) => toast.error(apiErrorMessage(err, t("toast.requestFailed"))),
   });
@@ -55,9 +81,40 @@ export function OverviewPanel() {
   const dot = status.enabled
     ? statusDotOf(channel?.status || "stopped")
     : "offline";
+  const workerAlive = !!worker?.alive;
 
   return (
     <div className="space-y-3">
+      {/* 未启用引导卡 */}
+      {!status.enabled && (
+        <div className="rounded-lg border border-accent/30 bg-accent-subtle p-4">
+          <h3 className="text-sm font-medium text-accent">{t("guide.title")}</h3>
+          <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-muted">
+            <li>{t("guide.step1")}</li>
+            <li>{t("guide.step2")}</li>
+            <li>{t("guide.step3")}</li>
+            <li>{t("guide.step4")}</li>
+          </ol>
+          <div className="mt-3 flex items-center gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={bootstrapMutation.isPending || status.env?.venv_ready}
+              onClick={() => bootstrapMutation.mutate()}
+            >
+              {bootstrapMutation.isPending && <RefreshCw size={14} className="animate-spin" />}
+              {status.env?.venv_ready ? t("runtime.ready") : t("runtime.bootstrap")}
+            </Button>
+            {status.env?.venv_ready && (
+              <Badge variant="ok">{t("runtime.ready")}</Badge>
+            )}
+            {!status.env?.uv_found && (
+              <span className="text-xs text-warn">{t("runtime.uvMissingHint")}</span>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 状态总览卡 */}
       <div className="rounded-lg border border-border bg-panel p-4">
         <div className="flex items-center justify-between gap-3">
@@ -73,20 +130,42 @@ export function OverviewPanel() {
               <Badge variant="accent">NoneBot {snapshot.nonebot_version}</Badge>
             )}
           </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={!status.registered || restartMutation.isPending}
-            onClick={() => restartMutation.mutate()}
-          >
-            <RefreshCw size={14} className={restartMutation.isPending ? "animate-spin" : ""} />
-            {t("overview.restart")}
-          </Button>
+          <div className="flex items-center gap-2">
+            {status.enabled && workerAlive && (
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={lifecycleMutation.isPending}
+                onClick={() => lifecycleMutation.mutate("stop")}
+                title={t("overview.stopWorker")}
+              >
+                <Square size={14} />
+                {t("overview.stop")}
+              </Button>
+            )}
+            {status.enabled && !workerAlive && (
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={lifecycleMutation.isPending}
+                onClick={() => lifecycleMutation.mutate("start")}
+                title={t("overview.startWorker")}
+              >
+                <Play size={14} />
+                {t("overview.start")}
+              </Button>
+            )}
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={!status.registered || restartMutation.isPending}
+              onClick={() => restartMutation.mutate()}
+            >
+              <RefreshCw size={14} className={restartMutation.isPending ? "animate-spin" : ""} />
+              {t("overview.restart")}
+            </Button>
+          </div>
         </div>
-
-        {!status.enabled && (
-          <p className="mt-2 text-xs text-muted">{t("overview.enableHint")}</p>
-        )}
 
         {status.enabled && worker && (
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">

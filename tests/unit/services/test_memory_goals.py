@@ -17,13 +17,6 @@ from services.memory import MemoryService
 
 
 @pytest.fixture
-async def store(tmp_path):
-    s = MemoryStore(str(tmp_path / "memory.sqlite3"))
-    yield s
-    await s.close()
-
-
-@pytest.fixture
 def svc(store: MemoryStore, monkeypatch) -> MemoryService:
     rt = SimpleNamespace(mind=SimpleNamespace(memory_store=store))
     monkeypatch.setattr("services.memory.require_runtime", lambda: rt)

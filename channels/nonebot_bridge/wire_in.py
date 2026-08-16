@@ -64,6 +64,7 @@ def wire_event_to_adapter_message(payload: Dict[str, Any]) -> Optional[AdapterMe
         is_to_me=bool(payload.get("is_to_me", False)),
         timestamp=_to_float(payload.get("timestamp")) or time.time(),
         reply_to_id=str(payload.get("reply_to", "") or ""),
+        reply_content=str(payload.get("reply_content", "") or ""),
     )
 
 
@@ -95,9 +96,9 @@ def _convert_segments(wire_segments: List[Dict[str, Any]]) -> List[MessageSegmen
             if content:
                 segments.append(MessageSegment(type=SegmentType.LOCATION, content=content))
         else:
-            # 媒体段：url / file / name 透传（文件段允许仅有名称）
+            # 媒体段：url / file / name 透传；local 为 worker 零拷贝解析的本地路径
             url = str(wire_seg.get("url", "") or "")
-            file_path = str(wire_seg.get("file", "") or "")
+            file_path = str(wire_seg.get("local", "") or "") or str(wire_seg.get("file", "") or "")
             name = str(wire_seg.get("name", "") or "")
             if url or file_path or name:
                 segments.append(

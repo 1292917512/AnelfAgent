@@ -10,13 +10,6 @@ from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = MemoryStore(str(tmp_path / "memory.sqlite3"))
-    yield s
-    await s.close()
-
-
 def _entry(
     content: str = "测试记忆",
     memory_type: MemoryType = MemoryType.SEMANTIC,

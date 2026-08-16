@@ -1,4 +1,4 @@
-"""短期记忆管理（WorkMemory scope 视图删除/清空 + short_term_tools 工具）单元测试。
+"""短期记忆（WorkMemory）单元测试：scope 视图删除/清空 + 自管理工具 + 溢出晋升。
 
 回归场景：短期记忆是任务提醒的投递区，但此前只有容量溢出与 WebUI 管理两条移除路径，
 AI 无法自清理，导致已完成的提醒不断堆积、持续占用上下文。
@@ -7,10 +7,13 @@ AI 无法自清理，导致已完成的提醒不断堆积、持续占用上下�
 from __future__ import annotations
 
 import json
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from agent.memory import notes
 from agent.mind.tools import short_term_tools
 from agent.mind.work_memory import WorkMemory
 
@@ -89,3 +92,51 @@ class TestShortTermTools:
         assert data["cleared"] == 3
         assert work_memory.get_temporary("group_qq:1") == []
         assert [c["content"] for c in work_memory.get_temporary("group_qq:2")] == ["别的群提醒"]
+
+
+# ------------------------------------------------------------------
+# 溢出晋升：容量截尾 → events 日期便签
+# ------------------------------------------------------------------
+
+@pytest.fixture
+def capped_memory(tmp_path, monkeypatch) -> WorkMemory:
+    """容量为 2 的短期记忆 + 隔离的便签工作区。"""
+    ws = tmp_path / "config"
+    (ws / "memory" / "events").mkdir(parents=True)
+    monkeypatch.setattr(notes, "_workspace_dir", ws)
+    monkeypatch.setattr(WorkMemory, "_max_temp", property(lambda self: 2))
+    return WorkMemory(everything_data=SimpleNamespace())
+
+
+class TestOverflowPromotion:
+    def test_overflow_promoted_to_events_note(self, capped_memory: WorkMemory, tmp_path: Path) -> None:
+        capped_memory.add_temporary({"role": "user", "content": "第一条"})
+        capped_memory.add_temporary({"role": "user", "content": "第二条"})
+        capped_memory.add_temporary({"role": "user", "content": "第三条"})
+
+        # 桶内只留最新 2 条
+        bucket = capped_memory.get_temporary()
+        assert [c["content"] for c in bucket] == ["第二条", "第三条"]
+
+        # 被挤出的「第一条」晋升到当天 events 便签
+        today = time.strftime("%Y-%m-%d")
+        note = tmp_path / "config" / "memory" / "events" / f"{today}.md"
+        assert note.exists()
+        text = note.read_text(encoding="utf-8")
+        assert "第一条" in text
+        assert "短期记忆溢出" in text
+
+    def test_no_overflow_no_note(self, capped_memory: WorkMemory, tmp_path: Path) -> None:
+        capped_memory.add_temporary({"role": "user", "content": "唯一一条"})
+        today = time.strftime("%Y-%m-%d")
+        note = tmp_path / "config" / "memory" / "events" / f"{today}.md"
+        assert not note.exists()
+
+    def test_scoped_buckets_overflow_independently(self, capped_memory: WorkMemory, tmp_path: Path) -> None:
+        for i in range(3):
+            capped_memory.add_temporary({"role": "user", "content": f"群消息{i}"}, scope="group_qq:1")
+        assert [c["content"] for c in capped_memory.get_temporary("group_qq:1") if c["content"].startswith("群消息")] == ["群消息1", "群消息2"]
+        today = time.strftime("%Y-%m-%d")
+        text = (tmp_path / "config" / "memory" / "events" / f"{today}.md").read_text(encoding="utf-8")
+        assert "群消息0" in text
+        assert "group_qq:1" in text
