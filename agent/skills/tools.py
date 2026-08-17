@@ -1,4 +1,9 @@
-"""技能工具 — AI 可调用的技能管理接口。
+"""技能工具 — AI 可调用的技能管理接口（决策协议面）。
+
+设计哲学：系统呈现事实，AI 持有决策权。create/update 在事实层检测到显著
+信号（语义相近技能/触发词碰撞/容量水位/无实质变化）时不拒绝写入，而是返回
+"需要决策"的诊断报告，AI 阅读事实后带 decision 回执重呼即完成写入，
+或改走合并/放弃路径——把判断留给 AI，把事实算清楚留给系统。
 
 通过 `register_skill_tools()` 在运行时注入依赖后批量注册到 EntityRegistry。
 """
@@ -22,7 +27,7 @@ def register_skill_tools(store: SkillStore, matcher: SkillMatcher) -> None:
     """注入运行时依赖并批量注册技能工具。"""
     global _store, _matcher
     _store, _matcher = store, matcher
-    count = activate_group("skills", "技能 - 经验技能的创建、检索、更新与管理，及外部技能源（可插拔商店）的搜索与安装")
+    count = activate_group("skills", "技能 - 经验技能的创建、检索、合并与策展，及外部技能源（可插拔商店）的搜索与安装")
     log(f"🎓 技能工具已注册 ({count} 个)", tag="技能")
 
 
@@ -34,25 +39,80 @@ def _not_ready() -> str:
     )
 
 
+def _index():
+    """事实索引（matcher 持有；未初始化时返回 None，工具降级为直通写入）。"""
+    return _matcher.index if _matcher else None
+
+
+def _decision_request(facts: Dict[str, Any], guidance: str) -> str:
+    """构造决策请求响应：呈现事实 + 决策路径，不做任何拒绝。"""
+    return json.dumps({
+        "status": "needs_decision",
+        "facts": facts,
+        "guidance": guidance,
+        "options": [
+            {"action": "merge", "how": "差异点并入相近技能：update_skill 增量补充，或 merge_skills 显式合并（源可逆归档）"},
+            {"action": "confirm", "how": "确有差异需独立成篇：重呼本工具并带 decision 参数写明差异理由"},
+            {"action": "abort", "how": "事实改变了判断：直接放弃本次写入"},
+        ],
+    }, ensure_ascii=False)
+
+
+async def _advisory_or_none(
+        *, name: str, description: str, content: str,
+        patterns: List[str], updating: bool,
+) -> Optional[Dict[str, Any]]:
+    """计算写入诊断；无 matcher/index 或无显著事实时返回 None（快路径直通）。"""
+    index = _index()
+    if index is None:
+        return None
+    try:
+        facts = await index.write_advisory(
+            name=name, description=description, content=content,
+            trigger_patterns=patterns, updating=updating,
+        )
+        return facts or None
+    except Exception as exc:
+        log(f"技能写入诊断失败（降级直通）: {exc}", "DEBUG", tag="技能")
+        return None
+
+
 @deferred_tool(
-    group="skills", tags=["always"], source="mind.skills",
-    description="创建一个新技能：将可复用的方法、流程或知识保存下来，供以后遇到相似任务时参考。",
+    group="skills", tags=["always"], source="mind.skills", timeout=90.0,
+    description="创建一个新技能：将可复用的方法、流程或知识保存下来，供以后遇到相似任务时参考。"
+                "当库中存在相近技能等显著事实时，首次调用会返回诊断报告（不写入），"
+                "阅读后带 decision 参数（差异理由）重呼即完成创建，或改走合并路径。",
 )
-def create_skill(name: str, description: str, content: str, trigger_patterns: str = "") -> str:
+async def create_skill(
+        name: str, description: str, content: str,
+        trigger_patterns: str = "", decision: str = "",
+) -> str:
     """创建新技能。
 
     Args:
         name: 技能名（英文短横线命名，如 web-research）
-        description: 一句话描述技能用途
+        description: 一句话描述技能用途（场景 + 目的）
         content: 技能内容（markdown，步骤/要点/注意事项）
-        trigger_patterns: 触发关键词，逗号分隔（遇到这些词时技能会被推荐）
+        trigger_patterns: 触发关键词，逗号分隔（3~8 个高区分度词，宁少勿泛）
+        decision: 决策回执：首次调用返回诊断报告后，写明差异理由重呼以确认写入
     """
     if not _store:
         return _not_ready()
     patterns = [p.strip() for p in trigger_patterns.split(",") if p.strip()]
+    if not decision.strip():
+        facts = await _advisory_or_none(
+            name=name, description=description, content=content,
+            patterns=patterns, updating=False,
+        )
+        if facts is not None:
+            return _decision_request(
+                facts,
+                "本次拟议创建与技能库现状存在上述显著事实，请决策：合并 / 确认新建 / 放弃。",
+            )
     skill = _store.create(
         name=name, description=description, content=content,
         trigger_patterns=patterns, created_by="agent",
+        rationale=decision.strip(),
     )
     return json.dumps({
         "ok": True, "name": skill.name,
@@ -61,26 +121,47 @@ def create_skill(name: str, description: str, content: str, trigger_patterns: st
 
 
 @deferred_tool(
-    group="skills", tags=["always"], source="mind.skills",
-    description="更新已有技能：改进内容、补充触发词。增量更新，会记录 patch 次数。",
+    group="skills", tags=["always"], source="mind.skills", timeout=90.0,
+    description="更新已有技能：改进内容、补充触发词。增量更新，会记录 patch 次数。"
+                "当检测到无实质变化/触发词碰撞等显著事实时，首次调用返回诊断报告（不写入），"
+                "阅读后带 decision 参数（更新理由）重呼即完成更新。",
 )
-def update_skill(name: str, content: str = "", description: str = "", add_trigger_patterns: str = "") -> str:
+async def update_skill(
+        name: str, content: str = "", description: str = "",
+        add_trigger_patterns: str = "", decision: str = "",
+) -> str:
     """更新技能。
 
     Args:
         name: 要更新的技能名
-        content: 新的技能内容（完整替换旧内容，留空则不更新）
+        content: 新的技能内容（完整替换旧内容，留空则不更新；合并时删除过时部分，不要只增不减）
         description: 新的描述（留空则不更新）
-        add_trigger_patterns: 追加的触发关键词，逗号分隔
+        add_trigger_patterns: 追加的触发关键词，逗号分隔（仅在真实漏召回后补充，不做预防性堆砌）
+        decision: 决策回执：首次调用返回诊断报告后，写明更新理由重呼以确认写入
     """
     if not _store:
         return _not_ready()
     patterns = [p.strip() for p in add_trigger_patterns.split(",") if p.strip()]
+    if not decision.strip():
+        facts = await _advisory_or_none(
+            name=name, description=description, content=content,
+            patterns=patterns, updating=True,
+        )
+        if facts is not None:
+            if "not_found" in facts:
+                return tool_error(
+                    f"技能 '{name}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False,
+                )
+            return _decision_request(
+                facts,
+                "本次拟议更新存在上述显著事实，请决策：调整后重试 / 确认更新 / 放弃。",
+            )
     skill = _store.patch(
         name,
         content=content or None,
         description=description or None,
         add_trigger_patterns=patterns or None,
+        rationale=decision.strip(),
     )
     if skill is None:
         return tool_error(f"技能 '{name}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
@@ -88,6 +169,76 @@ def update_skill(name: str, content: str = "", description: str = "", add_trigge
         "ok": True, "name": skill.name, "patch_count": skill.patch_count,
         "message": f"技能 '{skill.name}' 已更新（第 {skill.patch_count} 次修订）",
     }, ensure_ascii=False)
+
+
+@deferred_tool(
+    group="skills", tags=["always"], source="mind.skills",
+    description="合并技能：将若干冗余技能合并进一个目标技能（目标更新为合并后内容，源可逆归档）。"
+                "用于治理技能库中的近重复技能（诊断报告/库健康中的合并候选）。",
+)
+def merge_skills(
+        sources: str, target: str, content: str,
+        description: str = "", trigger_patterns: str = "",
+) -> str:
+    """合并技能。
+
+    Args:
+        sources: 要合并的源技能名，逗号分隔（将被归档，记录 merged_into 可恢复）
+        target: 合并目标技能名（必须已存在，接收合并后内容）
+        content: 合并后的完整内容（去重收敛后的版本，删除各源中过时的部分）
+        description: 合并后的新描述（留空则保留目标原描述）
+        trigger_patterns: 合并后的补充触发关键词，逗号分隔
+    """
+    if not _store:
+        return _not_ready()
+    source_list = [p.strip() for p in sources.split(",") if p.strip()]
+    if not source_list:
+        return tool_error(
+            "sources 不能为空", cause=ErrorCause.PARAM, retryable=False,
+            hint="提供至少一个要合并的源技能名",
+        )
+    patterns = [p.strip() for p in trigger_patterns.split(",") if p.strip()]
+    merged = _store.merge(
+        source_list, target,
+        content=content, description=description,
+        add_trigger_patterns=patterns or None,
+    )
+    if merged is None:
+        return tool_error(
+            f"合并目标 '{target}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False,
+        )
+    return json.dumps({
+        "ok": True, "target": merged.name,
+        "archived_sources": [s.strip() for s in source_list if s.strip() != merged.name],
+        "message": f"已合并进 '{merged.name}'，源技能已归档（merged_into 可追溯恢复）",
+    }, ensure_ascii=False)
+
+
+@deferred_tool(
+    group="skills", tags=["always"], source="mind.skills", timeout=120.0,
+    description="技能库健康报告：库容、零参与技能、高匹配零消费、触发词碰撞、合并信号、相似聚类。"
+                "治理技能库（合并/归档/精简触发词）前先看此报告。",
+)
+async def skill_library_health() -> str:
+    """查看技能库健康报告。"""
+    index = _index()
+    if index is None:
+        if not _store:
+            return _not_ready()
+        from agent.skills.skill_index import SkillIndex
+        index = SkillIndex(_store)
+    payload: Dict[str, Any] = dict(index.snapshot())
+    try:
+        await index.warm(limit=32)
+        clusters = await index.clusters()
+        if clusters:
+            payload["similar_clusters"] = [
+                [{"name": s.name, "use_count": s.use_count} for s in cluster]
+                for cluster in clusters[:10]
+            ]
+    except Exception as exc:
+        log(f"技能聚类计算失败: {exc}", "DEBUG", tag="技能")
+    return json.dumps(payload, ensure_ascii=False)
 
 
 @deferred_tool(
@@ -170,7 +321,7 @@ async def _search_external(query: str, limit: int, category: str) -> Tuple[List[
 
 @deferred_tool(
     group="skills", tags=["always"], source="mind.skills",
-    description="列出全部技能（名称、描述、使用次数、状态）。",
+    description="列出全部技能（名称、描述、使用/匹配次数、状态）。",
 )
 def list_skills(include_archived: bool = False) -> str:
     """列出技能。
@@ -187,6 +338,7 @@ def list_skills(include_archived: bool = False) -> str:
             "description": s.description,
             "state": s.state.value,
             "use_count": s.use_count,
+            "match_count": s.match_count,
             "patch_count": s.patch_count,
             "pinned": s.pinned,
         }
@@ -272,6 +424,7 @@ def install_external_skill(slug: str, namespace: str = "", source: str = "") -> 
         "message": f"技能 '{slug}' 已从 {chosen.display_name} 安装，可被 search_skills 检索与自动匹配",
     }, ensure_ascii=False)
 
+
 @deferred_tool(
     group="skills", tags=["always"], source="mind.skills",
     description="查看某个技能的完整内容。",
@@ -287,6 +440,10 @@ def get_skill(name: str) -> str:
     skill = _store.get(name)
     if skill is None:
         return tool_error(f"技能 '{name}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
+    # 读全文计一次使用但不刷新活动时间（评审查阅候选是检查，不是消费）；
+    # 先计数再重读，返回真实值而非手工补偿
+    _store.record_use(name, touch=False)
+    skill = _store.get(name) or skill
     return json.dumps({
         "ok": True,
         "name": skill.name,
@@ -295,5 +452,8 @@ def get_skill(name: str) -> str:
         "content": skill.content,
         "state": skill.state.value,
         "use_count": skill.use_count,
+        "match_count": skill.match_count,
         "patch_count": skill.patch_count,
+        "rationale": skill.rationale,
+        "merged_into": skill.merged_into,
     }, ensure_ascii=False)

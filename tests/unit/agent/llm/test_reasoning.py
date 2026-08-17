@@ -1,26 +1,23 @@
-"""agent.llm.reasoning 规范等级模块测试。
+"""agent.llm.reasoning 规范词汇 + 配置驱动下发引擎测试。
 
-覆盖 7 级词汇归一、按供应商/模型钳制、降级阶梯、端点拒绝识别。
-clamp_effort 优先采用 litellm 模型能力标志，未知模型走家族子串规则
-（已对每个测试用例验证实际输出）。
+核心原则：引擎对模型名零特判，只读 thinking 契约。覆盖规范词汇归一、
+契约解析、档位映射、嵌套字段写入。
 """
 
 from __future__ import annotations
 
 from agent.llm.reasoning import (
     CANONICAL_EFFORTS,
-    _matches_bare_token,
-    clamp_effort,
-    downgrade_effort,
-    from_litellm_effort,
-    is_effort_rejection,
+    ThinkingSpec,
     normalize_effort,
-    provider_specific_effort,
+    parse_thinking_spec,
+    resolve_thinking_value,
+    set_nested_field,
     to_litellm_effort,
 )
 
 # ------------------------------------------------------------------
-# normalize
+# 规范词汇
 # ------------------------------------------------------------------
 
 
@@ -51,269 +48,102 @@ def test_normalize_accepts_all_seven_levels() -> None:
         assert normalize_effort(level) == level
 
 
-# ------------------------------------------------------------------
-# to / from litellm
-# ------------------------------------------------------------------
-
-
 def test_to_litellm_off_maps_to_none() -> None:
     assert to_litellm_effort("off") == "none"
-
-
-def test_other_levels_pass_through() -> None:
     for level in CANONICAL_EFFORTS:
         if level != "off":
             assert to_litellm_effort(level) == level
 
 
-def test_litellm_roundtrip() -> None:
-    for level in CANONICAL_EFFORTS:
-        assert from_litellm_effort(to_litellm_effort(level)) == level
-    assert from_litellm_effort("none") == "off"
-    assert from_litellm_effort("garbage") == ""
-
-
 # ------------------------------------------------------------------
-# 降级阶梯
+# 契约解析
 # ------------------------------------------------------------------
 
 
-def test_downgrade_walks_full_ladder() -> None:
-    assert downgrade_effort("max") == "xhigh"
-    assert downgrade_effort("xhigh") == "high"
-    assert downgrade_effort("high") == "medium"
-    assert downgrade_effort("medium") == "low"
-    assert downgrade_effort("low") == "minimal"
+def test_parse_thinking_spec_full() -> None:
+    spec = parse_thinking_spec({
+        "param": "reasoning_effort",
+        "map": {"low": "low", "high": "high", "max": "max"},
+        "off": "low",
+    })
+    assert spec is not None
+    assert spec.param == "reasoning_effort"
+    assert spec.map == {"low": "low", "high": "high", "max": "max"}
+    assert spec.off == "low"
 
 
-def test_downgrade_bottom_returns_none_to_drop_param() -> None:
-    assert downgrade_effort("minimal") is None
+def test_parse_thinking_spec_toggle() -> None:
+    spec = parse_thinking_spec({
+        "param": "thinking.type", "on": "enabled", "off": "disabled",
+    })
+    assert spec is not None
+    assert spec.param == "thinking.type"
+    assert spec.on == "enabled"
+    assert spec.off == "disabled"
 
 
-def test_downgrade_off_returns_none_immediately() -> None:
-    # off 是显式关闭，端点拒绝时不应"降级"为开启思考
-    assert downgrade_effort("off") is None
-
-
-# ------------------------------------------------------------------
-# 按供应商/模型钳制
-# ------------------------------------------------------------------
-
-
-def test_clamp_anthropic_non_adaptive_drops_max_and_xhigh() -> None:
-    assert clamp_effort("max", "claude-sonnet-4-5", "anthropic") == "high"
-    assert clamp_effort("xhigh", "claude-sonnet-4-5", "anthropic") == "high"
-
-
-def test_clamp_anthropic_adaptive_keeps_max_drops_xhigh() -> None:
-    # Opus 4.6 支持 adaptive（max 保留），但 4.6 代无 xhigh
-    assert clamp_effort("max", "claude-opus-4-6", "anthropic") == "max"
-    assert clamp_effort("xhigh", "claude-opus-4-6", "anthropic") == "high"
-
-
-def test_clamp_anthropic_keeps_xhigh_on_4_7_plus() -> None:
-    assert clamp_effort("xhigh", "claude-opus-4-7", "anthropic") == "xhigh"
-
-
-def test_clamp_anthropic_preserves_standard_levels() -> None:
-    assert clamp_effort("medium", "claude-sonnet-4-5", "anthropic") == "medium"
-    assert clamp_effort("low", "claude-haiku-4-5", "anthropic") == "low"
-
-
-def test_clamp_openai_drops_max_and_xhigh() -> None:
-    assert clamp_effort("max", "gpt-5.1", "openai") == "high"
-    assert clamp_effort("xhigh", "o3", "openai") == "high"
-
-
-def test_clamp_openai_keeps_minimal() -> None:
-    assert clamp_effort("minimal", "gpt-5.1", "openai") == "minimal"
-
-
-def test_clamp_gemini_minimal_becomes_low_max_becomes_high() -> None:
-    assert clamp_effort("minimal", "gemini-2.5-pro", "gemini") == "low"
-    assert clamp_effort("max", "gemini-3-pro", "gemini") == "high"
-    assert clamp_effort("xhigh", "gemini-2.5-flash", "gemini") == "high"
-
-
-def test_clamp_xai_drops_max() -> None:
-    assert clamp_effort("max", "grok-4", "xai") == "high"
-
-
-def test_clamp_off_passthrough() -> None:
-    assert clamp_effort("off", "claude-sonnet-4-5", "anthropic") == "off"
-    assert clamp_effort("off", "gpt-5.1", "openai") == "off"
-
-
-def test_clamp_empty_passthrough() -> None:
-    assert clamp_effort("", "any-model", "openai") == ""
-
-
-def test_clamp_anthropic_detected_via_model_substring() -> None:
-    # api_type=openai 但模型名含 claude → 走 Anthropic 子串规则
-    assert clamp_effort("max", "claude-sonnet-4-5", "openai") == "high"
-
-
-def test_clamp_minimax_preserves_levels_for_provider_translation() -> None:
-    """MiniMax 模型在 clamp 阶段保留 7 级原样：由 provider_specific_effort
-    映射到 thinking.type (adaptive/disabled)。clamp 不在此处裁剪。
-    """
-    # clamp 不裁剪（保留 7 级以便后续 provider_specific_effort 处理）
-    for effort in ("minimal", "low", "medium", "high", "xhigh", "max"):
-        assert clamp_effort(effort, "MiniMax-M3", "anthropic") == effort
-        assert clamp_effort(effort, "MiniMax-M2.7-highspeed", "anthropic") == effort
-    # off 原样透传
-    assert clamp_effort("off", "MiniMax-M3", "anthropic") == "off"
-
-
-def test_clamp_kimi_preserves_levels_for_provider_translation() -> None:
-    """Kimi 模型在 clamp 阶段保留 7 级原样：由 provider_specific_effort
-    映射到顶层 reasoning_effort (low/high/max) 或 thinking.type (enabled/disabled)。
-    """
-    for effort in ("minimal", "low", "medium", "high", "xhigh", "max"):
-        assert clamp_effort(effort, "kimi-k3", "anthropic") == effort
-        assert clamp_effort(effort, "k3", "anthropic") == effort
-        assert clamp_effort(effort, "kimi-for-coding", "anthropic") == effort
-    assert clamp_effort("off", "kimi-k3", "anthropic") == "off"
-
-
-def test_clamp_qwen_uses_generic_anthropic_clamp() -> None:
-    """Qwen 走阿里百炼 anthropic 网关：模型名不含 claude-4-6/4-7 子串
-    且不在 MiniMax/Kimi 子串表，按通用 anthropic 钳制（max/xhigh→high）。
-    不强制降为 off——网关完整支持 thinking 与 reasoning_effort。"""
-    assert clamp_effort("high", "qwen3.8-max-preview", "anthropic") == "high"
-    assert clamp_effort("medium", "qwen3.7-plus", "anthropic") == "medium"
-    assert clamp_effort("max", "qwen3.7-max", "anthropic") == "high"
-
-
-def test_clamp_aliyun_deepseek_anthropic_uses_generic_clamp() -> None:
-    """DeepSeek anthropic 通道无明确 reasoning_effort 文档但未列入
-    MiniMax/Kimi 特殊表，按通用 anthropic 钳制（保守截断到 high）。"""
-    assert clamp_effort("low", "deepseek-v4-pro", "anthropic") == "low"
-    assert clamp_effort("max", "deepseek-v4-pro", "anthropic") == "high"
+def test_parse_thinking_spec_rejects_invalid() -> None:
+    assert parse_thinking_spec(None) is None
+    assert parse_thinking_spec({}) is None
+    assert parse_thinking_spec("str") is None
+    assert parse_thinking_spec({"map": {}}) is None  # 缺 param
+    assert parse_thinking_spec({"param": "foo"}) is None  # 非法根
+    assert parse_thinking_spec({"param": 123}) is None
 
 
 # ------------------------------------------------------------------
-# 端点拒绝识别
+# 档位解析
 # ------------------------------------------------------------------
 
 
-class _HttpError(Exception):
-    def __init__(self, message: str, status_code: int = 400) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-
-
-def test_is_effort_rejection_matches_known_keywords() -> None:
-    assert is_effort_rejection(_HttpError("Invalid reasoning_effort: 'ultra'"))
-    assert is_effort_rejection(_HttpError("thinking.budget_tokens: invalid"))
-    assert is_effort_rejection(_HttpError("effort='xhigh' is not supported by this model"))
-
-
-def test_is_effort_rejection_ignores_unrelated_bad_request() -> None:
-    assert not is_effort_rejection(
-        _HttpError("messages: text content blocks must be non-empty"),
+def test_resolve_map_model() -> None:
+    """有档位的模型：查 map；缺省档不下发；off 用契约 off 值。"""
+    spec = ThinkingSpec(
+        param="reasoning_effort",
+        map={"low": "low", "medium": "high", "high": "high",
+             "xhigh": "max", "max": "max"},
+        off="low",
     )
+    assert resolve_thinking_value(spec, "low") == "low"
+    assert resolve_thinking_value(spec, "medium") == "high"
+    assert resolve_thinking_value(spec, "xhigh") == "max"
+    assert resolve_thinking_value(spec, "off") == "low"  # 思考不可关 → off 用 low
+    assert resolve_thinking_value(spec, "minimal") is None  # 未列出 → 不下发
 
 
-def test_is_effort_rejection_ignores_5xx() -> None:
-    # 5xx 是服务端故障，不应被误判为参数问题
-    assert not is_effort_rejection(
-        _HttpError("reasoning_effort internal error", status_code=500),
-    )
+def test_resolve_toggle_model() -> None:
+    """开关型模型：非 off 统一映射 on；off 映射 off；无 off 则不下发关闭参数。"""
+    spec = ThinkingSpec(param="thinking.type", on="enabled", off="disabled")
+    for effort in ("minimal", "low", "medium", "high", "xhigh", "max"):
+        assert resolve_thinking_value(spec, effort) == "enabled", effort
+    assert resolve_thinking_value(spec, "off") == "disabled"
 
 
-def test_is_effort_rejection_ignores_when_no_status_code() -> None:
-    # 网络错误等无状态码异常不触发降级
-    assert not is_effort_rejection(Exception("reasoning_effort down"))
+def test_resolve_toggle_no_off() -> None:
+    """开关型但无法关闭（无 off 值）：off 不下发参数。"""
+    spec = ThinkingSpec(param="thinking.type", on="adaptive")
+    assert resolve_thinking_value(spec, "high") == "adaptive"
+    assert resolve_thinking_value(spec, "off") is None
+
 
 # ------------------------------------------------------------------
-# 供应商原生档位映射（MiniMax / Kimi）
+# 嵌套字段写入
 # ------------------------------------------------------------------
 
 
-def test_minimax_m3_maps_to_thinking_type() -> None:
-    """M3 档位：off→disabled；其余档位统一映射到 adaptive（官方仅二档）。
-    无档位差异。"""
-    assert provider_specific_effort("off", "MiniMax-M3") == "disabled"
-    assert provider_specific_effort("minimal", "MiniMax-M3") == "adaptive"
-    assert provider_specific_effort("low", "MiniMax-M3") == "adaptive"
-    assert provider_specific_effort("medium", "MiniMax-M3") == "adaptive"
-    assert provider_specific_effort("high", "MiniMax-M3") == "adaptive"
-    assert provider_specific_effort("xhigh", "MiniMax-M3") == "adaptive"
-    assert provider_specific_effort("max", "MiniMax-M3") == "adaptive"
+def test_set_nested_field_flat() -> None:
+    d: dict = {}
+    set_nested_field(d, "reasoning_effort", "high")
+    assert d == {"reasoning_effort": "high"}
 
 
-def test_minimax_m2x_always_adaptive() -> None:
-    """M2.x thinking 无法关闭，所有档位都映射为 adaptive（disabled 端点忽略）。"""
-    for effort in ("off", "minimal", "low", "medium", "high", "xhigh", "max"):
-        assert provider_specific_effort(effort, "MiniMax-M2.7-highspeed") == "adaptive"
-        assert provider_specific_effort(effort, "MiniMax-M2.7") == "adaptive"
-        assert provider_specific_effort(effort, "MiniMax-M2.5") == "adaptive"
+def test_set_nested_field_dotted() -> None:
+    d: dict = {}
+    set_nested_field(d, "thinking.type", "enabled")
+    assert d == {"thinking": {"type": "enabled"}}
 
 
-def test_kimi_k3_maps_to_top_level_reasoning_effort() -> None:
-    """K3 仅 3 档顶层 reasoning_effort（low/high/max，off 不下发）。"""
-    assert provider_specific_effort("off", "kimi-k3") is None  # off 不下发
-    assert provider_specific_effort("minimal", "kimi-k3") == "low"
-    assert provider_specific_effort("low", "kimi-k3") == "low"
-    assert provider_specific_effort("medium", "kimi-k3") == "high"
-    assert provider_specific_effort("high", "kimi-k3") == "high"
-    assert provider_specific_effort("xhigh", "kimi-k3") == "high"
-    assert provider_specific_effort("max", "kimi-k3") == "max"
-
-
-def test_kimi_k3_bare_token_k3_recognized() -> None:
-    """用户配置裸模型名 "k3" 必须被精确识别为 K3（不被其他模型误中）。"""
-    assert provider_specific_effort("low", "k3") == "low"
-    assert provider_specific_effort("high", "k3") == "high"
-    assert provider_specific_effort("max", "k3") == "max"
-    # 不会误中包含 "k3" 但不是 Kimi 的模型（精确 token 匹配）
-    assert _matches_bare_token("k3", "k3") is True
-    assert _matches_bare_token("some-k3", "k3") is True
-    assert _matches_bare_token("k3-2024", "k3") is True
-    assert _matches_bare_token("k3b", "k3") is False  # 不应误中
-    assert _matches_bare_token("k3x-model", "k3") is False  # 不应误中
-
-
-def test_kimi_k27code_always_enabled() -> None:
-    """K2.7-code thinking 强制开启，type=disabled 会报错 → 所有档位→enabled。"""
-    for effort in ("off", "low", "medium", "high", "xhigh", "max"):
-        assert provider_specific_effort(effort, "kimi-k2.7-code") == "enabled"
-        assert provider_specific_effort(effort, "kimi-for-coding") == "enabled"
-        assert provider_specific_effort(
-            effort, "kimi-for-coding-highspeed"
-        ) == "enabled"
-        assert provider_specific_effort(effort, "kimi-k2.7-code-highspeed") == "enabled"
-
-
-def test_kimi_k25_k26_supports_off() -> None:
-    """K2.5/K2.6 默认 enabled，可显式 disabled。"""
-    assert provider_specific_effort("off", "kimi-k2.5") == "disabled"
-    assert provider_specific_effort("off", "kimi-k2.6") == "disabled"
-    assert provider_specific_effort("low", "kimi-k2.5") == "enabled"
-    assert provider_specific_effort("high", "kimi-k2.6") == "enabled"
-
-
-def test_provider_specific_returns_none_for_unsupported_models() -> None:
-    """非供应商专项模型返回 None，走通用 litellm reasoning_effort 路径。"""
-    assert provider_specific_effort("high", "claude-sonnet-4-5") is None
-    assert provider_specific_effort("high", "gpt-5.1") is None
-    assert provider_specific_effort("high", "gemini-2.5-pro") is None
-    assert provider_specific_effort("high", "grok-4") is None
-    # 完全无档位时直接返回 None
-    assert provider_specific_effort("", "MiniMax-M3") is None
-
-
-def test_clamp_openai_qwen_keeps_xhigh_and_max() -> None:
-    """千问 compatible-mode 官方支持 xhigh/max，通用钳制应放行。"""
-    assert clamp_effort("xhigh", "qwen3.8-max", "openai") == "xhigh"
-    assert clamp_effort("max", "qwen3.8-max", "openai") == "max"
-    assert clamp_effort("high", "qwen3.6-flash", "openai") == "high"
-
-
-def test_clamp_bare_k3_substring_no_false_positive() -> None:
-    """非 Kimi 模型名含 k3 子串时不应被误钳到 off。"""
-    assert clamp_effort("high", "ark3-pro", "openai") == "high"
-    assert clamp_effort("medium", "xx-k3s", "openai") == "medium"
-    # 真正的 Kimi 通道模型仍走供应商拦截（off）
-    assert clamp_effort("high", "kimi-k4", "anthropic") == "off"
+def test_set_nested_field_preserves_existing_siblings() -> None:
+    d: dict = {"thinking": {"clear_thinking": False}}
+    set_nested_field(d, "thinking.type", "enabled")
+    assert d == {"thinking": {"clear_thinking": False, "type": "enabled"}}

@@ -18,17 +18,7 @@ from core.log import log
 from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import deferred_tool
 
-# ── 运行时引用（bootstrap 组装后通过 set_mind 注入）──
-
-_pfc_ref: Any = None
-_mind_ref: Any = None
-
-
-def set_mind(mind: Any) -> None:
-    """延迟注入 Mind 引用（bootstrap 组装完成后调用），同时获取 PFC。"""
-    global _mind_ref, _pfc_ref
-    _mind_ref = mind
-    _pfc_ref = mind.pfc if mind is not None else None
+from .ports import mind_port
 
 
 def _current_scope() -> str:
@@ -81,25 +71,26 @@ def _snapshot_activities(mind: Any) -> Dict[str, Dict[str, Any]]:
 )
 async def list_sessions() -> str:
     """列出所有活跃会话窗口及其未读状态。"""
-    if not _pfc_ref or not _mind_ref:
+    if not mind_port.bound:
         return _system_not_ready()
+    mind = mind_port.get()
 
     current = _current_scope()
-    activities = _snapshot_activities(_mind_ref)
+    activities = _snapshot_activities(mind)
     now = time.time()
 
     sessions: List[Dict[str, Any]] = []
     seen: set[str] = set()
 
     # 未读会话（待处理队列）
-    for scope, _uid, _gid, preview in _pfc_ref.peek_all_tasks():
+    for scope, _uid, _gid, preview in mind.pfc.peek_all_tasks():
         seen.add(scope)
         act = activities.get(scope, {})
         sessions.append({
             "scope": scope,
             "label": _scope_label(scope),
-            "channel": _pfc_ref.get_adapter_key(scope) or act.get("adapter_key", ""),
-            "unread": _pfc_ref.get_unread_count(scope),
+            "channel": mind.pfc.get_adapter_key(scope) or act.get("adapter_key", ""),
+            "unread": mind.pfc.get_unread_count(scope),
             "preview": preview or act.get("last_preview", ""),
             "is_current": scope == current,
         })
@@ -148,8 +139,9 @@ async def switch_session(scope: str, reason: str = "") -> str:
         scope: 目标会话标识（user_qq:123 / group_qq:456 / user_webui:u#chat_id，可由 list_sessions 获取）
         reason: 切换原因（可选，会作为提示注入目标会话的新一轮上下文）
     """
-    if not _pfc_ref or not _mind_ref:
+    if not mind_port.bound:
         return _system_not_ready()
+    mind = mind_port.get()
 
     scope = (scope or "").strip()
     scope_type, scope_adapter, _base_id, _session_id = parse_entity_scope(scope)
@@ -165,17 +157,17 @@ async def switch_session(scope: str, reason: str = "") -> str:
             "hint": "已处于该会话，无需切换；直接回复即可",
         }, ensure_ascii=False)
 
-    if scope in getattr(_mind_ref, "_active_scopes", set()):
+    if scope in getattr(mind, "_active_scopes", set()):
         return json.dumps({
             "ok": True, "scope": scope,
             "hint": "该会话正在处理中，无需重复切换",
         }, ensure_ascii=False)
 
     # 路由信息：scope 自带 adapter 段优先，其次待处理队列，回退频道活动快照
-    adapter_key = scope_adapter or _pfc_ref.get_adapter_key(scope)
+    adapter_key = scope_adapter or mind.pfc.get_adapter_key(scope)
     preview = ""
     if not adapter_key:
-        act = _snapshot_activities(_mind_ref).get(scope, {})
+        act = _snapshot_activities(mind).get(scope, {})
         adapter_key = act.get("adapter_key", "")
         preview = act.get("last_preview", "")
     if not adapter_key:
@@ -191,11 +183,11 @@ async def switch_session(scope: str, reason: str = "") -> str:
 
     from agent.mind.tools.scheduler import enqueue_scope_reply
     enqueue_scope_reply(
-        _pfc_ref, scope, adapter_key,
+        mind.pfc, scope, adapter_key,
         preview or f"会话切换: {reason or '主动处理'}"[:60],
         prompt,
     )
-    asyncio.create_task(_mind_ref.try_execute_mind())
+    asyncio.create_task(mind.try_execute_mind())
     log(f"AI 切换会话: scope={scope} reason={reason}", tag="会话")
 
     return json.dumps({

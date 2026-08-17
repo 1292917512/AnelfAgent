@@ -90,6 +90,8 @@ import type {
   ShareStats,
   DownloadLogListResult,
   SkillItem,
+  SkillBuildState,
+  SkillLibraryHealth,
   SnapshotListItem,
   SnapshotRecord,
   SnapshotResponse,
@@ -160,6 +162,8 @@ export type {
   ShareLinkListResult,
   ShareStats,
   SkillItem,
+  SkillBuildState,
+  SkillLibraryHealth,
   SnapshotListItem,
   SnapshotRecord,
   SnapshotResponse,
@@ -794,10 +798,13 @@ export const devopsApi = {
 export const skillsApi = {
   list: (includeArchived = false) =>
     api.get<SkillItem[]>("/skills/", { params: { include_archived: includeArchived } }),
+  health: () => api.get<SkillLibraryHealth>("/skills/health"),
+  rebuildVectors: () => api.post<{ ok: boolean; message?: string; state: SkillBuildState }>("/skills/vectors/rebuild"),
+  embed: (name: string) => api.post<{ ok: boolean; name: string; embedded: boolean; message?: string }>(`/skills/${encodeURIComponent(name)}/embed`),
   get: (name: string) => api.get<SkillItem>(`/skills/${encodeURIComponent(name)}`),
   create: (data: { name: string; description: string; content: string; trigger_patterns?: string[] }) =>
     api.post("/skills/", data),
-  update: (name: string, data: { content?: string; description?: string; add_trigger_patterns?: string[] }) =>
+  update: (name: string, data: { content?: string; description?: string; add_trigger_patterns?: string[]; rationale?: string }) =>
     api.put(`/skills/${encodeURIComponent(name)}`, data),
   remove: (name: string) => api.delete(`/skills/${encodeURIComponent(name)}`),
   setState: (name: string, state: string) =>

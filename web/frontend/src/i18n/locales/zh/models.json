@@ -111,6 +111,8 @@
     "extra_bodyHint": "合并进请求体；构造（含思考适配）完成后最后应用，同名字段以这里为准",
     "extra_headers": "自定义请求头 JSON",
     "extra_headersHint": "最后合并到 HTTP 请求头，可覆盖鉴权头（同名以这里为准）",
+    "thinking": "思考下发契约 JSON",
+    "thinkingHint": "声明本模型思考档位如何填进请求体：param 目标字段（reasoning_effort / thinking.type）、map 档位映射、on 开启值、off 关闭值；留空走通用透传",
     "context_window": "上下文窗口",
     "max_tokens": "最大输出 Token",
     "chat_protocol": "对话协议",

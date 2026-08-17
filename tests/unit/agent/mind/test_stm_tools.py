@@ -15,6 +15,7 @@ import pytest
 
 from agent.memory import notes
 from agent.mind.tools import short_term_tools
+from agent.mind.tools.ports import mind_port
 from agent.mind.work_memory import WorkMemory
 
 
@@ -57,18 +58,15 @@ class TestScopeViewOps:
 
 @pytest.fixture
 def tools(work_memory: WorkMemory, monkeypatch):
-    """注入 PFC 引用并固定当前 scope。"""
-    monkeypatch.setattr(
-        short_term_tools,
-        "_pfc_ref",
-        SimpleNamespace(
-            get_temporary=work_memory.get_temporary,
-            delete_temporary_in_scope=work_memory.delete_temporary_in_scope,
-            clear_temporary_in_scope=work_memory.clear_temporary_in_scope,
-        ),
-    )
+    """经 mind 端口注入 PFC 引用并固定当前 scope。"""
+    mind_port.set(SimpleNamespace(pfc=SimpleNamespace(  # type: ignore[arg-type]
+        get_temporary=work_memory.get_temporary,
+        delete_temporary_in_scope=work_memory.delete_temporary_in_scope,
+        clear_temporary_in_scope=work_memory.clear_temporary_in_scope,
+    )))
     monkeypatch.setattr(short_term_tools, "_current_scope", lambda: "group_qq:1")
-    return short_term_tools
+    yield short_term_tools
+    mind_port.unbind()
 
 
 class TestShortTermTools:

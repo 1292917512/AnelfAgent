@@ -236,15 +236,12 @@ async def _invoke_llm_unified(
 
 
 def _merge_llm_options(mind: "Mind", options: Optional[dict]) -> dict:
-    """合并 LLM 调用选项：全局 reasoning_effort 兜底 + 会话级参数覆盖。"""
-    mc = mind._get_mind_config()
+    """合并 LLM 调用选项：调用方 options + 会话级参数覆盖。
+
+    思考等级不做全局兜底——是否思考由选用的模型自己决定（模型配置的
+    reasoning_effort / thinking 契约），对话层不统一注入档位。
+    """
     merged_options = dict(options or {})
-    if mc.reasoning_effort and "reasoning_effort" not in merged_options:
-        from agent.llm.reasoning import normalize_effort
-        # 全局配置容错：非法值归一为空，避免污染每一次 LLM 调用
-        effort = normalize_effort(mc.reasoning_effort)
-        if effort:
-            merged_options["reasoning_effort"] = effort
     if mind._session_llm_params:
         merged_options.update(mind._session_llm_params)
     return merged_options

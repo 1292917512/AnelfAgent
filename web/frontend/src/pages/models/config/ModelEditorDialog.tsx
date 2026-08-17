@@ -23,7 +23,7 @@ import { Button, Input, Modal, Select, Switch, Textarea } from "@/components/ui"
 import { ReasoningEffortOptions } from "@/components/common/ReasoningEffortSelect";
 import { MODEL_TYPE_OPTIONS } from "./shared";
 
-type JsonField = "request_params" | "extra_body" | "extra_headers";
+type JsonField = "request_params" | "extra_body" | "extra_headers" | "thinking";
 
 /** FNV-1a 配置指纹：判断测试结果是否因配置变更而过期 */
 function fnv1a(str: string): string {
@@ -212,11 +212,13 @@ export function ModelEditorDialog({
     request_params: JSON.stringify(model.request_params ?? {}, null, 2),
     extra_body: JSON.stringify(model.extra_body ?? {}, null, 2),
     extra_headers: JSON.stringify(model.extra_headers ?? {}, null, 2),
+    thinking: JSON.stringify(model.thinking ?? {}, null, 2),
   }));
   const [jsonEnabled, setJsonEnabled] = useState<Record<JsonField, boolean>>(() => ({
     request_params: Object.keys(model.request_params ?? {}).length > 0,
     extra_body: Object.keys(model.extra_body ?? {}).length > 0,
     extra_headers: Object.keys(model.extra_headers ?? {}).length > 0,
+    thinking: Object.keys(model.thinking ?? {}).length > 0,
   }));
   const [jsonErrors, setJsonErrors] = useState<Partial<Record<JsonField, string>>>({});
 
@@ -300,13 +302,15 @@ export function ModelEditorDialog({
     const requestParams = parseJson("request_params");
     const extraBody = parseJson("extra_body");
     const extraHeaders = parseJson("extra_headers");
+    const thinking = parseJson("thinking");
     const builtinTools = parseBuiltinTools();
-    if (requestParams === null || extraBody === null || extraHeaders === null || builtinTools === null) return null;
+    if (requestParams === null || extraBody === null || extraHeaders === null || thinking === null || builtinTools === null) return null;
     return {
       ...draft,
       request_params: requestParams,
       extra_body: extraBody,
       extra_headers: extraHeaders as Record<string, string>,
+      thinking: thinking,
       builtin_tools: builtinTools,
     };
   };
@@ -457,6 +461,17 @@ export function ModelEditorDialog({
               )}
             </div>
             <p className="text-[11px] text-muted opacity-70">{t("effortHint")}</p>
+            {draft.supports_reasoning && (
+              <JsonSection
+                label={t("modelFields.thinking")}
+                hint={t("modelFields.thinkingHint")}
+                enabled={jsonEnabled.thinking}
+                onEnabledChange={(v) => setJsonEnabled((p) => ({ ...p, thinking: v }))}
+                value={jsonDrafts.thinking}
+                onChange={(v) => { setJsonDrafts((p) => ({ ...p, thinking: v })); setJsonErrors((p) => ({ ...p, thinking: undefined })); }}
+                error={jsonErrors.thinking}
+              />
+            )}
           </div>
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted">{t("endpointLabel")}</label>

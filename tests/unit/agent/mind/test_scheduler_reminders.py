@@ -9,6 +9,12 @@ from datetime import datetime, timedelta
 import pytest
 
 from agent.mind.tools import scheduler
+from agent.mind.tools.ports import mind_port
+
+
+def _wire_mind(mind: object) -> None:
+    """将 fake mind 施绑到端口（端口类型为 Mind，测试替身经此注入）。"""
+    mind_port.set(mind)  # type: ignore[arg-type]
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +52,7 @@ async def test_schedule_reminder_persists_and_lists() -> None:
         _active_scopes = {"user_123"}
         _reply_adapter_key = "qq"
 
-    scheduler.set_mind(FakeMind())
+    _wire_mind(FakeMind())
     try:
         result = json.loads(await scheduler.schedule_reminder(
             note="搜索比分并告诉主人", run_at="2099-01-01 08:00",
@@ -63,7 +69,7 @@ async def test_schedule_reminder_persists_and_lists() -> None:
         assert cancelled["ok"] is True
         assert json.loads(await scheduler.list_reminders())["total"] == 0
     finally:
-        scheduler.set_mind(None)
+        mind_port.unbind()
 
 
 @pytest.mark.asyncio
@@ -76,7 +82,7 @@ async def test_schedule_reminder_rejects_past_time() -> None:
         _active_scopes = {"user_123"}
         _reply_adapter_key = ""
 
-    scheduler.set_mind(FakeMind())
+    _wire_mind(FakeMind())
     try:
         result = json.loads(await scheduler.schedule_reminder(
             note="过去的时间", run_at="2020-01-01 08:00",
@@ -86,4 +92,4 @@ async def test_schedule_reminder_rejects_past_time() -> None:
         result = json.loads(await scheduler.schedule_reminder(note="无时间"))
         assert "error" in result
     finally:
-        scheduler.set_mind(None)
+        mind_port.unbind()

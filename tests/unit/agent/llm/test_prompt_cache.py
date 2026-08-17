@@ -48,7 +48,9 @@ class TestCacheMarker:
 class TestAnthropicWire:
     def test_api_type_detection(self) -> None:
         assert is_anthropic_wire("k3", "anthropic")
-        assert is_anthropic_wire("claude-sonnet-4", "openai")  # 模型名推断
+        # 模型名不再参与判定：cache_control 是 anthropic 协议字段，
+        # 走 openai 协议的端点即便模型名叫 claude 也不加 anthropic 断点
+        assert not is_anthropic_wire("claude-sonnet-4", "openai")
         assert not is_anthropic_wire("qwen3", "openai")
         assert not is_anthropic_wire("", "")
 

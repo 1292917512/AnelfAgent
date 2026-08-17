@@ -13,6 +13,7 @@ import os
 from typing import Optional, Tuple
 
 from core.config import get_config_bool, get_config_float
+from core.latebind import LateBinding
 from core.log import log
 
 from .phash import compute_phash
@@ -23,22 +24,16 @@ _DESCRIBE_PROMPT = (
     "用于后续语义检索。只输出描述本身，不要输出其他内容。"
 )
 
-_worker: Optional["ImageIndexWorker"] = None
-
-
-def set_image_index_worker(worker: Optional["ImageIndexWorker"]) -> None:
-    global _worker
-    _worker = worker
-
-
-def get_image_index_worker() -> Optional["ImageIndexWorker"]:
-    return _worker
+#: 图片索引 worker 端口（entities 层声明，agent 组合根经 wiring 施绑）
+image_index_worker_port: LateBinding["ImageIndexWorker"] = LateBinding(
+    "sticker.image_index_worker",
+)
 
 
 def submit_image(path_or_url: str, source: str = "") -> None:
     """写入路径调用：投递一张图片到索引队列（无 worker 时 no-op）。"""
-    if _worker and path_or_url:
-        _worker.submit(path_or_url, source)
+    if image_index_worker_port.bound and path_or_url:
+        image_index_worker_port.get().submit(path_or_url, source)
 
 
 def _md5_file(path: str) -> str:

@@ -23,8 +23,7 @@ def install_usage_tap(stream: Any) -> Optional[Dict[str, Any]]:
     """给 litellm 流式包装器装原始 usage 旁路，返回汇合槽（无旁路时 None）。
 
     litellm 的流式 chunk 转换会丢弃供应商扩展 usage 字段（DeepSeek
-    prompt_cache_hit_tokens 等——openai SDK 层字段完好，litellm 1.95/1.96
-    均丢）。本函数以透明转发生成器替换包装器的 completion_stream：
+    prompt_cache_hit_tokens 等——openai SDK 层字段完好，litellm 均丢）。本函数以透明转发生成器替换包装器的 completion_stream：
     转发每个原始 chunk 前把其 usage 的缓存字段挖进汇合槽；下游构造
     UsageInfo 时以槽内值补全。litellm 内部结构变化（属性缺失）时
     不装旁路，优雅降级为现状（字段缺失 = 不可观测），零侵入风险。

@@ -37,7 +37,7 @@ description: "AnelfAgent 项目指令 — 开发规范与架构速查（对所�
 | `agent/` | 智能体内核（Mind / LLM / Storage / Channel / Runtime / Memory / Task / Heartbeat / Planning） | 不依赖 web |
 | `agent/mind/` | 思维核心（自主决策 / 多轮推理 / 跨频道感知） | 工具编排在 `mind/tools/` |
 | `agent/memory/` | 语义记忆（FTS5 + Embedding 混合检索 / 便签 / 文件索引） | 不依赖 mind |
-| `agent/skills/` | 技能自学习（SKILL.md 存储 / 匹配 / 后台评审 / 策展） | 文件存储在 `workspace/skills/` |
+| `agent/skills/` | 技能自学习（事实索引 / 匹配 / 后台评审 / 策展；事实归系统、决策归 AI） | 文件存储在 `workspace/skills/` |
 | `agent/delegation/` | 子代理调度（delegate_task / 并行 fan-out / 深度限制） | 经 `mind.reflect()` 隔离执行 |
 | `agent/security/` | 安全防护（会话令牌 / 威胁扫描） | 脱敏核心在 `core/sanitizer.py` |
 | `agent/task/` | 独立任务系统（定义 / 注册表 / 执行器） | 纯内容定义，不含调度逻辑 |
@@ -265,6 +265,9 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 同任务排队去重 | `HeartbeatEngine._task_inflight` | tick/manual/AI 四路径共用的执行中集合，排队里同一种任务只允许一条 |
 | 崩溃守护与通报 | `start.sh`/`start.bat` 守护循环 + `core/crash_report.py` + `crash_recovery` | 致命信号退出（SIGSEGV 等，退出码 128+n；SIGKILL/SIGTERM 不重启）自动退避重启（5×次数秒，上限 60s），崩溃状态落盘 `logs/crash_state.json`，连续 5 次崩溃停止拉起防崩溃循环（稳定运行 ≥600s 后崩溃重置计数）；重启后 crash_recovery 消费崩溃状态并关联 macOS DiagnosticReports（.ips）生成崩溃上下文——有回复检查点则随中断元消息注入对应会话，无检查点则经 PushHub 写全局通知并唤醒一轮思维（重启报到技能接管向主人报平安）；状态标记 reported 只通报一次。AI 详情查询走 devops `get_crash_report` 工具 / 面板 `/crash-info` |
 | ladybug native 串行门 | `agent/memory/cognee/client.py` `_apply_native_gate` | 进程级线程锁串行所有 ladybug native 执行：锁包在提交到线程池的查询任务上（execute + 结果消费全程），由执行线程持有——wait_for 超时取消协程不会提前放锁，孤儿 native 查询跑完才放行下一条；`_drop_native_resources` 同锁保护，拆除句柄前等在途执行结束。修复 2026-08 SIGSEGV（NodeTableScanState::scanNext 空指针，孤儿查询与后续查询/拆除并发使用同一 connection） |
+| 技能治理决策协议 | `agent/skills/`（skill_index 事实层 + tools 决策协议） | 事实归系统、决策归 AI：create/update 在事实层检测到显著信号（语义相近≥`skills_similar_threshold` / 触发词碰撞≥`skills_trigger_collision_limit` / 容量水位 / 无实质变化）时**不拒绝**，返回 needs_decision 诊断报告，AI 带 decision 回执重呼写入（rationale 落盘问责）或改走 merge/放弃；评审上下文由 SkillIndex 供给（语义相近 top10 + 库健康摘要）；use/match 信号分离（检索注入不刷活动时间，get_skill 计数不刷活动，策展重力因此可触发）；检索端近重复折叠（≥`skills_match_redundancy` 折叠并入合并信号）；merge_skills 可逆合并（源 ARCHIVED 带 merged_into）；重力含试用期快筛（零参与 14 天降级）与 stale 软保留（仍被检索到不归档）。向量生命周期：缓存键 = 模型名 + 文本 hash（模型切换即全库失效重嵌，防跨模型余弦混算）；交互路径预算化补算（`skills_embed_budget`，advisory 收紧 8），心跳 `warm()` 批量预热；死键清理时机 = 嵌入完成后（warm/embed_now）+ 删除时（service 直调），列表重建不清理（防误杀待嵌入键）；Web 经 `services._runtime` 拿 Mind 侧索引展示 embedded 状态与覆盖统计，CRUD 后 embed_now 即时重嵌；Mind 构造时重绑定工具依赖避免双向量缓存。向量构建状态机（Web 可观测/可操作/可配置）：`build_state()` 暴露 idle/warming/rebuilding + 进度 + 上次重建记录；`skills_warm_batch_size`（心跳每拍批量）/ `skills_rebuild_batch_size`（全量重建批量）可调；Web 经 `POST /skills/vectors/rebuild` 手动触发重建（幂等，进行中返回当前进度）；每个技能行内 `POST /skills/{name}/embed` 单技能生成/重新生成（不等全库重建） |
+| 思考等级配置驱动下发 | `agent/llm/reasoning.py`（契约引擎）+ `llm_client._apply_thinking_payload` + 模型配置 `thinking` 字段 | **全代码库对模型名零特判**：每个模型在 `llm_clients.json` 里声明思考契约（`{"param": 目标字段, "map": 档位映射, "on": 开启值, "off": 关闭值}`），LLMClient 只做"读契约填值"，不认识任何模型名/供应商。档位能力不写代码——模型该用哪档由配置 `reasoning_effort` 决定，发了端点不认的档由端点自己报错（参考 cursor-byok）。下发载体按 api_type 区分（litellm 行为差异）：openai 兼容通道 extra_body 由 SDK 展开进请求体顶层；anthropic 兼容通道直发 body 不展开 extra_body、未收录模型顶层字段又被能力表卡住，故填顶层字段 + allowed_openai_params 白名单放行。无契约模型走通用 reasoning_effort 透传。effort 为空时开关型契约（无 map）用 on 值默认开启。litellm 1.95 暗坑：未收录模型顶层 reasoning_effort 被 drop_params 静默丢弃，必须走 extra_body/白名单透传 |
+| 晚绑定端口 | `core/latebind.py`（原语）+ `agent/runtime/wiring.py`（唯一施绑点） | 进程级类型化晚绑定：端口由消费方所在层声明（`LateBinding[T]`，名称全局唯一、`[None]` 施绑合法——bound 标志即事实），`wire_runtime()` 在 assemble 尾部统一施绑（mind 工具组 / cognee 可选后端 / sticker worker + prewarm/scope_usage 回调），check_health 经 `assert_wired()` 把漏接线暴露为启动红字；未施绑 `get()` 抛 WireError，cognee/sticker 访问器以 bound 守卫保持旧 None 语义。准入：仅限 import 时工具注册拿不到构造参数 / 循环初始化 / 跨层桥三种成因，`set()` 只许组合根调用；DI 容器与装饰器注册表方案均已否决（解析图无消费场景；RuntimePorts 无法跨 entities/agent 分层定型） |
 
 #### MCP 工具面细节（第四轮新增，均在 `entities/mcp/bridge.py`）
 
@@ -317,6 +320,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/mind/tool_activation.py` | 工具沉睡/激活状态机（activate_tool_group） |
 | `agent/mind/tools/think_loop.py` | 统一思维循环（多轮 LLM + 工具编排） |
 | `agent/llm/resilience/classifier.py` | LLM 错误分类（驱动重试/压缩/回退策略） |
+| `agent/llm/reasoning.py` | 思考等级单一权威（7 级规范词汇 + GLM/MiniMax/Kimi 专项档位表 + 下发通道分派；litellm 未收录模型的参数透传修复见运行时机制表） |
 | `agent/llm/prompt_cache.py` | Anthropic 缓存断点唯一权威（线型判定 / 发送边界装饰 decorate_messages / 锚点表 / strip 副本 / TTL marker / CACHEABLE_PREFIX_LAYERS 分析口径） |
 | `agent/llm/retry.py` | 自适应退避（指数 + 抖动） |
 | `agent/security/session_token.py` | 一次性会话令牌（防注入伪造历史） |
@@ -324,10 +328,11 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `core/sanitizer.py` | 敏感信息脱敏（API Key/Token/密码） |
 | `core/tool_gate.py` | 工具门控（check_fn TTL 缓存 + 瞬态宽限） |
 | `core/tool_errors.py` | 工具错误返回统一设施（tool_error / error_from_exception + ErrorCause 归因） |
-| `agent/skills/skill_store.py` | 技能存储（workspace/skills/SKILL.md） |
-| `agent/skills/skill_matcher.py` | 技能匹配（关键词 + 语义混合评分） |
-| `agent/skills/background_review.py` | 技能后台评审（对话后自动沉淀经验） |
-| `agent/skills/curator.py` | 技能策展（自动降级/归档，挂心跳维护） |
+| `agent/skills/skill_store.py` | 技能存储（workspace/skills/SKILL.md；use/match 信号分离 + merge 可逆合并） |
+| `agent/skills/skill_index.py` | 技能事实索引（向量/相似度/写入诊断/库健康快照/聚类——只产事实不做策略，决策协议与评审感知的数据底座） |
+| `agent/skills/skill_matcher.py` | 技能匹配（关键词 + 语义混合评分 + 近重复折叠，折叠记入合并信号） |
+| `agent/skills/background_review.py` | 技能后台评审（感知完备：语义相近候选 + 库健康摘要；沉淀/合并/治理由 LLM 自主决策） |
+| `agent/skills/curator.py` | 技能策展（重力：闲置降级/归档 + 试用期快筛；议程：治理事实供 AI 消费） |
 | `agent/skills/sources/` | 外部技能源（可插拔：SkillSource 抽象 + 注册表热插拔；内置 SkillHub 源，删模块即卸载） |
 | `agent/delegation/sub_agent.py` | 子代理（leaf/orchestrator 角色 + 深度限制） |
 | `agent/delegation/delegation_manager.py` | 委托调度（并发上限/预算/聚合/后台模式） |
@@ -373,6 +378,8 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `web/frontend/src/stores/workbench-store.ts` | 工作台状态（Dock / 编辑器 / UI 命令收件箱 / 状态上报） |
 | `core/path.py` | PathManager + ConfigPaths 动态路径（config_dir/data_dir 可搬迁） |
 | `core/lifecycle.py` | 单例生命周期注册表（register / shutdown_all / reset） |
+| `core/latebind.py` | 晚绑定端口原语（LateBinding / WireError / assert_wired / reset_all） |
+| `agent/runtime/wiring.py` | 运行时统一施绑点（wire_runtime：bootstrap 组装尾部唯一接线入口） |
 | `core/crash_report.py` | 崩溃状态设施（守护脚本崩溃状态 logs/crash_state.json 读写 + macOS .ips 崩溃报告解析关联 + AI 可注入摘要渲染） |
 | `agent/mind/crash_recovery.py` | 崩溃尾部修复（回复检查点残留注入中断元消息 + 崩溃上下文收集消费） |
 
@@ -452,6 +459,8 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
 
 **工具开发**：返回 `str`（JSON）、完整类型注解、Google docstring、内部捕获异常；错误返回统一用 `core.tool_errors`（entities 经 `_sdk` 导入 `tool_error` / `error_from_exception` / `ErrorCause`），禁止裸 `{"error": str(e)}`
 
+**晚绑定准入**：模块级运行时引用一律用 `core.latebind.LateBinding` 声明端口（消费方所在层声明、`agent/runtime/wiring.py` 统一施绑、check_health 经 `assert_wired()` 校验），禁止新增 `set_xxx` / `_xxx_ref` 式模块全局；仅限三种成因（import 时装饰器注册的工具拿不到构造参数 / 循环初始化 / 跨层桥），其余一律构造注入
+
 **系统注入消息必须带 `_source` 来源标记**：think_loop / round_helpers / context_compressor 向消息链注入的 system 元消息（压缩反馈、rehydration、超时恢复、长度恢复、后台任务、实体推送等）须附 `"_source": {"origin": "<词汇>"}`，发送前由 `normalize_for_send` 与 `_layer` 一并剥离（LLM 不可见，供快照归因/审计）。已用词汇：`compression` / `rehydration` / `timeout_recovery` / `length_recovery` / `background_task` / `push`；新增注入点复用或扩充词汇表，勿省略标记。注意 `_source` 不进 DB（对话历史只存 role/content），仅作用于内存消息链。
 
 **Model Experience 三行声明（新功能必答）**：任何影响模型输入/输出的新功能，须在其模块 docstring 或本表登记三件事——① 模型看到什么（注入了什么内容、走哪个通道）② token 影响（增量还是节省、量级）③ 缓存影响（是否触碰前缀层；volatile/tool_chain 尾部动态区则注明不破前缀）。对齐 dsh 每 README 必答 "Model Experience / Token effect / KV Cache effect" 的纪律——缓存是本项目一等指标，新功能不声明即视为未评估。
@@ -463,6 +472,8 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
 **生命周期**：bootstrap 中创建的有状态单例须调用 `Lifecycle.register(name, instance, cleanup=close_fn)` 注册；关闭时 `Lifecycle.shutdown_all()` 逆序清理
 
 **包管理**：项目依赖由 uv 管理（`pyproject.toml` + `uv.lock`），安装依赖用 `uv add`，临时操作用 `uv pip install`；禁止对 `.venv` 使用 `pip install` / `ensurepip`（uv 创建的 venv 默认不含 pip，属正常状态而非故障，不要"修复"它）
+
+**litellm 版本**：当前 1.95。1.96/1.97 在本项目（Python 3.10）下 `ModelResponse()` 崩溃——根因是新版引用了未 import 的符号，在 py3.10 的注解求值下暴露（py3.11 下 1.97 正常）。**升级路径：先把项目升到 Python 3.11（`requires-python` 已允许 `<3.12`），再升 litellm**；1.98(main) 起 litellm 已要求 py3.11+。升级前验证 `litellm.ModelResponse()` 可实例化即可。我们用的官方机制（`extra_body` 透传 / `allowed_openai_params` 白名单 / `register_model` 能力声明 / `drop_params`）在 1.97 仍在维护（#35885 修了 allowed_openai_params 经 bridge 转发）。
 
 **测试体系**：`tests/` 分两层——`tests/unit/`（纯 mock/纯函数/tmp_path，快速）与 `tests/integration/`（真实应用组装或需外部凭证，需凭证的用例 env-gated 自动 skip）；目录归属由根 `tests/conftest.py` 自动打 `unit`/`integration` marker，无需手写。根 conftest 全局隔离 ConfigManager（指向 tmp_path），新测试不得读写真实 `config/`。运行：`uv run pytest`（全量）/ `uv run pytest tests/unit`（快速）/ `uv run pytest -m integration`；加 `-n auto` 并行（已装 pytest-xdist，全量约 64s→26s，CI 已启用；单测调试/`--pdb` 时去掉）。CI（`.github/workflows/ci.yml`）在 push/PR 时执行 ruff + mypy（core 必过、全量观察）+ pytest（并行含覆盖率）+ 前端 lint/build，双 job 均有 timeout-minutes 挂起护栏。
 

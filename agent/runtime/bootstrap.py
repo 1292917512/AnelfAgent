@@ -187,13 +187,11 @@ def create_bootstrap() -> FlowMachine:
             from agent.memory.cognee.client import CogneeClient
             from agent.memory.cognee.config import load_cognee_config
             from agent.memory.cognee.coordinator import CogneeCoordinator
-            from agent.memory.cognee.runtime import set_cognee_runtime
 
             cognee_config = load_cognee_config()
             cognee_client = CogneeClient(cognee_config)
             cognee_coordinator = CogneeCoordinator(store, cognee_client, cognee_config)
             await cognee_coordinator.start()
-            set_cognee_runtime(cognee_client, cognee_coordinator)
             Lifecycle.register(
                 "cognee_memory",
                 cognee_coordinator,
@@ -240,15 +238,16 @@ def create_bootstrap() -> FlowMachine:
         register_skill_tools(skill_store, SkillMatcher(skill_store, mem["embedder"]))
 
         # 图片感知索引 worker：入站图片后台沉淀（phash/描述/向量），支撑文搜图/图搜图
+        # （引用经 wiring.wire_runtime 统一施绑，本节点只负责创建与生命周期注册）
         from core.lifecycle import Lifecycle
-        from entities.sticker.worker import ImageIndexWorker, set_image_index_worker
+        from entities.sticker.worker import ImageIndexWorker
         image_index_worker = ImageIndexWorker()
         await image_index_worker.start()
-        set_image_index_worker(image_index_worker)
         Lifecycle.register(
             "image_index_worker", image_index_worker,
             cleanup=image_index_worker.close,
         )
+        return {"image_index_worker": image_index_worker}
 
     @machine.node(skip_on_error=True)
     async def register_entity_lifecycles():
@@ -262,16 +261,16 @@ def create_bootstrap() -> FlowMachine:
 
     @machine.node(skip_on_error=False)
     async def assemble_runtime():
-        """纯组装：Mind -> Assistant -> Runtime -> set_runtime。"""
+        """纯组装：Mind -> Assistant -> Runtime -> set_runtime -> 统一施绑。"""
         from agent.mind import Mind
-        from agent.mind.tools import session_tools, short_term_tools
 
-        # 提前导入 scheduler/session_tools 模块，使其 deferred 工具在 Mind 初始化
-        # activate_group("thinking"/"session") 时一并注册
-        from agent.mind.tools.scheduler import set_mind
+        # 提前导入工具模块，使其 deferred 工具在 Mind 初始化激活
+        # thinking/session 分组时一并注册（依赖引用经 wiring 统一施绑）
+        from agent.mind.tools import scheduler, session_tools, short_term_tools  # noqa: F401
         from agent.runtime.assistant import AgentAssistant
         from agent.runtime.runtime import AgentRuntime
         from agent.runtime.singleton import set_runtime
+        from agent.runtime.wiring import wire_runtime
 
         data_center = machine.get(BK.STORAGE)
         llm_data = machine.get(BK.LLM)
@@ -306,18 +305,16 @@ def create_bootstrap() -> FlowMachine:
         )
         set_runtime(runtime)
 
-        # 折后预热钩子（storage 层不反向依赖 mind，经注入解耦）
-        from agent.storage.conversation_fold import conversation_folder
-        conversation_folder.set_prewarm_hook(mind.prewarm_scope_cache)
-
-        # 会话用量账本接线：scope_usage 只暴露回调接口，落盘由主库实现
-        # （分层纪律：agent/mind 不直接依赖 storage 层）
-        from agent.mind.scope_usage import wire_scope_usage
-        wire_scope_usage(data_center.router.sqlite.upsert_scope_usage)
-
-        set_mind(mind)
-        session_tools.set_mind(mind)
-        short_term_tools.set_mind(mind)
+        # 晚绑定统一施绑（mind 工具组 / cognee 可选后端 / sticker worker + 跨模块回调），
+        # 漏接线由 check_health 的 assert_wired 暴露为启动红字
+        tools_ctx: dict[str, Any] = machine.get_result("register_internal_tools") or {}
+        wire_runtime(
+            mind=mind,
+            data_center=data_center,
+            cognee_client=mem.get("cognee_client"),
+            cognee_coordinator=mem.get("cognee_coordinator"),
+            image_index_worker=tools_ctx["image_index_worker"],
+        )
 
         log(
             f"AgentRuntime 已组装: chat={llm_data['llm'].config.name} "
@@ -491,9 +488,14 @@ def create_bootstrap() -> FlowMachine:
         """启动健康检查 — 验证关键组件就绪状态。"""
         from agent.runtime.singleton import get_runtime
         from core.entity import EntityRegistry, EntityType
+        from core.latebind import assert_wired
 
         issues: list[str] = []
         rt = get_runtime()
+
+        # 晚绑定端口漏接线在此暴露（wire_runtime 遗漏即缺陷，不静默降级）
+        for port_name in assert_wired():
+            issues.append(f"晚绑定端口未施绑: {port_name}")
 
         if rt.llm is None:
             issues.append("LLM 默认客户端未就绪")

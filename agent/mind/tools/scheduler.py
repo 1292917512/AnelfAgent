@@ -22,10 +22,7 @@ from core.path import ConfigPaths
 from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import deferred_tool
 
-# ── 运行时引用（bootstrap 组装后通过 set_mind 注入）──
-
-_pfc_ref: Any = None
-_mind_ref: Any = None
+from .ports import mind_port
 
 _MAX_DELAY = 600
 
@@ -48,13 +45,6 @@ def _no_reply_target() -> str:
     )
 
 
-def set_mind(mind: Any) -> None:
-    """延迟注入 Mind 引用（bootstrap 组装完成后调用），同时获取 PFC。"""
-    global _mind_ref, _pfc_ref
-    _mind_ref = mind
-    _pfc_ref = mind.pfc if mind is not None else None
-
-
 @deferred_tool(
     group="thinking", tags=["core"], source="mind.scheduler",
     description="延迟指定秒数后自动触发一轮新的对话回复，适用于需要等一会儿再主动联系用户的场景。",
@@ -66,8 +56,9 @@ async def schedule_reply(delay_seconds: int = 30, reason: str = "") -> str:
         delay_seconds: 延迟秒数（1-600），默认30秒
         reason: 延迟原因，会作为提示注入下一轮上下文
     """
-    if not _pfc_ref or not _mind_ref:
+    if not mind_port.bound:
         return _system_not_ready()
+    mind = mind_port.get()
 
     delay = max(1, min(delay_seconds, _MAX_DELAY))
 
@@ -75,7 +66,7 @@ async def schedule_reply(delay_seconds: int = 30, reason: str = "") -> str:
     if not scope:
         return _no_reply_target()
 
-    reply_channel = getattr(_pfc_ref, "get_adapter_key", lambda s: "")(scope) if _pfc_ref else ""
+    reply_channel = getattr(mind.pfc, "get_adapter_key", lambda s: "")(scope)
     log(f"计划 {delay}s 后触发回复: scope={scope} reason={reason}", tag="调度")
     asyncio.create_task(_delayed_reply(delay, reply_channel, scope, reason))
 
@@ -92,7 +83,7 @@ async def _delayed_reply(delay: int, channel: str, scope: str, reason: str) -> N
     """等待指定秒数后触发一轮 REPLY。"""
     await asyncio.sleep(delay)
 
-    if not _pfc_ref or not _mind_ref:
+    if not mind_port.bound:
         return
 
     prompt = f"[定时提醒] 你 {delay} 秒前设定了一个延迟回复"
@@ -101,8 +92,8 @@ async def _delayed_reply(delay: int, channel: str, scope: str, reason: str) -> N
     prompt += "。请决定下一步操作。"
 
     _enqueue_reply(scope, channel, f"定时回复: {reason or '延迟触发'}", prompt)
-    log(f"延迟 {delay}s 到期，触发回复: {scope}", tag="调度")
-    asyncio.create_task(_mind_ref.try_execute_mind())
+    log(f"延迟 {delay}s 到期，触发回复: scope={scope}", tag="调度")
+    asyncio.create_task(mind_port.get().try_execute_mind())
 
 
 # ======================================================================
@@ -147,7 +138,9 @@ def _current_scope() -> str:
     if scope and scope != "_global" and scope.startswith(("user_", "group_")):
         return scope
     # 回退：从 Mind 活跃 scope 中提取（兼容测试/无 ContextVar 绑定场景）
-    for s in getattr(_mind_ref, "_active_scopes", set()) or set():
+    if not mind_port.bound:
+        return ""
+    for s in getattr(mind_port.get(), "_active_scopes", set()) or set():
         if s.startswith(("user_", "group_")):
             return s
     return ""
@@ -170,8 +163,8 @@ def enqueue_scope_reply(pfc: Any, scope: str, channel: str, preview: str, prompt
 
 
 def _enqueue_reply(scope: str, channel: str, preview: str, prompt: str) -> None:
-    """基于模块级 PFC 引用的 enqueue_scope_reply 便捷封装。"""
-    enqueue_scope_reply(_pfc_ref, scope, channel, preview, prompt)
+    """基于 mind 端口的 enqueue_scope_reply 便捷封装。"""
+    enqueue_scope_reply(mind_port.get().pfc, scope, channel, preview, prompt)
 
 
 def _parse_run_at(run_at: str) -> Optional[float]:
@@ -210,8 +203,9 @@ async def schedule_reminder(note: str, run_at: str = "", delay_seconds: int = 0)
         run_at: 绝对触发时间，格式 "YYYY-MM-DD HH:MM" 或 "HH:MM"（与 delay_seconds 二选一）
         delay_seconds: 相对延迟秒数（可超过600，与 run_at 二选一）
     """
-    if not _pfc_ref or not _mind_ref:
+    if not mind_port.bound:
         return _system_not_ready()
+    mind = mind_port.get()
     if not note.strip():
         return tool_error("提醒内容 note 不能为空", cause=ErrorCause.PARAM, retryable=False)
 
@@ -242,7 +236,7 @@ async def schedule_reminder(note: str, run_at: str = "", delay_seconds: int = 0)
         "note": note.strip(),
         "run_at_ts": run_at_ts,
         "scope": scope,
-        "channel": getattr(_pfc_ref, "get_adapter_key", lambda s: "")(scope) if _pfc_ref else "",
+        "channel": getattr(mind.pfc, "get_adapter_key", lambda s: "")(scope),
         "created_ts": time.time(),
     }
     reminders = await asyncio.to_thread(_load_reminders)
@@ -301,7 +295,7 @@ async def check_due_reminders() -> int:
 
     停机期间错过的提醒会在重启后首个心跳补触发。
     """
-    if not _pfc_ref or not _mind_ref:
+    if not mind_port.bound:
         return 0
 
     now = time.time()
@@ -324,5 +318,5 @@ async def check_due_reminders() -> int:
         _enqueue_reply(scope, r.get("channel", ""), f"定时提醒: {r.get('note', '')[:80]}", prompt)
         log(f"定时提醒到期触发: id={r.get('id')} scope={scope} note={r.get('note', '')[:50]}", tag="调度")
 
-    asyncio.create_task(_mind_ref.try_execute_mind())
+    asyncio.create_task(mind_port.get().try_execute_mind())
     return len(due)

@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 _CONFIG_PATH = ConfigPaths.LLM_CLIENTS
 
 
+
 @dataclass
 class ProviderConfig:
     """供应商级别配置。"""
@@ -50,7 +51,7 @@ class ProviderConfig:
     api_key: str = ""
     api_type: str = "openai"
     proxy_url: str = ""
-    # 图片生成协议适配器名（见 agent.llm.image_adapters），空表示按 host 自动匹配。
+    # 媒体协议适配器名（image/speech/video/music 共用注册表），空表示按 host 自动匹配。
     media_protocol: str = ""
 
     def __post_init__(self) -> None:
@@ -243,9 +244,13 @@ class LLMManager(BaseEntity):
                         provider_id=prov.id,
                         supports_reasoning=mdata.get("supports_reasoning", False),
                         reasoning_effort=mdata.get("reasoning_effort", ""),
+                        thinking=mdata.get("thinking", {}),
                         context_window=mdata.get("context_window", 0),
                         embedding_dims=mdata.get("embedding_dims", 0),
                         embedding_max_batch=mdata.get("embedding_max_batch", 0),
+                        embedding_protocol=mdata.get("embedding_protocol", ""),
+                        cache_affinity=mdata.get("cache_affinity"),
+                        image_url_format=mdata.get("image_url_format", ""),
                         request_params=mdata.get("request_params", {}),
                         extra_body=mdata.get("extra_body", {}),
                         extra_params=mdata.get("extra_params", {}),
@@ -278,7 +283,7 @@ class LLMManager(BaseEntity):
                 continue
             name = str(raw_name)
             if name in _BUILTIN_AGENT_NAMES:
-                # 内置难度档：新格式（models 列表），描述缺省保留默认
+                # 内置难度档：models 列表，描述缺省保留默认
                 profile = self._sub_agents[name]
                 profile.models = self._clean_pool(item.get("models"))
                 if item.get("description"):
@@ -392,7 +397,7 @@ class LLMManager(BaseEntity):
                 "default_chat": self._default_chat,
             }
             # 子代理统一注册表：内置难度档始终写出（空池也保留条目，注册表视图稳定），
-            # 自定义档案按需；legacy delegation_tiers 键不再写出（加载时自动迁移）
+            # 自定义档案按需；legacy 键不再写出（迁移见 _load_config）
             out["sub_agents"] = {
                 profile.name: profile.to_dict()
                 for profile in self._sub_agents.values()
@@ -518,7 +523,7 @@ class LLMManager(BaseEntity):
         """按模型类型获取对应凭据的 MediaClient。
 
         指定 model_type 时从该类型的优先级列表取凭据；
-        未指定时按 asr → tts → video → rerank 顺序取首个可用。
+        未指定时按 asr → tts → video → music → rerank 顺序取首个可用。
         """
         from agent.llm.media_client import MediaClient
         search_types = [model_type] if model_type else ["asr", "tts", "video", "music", "rerank"]
@@ -901,7 +906,6 @@ class LLMManager(BaseEntity):
         allowed = {k: v for k, v in kwargs.items() if hasattr(prov, k) and k != "id"}
         updated = replace(prov, **allowed)
         self._providers[pid] = updated
-        # 同步更新该供应商下所有模型的连接参数
         for client in self._clients.values():
             if client.config.provider_id != pid:
                 continue

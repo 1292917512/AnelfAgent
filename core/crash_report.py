@@ -98,7 +98,10 @@ def collect_previous_crash() -> Optional[Dict[str, Any]]:
 
 
 def _diagnostic_report_dirs() -> List[Path]:
-    if sys.platform != "darwin":
+    # 经变量中转避免 mypy 按 sys.platform 字面量收窄（linux 上会把
+    # darwin 分支判为 unreachable，CI（Linux）必红而本地（macOS）全绿）
+    is_darwin = sys.platform == "darwin"
+    if not is_darwin:
         return []
     home = Path(os.path.expanduser("~"))
     return [

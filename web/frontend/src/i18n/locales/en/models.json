@@ -111,6 +111,8 @@
     "extra_bodyHint": "Merged into the request body; applied last (after thinking adaptation), same-name keys win here",
     "extra_headers": "Custom Headers JSON",
     "extra_headersHint": "Merged last into HTTP headers; can override auth headers (same-name keys win here)",
+    "thinking": "Thinking Contract JSON",
+    "thinkingHint": "Declares how thinking effort maps into the request body: param target field (reasoning_effort / thinking.type), map level mapping, on enable value, off disable value; leave empty for generic passthrough",
     "context_window": "Context Window",
     "max_tokens": "Max Output Tokens",
     "chat_protocol": "Chat Protocol",

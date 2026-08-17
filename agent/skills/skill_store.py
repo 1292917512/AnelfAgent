@@ -38,7 +38,7 @@ try:
     import yaml
     _HAS_YAML = True
 except ImportError:
-    yaml = None  # type: ignore[assignment]
+    yaml = None
     _HAS_YAML = False
 
 
@@ -58,17 +58,26 @@ class Skill(BaseModel):
     trigger_patterns: List[str] = Field(default_factory=list)
     content: str = ""
     created_by: str = "agent"
+    # 真实消费次数（手势命中 / AI 读全文 / 内容被合并采用）；检索注入不计入
     use_count: int = 0
+    # 检索注入次数（语义/关键词匹配命中即计数，不代表被真正消费）
+    match_count: int = 0
     patch_count: int = 0
     state: SkillState = SkillState.ACTIVE
     pinned: bool = False
     # 用户手势可调用（/name 确定性触发；False = 仅语义/关键词匹配可见）
     user_invocable: bool = True
+    # 最近一次写入的决策理由（决策协议回执，供后续评审追溯问责）
+    rationale: str = ""
+    # 被合并归档时的去向技能名（可逆归档的恢复线索）
+    merged_into: str = ""
     created_at: float = Field(default_factory=time.time)
     last_activity_at: float = Field(default_factory=time.time)
+    # 最近一次被检索注入的时间（stale 层的软保留信号：仍被检索到则不归档）
+    last_match_at: float = 0.0
 
     def touch(self) -> None:
-        """记录一次活动（使用/更新）。"""
+        """记录一次活动（真实使用/更新）。检索注入不调用本方法。"""
         self.last_activity_at = time.time()
 
 
@@ -80,8 +89,8 @@ _FRONTMATTER_RE = re.compile(r"\A\s*---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 
 _META_FIELDS = (
     "name", "description", "trigger_patterns", "created_by",
-    "use_count", "patch_count", "state", "pinned", "user_invocable",
-    "created_at", "last_activity_at",
+    "use_count", "match_count", "patch_count", "state", "pinned", "user_invocable",
+    "rationale", "merged_into", "created_at", "last_activity_at", "last_match_at",
 )
 
 
@@ -136,13 +145,18 @@ def render_skill_md(skill: Skill) -> str:
         "trigger_patterns": skill.trigger_patterns,
         "created_by": skill.created_by,
         "use_count": skill.use_count,
+        "match_count": skill.match_count,
         "patch_count": skill.patch_count,
         "state": skill.state.value,
         "pinned": skill.pinned,
         "user_invocable": skill.user_invocable,
+        "rationale": skill.rationale,
+        "merged_into": skill.merged_into,
         "created_at": skill.created_at,
         "last_activity_at": skill.last_activity_at,
     }
+    if skill.last_match_at > 0.0:
+        meta["last_match_at"] = skill.last_match_at
     if _HAS_YAML:
         frontmatter = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False).strip()
     else:
@@ -185,6 +199,15 @@ class SkillStore:
         self._version = 0
         # 目录签名：外部途径（如 skillhub CLI / 手动拷贝）增删技能时检测变化
         self._last_dir_signature = self._dir_signature()
+        # 解析失败登记：严格契约下脏文件不静默消失——错误作为健康事实呈现，
+        # 由 AI 评审/治理时自主决策修复（create 同名重建即为修复通道）
+        self._parse_errors: Dict[str, str] = {}
+
+    @property
+    def parse_errors(self) -> Dict[str, str]:
+        """当前解析失败的技能（技能名 → 错误摘要，只读副本）。"""
+        with self._lock:
+            return dict(self._parse_errors)
 
     @property
     def version(self) -> int:
@@ -238,9 +261,12 @@ class SkillStore:
                 return None
             try:
                 meta, body = parse_skill_md(path.read_text(encoding="utf-8"))
-                return self._skill_from_meta(meta, body, fallback_name=self.normalize_name(name))
+                skill = self._skill_from_meta(meta, body, fallback_name=self.normalize_name(name))
+                self._parse_errors.pop(self.normalize_name(name), None)
+                return skill
             except Exception as exc:
                 log(f"技能解析失败: {path}: {exc}", "WARNING", tag="技能")
+                self._parse_errors[self.normalize_name(name)] = f"{type(exc).__name__}: {exc}"[:200]
                 return None
 
     def list_skills(self, *, include_archived: bool = False) -> List[Skill]:
@@ -267,6 +293,8 @@ class SkillStore:
         path = self._skill_path(skill.name)
         with self._lock:
             _atomic_write(path, render_skill_md(skill))
+            # save 写入的必然是合法格式（render 自模型），清除同名解析失败登记
+            self._parse_errors.pop(skill.name, None)
             self._last_dir_signature = self._dir_signature()
             self._version += 1
         log(f"💾 技能已保存: {skill.name} (state={skill.state.value})", "DEBUG", tag="技能")
@@ -279,8 +307,9 @@ class SkillStore:
             content: str,
             trigger_patterns: Optional[List[str]] = None,
             created_by: str = "agent",
+            rationale: str = "",
     ) -> Skill:
-        """创建新技能（已存在时转为内容更新）。"""
+        """创建新技能（已存在时转为内容更新）。rationale 记录本次写入的决策理由。"""
         existing = self.get(name)
         if existing is not None:
             existing.content = content
@@ -290,6 +319,7 @@ class SkillStore:
                 merged = list(dict.fromkeys(existing.trigger_patterns + trigger_patterns))
                 existing.trigger_patterns = merged
             existing.patch_count += 1
+            existing.rationale = rationale or existing.rationale
             existing.touch()
             return self.save(existing)
         skill = Skill(
@@ -298,6 +328,7 @@ class SkillStore:
             content=content,
             trigger_patterns=trigger_patterns or [],
             created_by=created_by,
+            rationale=rationale,
         )
         return self.save(skill)
 
@@ -308,8 +339,9 @@ class SkillStore:
             content: Optional[str] = None,
             description: Optional[str] = None,
             add_trigger_patterns: Optional[List[str]] = None,
+            rationale: str = "",
     ) -> Optional[Skill]:
-        """增量更新技能（patch_count +1）。"""
+        """增量更新技能（patch_count +1）。rationale 记录本次写入的决策理由。"""
         skill = self.get(name)
         if skill is None:
             return None
@@ -322,6 +354,8 @@ class SkillStore:
                 dict.fromkeys(skill.trigger_patterns + add_trigger_patterns)
             )
         skill.patch_count += 1
+        if rationale:
+            skill.rationale = rationale
         skill.touch()
         return self.save(skill)
 
@@ -333,20 +367,85 @@ class SkillStore:
                 return False
             import shutil
             shutil.rmtree(path.parent)
+            self._parse_errors.pop(self.normalize_name(name), None)
             self._last_dir_signature = self._dir_signature()
             self._version += 1
         log(f"🗑 技能已删除: {name}", tag="技能")
         return True
 
-    def record_use(self, name: str) -> None:
-        """记录一次使用（use_count +1，刷新活动时间）。"""
+    def record_use(self, name: str, *, touch: bool = True) -> None:
+        """记录一次真实使用（use_count +1）。
+
+        真实使用 = 手势命中 / AI 读全文 / 内容被采用。检索注入走 record_match，
+        两者分离后策展的闲置计时不再被"碰巧被匹配到"刷新。
+        touch=False 供系统侧查阅（如评审读候选）计数但不刷新活动时间——
+        检查不等于消费，不能给技能续命。
+        """
         with self._lock:
             skill = self.get(name)
             if skill is None:
                 return
             skill.use_count += 1
-            skill.touch()
+            if touch:
+                skill.touch()
             self.save(skill)
+
+    def record_match(self, name: str) -> None:
+        """记录一次检索注入（match_count +1，仅刷新 last_match_at）。
+
+        不刷新 last_activity_at：被匹配不等于被消费，不能阻断闲置降级；
+        last_match_at 供 stale 层软保留（仍被检索到的技能不归档）。
+        """
+        with self._lock:
+            skill = self.get(name)
+            if skill is None:
+                return
+            skill.match_count += 1
+            skill.last_match_at = time.time()
+            self.save(skill)
+
+    def merge(
+            self,
+            sources: List[str],
+            target: str,
+            *,
+            content: str,
+            description: str = "",
+            add_trigger_patterns: Optional[List[str]] = None,
+            rationale: str = "",
+    ) -> Optional[Skill]:
+        """将若干源技能合并进目标技能（目标增量更新，源可逆归档）。
+
+        合并是 AI 的显式策展决策，本方法只负责稳定落地：目标经 patch 语义
+        写入合并后内容，源技能置 ARCHIVED 并记录 merged_into 以便追溯恢复。
+        """
+        target_name = self.normalize_name(target)
+        with self._lock:
+            if target_name not in [s.name for s in self.list_skills(include_archived=True)]:
+                return None
+            source_names: List[str] = []
+            for raw in sources:
+                src_name = self.normalize_name(raw)
+                if src_name == target_name or src_name in source_names:
+                    continue
+                source_names.append(src_name)
+            merged = self.patch(
+                target_name,
+                content=content,
+                description=description or None,
+                add_trigger_patterns=add_trigger_patterns,
+                rationale=rationale or f"合并自: {', '.join(source_names)}",
+            )
+            if merged is None:
+                return None
+            for src_name in source_names:
+                src = self.get(src_name)
+                if src is None:
+                    continue
+                src.state = SkillState.ARCHIVED
+                src.merged_into = target_name
+                self.save(src)
+            return merged
 
     def set_state(self, name: str, state: SkillState) -> Optional[Skill]:
         """变更技能状态（active/stale/archived）。

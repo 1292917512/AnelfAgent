@@ -1,6 +1,6 @@
 """Anthropic Prompt Caching 断点设施 — 请求装饰的唯一权威。
 
-架构纪律（借鉴 Hermes agent/prompt_caching.py，收敛为单一装饰点）：
+架构纪律：
 
 - **唯一装饰点**：`decorate_request` 在发送边界（llm_invoker）调用，
   管线/think_loop/内容构建侧只负责 `_layer` 标签，谁都不写 cache_control
@@ -58,11 +58,15 @@ def is_tools_breakpoint_enabled() -> bool:
 
 
 def is_anthropic_wire(model: str, api_type: str) -> bool:
-    """Anthropic 线判定（决定是否做断点装饰）：模型名或 api_type 推断 + 总开关。"""
+    """Anthropic 线判定（决定是否做断点装饰）：按 api_type + 总开关。
+
+    cache_control 断点是 Anthropic 协议字段，是否装饰只取决于 api_type，
+    不看模型名——走 openai 协议的端点即便模型名叫 claude 也不该加 anthropic
+    断点（字段会被拒或忽略）。model 参数保留仅为兼容既有调用签名。
+    """
     if not get_config_bool("prompt_cache_anthropic_breakpoint", True):
         return False
-    m = (model or "").lower()
-    return "anthropic" in m or "claude" in m or (api_type or "").lower() == "anthropic"
+    return (api_type or "").lower() == "anthropic"
 
 
 def count_breakpoints(messages: List[Dict]) -> int:
@@ -177,9 +181,8 @@ def decorate_messages(
 def strip_cache_control_copy(messages: List[Dict]) -> List[Dict]:
     """非破坏式剥离：返回无 cache_control 的新列表（仅拷贝含断点的消息）。
 
-    跨供应商回退场景（Hermes _redecorate_prompt_cache_for_provider 同款纪律）：
-    断点是 Anthropic 专属字段，泄露到 OpenAI 兼容端点可能被严格校验拒绝；
-    原列表与 think_loop 上下文共享 dict，禁止原地剥离。
+    跨供应商回退场景：断点是 Anthropic 专属字段，泄露到 OpenAI 兼容端点
+    可能被严格校验拒绝；原列表与 think_loop 上下文共享 dict，禁止原地剥离。
     """
     result: List[Dict] = []
     for msg in messages:

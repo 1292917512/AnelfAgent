@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from agent.llm.protocol import CHAT_PROTOCOLS, ChatProtocol
-from agent.llm.reasoning import normalize_effort
+from agent.llm.reasoning import normalize_effort, parse_thinking_spec
 from core.log import log
 
 _DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1"
@@ -129,7 +129,7 @@ class LLMClientConfig:
     api_key: str = _DEFAULT_API_KEY
     model: str = ""
     api_type: str = API_TYPE_OPENAI
-    # None 表示不下发，由 provider/SDK 按模型默认决定（参考 hermes/nekro/openclaw）
+    # None 表示不下发，由 provider/SDK 按模型默认决定
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     # 输出预算上限；None 表示不主动限制，由 provider/SDK 按模型默认决定
@@ -151,11 +151,25 @@ class LLMClientConfig:
     # 每模型专属思考等级（off/minimal/low/medium/high/xhigh/max）；
     # 空=跟随全局/任务注入的等级。非法值在 __post_init__ 归一为 ""
     reasoning_effort: str = ""
+    # 思考下发契约（供应商无关声明）：本模型如何把思考档位填进请求体。
+    # {"param": "reasoning_effort"|"thinking.type", "map": {...档位映射},
+    #  "on": "...开关型开启值", "off": "...关闭值"}；空 dict = 走通用透传。
+    # 语义见 agent.llm.reasoning.parse_thinking_spec
+    thinking: Dict[str, Any] = field(default_factory=dict)
     context_window: int = 0
     # embedding 请求的目标维度（Matryoshka 可变维度模型生效）；0 = 模型默认维度
     embedding_dims: int = 0
     # embedding 单批文本数上限（供应商限制，如 text-embedding-v4 限 10）；0 = 不限制
     embedding_max_batch: int = 0
+    # embedding 协议：空 = 按 base_url 自动推断（host 含 dashscope 原生域名的走原生
+    # 多模态协议，其余走 OpenAI 兼容）；显式 "dashscope_native" / "openai" 强制指定
+    embedding_protocol: str = ""
+    # 节点本地缓存的连接池亲和：None = 按 api_type 默认（anthropic 开），
+    # True/False 显式开/关（节点本地 prompt 缓存的网关需要小连接池维持 TCP 亲和）
+    cache_affinity: Optional[bool] = None
+    # 图片 URL 格式："" = 按 api_type 默认（ollama 扁平）；"flat" / "nested" 显式指定
+    # （扁平 = image_url 直接放字符串，嵌套 = {"url": ...} 对象，部分端点只认一种）
+    image_url_format: str = ""
     request_params: Dict[str, Any] = field(default_factory=dict)
     extra_body: Dict[str, Any] = field(default_factory=dict)
     extra_params: Dict[str, Any] = field(default_factory=dict)
@@ -169,7 +183,7 @@ class LLMClientConfig:
     # chat_completions 路径：web_search 转译为 enable_search（chat 端点 tools 仅收
     # function），其余类型跳过；responses 路径：以 {"type": ...} 声明透传进 tools
     builtin_tools: List[Any] = field(default_factory=list)
-    # 图片生成协议适配器名（见 agent.llm.image_adapters），空表示按 host 自动匹配。
+    # 媒体协议适配器名（image/speech/video/music 共用注册表），空表示按 host 自动匹配。
     media_protocol: str = ""
     # 启用开关：禁用后模型配置保留但不参与任何自动选择/回退/默认（模型激活）
     enabled: bool = True
@@ -228,9 +242,40 @@ class LLMClientConfig:
                 "WARNING", tag="模型",
             )
         self.reasoning_effort = normalized_effort
+        if not isinstance(self.thinking, dict):
+            raise ValueError("thinking 必须是对象")
+        if self.thinking and parse_thinking_spec(self.thinking) is None:
+            log(
+                f"模型 [{self.name}] 的 thinking 契约无效（param 需为 "
+                f"reasoning_effort / thinking.type），已忽略并走通用透传",
+                "WARNING", tag="模型",
+            )
+            self.thinking = {}
+        # 契约声明了 adaptive 原生值时，向 litellm 声明该端点支持 adaptive——
+        # 否则 litellm 会把 adaptive 翻译成 Anthropic legacy 的 budget_tokens
+        # （配置驱动：读契约值触发，不看模型名）
+        if self.thinking and self._thinking_uses_adaptive():
+            self._declare_adaptive_thinking()
         collisions = _RESERVED_REQUEST_PARAMS.intersection(self.request_params)
         if collisions:
             raise ValueError(f"request_params 不允许覆盖保留参数: {sorted(collisions)}")
+
+    def _thinking_uses_adaptive(self) -> bool:
+        """思考契约的任一原生值是否声明了 adaptive。"""
+        values = [self.thinking.get("on"), self.thinking.get("off")]
+        mapping = self.thinking.get("map")
+        if isinstance(mapping, dict):
+            values.extend(mapping.values())
+        return any(v == "adaptive" for v in values)
+
+    def _declare_adaptive_thinking(self) -> None:
+        """向 litellm 声明本模型端点支持 adaptive thinking（防其翻译为 budget_tokens）。"""
+        try:
+            import litellm
+
+            litellm.register_model({self.model: {"supports_adaptive_thinking": True}})
+        except Exception as exc:
+            log(f"声明 adaptive thinking 失败（不影响主流程）: {exc}", "DEBUG", tag="模型")
 
     @property
     def effective_proxy(self) -> str:
@@ -262,7 +307,10 @@ class LLMClientConfig:
 
     @property
     def use_flat_image_url(self) -> bool:
-        """Ollama 兼容端点需要扁平 image_url 格式。"""
+        """扁平 image_url 格式判定：显式配置优先，缺省按 api_type（ollama 扁平）。"""
+        fmt = (self.image_url_format or "").strip().lower()
+        if fmt:
+            return fmt == "flat"
         return self.api_type == API_TYPE_OLLAMA
 
     @property
@@ -319,6 +367,8 @@ class LLMClientConfig:
             "media_protocol": self.media_protocol,
             "enabled": self.enabled,
         }
+        if self.thinking:
+            d["thinking"] = self.thinking
         if self.extra_params:
             d["extra_params"] = self.extra_params
         if self.extra_headers:
@@ -356,6 +406,12 @@ class LLMClientConfig:
             d["embedding_dims"] = self.embedding_dims
         if self.embedding_max_batch:
             d["embedding_max_batch"] = self.embedding_max_batch
+        if self.embedding_protocol:
+            d["embedding_protocol"] = self.embedding_protocol
+        if self.cache_affinity is not None:
+            d["cache_affinity"] = self.cache_affinity
+        if self.image_url_format:
+            d["image_url_format"] = self.image_url_format
         if self.frequency_penalty:
             d["frequency_penalty"] = self.frequency_penalty
         if self.presence_penalty:
@@ -368,6 +424,8 @@ class LLMClientConfig:
             d["extra_headers"] = self.extra_headers
         if self.reasoning_effort:
             d["reasoning_effort"] = self.reasoning_effort
+        if self.thinking:
+            d["thinking"] = self.thinking
         if not self.enabled:
             d["enabled"] = False
         return d

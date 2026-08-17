@@ -19,6 +19,38 @@ async def list_skills(include_archived: bool = False) -> List[Dict[str, Any]]:
     return _skill_svc.list_skills(include_archived=include_archived)
 
 
+@router.get("/health")
+async def library_health() -> Dict[str, Any]:
+    """技能库健康报告（计数/零参与/高匹配零消费/触发词碰撞/向量构建状态）。"""
+    return _skill_svc.library_health()
+
+
+@router.post("/vectors/rebuild")
+async def rebuild_vectors() -> Dict[str, Any]:
+    """手动触发全量向量重建（模型切换后的标准操作）。
+
+    幂等：进行中直接返回当前进度。返回触发后的构建状态快照。
+    """
+    try:
+        return await _skill_svc.rebuild_vectors()
+    except RuntimeError as e:
+        raise HTTPException(503, str(e)) from e
+
+
+@router.post("/{name}/embed")
+async def embed_skill(name: str) -> Dict[str, Any]:
+    """单个技能向量生成/重新生成（行内操作）。
+
+    幂等：向量已就绪直接返回；重建进行中让位（rebuild_all 会覆盖该技能）。
+    """
+    try:
+        return await _skill_svc.embed_skill(name)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(503, str(e)) from e
+
+
 @router.get("/{name}")
 async def get_skill(name: str) -> Dict[str, Any]:
     try:
@@ -50,6 +82,7 @@ class UpdateSkillRequest(BaseModel):
     content: Optional[str] = None
     description: Optional[str] = None
     add_trigger_patterns: Optional[List[str]] = None
+    rationale: Optional[str] = None
 
 
 @router.put("/{name}")

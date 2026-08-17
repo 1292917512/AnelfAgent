@@ -261,14 +261,24 @@ class Mind:
         self.compressor = ContextCompressor(self)
         register_compressor(self.compressor)
 
-        # 技能自学习系统（存储/匹配/策展/后台评审）
-        from agent.skills import SkillCurator, SkillMatcher, SkillReviewer, SkillStore
+        # 技能自学习系统（存储/事实索引/匹配/策展/后台评审）
+        from agent.skills import (
+            SkillCurator,
+            SkillMatcher,
+            SkillReviewer,
+            SkillStore,
+            register_skill_tools,
+        )
         self.skill_store = SkillStore()
         self.skill_matcher = SkillMatcher(self.skill_store, self.embedder)
-        self.skill_curator = SkillCurator(self.skill_store)
-        self.skill_reviewer = SkillReviewer(self, self.skill_store)
+        self.skill_curator = SkillCurator(self.skill_store, self.skill_matcher.index)
+        self.skill_reviewer = SkillReviewer(self, self.skill_store, index=self.skill_matcher.index)
         if self._skills_enabled():
             self.skill_reviewer.start()
+        # 重绑定工具依赖到本实例：bootstrap 先行注册用的是独立 matcher/store
+        # （Mind 创建晚于工具注册节点），不重绑会产生两套向量缓存重复嵌入。
+        # activate_group 二次调用为 no-op（延迟注册表已弹出），仅刷新依赖指针。
+        register_skill_tools(self.skill_store, self.skill_matcher)
 
         # 子代理委托管理器（delegate_task 工具注册）
         from agent.delegation import DelegationManager, register_delegation_tools

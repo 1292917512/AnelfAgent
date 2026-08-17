@@ -271,6 +271,10 @@ class CreateModelReq(BaseModel):
     vision_format: VisionFormat = "base64"
     supports_reasoning: bool = False
     reasoning_effort: ReasoningEffort = ""
+    thinking: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="思考下发契约（供应商无关）：param 目标字段 / map 档位映射 / on 开启值 / off 关闭值；空对象走通用透传",
+    )
     chat_protocol: ChatProtocolValue = "chat_completions"
     builtin_tools: List[Any] = Field(
         default_factory=list,
@@ -516,6 +520,7 @@ class UpdateModelReq(CreateModelReq):
     vision_format: Optional[VisionFormat] = None
     supports_reasoning: Optional[bool] = None
     reasoning_effort: Optional[ReasoningEffort] = None
+    thinking: Optional[Dict[str, Any]] = None
     chat_protocol: Optional[ChatProtocolValue] = None
     builtin_tools: Optional[List[Any]] = None
     request_params: Optional[RequestParams] = None

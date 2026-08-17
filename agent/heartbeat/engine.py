@@ -439,7 +439,7 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"日期便签归档失败: {e}", "DEBUG", tag="心跳")
 
-        # 技能策展：长期未用技能自动降级/归档（确定性状态机，无 LLM）
+        # 技能策展：重力迁移（长期未真实使用降级/归档）+ 向量预热 + 治理议程
         try:
             curator = getattr(self.mind, "skill_curator", None)
             if curator is not None:
@@ -449,6 +449,11 @@ class HeartbeatEngine:
                         f"[技能策展] 降级 {len(report['staled'])} 个，"
                         f"归档 {len(report['archived'])} 个"
                     )
+                await curator.warm_index()
+                agenda = await curator.build_agenda()
+                summary = curator.agenda_summary(agenda)
+                if summary:
+                    hb_log.append_entry(f"[技能治理议程] {summary}")
         except Exception as e:
             log(f"技能策展失败: {e}", "DEBUG", tag="心跳")
 

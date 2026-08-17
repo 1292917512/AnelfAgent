@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 from agent.messages import parse_entity_scope
 from agent.messages.presets import MessageAssistant, MessageGroupUser, MessageUser
 from agent.mind.prefrontal_cortex import PrefrontalCortex
+from agent.mind.tools.ports import mind_port
 
 # ==================================================================
 # scope 后缀规则与解析
@@ -246,7 +247,7 @@ class TestSwitchSession:
             _channel_snapshots={},
             try_execute_mind=AsyncMock(),
         )
-        session_tools.set_mind(mind)
+        mind_port.set(mind)  # type: ignore[arg-type]
         try:
             raw = await session_tools.switch_session("user_webui:web_user#tab9", reason="测试")
             result = json.loads(raw)
@@ -255,7 +256,7 @@ class TestSwitchSession:
             assert "user_webui:web_user#tab9" in pfc.pending_user.seen
             mind.try_execute_mind.assert_called_once()
         finally:
-            session_tools.set_mind(None)
+            mind_port.unbind()
 
     async def test_switch_unknown_scope_rejected(self) -> None:
         from agent.mind.tools import session_tools
@@ -267,13 +268,13 @@ class TestSwitchSession:
             _channel_snapshots={},
             try_execute_mind=AsyncMock(),
         )
-        session_tools.set_mind(mind)
+        mind_port.set(mind)  # type: ignore[arg-type]
         try:
             raw = await session_tools.switch_session("user_nobody")
             result = json.loads(raw)
             assert "error" in result
         finally:
-            session_tools.set_mind(None)
+            mind_port.unbind()
 
     async def test_list_sessions_reports_unread(self) -> None:
         from agent.mind.tools import session_tools
@@ -284,7 +285,7 @@ class TestSwitchSession:
             adapter_key="webui",
         ))
         mind = SimpleNamespace(pfc=pfc, _active_scopes=set(), _channel_snapshots={})
-        session_tools.set_mind(mind)
+        mind_port.set(mind)  # type: ignore[arg-type]
         try:
             result = json.loads(await session_tools.list_sessions())
             assert result["session_count"] == 1
@@ -293,4 +294,4 @@ class TestSwitchSession:
             assert entry["unread"] == 1
             assert entry["channel"] == "webui"
         finally:
-            session_tools.set_mind(None)
+            mind_port.unbind()

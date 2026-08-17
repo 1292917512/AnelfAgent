@@ -47,12 +47,22 @@ def _run_with_group_kill(command: Union[str, List[str]], timeout_sec: float,
         stdout, stderr = proc.communicate(input=stdin_data, timeout=timeout_sec)
         return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
     except subprocess.TimeoutExpired:
+        # killpg/SIGKILL 为 POSIX 独有：getattr 取用规避 typeshed 平台收窄
+        # （三平台 mypy 校验均无告警；win32 退化为 terminate/kill 单进程）
+        killpg = getattr(os, "killpg", None)
+        sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
+            if killpg is not None:
+                killpg(proc.pid, signal.SIGTERM)
+            else:
+                proc.terminate()
             proc.wait(timeout=2)
         except (ProcessLookupError, subprocess.TimeoutExpired, PermissionError):
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
+                if killpg is not None:
+                    killpg(proc.pid, sigkill)
+                else:
+                    proc.kill()
             except (ProcessLookupError, PermissionError):
                 log("_run_with_group_kill 异常已忽略", "DEBUG")
         proc.wait()

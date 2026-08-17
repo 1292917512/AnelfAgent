@@ -7,10 +7,9 @@ requires-python = ">=3.10, <3.12"
 dependencies = [
     # 智能体核心（litellm 统一 LLM API，内含 openai 作为传递依赖）
     "litellm>=1.95.0,<2.0.0",
-    "orjson>=3.11.9",
-    "aiosqlite==0.21.0",
+    "aiosqlite>=0.21.0",
     "pydantic>=2.10.0",
-    "fastapi>=0.116.2,<0.140.0",
+    "fastapi>=0.116.2",
     "httpx>=0.28.0",
     "aiohttp>=3.9.0",
     "mcp>=1.0.0",
@@ -26,37 +25,29 @@ dependencies = [
     # 通用工具
     "psutil>=7.0.0",
     "pyyaml>=6.0.0",
-    "jinja2>=3.1.0",
     # 图片处理（视觉模型前处理：压缩/格式重编码，如 QQ 的 MPO 转 JPEG）
     "pillow>=10.0.0",
     # 运行时
     "uvicorn>=0.30.0",
-    "starlette>=0.48,<1.0",
+    "starlette>=0.48",
     # Telegram Bot
     "python-telegram-bot>=22.0",
     # 飞书 / Lark
     "lark-oapi>=1.5.0",
     # Cognee 知识图谱记忆后端（默认安装，uv sync 自动拉取）
     "cognee==1.4.1",
-    "chardet>=5,<6",
     "sqlite-vec>=0.1.9",
     "tiktoken>=0.12.0",
     "jieba>=0.42.1",
     "pypdf>=6.14.2",
     "python-docx>=1.2.0",
     # 个人微信（Weixin / iLink Bot API）频道
-    "cryptography>=42.0.0",
+    "cryptography>=42.0.0,<50",
     "qrcode>=7.4.0",
     "aiolimiter>=1.2.1",
     "asyncpg>=0.31.0",
     "aiomysql>=0.3.2",
     "asyncssh>=2.24.0",
-    "funasr>=1.4.1",
-    "modelscope>=1.39.1",
-    "torch>=2.13.0",
-    "torchaudio>=2.11.0",
-    "soundfile>=0.14.0",
-    "opencc-python-reimplemented>=0.1.7",
 ]
 
 [[tool.uv.index]]

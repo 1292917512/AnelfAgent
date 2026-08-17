@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import re
 import time
+import zlib
 from types import SimpleNamespace
 
 import pytest
 
 from agent.skills.curator import SkillCurator
+from agent.skills.skill_index import SkillIndex
 from agent.skills.skill_matcher import SkillMatcher
 from agent.skills.skill_store import (
     Skill,
@@ -21,6 +25,27 @@ from agent.skills.skill_store import (
 @pytest.fixture
 def store(tmp_path) -> SkillStore:
     return SkillStore(str(tmp_path / "skills"))
+
+
+class FakeEmbedder:
+    """确定性词袋嵌入：英文词 → crc32 维度计数，共享词越多余弦越高。"""
+
+    def __init__(self, dims: int = 64, model: str = "fake-emb-v1") -> None:
+        self.dims = dims
+        self.client_name = model
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    async def embed_query(self, text: str) -> list[float]:
+        vec = [0.0] * self.dims
+        for tok in re.findall(r"[a-z0-9]+", text.lower()):
+            vec[zlib.crc32(tok.encode()) % self.dims] += 1.0
+        return vec
+
+    async def embed_text(self, texts: list[str]) -> list[list[float]]:
+        return [await self.embed_query(t) for t in texts]
 
 
 class TestSkillMdFormat:
@@ -45,6 +70,68 @@ class TestSkillMdFormat:
     def test_parse_without_frontmatter(self) -> None:
         meta, body = parse_skill_md("# 纯正文")
         assert meta == {} and body == "# 纯正文"
+
+    def test_legacy_frontmatter_defaults(self, store: SkillStore) -> None:
+        """旧格式 SKILL.md（无 match_count/rationale 等新字段）解析即迁移：默认值兜底。"""
+        legacy = (
+            "---\n"
+            "name: legacy-skill\n"
+            "description: 旧版技能\n"
+            "use_count: 5\n"
+            "state: active\n"
+            "---\n\n旧正文\n"
+        )
+        target = store.skills_dir / "legacy-skill"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(legacy, encoding="utf-8")
+        skill = store.get("legacy-skill")
+        assert skill is not None
+        assert skill.use_count == 5 and skill.match_count == 0
+        assert skill.rationale == "" and skill.merged_into == ""
+        assert skill.last_match_at == 0.0
+        assert skill.content == "旧正文"
+
+    def test_parse_error_registered_and_cleared(self, store: SkillStore) -> None:
+        """严格解析失败 → 登记为健康事实（抛给 AI 决策）；修复后自动清除。"""
+        dirty = (
+            "---\n"
+            "name: broken-skill\n"
+            "merged_into:\n"
+            "- some-list-value\n"
+            "---\n\n正文\n"
+        )
+        target = store.skills_dir / "broken-skill"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(dirty, encoding="utf-8")
+
+        assert store.get("broken-skill") is None  # 严格解析：不兜底
+        errors = store.parse_errors
+        assert "broken-skill" in errors
+        assert "merged_into" in errors["broken-skill"] or "ValidationError" in errors["broken-skill"]
+
+        # 修复通道：create 同名重建覆盖脏文件（严格模式下 get 为 None 走新建）
+        store.create("broken-skill", "修复后的描述", "修复后的内容")
+        assert store.parse_errors == {}
+        skill = store.get("broken-skill")
+        assert skill is not None and skill.description == "修复后的描述"
+
+    def test_parse_error_cleared_on_delete(self, store: SkillStore) -> None:
+        target = store.skills_dir / "broken-skill"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text("---\nmerged_into:\n- x\n---\n\nc\n", encoding="utf-8")
+        assert store.get("broken-skill") is None
+        assert "broken-skill" in store.parse_errors
+        store.delete("broken-skill")
+        assert store.parse_errors == {}
+
+    def test_snapshot_includes_parse_errors(self, store: SkillStore) -> None:
+        """健康快照透传解析失败事实（评审上下文与库健康工具共用）。"""
+        target = store.skills_dir / "broken-skill"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text("---\nmerged_into:\n- x\n---\n\nc\n", encoding="utf-8")
+        assert store.get("broken-skill") is None
+        snapshot = SkillIndex(store).snapshot()
+        assert "broken-skill" in snapshot["parse_errors"]
 
 
 class TestSkillStore:
@@ -85,6 +172,48 @@ class TestSkillStore:
         store.create("s1", "d", "c")
         store.record_use("s1")
         assert store.get("s1").use_count == 1
+
+    def test_record_match_no_touch(self, store: SkillStore) -> None:
+        """检索注入只计匹配：不刷 use_count、不刷活动时间（被匹配≠被消费）。"""
+        store.create("s1", "d", "c")
+        before = store.get("s1").last_activity_at
+        time.sleep(0.01)
+        store.record_match("s1")
+        skill = store.get("s1")
+        assert skill.match_count == 1 and skill.use_count == 0
+        assert skill.last_match_at > 0.0
+        assert skill.last_activity_at == before
+
+    def test_record_use_no_touch_mode(self, store: SkillStore) -> None:
+        """touch=False 的使用（如 get_skill 查阅）：计数但不刷新活动时间。"""
+        store.create("s1", "d", "c")
+        before = store.get("s1").last_activity_at
+        time.sleep(0.01)
+        store.record_use("s1", touch=False)
+        skill = store.get("s1")
+        assert skill.use_count == 1 and skill.last_activity_at == before
+        store.record_use("s1")
+        assert store.get("s1").use_count == 2
+        assert store.get("s1").last_activity_at > before
+
+    def test_merge_archives_sources(self, store: SkillStore) -> None:
+        store.create("a", "desc a", "内容 a", ["qa"])
+        store.create("b", "desc b", "内容 b", ["qb"])
+        merged = store.merge(["a"], "b", content="合并后内容", add_trigger_patterns=["qa"])
+        assert merged is not None and merged.content == "合并后内容"
+        assert "qa" in merged.trigger_patterns
+        assert "合并自: a" in merged.rationale
+        src = store.get("a")
+        assert src.state == SkillState.ARCHIVED and src.merged_into == "b"
+        assert [s.name for s in store.list_skills()] == ["b"]
+
+    def test_merge_target_missing(self, store: SkillStore) -> None:
+        store.create("a", "d", "c")
+        assert store.merge(["a"], "ghost", content="x") is None
+
+    def test_rationale_roundtrip(self, store: SkillStore) -> None:
+        store.create("s1", "d", "c", rationale="与 X 差异：覆盖容器路径变体")
+        assert store.get("s1").rationale == "与 X 差异：覆盖容器路径变体"
 
     def test_delete(self, store: SkillStore) -> None:
         store.create("s1", "d", "c")
@@ -129,6 +258,28 @@ class TestSkillMatcher:
         matched = await matcher.match(["调研"], top_k=2)
         assert len(matched) == 2
 
+    async def test_redundant_fold_and_merge_signal(self, store: SkillStore) -> None:
+        """近重复折叠：同簇技能只注入得分更高者，折叠记入合并信号。"""
+        store.create("qq-media-fallback-a", "qq media download fallback",
+                     "内容", ["qq media"])
+        store.create("qq-media-fallback-b", "qq media download fallback",
+                     "内容", ["qq media"])
+        matcher = SkillMatcher(store, FakeEmbedder())
+        matched = await matcher.match(["qq media download fallback"], top_k=3)
+        assert len(matched) == 1
+        signals = matcher.index.snapshot()["merge_signals"]
+        assert signals and signals[0]["count"] == 1
+
+    async def test_distinct_skills_not_folded(self, store: SkillStore) -> None:
+        """不同域技能不折叠：各占各的坑位。"""
+        store.create("qq-media-fallback", "qq media download fallback",
+                     "内容", ["qq media"])
+        store.create("cooking-recipe", "cooking recipe pasta dinner",
+                     "内容", ["cooking"])
+        matcher = SkillMatcher(store, FakeEmbedder())
+        matched = await matcher.match(["qq media and cooking recipe"], top_k=3)
+        assert len(matched) == 2
+
 
 class TestSkillCurator:
     def test_active_to_stale(self, store: SkillStore) -> None:
@@ -167,15 +318,230 @@ class TestSkillCurator:
         report = curator.apply_automatic_transitions()
         assert report["staled"] == [] and report["archived"] == []
 
+    def test_probation_zero_engagement_staled(self, store: SkillStore) -> None:
+        """试用期快筛：零参与（无使用无匹配）的新技能直接降级。"""
+        skill = store.create("s1", "d", "c")
+        skill.created_at = time.time() - 20 * 86400
+        store.save(skill)
+        curator = SkillCurator(store)
+        report = curator.apply_automatic_transitions()
+        assert report["staled"] == ["s1"]
+
+    def test_probation_matched_not_staled(self, store: SkillStore) -> None:
+        """被检索到的试用期技能不降级：match 也是参与的证据。"""
+        skill = store.create("s1", "d", "c")
+        skill.created_at = time.time() - 20 * 86400
+        store.save(skill)
+        store.record_match("s1")
+        curator = SkillCurator(store)
+        report = curator.apply_automatic_transitions()
+        assert report["staled"] == []
+
+    def test_stale_soft_keep_on_match(self, store: SkillStore) -> None:
+        """stale 软保留：仍被检索注入的技能不归档（有召回价值）。"""
+        skill = store.create("s1", "d", "c")
+        skill.state = SkillState.STALE
+        skill.last_activity_at = time.time() - 100 * 86400
+        store.save(skill)
+        store.record_match("s1")  # 最近仍被匹配
+        curator = SkillCurator(store)
+        report = curator.apply_automatic_transitions()
+        assert report["archived"] == []
+        assert store.get("s1").state == SkillState.STALE
+
+    async def test_build_agenda_clusters(self, store: SkillStore) -> None:
+        """议程生成：相似聚类进合并候选，元数据事实完整呈现。"""
+        store.create("qq-media-fallback-a", "qq media download fallback", "c", ["qq media"])
+        store.create("qq-media-fallback-b", "qq media download fallback", "c", ["qq media"])
+        store.create("cooking-recipe", "cooking recipe pasta dinner", "c", ["cooking"])
+        index = SkillIndex(store, FakeEmbedder())
+        await index.warm()  # 议程聚类只读缓存：先按生产流预热
+        curator = SkillCurator(store, index)
+        agenda = await curator.build_agenda()
+        names = {c["name"] for cluster in agenda["merge_candidates"] for c in cluster}
+        assert names == {"qq-media-fallback-a", "qq-media-fallback-b"}
+        assert agenda["counts"]["active"] == 3
+
+
+class TestSkillIndexFacts:
+    async def test_write_advisory_similar(self, store: SkillStore) -> None:
+        """写入诊断：与现有技能语义相近 → 相近事实（呈现给 AI，不是拒绝）。"""
+        store.create("qq-media-fallback", "qq media download fallback flow",
+                     "c", ["qq media"])
+        index = SkillIndex(store, FakeEmbedder())
+        facts = await index.write_advisory(
+            name="qq-media-recovery", description="qq media download fallback flow",
+            content="x", trigger_patterns=["qq media"],
+        )
+        similar = facts.get("similar_skills")
+        assert similar and similar[0]["name"] == "qq-media-fallback"
+        assert similar[0]["similarity"] >= 0.83
+
+    async def test_write_advisory_distinct_no_facts(self, store: SkillStore) -> None:
+        """不同域拟议写入无显著事实：快路径直通（空 facts）。"""
+        store.create("qq-media-fallback", "qq media download fallback", "c")
+        index = SkillIndex(store, FakeEmbedder())
+        facts = await index.write_advisory(
+            name="cooking-recipe", description="cooking recipe pasta dinner",
+            content="x", trigger_patterns=["pasta"],
+        )
+        assert facts == {}
+
+    async def test_write_advisory_no_substantive_change(self, store: SkillStore) -> None:
+        """更新诊断：新旧正文几乎一致 → 无实质变化事实（防空转重写）。"""
+        body = "步骤一 " * 60
+        store.create("s1", "d", body)
+        index = SkillIndex(store)
+        facts = await index.write_advisory(
+            name="s1", content=body + " ", updating=True,
+        )
+        assert "no_substantive_change" in facts
+
+    async def test_write_advisory_trigger_collision(self, store: SkillStore) -> None:
+        """触发词碰撞：泛词已被多个技能持有时呈现碰撞事实。"""
+        for i in range(3):
+            store.create(f"s{i}", "d", "c", [f"独有词{i}", "泛词"])
+        index = SkillIndex(store)
+        facts = await index.write_advisory(
+            name="s3", description="d", content="c", trigger_patterns=["泛词"],
+        )
+        collisions = facts.get("trigger_collisions")
+        assert collisions and collisions[0]["pattern"] == "泛词"
+        assert len(collisions[0]["also_in"]) == 3
+
+    def test_snapshot_metadata_facts(self, store: SkillStore) -> None:
+        """库快照：计数/零参与/碰撞等元数据事实（无向量依赖）。"""
+        old = store.create("old-zero", "d", "c")
+        old.created_at = time.time() - 20 * 86400
+        store.save(old)
+        for i in range(3):
+            store.create(f"s{i}", "d", "c", ["泛词"])
+        snapshot = SkillIndex(store).snapshot()
+        assert snapshot["counts"]["active"] == 4
+        assert "old-zero" in snapshot["zero_engagement"]
+        assert "泛词" in snapshot["trigger_collisions"]
+
+    async def test_clusters_deterministic(self, store: SkillStore) -> None:
+        store.create("a-one", "alpha beta gamma topic", "c")
+        store.create("a-two", "alpha beta gamma topic", "c")
+        store.create("b-one", "delta epsilon zeta topic", "c")
+        index = SkillIndex(store, FakeEmbedder())
+        await index.warm()  # 聚类只读缓存：先按生产流预热
+        clusters = await index.clusters(threshold=0.8)
+        flat = [{s.name for s in cluster} for cluster in clusters]
+        assert {"a-one", "a-two"} in flat
+        assert all("b-one" not in group for group in flat)
+        # 聚类缓存：库与向量未变时直接复用（同对象语义等价）
+        assert await index.clusters(threshold=0.8) == clusters
+        # 库变更后缓存失效：新技能进入聚类范围
+        store.create("a-three", "alpha beta gamma topic", "c")
+        await index.warm()
+        regrouped = await index.clusters(threshold=0.8)
+        assert {"a-one", "a-two", "a-three"} in [{s.name for s in c} for c in regrouped]
+
+    async def test_ensure_vectors_budget(self, store: SkillStore) -> None:
+        """预算化补算：超出 budget 的技能本轮拿不到向量（防冷启动串行风暴）。"""
+        for i in range(5):
+            store.create(f"s{i}", f"skill number {i}", "c")
+        index = SkillIndex(store, FakeEmbedder())
+        skills = store.list_skills()
+        vectors = await index.ensure_vectors(skills, budget=2)
+        computed = [name for name, v in vectors.items() if v is not None]
+        assert len(computed) == 2
+        # 再次调用：已缓存的直接命中，剩余预算继续补算
+        vectors2 = await index.ensure_vectors(skills, budget=2)
+        assert sum(1 for v in vectors2.values() if v is not None) == 4
+
+    async def test_warm_batch(self, store: SkillStore) -> None:
+        """批量预热：一次 embed_text 填一批向量，幂等（全热后返回 0）。"""
+        for i in range(3):
+            store.create(f"s{i}", f"skill number {i}", "c")
+        embedder = FakeEmbedder()
+        index = SkillIndex(store, embedder)
+        warmed = await index.warm(limit=4)
+        assert warmed == 3
+        assert await index.warm(limit=4) == 0
+        assert index.cached_vector(store.get("s0")) is not None
+
+    async def test_model_switch_full_rebuild(self, store: SkillStore) -> None:
+        """模型手动切换：清空全部向量 → 标记重建 → rebuild_all 一次性全量重建。"""
+        store.create("s1", "alpha beta topic", "c")
+        store.create("s2", "delta epsilon topic", "c")
+        embedder = FakeEmbedder(model="fake-emb-v1")
+        index = SkillIndex(store, embedder)
+        await index.warm()
+        assert index.embedding_stats()["embedded"] == 2
+        assert not index.rebuild_pending
+
+        # 人为切换模型：检测即全清，无新旧并存过渡态
+        index._embedder = FakeEmbedder(model="fake-emb-v2")
+        await index.warm()  # warm 入口检测切换
+        assert index.rebuild_pending
+        assert index.embedding_stats()["embedded"] == 0
+        assert index.embedding_stats()["model"] == "fake-emb-v2"
+        assert index.embedding_stats()["rebuilding"] is True
+
+        # rebuild_all 一次性全量重建（不分拍渐进）
+        rebuilt = await index.rebuild_all()
+        assert rebuilt == 2
+        stats = index.embedding_stats()
+        assert stats["embedded"] == 2 and stats["cache_keys"] == 2
+        assert not index.rebuild_pending and not stats["rebuilding"]
+
+    async def test_model_switch_rebuild_retry_on_failure(self, store: SkillStore) -> None:
+        """重建失败时保持 pending（心跳重试），不静默丢状态。"""
+        store.create("s1", "alpha beta topic", "c")
+        index = SkillIndex(store, FakeEmbedder(model="fake-emb-v1"))
+        await index.warm()
+
+        class DeadEmbedder(FakeEmbedder):
+            @property
+            def available(self) -> bool:
+                return False
+
+        index._embedder = DeadEmbedder(model="fake-emb-dead")
+        index._refresh_model()
+        assert index.rebuild_pending
+        rebuilt = await index.rebuild_all()
+        assert rebuilt == 0 and index.rebuild_pending  # 端点不可用，待重试
+
+    async def test_prune_stale_vectors(self, store: SkillStore) -> None:
+        """死键清理：删除后旧向量键在显式 prune 时清掉；内容变更在 embed_now 后清掉。"""
+        store.create("s1", "alpha beta topic", "c")
+        store.create("s2", "delta epsilon topic", "c")
+        index = SkillIndex(store, FakeEmbedder())
+        await index.warm()
+        keys_before = len(index._vec_cache)
+        store.delete("s2")
+        index.prune_stale_vectors()
+        assert len(index._vec_cache) == keys_before - 1
+        stats = index.embedding_stats()
+        assert stats["embedded"] == 1 and stats["total"] == 1
+
+    async def test_embed_now_after_update(self, store: SkillStore) -> None:
+        """CRUD 即时同步：更新表征后 embed_now 重嵌新文本，is_embedded 即时为真。"""
+        store.create("s1", "alpha beta topic", "c")
+        index = SkillIndex(store, FakeEmbedder())
+        assert not index.is_embedded(store.get("s1"))
+        assert await index.embed_now("s1")
+        assert index.is_embedded(store.get("s1"))
+        store.patch("s1", description="completely different gamma domain")
+        assert not index.is_embedded(store.get("s1"))  # 新文本未嵌入
+        assert await index.embed_now("s1")
+        assert index.is_embedded(store.get("s1"))
+
 
 class TestSkillTools:
-    async def test_create_and_list(self, store: SkillStore, monkeypatch) -> None:
+    async def _patch_tools(self, store: SkillStore, monkeypatch) -> None:
         from agent.skills import tools as skill_tools
         monkeypatch.setattr(skill_tools, "_store", store)
-        monkeypatch.setattr(skill_tools, "_matcher", SkillMatcher(store))
+        monkeypatch.setattr(skill_tools, "_matcher", SkillMatcher(store, FakeEmbedder()))
 
-        import json
-        result = json.loads(skill_tools.create_skill(
+    async def test_create_and_list(self, store: SkillStore, monkeypatch) -> None:
+        await self._patch_tools(store, monkeypatch)
+        from agent.skills import tools as skill_tools
+
+        result = json.loads(await skill_tools.create_skill(
             name="t1", description="测试", content="内容", trigger_patterns="测试,示例",
         ))
         assert result["ok"]
@@ -187,11 +553,113 @@ class TestSkillTools:
         detail = json.loads(skill_tools.get_skill("t1"))
         assert detail["content"] == "内容"
 
-        updated = json.loads(skill_tools.update_skill("t1", content="新内容"))
+        updated = json.loads(await skill_tools.update_skill("t1", content="完全不同的新内容"))
         assert updated["patch_count"] == 1
 
         searched = json.loads(await skill_tools.search_skills("测试"))
         assert len(searched["local"]) >= 1
+
+    async def test_decision_protocol_create(self, store: SkillStore, monkeypatch) -> None:
+        """决策协议：相近拟议创建首次返回诊断（不写入），带 decision 回执后写入。"""
+        await self._patch_tools(store, monkeypatch)
+        from agent.skills import tools as skill_tools
+
+        store.create("qq-media-fallback", "qq media download fallback flow",
+                     "内容", ["qq media"])
+        first = json.loads(await skill_tools.create_skill(
+            name="qq-media-recovery", description="qq media download fallback flow",
+            content="新内容", trigger_patterns="qq media",
+        ))
+        assert first["status"] == "needs_decision"
+        assert first["facts"]["similar_skills"][0]["name"] == "qq-media-fallback"
+        assert {o["action"] for o in first["options"]} == {"merge", "confirm", "abort"}
+        assert store.get("qq-media-recovery") is None  # 未写入
+
+        second = json.loads(await skill_tools.create_skill(
+            name="qq-media-recovery", description="qq media download fallback flow",
+            content="新内容", trigger_patterns="qq media",
+            decision="覆盖容器路径变体，与现有技能差异明确",
+        ))
+        assert second["ok"]
+        skill = store.get("qq-media-recovery")
+        assert skill is not None
+        assert "容器路径变体" in skill.rationale
+
+    async def test_decision_protocol_update_noop(self, store: SkillStore, monkeypatch) -> None:
+        """决策协议：无实质变化的更新先返回诊断，带理由确认后写入。"""
+        await self._patch_tools(store, monkeypatch)
+        from agent.skills import tools as skill_tools
+
+        body = "步骤一 " * 60
+        store.create("t1", "d", body)
+        first = json.loads(await skill_tools.update_skill("t1", content=body + " "))
+        assert first["status"] == "needs_decision"
+        assert "no_substantive_change" in first["facts"]
+
+        second = json.loads(await skill_tools.update_skill(
+            "t1", content=body + " ", decision="补充收尾步骤",
+        ))
+        assert second["ok"]
+
+    async def test_merge_skills_tool(self, store: SkillStore, monkeypatch) -> None:
+        await self._patch_tools(store, monkeypatch)
+        from agent.skills import tools as skill_tools
+
+        store.create("src-a", "d", "内容 a")
+        store.create("target-b", "d", "内容 b")
+        result = json.loads(skill_tools.merge_skills(
+            sources="src-a", target="target-b", content="合并后内容",
+        ))
+        assert result["ok"] and result["archived_sources"] == ["src-a"]
+        assert store.get("target-b").content == "合并后内容"
+        assert store.get("src-a").state == SkillState.ARCHIVED
+
+    async def test_library_health_tool(self, store: SkillStore, monkeypatch) -> None:
+        await self._patch_tools(store, monkeypatch)
+        from agent.skills import tools as skill_tools
+
+        store.create("qq-media-fallback-a", "qq media download fallback", "c")
+        store.create("qq-media-fallback-b", "qq media download fallback", "c")
+        payload = json.loads(await skill_tools.skill_library_health())
+        assert payload["counts"]["active"] == 2
+        assert any({"qq-media-fallback-a", "qq-media-fallback-b"} ==
+                   {m["name"] for m in cluster}
+                   for cluster in payload.get("similar_clusters", []))
+
+
+class TestSkillWebSerialization:
+    """Web 服务层序列化（向量状态随 CRUD 同步可见）。"""
+
+    def test_summary_embedded_field(self, tmp_path) -> None:
+        """列表/详情带 embedded 字段；无索引时降级为 None。"""
+        from services.skill import SkillService, _skill_summary
+
+        svc = SkillService(str(tmp_path / "skills"))
+        svc.create_skill("s1", "d", "c", ["t"])
+        item = [s for s in svc.list_skills() if s["name"] == "s1"][0]
+        assert item["embedded"] is None  # 无 runtime → 索引不可用 → 降级
+        assert "match_count" in item and "rationale" in item
+
+        # 有索引时按缓存命中返回布尔
+        store = SkillStore(str(tmp_path / "skills"))
+        skill = store.get("s1")
+        index = SkillIndex(store, FakeEmbedder())
+        assert _skill_summary(skill, index)["embedded"] is False
+        # 嵌入后为真
+        import asyncio
+        asyncio.run(index.embed_now("s1"))
+        assert _skill_summary(store.get("s1"), index)["embedded"] is True
+
+    def test_health_embedding_stats(self, tmp_path) -> None:
+        """健康报告带向量覆盖统计（embedded/total/cache_keys/model）。"""
+        from services.skill import SkillService
+
+        svc = SkillService(str(tmp_path / "skills"))
+        svc.create_skill("s1", "d", "c")
+        health = svc.library_health()
+        assert "embedding" in health
+        assert set(health["embedding"]) == {"embedded", "total", "cache_keys", "model", "rebuilding"}
+        assert health["embedding"]["total"] == 1
 
 
 class TestSkillReviewerContract:

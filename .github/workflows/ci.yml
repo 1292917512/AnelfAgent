@@ -29,8 +29,13 @@ jobs:
       - name: Ruff
         run: uv run ruff check .
 
-      - name: Mypy (core 严格层，必过)
-        run: uv run mypy core/
+      # 三平台 typeshed 条件校验：sys.platform 收窄差异会让本地（如 macOS）
+      # 全绿而 CI（Linux）报错，三平台同跑根治此类"本地绿 CI 红"
+      - name: Mypy (core 严格层，必过；三平台)
+        run: |
+          uv run mypy core/ --platform linux
+          uv run mypy core/ --platform darwin
+          uv run mypy core/ --platform win32
 
       - name: Mypy (全量基线观察)
         run: uv run mypy .

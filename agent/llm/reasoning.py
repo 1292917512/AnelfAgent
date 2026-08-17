@@ -1,32 +1,35 @@
-"""
-思考等级（reasoning_effort）单一权威模块。
+"""思考等级（reasoning_effort）单一权威模块：7 级规范词汇 + 配置驱动下发。
 
-全系统统一的 7 级规范词汇表与供应商/模型适配逻辑，参考 hermes-agent 的
-resolve_reasoning_config 单点设计：所有子系统（Mind 全局、任务、心跳、
-cognee、每模型专属）只产生/消费本模块定义的规范等级，由 LLMClient 在
-调用 litellm 前统一钳制与映射，确保参数对任何模型都合法。
+全系统统一的规范词汇表：所有子系统（Mind 全局、任务、心跳、cognee、每模型
+专属）只产生/消费本模块定义的规范等级。
+
+核心原则：**本模块不含任何模型名/供应商特判**。模型如何下发思考参数
+（目标字段、档位映射、关闭档语义）由每个模型配置的 ``thinking`` 契约声明
+（见 agent.llm.config.LLMClientConfig），LLMClient 只做"读契约填值"。
+
+Model Experience：① 模型看到的只是思考档位参数（reasoning_effort 顶层 /
+thinking.type 对象），不注入 prompt 内容；② token 影响仅思考预算档位本身；
+③ 参数经 extra_body 尾部合并，不触碰 prompt 前缀层，无缓存影响。
 
 等级语义：
-    off     显式关闭思考（映射为 litellm "none"）
+    off     显式关闭思考（litellm 侧记作 "none"）
     minimal 极简思考
     low     低
     medium  中
     high    高
-    xhigh   超高（仅部分新模型支持，如 Claude 4.7+）
-    max     最大（仅 Anthropic adaptive-thinking 模型支持）
+    xhigh   超高
+    max     最大
 
 空字符串 "" 一律表示"不设置/继承"。
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
-# 规范等级（不含空值）；顺序即强度升序，也是降级阶梯的依据
+# 规范等级（不含空值）；顺序即强度升序
 CANONICAL_EFFORTS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
-
-# 降级阶梯（高强度 → 低强度）：端点 400 拒绝时逐级下降，None 表示丢弃参数
-EFFORT_LADDER = ("max", "xhigh", "high", "medium", "low", "minimal")
 
 # 同义词归一（外部输入兼容）
 _EFFORT_SYNONYMS = {
@@ -50,296 +53,94 @@ def normalize_effort(value: Any) -> str:
     return effort if effort in CANONICAL_EFFORTS else ""
 
 
-def is_valid_effort(value: Any) -> bool:
-    """判断输入是否为合法的非空规范等级。"""
-    return normalize_effort(value) != ""
-
-
 def to_litellm_effort(effort: str) -> str:
-    """规范等级 → litellm 接受的 reasoning_effort 值（off → "none"）。"""
+    """规范等级 → 顶层 reasoning_effort 透传值（off → "none"）。"""
     return "none" if effort == "off" else effort
 
 
-def from_litellm_effort(effort: str) -> str:
-    """litellm reasoning_effort 值 → 规范等级（"none" → off）。"""
-    return normalize_effort(effort)
+# ------------------------------------------------------------------
+# 思考契约（模型配置驱动的下发规格）
+# ------------------------------------------------------------------
+
+# 合法的目标字段路径（第一级必须是这两个之一，防止任意注入）
+_VALID_PARAM_ROOTS = ("reasoning_effort", "thinking")
 
 
-def downgrade_effort(effort: str) -> Optional[str]:
-    """沿降级阶梯下降一档；已到最低档返回 None（表示应丢弃参数）。
+@dataclass(frozen=True)
+class ThinkingSpec:
+    """模型思考契约的解析结果：把规范档解析为"字段路径 + 原生值"。
 
-    off 不在降级阶梯中（显式关闭被端点拒绝时不应"降级"为开启思考），
-    直接返回 None。
+    由模型配置 ``thinking`` 对象声明（供应商无关）：
+      - ``param``   目标字段路径（如 reasoning_effort / thinking.type）
+      - ``map``     规范档 → 原生档映射（有档位的模型；缺省档不映射，视为不支持）
+      - ``on``      无档位差异的开关型模型开启思考的值（如 enabled / adaptive）
+      - ``off``     显式关闭思考的值；缺省表示该模型无法关闭（off 不下发参数）
     """
-    if effort not in EFFORT_LADDER:
-        return None
-    idx = EFFORT_LADDER.index(effort)
-    if idx + 1 >= len(EFFORT_LADDER):
-        return None
-    return EFFORT_LADDER[idx + 1]
+
+    param: str
+    map: Mapping[str, str] = field(default_factory=dict)
+    on: str = ""
+    off: Optional[str] = None
 
 
-# ------------------------------------------------------------------
-# 按供应商/模型钳制
-# ------------------------------------------------------------------
+def parse_thinking_spec(raw: Any) -> Optional[ThinkingSpec]:
+    """把模型配置的 ``thinking`` 对象解析为 ThinkingSpec；非法/缺失返回 None。
 
-# Anthropic adaptive-thinking 模型（支持 output_config.effort，含 max）
-# 参考 litellm anthropic transformation 与 hermes-agent 的模型代际表
-_ANTHROPIC_ADAPTIVE_SUBSTRINGS = (
-    "claude-opus-4-6", "claude-opus-4.6", "claude-opus-4_6",
-    "claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-4_6",
-    "claude-opus-4-7", "claude-opus-4.7", "claude-opus-4_7",
-    "claude-sonnet-4-7", "claude-sonnet-4.7", "claude-sonnet-4_7",
-    "claude-opus-4-8", "claude-opus-4.8", "claude-opus-4_8",
-    "claude-sonnet-4-8", "claude-sonnet-4.8", "claude-sonnet-4_8",
-    "claude-haiku-4-6", "claude-haiku-4.6", "claude-haiku-4_6",
-)
-
-# 支持 xhigh 的 Anthropic 模型（4.6 代无 xhigh，参考 hermes _NO_XHIGH_CLAUDE_SUBSTRINGS）
-_ANTHROPIC_XHIGH_SUBSTRINGS = (
-    "claude-opus-4-7", "claude-opus-4.7", "claude-opus-4_7",
-    "claude-sonnet-4-7", "claude-sonnet-4.7", "claude-sonnet-4_7",
-    "claude-opus-4-8", "claude-opus-4.8", "claude-opus-4_8",
-    "claude-sonnet-4-8", "claude-sonnet-4.8", "claude-sonnet-4_8",
-)
-
-# 走 Anthropic 兼容通道但不支持 reasoning_effort 档位的供应商。
-# 官方文档仅声明 thinking: {type: adaptive|disabled}（MiniMax M3）或 thinking 强制开启
-# 不可关闭（MiniMax M2.x、Kimi anthropic）。任何非 off 档位若直接透传为 reasoning_effort
-# 将被端点拒绝（400）；clamp 全部降为 off，由 litellm 翻译为 thinking: disabled 即可。
-# 注意：已收录于 _is_provider_specific 的型号会先被拦截，此表仅兜底未来新型号；
-# 不放裸代际词（如 "k3"），避免朴素子串误中无关模型名。
-_NO_REASONING_EFFORT_SUBSTRINGS = (
-    "minimax-m", "minimax-m2", "minimax-m3",
-    "kimi-", "kimi-for-coding",
-)
-
-
-# ------------------------------------------------------------------
-# 供应商原生档位（用于 MiniMax/Kimi 等 anthropic 兼容通道的专项 payload 转换）
-# ------------------------------------------------------------------
-# 把规范档（off/minimal/low/medium/high/xhigh/max）映射到供应商原生档位字符串。
-# 返回 None 表示该供应商+模型完全不支持该档位（调用方应静默跳过）。
-#
-# 各供应商原生档位语义：
-#   MiniMax M3:       "disabled" | "adaptive"   （thinking.type，仅二档）
-#   MiniMax M2.x:     "adaptive"               （M2.x 始终思考，type=disabled 被忽略）
-#   Kimi K3 / k3:     "low" | "high" | "max"   （顶层 reasoning_effort，3 档）
-#   Kimi K2.7-code:   "enabled"                （始终思考，type=disabled 会报错）
-#   Kimi K2.5/K2.6:   "enabled" | "disabled"   （默认 enabled）
-_MINIMAX_M3_EFFORTS = {"off": "disabled", "low": "adaptive", "medium": "adaptive",
-                       "high": "adaptive", "max": "adaptive",
-                       "minimal": "adaptive", "xhigh": "adaptive"}
-_MINIMAX_M2X_EFFORTS = {"off": "adaptive", "low": "adaptive", "medium": "adaptive",
-                        "high": "adaptive", "max": "adaptive",
-                        "minimal": "adaptive", "xhigh": "adaptive"}
-# K3 顶层 reasoning_effort：3 档；off → 不传
-_KIMI_K3_EFFORTS = {"off": None, "minimal": "low", "low": "low", "medium": "high",
-                    "high": "high", "xhigh": "high", "max": "max"}
-# K2.7-code：始终思考，所有档位映射为 enabled；off 仍 enabled（端点会报 disabled 错误）
-_KIMI_K27CODE_EFFORTS = {"off": "enabled", "low": "enabled", "medium": "enabled",
-                         "high": "enabled", "max": "enabled",
-                         "minimal": "enabled", "xhigh": "enabled"}
-# K2.5/K2.6：默认 enabled，可显式 disabled
-_KIMI_K25_K26_EFFORTS = {"off": "disabled", "low": "enabled", "medium": "enabled",
-                         "high": "enabled", "max": "enabled",
-                         "minimal": "enabled", "xhigh": "enabled"}
-
-# Kimi 模型代际子串（用于识别 K3 / K2.7-code / K2.5-K2.6）
-# K3 字面：用户配置可能用 "k3"（裸名）或 "kimi-k3"。
-# 使用"完整 token 匹配"语义（在分隔符边界上匹配），避免误中其他模型。
-_KIMI_K3_SUBSTRINGS = ("kimi-k3", "kimi_k3", "kimi.k3")  # 含分隔符的复合名
-# 裸 "k3" 单独检测（Kimi K3 官方裸名）
-_KIMI_K3_BARE_TOKEN = "k3"
-# K2.7-code：用户配置别名 kimi-for-coding 也映射到这里（同一系列）
-_KIMI_K27CODE_SUBSTRINGS = ("k2.7-code", "k2_7_code", "k2-7-code", "kimi-k2.7",
-                            "kimi-for-coding", "kimi-for-coding-highspeed")
-_KIMI_K25_K26_SUBSTRINGS = ("k2.5", "k2_5", "k2-5", "k2.6", "k2_6", "k2-6")
-
-# MiniMax 模型代际子串
-_MINIMAX_M3_SUBSTRINGS = ("minimax-m3", "minimax-m-3", "minimax_m3", "minimax.m3")
-_MINIMAX_M2X_SUBSTRINGS = ("minimax-m2", "minimax-m-2", "minimax_m2", "minimax.m2",
-                           "minimax-m2.7", "minimax-m2.5", "minimax-m2.1",
-                           "minimax-m2.7-highspeed", "minimax-m2.5-highspeed",
-                           "minimax-m2.1-highspeed")
-
-
-def _is_provider_specific(model_lower: str) -> Optional[Mapping[str, Optional[str]]]:
-    """识别走 Anthropic 兼容通道但需要供应商专项 payload 转换的供应商。
-
-    返回供应商档位映射表（M3/M2.x/K3/K2.7-code/K2.5-K2.6），值为 None
-    表示该档位与供应商语义冲突（调用方应静默跳过）。
-    否则返回 None，表示走通用 litellm reasoning_effort 路径。
+    宽容解析：结构不合法时返回 None（调用方回退通用透传），不抛异常——
+    配置项不应阻断启动主流程。
     """
-    if any(s in model_lower for s in _MINIMAX_M3_SUBSTRINGS):
-        return _MINIMAX_M3_EFFORTS
-    if any(s in model_lower for s in _MINIMAX_M2X_SUBSTRINGS):
-        return _MINIMAX_M2X_EFFORTS
-    if any(s in model_lower for s in _KIMI_K3_SUBSTRINGS):
-        return _KIMI_K3_EFFORTS
-    # 裸 "k3" token 匹配（前后为分隔符 / 字符串边界）
-    if _matches_bare_token(model_lower, _KIMI_K3_BARE_TOKEN):
-        return _KIMI_K3_EFFORTS
-    if any(s in model_lower for s in _KIMI_K27CODE_SUBSTRINGS):
-        return _KIMI_K27CODE_EFFORTS
-    if any(s in model_lower for s in _KIMI_K25_K26_SUBSTRINGS):
-        return _KIMI_K25_K26_EFFORTS
+    if not isinstance(raw, dict) or not raw:
+        return None
+    param = raw.get("param")
+    if not isinstance(param, str) or not param.strip():
+        return None
+    param = param.strip()
+    if param.split(".", 1)[0] not in _VALID_PARAM_ROOTS:
+        return None
+    mapping = raw.get("map")
+    if mapping is not None and not isinstance(mapping, dict):
+        return None
+    on = raw.get("on")
+    off = raw.get("off")
+    if on is not None and not isinstance(on, str):
+        return None
+    if off is not None and not isinstance(off, str):
+        return None
+    return ThinkingSpec(
+        param=param,
+        map={str(k): str(v) for k, v in (mapping or {}).items()},
+        on=(on or "").strip(),
+        off=off.strip() if isinstance(off, str) else None,
+    )
+
+
+def resolve_thinking_value(spec: ThinkingSpec, effort: str) -> Optional[Any]:
+    """按契约把规范档解析为原生值；返回 None 表示该档位不下发。
+
+    - effort == "off"：有 off 值就返回该值（关闭思考），没有则不下发关闭参数。
+    - 有档位的模型（map 非空）：查 map，未列出的档视为不支持 → 不下发。
+    - 开关型模型（map 为空、on 非空）：所有非 off 档统一映射为 on 值。
+    """
+    if effort == "off":
+        return spec.off
+    if spec.map:
+        return spec.map.get(effort)
+    if spec.on:
+        return spec.on
     return None
 
 
-def _matches_bare_token(model_lower: str, token: str) -> bool:
-    """模型字符串中是否含独立 token（前后为 -/_/.  或字符串边界）。"""
-    if token not in model_lower:
-        return False
-    idx = 0
-    while True:
-        pos = model_lower.find(token, idx)
-        if pos < 0:
-            return False
-        before_ok = pos == 0 or model_lower[pos - 1] in "-_./:"
-        after_pos = pos + len(token)
-        after_ok = after_pos == len(model_lower) or model_lower[after_pos] in "-_./:"
-        if before_ok and after_ok:
-            return True
-        idx = pos + 1
+def set_nested_field(container: dict, dotted: str, value: Any) -> None:
+    """按点号路径把值写入嵌套 dict（如 thinking.type → container["thinking"]["type"]）。
 
-
-def provider_specific_effort(effort: str, model: str) -> Optional[str]:
-    """把规范档映射到供应商原生档位字符串；返回 None 表示不下发。
-
-    用于 MiniMax/Kimi anthropic 兼容通道：这些供应商不识别 litellm 的
-    reasoning_effort kwarg，必须直接把档位填到对应 API 字段。
-    返回 None 表示该档位与供应商语义冲突（如下发 K2.7-code 的 disabled），
-    调用方应静默跳过，避免端点 400。
+    仅支持单层嵌套（两段路径），与 _VALID_PARAM_ROOTS 对齐。
     """
-    if not effort:
-        return None
-    model_lower = (model or "").lower()
-    table = _is_provider_specific(model_lower)
-    if table is None:
-        return None  # 非供应商专项，走通用 reasoning_effort 路径
-    return table.get(effort)
-
-
-def _model_capability_flag(model: str, flag: str) -> Optional[bool]:
-    """查询 litellm 模型能力标志（supports_*_reasoning_effort）；未知返回 None。"""
-    try:
-        import litellm
-
-        info = litellm.get_model_info(model)
-        if isinstance(info, dict):
-            value = info.get(flag)
-            if value is not None:
-                return bool(value)
-    except Exception:
-        pass  # 自定义/本地模型未收录于 litellm 模型表是常态，返回 None 走启发式回退
-    return None
-
-
-def _clamp_anthropic(effort: str, model_lower: str, model: str) -> str:
-    """Anthropic 家族钳制：max 仅 adaptive 模型；xhigh 仅 4.7+ 代。"""
-    if effort == "max":
-        flag = _model_capability_flag(model, "supports_max_reasoning_effort")
-        if flag is True:
-            return effort
-        if flag is False:
-            return "high"
-        if not any(s in model_lower for s in _ANTHROPIC_ADAPTIVE_SUBSTRINGS):
-            return "high"
-    elif effort == "xhigh":
-        flag = _model_capability_flag(model, "supports_xhigh_reasoning_effort")
-        if flag is True:
-            return effort
-        if flag is False:
-            return "high"
-        if not any(s in model_lower for s in _ANTHROPIC_XHIGH_SUBSTRINGS):
-            return "high"
-    return effort
-
-
-# OpenAI 协议家族中官方文档声明原生支持 xhigh/max 档位的模型
-# （千问 compatible-mode 支持 reasoning_effort: low/medium/high/xhigh/max）；
-# 用于 litellm 能力表未收录（自定义注册模型无该 flag）时的放行依据。
-# 端点实际不支持时仍有运行时降级阶梯兜底，静态放行是安全方向。
-_EXTENDED_EFFORT_SUBSTRINGS = ("qwen",)
-
-
-def _clamp_generic_high(effort: str, model: str = "") -> str:
-    """通用钳制：max/xhigh 默认只保留到 high（OpenAI/Gemini/xAI 等家族）。
-
-    放行顺序：litellm 能力表显式声明支持该档位 → 已知扩展档位家族
-    （如千问）→ 保守钳到 high。
-    """
-    if effort not in ("max", "xhigh"):
-        return effort
-    if _model_capability_flag(model, f"supports_{effort}_reasoning_effort") is True:
-        return effort
-    model_lower = (model or "").lower()
-    if any(s in model_lower for s in _EXTENDED_EFFORT_SUBSTRINGS):
-        return effort
-    return "high"
-
-
-def clamp_effort(effort: str, model: str, api_type: str) -> str:
-    """将规范等级钳制为指定供应商/模型可接受的等级。
-
-    只降不升；off 与空值原样返回。优先采用 litellm 模型能力表
-    （1.93 内置 supports_*_reasoning_effort 标志），查不到再走
-    家族子串规则。钳制是静态最优努力，运行时仍有降级重试兜底。
-
-    供应商专项模型（MiniMax / Kimi）走 _is_provider_specific 路径，
-    由 provider_specific_effort 直接映射到供应商原生档位，本函数仅
-    做轻微语义裁剪（max 在 M3 上保留，其他档位统一允许）。
-    """
-    if not effort or effort == "off":
-        return effort
-    model_lower = (model or "").lower()
-
-    # 供应商专项模型：保留 7 级原样，由 provider_specific_effort 映射
-    if _is_provider_specific(model_lower) is not None:
-        return effort
-
-    # 其他 anthropic 兼容通道但不支持 reasoning_effort 档位的供应商
-    if any(s in model_lower for s in _NO_REASONING_EFFORT_SUBSTRINGS):
-        return "off"
-
-    if api_type == "anthropic" or "claude" in model_lower:
-        return _clamp_anthropic(effort, model_lower, model)
-    if "gemini" in model_lower:
-        if effort == "minimal":
-            return "low"
-        return _clamp_generic_high(effort, model)
-    return _clamp_generic_high(effort, model)
-
-
-# ------------------------------------------------------------------
-# 端点拒绝识别（运行时降级重试用）
-# ------------------------------------------------------------------
-
-_EFFORT_REJECTION_KEYWORDS = (
-    "reasoning_effort",
-    "reasoning effort",
-    "reasoning.effort",
-    "invalid effort",
-    "effort=",
-    "thinking",
-    "budget_tokens",
-)
-
-
-def is_effort_rejection(exc: BaseException) -> bool:
-    """判断异常是否为端点对思考参数的 400 拒绝。
-
-    仅匹配 4xx 客户端错误（参数本身非法），5xx/网络错误不触发降级，
-    避免把正常的服务端故障误判为参数问题而掩盖真实错误。
-    """
-    status = getattr(exc, "status_code", None)
-    if status is None:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-    try:
-        if status is None or not (400 <= int(status) < 500):
-            return False
-    except (TypeError, ValueError):
-        return False
-    message = str(exc).lower()
-    return any(kw in message for kw in _EFFORT_REJECTION_KEYWORDS)
+    if "." in dotted:
+        root, leaf = dotted.split(".", 1)
+        node = container.get(root)
+        if not isinstance(node, dict):
+            node = {}
+            container[root] = node
+        node[leaf] = value
+    else:
+        container[dotted] = value

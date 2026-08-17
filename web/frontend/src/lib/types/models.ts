@@ -23,6 +23,8 @@ export interface ModelConfig {
   supports_reasoning: boolean;
   /** 每模型专属思考等级（off/minimal/low/medium/high/xhigh/max）；空串/缺省 = 跟随全局 */
   reasoning_effort?: string;
+  /** 思考下发契约（供应商无关）：param 目标字段 / map 档位映射 / on 开启值 / off 关闭值；空 = 走通用透传 */
+  thinking?: JsonObject;
   /** null = 不下发，由 provider/SDK 按模型默认决定 */
   temperature: number | null;
   /** null = 不下发，由 provider/SDK 按模型默认决定 */

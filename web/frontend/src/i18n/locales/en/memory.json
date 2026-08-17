@@ -279,5 +279,7 @@
     "deleteTitle": "Delete Document",
     "deleteConfirm": "Delete document \"{{name}}\"? Its index and file on disk will also be removed."
   },
-  "dimsValue": "{{dims}} dims"
+  "dimsValue": "{{dims}} dims",
+  "rebuildVectorsConfirm": "This wipes ALL memory vectors and rebuilds with the current model (runs in background; semantic search degrades to keyword-only until done). Usually only needed after switching the embedding model. Continue?",
+  "fullRebuildConfirm": "This wipes the file index and rebuilds from scratch (duration depends on file count; file search may be incomplete meanwhile). Continue?"
 }

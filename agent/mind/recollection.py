@@ -245,6 +245,7 @@ async def _match_skills(
             query_texts, top_k=top_k, query_vec=query_vec,
         )
         # 手势命中优先置顶（不与评分结果去重冲突：按名剔除重复）
+        forced_names: set = set()
         if forced:
             forced_names = {s.name for s in forced}
             matched_skills = [(s, sc) for s, sc in matched_skills if s.name not in forced_names]
@@ -259,7 +260,12 @@ async def _match_skills(
             skill_lines.append(
                 f"## {skill.name} — {skill.description}\n{skill_body}"
             )
-            mind.skill_store.record_use(skill.name)
+            # 信号分离：手势命中 = 真实使用（计数 + 刷新活动）；评分命中 = 检索注入
+            # （只计匹配，不刷新活动——被匹配不等于被消费，不能阻断闲置降级）
+            if skill.name in forced_names:
+                mind.skill_store.record_use(skill.name)
+            else:
+                mind.skill_store.record_match(skill.name)
         log(f"技能注入: {', '.join(s.name for s, _ in matched_skills)}", "DEBUG", tag="技能")
         return [{
             "role": "system",

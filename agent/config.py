@@ -303,7 +303,6 @@ _MIND_SYNC_FIELDS: tuple[str, ...] = (
     "cross_channel_enabled", "cross_channel_window_minutes",
     "cross_channel_recall_min_score", "cross_channel_recall_max_results",
     "cross_channel_recall_scan_limit", "cross_channel_narrative_max_items",
-    "reasoning_effort",
 )
 
 # 公开别名：供 web 层等外部模块引用（私有名 _MIND_SYNC_FIELDS 保留内部使用）
@@ -381,9 +380,6 @@ class MindConfig:
     cross_channel_recall_max_results: int = 3
     cross_channel_recall_scan_limit: int = 50
     cross_channel_narrative_max_items: int = 3
-    # 全局思考等级：off / minimal / low / medium / high / xhigh / max（空=不设置）；
-    # 规范词汇与钳制规则见 agent.llm.reasoning
-    reasoning_effort: str = ""
     # 工具系统提示规则（每条一行，注入到 LLM system prompt）；实际内容由 mind_config.json 提供
     tool_system_rules: List[str] = field(default_factory=list)
 

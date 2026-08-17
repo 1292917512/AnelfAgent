@@ -9,24 +9,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
 
 from agent.mind.tools.session_tools import _current_scope, _system_not_ready
 from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import deferred_tool
 
-_pfc_ref: Any = None
-
-
-def set_mind(mind: Any) -> None:
-    """延迟注入 Mind 引用（bootstrap 组装完成后调用），同时获取 PFC。"""
-    global _pfc_ref
-    _pfc_ref = mind.pfc if mind is not None else None
-
-
-def _view(scope: str) -> List[Dict]:
-    """当前会话的短期记忆视图（与上下文注入顺序一致：全局桶在前）。"""
-    return _pfc_ref.get_temporary(scope)
+from .ports import mind_port
 
 
 @deferred_tool(
@@ -39,9 +27,10 @@ def _view(scope: str) -> List[Dict]:
 )
 async def list_short_term_memory() -> str:
     """列出当前会话短期记忆（带索引）。"""
-    if not _pfc_ref:
+    if not mind_port.bound:
         return _system_not_ready()
-    clips = _view(_current_scope())
+    pfc = mind_port.get().pfc
+    clips = pfc.get_temporary(_current_scope())
     items = [
         {"index": i, "role": str(c.get("role", "")), "content": str(c.get("content", ""))[:200]}
         for i, c in enumerate(clips)
@@ -65,16 +54,20 @@ async def list_short_term_memory() -> str:
 )
 async def remove_short_term_memory(index: int) -> str:
     """按视图索引删除一条短期记忆。"""
-    if not _pfc_ref:
+    if not mind_port.bound:
         return _system_not_ready()
-    if not _pfc_ref.delete_temporary_in_scope(_current_scope(), int(index)):
+    pfc = mind_port.get().pfc
+    if not pfc.delete_temporary_in_scope(_current_scope(), int(index)):
         return tool_error(
             f"短期记忆索引无效: {index}",
             cause=ErrorCause.NOT_FOUND,
             retryable=False,
             hint="先调用 list_short_term_memory 获取当前有效索引",
         )
-    return json.dumps({"removed": index, "remaining": len(_view(_current_scope()))}, ensure_ascii=False)
+    return json.dumps(
+        {"removed": index, "remaining": len(pfc.get_temporary(_current_scope()))},
+        ensure_ascii=False,
+    )
 
 
 @deferred_tool(
@@ -86,7 +79,7 @@ async def remove_short_term_memory(index: int) -> str:
 )
 async def clear_short_term_memory() -> str:
     """清空当前会话视图覆盖的短期记忆。"""
-    if not _pfc_ref:
+    if not mind_port.bound:
         return _system_not_ready()
-    cleared = _pfc_ref.clear_temporary_in_scope(_current_scope())
+    cleared = mind_port.get().pfc.clear_temporary_in_scope(_current_scope())
     return json.dumps({"cleared": cleared}, ensure_ascii=False)

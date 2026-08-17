@@ -42,7 +42,7 @@ export function OverviewPanel() {
         <Card title={t("healthTitle")}><p className="text-sm text-muted">{health?.error || t("common:loading")}</p></Card>
       ) : (
         <Card title={t("healthSubtitle")} subtitle={t("totalMemories", { count: health.total_memories || 0 })} actions={
-          <button onClick={() => rebuildVectorsMutation.mutate()} disabled={rebuildVectorsMutation.isPending}
+          <button onClick={() => { if (window.confirm(t("rebuildVectorsConfirm"))) rebuildVectorsMutation.mutate(); }} disabled={rebuildVectorsMutation.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all">
             <RefreshCw size={14} /> {t("rebuildVectors")}
           </button>
@@ -108,7 +108,7 @@ export function OverviewPanel() {
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all">
             <RefreshCw size={14} /> {t("incrementalSync")}
           </button>
-          <button onClick={() => resyncMutation.mutate(true)}
+          <button onClick={() => { if (window.confirm(t("fullRebuildConfirm"))) resyncMutation.mutate(true); }}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all">
             <RefreshCw size={14} /> {t("fullRebuild")}
           </button>

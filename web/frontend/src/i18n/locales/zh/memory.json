@@ -279,5 +279,7 @@
     "deleteTitle": "删除文档",
     "deleteConfirm": "确定删除文档「{{name}}」吗？将同时移除其索引与磁盘文件。"
   },
-  "dimsValue": "{{dims}} 维"
+  "dimsValue": "{{dims}} 维",
+  "rebuildVectorsConfirm": "将清空全部记忆向量数据并按当前模型全量重建（后台执行，期间语义检索退化为纯关键词，完成后自动恢复）。通常仅在切换 embedding 模型后需要，确定继续？",
+  "fullRebuildConfirm": "将清空文件索引并全量重建（耗时取决于文件数量，期间文件检索可能不完整）。确定继续？"
 }
