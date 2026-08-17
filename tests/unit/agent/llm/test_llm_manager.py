@@ -11,11 +11,12 @@ from agent.llm.llm_manager import LLMManager
 from agent.llm.types import ChatResult
 
 
-def _client(name: str) -> LLMClient:
+def _client(name: str, *, timeout: float = 60.0) -> LLMClient:
     return LLMClient(LLMClientConfig(
         name=name,
         model=f"{name}-model",
         provider_id=name,
+        timeout=timeout,
     ))
 
 
@@ -60,7 +61,8 @@ async def test_primary_retries_then_succeeds(
 @pytest.mark.asyncio
 async def test_timeout_cancels_underlying_chat(tmp_path) -> None:
     manager = LLMManager(str(tmp_path / "llm.json"))
-    primary = _client("primary")
+    # 单次尝试上限取客户端 timeout，用小值让 wait_for 立即触发取消
+    primary = _client("primary", timeout=0.05)
     cancelled = asyncio.Event()
 
     async def slow_chat(*_args, **_kwargs):

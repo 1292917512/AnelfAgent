@@ -13,8 +13,8 @@ from core.log import log
 _DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1"
 _DEFAULT_API_KEY = ""
 # 全局默认请求超时（秒）；模型配置仅在需要非默认值时才显式指定。
-# 取值须明显小于思维循环总预算（mind.llm_timeout，默认 120s），
-# 否则单次慢调用即耗尽共享预算，重试与回退模型永远无法执行
+# 这是单次尝试的挂起护栏：chat_with_fallback 的候选预算按
+# 客户端超时 × (重试次数+1) 派生，慢调用不再挤占重试与回退空间
 DEFAULT_TIMEOUT = 60.0
 
 API_TYPE_OPENAI = "openai"

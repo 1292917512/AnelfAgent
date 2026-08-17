@@ -641,7 +641,9 @@ class LLMManager(BaseEntity):
     ) -> ChatResult:
         """带重试和模型回退的统一聊天调用。
 
-        所有候选共享总超时预算，避免模型级 timeout 与外层 timeout 叠加失控。
+        每个候选拥有独立预算（至少覆盖 客户端超时 × (重试次数+1) + 退避冗余），
+        避免慢模型首轮调用吃满共享预算，导致重试与回退链同时失效。
+        timeout 参数是单个候选的预算下限。
         """
         primary = client or self.get_default()
         candidates = [primary, *self.get_fallback_chat_clients(
@@ -649,11 +651,18 @@ class LLMManager(BaseEntity):
             require_tools=bool(tools),
             require_vision=self._messages_contain_images(messages),
         )]
-        deadline = asyncio.get_running_loop().time() + timeout
         last_exc: Optional[Exception] = None
         index = 0
         while index < len(candidates):
             candidate = candidates[index]
+            # 候选独立预算：挂起型失败（慢到触发单次超时）也必须留足
+            # 重试退避与后续回退的空间
+            candidate_budget = max(
+                timeout,
+                candidate.config.timeout * (max(0, max_retries) + 1)
+                + 30.0 * max(0, max_retries),
+            )
+            deadline = asyncio.get_running_loop().time() + candidate_budget
             # 跨供应商回退：cache_control 断点是 Anthropic 专属字段，
             # 非 Anthropic 候选必须收到剥离副本（原列表与调用方共享，禁止原地改）
             candidate_messages = self._messages_for_candidate(candidate, messages)
@@ -686,8 +695,6 @@ class LLMManager(BaseEntity):
                     f"{type(exc).__name__}: {safe}",
                     tag="模型",
                 )
-                if asyncio.get_running_loop().time() >= deadline:
-                    break
                 # 上下文超限：窗口不大于当前失败者的候选必然同样溢出，
                 # 跳过它们直达更大窗口候选（无则快速失败，交由调用方压缩重试）
                 from agent.llm.resilience import next_fallback_index
@@ -742,7 +749,7 @@ class LLMManager(BaseEntity):
         max_retries: int,
         deadline: float,
     ) -> ChatResult:
-        """在共享截止时间内调用单个候选，并按错误分类自适应重试。
+        """在候选独立预算内调用单个候选，并按错误分类自适应重试。
 
         重试策略由 error_classifier 驱动：
         - 不可重试错误（auth/参数/上下文超限/模型不存在）立即抛出
@@ -756,7 +763,8 @@ class LLMManager(BaseEntity):
         for attempt in range(max(0, max_retries) + 1):
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                raise asyncio.TimeoutError("LLM 调用总超时")
+                raise asyncio.TimeoutError(f"LLM [{name}] 候选预算耗尽")
+            attempt_timeout = min(remaining, client.config.timeout)
             try:
                 result = await asyncio.wait_for(
                     client.chat(
@@ -765,7 +773,7 @@ class LLMManager(BaseEntity):
                         tools=tools,
                         tool_choice=tool_choice,
                     ),
-                    timeout=min(remaining, client.config.timeout),
+                    timeout=attempt_timeout,
                 )
                 if result.finish_reason == "error":
                     raise RuntimeError("LLM 返回了无有效 choices/message 的响应")
@@ -773,9 +781,14 @@ class LLMManager(BaseEntity):
             except LLMNotConfiguredError:
                 raise
             except Exception as exc:
+                # wait_for 超时 str() 为空，改写为带时长的可诊断消息
+                if isinstance(exc, asyncio.TimeoutError) and not str(exc):
+                    exc = asyncio.TimeoutError(
+                        f"单次调用超时（{attempt_timeout:.0f}s 未响应）"
+                    )
                 classified = classify_llm_error(exc)
                 if not classified.retryable or attempt >= max_retries:
-                    raise
+                    raise exc
                 # 限流：更长基础退避；其余瞬态错误：标准指数退避（均带抖动）
                 if classified.category == ErrorCategory.RATE_LIMIT:
                     delay = jittered_backoff(attempt + 1, base_delay=5.0, max_delay=60.0)
@@ -783,7 +796,11 @@ class LLMManager(BaseEntity):
                     delay = jittered_backoff(attempt + 1, base_delay=2.0, max_delay=30.0)
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= delay:
-                    raise asyncio.TimeoutError("LLM 重试预算不足") from exc
+                    safe = self._safe_error(exc, client) or type(exc).__name__
+                    raise asyncio.TimeoutError(
+                        f"LLM [{name}] 重试预算不足，根因: "
+                        f"{type(exc).__name__}: {safe}"
+                    ) from exc
                 warning(
                     f"LLM [{name}] 调用失败 ({classified.category.value})，"
                     f"退避 {delay:.1f}s 后重试 {attempt + 1}/{max_retries}: "

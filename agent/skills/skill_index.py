@@ -550,15 +550,28 @@ class SkillIndex:
                         break
                     total += batch
                     self._build_progress["done"] = total
-                if total:
-                    log(f"技能向量全量重建完成: {total} 个（模型 {self._current_model}）", tag="技能")
+                # 完成判定以覆盖率为准：total=0 可能是"早已全部嵌入"（正常），
+                # 只有存在未嵌入技能时才说明端点不可用
+                uncached = [
+                    s for s in skills if not self.is_embedded(s)
+                ]
+                if not uncached:
+                    log(
+                        f"技能向量全量重建完成: 新嵌入 {total} 个，"
+                        f"覆盖 {len(skills)} 个（模型 {self._current_model}）",
+                        tag="技能",
+                    )
                     self._last_rebuild_at = time.time()
                     self._last_rebuild_count = total
                     self._last_rebuild_model = self._current_model or ""
                 else:
                     # 嵌入端点不可用：保持待重建状态，心跳重试
                     self._rebuild_pending = True
-                    log("技能向量全量重建暂未完成（嵌入端点不可用），待心跳重试", "WARNING", tag="技能")
+                    log(
+                        f"技能向量全量重建暂未完成（{len(uncached)} 个未嵌入，"
+                        f"嵌入端点不可用），待心跳重试",
+                        "WARNING", tag="技能",
+                    )
                 return total
             finally:
                 self._build_state = "idle"

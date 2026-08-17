@@ -517,6 +517,24 @@ class TestSkillIndexFacts:
         rebuilt = await index.rebuild_all()
         assert rebuilt == 0 and index.rebuild_pending  # 端点不可用，待重试
 
+    async def test_rebuild_when_already_embedded_no_false_alarm(self, store: SkillStore) -> None:
+        """全部已嵌入时触发重建：正常完成，不误报"端点不可用"、不残留 pending。
+
+        回归：total=0 曾被一律误判为端点故障——全嵌入状态下的重建会
+        循环刷警告且 pending 永远清不掉。
+        """
+        store.create("s1", "alpha beta topic", "c")
+        index = SkillIndex(store, FakeEmbedder())
+        await index.warm()
+        assert index.embedding_stats()["embedded"] == 1
+
+        rebuilt = await index.rebuild_all()
+        assert rebuilt == 0  # 无新嵌入（早已全部就绪）
+        assert not index.rebuild_pending
+        state = index.build_state()
+        assert state["rebuilding"] is False
+        assert state["last_rebuild"] is not None  # 完成记录正常更新
+
     async def test_prune_stale_vectors(self, store: SkillStore) -> None:
         """死键清理：删除后旧向量键在显式 prune 时清掉；内容变更在 embed_now 后清掉。"""
         store.create("s1", "alpha beta topic", "c")
