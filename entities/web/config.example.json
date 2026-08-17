@@ -1,3 +1,12 @@
 {
-    "proxy": ""
+    "proxy": "",
+    "active": {
+        "search": "auto",
+        "reader": "auto",
+        "repo": "auto"
+    },
+    "disabled": [],
+    "provider_keys": {
+        "bigmodel": ""
+    }
 }

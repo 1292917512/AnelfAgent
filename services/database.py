@@ -111,6 +111,11 @@ def _database_registry() -> Dict[str, Dict[str, str]]:
             "path": f"{stem}_voiceprints.sqlite3",
             "description": "说话人档案 / 声纹样本池 / 语音转写片段 / 已同步文件登记",
         },
+        "skill_vectors": {
+            "name": "技能向量库",
+            "path": f"{stem}_skill_vectors.sqlite3",
+            "description": "技能语义向量（模型+文本hash 双因子校验；重建操作见技能库页）",
+        },
         "cognee": {
             "name": "Cognee 关系库",
             "path": _cognee_db_path(),

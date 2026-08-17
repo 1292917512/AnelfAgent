@@ -1,0 +1,58 @@
+{
+  "tabs": {
+    "providers": "Providers",
+    "settings": "General"
+  },
+  "caps": {
+    "search": "Web Search",
+    "reader": "Page Reader",
+    "repo": "Repo Docs"
+  },
+  "matrix": {
+    "auto": "Auto",
+    "activeNow": "active",
+    "noneAvailable": "No provider available",
+    "autoDesc": "Use the first provider that is enabled and has credentials, by priority"
+  },
+  "provider": {
+    "enable": "Enable",
+    "disable": "Disable",
+    "disabledBadge": "Disabled",
+    "configured": "Configured",
+    "notConfigured": "No credentials",
+    "noCredential": "No credential needed",
+    "unsupported": "Not supported",
+    "sourcePrefix": "Credential source",
+    "source": {
+      "config": "Entity config",
+      "llm": "LLM provider",
+      "env": "Environment"
+    },
+    "keyPlaceholderSet": "Credential saved; enter a new key to replace",
+    "keyPlaceholderEmpty": "Enter API key",
+    "saveKey": "Save",
+    "clearKey": "Clear"
+  },
+  "test": {
+    "run": "Test",
+    "testing": "Testing…",
+    "inputPlaceholder": {
+      "search": "Test query (optional)",
+      "reader": "Test URL (optional)",
+      "repo": "owner/repo (optional)"
+    },
+    "failed": "Test failed"
+  },
+  "settings": {
+    "proxyTitle": "Fetch Proxy",
+    "proxyLabel": "Proxy URL",
+    "proxyPlaceholder": "http://127.0.0.1:7890 (optional, empty = direct)",
+    "save": "Save",
+    "saving": "Saving…",
+    "securityTitle": "Security",
+    "ssrf": "SSRF protection",
+    "ssrfOn": "Enabled",
+    "ssrfOff": "Disabled",
+    "ssrfHint": "Adjust in Config Center under the entity/web group"
+  }
+}

@@ -27,24 +27,36 @@ def store(tmp_path) -> SkillStore:
     return SkillStore(str(tmp_path / "skills"))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_vector_db(tmp_path, monkeypatch) -> None:
+    """隔离技能向量库：默认路径指向临时文件，不读写真实 data 目录。"""
+    from core.path import ConfigPaths
+    monkeypatch.setattr(
+        ConfigPaths, "SQLITE_DB", str(tmp_path / "data" / "agent.sqlite3"),
+    )
+
+
 class FakeEmbedder:
     """确定性词袋嵌入：英文词 → crc32 维度计数，共享词越多余弦越高。"""
 
     def __init__(self, dims: int = 64, model: str = "fake-emb-v1") -> None:
         self.dims = dims
         self.client_name = model
+        self.call_count = 0  # 嵌入调用计数（验证零重嵌恢复）
 
     @property
     def available(self) -> bool:
         return True
 
     async def embed_query(self, text: str) -> list[float]:
+        self.call_count += 1
         vec = [0.0] * self.dims
         for tok in re.findall(r"[a-z0-9]+", text.lower()):
             vec[zlib.crc32(tok.encode()) % self.dims] += 1.0
         return vec
 
     async def embed_text(self, texts: list[str]) -> list[list[float]]:
+        self.call_count += len(texts)
         return [await self.embed_query(t) for t in texts]
 
 
@@ -529,6 +541,129 @@ class TestSkillIndexFacts:
         assert not index.is_embedded(store.get("s1"))  # 新文本未嵌入
         assert await index.embed_now("s1")
         assert index.is_embedded(store.get("s1"))
+
+
+class TestSkillVectorPersistence:
+    """向量持久化：重启零重嵌恢复（商业级核心验收）。"""
+
+    @pytest.fixture
+    def db_path(self, tmp_path) -> str:
+        return str(tmp_path / "skill_vectors.sqlite3")
+
+    async def test_restart_zero_reembed(self, store: SkillStore, db_path: str) -> None:
+        """嵌入 → 关闭 → 新实例（模拟重启）→ 向量从 SQLite 恢复，零嵌入调用。"""
+        store.create("s1", "alpha beta topic", "c")
+        store.create("s2", "delta epsilon topic", "c")
+        first = SkillIndex(store, FakeEmbedder(), db_path=db_path)
+        await first.warm()
+        assert first.embedding_stats()["embedded"] == 2
+        calls_after_first = first._embedder.call_count
+        assert calls_after_first > 0  # 首次确实嵌入了
+
+        # 模拟重启：全新实例 + 全新 embedder（计数归零）
+        second_embedder = FakeEmbedder()
+        second = SkillIndex(store, second_embedder, db_path=db_path)
+        stats = second.embedding_stats()
+        assert stats["embedded"] == 2
+        assert second_embedder.call_count == 0  # 零嵌入调用恢复
+        assert stats["rebuilding"] is False
+
+    async def test_restart_after_model_switch_rebuilds(self, store: SkillStore, db_path: str) -> None:
+        """切换模型后重启：旧模型向量作废清除，标记全量重建。"""
+        store.create("s1", "alpha beta topic", "c")
+        first = SkillIndex(store, FakeEmbedder(model="fake-emb-v1"), db_path=db_path)
+        await first.warm()
+
+        second = SkillIndex(store, FakeEmbedder(model="fake-emb-v2"), db_path=db_path)
+        stats = second.embedding_stats()
+        assert stats["embedded"] == 0
+        assert second.rebuild_pending
+        # 重建后恢复
+        rebuilt = await second.rebuild_all()
+        assert rebuilt == 1
+        assert second.embedding_stats()["embedded"] == 1
+
+    async def test_content_change_reembeds(self, store: SkillStore, db_path: str) -> None:
+        """内容变更 → 重启时该行失效清除并重嵌（text_hash 失配）。"""
+        store.create("s1", "alpha beta topic", "c")
+        first = SkillIndex(store, FakeEmbedder(), db_path=db_path)
+        await first.warm()
+        store.patch("s1", description="completely different omega domain")
+
+        second_embedder = FakeEmbedder()
+        second = SkillIndex(store, second_embedder, db_path=db_path)
+        assert second.embedding_stats()["embedded"] == 0
+        assert second.rebuild_pending  # 失效行已清，待重建
+        await second.rebuild_all()
+        assert second.embedding_stats()["embedded"] == 1
+
+    async def test_delete_syncs_db(self, store: SkillStore, db_path: str) -> None:
+        """删除技能 → prune 同步删除持久化行，重启后不复活。"""
+        store.create("s1", "alpha beta topic", "c")
+        store.create("s2", "delta epsilon topic", "c")
+        first = SkillIndex(store, FakeEmbedder(), db_path=db_path)
+        await first.warm()
+        store.delete("s2")
+        first.prune_stale_vectors()
+
+        second = SkillIndex(store, FakeEmbedder(), db_path=db_path)
+        stats = second.embedding_stats()
+        assert stats["embedded"] == 1 and stats["total"] == 1
+        assert stats["rebuilding"] is False
+
+    async def test_single_embed_persisted(self, store: SkillStore, db_path: str) -> None:
+        """单技能 embed_now 同样持久化（行内按钮操作重启后不失效）。"""
+        store.create("s1", "alpha beta topic", "c")
+        first = SkillIndex(store, FakeEmbedder(), db_path=db_path)
+        await first.embed_now("s1")
+
+        second = SkillIndex(store, FakeEmbedder(), db_path=db_path)
+        assert second.is_embedded(store.get("s1"))
+        assert second._embedder.call_count == 0
+
+    async def test_observer_index_never_touches_db(self, store: SkillStore, db_path: str) -> None:
+        """无 embedder 的旁观者索引（Web 健康报告临时实例）绝不触碰持久层。
+
+        回归：此前 library_health 的临时索引以空模型名校验 DB，
+        把真模型存的向量全部误判失效删除——每次 Web 刷新清空全库。
+        """
+        store.create("s1", "alpha beta topic", "c")
+        owner = SkillIndex(store, FakeEmbedder(), db_path=db_path)
+        await owner.embed_now("s1")
+
+        # 旁观者索引：Web library_health 同款构造（无 embedder）
+        observer = SkillIndex(store, db_path=db_path)
+        observer.snapshot()           # library_health 的调用路径
+        observer.build_state()
+        observer.prune_stale_vectors()
+        assert observer.is_embedded(store.get("s1")) is False  # 旁观者本就无语义能力
+
+        # 真索引重启恢复：向量必须还在
+        second = SkillIndex(store, FakeEmbedder(), db_path=db_path)
+        assert second.is_embedded(store.get("s1"))
+        assert second._embedder.call_count == 0
+
+    async def test_unready_client_never_invalidates_db(self, store: SkillStore, db_path: str) -> None:
+        """客户端未就绪（client_name 空串）时不做任何失效判定。
+
+        回归：启动/热重载窗口期 client_name 为 ""，加载校验会把
+        真模型存的向量全部误判失效——"不知道"不等于"无模型"。
+        """
+        store.create("s1", "alpha beta topic", "c")
+        owner = SkillIndex(store, FakeEmbedder(model="real-model"), db_path=db_path)
+        await owner.embed_now("s1")
+
+        # 模拟重启早期：embedding 客户端尚未注册（client_name 为空）
+        unready = FakeEmbedder(model="")
+        idx = SkillIndex(store, unready, db_path=db_path)
+        stats = idx.embedding_stats()  # 触发加载尝试
+        assert stats["embedded"] == 0  # 未加载（延迟到客户端就绪）
+        assert not idx.rebuild_pending  # 不做失效判定
+
+        # 客户端就绪后：正常恢复，DB 未受损
+        ready = SkillIndex(store, FakeEmbedder(model="real-model"), db_path=db_path)
+        assert ready.is_embedded(store.get("s1"))
+        assert ready._embedder.call_count == 0
 
 
 class TestSkillTools:

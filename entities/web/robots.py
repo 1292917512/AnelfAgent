@@ -29,18 +29,17 @@ def _load_robots(host_key: str, use_proxy: bool) -> Tuple[Optional[RobotFilePars
     """
     import httpx
 
-    # 惰性导入避免与 tools.py 循环依赖
-    from entities.web.tools import (
+    from entities.web.fetcher import (
         _USER_AGENT,
-        _check_ssrf_url,
-        _proxy_kwargs,
-        _ssrf_protection_enabled,
+        check_ssrf_url,
+        proxy_kwargs,
+        ssrf_protection_enabled,
     )
 
     robots_url = f"{host_key}/robots.txt"
     try:
-        if _ssrf_protection_enabled():
-            err = _check_ssrf_url(robots_url)
+        if ssrf_protection_enabled():
+            err = check_ssrf_url(robots_url)
             if err:
                 log(f"robots.txt 目标被 SSRF 拦截（放行）: {err}", "DEBUG", tag="web")
                 return None, "open"
@@ -48,7 +47,7 @@ def _load_robots(host_key: str, use_proxy: bool) -> Tuple[Optional[RobotFilePars
             "timeout": _ROBOTS_TIMEOUT,
             "follow_redirects": True,
             "headers": {"User-Agent": _USER_AGENT},
-            **_proxy_kwargs(use_proxy),
+            **proxy_kwargs(use_proxy),
         }
         with httpx.Client(**client_kwargs) as client:
             resp = client.get(robots_url)

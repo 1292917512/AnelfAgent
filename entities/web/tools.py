@@ -1,19 +1,30 @@
-"""网络工具实体 — 搜索、抓取、HTTP 请求。
+"""网络工具实体 — 检索、网页读取、仓库文档、HTTP 请求（接口层）。
 
-搜索经 MiniMax Coding Plan（订阅配额，不计 API 调用费）。
+本文件只做工具注册与参数校验，能力实现全部在 providers/ 模块
+（能力 × 提供者矩阵：Provider 抽象 + builtin/minimax/bigmodel 具体实现），
+经 providers.resolve 统一解析；直连抓取设施在 fetcher.py。
 
-提供完整的 Web 访问工具集：
-- web_search:         搜索关键词，返回结构化结果列表
-- web_fetch:          抓取指定 URL 的可读正文
-- web_request:        通用 HTTP 请求（GET/POST，自定义 Header）
+工具面：
+- web_search:      检索关键词，返回结构化结果列表（可指定提供者）
+- web_fetch:       读取指定 URL 的可读正文（可指定提供者；分块统一在工具层）
+- repo_docs:       GitHub 仓库知识文档 / 目录结构 / 文件内容（check_fn 门控：无可用提供者不出现在 schema）
+- web_providers:   提供者管理（矩阵查看 / 切换 / 启停 / 凭据配置）
+- web_request:     通用 HTTP 请求（GET/POST，自定义 Header）
 - extract_page_links: 提取页面所有链接
-- web_download:       下载远程文件到本地 workspace（按需落盘）
+- web_download:    下载远程文件到本地 workspace（按需落盘）
+
+Model Experience（新增工具）：
+① 模型看到什么 — web_providers（web 组管理工具）与 repo_docs（有可用仓库
+   提供者时才注入 schema）；凭据不回显；
+② token 影响 — repo_docs 仅在门控通过时增加一个工具 schema；调用结果按
+   result_budget 既有规则截断；
+③ 缓存影响 — 纯工具层，不触碰任何 prompt 分层内容，前缀无感。
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Optional, Tuple
+from typing import Optional
 
 from entities._sdk import (
     ErrorCause,
@@ -24,11 +35,11 @@ from entities._sdk import (
     tool_error,
 )
 
-entity("web", "网络工具 - 搜索引擎查询、网页正文抓取、HTTP 请求")
+entity("web", "网络工具 - 联网检索、网页读取、仓库文档、HTTP 请求")
 entity_manifest(
     display_name="网络工具",
     icon="globe",
-    description="搜索引擎查询、网页正文抓取、HTTP 请求、文件下载",
+    description="联网检索、网页正文读取、GitHub 仓库文档、HTTP 请求、文件下载",
     version="1.0.0",
     group="web",
 )
@@ -47,145 +58,54 @@ _WEB_CONFIGS = {
 }
 
 from core.config import register_configs_safe  # noqa: E402
-from core.log import log
 
 register_configs_safe(_WEB_CONFIGS)
 
-_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/131.0.0.0 Safari/537.36"
-)
 
-
-def _proxy_kwargs(use_proxy: bool) -> dict[str, str]:
-    """构建 httpx 代理参数。始终禁止读取环境变量代理，避免被 LLM 代理污染。"""
-    if not use_proxy:
-        return {"trust_env": False}
-    from entities.web.web_config import get_proxy
-    proxy = get_proxy()
-    result: dict = {"trust_env": False}
-    if proxy:
-        result["proxy"] = proxy
-    return result
+def _repo_available() -> bool:
+    """repo_docs 门控：存在可用的仓库文档提供者才注入工具 schema。"""
+    from entities.web import providers
+    from entities.web.providers.base import CAP_REPO
+    return providers.any_available(CAP_REPO)
 
 
 # ==================================================================
-# SSRF 防护
-# ==================================================================
-
-# 防护开启时响应体流式读取的字节上限
-_SSRF_MAX_BODY_BYTES = 4 * 1024 * 1024
-
-
-def _ssrf_protection_enabled() -> bool:
-    """SSRF 防护开关（web_ssrf_protection，默认开）。"""
-    try:
-        from core.config import ConfigManager
-        return bool(ConfigManager.get("web_ssrf_protection", True))
-    except Exception:
-        return True
-
-
-def _check_ssrf_url(url: str) -> Optional[str]:
-    """SSRF 检查：解析目标 host 的 IP，拒绝回环/内网/链路本地等受限地址。
-
-    Returns:
-        拦截原因，未拦截返回 None
-    """
-    import ipaddress
-    import socket
-    from urllib.parse import urlparse
-    host = urlparse(url).hostname
-    if not host:
-        return "URL 缺少主机名"
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except Exception as e:
-        return f"DNS 解析失败: {host}: {e}"
-    for info in infos:
-        ip_str = info[4][0]
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            continue
-        if (ip.is_loopback or ip.is_private or ip.is_link_local
-                or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
-            return f"SSRF 防护拦截: {host} 解析到受限地址 {ip_str}"
-    return None
-
-
-def _read_body_limited(resp: Any, max_bytes: int = _SSRF_MAX_BODY_BYTES) -> str:
-    """流式读取响应体，按字节上限截断后解码（避免先全量加载到内存）。"""
-    buf = bytearray()
-    for chunk in resp.iter_bytes(65536):
-        buf.extend(chunk)
-        if len(buf) > max_bytes:
-            break
-    return bytes(buf[:max_bytes]).decode(resp.encoding or "utf-8", errors="replace")
-
-
-def _request_ssrf_checked(client: Any, method: str, url: str,
-                          content: Optional[str] = None,
-                          max_redirects: int = 5) -> Tuple[int, str, str, str]:
-    """SSRF 防护模式请求：逐跳校验重定向目标，流式读取响应体并按字节上限截断。
-
-    Returns:
-        (status_code, final_url, content_type, body_text)
-    """
-    from urllib.parse import urljoin
-    for _ in range(max_redirects):
-        err = _check_ssrf_url(url)
-        if err:
-            raise PermissionError(err)
-        with client.stream(method, url, content=content, follow_redirects=False) as resp:
-            if resp.is_redirect:
-                location = resp.headers.get("location", "")
-                if not location:
-                    raise ValueError(f"重定向响应缺少 Location: {url}")
-                url = urljoin(str(resp.url), location)
-                if resp.status_code in (301, 302, 303):
-                    method, content = "GET", None
-                continue
-            body = _read_body_limited(resp)
-            return resp.status_code, str(resp.url), resp.headers.get("content-type", ""), body
-    raise ValueError(f"重定向次数过多 (上限 {max_redirects})")
-
-
-# ==================================================================
-# 搜索
+# 检索
 # ==================================================================
 
 
 @tool(name="web_search", group="web", tags=["web"], concurrency_safe=True)
-def web_search(query: str, max_results: int = 8) -> str:
+def web_search(query: str, max_results: int = 8, provider: str = "") -> str:
     """搜索关键词，返回结构化结果列表（标题/链接/摘要）。
 
-    经 MiniMax Coding Plan 搜索全网信息（订阅配额，不计 API 调用费）。
-    若需要某个页面的完整内容，请配合 web_fetch 使用。
-    时间敏感的问题（比分、新闻、股价等）：query 中应显式包含当前日期/
-    年份等时间词（如"2026年7月 世界杯决赛比分"），避免搜出过时内容。
+    经当前配置的检索提供者查询全网信息。若需要某个页面的完整内容，请配合
+    web_fetch 使用。时间敏感的问题（比分、新闻、股价等）：query 中应显式
+    包含当前日期/年份等时间词（如"2026年7月 世界杯决赛比分"），避免搜出过时内容。
 
     Args:
         query:       搜索关键词，支持自然语言；时间敏感问题请显式写入日期/年份
         max_results: 最多返回条数，默认 8，最大 20
+        provider:    指定检索提供者（如 minimax / bigmodel），留空用系统当前选择
     """
-    from entities.minimax.client import minimax_error_response
-    from entities.web.search import minimax_search
+    from entities.web import providers
+    from entities.web.providers.base import CAP_SEARCH, SearchCap
     max_results = min(max(1, max_results), 20)
     try:
-        output = minimax_search(query.strip(), max_results)
-        output["provider"] = "minimax"
+        selected = providers.resolve(CAP_SEARCH, provider)
+    except ValueError as e:
+        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False)
+    if not isinstance(selected, SearchCap):
+        return tool_error(f"提供者 {selected.name} 不支持检索能力", cause=ErrorCause.CONFIG, retryable=False)
+    try:
+        output = selected.search(query.strip(), max_results)
+        output["provider"] = selected.name
         return json.dumps(output, ensure_ascii=False)
     except Exception as e:
-        return minimax_error_response(
-            e, "网页搜索",
-            hint="检查网络连通性，以及 entities/minimax/config.json 的 coding_plan_api_key",
-        )
+        return selected.error_response(e, "网页搜索")
 
 
 # ==================================================================
-# 网页抓取
+# 网页读取
 # ==================================================================
 
 
@@ -198,6 +118,7 @@ def web_fetch(
     use_proxy: bool = False,
     start_index: int = 0,
     respect_robots: bool = False,
+    provider: str = "",
 ) -> str:
     """获取指定 URL 的网页正文，自动提取可读内容。
 
@@ -206,65 +127,248 @@ def web_fetch(
 
     Args:
         url:            网页地址（必须以 http:// 或 https:// 开头）
-        extract_mode:   输出格式：markdown（默认，保留结构）、text（纯文本）或 raw（原始内容，不提取正文）
+        extract_mode:   输出格式：markdown（默认，保留结构）、text（纯文本）或 raw（原始内容，仅 builtin 提供者支持）
         max_chars:      最大返回字符数，默认 8000
         timeout:        超时秒数，默认 15
-        use_proxy:      是否使用代理，默认 False
+        use_proxy:      是否使用代理（仅 builtin 提供者生效），默认 False
         start_index:    从该字符索引开始返回，默认 0，用于长页面分块续读
-        respect_robots: 是否遵守目标站点 robots.txt 合规检查，默认 False
+        respect_robots: 是否遵守目标站点 robots.txt 合规检查（仅 builtin 提供者生效），默认 False
+        provider:       指定读取提供者（builtin 本地直连 / bigmodel 智谱），留空用系统当前选择
     """
-    import httpx
+    from entities.web import providers
+    from entities.web.content_extractor import truncate_text
+    from entities.web.providers.base import CAP_READER, ReaderCap
+
     max_chars = int(max_chars)
     start_index = max(0, int(start_index))
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         return json.dumps({"error": f"仅支持 http/https，收到: {url[:50]}"}, ensure_ascii=False)
 
-    if respect_robots:
-        from entities.web.robots import is_allowed
-        allowed, detail = is_allowed(url, use_proxy=use_proxy)
-        if not allowed:
-            return tool_error(
-                f"robots.txt 合规检查未通过: {detail}",
-                cause=ErrorCause.PERMISSION, retryable=False,
-                robots_disallowed=True,
-                hint="如需强制抓取可传 respect_robots=false，请自行确认合规性",
-            )
+    try:
+        selected = providers.resolve(CAP_READER, provider)
+    except ValueError as e:
+        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False)
+    if not isinstance(selected, ReaderCap):
+        return tool_error(f"提供者 {selected.name} 不支持网页读取能力", cause=ErrorCause.CONFIG, retryable=False)
+    try:
+        result = selected.read(
+            url, timeout=int(timeout), extract_mode=extract_mode,
+            use_proxy=use_proxy, respect_robots=respect_robots,
+        )
+    except Exception as e:
+        return selected.error_response(e, f"读取 {url}")
 
-    ssrf = _ssrf_protection_enabled()
-    if ssrf:
-        err = _check_ssrf_url(url)
-        if err:
-            return json.dumps({"error": err}, ensure_ascii=False)
+    # 分块截断统一在工具层施加，与提供者无关
+    content = str(result.get("content", ""))[start_index:]
+    content, truncated = truncate_text(content, max_chars)
+    result["content"] = content
+    result["truncated"] = truncated
+    if truncated:
+        result["next_start_index"] = start_index + len(content)
+    result["provider"] = selected.name
+    return json.dumps(result, ensure_ascii=False)
+
+
+# ==================================================================
+# 仓库文档
+# ==================================================================
+
+
+@tool(name="repo_docs", group="web", tags=["web"], check_fn=_repo_available)
+def repo_docs(
+    action: str,
+    repo: str,
+    query: str = "",
+    path: str = "",
+    dir_path: str = "",
+    provider: str = "",
+) -> str:
+    """查询 GitHub 开源仓库的知识文档、目录结构与文件内容（如智谱 ZRead）。
+
+    适合了解某个开源项目的架构、用法、最近 issue/PR，或直接阅读仓库文件，
+    无需克隆仓库。
+
+    Args:
+        action:   search_doc（搜索仓库知识文档，需 query）/ get_structure（目录结构，可选 dir_path）/ read_file（文件内容，需 path）
+        repo:     仓库标识 owner/repo（如 "vitejs/vite"，GitHub URL 亦可）
+        query:    search_doc 的检索问题或关键词
+        path:     read_file 的文件相对路径（如 "src/index.ts"）
+        dir_path: get_structure 的子目录路径（留空为根目录）
+        provider: 指定提供者，留空用系统当前选择
+    """
+    from entities.web import providers
+    from entities.web.providers.base import CAP_REPO, RepoCap
+
+    action = action.strip().lower()
+    repo = repo.strip().removeprefix("https://github.com/").strip("/")
+    if not repo or "/" not in repo:
+        return tool_error(f"repo 需要 owner/repo 格式，收到: {repo or '(空)'}", cause=ErrorCause.PARAM, retryable=False)
 
     try:
-        with httpx.Client(
-            timeout=float(timeout),
-            follow_redirects=not ssrf,
-            headers={"User-Agent": _USER_AGENT},
-            **_proxy_kwargs(use_proxy),
-        ) as client:
-            if ssrf:
-                status, final_url, ct, body = _request_ssrf_checked(client, "GET", url)
-            else:
-                resp = client.get(url)
-                final_url = str(resp.url)
-                ct = resp.headers.get("content-type", "")
-                body = resp.text
-    except httpx.TimeoutException as e:
-        return error_from_exception(e, action=f"请求 {url}")
-    except PermissionError as e:
-        return error_from_exception(e, action=f"请求 {url}")
+        selected = providers.resolve(CAP_REPO, provider)
+    except ValueError as e:
+        return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False)
+    if not isinstance(selected, RepoCap):
+        return tool_error(f"提供者 {selected.name} 不支持仓库文档能力", cause=ErrorCause.CONFIG, retryable=False)
+
+    try:
+        if action == "search_doc":
+            if not query.strip():
+                return tool_error("search_doc 需要 query 参数", cause=ErrorCause.PARAM, retryable=False)
+            content = selected.search_doc(repo, query.strip())
+        elif action == "get_structure":
+            content = selected.get_repo_structure(repo, dir_path.strip())
+        elif action == "read_file":
+            if not path.strip():
+                return tool_error("read_file 需要 path 参数", cause=ErrorCause.PARAM, retryable=False)
+            content = selected.read_repo_file(repo, path.strip())
+        else:
+            return tool_error(
+                f"未知操作: {action}（可选: search_doc / get_structure / read_file）",
+                cause=ErrorCause.PARAM, retryable=False,
+            )
     except Exception as e:
-        return error_from_exception(e, action=f"请求 {url}")
+        return selected.error_response(e, f"仓库文档 {action}")
 
-    if "application/json" in ct or extract_mode == "raw":
-        return _process_raw(body, final_url, ct, start_index, max_chars)
+    return json.dumps({
+        "repo": repo, "action": action, "provider": selected.name, "content": content,
+    }, ensure_ascii=False)
 
-    if "text/" not in ct:
-        return json.dumps({"url": final_url, "content_type": ct, "error": f"不支持的内容类型: {ct}"}, ensure_ascii=False)
 
-    return _process_html(body, final_url, extract_mode, max_chars, start_index)
+# ==================================================================
+# 提供者管理
+# ==================================================================
+
+
+@tool(name="web_providers", group="web", tags=["web", "core"])
+def web_providers(action: str = "list", provider: str = "", capability: str = "", api_key: str = "") -> str:
+    """管理网络能力提供者：查看能力矩阵、切换能力实现、启停提供者、配置凭据。
+
+    Args:
+        action:     list（能力 × 提供者矩阵，默认）/ switch（切换某能力的提供者，provider=auto 恢复自动选择）/ enable / disable（启停提供者）/ set_key（配置凭据，api_key 传 clear 清除）
+        provider:   目标提供者名（如 builtin / minimax / bigmodel）
+        capability: 目标能力（switch 必填：search 检索 / reader 网页读取 / repo 仓库文档）
+        api_key:    凭据内容（set_key 必填；传 clear 清除已存凭据）
+    """
+    from entities.web import providers
+    from entities.web.providers.base import CAPABILITY_PROTOCOLS
+    from entities.web.web_config import set_active, set_enabled
+
+    action = action.strip().lower()
+
+    if action == "list":
+        return json.dumps(_providers_matrix(), ensure_ascii=False)
+
+    if action == "switch":
+        cap = capability.strip()
+        if cap not in CAPABILITY_PROTOCOLS:
+            return tool_error(
+                f"未知能力: {cap or '(空)'}（可选: {', '.join(CAPABILITY_PROTOCOLS)}）",
+                cause=ErrorCause.PARAM, retryable=False,
+            )
+        name = provider.strip()
+        if not name:
+            return tool_error("switch 需要提供 provider 参数", cause=ErrorCause.PARAM, retryable=False)
+        if name != "auto":
+            try:
+                providers.resolve(cap, name)  # 校验：不支持/已禁用/未配置会带原因抛出
+            except ValueError as e:
+                return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False)
+        set_active(cap, name)
+        return json.dumps({
+            "status": "ok", "capability": cap, "selection": name,
+            "active": _active_map(),
+        }, ensure_ascii=False)
+
+    if action in ("enable", "disable"):
+        name = provider.strip()
+        if not name:
+            return tool_error(f"{action} 需要提供 provider 参数", cause=ErrorCause.PARAM, retryable=False)
+        try:
+            providers.get_provider(name)
+        except ValueError as e:
+            return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False)
+        set_enabled(name, action == "enable")
+        return json.dumps({
+            "status": "ok", "provider": name, "enabled": action == "enable",
+            "active": _active_map(),
+        }, ensure_ascii=False)
+
+    if action == "set_key":
+        name = provider.strip()
+        if not name:
+            return tool_error("set_key 需要提供 provider 参数", cause=ErrorCause.PARAM, retryable=False)
+        try:
+            target = providers.get_provider(name)
+        except ValueError as e:
+            return tool_error(str(e), cause=ErrorCause.CONFIG, retryable=False)
+        if not target.requires_credential:
+            return tool_error(f"提供者 {name} 无需凭据", cause=ErrorCause.PARAM, retryable=False)
+        key = api_key.strip()
+        if not key:
+            return tool_error(
+                "set_key 需要提供 api_key 参数（传 clear 清除已存凭据）",
+                cause=ErrorCause.PARAM, retryable=False,
+            )
+        try:
+            target.set_api_key("" if key.lower() == "clear" else key)
+        except Exception as e:
+            return error_from_exception(e, action=f"保存 {name} 凭据")
+        return json.dumps({
+            "status": "ok",
+            "provider": name,
+            "credential": "cleared" if key.lower() == "clear" else "saved",
+            "configured": target.configured(),
+        }, ensure_ascii=False)
+
+    return tool_error(
+        f"未知操作: {action}（可选: list / switch / enable / disable / set_key）",
+        cause=ErrorCause.PARAM, retryable=False,
+    )
+
+
+def _active_map() -> dict:
+    """各能力当前生效的提供者（无可用则为 null）。"""
+    from entities.web import providers
+    from entities.web.providers.base import CAPABILITY_PROTOCOLS
+    result = {}
+    for cap in CAPABILITY_PROTOCOLS:
+        try:
+            result[cap] = providers.resolve(cap).name
+        except ValueError:
+            result[cap] = None
+    return result
+
+
+def _providers_matrix() -> dict:
+    """能力 × 提供者矩阵快照（凭据只暴露来源，不回显本体）。"""
+    from entities.web import providers
+    from entities.web.providers.base import CAPABILITY_PROTOCOLS
+    from entities.web.web_config import get_active
+    return {
+        "capabilities": list(CAPABILITY_PROTOCOLS),
+        "selection": {cap: get_active(cap) for cap in CAPABILITY_PROTOCOLS},
+        "active": _active_map(),
+        "providers": [
+            {
+                "name": p.name,
+                "display_name": p.display_name,
+                "description": p.description,
+                "enabled": p.enabled(),
+                "configured": p.configured(),
+                "credential_source": p.credential()[1] or None,
+                "capabilities": providers.provider_capabilities(p),
+            }
+            for p in providers.list_providers()
+        ],
+        "hint": "switch 切换能力实现（provider=auto 自动选择）；enable/disable 启停提供者；set_key 配置凭据",
+    }
+
+
+# ==================================================================
+# 页面链接提取（直连语义）
+# ==================================================================
 
 
 @tool(name="extract_page_links", group="web", tags=["web"], concurrency_safe=True)
@@ -283,32 +387,16 @@ def extract_page_links(
         use_proxy: 是否使用代理，默认 False
     """
     import httpx
+
+    from entities.web.fetcher import fetch
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         return json.dumps({"error": "仅支持 http/https"}, ensure_ascii=False)
-
-    ssrf = _ssrf_protection_enabled()
-    if ssrf:
-        err = _check_ssrf_url(url)
-        if err:
-            return json.dumps({"error": err}, ensure_ascii=False)
-
     try:
-        with httpx.Client(
-            timeout=float(timeout),
-            follow_redirects=not ssrf,
-            headers={"User-Agent": _USER_AGENT},
-            **_proxy_kwargs(use_proxy),
-        ) as client:
-            if ssrf:
-                _, final_url, ct, body = _request_ssrf_checked(client, "GET", url)
-            else:
-                resp = client.get(url)
-                final_url = str(resp.url)
-                ct = resp.headers.get("content-type", "")
-                body = resp.text
-        if "text/html" not in ct:
-            return json.dumps({"error": f"非 HTML 页面: {ct}"}, ensure_ascii=False)
+        _status, final_url, content_type, body = fetch(
+            url, timeout=float(timeout), use_proxy=use_proxy)
+        if "text/html" not in content_type:
+            return json.dumps({"error": f"非 HTML 页面: {content_type}"}, ensure_ascii=False)
         from entities.web.content_extractor import extract_links
         links = extract_links(body, base_url=final_url)
         total = len(links)
@@ -320,7 +408,7 @@ def extract_page_links(
 
 
 # ==================================================================
-# 通用 HTTP 请求
+# 通用 HTTP 请求（直连语义）
 # ==================================================================
 
 
@@ -348,56 +436,30 @@ def web_request(
         use_proxy: 是否使用代理，默认 False
     """
     import httpx
+
+    from entities.web.fetcher import fetch
     method = method.upper()
-    req_headers = {"User-Agent": _USER_AGENT}
+    if method not in ("GET", "POST", "PUT", "DELETE", "PATCH"):
+        return json.dumps({"error": f"不支持的方法: {method}"}, ensure_ascii=False)
+    req_headers = {}
     if headers.strip():
         try:
-            req_headers.update(json.loads(headers))
+            req_headers = json.loads(headers)
         except Exception:
             return json.dumps({"error": f"headers JSON 解析失败: {headers}"}, ensure_ascii=False)
-
     req_body: Optional[str] = body.strip() or None
 
-    ssrf = _ssrf_protection_enabled()
-    if ssrf:
-        err = _check_ssrf_url(url)
-        if err:
-            return json.dumps({"error": err}, ensure_ascii=False)
-
     try:
-        with httpx.Client(
-            timeout=float(timeout),
-            follow_redirects=not ssrf,
-            headers=req_headers,
-            **_proxy_kwargs(use_proxy),
-        ) as client:
-            if ssrf:
-                status_code, final_url, ct, text = _request_ssrf_checked(
-                    client, method, url, content=req_body)
-            else:
-                if method == "GET":
-                    resp = client.get(url)
-                elif method == "POST":
-                    resp = client.post(url, content=req_body)
-                elif method == "PUT":
-                    resp = client.put(url, content=req_body)
-                elif method == "DELETE":
-                    resp = client.delete(url)
-                elif method == "PATCH":
-                    resp = client.patch(url, content=req_body)
-                else:
-                    return json.dumps({"error": f"不支持的方法: {method}"}, ensure_ascii=False)
-                status_code = resp.status_code
-                ct = resp.headers.get("content-type", "")
-                text = resp.text
-
+        _status, _final_url, content_type, text = fetch(
+            url, method=method, content=req_body,
+            headers=req_headers or None, timeout=float(timeout), use_proxy=use_proxy,
+        )
         truncated = len(text) > max_chars
         if truncated:
             text = text[:max_chars] + "\n... (响应过长，已截断)"
-
         return json.dumps({
-            "status_code": status_code,
-            "content_type": ct,
+            "status_code": _status,
+            "content_type": content_type,
             "body": text,
             "truncated": truncated,
         }, ensure_ascii=False)
@@ -410,59 +472,8 @@ def web_request(
 
 
 # ==================================================================
-# 文件下载
+# 文件下载（直连语义）
 # ==================================================================
-
-
-def _download_to_file_checked(
-    client: Any,
-    url: str,
-    dest_path: str,
-    max_bytes: int,
-    ssrf: bool,
-    max_redirects: int = 5,
-) -> Tuple[int, str, int]:
-    """流式下载 URL 到本地文件，逐跳校验重定向目标（SSRF 开启时），按字节上限截断。
-
-    Returns:
-        (status_code, final_url, written_bytes)
-    """
-    import os
-    from urllib.parse import urljoin
-    for _ in range(max_redirects):
-        if ssrf:
-            err = _check_ssrf_url(url)
-            if err:
-                raise PermissionError(err)
-        with client.stream("GET", url, follow_redirects=False) as resp:
-            if resp.is_redirect:
-                location = resp.headers.get("location", "")
-                if not location:
-                    raise ValueError(f"重定向响应缺少 Location: {url}")
-                url = urljoin(str(resp.url), location)
-                continue
-            if resp.status_code >= 400:
-                raise ValueError(f"HTTP {resp.status_code}: {url}")
-            content_length = resp.headers.get("content-length", "")
-            if content_length.isdigit() and int(content_length) > max_bytes:
-                raise ValueError(f"文件超过大小限制 ({max_bytes // 1024 // 1024}MB)")
-            written = 0
-            overflow = False
-            with open(dest_path, "wb") as f:
-                for chunk in resp.iter_bytes(65536):
-                    written += len(chunk)
-                    if written > max_bytes:
-                        overflow = True
-                        break
-                    f.write(chunk)
-            if overflow:
-                try:
-                    os.remove(dest_path)
-                except OSError:
-                    log("_download_to_file_checked 异常已忽略", "DEBUG")
-                raise ValueError(f"文件超过大小限制 ({max_bytes // 1024 // 1024}MB)")
-            return resp.status_code, str(resp.url), written
-    raise ValueError(f"重定向次数过多 (上限 {max_redirects})")
 
 
 @tool(name="web_download", group="web",
@@ -495,19 +506,15 @@ def web_download(
 
     import httpx
 
+    from core.config import ConfigManager
+    from entities.web.fetcher import download_to_file
+
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         return json.dumps({"error": f"仅支持 http/https，收到: {url[:50]}"}, ensure_ascii=False)
     max_bytes = max(1, int(max_mb)) * 1024 * 1024
 
-    ssrf = _ssrf_protection_enabled()
-    if ssrf:
-        err = _check_ssrf_url(url)
-        if err:
-            return json.dumps({"error": err}, ensure_ascii=False)
-
     try:
-        from core.config import ConfigManager
         ws = ConfigManager.get("workspace_root", "workspace")
     except Exception:
         ws = "workspace"
@@ -523,14 +530,8 @@ def web_download(
         return json.dumps({"error": f"非法文件名: {filename}"}, ensure_ascii=False)
 
     try:
-        with httpx.Client(
-            timeout=float(timeout),
-            follow_redirects=False,
-            headers={"User-Agent": _USER_AGENT},
-            **_proxy_kwargs(use_proxy),
-        ) as client:
-            _, final_url, written = _download_to_file_checked(
-                client, url, local_path, max_bytes, ssrf)
+        _status, final_url, written = download_to_file(
+            url, local_path, max_bytes, timeout=float(timeout), use_proxy=use_proxy)
     except httpx.TimeoutException as e:
         return error_from_exception(e, action=f"下载 {url}")
     except PermissionError as e:
@@ -545,69 +546,3 @@ def web_download(
         "source_url": final_url,
         "hint": "文件已下载，可用 read_file 读取该路径进行分析",
     }, ensure_ascii=False)
-
-
-# ==================================================================
-# 内部工具
-# ==================================================================
-
-
-def _process_raw(body: str, url: str, content_type: str, start_index: int, max_chars: int) -> str:
-    """原始内容直通（JSON 响应 / raw 模式）：分块切片 + 截断。"""
-    from entities.web.content_extractor import truncate_text
-
-    body = body[start_index:]
-    body, truncated = truncate_text(body, max_chars)
-    result: dict = {"url": url, "content_type": content_type, "content": body, "truncated": truncated}
-    if truncated:
-        result["next_start_index"] = start_index + len(body)
-    return json.dumps(result, ensure_ascii=False)
-
-
-def _process_html(html: str, url: str, extract_mode: str, max_chars: int, start_index: int = 0) -> str:
-    """处理 HTML：提取元数据 + 预清洗 + 正文提取 + 格式转换 + 分块截断。"""
-    from entities.web.content_extractor import (
-        _bs4_to_text,
-        _simple_html_to_text,
-        extract_page_metadata,
-        extract_readable_content,
-        html_to_markdown,
-        truncate_text,
-    )
-
-    meta = extract_page_metadata(html, url)
-
-    title: Optional[str] = meta.get("title")
-    content_html = html
-
-    readable = extract_readable_content(html, url)
-    if readable:
-        title = title or readable[0]
-        content_html = readable[1]
-
-    if extract_mode == "markdown":
-        text = html_to_markdown(content_html)
-    else:
-        text = _bs4_to_text(content_html) or _simple_html_to_text(content_html)
-
-    text = text[start_index:]
-    text, truncated = truncate_text(text, max_chars)
-
-    result: dict = {
-        "url": url,
-        "extract_mode": extract_mode,
-        "content": text,
-        "truncated": truncated,
-        "raw_length": len(html),
-    }
-    if truncated:
-        result["next_start_index"] = start_index + len(text)
-    if title:
-        result["title"] = title
-    if meta.get("description"):
-        result["description"] = meta["description"]
-    if meta.get("author"):
-        result["author"] = meta["author"]
-    if meta.get("published"):
-        result["published"] = meta["published"]
-    return json.dumps(result, ensure_ascii=False)

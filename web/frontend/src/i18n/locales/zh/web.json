@@ -1,0 +1,58 @@
+{
+  "tabs": {
+    "providers": "能力提供者",
+    "settings": "通用设置"
+  },
+  "caps": {
+    "search": "联网检索",
+    "reader": "网页读取",
+    "repo": "仓库文档"
+  },
+  "matrix": {
+    "auto": "自动",
+    "activeNow": "生效",
+    "noneAvailable": "无可用提供者",
+    "autoDesc": "按优先级使用首个 已启用 + 已配置凭据 的提供者"
+  },
+  "provider": {
+    "enable": "启用",
+    "disable": "禁用",
+    "disabledBadge": "已禁用",
+    "configured": "已配置",
+    "notConfigured": "未配置凭据",
+    "noCredential": "无需凭据",
+    "unsupported": "不支持",
+    "sourcePrefix": "凭据来源",
+    "source": {
+      "config": "实体配置",
+      "llm": "LLM 供应商",
+      "env": "环境变量"
+    },
+    "keyPlaceholderSet": "已保存凭据，输入新 Key 更换",
+    "keyPlaceholderEmpty": "输入 API Key",
+    "saveKey": "保存",
+    "clearKey": "清除"
+  },
+  "test": {
+    "run": "测试",
+    "testing": "测试中…",
+    "inputPlaceholder": {
+      "search": "测试查询词（可选）",
+      "reader": "测试 URL（可选）",
+      "repo": "owner/repo（可选）"
+    },
+    "failed": "测试失败"
+  },
+  "settings": {
+    "proxyTitle": "网页抓取代理",
+    "proxyLabel": "代理地址",
+    "proxyPlaceholder": "http://127.0.0.1:7890（可选，留空直连）",
+    "save": "保存",
+    "saving": "保存中…",
+    "securityTitle": "安全",
+    "ssrf": "SSRF 防护",
+    "ssrfOn": "已开启",
+    "ssrfOff": "已关闭",
+    "ssrfHint": "在配置中心 entity/web 分组调整"
+  }
+}

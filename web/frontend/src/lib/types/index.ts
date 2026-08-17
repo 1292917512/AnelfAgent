@@ -22,6 +22,7 @@ export * from "./ssh";
 export * from "./voiceprint";
 export * from "./graph";
 export * from "./media";
+export * from "./web";
 export * from "./plan";
 export * from "./chat";
 export * from "./thinking";

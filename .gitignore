@@ -82,14 +82,9 @@ config/personas/yanyi.json
 # === Personal character assets ===
 config/mengli_aigc/
 
-# === Entity secrets (each entity has its own config.json) ===
-entities/web/config.json
-entities/minimax/config.json
-entities/ssh/config.json
+# === Entity secrets (personal configs stay local; example files unaffected) ===
+entities/*/config.json
 entities/ssh/connections.json
-entities/share/config.json
-entities/media/config.json
-entities/voiceprint/config.json
 
 # === Channel secrets ===
 channels/telegram/channel_config.json

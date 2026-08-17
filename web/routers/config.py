@@ -605,9 +605,9 @@ class WebToolsConfigUpdate(BaseModel):
 
 @router.get("/web-tools")
 async def get_web_tools_config() -> Dict[str, Any]:
-    """返回 Web 工具配置。"""
-    from entities.web.web_config import get_config
-    return get_config()
+    """返回 Web 工具配置（仅非敏感字段；提供者矩阵管理走 /api/entity/web/matrix）。"""
+    from entities.web.web_config import get_proxy
+    return {"proxy": get_proxy()}
 
 
 @router.put("/web-tools")

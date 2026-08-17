@@ -4,8 +4,9 @@
 - 只回答"技能库的现状是什么"（事实），不回答"应该怎么做"（策略归 AI）
 - 写入路径的诊断（write_advisory）在这里计算，经 tools.py 以"决策请求"呈现给
   AI，由 AI 带 decision 回执完成写入——系统呈现事实，不做拒绝
-- 向量复用 Mind 的 Embedder（与记忆召回同一基础设施），内容 hash 键控缓存，
-  无独立向量库；Embedder 不可用时全部语义能力优雅降级，仅剩元数据事实
+- 向量复用 Mind 的 Embedder（与记忆召回同一基础设施），SQLite 持久化
+  （skill_vectors.sqlite3，与主库同目录独立文件）+ 内存缓存热路径；
+  重启零重嵌直接恢复；Embedder 不可用时全部语义能力优雅降级，仅剩元数据事实
 
 Model Experience：
 ① 模型看到什么：create/update 的诊断报告（相近技能/触发词碰撞/容量/无实质变化）、
@@ -17,15 +18,23 @@ Model Experience：
 from __future__ import annotations
 
 import asyncio
+import os
+import sqlite3
 import time
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.memory.memory_utils import cosine_similarity, hash_text
+from agent.memory.memory_utils import (
+    cosine_similarity,
+    hash_text,
+    pack_embedding,
+    unpack_embedding,
+)
 from agent.skills.skill_store import Skill, SkillState, SkillStore
 from core.log import log
 
-# 向量缓存（内容 hash 键控）：容量有界 FIFO，技能反复修改时旧键自然淘汰
+# 向量内存缓存（模型名+内容 hash 键控）：容量有界 FIFO，持久层为 SQLite
 _EMBEDDING_CACHE_MAX = 1024
 
 
@@ -46,9 +55,12 @@ class SkillIndex:
     事实的呈现方式由调用方（tools 决策协议 / 评审上下文 / 策展议程）决定。
     """
 
-    def __init__(self, store: SkillStore, embedder: Optional[object] = None) -> None:
+    def __init__(self, store: SkillStore, embedder: Optional[object] = None,
+                 db_path: Optional[str] = None) -> None:
         self._store = store
         self._embedder = embedder
+        self._db_path = db_path
+        self._db_loaded = False
         self._vec_cache: Dict[str, List[float]] = {}
         # 当前模型快照：嵌入路径的写入键；模型切换经 _refresh_model 检测后整体清换
         self._current_model: Optional[str] = None
@@ -88,6 +100,146 @@ class SkillIndex:
         return [s for s in self._all_skills() if s.state != SkillState.ARCHIVED]
 
     # ------------------------------------------------------------------
+    # 向量持久化（SQLite：重启零重嵌恢复）
+    # ------------------------------------------------------------------
+
+    def _db_file(self) -> Path:
+        """向量库文件：主库同目录的独立 SQLite（schema 自治，不侵入 MemoryStore）。
+
+        命名对齐数据库注册表惯例（{主库stem}_skill_vectors.sqlite3），
+        Web 数据库管理页可浏览。
+        """
+        if self._db_path is not None:
+            return Path(self._db_path)
+        from agent.storage.sqlite_backend import default_sqlite_path
+        main = Path(default_sqlite_path())
+        return main.with_name(f"{main.stem}_skill_vectors.sqlite3")
+
+    @staticmethod
+    def _ensure_schema(conn: sqlite3.Connection) -> None:
+        """建表（读写路径各自保证 schema，写入不依赖加载先行）。"""
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS skill_vectors ("
+            "  skill_name TEXT PRIMARY KEY,"
+            "  model TEXT NOT NULL,"
+            "  text_hash TEXT NOT NULL,"
+            "  vector BLOB NOT NULL,"
+            "  updated_at REAL NOT NULL"
+            ")"
+        )
+
+    def _ensure_db_loaded(self) -> None:
+        """启动加载：首次访问时从 SQLite 恢复向量到内存缓存（一次性，毫秒级）。
+
+        恢复口径：模型名匹配 + 表征文本 hash 匹配的行才有效——
+        模型切换/技能内容变更/技能删除的残留行全部清除并标记全量重建。
+        同步读取（269 行 × 数 KB ≈ MB 级，一次性），各入口统一调用。
+        """
+        if self._db_loaded:
+            return
+        if self._embedder is None:
+            # 旁观者索引：模型名为空无法校验有效性，加载=把真模型的向量误判失效
+            self._db_loaded = True
+            return
+        if not self._model_key():
+            # 客户端未就绪（启动/热重载窗口）：延迟加载，就绪后下次入口再试——
+            # 空模型名永不做失效判定
+            return
+        self._db_loaded = True
+        try:
+            self._load_from_db()
+        except Exception as exc:
+            log(f"技能向量库加载失败（按空库处理）: {exc}", "WARNING", tag="技能")
+
+    def _load_from_db(self) -> None:
+        db = self._db_file()
+        db.parent.mkdir(parents=True, exist_ok=True)
+        # 旧命名（skill_vectors.sqlite3）一次性迁移为注册表惯例命名
+        legacy = db.with_name("skill_vectors.sqlite3")
+        if not db.exists() and legacy.exists():
+            try:
+                os.rename(legacy, db)
+                log("技能向量库已迁移为注册表惯例命名", tag="技能")
+            except OSError as exc:
+                log(f"技能向量库旧文件迁移失败: {exc}", "WARNING", tag="技能")
+        current_model = self._model_key()
+        self._current_model = current_model
+        with sqlite3.connect(db) as conn:
+            self._ensure_schema(conn)
+            rows = conn.execute(
+                "SELECT skill_name, model, text_hash, vector FROM skill_vectors"
+            ).fetchall()
+            skills_by_name = {s.name: s for s in self._store.list_skills(include_archived=True)}
+            stale_names: List[str] = []
+            loaded = 0
+            for name, model, text_hash, blob in rows:
+                skill = skills_by_name.get(name)
+                if (
+                    skill is not None
+                    and model == current_model
+                    and text_hash == hash_text(self._embedding_text(skill))
+                ):
+                    self._vec_cache[self._vector_key(skill)] = unpack_embedding(blob)
+                    loaded += 1
+                else:
+                    stale_names.append(name)
+            for name in stale_names:
+                conn.execute("DELETE FROM skill_vectors WHERE skill_name = ?", (name,))
+        if stale_names:
+            self._rebuild_pending = True
+            log(
+                f"技能向量库: 恢复 {loaded} 个，清理失效 {len(stale_names)} 个（已安排重建）",
+                tag="技能",
+            )
+        elif loaded:
+            log(f"技能向量库: 从磁盘恢复 {loaded} 个向量（零重嵌）", tag="技能")
+
+    def _persist_skill_vector(self, skill: Skill, vec: List[float]) -> None:
+        """嵌入成功后持久化（upsert；失败仅记日志，内存缓存仍可用）。"""
+        if self._embedder is None:
+            return
+        try:
+            with sqlite3.connect(self._db_file()) as conn:
+                self._ensure_schema(conn)
+                conn.execute(
+                    "INSERT INTO skill_vectors (skill_name, model, text_hash, vector, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(skill_name) DO UPDATE SET "
+                    "model=excluded.model, text_hash=excluded.text_hash, "
+                    "vector=excluded.vector, updated_at=excluded.updated_at",
+                    (
+                        skill.name, self._current_model or "",
+                        hash_text(self._embedding_text(skill)),
+                        pack_embedding(vec), time.time(),
+                    ),
+                )
+        except Exception as exc:
+            log(f"技能向量持久化失败: {exc}", "DEBUG", tag="技能")
+
+    def _delete_persisted(self, names: List[str]) -> None:
+        """删除持久化行（prune/删除技能的清库同步）。"""
+        if self._embedder is None or not names:
+            return
+        try:
+            with sqlite3.connect(self._db_file()) as conn:
+                conn.executemany(
+                    "DELETE FROM skill_vectors WHERE skill_name = ?",
+                    [(n,) for n in names],
+                )
+        except Exception as exc:
+            log(f"技能向量库清理失败: {exc}", "DEBUG", tag="技能")
+
+    def _delete_all_persisted(self) -> None:
+        """清空全部持久化行（模型切换：旧向量空间整体作废）。"""
+        if self._embedder is None:
+            return
+        try:
+            with sqlite3.connect(self._db_file()) as conn:
+                conn.execute("DELETE FROM skill_vectors")
+        except Exception as exc:
+            log(f"技能向量库清空失败: {exc}", "DEBUG", tag="技能")
+
+    # ------------------------------------------------------------------
     # 向量
     # ------------------------------------------------------------------
 
@@ -108,8 +260,16 @@ class SkillIndex:
 
         触发时机：每次嵌入调用/预热/健康统计前（非每技能的 cached_vector 热路径，
         热路径用 _current_model 快照读，零额外开销）。
+        无 embedder 的旁观者索引（如 Web 健康报告的临时实例）不参与模型追踪——
+        它无权对持久层做任何校验/清理。
         """
+        if self._embedder is None:
+            return
         model = self._model_key()
+        if not model:
+            # 客户端未就绪（启动/热重载窗口）：空模型名是"不知道"，
+            # 不参与任何校验——否则会把真模型存的向量误判失效
+            return
         if self._current_model is None:
             self._current_model = model
             return
@@ -120,6 +280,8 @@ class SkillIndex:
         self._vec_cache.clear()
         self._cluster_cache = None
         self._rebuild_pending = True
+        # DB 同步清空：旧模型向量不可复用（不同向量空间）
+        self._delete_all_persisted()
         log(
             f"Embedding 模型已手动切换（{previous or '无'} → {model or '无'}）："
             f"技能向量已全部清空，安排全量重建",
@@ -157,6 +319,7 @@ class SkillIndex:
         """
         self._refresh_model()
         skills = self._matchable_skills()
+        self._ensure_db_loaded()
         embedded = sum(1 for s in skills if self.is_embedded(s))
         total = len(skills)
         return {
@@ -186,7 +349,10 @@ class SkillIndex:
         return vec or None
 
     async def skill_vector(self, skill: Skill) -> Optional[List[float]]:
-        """技能向量（模型名 + 表征文本 hash 缓存，内容/模型变更自然失效）。"""
+        """技能向量（模型名 + 表征文本 hash 缓存，内容/模型变更自然失效）。
+
+        嵌入成功后同步持久化到 SQLite——重启经 _ensure_db_loaded 零重嵌恢复。
+        """
         key = self._vector_key(skill)
         cached = self._vec_cache.get(key)
         if cached is not None:
@@ -194,6 +360,7 @@ class SkillIndex:
         vec = await self.text_vector(self._embedding_text(skill))
         if vec:
             self._cache_vector(key, vec)
+            self._persist_skill_vector(skill, vec)
         return vec
 
     def cached_vector(self, skill: Skill) -> Optional[List[float]]:
@@ -206,16 +373,40 @@ class SkillIndex:
         时机约束：必须在嵌入完成之后调用——未嵌入的技能键尚未存在，
         在嵌入前调用会把"待嵌入"误判成死键。故常规路径由嵌入侧
         （warm/embed_now 完成后）与删除侧（service.delete_skill）触发，
-        不在列表重建时调用。
+        不在列表重建时调用。内存与 SQLite 同步清理。
         """
+        if self._embedder is None:
+            return 0
+        self._ensure_db_loaded()
         valid = {self._vector_key(s) for s in self._all_skills()}
         stale = [k for k in self._vec_cache if k not in valid]
         for key in stale:
             self._vec_cache.pop(key, None)
+        # DB 同步：技能删除/内容变更/模型变更的残留行一并清除
+        skills_by_name = {s.name: s for s in self._all_skills()}
+        current_model = self._current_model or ""
+        stale_names: List[str] = []
+        try:
+            with sqlite3.connect(self._db_file()) as conn:
+                rows = conn.execute(
+                    "SELECT skill_name, model, text_hash FROM skill_vectors"
+                ).fetchall()
+                for name, model, text_hash in rows:
+                    skill = skills_by_name.get(name)
+                    if (
+                        skill is None
+                        or model != current_model
+                        or text_hash != hash_text(self._embedding_text(skill))
+                    ):
+                        stale_names.append(name)
+        except Exception as exc:
+            log(f"技能向量库扫描失败: {exc}", "DEBUG", tag="技能")
+        self._delete_persisted(stale_names)
         return len(stale)
 
     def is_embedded(self, skill: Skill) -> bool:
         """技能向量是否已就绪（缓存命中即就绪，供 Web 展示与覆盖统计）。"""
+        self._ensure_db_loaded()
         return self.cached_vector(skill) is not None
 
     def embedding_stats(self) -> Dict[str, Any]:
@@ -239,6 +430,7 @@ class SkillIndex:
         全量重建进行中时让位（rebuild_all 会覆盖该技能）。
         """
         self._refresh_model()
+        self._ensure_db_loaded()
         if self._build_state == "rebuilding":
             return False
         skill = self._store.get(name)
@@ -265,6 +457,7 @@ class SkillIndex:
         if self._embedder is None:
             return {s.name: None for s in skills}
         self._refresh_model()
+        self._ensure_db_loaded()
         budget = _cfg_int("skills_embed_budget", 16) if budget is None else budget
         result: Dict[str, Optional[List[float]]] = {}
         uncached: List[Skill] = []
@@ -288,6 +481,7 @@ class SkillIndex:
         接管，此时普通预热让位。limit=0 时读配置 skills_warm_batch_size。
         """
         self._refresh_model()
+        self._ensure_db_loaded()
         if self._rebuild_pending or self._build_state == "rebuilding":
             return 0
         limit = limit or _cfg_int("skills_warm_batch_size", 32)
@@ -320,6 +514,7 @@ class SkillIndex:
         for skill, vec in zip(uncached, vectors, strict=False):
             if vec:
                 self._cache_vector(self._vector_key(skill), vec)
+                self._persist_skill_vector(skill, vec)
                 warmed += 1
         if warmed:
             self.prune_stale_vectors()
@@ -340,6 +535,7 @@ class SkillIndex:
         if self._rebuild_lock.locked():
             return 0
         async with self._rebuild_lock:
+            self._ensure_db_loaded()
             self._build_state = "rebuilding"
             self._rebuild_pending = False
             batch_size = batch_size or _cfg_int("skills_rebuild_batch_size", 32)

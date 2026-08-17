@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import sys
 import time
 from collections import deque
@@ -47,6 +48,68 @@ _RESTART_BACKOFF_MAX = 60.0
 _STABLE_RESET_SECONDS = 300.0
 
 WORKER_SCRIPT = Path(__file__).parent / "worker" / "bot.py"
+
+
+def _pid_exists(pid: int) -> bool:
+    """进程是否存活（0 信号探测，不产生实际影响）。"""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # 无权限但进程存在
+
+
+async def _kill_orphan_workers(timeout: float = 5.0) -> List[int]:
+    """spawn 前回收孤儿 worker 进程。
+
+    桥接进程崩溃/重启后，旧 worker（start_new_session 启动、不会被连带
+    杀死）会被 reparent 给 launchd（PPID=1）继续存活并占用 worker 端口，
+    导致新 worker bind 失败 (exit=3)、通道陷入 reconnecting 死锁。
+    此处清理所有父进程不是当前桥接的 bot.py 实例。
+    """
+    if _is_windows():
+        return []
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ps", "-eo", "pid=,ppid=,command=",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        text = out.decode("utf-8", "replace")
+    except Exception:
+        return []
+    killed: List[int] = []
+    marker = str(WORKER_SCRIPT)
+    own_pid = os.getpid()
+    for line in text.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3 or marker not in parts[2]:
+            continue
+        try:
+            pid, ppid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        if ppid == own_pid or pid == own_pid:
+            continue  # 当前桥接自己管理的子进程
+        try:
+            os.kill(pid, signal.SIGTERM)
+            killed.append(pid)
+        except (ProcessLookupError, PermissionError):
+            continue
+    deadline = time.time() + timeout
+    while killed and time.time() < deadline:
+        await asyncio.sleep(0.2)
+        killed = [p for p in killed if _pid_exists(p)]
+    for p in killed:  # 超时仍存活 -> 强杀
+        try:
+            os.kill(p, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return killed
+
 
 
 def _is_windows() -> bool:
@@ -489,6 +552,11 @@ class NoneBotRuntime:
 
         if self.is_process_alive():
             return True
+
+        # 孤儿 worker 预清理：旧桥接遗留实例占用端口会让新实例 bind 失败
+        orphans = await _kill_orphan_workers()
+        if orphans:
+            self._log(f"清理孤儿 worker 进程: {orphans}")
 
         self._auto_restart = auto_restart
         self._token = secrets.token_urlsafe(24)

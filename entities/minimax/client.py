@@ -46,6 +46,18 @@ def reload_config() -> None:
     _load_config()
 
 
+def update_config(updates: Dict[str, Any]) -> Dict[str, Any]:
+    """更新配置并持久化到 config.json（进程级缓存同步刷新），返回更新后的完整配置。"""
+    global _config_cache
+    current = dict(_load_config())
+    current.update(updates)
+    with open(_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(current, f, ensure_ascii=False, indent=4)
+    _config_cache = current
+    log("MiniMax 配置已更新", tag="MiniMax")
+    return dict(current)
+
+
 def get_config(key: str, default: Any = "") -> Any:
     return _load_config().get(key, default)
 
@@ -527,25 +539,28 @@ class MiniMaxClient:
             or _BASE_URL
         )
 
-    def _coding_plan_headers(self) -> Dict[str, str]:
+    def _coding_plan_headers(self, api_key: str = "") -> Dict[str, str]:
         return {
-            "Authorization": f"Bearer {self._coding_plan_key()}",
+            "Authorization": f"Bearer {api_key or self._coding_plan_key()}",
             "MM-API-Source": "AnelfAgent",
             "Content-Type": "application/json",
         }
 
-    async def coding_plan_search(self, query: str, timeout: float = _TIMEOUT) -> Dict[str, Any]:
+    async def coding_plan_search(
+        self, query: str, timeout: float = _TIMEOUT, api_key: str = ""
+    ) -> Dict[str, Any]:
         """Coding Plan 网页搜索 POST /v1/coding_plan/search，返回完整响应数据。
 
         Args:
             query: 搜索关键词（3-5 个关键词效果最佳）
             timeout: 超时秒数（兜底链路等场景可传更短超时）
+            api_key: 显式凭据覆盖（如 LLM 供应商回退凭据），留空走配置解析链
         """
         return await self._post_json(
             "/v1/coding_plan/search",
             {"q": query},
             base_url=self._coding_plan_host(),
-            headers=self._coding_plan_headers(),
+            headers=self._coding_plan_headers(api_key),
             timeout=timeout,
         )
 

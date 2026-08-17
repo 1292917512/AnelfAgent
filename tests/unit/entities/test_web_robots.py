@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-import entities.web.tools as web_tools
+import entities.web.fetcher as fetcher
 from entities.web import robots
 
 
@@ -45,7 +45,7 @@ def _isolate(monkeypatch: pytest.MonkeyPatch):
     _FakeClient.call_count = 0
     _FakeClient.error = None
     monkeypatch.setattr(httpx, "Client", _FakeClient)
-    monkeypatch.setattr(web_tools, "_ssrf_protection_enabled", lambda: False)
+    monkeypatch.setattr(fetcher, "ssrf_protection_enabled", lambda: False)
     yield
     robots.clear_cache()
 
@@ -106,8 +106,8 @@ class TestIsAllowed:
         assert _FakeClient.call_count == 1
 
     def test_ssrf_blocked_fail_open(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(web_tools, "_ssrf_protection_enabled", lambda: True)
-        monkeypatch.setattr(web_tools, "_check_ssrf_url", lambda url: "SSRF 防护拦截")
+        monkeypatch.setattr(fetcher, "ssrf_protection_enabled", lambda: True)
+        monkeypatch.setattr(fetcher, "check_ssrf_url", lambda url: "SSRF 防护拦截")
         allowed, _ = robots.is_allowed("https://example.com/page")
         assert allowed is True
         assert _FakeClient.call_count == 0
