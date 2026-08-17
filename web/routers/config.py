@@ -535,7 +535,26 @@ async def delete_task(name: str, folder: str = Query("")) -> Dict[str, str]:
             raise server_error("删除任务", e) from e
 
     _reload_task_registry()
+    _remove_task_schedule(name)
     return {"status": "ok"}
+
+
+def _remove_task_schedule(name: str) -> None:
+    """任务删除后同步移除其心跳调度绑定并热重载引擎，避免孤儿调度项。"""
+    try:
+        from agent.heartbeat.config import get_heartbeat_config
+        cfg = get_heartbeat_config()
+        if cfg.remove_schedule(name):
+            cfg.save()
+    except Exception as e:
+        log(f"心跳调度同步移除失败 [{name}]: {e}", "WARNING")
+    try:
+        from services._runtime import get_runtime
+        rt = get_runtime()
+        if rt is not None:
+            rt.mind.heartbeat_engine.reload()
+    except Exception as e:
+        log(f"心跳引擎热重载失败 [{name}]: {e}", "DEBUG")
 
 
 @router.post("/tasks/trigger/{name}")

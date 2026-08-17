@@ -33,11 +33,15 @@ def _result(name: str) -> TaskResult:
 class _FakeRegistry:
     """最小任务注册表替身（避免读取真实 config/tasks）。"""
 
-    def __init__(self, tasks: dict[str, TaskDefinition]) -> None:
+    def __init__(self, tasks: dict[str, TaskDefinition], file_stems: frozenset[str] = frozenset()) -> None:
         self._tasks = tasks
+        self._file_stems = file_stems
 
     def get(self, name: str):
         return self._tasks.get(name)
+
+    def task_file_exists(self, name: str) -> bool:
+        return name in self._file_stems
 
     def list_all(self):
         return list(self._tasks.values())
@@ -52,22 +56,27 @@ def _make_engine(
     monkeypatch: pytest.MonkeyPatch,
     *,
     last_activity: float = 0.0,
+    file_stems: frozenset[str] = frozenset(),
+    save_calls: list[HeartbeatConfig] | None = None,
 ) -> tuple[HeartbeatEngine, SimpleNamespace]:
     mind = SimpleNamespace(last_activity_ts=last_activity)
-
-    def _fake_config():
-        return HeartbeatConfig(task_schedules=schedules)
+    config = HeartbeatConfig(task_schedules=schedules)
 
     # 隔离真实配置文件：TaskRegistry / get_heartbeat_config / save 均指向测试替身
     # （save 落盘路径是模块级 _CONFIG_PATH，不隔离会覆盖真实 config/heartbeat.json）
-    monkeypatch.setattr("agent.heartbeat.engine.TaskRegistry", lambda: None)
     monkeypatch.setattr(
-        "agent.heartbeat.engine.get_heartbeat_config", _fake_config,
+        "agent.heartbeat.engine.TaskRegistry", lambda: _FakeRegistry(tasks, file_stems),
     )
-    monkeypatch.setattr(HeartbeatConfig, "save", lambda self, path=None: None)
+    monkeypatch.setattr(
+        "agent.heartbeat.engine.get_heartbeat_config", lambda: config,
+    )
+    if save_calls is None:
+        monkeypatch.setattr(HeartbeatConfig, "save", lambda self, path=None: None)
+    else:
+        monkeypatch.setattr(
+            HeartbeatConfig, "save", lambda self, path=None: save_calls.append(self),
+        )
     engine = HeartbeatEngine(mind)
-    engine.task_registry = _FakeRegistry(tasks)
-    engine.config = HeartbeatConfig(task_schedules=schedules)
     # 内置维护与执行器全部替身化：测试只关心调度决策
     engine._run_maintenance = AsyncMock()  # type: ignore[method-assign]
     engine.executor = SimpleNamespace(run=AsyncMock(side_effect=lambda t, e, **k: _result(t.name)))
@@ -103,6 +112,37 @@ class TestIdleConfig:
         assert restored.mode == ScheduleMode.IDLE
         assert restored.every_n_beats == 4
         assert restored.beat_count == 2
+
+
+class TestOrphanSchedulePrune:
+    def test_prunes_schedule_whose_task_file_deleted(self, monkeypatch) -> None:
+        """任务文件已删除的调度在引擎启动时被清理并落盘。"""
+        save_calls: list[HeartbeatConfig] = []
+        schedules = [
+            TaskSchedule(task_name="gone", mode=ScheduleMode.HEARTBEAT, every_n_beats=2),
+            TaskSchedule(task_name="alive", mode=ScheduleMode.HEARTBEAT, every_n_beats=2),
+        ]
+        tasks = {"alive": _task("alive")}
+        engine, _ = _make_engine(schedules, tasks, monkeypatch, save_calls=save_calls)
+        assert [s.task_name for s in engine.config.task_schedules] == ["alive"]
+        assert len(save_calls) == 1
+
+    def test_keeps_schedule_when_task_file_exists_but_unloadable(self, monkeypatch) -> None:
+        """任务文件仍在（如 JSON 损坏）时不清理调度，保留 WARN 由人工处理。"""
+        save_calls: list[HeartbeatConfig] = []
+        schedules = [TaskSchedule(task_name="broken", mode=ScheduleMode.HEARTBEAT, every_n_beats=2)]
+        engine, _ = _make_engine(
+            schedules, {}, monkeypatch, file_stems=frozenset({"broken"}), save_calls=save_calls,
+        )
+        assert [s.task_name for s in engine.config.task_schedules] == ["broken"]
+        assert save_calls == []
+
+    def test_no_orphans_no_save(self, monkeypatch) -> None:
+        save_calls: list[HeartbeatConfig] = []
+        schedules = [TaskSchedule(task_name="a", mode=ScheduleMode.HEARTBEAT, every_n_beats=2)]
+        engine, _ = _make_engine(schedules, {"a": _task("a")}, monkeypatch, save_calls=save_calls)
+        assert [s.task_name for s in engine.config.task_schedules] == ["a"]
+        assert save_calls == []
 
 
 class TestIdleScheduling:

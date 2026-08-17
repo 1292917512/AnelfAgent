@@ -110,6 +110,22 @@ class HeartbeatEngine:
         # 空闲折叠跟踪：scope → 最近一次见到的最新消息 ts / 连续无新消息心跳数
         self._fold_activity_ts: Dict[str, int] = {}
         self._fold_idle_beats: Dict[str, int] = {}
+        self._prune_orphan_schedules()
+
+    def _prune_orphan_schedules(self) -> None:
+        """清理任务文件已删除的孤儿调度（任务文件仍在但加载失败的不动，保留 WARN 提示）。"""
+        orphans = [
+            s.task_name for s in self.config.task_schedules
+            if self.task_registry.get(s.task_name) is None
+            and not self.task_registry.task_file_exists(s.task_name)
+        ]
+        if not orphans:
+            return
+        for name in orphans:
+            self.config.remove_schedule(name)
+            self._warned_missing_tasks.discard(name)
+        self.config.save()
+        log(f"已清理 {len(orphans)} 个孤儿心跳调度: {orphans}", tag="心跳")
 
     @property
     def total_ticks(self) -> int:
@@ -121,6 +137,7 @@ class HeartbeatEngine:
         self._warned_missing_tasks.clear()
         from .config import reload_heartbeat_config
         self.config = reload_heartbeat_config()
+        self._prune_orphan_schedules()
 
     # ------------------------------------------------------------------
     # 心跳主循环

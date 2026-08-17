@@ -25,14 +25,19 @@ class TaskRegistry:
     def __init__(self, tasks_dir: Optional[Path] = None) -> None:
         self._dir = tasks_dir or _TASKS_DIR
         self._tasks: Dict[str, TaskDefinition] = {}
+        # 磁盘上存在的任务文件名（stem）集合：解析失败的文件也计入，
+        # 用于区分"任务文件已删除"与"文件仍在但加载失败"两种缺失
+        self._file_stems: set[str] = set()
         self.reload()
 
     def reload(self) -> int:
         """重新加载所有任务定义（递归子目录），返回加载数量。"""
         self._tasks.clear()
+        self._file_stems.clear()
         if not self._dir.is_dir():
             return 0
         for json_file in sorted(self._dir.rglob("*.json")):
+            self._file_stems.add(json_file.stem)
             try:
                 data: Dict[str, Any] = json.loads(json_file.read_text("utf-8"))
                 task = TaskDefinition.from_dict(data)
@@ -48,6 +53,10 @@ class TaskRegistry:
 
     def get(self, name: str) -> Optional[TaskDefinition]:
         return self._tasks.get(name)
+
+    def task_file_exists(self, name: str) -> bool:
+        """任务定义文件是否仍在磁盘上（含解析失败的文件，按文件名匹配）。"""
+        return name in self._file_stems
 
     def list_all(self) -> List[TaskDefinition]:
         return list(self._tasks.values())
