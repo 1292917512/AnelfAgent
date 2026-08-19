@@ -4,13 +4,38 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # 路径感知：仅 Python 改动跳过前端 job、仅前端改动跳过 Python job，
+  # 文档类提交两个 job 都跳过；手动触发（workflow_dispatch）无视过滤全量跑
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            python:
+              - '**/*.py'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.github/workflows/ci.yml'
+            frontend:
+              - 'web/frontend/**'
+              - '.github/workflows/ci.yml'
+
   python:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -20,7 +45,7 @@ jobs:
         with:
           enable-cache: true
 
-      # uv.lock 中 registry 为清华镜像，CI 覆盖为 PyPI 并重解析（不用 --locked）
+      # uv.lock 中 registry 为清华镜像，CI 覆盖为 PyPI 重解析（不用 --locked）
       - name: Install dependencies
         run: uv sync
         env:
@@ -45,13 +70,17 @@ jobs:
         run: uv run pytest --cov --cov-report=xml --cov-report=term -n auto
 
       - name: Upload coverage report
+        if: always()  # pytest 失败时也上传，便于排查
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage.xml
+          retention-days: 7
           if-no-files-found: ignore
 
   frontend:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
