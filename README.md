@@ -128,7 +128,7 @@ stable（人设 + 工具提示，对话内冻结）
 
 Embedding + FTS5 + 标签匹配 + 时间衰减的混合评分；记忆类型覆盖实体画像、知识、事件、永久记忆，并支持 Markdown 便签。存储层拆分为 `memory/store/`（连接 / 检索 / 文件索引 / 队列）与上层领域逻辑解耦。
 
-可选启用 **Cognee** 知识图谱投影与联邦召回（`config/cognee.json` / WebUI 记忆配置），与 SQLite 权威存储并存，失败自动降级。详见 [`COGNEE.md`](COGNEE.md)。
+可选启用 **Cognee** 知识图谱投影与联邦召回（`config/cognee.json` / WebUI 记忆配置），与 SQLite 权威存储并存，失败自动降级。
 
 ### 技能自学习与子代理
 
