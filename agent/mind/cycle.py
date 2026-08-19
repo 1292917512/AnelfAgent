@@ -169,8 +169,15 @@ async def _execute_decisions_and_finalize(
     })
 
     sorted_decisions = sorted(decisions, key=lambda d: d.priority, reverse=True)
-    immediate = [d for d in sorted_decisions if d.type not in mind._DEFERRED_DECISIONS]
-    deferred = [d for d in sorted_decisions if d.type in mind._DEFERRED_DECISIONS]
+    if is_heartbeat:
+        # 心跳周期的即时决策（REPLY/PROACTIVE/TOOL_ACTION 均为分钟级 think loop）
+        # 全部转后台执行：_cycle_lock 持锁时间收敛到态势收集+元决策，
+        # 周期执行期间到达的用户消息不再被序列化在长决策之后
+        immediate: List[Decision] = []
+        deferred = sorted_decisions
+    else:
+        immediate = [d for d in sorted_decisions if d.type not in mind._DEFERRED_DECISIONS]
+        deferred = [d for d in sorted_decisions if d.type in mind._DEFERRED_DECISIONS]
 
     if mind._reflecting or mind.heartbeat_engine.reflection_pending:
         deferred = [d for d in deferred if d.type != DecisionType.REFLECT]
@@ -196,6 +203,8 @@ async def _execute_decisions_and_finalize(
         f"{d.type.value} {'成功' if ok else '失败'}"
         for d, ok in zip(immediate, exec_ok, strict=False)
     ]
+    if is_heartbeat:
+        exec_results.extend(f"{d.type.value} 转后台" for d in deferred)
     if is_heartbeat or decisions:
         _hb_write(
             task_names=[d.type.value for d in sorted_decisions],

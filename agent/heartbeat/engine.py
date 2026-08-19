@@ -295,6 +295,37 @@ class HeartbeatEngine:
     # 手动触发任务
     # ------------------------------------------------------------------
 
+    def start_task_background(self, task_name: str) -> tuple[bool, str]:
+        """校验并后台启动任务（供 AI 工具调用，不阻塞当前思维循环）。
+
+        受理后任务在独立 asyncio Task 中经 run_task 执行（_task_inflight 去重
+        与 _tick_lock 互斥由 run_task 保证，此处的 inflight 检查仅为提前给出
+        准确反馈）；任务执行中再次触发同名任务会被 run_task 忽略。
+
+        Returns:
+            (是否受理, 说明文案)
+        """
+        task = self.task_registry.get(task_name)
+        if not task:
+            return False, f"任务 {task_name} 不存在"
+        if not task.enabled:
+            return False, f"任务 {task_name} 已禁用"
+        if task_name in self._task_inflight:
+            return False, f"任务 {task_name} 已在执行或排队中"
+        asyncio.create_task(
+            self._run_task_guarded(task_name),
+            name=f"agent.heartbeat.manual.{task_name}",
+        )
+        return True, "任务已受理，正在后台执行"
+
+    async def _run_task_guarded(self, task_name: str) -> None:
+        """后台任务执行壳：吞掉异常只记日志（run_task 内部已分级处理）。"""
+        try:
+            result = await self.run_task(task_name)
+            log(f"后台手动任务完成: {task_name} ({'有产出' if result else '无产出'})", tag="心跳")
+        except Exception as exc:
+            log(f"后台手动任务异常 [{task_name}]: {exc}", "WARNING", tag="心跳")
+
     async def run_task(self, task_name: str) -> Optional[str]:
         """按名称执行指定任务，返回产出内容或 None。
 

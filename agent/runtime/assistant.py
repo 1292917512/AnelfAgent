@@ -115,6 +115,10 @@ class AgentAssistant:
                 await self._drain_pending_tasks()
             except Exception:
                 log("AgentAssistant 批量处理异常", "ERROR", tag="运行时")
+                # 异常后 PFC 中仍有待处理项时主动调度下一轮：
+                # 否则消息要等当前长任务/下次心跳收尾才有机会被重新触发
+                if self.mind.pfc.has_pending_tasks():
+                    self.mind._schedule_next_cycle("批量处理异常后仍有待处理任务")
             finally:
                 for _ in batch:
                     self._queue.task_done()
@@ -150,6 +154,8 @@ class AgentAssistant:
                 await self.mind.execute_mind()
             except Exception:
                 log("PFC 任务自排空异常", "ERROR", tag="运行时")
+                if self.mind.pfc.has_pending_tasks():
+                    self.mind._schedule_next_cycle("PFC 自排空异常后仍有待处理任务")
 
     def _current_heartbeat_interval(self) -> float:
         """动态获取心跳间隔，支持运行时热更新。"""

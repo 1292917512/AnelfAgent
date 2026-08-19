@@ -158,7 +158,8 @@ async def _post_with_retry(
     last_exc: Optional[Exception] = None
     for attempt in range(2):
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            # 本机固定服务:禁用环境代理(防系统代理劫持127.0.0.1请求致502)
+            async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
                 with open(upload_path, "rb") as f:
                     files = {"file": (upload_name, f)}
                     resp = await client.post(

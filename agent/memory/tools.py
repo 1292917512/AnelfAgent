@@ -1401,22 +1401,16 @@ async def list_tasks() -> str:
     ),
 )
 async def execute_task(task_name: str) -> str:
-    """按名称执行指定任务。
+    """按名称执行指定任务（后台异步，立即返回受理结果）。
 
     Args:
         task_name: 任务名称（通过 list_tasks 获取）
     """
     try:
         from services._runtime import require_runtime
-        rt = require_runtime()
-        result = await rt.mind.execute_task(task_name)
-        if result is None:
-            return json.dumps({"ok": False, "message": f"任务 {task_name} 不存在、已禁用或无产出"}, ensure_ascii=False)
-        return json.dumps({
-            "ok": True,
-            "task": task_name,
-            "preview": result[:200] if result else "",
-        }, ensure_ascii=False)
+        engine = require_runtime().mind.heartbeat_engine
+        ok, message = engine.start_task_background(task_name)
+        return json.dumps({"ok": ok, "task": task_name, "message": message}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="执行任务")
 

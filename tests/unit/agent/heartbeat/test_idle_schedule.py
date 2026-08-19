@@ -288,6 +288,43 @@ class TestInflightDedup:
         assert "a" not in engine._task_inflight
 
 
+class TestStartTaskBackground:
+    """后台手动触发：校验前置 + 立即返回，不阻塞调用方（AI 工具 execute_task 路径）。"""
+
+    def test_rejects_missing_task(self, monkeypatch) -> None:
+        engine, _ = _make_engine([], {}, monkeypatch)
+        ok, msg = engine.start_task_background("nope")
+        assert ok is False and "不存在" in msg
+
+    def test_rejects_disabled_task(self, monkeypatch) -> None:
+        tasks = {"a": TaskDefinition(name="a", prompt="p", enabled=False)}
+        engine, _ = _make_engine([], tasks, monkeypatch)
+        ok, msg = engine.start_task_background("a")
+        assert ok is False and "已禁用" in msg
+
+    def test_rejects_inflight_task(self, monkeypatch) -> None:
+        engine, _ = _make_engine([], {"a": _task("a")}, monkeypatch)
+        engine._task_inflight.add("a")
+        ok, msg = engine.start_task_background("a")
+        assert ok is False and "已在执行" in msg
+
+    async def test_accepts_and_schedules_run_task(self, monkeypatch) -> None:
+        engine, _ = _make_engine([], {"a": _task("a")}, monkeypatch)
+        engine.run_task = AsyncMock(return_value="产出")  # type: ignore[method-assign]
+        ok, msg = engine.start_task_background("a")
+        assert ok is True and "后台" in msg
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if engine.run_task.await_count:
+                break
+        engine.run_task.assert_awaited_once_with("a")
+
+    async def test_guarded_swallows_exceptions(self, monkeypatch) -> None:
+        engine, _ = _make_engine([], {"a": _task("a")}, monkeypatch)
+        engine.run_task = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+        await engine._run_task_guarded("a")  # 后台壳吞异常只记日志，不外抛
+
+
 class TestReflectDeferral:
     async def test_execute_reflect_defers_when_idle_configured(self, monkeypatch) -> None:
         from agent.mind.autonomous import Decision, DecisionType

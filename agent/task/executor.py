@@ -3,14 +3,17 @@
 从 introspection units 的执行逻辑提取，提供统一的任务执行流程。
 
 Model Experience:
-- 模型看到：extra_note（idle 反思触发原因等）追加在任务指令（最后一条消息）尾部
-- token 影响：极小（数十 token，仅 idle 触发带原因时）
-- KV Cache 影响：纯尾部追加，任务稳定前缀（人设+工具+永久记忆+指令锚点）字节不变
+- 模型看到：任务指令头部带 [执行时间]（运行开始时生成一次，全程冻结）；
+  extra_note（idle 反思触发原因等）追加在任务指令（最后一条消息）尾部
+- token 影响：极小（数十 token）
+- KV Cache 影响：均位于最后一条消息内——执行时间一次运行内字节冻结、
+  extra_note 纯尾部追加，任务稳定前缀（人设+工具+永久记忆）不受影响
 """
 
 from __future__ import annotations
 
 import re
+import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.memory.memory_types import MemoryEntry, MemoryType
@@ -177,6 +180,7 @@ class TaskExecutor:
             "role": "user",
             "content": (
                 f"[系统任务 - {task.name}]\n"
+                f"[执行时间] {time.strftime('%Y-%m-%d %H:%M')}\n"
                 f"{task.prompt}{handoff_prefix}{extra_note}"
                 f"{self._build_task_suffix(task.allow_output_tools, handoff=task.handoff)}"
             ),
