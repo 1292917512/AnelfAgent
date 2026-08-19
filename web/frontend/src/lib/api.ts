@@ -56,6 +56,7 @@ import type {
   HeartbeatConfig,
   HeartbeatStatus,
   SubAgentProfile,
+  LifecycleService,
   LogEntry,
   LogStats,
   MediaConfig,
@@ -120,6 +121,7 @@ import type {
   SpeakerDetail,
   SpeakerListResult,
   SpeakerUpdatePayload,
+  StartupNode,
   SyncCycleResult,
   SyncPreview,
   VoiceSegment,
@@ -284,6 +286,8 @@ export const statusApi = {
   logs: (level?: string, tag?: string, keyword?: string, limit = 50) =>
     api.get<{ logs: LogEntry[]; count: number }>("/status/logs", { params: { level: level || undefined, tag: tag || undefined, keyword: keyword || undefined, limit } }),
   logStats: () => api.get<LogStats>("/status/log-stats"),
+  services: () => api.get<{ services: LifecycleService[] }>("/status/services"),
+  startup: () => api.get<{ timeline: StartupNode[] }>("/status/startup"),
   clearLogs: () => api.post<{ status: string; cleared: number }>("/status/logs/clear"),
   saveMindConfig: (data: ConfigValues) => api.put("/status/mind-config", data),
 };

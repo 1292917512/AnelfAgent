@@ -41,6 +41,23 @@ async def get_components() -> Dict[str, Any]:
     }
 
 
+@router.get("/services")
+async def get_services() -> Dict[str, Any]:
+    """Lifecycle 宿主注册表快照：长驻服务清单与启动/关停顺序。"""
+    from core.lifecycle import Lifecycle
+    return {"services": Lifecycle.snapshot()}
+
+
+@router.get("/startup")
+async def get_startup() -> Dict[str, Any]:
+    """最近一次启动流程的节点时间线（节点 / 状态 / 耗时 / 尝试次数）。"""
+    from core.application import Application
+    from core.lifecycle import Lifecycle
+    app = Lifecycle.get("application")
+    timeline = app.startup_timeline() if isinstance(app, Application) else []
+    return {"timeline": timeline}
+
+
 @router.get("/events")
 async def get_event_stats() -> Dict[str, Any]:
     stats = _status_svc.get_event_stats()

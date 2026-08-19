@@ -55,5 +55,23 @@
     "callCount": "Calls",
     "ready": "Ready",
     "notReady": "Not Ready"
+  },
+  "services": {
+    "title": "System Services",
+    "subtitle": "Lifecycle host registry (start order = registration order, reverse on shutdown)",
+    "name": "Service",
+    "type": "Type",
+    "hooks": "Hooks",
+    "empty": "No registered services",
+    "startupTitle": "Startup Timeline",
+    "startupSubtitle": "Nodes and durations of the latest startup flow",
+    "startupEmpty": "No startup records",
+    "states": {
+      "success": "Success",
+      "failure": "Failed",
+      "skipped": "Skipped",
+      "upstream_failed": "Upstream Failed",
+      "crashed": "Crashed"
+    }
   }
 }

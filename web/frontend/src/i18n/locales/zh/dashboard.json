@@ -55,5 +55,23 @@
     "callCount": "调用次数",
     "ready": "已就绪",
     "notReady": "未加载完"
+  },
+  "services": {
+    "title": "系统服务",
+    "subtitle": "Lifecycle 宿主注册表（启动顺序 = 注册顺序，关停逆序）",
+    "name": "服务",
+    "type": "类型",
+    "hooks": "钩子",
+    "empty": "暂无已注册服务",
+    "startupTitle": "启动时间线",
+    "startupSubtitle": "最近一次启动流程的节点与耗时",
+    "startupEmpty": "暂无启动记录",
+    "states": {
+      "success": "成功",
+      "failure": "失败",
+      "skipped": "跳过",
+      "upstream_failed": "上游失败",
+      "crashed": "崩溃"
+    }
   }
 }

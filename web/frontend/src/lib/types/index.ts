@@ -27,5 +27,6 @@ export * from "./plan";
 export * from "./chat";
 export * from "./thinking";
 export * from "./system";
+export * from "./lifecycle";
 export * from "./devops";
 export * from "./nonebot";

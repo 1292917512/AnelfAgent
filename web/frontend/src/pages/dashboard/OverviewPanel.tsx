@@ -10,6 +10,7 @@ import { AttentionPanel } from "@/pages/dashboard/AttentionPanel";
 import { ComponentInfoCard } from "@/pages/dashboard/ComponentInfoCard";
 import { ToolsInsightPanel } from "@/pages/dashboard/ToolsInsightPanel";
 import { EventsPanel } from "@/pages/dashboard/EventsPanel";
+import { ServicesPanel } from "@/pages/dashboard/ServicesPanel";
 
 type StmItem = { index: number; role: string; content: string };
 
@@ -125,6 +126,8 @@ export function OverviewPanel() {
       </div>
 
       <ToolsInsightPanel />
+
+      <ServicesPanel />
 
       <EventsPanel />
     </div>

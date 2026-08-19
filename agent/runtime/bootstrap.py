@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import Any, Coroutine
 
@@ -35,11 +36,20 @@ def _spawn_background(coro: Coroutine[Any, Any, Any], *, name: str) -> asyncio.T
     return task
 
 
+async def cancel_background_tasks() -> None:
+    """取消并等待所有 bootstrap 后台任务（关停前置步骤，由 Application 宿主调用）。"""
+    tasks = [t for t in _background_tasks if not t.done()]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def create_bootstrap() -> FlowMachine:
     """构建运行时初始化流程并返回 FlowMachine 实例。"""
     machine = FlowMachine()
 
-    @machine.node(skip_on_error=False)
+    @machine.node(skip_on_error=False, depends_on=[])
     async def init_storage():
         from agent.storage.data_center import create_data_center
         from core.lifecycle import Lifecycle
@@ -49,7 +59,7 @@ def create_bootstrap() -> FlowMachine:
         log("DataCenter 已创建")
         return data_center
 
-    @machine.node(skip_on_error=True)
+    @machine.node(skip_on_error=True, depends_on=[])
     async def init_proxy():
         """将应用代理配置同步到环境变量，供 litellm 等库使用。"""
         import os
@@ -71,7 +81,7 @@ def create_bootstrap() -> FlowMachine:
 
         log(f"代理已启用: http={http_proxy or '(未设置)'}, https={https_proxy or '(未设置)'}")
 
-    @machine.node(skip_on_error=False)
+    @machine.node(skip_on_error=False, depends_on=["init_proxy"])
     async def init_llm():
         from agent.llm import get_llm_manager
         from core.lifecycle import Lifecycle
@@ -81,7 +91,7 @@ def create_bootstrap() -> FlowMachine:
         log(f"LLM 默认客户端: {llm.config.name} ({llm.config.model})")
         return {"manager": manager, "llm": llm}
 
-    @machine.node(skip_on_error=False)
+    @machine.node(skip_on_error=False, depends_on=[])
     async def init_channel_system():
         """初始化频道管理器和输入管道。"""
         from agent.channel import InputPipeline, get_channel_manager
@@ -89,27 +99,30 @@ def create_bootstrap() -> FlowMachine:
         pipeline = InputPipeline()
         return {"channel_manager": cm, "pipeline": pipeline}
 
-    @machine.node(skip_on_error=True)
+    @machine.node(skip_on_error=True, depends_on=[])
     async def register_entities():
         from entities import discover_entities
         discover_entities()
 
-    @machine.node(skip_on_error=True)
+    @machine.node(skip_on_error=True, depends_on=["register_entities"])
     async def import_api_registry():
         from core.entity import EntityRegistry
         EntityRegistry.import_from_api_registry()
 
-    @machine.node(skip_on_error=True)
+    @machine.node(skip_on_error=True, depends_on=["register_entities"])
     async def init_mcp():
+        from core.lifecycle import Lifecycle
         from entities.mcp.bridge import (
             MCPBridge,
             load_mcp_config,
             register_mcp_tools,
             set_mcp_bridge,
         )
+
         config = load_mcp_config()
         bridge = MCPBridge(config=config)
         set_mcp_bridge(bridge)
+        Lifecycle.register("mcp_bridge", bridge, cleanup=bridge.shutdown)
         register_mcp_tools()
         log(f"MCP Bridge: {len(config.servers)} servers")
         enabled_count = sum(1 for s in config.servers if s.enabled)
@@ -120,13 +133,13 @@ def create_bootstrap() -> FlowMachine:
             )
             log(f"MCP: {enabled_count} servers connecting in background...")
 
-    @machine.node(skip_on_error=False)
+    @machine.node(skip_on_error=False, depends_on=[])
     async def init_persona():
         from agent.runtime.factory import load_persona
         char = load_persona()
         return char
 
-    @machine.node(skip_on_error=False)
+    @machine.node(skip_on_error=False, depends_on=["init_storage", "init_llm"])
     async def init_memory():
         from agent.memory.embedding import get_embedder
         from agent.memory.memory_migrate import migrate_memories_to_md, needs_migration
@@ -213,7 +226,7 @@ def create_bootstrap() -> FlowMachine:
             "cognee_coordinator": cognee_coordinator,
         }
 
-    @machine.node(skip_on_error=False)
+    @machine.node(skip_on_error=False, depends_on=["init_memory", "register_entities"])
     async def register_internal_tools():
         # agent.task.tools 挂在 planning 组（deferred 注册按组弹出），须在 planning 激活前 import
         import agent.task.tools  # noqa: F401
@@ -249,7 +262,7 @@ def create_bootstrap() -> FlowMachine:
         )
         return {"image_index_worker": image_index_worker}
 
-    @machine.node(skip_on_error=True)
+    @machine.node(skip_on_error=True, depends_on=["register_entities", "init_memory"])
     async def register_entity_lifecycles():
         """扫描并调用所有实体的 register_lifecycle() 启动钩子。
 
@@ -259,7 +272,10 @@ def create_bootstrap() -> FlowMachine:
         from entities import discover_entity_lifecycles
         await discover_entity_lifecycles()
 
-    @machine.node(skip_on_error=False)
+    @machine.node(
+        skip_on_error=False,
+        depends_on=["init_channel_system", "init_persona", "init_memory", "register_internal_tools"],
+    )
     async def assemble_runtime():
         """纯组装：Mind -> Assistant -> Runtime -> set_runtime -> 统一施绑。"""
         from agent.mind import Mind
@@ -322,7 +338,7 @@ def create_bootstrap() -> FlowMachine:
         )
         return runtime
 
-    @machine.node(skip_on_error=False)
+    @machine.node(skip_on_error=False, depends_on=["assemble_runtime"])
     async def start_agent():
         """启动 AgentApp 事件循环和 Assistant 心跳。"""
         from agent.runtime.agent_app import get_agent_app
@@ -339,7 +355,7 @@ def create_bootstrap() -> FlowMachine:
         Lifecycle.register("assistant", runtime.assistant, cleanup=runtime.assistant.stop)
         log("AgentApp + Assistant 已启动")
 
-    @machine.node(skip_on_error=True)
+    @machine.node(skip_on_error=True, depends_on=["assemble_runtime"])
     async def restore_states():
         """恢复持久化的工具/实体状态覆盖（失败不影响启动）。"""
         from core.entity import EntityRegistry, EntityType
@@ -356,7 +372,7 @@ def create_bootstrap() -> FlowMachine:
         catalog_count = len(EntityRegistry.get_entity_catalog())
         log(f"实体就绪: tools={tool_count}, entities={entity_count}, groups={catalog_count}")
 
-    @machine.node(skip_on_error=True)
+    @machine.node(skip_on_error=True, depends_on=["assemble_runtime"])
     async def start_context_providers():
         """启动所有上下文提供者的生命周期（on_start）。"""
         from core.context_provider import ContextProviderRegistry
@@ -371,7 +387,7 @@ def create_bootstrap() -> FlowMachine:
         if provider_count:
             log(f"上下文提供者已启动: {provider_count} 个", tag="启动")
 
-    @machine.node(skip_on_error=True)
+    @machine.node(skip_on_error=True, depends_on=["init_channel_system"])
     async def register_channels():
         """自动发现并注册所有已启用的频道。"""
         from agent.channel import get_channel_manager
@@ -380,7 +396,57 @@ def create_bootstrap() -> FlowMachine:
         for channel in discover_channels():
             cm.register(channel)
 
-    @machine.node(skip_on_error=True)
+    @machine.node(skip_on_error=False, depends_on=["register_channels", "start_agent"])
+    async def register_channel_services():
+        """频道与看门狗注册进 Lifecycle：on_start 后台启动，cleanup 逆序回收。
+
+        注册在 start_agent 之后，关停时频道先于 assistant/mind 停止（drain 语义：
+        先停消息进水口，再收思考与资源）。
+        """
+        from agent.channel import get_channel_manager
+        from agent.channel.supervision import (
+            is_supervisor_enabled,
+            start_channel_supervisor,
+            stop_channel_supervisor,
+        )
+        from core.lifecycle import Lifecycle
+
+        cm = get_channel_manager()
+        start_task: asyncio.Task[None] | None = None
+
+        async def _start_channels() -> None:
+            nonlocal start_task
+
+            async def _run() -> None:
+                try:
+                    await cm.start_all()
+                    log("全部频道启动流程完成", tag="启动")
+                except Exception as exc:
+                    log(f"频道后台启动异常: {exc}", "ERROR", tag="启动")
+
+            start_task = asyncio.create_task(_run(), name="agent.channels_start")
+
+        async def _stop_channels() -> None:
+            if start_task and not start_task.done():
+                start_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await start_task
+            try:
+                await cm.stop_all()
+            except BaseException:
+                pass
+
+        Lifecycle.register(
+            "channels", cm, on_start=_start_channels, cleanup=_stop_channels,
+        )
+        if is_supervisor_enabled():
+            Lifecycle.register(
+                "channel_supervisor", None,
+                on_start=lambda: start_channel_supervisor(cm),
+                cleanup=stop_channel_supervisor,
+            )
+
+    @machine.node(skip_on_error=True, depends_on=["start_agent"])
     async def recover_unanswered():
         """启动恢复（后台执行，不阻塞 bootstrap 收尾与 WebUI 端口开放）：
 
@@ -449,7 +515,7 @@ def create_bootstrap() -> FlowMachine:
             log(f"未回复消息恢复: {recovered} 个 scope 重新入队", tag="启动")
             _spawn_background(mind.try_execute_mind(), name="recover-mind-execute")
 
-    @machine.node(skip_on_error=True)
+    @machine.node(skip_on_error=True, depends_on=["start_agent"])
     async def recover_interrupted():
         """崩溃尾部恢复（后台执行）：扫描上一次进程崩溃/SIGKILL 残留的
         回复检查点，向对应会话注入"上次被中断"元消息（写 DB，下次会话可见）。
@@ -483,7 +549,7 @@ def create_bootstrap() -> FlowMachine:
         except Exception as exc:
             log(f"崩溃尾部恢复失败: {exc}", "ERROR", tag="启动")
 
-    @machine.node(skip_on_error=True)
+    @machine.node(skip_on_error=True, depends_on=["start_agent", "register_channel_services"])
     async def check_health():
         """启动健康检查 — 验证关键组件就绪状态。"""
         from agent.runtime.singleton import get_runtime

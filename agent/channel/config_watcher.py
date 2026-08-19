@@ -39,6 +39,9 @@ class ConfigWatcher:
             return
 
         self._callbacks[file_path] = callback
+        # 首个监听注册时接入 Lifecycle 宿主，关停时统一回收轮询任务（幂等）
+        from core.lifecycle import Lifecycle
+        Lifecycle.register("config_watcher", self, cleanup=self.stop_all)
         # 延迟创建 task，避免在同步上下文中创建 coroutine
         try:
             asyncio.get_running_loop()

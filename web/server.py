@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import json
 import secrets
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -315,39 +318,51 @@ def _load_server_config() -> tuple[str, int]:
     return "0.0.0.0", 8092
 
 
-_server: Any = None
+class _QuietServer(uvicorn.Server):
+    """跳过 uvicorn 自带的信号处理，由 Application 宿主统一管理关闭流程。"""
+
+    @contextlib.contextmanager
+    def capture_signals(self):  # type: ignore[override]
+        yield
 
 
-async def start_web_server() -> None:
-    """启动 WebUI 服务器，host/port 从 config/webui.json 读取。"""
-    global _server
-    import contextlib
+class WebServerService:
+    """WebUI 服务器长驻服务：start 后台拉起，stop 优雅关停（超时兜底取消）。"""
 
-    import uvicorn
+    def __init__(self, stop_timeout: float = 10.0) -> None:
+        self._server: Optional[uvicorn.Server] = None
+        self._task: Optional[asyncio.Task[None]] = None
+        self._stop_timeout = stop_timeout
 
-    class _QuietServer(uvicorn.Server):
-        """跳过 uvicorn 自带的信号处理，由外部统一管理关闭流程。"""
+    async def start(self) -> None:
+        """创建后台服务任务（host/port 从 config/webui.json 读取）。"""
+        self._task = asyncio.create_task(self._serve(), name="agent.web_server")
 
-        @contextlib.contextmanager
-        def capture_signals(self):  # type: ignore[override]
-            yield
+    async def stop(self) -> None:
+        """请求优雅关停并等待退出，超时强制取消。"""
+        if self._server is not None:
+            self._server.should_exit = True
+        task = self._task
+        if task is None or task.done():
+            return
+        try:
+            await asyncio.wait_for(task, timeout=self._stop_timeout)
+        except asyncio.TimeoutError:
+            log("Web 服务器关停超时，已强制取消", "WARNING")
+        except (asyncio.CancelledError, Exception) as exc:
+            log(f"Web 服务器关停异常: {exc}", "WARNING")
 
-    host, port = _load_server_config()
-    await register_webui_channel()
+    async def _serve(self) -> None:
+        host, port = _load_server_config()
+        await register_webui_channel()
 
-    app = create_app()
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
-    _server = _QuietServer(config)
+        app = create_app()
+        config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+        self._server = _QuietServer(config)
 
-    local_url = f"http://127.0.0.1:{port}"
-    log(f"WebUI 已启动: {local_url}  (监听 {host}:{port}，局域网可访问)")
-    try:
-        await _server.serve()
-    finally:
-        _server = None
-
-
-def request_web_shutdown() -> None:
-    """请求 Web 服务器优雅关闭。"""
-    if _server is not None:
-        _server.should_exit = True
+        local_url = f"http://127.0.0.1:{port}"
+        log(f"WebUI 已启动: {local_url}  (监听 {host}:{port}，局域网可访问)")
+        try:
+            await self._server.serve()
+        finally:
+            self._server = None

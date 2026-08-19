@@ -1,7 +1,8 @@
-"""轻量级单例注册表 — 统一管理全局单例的创建与销毁。
+"""轻量级单例注册表 — 统一管理全局单例与长驻服务的创建与销毁。
 
-启动时通过 ``Lifecycle.register()`` 注册组件及其 cleanup 回调，
-关闭时通过 ``Lifecycle.shutdown_all()`` 逆序执行所有回调，确保资源正确释放。
+宿主契约：**注册顺序 = 启动顺序，逆序 = 关停顺序**。长驻服务（Web 服务器 /
+频道 / 看门狗 / 配置监听等）必须以 on_start + cleanup 成对注册，关停时由
+``shutdown_all()`` 统一逆序回收，调用方不得自行管理服务清理顺序。
 
 扩展生命周期钩子：
 - ``on_start``：bootstrap 末尾由 ``start_all()`` 正序触发
@@ -30,6 +31,7 @@ class Lifecycle:
     _cleanups: List[tuple[str, CleanupFn]] = []
     _start_hooks: List[tuple[str, HookFn]] = []
     _tick_hooks: List[tuple[str, HookFn]] = []
+    _order: List[str] = []
     _shutdown_requester: Optional[Callable[[], None]] = None
     _requester_loop: Optional[asyncio.AbstractEventLoop] = None
     _restart_requested: bool = False
@@ -52,6 +54,8 @@ class Lifecycle:
         cls._cleanups = [(n, fn) for n, fn in cls._cleanups if n != name]
         cls._start_hooks = [(n, fn) for n, fn in cls._start_hooks if n != name]
         cls._tick_hooks = [(n, fn) for n, fn in cls._tick_hooks if n != name]
+        cls._order = [n for n in cls._order if n != name]
+        cls._order.append(name)
         if cleanup:
             cls._cleanups.append((name, cleanup))
         if on_start:
@@ -89,21 +93,49 @@ class Lifecycle:
                 log(f"tick 钩子失败: {name} - {e}", "WARNING")
 
     @classmethod
-    async def shutdown_all(cls) -> None:
-        """逆序执行所有 cleanup 回调，释放资源。"""
+    async def shutdown_all(cls, per_timeout: Optional[float] = 30.0) -> None:
+        """逆序执行所有 cleanup 回调，释放资源。
+
+        per_timeout：单个 cleanup 的最大耗时（秒），超时记 ERROR 继续下一个，
+        防止个别组件卡死拖住整个进程退出；None 表示不限时。
+        """
         for name, fn in reversed(cls._cleanups):
             try:
                 if asyncio.iscoroutinefunction(fn):
-                    await fn()
+                    if per_timeout is not None:
+                        await asyncio.wait_for(fn(), timeout=per_timeout)
+                    else:
+                        await fn()
                 else:
                     fn()
                 log(f"已清理: {name}")
+            except asyncio.TimeoutError:
+                log(f"清理超时（{per_timeout}s）: {name}", "ERROR")
             except Exception as e:
                 log(f"清理失败: {name} - {e}", "WARNING")
         cls._instances.clear()
         cls._cleanups.clear()
         cls._start_hooks.clear()
         cls._tick_hooks.clear()
+        cls._order.clear()
+
+    @classmethod
+    def snapshot(cls) -> List[Dict[str, Any]]:
+        """注册表快照（名称 / 实例类型 / 钩子配置 / 注册顺序），供状态接口展示。"""
+        cleanup_names = {n for n, _ in cls._cleanups}
+        start_names = {n for n, _ in cls._start_hooks}
+        tick_names = {n for n, _ in cls._tick_hooks}
+        return [
+            {
+                "name": name,
+                "order": index + 1,
+                "instance_type": type(cls._instances.get(name)).__name__,
+                "has_cleanup": name in cleanup_names,
+                "has_on_start": name in start_names,
+                "has_on_tick": name in tick_names,
+            }
+            for index, name in enumerate(cls._order)
+        ]
 
     @classmethod
     def reset(cls) -> None:
@@ -112,6 +144,7 @@ class Lifecycle:
         cls._cleanups.clear()
         cls._start_hooks.clear()
         cls._tick_hooks.clear()
+        cls._order.clear()
         cls._shutdown_requester = None
         cls._requester_loop = None
         cls._restart_requested = False

@@ -33,7 +33,7 @@ description: "AnelfAgent 项目指令 — 开发规范与架构速查（对所�
 
 | 目录 | 职责 | 关键约定 |
 |------|------|---------|
-| `core/` | 基础框架（EntityRegistry / ConfigManager / Lifecycle / PathManager+ConfigPaths / 标签 / 事件 / 日志） | 不依赖任何业务模块 |
+| `core/` | 基础框架（EntityRegistry / ConfigManager / Application+Lifecycle / FlowMachine / PathManager+ConfigPaths / 标签 / 事件 / 日志） | 不依赖任何业务模块 |
 | `agent/` | 智能体内核（Mind / LLM / Storage / Channel / Runtime / Memory / Task / Heartbeat / Planning） | 不依赖 web |
 | `agent/mind/` | 思维核心（自主决策 / 多轮推理 / 跨频道感知） | 工具编排在 `mind/tools/` |
 | `agent/memory/` | 语义记忆（FTS5 + Embedding 混合检索 / 便签 / 文件索引） | 不依赖 mind |
@@ -66,6 +66,28 @@ agent.planning → agent.memory
 ```
 
 ### 核心系统
+
+#### 进程宿主（core/application.py + core/lifecycle.py + core/flow.py）
+
+入口 `launch.py` 是薄组合根：装配 `Application` 后 `app.run()` 三段式运行
+（启动流程 → 等待关停信号 → 逆序关停）。职责分层：
+
+- **一次性初始化步骤** → `FlowMachine`（`core/flow.py`）：`@machine.node` 注册，
+  `depends_on` 显式声明强依赖（上游未 SUCCESS 则 UPSTREAM_FAILED 跳过；未声明则
+  弱链前驱保持顺序语义），execute 前 graphlib 拓扑静态校验（环/重名/未知依赖 →
+  FlowCycleError 拒启动），同层节点并发执行；`retries`/`retry_delay`（标量或查表 list）/
+  `timeout` 声明式重试超时；skip_on_error 只吞 FAILED，CRASHED（BaseException）记录后穿透
+- **长驻服务** → `Lifecycle` 唯一宿主：web_server / channels / channel_supervisor /
+  config_watcher / mcp_bridge 与全部单例统一 `Lifecycle.register(name, instance,
+  on_start=..., cleanup=...)`。**注册顺序 = 启动顺序（start_all 正序），逆序 = 关停顺序
+  （shutdown_all，per_timeout 单组件限时降级）**，注册顺序因此自然获得 drain 语义
+  （web/频道等进水口先停，思考与资源后收）；调用方不得自行编排服务清理顺序
+- **关停前置钩子** → `Application.on_pre_shutdown`（launch 注入：记忆兜底 / 日志静音 /
+  bootstrap 后台任务取消），在 shutdown_all 之前执行，钩子失败降级为日志
+
+可观测：`GET /api/status/services`（Lifecycle.snapshot 注册表快照）、
+`GET /api/status/startup`（Application.startup_timeline 启动时间线），
+前端 Dashboard「系统服务」面板展示。
 
 #### EntityRegistry（core/entity.py）
 
@@ -377,7 +399,9 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `web/frontend/src/stores/chat-store.ts` | 对话状态 + 聊天 SSE（含 ui_command 分发） |
 | `web/frontend/src/stores/workbench-store.ts` | 工作台状态（Dock / 编辑器 / UI 命令收件箱 / 状态上报） |
 | `core/path.py` | PathManager + ConfigPaths 动态路径（config_dir/data_dir 可搬迁） |
-| `core/lifecycle.py` | 单例生命周期注册表（register / shutdown_all / reset） |
+| `core/lifecycle.py` | 长驻服务与单例的统一宿主（register(on_start/cleanup/on_tick) / start_all / shutdown_all(per_timeout) / snapshot；注册顺序=启动顺序，逆序=关停顺序） |
+| `core/application.py` | 进程宿主 Application（三段式 run：启动 FlowMachine → start_all → 等信号 → 前置钩子+逆序关停；信号布防 / 启动时间线） |
+| `core/flow.py` | 异步流程状态机 FlowMachine（depends_on 拓扑分层 + 同层并发 / retries·retry_delay·timeout 声明式 / NodeState 状态机（FAILED·SKIPPED·UPSTREAM_FAILED·CRASHED）/ FlowCycleError 静态校验） |
 | `core/latebind.py` | 晚绑定端口原语（LateBinding / WireError / assert_wired / reset_all） |
 | `agent/runtime/wiring.py` | 运行时统一施绑点（wire_runtime：bootstrap 组装尾部唯一接线入口） |
 | `core/crash_report.py` | 崩溃状态设施（守护脚本崩溃状态 logs/crash_state.json 读写 + macOS .ips 崩溃报告解析关联 + AI 可注入摘要渲染） |
@@ -469,7 +493,7 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
 
 **前端**：页面超过 300 行拆为子面板目录、统一用 TabBar、i18n 覆盖所有文本、`Record<string, unknown>` 替换为 `lib/types.ts` 接口
 
-**生命周期**：bootstrap 中创建的有状态单例须调用 `Lifecycle.register(name, instance, cleanup=close_fn)` 注册；关闭时 `Lifecycle.shutdown_all()` 逆序清理
+**生命周期**：有状态单例与长驻服务一律 `Lifecycle.register(name, instance, on_start=start_fn, cleanup=close_fn)` 注册（注册顺序 = 启动顺序，逆序 = 关停顺序）；关闭时由 Application 宿主统一 `Lifecycle.shutdown_all()`，禁止在入口脚本手工编排服务清理
 
 **包管理**：项目依赖由 uv 管理（`pyproject.toml` + `uv.lock`），安装依赖用 `uv add`，临时操作用 `uv pip install`；禁止对 `.venv` 使用 `pip install` / `ensurepip`（uv 创建的 venv 默认不含 pip，属正常状态而非故障，不要"修复"它）
 
