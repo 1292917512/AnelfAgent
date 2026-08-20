@@ -12,7 +12,10 @@ concurrency:
 
 jobs:
   # 路径感知：仅 Python 改动跳过前端 job、仅前端改动跳过 Python job，
-  # 文档类提交两个 job 都跳过；手动触发（workflow_dispatch）无视过滤全量跑
+  # 文档类提交两个 job 都跳过；手动触发（workflow_dispatch）无视过滤全量跑。
+  # 原生 shell 实现（无第三方 action）：dorny/paths-filter@v3 已停止维护且被
+  # 官方标记 Node 20 废弃（强制 node24 兼容模式，迟早硬失败），且其对 push
+  # 事件依赖工作区 git 历史——缺 checkout 即 git exit 128（01627ef 事故根因）
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -20,18 +23,26 @@ jobs:
       python: ${{ steps.filter.outputs.python }}
       frontend: ${{ steps.filter.outputs.frontend }}
     steps:
-      - uses: dorny/paths-filter@v3
-        id: filter
+      - uses: actions/checkout@v4
         with:
-          filters: |
-            python:
-              - '**/*.py'
-              - 'pyproject.toml'
-              - 'uv.lock'
-              - '.github/workflows/ci.yml'
-            frontend:
-              - 'web/frontend/**'
-              - '.github/workflows/ci.yml'
+          fetch-depth: 2  # 与 HEAD^ 基线对比所需的最小历史
+      - name: Detect changed paths
+        id: filter
+        run: |
+          set -eu
+          # push / pull_request 统一与 HEAD^（基线）对比；
+          # 基线不可得（浅历史边缘情形）时保守视为全量变更
+          if git cat-file -e HEAD^ 2>/dev/null; then
+            changed=$(git diff --name-only HEAD^ HEAD)
+          else
+            changed=$(git ls-files)
+          fi
+          py=$(grep -E '\.py$|^pyproject\.toml$|^uv\.lock$|^\.github/workflows/ci\.yml$' <<<"$changed" || true)
+          fe=$(grep -E '^web/frontend/|^\.github/workflows/ci\.yml$' <<<"$changed" || true)
+          {
+            echo "python=$([ -n "$py" ] && echo true || echo false)"
+            echo "frontend=$([ -n "$fe" ] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
 
   python:
     needs: changes
