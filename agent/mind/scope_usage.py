@@ -23,6 +23,7 @@ Model Experience：纯后台统计，不向模型上下文注入任何内容，�
 
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from core.config import get_config_int
@@ -33,6 +34,37 @@ _MAX_SCOPES = 200
 
 # scope -> 累计字段（llm_calls/prompt/completion/total/cache_read/turns + 未落盘计数）
 _ScopeAcc = Dict[str, int]
+
+# 用量归属 scope：委托执行链显式绑定父会话 scope（子代理 reflect 的一次性
+# scope 不该独立建账，经此 ContextVar 归属到发起委托的会话）
+usage_scope_var: ContextVar[str] = ContextVar("usage_scope", default="")
+
+
+def bind_usage_scope(scope: str) -> Token:
+    """绑定用量归属 scope（返回 token 供 reset_usage_scope）。"""
+    return usage_scope_var.set(scope)
+
+
+def reset_usage_scope(token: Token) -> None:
+    """复位 bind_usage_scope 的绑定。"""
+    usage_scope_var.reset(token)
+
+
+def current_usage_scope() -> str:
+    """读取当前绑定的用量归属 scope（未绑定为空串）。"""
+    return usage_scope_var.get()
+
+
+def _is_ephemeral_scope(scope: str) -> bool:
+    """一次性 scope（reflect:{uuid} 等）不建独立统计行。
+
+    mind.reflect 每次生成一次性 scope 并经 think_session 绑定激活上下文，
+    llm_invoker 的 scope 兜底会取到它——若放任建行，每个子代理/内部评审
+    都会留下孤儿统计行，累积挤爆 _MAX_SCOPES 后新会话的用量被整体静默
+    丢弃。一次性调用的正确归宿是经 bind_usage_scope 归属父会话（委托链
+    已绑定），无归属的直接丢弃。
+    """
+    return scope.startswith("reflect:")
 
 
 class ScopeUsageStats:
@@ -49,11 +81,11 @@ class ScopeUsageStats:
     def record(self, scope: str, kind: str, usage: Any) -> None:
         """记录一次 LLM 调用的用量（fail-open：异常吞掉只记日志）。
 
-        kind 为调用用途（reply/reflect/compress），当前统一计入 scope 总量；
-        reflect 类调用 scope 可能为空（临时 scope），空 scope 直接跳过——
-        临时会话的成本不归属任何持久对话。
+        kind 为调用用途（reply/reflect/compress）。reflect 类调用的一次性
+        scope 不建独立行：委托链经 bind_usage_scope 绑定的父 scope 在
+        llm_invoker 侧优先解析到此，无归属的一次性调用直接丢弃。
         """
-        if not scope or usage is None:
+        if not scope or _is_ephemeral_scope(scope) or usage is None:
             return
         try:
             entry = self._acc.get(scope)
@@ -79,7 +111,7 @@ class ScopeUsageStats:
 
     def turn(self, scope: str) -> None:
         """一次 REPLY 完成（complete_reply 调用）：turns+1 并调度落盘。"""
-        if not scope:
+        if not scope or _is_ephemeral_scope(scope):
             return
         entry = self._acc.get(scope)
         if entry is None:

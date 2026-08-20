@@ -35,7 +35,7 @@ import { useApprovalPopupStore } from "./approval-popup-store";
 import { useDelegationStore } from "./delegation-store";
 import { usePlanStore } from "./plan-store";
 import { useWorkbenchStore } from "./workbench-store";
-import { clearSendWatchdog, nextCid, DEFAULT_CHAT_ID } from "./chat-shared";
+import { clearSendWatchdog, touchSendWatchdog, nextCid, DEFAULT_CHAT_ID } from "./chat-shared";
 
 export interface ChatSseContext {
   updateBucket: (chatId: string, fn: (b: ChatBucket) => Partial<ChatBucket>) => void;
@@ -226,7 +226,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   es.addEventListener("delta", (e) => {
     try {
       const data = JSON.parse(e.data) as SseDeltaEvent;
-      clearSendWatchdog();
+      touchSendWatchdog();
       const chatId = routeChatId(data);
       updateBucket(chatId, (b) => {
         const cur = b.streaming && b.streaming.turnId === data.turn_id
@@ -251,6 +251,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   es.addEventListener("tool_call", (e) => {
     try {
       const data = JSON.parse(e.data) as SseToolCallEvent;
+      touchSendWatchdog();
       const chatId = routeChatId(data);
       updateBucket(chatId, (b) => {
         const turnId = data.turn_id ?? "";
@@ -277,6 +278,7 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): voi
   es.addEventListener("file_diff", (e) => {
     try {
       const data = JSON.parse(e.data) as SseFileDiffEvent;
+      touchSendWatchdog();
       const chatId = routeChatId(data);
       updateBucket(chatId, (b) => {
         const turnId = data.turn_id ?? "";

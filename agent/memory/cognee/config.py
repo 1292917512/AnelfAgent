@@ -100,6 +100,13 @@ class CogneeConfig:
     sync_interval_seconds: float = 5.0
     sync_batch_size: int = 20
     max_retries: int = 5
+    # LanceDB 物理压缩：同步队列空闲时自动 optimize 全部向量表，
+    # 回收删除/更新遗留的历史版本（最新版本永远保留，逻辑数据不受影响）。
+    # 保留期只是并发读保险：cognee 从不时间旅行，而高频重抽取每天产生
+    # 上千个版本清单（单表 7 天可累积 ~7G manifests），窗口宁短勿长
+    compact_enabled: bool = True
+    compact_interval_seconds: float = 86400.0
+    compact_retention_days: float = 1.0
     native_weight: float = 1.0
     cognee_weight: float = 0.8
     rrf_k: int = 60
@@ -129,6 +136,8 @@ class CogneeConfig:
         self.sync_interval_seconds = max(0.5, float(self.sync_interval_seconds))
         self.sync_batch_size = max(1, int(self.sync_batch_size))
         self.max_retries = max(1, int(self.max_retries))
+        self.compact_interval_seconds = max(600.0, float(self.compact_interval_seconds))
+        self.compact_retention_days = max(0.0, float(self.compact_retention_days))
         self.native_weight = max(0.0, float(self.native_weight))
         self.cognee_weight = max(0.0, float(self.cognee_weight))
         self.rrf_k = max(1, int(self.rrf_k))

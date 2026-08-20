@@ -44,6 +44,9 @@ export interface CogneeConfig {
   sync_interval_seconds: number;
   sync_batch_size: number;
   max_retries: number;
+  compact_enabled: boolean;
+  compact_interval_seconds: number;
+  compact_retention_days: number;
   native_weight: number;
   cognee_weight: number;
   rrf_k: number;
@@ -61,6 +64,15 @@ export interface CogneeResolvedInfo {
   api_key_set?: boolean;
 }
 
+export interface CogneeStorageInfo {
+  total_bytes: number;
+  data_bytes: number;
+  lance_bytes: number;
+  graph_bytes: number;
+  metadata_bytes: number;
+  other_bytes: number;
+}
+
 export interface CogneeStatus {
   availability: {
     installed: boolean;
@@ -73,6 +85,7 @@ export interface CogneeStatus {
     chat?: CogneeResolvedInfo;
     embedding?: CogneeResolvedInfo;
   };
+  storage?: CogneeStorageInfo;
   sync: {
     enabled: boolean;
     running: boolean;
@@ -80,6 +93,8 @@ export interface CogneeStatus {
     failed: number;
     synced: number;
     last_error: string;
+    last_compact_at?: number;
+    last_compact_summary?: string;
   };
 }
 

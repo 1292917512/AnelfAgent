@@ -89,9 +89,19 @@ async def _invoke_llm_unified(
     # 归因随快照落盘 records.jsonl（对齐 dsh 运行时不变式的"独立校验前缀"
     # 思想，适配为轻量观测版）。须先于 try_capture 计算，归因才能并入本次快照。
     from agent.mind.prefix_guard import prefix_guard
+    # scope 解析链：消息实体 scope（主回复）> 委托链绑定的父会话 scope
+    # （子代理 reflect，见 delegation_manager.bind_usage_scope）> 激活上下文
+    # scope。reflect 的一次性 scope 落到第三档时会被 scope_usage 丢弃
+    # （防孤儿行挤爆容量），前两档保证用量归属正确。
     _guard_scope = ""
     if anything is not None:
         _guard_scope = getattr(anything, "entity_scope", "") or ""
+    if not _guard_scope:
+        try:
+            from agent.mind.scope_usage import current_usage_scope
+            _guard_scope = current_usage_scope()
+        except Exception:
+            _guard_scope = ""
     if not _guard_scope:
         try:
             from agent.mind.tool_activation import ToolActivationManager
@@ -223,6 +233,9 @@ async def _invoke_llm_unified(
     await event_bus.emit(EVENT_THINKING_LLM_END, {
         "model": result.model or model_name,
         "duration_ms": round(elapsed_ms),
+        # TTFT（流式路径）：排队/首 token 延迟，与 duration_ms（总时长）
+        # 相减即输出生成耗时——两个独立的延迟来源分别可诊断
+        "ttft_ms": round(result.ttft_ms) if result.ttft_ms is not None else None,
         "has_content": bool(result.content),
         "content_preview": (result.content or "")[:200],
         "tool_calls": [tc.name for tc in result.tool_calls] if result.tool_calls else [],
@@ -321,6 +334,8 @@ async def _llm_chat_stream_once(
     tool_calls: List[Any] = []
     usage = None
     finish_reason = ""
+    ttft_ms: Optional[float] = None
+    started = time.monotonic()
     stream_iter = mind.llm.chat_stream(
         messages, options=final_options, tools=tools, tool_choice=tool_choice,
     ).__aiter__()
@@ -335,6 +350,8 @@ async def _llm_chat_stream_once(
                 delta = await asyncio.wait_for(stream_iter.__anext__(), timeout=mc.llm_timeout)
         except StopAsyncIteration:
             break
+        if ttft_ms is None:
+            ttft_ms = (time.monotonic() - started) * 1000
         if delta.content:
             content_parts.append(delta.content)
             if on_delta is not None:
@@ -360,4 +377,5 @@ async def _llm_chat_stream_once(
         reasoning_content="".join(reasoning_parts),
         usage=usage,
         model=mind.llm.config.model,
+        ttft_ms=ttft_ms,
     )

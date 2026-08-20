@@ -519,6 +519,7 @@ class MemoryService:
             get_cognee_client,
             get_cognee_coordinator,
         )
+        from agent.memory.cognee.storage import cognee_storage_stats
 
         config = load_cognee_config()
         client = get_cognee_client()
@@ -543,6 +544,7 @@ class MemoryService:
         return {
             "availability": availability_data,
             "resolved": client.resolved_info if client else {},
+            "storage": await cognee_storage_stats.get(config.absolute_data_root),
             "sync": sync.model_dump() if sync else {
                 "enabled": config.enabled and config.sync_enabled,
                 "running": False,
@@ -550,8 +552,23 @@ class MemoryService:
                 "failed": 0,
                 "synced": 0,
                 "last_error": "",
+                "last_compact_at": 0.0,
+                "last_compact_summary": "",
             },
         }
+
+    @staticmethod
+    async def compact_cognee() -> Dict[str, Any]:
+        """请求一次 cognee LanceDB 物理压缩（回收删除/更新的历史版本）。
+
+        同步 worker 运行中仅登记请求、待队列排空的空闲窗口执行（与写入互斥）；
+        worker 未运行时直接执行并返回回收统计。逻辑数据不受影响。
+        """
+        from agent.memory.cognee.runtime import get_cognee_coordinator
+        coordinator = get_cognee_coordinator()
+        if not coordinator:
+            return {"error": "Cognee 运行时未初始化"}
+        return await coordinator.request_compact()
 
     async def rebuild_cognee(self) -> Dict[str, Any]:
         """清空 cognee 数据并全量重建。
@@ -576,6 +593,10 @@ class MemoryService:
         # 重建 add 时按记录读文件报 FileNotFoundError
         await client.prune_system(graph=True, vector=True, metadata=True, cache=True)
         await client.prune_data()
+        # 清场后物理占用归零：使存储统计缓存与磁盘快照失效，
+        # 重启后由协调器启动预热按真实状态重算
+        from agent.memory.cognee.storage import cognee_storage_stats
+        cognee_storage_stats.invalidate(coordinator.config.absolute_data_root)
         result = await coordinator.backfill(limit=0, dry_run=False)
         log(f"cognee 重建: 清空队列/映射 {cleared}，重新入队 {result}（需重启生效）", tag="思维")
         return {

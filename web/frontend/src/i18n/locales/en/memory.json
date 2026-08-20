@@ -152,7 +152,10 @@
     "improve_interval_seconds": "Graph improve interval (s)",
     "sync_interval_seconds": "Sync poll interval (s)",
     "rrf_k": "RRF fusion constant k",
-    "recall_pool_multiplier": "Recall pool multiplier"
+    "recall_pool_multiplier": "Recall pool multiplier",
+    "compact_enabled": "Auto Compact",
+    "compact_interval_seconds": "Compact Interval (s)",
+    "compact_retention_days": "Version Retention (days)"
   },
   "cogneeDescs": {
     "enabled": "Enable the optional Cognee backend; automatically falls back when unavailable",
@@ -168,7 +171,10 @@
     "improve_interval_seconds": "Minimum interval between graph improves per dataset; <=0 disables auto improve",
     "sync_interval_seconds": "Poll interval of the sync worker when idle",
     "rrf_k": "Smoothing constant of Reciprocal Rank Fusion; larger values smooth rank gaps",
-    "recall_pool_multiplier": "Candidate pool amplification per source in federated recall"
+    "recall_pool_multiplier": "Candidate pool amplification per source in federated recall",
+    "compact_enabled": "Automatically compact the vector store when sync is idle, reclaiming historical versions left by deletes/updates (memory data is unaffected)",
+    "compact_interval_seconds": "Minimum interval between automatic compactions",
+    "compact_retention_days": "How many days of historical versions to keep; the latest version is always kept"
   },
   "nLines": "{{count}} lines",
   "goalsTitle": "Goal Plans",
@@ -268,7 +274,17 @@
     "generalSubtitle": "Projection sync and federated recall parameters",
     "hotApplyNote": "Applied immediately after save, no restart required",
     "saveFailed": "Save failed; check backend logs",
-    "reasoningModelHint": "This is a thinking model: its thinking budget is auto-capped to prevent output truncation, but extraction costs more — a non-thinking model is recommended"
+    "reasoningModelHint": "This is a thinking model: its thinking budget is auto-capped to prevent output truncation, but extraction costs more — a non-thinking model is recommended",
+    "compact": "Compact Storage",
+    "compactScheduled": "Compact request queued; it will run in the idle window after the sync queue drains",
+    "compactDone": "Compact finished, reclaimed {{size}}",
+    "compactFailed": "Compact request failed; check backend logs",
+    "storage": "Storage",
+    "storageLance": "Vector",
+    "storageGraph": "Graph",
+    "storageMetadata": "Metadata",
+    "storageData": "Raw docs",
+    "lastCompact": "Last compact"
   },
   "docs": {
     "title": "Document Index",

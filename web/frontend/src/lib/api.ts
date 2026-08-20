@@ -428,6 +428,10 @@ export const memoryApi = {
     saveConfig: (data: Partial<CogneeConfig>) => api.put<CogneeConfig>("/memory/cognee/config", data),
     retry: () => api.post("/memory/cognee/retry"),
     rebuild: () => api.post("/memory/cognee/rebuild"),
+    compact: () =>
+      api.post<{ ok: boolean; scheduled?: boolean; result?: { bytes_reclaimed?: number }; error?: string }>(
+        "/memory/cognee/compact",
+      ),
     backfill: (limit = 0, dryRun = true) =>
       api.post("/memory/cognee/backfill", { limit, dry_run: dryRun }),
     datasets: () => api.get<CogneeDataset[]>("/memory/cognee/datasets"),

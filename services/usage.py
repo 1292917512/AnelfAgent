@@ -25,7 +25,11 @@ class UsageService:
             return []
 
     def summary(self) -> Dict[str, Any]:
-        """全量会话的合计视图（成本总览）。"""
+        """全量会话的合计视图（成本总览）。
+
+        prompt_miss_tokens = prompt_tokens - cache_read_tokens（真实计费输入）：
+        DeepSeek 口径 prompt_tokens 含缓存命中，消费方把两者相加会重复计。
+        """
         rows = self.list_usage(limit=500)
         totals = {
             "scopes": len(rows),
@@ -36,6 +40,9 @@ class UsageService:
             "total_tokens": sum(r.get("total_tokens", 0) for r in rows),
             "cache_read_tokens": sum(r.get("cache_read_tokens", 0) for r in rows),
         }
+        totals["prompt_miss_tokens"] = max(
+            0, totals["prompt_tokens"] - totals["cache_read_tokens"],
+        )
         return totals
 
     def pending_snapshot(self) -> Dict[str, Dict[str, int]]:

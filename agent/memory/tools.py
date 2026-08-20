@@ -1281,6 +1281,24 @@ async def improve_cognee_dataset(dataset_name: str) -> str:
 
 @deferred_tool(
     group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    description="压缩 Cognee 向量库存储，回收删除/更新遗留的历史版本占用的磁盘空间。"
+    "不影响任何记忆数据（最新版本永远保留）。同步进行中时会排队到空闲窗口执行。",
+)
+async def compact_cognee_storage() -> str:
+    """压缩 Cognee LanceDB 存储，回收磁盘空间。"""
+    try:
+        from .cognee.runtime import get_cognee_coordinator
+        coordinator = get_cognee_coordinator()
+        if not coordinator:
+            return _cognee_not_ready()
+        result = await coordinator.request_compact()
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except Exception as e:
+        return error_from_exception(e, action="压缩 Cognee 存储")
+
+
+@deferred_tool(
+    group="memory", tags=["core", "heartbeat"], source="mind.memory",
     description="分页深度搜索所有记忆，支持按类型过滤。用于整理和合并记忆时分批查看所有记忆。",
 )
 async def memory_deep_search(page: int = 1, page_size: int = 20, memory_type: str = "") -> str:

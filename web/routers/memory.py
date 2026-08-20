@@ -74,6 +74,12 @@ async def rebuild_cognee() -> Dict[str, Any]:
     return await _mem_svc.rebuild_cognee()
 
 
+@router.post("/cognee/compact")
+async def compact_cognee() -> Dict[str, Any]:
+    """压缩 cognee LanceDB 向量库，回收删除/更新遗留的历史版本（不动逻辑数据）。"""
+    return await _mem_svc.compact_cognee()
+
+
 @router.post("/cognee/backfill")
 async def backfill_cognee(req: CogneeBackfillRequest) -> Dict[str, Any]:
     return await _mem_svc.backfill_cognee(limit=req.limit, dry_run=req.dry_run)

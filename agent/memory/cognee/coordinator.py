@@ -16,6 +16,7 @@ from ..memory_store import MemoryStore
 from ..store.cognee_queue import ENTRY_KIND_GRAPH_NODE
 from .client import CogneeClient
 from .config import CogneeConfig
+from .storage import cognee_storage_stats
 from .types import CogneeSyncStatus
 
 _SAFE_DATASET_RE = re.compile(r"[^a-zA-Z0-9_-]+")
@@ -38,6 +39,10 @@ class CogneeCoordinator:
         self._closing = False
         self._last_error = ""
         self._last_improve_ns: dict[str, int] = {}
+        self._compact_requested = False
+        self._last_compact_ns = 0
+        self.last_compact_at = 0.0
+        self.last_compact_summary = ""
 
     async def start(self) -> None:
         self.store.set_cognee_projection_enabled(
@@ -53,6 +58,9 @@ class CogneeCoordinator:
             await self.store.requeue_stale_cognee_sync(self._stale_after_seconds())
         except Exception as exc:
             log(f"Cognee 卡死任务回收失败: {exc}", "DEBUG", tag="思维")
+        # 启动即预热存储统计（大库遍历数十秒，后台线程执行不阻塞启动），
+        # 保证用户打开数据管理/记忆页时快照已就绪
+        cognee_storage_stats.schedule_refresh(self.config.absolute_data_root)
         if self.config.sync_enabled and self._task is None:
             self._task = asyncio.create_task(
                 self._worker(),
@@ -123,7 +131,25 @@ class CogneeCoordinator:
             failed=counts["failed"],
             synced=counts["synced"],
             last_error=self._last_error,
+            last_compact_at=self.last_compact_at,
+            last_compact_summary=self.last_compact_summary,
         )
+
+    async def request_compact(self) -> dict[str, Any]:
+        """请求一次 LanceDB 物理压缩。
+
+        worker 存活时仅登记请求，由 worker 在队列排空后的空闲窗口执行
+        （与写入互斥，避免 Lance 提交冲突）；worker 未运行（同步关闭）
+        时直接内联执行并返回结果。
+        """
+        if not self.config.enabled:
+            return {"ok": False, "error": "cognee 未启用"}
+        if self._task and not self._task.done():
+            self._compact_requested = True
+            self.wake()
+            return {"ok": True, "scheduled": True}
+        result = await self._run_compact()
+        return {"ok": True, "scheduled": False, "result": result}
 
     async def retry_failed(self) -> int:
         count = await self.store.retry_failed_cognee_sync()
@@ -152,6 +178,7 @@ class CogneeCoordinator:
                 if batch:
                     await self._process_batch(batch)
                     continue
+                await self._maybe_compact()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -166,6 +193,62 @@ class CogneeCoordinator:
                 )
             except asyncio.TimeoutError:
                 pass  # 超时属正常等待结束（正常控制流，非异常）
+
+    async def _maybe_compact(self) -> None:
+        """空闲窗口的 LanceDB 定期压缩（与写入天然互斥：worker 单消费者）。
+
+        触发条件：显式请求（request_compact）或距上次超过
+        compact_interval_seconds。无论成败都刷新时间戳，避免失败后在
+        每个空闲轮次反复重试；失败仅记日志，下一个周期再试。
+        """
+        if not (self.config.enabled and self.config.compact_enabled):
+            self._compact_requested = False
+            return
+        interval_ns = int(self.config.compact_interval_seconds * 1e9)
+        due = time.monotonic_ns() - self._last_compact_ns >= interval_ns
+        if not (self._compact_requested or due):
+            return
+        self._compact_requested = False
+        await self._run_compact()
+
+    async def _run_compact(self) -> dict[str, Any]:
+        self._last_compact_ns = time.monotonic_ns()
+        log(
+            "Cognee LanceDB 压缩开始（回收历史版本，首次压缩大库可能耗时较长）",
+            tag="思维",
+        )
+        try:
+            result = await self.client.compact_vector_storage(
+                self.config.compact_retention_days,
+            )
+        except Exception as exc:
+            self.last_compact_summary = f"失败: {_error_text(exc)}"
+            log(
+                f"Cognee LanceDB 压缩失败（下个周期重试）: {self.last_compact_summary}",
+                "WARNING",
+                tag="思维",
+            )
+            return {"error": self.last_compact_summary}
+        # 压缩尾声已实测最新占用：直接收录进统计缓存（代际递增使
+        # 在途的旧遍历结果被丢弃），避免紧接一次重复的数十秒遍历
+        cognee_storage_stats.adopt(
+            self.config.absolute_data_root,
+            result["after_stats"],
+        )
+        self.last_compact_at = time.time()
+        reclaimed_mb = result["bytes_reclaimed"] / 1024 / 1024
+        self.last_compact_summary = (
+            f"表 {result['tables']}，回收 {reclaimed_mb:.1f}MB"
+            + (f"，{len(result['errors'])} 个错误" if result["errors"] else "")
+        )
+        log(
+            f"Cognee LanceDB 压缩完成: 库 {result['databases']} 表 {result['tables']}，"
+            f"{result['bytes_before'] / 1024 / 1024:.1f}MB → "
+            f"{result['bytes_after'] / 1024 / 1024:.1f}MB"
+            + (f"，错误: {result['errors']}" if result["errors"] else ""),
+            tag="思维",
+        )
+        return result
 
     async def _process_batch(self, batch: list[dict[str, Any]]) -> None:
         availability = await self.client.initialize()

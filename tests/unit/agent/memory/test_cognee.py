@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -466,3 +467,238 @@ def test_sanitize_inlines_local_d3_and_strips_google_fonts() -> None:
 def test_sanitize_rejects_html_without_d3() -> None:
     with pytest.raises(RuntimeError, match="d3"):
         sanitize_cognee_graph_html("<html><body>no graph</body></html>")
+
+
+# ==================================================================
+# LanceDB 物理压缩
+# ==================================================================
+
+def test_compact_lance_tree_reclaims_history_versions(tmp_path) -> None:
+    """真实 lancedb：多次写入制造历史版本，压缩后仅保留最新版本且数据完好。"""
+    lancedb = pytest.importorskip("lancedb")
+    from agent.memory.cognee.storage import compact_lance_tree
+
+    db_dir = tmp_path / "system" / "databases" / "user" / "ds.lance.db"
+    db_dir.mkdir(parents=True)
+    connection = lancedb.connect(str(db_dir))
+    table = connection.create_table(
+        "DocumentChunk_text",
+        [{"id": i, "vector": [float(i)] * 8, "text": f"doc{i}"} for i in range(10)],
+    )
+    for extra in range(5):
+        table.add([{"id": 100 + extra, "vector": [0.0] * 8, "text": f"extra{extra}"}])
+    table.delete("id < 5")
+
+    versions_dir = db_dir / "DocumentChunk_text.lance" / "_versions"
+    assert len(list(versions_dir.iterdir())) > 2
+
+    result = compact_lance_tree(tmp_path / "system" / "databases", 0.0)
+
+    assert result["databases"] == 1
+    assert result["tables"] == 1
+    assert result["errors"] == []
+    assert result["bytes_reclaimed"] > 0
+    # after_stats 为压缩后实测占用，与 bytes_after 同口径（供统计缓存直接收录）
+    assert result["after_stats"]["total_bytes"] == result["bytes_after"]
+    assert result["after_stats"]["lance_bytes"] > 0
+    assert len(list(versions_dir.iterdir())) <= 2
+    reopened = lancedb.connect(str(db_dir)).open_table("DocumentChunk_text")
+    assert reopened.count_rows() == 10
+
+
+def test_compact_lance_tree_missing_root_is_noop(tmp_path) -> None:
+    pytest.importorskip("lancedb")
+    from agent.memory.cognee.storage import compact_lance_tree
+
+    result = compact_lance_tree(tmp_path / "nonexistent", 7.0)
+
+    assert result["databases"] == 0
+    assert result["tables"] == 0
+    assert result["errors"] == []
+
+
+def test_storage_stats_classifies_components(tmp_path) -> None:
+    """存储统计按 向量/图/元数据/原始文档 正确归类，总口径为整个数据目录。"""
+    from agent.memory.cognee.storage import compute_storage_stats
+
+    def put(rel: str, size: int) -> None:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * size)
+
+    put("data/dataset-1/doc.txt", 10)
+    put("system/databases/cognee_db", 100)
+    put("system/databases/user/ds.lance.db/T.lance/_versions/1.manifest", 1000)
+    put("system/databases/user/ds.lbug", 500)
+    put("system/databases/user/ds.lbug.wal", 50)
+    put("system/databases/user/misc.lock", 5)
+    put("system/logs/cognee.log", 7)
+
+    stats = compute_storage_stats(tmp_path)
+
+    assert stats["data_bytes"] == 10
+    assert stats["metadata_bytes"] == 100
+    assert stats["lance_bytes"] == 1000
+    assert stats["graph_bytes"] == 550
+    assert stats["other_bytes"] == 12
+    assert stats["total_bytes"] == 1672
+
+
+@pytest.mark.asyncio
+async def test_storage_stats_never_blocks_on_cold_cache(tmp_path) -> None:
+    """首次调用立即返回空统计并后台刷新；刷新完成后返回真实值并落快照。"""
+    import asyncio
+
+    from agent.memory.cognee.storage import StorageStatsTracker
+
+    tracker = StorageStatsTracker()
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "doc.bin").write_bytes(b"x" * 100)
+
+    first = await tracker.get(str(tmp_path))
+    assert first["total_bytes"] == 0  # 冷缓存不等待遍历
+
+    for _ in range(100):
+        await asyncio.sleep(0.05)
+        if (await tracker.get(str(tmp_path)))["total_bytes"] == 100:
+            break
+    else:
+        pytest.fail("后台存储统计刷新未完成")
+    assert (tmp_path / "storage_stats.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_storage_stats_snapshot_restores_after_restart(tmp_path) -> None:
+    """磁盘快照模拟重启恢复：清内存后立即返回上次真实值而非 0；定向失效连快照一起删。"""
+    import asyncio
+    import json as jsonlib
+
+    from agent.memory.cognee.storage import StorageStatsTracker
+
+    snapshot = {
+        "computed_at": 1.0,
+        "stats": {
+            "total_bytes": 500, "data_bytes": 100, "lance_bytes": 300,
+            "graph_bytes": 50, "metadata_bytes": 40, "other_bytes": 10,
+        },
+    }
+    (tmp_path / "storage_stats.json").write_text(jsonlib.dumps(snapshot))
+
+    tracker = StorageStatsTracker()
+    stats = await tracker.get(str(tmp_path))
+    assert stats["total_bytes"] == 500  # 来自快照而非重新遍历
+
+    # 后台刷新完成后会用真实遍历值覆盖快照
+    for _ in range(100):
+        await asyncio.sleep(0.05)
+        if (await tracker.get(str(tmp_path)))["total_bytes"] != 500:
+            break
+    else:
+        pytest.fail("后台存储统计刷新未完成")
+
+    tracker.invalidate(str(tmp_path))
+    assert not (tmp_path / "storage_stats.json").exists()
+    assert (await tracker.get(str(tmp_path)))["total_bytes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_storage_stats_adopt_wins_over_inflight_refresh(
+    tmp_path, monkeypatch,
+) -> None:
+    """在途遍历期间发生 adopt（压缩实测值）：代际递增使旧遍历结果被丢弃。"""
+    import asyncio
+    import threading
+
+    from agent.memory.cognee import storage
+
+    gate = threading.Event()
+
+    def slow_compute(_root):
+        gate.wait(10)
+        return storage.StorageStatsDict(
+            total_bytes=100, data_bytes=0, lance_bytes=100,
+            graph_bytes=0, metadata_bytes=0, other_bytes=0,
+        )
+
+    monkeypatch.setattr(storage, "compute_storage_stats", slow_compute)
+    tracker = storage.StorageStatsTracker(ttl_seconds=0.0)
+    root = str(tmp_path)
+
+    tracker.schedule_refresh(root)
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if root in tracker._refreshing:
+            break
+    fresh = storage.StorageStatsDict(
+        total_bytes=500, data_bytes=0, lance_bytes=500,
+        graph_bytes=0, metadata_bytes=0, other_bytes=0,
+    )
+    tracker.adopt(root, fresh)
+    gate.set()
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if root not in tracker._refreshing:
+            break
+
+    assert tracker._cache[root][1]["total_bytes"] == 500  # 未被在途旧遍历覆盖
+
+
+class _CompactFakeClient:
+    def __init__(self) -> None:
+        self.compact_calls: list[float] = []
+
+    async def compact_vector_storage(self, retention_days: float) -> dict:
+        self.compact_calls.append(retention_days)
+        return {
+            "databases": 1,
+            "tables": 2,
+            "bytes_before": 1000,
+            "bytes_after": 400,
+            "bytes_reclaimed": 600,
+            "errors": [],
+            "after_stats": {
+                "total_bytes": 400, "data_bytes": 0, "lance_bytes": 400,
+                "graph_bytes": 0, "metadata_bytes": 0, "other_bytes": 0,
+            },
+        }
+
+
+@pytest.mark.asyncio
+async def test_coordinator_compact_idle_scheduling(tmp_path) -> None:
+    """空闲窗口压缩：显式请求立即执行，之后受间隔门控；禁用时不执行。"""
+    import asyncio
+
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    client = _CompactFakeClient()
+    coordinator = CogneeCoordinator(
+        store,
+        client,
+        CogneeConfig(
+            enabled=True,
+            data_root=str(tmp_path / "cognee"),
+            compact_interval_seconds=3600.0,
+            compact_retention_days=3.0,
+        ),
+    )
+    try:
+        coordinator._last_compact_ns = time.monotonic_ns()  # 间隔未到期
+        await coordinator._maybe_compact()
+        assert client.compact_calls == []
+
+        await coordinator.request_compact()  # worker 未运行 → 内联执行
+        assert client.compact_calls == [3.0]
+        assert coordinator.last_compact_at > 0
+        assert "回收" in coordinator.last_compact_summary
+
+        coordinator._compact_requested = True
+        await coordinator._maybe_compact()  # 刚执行过，间隔未到期但被显式请求 → 仍执行
+        assert client.compact_calls == [3.0, 3.0]
+
+        coordinator.config.compact_enabled = False
+        coordinator._compact_requested = True
+        await coordinator._maybe_compact()
+        assert client.compact_calls == [3.0, 3.0]
+        assert coordinator._compact_requested is False
+        await asyncio.sleep(0.05)  # 等 adopt 的快照保存任务收尾
+    finally:
+        await store.close()

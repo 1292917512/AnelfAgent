@@ -152,7 +152,10 @@
     "improve_interval_seconds": "图谱增强间隔（秒）",
     "sync_interval_seconds": "同步轮询间隔（秒）",
     "rrf_k": "RRF 融合常数 k",
-    "recall_pool_multiplier": "召回池倍率"
+    "recall_pool_multiplier": "召回池倍率",
+    "compact_enabled": "自动压缩",
+    "compact_interval_seconds": "压缩间隔（秒）",
+    "compact_retention_days": "版本保留（天）"
   },
   "cogneeDescs": {
     "enabled": "启用可选 Cognee 后端；未安装依赖时自动降级",
@@ -168,7 +171,10 @@
     "improve_interval_seconds": "同一数据集两次图谱增强的最小间隔，<=0 关闭自动增强",
     "sync_interval_seconds": "同步 worker 空闲时的轮询间隔",
     "rrf_k": "倒数排名融合（RRF）的平滑常数，越大各来源排名差异越平滑",
-    "recall_pool_multiplier": "联邦召回时各来源的候选池放大倍数"
+    "recall_pool_multiplier": "联邦召回时各来源的候选池放大倍数",
+    "compact_enabled": "同步空闲时自动压缩向量库，回收删除/更新遗留的历史版本（不影响记忆数据）",
+    "compact_interval_seconds": "两次自动压缩的最小间隔",
+    "compact_retention_days": "保留多少天内的历史版本；最新版本永远保留"
   },
   "nLines": "{{count}} 行",
   "goalsTitle": "目标计划",
@@ -268,7 +274,17 @@
     "generalSubtitle": "投影同步与联邦召回参数",
     "hotApplyNote": "保存后立即生效，无需重启",
     "saveFailed": "保存失败，请查看后端日志",
-    "reasoningModelHint": "该模型为 thinking 模型：已自动限制思考预算防止输出截断，但抽取成本较高，建议改用非 thinking 模型"
+    "reasoningModelHint": "该模型为 thinking 模型：已自动限制思考预算防止输出截断，但抽取成本较高，建议改用非 thinking 模型",
+    "compact": "压缩存储",
+    "compactScheduled": "已登记压缩请求，将在同步队列排空后的空闲窗口执行",
+    "compactDone": "压缩完成，回收 {{size}}",
+    "compactFailed": "压缩请求失败，请查看后端日志",
+    "storage": "存储占用",
+    "storageLance": "向量库",
+    "storageGraph": "图库",
+    "storageMetadata": "元数据",
+    "storageData": "原始文档",
+    "lastCompact": "上次压缩"
   },
   "docs": {
     "title": "文档索引",

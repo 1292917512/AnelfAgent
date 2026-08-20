@@ -119,3 +119,46 @@ class TestScopeUsageSqlite:
             assert rows[0]["scope_key"] == "user_qq:big"
         finally:
             await sqlite.close()
+
+
+class TestEphemeralScopeAndAttribution:
+    def test_reflect_scope_not_recorded(self) -> None:
+        """reflect:{uuid} 一次性 scope 不建独立统计行（防孤儿挤爆容量）。"""
+        stats = ScopeUsageStats()
+        usage = SimpleNamespace(prompt_tokens=100, completion_tokens=10,
+                                total_tokens=110, cache_read_input_tokens=0)
+        stats.record("reflect:ab12cd34", "reflect", usage)
+        assert stats.snapshot() == {}
+
+    def test_reflect_scope_turn_not_recorded(self) -> None:
+        stats = ScopeUsageStats()
+        stats.turn("reflect:ab12cd34")
+        assert stats.snapshot() == {}
+
+    def test_usage_scope_bind_roundtrip(self) -> None:
+        """bind_usage_scope 绑定/复位往返（委托链归属父会话）。"""
+        from agent.mind.scope_usage import (
+            bind_usage_scope,
+            current_usage_scope,
+            reset_usage_scope,
+        )
+        assert current_usage_scope() == ""
+        token = bind_usage_scope("user_qq:parent")
+        try:
+            assert current_usage_scope() == "user_qq:parent"
+        finally:
+            reset_usage_scope(token)
+        assert current_usage_scope() == ""
+
+    async def test_list_scope_usage_prompt_miss_column(self, tmp_path) -> None:
+        """list_scope_usage 输出 prompt_miss_tokens 计算列（防重复计误读）。"""
+        sqlite = SqliteBackend(db_path=str(tmp_path / "miss.sqlite3"))
+        await sqlite._ensure_init()
+        try:
+            await sqlite.upsert_scope_usage("user_qq:s", {
+                "prompt_tokens": 1000, "cache_read_tokens": 700,
+            })
+            rows = await sqlite.list_scope_usage()
+            assert rows[0]["prompt_miss_tokens"] == 300
+        finally:
+            await sqlite.close()

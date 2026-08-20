@@ -47,6 +47,8 @@ class CogneeSyncStatus(BaseModel):
     failed: int = 0
     synced: int = 0
     last_error: str = ""
+    last_compact_at: float = 0.0
+    last_compact_summary: str = ""
 
 
 class CogneeCallResult(BaseModel):

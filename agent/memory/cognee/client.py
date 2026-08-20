@@ -308,6 +308,23 @@ class CogneeClient:
     async def prune_system(self, **kwargs: Any) -> Any:
         return await self._call("prune.prune_system", **kwargs)
 
+    async def compact_vector_storage(self, retention_days: float) -> dict[str, Any]:
+        """压缩全部 LanceDB 向量表并清理过期版本，回收磁盘空间。
+
+        实现见 `storage.compact_lance_tree`；最新版本永远保留，逻辑数据不受影响。
+        须在无并发写入时调用（协调器空闲窗口）。
+        """
+        if not self._configured:
+            availability = await self.initialize()
+            if not availability.ready:
+                raise RuntimeError(availability.reason or "Cognee 未就绪")
+        from .storage import compact_lance_tree
+        return await asyncio.to_thread(
+            compact_lance_tree,
+            Path(self.config.absolute_data_root) / "system" / "databases",
+            retention_days,
+        )
+
     async def visualize(self, *args: Any, **kwargs: Any) -> Any:
         return await self._call("visualize", *args, **kwargs)
 

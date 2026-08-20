@@ -27,6 +27,7 @@ from agent.delegation.sub_agent import (
     normalize_role,
     reset_delegation_id,
 )
+from agent.mind.scope_usage import bind_usage_scope, reset_usage_scope
 from core.event_bus import (
     EVENT_DELEGATION_PROGRESS,
     EVENT_DELEGATION_RESOLVED,
@@ -348,6 +349,9 @@ class DelegationManager:
             return _cancelled_result(goal, role=role, task_index=task_index)
 
         id_token = bind_delegation_id(delegation_id)
+        # 用量归属：子代理 reflect 的一次性 scope 不建独立统计行，
+        # 其 LLM 用量经此绑定归属父会话（/status/usage 可见委托成本）
+        usage_token = bind_usage_scope(scope) if scope else None
         try:
             agent = SubAgent(
                 self._mind, goal, context,
@@ -383,6 +387,8 @@ class DelegationManager:
                 self._cancel_marks.discard(delegation_id)
                 self._running.pop(delegation_id, None)
         finally:
+            if usage_token is not None:
+                reset_usage_scope(usage_token)
             reset_delegation_id(id_token)
             semaphore.release()
             if parent_id:

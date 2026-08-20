@@ -103,7 +103,7 @@ _MIND_CONFIGS = {
     },
     "mind/llm": {
         "llm_timeout": {
-            "description": "单次调用超时（秒）",
+            "description": "单次调用无输出停滞超时（秒）：持续有输出时不限时，仅静默超时判定挂死",
             "default": 120.0,
             "advanced": True,
             "unit": "秒",

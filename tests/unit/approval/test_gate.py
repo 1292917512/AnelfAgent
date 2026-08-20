@@ -16,6 +16,52 @@ from agent.approval import (
 )
 
 
+class _FakeAuditSink:
+    """审批审计的内存假 sqlite（与 SqliteBackend 审计方法同接口）。"""
+
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+        self._seq = 0
+
+    async def append_approval_audit(self, record: dict) -> None:
+        self._seq += 1
+        self.rows.append({"id": self._seq, **record})
+
+    async def count_approval_outcomes(self, tool_name: str, user_id: str, outcome: str) -> int:
+        return sum(
+            1 for r in self.rows
+            if r.get("tool_name") == tool_name
+            and r.get("user_id") == user_id
+            and r.get("outcome") == outcome
+        )
+
+    async def approval_audit_stats(self) -> dict:
+        by: dict[str, int] = {}
+        for r in self.rows:
+            by[r.get("outcome", "")] = by.get(r.get("outcome", ""), 0) + 1
+        return {"total": len(self.rows), "by_outcome": by}
+
+    async def list_approval_audit(self, limit: int = 50, offset: int = 0, tool_name: str = "") -> list[dict]:
+        rows = [r for r in self.rows if not tool_name or r.get("tool_name") == tool_name]
+        return list(reversed(rows))[offset:offset + limit]
+
+
+@pytest.fixture()
+def fake_audit_sink(monkeypatch: pytest.MonkeyPatch) -> _FakeAuditSink:
+    """把审批审计数据面指向内存假 sqlite（隔离真实 DB）。"""
+    import agent.approval.audit as audit_mod
+
+    sink = _FakeAuditSink()
+    monkeypatch.setattr(audit_mod, "_audit_sink", lambda: sink)
+    return sink
+
+
+async def _drain_audit_bg() -> None:
+    """让即发即忘的审计后台任务跑完（record_decision_bg 经 create_task）。"""
+    for _ in range(4):
+        await asyncio.sleep(0)
+
+
 @pytest.mark.asyncio
 async def test_approval_session_lifecycle():
     """测试批准会话生命周期。"""
@@ -87,8 +133,8 @@ async def test_auto_approve_deny():
 
 
 @pytest.mark.asyncio
-async def test_trust_mechanism():
-    """测试信任机制（trust_after_n_approvals）。"""
+async def test_trust_mechanism(fake_audit_sink: _FakeAuditSink):
+    """测试信任机制（trust_after_n_approvals，计数来自审计账本）。"""
     manager = ApprovalManager()
     policy = ApprovalPolicy(
         tool_name_pattern="test.*",
@@ -101,7 +147,7 @@ async def test_trust_mechanism():
     trusted = await manager.is_trusted("test.tool", "user_1", policy)
     assert trusted is False
 
-    # 模拟 2 次批准
+    # 模拟 2 次批准（决策经审计账本持久化）
     for _ in range(2):
         request = ApprovalRequest(
             tool_name="test.tool",
@@ -115,8 +161,9 @@ async def test_trust_mechanism():
         )
         await manager.create_session(request)
         await manager.approve(request.request_id, decided_by="admin")
+    await _drain_audit_bg()
 
-    # 达到阈值
+    # 达到阈值（账本累计计数，重启不清零——由账本持久性保证）
     trusted = await manager.is_trusted("test.tool", "user_1", policy)
     assert trusted is True
 
@@ -149,8 +196,8 @@ async def test_manager_cleanup():
 
 
 @pytest.mark.asyncio
-async def test_manager_stats():
-    """测试统计信息。"""
+async def test_manager_stats(fake_audit_sink: _FakeAuditSink):
+    """测试统计信息（决策聚合来自审计账本）。"""
     manager = ApprovalManager()
 
     # 创建并决策几个会话
@@ -170,6 +217,7 @@ async def test_manager_stats():
             await manager.approve(request.request_id)
         else:
             await manager.deny(request.request_id)
+    await _drain_audit_bg()
 
     stats = await manager.get_stats()
     assert stats["pending_count"] == 0

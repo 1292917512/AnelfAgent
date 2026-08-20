@@ -809,17 +809,6 @@ class ContextAssembly:
             round_info += f" | 已耗时 {elapsed:.2f}秒"
             lines.append(f"[系统提示] {round_info}")
 
-            # 超时风险预警：耗时超过 llm_timeout 的 60% 时提醒可切换模型
-            try:
-                llm_timeout = _get_mind_config().llm_timeout
-            except Exception:
-                llm_timeout = 0
-            if llm_timeout > 0 and elapsed > llm_timeout * 0.6:
-                lines.append(
-                    f"[超时预警] 本轮已耗时 {elapsed:.0f}s（配置上限 {llm_timeout:.0f}s），"
-                    "若当前模型响应慢，可调用 switch_model 切换到更快的模型后继续。"
-                )
-
             # 剩余轮次警告（动态强度）
             if remaining is not None:
                 if remaining == 1:

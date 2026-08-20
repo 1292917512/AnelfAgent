@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 from agent.channel.base import ApprovalPromptRenderContext, BaseChannel
 from core.log import log
 
+from . import audit
 from .manager import ApprovalManager, get_approval_manager
 from .policy import ApprovalPolicySet
 from .rules import (
@@ -186,6 +187,11 @@ class ApprovalGate:
 
         if verdict.decision == PermissionDecision.AUTO_DENY:
             log(f"权限拒绝: {tool_name} — {verdict.reason} (user={user_id})", "WARNING", tag="权限")
+            audit.record_decision_bg(
+                tool_name=tool_name, outcome="denied", decided_by="rule",
+                reason=verdict.reason, channel_id=channel_id, chat_id=chat_id,
+                user_id=user_id, matched_rule=verdict.matched_pattern or "",
+            )
             await self._notify_outcome(
                 channel, chat_id,
                 f"⛔ 已拒绝执行 {tool_name}\n原因: {verdict.reason}",
@@ -199,6 +205,12 @@ class ApprovalGate:
                 log(f"信任阈值达成，自动放行: {tool_name} "
                     f"(规则 [{rule.pattern}]，{rule.trust_after_n_approvals} 次批准)",
                     tag="权限")
+                audit.record_decision_bg(
+                    tool_name=tool_name, outcome="trusted", decided_by="trust",
+                    reason=f"累计批准达阈值 {rule.trust_after_n_approvals}",
+                    channel_id=channel_id, chat_id=chat_id, user_id=user_id,
+                    matched_rule=rule.pattern,
+                )
                 return ApprovalDecision.APPROVED
 
         # ASK：走人工批准流程
@@ -229,6 +241,12 @@ class ApprovalGate:
             on_timeout = rule.on_timeout if rule else "deny"
             if on_timeout == "allow":
                 log(f"批准超时但规则允许: {tool_name}", "WARNING", tag="权限")
+                # 超时事实已由 resolve 记为 expired，此处补记最终放行处置
+                audit.record_decision_bg(
+                    tool_name=tool_name, outcome="timeout_allow", decided_by="rule",
+                    reason="on_timeout=allow", channel_id=channel_id, chat_id=chat_id,
+                    user_id=user_id, matched_rule=request.matched_rule,
+                )
                 return ApprovalDecision.APPROVED
             if on_timeout == "halt":
                 raise ApprovalDenied(ApprovalDecision.EXPIRED, "timeout halt")

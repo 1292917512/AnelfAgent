@@ -43,26 +43,34 @@ async def list_pending() -> Dict[str, Any]:
 
 
 @router.get("/history")
-async def list_history(limit: int = Query(50, ge=1, le=500)) -> Dict[str, Any]:
-    """列出历史决策记录。"""
-    manager = get_approval_manager()
-    history = await manager.list_decision_history(limit)
+async def list_history(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    tool_name: str = Query(""),
+) -> Dict[str, Any]:
+    """列出历史决策记录（审计账本，持久化、重启不丢；按时间倒序分页）。"""
+    from agent.approval import audit
+    rows = await audit.list_history(limit, offset, tool_name)
     return {
         "history": [
             {
-                "request_id": s.request.request_id,
-                "tool_name": s.request.tool_name,
-                "risk_level": s.request.risk_level.value,
-                "decision": s.decision.value if s.decision else "unknown",
-                "decided_by": s.decided_by or "",
-                "decided_at": s.decided_at or 0,
-                "decision_reason": s.decision_reason,
-                "requester_user_id": s.request.requester_user_id,
-                "requester_channel": s.request.requester_channel,
-                "matched_rule": s.request.matched_rule,
+                "id": r["id"],
+                "ts_ns": r["ts_ns"],
+                "tool_name": r["tool_name"],
+                "outcome": r["outcome"],
+                "decided_by": r["decided_by"],
+                "reason": r["reason"],
+                "channel_id": r["channel_id"],
+                "chat_id": r["chat_id"],
+                "user_id": r["user_id"],
+                "risk_level": r["risk_level"],
+                "matched_rule": r["matched_rule"],
+                "args_json": r["args_json"],
             }
-            for s in history
+            for r in rows
         ],
+        "offset": offset,
+        "limit": limit,
     }
 
 

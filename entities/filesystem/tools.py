@@ -10,7 +10,6 @@ edit_file/read_file/write_file 的编辑安全语义移植自 Claude Code
 
 from __future__ import annotations
 
-import glob
 import json
 import os
 import shlex
@@ -190,6 +189,20 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
                 "size": size,
                 "ext": ext,
                 "hint": "Use recognize_image for images, voice_to_text for audio",
+            }, ensure_ascii=False)
+
+        # 内容级二进制嗅探：扩展名表覆盖不到无扩展名/冷门扩展名的二进制文件，
+        # 而下方文本读取走 errors="replace" 永不抛解码异常——NUL 采样是唯一防线
+        from entities.filesystem.scan import looks_binary
+        if looks_binary(fp):
+            return json.dumps({
+                "type": "binary",
+                "path": fp,
+                "size": os.path.getsize(fp),
+                "ext": ext,
+                "hint": "Binary content detected. Use recognize_image for images, "
+                        "voice_to_text for audio, or run_shell_command (e.g. `file`) "
+                        "to inspect the file type.",
             }, ensure_ascii=False)
 
         size = os.path.getsize(fp)
@@ -652,11 +665,14 @@ def mkdir(path: str) -> str:
 @tool(name="search_files", group="os", concurrency_safe=True)
 def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
                  max_results: int = 50) -> str:
-    """搜索文件：按 glob 模式找文件名，或按正则搜索文件内容（类似 grep）。
+    """搜索文件：按 glob 模式找文件名（任意深度），或按正则搜索文件内容（类似 grep）。
+
+    自动跳过噪声目录（node_modules/.git/__pycache__ 等，search_exclude_dirs 可配置）；
+    内容模式额外跳过二进制与超大文件（>2MB）。
 
     Args:
         path: 搜索根目录（相对于 workspace）
-        pattern: 文件名 glob 模式，如 '*.png'、'**/*.json'
+        pattern: 文件名 glob 模式，如 '*.png'、'config/*.json'（任意深度匹配）
         content_pattern: 文件内容正则（可选）。提供时返回匹配的文件及命中行，
             如 'def \\w+\\('、'TODO'
         max_results: 最大返回数量，默认 50
@@ -668,32 +684,30 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
                               retryable=False,
                               hint="请确认路径存在且为目录（可用 file_info 检查）")
 
-        search_pattern = os.path.join(fp, pattern)
-        candidates = [m for m in glob.iglob(search_pattern, recursive=True)]
+        from entities.filesystem.scan import (
+            content_search,
+            iter_matches,
+            resolve_exclude_dirs,
+        )
+        exclude = resolve_exclude_dirs()
 
         if not content_pattern:
-            matches: List[Dict[str, Any]] = []
-            for match in candidates:
-                entry: Dict[str, Any] = {"path": os.path.normpath(match),
-                                         "name": os.path.basename(match)}
-                if os.path.isdir(match):
-                    entry["type"] = "dir"
-                else:
-                    entry["type"] = "file"
-                    try:
-                        entry["size"] = os.path.getsize(match)
-                        entry["mtime"] = os.path.getmtime(match)
-                    except OSError:
-                        log("search_files 异常已忽略", "DEBUG")
-                matches.append(entry)
-            # 按修改时间倒序（最近修改在前，对齐 Claude Code Glob 语义）
-            matches.sort(key=lambda e: e.get("mtime", 0), reverse=True)
-            for entry in matches:
-                entry.pop("mtime", None)
-            matches = matches[:max_results]
+            # 按修改时间倒序（最近修改在前，对齐 Claude Code Glob 语义）；
+            # 目录沉底——mtime 排序对目录无操作价值。path 保持绝对路径
+            # （可直接传给 read_file 等工具）
+            entries = sorted(
+                iter_matches(fp, pattern, exclude),
+                key=lambda e: (not e.is_dir, -e.mtime),
+            )
+            matches = [
+                {"path": os.path.normpath(e.abspath), "name": os.path.basename(e.abspath),
+                 "type": "dir" if e.is_dir else "file", "size": e.size}
+                for e in entries[:max_results]
+            ]
             return json.dumps({
                 "pattern": pattern,
                 "root": path,
+                "excluded_dirs": sorted(exclude),
                 "count": len(matches),
                 "results": matches,
             }, ensure_ascii=False)
@@ -706,30 +720,15 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
             return tool_error(f"无效的正则表达式: {e}", cause=ErrorCause.PARAM,
                               retryable=False)
 
-        results: List[Dict[str, Any]] = []
-        for match in candidates:
-            if not os.path.isfile(match):
-                continue
-            try:
-                with open(match, "r", encoding="utf-8", errors="replace") as f:
-                    hit_lines = [
-                        f"{i}:{line.rstrip()[:200]}"
-                        for i, line in enumerate(f, 1)
-                        if regex.search(line)
-                    ][:5]
-            except OSError:
-                continue
-            if hit_lines:
-                results.append({"path": os.path.normpath(match), "matches": hit_lines})
-                if len(results) >= max_results:
-                    break
-
+        hits = content_search(fp, pattern, regex, exclude, max_results=max_results)
         return json.dumps({
             "pattern": pattern,
             "content_pattern": content_pattern,
             "root": path,
-            "count": len(results),
-            "results": results,
+            "count": len(hits),
+            "results": [
+                {"path": os.path.normpath(h.abspath), "matches": h.lines} for h in hits
+            ],
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="搜索文件")

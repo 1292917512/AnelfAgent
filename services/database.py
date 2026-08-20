@@ -119,7 +119,7 @@ def _database_registry() -> Dict[str, Dict[str, str]]:
         "cognee": {
             "name": "Cognee 关系库",
             "path": _cognee_db_path(),
-            "description": "Cognee 知识图谱投影的关系数据（lbug/lance 引擎文件不支持）",
+            "description": "Cognee 知识图谱投影（lbug 图/lance 向量/元数据；大小为整个 cognee 数据目录）",
         },
     }
 
@@ -325,6 +325,16 @@ class DatabaseService:
                 "size_bytes": os.path.getsize(path) if exists else 0,
                 "table_count": 0,
             }
+            if db_id == "cognee":
+                # cognee 的真实占用在整个数据目录（lance 向量库才是大头），
+                # 仅 stat 元数据库文件会严重低估（曾 177M 显示 vs 30G 实际）
+                from agent.memory.cognee.config import load_cognee_config
+                from agent.memory.cognee.storage import cognee_storage_stats
+                stats = await cognee_storage_stats.get(
+                    load_cognee_config().absolute_data_root,
+                )
+                entry["size_bytes"] = stats["total_bytes"]
+                entry["exists"] = stats["total_bytes"] > 0 or exists
             if exists:
                 try:
                     conn = await self._get_conn(db_id)

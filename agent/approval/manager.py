@@ -4,7 +4,8 @@
 - 维护 request_id → ApprovalSession 映射
 - 提供决策接口（approve / deny / cancel）
 - 自动清理过期会话
-- 决策历史记录（供 trust_after_n_approvals 使用）
+- 决策审计经 approval.audit 持久化（approval_audit 表）；
+  信任计数从审计账本统计，重启不清零
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from core.log import log
 
+from . import audit
 from .policy import ApprovalPolicy
 from .session import ApprovalDecision, ApprovalRequest, ApprovalSession
 
@@ -23,8 +25,6 @@ class ApprovalManager:
 
     def __init__(self) -> None:
         self._sessions: Dict[str, ApprovalSession] = {}
-        self._decision_history: List[ApprovalSession] = []  # 最近的决策历史
-        self._history_max_size: int = 1000
         self._lock = asyncio.Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
 
@@ -57,11 +57,6 @@ class ApprovalManager:
             sessions = [s for s in sessions if s.request.requester_channel == channel_id]
         return [s for s in sessions if s.is_pending()]
 
-    async def list_decision_history(self, limit: int = 100) -> List[ApprovalSession]:
-        """列出最近的决策历史（最多 limit 条，按时间正序，供 web 层展示）。"""
-        async with self._lock:
-            return list(self._decision_history[-limit:])
-
     # ------------------------------------------------------------------
     # 决策
     # ------------------------------------------------------------------
@@ -73,20 +68,29 @@ class ApprovalManager:
         decided_by: str = "",
         reason: str = "",
     ) -> bool:
-        """标记会话为已决策。"""
+        """标记会话为已决策，并把决策写入审计账本。"""
         async with self._lock:
             session = self._sessions.get(request_id)
             if not session or not session.is_pending():
                 return False
             session.resolve(decision, decided_by, reason)
-            # 移入历史
-            self._decision_history.append(session)
-            if len(self._decision_history) > self._history_max_size:
-                self._decision_history.pop(0)
         log(
             f"批准会话已决策: {request_id} -> {decision.value} "
             f"(by {decided_by or 'system'})",
             tag="批准",
+        )
+        # 审计落库（即发即忘，fail-open：失败不影响决策生效）
+        audit.record_decision_bg(
+            tool_name=session.request.tool_name,
+            outcome=decision.value,
+            decided_by=decided_by,
+            reason=reason or session.decision_reason,
+            channel_id=session.request.requester_channel,
+            chat_id=session.request.requester_chat_id,
+            user_id=session.request.requester_user_id,
+            risk_level=session.request.risk_level.value,
+            matched_rule=session.request.matched_rule,
+            tool_args=session.request.tool_args,
         )
         return True
 
@@ -103,24 +107,8 @@ class ApprovalManager:
         return await self.resolve(request_id, ApprovalDecision.CANCELLED, "system", reason)
 
     # ------------------------------------------------------------------
-    # 历史与信任
+    # 信任（从审计账本统计，重启不清零）
     # ------------------------------------------------------------------
-
-    async def get_recent_approvals_for_tool(
-        self,
-        tool_name: str,
-        user_id: str,
-        limit: int = 10,
-    ) -> List[ApprovalSession]:
-        """获取某用户对某工具的最近批准历史。"""
-        async with self._lock:
-            history = [
-                s for s in self._decision_history
-                if s.request.tool_name == tool_name
-                and s.request.requester_user_id == user_id
-                and s.decision == ApprovalDecision.APPROVED
-            ]
-        return history[-limit:]
 
     async def is_trusted(
         self,
@@ -128,13 +116,15 @@ class ApprovalManager:
         user_id: str,
         policy: ApprovalPolicy,
     ) -> bool:
-        """检查是否已达到 trust_after_n_approvals 阈值。"""
+        """检查是否已达到 trust_after_n_approvals 阈值。
+
+        计数为审计账本中该 (tool, user) 的累计人工批准（approved）次数；
+        信任自动放行（trusted）不计入，避免自动放行自我强化信任。
+        """
         if policy.trust_after_n_approvals <= 0:
             return False
-        recent = await self.get_recent_approvals_for_tool(
-            tool_name, user_id, limit=policy.trust_after_n_approvals,
-        )
-        return len(recent) >= policy.trust_after_n_approvals
+        count = await audit.count_approvals(tool_name, user_id)
+        return count >= policy.trust_after_n_approvals
 
     # ------------------------------------------------------------------
     # 清理
@@ -147,10 +137,23 @@ class ApprovalManager:
                 rid for rid, s in self._sessions.items()
                 if s.is_expired() and s.status == "pending"
             ]
+            resolved: List[ApprovalSession] = []
             for rid in expired:
                 session = self._sessions.pop(rid)
                 session.resolve(ApprovalDecision.EXPIRED, "system", "timeout")
-                self._decision_history.append(session)
+                resolved.append(session)
+        for session in resolved:
+            audit.record_decision_bg(
+                tool_name=session.request.tool_name,
+                outcome=ApprovalDecision.EXPIRED.value,
+                decided_by="system",
+                reason="timeout",
+                channel_id=session.request.requester_channel,
+                chat_id=session.request.requester_chat_id,
+                user_id=session.request.requester_user_id,
+                risk_level=session.request.risk_level.value,
+                matched_rule=session.request.matched_rule,
+            )
         if expired:
             log(f"批准会话清理: {len(expired)} 个过期会话已标记", "DEBUG", tag="批准")
         return len(expired)
@@ -185,17 +188,14 @@ class ApprovalManager:
     # ------------------------------------------------------------------
 
     async def get_stats(self) -> Dict[str, Any]:
-        """获取统计信息。"""
+        """获取统计信息：挂起数（内存实时）+ 决策聚合（审计账本）。"""
         async with self._lock:
             pending = sum(1 for s in self._sessions.values() if s.is_pending())
-            history_by_decision: Dict[str, int] = {}
-            for s in self._decision_history:
-                key = s.decision.value if s.decision else "unknown"
-                history_by_decision[key] = history_by_decision.get(key, 0) + 1
+        audit_stats = await audit.stats()
         return {
             "pending_count": pending,
-            "history_size": len(self._decision_history),
-            "history_by_decision": history_by_decision,
+            "history_size": audit_stats["total"],
+            "history_by_decision": audit_stats["by_outcome"],
         }
 
 

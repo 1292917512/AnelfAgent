@@ -757,7 +757,7 @@ class LLMManager(BaseEntity):
         - 其余瞬态错误使用标准指数退避 + 抖动
         """
         from agent.llm.resilience import ErrorCategory, classify_llm_error
-        from agent.llm.retry import jittered_backoff
+        from agent.llm.retry import RETRY_AFTER_WAIT_CAP, jittered_backoff, parse_retry_after
 
         name = client.config.name
         for attempt in range(max(0, max_retries) + 1):
@@ -789,9 +789,23 @@ class LLMManager(BaseEntity):
                 classified = classify_llm_error(exc)
                 if not classified.retryable or attempt >= max_retries:
                     raise exc
-                # 限流：更长基础退避；其余瞬态错误：标准指数退避（均带抖动）
+                # 限流：优先采信服务端 Retry-After（不足时取本地估计的较大者），
+                # 服务端要求等待超过采信上限则放弃当前候选转回退链；
+                # 其余瞬态错误：标准指数退避（均带抖动）
                 if classified.category == ErrorCategory.RATE_LIMIT:
                     delay = jittered_backoff(attempt + 1, base_delay=5.0, max_delay=60.0)
+                    server_wait = parse_retry_after(exc)
+                    if server_wait is not None:
+                        if server_wait > RETRY_AFTER_WAIT_CAP:
+                            safe = self._safe_error(exc, client) or type(exc).__name__
+                            warning(
+                                f"LLM [{name}] 服务端限流要求等待 {server_wait:.0f}s "
+                                f"（超过采信上限 {RETRY_AFTER_WAIT_CAP:.0f}s），"
+                                f"放弃当前候选转回退: {type(exc).__name__}: {safe}",
+                                tag="模型",
+                            )
+                            raise exc
+                        delay = max(delay, server_wait)
                 else:
                     delay = jittered_backoff(attempt + 1, base_delay=2.0, max_delay=30.0)
                 remaining = deadline - asyncio.get_running_loop().time()

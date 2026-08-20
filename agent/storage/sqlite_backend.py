@@ -205,6 +205,31 @@ class SqliteBackend:
                     );
                     """
                 )
+                # 审批审计账本：所有非默认放行的审批决策（人工批准/拒绝/取消/超时、
+                # 规则拒绝、信任阈值放行）追加写入；trust_after_n_approvals 的
+                # 信任计数从此表统计——重启不再清零
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS approval_audit (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      ts_ns INTEGER NOT NULL,
+                      tool_name TEXT NOT NULL,
+                      outcome TEXT NOT NULL,
+                      decided_by TEXT NOT NULL DEFAULT '',
+                      reason TEXT NOT NULL DEFAULT '',
+                      channel_id TEXT NOT NULL DEFAULT '',
+                      chat_id TEXT NOT NULL DEFAULT '',
+                      user_id TEXT NOT NULL DEFAULT '',
+                      risk_level TEXT NOT NULL DEFAULT '',
+                      matched_rule TEXT NOT NULL DEFAULT '',
+                      args_json TEXT NOT NULL DEFAULT ''
+                    );
+                    """
+                )
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_approval_audit_tool_user "
+                    "ON approval_audit(tool_name, user_id, outcome);"
+                )
                 # id 水位线列：同 ts_ns 并列的消息靠 id 决胜，避免边界消息永久不可见
                 cursor = await db.execute("PRAGMA table_info(conversation_summary)")
                 summary_cols = {row[1] for row in await cursor.fetchall()}
@@ -749,7 +774,11 @@ class SqliteBackend:
             await db.commit()
 
     async def list_scope_usage(self, limit: int = 100) -> list[dict]:
-        """按总 token 用量降序列出会话统计（API 用）。"""
+        """按总 token 用量降序列出会话统计（API 用）。
+
+        prompt_miss_tokens 为计算列（prompt_tokens - cache_read_tokens）：
+        DeepSeek 口径 prompt_tokens 含缓存命中，消费方把两者相加会重复计。
+        """
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT scope_key, turns, llm_calls, prompt_tokens, completion_tokens, "
@@ -761,9 +790,78 @@ class SqliteBackend:
         return [
             {"scope_key": r[0], "turns": r[1], "llm_calls": r[2],
              "prompt_tokens": r[3], "completion_tokens": r[4], "total_tokens": r[5],
-             "cache_read_tokens": r[6], "updated_ns": r[7]}
+             "cache_read_tokens": r[6], "updated_ns": r[7],
+             "prompt_miss_tokens": max(0, r[3] - r[6])}
             for r in rows
         ]
+
+    # ------------------------------------------------------------------
+    # 审批审计（approval_audit）
+    # ------------------------------------------------------------------
+
+    async def append_approval_audit(self, record: dict) -> None:
+        """追加一条审批决策审计记录（列缺失按空值兜底）。"""
+        cols = (
+            "ts_ns", "tool_name", "outcome", "decided_by", "reason",
+            "channel_id", "chat_id", "user_id", "risk_level", "matched_rule",
+            "args_json",
+        )
+        values = [record.get(c, "") for c in cols]
+        values[0] = int(record.get("ts_ns") or time.time_ns())
+        values[1] = str(values[1] or "")
+        db = await self._get_db()
+        async with self._write_lock:
+            await db.execute(
+                f"INSERT INTO approval_audit({', '.join(cols)}) "
+                f"VALUES({', '.join('?' for _ in cols)})",
+                values,
+            )
+            await db.commit()
+
+    async def list_approval_audit(
+        self, limit: int = 50, offset: int = 0, tool_name: str = "",
+    ) -> list[dict]:
+        """按时间倒序分页列出审批审计记录（可按工具名过滤）。"""
+        db = await self._get_db()
+        where = "WHERE tool_name = ? " if tool_name else ""
+        args: list = [tool_name] if tool_name else []
+        cursor = await db.execute(
+            "SELECT id, ts_ns, tool_name, outcome, decided_by, reason, channel_id, "
+            "chat_id, user_id, risk_level, matched_rule, args_json "
+            f"FROM approval_audit {where}ORDER BY id DESC LIMIT ? OFFSET ?",
+            (*args, max(1, int(limit)), max(0, int(offset))),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"id": r[0], "ts_ns": r[1], "tool_name": r[2], "outcome": r[3],
+             "decided_by": r[4], "reason": r[5], "channel_id": r[6],
+             "chat_id": r[7], "user_id": r[8], "risk_level": r[9],
+             "matched_rule": r[10], "args_json": r[11]}
+            for r in rows
+        ]
+
+    async def count_approval_outcomes(
+        self, tool_name: str, user_id: str, outcome: str,
+    ) -> int:
+        """统计某用户对某工具某结果的累计次数（trust 计数的数据源）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM approval_audit "
+            "WHERE tool_name = ? AND user_id = ? AND outcome = ?",
+            (tool_name, user_id, outcome),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    async def approval_audit_stats(self) -> dict:
+        """按 outcome 聚合审计记录（统计页用）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT outcome, COUNT(*) FROM approval_audit GROUP BY outcome"
+        )
+        rows = await cursor.fetchall()
+        by_outcome = {r[0]: int(r[1]) for r in rows}
+        return {"total": sum(by_outcome.values()), "by_outcome": by_outcome}
 
     # ------------------------------------------------------------------
     # 记忆管理扩展

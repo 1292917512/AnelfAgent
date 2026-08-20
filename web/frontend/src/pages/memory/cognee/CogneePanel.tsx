@@ -1,13 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { RefreshCw, Database, Sparkles, Upload } from "lucide-react";
+import { RefreshCw, Database, Sparkles, Upload, Shrink } from "lucide-react";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
+import { toast } from "@/components/ui";
 import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ModelConfigCard } from "@/pages/memory/cognee/ModelConfigCard";
 import { CogneeGraphCard } from "@/pages/memory/cognee/CogneeGraphCard";
 import { devopsApi, memoryApi } from "@/lib/api";
+import { formatSize } from "@/lib/utils";
 import type { CogneeResolvedInfo, ConfigValues } from "@/lib/types";
 
 function ResolvedLine({ label, info }: { label: string; info?: CogneeResolvedInfo }) {
@@ -73,9 +75,27 @@ export function CogneePanel() {
     mutationFn: (name: string) => memoryApi.cognee.improve(name),
     onSuccess: invalidate,
   });
+  const compactMutation = useMutation({
+    mutationFn: () => memoryApi.cognee.compact(),
+    onSuccess: (resp) => {
+      invalidate();
+      const data = resp?.data;
+      if (data?.error) {
+        toast.error(data.error);
+      } else if (data?.scheduled) {
+        toast.success(t("cognee.compactScheduled"));
+      } else {
+        toast.success(
+          t("cognee.compactDone", { size: formatSize(data?.result?.bytes_reclaimed ?? 0) }),
+        );
+      }
+    },
+    onError: () => toast.error(t("cognee.compactFailed")),
+  });
 
   const availability = status?.availability;
   const sync = status?.sync;
+  const storage = status?.storage;
 
   const generalFields: FieldMeta[] = [
     { key: "enabled", label: t("cogneeFields.enabled"), type: "bool", desc: t("cogneeDescs.enabled") },
@@ -88,6 +108,9 @@ export function CogneePanel() {
     { key: "sync_interval_seconds", label: t("cogneeFields.sync_interval_seconds"), type: "float", desc: t("cogneeDescs.sync_interval_seconds") },
     { key: "sync_batch_size", label: t("cogneeFields.sync_batch_size"), type: "int", desc: t("cogneeDescs.sync_batch_size") },
     { key: "max_retries", label: t("cogneeFields.max_retries"), type: "int", desc: t("cogneeDescs.max_retries") },
+    { key: "compact_enabled", label: t("cogneeFields.compact_enabled"), type: "bool", desc: t("cogneeDescs.compact_enabled") },
+    { key: "compact_interval_seconds", label: t("cogneeFields.compact_interval_seconds"), type: "float", desc: t("cogneeDescs.compact_interval_seconds") },
+    { key: "compact_retention_days", label: t("cogneeFields.compact_retention_days"), type: "float", desc: t("cogneeDescs.compact_retention_days") },
     { key: "native_weight", label: t("cogneeFields.native_weight"), type: "float", desc: t("cogneeDescs.native_weight") },
     { key: "cognee_weight", label: t("cogneeFields.cognee_weight"), type: "float", desc: t("cogneeDescs.cognee_weight") },
     { key: "rrf_k", label: t("cogneeFields.rrf_k"), type: "int", desc: t("cogneeDescs.rrf_k") },
@@ -109,6 +132,13 @@ export function CogneePanel() {
                 <RefreshCw size={14} /> {t("retryFailedSync")}
               </button>
             )}
+            <button
+              onClick={() => compactMutation.mutate()}
+              disabled={compactMutation.isPending}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
+            >
+              <Shrink size={14} /> {t("cognee.compact")}
+            </button>
             <button
               onClick={() => { if (window.confirm(t("cognee.backfillConfirm"))) backfillMutation.mutate(); }}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-all"
@@ -148,7 +178,27 @@ export function CogneePanel() {
             value={String(sync?.failed || 0)}
             variant={(sync?.failed || 0) > 0 ? "danger" : "default"}
           />
+          <StatCard
+            label={t("cognee.storage")}
+            value={storage ? formatSize(storage.total_bytes) : "—"}
+          />
         </div>
+        {storage && storage.total_bytes > 0 && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 pb-2 text-[11px] text-muted">
+            <span>{t("cognee.storageLance")}: {formatSize(storage.lance_bytes)}</span>
+            <span>{t("cognee.storageGraph")}: {formatSize(storage.graph_bytes)}</span>
+            <span>{t("cognee.storageMetadata")}: {formatSize(storage.metadata_bytes)}</span>
+            <span>{t("cognee.storageData")}: {formatSize(storage.data_bytes)}</span>
+          </div>
+        )}
+        {sync?.last_compact_summary && (
+          <div className="pb-2 text-[11px] text-muted">
+            {t("cognee.lastCompact")}: {sync.last_compact_summary}
+            {sync.last_compact_at
+              ? `（${new Date(sync.last_compact_at * 1000).toLocaleString()}）`
+              : ""}
+          </div>
+        )}
         <div className="space-y-1.5 pt-2 border-t border-border">
           <ResolvedLine label={t("cognee.chatModel")} info={status?.resolved?.chat} />
           <ResolvedLine label={t("cognee.embeddingModel")} info={status?.resolved?.embedding} />

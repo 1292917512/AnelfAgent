@@ -109,3 +109,33 @@ class TestStreamFallback:
                                                 stream=True)
         assert captured.get("called")
         assert result.content == "完整结果"
+
+
+class TestTTFT:
+    async def test_ttft_measured_on_first_delta(self):
+        """首 delta 到达时刻记 TTFT（毫秒），随 ChatResult 返回。"""
+
+        async def slow_first_stream(messages, *, options=None, tools=None, tool_choice=None):
+            await asyncio.sleep(0.05)
+            yield ChatStreamDelta(content="首字")
+            yield ChatStreamDelta(content="尾", finish_reason="stop")
+
+        client = _fake_stream_client([])
+        client.chat_stream = slow_first_stream
+        mind = _mind_stub(client)
+        result = await Mind._llm_chat_stream_once(mind, [], None)
+        assert result.content == "首字尾"
+        assert result.ttft_ms is not None and result.ttft_ms >= 40
+
+    async def test_ttft_absent_when_stream_empty(self):
+        """流无任何 delta（异常路径兜底）时 TTFT 为 None。"""
+
+        async def empty_stream(messages, *, options=None, tools=None, tool_choice=None):
+            return
+            yield  # pragma: no cover（空生成器）
+
+        client = _fake_stream_client([])
+        client.chat_stream = empty_stream
+        mind = _mind_stub(client)
+        result = await Mind._llm_chat_stream_once(mind, [], None)
+        assert result.ttft_ms is None

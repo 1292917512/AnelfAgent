@@ -58,24 +58,40 @@ export function genChatId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-// ── 发送看门狗：120s 无 reply/delta 则复位发送态 ──
+// ── 发送看门狗：120s 完全无输出（delta/tool_call/reply…）则复位发送态 ──
+// 语义是停滞判定而非总时长上限：回合内任何活动都重置计时，持续有输出的
+// 长回合不会触发；仅在彻底静默超过窗口时判定挂死。
 
 let _sendWatchdog: ReturnType<typeof setTimeout> | null = null;
+let _pendingTimeout: { chatId: string; onTimeout: (chatId: string) => void } | null = null;
 const SEND_TIMEOUT_MS = 120_000;
+
+function _scheduleSendWatchdog() {
+  if (_sendWatchdog) clearTimeout(_sendWatchdog);
+  _sendWatchdog = setTimeout(() => {
+    _sendWatchdog = null;
+    const pending = _pendingTimeout;
+    _pendingTimeout = null;
+    pending?.onTimeout(pending.chatId);
+  }, SEND_TIMEOUT_MS);
+}
 
 export function clearSendWatchdog() {
   if (_sendWatchdog) {
     clearTimeout(_sendWatchdog);
     _sendWatchdog = null;
   }
+  _pendingTimeout = null;
 }
 
 export function armSendWatchdog(chatId: string, onTimeout: (chatId: string) => void) {
-  clearSendWatchdog();
-  _sendWatchdog = setTimeout(() => {
-    _sendWatchdog = null;
-    onTimeout(chatId);
-  }, SEND_TIMEOUT_MS);
+  _pendingTimeout = { chatId, onTimeout };
+  _scheduleSendWatchdog();
+}
+
+/** 回合内有输出活动（delta/tool_call/file_diff）时重置停滞计时 */
+export function touchSendWatchdog() {
+  if (_pendingTimeout) _scheduleSendWatchdog();
 }
 
 // ── blob: URL 生命周期 ──

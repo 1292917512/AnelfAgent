@@ -185,6 +185,9 @@ class ChatResult:
     raw: Optional[dict[str, Any]] = None
     usage: Optional[UsageInfo] = None
     model: str = ""
+    # 首 token 时间（毫秒，流式路径填充；对齐 dsh trajectory 的 TTFT 指标——
+    # 区分"模型排队慢"与"输出生成长"两个独立的延迟来源）。非流式为 None。
+    ttft_ms: Optional[float] = None
 
 
 @dataclass(slots=True)

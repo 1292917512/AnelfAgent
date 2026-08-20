@@ -43,6 +43,8 @@ export function DatabasePanel() {
   const { data: databases, isLoading: dbsLoading } = useQuery({
     queryKey: ["dbDatabases"],
     queryFn: () => databaseApi.databases().then((r) => r.data.items),
+    // cognee 存储统计为后台快照制，首次计算完成前返回空值，轮询兜底自愈
+    refetchInterval: 30000,
   });
 
   const { data: connections } = useQuery({

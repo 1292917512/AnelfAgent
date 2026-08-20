@@ -1,26 +1,12 @@
 {
   "name": "memory_consolidation",
-  "display_name": "记忆整理",
-  "description": "全面审计记忆系统：逐类型清理长期记忆、巡检 MD 便签、消除两者内容重叠、整理目标堆积、核对标签与索引健康，并兜底处理心跳预警",
-  "scope": "global",
-  "enabled": true,
-  "memory_type": "reflection",
-  "importance": 0.4,
-  "tags": [
-    "type:consolidation"
+  "display_name": "记忆整理（深度自检版）",
+  "description": "每日10:00唯一常驻记忆任务。08-20 17:50 主人定调：记忆整理必须详细、真正调查记忆情况——标签是否正确使用、有无冗余重复、有无记忆错乱、如何优化利用记忆系统，不是只看水位数字。六维检查：水位/标签审计/冗余/错乱/便签健康/优化沉淀，发现问题当场修完不留尾巴",
+  "version": "3.0",
+  "mode": "scheduled",
+  "schedule_times": [
+    "10:00"
   ],
-  "source": "memory_consolidation",
-  "null_keywords": [
-    "记忆库健康",
-    "无需整理"
-  ],
-  "tool_tags": [
-    "heartbeat",
-    "memory",
-    "notes",
-    "graph"
-  ],
-  "prompt": "【工具使用（必须遵守）】本任务已注册 memory/notes/graph 等工具组，直接调用记忆工具完成工作（recall/memorize/memory_index/read_memory_file/write_section/patch_memory_file/view_memory_outline 等），禁止用 shell 命令或手动编辑文件的方式读写记忆库。\n\n全面审计记忆系统：逐类型清理长期记忆、巡检 MD 便签、消除两者内容重叠、整理目标堆积、核对标签与索引健康，并兜底处理心跳预警。注意：完整合并整理仅在周日（每周日）执行；其他日期若被触发只做轻量巡检（快速核对索引与预警），不做深度合并，避免过度消耗资源。深度整理输出打 goal:174cec23 标签便于目标视角召回。",
-  "allow_output_tools": false,
-  "save_result_to_memory": false
+  "timeout_seconds": 600,
+  "prompt": "执行每日记忆深度整理（唯一记忆任务。记忆是梦璃的自我，认真对待，禁止只看水位数字走过场；以下检查发现问题当场修完，不留尾巴）：\n\n一、水位快照：memory_stats() 记录各类型水位与 warnings、召回健康（关键词空结果、平均耗时异常）。\n\n二、标签使用审计（memory_deep_search 分页抽查 semantic+permanent 至少各 1 页 20 条）：①前缀规范 type:/user:/group:/topic:/date: 拼写用法，乱标签/无标签当场 update_memory 修正；②孤标签：全库仅出现1-2次的临时杂标签归并入规范标签；③路由正确性：正文混入画像描述（性格/偏好）→摘出补进 update_entity_profile，关系描述（A是B的xx/A喜欢C）→graph_add_relation（evidence 必填），落库后更新原记忆或 forget；④张冠李戴：user: 标签 uid 与正文提及人物一致性。\n\n三、冗余重复：当日新增/更新记忆逐条 recall 交叉验证，同语义多条未被去重拦截的 → 保留最新最全一条，其余 forget 归档；便签内出现 DB 已有内容副本（画像全文/事件详情）→ 按索引铁律只留一行索引、删正文。\n\n四、记忆错乱：当日 update/merge 的新旧版本语义冲突（旧结论已被推翻但未归档）→ forget 过时版；人物/群组/日期与标签 date: 自洽性，矛盾当场修正；cognee_status 看一眼 failed 积压并记录根因。\n\n五、便签层健康：knowledge(500)/reflections(500)/entities(1000) 行数超标即按索引为主瘦身；events/ 超30天文件提炼入 DB(type:event) 后删除；便签引用的 mem:ID 抽查 2-3 条 get_memory 验证未归档失效，失效索引行清除。\n\n六、优化沉淀：系统性问题（自动捕获冗余率高、某类标签反复出错、某文件反复超标）→ 沉淀或更新对应技能，一次性可修的当场修完。整理结论写心跳日志（水位快照+处置计数：修正X/合并X/归档X/瘦身X行）；仅发现重要错乱/事实冲突/容量失控才报主人，正常静默不打扰。"
 }
