@@ -3,6 +3,7 @@
   "subtitle": "Unified access to databases, stickers and other business data",
   "tabs": {
     "database": "Database",
+    "volumes": "Volumes",
     "stickers": "Stickers",
     "storage": "Storage"
   },
@@ -119,5 +120,80 @@
     "migrate": "Start migration",
     "migrateHint": "SQLite files are copied via online backup (safe while running); the source directory is kept. Restart required afterwards.",
     "migrateFailed": "Failed to start migration"
+  },
+  "volumes": {
+    "subtitle": "Each data module managed independently: backup / restore / relocate / external SQL transfer",
+    "kind": {
+      "sqlite": "SQLite",
+      "cognee_tree": "Cognee data tree",
+      "notes_tree": "Notes tree"
+    },
+    "source": {
+      "default": "Default location",
+      "assignment": "Custom location",
+      "env": "Pinned by env var"
+    },
+    "pendingBanner": "Restores staged for restart: {{volumes}}",
+    "pendingOne": "Restore staged, applies after restart",
+    "needsRestart": "Location switched; applies after restart. New writes before restart still go to the old location.",
+    "restartNow": "Restart now",
+    "restarting": "Restart requested",
+    "restartFailed": "Restart request failed",
+    "noVolumes": "No storage volumes registered",
+    "backupCount": "{{count}} backups",
+    "lastBackup": "Last backup {{time}}",
+    "op": {
+      "backup": "Backup",
+      "restore": "Restore",
+      "relocate": "Relocate",
+      "export": "Export",
+      "import": "Import"
+    },
+    "opRunning": "{{op}} in progress",
+    "opFailed": "Operation failed: {{error}}",
+    "ops": {
+      "backup": "Backup now",
+      "backups": "Backups",
+      "relocate": "Relocate",
+      "export": "SQL export",
+      "import": "SQL import"
+    },
+    "backupDrawer": {
+      "title": "{{name}} · Backups",
+      "empty": "No backups yet",
+      "restore": "Restore",
+      "download": "Download",
+      "delete": "Delete",
+      "restoreConfirmTitle": "Restore this backup?",
+      "restoreConfirmBody": "Current data is kept as a .pre-restore safety copy. The restore applies after restart; writes made before restarting are lost.",
+      "restoreDone": "Staged, applies after restart",
+      "deleteConfirmTitle": "Delete this backup?",
+      "failed": "Backup operation failed"
+    },
+    "relocate": {
+      "title": "Relocate {{name}}",
+      "hint": "Move this volume to another directory or disk: online copy (cognee tree waits for a sync idle window) → write location config → restart to apply. Source files are kept.",
+      "started": "Relocation started",
+      "failed": "Failed to start relocation",
+      "run": "Start relocation",
+      "problem": {
+        "target_file_exists": "A data file with the same name already exists in the target directory"
+      }
+    },
+    "sql": {
+      "exportTitle": "Export {{name}} to external SQL",
+      "importTitle": "Import {{name}} from external SQL",
+      "connection": "External connection",
+      "pickConnection": "Pick a connection…",
+      "noConnections": "No external connections configured (add a PostgreSQL / MySQL connection in the database tab)",
+      "prefix": "Table name prefix (optional, e.g. anelf_)",
+      "drop": "Overwrite existing target tables",
+      "dropHint": "(snapshot semantics: rebuild and fully overwrite)",
+      "exportHint": "Schema and data are pushed in full to the external database as a backup slot or transfer channel. Derived indexes (FTS/vector) are not transferred and can be imported back anytime.",
+      "importHint": "Only databases produced by this system's export are accepted. Import builds a fresh database and applies after restart; current data is kept as a safety copy.",
+      "run": "Start transfer",
+      "started": "Transfer started",
+      "failed": "Transfer failed"
+    }
   }
 }

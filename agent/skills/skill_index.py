@@ -38,6 +38,29 @@ from core.log import log
 _EMBEDDING_CACHE_MAX = 1024
 
 
+def _default_skill_vectors_path() -> str:
+    """派生技能向量库默认路径：主库同目录，stem + '_skill_vectors'。"""
+    from core.storage_volume import main_sqlite_path
+
+    main = Path(main_sqlite_path())
+    return str(main.with_name(f"{main.stem}_skill_vectors.sqlite3"))
+
+
+def _register_volume() -> None:
+    from core.storage_volume import VolumeDescriptor, VolumeKind, register_volume
+
+    register_volume(VolumeDescriptor(
+        volume_id="skill_vectors",
+        name="技能向量库",
+        description="技能语义向量（模型+文本hash 双因子校验；重建操作见技能库页）",
+        kind=VolumeKind.SQLITE,
+        default_path=_default_skill_vectors_path,
+    ))
+
+
+_register_volume()
+
+
 def _cfg_float(key: str, default: float) -> float:
     from core.config import get_config_float
     return get_config_float(key, default)
@@ -111,9 +134,11 @@ class SkillIndex:
         """
         if self._db_path is not None:
             return Path(self._db_path)
-        from agent.storage.sqlite_backend import default_sqlite_path
-        main = Path(default_sqlite_path())
-        return main.with_name(f"{main.stem}_skill_vectors.sqlite3")
+        from core.storage_volume import get_volume_registry
+
+        resolved = Path(get_volume_registry().resolve_path("skill_vectors"))
+        get_volume_registry().mark_active("skill_vectors", str(resolved))
+        return resolved
 
     @staticmethod
     def _ensure_schema(conn: sqlite3.Connection) -> None:

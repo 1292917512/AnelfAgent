@@ -25,7 +25,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-DEFAULT_DB = ROOT / "config/memory/data/agent_memory.sqlite3"
+
+def _default_db() -> Path:
+    """经存储卷注册表解析记忆库路径（卷指派/环境变量优先于历史默认布局）。"""
+    import agent.memory.memory_store  # noqa: F401  触发卷登记
+    from core.storage_volume import get_volume_registry
+
+    return Path(get_volume_registry().resolve_path("memory"))
+
+
 DEFAULT_CASES = ROOT / "scripts/eval_recall_cases.json"
 
 
@@ -65,7 +73,7 @@ async def run(cases_path: Path, db_path: Path, top_k: int) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="记忆召回评测")
     parser.add_argument("cases", nargs="?", default=str(DEFAULT_CASES), help="用例集 JSON")
-    parser.add_argument("--db", default=str(DEFAULT_DB), help="记忆库路径")
+    parser.add_argument("--db", default=str(_default_db()), help="记忆库路径")
     parser.add_argument("-k", type=int, default=5, help="top-k（默认 5）")
     args = parser.parse_args()
 

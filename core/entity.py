@@ -416,6 +416,7 @@ class BaseEntity(ABC):  # noqa: B024 — 标记型基类：子类经类属性声
             ),
             enabled=True,
             instance=self,
+            meta=dict(getattr(cls, '_entity_meta', {}) or {}),
         )
         EntityRegistry.register(metadata)
         EntityRegistry.activate_entity(instance_name)

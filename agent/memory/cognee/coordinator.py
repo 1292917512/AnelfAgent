@@ -41,6 +41,9 @@ class CogneeCoordinator:
         self._last_improve_ns: dict[str, int] = {}
         self._compact_requested = False
         self._last_compact_ns = 0
+        # 空闲窗口作业（run_in_idle_window 提交，worker 在队列排空后执行）
+        self._idle_job: Optional[Any] = None
+        self._idle_done = asyncio.Event()
         self.last_compact_at = 0.0
         self.last_compact_summary = ""
 
@@ -81,6 +84,10 @@ class CogneeCoordinator:
     async def close(self) -> None:
         self._closing = True
         self._wake.set()
+        # 唤醒可能仍在等待空闲窗口作业的调用方，避免关停悬挂
+        if self._idle_job is not None:
+            self._idle_job = asyncio.CancelledError("cognee worker 已关闭")
+            self._idle_done.set()
         if self._task:
             self._task.cancel()
             try:
@@ -151,6 +158,39 @@ class CogneeCoordinator:
         result = await self._run_compact()
         return {"ok": True, "scheduled": False, "result": result}
 
+    async def run_in_idle_window(self, job: Any) -> Any:
+        """在队列排空后的空闲窗口执行 job（协程，与写入互斥）。
+
+        供存储卷备份/迁移等需要 cognee 数据树静默期的操作使用：
+        worker 存活时提交作业并等待其在空闲窗口执行完毕（作业与批次
+        天然互斥——worker 是唯一写入者）；worker 未运行时直接执行。
+        """
+        if not (self._task and not self._task.done()):
+            return await job
+        if self._idle_job is not None:
+            raise RuntimeError("已有空闲窗口作业排队中")
+        self._idle_done.clear()
+        self._idle_job = job
+        self.wake()
+        await self._idle_done.wait()
+        result = self._idle_job
+        self._idle_job = None
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    async def _run_idle_job(self) -> None:
+        """worker 侧：执行排队的空闲作业并唤醒等待方（异常原样回传）。"""
+        job = self._idle_job
+        if job is None:
+            return
+        try:
+            self._idle_job = await job
+        except BaseException as exc:
+            self._idle_job = exc
+        finally:
+            self._idle_done.set()
+
     async def retry_failed(self) -> int:
         count = await self.store.retry_failed_cognee_sync()
         self.wake()
@@ -179,6 +219,7 @@ class CogneeCoordinator:
                     await self._process_batch(batch)
                     continue
                 await self._maybe_compact()
+                await self._run_idle_job()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

@@ -203,6 +203,7 @@ def _register_domain_error_handlers(app: FastAPI) -> None:
     """注册领域异常 → HTTP 响应的统一转换（路由内不再逐个 try/except）。"""
     from services.data_migration import MigrationError
     from services.database import DatabaseError
+    from services.volume_ops import VolumeOperationError
 
     @app.exception_handler(DatabaseError)
     async def _database_error_handler(request: Request, exc: DatabaseError) -> JSONResponse:
@@ -210,6 +211,10 @@ def _register_domain_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(MigrationError)
     async def _migration_error_handler(request: Request, exc: MigrationError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+
+    @app.exception_handler(VolumeOperationError)
+    async def _volume_error_handler(request: Request, exc: VolumeOperationError) -> JSONResponse:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 

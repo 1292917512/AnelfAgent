@@ -33,7 +33,7 @@ description: "AnelfAgent 项目指令 — 开发规范与架构速查（对所�
 
 | 目录 | 职责 | 关键约定 |
 |------|------|---------|
-| `core/` | 基础框架（EntityRegistry / ConfigManager / Application+Lifecycle / FlowMachine / PathManager+ConfigPaths / 标签 / 事件 / 日志） | 不依赖任何业务模块 |
+| `core/` | 基础框架（EntityRegistry / ConfigManager / Application+Lifecycle / FlowMachine / PathManager+ConfigPaths / 标签 / 事件 / 日志 / 存储卷注册表） | 不依赖任何业务模块 |
 | `agent/` | 智能体内核（Mind / LLM / Storage / Channel / Runtime / Memory / Task / Heartbeat / Planning） | 不依赖 web |
 | `agent/mind/` | 思维核心（自主决策 / 多轮推理 / 跨频道感知） | 工具编排在 `mind/tools/` |
 | `agent/memory/` | 语义记忆（FTS5 + Embedding 混合检索 / 便签 / 文件索引） | 不依赖 mind |
@@ -120,6 +120,7 @@ ConfigPaths.HEARTBEAT_CONFIG    # config/heartbeat.json
 ConfigPaths.TASKS_DIR           # config/tasks
 ConfigPaths.DB_CONNECTIONS      # config/db_connections.json（外部 SQL 连接注册表）
 ConfigPaths.SQLITE_DB           # <data_dir>/data/agent.sqlite3（随 ANELF_DATA_DIR/data_root 变化）
+ConfigPaths.STORAGE_VOLUMES     # config/storage_volumes.json（存储卷位置指派，见运行时机制表「存储卷」）
 ConfigPaths.UPLOAD_DIR          # workspace/uploads
 ```
 
@@ -315,6 +316,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 用量归属与口径 | `scope_usage.bind_usage_scope` + `_is_ephemeral_scope` | ① 委托链经 ContextVar 绑定父会话 scope，子代理 reflect 的 LLM 用量归属父会话（/status/usage 可见委托成本）；② `reflect:{uuid}` 一次性 scope 不建统计行——此前每个子代理落孤儿行，累积挤爆容量上限后**新会话用量被整体静默丢弃**；③ list/summary 输出 `prompt_miss_tokens = prompt - cache_read`（DeepSeek 口径 prompt 含缓存命中，防消费方相加重复计）。scope 解析链：anything.entity_scope > usage_scope 绑定 > 激活上下文 |
 | TTFT 首 token 计时 | `ChatResult.ttft_ms` + `EVENT_THINKING_LLM_END` | 流式路径记首 delta 到达时刻（毫秒）；与 duration_ms 相减即输出生成耗时——"排队慢"与"生成长"两个独立延迟源分别可诊断（对齐 dsh trajectory TTFT）。非流式为 None |
 | cognee LanceDB 物理压缩与存储统计 | `cognee/storage.py`（物理存储维护模块：压缩 + 统计 + 快照 + 调度）+ coordinator 空闲窗口调度 | cognee 删除/更新只在 Lance 追加 tombstone 新版本，历史版本物理数据永不回收（磁盘单调膨胀的根因）。`compact_lance_tree` 遍历 `system/databases/**/*.lance.db` 逐表 `optimize(cleanup_older_than)`（碎片合并+索引优化+清理早于 `compact_retention_days` 的版本，最新版本永远保留、逻辑数据零影响），压缩前后用同一条统计遍历实测占用；worker 队列排空后的空闲窗口按 `compact_interval_seconds`（默认 86400s）自动执行（与写入单消费者天然互斥），失败仅记日志下个周期重试。手动触发三入口同路径 `coordinator.request_compact()`：AI 工具 `compact_cognee_storage`（memory 组）/ `POST /memory/cognee/compact` / Web 记忆页「压缩存储」按钮；worker 存活时登记请求待空闲执行，未运行则内联执行。状态经 sync.last_compact_at/last_compact_summary 暴露。`StorageStatsTracker`（单例 `cognee_storage_stats`）：大库遍历可达数十秒，请求路径永不遍历——内存 TTL → 磁盘快照（`<data_root>/storage_stats.json`，重启即恢复真实值）→ 空统计三级返回，过期仅调度后台单任务刷新；所有缓存写入携带单调代际号，invalidate/adopt/新刷新使在途旧遍历结果被丢弃（防压缩后数字被旧遍历回写）；coordinator 启动预热、压缩尾声 `adopt(after_stats)` 直接收录实测值免二次遍历、rebuild 清场后 `invalidate(root)` 连快照删除。`/cognee/status` 的 storage 字段与数据库管理页 cognee 条目（size_bytes=整个数据目录，此前仅 stat 元数据库文件曾 177M 显示 vs 30G 实际）共用该 tracker |
+| 存储卷（数据平面模块化管理） | `core/storage_volume.py`（注册表 + 位置指派 + 主库路径权威 `main_sqlite_path`）+ `agent/storage/volume_restore.py`（重启落盘交换）+ `services/volume_ops.py`（备份/恢复/迁移/SQL 导出导入） | 所有持久化数据统一登记为存储卷（8 卷：agent 主库 / memory / skill_vectors / stickers / voiceprints / share 六个 SQLITE + cognee 树 + 便签树），各存储模块 import 时自注册 VolumeDescriptor（惰性 default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`（env > 项目根 ConfigPaths.SQLITE_DB）派生 stem，放在 core 使 entities 无需依赖 agent。路径解析优先级：env_override > 位置指派（`config/storage_volumes.json`，cognee 卷转发 cognee.json data_root 单一权威）> 模块默认派生——**无指派文件时所有路径与历史完全一致，数据零移动**。能力按形态派生：SQLITE 全量（备份/恢复/迁移/SQL 导出导入）、cognee 树无 SQL 传输、便签树（路径即数据根）仅备份/恢复（占用也只计卷成员：根级 *.md + events/groups/profile_backups，不计数据根其余内容）。备份：SQLite 走 Backup API 在线热备（`services.database.online_sqlite_backup` 唯一实现，整目录迁移同源复用）、树走 tgz（cognee 经 coordinator `run_in_idle_window` 空闲窗口与写入互斥，manifest 的 consistency 如实标注）；保留数 `volume_backup_retention`（storage/backup 组，默认 5）自动清理。恢复与迁移均为「校验 + 拷贝 + 指派/标记 + 重启生效」：恢复写 pending 标记（`<data_dir>/backups/volumes/.pending-restore.json`），bootstrap `init_storage` 最早消费（任何连接打开前交换文件；旧库 -wal/-shm 必清除防回放；现文件留 `.pre-restore-<ts>.bak` 滚动保留 3 份）；便签树恢复为选择性覆盖，cognee 树整树替换。迁移目标校验复用 `data_migration.validate_target_dir`（i18n 标识 tokens 共用），尺寸估计异步分口径（cognee 走统计缓存/便签走成员/SQLite 走 stat），不在事件循环上遍历大目录。外部 SQL 为备份/转移通道（运行时各库仍本地 SQLite）：`SqlTransferClient`（与只读浏览适配器分离的写通道）做 DDL 方言翻译 + rowid 窗口流式批量传输，导出登记清单表 `_anelf_export`、导入仅认清单（快照往返闭环）；派生索引（FTS5/vec0 影子表）不传输，导入后由各存储建表逻辑重建。Web 面板：数据管理页「存储卷」Tab（`pages/database/volumes/`），API 前缀 `/database/volumes`；`services.database.ensure_volume_modules()` 兜底触发卷登记，库注册表由卷驱动（share 库由此补登），cognee 浏览路径仍指元数据库文件。目录遍历/占用统一走 `core.file_utils.walk_files/directory_size` |
 
 ### 前端结构
 
@@ -404,8 +406,11 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `web/routers/workspace.py` | 工作区文件 API（目录树 / 读写 / 搜索，沙箱复用 entities.filesystem） |
 | `web/routers/database.py` | 数据管理 API（SQLite 浏览/维护/备份 + 外部连接 CRUD + 数据目录迁移） |
 | `web/routers/search.py` | 全局搜索聚合 API（记忆 / 日志 / 文件 / 会话） |
-| `services/db_connections.py` | 外部 SQL 连接（注册表 + PG/MySQL 只读适配器，config/db_connections.json） |
-| `services/data_migration.py` | 数据目录迁移（在线热备份拷贝 + 校验 + data_root 切换） |
+| `services/db_connections.py` | 外部 SQL 连接（注册表 + PG/MySQL 只读适配器 + SqlTransferClient 导出导入写通道，config/db_connections.json） |
+| `services/data_migration.py` | 数据目录迁移（在线热备份拷贝 + 校验 + data_root 切换；`validate_target_dir` 为目录迁移类目标校验的共用实现） |
+| `core/storage_volume.py` | 存储卷注册表（VolumeDescriptor 自注册 / 位置指派解析 / needs_restart 观测） |
+| `agent/storage/volume_restore.py` | 卷恢复重启落盘（pending 标记 + bootstrap 启动交换 + pre-restore 安全副本） |
+| `services/volume_ops.py` | 卷管理操作（备份/恢复/迁移/外部 SQL 导出导入 + 每卷单飞状态机） |
 | `entities/ui/tools.py` | 界面交互工具组（ui_notify / ui_ask / ui_open_panel / ui_compose / ui_get_state） |
 | `web/frontend/src/pages/chat/` | 对话工作凳子面板（Dock / StatusBar / FileEditor / UiCommandHost / render） |
 | `web/frontend/src/stores/chat-store.ts` | 对话状态 + 聊天 SSE（含 ui_command 分发） |

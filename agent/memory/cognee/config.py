@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from agent.llm.reasoning import CANONICAL_EFFORTS
 from core.log import log
@@ -194,3 +194,67 @@ def save_cognee_config(config: CogneeConfig) -> None:
         json.dumps(config.normalized().to_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+# ----------------------------------------------------------------------
+# 存储卷登记（cognee 数据树；位置权威保留在 cognee.json 的 data_root）
+# ----------------------------------------------------------------------
+
+
+def _config_file_path() -> Path:
+    path = Path(ConfigPaths.COGNEE_CONFIG)
+    if not path.is_absolute():
+        path = Path(project_root()) / path
+    return path
+
+
+def _absolute(path_str: str) -> str:
+    path = Path(path_str)
+    if not path.is_absolute():
+        path = Path(project_root()) / path
+    return str(path.resolve())
+
+
+def _default_cognee_data_root() -> str:
+    return _absolute(ConfigPaths.COGNEE_DATA_DIR)
+
+
+def _cognee_location_reader():
+    """卷位置读取：cognee.json 显式声明 data_root 才算有指派。"""
+    from core.storage_volume import VolumeLocation
+
+    path = _config_file_path()
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    data_root = str(raw.get("data_root", "") or "").strip() if isinstance(raw, dict) else ""
+    if not data_root:
+        return None
+    return VolumeLocation(path=_absolute(data_root))
+
+
+def _cognee_location_writer(path: Optional[str]) -> None:
+    """卷位置写入：转发 cognee.json data_root（单一权威，不进中央指派文件）。"""
+    config = load_cognee_config()
+    config.data_root = (path or "").strip() or ConfigPaths.COGNEE_DATA_DIR
+    save_cognee_config(config)
+
+
+def _register_volume() -> None:
+    from core.storage_volume import VolumeDescriptor, VolumeKind, register_volume
+
+    register_volume(VolumeDescriptor(
+        volume_id="cognee",
+        name="Cognee 关系库",
+        description="Cognee 知识图谱投影（lbug 图/lance 向量/元数据；大小为整个 cognee 数据目录）",
+        kind=VolumeKind.COGNEE_TREE,
+        default_path=_default_cognee_data_root,
+        location_reader=_cognee_location_reader,
+        location_writer=_cognee_location_writer,
+    ))
+
+
+_register_volume()

@@ -107,11 +107,9 @@ def normalize_tags(tags: list[str], mem_type: str, adapter: str) -> tuple[list[s
 
 
 async def run(apply: bool) -> None:
-    # 记忆库路径推导与生产 bootstrap 一致：主库 stem + "_memory" + 原后缀
-    from agent.storage.sqlite_backend import default_sqlite_path
-    _main = Path(default_sqlite_path())
-    db_path = str(_main.with_name(f"{_main.stem}_memory{_main.suffix or '.sqlite3'}"))
-    store = MemoryStore(db_path)
+    # 记忆库路径与生产一致：卷注册表解析（指派优先，默认主库 stem + "_memory"）
+    store = MemoryStore()
+    db_path = store._db_path
     adapter = _legacy_adapter()
     print(f"DB: {db_path}\nlegacy adapter: {adapter}\nmode: {'APPLY' if apply else 'DRY-RUN'}\n")
 

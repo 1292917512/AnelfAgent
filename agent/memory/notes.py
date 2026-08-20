@@ -46,6 +46,31 @@ def get_memory_dir() -> Path:
     return Path(ConfigPaths.MEMORY_DIR)
 
 
+def _default_notes_root() -> str:
+    """便签树根目录的绝对路径（即数据目录，相对路径基于项目根解析）。"""
+    from core.path import ConfigPaths, project_root
+
+    path = Path(ConfigPaths.MEMORY_DIR)
+    if not path.is_absolute():
+        path = Path(project_root()) / path
+    return str(path.resolve())
+
+
+def _register_volume() -> None:
+    from core.storage_volume import VolumeDescriptor, VolumeKind, register_volume
+
+    register_volume(VolumeDescriptor(
+        volume_id="notes",
+        name="便签记忆",
+        description="Markdown 便签树（memory.md / events / groups / 画像备份；路径即数据根，不可独立迁移）",
+        kind=VolumeKind.NOTES_TREE,
+        default_path=_default_notes_root,
+    ))
+
+
+_register_volume()
+
+
 def load_notes_content() -> str:
     """读取主便签文件内容，文件不存在返回空字符串。"""
     p = get_notes_path()

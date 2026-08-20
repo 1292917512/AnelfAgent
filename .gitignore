@@ -82,6 +82,10 @@ config/personas/yanyi.json
 # === Personal character assets ===
 config/mengli_aigc/
 
+# === Root-level ComfyUI workflow templates (personal downloads) ===
+/*_template.json
+/*workflow*.json
+
 # === Entity secrets (personal configs stay local; example files unaffected) ===
 entities/*/config.json
 entities/ssh/connections.json

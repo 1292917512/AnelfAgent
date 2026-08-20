@@ -65,15 +65,27 @@ CREATE TABLE IF NOT EXISTS meta (
 PHASH_CANDIDATE_THRESHOLD = 10
 
 
-def _default_db_path() -> str:
-    """派生贴纸库路径：与 MemoryStore 同一目录，stem + '_stickers'。"""
-    try:
-        from agent.storage.sqlite_backend import default_sqlite_path
-        main = default_sqlite_path()
-    except Exception:
-        main = os.path.join("workspace", "data.sqlite3")
-    stem, ext = os.path.splitext(main)
+def _derive_db_path() -> str:
+    """派生贴纸库默认路径：主库同目录，stem + '_stickers'。"""
+    from core.storage_volume import main_sqlite_path
+
+    stem, ext = os.path.splitext(main_sqlite_path())
     return f"{stem}_stickers{ext or '.sqlite3'}"
+
+
+def _register_volume() -> None:
+    from core.storage_volume import VolumeDescriptor, VolumeKind, register_volume
+
+    register_volume(VolumeDescriptor(
+        volume_id="stickers",
+        name="表情包库",
+        description="表情包 / 图片感知索引",
+        kind=VolumeKind.SQLITE,
+        default_path=_derive_db_path,
+    ))
+
+
+_register_volume()
 
 
 def _embed_to_blob(vec: List[float]) -> bytes:
@@ -134,7 +146,10 @@ class StickerStore:
     """表情包与图片索引的统一存储（懒初始化单例）。"""
 
     def __init__(self, db_path: Optional[str] = None) -> None:
-        self._db_path = db_path or _default_db_path()
+        from core.storage_volume import get_volume_registry
+
+        self._db_path = db_path or get_volume_registry().resolve_path("stickers")
+        get_volume_registry().mark_active("stickers", self._db_path)
         self._db: Optional[aiosqlite.Connection] = None
         self._lock = asyncio.Lock()
         self._vec_available = False

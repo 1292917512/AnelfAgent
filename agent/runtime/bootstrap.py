@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from pathlib import Path
 from typing import Any, Coroutine
 
 from core.flow import FlowMachine, result_key
@@ -52,7 +51,14 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=False, depends_on=[])
     async def init_storage():
         from agent.storage.data_center import create_data_center
+        from agent.storage.volume_restore import consume_pending_restores
         from core.lifecycle import Lifecycle
+
+        # 重启落盘的卷恢复交换：任何存储连接打开前完成文件替换
+        try:
+            consume_pending_restores()
+        except Exception as exc:
+            log(f"存储卷恢复标记消费失败（跳过）: {exc}", "ERROR")
 
         data_center = create_data_center()
         Lifecycle.register("data_center", data_center, cleanup=data_center.sqlite.close)
@@ -145,14 +151,10 @@ def create_bootstrap() -> FlowMachine:
         from agent.memory.memory_migrate import migrate_memories_to_md, needs_migration
         from agent.memory.memory_store import MemoryStore
         from agent.memory.memory_sync import sync_files
-        from agent.storage.sqlite_backend import default_sqlite_path
         from core.lifecycle import Lifecycle
 
-        # 在主库路径基础上派生记忆库路径： stem + "_memory" + 原后缀
-        # （with_suffix 要求后缀以 "." 开头，且 replace 对非 .sqlite3 后缀会失效，故按 stem 拼接）
-        _main = Path(default_sqlite_path())
-        db_path = str(_main.with_name(f"{_main.stem}_memory{_main.suffix or '.sqlite3'}"))
-        store = MemoryStore(db_path=db_path)
+        store = MemoryStore()
+        db_path = store._db_path
         embedder = get_embedder("text")
 
         await store._get_db()
@@ -200,8 +202,10 @@ def create_bootstrap() -> FlowMachine:
             from agent.memory.cognee.client import CogneeClient
             from agent.memory.cognee.config import load_cognee_config
             from agent.memory.cognee.coordinator import CogneeCoordinator
+            from core.storage_volume import get_volume_registry
 
             cognee_config = load_cognee_config()
+            get_volume_registry().mark_active("cognee", cognee_config.absolute_data_root)
             cognee_client = CogneeClient(cognee_config)
             cognee_coordinator = CogneeCoordinator(store, cognee_client, cognee_config)
             await cognee_coordinator.start()

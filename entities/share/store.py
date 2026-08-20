@@ -121,15 +121,27 @@ def get_public_base_url() -> str:
     return str(get_config("share_public_base_url", "") or "")
 
 
-def _default_db_path() -> str:
-    """派生分享库路径：与 MemoryStore 同一目录，stem + '_share'。"""
-    try:
-        from agent.storage.sqlite_backend import default_sqlite_path
-        main = default_sqlite_path()
-    except Exception:
-        main = os.path.join("workspace", "data.sqlite3")
-    stem, ext = os.path.splitext(main)
+def _derive_db_path() -> str:
+    """派生分享库默认路径：主库同目录，stem + '_share'。"""
+    from core.storage_volume import main_sqlite_path
+
+    stem, ext = os.path.splitext(main_sqlite_path())
     return f"{stem}_share{ext or '.sqlite3'}"
+
+
+def _register_volume() -> None:
+    from core.storage_volume import VolumeDescriptor, VolumeKind, register_volume
+
+    register_volume(VolumeDescriptor(
+        volume_id="share",
+        name="分享库",
+        description="分享链接与下载审计",
+        kind=VolumeKind.SQLITE,
+        default_path=_derive_db_path,
+    ))
+
+
+_register_volume()
 
 
 def _now_ms() -> int:
@@ -178,7 +190,10 @@ class ShareStore:
     """分享链接的统一存储（懒初始化单例）。"""
 
     def __init__(self, db_path: Optional[str] = None) -> None:
-        self._db_path = db_path or _default_db_path()
+        from core.storage_volume import get_volume_registry
+
+        self._db_path = db_path or get_volume_registry().resolve_path("share")
+        get_volume_registry().mark_active("share", self._db_path)
         self._db: Optional[aiosqlite.Connection] = None
         self._lock = asyncio.Lock()
 

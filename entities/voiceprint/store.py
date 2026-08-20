@@ -118,15 +118,27 @@ _FTS_TRIGGERS = [
 _SUMMARY_NAMES_LIMIT = 12
 
 
-def _default_db_path() -> str:
-    """派生音源库路径：与 MemoryStore 同一目录，stem + '_voiceprints'。"""
-    try:
-        from agent.storage.sqlite_backend import default_sqlite_path
-        main = default_sqlite_path()
-    except Exception:
-        main = os.path.join("workspace", "data.sqlite3")
-    stem, ext = os.path.splitext(main)
+def _derive_db_path() -> str:
+    """派生音源库默认路径：主库同目录，stem + '_voiceprints'。"""
+    from core.storage_volume import main_sqlite_path
+
+    stem, ext = os.path.splitext(main_sqlite_path())
     return f"{stem}_voiceprints{ext or '.sqlite3'}"
+
+
+def _register_volume() -> None:
+    from core.storage_volume import VolumeDescriptor, VolumeKind, register_volume
+
+    register_volume(VolumeDescriptor(
+        volume_id="voiceprints",
+        name="音源库",
+        description="说话人档案 / 声纹样本池 / 语音转写片段 / 已同步文件登记",
+        kind=VolumeKind.SQLITE,
+        default_path=_derive_db_path,
+    ))
+
+
+_register_volume()
 
 
 def _vec_to_blob(vec: List[float]) -> bytes:
@@ -274,7 +286,10 @@ class VoiceprintStore:
     """声纹库与语音片段库的统一存储（懒初始化单例）。"""
 
     def __init__(self, db_path: Optional[str] = None) -> None:
-        self._db_path = db_path or _default_db_path()
+        from core.storage_volume import get_volume_registry
+
+        self._db_path = db_path or get_volume_registry().resolve_path("voiceprints")
+        get_volume_registry().mark_active("voiceprints", self._db_path)
         self._db: Optional[aiosqlite.Connection] = None
         self._lock = asyncio.Lock()
         self._vec_available = False

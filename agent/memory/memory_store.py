@@ -49,17 +49,49 @@ from .store.tag_intel import ENTITY_PREFIXES
 from .store.tool_errors import ToolErrorTracker
 
 
+def default_memory_db_path() -> str:
+    """派生记忆库默认路径：主库 stem + "_memory"（历史布局）。"""
+    from pathlib import Path
+
+    from core.storage_volume import main_sqlite_path
+
+    main = Path(main_sqlite_path())
+    return str(main.with_name(f"{main.stem}_memory{main.suffix or '.sqlite3'}"))
+
+
+def _register_volume() -> None:
+    from core.storage_volume import VolumeDescriptor, VolumeKind, register_volume
+
+    register_volume(VolumeDescriptor(
+        volume_id="memory",
+        name="长期记忆库",
+        description="长期记忆 / 归档 / 文档索引 / 向量 / Cognee 同步队列",
+        kind=VolumeKind.SQLITE,
+        default_path=default_memory_db_path,
+    ))
+
+
+_register_volume()
+
+
 class MemoryStore(BaseEntity):
     """SQLite 记忆存储，支持 FTS5 全文检索、向量相似度搜索和标签索引。"""
 
     _entity_type = EntityType.DATABASE
     _entity_description = "记忆存储 — 基于 SQLite FTS5 + Embedding 的统一记忆系统"
+    _entity_meta = {
+        "backend": "sqlite",
+        "domains": ["memories", "file_index", "graph", "cognee_queue"],
+    }
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: Optional[str] = None) -> None:
+        from core.storage_volume import get_volume_registry
+
         from .graph import GraphStore
 
-        self._db_path = db_path
-        self._conn = MemoryConnectionManager(db_path)
+        self._db_path = db_path or get_volume_registry().resolve_path("memory")
+        get_volume_registry().mark_active("memory", self._db_path)
+        self._conn = MemoryConnectionManager(self._db_path)
         self._cognee = CogneeSyncQueue(self._conn)
         self._files = FileIndexStore(self._conn)
         self._tool_errors = ToolErrorTracker(self._conn)

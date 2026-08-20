@@ -1,9 +1,11 @@
-"""外部 SQL 数据库连接管理 — 注册表 + 只读适配器（PostgreSQL / MySQL）。
+"""外部 SQL 数据库连接管理 — 注册表 + 只读适配器 + 导出写通道。
 
-为 WebUI「数据管理」页提供外部只读数据源：
+为 WebUI「数据管理」页提供外部数据源能力：
 - 连接注册表持久化到 ``config/db_connections.json``（密码支持 ``${ENV_VAR}`` 引用）
-- 适配器统一接口：test / list_tables / table_schema / browse_rows / run_query
-- 全程只读：会话级 READ ONLY + 语句首关键字白名单，无行级写操作
+- 只读适配器统一接口：test / list_tables / table_schema / browse_rows / run_query；
+  全程只读：会话级 READ ONLY + 语句首关键字白名单，无行级写操作
+- SqlTransferClient：存储卷导出/导入专用读写通道（DDL 翻译 + 批量传输），
+  与只读适配器分离——浏览面的只读保证不受影响，仅由卷管理操作使用
 """
 
 from __future__ import annotations
@@ -486,6 +488,259 @@ class MysqlAdapter(ExternalAdapter):
 
 
 _ADAPTERS = {"postgresql": PostgresAdapter, "mysql": MysqlAdapter}
+
+
+# ----------------------------------------------------------------------
+# 存储卷导出/导入读写通道（与只读浏览适配器分离）
+# ----------------------------------------------------------------------
+
+# 导出清单保留表名（不加前缀，导入端据此定位）
+EXPORT_MANIFEST_TABLE = "_anelf_export"
+
+# SQLite 亲和类型 → 目标方言类型
+_PG_TYPE_MAP = {
+    "INTEGER": "BIGINT",
+    "TEXT": "TEXT",
+    "BLOB": "BYTEA",
+    "REAL": "DOUBLE PRECISION",
+    "NUMERIC": "NUMERIC",
+}
+_MYSQL_TYPE_MAP = {
+    "INTEGER": "BIGINT",
+    "TEXT": "MEDIUMTEXT",
+    "BLOB": "LONGBLOB",
+    "REAL": "DOUBLE",
+    "NUMERIC": "DECIMAL(65,10)",
+}
+
+
+def sqlite_affinity(decl: str) -> str:
+    """SQLite 列声明的亲和类型（INTEGER/TEXT/BLOB/REAL/NUMERIC）。"""
+    d = (decl or "").upper()
+    if "INT" in d:
+        return "INTEGER"
+    if "CHAR" in d or "CLOB" in d or "TEXT" in d:
+        return "TEXT"
+    if not d or "BLOB" in d:
+        return "BLOB"
+    if "REAL" in d or "FLOA" in d or "DOUB" in d:
+        return "REAL"
+    return "NUMERIC"
+
+
+class SqlTransferClient:
+    """SQLite 卷与外部库之间的批量传输通道（导出写 / 导入读）。
+
+    仅由 services.volume_ops 使用：导出 = 方言建表 + 批量 INSERT +
+    清单登记；导入 = 清单定位 + 分页全量读取。不提供任意 SQL 执行。
+    """
+
+    def __init__(self, conn: DbConnection) -> None:
+        self._conn_cfg = conn
+        self._pg_pool: Any = None
+        self._mysql: Any = None
+        self._lock = asyncio.Lock()
+
+    @property
+    def _is_pg(self) -> bool:
+        return self._conn_cfg.engine == "postgresql"
+
+    def quote(self, ident: str) -> str:
+        return f'"{ident}"' if self._is_pg else f"`{ident}`"
+
+    def _placeholders(self, count: int) -> str:
+        if self._is_pg:
+            return ", ".join(f"${i}" for i in range(1, count + 1))
+        return ", ".join("%s" for _ in range(count))
+
+    async def connect(self) -> None:
+        async with self._lock:
+            if self._is_pg and self._pg_pool is None:
+                import asyncpg
+
+                c = self._conn_cfg
+                self._pg_pool = await asyncpg.create_pool(
+                    host=c.host, port=c.effective_port(), database=c.database,
+                    user=c.username or None, password=c.resolved_password() or None,
+                    min_size=1, max_size=2, timeout=_CONNECT_TIMEOUT,
+                )
+            elif not self._is_pg and self._mysql is None:
+                import aiomysql
+
+                c = self._conn_cfg
+                self._mysql = await aiomysql.connect(
+                    host=c.host, port=c.effective_port(), db=c.database,
+                    user=c.username or None, password=c.resolved_password() or None,
+                    connect_timeout=int(_CONNECT_TIMEOUT), autocommit=True,
+                )
+
+    async def close(self) -> None:
+        async with self._lock:
+            if self._pg_pool is not None:
+                try:
+                    await self._pg_pool.close()
+                except Exception:
+                    log("SqlTransferClient close 异常已忽略", "DEBUG")
+                self._pg_pool = None
+            if self._mysql is not None:
+                try:
+                    self._mysql.close()
+                except Exception:
+                    log("SqlTransferClient close 异常已忽略", "DEBUG")
+                self._mysql = None
+
+    # ---------------- 执行原语 ----------------
+
+    async def execute(self, sql: str) -> None:
+        if self._is_pg:
+            pool = self._pg_pool
+            async with pool.acquire() as conn:
+                await conn.execute(sql)
+        else:
+            async with self._mysql.cursor() as cur:
+                await cur.execute(sql)
+
+    async def executemany_rows(self, sql: str, rows: List[Tuple[Any, ...]]) -> None:
+        if not rows:
+            return
+        if self._is_pg:
+            pool = self._pg_pool
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.executemany(sql, rows)
+        else:
+            async with self._mysql.cursor() as cur:
+                await cur.executemany(sql, rows)
+
+    async def fetch_all(self, sql: str, params: Tuple[Any, ...] = ()) -> List[Tuple[Any, ...]]:
+        if self._is_pg:
+            pool = self._pg_pool
+            async with pool.acquire() as conn:
+                return [tuple(r.values()) for r in await conn.fetch(sql, *params)]
+        async with self._mysql.cursor() as cur:
+            await cur.execute(sql, params or None)
+            return list(await cur.fetchall())
+
+    # ---------------- 导出侧（写） ----------------
+
+    async def create_table_from_sqlite(
+        self, table: str, columns: List[Dict[str, Any]], *, drop: bool
+    ) -> None:
+        """按 SQLite 列元数据翻译建表（快照语义：drop=True 先删旧表）。"""
+        type_map = _PG_TYPE_MAP if self._is_pg else _MYSQL_TYPE_MAP
+        decls = []
+        pk_columns = [c["name"] for c in columns if int(c.get("pk", 0) or 0) > 0]
+        for col in columns:
+            affinity = sqlite_affinity(str(col.get("type", "")))
+            decls.append(
+                f"{self.quote(str(col['name']))} {type_map[affinity]}"
+                + (" NOT NULL" if col["name"] in pk_columns else "")
+            )
+        if pk_columns:
+            decls.append("PRIMARY KEY (" + ", ".join(self.quote(c) for c in pk_columns) + ")")
+        name = self.quote(table)
+        if drop:
+            await self.execute(f"DROP TABLE IF EXISTS {name}")
+        await self.execute(f"CREATE TABLE {name} (" + ", ".join(decls) + ")")
+
+    def insert_sql(self, table: str, col_names: List[str]) -> str:
+        cols = ", ".join(self.quote(c) for c in col_names)
+        return (
+            f"INSERT INTO {self.quote(table)} ({cols}) "
+            f"VALUES ({self._placeholders(len(col_names))})"
+        )
+
+    async def write_export_manifest(
+        self, volume_id: str, prefix: str, tables: List[str]
+    ) -> None:
+        """登记导出清单（固定保留表名，导入端据此定位）。"""
+        await self.create_table_from_sqlite(
+            EXPORT_MANIFEST_TABLE,
+            [
+                {"name": "key", "type": "TEXT", "pk": 1},
+                {"name": "value", "type": "TEXT", "pk": 0},
+            ],
+            drop=True,
+        )
+        rows = [
+            ("volume_id", volume_id),
+            ("exported_at", str(time.time())),
+            ("prefix", prefix),
+            ("tables", json.dumps(tables, ensure_ascii=False)),
+        ]
+        await self.executemany_rows(
+            self.insert_sql(EXPORT_MANIFEST_TABLE, ["key", "value"]), rows
+        )
+
+    # ---------------- 导入侧（读） ----------------
+
+    async def read_export_manifest(self) -> Dict[str, Any]:
+        rows = await self.fetch_all(
+            f"SELECT key, value FROM {self.quote(EXPORT_MANIFEST_TABLE)}"
+        )
+        manifest: Dict[str, Any] = {}
+        for key, value in rows:
+            manifest[str(key)] = value
+        if "tables" in manifest:
+            try:
+                manifest["tables"] = json.loads(str(manifest["tables"]))
+            except ValueError:
+                manifest["tables"] = []
+        return manifest
+
+    async def list_columns(self, table: str) -> List[Dict[str, Any]]:
+        """外部表列元数据（统一为 {name, type, pk}）。"""
+        if self._is_pg:
+            rows = await self.fetch_all(
+                "SELECT c.column_name, c.data_type, EXISTS ("
+                "  SELECT 1 FROM information_schema.table_constraints tc"
+                "  JOIN information_schema.key_column_usage kcu"
+                "    ON tc.constraint_name = kcu.constraint_name"
+                "   AND tc.table_schema = kcu.table_schema"
+                "  WHERE tc.constraint_type = 'PRIMARY KEY'"
+                "    AND tc.table_schema = c.table_schema"
+                "    AND tc.table_name = c.table_name"
+                "    AND kcu.column_name = c.column_name) AS is_pk"
+                " FROM information_schema.columns c"
+                " WHERE c.table_schema = current_schema() AND c.table_name = $1"
+                " ORDER BY c.ordinal_position",
+                (table,),
+            )
+        else:
+            rows = await self.fetch_all(
+                "SELECT column_name, data_type, column_key = 'PRI'"
+                " FROM information_schema.columns"
+                " WHERE table_schema = DATABASE() AND table_name = %s"
+                " ORDER BY ordinal_position",
+                (table,),
+            )
+        return [{"name": r[0], "type": str(r[1]).upper(), "pk": bool(r[2])} for r in rows]
+
+    @staticmethod
+    def sqlite_type(ext_type: str) -> str:
+        """外部类型 → SQLite 声明（导出时的逆映射， Imported 表结构对齐源库）。"""
+        t = (ext_type or "").upper()
+        if "INT" in t:
+            return "INTEGER"
+        if t in ("BYTEA",) or "BLOB" in t or "BINARY" in t:
+            return "BLOB"
+        if t.startswith("DOUBLE") or "REAL" in t or "FLOAT" in t:
+            return "REAL"
+        if "NUMERIC" in t or "DECIMAL" in t:
+            return "NUMERIC"
+        return "TEXT"
+
+    async def fetch_table_page(
+        self, table: str, col_names: List[str], *, limit: int, offset: int
+    ) -> List[Tuple[Any, ...]]:
+        cols = ", ".join(self.quote(c) for c in col_names)
+        sql = f"SELECT {cols} FROM {self.quote(table)} LIMIT {limit} OFFSET {offset}"
+        rows = await self.fetch_all(sql)
+        # asyncpg 的 bytea → memoryview 统一为 bytes（sqlite 绑定兼容）
+        return [
+            tuple(bytes(v) if isinstance(v, memoryview) else v for v in row)
+            for row in rows
+        ]
 
 
 # ----------------------------------------------------------------------

@@ -16,8 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-import aiosqlite
-
+from core.file_utils import directory_size, walk_files
 from core.log import log
 from core.path import data_dir, project_root
 
@@ -73,19 +72,6 @@ def _data_dir_source() -> str:
     return "default"
 
 
-def _dir_size(root: Path) -> int:
-    total = 0
-    for dirpath, _dirs, files in os.walk(root):
-        for name in files:
-            if name.endswith(_SKIP_SUFFIXES):
-                continue
-            try:
-                total += os.path.getsize(os.path.join(dirpath, name))
-            except OSError:
-                log("_dir_size 异常已忽略", "DEBUG")
-    return total
-
-
 def get_location() -> Dict[str, Any]:
     """当前数据位置概览：解析路径 / 来源 / 占用明细。"""
     root = resolved_data_dir()
@@ -94,7 +80,7 @@ def get_location() -> Dict[str, Any]:
     if root.is_dir():
         for child in sorted(root.iterdir()):
             if child.is_dir():
-                size = _dir_size(child)
+                size = directory_size(child, _SKIP_SUFFIXES)
                 entries.append({"name": child.name, "kind": "dir", "size_bytes": size})
             elif child.is_file() and not child.name.endswith(_SKIP_SUFFIXES):
                 size = child.stat().st_size
@@ -112,14 +98,23 @@ def get_location() -> Dict[str, Any]:
     }
 
 
-def check_target(target: str) -> Dict[str, Any]:
-    """校验迁移目标目录，返回问题与警告标识列表（供前端 i18n 展示）。"""
+def validate_target_dir(
+    target: str,
+    current: Path,
+    *,
+    required_bytes: int,
+    forbid_contains: bool = False,
+) -> Dict[str, Any]:
+    """通用迁移目标目录校验，返回问题与警告标识列表（供前端 i18n 展示）。
+
+    数据目录整体迁移与存储卷按卷迁移共用；``forbid_contains`` 控制是否
+    禁止目标包含当前目录（整体迁移拷贝自身子树必须禁止，卷级拷贝无此约束）。
+    """
     problems: List[str] = []
     warnings: List[str] = []
     raw = (target or "").strip()
-    current = resolved_data_dir()
-    required = _dir_size(current) if current.is_dir() else 0
     resolved = ""
+    required = required_bytes
 
     if not raw:
         problems.append("empty")
@@ -132,9 +127,9 @@ def check_target(target: str) -> Dict[str, Any]:
             rp = p.resolve()
             if rp == current:
                 problems.append("same_as_current")
-            elif _is_relative_to(rp, current):
+            elif rp.is_relative_to(current):
                 problems.append("inside_current")
-            elif _is_relative_to(current, rp):
+            elif forbid_contains and current.is_relative_to(rp):
                 problems.append("contains_current")
             else:
                 if rp.exists():
@@ -153,11 +148,11 @@ def check_target(target: str) -> Dict[str, Any]:
                         problems.append("not_writable")
                 if not problems:
                     try:
-                        usage = shutil.disk_usage(rp if rp.exists() else ancestor)
+                        usage = shutil.disk_usage(rp if rp.exists() else rp.parent)
                         if usage.free < int(required * 1.1):
                             problems.append("insufficient_space")
                     except OSError:
-                        log("check_target 异常已忽略", "DEBUG")
+                        log("validate_target_dir 异常已忽略", "DEBUG")
     return {
         "target": resolved or raw,
         "ok": not problems,
@@ -167,12 +162,11 @@ def check_target(target: str) -> Dict[str, Any]:
     }
 
 
-def _is_relative_to(path: Path, base: Path) -> bool:
-    try:
-        path.relative_to(base)
-        return True
-    except ValueError:
-        return False
+def check_target(target: str) -> Dict[str, Any]:
+    """校验数据目录迁移目标。"""
+    current = resolved_data_dir()
+    required = directory_size(current, _SKIP_SUFFIXES) if current.is_dir() else 0
+    return validate_target_dir(target, current, required_bytes=required, forbid_contains=True)
 
 
 def migration_status() -> Dict[str, Any]:
@@ -213,7 +207,7 @@ async def _run_migration(source: Path, target: Path) -> None:
     global _running
     try:
         target.mkdir(parents=True, exist_ok=True)
-        files = await asyncio.to_thread(_collect_files, source)
+        files = await asyncio.to_thread(walk_files, source, _SKIP_SUFFIXES)
         _state["total"] = len(files)
 
         for index, src in enumerate(files):
@@ -222,7 +216,9 @@ async def _run_migration(source: Path, target: Path) -> None:
             _state["current_file"] = rel.as_posix()
             dest.parent.mkdir(parents=True, exist_ok=True)
             if src.suffix == ".sqlite3":
-                await _backup_sqlite(src, dest)
+                from services.database import online_sqlite_backup
+
+                await online_sqlite_backup(src, dest)
             else:
                 await asyncio.to_thread(shutil.copy2, src, dest)
                 if dest.stat().st_size != src.stat().st_size:
@@ -243,25 +239,3 @@ async def _run_migration(source: Path, target: Path) -> None:
         log(f"数据迁移失败: {exc}", "ERROR", tag="迁移")
     finally:
         _running = False
-
-
-def _collect_files(source: Path) -> List[Path]:
-    if not source.is_dir():
-        return []
-    return sorted(
-        p for p in source.rglob("*")
-        if p.is_file() and not p.name.endswith(_SKIP_SUFFIXES)
-    )
-
-
-async def _backup_sqlite(src: Path, dest: Path) -> None:
-    """SQLite 在线热备份（Backup API，对并发写安全，自包含输出）。"""
-    src_conn = await aiosqlite.connect(str(src))
-    try:
-        dest_conn = await aiosqlite.connect(str(dest))
-        try:
-            await src_conn.backup(dest_conn)
-        finally:
-            await dest_conn.close()
-    finally:
-        await src_conn.close()

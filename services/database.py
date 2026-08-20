@@ -70,58 +70,82 @@ class DatabaseError(RuntimeError):
 
 
 # ----------------------------------------------------------------------
-# 库注册表
+# 库注册表（存储卷驱动）
 # ----------------------------------------------------------------------
 
-def _main_db_path() -> str:
-    """主库路径（与 agent/storage/sqlite_backend.py 的 default_sqlite_path 同源）。"""
-    env_path = os.getenv("ANELF_BOT_SQLITE_PATH")
-    if env_path and env_path.strip():
-        return env_path.strip()
-    from core.path import ConfigPaths, project_root
-    return str(Path(project_root()) / ConfigPaths.SQLITE_DB)
+# 触发各存储模块的卷登记（模块 import 时自注册；已 import 的零开销）
+VOLUME_MODULES = (
+    "agent.storage.sqlite_backend",
+    "agent.memory.memory_store",
+    "agent.memory.notes",
+    "agent.memory.cognee.config",
+    "agent.skills.skill_index",
+    "entities.sticker.store",
+    "entities.voiceprint.store",
+    "entities.share.store",
+)
+
+# 数据库浏览面的固定展示顺序，未知卷按注册序追加
+_DISPLAY_ORDER = (
+    "agent", "memory", "stickers", "voiceprints", "skill_vectors", "share", "cognee",
+)
+
+
+def ensure_volume_modules() -> None:
+    """触发各存储模块的卷登记（幂等；供卷管理面在模块未加载时兜底）。"""
+    import importlib
+
+    for name in VOLUME_MODULES:
+        try:
+            importlib.import_module(name)
+        except Exception as exc:
+            log(f"存储卷模块加载失败 {name}: {exc}", "DEBUG", tag="数据库")
+
+
+async def online_sqlite_backup(src: Path, dest: Path) -> None:
+    """SQLite 在线热备份（Backup API，对并发写安全，自包含输出无 -wal/-shm）。
+
+    数据库管理 / 卷备份 / 数据目录迁移共用的唯一备份实现。
+    """
+    src_conn = await aiosqlite.connect(str(src))
+    try:
+        dest_conn = await aiosqlite.connect(str(dest))
+        try:
+            await src_conn.backup(dest_conn)
+        finally:
+            await dest_conn.close()
+    finally:
+        await src_conn.close()
 
 
 def _cognee_db_path() -> str:
-    from core.path import ConfigPaths, project_root
-    return str(Path(project_root()) / ConfigPaths.COGNEE_DATA_DIR / "system" / "databases" / "cognee_db")
+    """cognee 元数据库文件（浏览用）：卷解析出的数据根 + system/databases/cognee_db。"""
+    from core.storage_volume import get_volume_registry
+
+    root = get_volume_registry().resolve_path("cognee")
+    return str(Path(root) / "system" / "databases" / "cognee_db")
 
 
 def _database_registry() -> Dict[str, Dict[str, str]]:
-    main = _main_db_path()
-    stem = main[: -len(".sqlite3")] if main.endswith(".sqlite3") else os.path.splitext(main)[0]
-    return {
-        "agent": {
-            "name": "会话主库",
-            "path": main,
-            "description": "会话消息 / 实体画像 / 身份别名 / 待办任务",
-        },
-        "memory": {
-            "name": "长期记忆库",
-            "path": f"{stem}_memory.sqlite3",
-            "description": "长期记忆 / 归档 / 文档索引 / 向量 / Cognee 同步队列",
-        },
-        "stickers": {
-            "name": "表情包库",
-            "path": f"{stem}_stickers.sqlite3",
-            "description": "表情包 / 图片感知索引",
-        },
-        "voiceprints": {
-            "name": "音源库",
-            "path": f"{stem}_voiceprints.sqlite3",
-            "description": "说话人档案 / 声纹样本池 / 语音转写片段 / 已同步文件登记",
-        },
-        "skill_vectors": {
-            "name": "技能向量库",
-            "path": f"{stem}_skill_vectors.sqlite3",
-            "description": "技能语义向量（模型+文本hash 双因子校验；重建操作见技能库页）",
-        },
-        "cognee": {
-            "name": "Cognee 关系库",
-            "path": _cognee_db_path(),
-            "description": "Cognee 知识图谱投影（lbug 图/lance 向量/元数据；大小为整个 cognee 数据目录）",
-        },
-    }
+    """Web 端库注册表：由存储卷注册表驱动（与运行时同一事实源）。"""
+    from core.storage_volume import VolumeKind, get_volume_registry
+
+    ensure_volume_modules()
+    registry = get_volume_registry()
+    entries: Dict[str, Dict[str, str]] = {}
+    for desc in registry.list():
+        # 便签树等非库卷不进数据库浏览面；cognee 以元数据库文件路径呈现
+        if desc.kind is not VolumeKind.SQLITE and desc.volume_id != "cognee":
+            continue
+        path = _cognee_db_path() if desc.volume_id == "cognee" else registry.resolve_path(desc.volume_id)
+        entries[desc.volume_id] = {
+            "name": desc.name,
+            "path": path,
+            "description": desc.description,
+        }
+    ordered = {vid: entries[vid] for vid in _DISPLAY_ORDER if vid in entries}
+    ordered.update({k: v for k, v in entries.items() if k not in ordered})
+    return ordered
 
 
 # ----------------------------------------------------------------------

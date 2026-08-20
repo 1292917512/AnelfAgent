@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -14,19 +13,30 @@ from core.log import log
 _HEALTH_CHECK_INTERVAL = 30.0
 
 
-def default_sqlite_path() -> str:
-    env_path = os.getenv("ANELF_BOT_SQLITE_PATH")
-    if env_path and env_path.strip():
-        return env_path.strip()
-    from core.path import ConfigPaths, project_root
-    return str(Path(project_root()) / ConfigPaths.SQLITE_DB)
+def _register_volume() -> None:
+    from core.storage_volume import VolumeDescriptor, VolumeKind, main_sqlite_path, register_volume
+
+    register_volume(VolumeDescriptor(
+        volume_id="agent",
+        name="会话主库",
+        description="会话消息 / 实体画像 / 身份别名 / 待办任务",
+        kind=VolumeKind.SQLITE,
+        default_path=main_sqlite_path,
+        env_override="ANELF_BOT_SQLITE_PATH",
+    ))
+
+
+_register_volume()
 
 
 class SqliteBackend:
     """SQLite 后端（异步，持久连接）。"""
 
     def __init__(self, db_path: Optional[str] = None) -> None:
-        self.db_path = db_path or default_sqlite_path()
+        from core.storage_volume import get_volume_registry
+
+        self.db_path = db_path or get_volume_registry().resolve_path("agent")
+        get_volume_registry().mark_active("agent", self.db_path)
         self._db: Optional[aiosqlite.Connection] = None
         self._initialized = False
         self._scope_migrated = False

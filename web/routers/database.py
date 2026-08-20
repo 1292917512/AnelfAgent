@@ -12,6 +12,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from services import volume_ops
 from services.data_migration import (
     check_target,
     get_location,
@@ -112,6 +113,100 @@ async def delete_connection(conn_id: str) -> Dict[str, Any]:
 @router.post("/connections/test")
 async def test_connection(body: ConnectionTest) -> Dict[str, Any]:
     return await get_connection_store().test(body.model_dump())
+
+
+# ----------------------------------------------------------------------
+# 存储卷管理（模块化数据管理：备份/恢复/迁移/外部 SQL 导出导入；
+# 声明在 /{db_id} 之前，避免被参数路由捕获）
+# ----------------------------------------------------------------------
+
+
+class VolumeRelocateRequest(BaseModel):
+    """卷迁移请求。"""
+
+    target: str
+
+
+class VolumeExportRequest(BaseModel):
+    """卷导出到外部 SQL 请求。"""
+
+    connection_id: str
+    table_prefix: str = ""
+    drop_existing: bool = True
+
+
+class VolumeImportRequest(BaseModel):
+    """卷从外部 SQL 导入请求。"""
+
+    connection_id: str
+
+
+@router.get("/volumes")
+async def list_volumes() -> Dict[str, Any]:
+    return {
+        "items": await volume_ops.list_volumes(),
+        "pending_restore": volume_ops.pending_restart_hint(),
+    }
+
+
+@router.get("/volumes/{volume_id}/operation")
+async def volume_operation(volume_id: str) -> Dict[str, Any]:
+    volume_ops.require_volume(volume_id)
+    return volume_ops.operation_status(volume_id)
+
+
+@router.get("/volumes/{volume_id}/backups")
+async def volume_backups(volume_id: str) -> Dict[str, Any]:
+    volume_ops.require_volume(volume_id)
+    return {"items": volume_ops.list_backups(volume_id)}
+
+
+@router.post("/volumes/{volume_id}/backup", status_code=202)
+async def create_volume_backup(volume_id: str) -> Dict[str, Any]:
+    return volume_ops.create_backup(volume_id)
+
+
+@router.post("/volumes/{volume_id}/backups/{backup_id}/restore")
+async def restore_volume_backup(volume_id: str, backup_id: str) -> Dict[str, Any]:
+    return volume_ops.restore_backup(volume_id, backup_id)
+
+
+@router.get("/volumes/{volume_id}/backups/{backup_id}/download")
+async def download_volume_backup(volume_id: str, backup_id: str) -> FileResponse:
+    info = volume_ops.get_backup(volume_id, backup_id)
+    filename = f"{volume_id}-{info['backup_id']}-{info['artifact']}"
+    return FileResponse(info["artifact_path"], filename=filename)
+
+
+@router.delete("/volumes/{volume_id}/backups/{backup_id}")
+async def delete_volume_backup(volume_id: str, backup_id: str) -> Dict[str, Any]:
+    volume_ops.delete_backup(volume_id, backup_id)
+    return {"success": True}
+
+
+@router.post("/volumes/{volume_id}/relocate/check")
+async def check_volume_relocate(volume_id: str, body: VolumeRelocateRequest) -> Dict[str, Any]:
+    return await volume_ops.check_relocate_target(volume_id, body.target)
+
+
+@router.post("/volumes/{volume_id}/relocate", status_code=202)
+async def relocate_volume(volume_id: str, body: VolumeRelocateRequest) -> Dict[str, Any]:
+    return await volume_ops.relocate_volume(volume_id, body.target)
+
+
+@router.post("/volumes/{volume_id}/export", status_code=202)
+async def export_volume_sql(volume_id: str, body: VolumeExportRequest) -> Dict[str, Any]:
+    return volume_ops.export_sql(
+        volume_id,
+        body.connection_id,
+        table_prefix=body.table_prefix,
+        drop_existing=body.drop_existing,
+    )
+
+
+@router.post("/volumes/{volume_id}/import", status_code=202)
+async def import_volume_sql(volume_id: str, body: VolumeImportRequest) -> Dict[str, Any]:
+    return volume_ops.import_sql(volume_id, body.connection_id)
 
 
 # ----------------------------------------------------------------------

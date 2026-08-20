@@ -184,3 +184,51 @@ export interface DbMigrationStatus {
   finished_at: number;
   error: string;
 }
+
+// ======================================================================
+// 存储卷（数据管理页 · 存储卷 Tab：模块化备份/恢复/迁移/SQL 导出）
+// ======================================================================
+
+export type VolumeKind = "sqlite" | "cognee_tree" | "notes_tree";
+
+export interface VolumeInfo {
+  volume_id: string;
+  name: string;
+  description: string;
+  kind: VolumeKind;
+  capabilities: string[];
+  path: string;
+  default_path: string;
+  location_source: "env" | "assignment" | "default";
+  assignment: string | null;
+  active_path: string | null;
+  needs_restart: boolean;
+  pending_restore: boolean;
+  exists: boolean;
+  size_bytes: number;
+  backup_count: number;
+  last_backup_at: number;
+}
+
+export interface VolumeBackupInfo {
+  backup_id: string;
+  created_at: number;
+  kind: string;
+  artifact: string;
+  size_bytes: number;
+  table_count: number;
+  file_count: number;
+  consistency: string;
+}
+
+export interface VolumeOperationState {
+  op: string | null;
+  state: "idle" | "running" | "done" | "error";
+  phase?: string;
+  done?: number;
+  total?: number;
+  error?: string;
+  result?: { needs_restart?: boolean; [key: string]: unknown };
+  started_at?: number;
+  finished_at?: number;
+}

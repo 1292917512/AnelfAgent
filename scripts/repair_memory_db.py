@@ -22,7 +22,18 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
-DB_PATH = PROJECT_ROOT / "config" / "memory" / "data" / "agent_memory.sqlite3"
+sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _resolve_memory_db() -> Path:
+    """经存储卷注册表解析记忆库路径（卷指派/环境变量优先于历史默认布局）。"""
+    import agent.memory.memory_store  # noqa: F401  触发卷登记
+    from core.storage_volume import get_volume_registry
+
+    return Path(get_volume_registry().resolve_path("memory"))
+
+
+DB_PATH = _resolve_memory_db()
 
 # ── 颜色输出 ──────────────────────────────────────────────────────────────────
 

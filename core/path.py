@@ -503,6 +503,7 @@ _PATH_SPECS: Dict[str, Tuple[str, str]] = {
     "HOOKS": ("config", "hooks.json"),
     "APPROVAL_POLICIES": ("config", "approval_policies.json"),
     "DB_CONNECTIONS": ("config", "db_connections.json"),
+    "STORAGE_VOLUMES": ("config", "storage_volumes.json"),
     "COGNEE_CONFIG": ("config", "cognee.json"),
     "MEMORY_DIR": ("data", ""),
     "COGNEE_DATA_DIR": ("data", "cognee"),

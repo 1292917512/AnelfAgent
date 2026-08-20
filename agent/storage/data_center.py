@@ -476,6 +476,7 @@ def create_data_center(
         enabled=True,
         instance=dc,
         source="builtin",
+        meta={"backend": "sqlite", "domains": ["conversation", "entity_profile"]},
     ))
 
     return dc

@@ -46,6 +46,9 @@ import type {
   DbSchemaResult,
   DbTableInfo,
   DbTargetCheck,
+  VolumeBackupInfo,
+  VolumeInfo,
+  VolumeOperationState,
   DevopsActionResult,
   DevopsBuildState,
   DevopsCrashInfo,
@@ -947,6 +950,63 @@ export const storageApi = {
     api.post<DbTargetCheck>("/database/location/check", { target }),
   migrate: (target: string) => api.post<DbMigrationStatus>("/database/migrate", { target }),
   migrationStatus: () => api.get<DbMigrationStatus>("/database/migrate/status"),
+};
+
+// Volumes（数据管理页 · 存储卷：模块化备份/恢复/迁移/SQL 导出）
+export const volumeApi = {
+  list: () =>
+    api.get<{ items: VolumeInfo[]; pending_restore: string | null }>("/database/volumes"),
+  operation: (volumeId: string) =>
+    api.get<VolumeOperationState>(
+      `/database/volumes/${encodeURIComponent(volumeId)}/operation`,
+    ),
+  backups: (volumeId: string) =>
+    api.get<{ items: VolumeBackupInfo[] }>(
+      `/database/volumes/${encodeURIComponent(volumeId)}/backups`,
+    ),
+  backup: (volumeId: string) =>
+    api.post<VolumeOperationState>(
+      `/database/volumes/${encodeURIComponent(volumeId)}/backup`,
+      null,
+      { timeout: 300000 },
+    ),
+  restore: (volumeId: string, backupId: string) =>
+    api.post<VolumeOperationState>(
+      `/database/volumes/${encodeURIComponent(volumeId)}/backups/${encodeURIComponent(backupId)}/restore`,
+      null,
+    ),
+  downloadBackup: (volumeId: string, backupId: string) =>
+    api.get<Blob>(
+      `/database/volumes/${encodeURIComponent(volumeId)}/backups/${encodeURIComponent(backupId)}/download`,
+      { responseType: "blob", timeout: 300000 },
+    ),
+  deleteBackup: (volumeId: string, backupId: string) =>
+    api.delete<{ success: boolean }>(
+      `/database/volumes/${encodeURIComponent(volumeId)}/backups/${encodeURIComponent(backupId)}`,
+    ),
+  checkRelocate: (volumeId: string, target: string) =>
+    api.post<DbTargetCheck>(
+      `/database/volumes/${encodeURIComponent(volumeId)}/relocate/check`,
+      { target },
+    ),
+  relocate: (volumeId: string, target: string) =>
+    api.post<VolumeOperationState>(
+      `/database/volumes/${encodeURIComponent(volumeId)}/relocate`,
+      { target },
+    ),
+  exportSql: (
+    volumeId: string,
+    data: { connection_id: string; table_prefix?: string; drop_existing?: boolean },
+  ) =>
+    api.post<VolumeOperationState>(
+      `/database/volumes/${encodeURIComponent(volumeId)}/export`,
+      data,
+    ),
+  importSql: (volumeId: string, connectionId: string) =>
+    api.post<VolumeOperationState>(
+      `/database/volumes/${encodeURIComponent(volumeId)}/import`,
+      { connection_id: connectionId },
+    ),
 };
 
 // Share（文件分享推送）

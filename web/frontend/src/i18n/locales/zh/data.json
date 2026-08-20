@@ -3,6 +3,7 @@
   "subtitle": "数据库与表情包等业务数据的统一查看与维护入口",
   "tabs": {
     "database": "数据库",
+    "volumes": "存储卷",
     "stickers": "表情包",
     "storage": "存储位置"
   },
@@ -119,5 +120,80 @@
     "migrate": "开始迁移",
     "migrateHint": "SQLite 走在线热备份（运行中安全），源目录保留不删；完成后需重启生效。",
     "migrateFailed": "启动迁移失败"
+  },
+  "volumes": {
+    "subtitle": "每个数据模块独立管理：备份 / 恢复 / 迁移到其他目录 / 外部 SQL 导出导入",
+    "kind": {
+      "sqlite": "SQLite",
+      "cognee_tree": "Cognee 数据树",
+      "notes_tree": "便签树"
+    },
+    "source": {
+      "default": "默认位置",
+      "assignment": "自定义位置",
+      "env": "环境变量指定"
+    },
+    "pendingBanner": "以下卷的恢复任务已暂存，重启后落盘：{{volumes}}",
+    "pendingOne": "恢复任务已暂存，重启后落盘",
+    "needsRestart": "位置已切换，重启后生效；重启前的新写入仍落旧位置",
+    "restartNow": "立即重启",
+    "restarting": "重启指令已下发",
+    "restartFailed": "重启请求失败",
+    "noVolumes": "暂无已注册的存储卷",
+    "backupCount": "{{count}} 份备份",
+    "lastBackup": "最近备份 {{time}}",
+    "op": {
+      "backup": "备份",
+      "restore": "恢复",
+      "relocate": "迁移",
+      "export": "导出",
+      "import": "导入"
+    },
+    "opRunning": "{{op}}进行中",
+    "opFailed": "操作失败：{{error}}",
+    "ops": {
+      "backup": "立即备份",
+      "backups": "备份管理",
+      "relocate": "迁移",
+      "export": "SQL 导出",
+      "import": "SQL 导入"
+    },
+    "backupDrawer": {
+      "title": "{{name}} · 备份管理",
+      "empty": "暂无备份",
+      "restore": "恢复",
+      "download": "下载",
+      "delete": "删除",
+      "restoreConfirmTitle": "恢复该备份？",
+      "restoreConfirmBody": "当前数据将保留为 .pre-restore 安全副本；恢复经重启落盘，重启前的新写入会丢失。",
+      "restoreDone": "已暂存，重启后落盘",
+      "deleteConfirmTitle": "删除该备份？",
+      "failed": "备份操作失败"
+    },
+    "relocate": {
+      "title": "迁移 {{name}}",
+      "hint": "将该卷移动到其他目录或磁盘：在线拷贝（cognee 树在同步空闲窗口执行）→ 写入位置配置 → 重启生效。源文件保留不删。",
+      "started": "迁移已开始",
+      "failed": "迁移启动失败",
+      "run": "开始迁移",
+      "problem": {
+        "target_file_exists": "目标目录已存在同名数据文件"
+      }
+    },
+    "sql": {
+      "exportTitle": "导出 {{name}} 到外部 SQL",
+      "importTitle": "从外部 SQL 导入 {{name}}",
+      "connection": "外部连接",
+      "pickConnection": "选择连接…",
+      "noConnections": "尚未配置外部连接（在数据库 Tab 中添加 PostgreSQL / MySQL 连接）",
+      "prefix": "表名前缀（可选，如 anelf_）",
+      "drop": "覆盖目标同名表",
+      "dropHint": "（快照语义：重建并全量覆写）",
+      "exportHint": "结构与数据全量推送到外部库，作为备份位或转移通道；派生索引（全文/向量）不传输，可随时导回。",
+      "importHint": "仅接受由本系统导出产生的数据库；导入构建新库并经重启落盘，当前数据保留为安全副本。",
+      "run": "开始传输",
+      "started": "传输已开始",
+      "failed": "传输失败"
+    }
   }
 }
