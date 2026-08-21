@@ -79,6 +79,38 @@ async def test_client_normalizes_public_recall(monkeypatch, tmp_path) -> None:
     assert results[0].content == "graph answer"
 
 
+@pytest.mark.asyncio
+async def test_list_datasets_degrades_when_database_not_created(monkeypatch, tmp_path) -> None:
+    """重建清场后引擎待重启的中间态：数据集查询降级为空列表而非 500。"""
+
+    class DatabaseNotCreatedError(Exception):
+        pass
+
+    async def list_datasets():
+        raise DatabaseNotCreatedError("The database has not been created yet.")
+
+    fake = SimpleNamespace(
+        __version__="1.3.0",
+        config=_FakeConfig(),
+        datasets=SimpleNamespace(list_datasets=list_datasets),
+    )
+    client = CogneeClient(CogneeConfig(
+        enabled=True,
+        data_root=str(tmp_path),
+    ))
+    monkeypatch.setattr(
+        CogneeClient,
+        "installed",
+        property(lambda _self: True),
+    )
+    monkeypatch.setattr(client, "_import_cognee", lambda: fake)
+    monkeypatch.setattr(client, "_configure", _configure_without_models(client))
+
+    await client.initialize()
+
+    assert await client.list_datasets() == []
+
+
 def test_wal_recovery_patch_defaults_to_tolerant(monkeypatch) -> None:
     """WAL 容错补丁：默认注入 throw_on_wal_replay_failure=False 且幂等。"""
     import sys
@@ -391,6 +423,303 @@ async def test_coordinator_projects_graph_nodes(tmp_path) -> None:
         assert await store.get_cognee_mapping(
             edge["object"]["id"], entry_kind="graph_node",
         ) is None
+    finally:
+        await store.close()
+
+
+# ==================================================================
+# 内容指纹跳过（防无效变更重跑图谱抽取）
+# ==================================================================
+
+@pytest.mark.asyncio
+async def test_unchanged_upsert_skips_enqueue_after_sync(tmp_path) -> None:
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    client = _FakeCogneeClient()
+    coordinator = CogneeCoordinator(
+        store, client, CogneeConfig(enabled=True, sync_enabled=True),
+    )
+    try:
+        memory_id = await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content="stable content",
+        ))
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        mapping = await store.get_cognee_mapping(memory_id)
+        assert mapping is not None
+        assert mapping["content_hash"]
+
+        # importance 漂移：内容指纹未变 → 不入队、不重跑管线
+        await store.update_importance(memory_id, 0.9)
+        assert await store.claim_cognee_sync_batch(10) == []
+        assert len(client.items) == 1
+
+        # 真实内容变更仍正常入队与重投影
+        entry = await store.get(memory_id)
+        assert entry is not None
+        entry.content = "changed content"
+        await store.update(entry)
+        batch = await store.claim_cognee_sync_batch(10)
+        assert len(batch) == 1
+        await coordinator._process_batch(batch)
+        assert len(client.items) == 2
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_backfill_bypasses_fingerprint_skip(tmp_path) -> None:
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    try:
+        memory_id = await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content="backfill me",
+        ))
+        item = (await store.claim_cognee_sync_batch(1))[0]
+        await store.complete_cognee_sync(
+            item["queue_id"], memory_id,
+            dataset_name="anelf_global", dataset_id="dataset-id", data_id="data-id",
+            content_hash="fingerprint",
+        )
+        assert (await store.get_cognee_sync_status())["pending"] == 0
+
+        # 回填是显式修复语义：指纹一致也必须重新入队
+        queued = await store.enqueue_cognee_backfill(limit=0)
+
+        assert queued == 1
+        assert (await store.get_cognee_sync_status())["pending"] == 1
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_processing_entry_blocks_fingerprint_skip(tmp_path) -> None:
+    """在途批次持有更新版本的负载并会覆写映射：内容回退时不得跳过入队。"""
+    from agent.memory.store._shared import (
+        entry_projection_payload,
+        projection_content_hash,
+    )
+
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    client = _FakeCogneeClient()
+    coordinator = CogneeCoordinator(
+        store, client, CogneeConfig(enabled=True, sync_enabled=True),
+    )
+    try:
+        memory_id = await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content="version A",
+        ))
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+
+        # 变更为 B 并被 worker 认领（processing）
+        entry = await store.get(memory_id)
+        assert entry is not None
+        entry.content = "version B"
+        await store.update(entry)
+        inflight = await store.claim_cognee_sync_batch(1)
+        assert len(inflight) == 1
+
+        # 内容回退到 A：指纹与已同步映射一致，但在途批次未收尾 → 照常入队
+        entry.content = "version A"
+        await store.update(entry)
+        pending = await store.claim_cognee_sync_batch(10)
+        assert [item["entry_id"] for item in pending] == [memory_id]
+
+        # 两个批次顺序落地后，映射指纹与当前内容一致
+        await coordinator._process_batch(inflight)
+        await coordinator._process_batch(pending)
+        current = entry_projection_payload(await store.get(memory_id), memory_id)
+        mapping = await store.get_cognee_mapping(memory_id)
+        assert mapping is not None
+        assert mapping["content_hash"] == projection_content_hash(current)
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_unchanged_document_skips_reprojection(tmp_path) -> None:
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    client = _GraphFakeClient()
+    coordinator = CogneeCoordinator(
+        store, client, CogneeConfig(enabled=True, sync_enabled=True),
+    )
+    try:
+        await store.graph.add_relation(
+            "user:qq:1", "朋友", "user:qq:2",
+            subject_label="阿辰", object_label="老王", evidence="常一起吃饭",
+        )
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        projected = len(client.items)
+        assert projected == 2
+
+        # 同一条边以相同参数重复写入（ON CONFLICT 仅刷强度/证据，值不变）：
+        # 两端节点邻域文档指纹未变 → 消费侧跳过，不重跑 add/cognify
+        await store.graph.add_relation(
+            "user:qq:1", "朋友", "user:qq:2", evidence="常一起吃饭",
+        )
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+
+        assert len(client.items) == projected
+        assert (await store.get_cognee_sync_status())["pending"] == 0
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_dedup_noop_update_skips_write_and_projection(tmp_path) -> None:
+    """合并内容与标签均无变化：不落库（version/审计不动）、不触发投影。"""
+    from agent.memory.dedup import apply_update
+
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    try:
+        memory_id = await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content="原内容", tags=["user:1"],
+        ))
+        await store.claim_cognee_sync_batch(10)
+
+        result = await apply_update(store, memory_id, "原内容", extra_tags=["user:1"])
+
+        entry = await store.get(memory_id)
+        assert result is not None
+        assert entry is not None
+        assert entry.version == 1
+        assert await store.claim_cognee_sync_batch(10) == []
+    finally:
+        await store.close()
+
+
+# ==================================================================
+# 写盘熔断
+# ==================================================================
+
+def test_write_breaker_trips_on_burst() -> None:
+    from agent.memory.cognee.write_breaker import WriteBreaker
+
+    base_ns = 1_000_000_000
+    writes = iter([0, 300 * 1024 * 1024])
+    times = iter([base_ns, base_ns + 10_000_000_000])
+    breaker = WriteBreaker(
+        100.0, 60.0, sampler=lambda: next(writes), clock=lambda: next(times),
+    )
+
+    breaker.observe()
+    breaker.observe()
+
+    tripped, rate_mb_s = breaker.over_threshold()
+    assert tripped  # 300MB/10s = 30MB/s > 100MB/60s
+    assert rate_mb_s > 100.0 / 60.0
+
+
+def test_write_breaker_allows_normal_rate() -> None:
+    from agent.memory.cognee.write_breaker import WriteBreaker
+
+    base_ns = 1_000_000_000
+    writes = iter([0, 10 * 1024 * 1024])
+    times = iter([base_ns, base_ns + 10_000_000_000])
+    breaker = WriteBreaker(
+        100.0, 60.0, sampler=lambda: next(writes), clock=lambda: next(times),
+    )
+
+    breaker.observe()
+    breaker.observe()
+
+    tripped, _ = breaker.over_threshold()
+    assert not tripped  # 1MB/s < 100MB/60s ≈ 1.67MB/s
+
+
+def test_write_breaker_unavailable_sampler_disables() -> None:
+    from agent.memory.cognee.write_breaker import WriteBreaker
+
+    def _boom() -> int:
+        raise OSError("io_counters unavailable")
+
+    breaker = WriteBreaker(100.0, 60.0, sampler=_boom, clock=lambda: 0)
+
+    breaker.observe()
+
+    assert not breaker.available
+    assert breaker.over_threshold() == (False, 0.0)
+
+
+def test_write_breaker_window_evicts_stale_samples() -> None:
+    from agent.memory.cognee.write_breaker import WriteBreaker
+
+    second = 1_000_000_000
+    writes = iter([0, 10 * 1024 ** 3, 10 * 1024 ** 3 + 1024 ** 2])
+    times = iter([0, 50 * second, 70 * second])
+    breaker = WriteBreaker(
+        100.0, 60.0, sampler=lambda: next(writes), clock=lambda: next(times),
+    )
+
+    breaker.observe()
+    breaker.observe()
+    breaker.observe()
+
+    # 从窗口起点算是风暴（10GB/70s），窗口内只剩 1MB/20s → 不熔断
+    tripped, _ = breaker.over_threshold()
+    assert not tripped
+
+
+@pytest.mark.asyncio
+async def test_projection_allowed_pauses_on_write_storm(tmp_path) -> None:
+    from agent.memory.cognee.write_breaker import WriteBreaker
+
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    client = _FakeCogneeClient()
+    coordinator = CogneeCoordinator(
+        store,
+        client,
+        CogneeConfig(
+            enabled=True, sync_enabled=True,
+            write_breaker_threshold_mb=100.0, write_breaker_window_seconds=60.0,
+        ),
+    )
+    second = 1_000_000_000
+    writes = iter([0, 10 * 1024 ** 3])
+    times = iter([second, 11 * second])
+    coordinator._breaker = WriteBreaker(
+        100.0, 60.0, sampler=lambda: next(writes), clock=lambda: next(times),
+    )
+    try:
+        assert coordinator._projection_allowed() is True  # 首个样本不足以判定
+        assert coordinator._projection_allowed() is False  # 10GB/10s → 熔断暂停
+
+        status = await coordinator.status()
+        assert status.paused
+        assert status.paused_until > 0
+        assert "超阈值" in status.pause_reason
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_projection_allowed_ignores_disabled_breaker(tmp_path) -> None:
+    from agent.memory.cognee.write_breaker import WriteBreaker
+
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    client = _FakeCogneeClient()
+    coordinator = CogneeCoordinator(
+        store,
+        client,
+        CogneeConfig(
+            enabled=True, sync_enabled=True, write_breaker_enabled=False,
+            write_breaker_threshold_mb=100.0, write_breaker_window_seconds=60.0,
+        ),
+    )
+    second = 1_000_000_000
+    writes = iter([0, 10 * 1024 ** 3])
+    times = iter([second, 11 * second])
+    coordinator._breaker = WriteBreaker(
+        100.0, 60.0, sampler=lambda: next(writes), clock=lambda: next(times),
+    )
+    try:
+        assert coordinator._projection_allowed() is True
+        assert coordinator._projection_allowed() is True
+
+        status = await coordinator.status()
+        assert not status.paused
     finally:
         await store.close()
 

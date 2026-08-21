@@ -616,10 +616,18 @@ class HeartbeatEngine:
                     from agent.memory.cognee.runtime import get_cognee_coordinator
                     coordinator = get_cognee_coordinator()
                     pending = 0
+                    paused_note = ""
                     if coordinator is not None:
                         status = await coordinator.status()
                         pending = getattr(status, "pending", 0) or 0
-                    lines.append(f"- cognee 图谱：已启用，同步积压 {pending} 条")
+                        if getattr(status, "paused", False):
+                            until = time.strftime(
+                                "%H:%M", time.localtime(status.paused_until or 0),
+                            )
+                            paused_note = f"（写盘熔断暂停中，至 {until} 自动恢复）"
+                    lines.append(
+                        f"- cognee 图谱：已启用，同步积压 {pending} 条{paused_note}"
+                    )
                 else:
                     lines.append("- cognee 图谱：未启用")
             except Exception:

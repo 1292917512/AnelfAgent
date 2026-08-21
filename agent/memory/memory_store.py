@@ -463,13 +463,15 @@ class MemoryStore(BaseEntity):
         dataset_name: str = "",
         dataset_id: str = "",
         data_id: str = "",
+        content_hash: str = "",
         delete_mapping: bool = False,
     ) -> None:
         await self._cognee.complete(
             queue_id, entry_id,
             entry_kind=entry_kind,
             dataset_name=dataset_name, dataset_id=dataset_id,
-            data_id=data_id, delete_mapping=delete_mapping,
+            data_id=data_id, content_hash=content_hash,
+            delete_mapping=delete_mapping,
         )
 
     async def fail_cognee_sync(

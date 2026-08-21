@@ -269,7 +269,14 @@ class CogneeClient:
 
     # Dataset namespace
     async def list_datasets(self, **kwargs: Any) -> Any:
-        return await self._call("datasets.list_datasets", **kwargs)
+        try:
+            return await self._call("datasets.list_datasets", **kwargs)
+        except Exception as exc:
+            if _is_database_not_created(exc):
+                # 重建清场后、进程重启前的中间态：引擎句柄指向已 prune 的
+                # 元数据库，此时数据集确为空，降级返回避免 UI/工具层 500
+                return []
+            raise
 
     async def discover_datasets(self, directory_path: str) -> Any:
         return await self._call("datasets.discover_datasets", directory_path)
@@ -383,6 +390,11 @@ def _to_uuid(value: Any) -> Any:
             except ValueError:
                 return value
     return value
+
+
+def _is_database_not_created(exc: BaseException) -> bool:
+    """识别 cognee 元数据库未初始化（按类名匹配，cognee 为可选依赖不直接 import）。"""
+    return type(exc).__name__ == "DatabaseNotCreatedError"
 
 
 def _quieten_cognee_logger() -> None:

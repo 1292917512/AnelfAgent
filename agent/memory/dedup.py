@@ -190,9 +190,15 @@ async def apply_update(
     target = await store.get(target_id)
     if target is None:
         return None
+    merged_tags = (
+        list(dict.fromkeys(target.tags + extra_tags)) if extra_tags else target.tags
+    )
+    if target.content == merged_content and merged_tags == target.tags:
+        # 内容与标签均无变化：无变化的 update 会空转审计并触发
+        # cognee 投影重跑，是记忆写入风暴的主要来源之一
+        return target
     target.content = merged_content
-    if extra_tags:
-        target.tags = list(dict.fromkeys(target.tags + extra_tags))
+    target.tags = merged_tags
     target.embedding = None
     ok = await store.update(target, clear_embedding=True)
     if not ok:

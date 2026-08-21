@@ -18,7 +18,12 @@ import aiosqlite
 
 from core.log import log
 
-from ._shared import MEM_COLUMNS, entry_projection_payload, row_to_entry
+from ._shared import (
+    MEM_COLUMNS,
+    entry_projection_payload,
+    projection_content_hash,
+    row_to_entry,
+)
 from .connection import MemoryConnectionManager
 
 # 投影条目类型
@@ -49,9 +54,29 @@ class CogneeSyncQueue:
         payload: Optional[Dict[str, Any]] = None,
         *,
         entry_kind: str = ENTRY_KIND_MEMORY,
+        force: bool = False,
     ) -> None:
-        """在当前事务中追加 Cognee 投影操作，并压缩尚未执行的旧操作。"""
+        """在当前事务中追加 Cognee 投影操作，并压缩尚未执行的旧操作。
+
+        内容未变的 upsert 在此直接跳过（指纹与上次成功同步一致 =
+        投影已是最新），避免 importance 漂移等无效变更逐条重跑图谱
+        抽取；backfill 等显式修复路径经 force=True 绕过判重。
+        """
         if not self._projection_enabled or entry_id <= 0:
+            return
+        if (
+            operation == "upsert"
+            and not force
+            and entry_kind == ENTRY_KIND_MEMORY
+            and payload
+            and await self._already_projected(db, entry_id, payload)
+        ):
+            # 状态已同步：作废残留的待执行条目后不再入队
+            await db.execute(
+                "DELETE FROM cognee_sync_queue "
+                "WHERE entry_kind=? AND entry_id=? AND status IN ('pending', 'failed')",
+                (entry_kind, entry_id),
+            )
             return
         now_ns = time.time_ns()
         await db.execute(
@@ -72,6 +97,35 @@ class CogneeSyncQueue:
                 now_ns,
             ),
         )
+
+    async def _already_projected(
+        self,
+        db: aiosqlite.Connection,
+        entry_id: int,
+        payload: Dict[str, Any],
+    ) -> bool:
+        """upsert 负载与上次成功同步的指纹一致时视为已投影。
+
+        在途批次（processing）持有更新版本的负载并会在完成时覆写映射，
+        此时不得跳过——内容回退到已同步版本的入队必须照常排队。
+        """
+        fingerprint = projection_content_hash(payload)
+        if not fingerprint:
+            return False
+        cursor = await db.execute(
+            "SELECT content_hash FROM cognee_entry_map "
+            "WHERE entry_kind=? AND entry_id=?",
+            (ENTRY_KIND_MEMORY, entry_id),
+        )
+        row = await cursor.fetchone()
+        if not row or str(row["content_hash"] or "") != fingerprint:
+            return False
+        cursor = await db.execute(
+            "SELECT 1 FROM cognee_sync_queue "
+            "WHERE entry_kind=? AND entry_id=? AND status='processing' LIMIT 1",
+            (ENTRY_KIND_MEMORY, entry_id),
+        )
+        return await cursor.fetchone() is None
 
     async def claim_batch(self, limit: int) -> list[Dict[str, Any]]:
         """领取一批可执行投影任务，避免同进程重复消费。"""
@@ -138,6 +192,7 @@ class CogneeSyncQueue:
         dataset_name: str = "",
         dataset_id: str = "",
         data_id: str = "",
+        content_hash: str = "",
         delete_mapping: bool = False,
     ) -> None:
         db = await self._conn.get_db()
@@ -157,9 +212,12 @@ class CogneeSyncQueue:
             elif dataset_name:
                 await db.execute(
                     "INSERT OR REPLACE INTO cognee_entry_map"
-                    "(entry_kind, entry_id, dataset_name, dataset_id, data_id, synced_ns) "
-                    "VALUES(?,?,?,?,?,?)",
-                    (entry_kind, entry_id, dataset_name, dataset_id, data_id, time.time_ns()),
+                    "(entry_kind, entry_id, dataset_name, dataset_id, data_id, synced_ns, "
+                    "content_hash) VALUES(?,?,?,?,?,?,?)",
+                    (
+                        entry_kind, entry_id, dataset_name, dataset_id, data_id,
+                        time.time_ns(), content_hash,
+                    ),
                 )
 
     async def fail(
@@ -195,8 +253,8 @@ class CogneeSyncQueue:
     ) -> Optional[Dict[str, Any]]:
         db = await self._conn.get_db()
         cursor = await db.execute(
-            "SELECT entry_kind, entry_id, dataset_name, dataset_id, data_id, synced_ns "
-            "FROM cognee_entry_map WHERE entry_kind=? AND entry_id=?",
+            "SELECT entry_kind, entry_id, dataset_name, dataset_id, data_id, synced_ns, "
+            "content_hash FROM cognee_entry_map WHERE entry_kind=? AND entry_id=?",
             (entry_kind, entry_id),
         )
         row = await cursor.fetchone()
@@ -245,7 +303,11 @@ class CogneeSyncQueue:
         return cursor.rowcount or 0
 
     async def enqueue_backfill(self, *, limit: int = 0) -> int:
-        """显式将历史记忆加入投影队列；不会在启动时自动调用。"""
+        """显式将历史记忆加入投影队列；不会在启动时自动调用。
+
+        force 绕过内容指纹判重：回填是修复语义（映射可能在 cognee 数据
+        丢失后残留），必须无条件重新投影。
+        """
         if not self._projection_enabled:
             return 0
         db = await self._conn.get_db()
@@ -265,5 +327,6 @@ class CogneeSyncQueue:
                         entry.id,
                         "upsert",
                         entry_projection_payload(entry, entry.id),
+                        force=True,
                     )
         return len(rows)

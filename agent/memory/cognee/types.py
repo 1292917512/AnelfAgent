@@ -49,6 +49,10 @@ class CogneeSyncStatus(BaseModel):
     last_error: str = ""
     last_compact_at: float = 0.0
     last_compact_summary: str = ""
+    # 写盘熔断暂停（投影认领与自动压缩暂缓，冷却到期自动恢复）
+    paused: bool = False
+    paused_until: float = 0.0
+    pause_reason: str = ""
 
 
 class CogneeCallResult(BaseModel):

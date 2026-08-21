@@ -355,9 +355,14 @@ class MemoryConnectionManager:
                 dataset_id TEXT NOT NULL DEFAULT '',
                 data_id TEXT NOT NULL DEFAULT '',
                 synced_ns INTEGER NOT NULL,
+                content_hash TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (entry_kind, entry_id)
             );
         """)
+        # 既有映射无指纹（空串永不匹配）：首次真实变更重投影一次后自愈
+        await self._ensure_column(
+            db, "cognee_entry_map", "content_hash", "TEXT NOT NULL DEFAULT ''",
+        )
         # 上次进程异常退出时可能遗留 processing，启动后安全重试。
         await db.execute(
             "UPDATE cognee_sync_queue SET status='pending' WHERE status='processing'"

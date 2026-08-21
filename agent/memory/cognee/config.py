@@ -107,6 +107,12 @@ class CogneeConfig:
     compact_enabled: bool = True
     compact_interval_seconds: float = 86400.0
     compact_retention_days: float = 1.0
+    # 写盘熔断：滑动窗口内进程自身写入速率超阈值时暂停投影认领与
+    # 自动压缩（冷却期后重评），防止 Kùzu checkpoint 风暴撞爆磁盘配额
+    write_breaker_enabled: bool = True
+    write_breaker_threshold_mb: float = 500.0
+    write_breaker_window_seconds: float = 300.0
+    write_breaker_cooldown_seconds: float = 1800.0
     native_weight: float = 1.0
     cognee_weight: float = 0.8
     rrf_k: int = 60
@@ -138,6 +144,9 @@ class CogneeConfig:
         self.max_retries = max(1, int(self.max_retries))
         self.compact_interval_seconds = max(600.0, float(self.compact_interval_seconds))
         self.compact_retention_days = max(0.0, float(self.compact_retention_days))
+        self.write_breaker_threshold_mb = max(1.0, float(self.write_breaker_threshold_mb))
+        self.write_breaker_window_seconds = max(10.0, float(self.write_breaker_window_seconds))
+        self.write_breaker_cooldown_seconds = max(60.0, float(self.write_breaker_cooldown_seconds))
         self.native_weight = max(0.0, float(self.native_weight))
         self.cognee_weight = max(0.0, float(self.cognee_weight))
         self.rrf_k = max(1, int(self.rrf_k))

@@ -13,11 +13,13 @@ from typing import Any, Optional
 from core.log import log
 
 from ..memory_store import MemoryStore
+from ..store._shared import projection_content_hash
 from ..store.cognee_queue import ENTRY_KIND_GRAPH_NODE
 from .client import CogneeClient
 from .config import CogneeConfig
 from .storage import cognee_storage_stats
 from .types import CogneeSyncStatus
+from .write_breaker import WriteBreaker
 
 _SAFE_DATASET_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 
@@ -44,8 +46,18 @@ class CogneeCoordinator:
         # 空闲窗口作业（run_in_idle_window 提交，worker 在队列排空后执行）
         self._idle_job: Optional[Any] = None
         self._idle_done = asyncio.Event()
+        # 写盘熔断（暂停投影认领与自动压缩，冷却到期自动恢复）
+        self._breaker = self._build_breaker()
+        self._pause_until_ns = 0
+        self._pause_reason = ""
         self.last_compact_at = 0.0
         self.last_compact_summary = ""
+
+    def _build_breaker(self) -> WriteBreaker:
+        return WriteBreaker(
+            self.config.write_breaker_threshold_mb,
+            self.config.write_breaker_window_seconds,
+        )
 
     async def start(self) -> None:
         self.store.set_cognee_projection_enabled(
@@ -103,6 +115,9 @@ class CogneeCoordinator:
             self.config.enabled and self.config.sync_enabled,
         )
         self.client.reconfigure(self.config)
+        self._breaker = self._build_breaker()
+        self._pause_until_ns = 0
+        self._pause_reason = ""
 
         should_run = self.config.enabled and self.config.sync_enabled
         if should_run and (self._task is None or self._task.done()):
@@ -131,6 +146,10 @@ class CogneeCoordinator:
 
     async def status(self) -> CogneeSyncStatus:
         counts = await self.store.get_cognee_sync_status()
+        paused = self._pause_until_ns > time.monotonic_ns()
+        paused_until = 0.0
+        if paused:
+            paused_until = time.time() + (self._pause_until_ns - time.monotonic_ns()) / 1e9
         return CogneeSyncStatus(
             enabled=self.config.enabled and self.config.sync_enabled,
             running=bool(self._task and not self._task.done()),
@@ -140,6 +159,9 @@ class CogneeCoordinator:
             last_error=self._last_error,
             last_compact_at=self.last_compact_at,
             last_compact_summary=self.last_compact_summary,
+            paused=paused,
+            paused_until=paused_until,
+            pause_reason=self._pause_reason if paused else "",
         )
 
     async def request_compact(self) -> dict[str, Any]:
@@ -207,18 +229,53 @@ class CogneeCoordinator:
     async def improve(self, dataset_name: str) -> Any:
         return await self.client.improve(dataset=dataset_name)
 
+    def _projection_allowed(self) -> bool:
+        """写盘熔断闸门：暂停期间拒绝批次认领与自动压缩。
+
+        采样点覆盖 worker 轮次与管线边界（add/cognify 前后），长批次内
+        的短时风暴按速率口径无需等满窗口即可判定；冷却到期重评，仍超
+        限则续停。psutil 不可用时熔断恒放行（fail-open）。
+        """
+        self._breaker.observe()
+        if not self.config.write_breaker_enabled:
+            return True
+        now_ns = time.monotonic_ns()
+        if now_ns < self._pause_until_ns:
+            return False
+        if self._pause_until_ns:
+            self._pause_until_ns = 0
+            self._pause_reason = ""
+        tripped, rate_mb_s = self._breaker.over_threshold()
+        if tripped:
+            cooldown_ns = int(self.config.write_breaker_cooldown_seconds * 1e9)
+            self._pause_until_ns = now_ns + cooldown_ns
+            self._pause_reason = (
+                f"写盘速率 {rate_mb_s:.1f}MB/s 超阈值 "
+                f"{self.config.write_breaker_threshold_mb:.0f}MB/"
+                f"{self.config.write_breaker_window_seconds:.0f}s，"
+                f"冷却 {self.config.write_breaker_cooldown_seconds / 60:.0f} 分钟"
+            )
+            log(
+                f"Cognee 写盘熔断触发，投影暂停: {self._pause_reason}",
+                "WARNING",
+                tag="思维",
+            )
+        return not tripped
+
     async def _worker(self) -> None:
         while not self._closing:
             try:
                 # 每轮先回收卡死任务（worker 崩溃/取消导致的中断），再认领新批次
                 await self.store.requeue_stale_cognee_sync(self._stale_after_seconds())
-                batch = await self.store.claim_cognee_sync_batch(
-                    self.config.sync_batch_size,
-                )
-                if batch:
-                    await self._process_batch(batch)
-                    continue
-                await self._maybe_compact()
+                if self._projection_allowed():
+                    batch = await self.store.claim_cognee_sync_batch(
+                        self.config.sync_batch_size,
+                    )
+                    if batch:
+                        await self._process_batch(batch)
+                        continue
+                    await self._maybe_compact()
+                # 空闲作业是用户显式请求（备份/迁移），不受熔断阻断
                 await self._run_idle_job()
             except asyncio.CancelledError:
                 raise
@@ -380,12 +437,14 @@ class CogneeCoordinator:
                     },
                 ))
 
+            self._breaker.observe()
             await self.client.add(
                 data_items,
                 dataset_name=dataset_name,
                 incremental_loading=True,
             )
             await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
+            self._breaker.observe()
             await self._maybe_improve(dataset_name)
             identifiers = await self._resolve_data_ids(dataset_name, "anelf_memory_id")
 
@@ -401,6 +460,7 @@ class CogneeCoordinator:
                     dataset_name=dataset_name,
                     dataset_id=ids[0],
                     data_id=ids[1],
+                    content_hash=projection_content_hash(item["payload"]),
                 )
             self._last_error = ""
         except Exception as exc:
@@ -418,19 +478,29 @@ class CogneeCoordinator:
         """关系节点投影：渲染最新邻域文档，先删后加到 relations 数据集。
 
         入队负载仅是快照触发器，文档在消费时从权威库实时渲染，
-        保证投影内容不被入队后的后续变更过期。
+        保证投影内容不被入队后的后续变更过期。渲染文档与上次成功
+        同步的指纹一致时直接跳过（边强度漂移等无效变更不重跑管线）。
         """
         dataset_name = self.relations_dataset
-        active: list[tuple[dict[str, Any], str]] = []
+        active: list[tuple[dict[str, Any], str, str]] = []
         for item in items:
             document = await self.store.graph.render_node_document(item["entry_id"])
             if document is None:
                 # 节点已归档/不存在：按删除处理
                 await self._process_delete({**item, "operation": "delete"})
                 continue
+            fingerprint = _document_hash(document)
             mapping = await self.store.get_cognee_mapping(
                 item["entry_id"], entry_kind=item["entry_kind"],
             )
+            if mapping and str(mapping.get("content_hash") or "") == fingerprint:
+                # 投影已是最新：仅移除队列条目，映射与投影保持原样
+                await self.store.complete_cognee_sync(
+                    item["queue_id"],
+                    item["entry_id"],
+                    entry_kind=item["entry_kind"],
+                )
+                continue
             if mapping and mapping.get("dataset_id") and mapping.get("data_id"):
                 try:
                     await self.client.delete_data(
@@ -441,13 +511,13 @@ class CogneeCoordinator:
                 except Exception as exc:
                     await self._fail(item, f"清理旧投影失败: {_error_text(exc)}")
                     continue
-            active.append((item, document))
+            active.append((item, document, fingerprint))
         if not active:
             return
 
         try:
             data_items: list[Any] = []
-            for item, document in active:
+            for item, document, _fingerprint in active:
                 data_items.append(await self.client.make_data_item(
                     document,
                     label=f"anelf-graph-node-{item['entry_id']}",
@@ -457,15 +527,17 @@ class CogneeCoordinator:
                         "source": "graph",
                     },
                 ))
+            self._breaker.observe()
             await self.client.add(
                 data_items,
                 dataset_name=dataset_name,
                 incremental_loading=True,
             )
             await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
+            self._breaker.observe()
             await self._maybe_improve(dataset_name)
             identifiers = await self._resolve_data_ids(dataset_name, "anelf_graph_node_id")
-            for item, _doc in active:
+            for item, _doc, fingerprint in active:
                 ids = identifiers.get(str(item["entry_id"]))
                 if not ids:
                     await self._fail(item, "无法解析 Cognee 数据 ID")
@@ -477,11 +549,12 @@ class CogneeCoordinator:
                     dataset_name=dataset_name,
                     dataset_id=ids[0],
                     data_id=ids[1],
+                    content_hash=fingerprint,
                 )
             self._last_error = ""
         except Exception as exc:
             self._last_error = _error_text(exc)
-            for item, _doc in active:
+            for item, _doc, _fingerprint in active:
                 await self._fail(item, self._last_error)
 
     async def _maybe_improve(self, dataset_name: str) -> None:
@@ -582,6 +655,11 @@ def _error_text(exc: BaseException) -> str:
     """生成可见的错误描述；asyncio.TimeoutError 等异常的 str() 为空。"""
     text = str(exc).strip()
     return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _document_hash(document: str) -> str:
+    """渲染文档内容指纹（graph 投影消费侧判重）。"""
+    return hashlib.sha256(document.encode("utf-8")).hexdigest()[:16]
 
 
 def _value(item: Any, key: str, default: Any) -> Any:
