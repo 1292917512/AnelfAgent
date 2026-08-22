@@ -207,3 +207,52 @@ class TestMediaRulesDirectVision:
         assert "已直接以视觉形式呈现" in rules
         assert "recognize_image" in rules
         assert "必须优先使用" in rules
+
+
+class TestUrlFallbackNotification:
+    """URL 下载失败回退为 URL 直传时，必须注入文本通知 Agent（防幻觉描述）。"""
+
+    async def test_fallback_notice_injected(
+            self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def _fail_download(url: str, timeout: float = 30.0) -> None:
+            return None
+
+        monkeypatch.setattr(
+            "agent.llm.image_utils.download_image_to_base64", _fail_download,
+        )
+        config = LLMClientConfig(name="v", supports_vision=True, vision_format="both")
+        result = await apply_vision(
+            _make_mind(config), _make_messages(),
+            [ImageContent(data="https://example.com/a.jpg", is_url=True)],
+        )
+
+        content = result[-1]["content"]
+        assert isinstance(content, list)
+        # 图片 block 仍是 URL 直传
+        assert content[1] == {
+            "type": "image_url",
+            "image_url": {"url": "https://example.com/a.jpg"},
+        }
+        # 尾部追加回退通知
+        notice = content[-1]
+        assert notice["type"] == "text"
+        assert "下载失败" in notice["text"] and "URL" in notice["text"]
+
+    async def test_no_notice_when_download_ok(
+            self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def _fake_download(url: str, timeout: float = 30.0) -> ImageContent:
+            return ImageContent(data=_TINY_B64, mime_type="image/jpeg")
+
+        monkeypatch.setattr(
+            "agent.llm.image_utils.download_image_to_base64", _fake_download,
+        )
+        config = LLMClientConfig(name="v", supports_vision=True, vision_format="both")
+        result = await apply_vision(
+            _make_mind(config), _make_messages(),
+            [ImageContent(data="https://example.com/a.jpg", is_url=True)],
+        )
+        content = result[-1]["content"]
+        assert all(b.get("type") != "text" or "下载失败" not in b.get("text", "")
+                   for b in content)

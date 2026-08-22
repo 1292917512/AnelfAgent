@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import io
 
+import pytest
 from PIL import Image
 
 from agent.llm.image_utils import load_image_from_bytes, optimize_for_vision
@@ -71,3 +72,60 @@ class TestFormatReencode:
         check = Image.open(io.BytesIO(base64.b64decode(out.data)))
         assert max(check.size) <= 1568
         assert check.format == "JPEG"
+
+
+_TINY_B64 = base64.b64encode(_make_image_bytes("JPEG", (64, 64))).decode("utf-8")
+
+
+class TestEnsureBase64Report:
+    """ensure_base64_report：逐张状态报告（ok / url_fallback / failed）。"""
+
+    async def test_base64_passthrough_ok(self) -> None:
+        from agent.llm.image_utils import ensure_base64_report
+        from agent.llm.types import ImageContent
+        prepared, fallbacks, failed = await ensure_base64_report(
+            [ImageContent(data=_TINY_B64, mime_type="image/jpeg")],
+        )
+        assert len(prepared) == 1 and not fallbacks and not failed
+
+    async def test_url_download_failure_reported_as_fallback(
+            self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from agent.llm import image_utils
+        from agent.llm.types import ImageContent
+
+        async def _fail(url: str, timeout: float = 30.0):
+            return None
+
+        monkeypatch.setattr(image_utils, "download_image_to_base64", _fail)
+        prepared, fallbacks, failed = await image_utils.ensure_base64_report(
+            [ImageContent(data="https://example.com/x.jpg", is_url=True)],
+        )
+        # 原 URL 保留注入（端点兜底），但必须出现在 fallbacks 里供调用方告知 Agent
+        assert len(prepared) == 1 and prepared[0].data == "https://example.com/x.jpg"
+        assert len(fallbacks) == 1 and not failed
+
+    async def test_local_path_failure_reported_as_failed(self) -> None:
+        from agent.llm.image_utils import ensure_base64_report
+        from agent.llm.types import ImageContent
+        prepared, fallbacks, failed = await ensure_base64_report(
+            [ImageContent(data="/nonexistent/dir/missing.jpg")],
+        )
+        assert not prepared and not fallbacks and len(failed) == 1
+
+    async def test_mixed_images_parallel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """多图混合：成功/回退/失败分别归类，且互不阻塞。"""
+        from agent.llm import image_utils
+        from agent.llm.types import ImageContent
+
+        async def _ok(url: str, timeout: float = 30.0):
+            return ImageContent(data=_TINY_B64, mime_type="image/jpeg")
+
+        monkeypatch.setattr(image_utils, "download_image_to_base64", _ok)
+        prepared, fallbacks, failed = await image_utils.ensure_base64_report([
+            ImageContent(data=_TINY_B64, mime_type="image/jpeg"),
+            ImageContent(data="https://example.com/a.jpg", is_url=True),
+            ImageContent(data="/nonexistent/missing.jpg"),
+        ])
+        assert len(prepared) == 2 and not fallbacks and len(failed) == 1
+

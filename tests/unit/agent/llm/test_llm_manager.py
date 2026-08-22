@@ -227,3 +227,54 @@ def test_error_redaction_removes_api_key(tmp_path) -> None:
     )
     assert "top-secret-key" not in redacted
     assert "****" in redacted
+
+
+@pytest.mark.asyncio
+async def test_internal_purpose_usage_recorded(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """内部辅助调用（guardian/summarize 等）的 usage 记入缓存统计与成本账本。"""
+    from agent.llm.types import UsageInfo
+
+    manager = LLMManager(str(tmp_path / "llm.json"))
+    primary = _client("primary")
+    primary.chat = AsyncMock(return_value=ChatResult(
+        content="ok",
+        usage=UsageInfo(prompt_tokens=100, completion_tokens=10, total_tokens=110),
+    ))
+    recorded: list[dict] = []
+    monkeypatch.setattr(
+        "agent.mind.cache_stats.cache_usage_tracker.record",
+        lambda usage, *, kind="reply", model="": recorded.append(
+            {"kind": kind, "model": model, "total": usage.total_tokens}),
+    )
+
+    result = await manager.chat_with_fallback(
+        [{"role": "user", "content": "hi"}],
+        client=primary, max_retries=0, timeout=10, purpose="guardian",
+    )
+    assert result.content == "ok"
+    assert recorded == [{"kind": "guardian", "model": "primary-model", "total": 110}]
+
+
+@pytest.mark.asyncio
+async def test_internal_usage_record_failure_is_fail_open(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """记账链路异常不影响调用结果。"""
+    manager = LLMManager(str(tmp_path / "llm.json"))
+    primary = _client("primary")
+    from agent.llm.types import UsageInfo
+    primary.chat = AsyncMock(return_value=ChatResult(
+        content="ok",
+        usage=UsageInfo(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+    ))
+    def _boom(*a, **kw):
+        raise RuntimeError("tracker broken")
+    monkeypatch.setattr("agent.mind.cache_stats.cache_usage_tracker.record", _boom)
+
+    result = await manager.chat_with_fallback(
+        [{"role": "user", "content": "hi"}],
+        client=primary, max_retries=0, timeout=10,
+    )
+    assert result.content == "ok"

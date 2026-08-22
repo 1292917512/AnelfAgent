@@ -670,3 +670,56 @@ class TestPrefixReuseSummary:
         await c.compress_messages(base, [], scope="s", tools=tools)
         # 前缀路径返回空 → 回退文本路径
         assert len(mind.summarize_text.call_args_list) == 1
+
+
+class TestMediaBlockEstimate:
+    """estimate_tokens 的多模态块估算（不再计 0，按字节启发式 + 缓存复用）。"""
+
+    def test_image_block_counted(self) -> None:
+        from agent.mind.context_compressor import ContextCompressor
+        text_only = [{"role": "user", "content": "你好"}]
+        with_image = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "你好"},
+                {"type": "image_url", "image_url": {
+                    "url": "data:image/jpeg;base64," + "A" * 100_000,
+                }},
+            ],
+        }]
+        base = ContextCompressor.estimate_tokens(text_only)
+        with_img = ContextCompressor.estimate_tokens(with_image)
+        # 100KB base64 ≈ 75KB 图片 → 约 400 + 75*1.1 ≈ 480+ tokens
+        assert with_img - base >= 400
+
+    def test_remote_url_image_uses_typical_estimate(self) -> None:
+        from agent.mind.context_compressor import ContextCompressor
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url",
+                 "image_url": {"url": "https://example.com/a.jpg"}},
+            ],
+        }]
+        assert ContextCompressor.estimate_tokens(msgs) >= 1100
+
+    def test_media_estimate_cached(self) -> None:
+        """同一图片块逐轮重发时走缓存（第二次调用结果一致且命中 LRU）。"""
+        from agent.mind.context_compressor import ContextCompressor
+        block = {"type": "image_url", "image_url": {
+            "url": "data:image/png;base64," + "B" * 50_000,
+        }}
+        msgs = [{"role": "user", "content": [block]}]
+        first = ContextCompressor.estimate_tokens(msgs)
+        second = ContextCompressor.estimate_tokens(msgs)
+        assert first == second
+
+    def test_audio_block_counted(self) -> None:
+        from agent.mind.context_compressor import ContextCompressor
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "input_audio", "input_audio": {"data": "C" * 200_000}},
+            ],
+        }]
+        assert ContextCompressor.estimate_tokens(msgs) >= 400

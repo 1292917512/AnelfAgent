@@ -107,28 +107,31 @@ async def _inject_image_blocks(
 ) -> List[Dict]:
     """将图片以多模态 content block 注入到最后一条 user 消息（视觉模型直传）。
 
-    URL 图片下载优先（端点直抓远程链接不稳定且超时不可控），
-    下载失败时 ensure_base64 保留原 URL 交由端点兜底；
-    本地路径 / base64 统一归一为压缩后的 base64。
+    URL 图片下载优先（端点直抓远程链接不稳定且超时不可控）。三种结果分别处理：
+    - 成功：压缩后的 base64 block；
+    - URL 回退：下载失败保留原 URL 交由端点兜底——**必须告知 Agent**（端点
+      同样抓不到时模型看到的是坏图，不知情会产生幻觉描述）；
+    - 失败：本地路径加载失败被丢弃，文本告知 Agent。
 
     注入位置在对话尾部，stable/volatile 前缀字节不变，Prompt Caching 不受影响。
     """
-    from agent.llm.image_utils import ensure_base64
+    from agent.llm.image_utils import ensure_base64_report
 
-    prepared: List[ImageContent] = []
-    failed: List[str] = []
-    for img in images:
-        converted = await ensure_base64([img])
-        if converted:
-            prepared.extend(converted)
-        else:
-            failed.append(img.data[:80])
+    prepared, url_fallbacks, failed = await ensure_base64_report(images)
     blocks = [img.to_openai_block(flat_url=config.use_flat_image_url) for img in prepared]
+    notices: List[str] = []
+    if url_fallbacks:
+        notices.append(
+            f"{len(url_fallbacks)} 张图片本地下载失败（{'; '.join(url_fallbacks)}），"
+            "已按原 URL 直传给端点：如果你看不到这些图片的内容，说明端点也无法访问，"
+            "请如实告知用户图片不可见，不要描述你未看到的内容。"
+        )
     if failed:
-        blocks.append({
-            "type": "text",
-            "text": f"[系统提示] {len(failed)} 张图片加载失败（{'; '.join(failed)}），未包含在消息中，请告知用户。",
-        })
+        notices.append(
+            f"{len(failed)} 张图片加载失败（{'; '.join(failed)}），未包含在消息中，请告知用户。"
+        )
+    if notices:
+        blocks.append({"type": "text", "text": f"[系统提示] {' '.join(notices)}"})
 
     result = list(messages)
     for i in range(len(result) - 1, -1, -1):

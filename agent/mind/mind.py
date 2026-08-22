@@ -768,7 +768,7 @@ class Mind:
         messages = [{"role": "user", "content": prompt}]
         if self.llm_manager is not None:
             result = await self.llm_manager.chat_with_fallback(
-                messages, max_retries=1, timeout=180.0,
+                messages, max_retries=1, timeout=180.0, purpose="summarize",
             )
         else:
             result = await self.llm_chat(messages)

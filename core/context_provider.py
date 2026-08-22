@@ -317,6 +317,10 @@ class ContextProviderRegistry:
                 # 自动补充字节数
                 if snap.content and snap.bytes == 0:
                     snap.bytes = len(snap.content.encode("utf-8"))
+                # 未自报 tokens 时按内容长度粗估（与函数模式同口径，
+                # 供预算约束与 Web 面板占用统计；否则快照模式恒为 0）
+                if snap.content and snap.tokens <= 0:
+                    snap.tokens = max(1, len(snap.content) // _CHARS_PER_TOKEN)
                 if snap.fetched_at == 0.0:
                     snap.fetched_at = time.time()
             else:

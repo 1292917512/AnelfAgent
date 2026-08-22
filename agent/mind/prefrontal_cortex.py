@@ -249,10 +249,12 @@ class PrefrontalCortex:
             adapter_key: str = "",
             safety_limit: int = 0,
             anything: Optional["Everything"] = None,
+            budget_hint: str = "",
     ) -> dict:
         return self.context_assembly.build_execution_context(
             execution_steps, start_time, iteration,
             adapter_key=adapter_key, safety_limit=safety_limit, anything=anything,
+            budget_hint=budget_hint,
         )
 
     @staticmethod

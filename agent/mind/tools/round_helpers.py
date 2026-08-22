@@ -551,6 +551,8 @@ def _maybe_reset_guardrail_for_interjection(guardrail, new_msgs: List[Dict]) -> 
 
 async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
     """并入循环期间到达的新用户消息（含携带媒体），更新工具集与并入水位。"""
+    from core.sanitizer import clean_surrogates, has_surrogates
+
     mind = ctx.mind
     if not (ctx.mode == ThinkMode.REPLY and ctx.anything):
         return
@@ -560,7 +562,12 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
     if not new_msgs:
         return
     for m in new_msgs:
-        ctx.tool_chain.append({"role": "user", "content": m["content"]})
+        content = m["content"]
+        # 孤代理字符在并入入口清洗一次（发送边界的全量扫描是兜底；
+        # 入口清洗同时保证 FTS/embedding/摘要链路拿到干净文本）
+        if isinstance(content, str) and has_surrogates(content):
+            content = clean_surrogates(content)
+        ctx.tool_chain.append({"role": "user", "content": content})
     # 用户插话重置守卫链（对齐 dsh repeat-tool-reminder）：用户新消息改变了语境，
     # 跨插话的"重复调用"不再构成死循环
     if _maybe_reset_guardrail_for_interjection(ctx.guardrail, new_msgs):
@@ -642,6 +649,59 @@ async def _emit_context_usage(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
             })
     except Exception:
         pass  # 状态事件失败不影响主流程
+
+
+# Token 预算提醒：逼近压缩阈值时在 exec_context 提示模型主动收尾或带焦点压缩，
+# 不触碰 stable/历史前缀缓存。触发与展示均以模型窗口为分母（对模型可解释）。
+_TOKEN_BUDGET_CONFIGS = {
+    "mind/token_budget": {
+        "token_budget_reminder_enabled": {
+            "description": "是否在执行上下文中注入上下文预算提醒（逼近压缩阈值时提示模型收尾或主动压缩）",
+            "default": True,
+        },
+    },
+}
+
+from core.config import register_configs_safe  # noqa: E402
+
+register_configs_safe(_TOKEN_BUDGET_CONFIGS)
+
+# 提醒水位（占压缩阈值的比例；阈值本身默认为窗口的 75%）
+_TOKEN_BUDGET_URGENT_RATIO = 0.85
+
+
+def _token_budget_hint(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> str:
+    """计算上下文预算提醒文本（未达提醒水位返回空串）。
+
+    用量取上轮真实 prompt_tokens，缺失时估算；
+    百分比以模型窗口为分母，触发以压缩阈值为锚（阈值前留出主动压缩窗口）。
+    """
+    mind = ctx.mind
+    compressor = getattr(mind, "compressor", None)
+    if compressor is None:
+        return ""
+    try:
+        from core.config import get_config_bool
+        if not get_config_bool("token_budget_reminder_enabled", True):
+            return ""
+        threshold = compressor.threshold_tokens()
+        window = mind.get_model_context_length()
+        if threshold <= 0 or window <= 0:
+            return ""
+        tokens = state.last_prompt_tokens or compressor.estimate_tokens(
+            ctx.base_messages + ctx.tool_chain)
+        if tokens <= 0:
+            return ""
+        if tokens / threshold >= _TOKEN_BUDGET_URGENT_RATIO:
+            pct = int(tokens / window * 100)
+            return (
+                f"[上下文预算] 上下文窗口已用约 {pct}%，接近自动压缩阈值。"
+                "请优先收尾当前任务：不再读取大文件/大段新资料，已完成的工作不要重复；"
+                "如仍有大量后续工作，调用 compress_context 并带 focus_topic 保留关键上下文后继续。"
+            )
+    except Exception:
+        pass  # 预算提醒失败不影响主流程
+    return ""
 
 
 async def _handle_overflow(

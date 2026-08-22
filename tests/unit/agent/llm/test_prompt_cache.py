@@ -497,3 +497,66 @@ class TestFallbackStrip:
         assert result.content == "ok"
         fallback_msgs = fallback.chat.await_args.args[0]
         assert count_breakpoints(fallback_msgs) == 1
+
+
+class TestAdaptiveTTL:
+    """自适应 TTL：scope 闲置超过 5m 时本次重写改用 1h（prompt_cache_anthropic_ttl_auto）。"""
+
+    def setup_method(self) -> None:
+        from agent.llm.prompt_cache import _scope_last_call
+        _scope_last_call.clear()
+
+    def teardown_method(self) -> None:
+        from agent.llm.prompt_cache import _scope_last_call
+        _scope_last_call.clear()
+        ConfigManager.set("prompt_cache_anthropic_ttl", "5m")
+        ConfigManager.set("prompt_cache_anthropic_ttl_auto", True)
+
+    def test_active_scope_keeps_5m(self) -> None:
+        # 连续两次调用：第二次闲置 ~0s，维持 5m（无 ttl 字段）
+        from agent.llm.prompt_cache import observe_scope_idle
+        observe_scope_idle("user_tg:1")
+        assert observe_scope_idle("user_tg:1") < 300
+        assert cache_marker("anthropic", idle_seconds=10) == {"type": "ephemeral"}
+
+    def test_idle_scope_escalates_to_1h(self) -> None:
+        assert cache_marker("anthropic", idle_seconds=600) == {
+            "type": "ephemeral", "ttl": "1h",
+        }
+        # 非 Anthropic 线不带 ttl（缺 beta 头会 400）
+        assert cache_marker("openai", idle_seconds=600) == {"type": "ephemeral"}
+
+    def test_auto_disabled_keeps_5m(self) -> None:
+        ConfigManager.set("prompt_cache_anthropic_ttl_auto", False)
+        assert cache_marker("anthropic", idle_seconds=600) == {"type": "ephemeral"}
+
+    def test_explicit_1h_unaffected_by_auto(self) -> None:
+        ConfigManager.set("prompt_cache_anthropic_ttl", "1h")
+        ConfigManager.set("prompt_cache_anthropic_ttl_auto", False)
+        assert cache_marker("anthropic") == {"type": "ephemeral", "ttl": "1h"}
+
+    def test_observe_scope_idle_tracks_gap(self) -> None:
+        from agent.llm.prompt_cache import _scope_last_call, observe_scope_idle
+        assert observe_scope_idle("user_tg:2") == 0.0  # 首次
+        _scope_last_call["user_tg:2"] -= 700.0  # 模拟 700s 前的调用
+        assert observe_scope_idle("user_tg:2") >= 700.0
+        assert observe_scope_idle("") == 0.0  # 空 scope 不参与
+
+    def test_tools_breakpoint_reuses_message_marker(self) -> None:
+        from agent.llm.prompt_cache import first_cache_marker
+        messages = [
+            {"role": "system", "content": [
+                {"type": "text", "text": "a"},
+                {"type": "text", "text": "b",
+                 "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+            ]},
+        ]
+        marker = first_cache_marker(messages)
+        tools = [
+            {"type": "function", "function": {"name": "t1"}},
+            {"type": "function", "function": {"name": "t2"}},
+        ]
+        out = apply_tools_breakpoint(tools, api_type="anthropic", marker=marker)
+        assert out[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        # 原数组不被改写
+        assert "cache_control" not in tools[-1]

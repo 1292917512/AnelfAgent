@@ -755,7 +755,8 @@ class LLMClient(BaseEntity):
         仅 Anthropic 线生效。断点预算每请求 4 个（见 llm/prompt_cache）：
         工具链轮次消息侧已满 4 个时跳过——stable 层末断点的前缀本就覆盖
         tools 数组；首轮（无工具链断点）补位后，人设/目录文本变更时
-        工具数组前缀仍可命中缓存。
+        工具数组前缀仍可命中缓存。断点 marker 复用消息侧已有断点
+        （含自适应 TTL 决策），保证同一请求内 tools 与 messages TTL 一致。
         """
         if self.config.api_type != API_TYPE_ANTHROPIC:
             return tools
@@ -763,13 +764,16 @@ class LLMClient(BaseEntity):
             MAX_BREAKPOINTS,
             apply_tools_breakpoint,
             count_breakpoints,
+            first_cache_marker,
             is_tools_breakpoint_enabled,
         )
         if not is_tools_breakpoint_enabled():
             return tools
         if count_breakpoints(adapted) >= MAX_BREAKPOINTS:
             return tools
-        result = apply_tools_breakpoint(tools, api_type=self.config.api_type)
+        result = apply_tools_breakpoint(
+            tools, api_type=self.config.api_type, marker=first_cache_marker(adapted),
+        )
         return result if result is not None else tools
 
     # ------------------------------------------------------------------

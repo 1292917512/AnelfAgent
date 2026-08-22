@@ -64,3 +64,22 @@ class TestGetStatusScopeAggregation:
         assert status["current_used"] == 0
         assert status["collected_at"] == 0
         assert status["peak_used"] == 0
+
+    async def test_snapshot_without_tokens_estimated_from_content(self) -> None:
+        """快照模式未自报 tokens 时按内容粗估：占用/峰值不再恒 0（ssh/voiceprint 即此形态）。"""
+        async def _provide(scope: str) -> ProviderSnapshot:
+            return ProviderSnapshot(content="x" * 400, ready=True)
+
+        ContextProviderRegistry.register(ProviderMeta(name="bare", provide_fn=_provide))
+        await ContextProviderRegistry._collect_background("user_qq:123", 4000)
+        status = ContextProviderRegistry.get_status()
+        assert status["current_used"] == 100
+        assert status["peak_used"] == 100
+        assert status["providers"][0]["tokens"] == 100
+
+    async def test_snapshot_self_reported_tokens_respected(self) -> None:
+        """自报 tokens 时不覆盖（精确值优先于粗估）。"""
+        _register()  # tokens=120
+        await ContextProviderRegistry._collect_background("user_qq:123", 4000)
+        status = ContextProviderRegistry.get_status()
+        assert status["current_used"] == 120

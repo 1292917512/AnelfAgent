@@ -141,6 +141,7 @@ class ApprovalGuardian:
             ],
             max_retries=0,
             timeout=15.0,
+            purpose="guardian",
         )
         return self._parse_verdict(result.content or "")
 

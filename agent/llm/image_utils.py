@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import mimetypes
@@ -151,25 +152,62 @@ async def ensure_base64(images: List[ImageContent]) -> List[ImageContent]:
 
     每张图片加载后自动经过 optimize_for_vision 压缩。
     """
+    prepared, _url_fallbacks, _failed = await ensure_base64_report(images)
+    return prepared
+
+
+# 单张图片的处理状态
+PREPARED_OK = "ok"                    # 已归一为压缩后的 base64
+PREPARED_URL_FALLBACK = "url_fallback"  # URL 下载失败，保留原 URL 交由端点兜底
+PREPARED_FAILED = "failed"            # 本地路径加载失败，图片被丢弃
+
+
+async def _prepare_one(img: ImageContent) -> "tuple[Optional[ImageContent], str]":
+    """处理单张图片，返回 (图片, 状态)；失败状态返回 (None, PREPARED_FAILED)。"""
     from core.log import log as _log
 
-    result: List[ImageContent] = []
-    for img in images:
-        if img.is_url:
-            _log(f"ensure_base64: downloading URL ({img.data[:80]})", "DEBUG", tag="媒体")
-            converted = await download_image_to_base64(img.data)
-            loaded = converted if converted else img
-        elif _looks_like_file_path(img.data):
-            _log(f"ensure_base64: loading local file ({img.data})", "DEBUG", tag="媒体")
-            try:
-                loaded = load_image_from_path(img.data)
-            except Exception as exc:
-                _log(f"ensure_base64: 图片加载失败，已丢弃 ({img.data}): {exc}", "WARNING", tag="媒体")
-                continue
+    if img.is_url:
+        converted = await download_image_to_base64(img.data)
+        if converted is None:
+            _log(f"ensure_base64: URL 下载失败，保留原 URL 兜底 ({img.data[:80]})",
+                 "DEBUG", tag="媒体")
+            return img, PREPARED_URL_FALLBACK
+        loaded = converted
+    elif _looks_like_file_path(img.data):
+        try:
+            loaded = await asyncio.to_thread(load_image_from_path, img.data)
+        except Exception as exc:
+            _log(f"ensure_base64: 图片加载失败，已丢弃 ({img.data}): {exc}",
+                 "WARNING", tag="媒体")
+            return None, PREPARED_FAILED
+    else:
+        loaded = img
+    # PIL 解码/缩放/重编码是 CPU 密集操作，放工作线程不阻塞事件循环
+    return await asyncio.to_thread(optimize_for_vision, loaded), PREPARED_OK
+
+
+async def ensure_base64_report(
+    images: List[ImageContent],
+) -> "tuple[List[ImageContent], List[str], List[str]]":
+    """ensure_base64 的状态报告版：并行处理，返回 (成功图片, URL 回退列表, 失败列表)。
+
+    URL 回退与彻底失败分开报告：回退图片仍注入上下文（端点可能抓得到），
+    但调用方应告知 Agent 该图未经本地验证——端点同样抓不到时模型看到的
+    是坏图，不知情会产生幻觉描述。
+    """
+    results = await asyncio.gather(*(_prepare_one(img) for img in images))
+    prepared: List[ImageContent] = []
+    url_fallbacks: List[str] = []
+    failed: List[str] = []
+    for img, (loaded, status) in zip(images, results, strict=True):
+        if status == PREPARED_OK and loaded is not None:
+            prepared.append(loaded)
+        elif status == PREPARED_URL_FALLBACK and loaded is not None:
+            prepared.append(loaded)
+            url_fallbacks.append(img.data[:80])
         else:
-            loaded = img
-        result.append(optimize_for_vision(loaded))
-    return result
+            failed.append(img.data[:80])
+    return prepared, url_fallbacks, failed
 
 
 def optimize_for_vision(

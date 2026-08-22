@@ -127,7 +127,15 @@ class ToolResultPipeline:
         if not output:
             return output
         try:
-            from core.sanitizer import is_sanitize_enabled, sanitize_text
+            from core.sanitizer import (
+                clean_surrogates,
+                has_surrogates,
+                is_sanitize_enabled,
+                sanitize_text,
+            )
+            # 孤代理清洗在结果入库入口执行（发送边界的全量扫描是兜底）
+            if has_surrogates(output):
+                output = clean_surrogates(output)
             if is_sanitize_enabled():
                 sanitized = sanitize_text(output)
                 if sanitized != output:

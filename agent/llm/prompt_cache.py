@@ -37,16 +37,42 @@ _HISTORY_ANCHOR_LAYERS = ("conversation", "summary")
 # 理论可命中前缀层（快照分析口径：这些层字节稳定，其 tokens 即预期 cache_read 下限）
 CACHEABLE_PREFIX_LAYERS = ("stable", "summary")
 
+# scope 上次请求时间（自适应 TTL 用；进程内状态，单调时钟）
+_scope_last_call: Dict[str, float] = {}
 
-def cache_marker(api_type: str = "") -> Dict[str, Any]:
+# 5m TTL 的视野：闲置超过该值意味着上一轮缓存已过期，本轮必然要重写
+_TTL_5M_HORIZON_SECONDS = 300.0
+
+
+def observe_scope_idle(scope: str) -> float:
+    """记录本 scope 的请求时刻，返回距上次请求的闲置秒数（首次返回 0）。
+
+    供自适应 TTL 判定：IM 闲聊间隔经常超过 5m，上一轮 5m 缓存已失效，
+    本轮重写时改用 1h TTL 可覆盖后续的慢节奏对话。
+    """
+    if not scope:
+        return 0.0
+    import time
+    now = time.monotonic()
+    last = _scope_last_call.get(scope)
+    _scope_last_call[scope] = now
+    return (now - last) if last is not None else 0.0
+
+
+def cache_marker(api_type: str = "", idle_seconds: float = 0.0) -> Dict[str, Any]:
     """构造 cache_control marker（TTL 由配置驱动，默认 5m 短缓存）。
 
     prompt_cache_anthropic_ttl="1h" 时携带 ttl 字段（写入成本 2x vs 1.25x，
-    适合会话间隔 >5min 的场景）。ttl 标记仅真 Anthropic 线（api_type=="anthropic"）
-    注入：兼容网关缺少 extended-cache-ttl beta 头会 400
-    （与 anthropic_ttl_beta_headers 的判定口径保持一致）。
+    适合会话间隔 >5min 的场景）。prompt_cache_anthropic_ttl_auto（默认开）
+    在 5m 配置下按 scope 闲置时长自适应：闲置超过 5m 说明上轮缓存已过期，
+    本次重写改用 1h（仅冷启动这一发付 2x，后续 1h 内的慢节奏对话直接命中）。
+    ttl 标记仅真 Anthropic 线（api_type=="anthropic"）注入：兼容网关缺少
+    extended-cache-ttl beta 头会 400（与 anthropic_ttl_beta_headers 口径一致）。
     """
     ttl = str(get_config("prompt_cache_anthropic_ttl", "5m")).strip().lower()
+    if ttl == "5m" and idle_seconds > _TTL_5M_HORIZON_SECONDS:
+        if get_config_bool("prompt_cache_anthropic_ttl_auto", True):
+            ttl = "1h"
     if ttl == "1h" and (api_type or "").lower() == "anthropic":
         return {"type": "ephemeral", "ttl": "1h"}
     return {"type": "ephemeral"}
@@ -84,18 +110,33 @@ def count_breakpoints(messages: List[Dict]) -> int:
     return count
 
 
+def first_cache_marker(messages: List[Dict]) -> Optional[Dict[str, Any]]:
+    """取消息列表上第一个 cache_control marker 的副本（供 tools 断点复用 TTL）。"""
+    for msg in messages:
+        marker = msg.get("cache_control")
+        if marker is not None:
+            return dict(marker)
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("cache_control") is not None:
+                    return dict(part["cache_control"])
+    return None
+
+
 def apply_tools_breakpoint(
-    tools: Optional[List[Dict]], *, api_type: str = ""
+    tools: Optional[List[Dict]], *, api_type: str = "", marker: Optional[Dict[str, Any]] = None,
 ) -> Optional[List[Dict]]:
     """在 wire tools 数组末尾 schema 注入断点（不改写入参，返回新列表）。
 
     整个工具数组随末 schema 进入缓存：配合工具排序确定性 + sticky 激活，
     数组跨会话字节稳定；人设/目录文本变更时工具数组前缀仍可命中。
-    调用方负责预算门控（断点总数 ≤ MAX_BREAKPOINTS）。
+    marker 缺省时按 api_type 新建；调用方传入消息侧已有 marker 时复用，
+    保证同一请求内 tools 与 messages 断点的 TTL 一致。
     """
     if not tools:
         return tools
-    return [*tools[:-1], {**tools[-1], "cache_control": cache_marker(api_type)}]
+    return [*tools[:-1], {**tools[-1], "cache_control": marker or cache_marker(api_type)}]
 
 
 def _select_anchor_targets(messages: List[Dict]) -> List[Dict]:
@@ -137,12 +178,13 @@ def _select_anchor_targets(messages: List[Dict]) -> List[Dict]:
 
 
 def decorate_messages(
-    messages: List[Dict], *, anthropic: bool, api_type: str = ""
+    messages: List[Dict], *, anthropic: bool, api_type: str = "", idle_seconds: float = 0.0,
 ) -> List[Dict]:
     """消息缓存断点装饰的唯一入口（发送边界调用，copy-on-write，零拷贝优先）。
 
     - 非 Anthropic 线：消息带断点时返回剥离副本（防御），否则原样返回
     - Anthropic 线：先剥离既有断点（幂等），再按锚点表重放置 ≤4 个
+    - idle_seconds：本 scope 距上次请求的闲置秒数，驱动自适应 TTL（cache_marker）
 
     tools 数组断点不归此管（llm_client 传输层按预算门控补位）。
     入参消息与调用方上下文共享 dict，本函数绝不原地改写。
@@ -173,7 +215,7 @@ def decorate_messages(
                 for p in content
             ]
         if is_target:
-            copied["cache_control"] = cache_marker(api_type)
+            copied["cache_control"] = cache_marker(api_type, idle_seconds)
         decorated.append(copied)
     return decorated
 

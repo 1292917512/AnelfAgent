@@ -638,12 +638,16 @@ class LLMManager(BaseEntity):
         client: Optional[LLMClient] = None,
         max_retries: int = 2,
         timeout: float = 120.0,
+        purpose: str = "internal",
     ) -> ChatResult:
         """带重试和模型回退的统一聊天调用。
 
         每个候选拥有独立预算（至少覆盖 客户端超时 × (重试次数+1) + 退避冗余），
         避免慢模型首轮调用吃满共享预算，导致重试与回退链同时失效。
         timeout 参数是单个候选的预算下限。
+
+        purpose 标记调用用途（guardian/summarize/skill_review 等）：成功结果的
+        usage 记入缓存命中统计与 scope 成本账本，内部辅助调用与主对话同口径。
         """
         primary = client or self.get_default()
         candidates = [primary, *self.get_fallback_chat_clients(
@@ -683,6 +687,7 @@ class LLMManager(BaseEntity):
                 )
                 if index:
                     info(f"回退成功: {candidate.config.name}", tag="模型")
+                self._record_internal_usage(result, candidate, purpose)
                 return result
             except LLMNotConfiguredError:
                 raise
@@ -713,6 +718,28 @@ class LLMManager(BaseEntity):
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("没有可用的 LLM 候选模型")
+
+    @staticmethod
+    def _record_internal_usage(result: ChatResult, client: LLMClient, purpose: str) -> None:
+        """把内部辅助调用的 usage 记入缓存命中统计与 scope 成本账本（fail-open）。
+
+        与 _invoke_llm_unified 的主对话记账同口径；agent.llm 不顶层依赖
+        agent.mind（避免循环引用），此处延迟导入。
+        """
+        if not result.usage:
+            return
+        try:
+            from agent.mind.cache_stats import cache_usage_tracker
+            cache_usage_tracker.record(
+                result.usage, kind=purpose,
+                model=result.model or client.config.model,
+            )
+            from agent.mind.scope_usage import current_usage_scope, scope_usage_stats
+            scope = current_usage_scope()
+            if scope:
+                scope_usage_stats.record(scope, purpose, result.usage)
+        except Exception:
+            pass  # 记账失败不影响调用结果
 
     @staticmethod
     def _messages_for_candidate(

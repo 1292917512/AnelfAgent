@@ -70,6 +70,7 @@ from agent.mind.tools.round_helpers import (
     _suspend_for_background,
     _ThinkLoopCtx,
     _ThinkRoundState,
+    _token_budget_hint,
     resolve_tool_calls,
     should_end_reply,
 )
@@ -355,6 +356,7 @@ async def _run_think_rounds(
             execution_steps, start_time, state.iteration,
             adapter_key=ctx.adapter_key, safety_limit=safety_limit,
             anything=anything,
+            budget_hint=_token_budget_hint(ctx, state),
         )
         # 纯工具模式（可选）且有可用工具时，API 级强制工具选择
         require_tools = bool(ctx.active_tools) and ctx.pure_tool_mode
@@ -502,10 +504,15 @@ def _append_assistant_msg(
     """追加 assistant 消息并保留推理字段（维持多轮思维链连续性）。
 
     空 content 且无 tool_calls 时不入链：litellm 会对空文本注入占位文本
-    常驻历史并被模型复述。
+    常驻历史并被模型复述。content 入链时做孤代理清洗（模型输出是脏字符
+    来源之一；发送边界的全量扫描仍是兜底）。
     """
     if not content and not result.tool_calls:
         return
+    if content:
+        from core.sanitizer import clean_surrogates, has_surrogates
+        if has_surrogates(content):
+            content = clean_surrogates(content)
     assistant_msg = {"role": "assistant", "content": content}
     preserve_reasoning_fields(assistant_msg, result)
     tool_chain.append(assistant_msg)

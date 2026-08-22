@@ -380,18 +380,25 @@ class ContextCompressor:
         会导致压缩触发过晚、撞上 provider 溢出走紧急压缩；
         cl100k_base 与主流模型分词接近，估算偏差显著更小。
         每条消息加计固定结构开销（角色/分隔符等）。
-        相同内容字符串的编码结果按进程内缓存复用（思考循环每轮全量估算场景）。
+        多模态块（图片/音频/视频）按字节启发式单独估算（`_estimate_media_block`），
+        不再计 0——多图会话此前会被严重低估，压缩触发系统性偏晚。
+        相同内容字符串/媒体块的估算结果按进程内缓存复用（思考循环每轮全量估算场景）。
         """
         parts: List[str] = []
+        media_tokens = 0
         total_chars = 0
         for msg in messages:
             content = msg.get("content")
             if isinstance(content, str):
                 parts.append(content)
             elif isinstance(content, list):
-                parts.extend(
-                    str(part.get("text", "")) for part in content if isinstance(part, dict)
-                )
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text":
+                        parts.append(str(part.get("text", "")))
+                    else:
+                        media_tokens += ContextCompressor._estimate_media_block(part)
             for tc in msg.get("tool_calls") or []:
                 try:
                     parts.append(json.dumps(tc, ensure_ascii=False))
@@ -405,10 +412,67 @@ class ContextCompressor:
                 return (
                     sum(ContextCompressor._encode_part(enc, p, cache) for p in parts)
                     + _TOKENS_PER_MESSAGE * len(messages)
+                    + media_tokens
                 )
             except Exception:
                 pass  # 编码异常（如特殊 token 序列）回退字符估算
-        return total_chars // _CHARS_PER_TOKEN
+        return total_chars // _CHARS_PER_TOKEN + media_tokens
+
+    # 多模态块 token 估算常数（启发式，不求精确只求不再计 0）：
+    # 图片经 optimize_for_vision 统一压缩到 ≤1568px / ≤1MB，
+    # 按主流视觉模型 tile 计价约 1.1~1.6K tokens/张
+    _IMAGE_BLOCK_BASE_TOKENS = 400     # 小图/图标下限
+    _IMAGE_BLOCK_TOKENS_PER_KB = 1.1   # 压缩后约 1.1 token/KB
+    _IMAGE_BLOCK_MAX_TOKENS = 2000     # 单图上限
+    _MEDIA_BLOCK_MIN_TOKENS = 400      # 音频/视频等其他媒体块
+    _MEDIA_BLOCK_MAX_TOKENS = 8000
+
+    @staticmethod
+    def _estimate_media_block(part: Dict) -> int:
+        """估算单个多模态 content block 的 token 数（按内容哈希缓存）。
+
+        data URL 按解码后字节数估算；远程 URL 无尺寸信息按典型值。
+        同一图片块在回复内逐轮重发，缓存使其免于重复计算。
+        """
+        payload = part.get("image_url") or part.get("input_audio") or part.get("video_url")
+        if isinstance(payload, dict):
+            data = str(payload.get("url") or payload.get("data") or "")
+        else:
+            data = str(payload or "")
+        if not data:
+            return ContextCompressor._IMAGE_BLOCK_BASE_TOKENS
+        is_image = part.get("type") == "image_url"
+        cache = ContextCompressor._token_est_cache
+        key = hashlib.sha1(data[:65536].encode("utf-8", errors="replace")).hexdigest()
+        cached = cache.get(key)
+        if cached is not None:
+            cache.move_to_end(key)
+            return cached
+        if data.startswith("data:") and ";base64," in data:
+            raw_bytes = int((len(data) - data.index(";base64,") - 8) * 3 / 4)
+        elif data.startswith(("http://", "https://")):
+            raw_bytes = 0  # 远程 URL：无尺寸信息
+        else:
+            raw_bytes = int(len(data) * 3 / 4)  # 裸 base64
+        if is_image:
+            if raw_bytes <= 0:
+                estimate = 1100  # 远程图片按压缩后典型值
+            else:
+                estimate = int(
+                    ContextCompressor._IMAGE_BLOCK_BASE_TOKENS
+                    + raw_bytes / 1024 * ContextCompressor._IMAGE_BLOCK_TOKENS_PER_KB
+                )
+                estimate = min(estimate, ContextCompressor._IMAGE_BLOCK_MAX_TOKENS)
+        else:
+            estimate = max(
+                ContextCompressor._MEDIA_BLOCK_MIN_TOKENS,
+                min(raw_bytes // 1024, ContextCompressor._MEDIA_BLOCK_MAX_TOKENS),
+            )
+        cache[key] = estimate
+        cache.move_to_end(key)
+        while len(cache) > ContextCompressor._TOKEN_EST_CACHE_MAX:
+            cache.popitem(last=False)
+        return estimate
 
     def should_compress(
             self,

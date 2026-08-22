@@ -119,6 +119,7 @@ web/frontend/node_modules/
 # === Workspace & uploads ===
 /workspace/
 /uploads/
+/tmp/
 
 # === Misc ===
 /.other
