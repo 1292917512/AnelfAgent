@@ -1,11 +1,11 @@
-"""批准门 — 工具调用前的人工确认入口（统一权限引擎驱动）。
+"""批准门 — 工具调用前的确认入口（统一权限引擎 + Guardian 自动评审）。
 
-职责：
-1. 经统一规则引擎求值（PermissionRuleSet.evaluate）
-2. auto_allow / auto_deny 直接决策（deny 会通知用户原因）
-3. ask → 创建批准会话 → 频道提示（WebUI 为 SSE 弹窗）→ 等待决策
-4. 支持"记住决策"：本会话不再询问（内存规则）/ 永久放行（写入规则文件）
-5. 决策结果（含命中规则）回写频道与日志，拒绝原因全链路可见
+流程：规则引擎求值 → auto_allow/auto_deny 直接决策（deny 通知用户原因）→
+ask 先经 Guardian 自动评审（放行即执行），guardian 拒绝或不可用且有频道时
+才创建批准会话、发频道提示、事件驱动等待人工决策；无频道时由 guardian 独立
+裁决，评审不可用则放行。
+
+支持"记住决策"：本会话不再询问（内存规则）/ 永久放行（写入规则文件）。
 
 使用方式：
     gate = get_approval_gate()
@@ -13,7 +13,7 @@
         tool_name="write_file",
         tool_args={"file_path": "/tmp/x", "content": "..."},
         reason="high risk write",
-        channel=current_channel,
+        channel=current_channel,  # 无人可问路径传 None
         chat_id="...",
         user_id="...",
     )
@@ -21,16 +21,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.channel.base import ApprovalPromptRenderContext, BaseChannel
 from core.log import log
 
 from . import audit
+from .guardian import get_approval_guardian
 from .manager import ApprovalManager, get_approval_manager
 from .policy import ApprovalPolicySet
 from .rules import (
@@ -167,12 +167,17 @@ class ApprovalGate:
         tool_name: str,
         tool_args: Dict[str, Any],
         reason: str,
-        channel: BaseChannel,
+        channel: Optional[BaseChannel] = None,
         chat_id: str,
         user_id: str,
         timeout: Optional[float] = None,
+        abort_check: Optional[Callable[[], bool]] = None,
     ) -> ApprovalDecision:
         """请求批准（核心入口）。
+
+        channel 为 None 表示无人可问的路径（reflect/心跳/子代理）：ask 由
+        Guardian 独立裁决，评审不可用则放行。abort_check 命中时等待立即收束
+        为 CANCELLED。
 
         Returns:
             ApprovalDecision.APPROVED / DENIED / EXPIRED / CANCELLED
@@ -213,12 +218,55 @@ class ApprovalGate:
                 )
                 return ApprovalDecision.APPROVED
 
-        # ASK：走人工批准流程
+        risk_level = rule.risk_level if rule else self._rule_set.default_risk
+
+        # ASK：Guardian 先行评审，放行即不再打扰用户
+        guardian_verdict = await get_approval_guardian().review(
+            tool_name=tool_name,
+            tool_args=self._sanitize_args(tool_args),
+            reason=reason,
+            risk_level=risk_level.value,
+            channel_id=channel_id,
+            user_id=user_id,
+        )
+        if guardian_verdict is not None and guardian_verdict.approved:
+            audit.record_decision_bg(
+                tool_name=tool_name, outcome="guardian_approved", decided_by="guardian",
+                reason=guardian_verdict.rationale or "guardian 自动放行",
+                channel_id=channel_id, chat_id=chat_id, user_id=user_id,
+                risk_level=risk_level.value, matched_rule=verdict.matched_pattern or "*",
+                tool_args=self._sanitize_args(tool_args),
+            )
+            return ApprovalDecision.APPROVED
+
+        if channel is None:
+            # 无人可问：guardian 拒绝即拦截；评审不可用则放行
+            if guardian_verdict is not None:
+                log(f"Guardian 拒绝（无人工可达）: {tool_name} — {guardian_verdict.rationale}",
+                    "WARNING", tag="权限")
+                audit.record_decision_bg(
+                    tool_name=tool_name, outcome="guardian_denied", decided_by="guardian",
+                    reason=guardian_verdict.rationale or "guardian 判定危险",
+                    channel_id=channel_id, chat_id=chat_id, user_id=user_id,
+                    risk_level=risk_level.value, matched_rule=verdict.matched_pattern or "*",
+                    tool_args=self._sanitize_args(tool_args),
+                )
+                return ApprovalDecision.DENIED
+            audit.record_decision_bg(
+                tool_name=tool_name, outcome="guardian_bypass", decided_by="system",
+                reason="guardian 不可用，无人可问路径按自主性放行",
+                channel_id=channel_id, chat_id=chat_id, user_id=user_id,
+                risk_level=risk_level.value, matched_rule=verdict.matched_pattern or "*",
+                tool_args=self._sanitize_args(tool_args),
+            )
+            return ApprovalDecision.APPROVED
+
+        # ASK：guardian 判定危险或不可用 → 走人工批准流程
         timeout_seconds = timeout or (rule.timeout_seconds if rule else 60.0)
         request = ApprovalRequest(
             tool_name=tool_name,
             tool_args=self._sanitize_args(tool_args),
-            risk_level=rule.risk_level if rule else self._rule_set.default_risk,
+            risk_level=risk_level,
             reason=reason,
             requester_channel=channel_id,
             requester_chat_id=chat_id,
@@ -235,7 +283,9 @@ class ApprovalGate:
             await self._manager.cancel(request.request_id, "send_prompt_failed")
             return ApprovalDecision.CANCELLED
 
-        decision = await self._wait_for_decision(session, timeout_seconds)
+        decision = await self._manager.wait_decision(
+            request.request_id, timeout_seconds, abort_check=abort_check,
+        )
 
         if decision == ApprovalDecision.EXPIRED:
             on_timeout = rule.on_timeout if rule else "deny"
@@ -411,41 +461,16 @@ class ApprovalGate:
         if not response.success:
             raise RuntimeError(f"批准提示发送失败: {response.error}")
 
-    async def _notify_outcome(self, channel: BaseChannel, chat_id: str, text: str) -> None:
+    async def _notify_outcome(self, channel: Optional[BaseChannel], chat_id: str, text: str) -> None:
         """把权限决策结果通知到频道（best-effort，拒绝原因对用户可见）。"""
+        if channel is None:
+            return
         try:
             send_text = getattr(channel, "send_text", None)
             if callable(send_text):
                 await send_text(chat_id, text)
         except Exception as exc:
             log(f"权限结果通知发送失败: {exc}", "DEBUG", tag="权限")
-
-    async def _wait_for_decision(
-        self,
-        session: ApprovalSession,
-        timeout: float,
-    ) -> ApprovalDecision:
-        """等待决策（轮询）。"""
-        deadline = time.time() + timeout
-        poll_interval = 0.5
-        while time.time() < deadline:
-            current = await self._manager.get_session(session.request.request_id)
-            # 先检查决策：resolved 会话 status 已非 pending，但 decision 有效
-            if current and current.decision:
-                return current.decision
-            if not current or current.status != "pending":
-                break
-            await asyncio.sleep(poll_interval)
-            poll_interval = min(poll_interval * 1.2, 2.0)  # 渐进退避
-
-        # 超时
-        await self._manager.resolve(
-            session.request.request_id,
-            ApprovalDecision.EXPIRED,
-            "system",
-            "timeout",
-        )
-        return ApprovalDecision.EXPIRED
 
 
 def from_legacy_policyset_to_policies(rule_set: PermissionRuleSet) -> ApprovalPolicySet:

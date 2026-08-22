@@ -3,7 +3,8 @@
 基于 asyncssh 的结构化执行：
 - connect() 双重检查锁建连（per-name Lock），keepalive 死链检测
 - connection_lost 回调置状态并广播（前端 SSE 实时刷新）
-- execute() 未连接自动建连，ConnectionLost 自动重连重试一次
+- execute() 两阶段执行：通道打开失败（命令未开始，典型为池内失效连接）
+  自动重连重试一次；命令执行中断开则抛 SshCommandInterrupted 交调用方决策
 - upload/download 走 SFTP
 
 状态变更经模块级订阅者队列广播，router.py 的 SSE 端点消费。
@@ -36,6 +37,23 @@ _FALLBACK_CMD_TIMEOUT = 60.0
 
 # SSE 订阅者队列（router.py 注册），广播失败仅告警不中断
 _subscribers: List[asyncio.Queue] = []
+
+
+class SshCommandInterrupted(Exception):
+    """命令执行中 SSH 连接断开：命令已在远端启动，但执行结果未知。
+
+    与会话建立阶段的失败不同，这类中断无法安全地自动重试——目标可能
+    正在关机/重启（重连注定失败白等 connect 超时），且重跑整条命令会
+    放大副作用与耗时。重试与否的决策交还调用方（AI/Web）。
+    """
+
+    def __init__(self, connection: str, reason: str, elapsed_ms: int) -> None:
+        self.connection = connection
+        self.reason = reason
+        self.elapsed_ms = elapsed_ms
+        super().__init__(
+            f"连接 {connection} 在命令执行中（已运行 {elapsed_ms // 1000}s）断开: {reason}"
+        )
 
 
 def subscribe_status() -> asyncio.Queue:
@@ -290,26 +308,59 @@ class SshConnectionManager:
     ) -> Dict[str, Any]:
         """在指定（或默认）连接上执行命令，返回结构化结果。
 
-        连接中断（ConnectionLost）时自动重连并重试一次。
+        两阶段语义决定断线时的处理：
+        - 通道打开失败：命令尚未开始（典型为连接池内的失效连接），
+          重置状态、重建连接后完整重试一次；
+        - 执行中断开：命令已被中途掐断、结果不可知，抛
+          SshCommandInterrupted 立即返回，不重试。
 
         Returns:
             {"ok", "exit_code", "stdout", "stderr", "connection", "truncated"}
+
+        Raises:
+            SshCommandInterrupted: 命令执行中连接断开（含对端关机/网络中断）。
         """
         target = self._resolve_name(name)
         conn = await self._ensure_connected(target)
         effective_timeout = timeout or get_config_int("ssh_default_timeout", int(_FALLBACK_CMD_TIMEOUT))
         full_command = f"cd {work_dir} && {command}" if work_dir.strip() else command
 
-        try:
-            result = await conn.run(full_command, timeout=effective_timeout)
-        except (asyncssh.ConnectionLost, asyncssh.DisconnectError):
-            # 连接失效：重置状态、重建连接并重试一次
+        def _mark_disconnected() -> None:
             managed = self._managed(target)
             managed.conn = None
             managed.status = STATUS_DISCONNECTED
             _broadcast_status(self, target, "status")
-            conn = await self._ensure_connected(target)
-            result = await conn.run(full_command, timeout=effective_timeout)
+
+        # 阶段一：打开执行通道。此阶段断线 = 命令未开始，重试安全。
+        # create_process 拆分自 conn.run：以"命令是否已在远端启动"为界
+        # 区分可重试与不可重试，是断线路由的唯一依据。
+        try:
+            process = await conn.create_process(full_command)
+        except (asyncssh.ConnectionLost, asyncssh.DisconnectError) as exc:
+            log(f"SSH 会话打开失败，重连后重试: {target} - {exc}", "DEBUG", tag="SSH")
+            _mark_disconnected()
+            try:
+                conn = await self._ensure_connected(target)
+                process = await conn.create_process(full_command)
+            except (asyncssh.ConnectionLost, asyncssh.DisconnectError) as retry_exc:
+                _mark_disconnected()
+                raise ConnectionError(f"重连后仍无法建立会话: {retry_exc}") from retry_exc
+
+        # 阶段二：等待命令完成。此阶段断线 = 命令被中途掐断，立即上抛。
+        started = time.monotonic()
+        try:
+            result = await process.wait(timeout=effective_timeout)
+        except asyncio.TimeoutError:
+            # 关闭通道终止远端会话，防超时命令在池化连接上继续滞留
+            process.close()
+            raise
+        except (asyncssh.ConnectionLost, asyncssh.DisconnectError) as exc:
+            _mark_disconnected()
+            raise SshCommandInterrupted(
+                connection=target,
+                reason=str(exc),
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+            ) from exc
 
         self._managed(target).last_used_at = int(time.time() * 1000)
         stdout = result.stdout if isinstance(result.stdout, str) else (result.stdout or b"").decode("utf-8", errors="replace")

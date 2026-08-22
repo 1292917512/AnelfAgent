@@ -204,14 +204,16 @@ class ToolResultPipeline:
         head_len = max(1, int(limit * _TOOL_RESULT_HEAD_RATIO))
         tail_len = max(1, limit - head_len)
         kept_len = head_len + tail_len
+        head, tail = output[:head_len], output[-tail_len:]
 
         return (
             "[系统提示] 工具返回内容过长，已自动截断以避免上下文溢出。\n"
-            f"[tool={tool_name}] 原始长度={len(output)} 字符，保留长度={kept_len} 字符。\n"
+            f"[tool={tool_name}] 原始长度={len(output)} 字符（{output.count(chr(10)) + 1} 行），"
+            f"保留长度={kept_len} 字符（头 {head.count(chr(10)) + 1} 行 + 尾 {tail.count(chr(10)) + 1} 行）。\n"
             "----- head -----\n"
-            f"{output[:head_len]}\n"
-            "----- tail -----\n"
-            f"{output[-tail_len:]}"
+            f"{head}\n"
+            f"----- tail（中间省略 {len(output) - kept_len} 字符）-----\n"
+            f"{tail}"
         )
 
     # ------------------------------------------------------------------

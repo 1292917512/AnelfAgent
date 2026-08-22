@@ -2,7 +2,7 @@
 
 完整的 SSH 客户端能力，供 AI 与 Web 用户共同使用：
 - 连接配置管理（增删改查 + 默认连接切换，凭据脱敏存储）
-- 连接池复用（keepalive 保活 + 断线自动重连）
+- 连接池复用（keepalive 保活 + 失效连接自动重建）
 - 结构化命令执行（exit_code/stdout/stderr）
 - SFTP 文件上传/下载
 - 实时状态经 SSE 推送，激活连接经 context_provider 注入 AI 上下文

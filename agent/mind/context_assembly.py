@@ -785,7 +785,8 @@ class ContextAssembly:
             safety_limit: int = 0,
             anything: Optional["Everything"] = None,
     ) -> dict:
-        """构建当前轮次的执行状态消息（轮次、耗时、工具态势、频道、历史步骤、待处理消息）。"""
+        """构建当前轮次的执行状态消息（轮次、耗时、工具态势、频道、历史步骤、待处理消息）。
+        """
         import time
         elapsed = time.time() - start_time
         remaining = (safety_limit - iteration) if safety_limit > 0 else None

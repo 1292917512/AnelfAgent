@@ -31,6 +31,9 @@ AUDITED_OUTCOMES = frozenset({
     "expired",     # 超时未决策
     "trusted",     # 信任阈值自动放行（不计入 approved 计数）
     "timeout_allow",  # 规则 on_timeout=allow 的超时放行
+    "guardian_approved",  # Guardian 自动放行（不计入 approved 计数）
+    "guardian_denied",    # Guardian 判定危险拒绝（无人可问路径）
+    "guardian_bypass",    # Guardian 不可用，无人可问路径按自主性放行
 })
 
 

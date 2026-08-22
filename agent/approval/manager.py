@@ -1,17 +1,15 @@
 """批准管理器 — 全局管理所有挂起的批准请求。
 
-职责：
-- 维护 request_id → ApprovalSession 映射
-- 提供决策接口（approve / deny / cancel）
-- 自动清理过期会话
-- 决策审计经 approval.audit 持久化（approval_audit 表）；
+- 维护 request_id → ApprovalSession 映射，提供决策接口（approve / deny / cancel）
+- wait_decision 事件驱动等待：决策到达即唤醒；abort_check 命中收束为 CANCELLED
+- 自动清理过期会话；决策审计经 approval.audit 持久化（approval_audit 表），
   信任计数从审计账本统计，重启不清零
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from core.log import log
 
@@ -25,6 +23,8 @@ class ApprovalManager:
 
     def __init__(self) -> None:
         self._sessions: Dict[str, ApprovalSession] = {}
+        # 决策事件：resolve 时唤醒 wait_decision 等待者
+        self._events: Dict[str, asyncio.Event] = {}
         self._lock = asyncio.Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
 
@@ -37,6 +37,7 @@ class ApprovalManager:
         session = ApprovalSession(request=request)
         async with self._lock:
             self._sessions[request.request_id] = session
+            self._events[request.request_id] = asyncio.Event()
         log(
             f"批准会话已创建: {request.request_id} "
             f"({request.tool_name}, risk={request.risk_level.value})",
@@ -68,12 +69,15 @@ class ApprovalManager:
         decided_by: str = "",
         reason: str = "",
     ) -> bool:
-        """标记会话为已决策，并把决策写入审计账本。"""
+        """标记会话为已决策，唤醒等待者，并把决策写入审计账本。"""
         async with self._lock:
             session = self._sessions.get(request_id)
             if not session or not session.is_pending():
                 return False
             session.resolve(decision, decided_by, reason)
+            event = self._events.get(request_id)
+        if event is not None:
+            event.set()
         log(
             f"批准会话已决策: {request_id} -> {decision.value} "
             f"(by {decided_by or 'system'})",
@@ -105,6 +109,54 @@ class ApprovalManager:
     async def cancel(self, request_id: str, reason: str = "") -> bool:
         """取消（如 agent 中断）。"""
         return await self.resolve(request_id, ApprovalDecision.CANCELLED, "system", reason)
+
+    # ------------------------------------------------------------------
+    # 等待（事件驱动，零轮询）
+    # ------------------------------------------------------------------
+
+    async def wait_decision(
+        self,
+        request_id: str,
+        timeout: float,
+        abort_check: Optional[Callable[[], bool]] = None,
+    ) -> ApprovalDecision:
+        """等待会话决策，返回最终决策。
+
+        决策到达立即唤醒。abort_check 提供时每秒轮询一次该标志位
+        （中断注册表本身无事件机制），命中即收束为 CANCELLED；
+        超时收束为 EXPIRED（deny/allow/halt 由 gate 按规则决定）。
+        """
+        event = self._events.get(request_id)
+        if event is None:
+            return ApprovalDecision.CANCELLED
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        try:
+            while True:
+                session = await self.get_session(request_id)
+                if session is None:
+                    return ApprovalDecision.EXPIRED  # 已被清理
+                if session.decision is not None:
+                    return session.decision
+                if not session.is_pending():
+                    return ApprovalDecision.EXPIRED
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                slice_ = min(remaining, 1.0) if abort_check is not None else remaining
+                try:
+                    await asyncio.wait_for(event.wait(), slice_)
+                except asyncio.TimeoutError:
+                    pass  # 分片到期：回环检查 abort/超时
+                if abort_check is not None and abort_check():
+                    await self.resolve(
+                        request_id, ApprovalDecision.CANCELLED, "system", "interrupted",
+                    )
+                    return ApprovalDecision.CANCELLED
+            await self.resolve(request_id, ApprovalDecision.EXPIRED, "system", "timeout")
+            return ApprovalDecision.EXPIRED
+        finally:
+            self._events.pop(request_id, None)
 
     # ------------------------------------------------------------------
     # 信任（从审计账本统计，重启不清零）
@@ -141,6 +193,9 @@ class ApprovalManager:
             for rid in expired:
                 session = self._sessions.pop(rid)
                 session.resolve(ApprovalDecision.EXPIRED, "system", "timeout")
+                event = self._events.get(rid)
+                if event is not None:
+                    event.set()
                 resolved.append(session)
         for session in resolved:
             audit.record_decision_bg(

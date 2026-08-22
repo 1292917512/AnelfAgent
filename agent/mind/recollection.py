@@ -252,20 +252,29 @@ async def _match_skills(
             matched_skills = [(s, 1.0) for s in forced] + matched_skills
         if not matched_skills:
             return []
-        skill_lines = ["[相关技能] 以下经验可能适用于当前任务，可参考复用："]
+        # 渐进披露：评分匹配只注目录（名称+描述+触发词），正文经 get_skill 按需自取；
+        # 手势命中（用户显式调用 /name）直接注入全文
+        skill_lines = [
+            "[相关技能] 以下技能可能适用于当前任务（目录）。"
+            "决定使用某个技能时，先用 get_skill 读取其完整内容再按步骤执行；"
+            "不适用则忽略，不要逐条读取。",
+        ]
         for skill, _score in matched_skills:
-            skill_body = skill.content[:800]
-            if len(skill.content) > 800:
-                skill_body += "\n（内容较长已截断，get_skill 可读全文）"
-            skill_lines.append(
-                f"## {skill.name} — {skill.description}\n{skill_body}"
-            )
             # 信号分离：手势命中 = 真实使用（计数 + 刷新活动）；评分命中 = 检索注入
             # （只计匹配，不刷新活动——被匹配不等于被消费，不能阻断闲置降级）
             if skill.name in forced_names:
                 mind.skill_store.record_use(skill.name)
+                skill_lines.append(
+                    f"## {skill.name} — {skill.description}\n"
+                    f"（用户显式调用，全文如下）\n{skill.content}"
+                )
             else:
                 mind.skill_store.record_match(skill.name)
+                triggers = "、".join(skill.trigger_patterns[:6])
+                entry = f"## {skill.name} — {skill.description}"
+                if triggers:
+                    entry += f"\n触发词: {triggers}"
+                skill_lines.append(entry)
         log(f"技能注入: {', '.join(s.name for s, _ in matched_skills)}", "DEBUG", tag="技能")
         return [{
             "role": "system",

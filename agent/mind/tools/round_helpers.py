@@ -637,7 +637,7 @@ async def _emit_context_usage(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
                 "window": _window,
                 "percent": round(_tokens / _threshold * 100, 1),
                 "cache_read_input_tokens": state.last_cache_read_tokens,
-                "cache_creation_input_tokens": state.last_cache_creation_tokens,
+                "cache_creation_tokens": state.last_cache_creation_tokens,
                 "cache_hit_rate": state.last_cache_hit_rate,
             })
     except Exception:
@@ -1082,14 +1082,14 @@ async def _request_tool_approval(
         tc: "ToolCall",
         anything: Optional["Everything"],
         tool_scope: str,
+        mind: Optional["Mind"] = None,
 ) -> Optional[str]:
-    """批准机制：在执行前检查是否需要人工批准。
+    """执行前审批检查；未获批准返回合成错误 JSON（并关闭链路工具节点），批准返回 None。
 
-    未获批准时返回合成错误 JSON（并关闭链路中的工具节点）；
-    批准、无 anything 或批准模块缺失时返回 None，调用方继续真实执行。
+    对话/反思/子代理统一经过规则引擎求值；ask 的裁决方式由 gate 按是否有
+    频道上下文决定（guardian 自动评审 / 人工弹窗）。mind 提供中断注册表，
+    用于等待人工决策期间的中断唤醒。
     """
-    if anything is None:
-        return None
     try:
         from agent.approval import ApprovalDecision, get_approval_gate
 
@@ -1117,52 +1117,69 @@ async def _request_tool_approval(
                 }, ensure_ascii=False)
 
         gate = get_approval_gate()
-        # 从 anything 提取上下文
-        adapter_key = getattr(anything, "adapter_key", "") or "unknown"
-        user_id = str(getattr(anything, "uid", "") or getattr(anything, "user_id", "") or "unknown")
-        group_id = str(getattr(anything, "group_id", "") or "")
-        chat_id = group_id if group_id not in ("", "0") else user_id
+        # 频道上下文（无人可问路径：anything 缺失或频道未注册，channel=None）
+        channel = None
+        chat_id = tool_scope
+        user_id = "agent"
+        if anything is not None:
+            adapter_key = getattr(anything, "adapter_key", "") or "unknown"
+            user_id = str(getattr(anything, "uid", "") or getattr(anything, "user_id", "") or "unknown")
+            group_id = str(getattr(anything, "group_id", "") or "")
+            chat_id = group_id if group_id not in ("", "0") else user_id
+            from agent.channel.manager import get_channel_manager
+            channel = get_channel_manager().get(adapter_key)
 
-        # 获取频道实例
-        from agent.channel.manager import get_channel_manager
-        channel = get_channel_manager().get(adapter_key)
+        # 中断唤醒：等待人工决策期间用户中断即收束
+        abort_check = None
+        interrupts = getattr(mind, "interrupts", None) if mind is not None else None
+        scope = tool_scope
+        if not scope:
+            from agent.mind.tool_activation import ToolActivationManager
+            scope = ToolActivationManager.current_scope()
+        if interrupts is not None and scope:
+            abort_check = lambda: interrupts.is_requested(scope)  # noqa: E731
 
-        if channel:
-            # 解析工具参数
-            try:
-                tool_args = json.loads(tc.arguments) if tc.arguments else {}
-            except (json.JSONDecodeError, TypeError):
-                tool_args = {"_raw": tc.arguments or ""}
+        # 解析工具参数
+        try:
+            tool_args = json.loads(tc.arguments) if tc.arguments else {}
+        except (json.JSONDecodeError, TypeError):
+            tool_args = {"_raw": tc.arguments or ""}
 
-            decision = await gate.request_approval(
-                tool_name=tc.name,
-                tool_args=tool_args,
-                reason=f"AI 请求调用工具 {tc.name}",
-                channel=channel,
-                chat_id=chat_id,
-                user_id=user_id,
+        decision = await gate.request_approval(
+            tool_name=tc.name,
+            tool_args=tool_args,
+            reason=f"AI 请求调用工具 {tc.name}",
+            channel=channel,
+            chat_id=chat_id,
+            user_id=user_id,
+            abort_check=abort_check,
+        )
+        if decision != ApprovalDecision.APPROVED:
+            log(
+                f"工具 {tc.name} 未获批准: {decision.value}",
+                "WARNING",
+                tag="批准",
             )
-            if decision != ApprovalDecision.APPROVED:
-                log(
-                    f"工具 {tc.name} 未获批准: {decision.value}",
-                    "WARNING",
-                    tag="批准",
+            # 关闭链路中的工具节点，避免一直停留在执行中
+            await event_bus.emit(EVENT_THINKING_TOOL_END, {
+                "scope": tool_scope,
+                "tool_name": tc.name,
+                "tool_id": tc.id,
+                "duration_ms": 0,
+                "error": f"未获批准: {decision.value}",
+                "success": False,
+            })
+            if decision == ApprovalDecision.CANCELLED:
+                error_text = "工具调用已取消（用户中断）。请勿重试，等待用户新的指示。"
+            else:
+                error_text = (
+                    f"工具调用未获批准: {decision.value}。"
+                    "请勿重试相同的调用，可向用户说明情况或改用其他方式完成任务。"
                 )
-                # 关闭链路中的工具节点，避免一直停留在执行中
-                await event_bus.emit(EVENT_THINKING_TOOL_END, {
-                    "scope": tool_scope,
-                    "tool_name": tc.name,
-                    "tool_id": tc.id,
-                    "duration_ms": 0,
-                    "error": f"未获批准: {decision.value}",
-                    "success": False,
-                })
-                return json.dumps({
-                    "error": f"工具调用未获批准: {decision.value}。"
-                             "用户已通过频道收到拒绝原因；请勿重试相同的调用，"
-                             "可向用户说明情况或改用其他方式完成任务。",
-                    "approval_decision": decision.value,
-                }, ensure_ascii=False)
+            return json.dumps({
+                "error": error_text,
+                "approval_decision": decision.value,
+            }, ensure_ascii=False)
     except ImportError:
         # approval 模块未安装，跳过
         pass

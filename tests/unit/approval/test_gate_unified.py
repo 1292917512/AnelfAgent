@@ -40,7 +40,19 @@ def _gate(rules) -> ApprovalGate:
     return ApprovalGate(rule_set=PermissionRuleSet(rules=rules))
 
 
+@pytest.fixture()
+def guardian_off():
+    """关闭 Guardian 自动评审，隔离测试人工审批流程（评审路径见 test_guardian.py）。"""
+    ConfigManager.set("approval_guardian_enabled", False)
+    yield
+    ConfigManager.set("approval_guardian_enabled", True)
+
+
 class TestGateDecisions:
+    @pytest.fixture(autouse=True)
+    def _no_guardian(self, guardian_off):
+        pass
+
     async def test_auto_allow_no_prompt(self):
         gate = _gate([])
         ch = MockChannel()

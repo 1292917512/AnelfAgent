@@ -1,10 +1,12 @@
 """SshConnectionManager 连接池与执行链路测试（mock asyncssh）。
 
-覆盖：名称解析、连接复用、结构化执行、断线自动重连、SFTP 传输、状态快照。
+覆盖：名称解析、连接复用、结构化执行、两阶段断线路由
+（打开失败重连重试 / 执行中断立即抛错）、SFTP 传输、状态快照。
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, List
 from unittest.mock import AsyncMock, patch
 
@@ -14,6 +16,7 @@ import pytest
 from entities.ssh.manager import (
     STATUS_CONNECTED,
     STATUS_DISCONNECTED,
+    SshCommandInterrupted,
     SshConnectionManager,
 )
 from entities.ssh.store import SshConfigStore
@@ -26,6 +29,36 @@ class FakeResult:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+class OpenError:
+    """会话打开阶段抛出的异常（命令未开始）。"""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+
+class WaitError:
+    """命令执行阶段抛出的异常（命令已在远端启动）。"""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+
+class FakeProcess:
+    """模拟 asyncssh.SSHClientProcess。"""
+
+    def __init__(self, outcome: Any) -> None:
+        self._outcome = outcome
+        self.closed = False
+
+    async def wait(self, timeout: float | None = None) -> Any:
+        if isinstance(self._outcome, WaitError):
+            raise self._outcome.exc
+        return self._outcome
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeSftp:
@@ -45,21 +78,24 @@ class FakeSftp:
 
 
 class FakeConn:
-    """模拟 asyncssh.SSHClientConnection。"""
+    """模拟 asyncssh.SSHClientConnection（create_process + wait 两阶段）。"""
 
     def __init__(self, run_outcomes: List[Any]) -> None:
-        # 每个元素为 FakeResult（成功）或 Exception（抛出）
+        # 每个元素：FakeResult（成功）/ OpenError（打开失败）/ WaitError（执行中失败）
         self._run_outcomes = list(run_outcomes)
         self.run_commands: List[str] = []
+        self.processes: List[FakeProcess] = []
         self.sftp = FakeSftp()
         self.closed = False
 
-    async def run(self, command: str, timeout: float | None = None) -> FakeResult:
+    async def create_process(self, command: str) -> FakeProcess:
         self.run_commands.append(command)
         outcome = self._run_outcomes.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
+        if isinstance(outcome, OpenError):
+            raise outcome.exc
+        process = FakeProcess(outcome)
+        self.processes.append(process)
+        return process
 
     async def start_sftp_client(self) -> FakeSftp:
         return self.sftp
@@ -138,9 +174,9 @@ class TestExecute:
         assert connect_mock.call_count == 1
         assert len(fake.run_commands) == 2
 
-    async def test_auto_reconnect_on_connection_lost(self, manager: SshConnectionManager) -> None:
-        """首次执行连接中断 → 自动重连并重试一次。"""
-        broken = FakeConn([asyncssh.ConnectionLost("网络中断")])
+    async def test_open_failure_reconnects_and_retries(self, manager: SshConnectionManager) -> None:
+        """会话打开失败（命令未开始，如池内失效连接）→ 重连并完整重试一次。"""
+        broken = FakeConn([OpenError(asyncssh.ConnectionLost("网络中断"))])
         healthy = FakeConn([FakeResult(0, "recovered", "")])
         with patch(
             "entities.ssh.manager.asyncssh.connect",
@@ -149,6 +185,46 @@ class TestExecute:
             result = await manager.execute("cmd")
         assert result["ok"] is True
         assert result["stdout"] == "recovered"
+
+    async def test_open_failure_twice_raises_connection_error(
+        self, manager: SshConnectionManager,
+    ) -> None:
+        """重连后打开仍失败 → ConnectionError（归因 network），不再无限重试。"""
+        broken = FakeConn([OpenError(asyncssh.ConnectionLost("网络中断"))])
+        broken2 = FakeConn([OpenError(asyncssh.ConnectionLost("仍失败"))])
+        with patch(
+            "entities.ssh.manager.asyncssh.connect",
+            AsyncMock(side_effect=[broken, broken2]),
+        ):
+            with pytest.raises(ConnectionError):
+                await manager.execute("cmd")
+
+    async def test_interrupted_mid_command_fails_fast(
+        self, manager: SshConnectionManager,
+    ) -> None:
+        """命令执行中断开（对端关机等）→ 立即抛 SshCommandInterrupted，不重连。"""
+        fake = FakeConn([WaitError(asyncssh.ConnectionLost("Connection reset by peer"))])
+        connect_mock = AsyncMock(return_value=fake)
+        with patch("entities.ssh.manager.asyncssh.connect", connect_mock):
+            with pytest.raises(SshCommandInterrupted) as excinfo:
+                await manager.execute("sleep 60")
+        err = excinfo.value
+        assert err.connection == "web"
+        assert "reset" in err.reason
+        assert err.elapsed_ms >= 0
+        # 关键断言：未做任何重连尝试
+        assert connect_mock.call_count == 1
+        snapshot = manager.get_snapshot("web")
+        assert snapshot is not None
+        assert snapshot["status"] == STATUS_DISCONNECTED
+
+    async def test_command_timeout_closes_process(self, manager: SshConnectionManager) -> None:
+        """命令超时 → 关闭执行通道（防远端进程在池化连接上滞留）并上抛超时。"""
+        fake = FakeConn([WaitError(asyncio.TimeoutError())])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            with pytest.raises(asyncio.TimeoutError):
+                await manager.execute("sleep 999")
+        assert fake.processes[0].closed is True
 
 
 class TestConnectDisconnect:

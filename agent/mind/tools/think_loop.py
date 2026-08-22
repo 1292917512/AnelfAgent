@@ -460,11 +460,15 @@ async def _invoke_llm_round(
     """
     mind = ctx.mind
     try:
-        stream_kwargs = (
+        # Dict[str, Any] 注解：键集合按探测结果动态确定（替身 Mind 兼容），
+        # mypy 无法对 **dict 解包的键做参数名匹配，值声明 Any 避免误报
+        stream_kwargs: Dict[str, Any] = (
             {"stream": _streaming_enabled(), "on_delta": ctx.delta_emitter}
             if ctx.supports_stream else {}
         )
-        purpose_kwargs = {"purpose": ctx.mode.value} if ctx.supports_purpose else {}
+        purpose_kwargs: Dict[str, Any] = (
+            {"purpose": ctx.mode.value} if ctx.supports_purpose else {}
+        )
         return await mind._invoke_llm_unified(
             llm_messages, ctx.active_tools or None, ctx.anything,
             tool_choice="required" if require_tools else None,
@@ -638,17 +642,18 @@ async def _handle_text_only_round(
         _append_assistant_msg(tool_chain, result, raw_text)
         ctx.collected_text.append(raw_text)
 
+        bg = ctx.background
         running_bg: List[BackgroundTaskInfo] = []
-        if ctx.mode == ThinkMode.REPLY and ctx.anything and ctx.background is not None:
-            running_bg = ctx.background.running(ctx.current_scope)
+        if ctx.mode == ThinkMode.REPLY and ctx.anything and bg is not None:
+            running_bg = bg.running(ctx.current_scope)
 
-        if running_bg and state.wait_budget > 0:
+        if bg is not None and ctx.anything is not None and running_bg and state.wait_budget > 0:
             # 等待挂起：后台任务运行中时的纯文本一律视为等待——挂起会合
             # （结构性判定，不解析文本语义）。
             # 挂起期间新消息照常实时入库，中断/新消息/完成/超时都会安全唤醒；
             # 超时说明等待无望，清零预算，后续纯文本回落到普通投递路径。
             reason, completions, elapsed = await _suspend_for_background(
-                mind, ctx.anything, ctx.background, ctx.current_scope,
+                mind, ctx.anything, bg, ctx.current_scope,
                 state.last_merged_ts, min(ctx.wait_per_round, state.wait_budget), ctx.interrupts,
                 since_id=state.last_merged_id,
             )
@@ -660,7 +665,7 @@ async def _handle_text_only_round(
                 tool_chain.append({
                     "role": "system",
                     "content": _format_task_completions(
-                        completions, ctx.background.running(ctx.current_scope),
+                        completions, bg.running(ctx.current_scope),
                     ),
                     "_source": {"origin": "background_task"},
                 })
@@ -1075,8 +1080,8 @@ async def execute_one_tool(
     })
     log(f"执行工具: {tc.name}", tag="思维")
 
-    # 批准机制：在执行前检查是否需要人工批准
-    denied = await _request_tool_approval(tc, anything, tool_scope)
+    # 批准机制：执行前审批检查（对话/反思/子代理统一求值）
+    denied = await _request_tool_approval(tc, anything, tool_scope, mind)
     if denied is not None:
         return denied
 
