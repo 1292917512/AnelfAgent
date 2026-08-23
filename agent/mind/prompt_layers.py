@@ -212,6 +212,9 @@ def is_prompt_cache_enabled() -> bool:
 # 配置注册
 # ------------------------------------------------------------------
 
+from agent.llm.reasoning import CANONICAL_EFFORTS  # noqa: E402
+from core.config import ConfigValueType, register_configs_safe  # noqa: E402
+
 _PROMPT_CACHE_CONFIGS = {
     "cache/prompt": {
         "max_conversation_size": {
@@ -283,6 +286,24 @@ _PROMPT_CACHE_CONFIGS = {
             "description": "折叠完成后主动预热：用新前缀发一次 1-token 轻调用把缓存写热，消除折叠后的首轮命中低谷（成本 = 下一轮真实调用本应付的全价预读，净零额外开销）",
             "default": True,
         },
+        "conversation_summary_model": {
+            "description": "折叠/压缩摘要专用模型 ID：为内部摘要任务指定更轻量的已配置模型（失败仍走默认回退链）；空 = 默认主模型",
+            "default": "",
+        },
+        "conversation_summary_reasoning_effort": {
+            "description": "摘要专用思考等级：折叠/压缩摘要通常无需深度思考，可指定低档省时省 token（模型不支持思考时自动忽略）；空 = 跟随模型自身配置",
+            "default": "",
+            "value_type": ConfigValueType.ENUM,
+            "options": ["", *CANONICAL_EFFORTS],
+        },
+        "conversation_summary_llm_timeout": {
+            "description": "摘要调用总时长护栏：纯兜底防折叠 scope 锁悬挂（流式通道按空闲判定，思考/输出中不计时，正常远不会触及）",
+            "default": 900,
+            "advanced": True,
+            "min": 60,
+            "max": 7200,
+            "unit": "秒",
+        },
         "task_lean_context": {
             "description": "任务/反思调用使用精简上下文（人设+工具+永久记忆+任务指令）：环境便签/召回/状态对批处理任务是冗余（任务规则要求用 recall/get_conversation 按需取回），且任务每轮都会写便签使其漂移——带上既撑大每轮 prompt 又让下次任务首轮缓存从便签处断裂；关闭恢复完整环境注入",
             "default": True,
@@ -312,7 +333,5 @@ _PROMPT_CACHE_CONFIGS = {
         },
     },
 }
-
-from core.config import register_configs_safe  # noqa: E402
 
 register_configs_safe(_PROMPT_CACHE_CONFIGS)

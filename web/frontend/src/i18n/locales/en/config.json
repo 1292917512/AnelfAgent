@@ -71,5 +71,12 @@
     "keepSeg": "Keep {{count}} raw",
     "foldSeg": "Fold {{count}}/batch",
     "range": "Window {{min}} ~ {{max}}"
+  },
+  "summaryModel": {
+    "title": "Summary Model",
+    "desc": "Dedicated model & reasoning effort for fold/compression summaries: internal tasks rarely need deep thinking — a lighter model with lower effort saves time and tokens; failures fall back to the default model chain",
+    "model": "Model",
+    "effort": "Effort",
+    "followModel": "Follow model"
   }
 }

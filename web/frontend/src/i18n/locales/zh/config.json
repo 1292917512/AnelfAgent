@@ -71,5 +71,12 @@
     "keepSeg": "保留 {{count}} 条原文",
     "foldSeg": "每批折叠 {{count}} 条",
     "range": "窗口 {{min}} ~ {{max}} 条"
+  },
+  "summaryModel": {
+    "title": "摘要模型",
+    "desc": "折叠/压缩摘要的专用模型与思考档位：内部小任务通常无需深度思考，指定轻量模型+低档可省时省 token；失败自动回退默认模型链",
+    "model": "专用模型",
+    "effort": "思考档位",
+    "followModel": "跟随模型"
   }
 }

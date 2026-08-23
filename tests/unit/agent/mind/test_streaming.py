@@ -139,3 +139,95 @@ class TestTTFT:
         mind = _mind_stub(client)
         result = await Mind._llm_chat_stream_once(mind, [], None)
         assert result.ttft_ms is None
+
+
+class _FakeLLMManager:
+    """捕获 chat_with_fallback 参数的摘要调用替身。"""
+
+    def __init__(self, known_model: str = "lite"):
+        self.known_model = known_model
+        self.calls: List[dict] = []
+        self.known_client = SimpleNamespace(
+            config=SimpleNamespace(model=f"{known_model}-model"))
+
+    def get_enabled_client(self, model_id: str):
+        return self.known_client if model_id == self.known_model else None
+
+    async def chat_with_fallback(self, messages, **kwargs):
+        self.calls.append(kwargs)
+        return ChatResult(content="摘要内容")
+
+
+class TestSummarizeModelSelection:
+    """summarize_text：流式通道 + 可配置专用模型/思考档位。"""
+
+    def _stub(self):
+        mgr = _FakeLLMManager()
+        return mgr, SimpleNamespace(llm_manager=mgr)
+
+    async def test_default_follows_main_model(self):
+        from core.config import ConfigManager
+
+        ConfigManager.initialize()
+        ConfigManager.set("conversation_summary_model", "")
+        ConfigManager.set("conversation_summary_reasoning_effort", "")
+        mgr, stub = self._stub()
+
+        assert await Mind.summarize_text(stub, "整理这段对话") == "摘要内容"
+
+        kwargs = mgr.calls[0]
+        assert kwargs["client"] is None
+        assert kwargs["options"] is None
+        assert kwargs["stream"] is True
+        assert kwargs["purpose"] == "summarize"
+
+    async def test_custom_model_and_effort(self):
+        from core.config import ConfigManager
+
+        ConfigManager.initialize()
+        ConfigManager.set("conversation_summary_model", "lite")
+        ConfigManager.set("conversation_summary_reasoning_effort", "low")
+        try:
+            mgr, stub = self._stub()
+            lite = mgr.known_client
+
+            await Mind.summarize_text(stub, "整理这段对话")
+
+            kwargs = mgr.calls[0]
+            assert kwargs["client"] is lite
+            assert kwargs["options"] == {"reasoning_effort": "low"}
+        finally:
+            ConfigManager.set("conversation_summary_model", "")
+            ConfigManager.set("conversation_summary_reasoning_effort", "")
+
+    async def test_missing_model_falls_back_to_default(self):
+        from core.config import ConfigManager
+
+        ConfigManager.initialize()
+        ConfigManager.set("conversation_summary_model", "ghost")
+        try:
+            mgr, stub = self._stub()
+
+            await Mind.summarize_text(stub, "整理这段对话")
+
+            assert mgr.calls[0]["client"] is None
+        finally:
+            ConfigManager.set("conversation_summary_model", "")
+
+    async def test_effort_normalized_and_invalid_ignored(self):
+        from core.config import ConfigManager
+
+        ConfigManager.initialize()
+        ConfigManager.set("conversation_summary_model", "")
+        ConfigManager.set("conversation_summary_reasoning_effort", " LOW ")
+        try:
+            mgr, stub = self._stub()
+            await Mind.summarize_text(stub, "整理这段对话")
+            assert mgr.calls[0]["options"] == {"reasoning_effort": "low"}
+
+            mgr2, stub2 = self._stub()
+            ConfigManager.set("conversation_summary_reasoning_effort", "bogus")
+            await Mind.summarize_text(stub2, "整理这段对话")
+            assert mgr2.calls[0]["options"] is None
+        finally:
+            ConfigManager.set("conversation_summary_reasoning_effort", "")

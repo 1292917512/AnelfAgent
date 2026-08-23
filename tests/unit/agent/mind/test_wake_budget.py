@@ -83,18 +83,18 @@ class TestUnclaimedCallbackBudget:
     async def test_within_budget_wakes(self) -> None:
         import agent.mind.mind as mind_mod
         mind = self._fake_mind(3)
-        mind_mod.Mind._on_bg_task_unclaimed(
+        await mind_mod.Mind._on_bg_task_unclaimed(
             mind, "user_qq:1", "构建任务", "退出码 0")
-        # 短期记忆已写入（信息保底）
+        # 通知已投递（无 router 时短期记忆兜底，信息保底）
         assert mind.pfc.add_temporary.called
         assert mind.wake_budget.count("user_qq:1") == 1
 
     async def test_over_budget_suppresses_wake(self) -> None:
         import agent.mind.mind as mind_mod
         mind = self._fake_mind(1)
-        mind_mod.Mind._on_bg_task_unclaimed(mind, "user_qq:1", "任务A", "ok")
-        mind_mod.Mind._on_bg_task_unclaimed(mind, "user_qq:1", "任务B", "ok")
-        # 第二次超预算：仍写短期记忆（第二次 add_temporary），计数不再增长
+        await mind_mod.Mind._on_bg_task_unclaimed(mind, "user_qq:1", "任务A", "ok")
+        await mind_mod.Mind._on_bg_task_unclaimed(mind, "user_qq:1", "任务B", "ok")
+        # 第二次超预算：仍投递通知（第二次 add_temporary 兜底），计数不再增长
         assert mind.pfc.add_temporary.call_count == 2
         assert mind.wake_budget.count("user_qq:1") == 1
 

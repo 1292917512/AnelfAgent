@@ -6,6 +6,7 @@ x 条起增长到 M 触发折叠，最旧 M-x 条并入摘要后窗口重置为 
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
 
@@ -242,6 +243,51 @@ class TestFoldExecution:
         assert row is None
         # 失败退避记录（60s 内不再调度）
         assert folder._last_failure.get("user:1", 0) > 0
+
+    async def test_summary_ceiling_timeout_drops_batch(
+        self, conv_data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """摘要超总时长护栏：以普通异常进丢批路径推进水位线（不以取消绕过降级）。"""
+        monkeypatch.setattr(conversation_fold, "summary_llm_timeout", lambda: 0.05)
+
+        async def slow_summarizer(prompt: str) -> str:
+            await asyncio.sleep(60)
+            return "不应到达"
+
+        async def resolve():
+            return slow_summarizer
+
+        monkeypatch.setattr(ConversationFolder, "_resolve_summarizer", staticmethod(resolve))
+        folder = ConversationFolder()
+        ts_list = await _append(conv_data, [f"m{i}" for i in range(MAX_SIZE)])
+        await folder._fold(conv_data, "user", "1", [("user", "1")], {})
+
+        row = await conv_data.router.sqlite.get_conversation_summary(
+            scope_type="user", scope_id="1",
+        )
+        assert row is not None
+        assert row["dropped_count"] == MAX_SIZE - RAW_MIN
+        # 水位线推进到超时批最大 ts：一次失败即收敛，不再进入重试循环
+        assert row["watermarks"]["user:1"] == ts_list[MAX_SIZE - RAW_MIN - 1]
+
+    async def test_db_read_watchdog_bounds_hang(
+        self, conv_data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DB 读段悬挂被短护栏有界终止：记退避、scope 锁释放。"""
+        monkeypatch.setattr(conversation_fold, "_DB_OP_TIMEOUT", 0.05)
+
+        async def hanging_count(**_kwargs):
+            await asyncio.sleep(60)
+
+        monkeypatch.setattr(
+            conv_data.router.sqlite, "count_after_watermarks", hanging_count,
+        )
+        folder = ConversationFolder()
+        await _append(conv_data, [f"m{i}" for i in range(MAX_SIZE)])
+        await folder._fold(conv_data, "user", "1", [("user", "1")], {})
+
+        assert folder._last_failure.get("user:1", 0) > 0
+        assert not folder._locks.setdefault("user:1", asyncio.Lock()).locked()
 
     async def test_partial_batch_not_folded(
         self, conv_data, monkeypatch: pytest.MonkeyPatch

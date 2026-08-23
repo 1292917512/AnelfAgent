@@ -258,6 +258,101 @@ async def test_internal_purpose_usage_recorded(
 
 
 @pytest.mark.asyncio
+async def test_stream_slow_but_flowing_completes(tmp_path) -> None:
+    """流式通道空闲超时语义：持续出片段的慢流不受墙钟限制（思考中不掐）。"""
+    from agent.llm.types import ChatStreamDelta, UsageInfo
+
+    manager = LLMManager(str(tmp_path / "llm.json"))
+    # 空闲窗口 0.15s；每 0.03s 一个片段共 0.24s——总时长超窗口但全程有活动
+    async def gen(*_args, **_kwargs):
+        for i in range(8):
+            await asyncio.sleep(0.03)
+            yield ChatStreamDelta(content=f"段{i};")
+        yield ChatStreamDelta(
+            finish_reason="stop",
+            usage=UsageInfo(prompt_tokens=3, completion_tokens=7, total_tokens=10),
+        )
+
+    primary = _client("primary", timeout=0.15)
+    primary.chat_stream = lambda *_args, **_kwargs: gen()
+    primary.chat = AsyncMock(side_effect=AssertionError("流式通道不应调用非流式 chat"))
+
+    result = await manager.chat_with_fallback(
+        [{"role": "user", "content": "hi"}],
+        client=primary, max_retries=0, timeout=10, stream=True,
+    )
+
+    assert result.content == "".join(f"段{i};" for i in range(8))
+    assert result.finish_reason == "stop"
+    assert result.usage is not None and result.usage.total_tokens == 10
+    assert result.ttft_ms is not None
+    primary.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stream_stall_times_out_and_falls_back(tmp_path) -> None:
+    """流中途静默超过空闲窗口：超时取消底层生成器 → 回退链切换候选。"""
+    from agent.llm.types import ChatStreamDelta
+
+    manager = LLMManager(str(tmp_path / "llm.json"))
+    cancelled = asyncio.Event()
+
+    async def stalled_gen(*_args, **_kwargs):
+        try:
+            yield ChatStreamDelta(content="开头")
+            await asyncio.sleep(60)  # 静默悬挂
+            yield ChatStreamDelta(content="不会再到达")
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async def ok_gen(*_args, **_kwargs):
+        yield ChatStreamDelta(content="回退结果")
+
+    primary = _client("primary", timeout=0.05)
+    primary.chat_stream = lambda *_args, **_kwargs: stalled_gen()
+    fallback = _client("fallback")
+    fallback.chat_stream = lambda *_args, **_kwargs: ok_gen()
+    manager._clients = {"primary": primary, "fallback": fallback}
+    manager._type_priorities = {"chat": ["primary", "fallback"]}
+
+    result = await manager.chat_with_fallback(
+        [{"role": "user", "content": "hi"}],
+        client=primary, max_retries=0, timeout=10, stream=True,
+    )
+
+    assert result.content == "回退结果"
+    assert cancelled.is_set()
+
+
+def test_stream_aggregator_merges_fields() -> None:
+    """StreamAggregator：正文/思考增量拼接、tool_calls 合并、usage/finish 覆盖。"""
+    from agent.llm.stream_aggregate import StreamAggregator
+    from agent.llm.types import ChatStreamDelta, ToolCall, UsageInfo
+
+    agg = StreamAggregator()
+    agg.feed(ChatStreamDelta(reasoning_content="思"))
+    agg.feed(ChatStreamDelta(reasoning_content="考"))
+    agg.feed(ChatStreamDelta(content="正"))
+    agg.feed(ChatStreamDelta(
+        content="文", tool_calls=[ToolCall(id="1", name="f", arguments="{}")],
+    ))
+    agg.feed(ChatStreamDelta(finish_reason="tool_calls"))
+    agg.feed(ChatStreamDelta(
+        usage=UsageInfo(prompt_tokens=2, completion_tokens=3, total_tokens=5),
+    ))
+
+    result = agg.build(model="m")
+    assert result.content == "正文"
+    assert result.reasoning_content == "思考"
+    assert [c.name for c in result.tool_calls] == ["f"]
+    assert result.finish_reason == "tool_calls"
+    assert result.usage is not None and result.usage.total_tokens == 5
+    assert result.model == "m"
+    assert result.ttft_ms is not None
+
+
+@pytest.mark.asyncio
 async def test_internal_usage_record_failure_is_fail_open(
     tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

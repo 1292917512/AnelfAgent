@@ -422,12 +422,15 @@ class Mind:
         """记录频道活动快照，供跨频道感知使用。"""
         _cc_update_snapshot(self, anything)
 
-    def _on_bg_task_unclaimed(self, scope: str, description: str, summary: str) -> None:
-        """后台任务轮外完成回调：排入回复队列触发新 REPLY（与 delegation_manager 同路径）。
+    async def _on_bg_task_unclaimed(self, scope: str, description: str, summary: str) -> None:
+        """后台任务轮外完成回调：完成事实写对话历史并排入回复队列触发新 REPLY。
+
+        通知经 enqueue_scope_reply 落目标会话的对话历史（一次性事实固化，
+        不驻留短期记忆——驻留会每轮催促已处理完的事项且反复打断缓存前缀）。
 
         唤醒预算：连续自动唤醒超过 background_wake_budget（默认 3，0=关闭）时
         不再触发新周期（防"完成→回复→又启后台任务→完成"的自我激励循环），
-        完成信息仍写短期记忆，下次真人消息触发时模型可见，信息不丢。
+        完成事实已在历史中，下次真人消息触发时模型可见，信息不丢。
         """
         from agent.mind.tools.scheduler import enqueue_scope_reply
         prompt = (
@@ -435,7 +438,7 @@ class Mind:
             f"结果：{summary[:800]}\n"
             "请根据结果继续处理（回复用户请调用 send_message，完成请调用 end_reply）。"
         )
-        enqueue_scope_reply(
+        await enqueue_scope_reply(
             self.pfc, scope,
             self.pfc.get_adapter_key(scope),
             f"后台任务完成: {description[:60]}",
@@ -762,13 +765,35 @@ class Mind:
     async def summarize_text(self, prompt: str) -> str:
         """生成摘要文本（供对话折叠/上下文压缩等内部流程使用）。
 
-        优先经 chat_with_fallback 调用：主模型超时/故障时自动回退其他可用
-        chat 模型，避免内部小任务被单点模型拖死（摘要输入小、对时效敏感）。
+        经 chat_with_fallback 流式通道调用：思考/输出期间不设墙钟（空闲才判
+        超时），主模型超时/故障时自动回退其他可用 chat 模型。可经配置为摘要
+        任务指定更轻量的专用模型与思考档位（conversation_summary_model /
+        conversation_summary_reasoning_effort，空 = 默认主模型/跟随模型配置）。
+
+        Model Experience:
+        - 模型看到什么：无 prompt 层变化；仅通道（流式）与可选专用模型/档位。
+        - token 影响：指定低思考档可显著省 token；流式本身不改用量。
+        - 缓存影响：摘要为独立小请求，不共享主对话前缀，不触碰前缀层。
         """
         messages = [{"role": "user", "content": prompt}]
         if self.llm_manager is not None:
+            from agent.llm.reasoning import normalize_effort
+            from core.config import get_config
+
+            client = None
+            model_id = str(get_config("conversation_summary_model", "") or "").strip()
+            if model_id:
+                client = self.llm_manager.get_enabled_client(model_id)
+                if client is None:
+                    log(f"摘要专用模型不存在或已停用，回落默认主模型: {model_id}",
+                        "WARNING", tag="思维")
+            options = None
+            effort = normalize_effort(get_config("conversation_summary_reasoning_effort", ""))
+            if effort:
+                options = {"reasoning_effort": effort}
             result = await self.llm_manager.chat_with_fallback(
                 messages, max_retries=1, timeout=180.0, purpose="summarize",
+                client=client, options=options, stream=True,
             )
         else:
             result = await self.llm_chat(messages)
@@ -881,6 +906,12 @@ class Mind:
             LLM 产出的文本内容（所有轮次输出的合并）。
         """
         self.note_activity()
+        # 反思计时打点：mind.reflect 是所有反思会话（调度任务/元决策 REFLECT/
+        # 子代理/手动触发）的唯一入口，在此刷新 _last_reflect_time，供
+        # SituationContext.hours_since_reflect 计算真实间隔。此前该字段仅在
+        # __init__ 置 0 后全仓库无写入点，hours_since_reflect 恒返回 999.0
+        # 哨兵，元决策被"距上次反思 999h"误导而反复建议反思（饱和假象根因）。
+        self._last_reflect_time = time.time()
         mc = self._get_mind_config()
         safety_limit = max_iterations or mc.max_tool_iterations
         blocked_tools = self._build_reflect_blocklist(allow_output_tools)

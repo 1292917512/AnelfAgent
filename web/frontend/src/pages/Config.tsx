@@ -10,9 +10,16 @@ import { ConfigSidebar } from "@/pages/config/ConfigSidebar";
 import { ConfigSection } from "@/pages/config/ConfigSection";
 import { ConfigDetailDrawer } from "@/pages/config/ConfigDetailDrawer";
 import { ConversationWindowRow } from "@/pages/config/ConversationWindowRow";
+import { SummaryModelRow } from "@/pages/config/SummaryModelRow";
 
 /** 对话窗口复合行收编的键（一行配置：总条数 + 保留比例滑条） */
 const WINDOW_KEYS = new Set(["max_conversation_size", "conversation_raw_keep_percent"]);
+
+/** 摘要模型复合行收编的键（一行配置：专用模型 + 思考档位） */
+const SUMMARY_MODEL_KEYS = new Set([
+  "conversation_summary_model",
+  "conversation_summary_reasoning_effort",
+]);
 
 /** i18n 资源 key 顺序驱动模块/分组展示顺序（未列出的排最后） */
 function useConfigOrder(): { moduleOrder: string[]; sectionOrder: string[] } {
@@ -89,6 +96,14 @@ export default function Config() {
     const sizeItem = items.find((i) => i.key === "max_conversation_size");
     const percentItem = items.find((i) => i.key === "conversation_raw_keep_percent");
     return sizeItem && percentItem ? { sizeItem, percentItem } : null;
+  }, [currentGroup]);
+
+  // 摘要模型复合行：当前分组同时含模型/档位两键时收编为一行
+  const summaryModelItems = useMemo(() => {
+    const items = currentGroup?.items ?? [];
+    const modelItem = items.find((i) => i.key === "conversation_summary_model");
+    const effortItem = items.find((i) => i.key === "conversation_summary_reasoning_effort");
+    return modelItem && effortItem ? { modelItem, effortItem } : null;
   }, [currentGroup]);
 
   return (
@@ -182,10 +197,22 @@ export default function Config() {
                   />
                 </div>
               )}
+              {summaryModelItems && (
+                <div id="config-item-conversation_summary_model">
+                  <SummaryModelRow
+                    modelItem={summaryModelItems.modelItem}
+                    effortItem={summaryModelItems.effortItem}
+                  />
+                </div>
+              )}
               <ConfigSection
                 items={currentGroup.items}
                 focusKey={focusKey}
-                renderRow={(item, defaultRow) => (WINDOW_KEYS.has(item.key) ? null : defaultRow)}
+                renderRow={(item, defaultRow) =>
+                  WINDOW_KEYS.has(item.key) || SUMMARY_MODEL_KEYS.has(item.key)
+                    ? null
+                    : defaultRow
+                }
                 onOpenDetail={(item) => setDetail({ item, group: currentGroup.group })}
               />
             </div>

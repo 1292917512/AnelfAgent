@@ -94,26 +94,38 @@ class PushHub:
             log(f"实体推送（无有效 scope，仅写全局桶）: source={source}", "DEBUG", tag="推送")
             return True
 
-        # 入队语义复用"完成即新 turn"统一入口（短期记忆 + pending + 预览 + 路由）
-        from agent.mind.tools.scheduler import enqueue_scope_reply
+        # 历史写入与入队唤醒为异步投递：完成后才触发思维，回复周期拉取
+        # 历史必含本条（无竞态）；推送不再驻留短期记忆（一次性事实固化历史）。
+        # seq/inflight 也随投递完成后登记——水位只统计已落历史的推送，
+        # 并发启动的回复不会把未落库的推送计入水位而误丢弃。
         preview = f"实体推送 {source}: {content[:60]}"
-        enqueue_scope_reply(pfc, scope, channel, preview, text)
+        try:
+            asyncio.get_running_loop().create_task(
+                self._deliver(pfc, scope, channel, preview, text, trigger),
+            )
+        except RuntimeError:
+            log("实体推送无法投递（无运行中事件循环）", "DEBUG", tag="推送")
+            return False
+        log(f"实体推送: scope={scope} source={source} trigger={trigger}", tag="推送")
+        return True
+
+    async def _deliver(
+            self, pfc: Any, scope: str, channel: str,
+            preview: str, text: str, trigger: bool) -> None:
+        """推送投递：一次性事实写对话历史 + 入队 + seq/inflight 登记。"""
+        from agent.mind.tools.scheduler import enqueue_scope_reply
+        await enqueue_scope_reply(pfc, scope, channel, preview, text)
         seq = self._seq.get(scope, 0) + 1
         self._seq[scope] = seq
         self._inflight.setdefault(scope, deque()).append((seq, text))
-
         if trigger:
-            try:
-                asyncio.get_running_loop().create_task(self._mind.try_execute_mind())
-            except RuntimeError:
-                log("实体推送无法唤醒思维（无运行中事件循环）", "DEBUG", tag="推送")
-        log(f"实体推送: scope={scope} source={source} trigger={trigger}", tag="推送")
-        return True
+            asyncio.create_task(self._mind.try_execute_mind())
 
     def drain_inflight(self, scope: str, since: int = 0) -> List[str]:
         """取出该 scope 序号大于水位的推送并清空队列（think_loop 每轮调用）。
 
-        序号 ≤ 水位的推送已随短期记忆进入当前会话的 base 快照，直接丢弃防重复。
+        序号 ≤ 水位的推送已随对话历史进入当前会话的 base 快照，直接丢弃防重复
+        （seq 在历史落库后才分配，水位只统计已固化的事实）。
         """
         queue = self._inflight.pop(scope, None)
         if not queue:

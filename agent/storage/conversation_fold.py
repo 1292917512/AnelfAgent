@@ -12,6 +12,18 @@
 
 折叠在后台异步执行（每 scope 一把锁防并发）；折叠中/失败时窗口短暂超窗
 （宽限到 M+x），持续失败则硬降级为原来的"最后 M 条滑动"行为，功能无损。
+
+超时架构（分段设防，替代旧的整体看门狗）：摘要调用走流式空闲超时——思考/
+输出期间不计时，完全无响应才判死（summarize_text → chat_with_fallback 流式
+通道），总时长护栏 summary_llm_timeout 仅兜底"无限流"；护栏超时以普通异常
+进入丢批路径推进水位线，不会以取消形式绕过降级。DB 读写段各带短护栏
+（_DB_OP_TIMEOUT）防 sqlite 锁等待悬挂占用 scope 锁。
+
+Model Experience:
+- 模型看到什么：摘要提示词内容不变；仅调用通道（流式）与可选专用模型/
+  思考档位（conversation_summary_model / conversation_summary_reasoning_effort）。
+- token 影响：指定低思考档可显著省 token；流式本身不改变用量。
+- 缓存影响：摘要为独立小请求，不共享主对话前缀，不触碰任何前缀层。
 """
 
 from __future__ import annotations
@@ -29,9 +41,8 @@ if TYPE_CHECKING:
 # 折叠失败后的重试退避（秒）：避免 LLM 故障时每条消息都重试
 _FAILURE_BACKOFF = 60.0
 
-# 单次折叠看门狗超时（秒）：摘要 LLM 调用虽有 180s 上限，但 DB 锁等待等
-# 路径无超时——看门狗兜底，防止任务悬挂导致 scope 锁永久占用（折叠死态）
-_FOLD_WATCHDOG = 300.0
+# DB 段看门狗（秒）：sqlite 读写无自身超时，短护栏防锁等待悬挂占用 scope 锁
+_DB_OP_TIMEOUT = 60.0
 
 # 折叠片段中单条消息的字符上限（防止超长消息撑爆摘要提示词）
 _FOLD_MSG_MAX_CHARS = 500
@@ -115,11 +126,23 @@ def fold_prewarm_enabled() -> bool:
     return get_config_bool("conversation_fold_prewarm", True)
 
 
+def summary_llm_timeout() -> float:
+    """摘要 LLM 调用总时长护栏（秒）。
+
+    摘要走流式空闲超时（思考/输出中不计时），本护栏纯兜底防"无限流"
+    病理长期占用 scope 锁；超时以普通异常进入丢批路径推进水位线，
+    不会以取消形式绕过降级。
+    """
+    from core.config import get_config_int
+    return max(60.0, float(get_config_int("conversation_summary_llm_timeout", 900)))
+
+
 def _format_fold_messages(rows: List[Dict]) -> str:
     """把待折叠的消息格式化为摘要输入文本。"""
     lines: List[str] = []
+    role_labels = {"assistant": "助手", "system": "系统"}
     for row in rows:
-        role = "助手" if row.get("role") == "assistant" else "用户"
+        role = role_labels.get(str(row.get("role", "")), "用户")
         content = str(row.get("content", ""))
         if len(content) > _FOLD_MSG_MAX_CHARS:
             content = content[:_FOLD_MSG_MAX_CHARS] + "…"
@@ -183,16 +206,18 @@ class ConversationFolder:
         watermarks: Dict[str, int],
         watermark_ids: Optional[Dict[str, int]] = None,
     ) -> None:
-        """执行一次折叠：最旧 M-x 条 → 增量摘要 → 推进水位线。"""
+        """执行一次折叠：最旧 M-x 条 → 增量摘要 → 推进水位线。
+
+        分段设防（替代旧的整体看门狗）：DB 读写段短护栏防锁悬挂，摘要段由
+        流式空闲语义与总时长护栏自理——摘要超时以普通异常进入丢批路径
+        （drop_on_failure）推进水位线，不再以取消形式绕过降级导致失败循环。
+        """
         key = f"{scope_type}:{scope_id}"
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             try:
-                await asyncio.wait_for(
-                    self._fold_locked(
-                        conv_data, scope_type, scope_id, scopes, watermarks, watermark_ids,
-                    ),
-                    timeout=_FOLD_WATCHDOG,
+                await self._fold_locked(
+                    conv_data, scope_type, scope_id, scopes, watermarks, watermark_ids,
                 )
                 self._last_failure.pop(key, None)
             except Exception as exc:
@@ -217,8 +242,11 @@ class ConversationFolder:
         trigger = max_size + fold_hysteresis()
 
         # 按实际余量决定批量：折到窗口回到 x 条（批量 = count - x ≥ trigger - x）
-        count_after = await sqlite.count_after_watermarks(
-            scopes=scopes, watermarks=watermarks, watermark_ids=watermark_ids,
+        count_after = await asyncio.wait_for(
+            sqlite.count_after_watermarks(
+                scopes=scopes, watermarks=watermarks, watermark_ids=watermark_ids,
+            ),
+            timeout=_DB_OP_TIMEOUT,
         )
         if count_after < trigger:
             return
@@ -231,15 +259,21 @@ class ConversationFolder:
             "DEBUG", tag="存储",
         )
 
-        folded_rows = await sqlite.fetch_oldest_after_watermarks(
-            scopes=scopes, watermarks=watermarks, limit=fold_count,
-            watermark_ids=watermark_ids,
+        folded_rows = await asyncio.wait_for(
+            sqlite.fetch_oldest_after_watermarks(
+                scopes=scopes, watermarks=watermarks, limit=fold_count,
+                watermark_ids=watermark_ids,
+            ),
+            timeout=_DB_OP_TIMEOUT,
         )
         if not folded_rows:
             return
 
-        old = await sqlite.get_conversation_summary(
-            scope_type=scope_type, scope_id=scope_id,
+        old = await asyncio.wait_for(
+            sqlite.get_conversation_summary(
+                scope_type=scope_type, scope_id=scope_id,
+            ),
+            timeout=_DB_OP_TIMEOUT,
         )
         old_summary = (old or {}).get("summary", "") or ""
         old_folded = int((old or {}).get("folded_count", 0) or 0)
@@ -269,7 +303,11 @@ class ConversationFolder:
                 folded_text=_format_fold_messages(folded_rows),
             )
             summarizer = await self._resolve_summarizer()
-            new_summary = (await summarizer(prompt)).strip()
+            # 总时长护栏：流式空闲语义由调用链自理，此处仅兜底"无限流"；
+            # 超时以 TimeoutError（Exception 子类）进入下方丢批路径，推进水位线
+            new_summary = (await asyncio.wait_for(
+                summarizer(prompt), timeout=summary_llm_timeout(),
+            )).strip()
             if not new_summary:
                 raise RuntimeError("摘要生成返回空内容")
             if len(new_summary) > summary_max_chars():
@@ -288,12 +326,15 @@ class ConversationFolder:
                 "WARNING", tag="存储",
             )
 
-        await sqlite.upsert_conversation_summary(
-            scope_type=scope_type, scope_id=scope_id,
-            summary=new_summary, watermarks=new_marks,
-            folded_count=old_folded + (len(folded_rows) if succeeded else 0),
-            dropped_count=old_dropped,
-            watermark_ids=new_id_marks,
+        await asyncio.wait_for(
+            sqlite.upsert_conversation_summary(
+                scope_type=scope_type, scope_id=scope_id,
+                summary=new_summary, watermarks=new_marks,
+                folded_count=old_folded + (len(folded_rows) if succeeded else 0),
+                dropped_count=old_dropped,
+                watermark_ids=new_id_marks,
+            ),
+            timeout=_DB_OP_TIMEOUT,
         )
         if succeeded:
             log(
@@ -428,4 +469,4 @@ async def fold_conversations(scope: str = "") -> str:
         }, ensure_ascii=False)
     except Exception as exc:
         from core.tool_errors import error_from_exception
-        return error_from_exception("折叠调度失败", exc)
+        return error_from_exception(exc, action="折叠调度")

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 import time
 import uuid
@@ -104,17 +105,18 @@ class BackgroundTaskRegistry:
         # 主事件循环（bind_loop 绑定；工作线程完成任务时经 call_soon_threadsafe 回到循环）
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         # 轮外完成回调（无等待者时触发，由 Mind 注册，避免 entities 层直接 import agent.mind）
-        self._on_unclaimed: Optional[Callable[[str, str, str], None]] = None
+        self._on_unclaimed: Optional[Callable[[str, str, str], Any]] = None
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """绑定主事件循环（Mind 初始化时调用）。"""
         self._loop = loop
 
-    def set_unclaimed_callback(self, callback: Callable[[str, str, str], None]) -> None:
+    def set_unclaimed_callback(self, callback: Callable[[str, str, str], Any]) -> None:
         """注册轮外完成回调（无等待者时触发新 REPLY 周期）。
 
         Args:
-            callback: (scope, description, summary) -> None
+            callback: (scope, description, summary) -> None 或协程
+                （协程在主循环上 ensure_future；_finish 总在主循环执行）
         """
         self._on_unclaimed = callback
 
@@ -260,11 +262,14 @@ class BackgroundTaskRegistry:
             f"{'轮内会合' if claimed else '轮外通知'}",
             tag="后台",
         )
-        # 轮外完成（无等待者）：触发回调（由 Mind 注册，排入回复队列触发新 REPLY）
+        # 轮外完成（无等待者）：触发回调（由 Mind 注册，写对话历史并排入
+        # 回复队列触发新 REPLY）。回调可为协程（_finish 总在主循环执行）
         if not claimed and self._on_unclaimed is not None:
             scope = rec.info.scope
             if scope.startswith(("user_", "group_")):
-                self._on_unclaimed(scope, rec.info.description, summary[:1500])
+                result = self._on_unclaimed(scope, rec.info.description, summary[:1500])
+                if inspect.iscoroutine(result):
+                    asyncio.ensure_future(result)
         return claimed
 
     # ------------------------------------------------------------------

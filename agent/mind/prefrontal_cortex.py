@@ -72,6 +72,11 @@ class PrefrontalCortex:
         return self.work_memory.pending_analysis
 
     @property
+    def conversation_data(self) -> Optional["ConversationData"]:
+        """会话存储访问（一次性事件通知写对话历史用，见 scheduler）。"""
+        return self._conversation_data
+
+    @property
     def temporary(self) -> list[Dict]:
         """全桶展开视图（管理接口/监控用；LLM 上下文请用 get_temporary(scope)）。"""
         return self.work_memory.temporary

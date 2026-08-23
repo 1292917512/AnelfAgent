@@ -612,28 +612,30 @@ class DelegationManager:
             log(f"后台委托结果登记失败: {delegation_id}: {exc}", "ERROR", tag="委托")
 
         try:
-            if not claimed and not result.cancelled and scope.startswith(("user_", "group_")):
-                if registry is not None:
-                    # 轮外完成：唤醒路由由 registry 的 unclaimed 回调统一负责
-                    # （回调已排入回复队列触发新 REPLY），此处仅写短期记忆兜底，
-                    # 避免回调 + 本处双投递同一完成事件
+            if not scope.startswith(("user_", "group_")):
+                # 无回复目标（非对话 scope）：全局短期记忆桶兜底（无处写历史）
+                self._mind.pfc.add_temporary({"role": "user", "content": note})
+            elif claimed:
+                # 轮内会合：等待者本轮已收到完成注入（ephemeral），完整详情
+                # 固化到对话历史供后续轮次回溯（一次性事实，不驻留短期记忆）
+                from agent.mind.tools.scheduler import _append_one_shot_history
+                if not await _append_one_shot_history(
+                        self._mind.pfc, scope,
+                        self._mind.pfc.get_adapter_key(scope), note):
                     self._mind.pfc.add_temporary({"role": "user", "content": note}, scope=scope)
-                else:
-                    # 无注册表（极端降级路径）：排入回复队列触发新一轮 REPLY，主动汇报结果
-                    from agent.mind.tools.scheduler import enqueue_scope_reply
-                    enqueue_scope_reply(
-                        self._mind.pfc,
-                        scope,
-                        self._mind.pfc.get_adapter_key(scope),
-                        f"后台委托完成: {goal[:60]}",
-                        note + "\n请将结果告知用户，或根据结果继续未完成的操作。",
-                    )
-                    asyncio.create_task(self._mind.try_execute_mind())
-            else:
-                # 轮内会合（等待者已收到注入）或无回复目标：结果写入短期记忆兜底，
-                # 保证后续轮次可见、信息不丢失
-                temp_scope = scope if scope.startswith(("user_", "group_")) else ""
-                self._mind.pfc.add_temporary({"role": "user", "content": note}, scope=temp_scope)
+            elif registry is None:
+                # 轮外完成且无注册表（极端降级路径）：写历史 + 入队 + 触发新 REPLY
+                from agent.mind.tools.scheduler import enqueue_scope_reply
+                await enqueue_scope_reply(
+                    self._mind.pfc,
+                    scope,
+                    self._mind.pfc.get_adapter_key(scope),
+                    f"后台委托完成: {goal[:60]}",
+                    note + "\n请将结果告知用户，或根据结果继续未完成的操作。",
+                )
+                asyncio.create_task(self._mind.try_execute_mind())
+            # 轮外完成且有注册表：unclaimed 回调统一负责（写历史 + 入队 +
+            # 唤醒），此处不重复投递
         except Exception as exc:
             log(f"后台委托结果路由失败: {delegation_id}: {exc}", "ERROR", tag="委托")
         log(f"后台委托完成: {delegation_id} ({status})", tag="委托")

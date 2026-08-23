@@ -129,11 +129,19 @@ class SituationContext:
         lines: list[str] = []
         lines.append(f"[当前时间] {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.current_time))}")
         hours = self.hours_since_reflect
-        lines.append(f"[距上次反思] {hours:.1f} 小时")
-        if hours < 0.5:
-            lines.append("  [注意] 距上次反思时间很短，避免重复反思，优先做其他事情")
-        elif self.is_heartbeat and hours > 1.0:
-            lines.append(f"  [建议] 距上次反思已 {hours:.1f} 小时，建议执行 reflect 进行阶段性反思")
+        if hours >= 999.0:
+            # 哨兵值：本进程启动后尚未执行过 reflect（时间戳为内存态，不跨进程
+            # 持久）——如实显示"未知"，不再输出误导性的"999.0 小时"饱和读数；
+            # 首次 reflect 后即恢复真实计时（打点见 Mind.reflect 入口）
+            lines.append("[距上次反思] 未知（本次启动以来尚未反思）")
+            if self.is_heartbeat:
+                lines.append("  [建议] 可执行 reflect 进行阶段性反思（执行后恢复真实计时）")
+        else:
+            lines.append(f"[距上次反思] {hours:.1f} 小时")
+            if hours < 0.5:
+                lines.append("  [注意] 距上次反思时间很短，避免重复反思，优先做其他事情")
+            elif self.is_heartbeat and hours > 1.0:
+                lines.append(f"  [建议] 距上次反思已 {hours:.1f} 小时，建议执行 reflect 进行阶段性反思")
 
         if self.connected_channels:
             lines.append(f"[通信通道] {len(self.connected_channels)} 个：{', '.join(self.connected_channels)}")

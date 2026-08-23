@@ -322,13 +322,17 @@ class _DelegationMind:
         # 镜像 Mind._on_bg_task_unclaimed：轮外完成经回调排入回复队列并触发新一轮
         self.background_tasks.set_unclaimed_callback(self._on_bg_task_unclaimed)
 
-    def _on_bg_task_unclaimed(self, scope: str, description: str, summary: str) -> None:
-        from agent.mind.tools.scheduler import enqueue_scope_reply
-        enqueue_scope_reply(
-            self.pfc, scope, self.pfc.get_adapter_key(scope),
-            f"后台任务完成: {description[:60]}", summary,
-        )
-        asyncio.create_task(self.try_execute_mind())
+    def _on_bg_task_unclaimed(self, scope: str, description: str, summary: str):
+        # 镜像 Mind._on_bg_task_unclaimed（async 版）：返回协程由 registry
+        # 在主循环 ensure_future——历史写入完成后才入队触发
+        async def _notify() -> None:
+            from agent.mind.tools.scheduler import enqueue_scope_reply
+            await enqueue_scope_reply(
+                self.pfc, scope, self.pfc.get_adapter_key(scope),
+                f"后台任务完成: {description[:60]}", summary,
+            )
+            asyncio.create_task(self.try_execute_mind())
+        return _notify()
 
     def get_model_context_length(self) -> int:
         return 128_000
@@ -346,6 +350,9 @@ class TestDelegationBackgroundIntegration:
 
         task = manager._background_tasks[delegation_id]
         await asyncio.wait_for(task, timeout=5)
+        # 回调经 ensure_future 异步执行：放行协程任务
+        for _ in range(6):
+            await asyncio.sleep(0)
 
         # 完成即新 turn：scope 已排入回复队列，并触发新一轮
         assert "user_123" in mind.pfc.pending_user

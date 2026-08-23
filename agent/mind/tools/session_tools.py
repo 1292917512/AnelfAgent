@@ -182,7 +182,7 @@ async def switch_session(scope: str, reason: str = "") -> str:
     prompt += "。请阅读上方消息后决定回复内容。"
 
     from agent.mind.tools.scheduler import enqueue_scope_reply
-    enqueue_scope_reply(
+    await enqueue_scope_reply(
         mind.pfc, scope, adapter_key,
         preview or f"会话切换: {reason or '主动处理'}"[:60],
         prompt,

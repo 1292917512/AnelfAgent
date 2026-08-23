@@ -509,7 +509,7 @@ def create_bootstrap() -> FlowMachine:
                 continue
             scope = f"{row['scope_type']}_{row['scope_id']}"
             preview = row["content"][:300]
-            enqueue_scope_reply(
+            await enqueue_scope_reply(
                 mind.pfc, scope, row["adapter_key"], preview,
                 f"[系统] 进程重启前你收到了这条消息但尚未回复（对话历史中可见其完整内容）：\n"
                 f"{preview}\n请现在补回处理。",

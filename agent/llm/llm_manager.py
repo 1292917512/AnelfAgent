@@ -639,6 +639,7 @@ class LLMManager(BaseEntity):
         max_retries: int = 2,
         timeout: float = 120.0,
         purpose: str = "internal",
+        stream: bool = False,
     ) -> ChatResult:
         """带重试和模型回退的统一聊天调用。
 
@@ -648,6 +649,15 @@ class LLMManager(BaseEntity):
 
         purpose 标记调用用途（guardian/summarize/skill_review 等）：成功结果的
         usage 记入缓存命中统计与 scope 成本账本，内部辅助调用与主对话同口径。
+
+        stream=True 走流式通道：空闲窗口（客户端超时配置）内无任何新片段才判
+        超时，思考/输出期间不设墙钟——深度思考模型的内部调用不再被整段掐断。
+        deadline 仅在尝试开始前/重试决策时检查，不限制单次流的总时长。
+
+        Model Experience:
+        - 模型看到什么：无 prompt 层变化，仅调用通道（流式）差异。
+        - token 影响：流式不改变 token 用量，usage 同口径回传。
+        - 缓存影响：内部调用为独立请求，不触碰主对话前缀层。
         """
         primary = client or self.get_default()
         candidates = [primary, *self.get_fallback_chat_clients(
@@ -684,6 +694,7 @@ class LLMManager(BaseEntity):
                     tool_choice=tool_choice,
                     max_retries=max_retries,
                     deadline=deadline,
+                    stream=stream,
                 )
                 if index:
                     info(f"回退成功: {candidate.config.name}", tag="模型")
@@ -775,6 +786,7 @@ class LLMManager(BaseEntity):
         tool_choice: Optional[Any],
         max_retries: int,
         deadline: float,
+        stream: bool = False,
     ) -> ChatResult:
         """在候选独立预算内调用单个候选，并按错误分类自适应重试。
 
@@ -782,6 +794,9 @@ class LLMManager(BaseEntity):
         - 不可重试错误（auth/参数/上下文超限/模型不存在）立即抛出
         - 限流错误使用更长基础退避 + 抖动
         - 其余瞬态错误使用标准指数退避 + 抖动
+
+        stream=True 走流式通道（空闲超时语义，见 _chat_candidate_stream）；
+        流式失败同样进入本层重试/回退（整次调用重发）。
         """
         from agent.llm.resilience import ErrorCategory, classify_llm_error
         from agent.llm.retry import RETRY_AFTER_WAIT_CAP, jittered_backoff, parse_retry_after
@@ -793,15 +808,24 @@ class LLMManager(BaseEntity):
                 raise asyncio.TimeoutError(f"LLM [{name}] 候选预算耗尽")
             attempt_timeout = min(remaining, client.config.timeout)
             try:
-                result = await asyncio.wait_for(
-                    client.chat(
+                if stream:
+                    result = await self._chat_candidate_stream(
+                        client,
                         messages,
                         options=options,
                         tools=tools,
                         tool_choice=tool_choice,
-                    ),
-                    timeout=attempt_timeout,
-                )
+                    )
+                else:
+                    result = await asyncio.wait_for(
+                        client.chat(
+                            messages,
+                            options=options,
+                            tools=tools,
+                            tool_choice=tool_choice,
+                        ),
+                        timeout=attempt_timeout,
+                    )
                 if result.finish_reason == "error":
                     raise RuntimeError("LLM 返回了无有效 choices/message 的响应")
                 return result
@@ -810,9 +834,14 @@ class LLMManager(BaseEntity):
             except Exception as exc:
                 # wait_for 超时 str() 为空，改写为带时长的可诊断消息
                 if isinstance(exc, asyncio.TimeoutError) and not str(exc):
-                    exc = asyncio.TimeoutError(
-                        f"单次调用超时（{attempt_timeout:.0f}s 未响应）"
-                    )
+                    if stream:
+                        exc = asyncio.TimeoutError(
+                            f"流式空闲超时（{client.config.timeout:.0f}s 无新片段）"
+                        )
+                    else:
+                        exc = asyncio.TimeoutError(
+                            f"单次调用超时（{attempt_timeout:.0f}s 未响应）"
+                        )
                 classified = classify_llm_error(exc)
                 if not classified.retryable or attempt >= max_retries:
                     raise exc
@@ -850,6 +879,47 @@ class LLMManager(BaseEntity):
                 )
                 await asyncio.sleep(delay)
         raise RuntimeError("LLM 重试流程异常退出")
+
+    async def _chat_candidate_stream(
+        self,
+        client: LLMClient,
+        messages: List[Dict[str, Any]],
+        *,
+        options: Optional[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        tool_choice: Optional[Any],
+    ) -> ChatResult:
+        """单次流式调用：每 chunk 独立空闲超时，思考/输出中不限总时长。
+
+        空闲窗口 = 客户端超时配置（与单次调用超时同值：完全无响应才判死，
+        思考增量/正文增量都算活动）。流中不做 deadline 检查——总时长由
+        外层护栏（如折叠摘要天花板）与重试决策兜底。内部调用 chunk 数少，
+        统一用 wait_for 即可，无需 3.11 asyncio.timeout 优化。
+        """
+        from agent.llm.stream_aggregate import StreamAggregator
+
+        aggregator = StreamAggregator()
+        stream_gen = client.chat_stream(
+            messages, options=options, tools=tools, tool_choice=tool_choice,
+        )
+        try:
+            while True:
+                try:
+                    delta = await asyncio.wait_for(
+                        stream_gen.__anext__(), timeout=client.config.timeout,
+                    )
+                except StopAsyncIteration:
+                    break
+                aggregator.feed(delta)
+        finally:
+            try:
+                await stream_gen.aclose()
+            except Exception:
+                pass  # 生成器已在取消中收尾或关闭失败，底层流由 chat_stream finally 兜底
+        result = aggregator.build(model=client.config.model)
+        if result.finish_reason == "error":
+            raise RuntimeError("LLM 返回了无有效 choices/message 的响应")
+        return result
 
     @staticmethod
     def _messages_contain_images(messages: List[Dict[str, Any]]) -> bool:
