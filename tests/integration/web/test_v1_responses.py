@@ -127,10 +127,6 @@ def client(api_key: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         "services.responses.get_response_session_store",
         lambda: store,
     )
-    monkeypatch.setattr(
-        "web.routers.v1_responses.get_response_session_store",
-        lambda: store,
-    )
 
     def _sanitize(self: Any, exc: Exception, *extra_secrets: str) -> str:
         message = str(exc)

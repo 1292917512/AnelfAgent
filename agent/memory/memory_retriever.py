@@ -243,8 +243,11 @@ class MemoryRetriever:
     async def _resolve_scope_alias(scope: str) -> str:
         """将 scope 解析到 primary（若存在 alias）。"""
         try:
-            from services._runtime import require_runtime
-            sqlite = require_runtime().data_center.sqlite
+            from agent.runtime.singleton import get_runtime
+            rt = get_runtime()
+            if rt is None:
+                return scope
+            sqlite = rt.data_center.sqlite
             scope_type = "user" if scope.startswith("user_") else "group"
             scope_id = scope.split("_", 1)[1] if "_" in scope else scope
             primary = await sqlite.resolve_alias(scope_type, scope_id)

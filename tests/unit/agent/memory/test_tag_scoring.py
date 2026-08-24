@@ -85,7 +85,7 @@ def test_normalize_tags() -> None:
 @pytest.mark.asyncio
 async def test_memorize_tag_hints(store) -> None:
     from agent.memory import tools as mem_tools
-    mem_tools.register_memory_tools(store, None)  # type: ignore[arg-type]
+    mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
     try:
         # 既有高频标签
         for _ in range(2):
@@ -103,4 +103,4 @@ async def test_memorize_tag_hints(store) -> None:
         data = json.loads(raw)
         assert "tag_hints" not in data
     finally:
-        mem_tools._store = None
+        mem_tools.memory_tools_port.unbind()

@@ -31,7 +31,7 @@ async def _segments_backfill(embedder: Any, batch_size: int) -> int:
 
 
 try:
-    from agent.memory.embedding import register_embedding_backlog
+    from entities._sdk import register_embedding_backlog
     register_embedding_backlog("voiceprint_segments", _segments_backfill)
 except Exception as _exc:
     log(f"音源库 embedding backlog 注册失败: {_exc}", "DEBUG", tag="音源库")

@@ -118,12 +118,9 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=True, depends_on=["register_entities"])
     async def init_mcp():
         from core.lifecycle import Lifecycle
-        from entities.mcp.bridge import (
-            MCPBridge,
-            load_mcp_config,
-            register_mcp_tools,
-            set_mcp_bridge,
-        )
+        from entities.mcp.bridge import MCPBridge, set_mcp_bridge
+        from entities.mcp.config import load_mcp_config
+        from entities.mcp.manage_tools import register_mcp_tools
 
         config = load_mcp_config()
         bridge = MCPBridge(config=config)
@@ -185,11 +182,10 @@ def create_bootstrap() -> FlowMachine:
         except Exception as exc:
             log(f"文件索引同步失败（不影响启动）: {exc}", "WARNING")
 
-        from agent.memory.embedding import EmbeddingWorker, set_embedding_worker
+        from agent.memory.embedding import EmbeddingWorker
 
         embedding_worker = EmbeddingWorker(store, embedder)
         await embedding_worker.start()
-        set_embedding_worker(embedding_worker)
         Lifecycle.register(
             "embedding_worker",
             embedding_worker,
@@ -226,33 +222,46 @@ def create_bootstrap() -> FlowMachine:
             "store": store,
             "embedder": embedder,
             "workspace_dir": workspace_dir,
+            "embedding_worker": embedding_worker,
             "cognee_client": cognee_client,
             "cognee_coordinator": cognee_coordinator,
         }
 
     @machine.node(skip_on_error=False, depends_on=["init_memory", "register_entities"])
     async def register_internal_tools():
-        # agent.task.tools 挂在 planning 组（deferred 注册按组弹出），须在 planning 激活前 import
+        """激活内部 deferred 工具组（依赖引用经 wiring.wire_runtime 统一施绑）。
+
+        各工具模块 import 时完成 deferred 注册，本节点只按组弹出激活；
+        agent.task.tools 挂在 planning 组，须在 planning 激活前 import。
+        """
+        import agent.channel.output_tools  # noqa: F401
+        import agent.memory.graph.tools  # noqa: F401
+        import agent.memory.tools  # noqa: F401
+        import agent.planning.tools  # noqa: F401
+        import agent.skills.tools  # noqa: F401
+        import agent.storage.conversation_fold  # noqa: F401
         import agent.task.tools  # noqa: F401
-        from agent.channel.output_tools import register_output_tools
-        from agent.memory.graph.tools import register_graph_tools
+        from agent.memory.graph.tools import _resolve_alias
         from agent.memory.notes import register_notes_tools
-        from agent.memory.tools import register_memory_tools
-        from agent.planning import register_planning_tools
-        from agent.skills import SkillMatcher, SkillStore, register_skill_tools
+        from entities._sdk import activate_group
 
         mem = machine.get(BK.MEMORY)
-        data_center = machine.get(BK.STORAGE)
-        register_memory_tools(mem["store"], mem["embedder"])
-        register_graph_tools(mem["store"])
-        register_notes_tools(workspace_dir=mem.get("workspace_dir"))
-        register_planning_tools(mem["store"])
-        register_output_tools(data_center.conversation_data)
-        from agent.storage.conversation_fold import register_fold_tools
-        register_fold_tools(data_center.conversation_data)
+        # 关系图谱别名解析桥（store 侧接线，工具依赖经 wiring 端口施绑）
+        mem["store"].graph.set_alias_resolver(_resolve_alias)
 
-        skill_store = SkillStore()
-        register_skill_tools(skill_store, SkillMatcher(skill_store, mem["embedder"]))
+        count = activate_group("memory", "长期记忆 - 记忆存储、语义检索、标签索引、遗忘")
+        log(f"💾 内部记忆工具已注册 ({count} 个)", tag="思维")
+        count = activate_group("graph", "关系图谱 - 人物/概念关系网络的结构化存储与查询")
+        log(f"🕸 关系图谱工具已注册 ({count} 个)", tag="思维")
+        activate_group("planning", "目标规划管理 - 创建执行计划、追踪目标进度")
+        count = activate_group("output", "消息输出 — 向频道发送文本、图片、语音、文件等")
+        log(f"统一输出工具已注册 ({count} 个)", tag="通道")
+        count = activate_group(
+            "skills",
+            "技能 - 经验技能的创建、检索、合并与策展，及外部技能源（可插拔商店）的搜索与安装",
+        )
+        log(f"🎓 技能工具已注册 ({count} 个)", tag="技能")
+        register_notes_tools(workspace_dir=mem.get("workspace_dir"))
 
         # 图片感知索引 worker：入站图片后台沉淀（phash/描述/向量），支撑文搜图/图搜图
         # （引用经 wiring.wire_runtime 统一施绑，本节点只负责创建与生命周期注册）
@@ -331,6 +340,9 @@ def create_bootstrap() -> FlowMachine:
         wire_runtime(
             mind=mind,
             data_center=data_center,
+            memory_store=mem["store"],
+            embedder=mem["embedder"],
+            embedding_worker=mem["embedding_worker"],
             cognee_client=mem.get("cognee_client"),
             cognee_coordinator=mem.get("cognee_coordinator"),
             image_index_worker=tools_ctx["image_index_worker"],
@@ -346,10 +358,10 @@ def create_bootstrap() -> FlowMachine:
     async def start_agent():
         """启动 AgentApp 事件循环和 Assistant 心跳。"""
         from agent.runtime.agent_app import get_agent_app
-        from agent.runtime.singleton import get_runtime
+        from agent.runtime.singleton import require_runtime
         from core.lifecycle import Lifecycle
 
-        runtime = get_runtime()
+        runtime = require_runtime()
         runtime.assistant.start()
 
         app = get_agent_app()
@@ -362,14 +374,16 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=True, depends_on=["assemble_runtime"])
     async def restore_states():
         """恢复持久化的工具/实体状态覆盖（失败不影响启动）。"""
+        from agent.runtime.state_restore import (
+            apply_entity_states,
+            apply_tool_overrides,
+            load_custom_tags,
+        )
         from core.entity import EntityRegistry, EntityType
-        from services.entity import EntityService
-        from services.tag import TagService
-        from services.tool import ToolService
 
-        ToolService.apply_overrides()
-        EntityService.apply_entity_states()
-        TagService.load_custom_tags()
+        apply_tool_overrides()
+        apply_entity_states()
+        load_custom_tags()
 
         tool_count = len(EntityRegistry.get_by_type(EntityType.TOOL))
         entity_count = len(EntityRegistry.get_all())
@@ -472,10 +486,10 @@ def create_bootstrap() -> FlowMachine:
     async def _do_recover_unanswered() -> None:
         import time
 
-        from agent.runtime.singleton import get_runtime
+        from agent.runtime.singleton import require_runtime
         from core.config import get_config_bool, get_config_float
 
-        rt = get_runtime()
+        rt = require_runtime()
         mind = rt.mind
         sqlite = rt.data_center.sqlite
 
@@ -493,7 +507,7 @@ def create_bootstrap() -> FlowMachine:
         max_age_hours = get_config_float("recovery_max_age_hours", 24.0)
         cutoff_ns = time.time_ns() - int(max_age_hours * 3600 * 1e9)
 
-        from agent.mind.context_compressor import is_genuine_user_message
+        from agent.mind.message_schema import is_genuine_user_message
         from agent.mind.tools.scheduler import enqueue_scope_reply
 
         last_msgs = await sqlite.list_scopes_with_last_message()
@@ -534,9 +548,9 @@ def create_bootstrap() -> FlowMachine:
             collect_crash_context,
             recover_interrupted_replies,
         )
-        from agent.runtime.singleton import get_runtime
+        from agent.runtime.singleton import require_runtime
         try:
-            mind = get_runtime().mind
+            mind = require_runtime().mind
             # 消费上次崩溃状态（守护脚本写入 + 系统崩溃报告关联），仅注入一次
             crash_context = collect_crash_context()
             recovered = await recover_interrupted_replies(mind, crash_context)
@@ -556,12 +570,12 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=True, depends_on=["start_agent", "register_channel_services"])
     async def check_health():
         """启动健康检查 — 验证关键组件就绪状态。"""
-        from agent.runtime.singleton import get_runtime
+        from agent.runtime.singleton import require_runtime
         from core.entity import EntityRegistry, EntityType
         from core.latebind import assert_wired
 
         issues: list[str] = []
-        rt = get_runtime()
+        rt = require_runtime()
 
         # 晚绑定端口漏接线在此暴露（wire_runtime 遗漏即缺陷，不静默降级）
         for port_name in assert_wired():

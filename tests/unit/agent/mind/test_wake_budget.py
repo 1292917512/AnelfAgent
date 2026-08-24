@@ -101,6 +101,6 @@ class TestUnclaimedCallbackBudget:
     async def test_reset_via_genuine_input(self) -> None:
         import agent.mind.mind as mind_mod
         mind = self._fake_mind(1)
-        mind_mod.Mind._on_bg_task_unclaimed(mind, "user_qq:1", "任务A", "ok")
+        await mind_mod.Mind._on_bg_task_unclaimed(mind, "user_qq:1", "任务A", "ok")
         mind.wake_budget.reset("user_qq:1")  # 真人消息到达（accept_feel 路径）
         assert mind.wake_budget.allow("user_qq:1")

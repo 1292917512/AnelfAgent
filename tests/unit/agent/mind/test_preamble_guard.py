@@ -88,7 +88,8 @@ class _ScriptedMind(FakeMind):
     def _resolve_entity_scope(anything) -> str:
         return anything.entity_scope if anything else ""
 
-    async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None):
+    async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None,
+        stream=False, on_delta=None, purpose="reply"):
         content = self._script[min(self.calls, len(self._script) - 1)]
         self.calls += 1
         self.sent_messages.append(list(messages))

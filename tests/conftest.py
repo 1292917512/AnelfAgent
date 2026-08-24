@@ -37,22 +37,54 @@ def _isolate_config_manager(tmp_path, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _wire_function_ports():
+    """施绑纯函数型跨层端口（测试即组合根，对齐 wiring.wire_runtime 的施绑）。
+
+    这些端口承载无状态函数实现（工作区路径解析 / 结果落盘 / 文件状态缓存 /
+    图片索引投递），生产由 agent.runtime.wiring 施绑；测试环境无 bootstrap，
+    在此统一施绑真实实现，保持被测路径与生产一致。
+    """
+    from agent.approval.policy import WorkspacePathFns, workspace_paths_port
+    from agent.mind.tools.media_pipeline import image_index_submit_port
+    from agent.mind.tools.result_pipeline import shell_persist_port
+    from agent.mind.tools.round_helpers import file_state_cache_port
+    from entities.filesystem.file_state import get_cache as get_file_state_cache
+    from entities.filesystem.paths import get_workspace_root, resolve_workspace_path
+    from entities.filesystem.shell_state import persist_output
+    from entities.sticker.worker import submit_image
+
+    workspace_paths_port.set(WorkspacePathFns(get_workspace_root, resolve_workspace_path))
+    file_state_cache_port.set(get_file_state_cache)
+    shell_persist_port.set(persist_output)
+    image_index_submit_port.set(submit_image)
+    yield
+    workspace_paths_port.unbind()
+    file_state_cache_port.unbind()
+    shell_persist_port.unbind()
+    image_index_submit_port.unbind()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_embedding_registry():
-    """隔离 EmbeddingWorker 全局注册表（_worker / _pending_backlogs）。
+    """隔离 EmbeddingWorker 端口与挂起注册表（embedding_worker_port / _pending_backlogs）。
 
     实体模块（如 entities.voiceprint.worker）在导入期向全局挂起表注册
-    backlog；测试内 set_embedding_worker 会将其挂载到测试 worker，handler
-    随即打开全局单例存储的真实数据库——aiosqlite 连接线程无人关闭，
-    挂住 pytest 进程退出。逐用例快照/清空/恢复，阻断跨层污染。
+    backlog；测试内施绑端口会将其挂载到测试 worker，handler 随即打开
+    全局单例存储的真实数据库——aiosqlite 连接线程无人关闭，挂住 pytest
+    进程退出。逐用例快照/清空/恢复，阻断跨层污染。
     """
     from agent.memory.embedding import worker as embedding_worker
 
-    saved_worker = embedding_worker._worker
+    port = embedding_worker.embedding_worker_port
+    was_bound = port.bound
+    saved_worker = port.get() if was_bound else None
     saved_pending = dict(embedding_worker._pending_backlogs)
-    embedding_worker._worker = None
+    port.unbind()
     embedding_worker._pending_backlogs.clear()
     yield
-    embedding_worker._worker = saved_worker
+    port.unbind()
+    if was_bound:
+        port.set(saved_worker)
     embedding_worker._pending_backlogs.clear()
     embedding_worker._pending_backlogs.update(saved_pending)
 

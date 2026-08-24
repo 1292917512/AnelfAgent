@@ -1,7 +1,7 @@
 """思维循环的图片处理块：视觉模型直传与 base64 转存。
 
-从 think_loop 拆出，函数以 mind 实例为第一参数；
-think_loop 通过 import 复用本模块（并保持同名再导出以兼容既有引用）。
+从 think_loop 拆出，函数以 mind 实例为第一参数；think_loop 与 round_helpers
+均从本模块导入（单向依赖，无环）。
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import os
 import uuid
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from agent.mind.tools.result_parse import parse_tool_result_json
 from core.log import log
 
 if TYPE_CHECKING:
@@ -72,10 +73,7 @@ async def apply_vision(
         return await _inject_image_blocks(messages, images, config)
 
     # 仅处理需要转存的超大 base64 图片（QQ/Telegram 通常是 URL/文件路径，无需处理）
-    # 经 think_loop 命名空间解析转存函数：兼容既有打桩路径
-    # agent.mind.tools.think_loop.save_base64_image（think_loop 再导出本模块实现）
-    from agent.mind.tools import think_loop as _think_loop_mod
-    saver = getattr(_think_loop_mod, "save_base64_image", save_base64_image)
+    saver = save_base64_image
 
     path_map: Dict[str, str] = {}
     for img in images:
@@ -169,9 +167,7 @@ async def _append_multimodal_result(
     """
     if '"_multimodal"' not in output:
         return
-    # 延迟导入：round_helpers 依赖本模块的 apply_vision，避免循环引用
-    from agent.mind.tools.round_helpers import _parse_tool_result_json
-    parsed = _parse_tool_result_json(output)
+    parsed = parse_tool_result_json(output)
     if not isinstance(parsed, dict) or not parsed.get("_multimodal"):
         return
     images = [p for p in (parsed.get("images") or []) if isinstance(p, str) and p]

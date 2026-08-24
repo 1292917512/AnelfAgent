@@ -9,9 +9,16 @@ then process it with tools (recognize_image, voice_to_text, read_file, etc.).
 from __future__ import annotations
 
 import os
-from typing import List
+from typing import Callable, List
 
+from core.latebind import LateBinding
 from core.log import log
+
+#: 图片索引投递函数端口（agent → entities 跨层桥，wiring 以
+#: entities.sticker.worker.submit_image 施绑；未施绑时跳过索引投递）
+image_index_submit_port: LateBinding[Callable[[str, str], None]] = LateBinding(
+    "mind.image_index_submit",
+)
 
 
 class MediaPipeline:
@@ -38,11 +45,10 @@ class MediaPipeline:
             if seg_type == "image":
                 try:
                     from core.config import get_config_bool
-                    if get_config_bool("image_index_enabled", True):
-                        from entities.sticker.worker import submit_image
+                    if get_config_bool("image_index_enabled", True) and image_index_submit_port.bound:
                         candidate = file_path if file_path and os.path.isfile(file_path) else url
                         if candidate:
-                            submit_image(candidate, source="inbound")
+                            image_index_submit_port.get()(candidate, "inbound")
                 except Exception:
                     log("process_segments 异常已忽略", "DEBUG")
 

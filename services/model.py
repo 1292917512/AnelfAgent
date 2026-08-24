@@ -13,6 +13,46 @@ if TYPE_CHECKING:
 class ModelService:
     _API_KEY_MASK = "****"
 
+    # ------------------------------------------------------------------
+    # 协议类型 / 思考档位（agent.llm 单一权威的 services 侧出口）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def api_types() -> tuple:
+        """支持的 api_type 列表（单一权威来源：agent.llm.config）。"""
+        from agent.llm.config import API_TYPES
+        return API_TYPES
+
+    @staticmethod
+    def default_base_urls() -> Dict[str, str]:
+        """各 api_type 的默认接口地址（统一引用 agent.llm.config.DEFAULT_BASE_URLS，
+        消除多副本漂移——此前与 llm_client._LITELLM_PREFIX_MAP 已发生过漂移）。"""
+        from agent.llm.config import DEFAULT_BASE_URLS
+        return DEFAULT_BASE_URLS
+
+    def list_api_types(self) -> List[Dict[str, Any]]:
+        """返回结构化的 api_type 列表（common/other 分组 + 默认接口地址）。
+
+        common 组（openai/anthropic）为两大主流协议，市面上绝大多数中转/
+        国产模型都是其兼容实现；其余归为 other。
+        """
+        common = {"openai", "anthropic"}
+        defaults = self.default_base_urls()
+        return [
+            {
+                "value": t,
+                "group": "common" if t in common else "other",
+                "default_base_url": defaults.get(t, ""),
+            }
+            for t in self.api_types()
+        ]
+
+    @staticmethod
+    def normalize_effort(value: str) -> str:
+        """规范化思考档位（非法值返回空串，单一权威：agent.llm.reasoning）。"""
+        from agent.llm.reasoning import normalize_effort
+        return normalize_effort(value)
+
     @staticmethod
     def _manager() -> "LLMManager":
         from agent.llm import get_llm_manager
@@ -242,13 +282,6 @@ class ModelService:
                 return f"连接成功! 可用模型: {', '.join(names)}" if names else "连接成功 (无模型列表)"
             return f"连接成功 (HTTP {r.status_code if r is not None else '无响应'})"
 
-    # 各 api_type 的默认接口地址：统一引用 agent.llm.config.DEFAULT_BASE_URLS，
-    # 消除多副本漂移（此前与 llm_client._LITELLM_PREFIX_MAP 已发生过漂移）
-    @staticmethod
-    def _default_base_urls() -> Dict[str, str]:
-        from agent.llm.config import DEFAULT_BASE_URLS
-        return DEFAULT_BASE_URLS
-
     @staticmethod
     def _auth_headers(
         api_key: str, api_type: str = "openai",
@@ -297,7 +330,7 @@ class ModelService:
 
         from agent.llm.url_utils import models_endpoint_candidates
 
-        effective_url = base_url.strip() or self._default_base_urls().get(api_type, "")
+        effective_url = base_url.strip() or self.default_base_urls().get(api_type, "")
         if not effective_url:
             return []
         self._validate_remote_url(effective_url, bool(api_key))

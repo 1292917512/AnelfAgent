@@ -182,30 +182,9 @@ class ToolService:
 
     @staticmethod
     def apply_overrides() -> int:
-        """启动时加载持久化的工具属性覆盖，返回应用的覆盖数量。"""
-        from core.config import ConfigManager
-        from core.entity import EntityRegistry
-
-        overrides: dict = ConfigManager.get("tool_overrides", {})
-        if not isinstance(overrides, dict) or not overrides:
-            return 0
-
-        applied = 0
-        for name, meta in overrides.items():
-            entity = EntityRegistry.get(name)
-            if entity is None:
-                continue
-            if "tags" in meta and isinstance(meta["tags"], list):
-                entity.tags = meta["tags"]
-            if "description" in meta and isinstance(meta["description"], str):
-                entity.description = meta["description"]
-            applied += 1
-
-        if applied:
-            # 直接修改了实体元数据，递增注册表版本使派生缓存失效
-            EntityRegistry.bump_version()
-            log(f"工具属性覆盖已加载: {applied} 个工具", tag="工具")
-        return applied
+        """启动时加载持久化的工具属性覆盖（实现归 agent.runtime.state_restore）。"""
+        from agent.runtime.state_restore import apply_tool_overrides
+        return apply_tool_overrides()
 
     def reload_entities(self) -> Dict[str, Any]:
         """热重载实体：重新扫描 entities/ 目录。"""

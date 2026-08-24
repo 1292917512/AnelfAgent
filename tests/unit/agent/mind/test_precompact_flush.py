@@ -17,9 +17,9 @@ class _MindStub:
 
 @pytest.fixture(autouse=True)
 def _reset_pipeline():
-    auto_capture._pipeline = None
+    auto_capture.auto_capture_port.unbind()
     yield
-    auto_capture._pipeline = None
+    auto_capture.auto_capture_port.unbind()
 
 
 class TestScopeMapping:
@@ -108,8 +108,8 @@ class TestFlushScopeCapture:
             class data_center:
                 sqlite = object()
 
-        monkeypatch.setattr(auto_capture, "_pipeline", _FakePipeline())
-        monkeypatch.setattr("services._runtime.require_runtime", lambda: _FakeRT())
+        auto_capture.auto_capture_port.set(_FakePipeline())
+        monkeypatch.setattr("agent.runtime.singleton.require_runtime", lambda: _FakeRT())
         assert await auto_capture.flush_scope_capture(_MindStub(), "user:qq:123") is True
         assert calls["scope_type"] == "user"
         assert calls["scope_id"] == "qq:123"

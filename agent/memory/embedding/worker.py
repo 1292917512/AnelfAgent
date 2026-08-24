@@ -15,6 +15,7 @@ import asyncio
 from typing import Awaitable, Callable, Dict, Optional
 
 from core.config import get_config_float, get_config_int, register_configs_safe
+from core.latebind import LateBinding
 from core.log import log
 
 from ..memory_store import MemoryStore
@@ -48,33 +49,39 @@ _WORKER_CONFIGS = {
 
 register_configs_safe(_WORKER_CONFIGS)
 
-_worker: Optional["EmbeddingWorker"] = None
+#: worker 端口（worker 在 bootstrap init_memory 节点创建后，经
+#: agent.runtime.wiring 统一施绑；绑定后 attach_pending_backlogs 消化挂起注册）
+embedding_worker_port: LateBinding["EmbeddingWorker"] = LateBinding("memory.embedding_worker")
+
+# worker 施绑前注册的外部 backlog 挂起表（施绑时一次性挂载并清空）
 _pending_backlogs: Dict[str, BacklogHandler] = {}
 
 
-def set_embedding_worker(worker: Optional["EmbeddingWorker"]) -> None:
-    global _worker
-    _worker = worker
-    if worker and _pending_backlogs:
+def get_embedding_worker() -> Optional["EmbeddingWorker"]:
+    """取当前 worker（端口未施绑时返回 None，调用方按无 worker 降级）。"""
+    return embedding_worker_port.get() if embedding_worker_port.bound else None
+
+
+def attach_pending_backlogs(worker: "EmbeddingWorker") -> None:
+    """把挂起的 backlog 注册挂载到 worker（组合根施绑端口后调用一次）。"""
+    if _pending_backlogs:
         for name, handler in _pending_backlogs.items():
             worker.register_backlog(name, handler)
         _pending_backlogs.clear()
 
 
-def get_embedding_worker() -> Optional["EmbeddingWorker"]:
-    return _worker
-
-
 def wake_embedding_worker() -> None:
     """写入路径调用：通知 worker 有新 backlog（无 worker 时 no-op）。"""
-    if _worker:
-        _worker.wake()
+    worker = get_embedding_worker()
+    if worker:
+        worker.wake()
 
 
 def register_embedding_backlog(name: str, handler: BacklogHandler) -> None:
-    """外部存储注册 backlog 回填处理器；worker 未创建时挂起，就绪后自动挂载。"""
-    if _worker:
-        _worker.register_backlog(name, handler)
+    """外部存储注册 backlog 回填处理器；worker 未施绑时挂起，施绑后自动挂载。"""
+    worker = get_embedding_worker()
+    if worker:
+        worker.register_backlog(name, handler)
     else:
         _pending_backlogs[name] = handler
 

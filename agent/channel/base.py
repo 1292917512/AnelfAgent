@@ -620,22 +620,9 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     ) -> Optional[List[CommandResponse]]:
         """执行命令并消费流式输出（由 InputPipeline 的 CommandProcessor 调用）。
 
-        默认实现：转发到 services.command（如存在），否则返回 None 让 Mind 处理。
+        默认返回 None 让 Mind 处理；子类可覆盖实现频道自定义命令。
         """
-        try:
-            from services.command import execute as cmd_execute
-        except ImportError:
-            return None
-        return await cmd_execute(
-            channel=self,
-            chat_key=chat_key,
-            user_id=user_id,
-            username=username,
-            command_name=command_name,
-            raw_args=raw_args,
-            is_super_user=is_super_user,
-            is_advanced_user=is_advanced_user,
-        )
+        return None
 
     # ------------------------------------------------------------------
     # 批准机制钩子（占位，由 agent/approval/ 驱动）

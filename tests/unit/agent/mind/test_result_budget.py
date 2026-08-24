@@ -14,8 +14,8 @@ from agent.mind.result_budget import (
 from agent.mind.tools.result_pipeline import (
     ToolResultPipeline,
     _persist_oversized_result,
+    truncate_tool_output,
 )
-from agent.mind.tools.think_loop import _truncate_tool_output
 
 
 class TestBudgetComputation:
@@ -55,36 +55,36 @@ class TestTruncateWithBudget:
     def test_pinned_tool_not_truncated(self) -> None:
         budget = ResultBudget(per_result_chars=100, per_turn_chars=200)
         output = "x" * 10_000
-        assert _truncate_tool_output("send_message", output, budget=budget) == output
+        assert truncate_tool_output("send_message", output, budget=budget) == output
 
     def test_dynamic_limit_applied(self) -> None:
         budget = ResultBudget(per_result_chars=1000, per_turn_chars=5000)
         output = "y" * 5_000
-        result = _truncate_tool_output("web_search", output, budget=budget)
+        result = truncate_tool_output("web_search", output, budget=budget)
         assert len(result) < len(output)
         assert "已自动截断" in result
 
     def test_html_stricter_limit(self) -> None:
         budget = ResultBudget(per_result_chars=100_000, per_turn_chars=200_000)
         output = "<!DOCTYPE html><html><body>" + "z" * 10_000 + "</body></html>"
-        result = _truncate_tool_output("fetch_page", output, budget=budget)
+        result = truncate_tool_output("fetch_page", output, budget=budget)
         assert len(result) <= 3000 + 200  # HTML 特例 3000 + 截断标记
 
     def test_no_budget_fallback(self) -> None:
         output = "w" * 10_000
-        result = _truncate_tool_output("web_search", output)
+        result = truncate_tool_output("web_search", output)
         assert len(result) < len(output)
 
     def test_short_output_untouched(self) -> None:
         budget = ResultBudget(per_result_chars=1000, per_turn_chars=5000)
         output = "short"
-        assert _truncate_tool_output("web_search", output, budget=budget) == output
+        assert truncate_tool_output("web_search", output, budget=budget) == output
 
     def test_json_structure_preserved(self) -> None:
         import json
         budget = ResultBudget(per_result_chars=2000, per_turn_chars=5000)
         output = json.dumps({"success": True, "data": ["item" * 100] * 50})
-        result = _truncate_tool_output("web_search", output, budget=budget)
+        result = truncate_tool_output("web_search", output, budget=budget)
         parsed = json.loads(result)  # JSON 结构化裁剪保持可解析
         assert parsed is not None
 
@@ -141,11 +141,9 @@ class TestPersistOversized:
         # 持久化后的预览文本远小于原文
         assert len(result) < 10_000
 
-    def test_persist_failure_falls_back(self, monkeypatch):
-        monkeypatch.setattr(
-            "entities.filesystem.shell_state.persist_output",
-            lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
-        )
+    def test_persist_failure_falls_back(self):
+        from agent.mind.tools.result_pipeline import shell_persist_port
+        shell_persist_port.set(lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
         assert _persist_oversized_result("x", "y" * 60_000) is None
 
 

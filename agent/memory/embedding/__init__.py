@@ -10,7 +10,6 @@ from .worker import (
     EmbeddingWorker,
     get_embedding_worker,
     register_embedding_backlog,
-    set_embedding_worker,
     wake_embedding_worker,
 )
 
@@ -21,7 +20,6 @@ __all__ = [
     "EmbeddingWorker",
     "BacklogHandler",
     "get_embedding_worker",
-    "set_embedding_worker",
     "wake_embedding_worker",
     "register_embedding_backlog",
 ]

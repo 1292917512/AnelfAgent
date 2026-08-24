@@ -7,8 +7,13 @@ from agent.runtime.runtime import AgentRuntime
 _default_runtime: Optional[AgentRuntime] = None
 
 
-def get_runtime() -> AgentRuntime:
-    """获取全局 AgentRuntime。未初始化时抛出 RuntimeError。"""
+def get_runtime() -> Optional[AgentRuntime]:
+    """获取全局 AgentRuntime；未初始化时返回 None。"""
+    return _default_runtime
+
+
+def require_runtime() -> AgentRuntime:
+    """获取全局 AgentRuntime；未初始化时抛出 RuntimeError。"""
     if _default_runtime is None:
         raise RuntimeError(
             "AgentRuntime 尚未初始化，请确保 bootstrap 已执行"

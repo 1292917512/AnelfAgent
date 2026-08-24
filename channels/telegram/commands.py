@@ -105,7 +105,7 @@ async def _cmd_reset(bot: Any, chat_id: int, update: Any) -> None:
     user_id = str(user.id) if user else "unknown"
 
     try:
-        from services._runtime import get_runtime
+        from agent.runtime.singleton import get_runtime
         rt = get_runtime()
         if rt:
             from agent.messages import build_scope_id
@@ -132,7 +132,7 @@ async def _cmd_reset(bot: Any, chat_id: int, update: Any) -> None:
 async def _cmd_status(bot: Any, chat_id: int) -> None:
     from .send import send_text
     try:
-        from services._runtime import get_agent_app
+        from agent.runtime.agent_app import get_agent_app
         app = get_agent_app()
         if app:
             info = app.get_status_info()

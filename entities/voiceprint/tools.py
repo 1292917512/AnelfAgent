@@ -876,7 +876,7 @@ async def segment_add(
             transcript=text.strip(),
             ts_ns=ts_ns)
         try:
-            from agent.memory.embedding import wake_embedding_worker
+            from entities._sdk import wake_embedding_worker
             wake_embedding_worker()
         except Exception:
             pass
@@ -1008,7 +1008,7 @@ def _get_embedder() -> Any:
     """文本域共享 Embedder（转写检索向量化用，惰性获取）。"""
     global _embedder
     if _embedder is None:
-        from agent.memory.embedding import get_embedder
+        from entities._sdk import get_embedder
         _embedder = get_embedder("text")
     return _embedder
 

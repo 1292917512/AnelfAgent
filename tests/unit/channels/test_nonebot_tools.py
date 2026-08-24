@@ -104,7 +104,7 @@ class TestSendMediaParams:
                 calls.append((chat_id, kind, source))
                 return {"success": True}
 
-        import services.nonebot as svc_mod
+        import channels.nonebot_bridge.service as svc_mod
 
         monkeypatch.setattr(svc_mod, "NoneBotService", _FakeSvc)
         result = await nb_tools._tool_send("70001", voice="/x/a.silk", channel_type="group")

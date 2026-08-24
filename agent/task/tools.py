@@ -3,7 +3,7 @@
 补齐规划体系的自下而上通道：AI 可以把反复出现的规划沉淀为任务定义
 （config/tasks/*.json），并自主绑定/调整心跳调度（heartbeat.json）。
 与 Web 管理面（web/routers/config.py）走同一份配置文件与热重载路径，
-两侧改动互相可见。工具挂 group="planning"，须在 register_planning_tools
+两侧改动互相可见。工具挂 group="planning"，须在 planning 组激活
 之前 import 本模块（deferred 注册按组弹出）。
 """
 
@@ -35,7 +35,7 @@ def _task_path(name: str) -> Path:
 def _reload_engine() -> None:
     """热重载任务注册表与心跳调度（运行时不可用时静默跳过）。"""
     try:
-        from services._runtime import require_runtime
+        from agent.runtime.singleton import require_runtime
         require_runtime().mind.heartbeat_engine.reload()
     except Exception as exc:
         log(f"任务热重载跳过（运行时不可用）: {exc}", "DEBUG", tag="任务")

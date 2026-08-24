@@ -8,9 +8,9 @@ import time
 from agent.memory.embedding import (
     EmbeddingWorker,
     register_embedding_backlog,
-    set_embedding_worker,
     wake_embedding_worker,
 )
+from agent.memory.embedding.worker import attach_pending_backlogs, embedding_worker_port
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
 from agent.memory.memory_utils import hash_text
@@ -195,7 +195,7 @@ class TestEmbeddingWorker:
     async def test_worker_loop_processes_on_wake(self, store: MemoryStore) -> None:
         embedder = FakeEmbedder()
         worker = EmbeddingWorker(store, embedder)  # type: ignore[arg-type]
-        set_embedding_worker(worker)
+        embedding_worker_port.set(worker)
         await worker.start()
         try:
             await store.add(_entry("唤醒后回填"))
@@ -207,7 +207,7 @@ class TestEmbeddingWorker:
             assert await _null_embedding_count(store) == 0
         finally:
             await worker.close()
-            set_embedding_worker(None)
+            embedding_worker_port.unbind()
 
     async def test_worker_backoff_when_embedder_unavailable(self, store: MemoryStore) -> None:
         embedder = FakeEmbedder()
@@ -248,19 +248,21 @@ class TestEmbeddingWorker:
         assert await _null_embedding_count(store) == 0
 
     async def test_pending_backlog_flushed_on_worker_set(self, store: MemoryStore) -> None:
-        """worker 未就绪时注册的 backlog 挂起，set_embedding_worker 后自动挂载且只挂一次。"""
+        """worker 未施绑时注册的 backlog 挂起，端口施绑 + attach 后自动挂载且只挂一次。"""
         async def handler(embedder, batch_size: int) -> int:
             return 0
 
         register_embedding_backlog("pending_test", handler)
         try:
             worker = EmbeddingWorker(store, FakeEmbedder())  # type: ignore[arg-type]
-            set_embedding_worker(worker)
+            embedding_worker_port.set(worker)
+            attach_pending_backlogs(worker)
             assert "pending_test" in worker._backlogs
 
             # 挂起表已清空：后续新 worker 不再重复挂载
             worker2 = EmbeddingWorker(store, FakeEmbedder())  # type: ignore[arg-type]
-            set_embedding_worker(worker2)
+            embedding_worker_port.set(worker2)
+            attach_pending_backlogs(worker2)
             assert "pending_test" not in worker2._backlogs
         finally:
-            set_embedding_worker(None)
+            embedding_worker_port.unbind()

@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.llm import ChatResult
 from agent.llm.llm_client import LLMClient
+from agent.mind import context_audit
+from agent.mind.message_schema import normalize_for_send
 from core.event_bus import (
     EVENT_THINKING_LLM_END,
     EVENT_THINKING_LLM_START,
@@ -21,23 +23,11 @@ from core.event_bus import (
 from core.log import log
 
 if TYPE_CHECKING:
-    from types import ModuleType
-
     from agent.messages import Everything
     from agent.mind.mind import Mind
 
 # asyncio.timeout 需 3.11+（无 per-chunk Task 创建开销）；3.10 回退 wait_for
 _HAS_ASYNCIO_TIMEOUT = sys.version_info >= (3, 11)
-
-
-def _mind_module() -> "ModuleType":
-    """延迟引用 agent.mind.mind 模块。
-
-    normalize_for_send / context_audit 经模块属性访问，
-    保持 tests 对 agent.mind.mind.* 的 monkeypatch 语义（且避免循环导入）。
-    """
-    import agent.mind.mind as mind_module
-    return mind_module
 
 
 def get_model_context_length(mind: "Mind") -> int:
@@ -82,7 +72,6 @@ async def _invoke_llm_unified(
     流式失败自动回退非流式重试路径（行为与非流式完全一致）。
     """
     model_name = mind.llm.config.model if isinstance(mind.llm, LLMClient) else "unknown"
-    _mm = _mind_module()
 
     # 前缀稳定性守卫（normalize 前，_layer 标签尚存）：对前缀层消息逐条哈希
     # 与同 scope 上一次调用比对，首个不一致位置即缓存断裂点。仅观测不阻断，
@@ -136,7 +125,7 @@ async def _invoke_llm_unified(
     # 发送边界统一规整（message_schema.normalize_for_send）：
     # 角色归一（头部提示词分层保持 system 供 Anthropic 前缀缓存，中途注入
     # 转 user 保留位置语义）+ 尾部 assistant prefill 修复
-    messages = _mm.normalize_for_send(messages)
+    messages = normalize_for_send(messages)
     log(f"调用 LLM: {model_name} msgs={len(messages)}", tag="思维")
     tool_names = [t.get("function", {}).get("name", "") for t in (tools or [])]
     await event_bus.emit(EVENT_THINKING_LLM_START, {
@@ -176,14 +165,14 @@ async def _invoke_llm_unified(
             "success": False,
         })
         # 请求级审计：异常交换同样落盘（未开启时零开销）
-        await _mm.context_audit.record_exchange(
+        await context_audit.record_exchange(
             model=model_name, messages=messages, tools=tools,
             error=exc, duration_ms=(time.time() - t0) * 1000,
         )
         raise
     elapsed_ms = (time.time() - t0) * 1000
     # 请求级审计：规整后最终发送的 messages + 完整响应（未开启时零开销）
-    await _mm.context_audit.record_exchange(
+    await context_audit.record_exchange(
         model=result.model or model_name, messages=messages, tools=tools,
         result=result, duration_ms=elapsed_ms,
     )
@@ -257,8 +246,8 @@ def _merge_llm_options(mind: "Mind", options: Optional[dict]) -> dict:
     reasoning_effort / thinking 契约），对话层不统一注入档位。
     """
     merged_options = dict(options or {})
-    if mind._session_llm_params:
-        merged_options.update(mind._session_llm_params)
+    if mind.session_llm_params:
+        merged_options.update(mind.session_llm_params)
     return merged_options
 
 

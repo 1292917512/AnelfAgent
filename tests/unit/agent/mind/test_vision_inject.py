@@ -155,7 +155,7 @@ class TestApplyVisionNonVisionModel:
     ) -> None:
         saved = str(tmp_path / "vision_saved.jpg")
         monkeypatch.setattr(
-            "agent.mind.tools.think_loop.save_base64_image",
+            "agent.mind.tools.vision.save_base64_image",
             lambda data, mime_type="image/jpeg": saved,
         )
         big_b64 = base64.b64encode(b"x" * 600).decode("utf-8")

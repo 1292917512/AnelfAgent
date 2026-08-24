@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 from agent.mind.result_budget import (
     PINNED_TOOLS,
@@ -20,11 +20,16 @@ from agent.mind.result_budget import (
     budget_for_context_window,
     resolve_result_limit,
 )
+from core.latebind import LateBinding
 from core.log import log
 
 if TYPE_CHECKING:
     from agent.mind.guardrails import GuardrailController
     from agent.mind.mind import Mind
+
+#: 超大工具结果落盘函数端口（agent → entities 跨层桥，wiring 以
+#: entities.filesystem.shell_state.persist_output 施绑；未施绑时退回截断）
+shell_persist_port: LateBinding[Callable[[str, str], str]] = LateBinding("mind.shell_persist")
 
 # 工具输出裁剪阈值（字符数）——静态兜底（无法获取模型窗口时使用）
 _TOOL_RESULT_MAX_CHARS = 8000
@@ -45,11 +50,12 @@ def _persist_oversized_result(tool_name: str, output: str) -> Optional[str]:
     """
     if len(output) <= _PERSIST_THRESHOLD_CHARS:
         return None
+    if not shell_persist_port.bound:
+        return None
     try:
         from core.config import ConfigManager
-        from entities.filesystem.shell_state import persist_output
         workspace = ConfigManager.get("workspace_root", "workspace")
-        path = persist_output(output, workspace)
+        path = shell_persist_port.get()(output, workspace)
     except Exception as exc:
         log(f"工具结果落盘失败（退回截断）: {exc}", "DEBUG", tag="思维")
         return None

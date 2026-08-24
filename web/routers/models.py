@@ -15,15 +15,13 @@ _svc = ModelService()
 
 
 def _validate_api_type(value: str) -> str:
-    from agent.llm.llm_client import API_TYPES
-    if value not in API_TYPES:
+    if value not in _svc.api_types():
         raise ValueError(f"不支持的 api_type: {value}")
     return value
 
 
 def _validate_reasoning_effort(value: str) -> str:
-    from agent.llm.reasoning import normalize_effort
-    normalized = normalize_effort(value)
+    normalized = _svc.normalize_effort(value)
     if value.strip() and not normalized:
         raise ValueError(
             f"无效的 reasoning_effort: {value}（可选 off/minimal/low/medium/high/xhigh/max）"
@@ -419,19 +417,7 @@ async def list_api_types() -> Dict[str, Any]:
     common 组（openai/anthropic）为两大主流协议，市面上绝大多数中转/
     国产模型都是其兼容实现；其余归为 other。
     """
-    from agent.llm.config import API_TYPES, DEFAULT_BASE_URLS
-
-    common = {"openai", "anthropic"}
-    return {
-        "api_types": [
-            {
-                "value": t,
-                "group": "common" if t in common else "other",
-                "default_base_url": DEFAULT_BASE_URLS.get(t, ""),
-            }
-            for t in API_TYPES
-        ]
-    }
+    return {"api_types": _svc.list_api_types()}
 
 
 class ProbeReq(BaseModel):

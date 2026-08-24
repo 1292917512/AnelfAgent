@@ -11,23 +11,20 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
+from core.latebind import LateBinding
 from core.log import log
 from core.tags import strip_message_meta_tags
 from core.tool_errors import ErrorCause, error_from_exception
-from entities._sdk import activate_group, deferred_tool
+from entities._sdk import deferred_tool
 
-# 会话记录引用（register_output_tools 注入，用于将 AI 回复写入对话历史）
-_conversation_data: Optional[Any] = None
+if TYPE_CHECKING:
+    from agent.storage.data_center import ConversationData
 
-
-def register_output_tools(conversation_data: Optional[Any] = None) -> None:
-    """批量注册输出工具。"""
-    global _conversation_data
-    _conversation_data = conversation_data
-    count = activate_group("output", "消息输出 — 向频道发送文本、图片、语音、文件等")
-    log(f"统一输出工具已注册 ({count} 个)", tag="通道")
+#: 会话记录端口（将 AI 回复写入对话历史；工具 import 时注册、拿不到
+#: DataCenter 构造参数，由 agent.runtime.wiring 统一施绑）
+conversation_data_port: LateBinding["ConversationData"] = LateBinding("channel.output")
 
 
 async def _record_sent_reply(
@@ -45,8 +42,9 @@ async def _record_sent_reply(
     诱发模型模仿标签格式并泄漏到出站文本。
     session_id 非空时写入对应子会话分桶；scope_id 含 adapter 前缀（与 entity_scope 规则一致）。
     """
-    if _conversation_data is None or not content:
+    if not conversation_data_port.bound or not content:
         return
+    conversation_data = conversation_data_port.get()
     try:
         from agent.messages import build_scope_id
         from agent.storage.storage_router import StorageDomain
@@ -54,7 +52,7 @@ async def _record_sent_reply(
         base_id = str(target_id)
         suffix = f"#{session_id}" if session_id and session_id != base_id else ""
         scope_id = build_scope_id(adapter_key, base_id, suffix)
-        await _conversation_data.router.append(
+        await conversation_data.router.append(
             StorageDomain.CONVERSATION,
             scope_type=scope_type, scope_id=scope_id,
             role="assistant", content=content,
@@ -212,7 +210,7 @@ def _check_send_result(raw: Any, channel_id: str, target_id: str) -> tuple[dict,
     return parsed, ok
 
 
-async def _execute_send_action(
+async def execute_send_action(
         *,
         channel_id: str,
         target_id: str,
@@ -326,7 +324,7 @@ async def send_message(
         if reply_to_message_id:
             parsed["reply_to_message_id"] = reply_to_message_id
 
-    result = await _execute_send_action(
+    result = await execute_send_action(
         channel_id=channel_id,
         target_id=target_id,
         operation="消息",
@@ -366,7 +364,7 @@ async def send_photo(channel_id: str, target_id: str, photo: str, caption: str =
         if ok:
             parsed["sent_media"] = f"[media_type:image][media_path:{photo}]"
 
-    return await _execute_send_action(
+    return await execute_send_action(
         channel_id=channel_id,
         target_id=target_id,
         operation="图片",
@@ -392,7 +390,7 @@ async def send_voice(channel_id: str, target_id: str, voice: str) -> str:
         if ok:
             parsed["sent_media"] = f"[media_type:voice][media_path:{voice}]"
 
-    return await _execute_send_action(
+    return await execute_send_action(
         channel_id=channel_id,
         target_id=target_id,
         operation="语音",
@@ -421,7 +419,7 @@ async def send_file(channel_id: str, target_id: str, file_path: str, caption: st
         if ok:
             parsed["sent_media"] = f"[media_type:file][media_path:{file_path}]"
 
-    return await _execute_send_action(
+    return await execute_send_action(
         channel_id=channel_id,
         target_id=target_id,
         operation="文件",

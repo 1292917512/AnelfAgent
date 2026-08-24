@@ -29,7 +29,7 @@ def _fake_stream_client(deltas: List[ChatStreamDelta], raise_mid: bool = False):
 def _mind_stub(client) -> SimpleNamespace:
     return SimpleNamespace(
         llm=client,
-        _session_llm_params={},
+        session_llm_params={},
         _get_mind_config=lambda: SimpleNamespace(reasoning_effort=None, llm_timeout=30),
     )
 
@@ -101,8 +101,8 @@ class TestStreamFallback:
             return fallback_result
 
         mind._llm_chat_with_retry = fake_retry
-        monkeypatch.setattr("agent.mind.mind.normalize_for_send", lambda m: m)
-        monkeypatch.setattr("agent.mind.mind.context_audit", SimpleNamespace(
+        monkeypatch.setattr("agent.mind.llm_invoker.normalize_for_send", lambda m: m)
+        monkeypatch.setattr("agent.mind.llm_invoker.context_audit", SimpleNamespace(
             record_exchange=lambda **kw: asyncio.sleep(0)))
 
         result = await Mind._invoke_llm_unified(mind, [{"role": "user", "content": "hi"}], None,

@@ -146,7 +146,7 @@ class OpenAIImagesAdapter(ImageGenAdapter):
 
 
 class DashScopeImagesAdapter(ImageGenAdapter):
-    """阿里云百炼原生同步多模态生成接口（万相 wan 系列）。
+    """阿里云百炼原生同步多模态生成接口。
 
     接口挂在网关机根路径（dashscope.aliyuncs.com、token-plan.*.maas.aliyuncs.com 等），
     与 base_url 中的聊天协议路径（/compatible-mode/v1、/apps/anthropic）无关，
@@ -173,12 +173,34 @@ class DashScopeImagesAdapter(ImageGenAdapter):
         }
         return ImageGenRequest(url=f"{host_root(base_url)}{self._PATH}", payload=payload)
 
+    def build_edit_request(
+        self,
+        base_url: str,
+        *,
+        model: str,
+        prompt: str,
+        image_content: str,
+        num_inference_steps: int,
+        cfg: float,
+    ) -> ImageGenRequest:
+        """图片编辑与文生图同端点，messages 里图片（URL 或 data:base64）+ 编辑指令。"""
+        payload: Dict[str, Any] = {
+            "model": model,
+            "input": {"messages": [{"role": "user", "content": [
+                {"image": image_content},
+                {"text": prompt},
+            ]}]},
+            "parameters": {"n": 1},
+        }
+        return ImageGenRequest(url=f"{host_root(base_url)}{self._PATH}", payload=payload)
+
     def extract_urls(self, result: Dict[str, Any]) -> List[str]:
+        # 该端点内容项结构不统一：有的只有 image 键、有的带 type 标记，按 image 键存在提取
         out: List[str] = []
         for choice in result.get("output", {}).get("choices", []):
             content = (choice.get("message") or {}).get("content", [])
             for item in content:
-                if isinstance(item, dict) and item.get("type") == "image" and item.get("image"):
+                if isinstance(item, dict) and item.get("image"):
                     out.append(item["image"])
         return out
 

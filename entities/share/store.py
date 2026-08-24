@@ -267,9 +267,9 @@ class ShareStore:
             if not file_path:
                 raise ValueError("file/media 类型分享必须提供 file_path")
             # 沙箱校验 + 文件存在性
-            from entities.filesystem.tools import _safe_path
+            from entities.filesystem.tools import safe_path
             try:
-                fp = _safe_path(file_path)
+                fp = safe_path(file_path)
             except ValueError as e:
                 raise ValueError(f"路径沙箱校验失败: {e}") from e
             if not os.path.isfile(fp):

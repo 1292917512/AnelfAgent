@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock
 
-from agent.delegation.delegate_tool import delegate_task, register_delegation_tools
+from agent.delegation.delegate_tool import delegate_task, delegation_manager_port
 from agent.delegation.delegation_manager import DelegationManager
 
 
@@ -93,7 +93,7 @@ class TestResolvePriority:
 class TestDelegateToolValidation:
     async def test_unknown_agent_returns_param_error(self) -> None:
         manager, _ = _make_manager(profiles={"researcher": "glm-flash"})
-        register_delegation_tools(manager)
+        delegation_manager_port.set(manager)
         out = json.loads(await delegate_task(goal="做调研", agent_name="ghost"))
         assert "不存在" in json.dumps(out, ensure_ascii=False)
         # 附可用名称列表供自纠正
@@ -107,13 +107,13 @@ class TestDelegateToolValidation:
             "tier": 0, "builtin": False, "first_available": None,
             "model_missing": False, "model_enabled": False,
         }]
-        register_delegation_tools(manager)
+        delegation_manager_port.set(manager)
         out = json.loads(await delegate_task(goal="做调研", agent_name="researcher"))
         assert "无可用模型" in json.dumps(out, ensure_ascii=False)
 
     async def test_valid_agent_proceeds(self) -> None:
         manager, _ = _make_manager(profiles={"researcher": "glm-flash"})
-        register_delegation_tools(manager)
+        delegation_manager_port.set(manager)
         out = json.loads(await delegate_task(goal="做调研", agent_name="researcher"))
         assert out["total"] == 1
         assert out["succeeded"] == 1

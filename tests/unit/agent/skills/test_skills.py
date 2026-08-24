@@ -685,10 +685,17 @@ class TestSkillVectorPersistence:
 
 
 class TestSkillTools:
+    @pytest.fixture(autouse=True)
+    def _unbind_skill_port(self):
+        yield
+        from agent.skills import tools as skill_tools
+        skill_tools.skill_tools_port.unbind()
+
     async def _patch_tools(self, store: SkillStore, monkeypatch) -> None:
         from agent.skills import tools as skill_tools
-        monkeypatch.setattr(skill_tools, "_store", store)
-        monkeypatch.setattr(skill_tools, "_matcher", SkillMatcher(store, FakeEmbedder()))
+        skill_tools.skill_tools_port.set(
+            skill_tools.SkillToolDeps(store, SkillMatcher(store, FakeEmbedder()))
+        )
 
     async def test_create_and_list(self, store: SkillStore, monkeypatch) -> None:
         await self._patch_tools(store, monkeypatch)

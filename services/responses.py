@@ -54,6 +54,10 @@ class ResponsesService:
         self._sessions = session_store or get_response_session_store()
         self._models = model_service or ModelService()
 
+    def new_response_id(self) -> str:
+        """分配一个新的 response_id（流式响应先注册占位）。"""
+        return self._sessions.new_response_id()
+
     def _manager(self) -> Any:
         from agent.llm import get_llm_manager
         return get_llm_manager()

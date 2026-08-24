@@ -1,10 +1,11 @@
-"""MediaClient HTTP 错误提取（_check_resp）单元测试。"""
+"""MediaClient HTTP 错误提取（_check_resp）与 DashScope 图片协议单元测试。"""
 
 from __future__ import annotations
 
 import httpx
 import pytest
 
+from agent.llm.image_adapters import DashScopeImagesAdapter
 from agent.llm.media_client import MediaClient
 
 
@@ -46,3 +47,39 @@ class TestCheckResp:
     def test_non_json_body_falls_back_to_text(self) -> None:
         with pytest.raises(RuntimeError, match="Bad Gateway"):
             MediaClient._check_resp(_resp(502, text="Bad Gateway"))
+
+
+class TestDashScopeImageEdit:
+    def test_edit_request_messages_with_image(self) -> None:
+        adapter = DashScopeImagesAdapter()
+        req = adapter.build_edit_request(
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            model="qwen-image-3.0-pro",
+            prompt="把猫变成戴眼镜的样子",
+            image_content="https://oss.example/cat.png",
+            num_inference_steps=20,
+            cfg=4.0,
+        )
+        assert req.url == (
+            "https://token-plan.cn-beijing.maas.aliyuncs.com"
+            "/api/v1/services/aigc/multimodal-generation/generation"
+        )
+        payload = req.payload or {}
+        content = payload["input"]["messages"][0]["content"]
+        assert content == [
+            {"image": "https://oss.example/cat.png"},
+            {"text": "把猫变成戴眼镜的样子"},
+        ]
+        assert payload["parameters"] == {"n": 1}
+
+    def test_edit_response_reuses_extract_urls(self) -> None:
+        adapter = DashScopeImagesAdapter()
+        # qwen-image 系列内容项只有 image 键（实测），wan 系列带 type 字段，两种都要解析
+        qwen_style = {"output": {"choices": [{"message": {"content": [
+            {"image": "https://oss.example/edited.png"},
+        ]}}]}}
+        assert adapter.extract_urls(qwen_style) == ["https://oss.example/edited.png"]
+        wan_style = {"output": {"choices": [{"message": {"content": [
+            {"type": "image", "image": "https://oss.example/edited2.png"},
+        ]}}]}}
+        assert adapter.extract_urls(wan_style) == ["https://oss.example/edited2.png"]

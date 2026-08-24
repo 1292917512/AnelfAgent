@@ -3,24 +3,31 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from agent.llm.reasoning import CANONICAL_EFFORTS
 from core.log import log
 from core.path import ConfigPaths
-from services import AgentStatusService
-from services._parsing import to_bool as _to_bool
+from services import (
+    AgentStatusService,
+    ConfigService,
+    HeartbeatService,
+    TaskService,
+)
+from services.heartbeat import HeartbeatServiceError
+from services.task import TaskServiceError, TaskStorageError
 from web.routers._errors import server_error
 from web.routers.schemas import MindConfigUpdate
 
 router = APIRouter(prefix="/config", tags=["config"])
 
 _status_svc = AgentStatusService()
+_config_svc = ConfigService()
+_heartbeat_svc = HeartbeatService()
+_task_svc = TaskService()
 
 _APP_CONFIG_PATH = Path(ConfigPaths.APP_CONFIG)
 
@@ -202,8 +209,7 @@ async def save_mind_config(data: MindConfigUpdate) -> Dict[str, str]:
 @router.get("/heartbeat")
 async def get_heartbeat_config() -> Dict[str, Any]:
     """返回心跳调度配置。"""
-    from agent.heartbeat.config import get_heartbeat_config
-    return get_heartbeat_config().to_dict()
+    return _heartbeat_svc.get_config()
 
 
 class HeartbeatConfigUpdate(BaseModel):
@@ -217,64 +223,27 @@ class HeartbeatConfigUpdate(BaseModel):
 @router.put("/heartbeat")
 async def save_heartbeat_config(data: HeartbeatConfigUpdate) -> Dict[str, str]:
     """保存心跳配置并热重载。"""
-    from agent.heartbeat.config import (
-        TaskSchedule,
-        get_heartbeat_config,
-        validate_schedules,
-    )
-
-    cfg = get_heartbeat_config()
-    if data.enabled is not None:
-        cfg.enabled = data.enabled
-    if data.interval_seconds is not None:
-        cfg.interval_seconds = max(10, data.interval_seconds)
-    if data.analysis_temperature is not None:
-        cfg.analysis_temperature = data.analysis_temperature
-    if data.min_conversations_for_analysis is not None:
-        cfg.min_conversations_for_analysis = data.min_conversations_for_analysis
-    if data.task_schedules is not None:
-        schedules = [TaskSchedule.from_dict(s) for s in data.task_schedules]
-        if err := validate_schedules(schedules):
-            raise HTTPException(400, err)
-        cfg.task_schedules = schedules
-    cfg.save()
-
-    from services._runtime import get_runtime
-    rt = get_runtime()
-    if rt is not None:
-        rt.mind.heartbeat_engine.reload()
-
+    params = {k: v for k, v in data.model_dump().items() if v is not None}
+    try:
+        _heartbeat_svc.save_config(params)
+    except HeartbeatServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
     return {"status": "ok"}
 
 
 @router.get("/heartbeat/status")
 async def get_heartbeat_status() -> Dict[str, Any]:
     """返回心跳引擎运行状态。"""
-    from services._runtime import get_runtime
-    rt = get_runtime()
-    if rt is None:
-        return {"enabled": False, "total_ticks": 0, "message": "Agent 尚未初始化"}
-    return rt.mind.heartbeat_engine.get_status()
+    return _heartbeat_svc.get_status()
 
 
 @router.post("/heartbeat/trigger")
 async def trigger_heartbeat() -> Dict[str, str]:
     """手动触发一次心跳。"""
-    import asyncio
-
-    from services._runtime import get_runtime
-    rt = get_runtime()
-    if rt is None:
-        raise HTTPException(status_code=503, detail="Agent 尚未初始化")
-
-    async def _run() -> None:
-        try:
-            executed = await rt.mind.heartbeat_engine.tick()
-            log(f"Web 手动心跳完成: 执行了 {len(executed)} 个任务", tag="心跳")
-        except Exception as exc:
-            log(f"Web 手动心跳异常: {exc}", "WARNING", tag="心跳")
-
-    asyncio.create_task(_run(), name="agent.heartbeat.web_manual_tick")
+    try:
+        _heartbeat_svc.trigger()
+    except HeartbeatServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
     return {"status": "triggered"}
 
 
@@ -282,122 +251,21 @@ async def trigger_heartbeat() -> Dict[str, str]:
 # 任务单元 CRUD + 触发（config/tasks/*.json）
 # ──────────────────────────────────────────────────────────────────────────────
 
-_TASKS_DIR = Path(ConfigPaths.TASKS_DIR)
-
-
-def _ensure_tasks_dir() -> None:
-    _TASKS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _sanitize_folder(folder: str) -> str:
-    """标准化任务文件夹：限制为 tasks 目录内的相对路径，防路径穿越。"""
-    normalized = folder.replace("\\", "/").strip("/").strip()
-    if not normalized:
-        return ""
-    parts = [p for p in normalized.split("/") if p and p != "."]
-    if any(p == ".." for p in parts):
-        raise HTTPException(status_code=400, detail="非法的任务文件夹路径")
-    return "/".join(parts)
-
-
-def _task_path(name: str, folder: str = "") -> Path:
-    if "/" in name or "\\" in name or name in {".", ".."}:
-        raise HTTPException(status_code=400, detail="非法的任务名称")
-    base = _TASKS_DIR / folder if folder else _TASKS_DIR
-    resolved = base.resolve()
-    if not resolved.is_relative_to(_TASKS_DIR.resolve()):
-        raise HTTPException(status_code=400, detail="非法的任务文件夹路径")
-    return resolved / f"{name}.json"
-
-
-def _task_folder_of(json_file: Path) -> str:
-    """由文件位置推导任务文件夹。
-
-    _task_path 返回的是已 resolve 的绝对路径，而 rglob 给出相对路径，
-    统一 resolve 后再做 relative_to，避免绝对/相对混用抛 ValueError。
-    """
-    folder = json_file.parent.resolve().relative_to(_TASKS_DIR.resolve()).as_posix()
-    return "" if folder == "." else folder
-
-
-_TASK_DEFAULTS: Dict[str, Any] = {
-    "display_name": "", "description": "", "scope": "global",
-    "enabled": True, "memory_type": "semantic", "importance": 0.5,
-    "tags": [], "source": "", "null_keywords": [], "tool_tags": [], "prompt": "",
-    "allow_output_tools": False,
-    "save_result_to_memory": True,
-}
-
-_OPTIONAL_TASK_OVERRIDE_FIELDS = ("model_id", "reasoning_effort")
-_TASK_REASONING_EFFORTS = frozenset(CANONICAL_EFFORTS)
-
-
-def _normalize_task(data: Dict[str, Any]) -> Dict[str, Any]:
-    """确保任务数据包含所有必需字段。"""
-    for k, v in _TASK_DEFAULTS.items():
-        if k not in data:
-            data[k] = v
-    data["allow_output_tools"] = _to_bool(data.get("allow_output_tools"), default=False)
-    data["save_result_to_memory"] = _to_bool(data.get("save_result_to_memory"), default=True)
-    return _normalize_optional_task_overrides(data)
-
-
-def _normalize_optional_task_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
-    """标准化可选覆盖字段：空值转为“移除字段”，非空字符串做 trim。"""
-    for field in _OPTIONAL_TASK_OVERRIDE_FIELDS:
-        if field not in data:
-            continue
-        raw = data.get(field)
-        if raw is None:
-            data.pop(field, None)
-            continue
-        normalized = str(raw).strip()
-        if not normalized:
-            data.pop(field, None)
-            continue
-        if field == "reasoning_effort":
-            lowered = normalized.lower()
-            if lowered in _TASK_REASONING_EFFORTS:
-                data[field] = lowered
-            else:
-                data.pop(field, None)
-            continue
-        data[field] = normalized
-    return data
-
-
-def _load_task(name: str, folder: str = "") -> Dict[str, Any]:
-    p = _task_path(name, _sanitize_folder(folder))
-    if not p.exists():
-        raise HTTPException(status_code=404, detail=f"任务 [{name}] 不存在")
-    try:
-        data = _normalize_task(json.loads(p.read_text("utf-8")))
-        data["folder"] = _task_folder_of(p)
-        return data
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise server_error("读取任务配置", e) from e
-
 
 @router.get("/tasks")
 async def list_tasks() -> List[Dict[str, Any]]:
     """列出所有任务单元（config/tasks/**/*.json，递归子目录）。"""
-    _ensure_tasks_dir()
-    tasks: List[Dict[str, Any]] = []
-    for json_file in sorted(_TASKS_DIR.rglob("*.json")):
-        try:
-            data = _normalize_task(json.loads(json_file.read_text("utf-8")))
-            data["folder"] = _task_folder_of(json_file)
-            tasks.append(data)
-        except Exception as e:
-            log(f"任务配置解析失败 ({json_file.name}): {e}", "DEBUG")
-    return tasks
+    return _task_svc.list_tasks()
 
 
 @router.get("/tasks/{name}")
 async def get_task(name: str, folder: str = Query("")) -> Dict[str, Any]:
-    return _load_task(name, folder)
+    try:
+        return _task_svc.get_task(name, folder)
+    except TaskServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
+    except TaskStorageError as e:
+        raise server_error(e.action, e.cause) from e
 
 
 class TaskCreate(BaseModel):
@@ -422,35 +290,12 @@ class TaskCreate(BaseModel):
 
 @router.post("/tasks", status_code=201)
 async def create_task(data: TaskCreate) -> Dict[str, Any]:
-    from agent.task.registry import task_files_lock
-    from core.file_utils import atomic_write_text
-
-    _ensure_tasks_dir()
-    folder = _sanitize_folder(data.folder)
-    p = _task_path(data.name, folder)
-
-    task_data = _normalize_optional_task_overrides(data.model_dump())
-    task_data.pop("folder", None)
-    if not task_data.get("source"):
-        task_data["source"] = data.name
-    if not task_data.get("display_name"):
-        task_data["display_name"] = data.name
-    _normalize_task(task_data)
-
     try:
-        async with task_files_lock:
-            if p.exists():
-                raise HTTPException(status_code=409, detail=f"任务 [{data.name}] 已存在")
-            p.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(p, json.dumps(task_data, ensure_ascii=False, indent=2))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise server_error("写入任务配置", e) from e
-
-    _reload_task_registry()
-    task_data["folder"] = folder
-    return task_data
+        return await _task_svc.create_task(data.model_dump())
+    except TaskServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
+    except TaskStorageError as e:
+        raise server_error(e.action, e.cause) from e
 
 
 class TaskUpdate(BaseModel):
@@ -474,124 +319,33 @@ class TaskUpdate(BaseModel):
 
 @router.put("/tasks/{name}")
 async def update_task(name: str, data: TaskUpdate, folder: str = Query("")) -> Dict[str, Any]:
-    from agent.task.registry import task_files_lock
-
-    old_folder = _sanitize_folder(folder)
-    async with task_files_lock:
-        existing = _load_task(name, old_folder)
-        provided_fields = set(data.model_fields_set)
-        updates = data.model_dump(exclude_unset=True)
-        new_folder = _sanitize_folder(updates.pop("folder")) if "folder" in updates else None
-        updates = _normalize_optional_task_overrides(updates)
-        existing.update(updates)
-        for field in _OPTIONAL_TASK_OVERRIDE_FIELDS:
-            if field in provided_fields and field not in updates:
-                existing.pop(field, None)
-        existing.pop("folder", None)
-
-        if new_folder is not None and new_folder != old_folder:
-            moving = True
-            target_folder = new_folder
-        else:
-            moving = False
-            target_folder = old_folder
-        target = _task_path(name, target_folder)
-        if moving and target.exists():
-            raise HTTPException(status_code=409, detail=f"任务 [{name}] 在目标文件夹已存在")
-
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            # 先写临时文件再 os.replace 原子替换；移动场景写新成功后才删旧，
-            # 写新失败时旧文件保持不动（tmp 清理后抛出）
-            tmp = target.with_name(target.name + ".tmp")
-            try:
-                tmp.write_text(
-                    json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-                os.replace(tmp, target)
-            except Exception:
-                tmp.unlink(missing_ok=True)
-                raise
-            if moving:
-                _task_path(name, old_folder).unlink()
-        except Exception as e:
-            raise server_error("写入任务配置", e) from e
-
-    _reload_task_registry()
-    existing["folder"] = target_folder
-    return existing
+    try:
+        return await _task_svc.update_task(name, folder, data.model_dump(exclude_unset=True))
+    except TaskServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
+    except TaskStorageError as e:
+        raise server_error(e.action, e.cause) from e
 
 
 @router.delete("/tasks/{name}")
 async def delete_task(name: str, folder: str = Query("")) -> Dict[str, str]:
-    from agent.task.registry import task_files_lock
-    async with task_files_lock:
-        p = _task_path(name, _sanitize_folder(folder))
-        if not p.exists():
-            raise HTTPException(status_code=404, detail=f"任务 [{name}] 不存在")
-        try:
-            p.unlink()
-        except Exception as e:
-            raise server_error("删除任务", e) from e
-
-    _reload_task_registry()
-    _remove_task_schedule(name)
+    try:
+        await _task_svc.delete_task(name, folder)
+    except TaskServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
+    except TaskStorageError as e:
+        raise server_error(e.action, e.cause) from e
     return {"status": "ok"}
-
-
-def _remove_task_schedule(name: str) -> None:
-    """任务删除后同步移除其心跳调度绑定并热重载引擎，避免孤儿调度项。"""
-    try:
-        from agent.heartbeat.config import get_heartbeat_config
-        cfg = get_heartbeat_config()
-        if cfg.remove_schedule(name):
-            cfg.save()
-    except Exception as e:
-        log(f"心跳调度同步移除失败 [{name}]: {e}", "WARNING")
-    try:
-        from services._runtime import get_runtime
-        rt = get_runtime()
-        if rt is not None:
-            rt.mind.heartbeat_engine.reload()
-    except Exception as e:
-        log(f"心跳引擎热重载失败 [{name}]: {e}", "DEBUG")
 
 
 @router.post("/tasks/trigger/{name}")
 async def trigger_task(name: str, folder: str = Query("")) -> Dict[str, str]:
     """手动触发执行指定任务，在后台异步执行。"""
-    import asyncio
-
-    p = _task_path(name, _sanitize_folder(folder))
-    if not p.exists():
-        raise HTTPException(status_code=404, detail=f"任务 [{name}] 不存在")
-
-    from services._runtime import get_runtime
-    rt = get_runtime()
-    if rt is None:
-        raise HTTPException(status_code=503, detail="Agent 尚未初始化")
-
-    async def _run() -> None:
-        from core.log import log
-        try:
-            result = await rt.mind.execute_task(name)
-            log(f"Web 手动任务完成: {name} ({'有产出' if result else '无产出'})", tag="任务")
-        except Exception as exc:
-            log(f"Web 手动任务异常 [{name}]: {exc}", "WARNING", tag="任务")
-
-    asyncio.create_task(_run(), name=f"agent.task.web_{name}")
-    return {"status": "triggered", "task": name}
-
-
-def _reload_task_registry() -> None:
-    """热重载运行中的任务注册表。"""
     try:
-        from services._runtime import get_runtime
-        rt = get_runtime()
-        if rt is not None:
-            rt.mind.heartbeat_engine.task_registry.reload()
-    except Exception as e:
-        log(f"任务注册表热重载失败: {e}", "DEBUG")
+        _task_svc.trigger_task(name, folder)
+    except TaskServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
+    return {"status": "triggered", "task": name}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -606,18 +360,16 @@ class WebToolsConfigUpdate(BaseModel):
 @router.get("/web-tools")
 async def get_web_tools_config() -> Dict[str, Any]:
     """返回 Web 工具配置（仅非敏感字段；提供者矩阵管理走 /api/entity/web/matrix）。"""
-    from entities.web.web_config import get_proxy
-    return {"proxy": get_proxy()}
+    return {"proxy": _config_svc.get_web_tools_proxy()}
 
 
 @router.put("/web-tools")
 async def save_web_tools_config(data: WebToolsConfigUpdate) -> Dict[str, str]:
     """保存 Web 工具配置（代理等）。"""
-    from entities.web.web_config import update_config
     updates: Dict[str, Any] = {}
     if data.proxy is not None:
         updates["proxy"] = data.proxy
     if not updates:
         return {"status": "ok", "message": "无变更"}
-    update_config(updates)
+    _config_svc.update_web_tools_config(updates)
     return {"status": "ok"}

@@ -59,8 +59,8 @@ def notebook_edit(path: str, cell_index: int, new_source: str = "",
         edit_mode: 操作模式：replace（替换，默认）、insert（在该索引处插入）、delete（删除）
     """
     try:
-        from entities.filesystem.tools import _safe_path
-        fp = _safe_path(path)
+        from entities.filesystem.tools import safe_path
+        fp = safe_path(path)
         if not fp.lower().endswith(".ipynb"):
             return tool_error("notebook_edit 仅支持 .ipynb 文件",
                               cause=ErrorCause.PARAM, retryable=False)

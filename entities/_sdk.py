@@ -16,32 +16,41 @@
     async def get_weather(city: str) -> str:
         ...
 
-2. 延迟注册 — 装饰时仅收集元数据，运行时注入依赖后调用 activate_group 批量注册::
+2. 延迟注册 — 装饰时仅收集元数据，bootstrap 按组 activate_group 批量注册；
+   运行时依赖经 core.latebind 端口分发（agent.runtime.wiring 统一施绑）::
 
     from entities._sdk import deferred_tool, activate_group
 
     @deferred_tool(group="memory", tags=["always"], source="mind.memory")
     async def memorize(content: str) -> str:
+        deps = memory_tools_port.get()  # LateBinding 端口取依赖
         ...
 
-    def register_memory_tools(store, embedder):
-        global _store, _embedder
-        _store, _embedder = store, embedder
-        activate_group("memory", "长期记忆 - 记忆存储、语义检索")
+    # bootstrap 组合根：
+    activate_group("memory", "长期记忆 - 记忆存储、语义检索")
+    memory_tools_port.set(MemoryToolDeps(store, embedder))  # wiring 统一施绑
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 from core.entity import EntityRegistry
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_schema import extract_tool_params, get_first_line
 
+if TYPE_CHECKING:
+    from agent.llm.llm_client import LLMClient as LLMClient
+    from agent.llm.llm_manager import LLMManager as LLMManager
+
 __all__ = [
     "tool", "deferred_tool", "entity", "activate_group",
     "entity_manifest", "entity_config", "context_provider",
     "push_notify",
+    "get_embedder", "wake_embedding_worker", "register_embedding_backlog",
+    "download_media_to_uploads", "execute_send_action",
+    "set_default_model", "get_active_llm_client", "get_llm_client_class",
+    "get_session_llm_params", "canonical_efforts",
     "tool_error", "error_from_exception", "ErrorCause",
 ]
 
@@ -241,8 +250,8 @@ def get_background_registry() -> Any:
     供 entities 层工具登记/完成后台任务（如后台 shell 执行）。
     """
     try:
-        from agent.runtime.singleton import get_runtime
-        return get_runtime().mind.background_tasks
+        from agent.runtime.singleton import require_runtime
+        return require_runtime().mind.background_tasks
     except Exception:
         return None
 
@@ -277,8 +286,8 @@ def push_notify(
             scope = get_current_scope()
             if scope == "_global":
                 scope = ""
-        from agent.runtime.singleton import get_runtime
-        return bool(get_runtime().mind.push_hub.push(
+        from agent.runtime.singleton import require_runtime
+        return bool(require_runtime().mind.push_hub.push(
             scope, source, content, channel=channel, trigger=trigger))
     except Exception:
         return False
@@ -342,6 +351,132 @@ def get_model_type_enum() -> Any:
     """获取 ModelType 枚举。"""
     from agent.llm.llm_manager import ModelType
     return ModelType
+
+
+# ------------------------------------------------------------------
+# Embedding 桥接（延迟导入 agent.memory.embedding）
+# ------------------------------------------------------------------
+
+
+def get_embedder(purpose: str = "text") -> Any:
+    """获取共享 Embedder（按用途域隔离向量空间：text=记忆/对话，vision=贴纸/图片）。"""
+    from agent.memory.embedding import get_embedder as _get
+    return _get(purpose)
+
+
+def wake_embedding_worker() -> None:
+    """唤醒后台 embedding 回填 worker（有新 backlog 任务待消化时调用）。"""
+    from agent.memory.embedding import wake_embedding_worker as _wake
+    _wake()
+
+
+def register_embedding_backlog(name: str, handler: Any) -> None:
+    """注册后台 embedding 回填任务（EmbeddingWorker 启动后统一消化）。"""
+    from agent.memory.embedding import register_embedding_backlog as _reg
+    _reg(name, handler)
+
+
+# ------------------------------------------------------------------
+# 频道桥接（延迟导入 agent.channel）
+# ------------------------------------------------------------------
+
+
+async def download_media_to_uploads(
+    url: str,
+    media_type: str,
+    save_name: str = "",
+    max_size: Optional[int] = None,
+) -> str:
+    """下载 URL 媒体到 uploads 对应子目录，返回本地路径（失败返回空串）。
+
+    Args:
+        url: 远程文件地址（http/https）
+        media_type: 媒体类型（SegmentType 值：image/voice/audio/video/file 等），
+            决定落盘子目录与默认扩展名
+        save_name: 期望的文件名（仅取 basename，附加唯一前缀防冲突）
+        max_size: 允许的最大字节数（None = 全局默认上限）
+    """
+    from agent.channel.media import MAX_DOWNLOAD_SIZE, download_to_uploads
+    from agent.channel.schemas import SegmentType
+    return await download_to_uploads(
+        url, SegmentType(media_type), save_name=save_name,
+        max_size=max_size if max_size is not None else MAX_DOWNLOAD_SIZE,
+    )
+
+
+async def execute_send_action(
+    *,
+    channel_id: str,
+    target_id: str,
+    operation: str,
+    invoke: Callable[[Any, str, str], Awaitable[Any]],
+    enrich: Optional[Callable[[dict, bool], None]] = None,
+    success_suffix: str = "",
+) -> str:
+    """经频道统一发送管道执行发送：校验 -> 目标解析 -> 调用频道 -> 结果解析 -> 日志。
+
+    Args:
+        channel_id: 目标频道 ID
+        target_id: 目标会话 ID（uid 或群号）
+        operation: 操作名（日志与错误归因用，如 "表情包"）
+        invoke: 真实发送回调 invoke(ch, resolved_target_id, channel_type)
+        enrich: 结果补充回调 enrich(parsed, ok)，向返回 JSON 附加调用方字段
+        success_suffix: 成功日志的附加信息
+
+    Returns:
+        结果 JSON 字符串（含 success/channel_id/target_id 及 enrich 附加字段）。
+    """
+    from agent.channel.output_tools import execute_send_action as _exec
+    return await _exec(
+        channel_id=channel_id,
+        target_id=target_id,
+        operation=operation,
+        invoke=invoke,
+        enrich=enrich,
+        success_suffix=success_suffix,
+    )
+
+
+# ------------------------------------------------------------------
+# 模型管理桥接（延迟导入 agent.llm / agent.runtime）
+# ------------------------------------------------------------------
+
+
+def set_default_model(model_id: str) -> bool:
+    """热切换默认对话模型：持久化配置并同步运行时激活客户端。"""
+    mgr = get_llm_manager()
+    if not mgr.set_default(model_id):
+        return False
+    from agent.runtime.singleton import get_runtime
+    rt = get_runtime()
+    if rt is not None:
+        rt.switch_llm(mgr.get_default())
+    return True
+
+
+def get_active_llm_client() -> Any:
+    """获取运行时当前激活的 LLM 客户端（未初始化返回 None）。"""
+    from agent.runtime.singleton import get_runtime
+    rt = get_runtime()
+    return getattr(rt, "llm", None) if rt is not None else None
+
+
+def get_llm_client_class() -> "type[LLMClient]":
+    """获取 LLMClient 类型（isinstance 判断用）。"""
+    from agent.llm.llm_client import LLMClient
+    return LLMClient
+
+
+def get_session_llm_params() -> Dict[str, Any]:
+    """获取会话级临时 LLM 参数覆盖（可变 dict，直接读写；重启失效）。"""
+    from agent.runtime.singleton import require_runtime
+    return require_runtime().mind.session_llm_params
+
+
+def canonical_efforts() -> List[str]:
+    """获取思考等级规范词汇表（update_model_config 等校验用）。"""
+    from agent.llm.reasoning import CANONICAL_EFFORTS
+    return list(CANONICAL_EFFORTS)
 
 
 # ------------------------------------------------------------------

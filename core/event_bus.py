@@ -225,6 +225,7 @@ event_bus = EventBus()
 EVENT_AGENT_STARTED = "agent_started"
 EVENT_AGENT_STOPPED = "agent_stopped"
 EVENT_MESSAGE_RECEIVED = "message_received"
+EVENT_CHAT_BROADCAST = "chat_broadcast"
 EVENT_BEFORE_REPLY = "before_reply"
 EVENT_AFTER_REPLY = "after_reply"
 EVENT_TOOL_EXECUTED = "tool_executed"

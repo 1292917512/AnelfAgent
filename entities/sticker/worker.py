@@ -99,9 +99,8 @@ class ImageIndexWorker:
     async def _localize(self, path_or_url: str) -> str:
         """URL 下载到 uploads；本地路径原样返回。失败返回空串。"""
         if path_or_url.startswith(("http://", "https://")):
-            from agent.channel.media import download_to_uploads
-            from agent.channel.schemas import SegmentType
-            return await download_to_uploads(path_or_url, SegmentType.IMAGE)
+            from entities._sdk import download_media_to_uploads
+            return await download_media_to_uploads(path_or_url, "image")
         return path_or_url if os.path.exists(path_or_url) else ""
 
     async def _describe(self, local_path: str) -> str:
@@ -147,8 +146,8 @@ class ImageIndexWorker:
 
         phash = await asyncio.to_thread(compute_phash, local_path)
         description = await self._describe(local_path)
-        from .tools import _embed_for_index
-        embedding = await _embed_for_index(description, [], local_path)
+        from .tools import embed_for_index
+        embedding = await embed_for_index(description, [], local_path)
 
         await self.store.upsert_image(
             path=local_path,

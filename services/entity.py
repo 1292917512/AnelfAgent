@@ -188,29 +188,9 @@ class EntityService:
 
     @staticmethod
     def apply_entity_states() -> int:
-        """启动时从 app_config.json 恢复实体启用/禁用状态，返回应用数量。"""
-        from core.config import ConfigManager
-        from core.entity import EntityRegistry
-
-        states: dict = ConfigManager.get("entity_states", {})
-        if not isinstance(states, dict) or not states:
-            return 0
-
-        applied = 0
-        for name, enabled in states.items():
-            if not isinstance(enabled, bool):
-                continue
-            if not EntityRegistry.exists(name):
-                continue
-            if enabled:
-                EntityRegistry.enable(name)
-            else:
-                EntityRegistry.disable(name)
-            applied += 1
-
-        if applied:
-            log(f"实体状态已恢复: {applied} 个实体", tag="实体")
-        return applied
+        """启动时恢复实体启用/禁用状态（实现归 agent.runtime.state_restore）。"""
+        from agent.runtime.state_restore import apply_entity_states as _apply
+        return _apply()
 
     def get_statistics(self) -> Dict[str, Any]:
         """获取实体统计。"""

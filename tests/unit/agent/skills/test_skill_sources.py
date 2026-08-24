@@ -117,13 +117,15 @@ class TestSkillToolsExternalEntry:
     """tools.py 统一入口（search_skills scope / install_external_skill）行为契约。"""
 
     @pytest.fixture
-    def skill_tools(self, store: SkillStore, monkeypatch: pytest.MonkeyPatch):
+    def skill_tools(self, store: SkillStore):
         from agent.skills import tools as skill_tools_mod
         from agent.skills.skill_matcher import SkillMatcher
 
-        monkeypatch.setattr(skill_tools_mod, "_store", store)
-        monkeypatch.setattr(skill_tools_mod, "_matcher", SkillMatcher(store))
-        return skill_tools_mod
+        skill_tools_mod.skill_tools_port.set(
+            skill_tools_mod.SkillToolDeps(store, SkillMatcher(store))
+        )
+        yield skill_tools_mod
+        skill_tools_mod.skill_tools_port.unbind()
 
     async def test_search_invalid_scope(self, skill_tools) -> None:
         import json

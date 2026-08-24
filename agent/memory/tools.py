@@ -1,26 +1,41 @@
 """内部记忆工具 — Agent 大脑的长期记忆接口。
 
-记忆是 Agent 的核心认知能力，工具直接持有 MemoryStore / Embedder 引用，
-通过 `register_memory_tools()` 在运行时注入依赖后批量注册到 EntityRegistry。
+记忆是 Agent 的核心认知能力，MemoryStore / Embedder 引用经
+``memory_tools_port`` 晚绑定端口分发（工具 import 时注册、拿不到构造参数；
+由 agent.runtime.wiring 统一施绑）。
 """
 
 from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NamedTuple, Optional
 
+from core.latebind import LateBinding
 from core.log import log
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
-from entities._sdk import activate_group, deferred_tool
+from entities._sdk import deferred_tool
 
 from .embedding import Embedder, wake_embedding_worker
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
 from .store.tag_intel import ASSOC_PREFIXES, ENTITY_PREFIXES
 
-_store: Optional[MemoryStore] = None
-_embedder: Optional[Embedder] = None
+
+class MemoryToolDeps(NamedTuple):
+    """记忆工具组运行时依赖（wiring 一次性施绑）。"""
+
+    store: MemoryStore
+    embedder: Optional[Embedder]
+
+
+#: 记忆工具组依赖端口（bootstrap 经 agent.runtime.wiring 施绑）
+memory_tools_port: LateBinding[MemoryToolDeps] = LateBinding("memory.tools")
+
+
+def _deps() -> Optional[MemoryToolDeps]:
+    """取记忆工具依赖（端口未施绑时返回 None，工具降级为未就绪错误）。"""
+    return memory_tools_port.get() if memory_tools_port.bound else None
 
 _TYPE_MAP = {
     "trait": MemoryType.ENTITY,
@@ -48,15 +63,6 @@ def _cognee_not_ready() -> str:
         cause=ErrorCause.STATE, retryable=False,
         hint="Cognee 为可选记忆后端，请确认其已启用并完成初始化",
     )
-
-
-def register_memory_tools(store: MemoryStore, embedder: Embedder) -> None:
-    """注入运行时依赖并批量注册记忆工具。"""
-    global _store, _embedder
-    _store = store
-    _embedder = embedder
-    count = activate_group("memory", "长期记忆 - 记忆存储、语义检索、标签索引、遗忘")
-    log(f"💾 内部记忆工具已注册 ({count} 个)", tag="思维")
 
 
 def _current_scope_tag() -> str:
@@ -108,8 +114,10 @@ async def memorize(
         禁止谎称"已记住"，禁止不做变更地自动重试相同内容。
     """
     try:
-        if not _store:
+        deps = _deps()
+        if deps is None:
             return _store_not_ready()
+        store = deps.store
 
         # 威胁扫描：记忆写入是注入持久化的关键路径，命中威胁模式时拒绝写入
         from agent.security.threat_scanner import first_threat_message, is_threat_scan_enabled
@@ -145,7 +153,7 @@ async def memorize(
             sensitivity = "normal"
 
         # 第一级：规则判重（子串/字面高相似，零成本快速拦截）
-        if await _store.has_similar_content(content):
+        if await store.has_similar_content(content):
             from . import metrics
             metrics.incr("write.dedup_rule_skip")
             return json.dumps({
@@ -156,7 +164,7 @@ async def memorize(
         # 第二级：LLM 语义裁决（事实演进 update / 语义重复 skip / 无重复 store）
         from . import metrics
         from .dedup import apply_update, gather_dedup_candidates, judge_write
-        candidates = await gather_dedup_candidates(_store, _embedder, content)
+        candidates = await gather_dedup_candidates(store, deps.embedder, content)
         decision = await judge_write(content, candidates)
         action = decision.get("action", "store")
         metrics.incr(f"write.dedup_llm_{action}")
@@ -167,13 +175,13 @@ async def memorize(
             }, ensure_ascii=False)
         if action == "update" and decision.get("target_id"):
             updated = await apply_update(
-                _store, int(decision["target_id"]),
+                store, int(decision["target_id"]),
                 str(decision.get("content") or content), tag_list,
             )
             if updated is not None:
                 if sensitivity != "normal":
                     updated.metadata["sensitivity"] = sensitivity
-                    await _store.update(updated)
+                    await store.update(updated)
                 wake_embedding_worker()
                 return json.dumps({
                     "ok": True, "id": updated.id, "action": "updated", "verdict": "updated",
@@ -184,7 +192,7 @@ async def memorize(
         if action == "merge" and decision.get("target_ids"):
             merge_ids = [int(i) for i in decision["target_ids"]]
             merged_content = str(decision.get("content") or content)
-            new_id = await _store.merge_memories(merge_ids, merged_content)
+            new_id = await store.merge_memories(merge_ids, merged_content)
             if new_id:
                 wake_embedding_worker()
                 return json.dumps({
@@ -204,7 +212,7 @@ async def memorize(
 
         # 近重复提示须在写入前计算（写入后新标签已进入统计，会被误判为既有标签）
         hints = await _tag_near_duplicate_hints(tag_list)
-        mid = await _store.add(entry)
+        mid = await store.add(entry)
         wake_embedding_worker()
         result: Dict[str, Any] = {"ok": True, "id": mid, "verdict": "stored", "tags": tag_list}
         if hints:
@@ -228,10 +236,11 @@ def _normalize_tags(tags: str) -> list[str]:
 async def _tag_near_duplicate_hints(tag_list: list[str]) -> list[str]:
     """新 topic: 标签与既有高频标签存在包含关系时给出归并建议（只提示不改数据）。"""
     new_topics = [t for t in tag_list if t.startswith("topic:")]
-    if not new_topics or not _store:
+    deps = _deps()
+    if not new_topics or deps is None:
         return []
     try:
-        tag_df = await _store.list_tags()
+        tag_df = await deps.store.list_tags()
     except Exception:
         return []
     hints: list[str] = []
@@ -253,11 +262,13 @@ async def _tag_near_duplicate_hints(tag_list: list[str]) -> list[str]:
 
 async def _upsert_permanent(content: str, tag_list: list[str], importance: float) -> str:
     """永久记忆的 upsert：按非 type: 标签匹配已有条目，存在则更新，不存在则新增。"""
-    assert _store is not None
+    deps = _deps()
+    assert deps is not None  # 调用方 memorize 已做未就绪检查
+    store = deps.store
     match_tags = [t for t in tag_list if not t.startswith("type:")]
     existing: list[MemoryEntry] = []
     if match_tags:
-        candidates = await _store.search_by_tags(match_tags, limit=10)
+        candidates = await store.search_by_tags(match_tags, limit=10)
         existing = [e for e in candidates if e.memory_type == MemoryType.PERMANENT]
 
     if existing:
@@ -268,7 +279,7 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
         target.importance = importance
         # 内容已变更，清空旧向量，由后台 worker 重新生成
         target.embedding = None
-        await _store.update(target, clear_embedding=True)
+        await store.update(target, clear_embedding=True)
         wake_embedding_worker()
         return json.dumps({
             "ok": True, "id": target.id, "action": "updated", "verdict": "updated",
@@ -281,7 +292,7 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
         tags=tag_list,
         importance=importance,
     )
-    mid = await _store.add(entry)
+    mid = await store.add(entry)
     wake_embedding_worker()
     return json.dumps({
         "ok": True, "id": mid, "action": "created", "verdict": "stored", "tags": tag_list,
@@ -317,21 +328,23 @@ async def recall(
             启用后只返回数据库记忆（文件便签无标签体系）
     """
     try:
-        if not _store:
+        deps = _deps()
+        if deps is None:
             return _store_not_ready()
+        store = deps.store
 
         tag_list = _normalize_tags(tags) or None
         hard_tags = _normalize_tags(filter_tags) or None
         is_deep = depth.strip().lower() == "deep"
 
         # 查询提及识别：查询文本中提到的已知实体/话题自动转为标签加权
-        mention_tags = await _store.extract_query_mentions(query)
+        mention_tags = await store.extract_query_mentions(query)
         if mention_tags:
             tag_list = list(dict.fromkeys((tag_list or []) + mention_tags))
 
         query_vec = None
-        if _embedder:
-            query_vec = await _embedder.embed_query(query)
+        if deps.embedder:
+            query_vec = await deps.embedder.embed_query(query)
 
         from .cognee.config import load_cognee_config
         from .cognee.fusion import federated_search
@@ -345,7 +358,7 @@ async def recall(
                 break
         pool_multiplier = cognee_config.recall_pool_multiplier * (2 if is_deep else 1)
         results = await federated_search(
-            _store.search_unified(
+            store.search_unified(
                 query=query,
                 query_vec=query_vec,
                 query_tags=tag_list,
@@ -370,7 +383,7 @@ async def recall(
             if r.source == "memory" and r.id.startswith("mem:")
         ]
         if mem_ids:
-            await _store.record_access(mem_ids)
+            await store.record_access(mem_ids)
 
         items = [{
             "id": r.id,
@@ -405,7 +418,7 @@ async def recall(
                 node_keys.append(f"{prefix}:{value}")
             if node_keys:
                 from .graph import format_triple
-                edges = await _store.graph.edges_for_scopes(node_keys, limit=10)
+                edges = await store.graph.edges_for_scopes(node_keys, limit=10)
                 relations = [format_triple(e) for e in edges]
 
         return json.dumps({
@@ -426,8 +439,10 @@ async def _recall_associations(
         max_related: int = 3,
 ) -> list[Dict[str, Any]]:
     """沿主结果的标签网络联想关联记忆（一跳扩展）。"""
-    if not _store or not results:
+    deps = _deps()
+    if deps is None or not results:
         return []
+    store = deps.store
     assoc_tags: list[str] = []
     for r in results:
         for tag in r.tags:
@@ -436,8 +451,8 @@ async def _recall_associations(
     if not assoc_tags:
         return []
     # 种子三层扩展（图谱邻居 + 标签共现）
-    assoc_tags = await _store.expand_tag_seeds(assoc_tags)
-    related = await _store.search_associative(
+    assoc_tags = await store.expand_tag_seeds(assoc_tags)
+    related = await store.search_associative(
         assoc_tags, exclude_ids=set(existing_mem_ids), limit=max_related,
     )
     return [
@@ -467,7 +482,9 @@ async def _recall_associations_deep(
     再回向量库深潜提取相邻记忆。
     """
     seed_results = results
-    if _store:
+    deps = _deps()
+    store = deps.store if deps else None
+    if store is not None:
         extra_tags: list[str] = []
         for r in results:
             if not r.source.startswith("cognee") or r.score < 0.5:
@@ -476,7 +493,7 @@ async def _recall_associations_deep(
             if not mem_id:
                 continue
             try:
-                entry = await _store.get(int(mem_id))
+                entry = await store.get(int(mem_id))
             except (TypeError, ValueError):
                 continue
             if entry:
@@ -489,7 +506,7 @@ async def _recall_associations_deep(
             ]
 
     hop1 = await _recall_associations(seed_results, existing_mem_ids, max_related=max_related)
-    if not _store or len(hop1) >= max_related:
+    if store is None or len(hop1) >= max_related:
         return hop1
 
     seen_ids = set(existing_mem_ids)
@@ -503,7 +520,7 @@ async def _recall_associations_deep(
     if not hop1_tags:
         return hop1
 
-    hop2 = await _store.search_associative(
+    hop2 = await store.search_associative(
         hop1_tags, exclude_ids=seen_ids, limit=max_related - len(hop1),
     )
     for entry, score in hop2:
@@ -531,20 +548,22 @@ async def memory_index(tag: str = "") -> str:
         tag: 可选，指定标签查看其下的记忆（如 user:123）
     """
     try:
-        if not _store:
+        deps = _deps()
+        if deps is None:
             return _store_not_ready()
+        store = deps.store
 
         if not tag:
-            tag_counts = await _store.list_tags()
-            total = await _store.count()
-            index_status = await _store.get_index_status()
+            tag_counts = await store.list_tags()
+            total = await store.count()
+            index_status = await store.get_index_status()
             return json.dumps({
                 "total_memories": total,
                 "tags": tag_counts,
                 "index": index_status,
             }, ensure_ascii=False)
 
-        entries = await _store.search_by_tags([tag], limit=20)
+        entries = await store.search_by_tags([tag], limit=20)
         items = [{
             "id": e.id,
             "summary": e.content[:80],
@@ -567,9 +586,10 @@ async def get_memory(memory_id: int) -> str:
         memory_id: 记忆 ID（从 recall / memory_index / memory_deep_search 结果中获取）
     """
     try:
-        if not _store:
+        deps = _deps()
+        if deps is None:
             return _store_not_ready()
-        entry = await _store.get(memory_id)
+        entry = await deps.store.get(memory_id)
         if not entry:
             return tool_error(f"记忆 {memory_id} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
         return json.dumps({
@@ -611,10 +631,11 @@ async def update_memory(
         sensitivity: 新的私密度 normal/private/secret（留空则保持原值不变）
     """
     try:
-        if not _store:
+        deps = _deps()
+        if deps is None:
             return _store_not_ready()
 
-        entry = await _store.get(memory_id)
+        entry = await deps.store.get(memory_id)
         if not entry:
             return tool_error(f"记忆 {memory_id} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
 
@@ -654,7 +675,7 @@ async def update_memory(
         if content_changed:
             entry.embedding = None
 
-        ok = await _store.update(entry, clear_embedding=content_changed)
+        ok = await deps.store.update(entry, clear_embedding=content_changed)
         if ok and content_changed:
             wake_embedding_worker()
         return json.dumps({
@@ -677,9 +698,10 @@ async def forget(memory_id: int) -> str:
         memory_id: 要遗忘的记忆 ID
     """
     try:
-        if not _store:
+        deps = _deps()
+        if deps is None:
             return _store_not_ready()
-        ok = await _store.archive_memory(memory_id, reason="manual_forget")
+        ok = await deps.store.archive_memory(memory_id, reason="manual_forget")
         return json.dumps({
             "ok": ok,
             "message": f"记忆 {memory_id} {'已遗忘（归档，可恢复）' if ok else '不存在'}",
@@ -693,7 +715,7 @@ async def forget(memory_id: int) -> str:
 # ------------------------------------------------------------------
 
 def _get_sqlite():
-    from services._runtime import require_runtime
+    from agent.runtime.singleton import require_runtime
     return require_runtime().data_center.sqlite
 
 
@@ -1120,8 +1142,9 @@ async def recall_conversation(
         t0 = _time.monotonic()
         results: list[dict] = []
 
-        if _embedder:
-            query_vec = await _embedder.embed_query(query)
+        deps = _deps()
+        if deps is not None and deps.embedder:
+            query_vec = await deps.embedder.embed_query(query)
             if query_vec:
                 results = await sqlite.search_conversation_vector(
                     scope_type, scope_id, query_vec,
@@ -1178,9 +1201,10 @@ async def recall_conversation(
 async def memory_stats() -> str:
     """查看记忆系统统计和健康状态。"""
     try:
-        if not _store:
+        deps = _deps()
+        if deps is None:
             return _store_not_ready()
-        health = await _store.get_health_status()
+        health = await deps.store.get_health_status()
         return json.dumps(health, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="读取记忆统计")
@@ -1310,7 +1334,8 @@ async def memory_deep_search(page: int = 1, page_size: int = 20, memory_type: st
         memory_type: 可选类型过滤：episodic/semantic/entity/reflection/permanent
     """
     try:
-        if not _store:
+        deps = _deps()
+        if deps is None:
             return _store_not_ready()
         mt = None
         if memory_type:
@@ -1318,7 +1343,7 @@ async def memory_deep_search(page: int = 1, page_size: int = 20, memory_type: st
                 mt = MemoryType(memory_type)
             except ValueError:
                 log("memory_deep_search 异常已忽略", "DEBUG")
-        result = await _store.list_paginated(page=page, page_size=page_size, memory_type=mt)
+        result = await deps.store.list_paginated(page=page, page_size=page_size, memory_type=mt)
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="深度搜索记忆")
@@ -1336,7 +1361,8 @@ async def merge_memories(memory_ids: str, merged_content: str) -> str:
         merged_content: 合并后的内容（综合多条记忆的精华）
     """
     try:
-        if not _store:
+        deps = _deps()
+        if deps is None:
             return _store_not_ready()
 
         ids = []
@@ -1349,7 +1375,7 @@ async def merge_memories(memory_ids: str, merged_content: str) -> str:
         if not merged_content.strip():
             return tool_error("合并内容不能为空", cause=ErrorCause.PARAM, retryable=False)
 
-        new_id = await _store.merge_memories(ids, merged_content)
+        new_id = await deps.store.merge_memories(ids, merged_content)
         if not new_id:
             return tool_error(
                 "合并失败：指定的记忆不存在",
@@ -1404,7 +1430,7 @@ async def log_to_heartbeat(content: str) -> str:
 async def list_tasks() -> str:
     """列出所有可执行的任务。"""
     try:
-        from services._runtime import require_runtime
+        from agent.runtime.singleton import require_runtime
         tasks = require_runtime().mind.heartbeat_engine.task_registry.list_info()
         return json.dumps({"total": len(tasks), "tasks": tasks}, ensure_ascii=False)
     except Exception as e:
@@ -1425,7 +1451,7 @@ async def execute_task(task_name: str) -> str:
         task_name: 任务名称（通过 list_tasks 获取）
     """
     try:
-        from services._runtime import require_runtime
+        from agent.runtime.singleton import require_runtime
         engine = require_runtime().mind.heartbeat_engine
         ok, message = engine.start_task_background(task_name)
         return json.dumps({"ok": ok, "task": task_name, "message": message}, ensure_ascii=False)
@@ -1549,7 +1575,7 @@ async def delete_entity_profile(scope_type: str, scope_id: str) -> str:
 
         # 清理内存缓存（primary + 所有 alias 的内存实体）
         try:
-            from services._runtime import require_runtime
+            from agent.runtime.singleton import require_runtime
             rt = require_runtime()
             entities = rt.data_center.everything_data.entities
             entities.pop(f"{p_type}_{p_id}", None)
@@ -1560,14 +1586,15 @@ async def delete_entity_profile(scope_type: str, scope_id: str) -> str:
             log("delete_entity_profile 异常已忽略", "DEBUG")
 
         # 清理 MemoryStore 中的 ENTITY 记忆
-        if _store:
+        deps = _deps()
+        if deps is not None:
             source = f"entity_{p_id}"
-            old_entries = await _store.list_recent(
+            old_entries = await deps.store.list_recent(
                 limit=5, memory_type=MemoryType.ENTITY, source=source,
             )
             for entry in old_entries:
                 if entry.id:
-                    await _store.delete(entry.id)
+                    await deps.store.delete(entry.id)
 
         return json.dumps({
             "ok": True,
@@ -1617,7 +1644,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
 
         # 同步更新内存缓存（primary + 所有 alias 的内存实体）
         try:
-            from services._runtime import require_runtime
+            from agent.runtime.singleton import require_runtime
             rt = require_runtime()
             entities = rt.data_center.everything_data.entities
             keys_to_update = [f"{p_type}_{p_id}"]
@@ -1631,15 +1658,16 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
             log("update_entity_profile 异常已忽略", "DEBUG")
 
         # 同步更新 MemoryStore 中的 ENTITY 记忆
-        if _store:
+        deps = _deps()
+        if deps is not None:
             source = f"entity_{p_id}"
             scope_tag = f"{p_type}:{p_id}"
-            old_entries = await _store.list_recent(
+            old_entries = await deps.store.list_recent(
                 limit=5, memory_type=MemoryType.ENTITY, source=source,
             )
             for old_entry in old_entries:
                 if old_entry.id:
-                    await _store.delete(old_entry.id)
+                    await deps.store.delete(old_entry.id)
             entry = MemoryEntry(
                 memory_type=MemoryType.ENTITY,
                 content=personality.strip(),
@@ -1647,7 +1675,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
                 tags=[scope_tag, "type:profile"],
                 importance=0.8,
             )
-            await _store.add(entry)
+            await deps.store.add(entry)
             wake_embedding_worker()
 
         target_desc = f"{p_type}:{p_id}"
@@ -1799,14 +1827,15 @@ async def recall_tool_errors(tool_name: str = "", limit: int = 20) -> str:
         tool_name: 工具名称，空则返回所有工具的错误统计摘要
         limit: 返回条数上限，默认 20
     """
-    if not _store:
+    deps = _deps()
+    if deps is None:
         return _store_not_ready()
     try:
         limit = int(limit)
         if not tool_name:
-            stats = await _store.get_tool_error_stats()
+            stats = await deps.store.get_tool_error_stats()
             return json.dumps({"stats": stats}, ensure_ascii=False)
-        errors = await _store.get_tool_errors(tool_name=tool_name, limit=limit)
+        errors = await deps.store.get_tool_errors(tool_name=tool_name, limit=limit)
         return json.dumps({
             "tool_name": tool_name,
             "count": len(errors),

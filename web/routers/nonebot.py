@@ -11,8 +11,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
-from channels.nonebot_bridge.tools import register_nonebot_tools
-from services.nonebot import NoneBotService
+from services.nonebot import NoneBotService, register_nonebot_tools
 from web.routers._errors import server_error
 
 register_nonebot_tools()

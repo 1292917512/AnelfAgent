@@ -20,8 +20,12 @@ from typing import Generator, List
 import pytest
 
 import entities.mcp.bridge as bridge_mod
+import entities.mcp.render as render_mod
 from core.entity import EntityRegistry
-from entities.mcp.bridge import MCPBridge, _RetryBudget
+from entities.mcp.bridge import MCPBridge
+from entities.mcp.render import _render_call_result
+from entities.mcp.retry import _RetryBudget
+from entities.mcp.schema import _parse_mcp_tool
 
 
 @pytest.fixture()
@@ -36,7 +40,7 @@ def bridge() -> Generator[MCPBridge, None, None]:
 def upload_dir(monkeypatch: pytest.MonkeyPatch, tmp_path) -> str:
     """把 MCP 图片落盘目录重定向到临时目录。"""
     target = str(tmp_path / "uploads")
-    monkeypatch.setattr(bridge_mod, "ConfigPaths", SimpleNamespace(UPLOAD_DIR=target))
+    monkeypatch.setattr(render_mod, "ConfigPaths", SimpleNamespace(UPLOAD_DIR=target))
     return target
 
 
@@ -71,7 +75,7 @@ def _text_block(text: str) -> SimpleNamespace:
 @pytest.mark.asyncio
 async def test_image_saved_and_multimodal(bridge: MCPBridge, upload_dir: str) -> None:
     """image 块应落盘并经 _multimodal 约定返回，base64 原文不进结果。"""
-    out = await bridge._render_call_result(_result(_text_block("截图完成"), _img_block()))
+    out = await _render_call_result(_result(_text_block("截图完成"), _img_block()))
 
     parsed = json.loads(out)
     assert parsed["_multimodal"] is True
@@ -86,7 +90,7 @@ async def test_image_saved_and_multimodal(bridge: MCPBridge, upload_dir: str) ->
 @pytest.mark.asyncio
 async def test_text_blocks_joined_plain(bridge: MCPBridge) -> None:
     """纯文本块按序拼接为普通文本，不包 JSON（与旧版行为一致）。"""
-    out = await bridge._render_call_result(_result(_text_block("第一段"), _text_block("第二段")))
+    out = await _render_call_result(_result(_text_block("第一段"), _text_block("第二段")))
     assert out == "第一段\n第二段"
 
 
@@ -104,7 +108,7 @@ async def test_audio_and_resource_placeholders(bridge: MCPBridge) -> None:
         resource=SimpleNamespace(uri="file:///tmp/data.bin", text=None, blob="QUJD" * 512),
     )
 
-    out = await bridge._render_call_result(
+    out = await _render_call_result(
         _result(_text_block("ok"), audio, link, embedded_text, embedded_blob),
     )
 
@@ -118,7 +122,7 @@ async def test_audio_and_resource_placeholders(bridge: MCPBridge) -> None:
 @pytest.mark.asyncio
 async def test_structured_content_fallback(bridge: MCPBridge) -> None:
     """无任何文本时 structuredContent 兜底输出 JSON。"""
-    out = await bridge._render_call_result(
+    out = await _render_call_result(
         _result(structured={"rows": 3, "ok": True}),
     )
     assert json.loads(out) == {"rows": 3, "ok": True}
@@ -150,7 +154,7 @@ async def test_image_passthrough_disabled(
     monkeypatch.setattr(
         "core.config.get_config_bool", lambda k, d=False: False if k == "mcp_image_passthrough" else d,
     )
-    out = await bridge._render_call_result(_result(_img_block()))
+    out = await _render_call_result(_result(_img_block()))
 
     assert "_multimodal" not in out
     assert "未注入" in out
@@ -162,7 +166,7 @@ async def test_image_passthrough_disabled(
 async def test_image_count_cap(bridge: MCPBridge, upload_dir: str) -> None:
     """单次结果最多注入 4 张图片，超出的以数量说明。"""
     blocks = [_img_block() for _ in range(6)]
-    out = await bridge._render_call_result(_result(*blocks))
+    out = await _render_call_result(_result(*blocks))
 
     parsed = json.loads(out)
     assert len(parsed["images"]) == 4
@@ -172,7 +176,7 @@ async def test_image_count_cap(bridge: MCPBridge, upload_dir: str) -> None:
 @pytest.mark.asyncio
 async def test_image_corrupt_data_placeholder(bridge: MCPBridge, upload_dir: str) -> None:
     """解码失败的图片以占位说明，不抛异常。"""
-    out = await bridge._render_call_result(
+    out = await _render_call_result(
         _result(_img_block(data_b64="!!!非法base64!!!")),
     )
     assert "image/png" in out and "解码失败" in out
@@ -354,7 +358,7 @@ def test_parse_param_anyof_default_items() -> None:
             "required": ["plain"],
         },
     )
-    _name, params = MCPBridge._parse_mcp_tool(tool)
+    _name, params = _parse_mcp_tool(tool)
     by_name = {p.name: p for p in params}
 
     assert by_name["limit"].type == "integer"
@@ -370,7 +374,7 @@ def test_parse_param_non_dict_schema_safe() -> None:
     tool = SimpleNamespace(
         name="t", description="", inputSchema={"properties": {"bad": "not-a-dict"}},
     )
-    _name, params = MCPBridge._parse_mcp_tool(tool)
+    _name, params = _parse_mcp_tool(tool)
     assert len(params) == 1
     assert params[0].name == "bad"
     assert params[0].type == "string"

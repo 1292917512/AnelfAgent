@@ -63,6 +63,7 @@ dev = [
     "ruff>=0.14.0",
     "mypy>=1.18.0",
     "pytest-xdist>=3.8.0",
+    "import-linter>=2.13",
 ]
 
 [tool.pytest.ini_options]
@@ -134,3 +135,47 @@ disallow_untyped_defs = true
 # nonebot.* 仅在 worker 子进程代码中引用（worker venv 独立安装，主环境无此包）
 module = ["litellm", "cognee", "lark_oapi.*", "nonebot.*"]
 ignore_missing_imports = true
+
+# ------------------------------------------------------------------
+# 分层依赖守卫（uv run lint-imports）：AGENTS.md 依赖方向的机械执行
+# ------------------------------------------------------------------
+[tool.importlinter]
+root_packages = ["core", "agent", "entities", "services", "web", "channels"]
+
+[[tool.importlinter.contracts]]
+name = "core 不依赖任何业务层"
+type = "forbidden"
+source_modules = ["core"]
+forbidden_modules = ["agent", "entities", "services", "web", "channels"]
+
+[[tool.importlinter.contracts]]
+name = "entities 不得直接依赖 agent（经 entities._sdk 桥接）"
+type = "forbidden"
+source_modules = ["entities"]
+forbidden_modules = ["agent", "services", "web", "channels"]
+ignore_imports = ["entities._sdk -> agent.**"]
+
+[[tool.importlinter.contracts]]
+name = "agent 不依赖 web/services 上层"
+type = "forbidden"
+source_modules = ["agent"]
+forbidden_modules = ["web", "services"]
+
+[[tool.importlinter.contracts]]
+name = "channels 不依赖 web/services（频道事件经 core.event_bus 上行）"
+type = "forbidden"
+source_modules = ["channels"]
+forbidden_modules = ["web", "services"]
+
+[[tool.importlinter.contracts]]
+name = "services 不依赖 web"
+type = "forbidden"
+source_modules = ["services"]
+forbidden_modules = ["web"]
+
+[[tool.importlinter.contracts]]
+name = "web/routers 不直接依赖 agent/entities/channels（经 services 收口）"
+type = "forbidden"
+source_modules = ["web.routers"]
+forbidden_modules = ["agent", "entities", "channels"]
+allow_indirect_imports = true

@@ -10,7 +10,8 @@ from typing import Any, Generator, List
 
 import pytest
 
-from entities.mcp.bridge import MCPBridge, MCPServerConfig
+from entities.mcp.bridge import MCPBridge
+from entities.mcp.config import MCPServerConfig
 
 
 @pytest.fixture()

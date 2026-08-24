@@ -1,6 +1,6 @@
 """工作区路径解析 — 文件工具与权限层共用的唯一路径解析点。
 
-抽取自 entities/filesystem/tools.py 的 _safe_path（解析部分），
+抽取自 entities/filesystem/tools.py 的 safe_path（解析部分），
 供两处使用（保证权限匹配的解析结果与执行层完全一致，防绕过）：
 - 文件工具执行前的沙箱路径解析
 - 权限规则 ``工具名(路径glob)`` 匹配前的参数规范化

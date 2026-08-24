@@ -220,7 +220,8 @@ class _MergeMind(FakeMind):
     def _resolve_entity_scope(anything) -> str:
         return f"user_{anything.uid}" if anything else ""
 
-    async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None):
+    async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None,
+        stream=False, on_delta=None, purpose="reply"):
         self.llm_calls += 1
         self.sent_messages.append(list(messages))
         return SimpleNamespace(

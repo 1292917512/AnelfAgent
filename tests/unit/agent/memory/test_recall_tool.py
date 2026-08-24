@@ -22,12 +22,12 @@ def _entry(content: str, tags: list[str], importance: float = 0.6) -> MemoryEntr
 
 
 @pytest.fixture
-def bound_store(store: MemoryStore, monkeypatch):
+def bound_store(store: MemoryStore):
     from agent.memory import tools as mem_tools
 
-    monkeypatch.setattr(mem_tools, "_store", store)
-    monkeypatch.setattr(mem_tools, "_embedder", None)
-    return mem_tools
+    mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
+    yield mem_tools
+    mem_tools.memory_tools_port.unbind()
 
 
 class TestRecallSourceMarking:

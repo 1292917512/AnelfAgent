@@ -15,27 +15,22 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from core.log import log
-from core.path import ConfigPaths
-from services import ChatService
+from services import ChatService, UiService
+from services.chat import UPLOAD_DIR as _UPLOAD_DIR
+from services.chat import classify_file_type as _classify_file
 from web.routers._errors import server_error
-from web.routers._paths import safe_workspace_path
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 _chat_svc = ChatService()
+_ui_svc = UiService()
 
 # 消息内容内部标签（[tag:xxx]）剥离正则，历史清洗与会话标题共用；
 # 键为单词字符（与 tag_label 生成一致），值禁止跨 [、] 与换行，
 # 防止多行正文（执行摘要等）被错误配对吞掉
 _TAG_PREFIX_RE = re.compile(r"\[(?:\w+):([^\[\]\n]*)\]")
 
-_UPLOAD_DIR = Path(ConfigPaths.UPLOAD_DIR).resolve()
-
 _FILE_TYPES = {"image", "audio", "video", "file"}
-
-_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
-_AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".amr", ".opus"}
-_VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv"}
 
 # 强制以下载形式响应的扩展名（防存储型 XSS）
 _ATTACHMENT_EXTS = {".html", ".htm", ".svg"}
@@ -62,6 +57,15 @@ def broadcast_chat_event(event: Dict[str, Any]) -> None:
             log("broadcast_chat_event 异常已忽略", "DEBUG")
 
 
+def _setup_chat_broadcast_bridge() -> None:
+    """订阅聊天广播事件并桥接到 SSE 流（WebUI 频道经此事件推帧，不反向依赖 web 层）。"""
+    from core.event_bus import EVENT_CHAT_BROADCAST, event_bus
+
+    @event_bus.on(EVENT_CHAT_BROADCAST, owner="webui")
+    async def _forward_chat_broadcast(payload: Dict[str, Any]) -> None:
+        broadcast_chat_event(payload)
+
+
 def _setup_ui_command_bridge() -> None:
     """订阅界面命令事件并桥接到聊天 SSE 流。"""
     from core.event_bus import EVENT_UI_COMMAND, event_bus
@@ -80,6 +84,7 @@ def _setup_share_event_bridge() -> None:
         broadcast_chat_event({"event": "share", **payload})
 
 
+_setup_chat_broadcast_bridge()
 _setup_ui_command_bridge()
 _setup_share_event_bridge()
 
@@ -92,8 +97,7 @@ class UiAnswerRequest(BaseModel):
 @router.post("/ui-answer")
 async def ui_answer(req: UiAnswerRequest) -> Dict[str, Any]:
     """前端提交 ui_ask 弹窗的回答，解决后端挂起的提问。"""
-    from entities.ui.tools import resolve_ask
-    ok = resolve_ask(req.ask_id, req.answer)
+    ok = _ui_svc.resolve_ask(req.ask_id, req.answer)
     return {"status": "ok" if ok else "expired"}
 
 
@@ -104,15 +108,13 @@ class UiStateRequest(BaseModel):
 @router.post("/ui-state")
 async def post_ui_state(req: UiStateRequest) -> Dict[str, str]:
     """前端上报工作台状态快照（供 ui_get_state 工具查询）。"""
-    from entities.ui.tools import update_ui_state
-    update_ui_state(req.state)
+    _ui_svc.update_ui_state(req.state)
     return {"status": "ok"}
 
 
 @router.get("/ui-state")
 async def get_ui_state() -> Dict[str, Any]:
-    from entities.ui.tools import get_ui_state_snapshot
-    return {"state": get_ui_state_snapshot()}
+    return {"state": _ui_svc.get_ui_state_snapshot()}
 
 
 class SendMessageRequest(BaseModel):
@@ -127,32 +129,6 @@ class SendMessageRequest(BaseModel):
 class SendMessageResponse(BaseModel):
     ok: bool = True
     error: str = ""
-
-
-def _classify_file(ext: str) -> str:
-    ext = ext.lower()
-    if ext in _IMAGE_EXTS:
-        return "image"
-    if ext in _AUDIO_EXTS:
-        return "audio"
-    if ext in _VIDEO_EXTS:
-        return "video"
-    return "file"
-
-
-def _resolve_media_path(file_path: str) -> str:
-    """解析媒体路径：相对路径优先按当前路径，其次按工作区根目录解析。"""
-    if not file_path or file_path.startswith(("http://", "https://", "/api/")):
-        return file_path
-    if os.path.isabs(file_path) or os.path.exists(file_path):
-        return file_path
-    try:
-        resolved = safe_workspace_path(file_path)
-        if os.path.exists(resolved):
-            return resolved
-    except Exception:
-        log("_resolve_media_path 异常已忽略", "DEBUG")
-    return file_path
 
 
 @router.post("/upload")
@@ -208,65 +184,13 @@ async def serve_uploaded_file(file_type: str, filename: str) -> Any:
 @router.post("/send", response_model=SendMessageResponse)
 async def send_message(req: SendMessageRequest) -> SendMessageResponse:
     try:
-        from agent.channel.schemas import MessageSegment, SegmentType
-        from agent.llm.types import ImageContent
-
-        images = None
-        if req.images:
-            images = []
-            for img in req.images:
-                # Convert API URL back to local path for consistent path-based handling
-                if img.startswith("/api/chat/files/"):
-                    parts = img.replace("/api/chat/files/", "").split("/", 1)
-                    if len(parts) == 2:
-                        local = str(_UPLOAD_DIR / parts[0] / parts[1])
-                        if Path(local).exists():
-                            img = local
-                if img.startswith("http"):
-                    images.append(ImageContent(data=img, is_url=True))
-                else:
-                    images.append(ImageContent(data=img))
-
-        media_segments = None
-        if req.files:
-            media_segments = []
-            for file_path in req.files:
-                file_path = _resolve_media_path(file_path)
-                ext = Path(file_path).suffix.lower()
-                ftype = _classify_file(ext)
-                seg_type_map = {
-                    "image": SegmentType.IMAGE,
-                    "audio": SegmentType.AUDIO,
-                    "video": SegmentType.VIDEO,
-                    "file": SegmentType.FILE,
-                }
-                seg = MessageSegment(
-                    type=seg_type_map.get(ftype, SegmentType.FILE),
-                    file_path=file_path,
-                    file_name=Path(file_path).name,
-                    url=file_path if file_path.startswith("/api/") else "",
-                )
-                if ftype == "image" and not images:
-                    images = []
-                if ftype == "image":
-                    images.append(ImageContent(data=file_path, is_url=False))
-                else:
-                    media_segments.append(seg)
-
-        text = req.message
-        if req.files:
-            file_descs = [f"[{_classify_file(Path(fp).suffix.lower())}:{fp}]" for fp in req.files]
-            if file_descs:
-                text = text + "\n" + " ".join(file_descs) if text else " ".join(file_descs)
-
-        await _chat_svc.send_message(
-            text,
-            images=images,
-            media_segments=media_segments if media_segments else None,
+        await _chat_svc.send_web_message(
+            req.message,
+            images=req.images,
+            files=req.files,
             user_id=req.user_id,
             user_name=req.user_name,
             chat_id=req.chat_id,
-            adapter_key="webui",
         )
         return SendMessageResponse()
     except Exception as e:
@@ -385,26 +309,11 @@ class CancelPlanRequest(BaseModel):
 
 @router.post("/cancel-plan")
 async def cancel_plan(req: CancelPlanRequest) -> Dict[str, Any]:
-    """用户从前端 PlanPanel 浮窗点击"取消"：标记 cancelled + interrupt scope + 发射事件。
-
-    全部状态机逻辑由 ``agent.planning.tracker.cancel_plan`` 统一实现，
-    路由层只做参数组装（chat_id → scope）。
-    """
-    from agent.planning import tracker as plan_tracker
-
-    scope = plan_tracker.make_scope(
-        "webui:web_user", "" if req.chat_id == "default" else req.chat_id,
-    )
-    ok = await plan_tracker.cancel_plan(scope, req.plan_id, reason="用户取消")
+    """用户从前端 PlanPanel 浮窗点击"取消"：标记 cancelled + interrupt scope + 发射事件。"""
+    ok = await _chat_svc.cancel_plan(req.chat_id, req.plan_id)
     if not ok:
         return {"status": "error", "error": "plan 不存在或已结束"}
     return {"status": "ok"}
-
-
-def _scope_for_chat(chat_id: str) -> str:
-    """chat_id → entity scope（与 cancel-plan 同一构造规则）。"""
-    from agent.planning.tracker import make_scope
-    return make_scope("webui:web_user", "" if chat_id == "default" else chat_id)
 
 
 class InterruptRequest(BaseModel):
@@ -418,20 +327,7 @@ async def interrupt_chat(req: InterruptRequest) -> Dict[str, Any]:
     中断是协作式的（下一轮检查点安全收束），子代理取消会即时终止其执行任务，
     delegate_task 工具结果携带 user_cancel 归因提示 AI 不要自动重试。
     """
-    from services._runtime import get_runtime
-
-    rt = get_runtime()
-    if rt is None:
-        return {"status": "error", "error": "runtime 未就绪"}
-    scope = _scope_for_chat(req.chat_id)
-    interrupted = rt.mind.interrupt(scope, reason="用户点击停止生成")
-    cancelled = 0
-    dm = getattr(rt.mind, "delegation_manager", None)
-    if dm is not None:
-        cancelled = dm.cancel_scope(scope)
-    if not interrupted and cancelled == 0:
-        return {"status": "idle"}
-    return {"status": "ok", "interrupted": interrupted, "cancelled_delegations": cancelled}
+    return _chat_svc.interrupt_chat(req.chat_id)
 
 
 @router.get("/delegations")
@@ -439,26 +335,15 @@ async def list_delegations(
     chat_id: str = Query("default"),
 ) -> Dict[str, Any]:
     """列出该会话运行中的子代理委托（前端刷新后恢复 DelegationCard 进度）。"""
-    from services._runtime import get_runtime
-
-    rt = get_runtime()
-    if rt is None:
-        return {"running": []}
-    dm = getattr(rt.mind, "delegation_manager", None)
-    running = dm.running_snapshot(_scope_for_chat(chat_id)) if dm is not None else []
-    return {"running": running}
+    return {"running": _chat_svc.list_delegations(chat_id)}
 
 
 @router.post("/delegations/{delegation_id}/cancel")
 async def cancel_delegation(delegation_id: str) -> Dict[str, Any]:
     """取消运行中的子代理委托（DelegationCard 取消按钮）。"""
-    from services._runtime import get_runtime
-
-    rt = get_runtime()
-    if rt is None:
+    ok = _chat_svc.cancel_delegation(delegation_id)
+    if ok is None:
         return {"status": "error", "error": "runtime 未就绪"}
-    dm = getattr(rt.mind, "delegation_manager", None)
-    ok = dm.cancel(delegation_id) if dm is not None else False
     if not ok:
         return {"status": "error", "error": "委托不存在或已结束"}
     return {"status": "ok"}

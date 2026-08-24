@@ -313,7 +313,7 @@ class TestCacheRateAggregation:
 class TestMcpSleepPolicy:
     def test_default_sleeps_all_mcp(self, monkeypatch) -> None:
         from core.config import ConfigManager
-        from entities.mcp.bridge import _mcp_sleep_enabled
+        from entities.mcp.config import _mcp_sleep_enabled
 
         ConfigManager.initialize()
         ConfigManager.set("mcp_sleep_excludes", "")
@@ -353,7 +353,7 @@ class TestStayAwakePolicy:
         """每服务 stay_awake 覆盖全局默认沉睡。"""
         import json
 
-        import entities.mcp.bridge as bridge
+        import entities.mcp.config as mcp_config
         from core.config import ConfigManager
 
         cfg = tmp_path / "mcp_servers.json"
@@ -362,9 +362,9 @@ class TestStayAwakePolicy:
         ConfigManager.initialize()
         ConfigManager.set("mcp_sleep_excludes", "")
 
-        assert not bridge._mcp_sleep_enabled("git")   # stay_awake 覆盖
-        assert bridge._mcp_sleep_enabled("mind-map")  # 未覆盖仍沉睡
+        assert not mcp_config._mcp_sleep_enabled("git")   # stay_awake 覆盖
+        assert mcp_config._mcp_sleep_enabled("mind-map")  # 未覆盖仍沉睡
 
         # 关闭覆盖后恢复沉睡
         cfg.write_text(json.dumps({"mcpServers": {"git": {"stay_awake": False}}}), encoding="utf-8")
-        assert bridge._mcp_sleep_enabled("git")
+        assert mcp_config._mcp_sleep_enabled("git")

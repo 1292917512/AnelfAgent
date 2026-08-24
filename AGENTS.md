@@ -45,7 +45,7 @@ description: "AnelfAgent 项目指令 — 开发规范与架构速查（对所�
 | `agent/planning/` | 自主规划（目标 CRUD / 执行追踪） | 依赖 memory |
 | `channels/` | 频道适配器（目录自动发现） | 继承 BaseChannel |
 | `entities/` | 工具实体（目录自动发现） | 通过 `@tool`/`entity()` 注册，通过 `_sdk.py` 桥接 LLM |
-| `services/` | 业务封装层 | 供 Web API 调用，不依赖 web |
+| `services/` | 业务封装层（model/chat/task/heartbeat/approval/context/config/sticker/system/ui/filesystem/mcp 等；mcp 为 entities.mcp 薄门面，nonebot 桥接 channels.nonebot_bridge.service） | 供 Web API 调用，不依赖 web |
 | `web/routers/` | FastAPI 路由 | 共享模型放 `schemas.py` |
 | `web/frontend/src/` | React 前端 | 页面壳组件 + 子面板目录拆分 |
 | `config/` | JSON 配置 + SQLite 数据 + Markdown 便签 | 路径统一用 `ConfigPaths` |
@@ -62,7 +62,9 @@ agent.heartbeat → agent.task + agent.memory + agent.mind（调度执行）
 agent.task → agent.memory（结果存储）
 agent.planning → agent.memory
 
-禁止: agent → web | core → agent | services → web | entities → agent（通过 _sdk 桥接）
+禁止: agent → web/services | core → 业务层 | services → web | channels → web/services | entities → agent/services/web/channels（entities 经 _sdk 桥接 agent，_sdk 是唯一豁免）| web/routers → agent/entities/channels（经 services 收口）
+
+以上方向由 import-linter 机械守卫（pyproject.toml `[tool.importlinter]` 六条 forbidden 契约，`uv run lint-imports`，CI python job 红绿门禁；`_sdk → agent.**` 为唯一豁免通道，web/routers 契约允许经 services 的间接依赖）
 ```
 
 ### 核心系统
@@ -170,6 +172,11 @@ from entities._sdk import get_llm_manager                   # LLM 访问
 from entities._sdk import push_notify                       # 向 AI 推送系统通知（[push:] 标签，手机弹窗语义）
 from entities._sdk import load_image_from_path              # 图片加载
 from entities._sdk import get_image_content_class, get_model_type_enum  # 类型获取
+from entities._sdk import get_embedder, wake_embedding_worker, register_embedding_backlog  # 向量设施
+from entities._sdk import download_media_to_uploads         # URL 媒体落盘 uploads
+from entities._sdk import execute_send_action               # 频道统一发送管道（校验/目标解析/结果归因）
+from entities._sdk import set_default_model, get_active_llm_client, get_llm_client_class  # 模型控制
+from entities._sdk import get_session_llm_params, canonical_efforts  # 会话参数覆盖 / 思考档位表
 ```
 
 ### 思维系统
@@ -290,9 +297,9 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | ladybug native 串行门 | `agent/memory/cognee/client.py` `_apply_native_gate` | 进程级线程锁串行所有 ladybug native 执行：锁包在提交到线程池的查询任务上（execute + 结果消费全程），由执行线程持有——wait_for 超时取消协程不会提前放锁，孤儿 native 查询跑完才放行下一条；`_drop_native_resources` 同锁保护，拆除句柄前等在途执行结束。修复 2026-08 SIGSEGV（NodeTableScanState::scanNext 空指针，孤儿查询与后续查询/拆除并发使用同一 connection） |
 | 技能治理决策协议 | `agent/skills/`（skill_index 事实层 + tools 决策协议） | 事实归系统、决策归 AI：create/update 在事实层检测到显著信号（语义相近≥`skills_similar_threshold` / 触发词碰撞≥`skills_trigger_collision_limit` / 容量水位 / 无实质变化）时**不拒绝**，返回 needs_decision 诊断报告，AI 带 decision 回执重呼写入（rationale 落盘问责）或改走 merge/放弃；评审上下文由 SkillIndex 供给（语义相近 top10 + 库健康摘要）；use/match 信号分离（检索注入不刷活动时间，get_skill 计数不刷活动，策展重力因此可触发）；检索端近重复折叠（≥`skills_match_redundancy` 折叠并入合并信号）；merge_skills 可逆合并（源 ARCHIVED 带 merged_into）；重力含试用期快筛（零参与 14 天降级）与 stale 软保留（仍被检索到不归档）。向量生命周期：缓存键 = 模型名 + 文本 hash（模型切换即全库失效重嵌，防跨模型余弦混算）；交互路径预算化补算（`skills_embed_budget`，advisory 收紧 8），心跳 `warm()` 批量预热；死键清理时机 = 嵌入完成后（warm/embed_now）+ 删除时（service 直调），列表重建不清理（防误杀待嵌入键）；Web 经 `services._runtime` 拿 Mind 侧索引展示 embedded 状态与覆盖统计，CRUD 后 embed_now 即时重嵌；Mind 构造时重绑定工具依赖避免双向量缓存。向量构建状态机（Web 可观测/可操作/可配置）：`build_state()` 暴露 idle/warming/rebuilding + 进度 + 上次重建记录；`skills_warm_batch_size`（心跳每拍批量）/ `skills_rebuild_batch_size`（全量重建批量）可调；Web 经 `POST /skills/vectors/rebuild` 手动触发重建（幂等，进行中返回当前进度）；每个技能行内 `POST /skills/{name}/embed` 单技能生成/重新生成（不等全库重建）。向量持久化：`skill_vectors.sqlite3`（主库同目录独立文件，短连接 schema 自治，pack_embedding float32 BLOB）——嵌入即 upsert，首次访问懒加载恢复（模型+文本 hash 双因子校验，失配行清除并标记重建），**重启零重嵌**；模型切换内存与 DB 同步清空 |
 | 思考等级配置驱动下发 | `agent/llm/reasoning.py`（契约引擎）+ `llm_client._apply_thinking_payload` + 模型配置 `thinking` 字段 | **全代码库对模型名零特判**：每个模型在 `llm_clients.json` 里声明思考契约（`{"param": 目标字段, "map": 档位映射, "on": 开启值, "off": 关闭值}`），LLMClient 只做"读契约填值"，不认识任何模型名/供应商。档位能力不写代码——模型该用哪档由配置 `reasoning_effort` 决定，发了端点不认的档由端点自己报错（参考 cursor-byok）。下发载体按 api_type 区分（litellm 行为差异）：openai 兼容通道 extra_body 由 SDK 展开进请求体顶层；anthropic 兼容通道直发 body 不展开 extra_body、未收录模型顶层字段又被能力表卡住，故填顶层字段 + allowed_openai_params 白名单放行。无契约模型走通用 reasoning_effort 透传。effort 为空时开关型契约（无 map）用 on 值默认开启。litellm 1.95 暗坑：未收录模型顶层 reasoning_effort 被 drop_params 静默丢弃，必须走 extra_body/白名单透传 |
-| 晚绑定端口 | `core/latebind.py`（原语）+ `agent/runtime/wiring.py`（唯一施绑点） | 进程级类型化晚绑定：端口由消费方所在层声明（`LateBinding[T]`，名称全局唯一、`[None]` 施绑合法——bound 标志即事实），`wire_runtime()` 在 assemble 尾部统一施绑（mind 工具组 / cognee 可选后端 / sticker worker + prewarm/scope_usage 回调），check_health 经 `assert_wired()` 把漏接线暴露为启动红字；未施绑 `get()` 抛 WireError，cognee/sticker 访问器以 bound 守卫保持旧 None 语义。准入：仅限 import 时工具注册拿不到构造参数 / 循环初始化 / 跨层桥三种成因，`set()` 只许组合根调用；DI 容器与装饰器注册表方案均已否决（解析图无消费场景；RuntimePorts 无法跨 entities/agent 分层定型） |
+| 晚绑定端口 | `core/latebind.py`（原语）+ `agent/runtime/wiring.py`（唯一施绑点） | 进程级类型化晚绑定：端口由消费方所在层声明（`LateBinding[T]`，名称全局唯一、`[None]` 施绑合法——bound 标志即事实），`wire_runtime()` 在 assemble 尾部统一施绑（mind 工具组 / 思维子系统实例（compressor·delegation·auto_capture·skills deps）/ 记忆存储族（memory·graph·planning）/ 会话数据（output·fold）/ embedding worker / cognee 可选后端 / sticker worker / agent→entities 函数桥（workspace 路径·结果落盘·文件状态缓存·图片索引投递）+ prewarm/scope_usage 回调；多依赖端口以 NamedTuple 承载如 `MemoryToolDeps`/`SkillToolDeps`/`WorkspacePathFns`），check_health 经 `assert_wired()` 把漏接线暴露为启动红字；未施绑 `get()` 抛 WireError，可选消费以 bound 守卫保持旧 None 语义。准入：仅限 import 时工具注册拿不到构造参数 / 循环初始化 / 跨层桥三种成因，`set()` 只许组合根调用；DI 容器与装饰器注册表方案均已否决（解析图无消费场景；RuntimePorts 无法跨 entities/agent 分层定型） |
 
-#### MCP 工具面细节（第四轮新增，均在 `entities/mcp/bridge.py`）
+#### MCP 工具面细节（第四轮新增；已拆分为 entities/mcp/ 模块群：bridge.py=连接生命周期核心，config.py=配置注册/沉睡策略/MCPServerStore 配置域，manage_tools.py=管理工具，transport.py=传输工厂+env 白名单，schema.py=参数 schema 解析/名整形，render.py=结果渲染，retry.py=重连预算）
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
@@ -314,6 +321,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 二进制嗅探 | `scan.looks_binary`（前 8KB NUL 采样） | read_file 扩展名表之外的内容级防线——文本读取走 `errors="replace"` 永不抛解码异常，无扩展名/冷门扩展名二进制文件此前乱码灌上下文；命中返回既有 `{"type":"binary"}` JSON 引导媒体工具 |
 | Retry-After 采信 | `agent/llm/retry.py::parse_retry_after` | litellm RateLimitError 携带 headers（本机已验证）；支持秒数/HTTP 日期/毫秒变体。限流退避取 max(服务端指令, 本地抖动指数)；服务端要求 >60s（`RETRY_AFTER_WAIT_CAP`）视为本轮放弃当前候选转回退链——不白烧请求与配额 |
 | 用量归属与口径 | `scope_usage.bind_usage_scope` + `_is_ephemeral_scope` | ① 委托链经 ContextVar 绑定父会话 scope，子代理 reflect 的 LLM 用量归属父会话（/status/usage 可见委托成本）；② `reflect:{uuid}` 一次性 scope 不建统计行——此前每个子代理落孤儿行，累积挤爆容量上限后**新会话用量被整体静默丢弃**；③ list/summary 输出 `prompt_miss_tokens = prompt - cache_read`（DeepSeek 口径 prompt 含缓存命中，防消费方相加重复计）。scope 解析链：anything.entity_scope > usage_scope 绑定 > 激活上下文 |
+| WebUI 聊天广播 | `core.event_bus.EVENT_CHAT_BROADCAST` + web/routers/chat.py SSE 桥接 | channels/webui 经事件总线推帧（`_broadcast`/`_broadcast_scoped` 发射 EVENT_CHAT_BROADCAST），web 层订阅桥接 SSE 订阅者——频道不反向依赖 web 层（旧 `channels.webui → web.routers.chat` 环已拆）；健康探针改查 `event_bus.has_listeners` |
 | TTFT 首 token 计时 | `ChatResult.ttft_ms` + `EVENT_THINKING_LLM_END` | 流式路径记首 delta 到达时刻（毫秒）；与 duration_ms 相减即输出生成耗时——"排队慢"与"生成长"两个独立延迟源分别可诊断（对齐 dsh trajectory TTFT）。非流式为 None |
 | 一次性通知历史固化 | `scheduler.enqueue_scope_reply`（async）+ `_append_one_shot_history` | 一次性事件（后台任务完成/实体推送/定时提醒/重启补回/会话切换/委托完成）写目标会话**对话历史**（system，trigger_mind=False）而非短期记忆——此前驻留 volatile 层：每轮重复催促已处理完的事项，且每条新通知重写会话层前缀反复打断 prompt cache，清理全靠模型自觉。await 返回即历史落库，随后的回复周期拉取必含（无竞态）；写入失败回退短期记忆兜底。push 的 seq/inflight 随投递完成后登记（水位只统计已固化事实）。委托轮内会合的完整详情同样固化历史（`_append_one_shot_history` 直达），轮外完成由 registry unclaimed 回调统一负责不双投递；回调支持协程（`_finish` 总在主循环 ensure_future）。短期记忆回归纯持续提醒语义 |
 | cognee LanceDB 物理压缩与存储统计 | `cognee/storage.py`（物理存储维护模块：压缩 + 统计 + 快照 + 调度）+ coordinator 空闲窗口调度 | cognee 删除/更新只在 Lance 追加 tombstone 新版本，历史版本物理数据永不回收（磁盘单调膨胀的根因）。`compact_lance_tree` 遍历 `system/databases/**/*.lance.db` 逐表 `optimize(cleanup_older_than)`（碎片合并+索引优化+清理早于 `compact_retention_days` 的版本，最新版本永远保留、逻辑数据零影响），压缩前后用同一条统计遍历实测占用；worker 队列排空后的空闲窗口按 `compact_interval_seconds`（默认 86400s）自动执行（与写入单消费者天然互斥），失败仅记日志下个周期重试。手动触发三入口同路径 `coordinator.request_compact()`：AI 工具 `compact_cognee_storage`（memory 组）/ `POST /memory/cognee/compact` / Web 记忆页「压缩存储」按钮；worker 存活时登记请求待空闲执行，未运行则内联执行。状态经 sync.last_compact_at/last_compact_summary 暴露。`StorageStatsTracker`（单例 `cognee_storage_stats`）：大库遍历可达数十秒，请求路径永不遍历——内存 TTL → 磁盘快照（`<data_root>/storage_stats.json`，重启即恢复真实值）→ 空统计三级返回，过期仅调度后台单任务刷新；所有缓存写入携带单调代际号，invalidate/adopt/新刷新使在途旧遍历结果被丢弃（防压缩后数字被旧遍历回写）；coordinator 启动预热、压缩尾声 `adopt(after_stats)` 直接收录实测值免二次遍历、rebuild 清场后 `invalidate(root)` 连快照删除。`/cognee/status` 的 storage 字段与数据库管理页 cognee 条目（size_bytes=整个数据目录，此前仅 stat 元数据库文件曾 177M 显示 vs 30G 实际）共用该 tracker |
@@ -370,7 +378,10 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/mind/context_compressor.py` | 上下文压缩（溢出检测 + 保头保尾 + LLM 摘要） |
 | `agent/mind/result_budget.py` | 工具结果预算截断（按模型窗口动态计算） |
 | `agent/mind/tool_activation.py` | 工具沉睡/激活状态机（activate_tool_group） |
-| `agent/mind/tools/think_loop.py` | 统一思维循环（多轮 LLM + 工具编排） |
+| `agent/mind/tools/think_loop.py` | 统一思维循环（多轮 LLM + 工具编排 + 回复入口 reply_entry/reply_loop） |
+| `agent/mind/tools/reply_finalize.py` | 思维收尾块（finish_think/complete_reply/执行摘要；入口在 think_loop，单向依赖无环） |
+| `agent/mind/tools/result_parse.py` | 工具结果宽松 JSON 解析 + 错误文本提取（叶子模块，think_loop/round_helpers/vision/compressor 共用） |
+| `agent/mind/message_schema.py` | 内部消息契约 + 发送边界规整 + 真用户消息判定（is_genuine_user_message）+ 推理字段回传（preserve_reasoning_fields） |
 | `agent/llm/resilience/classifier.py` | LLM 错误分类（驱动重试/压缩/回退策略） |
 | `agent/llm/reasoning.py` | 思考等级单一权威（7 级规范词汇 + GLM/MiniMax/Kimi 专项档位表 + 下发通道分派；litellm 未收录模型的参数透传修复见运行时机制表） |
 | `agent/llm/prompt_cache.py` | Anthropic 缓存断点唯一权威（线型判定 / 发送边界装饰 decorate_messages / 锚点表 / strip 副本 / TTL marker / CACHEABLE_PREFIX_LAYERS 分析口径） |
@@ -413,6 +424,8 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/heartbeat/log.py` | 心跳日志读写 |
 | `agent/planning/tools.py` | 规划工具（create_goal/update_goal/delete_goal） |
 | `agent/runtime/bootstrap.py` | 启动流程（初始化 → 组装 → 启动 → 健康检查） |
+| `agent/runtime/state_restore.py` | 启动状态恢复（工具覆盖/实体启停/自定义标签回放，纯 core 操作；services 同名方法委托于此） |
+| `agent/runtime/singleton.py` | AgentRuntime 全局单例（get_runtime Optional 读 / require_runtime 未就绪抛错；services._runtime 为其 web 侧门面） |
 | `entities/_sdk.py` | 工具注册 + LLM 桥接 |
 | `agent/channel/manager.py` | 频道管理（register / route） |
 | `agent/channel/tool_bridge.py` | 频道工具桥接（@channel_tool 扫描注册 / 通用能力路由 / 敏感门控 / 按频道接口开关 channel_tool_states） |

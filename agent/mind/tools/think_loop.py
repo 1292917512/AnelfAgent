@@ -27,19 +27,11 @@ from agent.channel.reply_route import (
     should_suppress,
     target_from_anything,
 )
-from agent.mind.tools.reply_finalize import (
-    complete_reply as complete_reply,
-)
-from agent.mind.tools.reply_finalize import finish_think
-from agent.mind.tools.reply_finalize import (
-    reply_entry as reply_entry,
-)
-from agent.mind.tools.reply_finalize import (
-    reply_loop as reply_loop,
-)
+from agent.mind.message_schema import preserve_reasoning_fields
+from agent.mind.think_session import think_session
+from agent.mind.tools.reply_finalize import complete_reply, finish_think
 from agent.mind.tools.result_pipeline import (
     ToolResultPipeline,
-    truncate_tool_output,
 )
 from agent.mind.tools.round_helpers import (
     _END_REPLY_TOOL_NAME,
@@ -51,6 +43,7 @@ from agent.mind.tools.round_helpers import (
     _collect_round_error_briefs,
     _collect_round_failures,
     _compress_context,
+    _consume_pending_for_scope,
     _detect_token_leak,
     _emit_context_usage,
     _format_running_tasks,
@@ -75,12 +68,6 @@ from agent.mind.tools.round_helpers import (
     should_end_reply,
 )
 from agent.mind.tools.round_helpers import (
-    _extract_error_text as _extract_error_text,
-)
-from agent.mind.tools.round_helpers import (
-    _parse_tool_result_json as _parse_tool_result_json,
-)
-from agent.mind.tools.round_helpers import (
     _rehydrate_recent_files as _rehydrate_recent_files,
 )
 from agent.mind.tools.vision import _append_multimodal_result
@@ -94,6 +81,7 @@ from agent.mind.tools.vision import (
     save_base64_image as save_base64_image,
 )
 from core.event_bus import (
+    EVENT_BEFORE_REPLY,
     EVENT_THINKING_FAKE_TOOL_CALL,
     EVENT_THINKING_REPLY_ROUND,
     EVENT_THINKING_TOOL_END,
@@ -105,14 +93,95 @@ from core.log import log
 from core.tool_errors import error_from_exception
 
 if TYPE_CHECKING:
-    from agent.llm import ChatResult, ToolCall
+    from agent.llm import ChatResult, ImageContent, ToolCall
     from agent.messages import Everything
     from agent.mind.background_tasks import BackgroundTaskInfo
     from agent.mind.guardrails import GuardrailController
     from agent.mind.mind import Mind
 
-# 兼容历史私有名（tests/unit/agent/mind/test_result_budget.py 直接引用）
-_truncate_tool_output = truncate_tool_output
+# ==================================================================
+# 回复入口（多轮对话循环装配 + 异常兜底）
+# ==================================================================
+
+async def reply_entry(
+        mind: "Mind",
+        anything: "Everything",
+        images: Optional[List["ImageContent"]] = None,
+        *,
+        adapter_key: str = "",
+) -> None:
+    """执行回复，异常时发送错误提示。"""
+    await event_bus.emit(EVENT_BEFORE_REPLY, {"phase": "llm_calling"})
+    try:
+        await reply_loop(mind, anything, images or [], adapter_key=adapter_key)
+    except Exception as exc:
+        log(f"reply 异常: {type(exc).__name__}: {exc}", "ERROR", tag="思维")
+        error_msg = f"抱歉，处理消息时出错了: {type(exc).__name__}: {exc}"
+        await _send_reply_error(anything, error_msg)
+        await complete_reply(mind, anything, error_msg, 0, error=True)
+
+
+async def _send_reply_error(anything: "Everything", error_msg: str) -> None:
+    """reply 异常时主动把错误提示发送到来源频道（避免用户端无反馈地空等）。"""
+    try:
+        target = target_from_anything(anything)
+        if target is not None:
+            await deliver_text(target, error_msg)
+    except Exception as exc:
+        log(f"错误提示发送失败: {exc}", "DEBUG", tag="思维")
+
+
+async def reply_loop(
+        mind: "Mind",
+        anything: "Everything",
+        images: Optional[List["ImageContent"]] = None,
+        *,
+        adapter_key: str = "",
+) -> None:
+    """多轮对话循环入口：处理图片，进入统一思维循环。"""
+    mc = mind._get_mind_config()
+    # adapter_key 优先使用调用方传入（按 scope 隔离），回退到共享状态（兼容旧路径）
+    if not adapter_key:
+        adapter_key = mind._resolve_adapter_key()
+    scope = mind._resolve_entity_scope(anything) if anything else ""
+    with think_session(mind, scope):
+        # 会话开始清理历史中断信号，避免上一轮遗留请求误杀新会话
+        _interrupts = getattr(mind, "interrupts", None)
+        if scope and _interrupts is not None:
+            _interrupts.clear(scope)
+        # 推送水位必须在 base 快照之前读取：快照与水位读取之间的到达窗口内，
+        # 推送既不随短期记忆进 base、又被 drain_inflight 按 seq≤水位 丢弃，导致吞推送
+        push_watermark = 0
+        push_hub = getattr(mind, "push_hub", None)
+        if push_hub is not None and scope:
+            try:
+                push_watermark = push_hub.current_seq(scope)
+            except Exception:
+                push_watermark = 0
+        active_tools = await mind.pfc.get_active_tool_schemas(adapter_key, scope=scope)
+        base_messages = await mind.get_recollection(anything=anything)
+        # 历史快照已覆盖该 scope 当前全部消息：消费到达时入队的待处理条目，
+        # 避免快照内消息在周期结束后另起周期导致重复回复
+        if anything:
+            _consume_pending_for_scope(mind, anything)
+        if images:
+            base_messages = await apply_vision(mind, base_messages, images, anything)
+
+        await think_loop(
+            mind,
+            mode=ThinkMode.REPLY,
+            tool_chain=[],
+            execution_steps=[],
+            start_time=time.time(),
+            safety_limit=mc.max_tool_iterations,
+            collected_text=[],
+            active_tools=active_tools,
+            anything=anything,
+            base_messages=base_messages,
+            options={"push_watermark": push_watermark} if push_watermark else None,
+            adapter_key=adapter_key,
+        )
+
 
 # ------------------------------------------------------------------
 # 思维循环系统提示常量
@@ -456,27 +525,16 @@ async def _invoke_llm_round(
         llm_messages: List[Dict],
         require_tools: bool,
 ) -> Optional[ChatResult]:
-    """单次 LLM 调用；超时/上下文超限已处理（注入提示或紧急压缩）时返回 None。
-
-    替身 Mind（测试/子代理）可能仍是非流式签名：按探测结果按需传流式参数。
-    """
+    """单次 LLM 调用；超时/上下文超限已处理（注入提示或紧急压缩）时返回 None。"""
     mind = ctx.mind
     try:
-        # Dict[str, Any] 注解：键集合按探测结果动态确定（替身 Mind 兼容），
-        # mypy 无法对 **dict 解包的键做参数名匹配，值声明 Any 避免误报
-        stream_kwargs: Dict[str, Any] = (
-            {"stream": _streaming_enabled(), "on_delta": ctx.delta_emitter}
-            if ctx.supports_stream else {}
-        )
-        purpose_kwargs: Dict[str, Any] = (
-            {"purpose": ctx.mode.value} if ctx.supports_purpose else {}
-        )
         return await mind._invoke_llm_unified(
             llm_messages, ctx.active_tools or None, ctx.anything,
             tool_choice="required" if require_tools else None,
             options=ctx.options,
-            **purpose_kwargs,
-            **stream_kwargs,
+            purpose=ctx.mode.value,
+            stream=_streaming_enabled(),
+            on_delta=ctx.delta_emitter,
         )
     except asyncio.TimeoutError:
         timeout_val = mind._get_mind_config().llm_timeout
@@ -1140,40 +1198,6 @@ async def execute_one_tool(
             except Exception:
                 pass
         return error_from_exception(exc, action=f"工具 {tc.name} 执行")
-
-
-def preserve_reasoning_fields(msg: Dict[str, Any], result: ChatResult,
-                              tool_turn: bool = False) -> None:
-    """从 ChatResult.raw 中提取推理字段到 assistant 消息，维持多轮思维链。
-
-    litellm 统一返回 OpenAI 格式，按协议覆盖两种载体：
-    - reasoning_details：OpenRouter 风格，litellm 请求侧原样回传。
-      **仅 tool_turn=True（工具调用轮）挂载**——DeepSeek 官方 thinking 规则
-      要求工具轮回传、纯文本轮服务端直接忽略，普通轮回传纯属 token 浪费
-      （对齐 dsh serialize.ts 的条件回传；REFLECT 连续文本轮场景收益最大）
-    - thinking_blocks：Anthropic 协议 thinking 块（含 signature/redacted），
-      litellm 请求侧据此重构 thinking 块（交错思考 + tool_use 场景必需）。
-      签名块语义微妙，保持无条件保留（不随本参数收紧，单独评估）
-    均以响应实际存在为条件，不返回推理字段的模型行为不变。
-    """
-    if not result.raw or not result.reasoning_content:
-        return
-    try:
-        choices = result.raw.get("choices")
-        if not choices or not isinstance(choices, list):
-            return
-        message = choices[0].get("message", {})
-        if not isinstance(message, dict):
-            return
-        if tool_turn:
-            rd = message.get("reasoning_details")
-            if rd:
-                msg["reasoning_details"] = rd
-        tb = message.get("thinking_blocks")
-        if tb:
-            msg["thinking_blocks"] = tb
-    except (IndexError, AttributeError, TypeError):
-        pass
 
 
 def log_tool_round(iteration: int, tool_calls: List[ToolCall]) -> None:

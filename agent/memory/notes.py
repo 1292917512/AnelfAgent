@@ -320,7 +320,7 @@ def _schedule_file_resync(file_path: Path) -> None:
 async def _resync_single_file(file_path: Path) -> None:
     """对单个 MD 文件重新生成 chunks 索引（仅该文件，不做全工作区扫描）。"""
     try:
-        from services._runtime import require_runtime
+        from agent.runtime.singleton import require_runtime
         rt = require_runtime()
         store = rt.mind.memory_store
         embedder = rt.mind.embedder

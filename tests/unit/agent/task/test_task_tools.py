@@ -26,15 +26,14 @@ def _isolate_task_and_heartbeat_paths(tmp_path, monkeypatch: pytest.MonkeyPatch)
 
 @pytest.fixture
 async def store(tmp_path):
-    from agent.planning import tracker
+    from agent.planning.tracker import planning_store_port
 
     s = MemoryStore(str(tmp_path / "memory.sqlite3"))
-    planning_tools.register_planning_tools(s)
+    planning_store_port.set(s)
     yield s
     await s.close()
-    # 解除全局绑定，避免后续测试复用到已关闭的 store
-    tracker._store = None
-    planning_tools._store = None
+    # 解除端口施绑，避免后续测试复用到已关闭的 store
+    planning_store_port.unbind()
 
 
 # ==================================================================

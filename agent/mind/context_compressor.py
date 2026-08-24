@@ -23,6 +23,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from agent.mind.message_schema import is_genuine_user_message
+from agent.mind.tools.result_parse import extract_error_text
 from core.log import log
 
 _CHARS_PER_TOKEN = 4
@@ -160,31 +162,6 @@ _PREVIOUS_SUMMARY_BLOCK = (
 
 # 压缩反馈消息的内容前缀：识别前次摘要（迭代压缩时提取，避免"摘要的摘要"）
 _COMPRESSION_FEEDBACK_PREFIX = "[上下文压缩]"
-
-# 真用户原话判定：经渠道到达的消息 content 以前缀元数据标签开头
-# （[time:…][uid:…][name:…] 等，见 messages.everything.get_tag_list）。
-# 机器生成的 user 角色消息（proactive 主动联系指令、自主操作提示、
-# prefill 修复后被改写为 user 的 assistant 独白等）没有到达标签——
-# 它们属于执行块而非用户原话，应随摘要正常压缩。
-_USER_ARRIVAL_TAGS = (
-    "time", "uid", "name", "nickname", "channel", "group_id", "session_id", "message_id",
-)
-
-
-def _is_genuine_user_message(msg: Dict) -> bool:
-    """判定 role=user 消息是否为真用户原话（渠道到达、带元数据标签）。"""
-    if msg.get("role") != "user":
-        return False
-    content = msg.get("content")
-    if not isinstance(content, str) or not content:
-        return False
-    head = content.lstrip()[:200]
-    return head.startswith("[") and any(f"[{tag}:" in head for tag in _USER_ARRIVAL_TAGS)
-
-
-# 公开别名：供外部模块（如 runtime.bootstrap）引用，避免跨模块导入私有函数
-is_genuine_user_message = _is_genuine_user_message
-
 
 class ContextCompressor:
     """上下文压缩器：检测溢出并压缩中间轮次。"""
@@ -892,7 +869,7 @@ class ContextCompressor:
         转述——语气与细节会丢。保留原文让模型始终读到用户确切说过的话
         （参考 Mini-Agent 压缩策略：user 消息全文保留，仅压缩执行块）。
 
-        只保留携带到达元数据标签的真用户消息（_is_genuine_user_message）；
+        只保留携带到达元数据标签的真用户消息（is_genuine_user_message）；
         机器生成的 user 角色消息（proactive 指令/prefill 修复的独白等）
         属于执行块，留在 middle 随摘要正常压缩。
         单条超 user_max_chars 时截断兜底，防超大粘贴常驻上下文；
@@ -903,7 +880,7 @@ class ContextCompressor:
         preserved: List[Dict] = []
         rest: List[Dict] = []
         for msg in middle:
-            if _is_genuine_user_message(msg):
+            if is_genuine_user_message(msg):
                 content = msg["content"]
                 limit = self.config.user_max_chars
                 if limit > 0 and len(content) > limit:
@@ -965,8 +942,7 @@ class ContextCompressor:
             err = parsed.get("error")
             if err or parsed.get("success") is False or parsed.get("ok") is False:
                 # 复用统一错误提取（含 notes/returncode 回退），与思维环路口径一致
-                from agent.mind.tools.round_helpers import _extract_error_text
-                return f"[工具结果] {name}: 执行失败: {_extract_error_text(parsed)[:150]}"
+                return f"[工具结果] {name}: 执行失败: {extract_error_text(parsed)[:150]}"
         head = text[:120].replace("\n", " ")
         suffix = f"…（原文 {len(text)} 字符）" if len(text) > 120 else ""
         return f"[工具结果] {name}: {head}{suffix}"
@@ -1033,20 +1009,12 @@ class ContextCompressor:
 # AI 可调用工具：手动触发压缩
 # ------------------------------------------------------------------
 
+from core.latebind import LateBinding  # noqa: E402
 from entities._sdk import deferred_tool  # noqa: E402
 
-_compressor_ref: Optional[ContextCompressor] = None
-
-
-def register_compressor(compressor: ContextCompressor) -> None:
-    """注册当前 Mind 的压缩器（Mind 初始化时调用）。"""
-    global _compressor_ref
-    _compressor_ref = compressor
-
-
-def get_compressor() -> Optional[ContextCompressor]:
-    """获取当前压缩器实例。"""
-    return _compressor_ref
+#: 压缩器端口（compress_context 工具 import 时注册、拿不到 Mind 构造参数，
+#: 由 agent.runtime.wiring 统一施绑）
+compressor_port: LateBinding[ContextCompressor] = LateBinding("compressor")
 
 
 @deferred_tool(
@@ -1063,7 +1031,7 @@ def _compress_context_tool(reason: str = "", focus_topic: str = "") -> str:
         reason: 触发原因（仅日志记录）
         focus_topic: 可选的焦点话题，压缩摘要将优先完整保留该话题相关信息
     """
-    compressor = get_compressor()
+    compressor = compressor_port.get() if compressor_port.bound else None
     if compressor is None:
         return json.dumps({"error": "压缩器未初始化"}, ensure_ascii=False)
     try:

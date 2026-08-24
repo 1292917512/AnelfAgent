@@ -3,7 +3,8 @@
 Uses httpx for HTTP requests. Each method is stateless and independently callable.
 Constructed from LLMClientConfig by LLMManager.
 图片生成/编辑的协议差异由 agent.llm.image_adapters 中的适配器收口，
-视频生成的协议差异由 agent.llm.video_adapters 中的适配器收口。
+视频生成的协议差异由 agent.llm.video_adapters 中的适配器收口，
+语音识别的协议差异由 agent.llm.asr_adapters 中的适配器收口。
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from agent.llm.adapter_base import AdapterRequest
+from agent.llm.asr_adapters import AsrAdapter, resolve_asr_adapter
 from agent.llm.image_adapters import ImageGenAdapter, resolve_image_adapter
 from agent.llm.music_adapters import MusicAdapter, MusicParams, MusicResult, resolve_music_adapter
 from agent.llm.speech_adapters import (
@@ -116,7 +118,7 @@ class MediaClient:
         file_name: str = "audio.mp3",
         mime_type: str = "",
     ) -> str:
-        """Transcribe audio bytes to text via /audio/transcriptions."""
+        """Transcribe audio bytes to text（协议差异由 AsrAdapter 收口）。"""
         if not mime_type:
             ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else "mp3"
             mime_map = {"mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg",
@@ -124,15 +126,28 @@ class MediaClient:
                         "amr": "audio/amr", "flac": "audio/flac"}
             mime_type = mime_map.get(ext, "audio/mpeg")
 
-        url = f"{self._base_url}/audio/transcriptions"
+        adapter = self._asr_adapter()
+        req = adapter.build_transcribe_request(
+            self._base_url,
+            model=model,
+            audio_data=audio_data,
+            file_name=file_name,
+            mime_type=mime_type,
+        )
+        headers = {**self._headers(), **(req.headers or {})}
         async with self._http_client() as client:
-            files = {"file": (file_name, audio_data, mime_type)}
-            # 部分服务对空 model 字段报错，空时不传
-            data = {"model": model} if model else {}
-            resp = await client.post(url, headers=self._headers(), files=files, data=data)
+            if req.files:
+                resp = await client.post(req.url, headers=headers, files=req.files,
+                                         data=req.payload or {})
+            else:
+                resp = await client.post(req.url, headers=headers, json=req.payload,
+                                         params=req.params)
             self._check_resp(resp)
-            result = resp.json()
-            return result.get("text", "")
+            return adapter.extract_text(resp.json())
+
+    def _asr_adapter(self) -> AsrAdapter:
+        """解析当前凭据对应的 ASR 协议适配器。"""
+        return resolve_asr_adapter(self._base_url, self._media_protocol)
 
     async def transcribe_url(
         self,
@@ -578,7 +593,10 @@ class MediaClient:
             num_inference_steps=num_inference_steps,
             cfg=cfg,
         )
-        return adapter.extract_urls(await self._send(req))
+        urls = adapter.extract_urls(await self._send(req))
+        if not urls:
+            raise RuntimeError(f"图片生成响应中无图片（模型 {model}）")
+        return urls
 
     async def edit_image(
         self,
@@ -608,7 +626,10 @@ class MediaClient:
             num_inference_steps=num_inference_steps,
             cfg=cfg,
         )
-        return adapter.extract_urls(await self._send(req))
+        urls = adapter.extract_urls(await self._send(req))
+        if not urls:
+            raise RuntimeError(f"图片编辑响应中无图片（模型 {model}）")
+        return urls
 
     async def download_and_save_images(
         self,

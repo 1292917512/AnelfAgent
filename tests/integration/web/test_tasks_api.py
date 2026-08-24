@@ -17,15 +17,15 @@ from fastapi.testclient import TestClient
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """隔离任务目录，且保持与生产一致的「相对路径」形态。
 
-    生产中 ConfigPaths.TASKS_DIR 解析为相对路径 config/tasks，而 _task_path
-    返回 resolve 后的绝对路径——只有相对 _TASKS_DIR 才能复现两者混用的
+    生产中 ConfigPaths.TASKS_DIR 解析为相对路径 config/tasks，而任务路径解析
+    返回 resolve 后的绝对路径——只有相对 tasks 目录才能复现两者混用的
     relative_to 崩溃，因此 fixture 用 chdir + 相对 Path 模拟。
     """
-    import web.routers.config as config_router
+    import services.task as task_service
     from web.server import create_app
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(config_router, "_TASKS_DIR", Path("tasks"))
+    monkeypatch.setattr(task_service, "_TASKS_DIR", Path("tasks"))
     return TestClient(create_app())
 
 

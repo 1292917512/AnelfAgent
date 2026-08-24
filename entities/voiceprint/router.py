@@ -342,7 +342,7 @@ def build_router() -> APIRouter:
         if q.strip():
             query_vec = None
             try:
-                from agent.memory.embedding import get_embedder
+                from entities._sdk import get_embedder
                 query_vec = await get_embedder("text").embed_query(q)
             except Exception as exc:
                 log(f"查询向量化失败（降级 FTS）: {exc}", "DEBUG", tag="音源库")

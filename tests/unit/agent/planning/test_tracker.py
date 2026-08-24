@@ -24,7 +24,7 @@ async def _setup(tmp_path):
     from agent.planning import tracker
 
     store = MemoryStore(db_path=str(tmp_path / "mem.db"))
-    tracker.bind_store(store)
+    tracker.planning_store_port.set(store)
     return store, tracker
 
 
@@ -32,7 +32,7 @@ async def _teardown(store) -> None:
     from agent.planning import tracker
 
     await store.close()
-    tracker._store = None
+    tracker.planning_store_port.unbind()
 
 
 class TestFinalizePlan:
@@ -153,7 +153,7 @@ class TestUpdateGoalMetadata:
         store, tracker = await _setup(tmp_path)
         try:
             from agent.planning import tools as planning_tools
-            planning_tools._store = store
+            tracker.planning_store_port.set(store)
             plan_id = await tracker.submit_plan(
                 SCOPE, "目标", tracker.parse_steps("a|b"),
             )
@@ -164,8 +164,7 @@ class TestUpdateGoalMetadata:
             assert entry.metadata.get("scope") == SCOPE
             assert entry.metadata.get("goal_id") == plan_id
         finally:
-            from agent.planning import tools as planning_tools
-            planning_tools._store = None
+            tracker.planning_store_port.unbind()
             await _teardown(store)
 
     async def test_reflect_scope_prefix_not_user_facing(self) -> None:

@@ -1108,7 +1108,7 @@ class VoiceprintStore:
             for seg_id in changed_ids:
                 await self._vec_delete("segments", seg_id)
             try:
-                from agent.memory.embedding import wake_embedding_worker
+                from entities._sdk import wake_embedding_worker
                 wake_embedding_worker()
             except Exception as exc:
                 log(f"embedding worker 唤醒失败: {exc}", "DEBUG", tag="音源库")

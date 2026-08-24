@@ -84,12 +84,6 @@ async def save_configs(values: Dict[str, Any]) -> Dict[str, int]:
 
     # 触发热更新：重载所有频道配置
     if changed > 0:
-        from agent.channel import get_channel_manager
-        manager = get_channel_manager()
-        for channel in manager.list_channels().values():
-            try:
-                channel.reload_config()
-            except Exception:
-                pass  # 单个频道重载失败不影响其他频道
+        _adapter_svc.reload_all_channel_configs()
 
     return {"changed": changed}

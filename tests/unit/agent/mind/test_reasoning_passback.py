@@ -1,4 +1,4 @@
-"""reasoning 字段条件回传（think_loop.preserve_reasoning_fields）单元测试。
+"""reasoning 字段条件回传（message_schema.preserve_reasoning_fields）单元测试。
 
 锁定：纯文本轮丢弃 reasoning_details（DeepSeek 官方规则：普通轮服务端忽略）
 但保留 thinking_blocks（Anthropic 签名块语义保守不动）；工具轮两者都保留。
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from agent.mind.tools.think_loop import preserve_reasoning_fields
+from agent.mind.message_schema import preserve_reasoning_fields
 
 
 def _result(reasoning: str = "思考过程", details: bool = True, blocks: bool = True):

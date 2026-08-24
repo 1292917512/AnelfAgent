@@ -210,7 +210,7 @@ async def deliver_text(target: ReplyTarget, content: str) -> bool:
     复用 output_tools 的发送管道（频道校验 → 目标解析 → 发送 → 结果解析），
     成功后以 assistant 角色写入对话历史（与 send_message 工具一致）。
     """
-    from agent.channel.output_tools import _execute_send_action, _record_sent_reply
+    from agent.channel.output_tools import _record_sent_reply, execute_send_action
 
     # 剥离 LLM 可能模仿历史格式带入的元数据标签（[message_id:xxx] 等）
     content = strip_message_meta_tags(content or "").strip()
@@ -230,7 +230,7 @@ async def deliver_text(target: ReplyTarget, content: str) -> bool:
         return await ch.send_text(resolved_target_id, content, **kwargs)
 
     try:
-        result = await _execute_send_action(
+        result = await execute_send_action(
             channel_id=target.channel_id,
             target_id=target.target_id,
             operation="消息",

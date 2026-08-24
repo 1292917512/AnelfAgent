@@ -151,7 +151,8 @@ class _WaitMind(FakeMind):
         self._wait_text = wait_text
         self._queue: List = []
 
-    async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None):
+    async def _invoke_llm_unified(self, messages, tools, anything=None, *, tool_choice=None, options=None,
+        stream=False, on_delta=None, purpose="reply"):
         self.llm_calls += 1
         if self.llm_calls == 1:
             return text_result(self._wait_text)
@@ -282,9 +283,13 @@ class TestReflectGuards:
         seen: List[str] = []
         original = mind._invoke_llm_unified
 
-        async def spy(messages, tools, anything=None, *, tool_choice=None, options=None):
+        async def spy(messages, tools, anything=None, *, tool_choice=None, options=None,
+                      stream=False, on_delta=None, purpose="reply"):
             seen.append(messages[-1]["content"])
-            return await original(messages, tools, anything, tool_choice=tool_choice, options=options)
+            return await original(
+                messages, tools, anything, tool_choice=tool_choice, options=options,
+                stream=stream, on_delta=on_delta, purpose=purpose,
+            )
 
         mind._invoke_llm_unified = spy
         await run_think_loop(
@@ -392,7 +397,7 @@ class TestDelegationBackgroundIntegration:
 
         mind = _DelegationMind()
         manager = DelegationManager(mind)
-        delegate_tool.register_delegation_tools(manager)
+        delegate_tool.delegation_manager_port.set(manager)
         mind.background_tasks.register("_global", "delegation", "生成图片")
 
         result = json.loads(await delegate_tool.check_background_tasks())

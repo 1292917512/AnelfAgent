@@ -37,6 +37,7 @@ from core.event_bus import (
     EVENT_PLAN_SUBMITTED,
     event_bus,
 )
+from core.latebind import LateBinding
 from core.log import log
 
 GOAL_SOURCE = "goal"
@@ -47,13 +48,14 @@ PLAN_MANAGEMENT_TOOL_NAMES = frozenset({
     "present_plan", "update_goal", "create_goal", "list_goals", "get_goal", "delete_goal",
 })
 
-_store: Optional[MemoryStore] = None
+#: MemoryStore 端口（planning 工具组与 tracker 共用；工具 import 时注册、
+#: 拿不到 MemoryStore 构造参数，由 agent.runtime.wiring 统一施绑）
+planning_store_port: LateBinding[MemoryStore] = LateBinding("planning.store")
 
 
-def bind_store(store: MemoryStore) -> None:
-    """注入 MemoryStore（由 planning.tools.register_planning_tools 调用）。"""
-    global _store
-    _store = store
+def _bound_store() -> Optional[MemoryStore]:
+    """取 MemoryStore（未施绑时返回 None，调用方降级为未就绪处理）。"""
+    return planning_store_port.get() if planning_store_port.bound else None
 
 
 # ------------------------------------------------------------------
@@ -108,10 +110,11 @@ async def _find_active_plan(
     Returns:
         (entry, goal) 或 (None, None)。
     """
-    if _store is None:
+    store = _bound_store()
+    if store is None:
         return None, None
     try:
-        entries = await _store.list_recent(
+        entries = await store.list_recent(
             limit=20, memory_type=MemoryType.SEMANTIC, source=GOAL_SOURCE,
         )
     except Exception as exc:
@@ -141,7 +144,7 @@ async def get_active_plan(scope: str) -> Optional[Dict[str, Any]]:
 
 async def _persist(entry: MemoryEntry, goal: Dict[str, Any]) -> None:
     """写回 MemoryStore（内容已变更，清空旧向量待后台 worker 重建）。"""
-    store = _store
+    store = _bound_store()
     if store is None:
         return
     goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -224,7 +227,8 @@ async def submit_plan(
     plan_id = uuid.uuid4().hex[:8]
     _, chat_id = parse_scope_chat_id(scope)
 
-    if _store is not None:
+    store = _bound_store()
+    if store is not None:
         try:
             goal_doc = {
                 "goal_id": plan_id,
@@ -249,7 +253,7 @@ async def submit_plan(
                     "kind": "present_plan", "scope": scope,
                 },
             )
-            await _store.add(entry)
+            await store.add(entry)
         except Exception as exc:
             log(f"plan 持久化失败（不影响执行）: {exc}", "WARNING", tag="规划")
 
@@ -274,7 +278,7 @@ async def advance_plan_step(scope: str) -> None:
     把当前 in_progress 步骤标记 completed，推进下一 pending 为 in_progress。
     仅处理当前 scope 的 active plan；无 active plan 时快速返回。
     """
-    if _store is None or current_scope() != scope:
+    if _bound_store() is None or current_scope() != scope:
         return
     try:
         entry, goal = await _find_active_plan(scope)
@@ -337,7 +341,7 @@ async def finalize_plan(scope: str, outcome: str = "completed") -> None:
       skipped，plan → cancelled
     无 active plan 时零成本返回；状态机幂等，可在 finally 中安全调用。
     """
-    if _store is None:
+    if _bound_store() is None:
         return
     try:
         entry, goal = await _find_active_plan(scope)
@@ -361,7 +365,7 @@ async def cancel_plan(scope: str, plan_id: str, reason: str = "用户取消") ->
     Returns:
         是否找到并取消了该 plan。
     """
-    if _store is None:
+    if _bound_store() is None:
         return False
     try:
         entry, goal = await _find_active_plan(scope)
@@ -382,7 +386,7 @@ async def cancel_plan(scope: str, plan_id: str, reason: str = "用户取消") ->
             log("cancel_plan 异常已忽略", "DEBUG")
         # 协作式中断当前 think_loop（Agent 下轮检查点停止）
         try:
-            from services._runtime import get_runtime
+            from agent.runtime.singleton import get_runtime
             rt = get_runtime()
             mind = getattr(rt, "mind", None) if rt is not None else None
             if mind is not None and hasattr(mind, "interrupt"):
@@ -438,12 +442,13 @@ async def find_goal_by_id(
     goal_id: str,
 ) -> Tuple[Optional[MemoryEntry], Optional[Dict[str, Any]]]:
     """按 goal_id 定位记忆条目与目标数据（分页扫描）。"""
-    if _store is None:
+    store = _bound_store()
+    if store is None:
         return None, None
     page_size = 100
     offset = 0
     while True:
-        entries = await _store.list_by_source(
+        entries = await store.list_by_source(
             GOAL_SOURCE, memory_type=MemoryType.SEMANTIC,
             limit=page_size, offset=offset,
         )

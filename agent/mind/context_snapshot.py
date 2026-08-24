@@ -251,8 +251,8 @@ class ContextSnapshot:
         """获取当前激活模型的上下文窗口大小。"""
         try:
             from agent.llm.llm_client import LLMClient
-            from agent.runtime.singleton import get_runtime
-            rt = get_runtime()
+            from agent.runtime.singleton import require_runtime
+            rt = require_runtime()
             llm = rt.mind.llm
             if isinstance(llm, LLMClient):
                 info = LLMClient.get_model_info(llm.config.litellm_model)

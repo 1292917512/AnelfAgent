@@ -47,7 +47,7 @@ def _load_config() -> None:
         log(f"文件系统沙箱配置加载失败: {e}", "DEBUG")
 
 
-def _safe_path(path: str) -> str:
+def safe_path(path: str) -> str:
     """解析路径并执行沙箱检查。相对路径基于 workspace_root 解析。
 
     解析逻辑与权限层共用 entities/filesystem/paths.py（防权限绕过：
@@ -163,7 +163,7 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
         encoding: 文件编码，默认 utf-8
     """
     try:
-        fp = _safe_path(file_path)
+        fp = safe_path(file_path)
         if not os.path.isfile(fp):
             return tool_error(f"文件不存在: {file_path}", cause=ErrorCause.NOT_FOUND,
                               retryable=False, resolved=fp)
@@ -290,7 +290,7 @@ def write_file(file_path: str, content: str) -> str:
         content: 要写入的文本内容
     """
     try:
-        fp = _safe_path(file_path)
+        fp = safe_path(file_path)
         if os.path.exists(fp):
             ok, message = file_state.check_writable(fp)
             if not ok:
@@ -328,7 +328,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     # 容忍模型传入字符串形式的布尔值（对齐 Claude Code semanticBoolean）
     replace_all = coerce_bool_arg(replace_all, False)
     try:
-        fp = _safe_path(file_path)
+        fp = safe_path(file_path)
     except Exception as e:
         return error_from_exception(e, action="解析文件路径")
 
@@ -477,7 +477,7 @@ def append_file(path: str, content: str) -> str:
         content: 要追加的文本内容
     """
     try:
-        fp = _safe_path(path)
+        fp = safe_path(path)
         # 追加同样会改写文件：与 write_file/edit_file 一致接入严格 read-before-write 门
         # （不自动建基线——未读取过的已有文件须先 read_file，防止盲追加重复/错位内容；
         # 已读取后外部修改仍被 check_writable 的 mtime+内容比对捕获）
@@ -507,7 +507,7 @@ def list_directory(path: str = ".", recursive: bool = False, max_depth: int = 3)
         max_depth: 递归最大深度，默认 3
     """
     try:
-        fp = _safe_path(path)
+        fp = safe_path(path)
         if not os.path.isdir(fp):
             return tool_error(f"不是有效目录: {path}", cause=ErrorCause.PARAM,
                               retryable=False,
@@ -568,7 +568,7 @@ def file_info(path: str) -> str:
         path: 文件或目录路径
     """
     try:
-        fp = _safe_path(path)
+        fp = safe_path(path)
         e = os.path.exists(fp)
         info: Dict[str, Any] = {"path": path, "resolved": fp, "exists": e}
         if e:
@@ -595,8 +595,8 @@ def copy_file(src: str, dst: str) -> str:
     """
     try:
         import shutil
-        src_fp = _safe_path(src)
-        dst_fp = _safe_path(dst)
+        src_fp = safe_path(src)
+        dst_fp = safe_path(dst)
         if not os.path.isfile(src_fp):
             return tool_error(f"源文件不存在: {src}", cause=ErrorCause.NOT_FOUND,
                               retryable=False)
@@ -617,8 +617,8 @@ def move_file(src: str, dst: str) -> str:
     """
     try:
         import shutil
-        src_fp = _safe_path(src)
-        dst_fp = _safe_path(dst)
+        src_fp = safe_path(src)
+        dst_fp = safe_path(dst)
         if not os.path.exists(src_fp):
             return tool_error(f"源路径不存在: {src}", cause=ErrorCause.NOT_FOUND,
                               retryable=False)
@@ -637,7 +637,7 @@ def delete_file(path: str) -> str:
         path: 要删除的文件路径
     """
     try:
-        fp = _safe_path(path)
+        fp = safe_path(path)
         if not os.path.isfile(fp):
             return tool_error(f"文件不存在或不是文件: {path}",
                               cause=ErrorCause.NOT_FOUND, retryable=False)
@@ -655,7 +655,7 @@ def mkdir(path: str) -> str:
         path: 目录路径
     """
     try:
-        fp = _safe_path(path)
+        fp = safe_path(path)
         os.makedirs(fp, exist_ok=True)
         return json.dumps({"ok": True, "path": fp}, ensure_ascii=False)
     except Exception as e:
@@ -678,7 +678,7 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
         max_results: 最大返回数量，默认 50
     """
     try:
-        fp = _safe_path(path)
+        fp = safe_path(path)
         if not os.path.isdir(fp):
             return tool_error(f"不是有效目录: {path}", cause=ErrorCause.PARAM,
                               retryable=False,

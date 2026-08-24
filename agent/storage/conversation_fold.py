@@ -32,8 +32,9 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Tuple
 
+from core.latebind import LateBinding
 from core.log import log
-from entities._sdk import activate_group, deferred_tool
+from entities._sdk import deferred_tool
 
 if TYPE_CHECKING:
     from agent.storage.data_center import ConversationData
@@ -366,8 +367,8 @@ class ConversationFolder:
     @staticmethod
     async def _resolve_summarizer() -> Callable[[str], Awaitable[str]]:
         """解析摘要函数：优先运行时 Mind.summarize_text（主模型纯文本调用）。"""
-        from agent.runtime.singleton import get_runtime
-        mind = get_runtime().mind
+        from agent.runtime.singleton import require_runtime
+        mind = require_runtime().mind
         summarizer = getattr(mind, "summarize_text", None)
         if summarizer is None:
             raise RuntimeError("运行时 Mind 不具备摘要能力")
@@ -382,15 +383,9 @@ conversation_folder = ConversationFolder()
 # AI 工具：主动整理对话历史
 # ------------------------------------------------------------------
 
-# 会话数据引用（register_fold_tools 注入）
-_conv_data: Optional["ConversationData"] = None
-
-
-def register_fold_tools(conv_data: "ConversationData") -> None:
-    """注入会话数据并注册对话整理工具（memory 组，幂等）。"""
-    global _conv_data
-    _conv_data = conv_data
-    activate_group("memory")
+#: 会话数据端口（fold_conversations 工具消费；工具 import 时注册、拿不到
+#: DataCenter 构造参数，由 agent.runtime.wiring 统一施绑）
+fold_data_port: LateBinding["ConversationData"] = LateBinding("storage.fold")
 
 
 def _resolve_target_scope(scope: str) -> Tuple[str, str]:
@@ -425,20 +420,21 @@ async def fold_conversations(scope: str = "") -> str:
             也接受完整实体 scope（如 user_qq:123 / group_qq:456）
     """
     from core.tool_errors import ErrorCause, tool_error
-    if _conv_data is None:
+    if not fold_data_port.bound:
         return tool_error(
             "会话存储未初始化", cause=ErrorCause.STATE, retryable=True,
             hint="系统组件尚未完成初始化，请稍后重试",
         )
+    conv_data = fold_data_port.get()
     try:
         if scope.strip().lower() == "all":
-            activity = await _conv_data.list_scope_activity()
+            activity = await conv_data.list_scope_activity()
             scheduled, backlogs = [], {}
             for st, sid, _max_ts in activity:
-                backlog = await _conv_data.scope_backlog(st, sid)
-                if backlog >= _conv_data.fold_idle_min:
+                backlog = await conv_data.scope_backlog(st, sid)
+                if backlog >= conv_data.fold_idle_min:
                     backlogs[f"{st}:{sid}"] = backlog
-                    if await _conv_data.schedule_fold(st, sid):
+                    if await conv_data.schedule_fold(st, sid):
                         scheduled.append(f"{st}:{sid}")
             import json as _json
             return _json.dumps({
@@ -453,14 +449,14 @@ async def fold_conversations(scope: str = "") -> str:
                 "无法确定目标会话", cause=ErrorCause.PARAM, retryable=False,
                 hint="在对话中调用时留空即可；或传 all 整理全部会话",
             )
-        backlog = await _conv_data.scope_backlog(scope_type, scope_id)
-        if backlog < _conv_data.fold_idle_min:
+        backlog = await conv_data.scope_backlog(scope_type, scope_id)
+        if backlog < conv_data.fold_idle_min:
             import json as _json
             return _json.dumps({
                 "scheduled": [], "backlog": backlog,
                 "note": f"当前积压 {backlog} 条，低于整理阈值，无需折叠",
             }, ensure_ascii=False)
-        ok = await _conv_data.schedule_fold(scope_type, scope_id)
+        ok = await conv_data.schedule_fold(scope_type, scope_id)
         import json as _json
         return _json.dumps({
             "scheduled": [f"{scope_type}:{scope_id}"] if ok else [],

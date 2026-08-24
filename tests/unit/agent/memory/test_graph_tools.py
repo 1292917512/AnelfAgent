@@ -13,10 +13,13 @@ from agent.memory.memory_store import MemoryStore
 @pytest.fixture
 async def store(tmp_path):
     s = MemoryStore(str(tmp_path / "memory.sqlite3"))
-    graph_tools.register_graph_tools(s)
+    graph_tools.graph_store_port.set(s)
+    s.graph.set_alias_resolver(graph_tools._resolve_alias)
+    from entities._sdk import activate_group
+    activate_group("graph", "关系图谱 - 人物/概念关系网络的结构化存储与查询")
     yield s
     await s.close()
-    graph_tools._store = None
+    graph_tools.graph_store_port.unbind()
 
 
 @pytest.mark.asyncio

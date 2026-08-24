@@ -13,11 +13,14 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Protocol, Set
 
+from agent.mind.message_schema import is_genuine_user_message, preserve_reasoning_fields
+from agent.mind.tools.result_parse import extract_error_text, parse_tool_result_json
 from agent.mind.tools.result_pipeline import ToolResultPipeline
 from agent.mind.tools.vision import apply_vision
 from core.event_bus import EVENT_THINKING_TOOL_END, event_bus
+from core.latebind import LateBinding
 from core.log import log
 from core.stream_events import EVENT_ASSISTANT_DELTA, EVENT_CONTEXT_USAGE
 
@@ -31,6 +34,21 @@ if TYPE_CHECKING:
     )
     from agent.mind.guardrails import GuardrailController
     from agent.mind.mind import Mind
+
+
+class FileStateCacheView(Protocol):
+    """rehydration 消费的文件状态缓存最小接口（entities 侧实现，结构化匹配）。"""
+
+    def recent_entries(self, n: int) -> List[Any]:
+        """最近使用的 n 条 (key, state) 对（新→旧）。"""
+        ...  # Protocol 方法体
+
+
+#: 文件状态缓存工厂端口（agent → entities 跨层桥，wiring 以
+#: entities.filesystem.file_state.get_cache 施绑；未施绑时 rehydration 跳过）
+file_state_cache_port: LateBinding[Callable[[str], FileStateCacheView]] = LateBinding(
+    "mind.file_state_cache",
+)
 
 
 class ThinkMode(str, Enum):
@@ -129,8 +147,6 @@ class _ThinkLoopCtx:
     pipeline: ToolResultPipeline
     turn_id: str
     delta_emitter: Callable[[str, bool], Awaitable[None]]
-    supports_stream: bool
-    supports_purpose: bool
     # 模式级禁用工具（内部任务禁外发 / leaf 禁委托）：执行侧拦截返回合成错误，
     # 不从 tools 数组移除——可见性（schema 数组全量冻结、跨调用字节一致）
     # 与权限（执行时拦截）分离，保证工具数组前缀缓存跨模式共享
@@ -179,23 +195,6 @@ def _make_delta_emitter(
 
     delta_emitter.reset = reset_stream  # type: ignore[attr-defined]
     return delta_emitter
-
-
-def _probe_stream_support(mind: "Mind") -> bool:
-    """替身 Mind（测试/子代理）可能仍是非流式签名：探测后按需传参。"""
-    return _probe_invoke_kwarg(mind, "stream")
-
-
-def _probe_invoke_kwarg(mind: "Mind", name: str) -> bool:
-    """探测替身 Mind 的 _invoke_llm_unified 是否支持指定关键字参数。"""
-    try:
-        import inspect as _inspect
-        _invoke_params = _inspect.signature(mind._invoke_llm_unified).parameters
-        return name in _invoke_params or any(
-            p.kind == _inspect.Parameter.VAR_KEYWORD for p in _invoke_params.values()
-        )
-    except (TypeError, ValueError):
-        return False
 
 
 def _tool_schema_name(schema: Dict) -> str:
@@ -293,8 +292,6 @@ async def _prepare_think_context(
         pipeline=pipeline,
         turn_id=turn_id,
         delta_emitter=_make_delta_emitter(current_scope, turn_id),
-        supports_stream=_probe_stream_support(mind),
-        supports_purpose=_probe_invoke_kwarg(mind, "purpose"),
         blocked_tools=frozenset(blocked_tools or ()),
     )
     state = _ThinkRoundState(
@@ -447,8 +444,9 @@ _REHYDRATE_TOTAL_CHARS = 50000
 def _rehydrate_recent_files(scope: str) -> str:
     """压缩后重读最近读取/编辑过的文件（≤5 个），生成恢复上下文。"""
     try:
-        from entities.filesystem import file_state
-        cache = file_state.get_cache(scope)
+        if not file_state_cache_port.bound:
+            return ""
+        cache = file_state_cache_port.get()(scope)
         entries = cache.recent_entries(_REHYDRATE_MAX_FILES)
     except Exception:
         return ""
@@ -539,7 +537,6 @@ def _maybe_reset_guardrail_for_interjection(guardrail, new_msgs: List[Dict]) -> 
     仅认真实渠道到达的用户消息（带到达元数据标签）为插话；机器生成的
     user 角色消息（proactive 指令/prefill 独白）不触发重置。返回是否重置。
     """
-    from agent.mind.context_compressor import is_genuine_user_message
     if any(
         is_genuine_user_message({"role": "user", "content": m.get("content")})
         for m in new_msgs
@@ -764,8 +761,6 @@ def _handle_length_recovery(
     截断轮的 tool_calls 参数可能不完整（JSON 断裂），一律丢弃不执行；
     恢复次数耗尽时同样跳过本轮 tool_calls 并提示拆分/结束。
     """
-    # 延迟导入：preserve_reasoning_fields 定义在 think_loop（工具执行块），避免循环引用
-    from agent.mind.tools.think_loop import preserve_reasoning_fields
 
     if getattr(result, "finish_reason", "") != "length":
         return _StageOutcome.PROCEED
@@ -857,27 +852,6 @@ def _detect_token_leak(result: "ChatResult", tool_calls: List["ToolCall"]) -> bo
     return False
 
 
-def _parse_tool_result_json(text: str) -> Optional[Any]:
-    """宽松解析工具结果 JSON。
-
-    结果经加工管线后可能带威胁扫描前缀（[安全警告] ...\n）或
-    守卫警告后缀（\n\n[工具守卫警告: ...]），整体 json.loads 会失败；
-    此处定位首个 '{' 起解析首个完整 JSON 值，容忍前后附加文本。
-    """
-    try:
-        return json.loads(text)
-    except (json.JSONDecodeError, TypeError):
-        pass
-    start = text.find("{")
-    if start < 0:
-        return None
-    try:
-        obj, _ = json.JSONDecoder().raw_decode(text, start)
-        return obj
-    except (json.JSONDecodeError, ValueError):
-        return None
-
-
 def _check_tool_results_all_errors(
         tool_chain: List[Dict],
         tool_calls: List["ToolCall"],
@@ -907,7 +881,7 @@ def _check_tool_results_all_errors(
         return False
 
     for r in results:
-        parsed = _parse_tool_result_json(r)
+        parsed = parse_tool_result_json(r)
         if not isinstance(parsed, dict):
             # 非 JSON dict 内容视为非错误（纯文本结果）
             return False
@@ -925,42 +899,6 @@ def _check_tool_results_all_errors(
 
 # 失败 payload 中错误描述字段的回退顺序（error 为统一主信号键，
 # 其余兼容未走 tool_error 的工具：shell 类用 stderr、部分业务工具用 message/detail）
-_ERROR_TEXT_KEYS = ("error", "message", "stderr", "detail")
-
-# 回退摘要的最大长度（notes 拼接统一截断，供日志与拦截反馈）
-_FALLBACK_BRIEF_MAX = 150
-
-
-def _extract_error_text(payload: Any) -> str:
-    """从工具结果 payload（dict 或 JSON 字符串）中提取错误文本，无错误返回空串。
-
-    回退链（仅失败分支内）：error/message/stderr/detail → notes（工具自身的
-    语义解释，如 shell"非零码+无输出通常为无匹配"）→ returncode（命令退出码）。
-    避免把"搜索无匹配"这类否定结果渲染成无信息的"未知错误"。
-    """
-    if isinstance(payload, str):
-        payload = _parse_tool_result_json(payload)
-    if not isinstance(payload, dict):
-        return ""
-    if payload.get("success") is False or payload.get("ok") is False:
-        for key in _ERROR_TEXT_KEYS:
-            value = payload.get(key)
-            if value:
-                return str(value)
-        notes = payload.get("notes")
-        if isinstance(notes, list) and notes:
-            text = "；".join(str(n) for n in notes if n)
-            if text:
-                return text[:_FALLBACK_BRIEF_MAX] + ("…" if len(text) > _FALLBACK_BRIEF_MAX else "")
-        rc = payload.get("returncode")
-        if rc is not None:
-            return f"命令退出码 {rc}（无错误输出）"
-        return "工具返回失败但未提供错误详情"
-    if payload.get("error"):
-        return str(payload["error"])
-    return ""
-
-
 # 单条错误摘要的最大长度（日志可读性截断）
 _ERROR_BRIEF_MAX = 150
 
@@ -991,7 +929,7 @@ def _collect_round_error_briefs(
             continue
         matched_any = True
         content = msg.get("content", "")
-        err = _extract_error_text(content if isinstance(content, str) else "")
+        err = extract_error_text(content if isinstance(content, str) else "")
         if err:
             if len(err) > _ERROR_BRIEF_MAX:
                 err = err[:_ERROR_BRIEF_MAX] + "…"
@@ -1031,11 +969,11 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List["ToolCall"]
         content = msg.get("content", "")
         if not isinstance(content, str):
             continue
-        parsed = _parse_tool_result_json(content)
+        parsed = parse_tool_result_json(content)
         if not isinstance(parsed, dict):
             continue
 
-        err = _extract_error_text(parsed)
+        err = extract_error_text(parsed)
         if err:
             failures.append(f"{tc_names.get(tc_id, '?')}: {err}")
 
@@ -1086,7 +1024,7 @@ def _round_output_sent_successfully(
         found_tool = True
         if msg.get("tool_call_id") not in tc_ids:
             continue
-        parsed = _parse_tool_result_json(msg.get("content", ""))
+        parsed = parse_tool_result_json(msg.get("content", ""))
         if isinstance(parsed, dict) and parsed.get("success") is not False:
             return True
     return False

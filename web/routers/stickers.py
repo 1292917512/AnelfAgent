@@ -18,8 +18,12 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from core.log import log
+from services import StickerService
+from services.sticker import StickerServiceError
 
 router = APIRouter(prefix="/stickers", tags=["stickers"])
+
+_sticker_svc = StickerService()
 
 _ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -29,11 +33,6 @@ def _write_bytes(path: str, data: bytes) -> None:
     """写入二进制文件（同步实现，供 to_thread 调用）。"""
     with open(path, "wb") as f:
         f.write(data)
-
-
-def _store():
-    from entities.sticker.store import get_sticker_store
-    return get_sticker_store()
 
 
 def _workspace_abs() -> str:
@@ -65,13 +64,13 @@ async def list_indexed_images(
     page_size: int = Query(24, ge=1, le=100),
 ) -> Dict[str, Any]:
     """分页浏览全量图片感知索引。"""
-    return await _store().list_images(page=page, page_size=page_size)
+    return await _sticker_svc.list_images(page, page_size)
 
 
 @router.get("/images/file")
 async def indexed_image_file(path: str) -> FileResponse:
     """索引图片预览（仅允许已入库且位于 workspace 内的路径）。"""
-    record = await _store().get_image(path)
+    record = await _sticker_svc.get_image(path)
     if not record:
         raise HTTPException(status_code=404, detail="图片不在索引中")
     return _safe_file_response(path)
@@ -80,7 +79,7 @@ async def indexed_image_file(path: str) -> FileResponse:
 @router.delete("/images")
 async def delete_indexed_image(path: str) -> Dict[str, Any]:
     """从索引中移除一张图片（不删除原文件）。"""
-    if not await _store().delete_image(path):
+    if not await _sticker_svc.delete_image(path):
         raise HTTPException(status_code=404, detail="图片不在索引中")
     return {"success": True, "removed": path}
 
@@ -88,16 +87,6 @@ async def delete_indexed_image(path: str) -> Dict[str, Any]:
 # ------------------------------------------------------------------
 # 向量维度健康与重建（静态前缀，先于 /{sticker_id} 注册）
 # ------------------------------------------------------------------
-
-def _mismatched_count(embedding: Dict[str, Any], model_dims: Optional[int]) -> int:
-    """统计与参考维度不一致的向量条数（参考维度优先取当前模型，其次 vec 索引维度）。"""
-    total = 0
-    for kind, dims_map in embedding["stored_dims"].items():
-        ref = model_dims or embedding["vec_dims"].get(kind)
-        if not ref:
-            continue
-        total += sum(c for d, c in dims_map.items() if int(d) != ref)
-    return total
 
 
 class EmbeddingRebuildRequest(BaseModel):
@@ -107,31 +96,10 @@ class EmbeddingRebuildRequest(BaseModel):
 @router.post("/embedding/rebuild")
 async def rebuild_embeddings(body: EmbeddingRebuildRequest) -> Dict[str, Any]:
     """切换向量模型后重建贴纸/图片向量：清理后由后台 EmbeddingWorker 按当前模型回填。"""
-    from entities.sticker.tools import _get_embedder
-
-    if body.mode not in ("mismatched", "all"):
-        raise HTTPException(status_code=400, detail=f"不支持的重建模式: {body.mode}")
-
-    embedder = _get_embedder()
-    dims = embedder.dimensions
-    if dims is None:
-        probe = await embedder.embed_query("dimension probe")
-        if probe:
-            dims = len(probe)
-    if not dims:
-        raise HTTPException(status_code=503, detail="无可用向量模型，无法重建")
-
-    store = _store()
-    cleared: Dict[str, Any]
-    if body.mode == "all":
-        cleared = {"total": await store.clear_embeddings()}
-    else:
-        cleared = await store.clear_mismatched_embeddings(dims)
-
-    from agent.memory.embedding import wake_embedding_worker
-    wake_embedding_worker()
-    log(f"贴纸向量重建（{body.mode}）: 目标维度 {dims}，已清空 {cleared}", tag="贴纸")
-    return {"ok": True, "dims": dims, "cleared": cleared}
+    try:
+        return await _sticker_svc.rebuild_embeddings(body.mode)
+    except StickerServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
 
 
 # ------------------------------------------------------------------
@@ -145,33 +113,19 @@ async def list_stickers(
     page_size: int = Query(24, ge=1, le=100),
 ) -> Dict[str, Any]:
     """分页列出表情包（query 非空时在当前页内做模糊过滤）。"""
-    return await _store().list_stickers(page=page, page_size=page_size, query=query)
+    return await _sticker_svc.list_stickers(query, page, page_size)
 
 
 @router.get("/stats")
 async def sticker_stats() -> Dict[str, Any]:
     """表情包与图片索引统计（含向量维度健康）。"""
-    stats = await _store().stats()
-    model = ""
-    model_dims: Optional[int] = None
-    try:
-        from entities.sticker.tools import _get_embedder
-        embedder = _get_embedder()
-        model = embedder.client_name
-        model_dims = embedder.dimensions
-    except Exception as exc:
-        log(f"获取向量模型信息失败: {exc}", "DEBUG", tag="贴纸")
-    embedding = stats["embedding"]
-    embedding["model"] = model
-    embedding["model_dims"] = model_dims
-    embedding["mismatched"] = _mismatched_count(embedding, model_dims)
-    return stats
+    return await _sticker_svc.stats()
 
 
 @router.get("/{sticker_id}/file")
 async def sticker_file(sticker_id: str) -> FileResponse:
     """表情包图片预览。"""
-    sticker = await _store().get_sticker(sticker_id)
+    sticker = await _sticker_svc.get_sticker(sticker_id)
     if not sticker:
         raise HTTPException(status_code=404, detail="表情包不存在")
     return _safe_file_response(sticker["file_path"])
@@ -185,16 +139,6 @@ async def upload_sticker(
     emotion: str = Form(""),
 ) -> Dict[str, Any]:
     """上传表情包：description 留空时自动调用视觉模型生成。"""
-    from entities.sticker.phash import compute_phash
-    from entities.sticker.tools import (
-        _describe_sticker,
-        _embed_for_index,
-        _import_to_stickers_dir,
-        _md5_file,
-        _parse_tags,
-        _stickers_dir,
-    )
-
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in _ALLOWED_EXTS:
         raise HTTPException(status_code=400, detail=f"不支持的图片格式: {ext or '未知'}")
@@ -206,29 +150,11 @@ async def upload_sticker(
         raise HTTPException(status_code=400, detail="文件超过 20MB 限制")
 
     # 先落到 stickers 临时名，算出哈希后再规范命名
-    tmp_path = os.path.join(_stickers_dir(), f"upload_{os.urandom(4).hex()}{ext}")
+    tmp_path = os.path.join(_sticker_svc.stickers_dir(), f"upload_{os.urandom(4).hex()}{ext}")
     await asyncio.to_thread(_write_bytes, tmp_path, data)
 
     try:
-        content_hash = _md5_file(tmp_path)
-        phash = compute_phash(tmp_path)
-        tag_list = _parse_tags(tags)
-        if not description.strip():
-            description = await _describe_sticker(tmp_path)
-        dest = _import_to_stickers_dir(tmp_path, content_hash)
-        embedding = await _embed_for_index(description, tag_list, dest)
-
-        sticker = await _store().add_sticker(
-            file_path=dest,
-            description=description,
-            tags=tag_list,
-            emotion=emotion.strip(),
-            content_hash=content_hash,
-            phash=phash,
-            source="webui",
-            embedding=embedding,
-        )
-        log(f"WebUI 上传表情包: {sticker['id']}", tag="贴纸")
+        sticker = await _sticker_svc.import_sticker(tmp_path, description, tags, emotion)
         return {"success": True, "sticker": sticker}
     finally:
         try:
@@ -246,58 +172,29 @@ class StickerUpdate(BaseModel):
 @router.put("/{sticker_id}")
 async def update_sticker(sticker_id: str, body: StickerUpdate) -> Dict[str, Any]:
     """更新描述/标签/情绪（自动重新生成检索向量）。"""
-    from entities.sticker.tools import _embed_for_index
-
-    store = _store()
-    current = await store.get_sticker(sticker_id)
-    if not current:
-        raise HTTPException(status_code=404, detail="表情包不存在")
-
-    new_desc = body.description if body.description is not None else current["description"]
-    new_tags = body.tags if body.tags is not None else current["tags"]
-    embedding = await _embed_for_index(new_desc, new_tags, current["file_path"])
-
-    updated = await store.update_sticker(
-        sticker_id,
-        description=body.description,
-        tags=body.tags,
-        emotion=body.emotion,
-        embedding=embedding,
-    )
+    try:
+        updated = await _sticker_svc.update_sticker(
+            sticker_id, body.description, body.tags, body.emotion,
+        )
+    except StickerServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
     return {"success": True, "sticker": updated}
 
 
 @router.post("/{sticker_id}/reindex")
 async def reindex_sticker(sticker_id: str) -> Dict[str, Any]:
     """重新生成描述与检索向量（视觉模型重描述）。"""
-    from entities.sticker.tools import _describe_sticker, _embed_for_index
-
-    store = _store()
-    current = await store.get_sticker(sticker_id)
-    if not current:
-        raise HTTPException(status_code=404, detail="表情包不存在")
-    if not os.path.isfile(current["file_path"]):
-        raise HTTPException(status_code=404, detail="表情包文件已丢失")
-
-    description = await _describe_sticker(current["file_path"])
-    if not description:
-        raise HTTPException(status_code=503, detail="无可用视觉模型，无法重新生成描述")
-    embedding = await _embed_for_index(description, current["tags"], current["file_path"])
-    updated = await store.update_sticker(
-        sticker_id, description=description, embedding=embedding)
+    try:
+        updated = await _sticker_svc.reindex_sticker(sticker_id)
+    except StickerServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
     return {"success": True, "sticker": updated}
 
 
 @router.delete("/{sticker_id}")
 async def delete_sticker(sticker_id: str) -> Dict[str, Any]:
     """删除表情包（连同文件与索引）。"""
-    store = _store()
-    removed = await store.delete_sticker(sticker_id)
+    removed = await _sticker_svc.delete_sticker(sticker_id)
     if not removed:
         raise HTTPException(status_code=404, detail="表情包不存在")
-    try:
-        if os.path.exists(removed["file_path"]):
-            os.remove(removed["file_path"])
-    except OSError as exc:
-        log(f"表情包文件删除失败: {exc}", "DEBUG", tag="贴纸")
     return {"success": True, "removed": sticker_id}

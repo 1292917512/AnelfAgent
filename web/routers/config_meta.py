@@ -10,29 +10,23 @@ PUT  /api/config/meta/{key}  保存单个配置项（热更生效，自动路由
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from core.config import ConfigItem, ConfigManager, ConfigRegistry, ConfigValueType
+from services import ConfigService
 from web.routers._errors import server_error
 
 router = APIRouter(prefix="/config", tags=["config"])
 
-# MindConfig 字段集合（保存时路由到 save_mind_config 以保证双轨同步）
-_MIND_FIELDS_CACHE: Optional[frozenset] = None
+_config_svc = ConfigService()
 
 
 def _mind_fields() -> frozenset:
-    global _MIND_FIELDS_CACHE
-    if _MIND_FIELDS_CACHE is None:
-        try:
-            from agent.config import MIND_SYNC_FIELDS
-            _MIND_FIELDS_CACHE = frozenset((*MIND_SYNC_FIELDS, "tool_system_rules"))
-        except Exception:
-            _MIND_FIELDS_CACHE = frozenset()
-    return _MIND_FIELDS_CACHE
+    """MindConfig 字段集合（保存时路由到 save_mind_config 以保证双轨同步）。"""
+    return _config_svc.mind_fields()
 
 
 def _item_type(item: ConfigItem) -> str:
@@ -117,8 +111,7 @@ async def save_config_meta(key: str, data: ConfigValueUpdate) -> Dict[str, Any]:
     if key in _mind_fields():
         # MindConfig 字段：走 save_mind_config 保证双轨同步 + 实时生效
         try:
-            from agent.config import get_config_provider
-            get_config_provider().save_mind_config(**{key: value})
+            _config_svc.save_mind_value(key, value)
         except Exception as exc:
             raise server_error("保存 Mind 配置", exc) from exc
     else:

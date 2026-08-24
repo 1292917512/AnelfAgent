@@ -14,9 +14,12 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict
+
+if TYPE_CHECKING:
+    from agent.llm.types import ChatResult
 
 
 class FunctionCall(BaseModel):
@@ -214,3 +217,62 @@ def normalize_for_send(messages: List[Dict]) -> List[Dict]:
     return fix_empty_tool_call_content(
         fix_trailing_assistant(normalize_roles(ensure_tool_result_pairing(stripped)))
     )
+
+
+# ------------------------------------------------------------------
+# 消息内容判定与推理字段回传（纯函数叶子区）
+# ------------------------------------------------------------------
+
+# 真用户原话判定：经渠道到达的消息 content 以前缀元数据标签开头
+# （[time:…][uid:…][name:…] 等，见 messages.everything.get_tag_list）。
+# 机器生成的 user 角色消息（proactive 主动联系指令、自主操作提示、
+# prefill 修复后被改写为 user 的 assistant 独白等）没有到达标签——
+# 它们属于执行块而非用户原话。
+_USER_ARRIVAL_TAGS = (
+    "time", "uid", "name", "nickname", "channel", "group_id", "session_id", "message_id",
+)
+
+
+def is_genuine_user_message(msg: Dict) -> bool:
+    """判定 role=user 消息是否为真用户原话（渠道到达、带元数据标签）。"""
+    if msg.get("role") != "user":
+        return False
+    content = msg.get("content")
+    if not isinstance(content, str) or not content:
+        return False
+    head = content.lstrip()[:200]
+    return head.startswith("[") and any(f"[{tag}:" in head for tag in _USER_ARRIVAL_TAGS)
+
+
+def preserve_reasoning_fields(msg: Dict[str, Any], result: "ChatResult",
+                              tool_turn: bool = False) -> None:
+    """从 ChatResult.raw 中提取推理字段到 assistant 消息，维持多轮思维链。
+
+    litellm 统一返回 OpenAI 格式，按协议覆盖两种载体：
+    - reasoning_details：OpenRouter 风格，litellm 请求侧原样回传。
+      **仅 tool_turn=True（工具调用轮）挂载**——DeepSeek 官方 thinking 规则
+      要求工具轮回传、纯文本轮服务端直接忽略，普通轮回传纯属 token 浪费
+      （对齐 dsh serialize.ts 的条件回传；REFLECT 连续文本轮场景收益最大）
+    - thinking_blocks：Anthropic 协议 thinking 块（含 signature/redacted），
+      litellm 请求侧据此重构 thinking 块（交错思考 + tool_use 场景必需）。
+      签名块语义微妙，保持无条件保留（不随本参数收紧，单独评估）
+    均以响应实际存在为条件，不返回推理字段的模型行为不变。
+    """
+    if not result.raw or not result.reasoning_content:
+        return
+    try:
+        choices = result.raw.get("choices")
+        if not choices or not isinstance(choices, list):
+            return
+        message = choices[0].get("message", {})
+        if not isinstance(message, dict):
+            return
+        if tool_turn:
+            rd = message.get("reasoning_details")
+            if rd:
+                msg["reasoning_details"] = rd
+        tb = message.get("thinking_blocks")
+        if tb:
+            msg["thinking_blocks"] = tb
+    except (IndexError, AttributeError, TypeError):
+        pass

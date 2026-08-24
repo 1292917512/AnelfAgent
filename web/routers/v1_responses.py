@@ -9,7 +9,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from agent.llm.responses.session import get_response_session_store
 from core.log import log
 from services.responses import ResponsesService, ResponsesServiceError
 
@@ -52,8 +51,7 @@ async def create_response(
     request: Request,
 ) -> Any:
     if req.stream:
-        store = get_response_session_store()
-        response_id = store.new_response_id()
+        response_id = _svc.new_response_id()
 
         async def event_gen() -> AsyncGenerator[str, None]:
             try:

@@ -1,7 +1,8 @@
 """自主规划工具 — 创建、追踪和管理目标计划。
 
-规划是 Agent 的核心认知能力，工具直接持有 MemoryStore 引用，
-通过 ``register_planning_tools()`` 在运行时注入依赖后批量注册到 EntityRegistry。
+规划是 Agent 的核心认知能力，MemoryStore 引用经 ``planning_store_port``
+晚绑定端口分发（工具 import 时注册、拿不到构造参数；由 agent.runtime.wiring
+统一施绑，tracker 与工具组共用同一端口）。
 
 Plan 模式（present_plan）：
 - Agent 自发提交计划后立即开始执行，**不**等待用户批准（不走 ApprovalGate）。
@@ -19,14 +20,18 @@ from typing import Any, Dict, List, Optional
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
 from agent.planning import tracker
+from agent.planning.tracker import planning_store_port
 from core.log import log
 from core.tool_errors import ErrorCause, tool_error
-from entities._sdk import activate_group, deferred_tool
+from entities._sdk import deferred_tool
 
 _GOAL_SOURCE = "goal"
 _GROUP = "planning"
 
-_store: Optional[MemoryStore] = None
+
+def _bound_store() -> Optional[MemoryStore]:
+    """取 MemoryStore（端口未施绑时返回 None，工具降级为未就绪错误）。"""
+    return planning_store_port.get() if planning_store_port.bound else None
 
 
 def _store_not_ready() -> str:
@@ -36,14 +41,6 @@ def _store_not_ready() -> str:
         cause=ErrorCause.STATE, retryable=False,
         hint="MemoryStore 不可用，请检查服务启动状态",
     )
-
-
-def register_planning_tools(store: MemoryStore) -> None:
-    """注入 MemoryStore 并批量注册规划工具。"""
-    global _store
-    _store = store
-    tracker.bind_store(store)
-    activate_group(_GROUP, "目标规划管理 - 创建执行计划、追踪目标进度")
 
 
 async def _find_goal(
@@ -98,7 +95,8 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
 
     注意：非循环目标完成后需调用 delete_goal(goal_id) 删除。
     """
-    if _store is None:
+    store = _bound_store()
+    if store is None:
         return _store_not_ready()
 
     step_list = [s.strip() for s in steps.split("|") if s.strip()] if steps else []
@@ -113,7 +111,7 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
         tags=[f"goal:{goal['goal_id']}"],
         metadata={"goal_id": goal["goal_id"], "status": "active"},
     )
-    entry_id = await _store.add(entry)
+    entry_id = await store.add(entry)
     goal["memory_id"] = entry_id
     return json.dumps({"success": True, "goal": goal}, ensure_ascii=False)
 
@@ -131,10 +129,11 @@ async def list_goals(status: str = "active") -> str:
     Args:
         status: 筛选状态，active（默认）/ completed / all
     """
-    if _store is None:
+    store = _bound_store()
+    if store is None:
         return _store_not_ready()
 
-    entries = await _store.list_recent(limit=50, memory_type=MemoryType.SEMANTIC, source=_GOAL_SOURCE)
+    entries = await store.list_recent(limit=50, memory_type=MemoryType.SEMANTIC, source=_GOAL_SOURCE)
 
     goals: List[Dict[str, Any]] = []
     for entry in entries:
@@ -177,7 +176,8 @@ async def update_goal(
         note: 步骤备注
         goal_status: 整体目标状态（active / completed / cancelled），留空不更新
     """
-    if _store is None:
+    store = _bound_store()
+    if store is None:
         return _store_not_ready()
 
     target_entry, target_goal = await _find_goal(goal_id)
@@ -212,7 +212,7 @@ async def update_goal(
         "goal_id": goal_id,
         "status": target_goal["status"],
     }
-    await _store.update(target_entry, clear_embedding=True)
+    await store.update(target_entry, clear_embedding=True)
     target_goal["memory_id"] = target_entry.id
 
     # 发射步骤进度事件（前端 PlanPanel 浮窗据此打勾）；
@@ -231,7 +231,7 @@ async def update_goal(
                 if next_idx < len(steps) and steps[next_idx].get("status") == "pending":
                     steps[next_idx]["status"] = "in_progress"
                     target_entry.content = json.dumps(target_goal, ensure_ascii=False)
-                    await _store.update(target_entry, clear_embedding=False)
+                    await store.update(target_entry, clear_embedding=False)
                     await tracker._emit_step(scope, goal_id, next_idx, "in_progress", note="自动推进")
 
         if goal_status:
@@ -258,12 +258,13 @@ async def delete_goal(goal_id: str) -> str:
     Args:
         goal_id: 目标 ID
     """
-    if _store is None:
+    store = _bound_store()
+    if store is None:
         return _store_not_ready()
 
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is not None and target_goal is not None and target_entry.id:
-        await _store.delete(target_entry.id)
+        await store.delete(target_entry.id)
         # 通知前端移除计划卡片（否则 PlanPanel 残留已删除的计划）
         try:
             from core.event_bus import EVENT_PLAN_DELETED, event_bus
@@ -290,14 +291,15 @@ async def get_goal(goal_id: str) -> str:
     Args:
         goal_id: 目标 ID
     """
-    if _store is None:
+    store = _bound_store()
+    if store is None:
         return _store_not_ready()
 
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is not None and target_goal is not None:
         target_goal["memory_id"] = target_entry.id
         # 反查关联记忆（goal:{id} 标签双链），让 AI 看到目标下已沉淀的内容
-        related = await _store.search_by_tags([f"goal:{goal_id}"], limit=20)
+        related = await store.search_by_tags([f"goal:{goal_id}"], limit=20)
         related_count = sum(1 for e in related if e.id != target_entry.id)
         return json.dumps({
             "success": True,

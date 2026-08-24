@@ -86,11 +86,11 @@ class TestUpdateGoal:
     async def test_emits_step_updated(self, tmp_path):
         """update_goal 成功后发射 plan_step_updated 事件。"""
         from agent.memory.memory_store import MemoryStore
-        from agent.planning import tools as plan_tools
+        from agent.planning.tracker import planning_store_port
 
         # 注入临时 store（走正式初始化路径，同时绑定 tracker）
         store = MemoryStore(db_path=str(tmp_path / "mem.db"))
-        plan_tools.register_planning_tools(store)
+        planning_store_port.set(store)
 
         from agent.planning.tools import create_goal, update_goal
 
@@ -122,17 +122,15 @@ class TestUpdateGoal:
         finally:
             event_bus.off_by_owner("test.plan")
             await store.close()
-            plan_tools._store = None
-            from agent.planning import tracker
-            tracker._store = None
+            planning_store_port.unbind()
 
     async def test_emits_status_changed_on_completed(self, tmp_path):
         """update_goal 设置 goal_status='completed' 时发射 plan_status_changed。"""
         from agent.memory.memory_store import MemoryStore
-        from agent.planning import tools as plan_tools
+        from agent.planning.tracker import planning_store_port
 
         store = MemoryStore(db_path=str(tmp_path / "mem.db"))
-        plan_tools.register_planning_tools(store)
+        planning_store_port.set(store)
 
         from agent.planning.tools import create_goal, update_goal
 
@@ -154,9 +152,7 @@ class TestUpdateGoal:
         finally:
             event_bus.off_by_owner("test.plan")
             await store.close()
-            plan_tools._store = None
-            from agent.planning import tracker
-            tracker._store = None
+            planning_store_port.unbind()
 
 
 class TestApprovalGateNoLongerAsksForPlan:

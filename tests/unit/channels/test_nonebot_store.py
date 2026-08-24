@@ -8,14 +8,14 @@ from typing import List
 
 import pytest
 
-from services.nonebot import NoneBotService, _read_channel_config, _write_channel_config
+from channels.nonebot_bridge.service import NoneBotService, _read_channel_config, _write_channel_config
 
 
 @pytest.fixture()
 def isolated_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """把频道配置路径与商店快照目录隔离到临时目录。"""
     cfg_path = tmp_path / "channel_config.json"
-    monkeypatch.setattr("services.nonebot._channel_config_path", lambda: cfg_path)
+    monkeypatch.setattr("channels.nonebot_bridge.service._channel_config_path", lambda: cfg_path)
 
     from core.path import ConfigPaths
 

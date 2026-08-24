@@ -54,7 +54,7 @@ def _register(name: str, func: Callable[..., Any], description: str, sensitive: 
 
 
 def _service() -> Any:
-    from services.nonebot import NoneBotService
+    from channels.nonebot_bridge.service import NoneBotService
 
     return NoneBotService()
 

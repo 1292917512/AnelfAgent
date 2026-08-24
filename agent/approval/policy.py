@@ -14,11 +14,27 @@ import fnmatch
 import json
 import os
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from pydantic import BaseModel, Field
 
+from core.latebind import LateBinding
 from core.log import log
+
+
+class WorkspacePathFns(NamedTuple):
+    """工作区路径解析函数集（entities.filesystem.paths 的端口载体）。
+
+    agent → entities 跨层桥：审批路径规则需与文件工具执行层完全一致的
+    路径解析，经端口获取实现，不直接 import entities 内部模块。
+    """
+
+    get_root: Callable[[], str]
+    resolve: Callable[[str], str]
+
+
+#: 工作区路径解析端口（agent.runtime.wiring 以 entities 实现施绑）
+workspace_paths_port: LateBinding[WorkspacePathFns] = LateBinding("approval.workspace_paths")
 
 
 class RiskLevel(str, Enum):
@@ -166,17 +182,17 @@ def matchable_arg_candidates(tool_name: str, tool_args: Optional[Dict[str, Any]]
     candidates = [value]
     if tool_name in _PATH_TOOLS:
         try:
-            from entities.filesystem.paths import get_workspace_root
-            root = get_workspace_root()
-            parts = []
-            for v in value.split(" "):
-                if v.startswith(root + os.sep):
-                    parts.append(v[len(root) + 1:])
-                else:
-                    parts.append(v)
-            rel = " ".join(parts).strip()
-            if rel != value:
-                candidates.append(rel)
+            if workspace_paths_port.bound:
+                root = workspace_paths_port.get().get_root()
+                parts = []
+                for v in value.split(" "):
+                    if v.startswith(root + os.sep):
+                        parts.append(v[len(root) + 1:])
+                    else:
+                        parts.append(v)
+                rel = " ".join(parts).strip()
+                if rel != value:
+                    candidates.append(rel)
         except Exception:
             log("matchable_arg_candidates 异常已忽略", "DEBUG")
     return candidates
@@ -187,10 +203,11 @@ def _normalize_path_arg(path: str) -> str:
     if not path:
         return path
     try:
-        from entities.filesystem.paths import resolve_workspace_path
-        return resolve_workspace_path(path)
+        if workspace_paths_port.bound:
+            return workspace_paths_port.get().resolve(path)
     except Exception:
-        return path
+        pass  # 路径解析失败时按原文匹配（正常控制流，非异常）
+    return path
 
 
 class ApprovalPolicySet(BaseModel):

@@ -5,7 +5,6 @@
 - delegate_tool:      AI 可调用的 delegate_task 工具
 """
 
-from agent.delegation.delegate_tool import register_delegation_tools
 from agent.delegation.delegation_manager import DelegationManager
 from agent.delegation.sub_agent import SubAgent, SubAgentResult
 
@@ -13,5 +12,4 @@ __all__ = [
     "DelegationManager",
     "SubAgent",
     "SubAgentResult",
-    "register_delegation_tools",
 ]

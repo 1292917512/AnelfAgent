@@ -199,21 +199,24 @@ class TestRelaxImportance:
 
 
 class TestManualForgetArchived:
-    async def test_forget_archives_and_restorable(self, store: MemoryStore, monkeypatch) -> None:
+    async def test_forget_archives_and_restorable(self, store: MemoryStore) -> None:
         import json
 
         from agent.memory import tools as mem_tools
 
-        monkeypatch.setattr(mem_tools, "_store", store)
-        mid = await store.add(_entry("待遗忘的记忆", importance=0.7))
+        mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
+        try:
+            mid = await store.add(_entry("待遗忘的记忆", importance=0.7))
 
-        result = json.loads(await mem_tools.forget(mid))
-        assert result["ok"] is True
-        assert await store.get(mid) is None
-        archived = await store.list_archived()
-        assert any(a["id"] == mid and a["reason"] == "manual_forget" for a in archived)
+            result = json.loads(await mem_tools.forget(mid))
+            assert result["ok"] is True
+            assert await store.get(mid) is None
+            archived = await store.list_archived()
+            assert any(a["id"] == mid and a["reason"] == "manual_forget" for a in archived)
 
-        assert await store.restore_memory(mid) is True
+            assert await store.restore_memory(mid) is True
+        finally:
+            mem_tools.memory_tools_port.unbind()
         assert (await store.get(mid)).content == "待遗忘的记忆"
 
 

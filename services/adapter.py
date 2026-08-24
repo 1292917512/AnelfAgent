@@ -513,6 +513,17 @@ class AdapterService:
         return changed
 
     @staticmethod
+    def reload_all_channel_configs() -> None:
+        """配置保存后热重载所有已注册频道的配置（单个失败不影响其他频道）。"""
+        from agent.channel import get_channel_manager
+        manager = get_channel_manager()
+        for channel in manager.list_channels().values():
+            try:
+                channel.reload_config()
+            except Exception:
+                pass  # 单个频道重载失败不影响其他频道
+
+    @staticmethod
     def _reload_affected_channels(channel_names: list[str]) -> None:
         """通知运行中的频道重新加载配置。"""
         if not channel_names:

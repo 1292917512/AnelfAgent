@@ -66,7 +66,7 @@ def hub(monkeypatch: pytest.MonkeyPatch) -> _FakeHub:
     fake = _FakeHub()
     runtime = SimpleNamespace(mind=SimpleNamespace(push_hub=fake))
     from agent.runtime import singleton
-    monkeypatch.setattr(singleton, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(singleton, "require_runtime", lambda: runtime)
     return fake
 
 

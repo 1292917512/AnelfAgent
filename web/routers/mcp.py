@@ -125,8 +125,7 @@ async def set_stay_awake(name: str, req: StayAwakeRequest) -> Dict[str, Any]:
         )
     except ValueError as e:
         raise HTTPException(404, str(e)) from e
-    from entities.mcp.bridge import apply_sleep_policy
-    applied = apply_sleep_policy(name)
+    applied = _mcp_svc.apply_sleep_policy(name)
     return {"status": "ok", "stay_awake": req.enabled, "applied": applied}
 
 

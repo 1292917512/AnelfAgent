@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
 
 if TYPE_CHECKING:
-    from agent.llm.llm_manager import LLMManager
+    from entities._sdk import LLMManager
 
 entity("model_control", "模型控制 - 切换模型、调整参数、管理优先级")
 
@@ -46,7 +46,7 @@ if _OLLAMA_AVAILABLE:
 def list_models() -> str:
     """列出所有已配置的 LLM 模型，包含类型（chat/vision/embedding）、能力和当前默认标记。"""
     try:
-        from agent.llm import get_llm_manager
+        from entities._sdk import get_llm_manager
         manager = get_llm_manager()
 
         summary = manager.get_models_summary()
@@ -90,9 +90,8 @@ def switch_model(model_name: str) -> str:
         model_name: 要切换到的模型名称（通过 list_models 查看可用名称）
     """
     try:
-        from services.model import ModelService
-        svc = ModelService()
-        ok = svc.set_default(model_name)
+        from entities._sdk import set_default_model
+        ok = set_default_model(model_name)
         if ok:
             return json.dumps({
                 "ok": True,
@@ -112,22 +111,24 @@ def switch_model(model_name: str) -> str:
 def get_current_model() -> str:
     """查看当前使用的模型详情，包括名称、底层模型、温度、超时配置和会话临时参数。"""
     try:
-        from agent.llm import get_llm_manager
-        from agent.llm.llm_client import LLMClient
-        from services._runtime import require_runtime
+        from entities._sdk import (
+            get_active_llm_client,
+            get_llm_client_class,
+            get_llm_manager,
+            get_session_llm_params,
+        )
 
-        rt = require_runtime()
-        llm = rt.llm
+        llm = get_active_llm_client()
         manager = get_llm_manager()
 
         info: dict = {
             "current_model_name": manager.default_name,
-            # 耦合点：agent.mind.Mind._session_llm_params 为 mind 层私有字段，
-            # 由 set_session_params/clear_session_params 写入、mind 构建 LLM 选项时读取
-            "session_params": rt.mind._session_llm_params,
+            # 会话级临时参数覆盖：由 set_session_params/clear_session_params 写入、
+            # mind 构建 LLM 选项时读取
+            "session_params": get_session_llm_params(),
         }
 
-        if isinstance(llm, LLMClient):
+        if isinstance(llm, get_llm_client_class()):
             cfg = llm.config
             info.update({
                 "model": cfg.model,
@@ -158,9 +159,8 @@ def set_session_params(temperature: float = -1.0, max_tokens: int = -1, reasonin
         reasoning_effort: 思考等级 low/medium/high/max（空字符串表示不修改，low 节省成本，high 深度思考）
     """
     try:
-        from services._runtime import require_runtime
-        rt = require_runtime()
-        params = rt.mind._session_llm_params
+        from entities._sdk import get_session_llm_params
+        params = get_session_llm_params()
 
         changed: list[str] = []
         if temperature >= 0:
@@ -195,9 +195,8 @@ def set_session_params(temperature: float = -1.0, max_tokens: int = -1, reasonin
 def clear_session_params() -> str:
     """清除所有临时会话参数，恢复使用模型默认的 temperature 和 max_tokens。"""
     try:
-        from services._runtime import require_runtime
-        rt = require_runtime()
-        rt.mind._session_llm_params.clear()
+        from entities._sdk import get_session_llm_params
+        get_session_llm_params().clear()
         return json.dumps({"ok": True, "message": "已清除所有临时参数，恢复模型默认配置"}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="清除会话参数")
@@ -233,7 +232,7 @@ def update_model_config(model_name: str, field: str, value: str) -> str:
         value: 新值（按字段类型解析）
     """
     try:
-        from agent.llm import get_llm_manager
+        from entities._sdk import get_llm_manager
         manager = get_llm_manager()
 
         client = manager.get_client(model_name)
@@ -282,11 +281,12 @@ def _parse_field_value(field: str, value: str) -> tuple[Any, str]:
             return False, ""
         return None, f"字段 {field} 需要布尔值（true/false），收到: {value!r}"
     if ptype is str:
-        from agent.llm.reasoning import CANONICAL_EFFORTS
+        from entities._sdk import canonical_efforts
+        efforts = canonical_efforts()
         lowered = text.lower()
-        if lowered in CANONICAL_EFFORTS or not lowered:
+        if lowered in efforts or not lowered:
             return lowered, ""
-        return None, f"字段 {field} 可选值: {sorted(CANONICAL_EFFORTS)} 或空串清除，收到: {value!r}"
+        return None, f"字段 {field} 可选值: {sorted(efforts)} 或空串清除，收到: {value!r}"
     try:
         parsed = ptype(text)
     except (TypeError, ValueError):
@@ -305,7 +305,7 @@ def get_model_priority(model_type: str = "chat") -> str:
         model_type: 模型类型，支持 chat / vision / embedding / rerank，默认 chat
     """
     try:
-        from agent.llm import get_llm_manager
+        from entities._sdk import get_llm_manager
         manager = get_llm_manager()
         priorities = manager.get_type_priorities()
 
@@ -334,13 +334,12 @@ def set_model_priority(model_type: str, model_ids: str) -> str:
         model_ids: 逗号分隔的模型 ID 列表，如 "gpt4o,claude3,qwen" （优先级从高到低）
     """
     try:
-        from services.model import ModelService
+        from entities._sdk import get_llm_manager
         id_list = [s.strip() for s in model_ids.split(",") if s.strip()]
         if not id_list:
             return json.dumps({"error": "model_ids 不能为空"}, ensure_ascii=False)
 
-        svc = ModelService()
-        svc.set_type_priority(model_type, id_list)
+        get_llm_manager().set_type_priority(model_type, id_list)
         return json.dumps({
             "ok": True,
             "model_type": model_type,
@@ -363,8 +362,8 @@ def set_model_priority(model_type: str, model_ids: str) -> str:
 def list_sub_agents() -> str:
     """列出全部子代理档案，供 delegate_task 的 agent_name 参数选用。"""
     try:
-        from services.model import ModelService
-        profiles = ModelService().list_sub_agents()
+        from entities._sdk import get_llm_manager
+        profiles = get_llm_manager().list_sub_agents()
         return json.dumps({
             "sub_agents": profiles,
             "usage": "delegate_task(agent_name=档案名) 使用；difficulty 1/2/3 等价于 "
@@ -388,8 +387,8 @@ def create_sub_agent(name: str, model_id: str, description: str = "") -> str:
         description: 用途描述（可选，帮助后续选用）
     """
     try:
-        from services.model import ModelService
-        ok, message = ModelService().create_sub_agent(name, model_id, description)
+        from entities._sdk import get_llm_manager
+        ok, message = get_llm_manager().create_sub_agent(name, model_id, description)
         if not ok:
             return tool_error(message, cause=ErrorCause.PARAM, retryable=False)
         return json.dumps({"ok": True, "message": message, "name": name, "model_id": model_id},
@@ -418,9 +417,9 @@ def update_sub_agent(
         description: 新描述（空 = 不变）
     """
     try:
-        from services.model import ModelService
+        from entities._sdk import get_llm_manager
         pool = [s.strip() for s in models.split(",") if s.strip()] if models else None
-        ok, message = ModelService().update_sub_agent(
+        ok, message = get_llm_manager().update_sub_agent(
             name, model_id=model_id, models=pool, description=description,
         )
         if not ok:
@@ -439,8 +438,8 @@ def delete_sub_agent(name: str) -> str:
         name: 档案名（通过 list_sub_agents 查看）
     """
     try:
-        from services.model import ModelService
-        ok, message = ModelService().remove_sub_agent(name)
+        from entities._sdk import get_llm_manager
+        ok, message = get_llm_manager().remove_sub_agent(name)
         if not ok:
             return tool_error(message, cause=ErrorCause.PARAM, retryable=False)
         return json.dumps({"ok": True, "message": message}, ensure_ascii=False)

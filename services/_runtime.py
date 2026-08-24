@@ -1,7 +1,7 @@
-"""统一的 runtime 访问层。
+"""统一的 runtime 访问层（web/services 侧门面）。
 
-所有 Service 通过本模块安全地获取 AgentRuntime / AgentApp，
-不会意外触发懒创建（避免竞态和重复初始化）。
+实现归 agent.runtime.singleton / agent.runtime.agent_app（单一权威），
+本模块仅为 services/web 层提供不触发懒创建的读取语义。
 """
 
 from __future__ import annotations
@@ -15,17 +15,12 @@ if TYPE_CHECKING:
 
 def is_ready() -> bool:
     """检查 AgentRuntime 是否已初始化（不触发懒创建）。"""
-    try:
-        from agent.runtime import singleton
-        return singleton._default_runtime is not None
-    except Exception:
-        return False
+    from agent.runtime.singleton import get_runtime
+    return get_runtime() is not None
 
 
 def get_runtime() -> Optional["AgentRuntime"]:
     """获取 runtime；未就绪返回 None。"""
-    if not is_ready():
-        return None
     from agent.runtime.singleton import get_runtime as _get
     return _get()
 
@@ -40,7 +35,5 @@ def get_agent_app() -> Optional["AgentApp"]:
 
 def require_runtime() -> "AgentRuntime":
     """获取 runtime；未就绪时抛出 RuntimeError。"""
-    rt = get_runtime()
-    if rt is None:
-        raise RuntimeError("AgentRuntime 尚未初始化")
-    return rt
+    from agent.runtime.singleton import require_runtime as _require
+    return _require()

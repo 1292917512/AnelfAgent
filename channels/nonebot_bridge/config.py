@@ -4,7 +4,7 @@
 - ``KNOWN_ADAPTERS``：内置精选适配器，带完整的平台接入元数据
   （所需环境变量、接入难度、说明、文档链接），Web 界面据此渲染对接表单；
 - 注册表动态适配器：启动/刷新时从 ``registry.nonebot.dev/adapters.json``
-  合并非内置项（见 services/nonebot.py），由通用转换兜底，支持可拓展开发。
+  合并非内置项（见 channels/nonebot_bridge/service.py），由通用转换兜底，支持可拓展开发。
 """
 
 from __future__ import annotations

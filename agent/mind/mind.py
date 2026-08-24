@@ -25,7 +25,6 @@ from agent.messages import (
     Everything,
     EverythingGroup,
 )
-from agent.mind import context_audit  # noqa: F401  # 模块级符号：tests monkeypatch agent.mind.mind.context_audit
 from agent.mind import cycle as _cycle
 from agent.mind import llm_invoker as _llm_invoker
 from agent.mind import recollection as _recollection
@@ -37,7 +36,7 @@ from agent.mind.autonomous import (
     SituationContext,
 )
 from agent.mind.background_tasks import BackgroundTaskRegistry
-from agent.mind.context_compressor import ContextCompressor, register_compressor
+from agent.mind.context_compressor import ContextCompressor
 from agent.mind.cross_channel import (
     ChannelSnapshot,
 )
@@ -59,7 +58,7 @@ from agent.mind.interrupt import (
     match_interrupt_keyword,
 )
 from agent.mind.message_schema import (
-    normalize_for_send,  # noqa: F401  # 模块级符号：tests monkeypatch agent.mind.mind.normalize_for_send
+    normalize_for_send,
     normalize_roles,
 )
 from agent.mind.prefrontal_cortex import PrefrontalCortex
@@ -203,7 +202,7 @@ class Mind:
         # 最近一次真实思考活动时间戳（idle 空闲计数锚点，见 last_activity_ts）
         self._last_activity_ts: float = 0.0
         # 会话级 LLM 参数覆盖（model_control 工具经此下发 temperature 等，随会话存活）
-        self._session_llm_params: dict = {}
+        self.session_llm_params: dict = {}
 
         self._reflecting: bool = False
         self._cycle_lock = asyncio.Lock()
@@ -256,10 +255,13 @@ class Mind:
         self._register_core_tools()
 
     def _init_subsystems(self) -> None:
-        """初始化思维子系统：上下文压缩 / 技能自学习 / 子代理委托。"""
+        """初始化思维子系统：上下文压缩 / 技能自学习 / 子代理委托 / 记忆自动捕获。
+
+        各子系统实例由本类构造持有，工具层的引用经 LateBinding 端口由
+        agent.runtime.wiring 统一施绑（本方法只激活 deferred 工具组）。
+        """
         # 上下文压缩器（think_loop 每轮调用前检查溢出风险）
         self.compressor = ContextCompressor(self)
-        register_compressor(self.compressor)
 
         # 技能自学习系统（存储/事实索引/匹配/策展/后台评审）
         from agent.skills import (
@@ -267,7 +269,6 @@ class Mind:
             SkillMatcher,
             SkillReviewer,
             SkillStore,
-            register_skill_tools,
         )
         self.skill_store = SkillStore()
         self.skill_matcher = SkillMatcher(self.skill_store, self.embedder)
@@ -275,15 +276,16 @@ class Mind:
         self.skill_reviewer = SkillReviewer(self, self.skill_store, index=self.skill_matcher.index)
         if self._skills_enabled():
             self.skill_reviewer.start()
-        # 重绑定工具依赖到本实例：bootstrap 先行注册用的是独立 matcher/store
-        # （Mind 创建晚于工具注册节点），不重绑会产生两套向量缓存重复嵌入。
-        # activate_group 二次调用为 no-op（延迟注册表已弹出），仅刷新依赖指针。
-        register_skill_tools(self.skill_store, self.skill_matcher)
 
-        # 子代理委托管理器（delegate_task 工具注册）
-        from agent.delegation import DelegationManager, register_delegation_tools
+        # 子代理委托管理器（delegate_task 工具经 wiring 端口消费本实例）
+        from agent.delegation import DelegationManager
         self.delegation_manager = DelegationManager(self)
-        register_delegation_tools(self.delegation_manager)
+        count = activate_group("delegation", "子代理 - 复杂任务拆分委托与并行执行")
+        log(f"🤖 子代理工具已注册 ({count} 个)", tag="委托")
+
+        # 记忆自动捕获管线（心跳 tick / 关停兜底 / 压缩前抢跑共用单例）
+        from agent.memory.auto_capture import AutoCapturePipeline
+        self.auto_capture_pipeline = AutoCapturePipeline(self)
 
     # ==================================================================
     # 初始化与配置

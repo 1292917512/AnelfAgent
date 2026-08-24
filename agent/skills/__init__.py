@@ -17,7 +17,6 @@ from agent.skills.curator import SkillCurator
 from agent.skills.skill_index import SkillIndex
 from agent.skills.skill_matcher import SkillMatcher
 from agent.skills.skill_store import Skill, SkillState, SkillStore
-from agent.skills.tools import register_skill_tools
 
 __all__ = [
     "Skill",
@@ -27,5 +26,4 @@ __all__ = [
     "SkillReviewer",
     "SkillState",
     "SkillStore",
-    "register_skill_tools",
 ]

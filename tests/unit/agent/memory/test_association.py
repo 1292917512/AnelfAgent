@@ -97,8 +97,7 @@ class TestMemorizeAutoTag:
         from agent.memory import tools as mem_tools
         from agent.mind.tool_activation import bind_scope, reset_scope
 
-        monkeypatch.setattr(mem_tools, "_store", store)
-        monkeypatch.setattr(mem_tools, "_embedder", None)
+        mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
 
         token = bind_scope("user_424242")
         try:
@@ -107,13 +106,13 @@ class TestMemorizeAutoTag:
             assert "user:424242" in result["tags"]
         finally:
             reset_scope(token)
+            mem_tools.memory_tools_port.unbind()
 
     async def test_explicit_tag_not_overridden(self, store: MemoryStore, monkeypatch) -> None:
         from agent.memory import tools as mem_tools
         from agent.mind.tool_activation import bind_scope, reset_scope
 
-        monkeypatch.setattr(mem_tools, "_store", store)
-        monkeypatch.setattr(mem_tools, "_embedder", None)
+        mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
 
         token = bind_scope("user_424242")
         try:
@@ -122,3 +121,4 @@ class TestMemorizeAutoTag:
             assert "user:424242" not in result["tags"]
         finally:
             reset_scope(token)
+            mem_tools.memory_tools_port.unbind()

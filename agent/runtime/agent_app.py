@@ -103,8 +103,8 @@ class AgentApp:
     @property
     def runtime(self):
         if self._runtime is None:
-            from agent.runtime.singleton import get_runtime
-            self._runtime = get_runtime()
+            from agent.runtime.singleton import require_runtime
+            self._runtime = require_runtime()
         return self._runtime
 
     @property

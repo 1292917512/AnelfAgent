@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
+import asyncio
 import json
 import time
 from typing import Any, Set
@@ -108,7 +108,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     def _make_scoped_forwarder(self, event: str):
         """生成把内核事件透传到 SSE 的 handler（帧名与事件名一致）。"""
         async def _forward(payload: dict) -> None:
-            self._broadcast_scoped(event, payload)
+            await self._broadcast_scoped(event, payload)
         return _forward
 
     async def _on_after_reply(self, payload: dict) -> None:
@@ -117,16 +117,15 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         覆盖无 reply 帧的结束路径（[SILENT] 沉默、空输出、异常），
         避免前端 sending 状态空等看门狗超时。
         """
-        self._broadcast_scoped("turn_end", {"scope": payload.get("scope", ""), "error": bool(payload.get("error"))})
+        await self._broadcast_scoped("turn_end", {"scope": payload.get("scope", ""), "error": bool(payload.get("error"))})
 
     async def _on_assistant_delta(self, payload: dict) -> None:
         """assistant 文本增量 → 50ms 合帧后推送 SSE delta 帧。"""
-        import asyncio
         turn_id = str(payload.get("turn_id", ""))
         if payload.get("reset"):
             # 流式中途失败回退重试：清空该 turn 缓冲并通知前端重置增量渲染
             self._delta_buffers.pop(turn_id, None)
-            self._broadcast_scoped("delta", {
+            await self._broadcast_scoped("delta", {
                 "scope": str(payload.get("scope", "")), "turn_id": turn_id, "reset": True,
             })
             return
@@ -141,6 +140,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             asyncio.get_running_loop().call_later(0.05, self._flush_delta, turn_id)
 
     def _flush_delta(self, turn_id: str) -> None:
+        """50ms 合帧回调（call_later 同步上下文）：组帧后调度单个任务按序发射。"""
         buf = self._delta_buffers.get(turn_id)
         if not buf:
             return
@@ -148,13 +148,21 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         text, reasoning = buf["text"], buf["reasoning"]
         scope = buf.get("scope", "")
         buf["text"] = buf["reasoning"] = ""
+        frames = []
         if reasoning:
-            self._broadcast_scoped("delta", {"scope": scope, "turn_id": turn_id, "delta": reasoning, "reasoning": True})
+            frames.append({"scope": scope, "turn_id": turn_id, "delta": reasoning, "reasoning": True})
         if text:
-            self._broadcast_scoped("delta", {"scope": scope, "turn_id": turn_id, "delta": text, "reasoning": False})
+            frames.append({"scope": scope, "turn_id": turn_id, "delta": text, "reasoning": False})
+        if frames:
+            asyncio.get_running_loop().create_task(self._emit_delta_frames(frames))
+
+    async def _emit_delta_frames(self, frames: list) -> None:
+        """按序发射合帧的 delta 帧（reasoning 先于 text）。"""
+        for frame in frames:
+            await self._broadcast_scoped("delta", frame)
 
     async def _on_tool_start(self, payload: dict) -> None:
-        self._broadcast_scoped("tool_call", {
+        await self._broadcast_scoped("tool_call", {
             "scope": payload.get("scope", ""),
             "call_id": payload.get("tool_id", ""),
             "name": payload.get("tool_name", ""),
@@ -163,7 +171,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         })
 
     async def _on_context_usage(self, payload: dict) -> None:
-        self._broadcast_scoped("context_usage", {
+        await self._broadcast_scoped("context_usage", {
             "scope": payload.get("scope", ""),
             "tokens": payload.get("tokens", 0),
             "threshold": payload.get("threshold", 0),
@@ -175,7 +183,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         })
 
     async def _on_file_diff(self, payload: dict) -> None:
-        self._broadcast("file_diff", {
+        await self._broadcast("file_diff", {
             "path": payload.get("path", ""),
             "diff": payload.get("diff", ""),
             "additions": payload.get("additions", 0),
@@ -183,7 +191,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         })
 
     async def _on_tool_end(self, payload: dict) -> None:
-        self._broadcast_scoped("tool_call", {
+        await self._broadcast_scoped("tool_call", {
             "scope": payload.get("scope", ""),
             "call_id": payload.get("tool_id", ""),
             "name": payload.get("tool_name", ""),
@@ -207,7 +215,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         text = _clean_outbound(text)
         if not text:
             return json.dumps({"success": True}, ensure_ascii=False)
-        self._broadcast("reply", {
+        await self._broadcast("reply", {
             "content": text,
             "media_type": "text",
             "chat_id": self._resolve_chat_id(chat_id, kwargs),
@@ -215,7 +223,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         return json.dumps({"success": True}, ensure_ascii=False)
 
     async def send_photo(self, chat_id: str, photo: str, caption: str = "", **kwargs: Any) -> str:
-        self._broadcast("media", {
+        await self._broadcast("media", {
             "media_type": "image",
             "url": photo,
             "caption": _clean_outbound(caption),
@@ -224,7 +232,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         return json.dumps({"success": True}, ensure_ascii=False)
 
     async def send_voice(self, chat_id: str, voice: str, **kwargs: Any) -> str:
-        self._broadcast("media", {
+        await self._broadcast("media", {
             "media_type": "voice",
             "url": voice,
             "chat_id": self._resolve_chat_id(chat_id, kwargs),
@@ -232,7 +240,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         return json.dumps({"success": True}, ensure_ascii=False)
 
     async def send_audio(self, chat_id: str, audio: str, caption: str = "", **kwargs: Any) -> str:
-        self._broadcast("media", {
+        await self._broadcast("media", {
             "media_type": "audio",
             "url": audio,
             "caption": _clean_outbound(caption),
@@ -241,7 +249,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         return json.dumps({"success": True}, ensure_ascii=False)
 
     async def send_video(self, chat_id: str, video: str, caption: str = "", **kwargs: Any) -> str:
-        self._broadcast("media", {
+        await self._broadcast("media", {
             "media_type": "video",
             "url": video,
             "caption": _clean_outbound(caption),
@@ -250,7 +258,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         return json.dumps({"success": True}, ensure_ascii=False)
 
     async def send_file(self, chat_id: str, file_path: str, caption: str = "", **kwargs: Any) -> str:
-        self._broadcast("media", {
+        await self._broadcast("media", {
             "media_type": "file",
             "url": file_path,
             "caption": _clean_outbound(caption),
@@ -264,7 +272,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
 
     async def render_approval_prompt(self, ctx):
         """审批提示 → SSE 弹窗事件（Web 富交互，不发纯文本消息）。"""
-        self._broadcast("approval_request", {
+        await self._broadcast("approval_request", {
             "request_id": ctx.request_id,
             "tool_name": ctx.tool_name,
             "tool_args": ctx.tool_args_summary,
@@ -307,37 +315,37 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
         )
 
     async def health_check(self) -> HealthStatus:
-        """WebUI 健康探针：检查 broadcast 路由模块可达。"""
-        try:
-            if importlib.util.find_spec("web.routers.chat") is None:
-                raise ImportError("web.routers.chat 模块不存在")
+        """WebUI 健康探针：检查聊天广播事件已有订阅者（web 层 SSE 桥接在线）。"""
+        from core.event_bus import EVENT_CHAT_BROADCAST, event_bus
+        if event_bus.has_listeners(EVENT_CHAT_BROADCAST):
             return HealthStatus(
                 healthy=True,
                 detail="WebUI broadcast channel reachable",
                 last_success_at=time.time(),
             )
-        except ImportError as exc:
-            return HealthStatus(
-                healthy=False,
-                detail=f"WebUI router not available: {exc}",
-                last_error=str(exc),
-            )
+        return HealthStatus(
+            healthy=False,
+            detail="WebUI broadcast 无订阅者（web 层未就绪）",
+            last_error="no chat_broadcast listener",
+        )
 
     @staticmethod
-    def _broadcast(event: str, data: dict) -> None:
-        from web.routers.chat import broadcast_chat_event
-        broadcast_chat_event({
+    async def _broadcast(event: str, data: dict) -> None:
+        """经内核事件总线广播 SSE 帧（web 层订阅 EVENT_CHAT_BROADCAST 桥接，
+        频道不反向依赖 web 层）。"""
+        from core.event_bus import EVENT_CHAT_BROADCAST, event_bus
+        await event_bus.emit(EVENT_CHAT_BROADCAST, {
             "event": event,
             "role": "assistant",
             **data,
         })
 
     @staticmethod
-    def _broadcast_scoped(event: str, payload: dict) -> None:
+    async def _broadcast_scoped(event: str, payload: dict) -> None:
         """带 scope/chat_id 的广播：从 payload.scope 解析 chat_id 一并推给前端，
         前端 buckets[chat_id] 据此路由。"""
         scope = str(payload.get("scope") or "")
         chat_id = str(payload.get("chat_id") or "")
         if not chat_id and "#" in scope:
             chat_id = scope.split("#", 1)[1]
-        WebUIChannel._broadcast(event, {**payload, "chat_id": chat_id})
+        await WebUIChannel._broadcast(event, {**payload, "chat_id": chat_id})

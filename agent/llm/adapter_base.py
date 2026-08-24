@@ -11,7 +11,11 @@ from core.log import log
 
 @dataclass(slots=True)
 class AdapterRequest:
-    """一次媒体 API HTTP 请求（方法 + URL + 查询参数 + JSON 请求体 + 附加请求头）。"""
+    """一次媒体 API HTTP 请求（方法 + URL + 查询参数 + JSON 请求体 + 附加请求头）。
+
+    files 非空时按 multipart 表单发送（OpenAI 系 ASR 等协议需要），
+    此时 payload 作为普通表单字段随附。
+    """
 
     url: str
     method: str = "POST"
@@ -19,6 +23,8 @@ class AdapterRequest:
     params: Optional[Dict[str, Any]] = None
     # 协议要求的附加请求头（如 DashScope 异步任务的 X-DashScope-Async）
     headers: Optional[Dict[str, str]] = None
+    # multipart 文件字段：{字段名: (文件名, 字节, MIME)}
+    files: Optional[Dict[str, Tuple[str, bytes, str]]] = None
 
 
 def host_root(base_url: str) -> str:

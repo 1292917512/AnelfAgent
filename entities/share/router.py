@@ -72,9 +72,9 @@ async def _validate_entry(token: str) -> Dict[str, Any]:
 
 def _resolve_file(entry: Dict[str, Any]) -> str:
     """沙箱校验并返回文件绝对路径，不存在则 404。"""
-    from entities.filesystem.tools import _safe_path
+    from entities.filesystem.tools import safe_path
     try:
-        fp = _safe_path(entry["file_path"])
+        fp = safe_path(entry["file_path"])
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     if not os.path.isfile(fp):

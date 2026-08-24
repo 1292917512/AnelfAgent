@@ -5,30 +5,37 @@
 "需要决策"的诊断报告，AI 阅读事实后带 decision 回执重呼即完成写入，
 或改走合并/放弃路径——把判断留给 AI，把事实算清楚留给系统。
 
-通过 `register_skill_tools()` 在运行时注入依赖后批量注册到 EntityRegistry。
+SkillStore / SkillMatcher 引用经 ``skill_tools_port`` 晚绑定端口分发
+（工具 import 时注册、拿不到构造参数；由 agent.runtime.wiring 统一施绑）。
 """
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from agent.skills import sources as skill_sources
 from agent.skills.skill_matcher import SkillMatcher
 from agent.skills.skill_store import SkillStore
+from core.latebind import LateBinding
 from core.log import log
 from core.tool_errors import ErrorCause, tool_error
-from entities._sdk import activate_group, deferred_tool
-
-_store: Optional[SkillStore] = None
-_matcher: Optional[SkillMatcher] = None
+from entities._sdk import deferred_tool
 
 
-def register_skill_tools(store: SkillStore, matcher: SkillMatcher) -> None:
-    """注入运行时依赖并批量注册技能工具。"""
-    global _store, _matcher
-    _store, _matcher = store, matcher
-    count = activate_group("skills", "技能 - 经验技能的创建、检索、合并与策展，及外部技能源（可插拔商店）的搜索与安装")
-    log(f"🎓 技能工具已注册 ({count} 个)", tag="技能")
+class SkillToolDeps(NamedTuple):
+    """技能工具组运行时依赖（wiring 一次性施绑）。"""
+
+    store: SkillStore
+    matcher: SkillMatcher
+
+
+#: 技能工具组依赖端口（bootstrap 经 agent.runtime.wiring 施绑）
+skill_tools_port: LateBinding[SkillToolDeps] = LateBinding("skills.tools")
+
+
+def _deps() -> Optional[SkillToolDeps]:
+    """取技能工具依赖（端口未施绑时返回 None，工具降级为未就绪错误）。"""
+    return skill_tools_port.get() if skill_tools_port.bound else None
 
 
 def _not_ready() -> str:
@@ -39,9 +46,10 @@ def _not_ready() -> str:
     )
 
 
-def _index():
+def _index() -> Any:
     """事实索引（matcher 持有；未初始化时返回 None，工具降级为直通写入）。"""
-    return _matcher.index if _matcher else None
+    deps = _deps()
+    return deps.matcher.index if deps else None
 
 
 def _decision_request(facts: Dict[str, Any], guidance: str) -> str:
@@ -96,7 +104,8 @@ async def create_skill(
         trigger_patterns: 触发关键词，逗号分隔（3~8 个高区分度词，宁少勿泛）
         decision: 决策回执：首次调用返回诊断报告后，写明差异理由重呼以确认写入
     """
-    if not _store:
+    deps = _deps()
+    if deps is None:
         return _not_ready()
     patterns = [p.strip() for p in trigger_patterns.split(",") if p.strip()]
     if not decision.strip():
@@ -109,7 +118,7 @@ async def create_skill(
                 facts,
                 "本次拟议创建与技能库现状存在上述显著事实，请决策：合并 / 确认新建 / 放弃。",
             )
-    skill = _store.create(
+    skill = deps.store.create(
         name=name, description=description, content=content,
         trigger_patterns=patterns, created_by="agent",
         rationale=decision.strip(),
@@ -139,7 +148,8 @@ async def update_skill(
         add_trigger_patterns: 追加的触发关键词，逗号分隔（仅在真实漏召回后补充，不做预防性堆砌）
         decision: 决策回执：首次调用返回诊断报告后，写明更新理由重呼以确认写入
     """
-    if not _store:
+    deps = _deps()
+    if deps is None:
         return _not_ready()
     patterns = [p.strip() for p in add_trigger_patterns.split(",") if p.strip()]
     if not decision.strip():
@@ -156,7 +166,7 @@ async def update_skill(
                 facts,
                 "本次拟议更新存在上述显著事实，请决策：调整后重试 / 确认更新 / 放弃。",
             )
-    skill = _store.patch(
+    skill = deps.store.patch(
         name,
         content=content or None,
         description=description or None,
@@ -189,7 +199,8 @@ def merge_skills(
         description: 合并后的新描述（留空则保留目标原描述）
         trigger_patterns: 合并后的补充触发关键词，逗号分隔
     """
-    if not _store:
+    deps = _deps()
+    if deps is None:
         return _not_ready()
     source_list = [p.strip() for p in sources.split(",") if p.strip()]
     if not source_list:
@@ -198,7 +209,7 @@ def merge_skills(
             hint="提供至少一个要合并的源技能名",
         )
     patterns = [p.strip() for p in trigger_patterns.split(",") if p.strip()]
-    merged = _store.merge(
+    merged = deps.store.merge(
         source_list, target,
         content=content, description=description,
         add_trigger_patterns=patterns or None,
@@ -223,10 +234,11 @@ async def skill_library_health() -> str:
     """查看技能库健康报告。"""
     index = _index()
     if index is None:
-        if not _store:
+        deps = _deps()
+        if deps is None:
             return _not_ready()
         from agent.skills.skill_index import SkillIndex
-        index = SkillIndex(_store)
+        index = SkillIndex(deps.store)
     payload: Dict[str, Any] = dict(index.snapshot())
     try:
         await index.warm(limit=32)
@@ -255,7 +267,8 @@ async def search_skills(query: str, top_k: int = 5, scope: str = "local", catego
         scope: 搜索范围：local（本地技能库，默认）/ external（外部技能商店）/ all（两者）
         category: 外部商店的一级分类过滤（留空不过滤；可选值见 list_skill_sources 返回）
     """
-    if not _store or not _matcher:
+    deps = _deps()
+    if deps is None:
         return _not_ready()
     scope = (scope or "local").strip().lower()
     if scope not in ("local", "external", "all"):
@@ -266,7 +279,7 @@ async def search_skills(query: str, top_k: int = 5, scope: str = "local", catego
     limit = max(1, min(top_k, 20))
     payload: Dict[str, Any] = {"ok": True, "scope": scope, "query": query}
     if scope in ("local", "all"):
-        matched = await _matcher.match([query], top_k=limit, min_score=0.0)
+        matched = await deps.matcher.match([query], top_k=limit, min_score=0.0)
         payload["local"] = [
             {
                 "name": skill.name,
@@ -329,9 +342,10 @@ def list_skills(include_archived: bool = False) -> str:
     Args:
         include_archived: 是否包含已归档的技能，默认否
     """
-    if not _store:
+    deps = _deps()
+    if deps is None:
         return _not_ready()
-    skills = _store.list_skills(include_archived=include_archived)
+    skills = deps.store.list_skills(include_archived=include_archived)
     results = [
         {
             "name": s.name,
@@ -383,7 +397,8 @@ def install_external_skill(slug: str, namespace: str = "", source: str = "") -> 
         namespace: 命名空间（结果中的 namespace 字段，无则留空）
         source: 技能源 key（list_skill_sources 查看；只有一个可用源时可留空自动选择）
     """
-    if not _store:
+    deps = _deps()
+    if deps is None:
         return _not_ready()
     sources = {s.key: s for s in skill_sources.list_sources() if s.is_available()}
     if not sources:
@@ -405,19 +420,19 @@ def install_external_skill(slug: str, namespace: str = "", source: str = "") -> 
             "存在多个技能源，请用 source 参数指定", cause=ErrorCause.PARAM, retryable=False,
             hint=f"可用技能源: {', '.join(sources)}",
         )
-    if _store.exists(slug):
+    if deps.store.exists(slug):
         return tool_error(
             f"技能 '{slug}' 已存在", cause=ErrorCause.STATE, retryable=False,
             hint="如需更新可先删除旧技能再安装，或用 update_skill 修改现有技能",
         )
-    result = chosen.install(slug=slug, namespace=namespace, skills_dir=_store.skills_dir)
+    result = chosen.install(slug=slug, namespace=namespace, skills_dir=deps.store.skills_dir)
     if not result.ok:
         return tool_error(
             f"安装失败: {result.error}", cause=ErrorCause.INTERNAL, retryable=True,
             hint=result.hint or chosen.install_hint(),
         )
     # 触发一次读取校验（同时让外部变更感知立即生效）
-    skill = _store.get(slug)
+    skill = deps.store.get(slug)
     return json.dumps({
         "ok": True, "name": slug, "source": chosen.key, "path": result.path,
         "loaded": skill is not None,
@@ -435,15 +450,16 @@ def get_skill(name: str) -> str:
     Args:
         name: 技能名
     """
-    if not _store:
+    deps = _deps()
+    if deps is None:
         return _not_ready()
-    skill = _store.get(name)
+    skill = deps.store.get(name)
     if skill is None:
         return tool_error(f"技能 '{name}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
     # 读全文计一次使用但不刷新活动时间（评审查阅候选是检查，不是消费）；
     # 先计数再重读，返回真实值而非手工补偿
-    _store.record_use(name, touch=False)
-    skill = _store.get(name) or skill
+    deps.store.record_use(name, touch=False)
+    skill = deps.store.get(name) or skill
     return json.dumps({
         "ok": True,
         "name": skill.name,

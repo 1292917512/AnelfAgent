@@ -17,14 +17,9 @@ _custom_tags_loaded = False
 
 
 def _load_tags_file() -> Dict[str, Any]:
-    """读取 config/tags.json，不存在则返回空字典。"""
-    p = Path(ConfigPaths.CUSTOM_TAGS)
-    if p.exists():
-        try:
-            return json.loads(p.read_text("utf-8"))
-        except Exception as e:
-            log(f"读取标签配置失败: {e}", "ERROR", tag="Tags")
-    return {}
+    """读取 config/tags.json（实现归 agent.runtime.state_restore，此处委托）。"""
+    from agent.runtime.state_restore import load_tags_file
+    return load_tags_file()
 
 
 def _save_tags_file(data: Dict[str, Any]) -> None:
@@ -160,21 +155,6 @@ class TagService:
 
     @staticmethod
     def load_custom_tags() -> int:
-        """从 config/tags.json 加载自定义标签到内存 tag_list（幂等，首次调用时触发）。"""
-        from core.tags import Tag, tag_list
-
-        data = _load_tags_file()
-        if not data:
-            return 0
-
-        existing_names = {t.tag_name for t in tag_list}
-        loaded = 0
-        for name, meta in data.items():
-            if name in existing_names:
-                continue
-            Tag(tag_name=name, tag_name_desc=meta.get("description", ""))
-            loaded += 1
-
-        if loaded:
-            log(f"自定义标签已加载: {loaded} 个", tag="Tags")
-        return loaded
+        """从 config/tags.json 加载自定义标签到内存 tag_list（实现归 agent.runtime.state_restore）。"""
+        from agent.runtime.state_restore import load_custom_tags as _load
+        return _load()

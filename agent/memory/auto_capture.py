@@ -23,6 +23,7 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from core.config import get_config_bool, get_config_int, register_configs_safe
+from core.latebind import LateBinding
 from core.log import log
 
 from .dedup import apply_update, gather_dedup_candidates, judge_write, light_llm
@@ -231,7 +232,7 @@ class AutoCapturePipeline:
         if not store:
             return
         try:
-            from services._runtime import require_runtime
+            from agent.runtime.singleton import require_runtime
             sqlite = require_runtime().data_center.sqlite
             # 轻量枚举（无 COUNT）：每 tick 调用，避免全表 GROUP BY
             scopes = await sqlite.list_conversation_scope_keys()
@@ -538,15 +539,18 @@ class AutoCapturePipeline:
         return stored
 
 
-_pipeline: Optional[AutoCapturePipeline] = None
+auto_capture_port: LateBinding["AutoCapturePipeline"] = LateBinding("memory.auto_capture")
+"""管线端口：Mind 构造时创建管线实例，agent.runtime.wiring 统一施绑。"""
+
+
+def _pipeline() -> "AutoCapturePipeline":
+    """取自动捕获管线（bootstrap 接线前访问抛 WireError）。"""
+    return auto_capture_port.get()
 
 
 async def run_auto_capture(mind: "Mind") -> None:
     """心跳集成入口：每个 tick 调用一次。"""
-    global _pipeline
-    if _pipeline is None:
-        _pipeline = AutoCapturePipeline(mind)
-    await _pipeline.run()
+    await _pipeline().run()
 
 
 async def flush_auto_capture(mind: "Mind") -> None:
@@ -555,14 +559,12 @@ async def flush_auto_capture(mind: "Mind") -> None:
     对应触发器的第三轨（shutdown flush）：未达轮数阈值且未满空闲时间的
     对话批次，在优雅关停时强制提取，避免短期会话的记忆随进程退出丢失。
     """
-    global _pipeline
-    if _pipeline is None:
-        _pipeline = AutoCapturePipeline(mind)
+    pipeline = _pipeline()
     store = mind.memory_store
     if not store or not get_config_bool("memory_auto_capture_enabled", True):
         return
     try:
-        from services._runtime import require_runtime
+        from agent.runtime.singleton import require_runtime
         sqlite = require_runtime().data_center.sqlite
         scopes = await sqlite.list_conversation_scope_keys()
     except Exception:
@@ -571,11 +573,11 @@ async def flush_auto_capture(mind: "Mind") -> None:
     now = time.time()
     for scope in scopes:
         try:
-            state = await _pipeline._load_state(f"{scope['scope_type']}:{scope['scope_id']}")
+            state = await pipeline._load_state(f"{scope['scope_type']}:{scope['scope_id']}")
             if state.pending_turns <= 0:
                 continue
             # idle_seconds=0：有待提取内容即视为到期
-            await _pipeline._process_scope(
+            await pipeline._process_scope(
                 sqlite, scope["scope_type"], scope["scope_id"],
                 every_n=every_n, idle_seconds=0, now=now,
             )
@@ -594,21 +596,18 @@ async def flush_scope_capture(mind: "Mind", scope_key: str) -> bool:
     fail-open：未启用 / 无待提取内容 / 运行时不可用均返回 False，
     是否记录日志由调用方决定。实际执行了提取返回 True。
     """
-    global _pipeline
-    if _pipeline is None:
-        _pipeline = AutoCapturePipeline(mind)
     if not mind.memory_store or not get_config_bool("memory_auto_capture_enabled", True):
         return False
     scope_type, _, scope_id = scope_key.partition(":")
     if scope_type not in ("user", "group") or not scope_id:
         return False
     try:
-        from services._runtime import require_runtime
+        from agent.runtime.singleton import require_runtime
         sqlite = require_runtime().data_center.sqlite
     except Exception:
         return False
     every_n = max(1, get_config_int("memory_auto_capture_every_n", 5))
-    return await _pipeline._process_scope(
+    return await _pipeline()._process_scope(
         sqlite, scope_type, scope_id,
         every_n=every_n, idle_seconds=0, now=time.time(),
     )

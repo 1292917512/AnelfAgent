@@ -4,6 +4,9 @@
 增删改查入口；与记忆（什么事）、画像（谁）互补，专管"谁和谁/什么和什么
 什么关系"。节点 key 格式 ``类型:名称``：实体型 ``user:{频道}:{uid}`` /
 ``group:{频道}:{gid}``（自动别名归一），自由型 person:/topic:/project: 等。
+
+MemoryStore 引用经 ``graph_store_port`` 晚绑定端口分发（工具 import 时注册、
+拿不到构造参数；由 agent.runtime.wiring 统一施绑）。
 """
 
 from __future__ import annotations
@@ -12,14 +15,15 @@ import json
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from core.log import log
+from core.latebind import LateBinding
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
-from entities._sdk import activate_group, deferred_tool
+from entities._sdk import deferred_tool
 
 from ..memory_store import MemoryStore
 from .store import NODE_TYPES, format_triple, parse_node_key
 
-_store: Optional[MemoryStore] = None
+#: MemoryStore 端口（关系图谱工具组消费，bootstrap 经 agent.runtime.wiring 施绑）
+graph_store_port: LateBinding[MemoryStore] = LateBinding("memory.graph")
 
 # 别名解析进程内缓存：别名极少变更，图谱每次读写都解析，直查主库是热路径开销
 _ALIAS_CACHE_TTL = 300.0
@@ -32,15 +36,6 @@ def invalidate_alias_cache() -> None:
     _alias_cache.clear()
 
 
-def register_graph_tools(store: MemoryStore) -> None:
-    """注入运行时依赖、接线别名解析器并批量注册关系图谱工具。"""
-    global _store
-    _store = store
-    store.graph.set_alias_resolver(_resolve_alias)
-    count = activate_group("graph", "关系图谱 - 人物/概念关系网络的结构化存储与查询")
-    log(f"🕸 关系图谱工具已注册 ({count} 个)", tag="思维")
-
-
 async def _resolve_alias(scope_type: str, scope_id: str) -> Optional[tuple[str, str]]:
     """别名解析桥：惰性访问运行时 sqlite（心跳/测试环境无运行时则放弃归一）。
 
@@ -51,7 +46,7 @@ async def _resolve_alias(scope_type: str, scope_id: str) -> Optional[tuple[str, 
     if cached is not None and time.monotonic() - cached[0] < _ALIAS_CACHE_TTL:
         return cached[1]
     try:
-        from services._runtime import require_runtime
+        from agent.runtime.singleton import require_runtime
         result = await require_runtime().data_center.sqlite.resolve_alias(scope_type, scope_id)
     except Exception:
         return None
@@ -63,7 +58,7 @@ async def _resolve_alias(scope_type: str, scope_id: str) -> Optional[tuple[str, 
 
 def _graph() -> Any:
     """取 GraphStore；未就绪返回 None。"""
-    return _store.graph if _store else None
+    return graph_store_port.get().graph if graph_store_port.bound else None
 
 
 def _not_ready() -> str:

@@ -162,7 +162,7 @@ class TestFoldTool:
             schedule_fold=AsyncMock(return_value=True),
             fold_idle_min=20,
         )
-        conversation_fold.register_fold_tools(conv)
+        conversation_fold.fold_data_port.set(conv)
         import json
         result = json.loads(await conversation_fold.fold_conversations(scope="all"))
         assert result["scheduled"] == ["user:qq:1"]
@@ -170,7 +170,7 @@ class TestFoldTool:
 
     async def test_empty_scope_without_context_errors(self) -> None:
         """无会话上下文且未指定 scope：返回参数错误而非异常。"""
-        conversation_fold.register_fold_tools(SimpleNamespace())
+        conversation_fold.fold_data_port.set(SimpleNamespace())
         import json
         result = json.loads(await conversation_fold.fold_conversations(scope=""))
         assert "error" in result
@@ -181,7 +181,7 @@ class TestFoldTool:
             schedule_fold=AsyncMock(return_value=True),
             fold_idle_min=20,
         )
-        conversation_fold.register_fold_tools(conv)
+        conversation_fold.fold_data_port.set(conv)
         import json
         result = json.loads(await conversation_fold.fold_conversations(scope="user_qq:123"))
         assert result["scheduled"] == []

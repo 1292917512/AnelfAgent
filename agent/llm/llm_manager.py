@@ -1393,7 +1393,7 @@ class LLMManager(BaseEntity):
     def _hot_switch_if_disabled(self, model_id: str) -> None:
         """禁用模型后，若其正是当前在用的默认客户端，热切换到下一可用模型。"""
         try:
-            from services._runtime import get_runtime
+            from agent.runtime.singleton import get_runtime
             rt = get_runtime()
             if rt is None or getattr(rt, "mind", None) is None:
                 return
@@ -1411,7 +1411,7 @@ class LLMManager(BaseEntity):
         if new_first and new_first != old_first:
             self._default_chat = new_first
             try:
-                from services._runtime import get_runtime
+                from agent.runtime.singleton import get_runtime
                 rt = get_runtime()
                 client = self._clients.get(new_first)
                 if rt and client:

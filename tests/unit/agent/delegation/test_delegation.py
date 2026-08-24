@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.delegation.delegate_tool import delegate_task, register_delegation_tools
+from agent.delegation.delegate_tool import delegate_task, delegation_manager_port
 from agent.delegation.delegation_manager import DelegationManager
 from agent.delegation.sub_agent import (
     SubAgent,
@@ -130,7 +130,7 @@ class TestDelegationManager:
 
 class TestDelegateTool:
     async def test_depth_limit(self, manager: DelegationManager) -> None:
-        register_delegation_tools(manager)
+        delegation_manager_port.set(manager)
         token = _delegate_depth.set(max_spawn_depth())
         try:
             result = json.loads(await delegate_task(goal="任务"))
@@ -140,28 +140,28 @@ class TestDelegateTool:
             _delegate_depth.reset(token)
 
     async def test_single_goal(self, manager: DelegationManager) -> None:
-        register_delegation_tools(manager)
+        delegation_manager_port.set(manager)
         result = json.loads(await delegate_task(goal="调研xxx"))
         assert result["total"] == 1
 
     async def test_batch_tasks(self, manager: DelegationManager) -> None:
-        register_delegation_tools(manager)
+        delegation_manager_port.set(manager)
         tasks = json.dumps([{"goal": "A"}, {"goal": "B"}])
         result = json.loads(await delegate_task(tasks=tasks))
         assert result["total"] == 2
 
     async def test_invalid_tasks_json(self, manager: DelegationManager) -> None:
-        register_delegation_tools(manager)
+        delegation_manager_port.set(manager)
         result = json.loads(await delegate_task(tasks="not json"))
         assert "error" in result
 
     async def test_missing_goal(self, manager: DelegationManager) -> None:
-        register_delegation_tools(manager)
+        delegation_manager_port.set(manager)
         result = json.loads(await delegate_task())
         assert "error" in result
 
     async def test_background_mode(self, manager: DelegationManager) -> None:
-        register_delegation_tools(manager)
+        delegation_manager_port.set(manager)
         result = json.loads(await delegate_task(goal="后台任务", background=True))
         assert result["mode"] == "background"
         assert "delegation_id" in result
