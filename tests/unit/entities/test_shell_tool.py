@@ -110,3 +110,77 @@ class TestRedundantWorkspacePrefixHelper:
         result = _run(f"ls {workspace.name}/{workspace.name}/")
         assert result["ok"] is False
         assert any("直接写 . 即可" in n for n in result.get("notes", []))
+
+
+class TestMemoryKeyNote:
+    """记忆索引键（memory/*.md）误用为 Shell 相对路径的归因提示（纯事实陈述）。"""
+
+    def test_note_with_real_file(self, workspace, monkeypatch):
+        from core import path as core_path
+
+        data_dir = workspace / "dataroot" / "memory"
+        data_dir.mkdir(parents=True)
+        (data_dir / "heartbeat.md").write_text("hb\n", encoding="utf-8")
+        monkeypatch.setitem(core_path._PATH_OVERRIDES, "MEMORY_DIR", str(data_dir))
+
+        result = _run("cat memory/heartbeat.md")
+        assert result["ok"] is False
+        notes = result.get("notes", [])
+        assert any("记忆索引键" in n and str(data_dir / "heartbeat.md") in n for n in notes)
+
+    def test_note_without_real_file_still_states_namespace(self, workspace, monkeypatch):
+        from core import path as core_path
+
+        monkeypatch.setitem(core_path._PATH_OVERRIDES, "MEMORY_DIR", str(workspace / "dataroot" / "memory"))
+        result = _run("cat memory/gone.md")
+        assert result["ok"] is False
+        assert any("记忆索引键" in n for n in result.get("notes", []))
+
+    def test_no_note_when_file_exists_in_cwd(self, workspace):
+        (workspace / "memory").mkdir()
+        (workspace / "memory" / "local.md").write_text("x\n", encoding="utf-8")
+        result = _run("cat memory/local.md no_such_file")
+        assert result["ok"] is False
+        assert not any("记忆索引键" in n for n in result.get("notes", []))
+
+
+class TestMissingModuleHint:
+    """uv venv 缺失模块错误（No module named pip/xxx）的环境事实提示。"""
+
+    @staticmethod
+    def _uv_managed(monkeypatch):
+        from entities.system import python_service
+        monkeypatch.setattr(
+            python_service, "detect_env_manager",
+            lambda p: {"manager": "uv", "uv_managed": True, "uv_version": "0.9"},
+        )
+
+    def test_fact_hint_no_commands(self, monkeypatch):
+        self._uv_managed(monkeypatch)
+        hint = tools._missing_module_hint("x: No module named pip", "")
+        assert hint and "不含 pip" in hint
+        # 只陈述事实：不出现操作命令
+        assert "uv pip install" not in hint and "uv add" not in hint
+
+    def test_quoted_module_variant(self, monkeypatch):
+        self._uv_managed(monkeypatch)
+        assert tools._missing_module_hint(
+            "", "ModuleNotFoundError: No module named 'paramiko'"
+        ) is not None
+
+    def test_no_hint_for_non_uv(self, monkeypatch):
+        from entities.system import python_service
+        monkeypatch.setattr(
+            python_service, "detect_env_manager",
+            lambda p: {"manager": "pip", "uv_managed": False, "uv_version": None},
+        )
+        assert tools._missing_module_hint("", "No module named 'x'") is None
+
+    def test_no_hint_without_match(self):
+        assert tools._missing_module_hint("all good", "") is None
+
+    def test_note_in_failure_result(self, workspace, monkeypatch):
+        self._uv_managed(monkeypatch)
+        result = _run('echo "No module named pip" >&2; exit 1')
+        assert result["ok"] is False
+        assert any("不含 pip" in n for n in result.get("notes", []))

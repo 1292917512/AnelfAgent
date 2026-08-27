@@ -3,10 +3,12 @@ Python环境管理工具
 提供Python、Conda、uv等工具的检测、安装、配置和包管理功能
 """
 
+import importlib.util
 import json
 import os
 import platform
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -57,6 +59,50 @@ def detect_env_manager(python_path: Optional[str] = None) -> Dict[str, Any]:
 
     _env_manager_cache[python_exe] = info
     return info
+
+
+# 运行环境摘要缓存：解释器/包管理器布局是进程级不变量，
+# 人设层（[运行环境] 块）指纹依赖其字节稳定，首次调用后不再重算
+_runtime_env_summary_cache: Optional[str] = None
+
+
+def get_runtime_env_summary() -> str:
+    """构建注入 [运行环境] 人设块的 Python 解释器事实摘要。
+
+    只陈述环境事实（解释器身份 / venv 管理方式 / pip 有无），不含任何操作
+    建议——环境如何使用由 AI 自行决策。解释器属于项目宿主大环境（与工作区
+    操作环境的层级关系由 [运行环境] 块说明）。全部事实为进程不变量（PATH /
+    venv 布局在进程生命周期内不变），模块级缓存保证跨调用字节稳定。
+
+    Model Experience:
+    - 模型看到什么：stable 人设层 [运行环境] 块追加 1 行解释器事实
+    - token 影响：约 +40 token 一次性注入（此后随前缀缓存命中）
+    - 缓存影响：内容进程级字节稳定，不破前缀；升级部署时人设指纹变化一次属预期
+    """
+    global _runtime_env_summary_cache
+    if _runtime_env_summary_cache is not None:
+        return _runtime_env_summary_cache
+
+    exe = sys.executable
+    version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    shell_python = shutil.which("python3") or ""
+    if shell_python and os.path.realpath(shell_python) != os.path.realpath(exe):
+        line = (
+            f"宿主环境: 项目环境为宿主大环境，python_exec 为其解释器 {exe} ({version})；"
+            f"shell 的 python3 为 {shell_python}（两者不同）"
+        )
+    else:
+        line = (
+            f"宿主环境: 项目环境为宿主大环境，shell 的 python3 与 python_exec "
+            f"均为其解释器 {exe} ({version})"
+        )
+        if detect_env_manager(exe)["manager"] == "uv":
+            line += "，venv 由 uv 创建、不含 pip"
+        elif importlib.util.find_spec("pip") is None:
+            line += "，不含 pip"
+
+    _runtime_env_summary_cache = line
+    return line
 
 
 # ==================== pip 工具检测 ====================

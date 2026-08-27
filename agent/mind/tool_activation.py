@@ -36,6 +36,21 @@ def reset_scope(token) -> None:
     _current_scope.reset(token)
 
 
+def current_owner_scope() -> str:
+    """解析后台任务的归属会话 scope（完成通知的路由目标）。
+
+    委托链经 usage_scope 绑定的父会话 scope 优先——子代理（reflect 一次性
+    scope）内启动的后台任务必须归属发起会话，完成通知才能路由回对话；
+    未绑定或绑定值非会话 scope（user_/group_）时回退当前激活 scope。
+    与 llm_invoker 的 scope 解析链同构（entity_scope > usage_scope > 激活上下文）。
+    """
+    from agent.mind.scope_usage import current_usage_scope
+    bound = current_usage_scope()
+    if bound.startswith(("user_", "group_")):
+        return bound
+    return ToolActivationManager.current_scope()
+
+
 class ToolActivationManager:
     """工具分组激活状态管理：scope -> group -> 剩余轮数。"""
 

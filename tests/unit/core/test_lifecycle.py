@@ -103,3 +103,9 @@ def test_request_shutdown_marks_restart_and_invokes_requester():
     Lifecycle.request_shutdown(restart=True)
     assert called == [True]
     assert Lifecycle.restart_requested()
+
+
+def test_request_shutdown_without_requester_keeps_restart_flag_clear():
+    """关闭触发器未注册时不应残留重启意图（否则日后正常退出会被误判为重启）。"""
+    Lifecycle.request_shutdown(restart=True)
+    assert not Lifecycle.restart_requested()

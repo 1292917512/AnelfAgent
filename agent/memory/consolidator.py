@@ -281,6 +281,12 @@ _CONSOLIDATOR_CONFIGS = {
             "advanced": True,
             "unit": "天",
         },
+        "memory_audit_retention_days": {
+            "description": "记忆审计日志保留天数（表只追加，超期清理防线性膨胀）",
+            "default": 30,
+            "advanced": True,
+            "unit": "天",
+        },
         "cognee_sync_stale_seconds": {
             "description": "Cognee 投影任务卡死判定（超时自动重新入队）",
             "default": 900.0,

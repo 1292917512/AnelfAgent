@@ -719,6 +719,7 @@ class MemoryStore(BaseEntity):
         """
         db = await self._get_db()
         now = time.time()
+        from core.config import get_config_int
         min_ts = now - min_age_days * 86400
         # 无向量列 + 候选上限：有效分计算不需要 embedding，
         # 候选放大到 limit 的 3 倍足够覆盖护栏跳过的条目
@@ -736,7 +737,8 @@ class MemoryStore(BaseEntity):
         # 最小保留护栏：每类活跃记忆低于下限后不再遗忘（防极端清理掏空小类）
         min_keep = (
             min_keep_per_type if min_keep_per_type is not None
-            else int(_get_memory_config_value("memory_forget_min_keep_per_type", 20))
+            # 该项注册在 ConfigManager（非 MindConfig 字段），须读配置中心热值
+            else int(get_config_int("memory_forget_min_keep_per_type", 20))
         )
         type_counts = await self.get_type_counts()
         for row in rows:

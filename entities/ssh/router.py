@@ -127,7 +127,8 @@ def build_router() -> APIRouter:
             await manager.connect(name)
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
-        except ConnectionError as e:
+        except OSError as e:
+            # 含网络失败 / 认证失败 / 密钥文件缺失（均属远端或配置问题）
             raise HTTPException(status_code=502, detail=str(e)) from e
         profile = get_ssh_store().get(name) or {}
         snapshot = manager.get_snapshot(name) or {}

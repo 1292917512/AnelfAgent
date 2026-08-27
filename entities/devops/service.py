@@ -39,15 +39,58 @@ _build_lock = threading.Lock()
 
 # ── 重启 ─────────────────────────────────────────────────────────────
 
+_restart_lock = threading.Lock()
+_restart_pending = False
+
+
+def _is_supervised() -> bool:
+    """当前进程是否由 start.sh / start.bat 守护循环拉起。
+
+    重启依赖外层脚本按退出码 42 重新拉起；直接 ``python launch.py``
+    启动的进程没有守护，"重启"会等同关机且不会自动拉起。
+    """
+    try:
+        import psutil
+        for parent in psutil.Process().parents():
+            try:
+                cmdline = " ".join(parent.cmdline())
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if "start.sh" in cmdline or "start.bat" in cmdline:
+                return True
+    except Exception as exc:
+        log(f"守护进程检测失败: {exc}", "DEBUG", tag="运维")
+    return False
+
 
 def schedule_restart(delay: float = _SHUTDOWN_DELAY) -> None:
     """延迟触发优雅关闭并标记重启意图（任意线程可调）。"""
     threading.Timer(delay, Lifecycle.request_shutdown, args=(True,)).start()
 
 
-def request_restart() -> Dict[str, Any]:
-    """请求优雅重启（由外层启动脚本按退出码 42 重新拉起）。"""
-    log("收到重启请求，即将优雅关闭并重启", tag="运维")
+def request_restart(source: str = "api") -> Dict[str, Any]:
+    """请求优雅重启（由外层启动脚本按退出码 42 重新拉起）。
+
+    重复请求去重（多标签页/多渠道重复触发只生效一次）；
+    进程非守护脚本拉起时拒绝，避免"重启变关机"。
+    """
+    global _restart_pending
+    with _restart_lock:
+        if _restart_pending:
+            return {"ok": True, "restarting": True, "already_pending": True}
+        if not _is_supervised():
+            log(
+                f"拒绝重启请求（来源 {source}）：进程非 start.sh 守护拉起，重启将等同关机",
+                "WARNING", tag="运维",
+            )
+            return {
+                "ok": False,
+                "error": "no_supervisor",
+                "message": "当前进程不是由启动脚本（start.sh）守护拉起的，重启等同关机且不会自动拉起；"
+                           "请改用 restart.sh 重启，或先通过 start.sh 启动后再使用本功能",
+            }
+        _restart_pending = True
+    log(f"收到重启请求（来源 {source}），即将优雅关闭并重启", tag="运维")
     schedule_restart()
     return {"ok": True, "restarting": True}
 
@@ -149,8 +192,11 @@ async def build_and_restart() -> Dict[str, Any]:
     await _run_build()
     last = _build_state["last"]
     if last and last["ok"]:
+        restart = request_restart(source="build_and_restart")
+        if not restart["ok"]:
+            return {"ok": False, "error": restart["error"],
+                    "message": f"前端构建成功，但{restart['message']}", "build": last}
         log("构建成功，即将重启", tag="运维")
-        schedule_restart()
         return {"ok": True, "restarting": True, "build": last}
     return {"ok": False, "error": "build_failed", "build": last}
 

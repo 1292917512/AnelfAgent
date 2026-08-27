@@ -38,6 +38,9 @@ class BackgroundTaskInfo:
     kind: str
     description: str
     started_at: float
+    # 预期时长（秒，0=未声明）：超出时向 AI 发送超时提醒（不终止任务，
+    # 去留由 AI 决策——系统提供可见性，不替 AI 做决定）
+    expected_seconds: float = 0.0
 
     @property
     def elapsed(self) -> float:
@@ -69,6 +72,9 @@ class _TaskRecord:
     delivered: bool = False
     # 任务输出文件（可选，如后台 shell 的日志）——增量读取游标的数据源
     output_file: Optional[str] = None
+    # 终止句柄（可选）：AI 经 terminate_background_task 决策终止时调用，
+    # 返回是否受理；终态仍由生产者的完成路径登记（终态通知照常送达）
+    killer: Optional[Callable[[], bool]] = None
 
     def to_completion(self) -> TaskCompletion:
         return TaskCompletion(
@@ -105,26 +111,41 @@ class BackgroundTaskRegistry:
         # 主事件循环（bind_loop 绑定；工作线程完成任务时经 call_soon_threadsafe 回到循环）
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         # 轮外完成回调（无等待者时触发，由 Mind 注册，避免 entities 层直接 import agent.mind）
-        self._on_unclaimed: Optional[Callable[[str, str, str], Any]] = None
+        self._on_unclaimed: Optional[Callable[[str, str, str, bool], Any]] = None
+        # 超时提醒回调（任务超过预期时长仍在运行时触发，不改变任务状态）
+        self._on_alert: Optional[Callable[[str, str, str, str], Any]] = None
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """绑定主事件循环（Mind 初始化时调用）。"""
         self._loop = loop
 
-    def set_unclaimed_callback(self, callback: Callable[[str, str, str], Any]) -> None:
+    def set_unclaimed_callback(self, callback: Callable[[str, str, str, bool], Any]) -> None:
         """注册轮外完成回调（无等待者时触发新 REPLY 周期）。
 
         Args:
-            callback: (scope, description, summary) -> None 或协程
-                （协程在主循环上 ensure_future；_finish 总在主循环执行）
+            callback: (scope, description, summary, success) -> None 或协程
+                （协程在主循环上 ensure_future；_finish 总在主循环执行）。
+                非 conversation scope（_global / reflect:*）也回调，由接收方
+                决定兜底去向（全局短期记忆桶）——完成事实不因 scope 静默丢弃。
         """
         self._on_unclaimed = callback
+
+    def set_alert_callback(self, callback: Callable[[str, str, str, str], Any]) -> None:
+        """注册超时提醒回调（任务超过预期时长仍在运行时触发）。
+
+        Args:
+            callback: (scope, description, detail, task_id) -> None 或协程。
+                提醒不改变任务状态、不终止任务——以报告形式向 AI 呈现进度
+                事实，真假超时与去留由 AI 自行判断。
+        """
+        self._on_alert = callback
 
     # ------------------------------------------------------------------
     # 登记与完成
     # ------------------------------------------------------------------
 
-    def register(self, scope: str, kind: str, description: str) -> str:
+    def register(self, scope: str, kind: str, description: str,
+                 expected_seconds: float = 0.0) -> str:
         """登记一个后台任务，返回任务 ID。"""
         task_id = uuid.uuid4().hex[:8]
         self._records[task_id] = _TaskRecord(
@@ -134,11 +155,18 @@ class BackgroundTaskRegistry:
                 kind=kind,
                 description=description,
                 started_at=time.time(),
+                expected_seconds=expected_seconds,
             ),
         )
         self._purge_completed(scope or "_global")
         log(f"后台任务已登记: {task_id} [{kind}] {description[:60]}", tag="后台")
         return task_id
+
+    def attach_killer(self, task_id: str, killer: Callable[[], bool]) -> None:
+        """为任务关联终止句柄（terminate 用；shell 进程组击杀 / 委托取消）。"""
+        rec = self._records.get(task_id)
+        if rec is not None and callable(killer):
+            rec.killer = killer
 
     # ------------------------------------------------------------------
     # 增量输出读取（单游标消费型，对齐 dsh jobs readOutput）
@@ -263,14 +291,67 @@ class BackgroundTaskRegistry:
             tag="后台",
         )
         # 轮外完成（无等待者）：触发回调（由 Mind 注册，写对话历史并排入
-        # 回复队列触发新 REPLY）。回调可为协程（_finish 总在主循环执行）
+        # 回复队列触发新 REPLY；非 conversation scope 由回调侧全局桶兜底）。
+        # 回调可为协程（_finish 总在主循环执行）
         if not claimed and self._on_unclaimed is not None:
-            scope = rec.info.scope
-            if scope.startswith(("user_", "group_")):
-                result = self._on_unclaimed(scope, rec.info.description, summary[:1500])
-                if inspect.iscoroutine(result):
-                    asyncio.ensure_future(result)
+            result = self._on_unclaimed(
+                rec.info.scope, rec.info.description, summary[:1500], success,
+            )
+            if inspect.iscoroutine(result):
+                asyncio.ensure_future(result)
         return claimed
+
+    def alert_timeout(self, task_id: str, detail: str) -> None:
+        """任务超过预期时长仍在运行：向 AI 发送提醒（不改变任务状态，线程安全）。
+
+        超时是提醒不是击杀——长下载等慢任务由 AI 拿着进度自行决策去留，
+        终止走 ``terminate``。
+        """
+        if (
+            self._loop is not None
+            and self._loop.is_running()
+            and threading.current_thread() is not threading.main_thread()
+        ):
+            self._loop.call_soon_threadsafe(self._alert, task_id, detail)
+        else:
+            self._alert(task_id, detail)
+
+    def _alert(self, task_id: str, detail: str) -> None:
+        """超时提醒的实际实现（须运行在主循环线程；任务已结束时丢弃）。"""
+        rec = self._records.get(task_id)
+        if rec is None or rec.done or self._on_alert is None:
+            return
+        result = self._on_alert(rec.info.scope, rec.info.description, detail, task_id)
+        if inspect.iscoroutine(result):
+            asyncio.ensure_future(result)
+
+    def terminate(self, scope: str, task_id: str) -> Dict[str, Any]:
+        """终止一个运行中的后台任务（AI 决策调用；killer 阻塞时调用方应放线程池）。
+
+        Returns:
+            {"ok": True, "terminated": bool, ...} 或 {"ok": False, "error"}。
+            终止只发信号：终态仍由生产者的完成路径登记，完成通知照常送达。
+        """
+        rec = self._records.get(task_id)
+        if rec is None:
+            return {"ok": False, "error": f"任务不存在: {task_id}"}
+        if rec.info.scope != (scope or "_global"):
+            return {"ok": False, "error": f"任务 {task_id} 不属于当前会话"}
+        if rec.done:
+            return {
+                "ok": True, "terminated": False, "already_finished": True,
+                "success": rec.success, "summary": rec.summary[:200],
+            }
+        if rec.killer is None:
+            return {"ok": False, "error": f"任务 {task_id} 不支持终止（无终止句柄）"}
+        try:
+            terminated = bool(rec.killer())
+        except Exception as exc:
+            return {"ok": False, "error": f"终止失败: {exc}"}
+        return {
+            "ok": terminated, "terminated": terminated,
+            "hint": "终止信号已发出，任务结束时你会收到完成通知。",
+        }
 
     # ------------------------------------------------------------------
     # 查询
@@ -299,6 +380,8 @@ class BackgroundTaskRegistry:
                     "kind": t.kind,
                     "description": t.description,
                     "elapsed_seconds": int(t.elapsed),
+                    # 预期时长（0=未声明）：超出即已/将收到超时提醒
+                    "expected_seconds": int(t.expected_seconds),
                 }
                 for t in self.running(scope)
             ],

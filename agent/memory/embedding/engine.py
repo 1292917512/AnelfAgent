@@ -122,6 +122,7 @@ class Embedder:
         self._available: Optional[bool] = None
         self._dims: Optional[int] = None
         self._limiter: Optional[AsyncLimiter] = None
+        self._limiter_spec: Optional[Tuple[int, float]] = None
         self._gate = _PriorityGate()
         self._query_cache: Dict[str, Tuple[list[float], float]] = {}
 
@@ -155,6 +156,7 @@ class Embedder:
         """配置变更后重新检测（含限速器与查询缓存重建）。"""
         self._available = None
         self._limiter = None
+        self._limiter_spec = None
         self._query_cache.clear()
 
     def _ready(self) -> bool:
@@ -162,11 +164,14 @@ class Embedder:
         return self.available and self._get_client() is not None
 
     def _get_limiter(self) -> AsyncLimiter:
-        """后台批量共享限速器（惰性构建，配置在首次使用时读取）。"""
-        if self._limiter is None:
-            requests = max(1, get_config_int("embed_rate_limit_requests", 60))
-            interval = max(1.0, get_config_float("embed_rate_limit_interval_seconds", 60.0))
-            self._limiter = AsyncLimiter(requests, interval)
+        """后台批量共享限速器（惰性构建；配置值变化时自动重建，保存即生效）。"""
+        spec = (
+            max(1, get_config_int("embed_rate_limit_requests", 60)),
+            max(1.0, get_config_float("embed_rate_limit_interval_seconds", 60.0)),
+        )
+        if self._limiter is None or self._limiter_spec != spec:
+            self._limiter = AsyncLimiter(spec[0], spec[1])
+            self._limiter_spec = spec
         return self._limiter
 
     async def _call(self, texts: list[str]) -> list[list[float]]:

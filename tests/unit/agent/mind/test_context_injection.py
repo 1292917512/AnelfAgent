@@ -34,6 +34,13 @@ def test_no_bsd_dialect_hint_on_linux(monkeypatch: pytest.MonkeyPatch):
     assert "BSD" not in block
 
 
+def test_env_block_contains_python_summary():
+    """[运行环境] 注入工作区/宿主环境事实，且进程级缓存保证字节稳定。"""
+    block = prefrontal_cortex._env_info_block()
+    assert "你的操作环境" in block and "宿主环境" in block
+    assert prefrontal_cortex._env_info_block() == block
+
+
 # ==================================================================
 # goal nag 提醒注入（对齐 Claude Code todo_reminder 启发式）
 # ==================================================================

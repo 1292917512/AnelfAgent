@@ -231,6 +231,19 @@ def get_current_scope() -> str:
         return "_global"
 
 
+def get_owner_scope() -> str:
+    """获取后台任务的归属会话 scope（延迟导入 agent.mind，失败返回 "_global"）。
+
+    委托链绑定的父会话 scope 优先（子代理内启动的后台任务归属发起会话，
+    完成通知才能路由回对话），否则退回当前激活 scope——启动与查询同链。
+    """
+    try:
+        from agent.mind.tool_activation import current_owner_scope
+        return current_owner_scope()
+    except Exception:
+        return "_global"
+
+
 def tool_group_rounds_left(group: str) -> int:
     """查询可沉睡分组在当前会话 scope 下的剩余激活轮数（0 = 沉睡中）。
 

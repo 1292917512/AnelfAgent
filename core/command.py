@@ -33,10 +33,36 @@ class CommandResult:
     returncode: Optional[int] = None
 
 
+def terminate_process_group(proc: "subprocess.Popen", grace_seconds: float = 2.0) -> None:
+    """整组终止进程：SIGTERM → 宽限 → SIGKILL（POSIX 进程组，win32 退化单进程）。
+
+    要求 proc 以 start_new_session=True 启动（POSIX），否则只杀直接子进程。
+    供前台超时（_run_with_group_kill）与后台 shell 超时共用。
+    """
+    import signal
+    # killpg/SIGKILL 为 POSIX 独有：getattr 取用规避 typeshed 平台收窄
+    # （三平台 mypy 校验均无告警；win32 退化为 terminate/kill 单进程）
+    killpg = getattr(os, "killpg", None)
+    sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+    try:
+        if killpg is not None:
+            killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+        proc.wait(timeout=grace_seconds)
+    except (ProcessLookupError, subprocess.TimeoutExpired, PermissionError):
+        try:
+            if killpg is not None:
+                killpg(proc.pid, sigkill)
+            else:
+                proc.kill()
+        except (ProcessLookupError, PermissionError):
+            log("terminate_process_group 异常已忽略", "DEBUG")
+
+
 def _run_with_group_kill(command: Union[str, List[str]], timeout_sec: float,
                          run_kwargs: Dict[str, Any]) -> "subprocess.CompletedProcess[str]":
     """POSIX 下以独立进程组执行，超时时 SIGTERM→SIGKILL 整组终止（防孙进程泄漏）。"""
-    import signal
     kwargs = dict(run_kwargs)
     if kwargs.pop("capture_output", False):
         kwargs["stdout"] = subprocess.PIPE
@@ -47,24 +73,7 @@ def _run_with_group_kill(command: Union[str, List[str]], timeout_sec: float,
         stdout, stderr = proc.communicate(input=stdin_data, timeout=timeout_sec)
         return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
     except subprocess.TimeoutExpired:
-        # killpg/SIGKILL 为 POSIX 独有：getattr 取用规避 typeshed 平台收窄
-        # （三平台 mypy 校验均无告警；win32 退化为 terminate/kill 单进程）
-        killpg = getattr(os, "killpg", None)
-        sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-        try:
-            if killpg is not None:
-                killpg(proc.pid, signal.SIGTERM)
-            else:
-                proc.terminate()
-            proc.wait(timeout=2)
-        except (ProcessLookupError, subprocess.TimeoutExpired, PermissionError):
-            try:
-                if killpg is not None:
-                    killpg(proc.pid, sigkill)
-                else:
-                    proc.kill()
-            except (ProcessLookupError, PermissionError):
-                log("_run_with_group_kill 异常已忽略", "DEBUG")
+        terminate_process_group(proc)
         proc.wait()
         raise
 

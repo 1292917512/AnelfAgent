@@ -54,7 +54,7 @@ _STICKER_CONFIGS = {
         },
         "image_index_describe_timeout": {
             "description": "单张图片描述的超时时间",
-            "default": 60.0,
+            "default": 120.0,
             "advanced": True,
             "unit": "秒",
         },
@@ -287,7 +287,7 @@ def _multimodal_result(items: List[Dict[str, Any]], header: str, kind: str) -> s
 # 表情包：收藏
 # ==================================================================
 
-@tool(name="collect_sticker", group="sticker", tags=["media:image"], timeout=120.0)
+@tool(name="collect_sticker", group="sticker", tags=["media:image"], timeout=300.0)
 async def collect_sticker(
     source_path: str,
     description: str = "",

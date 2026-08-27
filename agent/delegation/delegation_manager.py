@@ -485,6 +485,20 @@ class DelegationManager:
         registry = getattr(self._mind, "background_tasks", None)
         if registry is not None:
             delegation_id = registry.register(scope or "_global", "delegation", goal[:80])
+            # 终止句柄：AI 经 terminate_background_task 决策取消本委托。
+            # cancel 内的 Task.cancel 非线程安全，killer 可能在线程池执行，
+            # 经 call_soon_threadsafe 桥回主循环；标记先行保证按用户取消路由
+            _loop = asyncio.get_running_loop()
+
+            def _kill() -> bool:
+                self._cancel_marks.add(delegation_id)
+                try:
+                    _loop.call_soon_threadsafe(self.cancel, delegation_id)
+                    return True
+                except RuntimeError:
+                    return False  # 循环已关闭（关停中）
+
+            registry.attach_killer(delegation_id, _kill)
         else:
             delegation_id = uuid.uuid4().hex[:8]
 
@@ -517,7 +531,13 @@ class DelegationManager:
             name=f"delegation.{delegation_id}",
         )
         self._background_tasks[delegation_id] = task
-        task.add_done_callback(lambda _: self._background_tasks.pop(delegation_id, None))
+
+        def _bg_done(t: "asyncio.Task") -> None:
+            self._background_tasks.pop(delegation_id, None)
+            if not t.cancelled():
+                _ = t.exception()  # 取回异常防 never-retrieved 告警
+
+        task.add_done_callback(_bg_done)
         log(f"后台委托已启动: {delegation_id} -> {goal[:60]}", tag="委托")
         return delegation_id
 
@@ -547,11 +567,19 @@ class DelegationManager:
             )
         except asyncio.CancelledError:
             # 用户取消（含并发槽等待阶段）：转化为取消结果继续走正常路由；
-            # 非用户取消（服务关闭等）向上传播
+            # 非用户取消（服务关闭等）先落终态再向上传播，防记录永久卡 running
             if delegation_id in self._cancel_marks:
                 self._cancel_marks.discard(delegation_id)
                 result = _cancelled_result(goal, role=role)
             else:
+                try:
+                    bg_registry = getattr(self._mind, "background_tasks", None)
+                    if bg_registry is not None:
+                        bg_registry.complete(
+                            delegation_id, False, "后台委托被取消（非用户操作）",
+                        )
+                except Exception:
+                    log(f"后台委托取消登记失败: {delegation_id}", "DEBUG", tag="委托")
                 raise
         except Exception as exc:
             log(f"后台委托执行异常: {delegation_id}: {exc}", "ERROR", tag="委托")
@@ -612,10 +640,7 @@ class DelegationManager:
             log(f"后台委托结果登记失败: {delegation_id}: {exc}", "ERROR", tag="委托")
 
         try:
-            if not scope.startswith(("user_", "group_")):
-                # 无回复目标（非对话 scope）：全局短期记忆桶兜底（无处写历史）
-                self._mind.pfc.add_temporary({"role": "user", "content": note})
-            elif claimed:
+            if claimed:
                 # 轮内会合：等待者本轮已收到完成注入（ephemeral），完整详情
                 # 固化到对话历史供后续轮次回溯（一次性事实，不驻留短期记忆）
                 from agent.mind.tools.scheduler import _append_one_shot_history
@@ -624,18 +649,22 @@ class DelegationManager:
                         self._mind.pfc.get_adapter_key(scope), note):
                     self._mind.pfc.add_temporary({"role": "user", "content": note}, scope=scope)
             elif registry is None:
-                # 轮外完成且无注册表（极端降级路径）：写历史 + 入队 + 触发新 REPLY
-                from agent.mind.tools.scheduler import enqueue_scope_reply
-                await enqueue_scope_reply(
-                    self._mind.pfc,
-                    scope,
-                    self._mind.pfc.get_adapter_key(scope),
-                    f"后台委托完成: {goal[:60]}",
-                    note + "\n请将结果告知用户，或根据结果继续未完成的操作。",
-                )
-                asyncio.create_task(self._mind.try_execute_mind())
+                # 无注册表（极端降级路径）：自行写历史 + 入队 + 触发新 REPLY；
+                # 非 conversation scope 无处写历史，全局短期记忆桶兜底
+                if scope.startswith(("user_", "group_")):
+                    from agent.mind.tools.scheduler import enqueue_scope_reply
+                    await enqueue_scope_reply(
+                        self._mind.pfc,
+                        scope,
+                        self._mind.pfc.get_adapter_key(scope),
+                        f"后台委托完成: {goal[:60]}",
+                        note + "\n请将结果告知用户，或根据结果继续未完成的操作。",
+                    )
+                    asyncio.create_task(self._mind.try_execute_mind())
+                else:
+                    self._mind.pfc.add_temporary({"role": "user", "content": note})
             # 轮外完成且有注册表：unclaimed 回调统一负责（写历史 + 入队 +
-            # 唤醒），此处不重复投递
+            # 唤醒；非 conversation scope 由回调侧全局桶兜底），此处不重复投递
         except Exception as exc:
             log(f"后台委托结果路由失败: {delegation_id}: {exc}", "ERROR", tag="委托")
         log(f"后台委托完成: {delegation_id} ({status})", tag="委托")

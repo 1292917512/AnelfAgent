@@ -50,25 +50,29 @@ def _cap_names(names: List[str], limit: int = 8) -> str:
 
 
 def _env_info_block() -> str:
-    """运行环境信息块（工作区绝对路径 + 平台），注入 stable 层让 AI 知晓自身工作位置。"""
+    """运行环境信息块（工作区操作环境 + 宿主环境 + 平台 + 命令方言），注入 stable 层。"""
     import platform as _platform
 
     from core.path import workspace_root
     system = _platform.system().lower()
     block = (
         "[运行环境]\n"
-        f"工作区根目录: {workspace_root()}\n"
+        f"工作区根目录: {workspace_root()}（你的操作环境）\n"
         f"平台: {system} ({_platform.machine()})\n"
-        "文件工具的相对路径与 Shell 的初始工作目录均基于工作区根目录；"
-        "日常操作建议优先在工作区内进行，访问其他位置时使用绝对路径；"
-        "需要当前 Shell 工作目录等更多路径信息时调用 get_workspace_info。"
+        "文件工具与 Shell 的相对路径均基于工作区根目录，操作在工作区内进行，"
+        "访问区外用绝对路径；Shell 当前工作目录等实时信息用 get_workspace_info。"
     )
+    # 宿主环境事实：环境实体为单一数据源（与 get_python_status 工具共用
+    # 检测逻辑），进程级缓存保证字节稳定（人设层指纹依赖）
+    try:
+        from entities.system.python_service import get_runtime_env_summary
+        block += "\n" + get_runtime_env_summary()
+    except Exception:
+        pass
     if system in ("darwin", "freebsd", "openbsd", "netbsd"):
         block += (
-            "\n命令方言: 当前为 BSD 用户态（非 GNU），常见 GNU 专有写法不可用——"
-            "find 无 -printf（用 -exec ls -l {} + 或 du 替代）、sed -i 必须跟备份后缀（如 -i ''）、"
-            "stat 用 -f 而非 -c、date 无 -d（用 -v）、grep 无 -P；"
-            "不确定的选项先查 man 或换用文件工具完成。"
+            "\n命令方言: BSD 用户态（非 GNU）——find 无 -printf、sed -i 需备份后缀、"
+            "stat 用 -f 而非 -c、date 用 -v 而非 -d、grep 无 -P"
         )
     return block
 

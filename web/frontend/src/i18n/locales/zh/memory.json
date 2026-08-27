@@ -8,7 +8,6 @@
     "conv": "会话记录",
     "entity": "实体画像",
     "notes": "便签",
-    "config": "配置",
     "cognee": "Cognee",
     "graph": "关系图谱",
     "daily": "日记",
@@ -112,32 +111,6 @@
     "fts_available": "全文搜索",
     "chunks_fts_available": "分块全文搜索"
   },
-  "memoryConfig": "记忆系统配置",
-  "memoryConfigSubtitle": "调整记忆搜索、管理和整理参数",
-  "configFields": {
-    "vector_search_batch_size": "向量搜索批量大小",
-    "memory_recall_top_k": "召回数量",
-    "memory_recall_min_score": "召回最低分",
-    "memory_time_decay_days": "时间衰减半衰期(天)",
-    "memory_warn_threshold": "预警阈值",
-    "memory_max_per_type": "类型上限",
-    "heartbeat_max_entries": "心跳最大条目",
-    "auto_consolidate_enabled": "自动整理",
-    "notes_events_retention_days": "日期便签保留天数",
-    "notes_events_distill_enabled": "过期便签提炼归档"
-  },
-  "configDescs": {
-    "vector_search_batch_size": "超过此数量时分批并行搜索",
-    "memory_recall_top_k": "被动记忆召回返回的最大条目数",
-    "memory_recall_min_score": "低于此分数的记忆不会被召回",
-    "memory_time_decay_days": "记忆随时间衰减的半衰期",
-    "memory_warn_threshold": "单类型记忆超过此数量时发出预警",
-    "memory_max_per_type": "单类型记忆的硬上限",
-    "heartbeat_max_entries": "heartbeat.md 保留的最大条目数",
-    "auto_consolidate_enabled": "是否在心跳时自动整理记忆文件",
-    "notes_events_retention_days": "events 日期便签保留天数，超期自动提炼归档后删除文件",
-    "notes_events_distill_enabled": "过期日期便签删除前是否先提炼进长期记忆（关闭则直接删除）"
-  },
   "cogneeFields": {
     "enabled": "启用 Cognee",
     "sync_enabled": "异步双写",
@@ -155,7 +128,11 @@
     "recall_pool_multiplier": "召回池倍率",
     "compact_enabled": "自动压缩",
     "compact_interval_seconds": "压缩间隔（秒）",
-    "compact_retention_days": "版本保留（天）"
+    "compact_retention_days": "版本保留（天）",
+    "write_breaker_enabled": "写盘熔断",
+    "write_breaker_threshold_mb": "熔断阈值 (MB)",
+    "write_breaker_window_seconds": "熔断采样窗口 (秒)",
+    "write_breaker_cooldown_seconds": "熔断冷却时长 (秒)"
   },
   "cogneeDescs": {
     "enabled": "启用可选 Cognee 后端；未安装依赖时自动降级",
@@ -174,7 +151,11 @@
     "recall_pool_multiplier": "联邦召回时各来源的候选池放大倍数",
     "compact_enabled": "同步空闲时自动压缩向量库，回收删除/更新遗留的历史版本（不影响记忆数据）",
     "compact_interval_seconds": "两次自动压缩的最小间隔",
-    "compact_retention_days": "保留多少天内的历史版本；最新版本永远保留"
+    "compact_retention_days": "保留多少天内的历史版本；最新版本永远保留",
+    "write_breaker_enabled": "进程自身磁盘写入速率超阈值时暂停投影认领与自动压缩（防写盘风暴撞爆磁盘配额）",
+    "write_breaker_threshold_mb": "滑动窗口内的写入量阈值，超过即触发熔断",
+    "write_breaker_window_seconds": "写入速率采样的滑动窗口时长",
+    "write_breaker_cooldown_seconds": "熔断触发后的冷却时长，到期重新评估"
   },
   "nLines": "{{count}} 行",
   "goalsTitle": "目标计划",

@@ -21,12 +21,22 @@ from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
 from agent.planning import tracker
 from agent.planning.tracker import planning_store_port
+from core.config import register_configs_safe
 from core.log import log
 from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import deferred_tool
 
 _GOAL_SOURCE = "goal"
 _GROUP = "planning"
+
+register_configs_safe({
+    "planning/core": {
+        "goals_inject_enabled": {
+            "description": "对话上下文中注入活跃目标快照（让 AI 始终感知进行中的目标）",
+            "default": True,
+        },
+    },
+})
 
 
 def _bound_store() -> Optional[MemoryStore]:

@@ -119,7 +119,7 @@ class ImageIndexWorker:
             if not vision_clients:
                 return ""
             img = load_image_from_path(local_path)
-            timeout = get_config_float("image_index_describe_timeout", 60.0)
+            timeout = get_config_float("image_index_describe_timeout", 120.0)
             for vc in vision_clients:
                 try:
                     return await asyncio.wait_for(

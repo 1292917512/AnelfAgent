@@ -168,12 +168,13 @@ class Lifecycle:
         线程安全：任意线程（如工具工作线程）均可调用，
         经捕获的主循环 call_soon_threadsafe 派发到循环线程执行。
         """
-        if restart:
-            cls._restart_requested = True
         requester = cls._shutdown_requester
         if requester is None:
             log("收到关闭请求，但关闭触发器未注册", "WARNING")
             return
+        # 仅在关闭能实际触发后才记录重启意图，避免残留旗标导致日后正常退出被误判为重启
+        if restart:
+            cls._restart_requested = True
         loop = cls._requester_loop
         if loop is not None and loop.is_running():
             loop.call_soon_threadsafe(requester)

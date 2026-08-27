@@ -6,13 +6,21 @@
 edit_file/read_file/write_file 的编辑安全语义移植自 Claude Code
 （read-before-write、mtime 过期检查、弯引号容忍匹配、行尾往返），
 详见 docs/refactor/01-claudecode-tools.md。
+
+Model Experience（run_shell_command 失败归因 notes）:
+- 模型看到什么：命令失败且命中归因模式时，结果 notes 附带事实陈述——
+  记忆索引键的真实位置，或解释器为 uv venv 且不含 pip（无操作建议）
+- token 影响：仅失败时 +50~150 字符，属 tool_chain 尾部动态区
+- 缓存影响：不触碰任何前缀层（notes 在工具结果内，volatile 语义）
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,6 +33,10 @@ from entities._sdk import (
     tool_error,
 )
 from entities.filesystem import edit_utils, file_state
+
+# 顶部导入：shell_background 的配置注册（entity/os 组）随模块加载生效，
+# 配置中心启动即可见；惰性导入会让配置项迟到首次后台执行
+from entities.filesystem.shell_background import launch_background
 
 entity("os", "操作系统 - 文件读写、目录管理、Shell 命令、Python 执行")
 
@@ -101,7 +113,9 @@ _SHELL_PROMPT = """在系统 shell 中执行命令并返回输出。
 执行环境:
 - 每条命令独立进程（环境变量/alias 不保留），但 cd 对后续命令生效；沙箱下漂出 workspace 自动重置。
 - 输出超 30000 字符自动落盘，返回预览和文件路径（用 read_file 查看）。
-- 超时默认 120 秒，由 timeout 参数指定；run_in_background=True 后台执行，完成后自动通知。
+- 超时由 timeout 参数指定：前台默认 120 秒（到时返回失败结果）；run_in_background=True 后台执行
+  不受强制超时——超过预期时长（默认 1800 秒）系统会提醒你并附最新进度，是否终止由你决定
+  （terminate_background_task）。
 
 工具偏好（不要用 shell 做这些事）: 搜索用 search_files，读取用 read_file，编辑用 edit_file，写入用 write_file。
 
@@ -756,8 +770,58 @@ def _redundant_workspace_prefix(command: str) -> Optional[str]:
     return None
 
 
+# 形如记忆索引键的相对路径（memory/*.md）：recall 结果 file 来源的标注形态，
+# 相对数据目录父目录而非 Shell 工作目录
+_MEMORY_KEY_RE = re.compile(r"^memory/[\w./\-]+\.md$")
+
+# Python 缺失模块错误（No module named xxx / ModuleNotFoundError: No module named 'xxx'）
+_MISSING_MODULE_RE = re.compile(r"No module named '?[\w.]+'?")
+
+
+def _memory_key_token(command: str) -> Optional[str]:
+    """返回命令中形如记忆索引键（memory/*.md）的相对路径 token。
+
+    仅用于失败归因提示，不做拦截；无命中返回 None。
+    """
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = command.split()
+    for token in tokens:
+        if _MEMORY_KEY_RE.match(token):
+            return token
+    return None
+
+
+def _memory_key_note(key: str) -> str:
+    """记忆索引键误用为 Shell 相对路径的归因提示（事实陈述：键空间与真实位置）。"""
+    from core.path import ConfigPaths
+    root = os.path.dirname(os.path.abspath(ConfigPaths.MEMORY_DIR))
+    real = os.path.join(root, key)
+    base = f"注意: {key} 是记忆索引键（相对数据目录 {root}，非 Shell 相对路径）"
+    if os.path.isfile(real):
+        return f"{base}，实际文件在 {real}"
+    return base
+
+
+def _missing_module_hint(stdout: str, stderr: str) -> Optional[str]:
+    """uv 管理环境下缺失模块错误的环境事实提示（当前解释器为 uv venv、不含 pip）。
+
+    只陈述事实不做操作建议；非 uv 环境无此事实差异，不提示。无命中返回 None。
+    """
+    if not _MISSING_MODULE_RE.search(f"{stdout}\n{stderr}"):
+        return None
+    import shutil
+
+    from entities.system.python_service import detect_env_manager
+    python3 = shutil.which("python3") or sys.executable
+    if detect_env_manager(python3).get("manager") != "uv":
+        return None
+    return "注意: 当前 python3 是 uv 创建的 venv（不含 pip）"
+
+
 @tool(name="run_shell_command", group="os", tags=["always"], description=_SHELL_PROMPT)
-def run_shell_command(command: str, timeout: int = 120, run_in_background: bool = False) -> str:
+def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = False) -> str:
     """在系统 shell 中执行命令并返回输出结果。
 
     每次命令在独立进程中执行（shell 状态不持久），但工作目录在命令间持久
@@ -769,7 +833,9 @@ def run_shell_command(command: str, timeout: int = 120, run_in_background: bool 
 
     Args:
         command: 要执行的 shell 命令字符串
-        timeout: 超时时间（秒），默认 120
+        timeout: 预期时长（秒）。0 = 自动（前台默认 120，后台默认 1800）。
+            前台到时返回失败结果；后台超过该时长系统提醒你并附最新进度
+            （不自动终止），是否终止由你决定
         run_in_background: 是否后台执行（构建/训练等长任务）。立即返回任务 ID
             和输出文件路径，完成后系统自动通知；期间可用 read_file 查看进度
     """
@@ -797,13 +863,18 @@ def run_shell_command(command: str, timeout: int = 120, run_in_background: bool 
         cwd = shell_state.get_cwd(_WORKSPACE, sandbox=_SANDBOX)
 
         if run_in_background:
-            from entities.filesystem.shell_background import launch_background
+            # 0 = 自动：后台缺省预期时长由 launch_background 读
+            # background_shell_alert_after 决定（超时提醒语义，不终止进程）
             return json.dumps(
-                launch_background(command, cwd, _WORKSPACE),
+                launch_background(
+                    command, cwd, _WORKSPACE,
+                    timeout_sec=float(timeout) if timeout > 0 else 0.0,
+                ),
                 ensure_ascii=False,
             )
 
-        timeout = max(1, int(timeout))
+        # 前台缺省沿用历史默认 120s；显式值钳制在 1s~24h
+        timeout = 120 if timeout <= 0 else min(max(1, int(timeout)), 86400)
 
         pwd_file = ""
         run_cmd = command
@@ -852,6 +923,13 @@ def run_shell_command(command: str, timeout: int = 120, run_in_background: bool 
                     f"注意: 工作目录已是 workspace 根目录，{redundant} 的 {prefix} 前缀多余"
                     f"（指向不存在的嵌套路径），直接写 {stripped.rstrip('/') or '.'} 即可"
                 )
+            # 记忆索引键误用为 Shell 相对路径：cwd 下不存在才归因（存在则失败另有原因）
+            key = _memory_key_token(command)
+            if key and not os.path.exists(os.path.join(str(payload["cwd"]), key)):
+                notes.append(_memory_key_note(key))
+            module_hint = _missing_module_hint(stdout, stderr)
+            if module_hint:
+                notes.append(module_hint)
         if notes:
             payload["notes"] = notes
         return json.dumps(payload, ensure_ascii=False)

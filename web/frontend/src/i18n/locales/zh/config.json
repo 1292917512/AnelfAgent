@@ -32,6 +32,9 @@
     "network": "网络",
     "system": "系统",
     "entity": "实体",
+    "planning": "目标规划",
+    "task": "任务系统",
+    "storage": "存储与备份",
     "other": "其他"
   },
   "sections": {
@@ -39,6 +42,9 @@
     "mind/llm": "LLM 调用",
     "mind/interrupt": "中断控制",
     "mind/guardrails": "错误守卫",
+    "mind/token_budget": "Token 预算",
+    "mind/background": "后台唤醒",
+    "mind/usage": "用量统计",
     "memory/recall": "记忆召回",
     "memory/search": "检索评分",
     "memory/embedding": "向量化",
@@ -61,7 +67,18 @@
     "system/workspace": "工作区",
     "system/recovery": "启动恢复",
     "system/migration": "数据迁移",
-    "system/logging": "日志"
+    "system/logging": "日志",
+    "system/hooks": "用户钩子",
+    "entity/os": "系统命令",
+    "entity/ssh": "SSH 远程",
+    "entity/web": "网络工具",
+    "entity/voiceprint": "音源库",
+    "entity/mcp": "MCP 服务",
+    "entity/sticker": "表情包",
+    "entity/share": "分享",
+    "planning/core": "目标注入",
+    "task/handoff": "任务交接",
+    "storage/backup": "存储卷备份"
   },
   "window": {
     "title": "对话窗口",

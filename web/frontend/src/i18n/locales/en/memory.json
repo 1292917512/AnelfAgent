@@ -8,7 +8,6 @@
     "conv": "Conversations",
     "entity": "Entity Profiles",
     "notes": "Notes",
-    "config": "Config",
     "cognee": "Cognee",
     "graph": "Graph",
     "daily": "Daily",
@@ -112,32 +111,6 @@
     "fts_available": "Full-text Search",
     "chunks_fts_available": "Chunk Full-text Search"
   },
-  "memoryConfig": "Memory System Config",
-  "memoryConfigSubtitle": "Adjust memory search, management and consolidation parameters",
-  "configFields": {
-    "vector_search_batch_size": "Vector Search Batch Size",
-    "memory_recall_top_k": "Recall Top K",
-    "memory_recall_min_score": "Recall Min Score",
-    "memory_time_decay_days": "Time Decay Half-life (days)",
-    "memory_warn_threshold": "Warning Threshold",
-    "memory_max_per_type": "Max Per Type",
-    "heartbeat_max_entries": "Heartbeat Max Entries",
-    "auto_consolidate_enabled": "Auto Consolidation",
-    "notes_events_retention_days": "Daily Note Retention (days)",
-    "notes_events_distill_enabled": "Distill Expired Notes"
-  },
-  "configDescs": {
-    "vector_search_batch_size": "Batch parallel search when exceeding this count",
-    "memory_recall_top_k": "Max entries returned by passive memory recall",
-    "memory_recall_min_score": "Memories below this score will not be recalled",
-    "memory_time_decay_days": "Half-life for memory time decay",
-    "memory_warn_threshold": "Warn when a single type exceeds this count",
-    "memory_max_per_type": "Hard limit per memory type",
-    "heartbeat_max_entries": "Max entries kept in heartbeat.md",
-    "auto_consolidate_enabled": "Auto-consolidate memory files during heartbeat",
-    "notes_events_retention_days": "Days to keep events daily notes; expired notes are distilled and archived, then deleted",
-    "notes_events_distill_enabled": "Distill expired daily notes into long-term memory before deletion (delete directly when off)"
-  },
   "cogneeFields": {
     "enabled": "Enable Cognee",
     "sync_enabled": "Async Projection",
@@ -155,7 +128,11 @@
     "recall_pool_multiplier": "Recall pool multiplier",
     "compact_enabled": "Auto Compact",
     "compact_interval_seconds": "Compact Interval (s)",
-    "compact_retention_days": "Version Retention (days)"
+    "compact_retention_days": "Version Retention (days)",
+    "write_breaker_enabled": "Write Breaker",
+    "write_breaker_threshold_mb": "Breaker Threshold (MB)",
+    "write_breaker_window_seconds": "Breaker Window (s)",
+    "write_breaker_cooldown_seconds": "Breaker Cooldown (s)"
   },
   "cogneeDescs": {
     "enabled": "Enable the optional Cognee backend; automatically falls back when unavailable",
@@ -174,7 +151,11 @@
     "recall_pool_multiplier": "Candidate pool amplification per source in federated recall",
     "compact_enabled": "Automatically compact the vector store when sync is idle, reclaiming historical versions left by deletes/updates (memory data is unaffected)",
     "compact_interval_seconds": "Minimum interval between automatic compactions",
-    "compact_retention_days": "How many days of historical versions to keep; the latest version is always kept"
+    "compact_retention_days": "How many days of historical versions to keep; the latest version is always kept",
+    "write_breaker_enabled": "Pause projection claiming and auto-compaction when the process's own disk write rate exceeds the threshold",
+    "write_breaker_threshold_mb": "Write volume threshold within the sliding window that trips the breaker",
+    "write_breaker_window_seconds": "Sliding window length for write-rate sampling",
+    "write_breaker_cooldown_seconds": "Cooldown after the breaker trips; re-evaluated on expiry"
   },
   "nLines": "{{count}} lines",
   "goalsTitle": "Goal Plans",

@@ -430,9 +430,11 @@ class HeartbeatEngine:
 
     async def _run_maintenance(self) -> None:
         """内置维护步骤（不可由用户配置为任务）。"""
+        from core.config import get_config_bool
         try:
-            from agent.memory.notes import consolidate_heartbeat
-            consolidate_heartbeat()
+            if get_config_bool("auto_consolidate_enabled", True):
+                from agent.memory.notes import consolidate_heartbeat
+                consolidate_heartbeat()
         except Exception as e:
             log(f"心跳日志合并失败: {e}", "DEBUG", tag="心跳")
 

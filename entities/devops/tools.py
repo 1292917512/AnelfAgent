@@ -33,8 +33,12 @@ def restart_app() -> str:
 
     触发优雅关闭（完整清理 WebUI / 频道 / MCP 等资源）后退出，
     由外层启动脚本（start.sh / start.bat）自动重新拉起应用。
+    进程若非启动脚本守护拉起，重启等同关机，请求会被拒绝并说明。
     """
-    service.request_restart()
+    result = service.request_restart(source="tool:restart_app")
+    if not result.get("ok"):
+        return _result("restart_app", ok=False,
+                       message=result.get("message", "重启请求被拒绝"))
     return _result("restart_app", ok=True, message="应用即将优雅重启...")
 
 

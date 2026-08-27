@@ -2,9 +2,12 @@
 
 基于 asyncssh 的结构化执行：
 - connect() 双重检查锁建连（per-name Lock），keepalive 死链检测
+- 建连前 TCP 快速探测：端口不通/域名错误/防火墙丢弃秒级失败并精确归因，
+  不可达主机不再等满 SSH 握手超时
 - connection_lost 回调置状态并广播（前端 SSE 实时刷新）
-- execute() 两阶段执行：通道打开失败（命令未开始，典型为池内失效连接）
-  自动重连重试一次；命令执行中断开则抛 SshCommandInterrupted 交调用方决策
+- execute() 两阶段执行：通道打开失败（命令未开始，典型为池内失效连接，
+  含打开超时的静默死链）自动重连重试一次；命令执行中断开则抛
+  SshCommandInterrupted 交调用方决策
 - upload/download 走 SFTP
 
 状态变更经模块级订阅者队列广播，router.py 的 SSE 端点消费。
@@ -14,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 import time
 from typing import Any, Dict, List, Optional
 
@@ -34,9 +38,42 @@ STATUS_ERROR = "error"
 _OUTPUT_LIMIT = 8000
 # 默认命令超时（秒），可被实体配置 ssh_default_timeout 覆盖
 _FALLBACK_CMD_TIMEOUT = 60.0
+# 会话打开阶段（命令未开始）可安全重试的异常：断线类 + 打开超时（死链）
+_SESSION_OPEN_EXCS = (asyncssh.ConnectionLost, asyncssh.DisconnectError, asyncio.TimeoutError)
 
 # SSE 订阅者队列（router.py 注册），广播失败仅告警不中断
 _subscribers: List[asyncio.Queue] = []
+
+
+async def _probe_tcp(host: str, port: int) -> None:
+    """建连前的快速 TCP 可达性探测。
+
+    端口不通、域名解析失败、防火墙丢弃等在探测超时（ssh_probe_timeout，
+    0 表示禁用）内快速失败并给出可读归因，不可达主机不再等满 SSH 握手
+    超时。探测连接随即关闭，正式连接仍由 asyncssh 独立建立。
+    """
+    timeout = get_config_int("ssh_probe_timeout", 5)
+    if timeout <= 0:
+        return
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        raise ConnectionError(
+            f"TCP 探测超时: {host}:{port} 无响应，主机不可达或端口被防火墙丢弃"
+        ) from None
+    except ConnectionRefusedError:
+        raise ConnectionError(f"TCP 连接被拒绝: {host}:{port} 端口未开放") from None
+    except socket.gaierror as exc:
+        raise ConnectionError(f"域名解析失败: {host} ({exc})") from exc
+    except OSError as exc:
+        raise ConnectionError(f"TCP 连接失败: {host}:{port} ({exc})") from exc
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except Exception:
+        log("TCP 探测连接关闭异常（已忽略）", "DEBUG", tag="SSH")
 
 
 class SshCommandInterrupted(Exception):
@@ -216,7 +253,14 @@ class SshConnectionManager:
                 managed.last_error = str(exc)[:200]
                 _broadcast_status(self, name, "status")
                 log(f"SSH 连接失败: {name}@{profile.get('host')} - {exc}", "WARNING", tag="SSH")
-                raise ConnectionError(f"连接 {name} 失败: {exc}") from exc
+                # 按语义保留异常类型：认证失败（重试无意义）与本地文件缺失
+                # 不与网络失败混为一谈，调用方按 cause 精确决策
+                if isinstance(exc, asyncssh.PermissionDenied):
+                    raise PermissionError(f"SSH 认证失败: {exc}") from exc
+                if isinstance(exc, FileNotFoundError):
+                    raise
+                detail = str(exc).strip() or type(exc).__name__
+                raise ConnectionError(f"连接 {name} 失败: {detail}") from exc
 
             managed.conn = conn
             managed.status = STATUS_CONNECTED
@@ -227,13 +271,17 @@ class SshConnectionManager:
             return managed.snapshot(profile, self._store.get_default_name() == name)
 
     async def _create_connection(self, profile: Dict[str, Any]) -> asyncssh.SSHClientConnection:
-        """根据配置建立 asyncssh 连接（展开 ${ENV_VAR} 引用）。"""
+        """根据配置建立 asyncssh 连接（展开 ${ENV_VAR} 引用，先做 TCP 可达性探测）。"""
         password = str(expand_env_refs(profile.get("password", "")))
         passphrase = str(expand_env_refs(profile.get("passphrase", ""))) or None
         key_path = str(profile.get("key_path", "")).strip()
         key_path = os.path.expanduser(key_path) if key_path else ""
         if key_path and not os.path.exists(key_path):
             raise FileNotFoundError(f"私钥文件不存在: {key_path}")
+
+        host = str(profile["host"])
+        port = int(profile.get("port", 22))
+        await _probe_tcp(host, port)
 
         keepalive = get_config_int("ssh_keepalive_interval", 30)
 
@@ -256,10 +304,16 @@ class SshConnectionManager:
         elif password:
             kwargs["password"] = password
 
-        return await asyncio.wait_for(
-            asyncssh.connect(str(profile["host"]), int(profile.get("port", 22)), **kwargs),
-            timeout=get_config_int("ssh_connect_timeout", 15),
-        )
+        connect_timeout = get_config_int("ssh_connect_timeout", 15)
+        try:
+            return await asyncio.wait_for(
+                asyncssh.connect(host, port, **kwargs), timeout=connect_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise ConnectionError(
+                f"SSH 握手超时: TCP 已连通但 {connect_timeout}s 内未完成握手，"
+                "端口可能被非 SSH 服务占用或 sshd 过载"
+            ) from None
 
     async def disconnect(self, name: str) -> None:
         """主动断开连接（未连接则无操作）。"""
@@ -299,6 +353,20 @@ class SshConnectionManager:
         assert managed.conn is not None
         return managed.conn
 
+    async def _open_process(
+        self, conn: asyncssh.SSHClientConnection, command: str,
+    ) -> asyncssh.SSHClientProcess:
+        """打开执行通道，超时即判定连接死链。
+
+        静默死链（主机断电/NAT 超时，无 RST）下 create_process 只能等
+        keepalive 判死（30s×3 起步）；以 ssh_connect_timeout 为界提前截断，
+        健康链路的通道打开远快于该值。
+        """
+        return await asyncio.wait_for(
+            conn.create_process(command),
+            timeout=get_config_int("ssh_connect_timeout", 15),
+        )
+
     async def execute(
         self,
         command: str,
@@ -331,20 +399,26 @@ class SshConnectionManager:
             managed.status = STATUS_DISCONNECTED
             _broadcast_status(self, target, "status")
 
-        # 阶段一：打开执行通道。此阶段断线 = 命令未开始，重试安全。
+        # 阶段一：打开执行通道。此阶段断线/超时 = 命令未开始，重试安全。
         # create_process 拆分自 conn.run：以"命令是否已在远端启动"为界
         # 区分可重试与不可重试，是断线路由的唯一依据。
         try:
-            process = await conn.create_process(full_command)
-        except (asyncssh.ConnectionLost, asyncssh.DisconnectError) as exc:
+            process = await self._open_process(conn, full_command)
+        except _SESSION_OPEN_EXCS as exc:
             log(f"SSH 会话打开失败，重连后重试: {target} - {exc}", "DEBUG", tag="SSH")
+            if isinstance(exc, asyncio.TimeoutError):
+                # 静默死链无 RST，主动关闭旧句柄防滞留
+                conn.close()
             _mark_disconnected()
             try:
                 conn = await self._ensure_connected(target)
-                process = await conn.create_process(full_command)
-            except (asyncssh.ConnectionLost, asyncssh.DisconnectError) as retry_exc:
+                process = await self._open_process(conn, full_command)
+            except _SESSION_OPEN_EXCS as retry_exc:
+                if isinstance(retry_exc, asyncio.TimeoutError):
+                    conn.close()
                 _mark_disconnected()
-                raise ConnectionError(f"重连后仍无法建立会话: {retry_exc}") from retry_exc
+                detail = str(retry_exc).strip() or type(retry_exc).__name__
+                raise ConnectionError(f"重连后仍无法建立会话: {detail}") from retry_exc
 
         # 阶段二：等待命令完成。此阶段断线 = 命令被中途掐断，立即上抛。
         started = time.monotonic()

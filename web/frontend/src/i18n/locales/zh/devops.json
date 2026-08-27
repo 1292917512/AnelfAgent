@@ -25,5 +25,6 @@
   "lastBuild": "最近构建",
   "crashInfo": "最近崩溃",
   "crashInfoDesc": "启动脚本守护循环在崩溃后自动重新拉起，并记录崩溃状态",
-  "crashAutoRestartHint": "进程以段错误等致命信号退出时，守护循环按递增间隔自动重启；连续 5 次崩溃后停止自动拉起，需人工排查。"
+  "crashAutoRestartHint": "进程以段错误等致命信号退出时，守护循环按递增间隔自动重启；连续 5 次崩溃后停止自动拉起，需人工排查。",
+  "restartFailed": "重启请求被拒绝"
 }

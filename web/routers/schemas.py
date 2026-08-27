@@ -74,11 +74,19 @@ class CogneeConfigUpdate(BaseModel):
     sync_interval_seconds: Optional[float] = None
     sync_batch_size: Optional[int] = None
     max_retries: Optional[int] = None
+    compact_enabled: Optional[bool] = None
+    compact_interval_seconds: Optional[float] = None
+    compact_retention_days: Optional[float] = None
+    write_breaker_enabled: Optional[bool] = None
+    write_breaker_threshold_mb: Optional[float] = None
+    write_breaker_window_seconds: Optional[float] = None
+    write_breaker_cooldown_seconds: Optional[float] = None
     native_weight: Optional[float] = None
     cognee_weight: Optional[float] = None
     rrf_k: Optional[int] = None
     recall_pool_multiplier: Optional[int] = None
     search_types: Optional[list[str]] = None
+    deep_search_types: Optional[list[str]] = None
     chat: Optional[CogneeChatModelUpdate] = None
     embedding: Optional[CogneeEmbeddingModelUpdate] = None
 

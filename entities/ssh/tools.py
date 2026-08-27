@@ -6,9 +6,10 @@
 实现"一条指令直达"的使用体验。
 
 Model Experience:
-- 模型看到：命令执行中断开时立即收到结构化错误（cause=network +
-  connection/elapsed_ms 上下文），而非隐式重连+整条重跑的漫长等待
-- token 影响：错误路径即时返回省去空等；错误 JSON 仅增两个上下文字段
+- 模型看到：目标不可达时建连前的 TCP 探测秒级失败并精确归因（域名解析
+  失败/端口未开放/主机不可达/认证失败/握手超时）；命令执行中断开时立即
+  收到结构化错误（cause=network + connection/elapsed_ms 上下文）
+- token 影响：错误路径即时返回省去空等；错误 JSON 仅增少量上下文字段
 - 缓存影响：仅 tool_chain 动态区（工具结果），不触碰前缀缓存层
 """
 
@@ -29,6 +30,16 @@ from .store import get_ssh_store
 
 # 分组沉睡简介：目录中展示 [沉睡] 标记，AI 按需 activate_tool_group 唤醒
 _SLEEP_BRIEF = "SSH 远程管理（连接管理 / 命令执行 / 文件传输）"
+
+
+def _conn_error(exc: Exception, action: str) -> str:
+    """连接类操作异常的统一映射：认证失败给出针对性指引，其余走通用归因。"""
+    if isinstance(exc, PermissionError):
+        return tool_error(
+            str(exc), cause=ErrorCause.PERMISSION, retryable=False,
+            hint="检查用户名/密码/私钥口令是否正确（密码支持 ${ENV_VAR} 环境变量引用）",
+        )
+    return error_from_exception(exc, action=action)
 
 
 def _ai_enabled() -> bool:
@@ -71,9 +82,10 @@ def ssh_list() -> str:
 async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str = "") -> str:
     """在 SSH 连接上执行命令，返回结构化结果（exit_code/stdout/stderr）。
 
-    连接未建立时自动建连；命令开始前连接失效会自动重连重试一次；
-    命令执行中连接断开（对端关机/重启/网络中断）则立即返回错误，
-    命令可能已在远端启动，是否重跑由你判断。
+    连接未建立时自动建连；目标不可达时 TCP 探测秒级失败并返回精确原因；
+    命令开始前连接失效会自动重连重试一次；命令执行中连接断开（对端
+    关机/重启/网络中断）则立即返回错误，命令可能已在远端启动，
+    是否重跑由你判断。
 
     Args:
         command: 要执行的 shell 命令
@@ -100,7 +112,7 @@ async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str
     except ValueError as e:
         return tool_error(str(e), cause=ErrorCause.PARAM)
     except Exception as e:
-        return error_from_exception(e, action=f"SSH 执行命令 [{command[:50]}]")
+        return _conn_error(e, action=f"SSH 执行命令 [{command[:50]}]")
 
 
 @tool(name="ssh_upload", group="ssh", timeout=600,
@@ -123,7 +135,7 @@ async def ssh_upload(local_path: str, remote_path: str, name: str = "") -> str:
     except ValueError as e:
         return tool_error(str(e), cause=ErrorCause.PARAM)
     except Exception as e:
-        return error_from_exception(e, action="SSH 上传文件")
+        return _conn_error(e, action="SSH 上传文件")
 
 
 @tool(name="ssh_download", group="ssh", timeout=600,
@@ -144,13 +156,17 @@ async def ssh_download(remote_path: str, local_path: str, name: str = "") -> str
     except ValueError as e:
         return tool_error(str(e), cause=ErrorCause.PARAM)
     except Exception as e:
-        return error_from_exception(e, action="SSH 下载文件")
+        return _conn_error(e, action="SSH 下载文件")
 
 
 @tool(name="ssh_connect", group="ssh", timeout=60,
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
 async def ssh_connect(name: str = "") -> str:
     """建立 SSH 连接（连接池复用，已连接时直接返回）。
+
+    建连前先做秒级 TCP 探测，失败立即返回精确原因（域名解析失败 /
+    端口未开放 / 主机不可达 / 认证失败 / 握手超时），不会长时间阻塞，
+    因此本工具也可当作连通性检查使用。
 
     Args:
         name: 连接名称，缺省使用默认连接
@@ -165,7 +181,7 @@ async def ssh_connect(name: str = "") -> str:
     except ValueError as e:
         return tool_error(str(e), cause=ErrorCause.PARAM)
     except Exception as e:
-        return error_from_exception(e, action="SSH 连接")
+        return _conn_error(e, action="SSH 连接")
 
 
 @tool(name="ssh_disconnect", group="ssh",

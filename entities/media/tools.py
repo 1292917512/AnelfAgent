@@ -42,7 +42,7 @@ def _dumps(out: Dict[str, Any]) -> str:
 # 图片识别（vision）
 # ==================================================================
 
-@tool(name="recognize_image", group="media", tags=["media:image", "media:video"], timeout=120.0)
+@tool(name="recognize_image", group="media", tags=["media:image", "media:video"], timeout=300.0)
 async def recognize_image(image_path: str = "", prompt: str = "", provider: str = "auto", **kwargs: str) -> str:
     """识别/分析图片或视频内容。支持本地文件路径或 URL。
 
@@ -549,7 +549,7 @@ async def cancel_video_task(task_id: str, provider: str = "auto") -> str:
 # 图片生成
 # ==================================================================
 
-@tool(name="generate_image", group="media", tags=["media:image_gen"])
+@tool(name="generate_image", group="media", tags=["media:image_gen"], timeout=300.0)
 async def generate_image(
     prompt: str,
     image_size: str = "",
@@ -596,7 +596,7 @@ async def generate_image(
 # 图片编辑
 # ==================================================================
 
-@tool(name="edit_image", group="media", tags=["media:image_edit"])
+@tool(name="edit_image", group="media", tags=["media:image_edit"], timeout=300.0)
 async def edit_image(
     image_path: str,
     prompt: str,

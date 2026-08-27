@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer } from "@/components/common/PageContainer";
-import { Activity, HardDrive, Target, MessageSquare, StickyNote, Users, Database, Settings2, Network, CalendarDays, BookOpen, Waypoints } from "lucide-react";
+import { Activity, HardDrive, Target, MessageSquare, StickyNote, Users, Database, Network, CalendarDays, BookOpen, Waypoints } from "lucide-react";
 import { OverviewPanel } from "@/pages/memory/OverviewPanel";
 import { STMPanel } from "@/pages/memory/STMPanel";
 import { LTMPanel } from "@/pages/memory/LTMPanel";
@@ -12,11 +12,10 @@ import { EntityPanel } from "@/pages/memory/EntityPanel";
 import { NotesPanel } from "@/pages/memory/NotesPanel";
 import { DailyNotesPanel } from "@/pages/memory/DailyNotesPanel";
 import { DocsPanel } from "@/pages/memory/DocsPanel";
-import { ConfigPanel } from "@/pages/memory/ConfigPanel";
 import { CogneePanel } from "@/pages/memory/cognee/CogneePanel";
 import { GraphPanel } from "@/pages/memory/graph/GraphPanel";
 
-type MemTab = "overview" | "stm" | "goals" | "conv" | "notes" | "daily" | "docs" | "entity" | "ltm" | "graph" | "cognee" | "config";
+type MemTab = "overview" | "stm" | "goals" | "conv" | "notes" | "daily" | "docs" | "entity" | "ltm" | "graph" | "cognee";
 
 export default function Memory() {
   const { t } = useTranslation("memory");
@@ -34,7 +33,6 @@ export default function Memory() {
     { key: "ltm", label: t("tabs.ltm"), icon: Database },
     { key: "graph", label: t("tabs.graph"), icon: Waypoints },
     { key: "cognee", label: t("tabs.cognee"), icon: Network },
-    { key: "config", label: t("tabs.config"), icon: Settings2 },
   ];
 
   return (
@@ -51,7 +49,6 @@ export default function Memory() {
       {tab === "ltm" && <LTMPanel />}
       {tab === "graph" && <GraphPanel />}
       {tab === "cognee" && <CogneePanel />}
-      {tab === "config" && <ConfigPanel />}
     </PageContainer>
   );
 }

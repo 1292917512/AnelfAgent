@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Brain, ChevronDown, ChevronRight, Database, GitBranch, Globe, Layers,
-  MoreHorizontal, Package, Radio, Settings, Shield, Sparkles, Wrench, Zap,
+  Brain, ChevronDown, ChevronRight, Database, GitBranch, Globe, HardDrive,
+  Layers, ListChecks, MoreHorizontal, Package, Radio, Settings, Shield,
+  Sparkles, Target, Wrench, Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ConfigModuleNode } from "./configTree";
@@ -20,6 +21,9 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ size?: number | string 
   network: Globe,
   system: Settings,
   entity: Package,
+  planning: Target,
+  task: ListChecks,
+  storage: HardDrive,
   other: MoreHorizontal,
 };
 

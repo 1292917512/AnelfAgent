@@ -2,6 +2,12 @@
 
 支持 memory.md（常青知识）和 memory/ 目录下的多文件管理。
 Agent 每次对话时自动读取注入到上下文，并可通过工具随时编辑更新。
+
+Model Experience（read_memory_file 常驻 always）:
+- 模型看到什么：所有会话的 tools 数组常驻 read_memory_file（recall 的 file 来源
+  标注可直接作为其 file_path，描述中已说明行号后缀剥离规则）
+- token 影响：schema 常驻增加约 +80 token（随 tools 前缀缓存命中）
+- 缓存影响：升级部署后 tools 数组变化一次属预期，此后字节稳定不破前缀
 """
 
 from __future__ import annotations
@@ -758,7 +764,7 @@ def build_dynamic_notes() -> str:
         return ""
     from core.config import get_config_int
     return _smart_truncate_notes(
-        dynamic_part, get_config_int("notes_inject_max_chars", 5000),
+        dynamic_part, get_config_int("notes_inject_max_chars", 6000),
     )
 
 
@@ -900,9 +906,11 @@ async def list_memory_files() -> str:
 
 @deferred_tool(
     name="read_memory_file",
-    group="notes", tags=["core", "heartbeat"], source="mind.notes",
+    group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "读取指定记忆文件的内容（memory/reflections.md、memory/entities.md 等）。"
+        "recall 结果中 file 来源标注的路径去掉行号后缀（如 memory/heartbeat.md:1-20 → "
+        "memory/heartbeat.md）即可直接作为 file_path，读取该条记忆的完整上下文。"
         "返回两个字段：content（原始内容，用于 write_memory_file/patch_memory_file 的写回）"
         "和 view（带行号的显示内容，用于 edit_memory_lines 定位行号）。"
         "对文件做精确修改时，old_text 和写回内容必须来自 content 字段，不要包含 view 中的行号前缀。"

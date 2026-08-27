@@ -168,7 +168,9 @@ class ContextCompressor:
 
     def __init__(self, mind: Any, config: Optional[CompressionConfig] = None) -> None:
         self._mind = mind
-        self.config = config or CompressionConfig.from_config_manager()
+        # 显式注入（测试）时固化；默认 None 时 config 属性每次访问动态读取，
+        # 配置中心保存即热生效，无需重启
+        self._config_override = config
         self.metrics = CompressionMetrics()
         # 手动压缩请求（compress_context 工具设置，think_loop 消费）
         # scope → focus_topic（空串表示无焦点全量压缩）
@@ -178,6 +180,15 @@ class ContextCompressor:
         # 连续失败熔断（对齐 Claude Code：连续 3 次失败后停止尝试）
         self._consecutive_failures = 0
         self._broken = False
+
+    @property
+    def config(self) -> CompressionConfig:
+        """当前生效配置：注入值优先，否则从配置中心热读。"""
+        return self._config_override or CompressionConfig.from_config_manager()
+
+    @config.setter
+    def config(self, value: CompressionConfig) -> None:
+        self._config_override = value
 
     # 可 microcompact 清理的只读工具（对齐 Claude Code COMPACTABLE_TOOLS）
     _MICROCOMPACTABLE_TOOLS = frozenset({
@@ -1107,6 +1118,18 @@ _COMPRESSION_CONFIGS = {
             "default": 2000,
             "advanced": True,
             "unit": "字符",
+        },
+        "compression_microcompact_threshold": {
+            "description": "Microcompact 触发条数（工具链超过此条数时清理较早的只读工具结果，0 = 关闭）",
+            "default": 40,
+            "advanced": True,
+            "unit": "条",
+        },
+        "compression_microcompact_keep": {
+            "description": "Microcompact 保留的最新工具结果条数",
+            "default": 6,
+            "advanced": True,
+            "unit": "条",
         },
     },
 }

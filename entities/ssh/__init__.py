@@ -43,8 +43,14 @@ register_configs_safe({
             "advanced": True,
             "unit": "秒",
         },
+        "ssh_probe_timeout": {
+            "description": "建连前 TCP 端口探测超时（不可达主机秒级失败并精确归因，0 表示禁用）",
+            "default": 5,
+            "advanced": True,
+            "unit": "秒",
+        },
         "ssh_connect_timeout": {
-            "description": "建立连接超时",
+            "description": "建立连接与会话通道打开超时",
             "default": 15,
             "advanced": True,
             "unit": "秒",

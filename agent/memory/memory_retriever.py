@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from core.log import log
 
@@ -16,6 +16,9 @@ from .embedding import Embedder
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
 from .store.tag_intel import ASSOC_PREFIXES, ENTITY_PREFIXES
+
+if TYPE_CHECKING:
+    from .cognee.config import CogneeConfig
 
 DEFAULT_TOP_K = 5
 DEFAULT_MIN_SCORE = 0.1
@@ -37,8 +40,12 @@ class MemoryRetriever:
         self._top_k = top_k
         self._min_score = min_score
         self._rerank_client: Optional[object] = None
+
+    @staticmethod
+    def _cognee_config() -> "CogneeConfig":
+        """Cognee 联邦召回配置（每次召回热读，Web 保存/手改 cognee.json 即时生效）。"""
         from .cognee.config import load_cognee_config
-        self._cognee_config = load_cognee_config()
+        return load_cognee_config()
 
     def set_rerank_client(self, client: object) -> None:
         """Set reranker (MediaClient instance) for post-search reranking."""
@@ -138,17 +145,18 @@ class MemoryRetriever:
                 vec = await self._embedder.embed_query(search_query)
             from .cognee.fusion import federated_search
             from .cognee.runtime import get_cognee_client
+            cognee_config = self._cognee_config()
             return await federated_search(
                 self._store.search_unified(
                     query=search_query,
                     query_vec=vec,
                     query_tags=mention_tags or None,
-                    limit=k * self._cognee_config.recall_pool_multiplier,
+                    limit=k * cognee_config.recall_pool_multiplier,
                     min_score=min_score,
                 ),
                 query=search_query,
                 client=get_cognee_client(),
-                config=self._cognee_config,
+                config=cognee_config,
                 limit=k,
                 entity_scope=entity_scope,
             )

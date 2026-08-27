@@ -121,7 +121,12 @@ export default function DevopsPanel() {
     setErrorLog("");
     setNotice(null);
     try {
-      await devopsApi.restart();
+      const { data } = await devopsApi.restart();
+      if (data && data.ok === false) {
+        // 服务端拒绝（如进程非守护脚本拉起，重启等同关机）：直接展示原因，不进入等待
+        fail(data.message || data.error || t("restartFailed"));
+        return;
+      }
     } catch {
       // 服务可能已开始关闭，忽略请求错误
     }

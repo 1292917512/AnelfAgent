@@ -32,6 +32,9 @@
     "network": "Network",
     "system": "System",
     "entity": "Entities",
+    "planning": "Planning",
+    "task": "Tasks",
+    "storage": "Storage & Backup",
     "other": "Other"
   },
   "sections": {
@@ -39,6 +42,9 @@
     "mind/llm": "LLM Calls",
     "mind/interrupt": "Interrupt",
     "mind/guardrails": "Guardrails",
+    "mind/token_budget": "Token Budget",
+    "mind/background": "Background Wake",
+    "mind/usage": "Usage Stats",
     "memory/recall": "Recall",
     "memory/search": "Search Scoring",
     "memory/embedding": "Embedding",
@@ -61,7 +67,18 @@
     "system/workspace": "Workspace",
     "system/recovery": "Recovery",
     "system/migration": "Migration",
-    "system/logging": "Logging"
+    "system/logging": "Logging",
+    "system/hooks": "User Hooks",
+    "entity/os": "OS & Shell",
+    "entity/ssh": "SSH",
+    "entity/web": "Web Tools",
+    "entity/voiceprint": "Voiceprint",
+    "entity/mcp": "MCP Servers",
+    "entity/sticker": "Stickers",
+    "entity/share": "Share",
+    "planning/core": "Goal Injection",
+    "task/handoff": "Task Handoff",
+    "storage/backup": "Volume Backup"
   },
   "window": {
     "title": "Conversation Window",

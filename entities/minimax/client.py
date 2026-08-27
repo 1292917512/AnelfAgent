@@ -17,6 +17,8 @@ from core.log import log
 
 _BASE_URL = "https://api.minimaxi.com"
 _TIMEOUT = 120.0
+# 同步图片生成单请求耗时可达数分钟（参考图/自动优化提示词/排队），长于通用超时
+_IMAGE_TIMEOUT = 300.0
 _CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 
 _config_cache: Optional[Dict[str, Any]] = None
@@ -267,7 +269,7 @@ class MiniMaxClient:
             "response_format": response_format,
             "prompt_optimizer": prompt_optimizer,
         }
-        async with self._http_client() as client:
+        async with self._http_client(timeout=_IMAGE_TIMEOUT) as client:
             resp = await client.post(
                 f"{_BASE_URL}/v1/image_generation",
                 headers=self._json_headers(),
@@ -315,7 +317,7 @@ class MiniMaxClient:
                 {"type": "character", "image_file": reference_image},
             ],
         }
-        async with self._http_client() as client:
+        async with self._http_client(timeout=_IMAGE_TIMEOUT) as client:
             resp = await client.post(
                 f"{_BASE_URL}/v1/image_generation",
                 headers=self._json_headers(),

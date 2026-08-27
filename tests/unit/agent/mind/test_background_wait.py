@@ -132,6 +132,69 @@ class TestBackgroundTaskRegistry:
         assert len(snapshot["completed"]) == 1
         assert snapshot["completed"][0]["success"] is False
 
+    def test_unclaimed_callback_fires_for_all_scopes(self) -> None:
+        """轮外完成对非 conversation scope（_global / reflect:*）也触发回调——
+        完成事实不因 scope 静默丢弃（兜底去向由回调侧决定）。"""
+        registry = BackgroundTaskRegistry()
+        calls: List[tuple] = []
+        registry.set_unclaimed_callback(
+            lambda scope, desc, summary, success: calls.append((scope, desc, summary, success)),
+        )
+        tid_global = registry.register("_global", "shell", "监控脚本")
+        registry.complete(tid_global, False, "执行超时（>1200s），进程已终止")
+        tid_reflect = registry.register("reflect:abc", "shell", "心跳任务里的后台命令")
+        registry.complete(tid_reflect, True, "退出码 0")
+        assert calls == [
+            ("_global", "监控脚本", "执行超时（>1200s），进程已终止", False),
+            ("reflect:abc", "心跳任务里的后台命令", "退出码 0", True),
+        ]
+
+    def test_alert_timeout_reaches_callback_only_when_running(self) -> None:
+        """超时提醒只对仍在运行的任务触发，且不改变任务状态（不置 done）。"""
+        registry = BackgroundTaskRegistry()
+        alerts: List[tuple] = []
+        registry.set_alert_callback(
+            lambda scope, desc, detail, tid: alerts.append((scope, desc, detail, tid)))
+        tid = registry.register("user_1", "shell", "下载任务", expected_seconds=60)
+        registry.alert_timeout(tid, "已运行 70s（预期 60s），还在勤勤恳恳地跑")
+        assert alerts == [
+            ("user_1", "下载任务", "已运行 70s（预期 60s），还在勤勤恳恳地跑", tid),
+        ]
+        # 任务状态不受提醒影响：仍运行中
+        assert [t.task_id for t in registry.running("user_1")] == [tid]
+        # 已完成的任务不再提醒
+        registry.complete(tid, True, "退出码 0")
+        registry.alert_timeout(tid, "迟到的提醒")
+        assert len(alerts) == 1
+
+    def test_terminate_routes_and_errors(self) -> None:
+        """terminate：跨会话拒绝 / 不存在 / 无句柄 / killer 受理 / 已结束幂等。"""
+        registry = BackgroundTaskRegistry()
+        # 不存在
+        assert registry.terminate("user_1", "nope")["ok"] is False
+        # 跨会话
+        tid = registry.register("user_1", "shell", "任务")
+        assert registry.terminate("user_2", tid)["ok"] is False
+        # 无终止句柄
+        assert "不支持终止" in registry.terminate("user_1", tid)["error"]
+        # killer 受理：只发信号，终态仍由生产者完成路径登记
+        registry.attach_killer(tid, lambda: True)
+        result = registry.terminate("user_1", tid)
+        assert result["ok"] and result["terminated"]
+        assert registry.running("user_1")  # 状态未翻转，等待生产者登记终态
+        # 已结束幂等返回
+        registry.complete(tid, False, "已被 AI 终止")
+        result = registry.terminate("user_1", tid)
+        assert result["ok"] and result["already_finished"] and not result["terminated"]
+
+    def test_snapshot_includes_expected_seconds(self) -> None:
+        registry = BackgroundTaskRegistry()
+        registry.register("user_1", "shell", "有预期", expected_seconds=120)
+        registry.register("user_1", "shell", "无预期")
+        running = {t["description"]: t for t in registry.snapshot("user_1")["running"]}
+        assert running["有预期"]["expected_seconds"] == 120
+        assert running["无预期"]["expected_seconds"] == 0
+
 
 # ==================================================================
 # think_loop 挂起点测试
@@ -327,7 +390,7 @@ class _DelegationMind:
         # 镜像 Mind._on_bg_task_unclaimed：轮外完成经回调排入回复队列并触发新一轮
         self.background_tasks.set_unclaimed_callback(self._on_bg_task_unclaimed)
 
-    def _on_bg_task_unclaimed(self, scope: str, description: str, summary: str):
+    def _on_bg_task_unclaimed(self, scope: str, description: str, summary: str, success: bool = True):
         # 镜像 Mind._on_bg_task_unclaimed（async 版）：返回协程由 registry
         # 在主循环 ensure_future——历史写入完成后才入队触发
         async def _notify() -> None:
@@ -387,6 +450,35 @@ class TestDelegationBackgroundIntegration:
         mind.try_execute_mind.assert_not_called()
         if bg is not None:
             await asyncio.wait_for(bg, timeout=5)
+
+    async def test_terminate_background_delegation(self) -> None:
+        """AI 终止后台委托：killer 线程安全桥回主循环 cancel，按取消终态完成并通知。"""
+        from agent.delegation.delegation_manager import DelegationManager
+
+        mind = _DelegationMind()
+        manager = DelegationManager(mind)
+        # 让子代理持续运行直到被终止
+        async def _slow_reflect(*a, **k) -> str:
+            await asyncio.sleep(30)
+            return "迟到的结果"
+        mind.reflect = AsyncMock(side_effect=_slow_reflect)
+        delegation_id = manager.delegate_background("长任务", scope="user_123")
+        await asyncio.sleep(0.05)
+        assert len(mind.background_tasks.running("user_123")) == 1
+
+        result = await asyncio.to_thread(
+            mind.background_tasks.terminate, "user_123", delegation_id)
+        assert result["ok"] and result["terminated"]
+        bg = manager._background_tasks.get(delegation_id)
+        if bg is not None:
+            await asyncio.wait_for(bg, timeout=5)
+        for _ in range(6):
+            await asyncio.sleep(0)
+
+        # 取消终态完成 + 轮外通知照常送达
+        completed = mind.background_tasks.completed("user_123")
+        assert completed and not completed[0].success
+        assert "user_123" in mind.pfc.pending_user
 
     async def test_check_background_tasks_tool(self) -> None:
         """check_background_tasks 工具返回运行中与已完成任务快照。"""

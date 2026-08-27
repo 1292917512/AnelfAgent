@@ -36,6 +36,8 @@ from agent.llm.video_adapters import (
 from core.log import log
 
 _TIMEOUT = 120.0
+# 同步图片生成/编辑单请求耗时可达数分钟（高步数/排队），长于通用超时
+_IMAGE_TIMEOUT = 300.0
 _VIDEO_POLL_INTERVAL = 5.0
 _VIDEO_MAX_POLL = 120
 _TTS_ASYNC_THRESHOLD = 3000
@@ -431,10 +433,13 @@ class MediaClient:
         """解析当前凭据对应的视频协议适配器。"""
         return resolve_video_adapter(self._base_url, self._media_protocol, model)
 
-    async def _send(self, req: AdapterRequest) -> Dict[str, Any]:
-        """按适配器请求描述发送 HTTP 请求并返回响应 JSON。"""
+    async def _send(self, req: AdapterRequest, *, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """按适配器请求描述发送 HTTP 请求并返回响应 JSON。
+
+        timeout 为 None 时使用客户端默认超时；同步生成类请求可传更长超时。
+        """
         headers = {**self._headers(), **(req.headers or {})}
-        async with self._http_client() as client:
+        async with self._http_client(timeout) as client:
             if req.method == "GET":
                 resp = await client.get(req.url, headers=headers, params=req.params)
             elif req.method == "DELETE":
@@ -593,7 +598,7 @@ class MediaClient:
             num_inference_steps=num_inference_steps,
             cfg=cfg,
         )
-        urls = adapter.extract_urls(await self._send(req))
+        urls = adapter.extract_urls(await self._send(req, timeout=_IMAGE_TIMEOUT))
         if not urls:
             raise RuntimeError(f"图片生成响应中无图片（模型 {model}）")
         return urls
@@ -626,7 +631,7 @@ class MediaClient:
             num_inference_steps=num_inference_steps,
             cfg=cfg,
         )
-        urls = adapter.extract_urls(await self._send(req))
+        urls = adapter.extract_urls(await self._send(req, timeout=_IMAGE_TIMEOUT))
         if not urls:
             raise RuntimeError(f"图片编辑响应中无图片（模型 {model}）")
         return urls

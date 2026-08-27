@@ -11,6 +11,7 @@ Model Experience:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Optional
 
@@ -136,10 +137,12 @@ async def delegate_task(
         return tool_error("必须提供 goal 或 tasks 参数", cause=ErrorCause.PARAM, retryable=False)
 
     if background:
-        from agent.mind.tool_activation import ToolActivationManager
+        from agent.mind.tool_activation import current_owner_scope
+        # 归属会话解析（委托链绑定的父会话优先）：子代理内发起的后台委托
+        # 也登记到发起会话，完成通知才能路由回对话
         delegation_id = manager.delegate_background(
             goal, context, role=role, max_iterations=max_iterations,
-            scope=ToolActivationManager.current_scope(),
+            scope=current_owner_scope(),
             difficulty=difficulty, agent_name=agent_name,
         )
         return json.dumps({
@@ -198,8 +201,9 @@ async def check_background_tasks(task_id: str = "") -> str:
     manager = _manager_or_none()
     if manager is None:
         return _manager_not_ready()
-    from agent.mind.tool_activation import ToolActivationManager
-    scope = ToolActivationManager.current_scope()
+    from agent.mind.tool_activation import current_owner_scope
+    # 与启动同链解析：父会话与子代理看到一致的后台任务列表
+    scope = current_owner_scope()
     registry = getattr(manager._mind, "background_tasks", None) if manager._mind else None
     if task_id and registry is not None:
         result = registry.read_task_output(scope, task_id)
@@ -218,3 +222,35 @@ async def check_background_tasks(task_id: str = "") -> str:
         if snapshot["running"] else "当前没有运行中的后台任务。"
     )
     return json.dumps(snapshot, ensure_ascii=False)
+
+
+@deferred_tool(
+    name="terminate_background_task",
+    group="delegation", tags=["always"], source="mind.delegation",
+    description="终止一个运行中的后台任务（后台 shell / 后台委托）。"
+    "任务超时（收到超时提醒）或确认不再需要时由你决策调用；"
+    "系统不会替你终止任务——终止后以终止态完成并照常通知。",
+)
+async def terminate_background_task(task_id: str) -> str:
+    """终止当前会话的一个运行中后台任务。
+
+    Args:
+        task_id: check_background_tasks 返回的任务 ID
+    """
+    manager = _manager_or_none()
+    if manager is None:
+        return _manager_not_ready()
+    registry = getattr(manager._mind, "background_tasks", None) if manager._mind else None
+    if registry is None:
+        return tool_error("后台任务注册表未就绪", cause=ErrorCause.STATE, retryable=False)
+    from agent.mind.tool_activation import current_owner_scope
+    # killer 可能阻塞（shell 进程组击杀有 2s 宽限），放线程池执行
+    result = await asyncio.to_thread(
+        registry.terminate, current_owner_scope(), task_id,
+    )
+    if not result.get("ok"):
+        return tool_error(
+            result.get("error", "终止失败"),
+            cause=ErrorCause.NOT_FOUND, retryable=False,
+        )
+    return json.dumps(result, ensure_ascii=False)

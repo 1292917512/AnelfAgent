@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from . import service
 
@@ -18,9 +18,10 @@ def build_router() -> APIRouter:
     router = APIRouter()
 
     @router.post("/restart")
-    async def restart() -> Dict[str, Any]:
+    async def restart(request: Request) -> Dict[str, Any]:
         """优雅重启应用（由外层启动脚本按退出码 42 重新拉起）。"""
-        return service.request_restart()
+        client = request.client.host if request.client else "unknown"
+        return service.request_restart(source=f"http:{client}")
 
     @router.post("/build-restart")
     async def build_restart() -> Dict[str, Any]:
