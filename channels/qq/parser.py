@@ -119,8 +119,13 @@ async def parse_event_async(
 async def _parse_message_event_async(
     data: Dict[str, Any],
     api_caller: Optional[ApiCaller] = None,
-) -> AdapterMessage:
-    """异步解析 message 类型事件，支持获取引用消息内容和群成员昵称。"""
+) -> Optional[AdapterMessage]:
+    """异步解析 message 类型事件，支持获取引用消息内容和群成员昵称。
+
+    空消息（无文本且无任何媒体/交互段）返回 None——NapCat 对灰条提示
+    （如"对方已接收你发送的离线文件"）无 grayTipElement 转换器，
+    会原样上报 message 为空的 message 事件，丢弃以免触发空思考。
+    """
     message_type = data.get("message_type", "private")
     user_id = str(data.get("user_id", ""))
     message_id = str(data.get("message_id", ""))
@@ -155,6 +160,13 @@ async def _parse_message_event_async(
     content, segments = await _parse_message_segments_async(
         raw_message, group_id, self_id, api_caller
     )
+
+    if not content.strip() and not any(
+        seg.type != SegmentType.TEXT for seg in segments
+    ):
+        log(f"QQ: 丢弃空消息事件（通常为灰条提示回执）: user={user_id} "
+            f"msg_id={message_id}", "DEBUG", tag="QQ")
+        return None
 
     # 提取引用消息 ID 并获取内容与消息段
     reply_to_id = _extract_reply_id(raw_message)

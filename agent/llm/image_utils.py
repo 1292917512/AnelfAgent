@@ -241,39 +241,42 @@ def optimize_for_vision(
 
     try:
         img: "PILImage.Image" = PILImage.open(io.BytesIO(raw))
-    except Exception:
+        # PIL 是惰性解码：截断文件/DecompressionBomb 等错误在 size/resize/save
+        # 才抛出，整个处理段都必须在 try 内——单张坏图不能炸穿整条回复链
+        src_format = (img.format or "").upper()
+        # 动图（GIF/动态PNG/动态WEBP）不重编码，保持原样
+        if getattr(img, "is_animated", False) and src_format in ("GIF", "PNG", "WEBP"):
+            return image
+
+        w, h = img.size
+        original_bytes = len(raw)
+        max_bytes = max_kb * 1024
+        needs_resize = max(w, h) > max_long_edge
+        needs_compress = original_bytes > max_bytes
+        # 视觉 API 不支持的容器格式（如 QQ 图片常见的 MPO）统一取首帧重编码为 JPEG
+        needs_reencode = src_format not in ("JPEG", "PNG", "GIF", "WEBP")
+
+        if not needs_resize and not needs_compress and not needs_reencode:
+            return image
+
+        if needs_resize:
+            scale = max_long_edge / max(w, h)
+            img = img.resize((int(w * scale), int(h * scale)), PILImage.Resampling.LANCZOS)
+
+        if img.mode in ("RGBA", "P", "LA"):
+            img = img.convert("RGB")
+
+        compressed = b""
+        for quality in (85, 70, 55, 40):
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            compressed = buf.getvalue()
+            if len(compressed) <= max_bytes:
+                break
+    except Exception as exc:
+        from core.log import log as _log
+        _log(f"图片优化失败，按原样使用: {exc}", "DEBUG", tag="媒体")
         return image
-
-    src_format = (img.format or "").upper()
-    # 动图（GIF/动态PNG/动态WEBP）不重编码，保持原样
-    if getattr(img, "is_animated", False) and src_format in ("GIF", "PNG", "WEBP"):
-        return image
-
-    w, h = img.size
-    original_bytes = len(raw)
-    max_bytes = max_kb * 1024
-    needs_resize = max(w, h) > max_long_edge
-    needs_compress = original_bytes > max_bytes
-    # 视觉 API 不支持的容器格式（如 QQ 图片常见的 MPO）统一取首帧重编码为 JPEG
-    needs_reencode = src_format not in ("JPEG", "PNG", "GIF", "WEBP")
-
-    if not needs_resize and not needs_compress and not needs_reencode:
-        return image
-
-    if needs_resize:
-        scale = max_long_edge / max(w, h)
-        img = img.resize((int(w * scale), int(h * scale)), PILImage.Resampling.LANCZOS)
-
-    if img.mode in ("RGBA", "P", "LA"):
-        img = img.convert("RGB")
-
-    compressed = b""
-    for quality in (85, 70, 55, 40):
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=quality, optimize=True)
-        compressed = buf.getvalue()
-        if len(compressed) <= max_bytes:
-            break
 
     from core.log import log as _log
     _log(

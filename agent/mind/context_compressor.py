@@ -421,17 +421,27 @@ class ContextCompressor:
 
         data URL 按解码后字节数估算；远程 URL 无尺寸信息按典型值。
         同一图片块在回复内逐轮重发，缓存使其免于重复计算。
+        缓存键带 "media:" 域前缀，与文本 part 的估算键空间隔离（URL 字符串
+        同时以文本消息与图片块出现时不会碰撞）。兼容 OpenAI 形态
+        （image_url/input_audio/video_url）与 Anthropic 形态（source 块）。
         """
-        payload = part.get("image_url") or part.get("input_audio") or part.get("video_url")
+        payload = (
+            part.get("image_url") or part.get("input_audio") or part.get("video_url")
+            or part.get("source")
+        )
         if isinstance(payload, dict):
             data = str(payload.get("url") or payload.get("data") or "")
+            media_type = str(payload.get("media_type") or "")
         else:
             data = str(payload or "")
+            media_type = ""
+        is_image = part.get("type") in ("image_url", "image")
         if not data:
-            return ContextCompressor._IMAGE_BLOCK_BASE_TOKENS
-        is_image = part.get("type") == "image_url"
+            return 1100 if is_image else ContextCompressor._MEDIA_BLOCK_MIN_TOKENS
         cache = ContextCompressor._token_est_cache
-        key = hashlib.sha1(data[:65536].encode("utf-8", errors="replace")).hexdigest()
+        key = hashlib.sha1(
+            b"media:" + data[:65536].encode("utf-8", errors="replace")
+        ).hexdigest()
         cached = cache.get(key)
         if cached is not None:
             cache.move_to_end(key)
@@ -442,7 +452,7 @@ class ContextCompressor:
             raw_bytes = 0  # 远程 URL：无尺寸信息
         else:
             raw_bytes = int(len(data) * 3 / 4)  # 裸 base64
-        if is_image:
+        if is_image or media_type.startswith("image/"):
             if raw_bytes <= 0:
                 estimate = 1100  # 远程图片按压缩后典型值
             else:

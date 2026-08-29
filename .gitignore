@@ -127,5 +127,10 @@ web/frontend/node_modules/
 /uploads/
 /tmp/
 
+# === Root-level personal scripts (Windows PowerShell / batch helpers) ===
+# Keep start.bat tracked (project entry); exclude user-specific *.ps1 in repo root.
+/*.ps1
+/*.psm1
+
 # === Misc ===
 /.other

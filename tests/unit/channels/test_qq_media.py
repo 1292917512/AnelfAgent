@@ -334,3 +334,39 @@ class TestParseEventAutoDownload:
         assert called is False
         images = [s for s in msg.segments if s.type == SegmentType.IMAGE]
         assert images[0].file_path == ""
+
+
+class TestEmptyMessageDropped:
+    """无内容的空消息事件（NapCat 灰条回执）解析阶段直接丢弃。"""
+
+    def _private_event(self, message) -> dict:  # noqa: ANN001
+        return {
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": 42,
+            "message_id": 7,
+            "self_id": 999,
+            "sender": {"nickname": "n"},
+            "message": message,
+            "time": 1,
+        }
+
+    async def test_empty_segment_list_dropped(self) -> None:
+        msg = await _parse_message_event_async(self._private_event([]), None)
+        assert msg is None
+
+    async def test_whitespace_text_dropped(self) -> None:
+        msg = await _parse_message_event_async(
+            self._private_event([{"type": "text", "data": {"text": "  "}}]), None
+        )
+        assert msg is None
+
+    async def test_media_segment_kept(self) -> None:
+        msg = await _parse_message_event_async(
+            self._private_event([
+                {"type": "image", "data": {"file": "p.jpg", "file_id": "fid"}},
+            ]),
+            None,
+        )
+        assert msg is not None
+        assert msg.segments[0].type == SegmentType.IMAGE

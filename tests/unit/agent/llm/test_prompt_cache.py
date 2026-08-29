@@ -251,8 +251,18 @@ class TestStripCopy:
 
 
 class TestTtlBetaHeaders:
-    def test_5m_no_beta_header(self) -> None:
-        assert anthropic_ttl_beta_headers("anthropic") == {}
+    def test_5m_auto_on_carries_beta_header(self) -> None:
+        """自适应开启（默认）时可能切 1h，beta 头必须常备（特性开关，5m 携带无害）。"""
+        assert anthropic_ttl_beta_headers("anthropic") == {
+            "anthropic-beta": "extended-cache-ttl-2025-04-11",
+        }
+
+    def test_5m_auto_off_no_beta_header(self) -> None:
+        ConfigManager.set("prompt_cache_anthropic_ttl_auto", False)
+        try:
+            assert anthropic_ttl_beta_headers("anthropic") == {}
+        finally:
+            ConfigManager.set("prompt_cache_anthropic_ttl_auto", True)
 
     def test_1h_anthropic_carries_beta_header(self) -> None:
         ConfigManager.set("prompt_cache_anthropic_ttl", "1h")

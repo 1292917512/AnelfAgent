@@ -49,11 +49,19 @@ def observe_scope_idle(scope: str) -> float:
 
     供自适应 TTL 判定：IM 闲聊间隔经常超过 5m，上一轮 5m 缓存已失效，
     本轮重写时改用 1h TTL 可覆盖后续的慢节奏对话。
+    表容量有上限：超载时先清超过 1 小时的旧条目，仍超载则清空
+    （长闲置 scope 被清只是退回 5m 决策一次，不影响正确性）。
     """
     if not scope:
         return 0.0
     import time
     now = time.monotonic()
+    if len(_scope_last_call) >= 2048:
+        stale = [k for k, ts in _scope_last_call.items() if now - ts > 3600]
+        for k in stale:
+            _scope_last_call.pop(k, None)
+        if len(_scope_last_call) >= 2048:
+            _scope_last_call.clear()
     last = _scope_last_call.get(scope)
     _scope_last_call[scope] = now
     return (now - last) if last is not None else 0.0
@@ -250,11 +258,14 @@ def strip_cache_control_copy(messages: List[Dict]) -> List[Dict]:
 def anthropic_ttl_beta_headers(api_type: str) -> Dict[str, str]:
     """1h TTL 所需的 Anthropic beta 头（5m 或非 Anthropic 线返回空）。
 
-    ttl="1h" 在 Anthropic 官方端点要求 extended-cache-ttl beta 头，
-    缺失会 400；兼容网关多余 beta 头通常被忽略（被拒绝时调回 5m）。
+    ttl="1h"（显式配置）或 ttl_auto 开启（自适应可能把单次请求切到 1h）时
+    都携带 extended-cache-ttl beta 头——beta 头是特性开关，5m 请求携带无害；
+    官方端点缺此头而 marker 带 ttl=1h 会 400。
     """
     if api_type != "anthropic":
         return {}
     if str(get_config("prompt_cache_anthropic_ttl", "5m")).strip().lower() == "1h":
+        return {"anthropic-beta": "extended-cache-ttl-2025-04-11"}
+    if get_config_bool("prompt_cache_anthropic_ttl_auto", True):
         return {"anthropic-beta": "extended-cache-ttl-2025-04-11"}
     return {}
