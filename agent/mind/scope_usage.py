@@ -28,6 +28,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 from core.config import get_config_int
 from core.log import log
+from core.async_helper import spawn
 
 # 单 scope 内存累计条目上限（防异常 scope 泄漏；超出丢弃最旧统计但不回滚 DB）
 _MAX_SCOPES = 200
@@ -139,26 +140,49 @@ class ScopeUsageStats:
             return
         import asyncio
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()  # 无事件循环（测试/关停中）时 spawn 会炸，先探测
         except RuntimeError:
-            return  # 无事件循环（测试/关停中）：留待下次触发
-        loop.create_task(self.flush(scope))
+            return
+        spawn(self.flush(scope), name="scope_usage.flush")
 
     async def flush(self, scope: str) -> None:
-        """把该 scope 的增量 upsert 到持久层（累加语义），清零未落盘计数。"""
+        """把该 scope 的增量 upsert 到持久层（累加语义）。
+
+        快照即清零：落盘的是"自上次 flush 以来的真实增量"，后续 record
+        计入下一增量；落盘失败时把快照加回（增量不丢不重）。在途 flush
+        去重：并发触发共享同一份快照，不双写。
+        """
         entry = self._acc.get(scope)
         if entry is None or self._flush_callback is None:
             return
+        if entry.get("_flushing"):
+            return  # 在途 flush 已携带当前快照，本增量随下次触发落盘
         delta = {k: v for k, v in entry.items() if not k.startswith("_")}
         if not any(delta.values()):
+            entry["_pending"] = 0
             return
+        for k in delta:
+            entry[k] = 0
         entry["_pending"] = 0
+        entry["_flushing"] = True
+        failed = False
         try:
             await self._flush_callback(scope, delta)
         except Exception as exc:
-            # 落盘失败：计数回滚待下次重试（增量不丢）
+            failed = True
+            # 落盘失败：快照加回，待下次 record/turn 触发重试（增量不丢）；
+            # 不在此重调度——持久故障下立即重试会自旋
+            for k, v in delta.items():
+                entry[k] = entry.get(k, 0) + v
             entry["_pending"] = 1
             log(f"会话用量落盘失败（下次重试）: {scope} {exc}", "DEBUG", tag="统计")
+        finally:
+            entry["_flushing"] = False
+            # 成功且在途期间又来了新用量：补一次落盘
+            if not failed and any(
+                v for k, v in entry.items() if not k.startswith("_")
+            ):
+                self._schedule_flush(scope)
 
     def snapshot(self) -> Dict[str, Dict[str, int]]:
         """内存累计视图（API 兜底用；权威值在 DB）。"""

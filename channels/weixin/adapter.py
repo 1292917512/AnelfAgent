@@ -500,7 +500,14 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
             message = self._pending_text_batches.pop(key, None)
             if not message:
                 return
-            await self._dispatch(message)
+            # dispatch 期间被新消息触发的 cancel 命中时，合批消息已出队，
+            # 必须完成投递——shield 让 dispatch 在后台跑完，cancel 只终止等待
+            async def _guarded_dispatch() -> None:
+                try:
+                    await self._dispatch(message)
+                except Exception as exc:
+                    log(f"微信合批消息分发失败: {exc}", "ERROR", tag="频道")
+            await asyncio.shield(_guarded_dispatch())
         except asyncio.CancelledError:
             pass  # 取消属正常关闭流程（正常控制流，非异常）
         finally:

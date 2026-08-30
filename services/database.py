@@ -569,6 +569,21 @@ class DatabaseService:
             return embedding_cols[0]
         return None
 
+    @staticmethod
+    async def _sync_memories_fts(conn: Any, rowid: int, content: str) -> None:
+        """同步记忆行到 memories_fts（fail-open：失败由启动计数对账兜底）。"""
+        try:
+            from agent.memory.store.tokenizer import tokenize_for_index
+            tokenized = await asyncio.to_thread(tokenize_for_index, content)
+            await conn.execute("DELETE FROM memories_fts WHERE rowid=?", (rowid,))
+            await conn.execute(
+                "INSERT INTO memories_fts(rowid, content) VALUES(?, ?)",
+                (rowid, tokenized),
+            )
+            await conn.commit()
+        except Exception as exc:
+            log(f"memories_fts 同步失败 rowid={rowid}: {exc}", "WARNING", tag="数据库")
+
     async def insert_row(self, db_id: str, table: str, values: Dict[str, Any]) -> Dict[str, Any]:
         self._require_local(db_id)
         conn = await self._get_conn(db_id)
@@ -609,6 +624,10 @@ class DatabaseService:
         await conn.commit()
         if cursor.rowcount == 0:
             raise DatabaseError(f"行不存在: rowid={rowid}", status_code=404)
+        # memories 表内容列变更：同步 memories_fts（手动同步表，不随 UPDATE 自动
+        # 更新；行数不变所以启动对账不会自愈，旧关键词会一直可搜）
+        if table == "memories" and "content" in values:
+            await self._sync_memories_fts(conn, rowid, str(values["content"]))
         log(f"数据库管理: 更新行 {db_id}/{table} rowid={rowid} 列={list(values.keys())}", "DEBUG", tag="数据库")
 
     async def delete_row(self, db_id: str, table: str, rowid: int) -> None:

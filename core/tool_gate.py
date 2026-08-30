@@ -43,6 +43,16 @@ class ToolGate:
         # id(check_fn) -> 进行中的探测任务（单飞去重：同 key 并发探测共享同一个 Task）
         self._inflight: Dict[int, asyncio.Task] = {}
 
+    # 缓存容量上限：MCP 热同步/插件 reload 会重建实体产生新 check_fn，
+    # 旧 callable 键无淘汰会永久驻留（且强引用阻止 GC）
+    _CACHE_MAX_KEYS = 512
+
+    def _evict_cache_if_full(self) -> None:
+        if len(self._cache) >= self._CACHE_MAX_KEYS:
+            for k in list(self._cache)[: self._CACHE_MAX_KEYS // 2]:
+                self._cache.pop(k, None)
+                self._last_good.pop(k, None)
+
     def _effective_ttl(self) -> float:
         return get_config_float("tool_gate_check_ttl_seconds", self.ttl_seconds)
 
@@ -102,6 +112,7 @@ class ToolGate:
 
         value = await self._probe(fn)
 
+        self._evict_cache_if_full()
         if value:
             self._last_good[fn] = now
             self._cache[fn] = (now, True)

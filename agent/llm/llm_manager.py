@@ -666,6 +666,7 @@ class LLMManager(BaseEntity):
             require_vision=self._messages_contain_images(messages),
         )]
         last_exc: Optional[Exception] = None
+        first_exc: Optional[Exception] = None
         index = 0
         while index < len(candidates):
             candidate = candidates[index]
@@ -704,6 +705,8 @@ class LLMManager(BaseEntity):
                 raise
             except Exception as exc:
                 last_exc = exc
+                if first_exc is None:
+                    first_exc = exc
                 # TimeoutError 等异常 str() 为空，补类型名保证日志可诊断
                 safe = self._safe_error(exc, candidate) or type(exc).__name__
                 warning(
@@ -726,8 +729,13 @@ class LLMManager(BaseEntity):
                 index = nxt
                 continue
 
-        if last_exc is not None:
-            raise last_exc
+        # 全部候选失败：抛第一个异常（主因——主模型失败才触发回退链），
+        # 末位候选的异常往往只是连带表象（如回退模型窗口更小的溢出），
+        # 上层按异常类型做控制流决策，必须以主因为准
+        if last_exc is not None and first_exc is None:
+            first_exc = last_exc
+        if first_exc is not None:
+            raise first_exc
         raise RuntimeError("没有可用的 LLM 候选模型")
 
     @staticmethod
@@ -889,12 +897,11 @@ class LLMManager(BaseEntity):
         tools: Optional[List[Dict[str, Any]]],
         tool_choice: Optional[Any],
     ) -> ChatResult:
-        """单次流式调用：每 chunk 独立空闲超时，思考/输出中不限总时长。
+        """单次流式调用：每 chunk 空闲超时 + 总时长天花板双保险。
 
-        空闲窗口 = 客户端超时配置（与单次调用超时同值：完全无响应才判死，
-        思考增量/正文增量都算活动）。流中不做 deadline 检查——总时长由
-        外层护栏（如折叠摘要天花板）与重试决策兜底。内部调用 chunk 数少，
-        统一用 wait_for 即可，无需 3.11 asyncio.timeout 优化。
+        空闲窗口 = 客户端超时配置（完全无响应才判死，思考/正文增量都算活动）。
+        总时长天花板 = 空闲窗口 × 20：防端点以"周期性吐字节"的方式吊流
+        （每 chunk 都有活动但永不结束），此时空闲超时失效、回退链不推进。
         """
         from agent.llm.stream_aggregate import StreamAggregator
 
@@ -902,11 +909,17 @@ class LLMManager(BaseEntity):
         stream_gen = client.chat_stream(
             messages, options=options, tools=tools, tool_choice=tool_choice,
         )
+        idle_timeout = client.config.timeout
+        overall_deadline = asyncio.get_running_loop().time() + idle_timeout * 20
         try:
             while True:
+                if asyncio.get_running_loop().time() > overall_deadline:
+                    raise asyncio.TimeoutError(
+                        f"LLM [{client.config.name}] 流式总时长超限"
+                    )
                 try:
                     delta = await asyncio.wait_for(
-                        stream_gen.__anext__(), timeout=client.config.timeout,
+                        stream_gen.__anext__(), timeout=idle_timeout,
                     )
                 except StopAsyncIteration:
                     break

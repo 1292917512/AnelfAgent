@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from core.log import log
+
 import json
+import uuid
 from typing import Any, AsyncGenerator, Dict, Optional, Union
 
 import litellm
@@ -82,7 +85,8 @@ def _tool_call_from_item(item: dict[str, Any]) -> Optional[ToolCall]:
     arguments = item.get("arguments", "")
     if not isinstance(arguments, str):
         arguments = json.dumps(arguments, ensure_ascii=False)
-    call_id = str(item.get("call_id") or item.get("id") or "") or f"fc_{name}"
+    call_id = str(item.get("call_id") or item.get("id") or "") \
+        or f"fc_{name}_{uuid.uuid4().hex[:8]}"
     return ToolCall(
         id=call_id,
         name=name,
@@ -216,12 +220,32 @@ def messages_to_responses_input(
             continue
 
         if role == "tool":
+            if isinstance(content, str):
+                output: Any = content
+            elif isinstance(content, list):
+                # 多模态工具结果（含图片块）转为结构化 parts，不做 JSON 退化
+                parts: list[dict[str, Any]] = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    ptype = part.get("type")
+                    if ptype == "text":
+                        parts.append({"type": "input_text", "text": str(part.get("text", ""))})
+                    elif ptype == "image_url":
+                        url = part.get("image_url")
+                        url = url.get("url") if isinstance(url, dict) else url
+                        if isinstance(url, str) and url:
+                            parts.append({"type": "input_image", "image_url": url})
+                    else:
+                        parts.append({"type": "input_text", "text": json.dumps(
+                            part, ensure_ascii=False)})
+                output = parts
+            else:
+                output = json.dumps(content, ensure_ascii=False)
             input_items.append({
                 "type": "function_call_output",
                 "call_id": message.get("tool_call_id") or "",
-                "output": content if isinstance(content, str) else json.dumps(
-                    content, ensure_ascii=False,
-                ),
+                "output": output,
             })
             continue
 
@@ -249,18 +273,22 @@ def messages_to_responses_input(
                 })
             continue
 
-        if role in {"user", "assistant"}:
-            if isinstance(content, str):
-                input_items.append({
-                    "role": role,
-                    "content": content,
-                })
-            else:
-                input_items.append({
-                    "type": "message",
-                    "role": role,
-                    "content": _convert_content_parts(content, role),
-                })
+        if role not in {"user", "assistant"}:
+            # 未知 role（developer/空值等脏数据）降级为 user 保留内容，
+            # 静默丢弃会让模型丢失上下文且无任何痕迹
+            log(f"responses 转换: 未知 role {role!r} 降级为 user", "WARNING", tag="模型")
+            role = "user"
+        if isinstance(content, str):
+            input_items.append({
+                "role": role,
+                "content": content,
+            })
+        else:
+            input_items.append({
+                "type": "message",
+                "role": role,
+                "content": _convert_content_parts(content, role),
+            })
 
     instructions = "\n\n".join(part for part in instructions_parts if part)
     # 单条 user 文本可折叠为裸 string；assistant 折叠会被按 user 处理，role 语义改变
@@ -283,7 +311,9 @@ def convert_chat_tools(tools: Optional[list[Any]]) -> Optional[list[dict[str, An
             continue
         if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
             function = tool["function"]
+            # 保留 strict 等扩展字段， Responses 端点原样透传
             converted.append({
+                **function,
                 "type": "function",
                 "name": function.get("name") or "",
                 "description": function.get("description") or "",

@@ -146,7 +146,9 @@ class TestCrashContext:
         context = collect_crash_context()
         assert "SIGSEGV" in context
         assert "139" in context
-        # 已消费：重复收集返回空串（不重复注入）
+        # 收集不再提前标记（恢复失败不丢上下文）；标记后重复收集返回空串
+        assert collect_crash_context() != ""
+        crash_report.mark_crash_reported()
         assert collect_crash_context() == ""
 
     def test_collect_context_no_state(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -330,9 +330,11 @@ class DelegationManager:
                         })
                     except Exception:
                         log("delegate 异常已忽略", "DEBUG")
+                self._detach_child(parent_id, delegation_id)
                 return fail_result
             except asyncio.CancelledError:
                 # 并发槽等待期间被取消（cancel 先于执行登记到达）
+                self._detach_child(parent_id, delegation_id)
                 if delegation_id in self._cancel_marks:
                     self._cancel_marks.discard(delegation_id)
                     return _cancelled_result(goal, role=role, task_index=task_index)

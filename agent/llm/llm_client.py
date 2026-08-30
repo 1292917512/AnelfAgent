@@ -179,6 +179,16 @@ def _clean_message_surrogates(msg: dict) -> dict:
     return msg
 
 
+def _responses_tool_choice(tool_choice: Any) -> Any:
+    """Chat Completions 格式的 tool_choice 转 Responses 格式（其余原样透传）。"""
+    if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+        func = tool_choice.get("function")
+        name = func.get("name") if isinstance(func, dict) else None
+        if name:
+            return {"type": "function", "name": name}
+    return tool_choice
+
+
 class LLMClient(BaseEntity):
     """统一 LLM 客户端（基于 litellm）。
 
@@ -880,8 +890,10 @@ class LLMClient(BaseEntity):
             "tools": convert_chat_tools(
                 self._merge_responses_builtin_tools(tools) if tools else tools,
             ),
-            # 与 chat_completions 路径一致：端点不接受强制 tool_choice 时降级
-            "tool_choice": self._resolve_tool_choice(tool_choice),
+            # 与 chat_completions 路径一致：端点不接受强制 tool_choice 时降级；
+            # chat 格式 {"type":"function","function":{...}} 需转 Responses 的
+            # {"type":"function","name":...}
+            "tool_choice": _responses_tool_choice(self._resolve_tool_choice(tool_choice)),
             "temperature": params.get("temperature"),
             "top_p": params.get("top_p"),
             "max_output_tokens": max_output_tokens,
@@ -1040,18 +1052,15 @@ class LLMClient(BaseEntity):
                     await close_fn()
 
         if tc_bufs:
-            if last_finish in ("tool_calls", "stop"):
-                yield ChatStreamDelta(
-                    tool_calls=self._complete_tool_buffers(tc_bufs),
-                    finish_reason="tool_calls",
-                )
-            else:
-                log(
-                    f"流式响应被截断（finish_reason={last_finish or '缺失'}），"
-                    f"丢弃 {len(tc_bufs)} 个不完整的 tool_call 缓冲",
-                    "WARNING", tag="模型",
-                )
-                tc_bufs.clear()
+            # 正常 finish 时工具缓冲已在 _iter_stream 内完成并清空；
+            # 流尾仍有残留 = 无 finish 的截断或 finish 之后到达的残片，
+            # 两者都不能当作完整调用下发
+            log(
+                f"流式响应异常结束（finish_reason={last_finish or '缺失'}），"
+                f"丢弃 {len(tc_bufs)} 个不完整的 tool_call 缓冲",
+                "WARNING", tag="模型",
+            )
+            tc_bufs.clear()
 
     # ------------------------------------------------------------------
     # 流式/响应解析（实现位于 agent.llm.response_parsing，此处做访问绑定）
@@ -1394,6 +1403,10 @@ class LLMClient(BaseEntity):
                 loop.create_task(stale_embed.aclose())
             except RuntimeError:
                 pass
+        # 端点学习状态随配置重置：换模型/换端点后旧限制（max_tokens 上限、
+        # 强制 tool_choice 不支持）不应继续钳制新配置
+        self._learned_output_cap = None
+        self._learned_no_forced_tool_choice = False
         info(f"LLMClient [{self.config.name}] 配置已更新", tag="模型")
 
     def __repr__(self) -> str:

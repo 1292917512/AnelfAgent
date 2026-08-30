@@ -19,7 +19,9 @@ class ImageContent:
             flat_url: 为 True 时使用 Ollama 兼容的扁平字符串格式；
                       为 False 时使用 OpenAI 标准嵌套 ``{"url": ...}`` 格式。
         """
-        if self.is_url:
+        if self.is_url or self.data.startswith("data:"):
+            # data URL 形态的输入原样透传，不再二次包装成
+            # data:image/jpeg;base64,data:image/png;base64,... 坏块
             url = self.data
         else:
             url = f"data:{self.mime_type};base64,{self.data}"
@@ -46,7 +48,7 @@ class VideoContent:
 
     def to_openai_block(self) -> dict[str, Any]:
         """转换为 OpenAI 兼容的 video_url content block。"""
-        if self.is_url:
+        if self.is_url or self.data.startswith("data:"):
             url = self.data
         else:
             url = f"data:{self.mime_type};base64,{self.data}"

@@ -48,6 +48,26 @@ def resolve_scope_adapter(scope_base_id: str, row_adapter: str, legacy_adapter: 
     return _KNOWN_SCOPE_ADAPTERS.get(base, legacy_adapter)
 
 
+async def resolve_summary_scope(
+    sqlite: object, scope_type: str, scope_id: str
+) -> tuple[str, str]:
+    """别名合并启用时，对话摘要/水位线行归一到 primary scope。
+
+    同一逻辑会话（primary + alias 频道）共享一行摘要：成员 scope 的水位线
+    存在行内 watermarks 字典里按 scope 键区分；否则同一合并会话会产生
+    多份摘要行、各自水位线独立推进，同批消息被重复折叠。
+    """
+    try:
+        if not is_alias_merge_enabled():
+            return scope_type, scope_id
+        primary = await sqlite.resolve_alias(scope_type, scope_id)  # type: ignore[attr-defined]
+        if primary:
+            return str(primary[0]), str(primary[1])
+    except Exception:
+        pass
+    return scope_type, scope_id
+
+
 def get_legacy_adapter() -> str:
     """存量无频道信息数据迁移时归属的默认 adapter key。"""
     return str(get_config("legacy_adapter_default", "qq") or "qq")

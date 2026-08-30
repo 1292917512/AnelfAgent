@@ -38,6 +38,8 @@ def load_image_from_path(path: str | Path) -> ImageContent:
         raise FileNotFoundError(f"图片路径不存在: {p}")
     if not p.is_file():
         raise IsADirectoryError(f"路径不是文件: {p}")
+    if p.stat().st_size > _MAX_IMAGE_DOWNLOAD_BYTES:
+        raise ValueError(f"图片超过体积上限（{_MAX_IMAGE_DOWNLOAD_BYTES // 1024 // 1024}MB）: {p}")
 
     mime_type, _ = mimetypes.guess_type(str(p))
     if not mime_type or not mime_type.startswith("image/"):
@@ -55,14 +57,22 @@ def load_image_from_bytes(
     return ImageContent(data=data, mime_type=mime_type)
 
 
+# 下载/读取的体积上限（防异常 URL 或超大文件一次性吃满内存；
+# 压缩在读取之后，上限必须在读取之前）
+_MAX_IMAGE_DOWNLOAD_BYTES = 32 * 1024 * 1024   # 图片 32MB
+_MAX_VIDEO_DOWNLOAD_BYTES = 256 * 1024 * 1024  # 视频 256MB
+
+
 async def download_image_to_base64(url: str, timeout: float = 30.0) -> Optional[ImageContent]:
-    """下载 URL 图片并转为 base64 ImageContent。"""
+    """下载 URL 图片并转为 base64 ImageContent（超体积上限放弃）。"""
     import httpx
 
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
+            if len(resp.content) > _MAX_IMAGE_DOWNLOAD_BYTES:
+                raise ValueError(f"图片超过体积上限（{_MAX_IMAGE_DOWNLOAD_BYTES // 1024 // 1024}MB）")
             content_type = resp.headers.get("content-type", "image/jpeg")
             mime = content_type.split(";")[0].strip()
             if not mime.startswith("image/"):
@@ -129,9 +139,10 @@ def _looks_like_file_path(data: str) -> bool:
     """Detect if data string is a local file path rather than base64."""
     if data.startswith(_BASE64_MAGIC_PREFIXES) or data.startswith("data:"):
         return False
-    if len(data) >= 500 or ("/" not in data and "\\" not in data):
+    if "/" not in data and "\\" not in data:
         return False
-    # 真实存在的路径优先；不存在时按 base64 特征二次判断，
+    # 真实存在的路径优先（长度不设限：长路径也是路径）；
+    # 不存在时按 base64 特征二次判断，
     # 避免不含魔数前缀的短 base64（小图标等）被误当路径丢弃
     try:
         if Path(data).exists():

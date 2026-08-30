@@ -143,9 +143,10 @@ class CogneeSyncQueue:
         ids = [int(row["id"]) for row in rows]
         placeholders = ",".join("?" for _ in ids)
         async with self._conn.tx(db):
+            # 状态守卫：并发认领者在 SELECT 后已被认领的行不再重复领取
             await db.execute(
                 f"UPDATE cognee_sync_queue SET status='processing', updated_ns=? "
-                f"WHERE id IN ({placeholders})",
+                f"WHERE status='pending' AND id IN ({placeholders})",
                 (now_ns, *ids),
             )
         result: list[Dict[str, Any]] = []

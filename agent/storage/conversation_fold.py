@@ -270,9 +270,11 @@ class ConversationFolder:
         if not folded_rows:
             return
 
+        from agent.storage.scope_migrate import resolve_summary_scope
+        sum_type, sum_id = await resolve_summary_scope(sqlite, scope_type, scope_id)
         old = await asyncio.wait_for(
             sqlite.get_conversation_summary(
-                scope_type=scope_type, scope_id=scope_id,
+                scope_type=sum_type, scope_id=sum_id,
             ),
             timeout=_DB_OP_TIMEOUT,
         )
@@ -329,7 +331,7 @@ class ConversationFolder:
 
         await asyncio.wait_for(
             sqlite.upsert_conversation_summary(
-                scope_type=scope_type, scope_id=scope_id,
+                scope_type=sum_type, scope_id=sum_id,
                 summary=new_summary, watermarks=new_marks,
                 folded_count=old_folded + (len(folded_rows) if succeeded else 0),
                 dropped_count=old_dropped,

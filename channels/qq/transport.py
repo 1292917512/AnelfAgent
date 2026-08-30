@@ -132,6 +132,9 @@ class QQTransport:
                 await ch._ws.close()
             except OSError as exc:
                 log(f"QQ: 关闭旧 WS 连接异常 -> {exc}", "DEBUG", tag="通道")
+            # 旧连接的在途 echo 等不到响应：立即失败；同时让旧 handler 的
+            # finally 只处理"自己仍是当前连接"的断开，不误杀新连接的在途调用
+            self._fail_pending_echoes("ws replaced by new connection")
         ch._ws = ws
         log("QQ: 客户端已连接（反向 WS）")
 
@@ -148,7 +151,7 @@ class QQTransport:
         finally:
             if ch._ws is ws:
                 ch._ws = None
-            self._fail_pending_echoes("ws disconnected")
+                self._fail_pending_echoes("ws disconnected")
             log("QQ: 客户端断开连接（反向 WS）")
 
         return ws

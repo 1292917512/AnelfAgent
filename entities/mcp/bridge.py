@@ -112,6 +112,7 @@ class MCPBridge:
         self._op_locks: Dict[str, threading.Lock] = {}  # name -> 连接/断开操作串行锁
         self._sync_pending: set = set()                 # name -> 工具列表同步防抖中
         self._lock = threading.Lock()
+        self._reload_lock = threading.Lock()  # reload_config 全局串行
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
@@ -178,7 +179,15 @@ class MCPBridge:
             self._set_last_error(name, "")
 
     def reload_config(self) -> Dict[str, Any]:
-        """热重载配置：重读磁盘配置，diff 增删改，自动连接/断开变更的 server。"""
+        """热重载配置：重读磁盘配置，diff 增删改，自动连接/断开变更的 server。
+
+        全局串行：并发 reload（如 web 侧快速连写）会基于被中途替换的
+        self.config 算出错误的增删集合。
+        """
+        with self._reload_lock:
+            return self._reload_config_locked()
+
+    def _reload_config_locked(self) -> Dict[str, Any]:
         new_config = load_mcp_config()
         old_map = {s.name: s for s in self.config.servers}
         new_map = {s.name: s for s in new_config.servers}
@@ -199,7 +208,9 @@ class MCPBridge:
 
         for name in removed + changed:
             with self._lock:
-                connected = name in self._sessions
+                # 重连退避中的 server：session 已摘除但 lifecycle task 仍存活，
+                # 必须一并停止，否则旧配置会把它复活
+                connected = name in self._sessions or name in self._stop_events
             if connected:
                 try:
                     self.disconnect_server_by_name(name)
@@ -520,8 +531,17 @@ class MCPBridge:
             self._stop_events[srv.name] = stop_event
             self._lifecycle_tasks[srv.name] = task
 
-        # 等待 session 初始化完成（或失败）
-        await ready_event.wait()
+        # 等待 session 初始化完成（或失败）；挂死时按超时脱身，
+        # lifecycle task 由 stop 信号回收，避免半连接残留
+        try:
+            await asyncio.wait_for(ready_event.wait(), timeout=30.0)
+        except asyncio.TimeoutError:
+            stop_event.set()
+            with self._lock:
+                self._stop_events.pop(srv.name, None)
+                self._lifecycle_tasks.pop(srv.name, None)
+            self._set_last_error(srv.name, "连接初始化超时")
+            raise TimeoutError(f"MCP server '{srv.name}' 初始化超时（30s）")
 
         if result_box and isinstance(result_box[0], Exception):
             with self._lock:
@@ -599,6 +619,12 @@ class MCPBridge:
                         return
 
                     if stop_event.is_set():
+                        return
+
+                    # 重连窗口内被删除/禁用的 server 不再复活
+                    current = self._find_server_config(srv.name)
+                    if current is None or not current.enabled:
+                        log(f"MCP server '{srv.name}' 已删除或禁用，停止重连", tag="MCP")
                         return
 
                     with self._lock:

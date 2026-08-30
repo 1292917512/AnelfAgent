@@ -42,6 +42,7 @@ class SqliteBackend:
         self._scope_migrated = False
         self._scope_migrate_retry_after = 0.0
         self._conn_lock = asyncio.Lock()
+        self._scope_migrate_attempts = 0
         # 多步写串行锁：单连接上批量写循环（如 embedding 回填）期间，
         # 其他协程的 commit 会把半成品批次一并落盘；持锁后多步写互斥
         self._write_lock = asyncio.Lock()
@@ -67,19 +68,35 @@ class SqliteBackend:
             max_age_days=max_age_days,
         )
 
+    _SCOPE_MIGRATE_MAX_ATTEMPTS = 5
+
     async def _retry_scope_migration(self, db: aiosqlite.Connection) -> None:
         """scope 迁移尝试：失败不置完成标志，60s 退避后在后续周期重试。
 
         避免迁移失败（如备份磁盘满）后旧格式数据在本进程内永久不可见、
-        必须重启才能恢复。自身不抛异常。
+        必须重启才能恢复。自身不抛异常。重试有上限：PK 冲突类数据异常
+        （新旧格式行并存）不会自愈，超限后停止循环并响亮报错，
+        指引人工处理（自动合并有数据丢失风险，不做）。
         """
         if self._scope_migrated or time.monotonic() < self._scope_migrate_retry_after:
             return
         from agent.storage.scope_migrate import get_legacy_adapter, migrate_main_db_scopes
         try:
-            await migrate_main_db_scopes(db, self.db_path, get_legacy_adapter())
+            # 迁移在共享活动连接上执行且失败时整体 rollback——必须持写锁，
+            # 保证没有其他协程的写事务在途，否则 rollback 会连坐正常流量
+            async with self._write_lock:
+                await migrate_main_db_scopes(db, self.db_path, get_legacy_adapter())
             self._scope_migrated = True
         except Exception as exc:
+            self._scope_migrate_attempts += 1
+            if self._scope_migrate_attempts >= self._SCOPE_MIGRATE_MAX_ATTEMPTS:
+                log(
+                    f"scope 迁移连续 {self._scope_migrate_attempts} 次失败，停止重试: {exc}。"
+                    "旧格式数据当前不可见，请检查 .pre-scope-migration.bak 备份并人工处理",
+                    "ERROR",
+                )
+                self._scope_migrate_retry_after = float("inf")
+                return
             log(f"scope 迁移失败（60s 后重试，备份可恢复）: {exc}", "ERROR")
             self._scope_migrate_retry_after = time.monotonic() + 60.0
 
@@ -259,13 +276,14 @@ class SqliteBackend:
             return db
 
     async def close(self) -> None:
-        """关闭持久连接。"""
-        if self._db:
-            try:
-                await self._db.close()
-            except Exception:
-                log("close 异常已忽略", "DEBUG")
-            self._db = None
+        """关闭持久连接（与 _get_db 的健康检查/重建互斥，防关闭途中被复用）。"""
+        async with self._conn_lock:
+            if self._db:
+                try:
+                    await self._db.close()
+                except Exception:
+                    log("close 异常已忽略", "DEBUG")
+                self._db = None
 
     async def _ensure_init(self) -> None:
         await self._get_db()
@@ -292,6 +310,39 @@ class SqliteBackend:
             (scope_type, scope_id, role, content, int(ts_ns), adapter_key or "", 1 if trigger_mind else 0),
         )
         await db.commit()
+
+    async def conversation_has_duplicate(
+        self,
+        scope_type: str,
+        scope_id: str,
+        message_id: str,
+        content: str,
+        *,
+        window_seconds: int = 86400,
+    ) -> bool:
+        """入站去重：同 scope 时间窗内是否已有同 message_id 且同内容的消息。
+
+        webhook 重投/重连重放的副本 message_id 与内容完全相同；Telegram 编辑
+        消息带 [编辑] 前缀（内容不同）不误伤。LIKE 粗筛 + 内容全等校验，
+        时间窗约束扫描范围。
+        """
+        message_id = (message_id or "").strip()
+        if not message_id:
+            return False
+        from core.tags import tag_label
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT content FROM conversation_messages "
+            "WHERE scope_type=? AND scope_id=? AND ts_ns > ? AND content LIKE ? "
+            "ORDER BY ts_ns DESC LIMIT 20",
+            (scope_type, scope_id,
+             int(time.time_ns() - window_seconds * 1e9),
+             f"%{tag_label('message_id', message_id)}%"),
+        )
+        for row in await cursor.fetchall():
+            if (row[0] or "") == content:
+                return True
+        return False
 
     async def list_scopes_with_last_message(self) -> list[dict]:
         """列出每个 scope 的最后一条消息（启动时未回复恢复扫描用）。
@@ -1318,6 +1369,9 @@ class SqliteBackend:
             (new_content, row_id),
         )
         if cursor.rowcount == 0:
+            # 未命中也要提交：UPDATE 已隐式开启事务，挂着不交会污染
+            # 共享连接上的后续操作（如迁移的 VACUUM INTO 会因事务中报错）
+            await db.commit()
             return False
         await db.commit()
         from agent.memory.embedding import wake_embedding_worker

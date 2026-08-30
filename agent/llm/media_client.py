@@ -230,6 +230,7 @@ class MediaClient:
             raise ValueError(f"异步语音任务创建响应中无任务 ID: {result}")
 
         async with self._http_client(timeout=30.0) as client:
+            consecutive_404 = 0
             for _ in range(_TTS_ASYNC_MAX_POLL):
                 await asyncio.sleep(_TTS_ASYNC_POLL_INTERVAL)
                 req = adapter.build_async_query_request(self._base_url, task_id)
@@ -242,7 +243,15 @@ class MediaClient:
                 except httpx.TransportError as exc:
                     log(f"tts async poll transport error: {exc}", "DEBUG", tag="媒体")
                     continue
-                if resp.status_code == 404 or resp.status_code == 429 or resp.status_code >= 500:
+                if resp.status_code == 404:
+                    # 任务 ID 无效是终态而非瞬态：连续 404 直接失败，
+                    # 不再烧满整个轮询预算
+                    consecutive_404 += 1
+                    if consecutive_404 >= 3:
+                        raise ValueError(f"TTS 任务不存在或已过期（连续 404）: {task_id}")
+                    continue
+                consecutive_404 = 0
+                if resp.status_code == 429 or resp.status_code >= 500:
                     continue
                 self._check_resp(resp)
                 state = adapter.parse_async_query(resp.json())

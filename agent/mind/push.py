@@ -16,6 +16,7 @@ from collections import deque
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from core.log import log
+from core.async_helper import spawn
 from core.tags import get_time_tag, tag_label
 
 # 单条推送内容上限（防止异常实体灌爆短期记忆桶）
@@ -119,7 +120,7 @@ class PushHub:
         self._seq[scope] = seq
         self._inflight.setdefault(scope, deque()).append((seq, text))
         if trigger:
-            asyncio.create_task(self._mind.try_execute_mind())
+            spawn(self._mind.try_execute_mind(), name="mind.wake")
 
     def drain_inflight(self, scope: str, since: int = 0) -> List[str]:
         """取出该 scope 序号大于水位的推送并清空队列（think_loop 每轮调用）。

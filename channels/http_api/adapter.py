@@ -167,6 +167,11 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
     def _expect_reply(self, reply_key: str) -> asyncio.Future[str]:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
+        # 同 key 已有挂起请求（同用户并发调用）：立即失败旧 future——
+        # 否则旧请求干等超时，且 Agent 回复会错配给新请求
+        old = self._pending_replies.get(reply_key)
+        if old is not None and not old.done():
+            old.set_exception(RuntimeError("该会话已有更新的请求，本请求被取代"))
         self._pending_replies[reply_key] = fut
         return fut
 

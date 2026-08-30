@@ -121,7 +121,9 @@ class MemoryConnectionManager:
             return
         try:
             from agent.storage.scope_migrate import get_legacy_adapter, migrate_memory_db_tags
-            await migrate_memory_db_tags(db, self.db_path, get_legacy_adapter())
+            # 持写锁执行：迁移失败 rollback 不会连坐其他协程的在途写事务
+            async with self.write_lock:
+                await migrate_memory_db_tags(db, self.db_path, get_legacy_adapter())
             self._tags_migrated = True
         except Exception as exc:
             log(f"记忆标签迁移失败（60s 后重试，备份可恢复）: {exc}", "ERROR", tag="记忆")

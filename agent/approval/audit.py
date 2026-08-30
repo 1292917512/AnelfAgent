@@ -19,6 +19,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from core.log import log
+from core.async_helper import spawn
 
 # 审计记录的 args_json 序列化上限（参数已在 gate 层脱敏，此处只防超大正文）
 _ARGS_JSON_MAX_CHARS = 2000
@@ -106,7 +107,7 @@ def record_decision_bg(**kwargs: Any) -> None:
         asyncio.get_running_loop()
     except RuntimeError:
         return
-    task = asyncio.create_task(record_decision(**kwargs))
+    task = spawn(record_decision(**kwargs), name="approval.audit")
     task.add_done_callback(_swallow_task_exc)
 
 

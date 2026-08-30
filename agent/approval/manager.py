@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 from core.log import log
@@ -183,7 +184,11 @@ class ApprovalManager:
     # ------------------------------------------------------------------
 
     async def cleanup_expired(self) -> int:
-        """清理过期会话，返回清理数量。"""
+        """清理过期会话（pending 超时）与已决策的完成会话（10 分钟保留期），返回清理数量。
+
+        已决策会话短暂保留供路由层/审计读取决策结果，过期后移除——
+        权威记录已落审计表，内存只留活跃工作集。
+        """
         async with self._lock:
             expired = [
                 rid for rid, s in self._sessions.items()
@@ -197,6 +202,16 @@ class ApprovalManager:
                 if event is not None:
                     event.set()
                 resolved.append(session)
+            # 已决策会话保留 10 分钟后移除（防 _sessions 无界增长）
+            settled_cutoff = time.time() - 600
+            settled = [
+                rid for rid, s in self._sessions.items()
+                if s.status != "pending"
+                and (s.decided_at or 0) < settled_cutoff
+            ]
+            for rid in settled:
+                self._sessions.pop(rid, None)
+                self._events.pop(rid, None)
         for session in resolved:
             audit.record_decision_bg(
                 tool_name=session.request.tool_name,
@@ -211,7 +226,7 @@ class ApprovalManager:
             )
         if expired:
             log(f"批准会话清理: {len(expired)} 个过期会话已标记", "DEBUG", tag="批准")
-        return len(expired)
+        return len(expired) + len(settled)
 
     async def start_cleanup_task(self, interval: float = 30.0) -> None:
         """启动后台清理任务。"""

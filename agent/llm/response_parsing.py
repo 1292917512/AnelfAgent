@@ -88,6 +88,9 @@ async def _iter_stream(
     usage_sink: Optional[Dict[str, int]] = None,
 ) -> AsyncGenerator[tuple[ChatStreamDelta, str], None]:
     """解析 LiteLLM 流，并保留跨 chunk 的工具与推理缓冲。"""
+    # reasoning_details 逐块累积缓冲（块间独立：第二个 detail 块的文本
+    # 长度与第一块无关，共享单一缓冲会把短块整块跳过、推理静默丢失）
+    rd_bufs: Dict[int, str] = {}
     async for chunk in stream:
         choices = getattr(chunk, "choices", None) or []
         if not choices:
@@ -99,20 +102,29 @@ async def _iter_stream(
             continue
         choice = choices[0]
         delta = getattr(choice, "delta", None)
+        finish = getattr(choice, "finish_reason", None) or ""
         if delta is None:
+            # finish 落在无 delta 的 chunk 上：仍要完成工具缓冲收尾，
+            # 否则这批 tool_calls 会滞留到流尾被误判为残缺丢弃
+            if finish in ("tool_calls", "stop") and tc_bufs:
+                completed = _complete_tool_buffers(tc_bufs)
+                tc_bufs.clear()
+                yield ChatStreamDelta(tool_calls=completed, finish_reason="tool_calls"), reasoning_buf
             continue
         content = getattr(delta, "content", None) or ""
-        finish = getattr(choice, "finish_reason", None) or ""
         reasoning = ""
         rc = getattr(delta, "reasoning_content", None)
         if isinstance(rc, str) and rc:
             reasoning = rc
         else:
-            for detail in getattr(delta, "reasoning_details", None) or []:
+            for pos, detail in enumerate(getattr(delta, "reasoning_details", None) or []):
                 text = detail.get("text", "") if isinstance(detail, dict) else getattr(detail, "text", "")
-                if text and len(text) > len(reasoning_buf):
-                    reasoning = text[len(reasoning_buf):]
-                    reasoning_buf = text
+                if not text:
+                    continue
+                prev = rd_bufs.get(pos, "")
+                if len(text) > len(prev):
+                    reasoning += text[len(prev):]
+                    rd_bufs[pos] = text
 
         for tc_chunk in getattr(delta, "tool_calls", None) or []:
             # 部分 provider 会把 index 返回为字符串，统一强转 int，

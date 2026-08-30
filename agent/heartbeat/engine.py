@@ -233,6 +233,16 @@ class HeartbeatEngine:
                 # 连续失败超过上限则放弃本轮（避免故障任务卡死调度）
                 failures = self._task_failures.get(pending_task.name, 0) + 1
                 self._task_failures[pending_task.name] = failures
+                if entity is not None and failures < self._MAX_TASK_FAILURES:
+                    # 实体已弹出且持久化行已删：失败必须重入队，
+                    # 否则该实体的画像分析要等对话计数再达阈值才恢复
+                    try:
+                        self.mind.pfc.requeue_analysis(
+                            entity.group_id or 0, entity.uid or 0,
+                            entity.adapter_key or "",
+                        )
+                    except Exception as rq_exc:
+                        log(f"画像分析重入队失败: {rq_exc}", "WARNING", tag="心跳")
                 if failures < self._MAX_TASK_FAILURES:
                     log(f"任务 [{pending_task.name}] 执行失败（第 {failures} 次），"
                         f"保留标记待重试: {exc}", "WARNING", tag="心跳")

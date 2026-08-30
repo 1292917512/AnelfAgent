@@ -25,6 +25,7 @@ from agent.mind.autonomous import MindTask, TaskType
 from agent.storage.data_center import EverythingData
 from agent.utils.unique_queue import UniqueQueue
 from core.log import log
+from core.async_helper import spawn
 from core.tags import etag_all
 
 if TYPE_CHECKING:
@@ -101,9 +102,9 @@ class WorkMemory:
         if db is None:
             return
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()  # 无事件循环（同步/测试上下文）时 spawn 会炸，先探测
         except RuntimeError:
-            return  # 无事件循环（同步/测试上下文），跳过持久化
+            return  # 跳过持久化
 
         async def _add() -> None:
             try:
@@ -114,7 +115,7 @@ class WorkMemory:
             except Exception as exc:
                 log(f"待办持久化写入失败: {exc}", "DEBUG", tag="PFC")
 
-        loop.create_task(_add())
+        spawn(_add(), name="work_memory.persist_add")
 
     def _persist_remove(self, task_key: str) -> None:
         """异步删除已消费待办（fire-and-forget）。"""
@@ -124,7 +125,7 @@ class WorkMemory:
         if db is None:
             return
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             return
 
@@ -134,7 +135,7 @@ class WorkMemory:
             except Exception as exc:
                 log(f"待办持久化删除失败: {exc}", "DEBUG", tag="PFC")
 
-        loop.create_task(_del())
+        spawn(_del(), name="work_memory.persist_remove")
 
     def restore_persisted_tasks(self, rows: List[Dict[str, Any]]) -> int:
         """启动时 replay 持久化的待办（bootstrap 调用，同步重建内存队列）。

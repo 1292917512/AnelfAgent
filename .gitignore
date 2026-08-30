@@ -87,6 +87,8 @@ config/events/
 # === Root-level ComfyUI workflow templates (personal downloads) ===
 /*_template.json
 /*workflow*.json
+# Root-level tmp_* directories (workflow archives / snapshots / scratch)
+/tmp_*/
 
 # === Entity secrets (personal configs stay local; example files unaffected) ===
 entities/*/config.json

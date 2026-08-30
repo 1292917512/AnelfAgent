@@ -38,6 +38,29 @@ def shutdown_shared_executor() -> None:
     _shared_executor.shutdown(wait=False, cancel_futures=True)
 
 
+# 强引用集合：事件循环对 task 只持弱引用，fire-and-forget 任务在
+# 两次 await 之间可能被 GC 回收而静默夭折；done 回调取回异常并记日志
+_background_tasks: "set[asyncio.Task]" = set()
+
+
+def spawn(coro: Coroutine[Any, Any, Any], *, name: str = "") -> asyncio.Task:
+    """创建受管后台任务：强引用防 GC + 异常取回记日志（替代裸 create_task）。"""
+    task = asyncio.create_task(coro, name=name or None)
+
+    def _done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            log(f"后台任务异常 ({name or t.get_name()}): "
+                f"{type(exc).__name__}: {exc}", "ERROR")
+
+    _background_tasks.add(task)
+    task.add_done_callback(_done)
+    return task
+
+
 def _register_shutdown_hook() -> None:
     """将共享线程池的清理回调注册到 Lifecycle。"""
     try:

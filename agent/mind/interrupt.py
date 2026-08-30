@@ -56,6 +56,17 @@ class InterruptRegistry:
         """会话开始时清理历史请求，避免旧信号误杀新会话。"""
         self._requests.pop(scope, None)
 
+    def clear_before(self, scope: str, cutoff: float) -> None:
+        """只清理 cutoff 之前的历史请求（保留回复启动窗口内的新中断）。
+
+        会话启动清旧信号用：scope 登记活跃（_active_scopes.add）到
+        think_session 清理之间有数百 ms 上下文构建窗口，期间用户发的
+        "停止"是对本次回复的合法中断，不能被当作遗留清掉。
+        """
+        req = self._requests.get(scope)
+        if req is not None and req.requested_at < cutoff:
+            self._requests.pop(scope, None)
+
     def pending_scopes(self) -> List[str]:
         """当前存在未消费请求的 scope 列表（可观测性用）。"""
         return list(self._requests)

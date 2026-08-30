@@ -468,15 +468,16 @@ def edit_file_lines(
     target = _validate_md_path(file_path)
     if not target.exists():
         raise FileNotFoundError(f"{file_path} 不存在")
+    # 读-改-写全程持守卫锁：心跳线程的追加不会被整文件覆写冲掉
     with _heartbeat_write_guard(file_path):
         lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
-    total = len(lines)
-    if end_line < 0:
-        end_line = total
-    start_line = max(1, start_line)
-    end_line = min(end_line, total)
-    if start_line > end_line + 1:
-        raise ValueError(f"start_line ({start_line}) 超出有效范围（end_line={end_line}）")
+        total = len(lines)
+        if end_line < 0:
+            end_line = total
+        start_line = max(1, start_line)
+        end_line = min(end_line, total)
+        if start_line > end_line + 1:
+            raise ValueError(f"start_line ({start_line}) 超出有效范围（end_line={end_line}）")
         replacement: list[str] = []
         if new_content:
             if not new_content.endswith("\n"):

@@ -276,6 +276,9 @@ class NoneBotBridgeChannel(BaseChannel[NoneBotBridgeConfig]):
                 await self._ws.close()
             except OSError:
                 pass
+            # 旧连接上的挂起请求已等不到响应：立即失败（旧 handler 退出时
+            # 发现自己已不是当前连接，不会再 fail），调用方无需等满超时
+            self._fail_pending("worker 连接已被新连接顶替")
         self._ws = ws
         self._last_pong = time.time()
         if self._status in (ChannelStatus.STARTING, ChannelStatus.RECONNECTING):

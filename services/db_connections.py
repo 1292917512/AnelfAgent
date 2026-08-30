@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from core.config import expand_env_refs
+from core.file_utils import atomic_write_text
 from core.log import log
 from core.path import ConfigPaths
 
@@ -759,23 +760,28 @@ class ConnectionStore:
 
     def reload(self) -> None:
         with self._file_lock:
-            self._items.clear()
             if not self._path.exists():
+                self._items.clear()
                 return
             try:
                 raw = json.loads(self._path.read_text("utf-8"))
+                items: Dict[str, DbConnection] = {}
                 for item in raw.get("connections", []):
                     conn = DbConnection(**item)
-                    self._items[conn.id] = conn
+                    items[conn.id] = conn
             except Exception as exc:
-                log(f"外部连接配置加载失败: {exc}", "WARNING", tag="数据库")
+                # 解析失败保留既有配置（清空会让全部外部连接静默消失）
+                log(f"外部连接配置加载失败（保留既有配置）: {exc}", "WARNING", tag="数据库")
+                return
+            self._items = items
 
     def _save(self) -> None:
         with self._file_lock:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             payload = {"connections": [c.model_dump() for c in self._items.values()]}
-            self._path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            # 原子写：写盘途中崩溃不丢全部连接配置
+            atomic_write_text(
+                self._path, json.dumps(payload, ensure_ascii=False, indent=2),
             )
 
     # ---------------- CRUD ----------------

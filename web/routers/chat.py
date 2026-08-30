@@ -14,7 +14,6 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from core.log import log
 from services import ChatService, UiService
 from services.chat import UPLOAD_DIR as _UPLOAD_DIR
 from services.chat import classify_file_type as _classify_file
@@ -45,16 +44,12 @@ def _upload_max_bytes() -> int:
         max_mb = 50.0
     return max(1, int(max_mb)) * 1024 * 1024
 
-_sse_subscribers: List[asyncio.Queue[Dict[str, Any]]] = []
+from core import sse_hub  # noqa: E402  订阅注册中心在 core 层（频道侧也要用）
 
 
 def broadcast_chat_event(event: Dict[str, Any]) -> None:
     """向所有 SSE 订阅者推送聊天事件。"""
-    for q in _sse_subscribers:
-        try:
-            q.put_nowait(event)
-        except asyncio.QueueFull:
-            log("broadcast_chat_event 异常已忽略", "DEBUG")
+    sse_hub.broadcast(event)
 
 
 def _setup_chat_broadcast_bridge() -> None:
@@ -352,8 +347,7 @@ async def cancel_delegation(delegation_id: str) -> Dict[str, Any]:
 @router.get("/stream")
 async def chat_stream(request: Request) -> EventSourceResponse:
     """SSE 端点：推送聊天消息事件。"""
-    queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=256)
-    _sse_subscribers.append(queue)
+    queue: asyncio.Queue[Dict[str, Any]] = sse_hub.subscribe()
 
     async def event_generator():
         try:
@@ -366,6 +360,6 @@ async def chat_stream(request: Request) -> EventSourceResponse:
                 except asyncio.TimeoutError:
                     yield {"event": "ping", "data": ""}
         finally:
-            _sse_subscribers.remove(queue)
+            sse_hub.unsubscribe(queue)
 
     return EventSourceResponse(event_generator())

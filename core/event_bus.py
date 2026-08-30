@@ -159,10 +159,13 @@ class EventBus:
         if not subs:
             return
 
-        # 快照当前订阅列表，避免处理器执行期间注册/退订导致迭代错乱
+        # 快照当前订阅列表，避免处理器执行期间注册/退订导致迭代错乱；
+        # off() 会整体替换列表对象，once 清理必须作用于当前列表而非旧快照
         batch = list(subs)
         await asyncio.gather(*(self._invoke_handler(event, sub, payload) for sub in batch))
-        self._prune_once(subs, batch)
+        current = self._handlers.get(event)
+        if current is not None:
+            self._prune_once(current, batch)
 
     async def emit_with_result(
         self, event: str, payload: Optional[Dict[str, Any]] = None,

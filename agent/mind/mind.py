@@ -110,6 +110,7 @@ from core.event_bus import (
     event_bus,
 )
 from core.log import log
+from core.async_helper import spawn
 from core.trace_session import thinking_session
 
 if TYPE_CHECKING:
@@ -195,6 +196,8 @@ class Mind:
         self.media_pipeline = MediaPipeline()
 
         self._active_scopes: set[str] = set()
+        # scope → 本次回复的激活时刻（中断请求的新旧分界，见 InterruptRegistry.clear_before）
+        self._reply_activated_at: Dict[str, float] = {}
         self._reply_idle_event = asyncio.Event()
         self._reply_idle_event.set()
         self.phase: MindPhase = MindPhase.IDLE
@@ -206,7 +209,6 @@ class Mind:
 
         self._reflecting: bool = False
         self._cycle_lock = asyncio.Lock()
-        self._heartbeat_active: bool = False
         self._heartbeat_running: bool = False
         # 自动续轮退避计数（周期内无实质进展时递增，防紧凑重试烧 token）
         self._auto_cycle_retry: int = 0
@@ -468,7 +470,7 @@ class Mind:
             self.wake_budget.note_suppressed(scope, description, failed=not success)
             return
         self.wake_budget.consume(scope, failed=not success)
-        asyncio.create_task(self.try_execute_mind())
+        spawn(self.try_execute_mind(), name="mind.wake")
 
     async def _on_bg_task_alert(self, scope: str, description: str,
                                 detail: str, task_id: str) -> None:
@@ -500,7 +502,7 @@ class Mind:
             self.wake_budget.note_suppressed(scope, description)
             return
         self.wake_budget.consume(scope)
-        asyncio.create_task(self.try_execute_mind())
+        spawn(self.try_execute_mind(), name="mind.wake")
 
     @property
     def is_reply(self) -> bool:
@@ -554,12 +556,7 @@ class Mind:
     async def execute_mind(self, *, is_heartbeat: bool = False) -> None:
         """触发自主循环。通过 _cycle_lock 防止多个循环并发执行。"""
         async with self._cycle_lock:
-            if is_heartbeat:
-                self._heartbeat_active = True
-            try:
-                await self._autonomous_cycle(is_heartbeat=is_heartbeat)
-            finally:
-                self._heartbeat_active = False
+            await self._autonomous_cycle(is_heartbeat=is_heartbeat)
 
     async def try_execute_mind(self) -> None:
         """尝试触发自主循环；已有循环在执行时直接跳过（用于 fire-and-forget 场景）。"""

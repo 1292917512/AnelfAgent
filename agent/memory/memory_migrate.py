@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 
 import aiosqlite
 
+from core.file_utils import atomic_write_text
 from core.log import log
 
 from .memory_types import MemoryType
@@ -23,6 +24,7 @@ async def needs_migration(db_path: str) -> bool:
     """检查是否存在需要迁移的记忆。"""
     try:
         async with aiosqlite.connect(db_path) as db:
+            await db.execute("PRAGMA busy_timeout=5000")
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM memories WHERE migrated = 0"
             )
@@ -131,6 +133,7 @@ async def migrate_memories_to_md(db_path: str, workspace_dir: Path) -> int:
     # 标记已迁移
     if migrated_ids:
         async with aiosqlite.connect(db_path) as db:
+            await db.execute("PRAGMA busy_timeout=5000")
             placeholders = ",".join("?" for _ in migrated_ids)
             await db.execute(
                 f"UPDATE memories SET migrated = 1 WHERE id IN ({placeholders})",
@@ -168,14 +171,20 @@ def _format_section(title: str, entries: list[Dict[str, Any]]) -> str:
         tag_str = f" `{', '.join(e['tags'])}`" if e["tags"] else ""
         source_str = f" (source: {e['source']})" if e["source"] else ""
 
-        lines.append(f"- [{time_str}]{tag_str}{source_str} {content}")
+        # mem 标记用于崩溃重跑去重（写文件与 migrated=1 标记之间崩溃会重跑）
+        mem_id = e["id"]
+        lines.append(f"- [{time_str}]{tag_str}{source_str} {content} <!-- mem:{mem_id} -->")
 
     lines.append("")
     return "\n".join(lines)
 
 
 def _append_to_file(path: Path, content: str) -> None:
-    """追加内容到文件末尾，文件不存在时创建。"""
+    """追加内容到文件末尾（崩溃重跑幂等 + 原子写）。
+
+    已迁移标记（migrated=1）与文件写是两个独立步骤，中途崩溃会重跑：
+    按 ``<!-- mem:id -->`` 标记过滤掉已在文件中的条目行，不产生重复段落。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = ""
     if path.exists():
@@ -183,9 +192,19 @@ def _append_to_file(path: Path, content: str) -> None:
         if existing and not existing.endswith("\n"):
             existing += "\n"
 
+    # 崩溃重跑去重：过滤已存在于文件的条目行
+    lines = []
+    for line in content.splitlines(keepends=True):
+        marker = line.rsplit("<!-- mem:", 1)
+        if len(marker) == 2 and f"<!-- mem:{marker[1]}" in existing:
+            continue
+        lines.append(line)
+    content = "".join(lines)
+    if not content.strip():
+        return
+
     # 如果文件为空，添加标题
     if not existing.strip():
         header = f"# {path.stem}\n\n"
-        path.write_text(header + content, encoding="utf-8")
-    else:
-        path.write_text(existing + content, encoding="utf-8")
+        content = header + content
+    atomic_write_text(path, existing + content)

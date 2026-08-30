@@ -211,11 +211,16 @@ async def _extract_media(
 ) -> None:
     """从消息中提取并下载媒体文件，追加到 segments。"""
 
-    # 富文本中的嵌入图片
+    # 富文本中的嵌入图片（单张下载失败不炸穿整条消息——消息已被去重标记，
+    # 异常逃逸意味着整条消息丢失且重投被去重拦截）
     if msg_type == "post":
         result = parse_post_content(raw_content)
         for image_key in result.image_keys:
-            info = await download_image(client, message_id, image_key)
+            try:
+                info = await download_image(client, message_id, image_key)
+            except Exception as exc:
+                log(f"飞书: 富文本图片下载失败 ({image_key}): {exc}", "WARNING")
+                continue
             if info:
                 segments.append(MessageSegment(
                     type=SegmentType.IMAGE,

@@ -333,7 +333,10 @@ class Tracer:
 
     def _trim_sessions(self) -> None:
         while len(self._sessions) > self.max_sessions:
-            self._sessions.popitem(last=False)
+            sid, _session = self._sessions.popitem(last=False)
+            # 被逐出会话的 flows 与活跃节点一并清理（从未发 SESSION_END
+            # 的会话会永久残留）
+            self._flows.pop(sid, None)
 
     # ==================================================================
     # span() — 通用追踪上下文管理器
@@ -913,6 +916,10 @@ class Tracer:
             return
         call_id = payload.get("call_id", uuid.uuid4().hex[:8])
         nid = f"ec_{uuid.uuid4().hex[:8]}"
+        if len(self._active_entity_nodes) >= 256:
+            # END 事件缺失（工具被硬取消）时条目永不清理，容量兜底
+            for k in list(self._active_entity_nodes)[:128]:
+                self._active_entity_nodes.pop(k, None)
         self._active_entity_nodes[call_id] = nid
         name = payload.get("name", "?")
         group = payload.get("group", "")

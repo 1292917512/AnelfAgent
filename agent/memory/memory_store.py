@@ -178,18 +178,20 @@ class MemoryStore(BaseEntity):
             return 0
 
         count = 0
-        for row, vec in zip(rows, vecs, strict=False):
-            if not vec:
-                continue
-            blob = pack_embedding(vec)
-            await db.execute(
-                "UPDATE memories SET embedding_blob=? WHERE id=?",
-                (blob, row["id"]),
-            )
-            await self._conn.vec_upsert_memory(db, int(row["id"]), blob)
-            count += 1
+        # 多步写（UPDATE + vec 投影）走 tx 模板：持写锁串行化，
+        # 任一异常整体回滚，避免与其他协程的写事务互相连坐
+        async with self._conn.tx(db):
+            for row, vec in zip(rows, vecs, strict=False):
+                if not vec:
+                    continue
+                blob = pack_embedding(vec)
+                await db.execute(
+                    "UPDATE memories SET embedding_blob=? WHERE id=?",
+                    (blob, row["id"]),
+                )
+                await self._conn.vec_upsert_memory(db, int(row["id"]), blob)
+                count += 1
         if count:
-            await db.commit()
             log(f"Embedding 批量回填: {count} 条记忆", "DEBUG", tag="思维")
         return count
 
@@ -210,23 +212,24 @@ class MemoryStore(BaseEntity):
 
         now_ns = int(time.time() * 1e9)
         count = 0
-        for row, vec in zip(rows, vecs, strict=False):
-            if not vec:
-                continue
-            blob = pack_embedding(vec)
-            await db.execute(
-                "UPDATE chunks SET embedding=? WHERE id=?",
-                (blob, row["id"]),
-            )
-            await self._conn.vec_upsert_chunk(db, str(row["id"]), blob)
-            await db.execute(
-                "INSERT OR REPLACE INTO embedding_cache(hash, embedding, dims, updated_ns) "
-                "VALUES(?,?,?,?)",
-                (row["hash"], blob, len(vec), now_ns),
-            )
-            count += 1
+        # 多步写（UPDATE + vec 投影 + 缓存）走 tx 模板（同 backfill_embeddings）
+        async with self._conn.tx(db):
+            for row, vec in zip(rows, vecs, strict=False):
+                if not vec:
+                    continue
+                blob = pack_embedding(vec)
+                await db.execute(
+                    "UPDATE chunks SET embedding=? WHERE id=?",
+                    (blob, row["id"]),
+                )
+                await self._conn.vec_upsert_chunk(db, str(row["id"]), blob)
+                await db.execute(
+                    "INSERT OR REPLACE INTO embedding_cache(hash, embedding, dims, updated_ns) "
+                    "VALUES(?,?,?,?)",
+                    (row["hash"], blob, len(vec), now_ns),
+                )
+                count += 1
         if count:
-            await db.commit()
             log(f"Embedding 批量回填: {count} 条 chunk", "DEBUG", tag="思维")
         return count
 
@@ -558,11 +561,16 @@ class MemoryStore(BaseEntity):
             (cutoff_ns,),
         )
         affected = [row_to_entry(r, with_embedding=False) for r in await cursor.fetchall()]
+        if not affected:
+            return 0
         async with self._tx(db):
+            # UPDATE 限定到快照 id 集合：快照 500 上限 vs 全量更新的范围差
+            # 会导致超出部分的变更永远拿不到投影补偿（权威/投影漂移）
+            id_marks = ",".join("?" for _ in affected)
             cursor = await db.execute(
                 "UPDATE memories SET importance = 0.5 + (importance - 0.5) * (1.0 - ?) "
-                f"WHERE {where}",
-                (min(rate, 1.0), cutoff_ns),
+                f"WHERE {where} AND id IN ({id_marks})",
+                (min(rate, 1.0), cutoff_ns, *[r.id for r in affected]),
             )
             # 投影同步：用更新后的 importance 重建负载（封顶防风暴）
             for entry in affected[:200]:

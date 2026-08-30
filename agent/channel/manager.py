@@ -220,9 +220,13 @@ class ChannelManager(BaseEntity):
             channel_type = "private"
 
         reply_to = getattr(anything, "adapter_message_id", None) or None
+        session_id = str(getattr(anything, "session_id", "") or "")
         # 剥离 LLM 可能模仿历史格式带入的元数据标签（[message_id:xxx] 等）
         content = strip_message_meta_tags(content)
-        await channel.send_text(chat_id, content, reply_to=reply_to, channel_type=channel_type)
+        await channel.send_text(
+            chat_id, content, reply_to=reply_to, channel_type=channel_type,
+            session_id=session_id,
+        )
 
     async def stream_end(self, full_text: str, anything: Any = None) -> None:
         """流式回复结束，发送最终内容。"""

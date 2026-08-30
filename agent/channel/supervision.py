@@ -163,6 +163,13 @@ class ChannelSupervisor:
         if getattr(channel, "_status", None) != ChannelStatus.ERROR:
             return
 
+        # 重启前先停掉旧实例：ERROR 状态下可能仍有半启动资源残留
+        # （Telegram 轮询线程/webhook 端口占用），直接 start 会双实例或端口冲突
+        try:
+            await channel.stop()
+        except Exception as exc:
+            log(f"看门狗重启前停止旧实例失败（继续重启）: {cid}: {exc}", "WARNING", tag="看门狗")
+
         ok = await self._manager.start_channel(cid)
         if ok:
             self._fail_counts.pop(cid, None)

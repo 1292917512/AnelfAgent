@@ -242,8 +242,10 @@ class ConversationData:
         if not is_summary_enabled():
             return await sqlite.fetch_conversation_multi(scopes=scopes, limit=self.max_size)
 
+        from agent.storage.scope_migrate import resolve_summary_scope
+        sum_type, sum_id = await resolve_summary_scope(sqlite, scope_type, scope_id)
         summary_row = await sqlite.get_conversation_summary(
-            scope_type=scope_type, scope_id=scope_id,
+            scope_type=sum_type, scope_id=sum_id,
         )
         watermarks = (summary_row or {}).get("watermarks", {})
         watermark_ids = (summary_row or {}).get("watermark_ids", {})
@@ -276,8 +278,12 @@ class ConversationData:
             return None
         scope_type, scope_id = self._scope_of(anything)
         try:
+            from agent.storage.scope_migrate import resolve_summary_scope
+            sum_type, sum_id = await resolve_summary_scope(
+                self.router.sqlite, scope_type, scope_id,
+            )
             return await self.router.sqlite.get_conversation_summary(
-                scope_type=scope_type, scope_id=scope_id,
+                scope_type=sum_type, scope_id=sum_id,
             )
         except Exception as exc:
             from core.log import log
@@ -334,8 +340,12 @@ class ConversationData:
     async def scope_backlog(self, scope_type: str, scope_id: str) -> int:
         """该 scope 水位线后的未折叠消息数（别名合并口径）。"""
         scopes = await self._alias_merged_scopes(scope_type, scope_id)
+        from agent.storage.scope_migrate import resolve_summary_scope
+        sum_type, sum_id = await resolve_summary_scope(
+            self.router.sqlite, scope_type, scope_id,
+        )
         summary_row = await self.router.sqlite.get_conversation_summary(
-            scope_type=scope_type, scope_id=scope_id,
+            scope_type=sum_type, scope_id=sum_id,
         )
         return await self.router.sqlite.count_after_watermarks(
             scopes=scopes,
@@ -347,8 +357,12 @@ class ConversationData:
         """调度一次后台折叠（别名合并 + 水位线解析在此收敛）；已在折叠/退避中返回 False。"""
         from agent.storage.conversation_fold import conversation_folder
         scopes = await self._alias_merged_scopes(scope_type, scope_id)
+        from agent.storage.scope_migrate import resolve_summary_scope
+        sum_type, sum_id = await resolve_summary_scope(
+            self.router.sqlite, scope_type, scope_id,
+        )
         summary_row = await self.router.sqlite.get_conversation_summary(
-            scope_type=scope_type, scope_id=scope_id,
+            scope_type=sum_type, scope_id=sum_id,
         )
         return conversation_folder.maybe_schedule_fold(
             self, scope_type, scope_id, scopes,
@@ -431,6 +445,20 @@ class ConversationData:
             content = content + "\n" + "\n".join(media_lines)
 
         scope_type, scope_id = self._scope_of(anything)
+        # 入站去重：webhook 重投/断线重放的副本（同 message_id 同内容）直接丢弃。
+        # 编辑消息带 [编辑] 前缀（内容已变）不受影响
+        adapter_message_id = getattr(anything, "adapter_message_id", "") or ""
+        if adapter_message_id:
+            try:
+                if await self.router.sqlite.conversation_has_duplicate(
+                    scope_type, scope_id, adapter_message_id, content,
+                ):
+                    log(f"入站消息去重: 丢弃重复投递 (message_id={adapter_message_id})",
+                        "DEBUG", tag="存储")
+                    return
+            except Exception as exc:
+                # 去重查询失败不阻塞入库（宁可重复也不丢消息）
+                log(f"入站去重查询失败（照常入库）: {exc}", "DEBUG", tag="存储")
         # 以消息到达时间入库，保证对话历史严格按到达时序排列；
         # adapter_key 记录来源频道，供启动时未回复恢复定位回复路由；
         # trigger_mind 记录消息当时是否触发思考（非 @ 群消息记 False），

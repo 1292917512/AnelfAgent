@@ -18,6 +18,7 @@ init_storage（最早的存储节点，任何连接打开前）调用
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tarfile
 import time
@@ -79,9 +80,15 @@ def stage_restore_entry(volume_id: str, kind: VolumeKind, staged_path: str) -> N
         "staged_path": staged_path,
         "requested_at": f"{time.time():.3f}",
     })
-    marker.write_text(
-        json.dumps({"entries": entries}, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    _write_marker_atomic(marker, {"entries": entries})
+
+
+def _write_marker_atomic(marker: Path, payload: Dict[str, Any]) -> None:
+    """tmp 文件 + os.replace 原子写标记（写一半崩溃不会留下损坏 JSON
+    导致全部待恢复条目静默蒸发）。"""
+    tmp = marker.with_suffix(marker.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, marker)
 
 
 def read_pending_entries() -> List[Dict[str, Any]]:
@@ -118,6 +125,13 @@ def consume_pending_restores() -> List[Dict[str, Any]]:
             target = Path(registry.resolve_path(volume_id))
             staged = Path(staged_path)
             if not staged.exists():
+                # 交换已完成过但标记更新前崩溃：暂存产物已被 move 走，
+                # 按幂等成功处理（否则该条目永久误报"恢复失败"）
+                if target.exists():
+                    results.append({"volume_id": volume_id, "ok": True,
+                                    "target": str(target), "already": True})
+                    log(f"存储卷恢复幂等跳过（暂存已消费）: {volume_id}", tag="存储卷")
+                    continue
                 raise FileNotFoundError(f"暂存产物不存在: {staged}")
             if kind_raw == VolumeKind.SQLITE.value:
                 _swap_sqlite(staged, target)
@@ -138,9 +152,7 @@ def consume_pending_restores() -> List[Dict[str, Any]]:
             log(f"存储卷恢复失败（条目保留待下次重试）: {volume_id}: {exc}", "ERROR", tag="存储卷")
     marker = pending_marker_path()
     if failed:
-        marker.write_text(
-            json.dumps({"entries": failed}, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        _write_marker_atomic(marker, {"entries": failed})
     elif marker.exists():
         marker.unlink()
     return results

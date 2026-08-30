@@ -359,6 +359,9 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             bot_open_id=self._bot_info.open_id,
             require_mention=require_mention,
             on_message=self.on_message,
+            # webhook 处理器在 aiohttp 请求协程内被同步调用（当前线程已有
+            # 运行中的事件循环），缺 main_loop 会 fallback 到 asyncio.run 必炸
+            main_loop=self._main_loop,
         )
 
         event_handler = lark.EventDispatcherHandler.builder(

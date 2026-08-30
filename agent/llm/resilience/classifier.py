@@ -140,20 +140,26 @@ def classify_llm_error(exc: BaseException) -> ClassifiedError:
             status_code=status_code,
         )
 
-    # ---- 上下文超限（不重试，触发压缩）----
-    # 保持在 BadRequestError 类型判断之前：ContextWindowExceededError 是
-    # BadRequestError 子类，且部分供应商把溢出包装成 400 文本
-    if isinstance(exc, litellm.ContextWindowExceededError) or _match_any(
-        msg_lower, _CONTEXT_OVERFLOW_PATTERNS
-    ):
+    # ---- 上下文超限（类型判断优先；不重试，触发压缩）----
+    # ContextWindowExceededError 是 BadRequestError 子类，保持在其类型判断之前
+    if isinstance(exc, litellm.ContextWindowExceededError):
         return ClassifiedError(
             ErrorCategory.CONTEXT_OVERFLOW, retryable=False,
             should_compress=True, message=message, status_code=status_code,
         )
 
     # ---- 限流（类型）----
+    # 必须先于溢出消息模式：TPM 限流文案（"too many tokens per minute" 类）
+    # 会命中溢出模式，而 429 是瞬时限流，不该触发压缩
     if isinstance(exc, litellm.RateLimitError):
         return _classify_quota_error(msg_lower, status_code)
+
+    # ---- 上下文超限（消息模式兜底：部分供应商把溢出包装成 400 文本）----
+    if _match_any(msg_lower, _CONTEXT_OVERFLOW_PATTERNS):
+        return ClassifiedError(
+            ErrorCategory.CONTEXT_OVERFLOW, retryable=False,
+            should_compress=True, message=message, status_code=status_code,
+        )
 
     # ---- 过载 / 服务不可用（类型）----
     if isinstance(exc, litellm.ServiceUnavailableError):

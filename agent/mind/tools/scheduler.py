@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.log import log
+from core.async_helper import spawn
 from core.path import ConfigPaths
 from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import deferred_tool
@@ -68,7 +69,7 @@ async def schedule_reply(delay_seconds: int = 30, reason: str = "") -> str:
 
     reply_channel = getattr(mind.pfc, "get_adapter_key", lambda s: "")(scope)
     log(f"计划 {delay}s 后触发回复: scope={scope} reason={reason}", tag="调度")
-    asyncio.create_task(_delayed_reply(delay, reply_channel, scope, reason))
+    spawn(_delayed_reply(delay, reply_channel, scope, reason), name="mind.delayed_reply")
 
     return json.dumps({
         "ok": True,
@@ -93,7 +94,7 @@ async def _delayed_reply(delay: int, channel: str, scope: str, reason: str) -> N
 
     await _enqueue_reply(scope, channel, f"定时回复: {reason or '延迟触发'}", prompt)
     log(f"延迟 {delay}s 到期，触发回复: scope={scope}", tag="调度")
-    asyncio.create_task(mind_port.get().try_execute_mind())
+    spawn(mind_port.get().try_execute_mind(), name="mind.wake")
 
 
 # ======================================================================
@@ -102,6 +103,11 @@ async def _delayed_reply(delay: int, channel: str, scope: str, reason: str) -> N
 
 def _reminders_path() -> Path:
     return Path(ConfigPaths.REMINDERS)
+
+
+# 提醒文件读-改-写串行锁：心跳 tick 的 check_due 与回复周期的
+# schedule/cancel 可能并发，无锁的 load→改→save 会互相覆盖丢更新
+_reminders_lock = asyncio.Lock()
 
 
 def _load_reminders() -> List[Dict[str, Any]]:
@@ -277,9 +283,10 @@ async def schedule_reminder(note: str, run_at: str = "", delay_seconds: int = 0)
         "channel": getattr(mind.pfc, "get_adapter_key", lambda s: "")(scope),
         "created_ts": time.time(),
     }
-    reminders = await asyncio.to_thread(_load_reminders)
-    reminders.append(reminder)
-    await asyncio.to_thread(_save_reminders, reminders)
+    async with _reminders_lock:
+        reminders = await asyncio.to_thread(_load_reminders)
+        reminders.append(reminder)
+        await asyncio.to_thread(_save_reminders, reminders)
 
     run_at_str = datetime.fromtimestamp(run_at_ts).strftime("%Y-%m-%d %H:%M:%S")
     log(f"定时提醒已创建: id={reminder['id']} run_at={run_at_str} scope={scope} note={note[:50]}", tag="调度")
@@ -319,11 +326,12 @@ async def cancel_reminder(reminder_id: str) -> str:
     Args:
         reminder_id: 提醒 ID（通过 list_reminders 获取）
     """
-    reminders = await asyncio.to_thread(_load_reminders)
-    kept = [r for r in reminders if r["id"] != reminder_id]
-    if len(kept) == len(reminders):
-        return tool_error(f"提醒不存在: {reminder_id}", cause=ErrorCause.NOT_FOUND, retryable=False)
-    await asyncio.to_thread(_save_reminders, kept)
+    async with _reminders_lock:
+        reminders = await asyncio.to_thread(_load_reminders)
+        kept = [r for r in reminders if r["id"] != reminder_id]
+        if len(kept) == len(reminders):
+            return tool_error(f"提醒不存在: {reminder_id}", cause=ErrorCause.NOT_FOUND, retryable=False)
+        await asyncio.to_thread(_save_reminders, kept)
     log(f"定时提醒已取消: id={reminder_id}", tag="调度")
     return json.dumps({"ok": True, "message": f"提醒 {reminder_id} 已取消"}, ensure_ascii=False)
 
@@ -337,13 +345,13 @@ async def check_due_reminders() -> int:
         return 0
 
     now = time.time()
-    reminders = await asyncio.to_thread(_load_reminders)
-    due = [r for r in reminders if r.get("run_at_ts", 0) <= now]
-    if not due:
-        return 0
-
-    kept = [r for r in reminders if r.get("run_at_ts", 0) > now]
-    await asyncio.to_thread(_save_reminders, kept)
+    async with _reminders_lock:
+        reminders = await asyncio.to_thread(_load_reminders)
+        due = [r for r in reminders if r.get("run_at_ts", 0) <= now]
+        if not due:
+            return 0
+        kept = [r for r in reminders if r.get("run_at_ts", 0) > now]
+        await asyncio.to_thread(_save_reminders, kept)
 
     for r in due:
         scope = r.get("scope", "")
@@ -356,5 +364,5 @@ async def check_due_reminders() -> int:
         await _enqueue_reply(scope, r.get("channel", ""), f"定时提醒: {r.get('note', '')[:80]}", prompt)
         log(f"定时提醒到期触发: id={r.get('id')} scope={scope} note={r.get('note', '')[:50]}", tag="调度")
 
-    asyncio.create_task(mind_port.get().try_execute_mind())
+    spawn(mind_port.get().try_execute_mind(), name="mind.wake")
     return len(due)

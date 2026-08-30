@@ -211,10 +211,23 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
             return target.split("#", 1)[1]
         return ""
 
+    @staticmethod
+    def _has_online_clients() -> bool:
+        """是否有在线 WebUI 客户端（SSE 订阅者，注册中心在 core 层）。"""
+        from core import sse_hub
+        return sse_hub.subscriber_count() > 0
+
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
         text = _clean_outbound(text)
         if not text:
             return json.dumps({"success": True}, ensure_ascii=False)
+        if not self._has_online_clients():
+            # 无订阅者时广播等于丢消息：如实返回失败，调用方（deliver_text）
+            # 会记录投递失败而非把回复标记为已送达
+            return json.dumps(
+                {"success": False, "error": "无在线 WebUI 客户端（SSE 未连接）"},
+                ensure_ascii=False,
+            )
         await self._broadcast("reply", {
             "content": text,
             "media_type": "text",

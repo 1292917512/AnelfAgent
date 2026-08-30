@@ -107,7 +107,9 @@ class TestCrashState:
         assert crash is not None
         assert crash["exit_code"] == 139
         assert crash["ips"] is None  # 目录中无匹配报告
-        # 已标记 reported：二次消费返回 None
+        # 收集不提前标记（恢复失败不丢上下文）；标记后二次消费返回 None
+        assert crash_report.collect_previous_crash() is not None
+        crash_report.mark_crash_reported()
         assert crash_report.collect_previous_crash() is None
 
     def test_collect_ignores_already_reported(self, state_path: Path) -> None:

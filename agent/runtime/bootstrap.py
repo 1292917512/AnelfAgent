@@ -554,6 +554,11 @@ def create_bootstrap() -> FlowMachine:
             # 消费上次崩溃状态（守护脚本写入 + 系统崩溃报告关联），仅注入一次
             crash_context = collect_crash_context()
             recovered = await recover_interrupted_replies(mind, crash_context)
+            # 恢复流程已执行（无论是否有检查点要处理），崩溃上下文不再保留：
+            # 提前标记会让恢复失败时上下文永久丢失
+            if crash_context:
+                from core.crash_report import mark_crash_reported
+                mark_crash_reported()
             if crash_context and not recovered:
                 # 无进行中的回复检查点（如空闲时崩溃）：推送全局通知让她知晓崩溃经过，
                 # 并唤醒一轮思维（她的重启报到技能会接管后续向主人报平安）

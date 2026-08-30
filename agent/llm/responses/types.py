@@ -55,8 +55,12 @@ class ResponseResult:
     raw: Optional[dict[str, Any]] = None
 
     def to_chat_result(self) -> ChatResult:
+        # incomplete 的典型原因是 max_output_tokens 截断：映射为 length
+        # 让上层走续写恢复，而不是当成故障报错
         finish = "tool_calls" if self.tool_calls else (
-            "error" if self.status in {"failed", "cancelled", "incomplete"} else "stop"
+            "length" if self.status == "incomplete"
+            else "error" if self.status in {"failed", "cancelled"}
+            else "stop"
         )
         return ChatResult(
             content=self.output_text,

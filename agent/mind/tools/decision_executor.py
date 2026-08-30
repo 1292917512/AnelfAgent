@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 from agent.heartbeat.log import append_entry as _hb_append
@@ -58,6 +59,9 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
     if scope in mind._active_scopes:
         log(f"跳过重复回复: {scope}", "DEBUG", tag="思维")
         return
+    # 激活时刻先于活跃登记：accept_feel 的中断判定以登记为准，
+    # 登记后到达的中断请求 requested_at ≥ 激活时刻，启动清理不会误清
+    mind._reply_activated_at[scope] = time.time()
     mind._active_scopes.add(scope)
     mind._reply_idle_event.clear()
     # 崩溃尾部修复：登记进行中回复检查点（正常/协作中断结束在 finally 清除；
@@ -92,6 +96,7 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
         await mind.reply(anything, pending_images, adapter_key=adapter_key)
     finally:
         mind._active_scopes.discard(scope)
+        mind._reply_activated_at.pop(scope, None)
         if _checkpoint_registered:
             # 清除检查点（正常结束/协作中断/异常都算收束）。关停取消场景
             # 若清除未完成，残留行下次启动注入"被中断"提示——语义上同样成立
@@ -121,6 +126,10 @@ async def execute_reflect(mind: Mind, decision: Optional[Decision] = None, *, sk
         log(f"反思延迟到空闲窗口（原因: {reason[:60]}）", tag="思维")
         return 0
 
+    if mind._reflecting:
+        # 同批/并发 REFLECT 只执行一个（批量决策的去重过滤发生在
+        # 任一任务置位之前，这里是执行入口的最后防线）
+        return 0
     mind._reflecting = True
     mind._set_phase(MindPhase.INTROSPECTING)
 
@@ -411,22 +420,27 @@ def resolve_reply_target(mind: Mind, target: str) -> Optional[Everything]:
 
 
 async def pop_next_reply_target(mind: Mind) -> Optional[Everything]:
-    """从 PFC 取出下一个待回复目标（保留 session_id 传播）。"""
-    tasks = mind.pfc.peek_all_tasks()
-    if not tasks:
-        return None
-    scope, _, _, _ = tasks[0]
-    scope_type, scope_adapter, base_id, session_id = parse_entity_scope(scope)
-    adapter_key = scope_adapter or mind.pfc.get_adapter_key(scope)
-    if not scope_type:
-        return None
-    target_id: Union[int, str] = base_id
-    try:
-        target_id = int(base_id)
-    except ValueError:
-        log("pop_next_reply_target 异常已忽略", "DEBUG")
-    if scope_type == "group":
-        await mind.pfc.pop_group_task()
-        return MessageAssistantGroup(group_id=target_id, adapter_key=adapter_key, session_id=session_id)
-    await mind.pfc.pop_user_task()
-    return MessageAssistant(uid=target_id, adapter_key=adapter_key, session_id=session_id)
+    """从 PFC 取出下一个待回复目标（保留 session_id 传播）。
+
+    跳过正在回复的 scope：盲弹队首会把"活跃会话的新消息"消费掉，
+    而该消息本该由在途 think_loop 的轮内合并接管——弹走后周期不再
+    触发，消息无人回复。
+    """
+    for scope, _, _, _ in mind.pfc.peek_all_tasks():
+        if scope in mind._active_scopes:
+            continue
+        scope_type, scope_adapter, base_id, session_id = parse_entity_scope(scope)
+        adapter_key = scope_adapter or mind.pfc.get_adapter_key(scope)
+        if not scope_type:
+            continue
+        target_id: Union[int, str] = base_id
+        try:
+            target_id = int(base_id)
+        except ValueError:
+            log("pop_next_reply_target 异常已忽略", "DEBUG")
+        # 按 scope 精确消费（含未读计数/预览清理），不依赖队首位置
+        mind.pfc.consume_scope_task(scope)
+        if scope_type == "group":
+            return MessageAssistantGroup(group_id=target_id, adapter_key=adapter_key, session_id=session_id)
+        return MessageAssistant(uid=target_id, adapter_key=adapter_key, session_id=session_id)
+    return None

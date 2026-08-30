@@ -56,14 +56,21 @@ class AgentAssistant:
         新消息都必须第一时间按到达时序插入，保证每轮 LLM 看到严格时序的上下文。
         """
         self._ensure_started()
-        try:
-            await self.mind.accept_feel(anything)
-        except Exception as exc:
-            # 感知写入失败的消息不再入队：accept_feel 未生效意味着该消息
-            # 未进入对话历史/PFC，入队只会让 Mind 基于缺失上下文决策；
-            # 丢弃并以 ERROR 日志告警（含异常详情），由上游频道重试语义兜底
-            log(f"消息感知处理失败: {exc}", "ERROR", tag="运行时")
-            return
+        for attempt in (0, 1):
+            try:
+                await self.mind.accept_feel(anything)
+                break
+            except Exception as exc:
+                if attempt == 0:
+                    # 瞬时故障（SQLite 写竞争等）退避重试一次；上游频道均无重试，
+                    # 直接丢弃就是消息丢失
+                    log(f"消息感知失败，退避重试: {exc}", "WARNING", tag="运行时")
+                    await asyncio.sleep(0.5)
+                    continue
+                # 感知写入失败的消息不再入队：accept_feel 未生效意味着该消息
+                # 未进入对话历史/PFC，入队只会让 Mind 基于缺失上下文决策
+                log(f"消息感知处理失败（重试后仍失败，消息丢弃）: {exc}", "ERROR", tag="运行时")
+                return
         await self._queue.put(anything)
 
     def _ensure_started(self) -> None:

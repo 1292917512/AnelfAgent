@@ -181,10 +181,14 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
         if not self._ready.wait(timeout=30):
             err = self._start_error or "启动超时"
             self._status = ChannelStatus.ERROR
+            # 停掉半启动的轮询线程：否则它可能随后初始化成功继续 polling，
+            # 看门狗重启后形成同 token 双 poller（409 Conflict，消息随机分裂）
+            await self._stop_polling_thread()
             raise RuntimeError(f"Telegram 频道启动失败: {err}")
 
         if self._start_error:
             self._status = ChannelStatus.ERROR
+            await self._stop_polling_thread()
             raise RuntimeError(f"Telegram 频道启动失败: {self._start_error}")
 
         self._status = ChannelStatus.RUNNING
@@ -200,15 +204,23 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
             log(f"Telegram 命令菜单注册跳过: {exc}", "DEBUG")
 
     async def stop(self) -> None:
-        if self._tg_loop and self._stop_event:
-            self._tg_loop.call_soon_threadsafe(self._stop_event.set)
-        if self._thread:
-            self._thread.join(timeout=10)
-            self._thread = None
+        await self._stop_polling_thread()
         self._tg_loop = None
         self._app = None
         self._status = ChannelStatus.STOPPED
         log("Telegram 频道已停止")
+
+    async def _stop_polling_thread(self) -> None:
+        """停掉独立轮询线程（幂等；join 超时不置空引用，避免重复 stop 误报）。"""
+        if self._tg_loop and self._stop_event:
+            self._tg_loop.call_soon_threadsafe(self._stop_event.set)
+        if self._thread:
+            self._thread.join(timeout=15)
+            if self._thread.is_alive():
+                # polling 网络超时可达 30s：线程稍后自行退出（daemon），
+                # 但 _app 引用必须等线程真正结束才释放，这里只告警
+                log("Telegram 轮询线程退出超时（等待其自行结束）", "WARNING")
+            self._thread = None
 
     # ------------------------------------------------------------------
     # 独立线程

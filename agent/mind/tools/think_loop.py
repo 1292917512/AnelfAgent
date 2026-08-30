@@ -145,10 +145,13 @@ async def reply_loop(
         adapter_key = mind._resolve_adapter_key()
     scope = mind._resolve_entity_scope(anything) if anything else ""
     with think_session(mind, scope):
-        # 会话开始清理历史中断信号，避免上一轮遗留请求误杀新会话
+        # 会话开始清理历史中断信号，避免上一轮遗留请求误杀新会话；
+        # 只清激活时刻之前的——启动窗口内用户发的"停止"是合法中断
         _interrupts = getattr(mind, "interrupts", None)
         if scope and _interrupts is not None:
-            _interrupts.clear(scope)
+            _interrupts.clear_before(
+                scope, getattr(mind, "_reply_activated_at", {}).get(scope, 0),
+            )
         # 推送水位必须在 base 快照之前读取：快照与水位读取之间的到达窗口内，
         # 推送既不随短期记忆进 base、又被 drain_inflight 按 seq≤水位 丢弃，导致吞推送
         push_watermark = 0

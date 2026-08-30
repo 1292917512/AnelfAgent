@@ -33,7 +33,8 @@ def jittered_backoff(
     """
     attempt = max(1, attempt)
     delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
-    return delay + random.uniform(0, jitter_ratio * delay)
+    # 抖动加码后仍钳制在上限内（capped delay 上加码会超出文档宣称的上限 50%）
+    return min(delay + random.uniform(0, jitter_ratio * delay), max_delay)
 
 
 def parse_retry_after(exception: BaseException) -> Optional[float]:

@@ -292,13 +292,19 @@ class BackgroundTaskRegistry:
         )
         # 轮外完成（无等待者）：触发回调（由 Mind 注册，写对话历史并排入
         # 回复队列触发新 REPLY；非 conversation scope 由回调侧全局桶兜底）。
-        # 回调可为协程（_finish 总在主循环执行）
+        # 通知失败时恢复未送达标记——先标记后投递会让回调异常静默丢通知
         if not claimed and self._on_unclaimed is not None:
             result = self._on_unclaimed(
                 rec.info.scope, rec.info.description, summary[:1500], success,
             )
             if inspect.iscoroutine(result):
-                asyncio.ensure_future(result)
+                async def _guarded_notify() -> None:
+                    try:
+                        await result
+                    except Exception as exc:
+                        rec.delivered = False
+                        log(f"后台任务完成通知失败: {task_id}: {exc}", "ERROR", tag="后台")
+                asyncio.ensure_future(_guarded_notify())
         return claimed
 
     def alert_timeout(self, task_id: str, detail: str) -> None:

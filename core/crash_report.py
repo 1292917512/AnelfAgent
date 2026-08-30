@@ -81,16 +81,16 @@ def mark_crash_reported() -> None:
 
 
 def collect_previous_crash() -> Optional[Dict[str, Any]]:
-    """消费上一次崩溃状态：读取 + 关联系统崩溃报告 + 标记已通报。
+    """读取上一次崩溃状态并关联系统崩溃报告（不标记已通报）。
 
-    无崩溃状态或已通报返回 None。macOS 上按崩溃时间关联
-    DiagnosticReports 中的 python 崩溃报告，摘要挂在 ``ips`` 键。
+    标记 reported 是调用方的责任：恢复流程成功注入后才调用
+    mark_crash_reported()——先标记后注入会让恢复失败时崩溃上下文永久丢失。
+    无崩溃状态或已通报返回 None。
     """
     state = read_crash_state()
     if state is None or state.get("reported"):
         return None
     state["ips"] = find_related_ips(str(state.get("crashed_at") or ""))
-    mark_crash_reported()
     return state
 
 
