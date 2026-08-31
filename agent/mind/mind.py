@@ -104,13 +104,13 @@ from agent.mind.tools.think_loop import (
 )
 from agent.storage.data_center import ConversationData, EverythingData
 from agent.storage.storage_router import StorageDomain
+from core.async_helper import spawn
 from core.entity import EntityRegistry
 from core.event_bus import (
     EVENT_THINKING_PHASE_CHANGE,
     event_bus,
 )
 from core.log import log
-from core.async_helper import spawn
 from core.trace_session import thinking_session
 
 if TYPE_CHECKING:

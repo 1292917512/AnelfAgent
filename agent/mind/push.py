@@ -15,8 +15,8 @@ import re
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
-from core.log import log
 from core.async_helper import spawn
+from core.log import log
 from core.tags import get_time_tag, tag_label
 
 # 单条推送内容上限（防止异常实体灌爆短期记忆桶）

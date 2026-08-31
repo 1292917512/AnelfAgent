@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from core.log import log
-
 import json
 import uuid
 from typing import Any, AsyncGenerator, Dict, Optional, Union
@@ -25,7 +23,7 @@ from agent.llm.responses.types import (
     event_is_terminal,
 )
 from agent.llm.types import ToolCall
-from core.log import debug
+from core.log import debug, log
 
 
 def _as_dict(obj: Any) -> dict[str, Any]:

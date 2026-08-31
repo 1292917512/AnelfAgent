@@ -18,8 +18,8 @@ import asyncio
 import json
 from typing import Any, Dict, List, Optional
 
-from core.log import log
 from core.async_helper import spawn
+from core.log import log
 
 # 审计记录的 args_json 序列化上限（参数已在 gate 层脱敏，此处只防超大正文）
 _ARGS_JSON_MAX_CHARS = 2000

@@ -26,9 +26,9 @@ from __future__ import annotations
 from contextvars import ContextVar, Token
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from core.async_helper import spawn
 from core.config import get_config_int
 from core.log import log
-from core.async_helper import spawn
 
 # 单 scope 内存累计条目上限（防异常 scope 泄漏；超出丢弃最旧统计但不回滚 DB）
 _MAX_SCOPES = 200

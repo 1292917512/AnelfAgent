@@ -24,8 +24,8 @@ from agent.messages import EntityData, Everything, EverythingGroup, build_entity
 from agent.mind.autonomous import MindTask, TaskType
 from agent.storage.data_center import EverythingData
 from agent.utils.unique_queue import UniqueQueue
-from core.log import log
 from core.async_helper import spawn
+from core.log import log
 from core.tags import etag_all
 
 if TYPE_CHECKING:

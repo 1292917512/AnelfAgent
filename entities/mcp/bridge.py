@@ -541,7 +541,7 @@ class MCPBridge:
                 self._stop_events.pop(srv.name, None)
                 self._lifecycle_tasks.pop(srv.name, None)
             self._set_last_error(srv.name, "连接初始化超时")
-            raise TimeoutError(f"MCP server '{srv.name}' 初始化超时（30s）")
+            raise TimeoutError(f"MCP server '{srv.name}' 初始化超时（30s）") from None
 
         if result_box and isinstance(result_box[0], Exception):
             with self._lock:
