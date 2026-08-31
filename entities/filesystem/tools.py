@@ -12,6 +12,13 @@ Model Experience（run_shell_command 失败归因 notes）:
   记忆索引键的真实位置，或解释器为 uv venv 且不含 pip（无操作建议）
 - token 影响：仅失败时 +50~150 字符，属 tool_chain 尾部动态区
 - 缓存影响：不触碰任何前缀层（notes 在工具结果内，volatile 语义）
+
+Model Experience（写操作成功结果 location 标注）:
+- 模型看到什么：write/edit/append/copy/move/delete/mkdir 的成功结果多一个
+  location 键（inside_workspace / outside_workspace），明确本次操作的实际
+  落点是否在工作区内（沙箱关闭或审批放行的区外写也能成功，需让 AI 知情）
+- token 影响：每次写操作约 +5 token，属 tool_chain 尾部动态区
+- 缓存影响：不触碰任何前缀层（工具结果在尾部动态区）
 """
 
 from __future__ import annotations
@@ -73,6 +80,17 @@ def safe_path(path: str) -> str:
     if _SANDBOX and not _paths.check_sandbox(resolved, ws_abs):
         raise ValueError(f"沙箱限制: {path} 不在工作目录 ({_WORKSPACE}) 内")
     return resolved
+
+
+def _location_of(fp: str) -> str:
+    """标注解析后路径的工作区归属（inside_workspace / outside_workspace）。
+
+    成功结果中告知 AI 本次操作的实际位置：沙箱关闭或经审批放行的区外
+    操作本可成功，AI 需要明确知道"这次写到了工作区外"。判定与沙箱同源
+    （paths.check_sandbox，realpath 展开符号链接）。
+    """
+    from entities.filesystem import paths as _paths
+    return "inside_workspace" if _paths.check_sandbox(fp) else "outside_workspace"
 
 
 # ------------------------------------------------------------------
@@ -313,7 +331,8 @@ def write_file(file_path: str, content: str) -> str:
         with open(fp, "w", encoding="utf-8") as f:
             f.write(content)
         file_state.record_write(fp, content.replace("\r\n", "\n"), os.path.getmtime(fp))
-        return json.dumps({"ok": True, "path": fp, "size": len(content)}, ensure_ascii=False)
+        return json.dumps({"ok": True, "path": fp, "size": len(content),
+                           "location": _location_of(fp)}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="写入文件")
 
@@ -364,7 +383,8 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
                 _write_text_with_metadata(fp, new_string, "utf-8", "LF")
                 file_state.record_write(fp, new_string, os.path.getmtime(fp))
                 return json.dumps({"ok": True, "path": fp,
-                                   "message": f"文件创建成功: {fp}"}, ensure_ascii=False)
+                                   "message": f"文件创建成功: {fp}",
+                                   "location": _location_of(fp)}, ensure_ascii=False)
             except Exception as e:
                 return _err(f"创建文件失败: {e}", 11)
         suggestion = _suggest_similar_path(fp)
@@ -418,7 +438,8 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     _emit_file_diff(fp, content, updated, additions, removals)
     replaced = occurrences if replace_all else 1
     result: Dict[str, Any] = {"ok": True, "path": fp,
-                              "message": f"文件已更新（+{additions} -{removals} 行）。"}
+                              "message": f"文件已更新（+{additions} -{removals} 行）。",
+                              "location": _location_of(fp)}
     if replace_all:
         result["replaced"] = replaced
         result["message"] = f"已替换全部 {replaced} 处（+{additions} -{removals} 行）。"
@@ -506,7 +527,8 @@ def append_file(path: str, content: str) -> str:
         if file_state.get_cache().get(fp) is not None:
             new_content, _, _ = _read_text_with_metadata(fp)
             file_state.record_write(fp, new_content, os.path.getmtime(fp))
-        return json.dumps({"ok": True, "path": fp}, ensure_ascii=False)
+        return json.dumps({"ok": True, "path": fp,
+                           "location": _location_of(fp)}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="追加文件内容")
 
@@ -616,7 +638,8 @@ def copy_file(src: str, dst: str) -> str:
                               retryable=False)
         os.makedirs(os.path.dirname(dst_fp) or ".", exist_ok=True)
         shutil.copy2(src_fp, dst_fp)
-        return json.dumps({"ok": True, "src": src, "dst": dst}, ensure_ascii=False)
+        return json.dumps({"ok": True, "src": src_fp, "dst": dst_fp,
+                           "location": _location_of(dst_fp)}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="复制文件")
 
@@ -638,7 +661,8 @@ def move_file(src: str, dst: str) -> str:
                               retryable=False)
         os.makedirs(os.path.dirname(dst_fp) or ".", exist_ok=True)
         shutil.move(src_fp, dst_fp)
-        return json.dumps({"ok": True, "src": src, "dst": dst}, ensure_ascii=False)
+        return json.dumps({"ok": True, "src": src_fp, "dst": dst_fp,
+                           "location": _location_of(dst_fp)}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="移动文件")
 
@@ -656,7 +680,8 @@ def delete_file(path: str) -> str:
             return tool_error(f"文件不存在或不是文件: {path}",
                               cause=ErrorCause.NOT_FOUND, retryable=False)
         os.remove(fp)
-        return json.dumps({"ok": True, "deleted": path}, ensure_ascii=False)
+        return json.dumps({"ok": True, "deleted": fp,
+                           "location": _location_of(fp)}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="删除文件")
 
@@ -671,7 +696,8 @@ def mkdir(path: str) -> str:
     try:
         fp = safe_path(path)
         os.makedirs(fp, exist_ok=True)
-        return json.dumps({"ok": True, "path": fp}, ensure_ascii=False)
+        return json.dumps({"ok": True, "path": fp,
+                           "location": _location_of(fp)}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="创建目录")
 

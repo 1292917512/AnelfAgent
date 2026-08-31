@@ -132,3 +132,52 @@ class TestTaskCrud:
         r = client.delete("/api/config/tasks/demo_task")
         assert r.status_code == 200
         assert client.get("/api/config/tasks/demo_task").status_code == 404
+
+
+class TestTaskExpiry:
+    """expires_at / created_at / updated_at 的 API 语义。"""
+
+    def test_create_with_expiry_and_timestamps(
+        self, client: TestClient, sample_task: dict
+    ) -> None:
+        r = client.post(
+            "/api/config/tasks", json={**sample_task, "expires_at": "2099-03-05"}
+        )
+        assert r.status_code == 201
+        data = r.json()
+        assert data["expires_at"] == "2099-03-05"
+        assert data["created_at"] > 0
+        assert data["updated_at"] == data["created_at"]
+
+    def test_create_rejects_invalid_expiry(
+        self, client: TestClient, sample_task: dict
+    ) -> None:
+        r = client.post(
+            "/api/config/tasks", json={**sample_task, "expires_at": "not-a-date"}
+        )
+        assert r.status_code == 400
+
+    def test_update_expiry_set_and_remove(
+        self, client: TestClient, sample_task: dict
+    ) -> None:
+        client.post("/api/config/tasks", json=sample_task)
+
+        r = client.put("/api/config/tasks/demo_task", json={"expires_at": "2099-01-01 08:30"})
+        assert r.status_code == 200
+        assert r.json()["expires_at"] == "2099-01-01 08:30"
+
+        # 显式 null = 移除（恢复永久有效）
+        r = client.put("/api/config/tasks/demo_task", json={"expires_at": None})
+        assert r.status_code == 200
+        assert "expires_at" not in r.json()
+
+        # 非法值 400
+        r = client.put("/api/config/tasks/demo_task", json={"expires_at": "??"})
+        assert r.status_code == 400
+
+    def test_update_bumps_updated_at(self, client: TestClient, sample_task: dict) -> None:
+        created = client.post("/api/config/tasks", json=sample_task).json()
+        updated = client.put(
+            "/api/config/tasks/demo_task", json={"description": "改"}
+        ).json()
+        assert updated["updated_at"] >= created["updated_at"]

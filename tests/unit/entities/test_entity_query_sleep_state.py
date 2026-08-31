@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from agent.mind.tool_activation import bind_scope, reset_scope, tool_activation
+from core.config import ConfigManager
 from core.entity import EntityRegistry
 
 
@@ -63,3 +66,33 @@ class TestListEntityMethodsSleepState:
         result = json.loads(list_entity_methods(group="no_such_group_xyz"))
         assert "error" in result
         assert "available_groups" in result
+
+
+class TestToggleEntityGroupPersistence:
+    """toggle_entity_group 与 Web 开关同路径：状态写 entity_states 持久化，重启后保持。"""
+
+    @pytest.fixture(autouse=True)
+    def _clean_states(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(ConfigManager, "save", classmethod(lambda cls: True))
+        old = ConfigManager.get("entity_states")
+        ConfigManager.set("entity_states", {})
+        yield
+        ConfigManager.set("entity_states", old or {})
+
+    def test_toggle_persists_entity_states(self) -> None:
+        from entities.entity_query.tools import toggle_entity_group
+
+        _register("lq_tog_g", "lq_tog_t")
+        try:
+            result = json.loads(toggle_entity_group(group="lq_tog_g", enabled=False))
+            assert result["success"] is True
+            assert result["affected_count"] == 1
+            states = ConfigManager.get("entity_states", {})
+            assert states.get("lq_tog_t") is False
+
+            result = json.loads(toggle_entity_group(group="lq_tog_g", enabled=True))
+            assert result["affected_count"] == 1
+            states = ConfigManager.get("entity_states", {})
+            assert states.get("lq_tog_t") is True
+        finally:
+            EntityRegistry.unregister("lq_tog_t")

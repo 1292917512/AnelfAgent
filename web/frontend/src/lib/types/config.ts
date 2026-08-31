@@ -53,6 +53,11 @@ export interface TaskConfig {
   save_result_to_memory?: boolean;
   model_id?: string | null;
   reasoning_effort?: ReasoningEffort | null;
+  /** 生效截止时间（"YYYY-MM-DD" 或 "YYYY-MM-DD HH:MM"，空/缺省 = 永久有效），到期自动停用 */
+  expires_at?: string;
+  /** 创建/最近更新时间（epoch 秒，0 = 未知） */
+  created_at?: number;
+  updated_at?: number;
   folder?: string;
 }
 

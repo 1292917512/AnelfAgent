@@ -38,6 +38,7 @@
     "used": "Current Usage",
     "staticEstimate": "Static Estimate",
     "peak": "Peak",
+    "inactive": "Inactive with entity",
     "lastCollect": "Last collect: {{scope}} · {{time}}"
   },
   "stats": {

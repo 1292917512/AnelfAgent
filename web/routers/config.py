@@ -285,6 +285,7 @@ class TaskCreate(BaseModel):
     save_result_to_memory: bool = True
     model_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
+    expires_at: str = ""
     folder: str = ""
 
 
@@ -314,6 +315,7 @@ class TaskUpdate(BaseModel):
     save_result_to_memory: Optional[bool] = None
     model_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
+    expires_at: Optional[str] = None
     folder: Optional[str] = None
 
 

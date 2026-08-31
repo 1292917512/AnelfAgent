@@ -11,6 +11,17 @@
 提取流程：质量门（过滤纯寒暄批次）→ 单次 LLM 提取（JSON 数组）→
 逐条经 dedup 模块语义裁决（store/skip/update）→ 写库。
 游标按 scope 持久化（capture_cursors 表），进程重启后从未处理消息继续。
+
+发言者归属：消息行渲染时从元数据标签确定性提取身份（称呼[uid:xxx]），
+提取输出的 speaker 字段经批次内真实 uid 集合校验后挂为 user:{adapter}:{uid}
+记忆标签——每条记忆天生携带"谁说的"，下游召回/任务可核验归属（读取侧的
+归属标注渲染见 memory_retriever._humanize_entity_tags）。
+
+Model Experience（提取 prompt 说话人身份）:
+- 模型看到什么：消息行从"[时间] 用户: 内容"变为"[时间] 称呼[uid:xxx]: 内容"，
+  prompt 新增输入格式说明与 speaker 输出字段（群聊多人可区分）
+- token 影响：每条消息 +8~15 字符，prompt 指令 +约 60 字符（每批提取一次）
+- 缓存影响：无（内部小调用，不共享主对话前缀）
 """
 
 from __future__ import annotations
@@ -20,7 +31,7 @@ import hashlib
 import json
 import re
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from core.config import get_config_bool, get_config_int, register_configs_safe
 from core.latebind import LateBinding
@@ -56,18 +67,23 @@ def _batch_signature(rows: List[Dict[str, Any]]) -> str:
 _EXTRACT_PROMPT = """\
 你是记忆提取器。从以下对话片段中提取值得长期记住的信息，输出 JSON 数组。
 
+## 输入格式
+每行一条消息：[时间] 发言者: 内容。发言者带身份标注（称呼[uid:xxx] 或 [uid:xxx]），
+群聊中不同 uid 是不同的人——必须分清每句话是谁说的，不得张冠李戴。
+
 ## 提取标准
-- fact：稳定的偏好、个人信息、约定、计划、知识（"主人不吃辣"、"周五要交报告"）
-- event：发生的具体事件，带时间锚点（"周日去看了演唱会"）
+- fact：稳定的偏好、个人信息、约定、计划、知识（如"小明[uid:123] 说自己不吃辣"，主体是小明）
+- event：发生的具体事件，带时间锚点（如"小李[uid:456] 周日去看了演唱会"）
 - 不提取：寒暄客套、情绪性短句、常识、一次性指令、正在进行的任务过程
 
 ## 输出格式（只输出 JSON 数组，没有值得提取的内容时输出 []）
-[{{"content": "一两句话的记忆内容",
+[{"content": "一两句话的记忆内容（用称呼写明主体是谁，禁止「用户」「有人」这类模糊指代）",
+   "speaker": "该信息发言者的 uid（取自消息行的 [uid:xxx]；AI 说的或无法确定时省略）",
    "type": "fact" 或 "event",
    "topic": "主题词（一两个字）",
    "importance": 0.5到1.0（重要约定/承诺 0.8 以上）,
    "sensitivity": "normal" 或 "private"（个人隐私/悄悄话标 private）,
-   "date": "事件发生的日期 YYYY-MM-DD（仅 event 且能从对话确定时填写，否则省略）"}}]
+   "date": "事件发生的日期 YYYY-MM-DD（仅 event 且能从对话确定时填写，否则省略）"}]
 
 【背景（最近的旧对话，仅供理解）】
 {background}
@@ -75,6 +91,32 @@ _EXTRACT_PROMPT = """\
 【新对话（提取对象）】
 {new_messages}
 """
+
+# 消息元数据标签头部扫描窗口（标签由频道渲染在内容前缀处）
+_META_HEAD_CHARS = 200
+
+
+def _extract_speaker(content: str) -> Tuple[str, str]:
+    """从消息元数据标签确定性提取发言者身份，返回 (展示标签, uid)。
+
+    标签在入库时由频道渲染（[uid:][name:][nickname:] 前缀），只扫描头部窗口，
+    正文中用户手打的类标签语法不构成身份。无身份标签返回 ("", "")。
+    """
+    from core.tags import etag_all
+
+    uid = ""
+    name = ""
+    for key, value in etag_all(content[:_META_HEAD_CHARS]):
+        if key == "uid" and not uid:
+            uid = value.strip()
+        elif key == "nickname" and value.strip():
+            name = value.strip()  # 群昵称优先于用户名
+        elif key == "name" and not name:
+            name = value.strip()
+    if not uid:
+        return "", ""
+    label = f"{name}[uid:{uid}]" if name else f"[uid:{uid}]"
+    return label, uid
 
 
 def should_extract(messages: List[Dict[str, Any]]) -> bool:
@@ -120,6 +162,8 @@ def parse_extraction(raw: str, *, max_items: int) -> List[Dict[str, Any]]:
         date = str(item.get("date", "")).strip()
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             date = ""
+        # 发言者 uid（与批次内真实出现的 uid 的交叉校验在写库侧进行）
+        speaker = str(item.get("speaker", "")).strip()[:64]
         out.append({
             "content": content,
             "type": "event" if item.get("type") == "event" else "fact",
@@ -127,6 +171,7 @@ def parse_extraction(raw: str, *, max_items: int) -> List[Dict[str, Any]]:
             "importance": importance,
             "sensitivity": sensitivity if sensitivity in ("private", "secret") else "normal",
             "date": date,
+            "speaker": speaker,
         })
         if len(out) >= max_items:
             break
@@ -402,9 +447,19 @@ class AutoCapturePipeline:
         """LLM 提取 + 逐条语义裁决写库。失败返回 None，成功返回写入/更新条数。"""
         from core.tags import strip_message_meta_tags
 
+        # 批次内真实出现的发言者 uid 集合：写库时校验 LLM 输出的 speaker，
+        # 不在集合内的视为幻觉丢弃（身份只能来自消息元数据，不信模型编造）
+        speaker_uids: set[str] = set()
+
         def _fmt(msg: Dict[str, Any]) -> str:
-            who = "用户" if msg["role"] == "user" else "AI"
             day = time.strftime("%m-%d %H:%M", time.localtime(int(msg["ts_ns"]) / 1e9))
+            if msg["role"] == "user":
+                label, uid = _extract_speaker(msg["content"])
+                if uid:
+                    speaker_uids.add(uid)
+                who = label or "用户"
+            else:
+                who = "AI"
             content = strip_message_meta_tags(msg["content"])[:_MSG_MAX_CHARS]
             return f"[{day}] {who}: {content}"
 
@@ -431,11 +486,25 @@ class AutoCapturePipeline:
         store = self._mind.memory_store
         assert store is not None
         scope_tag = scope_key  # scope_key 即 "user:qq:123" / "group:qq:456" 标签格式
+        parts = scope_key.split(":")
+        adapter = parts[1] if len(parts) >= 3 else ""
         stored = 0
         for item in items:
             tags = [scope_tag, f"type:{item['type']}"]
             if item["topic"]:
                 tags.append(f"topic:{item['topic']}")
+            # 发言者归属标签：每条记忆天生携带"谁说的"，下游召回/任务可核验归属
+            speaker = item.get("speaker", "")
+            if speaker:
+                if speaker in speaker_uids and adapter:
+                    speaker_tag = f"user:{adapter}:{speaker}"
+                    if speaker_tag != scope_tag:
+                        tags.append(speaker_tag)
+                else:
+                    log(
+                        f"自动捕获 [{scope_key}]: speaker {speaker!r} 不在批次发言者中，已丢弃",
+                        "DEBUG", tag="记忆",
+                    )
             try:
                 candidates = await gather_dedup_candidates(
                     store, self._mind.embedder, item["content"],

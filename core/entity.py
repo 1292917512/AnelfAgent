@@ -1235,6 +1235,60 @@ class EntityRegistry:
         return bool(tools) and all(t.enabled for t in tools)
 
     @classmethod
+    def group_has_enabled_tools(cls, group: str) -> bool:
+        """分组内是否存在任一启用的 TOOL 实体（与实体目录的分组可见性同口径）。"""
+        names = cls._groups.get(group, [])
+        return any(
+            n in cls._entities
+            and cls._entities[n].entity_type == EntityType.TOOL
+            and cls._entities[n].enabled
+            for n in names
+        )
+
+    @classmethod
+    def set_enabled(cls, name: str, enabled: bool, *, persist: bool = True) -> bool:
+        """设置实体启用状态，返回实体是否存在。
+
+        persist=True（默认，用户显式开关）同步写入 entity_states 持久化，
+        重启后由 state_restore 回放；回放与派生状态路径（频道接口开关）
+        传 persist=False 仅改内存态。
+        """
+        ok = cls.enable(name) if enabled else cls.disable(name)
+        if ok and persist:
+            cls._persist_entity_states({name: enabled})
+        return ok
+
+    @classmethod
+    def set_group_enabled(cls, group: str, enabled: bool, *, persist: bool = True) -> int:
+        """设置分组内全部实体的启用状态，返回受影响的实体数。
+
+        持久化口径：分组内全部 TOOL 实体（含无分组的 default 桶），
+        与启动回放 apply_entity_states 的逐实体格式对齐。
+        """
+        count = cls.enable_group(group) if enabled else cls.disable_group(group)
+        if persist:
+            updates = {
+                e.name: enabled
+                for e in cls._entities.values()
+                if e.entity_type == EntityType.TOOL and (e.group or "default") == group
+            }
+            if updates:
+                cls._persist_entity_states(updates)
+        return count
+
+    @classmethod
+    def _persist_entity_states(cls, updates: Dict[str, bool]) -> None:
+        """把启用状态合并写入 entity_states 并落盘（启停持久化的唯一实现）。"""
+        from core.config import ConfigManager
+
+        states = ConfigManager.get("entity_states", {})
+        if not isinstance(states, dict):
+            states = {}
+        states.update(updates)
+        ConfigManager.set("entity_states", states)
+        ConfigManager.save()
+
+    @classmethod
     @catch_exceptions(reraise=False, default_value=False, tag="entity")
     def activate_entity(cls, name: str) -> bool:
         """激活实体并注册其公共方法为 API（仅 BaseEntity 实例）"""

@@ -7,6 +7,10 @@ export interface ProviderMetric {
   priority: number;
   max_tokens: number;
   scope_filter: string | null;
+  /** 所属工具分组（实体启停门控依据）；null = 全局常驻 */
+  group?: string | null;
+  /** 是否处于注入活动状态（分组工具全禁用时为 false，停止采集与注入） */
+  active?: boolean;
   description: string;
   tokens: number;
   bytes: number;

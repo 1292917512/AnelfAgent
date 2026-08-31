@@ -2,6 +2,13 @@
 
 使用 search_unified 实现双轨召回（memories 表 + MD 文件 chunks），
 与 tools.recall 主动召回保持一致的搜索范围。
+
+Model Experience（召回归属标注）:
+- 模型看到什么：每条召回记忆行首的归属标注（称呼[uid:xxx] / [group_id:xxx]，
+  与会话消息 [uid:] 标签同构）+ 记忆召回块头的归属确认提示（先确认记忆
+  涉及谁再下定论，uid 不符不张冠李戴）
+- token 影响：每条记忆 +10~20 字符，块头 +约 80 字符（仅召回非空时注入）
+- 缓存影响：召回块在尾部动态区（vol>30），不触碰前缀缓存层
 """
 
 from __future__ import annotations
@@ -382,9 +389,17 @@ class MemoryRetriever:
             log(f"💾 回退: 取最近 {len(entries)} 条记忆", tag="思维")
         if not entries:
             return []
-        lines = [e.content for e in entries]
+        # 与召回行同一归属标注格式：回退路径同样不能丢失"这是谁的记忆"
+        lines: List[str] = []
+        for e in entries:
+            tags = await self._humanize_entity_tags(e.tags) if e.tags else []
+            head = f"{'·'.join(tags)} " if tags else ""
+            lines.append(f"{head}{e.content}")
         from core.sanitizer import sanitize_for_context
-        return [{"role": "system", "content": sanitize_for_context("[近期记忆]\n" + "\n---\n".join(lines))}]
+        return [{"role": "system", "content": sanitize_for_context(
+            "[近期记忆]（归属标注含义同记忆召回：称呼[uid:xxx] 指明记忆涉及谁）\n"
+            + "\n---\n".join(lines)
+        )}]
 
     @staticmethod
     def _extract_query(conversation: List[Dict], max_chars: int = 500) -> str:
@@ -656,10 +671,12 @@ class MemoryRetriever:
         return re.sub(r"\s+", "", snippet)[:120]
 
     async def _humanize_entity_tags(self, tags: List[str]) -> List[str]:
-        """将记忆标签转为 AI 可读的归因词：实体标签解析为称呼，主题标签去前缀。
+        """将记忆标签转为 AI 可读的归属标注：实体标签带明确身份 ID，主题标签去前缀。
 
-        user:/group: 标签优先解析为图谱节点称呼（如"小李"），解析失败回退去
-        前缀原值；type:/merged/channel:/date: 等内部机制标签不展示。
+        实体标签渲染为「称呼[uid:xxx]」（图谱有称呼时）或「[uid:xxx]」——
+        ID 与会话消息的 [uid:xxx] 标签同构，AI 可直接对照当前对话对象确认归属，
+        避免仅凭称呼把别人的记忆安到当前对象头上（同名/称呼变更场景）。
+        type:/merged/channel:/date: 等内部机制标签不展示。
         """
         display: List[str] = []
         entity_tags: List[str] = []
@@ -678,16 +695,19 @@ class MemoryRetriever:
                 node_map = await self._store.graph.get_nodes_by_keys(entity_tags)
             except Exception:
                 node_map = {}
+        # 归属主体排在主题之前（行首先看"是谁的事"，再看话题）
+        labels: List[str] = []
         for tag in entity_tags:
-            name = ""
+            kind, _, raw = tag.partition(":")
+            # 剥离 adapter 段：user:qq:123 → 123，与消息 [uid:xxx] 标签对齐
+            uid = raw.rsplit(":", 1)[-1] if raw else ""
+            id_key = "uid" if kind == "user" else "group_id"
             node = node_map.get(tag)
-            if node:
-                name = str(node.get("label", "")).strip()
-            if not name:
-                name = tag.split(":", 1)[1]
-            if name and name not in display:
-                display.append(name)
-        return display
+            name = str(node.get("label", "")).strip() if node else ""
+            label = f"{name}[{id_key}:{uid}]" if name else f"[{id_key}:{uid}]"
+            if label not in labels:
+                labels.append(label)
+        return labels + display
 
     @staticmethod
     def _format_memory_time(ts: float) -> str:
@@ -734,8 +754,9 @@ class MemoryRetriever:
                 file_lines.append(f"{marker} {loc} {snippet}".replace("  ", " "))
                 continue
             # memory / cognee_* 统一按记忆行呈现（cognee 只是投影层，对 AI 无区别）
+            # 归属标注自带方括号（称呼[uid:xxx]），不再外层包裹，避免括号嵌套
             tags = await self._humanize_entity_tags(r.tags) if r.tags else []
-            head = f"[{'·'.join(tags)}] " if tags else ""
+            head = f"{'·'.join(tags)} " if tags else ""
             ts = r.timestamp or (r.provenance.get("timestamp", 0) if r.provenance else 0)
             tail_parts: list[str] = []
             activity = r.provenance.get("activity_date", "") if r.provenance else ""
@@ -775,9 +796,12 @@ class MemoryRetriever:
         dynamic_lines: list[str] = []
         if mem_lines:
             dynamic_lines.append(
-                "[系统注入·记忆召回] 以下为自动检索到的相关记忆，不代表当前任务进程，"
-                "仅作为参考（💡=直接相关，🔗=联想关联；标注「私事」的记忆不要向"
-                "第三方透露，除非对方就是当事人）：\n"
+                "[系统注入·记忆召回] 以下为自动检索到的相关记忆，不代表当前任务进程，仅作参考：\n"
+                "- 💡=直接相关，🔗=联想关联\n"
+                "- 每条开头的归属标注（称呼[uid:xxx] / [group_id:xxx]）指明这条记忆涉及谁——"
+                "引用内容前先确认归属：uid 与当前对话对象不符的记忆是别人的事，"
+                "切勿张冠李戴当作当前对象的经历；拿不准就含糊处理或向对方求证\n"
+                "- 标注「私事」的记忆不要向第三方透露，除非对方就是当事人：\n"
                 + "\n".join(mem_lines)
             )
         if file_lines:

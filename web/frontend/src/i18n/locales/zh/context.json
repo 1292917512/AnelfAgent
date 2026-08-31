@@ -38,6 +38,7 @@
     "used": "当前占用",
     "staticEstimate": "静态预估",
     "peak": "历史峰值",
+    "inactive": "已随实体停用",
     "lastCollect": "最近一次收集：{{scope}} · {{time}}"
   },
   "stats": {

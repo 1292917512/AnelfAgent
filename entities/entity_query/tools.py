@@ -259,7 +259,7 @@ def get_entity_status(entity_name: str = "") -> str:
 
 @tool(name="toggle_entity_group", group="entity", tags=["core"])
 def toggle_entity_group(group: str, enabled: bool = True) -> str:
-    """启用或禁用实体分组内的所有工具。
+    """启用或禁用实体分组内的所有工具（与 Web 开关同路径，状态持久化，重启后保持）。
 
     Args:
         group: 实体分组名称（如 os、environment、web）
@@ -268,10 +268,7 @@ def toggle_entity_group(group: str, enabled: bool = True) -> str:
     try:
         from core.entity import EntityRegistry
 
-        if enabled:
-            count = EntityRegistry.enable_group(group)
-        else:
-            count = EntityRegistry.disable_group(group)
+        count = EntityRegistry.set_group_enabled(group, enabled)
 
         return json.dumps({
             "success": True,

@@ -3,8 +3,9 @@
 从 introspection units 的执行逻辑提取，提供统一的任务执行流程。
 
 Model Experience:
-- 模型看到：任务指令头部带 [执行时间]（运行开始时生成一次，全程冻结）；
-  extra_note（idle 反思触发原因等）追加在任务指令（最后一条消息）尾部
+- 模型看到：任务指令头部带 [执行时间] 与任务元信息（[任务创建]/[最近更新]/
+  [生效截止]，运行开始时生成一次，全程冻结）；extra_note（idle 反思触发原因等）
+  追加在任务指令（最后一条消息）尾部
 - token 影响：极小（数十 token）
 - KV Cache 影响：均位于最后一条消息内——执行时间一次运行内字节冻结、
   extra_note 纯尾部追加，任务稳定前缀（人设+工具+永久记忆）不受影响
@@ -20,7 +21,7 @@ from agent.memory.memory_types import MemoryEntry, MemoryType
 from core.event_bus import EVENT_THINKING_INTROSPECTION, event_bus
 from core.log import log
 
-from .model import TaskDefinition, TaskResult
+from .model import TaskDefinition, TaskResult, format_task_time
 
 if TYPE_CHECKING:
     from agent.messages import EntityData
@@ -123,6 +124,20 @@ class TaskExecutor:
             raise
 
     @staticmethod
+    def _build_task_meta_lines(task: TaskDefinition) -> str:
+        """任务元信息行（创建/更新/生效截止），供任务自检判断新旧与有效性。"""
+        lines: List[str] = []
+        created = format_task_time(task.created_at)
+        if created:
+            lines.append(f"[任务创建] {created}")
+        updated = format_task_time(task.updated_at)
+        if updated:
+            lines.append(f"[最近更新] {updated}")
+        if task.expires_at:
+            lines.append(f"[生效截止] {task.expires_at}（到期自动停用，可用 update_task 延期）")
+        return "\n".join(lines) + "\n" if lines else ""
+
+    @staticmethod
     def _build_task_suffix(allow_output_tools: bool, handoff: bool = False) -> str:
         """按任务配置构建系统规则后缀。"""
         rule_1 = (
@@ -136,13 +151,16 @@ class TaskExecutor:
             f"{rule_1}\n",
             "2. 要了解会话内容必须用 get_conversation 实际读取消息，而非只看 scope 列表\n",
             "3. 操作前先用 recall/list_goals 检查已有记忆和目标，避免重复记录和重复提问\n",
-            "4. 完成后调用 log_to_heartbeat 记录操作总结，然后 end_reply 结束",
+            "4. 完成后调用 log_to_heartbeat 记录操作总结，然后 end_reply 结束\n",
+            "5. 任务自检：结合头部元信息判断本任务是否仍然有效——目标已达成/被新事实推翻/"
+            "指令需要修订时用 update_task 更新（可改 prompt 或用 expires_at 延期）；"
+            "确认彻底废弃用 delete_task 删除；到期任务系统会自动停用，无需手动处理",
         ]
         if handoff:
             # 长任务交接：输出末尾追加结构化块，供下次运行确定性接力
             # （策略进指令而非全局人设——只有 handoff 任务看到，对齐 dsh "策略进工具自带 section"）
             rules.append(
-                "\n5. 本任务为多轮接力任务：在输出最末尾追加一段以 \"# HANDOFF\" 行起始的"
+                "\n6. 本任务为多轮接力任务：在输出最末尾追加一段以 \"# HANDOFF\" 行起始的"
                 "交接块（JSON：{\"summary\": 本轮进展, \"next_steps\": [下一步…], "
                 "\"blocker\": 阻塞或null}），供下次运行接续；其余输出不要包含该块"
             )
@@ -181,6 +199,7 @@ class TaskExecutor:
             "content": (
                 f"[系统任务 - {task.name}]\n"
                 f"[执行时间] {time.strftime('%Y-%m-%d %H:%M')}\n"
+                f"{self._build_task_meta_lines(task)}"
                 f"{task.prompt}{handoff_prefix}{extra_note}"
                 f"{self._build_task_suffix(task.allow_output_tools, handoff=task.handoff)}"
             ),

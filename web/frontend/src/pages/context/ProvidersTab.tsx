@@ -51,10 +51,22 @@ export function ProvidersTab() {
 
       <div className="space-y-2">
         {data.providers.map((p) => (
-          <div key={p.name} className="flex items-center gap-3 py-2 px-3 rounded-lg bg-elevated border border-border">
-            <StatusDot status={p.ready ? "ok" : "warn"} />
+          <div
+            key={p.name}
+            className={cn(
+              "flex items-center gap-3 py-2 px-3 rounded-lg bg-elevated border border-border",
+              p.active === false && "opacity-55",
+            )}
+          >
+            <StatusDot status={p.active === false ? "offline" : p.ready ? "ok" : "warn"} />
             <div className="flex-1 min-w-0">
               <span className="text-xs font-medium text-foreground">{p.name}</span>
+              {p.group && <span className="ml-1.5 text-[10px] text-muted font-mono">{p.group}</span>}
+              {p.active === false && (
+                <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-border/40 text-muted">
+                  {t("providers.inactive")}
+                </span>
+              )}
               {p.description && <p className="text-[10px] text-muted truncate">{p.description}</p>}
               {p.last_error && <p className="text-[10px] text-danger truncate">{p.last_error}</p>}
             </div>

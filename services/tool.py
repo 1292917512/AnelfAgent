@@ -92,47 +92,21 @@ class ToolService:
 
     def toggle_tool(self, name: str) -> bool:
         """切换工具启用/禁用状态，并持久化。返回切换后是否启用。"""
-        from core.config import ConfigManager
         from core.entity import EntityRegistry
 
         e = EntityRegistry.get(name)
         if e is None:
             raise ValueError(f"tool '{name}' not found")
         new_state = not e.enabled
-        if new_state:
-            EntityRegistry.enable(name)
-        else:
-            EntityRegistry.disable(name)
-
-        states: dict = ConfigManager.get("entity_states", {})
-        if not isinstance(states, dict):
-            states = {}
-        states[name] = new_state
-        ConfigManager.set("entity_states", states)
-        ConfigManager.save()
-
+        EntityRegistry.set_enabled(name, new_state)
         return new_state
 
     def toggle_group(self, group: str) -> bool:
         """切换整个分组的启用/禁用状态，并持久化。返回切换后是否启用。"""
-        from core.config import ConfigManager
-        from core.entity import EntityRegistry, EntityType
+        from core.entity import EntityRegistry
 
         new_enabled = not EntityRegistry.is_group_enabled(group)
-        if new_enabled:
-            EntityRegistry.enable_group(group)
-        else:
-            EntityRegistry.disable_group(group)
-
-        states: dict = ConfigManager.get("entity_states", {})
-        if not isinstance(states, dict):
-            states = {}
-        for e in EntityRegistry.get_by_type(EntityType.TOOL):
-            if (e.group or "default") == group:
-                states[e.name] = new_enabled
-        ConfigManager.set("entity_states", states)
-        ConfigManager.save()
-
+        EntityRegistry.set_group_enabled(group, new_enabled)
         return new_enabled
 
     def update_tool_meta(

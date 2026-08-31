@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -25,9 +26,10 @@ _TASK_DEFAULTS: Dict[str, Any] = {
     "tags": [], "source": "", "null_keywords": [], "tool_tags": [], "prompt": "",
     "allow_output_tools": False,
     "save_result_to_memory": True,
+    "expires_at": "", "created_at": 0.0, "updated_at": 0.0,
 }
 
-_OPTIONAL_TASK_OVERRIDE_FIELDS = ("model_id", "reasoning_effort")
+_OPTIONAL_TASK_OVERRIDE_FIELDS = ("model_id", "reasoning_effort", "expires_at")
 
 
 class TaskServiceError(Exception):
@@ -92,6 +94,22 @@ def _normalize_task(data: Dict[str, Any]) -> Dict[str, Any]:
     return _normalize_optional_task_overrides(data)
 
 
+def _validate_task_expiry(data: Dict[str, Any]) -> None:
+    """写入路径的 expires_at 严格校验（非法 → 400；空/null 为移除语义，不校验）。"""
+    raw = data.get("expires_at")
+    if raw is None:
+        return
+    value = str(raw).strip()
+    if not value:
+        return
+    from agent.task.model import parse_task_time
+    if parse_task_time(value) is None:
+        raise TaskServiceError(
+            f"expires_at 格式非法: {value!r}（期望 YYYY-MM-DD 或 YYYY-MM-DD HH:MM）",
+            status_code=400,
+        )
+
+
 def _normalize_optional_task_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
     """标准化可选覆盖字段：空值转为“移除字段”，非空字符串做 trim。"""
     from agent.llm.reasoning import CANONICAL_EFFORTS
@@ -112,6 +130,15 @@ def _normalize_optional_task_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
             if lowered in valid_efforts:
                 data[field] = lowered
             else:
+                data.pop(field, None)
+            continue
+        if field == "expires_at":
+            from agent.task.model import normalize_task_time
+            expiry = normalize_task_time(normalized)
+            if expiry:
+                data[field] = expiry
+            else:
+                # 非法值容错移除（读取路径安全；写入路径由 _validate_task_expiry 先行 400）
                 data.pop(field, None)
             continue
         data[field] = normalized
@@ -173,12 +200,17 @@ class TaskService:
         name = str(payload.get("name") or "")
         p = _task_path(name, folder)
 
-        task_data = _normalize_optional_task_overrides(dict(payload))
+        task_data = dict(payload)
+        _validate_task_expiry(task_data)
+        task_data = _normalize_optional_task_overrides(task_data)
         task_data.pop("folder", None)
         if not task_data.get("source"):
             task_data["source"] = name
         if not task_data.get("display_name"):
             task_data["display_name"] = name
+        now = time.time()
+        task_data["created_at"] = now
+        task_data["updated_at"] = now
         _normalize_task(task_data)
 
         try:
@@ -220,12 +252,14 @@ class TaskService:
             provided_fields = set(updates)
             updates = dict(updates)
             new_folder = _sanitize_folder(updates.pop("folder")) if "folder" in updates else None
+            _validate_task_expiry(updates)
             updates = _normalize_optional_task_overrides(updates)
             existing.update(updates)
             for field in _OPTIONAL_TASK_OVERRIDE_FIELDS:
                 if field in provided_fields and field not in updates:
                     existing.pop(field, None)
             existing.pop("folder", None)
+            existing["updated_at"] = time.time()
 
             if new_folder is not None and new_folder != old_folder:
                 moving = True

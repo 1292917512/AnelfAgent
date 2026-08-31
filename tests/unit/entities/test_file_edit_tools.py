@@ -310,6 +310,55 @@ class TestSearchFiles:
         assert result["results"][0]["path"].endswith("x.txt")
 
 
+class TestLocationAnnotation:
+    """写操作成功结果的位置标注（inside_workspace / outside_workspace）。"""
+
+    @pytest.fixture()
+    def ws_root(self, workspace, monkeypatch):
+        """把 paths 层工作区根对齐到测试 workspace（location 判定与沙箱同源）。"""
+        from entities.filesystem import paths
+        monkeypatch.setattr(paths, "get_workspace_root", lambda: str(workspace))
+        return workspace
+
+    def test_write_and_edit_annotate_inside(self, ws_root):
+        result = json.loads(tools.write_file(str(ws_root / "new.txt"), "data"))
+        assert result["ok"] and result["location"] == "inside_workspace"
+
+        result = _edit(ws_root / "sub/b.txt", "", "hello")
+        assert result["ok"] and result["location"] == "inside_workspace"
+
+    def test_copy_move_delete_annotate_and_resolve(self, ws_root):
+        src = ws_root / "src.txt"
+        src.write_text("x")
+
+        result = json.loads(tools.copy_file(str(src), "copy.txt"))
+        assert result["ok"] and result["location"] == "inside_workspace"
+        # 回显为解析后的绝对路径（可直接喂 read_file）
+        assert result["dst"] == str(ws_root / "copy.txt")
+
+        result = json.loads(tools.move_file("copy.txt", "moved.txt"))
+        assert result["ok"] and result["dst"] == str(ws_root / "moved.txt")
+        assert result["location"] == "inside_workspace"
+
+        result = json.loads(tools.delete_file("moved.txt"))
+        assert result["ok"] and result["deleted"] == str(ws_root / "moved.txt")
+        assert result["location"] == "inside_workspace"
+
+    def test_outside_workspace_annotated(self, workspace, monkeypatch, tmp_path):
+        # 沙箱关闭时区外写合法，结果必须明确标注 outside_workspace
+        from entities.filesystem import paths
+        ws_dir = tmp_path / "ws"
+        monkeypatch.setattr(paths, "get_workspace_root", lambda: str(ws_dir))
+        monkeypatch.setattr(tools, "_WORKSPACE", str(ws_dir))
+        monkeypatch.setattr(tools, "_SANDBOX", False)
+        outside = tmp_path / "outside.txt"
+        result = json.loads(tools.write_file(str(outside), "data"))
+        assert result["ok"] and result["location"] == "outside_workspace"
+
+        result = json.loads(tools.delete_file(str(outside)))
+        assert result["ok"] and result["location"] == "outside_workspace"
+
+
 class TestLongPrompts:
     def test_schema_description_contains_usage_rules(self):
         import entities.filesystem.tools  # noqa: F401

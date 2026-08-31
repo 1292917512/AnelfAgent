@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,9 +20,23 @@ from core.path import ConfigPaths
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import deferred_tool
 
+from .model import normalize_task_time, parse_task_time
+
 _TASK_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _TASK_MEMORY_TYPES = {"reflection", "semantic", "episodic"}
 _SCHEDULE_MODES = {"heartbeat", "scheduled", "idle", "manual"}
+# update_task 的 expires_at 清除标记（空串 = 不变）
+_EXPIRY_CLEAR_TOKENS = {"clear", "永久"}
+
+
+def _validate_expiry(value: str) -> str:
+    """校验并规范化 expires_at（须为将来时间）；非法时抛 ValueError。"""
+    ts = parse_task_time(value)
+    if ts is None:
+        raise ValueError(f"expires_at 格式非法: {value!r}（期望 YYYY-MM-DD 或 YYYY-MM-DD HH:MM）")
+    if ts <= time.time():
+        raise ValueError("expires_at 必须是将来的时间")
+    return normalize_task_time(value)
 
 
 def _tasks_dir() -> Path:
@@ -66,7 +81,8 @@ def _split_csv(value: str) -> List[str]:
     description=(
         "创建一个新的心跳任务定义（沉淀可复用的自治流程）。"
         "当你发现某类工作反复出现、值得定期自动执行时，用它把流程固化下来；"
-        "创建后默认 manual 触发，需要自动执行时用 set_task_schedule 绑定调度。"
+        "创建后默认 manual 触发，需要自动执行时用 set_task_schedule 绑定调度；"
+        "临时性任务可设 expires_at，到期自动停用。"
     ),
 )
 async def create_task(
@@ -80,6 +96,7 @@ async def create_task(
     tool_tags: str = "heartbeat",
     allow_output_tools: bool = False,
     save_result_to_memory: bool = True,
+    expires_at: str = "",
 ) -> str:
     """创建任务定义。
 
@@ -94,6 +111,8 @@ async def create_task(
         tool_tags: 执行时可用的工具标签，逗号分隔（默认 heartbeat）
         allow_output_tools: 是否允许对外发消息（默认 False，仅内部反思类任务）
         save_result_to_memory: 结果是否写入长期记忆（默认 True）
+        expires_at: 生效截止时间（YYYY-MM-DD 或 YYYY-MM-DD HH:MM，空 = 永久有效）；
+            到期后系统自动停用任务并移除调度，适合临时性/阶段性任务
     """
     try:
         if not _TASK_NAME_RE.match(name or ""):
@@ -108,6 +127,12 @@ async def create_task(
                 f"memory_type 须为 {sorted(_TASK_MEMORY_TYPES)} 之一",
                 cause=ErrorCause.PARAM, retryable=False,
             )
+        normalized_expiry = ""
+        if expires_at.strip():
+            try:
+                normalized_expiry = _validate_expiry(expires_at)
+            except ValueError as ve:
+                return tool_error(str(ve), cause=ErrorCause.PARAM, retryable=False)
         from .registry import task_files_lock
         async with task_files_lock:
             if _task_path(name).exists():
@@ -116,6 +141,7 @@ async def create_task(
                     cause=ErrorCause.STATE, retryable=False,
                 )
 
+            now = time.time()
             data: Dict[str, Any] = {
                 "name": name,
                 "display_name": display_name.strip() or name,
@@ -131,12 +157,17 @@ async def create_task(
                 "prompt": prompt.strip(),
                 "allow_output_tools": allow_output_tools,
                 "save_result_to_memory": save_result_to_memory,
+                "created_at": now,
+                "updated_at": now,
             }
+            if normalized_expiry:
+                data["expires_at"] = normalized_expiry
             _write_task_data(name, data)
         _reload_engine()
         log(f"🛠 AI 创建任务: {name}", tag="任务")
         return json.dumps({
             "ok": True, "task": name,
+            "expires_at": normalized_expiry or None,
             "message": f"任务 [{name}] 已创建（默认 manual 触发）。"
                        "需要自动执行时用 set_task_schedule 绑定心跳/定时调度。",
         }, ensure_ascii=False)
@@ -146,7 +177,7 @@ async def create_task(
 
 @deferred_tool(
     group="planning", tags=["planning", "heartbeat"], source="mind.task",
-    description="修改已有任务定义的字段（prompt/启用状态/记忆类型/标签等，空参数不变）。",
+    description="修改已有任务定义的字段（prompt/启用状态/记忆类型/标签/expires_at 等，空参数不变）。",
 )
 async def update_task(
     name: str,
@@ -158,6 +189,7 @@ async def update_task(
     importance: float = -1.0,
     tags: str = "",
     tool_tags: str = "",
+    expires_at: str = "",
 ) -> str:
     """修改任务定义。
 
@@ -171,6 +203,9 @@ async def update_task(
         importance: 0-1（负数不变）
         tags: 结果记忆标签（空串不变，逗号分隔，整体替换）
         tool_tags: 执行工具标签（空串不变，逗号分隔，整体替换）
+        expires_at: 生效截止时间 YYYY-MM-DD 或 YYYY-MM-DD HH:MM（空串不变，
+            "clear"/"永久" 清除即恢复永久有效）；延期可让被停用的任务恢复
+            （需同时 enabled="true" 并重新 set_task_schedule）
     """
     try:
         from .registry import task_files_lock
@@ -209,9 +244,20 @@ async def update_task(
             if tool_tags.strip():
                 data["tool_tags"] = _split_csv(tool_tags)
                 changed.append("tool_tags")
+            if expires_at.strip():
+                if expires_at.strip().lower() in _EXPIRY_CLEAR_TOKENS:
+                    data.pop("expires_at", None)
+                    changed.append("expires_at")
+                else:
+                    try:
+                        data["expires_at"] = _validate_expiry(expires_at)
+                    except ValueError as ve:
+                        return tool_error(str(ve), cause=ErrorCause.PARAM, retryable=False)
+                    changed.append("expires_at")
             if not changed:
                 return tool_error("没有任何字段需要更新", cause=ErrorCause.PARAM, retryable=False)
 
+            data["updated_at"] = time.time()
             _write_task_data(name, data)
         _reload_engine()
         log(f"🛠 AI 更新任务: {name} ({', '.join(changed)})", tag="任务")

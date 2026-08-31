@@ -15,7 +15,7 @@ from entities._sdk import context_provider
 from .manager import STATUS_CONNECTED, get_ssh_manager
 
 
-@context_provider(name="ssh_status", priority=30, max_tokens=200)
+@context_provider(name="ssh_status", priority=30, max_tokens=200, group="ssh")
 class SshStatusProvider:
     """注入当前已连接的 SSH 主机清单。"""
 

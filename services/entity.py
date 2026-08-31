@@ -169,22 +169,10 @@ class EntityService:
         return count
 
     def set_entity_enabled(self, name: str, enabled: bool) -> bool:
-        """启用/禁用实体，并持久化到 app_config.json。"""
-        from core.config import ConfigManager
+        """启用/禁用实体，并持久化到 app_config.json（实现归 EntityRegistry.set_enabled）。"""
         from core.entity import EntityRegistry
 
-        if not EntityRegistry.exists(name):
-            return False
-        result = EntityRegistry.enable(name) if enabled else EntityRegistry.disable(name)
-
-        states: dict = ConfigManager.get("entity_states", {})
-        if not isinstance(states, dict):
-            states = {}
-        states[name] = enabled
-        ConfigManager.set("entity_states", states)
-        ConfigManager.save()
-
-        return result
+        return EntityRegistry.set_enabled(name, enabled)
 
     @staticmethod
     def apply_entity_states() -> int:

@@ -170,3 +170,56 @@ def test_char_estimation_fallback(monkeypatch) -> None:
     # 降级路径：1 token ≈ 3 字符
     for ch in chunks:
         assert len(ch["text"]) <= 60 * 3 + 6
+
+
+# ==================================================================
+# 召回归属标注（归属标注 + 块头提示 + 回退路径）
+# ==================================================================
+
+class TestAttributionRendering:
+    """召回行首归属标注：实体标签 → 称呼[uid:xxx] / [uid:xxx]（与消息标签同构）。"""
+
+    def _retriever(self, store) -> MemoryRetriever:
+        from types import SimpleNamespace
+        return MemoryRetriever(store, SimpleNamespace(available=False))
+
+    async def test_entity_tag_fallback_shows_uid(self, store) -> None:
+        r = self._retriever(store)
+        display = await r._humanize_entity_tags(["user:qq:123", "topic:周报"])
+        assert display == ["[uid:123]", "周报"]
+
+    async def test_group_tag_shows_group_id(self, store) -> None:
+        r = self._retriever(store)
+        display = await r._humanize_entity_tags(["group:qq:456"])
+        assert display == ["[group_id:456]"]
+
+    async def test_graph_label_prefixed_with_uid(self, store) -> None:
+        await store.graph.upsert_node("user:qq:123", label="小李")
+        r = self._retriever(store)
+        display = await r._humanize_entity_tags(["user:qq:123"])
+        assert display == ["小李[uid:123]"]
+
+    async def test_recall_block_carries_attribution_and_guidance(self, store) -> None:
+        r = self._retriever(store)
+        results = [MemorySearchResult(
+            id="mem:1", snippet="喜欢摇滚乐", score=0.9,
+            memory_type=MemoryType.SEMANTIC.value,
+            tags=["user:qq:123"], timestamp=time.time(),
+        )]
+        msgs = await r._format_unified_results(results)
+        assert len(msgs) == 1
+        content = msgs[0]["content"]
+        assert "[uid:123] 喜欢摇滚乐" in content
+        # 块头含归属确认提示
+        assert "归属标注" in content and "张冠李戴" in content
+
+    async def test_fallback_recent_carries_attribution(self, store) -> None:
+        from agent.memory.memory_types import MemoryEntry
+        await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content="对花生过敏",
+            tags=["user:qq:123", "type:fact"],
+        ))
+        r = self._retriever(store)
+        msgs = await r._fallback_recent(3)
+        assert len(msgs) == 1
+        assert "[uid:123] 对花生过敏" in msgs[0]["content"]

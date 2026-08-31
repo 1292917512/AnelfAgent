@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import time
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -45,6 +47,14 @@ def _to_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _to_float(value: Any) -> float:
+    """容错浮点解析（非法值返回 0.0）。"""
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     """标准化 reasoning_effort：接受 7 级规范等级（见 agent.llm.reasoning）。"""
     if value is None:
@@ -85,6 +95,47 @@ def _normalize_tool_tags(value: Any) -> List[str]:
     return result
 
 
+_TASK_TIME_FORMATS = ("%Y-%m-%d %H:%M", "%Y-%m-%d")
+
+
+def parse_task_time(value: Any) -> Optional[float]:
+    """解析任务时间字符串为 epoch 秒；空或非法返回 None。
+
+    接受 "YYYY-MM-DD HH:MM" 与 "YYYY-MM-DD"（仅日期按当天 23:59:59 处理，
+    使 expires_at 的日期语义为"当天仍有效"）。
+    """
+    s = str(value or "").strip()
+    if not s:
+        return None
+    for fmt in _TASK_TIME_FORMATS:
+        try:
+            dt = datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+        if fmt == "%Y-%m-%d":
+            dt = dt.replace(hour=23, minute=59, second=59)
+        return dt.timestamp()
+    return None
+
+
+def normalize_task_time(value: Any) -> str:
+    """规范化任务时间字符串（非法/空返回空串），供写入侧统一存储格式。"""
+    ts = parse_task_time(value)
+    if ts is None:
+        return ""
+    dt = datetime.fromtimestamp(ts)
+    if dt.hour == 23 and dt.minute == 59 and dt.second == 59:
+        return dt.strftime("%Y-%m-%d")
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def format_task_time(ts: float) -> str:
+    """epoch 秒渲染为展示文本（0 返回空串）。"""
+    if ts <= 0:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+
+
 class TaskDefinition(BaseModel):
     """一个可执行任务的完整定义。"""
 
@@ -113,6 +164,20 @@ class TaskDefinition(BaseModel):
     handoff: bool = False
     """长任务结构化交接：运行结束时从输出提取 "# HANDOFF" 块存为下次运行的
     上次交接（对齐 dsh ralph 的有界 handoff——每轮全新上下文 + 确定性接力）。"""
+    expires_at: str = ""
+    """生效截止时间（"YYYY-MM-DD" 或 "YYYY-MM-DD HH:MM"，空 = 永久有效）。
+    到期后由心跳引擎自动停用任务并移除调度绑定，定义文件保留可改期恢复。"""
+    created_at: float = 0.0
+    """创建时间（epoch 秒，0 = 未知；供执行期任务自检判断新旧）。"""
+    updated_at: float = 0.0
+    """最近更新时间（epoch 秒，0 = 未知；任何写入路径变更时刷新）。"""
+
+    def is_expired(self, now: Optional[float] = None) -> bool:
+        """任务是否已过生效截止时间（空 expires_at 恒 False）。"""
+        ts = parse_task_time(self.expires_at)
+        if ts is None:
+            return False
+        return (now if now is not None else time.time()) > ts
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> TaskDefinition:
@@ -139,6 +204,9 @@ class TaskDefinition(BaseModel):
             reasoning_effort=_normalize_reasoning_effort(data.get("reasoning_effort")),
             folder=str(data.get("folder", "") or "").strip("/"),
             handoff=_to_bool(data.get("handoff", False)),
+            expires_at=normalize_task_time(data.get("expires_at")),
+            created_at=_to_float(data.get("created_at")),
+            updated_at=_to_float(data.get("updated_at")),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -168,6 +236,13 @@ class TaskDefinition(BaseModel):
             result["reasoning_effort"] = normalized_effort
         if self.folder:
             result["folder"] = self.folder
+        normalized_expiry = normalize_task_time(self.expires_at)
+        if normalized_expiry:
+            result["expires_at"] = normalized_expiry
+        if self.created_at > 0:
+            result["created_at"] = self.created_at
+        if self.updated_at > 0:
+            result["updated_at"] = self.updated_at
         return result
 
     def should_run_for_entity(self, has_entity: bool) -> bool:

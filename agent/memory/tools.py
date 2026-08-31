@@ -303,6 +303,8 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
     group="memory", tags=["always"], source="mind.memory",
     description="在长期记忆中语义搜索，返回最相关的记忆及其联想关联。"
     "每条结果带 source 标明出处（memory=数据库记忆 / file=便签文件 / cognee_graph|cognee_chunk=知识图谱）；"
+    "tags 中的 user:频道:uid / group:频道:gid 是该记忆归属的人/群标识——"
+    "引用内容前先确认归属，uid 与当前对话对象不符的是别人的事，勿张冠李戴；"
     "depth=deep 做深度召回（图谱检索+二跳联想，更全但更慢）；"
     "filter_tags 为硬过滤（结果必须含全部指定标签），tags 仅作相关度加权。",
 )

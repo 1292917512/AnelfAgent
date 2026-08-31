@@ -508,6 +508,7 @@ def context_provider(
     priority: int = 50,
     max_tokens: int = 500,
     scope: Optional[str] = None,
+    group: Optional[str] = None,
 ) -> Callable:
     """装饰器：将类或函数注册为上下文提供者。
 
@@ -516,7 +517,7 @@ def context_provider(
 
     类模式（有生命周期）::
 
-        @context_provider(name="health", priority=10, max_tokens=200)
+        @context_provider(name="health", priority=10, max_tokens=200, group="system")
         class HealthWatcher:
             async def on_start(self):
                 self._task = asyncio.create_task(self._collect_loop())
@@ -541,6 +542,9 @@ def context_provider(
         priority: 注入优先级（越小越优先，预算超限时低优先级先被截断）。
         max_tokens: 静态预估上限（Web 展示 + 预算告警参考）。
         scope: 作用域过滤。None=全局；"webui:*"=前缀匹配；"webui:u123"=精确匹配。
+        group: 所属工具分组（如 "ssh"）。声明后随实体启停联动：分组内全部
+            工具被禁用时停止采集与注入，重新启用自动恢复；None 表示全局常驻。
+            属于某个实体分组的 provider 应始终声明，否则关闭实体无法停止其注入。
     """
     from core.context_provider import ContextProviderRegistry, ProviderMeta
 
@@ -555,6 +559,7 @@ def context_provider(
                 priority=priority,
                 max_tokens=max_tokens,
                 scope_filter=scope,
+                group=group,
                 instance=instance,
                 description=getattr(cls_or_func, "__doc__", "") or "",
             )
@@ -567,6 +572,7 @@ def context_provider(
                 priority=priority,
                 max_tokens=max_tokens,
                 scope_filter=scope,
+                group=group,
                 provide_fn=cls_or_func,
                 description=getattr(cls_or_func, "__doc__", "") or "",
             )

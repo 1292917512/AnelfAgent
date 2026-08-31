@@ -5,9 +5,21 @@
 调用 collect() 拉取所有 provider 的最新快照。
 
 实体开发者只需：
-1. 用 @context_provider 装饰器注册（见 entities/_sdk.py）
+1. 用 @context_provider 装饰器注册（见 entities/_sdk.py），
+   并以 group 声明所属工具分组
 2. 实现 provide() 方法返回 ProviderSnapshot
 3. 可选实现 on_start / on_tick / on_stop 生命周期
+
+启停门控：声明了 group 的 provider 随实体启停联动——分组内全部工具
+被禁用（实体目录中该分组同步消失）时，其快照停止采集与注入；
+重新启用后自动恢复。未声明 group 的 provider 视为全局常驻。
+
+Model Experience：
+- 模型看到什么：volatile 尾部动态区的实体状态快照（每条快照一条 system 消息）；
+  实体分组全禁用后对应快照消失，部分禁用（分组在目录中仍可见）不影响注入
+- token 影响：禁用后每轮节省该 provider 的快照 tokens（上限为其 max_tokens）
+- 缓存影响：注入块位于 volatile 层（对话历史之后），不触碰 stable/summary/
+  conversation 前缀层，启停切换不击穿前缀缓存
 
 预算与监督：
 - 总预算（token）由 collect() 的 budget 参数控制，超限日志警告 + 截断
@@ -85,6 +97,7 @@ class ProviderMeta:
         priority: 注入优先级（越小越优先，预算超限时低优先级先被截断）。
         max_tokens: 静态预估上限（Web 展示 + 预算告警参考）。
         scope_filter: 作用域过滤。None=全局；"webui:*"=前缀匹配；"webui:u123"=精确匹配。
+        group: 所属工具分组（实体启停门控依据）。None=全局常驻，不随实体启停。
         instance: 实体实例（类模式，有生命周期）。
         provide_fn: 函数式 provide（函数模式，无生命周期）。
         description: 描述（Web 展示用）。
@@ -94,6 +107,7 @@ class ProviderMeta:
     priority: int = 50
     max_tokens: int = 500
     scope_filter: Optional[str] = None
+    group: Optional[str] = None
     instance: Any = None
     provide_fn: Optional[Callable] = None
     description: str = ""
@@ -208,6 +222,8 @@ class ContextProviderRegistry:
             used_bytes = 0
 
             for meta in cls.get_all():
+                if not cls._is_active(meta):
+                    continue
                 if not cls._match_scope(meta.scope_filter, scope):
                     continue
 
@@ -339,6 +355,19 @@ class ContextProviderRegistry:
             return None
 
     @classmethod
+    def _is_active(cls, meta: ProviderMeta) -> bool:
+        """provider 是否处于注入活动状态。
+
+        声明了 group 的 provider 随实体启停：分组内全部工具被禁用时
+        （实体目录中该分组同步消失）停止采集与注入；未声明 group 的
+        provider 全局常驻。启停事实的唯一权威是 EntityRegistry。
+        """
+        if meta.group is None:
+            return True
+        from core.entity import EntityRegistry
+        return EntityRegistry.group_has_enabled_tools(meta.group)
+
+    @classmethod
     def _match_scope(cls, scope_filter: Optional[str], scope: str) -> bool:
         """检查 scope 是否匹配 provider 的过滤规则。"""
         if scope_filter is None:
@@ -439,6 +468,8 @@ class ContextProviderRegistry:
                 "priority": meta.priority,
                 "max_tokens": meta.max_tokens,
                 "scope_filter": meta.scope_filter,
+                "group": meta.group,
+                "active": cls._is_active(meta),
                 "description": meta.description,
                 "tokens": 0,
                 "bytes": 0,

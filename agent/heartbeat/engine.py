@@ -127,6 +127,35 @@ class HeartbeatEngine:
         self.config.save()
         log(f"已清理 {len(orphans)} 个孤儿心跳调度: {orphans}", tag="心跳")
 
+    async def _disable_expired_tasks(self) -> None:
+        """停用过期任务：超过 expires_at 的任务自动 enabled=false 并移除调度绑定。
+
+        定义文件保留（可经 update_task 改期恢复）；停用写回任务文件持久生效，
+        后续 tick 的 enabled 检查天然不再选取。
+        """
+        now = time.time()
+        for task in self.task_registry.list_all():
+            if not task.enabled or not task.is_expired(now):
+                continue
+            ok = await self.task_registry.update_task_fields(task.name, {
+                "enabled": False,
+                "updated_at": now,
+            })
+            if not ok:
+                log(f"过期任务 [{task.name}] 停用写回失败，本次跳过", "WARNING", tag="心跳")
+                continue
+            schedule_removed = self.config.remove_schedule(task.name)
+            if schedule_removed:
+                self.config.save()
+            log(
+                f"任务 [{task.name}] 已过生效截止（{task.expires_at}），"
+                f"已自动停用（调度移除: {schedule_removed}）",
+                tag="心跳",
+            )
+            hb_log.append_entry(
+                f"任务过期自动停用: {task.name}（截止 {task.expires_at}，可改期恢复）"
+            )
+
     @property
     def total_ticks(self) -> int:
         return self._total_ticks
@@ -159,6 +188,7 @@ class HeartbeatEngine:
         executed: List[str] = []
 
         await self._run_maintenance()
+        await self._disable_expired_tasks()
 
         # 到期定时提醒触发（持久化提醒，含停机期间错过的补触发）
         try:

@@ -83,3 +83,72 @@ class TestGetStatusScopeAggregation:
         await ContextProviderRegistry._collect_background("user_qq:123", 4000)
         status = ContextProviderRegistry.get_status()
         assert status["current_used"] == 120
+
+
+class TestGroupGating:
+    """声明 group 的 provider 随实体启停联动：分组工具全禁用即停止采集与注入。"""
+
+    @pytest.fixture(autouse=True)
+    def _tools(self):
+        from core.entity import EntityRegistry
+
+        for name in ("cp_g1", "cp_g2"):
+            EntityRegistry.register_tool(name=name, func=lambda: "ok", group="cp_group")
+        yield
+        for name in ("cp_g1", "cp_g2"):
+            EntityRegistry.unregister(name)
+
+    def _register_grouped(self, group: str | None = "cp_group", name: str = "grouped") -> None:
+        async def _provide(scope: str) -> ProviderSnapshot:
+            return ProviderSnapshot(content=f"[{name}] 状态", tokens=10, bytes=20, ready=True)
+
+        ContextProviderRegistry.register(
+            ProviderMeta(name=name, provide_fn=_provide, group=group),
+        )
+
+    async def test_disabled_group_stops_injection(self) -> None:
+        """分组全部工具禁用 → 快照不采集不注入；重新启用自动恢复。"""
+        from core.entity import EntityRegistry
+
+        self._register_grouped()
+        await ContextProviderRegistry._collect_background("s1", 4000)
+        assert ContextProviderRegistry._last_snippets["s1"] == ["[grouped] 状态"]
+
+        EntityRegistry.disable_group("cp_group")
+        await ContextProviderRegistry._collect_background("s1", 4000)
+        assert ContextProviderRegistry._last_snippets["s1"] == []
+
+        EntityRegistry.enable_group("cp_group")
+        await ContextProviderRegistry._collect_background("s1", 4000)
+        assert ContextProviderRegistry._last_snippets["s1"] == ["[grouped] 状态"]
+
+    async def test_partial_disable_keeps_provider_active(self) -> None:
+        """分组内仍有启用工具时（目录中分组仍可见）provider 继续注入。"""
+        from core.entity import EntityRegistry
+
+        self._register_grouped()
+        EntityRegistry.disable("cp_g1")
+        await ContextProviderRegistry._collect_background("s1", 4000)
+        assert ContextProviderRegistry._last_snippets["s1"] == ["[grouped] 状态"]
+
+    async def test_ungrouped_provider_always_active(self) -> None:
+        """未声明 group 的 provider 视为全局常驻，不随实体启停。"""
+        from core.entity import EntityRegistry
+
+        self._register_grouped(group=None, name="global")
+        EntityRegistry.disable_group("cp_group")
+        await ContextProviderRegistry._collect_background("s1", 4000)
+        assert ContextProviderRegistry._last_snippets["s1"] == ["[global] 状态"]
+
+    def test_status_exposes_group_and_active(self) -> None:
+        """Web 面板可观测 provider 的归属分组与活动状态。"""
+        from core.entity import EntityRegistry
+
+        self._register_grouped()
+        status = ContextProviderRegistry.get_status()
+        assert status["providers"][0]["group"] == "cp_group"
+        assert status["providers"][0]["active"] is True
+
+        EntityRegistry.disable_group("cp_group")
+        status = ContextProviderRegistry.get_status()
+        assert status["providers"][0]["active"] is False

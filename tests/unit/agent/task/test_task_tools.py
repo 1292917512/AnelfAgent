@@ -11,19 +11,6 @@ from agent.memory.memory_store import MemoryStore
 from agent.planning import tools as planning_tools
 
 
-@pytest.fixture(autouse=True)
-def _isolate_task_and_heartbeat_paths(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    """隔离任务定义目录与心跳配置文件（conftest 只隔离 ConfigManager，
-    ConfigPaths 解析的是真实 config/，必须显式重定向到 tmp）。"""
-    import agent.heartbeat.config as hb_config
-
-    monkeypatch.setattr(task_tools, "_tasks_dir", lambda: tmp_path / "tasks")
-    monkeypatch.setattr(hb_config, "_CONFIG_PATH", tmp_path / "heartbeat.json")
-    monkeypatch.setattr(hb_config, "_instance", None)
-    yield
-    monkeypatch.setattr(hb_config, "_instance", None)
-
-
 @pytest.fixture
 async def store(tmp_path):
     from agent.planning.tracker import planning_store_port
@@ -56,6 +43,9 @@ async def test_create_task_writes_definition(tmp_path) -> None:
     assert saved["display_name"] == "每日简报"
     assert saved["tags"] == ["type:reflection", "topic:日报"]
     assert saved["tool_tags"] == ["heartbeat"]
+    # 创建时记录创建/更新时间戳
+    assert saved["created_at"] > 0
+    assert saved["updated_at"] == saved["created_at"]
 
     # 重名拒绝
     raw = await task_tools.create_task("daily_brief", "重复")
@@ -76,6 +66,8 @@ async def test_update_task_partial() -> None:
     saved = json.loads(task_tools._task_path("t1").read_text("utf-8"))
     assert saved["prompt"] == "新 prompt"
     assert saved["enabled"] is False
+    # 任何字段变更都会刷新 updated_at
+    assert saved["updated_at"] >= saved["created_at"]
 
     # 无字段更新 → 参数错误；不存在 → NOT_FOUND
     assert "error" in json.loads(await task_tools.update_task("t1"))

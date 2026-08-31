@@ -452,6 +452,7 @@ i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
 | `agent/runtime/wiring.py` | 运行时统一施绑点（wire_runtime：bootstrap 组装尾部唯一接线入口） |
 | `core/crash_report.py` | 崩溃状态设施（守护脚本崩溃状态 logs/crash_state.json 读写 + macOS .ips 崩溃报告解析关联 + AI 可注入摘要渲染） |
 | `agent/mind/crash_recovery.py` | 崩溃尾部修复（回复检查点残留注入中断元消息 + 崩溃上下文收集消费） |
+| `core/context_provider.py` | 上下文提供者注册表（实体 → volatile 层实时快照注入；provider 以 group 声明所属工具分组，分组工具全禁用时停止采集与注入，与实体目录可见性同口径） |
 
 ### 工具分组体系
 
