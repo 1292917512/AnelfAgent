@@ -1,3 +1,9 @@
+import { registerPluginI18n } from "@/lib/plugin-i18n";
+import zh from "./web/locales/zh.json";
+import en from "./web/locales/en.json";
+
+registerPluginI18n("web", { zh, en });
+
 /**
  * web 实体自定义面板 — 能力 × 提供者矩阵 + 通用设置。
  *

@@ -1,7 +1,8 @@
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bot, Play, RefreshCw, Square } from "lucide-react";
-import { apiErrorMessage, nonebotApi } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/api";
+import { nonebotApi } from "../api";
 import { StatusDot } from "@/components/common/StatusDot";
 import { Badge, Button, EmptyState, LoadingBlock, toast } from "@/components/ui";
 

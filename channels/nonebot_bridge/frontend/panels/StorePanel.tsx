@@ -2,10 +2,11 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, ExternalLink, GitBranch, Search, Store } from "lucide-react";
-import { apiErrorMessage, nonebotApi } from "@/lib/api";
-import type { NoneBotStorePlugin } from "@/lib/types";
+import { apiErrorMessage } from "@/lib/api";
+import { nonebotApi } from "../api";
+import type { NoneBotStorePlugin } from "../types";
 import { Badge, Button, ConfirmDialog, EmptyState, Input, LoadingBlock, Switch, toast } from "@/components/ui";
-import { InstallProgressBanner } from "@/pages/nonebot/InstallProgressBanner";
+import { InstallProgressBanner } from "./InstallProgressBanner";
 
 /** 插件商店浏览（registry.nonebot.dev 代理）：搜索 / 徽标 / 一键安装 / Git·本地路径高级安装 */
 export function StorePanel() {

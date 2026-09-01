@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Puzzle, Trash2 } from "lucide-react";
-import { apiErrorMessage, nonebotApi } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/api";
+import { nonebotApi } from "../api";
 import { Badge, Button, ConfirmDialog, EmptyState, LoadingBlock, Switch, toast } from "@/components/ui";
 
 /** 已加载插件列表（worker 实时）+ 启用/停用（配置态）+ 卸载 */

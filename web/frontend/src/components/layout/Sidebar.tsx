@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import type { NavItem } from "@/stores/app-store";
+import { CORE_ROUTE_PATHS } from "@/lib/core-routes";
+import { listPluginRoutes } from "@/lib/channel-plugins";
 import {
   LayoutDashboard,
   MessageCircle,
@@ -90,7 +92,10 @@ export function Sidebar() {
   const branding = useAppStore((s) => s.branding);
   const { t } = useTranslation("nav");
 
-  const navItems = navigation.length > 0 ? navigation : FALLBACK_NAV;
+  // 插件整页路由（如 nonebot_bridge 的 /nonebot）：插件存在才展示对应导航项
+  const pluginPaths = new Set(listPluginRoutes().map((r) => `/${r.path}`));
+  const navItems = (navigation.length > 0 ? navigation : FALLBACK_NAV)
+    .filter((item) => CORE_ROUTE_PATHS.has(item.path) || pluginPaths.has(item.path));
 
   const groups = navItems.reduce<Record<string, NavItem[]>>((acc, item) => {
     const g = item.group || "other";

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { adaptersApi, apiErrorMessage } from "@/lib/api";
+import { isChannelHidden } from "@/lib/channel-plugins";
 import type { AdapterInfo, ChannelTestHealthResult, ChannelTestSendResult } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
@@ -16,8 +17,6 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
-
-const HIDDEN_CHANNELS = new Set(["nonebot_bridge"]);
 
 /** 频道接口测试面板：健康检查 + 真实消息发送 + 能力查看 */
 export function ChannelTestPanel({ initialKey = "" }: { initialKey?: string }) {
@@ -45,7 +44,7 @@ export function ChannelTestPanel({ initialKey = "" }: { initialKey?: string }) {
   });
 
   const adapters: AdapterInfo[] = (data?.adapters ?? []).filter(
-    (a) => !HIDDEN_CHANNELS.has(a.key),
+    (a) => !isChannelHidden(a.key),
   );
   const running = adapters.filter((a) => a.status === "running");
   const selected = adapters.find((a) => a.key === selectedKey) ?? null;

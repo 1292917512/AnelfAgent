@@ -1,11 +1,12 @@
+import { Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Power, Settings2 } from "lucide-react";
 import type { ConfigValues } from "@/lib/types";
 import { StatusDot } from "@/components/common/StatusDot";
 import { cn } from "@/lib/utils";
-import { WeixinQrLogin } from "./WeixinQrLogin";
 import { ConfigField } from "./ConfigField";
 import type { ConfigMeta } from "./ConfigField";
+import { CHANNEL_LOGIN_COMPONENTS } from "@/lib/channel-plugins";
 
 /** 未注册为频道的配置组卡片（可启用 + 配置表单） */
 export function UnmatchedGroupCard({
@@ -28,6 +29,8 @@ export function UnmatchedGroupCard({
   onUpdateVal: (key: string, val: unknown) => void;
 }) {
   const { t } = useTranslation("channels");
+  // 未注册频道同样可携带插件登录入口（如扫码登录在启用前可用）
+  const PluginLogin = CHANNEL_LOGIN_COMPONENTS[channelKey];
   return (
     <div className={cn(
       "rounded-md border transition-all bg-card",
@@ -50,7 +53,11 @@ export function UnmatchedGroupCard({
           </span>
         </div>
         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-          {channelKey === "weixin" && <WeixinQrLogin compact />}
+          {PluginLogin && (
+            <Suspense fallback={null}>
+              <PluginLogin compact />
+            </Suspense>
+          )}
           <button
             onClick={onStart}
             disabled={toggling}

@@ -3,9 +3,9 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Save } from "lucide-react";
-import { mediaApi } from "@/lib/api";
+import { mediaApi } from "./api";
 import { Card } from "@/components/common/Card";
-import type { MediaConfig } from "@/lib/types";
+import type { MediaConfig } from "./types";
 
 const INPUT_CLS =
   "w-full px-2 py-1.5 rounded-md border border-border bg-elevated text-xs text-foreground font-mono";

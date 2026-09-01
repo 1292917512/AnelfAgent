@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { voiceprintApi } from "@/lib/api";
+import { voiceprintApi } from "./api";
 import { Badge, Modal, Spinner } from "@/components/ui";
 
 interface SimilarityMapModalProps {

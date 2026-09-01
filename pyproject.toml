@@ -48,6 +48,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "aiomysql>=0.3.2",
     "asyncssh>=2.24.0",
+    "acfunsdk>=0.9.8",
 ]
 
 [[tool.uv.index]]

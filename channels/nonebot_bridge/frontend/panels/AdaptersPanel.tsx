@@ -2,11 +2,12 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Download, GitBranch, Link, Search, Trash2 } from "lucide-react";
-import { apiErrorMessage, nonebotApi } from "@/lib/api";
-import type { NoneBotAdapterInfo } from "@/lib/types";
+import { apiErrorMessage } from "@/lib/api";
+import { nonebotApi } from "../api";
+import type { NoneBotAdapterInfo } from "../types";
 import { StatusDot } from "@/components/common/StatusDot";
 import { Badge, Button, ConfirmDialog, EmptyState, Input, LoadingBlock, Switch, Textarea, toast } from "@/components/ui";
-import { InstallProgressBanner } from "@/pages/nonebot/InstallProgressBanner";
+import { InstallProgressBanner } from "./InstallProgressBanner";
 
 function difficultyVariant(difficulty: string): "ok" | "warn" | "danger" {
   if (difficulty === "easy") return "ok";

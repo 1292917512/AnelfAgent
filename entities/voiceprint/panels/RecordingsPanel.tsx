@@ -2,8 +2,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, FileAudio, Folder, RefreshCw, Trash2 } from "lucide-react";
-import { voiceprintApi } from "@/lib/api";
-import type { Recording } from "@/lib/types";
+import { voiceprintApi } from "./api";
+import type { Recording } from "./types";
 import { Badge, Button, ConfirmDialog, EmptyState, Spinner, toast } from "@/components/ui";
 import { formatNs, formatOffset } from "./format";
 

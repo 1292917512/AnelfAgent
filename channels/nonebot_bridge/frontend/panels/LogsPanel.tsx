@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { ScrollText } from "lucide-react";
-import { nonebotApi } from "@/lib/api";
+import { nonebotApi } from "../api";
 import { EmptyState, LoadingBlock } from "@/components/ui";
 
 /** worker 日志尾部视图（轮询刷新） */

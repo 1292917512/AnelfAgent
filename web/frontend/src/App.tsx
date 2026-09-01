@@ -9,6 +9,8 @@ import { CommandPalette } from "./components/palette/CommandPalette";
 import { useAppStore } from "./stores/app-store";
 import { configApi } from "./lib/api";
 import { warnApiError } from "@/lib/api";
+import { CORE_ROUTES } from "@/lib/core-routes";
+import { listPluginRoutes } from "@/lib/channel-plugins";
 
 // 页面模块自动发现：pages/*.tsx 按文件名映射路由 path
 // 命名约定：Share.tsx → /share, Dashboard.tsx → /dashboard
@@ -27,44 +29,6 @@ function lazyPage(name: string) {
   pageCache.set(name, comp);
   return comp;
 }
-
-// 核心路由注册表：声明式集中管理，新增页面只需在此追加一行
-// - index: true → 首页（path="/"）
-// - redirectTo → Navigate 重定向（无需 page）
-// - path 含 ":" → 参数路由（如 entities/:name）
-interface CoreRoute {
-  path?: string;
-  page?: string;
-  index?: boolean;
-  redirectTo?: string;
-}
-
-const CORE_ROUTES: CoreRoute[] = [
-  { index: true, page: "Chat" },
-  { path: "dashboard", page: "Dashboard" },
-  { path: "status", page: "Chat", redirectTo: "/" },
-  { path: "models", page: "Models" },
-  { path: "capabilities", page: "Tools", redirectTo: "/tools" },
-  { path: "tools", page: "Tools" },
-  { path: "entities/:name", page: "EntityDetail" },
-  { path: "skills", page: "Skills" },
-  { path: "mcp", page: "Mcp" },
-  { path: "tags", page: "Tags" },
-  { path: "personas", page: "Personas" },
-  { path: "memory", page: "Memory" },
-  { path: "stickers", page: "Stickers" },
-  { path: "share", redirectTo: "/entities/share" },
-  { path: "ssh", redirectTo: "/entities/ssh" },
-  { path: "data", page: "Data" },
-  { path: "config", page: "Config" },
-  { path: "channels", page: "Channels" },
-  { path: "nonebot", page: "Nonebot" },
-  { path: "approvals", page: "Approvals" },
-  { path: "tasks", page: "Tasks" },
-  { path: "heartbeat", page: "Heartbeat" },
-  { path: "thinking", page: "Thinking" },
-  { path: "settings", page: "Settings" },
-];
 
 export default function App() {
   const { t } = useTranslation();
@@ -109,6 +73,17 @@ export default function App() {
                 <Route key={r.path} path={r.path} element={element} />
               );
             })}
+            {listPluginRoutes().map((r) => (
+              <Route
+                key={`plugin:${r.path}`}
+                path={r.path}
+                element={
+                  <Suspense fallback={<div className="p-4 text-muted">{t("common:loading")}</div>}>
+                    <r.page />
+                  </Suspense>
+                }
+              />
+            ))}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

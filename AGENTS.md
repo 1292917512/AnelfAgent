@@ -361,10 +361,21 @@ pages/
 └── ...
 
 components/common/TabBar.tsx  # 统一标签栏
-lib/types.ts / api.ts         # API 接口类型（接口集中在 types.ts，api.ts 引用）
+lib/types.ts / api.ts         # API 接口类型（接口集中在 types.ts，api.ts 引用；api 实例已导出供插件复用）
+lib/core-routes.ts            # 核心路由注册表（App.tsx 引用；Sidebar 据此识别插件导航项）
+lib/channel-plugins.ts        # 频道前端插件注册表（清单驱动频道卡片登录入口/展开面板/整页路由/列表隐藏）
+lib/plugin-i18n.ts            # 插件 i18n 自注册（addResourceBundle 双语 deep 合并）
 lib/utils.ts                  # cn() 类名合并工具（样式走 Tailwind 内联类，无独立 styles.ts）
-i18n/locales/{zh,en}/         # 20 个 namespace（zh/en key 须一一对应）
+i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；插件文案不进核心 locale）
 ```
+
+#### 模块前端插件体系（热插拔）
+
+频道/实体的前端与后端收敛到同一模块目录，核心框架只做通用加载，删除模块目录即整体拔出（UI/API/文案/路由零残留）：
+
+- **频道前端**：`channels/<id>/frontend/`（index.ts 清单 + components/ + api.ts + types.ts + locales/{zh,en}.json），经 `moduleFrontendsPlugin`（vite.config.ts）/ `scripts/link_entity_panels.py` 整目录软链到 `src/plugins/channels/<id>/`（**软链须提交 git**——CI 中 `tsc -b` 先于 vite buildStart）。index.ts 为轻量 eager 清单：`registerPluginI18n("channel-<id>", {zh, en})` 自注册文案 + 组件 loader 动态 import。清单字段：`login`（频道卡片登录入口）/ `panel`（卡片展开区自定义面板）/ `route`+`page`（整页路由，App.tsx 动态注册）/ `hiddenInChannelList`（频道列表隐藏）。频道页（AdapterCard/UnmatchedGroupCard/ChannelsPanel/ChannelTestPanel/Sidebar）全部经 `lib/channel-plugins.ts` 注册表驱动，**禁止 `key === "xxx"` 硬编码**
+- **实体面板**：`entities/<name>/panel.tsx`（+ `panels/` 子目录拆分）软链到 `src/pages/entities/panels/`；面板专属 i18n 放 `panels/locales/{zh,en}.json` 由 panel.tsx 顶部 `registerPluginI18n(<ns>)` 自注册（ns 名不变）；面板专属 API/类型放 `panels/api.ts` / `panels/types.ts`（不污染核心 lib/api.ts、lib/types）。**共享型例外**（被核心页面消费的实体功能留核心）：sticker（核心表情包库页）、share（聊天 ShareCard）、mcp / graph / devops（核心管理页共用其 API）
+- 插件 API 复用核心 axios 实例（`import { api, apiErrorMessage } from "@/lib/api"`），类型放插件 types.ts，不进 lib/types
 
 ### 关键文件索引
 

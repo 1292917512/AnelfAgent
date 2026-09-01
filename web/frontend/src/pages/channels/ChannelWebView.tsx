@@ -17,16 +17,18 @@ export function ChannelWebView({
   const { t } = useTranslation("channels");
   const [showIframe, setShowIframe] = useState(false);
 
-  const webuiEntry = configs.find(([k]) =>
-    k.endsWith(".napcat_webui_url") || k.endsWith(".webui_url") || k.endsWith(".dashboard_url")
-  );
+  // 配置键叶段含 webui_url / dashboard_url 即视为频道远程面板（纯约定，无频道特判）
+  const webuiEntry = configs.find(([k]) => {
+    const leaf = k.split(".").pop() ?? "";
+    return leaf.includes("webui_url") || leaf.includes("dashboard_url");
+  });
   if (!webuiEntry) return null;
 
   const url = String(values[webuiEntry[0]] || webuiEntry[1].value || webuiEntry[1].default || "");
   if (!url) return null;
 
   // 一律经本站同源代理访问频道 WebUI（外网可达）；
-  // 携带配置 URL 的 query/hash（如 NapCat 的 ?token= 自动登录）
+  // 携带配置 URL 的 query/hash（如远程面板的 ?token= 自动登录参数）
   // 注意：不能在早退 return 之后调用 hook，这里为纯字符串计算，无需 useMemo
   const proxyBase = `/api/channels/${channelKey}/webui/`;
   let proxyUrl = proxyBase;

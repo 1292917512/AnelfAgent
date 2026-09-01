@@ -2,8 +2,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { GitMerge, Grid3X3, Pencil, Plus, RefreshCw, Trash2, UserCheck } from "lucide-react";
-import { voiceprintApi } from "@/lib/api";
-import type { SpeakerListItem } from "@/lib/types";
+import { voiceprintApi } from "./api";
+import type { SpeakerListItem } from "./types";
 import { Card } from "@/components/common/Card";
 import {
   Badge, Button, ConfirmDialog, EmptyState, Input, Modal, Select, Spinner, Switch, toast,

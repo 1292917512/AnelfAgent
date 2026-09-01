@@ -2,10 +2,10 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Save, X } from "lucide-react";
-import { sshApi } from "@/lib/api";
+import { sshApi } from "./api";
 import { Card } from "@/components/common/Card";
 import { toast } from "@/stores/toast-store";
-import type { SshConnection } from "@/lib/types";
+import type { SshConnection } from "./types";
 
 interface ConnectionFormProps {
   /** 编辑目标；null 表示新增 */

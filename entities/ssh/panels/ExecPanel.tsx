@@ -2,10 +2,10 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Play } from "lucide-react";
-import { sshApi } from "@/lib/api";
+import { sshApi } from "./api";
 import { Card } from "@/components/common/Card";
 import { toast } from "@/stores/toast-store";
-import type { SshExecResult } from "@/lib/types";
+import type { SshExecResult } from "./types";
 
 export function ExecPanel() {
   const { t } = useTranslation("ssh");

@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye, EyeOff, Plus, Settings2, Trash2 } from "lucide-react";
-import { apiErrorMessage, nonebotApi } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/api";
+import { nonebotApi } from "../api";
 import { Badge, Button, EmptyState, Input, LoadingBlock, Switch, Textarea, toast } from "@/components/ui";
 
 interface EnvRow {

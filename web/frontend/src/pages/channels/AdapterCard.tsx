@@ -1,12 +1,13 @@
+import { Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Power, RotateCcw, Settings2, Blocks, Wifi, WifiOff } from "lucide-react";
 import type { AdapterInfo, ConfigValues } from "@/lib/types";
 import { StatusDot } from "@/components/common/StatusDot";
 import { cn } from "@/lib/utils";
 import { ChannelWebView } from "./ChannelWebView";
-import { WeixinQrLogin } from "./WeixinQrLogin";
 import { ConfigField } from "./ConfigField";
 import type { ConfigMeta } from "./ConfigField";
+import { CHANNEL_LOGIN_COMPONENTS, CHANNEL_PANEL_COMPONENTS } from "@/lib/channel-plugins";
 
 const statusToColor = (s: string): "ok" | "warn" | "danger" | "offline" => {
   switch (s) {
@@ -43,6 +44,9 @@ export function AdapterCard({
 }) {
   const { t } = useTranslation("channels");
   const isRunning = a.status === "running";
+  // 频道插件（channels/<id>/frontend/）提供登录入口与自定义面板，核心零硬编码
+  const PluginLogin = CHANNEL_LOGIN_COMPONENTS[a.key];
+  const PluginPanel = CHANNEL_PANEL_COMPONENTS[a.key];
   return (
     <div className={cn(
       "rounded-md border transition-all bg-card",
@@ -72,7 +76,11 @@ export function AdapterCard({
           )}
         </div>
         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-          {a.key === "weixin" && <WeixinQrLogin compact />}
+          {PluginLogin && (
+            <Suspense fallback={null}>
+              <PluginLogin compact />
+            </Suspense>
+          )}
           {onOpenTools && (
             <button onClick={() => onOpenTools({ key: a.key, name: a.name })}
               title={t("tools.openTools")}
@@ -119,6 +127,13 @@ export function AdapterCard({
 
           {/* Embedded WebUI iframe */}
           <ChannelWebView channelKey={a.key} configs={configs} values={values} />
+
+          {/* 频道插件自定义面板（如 AcFun 直播模式面板） */}
+          {PluginPanel && (
+            <Suspense fallback={null}>
+              <PluginPanel />
+            </Suspense>
+          )}
 
           {configs.length > 0 ? (
             <>

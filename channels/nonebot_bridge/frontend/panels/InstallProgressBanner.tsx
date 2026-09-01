@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
-import { nonebotApi } from "@/lib/api";
+import { nonebotApi } from "../api";
 
 /** 安装进行中横幅（适配器/商店面板共用：任何包操作进行时置顶提示） */
 export function InstallProgressBanner() {

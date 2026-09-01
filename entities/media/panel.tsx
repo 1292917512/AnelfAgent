@@ -1,3 +1,9 @@
+import { registerPluginI18n } from "@/lib/plugin-i18n";
+import zh from "./media/locales/zh.json";
+import en from "./media/locales/en.json";
+
+registerPluginI18n("media", { zh, en });
+
 /**
  * 媒体库实体自定义面板 — provider 优先级、音色与默认参数、风格预设。
  *

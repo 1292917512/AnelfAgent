@@ -1,8 +1,14 @@
+import { registerPluginI18n } from "@/lib/plugin-i18n";
+import zh from "./ssh/locales/zh.json";
+import en from "./ssh/locales/en.json";
+
+registerPluginI18n("ssh", { zh, en });
+
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Network, SquareTerminal } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import type { SshConnection } from "@/lib/types";
+import type { SshConnection } from "./ssh/types";
 import { ConnectionsPanel } from "./ssh/ConnectionsPanel";
 import { ConnectionForm } from "./ssh/ConnectionForm";
 import { ExecPanel } from "./ssh/ExecPanel";

@@ -5,18 +5,11 @@ import { adaptersApi, warnApiError } from "@/lib/api";
 import type { AdapterInfo, ConfigValues } from "@/lib/types";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 import { Save, CheckCircle } from "lucide-react";
+import { isChannelHidden } from "@/lib/channel-plugins";
 import { AdapterCard } from "@/pages/channels/AdapterCard";
 import { UnmatchedGroupCard } from "@/pages/channels/UnmatchedGroupCard";
 import type { ConfigMeta } from "@/pages/channels/ConfigField";
 
-const GROUP_KEY_MAP: Record<string, string> = {
-  telegram: "adapter/telegram",
-  http_api: "adapter/http_api",
-  qq: "adapter/qq",
-  feishu: "adapter/feishu",
-};
-
-const HIDDEN_CHANNELS = new Set(["nonebot_bridge"]);
 
 export function ChannelsPanel({
   onOpenTools,
@@ -86,7 +79,7 @@ export function ChannelsPanel({
   });
 
   const adapters: AdapterInfo[] = (data?.adapters ?? []).filter(
-    (a: AdapterInfo) => !HIDDEN_CHANNELS.has(a.key),
+    (a: AdapterInfo) => !isChannelHidden(a.key),
   );
   const ready = data?.ready ?? false;
 
@@ -100,7 +93,7 @@ export function ChannelsPanel({
   }
 
   const getConfigsForChannel = (channelKey: string): Array<[string, ConfigMeta]> => {
-    const groupKey = GROUP_KEY_MAP[channelKey] ?? `adapter/${channelKey}`;
+    const groupKey = `adapter/${channelKey}`;
     return configGroups[groupKey] ?? [];
   };
 
@@ -112,7 +105,7 @@ export function ChannelsPanel({
 
   const resetDefaults = (channelKey: string) => {
     if (!rawConfigs) return;
-    const groupKey = GROUP_KEY_MAP[channelKey] ?? `adapter/${channelKey}`;
+    const groupKey = `adapter/${channelKey}`;
     const defaults: ConfigValues = {};
     for (const [k, m] of Object.entries(rawConfigs)) {
       if (m.group === groupKey) defaults[k] = m.default;
@@ -138,7 +131,7 @@ export function ChannelsPanel({
   const adapterKeys = new Set(adapters.map((a) => a.key));
   const unmatchedGroups = allConfigGroups.filter((g) => {
     const channelKey = g.replace("adapter/", "");
-    return !adapterKeys.has(channelKey) && !HIDDEN_CHANNELS.has(channelKey);
+    return !adapterKeys.has(channelKey) && !isChannelHidden(channelKey);
   });
 
   return (

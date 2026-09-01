@@ -4,7 +4,7 @@ import {
   ArrowLeftRight, CheckCircle2, Cloud, Database, FolderSync, Pause, Play,
   RefreshCw, XCircle,
 } from "lucide-react";
-import { voiceprintApi } from "@/lib/api";
+import { voiceprintApi } from "./api";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
 import { Badge, Button, Spinner, toast } from "@/components/ui";

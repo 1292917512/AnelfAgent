@@ -3,13 +3,13 @@ import { useTranslation } from "react-i18next";
 import { Bot, Boxes, Puzzle, Radio, ScrollText, Settings2, Store } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
-import { OverviewPanel } from "@/pages/nonebot/OverviewPanel";
-import { AdaptersPanel } from "@/pages/nonebot/AdaptersPanel";
-import { PluginsPanel } from "@/pages/nonebot/PluginsPanel";
-import { StorePanel } from "@/pages/nonebot/StorePanel";
-import { EnvPanel } from "@/pages/nonebot/EnvPanel";
-import { EnvironmentPanel } from "@/pages/nonebot/EnvironmentPanel";
-import { LogsPanel } from "@/pages/nonebot/LogsPanel";
+import { OverviewPanel } from "./panels/OverviewPanel";
+import { AdaptersPanel } from "./panels/AdaptersPanel";
+import { PluginsPanel } from "./panels/PluginsPanel";
+import { StorePanel } from "./panels/StorePanel";
+import { EnvPanel } from "./panels/EnvPanel";
+import { EnvironmentPanel } from "./panels/EnvironmentPanel";
+import { LogsPanel } from "./panels/LogsPanel";
 
 type NonebotTab = "overview" | "adapters" | "plugins" | "store" | "config" | "runtime" | "logs";
 

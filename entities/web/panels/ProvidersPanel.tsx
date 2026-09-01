@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Check } from "lucide-react";
-import { webEntityApi } from "@/lib/api";
+import { webEntityApi } from "./api";
 import { cn } from "@/lib/utils";
 import { ProviderCard } from "./ProviderCard";
 

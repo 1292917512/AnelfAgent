@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
-import { weixinQrApi } from "@/lib/api";
+import { weixinQrApi } from "../api";
 import { cn } from "@/lib/utils";
 import { QrCode, X, RefreshCw, CheckCircle, Loader2, AlertCircle } from "lucide-react";
 
@@ -10,8 +10,8 @@ type Phase = "idle" | "loading" | "wait" | "scaned" | "confirmed" | "timeout" | 
 /**
  * 微信扫码登录 — 点击按钮弹出二维码，扫码确认后凭据自动写入配置并启动频道。
  */
-export function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
-  const { t } = useTranslation("channels");
+export default function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
+  const { t } = useTranslation("channel-weixin");
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -128,7 +128,7 @@ export function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
           setOpen(true);
           start();
         }}
-        title={t("weixin.qrLogin")}
+        title={t("qrLogin")}
         className={cn(
           "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-all",
           "border-[rgba(34,197,94,0.3)] text-ok hover:bg-ok-subtle",
@@ -136,7 +136,7 @@ export function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
         )}
       >
         <QrCode size={14} />
-        {t("weixin.qrLogin")}
+        {t("qrLogin")}
       </button>
 
       {open && (
@@ -149,7 +149,7 @@ export function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-heading">{t("weixin.qrTitle")}</h3>
+              <h3 className="text-sm font-semibold text-heading">{t("qrTitle")}</h3>
               <button onClick={close} className="text-muted hover:text-foreground transition-colors">
                 <X size={16} />
               </button>
@@ -168,36 +168,36 @@ export function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
 
               {refreshed && (
                 <p className="flex items-center gap-1 text-[11px] text-warn">
-                  <RefreshCw size={12} /> {t("weixin.qrRefreshing")}
+                  <RefreshCw size={12} /> {t("qrRefreshing")}
                 </p>
               )}
 
               <div className="text-center space-y-1">
                 {phase === "wait" && (
-                  <p className="text-xs text-muted">{t("weixin.qrWaiting")}</p>
+                  <p className="text-xs text-muted">{t("qrWaiting")}</p>
                 )}
                 {phase === "scaned" && (
-                  <p className="text-xs text-warn">{t("weixin.qrScanned")}</p>
+                  <p className="text-xs text-warn">{t("qrScanned")}</p>
                 )}
                 {phase === "confirmed" && (
                   <p className="flex items-center justify-center gap-1 text-xs text-ok">
                     <CheckCircle size={14} />
-                    {t("weixin.qrSuccess")}
+                    {t("qrSuccess")}
                     {accountId && (
                       <span className="font-mono text-[10px] opacity-70">
-                        {t("weixin.qrAccount")}: {accountId}
+                        {t("qrAccount")}: {accountId}
                       </span>
                     )}
                   </p>
                 )}
                 {(phase === "error" || phase === "timeout") && (
                   <p className="text-xs text-danger">
-                    {phase === "timeout" ? t("weixin.qrTimeout") : t("weixin.qrError")}
+                    {phase === "timeout" ? t("qrTimeout") : t("qrError")}
                     {error ? `: ${error}` : ""}
                   </p>
                 )}
                 {(phase === "wait" || phase === "scaned" || phase === "loading") && (
-                  <p className="text-[11px] text-muted">{t("weixin.qrHint")}</p>
+                  <p className="text-[11px] text-muted">{t("qrHint")}</p>
                 )}
                 {qrUrl && phase !== "confirmed" && (
                   <p className="text-[10px] text-muted break-all font-mono opacity-60">{qrUrl}</p>
@@ -211,14 +211,14 @@ export function WeixinQrLogin({ compact = false }: { compact?: boolean }) {
                   onClick={start}
                   className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:opacity-90 transition-all"
                 >
-                  <RefreshCw size={12} /> {t("weixin.qrRetry")}
+                  <RefreshCw size={12} /> {t("qrRetry")}
                 </button>
               )}
               <button
                 onClick={close}
                 className="px-3 py-1.5 text-xs font-medium rounded-md border border-border text-muted hover:text-foreground hover:bg-hover transition-all"
               >
-                {t("weixin.qrClose")}
+                {t("qrClose")}
               </button>
             </div>
           </div>

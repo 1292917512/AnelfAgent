@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { FolderSync, Upload } from "lucide-react";
-import { voiceprintApi } from "@/lib/api";
+import { voiceprintApi } from "./api";
 import { Card } from "@/components/common/Card";
 import { Badge, Button, Spinner, Switch, toast } from "@/components/ui";
 import { formatNs, formatOffset } from "./format";

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Save } from "lucide-react";
-import { voiceprintApi } from "@/lib/api";
+import { voiceprintApi } from "./api";
 import { Button, Input, Spinner, Switch, toast } from "@/components/ui";
 
 /** 音源库设置：读写实体配置（阈值/样本池/FunASR/目录同步/令牌/webhook 等）。 */

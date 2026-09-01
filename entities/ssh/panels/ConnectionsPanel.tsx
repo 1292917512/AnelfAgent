@@ -2,11 +2,11 @@ import { useCallback, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Pencil, Plug, Plus, RefreshCw, Star, Trash2, Unplug } from "lucide-react";
-import { sshApi } from "@/lib/api";
+import { sshApi } from "./api";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
 import { toast } from "@/stores/toast-store";
-import type { SshConnection, SshStatus } from "@/lib/types";
+import type { SshConnection, SshStatus } from "./types";
 
 interface ConnectionsPanelProps {
   onEdit: (conn: SshConnection) => void;

@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { voiceprintApi } from "@/lib/api";
-import type { VoiceSegment } from "@/lib/types";
+import { voiceprintApi } from "./api";
+import type { VoiceSegment } from "./types";
 import { Badge, EmptyState, Select, Spinner } from "@/components/ui";
 import { formatOffset } from "./format";
 

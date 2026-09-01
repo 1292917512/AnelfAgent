@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Boxes, FolderGit2, PackageCheck, RefreshCw, Trash2 } from "lucide-react";
-import { apiErrorMessage, nonebotApi } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/api";
+import { nonebotApi } from "../api";
 import { StatusDot } from "@/components/common/StatusDot";
 import {
   Badge, Button, ConfirmDialog, EmptyState, Input, LoadingBlock, toast,

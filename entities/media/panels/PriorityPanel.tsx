@@ -3,10 +3,10 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ArrowDown, ArrowUp, Save } from "lucide-react";
-import { mediaApi } from "@/lib/api";
+import { mediaApi } from "./api";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
-import type { MediaProviderStatus } from "@/lib/types";
+import type { MediaProviderStatus } from "./types";
 
 const CAP_ORDER = [
   "vision", "asr", "tts", "voice_mgmt", "music",

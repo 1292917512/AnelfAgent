@@ -62,8 +62,6 @@ import type {
   LifecycleService,
   LogEntry,
   LogStats,
-  MediaConfig,
-  MediaProvidersResult,
   MCPServer,
   MCPServerConfig,
   MCPToggleResult,
@@ -73,15 +71,6 @@ import type {
   ModelConfig,
   ModelInfoResult,
   ModelPriorityItem,
-  NoneBotAdapterInfo,
-  NoneBotConfig,
-  NoneBotEnvStatus,
-  NoneBotOpResult,
-  NoneBotPackagesResult,
-  NoneBotPluginsResult,
-  NoneBotSourcesResult,
-  NoneBotStatus,
-  NoneBotStorePluginsResult,
   PermissionRuleItem,
   PersonaData,
   ProbeResult,
@@ -99,12 +88,6 @@ import type {
   SnapshotListItem,
   SnapshotRecord,
   SnapshotResponse,
-  SshConnection,
-  SshConnectionCreateRequest,
-  SshConnectionListResult,
-  SshConnectionUpdateRequest,
-  SshExecRequest,
-  SshExecResult,
   StickerItem,
   StickerListResult,
   StickerStats,
@@ -114,28 +97,8 @@ import type {
   UiStateReport,
   UpdateModelConfig,
   UpdateProviderConfig,
-  AudioIdentifyResult,
-  ConsolidateResult,
-  OpenListStatus,
-  RecordingListResult,
-  SegmentListResult,
-  SimilarityMapResult,
-  Speaker,
-  SpeakerDetail,
-  SpeakerListResult,
-  SpeakerUpdatePayload,
   StartupNode,
-  SyncCycleResult,
-  SyncPreview,
-  VoiceSegment,
-  VoiceprintConfigResult,
-  VoiceprintStats,
-  WatchStatus,
-  WebProviderTestResult,
-  WebProvidersMatrix,
   WebToolsConfig,
-  WeixinQrStartResult,
-  WeixinQrStatusResult,
   WorkspaceFile,
   WorkspaceNode,
   WorkspaceSearchHit,
@@ -180,11 +143,7 @@ export type {
   IndexedImageListResult,
   TaskConfig,
   TaskSchedule,
-  WebProviderTestResult,
-  WebProvidersMatrix,
   WebToolsConfig,
-  WeixinQrStartResult,
-  WeixinQrStatusResult,
   WorkspaceFile,
   WorkspaceNode,
   WorkspaceSearchHit,
@@ -195,6 +154,9 @@ const api = axios.create({
   timeout: 30000,
   headers: { "Content-Type": "application/json" },
 });
+
+// 模块前端插件（channels/*/frontend、entities/*/panel）经此实例复用认证与拦截器
+export { api };
 
 /** 可注入的全局 API 错误处理器（默认空实现；上层可接入 toast/日志） */
 export type ApiErrorHandler = (err: unknown) => void;
@@ -389,27 +351,6 @@ export const entitiesApi = {
     api.post(`/entities/${encodeURIComponent(name)}/enable`, { enabled }),
 };
 
-// Media Library（媒体库实体专属路由 /api/entity/media）
-export const mediaApi = {
-  config: () => api.get<MediaConfig>("/entity/media/config"),
-  updateConfig: (payload: Partial<MediaConfig>) =>
-    api.put<MediaConfig>("/entity/media/config", payload),
-  providers: () => api.get<MediaProvidersResult>("/entity/media/providers"),
-};
-
-// Web 实体（搜索引擎管理，实体专属路由 /api/entity/web）
-export const webEntityApi = {
-  matrix: () => api.get<WebProvidersMatrix>("/entity/web/matrix"),
-  setActive: (capability: string, provider: string) =>
-    api.put<WebProvidersMatrix>("/entity/web/active", { capability, provider }),
-  setEnabled: (name: string, enabled: boolean) =>
-    api.put<WebProvidersMatrix>(`/entity/web/providers/${encodeURIComponent(name)}/enabled`, { enabled }),
-  setKey: (name: string, apiKey: string) =>
-    api.put<WebProvidersMatrix>(`/entity/web/providers/${encodeURIComponent(name)}/credential`, { api_key: apiKey }),
-  test: (name: string, capability: string, input = "") =>
-    api.post<WebProviderTestResult>(`/entity/web/providers/${encodeURIComponent(name)}/test`, { capability, input }),
-};
-
 // Personas
 export const personasApi = {
   list: () => api.get("/personas/"),
@@ -583,58 +524,6 @@ export const adaptersApi = {
     api.post<ChannelToolTestResult>(
       `/adapters/${encodeURIComponent(key)}/tools/${encodeURIComponent(name)}/test`,
       { args },
-    ),
-};
-
-// Weixin QR Login（微信扫码登录）
-export const weixinQrApi = {
-  start: () => api.post<WeixinQrStartResult>("/channels/weixin/qr/start"),
-  status: (sessionId: string) =>
-    api.get<WeixinQrStatusResult>(`/channels/weixin/qr/${encodeURIComponent(sessionId)}/status`),
-  discard: (sessionId: string) =>
-    api.delete(`/channels/weixin/qr/${encodeURIComponent(sessionId)}`),
-};
-
-// NoneBot Bridge（完整客户端管理：worker / 环境 / 适配器 / 插件 / 商店 / 配置 / 日志）
-export const nonebotApi = {
-  status: () => api.get<NoneBotStatus>("/nonebot/status"),
-  restart: () => api.post<NoneBotOpResult>("/nonebot/restart", null, { timeout: 90000 }),
-  workerStart: () => api.post<NoneBotOpResult>("/nonebot/worker/start", null, { timeout: 120000 }),
-  workerStop: () => api.post<NoneBotOpResult>("/nonebot/worker/stop", null, { timeout: 60000 }),
-  adapters: () => api.get<{ adapters: NoneBotAdapterInfo[] }>("/nonebot/adapters"),
-  installAdapter: (key: string, enable: boolean = true, source: string = "") =>
-    api.post<NoneBotOpResult>("/nonebot/adapters/install", { key, enable, source }, { timeout: 300000 }),
-  uninstallAdapter: (key: string) =>
-    api.post<NoneBotOpResult>("/nonebot/adapters/uninstall", { key }, { timeout: 300000 }),
-  enableAdapter: (key: string, enabled: boolean) =>
-    api.post<NoneBotOpResult>("/nonebot/adapters/enable", { key, enabled }, { timeout: 60000 }),
-  plugins: () => api.get<NoneBotPluginsResult>("/nonebot/plugins"),
-  installPlugin: (moduleName: string, source: string = "", editable: boolean = false) =>
-    api.post<NoneBotOpResult>(
-      "/nonebot/plugins/install",
-      { module_name: moduleName, source, editable },
-      { timeout: 600000 },
-    ),
-  uninstallPlugin: (moduleName: string) =>
-    api.post<NoneBotOpResult>("/nonebot/plugins/uninstall", { module_name: moduleName }, { timeout: 300000 }),
-  enablePlugin: (module: string, enabled: boolean) =>
-    api.post<NoneBotOpResult>("/nonebot/plugins/enable", { module, enabled }, { timeout: 60000 }),
-  storePlugins: (query: string = "", limit: number = 60) =>
-    api.get<NoneBotStorePluginsResult>("/nonebot/store/plugins", { params: { query, limit }, timeout: 60000 }),
-  envStatus: () => api.get<NoneBotEnvStatus>("/nonebot/env"),
-  envBootstrap: () => api.post<NoneBotOpResult>("/nonebot/env/bootstrap", null, { timeout: 600000 }),
-  envUpgrade: (packages?: string[]) =>
-    api.post<NoneBotOpResult>("/nonebot/env/upgrade", { packages: packages ?? null }, { timeout: 600000 }),
-  envRebuild: () => api.post<NoneBotOpResult>("/nonebot/env/rebuild", null, { timeout: 900000 }),
-  envPackages: () => api.get<NoneBotPackagesResult>("/nonebot/env/packages", { timeout: 60000 }),
-  envSources: () => api.get<NoneBotSourcesResult>("/nonebot/env/sources"),
-  envResync: () => api.post<NoneBotOpResult>("/nonebot/env/resync", null, { timeout: 900000 }),
-  config: () => api.get<NoneBotConfig>("/nonebot/config"),
-  saveConfig: (patch: Partial<NoneBotConfig>) => api.put<NoneBotOpResult>("/nonebot/config", patch),
-  logs: (count: number = 200) => api.get<{ logs: string[] }>("/nonebot/logs", { params: { count } }),
-  runCommand: (command: string, botId: string = "", adapter: string = "") =>
-    api.post<{ ok: boolean; replies?: string[]; error?: string }>(
-      "/nonebot/command", { command, bot_id: botId, adapter }, { timeout: 90000 },
     ),
 };
 
@@ -1021,92 +910,6 @@ export const shareApi = {
     api.get<ShareStats>("/entity/share/stats"),
   getLogs: (params: { token?: string; page?: number; page_size?: number }) =>
     api.get<DownloadLogListResult>("/entity/share/logs", { params }),
-};
-
-// SSH（远程管理）
-export const sshApi = {
-  list: () =>
-    api.get<SshConnectionListResult>("/entity/ssh/connections"),
-  create: (data: SshConnectionCreateRequest) =>
-    api.post<SshConnection>("/entity/ssh/connections", data),
-  update: (name: string, data: SshConnectionUpdateRequest) =>
-    api.put<SshConnection>(`/entity/ssh/connections/${encodeURIComponent(name)}`, data),
-  remove: (name: string) =>
-    api.delete(`/entity/ssh/connections/${encodeURIComponent(name)}`),
-  connect: (name: string) =>
-    api.post<SshConnection>(`/entity/ssh/connections/${encodeURIComponent(name)}/connect`),
-  disconnect: (name: string) =>
-    api.post<SshConnection>(`/entity/ssh/connections/${encodeURIComponent(name)}/disconnect`),
-  setDefault: (name: string) =>
-    api.post("/entity/ssh/default", { name }),
-  exec: (name: string, data: SshExecRequest) =>
-    api.post<SshExecResult>(`/entity/ssh/connections/${encodeURIComponent(name)}/exec`, data),
-};
-
-// Voiceprint（音源库实体专属路由 /api/entity/voiceprint）
-export const voiceprintApi = {
-  stats: () => api.get<VoiceprintStats>("/entity/voiceprint/stats"),
-  speakers: (params?: { status?: string; keyword?: string; limit?: number; offset?: number }) =>
-    api.get<SpeakerListResult>("/entity/voiceprint/speakers", { params }),
-  speakerDetail: (id: number) =>
-    api.get<SpeakerDetail>(`/entity/voiceprint/speakers/${id}`),
-  updateSpeaker: (id: number, data: SpeakerUpdatePayload) =>
-    api.patch<{ speaker: Speaker }>(`/entity/voiceprint/speakers/${id}`, data),
-  confirmSpeaker: (id: number, name: string, role = "") =>
-    api.post<{ speaker: Speaker }>(`/entity/voiceprint/speakers/${id}/confirm`, { name, role }),
-  mergeSpeakers: (sourceId: number, targetId: number) =>
-    api.post("/entity/voiceprint/speakers/merge", { source_id: sourceId, target_id: targetId }),
-  pruneSpeakers: (includeWithSamples = false) =>
-    api.post<{ pruned: number }>("/entity/voiceprint/speakers/prune",
-      { include_with_samples: includeWithSamples }),
-  consolidateSpeakers: (payload: {
-    dry_run: boolean; threshold?: number; prune_insignificant?: boolean;
-  }) => api.post<ConsolidateResult>("/entity/voiceprint/speakers/consolidate", payload),
-  similarityMap: (params?: { status?: string; neighbors?: number }) =>
-    api.get<SimilarityMapResult>("/entity/voiceprint/speakers/similarity-map", { params }),
-  deleteSpeaker: (id: number) =>
-    api.delete(`/entity/voiceprint/speakers/${id}`),
-  deleteSample: (sampleId: number) =>
-    api.delete(`/entity/voiceprint/samples/${sampleId}`),
-  enrollAudio: (file: File, name: string, role = "", notes = "") => {
-    const form = new FormData();
-    form.append("file", file);
-    form.append("name", name);
-    form.append("role", role);
-    form.append("notes", notes);
-    return api.post<{ speaker: Speaker; samples_enrolled: number }>(
-      "/entity/voiceprint/enroll/audio", form);
-  },
-  identifyAudio: (file: File, ingest = false) => {
-    const form = new FormData();
-    form.append("file", file);
-    form.append("ingest", String(ingest));
-    return api.post<AudioIdentifyResult>("/entity/voiceprint/identify/audio", form);
-  },
-  segments: (params: {
-    speaker_id?: number; recording_path?: string; time_from?: string; time_to?: string;
-    q?: string; unread_only?: boolean; limit?: number; offset?: number; order?: string;
-  }) => api.get<SegmentListResult>("/entity/voiceprint/segments", { params }),
-  updateSegment: (id: number, data: { speaker_id?: number | null; transcript?: string }) =>
-    api.patch<{ segment: VoiceSegment }>(`/entity/voiceprint/segments/${id}`, data),
-  deleteSegment: (id: number) =>
-    api.delete(`/entity/voiceprint/segments/${id}`),
-  markRead: (segmentIds?: number[]) =>
-    api.post<{ marked_read: number }>("/entity/voiceprint/segments/mark-read", segmentIds ?? null),
-  syncNow: () => api.post<SyncCycleResult>("/entity/voiceprint/sync"),
-  syncStatus: () => api.get<WatchStatus>("/entity/voiceprint/sync/status"),
-  syncPreview: () => api.get<SyncPreview>("/entity/voiceprint/sync/preview"),
-  recordings: (params?: { limit?: number; offset?: number }) =>
-    api.get<RecordingListResult>("/entity/voiceprint/sync/files", { params }),
-  deleteRecording: (path: string) =>
-    api.delete("/entity/voiceprint/sync/files", { params: { path } }),
-  rebuildRecordings: (paths: string[]) =>
-    api.post<{ error: string; results: Array<{ path: string; outcome: string; detail: string }> }>(
-      "/entity/voiceprint/sync/rebuild", { paths }),
-  config: () => api.get<VoiceprintConfigResult>("/entity/voiceprint/config"),
-  updateConfig: (updates: Record<string, unknown>) =>
-    api.put<{ updated: number }>("/entity/voiceprint/config", { updates }),
-  openlistStatus: () => api.get<OpenListStatus>("/entity/voiceprint/openlist/status"),
 };
 
 // ── 关系图谱（/memory/graph，权威存储在记忆库 graph_nodes/graph_edges） ──

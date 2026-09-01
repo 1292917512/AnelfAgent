@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Plus, Save, Trash2 } from "lucide-react";
-import { mediaApi } from "@/lib/api";
+import { mediaApi } from "./api";
 import { Card } from "@/components/common/Card";
 
 const INPUT_CLS =

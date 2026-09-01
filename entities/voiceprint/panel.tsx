@@ -1,3 +1,9 @@
+import { registerPluginI18n } from "@/lib/plugin-i18n";
+import zh from "./voiceprint/locales/zh.json";
+import en from "./voiceprint/locales/en.json";
+
+registerPluginI18n("voiceprint", { zh, en });
+
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {

@@ -2,8 +2,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { CheckCheck, Pencil, Search, Trash2 } from "lucide-react";
-import { voiceprintApi } from "@/lib/api";
-import type { VoiceSegment } from "@/lib/types";
+import { voiceprintApi } from "./api";
+import type { VoiceSegment } from "./types";
 import {
   Badge, Button, EmptyState, Input, Modal, Select, Spinner, Textarea, toast,
 } from "@/components/ui";
