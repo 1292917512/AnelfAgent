@@ -117,6 +117,8 @@ class _ThinkRoundState:
     plan_finalized: bool = False
     # 本次会话是否被协作式中断终止（决定 finally 收敛 outcome）
     interrupted: bool = False
+    # 结束原因（completed/budget_exhausted；interrupted 经 state.interrupted 推断）
+    completion_reason: str = "completed"
 
 
 @dataclass
@@ -147,6 +149,8 @@ class _ThinkLoopCtx:
     pipeline: ToolResultPipeline
     turn_id: str
     delta_emitter: Callable[[str, bool], Awaitable[None]]
+    # 结束原因输出容器（调用方传入；None = 不收集）——置于全默认字段区
+    completion: Optional[Dict] = None
     # 模式级禁用工具（内部任务禁外发 / leaf 禁委托）：执行侧拦截返回合成错误，
     # 不从 tools 数组移除——可见性（schema 数组全量冻结、跨调用字节一致）
     # 与权限（执行时拦截）分离，保证工具数组前缀缓存跨模式共享
@@ -214,6 +218,7 @@ async def _prepare_think_context(
         options: Optional[Dict],
         adapter_key: str,
         blocked_tools: Optional[Set[str]] = None,
+        completion: Optional[Dict] = None,
 ) -> tuple[_ThinkLoopCtx, _ThinkRoundState]:
     """think_loop 会话初始化：adapter/基线消息/快照水位/守卫/管线/流式探测。"""
     from agent.mind.guardrails import GuardrailController
@@ -282,6 +287,7 @@ async def _prepare_think_context(
         execution_steps=execution_steps,
         collected_text=collected_text,
         active_tools=active_tools,
+        completion=completion,
         current_scope=current_scope,
         interrupts=interrupts,
         background=background,
@@ -532,7 +538,7 @@ async def _suspend_for_background(
 
 
 def _maybe_reset_guardrail_for_interjection(guardrail, new_msgs: List[Dict]) -> bool:
-    """用户插话时重置工具守卫链（对齐 dsh repeat-tool-reminder）。
+    """用户插话时重置工具守卫链。
 
     仅认真实渠道到达的用户消息（带到达元数据标签）为插话；机器生成的
     user 角色消息（proactive 指令/prefill 独白）不触发重置。返回是否重置。
@@ -565,7 +571,7 @@ async def _merge_new_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
         if isinstance(content, str) and has_surrogates(content):
             content = clean_surrogates(content)
         ctx.tool_chain.append({"role": "user", "content": content})
-    # 用户插话重置守卫链（对齐 dsh repeat-tool-reminder）：用户新消息改变了语境，
+    # 用户插话重置守卫链：用户新消息改变了语境，
     # 跨插话的"重复调用"不再构成死循环
     if _maybe_reset_guardrail_for_interjection(ctx.guardrail, new_msgs):
         log("用户插话，重置工具守卫链", "DEBUG", tag="守卫")
@@ -621,6 +627,28 @@ async def _merge_pushes(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
         log(f"消费推送待处理队列失败: {exc}", "DEBUG", tag="思维")
     log(f"并入 {len(texts)} 条实体推送到当前上下文", tag="思维")
     ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮前: 并入 {len(texts)} 条实体推送")
+
+
+def _merge_steered_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
+    """并入转向指令（steer）：运行中委托在步骤边界收到的追加指示。
+
+    委托方向运行中的子代理发送的转向消息暂存于 SteerInbox（按
+    delegation_id），SubAgent 经 ContextVar 绑定 drain 闭包——此处轮顶
+    取走并注入工具链尾部，当前轮 LLM 即见。主会话未绑定 drain 时恒空
+    （零开销）；注入为 user 角色（带 [转向指令] 标记），消息在最近的
+    步骤边界生效，可改变进行中的工作。
+    """
+    from agent.delegation.steer import drain_steered_messages
+    messages = drain_steered_messages()
+    if not messages:
+        return
+    lines = ["[转向指令] 委托方在你执行期间发来新指令，请据此调整当前工作"
+             "（不否定已完成部分，按需修正方向）："]
+    lines.extend(f"- {msg}" for msg in messages)
+    ctx.tool_chain.append({"role": "user", "content": "\n".join(lines),
+                           "_source": {"origin": "steer"}})
+    log(f"并入 {len(messages)} 条转向指令（步骤边界）", tag="委托")
+    ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮前: 并入 {len(messages)} 条转向指令")
 
 
 async def _emit_context_usage(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
@@ -1088,6 +1116,9 @@ async def _request_tool_approval(
     频道上下文决定（guardian 自动评审 / 人工弹窗）。mind 提供中断注册表，
     用于等待人工决策期间的中断唤醒。
     """
+    # 审批上下文默认值（except 分支审计也要用；频道信息在 try 内补充）
+    chat_id = tool_scope
+    user_id = "agent"
     try:
         from agent.approval import ApprovalDecision, get_approval_gate
 
@@ -1151,6 +1182,7 @@ async def _request_tool_approval(
             chat_id=chat_id,
             user_id=user_id,
             abort_check=abort_check,
+            notify=_make_approval_notifier(mind, tool_scope or scope),
         )
         if decision != ApprovalDecision.APPROVED:
             log(
@@ -1179,8 +1211,76 @@ async def _request_tool_approval(
                 "approval_decision": decision.value,
             }, ensure_ascii=False)
     except ImportError:
-        # approval 模块未安装，跳过
-        pass
+        # approval 模块缺失：放行（项目哲学：提醒而非拒绝），但首次大声留痕
+        global _APPROVAL_IMPORT_WARNED
+        if not _APPROVAL_IMPORT_WARNED:
+            _APPROVAL_IMPORT_WARNED = True
+            log("approval 模块未安装，工具调用将不经审批直接执行", "ERROR", tag="批准")
+        _push_approval_reminder(
+            mind, tool_scope or scope,
+            f"approval 模块未安装，{tc.name} 未经审批直接执行——"
+            "请自行评估该操作的影响，高危操作先向用户说明",
+        )
     except Exception as exc:
-        log(f"批准机制异常（继续执行）: {exc}", "WARNING", tag="批准")
+        # 审批链路自身异常：按默认放行，但落审计 + 提醒（不能无声无息）
+        log(f"批准机制异常（按默认放行并提醒）: {exc}", "WARNING", tag="批准")
+        try:
+            from agent.approval import audit
+            audit.record_decision_bg(
+                tool_name=tc.name, outcome="approval_error", decided_by="system",
+                reason=f"审批链路异常，按默认放行: {type(exc).__name__}: {exc}",
+                channel_id="", chat_id=chat_id, user_id=user_id,
+                tool_args={"_raw": (tc.arguments or "")[:500]},
+            )
+        except Exception:
+            pass
+        _push_approval_reminder(
+            mind, tool_scope or scope,
+            f"审批模块异常（{type(exc).__name__}），{tc.name} 已按默认放行——"
+            "该操作未经评审，请自行复核后果，必要时向用户说明",
+        )
     return None
+
+
+# approval 缺失告警只喊一次（每次工具调用都喊会刷屏）
+_APPROVAL_IMPORT_WARNED = False
+# 提醒节流：(scope, 提醒文本) → 上次提醒时间——同一事件短时间去重，
+# 不同事件（不同工具/不同原因）互不压制
+_APPROVAL_REMINDER_AT: dict = {}
+_APPROVAL_REMINDER_MIN_INTERVAL = 120.0
+
+
+def _push_approval_reminder(
+        mind: Optional["Mind"], scope: str, text: str) -> None:
+    """经 PushHub 给 AI 本身写一条审批提醒（写对话历史 + think_loop 轮内并入）。
+
+    提醒的读者是模型自己：guardian 的疑虑/审批链路异常进上下文，由模型
+    复核后自行决定是否告知用户。节流去重同一事件；push 失败静默
+    （提醒是 best-effort，不影响放行路径）。
+    """
+    push_hub = getattr(mind, "push_hub", None) if mind is not None else None
+    if push_hub is None or not scope:
+        return
+    try:
+        import time as _time
+        key = (scope, text)
+        now = _time.monotonic()
+        last = _APPROVAL_REMINDER_AT.get(key)
+        if last is not None and now - last < _APPROVAL_REMINDER_MIN_INTERVAL:
+            return
+        _APPROVAL_REMINDER_AT[key] = now
+        push_hub.push(scope, "approval", text, trigger=False)
+    except Exception:
+        pass
+
+
+def _make_approval_notifier(
+        mind: Optional["Mind"], scope: str) -> Optional[object]:
+    """构造给 gate 的提醒回调：经 PushHub 写短期记忆（带节流）。"""
+    if mind is None or not scope:
+        return None
+
+    async def _notify(text: str) -> None:
+        _push_approval_reminder(mind, scope, text)
+
+    return _notify

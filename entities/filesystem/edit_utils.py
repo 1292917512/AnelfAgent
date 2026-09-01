@@ -1,6 +1,8 @@
 """edit_file 的纯函数算法库 — 移植自 Claude Code ``src/tools/FileEditTool/utils.ts``。
 
-包含：弯引号归一化匹配、引号风格保持、逐行尾空格清理、删行特例、unified diff。
+包含：四级递降容错匹配（精确 → 弯引号归一 → 行尾空白 → Unicode 标点/空白归一，
+对齐 codex apply-patch seek_sequence / git apply 模糊行为）、引号风格保持、
+逐行尾空格清理、删行特例、unified diff。
 未移植 DESANITIZATIONS（ Anthropic API 特有的 token 消毒表，Anelf 不适用）。
 """
 
@@ -14,6 +16,21 @@ LEFT_SINGLE_CURLY_QUOTE = "‘"
 RIGHT_SINGLE_CURLY_QUOTE = "’"
 LEFT_DOUBLE_CURLY_QUOTE = "“"
 RIGHT_DOUBLE_CURLY_QUOTE = "”"
+
+# Unicode 归一化映射（对齐 codex seek_sequence::normalise，模仿 git apply 的模糊行为）。
+# 模型按看到的显示字符写 old_string，但原文可能是 NBSP/全角空格/连字符等宽字符变体。
+_UNICODE_NORMALIZE_TABLE = str.maketrans({
+    # 各类破折号/减号 → ASCII 连字符
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "―": "-", "−": "-",
+    # 单弯引号/低引号 → ASCII 撇号
+    "‘": "'", "’": "'", "‚": "'", "‛": "'",
+    # 双弯引号/低引号 → ASCII 引号
+    "“": '"', "”": '"', "„": '"', "‟": '"',
+    # NBSP 与各类 Unicode 空格 → ASCII 空格
+    " ": " ", " ": " ", " ": " ", " ": " ", " ": " ",
+    " ": " ", " ": " ", " ": " ", " ": " ", " ": " ",
+    " ": " ", " ": " ", "　": " ",
+})
 
 
 def normalize_quotes(s: str) -> str:
@@ -37,11 +54,38 @@ def strip_trailing_whitespace(s: str) -> str:
     return "".join(out)
 
 
+def _strip_trailing_ws_lines(s: str) -> str:
+    """逐行去除尾部空白并统一按 LF 连接（匹配用归一视图，不用于写盘）。"""
+    return "\n".join(line.rstrip() for line in s.splitlines())
+
+
+def _find_line_span(content: str, norm_search: str, view) -> Optional[str]:
+    """按行对齐的归一查找：对归一视图逐行扫描，返回原文中对应的切片。
+
+    view(str) -> str 把一行映射为归一形式；两端的归一视图（content/search）
+    用同一个函数生成，行数一致，因此命中段可以直接按行下标回切原文。
+    """
+    file_lines = content.split("\n")
+    needle_lines = norm_search.split("\n")
+    if not needle_lines or len(needle_lines) > len(file_lines):
+        return None
+    target = tuple(view(line) for line in needle_lines)
+    for i in range(0, len(file_lines) - len(needle_lines) + 1):
+        if tuple(view(line) for line in file_lines[i:i + len(needle_lines)]) == target:
+            return "\n".join(file_lines[i:i + len(needle_lines)])
+    return None
+
+
 def find_actual_string(file_content: str, search_string: str) -> Optional[str]:
     """在文件内容中定位 search_string 对应的原文。
 
-    先精确匹配；失败则对弯引号归一后匹配，从原文切片返回真实文本
-    （保留文件原有的弯引号，供后续精确替换）。
+    四级递降容错（严格度递减，命中即返回原文切片，供精确替换）：
+    1. 精确子串；
+    2. 弯引号归一后匹配（原文含弯引号时保留原样返回）；
+    3. 逐行行尾空白归一（模型看不到 read_file 输出中的行尾空格/Tab，
+       old_string 漏掉即可命中；**只容忍行尾，不放松缩进**）；
+    4. Unicode 标点/空白归一（NBSP、全角空格、各类破折号、弯引号 → ASCII，
+       同样不放松缩进）。
     """
     if search_string in file_content:
         return search_string
@@ -50,7 +94,13 @@ def find_actual_string(file_content: str, search_string: str) -> Optional[str]:
     idx = normalized_file.find(normalized_search)
     if idx != -1:
         return file_content[idx:idx + len(search_string)]
-    return None
+    found = _find_line_span(file_content, search_string, lambda s: s.rstrip())
+    if found is not None:
+        return found
+    return _find_line_span(
+        file_content, search_string,
+        lambda s: s.translate(_UNICODE_NORMALIZE_TABLE),
+    )
 
 
 def _is_opening_context(chars: List[str], index: int) -> bool:

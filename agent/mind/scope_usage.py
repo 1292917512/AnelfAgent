@@ -1,11 +1,10 @@
-"""会话级用量统计 — per-scope 累计 LLM 用量与回复轮数（对齐 dsh sessionStats 投影）。
+"""会话级用量统计 — per-scope 累计 LLM 用量与回复轮数。
 
 与 cache_stats（CacheUsageTracker）的分工：那是**单次调用环形缓冲**服务于
 缓存命中率诊断；本模块是 **per-scope 累计账本**服务于成本追踪——"这个会话/
 这个月花了多少 token"是个人助理的刚需观测面。
 
-设计（对齐 dsh "全日志投影，翻页压缩改变不了全图数字"的语义，适配为
-内存累计 + 周期落盘）：
+设计（内存累计 + 周期落盘，投影口径不受翻页/压缩影响）：
 - ``record(scope, kind, usage)``：每次 LLM 调用后在 llm_invoker 记录点直采
   （fail-open，异常绝不影响调用主流程）；
 - 内存累计 per scope，每 ``usage_stats_flush_every``（默认 20）次调用或

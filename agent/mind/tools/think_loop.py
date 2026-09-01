@@ -52,6 +52,7 @@ from agent.mind.tools.round_helpers import (
     _handle_overflow,
     _merge_new_messages,
     _merge_pushes,
+    _merge_steered_messages,
     _partition_tool_calls,
     _precompact_flush,
     _prepare_think_context,
@@ -295,6 +296,7 @@ async def think_loop(
         *,
         adapter_key: str = "",
         blocked_tools: Optional[Set[str]] = None,
+        completion: Optional[Dict] = None,
 ) -> None:
     """统一思维循环：对话和反思共享同一流程。
 
@@ -311,7 +313,7 @@ async def think_loop(
     ctx, state = await _prepare_think_context(
         mind, mode, tool_chain, execution_steps,
         collected_text, active_tools, anything, base_messages,
-        options, adapter_key, blocked_tools,
+        options, adapter_key, blocked_tools, completion,
     )
 
     # 工具数组顺序由 ToolAssembly 跨回复追加式冻结（见 tool_assembly），
@@ -320,6 +322,12 @@ async def think_loop(
     try:
         await _run_think_rounds(ctx, state, safety_limit, start_time)
     finally:
+        # 结束原因收口（调用方传入 completion 容器时写出）：
+        # 中断 > 预算耗尽标记 > 默认完成
+        if ctx.completion is not None:
+            ctx.completion["reason"] = (
+                "interrupted" if state.interrupted else state.completion_reason
+            )
         # plan 全退出路径唯一收敛点：正常结束已由 _finish_round 收敛（finalized
         # 置位）；中断 / 安全上限等异常退出在此收敛——中断 → cancelled，其余 →
         # completed。无 active plan 时 finalize_plan 零成本，幂等安全。
@@ -423,6 +431,8 @@ async def _run_think_rounds(
         await _merge_new_messages(ctx, state)
         # 并入循环期间到达的实体推送（[push:] 系统通知，轮内弹窗）
         await _merge_pushes(ctx, state)
+        # 并入转向指令（子代理步骤边界；主会话未绑定 drain 时零开销）
+        _merge_steered_messages(ctx, state)
 
         exec_context = mind.pfc.build_execution_context(
             execution_steps, start_time, state.iteration,
@@ -480,7 +490,8 @@ async def _run_think_rounds(
         if outcome is _StageOutcome.BREAK:
             return
 
-    # 达到安全上限
+    # 达到安全上限：产出可能只是中途状态，标记结束原因供调用方决策
+    state.completion_reason = "budget_exhausted"
     log(f"达到安全上限 ({safety_limit} 轮)，强制结束", "WARNING", tag="思维")
     if mode == ThinkMode.REPLY and anything:
         await finish_think(mind, anything, execution_steps, safety_limit, ctx.tool_chain)
@@ -879,6 +890,16 @@ async def _handle_tool_round(
     state.consecutive_fake_calls = 0
     state.consecutive_empty_calls = 0
     state.reflect_text_rounds = 0
+    # 反思产出语义：模型发起工具调用即说明此前的纯文本是中间独白而非
+    # 最终结论——从产出中移除（过程留痕进 execution_steps），产出只保留
+    # 收束前最后一个未被工具调用打断的连续文本段
+    if ctx.mode == ThinkMode.REFLECT and ctx.collected_text:
+        dropped_chars = sum(len(s) for s in ctx.collected_text)
+        execution_steps.append(
+            f"→ 第{state.iteration + 1}轮: 中间独白 {dropped_chars} 字归档为过程"
+            "（产出以最终总结段为准）"
+        )
+        ctx.collected_text.clear()
     await execute_tool_calls(
         mind, tool_chain, result, tool_calls, state.iteration, ctx.anything,
         guardrail=guardrail, pipeline=ctx.pipeline, blocked_tools=ctx.blocked_tools,

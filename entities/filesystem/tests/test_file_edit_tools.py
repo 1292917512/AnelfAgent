@@ -276,6 +276,51 @@ class TestAppendFile:
         assert "尚未读取" in result["error"]
         assert result.get("cause") == "state"
 
+    def test_append_preserves_crlf(self, workspace):
+        """追加已读取的 CRLF 文件：行尾风格保留（与 write/edit 对齐）。"""
+        fp = workspace / "a.txt"
+        fp.write_bytes(b"line1\r\nline2\r\n")
+        _read(fp)
+        assert json.loads(tools.append_file(str(fp), "line3\n"))["ok"]
+        assert fp.read_bytes() == b"line1\r\nline2\r\nline3\r\n"
+
+
+# ------------------------------------------------------------------
+# 原子写（write_file/append_file/edit_file 共用 _atomic_write_bytes）
+# ------------------------------------------------------------------
+
+class TestAtomicWrite:
+    def test_write_no_leftover_tmp(self, workspace):
+        fp = workspace / "a.txt"
+        fp.write_text("old")
+        _read(fp)
+        assert json.loads(tools.write_file(str(fp), "new content"))["ok"]
+        leftovers = [p.name for p in workspace.iterdir() if p.name.endswith(".tmp")]
+        assert leftovers == []
+
+    def test_write_failure_leaves_original(self, workspace, monkeypatch):
+        """原子写中途失败（fsync 抛错）时：原文件不被破坏、临时文件被清理。"""
+        fp = workspace / "a.txt"
+        fp.write_text("original")
+        _read(fp)
+
+        def _boom(fd):
+            raise OSError("disk full")
+        monkeypatch.setattr(os, "fsync", _boom)
+        result = json.loads(tools.write_file(str(fp), "new content"))
+        assert "error" in result
+        assert fp.read_text() == "original"
+        leftovers = [p.name for p in workspace.iterdir() if p.name.endswith(".tmp")]
+        assert leftovers == []
+
+    def test_write_preserves_crlf(self, workspace):
+        """整体覆盖已读取的 CRLF 文件：行尾风格保留（git 不显示全文件变更）。"""
+        fp = workspace / "a.txt"
+        fp.write_bytes(b"one\r\ntwo\r\n")
+        _read(fp)
+        assert json.loads(tools.write_file(str(fp), "three\nfour\n"))["ok"]
+        assert fp.read_bytes() == b"three\r\nfour\r\n"
+
 
 # ------------------------------------------------------------------
 # search_files：glob/内容检索

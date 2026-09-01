@@ -17,7 +17,7 @@ from entities._sdk import (
 entity("entity", "实体系统自省 - 查询实体目录、方法详情和配置管理")
 
 
-@tool(name="query_entities", group="entity", tags=["core"])
+@tool(name="query_entities", concurrency_safe=True, group="entity", tags=["core"])
 def query_entities(keyword: str = "", include_disabled: bool = False) -> str:
     """查询实体目录，默认只显示已启用的实体。
 
@@ -71,7 +71,7 @@ def query_entities(keyword: str = "", include_disabled: bool = False) -> str:
         return error_from_exception(e, action="查询实体目录")
 
 
-@tool(name="list_entity_methods", group="entity", tags=["always"])
+@tool(name="list_entity_methods", concurrency_safe=True, group="entity", tags=["always"])
 def list_entity_methods(group: str) -> str:
     """查看指定实体分组的所有可用方法及其参数详情。
 
@@ -147,7 +147,7 @@ def _sleep_state(group: str) -> dict:
     }
 
 
-@tool(name="get_entity_config", group="entity", tags=["core"])
+@tool(name="get_entity_config", group="entity", tags=["core"], concurrency_safe=True)
 def get_entity_config(entity_name: str) -> str:
     """查看指定实体的配置信息，包括当前值、默认值和配置描述。
 
@@ -214,7 +214,7 @@ def update_entity_config(key: str, value: str) -> str:
         return error_from_exception(e, action="更新实体配置")
 
 
-@tool(name="get_entity_status", group="entity", tags=["core"])
+@tool(name="get_entity_status", concurrency_safe=True, group="entity", tags=["core"])
 def get_entity_status(entity_name: str = "") -> str:
     """查看实体系统整体状态或指定实体的详细状态。
 

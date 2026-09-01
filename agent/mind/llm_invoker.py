@@ -75,8 +75,8 @@ async def _invoke_llm_unified(
 
     # 前缀稳定性守卫（normalize 前，_layer 标签尚存）：对前缀层消息逐条哈希
     # 与同 scope 上一次调用比对，首个不一致位置即缓存断裂点。仅观测不阻断，
-    # 归因随快照落盘 records.jsonl（对齐 dsh 运行时不变式的"独立校验前缀"
-    # 思想，适配为轻量观测版）。须先于 try_capture 计算，归因才能并入本次快照。
+    # 归因随快照落盘 records.jsonl（轻量观测版，不阻断调用）。
+    # 须先于 try_capture 计算，归因才能并入本次快照。
     from agent.mind.prefix_guard import prefix_guard
     # scope 解析链：消息实体 scope（主回复）> 委托链绑定的父会话 scope
     # （子代理 reflect，见 delegation_manager.bind_usage_scope）> 激活上下文

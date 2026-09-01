@@ -120,6 +120,7 @@ _EDIT_FILE_PROMPT = """在文件中执行精确的字符串替换 — 修改已�
 - old_string 不唯一时会失败：提供包含更多上下文的更大字符串以唯一定位，
   或设置 replace_all=True 替换所有出现处（适合重命名变量/函数）。
 - 优先编辑已有文件，除非明确要求否则不要新建文件。
+- 修改成功后无需再用 read_file 验证——失败会明确报错，重复读取浪费 token。
 - 除非用户要求，不要在代码中添加 emoji。"""
 
 _SHELL_PROMPT = """在系统 shell 中执行命令并返回输出。
@@ -170,11 +171,36 @@ def _read_text_with_metadata(fp: str, encoding: str = "utf-8") -> Tuple[str, str
 
 def _write_text_with_metadata(fp: str, content: str, encoding: str = "utf-8",
                               eol: str = "LF") -> None:
-    """按原编码与行尾风格写回文件（CRLF 文件写回 CRLF）。"""
+    """按原编码与行尾风格写回文件（CRLF 文件写回 CRLF），经原子写落盘。"""
     if eol == "CRLF":
         content = content.replace("\r\n", "\n").replace("\n", "\r\n")
-    with open(fp, "wb") as f:
-        f.write(content.encode(encoding))
+    _atomic_write_bytes(fp, content.encode(encoding))
+
+
+def _atomic_write_bytes(fp: str, data: bytes) -> None:
+    """原子写：先写同目录临时文件，fsync 后 os.replace 到目标。
+
+    长驻进程下避免"写到一半崩溃/断电留下半截文件"（codex apply-patch 也未做
+    原子写，此处为长驻场景的加强）。临时文件与目标同目录（保证同文件系统，
+    rename 才是原子的）；异常路径负责清理临时文件。
+    """
+    import tempfile
+    directory = os.path.dirname(fp) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{os.path.basename(fp)}.",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, fp)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _add_line_numbers(content: str, start_line: int = 1) -> str:
@@ -327,9 +353,12 @@ def write_file(file_path: str, content: str) -> str:
             ok, message = file_state.check_writable(fp)
             if not ok:
                 return tool_error(message, cause=ErrorCause.STATE, retryable=False, path=fp)
-        os.makedirs(os.path.dirname(fp) or ".", exist_ok=True)
-        with open(fp, "w", encoding="utf-8") as f:
-            f.write(content)
+            # 保留已有文件的行尾风格：edit_file 维护的 CRLF 文件不应被
+            # 整体覆盖洗成 LF（git 会显示全文件变更）
+            _, encoding, eol = _read_text_with_metadata(fp)
+        else:
+            encoding, eol = "utf-8", "LF"
+        _write_text_with_metadata(fp, content, encoding, eol)
         file_state.record_write(fp, content.replace("\r\n", "\n"), os.path.getmtime(fp))
         return json.dumps({"ok": True, "path": fp, "size": len(content),
                            "location": _location_of(fp)}, ensure_ascii=False)
@@ -379,7 +408,6 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
         if old_string == "":
             # 空 old_string + 文件不存在 = 创建新文件
             try:
-                os.makedirs(os.path.dirname(fp) or ".", exist_ok=True)
                 _write_text_with_metadata(fp, new_string, "utf-8", "LF")
                 file_state.record_write(fp, new_string, os.path.getmtime(fp))
                 return json.dumps({"ok": True, "path": fp,
@@ -520,9 +548,11 @@ def append_file(path: str, content: str) -> str:
             ok, message = file_state.check_writable(fp)
             if not ok:
                 return tool_error(message, cause=ErrorCause.STATE, retryable=False, path=fp)
-        os.makedirs(os.path.dirname(fp) or ".", exist_ok=True)
-        with open(fp, "a", encoding="utf-8") as f:
-            f.write(content)
+            # 原子追加：读原文 + 拼接 + 原子重写（追加语义下崩溃/断电不损原文）
+            existing, encoding, eol = _read_text_with_metadata(fp)
+            _write_text_with_metadata(fp, existing + content, encoding, eol)
+        else:
+            _write_text_with_metadata(fp, content, "utf-8", "LF")
         # 若缓存中有该文件的读取记录，追加后同步刷新，避免后续编辑被误判为过期
         if file_state.get_cache().get(fp) is not None:
             new_content, _, _ = _read_text_with_metadata(fp)
@@ -732,7 +762,7 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
         exclude = resolve_exclude_dirs()
 
         if not content_pattern:
-            # 按修改时间倒序（最近修改在前，对齐 Claude Code Glob 语义）；
+            # 按修改时间倒序（最近修改在前）；
             # 目录沉底——mtime 排序对目录无操作价值。path 保持绝对路径
             # （可直接传给 read_file 等工具）
             entries = sorted(
@@ -908,6 +938,7 @@ def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = 
         if is_posix:
             run_cmd, pwd_file = shell_state.wrap_command_capture_pwd(command)
 
+        # 环境变量卫生（NO_COLOR/pager/locale）由 core.command.run_command 统一注入
         result = run_command(run_cmd, timeout_sec=timeout, cwd=cwd)
 
         notes: List[str] = []
@@ -991,16 +1022,24 @@ def python_exec(code: str, timeout: int = 30) -> str:
         )
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
-        if len(stdout) > 5000:
-            stdout = stdout[:5000] + "\n... (输出过长，已截断)"
+        # 输出落盘：stdout 与 run_shell_command 同一阈值（超 30000 字符落盘
+        # 返回 persisted 路径，模型可 read_file 分段取回，不再截断丢弃）；
+        # stderr 小限截断（多为回溯/警告，完整价值低）
+        from entities.filesystem import shell_state
+        stdout, persisted_path = shell_state.truncate_or_persist(
+            stdout, os.path.abspath(_WORKSPACE),
+        )
         if len(stderr) > 1000:
             stderr = stderr[:1000] + "\n... (截断)"
-        return json.dumps({
+        payload: Dict[str, Any] = {
             "ok": result.returncode == 0,
             "stdout": stdout,
             "stderr": stderr,
             "returncode": result.returncode,
-        }, ensure_ascii=False)
+        }
+        if persisted_path:
+            payload["persisted"] = persisted_path
+        return json.dumps(payload, ensure_ascii=False)
     except subprocess.TimeoutExpired:
         return tool_error(f"执行超时 ({timeout}s)", cause=ErrorCause.TIMEOUT,
                           retryable=True)

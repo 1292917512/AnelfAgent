@@ -41,7 +41,7 @@ if _OLLAMA_AVAILABLE:
 # ==================================================================
 
 
-@tool(name="list_models", group="model_control", tags=["core"],
+@tool(name="list_models", concurrency_safe=True, group="model_control", tags=["core"],
       description="列出所有已配置的模型及其类型、能力和当前默认状态")
 def list_models() -> str:
     """列出所有已配置的 LLM 模型，包含类型（chat/vision/embedding）、能力和当前默认标记。"""
@@ -106,7 +106,7 @@ def switch_model(model_name: str) -> str:
         return error_from_exception(e, action=f"切换模型 '{model_name}'")
 
 
-@tool(name="get_current_model", group="model_control", tags=["core"],
+@tool(name="get_current_model", concurrency_safe=True, group="model_control", tags=["core"],
       description="查看当前使用的模型名称、配置参数和会话临时覆盖值")
 def get_current_model() -> str:
     """查看当前使用的模型详情，包括名称、底层模型、温度、超时配置和会话临时参数。"""
@@ -296,7 +296,7 @@ def _parse_field_value(field: str, value: str) -> tuple[Any, str]:
     return parsed, ""
 
 
-@tool(name="get_model_priority", group="model_control", tags=["core"],
+@tool(name="get_model_priority", concurrency_safe=True, group="model_control", tags=["core"],
       description="查看指定类型（chat/vision/embedding/rerank）的模型优先级顺序")
 def get_model_priority(model_type: str = "chat") -> str:
     """查看指定模型类型的优先级列表（按优先级从高到低排列）。

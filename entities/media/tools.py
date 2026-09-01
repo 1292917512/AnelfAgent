@@ -298,7 +298,7 @@ async def design_voice(prompt: str, preview_text: str = "", voice_id: str = "", 
     return _dumps(out)
 
 
-@tool(name="list_voices", group="media")
+@tool(name="list_voices", concurrency_safe=True, group="media")
 async def list_voices(voice_type: str = "all", provider: str = "auto") -> str:
     """查询可用音色列表（系统音色/复刻音色/设计音色）。
 
@@ -743,7 +743,7 @@ async def media_config(action: str = "get", key: str = "", value: str = "") -> s
 # 文档重排序
 # ==================================================================
 
-@tool(name="rerank_search", group="media")
+@tool(name="rerank_search", concurrency_safe=True, group="media")
 async def rerank_search(query: str, documents: str, provider: str = "auto") -> str:
     """按相关性对文档列表重新排序。documents 应为 JSON 字符串数组。
 

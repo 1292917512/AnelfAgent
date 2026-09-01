@@ -136,3 +136,5 @@ web/frontend/node_modules/
 
 # === Misc ===
 /.other
+# === Bilibili channel (personal, vendored SDK) ===
+channels/bilibili/

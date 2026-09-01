@@ -375,7 +375,7 @@ class Mind:
             log(f"反思中忽略非 @ 群消息: {anything.entity_scope}", "DEBUG", tag="思维")
         if should_enqueue:
             # 真实外部事件：重置自动续轮退避 + 后台任务唤醒预算（真人参与
-            # 后自动唤醒链路重新合法，对齐 dsh maxConsecutiveWakes 的重置语义）
+            # 后自动唤醒链路重新合法）
             self._auto_cycle_retry = 0
             self.wake_budget.reset(scope)
             # /name 技能手势：真实外部消息正文以 /技能名 开头 → 确定性触发
@@ -719,6 +719,7 @@ class Mind:
             *,
             adapter_key: str = "",
             blocked_tools: Optional[Set[str]] = None,
+            completion: Optional[Dict] = None,
     ) -> None:
         """统一思维循环。"""
         await _tl_think_loop(
@@ -726,6 +727,7 @@ class Mind:
             safety_limit, collected_text, active_tools,
             anything, base_messages, options,
             adapter_key=adapter_key, blocked_tools=blocked_tools,
+            completion=completion,
         )
 
     @staticmethod
@@ -943,8 +945,13 @@ class Mind:
             tool_tags: Optional[List[str]] = None,
             allow_output_tools: bool = False,
             extra_blocked_tools: Optional[Set[str]] = None,
+            completion: Optional[Dict] = None,
     ) -> str:
         """内部任务循环：与对话共享统一思维流程，默认禁止对外发送消息。
+
+        completion 非 None 时，循环结束把结束原因写入 completion["reason"]：
+        completed（正常收束）/ budget_exhausted（轮次预算用尽，产出可能只是
+        中途状态）/ interrupted（协作中断）——调用方据此决策是否需要续委托。
 
         tool_tags 非空时按选择器加载工具集（替代默认的 "heartbeat" 标签）。
         选择器优先按 tag 匹配，同时兼容按 group 名匹配（如 mcp:web-fetch）。
@@ -1016,6 +1023,7 @@ class Mind:
                 base_messages=messages,
                 options=options,
                 blocked_tools=blocked_tools,
+                completion=completion,
             )
 
         total = "\n".join(collected_text)

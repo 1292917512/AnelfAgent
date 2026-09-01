@@ -205,7 +205,7 @@ async def _match_skills(
     """匹配当前对话相关的技能（并记录使用次数），返回注入消息列表。
 
     scope 非空时先消费 /name 用户手势：登记过的技能名绕过评分确定性注入
-    （对齐 dsh SKILL_GESTURE 的确定性触发），不存在的名字经短期记忆提示
+    （确定性触发），不存在的名字经短期记忆提示
     模型可回应用户。
     """
     if not mind._skills_enabled() or not tail:

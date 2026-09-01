@@ -1,7 +1,7 @@
 """自适应重试工具（参考 hermes-agent retry_utils）。
 
 提供带抖动的指数退避，避免多实例同时重试造成的惊群效应，
-以及限流响应 Retry-After 头的解析（对齐 dsh providerRetryAfterMs）。
+以及限流响应 Retry-After 头的解析。
 """
 from __future__ import annotations
 

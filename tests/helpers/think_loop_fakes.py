@@ -184,11 +184,14 @@ def run_think_loop(
     safety_limit: int = 20,
     base_messages: Optional[list] = None,
     adapter_key: Optional[str] = None,
+    completion: Optional[dict] = None,
 ):
     """统一的 think_loop 启动器（收敛 10 个 kwargs 的调用样板）。"""
     kwargs: dict = {}
     if adapter_key is not None:
         kwargs["adapter_key"] = adapter_key
+    if completion is not None:
+        kwargs["completion"] = completion
     return think_loop(
         mind,
         mode=mode,

@@ -172,7 +172,7 @@ async def ui_compose(text: str) -> str:
         return error_from_exception(e, action="注入对话草稿")
 
 
-@tool(name="ui_get_state", group="ui", tags=["always"])
+@tool(name="ui_get_state", concurrency_safe=True, group="ui", tags=["always"])
 async def ui_get_state() -> str:
     """获取 Web 工作台界面状态快照（当前面板、打开的文件、输入框草稿等）。"""
     try:

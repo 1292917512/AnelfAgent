@@ -59,6 +59,9 @@ def launch_background(command: str, cwd: str, workspace: str,
     if os.name != "nt":
         # 独立进程组：AI 终止时整组击杀，防 shell 孙进程泄漏（对齐前台 run_command）
         popen_kwargs["start_new_session"] = True
+    # 环境变量卫生：NO_COLOR/pager/locale 等（用户环境值优先，见 shell_env）
+    from entities.filesystem.shell_env import shell_env_defaults
+    env = {**shell_env_defaults(), **os.environ}
     try:
         out_fp = open(output_file, "w", encoding="utf-8", errors="replace")
         proc = subprocess.Popen(
@@ -67,6 +70,7 @@ def launch_background(command: str, cwd: str, workspace: str,
             stdout=out_fp,
             stderr=subprocess.STDOUT,
             cwd=cwd,
+            env=env,
             text=True,
             **popen_kwargs,
         )
@@ -81,7 +85,7 @@ def launch_background(command: str, cwd: str, workspace: str,
     if registry is not None:
         task_id = registry.register(scope, "shell", desc, expected_seconds=timeout_sec)
         # 关联输出文件：check_background_tasks(task_id=...) 即可增量消费输出，
-        # 轮询长任务不再全量重读日志文件（对齐 dsh job_output 单游标语义）
+        # 轮询长任务不再全量重读日志文件（单游标增量语义）
         registry.attach_output_file(task_id, output_file)
         # 终止句柄：AI 决策终止时整组击杀，终态由等待线程照常登记
         killed = threading.Event()

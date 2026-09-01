@@ -26,7 +26,7 @@ entity("environment", "环境信息 - 系统信息、工作区路径、Python �
 
 # ── 系统信息 ─────────────────────────────────────────────────────────
 
-@tool(name="get_workspace_info", group="environment")
+@tool(name="get_workspace_info", concurrency_safe=True, group="environment")
 def get_workspace_info() -> str:
     """获取工作区路径信息：工作区根目录绝对路径、Shell 当前工作目录、平台与沙箱状态。
 
@@ -55,7 +55,7 @@ def get_workspace_info() -> str:
         return error_from_exception(e, action="获取工作区信息")
 
 
-@tool(name="get_system_info", group="environment")
+@tool(name="get_system_info", concurrency_safe=True, group="environment")
 def get_system_info() -> str:
     """获取当前操作系统的基本信息，包括系统类型、版本、架构、主机名等。"""
     try:
@@ -76,7 +76,7 @@ def get_system_info() -> str:
 
 # ── Python 环境 ──────────────────────────────────────────────────────
 
-@tool(name="get_python_status", group="environment")
+@tool(name="get_python_status", concurrency_safe=True, group="environment")
 def get_python_status() -> str:
     """获取当前系统的 Python 环境状态，包括版本、虚拟环境、包管理器（uv/pip/conda）等。
 
@@ -91,7 +91,7 @@ def get_python_status() -> str:
         return error_from_exception(e, action="获取 Python 环境状态")
 
 
-@tool(name="list_python_packages", group="environment")
+@tool(name="list_python_packages", concurrency_safe=True, group="environment")
 def list_python_packages() -> str:
     """列出当前 Python 环境中已安装的所有包及其版本（pip 环境走 pip list，uv 环境自动回退 uv pip list）。"""
     try:
@@ -108,7 +108,7 @@ def list_python_packages() -> str:
         return error_from_exception(e, action="列出已安装包")
 
 
-@tool(name="get_pip_mirror_info", group="environment")
+@tool(name="get_pip_mirror_info", concurrency_safe=True, group="environment")
 def get_pip_mirror_info() -> str:
     """获取当前 pip 镜像源配置信息（仅适用于 pip 管理的环境；uv 管理的环境镜像走 uv 索引配置）。"""
     try:
@@ -121,7 +121,7 @@ def get_pip_mirror_info() -> str:
 # ── Git 管理（仅在检测到 git 命令时注册）────────────────────────────
 
 if _GIT_AVAILABLE:
-    @tool(name="get_git_config", group="environment")
+    @tool(name="get_git_config", concurrency_safe=True, group="environment")
     def get_git_config() -> str:
         """获取 Git 全局配置，包括用户名、邮箱、代理设置等。"""
         try:
@@ -217,3 +217,38 @@ def query_logs(keyword: str = "", tag: str = "", level: str = "", limit: int = 2
         return json.dumps({"count": len(logs), "logs": logs}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="查询日志")
+
+
+# ── 上下文窗口 ───────────────────────────────────────────────────────
+
+@tool(name="get_context_remaining", group="environment")
+def get_context_remaining() -> str:
+    """查询当前上下文窗口的剩余 token（无参数）。
+
+    长任务中在决定是否继续读取大文件/大段资料前自查；返回本轮最近一次真实
+    prompt_tokens 与估算用量的差值。数值为参考（不同供应商的计费口径略有差异）。
+    """
+    try:
+        from agent.runtime.singleton import require_runtime
+        mind = require_runtime().mind
+        window = mind.get_model_context_length() if mind is not None else 0
+        if not window or window <= 0:
+            return json.dumps({"tokens_left": None,
+                               "message": "当前模型的上下文窗口大小未知。"},
+                              ensure_ascii=False)
+        compressor = getattr(mind, "compressor", None)
+        used = 0
+        if compressor is not None:
+            pfc = getattr(mind, "pfc", None)
+            base = getattr(pfc, "base_messages", None) or []
+            chain = getattr(pfc, "tool_chain", None) or []
+            used = compressor.estimate_tokens(list(base) + list(chain))
+        left = max(0, window - int(used))
+        return json.dumps({
+            "tokens_left": left,
+            "tokens_used": int(used),
+            "context_window": window,
+            "message": f"当前上下文窗口剩余约 {left} 个 token。",
+        }, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action="查询上下文剩余")

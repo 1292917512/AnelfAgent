@@ -290,7 +290,7 @@ agent.planning → agent.memory
 | `services/` | 业务封装，供 Web API 调用 |
 | `web/` | FastAPI 路由 + React 前端 |
 | `config/` | JSON 配置 · SQLite 数据 · 人设 · 任务定义 |
-| `tests/` | pytest 用例（`unit/` 单元 + `integration/` 集成分层） |
+| `tests/` | pytest 分层套件（`unit/` 单元 + `integration/` 集成；实体/频道单测在各模块内 `<模块>/tests/`，随模块拔出） |
 
 ### 内置实体（entities/）
 
@@ -386,14 +386,15 @@ async def get_weather(city: str) -> str:
 ```bash
 uv sync                          # 安装依赖（含 Cognee 等）
 uv run pytest                    # 全量测试（unit + 无需凭证的 integration）
-uv run pytest tests/unit         # 仅单元测试（快速）
+uv run pytest tests/unit         # 分层单元测试（core/agent/services/web，快速）
+uv run pytest entities/web/tests # 单模块测试（实体/频道单测在各模块内 tests/）
 uv run pytest -m integration     # 仅集成测试（需凭证的用例自动跳过）
 uv run ruff check .              # Lint
 uv run mypy core/                # 类型检查（core 严格层）
 uv add <package>                 # 新增依赖（请勿对 uv venv 使用 pip install）
 ```
 
-CI（GitHub Actions，`.github/workflows/ci.yml`）：push/PR 自动执行 ruff → mypy（core 必过，全量观察）→ pytest + 覆盖率，以及前端 `npm run lint` + `npm run build`。
+CI（GitHub Actions，`.github/workflows/ci.yml`）：push/PR 时先按改动路径归类——`lint` job 全仓静态门禁（ruff → import-linter → mypy），`tests` job 按模块动态矩阵分腿（实体/频道改动只跑对应模块 `tests/` 套件，主干改动触发全量腿），`frontend` job 跑 `npm run lint` + `npm run build`；文档类提交全跳过。
 
 更细的架构约定见仓库根目录 [`AGENTS.md`](AGENTS.md)（供编辑器 / Agent 注入的工作区指令，非运行时依赖）。
 

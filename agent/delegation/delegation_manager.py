@@ -16,7 +16,7 @@ import asyncio
 import json
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.delegation.sub_agent import (
     SubAgent,
@@ -224,6 +224,35 @@ class DelegationManager:
             if info.get("scope") == scope
         ]
 
+    def steer(self, delegation_id: str, message: str) -> Dict[str, Any]:
+        """向运行中的委托发送转向指令（步骤边界注入，不取消不重开）。
+
+        前台/后台委托统一支持：只要还在 _running 即可转向；消息经
+        SteerInbox 暂存，子代理 think_loop 下一轮轮顶注入。收件箱满
+        （单委托 8 条）返回结构化错误——转向是纠偏不是聊天通道。
+        """
+        from agent.delegation.steer import steer_inbox
+        if delegation_id not in self._running:
+            return {
+                "error": f"委托不存在或已结束: {delegation_id}",
+                "hint": "可先调用 check_background_tasks 查看运行中的任务",
+            }
+        if not (message or "").strip():
+            return {"error": "message 不能为空"}
+        if not steer_inbox.push(delegation_id, message):
+            return {
+                "error": f"委托 {delegation_id} 的转向消息已达上限，请等待其消化后再发",
+                "queued": steer_inbox.pending_count(delegation_id),
+            }
+        goal = str(self._running[delegation_id].get("goal", ""))[:80]
+        log(f"转向指令入箱: {delegation_id} ({goal}) msg={message[:60]}", tag="委托")
+        return {
+            "ok": True,
+            "delegation_id": delegation_id,
+            "queued": steer_inbox.pending_count(delegation_id),
+            "note": "指令将在子代理当前步骤完成后注入（不取消、已完成部分保留）",
+        }
+
     def _resolve_model(self, agent_name: str, difficulty: Any) -> str:
         """子代理模型解析：命名档案 > 内置难度档 > 默认模型。
 
@@ -278,8 +307,18 @@ class DelegationManager:
         # 嵌套方持槽等待时不再竞争同一把信号量
         semaphore = self._semaphore if current_depth() < 1 else self._nested_semaphore
         timeout = _acquire_timeout_seconds()
+        registry = getattr(self._mind, "background_tasks", None)
+        owns_registry_entry = False
         if not delegation_id:
-            delegation_id = uuid.uuid4().hex[:8]
+            if registry is not None:
+                # 前台/嵌套委托同样登记注册表：check_background_tasks 可见
+                # （含耗时）、terminate_background_task 可单独停止（无需中断
+                # 整个回复）。完成时以 claimed=True 收尾——前台的通知语义
+                # 就是工具结果本身，不走轮外完成回调
+                delegation_id = registry.register(scope_hint or "_global", "delegation", goal[:80])
+                owns_registry_entry = True
+            else:
+                delegation_id = uuid.uuid4().hex[:8]
         scope = scope_hint or _current_scope()
         _user_scope, chat_id = _parse_scope_chat_id(scope)
         model_id = self._resolve_model(agent_name, difficulty)
@@ -359,10 +398,24 @@ class DelegationManager:
                 self._mind, goal, context,
                 role=role, max_iterations=max_iterations, task_index=task_index,
                 model_id=model_id, agent_name=agent_name,
+                delegation_id=delegation_id,
             )
             run_task = asyncio.create_task(
                 agent.run(), name=f"delegation.run.{delegation_id}",
             )
+            if owns_registry_entry and registry is not None:
+                # 终止句柄：标记先行 + 桥回主循环走 cancel()（转"用户取消"结果）
+                _loop = asyncio.get_running_loop()
+
+                def _kill_front() -> bool:
+                    self._cancel_marks.add(delegation_id)
+                    try:
+                        _loop.call_soon_threadsafe(self.cancel, delegation_id)
+                        return True
+                    except RuntimeError:
+                        return False  # 循环已关闭（关停中）
+
+                registry.attach_killer(delegation_id, _kill_front)
             self._running[delegation_id] = {
                 "task": run_task,
                 "goal": goal,
@@ -375,6 +428,7 @@ class DelegationManager:
                 "agent": agent_name,
                 "started_at": time.time(),
             }
+            result: Optional[SubAgentResult] = None
             try:
                 result = await run_task
             except asyncio.CancelledError:
@@ -388,6 +442,20 @@ class DelegationManager:
             finally:
                 self._cancel_marks.discard(delegation_id)
                 self._running.pop(delegation_id, None)
+                # 注册表收尾：结果由工具返回值消费（claimed=True），异常路径
+                # 也不例外——否则条目滞留 running 永不消失
+                if owns_registry_entry and registry is not None:
+                    try:
+                        registry.complete(
+                            delegation_id,
+                            bool(result and result.success),
+                            ((result.output if result else "")
+                             or (result.error if result else "")
+                             or "execution aborted")[:1500],
+                            claimed=True,
+                        )
+                    except Exception as exc:
+                        log(f"前台委托注册表收尾失败: {delegation_id}: {exc}", "DEBUG", tag="委托")
         finally:
             if usage_token is not None:
                 reset_usage_scope(usage_token)
@@ -629,6 +697,8 @@ class DelegationManager:
             f"[后台委托完成] id={delegation_id} 状态={status}\n"
             f"目标: {goal[:200]}\n结果: {summary[:_SUMMARY_NOTICE_MAX_CHARS]}"
         )
+        if getattr(result, "completed_reason", "completed") == "budget_exhausted":
+            note += "\n（轮次预算用尽，结果可能不完整；需要更完整结论可拆小任务重新委托）"
 
         # 结果登记兜底：无论后续路由是否成功，registry 都必须完成，
         # 否则 delegation 永久卡 running、等待者永远收不到会合注入
@@ -701,6 +771,10 @@ class DelegationManager:
             if r.cancelled:
                 item["cause"] = "user_cancel"
                 item["retryable"] = False
+            if r.completed_reason == "budget_exhausted":
+                # 轮次预算用尽：产出可能只是中途状态，父级可决策拆小重委托
+                item["completed_reason"] = "budget_exhausted"
+                item["hint"] = "轮次预算用尽，结果可能不完整；需要更完整结论可拆分为更小的子任务重新委托"
             items.append(item)
         succeeded = sum(1 for r in results if r.success)
         return json.dumps({

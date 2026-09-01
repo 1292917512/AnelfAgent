@@ -31,7 +31,8 @@
   },
   "stream": {
     "readonlyCollapsed": "已调用 {{count}} 个只读工具，点击展开",
-    "collapse": "收起"
+    "collapse": "收起",
+    "connectionLost": "实时连接已断开，正在重连（期间的消息将在恢复后自动补齐）…"
   },
   "fileLimit": "最多附加 {{max}} 个文件",
   "fileTooLarge": "文件 {{name}} 超过 {{max}}MB 大小上限",

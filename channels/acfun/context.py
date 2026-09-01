@@ -33,8 +33,11 @@ def _format_age(age: Optional[float]) -> str:
     return f"{_format_duration(age)}前"
 
 
-def _render_live_status() -> Optional[str]:
-    """渲染直播状态块；模式关闭 / 无房间 / 频道未注册时返回 None（不注入）。"""
+def _render_live_status(scope: str = "") -> Optional[str]:
+    """渲染直播状态块；模式关闭 / 无房间 / 频道未注册时返回 None（不注入）。
+
+    scope: 当前对话 scope（provider 协议要求接收；直播状态全局一致，不使用）。
+    """
     try:
         from agent.channel.manager import get_channel_manager
 

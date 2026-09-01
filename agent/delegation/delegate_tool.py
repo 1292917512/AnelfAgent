@@ -254,3 +254,38 @@ async def terminate_background_task(task_id: str) -> str:
             cause=ErrorCause.NOT_FOUND, retryable=False,
         )
     return json.dumps(result, ensure_ascii=False)
+
+
+@deferred_tool(
+    name="send_to_agent",
+    group="delegation", tags=["always"], source="mind.delegation",
+    description="向运行中的委托发送转向指令（steer）：指令在子代理当前步骤完成后注入，"
+    "可改变进行中的工作——不必取消重开、已完成的部分保留。"
+    "适合用户中途修改需求、补充约束、追加信息等场景。"
+    "目标 delegation_id 可从 delegate_task 的返回或 check_background_tasks 获取。",
+)
+async def send_to_agent(delegation_id: str, message: str) -> str:
+    """向运行中的子代理发送转向指令（步骤边界注入）。
+
+    Args:
+        delegation_id: 目标委托 ID（delegate_task 返回 / check_background_tasks 查看）
+        message: 转向指令内容（需求变更、补充约束等；应明确说明要调整什么）
+    """
+    if not _delegation_enabled():
+        return tool_error(
+            "子代理委托已禁用",
+            cause=ErrorCause.STATE, retryable=False,
+            hint="如需启用，请将配置 delegation_enabled 设为 true",
+        )
+    manager = _manager_or_none()
+    if manager is None:
+        return _manager_not_ready()
+    result = manager.steer(delegation_id.strip(), message)
+    if "error" in result:
+        return tool_error(
+            result["error"],
+            cause=ErrorCause.NOT_FOUND if "不存在" in result["error"] else ErrorCause.PARAM,
+            retryable=False,
+            hint=result.get("hint"),
+        )
+    return json.dumps(result, ensure_ascii=False)

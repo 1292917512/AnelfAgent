@@ -36,7 +36,7 @@ class HookSpec:
 class HookOutcome:
     """一次事件的 hook 合并结果。
 
-    合并语义（对齐 dsh deny>ask>allow）：任一 hook exit 2 → allowed=False
+    合并语义（deny 优先）：任一 hook exit 2 → allowed=False
     （reason 取第一个阻塞理由）；否则 allowed=True。executed 为实际运行的
     hook 数（含非阻塞失败）。
     """
@@ -149,7 +149,7 @@ async def run_event_hooks(event: str, **payload: Any) -> HookOutcome:
         )
         if result.ok:
             continue
-        # exit 2 = 阻塞（stderr 作为理由，对齐 Claude Code hooks 语义）；
+        # exit 2 = 阻塞（stderr 作为理由）；
         # 超时/其他退出码/异常 = 非阻塞错误（WARNING，不影响主流程）
         if result.returncode == 2:
             outcome.allowed = False

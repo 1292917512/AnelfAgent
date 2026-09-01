@@ -175,7 +175,7 @@ def web_fetch(
 # ==================================================================
 
 
-@tool(name="repo_docs", group="web", tags=["web"], check_fn=_repo_available)
+@tool(name="repo_docs", concurrency_safe=True, group="web", tags=["web"], check_fn=_repo_available)
 def repo_docs(
     action: str,
     repo: str,
@@ -478,7 +478,10 @@ def web_request(
 
 @tool(name="web_download", group="web",
       tags=["web", "media:file", "media:video", "media:audio", "media:voice"],
-      concurrency_safe=True)
+      concurrency_safe=True,
+      # 下载场景的慢链路预算：AI 参数 timeout（默认 30s）在此范围内生效，
+      # 未声明则落入全局默认 60s，AI 传 120+ 秒也会被提前掐断（死配置）
+      timeout=300.0)
 def web_download(
     url: str,
     filename: str = "",

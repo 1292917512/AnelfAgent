@@ -196,7 +196,7 @@ def ensure_tool_result_pairing(messages: List[Dict]) -> List[Dict]:
 
 # 发送前剥离的内部元数据键（LLM 不可见）：
 # - _layer：上下文分层标签（快照分类 / 缓存断点锚点用）
-# - _source：系统注入消息的结构化来源标记（归因 / 审计用，对齐 dsh MessageSource）
+# - _source：系统注入消息的结构化来源标记（归因 / 审计用）
 _STRIP_KEYS = ("_layer", "_source")
 
 
@@ -252,7 +252,7 @@ def preserve_reasoning_fields(msg: Dict[str, Any], result: "ChatResult",
     - reasoning_details：OpenRouter 风格，litellm 请求侧原样回传。
       **仅 tool_turn=True（工具调用轮）挂载**——DeepSeek 官方 thinking 规则
       要求工具轮回传、纯文本轮服务端直接忽略，普通轮回传纯属 token 浪费
-      （对齐 dsh serialize.ts 的条件回传；REFLECT 连续文本轮场景收益最大）
+      （REFLECT 连续文本轮场景收益最大）
     - thinking_blocks：Anthropic 协议 thinking 块（含 signature/redacted），
       litellm 请求侧据此重构 thinking 块（交错思考 + tool_use 场景必需）。
       签名块语义微妙，保持无条件保留（不随本参数收紧，单独评估）

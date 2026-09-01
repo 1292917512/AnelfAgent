@@ -763,7 +763,7 @@ class ContextCompressor:
             if previous_summary else ""
         )
 
-        # 前缀复用路径（对齐 dsh compaction-basic：辅助调用复用前缀而非独立请求）
+        # 前缀复用路径（辅助调用复用主对话前缀，命中供应商 KV 缓存）
         if prefix_messages and tools:
             try:
                 text = await self._summarize_with_prefix(

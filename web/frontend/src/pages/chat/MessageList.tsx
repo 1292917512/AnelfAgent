@@ -82,6 +82,7 @@ export function MessageList() {
   const historyLoaded = useChatStore((s) => s.buckets[s.activeChatId]?.historyLoaded ?? false);
   const hasMore = useChatStore((s) => s.buckets[s.activeChatId]?.hasMore ?? false);
   const loadingEarlier = useChatStore((s) => s.buckets[s.activeChatId]?.loadingEarlier ?? false);
+  const sseConnected = useChatStore((s) => s.sseConnected);
   const loadEarlier = useChatStore((s) => s.loadEarlier);
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialLoad = useRef(true);
@@ -189,6 +190,14 @@ export function MessageList() {
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-3 pr-1 mb-3 min-h-0">
+      {!sseConnected && (
+        <div className="flex justify-center" data-testid="sse-reconnect-banner">
+          <div className="inline-flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 rounded-full bg-amber-500/10 px-3 py-1">
+            <Loader2 size={11} className="animate-spin" />
+            {t("stream.connectionLost")}
+          </div>
+        </div>
+      )}
       {hasMore && (
         <div className="flex justify-center">
           <button

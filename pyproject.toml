@@ -49,6 +49,13 @@ dependencies = [
     "aiomysql>=0.3.2",
     "asyncssh>=2.24.0",
     "acfunsdk>=0.9.8",
+    "brotli>=1.2.0",
+    "qrcode-terminal>=0.8",
+    "pycryptodomex>=3.23.0",
+    "pyjwt>=2.13.0",
+    "yarl>=1.24.5",
+    "apscheduler>=3.11.3",
+    "colorama>=0.4.6",
 ]
 
 [[tool.uv.index]]
@@ -69,12 +76,16 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = [".", "tests"]
-testpaths = ["tests"]
+# 测试面 = 分层套件（tests/）+ 模块内套件（entities/<name>/tests、channels/<id>/tests）；
+# 模块测试随模块目录走，删除模块即整体拔出（零残留）
+testpaths = ["tests", "entities", "channels"]
+# 模块目录内的非测试子树不进入收集扫描（前端面板源码、nonebot 供应商源码等）
+norecursedirs = ["*.egg", ".*", "build", "dist", "venv", "node_modules", "frontend", "sources", "vendor"]
 asyncio_mode = "auto"
 timeout = 120
 addopts = "--strict-markers"
 markers = [
-    "unit: 纯 mock/纯函数/tmp_path 的快速单元测试（tests/unit/ 下自动标记）",
+    "unit: 纯 mock/纯函数/tmp_path 的快速单元测试（tests/unit/ 与模块内 tests/ 下自动标记）",
     "integration: 真实应用组装或需外部服务/凭证（tests/integration/ 下自动标记）",
     "slow: 运行较慢的用例，可用 -m 'not slow' 排除",
 ]
@@ -116,6 +127,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # 测试中允许盲断言异常（pytest.raises(Exception) 语义明确）
 "tests/**" = ["B017"]
+"entities/**/tests/**" = ["B017"]
+"channels/**/tests/**" = ["B017"]
 
 [tool.mypy]
 python_version = "3.10"

@@ -56,7 +56,7 @@ _MAX_LIFECYCLE_RETRIES = 5
 # 工具列表变更通知的同步防抖（秒）：server 可能连发多条通知，合并为一次同步
 _TOOL_SYNC_DEBOUNCE_SEC = 1.0
 # 连接稳定运行该时长后，重连重试预算复位（秒）：
-# 长期运行的服务偶发抖动不应累计耗尽预算而永久死亡（对齐 dsh 稳定窗口复位）
+# 长期运行的服务偶发抖动不应累计耗尽预算而永久死亡
 _RECONNECT_BUDGET_RESET_SEC = 300.0
 
 # 分组目录描述的截断上限
@@ -689,9 +689,8 @@ class MCPBridge:
         """会话消息分发：工具列表变更 → 防抖登记同步任务。
 
         SDK 默认把 ToolListChangedNotification 静默丢弃（client/session.py
-        的 ``case _: pass``），这里经 message_handler 拦截补上（对齐 dsh
-        的 ToolListChanged 重同步）。server 可能连发多条通知，防抖窗口
-        内合并为一次同步。
+        的 ``case _: pass``），这里经 message_handler 拦截补上。
+        server 可能连发多条通知，防抖窗口内合并为一次同步。
         """
         if not self._is_tool_list_changed(message):
             return

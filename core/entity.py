@@ -1115,7 +1115,7 @@ class EntityRegistry:
                 "error": f"执行超时 ({tool_timeout}s)",
             })
             # 结构化错误（cause/retryable + 稳定 code）：守卫/重试/前端按 cause
-            # 路由，不解析 message（对齐 dsh HarnessError.code 契约）。
+            # 路由，不解析 message（code 即机器可判定的错误契约）。
             # 只陈述事实（哪个调用、执行上限多久），处置决策留给 AI。
             # Model Experience: 超时错误附 args_preview 纯事实增量（仅错误路径，
             # token 影响可忽略）；tool 结果属 tool_chain 动态区，不触碰前缀缓存层

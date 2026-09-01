@@ -169,7 +169,7 @@ class BackgroundTaskRegistry:
             rec.killer = killer
 
     # ------------------------------------------------------------------
-    # 增量输出读取（单游标消费型，对齐 dsh jobs readOutput）
+    # 增量输出读取（单游标消费型：每次只返回上次读取之后的新增输出）
     # ------------------------------------------------------------------
     # task_id -> 已消费的字节偏移。游标留在注册表侧（生产者只管写文件），
     # 单读者语义：一个任务只有一个模型读者，每次读取只返回自上次以来的增量，
@@ -248,11 +248,17 @@ class BackgroundTaskRegistry:
             "hint": "delta 为本次新增输出（消费型读取，重复调用不会重发旧内容）；truncated=true 表示还有未读。" if delta else "暂无新输出，可稍后再查或等待完成通知。",
         }
 
-    def complete(self, task_id: str, success: bool, summary: str) -> bool:
+    def complete(
+            self, task_id: str, success: bool, summary: str,
+            *, claimed: Optional[bool] = None,
+    ) -> bool:
         """标记任务完成并唤醒等待者（线程安全）。
 
         主循环线程内直接完成；工作线程（如后台 shell 等待线程）经
         call_soon_threadsafe 回到主循环完成，此时返回值无意义（恒 True）。
+        claimed 非 None 时覆盖"是否存在等待者"的判定：调用方声明结果已被
+        自身消费（如前台委托的工具结果即通知本体）时传 True，跳过轮外
+        完成回调，避免同一完成事件双投递。
 
         Returns:
             True 表示该 scope 存在轮内等待者（完成事件由 wait_any 送达）；
@@ -264,11 +270,14 @@ class BackgroundTaskRegistry:
             and self._loop.is_running()
             and threading.current_thread() is not threading.main_thread()
         ):
-            self._loop.call_soon_threadsafe(self._finish, task_id, success, summary)
+            self._loop.call_soon_threadsafe(self._finish, task_id, success, summary, claimed)
             return True
-        return self._finish(task_id, success, summary)
+        return self._finish(task_id, success, summary, claimed)
 
-    def _finish(self, task_id: str, success: bool, summary: str) -> bool:
+    def _finish(
+            self, task_id: str, success: bool, summary: str,
+            claimed_override: Optional[bool] = None,
+    ) -> bool:
         """完成处理的实际实现（须运行在主循环线程）。"""
         rec = self._records.get(task_id)
         if rec is None or rec.done:
@@ -278,7 +287,10 @@ class BackgroundTaskRegistry:
         rec.summary = summary
         rec.finished_at = time.time()
 
-        claimed = self._waiting.get(rec.info.scope, 0) > 0
+        claimed = (
+            self._waiting.get(rec.info.scope, 0) > 0
+            if claimed_override is None else claimed_override
+        )
         if not claimed:
             rec.delivered = True
         event = self._events.get(rec.info.scope)

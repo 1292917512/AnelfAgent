@@ -163,7 +163,7 @@ class TaskDefinition(BaseModel):
     """任务所在文件夹（config/tasks 下的相对路径），由文件位置决定。"""
     handoff: bool = False
     """长任务结构化交接：运行结束时从输出提取 "# HANDOFF" 块存为下次运行的
-    上次交接（对齐 dsh ralph 的有界 handoff——每轮全新上下文 + 确定性接力）。"""
+    上次交接（每轮全新上下文 + 确定性接力）。"""
     expires_at: str = ""
     """生效截止时间（"YYYY-MM-DD" 或 "YYYY-MM-DD HH:MM"，空 = 永久有效）。
     到期后由心跳引擎自动停用任务并移除调度绑定，定义文件保留可改期恢复。"""

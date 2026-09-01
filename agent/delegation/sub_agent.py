@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional
 
 from core.log import log
 
@@ -43,6 +43,9 @@ class SubAgentResult:
     role: str = _ROLE_LEAF
     task_index: int = 0
     cancelled: bool = False
+    # 结束原因：completed（正常收束）/ budget_exhausted（轮次预算用尽，
+    # 产出可能只是中途状态，父级可决策拆小重委托）/ interrupted / no_output
+    completed_reason: str = "completed"
 
     def to_dict(self) -> dict:
         return {
@@ -53,6 +56,7 @@ class SubAgentResult:
             "role": self.role,
             "task_index": self.task_index,
             "cancelled": self.cancelled,
+            "completed_reason": self.completed_reason,
         }
 
 
@@ -138,6 +142,7 @@ class SubAgent:
             task_index: int = 0,
             model_id: str = "",
             agent_name: str = "",
+            delegation_id: str = "",
     ) -> None:
         self._mind = mind
         self.goal = goal
@@ -149,6 +154,8 @@ class SubAgent:
         self.model_id = model_id
         # 命名子代理档案名（日志/事件归因，空 = 未指定）
         self.agent_name = agent_name
+        # 所属委托 ID（steer 转向寻址；空 = 不可转向，如测试直构）
+        self.delegation_id = delegation_id
 
     async def run(self) -> SubAgentResult:
         """执行子任务并返回结果摘要。"""
@@ -178,17 +185,32 @@ class SubAgent:
         timeout = delegation_timeout_seconds()
         # 性价比模型：经已验证的 _model_id 覆盖管道注入（与 TaskExecutor 同路径）
         options = {"_model_id": self.model_id} if self.model_id else None
+
+        # steer 转向桥：把"取走本委托转向消息"闭包绑进当前任务上下文，
+        # think_loop 轮顶 drain（步骤边界注入）；无 delegation_id 不可转向
+        from agent.delegation.steer import bind_steer_drain, steer_inbox
+
+        def _drain_noop() -> List[str]:
+            return []
+
+        def _drain_own(delegation_id: str = self.delegation_id) -> List[str]:
+            return steer_inbox.drain(delegation_id)
+
+        drain: Callable[[], List[str]] = _drain_own if self.delegation_id else _drain_noop
+        completion: Dict[str, str] = {}
         try:
-            output = await asyncio.wait_for(
-                self._mind.reflect(
-                    [{"role": "user", "content": prompt}],
-                    max_iterations=self.max_iterations,
-                    allow_output_tools=False,
-                    extra_blocked_tools=extra_blocked,
-                    options=options,
-                ),
-                timeout=timeout,
-            )
+            with bind_steer_drain(drain):
+                output = await asyncio.wait_for(
+                    self._mind.reflect(
+                        [{"role": "user", "content": prompt}],
+                        max_iterations=self.max_iterations,
+                        allow_output_tools=False,
+                        extra_blocked_tools=extra_blocked,
+                        options=options,
+                        completion=completion,
+                    ),
+                    timeout=timeout,
+                )
         except asyncio.TimeoutError:
             log(
                 f"子代理整体超时（>{timeout:.0f}s）: {self.goal[:60]}",
@@ -207,16 +229,22 @@ class SubAgent:
                 role=self.role, task_index=self.task_index,
             )
         finally:
+            # 委托执行结束（无论成败/超时）：清箱防残留指令误入后续同名委托
+            if self.delegation_id:
+                steer_inbox.clear(self.delegation_id)
             _delegate_depth.reset(token)
         output = (output or "").strip()
+        reason = completion.get("reason", "completed")
         if not output:
             return SubAgentResult(
                 goal=self.goal, success=False,
                 error="子代理未产出任何结果",
                 role=self.role, task_index=self.task_index,
+                completed_reason="no_output" if reason == "completed" else reason,
             )
-        log(f"子代理完成: {self.goal[:60]} -> {len(output)} 字", tag="委托")
+        log(f"子代理完成: {self.goal[:60]} -> {len(output)} 字 (原因={reason})", tag="委托")
         return SubAgentResult(
             goal=self.goal, success=True, output=output,
             role=self.role, task_index=self.task_index,
+            completed_reason=reason,
         )

@@ -138,7 +138,7 @@ def _hash_result(result: str) -> str:
     return hashlib.sha256((result or "").encode("utf-8")).hexdigest()[:16]
 
 
-# 分级提醒中参数预览的字符上限（对齐 dsh argumentsPreviewChars）：
+# 分级提醒中参数预览的字符上限：
 # 截断的只是给模型看的文本，检测永远用全量 canonical 串比较
 # ——"cap bounds the reminder, never the detection"
 _ARGS_PREVIEW_CHARS = 500
@@ -282,7 +282,7 @@ class GuardrailController:
     ) -> GuardrailDecision:
         """工具执行后检查，返回处置决策。
 
-        被拒调用也计数（对齐 dsh repeat-tool-reminder）：审批拒绝/权限拦截
+        被拒调用也计数：审批拒绝/权限拦截
         返回的 error 结果经 classify_tool_failure 判为失败并累加——"模型猛锤
         一个被拒的调用，正是要打破的循环"。守卫自身拦截（before_call block）
         的合成结果在上游以 skip_guardrail 跳过本方法，避免同一调用双重计数。
@@ -353,7 +353,7 @@ class GuardrailController:
         return _ALLOW
 
     def _graduate_exact_message(self, tool_name: str, arguments: str, count: int) -> str:
-        """分级提醒文案（对齐 dsh repeat-tool-reminder）：首次达阈温和提示，
+        """分级提醒文案：首次达阈温和提示，
         之后给出完整报告（工具名 + 连续次数 + 参数预览），并明令停止该调用。"""
         if count <= self.config.exact_failure_warn_after:
             # 首次达阈：温和提醒，鼓励换思路

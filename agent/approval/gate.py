@@ -5,6 +5,10 @@ ask 先经 Guardian 自动评审（放行即执行），guardian 拒绝或不可
 才创建批准会话、发频道提示、事件驱动等待人工决策；无频道时由 guardian 独立
 裁决，评审不可用则放行。
 
+放行不打折、但要留痕：guardian 放行但风险 high、或无人可问路径上评审
+不可用放行时，经 notify 回调给 AI 本身发一条提醒（提醒而非拒绝——自主
+路径人不在场，由模型复核后自行决定是否告知用户）；审计表同步记录。
+
 支持"记住决策"：本会话不再询问（内存规则）/ 永久放行（写入规则文件）。
 
 使用方式：
@@ -21,6 +25,7 @@ ask 先经 Guardian 自动评审（放行即执行），guardian 拒绝或不可
 
 from __future__ import annotations
 
+import asyncio
 import re
 import threading
 import time
@@ -172,12 +177,15 @@ class ApprovalGate:
         user_id: str,
         timeout: Optional[float] = None,
         abort_check: Optional[Callable[[], bool]] = None,
+        notify: Optional[Callable[[str], Any]] = None,
     ) -> ApprovalDecision:
         """请求批准（核心入口）。
 
         channel 为 None 表示无人可问的路径（reflect/心跳/子代理）：ask 由
         Guardian 独立裁决，评审不可用则放行。abort_check 命中时等待立即收束
-        为 CANCELLED。
+        为 CANCELLED。notify 是可选的异步提醒回调（接收提醒文本）：guardian
+        放行但风险偏高、或评审不可用放行时调用——放行不打折，提醒的读者是
+        AI 本身（如经 PushHub 写入当前 scope，模型当轮/下轮可见后自行复核）。
 
         Returns:
             ApprovalDecision.APPROVED / DENIED / EXPIRED / CANCELLED
@@ -237,6 +245,17 @@ class ApprovalGate:
                 risk_level=risk_level.value, matched_rule=verdict.matched_pattern or "*",
                 tool_args=self._sanitize_args(tool_args),
             )
+            # 放行不打折，但 guardian 标了高风险的给 AI 本身留一条提醒
+            # （提醒而非拒绝——自主路径人不在场，提醒的读者是模型自己：
+            # 自行复核，酌情决定是否告知用户）。
+            if str(guardian_verdict.risk).lower() == "high":
+                await self._safe_notify(
+                    notify,
+                    f"guardian 放行了 {tool_name} 但标注风险 high"
+                    f"（{guardian_verdict.rationale or '未给出理由'}）。"
+                    "请复核该操作是否确属当前任务所需、影响是否可控；"
+                    "若涉及用户数据或不可逆变更，先向用户说明再继续。",
+                )
             return ApprovalDecision.APPROVED
 
         if channel is None:
@@ -252,12 +271,22 @@ class ApprovalGate:
                     tool_args=self._sanitize_args(tool_args),
                 )
                 return ApprovalDecision.DENIED
+            log(
+                f"Guardian 不可用（无人可问路径，放行并提醒）: {tool_name} risk={risk_level.value}",
+                "WARNING", tag="权限",
+            )
             audit.record_decision_bg(
                 tool_name=tool_name, outcome="guardian_bypass", decided_by="system",
                 reason="guardian 不可用，无人可问路径按自主性放行",
                 channel_id=channel_id, chat_id=chat_id, user_id=user_id,
                 risk_level=risk_level.value, matched_rule=verdict.matched_pattern or "*",
                 tool_args=self._sanitize_args(tool_args),
+            )
+            await self._safe_notify(
+                notify,
+                f"guardian 评审不可用，{tool_name} 已按默认放行（风险 {risk_level.value}）——"
+                "该操作未经安全评审，请自行评估后果；"
+                "若涉及用户数据、凭据或不可逆变更，向用户说明后再执行类似操作。",
             )
             return ApprovalDecision.APPROVED
 
@@ -460,6 +489,15 @@ class ApprovalGate:
         response = await channel.forward_message(request)
         if not response.success:
             raise RuntimeError(f"批准提示发送失败: {response.error}")
+
+    async def _safe_notify(self, notify: Callable[[str], Any], text: str) -> None:
+        """best-effort 调用提醒回调（提醒失败不影响放行决策）。"""
+        try:
+            result = notify(text)
+            if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
+                await result
+        except Exception as exc:
+            log(f"权限提醒回调失败: {exc}", "DEBUG", tag="权限")
 
     async def _notify_outcome(self, channel: Optional[BaseChannel], chat_id: str, text: str) -> None:
         """把权限决策结果通知到频道（best-effort，拒绝原因对用户可见）。"""

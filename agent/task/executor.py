@@ -158,7 +158,7 @@ class TaskExecutor:
         ]
         if handoff:
             # 长任务交接：输出末尾追加结构化块，供下次运行确定性接力
-            # （策略进指令而非全局人设——只有 handoff 任务看到，对齐 dsh "策略进工具自带 section"）
+            # （策略进指令而非全局人设——只有 handoff 任务看到）
             rules.append(
                 "\n6. 本任务为多轮接力任务：在输出最末尾追加一段以 \"# HANDOFF\" 行起始的"
                 "交接块（JSON：{\"summary\": 本轮进展, \"next_steps\": [下一步…], "

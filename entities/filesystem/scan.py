@@ -2,13 +2,13 @@
 
 从 tools.search_files / tools.read_file 抽出的无副作用核心，职责：
 
-- **噪声剪枝**（对齐 dsh glob 的 VCS 目录排除，扩展到依赖/缓存目录）：
+- **噪声剪枝**（版本控制/依赖/构建/缓存目录）：
   os.walk 期间按目录名剪枝，``node_modules``/``.git`` 等既不进结果也不再
   向下遍历——此前 glob.iglob 全量下钻，装了依赖的 workspace 一次
   ``**/*.py`` 内容搜索要读几万个小文件；
 - **任意深度 glob 语义**：fnmatch 对相对路径匹配（``*.png`` 命中任意深度，
-  对齐 Claude Code Glob；fnmatch 的 ``*`` 天然跨 ``/``，``**`` 与之等价）；
-- **二进制嗅探**：读前 8KB 查 NUL 字节（对齐 dsh fsio 的 BINARY_SAMPLE_BYTES）。
+  fnmatch 的 ``*`` 天然跨 ``/``，``**`` 与之等价）；
+- **二进制嗅探**：读前 8KB 查 NUL 字节。
   read_file 的扩展名表覆盖不到无扩展名/冷门扩展名的二进制文件，且文本
   读取走 ``errors="replace"`` 永不抛解码异常——NUL 采样是唯一可靠防线。
 """
@@ -72,7 +72,7 @@ def iter_matches(
     pattern 对相对路径 fnmatch：``*.png`` 命中任意深度文件（fnmatch 的
     ``*`` 天然跨 ``/``），``config/*.json`` 限定一级子目录。前导 ``**/``
     额外按文件名匹配余下模式——补齐 glob 递归模式的"零目录"语义
-    （``**/*.py`` 也命中根级 a.py），与旧 glob.iglob(recursive=True) 对齐。
+    （``**/*.py`` 也命中根级 a.py）。
     目录同样参与匹配。
     """
     exclude = DEFAULT_EXCLUDE_DIRS if exclude is None else exclude

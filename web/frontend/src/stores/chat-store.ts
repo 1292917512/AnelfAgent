@@ -39,6 +39,8 @@ import {
 
 // ── SSE 单例 ──────────────────────────────────────────────────
 let _eventSource: EventSource | null = null;
+/** 曾成功连上过：区分"初次连接"与"断线后重连"（重连需补拉错过的帧） */
+let _wasConnected = false;
 
 /** 历史分页大小（首次加载与"加载更早"共用） */
 const HISTORY_PAGE_SIZE = 100;
@@ -48,6 +50,8 @@ interface ChatState {
   activeChatId: string;
   chats: ChatMeta[];
   contextUsage: ContextUsage | null;
+  /** SSE 实时流连接状态（断线时聊天流顶部显示恢复横幅） */
+  sseConnected: boolean;
 
   /** 派生 helper：当前激活 bucket（渲染时直接用） */
   active: () => ChatBucket;
@@ -62,6 +66,8 @@ interface ChatState {
   loadEarlier: (chatId?: string) => Promise<void>;
   startSSE: () => void;
   stopSSE: () => void;
+  /** 断线重连后补拉当前会话最近一页（错过的落地帧经历史补齐） */
+  refreshAfterReconnect: (chatId?: string) => Promise<void>;
   clearMessages: () => void;
   addFiles: (files: FileList | null) => Promise<void>;
   attachWorkspaceFile: (path: string, name: string) => void;
@@ -110,6 +116,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     activeChatId: initialChatId,
     chats: initialChats,
     contextUsage: null,
+    sseConnected: false,
 
     active: () => {
       const s = get();
@@ -305,15 +312,58 @@ export const useChatStore = create<ChatState>((set, get) => {
         },
       });
 
+      es.onopen = () => {
+        set({ sseConnected: true });
+        if (_wasConnected) {
+          // 断线重连：补拉当前会话最近一页历史——断线窗口内落地的回复
+          // 帧（delta/turn_end）不会重发，只有刷新历史才能补齐
+          const chatId = get().activeChatId;
+          void get().refreshAfterReconnect(chatId);
+        }
+        _wasConnected = true;
+      };
       es.onerror = () => {
+        set({ sseConnected: false });
         if (es.readyState === EventSource.CLOSED) _eventSource = null;
       };
+    },
+
+    refreshAfterReconnect: async (chatId) => {
+      const targetChatId = chatId ?? get().activeChatId;
+      try {
+        const scopeId = "web_user";
+        const r = await chatApi.history(scopeId, HISTORY_PAGE_SIZE, targetChatId === DEFAULT_CHAT_ID ? undefined : targetChatId);
+        const list = (r.data ?? []) as ChatHistoryMessage[];
+        // 尾部对齐合并：以最新一页为基准，保留本地更早的已加载消息
+        const firstNewId = list[0]?.id;
+        const isNewer = (id: number | undefined): id is number =>
+          id != null && firstNewId != null && id < firstNewId;
+        updateBucket(targetChatId, (b) => {
+          const refreshed = list.map((m) => ({
+            role: m.role,
+            content: m.content,
+            timestamp: m.timestamp,
+            ts: m.ts,
+            id: m.id,
+            kind: m.kind,
+          }));
+          const localEarlier = refreshed.length
+            ? b.messages.filter((m) => isNewer(m.id))
+            : b.messages;
+          return {
+            messages: [...localEarlier, ...refreshed],
+            earliestId: localEarlier[0]?.id ?? firstNewId ?? b.earliestId,
+            hasMore: b.hasMore,
+          };
+        });
+      } catch { /* 补拉失败：保持现状，用户可手动刷新 */ }
     },
 
     stopSSE: () => {
       clearSendWatchdog();
       _eventSource?.close();
       _eventSource = null;
+      set({ sseConnected: false });
     },
 
     clearMessages: () => {

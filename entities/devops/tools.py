@@ -42,7 +42,7 @@ def restart_app() -> str:
     return _result("restart_app", ok=True, message="应用即将优雅重启...")
 
 
-@tool(name="get_crash_report", group="devops")
+@tool(name="get_crash_report", concurrency_safe=True, group="devops")
 def get_crash_report() -> str:
     """查询最近一次进程崩溃信息（退出码/信号/系统崩溃报告摘要）。
 

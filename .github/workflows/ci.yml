@@ -11,8 +11,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 路径感知：仅 Python 改动跳过前端 job、仅前端改动跳过 Python job，
-  # 文档类提交两个 job 都跳过；手动触发（workflow_dispatch）无视过滤全量跑。
+  # 改动归类：把变更文件映射为「lint 门禁开关 / 前端开关 / 测试矩阵」。
+  # 模块（entities/<name>、channels/<id>）自带 tests/ 套件，改动只跑对应模块腿，
+  # 在 GitHub UI 上按模块独立呈现红绿，快速定位、分开管理；
+  # 分层主干（core/agent/tests 基建/依赖锁定）改动影响面横切所有模块 → 全量腿。
   # 原生 shell 实现（无第三方 action）：dorny/paths-filter@v3 已停止维护且被
   # 官方标记 Node 20 废弃（强制 node24 兼容模式，迟早硬失败），且其对 push
   # 事件依赖工作区 git 历史——缺 checkout 即 git exit 128（01627ef 事故根因）
@@ -22,33 +24,76 @@ jobs:
     outputs:
       python: ${{ steps.filter.outputs.python }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      matrix: ${{ steps.filter.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # 与 HEAD^ 基线对比所需的最小历史
+          fetch-depth: 2  # push 与 HEAD^ 基线对比所需的最小历史
       - name: Detect changed paths
         id: filter
         run: |
           set -eu
-          # push / pull_request 统一与 HEAD^（基线）对比；
+          # pull_request 与目标分支基点对比（HEAD^ 只能看到 PR 末一个提交）；
+          # push 与 HEAD^ 对比；手动触发无视过滤全量跑；
           # 基线不可得（浅历史边缘情形）时保守视为全量变更
-          if git cat-file -e HEAD^ 2>/dev/null; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            changed=$(git ls-files)
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --depth=1 origin "${{ github.event.pull_request.base.sha }}"
+            changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD)
+          elif git cat-file -e HEAD^ 2>/dev/null; then
             changed=$(git diff --name-only HEAD^ HEAD)
           else
             changed=$(git ls-files)
           fi
           py=$(grep -E '\.py$|^pyproject\.toml$|^uv\.lock$|^\.github/workflows/ci\.yml$' <<<"$changed" || true)
-          fe=$(grep -E '^web/frontend/|^\.github/workflows/ci\.yml$' <<<"$changed" || true)
+          # 模块前端（频道 frontend/ 与实体面板 tsx）软链进 web/frontend 参与构建，同属前端改动面
+          fe=$(grep -E '^web/frontend/|^channels/[^/]+/frontend/|^entities/.+\.(tsx|ts|css)$|^\.github/workflows/ci\.yml$' <<<"$changed" || true)
+
+          # 模块测试腿只跟随 Python 改动面（纯前端/文档改动不触发后端测试）
+          changed_py=$(grep -E '\.py$' <<<"$changed" || true)
+
+          entries='[]'
+          add() { entries=$(jq -c --arg n "$1" --arg p "$2" '. + [{name:$n, paths:$p}]' <<<"$entries"); }
+
+          # 全量触发面：分层主干（core/agent）+ 测试基建（tests/、根 conftest）+ 依赖与工作流
+          if grep -qE '^(core/|agent/|tests/|conftest\.py|pyproject\.toml|uv\.lock|\.github/workflows/ci\.yml)' <<<"$changed"; then
+            entries='[{"name":"all","paths":""}]'
+          else
+            # 实体模块：跑模块内套件 + 跨实体共享套件（_sdk 桥接 / 外围工具契约）
+            for top in $(grep -oE '^entities/[^/]+' <<<"$changed_py" | sort -u); do
+              if [ -d "$top" ]; then
+                [ -d "$top/tests" ] && add "entity-${top#entities/}" "$top/tests tests/unit/entities"
+              else
+                add "entities-shared" "tests/unit/entities"  # entities/_sdk.py 等根级共享件
+              fi
+            done
+            # 频道模块：跑模块内套件；channels/__init__.py（自动发现设施）→ 全频道回归
+            if grep -qE '^channels/[^/]+\.py$' <<<"$changed_py"; then
+              add "channels-all" "channels"
+            else
+              for top in $(grep -oE '^channels/[^/]+' <<<"$changed_py" | sort -u); do
+                [ -d "$top/tests" ] && add "channel-${top#channels/}" "$top/tests"
+              done
+            fi
+            grep -qE '^services/' <<<"$changed_py" && add "services" "tests/unit/services"
+            web_backend=$(grep -E '^web/' <<<"$changed_py" | grep -vE '^web/frontend/' || true)
+            [ -n "$web_backend" ] && add "web" "tests/unit/web tests/integration/web"
+            entries=$(jq -c 'unique_by(.name)' <<<"$entries")
+          fi
+
           {
             echo "python=$([ -n "$py" ] && echo true || echo false)"
             echo "frontend=$([ -n "$fe" ] && echo true || echo false)"
+            echo "matrix=$entries"
           } >> "$GITHUB_OUTPUT"
 
-  python:
+  # 静态门禁全仓收口：ruff / 分层依赖守卫 / mypy 与改动面无关，始终全量
+  lint:
     needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.python == 'true'
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -81,21 +126,44 @@ jobs:
         run: uv run mypy .
         continue-on-error: true
 
-      - name: Pytest + Coverage
-        run: uv run pytest --cov --cov-report=xml --cov-report=term -n auto
+  # 测试按模块矩阵分腿：每条腿只跑自己的套件，UI 上按模块独立呈现
+  tests:
+    needs: changes
+    if: needs.changes.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false  # 一个模块红不取消其余模块腿，保留完整失败面
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+        env:
+          UV_INDEX_URL: https://pypi.org/simple
+
+      # paths 为空（all 腿）时走 pyproject testpaths 全量收集
+      - name: Pytest (${{ matrix.name }})
+        run: uv run pytest ${{ matrix.paths }} --cov --cov-report=xml --cov-report=term -n auto
 
       - name: Upload coverage report
         if: always()  # pytest 失败时也上传，便于排查
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: coverage-${{ matrix.name }}
           path: coverage.xml
           retention-days: 7
           if-no-files-found: ignore
 
   frontend:
     needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.frontend == 'true'
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:

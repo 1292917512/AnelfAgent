@@ -1,10 +1,13 @@
-"""tests 全局共享层：配置隔离 + embedding 注册表隔离 + 目录分层自动 marker + 线程泄漏检测。
+"""仓库级测试共享层：配置隔离 + embedding 注册表隔离 + 目录分层自动 marker + 线程泄漏检测。
+
+作用于全部测试面（分层套件 tests/ 与模块内套件 <模块>/tests/ 均经此收口）：
 
 - ConfigManager 隔离：测试态指向临时配置文件并清空内存态，
   防止任何测试回写覆盖真实 config/app_config.json。
 - Embedding 注册表隔离：实体模块导入期注册的全局 backlog 不得挂载到
   测试内 worker（其 handler 会打开真实数据库，aiosqlite 线程泄漏挂住退出）。
-- 自动 marker：tests/unit/ 下用例自动标记 unit，tests/integration/ 下自动标记
+- 自动 marker：tests/unit/ 与模块内 tests/（entities/<name>/tests、
+  channels/<id>/tests）下的用例自动标记 unit，tests/integration/ 下自动标记
   integration，无需逐文件手写；可用 -m "not integration" 分层运行。
 - 线程泄漏检测：会话结束时报告存活的非守护线程（如未关闭的 aiosqlite
   连接），这类泄漏会阻塞 pytest 进程退出、挂起 CI。
@@ -19,8 +22,10 @@ from pathlib import Path
 
 import pytest
 
-_UNIT_DIR = Path(__file__).parent / "unit"
-_INTEGRATION_DIR = Path(__file__).parent / "integration"
+_REPO_ROOT = Path(__file__).parent
+_UNIT_DIR = _REPO_ROOT / "tests" / "unit"
+_INTEGRATION_DIR = _REPO_ROOT / "tests" / "integration"
+_MODULE_PARENTS = ("entities", "channels")
 
 
 @pytest.fixture(autouse=True)
@@ -89,12 +94,21 @@ def _isolate_embedding_registry():
     embedding_worker._pending_backlogs.update(saved_pending)
 
 
+def _is_module_test(path: Path) -> bool:
+    """模块内测试判定：entities/<name>/tests/ 或 channels/<id>/tests/ 下的用例。"""
+    try:
+        rel = path.relative_to(_REPO_ROOT)
+    except ValueError:
+        return False
+    return len(rel.parts) >= 3 and rel.parts[0] in _MODULE_PARENTS and rel.parts[2] == "tests"
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """按所在目录自动打上 unit / integration marker。"""
     for item in items:
         path = Path(str(item.fspath))
         try:
-            if path.is_relative_to(_UNIT_DIR):
+            if path.is_relative_to(_UNIT_DIR) or _is_module_test(path):
                 item.add_marker(pytest.mark.unit)
             elif path.is_relative_to(_INTEGRATION_DIR):
                 item.add_marker(pytest.mark.integration)

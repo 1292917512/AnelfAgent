@@ -1,10 +1,10 @@
 import { useState, useCallback } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { modelsApi, configApi } from "@/lib/api";
+import { modelsApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui";
-import type { ModelPriorityItem, ConfigValues } from "@/lib/types";
+import type { ModelPriorityItem } from "@/lib/types";
 import { useModelPin, usePriorities } from "@/components/models/ModelSelect";
 import {
   Star, Eye, Wrench, Server, Brain, ChevronsUp, GripVertical, Layers, Pin,
@@ -26,7 +26,6 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ReasoningEffortOptions } from "@/components/common/ReasoningEffortSelect";
 
 const TYPE_ORDER = ["chat", "vision", "embedding", "asr", "tts", "video", "music", "rerank", "image_gen", "image_edit"];
 
@@ -152,18 +151,6 @@ export function PrioritiesPanel() {
 
   const { data: priorities = {} } = usePriorities();
 
-  const { data: mindConfig } = useQuery<ConfigValues>({
-    queryKey: ["mindConfig"],
-    queryFn: () => configApi.getMind().then(r => r.data?.config || r.data),
-  });
-
-  const effortMut = useMutation({
-    mutationFn: (effort: string) => configApi.saveMind({ reasoning_effort: effort }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["mindConfig"] }),
-  });
-
-  const currentEffort = String(mindConfig?.reasoning_effort ?? "");
-
   const pinMut = useModelPin();
 
   const setPriorityMut = useMutation({
@@ -221,18 +208,7 @@ export function PrioritiesPanel() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted">{t("priorityDesc")}</p>
-        <div className="flex items-center gap-2 shrink-0">
-          <span className="text-xs text-muted">{t("reasoningEffort")}</span>
-          <select value={currentEffort}
-            onChange={e => effortMut.mutate(e.target.value)}
-            className="bg-elevated border border-input rounded-md px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent">
-            <option value="">{t("effortDefault")}</option>
-            <ReasoningEffortOptions t={t} />
-          </select>
-        </div>
-      </div>
+      <p className="text-sm text-muted">{t("priorityDesc")}</p>
 
       <div className="flex flex-wrap gap-1.5">
         {availableTypes.map(mt => (
