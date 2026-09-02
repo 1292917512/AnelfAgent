@@ -148,26 +148,6 @@ export interface StChatMessagesResult {
   messages: StChatMessage[];
 }
 
-/** AnelfAgent 已配置的可对话模型（供直连酒馆） */
-export interface StMyModel {
-  provider_id: string;
-  provider_name: string;
-  model_id: string;
-  model: string;
-  base_url: string;
-  api_type: string;
-}
-
-export interface StMyModelsResult {
-  models: StMyModel[];
-}
-
-export interface StUseMyModelResult {
-  ok: boolean;
-  model: string;
-  endpoint: string;
-  provider: string;
-}
 
 /** AI 对话发送结果（走 anelf-bridge 插件） */
 export interface StChatSendResult {

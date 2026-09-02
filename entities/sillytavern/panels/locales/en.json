@@ -91,13 +91,7 @@
     "maxTokens": "Max tokens",
     "saved": "Model settings saved",
     "changed": "Updated fields: {{fields}}",
-    "noChange": "Nothing to update",
-    "directLink": "Link AnelfAgent model",
-    "directLinkHint": "One-click bridge a configured provider into the tavern (writes endpoint + key)",
-    "pickModel": "Pick a model",
-    "pickPlaceholder": "— choose a model to link —",
-    "apply": "Link",
-    "linked": "Linked {{model}}"
+    "noChange": "Nothing to update"
   },
   "git": {
     "title": "Repository",

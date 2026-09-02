@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { PlugZap } from "lucide-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiErrorMessage, sillytavernApi } from "./api";
 import type { StModelUpdatePayload } from "./types";
 import { Button, Input, LoadingBlock, Select, toast } from "@/components/ui";
@@ -18,7 +17,6 @@ const MAIN_APIS = [
 /** 模型配置面板：读写酒馆 settings.json 的模型参数 */
 export function ModelPanel() {
   const { t } = useTranslation(["sillytavern", "common"]);
-  const queryClient = useQueryClient();
 
   const { data: status } = useQuery({
     queryKey: ["st", "status"],
@@ -31,26 +29,6 @@ export function ModelPanel() {
     queryFn: () => sillytavernApi.settings().then((r) => r.data),
     enabled: !!status?.running,
     retry: false,
-  });
-
-  // AnelfAgent 已配置的可对话模型（供一键直连）
-  const { data: myModels } = useQuery({
-    queryKey: ["st", "my-models"],
-    queryFn: () => sillytavernApi.myModels().then((r) => r.data),
-    enabled: !!status?.running,
-    retry: false,
-  });
-  const [selectedMyModel, setSelectedMyModel] = useState("");
-
-  const useMyMut = useMutation({
-    mutationFn: (modelId: string) => sillytavernApi.useMyModel(modelId),
-    onSuccess: (r) => {
-      toast.success(
-        t("sillytavern:model.linked", { model: r.data.model }),
-      );
-      queryClient.invalidateQueries({ queryKey: ["st", "settings"] });
-    },
-    onError: (err) => toast.error(apiErrorMessage(err, t("sillytavern:common.requestFailed"))),
   });
 
   const [form, setForm] = useState({
@@ -98,42 +76,6 @@ export function ModelPanel() {
 
   return (
       <div className="space-y-4">
-      {/* 直连 AnelfAgent 模型 */}
-      <Card
-        title={t("sillytavern:model.directLink")}
-        subtitle={t("sillytavern:model.directLinkHint")}
-      >
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="block min-w-64 flex-1">
-            <span className="text-xs font-medium text-muted">
-              {t("sillytavern:model.pickModel")}
-            </span>
-            <Select
-              value={selectedMyModel}
-              onChange={(e) => setSelectedMyModel(e.target.value)}
-              className="mt-1 w-full"
-            >
-              <option value="">{t("sillytavern:model.pickPlaceholder")}</option>
-              {(myModels?.models ?? []).map((m) => (
-                <option key={m.model_id} value={m.model_id}>
-                  {m.provider_name} · {m.model}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <Button
-            variant="primary"
-            size="md"
-            loading={useMyMut.isPending}
-            disabled={!selectedMyModel}
-            onClick={() => useMyMut.mutate(selectedMyModel)}
-          >
-            <PlugZap size={14} />
-            {t("sillytavern:model.apply")}
-          </Button>
-        </div>
-      </Card>
-
       {/* 酒馆模型参数 */}
       <Card
       title={t("sillytavern:model.title")}

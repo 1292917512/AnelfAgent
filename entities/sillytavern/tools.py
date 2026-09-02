@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import tool
@@ -409,110 +409,6 @@ def sillytavern_chat(avatar: str, message: str, chat_file: str = "",
                      name: str = "Anelf") -> str:
     def _run() -> Dict[str, Any]:
         return chat_bridge.chat_turn(avatar, message, chat_file or None, name)
-    return _guard(_run)
-
-
-# ------------------------------------------------------------------
-# 模型直连（把 AnelfAgent 已配置的模型一键应用到酒馆）
-# ------------------------------------------------------------------
-
-@tool(name="sillytavern_list_my_models", group=_GROUP, tags=["sillytavern"],
-      concurrency_safe=True,
-      description="列出 AnelfAgent 已配置的可对话模型（供应商 + 模型名），"
-                  "供选择应用到酒馆")
-def sillytavern_list_my_models() -> str:
-    def _run() -> List[Dict[str, Any]]:
-        from entities._sdk import get_model_service
-        svc = get_model_service()
-        out = []
-        for prov in svc.list_providers():
-            pid = prov.get("id") or prov.get("provider_id")
-            for m in svc.list_provider_models(pid):
-                if "chat" not in (m.get("model_types") or ["chat"]):
-                    continue
-                out.append({
-                    "provider_id": pid,
-                    "provider_name": prov.get("name", pid),
-                    "model_id": m.get("id") or m.get("name"),
-                    "model": m.get("model"),
-                    "base_url": prov.get("base_url", ""),
-                    "api_type": prov.get("api_type", "openai"),
-                })
-        return out
-    return _guard(_run)
-
-
-def _normalize_chat_endpoint(base_url: str) -> str:
-    """把供应商 base_url 规范成酒馆 custom 源需要的前缀（不含 /chat/completions）。
-
-    酒馆 generate 内部会自己拼 `${custom_url}/chat/completions`，因此 custom_url
-    只需给到 .../v1 这一层；若带了 /chat/completions 会被重复拼接成 404。
-    """
-    url = str(base_url or "").strip().rstrip("/")
-    if not url:
-        return url
-    # 去掉酒馆会自动补的后缀，避免重复
-    if url.endswith("/chat/completions"):
-        url = url[: -len("/chat/completions")]
-    # 去掉尾部的协议段（/anthropic、/messages 等）
-    for suffix in ("/messages", "/anthropic", "/responses"):
-        if url.endswith(suffix):
-            url = url[: -len(suffix)]
-            break
-    # 规范到 .../v1
-    if not url.endswith("/v1"):
-        url += "/v1"
-    return url
-
-
-@tool(name="sillytavern_use_my_model", group=_GROUP, tags=["sillytavern"],
-      description="把 AnelfAgent 已配置的某个模型直接接到酒馆：自动把该供应商的"
-                  "接口地址与密钥写入酒馆（custom 源），并设为当前聊天模型。"
-                  "model_id 用 sillytavern_list_my_models 查到的 model_id")
-def sillytavern_use_my_model(model_id: str) -> str:
-    def _run() -> Dict[str, Any]:
-        base = _require_running()
-        from entities._sdk import get_llm_manager
-        manager = get_llm_manager()
-        client = manager.get_client(model_id)
-        if client is None:
-            raise ValueError(f"模型不存在: {model_id}（先用 sillytavern_list_my_models 查看可选）")
-        cfg = client.config
-        provider = manager.get_provider(cfg.provider_id)
-        if provider is None:
-            raise ValueError(f"供应商不存在: {cfg.provider_id}")
-        base_url = str(getattr(provider, "base_url", "") or "").rstrip("/")
-        api_key = str(getattr(provider, "api_key", "") or "")
-        api_type = str(getattr(provider, "api_type", "openai") or "openai")
-        if not base_url:
-            raise ValueError(f"供应商 {cfg.provider_id} 未配置 base_url，无法直连酒馆")
-
-        endpoint = _normalize_chat_endpoint(base_url)
-        if api_type != "openai":
-            log_hint = (f"供应商协议为 {api_type}，已按 OpenAI 兼容端点 {endpoint} 接入；"
-                        "若酒馆生成报错，请改用 OpenAI 协议的供应商。")
-        else:
-            log_hint = ""
-
-        st_client = get_st_client()
-        settings = st_client.get_settings(base)["settings"]
-        oai = dict(settings.get("oai_settings", {}) or {})
-        oai["chat_completion_source"] = "custom"
-        oai["custom_url"] = endpoint
-        oai["openai_model"] = str(cfg.model)
-        settings["oai_settings"] = oai
-        settings["main_api"] = "openai"
-        st_client.save_settings(base, settings)
-        if api_key:
-            st_client.write_secret(base, "api_key_custom", api_key)
-        return {
-            "ok": True,
-            "model": cfg.model,
-            "endpoint": endpoint,
-            "provider": cfg.provider_id,
-            "protocol_note": log_hint,
-            "hint": "已写入酒馆 custom 源，酒馆网页端刷新后生效",
-        }
     return _guard(_run)
 
 

@@ -91,13 +91,7 @@
     "maxTokens": "最大回复 (max_tokens)",
     "saved": "模型配置已保存",
     "changed": "已更新字段：{{fields}}",
-    "noChange": "没有需要更新的字段",
-    "directLink": "直连 AnelfAgent 模型",
-    "directLinkHint": "从已配置的供应商一键接入酒馆（自动写入接口地址与密钥）",
-    "pickModel": "选择模型",
-    "pickPlaceholder": "— 选择要接入的模型 —",
-    "apply": "接入酒馆",
-    "linked": "已接入 {{model}}"
+    "noChange": "没有需要更新的字段"
   },
   "git": {
     "title": "仓库状态",

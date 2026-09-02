@@ -17,9 +17,7 @@ import type {
   StLogsResult,
   StModelUpdatePayload,
   StModelUpdateResult,
-  StMyModelsResult,
   StStatus,
-  StUseMyModelResult,
 } from "./types";
 
 export { apiErrorMessage };
@@ -63,10 +61,6 @@ export const sillytavernApi = {
   saveModel: (data: StModelUpdatePayload) =>
     api.post<StModelUpdateResult>(`${BASE}/settings/model`, data),
 
-  // AnelfAgent 模型直连酒馆
-  myModels: () => api.get<StMyModelsResult>(`${BASE}/my-models`),
-  useMyModel: (modelId: string) =>
-    api.post<StUseMyModelResult>(`${BASE}/my-models/use`, { model_id: modelId }),
 
   // AI 与酒馆角色对话（走 anelf-bridge 插件）
   chatSend: (avatar: string, message: string, chatFile = "", name = "Anelf") =>
