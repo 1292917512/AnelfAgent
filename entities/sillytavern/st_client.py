@@ -256,6 +256,96 @@ class STClient:
         except (httpx.HTTPError, ValueError) as e:
             raise STError(f"读取扩展列表失败: {e}") from e
 
+    # ------------------------------------------------------------------
+    # 向量记忆（Data Bank / 角色长期记忆）
+    # ------------------------------------------------------------------
+
+    def vector_insert(self, base_url: str, text: str, collection_id: str,
+                      source: str = "transformers") -> Any:
+        """插入一条文本到向量库。items 需 {hash,text,index}，hash 用文本的 md5。"""
+        import hashlib
+        items = [{
+            "hash": int(hashlib.md5(text.encode()).hexdigest()[:12], 16) % (2**31),
+            "text": text,
+            "index": 0,
+        }]
+        return self.post(base_url, "/api/vector/insert", {
+            "collectionId": collection_id, "items": items, "source": source,
+        })
+
+    def vector_query(self, base_url: str, collection_id: str, search_text: str,
+                     top_k: int = 5, threshold: float = 0.0,
+                     source: str = "transformers") -> Any:
+        return self.post(base_url, "/api/vector/query", {
+            "collectionId": collection_id, "searchText": search_text,
+            "topK": top_k, "threshold": threshold, "source": source,
+        })
+
+    def vector_list(self, base_url: str, collection_id: str) -> Any:
+        return self.post(base_url, "/api/vector/list", {"collectionId": collection_id})
+
+    def vector_purge(self, base_url: str, collection_id: str) -> Any:
+        return self.post(base_url, "/api/vector/purge", {"collectionId": collection_id})
+
+    # ------------------------------------------------------------------
+    # 世界书（Lorebook）
+    # ------------------------------------------------------------------
+
+    def worldinfo_edit(self, base_url: str, name: str, data: Dict[str, Any]) -> Any:
+        """整本世界书覆盖式编辑（先 get 再改再 edit）。"""
+        return self.post(base_url, "/api/worldinfo/edit", {"name": name, "data": data})
+
+    def worldinfo_delete(self, base_url: str, name: str) -> Any:
+        return self.post(base_url, "/api/worldinfo/delete", {"name": name})
+
+    # ------------------------------------------------------------------
+    # 群聊
+    # ------------------------------------------------------------------
+
+    def groups_all(self, base_url: str) -> List[Dict[str, Any]]:
+        return self.post(base_url, "/api/groups/all") or []
+
+    def group_chat_get(self, base_url: str, group_id: str) -> Any:
+        return self.post(base_url, "/api/chats/group/get", {"id": group_id})
+
+    # ------------------------------------------------------------------
+    # 外部内容导入（角色卡站）
+    # ------------------------------------------------------------------
+
+    def content_import_url(self, base_url: str, url: str) -> Dict[str, Any]:
+        """从 URL 导入角色卡/世界书（chub.ai、janitorai 等）。"""
+        return self.post(base_url, "/api/content/importURL", {"url": url}) or {}
+
+    # ------------------------------------------------------------------
+    # 备份 / 统计 / token 计数
+    # ------------------------------------------------------------------
+
+    def backups_list(self, base_url: str, avatar: str) -> Any:
+        return self.post(base_url, "/api/backups/chat/get", {"avatar_url": avatar})
+
+    def user_backup(self, base_url: str) -> Any:
+        """打包当前用户全部数据（完整备份，返回文件流路径信息）。"""
+        return self.post(base_url, "/api/users/backup")
+
+    def stats_get(self, base_url: str) -> Dict[str, Any]:
+        return self.post(base_url, "/api/stats/get") or {}
+
+    def tokenizer_count(self, base_url: str, model: str, text: str) -> Any:
+        return self.post(base_url, f"/api/tokenizers/{model}/count" if model == "openai"
+                         else f"/api/tokenizers/{model}/encode", {"text": text})
+
+    # ------------------------------------------------------------------
+    # 扩展管理（安装/更新/删除 —— 高危，工具层加确认）
+    # ------------------------------------------------------------------
+
+    def extension_install(self, base_url: str, url: str, global_: bool = True) -> Any:
+        return self.post(base_url, "/api/extensions/install",
+                         {"url": url, "global": global_})
+
+    def extension_update(self, base_url: str, name: str, global_: bool = True) -> Any:
+        return self.post(base_url, "/api/extensions/update",
+                         {"extension": name, "global": global_})
+
     def save_settings(self, base_url: str, settings: Dict[str, Any]) -> Any:
         """整文件覆盖写 settings.json（调用方须先 get 再改再 save）。"""
         return self.post(base_url, "/api/settings/save", settings)

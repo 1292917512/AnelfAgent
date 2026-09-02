@@ -514,3 +514,168 @@ def sillytavern_use_my_model(model_id: str) -> str:
             "hint": "已写入酒馆 custom 源，酒馆网页端刷新后生效",
         }
     return _guard(_run)
+
+
+# ------------------------------------------------------------------
+# 世界书（Lorebook）
+# ------------------------------------------------------------------
+
+@tool(name="sillytavern_list_worldbooks", group=_GROUP, tags=["sillytavern"],
+      concurrency_safe=True,
+      description="列出酒馆里所有世界书（Lorebook）名称")
+def sillytavern_list_worldbooks() -> str:
+    def _run() -> Dict[str, Any]:
+        base = _require_running()
+        books = get_st_client().worldinfo_list(base)
+        return {"count": len(books),
+                "books": [{"name": b.get("name"), "file_id": b.get("file_id")}
+                          for b in books]}
+    return _guard(_run)
+
+
+@tool(name="sillytavern_get_worldbook", group=_GROUP, tags=["sillytavern"],
+      concurrency_safe=True,
+      description="读取指定世界书的完整内容（条目列表）")
+def sillytavern_get_worldbook(name: str) -> str:
+    def _run() -> Dict[str, Any]:
+        base = _require_running()
+        return get_st_client().worldinfo_get(base, name)
+    return _guard(_run)
+
+
+# ------------------------------------------------------------------
+# 向量记忆（Data Bank / 角色长期记忆）
+# ------------------------------------------------------------------
+
+@tool(name="sillytavern_memory_insert", group=_GROUP, tags=["sillytavern"],
+      description="往酒馆的向量记忆库写入一段文本。collection_id 用角色绑定时是 "
+                  "'chat_<avatar去扩展名>'（如 chat_Seraphina），自由知识库用任意名字。"
+                  "注意：默认 embedding 源(transformers)需联网下载模型，离线环境会失败")
+def sillytavern_memory_insert(collection_id: str, text: str) -> str:
+    def _run() -> Dict[str, Any]:
+        base = _require_running()
+        if not text.strip():
+            raise ValueError("text 不能为空")
+        try:
+            get_st_client().vector_insert(base, text.strip(), collection_id)
+        except STError as e:
+            if "500" in str(e) or "400" in str(e):
+                raise RuntimeError(
+                    f"向量写入失败: {e}。默认 embedding 源(transformers)需联网下载模型，"
+                    "若离线请在酒馆设置里改用 OpenAI/SiliconFlow 等在线 embedding 源。") from e
+            raise
+        return {"ok": True, "collection_id": collection_id}
+    return _guard(_run)
+
+
+@tool(name="sillytavern_memory_query", group=_GROUP, tags=["sillytavern"],
+      concurrency_safe=True,
+      description="在酒馆向量记忆库做相似度检索，返回最相关的若干条")
+def sillytavern_memory_query(collection_id: str, query: str, top_k: int = 5) -> str:
+    def _run() -> Dict[str, Any]:
+        base = _require_running()
+        result = get_st_client().vector_query(base, collection_id, query, top_k)
+        return {"collection_id": collection_id, "results": result}
+    return _guard(_run)
+
+
+@tool(name="sillytavern_memory_list", group=_GROUP, tags=["sillytavern"],
+      concurrency_safe=True,
+      description="列出某个向量记忆库里的条目")
+def sillytavern_memory_list(collection_id: str) -> str:
+    def _run() -> Dict[str, Any]:
+        base = _require_running()
+        return {"collection_id": collection_id,
+                "items": get_st_client().vector_list(base, collection_id)}
+    return _guard(_run)
+
+
+# ------------------------------------------------------------------
+# 群聊
+# ------------------------------------------------------------------
+
+@tool(name="sillytavern_list_groups", group=_GROUP, tags=["sillytavern"],
+      concurrency_safe=True,
+      description="列出酒馆里所有群聊及其成员")
+def sillytavern_list_groups() -> str:
+    def _run() -> Dict[str, Any]:
+        base = _require_running()
+        groups = get_st_client().groups_all(base)
+        return {"count": len(groups), "groups": [
+            {"id": g.get("id"), "name": g.get("name"),
+             "members": g.get("members", [])} for g in groups]}
+    return _guard(_run)
+
+
+# ------------------------------------------------------------------
+# 外部角色卡导入
+# ------------------------------------------------------------------
+
+@tool(name="sillytavern_import_character", group=_GROUP, tags=["sillytavern"],
+      description="从 URL 导入角色卡或世界书（支持 chub.ai、janitorai 等）。"
+                  "返回导入后的文件标识")
+def sillytavern_import_character(url: str) -> str:
+    def _run() -> Dict[str, Any]:
+        base = _require_running()
+        if not url.strip():
+            raise ValueError("url 不能为空")
+        return get_st_client().content_import_url(base, url.strip())
+    return _guard(_run)
+
+
+# ------------------------------------------------------------------
+# 备份 / 统计
+# ------------------------------------------------------------------
+
+@tool(name="sillytavern_backup", group=_GROUP, tags=["sillytavern"],
+      description="打包酒馆当前用户的全部数据（完整备份）。会下载数据包，"
+                  "用于更新源码或大改前留底")
+def sillytavern_backup() -> str:
+    def _run() -> Dict[str, Any]:
+        base = _require_running()
+        result = get_st_client().user_backup(base)
+        return {"ok": True, "backup": result,
+                "hint": "完整数据包已生成；建议也把 data/ 目录做外部快照"}
+    return _guard(_run)
+
+
+@tool(name="sillytavern_stats", group=_GROUP, tags=["sillytavern"],
+      concurrency_safe=True,
+      description="读取酒馆用量统计（各模型的 token 消耗、生成次数等）")
+def sillytavern_stats() -> str:
+    def _run() -> Dict[str, Any]:
+        base = _require_running()
+        return get_st_client().stats_get(base)
+    return _guard(_run)
+
+
+# ------------------------------------------------------------------
+# 扩展管理（只读列举 + 安装需人工确认，防供应链风险）
+# ------------------------------------------------------------------
+
+@tool(name="sillytavern_list_extensions", group=_GROUP, tags=["sillytavern"],
+      concurrency_safe=True,
+      description="列出酒馆已安装的扩展（名称/版本/来源 global 或 local）")
+def sillytavern_list_extensions() -> str:
+    def _run() -> Dict[str, Any]:
+        base = _require_running()
+        exts = get_st_client().extensions_discover(base)
+        return {"count": len(exts), "extensions": [
+            {"name": e.get("name"), "type": e.get("type"),
+             "version": e.get("version")} for e in exts]}
+    return _guard(_run)
+
+
+@tool(name="sillytavern_install_extension", group=_GROUP, tags=["sillytavern"],
+      description="安装酒馆扩展（git URL，默认装到全局 global，全局=酒馆主程序共享，"
+                  "local=仅当前用户）。装完用 sillytavern_list_extensions 可见，"
+                  "建议 sillytavern_restart 后生效")
+def sillytavern_install_extension(url: str, global_install: bool = True) -> str:
+    def _run() -> Dict[str, Any]:
+        base = _require_running()
+        if not url.strip():
+            raise ValueError("url 不能为空")
+        result = get_st_client().extension_install(base, url.strip(), global_install)
+        return {"ok": True, "url": url, "global": global_install, "result": result,
+                "hint": "扩展已安装，建议 sillytavern_restart 后生效"}
+    return _guard(_run)

@@ -370,6 +370,81 @@ def build_router() -> APIRouter:
         return await _call(_run)()
 
     # ------------------------------------------------------------------
+    # 能力域端点（世界书/向量记忆/群聊/导入/备份/统计/扩展）
+    # ------------------------------------------------------------------
+
+    @router.get("/worldbooks")
+    async def worldbooks() -> Dict[str, Any]:
+        def _run() -> Any:
+            return {"books": get_st_client().worldinfo_list(_running_base())}
+        return await _call(_run)()
+
+    @router.get("/worldbooks/{name}")
+    async def worldbook_detail(name: str) -> Dict[str, Any]:
+        def _run() -> Any:
+            return get_st_client().worldinfo_get(_running_base(), name)
+        return await _call(_run)()
+
+    class MemoryBody(BaseModel):
+        collection_id: str = Field(min_length=1)
+        text: str = ""
+        query: str = ""
+        top_k: int = 5
+
+    @router.post("/memory/insert")
+    async def memory_insert(body: MemoryBody) -> Dict[str, Any]:
+        def _run() -> Any:
+            get_st_client().vector_insert(_running_base(), body.text, body.collection_id)
+            return {"ok": True}
+        return await _call(_run)()
+
+    @router.post("/memory/query")
+    async def memory_query(body: MemoryBody) -> Dict[str, Any]:
+        def _run() -> Any:
+            return {"results": get_st_client().vector_query(
+                _running_base(), body.collection_id, body.query, body.top_k)}
+        return await _call(_run)()
+
+    @router.get("/groups")
+    async def groups() -> Dict[str, Any]:
+        def _run() -> Any:
+            return {"groups": get_st_client().groups_all(_running_base())}
+        return await _call(_run)()
+
+    class ImportBody(BaseModel):
+        url: str = Field(min_length=1)
+
+    @router.post("/import")
+    async def import_url(body: ImportBody) -> Dict[str, Any]:
+        def _run() -> Any:
+            return get_st_client().content_import_url(_running_base(), body.url)
+        return await _call(_run)()
+
+    @router.get("/stats")
+    async def stats() -> Dict[str, Any]:
+        def _run() -> Any:
+            return get_st_client().stats_get(_running_base())
+        return await _call(_run)()
+
+    @router.get("/extensions")
+    async def extensions() -> Dict[str, Any]:
+        def _run() -> Any:
+            exts = get_st_client().extensions_discover(_running_base())
+            return {"count": len(exts), "extensions": exts}
+        return await _call(_run)()
+
+    class ExtInstallBody(BaseModel):
+        url: str = Field(min_length=1)
+        global_install: bool = True
+
+    @router.post("/extensions/install")
+    async def extension_install(body: ExtInstallBody) -> Dict[str, Any]:
+        def _run() -> Any:
+            return {"ok": True, "result": get_st_client().extension_install(
+                _running_base(), body.url, body.global_install)}
+        return await _call(_run)()
+
+    # ------------------------------------------------------------------
     # 酒馆网页同源反代（/webui）——仿 web/routers/channel_webui.py
     # ------------------------------------------------------------------
 
