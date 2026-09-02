@@ -142,7 +142,10 @@
   "tabWeb": "Tavern Web",
   "web": {
     "newWindow": "Open in new window",
-    "loading": "Loading tavern web UI…"
+    "loading": "Loading tavern web UI…",
+    "directTitle": "Tavern Web",
+    "directHint": "Opens the tavern in a new tab (direct local link, no proxy)",
+    "openTavern": "Open Tavern"
   },
   "chat": {
     "title": "Chat with character",

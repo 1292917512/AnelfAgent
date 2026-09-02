@@ -142,7 +142,10 @@
   "tabWeb": "酒馆网页",
   "web": {
     "newWindow": "新窗口打开",
-    "loading": "酒馆网页加载中…"
+    "loading": "酒馆网页加载中…",
+    "directTitle": "酒馆网页",
+    "directHint": "酒馆在浏览器新标签页打开（本机直达，不经本站中转）",
+    "openTavern": "打开酒馆"
   },
   "chat": {
     "title": "与角色对话",

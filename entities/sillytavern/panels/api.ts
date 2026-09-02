@@ -70,7 +70,3 @@ export const sillytavernApi = {
     api.get<StChatMessagesResult>(`${BASE}/chats/content`,
       { params: { avatar, file_name: fileName } }),
 };
-
-/** 酒馆网页内嵌地址（同源反代，经本站即可访问）。iframe src 走浏览器相对当前页，
- * 必须带 /api 前缀（axios baseURL 不影响 iframe 的地址解析）。 */
-export const WEBUI_URL = `/api${BASE}/webui/`;

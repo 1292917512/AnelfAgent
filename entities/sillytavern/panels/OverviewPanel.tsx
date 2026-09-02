@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Play, RotateCw, Square } from "lucide-react";
-import { apiErrorMessage, WEBUI_URL, sillytavernApi } from "./api";
+import { apiErrorMessage, sillytavernApi } from "./api";
 import { Badge, Button, ConfirmDialog, LoadingBlock, toast } from "@/components/ui";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
@@ -99,14 +99,13 @@ export function OverviewPanel() {
               {status.url && (
                 <p className="text-xs text-muted mt-1 truncate">
                   {t("sillytavern:overview.url")}: {status.url}
-                  <span className="ml-2 text-muted/70">（{WEBUI_URL}）</span>
                 </p>
               )}
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             {running && status.url && (
-              <a href={WEBUI_URL} target="_blank" rel="noreferrer">
+              <a href={status.url} target="_blank" rel="noreferrer">
                 <Button variant="secondary" size="sm">
                   <ExternalLink size={14} />
                   {t("sillytavern:overview.openWeb")}

@@ -2,24 +2,15 @@
 
 与 AI 工具共用 service/st_client 同一实现；认证由全局
 _AuthMiddleware（_anelf_token cookie）统一兜底。
-
-/webui/* 为酒馆网页的同源反向代理（仿 web/routers/channel_webui.py），
-让外部浏览器经本站（8092）即可打开只监听回环的酒馆页面。
 """
 
 from __future__ import annotations
 
 import asyncio
-import re
 from typing import Any, Dict, Optional
 
-import aiohttp
-import httpx
-from fastapi import APIRouter, Request, WebSocket
-from fastapi.responses import JSONResponse, Response
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
-
-from core.log import log
 
 from . import chat_bridge, git_ops, service
 from . import config as st_config
@@ -378,155 +369,5 @@ def build_router() -> APIRouter:
             return {"ok": True, "result": get_st_client().extension_install(
                 _running_base(), body.url, body.global_install)}
         return await _call(_run)()
-
-    # ------------------------------------------------------------------
-    # 酒馆网页同源反代（/webui）——仿 web/routers/channel_webui.py
-    # ------------------------------------------------------------------
-
-    _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
-    _HOP_BY_HOP = frozenset({
-        "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-        "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length",
-    })
-    _REWRITE_TYPES = ("text/html", "javascript", "text/css")
-    _proxy_client: Optional[httpx.AsyncClient] = None
-
-    def _webui_prefix(request: Request) -> str:
-        """代理前缀（含 include_router 挂载的 /api/entity/sillytavern 前缀）。"""
-        return request.scope.get("root_path", "") + "/api/entity/sillytavern/webui"
-
-    def _rewrite_text(text: str, prefix: str) -> str:
-        guard = r"(?!" + re.escape(prefix) + r"/)"
-        attrs = re.compile(r'(?P<a>href="|src="|action="|srcset=")' + guard + "/")
-        text = attrs.sub(lambda m: f'{m.group("a")}{prefix}/', text)
-        css_url = re.compile(r"url\(" + guard + "/")
-        return css_url.sub(f"url({prefix}/", text)
-
-    def _rewrite_location(location: str, origin: str, prefix: str) -> str:
-        if location.startswith(origin):
-            return prefix + location[len(origin):]
-        if location.startswith("/"):
-            return prefix + location
-        return location
-
-    def _rewrite_set_cookie(value: str, prefix: str) -> str:
-        if re.search(r"(?i)(?:^|;\s*)path=", value):
-            return re.sub(r"(?i)((?:^|;\s*)path=)/[^;]*", rf"\g<1>{prefix}/", value)
-        return value + f"; Path={prefix}/"
-
-    async def _pclient() -> httpx.AsyncClient:
-        nonlocal _proxy_client
-        if _proxy_client is None:
-            _proxy_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(60.0, connect=5.0),
-                follow_redirects=False,
-                trust_env=False,
-            )
-        return _proxy_client
-
-    @router.api_route("/webui", methods=_PROXY_METHODS)
-    @router.api_route("/webui/", methods=_PROXY_METHODS)
-    @router.api_route("/webui/{path:path}", methods=_PROXY_METHODS)
-    async def proxy_webui(request: Request, path: str = "") -> Response:
-        """将请求转发到本机酒馆服务，并重写响应中的绝对路径。"""
-        if not service.is_running():
-            return JSONResponse({"error": "酒馆未运行，无法打开网页"}, status_code=400)
-        origin = st_config.base_url()
-        prefix = _webui_prefix(request)
-        upstream_url = f"{origin}/{path}"
-        if request.url.query:
-            upstream_url += f"?{request.url.query}"
-        headers: Dict[str, str] = {
-            key: value for key, value in request.headers.items()
-            if key.lower() not in _HOP_BY_HOP and key.lower() != "cookie"
-        }
-        headers["accept-encoding"] = "identity"
-        try:
-            upstream = await (await _pclient()).request(
-                request.method, upstream_url,
-                content=await request.body(), headers=headers,
-            )
-        except httpx.HTTPError as exc:
-            return JSONResponse({"error": f"酒馆不可达: {exc}"}, status_code=502)
-
-        resp_headers = {
-            key: value for key, value in upstream.headers.items()
-            if key.lower() not in _HOP_BY_HOP
-            and key.lower() not in ("content-encoding", "content-length",
-                                    "set-cookie", "location")
-        }
-        if "location" in upstream.headers:
-            resp_headers["location"] = _rewrite_location(
-                upstream.headers["location"], origin, prefix)
-        content = upstream.content
-        content_type = upstream.headers.get("content-type", "")
-        if any(kind in content_type for kind in _REWRITE_TYPES):
-            text = content.decode(upstream.encoding or "utf-8", errors="replace")
-            content = _rewrite_text(text, prefix).encode("utf-8")
-        response = Response(content=content, status_code=upstream.status_code,
-                            headers=resp_headers)
-        for set_cookie in upstream.headers.get_list("set-cookie"):
-            response.raw_headers.append((
-                b"set-cookie", _rewrite_set_cookie(set_cookie, prefix).encode("latin-1"),
-            ))
-        return response
-
-    @router.websocket("/webui/{path:path}")
-    @router.websocket("/webui")
-    async def proxy_webui_ws(websocket: WebSocket, path: str = "") -> None:
-        """桥接酒馆网页的 WebSocket 连接（鉴权走前置 HTTP 代理逻辑）。"""
-        if not service.is_running():
-            await websocket.close(code=4404)
-            return
-        origin = st_config.base_url().replace("http://", "ws://").replace(
-            "https://", "wss://")
-        upstream_url = f"{origin}/{path}"
-        if websocket.url.query:
-            upstream_url += f"?{websocket.url.query}"
-        headers: Dict[str, str] = {
-            key: value for key, value in websocket.headers.items()
-            if key.lower() not in _HOP_BY_HOP
-            and key.lower() not in ("cookie", "sec-websocket-key",
-                                    "sec-websocket-version", "sec-websocket-extensions")
-        }
-        await websocket.accept()
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(upstream_url, headers=headers) as upstream:
-                    async def client_to_upstream() -> None:
-                        while True:
-                            event = await websocket.receive()
-                            if event["type"] == "websocket.disconnect":
-                                break
-                            if event.get("text") is not None:
-                                await upstream.send_str(event["text"])
-                            elif event.get("bytes") is not None:
-                                await upstream.send_bytes(event["bytes"])
-
-                    async def upstream_to_client() -> None:
-                        async for msg in upstream:
-                            if msg.type == aiohttp.WSMsgType.TEXT:
-                                await websocket.send_text(msg.data)
-                            elif msg.type == aiohttp.WSMsgType.BINARY:
-                                await websocket.send_bytes(msg.data)
-                            elif msg.type in (aiohttp.WSMsgType.CLOSED,
-                                              aiohttp.WSMsgType.ERROR):
-                                break
-
-                    tasks = [
-                        asyncio.create_task(client_to_upstream()),
-                        asyncio.create_task(upstream_to_client()),
-                    ]
-                    _, pending = await asyncio.wait(
-                        tasks, return_when=asyncio.FIRST_COMPLETED)
-                    for task in pending:
-                        task.cancel()
-        except Exception as exc:
-            log(f"酒馆 WebUI WS 代理异常: {exc}", "DEBUG")
-        finally:
-            try:
-                await websocket.close()
-            except Exception:
-                pass
 
     return router
