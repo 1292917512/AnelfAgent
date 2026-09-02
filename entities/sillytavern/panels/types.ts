@@ -24,6 +24,7 @@ export interface StConfig {
   st_dir: string;
   port: number;
   listen: boolean;
+  host: string;
   disable_csrf: boolean;
   extra_args: string;
   auto_start: boolean;

@@ -9,6 +9,7 @@ import { Card } from "@/components/common/Card";
 interface FormState {
   st_dir: string;
   port: string;
+  host: string;
   listen: boolean;
   disable_csrf: boolean;
   extra_args: string;
@@ -22,6 +23,7 @@ function toForm(c: StConfig): FormState {
   return {
     st_dir: c.st_dir ?? "",
     port: String(c.port ?? 8000),
+    host: c.host ?? "",
     listen: !!c.listen,
     disable_csrf: !!c.disable_csrf,
     extra_args: c.extra_args ?? "",
@@ -75,6 +77,7 @@ export function ConfigPanel() {
       sillytavernApi.saveConfig({
         st_dir: form!.st_dir,
         port: Number(form!.port) || 8000,
+        host: form!.host.trim(),
         listen: form!.listen,
         disable_csrf: form!.disable_csrf,
         extra_args: form!.extra_args,
@@ -122,6 +125,15 @@ export function ConfigPanel() {
               value={form.port}
               onChange={(e) => set("port", e.target.value)}
               className="mt-1"
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-muted">{t("sillytavern:config.host")}</span>
+            <Input
+              value={form.host}
+              onChange={(e) => set("host", e.target.value)}
+              placeholder={t("sillytavern:config.hostPlaceholder")}
+              className="mt-1 font-mono"
             />
           </label>
           <label className="block">

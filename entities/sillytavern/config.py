@@ -26,6 +26,7 @@ _DEFAULTS: Dict[str, Any] = {
     "st_dir": _DEFAULT_ST_DIR,
     "port": 8000,
     "listen": False,          # False=仅本机 127.0.0.1，True=局域网可访问
+    "host": "",               # 访问地址主机：填域名/IP 则固定用它；空=listen 开时探测局域网 IP
     "disable_csrf": True,     # 程序化管理需要；本机监听场景风险可控
     "extra_args": [],         # 追加到 node server.js 的额外 CLI 参数
     "auto_start": False,      # AnelfAgent 启动时是否自动拉起酒馆

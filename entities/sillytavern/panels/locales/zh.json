@@ -137,7 +137,9 @@
     "autoStart": "随实体自启动",
     "contextInject": "启用上下文注入",
     "contextMaxTokens": "注入上下文上限 (tokens)",
-    "startupTimeout": "启动超时（秒）"
+    "startupTimeout": "启动超时（秒）",
+    "host": "访问地址",
+    "hostPlaceholder": "留空=listen 开时自动探测局域网 IP；填域名/IP 则固定用它"
   },
   "tabWeb": "酒馆网页",
   "web": {
