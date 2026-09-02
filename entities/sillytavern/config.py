@@ -85,9 +85,3 @@ def st_dir() -> str:
 def base_url() -> str:
     cfg = load_config()
     return f"http://127.0.0.1:{cfg['port']}"
-
-
-def public_url() -> str:
-    cfg = load_config()
-    host = "0.0.0.0" if cfg["listen"] else "127.0.0.1"
-    return f"http://{host}:{cfg['port']}"

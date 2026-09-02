@@ -129,7 +129,7 @@
     "stDir": "SillyTavern 目录",
     "port": "端口",
     "listen": "监听所有网卡 (listen)",
-    "listenHint": "允许局域网访问",
+    "listenHint": "允许局域网访问；开启后酒馆地址显示为局域网 IP",
     "disableCsrf": "禁用 CSRF 保护",
     "disableCsrfHint": "会降低安全性，仅在受信网络启用",
     "extraArgs": "额外启动参数",

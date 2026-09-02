@@ -129,7 +129,7 @@
     "stDir": "SillyTavern directory",
     "port": "Port",
     "listen": "Listen on all interfaces",
-    "listenHint": "Allow LAN access",
+    "listenHint": "Allow LAN access; tavern URL shows the LAN IP when on",
     "disableCsrf": "Disable CSRF protection",
     "disableCsrfHint": "Reduces security; only in trusted networks",
     "extraArgs": "Extra launch arguments",

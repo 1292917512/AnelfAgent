@@ -71,6 +71,28 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _lan_ip() -> str:
+    """探测本机局域网 IP（UDP 连公共地址不实际发包，只为选网卡）。"""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return str(s.getsockname()[0])
+    except OSError:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return "127.0.0.1"
+
+
+def _access_url(cfg: Dict[str, Any]) -> str:
+    """酒馆访问地址：listen=True 用局域网 IP，否则回环。"""
+    port = cfg["port"]
+    if cfg.get("listen"):
+        return f"http://{_lan_ip()}:{port}"
+    return f"http://127.0.0.1:{port}"
+
+
 def _find_pid_on_port(port: int) -> Optional[int]:
     """lsof 定位占用端口的进程 pid（管理外部拉起的酒馆实例）。"""
     try:
@@ -111,8 +133,9 @@ def status() -> Dict[str, Any]:
     info: Dict[str, Any] = {
         "running": running,
         "managed": running and pid_alive,
-        "url": st_config.public_url(),
+        "url": _access_url(cfg),
         "port": cfg["port"],
+        "listen": cfg.get("listen", False),
         "pid": pid if running else None,
         "started_at": state.get("started_at"),
         "version": (version or {}).get("pkgVersion") if running else None,
@@ -256,7 +279,7 @@ def start(wait_ready: bool = True) -> Dict[str, Any]:
         if _probe():
             refresh_probe_cache()
             return {"ok": True, "pid": proc.pid, "port": cfg["port"],
-                    "url": st_config.public_url(), "log_file": log_file,
+                    "url": _access_url(cfg), "log_file": log_file,
                     "deps_installed": installed == "deps_installed",
                     "version": (_probe() or {}).get("pkgVersion")}
         if proc.poll() is not None:
@@ -267,7 +290,7 @@ def start(wait_ready: bool = True) -> Dict[str, Any]:
         raise TimeoutError(
             f"酒馆启动超时（{cfg.get('startup_timeout', 120)}s 内未就绪），日志尾部:\n{tail_log(2000)}")
     return {"ok": True, "pid": proc.pid, "port": cfg["port"],
-            "url": st_config.public_url(), "log_file": log_file,
+            "url": _access_url(cfg), "log_file": log_file,
             "starting": True}
 
 
