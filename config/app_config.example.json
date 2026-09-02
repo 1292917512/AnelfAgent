@@ -73,7 +73,6 @@
   "port": 8091,
   "reply_timeout": 60,
   "adapters": [],
-  "nonebot_env": {},
   "intercept_all": true,
   "entity_states": {},
   "bot_token": "",

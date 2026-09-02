@@ -42,8 +42,7 @@
     "share": "文件分享",
     "sticker": "表情包",
     "ssh": "SSH 远程管理",
-    "voiceprint": "音源库",
-    "nonebot": "NoneBot 桥接"
+    "voiceprint": "音源库"
   },
   "reload": "重新加载",
   "reloading": "重新加载中...",

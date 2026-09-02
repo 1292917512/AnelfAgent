@@ -252,7 +252,9 @@ class LiveSessionManager:
 
     async def _dispatch_special(self, uid: str, event: live_signals.LiveEvent,
                                 desc: str, *, trigger: bool) -> None:
-        from agent.channel.schemas import AdapterChannel, AdapterMessage, AdapterUser, ChannelType
+        from agent.channel.schemas import (
+            AdapterChannel, AdapterMessage, AdapterUser, ChannelType, MessageKind,
+        )
 
         message = AdapterMessage(
             sender=AdapterUser(platform="acfun", user_id=event.user_id or "unknown",
@@ -260,19 +262,23 @@ class LiveSessionManager:
             channel=AdapterChannel(channel_id=f"live:{uid}", channel_type=ChannelType.GROUP,
                                    channel_name="直播间"),
             content=f"[直播间事件] {event.user_name} {desc}",
+            kind=MessageKind.EVENT,
             is_to_me=False,
             trigger_mind=trigger,
         )
         await self._channel.on_message(message)
 
     async def _dispatch_system(self, uid: str, text: str, *, trigger: bool) -> None:
-        from agent.channel.schemas import AdapterChannel, AdapterMessage, AdapterUser, ChannelType
+        from agent.channel.schemas import (
+            AdapterChannel, AdapterMessage, AdapterUser, ChannelType, MessageKind,
+        )
 
         message = AdapterMessage(
             sender=AdapterUser(platform="acfun", user_id="acfun_live", user_name="AcFun 直播"),
             channel=AdapterChannel(channel_id=f"live:{uid}", channel_type=ChannelType.GROUP,
                                    channel_name="直播间"),
             content=f"[系统] {text}",
+            kind=MessageKind.SYSTEM,
             is_to_me=False,
             trigger_mind=trigger,
         )

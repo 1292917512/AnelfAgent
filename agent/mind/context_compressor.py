@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -162,6 +163,103 @@ _PREVIOUS_SUMMARY_BLOCK = (
 
 # 压缩反馈消息的内容前缀：识别前次摘要（迭代压缩时提取，避免"摘要的摘要"）
 _COMPRESSION_FEEDBACK_PREFIX = "[上下文压缩]"
+
+# 文件操作工具 → 参数名（清单提取的源；模型发起调用的 tool_calls 记录在工作链）
+_FILE_LIST_TOOLS = {
+    "read_file": ("file_path",), "write_file": ("file_path",),
+    "edit_file": ("file_path",), "append_file": ("file_path",),
+    "delete_file": ("file_path",), "move_file": ("src", "dst"),
+    "copy_file": ("src", "dst"),
+}
+
+# 文件清单单条目数上限（超出时仅保留最近 N 条；清单是事实面不是全文索引）
+_FILE_LIST_MAX_ENTRIES = 30
+
+
+def _extract_file_operations(messages: List[Dict]) -> Dict[str, List[str]]:
+    """从中间段消息提取"读过/改过"的文件清单（确定性规则，不经 LLM）。
+
+    源是 assistant 消息的 tool_calls（工作链的事实面），按工具名归并
+    （read 类 vs write/edit/delete 类）。跨多次压缩时每次只提取本批
+    新压缩的中间段——清单在摘要反馈消息中以独立 [已操作文件] 行
+    累积追加（见 compress_messages 重组段），形成单调增长的事实链，
+    不随摘要文本的有损转述衰减。
+    """
+    reads: List[str] = []
+    writes: List[str] = []
+    seen_read: set = set()
+    seen_write: set = set()
+    for msg in messages:
+        for tc in msg.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
+            name = fn.get("name", "")
+            if name not in _FILE_LIST_TOOLS:
+                continue
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            for arg_key in _FILE_LIST_TOOLS[name]:
+                path = args.get(arg_key)
+                if not isinstance(path, str) or not path:
+                    continue
+                if name.startswith(("write_", "edit_", "append_", "delete_", "move_", "copy_")):
+                    if path not in seen_write:
+                        seen_write.add(path)
+                        writes.append(path)
+                else:
+                    if path not in seen_read:
+                        seen_read.add(path)
+                        reads.append(path)
+    return {"read": reads, "written": writes}
+
+
+def _render_file_list_message(file_ops: Dict[str, List[str]]) -> str:
+    """把文件清单渲染为摘要区消息（无内容返回空串，不产生空消息）。
+
+    清单行格式：
+        [已操作文件] 读: a.py, b.py | 写: c.md, d.json
+    下次压缩时经 _extract_file_operations_from_summary 从摘要文本回读，
+    与本批新提取的清单合并（单调增长的事实链）。
+    """
+    parts: List[str] = []
+    if file_ops["read"]:
+        parts.append("读: " + ", ".join(file_ops["read"][-_FILE_LIST_MAX_ENTRIES:]))
+    if file_ops["written"]:
+        parts.append("写: " + ", ".join(file_ops["written"][-_FILE_LIST_MAX_ENTRIES:]))
+    if not parts:
+        return ""
+    return "[已操作文件] " + " | ".join(parts)
+
+
+def _extract_file_operations_from_summary(summary_text: str) -> Dict[str, List[str]]:
+    """从摘要文本回读既有的文件清单行（_render_file_list_message 的逆变换）。
+
+    摘要消息多轮压缩时被原样携带（见 _extract_previous_summary 的提取逻辑），
+    清单行随之迁移到下一次摘要输入——回读合并使清单在压缩链上单调累积。
+    未命中清单行时返回空集（旧摘要无清单字段的向前兼容）。
+    """
+    result: Dict[str, List[str]] = {"read": [], "written": []}
+    match = re.search(r"\[已操作文件\]\s*读:\s*(.+?)(?:\s*\|\s*写:\s*(.+))?$", summary_text, re.M)
+    if match:
+        for key, group in (("read", 1), ("written", 2)):
+            text = match.group(group)
+            if text:
+                result[key] = [p.strip() for p in text.split(",") if p.strip()]
+    return result
+
+
+def _merge_list(existing: List[str], new: List[str]) -> List[str]:
+    """合并两个清单（保序去重，后出现的排后）。"""
+    seen = set(existing)
+    merged = list(existing)
+    for item in new:
+        if item not in seen:
+            seen.add(item)
+            merged.append(item)
+    return merged
 
 class ContextCompressor:
     """上下文压缩器：检测溢出并压缩中间轮次。"""
@@ -600,6 +698,18 @@ class ContextCompressor:
         # 不经摘要模型的有损二次转述
         preserved_users, middle = self._extract_user_messages(middle)
 
+        # 文件清单提取（确定性规则）：从本批被压缩的中间段的工作链提取
+        # "读过/改过"的文件——不随摘要文本的有损转述衰减，跨多次压缩
+        # 以独立 [已操作文件] 行在摘要区累积追加
+        file_ops = _extract_file_operations(middle)
+        # 与前次摘要消息中已有的清单合并（单调增长的事实链）
+        if previous_summary:
+            prev_ops = _extract_file_operations_from_summary(previous_summary)
+            file_ops = {
+                "read": _merge_list(prev_ops["read"], file_ops["read"]),
+                "written": _merge_list(prev_ops["written"], file_ops["written"]),
+            }
+
         # 3. 生成摘要（LLM 失败时回退确定性摘要；无新增内容则直接沿用前次摘要；
         # 中间段只剩用户原话时无需摘要，原文保留即无损）
         if not middle and previous_summary:
@@ -636,6 +746,12 @@ class ContextCompressor:
                 "期间用户的原话完整保留在下方。"
             ), "_source": {"origin": "compression"}})
         new_base += preserved_users
+        # 文件清单消息：独立承载，不随摘要文本衰减；下次压缩时经
+        # _extract_file_operations_from_summary 从摘要文本回读合并
+        file_list_msg = _render_file_list_message(file_ops)
+        if file_list_msg:
+            new_base.append({"role": "system", "content": file_list_msg,
+                             "_source": {"origin": "compression"}})
         new_chain = tail
 
         # 配对断言：压缩产物中不允许存在结果残缺的工具组

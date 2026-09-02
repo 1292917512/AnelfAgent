@@ -3,7 +3,8 @@
 会话 ID 约定（出站路由与思维回复路由共用）：
 - ``comment:{rtype}:{rid}`` — 内容评论区（rtype: 1 番剧/2 视频/3 文章/10 动态），多人语义按 GROUP 处理
 - ``live:{uid}`` — 直播间（出站弹幕）
-- ``system`` — 系统通知聚合会话（只记录，不可回复）
+- ``notification`` — 通知中心（回复/@/点赞/投蕉推送聚合，kind=notification，不可直接回复）
+- ``system`` — 系统通知聚合会话（kind=system，只记录，不可回复）
 """
 
 from __future__ import annotations
@@ -12,9 +13,18 @@ import hashlib
 import re
 from typing import Any, Dict, Optional, Tuple
 
-from agent.channel.schemas import AdapterChannel, AdapterMessage, AdapterUser, ChannelType
+from agent.channel.schemas import (
+    AdapterChannel,
+    AdapterMessage,
+    AdapterUser,
+    ChannelType,
+    MessageKind,
+    notification_channel,
+    notification_sender,
+)
 
 PLATFORM = "acfun"
+PLATFORM_NAME = "AcFun"
 SYSTEM_CHANNEL_ID = "system"
 
 # 内容 URL → (rtype, rid)。对齐 AcSource.routes：/v/ac* /a/ac* /bangumi/aa* /moment/am*
@@ -58,17 +68,17 @@ def _sender(item: Dict[str, Any]) -> AdapterUser:
     )
 
 
-def _comment_channel(item: Dict[str, Any]) -> AdapterChannel:
-    """通知指向的内容评论区会话；URL 不可解析时退化到系统会话。"""
+def _comment_target_hint(item: Dict[str, Any]) -> str:
+    """通知指向的评论目标提示（rtype/rid/ncid），供 acfun_send_comment 工具使用。"""
     target = parse_content_url(str(item.get("content_url") or ""))
     if target is None:
-        return AdapterChannel(channel_id=SYSTEM_CHANNEL_ID, channel_type=ChannelType.PRIVATE, channel_name="系统通知")
+        return ""
     rtype, rid = target
-    return AdapterChannel(
-        channel_id=comment_chat_id(rtype, rid),
-        channel_type=ChannelType.GROUP,
-        channel_name=str(item.get("content_title") or ""),
-    )
+    ncid = str(item.get("ncid") or "")
+    hint = f"comment:{rtype}:{rid}"
+    if ncid:
+        hint += f"，reply_id={ncid}"
+    return hint
 
 
 def notification_to_message(
@@ -80,49 +90,65 @@ def notification_to_message(
 ) -> Optional[AdapterMessage]:
     """把一条通知载荷转成 AdapterMessage；无法识别/无意义的条目返回 None。
 
-    reply/at 始终触发思维（直接对 Bot 说话）；like/gift 按配置；notice/system 仅记录。
+    reply/at/like/gift 路由到通知中心会话（kind=notification）：通知是平台推送
+    而非对方主动发起的对话，正文携带行为人与可操作参数（评论目标/reply_id），
+    AI 要回应用 acfun_send_comment 等工具，而不是直接回复该会话。
+    notice/system 保留 system 会话（kind=system，仅记录）。
     """
+    actor = _sender(item)
+    target_hint = _comment_target_hint(item)
+
     if kind == "reply":
         content = str(item.get("content") or "").strip()
         if not content:
             return None
+        text = f"[回复了你] {actor.user_name}(uid={actor.user_id}): {content}"
+        if target_hint:
+            text += f"\n（回应方式：acfun_send_comment 目标 {target_hint}）"
         return AdapterMessage(
-            sender=_sender(item),
-            channel=_comment_channel(item),
-            content=content,
+            sender=notification_sender(PLATFORM, PLATFORM_NAME),
+            channel=notification_channel(PLATFORM_NAME),
+            content=text,
+            kind=MessageKind.NOTIFICATION,
             is_to_me=True,
             trigger_mind=True,
             reply_to_id=str(item.get("ncid") or ""),
             reply_content=str(item.get("replied") or ""),
         )
     if kind == "at":
-        content = str(item.get("intro") or "").strip() or "在评论中提到了你"
+        intro = str(item.get("intro") or "").strip() or "在评论中提到了你"
+        text = f"[@了你] {actor.user_name}(uid={actor.user_id}): {intro}"
+        if target_hint:
+            text += f"\n（回应方式：acfun_send_comment 目标 {target_hint}）"
         return AdapterMessage(
-            sender=_sender(item),
-            channel=_comment_channel(item),
-            content=content,
+            sender=notification_sender(PLATFORM, PLATFORM_NAME),
+            channel=notification_channel(PLATFORM_NAME),
+            content=text,
+            kind=MessageKind.NOTIFICATION,
             is_to_me=True,
             trigger_mind=True,
             reply_to_id=str(item.get("ncid") or ""),
         )
     if kind == "like":
         replied = str(item.get("replied") or "").strip()
-        content = f"赞了你的评论：{replied}" if replied else "赞了你的内容"
+        detail = f"赞了你的评论：{replied}" if replied else "赞了你的内容"
         return AdapterMessage(
-            sender=_sender(item),
-            channel=_comment_channel(item),
-            content=content,
+            sender=notification_sender(PLATFORM, PLATFORM_NAME),
+            channel=notification_channel(PLATFORM_NAME),
+            content=f"[赞了你] {actor.user_name}(uid={actor.user_id}) {detail}",
+            kind=MessageKind.NOTIFICATION,
             is_to_me=False,
             trigger_mind=like_trigger_mind,
         )
     if kind == "gift":
         banana = item.get("banana", 0)
         title = str(item.get("content_title") or "").strip()
-        content = f"给你投了 {banana} 根香蕉" + (f"（《{title}》）" if title and title != "动态" else "")
+        detail = f"给你投了 {banana} 根香蕉" + (f"（《{title}》）" if title and title != "动态" else "")
         return AdapterMessage(
-            sender=_sender(item),
-            channel=_comment_channel(item),
-            content=content,
+            sender=notification_sender(PLATFORM, PLATFORM_NAME),
+            channel=notification_channel(PLATFORM_NAME),
+            content=f"[投蕉] {actor.user_name}(uid={actor.user_id}) {detail}",
+            kind=MessageKind.NOTIFICATION,
             is_to_me=False,
             trigger_mind=gift_trigger_mind,
         )
@@ -136,6 +162,7 @@ def notification_to_message(
             sender=AdapterUser(platform=PLATFORM, user_id="acfun_system", user_name="AcFun 系统"),
             channel=AdapterChannel(channel_id=SYSTEM_CHANNEL_ID, channel_type=ChannelType.PRIVATE, channel_name="系统通知"),
             content=content,
+            kind=MessageKind.SYSTEM,
             is_to_me=False,
             trigger_mind=False,
         )

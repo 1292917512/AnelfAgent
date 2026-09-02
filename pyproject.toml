@@ -35,7 +35,7 @@ dependencies = [
     # 飞书 / Lark
     "lark-oapi>=1.5.0",
     # Cognee 知识图谱记忆后端（默认安装，uv sync 自动拉取）
-    "cognee==1.4.1",
+    "cognee==1.5.3",
     "sqlite-vec>=0.1.9",
     "tiktoken>=0.12.0",
     "jieba>=0.42.1",
@@ -79,7 +79,7 @@ pythonpath = [".", "tests"]
 # 测试面 = 分层套件（tests/）+ 模块内套件（entities/<name>/tests、channels/<id>/tests）；
 # 模块测试随模块目录走，删除模块即整体拔出（零残留）
 testpaths = ["tests", "entities", "channels"]
-# 模块目录内的非测试子树不进入收集扫描（前端面板源码、nonebot 供应商源码等）
+# 模块目录内的非测试子树不进入收集扫描（前端面板源码等）
 norecursedirs = ["*.egg", ".*", "build", "dist", "venv", "node_modules", "frontend", "sources", "vendor"]
 asyncio_mode = "auto"
 timeout = 120
@@ -106,7 +106,7 @@ exclude_lines = [
 [tool.ruff]
 target-version = "py310"
 line-length = 120
-extend-exclude = ["channels/nonebot_bridge/sources", 
+extend-exclude = [
     ".venv",
     "workspace",
     "web/frontend/node_modules",
@@ -139,15 +139,14 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unreachable = true
 strict_optional = true
-exclude = "(\\.venv|workspace|web/frontend|config|tests|channels/nonebot_bridge/sources)"
+exclude = "(\\.venv|workspace|web/frontend|config|tests)"
 
 [[tool.mypy.overrides]]
 module = "core.*"
 disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
-# nonebot.* 仅在 worker 子进程代码中引用（worker venv 独立安装，主环境无此包）
-module = ["litellm", "cognee", "lark_oapi.*", "nonebot.*"]
+module = ["litellm", "cognee", "lark_oapi.*"]
 ignore_missing_imports = true
 
 # ------------------------------------------------------------------

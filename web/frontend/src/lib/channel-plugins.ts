@@ -16,11 +16,11 @@ export interface ChannelPlugin {
   login?: () => Promise<{ default: ComponentType<{ compact?: boolean }> }>;
   /** 频道卡片展开区的自定义面板（如直播模式面板） */
   panel?: () => Promise<{ default: ComponentType }>;
-  /** 整页路由（注册到 App 路由表，path 不含前导斜杠，如 "nonebot"） */
+  /** 整页路由（注册到 App 路由表，path 不含前导斜杠，如 "bilibili"） */
   route?: { path: string };
   /** 整页组件 loader（配合 route 使用） */
   page?: () => Promise<{ default: ComponentType }>;
-  /** 从频道列表/测试面板隐藏（管理面另有入口的频道，如 nonebot_bridge） */
+  /** 从频道列表/测试面板隐藏（管理面另有入口的频道，如有整页路由的插件频道） */
   hiddenInChannelList?: boolean;
 }
 

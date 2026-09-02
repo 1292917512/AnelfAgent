@@ -23,6 +23,7 @@ class FakeEmbedder:
         self.dims = dims
         self.calls: list[list[str]] = []
         self._available = True
+        self.max_batch_size = 0
 
     @property
     def available(self) -> bool:
@@ -175,6 +176,15 @@ class TestPurgeArchivedMemories:
 
 
 class TestEmbeddingWorker:
+    async def test_batch_size_aligns_to_client_max_batch(self, store: MemoryStore) -> None:
+        """客户端声明单批上限时，worker 批次对齐上限（一批 = 一次 API 调用）。"""
+        embedder = FakeEmbedder()
+        embedder.max_batch_size = 20
+        worker = EmbeddingWorker(store, embedder)  # type: ignore[arg-type]
+        assert worker._batch_size == 20
+        embedder.max_batch_size = 0  # 未声明上限：跟随配置默认
+        assert worker._batch_size == 32
+
     async def test_drain_once_backfills_memories_and_chunks(self, store: MemoryStore) -> None:
         await store.add(_entry("worker 回填记忆"))
         now_ns = int(time.time() * 1e9)

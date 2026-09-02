@@ -27,6 +27,14 @@ _TARGET_USAGE = (
     "live:{uid}（直播间弹幕）；AcFun 私信出站暂不支持"
 )
 
+# 通知中心/系统通知是只读聚合会话，直接回复没有意义，引导到对应工具
+_NOTIFICATION_GUIDANCE = (
+    "这是通知中心会话（平台推送聚合，非真人对话），不支持直接回复。"
+    "要回应通知内容：回评论用 acfun_send_comment(rtype, rid, content, reply_id=ncid)；"
+    "弹幕互动用 live:{uid} 目标"
+)
+_SYSTEM_GUIDANCE = "系统通知会话为只读记录，不支持回复，也无需回复"
+
 
 def parse_chat_target(chat_id: str) -> Optional[Tuple[str, str]]:
     """解析会话目标为 (kind, rest)；kind ∈ comment/live/user，不合法返回 None。"""
@@ -62,6 +70,11 @@ async def send_channel_text(
 ) -> str:
     """频道文本发送主路径：按目标前缀路由到评论回复或直播弹幕。"""
     client = channel.client
+    # 通知/系统聚合会话优先短路（无需登录检查，直接给 AI 可执行的引导）
+    if chat_id == "notification":
+        return _err(_NOTIFICATION_GUIDANCE)
+    if chat_id == "system":
+        return _err(_SYSTEM_GUIDANCE)
     if not client.is_logined:
         return _err("AcFun 未登录，请先在频道页完成账号登录")
     target = parse_chat_target(chat_id)

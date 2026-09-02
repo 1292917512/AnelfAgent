@@ -25,7 +25,7 @@ AnelfAgent 是面向个人与团队的开源 AI 智能体运行时：内置自�
 | **持续进化** | 技能自学习闭环 + 心跳任务调度 + 目标规划 |
 | **安全可控** | 统一权限引擎（allow / ask / deny）+ 频道化批准 + WebUI 认证 + 敏感信息脱敏 |
 | **自运维** | SSH 远程管理 / 记忆备份 / 项目更新 / 文件分享 — AI 可自主管理自身部署 |
-| **多端接入** | QQ / 飞书 / 微信 / WebUI / HTTP / CLI / NoneBot 桥接 + OpenAI 兼容 Responses API |
+| **多端接入** | QQ / 飞书 / 微信 / Bilibili / Acfun / WebUI / HTTP / CLI + OpenAI 兼容 Responses API |
 
 ---
 
@@ -323,7 +323,7 @@ AnelfAgent/
 │   ├── skills/ · delegation/ · approval/ · security/
 │   ├── heartbeat/ · task/ · planning/ · messages/
 │   ├── channel/ · runtime/ · storage/
-├── channels/                 # qq / feishu / weixin / webui / http_api / cli / nonebot_bridge
+├── channels/                 # qq / feishu / weixin / bilibili / acfun / telegram / webui / http_api / cli
 ├── entities/                 # filesystem / web / media / minimax / sticker / ui / ssh / devops / share / mcp / ...
 ├── services/ · web/ · config/ · scripts/ · tests/
 └── workspace/                # 运行时工作区（上传 / 技能等，本地生成）
@@ -419,7 +419,6 @@ AnelfAgent 的多平台能力建立在这些优秀开源项目之上：
 | 项目 | 用途 | 协议 |
 |---|---|---|
 | [litellm](https://github.com/BerriAI/litellm) | 统一 LLM API | MIT |
-| [NoneBot2](https://github.com/nonebot/nonebot2) | 跨平台机器人框架 / 桥接 | MIT |
 | [NapCatQQ](https://github.com/NapNeko/NapCatQQ) | QQ OneBot v11 协议端 | 混合协议 |
 | [lark-oapi](https://github.com/larksuite/oapi-sdk-python) | 飞书 / Lark SDK | MIT |
 | [FastAPI](https://github.com/fastapi/fastapi) / [MCP](https://modelcontextprotocol.io/) | Web 与工具协议 | MIT |

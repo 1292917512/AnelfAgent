@@ -634,7 +634,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     ) -> SendRequest:
         """渲染批准提示消息。
 
-        默认实现：纯文本提示（微信 / 飞书 / HTTP API / NoneBot 等纯文本频道共用），
+        默认实现：纯文本提示（微信 / 飞书 / HTTP API 等纯文本频道共用），
         子类可覆盖（Telegram 用 InlineKeyboard、WebUI 用 SSE 弹窗、CLI 用 y/n 提示等）。
         """
         text = (

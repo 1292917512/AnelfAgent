@@ -29,6 +29,7 @@ from core.config import get_config_float, get_config_int, register_configs_safe
 from core.log import log
 
 from ..memory_utils import hash_text
+from .usage import record_embedding_call
 
 _ENGINE_CONFIGS = {
     "memory/embedding": {
@@ -43,6 +44,12 @@ _ENGINE_CONFIGS = {
             "default": 300.0,
             "advanced": True,
             "unit": "秒",
+        },
+        "embed_query_cache_size": {
+            "description": "交互式查询向量缓存容量（超出时淘汰最旧条目）",
+            "default": 256,
+            "advanced": True,
+            "unit": "条",
         },
         "embed_rate_limit_requests": {
             "description": "批量限速：每个时间窗内允许的 API 请求数",
@@ -74,8 +81,6 @@ _ENGINE_CONFIGS = {
 }
 
 register_configs_safe(_ENGINE_CONFIGS)
-
-_QUERY_CACHE_MAX = 128
 
 
 class _PriorityGate:
@@ -152,6 +157,13 @@ class Embedder:
         client = self._get_client()
         return str(getattr(client.config, "name", "") or "") if client else ""
 
+    @property
+    def max_batch_size(self) -> int:
+        """当前客户端声明的单批上限（embedding_max_batch；未配置返回 0）。"""
+        client = self._get_client()
+        value = getattr(getattr(client, "config", None), "embedding_max_batch", 0) if client else 0
+        return int(value) if value else 0
+
     def invalidate(self) -> None:
         """配置变更后重新检测（含限速器与查询缓存重建）。"""
         self._available = None
@@ -180,6 +192,7 @@ class Embedder:
         if not client:
             raise RuntimeError("无可用 embedding 客户端")
         result = await client.embed(texts)
+        record_embedding_call(texts=len(texts), chars=sum(len(t) for t in texts))
         if result and self._dims is None:
             self._dims = len(result[0])
             log(f"Embedding 维度: {self._dims}", "DEBUG", tag="思维")
@@ -199,7 +212,8 @@ class Embedder:
         return None
 
     def _cache_put(self, key: str, vec: list[float]) -> None:
-        if len(self._query_cache) >= _QUERY_CACHE_MAX:
+        capacity = max(16, get_config_int("embed_query_cache_size", 256))
+        if len(self._query_cache) >= capacity:
             oldest = min(self._query_cache, key=lambda k: self._query_cache[k][1])
             self._query_cache.pop(oldest, None)
         self._query_cache[key] = (vec, time.monotonic())
@@ -312,6 +326,10 @@ class Embedder:
         if not client:
             raise RuntimeError("无可用 embedding 客户端")
         result = await client.embed_multimodal(contents)
+        record_embedding_call(
+            texts=len(contents),
+            chars=sum(len(str(c.get("text", ""))) for c in contents),
+        )
         if result and self._dims is None:
             self._dims = len(result[0])
             log(f"Embedding 维度: {self._dims}", "DEBUG", tag="思维")

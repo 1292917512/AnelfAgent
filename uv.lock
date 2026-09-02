@@ -2,8 +2,10 @@ version = 1
 revision = 3
 requires-python = ">=3.10, <3.12"
 resolution-markers = [
-    "python_full_version >= '3.11'",
-    "python_full_version < '3.11'",
+    "(python_full_version >= '3.11' and 'Darwin Kernel Version 22.' not in platform_version and 'Darwin Kernel Version 23.' not in platform_version) or (python_full_version >= '3.11' and sys_platform != 'darwin')",
+    "(python_full_version >= '3.11' and 'Darwin Kernel Version 22.' in platform_version and sys_platform == 'darwin') or (python_full_version >= '3.11' and 'Darwin Kernel Version 23.' in platform_version and sys_platform == 'darwin')",
+    "(python_full_version < '3.11' and 'Darwin Kernel Version 22.' not in platform_version and 'Darwin Kernel Version 23.' not in platform_version) or (python_full_version < '3.11' and sys_platform != 'darwin')",
+    "(python_full_version < '3.11' and 'Darwin Kernel Version 22.' in platform_version and sys_platform == 'darwin') or (python_full_version < '3.11' and 'Darwin Kernel Version 23.' in platform_version and sys_platform == 'darwin')",
 ]
 
 [[package]]
@@ -223,7 +225,7 @@ requires-dist = [
     { name = "asyncssh", specifier = ">=2.24.0" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
     { name = "brotli", specifier = ">=1.2.0" },
-    { name = "cognee", specifier = "==1.4.1" },
+    { name = "cognee", specifier = "==1.5.3" },
     { name = "colorama", specifier = ">=0.4.6" },
     { name = "cryptography", specifier = ">=42.0.0,<50" },
     { name = "fastapi", specifier = ">=0.116.2" },
@@ -701,7 +703,7 @@ wheels = [
 
 [[package]]
 name = "cognee"
-version = "1.4.1"
+version = "1.5.3"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
 dependencies = [
     { name = "aiofiles" },
@@ -721,7 +723,8 @@ dependencies = [
     { name = "gunicorn" },
     { name = "instructor" },
     { name = "jinja2" },
-    { name = "ladybug" },
+    { name = "ladybug", version = "0.17.1", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }, marker = "('Darwin Kernel Version 22.' in platform_version and sys_platform == 'darwin') or ('Darwin Kernel Version 23.' in platform_version and sys_platform == 'darwin')" },
+    { name = "ladybug", version = "0.19.0", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }, marker = "('Darwin Kernel Version 22.' not in platform_version and 'Darwin Kernel Version 23.' not in platform_version) or sys_platform != 'darwin'" },
     { name = "lancedb" },
     { name = "langdetect" },
     { name = "limits" },
@@ -751,9 +754,9 @@ dependencies = [
     { name = "uvicorn" },
     { name = "websockets" },
 ]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/d8/93/1277ebad661581e4eee8182e80cb898d26ae8f60f8aae2cf33329281c4db/cognee-1.4.1.tar.gz", hash = "sha256:9206075539935ef0adfab82cf410af6799e83c42969ba7c8fae5065de9aba7c9", size = 26990336, upload-time = "2026-07-31T21:28:41.496Z" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/e3/6c/d59798a299dd7f28c18a3b14d0e711036e7f12941feb1e1666a539418870/cognee-1.5.3.tar.gz", hash = "sha256:49c4799c313990a0905cfcc90a0e0ba3e1521d1726134dd8bcca47e2f19c36ad", size = 27624449, upload-time = "2026-08-23T18:30:38.484Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/34/8f/509d4fa55140129ae3f93a013f44f82e0842ef60e2f58168c2a38ae3e0a1/cognee-1.4.1-py3-none-any.whl", hash = "sha256:4c94285589db5a585365bf4bf9cfc8481494d7a8dec2e38d50f14484f69f48dc", size = 7448815, upload-time = "2026-07-31T21:28:38.213Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/6d/44/71d7f7fd0245ecbf6032b6dc3fb37d41e715b55d8c5477851c0f43d28ee5/cognee-1.5.3-py3-none-any.whl", hash = "sha256:575c2791a911edecfa70321c81e984a7ebbc16746f41562361f43636be76308f", size = 8194900, upload-time = "2026-08-23T18:30:35.031Z" },
 ]
 
 [[package]]
@@ -1527,24 +1530,44 @@ wheels = [
 name = "ladybug"
 version = "0.17.1"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
+resolution-markers = [
+    "(python_full_version >= '3.11' and 'Darwin Kernel Version 22.' in platform_version and sys_platform == 'darwin') or (python_full_version >= '3.11' and 'Darwin Kernel Version 23.' in platform_version and sys_platform == 'darwin')",
+    "(python_full_version < '3.11' and 'Darwin Kernel Version 22.' in platform_version and sys_platform == 'darwin') or (python_full_version < '3.11' and 'Darwin Kernel Version 23.' in platform_version and sys_platform == 'darwin')",
+]
 sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/7e/f6/1511d2ab4391af8a4133c556ccaf79b613d79c6120e3fcced02c8d438982/ladybug-0.17.1.tar.gz", hash = "sha256:82efea498713c7da7f6f94f80252574599252d26ee10fb11e62ae932b5d8f2ba", size = 10160802, upload-time = "2026-06-02T20:08:43.241Z" }
 wheels = [
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/0a/60/b87c4d017caf35b50c839299b6698a1bf79ab1a6486e4e935a73332bffd2/ladybug-0.17.1-cp310-cp310-macosx_13_0_arm64.whl", hash = "sha256:faf616d55f8a1269346c66913cabb32a88f9459878adadd7befb5e7adb206ea2", size = 4183667, upload-time = "2026-06-02T20:07:20.659Z" },
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/a5/fb/7e2c6bc3950a60250cfa87fb20146f26df3888049490168f4b1d8924bab6/ladybug-0.17.1-cp310-cp310-macosx_13_0_x86_64.whl", hash = "sha256:6b93d3dc7eb3827bfec82368d1196f78aa529dcddab848a06015a51d05ec622d", size = 4666415, upload-time = "2026-06-02T20:07:22.826Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/ce/03/4489ab0d7a65d82fe945c31abe5c0007f396b4040c1fabed512800ecad84/ladybug-0.17.1-cp310-cp310-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e0624025078a120b4e397d0e84a4de2a931a8a40434fa0594c49da5beee093ce", size = 7066895, upload-time = "2026-06-02T20:07:24.537Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/9d/b8/f84cd5c39ad471c332272ae54df83b533df208305d28857dc70bb9eee526/ladybug-0.17.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3b69c79fafd7fbd2eaa2fa5ee7b891aa5ddf91f913b1d252a983175c1b8c4563", size = 7922849, upload-time = "2026-06-02T20:07:26.465Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/d2/6a/37856a75d1ff1d7f0a6bfb15fe4fea30aed037c31c852bab77300915d91b/ladybug-0.17.1-cp310-cp310-musllinux_1_2_aarch64.whl", hash = "sha256:0ed7445e6bf200cc585f7e71e0d3a79b4a78718c1bf3fdcdee99dfadc0ce73c1", size = 7898267, upload-time = "2026-06-02T20:07:28.554Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/20/2e/26ce9528a96911ca11d875013504287d722b46aebacd25626ac107579c5f/ladybug-0.17.1-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:99a76128828245e39996c44ba693a754132b785c5db5e70f0e469e73ec24d103", size = 8783469, upload-time = "2026-06-02T20:07:30.652Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/3d/8e/ead3989595cf2e2df0829b3064b073f379a0bcdcba99bcd620d175e8ff1f/ladybug-0.17.1-cp310-cp310-win_amd64.whl", hash = "sha256:2748b1bb9e13c6af465f8089eb20e72fb4f1871603b1031eeb3390ab5b9f9baa", size = 5289323, upload-time = "2026-06-02T20:07:33.089Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/5e/4c/585f3b98ebf50a9fb5ad090e4deb04ad5a0080fc91c54da4ce1aad741fa0/ladybug-0.17.1-cp310-cp310-win_arm64.whl", hash = "sha256:0a7cea07905e7bdfb8a45bd80f3491ff6624ec34d0395d1887be0e4e0e2259d3", size = 5257509, upload-time = "2026-06-02T20:07:34.904Z" },
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/df/9d/d2993494ecd3a6aa2d12a027a9f6adf365a702c720d99cd1fa8a9d9142bf/ladybug-0.17.1-cp311-cp311-macosx_13_0_arm64.whl", hash = "sha256:b21e9101855a852c8f810e591d078adc0d28639c45bfaae4f20c20ad07164162", size = 4185136, upload-time = "2026-06-02T20:07:36.714Z" },
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/62/00/a42fdb3eef04e60819525f8bcccd785d7ea8d8bdcc0336b587e8742a2c8f/ladybug-0.17.1-cp311-cp311-macosx_13_0_x86_64.whl", hash = "sha256:d6ed21cc33d636d9e69c9126a0e55142000faa3f402cc8f30a79f03f9c9c997b", size = 4667711, upload-time = "2026-06-02T20:07:38.573Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/28/fa/f27d01ea2a14fbf03a8d38d254ac39e36954f1ee6dfd0cf2f0f0aa34bbe6/ladybug-0.17.1-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:afbf3096d18ab6300a29df15c2a77c936434d11bf9ef2b370076e13450592907", size = 7069633, upload-time = "2026-06-02T20:07:40.586Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/58/97/6eac02e95ed5cf31eb3336ac2f95b4db3a98c775593a91f183a291f4a9e1/ladybug-0.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3cffc7023414c890f8be7841df8f41a9b3d489715ada9ab7426f943701e64eb6", size = 7923999, upload-time = "2026-06-02T20:07:42.631Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/75/0f/0887c7e6fe74245569f572a9a8d1011dead4367e9fce72b318acff544930/ladybug-0.17.1-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:7eb77583aee8618bcb8d174ec834950b821f44feb21655d502fda415d51e1194", size = 7900586, upload-time = "2026-06-02T20:07:44.716Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/ee/88/151439e993103788c112f7dc547596329ddd9e89abc439a629f79475d953/ladybug-0.17.1-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:8eb26cb7508541facc38e4d4282583469ef3927fbb99900eb4ae66632a55e215", size = 8784396, upload-time = "2026-06-02T20:07:46.941Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c3/9f/f35cd80041209f93f47b6a60bc17d0fa73fa1b2c80467c788a10a6188bab/ladybug-0.17.1-cp311-cp311-win_amd64.whl", hash = "sha256:b2fd0e4e8948e15e567e8dcdfa38709906f6f1a66552cd44eea873a8ff664df9", size = 5289990, upload-time = "2026-06-02T20:07:49.211Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/f6/82/f66966cebb674dd9f995cb981c9d79284d84259dc482453edbd963a53a00/ladybug-0.17.1-cp311-cp311-win_arm64.whl", hash = "sha256:e1b881433e6623daa5c84eb80a9c1d6d5b4a16618c022fa028aa16b9de7a7dd8", size = 5258334, upload-time = "2026-06-02T20:07:51.145Z" },
+]
+
+[[package]]
+name = "ladybug"
+version = "0.19.0"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
+resolution-markers = [
+    "(python_full_version >= '3.11' and 'Darwin Kernel Version 22.' not in platform_version and 'Darwin Kernel Version 23.' not in platform_version) or (python_full_version >= '3.11' and sys_platform != 'darwin')",
+    "(python_full_version < '3.11' and 'Darwin Kernel Version 22.' not in platform_version and 'Darwin Kernel Version 23.' not in platform_version) or (python_full_version < '3.11' and sys_platform != 'darwin')",
+]
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/65/f7/0ef0a9616d622c790c7fd559d10eb0fdd320c5880e79da035d0b23d2ab8d/ladybug-0.19.0.tar.gz", hash = "sha256:02a0725d29b36fd0de469dab14928c3bc8c5dfee4019acfd60ca504caffc4cd7", size = 10301849, upload-time = "2026-07-30T00:36:34.015Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/77/05/b8cb867e212ca835a4bd56ac34784022d897cd93a466f023c02183ea6ce9/ladybug-0.19.0-cp310-cp310-macosx_15_0_arm64.whl", hash = "sha256:5adf17c61155d8687f8b0a999a227549edf4473ae1ced897e0d6ac9937550b0a", size = 4561242, upload-time = "2026-07-30T00:35:23.366Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/d7/e5/44e625653cf4999111c87e28fb975fc4c0874a3d82c172acb73b84bfeb31/ladybug-0.19.0-cp310-cp310-macosx_15_0_x86_64.whl", hash = "sha256:8aca1fdf33f02508f0679ed49c90a154051c01640be1f44d5d93fb9e32635d36", size = 4901666, upload-time = "2026-07-30T00:35:25.34Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/9d/f3/b6e06c39af47785b77a69570a9862cc4b42e3423505dddb509b3bbf2baa8/ladybug-0.19.0-cp310-cp310-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:85647a6359186c39936c905f5f78714ab4be020ae734c4ac834fcfbf78f9caa6", size = 7362271, upload-time = "2026-07-30T00:35:26.927Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c1/22/4b5a40c96b1c6135c6d323340b5fdbc03cfa9c3dff0a165927c8edd8377c/ladybug-0.19.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:71d8cfdb2200295d294f10cbda5554fd86299b751ec997cfec74d0c1eef24556", size = 8255191, upload-time = "2026-07-30T00:35:28.64Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/19/db/7b1583b708de405a6a0de9a828b17d04237ab03ff799a662c53300ed49b8/ladybug-0.19.0-cp310-cp310-musllinux_1_2_aarch64.whl", hash = "sha256:507fd8a2da1970b2bfdf84f85bba3f62482864416e7f8178661331938a98d1a5", size = 8190663, upload-time = "2026-07-30T00:35:30.389Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/79/01/dd997ba5f0a7397c5e396b684d1d927ba14fa7c32513b604b49b41888920/ladybug-0.19.0-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:290ef1a03e88debb5039f218e7d842f7ea15861be8e716d015dbc472da4187cc", size = 9116091, upload-time = "2026-07-30T00:35:32.213Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/21/9e/3fdf6c563795d3b1eacfebdd4f61a15fe4149573fd8f6ffe9024b16dcccb/ladybug-0.19.0-cp310-cp310-win_amd64.whl", hash = "sha256:4791f27194fdda740a0debaa9e1ad7f1294ec7e3080a57eaccd6278b2aa893fd", size = 5719695, upload-time = "2026-07-30T00:35:34.362Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/b0/5c/5bbcd04079bc0e4f4177c1bcef8566e0ca46c8d00bb32cab24770f908ace/ladybug-0.19.0-cp310-cp310-win_arm64.whl", hash = "sha256:1c26b9aae154a3dd7e9222c5e4f57e9a8309627657d143f82ff1b0edb7613c36", size = 8204490, upload-time = "2026-07-30T00:35:36.056Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/db/80/8ca473a19195fab63af64f15a0f1a31011aebe8ed09db13462f17cecfe63/ladybug-0.19.0-cp311-cp311-macosx_15_0_arm64.whl", hash = "sha256:d1a434f02723072a6ea4407b928f458d3e3ada28eb1f5406f0f18b1d261c9457", size = 4561786, upload-time = "2026-07-30T00:35:37.731Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/71/cf/0ef7f0e89cc169167a81025dd26e8a65145b7ce6e736e651d22f5c9bcef1/ladybug-0.19.0-cp311-cp311-macosx_15_0_x86_64.whl", hash = "sha256:f64b1de331d21e24240eee4c62c18a45f51903c75cfe6db7dd660deddab0dfda", size = 4903599, upload-time = "2026-07-30T00:35:39.539Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c2/00/5230c1f6f574fd88f747edc4d3118973242c363b47d4fab3f52992219a6b/ladybug-0.19.0-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:7f04b1557052e62802007fb40d5216c0548bb02863ba1295bbbf28b796fd8978", size = 7363410, upload-time = "2026-07-30T00:35:41.094Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/a4/bb/428b1a0722aa476f03f75188f65b9a097644dec6a08830a88abf4c3f3881/ladybug-0.19.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:54867877c723f3be76a32e060e948ccec95187ad2e4086563c42ef34c35a03b7", size = 8256219, upload-time = "2026-07-30T00:35:42.948Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/18/fb/95fd9ebe0841a3b2241d2570048051920f207393bf9b6ab2806451022595/ladybug-0.19.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:09f6052dd8b0f9e8985457e7d40287726e199234934678db28d0b27e98104da2", size = 8191751, upload-time = "2026-07-30T00:35:44.73Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/dc/68/fc6264a9e4a4f1d64ffd7653d3862a72c88f6b9b20372f07e0b9be79d0d5/ladybug-0.19.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:38d798d62001ceb976d9b7107e5e3d916305deb5d131f92789ccbfcda51f0fdc", size = 9117419, upload-time = "2026-07-30T00:35:46.494Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/f1/89/ac7106173442b73fca95812e286a901b41db35ce6fa711ddb43794a50dbf/ladybug-0.19.0-cp311-cp311-win_amd64.whl", hash = "sha256:a8367c2bd473e4361f80e50d24186542f12af4004eb548cb1854736fdd352b3c", size = 5720052, upload-time = "2026-07-30T00:35:48.437Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/79/15/f196ca72426c6e4ab05be543afda3a8738f64db205c83f870999381f6c15/ladybug-0.19.0-cp311-cp311-win_arm64.whl", hash = "sha256:66fe4fcd4113f2adfa15ae9b195e43e450fc52de71b612d65c64ada65d597157", size = 8205756, upload-time = "2026-07-30T00:35:50.18Z" },
 ]
 
 [[package]]
@@ -1607,7 +1630,7 @@ sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/0e/72/a3add0e4eec4eb
 
 [[package]]
 name = "lark-oapi"
-version = "1.7.2"
+version = "1.7.3"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
 dependencies = [
     { name = "httpx" },
@@ -1616,9 +1639,9 @@ dependencies = [
     { name = "requests-toolbelt" },
     { name = "websockets" },
 ]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/63/02/9992aa997e7085507237554ba5b49b998d77a6f8971e05ce105b04fbc324/lark_oapi-1.7.2.tar.gz", hash = "sha256:deee5ed90f6b54448e00af6749af90a1ac72f212050c24a6c619f5a12c542774", size = 2328627, upload-time = "2026-08-05T09:22:52.805Z" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/8f/5f/a0cc291039501fae117602074006508c17d6c9c83f1daa61b8d029004662/lark_oapi-1.7.3.tar.gz", hash = "sha256:e532e57fa295a1cc10e3432191f80638a082a190dc678cb2eddb6de301ff3573", size = 2346519, upload-time = "2026-08-19T09:27:42.208Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/8b/34/151efd46acca34d086a2db86d1820ec2452a72d1a8281bb73d5991f03505/lark_oapi-1.7.2-py3-none-any.whl", hash = "sha256:d73cbcac28d8e7cd75efe64a8c350da50b1a45be046c5e5b8382701ea8bb764c", size = 7629022, upload-time = "2026-08-05T09:22:50.485Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/7c/65/91961331ba56308101cb932d446bd1b80e7d23234e498cefc6384ca04018/lark_oapi-1.7.3-py3-none-any.whl", hash = "sha256:c91f00087b7977dc9059ab492e8fe435e1a873863dca1d4e660d2be5b801e4cd", size = 7708570, upload-time = "2026-08-19T09:27:33.078Z" },
 ]
 
 [[package]]
@@ -2044,7 +2067,8 @@ name = "networkx"
 version = "3.4.2"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
 resolution-markers = [
-    "python_full_version < '3.11'",
+    "(python_full_version < '3.11' and 'Darwin Kernel Version 22.' not in platform_version and 'Darwin Kernel Version 23.' not in platform_version) or (python_full_version < '3.11' and sys_platform != 'darwin')",
+    "(python_full_version < '3.11' and 'Darwin Kernel Version 22.' in platform_version and sys_platform == 'darwin') or (python_full_version < '3.11' and 'Darwin Kernel Version 23.' in platform_version and sys_platform == 'darwin')",
 ]
 sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/fd/1d/06475e1cd5264c0b870ea2cc6fdb3e37177c1e565c43f56ff17a10e3937f/networkx-3.4.2.tar.gz", hash = "sha256:307c3669428c5362aab27c8a1260aa8f47c4e91d3891f48be0141738d8d053e1", size = 2151368, upload-time = "2024-10-21T12:39:38.695Z" }
 wheels = [
@@ -2056,7 +2080,8 @@ name = "networkx"
 version = "3.6.1"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
 resolution-markers = [
-    "python_full_version >= '3.11'",
+    "(python_full_version >= '3.11' and 'Darwin Kernel Version 22.' not in platform_version and 'Darwin Kernel Version 23.' not in platform_version) or (python_full_version >= '3.11' and sys_platform != 'darwin')",
+    "(python_full_version >= '3.11' and 'Darwin Kernel Version 22.' in platform_version and sys_platform == 'darwin') or (python_full_version >= '3.11' and 'Darwin Kernel Version 23.' in platform_version and sys_platform == 'darwin')",
 ]
 sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/6a/51/63fe664f3908c97be9d2e4f1158eb633317598cfa6e1fc14af5383f17512/networkx-3.6.1.tar.gz", hash = "sha256:26b7c357accc0c8cde558ad486283728b65b6a95d85ee1cd66bafab4c8168509", size = 2517025, upload-time = "2025-12-08T17:02:39.908Z" }
 wheels = [
@@ -2068,7 +2093,8 @@ name = "numpy"
 version = "2.2.6"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
 resolution-markers = [
-    "python_full_version < '3.11'",
+    "(python_full_version < '3.11' and 'Darwin Kernel Version 22.' not in platform_version and 'Darwin Kernel Version 23.' not in platform_version) or (python_full_version < '3.11' and sys_platform != 'darwin')",
+    "(python_full_version < '3.11' and 'Darwin Kernel Version 22.' in platform_version and sys_platform == 'darwin') or (python_full_version < '3.11' and 'Darwin Kernel Version 23.' in platform_version and sys_platform == 'darwin')",
 ]
 sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/76/21/7d2a95e4bba9dc13d043ee156a356c0a8f0c6309dff6b21b4d71a073b8a8/numpy-2.2.6.tar.gz", hash = "sha256:e29554e2bef54a90aa5cc07da6ce955accb83f21ab5de01a62c8478897b264fd", size = 20276440, upload-time = "2025-05-17T22:38:04.611Z" }
 wheels = [
@@ -2103,7 +2129,8 @@ name = "numpy"
 version = "2.4.6"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
 resolution-markers = [
-    "python_full_version >= '3.11'",
+    "(python_full_version >= '3.11' and 'Darwin Kernel Version 22.' not in platform_version and 'Darwin Kernel Version 23.' not in platform_version) or (python_full_version >= '3.11' and sys_platform != 'darwin')",
+    "(python_full_version >= '3.11' and 'Darwin Kernel Version 22.' in platform_version and sys_platform == 'darwin') or (python_full_version >= '3.11' and 'Darwin Kernel Version 23.' in platform_version and sys_platform == 'darwin')",
 ]
 sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/d0/ad/fed0499ce6a338d2a03ebae59cd15093910c8875328855781952abf6c2fe/numpy-2.4.6.tar.gz", hash = "sha256:f3a3570c4a2a16746ac2c31a7c7c7b0c186b95ce902e33db6f28094ed7387dda", size = 20735807, upload-time = "2026-05-18T23:37:14.07Z" }
 wheels = [
@@ -2901,7 +2928,8 @@ name = "rpds-py"
 version = "0.30.0"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
 resolution-markers = [
-    "python_full_version < '3.11'",
+    "(python_full_version < '3.11' and 'Darwin Kernel Version 22.' not in platform_version and 'Darwin Kernel Version 23.' not in platform_version) or (python_full_version < '3.11' and sys_platform != 'darwin')",
+    "(python_full_version < '3.11' and 'Darwin Kernel Version 22.' in platform_version and sys_platform == 'darwin') or (python_full_version < '3.11' and 'Darwin Kernel Version 23.' in platform_version and sys_platform == 'darwin')",
 ]
 sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/20/af/3f2f423103f1113b36230496629986e0ef7e199d2aa8392452b484b38ced/rpds_py-0.30.0.tar.gz", hash = "sha256:dd8ff7cf90014af0c0f787eea34794ebf6415242ee1d6fa91eaba725cc441e84", size = 69469, upload-time = "2025-11-30T20:24:38.837Z" }
 wheels = [
@@ -2953,7 +2981,8 @@ name = "rpds-py"
 version = "2026.6.3"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple/" }
 resolution-markers = [
-    "python_full_version >= '3.11'",
+    "(python_full_version >= '3.11' and 'Darwin Kernel Version 22.' not in platform_version and 'Darwin Kernel Version 23.' not in platform_version) or (python_full_version >= '3.11' and sys_platform != 'darwin')",
+    "(python_full_version >= '3.11' and 'Darwin Kernel Version 22.' in platform_version and sys_platform == 'darwin') or (python_full_version >= '3.11' and 'Darwin Kernel Version 23.' in platform_version and sys_platform == 'darwin')",
 ]
 sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/aa/2a/9618a122aeb2a169a28b03889a2995fe297588964333d4a7d67bdf46e147/rpds_py-2026.6.3.tar.gz", hash = "sha256:1cebd1337c242e4ec2293e541f712b2da849b29f48f0c293684b71c0632625d4", size = 64051, upload-time = "2026-06-30T07:17:53.009Z" }
 wheels = [

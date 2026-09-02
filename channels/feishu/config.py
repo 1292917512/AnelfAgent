@@ -55,6 +55,32 @@ FEISHU_CONFIGS: Dict[str, Dict[str, Any]] = {
             "default": True,
             "value_type": ConfigValueType.BOOLEAN,
         },
+        "reply_to_mode": {
+            "description": "回复引用策略（first=仅首条分段挂引用 / all=全部挂引用 / off=不引用）",
+            "default": "first",
+            "value_type": ConfigValueType.ENUM,
+            "options": ["first", "all", "off"],
+        },
+        "reply_in_thread": {
+            "description": "群聊中引用回复进入话题（thread）模式，长讨论不刷群主聊面板",
+            "default": False,
+            "value_type": ConfigValueType.BOOLEAN,
+        },
+        "markdown_render": {
+            "description": "含 Markdown 语法（标题/加粗/列表/表格/代码块等）的回复以富文本渲染发送",
+            "default": True,
+            "value_type": ConfigValueType.BOOLEAN,
+        },
+        "sender_name_enabled": {
+            "description": "解析发送者昵称（需为应用开通 contact:user.base:readonly 权限；缺失时自动降级为 open_id）",
+            "default": True,
+            "value_type": ConfigValueType.BOOLEAN,
+        },
+        "max_download_mb": {
+            "description": "入站媒体文件下载大小上限（MB），超出拒绝下载并在日志中说明",
+            "default": 50,
+            "value_type": ConfigValueType.INTEGER,
+        },
         "text_limit": {
             "description": "单条消息字符限制（飞书上限约 4000）",
             "default": 4000,

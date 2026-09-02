@@ -20,6 +20,7 @@ from core.log import log
 
 from ..memory_store import MemoryStore
 from .engine import Embedder
+from .usage import flush_embedding_usage
 
 BacklogHandler = Callable[[Embedder, int], Awaitable[int]]
 """回填处理器：接收 embedder 与批次大小，返回本轮补全的向量数。"""
@@ -112,7 +113,11 @@ class EmbeddingWorker:
 
     @property
     def _batch_size(self) -> int:
-        return max(1, get_config_int("embedding_worker_batch_size", 32))
+        configured = max(1, get_config_int("embedding_worker_batch_size", 32))
+        # 对齐客户端单批上限：超过上限时 llm_client 内部拆批，
+        # 32 条会变成 20+12 两次请求，按上限取批保证一批 = 一次 API 调用
+        max_batch = self.embedder.max_batch_size
+        return min(configured, max_batch) if max_batch > 0 else configured
 
     @property
     def _interval_seconds(self) -> float:
@@ -133,6 +138,7 @@ class EmbeddingWorker:
             except asyncio.CancelledError:
                 pass  # 取消属正常关闭流程（正常控制流，非异常）
             self._task = None
+        flush_embedding_usage()
 
     def wake(self) -> None:
         self._wake.set()

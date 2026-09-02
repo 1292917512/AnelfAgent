@@ -198,3 +198,31 @@ async def test_render_node_document(store) -> None:
     # 归档节点不渲染
     await store.graph.set_node_archived("user:qq:1", True)
     assert await store.graph.render_node_document(edge["subject"]["id"]) is None
+
+
+@pytest.mark.asyncio
+async def test_render_node_projection_fingerprint_ignores_strength_and_evidence(store) -> None:
+    edge = await store.graph.add_relation(
+        "user:qq:1", "喜欢", "topic:火锅", strength=0.5, evidence="初识",
+    )
+    node_id = edge["subject"]["id"]
+    first = await store.graph.render_node_projection(node_id)
+    assert first is not None
+    doc_a, fp_a = first
+    # 强度强化与证据刷新：文档文本变化但结构指纹不变（投影跳过的依据）
+    await store.graph.add_relation(
+        "user:qq:1", "喜欢", "topic:火锅", strength=0.9, evidence="每周必吃",
+    )
+    second = await store.graph.render_node_projection(node_id)
+    assert second is not None
+    doc_b, fp_b = second
+    assert fp_a == fp_b
+    assert doc_a != doc_b
+    # 邻域结构变化（新增边）：指纹必须变化以触发重投影
+    await store.graph.add_relation("user:qq:1", "讨厌", "topic:香菜")
+    third = await store.graph.render_node_projection(node_id)
+    assert third is not None
+    assert third[1] != fp_a
+    # 归档节点不渲染
+    await store.graph.set_node_archived("user:qq:1", True)
+    assert await store.graph.render_node_projection(node_id) is None

@@ -143,10 +143,23 @@ async def get_active_plan(scope: str) -> Optional[Dict[str, Any]]:
 
 
 async def _persist(entry: MemoryEntry, goal: Dict[str, Any]) -> None:
-    """写回 MemoryStore（内容已变更，清空旧向量待后台 worker 重建）。"""
+    """写回 MemoryStore（内容已变更，清空旧向量待后台 worker 重建）。
+
+    语义内容（updated_at 之外）未变时跳过写库：时间戳漂移本身不产生
+    新信息，但每次落库都会触发向量重建与 cognee 重投影的连锁成本。
+    """
     store = _bound_store()
     if store is None:
         return
+    try:
+        previous = json.loads(entry.content)
+    except (json.JSONDecodeError, TypeError):
+        previous = None
+    if isinstance(previous, dict):
+        def _semantic(g: Dict[str, Any]) -> Dict[str, Any]:
+            return {k: v for k, v in g.items() if k != "updated_at"}
+        if _semantic(previous) == _semantic(goal):
+            return
     goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     entry.content = json.dumps(goal, ensure_ascii=False)
     await store.update(entry, clear_embedding=True)

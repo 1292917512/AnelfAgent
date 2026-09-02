@@ -509,7 +509,6 @@ _PATH_SPECS: Dict[str, Tuple[str, str]] = {
     "COGNEE_DATA_DIR": ("data", "cognee"),
     "HEARTBEAT_LOG": ("data", "heartbeat.md"),
     "SQLITE_DB": ("data", "data/agent.sqlite3"),
-    "NONEBOT_DIR": ("data", "nonebot"),
     "UPLOAD_DIR": ("literal", "workspace/uploads"),
 }
 

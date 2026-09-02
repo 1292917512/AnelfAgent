@@ -90,13 +90,22 @@ class CogneeConfig:
     enabled: bool = False
     sync_enabled: bool = True
     recall_enabled: bool = True
+    # 投影开关：memory 投影与主向量库内容同源（重复嵌入一份），
+    # 召回经 RRF 按 memory id 去重后增益主要在 cognee 图谱抽取；
+    # graph 投影（关系邻域文档）是原生检索没有的增量信息
+    project_memories_enabled: bool = True
+    project_graph_enabled: bool = True
     data_root: str = ConfigPaths.COGNEE_DATA_DIR
     dataset_prefix: str = "anelf"
     timeout_seconds: float = 30.0
     # 流水线超时需覆盖整批次的 add/cognify/improve：
     # thinking 模型下单批 20 条记忆的图谱抽取约需 15 分钟
     pipeline_timeout_seconds: float = 1800.0
-    improve_interval_seconds: float = 600.0
+    # 自动图谱增强（cognee improve/memify）：默认禁用——memify 默认任务
+    # 对全图三元组重新 embedding 且向量索引只追加不去重（EdgeType 索引
+    # 曾堆积 21 万重复行），而 CHUNKS 类召回不依赖它；需要时经
+    # improve_cognee_dataset 工具手动触发
+    improve_interval_seconds: float = 0.0
     sync_interval_seconds: float = 5.0
     sync_batch_size: int = 20
     max_retries: int = 5

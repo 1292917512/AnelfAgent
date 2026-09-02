@@ -68,9 +68,6 @@ config/introspection/
 config/memory/
 config/config/
 
-# === NoneBot 桥接源码检出（git 源安装的本地仓库，二次开发用） ===
-channels/nonebot_bridge/sources/
-
 # === Personal tasks (keep memory_consolidation.json as example) ===
 config/tasks/*
 !config/tasks/memory_consolidation.json
@@ -101,7 +98,6 @@ channels/telegram/channel_config.json
 channels/qq/channel_config.json
 channels/feishu/channel_config.json
 channels/weixin/channel_config.json
-channels/nonebot_bridge/channel_config.json
 # Any nested channel_config.json (e.g. channels/<vendor>/<vendor>/...) is also runtime-generated
 channels/**/channel_config.json
 
@@ -138,3 +134,11 @@ web/frontend/node_modules/
 /.other
 # === Bilibili channel (personal, vendored SDK) ===
 channels/bilibili/
+
+# === SillyTavern (external project, nested git repo, updated independently) ===
+/entities/sillytavern/SillyTavern/
+
+# === SillyTavern entity runtime state (source repo ignored separately) ===
+/entities/sillytavern/state.json
+/entities/sillytavern/logs/
+/entities/sillytavern/config.json

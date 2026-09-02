@@ -197,6 +197,8 @@ class ChannelManager(BaseEntity):
             reply_to_id=message.reply_to_id,
             reply_content=message.reply_content,
             trigger_mind=trigger_mind,
+            message_kind=getattr(message.kind, "value", message.kind)
+            if getattr(message, "kind", None) else "chat",
         )
 
     # ------------------------------------------------------------------

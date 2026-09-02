@@ -8,5 +8,10 @@
   "verification_token": "",
   "webhook_port": 9321,
   "require_mention": true,
+  "reply_to_mode": "first",
+  "reply_in_thread": false,
+  "markdown_render": true,
+  "sender_name_enabled": true,
+  "max_download_mb": 50,
   "text_limit": 4000
 }

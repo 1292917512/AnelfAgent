@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import time
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import lark_oapi as lark
 
@@ -27,10 +28,6 @@ from .helpers import (
 )
 from .media import download_image, download_message_resource
 from .types import FeishuMention
-
-if TYPE_CHECKING:
-    pass
-
 
 # ------------------------------------------------------------------
 # 消息去重（LRU）
@@ -56,6 +53,8 @@ def _is_duplicate(message_id: str) -> bool:
 
 
 OnMessageCallback = Callable[[AdapterMessage], Awaitable[None]]
+NameResolver = Callable[[str], Awaitable[str]]
+ChatSeenCallback = Callable[[str, str], None]
 
 
 def build_message_handler(
@@ -65,6 +64,9 @@ def build_message_handler(
     require_mention: bool,
     on_message: OnMessageCallback,
     main_loop: Optional[asyncio.AbstractEventLoop] = None,
+    resolve_name: Optional[NameResolver] = None,
+    on_chat_seen: Optional[ChatSeenCallback] = None,
+    max_download_bytes: int = 50 * 1024 * 1024,
 ) -> Callable[[lark.im.v1.P2ImMessageReceiveV1], None]:
     """构造飞书消息事件处理函数。
 
@@ -80,15 +82,28 @@ def build_message_handler(
             bot_open_id=bot_open_id,
             require_mention=require_mention,
             on_message=on_message,
+            resolve_name=resolve_name,
+            on_chat_seen=on_chat_seen,
+            max_download_bytes=max_download_bytes,
         )
         if main_loop is not None and main_loop.is_running():
             log("飞书: 调度到主事件循环", "DEBUG")
-            asyncio.run_coroutine_threadsafe(coro, main_loop)
+            future = asyncio.run_coroutine_threadsafe(coro, main_loop)
+            # 异常不消费会静默丢消息（Future 无人 await），done 回调兜底记日志
+            future.add_done_callback(_log_coro_exception)
         else:
             log(f"飞书: main_loop 不可用(is_running={main_loop.is_running() if main_loop else None})，fallback asyncio.run", "DEBUG")
             asyncio.run(coro)
 
     return handler
+
+
+def _log_coro_exception(future: "concurrent.futures.Future[None]") -> None:
+    """消息处理协程异常兜底（future 无人 await，不取异常会被静默吞掉）。"""
+    try:
+        future.result()
+    except Exception as exc:
+        log(f"飞书: 消息处理协程异常: {exc}", "ERROR")
 
 
 # ------------------------------------------------------------------
@@ -103,6 +118,9 @@ async def _handle_message_event(
     bot_open_id: str,
     require_mention: bool,
     on_message: OnMessageCallback,
+    resolve_name: Optional[NameResolver] = None,
+    on_chat_seen: Optional[ChatSeenCallback] = None,
+    max_download_bytes: int = 50 * 1024 * 1024,
 ) -> None:
     """处理 im.message.receive_v1 事件。"""
     event = data.event
@@ -130,6 +148,15 @@ async def _handle_message_event(
     chat_id = message.chat_id or ""
     chat_type = message.chat_type or "p2p"
     parent_id = message.parent_id or ""
+
+    # 登记已知会话（list_known_chats 数据源）
+    if chat_id and on_chat_seen:
+        on_chat_seen(chat_id, chat_type)
+
+    # 引用消息原文预览（随 [reply_to:xxx] 标签注入，AI 可看到被回复内容摘要）
+    reply_content = ""
+    if parent_id and client is not None:
+        reply_content = await _fetch_parent_preview(client, parent_id)
 
     # 解析 mentions
     raw_mentions = getattr(message, "mentions", None)
@@ -168,10 +195,11 @@ async def _handle_message_event(
         msg_type=msg_type,
         raw_content=raw_content,
         segments=segments,
+        max_download_bytes=max_download_bytes,
     )
 
-    # 发送者信息
-    sender_name = ""
+    # 发送者昵称（contact API + 缓存，权限缺失时回退 open_id）
+    sender_name = await resolve_name(sender_open_id) if resolve_name else ""
 
     # 构建 AdapterMessage
     adapter_msg = AdapterMessage(
@@ -190,10 +218,28 @@ async def _handle_message_event(
         is_to_me=is_to_me,
         trigger_mind=trigger_mind,
         reply_to_id=parent_id,
+        reply_content=reply_content,
     )
 
     log(f"飞书: 分发消息 chat={chat_id} sender={sender_open_id} type={msg_type} content={text_content[:100]}")
     await on_message(adapter_msg)
+
+
+# ------------------------------------------------------------------
+# 引用消息预览
+# ------------------------------------------------------------------
+
+
+async def _fetch_parent_preview(client: lark.Client, parent_id: str) -> str:
+    """拉取被引用消息的文本预览（best-effort，权限不足/超时静默降级为空）。"""
+    from .send import get_message
+
+    try:
+        data = await asyncio.wait_for(get_message(client, parent_id), timeout=10)
+        return str(data.get("text", "") or "")
+    except Exception as exc:
+        log(f"飞书: 引用消息预览拉取失败 ({parent_id}): {exc}", "DEBUG")
+        return ""
 
 
 # ------------------------------------------------------------------
@@ -208,6 +254,7 @@ async def _extract_media(
     msg_type: str,
     raw_content: str,
     segments: List[MessageSegment],
+    max_download_bytes: int,
 ) -> None:
     """从消息中提取并下载媒体文件，追加到 segments。"""
 
@@ -217,7 +264,7 @@ async def _extract_media(
         result = parse_post_content(raw_content)
         for image_key in result.image_keys:
             try:
-                info = await download_image(client, message_id, image_key)
+                info = await download_image(client, message_id, image_key, max_bytes=max_download_bytes)
             except Exception as exc:
                 log(f"飞书: 富文本图片下载失败 ({image_key}): {exc}", "WARNING")
                 continue
@@ -260,6 +307,7 @@ async def _extract_media(
             resource_type=resource_type,
             msg_type=msg_type,
             file_name=file_name,
+            max_bytes=max_download_bytes,
         )
         segments.append(MessageSegment(
             type=seg_type,

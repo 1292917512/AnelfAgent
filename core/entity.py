@@ -474,7 +474,7 @@ _DEFAULT_GROUP_ORDER: Dict[str, int] = {
     "model_control": 11, "ollama": 12, "logs": 13, "channel_ops": 14,
     "entity": 15, "mcp_manage": 16, "devops": 17,
     "skills": 18, "delegation": 19, "ui": 20, "session": 21, "ssh": 22,
-    "voiceprint": 23, "nonebot": 24,
+    "voiceprint": 23,
 }
 
 

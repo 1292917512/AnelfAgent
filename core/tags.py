@@ -225,6 +225,13 @@ to_me_tag = Tag(
                   "无需回应，也不要当作对你的提问、托付或欠下的待办（私聊消息默认都是对你说，无需此标签）",
 )
 avatar_tag = Tag(tag_name="avatar", tag_name_desc="用户头像 URL")
+kind_tag = Tag(
+    tag_name="kind",
+    tag_name_desc="消息类别：notification 表示平台自动推送的通知（如回复/点赞提醒，"
+                  "不是对方主动对你发起的对话，要回应请用对应频道的工具操作，不要当作聊天消息直接回复）；"
+                  "event 表示场景事件（如直播间礼物/醒目留言）；system 表示系统消息；"
+                  "无此标签的消息是真人聊天",
+)
 
 # 媒体标签
 media_file_tag = Tag(

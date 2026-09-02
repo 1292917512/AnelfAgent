@@ -66,6 +66,28 @@ class CogneeSyncQueue:
             return
         if (
             operation == "upsert"
+            and entry_kind == ENTRY_KIND_MEMORY
+            and payload
+            and payload.get("source") == "goal"
+        ):
+            # 计划状态 JSON 不是知识：updated_at 高频漂移使投影永不稳定，
+            # 图谱抽取只产出噪音实体；原生 FTS/向量检索已覆盖召回。
+            # 已有旧投影的转为 delete 清理，无投影的仅作废残留条目。
+            cursor = await db.execute(
+                "SELECT data_id FROM cognee_entry_map WHERE entry_kind=? AND entry_id=?",
+                (entry_kind, entry_id),
+            )
+            mapping_row = await cursor.fetchone()
+            if not mapping_row or not mapping_row["data_id"]:
+                await db.execute(
+                    "DELETE FROM cognee_sync_queue "
+                    "WHERE entry_kind=? AND entry_id=? AND status IN ('pending', 'failed')",
+                    (entry_kind, entry_id),
+                )
+                return
+            operation, payload = "delete", None
+        if (
+            operation == "upsert"
             and not force
             and entry_kind == ENTRY_KIND_MEMORY
             and payload

@@ -6,7 +6,7 @@ import fnmatch
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from core.command import run_command
 from core.log import log
@@ -45,6 +45,31 @@ class HookOutcome:
     reason: str = ""
     executed: int = 0
     blocked_by: List[str] = field(default_factory=list)
+    # hook 主动返回的替换内容（reply_end 场景：脱敏/纠偏改写最终文本）。
+    # hook 在 stdout 输出一行前缀 REPLACE:<json-string> 即返回；多 hook 时
+    # 取第一个（后续 hook 仍照常执行——串行合并语义不变）
+    replace: str = "" 
+
+
+_REPLACE_PREFIX = "REPLACE:"
+
+
+def _extract_replace(stdout: str) -> Optional[str]:
+    """从 hook stdout 提取替换内容（最后一行以 REPLACE: 开头的 JSON 字符串）。
+
+    JSON 字符串保持 hook 意图的可选性：多行文本以转义形式携带；
+    解析失败（非 JSON/非字符串）按无替换处理（向后兼容：stdout 是日志通道）。
+    """
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if line.startswith(_REPLACE_PREFIX):
+            raw = line[len(_REPLACE_PREFIX):].strip()
+            try:
+                value = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return None
+            return value if isinstance(value, str) else None
+    return None
 
 
 class HookRegistry:
@@ -148,6 +173,10 @@ async def run_event_hooks(event: str, **payload: Any) -> HookOutcome:
             stdin_data=stdin_text,
         )
         if result.ok:
+            if not outcome.replace:
+                replace = _extract_replace(result.stdout)
+                if replace is not None:
+                    outcome.replace = replace
             continue
         # exit 2 = 阻塞（stderr 作为理由）；
         # 超时/其他退出码/异常 = 非阻塞错误（WARNING，不影响主流程）

@@ -77,7 +77,6 @@ export const FALLBACK_NAV: NavItem[] = [
   { path: "/mcp", label: "mcp", icon: "Plug", group: "group_ability" },
   { path: "/tags", label: "tags", icon: "Tags", group: "group_ability" },
   { path: "/channels", label: "channels", icon: "Radio", group: "group_ability" },
-  { path: "/nonebot", label: "nonebot", icon: "Bot", group: "group_ability" },
   { path: "/thinking", label: "thinking", icon: "Workflow", group: "group_ability" },
   { path: "/data", label: "data", icon: "Database", group: "group_system" },
   { path: "/approvals", label: "approvals", icon: "Shield", group: "group_system" },
@@ -92,7 +91,7 @@ export function Sidebar() {
   const branding = useAppStore((s) => s.branding);
   const { t } = useTranslation("nav");
 
-  // 插件整页路由（如 nonebot_bridge 的 /nonebot）：插件存在才展示对应导航项
+  // 插件整页路由：插件存在才展示对应导航项
   const pluginPaths = new Set(listPluginRoutes().map((r) => `/${r.path}`));
   const navItems = (navigation.length > 0 ? navigation : FALLBACK_NAV)
     .filter((item) => CORE_ROUTE_PATHS.has(item.path) || pluginPaths.has(item.path));

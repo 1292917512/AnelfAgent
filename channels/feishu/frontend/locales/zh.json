@@ -1,0 +1,29 @@
+{
+  "panel": {
+    "title": "飞书连接状态",
+    "probe": "健康探测",
+    "probing": "探测中...",
+    "healthy": "连接正常",
+    "unhealthy": "连接异常",
+    "latency": "延迟 {{ms}}ms",
+    "notRunning": "频道未运行",
+    "guideTitle": "接入指引",
+    "guideSteps": [
+      "在飞书开放平台创建企业自建应用，获取 App ID / App Secret",
+      "开通权限：im:message、im:message:send_as_bot、im:resource、im:chat:readonly、contact:user.base:readonly（发送者昵称）",
+      "事件订阅选择「长连接」模式（webhook 模式需公网回调地址），订阅「接收消息」事件",
+      "在上方配置区填入 App ID / App Secret 并启用频道",
+      "将 Bot 邀请进目标群聊后即可 @ 它对话"
+    ],
+    "guideLink": "飞书开放平台文档",
+    "testTitle": "测试发送",
+    "chatIdPlaceholder": "目标会话 ID（oc_ 开头，可先让群内成员发一条消息后经 list_known_chats 获取）",
+    "textPlaceholder": "测试消息内容",
+    "send": "发送",
+    "sending": "发送中...",
+    "sendOk": "已发送（{{id}}）",
+    "sendOkRich": "已发送为富文本（{{id}}）",
+    "sendFailed": "发送失败",
+    "capabilities": "AI 可用能力"
+  }
+}

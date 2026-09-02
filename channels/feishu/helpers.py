@@ -6,7 +6,7 @@ import json
 import re
 from typing import List, Sequence
 
-from .types import FeishuMention, FeishuSenderId, PostContentResult
+from .types import FeishuMention, PostContentResult
 
 # ------------------------------------------------------------------
 # 富文本 (post) 消息解析
@@ -67,10 +67,10 @@ def parse_post_content(raw_content: str) -> PostContentResult:
                 continue
             tag = element.get("tag", "")
             if tag == "text":
-                line_parts.append(element.get("text", ""))
+                line_parts.append(str(element.get("text") or ""))
             elif tag == "a":
-                href = element.get("href", "")
-                text = element.get("text", href)
+                href = str(element.get("href") or "")
+                text = str(element.get("text") or href)
                 line_parts.append(f"{text}({href})" if href else text)
             elif tag == "at":
                 user_id = element.get("user_id", "")
@@ -130,7 +130,7 @@ def parse_message_content(raw_content: str, msg_type: str) -> str:
     if msg_type == "share_chat":
         return "[分享群聊]"
     if msg_type == "merge_forward":
-        return "[合并转发消息]"
+        return "[合并转发消息]（入站合并转发内容飞书未开放展开接口，可用 feishu_get_chat_history 查看上下文）"
     if msg_type == "interactive":
         return _parse_interactive_text(raw_content)
     return raw_content
@@ -173,13 +173,26 @@ def check_bot_mentioned(
     return any(m.id.open_id == bot_open_id for m in mentions)
 
 
-def strip_bot_mention(text: str, bot_open_id: str) -> str:
-    """移除文本中对 Bot 的 @提及。"""
-    if not bot_open_id:
-        return text
-    # 飞书文本中 @Bot 通常以 @Bot名称 或 at 标签出现
-    result = re.sub(r"@\S*\s*", "", text, count=1).strip() if text else ""
-    return result or text
+# ------------------------------------------------------------------
+# Markdown 检测
+# ------------------------------------------------------------------
+
+_MD_PATTERNS: List[re.Pattern[str]] = [
+    re.compile(r"^#{1,6}\s", re.MULTILINE),          # 标题
+    re.compile(r"\*\*[^*]+\*\*"),                     # 加粗
+    re.compile(r"```"),                               # 代码块
+    re.compile(r"`[^`\n]+`"),                         # 行内代码
+    re.compile(r"^\s*[-*]\s", re.MULTILINE),          # 无序列表
+    re.compile(r"^\s*\d+\.\s", re.MULTILINE),         # 有序列表
+    re.compile(r"\[[^\]]+\]\([^)]+\)"),               # 链接
+    re.compile(r"^\|.+\|$", re.MULTILINE),            # 表格
+    re.compile(r"^>\s", re.MULTILINE),                # 引用
+]
+
+
+def looks_like_markdown(text: str) -> bool:
+    """启发式判断文本是否含 Markdown 语法（含任一特征即视为富文本）。"""
+    return any(p.search(text) for p in _MD_PATTERNS)
 
 
 # ------------------------------------------------------------------
@@ -231,28 +244,3 @@ def extract_media_key(raw_content: str, msg_type: str) -> dict[str, str]:
     if msg_type == "sticker":
         return {"file_key": parsed.get("file_key", "")}
     return {}
-
-
-# ------------------------------------------------------------------
-# Mention 解析
-# ------------------------------------------------------------------
-
-
-def parse_mentions_from_event(raw_mentions: list | None) -> List[FeishuMention]:
-    """将飞书事件中的 mentions 列表转为类型化对象。"""
-    if not raw_mentions:
-        return []
-    result: List[FeishuMention] = []
-    for m in raw_mentions:
-        sid = m.get("id", {}) if isinstance(m, dict) else {}
-        result.append(FeishuMention(
-            key=m.get("key", "") if isinstance(m, dict) else "",
-            name=m.get("name", "") if isinstance(m, dict) else "",
-            id=FeishuSenderId(
-                open_id=sid.get("open_id", ""),
-                user_id=sid.get("user_id", ""),
-                union_id=sid.get("union_id", ""),
-            ),
-            tenant_key=m.get("tenant_key", "") if isinstance(m, dict) else "",
-        ))
-    return result

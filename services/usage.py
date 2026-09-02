@@ -14,23 +14,23 @@ from services._runtime import get_runtime
 
 class UsageService:
 
-    def list_usage(self, limit: int = 50) -> List[Dict[str, Any]]:
+    async def list_usage(self, limit: int = 50) -> List[Dict[str, Any]]:
         """按总 token 降序列出会话累计用量（DB 权威值）。"""
         rt = get_runtime()
         if rt is None:
             return []
         try:
-            return rt.mind.conversation_data.router.sqlite.list_scope_usage(limit)
+            return await rt.mind.conversation_data.router.sqlite.list_scope_usage(limit)
         except Exception:
             return []
 
-    def summary(self) -> Dict[str, Any]:
+    async def summary(self) -> Dict[str, Any]:
         """全量会话的合计视图（成本总览）。
 
         prompt_miss_tokens = prompt_tokens - cache_read_tokens（真实计费输入）：
         DeepSeek 口径 prompt_tokens 含缓存命中，消费方把两者相加会重复计。
         """
-        rows = self.list_usage(limit=500)
+        rows = await self.list_usage(limit=500)
         totals = {
             "scopes": len(rows),
             "turns": sum(r.get("turns", 0) for r in rows),
@@ -49,3 +49,11 @@ class UsageService:
         """内存中尚未落盘的增量视图（调试用；权威值在 DB）。"""
         from agent.mind.scope_usage import scope_usage_stats
         return scope_usage_stats.snapshot()
+
+    def embedding_usage(self, days: int = 14) -> Dict[str, Any]:
+        """embedding 调用日级账本（主 Embedder 引擎口径，见 embedding/usage.py）。"""
+        from agent.memory.embedding.usage import embedding_usage_summary
+        try:
+            return embedding_usage_summary(days)
+        except Exception:
+            return {"daily": [], "totals": {"calls": 0, "texts": 0, "chars": 0}}

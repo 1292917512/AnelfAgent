@@ -32,6 +32,46 @@ class ChannelType(str, Enum):
     GROUP = "group"
 
 
+class MessageKind(str, Enum):
+    """入站消息类别 — 区分真人聊天与平台自动推送。
+
+    - CHAT: 真人聊天消息（私聊/群聊/直播弹幕），默认
+    - NOTIFICATION: 平台通知推送（回复/@/点赞等，非对方主动发起的对话），
+      频道应将其路由到通知中心会话（见 ``notification_channel``），
+      历史中以 [kind:notification] 标签标注
+    - EVENT: 场景事件（直播间礼物/醒目留言/大航海等），留在原场景会话，
+      历史以 [kind:event] 标注
+    - SYSTEM: 系统消息（连接状态/平台公告），历史以 [kind:system] 标注
+    """
+
+    CHAT = "chat"
+    NOTIFICATION = "notification"
+    EVENT = "event"
+    SYSTEM = "system"
+
+
+# 通知中心会话 ID（每平台一个聚合收件箱，与真实聊天会话隔离）
+NOTIFICATION_CHANNEL_ID = "notification"
+
+
+def notification_channel(platform_name: str) -> "AdapterChannel":
+    """平台通知中心会话（PRIVATE 语义；通知聚合投递处，不支持直接回复）。"""
+    return AdapterChannel(
+        channel_id=NOTIFICATION_CHANNEL_ID,
+        channel_type=ChannelType.PRIVATE,
+        channel_name=f"{platform_name}通知中心",
+    )
+
+
+def notification_sender(platform: str, platform_name: str) -> "AdapterUser":
+    """通知中心虚拟发送者（真实行为人在正文中标注）。"""
+    return AdapterUser(
+        platform=platform,
+        user_id=f"{platform}_notify",
+        user_name=f"{platform_name}通知中心",
+    )
+
+
 class SegmentType(str, Enum):
     """消息段类型。"""
 
@@ -115,6 +155,7 @@ class AdapterMessage(BaseModel):
     channel: AdapterChannel
     content: str = ""
     segments: List[MessageSegment] = Field(default_factory=list)
+    kind: MessageKind = MessageKind.CHAT
     is_to_me: bool = False
     trigger_mind: bool = True
     timestamp: float = Field(default_factory=time.time)

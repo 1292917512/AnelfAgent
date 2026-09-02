@@ -15,7 +15,6 @@ from web.routers.entities import router as entities_router
 from web.routers.mcp import router as mcp_router
 from web.routers.memory import router as memory_router
 from web.routers.models import router as models_router
-from web.routers.nonebot import router as nonebot_router
 from web.routers.personas import router as personas_router
 from web.routers.search import router as search_router
 from web.routers.skills import router as skills_router
@@ -45,7 +44,6 @@ api_router.include_router(mcp_router)
 api_router.include_router(adapters_router)
 api_router.include_router(channel_webui_router)
 api_router.include_router(approvals_router)
-api_router.include_router(nonebot_router)
 api_router.include_router(system_router)
 api_router.include_router(entities_router)
 api_router.include_router(thinking_router)

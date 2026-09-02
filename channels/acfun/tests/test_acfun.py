@@ -117,12 +117,14 @@ class TestNotificationToMessage:
         msg = parser.notification_to_message("reply", _reply_item())
         assert msg is not None
         assert msg.is_to_me is True and msg.trigger_mind is True
-        assert msg.channel.channel_id == "comment:2:12345"
-        assert msg.channel.channel_type.value == "group"
+        # 通知路由到通知中心会话（与聊天通道隔离），评论目标以提示形式携带
+        assert msg.channel.channel_id == "notification"
+        assert msg.kind.value == "notification"
         assert msg.reply_to_id == "9001"
         assert msg.reply_content == "我的原评论"
-        assert msg.sender.user_id == "1001"
-        assert msg.content == "回复你的内容"
+        assert msg.sender.user_id == "acfun_notify"
+        assert "回复你的内容" in msg.content
+        assert "comment:2:12345" in msg.content  # 可操作的回应目标
 
     def test_reply_empty_content_dropped(self):
         assert parser.notification_to_message("reply", _reply_item(content="  ")) is None
@@ -132,13 +134,16 @@ class TestNotificationToMessage:
                 "uid": "1002", "username": "acer乙", "intro": "在评论中提到了你"}
         msg = parser.notification_to_message("at", item)
         assert msg is not None and msg.trigger_mind is True
-        assert msg.channel.channel_id == "comment:3:678"
+        assert msg.channel.channel_id == "notification"
+        assert msg.kind.value == "notification"
         assert msg.reply_to_id == "81"
+        assert "comment:3:678" in msg.content
 
     def test_like_record_only_by_default(self):
         msg = parser.notification_to_message("like", _reply_item(replied="我的评论"))
         assert msg is not None
         assert msg.is_to_me is False and msg.trigger_mind is False
+        assert msg.channel.channel_id == "notification"
         assert "赞了你的评论" in msg.content
 
     def test_gift_trigger_flag(self):
@@ -153,13 +158,16 @@ class TestNotificationToMessage:
         msg = parser.notification_to_message("system", item)
         assert msg is not None
         assert msg.channel.channel_id == parser.SYSTEM_CHANNEL_ID
+        assert msg.kind.value == "system"
         assert msg.trigger_mind is False
         assert msg.sender.user_id == "acfun_system"
 
-    def test_unparseable_url_falls_back_to_system_channel(self):
+    def test_unparseable_reply_url_keeps_notification_channel(self):
+        # URL 不可解析时仍进通知中心，只是没有评论目标提示
         msg = parser.notification_to_message("reply", _reply_item(content_url="https://live.acfun.cn/live/1"))
         assert msg is not None
-        assert msg.channel.channel_id == parser.SYSTEM_CHANNEL_ID
+        assert msg.channel.channel_id == "notification"
+        assert "acfun_send_comment" not in msg.content
 
     def test_unknown_kind_returns_none(self):
         assert parser.notification_to_message("mystery", {}) is None
@@ -331,7 +339,8 @@ class TestPoller:
         client.notifications["reply"] = [_reply_item(ncid="9002", content="新回复"), _reply_item()]
         await poller._poll_once()
         assert len(channel.messages) == 1
-        assert channel.messages[0].content == "新回复"
+        assert "新回复" in channel.messages[0].content  # 通知包装后的正文包含原内容
+        assert channel.messages[0].channel.channel_id == "notification"
 
     async def test_dispatch_order_oldest_first(self, data_dir):
         client = FakeClient()
@@ -344,7 +353,10 @@ class TestPoller:
             _reply_item(ncid="9002", content="较旧"),
         ]
         await poller._poll_once()
-        assert [m.content for m in channel.messages] == ["较旧", "较新"]
+        contents = [m.content for m in channel.messages]
+        assert any("较旧" in c for c in contents) and any("较新" in c for c in contents)
+        # 最旧先派发保持时序
+        assert contents[0].find("较旧") >= 0 and contents[1].find("较新") >= 0
 
     async def test_whitelist_blocks_dispatch(self, data_dir):
         client = FakeClient()
@@ -837,7 +849,7 @@ class TestPollerFaultIsolation:
         client.get_notifications = fail_like  # type: ignore[method-assign]
         client.notifications["reply"] = [_reply_item(ncid="9101", content="新回复")]
         await poller._poll_once()  # like 失败不阻塞 reply
-        assert [m.content for m in channel.messages] == ["新回复"]
+        assert len(channel.messages) == 1 and "新回复" in channel.messages[0].content
         assert "like" in poller.last_error
         assert poller.last_poll_at > 0
 

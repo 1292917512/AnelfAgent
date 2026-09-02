@@ -276,6 +276,8 @@ class AcfunChannel(AcfunToolsMixin, BaseChannel[AcfunConfig]):
 
         if channel_id == SYSTEM_CHANNEL_ID:
             return ChannelInfo(channel_id=channel_id, channel_name="AcFun 系统通知")
+        if channel_id == "notification":
+            return ChannelInfo(channel_id=channel_id, channel_name="AcFun 通知中心")
         target = parse_chat_target(channel_id)
         if target is None:
             return ChannelInfo(channel_id=channel_id, channel_name=channel_id)

@@ -85,7 +85,7 @@ class AgentApp:
     """
     AnelfAgent 统一智能体运行时入口。
 
-    集成 Mind/Storage/LLM/Tools 等，所有适配器（NoneBot/FastAPI/CLI）
+    集成 Mind/Storage/LLM/Tools 等，所有适配器（FastAPI/CLI 等）
     统一通过 submit() 或 send_message() 提交输入。
     """
 
@@ -185,6 +185,7 @@ class AgentApp:
         reply_to_id: str = "",
         reply_content: str = "",
         trigger_mind: bool = True,
+        message_kind: str = "chat",
     ) -> None:
         """便捷方法：提交一条消息事件（适配器推荐使用此方法）。
 
@@ -216,6 +217,7 @@ class AgentApp:
             "reply_to_id": reply_to_id,
             "reply_content": reply_content,
             "trigger_mind": trigger_mind,
+            "message_kind": message_kind,
         }
         if images:
             payload["images"] = images
@@ -415,6 +417,7 @@ def _build_message_everything(payload: dict[str, Any]) -> Everything:
     reply_to_id: str = payload.get("reply_to_id", "")
     reply_content: str = payload.get("reply_content", "")
     trigger_mind: bool = payload.get("trigger_mind", True)
+    message_kind: str = payload.get("message_kind", "chat")
 
     if group_id and group_id not in (0, "0", ""):
         msg = MessageGroupUser(
@@ -431,6 +434,7 @@ def _build_message_everything(payload: dict[str, Any]) -> Everything:
             reply_to_id=reply_to_id,
             reply_content=reply_content,
             trigger_mind=trigger_mind,
+            message_kind=message_kind,
         )
     else:
         msg = MessageUser(  # type: ignore[assignment]
@@ -444,5 +448,6 @@ def _build_message_everything(payload: dict[str, Any]) -> Everything:
             reply_to_id=reply_to_id,
             reply_content=reply_content,
             trigger_mind=trigger_mind,
+            message_kind=message_kind,
         )
     return msg

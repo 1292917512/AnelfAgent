@@ -11,11 +11,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
 import time
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import aiosqlite
 
@@ -763,8 +764,14 @@ class GraphStore:
     # cognee 投影
     # ------------------------------------------------------------------
 
-    async def render_node_document(self, node_id: int) -> Optional[str]:
-        """渲染节点邻域文档（cognee 投影单元）；节点不存在或已归档返回 None。"""
+    async def render_node_projection(self, node_id: int) -> Optional[Tuple[str, str]]:
+        """渲染节点邻域文档与结构指纹（cognee 投影单元）；节点不存在或已归档返回 None。
+
+        指纹只覆盖结构内容（节点身份 + 各边的谓词/方向/对端节点），
+        不含强度与证据文本——关系被重复提及时的强化（strength 漂移）
+        与证据刷新不改变指纹，投影因此跳过；仅在邻域结构真实变化
+        （增删边/谓词或对端变化）时重投影，文档中的强度/证据随之刷新。
+        """
         node = await self.get_node_by_id(node_id)
         if not node or node["archived"]:
             return None
@@ -772,20 +779,30 @@ class GraphStore:
         edges = await self._edges_for_node_ids(db, [node_id])
         label = node["label"] or node["node_key"]
         lines = [f"[关系节点] {label}（{node['node_key']}，类型 {node['node_type']}）"]
+        structure = [f"{node['node_key']}|{node['node_type']}|{label}"]
         for edge in edges:
             if edge["subject"]["id"] == node_id:
                 target = edge["object"]
                 t_name = f"{target['label']}（{target['node_key']}）" if target["label"] else target["node_key"]
                 arrow = "↔" if edge["symmetric"] else "→"
                 line = f"- {edge['predicate']} {arrow} {t_name}（强度 {edge['strength']:.2f}）"
+                structure.append(f"{edge['predicate']}|{'s' if edge['symmetric'] else 'o'}|{target['node_key']}")
             else:
                 source = edge["subject"]
                 s_name = f"{source['label']}（{source['node_key']}）" if source["label"] else source["node_key"]
                 arrow = "↔" if edge["symmetric"] else "←"
                 line = f"- {edge['predicate']} {arrow} {s_name}（强度 {edge['strength']:.2f}）"
+                structure.append(f"{edge['predicate']}|{'s' if edge['symmetric'] else 'i'}|{source['node_key']}")
             if edge["evidence"]:
                 line += f"——{edge['evidence']}"
             lines.append(line)
         if len(lines) == 1:
             lines.append("- （暂无已知关系）")
-        return "\n".join(lines)
+        canonical = "\n".join([structure[0], *sorted(structure[1:])])
+        fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+        return "\n".join(lines), fingerprint
+
+    async def render_node_document(self, node_id: int) -> Optional[str]:
+        """渲染节点邻域文档（cognee 投影单元）；节点不存在或已归档返回 None。"""
+        projection = await self.render_node_projection(node_id)
+        return projection[0] if projection else None

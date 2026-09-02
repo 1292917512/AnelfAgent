@@ -567,6 +567,74 @@ async def test_graph_unchanged_document_skips_reprojection(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_graph_strength_drift_skips_reprojection(tmp_path) -> None:
+    """结构指纹不含强度/证据：关系被重复提及强化时不再整篇重投影。"""
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    client = _GraphFakeClient()
+    coordinator = CogneeCoordinator(
+        store, client, CogneeConfig(enabled=True, sync_enabled=True),
+    )
+    try:
+        await store.graph.add_relation("user:qq:1", "朋友", "user:qq:2", strength=0.5)
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        assert len(client.items) == 2
+
+        # 强度强化 + 证据刷新：文档文本变了但邻域结构未变 → 跳过重投影
+        await store.graph.add_relation(
+            "user:qq:1", "朋友", "user:qq:2", strength=0.9, evidence="新证据",
+        )
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        assert len(client.items) == 2
+
+        # 邻域结构真实变化（新增边）：仍正常重投影
+        await store.graph.add_relation("user:qq:1", "同事", "user:qq:3")
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        assert len(client.items) == 4
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_memory_is_not_projected(tmp_path) -> None:
+    """计划状态 JSON 不投影 cognee；存量映射转为 delete 清理。"""
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    try:
+        # 新增 goal 记忆：不产生任何投影队列条目
+        goal_id = await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content='{"goal_id": "g1"}', source="goal",
+        ))
+        assert await store.claim_cognee_sync_batch(10) == []
+        assert await store.get_cognee_mapping(goal_id) is None
+
+        # 模拟历史遗留：已有投影映射的 goal 再次写入 → 转为 delete 清理旧投影
+        normal_id = await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content="normal", source="chat",
+        ))
+        item = (await store.claim_cognee_sync_batch(10))[0]
+        await store.complete_cognee_sync(
+            item["queue_id"], normal_id,
+            dataset_name="anelf_global", dataset_id="d", data_id="dd",
+            content_hash="x",
+        )
+        db = await store._get_db()
+        async with store._tx(db):
+            await db.execute(
+                "UPDATE memories SET source='goal' WHERE id=?", (normal_id,),
+            )
+        entry = await store.get(normal_id)
+        assert entry is not None
+        entry.content = "updated goal"
+        await store.update(entry)
+        batch = await store.claim_cognee_sync_batch(10)
+        assert len(batch) == 1
+        assert batch[0]["operation"] == "delete"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_dedup_noop_update_skips_write_and_projection(tmp_path) -> None:
     """合并内容与标签均无变化：不落库（version/审计不动）、不触发投影。"""
     from agent.memory.dedup import apply_update

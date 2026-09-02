@@ -17,7 +17,7 @@ import lark_oapi as lark
 from pydantic import Field
 
 from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
-from agent.channel.channel_types import ChannelCapability, ChannelStatus, _err, _ok
+from agent.channel.channel_types import ChannelCapability, ChannelStatus, _ok
 from agent.channel.schemas import (
     ChannelInfo,
     ChannelType,
@@ -28,11 +28,12 @@ from agent.channel.schemas import (
     SendResponse,
 )
 from agent.channel.tool_bridge import channel_tool
-from agent.channel.utils.formatter import format_exception as _fmt_exc
 from core.log import log
 
 from .config import FEISHU_CONFIGS
+from .errors import not_ready_json, to_error_json
 from .types import FeishuBotInfo
+from .users import UserNameCache
 
 _AT_RE = re.compile(r'\[at_uid:([^\]]+)\]')
 
@@ -44,13 +45,19 @@ class FeishuConfig(ChannelConfig):
 
     app_id: str = Field(default="", description="飞书 App ID")
     app_secret: str = Field(default="", description="飞书 App Secret")
+    domain: str = Field(default="feishu", description="飞书域名 (feishu=国内版/lark=国际版)")
     connection_mode: str = Field(default="websocket", description="连接模式 (websocket/webhook)")
     webhook_host: str = Field(default="127.0.0.1", description="Webhook 监听地址（非回环地址必须配置验证 Token 或加密 Key）")
-    webhook_port: int = Field(default=8093, description="Webhook 监听端口")
+    webhook_port: int = Field(default=9321, description="Webhook 监听端口")
     verification_token: str = Field(default="", description="Webhook 验证 Token")
     encrypt_key: str = Field(default="", description="Webhook 加密 Key")
-    require_mention: bool = Field(default=False, description="群聊中是否需要 @Bot 才触发")
+    require_mention: bool = Field(default=True, description="群聊中是否需要 @Bot 才触发")
     reply_to_mode: str = Field(default="first", description="回复引用策略 (first/all/off)")
+    reply_in_thread: bool = Field(default=False, description="群聊中引用回复是否进入话题（thread）模式")
+    markdown_render: bool = Field(default=True, description="含 Markdown 语法的回复以富文本渲染发送")
+    text_limit: int = Field(default=4000, description="单条消息字符限制（超出自动分段）")
+    max_download_mb: int = Field(default=50, description="入站媒体文件下载大小上限 (MB)")
+    sender_name_enabled: bool = Field(default=True, description="解析发送者昵称（需 contact:user.base:readonly 权限，缺失时自动降级为 open_id）")
 
 
 class FeishuChannel(BaseChannel[FeishuConfig]):
@@ -84,6 +91,8 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
         self._start_error: str = ""
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
         self._known_chats: Dict[str, Dict[str, Any]] = {}
+        # 发送者昵称缓存（contact API，权限缺失自动降级）
+        self._user_names = UserNameCache()
         # Webhook 模式的 aiohttp runner
         self._webhook_runner: Optional[Any] = None
         # WS 线程的事件循环（stop 时用于远程断开连接）
@@ -115,6 +124,8 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             ChannelCapability.GET_CHAT_INFO,
             ChannelCapability.GET_CHAT_MEMBERS,
             ChannelCapability.LIST_KNOWN_CHATS,
+            # 互动
+            ChannelCapability.MESSAGE_REACTION,
             # 高级
             ChannelCapability.REPLY_TO,
         }
@@ -215,6 +226,38 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
         log("飞书频道已停止")
 
     # ------------------------------------------------------------------
+    # 消息处理器装配（WS / Webhook 共用）
+    # ------------------------------------------------------------------
+
+    def _on_chat_seen(self, chat_id: str, chat_type: str) -> None:
+        """入站消息时登记已知会话（list_known_chats 数据源，保留已查到的名称）。"""
+        known = self._known_chats.get(chat_id)
+        if known is None:
+            self._known_chats[chat_id] = {"chat_id": chat_id, "name": "", "type": chat_type}
+        elif not known.get("type"):
+            known["type"] = chat_type
+
+    async def _resolve_name(self, open_id: str) -> str:
+        """解析用户昵称（client 未就绪或权限缺失时返回空串）。"""
+        if not self._client:
+            return ""
+        return await self._user_names.get_name(self._client, open_id)
+
+    def _handler_kwargs(self) -> Dict[str, Any]:
+        """构造消息处理器的公共参数（昵称解析 / 会话登记 / 下载上限）。"""
+        cfg = self.config
+        return {
+            "client": self._client,
+            "bot_open_id": self._bot_info.open_id,
+            "require_mention": bool(cfg.require_mention),
+            "on_message": self.on_message,
+            "main_loop": self._main_loop,
+            "resolve_name": self._resolve_name if cfg.sender_name_enabled else None,
+            "on_chat_seen": self._on_chat_seen,
+            "max_download_bytes": int(cfg.max_download_mb) * 1024 * 1024,
+        }
+
+    # ------------------------------------------------------------------
     # WebSocket 长连接模式
     # ------------------------------------------------------------------
 
@@ -232,17 +275,9 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
 
     def _start_websocket(self, app_id: str, app_secret: str) -> None:
         """在独立线程中启动 lark.ws.Client 长连接。"""
-        require_mention = bool(self.config.require_mention)
-
         from .handlers import build_message_handler
 
-        msg_handler = build_message_handler(
-            client=self._client,  # type: ignore[arg-type]
-            bot_open_id=self._bot_info.open_id,
-            require_mention=require_mention,
-            on_message=self.on_message,
-            main_loop=self._main_loop,
-        )
+        msg_handler = build_message_handler(**self._handler_kwargs())
 
         event_handler = lark.EventDispatcherHandler.builder("", "") \
             .register_p2_im_message_receive_v1(msg_handler) \
@@ -260,7 +295,7 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
                     return None
                 raise
 
-        event_handler.do_without_validation = _safe_dispatch  # type: ignore[method-assign]
+        event_handler.do_without_validation = _safe_dispatch
 
         self._ws_client = lark.ws.Client(
             app_id, app_secret,
@@ -343,7 +378,6 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
         verification_token: str = self.config.verification_token
         host: str = self.config.webhook_host
         port: int = int(self.config.webhook_port)
-        require_mention = bool(self.config.require_mention)
 
         if host not in ("127.0.0.1", "localhost", "::1") and not (verification_token or encrypt_key):
             raise RuntimeError(
@@ -354,15 +388,9 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
 
         from .handlers import build_message_handler
 
-        msg_handler = build_message_handler(
-            client=self._client,  # type: ignore[arg-type]
-            bot_open_id=self._bot_info.open_id,
-            require_mention=require_mention,
-            on_message=self.on_message,
-            # webhook 处理器在 aiohttp 请求协程内被同步调用（当前线程已有
-            # 运行中的事件循环），缺 main_loop 会 fallback 到 asyncio.run 必炸
-            main_loop=self._main_loop,
-        )
+        # webhook 处理器在 aiohttp 请求协程内被同步调用（当前线程已有
+        # 运行中的事件循环），缺 main_loop 会 fallback 到 asyncio.run 必炸
+        msg_handler = build_message_handler(**self._handler_kwargs())
 
         event_handler = lark.EventDispatcherHandler.builder(
             encrypt_key, verification_token
@@ -400,23 +428,26 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
     # ------------------------------------------------------------------
 
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
-        """发送文本消息。"""
+        """发送文本消息。含 Markdown 语法时自动以富文本渲染（markdown_render 配置可关）。"""
         if not self._client:
-            return _err("飞书频道未就绪")
+            return not_ready_json()
+        cfg = self.config
         reply_to = kwargs.get("reply_to")
-        text_limit = int(self.config.text_limit)
         text = self._convert_at_to_lark(text)
         try:
             from . import send as feishu_send
             result = await feishu_send.send_text(
                 self._client, chat_id, text,
                 reply_to=reply_to,
-                text_limit=text_limit,
+                text_limit=int(cfg.text_limit),
+                reply_to_mode=str(kwargs.get("reply_to_mode") or cfg.reply_to_mode),
+                render_markdown=bool(kwargs.get("render_markdown", cfg.markdown_render)),
+                reply_in_thread=bool(kwargs.get("reply_in_thread", cfg.reply_in_thread)),
             )
             return _ok(result)
         except Exception as exc:
             log(f"飞书 send_text 失败: {exc}", "ERROR")
-            return _err(_fmt_exc(exc))
+            return to_error_json(exc, "发送消息")
 
     @staticmethod
     def _convert_at_to_lark(text: str) -> str:
@@ -431,128 +462,180 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
     async def send_photo(self, chat_id: str, photo: str, caption: str = "", **kwargs: Any) -> str:
         """发送图片。"""
         if not self._client:
-            return _err("飞书频道未就绪")
+            return not_ready_json()
         try:
             from . import send as feishu_send
             result = await feishu_send.send_photo(
                 self._client, chat_id, photo,
                 caption=caption,
                 reply_to=kwargs.get("reply_to"),
+                reply_in_thread=bool(kwargs.get("reply_in_thread", self.config.reply_in_thread)),
             )
             return _ok(result)
         except Exception as exc:
-            return _err(_fmt_exc(exc))
+            return to_error_json(exc, "发送图片")
 
     async def send_audio(self, chat_id: str, audio: str, caption: str = "", **kwargs: Any) -> str:
         """发送音频文件。"""
         if not self._client:
-            return _err("飞书频道未就绪")
+            return not_ready_json()
         try:
             from . import send as feishu_send
             result = await feishu_send.send_audio(
                 self._client, chat_id, audio,
                 caption=caption,
                 reply_to=kwargs.get("reply_to"),
+                reply_in_thread=bool(kwargs.get("reply_in_thread", self.config.reply_in_thread)),
             )
             return _ok(result)
         except Exception as exc:
-            return _err(_fmt_exc(exc))
+            return to_error_json(exc, "发送音频")
 
     async def send_video(self, chat_id: str, video: str, caption: str = "", **kwargs: Any) -> str:
         """发送视频。"""
         if not self._client:
-            return _err("飞书频道未就绪")
+            return not_ready_json()
         try:
             from . import send as feishu_send
             result = await feishu_send.send_video(
                 self._client, chat_id, video,
                 caption=caption,
                 reply_to=kwargs.get("reply_to"),
+                reply_in_thread=bool(kwargs.get("reply_in_thread", self.config.reply_in_thread)),
             )
             return _ok(result)
         except Exception as exc:
-            return _err(_fmt_exc(exc))
+            return to_error_json(exc, "发送视频")
 
     async def send_file(self, chat_id: str, file_path: str, caption: str = "", **kwargs: Any) -> str:
         """发送文件。"""
         if not self._client:
-            return _err("飞书频道未就绪")
+            return not_ready_json()
         try:
             from . import send as feishu_send
             result = await feishu_send.send_file(
                 self._client, chat_id, file_path,
                 caption=caption,
                 reply_to=kwargs.get("reply_to"),
+                reply_in_thread=bool(kwargs.get("reply_in_thread", self.config.reply_in_thread)),
             )
             return _ok(result)
         except Exception as exc:
-            return _err(_fmt_exc(exc))
+            return to_error_json(exc, "发送文件")
 
-    @channel_tool()
-    async def edit_message(self, chat_id: str, message_id: str, text: str, **kwargs: Any) -> str:
-        """编辑已发送的消息。"""
+    @channel_tool(description="编辑已发送的消息。format=text 编辑文本消息，format=markdown 以富文本渲染编辑 post 消息（飞书限 24 小时内，且编辑格式须与原消息类型一致）")
+    async def edit_message(self, chat_id: str, message_id: str, text: str, format: str = "text", **kwargs: Any) -> str:
+        """编辑消息。"""
         if not self._client:
-            return _err("飞书频道未就绪")
+            return not_ready_json()
         try:
             from . import send as feishu_send
-            result = await feishu_send.edit_message(self._client, message_id, text)
+            result = await feishu_send.edit_message(self._client, message_id, text, format=format)
             return _ok(result)
         except Exception as exc:
-            return _err(_fmt_exc(exc))
+            return to_error_json(exc, "编辑消息")
 
     @channel_tool()
     async def delete_message(self, chat_id: str, message_id: str, **kwargs: Any) -> str:
         """删除消息。"""
         if not self._client:
-            return _err("飞书频道未就绪")
+            return not_ready_json()
         try:
             from . import send as feishu_send
             result = await feishu_send.delete_message(self._client, message_id)
             return _ok(result)
         except Exception as exc:
-            return _err(_fmt_exc(exc))
+            return to_error_json(exc, "删除消息")
 
     @channel_tool()
     async def forward_msg(self, chat_id: str, from_chat_id: str, message_id: str, **kwargs: Any) -> str:
         """转发消息到另一个会话。"""
         if not self._client:
-            return _err("飞书频道未就绪")
+            return not_ready_json()
         try:
             from . import send as feishu_send
             result = await feishu_send.forward_message(self._client, message_id, chat_id)
             return _ok(result)
         except Exception as exc:
-            return _err(_fmt_exc(exc))
+            return to_error_json(exc, "转发消息")
 
     @channel_tool()
     async def pin_message(self, chat_id: str, message_id: str, **kwargs: Any) -> str:
         """置顶消息。"""
         if not self._client:
-            return _err("飞书频道未就绪")
+            return not_ready_json()
         try:
             from . import send as feishu_send
             result = await feishu_send.pin_message(self._client, message_id)
             return _ok(result)
         except Exception as exc:
-            return _err(_fmt_exc(exc))
+            return to_error_json(exc, "置顶消息")
 
     @channel_tool()
     async def unpin_message(self, chat_id: str, message_id: str, **kwargs: Any) -> str:
         """取消置顶消息。"""
         if not self._client:
-            return _err("飞书频道未就绪")
+            return not_ready_json()
         try:
             from . import send as feishu_send
             result = await feishu_send.unpin_message(self._client, message_id)
             return _ok(result)
         except Exception as exc:
-            return _err(_fmt_exc(exc))
+            return to_error_json(exc, "取消置顶")
+
+    @channel_tool(description="对指定消息添加表情回应（低成本确认/表态信号）。emoji 支持表情字符（如 👍✅❤️）或飞书 emoji_type 枚举（THUMBSUP/OK/DONE/HEART/SMILE 等）；返回 reaction_id 供 feishu_remove_reaction 移除")
+    async def message_reaction(self, chat_id: str, message_id: str, emoji: str = "👍", **kwargs: Any) -> str:
+        """添加表情回应。"""
+        if not self._client:
+            return not_ready_json()
+        try:
+            from . import send as feishu_send
+            result = await feishu_send.add_reaction(self._client, message_id, emoji)
+            return _ok(result)
+        except Exception as exc:
+            return to_error_json(exc, "添加表情回应")
+
+    @channel_tool()
+    async def remove_reaction(self, message_id: str, reaction_id: str, **kwargs: Any) -> str:
+        """移除 Bot 此前对消息添加的表情回应。reaction_id 来自 message_reaction 的返回值。"""
+        if not self._client:
+            return not_ready_json()
+        try:
+            from . import send as feishu_send
+            result = await feishu_send.remove_reaction(self._client, message_id, reaction_id)
+            return _ok(result)
+        except Exception as exc:
+            return to_error_json(exc, "移除表情回应")
+
+    @channel_tool(description="读取会话最近消息（新消息在前），用于了解群里刚才聊了什么。需要 im:message 相关读取权限")
+    async def get_chat_history(self, chat_id: str, limit: int = 20, **kwargs: Any) -> str:
+        """读取会话历史消息。"""
+        if not self._client:
+            return not_ready_json()
+        try:
+            from . import send as feishu_send
+            result = await feishu_send.get_chat_history(self._client, chat_id, limit=limit)
+            return _ok(result)
+        except Exception as exc:
+            return to_error_json(exc, "读取会话历史")
+
+    @channel_tool(description="按 message_id 读取单条消息原文（可查看被引用消息的完整内容）。合并转发消息飞书未开放展开接口，只能读到占位文本")
+    async def get_message(self, message_id: str, **kwargs: Any) -> str:
+        """读取单条消息内容。"""
+        if not self._client:
+            return not_ready_json()
+        try:
+            from . import send as feishu_send
+            result = await feishu_send.get_message(self._client, message_id)
+            return _ok(result)
+        except Exception as exc:
+            return to_error_json(exc, "读取消息")
 
     @channel_tool()
     async def get_chat_info(self, chat_id: str, **kwargs: Any) -> str:
         """查询会话详细信息。"""
         if not self._client:
-            return _err("飞书频道未就绪")
+            return not_ready_json()
         try:
             from . import send as feishu_send
             result = await feishu_send.get_chat_info(self._client, chat_id)
@@ -565,22 +648,41 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             }
             return _ok(result)
         except Exception as exc:
-            return _err(_fmt_exc(exc))
+            return to_error_json(exc, "查询群信息")
 
-    @channel_tool()
+    @channel_tool(description="查询会话成员列表（自动分页，上限 500 人）")
     async def get_chat_members(self, chat_id: str, **kwargs: Any) -> str:
         """查询会话成员列表。"""
         if not self._client:
-            return _err("飞书频道未就绪")
+            return not_ready_json()
         try:
             from . import send as feishu_send
             result = await feishu_send.get_chat_members(self._client, chat_id)
             return _ok(result)
         except Exception as exc:
-            return _err(_fmt_exc(exc))
+            return to_error_json(exc, "查询成员")
 
     # ------------------------------------------------------------------
+    # 表情反馈（BaseChannel 钩子）
     # ------------------------------------------------------------------
+
+    async def set_message_reaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: str = "👍",
+        on: bool = True,
+    ) -> bool:
+        """设置消息表情反应（on=False 需经 remove_reaction 与 reaction_id，钩子形态仅支持添加）。"""
+        if not self._client or not on:
+            return False
+        try:
+            from . import send as feishu_send
+            await feishu_send.add_reaction(self._client, message_id, emoji)
+            return True
+        except Exception as exc:
+            log(f"飞书 set_message_reaction 失败: {exc}", "DEBUG")
+            return False
 
     # ------------------------------------------------------------------
     # BaseChannel 协议方法
@@ -599,6 +701,17 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             user_name=self._bot_info.app_name or "FeishuBot",
             role=ChannelUserRole.MEMBER,
             is_bot=True,
+        )
+
+    async def get_user_info(self, user_id: str, channel_id: str) -> ChannelUser:
+        """获取用户信息（经 contact API 昵称缓存，权限缺失回退 open_id）。"""
+        name = ""
+        if self._client:
+            name = await self._user_names.get_name(self._client, user_id)
+        return ChannelUser(
+            platform=self.channel_id,
+            user_id=user_id,
+            user_name=name or user_id,
         )
 
     async def get_channel_info(self, channel_id: str) -> ChannelInfo:

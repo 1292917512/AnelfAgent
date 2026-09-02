@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Query, Request
@@ -27,9 +28,11 @@ async def get_usage(limit: int = Query(50, ge=1, le=500)) -> Dict[str, Any]:
     """会话级用量统计：per-scope 累计 LLM 调用与 token（成本追踪）。"""
     from services.usage import UsageService
     svc = UsageService()
+    summary, scopes = await asyncio.gather(svc.summary(), svc.list_usage(limit))
     return {
-        "summary": svc.summary(),
-        "scopes": svc.list_usage(limit),
+        "summary": summary,
+        "scopes": scopes,
+        "embedding": svc.embedding_usage(),
     }
 
 

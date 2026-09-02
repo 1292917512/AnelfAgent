@@ -207,6 +207,28 @@ class TestProbe:
         assert e._limiter is None
 
 
+class TestUsageLedger:
+    async def test_calls_are_recorded_and_summarized(self, tmp_path, monkeypatch) -> None:
+        """引擎成功调用写入日级账本（calls/texts/chars），落盘后可汇总。"""
+        from agent.memory.embedding import usage as usage_module
+
+        monkeypatch.setattr(usage_module, "_state", {})
+        monkeypatch.setattr(usage_module, "_pending", 0)
+        monkeypatch.setattr(usage_module, "_loaded", False)
+        monkeypatch.setattr(usage_module, "_path", lambda: tmp_path / "usage.json")
+
+        e = _make_embedder(FakeClient())
+        await e.embed_text(["甲", "乙"])
+        await e.embed_query("丙")
+        usage_module.flush_embedding_usage()
+
+        summary = usage_module.embedding_usage_summary()
+        assert summary["totals"]["calls"] == 2
+        assert summary["totals"]["texts"] == 3
+        assert summary["totals"]["chars"] == 3
+        assert (tmp_path / "usage.json").exists()
+
+
 class TestDomainFactory:
     def test_get_embedder_per_purpose(self) -> None:
         from agent.memory.embedding import get_embedder

@@ -173,3 +173,41 @@ class TestUpdateGoalMetadata:
         assert not _is_user_facing("reflect")
         assert not _is_user_facing("reflect:abc12345")
         assert _is_user_facing("user_webui:u1")
+
+
+class TestPersistDebounce:
+    async def test_persist_skips_when_only_timestamp_changes(self, tmp_path):
+        """_persist 去抖：语义内容未变（仅 updated_at 漂移）时不落库。"""
+        store, tracker = await _setup(tmp_path)
+        try:
+            plan_id = await tracker.submit_plan(SCOPE, "目标", tracker.parse_steps("a"))
+            entry, goal = await tracker.find_goal_by_id(plan_id)
+            assert entry is not None and goal is not None
+            version_before = entry.version
+
+            await tracker._persist(entry, goal)
+
+            reloaded, _ = await tracker.find_goal_by_id(plan_id)
+            assert reloaded is not None
+            assert reloaded.version == version_before
+        finally:
+            await _teardown(store)
+
+    async def test_persist_writes_on_real_change(self, tmp_path):
+        """_persist 真实变更：步骤状态推进正常落库并刷新 updated_at。"""
+        store, tracker = await _setup(tmp_path)
+        try:
+            plan_id = await tracker.submit_plan(SCOPE, "目标", tracker.parse_steps("a|b"))
+            entry, goal = await tracker.find_goal_by_id(plan_id)
+            assert entry is not None and goal is not None
+            version_before = entry.version
+
+            goal["steps"][0]["status"] = "completed"
+            await tracker._persist(entry, goal)
+
+            reloaded, reloaded_goal = await tracker.find_goal_by_id(plan_id)
+            assert reloaded is not None and reloaded_goal is not None
+            assert reloaded.version == version_before + 1
+            assert reloaded_goal["steps"][0]["status"] == "completed"
+        finally:
+            await _teardown(store)

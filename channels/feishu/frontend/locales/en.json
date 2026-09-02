@@ -1,0 +1,29 @@
+{
+  "panel": {
+    "title": "Feishu Connection",
+    "probe": "Health probe",
+    "probing": "Probing...",
+    "healthy": "Connected",
+    "unhealthy": "Connection issue",
+    "latency": "{{ms}}ms latency",
+    "notRunning": "Channel not running",
+    "guideTitle": "Setup guide",
+    "guideSteps": [
+      "Create a custom app on the Feishu Open Platform and get the App ID / App Secret",
+      "Grant scopes: im:message, im:message:send_as_bot, im:resource, im:chat:readonly, contact:user.base:readonly (sender names)",
+      "Use long-connection event subscription (webhook mode requires a public callback URL) and subscribe to message receive events",
+      "Fill in App ID / App Secret in the config section above and enable the channel",
+      "Invite the bot into a group chat and @ it to start a conversation"
+    ],
+    "guideLink": "Feishu Open Platform docs",
+    "testTitle": "Test send",
+    "chatIdPlaceholder": "Target chat ID (starts with oc_; have a member send a message first, then look it up via list_known_chats)",
+    "textPlaceholder": "Test message",
+    "send": "Send",
+    "sending": "Sending...",
+    "sendOk": "Sent ({{id}})",
+    "sendOkRich": "Sent as rich text ({{id}})",
+    "sendFailed": "Send failed",
+    "capabilities": "AI capabilities"
+  }
+}

@@ -364,13 +364,24 @@ class CogneeCoordinator:
         graph_upserts: list[dict[str, Any]] = []
         for item in upserts:
             if item["entry_kind"] == ENTRY_KIND_GRAPH_NODE:
-                graph_upserts.append(item)
-            else:
+                if self.config.project_graph_enabled:
+                    graph_upserts.append(item)
+                else:
+                    await self._skip_disabled(item)
+            elif self.config.project_memories_enabled:
                 memory_upserts[self.dataset_for_payload(item["payload"])].append(item)
+            else:
+                await self._skip_disabled(item)
         for dataset_name, items in memory_upserts.items():
             await self._process_upsert_group(dataset_name, items)
         if graph_upserts:
             await self._process_graph_upserts(graph_upserts)
+
+    async def _skip_disabled(self, item: dict[str, Any]) -> None:
+        """投影开关关闭的条目直接完成出队（不入 cognee，也不算失败）。"""
+        await self.store.complete_cognee_sync(
+            item["queue_id"], item["entry_id"], entry_kind=item["entry_kind"],
+        )
 
     async def _process_delete(self, item: dict[str, Any]) -> None:
         mapping = await self.store.get_cognee_mapping(
@@ -478,18 +489,19 @@ class CogneeCoordinator:
         """关系节点投影：渲染最新邻域文档，先删后加到 relations 数据集。
 
         入队负载仅是快照触发器，文档在消费时从权威库实时渲染，
-        保证投影内容不被入队后的后续变更过期。渲染文档与上次成功
-        同步的指纹一致时直接跳过（边强度漂移等无效变更不重跑管线）。
+        保证投影内容不被入队后的后续变更过期。结构指纹（节点身份 +
+        各边谓词/方向/对端，不含强度与证据）与上次成功同步一致时
+        直接跳过——关系强化与证据刷新不再触发整篇重投影。
         """
         dataset_name = self.relations_dataset
         active: list[tuple[dict[str, Any], str, str]] = []
         for item in items:
-            document = await self.store.graph.render_node_document(item["entry_id"])
-            if document is None:
+            projection = await self.store.graph.render_node_projection(item["entry_id"])
+            if projection is None:
                 # 节点已归档/不存在：按删除处理
                 await self._process_delete({**item, "operation": "delete"})
                 continue
-            fingerprint = _document_hash(document)
+            document, fingerprint = projection
             mapping = await self.store.get_cognee_mapping(
                 item["entry_id"], entry_kind=item["entry_kind"],
             )
@@ -655,11 +667,6 @@ def _error_text(exc: BaseException) -> str:
     """生成可见的错误描述；asyncio.TimeoutError 等异常的 str() 为空。"""
     text = str(exc).strip()
     return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
-
-
-def _document_hash(document: str) -> str:
-    """渲染文档内容指纹（graph 投影消费侧判重）。"""
-    return hashlib.sha256(document.encode("utf-8")).hexdigest()[:16]
 
 
 def _value(item: Any, key: str, default: Any) -> Any:

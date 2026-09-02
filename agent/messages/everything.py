@@ -11,6 +11,7 @@ from core.tags import (
     Tag,
     get_time_tag,
     group_id_tag,
+    kind_tag,
     name_tag,
     nickname_tag,
     reply_to_tag,
@@ -66,6 +67,9 @@ class Everything(Nothing):
     reply_to_id: str = ""
     reply_content: str = ""
     trigger_mind: bool = True
+    # 消息类别（chat/notification/event/system，对应 MessageKind）：
+    # 非 chat 时在历史文本渲染 [kind:xxx] 标签，区分平台推送与真人聊天
+    message_kind: str = "chat"
     # 消息到达时间（纳秒）：构造即到达，时间标签与对话历史入库均以它为准，保证时序
     created_ts_ns: int = Field(default_factory=time.time_ns)
     _tags_generated: bool = PrivateAttr(default=False)
@@ -143,6 +147,9 @@ class Everything(Nothing):
                 val = getattr(self, field, None)
                 if val is not None and val != "":
                     text_tags += tag.generate_label(str(val))
+        # 消息类别标签：仅非 chat（通知/事件/系统）时标注，真人聊天保持信封干净
+        if self.message_kind and self.message_kind != "chat":
+            text_tags += kind_tag.generate_label(self.message_kind)
         return text_tags
 
     def _render_to_me_label(self) -> str:
