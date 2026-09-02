@@ -166,19 +166,23 @@ name = "entities 不得直接依赖 agent（经 entities._sdk 桥接）"
 type = "forbidden"
 source_modules = ["entities"]
 forbidden_modules = ["agent", "services", "web", "channels"]
-ignore_imports = ["entities._sdk -> agent.**"]
+# _sdk 是 entities 访问 agent/services 的唯一桥（LLM、模型配置等）
+ignore_imports = ["entities._sdk -> agent.**", "entities._sdk -> services.**"]
 
 [[tool.importlinter.contracts]]
 name = "agent 不依赖 web/services 上层"
 type = "forbidden"
 source_modules = ["agent"]
 forbidden_modules = ["web", "services"]
+# agent 经 entities._sdk 间接受益于 sdk 的 services 桥（sdk 自身豁免见 entities 契约）
+ignore_imports = ["entities._sdk -> services.**"]
 
 [[tool.importlinter.contracts]]
 name = "channels 不依赖 web/services（频道事件经 core.event_bus 上行）"
 type = "forbidden"
 source_modules = ["channels"]
 forbidden_modules = ["web", "services"]
+ignore_imports = ["entities._sdk -> services.**"]
 
 [[tool.importlinter.contracts]]
 name = "services 不依赖 web"

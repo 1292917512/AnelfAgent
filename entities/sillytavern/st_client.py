@@ -195,7 +195,7 @@ class STClient:
         return avatar
 
     def edit_character_field(self, base_url: str, avatar: str, name: str,
-                             field: str, value: Any) -> Dict[str, Any]:
+                             field: str, value: Any) -> str:
         """单字段编辑（同时写入顶层与 data.*），返回响应文本（通常为 OK）。"""
         return self.post_text(base_url, "/api/characters/edit-attribute", {
             "avatar_url": avatar,

@@ -18,7 +18,7 @@ import signal
 import subprocess
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from core.log import log
 
@@ -107,7 +107,7 @@ def status() -> Dict[str, Any]:
     version = _probe()
     running = version is not None
     pid = state.get("pid")
-    pid_alive = bool(pid) and _pid_alive(int(pid))
+    pid_alive = pid is not None and _pid_alive(int(pid))
     info: Dict[str, Any] = {
         "running": running,
         "managed": running and pid_alive,

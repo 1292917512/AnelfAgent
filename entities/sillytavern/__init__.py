@@ -30,8 +30,10 @@ entity_manifest(
     group="sillytavern",
 )
 
-from . import context  # noqa: E402,F401  注册动态上下文提供者
-from . import tools  # noqa: E402,F401  触发 @tool 注册
+from . import (
+    context,  # noqa: E402,F401  注册动态上下文提供者
+    tools,  # noqa: E402,F401  触发 @tool 注册
+)
 
 
 def register_lifecycle() -> None:

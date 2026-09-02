@@ -141,11 +141,11 @@ def build_router() -> APIRouter:
             try:
                 return await asyncio.to_thread(fn)
             except _NotRunning:
-                raise HTTPException(400, "酒馆未运行，请先启动")
+                raise HTTPException(400, "酒馆未运行，请先启动") from None
             except ValueError as e:
-                raise HTTPException(400, str(e))
+                raise HTTPException(400, str(e)) from e
             except STError as e:
-                raise HTTPException(502, str(e))
+                raise HTTPException(502, str(e)) from e
         return _run
 
     @router.get("/characters")
@@ -300,9 +300,9 @@ def build_router() -> APIRouter:
         try:
             return await asyncio.to_thread(_run)
         except _NotRunning:
-            raise HTTPException(400, "酒馆未运行，请先启动")
+            raise HTTPException(400, "酒馆未运行，请先启动") from None
         except chat_bridge.TavernChatError as e:
-            raise HTTPException(502, str(e))
+            raise HTTPException(502, str(e)) from e
 
     # ------------------------------------------------------------------
     # 模型直连（把 AnelfAgent 已配置的模型应用到酒馆）
@@ -312,8 +312,8 @@ def build_router() -> APIRouter:
     async def my_models() -> Dict[str, Any]:
         """列出 AnelfAgent 已配置的可对话模型。"""
         def _run() -> Dict[str, Any]:
-            from services.model import ModelService
-            svc = ModelService()
+            from entities._sdk import get_model_service
+            svc = get_model_service()
             out = []
             for prov in svc.list_providers():
                 pid = prov.get("id")
@@ -339,7 +339,8 @@ def build_router() -> APIRouter:
         """把指定 AnelfAgent 模型接到酒馆（写 custom 源 + 密钥）。"""
         def _run() -> Dict[str, Any]:
             base = _running_base()
-            from agent.llm import get_llm_manager
+            from entities._sdk import get_llm_manager
+
             from .tools import _normalize_chat_endpoint
             manager = get_llm_manager()
             client = manager.get_client(body.model_id)
@@ -501,7 +502,7 @@ def build_router() -> APIRouter:
         upstream_url = f"{origin}/{path}"
         if request.url.query:
             upstream_url += f"?{request.url.query}"
-        headers = {
+        headers: Dict[str, str] = {
             key: value for key, value in request.headers.items()
             if key.lower() not in _HOP_BY_HOP and key.lower() != "cookie"
         }
@@ -548,7 +549,7 @@ def build_router() -> APIRouter:
         upstream_url = f"{origin}/{path}"
         if websocket.url.query:
             upstream_url += f"?{websocket.url.query}"
-        headers = {
+        headers: Dict[str, str] = {
             key: value for key, value in websocket.headers.items()
             if key.lower() not in _HOP_BY_HOP
             and key.lower() not in ("cookie", "sec-websocket-key",
@@ -560,7 +561,7 @@ def build_router() -> APIRouter:
                 async with session.ws_connect(upstream_url, headers=headers) as upstream:
                     async def client_to_upstream() -> None:
                         while True:
-                            event: Dict[str, Any] = await websocket.receive()
+                            event = await websocket.receive()
                             if event["type"] == "websocket.disconnect":
                                 break
                             if event.get("text") is not None:

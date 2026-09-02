@@ -15,8 +15,8 @@ from core.context_provider import ProviderSnapshot
 from core.log import log
 from entities._sdk import context_provider
 
-from . import service
 from . import config as st_config
+from . import service
 
 _POLL_INTERVAL = 30.0  # 秒
 _snapshot: dict = {"status": None, "character_count": None, "recent": []}

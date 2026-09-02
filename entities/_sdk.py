@@ -50,6 +50,7 @@ __all__ = [
     "get_embedder", "wake_embedding_worker", "register_embedding_backlog",
     "download_media_to_uploads", "execute_send_action",
     "set_default_model", "get_active_llm_client", "get_llm_client_class",
+    "get_llm_manager", "get_model_service",
     "get_session_llm_params", "canonical_efforts",
     "tool_error", "error_from_exception", "ErrorCause",
 ]
@@ -216,6 +217,15 @@ def get_llm_manager() -> Any:
     """获取 LLMManager 实例（延迟导入 agent.llm）。"""
     from agent.llm import get_llm_manager as _get
     return _get()
+
+
+def get_model_service() -> Any:
+    """获取 ModelService 实例（延迟导入 services.model，供实体查询模型配置）。
+
+    用于实体读取 AnelfAgent 已配置的供应商/模型（如桥接到外部服务）。
+    """
+    from services.model import ModelService
+    return ModelService()
 
 
 def get_current_scope() -> str:

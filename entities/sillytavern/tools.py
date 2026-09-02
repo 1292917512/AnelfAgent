@@ -8,10 +8,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from entities._sdk import tool
 from core.tool_errors import ErrorCause, tool_error
+from entities._sdk import tool
 
 from . import chat_bridge, git_ops, service
 from . import config as st_config
@@ -219,7 +219,7 @@ _MAIN_APIS = ["openai", "textgenerationwebui", "novelai", "koboldhorde",
       description="读取酒馆当前模型配置：API 类型(main_api)、模型名、温度、"
                   "上下文长度、生成上限等关键参数")
 def sillytavern_get_model_config() -> str:
-    def _run() -> str:
+    def _run() -> Dict[str, Any]:
         base = _require_running()
         settings = get_st_client().get_settings(base)["settings"]
         oai = settings.get("oai_settings", {}) or {}
@@ -287,7 +287,7 @@ def sillytavern_set_model_config(
       concurrency_safe=True,
       description="列出指定角色的所有聊天文件")
 def sillytavern_list_chats(avatar: str) -> str:
-    def _run() -> str:
+    def _run() -> Dict[str, Any]:
         base = _require_running()
         chats = get_st_client().character_chats(base, avatar)
         return {"avatar": avatar, "chats": chats}
@@ -298,7 +298,7 @@ def sillytavern_list_chats(avatar: str) -> str:
       concurrency_safe=True,
       description="读取指定角色的一份聊天记录（messages 数组）")
 def sillytavern_read_chat(avatar: str, file_name: str, max_messages: int = 50) -> str:
-    def _run() -> str:
+    def _run() -> Dict[str, Any]:
         base = _require_running()
         messages = get_st_client().get_chat(base, avatar, file_name)
         trimmed = messages[:max_messages] if max_messages > 0 else messages
@@ -422,8 +422,8 @@ def sillytavern_chat(avatar: str, message: str, chat_file: str = "",
                   "供选择应用到酒馆")
 def sillytavern_list_my_models() -> str:
     def _run() -> List[Dict[str, Any]]:
-        from services.model import ModelService
-        svc = ModelService()
+        from entities._sdk import get_model_service
+        svc = get_model_service()
         out = []
         for prov in svc.list_providers():
             pid = prov.get("id") or prov.get("provider_id")
@@ -472,7 +472,7 @@ def _normalize_chat_endpoint(base_url: str) -> str:
 def sillytavern_use_my_model(model_id: str) -> str:
     def _run() -> Dict[str, Any]:
         base = _require_running()
-        from agent.llm import get_llm_manager
+        from entities._sdk import get_llm_manager
         manager = get_llm_manager()
         client = manager.get_client(model_id)
         if client is None:
