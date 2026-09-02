@@ -310,6 +310,97 @@ def sillytavern_read_chat(avatar: str, file_name: str, max_messages: int = 50) -
 # AI 与酒馆角色对话（AI 是独立参与者，经 anelf-bridge 插件走酒馆生成管道）
 # ------------------------------------------------------------------
 
+@tool(name="sillytavern_overview", group=_GROUP, tags=["sillytavern"],
+      concurrency_safe=True,
+      description="酒馆体检：一次拿到酒馆全貌——运行状态、版本、当前模型配置、"
+                  "角色数、世界书/预设/扩展清单、最近聊天、桥接插件是否就绪、"
+                  "git 分支与未提交修改。想全面了解酒馆或排障时先调用它")
+def sillytavern_overview() -> str:
+    def _run() -> Dict[str, Any]:
+        st = service.status()
+        out: Dict[str, Any] = {"status": st, "running": st["running"]}
+        if not st["running"]:
+            out["hint"] = "酒馆未运行。sillytavern_start 可启动；启动后我再给你完整全貌。"
+            # 离线时也给 git 状态（不依赖酒馆运行）
+            try:
+                out["git"] = git_ops.status()
+            except Exception:
+                pass
+            return out
+
+        base = st_config.base_url()
+        client = get_st_client()
+
+        # 模型配置
+        try:
+            settings = client.get_settings(base)["settings"]
+            oai = settings.get("oai_settings", {}) or {}
+            out["model"] = {
+                "main_api": settings.get("main_api"),
+                "source": oai.get("chat_completion_source"),
+                "model": oai.get("openai_model") or settings.get("model"),
+                "temperature": oai.get("temp_openai"),
+                "max_context": oai.get("openai_max_context"),
+                "custom_url": oai.get("custom_url") or None,
+            }
+            out["world_books"] = client.get_settings(base).get("world_names", [])
+            out["presets"] = {
+                "instruct": [x.get("name") for x in (client.get_settings(base).get("instruct") or []) if isinstance(x, dict)][:20],
+            }
+        except STError as e:
+            out["model_error"] = str(e)
+
+        # 角色与聊天
+        try:
+            chars = client.characters_all(base)
+            out["characters"] = {
+                "count": len(chars),
+                "names": [c.get("name") for c in chars][:30],
+            }
+        except STError:
+            pass
+        try:
+            recent = client.recent_chats(base)
+            out["recent_chats"] = [
+                {"file": r.get("file_name"),
+                 "avatar": r.get("avatar") or r.get("character"),
+                 "preview": (r.get("mes") or r.get("last_mes") or "")[:40]}
+                for r in (recent or [])[:5]
+            ]
+        except STError:
+            pass
+
+        # 桥接插件与扩展
+        try:
+            from . import chat_bridge
+            out["bridge"] = chat_bridge.bridge_health()
+        except Exception as e:
+            out["bridge"] = {"ok": False, "error": str(e)}
+        try:
+            exts = client.extensions_discover(base)
+            out["extensions"] = {
+                "count": len(exts),
+                "names": [e.get("name") for e in exts if isinstance(e, dict)][:30],
+            }
+        except STError:
+            pass
+
+        # git
+        try:
+            g = git_ops.status()
+            out["git"] = {"branch": g["branch"], "last_commit": g["last_commit"],
+                          "dirty_count": g["dirty_count"]}
+        except Exception:
+            pass
+
+        out["hint"] = (
+            "酒馆运行中。可用工具：sillytavern_chat（对话）、角色管理、"
+            "sillytavern_set_model_config（调模型）、sillytavern_update/switch_version（源码）、"
+            "sillytavern_restart（改动后生效）。")
+        return out
+    return _guard(_run)
+
+
 @tool(name="sillytavern_chat", group=_GROUP, tags=["sillytavern"],
       description="以你自己的身份直接对酒馆里的某个角色说话。消息会注入酒馆会话，"
                   "由酒馆用已配置的模型生成角色回复并写入聊天记录（可在酒馆网页查看）。"

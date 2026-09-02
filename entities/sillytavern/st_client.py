@@ -224,10 +224,37 @@ class STClient:
         if not isinstance(settings, dict):
             raise STError("酒馆 settings 响应异常：缺少 settings 字段")
         out = {"settings": settings}
-        for key in ("world_names", "enable_extensions", "enable_accounts"):
+        for key in ("world_names", "enable_extensions", "enable_accounts",
+                    "instruct", "context", "sysprompt", "reasoning",
+                    "openai_setting_names", "textgenerationwebui_preset_names"):
             if key in raw:
                 out[key] = raw[key]
         return out
+
+    # ------------------------------------------------------------------
+    # 世界书
+    # ------------------------------------------------------------------
+
+    def worldinfo_list(self, base_url: str) -> List[Dict[str, Any]]:
+        """列出世界书（名称 + 条目数）。"""
+        return self.post(base_url, "/api/worldinfo/list") or []
+
+    def worldinfo_get(self, base_url: str, name: str) -> Dict[str, Any]:
+        return self.post(base_url, "/api/worldinfo/get", {"name": name}) or {}
+
+    # ------------------------------------------------------------------
+    # 扩展
+    # ------------------------------------------------------------------
+
+    def extensions_discover(self, base_url: str) -> List[Dict[str, Any]]:
+        """列出酒馆已启用的扩展（系统/全局/本地）。"""
+        client = self._ensure(base_url)
+        try:
+            resp = client.get("/api/extensions/discover")
+            resp.raise_for_status()
+            return resp.json()
+        except (httpx.HTTPError, ValueError) as e:
+            raise STError(f"读取扩展列表失败: {e}") from e
 
     def save_settings(self, base_url: str, settings: Dict[str, Any]) -> Any:
         """整文件覆盖写 settings.json（调用方须先 get 再改再 save）。"""

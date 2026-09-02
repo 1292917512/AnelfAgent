@@ -39,8 +39,9 @@ def _collect_once() -> None:
     if not st.get("running"):
         _snapshot["character_count"] = None
         _snapshot["recent"] = []
+        _snapshot["model"] = None
+        _snapshot["bridge_ok"] = None
         return
-    # 顺带采集轻量元数据（在 to_thread 中执行，不受 provide 超时约束）
     from .st_client import STError, get_st_client
     base = st_config.base_url()
     client = get_st_client()
@@ -53,6 +54,18 @@ def _collect_once() -> None:
     except STError:
         _snapshot["character_count"] = None
         _snapshot["recent"] = []
+    # 当前模型配置（注入给 AI，让它知道酒馆在用哪个模型）
+    try:
+        oai = (client.get_settings(base)["settings"].get("oai_settings") or {})
+        _snapshot["model"] = oai.get("openai_model") or None
+    except STError:
+        _snapshot["model"] = None
+    # 桥接插件健康（AI 排障用）
+    try:
+        from . import chat_bridge
+        _snapshot["bridge_ok"] = bool(chat_bridge.bridge_health().get("ok"))
+    except Exception:
+        _snapshot["bridge_ok"] = False
 
 
 @context_provider(name="sillytavern_status", priority=30, max_tokens=300, group="sillytavern")
@@ -82,12 +95,17 @@ class SillyTavernStatusProvider:
             "[SillyTavern 酒馆] 运行中",
             f"- 地址: {st.get('url')} (pid={st.get('pid')}, 版本 {st.get('version') or '未知'})",
         ]
+        if _snapshot.get("model"):
+            lines.append(f"- 当前模型: {_snapshot['model']}")
         if _snapshot.get("character_count") is not None:
             lines.append(f"- 角色数: {_snapshot['character_count']}")
         if _snapshot.get("recent"):
             lines.append(f"- 活跃角色: {', '.join(_snapshot['recent'])}")
-        lines.append("可用工具: sillytavern_start/stop/restart/status、角色管理、"
-                     "模型配置、sillytavern_update 等")
+        bridge = _snapshot.get("bridge_ok")
+        if bridge is False:
+            lines.append("- 对话桥接: 不可用（anelf-bridge 插件未就绪，需重启酒馆）")
+        lines.append("管理工具: sillytavern_overview 拿全貌、sillytavern_chat 对话、"
+                     "角色/模型/源码管理；改了源码或模型后用 sillytavern_restart 生效")
         return ProviderSnapshot(content="\n".join(lines), ready=True)
 
 
