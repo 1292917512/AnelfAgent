@@ -86,7 +86,7 @@ def _lan_ip() -> str:
 
 
 def _access_url(cfg: Dict[str, Any]) -> str:
-    """酒馆访问地址：host 填了固定用它；否则 listen 开=探测局域网 IP，关=回环。"""
+    """酒馆访问地址：host 填了固定用它；否则默认探测局域网 IP（host 空时）。"""
     port = cfg["port"]
     host = str(cfg.get("host") or "").strip()
     if host:
@@ -95,9 +95,8 @@ def _access_url(cfg: Dict[str, Any]) -> str:
             rest = host.split("//", 1)[1]
             return host.rstrip("/") if ":" in rest else f"{host.rstrip('/')}:{port}"
         return f"http://{host}:{port}"
-    if cfg.get("listen"):
-        return f"http://{_lan_ip()}:{port}"
-    return f"http://127.0.0.1:{port}"
+    # 默认：局域网地址（最常用场景），listen 关也显示局域网便于提示
+    return f"http://{_lan_ip()}:{port}"
 
 
 def _find_pid_on_port(port: int) -> Optional[int]:

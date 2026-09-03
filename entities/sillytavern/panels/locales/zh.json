@@ -141,7 +141,6 @@
     "host": "访问地址",
     "hostPlaceholder": "留空=listen 开时自动探测局域网 IP；填域名/IP 则固定用它"
   },
-  "tabWeb": "酒馆网页",
   "web": {
     "newWindow": "新窗口打开",
     "loading": "酒馆网页加载中…",

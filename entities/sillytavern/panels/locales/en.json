@@ -141,7 +141,6 @@
     "host": "Access host",
     "hostPlaceholder": "Empty = auto-detect LAN IP when listen is on; set a domain/IP to pin it"
   },
-  "tabWeb": "Tavern Web",
   "web": {
     "newWindow": "Open in new window",
     "loading": "Loading tavern web UI…",

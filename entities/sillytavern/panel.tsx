@@ -9,7 +9,6 @@ import {
   Castle,
   GitBranch,
   MessageSquare,
-  MonitorPlay,
   Settings2,
   SlidersHorizontal,
   Users,
@@ -18,7 +17,6 @@ import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { registerPluginI18n } from "@/lib/plugin-i18n";
 import { OverviewPanel } from "./sillytavern/OverviewPanel";
-import { WebPanel } from "./sillytavern/WebPanel";
 import { ChatPanel } from "./sillytavern/ChatPanel";
 import { CharactersPanel } from "./sillytavern/CharactersPanel";
 import { ModelPanel } from "./sillytavern/ModelPanel";
@@ -29,11 +27,10 @@ import en from "./sillytavern/locales/en.json";
 
 registerPluginI18n("sillytavern", { zh, en });
 
-type StTab = "overview" | "web" | "chat" | "characters" | "model" | "git" | "config";
+type StTab = "overview" | "chat" | "characters" | "model" | "git" | "config";
 
 const TABS: TabItem<StTab>[] = [
   { key: "overview", label: "sillytavern:tabOverview", icon: Activity },
-  { key: "web", label: "sillytavern:tabWeb", icon: MonitorPlay },
   { key: "chat", label: "sillytavern:tabChat", icon: MessageSquare },
   { key: "characters", label: "sillytavern:tabCharacters", icon: Users },
   { key: "model", label: "sillytavern:tabModel", icon: SlidersHorizontal },
@@ -60,7 +57,6 @@ export default function SillyTavernPanel() {
       <TabBar tabs={resolvedTabs} activeTab={tab} onChange={setTab} />
       <div className="mt-4">
         {tab === "overview" && <OverviewPanel />}
-        {tab === "web" && <WebPanel />}
         {tab === "chat" && <ChatPanel />}
         {tab === "characters" && <CharactersPanel />}
         {tab === "model" && <ModelPanel />}
