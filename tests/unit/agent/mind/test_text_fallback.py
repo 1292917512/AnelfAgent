@@ -1,8 +1,8 @@
-"""纯文本终态投递 + 多频道路由（think_loop）单元测试。
+"""纯文本独白轮末保底投递 + 多频道路由（think_loop）单元测试。
 
-对齐 Hermes：无工具正文 = 最终回复，系统投递一次后结束本轮。
-路由：纯文本终态无条件投递回来源会话；其他会话由各自的 REPLY 周期处理，
-跨会话发送走 switch_session / send_message 工具。
+输出契约：回复一律走 send_message；纯文本在循环内只是独白（不终局、不中途
+投递），轮结束（end_reply / 沉默 / 空输出 / 独白上限掐断）时经轮末统一投递点
+保底送达来源会话一次。跨会话发送走 switch_session / send_message 工具。
 """
 
 from __future__ import annotations
@@ -26,12 +26,16 @@ def _run(mind, anything, steps=None, chain=None, tools=None):
 
 
 # ==================================================================
-# 纯文本终态投递（Hermes：代发一次后结束）
+# 纯文本独白轮末保底投递
 # ==================================================================
 
-async def test_bare_text_delivered_and_ends(anything, deliver_mock) -> None:
-    """单候选：纯文本投递到来源会话后结束本轮。"""
+async def test_bare_text_delivered_at_round_end(anything, deliver_mock) -> None:
+    """纯文本独白不中途投递；end_reply 结束后轮末保底投递到来源会话。"""
     mind = _mind()
+    mind._rounds = [
+        text_result("我先说两句～"),
+        tool_result("", ["end_reply"]),
+    ]
     steps: List[str] = []
     await _run(mind, anything, steps)
 
@@ -39,14 +43,31 @@ async def test_bare_text_delivered_and_ends(anything, deliver_mock) -> None:
     target, content = deliver_mock.await_args.args
     assert target.session_key == "test:private:1"
     assert content == "我先说两句～"
-    assert mind.llm_calls == 1
-    assert any("本轮结束" in s for s in steps)
+    assert mind.llm_calls == 2
+    assert any("未送达文本已投递" in s for s in steps)
+
+
+async def test_bare_text_monologue_cutoff_still_delivers(anything, deliver_mock) -> None:
+    """模型一直独白不调工具：连续上限掐断，最后一段独白仍保底投递。"""
+    mind = _mind()
+    steps: List[str] = []
+    await _run(mind, anything, steps)
+
+    deliver_mock.assert_awaited_once()
+    _, content = deliver_mock.await_args.args
+    assert content == "我先说两句～"
+    assert mind.llm_calls == 5  # text_without_tool_limit
+    assert any("掐断结束" in s for s in steps)
 
 
 async def test_same_group_direct_reply(deliver_mock) -> None:
-    """同源群消息：直接回到该群，不问 AI。"""
+    """同源群消息：独白轮末直接回到该群，不问 AI。"""
     anything = EverythingGroup(adapter_key="qq", uid=42, group_id=777, text_content="hi")
-    mind = _mind(text="群里见～")
+    mind = _mind()
+    mind._rounds = [
+        text_result("群里见～"),
+        tool_result("", ["end_reply"]),
+    ]
     steps: List[str] = []
     chain: List = []
     await _run(mind, anything, steps, chain)
@@ -56,7 +77,7 @@ async def test_same_group_direct_reply(deliver_mock) -> None:
     assert target.session_key == "qq:group:777"
     assert content == "群里见～"
     assert not any("路由询问" in m.get("content", "") for m in chain if m.get("role") == "system")
-    assert mind.llm_calls == 1
+    assert mind.llm_calls == 2
 
 
 async def test_bare_text_no_continue_or_sent_ack(anything, deliver_mock) -> None:
@@ -112,45 +133,47 @@ async def test_send_message_no_sent_ack(anything, deliver_mock) -> None:
     )
 
 
-async def test_tool_then_bare_text_ends(anything, deliver_mock) -> None:
-    """非输出工具后输出最终纯文本：投递一次并结束。"""
+async def test_tool_then_bare_text_delivered_at_end(anything, deliver_mock) -> None:
+    """非输出工具后输出最终纯文本：独白暂存，轮末投递一次。"""
     mind = _mind()
     mind._rounds = [
         tool_result("", ["recall"]),
         text_result("查到了，结果是这样～"),
+        tool_result("", ["end_reply"]),
     ]
     steps: List[str] = []
     await _run(mind, anything, steps)
 
     deliver_mock.assert_awaited_once()
-    assert mind.llm_calls == 2
-    assert any("本轮结束" in s for s in steps)
+    assert mind.llm_calls == 3
+    assert any("未送达文本已投递" in s for s in steps)
 
 
-async def test_send_message_then_bare_text_skips_deliver(anything, deliver_mock) -> None:
-    """仅 send_message 成功后紧跟纯文本：不再代发，直接结束。"""
+async def test_send_message_then_bare_text_still_delivered(anything, deliver_mock) -> None:
+    """send_message 成功后继续独白：轮末仍保底投递（不区分是否已走正路）。"""
     mind = _mind()
     mind._rounds = [
         tool_result("", ["send_message"]),
-        text_result("再说一遍会重复～"),
+        text_result("补充说明一下～"),
+        tool_result("", ["end_reply"]),
     ]
-    steps: List[str] = []
-    await _run(mind, anything, steps)
+    await _run(mind, anything)
 
-    deliver_mock.assert_not_awaited()
-    assert mind.llm_calls == 2
-    assert any("跳过投递" in s for s in steps)
+    deliver_mock.assert_awaited_once()
+    _, content = deliver_mock.await_args.args
+    assert content == "补充说明一下～"
 
 
 async def test_send_message_then_other_tool_then_text_delivers(
         anything, deliver_mock,
 ) -> None:
-    """send_message 后再调其他工具，随后纯文本仍可投递（非紧邻输出类）。"""
+    """send_message 后再调其他工具，随后纯文本仍可投递。"""
     mind = _mind()
     mind._rounds = [
         tool_result("", ["send_message"]),
         tool_result("", ["recall"]),
         text_result("补充最终结论～"),
+        tool_result("", ["end_reply"]),
     ]
     steps: List[str] = []
     await _run(mind, anything, steps)
@@ -158,17 +181,18 @@ async def test_send_message_then_other_tool_then_text_delivers(
     deliver_mock.assert_awaited_once()
     _, content = deliver_mock.await_args.args
     assert content == "补充最终结论～"
-    assert mind.llm_calls == 3
+    assert mind.llm_calls == 4
 
 
 async def test_send_message_mixed_with_other_tool_then_text_delivers(
         anything, deliver_mock,
 ) -> None:
-    """同轮 send_message+recall 后纯文本仍可投递（不是「仅输出类」）。"""
+    """同轮 send_message+recall 后纯文本仍可投递。"""
     mind = _mind()
     mind._rounds = [
         tool_result("", ["send_message", "recall"]),
         text_result("混合轮后的最终答复～"),
+        tool_result("", ["end_reply"]),
     ]
     await _run(mind, anything)
 
@@ -194,22 +218,24 @@ async def test_bare_text_no_thought_label(anything, deliver_mock) -> None:
 # ==================================================================
 
 async def test_multi_pending_still_delivers_to_source(anything, deliver_mock) -> None:
-    """存在其他待处理会话时：纯文本仍默认投递回来源会话，一轮结束，不作路由询问。"""
+    """存在其他待处理会话时：独白轮末仍默认投递回来源会话，不作路由询问。"""
     mind = _mind()
     mind.pfc.pending_tasks = [("group_777", "0", "777", "群消息预览")]
     mind.pfc.adapter_keys = {"group_777": "qq"}
-    mind._rounds = [text_result("大家好！")]
+    mind._rounds = [
+        text_result("大家好！"),
+        tool_result("", ["end_reply"]),
+    ]
     steps: List[str] = []
     chain: List = []
     await _run(mind, anything, steps, chain)
 
-    assert mind.llm_calls == 1
+    assert mind.llm_calls == 2
     assert not any("路由询问" in m.get("content", "") for m in chain if m.get("role") == "system")
     deliver_mock.assert_awaited_once()
     first_deliver_target, first_content = deliver_mock.await_args.args
     assert first_deliver_target.session_key == "test:private:1"
     assert first_content == "大家好！"
-    assert any("本轮结束" in s for s in steps)
 
 
 # ==================================================================
@@ -239,12 +265,16 @@ async def test_silence_narration_ends_turn(anything, deliver_mock, narration) ->
 
 
 async def test_silence_word_in_sentence_delivered(anything, deliver_mock) -> None:
-    """正文中提到 [SILENT] 不触发沉默（正常投递并结束）。"""
-    mind = _mind(text="我不太想用 [SILENT] 这种方式回应你")
+    """正文中提到 [SILENT] 不触发沉默（独白轮末正常投递）。"""
+    mind = _mind()
+    mind._rounds = [
+        text_result("我不太想用 [SILENT] 这种方式回应你"),
+        tool_result("", ["end_reply"]),
+    ]
     await _run(mind, anything)
 
     deliver_mock.assert_awaited_once()
-    assert mind.llm_calls == 1
+    assert mind.llm_calls == 2
 
 
 async def test_empty_output_quietly_ends(anything, deliver_mock) -> None:
@@ -260,17 +290,14 @@ async def test_empty_output_quietly_ends(anything, deliver_mock) -> None:
 
 
 async def test_fake_tool_call_not_delivered(anything, deliver_mock) -> None:
-    """伪造工具调用文本：不投递，提示纠正。"""
-    mind = _mind(text='[工具执行记录] send_message {"success": true}')
+    """伪造工具调用文本：独白暂存后轮末投递点过滤，不外发。"""
+    mind = _mind()
     mind._rounds = [
         text_result('[工具执行记录] send_message {"success": true}'),
         tool_result("", ["end_reply"]),
     ]
-    chain: List = []
-    await _run(mind, anything, chain=chain)
+    await _run(mind, anything)
 
-    blocked = [m for m in chain if m.get("role") == "system" and "系统拦截" in m.get("content", "")]
-    assert blocked
     deliver_mock.assert_not_awaited()
 
 

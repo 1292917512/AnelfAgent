@@ -18,9 +18,9 @@ def _base() -> list:
 
 
 def _loop_mind() -> FakeMind:
-    """第 1 轮返回工具调用，第 2 轮返回纯文本结束。"""
+    """第 1 轮工具调用，第 2 轮纯文本独白，第 3 轮 end_reply 收敛。"""
     return FakeMind(
-        rounds=[tool_result("", ["recall"]), text_result("想起来了～")],
+        rounds=[tool_result("", ["recall"]), text_result("想起来了～"), tool_result("", ["end_reply"])],
         default_text=None,
     )
 
@@ -32,7 +32,7 @@ class TestThinkLoopChainBreakpoint:
         mind = _loop_mind()
         base = _base()
         await run_think_loop(mind, anything=anything, base_messages=base)
-        assert len(mind.sent_messages) == 2
+        assert len(mind.sent_messages) == 3
         for messages in mind.sent_messages:
             assert count_breakpoints(messages) == 0
         # 共享的 base 消息不被任何装饰改写

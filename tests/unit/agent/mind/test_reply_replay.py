@@ -44,38 +44,41 @@ def _base() -> list:
 
 
 class TestScenarioPureText:
-    """场景 1：纯文本回复（单轮收敛）。"""
+    """场景 1：纯文本独白 + end_reply 收敛。"""
 
     async def test_replay(self, replay_anything, deliver_mock) -> None:
-        mind = _ReplayMind([text_result("你好呀～")])
+        mind = _ReplayMind([text_result("你好呀～"), tool_result("", ["end_reply"])])
         await run_think_loop(
             mind, anything=replay_anything, base_messages=_base(), adapter_key="test",
         )
-        # 布局：单轮调用，base(2) + exec_context(1)
-        assert len(mind.sent_messages) == 1
+        # 布局：首轮调用，base(2) + exec_context(1)
         round1 = mind.sent_messages[0]
         assert [m.get("_layer") for m in round1[:2]] == ["stable", "conversation"]
         assert round1[-1].get("_layer") == "exec_context"
-        # 无工具执行
-        assert mind.executed_tools == []
-        # 出站文本
+        # 无业务工具执行（仅 end_reply 收敛）
+        assert mind.executed_tools == ["end_reply"]
+        # 出站文本（轮末保底投递独白）
         deliver_mock.assert_awaited()
         assert deliver_mock.await_args.args[0] == "你好呀～" or \
             "你好呀～" in str(deliver_mock.await_args.args)
 
 
 class TestScenarioSingleTool:
-    """场景 2：单工具调用后文本收敛。"""
+    """场景 2：单工具调用后独白 + end_reply 收敛。"""
 
     async def test_replay(self, replay_anything, deliver_mock) -> None:
-        mind = _ReplayMind([tool_result("", ["recall"]), text_result("查到了")])
+        mind = _ReplayMind([
+            tool_result("", ["recall"]),
+            text_result("查到了"),
+            tool_result("", ["end_reply"]),
+        ])
         await run_think_loop(
             mind, anything=replay_anything, base_messages=_base(), adapter_key="test",
         )
-        # 两轮 LLM 调用
-        assert len(mind.sent_messages) == 2
+        # 三轮 LLM 调用
+        assert len(mind.sent_messages) == 3
         # 工具序列：recall 恰好执行一次
-        assert mind.executed_tools == ["recall"]
+        assert mind.executed_tools == ["recall", "end_reply"]
         # 第 2 轮上下文含第 1 轮的 assistant + tool 结果（工具链并入）
         roles2 = [m.get("role") for m in mind.sent_messages[1]]
         assert "tool" in roles2
@@ -91,13 +94,14 @@ class TestScenarioMultiToolChain:
             tool_result("", ["recall"]),
             tool_result("", ["get_conversation"]),
             text_result("都办好了"),
+            tool_result("", ["end_reply"]),
         ])
         await run_think_loop(
             mind, anything=replay_anything, base_messages=_base(), adapter_key="test",
         )
-        # 三轮 LLM 调用
-        assert len(mind.sent_messages) == 3
+        # 四轮 LLM 调用
+        assert len(mind.sent_messages) == 4
         # 工具序列按轮次顺序执行
-        assert mind.executed_tools == ["recall", "get_conversation"]
+        assert mind.executed_tools == ["recall", "get_conversation", "end_reply"]
         # 最终出站
         assert deliver_mock.await_count == 1

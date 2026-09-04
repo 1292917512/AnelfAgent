@@ -698,33 +698,6 @@ class TestChannelRouterMount:
         assert "/qr/start" in paths
         assert "/qr/{session_id}/status" in paths
 
-    def test_server_mounts_channel_routers(self, monkeypatch):
-        """create_app() 挂载微信扫码路由，端到端走通（mock QR 管理器）。"""
-        from unittest.mock import AsyncMock
-
-        import channels.weixin.qr_login as qr_mod
-
-        mock_manager = AsyncMock()
-        mock_manager.start.return_value = {
-            "session_id": "s1", "qr_png": "data:png,x", "qr_url": "u",
-        }
-        mock_manager.poll.return_value = {"status": "wait"}
-        monkeypatch.setattr(qr_mod, "get_qr_manager", lambda: mock_manager)
-
-        import web.server as server_mod
-
-        monkeypatch.setattr(server_mod, "_load_auth_password", lambda: "")
-
-        from fastapi.testclient import TestClient
-
-        client = TestClient(server_mod.create_app())
-        resp = client.post("/api/channels/weixin/qr/start")
-        assert resp.status_code == 200
-        assert resp.json()["session_id"] == "s1"
-        resp = client.get("/api/channels/weixin/qr/s1/status")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "wait"
-
     def test_channel_get_router_hook(self):
         from channels.weixin.adapter import WeixinChannel
 

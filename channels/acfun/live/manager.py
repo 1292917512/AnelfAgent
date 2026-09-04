@@ -253,7 +253,11 @@ class LiveSessionManager:
     async def _dispatch_special(self, uid: str, event: live_signals.LiveEvent,
                                 desc: str, *, trigger: bool) -> None:
         from agent.channel.schemas import (
-            AdapterChannel, AdapterMessage, AdapterUser, ChannelType, MessageKind,
+            AdapterChannel,
+            AdapterMessage,
+            AdapterUser,
+            ChannelType,
+            MessageKind,
         )
 
         message = AdapterMessage(
@@ -270,7 +274,11 @@ class LiveSessionManager:
 
     async def _dispatch_system(self, uid: str, text: str, *, trigger: bool) -> None:
         from agent.channel.schemas import (
-            AdapterChannel, AdapterMessage, AdapterUser, ChannelType, MessageKind,
+            AdapterChannel,
+            AdapterMessage,
+            AdapterUser,
+            ChannelType,
+            MessageKind,
         )
 
         message = AdapterMessage(

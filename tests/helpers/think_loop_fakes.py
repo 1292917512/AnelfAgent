@@ -138,6 +138,19 @@ class FakeMind:
         self._config = {**DEFAULT_MIND_CONFIG, **(config_overrides or {})}
         self._add_system_context = AsyncMock()
         self._reply_adapter_key = ""
+        # 快照水位存根：think_loop 轮顶读取历史水位并入新消息（无真实 DB，空水位即可）
+        self.conversation_data = SimpleNamespace(
+            get_fetch_watermark=lambda *_: None,
+            get_fetch_watermark_id=lambda *_: 0,
+        )
+
+    @staticmethod
+    def _resolve_scope(anything) -> tuple:
+        """对齐 Mind._resolve_scope（替身实体缺 scope 字段时回落 uid 维度）。"""
+        return (
+            getattr(anything, "scope_type", "user"),
+            getattr(anything, "scope_id", str(getattr(anything, "uid", ""))),
+        )
 
     def _resolve_adapter_key(self) -> str:
         return ""

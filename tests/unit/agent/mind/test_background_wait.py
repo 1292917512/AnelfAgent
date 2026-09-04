@@ -269,8 +269,8 @@ class TestWaitSuspension:
         injected = [m for m in chain if m.get("role") == "system" and "仍未完成" in m.get("content", "")]
         assert injected
 
-    async def test_wait_timeout_zeroes_budget_then_delivers(self, anything) -> None:
-        """挂起超时后预算清零：后续纯文本按 Hermes 终态投递并结束。"""
+    async def test_wait_timeout_zeroes_budget_then_delivers(self, anything, deliver_mock) -> None:
+        """挂起超时后预算清零：后续纯文本回落独白路径，独白上限掐断后轮末投递。"""
         mind = _WaitMind()
         mind.background_tasks.register("_global", "delegation", "生成图片")
         mind._queue = [text_result(mind._wait_text) for _ in range(5)]
@@ -279,16 +279,17 @@ class TestWaitSuspension:
         await _run_reply(mind, anything, steps, chain)
 
         assert any("等待后台任务（timeout" in s for s in steps)
-        # 第 1 次挂起超时；第 2 次纯文本投递后结束（预算已清零不再挂起）
-        assert any("本轮结束" in s for s in steps)
-        assert mind.llm_calls == 2
+        # 第 1 次挂起超时；预算清零后连续独白达上限掐断，独白轮末保底投递
+        assert any("掐断结束" in s for s in steps)
+        assert mind.llm_calls == 6
+        deliver_mock.assert_awaited_once()
         assert not any(
             "未调用工具" in m.get("content", "")
             for m in chain if m.get("role") == "system"
         )
 
     async def test_any_text_with_tasks_suspends_once(self, anything) -> None:
-        """有后台任务时任意纯文本都先挂起一次；预算耗尽后纯文本终态投递。"""
+        """有后台任务时任意纯文本都先挂起一次；预算耗尽后独白上限掐断收尾。"""
         mind = _WaitMind(wait_text="我今天心情不太好喵，想随便聊聊")
         mind.background_tasks.register("_global", "delegation", "生成图片")
         mind._queue = [text_result("我还是不太舒服") for _ in range(5)]
@@ -300,23 +301,24 @@ class TestWaitSuspension:
         # 超时提示含任务查询路径
         hints = [m for m in chain if m.get("role") == "system" and "check_background_tasks" in m.get("content", "")]
         assert hints
-        assert any("本轮结束" in s for s in steps)
+        assert any("掐断结束" in s for s in steps)
 
-    async def test_no_tasks_text_delivers_and_ends(self, anything) -> None:
-        """无后台任务时纯文本投递一次并结束本轮。"""
+    async def test_no_tasks_text_delivers_and_ends(self, anything, deliver_mock) -> None:
+        """无后台任务时纯文本为独白：连续上限掐断，轮末保底投递一次。"""
         mind = _WaitMind()
         mind._queue = [text_result(mind._wait_text) for _ in range(6)]
         steps: List[str] = []
         chain: List = []
         await _run_reply(mind, anything, steps, chain)
 
-        assert mind.llm_calls == 1
-        assert any("本轮结束" in s for s in steps)
+        assert mind.llm_calls == 5  # text_without_tool_limit
+        assert any("掐断结束" in s for s in steps)
+        deliver_mock.assert_awaited_once()
+        assert deliver_mock.await_args.args[1] == mind._wait_text
         assert not any(
             "未调用工具" in m.get("content", "")
             for m in chain if m.get("role") == "system"
         )
-        assert not any("熔断结束" in s for s in steps)
 
 
 # ==================================================================
