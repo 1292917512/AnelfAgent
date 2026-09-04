@@ -68,10 +68,13 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-timeout>=2.4.0",
     "pytest-cov>=7.0.0",
-    "ruff>=0.14.0",
-    "mypy>=1.18.0",
     "pytest-xdist>=3.8.0",
-    "import-linter>=2.13",
+    # CI 用 PyPI 重解析（不用 --locked，uv.lock registry 为镜像源），lint 门禁
+    # 工具钉死 minor 防 CI 解析到新版引入新规则造成"本地绿 CI 红"
+    "ruff==0.16.*",
+    "mypy==2.3.*",
+    "import-linter==2.14.*",
+    "grimp==3.16.*",
 ]
 
 [tool.pytest.ini_options]
@@ -166,8 +169,13 @@ name = "entities 不得直接依赖 agent（经 entities._sdk 桥接）"
 type = "forbidden"
 source_modules = ["entities"]
 forbidden_modules = ["agent", "services", "web", "channels"]
-# _sdk 是 entities 访问 agent/services 的唯一桥（LLM、模型配置等）
-ignore_imports = ["entities._sdk -> agent.**"]
+# _sdk 是 entities 访问 agent/services 的唯一桥（LLM、模型配置等）；
+# 模块内 tests/ 是白盒测试——为 mock/断言内部结构可直达各层，不构成生产依赖
+ignore_imports = [
+    "entities._sdk -> agent.**",
+    "entities.*.tests.** -> agent.**",
+    "entities.*.tests.** -> services.**",
+]
 
 [[tool.importlinter.contracts]]
 name = "agent 不依赖 web/services 上层"

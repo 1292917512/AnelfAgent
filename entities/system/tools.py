@@ -12,7 +12,7 @@ import platform
 import shutil
 
 from core.log import log
-from entities._sdk import entity, error_from_exception, tool
+from entities._sdk import entity, error_from_exception, get_mind, tool
 
 # 耦合点：读取文件系统实体的沙箱配置需访问其模块级私有成员
 # （entities 内部允许直接 import 模块级私有成员，集中在此声明）
@@ -229,8 +229,7 @@ def get_context_remaining() -> str:
     prompt_tokens 与估算用量的差值。数值为参考（不同供应商的计费口径略有差异）。
     """
     try:
-        from agent.runtime.singleton import require_runtime
-        mind = require_runtime().mind
+        mind = get_mind()
         window = mind.get_model_context_length() if mind is not None else 0
         if not window or window <= 0:
             return json.dumps({"tokens_left": None,

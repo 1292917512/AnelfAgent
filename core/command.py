@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from core.async_helper import dual_mode
 from core.log import log
+from core.shell_env import shell_env_defaults
 
 # 版本信息输出的最大长度（超出截断并追加省略号）
 _VERSION_OUTPUT_MAX_LEN = 50
@@ -107,12 +108,8 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
             env.update(env_vars)
         # 环境变量卫生：NO_COLOR/pager/UTF-8 locale 兜底（用户显式值优先，
         # 防 ANSI 色码混入输出与 pager 在管道下挂起——对齐 codex unified_exec）
-        try:
-            from entities.filesystem.shell_env import shell_env_defaults
-            for key, value in shell_env_defaults().items():
-                env.setdefault(key, value)
-        except ImportError:
-            pass  # shell_env 不可用时降级为纯 os.environ 语义
+        for key, value in shell_env_defaults().items():
+            env.setdefault(key, value)
 
         # 自动判断shell模式
         use_shell = isinstance(command, str) if shell is None else shell

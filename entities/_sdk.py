@@ -300,6 +300,20 @@ def get_background_registry() -> Any:
         return None
 
 
+def get_mind() -> Any:
+    """获取当前思维核心实例（延迟导入 agent.runtime，未初始化返回 None）。
+
+    供 entities 层工具只读查询思维侧状态（上下文窗口/用量等）；
+    返回值是 Mind 实例，调用方自行 getattr 防御属性差异。
+    """
+    try:
+        from agent.runtime.singleton import get_runtime
+        rt = get_runtime()
+        return rt.mind if rt is not None else None
+    except Exception:
+        return None
+
+
 def push_notify(
     content: str,
     source: str,

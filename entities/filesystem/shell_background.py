@@ -60,7 +60,7 @@ def launch_background(command: str, cwd: str, workspace: str,
         # 独立进程组：AI 终止时整组击杀，防 shell 孙进程泄漏（对齐前台 run_command）
         popen_kwargs["start_new_session"] = True
     # 环境变量卫生：NO_COLOR/pager/locale 等（用户环境值优先，见 shell_env）
-    from entities.filesystem.shell_env import shell_env_defaults
+    from core.shell_env import shell_env_defaults
     env = {**shell_env_defaults(), **os.environ}
     try:
         out_fp = open(output_file, "w", encoding="utf-8", errors="replace")

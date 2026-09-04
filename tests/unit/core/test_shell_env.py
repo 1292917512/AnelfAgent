@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from core.command import run_command
-from entities.filesystem.shell_env import shell_env_defaults
+from core.shell_env import shell_env_defaults
 
 
 class TestShellEnvDefaults:
