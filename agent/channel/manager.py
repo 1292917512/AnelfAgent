@@ -6,13 +6,76 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Optional
+import importlib
+import json
+from pathlib import Path
+from typing import Any, Dict, Optional, Type
 
 from core.entity import BaseEntity, EntityType
 from core.log import log
 from core.tags import strip_message_meta_tags
 
 from .base import BaseChannel, ChannelStatus
+
+
+def _channels_dir() -> Path:
+    """频道目录（基于项目根的绝对路径，不依赖进程 CWD）。"""
+    from core.path import project_root
+    return Path(project_root()) / "channels"
+
+
+def list_configured_channels() -> Dict[str, bool]:
+    """扫描 channels/ 下所有频道目录，返回 {channel_id: enabled}（含未注册频道）。"""
+    result: Dict[str, bool] = {}
+    root = _channels_dir()
+    if not root.is_dir():
+        return result
+    for item in sorted(root.iterdir()):
+        if not item.is_dir() or item.name.startswith("_"):
+            continue
+        if not (item / "adapter.py").exists():
+            continue
+        enabled = False
+        cfg_file = item / "channel_config.json"
+        if cfg_file.exists():
+            try:
+                data = json.loads(cfg_file.read_text("utf-8"))
+                if isinstance(data, dict):
+                    enabled = bool(data.get("enabled", False))
+            except (json.JSONDecodeError, OSError):
+                log(f"频道配置读取失败: {cfg_file}", "DEBUG", tag="通道")
+        result[item.name] = enabled
+    return result
+
+
+def set_channel_enabled(channel_id: str, enabled: bool) -> bool:
+    """持久化频道启用状态到 channel_config.json，并同步已注册频道的内存配置。
+
+    仅编辑 enabled 字段，保留文件中的其余键与格式；配置文件不存在时返回 False。
+    """
+    cfg_file = _channels_dir() / channel_id / "channel_config.json"
+    if not cfg_file.exists():
+        return False
+    data: Dict[str, Any] = {}
+    try:
+        raw = json.loads(cfg_file.read_text("utf-8"))
+        if isinstance(raw, dict):
+            data = raw
+    except (json.JSONDecodeError, OSError):
+        log(f"频道配置读取失败，将重建 enabled 字段: {cfg_file}", "DEBUG", tag="通道")
+    data["enabled"] = bool(enabled)
+    try:
+        cfg_file.write_bytes(json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"))
+    except OSError as exc:
+        log(f"频道启用状态落盘失败: {channel_id} -> {exc}", "WARNING", tag="通道")
+        return False
+    channel = get_channel_manager().get(channel_id)
+    if channel is not None:
+        try:
+            channel.config.enabled = enabled
+        except Exception as exc:
+            log(f"频道内存配置同步失败: {channel_id} -> {exc}", "DEBUG", tag="通道")
+    return True
 
 
 class ChannelManager(BaseEntity):
@@ -147,6 +210,44 @@ class ChannelManager(BaseEntity):
         except Exception as exc:
             log(f"频道停止失败: {channel_id} -> {exc}", "ERROR", tag="通道")
             return False
+
+    async def activate_channel(self, channel_id: str) -> bool:
+        """动态加载并启动一个未注册的频道（启动期因 enabled=false 被跳过的频道）。
+
+        已注册时退化为 start_channel；目录/模块/频道类缺失或启动失败返回 False。
+        """
+        registered = self._channels.get(channel_id)
+        if registered is not None:
+            return await self.start_channel(channel_id)
+
+        channel_dir = _channels_dir() / channel_id
+        if not (channel_dir / "adapter.py").exists():
+            log(f"频道激活失败，目录或 adapter.py 不存在: {channel_id}", "WARNING", tag="通道")
+            return False
+        try:
+            mod = importlib.import_module(f"channels.{channel_id}.adapter")
+        except Exception as exc:
+            log(f"频道模块加载失败: {channel_id} - {exc}", "ERROR", tag="通道")
+            return False
+
+        channel_cls: Optional[Type[BaseChannel]] = getattr(mod, "CHANNEL_CLASS", None)
+        if channel_cls is None:
+            for attr_name in dir(mod):
+                attr = getattr(mod, attr_name)
+                if isinstance(attr, type) and issubclass(attr, BaseChannel) and attr is not BaseChannel:
+                    channel_cls = attr
+                    break
+        if channel_cls is None:
+            log(f"频道类未找到: {channel_id}", "ERROR", tag="通道")
+            return False
+
+        try:
+            # 配置在 BaseChannel.__init__ 中自动加载（channels/<id>/channel_config.json）
+            self.register(channel_cls())
+        except Exception as exc:
+            log(f"频道实例化失败: {channel_id} - {exc}", "ERROR", tag="通道")
+            return False
+        return await self.start_channel(channel_id)
 
     # ------------------------------------------------------------------
     # 入站分发（平台 → AgentApp）

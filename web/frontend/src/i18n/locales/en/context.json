@@ -39,7 +39,10 @@
     "staticEstimate": "Static Estimate",
     "peak": "Peak",
     "inactive": "Inactive with entity",
-    "lastCollect": "Last collect: {{scope}} · {{time}}"
+    "lastCollect": "Last collect: {{scope}} · {{time}}",
+    "injecting": "Injecting",
+    "notInjecting": "Idle",
+    "injectedAt": "Last injected"
   },
   "stats": {
     "totalTokens": "Est. Tokens",

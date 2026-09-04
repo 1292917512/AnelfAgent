@@ -1,11 +1,10 @@
-"""纯文本回复的自动路由（兜底投递）。
+"""轮末保底投递：循环内未经输出工具送达的尾部文本，在轮结束时投递一次。
 
-对齐 hermes-agent：对当前用户的最终回复 = 无工具时的 assistant 正文，
-由运行时投递一次后结束本轮。
+纯文本在 think_loop 内只是独白（不终局、不中途投递）；本模块提供轮末统一
+投递的出口与投递前过滤（沉默标记 / 伪造工具调用 / 上下文复述不投递）。
 
-路由规则：纯文本终态无条件投递回来源会话（同一私聊 / 同一群 / 同一子会话）；
+路由规则：未送达文本无条件投递回来源会话（同一私聊 / 同一群 / 同一子会话）；
 其他会话由各自的 REPLY 周期处理，跨会话发送走 switch_session / send_message 工具。
-本模块只处理未指定目标的纯文本终态。
 """
 
 from __future__ import annotations
@@ -67,7 +66,7 @@ def should_suppress(text: str) -> bool:
 
 
 def looks_like_fake_tool_call(text: str) -> bool:
-    """检测伪造工具调用/执行记录的文本（不投递给用户，由调用方纠正）。"""
+    """检测伪造工具调用/执行记录的文本（不投递给用户）。"""
     if not text:
         return False
     return (
@@ -92,51 +91,11 @@ _CONTEXT_LEAK_SCAN_CHARS = 300
 
 
 def looks_like_context_leak(text: str) -> bool:
-    """检测回复正文是否复述了内部注入的上下文块（不投递，由调用方纠正）。"""
+    """检测回复正文是否复述了内部注入的上下文块（不投递）。"""
     if not text:
         return False
     head = text[:_CONTEXT_LEAK_SCAN_CHARS]
     return any(marker in head for marker in _CONTEXT_LEAK_MARKERS)
-
-
-# 前言（过程话术）检测：承诺即将执行动作但无实质结论的过渡文本。
-# 这类文本一旦按"纯文本终态"投递就会"只说不做"，由调用方拦截并纠正。
-_PREAMBLE_CN_RE = re.compile(
-    r"^(?:(?:好的?|OK|嗯+|收到|明白|没问题|稍等(?:一下|片刻)?|等我一下)[，,。！!~～\s]*)?"
-    r"(?:让?我|咱)(?:来|先|现在|马上|立即|就|去|这就|帮你|为你|给你)*\s*"
-    r"(?:看一?看|查一?查|查一下|看一下|找一?找|找一下|搜索|搜一?搜|试一?试|尝试|"
-    r"处理|分析|检查|确认|获取|打开|读取?|运行|执行|验证|研究|了解|调查|整理|统计|翻一?翻)"
-)
-_PREAMBLE_EN_RE = re.compile(
-    r"^(?:(?:sure|okay|ok|alright|got it)[,.!]?\s*)?"
-    r"(?:let me|i'll|i will|i'm going to|i am going to|allow me to)\s+"
-    r"(?:check|look|search|fetch|find|try|run|read|open|verify|investigate|"
-    r"analyze|analyse|take a look|gather|review)",
-    re.IGNORECASE,
-)
-# 前言通常短小；长文本即使以承诺式开头也往往自带结论，不误拦
-_PREAMBLE_MAX_LEN = 200
-
-
-def looks_like_preamble(text: str) -> bool:
-    """检测"前言/过程话术"：承诺即将执行动作但没有任何实质结论的过渡文本。"""
-    if not text:
-        return False
-    stripped = text.strip()
-    if not stripped or len(stripped) > _PREAMBLE_MAX_LEN:
-        return False
-    return bool(_PREAMBLE_CN_RE.match(stripped) or _PREAMBLE_EN_RE.match(stripped))
-
-
-# 输出工具成功后的短确认文本（"已发送"类）：无信息增量，丢弃防重复出站
-_SHORT_ACK_MAX_LEN = 40
-
-
-def is_short_ack(text: str) -> bool:
-    """判断纯文本是否为无信息增量的短确认（输出工具成功后的自言回执）。"""
-    if not text:
-        return True
-    return len(text.strip()) < _SHORT_ACK_MAX_LEN
 
 
 @dataclass

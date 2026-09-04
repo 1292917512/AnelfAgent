@@ -66,11 +66,22 @@ export function ContextProvidersPanel() {
                   <span
                     className={cn(
                       "w-1.5 h-1.5 rounded-full flex-shrink-0",
-                      p.ready ? "bg-ok" : "bg-warn animate-pulse",
+                      p.injecting ? "bg-ok" : p.ready ? "bg-warn" : "bg-warn animate-pulse",
                     )}
                   />
                   <span className="text-[11px] font-medium text-foreground truncate flex-1">
                     {p.name}
+                  </span>
+                  {/* 注入状态徽标：未注入（模式关闭/无内容）时弱化展示 */}
+                  <span
+                    className={cn(
+                      "text-[9px] px-1 py-px rounded flex-shrink-0",
+                      p.injecting ? "bg-ok-subtle text-ok" : "bg-border/40 text-muted",
+                    )}
+                  >
+                    {p.injecting
+                      ? t("contextProviders.injecting")
+                      : t("contextProviders.notInjecting")}
                   </span>
                   <span className="text-[10px] font-mono text-muted flex-shrink-0">
                     {p.tokens}t · {p.cost_ms.toFixed(0)}ms

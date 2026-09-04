@@ -102,7 +102,7 @@ def channel_tool(
 _CHANNEL_TOOL_CONFIGS = {
     "security/core": {
         "channel_tools_allow_sensitive": {
-            "description": "是否向 AI 暴露敏感频道操作（踢人/退群/全体禁言/审批等）",
+            "description": "是否向 AI 暴露敏感频道操作（踢人/退群/全体禁言/审批/频道启停等）",
             "default": True,
         },
     },

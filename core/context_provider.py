@@ -478,6 +478,9 @@ class ContextProviderRegistry:
                 "fetched_at": 0.0,
                 "last_error": cls._last_errors.get(meta.name, ""),
                 "call_count": cls._call_counts.get(meta.name, 0),
+                # 最近一次收集中是否实际注入了内容（False=已注册但未注入，如直播模式关闭）
+                "injecting": False,
+                "injected_at": 0.0,
             })
 
         # 用最近一次 collect 的 metrics 覆盖实际值
@@ -491,6 +494,9 @@ class ContextProviderRegistry:
                 pm["cost_ms"] = m.cost_ms
                 pm["ready"] = m.ready
                 pm["fetched_at"] = m.fetched_at
+                # metrics 仅在实际产出内容时登记（provide 返回空/None 不在其中）
+                pm["injecting"] = True
+                pm["injected_at"] = m.fetched_at
 
         return {
             "total_budget": total_budget,

@@ -39,7 +39,10 @@
     "staticEstimate": "静态预估",
     "peak": "历史峰值",
     "inactive": "已随实体停用",
-    "lastCollect": "最近一次收集：{{scope}} · {{time}}"
+    "lastCollect": "最近一次收集：{{scope}} · {{time}}",
+    "injecting": "注入中",
+    "notInjecting": "未注入",
+    "injectedAt": "最近注入"
   },
   "stats": {
     "totalTokens": "估算 Tokens",

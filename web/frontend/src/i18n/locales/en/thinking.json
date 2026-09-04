@@ -69,7 +69,9 @@
     "title": "Context Injection",
     "budget": "Token Budget",
     "peak": "Peak",
-    "empty": "No context providers"
+    "empty": "No context providers",
+    "injecting": "Injecting",
+    "notInjecting": "Idle"
   },
   "snapshot": {
     "title": "Context Snapshot",

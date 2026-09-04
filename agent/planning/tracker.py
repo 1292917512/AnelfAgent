@@ -6,7 +6,7 @@ updateProgressFromMessage）：进度由程序从执行流自动推断，AI 不�
 
 本模块是 plan 状态机与事件发射的**唯一入口**，消费者：
 - ``agent/planning/tools.py``：present_plan / update_goal 工具
-- ``agent/mind/tools/think_loop.py``：每轮自动推进 + 会话结束收敛 + 纯文本守卫
+- ``agent/mind/tools/think_loop.py``：每轮自动推进 + 会话结束收敛
 - ``web/routers/chat.py``：cancel-plan 路由
 
 三层进度机制：
@@ -15,10 +15,6 @@ updateProgressFromMessage）：进度由程序从执行流自动推断，AI 不�
 3. ``finalize_plan``：think_loop 全退出路径的唯一收敛入口（诚实语义：
    正常结束 in_progress → completed；中断/取消 in_progress → skipped；
    pending 一律 → skipped，不假装完成）
-
-守卫：``guard_feedback_for_text_only`` —— AI 有未完成 plan 却输出纯文本
-（无工具调用）时，think_loop 在"无工具正文 = 最终回复"终态前调用本函数
-注入提醒，防止"计划公告了但一步没做就结束"。
 """
 
 from __future__ import annotations
@@ -409,46 +405,6 @@ async def cancel_plan(scope: str, plan_id: str, reason: str = "用户取消") ->
         return True
     except Exception:
         return False
-
-
-# ------------------------------------------------------------------
-# 纯文本守卫
-# ------------------------------------------------------------------
-
-_PROMPT_PLAN_NOT_EXECUTED = (
-    "[系统提示] 检测到你有一个正在进行中的计划，但尚未执行任何步骤：\n"
-    "- 计划：{goal} (plan_id={plan_id})\n"
-    "- 当前步骤：步骤 {step_no}: {step_content}\n\n"
-    "你刚才输出的是纯文本（无工具调用），系统会把它当作最终回复并结束本轮——"
-    "这将导致计划被放弃。\n"
-    "**请立即调用执行当前步骤所需的工具**（不要只输出文字说明）；"
-    "若任务确实已完成，请调用 end_reply 明确结束。"
-)
-
-
-async def guard_feedback_for_text_only(scope: str) -> str:
-    """当前 scope 有未完成 plan 时返回守卫提醒文本；无则返回空串。
-
-    think_loop 在"无工具正文 = 最终回复"终态前调用，防止
-    "计划公告了但一步没做就结束"。
-    """
-    entry, goal = await _find_active_plan(scope)
-    if goal is None:
-        return ""
-    steps = goal.get("steps", [])
-    current = next(
-        (s for s in steps if s.get("status") == "in_progress"), None,
-    ) or next(
-        (s for s in steps if s.get("status") == "pending"), None,
-    )
-    if current is None:
-        return ""
-    return _PROMPT_PLAN_NOT_EXECUTED.format(
-        goal=goal.get("title", ""),
-        plan_id=goal.get("goal_id", ""),
-        step_no=current.get("index", 0) + 1,
-        step_content=current.get("content", ""),
-    )
 
 
 async def find_goal_by_id(

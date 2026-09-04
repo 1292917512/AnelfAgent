@@ -19,6 +19,10 @@ export interface ProviderMetric {
   fetched_at: number;
   last_error: string;
   call_count: number;
+  /** 最近一次收集中是否实际注入了内容（false = 已注册但未注入，如直播模式关闭） */
+  injecting?: boolean;
+  /** 最近一次实际注入时间（epoch 秒，0=未注入过） */
+  injected_at?: number;
 }
 
 export interface ContextProviderStatus {

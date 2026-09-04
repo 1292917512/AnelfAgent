@@ -5,6 +5,12 @@
 线程安全），完整清理由 launch.py 关停流程执行，进程以 42 退出后由脚本重新拉起。
 若进程并非由启动脚本拉起，则等同于普通关闭。
 
+AI 工具发起的重启走"重启交接"闭环：调用时把目标会话 scope / 回复路由 /
+AI 留言落盘（<data_dir>/restart_handoff.json），随后等待思维空闲再关停
+（当前回复轮自然收尾，不产生"被意外中断"残留检查点）；进程重新拉起后由
+tools.py 的 RestartHandoffWatcher 消费交接，向原会话推送"重启成功 + 留言"
+一次性通知并唤醒思维。Web/API 路径不等待、不写交接，行为与历史一致。
+
 AI 工具（tools.py，同步工作线程）与 HTTP 路由（router.py，主事件循环）
 统一走本模块，杜绝平行实现。
 """
@@ -12,6 +18,7 @@ AI 工具（tools.py，同步工作线程）与 HTTP 路由（router.py，主事
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import threading
 import time
@@ -22,6 +29,8 @@ from typing import Any, Dict, List, Optional
 from core.command import run_command
 from core.lifecycle import Lifecycle
 from core.log import log
+from core.path import data_dir
+from entities._sdk import is_mind_busy
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 FRONTEND_DIR = PROJECT_ROOT / "web" / "frontend"
@@ -32,6 +41,14 @@ _SHUTDOWN_DELAY = 1.0
 _BUILD_TIMEOUT = 300
 # 构建日志仅保留尾部，避免状态接口返回过大
 _LOG_TAIL_LIMIT = 4000
+# 等待思维空闲的轮询间隔 / 上限（超时强制关停，防死等）
+_IDLE_POLL_INTERVAL = 0.5
+_IDLE_WAIT_CAP = 120.0
+# 交接留言长度上限（对齐推送通道单条内容上限）
+_HANDOFF_MESSAGE_LIMIT = 2000
+# 交接有效期限：正常重启秒级完成即被消费，超时残留的一律视为陈旧，
+# 只清理不投递（防止进程被 kill 后数小时才手动启动时投递过期留言）
+_HANDOFF_TTL_SECONDS = 3600.0
 
 _build_state: Dict[str, Any] = {"building": False, "last": None}
 _build_lock = threading.Lock()
@@ -68,15 +85,103 @@ def schedule_restart(delay: float = _SHUTDOWN_DELAY) -> None:
     threading.Timer(delay, Lifecycle.request_shutdown, args=(True,)).start()
 
 
-def request_restart(source: str = "api") -> Dict[str, Any]:
+def _wait_idle_then_shutdown() -> None:
+    """等待思维空闲（无进行中回复/反思）后触发优雅关闭，超上限强制关停。"""
+    deadline = time.monotonic() + _IDLE_WAIT_CAP
+    while is_mind_busy() and time.monotonic() < deadline:
+        time.sleep(_IDLE_POLL_INTERVAL)
+    Lifecycle.request_shutdown(True)
+
+
+def schedule_restart_when_idle(delay: float = _SHUTDOWN_DELAY) -> None:
+    """宽限 delay 后等思维空闲再触发优雅关闭（任意线程可调）。
+
+    AI 工具发起的重启走此路径：当前回复轮自然收尾（检查点正常清除，
+    重启后不会产生"被意外中断"元消息），随后才进入关停流程。
+    """
+    threading.Timer(delay, _wait_idle_then_shutdown).start()
+
+
+# ── 重启交接 ─────────────────────────────────────────────────────────
+
+
+def _handoff_path() -> Path:
+    """重启交接状态文件路径（随数据目录配置搬迁）。"""
+    return Path(data_dir()) / "restart_handoff.json"
+
+
+def write_handoff(scope: str, channel: str, message: str, source: str) -> None:
+    """持久化重启交接（重启后由原会话接收"重启成功"通知与 AI 留言）。
+
+    写失败仅记日志（fail-open）：交接丢失只退化为无通知重启，不阻断流程。
+    """
+    payload = {
+        "scope": scope,
+        "channel": channel,
+        "message": message[:_HANDOFF_MESSAGE_LIMIT],
+        "source": source,
+        "ts": time.time(),
+    }
+    try:
+        _handoff_path().write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        log(f"重启交接写入失败（已忽略）: {exc}", "WARNING", tag="运维")
+
+
+def consume_handoff() -> Optional[Dict[str, Any]]:
+    """读取并删除重启交接（不存在/损坏/陈旧返回 None；保证只消费一次）。
+
+    文件先删后判：无论内容是否可用都只处理一次，绝不在后续启动重复投递。
+    超过 _HANDOFF_TTL_SECONDS 的残留交接视为陈旧，仅清理不返回。
+    """
+    path = _handoff_path()
+    data: Any = None
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log(f"重启交接读取失败（按无交接处理）: {exc}", "DEBUG", tag="运维")
+    try:
+        path.unlink(missing_ok=True)
+    except Exception as exc:
+        log(f"重启交接清理失败（已忽略）: {exc}", "DEBUG", tag="运维")
+    if not isinstance(data, dict):
+        return None
+    try:
+        age = time.time() - float(data.get("ts") or 0)
+    except (TypeError, ValueError):
+        age = _HANDOFF_TTL_SECONDS + 1
+    if age > _HANDOFF_TTL_SECONDS:
+        log(f"重启交接已陈旧（{age:.0f}s 前），仅清理不投递", "WARNING", tag="运维")
+        return None
+    return data
+
+
+def request_restart(
+    source: str = "api",
+    delay: float = _SHUTDOWN_DELAY,
+    wait_idle: bool = False,
+    handoff: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """请求优雅重启（由外层启动脚本按退出码 42 重新拉起）。
 
-    重复请求去重（多标签页/多渠道重复触发只生效一次）；
+    重复请求去重（多标签页/多渠道重复触发只生效一次，已排定时允许用
+    handoff 补充/更新交接留言）；
     进程非守护脚本拉起时拒绝，避免"重启变关机"。
+
+    Args:
+        wait_idle: True 时等思维空闲再关停（AI 工具路径，让当前回复轮收尾）
+        handoff: 重启交接（scope/channel/message），仅在重启确认排定后落盘，
+            重启完成重新拉起后由原会话消费
     """
     global _restart_pending
     with _restart_lock:
         if _restart_pending:
+            # 已排定：仅在新留言非空时更新交接，避免空留言覆盖已写内容
+            if handoff and handoff.get("message", "").strip():
+                write_handoff(handoff.get("scope", ""), handoff.get("channel", ""),
+                              handoff.get("message", ""), source)
             return {"ok": True, "restarting": True, "already_pending": True}
         if not _is_supervised():
             log(
@@ -90,8 +195,14 @@ def request_restart(source: str = "api") -> Dict[str, Any]:
                            "请改用 restart.sh 重启，或先通过 start.sh 启动后再使用本功能",
             }
         _restart_pending = True
+    if handoff:
+        write_handoff(handoff.get("scope", ""), handoff.get("channel", ""),
+                      handoff.get("message", ""), source)
     log(f"收到重启请求（来源 {source}），即将优雅关闭并重启", tag="运维")
-    schedule_restart()
+    if wait_idle:
+        schedule_restart_when_idle(delay)
+    else:
+        schedule_restart(delay)
     return {"ok": True, "restarting": True}
 
 
@@ -184,7 +295,10 @@ async def _run_build() -> None:
         log(f"前端构建异常: {exc}", "ERROR", tag="运维")
 
 
-async def build_and_restart() -> Dict[str, Any]:
+async def build_and_restart(
+    wait_idle: bool = False,
+    handoff: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """构建前端，成功后调度重启；构建失败则取消重启并返回错误。"""
     error = try_begin_build()
     if error:
@@ -192,7 +306,8 @@ async def build_and_restart() -> Dict[str, Any]:
     await _run_build()
     last = _build_state["last"]
     if last and last["ok"]:
-        restart = request_restart(source="build_and_restart")
+        restart = request_restart(
+            source="build_and_restart", wait_idle=wait_idle, handoff=handoff)
         if not restart["ok"]:
             return {"ok": False, "error": restart["error"],
                     "message": f"前端构建成功，但{restart['message']}", "build": last}
@@ -201,9 +316,12 @@ async def build_and_restart() -> Dict[str, Any]:
     return {"ok": False, "error": "build_failed", "build": last}
 
 
-def build_and_restart_blocking() -> Dict[str, Any]:
+def build_and_restart_blocking(
+    wait_idle: bool = False,
+    handoff: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """build_and_restart 的同步包装（供工具工作线程使用，私有循环内执行子进程）。"""
-    return asyncio.run(build_and_restart())
+    return asyncio.run(build_and_restart(wait_idle=wait_idle, handoff=handoff))
 
 
 _background_tasks: set[asyncio.Task[Dict[str, Any]]] = set()

@@ -94,26 +94,27 @@ class AdapterService:
     async def toggle_adapter(self, key: str) -> None:
         """启动或停止指定频道（挂起直到完成或超时）。
 
-        对于未注册的频道（config 中 enabled=false），先动态实例化并注册，
-        再启动。这样前端点"激活"时可以启用一个之前未加载的频道。
+        启停意图持久化到 channel_config.json 的 enabled 字段（重启后保持）；
+        未注册的频道（启动期 enabled=false 被跳过）由
+        ChannelManager.activate_channel 动态实例化、注册并启动。
         """
         from agent.channel import get_channel_manager
+        from agent.channel.manager import set_channel_enabled
         mgr = get_channel_manager()
         channel = mgr.get(key)
 
         if channel and channel.status.value == "running":
             await self._with_timeout(mgr.stop_channel(key), 10, f"停止频道超时: {key}")
-            self._set_channel_enabled(key, False)
+            set_channel_enabled(key, False)
             return
 
+        set_channel_enabled(key, True)
         if channel:
             await self._with_timeout(mgr.start_channel(key), 15, f"启动频道超时: {key}")
             return
 
         # 频道未注册：动态实例化、注册、启动
-        await self._with_timeout(
-            self._activate_unregistered_channel(key, mgr), 20, f"激活频道超时: {key}",
-        )
+        await self._with_timeout(mgr.activate_channel(key), 20, f"激活频道超时: {key}")
 
     @staticmethod
     async def _with_timeout(coro: Any, timeout: float, message: str) -> Any:
@@ -122,53 +123,6 @@ class AdapterService:
             return await asyncio.wait_for(coro, timeout=timeout)
         except asyncio.TimeoutError:
             raise RuntimeError(message) from None
-
-    @staticmethod
-    async def _activate_unregistered_channel(key: str, mgr: Any) -> None:
-        """动态加载并启动一个未注册的频道。"""
-        import importlib
-
-        from core.log import log
-
-        channel_dir = _channels_dir() / key
-        if not channel_dir.is_dir():
-            log(f"频道目录不存在: {channel_dir}", "WARNING")
-            return
-
-        # 更新 channel_config.json 设为 enabled
-        cfg_file = channel_dir / "channel_config.json"
-        cfg = _read_channel_config(cfg_file)
-        cfg["enabled"] = True
-        _write_channel_config(cfg_file, cfg)
-
-        # 动态导入频道模块
-        module_path = f"channels.{key}.adapter"
-        try:
-            mod = importlib.import_module(module_path)
-        except Exception as exc:
-            log(f"频道模块加载失败: {key} - {exc}", "ERROR")
-            return
-
-        from agent.channel.base import BaseChannel
-        channel_cls = getattr(mod, "CHANNEL_CLASS", None)
-        if channel_cls is None:
-            for attr_name in dir(mod):
-                attr = getattr(mod, attr_name)
-                if isinstance(attr, type) and issubclass(attr, BaseChannel) and attr is not BaseChannel:
-                    channel_cls = attr
-                    break
-        if channel_cls is None:
-            log(f"频道类未找到: {key}", "ERROR")
-            return
-
-        try:
-            # 配置在 BaseChannel.__init__ 中自动加载（channels/<id>/channel_config.json）
-            instance = channel_cls()
-            mgr.register(instance)
-            await mgr.start_channel(key)
-            log(f"频道动态启用: {key}")
-        except Exception as exc:
-            log(f"频道动态启用失败: {key} - {exc}", "ERROR")
 
     @staticmethod
     async def test_channel_health(key: str) -> Dict[str, Any]:
@@ -251,16 +205,6 @@ class AdapterService:
             return {"ready": True, "success": False, "error": f"invalid channel response: {exc}"}
         except Exception as exc:
             return {"ready": True, "success": False, "error": str(exc)}
-
-    @staticmethod
-    def _set_channel_enabled(key: str, enabled: bool) -> None:
-        """Update enabled flag in channel_config.json."""
-        cfg_file = _channels_dir() / key / "channel_config.json"
-        if not cfg_file.exists():
-            return
-        cfg = _read_channel_config(cfg_file)
-        cfg["enabled"] = enabled
-        _write_channel_config(cfg_file, cfg)
 
     @staticmethod
     def get_channel_webui_url(channel_id: str) -> Optional[str]:

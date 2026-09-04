@@ -234,6 +234,7 @@ def create_bootstrap() -> FlowMachine:
         各工具模块 import 时完成 deferred 注册，本节点只按组弹出激活；
         agent.task.tools 挂在 planning 组，须在 planning 激活前 import。
         """
+        import agent.channel.manage_tools  # noqa: F401
         import agent.channel.output_tools  # noqa: F401
         import agent.memory.graph.tools  # noqa: F401
         import agent.memory.tools  # noqa: F401

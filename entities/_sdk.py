@@ -259,6 +259,35 @@ def tool_group_rounds_left(group: str) -> int:
         return 0
 
 
+def get_current_channel() -> str:
+    """获取当前会话频道 adapter_key（未绑定时返回空串，延迟导入 agent.channel）。
+
+    供 entities 层工具记录回复路由（如重启交接后把通知路由回原频道）。
+    """
+    try:
+        from agent.channel.context import get_current_channel as _get
+        return _get() or ""
+    except Exception:
+        return ""
+
+
+def is_mind_busy() -> bool:
+    """思维是否有进行中的回复/反思（延迟导入 agent.runtime）。
+
+    供 entities 层在破坏性操作（如重启）前等待思维空闲；运行时未就绪
+    或查询失败按不忙碌处理（fail-open，不阻塞操作流程）。
+    """
+    try:
+        from agent.runtime.singleton import get_runtime
+        rt = get_runtime()
+        if rt is None:
+            return False
+        mind = rt.mind
+        return bool(mind.is_reply or mind.is_reflecting)
+    except Exception:
+        return False
+
+
 def get_background_registry() -> Any:
     """获取后台任务注册表（延迟导入 agent.runtime，未初始化返回 None）。
 

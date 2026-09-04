@@ -341,6 +341,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 |------|------|------|
 | cognee 投影内容指纹跳过 | `store/_shared.py::projection_content_hash` + `cognee_queue.enqueue_sync` + coordinator `_process_graph_upserts` | 防记忆写入风暴打爆磁盘写盘配额（2026-08 实证：24h 211 次无效 update 逐条重跑 cognify，Kùzu checkpoint 5 分钟刷 2.1GB 撞爆 macOS 单日配额致进程卡死）。`cognee_entry_map` 新增 `content_hash` 列（投影稳定字段 type/content/source/metadata/tags 的 canonical sha256 前 16 位，**刻意不含 importance**——召回强化 +0.02/松弛回归不再触发重投影；投影文档的 Importance 行陈旧至下次真实变更，可接受）。三层跳过：① memory upsert 入队时指纹与上次成功同步一致 → 作废残留 pending/failed 条目后不入队；在途 processing 批次持有更新负载时不跳过（防"改 B→回退 A"竞态：在途批次完成会覆写映射，回退必须重新排队）；`enqueue_backfill` 走 force=True 保持显式修复语义，rebuild 前本就 reset 清映射。② graph_node 载荷仅是快照触发器，消费时经 `graph/store.render_node_projection` 渲染邻域文档 + **结构指纹**（节点身份 + 各边谓词/方向/对端，**不含强度与证据文本**——重复提及的强化/证据刷新不再触发整篇重投影，仅邻域结构真实变化才重跑，文档中的强度/证据随下次真实变更刷新）。③ 源头：`dedup.apply_update` 合并内容与标签均无变化时直接返回不落库（version/审计/cognee 全不动，对齐 update_memory 工具既有短路）。既有映射迁移后 hash 为空串永不匹配，首次真实变更重投影一次自愈 |
 | cognee 写盘熔断 | `cognee/write_breaker.py`（WriteBreaker）+ coordinator `_projection_allowed` | 进程自身磁盘写入速率超阈值时暂停投影认领与自动压缩（两者都是写盘大户），冷却到期重评、仍超限续停，自调节。`WriteBreaker` 按滑动窗口采样 `psutil.Process().io_counters().write_bytes`（cognee/Kùzu 均在本进程内，口径完整；平台不支持时恒放行 fail-open），速率口径 = 字节增量/时长，短时风暴无需等满窗口；采样点在 worker 轮次 + add/cognify 管线边界（防长批次内风暴被整批时长平均掉）。配置随 cognee.json：`write_breaker_enabled`（默认 true）/`write_breaker_threshold_mb`（500）/`write_breaker_window_seconds`（300，即 500MB/5min）/`write_breaker_cooldown_seconds`（1800）；状态经 `CogneeSyncStatus.paused/paused_until/pause_reason` 暴露（cognee_status 工具与 /cognee/status 自动带出），心跳记忆状态行追加暂停提示；`run_in_idle_window` 用户显式作业（备份/迁移）不受熔断阻断 |
+| 重启交接闭环 | `entities/devops/service.py`（交接落盘 + wait_idle 重启）+ `entities/devops/tools.py`（RestartHandoffWatcher provider）+ `_sdk` 桥（`is_mind_busy`/`get_current_channel`） | AI 调 restart_app / build_and_restart / update_and_restart 可传 `message` 给重启后的自己留言；重启确认排定后交接（owner scope / 回复路由 adapter_key / 留言）落盘 `<data_dir>/restart_handoff.json`（拒绝时不写，防残留误触发；已排定重复调用仅在留言非空时更新），返回值指示 AI 立即 end_reply；`wait_idle=True` 路径等思维空闲（`is_mind_busy` 轮询 reply/reflect，120s 上限强制关停防死等）让当前回复轮自然收尾——检查点正常清除，重启后无"被意外中断"元消息。bootstrap 末尾 provider `on_start` 消费交接（**读即删文件只消费一次**；超 1h TTL 的陈旧残留仅清理不投递），延迟 5s 经 `push_notify` 向原会话推送"重启成功 + 留言"一次性通知（陈述式措辞显式标注一次性，固化对话历史一条 system 消息，水位机制防历史/轮内双份）并唤醒一轮思维；provider 仅借 on_start 生命周期做启动钩子，provide 恒 None 不注入 volatile 层。Web/API 重启路径不写交接、不等待，行为与历史一致 |
 
 #### 内部调用空闲超时与摘要专用模型（第七轮新增）
 
@@ -460,7 +461,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `agent/runtime/state_restore.py` | 启动状态恢复（工具覆盖/实体启停/自定义标签回放，纯 core 操作；services 同名方法委托于此） |
 | `agent/runtime/singleton.py` | AgentRuntime 全局单例（get_runtime Optional 读 / require_runtime 未就绪抛错；services._runtime 为其 web 侧门面） |
 | `entities/_sdk.py` | 工具注册 + LLM 桥接 |
-| `agent/channel/manager.py` | 频道管理（register / route） |
+| `agent/channel/manager.py` | 频道管理（register / route / activate_channel 动态加载未注册频道 / set_channel_enabled 启停意图落盘 / list_configured_channels 目录扫描） |
 | `agent/channel/tool_bridge.py` | 频道工具桥接（@channel_tool 扫描注册 / 通用能力路由 / 敏感门控 / 按频道接口开关 channel_tool_states） |
 | `agent/channel/context.py` | 当前会话频道 ContextVar（通用工具默认路由目标） |
 | `web/routers/config.py` | 心跳/任务 API + Mind 配置 API |
@@ -526,7 +527,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `model_control` | 模型控制 | `entities/model_control/tools.py` | core |
 | `ollama` | Ollama | `entities/model_control/tools.py` | — |
 | `logs` | 日志查询 | `entities/logs/tools.py` | — |
-| `channel_ops` | 频道操作 | `agent/channel/tool_bridge.py`（@channel_tool 动态） | capability/channel_id |
+| `channel_ops` | 频道操作 | `agent/channel/tool_bridge.py`（@channel_tool 动态）+ `agent/channel/manage_tools.py`（频道启停 start_channel/stop_channel，敏感门控 + risk=CRITICAL，启停意图落盘 channel_config.json 的 enabled） | capability/channel_id/core |
 | `entity` | 实体管理 | `entities/entity_query/tools.py` | always/core |
 | `mcp_manage` | MCP 管理 | `entities/mcp/bridge.py`（动态） | — |
 | `mcp:*` | MCP 服务 | 动态注册 | — |

@@ -11,7 +11,7 @@ import json
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Protocol, Set
 
@@ -83,28 +83,24 @@ class _ThinkRoundState:
     """think_loop 的回合可变状态（计数器/水位/预算，每轮更新）。"""
 
     iteration: int = 0
-    consecutive_fake_calls: int = 0
     consecutive_empty_calls: int = 0
     consecutive_tool_errors: int = 0
     consecutive_security_leaks: int = 0
     consecutive_overflow_compressions: int = 0
     reflect_text_rounds: int = 0
     end_reply_interceptions: int = 0
-    # 无工具正文守卫计数：有未完成 plan 时纯文本被拦截的次数（防死循环上限 2）
-    plan_text_guard_count: int = 0
-    # 前言守卫：承诺式过渡文本（"我来看看…"）被拦截的次数与暂存内容
-    # （防"只说不做"，上限 2；被拦的前言在终态投递时合并进最终回复，不丢表达）
-    preamble_guard_count: int = 0
-    preamble_parts: List[str] = field(default_factory=list)
+    # 独白计数：REPLY 模式连续纯文本（无工具调用）轮数，达到
+    # text_without_tool_limit 掐断本轮（纯文本非终局，独白不结束循环）
+    consecutive_text_rounds: int = 0
+    # 未送达文本：独白/附带正文暂存，轮末经统一投递点保底投递一次；
+    # 输出类工具成功送达后被取代清空
+    pending_text: str = ""
     max_output_recoveries: int = 0
     last_prompt_tokens: int = 0
     # 最近一次 LLM 调用的供应商侧缓存用量（context_usage 事件展示用）
     last_cache_read_tokens: int = 0
     last_cache_creation_tokens: int = 0
     last_cache_hit_rate: float = 0.0
-    # 上一轮是否仅为输出类工具（send_message 等）且已成功发送：
-    # 其后紧跟的纯文本不再代发，直接结束，避免重复出站
-    prev_round_outbound_only: bool = False
     # 后台任务等待：本轮回复累计预算（秒）
     wait_budget: float = 0.0
     # 新消息并入基线水位（快照内最大 ts_ns）
@@ -503,8 +499,8 @@ def _format_task_completions(
         lines.append(f"仍有 {len(running)} 个任务运行中：{_format_running_tasks(running)}")
     lines.append(
         "请根据结果继续处理："
-        "任务全程用工具推进；中途同步消息用 send_message（正文会结束本轮）；"
-        "全部完成后输出最终正文；无需回复或无需继续操作时 end_reply。"
+        "任务全程用工具推进；回复与中途同步一律 send_message（不结束本轮）；"
+        "无需回复或无需继续操作时 end_reply。"
     )
     return "\n".join(lines)
 
@@ -1022,7 +1018,6 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List["ToolCall"]
 # - present_plan 工具 → tracker.submit_plan（公告 + 首步 in_progress）
 # - 每轮工具批次后 → tracker.advance_plan_step（粗粒度兜底）
 # - finish_think → tracker.finalize_plan（收敛终态，诚实语义）
-# - 无工具正文终态前 → tracker.guard_feedback_for_text_only（守卫）
 # - cancel-plan 路由 → tracker.cancel_plan
 # ------------------------------------------------------------------
 

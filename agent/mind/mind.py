@@ -127,7 +127,7 @@ from entities._sdk import activate_group, deferred_tool
     group="thinking", tags=["always"], source="mind.core",
     description=(
         "结束本轮操作。任务已全部完成或无需继续时调用；参数留空即可（reason 仅内部日志，不发给用户）。"
-        "回复用户请在结束前用 send_message，或直接输出最终回复正文。"
+        "回复用户请在结束前调用 send_message。"
         "若同批或同轮存在失败工具，结束将不生效并反馈失败原因，修正后需重新调用。"
     ),
 )

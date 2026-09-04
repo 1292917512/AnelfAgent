@@ -69,7 +69,9 @@
     "title": "上下文注入",
     "budget": "Token 预算",
     "peak": "峰值",
-    "empty": "暂无上下文提供者"
+    "empty": "暂无上下文提供者",
+    "injecting": "注入中",
+    "notInjecting": "未注入"
   },
   "snapshot": {
     "title": "上下文快照",

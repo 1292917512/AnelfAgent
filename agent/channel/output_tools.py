@@ -257,21 +257,29 @@ async def execute_send_action(
 
 @deferred_tool(group="output", tags=["core"], source="channel.output")
 def list_channels() -> str:
-    """列出所有已连接的通信频道及其能力和状态。"""
+    """列出所有通信频道及其能力和状态（含已配置但未启用的频道）。"""
     try:
-        from .manager import get_channel_manager
+        from .manager import get_channel_manager, list_configured_channels
         cm = get_channel_manager()
         channels = cm.list_channels()
-        if not channels:
-            return json.dumps({"channels": [], "hint": "当前无已连接频道"}, ensure_ascii=False)
-        result = []
-        for ch in channels.values():
-            info = ch.get_status_info()
-            result.append(info)
+        result = [ch.get_status_info() for ch in channels.values()]
+        # 补充已配置但未注册（enabled=false 启动期被跳过）的频道，供 start_channel 发现
+        for cid, enabled in list_configured_channels().items():
+            if cid not in channels:
+                result.append({
+                    "key": cid,
+                    "name": cid,
+                    "status": "stopped",
+                    "enabled": enabled,
+                    "capabilities": [],
+                })
+        if not result:
+            return json.dumps({"channels": [], "hint": "当前无已配置频道"}, ensure_ascii=False)
         return json.dumps({
             "channels": result,
             "total": len(result),
-            "usage": "使用 send_message(channel_id, target_id, content) 发送消息",
+            "usage": "使用 send_message(channel_id, target_id, content) 发送消息；"
+                     "使用 start_channel / stop_channel 启停频道",
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="列出频道")

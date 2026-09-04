@@ -58,10 +58,24 @@ export function ProvidersTab() {
               p.active === false && "opacity-55",
             )}
           >
-            <StatusDot status={p.active === false ? "offline" : p.ready ? "ok" : "warn"} />
+            <StatusDot status={p.active === false ? "offline" : p.injecting ? "ok" : p.ready ? "warn" : "warn"} />
             <div className="flex-1 min-w-0">
               <span className="text-xs font-medium text-foreground">{p.name}</span>
               {p.group && <span className="ml-1.5 text-[10px] text-muted font-mono">{p.group}</span>}
+              {/* 注入状态徽标：区分"已注册未注入"（如直播模式关闭）与实际注入 */}
+              {p.active !== false && (
+                <span
+                  className={cn(
+                    "ml-1.5 text-[10px] px-1.5 py-0.5 rounded",
+                    p.injecting ? "bg-ok-subtle text-ok" : "bg-border/40 text-muted",
+                  )}
+                  title={p.injecting && (p.injected_at ?? 0) > 0
+                    ? `${t("providers.injectedAt")}: ${new Date((p.injected_at ?? 0) * 1000).toLocaleTimeString()}`
+                    : undefined}
+                >
+                  {p.injecting ? t("providers.injecting") : t("providers.notInjecting")}
+                </span>
+              )}
               {p.active === false && (
                 <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-border/40 text-muted">
                   {t("providers.inactive")}
