@@ -408,9 +408,11 @@ def create_bootstrap() -> FlowMachine:
 
     @machine.node(skip_on_error=True, depends_on=["init_channel_system"])
     async def register_channels():
-        """自动发现并注册所有已启用的频道。"""
+        """注册频道配置 schema（含旧配置迁移），并自动发现注册所有已启用的频道。"""
         from agent.channel import get_channel_manager
+        from agent.channel.config import register_channel_schemas
         from channels import discover_channels
+        register_channel_schemas()
         cm = get_channel_manager()
         for channel in discover_channels():
             cm.register(channel)

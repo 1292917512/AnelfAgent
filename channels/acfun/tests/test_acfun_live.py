@@ -621,23 +621,20 @@ class LiveToolHost(AcfunToolsMixin):
         self.channel = make_manager_channel(**cfg)
         self.live_manager = LiveSessionManager(self.channel)
         self.client = self.channel.client
-        self.saved: List[Dict[str, Any]] = []
 
     @property
     def config(self) -> Any:
         return self.channel.config
 
-    def save_config(self) -> bool:
-        self.saved.append(self.channel.config.__dict__.copy())
-        return True
-
     def persist_live_config(self, *, live_mode: Any = None, rooms: Any = None) -> None:
-        """与频道真实实现同形：改配置 + 记录落盘。"""
+        """直连频道真实实现（写统一配置；宿主替身无变更监听，手动同步内存态）。"""
+        from channels.acfun.adapter import AcfunChannel
+
+        AcfunChannel.persist_live_config(self, live_mode=live_mode, rooms=rooms)
         if live_mode is not None:
             self.channel.config.live_mode = live_mode
         if rooms is not None:
             self.channel.config.live_watch_rooms = ",".join(rooms)
-        self.save_config()
 
 
 class TestLiveTools:
@@ -646,13 +643,15 @@ class TestLiveTools:
         result = json.loads(await host.live_mode("true"))
         assert result["success"] is True and result["live_mode"] is True
         assert host.live_manager.mode_enabled is True
-        assert host.saved and host.saved[-1]["live_mode"] is True
+        from core.config import ConfigManager
+        assert ConfigManager.get("acfun_live_mode") is True
 
     async def test_live_watch_and_status(self):
         host = LiveToolHost()
         await host.live_watch("1001")
         assert host.live_manager.watched == ["1001"]
-        assert host.saved[-1]["live_watch_rooms"] == "1001"
+        from core.config import ConfigManager
+        assert ConfigManager.get("acfun_live_watch_rooms") == "1001"
         status = json.loads(await host.live_status())
         assert status["success"] is True
         assert status["watched"] == ["1001"]
@@ -677,10 +676,6 @@ class TestLiveRouter:
 
         from channels.acfun import adapter as adapter_mod
 
-        monkeypatch.setattr(
-            adapter_mod, "_channel_config_file", lambda: tmp_path / "channel_config.json",
-        )
-        (tmp_path / "channel_config.json").write_text('{"enabled": false}', encoding="utf-8")
         if channel is None:
             monkeypatch.setattr(
                 adapter_mod, "_get_acfun_channel",
@@ -702,8 +697,8 @@ class TestLiveRouter:
         client, _ = self._app(monkeypatch, tmp_path)
         body = client.post("/channels/acfun/live/mode", json={"enabled": True}).json()
         assert body["success"] is True and body["live_mode"] is True
-        cfg = json.loads((tmp_path / "channel_config.json").read_text(encoding="utf-8"))
-        assert cfg["live_mode"] is True
+        from core.config import ConfigManager
+        assert ConfigManager.get("acfun_live_mode") is True
 
     def test_mode_online_applies_and_persists(self, monkeypatch, tmp_path):
         channel = make_manager_channel()
@@ -768,27 +763,20 @@ class TestLiveRouter:
 class TestPersistLiveConfigShared:
     def test_channel_persist_writes_config(self, tmp_path, monkeypatch):
         from channels.acfun import adapter as adapter_mod
+        from core.config import ConfigManager
 
-        monkeypatch.setattr(
-            adapter_mod, "_channel_config_file", lambda: tmp_path / "channel_config.json",
-        )
-        (tmp_path / "channel_config.json").write_text('{"enabled": false}', encoding="utf-8")
         channel = adapter_mod.AcfunChannel()
-        channel._config_path = str(tmp_path / "channel_config.json")
         channel.persist_live_config(live_mode=True, rooms=["1001", "2002"])
-        cfg = json.loads((tmp_path / "channel_config.json").read_text(encoding="utf-8"))
-        assert cfg["live_mode"] is True
-        assert cfg["live_watch_rooms"] == "1001,2002"
+        assert ConfigManager.get("acfun_live_mode") is True
+        assert ConfigManager.get("acfun_live_watch_rooms") == "1001,2002"
 
     def test_offline_persist(self, tmp_path, monkeypatch):
         from channels.acfun import adapter as adapter_mod
+        from core.config import ConfigManager
 
-        monkeypatch.setattr(
-            adapter_mod, "_channel_config_file", lambda: tmp_path / "channel_config.json",
-        )
         adapter_mod._persist_live_config_offline(live_mode=True, rooms=["1001"])
-        cfg = json.loads((tmp_path / "channel_config.json").read_text(encoding="utf-8"))
-        assert cfg["live_mode"] is True and cfg["live_watch_rooms"] == "1001"
+        assert ConfigManager.get("acfun_live_mode") is True
+        assert ConfigManager.get("acfun_live_watch_rooms") == "1001"
 
 
 # ======================================================================
@@ -806,15 +794,16 @@ class TestConfigTools:
         assert "password" not in result["config"]  # 凭据不可见
 
     async def test_config_set_type_coercion(self):
+        from core.config import ConfigManager
+
         host = LiveToolHost()
         result = json.loads(await host.config_set("poll_interval_seconds", "30"))
         assert result["success"] is True and result["value"] == 30
-        assert host.config.poll_interval_seconds == 30
+        assert ConfigManager.get("acfun_poll_interval_seconds") == 30
         result = json.loads(await host.config_set("notify_like", "false"))
-        assert result["value"] is False and host.config.notify_like is False
+        assert result["value"] is False and ConfigManager.get("acfun_notify_like") is False
         result = json.loads(await host.config_set("user_whitelist", "1,2"))
-        assert result["value"] == "1,2" and host.config.user_whitelist == "1,2"
-        assert host.saved  # 已持久化
+        assert result["value"] == "1,2" and ConfigManager.get("acfun_user_whitelist") == "1,2"
 
     async def test_config_set_rejects_non_editable(self):
         host = LiveToolHost()

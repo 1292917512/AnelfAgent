@@ -1,12 +1,11 @@
 import { Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Power, RotateCcw, Settings2, Blocks, Wifi, WifiOff } from "lucide-react";
-import type { AdapterInfo, ConfigValues } from "@/lib/types";
+import type { AdapterInfo, ConfigMetaItem, ConfigValues } from "@/lib/types";
 import { StatusDot } from "@/components/common/StatusDot";
 import { cn } from "@/lib/utils";
 import { ChannelWebView } from "./ChannelWebView";
 import { ConfigField } from "./ConfigField";
-import type { ConfigMeta } from "./ConfigField";
 import { CHANNEL_LOGIN_COMPONENTS, CHANNEL_PANEL_COMPONENTS } from "@/lib/channel-plugins";
 
 const statusToColor = (s: string): "ok" | "warn" | "danger" | "offline" => {
@@ -33,7 +32,7 @@ export function AdapterCard({
 }: {
   adapter: AdapterInfo;
   isOpen: boolean;
-  configs: Array<[string, ConfigMeta]>;
+  configs: ConfigMetaItem[];
   values: ConfigValues;
   toggling: boolean;
   onToggleExpand: () => void;
@@ -148,16 +147,16 @@ export function AdapterCard({
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {configs
-                  .filter(([, meta]) => {
+                  .filter((meta) => {
                     if (!meta.tag) return true;
-                    const modeKey = configs.find(([k]) => k.endsWith(".ws_mode"));
-                    if (!modeKey) return true;
-                    const currentMode = values[modeKey[0]] ?? modeKey[1].value;
+                    const modeMeta = configs.find((m) => m.key.endsWith("_ws_mode"));
+                    if (!modeMeta) return true;
+                    const currentMode = values[modeMeta.key] ?? modeMeta.value;
                     return meta.tag === currentMode;
                   })
-                  .map(([key, meta]) => (
-                  <ConfigField key={key} configKey={key} meta={meta}
-                    value={values[key]} onChange={(v) => onUpdateVal(key, v)} />
+                  .map((meta) => (
+                  <ConfigField key={meta.key} meta={meta} prefix={`${a.key}_`}
+                    value={values[meta.key]} onChange={(v) => onUpdateVal(meta.key, v)} />
                 ))}
               </div>
             </>

@@ -1,9 +1,9 @@
 """微信频道适配器 — 通过腾讯 iLink Bot API 接入个人微信。"""
 
 from .adapter import WeixinChannel
-from .config import WEIXIN_CONFIGS
+from .config import WeixinConfig
 
 CHANNEL_CLASS = WeixinChannel
-CHANNEL_CONFIGS = WEIXIN_CONFIGS
+CONFIG_MODEL = WeixinConfig
 
-__all__ = ["CHANNEL_CLASS", "CHANNEL_CONFIGS", "WeixinChannel"]
+__all__ = ["CHANNEL_CLASS", "CONFIG_MODEL", "WeixinChannel"]

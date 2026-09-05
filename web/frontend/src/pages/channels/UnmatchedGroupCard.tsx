@@ -1,11 +1,10 @@
 import { Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Power, Settings2 } from "lucide-react";
-import type { ConfigValues } from "@/lib/types";
+import type { ConfigMetaItem, ConfigValues } from "@/lib/types";
 import { StatusDot } from "@/components/common/StatusDot";
 import { cn } from "@/lib/utils";
 import { ConfigField } from "./ConfigField";
-import type { ConfigMeta } from "./ConfigField";
 import { CHANNEL_LOGIN_COMPONENTS } from "@/lib/channel-plugins";
 
 /** 未注册为频道的配置组卡片（可启用 + 配置表单） */
@@ -20,7 +19,7 @@ export function UnmatchedGroupCard({
   onUpdateVal,
 }: {
   channelKey: string;
-  configs: Array<[string, ConfigMeta]>;
+  configs: ConfigMetaItem[];
   values: ConfigValues;
   isOpen: boolean;
   toggling: boolean;
@@ -76,9 +75,9 @@ export function UnmatchedGroupCard({
       {isOpen && (
         <div className="border-t border-border p-4 space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {configs.map(([key, meta]) => (
-              <ConfigField key={key} configKey={key} meta={meta}
-                value={values[key]} onChange={(v) => onUpdateVal(key, v)} />
+            {configs.map((meta) => (
+              <ConfigField key={meta.key} meta={meta} prefix={`${channelKey}_`}
+                value={values[meta.key]} onChange={(v) => onUpdateVal(meta.key, v)} />
             ))}
           </div>
         </div>

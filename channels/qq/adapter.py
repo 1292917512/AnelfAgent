@@ -18,9 +18,8 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Set
 
 import aiohttp
 from aiohttp import web
-from pydantic import Field
 
-from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
+from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability
 from agent.channel.schemas import (
     AdapterChannel,
@@ -35,22 +34,13 @@ from agent.channel.schemas import (
 )
 from core.log import log
 
+from .config import QQConfig
 from .send import QQSender
 from .tools import QQToolsMixin
 from .transport import QQTransport
 
 if TYPE_CHECKING:
     from agent.channel.base import ApprovalPromptRenderContext
-
-
-class QQConfig(ChannelConfig):
-    """QQ 频道配置（OneBot v11）。"""
-
-    ws_url: str = Field(default="ws://127.0.0.1:3001", description="OneBot WebSocket 地址")
-    access_token: str = Field(default="", description="OneBot Access Token")
-    require_mention: bool = Field(default=True, description="群聊中是否需要 @Bot 才触发")
-    reply_to_mode: str = Field(default="first", description="回复引用策略 (first/all/off)")
-    reconnect_interval: int = Field(default=5, description="重连间隔（秒）")
 
 
 class OneBotV11Channel(QQToolsMixin, BaseChannel[QQConfig]):

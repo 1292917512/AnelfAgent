@@ -61,7 +61,7 @@ async def test_primary_retries_then_succeeds(
 @pytest.mark.asyncio
 async def test_timeout_cancels_underlying_chat(tmp_path) -> None:
     manager = LLMManager(str(tmp_path / "llm.json"))
-    # 单次尝试上限取客户端 timeout，用小值让 wait_for 立即触发取消
+    # 单次尝试上限取 min(调用方 timeout, 客户端 timeout)，用小值让 wait_for 立即触发取消
     primary = _client("primary", timeout=0.05)
     cancelled = asyncio.Event()
 
@@ -83,6 +83,55 @@ async def test_timeout_cancels_underlying_chat(tmp_path) -> None:
         )
 
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_caller_timeout_caps_attempt(tmp_path) -> None:
+    """调用方 timeout 小于客户端配置时真实生效（此前仅作预算下限，是死配置）。"""
+    manager = LLMManager(str(tmp_path / "llm.json"))
+    primary = _client("primary", timeout=60.0)
+    cancelled = asyncio.Event()
+
+    async def slow_chat(*_args, **_kwargs):
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    primary.chat = slow_chat
+
+    with pytest.raises(asyncio.TimeoutError):
+        await manager.chat_with_fallback(
+            [{"role": "user", "content": "hello"}],
+            client=primary,
+            max_retries=0,
+            timeout=0.05,
+        )
+
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_stream_idle_window_honors_caller_timeout(tmp_path) -> None:
+    """流式空闲窗口取 min(调用方 timeout, 客户端配置)：调用方更短值生效。"""
+    from agent.llm.types import ChatStreamDelta
+
+    manager = LLMManager(str(tmp_path / "llm.json"))
+
+    async def stalled_gen(*_args, **_kwargs):
+        yield ChatStreamDelta(content="开头")
+        await asyncio.sleep(60)  # 静默悬挂，远超调用方 0.05s 空闲窗口
+        yield ChatStreamDelta(content="不会再到达")
+
+    primary = _client("primary", timeout=60.0)
+    primary.chat_stream = lambda *_args, **_kwargs: stalled_gen()
+
+    with pytest.raises(asyncio.TimeoutError):
+        await manager.chat_with_fallback(
+            [{"role": "user", "content": "hi"}],
+            client=primary, max_retries=0, timeout=0.05, stream=True,
+        )
 
 
 @pytest.mark.asyncio

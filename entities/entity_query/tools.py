@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-from core.log import log
 from entities._sdk import (
     ErrorCause,
     entity,
@@ -147,67 +146,123 @@ def _sleep_state(group: str) -> dict:
     }
 
 
+def _serialize_config_items(group: str) -> list:
+    """序列化指定配置组的配置项（PASSWORD 类型值掩码，密钥不出上下文）。"""
+    from core.config import ConfigManager, ConfigRegistry, mask_secret
+
+    items = []
+    for item in ConfigRegistry.get_group_items(group):
+        value = ConfigManager.get(item.key, item.default_value)
+        if item.is_secret and isinstance(value, str) and value:
+            value = mask_secret(value)
+        items.append({
+            "key": item.key,
+            "description": item.description,
+            "value": value,
+            "default": item.default_value,
+            "type": item.type_name,
+            "editable": item.editable,
+            "required": item.required,
+            "enum_options": item.enum_options,
+        })
+    return items
+
+
+@tool(name="list_config_groups", group="entity", tags=["core"], concurrency_safe=True)
+def list_config_groups() -> str:
+    """列出所有配置分组（频道 adapter/<id>、实体 entity/<name>、系统模块），供按分类浏览配置。"""
+    try:
+        from core.config import ConfigRegistry
+
+        groups = [
+            {"group": g, "item_count": len(ConfigRegistry.get_group_items(g))}
+            for g in sorted(ConfigRegistry.get_all_groups())
+        ]
+        return json.dumps({
+            "groups": groups,
+            "hint": "用 get_entity_config 查看某频道/实体的配置详情（如 get_entity_config(\"qq\")），"
+                    "用 update_entity_config 修改配置项",
+        }, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action="列出配置分组")
+
+
 @tool(name="get_entity_config", group="entity", tags=["core"], concurrency_safe=True)
 def get_entity_config(entity_name: str) -> str:
-    """查看指定实体的配置信息，包括当前值、默认值和配置描述。
+    """查看指定实体或频道的配置信息，包括当前值、默认值和配置描述。
 
     Args:
-        entity_name: 实体名称或关键词（支持模糊匹配）
+        entity_name: 实体/频道名称或关键词（支持模糊匹配，如 qq、telegram、ssh、web）
     """
     try:
+        from core.config import ConfigRegistry
         from core.entity import EntityRegistry
+
+        # 配置组直查（适配器可能未启用而无实体实例，组却已有 schema）
+        for candidate in (entity_name, f"adapter/{entity_name}", f"entity/{entity_name}"):
+            if candidate in ConfigRegistry.get_all_groups():
+                return json.dumps({
+                    "entity": entity_name,
+                    "config_group": candidate,
+                    "config_items": _serialize_config_items(candidate),
+                }, ensure_ascii=False)
 
         metadata = EntityRegistry.get(entity_name)
         if metadata is None:
             results = EntityRegistry.search(entity_name)
-            with_config = [e for e in results if e.get_config_items()]
+            with_config = [e for e in results if e.config_group]
             if not with_config:
                 return tool_error(f"未找到实体 '{entity_name}' 或该实体无配置",
                                   cause=ErrorCause.NOT_FOUND, retryable=False,
-                                  hint="可用 query_entities 搜索可用实体")
+                                  hint="可用 list_config_groups 按分类浏览全部配置")
             metadata = with_config[0]
 
-        config_items = metadata.get_config_items()
         return json.dumps({
             "entity": metadata.name,
             "type": metadata.entity_type.value,
             "config_group": metadata.config_group,
-            "config_items": config_items,
+            "config_items": _serialize_config_items(metadata.config_group),
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="获取实体配置")
 
 
-@tool(name="update_entity_config", group="entity", tags=["core"])
+@tool(name="update_entity_config", group="entity", tags=["core"], risk="CRITICAL")
 def update_entity_config(key: str, value: str) -> str:
-    """修改实体的配置项。
+    """修改配置项（实体/频道/系统统一入口，立即热更生效并持久化）。
 
     Args:
-        key: 配置项键名
-        value: 新的配置值（字符串形式，会自动转换类型）
+        key: 配置项键名（经 get_entity_config / list_config_groups 获取，如 qq_group_whitelist）
+        value: 新的配置值（按声明类型自动转换并校验）
     """
     try:
-        from core.config import ConfigManager, ConfigRegistry
+        from core.config import ConfigRegistry
+        from entities._sdk import save_config_value
 
         item = ConfigRegistry.get_item(key)
         if item is None:
             return tool_error(f"配置项 '{key}' 不存在", cause=ErrorCause.NOT_FOUND,
                               retryable=False,
-                              hint="可用 get_entity_config 查看实体的可用配置项")
+                              hint="可用 list_config_groups / get_entity_config 查看可用配置项")
+        if not item.editable:
+            return tool_error(f"配置项 '{key}' 不可编辑", cause=ErrorCause.PERMISSION,
+                              retryable=False)
 
-        parsed_value: object = value
         try:
-            parsed_value = json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            log("update_entity_config 异常已忽略", "DEBUG")
+            parsed = item.clamp(item.coerce_value(value))
+        except ValueError as exc:
+            return tool_error(str(exc), cause=ErrorCause.PARAM, retryable=False)
+        if item.type_name == "enum" and item.enum_options and parsed not in item.enum_options:
+            return tool_error(
+                f"配置项 '{key}' 的值必须是 {item.enum_options} 之一",
+                cause=ErrorCause.PARAM, retryable=False)
 
-        ConfigManager.set(key, parsed_value)
-        ConfigManager.save()
+        save_config_value(key, parsed)
 
         return json.dumps({
             "success": True,
             "key": key,
-            "new_value": parsed_value,
+            "new_value": parsed,
             "description": item.description,
         }, ensure_ascii=False)
     except Exception as e:

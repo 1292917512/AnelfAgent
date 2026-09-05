@@ -645,7 +645,9 @@ class LLMManager(BaseEntity):
 
         每个候选拥有独立预算（至少覆盖 客户端超时 × (重试次数+1) + 退避冗余），
         避免慢模型首轮调用吃满共享预算，导致重试与回退链同时失效。
-        timeout 参数是单个候选的预算下限。
+        timeout 参数既是单个候选的预算下限，也是单次尝试的超时上限
+        （与客户端 timeout 配置取小者生效）——调用方为轻量任务声明的
+        更短超时（如审批裁决 15s）会真实生效，不被客户端配置覆盖。
 
         purpose 标记调用用途（guardian/summarize/skill_review 等）：成功结果的
         usage 记入缓存命中统计与 scope 成本账本，内部辅助调用与主对话同口径。
@@ -695,6 +697,7 @@ class LLMManager(BaseEntity):
                     tool_choice=tool_choice,
                     max_retries=max_retries,
                     deadline=deadline,
+                    timeout=timeout,
                     stream=stream,
                 )
                 if index:
@@ -794,6 +797,7 @@ class LLMManager(BaseEntity):
         tool_choice: Optional[Any],
         max_retries: int,
         deadline: float,
+        timeout: float,
         stream: bool = False,
     ) -> ChatResult:
         """在候选独立预算内调用单个候选，并按错误分类自适应重试。
@@ -803,6 +807,9 @@ class LLMManager(BaseEntity):
         - 限流错误使用更长基础退避 + 抖动
         - 其余瞬态错误使用标准指数退避 + 抖动
 
+        单次尝试超时取 min(调用方 timeout, 客户端 timeout 配置)——调用方为
+        轻量任务声明的更短超时真实生效，客户端配置只作上限封顶。
+
         stream=True 走流式通道（空闲超时语义，见 _chat_candidate_stream）；
         流式失败同样进入本层重试/回退（整次调用重发）。
         """
@@ -810,11 +817,12 @@ class LLMManager(BaseEntity):
         from agent.llm.retry import RETRY_AFTER_WAIT_CAP, jittered_backoff, parse_retry_after
 
         name = client.config.name
+        attempt_cap = min(timeout, client.config.timeout)
         for attempt in range(max(0, max_retries) + 1):
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 raise asyncio.TimeoutError(f"LLM [{name}] 候选预算耗尽")
-            attempt_timeout = min(remaining, client.config.timeout)
+            attempt_timeout = min(remaining, attempt_cap)
             try:
                 if stream:
                     result = await self._chat_candidate_stream(
@@ -823,6 +831,7 @@ class LLMManager(BaseEntity):
                         options=options,
                         tools=tools,
                         tool_choice=tool_choice,
+                        timeout=attempt_cap,
                     )
                 else:
                     result = await asyncio.wait_for(
@@ -844,7 +853,7 @@ class LLMManager(BaseEntity):
                 if isinstance(exc, asyncio.TimeoutError) and not str(exc):
                     if stream:
                         exc = asyncio.TimeoutError(
-                            f"流式空闲超时（{client.config.timeout:.0f}s 无新片段）"
+                            f"流式空闲超时（{attempt_cap:.0f}s 无新片段）"
                         )
                     else:
                         exc = asyncio.TimeoutError(
@@ -896,10 +905,12 @@ class LLMManager(BaseEntity):
         options: Optional[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]],
         tool_choice: Optional[Any],
+        timeout: float,
     ) -> ChatResult:
         """单次流式调用：每 chunk 空闲超时 + 总时长天花板双保险。
 
-        空闲窗口 = 客户端超时配置（完全无响应才判死，思考/正文增量都算活动）。
+        空闲窗口 = min(调用方 timeout, 客户端 timeout 配置)（完全无响应才判死，
+        思考/正文增量都算活动）。
         总时长天花板 = 空闲窗口 × 20：防端点以"周期性吐字节"的方式吊流
         （每 chunk 都有活动但永不结束），此时空闲超时失效、回退链不推进。
         """
@@ -909,7 +920,7 @@ class LLMManager(BaseEntity):
         stream_gen = client.chat_stream(
             messages, options=options, tools=tools, tool_choice=tool_choice,
         )
-        idle_timeout = client.config.timeout
+        idle_timeout = timeout
         overall_deadline = asyncio.get_running_loop().time() + idle_timeout * 20
         try:
             while True:

@@ -243,6 +243,8 @@ _MAX_REFLECT_TEXT_ROUNDS = 3
 
 # 文本形态的 end_reply（弱模型把结束指令写成文本）：整条匹配即按结束意图处理
 _END_REPLY_TEXT_RE = re.compile(r"^end_reply\s*\(.*\)\s*$", re.DOTALL)
+# 文本形态 end_reply 转规范入链时使用的合成 tool_call id
+_SYNTHETIC_END_REPLY_CALL_ID = "call_end_reply_text_intent"
 
 _PROMPT_TOOL_ERROR_ESCALATION = (
     "[严重警告] 工具调用连续返回错误，你可能陷入了参数格式错误的循环。"
@@ -713,6 +715,32 @@ async def _handle_text_only_round(
         return _StageOutcome.BREAK
     else:
         state.consecutive_empty_calls = 0
+        # REPLY：弱模型把 end_reply 写成文本——按结束意图处理，并以规范
+        # function calling 形态入链（assistant tool_calls + tool 结果）：
+        # 幻觉文本本身不留痕，上下文与执行摘要看到的都是正确格式，不强化文本形态调用
+        if ctx.mode == ThinkMode.REPLY and _END_REPLY_TEXT_RE.match(raw_text):
+            assistant_msg: Dict[str, Any] = {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": _SYNTHETIC_END_REPLY_CALL_ID,
+                    "type": "function",
+                    "function": {"name": _END_REPLY_TOOL_NAME, "arguments": "{}"},
+                }],
+            }
+            preserve_reasoning_fields(assistant_msg, result, tool_turn=True)
+            tool_chain.append(assistant_msg)
+            tool_chain.append({
+                "role": "tool",
+                "tool_call_id": _SYNTHETIC_END_REPLY_CALL_ID,
+                "content": '{"ok": true, "action": "end_reply"}',
+            })
+            log("文本形态的 end_reply，按结束意图规范入链并结束（不投递）", "WARNING", tag="思维")
+            execution_steps.append(
+                f"→ 第{state.iteration + 1}轮: 文本形态 end_reply，按结束处理"
+            )
+            await _finish_round(ctx, state)
+            return _StageOutcome.BREAK
         _append_assistant_msg(tool_chain, result, raw_text)
         ctx.collected_text.append(raw_text)
 
@@ -772,16 +800,7 @@ async def _handle_text_only_round(
             tool_chain.append({"role": "system", "content": _PROMPT_CONTINUE})
             execution_steps.append(f"→ 第{state.iteration + 1}轮: {ctx.mode_label}中")
         else:
-            # REPLY：弱模型把 end_reply 写成文本——按结束意图处理，
-            # 内部指令文本不投递（省掉下一轮补发工具调用的往返）
-            if _END_REPLY_TEXT_RE.match(raw_text):
-                log("文本形态的 end_reply，按结束意图处理（不投递）", "WARNING", tag="思维")
-                execution_steps.append(
-                    f"→ 第{state.iteration + 1}轮: 文本形态 end_reply，按结束处理"
-                )
-                await _finish_round(ctx, state)
-                return _StageOutcome.BREAK
-            # 纯文本 = 独白，不终局不投递；暂存为未送达文本，轮末统一投递。
+            # REPLY：纯文本 = 独白，不终局不投递；暂存为未送达文本，轮末统一投递。
             # 连续独白达到上限说明模型一直不调用工具——掐断，经 _finish_round 投递收尾
             state.pending_text = raw_text
             state.consecutive_text_rounds += 1

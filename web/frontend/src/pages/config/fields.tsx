@@ -119,6 +119,38 @@ export function TextField({
 }
 
 /**
+ * 敏感值控件（PASSWORD 类型）：服务端返回掩码值（abcd****wxyz），
+ * 未改动时提交掩码由服务端识别并保留现值；输入新值即替换。
+ */
+export function PasswordField({
+  value,
+  disabled,
+  onCommit,
+}: CommonProps & { value: string; onCommit: (v: string) => void }) {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+
+  const commit = () => {
+    if (text !== value) onCommit(text);
+  };
+
+  return (
+    <input
+      type="password"
+      value={text}
+      disabled={disabled}
+      autoComplete="new-password"
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+      className={cn(INPUT_CLS, "w-48")}
+    />
+  );
+}
+
+/**
  * 滑条 + 数值复合控件（RANGE 类型）：拖动过程只更新本地预览，
  * pointerup/keyup 才提交——避免拖动中连续打后端。
  */

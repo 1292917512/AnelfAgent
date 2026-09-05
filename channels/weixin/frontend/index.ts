@@ -11,6 +11,12 @@ import en from "./locales/en.json";
 
 registerPluginI18n("channel-weixin", { zh, en });
 
+// 配置中心分组展示名（config 命名空间，deep 合并进核心 locale）
+registerPluginI18n("config", {
+  zh: { sections: { "adapter/weixin": "微信" } },
+  en: { sections: { "adapter/weixin": "WeChat" } },
+});
+
 export default {
   login: () => import("./components/QrLogin"),
 } satisfies ChannelPlugin;

@@ -11,6 +11,12 @@ import en from "./locales/en.json";
 
 registerPluginI18n("channel-feishu", { zh, en });
 
+// 配置中心分组展示名（config 命名空间，deep 合并进核心 locale）
+registerPluginI18n("config", {
+  zh: { sections: { "adapter/feishu": "飞书" } },
+  en: { sections: { "adapter/feishu": "Feishu" } },
+});
+
 export default {
   panel: () => import("./components/FeishuPanel"),
 } satisfies ChannelPlugin;

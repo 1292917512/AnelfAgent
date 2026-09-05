@@ -56,15 +56,14 @@ def _to_bool(value: Any) -> bool:
 class AcfunToolsMixin:
     """AcFun 频道工具集（由 AcfunChannel 继承，下列成员由频道实例提供）。
 
-    注：config / save_config 仅作类型注解（类级注解不创建属性），
-    运行时由 BaseChannel 的属性与实现提供，mixin 不得定义同名成员遮蔽。
+    注：config 仅作类型注解（类级注解不创建属性），
+    运行时由 BaseChannel 的属性提供，mixin 不得定义同名成员遮蔽。
     """
 
     client: "AcfunClient"
     live_manager: "LiveSessionManager"
     live_danmaku_last_sent: Dict[str, float]
     config: Any  # AcfunConfig
-    save_config: Any  # BaseChannel.save_config
     persist_live_config: Any  # AcfunChannel.persist_live_config
 
     def live_danmaku_cooldown_seconds(self) -> int:
@@ -433,8 +432,8 @@ class AcfunToolsMixin:
             )
         except ValueError as exc:
             return _err(str(exc))
-        setattr(self.config, key, coerced)
-        self.save_config()  # 配置监听的热重载为幂等同值，不会二次触发
+        from agent.channel.config import set_channel_config
+        set_channel_config("acfun", **{key: coerced})  # 变更监听自动热更频道内存态
         return _ok({"key": key, "value": coerced, "result": "已生效并持久化"})
 
     # ------------------------------------------------------------------

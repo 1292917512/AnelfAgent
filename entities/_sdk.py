@@ -50,7 +50,7 @@ __all__ = [
     "get_embedder", "wake_embedding_worker", "register_embedding_backlog",
     "download_media_to_uploads", "execute_send_action",
     "set_default_model", "get_active_llm_client", "get_llm_client_class",
-    "get_llm_manager",
+    "get_llm_manager", "save_config_value",
     "get_session_llm_params", "canonical_efforts",
     "activate_tool_group_now", "notify_tool_set_changed",
     "tool_error", "error_from_exception", "ErrorCause",
@@ -93,6 +93,7 @@ def tool(
     allow_sleep: bool = False,
     sleep_brief: str = "",
     concurrency_safe: bool = False,
+    risk: str = "",
 ) -> Callable[[F], F]:
     """装饰器：将函数注册为 LLM 可调用工具（注册到 EntityRegistry）。
 
@@ -106,6 +107,7 @@ def tool(
         sleep_brief: 沉睡状态下展示给 AI 的简短描述
         concurrency_safe: 是否可与其他安全工具并行执行（只读工具才应开启，
             默认 False — 与 Claude Code isConcurrencySafe 一致的 fail-closed 语义）
+        risk: 风险等级标记（如 CRITICAL），供审批规则引擎匹配拦截
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
@@ -117,6 +119,8 @@ def tool(
             meta["timeout"] = timeout
         if concurrency_safe:
             meta["concurrency_safe"] = True
+        if risk:
+            meta["risk"] = risk
 
         EntityRegistry.register_tool(
             name=tool_name,
@@ -525,6 +529,27 @@ async def execute_send_action(
 # ------------------------------------------------------------------
 # 模型管理桥接（延迟导入 agent.llm / agent.runtime）
 # ------------------------------------------------------------------
+
+
+def save_config_value(key: str, value: Any) -> None:
+    """统一配置写入：MindConfig 字段路由 save_mind_config（双轨同步 + 实时生效），
+    其余走 ConfigManager.set + save（变更监听驱动消费方热更）。
+
+    Web 的 PUT /config/meta 与本函数是同一写纪律的两个入口，AI 配置工具应走这里。
+    """
+    from core.config import ConfigManager
+
+    try:
+        from agent.config import MIND_SYNC_FIELDS
+        mind_fields = frozenset((*MIND_SYNC_FIELDS, "tool_system_rules"))
+    except Exception:
+        mind_fields = frozenset()
+    if key in mind_fields:
+        from agent.config import get_config_provider
+        get_config_provider().save_mind_config(**{key: value})
+        return
+    ConfigManager.set(key, value)
+    ConfigManager.save()
 
 
 def set_default_model(model_id: str) -> bool:

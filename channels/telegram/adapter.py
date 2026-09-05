@@ -11,9 +11,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Dict, Optional, Set
 
-from pydantic import Field
-
-from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
+from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus, _err, _ok
 from agent.channel.schemas import (
     AdapterChannel,
@@ -30,33 +28,17 @@ from agent.channel.tool_bridge import channel_tool
 from agent.channel.utils.formatter import format_exception as _fmt_exc
 from core.log import log
 
-from .config import TELEGRAM_CONFIGS
+from .config import TelegramConfig
 from .delivery import deliver_reply
 
 if TYPE_CHECKING:
     from agent.channel.base import ApprovalPromptRenderContext
 
 
-class TelegramConfig(ChannelConfig):
-    """Telegram 频道配置（pydantic 强类型）。"""
-
-    bot_token: str = Field(default="", description="Bot Token（从 @BotFather 获取）")
-    proxy_host: str = Field(default="", description="代理地址（留空不使用代理）")
-    proxy_port: int = Field(default=7890, description="代理端口")
-    require_mention: bool = Field(default=False, description="群聊中是否需要 @Bot 才触发思考")
-    channel_post_trigger: bool = Field(default=False, description="频道帖子是否触发思考（默认关闭，避免任何频道帖子都唤醒 Mind）")
-    reply_to_mode: str = Field(default="first", description="回复引用策略 (first/all/off)")
-    stream_mode: str = Field(default="off", description="流式输出模式 (off/draft)")
-    parse_mode: str = Field(default="html", description="消息格式化模式 (html/markdown)")
-    text_limit: int = Field(default=4096, description="单条消息最大长度")
-    link_preview: bool = Field(default=True, description="是否显示链接预览")
-
-
 class TelegramAdapter(BaseChannel[TelegramConfig]):
     """Telegram Bot 频道（独立线程运行）。"""
 
     _entity_description = "Telegram Bot 频道"
-    _adapter_configs = TELEGRAM_CONFIGS
 
     metadata = ChannelMetadata(
         name="Telegram",

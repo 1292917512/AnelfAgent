@@ -19,6 +19,7 @@ import agent.channel.manage_tools as manage_tools
 import agent.channel.manager as manager_mod
 from agent.channel.channel_types import ChannelStatus
 from agent.channel.manager import ChannelManager
+from core.config import ConfigManager
 from core.entity import EntityRegistry
 
 
@@ -65,17 +66,14 @@ def channels_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """将频道目录隔离到 tmp_path。"""
     root = tmp_path / "channels"
     root.mkdir()
-    monkeypatch.setattr(manager_mod, "_channels_dir", lambda: root)
+    monkeypatch.setattr(manager_mod, "channels_dir", lambda: root)
     return root
 
 
-def _write_channel(root: Path, channel_id: str, cfg: Dict[str, Any]) -> None:
+def _write_channel(root: Path, channel_id: str) -> None:
     channel_dir = root / channel_id
     channel_dir.mkdir(parents=True, exist_ok=True)
     (channel_dir / "adapter.py").write_text("# fake", "utf-8")
-    (channel_dir / "channel_config.json").write_text(
-        json.dumps(cfg), "utf-8",
-    )
 
 
 @pytest.fixture()
@@ -100,49 +98,33 @@ def patched_manager(monkeypatch: pytest.MonkeyPatch) -> Dict[str, Any]:
 
 
 # ----------------------------------------------------------------------
-# 文件层辅助
+# 频道启停配置（统一配置系统：<channel_id>_enabled 键）
 # ----------------------------------------------------------------------
 
 class TestConfiguredChannels:
     def test_scan_enabled_flags(self, channels_dir: Path) -> None:
-        _write_channel(channels_dir, "qq", {"enabled": True})
-        _write_channel(channels_dir, "tg", {"enabled": False, "token": "x"})
+        _write_channel(channels_dir, "qq")
+        _write_channel(channels_dir, "tg")
         (channels_dir / "_scratch").mkdir()
         (channels_dir / "noadapter").mkdir()  # 无 adapter.py，跳过
+        ConfigManager.set("qq_enabled", True)
         assert manager_mod.list_configured_channels() == {"qq": True, "tg": False}
 
     def test_scan_empty_dir(self, channels_dir: Path) -> None:
         assert manager_mod.list_configured_channels() == {}
 
-    def test_set_enabled_preserves_other_keys(
-        self, channels_dir: Path, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _write_channel(channels_dir, "qq", {"enabled": True, "appid": "1"})
-        monkeypatch.setattr(
-            manager_mod, "get_channel_manager", lambda: FakeManager(),
-        )
+    def test_set_enabled_persists(self) -> None:
         assert manager_mod.set_channel_enabled("qq", False) is True
-        data = json.loads(
-            (channels_dir / "qq" / "channel_config.json").read_text("utf-8"),
-        )
-        assert data == {"enabled": False, "appid": "1"}
+        assert ConfigManager.get("qq_enabled") is False
+        manager_mod.set_channel_enabled("qq", True)
+        assert ConfigManager.get("qq_enabled") is True
 
-    def test_set_enabled_missing_file(self, channels_dir: Path,
-                                      monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            manager_mod, "get_channel_manager", lambda: FakeManager(),
-        )
-        assert manager_mod.set_channel_enabled("ghost", True) is False
-
-    def test_set_enabled_syncs_memory_config(self, channels_dir: Path,
-                                             monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_channel(channels_dir, "qq", {"enabled": True})
-        channel = FakeChannel("qq")
-        monkeypatch.setattr(
-            manager_mod, "get_channel_manager", lambda: FakeManager(channel),
-        )
-        assert manager_mod.set_channel_enabled("qq", False) is True
-        assert channel.config.enabled is False
+    def test_set_enabled_notifies_listener(self) -> None:
+        """写入经 ConfigManager 变更监听同步通知（频道热更的驱动路径）。"""
+        fired: list = []
+        ConfigManager.add_listener("qq_", lambda k, v: fired.append((k, v)))
+        manager_mod.set_channel_enabled("qq", True)
+        assert ("qq_enabled", True) in fired
 
 
 # ----------------------------------------------------------------------
@@ -150,12 +132,6 @@ class TestConfiguredChannels:
 # ----------------------------------------------------------------------
 
 class TestActivateChannel:
-    @pytest.fixture(autouse=True)
-    def _no_watcher(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            ChannelManager, "_ensure_config_watcher_started", staticmethod(lambda: None),
-        )
-
     async def test_registered_channel_delegates_to_start(self) -> None:
         cm = ChannelManager()
         channel = FakeChannel("fake")
@@ -171,7 +147,7 @@ class TestActivateChannel:
     async def test_dynamic_load_and_start(
         self, channels_dir: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _write_channel(channels_dir, "newbie", {"enabled": False})
+        _write_channel(channels_dir, "newbie")
 
         class NewbieChannel(FakeChannel):
             def __init__(self) -> None:
@@ -192,7 +168,7 @@ class TestActivateChannel:
     async def test_module_without_channel_class(
         self, channels_dir: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _write_channel(channels_dir, "empty", {"enabled": False})
+        _write_channel(channels_dir, "empty")
         monkeypatch.setattr(
             manager_mod.importlib, "import_module",
             lambda _name: types.ModuleType("channels.empty.adapter"),

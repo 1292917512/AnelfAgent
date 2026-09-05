@@ -71,19 +71,3 @@ async def toggle_channel_tool(key: str, name: str) -> Dict[str, Any]:
 @router.post("/{key}/tools/{name}/test")
 async def test_channel_tool(key: str, name: str, body: ToolTestRequest) -> Dict[str, Any]:
     return await _adapter_svc.test_channel_tool(key, name, body.args)
-
-
-@router.get("/configs")
-async def get_configs() -> Dict[str, Dict[str, Any]]:
-    return _adapter_svc.get_adapter_configs()
-
-
-@router.put("/configs")
-async def save_configs(values: Dict[str, Any]) -> Dict[str, int]:
-    changed = _adapter_svc.save_adapter_configs(values)
-
-    # 触发热更新：重载所有频道配置
-    if changed > 0:
-        _adapter_svc.reload_all_channel_configs()
-
-    return {"changed": changed}

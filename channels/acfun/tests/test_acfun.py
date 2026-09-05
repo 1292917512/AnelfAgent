@@ -470,8 +470,6 @@ class TestLoginRouter:
 
         from channels.acfun import adapter as adapter_mod
 
-        monkeypatch.setattr(adapter_mod, "_channel_config_file", lambda: tmp_path / "channel_config.json")
-        (tmp_path / "channel_config.json").write_text('{"enabled": false}', encoding="utf-8")
         app = FastAPI()
         app.include_router(adapter_mod.build_router(), prefix="/channels/acfun")
         return TestClient(app), adapter_mod
@@ -541,8 +539,8 @@ class TestLoginRouter:
         resp = client.post("/channels/acfun/logout")
         assert resp.json()["success"] is True
         assert cleared == [True]
-        cfg = json.loads((tmp_path / "channel_config.json").read_text(encoding="utf-8"))
-        assert cfg["enabled"] is False
+        from core.config import ConfigManager
+        assert ConfigManager.get("acfun_enabled") is False
 
 
 # ======================================================================
@@ -686,10 +684,6 @@ class TestQrRouter:
 
         from channels.acfun import adapter as adapter_mod
 
-        monkeypatch.setattr(
-            adapter_mod, "_channel_config_file", lambda: tmp_path / "channel_config.json",
-        )
-        (tmp_path / "channel_config.json").write_text('{"enabled": false}', encoding="utf-8")
         app = FastAPI()
         app.include_router(adapter_mod.build_router(), prefix="/channels/acfun")
         return TestClient(app), adapter_mod

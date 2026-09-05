@@ -19,14 +19,12 @@ Model Experience 三行声明：
 from __future__ import annotations
 
 import asyncio
-import json
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
+from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
 from agent.channel.schemas import (
     ChannelInfo,
@@ -39,6 +37,7 @@ from agent.channel.schemas import (
 from core.log import log
 
 from .client import AcfunClient
+from .config import AcfunConfig
 from .context import register_live_context_provider
 from .live.manager import LiveSessionManager
 from .poller import NotificationPoller
@@ -51,33 +50,6 @@ register_live_context_provider()
 
 _SELF_INFO_TTL = 300.0  # 自身资料缓存（秒）
 _HEALTH_PROBE_TTL = 60.0  # 健康探针最小间隔（秒）
-
-
-class AcfunConfig(ChannelConfig):
-    """AcFun 频道配置（敏感凭据不落此文件，见 state.py）。"""
-
-    enabled: bool = Field(default=False, description="启用 AcFun 频道")
-    username: str = Field(default="", description="AcFun 账号")
-    password: str = Field(default="", description="AcFun 密码（可选，无头自登录用）")
-    poll_interval_seconds: int = Field(default=60, description="通知轮询间隔（秒）")
-    notify_like: bool = Field(default=False, description="接收点赞通知（默认仅计数）")
-    notify_gift: bool = Field(default=True, description="接收投蕉通知")
-    notify_system: bool = Field(default=True, description="接收站内公告/系统通知")
-    gift_trigger_mind: bool = Field(default=True, description="投蕉通知触发思考")
-    like_trigger_mind: bool = Field(default=False, description="点赞通知触发思考")
-    live_danmaku_cooldown_seconds: int = Field(default=5, description="直播弹幕同房间冷却（秒）")
-    whitelist_enabled: bool = Field(default=False, description="启用用户白名单")
-    user_whitelist: str = Field(default="", description="用户白名单（UID 逗号分隔）")
-    message_max_length: int = Field(default=1000, description="单条评论/弹幕最大长度")
-    live_mode: bool = Field(default=False, description="直播模式（连接观察中的直播间，实时接收弹幕）")
-    live_watch_rooms: str = Field(default="", description="观察的直播间主播 UID（逗号分隔，直播模式开启时连接）")
-    live_recent_window: int = Field(default=20, description="上下文注入的最近弹幕条数")
-    live_mention_names: str = Field(default="", description="直播弹幕额外点名词（逗号分隔，命中即触发思考）")
-    live_mention_trigger: bool = Field(default=True, description="弹幕点名（bot 名/点名词）触发思考")
-    live_gift_trigger_mind: bool = Field(default=True, description="直播间礼物/投蕉事件触发思考")
-    live_record_chatter: bool = Field(default=False, description="普通弹幕也写入会话历史（默认仅进上下文缓冲）")
-    live_max_rooms: int = Field(default=3, description="同时观察的直播间上限")
-    live_closed_retry_seconds: int = Field(default=300, description="主播未开播时的重探间隔（秒）")
 
 
 class AcfunChannel(AcfunToolsMixin, BaseChannel[AcfunConfig]):
@@ -150,8 +122,12 @@ class AcfunChannel(AcfunToolsMixin, BaseChannel[AcfunConfig]):
         self._self_info = None
         log("AcFun: 频道已停止", tag="通道")
 
+    def _on_config_changed(self, key: str, value: Any) -> None:
+        """配置变更监听走 reload_config 统一入口（含直播 diff 应用）。"""
+        self.reload_config()
+
     def reload_config(self) -> bool:
-        """热重载配置：diff 直播模式与观察列表并即时应用（Web 表单热切换入口）。"""
+        """热重载配置：diff 直播模式与观察列表并即时应用（Web 表单/AI 工具热切换入口）。"""
         prev_mode = self.config.live_mode
         prev_rooms = self.live_manager.watched
         ok = super().reload_config()
@@ -194,13 +170,17 @@ class AcfunChannel(AcfunToolsMixin, BaseChannel[AcfunConfig]):
 
     def persist_live_config(self, *, live_mode: Optional[bool] = None,
                             rooms: Optional[List[str]] = None) -> None:
-        """直播模式/观察列表变更后写回频道配置（AI 工具与 Web 直播 API 同源的持久化入口）。"""
+        """直播模式/观察列表变更后写回统一配置（AI 工具与 Web 直播 API 同源的持久化入口）。"""
+        from agent.channel.config import set_channel_config
+
         try:
+            updates: Dict[str, Any] = {}
             if live_mode is not None:
-                self.config.live_mode = live_mode
+                updates["live_mode"] = live_mode
             if rooms is not None:
-                self.config.live_watch_rooms = ",".join(rooms)
-            self.save_config()
+                updates["live_watch_rooms"] = ",".join(rooms)
+            if updates:
+                set_channel_config("acfun", **updates)
         except Exception as exc:
             log(f"AcFun直播: 配置持久化失败（运行时变更仍已生效）: {exc}", "DEBUG", tag="通道")
 
@@ -376,10 +356,6 @@ CHANNEL_CLASS = AcfunChannel
 # WebUI 登录路由（挂载于 /api/channels/acfun，无需频道已启用）
 # ======================================================================
 
-def _channel_config_file() -> Path:
-    return Path(__file__).parent / "channel_config.json"
-
-
 class _LoginBody(BaseModel):
     """登录请求体（模块级定义：__future__ annotations 下 FastAPI 需可解析的类型引用）。"""
 
@@ -403,19 +379,16 @@ class _LiveWatchBody(BaseModel):
 
 def _persist_live_config_offline(*, live_mode: Optional[bool] = None,
                                  rooms: Optional[List[str]] = None) -> None:
-    """频道未注册/未运行时直接写配置文件（下次启动生效）。"""
-    cfg_file = _channel_config_file()
-    cfg: Dict[str, Any] = {}
-    if cfg_file.exists():
-        try:
-            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-        except Exception:
-            cfg = {}
+    """频道未注册/未运行时直接写统一配置（下次启动生效）。"""
+    from agent.channel.config import set_channel_config
+
+    updates: Dict[str, Any] = {}
     if live_mode is not None:
-        cfg["live_mode"] = live_mode
+        updates["live_mode"] = live_mode
     if rooms is not None:
-        cfg["live_watch_rooms"] = ",".join(rooms)
-    cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        updates["live_watch_rooms"] = ",".join(rooms)
+    if updates:
+        set_channel_config("acfun", **updates)
 
 
 def build_router() -> Any:
@@ -494,14 +467,8 @@ def build_router() -> Any:
         except Exception as exc:
             log(f"AcFun: 登出时停频道异常: {exc}", "WARNING", tag="通道")
         clear_cookies()
-        cfg_file = _channel_config_file()
-        if cfg_file.exists():
-            try:
-                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-                cfg["enabled"] = False
-                cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            except Exception as exc:
-                log(f"AcFun: 登出写配置失败: {exc}", "WARNING", tag="通道")
+        from agent.channel.manager import set_channel_enabled
+        set_channel_enabled("acfun", False)
         return {"success": True}
 
     # --------------------------------------------------------------
@@ -649,18 +616,10 @@ def _get_acfun_channel() -> "AcfunChannel":
 
 
 async def _apply_login_success(username: str) -> None:
-    """登录成功后：写频道配置（enabled + username）→ 已注册则热重启，未注册则注册并启动。"""
-    cfg_file = _channel_config_file()
-    cfg: Dict[str, Any] = {}
-    if cfg_file.exists():
-        try:
-            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-        except Exception as exc:
-            log(f"AcFun: 现有频道配置解析失败，按空配置重建: {exc}", "DEBUG", tag="通道")
-            cfg = {}
-    cfg["enabled"] = True
-    cfg["username"] = username
-    cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    """登录成功后：写统一配置（enabled + username）→ 已注册则热重启，未注册则注册并启动。"""
+    from agent.channel.config import set_channel_config
+
+    set_channel_config("acfun", enabled=True, username=username)
     log(f"AcFun: 登录凭据已写入配置 username={username}", tag="通道")
 
     try:
@@ -669,7 +628,7 @@ async def _apply_login_success(username: str) -> None:
         mgr = get_channel_manager()
         channel = mgr.get("acfun")
         if channel is not None:
-            channel.reload_config()
+            # 配置变更监听已热更内存态；直接按新凭据重启
             if channel.status == ChannelStatus.RUNNING:
                 await mgr.stop_channel("acfun")
             await mgr.start_channel("acfun")

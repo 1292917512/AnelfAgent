@@ -18,7 +18,15 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from core.config import get_config_bool, get_config_float, get_config_int, register_configs_safe
+from agent.llm.reasoning import CANONICAL_EFFORTS, normalize_effort
+from core.config import (
+    ConfigValueType,
+    get_config,
+    get_config_bool,
+    get_config_float,
+    get_config_int,
+    register_configs_safe,
+)
 from core.log import log
 
 from .memory_store import MemoryStore
@@ -54,15 +62,30 @@ _DEDUP_JUDGE_PROMPT = """\
 _JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
-async def light_llm(prompt: str, *, temperature: float = 0.1, timeout: float = 30.0) -> str:
-    """轻量一次性 LLM 调用（无工具、带模型回退），供裁决/提取类内部任务使用。"""
+async def light_llm(prompt: str, *, temperature: float = 0.1, timeout: float = 120.0) -> str:
+    """轻量一次性 LLM 调用（无工具、带模型回退），供裁决/提取类内部任务使用。
+
+    经 chat_with_fallback 流式通道调用：按空闲窗口判死（思考/输出中不计时，
+    完全静默超 timeout 才超时），长思考模型不再被墙钟掐断。思考等级可经
+    memory_judge_reasoning_effort 配置（空 = 跟随模型自身配置）。
+
+    Model Experience:
+    - 模型看到什么：无 prompt 层变化；仅通道（流式）与可选思考档位。
+    - token 影响：指定低思考档可显著省 token；流式本身不改用量。
+    - 缓存影响：独立小请求，不触碰任何对话前缀层。
+    """
     from agent.llm import get_llm_manager
 
+    options: Dict[str, Any] = {"temperature": temperature}
+    effort = normalize_effort(get_config("memory_judge_reasoning_effort", ""))
+    if effort:
+        options["reasoning_effort"] = effort
     result = await get_llm_manager().chat_with_fallback(
         [{"role": "user", "content": prompt}],
-        options={"temperature": temperature},
+        options=options,
         max_retries=1,
         timeout=timeout,
+        stream=True,
     )
     return (getattr(result, "content", "") or "").strip()
 
@@ -226,6 +249,12 @@ _DEDUP_CONFIGS = {
             "min": 0,
             "max": 1,
             "step": 0.05,
+        },
+        "memory_judge_reasoning_effort": {
+            "description": "裁决/提取类内部调用的思考等级（判重裁决、自动捕获提取、关系抽取）：轻量任务通常无需深度思考，低档省时省 token（模型不支持思考时自动忽略）；空 = 跟随模型自身配置",
+            "default": "",
+            "value_type": ConfigValueType.ENUM,
+            "options": ["", *CANONICAL_EFFORTS],
         },
     },
 }

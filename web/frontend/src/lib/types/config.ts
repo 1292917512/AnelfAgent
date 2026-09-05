@@ -79,6 +79,8 @@ export interface ConfigMetaItem {
   step: number | null;
   /** 单位展示（秒/%/条/分钟…） */
   unit: string;
+  /** 条件显示标记（如频道 ws_mode 的 forward/reverse，仅供卡片分组过滤） */
+  tag: string;
   source: "mind" | "config_manager";
 }
 

@@ -1,37 +1,16 @@
-"""频道管理服务 -- 列表、启停、配置管理。"""
+"""频道管理服务 -- 列表、启停、接口开关与测试。
+
+频道配置的读写已全部收口到统一配置系统（core.config）：
+schema 注册见 agent/channel/config.py，Web 经 /api/config/meta、AI 经 entity 组工具，
+本服务不再维护独立的 channel_config.json 读写路径。
+"""
 
 from __future__ import annotations
 
 import asyncio
-import json
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.log import log
 from services._runtime import is_ready
-
-
-def _channels_dir() -> Path:
-    """频道目录（基于项目根的绝对路径，不依赖进程 CWD）。"""
-    from core.path import project_root
-    return Path(project_root()) / "channels"
-
-
-def _read_channel_config(cfg_file: Path) -> Dict[str, Any]:
-    """读取 channel_config.json（不存在/损坏返回空 dict）。"""
-    if cfg_file.exists():
-        try:
-            data = json.loads(cfg_file.read_text("utf-8"))
-            if isinstance(data, dict):
-                return data
-        except (json.JSONDecodeError, OSError):
-            log("_read_channel_config 异常已忽略", "DEBUG")
-    return {}
-
-
-def _write_channel_config(cfg_file: Path, cfg: Dict[str, Any]) -> None:
-    """写回 channel_config.json。"""
-    cfg_file.write_bytes(json.dumps(cfg, indent=2, ensure_ascii=False).encode("utf-8"))
 
 
 class AdapterService:
@@ -79,22 +58,21 @@ class AdapterService:
             result.append(item)
             seen_keys.add(key)
 
-        all_configs = self._scan_channel_configs()
-        for channel_name in all_configs:
+        from agent.channel.manager import list_configured_channels
+        for channel_name, enabled in list_configured_channels().items():
             if channel_name not in seen_keys and channel_name not in ("cli",):
-                cfg = all_configs[channel_name]
                 result.append({
                     "key": channel_name,
                     "name": channel_name,
                     "status": "stopped",
-                    "status_display": "⚪ 未启用" if not cfg.get("enabled") else "⚪ 已停止",
+                    "status_display": "⚪ 未启用" if not enabled else "⚪ 已停止",
                 })
         return result
 
     async def toggle_adapter(self, key: str) -> None:
         """启动或停止指定频道（挂起直到完成或超时）。
 
-        启停意图持久化到 channel_config.json 的 enabled 字段（重启后保持）；
+        启停意图持久化到统一配置的 <channel_id>_enabled 键（重启后保持）；
         未注册的频道（启动期 enabled=false 被跳过）由
         ChannelManager.activate_channel 动态实例化、注册并启动。
         """
@@ -208,15 +186,20 @@ class AdapterService:
 
     @staticmethod
     def get_channel_webui_url(channel_id: str) -> Optional[str]:
-        """解析频道配置的内嵌 WebUI 地址（实际值优先，回退元数据默认值）。
+        """解析频道配置的内嵌 WebUI 地址（统一配置实际值优先，回退 schema 默认值）。
 
         匹配 napcat_webui_url / webui_url / dashboard_url 配置项，
         供频道 WebUI 同源代理确定转发目标。
         """
-        cfg = _read_channel_config(_channels_dir() / channel_id / "channel_config.json")
-        meta = AdapterService._load_all_config_meta().get(channel_id, {})
+        from agent.channel.config import config_key
+        from core.config import ConfigManager, ConfigRegistry
+
         for suffix in ("napcat_webui_url", "webui_url", "dashboard_url"):
-            value = cfg.get(suffix) or meta.get(suffix, {}).get("default")
+            key = config_key(channel_id, suffix)
+            value = ConfigManager.get(key)
+            if not value:
+                item = ConfigRegistry.get_item(key)
+                value = item.default_value if item else None
             if value:
                 return str(value)
         return None
@@ -317,170 +300,3 @@ class AdapterService:
             return {"ready": True, "success": False, "error": "tool call timeout after 30s"}
         except Exception as exc:
             return {"ready": True, "success": False, "error": str(exc)}
-
-    # ------------------------------------------------------------------
-    # 适配器配置（从各频道的 channel_config.json 读写）
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _scan_channel_configs() -> Dict[str, Dict[str, Any]]:
-        """扫描所有频道目录的 channel_config.json。"""
-        result: Dict[str, Dict[str, Any]] = {}
-        channels_dir = _channels_dir()
-        if not channels_dir.is_dir():
-            return result
-        for item in sorted(channels_dir.iterdir()):
-            if not item.is_dir() or item.name.startswith("_"):
-                continue
-            cfg_file = item / "channel_config.json"
-            if cfg_file.exists():
-                result[item.name] = _read_channel_config(cfg_file)
-        return result
-
-    def get_adapter_configs(self) -> Dict[str, Dict[str, Any]]:
-        """收集所有频道的配置项。
-
-        从 channel_config.json 读取实际值，
-        从频道 config 模块的定义中获取元数据（description、value_type、enum_options、tag）。
-        """
-        all_configs = self._scan_channel_configs()
-        meta_cache = self._load_all_config_meta()
-        result: Dict[str, Dict[str, Any]] = {}
-
-        for channel_name, cfg in all_configs.items():
-            group = f"adapter/{channel_name}"
-            channel_meta = meta_cache.get(channel_name, {})
-
-            for key, value in cfg.items():
-                full_key = f"{group}.{key}"
-                meta = channel_meta.get(key)
-
-                if meta:
-                    vtype = meta.get("value_type", "auto")
-                    if hasattr(vtype, "value"):
-                        vtype = vtype.value
-                    description = meta.get("description", key)
-                    enum_options = meta.get("options")
-                    tag = meta.get("tag", "")
-                    default = meta.get("default", value)
-                else:
-                    vtype = "boolean" if isinstance(value, bool) else "integer" if isinstance(value, int) else "string"
-                    if isinstance(value, str) and ("token" in key or "secret" in key):
-                        vtype = "password"
-                    description = key
-                    enum_options = None
-                    tag = ""
-                    default = value
-
-                result[full_key] = {
-                    "description": description,
-                    "default": default,
-                    "value": value,
-                    "group": group,
-                    "value_type_str": str(vtype),
-                    "enum_options": enum_options,
-                    "tag": tag,
-                }
-        return result
-
-    @staticmethod
-    def _load_all_config_meta() -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """加载所有频道的配置元数据定义。
-
-        返回 {channel_name: {config_key: {description, value_type, options, tag, ...}}}
-        """
-        import importlib
-
-        result: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        channels_dir = _channels_dir()
-        if not channels_dir.is_dir():
-            return result
-
-        for item in sorted(channels_dir.iterdir()):
-            if not item.is_dir() or item.name.startswith("_"):
-                continue
-            config_file = item / "config.py"
-            if not config_file.exists():
-                continue
-
-            try:
-                mod = importlib.import_module(f"channels.{item.name}.config")
-            except Exception:
-                continue
-
-            for attr_name in dir(mod):
-                attr = getattr(mod, attr_name)
-                if not isinstance(attr, dict):
-                    continue
-                for group_key, fields in attr.items():
-                    if not isinstance(fields, dict) or not group_key.startswith("adapter/"):
-                        continue
-                    channel_name = group_key.replace("adapter/", "")
-                    result[channel_name] = fields
-
-        return result
-
-    def save_adapter_configs(self, values: Dict[str, Any]) -> int:
-        """保存适配器配置值到各频道的 channel_config.json，并热重载运行中的频道配置。"""
-        updates: Dict[str, Dict[str, Any]] = {}
-        for full_key, val in values.items():
-            parts = full_key.split(".", 1)
-            if len(parts) != 2:
-                continue
-            group, key = parts
-            channel_name = group.replace("adapter/", "")
-            if channel_name not in updates:
-                updates[channel_name] = {}
-            updates[channel_name][key] = val
-
-        changed = 0
-        affected_channels: list[str] = []
-        for channel_name, new_values in updates.items():
-            cfg_file = _channels_dir() / channel_name / "channel_config.json"
-            if not cfg_file.exists():
-                continue
-            existing = _read_channel_config(cfg_file)
-
-            channel_changed = 0
-            for k, v in new_values.items():
-                if existing.get(k) != v:
-                    existing[k] = v
-                    channel_changed += 1
-
-            _write_channel_config(cfg_file, existing)
-            changed += channel_changed
-            # 按频道独立判断，避免跨频道累积误标无变更的频道
-            if channel_changed:
-                affected_channels.append(channel_name)
-
-        self._reload_affected_channels(affected_channels)
-        return changed
-
-    @staticmethod
-    def reload_all_channel_configs() -> None:
-        """配置保存后热重载所有已注册频道的配置（单个失败不影响其他频道）。"""
-        from agent.channel import get_channel_manager
-        manager = get_channel_manager()
-        for channel in manager.list_channels().values():
-            try:
-                channel.reload_config()
-            except Exception:
-                pass  # 单个频道重载失败不影响其他频道
-
-    @staticmethod
-    def _reload_affected_channels(channel_names: list[str]) -> None:
-        """通知运行中的频道重新加载配置。"""
-        if not channel_names:
-            return
-        try:
-            from agent.channel import get_channel_manager
-            from core.log import log
-            mgr = get_channel_manager()
-            channels = mgr.list_channels()
-            for name in channel_names:
-                ch = channels.get(name)
-                if ch and hasattr(ch, 'reload_config'):
-                    ch.reload_config()
-                    log(f"频道配置已热重载: {name}", "DEBUG")
-        except Exception:
-            log("_reload_affected_channels 异常已忽略", "DEBUG")

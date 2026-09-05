@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from abc import ABC, abstractmethod
 from typing import (
@@ -99,10 +98,14 @@ class ChannelConfig(BaseModel):
 
     所有频道通用配置项。子类继承后追加平台特有字段即可。
 
-    与 AnelfAgent 现有 `core/config.py` 的集成方式：
-    - 频道启动时调用 `BaseChannel.get_config()`，将本模型 dump 为 dict 注册到 ConfigManager
-    - 配置改动通过 `BaseChannel.save_config()` 写回 `channels/<id>/channel_config.json`
-    - 环境变量 `ANELF_<CHANNEL_ID>_<FIELD>` 优先级高于文件
+    与统一配置系统（`core/config.py`）的集成方式：
+    - 频道配置模型即声明源：`channels/<id>/config.py` 的 ``CONFIG_MODEL``
+      经 ``agent/channel/config.py`` 派生注册进 ConfigRegistry，
+      值为 ``<channel_id>_<field>`` 键存入 ConfigManager（app_config.json）
+    - 运行时 ``BaseChannel.get_config()`` 从 ConfigManager 物化本模型实例
+    - 配置写入（Web /config/meta 或 AI update_entity_config）经
+      ConfigManager 变更监听即时重新物化，无需重启
+    - 环境变量 ``ANELF_<CHANNEL_ID>_<FIELD>`` 优先级高于文件（ConfigManager 既有机制）
     """
 
     # ---- 基础 ----
@@ -204,7 +207,6 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
 
     # 配置缓存（实例级）
     _config: Optional[ChannelConfig] = None
-    _config_path: Optional[str] = None
 
     def __init__(self) -> None:
         self._status: ChannelStatus = ChannelStatus.STOPPED
@@ -212,8 +214,12 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         self._last_health_status: Optional[HealthStatus] = None
         super().__init__()
         self._load_and_register_config()
-        # 启动配置热更新监听
-        self._start_config_watcher()
+        # 配置变更监听：ConfigManager 写入命中本频道键前缀时即时重新物化
+        try:
+            from core.config import ConfigManager
+            ConfigManager.add_listener(self._config_key_prefix, self._on_config_changed)
+        except Exception as exc:
+            log(f"配置变更监听注册失败: {self.channel_id} -> {exc}", "WARNING", tag="通道")
 
     # ------------------------------------------------------------------
     # 状态
@@ -676,42 +682,32 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         await get_channel_manager().dispatch_inbound(self, message)
 
     # ------------------------------------------------------------------
-    # 配置（pydantic 强类型 + 落盘）
+    # 配置（统一配置系统物化 + 变更监听热更）
     # ------------------------------------------------------------------
 
-    def _default_config_path(self) -> str:
-        """默认配置路径：channels/<channel_id>/channel_config.json"""
-        return os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "..",
-            "channels",
-            self.channel_id,
-            "channel_config.json",
-        )
+    @property
+    def _config_key_prefix(self) -> str:
+        """本频道在 ConfigManager 中的键前缀（<channel_id>_）。"""
+        return f"{self.channel_id}_"
+
+    def _resolve_config_group(self) -> str:
+        """实体注册时的配置分组（adapter/<channel_id>），供 AI/Web 按实体定位配置。"""
+        return f"adapter/{self.channel_id}"
 
     def _load_and_register_config(self) -> None:
-        """加载配置并注册到 ConfigManager。"""
-        path = self._default_config_path()
-        self._config_path = path
-        cfg_dict: Dict[str, Any] = {}
-        if os.path.exists(path):
-            try:
-                with open(path, encoding="utf-8") as f:
-                    cfg_dict = json.load(f)
-            except Exception as exc:
-                log(f"频道配置解析失败 ({path}): {exc}", "WARNING", tag="通道")
-                cfg_dict = {}
+        """从 ConfigManager 物化频道配置（<channel_id>_<field> 键 → pydantic 模型）。
 
-        # 环境变量覆盖：ANELF_<CID>_<KEY>
-        env_prefix = f"ANELF_{self.channel_id.upper()}_"
-        for k, v in os.environ.items():
-            if k.startswith(env_prefix):
-                key = k[len(env_prefix):].lower()
-                cfg_dict[key] = v
+        未写入过 ConfigManager 的字段取模型默认值；校验失败整体回退默认配置。
+        """
+        from core.config import ConfigManager
 
-        # 用 pydantic 校验
+        values: Dict[str, Any] = {}
+        for name in self._Configs.model_fields:
+            key = self._config_key_prefix + name
+            if ConfigManager.has(key):
+                values[name] = ConfigManager.get(key)
         try:
-            self._config = self._Configs.model_validate(cfg_dict)
+            self._config = self._Configs.model_validate(values)
         except Exception as exc:
             log(
                 f"频道配置校验失败 ({self.channel_id}): {exc}，使用默认配置",
@@ -720,12 +716,13 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
             )
             self._config = self._Configs()
 
-        # 注册到 ConfigManager（如果存在）
+    def _on_config_changed(self, key: str, value: Any) -> None:
+        """ConfigManager 变更监听回调：本频道配置键写入时重新物化。"""
         try:
-            from core.config import ConfigManager
-            ConfigManager.register(f"channel_{self.channel_id}", self._config)
-        except Exception:
-            pass  # ConfigManager 可能不支持 register，静默跳过
+            self._load_and_register_config()
+            log(f"频道配置已热更新: {self.channel_id} ({key})", "DEBUG", tag="通道")
+        except Exception as exc:
+            log(f"频道配置热更新失败: {self.channel_id} -> {exc}", "WARNING", tag="通道")
 
     def get_config(self) -> TConfig:
         """获取配置（带类型）。"""
@@ -742,22 +739,8 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         """读取配置项（extra=allow 扩展字段缺失时返回 default）。"""
         return getattr(self.config, key, default)
 
-    def save_config(self) -> bool:
-        """保存配置到 channel_config.json。"""
-        if not self._config_path:
-            return False
-        try:
-            os.makedirs(os.path.dirname(self._config_path), exist_ok=True)
-            data = self._config.model_dump(mode="json") if self._config else {}
-            with open(self._config_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            return True
-        except Exception as exc:
-            log(f"频道配置保存失败: {exc}", "WARNING", tag="通道")
-            return False
-
     def reload_config(self) -> bool:
-        """热重载配置。"""
+        """手动触发配置重新物化（正常路径由变更监听自动热更，无需调用）。"""
         try:
             self._load_and_register_config()
             log(f"频道配置已热重载: {self.channel_id}", tag="通道")
@@ -765,17 +748,6 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         except Exception as exc:
             log(f"频道配置热重载失败: {exc}", "WARNING", tag="通道")
             return False
-
-    def _start_config_watcher(self) -> None:
-        """启动配置热更新监听。"""
-        if not self._config_path:
-            return
-        try:
-            from .config_watcher import get_config_watcher
-            watcher = get_config_watcher()
-            watcher.watch(self._config_path, self.reload_config)
-        except Exception as exc:
-            log(f"配置监听启动失败: {exc}", "WARNING", tag="通道")
 
     # ------------------------------------------------------------------
     # @ 格式工具（保留旧版能力）

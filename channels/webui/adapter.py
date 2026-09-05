@@ -7,7 +7,7 @@ import json
 import time
 from typing import Any, Set
 
-from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
+from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
 from agent.channel.schemas import (
     AdapterChannel,
@@ -21,15 +21,12 @@ from agent.channel.schemas import (
 )
 from core.tags import strip_functional_tags, strip_message_meta_tags
 
+from .config import WebUIConfig
+
 
 def _clean_outbound(text: str) -> str:
     """出站文本清洗：剥离元数据标签与功能性标签（对齐历史清洗语义）。"""
     return strip_functional_tags(strip_message_meta_tags(text or "")).strip()
-
-
-class WebUIConfig(ChannelConfig):
-    """网页界面 频道配置。"""
-    pass
 
 
 class WebUIChannel(BaseChannel[WebUIConfig]):

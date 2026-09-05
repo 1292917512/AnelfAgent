@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { ConfigMetaItem } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useConfigSave } from "./useConfigSave";
-import { NumberField, RangeField, SelectField, SwitchField, TextField } from "./fields";
+import { NumberField, PasswordField, RangeField, SelectField, SwitchField, TextField } from "./fields";
 
 interface ConfigItemRowProps {
   item: ConfigMetaItem;
@@ -53,6 +53,9 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
           onCommit={save}
         />
       );
+    }
+    if (item.type === "password") {
+      return <PasswordField value={value == null ? "" : String(value)} disabled={disabled} onCommit={save} />;
     }
     return <TextField value={value == null ? "" : String(value)} disabled={disabled} onCommit={save} />;
   })();

@@ -134,6 +134,8 @@ class EntityMetadata:
     group: str = ""
     source: str = "builtin"
     tags: List[str] = field(default_factory=list)
+    # 显式配置分组（ConfigRegistry 组名）；空则按约定 entity/<group> 推导
+    config_group_name: str = ""
 
     instance: Any = None
     entity_class: Optional[Type] = None
@@ -145,7 +147,9 @@ class EntityMetadata:
 
     @property
     def config_group(self) -> str:
-        """实体配置分组（约定：ConfigRegistry 中的 entity/<group>）。"""
+        """实体配置分组（显式 config_group_name 优先，否则约定 entity/<group>）。"""
+        if self.config_group_name:
+            return self.config_group_name
         return f"entity/{self.group}" if self.group else ""
 
     @property
@@ -184,35 +188,41 @@ class EntityMetadata:
         ConfigManager.set(key, value)
 
     def get_all_configs(self) -> Dict[str, Any]:
-        """获取实体所属配置分组的所有配置项及其当前值"""
+        """获取实体所属配置分组的所有配置项及其当前值（PASSWORD 类型掩码，供展示用）"""
         if not self.config_group:
             return {}
-        from core.config import ConfigManager, ConfigRegistry
+        from core.config import ConfigManager, ConfigRegistry, mask_secret
         items = ConfigRegistry.get_group_items(self.config_group)
-        return {
-            item.key: ConfigManager.get(item.key, item.default_value)
-            for item in items
-        }
+        result = {}
+        for item in items:
+            value = ConfigManager.get(item.key, item.default_value)
+            if item.is_secret and isinstance(value, str) and value:
+                value = mask_secret(value)
+            result[item.key] = value
+        return result
 
     def get_config_items(self) -> List[Dict[str, Any]]:
-        """获取实体配置项描述列表（含类型、默认值等元信息）"""
+        """获取实体配置项描述列表（含类型、默认值等元信息；PASSWORD 类型值掩码）"""
         if not self.config_group:
             return []
-        from core.config import ConfigManager, ConfigRegistry
+        from core.config import ConfigManager, ConfigRegistry, mask_secret
         items = ConfigRegistry.get_group_items(self.config_group)
-        return [
-            {
+        result = []
+        for item in items:
+            value = ConfigManager.get(item.key, item.default_value)
+            if item.is_secret and isinstance(value, str) and value:
+                value = mask_secret(value)
+            result.append({
                 "key": item.key,
                 "description": item.description,
-                "value": ConfigManager.get(item.key, item.default_value),
+                "value": value,
                 "default": item.default_value,
                 "type": item.value_type.value if hasattr(item.value_type, 'value') else str(item.value_type),
                 "editable": item.editable,
                 "required": item.required,
                 "enum_options": item.enum_options,
-            }
-            for item in items
-        ]
+            })
+        return result
 
 
 # ======================================================================
@@ -405,6 +415,15 @@ class BaseEntity(ABC):  # noqa: B024 — 标记型基类：子类经类属性声
         cls = self.__class__
         instance_name = _entity_instance_name(self)
 
+        # 子类可定义 _resolve_config_group() 显式声明配置分组（如频道 adapter/<id>）
+        config_group_name = ""
+        resolver = getattr(self, "_resolve_config_group", None)
+        if callable(resolver):
+            try:
+                config_group_name = str(resolver() or "")
+            except Exception:
+                config_group_name = ""
+
         metadata = EntityMetadata(
             name=instance_name,
             entity_type=getattr(cls, '_entity_type', EntityType.CUSTOM),
@@ -416,6 +435,7 @@ class BaseEntity(ABC):  # noqa: B024 — 标记型基类：子类经类属性声
             ),
             enabled=True,
             instance=self,
+            config_group_name=config_group_name,
             meta=dict(getattr(cls, '_entity_meta', {}) or {}),
         )
         EntityRegistry.register(metadata)

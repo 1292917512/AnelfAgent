@@ -365,11 +365,26 @@ async def test_text_form_end_reply_ends_without_delivery(anything, deliver_mock)
     mind = _mind()
     mind._rounds = [text_result("end_reply(reason=群员闲聊与我无关，静默结束)")]
     steps: List[str] = []
-    await _run(mind, anything, steps)
+    chain: List = []
+    await _run(mind, anything, steps, chain)
 
     deliver_mock.assert_not_awaited()
     assert mind.llm_calls == 1
     assert any("按结束处理" in s for s in steps)
+    # 规范入链：幻觉文本不留痕，轨迹里是 assistant tool_calls + tool 结果
+    assert not any(
+        m.get("role") == "assistant" and "end_reply(" in (m.get("content") or "")
+        for m in chain
+    )
+    assistant_calls = [
+        tc["function"]["name"] for m in chain if m.get("role") == "assistant"
+        for tc in m.get("tool_calls") or []
+    ]
+    assert assistant_calls == ["end_reply"]
+    assert any(
+        m.get("role") == "tool" and '"action": "end_reply"' in m.get("content", "")
+        for m in chain
+    )
 
 
 async def test_text_form_end_reply_delivers_earlier_pending(anything, deliver_mock) -> None:

@@ -25,9 +25,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from pydantic import Field
-
-from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
+from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
 from agent.channel.schemas import (
     AdapterChannel,
@@ -47,6 +45,7 @@ from agent.channel.utils.media import MAX_OUTBOUND_FILE_BYTES, resolve_local_fil
 from core.log import log
 
 from . import ilink_client as ilink
+from .config import WeixinConfig
 from .state import (
     ContextTokenStore,
     MessageDeduplicator,
@@ -55,48 +54,6 @@ from .state import (
     load_weixin_account,
     save_sync_buf,
 )
-
-
-class WeixinConfig(ChannelConfig):
-    """微信频道配置（iLink Bot API）。"""
-
-    account_id: str = Field(default="", description="iLink Bot 账号 ID（扫码登录获得）")
-    token: str = Field(default="", description="iLink Bot Token（留空则从 workspace/weixin/accounts 恢复）")
-    base_url: str = Field(default=ilink.ILINK_BASE_URL, description="iLink API 地址")
-    cdn_base_url: str = Field(default=ilink.WEIXIN_CDN_BASE_URL, description="微信 CDN 地址")
-    dm_policy: str = Field(default="open", description="私聊策略: open/allowlist/disabled")
-    group_policy: str = Field(default="disabled", description="群聊策略: open/allowlist/disabled")
-    allow_from: str = Field(default="", description="私聊白名单（逗号分隔用户 ID）")
-    group_allow_from: str = Field(default="", description="群聊白名单（逗号分隔群 ID）")
-    split_multiline_messages: bool = Field(default=False, description="多行消息逐行拆分发送")
-    send_chunk_delay_seconds: float = Field(default=1.5, description="文本分块发送间隔（秒）")
-    send_chunk_retries: int = Field(default=4, description="单块发送重试次数")
-    send_chunk_retry_delay_seconds: float = Field(default=1.0, description="发送重试基础退避（秒）")
-    rate_limit_circuit_threshold: int = Field(default=1, description="限频熔断触发次数")
-    rate_limit_circuit_window_seconds: float = Field(default=30.0, description="限频统计窗口（秒）")
-    rate_limit_circuit_open_seconds: float = Field(default=30.0, description="熔断断开时长（秒）")
-    text_batch_delay_seconds: float = Field(default=3.0, description="文本合批静默期（秒）")
-    text_batch_split_delay_seconds: float = Field(default=5.0, description="长片段合批静默期（秒）")
-
-
-def _weixin_config_path(legacy_path: str) -> str:
-    """微信频道配置路径：数据目录优先，首次发现仓库目录旧配置时自动迁移。"""
-    import shutil
-
-    from core.path import ConfigPaths
-
-    data_path = os.path.join(
-        os.path.dirname(str(ConfigPaths.SQLITE_DB)), "channels", "weixin.json",
-    )
-    if not os.path.exists(data_path) and os.path.exists(legacy_path):
-        try:
-            os.makedirs(os.path.dirname(data_path), exist_ok=True)
-            shutil.copy2(legacy_path, data_path)
-            log(f"微信: 频道配置已从仓库目录迁移到数据目录 {data_path}", tag="通道")
-        except Exception as exc:
-            log(f"微信: 配置迁移失败，回退旧路径 ({exc})", "WARNING", tag="通道")
-            return legacy_path
-    return data_path
 
 
 class WeixinChannel(BaseChannel[WeixinConfig]):
@@ -125,10 +82,6 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
 
     MAX_MESSAGE_LENGTH = ilink.MAX_MESSAGE_LENGTH
     _SPLIT_THRESHOLD = 1800  # iLink 自身约 2048 字符切片
-
-    def _default_config_path(self) -> str:
-        """配置改存数据目录（含扫码 token 凭据，不应落在仓库目录）。"""
-        return _weixin_config_path(super()._default_config_path())
 
     def __init__(self) -> None:
         self._poll_session: Optional[Any] = None
@@ -1251,23 +1204,20 @@ def build_router() -> Any:
 
 
 async def _apply_login_credential(credential: Dict[str, str]) -> None:
-    """扫码成功后：写频道配置（数据目录）→ 启用 → （重）启动频道。"""
-    import json
+    """扫码成功后：写统一配置（凭据 + 启用）→ （重）启动频道。"""
+    from agent.channel.config import set_channel_config
+    from core.config import ConfigManager
 
-    cfg_path = Path(_weixin_config_path(str(Path(__file__).parent / "channel_config.json")))
-    cfg: Dict[str, Any] = {}
-    if cfg_path.exists():
-        try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            log(f"微信: 现有频道配置解析失败，按空配置重建 ({cfg_path}): {exc}", "DEBUG", tag="通道")
-            cfg = {}
-    cfg["enabled"] = True
-    cfg["account_id"] = credential["account_id"]
-    cfg["token"] = credential["token"]
-    cfg["base_url"] = credential.get("base_url") or cfg.get("base_url") or ilink.ILINK_BASE_URL
-    cfg.setdefault("cdn_base_url", ilink.WEIXIN_CDN_BASE_URL)
-    cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    set_channel_config(
+        "weixin",
+        enabled=True,
+        account_id=credential["account_id"],
+        token=credential["token"],
+        base_url=credential.get("base_url")
+        or ConfigManager.get("weixin_base_url", "")
+        or ilink.ILINK_BASE_URL,
+        cdn_base_url=ConfigManager.get("weixin_cdn_base_url", "") or ilink.WEIXIN_CDN_BASE_URL,
+    )
     log(f"微信: 扫码凭据已写入配置 account={credential['account_id'][:8]}", tag="通道")
 
     try:
@@ -1276,7 +1226,6 @@ async def _apply_login_credential(credential: Dict[str, str]) -> None:
         mgr = get_channel_manager()
         channel = mgr.get("weixin")
         if channel is not None:
-            channel.reload_config()
             if channel.status == ChannelStatus.RUNNING:
                 await mgr.stop_channel("weixin")
             await mgr.start_channel("weixin")

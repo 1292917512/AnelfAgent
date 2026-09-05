@@ -121,3 +121,39 @@ class TestRangeMeta:
         r = client.put(f"/api/config/meta/{range_config}", json={"value": 150})
         assert r.status_code == 200
         assert r.json()["value"] == 100
+
+
+class TestPasswordMeta:
+    @pytest.fixture
+    def secret_config(self):
+        """注册一个 PASSWORD 配置项并在用后清理。"""
+        ConfigRegistry.register(ConfigItem(
+            key="meta_test_secret", group="测试组",
+            description="密钥", default_value="",
+            value_type="password",
+        ))
+        ConfigManager.set("meta_test_secret", "abcd1234efgh5678")
+        yield "meta_test_secret"
+        ConfigManager.set("meta_test_secret", "")
+
+    def test_get_masks_secret(self, client, secret_config) -> None:
+        r = client.get("/api/config/meta")
+        item = next(
+            i
+            for g in r.json()["groups"]
+            for i in g["items"]
+            if i["key"] == secret_config
+        )
+        assert item["type"] == "password"
+        assert item["value"] == "abcd****5678"
+
+    def test_put_masked_value_keeps_current(self, client, secret_config) -> None:
+        r = client.put(f"/api/config/meta/{secret_config}", json={"value": "abcd****5678"})
+        assert r.status_code == 200
+        assert r.json().get("unchanged") is True
+        assert ConfigManager.get(secret_config) == "abcd1234efgh5678"
+
+    def test_put_new_value_replaces(self, client, secret_config) -> None:
+        r = client.put(f"/api/config/meta/{secret_config}", json={"value": "new-token-0001"})
+        assert r.status_code == 200
+        assert ConfigManager.get(secret_config) == "new-token-0001"

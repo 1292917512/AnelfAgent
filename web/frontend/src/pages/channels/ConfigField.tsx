@@ -1,30 +1,24 @@
 import { useTranslation } from "react-i18next";
+import type { ConfigMetaItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export interface ConfigMeta {
-  description: string;
-  default: unknown;
-  value: unknown;
-  group: string;
-  value_type_str: string;
-  enum_options?: string[];
-  tag?: string;
-}
-
+/** 频道配置字段（消费统一配置元数据 ConfigMetaItem，与配置中心同一数据流） */
 export function ConfigField({
-  configKey,
   meta,
+  prefix,
   value,
   onChange,
 }: {
-  configKey: string;
-  meta: ConfigMeta;
+  meta: ConfigMetaItem;
+  /** 频道键前缀（如 "qq_"），仅用于展示短键名 */
+  prefix?: string;
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
   const { t } = useTranslation("common");
-  const shortKey = configKey.split(".").pop() || configKey;
-  const vtype = meta.value_type_str;
+  const shortKey =
+    prefix && meta.key.startsWith(prefix) ? meta.key.slice(prefix.length) : meta.key;
+  const vtype = meta.type;
 
   const fieldCls =
     "w-full px-3 py-1.5 text-sm rounded-md " +
@@ -95,13 +89,13 @@ export function ConfigField({
           placeholder={t("defaultPlaceholder", { value: meta.default })}
           className={fieldCls}
         />
-      ) : vtype === "enum" && meta.enum_options ? (
+      ) : vtype === "enum" && meta.options ? (
         <select
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
           className={fieldCls}
         >
-          {meta.enum_options.map((opt) => (
+          {meta.options.map((opt) => (
             <option key={opt} value={opt}>
               {opt}
             </option>

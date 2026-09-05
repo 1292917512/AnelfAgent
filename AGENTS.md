@@ -138,12 +138,46 @@ ConfigPaths.UPLOAD_DIR          # workspace/uploads
 
 - **group 规范**：全英文两级路径 `module/section`（如 `mind/core`、`memory/embedding`、
   `network/proxy`、`entity/ssh`），展示名走前端 i18n `config.json` 的 `modules.*` / `sections.*`；
-  频道配置独立走 `adapter/<id>` 组（不进 ConfigRegistry，经 `/adapters/configs` 读写）
+  频道配置走 `adapter/<id>` 组，与其他组同一注册体系（值存频道目录文件，见下「频道配置统一接入」）
 - **ConfigItem 展示元数据**：`advanced`（高级项，UI 折叠；`*_enabled` 主开关等保持基础项）、
-  `value_type: "range"` + `min`/`max`/`step`（滑条+数字复合控件）、`unit`（单位展示）
-- 保存时按类型强转 + `clamp` 边界收敛；MindConfig 字段自动路由 `save_mind_config` 双轨同步
+  `value_type: "range"` + `min`/`max`/`step`（滑条+数字复合控件）、`unit`（单位展示）、
+  `tag`（条件显示标记，如频道 ws_mode 的 forward/reverse 卡片过滤）；
+  `password` 类型 GET 掩码返回（`mask_secret`），PUT 提交掩码占位符保留现值
+- 保存时经 `ConfigItem.coerce_value` 类型强转 + `clamp` 边界收敛（Web PUT 与 AI
+  `update_entity_config` 共用同一入口）；MindConfig 字段自动路由 `save_mind_config` 双轨同步
+  （AI 侧经 `_sdk.save_config_value` 桥接同纪律）
 - 新增配置项只需在所属模块注册（含 description/advanced/unit），配置中心自动出现，
   不要在前端硬编码字段
+- **AI 配置工具面**（entity 组）：`list_config_groups`（按分类浏览全部配置组）/
+  `get_entity_config`（实体+频道模糊解析，未启用频道经组名直查；PASSWORD 掩码）/
+  `update_entity_config`（统一写入口，risk=CRITICAL 供审批拦截）
+
+#### 频道配置统一接入（agent/channel/config.py）
+
+频道配置与全系统同一套注册与读写面，值文件留在频道目录（模块自持有、可插拔）：
+
+- **声明约定**：`channels/<id>/config.py` 暴露标准符号 `CONFIG_MODEL`（ChannelConfig
+  子类，pydantic 模型即唯一声明源；`Field(description=...)` + `json_schema_extra`
+  直通 value_type/options/advanced/unit/min/max/step/tag；`Literal` 注解自动转 ENUM）。
+  适配器 `from .config import XxxConfig`，禁止在 adapter.py 再定义配置类（双份真相）
+- **键前缀与值存储**：统一配置面的键为 `<id>_<field>`（组 `adapter/<id>`），值存
+  `channels/<id>/channel_config.json`（文件内字段名无前缀，格式与历史一致）——
+  `ChannelConfigStore` 经 `ConfigManager.register_store(<id>_, store)` 接入，
+  get/set/has/save 自动路由，app_config.json 不存频道键；env 覆盖
+  `ANELF_<ID>_<FIELD>` 由 store 读取时生效（与历史语义一致）
+- **外部存储后端是通用机制**：core/config.py `ConfigStore` 协议 +
+  `ConfigManager.register_store(prefix, store)`，任何模块都可用同模式把值
+  留在自己目录下，同时接入统一注册面
+- **注册时机**：bootstrap `register_channels` 节点先调 `register_channel_schemas()`
+  ——扫描 channels/ 注册各频道 store + schema（仅子类声明字段，ChannelConfig 基类
+  通用字段不进配置面），幂等
+- **热更双路径**：进程内写入（Web /config/meta、AI update_entity_config、频道内部
+  `set_channel_config`）经 ConfigManager.set 命中前缀监听器即时热更；手工编辑
+  channel_config.json 经 ConfigWatcher mtime 轮询 → store diff →
+  `ConfigManager.notify_external` 上报同一批监听器（无 diff 不重复触发）
+- **频道内部写配置**：一律 `set_channel_config(<id>, field=value)`（登录回填/直播开关等），
+  禁止直写文件；频道需要对变更做 diff 应用时覆盖 `_on_config_changed`（参考
+  acfun/bilibili 委托 reload_config 的写法）
 
 #### 标签系统（core/tags.py）
 
@@ -396,7 +430,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 
 频道/实体的前端与后端收敛到同一模块目录，核心框架只做通用加载，删除模块目录即整体拔出（UI/API/文案/路由零残留）：
 
-- **频道前端**：`channels/<id>/frontend/`（index.ts 清单 + components/ + api.ts + types.ts + locales/{zh,en}.json），经 `moduleFrontendsPlugin`（vite.config.ts）/ `scripts/link_entity_panels.py` 整目录软链到 `src/plugins/channels/<id>/`（**软链须提交 git**——CI 中 `tsc -b` 先于 vite buildStart）。index.ts 为轻量 eager 清单：`registerPluginI18n("channel-<id>", {zh, en})` 自注册文案 + 组件 loader 动态 import。清单字段：`login`（频道卡片登录入口）/ `panel`（卡片展开区自定义面板）/ `route`+`page`（整页路由，App.tsx 动态注册）/ `hiddenInChannelList`（频道列表隐藏）。频道页（AdapterCard/UnmatchedGroupCard/ChannelsPanel/ChannelTestPanel/Sidebar）全部经 `lib/channel-plugins.ts` 注册表驱动，**禁止 `key === "xxx"` 硬编码**
+- **频道前端**：`channels/<id>/frontend/`（index.ts 清单 + components/ + api.ts + types.ts + locales/{zh,en}.json），经 `moduleFrontendsPlugin`（vite.config.ts）/ `scripts/link_entity_panels.py` 整目录软链到 `src/plugins/channels/<id>/`（**软链须提交 git**——CI 中 `tsc -b` 先于 vite buildStart）。index.ts 为轻量 eager 清单：`registerPluginI18n("channel-<id>", {zh, en})` 自注册文案 + 组件 loader 动态 import。清单字段：`login`（频道卡片登录入口）/ `panel`（卡片展开区自定义面板）/ `route`+`page`（整页路由，App.tsx 动态注册）/ `hiddenInChannelList`（频道列表隐藏）。频道页（AdapterCard/UnmatchedGroupCard/ChannelsPanel/ChannelTestPanel/Sidebar）全部经 `lib/channel-plugins.ts` 注册表驱动，**禁止 `key === "xxx"` 硬编码**。频道在配置中心的分组展示名也由频道自注册：`registerPluginI18n("config", {sections: {"adapter/<id>": ...}})`（deep 合并进核心 config 命名空间），核心 locale 不写具体频道文案
 - **实体面板**：`entities/<name>/panel.tsx`（+ `panels/` 子目录拆分）软链到 `src/pages/entities/panels/`；面板专属 i18n 放 `panels/locales/{zh,en}.json` 由 panel.tsx 顶部 `registerPluginI18n(<ns>)` 自注册（ns 名不变）；面板专属 API/类型放 `panels/api.ts` / `panels/types.ts`（不污染核心 lib/api.ts、lib/types）。**共享型例外**（被核心页面消费的实体功能留核心）：sticker（核心表情包库页）、share（聊天 ShareCard）、mcp / graph / devops（核心管理页共用其 API）
 - 插件 API 复用核心 axios 实例（`import { api, apiErrorMessage } from "@/lib/api"`），类型放插件 types.ts，不进 lib/types
 
@@ -461,7 +495,8 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `agent/runtime/state_restore.py` | 启动状态恢复（工具覆盖/实体启停/自定义标签回放，纯 core 操作；services 同名方法委托于此） |
 | `agent/runtime/singleton.py` | AgentRuntime 全局单例（get_runtime Optional 读 / require_runtime 未就绪抛错；services._runtime 为其 web 侧门面） |
 | `entities/_sdk.py` | 工具注册 + LLM 桥接 |
-| `agent/channel/manager.py` | 频道管理（register / route / activate_channel 动态加载未注册频道 / set_channel_enabled 启停意图落盘 / list_configured_channels 目录扫描） |
+| `agent/channel/manager.py` | 频道管理（register / route / activate_channel 动态加载未注册频道 / set_channel_enabled 启停意图落盘统一配置 / list_configured_channels 目录扫描） |
+| `agent/channel/config.py` | 频道配置统一接入（CONFIG_MODEL 扫描注册 adapter/<id> 组 / ChannelConfigStore 频道目录文件存储后端 / set_channel_config 频道内部写入口 / config_key 键前缀约定） |
 | `agent/channel/tool_bridge.py` | 频道工具桥接（@channel_tool 扫描注册 / 通用能力路由 / 敏感门控 / 按频道接口开关 channel_tool_states） |
 | `agent/channel/context.py` | 当前会话频道 ContextVar（通用工具默认路由目标） |
 | `web/routers/config.py` | 心跳/任务 API + Mind 配置 API |
@@ -527,7 +562,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `model_control` | 模型控制 | `entities/model_control/tools.py` | core |
 | `ollama` | Ollama | `entities/model_control/tools.py` | — |
 | `logs` | 日志查询 | `entities/logs/tools.py` | — |
-| `channel_ops` | 频道操作 | `agent/channel/tool_bridge.py`（@channel_tool 动态）+ `agent/channel/manage_tools.py`（频道启停 start_channel/stop_channel，敏感门控 + risk=CRITICAL，启停意图落盘 channel_config.json 的 enabled） | capability/channel_id/core |
+| `channel_ops` | 频道操作 | `agent/channel/tool_bridge.py`（@channel_tool 动态）+ `agent/channel/manage_tools.py`（频道启停 start_channel/stop_channel，敏感门控 + risk=CRITICAL，启停意图落盘统一配置 `<id>_enabled` 键） | capability/channel_id/core |
 | `entity` | 实体管理 | `entities/entity_query/tools.py` | always/core |
 | `mcp_manage` | MCP 管理 | `entities/mcp/bridge.py`（动态） | — |
 | `mcp:*` | MCP 服务 | 动态注册 | — |

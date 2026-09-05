@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Set
 from fastapi import FastAPI, Request
 from pydantic import BaseModel, Field
 
-from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
+from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus, _err, _ok
 from agent.channel.schemas import (
     ChannelInfo,
@@ -29,7 +29,7 @@ from agent.channel.schemas import (
 from agent.llm.types import ImageContent
 from core.log import log
 
-from .config import HTTP_API_CONFIGS
+from .config import HttpApiConfig
 
 # ------------------------------------------------------------------
 # Request / Response
@@ -66,16 +66,6 @@ class ChatResponse(BaseModel):
 # ------------------------------------------------------------------
 
 
-
-class HttpApiConfig(ChannelConfig):
-    """HTTP 接口 频道配置。"""
-
-    host: str = Field(default="127.0.0.1", description="监听地址")
-    port: int = Field(default=8091, description="监听端口")
-    reply_timeout: int = Field(default=60, description="回复超时时间（秒）")
-    api_token: str = Field(default="", description="API Token（空则免认证）")
-
-
 class HttpApiChannel(BaseChannel[HttpApiConfig]):
     """HTTP API 频道。"""
 
@@ -88,7 +78,6 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         author="AnelfAgent",
     )
     _Configs = HttpApiConfig
-    _adapter_configs = HTTP_API_CONFIGS
 
     def __init__(self) -> None:
         self._pending_replies: Dict[str, asyncio.Future[str]] = {}

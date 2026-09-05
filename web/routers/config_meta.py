@@ -1,12 +1,13 @@
 """统一配置元数据 API — 数据驱动的配置中心。
 
-GET  /api/config/meta        返回全部配置项元数据（按组组织，含当前值）
+GET  /api/config/meta        返回全部配置项元数据（按组组织，PASSWORD 类型值掩码）
 PUT  /api/config/meta/{key}  保存单个配置项（热更生效，自动路由存储后端）
 
 设计要点：
-- 配置项元数据来自 ConfigRegistry（各模块声明式注册）
+- 配置项元数据来自 ConfigRegistry（各模块声明式注册，频道经 adapter/<id> 组接入）
 - MindConfig 字段保存时路由到 save_mind_config（实时生效 + 持久化 + 同步 ConfigManager）
-- 其余配置走 ConfigManager.set + save（ConfigManager 实时读取，天然热更）
+- 其余配置走 ConfigManager.set + save（变更监听驱动频道等消费方即时热更）
+- PASSWORD 类型：GET 掩码返回；PUT 提交掩码占位符时保留现值（留空则清空）
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from core.config import ConfigItem, ConfigManager, ConfigRegistry, ConfigValueType
+from core.config import ConfigItem, ConfigManager, ConfigRegistry, mask_secret
 from services import ConfigService
 from web.routers._errors import server_error
 
@@ -29,19 +30,15 @@ def _mind_fields() -> frozenset:
     return _config_svc.mind_fields()
 
 
-def _item_type(item: ConfigItem) -> str:
-    """配置项的前端控件类型（ConfigItem 构造时已解析 AUTO，直接取声明类型）。"""
-    vt = item.value_type
-    return vt.value if isinstance(vt, ConfigValueType) else str(vt)
-
-
 def _serialize_item(item: ConfigItem) -> Dict[str, Any]:
-    """将 ConfigItem 序列化为前端可用的元数据。"""
+    """将 ConfigItem 序列化为前端可用的元数据（PASSWORD 类型值掩码）。"""
     value = ConfigManager.get(item.key, item.default_value)
+    if item.is_secret and isinstance(value, str) and value:
+        value = mask_secret(value)
     return {
         "key": item.key,
         "description": item.description or item.key,
-        "type": _item_type(item),
+        "type": item.type_name,
         "value": value,
         "default": item.default_value,
         "editable": item.editable,
@@ -51,6 +48,7 @@ def _serialize_item(item: ConfigItem) -> Dict[str, Any]:
         "max": item.max_value,
         "step": item.step,
         "unit": item.unit,
+        "tag": item.tag,
         "source": "mind" if item.key in _mind_fields() else "config_manager",
     }
 
@@ -70,30 +68,6 @@ class ConfigValueUpdate(BaseModel):
     value: Any
 
 
-def _coerce_value(key: str, value: Any, expected_type: str, default: Any = None) -> Any:
-    """按声明类型校验并转换配置值，非法值抛 400。"""
-    try:
-        if expected_type == "boolean":
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                return value.lower() in ("true", "1", "yes")
-            return bool(value)
-        if expected_type == "integer":
-            return int(value)
-        if expected_type in ("float", "range"):
-            number = float(value)
-            # range 与默认值保持同型（整型默认值不产生浮点值）
-            return int(number) if expected_type == "range" and isinstance(default, int) else number
-        if expected_type == "enum":
-            return str(value)
-        if expected_type == "json":
-            return value
-        return str(value) if not isinstance(value, str) else value
-    except (TypeError, ValueError):
-        raise HTTPException(400, f"配置项 {key} 的值类型错误（期望 {expected_type}）") from None
-
-
 @router.put("/meta/{key}")
 async def save_config_meta(key: str, data: ConfigValueUpdate) -> Dict[str, Any]:
     """保存单个配置项（热更生效）。"""
@@ -103,9 +77,17 @@ async def save_config_meta(key: str, data: ConfigValueUpdate) -> Dict[str, Any]:
     if not item.editable:
         raise HTTPException(403, f"配置项不可编辑: {key}")
 
-    expected_type = _item_type(item)
-    value = item.clamp(_coerce_value(key, data.value, expected_type, item.default_value))
-    if expected_type == "enum" and item.enum_options and value not in item.enum_options:
+    # PASSWORD 项提交当前掩码值 = 用户未改动，保留现值（掩码不可逆，无法回写）
+    if item.is_secret and isinstance(data.value, str):
+        current = ConfigManager.get(key, item.default_value)
+        if isinstance(current, str) and current and data.value == mask_secret(current):
+            return {"status": "ok", "key": key, "unchanged": True}
+
+    try:
+        value = item.clamp(item.coerce_value(data.value))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    if item.type_name == "enum" and item.enum_options and value not in item.enum_options:
         raise HTTPException(400, f"配置项 {key} 的值必须是 {item.enum_options} 之一")
 
     if key in _mind_fields():

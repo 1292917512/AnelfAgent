@@ -472,7 +472,7 @@ class AutoCapturePipeline:
         )
 
         try:
-            raw = await light_llm(prompt, temperature=0.2, timeout=60.0)
+            raw = await light_llm(prompt, temperature=0.2, timeout=120.0)
         except Exception as exc:
             # LLM 未配置/超时/故障：返回 None 走失败重试计数（有界），
             # 避免异常直接穿透导致每个 tick 无限重试毒 scope
@@ -587,7 +587,7 @@ class AutoCapturePipeline:
         adapter = parts[1] if len(parts) >= 3 else ""
         prompt = build_extract_prompt(scope_key, scope_key, adapter, material)
         try:
-            raw = await light_llm(prompt, temperature=0.2, timeout=60.0)
+            raw = await light_llm(prompt, temperature=0.2, timeout=120.0)
         except Exception as exc:
             log(f"关系抽取调用失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")
             return 0

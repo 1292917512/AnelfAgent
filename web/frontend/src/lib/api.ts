@@ -504,12 +504,10 @@ export function apiErrorMessage(err: unknown, fallback: string): string {
   return axErr?.response?.data?.detail || axErr?.message || fallback;
 }
 
-// Adapters
+// Adapters（频道配置读写统一走 configMetaApi，组 adapter/<id>）
 export const adaptersApi = {
   list: () => api.get<AdapterListResult>("/adapters/"),
   toggle: (key: string) => api.put(`/adapters/${encodeURIComponent(key)}/toggle`),
-  configs: () => api.get("/adapters/configs"),
-  saveConfigs: (values: ConfigValues) => api.put("/adapters/configs", values),
   testHealth: (key: string) =>
     api.post<ChannelTestHealthResult>(`/adapters/${encodeURIComponent(key)}/test/health`),
   testSend: (key: string, payload: { chat_id: string; text: string }) =>

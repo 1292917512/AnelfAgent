@@ -84,7 +84,7 @@ def build_router() -> APIRouter:
     async def get_entity_config() -> Dict[str, Any]:
         """读取 voiceprint 分组的配置项与当前值。"""
         items = []
-        for item in ConfigRegistry.get_group_items("voiceprint"):
+        for item in ConfigRegistry.get_group_items("entity/voiceprint"):
             items.append({
                 "key": item.key,
                 "description": item.description,
@@ -101,7 +101,7 @@ def build_router() -> APIRouter:
         updates = payload.get("updates")
         if not isinstance(updates, dict):
             raise HTTPException(status_code=400, detail="updates 必须是对象")
-        valid_keys = {item.key for item in ConfigRegistry.get_group_items("voiceprint")}
+        valid_keys = {item.key for item in ConfigRegistry.get_group_items("entity/voiceprint")}
         count = 0
         for key, value in updates.items():
             if key not in valid_keys:

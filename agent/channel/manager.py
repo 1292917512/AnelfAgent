@@ -7,27 +7,24 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
-from pathlib import Path
 from typing import Any, Dict, Optional, Type
 
+from core.config import get_config_bool
 from core.entity import BaseEntity, EntityType
 from core.log import log
 from core.tags import strip_message_meta_tags
 
 from .base import BaseChannel, ChannelStatus
-
-
-def _channels_dir() -> Path:
-    """频道目录（基于项目根的绝对路径，不依赖进程 CWD）。"""
-    from core.path import project_root
-    return Path(project_root()) / "channels"
+from .config import channels_dir, config_key
 
 
 def list_configured_channels() -> Dict[str, bool]:
-    """扫描 channels/ 下所有频道目录，返回 {channel_id: enabled}（含未注册频道）。"""
+    """扫描 channels/ 下所有频道目录，返回 {channel_id: enabled}（含未注册频道）。
+
+    enabled 读统一配置（ConfigManager 键 <channel_id>_enabled，缺省 False）。
+    """
     result: Dict[str, bool] = {}
-    root = _channels_dir()
+    root = channels_dir()
     if not root.is_dir():
         return result
     for item in sorted(root.iterdir()):
@@ -35,46 +32,19 @@ def list_configured_channels() -> Dict[str, bool]:
             continue
         if not (item / "adapter.py").exists():
             continue
-        enabled = False
-        cfg_file = item / "channel_config.json"
-        if cfg_file.exists():
-            try:
-                data = json.loads(cfg_file.read_text("utf-8"))
-                if isinstance(data, dict):
-                    enabled = bool(data.get("enabled", False))
-            except (json.JSONDecodeError, OSError):
-                log(f"频道配置读取失败: {cfg_file}", "DEBUG", tag="通道")
-        result[item.name] = enabled
+        result[item.name] = get_config_bool(config_key(item.name, "enabled"), False)
     return result
 
 
 def set_channel_enabled(channel_id: str, enabled: bool) -> bool:
-    """持久化频道启用状态到 channel_config.json，并同步已注册频道的内存配置。
+    """持久化频道启用状态到统一配置（<channel_id>_enabled 键）。
 
-    仅编辑 enabled 字段，保留文件中的其余键与格式；配置文件不存在时返回 False。
+    已实例化的频道经 ConfigManager 变更监听自动热更内存配置，无需手动同步。
     """
-    cfg_file = _channels_dir() / channel_id / "channel_config.json"
-    if not cfg_file.exists():
-        return False
-    data: Dict[str, Any] = {}
-    try:
-        raw = json.loads(cfg_file.read_text("utf-8"))
-        if isinstance(raw, dict):
-            data = raw
-    except (json.JSONDecodeError, OSError):
-        log(f"频道配置读取失败，将重建 enabled 字段: {cfg_file}", "DEBUG", tag="通道")
-    data["enabled"] = bool(enabled)
-    try:
-        cfg_file.write_bytes(json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"))
-    except OSError as exc:
-        log(f"频道启用状态落盘失败: {channel_id} -> {exc}", "WARNING", tag="通道")
-        return False
-    channel = get_channel_manager().get(channel_id)
-    if channel is not None:
-        try:
-            channel.config.enabled = enabled
-        except Exception as exc:
-            log(f"频道内存配置同步失败: {channel_id} -> {exc}", "DEBUG", tag="通道")
+    from core.config import ConfigManager
+
+    ConfigManager.set(config_key(channel_id, "enabled"), bool(enabled))
+    ConfigManager.save()
     return True
 
 
@@ -122,6 +92,11 @@ class ChannelManager(BaseEntity):
         channel = self._channels.pop(channel_id, None)
         if channel:
             try:
+                from core.config import ConfigManager
+                ConfigManager.remove_listener(channel._config_key_prefix, channel._on_config_changed)
+            except Exception as exc:
+                log(f"频道配置监听移除失败: {channel_id} -> {exc}", "DEBUG", tag="通道")
+            try:
                 from .tool_bridge import unregister_channel_tools
                 unregister_channel_tools(channel_id)
             except Exception as exc:
@@ -153,8 +128,6 @@ class ChannelManager(BaseEntity):
         """启动单个频道，捕获异常防止影响其他频道的并发启动。"""
         try:
             channel._status = ChannelStatus.STARTING
-            # 频道启动路径激活配置热更新监听（无事件循环期间登记的 watch 在此生效）
-            self._ensure_config_watcher_started()
             await channel.start()
             if channel._status == ChannelStatus.STARTING:
                 channel._status = ChannelStatus.RUNNING
@@ -179,7 +152,6 @@ class ChannelManager(BaseEntity):
             return False
         try:
             channel._status = ChannelStatus.STARTING
-            self._ensure_config_watcher_started()
             await channel.start()
             if channel._status == ChannelStatus.STARTING:
                 channel._status = ChannelStatus.RUNNING
@@ -220,7 +192,7 @@ class ChannelManager(BaseEntity):
         if registered is not None:
             return await self.start_channel(channel_id)
 
-        channel_dir = _channels_dir() / channel_id
+        channel_dir = channels_dir() / channel_id
         if not (channel_dir / "adapter.py").exists():
             log(f"频道激活失败，目录或 adapter.py 不存在: {channel_id}", "WARNING", tag="通道")
             return False
@@ -242,7 +214,7 @@ class ChannelManager(BaseEntity):
             return False
 
         try:
-            # 配置在 BaseChannel.__init__ 中自动加载（channels/<id>/channel_config.json）
+            # 配置在 BaseChannel.__init__ 中从 ConfigManager 物化（<id>_<field> 键）
             self.register(channel_cls())
         except Exception as exc:
             log(f"频道实例化失败: {channel_id} - {exc}", "ERROR", tag="通道")
@@ -339,15 +311,6 @@ class ChannelManager(BaseEntity):
     # ------------------------------------------------------------------
     # 内部辅助
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _ensure_config_watcher_started() -> None:
-        """激活配置热更新监听（best-effort，不影响频道启动）。"""
-        try:
-            from .config_watcher import get_config_watcher
-            get_config_watcher().ensure_started()
-        except Exception as exc:
-            log(f"配置监听激活失败: {exc}", "DEBUG", tag="通道")
 
     def resolve_channel_type(self, channel_id: str, target_id: str) -> str:
         """根据历史记录判断 target_id 是群聊还是私聊。

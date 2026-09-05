@@ -2,8 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { ExternalLink } from "lucide-react";
-import type { ConfigMeta } from "@/pages/channels/ConfigField";
-import type { ConfigValues } from "@/lib/types";
+import type { ConfigMetaItem, ConfigValues } from "@/lib/types";
 
 export function ChannelWebView({
   channelKey,
@@ -11,20 +10,18 @@ export function ChannelWebView({
   values,
 }: {
   channelKey: string;
-  configs: Array<[string, ConfigMeta]>;
+  configs: ConfigMetaItem[];
   values: ConfigValues;
 }) {
   const { t } = useTranslation("channels");
   const [showIframe, setShowIframe] = useState(false);
 
-  // 配置键叶段含 webui_url / dashboard_url 即视为频道远程面板（纯约定，无频道特判）
-  const webuiEntry = configs.find(([k]) => {
-    const leaf = k.split(".").pop() ?? "";
-    return leaf.includes("webui_url") || leaf.includes("dashboard_url");
-  });
-  if (!webuiEntry) return null;
+  // 配置键含 webui_url / dashboard_url 即视为频道远程面板（纯约定，无频道特判）
+  const webuiMeta = configs.find((m) =>
+    m.key.includes("webui_url") || m.key.includes("dashboard_url"));
+  if (!webuiMeta) return null;
 
-  const url = String(values[webuiEntry[0]] || webuiEntry[1].value || webuiEntry[1].default || "");
+  const url = String(values[webuiMeta.key] || webuiMeta.value || webuiMeta.default || "");
   if (!url) return null;
 
   // 一律经本站同源代理访问频道 WebUI（外网可达）；

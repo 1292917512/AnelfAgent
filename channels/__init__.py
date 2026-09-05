@@ -3,7 +3,8 @@
 
 每个频道是一个子目录，包含：
 - ``adapter.py`` — 频道类（继承 BaseChannel）
-- ``channel_config.json`` — 频道独立配置（enabled/参数等）
+- ``config.py`` — 频道配置声明（标准符号 ``CONFIG_MODEL``，ChannelConfig 子类；
+  schema 注册与值读写统一走 core.config，见 agent/channel/config.py）
 
 使用 ``discover_channels()`` 扫描并实例化已启用的频道。
 """
@@ -11,28 +12,18 @@
 from __future__ import annotations
 
 import importlib
-import json
 import traceback
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
+from typing import List, Optional, Type
 
+from core.config import get_config_bool
 from core.log import log
-
-
-def _load_channel_config(channel_dir: Path) -> Dict[str, Any]:
-    """加载频道目录下的 channel_config.json。"""
-    fp = channel_dir / "channel_config.json"
-    if fp.exists():
-        try:
-            return json.loads(fp.read_text("utf-8"))
-        except Exception as e:
-            log(f"频道配置加载失败 ({fp}): {e}", "DEBUG")
-    return {}
 
 
 def discover_channels() -> List:
     """扫描 channels/ 下所有子目录，实例化已启用的频道。"""
     from agent.channel.base import BaseChannel
+    from agent.channel.config import config_key
 
     channel_dir = Path(__file__).parent
     loaded: list = []
@@ -66,19 +57,17 @@ def discover_channels() -> List:
             skipped.append(item.name)
             continue
 
-        # 加载频道本地配置
-        cfg = _load_channel_config(item)
-
-        # 检查是否启用
-        enabled = cfg.get("enabled", False)
-        if not enabled:
+        # 检查是否启用（统一配置 <id>_enabled，缺省 False）
+        if not get_config_bool(config_key(item.name, "enabled"), False):
             skipped.append(item.name)
             continue
 
-        # 实例化（配置在 __init__ 中自动加载）
+        # 实例化（配置在 __init__ 中从 ConfigManager 物化）
         try:
             instance = channel_cls()
-            instance._deferred_start = cfg.get("deferred_start", False)
+            instance._deferred_start = get_config_bool(
+                config_key(item.name, "deferred_start"), False,
+            )
             loaded.append(instance)
         except Exception as e:
             failed.append(item.name)

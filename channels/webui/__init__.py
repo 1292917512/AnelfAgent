@@ -5,5 +5,9 @@
 """
 
 from .adapter import WebUIChannel
+from .config import WebUIConfig
+
+CHANNEL_CLASS = WebUIChannel
+CONFIG_MODEL = WebUIConfig
 
 __all__ = ["WebUIChannel"]

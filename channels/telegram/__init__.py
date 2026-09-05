@@ -1,10 +1,9 @@
 """Telegram Bot 频道适配器。"""
 
 from .adapter import TelegramAdapter
-from .config import TELEGRAM_CONFIGS
+from .config import TelegramConfig
 
 CHANNEL_CLASS = TelegramAdapter
-CHANNEL_CONFIGS = TELEGRAM_CONFIGS
-ENABLED_KEY = "telegram_enabled"
+CONFIG_MODEL = TelegramConfig
 
 __all__ = ["TelegramAdapter"]

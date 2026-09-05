@@ -1,14 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { adaptersApi, warnApiError } from "@/lib/api";
-import type { AdapterInfo, ConfigValues } from "@/lib/types";
+import { adaptersApi, configMetaApi, warnApiError } from "@/lib/api";
+import type { AdapterInfo, ConfigMetaItem, ConfigValues } from "@/lib/types";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 import { Save, CheckCircle } from "lucide-react";
 import { isChannelHidden } from "@/lib/channel-plugins";
 import { AdapterCard } from "@/pages/channels/AdapterCard";
 import { UnmatchedGroupCard } from "@/pages/channels/UnmatchedGroupCard";
-import type { ConfigMeta } from "@/pages/channels/ConfigField";
 
 
 export function ChannelsPanel({
@@ -29,9 +28,10 @@ export function ChannelsPanel({
     refetchInterval: togglingKey ? 1000 : 5000,
   });
 
-  const { data: rawConfigs } = useQuery({
-    queryKey: ["adapterConfigs"],
-    queryFn: () => adaptersApi.configs().then((r) => r.data as Record<string, ConfigMeta>),
+  // 频道配置走统一配置中心数据流（组 adapter/<id>），与 /config 页同源
+  const { data: configMeta } = useQuery({
+    queryKey: ["configMeta"],
+    queryFn: () => configMetaApi.list().then((r) => r.data),
   });
 
   const toggleMutation = useMutation({
@@ -56,24 +56,37 @@ export function ChannelsPanel({
   }, [data]);
 
   const [values, setValues] = useState<ConfigValues>({});
-  const [dirty, setDirty] = useState(false);
+  const [dirtyKeys, setDirtyKeys] = useState<Set<string>>(new Set());
   const [saveOk, triggerSaveOk, resetSaveOk] = useCopyFeedback(2000);
 
+  // 频道配置组：channelKey -> 该频道的配置项列表
+  const configsByChannel: Record<string, ConfigMetaItem[]> = {};
+  if (configMeta) {
+    for (const group of configMeta.groups) {
+      if (!group.group.startsWith("adapter/")) continue;
+      configsByChannel[group.group.slice("adapter/".length)] = group.items;
+    }
+  }
+
   useEffect(() => {
-    if (!rawConfigs) return;
+    if (!configMeta) return;
     const initial: ConfigValues = {};
-    for (const [key, meta] of Object.entries(rawConfigs)) {
-      initial[key] = meta.value !== undefined ? meta.value : meta.default;
+    for (const items of Object.values(configsByChannel)) {
+      for (const item of items) {
+        initial[item.key] = item.value !== undefined ? item.value : item.default;
+      }
     }
     setValues(initial);
-    setDirty(false);
-  }, [rawConfigs]);
+    setDirtyKeys(new Set());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configMeta]);
 
   const saveMutation = useMutation({
-    mutationFn: (vals: ConfigValues) => adaptersApi.saveConfigs(vals),
+    mutationFn: (keys: string[]) =>
+      Promise.all(keys.map((k) => configMetaApi.save(k, values[k]))),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["adapterConfigs"] });
-      setDirty(false);
+      queryClient.invalidateQueries({ queryKey: ["configMeta"] });
+      setDirtyKeys(new Set());
       triggerSaveOk();
     },
   });
@@ -83,35 +96,21 @@ export function ChannelsPanel({
   );
   const ready = data?.ready ?? false;
 
-  const configGroups: Record<string, Array<[string, ConfigMeta]>> = {};
-  if (rawConfigs) {
-    for (const [key, meta] of Object.entries(rawConfigs)) {
-      const g = meta.group || "other";
-      if (!configGroups[g]) configGroups[g] = [];
-      configGroups[g].push([key, meta]);
-    }
-  }
-
-  const getConfigsForChannel = (channelKey: string): Array<[string, ConfigMeta]> => {
-    const groupKey = `adapter/${channelKey}`;
-    return configGroups[groupKey] ?? [];
-  };
+  const getConfigsForChannel = (channelKey: string): ConfigMetaItem[] =>
+    configsByChannel[channelKey] ?? [];
 
   const updateVal = (key: string, val: unknown) => {
     setValues((prev) => ({ ...prev, [key]: val }));
-    setDirty(true);
+    setDirtyKeys((prev) => new Set(prev).add(key));
     resetSaveOk();
   };
 
   const resetDefaults = (channelKey: string) => {
-    if (!rawConfigs) return;
-    const groupKey = `adapter/${channelKey}`;
+    const items = configsByChannel[channelKey] ?? [];
     const defaults: ConfigValues = {};
-    for (const [k, m] of Object.entries(rawConfigs)) {
-      if (m.group === groupKey) defaults[k] = m.default;
-    }
+    for (const item of items) defaults[item.key] = item.default;
     setValues((prev) => ({ ...prev, ...defaults }));
-    setDirty(true);
+    setDirtyKeys((prev) => new Set([...prev, ...items.map((i) => i.key)]));
     resetSaveOk();
   };
 
@@ -127,24 +126,22 @@ export function ChannelsPanel({
     });
   };
 
-  const allConfigGroups = Object.keys(configGroups);
   const adapterKeys = new Set(adapters.map((a) => a.key));
-  const unmatchedGroups = allConfigGroups.filter((g) => {
-    const channelKey = g.replace("adapter/", "");
-    return !adapterKeys.has(channelKey) && !isChannelHidden(channelKey);
-  });
+  const unmatchedChannels = Object.keys(configsByChannel).filter(
+    (channelKey) => !adapterKeys.has(channelKey) && !isChannelHidden(channelKey),
+  );
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-end">
-        {dirty && (
+        {dirtyKeys.size > 0 && (
           <div className="flex items-center gap-2">
             {saveOk && (
               <span className="flex items-center gap-1 text-xs text-ok">
                 <CheckCircle size={14} /> {t("savedOk")}
               </span>
             )}
-            <button onClick={() => saveMutation.mutate(values)} disabled={saveMutation.isPending}
+            <button onClick={() => saveMutation.mutate([...dirtyKeys])} disabled={saveMutation.isPending}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md
                 bg-accent text-white hover:opacity-90 transition-all disabled:opacity-50">
               <Save size={14} />
@@ -176,23 +173,20 @@ export function ChannelsPanel({
             />
           ))}
 
-          {/* Unmatched config groups (not yet registered as channels) */}
-          {unmatchedGroups.map((group) => {
-            const channelKey = group.replace("adapter/", "");
-            return (
-              <UnmatchedGroupCard
-                key={channelKey}
-                channelKey={channelKey}
-                configs={configGroups[group] ?? []}
-                values={values}
-                isOpen={expanded === channelKey}
-                toggling={togglingKey === channelKey}
-                onToggleExpand={() => setExpanded(expanded === channelKey ? null : channelKey)}
-                onStart={() => startUnmatched(channelKey)}
-                onUpdateVal={updateVal}
-              />
-            );
-          })}
+          {/* 已配置但尚未注册启动的频道 */}
+          {unmatchedChannels.map((channelKey) => (
+            <UnmatchedGroupCard
+              key={channelKey}
+              channelKey={channelKey}
+              configs={configsByChannel[channelKey] ?? []}
+              values={values}
+              isOpen={expanded === channelKey}
+              toggling={togglingKey === channelKey}
+              onToggleExpand={() => setExpanded(expanded === channelKey ? null : channelKey)}
+              onStart={() => startUnmatched(channelKey)}
+              onUpdateVal={updateVal}
+            />
+          ))}
         </div>
       )}
     </div>

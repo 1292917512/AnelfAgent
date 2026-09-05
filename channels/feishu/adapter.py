@@ -14,9 +14,8 @@ import time
 from typing import Any, ClassVar, Dict, Optional, Set
 
 import lark_oapi as lark
-from pydantic import Field
 
-from agent.channel.base import BaseChannel, ChannelConfig, ChannelMetadata
+from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus, _ok
 from agent.channel.schemas import (
     ChannelInfo,
@@ -30,34 +29,12 @@ from agent.channel.schemas import (
 from agent.channel.tool_bridge import channel_tool
 from core.log import log
 
-from .config import FEISHU_CONFIGS
+from .config import FeishuConfig
 from .errors import not_ready_json, to_error_json
 from .types import FeishuBotInfo
 from .users import UserNameCache
 
 _AT_RE = re.compile(r'\[at_uid:([^\]]+)\]')
-
-
-
-
-class FeishuConfig(ChannelConfig):
-    """飞书 频道配置。"""
-
-    app_id: str = Field(default="", description="飞书 App ID")
-    app_secret: str = Field(default="", description="飞书 App Secret")
-    domain: str = Field(default="feishu", description="飞书域名 (feishu=国内版/lark=国际版)")
-    connection_mode: str = Field(default="websocket", description="连接模式 (websocket/webhook)")
-    webhook_host: str = Field(default="127.0.0.1", description="Webhook 监听地址（非回环地址必须配置验证 Token 或加密 Key）")
-    webhook_port: int = Field(default=9321, description="Webhook 监听端口")
-    verification_token: str = Field(default="", description="Webhook 验证 Token")
-    encrypt_key: str = Field(default="", description="Webhook 加密 Key")
-    require_mention: bool = Field(default=True, description="群聊中是否需要 @Bot 才触发")
-    reply_to_mode: str = Field(default="first", description="回复引用策略 (first/all/off)")
-    reply_in_thread: bool = Field(default=False, description="群聊中引用回复是否进入话题（thread）模式")
-    markdown_render: bool = Field(default=True, description="含 Markdown 语法的回复以富文本渲染发送")
-    text_limit: int = Field(default=4000, description="单条消息字符限制（超出自动分段）")
-    max_download_mb: int = Field(default=50, description="入站媒体文件下载大小上限 (MB)")
-    sender_name_enabled: bool = Field(default=True, description="解析发送者昵称（需 contact:user.base:readonly 权限，缺失时自动降级为 open_id）")
 
 
 class FeishuChannel(BaseChannel[FeishuConfig]):
@@ -72,7 +49,6 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
         author="AnelfAgent",
     )
     _Configs = FeishuConfig
-    _adapter_configs = FEISHU_CONFIGS
 
     # forward_message 段分发映射（飞书支持文本/图片/文件，见基类模板方法）
     _SEGMENT_SENDERS: ClassVar[Dict[str, str]] = {

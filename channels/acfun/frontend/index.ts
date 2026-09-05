@@ -11,6 +11,12 @@ import en from "./locales/en.json";
 
 registerPluginI18n("channel-acfun", { zh, en });
 
+// 配置中心分组展示名（config 命名空间，deep 合并进核心 locale）
+registerPluginI18n("config", {
+  zh: { sections: { "adapter/acfun": "AcFun" } },
+  en: { sections: { "adapter/acfun": "AcFun" } },
+});
+
 export default {
   login: () => import("./components/Login"),
   panel: () => import("./components/LivePanel"),
