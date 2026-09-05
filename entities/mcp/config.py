@@ -144,6 +144,7 @@ class MCPServerConfig:
     timeout: float = 5.0
     sse_read_timeout: float = 300.0
     call_timeout: float = _DEFAULT_CALL_TIMEOUT
+    plugin: str = ""
 
     def fingerprint(self) -> Dict[str, Any]:
         """用于比较配置是否变更的字典（排除 name）。"""
@@ -254,6 +255,7 @@ class MCPServerStore:
         "sse_read_timeout",
         "call_timeout",
         "stay_awake",
+        "plugin",
     })
     _SERVER_ALLOWED_TRANSPORTS = frozenset({"stdio", "streamable_http", "sse"})
     _SECRET_MASK = "********"
@@ -416,6 +418,9 @@ class MCPServerStore:
                 continue
             if key in {"enabled", "stay_awake"}:
                 normalized[key] = cls._to_bool(val)
+                continue
+            if key == "plugin":
+                normalized[key] = str(val).strip() or None
                 continue
             if key == "args":
                 normalized[key] = cls._parse_args_like(val)

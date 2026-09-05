@@ -70,7 +70,7 @@ _MIND_CONFIGS = {
             "unit": "轮",
         },
         "force_tool_use": {
-            "description": "纯工具模式：强制 LLM 工具选择（tool_choice=required）；纯文本本就会自动投递，通常无需开启",
+            "description": "纯工具模式：强制 LLM 工具选择（tool_choice=required）；纯文本轮末仍会兜底投递，通常无需开启",
             "default": False,
             "advanced": True,
         },
@@ -81,13 +81,13 @@ _MIND_CONFIGS = {
             "unit": "秒",
         },
         "background_wait_budget": {
-            "description": "后台任务等待：单轮累计挂起预算，耗尽后按普通文本投递",
+            "description": "后台任务等待：单轮累计挂起预算，耗尽后纯文本回落独白路径",
             "default": 120.0,
             "advanced": True,
             "unit": "秒",
         },
         "text_without_tool_limit": {
-            "description": "连续纯文本（无工具调用）上限，超过强制结束本轮防死循环",
+            "description": "连续纯文本独白（无工具调用）上限，超过则掐断本轮并轮末投递未送达文本",
             "default": 5,
             "advanced": True,
             "unit": "轮",

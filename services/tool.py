@@ -165,5 +165,6 @@ class ToolService:
         return reload_entities()
 
     def list_plugins(self) -> List[Dict[str, Any]]:
-        """返回已加载插件列表。"""
-        return []
+        """返回已安装插件列表（管理面归 entities/plugins 实体）。"""
+        from core.plugins import get_plugin_manager
+        return [p.to_dict() for p in get_plugin_manager().list_plugins()]

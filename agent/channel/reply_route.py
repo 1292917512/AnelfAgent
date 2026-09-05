@@ -98,6 +98,19 @@ def looks_like_context_leak(text: str) -> bool:
     return any(marker in head for marker in _CONTEXT_LEAK_MARKERS)
 
 
+# 文本形态的工具调用：整条就是一个 `name(...)` 字面调用（弱模型把 function
+# calling 写成文本的病态输出，如 "end_reply(reason=...)"），不是给用户的内容
+_TOOL_CALL_TEXT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\s*\(.*\)\s*$", re.DOTALL)
+_TOOL_CALL_TEXT_MAX_LEN = 500
+
+
+def looks_like_tool_call_text(text: str) -> bool:
+    """检测整条文本是否为一个字面工具调用（`name(...)` 形态，不投递）。"""
+    if not text or len(text) > _TOOL_CALL_TEXT_MAX_LEN:
+        return False
+    return bool(_TOOL_CALL_TEXT_RE.match(text.strip()))
+
+
 @dataclass
 class ReplyTarget:
     """一个可投递的会话目标。"""

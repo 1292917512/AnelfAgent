@@ -50,5 +50,7 @@
   "empty": "空",
   "defaultPlaceholder": "默认: {{value}}",
   "refresh": "刷新",
-  "retry": "重试"
+  "retry": "重试",
+  "pageErrorTitle": "页面加载失败",
+  "pageErrorDesc": "页面内容渲染异常。若是刚更新版本，刷新页面通常即可恢复。"
 }

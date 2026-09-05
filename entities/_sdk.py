@@ -52,6 +52,7 @@ __all__ = [
     "set_default_model", "get_active_llm_client", "get_llm_client_class",
     "get_llm_manager",
     "get_session_llm_params", "canonical_efforts",
+    "activate_tool_group_now", "notify_tool_set_changed",
     "tool_error", "error_from_exception", "ErrorCause",
 ]
 
@@ -257,6 +258,32 @@ def tool_group_rounds_left(group: str) -> int:
         return tool_activation.rounds_left(group)
     except Exception:
         return 0
+
+
+def activate_tool_group_now(group: str, rounds: int = 0) -> int:
+    """在当前会话 scope 程序化激活工具分组，返回生效轮数（0 = 激活失败）。
+
+    供 entities 层在运行时装载工具后立即可用（版本号递增触发下一轮
+    重组装与目录重建）；思维会话外或激活失败时返回 0，延迟导入 agent.mind。
+    """
+    try:
+        from agent.mind.tool_activation import tool_activation
+        return tool_activation.activate(group, rounds or None)
+    except Exception:
+        return 0
+
+
+def notify_tool_set_changed() -> None:
+    """通知工具集成员已变化（不改变激活状态），触发下一轮重组装与目录重建。
+
+    供 entities 层在运行时注册/注销工具后调用（如插件装卸载），
+    延迟导入 agent.mind，失败静默。
+    """
+    try:
+        from agent.mind.tool_activation import tool_activation
+        tool_activation.notify_tools_changed()
+    except Exception:
+        pass
 
 
 def get_current_channel() -> str:

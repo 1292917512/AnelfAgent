@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import type { EntityListItem } from "@/lib/types";
 import {
   Globe, Image, Terminal, Box, Cpu, FileText,
-  MessageSquare, Sticker, FolderTree, Server, Boxes,
+  MessageSquare, Sticker, FolderTree, Server, Boxes, Puzzle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -23,6 +23,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   "folder-tree": FolderTree,
   server: Server,
   boxes: Boxes,
+  puzzle: Puzzle,
 };
 
 export default function Entities() {

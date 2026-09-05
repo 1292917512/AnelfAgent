@@ -145,6 +145,14 @@ class ToolActivationManager:
             self._scope_rounds.pop(scope, None)
             self._version += 1
 
+    def notify_tools_changed(self) -> None:
+        """工具集成员变化通知（插件装卸载等不改激活状态的成员增删）。
+
+        递增版本号，驱动下一轮对话重组装工具 schema 并重算 stable 层指纹——
+        新增工具进入目录、注销工具从冻结数组滤除都依赖这次重建。
+        """
+        self._version += 1
+
 
 # 全局单例
 tool_activation = ToolActivationManager()

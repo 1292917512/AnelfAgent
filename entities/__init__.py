@@ -53,6 +53,14 @@ def discover_entities() -> list[str]:
         log(f"entities loaded: {', '.join(loaded)} ({len(loaded)})")
     if failed:
         log(f"entities failed: {', '.join(failed)} ({len(failed)})", "WARNING")
+
+    # 已安装插件的负载激活（技能/工具/MCP server）——在内置实体扫描后进行，
+    # 保证插件管理实体自身已注册，单个插件失败不阻断启动
+    try:
+        from entities.plugins.tools import activate_installed
+        activate_installed()
+    except Exception as e:
+        log(f"插件激活阶段异常: {e}", "WARNING")
     return loaded
 
 

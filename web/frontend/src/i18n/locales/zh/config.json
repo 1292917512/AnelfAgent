@@ -78,7 +78,8 @@
     "entity/share": "分享",
     "planning/core": "目标注入",
     "task/handoff": "任务交接",
-    "storage/backup": "存储卷备份"
+    "storage/backup": "存储卷备份",
+    "entity/plugins": "插件管理"
   },
   "window": {
     "title": "对话窗口",

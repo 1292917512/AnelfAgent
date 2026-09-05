@@ -531,6 +531,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `entity` | 实体管理 | `entities/entity_query/tools.py` | always/core |
 | `mcp_manage` | MCP 管理 | `entities/mcp/bridge.py`（动态） | — |
 | `mcp:*` | MCP 服务 | 动态注册 | — |
+| `plugins` | 插件管理 | `entities/plugins/tools.py`（AI 管理面）+ `activation.py`（激活编排：技能入库 workspace/skills + MCP 合并带 plugin 来源标记 + tools.py 差集注册）+ `router.py`（/api/entity/plugins）+ 核心引擎 `core/plugins/`（清单多点发现解析、plugins.json 注册表、git/local 负载获取与原子替换、PluginManager 编排，激活经钩子外置） | — |
 | `devops` | 运维管理 | `entities/devops/tools.py`（重启/构建/git 更新/崩溃信息查询 get_crash_report，核心逻辑在 `service.py`，Web 面板经 `router.py` + `panel.tsx` 复用同一实现） | — |
 
 ### 缓存命中率排查手册（ZCode 排障）

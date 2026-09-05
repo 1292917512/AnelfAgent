@@ -53,6 +53,7 @@ config/llm_clients.json
 config/mcp_servers.json
 config/mind_config.json
 config/approval_policies.json
+config/plugins.json
 # 运行时配置
 config/heartbeat.json
 config/cognee.json

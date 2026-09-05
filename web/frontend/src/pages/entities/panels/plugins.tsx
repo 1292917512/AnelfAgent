@@ -1,0 +1,1 @@
+../../../../../../entities/plugins/panel.tsx

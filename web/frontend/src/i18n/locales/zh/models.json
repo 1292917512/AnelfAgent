@@ -180,5 +180,6 @@
     "video": "视频",
     "music": "音乐",
     "rerank": "重排序"
-  }
+  },
+  "noModelMatch": "没有匹配的模型标识"
 }

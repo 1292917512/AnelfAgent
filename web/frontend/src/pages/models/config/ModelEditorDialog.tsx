@@ -58,8 +58,11 @@ function ModelCombobox({
   onFetch: () => void;
   placeholder?: string;
 }) {
+  const { t } = useTranslation("models");
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  // 聚焦时的值作为基线：未输入则展示全量远程列表，输入后才按子串过滤
+  const [focusBaseline, setFocusBaseline] = useState<string | null>(null);
 
   useEffect(() => {
     const onDocClick = (e: MouseEvent) => {
@@ -70,10 +73,13 @@ function ModelCombobox({
   }, []);
 
   const filtered = useMemo(() => {
+    if (focusBaseline !== null && value === focusBaseline) {
+      return options.slice(0, 100);
+    }
     const kw = value.trim().toLowerCase();
     const list = kw ? options.filter((o) => o.toLowerCase().includes(kw)) : options;
     return list.slice(0, 100);
-  }, [options, value]);
+  }, [options, value, focusBaseline]);
 
   return (
     <div ref={ref} className="relative">
@@ -83,7 +89,7 @@ function ModelCombobox({
             value={value}
             placeholder={placeholder}
             onChange={(e) => onChange(e.target.value)}
-            onFocus={() => setOpen(true)}
+            onFocus={() => { setFocusBaseline(value); setOpen(true); }}
             className="pr-7"
           />
           <ChevronDown
@@ -108,12 +114,18 @@ function ModelCombobox({
               onMouseDown={(e) => {
                 e.preventDefault();
                 onChange(id);
+                setFocusBaseline(id);
                 setOpen(false);
               }}
             >
               {id}
             </button>
           ))}
+        </div>
+      )}
+      {open && filtered.length === 0 && !loading && (
+        <div className="absolute z-20 mt-1 w-full rounded-md border border-border bg-card shadow-lg px-3 py-2 text-xs text-muted">
+          {options.length === 0 ? t("noRemoteModels") : t("noModelMatch")}
         </div>
       )}
     </div>

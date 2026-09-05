@@ -50,5 +50,7 @@
   "empty": "empty",
   "defaultPlaceholder": "Default: {{value}}",
   "refresh": "Refresh",
-  "retry": "Retry"
+  "retry": "Retry",
+  "pageErrorTitle": "Failed to load page",
+  "pageErrorDesc": "The page failed to render. If the app was just updated, a refresh usually fixes it."
 }

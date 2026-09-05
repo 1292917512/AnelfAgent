@@ -504,12 +504,14 @@ _PATH_SPECS: Dict[str, Tuple[str, str]] = {
     "APPROVAL_POLICIES": ("config", "approval_policies.json"),
     "DB_CONNECTIONS": ("config", "db_connections.json"),
     "STORAGE_VOLUMES": ("config", "storage_volumes.json"),
+    "PLUGINS_REGISTRY": ("config", "plugins.json"),
     "COGNEE_CONFIG": ("config", "cognee.json"),
     "MEMORY_DIR": ("data", ""),
     "COGNEE_DATA_DIR": ("data", "cognee"),
     "HEARTBEAT_LOG": ("data", "heartbeat.md"),
     "SQLITE_DB": ("data", "data/agent.sqlite3"),
     "UPLOAD_DIR": ("literal", "workspace/uploads"),
+    "PLUGINS_DIR": ("literal", "workspace/plugins"),
 }
 
 # 测试/脚本注入的路径覆盖（monkeypatch.setattr 或直接赋值）

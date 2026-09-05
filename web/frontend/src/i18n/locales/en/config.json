@@ -78,7 +78,8 @@
     "entity/share": "Share",
     "planning/core": "Goal Injection",
     "task/handoff": "Task Handoff",
-    "storage/backup": "Volume Backup"
+    "storage/backup": "Volume Backup",
+    "entity/plugins": "Plugins"
   },
   "window": {
     "title": "Conversation Window",

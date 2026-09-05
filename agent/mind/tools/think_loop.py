@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import TYPE_CHECKING, AbstractSet, Any, Dict, List, Optional, Set
 
@@ -22,6 +23,7 @@ from agent.channel.reply_route import (
     deliver_text,
     looks_like_context_leak,
     looks_like_fake_tool_call,
+    looks_like_tool_call_text,
     should_suppress,
     target_from_anything,
 )
@@ -238,6 +240,9 @@ _PROMPT_TASKS_STILL_RUNNING = (
 
 # 反思模式连续纯文本上限：达到后收束（产出已累积在 collected_text）
 _MAX_REFLECT_TEXT_ROUNDS = 3
+
+# 文本形态的 end_reply（弱模型把结束指令写成文本）：整条匹配即按结束意图处理
+_END_REPLY_TEXT_RE = re.compile(r"^end_reply\s*\(.*\)\s*$", re.DOTALL)
 
 _PROMPT_TOOL_ERROR_ESCALATION = (
     "[严重警告] 工具调用连续返回错误，你可能陷入了参数格式错误的循环。"
@@ -581,10 +586,14 @@ async def _deliver_pending_text(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> 
         return
     if should_suppress(text):
         return
-    if looks_like_fake_tool_call(text) or looks_like_context_leak(text):
+    suppressed_kind = ""
+    if looks_like_context_leak(text):
+        suppressed_kind = "注入上下文复述"
+    elif looks_like_fake_tool_call(text) or looks_like_tool_call_text(text):
+        suppressed_kind = "工具调用形态文本"
+    if suppressed_kind:
         # 病态输出不投递；发射观测事件供思维面板标红对应 LLM 节点
-        kind = "注入上下文复述" if looks_like_context_leak(text) else "假工具调用"
-        log(f"轮末投递已过滤{kind}文本", "WARNING", tag="思维")
+        log(f"轮末投递已过滤{suppressed_kind}", "WARNING", tag="思维")
         await event_bus.emit(
             EVENT_THINKING_FAKE_TOOL_CALL, {
                 "iteration": state.iteration + 1,
@@ -763,7 +772,16 @@ async def _handle_text_only_round(
             tool_chain.append({"role": "system", "content": _PROMPT_CONTINUE})
             execution_steps.append(f"→ 第{state.iteration + 1}轮: {ctx.mode_label}中")
         else:
-            # REPLY：纯文本 = 独白，不终局不投递；暂存为未送达文本，轮末统一投递。
+            # REPLY：弱模型把 end_reply 写成文本——按结束意图处理，
+            # 内部指令文本不投递（省掉下一轮补发工具调用的往返）
+            if _END_REPLY_TEXT_RE.match(raw_text):
+                log("文本形态的 end_reply，按结束意图处理（不投递）", "WARNING", tag="思维")
+                execution_steps.append(
+                    f"→ 第{state.iteration + 1}轮: 文本形态 end_reply，按结束处理"
+                )
+                await _finish_round(ctx, state)
+                return _StageOutcome.BREAK
+            # 纯文本 = 独白，不终局不投递；暂存为未送达文本，轮末统一投递。
             # 连续独白达到上限说明模型一直不调用工具——掐断，经 _finish_round 投递收尾
             state.pending_text = raw_text
             state.consecutive_text_rounds += 1

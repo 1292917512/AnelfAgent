@@ -87,7 +87,7 @@ def _current_scope_tag() -> str:
 # ------------------------------------------------------------------
 
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory",
+    group="memory", tags=["always"], source="mind.memory", timeout=300.0,
     description="将一条关键信息存入长期记忆。内容应简洁精炼。使用 type:permanent 标签可存储永远不会被遗忘的重要信息。"
     "返回 verdict 字段即最终裁决：stored/updated/merged 才是真的记住了；"
     "skipped_duplicate 表示与既有记忆重复、未写入——此时不要对用户声称「已记住」，也不要原样重试。",

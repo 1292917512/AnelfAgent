@@ -12,6 +12,7 @@ from typing import List
 import pytest
 from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool_result
 
+from agent.channel.reply_route import looks_like_tool_call_text
 from agent.messages.everything import EverythingGroup
 
 _SEND_MESSAGE_RESULT = '{"success": true, "target_id": "1", "message_id": "m1"}'
@@ -331,6 +332,67 @@ async def test_end_reply_empty_content_not_delivered(anything, deliver_mock) -> 
     """end_reply 无正文 → 不投递。"""
     mind = _mind()
     mind._rounds = [tool_result("", ["end_reply"])]
+    await _run(mind, anything)
+
+    deliver_mock.assert_not_awaited()
+
+
+# ==================================================================
+# 文本形态工具调用（弱模型把 function calling 写成文本）
+# ==================================================================
+
+class TestLooksLikeToolCallText:
+    @pytest.mark.parametrize("text", [
+        "end_reply()",
+        'end_reply(reason=群员闲聊与我无关，静默结束)',
+        'send_message(content="你好")',
+    ])
+    def test_detected(self, text: str) -> None:
+        assert looks_like_tool_call_text(text)
+
+    @pytest.mark.parametrize("text", [
+        "这个函数 end_reply() 是用来结束对话的",  # 调用形态只是正文片段
+        "我来看看（稍等）",  # 中文括号不是调用
+        "今天的结论是这样。",
+        "",
+    ])
+    def test_normal_text_not_detected(self, text: str) -> None:
+        assert not looks_like_tool_call_text(text)
+
+
+async def test_text_form_end_reply_ends_without_delivery(anything, deliver_mock) -> None:
+    """弱模型把 end_reply 写成文本：按结束意图处理，内部指令文本不投递。"""
+    mind = _mind()
+    mind._rounds = [text_result("end_reply(reason=群员闲聊与我无关，静默结束)")]
+    steps: List[str] = []
+    await _run(mind, anything, steps)
+
+    deliver_mock.assert_not_awaited()
+    assert mind.llm_calls == 1
+    assert any("按结束处理" in s for s in steps)
+
+
+async def test_text_form_end_reply_delivers_earlier_pending(anything, deliver_mock) -> None:
+    """先有正常独白、再输出文本形态 end_reply：只保底投递此前的独白。"""
+    mind = _mind()
+    mind._rounds = [
+        text_result("这是给你的答复～"),
+        text_result("end_reply()"),
+    ]
+    await _run(mind, anything)
+
+    deliver_mock.assert_awaited_once()
+    _, content = deliver_mock.await_args.args
+    assert content == "这是给你的答复～"
+
+
+async def test_tool_call_shaped_text_filtered_at_delivery(anything, deliver_mock) -> None:
+    """整条是字面工具调用形态的独白：轮末投递点过滤，不外发。"""
+    mind = _mind()
+    mind._rounds = [
+        text_result('send_message(content="你好")'),
+        tool_result("", ["end_reply"]),
+    ]
     await _run(mind, anything)
 
     deliver_mock.assert_not_awaited()

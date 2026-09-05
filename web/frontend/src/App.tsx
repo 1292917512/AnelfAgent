@@ -11,6 +11,7 @@ import { configApi } from "./lib/api";
 import { warnApiError } from "@/lib/api";
 import { CORE_ROUTES } from "@/lib/core-routes";
 import { listPluginRoutes } from "@/lib/channel-plugins";
+import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 
 // 页面模块自动发现：pages/*.tsx 按文件名映射路由 path
 // 命名约定：Share.tsx → /share, Dashboard.tsx → /dashboard
@@ -63,9 +64,11 @@ export default function App() {
               const Page = r.page ? lazyPage(r.page) : null;
               if (!Page) return null;
               const element = (
-                <Suspense fallback={<div className="p-4 text-muted">{t("common:loading")}</div>}>
-                  <Page />
-                </Suspense>
+                <RouteErrorBoundary>
+                  <Suspense fallback={<div className="p-4 text-muted">{t("common:loading")}</div>}>
+                    <Page />
+                  </Suspense>
+                </RouteErrorBoundary>
               );
               return r.index ? (
                 <Route key="index" index element={element} />
@@ -78,9 +81,11 @@ export default function App() {
                 key={`plugin:${r.path}`}
                 path={r.path}
                 element={
-                  <Suspense fallback={<div className="p-4 text-muted">{t("common:loading")}</div>}>
-                    <r.page />
-                  </Suspense>
+                  <RouteErrorBoundary>
+                    <Suspense fallback={<div className="p-4 text-muted">{t("common:loading")}</div>}>
+                      <r.page />
+                    </Suspense>
+                  </RouteErrorBoundary>
                 }
               />
             ))}
