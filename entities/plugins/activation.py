@@ -228,7 +228,15 @@ def _deactivate_skills(record: InstalledPlugin) -> None:
 # ==================================================================
 
 def _activate_mcp_servers(plugin_name: str, payload_dir: Path, manifest) -> List[str]:
-    """把插件声明的 MCP server 合并进 mcp_servers.json（带 plugin 来源标记）。"""
+    """把插件声明的 MCP server 合并进 mcp_servers.json（带 plugin 来源标记）。
+
+    reconcile 语义（重复激活幂等）：
+    - 本插件来源（plugin 字段）的既有 server 就地更新，不再视为同名冲突——
+      配置文件跨进程持久化，重启后上次合并的产物仍在，误当冲突会每次
+      启动增生一层前缀副本
+    - 非本插件占用同名时才加 ``<插件>__`` 前缀
+    - 本插件残留但清单已不声明的 server 直接回收
+    """
     from entities.mcp.config import MCPServerStore
 
     try:
@@ -236,26 +244,44 @@ def _activate_mcp_servers(plugin_name: str, payload_dir: Path, manifest) -> List
     except PluginError as e:
         log(f"插件 MCP 配置无效: {plugin_name} - {e}", "WARNING", tag=_TAG)
         return []
-    if not servers:
-        return []
 
     store = MCPServerStore()  # 批量合并期间不逐条热重载，结束后统一触发一次
-    existing = set(store.get_server_names())
+    raw = store.load_config().get("mcpServers", {})
+    # 本插件此前合并的 server 名（plugin 来源标记为凭据）
+    owned = {
+        name for name, cfg in raw.items()
+        if isinstance(cfg, dict) and cfg.get("plugin") == plugin_name
+    }
+    foreign = set(raw) - owned
+    if not servers and not owned:
+        return []
+
     added: List[str] = []
     for server_name, cfg in sorted(servers.items()):
         final_name = server_name
-        if final_name in existing:
+        if final_name in foreign:
             final_name = f"{plugin_name}__{server_name}"
             log(f"MCP server 名冲突，以前缀合并: {server_name} → {final_name}", "WARNING", tag=_TAG)
         cfg = dict(cfg)
         cfg["plugin"] = plugin_name
         try:
-            store.create_server(final_name, cfg)
-            existing.add(final_name)
+            if final_name in owned:
+                store.update_server_config(final_name, cfg, replace=True, reload=False)
+                owned.discard(final_name)
+            else:
+                store.create_server(final_name, cfg)
+                foreign.add(final_name)
             added.append(final_name)
         except ValueError as e:
             log(f"插件 MCP server 合并失败: {server_name} - {e}", "WARNING", tag=_TAG)
-    if added:
+    # 清单已不声明的残留 server 回收
+    for stale in sorted(owned):
+        try:
+            store.remove_server(stale)
+            log(f"插件 MCP server 残留已回收: {stale}", tag=_TAG)
+        except ValueError as e:
+            log(f"插件 MCP server 残留回收失败: {stale} - {e}", "WARNING", tag=_TAG)
+    if added or owned:
         _reload_mcp_bridge()
     return added
 
@@ -293,7 +319,11 @@ def _reload_mcp_bridge() -> None:
 # ==================================================================
 
 def _activate_tools(plugin_name: str, payload_dir: Path, manifest) -> List[str]:
-    """导入插件 tools.py（@tool 注册），按注册表差集收编新增工具。
+    """导入插件 tools.py（@tool 注册），按注册表差集收编工具。
+
+    重复激活幂等：先注销本插件此前收编的工具（source 标记为凭据）再导入，
+    差集才能正确反映本次注册——否则已注册工具不在差集内，记录为空导致
+    后续去激活无法回收（残留注册表）；从插件代码中删除的工具也因此不再回归。
 
     收编动作：
     - 改组到 ``plugin:<name>`` 并注册分组描述（工具目录可见，AI 可按需唤醒）
@@ -308,6 +338,11 @@ def _activate_tools(plugin_name: str, payload_dir: Path, manifest) -> List[str]:
     tools_path = payload_dir / tools_file
     if not tools_path.is_file():
         return []
+
+    source_tag = f"plugin:{plugin_name}"
+    for e in EntityRegistry.get_by_type(EntityType.TOOL):
+        if e.source == source_tag:
+            EntityRegistry.unregister(e.name)
 
     module_name = f"anelf_plugin_{plugin_name.replace('-', '_')}_tools"
     before = {e.name for e in EntityRegistry.get_by_type(EntityType.TOOL)}
@@ -351,7 +386,7 @@ def _activate_tools(plugin_name: str, payload_dir: Path, manifest) -> List[str]:
         # 先注销再以新元数据注册，避免同名覆盖告警并保证索引一致
         EntityRegistry.unregister(tool_name)
         EntityRegistry.register(replace(
-            entity, group=group, source=f"plugin:{plugin_name}", meta=meta,
+            entity, group=group, source=source_tag, meta=meta,
         ))
     # 对话进行中安装/启用时自动激活分组：装完当会话即可用；
     # 启动期无会话 scope，分组以沉睡形态进目录，AI 用时自行唤醒

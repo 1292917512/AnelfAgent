@@ -145,3 +145,62 @@ class TestCommandsConversion:
 
         manager.remove("cmder")
         assert not (plugin_env.skills_dir / "cmder__review").exists()
+
+
+class TestMcpReconcile:
+    def test_reactivate_is_idempotent(self, manager, plugin_env):
+        """重复激活（模拟重启）不增生前缀副本，server 数保持稳定。"""
+        from core.plugins.store import plugin_payload_dir
+        from entities.plugins.activation import activate_plugin
+
+        pkg = plugin_env.make_plugin("demo")
+        record = manager.install_from_source(str(pkg))
+        assert record.mcp_servers == ["demo_srv"]
+        # 模拟两次重启激活（不去激活直接再激活）
+        for _ in range(2):
+            record = activate_plugin(record, plugin_payload_dir("demo"))
+        servers = plugin_env.read_mcp_servers()
+        assert sorted(servers) == ["demo_srv"]
+        assert record.mcp_servers == ["demo_srv"]
+
+    def test_config_updated_in_place(self, manager, plugin_env):
+        """插件配置变化时就地更新同名 server，不新建。"""
+        import json
+
+
+        pkg = plugin_env.make_plugin("demo")
+        manager.install_from_source(str(pkg))
+        # 修改插件清单中的 server 地址后重新激活（模拟升级）
+        mcp = json.loads((pkg / ".mcp.json").read_text(encoding="utf-8"))
+        mcp["mcpServers"]["demo_srv"]["url"] = "http://127.0.0.1:28888/sse"
+        (pkg / ".mcp.json").write_text(json.dumps(mcp), encoding="utf-8")
+        _, changed = manager.upgrade("demo")
+        assert changed is True
+        servers = plugin_env.read_mcp_servers()
+        assert sorted(servers) == ["demo_srv"]
+        assert servers["demo_srv"]["url"] == "http://127.0.0.1:28888/sse"
+
+    def test_stale_server_recycled(self, manager, plugin_env):
+        """清单不再声明的 server 在升级重激活时回收。"""
+        pkg = plugin_env.make_plugin("demo")
+        manager.install_from_source(str(pkg))
+        (pkg / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+        record, changed = manager.upgrade("demo")
+        assert changed is True
+        assert record.mcp_servers == []
+        assert "demo_srv" not in plugin_env.read_mcp_servers()
+
+    def test_foreign_collision_stable_across_restarts(self, manager, plugin_env):
+        """与用户同名 server 冲突时加前缀，重启后前缀名保持稳定不叠加。"""
+        from core.plugins.store import plugin_payload_dir
+        from entities.mcp.config import MCPServerStore
+        from entities.plugins.activation import activate_plugin
+
+        MCPServerStore().create_server("demo_srv", {"url": "http://127.0.0.1:18888/sse"})
+        pkg = plugin_env.make_plugin("demo")
+        record = manager.install_from_source(str(pkg))
+        assert record.mcp_servers == ["demo__demo_srv"]
+        record = activate_plugin(record, plugin_payload_dir("demo"))
+        servers = plugin_env.read_mcp_servers()
+        assert sorted(servers) == ["demo__demo_srv", "demo_srv"]
+        assert record.mcp_servers == ["demo__demo_srv"]
