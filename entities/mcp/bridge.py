@@ -119,6 +119,47 @@ class MCPBridge:
             target=self._run_loop, daemon=True, name="mcp-bridge",
         )
         self._thread.start()
+        EntityRegistry.register_override_hook(self._on_external_override)
+
+    def _on_external_override(self, old: Any, new: Any) -> None:
+        """同名被非 MCP 来源覆盖时，MCP 工具让位为 {server}__{name} 前缀名保留。
+
+        重名仲裁纪律：内置/频道工具保留原名，MCP 工具改名——覆盖发生处
+        （EntityRegistry.register）只认名字不认归属，MCP 侧在此自我保全。
+        """
+        if old.source != "mcp" or new.source == "mcp":
+            return
+        if not old.group.startswith("mcp:"):
+            return
+        server_name = old.group[len("mcp:"):]
+        original = self._tool_original_names.get(old.name, old.name)
+        prefixed = _sanitize_tool_name(f"{server_name}__{original}")
+        if EntityRegistry.exists(prefixed):
+            return
+
+        bridge = self
+
+        async def _proxy(_name: str = prefixed, **kwargs: Any) -> str:
+            return await bridge.call_tool(_name, kwargs)
+
+        meta = {"timeout": old.meta["timeout"]} if "timeout" in old.meta else None
+        EntityRegistry.register_tool(
+            name=prefixed,
+            func=_proxy,
+            description=old.description,
+            group=old.group,
+            params=old.meta.get("params") or [],
+            tags=list(old.tags),
+            source="mcp",
+            allow_sleep=old.allow_sleep,
+            sleep_brief=old.sleep_brief,
+            meta=meta,
+        )
+        with self._lock:
+            self._tool_server_map[prefixed] = server_name
+            self._tool_original_names[prefixed] = original
+        log(f"MCP 工具让位改名: '{old.name}' → '{prefixed}'（原名由 {new.source} 来源保留）",
+            "WARNING")
 
     def _run_loop(self) -> None:
         import asyncio
@@ -239,6 +280,7 @@ class MCPBridge:
 
     def shutdown(self) -> None:
         """关闭所有连接，停止事件循环（进程退出时调用）。"""
+        EntityRegistry.unregister_override_hook(self._on_external_override)
         with self._lock:
             names = list(self._stop_events.keys())
         for name in names:
@@ -496,14 +538,29 @@ class MCPBridge:
                 self._tool_server_map.pop(t, None)
                 self._tool_original_names.pop(t, None)
         for t in tools:
-            try:
-                EntityRegistry.unregister(t)
-            except (KeyError, ValueError):
-                log("_cleanup_server_entities 异常已忽略", "DEBUG")
+            self._unregister_owned(t)
         try:
             EntityRegistry.unregister(f"mcp:{name}")
         except (KeyError, ValueError):
             log("_cleanup_server_entities 异常已忽略", "DEBUG")
+
+    @staticmethod
+    def _unregister_owned(reg_name: str) -> None:
+        """注销 MCP 注册名——注册表当前归属非 MCP 来源时跳过。
+
+        同名内置/频道工具可能在 MCP 注册后覆盖了该名字（如 output 组的
+        send_message 覆盖 MCP 的 iMessage 工具）；此时名字已不属于本 server，
+        注销会误杀覆盖者并让其永远缺席（注册只在启动装配时发生一次）。
+        """
+        entry = EntityRegistry.get(reg_name)
+        if entry is not None and entry.source != "mcp":
+            log(f"MCP 清理跳过 '{reg_name}'：注册名已被 {entry.source} 来源覆盖，归属保护",
+                "WARNING")
+            return
+        try:
+            EntityRegistry.unregister(reg_name)
+        except (KeyError, ValueError):
+            log("_unregister_owned 异常已忽略", "DEBUG")
 
     async def _connect_server(self, srv: MCPServerConfig) -> int:
         """连接单个 MCP server：启动 lifecycle task，等待 session 就绪，返回工具数量。
@@ -765,10 +822,7 @@ class MCPBridge:
                 with self._lock:
                     self._tool_server_map.pop(reg, None)
                     self._tool_original_names.pop(reg, None)
-                try:
-                    EntityRegistry.unregister(reg)
-                except (KeyError, ValueError):
-                    log("_sync_server_tools 异常已忽略", "DEBUG")
+                self._unregister_owned(reg)
             if added:
                 srv = self._find_server_config(server_name)
                 call_timeout = srv.call_timeout if srv else _DEFAULT_CALL_TIMEOUT

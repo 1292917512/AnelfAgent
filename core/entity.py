@@ -526,6 +526,27 @@ class EntityRegistry:
     _group_manifests: Dict[str, Dict[str, Any]] = {}
     # 分组排序权重（越小越靠前），经 register_group_order() 注册
     _group_order_weights: Dict[str, int] = {}
+    # 跨来源覆盖监听：注册名被不同 source 的工具覆盖时回调 (old, new)，
+    # 供 MCP bridge 把被覆盖的工具让位改名保留（重名仲裁：内置保留原名，MCP 加前缀）
+    _override_hooks: List[Callable[["EntityMetadata", "EntityMetadata"], None]] = []
+
+    @classmethod
+    def register_override_hook(
+        cls, hook: Callable[["EntityMetadata", "EntityMetadata"], None],
+    ) -> None:
+        """注册跨来源覆盖监听（幂等去重）。"""
+        with cls._lock:
+            if hook not in cls._override_hooks:
+                cls._override_hooks.append(hook)
+
+    @classmethod
+    def unregister_override_hook(
+        cls, hook: Callable[["EntityMetadata", "EntityMetadata"], None],
+    ) -> None:
+        """移除跨来源覆盖监听（不存在时静默跳过）。"""
+        with cls._lock:
+            if hook in cls._override_hooks:
+                cls._override_hooks.remove(hook)
     # 工具名候选缓存（未知工具名纠错建议用），注册/注销时失效
     _names_cache: Optional[List[str]] = None
     # 注册表版本号：任何元数据变更（注册/注销/启停/属性覆盖）时递增，
@@ -566,6 +587,7 @@ class EntityRegistry:
     @catch_exceptions(reraise=False, default_value=False, tag="entity")
     def register(cls, metadata: EntityMetadata) -> bool:
         """注册实体"""
+        overridden: Optional[EntityMetadata] = None
         with cls._lock:
             if metadata.name in cls._entities:
                 existing = cls._entities[metadata.name]
@@ -579,6 +601,7 @@ class EntityRegistry:
                         f"({existing.source} → {metadata.source})",
                         "WARNING",
                     )
+                    overridden = existing
                 cls._remove_from_indexes(metadata.name)
 
             cls._entities[metadata.name] = metadata
@@ -586,6 +609,14 @@ class EntityRegistry:
             if metadata.group:
                 cls._groups.setdefault(metadata.group, []).append(metadata.name)
             cls.bump_version()
+
+        # 锁外通知覆盖监听（监听器可能回注册新实体，避免持锁重入）
+        if overridden is not None:
+            for hook in list(cls._override_hooks):
+                try:
+                    hook(overridden, metadata)
+                except Exception as exc:
+                    log(f"实体覆盖监听回调失败 ({metadata.name}): {exc}", "WARNING")
 
         log(f"✅ 实体注册: {metadata.name} [{metadata.entity_type.value}]", "DEBUG")
         return True

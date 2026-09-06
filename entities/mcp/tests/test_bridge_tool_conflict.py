@@ -109,6 +109,48 @@ def test_call_tool_uses_original_name(bridge: MCPBridge) -> None:
     assert called == [("minimax-coding-plan", "web_search")]
 
 
+def test_override_by_internal_yields_prefixed_mcp_tool(bridge: MCPBridge) -> None:
+    """重名仲裁（启动顺序：MCP 先注册）：内置工具后注册覆盖原名时，
+    MCP 工具经覆盖监听让位为 {server}__{name} 前缀名，两侧都可用。"""
+    fake_tools = [SimpleNamespace(name="web_search", description="mcp 搜索", inputSchema={})]
+    assert bridge._register_tool_entries("web-fetch", fake_tools) == ["web_search"]
+
+    _register_internal_web_search()  # 内置覆盖原名
+
+    internal = EntityRegistry.get("web_search")
+    assert internal is not None and internal.source == "internal"
+    renamed = EntityRegistry.get("web-fetch__web_search")
+    assert renamed is not None and renamed.source == "mcp"
+    assert renamed.group == "mcp:web-fetch"
+    assert bridge._tool_server_map["web-fetch__web_search"] == "web-fetch"
+    assert bridge._tool_original_names["web-fetch__web_search"] == "web_search"
+    EntityRegistry.unregister("web-fetch__web_search")
+
+
+def test_cleanup_preserves_name_overtaken_by_internal(bridge: MCPBridge) -> None:
+    """事故回归（2026-09 send_message 丢失）：MCP 先占原名 → 内置工具覆盖 →
+    server 清理/重载不得注销覆盖者；MCP 重新注册时应让位为前缀名。"""
+    # 1. MCP 先以原名注册（无冲突）
+    fake_tools = [SimpleNamespace(name="web_search", description="mcp 搜索", inputSchema={})]
+    assert bridge._register_tool_entries("web-fetch", fake_tools) == ["web_search"]
+    assert EntityRegistry.get("web_search").source == "mcp"  # type: ignore[union-attr]
+
+    # 2. 内置/频道工具同名覆盖（EntityRegistry 覆盖语义）
+    _register_internal_web_search()
+    assert EntityRegistry.get("web_search").source == "internal"  # type: ignore[union-attr]
+
+    # 3. server 清理：不得误注销覆盖者的注册名
+    bridge._cleanup_server_entities("web-fetch")
+    internal = EntityRegistry.get("web_search")
+    assert internal is not None and internal.source == "internal"
+    assert "web_search" not in bridge._tool_server_map
+
+    # 4. MCP 重新注册：名字被内置占用 → 让位为前缀名
+    assert bridge._register_tool_entries("web-fetch", fake_tools) == ["web-fetch__web_search"]
+    assert EntityRegistry.get("web_search").source == "internal"  # type: ignore[union-attr]
+    EntityRegistry.unregister("web-fetch__web_search")
+
+
 def test_register_server_tools_async_wrapper(bridge: MCPBridge) -> None:
     """异步入口 _register_server_tools：list_tools → 注册 → 记录工具清单。"""
     _register_internal_web_search()
