@@ -18,14 +18,14 @@ CAPABILITY_GUIDE: Dict[str, Dict[str, Any]] = {
             "prompt": "分析指令，如'描述图片中的文字'（可选）",
         },
         "example": 'recognize_image(image_path="workspace/uploads/image/xxx.png", prompt="描述图片")',
-        "notes": "auto 链：视觉模型失败自动降级 MiniMax Coding Plan（订阅配额）；provider=minimax 直连不占视觉模型调用",
+        "notes": "主模型有视觉时本地图片直接回注原图（不走识别链，更快）；无视觉时按媒体库配置链识别（实时 provider 状态见 media_config providers）",
     },
     "asr": {
         "tools": ["voice_to_text"],
         "summary": "语音/音频转写为文字",
         "key_params": {"audio_source": "音频本地路径或 URL（必填）"},
         "example": 'voice_to_text(audio_source="workspace/uploads/voice/xxx.ogg")',
-        "notes": "仅 models 链（asr 类型模型）",
+        "notes": "按媒体库配置链路由到 asr 类型模型",
     },
     "tts": {
         "tools": ["text_to_voice"],
@@ -90,13 +90,13 @@ CAPABILITY_GUIDE: Dict[str, Dict[str, Any]] = {
         "summary": "按文字指令编辑已有图片",
         "key_params": {"image_path": "待编辑图片路径或 URL（必填）", "prompt": "编辑指令（必填）"},
         "example": 'edit_image(image_path="workspace/uploads/image/xxx.png", prompt="把背景换成海边")',
-        "notes": "仅 models 链（image_edit 类型模型）",
+        "notes": "按媒体库配置链路由到 image_edit 类型模型",
     },
     "rerank": {
         "tools": ["rerank_search"],
         "summary": "按相关性对文档列表重排序",
         "key_params": {"query": "查询语句", "documents": "JSON 字符串数组"},
         "example": 'rerank_search(query="安装教程", documents=\'["文档1","文档2"]\')',
-        "notes": "仅 models 链（rerank 类型模型）",
+        "notes": "按媒体库配置链路由到 rerank 类型模型",
     },
 }

@@ -73,6 +73,9 @@ def _register_volume() -> None:
 
 _register_volume()
 
+# 墓碑 gist 截断长度：梗概只需支撑关键词匹配与"曾知道什么"的提示，不保留全文
+_TOMBSTONE_GIST_CHARS = 200
+
 
 class MemoryStore(BaseEntity):
     """SQLite 记忆存储，支持 FTS5 全文检索、向量相似度搜索和标签索引。"""
@@ -544,6 +547,8 @@ class MemoryStore(BaseEntity):
         长期趋同于 1.0 失去区分度。每次整理对超过 stale_days 未访问且高于
         基线的记忆按比例下调；低于基线的交给有效分时间衰减与遗忘流程。
         permanent 与已合并（importance=0）记忆豁免。
+        检索练习效应：历史访问越多的记忆回归越慢（有效速率 ÷ (1 + ln(access_count))），
+        常被想起的记忆更抗遗忘——访问 0/1 次的按原速率，10 次约 ÷3.3，25 次约 ÷4.2。
         批量调整后对受影响条目补 cognee 投影（上限 200 条/轮，防投影风暴），
         保证权威层与投影层不长期漂移。
         Returns: 调整条数。
@@ -563,23 +568,28 @@ class MemoryStore(BaseEntity):
         affected = [row_to_entry(r, with_embedding=False) for r in await cursor.fetchall()]
         if not affected:
             return 0
+        base_rate = min(rate, 1.0)
         async with self._tx(db):
             # UPDATE 限定到快照 id 集合：快照 500 上限 vs 全量更新的范围差
             # 会导致超出部分的变更永远拿不到投影补偿（权威/投影漂移）
-            id_marks = ",".join("?" for _ in affected)
-            cursor = await db.execute(
-                "UPDATE memories SET importance = 0.5 + (importance - 0.5) * (1.0 - ?) "
-                f"WHERE {where} AND id IN ({id_marks})",
-                (min(rate, 1.0), cutoff_ns, *[r.id for r in affected]),
+            for entry in affected:
+                shield = (
+                    1.0 + math.log(entry.access_count) if entry.access_count > 1 else 1.0
+                )
+                entry.importance = (
+                    0.5 + (entry.importance - 0.5) * (1.0 - base_rate / shield)
+                )
+            await db.executemany(
+                "UPDATE memories SET importance = ? WHERE id = ?",
+                [(entry.importance, entry.id) for entry in affected],
             )
             # 投影同步：用更新后的 importance 重建负载（封顶防风暴）
             for entry in affected[:200]:
-                entry.importance = 0.5 + (entry.importance - 0.5) * (1.0 - min(rate, 1.0))
                 await self._cognee.enqueue_sync(
                     db, entry.id, "upsert",
                     entry_projection_payload(entry, entry.id),
                 )
-        return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        return len(affected)
 
     # ------------------------------------------------------------------
     # 遗忘机制（有效分评估 + 自动清理）
@@ -651,6 +661,7 @@ class MemoryStore(BaseEntity):
             await self._conn.vec_upsert_memory(db, memory_id, blob)
             await self._conn.fts_upsert_memory(db, memory_id, row["content"])
             await db.execute("DELETE FROM memories_archive WHERE id = ?", (memory_id,))
+            await self._record_audit(db, memory_id, "restore", "从归档恢复")
             # 归档时入队了 delete，恢复必须补 upsert，否则 cognee 侧残留已删除状态
             entry = await self.get(memory_id)
             if entry:
@@ -664,6 +675,13 @@ class MemoryStore(BaseEntity):
         """归档表中的记忆条数（状态展示用）。"""
         db = await self._get_db()
         cursor = await db.execute("SELECT COUNT(*) AS cnt FROM memories_archive")
+        row = await cursor.fetchone()
+        return int(row["cnt"]) if row else 0
+
+    async def count_tombstones(self) -> int:
+        """墓碑表中的 gist 痕迹条数（状态展示用）。"""
+        db = await self._get_db()
+        cursor = await db.execute("SELECT COUNT(*) AS cnt FROM memories_tombstone")
         row = await cursor.fetchone()
         return int(row["cnt"]) if row else 0
 
@@ -685,12 +703,23 @@ class MemoryStore(BaseEntity):
             for r in rows
         ]
 
-    async def purge_archived_memories(self, older_than_days: int, limit: int = 500) -> int:
+    async def purge_archived_memories(
+        self,
+        older_than_days: int,
+        limit: int = 500,
+        *,
+        tombstone_max_rows: Optional[int] = None,
+    ) -> int:
         """物理删除超过保留期的归档记忆，防止归档表无限增长。
+
+        删除前把每条记忆的 gist（截断梗概 + 标签）留入墓碑表 memories_tombstone
+        ——实体虽删，"曾经知道什么"的元记忆仍在，召回无果时以最低权重兜底。
+        墓碑表受行数硬上限约束（超限 FIFO 淘汰最老，0 = 不限），长期运行严格有界。
 
         Args:
             older_than_days: 归档保留天数（按 archived_at_ns 计算），<=0 时不清理。
             limit: 单次最多删除条数。
+            tombstone_max_rows: 墓碑表行数上限，None 时读配置（默认 50000）。
         Returns:
             实际删除的条数。
         """
@@ -698,16 +727,55 @@ class MemoryStore(BaseEntity):
             return 0
         db = await self._get_db()
         cutoff_ns = int((time.time() - older_than_days * 86400) * 1e9)
+        cursor = await db.execute(
+            "SELECT id, type, content, source, tags_json, archived_at_ns, archive_reason "
+            "FROM memories_archive WHERE archived_at_ns < ? "
+            "ORDER BY archived_at_ns LIMIT ?",
+            (cutoff_ns, limit),
+        )
+        rows = list(await cursor.fetchall())
+        if not rows:
+            return 0
+        if tombstone_max_rows is None:
+            from core.config import get_config_int
+            tombstone_max_rows = int(get_config_int("memory_tombstone_max_rows", 50000))
+        now_ns = int(time.time() * 1e9)
         async with self._tx(db):
-            cursor = await db.execute(
-                "DELETE FROM memories_archive WHERE id IN "
-                "(SELECT id FROM memories_archive WHERE archived_at_ns < ? LIMIT ?)",
-                (cutoff_ns, limit),
+            await db.executemany(
+                "INSERT INTO memories_tombstone "
+                "(memory_id, type, gist, source, tags_json, purge_reason, "
+                "archived_at_ns, purged_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        int(r["id"]), r["type"],
+                        str(r["content"])[:_TOMBSTONE_GIST_CHARS],
+                        r["source"], r["tags_json"], r["archive_reason"],
+                        int(r["archived_at_ns"]), now_ns,
+                    )
+                    for r in rows
+                ],
             )
-        deleted = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
-        if deleted:
-            log(f"归档清理: 物理删除 {deleted} 条超过 {older_than_days} 天的归档记忆", tag="思维")
-        return deleted
+            ids = [int(r["id"]) for r in rows]
+            placeholders = ",".join("?" for _ in ids)
+            await db.execute(
+                f"DELETE FROM memories_archive WHERE id IN ({placeholders})", ids,
+            )
+            await self._enforce_tombstone_cap(db, tombstone_max_rows)
+        log(f"归档清理: 物理删除 {len(rows)} 条超过 {older_than_days} 天的归档记忆"
+            f"（gist 已留墓碑）", tag="思维")
+        return len(rows)
+
+    @staticmethod
+    async def _enforce_tombstone_cap(db: aiosqlite.Connection, max_rows: int) -> None:
+        """墓碑表行数硬上限：超限 FIFO 淘汰最老墓碑（<=0 不限）。"""
+        if max_rows <= 0:
+            return
+        await db.execute(
+            "DELETE FROM memories_tombstone WHERE id NOT IN "
+            "(SELECT id FROM memories_tombstone "
+            "ORDER BY purged_at_ns DESC, id DESC LIMIT ?)",
+            (max_rows,),
+        )
 
     async def forget_weak_memories(
             self,
@@ -1131,6 +1199,19 @@ class MemoryStore(BaseEntity):
         """检查是否已存在语义相近的记忆（基于 FTS 候选 + bigram 相似度）。"""
         return await self._search.has_similar_content(content, min_overlap)
 
+    async def search_forgotten(
+        self,
+        query: str,
+        query_vec: Optional[list[float]] = None,
+        *,
+        limit: int = 3,
+        min_score: float = 0.3,
+    ) -> list[Dict[str, Any]]:
+        """遗忘层兜底检索：归档记忆（可恢复）+ 墓碑 gist（仅痕迹），合并排序。"""
+        return await self._search.search_forgotten(
+            query, query_vec, limit=limit, min_score=min_score,
+        )
+
     # ------------------------------------------------------------------
     # 管理接口
     # ------------------------------------------------------------------
@@ -1307,6 +1388,8 @@ class MemoryStore(BaseEntity):
         return {
             "total_memories": total,
             "type_counts": type_counts,
+            "archived_memories": await self.count_archived(),
+            "tombstones": await self.count_tombstones(),
             "warn_threshold": warn_threshold,
             "max_per_type": max_per_type,
             "warnings": warnings,

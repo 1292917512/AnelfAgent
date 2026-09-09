@@ -239,11 +239,16 @@ class TestWaitSuspension:
     async def test_wait_intent_suspends_and_injects_completion(self, anything) -> None:
         """等待意图 + 后台任务完成 → 挂起会合，结果注入循环，不计独白、不熔断。"""
         mind = _WaitMind()
-        # 注册一个 0.05s 后完成的后台任务（scope="_global"，测试无 think_session 绑定）
+        # 注册后台任务（scope="_global"，测试无 think_session 绑定）
         task_id = mind.background_tasks.register("_global", "delegation", "生成图片")
 
         async def finisher() -> None:
-            await asyncio.sleep(0.05)
+            # 等循环真正进入挂起（_waiting 登记）再完成任务——
+            # 固定时延在并行负载下是竞态（循环首轮耗时不确定）
+            for _ in range(400):
+                if mind.background_tasks._waiting.get("_global"):
+                    break
+                await asyncio.sleep(0.005)
             mind.background_tasks.complete(task_id, True, "图片已生成: /tmp/a.png")
 
         chain: List = []

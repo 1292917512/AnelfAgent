@@ -138,3 +138,28 @@ class TestRecallFailOpen:
         messages = await retriever._format_unified_results([r])
         assert len(messages) == 1
         assert "无 provenance 的记忆" in messages[0]["content"]
+
+
+class TestProviderLayerPlacement:
+    """provider（上下文提供者实时注入）层位置不变量。
+
+    实时内容（时间/天气等）必须位于工具链之后、exec_context 之前，
+    且由 think_loop 每轮管理——否则其逐轮字节变化会打断工具链前缀缓存。
+    """
+
+    def test_provider_between_chain_and_exec(self) -> None:
+        from agent.mind.context_pipeline import VOL_CHAIN, VOL_ROUND
+
+        meta = _LAYER_REGISTRY.get("provider")
+        assert meta is not None, "provider 层未注册"
+        assert VOL_CHAIN < meta.volatility < VOL_ROUND, (
+            f"provider volatility={meta.volatility} 须在 "
+            f"tool_chain({VOL_CHAIN}) 与 exec_context({VOL_ROUND}) 之间"
+        )
+        assert meta.managed == "think_loop"
+
+    def test_provider_not_pipeline_block(self) -> None:
+        """provider 不再是管线组装块（管线产物在回复周期内冻结，实时注入会失真）。"""
+        from agent.mind.context_assembly import ContextAssembly
+
+        assert not hasattr(ContextAssembly, "_blk_provider")

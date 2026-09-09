@@ -1,0 +1,23 @@
+{
+  "tool_pre": [
+    {
+      "matcher": "delete_*",
+      "command": "echo '{\"note\": \"删除操作前记录\"}' >> /tmp/anelf-hook.log",
+      "timeout": 5
+    }
+  ],
+  "tool_post": [
+    {
+      "matcher": "*",
+      "command": "wc -c >> /tmp/anelf-hook-metrics.log",
+      "timeout": 5
+    }
+  ],
+  "reply_end": [
+    {
+      "matcher": "*",
+      "command": "cat > /dev/null",
+      "timeout": 5
+    }
+  ]
+}

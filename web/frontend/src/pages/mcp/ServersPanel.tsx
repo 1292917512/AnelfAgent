@@ -29,6 +29,12 @@ export function ServersPanel() {
     refetchInterval: 5000,
   });
 
+  const { data: oauthStatus = {} } = useQuery({
+    queryKey: ["mcpOauthStatus"],
+    queryFn: () => mcpApi.oauthStatus().then((r) => r.data),
+    refetchInterval: 5000,
+  });
+
   const removeMutation = useMutation({
     mutationFn: (name: string) => mcpApi.remove(name),
     onSuccess: (_r, name) => {
@@ -102,6 +108,7 @@ export function ServersPanel() {
             <ServerCard
               key={s.name}
               server={s}
+              oauth={oauthStatus[s.name]}
               onEdit={handleEdit}
               onDelete={setDeleting}
             />

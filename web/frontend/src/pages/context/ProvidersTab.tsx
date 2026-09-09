@@ -1,13 +1,17 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
+import { ChevronRight } from "lucide-react";
 import { contextApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
+import { ProviderContent } from "@/components/common/ProviderContent";
 import { cn } from "@/lib/utils";
 import type { ContextProviderStatus } from "@/lib/types";
 
 export function ProvidersTab() {
   const { t } = useTranslation("context");
+  const [expanded, setExpanded] = useState<string | null>(null);
   const { data } = useQuery({
     queryKey: ["context-providers"],
     queryFn: () => contextApi.providers().then((r) => r.data as ContextProviderStatus),
@@ -50,48 +54,65 @@ export function ProvidersTab() {
       </Card>
 
       <div className="space-y-2">
-        {data.providers.map((p) => (
-          <div
-            key={p.name}
-            className={cn(
-              "flex items-center gap-3 py-2 px-3 rounded-lg bg-elevated border border-border",
-              p.active === false && "opacity-55",
-            )}
-          >
-            <StatusDot status={p.active === false ? "offline" : p.injecting ? "ok" : p.ready ? "warn" : "warn"} />
-            <div className="flex-1 min-w-0">
-              <span className="text-xs font-medium text-foreground">{p.name}</span>
-              {p.group && <span className="ml-1.5 text-[10px] text-muted font-mono">{p.group}</span>}
-              {/* 注入状态徽标：区分"已注册未注入"（如直播模式关闭）与实际注入 */}
-              {p.active !== false && (
-                <span
+        {data.providers.map((p) => {
+          const open = expanded === p.name;
+          return (
+            <div
+              key={p.name}
+              className={cn(
+                "rounded-lg bg-elevated border border-border cursor-pointer transition-colors hover:border-border-strong",
+                p.active === false && "opacity-55",
+              )}
+              onClick={() => setExpanded(open ? null : p.name)}
+            >
+              <div className="flex items-center gap-3 py-2 px-3">
+                <ChevronRight
                   className={cn(
-                    "ml-1.5 text-[10px] px-1.5 py-0.5 rounded",
-                    p.injecting ? "bg-ok-subtle text-ok" : "bg-border/40 text-muted",
+                    "h-3.5 w-3.5 text-muted transition-transform flex-shrink-0",
+                    open && "rotate-90",
                   )}
-                  title={p.injecting && (p.injected_at ?? 0) > 0
-                    ? `${t("providers.injectedAt")}: ${new Date((p.injected_at ?? 0) * 1000).toLocaleTimeString()}`
-                    : undefined}
-                >
-                  {p.injecting ? t("providers.injecting") : t("providers.notInjecting")}
-                </span>
+                />
+                <StatusDot status={p.active === false ? "offline" : p.injecting ? "ok" : p.ready ? "warn" : "warn"} />
+                <div className="flex-1 min-w-0">
+                  <span className="text-xs font-medium text-foreground">{p.name}</span>
+                  {p.group && <span className="ml-1.5 text-[10px] text-muted font-mono">{p.group}</span>}
+                  {/* 注入状态徽标：区分"已注册未注入"（如直播模式关闭）与实际注入 */}
+                  {p.active !== false && (
+                    <span
+                      className={cn(
+                        "ml-1.5 text-[10px] px-1.5 py-0.5 rounded",
+                        p.injecting ? "bg-ok-subtle text-ok" : "bg-border/40 text-muted",
+                      )}
+                      title={p.injecting && (p.injected_at ?? 0) > 0
+                        ? `${t("providers.injectedAt")}: ${new Date((p.injected_at ?? 0) * 1000).toLocaleTimeString()}`
+                        : undefined}
+                    >
+                      {p.injecting ? t("providers.injecting") : t("providers.notInjecting")}
+                    </span>
+                  )}
+                  {p.active === false && (
+                    <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-border/40 text-muted">
+                      {t("providers.inactive")}
+                    </span>
+                  )}
+                  {p.description && <p className="text-[10px] text-muted truncate">{p.description}</p>}
+                  {p.last_error && <p className="text-[10px] text-danger truncate">{p.last_error}</p>}
+                </div>
+                <div className="flex items-center gap-3 text-[10px] font-mono text-muted flex-shrink-0">
+                  <span>{p.tokens}t</span>
+                  <span>{p.bytes}B</span>
+                  <span>{p.cost_ms.toFixed(1)}ms</span>
+                  <span>×{p.call_count}</span>
+                </div>
+              </div>
+              {open && (
+                <div className="px-3 pb-2.5 pl-9" onClick={(e) => e.stopPropagation()}>
+                  <ProviderContent provider={p} />
+                </div>
               )}
-              {p.active === false && (
-                <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-border/40 text-muted">
-                  {t("providers.inactive")}
-                </span>
-              )}
-              {p.description && <p className="text-[10px] text-muted truncate">{p.description}</p>}
-              {p.last_error && <p className="text-[10px] text-danger truncate">{p.last_error}</p>}
             </div>
-            <div className="flex items-center gap-3 text-[10px] font-mono text-muted flex-shrink-0">
-              <span>{p.tokens}t</span>
-              <span>{p.bytes}B</span>
-              <span>{p.cost_ms.toFixed(1)}ms</span>
-              <span>×{p.call_count}</span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

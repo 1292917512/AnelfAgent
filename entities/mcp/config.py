@@ -47,6 +47,11 @@ _MCP_CONFIGS = {
                            "（关闭则仅在重连/手动 reload 时刷新）",
             "default": True,
         },
+        "mcp_oauth_enabled": {
+            "description": "HTTP 传输的 MCP server 启用 OAuth 授权流（401 时自动发起"
+                           "浏览器授权，token 持久化在 mcp_oauth.json）",
+            "default": True,
+        },
         "mcp_image_passthrough": {
             "description": "MCP 工具返回的图片落盘并经多模态约定注入"
                            "（视觉模型可直接看到截图；关闭则仅保留文本占位）",
@@ -145,6 +150,8 @@ class MCPServerConfig:
     sse_read_timeout: float = 300.0
     call_timeout: float = _DEFAULT_CALL_TIMEOUT
     plugin: str = ""
+    # OAuth 客户端配置（{"client_id"/"clientId", "scopes", ...}；缺省走动态注册）
+    oauth: Dict[str, Any] = field(default_factory=dict)
 
     def fingerprint(self) -> Dict[str, Any]:
         """用于比较配置是否变更的字典（排除 name）。"""
@@ -256,6 +263,7 @@ class MCPServerStore:
         "call_timeout",
         "stay_awake",
         "plugin",
+        "oauth",
     })
     _SERVER_ALLOWED_TRANSPORTS = frozenset({"stdio", "streamable_http", "sse"})
     _SECRET_MASK = "********"
@@ -422,6 +430,11 @@ class MCPServerStore:
             if key == "plugin":
                 normalized[key] = str(val).strip() or None
                 continue
+            if key == "oauth":
+                if not isinstance(val, dict):
+                    raise ValueError("oauth 必须是对象")
+                normalized[key] = dict(val)
+                continue
             if key == "args":
                 normalized[key] = cls._parse_args_like(val)
                 continue
@@ -466,6 +479,8 @@ class MCPServerStore:
             raise ValueError("env 必须是对象")
         if "headers" in final and not isinstance(final["headers"], dict):
             raise ValueError("headers 必须是对象")
+        if "oauth" in final and not isinstance(final["oauth"], dict):
+            raise ValueError("oauth 必须是对象")
 
         if "enabled" not in final:
             final["enabled"] = True

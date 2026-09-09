@@ -197,6 +197,117 @@ class TestRelaxImportance:
         await store.add(_entry("记忆", importance=0.9))
         assert await store.relax_importance(stale_days=14, rate=0.0) == 0
 
+    async def test_access_shield_slows_relax(self, store: MemoryStore) -> None:
+        # 检索练习效应：历史访问越多的记忆回归越慢
+        plain_id = await store.add(_entry("很少想起", importance=0.9))
+        shielded_id = await store.add(_entry("常被想起", importance=0.9))
+        db = await store._get_db()
+        await db.execute(
+            "UPDATE memories SET access_count=20 WHERE id=?", (shielded_id,),
+        )
+        await db.commit()
+
+        adjusted = await store.relax_importance(stale_days=14, rate=0.1)
+        assert adjusted == 2
+        plain = await store.get(plain_id)
+        shielded = await store.get(shielded_id)
+        # 无护盾：0.5 + 0.4 × 0.9 = 0.86；20 次访问护盾 ÷(1+ln20) ≈ ÷4.0 → 0.89
+        assert plain.importance == pytest.approx(0.86, abs=0.001)
+        assert shielded.importance == pytest.approx(0.89, abs=0.001)
+        assert shielded.importance > plain.importance
+
+
+class TestPurgeTombstone:
+    async def _archive_with_backdate(
+        self, store: MemoryStore, content: str, days: int = 100,
+    ) -> int:
+        """新增并归档一条记忆，归档时间回拨指定天数（满足 purge 保留期）。"""
+        mid = await store.add(_entry(content, importance=0.6))
+        assert await store.archive_memory(mid)
+        db = await store._get_db()
+        backdated_ns = int((time.time() - days * 86400) * 1e9)
+        await db.execute(
+            "UPDATE memories_archive SET archived_at_ns=? WHERE id=?",
+            (backdated_ns, mid),
+        )
+        await db.commit()
+        return mid
+
+    async def test_purge_leaves_tombstone(self, store: MemoryStore) -> None:
+        mid = await self._archive_with_backdate(store, "tombanchor 会被物理删除的记忆")
+
+        deleted = await store.purge_archived_memories(90)
+        assert deleted == 1
+        assert await store.count_archived() == 0
+        assert await store.count_tombstones() == 1
+        # 归档原文已删除，墓碑仍可经 gist 检索到
+        hits = await store.search_forgotten("tombanchor")
+        assert len(hits) == 1
+        assert hits[0]["kind"] == "tombstone"
+        assert hits[0]["memory_id"] == mid
+        assert "会被物理删除" in hits[0]["gist"]
+        assert hits[0]["score"] <= 0.3
+
+    async def test_tombstone_gist_truncated(self, store: MemoryStore) -> None:
+        long_content = "长内容 " + "字" * 500
+        await self._archive_with_backdate(store, long_content)
+        await store.purge_archived_memories(90)
+        db = await store._get_db()
+        cursor = await db.execute("SELECT gist FROM memories_tombstone")
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row["gist"] == long_content[:200]
+
+    async def test_tombstone_cap_fifo(self, store: MemoryStore) -> None:
+        oldest = await self._archive_with_backdate(store, "capanchor 最老的记忆", days=120)
+        await self._archive_with_backdate(store, "capanchor 中间的记忆", days=110)
+        newest = await self._archive_with_backdate(store, "capanchor 最新的记忆", days=100)
+
+        deleted = await store.purge_archived_memories(90, tombstone_max_rows=2)
+        assert deleted == 3
+        assert await store.count_tombstones() == 2
+        # FIFO：最老归档的墓碑被淘汰，较新的两条保留
+        hits = await store.search_forgotten("capanchor")
+        kept_ids = {h["memory_id"] for h in hits}
+        assert kept_ids != set()
+        assert oldest not in kept_ids
+        assert newest in kept_ids
+
+    async def test_tombstone_cap_zero_unlimited(self, store: MemoryStore) -> None:
+        for i in range(3):
+            await self._archive_with_backdate(store, f"zeroanchor 记忆{i}", days=100 + i)
+        await store.purge_archived_memories(90, tombstone_max_rows=0)
+        assert await store.count_tombstones() == 3
+
+
+class TestSearchForgotten:
+    async def test_archived_keyword_hit(self, store: MemoryStore) -> None:
+        mid = await store.add(_entry("forgotanchor 被遗忘的知识", importance=0.6))
+        assert await store.archive_memory(mid)
+
+        hits = await store.search_forgotten("forgotanchor")
+        assert len(hits) == 1
+        assert hits[0]["kind"] == "archived"
+        assert hits[0]["id"] == mid
+        assert hits[0]["score"] == pytest.approx(0.35)
+        assert "被遗忘的知识" in hits[0]["content"]
+
+    async def test_archived_vector_hit_outranks_keyword(self, store: MemoryStore) -> None:
+        entry = _entry("vecanchor 向量记忆", importance=0.6)
+        entry.embedding = [1.0, 0.0, 0.0]
+        mid = await store.add(entry)
+        assert await store.archive_memory(mid)
+
+        hits = await store.search_forgotten("无关键词命中", [1.0, 0.0, 0.0])
+        assert len(hits) == 1
+        assert hits[0]["kind"] == "archived"
+        assert hits[0]["score"] == pytest.approx(1.0, abs=0.01)
+
+    async def test_active_memory_not_in_forgotten(self, store: MemoryStore) -> None:
+        await store.add(_entry("liveanchor 活跃记忆", importance=0.6))
+        hits = await store.search_forgotten("liveanchor")
+        assert hits == []
+
 
 class TestManualForgetArchived:
     async def test_forget_archives_and_restorable(self, store: MemoryStore) -> None:

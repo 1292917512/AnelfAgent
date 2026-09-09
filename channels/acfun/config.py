@@ -19,6 +19,9 @@ class AcfunConfig(ChannelConfig):
     """AcFun 频道配置（敏感凭据不落配置面，见 state.py）。"""
 
     enabled: bool = Field(default=False, description="是否启用 AcFun 频道")
+    context_inject: bool = Field(
+        default=True,
+        description="是否向 AI 上下文注入 AcFun 直播状态（直播模式房间快照/最近弹幕）")
     username: str = Field(
         default="", description="AcFun 账号（手机号/用户名，Web 登录后自动回填）")
     password: str = Field(

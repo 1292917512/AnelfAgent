@@ -40,6 +40,7 @@ from entities._sdk import (
     tool_error,
 )
 from entities.filesystem import edit_utils, file_state
+from entities.filesystem.ops_context import track_fs_op
 
 # 顶部导入：shell_background 的配置注册（entity/os 组）随模块加载生效，
 # 配置中心启动即可见；惰性导入会让配置项迟到首次后台执行
@@ -211,6 +212,7 @@ def _add_line_numbers(content: str, start_line: int = 1) -> str:
 
 
 @tool(name="read_file", group="os", tags=["media:file"], concurrency_safe=True, description=_READ_FILE_PROMPT)
+@track_fs_op("file_path")
 def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "utf-8") -> str:
     """读取文本文件内容，带行号输出（格式: 行号→内容）。大文件请用 offset/limit 分段读取。
 
@@ -339,6 +341,7 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
 
 
 @tool(name="write_file", group="os", description=_WRITE_FILE_PROMPT)
+@track_fs_op("file_path")
 def write_file(file_path: str, content: str) -> str:
     """写入文件（覆盖）。目录不存在时自动创建。修改已有文件前必须先用 read_file 读取；
     对已有文件的局部修改请优先使用 edit_file（只发送差异部分）。
@@ -371,6 +374,7 @@ _EDIT_MAX_FILE_BYTES = 1024 * 1024 * 1024
 
 
 @tool(name="edit_file", group="os", tags=["always"], description=_EDIT_FILE_PROMPT)
+@track_fs_op("file_path")
 def edit_file(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
     """在文件中执行精确的字符串替换。修改已有文件的首选方式（只发送差异，而非全文）。
 
@@ -532,6 +536,7 @@ def _suggest_similar_path(fp: str) -> str:
 
 
 @tool(name="append_file", group="os")
+@track_fs_op("path")
 def append_file(path: str, content: str) -> str:
     """追加内容到文件末尾。
 
@@ -564,6 +569,7 @@ def append_file(path: str, content: str) -> str:
 
 
 @tool(name="list_directory", group="os", concurrency_safe=True)
+@track_fs_op("path")
 def list_directory(path: str = ".", recursive: bool = False, max_depth: int = 3) -> str:
     """列出目录内容。支持递归树形浏览。
 
@@ -627,6 +633,7 @@ def _build_tree(dir_path: str, max_depth: int, depth: int) -> List[Dict[str, Any
 
 
 @tool(name="file_info", group="os", concurrency_safe=True)
+@track_fs_op("path")
 def file_info(path: str) -> str:
     """获取文件或目录的详细信息（存在性、类型、大小、修改时间）。
 
@@ -652,6 +659,7 @@ def file_info(path: str) -> str:
 
 
 @tool(name="copy_file", group="os")
+@track_fs_op("src", "dst")
 def copy_file(src: str, dst: str) -> str:
     """复制文件。
 
@@ -675,6 +683,7 @@ def copy_file(src: str, dst: str) -> str:
 
 
 @tool(name="move_file", group="os")
+@track_fs_op("src", "dst")
 def move_file(src: str, dst: str) -> str:
     """移动或重命名文件。
 
@@ -698,6 +707,7 @@ def move_file(src: str, dst: str) -> str:
 
 
 @tool(name="delete_file", group="os")
+@track_fs_op("path")
 def delete_file(path: str) -> str:
     """删除文件（不删除目录）。
 
@@ -717,6 +727,7 @@ def delete_file(path: str) -> str:
 
 
 @tool(name="mkdir", group="os")
+@track_fs_op("path")
 def mkdir(path: str) -> str:
     """创建目录（递归创建父目录）。
 
@@ -733,6 +744,7 @@ def mkdir(path: str) -> str:
 
 
 @tool(name="search_files", group="os", concurrency_safe=True)
+@track_fs_op("path")
 def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
                  max_results: int = 50) -> str:
     """搜索文件：按 glob 模式找文件名（任意深度），或按正则搜索文件内容（类似 grep）。
@@ -877,6 +889,7 @@ def _missing_module_hint(stdout: str, stderr: str) -> Optional[str]:
 
 
 @tool(name="run_shell_command", group="os", tags=["always"], description=_SHELL_PROMPT)
+@track_fs_op("command")
 def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = False) -> str:
     """在系统 shell 中执行命令并返回输出结果。
 
@@ -995,6 +1008,7 @@ def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = 
 
 
 @tool(name="python_exec", group="os")
+@track_fs_op()
 def python_exec(code: str, timeout: int = 30) -> str:
     """执行 Python 代码片段并返回输出结果，适合数据计算、文本处理等场景。
 

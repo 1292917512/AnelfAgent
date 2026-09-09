@@ -72,6 +72,43 @@ def _extract_replace(stdout: str) -> Optional[str]:
     return None
 
 
+def parse_hooks_data(raw: Any) -> Dict[str, List[HookSpec]]:
+    """校验并解析 hooks.json 内容为事件分组；非法时抛 ValueError（全量校验）。
+
+    hook 声明字段：matcher（工具名 glob，缺省 "*"）、command（必填）、
+    timeout（秒，clamp 到 [1, 60]）。
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("hooks.json 顶层应为对象")
+    hooks: Dict[str, List[HookSpec]] = {e: [] for e in HOOK_EVENTS}
+    for event, entries in raw.items():
+        if event not in HOOK_EVENTS:
+            raise ValueError(f"未知 hook 事件: {event}（可用: {', '.join(HOOK_EVENTS)}）")
+        if not isinstance(entries, list):
+            raise ValueError(f"hooks.json[{event}] 应为数组")
+        for entry in entries:
+            if not isinstance(entry, dict) or not entry.get("command"):
+                raise ValueError(f"hooks.json[{event}] 条目缺少 command")
+            hooks[event].append(HookSpec(
+                event=event,
+                matcher=str(entry.get("matcher", "*")),
+                command=str(entry["command"]),
+                timeout=max(1.0, min(float(entry.get("timeout", _DEFAULT_TIMEOUT_SEC)), _MAX_TIMEOUT_SEC)),
+            ))
+    return hooks
+
+
+def hooks_data_from_specs(hooks: Dict[str, List[HookSpec]]) -> Dict[str, Any]:
+    """把事件分组导出为 hooks.json 内容（空事件组省略）。"""
+    return {
+        event: [
+            {"matcher": spec.matcher, "command": spec.command, "timeout": spec.timeout}
+            for spec in specs
+        ]
+        for event, specs in hooks.items() if specs
+    }
+
+
 class HookRegistry:
     """hook 配置持有者（fail-closed 加载：坏文件保留上次成功集）。"""
 
@@ -82,27 +119,8 @@ class HookRegistry:
         """从 JSON 文件加载，返回加载的 hook 总数（失败抛异常，调用方决定保留旧集）。"""
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
-        if not isinstance(raw, dict):
-            raise ValueError("hooks.json 顶层应为对象")
-        hooks: Dict[str, List[HookSpec]] = {e: [] for e in HOOK_EVENTS}
-        count = 0
-        for event, entries in raw.items():
-            if event not in HOOK_EVENTS:
-                raise ValueError(f"未知 hook 事件: {event}（可用: {', '.join(HOOK_EVENTS)}）")
-            if not isinstance(entries, list):
-                raise ValueError(f"hooks.json[{event}] 应为数组")
-            for entry in entries:
-                if not isinstance(entry, dict) or not entry.get("command"):
-                    raise ValueError(f"hooks.json[{event}] 条目缺少 command")
-                hooks[event].append(HookSpec(
-                    event=event,
-                    matcher=str(entry.get("matcher", "*")),
-                    command=str(entry["command"]),
-                    timeout=max(1.0, min(float(entry.get("timeout", _DEFAULT_TIMEOUT_SEC)), _MAX_TIMEOUT_SEC)),
-                ))
-                count += 1
-        self._hooks = hooks  # 全量校验通过才提交（原子替换）
-        return count
+        self._hooks = parse_hooks_data(raw)  # 全量校验通过才提交（原子替换）
+        return sum(len(v) for v in self._hooks.values())
 
     def empty(self) -> bool:
         return not any(self._hooks.values())

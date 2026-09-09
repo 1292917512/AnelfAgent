@@ -70,5 +70,7 @@
   "stayAwakeOn": "已设为常驻：工具组始终出现在 schema",
   "stayAwakeOff": "已设为沉睡：工具组仅保留目录简介，需要时唤醒",
   "stayAwakeHintOn": "设为常驻（工具组始终出现在工具列表，高频服务推荐）",
-  "stayAwakeHintOff": "设为沉睡（缩小上下文前缀，提升缓存命中）"
+  "stayAwakeHintOff": "设为沉睡（缩小上下文前缀，提升缓存命中）",
+  "oauthPending": "待授权 → 点击打开",
+  "oauthAuthorized": "已授权"
 }

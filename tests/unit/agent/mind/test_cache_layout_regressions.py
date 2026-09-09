@@ -292,21 +292,24 @@ class TestCacheKindBucketing:
 
 class TestCacheRateAggregation:
     def test_avg_never_exceeds_full_hit(self) -> None:
-        """Anthropic 口径（input 不含缓存，read 可大于 prompt）混窗时均值仍 ≤1。
+        """Anthropic 口径（input 不含缓存）混窗时均值仍 ≤1。
 
-        record 时单次命中率已钳到 1.0，聚合必须沿用该口径算术平均；
-        按总 read/总 prompt 重算会把均值放大到 100% 以上。
+        归一后的分母恒 ≥ read（不含口径 total = prompt+read+creation），
+        单次命中率天然不超 1，聚合算术平均同样封顶。
         """
         from agent.llm.types import UsageInfo
         from agent.mind.cache_stats import CacheUsageTracker
 
         tracker = CacheUsageTracker()
         # Anthropic 记账：input_tokens 仅未缓存部分，read 远大于它
-        tracker.record(UsageInfo(prompt_tokens=50, cache_read_input_tokens=200), kind="reflect")
+        tracker.record(
+            UsageInfo(prompt_tokens=50, cache_read_input_tokens=200, prompt_includes_cache=False),
+            kind="reflect",
+        )
         tracker.record(UsageInfo(prompt_tokens=100, cache_read_input_tokens=50), kind="reply")
 
         stats = tracker.summary()
-        assert stats["avg_cache_hit_rate"] == 0.75  # (1.0 + 0.5) / 2
+        assert stats["avg_cache_hit_rate"] == 0.65  # (0.8 + 0.5) / 2
         assert stats["avg_cache_hit_rate"] <= 1.0
 
 

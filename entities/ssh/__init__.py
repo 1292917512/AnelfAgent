@@ -37,6 +37,51 @@ register_configs_safe({
             "description": "是否允许 AI 调用 SSH 工具（连接/执行/传输）",
             "default": True,
         },
+        "ssh_context_inject": {
+            "description": "是否向 AI 上下文注入 SSH 连接状态（在线主机清单）",
+            "default": True,
+        },
+        "ssh_ops_context_inject": {
+            "description": "是否向 AI 上下文注入 SSH 操作态势（本会话操作的主机/远程目录/目录说明文档/最近操作）",
+            "default": True,
+        },
+        "ssh_ops_ttl_seconds": {
+            "description": "停止 SSH 操作多久后取消操作态势注入",
+            "default": 600,
+            "advanced": True,
+            "unit": "秒",
+        },
+        "ssh_ops_max_entries": {
+            "description": "每个主机的最近操作流水保留并注入的最大条数",
+            "default": 8,
+            "advanced": True,
+        },
+        "ssh_work_dir_tracking": {
+            "description": "是否跟踪远程工作目录（POSIX pwd 捕获，cd 对后续命令生效；非 POSIX 远端可关闭）",
+            "default": True,
+            "advanced": True,
+        },
+        "ssh_remote_docs_enabled": {
+            "description": "是否注入远程目录下的说明文档（如 AGENTS.md，操作后后台抓取）",
+            "default": True,
+        },
+        "ssh_remote_doc_names": {
+            "description": "注入的远程目录说明文档文件名（逗号分隔，仅纯文件名）",
+            "default": "AGENTS.md,README.md",
+            "advanced": True,
+        },
+        "ssh_remote_doc_max_chars": {
+            "description": "单份远程说明文档注入的最大字符数",
+            "default": 3000,
+            "advanced": True,
+            "unit": "字符",
+        },
+        "ssh_remote_doc_cache_seconds": {
+            "description": "远程说明文档的缓存时长（操作后过期即后台重新抓取）",
+            "default": 300,
+            "advanced": True,
+            "unit": "秒",
+        },
         "ssh_default_timeout": {
             "description": "命令执行默认超时",
             "default": 60,

@@ -23,6 +23,13 @@ export interface ProviderMetric {
   injecting?: boolean;
   /** 最近一次实际注入时间（epoch 秒，0=未注入过） */
   injected_at?: number;
+  /** 注入开关配置键（<组名>_context_inject 约定）；null = 无开关 */
+  inject_key?: string | null;
+  /** 最近一次实际注入的正文（跨 scope 取最新；null = 从未注入） */
+  last_content?: string | null;
+  /** 该次注入的时间（epoch 秒）与归属 scope */
+  last_content_at?: number;
+  last_content_scope?: string;
 }
 
 export interface ContextProviderStatus {

@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import socket
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import asyncssh
 
@@ -40,6 +41,98 @@ _OUTPUT_LIMIT = 8000
 _FALLBACK_CMD_TIMEOUT = 60.0
 # 会话打开阶段（命令未开始）可安全重试的异常：断线类 + 打开超时（死链）
 _SESSION_OPEN_EXCS = (asyncssh.ConnectionLost, asyncssh.DisconnectError, asyncio.TimeoutError)
+
+# 远程工作目录捕获标记（内嵌 stdout，提取后剥离，不展示给调用方）
+_PWD_MARKER_BEGIN = "__ANELF_PWD_BEGIN__"
+_PWD_MARKER_END = "__ANELF_PWD_END__"
+
+
+def compose_exec_command(command: str, work_dir: str, track_pwd: bool) -> str:
+    """组装远端执行命令：可选 cd 前缀 + POSIX pwd 捕获尾块（保留原退出码）。
+
+    cd 与捕获尾块同处一个 brace 组：cd 失败时整组不执行、无捕获标记
+    （调用方据此保持上次目录，cd 错误原样暴露），远端 shell 以原命令
+    退出码结束。track_pwd=False 时退化为简单的 cd 前缀拼接（兼容非
+    POSIX 远端，对应 ssh_work_dir_tracking 配置）。
+    """
+    directory = work_dir.strip()
+    if not track_pwd:
+        return f"cd {shlex.quote(directory)} && {command}" if directory else command
+    capture = (
+        "__anelf_ec=$?\n"
+        f'printf "\\n{_PWD_MARKER_BEGIN}%s{_PWD_MARKER_END}\\n" "$PWD"\n'
+        "exit $__anelf_ec"
+    )
+    if directory:
+        return f"cd {shlex.quote(directory)} && {{\n{command}\n{capture}\n}}"
+    return f"{command}\n{capture}"
+
+
+def extract_captured_pwd(stdout: str) -> Tuple[Optional[str], str]:
+    """从 stdout 提取并剥离 pwd 捕获标记（取最后一次出现），返回 (目录, 清洗后 stdout)。
+
+    无标记（非 POSIX 远端 / 命令提前 exit / cd 失败）返回 (None, 原文)。
+    """
+    begin = stdout.rfind(_PWD_MARKER_BEGIN)
+    if begin < 0:
+        return None, stdout
+    end = stdout.find(_PWD_MARKER_END, begin)
+    if end < 0:
+        return None, stdout
+    path = stdout[begin + len(_PWD_MARKER_BEGIN):end].strip()
+    remainder = stdout[end + len(_PWD_MARKER_END):].lstrip("\n")
+    cleaned = stdout[:begin].rstrip("\n")
+    if remainder:
+        cleaned = cleaned + ("\n" if cleaned else "") + remainder
+    return (path or None), cleaned
+
+
+def _has_decode_anomaly(text: str) -> bool:
+    """检测 GBK 被误作 UTF-8 解码的典型特征。
+
+    GBK 字节对常为合法 UTF-8 双字节序列，解码结果是希腊/西里尔/希伯来/
+    亚美尼亚字母区的"伪文字"——shell 输出几乎不会合法出现这些区段，
+    连续出现即误判信号（阈值 2 容忍个别合法的数学符号等）。
+    """
+    suspect = 0
+    for ch in text:
+        code = ord(ch)
+        if code == 0xFFFD or 0x0370 <= code <= 0x05FF:
+            suspect += 1
+            if suspect >= 2:
+                return True
+    return False
+
+
+def _decode_remote_text(data: bytes | str | None) -> str:
+    """智能解码远端输出，矫正 Windows GBK 代码页中文乱码。
+
+    执行通道以 encoding=None 收发原始字节（asyncssh 的连接级 utf-8/replace
+    会在 GBK 字节对上静默产出希腊字母乱码，信息不可恢复，故解码在本地做）：
+    utf-8 严格解码成功且无乱码特征直接采用；否则尝试 GB18030（GBK 超集，
+    覆盖 Windows 中文代码页）；两路均不可用回退 utf-8/replace。
+    utf-8 解码失败时仅在 GB18030 结果确实含 CJK 才采信（GB18030 编码空间
+    过于宽松，任意二进制都能"解码"成功）。
+    """
+    if data is None or isinstance(data, str):
+        return data or ""
+    if not data:
+        return ""
+    text: Optional[str]
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    if text is not None and not _has_decode_anomaly(text):
+        return text
+    try:
+        gbk_text: Optional[str] = data.decode("gb18030")
+    except UnicodeDecodeError:
+        gbk_text = None
+    if gbk_text is not None and not _has_decode_anomaly(gbk_text):
+        if text is not None or any("\u4e00" <= ch <= "\u9fff" for ch in gbk_text):
+            return gbk_text
+    return text if text is not None else data.decode("utf-8", errors="replace")
 
 # SSE 订阅者队列（router.py 注册），广播失败仅告警不中断
 _subscribers: List[asyncio.Queue] = []
@@ -116,6 +209,8 @@ class ManagedConnection:
         self.last_error: str = ""
         self.connected_at: int = 0
         self.last_used_at: int = 0
+        # 持久远程工作目录（pwd 捕获维护，cd 对后续命令生效；空 = 未跟踪）
+        self.work_dir: str = ""
 
     def snapshot(self, profile: Optional[Dict[str, Any]] = None, is_default: bool = False) -> Dict[str, Any]:
         """生成状态快照（供 API / 上下文注入，不含凭据）。"""
@@ -130,6 +225,7 @@ class ManagedConnection:
             "connected_at": self.connected_at,
             "last_used_at": self.last_used_at,
             "is_default": is_default,
+            "work_dir": self.work_dir,
         }
 
 
@@ -326,6 +422,8 @@ class SshConnectionManager:
         conn, managed.conn = managed.conn, None
         managed.status = STATUS_DISCONNECTED
         managed.last_error = ""
+        # 显式断开后重置远程目录偏好，重连即从登录目录开始（防陈旧目录误导）
+        managed.work_dir = ""
         try:
             conn.close()
             await conn.wait_closed()
@@ -361,9 +459,12 @@ class SshConnectionManager:
         静默死链（主机断电/NAT 超时，无 RST）下 create_process 只能等
         keepalive 判死（30s×3 起步）；以 ssh_connect_timeout 为界提前截断，
         健康链路的通道打开远快于该值。
+
+        encoding=None 取原始字节流，输出解码由 _decode_remote_text 智能处理
+        （连接级 utf-8/replace 会把 GBK 中文毁成不可恢复的希腊字母乱码）。
         """
         return await asyncio.wait_for(
-            conn.create_process(command),
+            conn.create_process(command, encoding=None),
             timeout=get_config_int("ssh_connect_timeout", 15),
         )
 
@@ -390,8 +491,13 @@ class SshConnectionManager:
         """
         target = self._resolve_name(name)
         conn = await self._ensure_connected(target)
+        managed = self._managed(target)
         effective_timeout = timeout or get_config_int("ssh_default_timeout", int(_FALLBACK_CMD_TIMEOUT))
-        full_command = f"cd {work_dir} && {command}" if work_dir.strip() else command
+        # 远程工作目录跟踪（ssh_work_dir_tracking，POSIX pwd 捕获）：
+        # 显式 work_dir 优先，其次上次捕获的持久目录，cd 因此对后续命令生效
+        track_pwd = get_config_bool("ssh_work_dir_tracking", True)
+        effective_dir = work_dir.strip() or managed.work_dir
+        full_command = compose_exec_command(command, effective_dir, track_pwd)
 
         def _mark_disconnected() -> None:
             managed = self._managed(target)
@@ -436,11 +542,20 @@ class SshConnectionManager:
                 elapsed_ms=int((time.monotonic() - started) * 1000),
             ) from exc
 
-        self._managed(target).last_used_at = int(time.time() * 1000)
-        stdout = result.stdout if isinstance(result.stdout, str) else (result.stdout or b"").decode("utf-8", errors="replace")
-        stderr = result.stderr if isinstance(result.stderr, str) else (result.stderr or b"").decode("utf-8", errors="replace")
-        truncated = len(stdout) > _OUTPUT_LIMIT or len(stderr) > _OUTPUT_LIMIT
+        managed.last_used_at = int(time.time() * 1000)
+        stdout = _decode_remote_text(result.stdout)
+        stderr = _decode_remote_text(result.stderr)
         exit_code = result.returncode if result.returncode is not None else -1
+        if track_pwd:
+            # 先提取捕获标记再截断（标记在 stdout 尾部，截断会误切）
+            captured, stdout = extract_captured_pwd(stdout)
+            if captured:
+                managed.work_dir = captured
+            elif effective_dir:
+                # 有标记缺失且有目标目录 = cd 失败/命令提前退出：清除持久目录
+                # 自愈，下条命令从登录目录重新开始（cd 错误已在 stderr 暴露）
+                managed.work_dir = ""
+        truncated = len(stdout) > _OUTPUT_LIMIT or len(stderr) > _OUTPUT_LIMIT
         return {
             "ok": exit_code == 0,
             "exit_code": exit_code,
@@ -448,7 +563,24 @@ class SshConnectionManager:
             "stderr": stderr[:_OUTPUT_LIMIT // 2],
             "connection": target,
             "truncated": truncated,
+            "work_dir": managed.work_dir,
         }
+
+    async def run_capture(self, name: str, command: str, timeout: float = 15.0) -> Optional[str]:
+        """在已建连的连接上运行辅助采集命令，返回 stdout（未连接/失败返回 None，静默）。
+
+        供态势注入的远程文档读取等旁路采集使用：不自动建连、不改状态、
+        不占用主执行路径的断线重试语义。
+        """
+        managed = self._connections.get(name)
+        if managed is None or managed.status != STATUS_CONNECTED or managed.conn is None:
+            return None
+        try:
+            result = await asyncio.wait_for(managed.conn.run(command, encoding=None), timeout=timeout)
+        except Exception as exc:
+            log(f"SSH 辅助采集命令失败（已忽略）: {name} - {exc}", "DEBUG", tag="SSH")
+            return None
+        return _decode_remote_text(result.stdout)
 
     async def upload(self, local_path: str, remote_path: str, name: str = "") -> Dict[str, Any]:
         """经 SFTP 上传本地文件到远程。"""

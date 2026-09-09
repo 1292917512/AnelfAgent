@@ -26,6 +26,7 @@ from entities._sdk import (
 )
 
 from .manager import SshCommandInterrupted, get_ssh_manager
+from .ops_state import track_ssh_op
 from .store import get_ssh_store
 
 # 分组沉睡简介：目录中展示 [沉睡] 标记，AI 按需 activate_tool_group 唤醒
@@ -79,19 +80,24 @@ def ssh_list() -> str:
 
 @tool(name="ssh_exec", group="ssh", timeout=300,
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
+@track_ssh_op("command")
 async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str = "") -> str:
-    """在 SSH 连接上执行命令，返回结构化结果（exit_code/stdout/stderr）。
+    """在 SSH 连接上执行命令，返回结构化结果（exit_code/stdout/stderr/work_dir）。
 
     连接未建立时自动建连；目标不可达时 TCP 探测秒级失败并返回精确原因；
     命令开始前连接失效会自动重连重试一次；命令执行中连接断开（对端
     关机/重启/网络中断）则立即返回错误，命令可能已在远端启动，
     是否重跑由你判断。
 
+    远程工作目录跨命令持久（与本地 shell 一致）：命令中的 cd 或 work_dir
+    参数指定的目录对后续命令持续生效，结果中的 work_dir 为命令结束后的
+    实际目录；cd 失败时目录偏好自动重置回登录目录。
+
     Args:
         command: 要执行的 shell 命令
         name: 连接名称，缺省使用默认连接
         timeout: 命令超时秒数，缺省使用实体配置的默认值（60秒）
-        work_dir: 远程工作目录（可选，先 cd 再执行）
+        work_dir: 远程工作目录（可选，先 cd 再执行，并对后续命令生效）
     """
     if error := _gate():
         return error
@@ -117,6 +123,7 @@ async def ssh_exec(command: str, name: str = "", timeout: int = 0, work_dir: str
 
 @tool(name="ssh_upload", group="ssh", timeout=600,
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
+@track_ssh_op("local_path", "remote_path")
 async def ssh_upload(local_path: str, remote_path: str, name: str = "") -> str:
     """上传本地文件到远程服务器（SFTP）。
 
@@ -140,6 +147,7 @@ async def ssh_upload(local_path: str, remote_path: str, name: str = "") -> str:
 
 @tool(name="ssh_download", group="ssh", timeout=600,
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
+@track_ssh_op("remote_path", "local_path")
 async def ssh_download(remote_path: str, local_path: str, name: str = "") -> str:
     """下载远程文件到本地（SFTP）。
 
@@ -161,6 +169,7 @@ async def ssh_download(remote_path: str, local_path: str, name: str = "") -> str
 
 @tool(name="ssh_connect", group="ssh", timeout=60,
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
+@track_ssh_op()
 async def ssh_connect(name: str = "") -> str:
     """建立 SSH 连接（连接池复用，已连接时直接返回）。
 
@@ -186,6 +195,7 @@ async def ssh_connect(name: str = "") -> str:
 
 @tool(name="ssh_disconnect", group="ssh",
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
+@track_ssh_op()
 async def ssh_disconnect(name: str = "") -> str:
     """断开 SSH 连接。
 
@@ -205,6 +215,7 @@ async def ssh_disconnect(name: str = "") -> str:
 
 @tool(name="ssh_set_default", group="ssh",
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
+@track_ssh_op("name")
 async def ssh_set_default(name: str) -> str:
     """切换默认 SSH 连接（后续 ssh_exec 等工具缺省 name 时使用该连接）。
 
@@ -222,6 +233,7 @@ async def ssh_set_default(name: str) -> str:
 
 @tool(name="ssh_add", group="ssh",
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
+@track_ssh_op("name")
 async def ssh_add(
     name: str,
     host: str,
@@ -268,6 +280,7 @@ async def ssh_add(
 
 @tool(name="ssh_remove", group="ssh",
       allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
+@track_ssh_op("name")
 async def ssh_remove(name: str) -> str:
     """删除 SSH 连接配置（同时断开对应连接）。
 

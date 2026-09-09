@@ -118,7 +118,7 @@ _SUB_AGENT_PROMPT = """你是一个子代理，负责完成主代理委托的子
 
 [背景上下文]
 {context}
-
+{history_block}
 [执行要求]
 1. 专注于完成上述子任务，不要偏离目标
 2. 你可以使用工具完成查询、计算、分析等操作
@@ -143,6 +143,7 @@ class SubAgent:
             model_id: str = "",
             agent_name: str = "",
             delegation_id: str = "",
+            parent_history: str = "",
     ) -> None:
         self._mind = mind
         self.goal = goal
@@ -156,6 +157,9 @@ class SubAgent:
         self.agent_name = agent_name
         # 所属委托 ID（steer 转向寻址；空 = 不可转向，如测试直构）
         self.delegation_id = delegation_id
+        # 主对话近期记录（fork_context=True 时由 DelegationManager 注入；
+        # 仅作背景参考的只读快照，子代理对主对话无写路径）
+        self.parent_history = parent_history
 
     async def run(self) -> SubAgentResult:
         """执行子任务并返回结果摘要。"""
@@ -172,9 +176,14 @@ class SubAgent:
             if self.role == _ROLE_ORCHESTRATOR
             else "5. 你是 leaf 角色：不可再委托，必须自己完成全部工作。"
         )
+        history_block = (
+            f"\n[主对话近期记录]（仅供参考，按时间顺序）\n{self.parent_history}\n"
+            if self.parent_history else ""
+        )
         prompt = _SUB_AGENT_PROMPT.format(
             goal=self.goal,
             context=self.context or "（无额外背景）",
+            history_block=history_block,
             role_hint=role_hint,
         )
 

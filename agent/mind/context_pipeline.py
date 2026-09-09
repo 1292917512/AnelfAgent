@@ -33,9 +33,10 @@ VOL_LOW = 10          # 保留档位（历史层定义，当前无内容块使�
 VOL_PERIODIC = 20     # 对话摘要：折叠周期（默认 20 条消息）才变
 VOL_HISTORY = 30      # 对话历史：纯追加（前缀稳定）
 VOL_TAIL_HEAD = 35    # 尾部动态区头部：便签/文件索引（后台任务会写，漂移只损尾部增量）
-VOL_SESSION = 40      # 状态/画像/短期记忆/召回/技能/Provider：每会话重建
+VOL_SESSION = 40      # 状态/画像/短期记忆/召回/技能：每会话重建
 VOL_MESSAGE = 50      # 溢出提示 / 安全提示：随消息状态变
 VOL_CHAIN = 60        # 工具调用链：每轮追加（think_loop 管理，不经管线）
+VOL_PROVIDER = 70     # 上下文提供者实时注入：think_loop 每轮尾部收集（工具链之后、exec_context 之前）
 VOL_ROUND = 90        # exec_context：每轮重建（think_loop 追加在尾部）
 
 
@@ -95,6 +96,7 @@ def get_layer_order() -> List[str]:
 
 # 思维循环逐轮管理的层（不经管线组装，但同属上下文体系，统一注册）
 register_layer("tool_chain", VOL_CHAIN, "工具调用链", managed="think_loop")
+register_layer("provider", VOL_PROVIDER, "上下文提供者注入", managed="think_loop")
 register_layer("exec_context", VOL_ROUND, "执行状态上下文", managed="think_loop")
 
 

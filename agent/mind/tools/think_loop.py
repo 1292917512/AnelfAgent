@@ -101,6 +101,34 @@ if TYPE_CHECKING:
     from agent.mind.mind import Mind
 
 # ==================================================================
+# 上下文提供者实时注入（每轮尾部收集，零 I/O 契约 + 并发超时兜底）
+# ==================================================================
+
+async def _collect_provider_messages(scope: str) -> List[Dict]:
+    """收集上下文提供者的当前最新快照，封装为 system 消息列表。
+
+    注入位置在工具链之后、exec_context 之前（每轮组装点调用）：
+    时间/天气等实时内容逐轮新鲜，其字节变化又不打断工具链前缀缓存。
+    收集失败 fail-open 为空列表（绝不影响主回复流程）。
+    """
+    try:
+        from core.context_provider import ContextProviderRegistry
+        snippets, _metrics = await ContextProviderRegistry.collect(scope)
+        return [
+            {
+                "role": "system",
+                "content": s,
+                "_layer": "provider",
+                "_source": {"origin": "context_provider"},
+            }
+            for s in snippets
+        ]
+    except Exception as exc:
+        log(f"上下文提供者收集失败: {exc}", "DEBUG", tag="思维")
+        return []
+
+
+# ==================================================================
 # 回复入口（多轮对话循环装配 + 异常兜底）
 # ==================================================================
 
@@ -281,6 +309,7 @@ async def think_loop(
         adapter_key: str = "",
         blocked_tools: Optional[Set[str]] = None,
         completion: Optional[Dict] = None,
+        reflect_tool_selectors: Optional[List[str]] = None,
 ) -> None:
     """统一思维循环：对话和反思共享同一流程。
 
@@ -292,12 +321,15 @@ async def think_loop(
     工具集由调用方构建并传入，确保模式差异在入口处理。
     blocked_tools 为模式级禁用工具：schema 保留在数组中（跨调用前缀一致），
     执行侧拦截返回合成错误结果（可见性与权限分离）。
+    reflect_tool_selectors 仅 REFLECT 模式使用：工具集版本变化重建
+    active_tools 时按同一批选择器还原精简目录（与 mind.reflect 初始装配一致）。
     主循环只保留：中断检查 → LLM 调用 → 分发到阶段函数 → 终止条件判断。
     """
     ctx, state = await _prepare_think_context(
         mind, mode, tool_chain, execution_steps,
         collected_text, active_tools, anything, base_messages,
         options, adapter_key, blocked_tools, completion,
+        reflect_tool_selectors=reflect_tool_selectors,
     )
 
     # 工具数组顺序由 ToolAssembly 跨回复追加式冻结（见 tool_assembly），
@@ -356,8 +388,10 @@ async def _run_think_rounds(
         if await _handle_interrupt(ctx, state):
             return
 
-        # 工具集版本检查：激活/发现/注册表变化时重建 active_tools
-        # （ToolAssembly 追加式冻结保证重建结果前缀字节稳定，prefix 缓存友好）
+        # 工具集版本检查：激活/发现/注册表变化时重建 active_tools。
+        # REPLY 走回复级全量装配（追加式冻结保证前缀字节稳定）；
+        # REFLECT 走精简目录装配（与 mind.reflect 初始装配同一入口，
+        # 重建不会退回全量、也不会丢失选择器工具）
         cur_tools_version = (
             getattr(mind.pfc, "tools_version", 0),
             _tool_act_mgr.version,
@@ -365,9 +399,15 @@ async def _run_think_rounds(
         )
         if cur_tools_version != last_tools_version:
             last_tools_version = cur_tools_version
-            ctx.active_tools = await mind.pfc.get_active_tool_schemas(
-                ctx.adapter_key, scope=ctx.current_scope,
-            )
+            if mode is ThinkMode.REFLECT:
+                ctx.active_tools = await mind.pfc.get_reflect_tool_schemas(
+                    ctx.adapter_key, scope=ctx.current_scope,
+                    selectors=list(ctx.reflect_tool_selectors),
+                )
+            else:
+                ctx.active_tools = await mind.pfc.get_active_tool_schemas(
+                    ctx.adapter_key, scope=ctx.current_scope,
+                )
             log(f"工具集版本变化，重建 active_tools: {len(ctx.active_tools)} 个", "DEBUG", tag="思维")
 
         await event_bus.emit(EVENT_THINKING_REPLY_ROUND, {
@@ -435,7 +475,11 @@ async def _run_think_rounds(
         # 字节稳定供 Prompt Caching 复用，且当前轮状态在模型注意力最强的末尾位置
         # （缓存断点不在此注入——发送边界由 llm/prompt_cache 按 _layer 统一装饰，
         # 链尾锚点天然随链增长前移）
-        llm_messages = ctx.base_messages + ctx.tool_chain + [exec_context]
+        # provider 实时注入：每轮收集最新快照，置于工具链之后、exec_context 之前
+        provider_msgs = await _collect_provider_messages(ctx.current_scope)
+        llm_messages = (
+            ctx.base_messages + ctx.tool_chain + provider_msgs + [exec_context]
+        )
 
         mind._set_phase(MindPhase.LLM_CALLING)
         # 超时/上下文超限已在 _invoke_llm_round 内注入恢复提示或紧急压缩

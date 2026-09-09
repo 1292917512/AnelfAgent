@@ -269,3 +269,94 @@ class TestWaitDecision:
             assert d == ApprovalDecision.CANCELLED
         finally:
             ConfigManager.set("approval_guardian_enabled", True)
+
+
+class TestGuardianEvidence:
+    """评审证据：近期审批历史注入 + 专用评审模型。"""
+
+    async def test_history_injected_when_present(self, monkeypatch):
+        """有审计记录时评审消息包含历史段，无记录时不占上下文。"""
+
+        captured: dict = {}
+
+        class _Sink:
+            async def list_approval_audit(self, limit=50, offset=0, tool_name=""):
+                return [
+                    {"outcome": "approved", "reason": "清理缓存", "user_id": "u1"},
+                    {"outcome": "guardian_denied", "reason": "目标为系统目录", "user_id": "u2"},
+                ]
+
+        class _Manager:
+            def get_client_by_id(self, mid):
+                return None
+
+            async def chat_with_fallback(self, messages, **kwargs):
+                captured["user"] = messages[1]["content"]
+                captured["client"] = kwargs.get("client")
+                captured["options"] = kwargs.get("options")
+                return SimpleNamespace(content='{"approve": true, "risk": "low", "rationale": "ok"}')
+
+        monkeypatch.setattr("agent.approval.audit._audit_sink", lambda: _Sink())
+        monkeypatch.setattr("agent.llm.get_llm_manager", lambda: _Manager())
+        verdict = await ApprovalGuardian()._review_llm(
+            tool_name="delete_file", tool_args={"path": "/tmp/x"}, reason="清理",
+            risk_level="medium", channel_id="webui", user_id="u1",
+        )
+        assert verdict is not None and verdict.approved
+        assert "近期同类审批" in captured["user"]
+        assert "approved（本用户）" in captured["user"]
+        assert captured["options"] == {"reasoning_effort": "low"}
+
+    async def test_no_history_no_section(self, monkeypatch):
+        """无审计记录时不注入历史段。"""
+        captured: dict = {}
+
+        class _Sink:
+            async def list_approval_audit(self, limit=50, offset=0, tool_name=""):
+                return []
+
+        class _Manager:
+            async def chat_with_fallback(self, messages, **kwargs):
+                captured["user"] = messages[1]["content"]
+                return SimpleNamespace(content='{"approve": true, "risk": "low", "rationale": "ok"}')
+
+        monkeypatch.setattr("agent.approval.audit._audit_sink", lambda: _Sink())
+        monkeypatch.setattr("agent.llm.get_llm_manager", lambda: _Manager())
+        await ApprovalGuardian()._review_llm(
+            tool_name="delete_file", tool_args={}, reason="", risk_level="low",
+            channel_id="", user_id="",
+        )
+        assert "近期同类审批" not in captured["user"]
+
+    async def test_review_model_override(self, monkeypatch):
+        """配置评审模型时按 ID 取客户端传入；取不到则回退默认链。"""
+        from core.config import ConfigManager
+
+        captured: dict = {}
+        sentinel_client = object()
+
+        class _Sink:
+            async def list_approval_audit(self, limit=50, offset=0, tool_name=""):
+                return []
+
+        class _Manager:
+            def get_client_by_id(self, mid):
+                captured["model_id"] = mid
+                return sentinel_client if mid == "fast-model" else None
+
+            async def chat_with_fallback(self, messages, **kwargs):
+                captured["client"] = kwargs.get("client")
+                return SimpleNamespace(content='{"approve": true, "risk": "low", "rationale": "ok"}')
+
+        monkeypatch.setattr("agent.approval.audit._audit_sink", lambda: _Sink())
+        monkeypatch.setattr("agent.llm.get_llm_manager", lambda: _Manager())
+        ConfigManager.set("approval_guardian_model", "fast-model")
+        try:
+            await ApprovalGuardian()._review_llm(
+                tool_name="t", tool_args={}, reason="", risk_level="low",
+                channel_id="", user_id="",
+            )
+        finally:
+            ConfigManager.set("approval_guardian_model", "")
+        assert captured["model_id"] == "fast-model"
+        assert captured["client"] is sentinel_client

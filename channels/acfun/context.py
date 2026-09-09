@@ -2,7 +2,8 @@
 
 经 core.context_provider 注册（channels → core 合法依赖方向），落在 provider 层
 （VOL_SESSION+4，历史之后的尾部动态区），一轮滞后的后台快照、<1s 超时、异常
-fail-open 跳过——直播模式关闭时返回 None，本轮完全不注入。
+fail-open 跳过——直播模式关闭时返回 None，本轮完全不注入；
+注入总开关为频道配置 context_inject（框架 inject_key 门控，关闭即停止采集与注入）。
 内容纯读 LiveSessionManager 内存（零 I/O），计数/相对时间为 volatile 区合法内容。
 """
 
@@ -118,6 +119,7 @@ def register_live_context_provider() -> None:
         max_tokens=450,
         scope_filter=None,
         group=None,  # 全局常驻；直播模式关闭时 provide 内部返回 None 实现零注入
+        inject_key="acfun_context_inject",  # 频道配置面开关（adapter/acfun 组）
         provide_fn=_render_live_status,
         description="AcFun 直播模式开启时的实时房间状态与最近弹幕注入",
     ))

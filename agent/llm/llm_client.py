@@ -487,6 +487,11 @@ class LLMClient(BaseEntity):
         if affinity_handler is not None:
             kwargs["client"] = affinity_handler
 
+        from agent.llm.prompt_cache import session_cache_key
+        cache_key = session_cache_key()
+        if cache_key:
+            kwargs["prompt_cache_key"] = cache_key
+
         if effort or self.config.thinking:
             # 有 effort 或声明了 thinking 契约都应用：effort 为空时开关型契约
             # 用 on 值（恒开模型），有档位契约无档可填则跳过
@@ -900,6 +905,14 @@ class LLMClient(BaseEntity):
         }
         if effort:
             create_kwargs["extra"] = {"reasoning": {"effort": to_litellm_effort(effort)}}
+        from agent.llm.prompt_cache import session_cache_key
+        cache_key = session_cache_key()
+        if cache_key:
+            # create() 为显式 kwargs 签名，缓存键经 extra 通道并入 litellm 调用
+            create_kwargs["extra"] = {
+                **(create_kwargs.get("extra") or {}),
+                "prompt_cache_key": cache_key,
+            }
         debug(
             f"LLM chat(via responses): {self.config.litellm_model}, msgs={len(adapted)}",
             tag="模型",

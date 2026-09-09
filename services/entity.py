@@ -45,6 +45,22 @@ class EntityService:
             for e in entities
         ]
 
+    @staticmethod
+    def _resolve_metadata(name: str) -> Optional[Any]:
+        """按实体名或分组名解析实体元数据（与 get_entity_detail 同口径）。
+
+        分组实体（工具以各自名称注册、组名下无同名实体）按分组名
+        取该组第一个实体，保证配置读写对全部分组实体可用。
+        """
+        from core.entity import EntityRegistry
+
+        metadata = EntityRegistry.get(name)
+        if metadata is None:
+            group_entities = EntityRegistry.get_by_group(name)
+            if group_entities:
+                metadata = group_entities[0]
+        return metadata
+
     def get_entity_detail(self, name: str) -> Optional[Dict[str, Any]]:
         """获取实体详情（含配置、API、工具列表和上下文提供者）。
 
@@ -53,14 +69,9 @@ class EntityService:
         """
         from core.entity import EntityRegistry, EntityType
 
-        metadata = EntityRegistry.get(name)
+        metadata = self._resolve_metadata(name)
         if metadata is None:
-            # 按分组名查找：取该组下第一个实体
-            group_entities = EntityRegistry.get_by_group(name)
-            if group_entities:
-                metadata = group_entities[0]
-            else:
-                return None
+            return None
 
         group = metadata.group
 
@@ -110,9 +121,7 @@ class EntityService:
 
     def get_entity_config(self, name: str) -> Optional[Dict[str, Any]]:
         """获取实体配置。"""
-        from core.entity import EntityRegistry
-
-        metadata = EntityRegistry.get(name)
+        metadata = self._resolve_metadata(name)
         if metadata is None:
             return None
 
@@ -122,49 +131,64 @@ class EntityService:
             "values": metadata.get_all_configs(),
         }
 
-    def update_entity_config(self, name: str, key: str, value: Any) -> bool:
-        """更新实体配置项。"""
-        from core.config import ConfigManager, ConfigRegistry
-        from core.entity import EntityRegistry
+    @staticmethod
+    def _coerce_item_value(key: str, value: Any) -> Any:
+        """按配置项声明类型矫正并收敛值（与配置中心 PUT 同纪律）。
 
-        metadata = EntityRegistry.get(name)
-        if metadata is None:
-            return False
+        配置项不存在或类型非法时抛 ValueError，调用方据此判失败。
+        """
+        from core.config import ConfigRegistry
 
         item = ConfigRegistry.get_item(key)
         if item is None:
+            raise ValueError(f"配置项不存在: {key}")
+        return item.clamp(item.coerce_value(value))
+
+    def update_entity_config(self, name: str, key: str, value: Any) -> bool:
+        """更新实体配置项（类型矫正 + 边界收敛后持久化）。"""
+        from core.config import ConfigManager
+
+        metadata = self._resolve_metadata(name)
+        if metadata is None:
             return False
 
-        ConfigManager.set(key, value)
+        try:
+            coerced = self._coerce_item_value(key, value)
+        except ValueError:
+            return False
+
+        ConfigManager.set(key, coerced)
         ConfigManager.save()
 
         # 同步写入实体目录的 config.json（如果存在）
-        self._sync_entity_config_file(metadata.group, key, value)
+        self._sync_entity_config_file(metadata.group, key, coerced)
         return True
 
     def update_entity_config_batch(
         self, name: str, updates: Dict[str, Any],
     ) -> int:
-        """批量更新实体配置项，返回成功更新数量。"""
-        from core.config import ConfigManager, ConfigRegistry
-        from core.entity import EntityRegistry
+        """批量更新实体配置项（逐条类型矫正），返回成功更新数量。"""
+        from core.config import ConfigManager
 
-        metadata = EntityRegistry.get(name)
+        metadata = self._resolve_metadata(name)
         if metadata is None:
             return 0
 
         count = 0
+        coerced_updates: Dict[str, Any] = {}
         for key, value in updates.items():
-            item = ConfigRegistry.get_item(key)
-            if item is None:
+            try:
+                coerced = self._coerce_item_value(key, value)
+            except ValueError:
                 continue
-            ConfigManager.set(key, value)
+            ConfigManager.set(key, coerced)
+            coerced_updates[key] = coerced
             count += 1
 
         if count:
             ConfigManager.save()
             # 批量同步到 config.json
-            self._sync_entity_config_file_batch(metadata.group, updates)
+            self._sync_entity_config_file_batch(metadata.group, coerced_updates)
 
         return count
 

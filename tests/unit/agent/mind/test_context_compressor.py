@@ -723,3 +723,54 @@ class TestMediaBlockEstimate:
             ],
         }]
         assert ContextCompressor.estimate_tokens(msgs) >= 400
+
+
+class TestSummarizeOverflowRetry:
+    """摘要请求自身上下文溢出：丢弃最老三分之一重试一次。"""
+
+    async def test_overflow_retries_with_head_trimmed(self) -> None:
+        import litellm
+
+        calls: List[str] = []
+
+        async def summarizer(prompt: str):
+            calls.append(prompt)
+            if len(calls) == 1:
+                raise litellm.ContextWindowExceededError(
+                    "context window exceeded", model="m", llm_provider="openai")
+            from types import SimpleNamespace
+            return SimpleNamespace(content="摘要完成")
+
+        c = _compressor()
+        middle = _make_messages(9, "中段")
+        text = await c._summarize(middle, summarizer)
+        assert text == "摘要完成"
+        assert len(calls) == 2
+        # 重试渲染的消息数少于首次（头部被丢弃）
+        assert len(calls[1]) < len(calls[0])
+
+    async def test_second_overflow_falls_back(self) -> None:
+        import litellm
+
+        async def summarizer(prompt: str):
+            raise litellm.ContextWindowExceededError(
+                "context window exceeded", model="m", llm_provider="openai")
+
+        c = _compressor()
+        middle = _make_messages(9, "中段")
+        text = await c._summarize(middle, summarizer)
+        # 二次溢出后回退确定性摘要（非异常）
+        assert text
+
+    async def test_non_overflow_no_retry(self) -> None:
+        calls = 0
+
+        async def summarizer(prompt: str):
+            nonlocal calls
+            calls += 1
+            raise ConnectionError("network down")
+
+        c = _compressor()
+        text = await c._summarize(_make_messages(9, "中段"), summarizer)
+        assert calls == 1  # 非溢出不重试
+        assert text  # 确定性回退

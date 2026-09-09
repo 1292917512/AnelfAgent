@@ -9,13 +9,14 @@ FTS 不可用或异常时回退 LIKE（ESCAPE 转义）。chunks 侧检索委托
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any, Dict, Optional
 
 from core.log import log
 
 from ..memory_types import MemoryEntry, MemorySearchResult
-from ..memory_utils import cosine_similarity, pack_embedding
+from ..memory_utils import cosine_similarity, pack_embedding, unpack_embedding
 from ._shared import (
     MEM_COLUMNS,
     bigram_similarity,
@@ -50,6 +51,25 @@ def _normalize(score: float, channel_max: float) -> float:
     if channel_max <= 0:
         return 0.0
     return min(1.0, score / channel_max)
+
+
+def _archived_row_dict(row: Any) -> Dict[str, Any]:
+    """归档表行 → 统一字典（按列名访问；embedding_blob 列忽略）。"""
+    tags: list[str] = []
+    try:
+        parsed = json.loads(row["tags_json"]) if row["tags_json"] else []
+        tags = [str(t) for t in parsed]
+    except (ValueError, TypeError):
+        pass
+    return {
+        "id": int(row["id"]),
+        "type": str(row["type"]),
+        "content": str(row["content"]),
+        "tags": tags,
+        "importance": float(row["importance"]),
+        "archived_at": int(row["archived_at_ns"]) / 1e9,
+        "reason": str(row["archive_reason"] or ""),
+    }
 
 
 class SearchEngine:
@@ -560,6 +580,158 @@ class SearchEngine:
         unified.extend(chunk_results)
         unified.sort(key=lambda r: r.score, reverse=True)
         return unified[:limit]
+
+    # ------------------------------------------------------------------
+    # 遗忘层兜底检索（归档 + 墓碑："似曾相识"通道）
+    # ------------------------------------------------------------------
+
+    async def search_forgotten(
+        self,
+        query: str,
+        query_vec: Optional[list[float]] = None,
+        *,
+        limit: int = 3,
+        min_score: float = 0.3,
+    ) -> list[Dict[str, Any]]:
+        """遗忘层统一检索：归档记忆（可恢复）+ 墓碑 gist（仅痕迹），合并排序。
+
+        归档向量余弦为强信号（可达 1.0）；关键词命中为弱信号（归档基准 0.35，
+        墓碑上限 0.3）——弱信号只有主召回无果时才应被调用方采纳。
+        Returns: [{"kind": "archived"|"tombstone", "score": float, ...}] 降序。
+        """
+        archived, tombstones = await asyncio.gather(
+            self.search_archived(query, query_vec, limit=limit, min_score=min_score),
+            self.search_tombstones(query, limit=limit),
+        )
+        items: list[Dict[str, Any]] = [
+            {"kind": "archived", **row} for row in archived
+        ]
+        items.extend({"kind": "tombstone", **row} for row in tombstones)
+        items.sort(key=lambda item: item["score"], reverse=True)
+        return items[:limit]
+
+    async def search_archived(
+        self,
+        query: str,
+        query_vec: Optional[list[float]] = None,
+        *,
+        limit: int = 3,
+        min_score: float = 0.3,
+    ) -> list[Dict[str, Any]]:
+        """归档记忆检索：向量余弦（分批全表扫描）+ 关键词 LIKE 两路合并。
+
+        归档表无 FTS/vec 索引（量级小、受保留期约束），不参与常规索引维护；
+        关键词命中给固定基准分 0.35，低于向量强匹配，避免弱命中喧宾夺主。
+        Returns: [{"id", "type", "content", "tags", "archived_at", "reason", "score"}] 降序。
+        """
+        scored: Dict[int, Dict[str, Any]] = {}
+
+        if query_vec:
+            db = await self._conn.get_db()
+            last_id = 0
+            while True:
+                cursor = await db.execute(
+                    "SELECT id, type, content, tags_json, importance, archived_at_ns, "
+                    "archive_reason, embedding_blob FROM memories_archive "
+                    "WHERE embedding_blob IS NOT NULL AND id > ? ORDER BY id LIMIT ?",
+                    (last_id, 500),
+                )
+                rows = list(await cursor.fetchall())
+                if not rows:
+                    break
+                last_id = int(rows[-1]["id"])
+                for item in await asyncio.to_thread(
+                    self._score_archived_batch, rows, query_vec, min_score,
+                ):
+                    scored[item["id"]] = item
+                if len(rows) < 500:
+                    break
+
+        for item in await self._match_archived_keywords(query, limit * 4):
+            scored.setdefault(item["id"], item)
+
+        merged = sorted(scored.values(), key=lambda x: x["score"], reverse=True)
+        return merged[:limit]
+
+    @staticmethod
+    def _score_archived_batch(
+        rows: list[Any], query_vec: list[float], min_score: float,
+    ) -> list[Dict[str, Any]]:
+        """对一批归档行计算余弦相似度（纯 CPU，供 to_thread 调用）。"""
+        hits: list[Dict[str, Any]] = []
+        for row in rows:
+            embedding = unpack_embedding(row["embedding_blob"])
+            if not embedding:
+                continue
+            score = cosine_similarity(query_vec, embedding)
+            if score >= min_score:
+                hits.append({**_archived_row_dict(row), "score": score})
+        return hits
+
+    async def _match_archived_keywords(
+        self, query: str, limit: int,
+    ) -> list[Dict[str, Any]]:
+        """归档内容关键词 LIKE 匹配（固定基准分 0.35 的弱信号）。"""
+        keywords = extract_like_keywords(query)
+        if not keywords:
+            return []
+        db = await self._conn.get_db()
+        conditions = " OR ".join(r"content LIKE ? ESCAPE '\'" for _ in keywords)
+        cursor = await db.execute(
+            "SELECT id, type, content, tags_json, importance, archived_at_ns, "
+            "archive_reason, NULL AS embedding_blob FROM memories_archive "
+            f"WHERE {conditions} ORDER BY archived_at_ns DESC LIMIT ?",
+            [*[f"%{escape_like(kw)}%" for kw in keywords], limit],
+        )
+        return [
+            {**_archived_row_dict(row), "score": 0.35}
+            for row in await cursor.fetchall()
+        ]
+
+    async def search_tombstones(
+        self, query: str, *, limit: int = 3,
+    ) -> list[Dict[str, Any]]:
+        """墓碑检索：已物理删除记忆的 gist 关键词匹配。
+
+        分数 = 命中关键词比例 × 0.3——刻意压在归档弱信号（0.35）之下，
+        gist 是截断梗概，匹配可信度最低。
+        Returns: [{"id", "memory_id", "type", "gist", "tags", "reason", "purged_at", "score"}] 降序。
+        """
+        keywords = extract_like_keywords(query)
+        if not keywords:
+            return []
+        db = await self._conn.get_db()
+        conditions = " OR ".join(r"gist LIKE ? ESCAPE '\'" for _ in keywords)
+        cursor = await db.execute(
+            "SELECT id, memory_id, type, gist, tags_json, purge_reason, purged_at_ns "
+            f"FROM memories_tombstone WHERE {conditions} "
+            "ORDER BY purged_at_ns DESC LIMIT 100",
+            [f"%{escape_like(kw)}%" for kw in keywords],
+        )
+        results: list[Dict[str, Any]] = []
+        for row in await cursor.fetchall():
+            gist = str(row["gist"])
+            matched = sum(1 for kw in keywords if kw in gist)
+            if matched <= 0:
+                continue
+            tags: list[str] = []
+            try:
+                parsed = json.loads(row["tags_json"]) if row["tags_json"] else []
+                tags = [str(t) for t in parsed]
+            except (ValueError, TypeError):
+                pass
+            results.append({
+                "id": int(row["id"]),
+                "memory_id": int(row["memory_id"]),
+                "type": str(row["type"]),
+                "gist": gist,
+                "tags": tags,
+                "reason": str(row["purge_reason"] or ""),
+                "purged_at": int(row["purged_at_ns"]) / 1e9,
+                "score": matched / len(keywords) * 0.3,
+            })
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:limit]
 
     # ------------------------------------------------------------------
     # 去重

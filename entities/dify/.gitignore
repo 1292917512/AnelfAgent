@@ -1,0 +1,4 @@
+# 运行时密钥（本实体目录内的 .gitignore，不污染仓库根规则）
+config.json
+secrets.json
+__pycache__/

@@ -491,6 +491,7 @@ _PATH_SPECS: Dict[str, Tuple[str, str]] = {
     "MIND_CONFIG": ("config", "mind_config.json"),
     "LLM_CLIENTS": ("config", "llm_clients.json"),
     "MCP_SERVERS": ("config", "mcp_servers.json"),
+    "MCP_OAUTH_TOKENS": ("config", "mcp_oauth.json"),
     "HEARTBEAT_CONFIG": ("config", "heartbeat.json"),
     "REMINDERS": ("config", "reminders.json"),
     "INTROSPECTION_CONFIG": ("config", "introspection.json"),

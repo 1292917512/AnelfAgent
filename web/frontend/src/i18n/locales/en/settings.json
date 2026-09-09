@@ -12,7 +12,8 @@
     "system": "System Info",
     "python": "Python",
     "git": "Git",
-    "config": "Config Overview"
+    "config": "Config Overview",
+    "hooks": "Hooks"
   },
   "os": "OS",
   "architecture": "Architecture",
@@ -76,5 +77,28 @@
     "cross_channel_recall_max_results": "Cross-channel recall max",
     "cross_channel_recall_scan_limit": "Cross-channel scan limit",
     "cross_channel_narrative_max_items": "Cross-channel narrative max"
+  },
+  "hooks": {
+    "title": "User Hooks",
+    "subtitle": "Visual editor for config/hooks.json: run custom scripts before/after tool execution and on reply completion; hot-applied on save",
+    "save": "Save",
+    "saved": "Saved ({{count}} active)",
+    "saveFailed": "Save failed",
+    "loadExample": "Load Example",
+    "add": "Add",
+    "empty": "No hooks",
+    "noHooks": "No hooks configured yet — click \"Load Example\" to get started",
+    "activeCount": "{{count}} active",
+    "matcher": "Matcher",
+    "matcherPlaceholder": "Tool name glob, e.g. delete_* or *",
+    "timeout": "Timeout (s)",
+    "command": "Command",
+    "commandPlaceholder": "shell command; payload JSON via stdin, exit 2 blocks the tool call",
+    "hint": "Payload is passed via stdin as JSON and mirrored to HOOK_EVENT/HOOK_TOOL env vars; exit 2 = block (stderr as reason); reply_end may rewrite the final reply by printing REPLACE:<json-string> on stdout.",
+    "events": {
+      "tool_pre": "Before Tool",
+      "tool_post": "After Tool",
+      "reply_end": "Reply Completed"
+    }
   }
 }

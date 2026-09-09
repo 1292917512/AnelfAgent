@@ -86,6 +86,19 @@ def cache_marker(api_type: str = "", idle_seconds: float = 0.0) -> Dict[str, Any
     return {"type": "ephemeral"}
 
 
+def session_cache_key() -> str:
+    """供应商缓存亲和键（prompt_cache_key）：当前用量归属 scope。
+
+    OpenAI 系端点按此键做缓存路由亲和——前缀稳定工程（冻结排序/分层装配）
+    借此兑换为同一缓存节点命中；无绑定 scope（进程内后台调用）时返回空，
+    不支持的供应商由 litellm drop_params 丢弃，无需按供应商特判。
+    """
+    if not get_config_bool("prompt_cache_key_enabled", True):
+        return ""
+    from agent.mind.scope_usage import current_usage_scope
+    return current_usage_scope().strip()
+
+
 def is_tools_breakpoint_enabled() -> bool:
     """wire tools 数组末尾断点开关（整个工具 schema 前缀进缓存）。"""
     return get_config_bool("prompt_cache_tools_breakpoint", True)

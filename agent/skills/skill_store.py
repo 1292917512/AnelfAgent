@@ -75,6 +75,9 @@ class Skill(BaseModel):
     last_activity_at: float = Field(default_factory=time.time)
     # 最近一次被检索注入的时间（stale 层的软保留信号：仍被检索到则不归档）
     last_match_at: float = 0.0
+    # 运行时依赖声明（如 [{"type": "mcp", "name": "notion", "url": ...}]），
+    # 消费全文时检查缺失并引导安装
+    dependencies: List[Dict[str, Any]] = Field(default_factory=list)
 
     def touch(self) -> None:
         """记录一次活动（真实使用/更新）。检索注入不调用本方法。"""
@@ -91,6 +94,7 @@ _META_FIELDS = (
     "name", "description", "trigger_patterns", "created_by",
     "use_count", "match_count", "patch_count", "state", "pinned", "user_invocable",
     "rationale", "merged_into", "created_at", "last_activity_at", "last_match_at",
+    "dependencies",
 )
 
 
@@ -157,6 +161,8 @@ def render_skill_md(skill: Skill) -> str:
     }
     if skill.last_match_at > 0.0:
         meta["last_match_at"] = skill.last_match_at
+    if skill.dependencies:
+        meta["dependencies"] = skill.dependencies
     if _HAS_YAML:
         frontmatter = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False).strip()
     else:

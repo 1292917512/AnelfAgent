@@ -1,18 +1,22 @@
 """上下文提供者注册表 — 实体向 PFC volatile 层注入实时数据。
 
-设计哲学：PFC 是被动消费者，实体是自治生产者。
-实体通过 RunTimeline 自驱更新内部快照，PFC 每轮构建 volatile 层时
-调用 collect() 拉取所有 provider 的最新快照。
+设计哲学：provider 是自治生产者，快照必须零 I/O 读内存（1s 硬超时兜底）；
+消费方（think_loop 每轮发送组装）经 collect() 取**当前最新**快照——缓存
+超过新鲜度阈值即内联并发重收（成本有界），保证时间类实时信息逐轮新鲜。
 
 实体开发者只需：
 1. 用 @context_provider 装饰器注册（见 entities/_sdk.py），
-   并以 group 声明所属工具分组
+   并以 group 声明所属工具分组、以 inject_key 声明注入开关
 2. 实现 provide() 方法返回 ProviderSnapshot
 3. 可选实现 on_start / on_tick / on_stop 生命周期
 
-启停门控：声明了 group 的 provider 随实体启停联动——分组内全部工具
-被禁用（实体目录中该分组同步消失）时，其快照停止采集与注入；
-重新启用后自动恢复。未声明 group 的 provider 视为全局常驻。
+启停门控（两道，均热读取）：
+1. 注入开关：provider 以 inject_key 声明配置键（约定 <组名>_context_inject），
+   配置为 False 时停止采集与注入——任何上下文注入都必须有此开关，
+   声明后配置中心/实体配置 tab 自动出现（_sdk 装饰器兜底注册）；
+2. 实体启停：声明了 group 的 provider 随实体启停联动——分组内全部工具
+   被禁用（实体目录中该分组同步消失）时停止采集与注入；重新启用自动恢复。
+   未声明 group 的 provider 视为全局常驻。
 
 Model Experience：
 - 模型看到什么：volatile 尾部动态区的实体状态快照（每条快照一条 system 消息）；
@@ -42,6 +46,9 @@ from core.log import log
 DEFAULT_COLLECT_BUDGET = 8000
 # 单个 provider 快照的采集超时（秒）
 _PROVIDE_TIMEOUT_SECONDS = 1.0
+# 快照新鲜度阈值（秒）：collect 时缓存超过该时长即内联并发重收，
+# 保证时间等实时信息逐轮新鲜；阈值内复用缓存避免单轮内重复收集
+_COLLECT_FRESH_SECONDS = 2.0
 # 字符串长度 -> token 数的粗估除数
 _CHARS_PER_TOKEN = 4
 # 按 scope 统计状态（metrics/collect/peak/snippets）的容量上限，超出按 LRU 淘汰
@@ -98,6 +105,9 @@ class ProviderMeta:
         max_tokens: 静态预估上限（Web 展示 + 预算告警参考）。
         scope_filter: 作用域过滤。None=全局；"webui:*"=前缀匹配；"webui:u123"=精确匹配。
         group: 所属工具分组（实体启停门控依据）。None=全局常驻，不随实体启停。
+        inject_key: 注入开关配置键（约定 <组名>_context_inject）。声明后该配置
+            为 False 时停止采集与注入；None 表示无开关（仅限永不注入的
+            生命周期钩子型 provider）。
         instance: 实体实例（类模式，有生命周期）。
         provide_fn: 函数式 provide（函数模式，无生命周期）。
         description: 描述（Web 展示用）。
@@ -108,6 +118,7 @@ class ProviderMeta:
     max_tokens: int = 500
     scope_filter: Optional[str] = None
     group: Optional[str] = None
+    inject_key: Optional[str] = None
     instance: Any = None
     provide_fn: Optional[Callable] = None
     description: str = ""
@@ -127,6 +138,8 @@ class ContextProviderRegistry:
     _providers: Dict[str, ProviderMeta] = {}
     _call_counts: Dict[str, int] = {}
     _last_errors: Dict[str, str] = {}
+    # provider 名 -> 最近一次实际注入的内容（跨 scope 取最新，供 Web 面板查看正文诊断）
+    _last_contents: Dict[str, Dict[str, Any]] = {}
     # 按 scope 的统计状态（LRU，容量上限 _MAX_TRACKED_SCOPES）
     _last_metrics: "OrderedDict[str, List[ProviderMetric]]" = OrderedDict()
     _last_collect: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
@@ -152,6 +165,7 @@ class ContextProviderRegistry:
         cls._providers.pop(name, None)
         cls._call_counts.pop(name, None)
         cls._last_errors.pop(name, None)
+        cls._last_contents.pop(name, None)
 
     @classmethod
     def get_all(cls) -> List[ProviderMeta]:
@@ -168,38 +182,39 @@ class ContextProviderRegistry:
         scope: str = "",
         budget: int = DEFAULT_COLLECT_BUDGET,
     ) -> Tuple[List[str], List[ProviderMetric]]:
-        """返回上一轮已完成收集的缓存结果，并在后台触发新一轮收集。
+        """返回当前最新快照；缓存超过新鲜度阈值时内联并发重收。
 
-        不阻塞当前轮：provider 快照由后台任务异步采集，完成后供下一轮
-        collect 使用；首次调用（尚无缓存）返回空结果。同一 scope 同时
-        只有一个收集任务（in-flight 去重）。
+        provider 契约是零 I/O 读内存快照（_safe_provide 有 1s 硬超时且
+        并发执行），内联重收成本有界（通常亚毫秒）——时间等实时信息因此
+        逐轮新鲜，不再滞后一轮。同 scope 并发调用经 inflight 去重。
 
         Args:
             scope: 当前对话 scope（用于过滤）。
-            budget: token 预算上限，后台收集超限日志警告并截断。
+            budget: token 预算上限，收集超限日志警告并截断。
 
         Returns:
             (snippets, metrics) — snippets 是注入文本列表，metrics 是监督指标。
         """
-        cls._trigger_collect(scope, budget)
+        last = cls._last_collect.get(scope, {})
+        stale = (
+            time.time() - float(last.get("collected_at", 0))
+            > _COLLECT_FRESH_SECONDS
+        )
+        if stale:
+            task = cls._inflight.get(scope)
+            if task is None or task.done():
+                task = asyncio.ensure_future(cls._collect_background(scope, budget))
+                cls._inflight[scope] = task
+
+                def _cleanup(done: "asyncio.Task[None]", key: str = scope) -> None:
+                    if cls._inflight.get(key) is done:
+                        del cls._inflight[key]
+
+                task.add_done_callback(_cleanup)
+            await task
         snippets = list(cls._last_snippets.get(scope, []))
         metrics = list(cls._last_metrics.get(scope, []))
         return snippets, metrics
-
-    @classmethod
-    def _trigger_collect(cls, scope: str, budget: int) -> None:
-        """后台触发一轮收集；同 scope 已有进行中任务时跳过。"""
-        task = cls._inflight.get(scope)
-        if task is not None and not task.done():
-            return
-        task = asyncio.ensure_future(cls._collect_background(scope, budget))
-        cls._inflight[scope] = task
-
-        def _cleanup(done: "asyncio.Task[None]", key: str = scope) -> None:
-            if cls._inflight.get(key) is done:
-                del cls._inflight[key]
-
-        task.add_done_callback(_cleanup)
 
     @classmethod
     def _bounded_put(cls, store: "OrderedDict[str, Any]", key: str, value: Any) -> None:
@@ -211,23 +226,26 @@ class ContextProviderRegistry:
 
     @classmethod
     async def _collect_background(cls, scope: str, budget: int) -> None:
-        """后台收集一轮所有匹配 scope 的 provider 快照并写入缓存。
+        """收集一轮所有匹配 scope 的 provider 快照并写入缓存。
 
-        任何异常记 DEBUG 不抛出（后台任务失败不影响主流程）。
+        全部 provider 并发采集（各自 1s 硬超时，总耗时有界 ≈1s），
+        结果按注册优先级顺序拼装。任何异常记 DEBUG 不抛出。
         """
         try:
+            metas = [
+                meta for meta in cls.get_all()
+                if cls._is_active(meta) and cls._match_scope(meta.scope_filter, scope)
+            ]
+            results = await asyncio.gather(
+                *(cls._safe_provide(meta, scope) for meta in metas)
+            )
+
             snippets: List[str] = []
             metrics: List[ProviderMetric] = []
             used_tokens = 0
             used_bytes = 0
 
-            for meta in cls.get_all():
-                if not cls._is_active(meta):
-                    continue
-                if not cls._match_scope(meta.scope_filter, scope):
-                    continue
-
-                result = await cls._safe_provide(meta, scope)
+            for meta, result in zip(metas, results, strict=True):
                 if result is None:
                     continue
                 snap, cost_ms = result
@@ -255,6 +273,11 @@ class ContextProviderRegistry:
                 snippets.append(snap.content)
                 used_tokens += snap.tokens
                 used_bytes += snap.bytes
+                cls._last_contents[meta.name] = {
+                    "content": snap.content,
+                    "fetched_at": snap.fetched_at or time.time(),
+                    "scope": scope,
+                }
 
                 metrics.append(ProviderMetric(
                     name=meta.name,
@@ -358,10 +381,15 @@ class ContextProviderRegistry:
     def _is_active(cls, meta: ProviderMeta) -> bool:
         """provider 是否处于注入活动状态。
 
-        声明了 group 的 provider 随实体启停：分组内全部工具被禁用时
-        （实体目录中该分组同步消失）停止采集与注入；未声明 group 的
-        provider 全局常驻。启停事实的唯一权威是 EntityRegistry。
+        两道门控（均热读取，配置/启停变更即时生效）：
+        1. 注入开关：声明 inject_key 且配置为 False → 停止采集与注入；
+        2. 实体启停：声明 group 且分组内全部工具被禁用（实体目录中该分组
+           同步消失）→ 停止采集与注入。启停事实的唯一权威是 EntityRegistry。
         """
+        if meta.inject_key is not None:
+            from core.config import get_config_bool
+            if not get_config_bool(meta.inject_key, True):
+                return False
         if meta.group is None:
             return True
         from core.entity import EntityRegistry
@@ -463,12 +491,14 @@ class ContextProviderRegistry:
         # 每个 provider 的指标
         provider_metrics = []
         for meta in cls.get_all():
+            last_content = cls._last_contents.get(meta.name)
             provider_metrics.append({
                 "name": meta.name,
                 "priority": meta.priority,
                 "max_tokens": meta.max_tokens,
                 "scope_filter": meta.scope_filter,
                 "group": meta.group,
+                "inject_key": meta.inject_key,
                 "active": cls._is_active(meta),
                 "description": meta.description,
                 "tokens": 0,
@@ -481,6 +511,10 @@ class ContextProviderRegistry:
                 # 最近一次收集中是否实际注入了内容（False=已注册但未注入，如直播模式关闭）
                 "injecting": False,
                 "injected_at": 0.0,
+                # 最近一次实际注入的正文（跨 scope 取最新，供面板展开查看）
+                "last_content": last_content["content"] if last_content else None,
+                "last_content_at": last_content["fetched_at"] if last_content else 0.0,
+                "last_content_scope": last_content["scope"] if last_content else "",
             })
 
         # 用最近一次 collect 的 metrics 覆盖实际值
@@ -522,6 +556,7 @@ class ContextProviderRegistry:
         cls._providers.clear()
         cls._call_counts.clear()
         cls._last_errors.clear()
+        cls._last_contents.clear()
         cls._last_metrics.clear()
         cls._last_collect.clear()
         cls._last_snippets.clear()

@@ -42,7 +42,11 @@
     "lastCollect": "Last collect: {{scope}} · {{time}}",
     "injecting": "Injecting",
     "notInjecting": "Idle",
-    "injectedAt": "Last injected"
+    "injectedAt": "Last injected",
+    "copy": "Copy",
+    "copied": "Copied",
+    "noContent": "Nothing injected yet (full content appears here after injection)",
+    "contentMeta": "Scope {{scope}} · {{time}}"
   },
   "stats": {
     "totalTokens": "Est. Tokens",

@@ -60,6 +60,7 @@ async def delegate_task(
         max_iterations: int = 0,
         difficulty: int = 0,
         agent_name: str = "",
+        fork_context: bool = False,
 ) -> str:
     """委托子任务给子代理执行。
 
@@ -78,6 +79,8 @@ async def delegate_task(
         agent_name: 子代理档案名（优先于 difficulty）：档案携带有序模型候选池（首个可用者生效），
             适合已知某模型更适合某类工作的场景。档案用 create_sub_agent 管理、
             list_sub_agents 查看（内置 easy/medium/hard 也可直接指定）。
+        fork_context: 是否把主对话近期记录（最近 20 条只读快照）带给子代理，
+            适合"接着当前话题深查"类任务；默认不带（子代理只看 goal+context）
     """
     if not _delegation_enabled():
         return tool_error(
@@ -144,6 +147,7 @@ async def delegate_task(
             goal, context, role=role, max_iterations=max_iterations,
             scope=current_owner_scope(),
             difficulty=difficulty, agent_name=agent_name,
+            fork_context=fork_context,
         )
         return json.dumps({
             "ok": True,
@@ -154,7 +158,7 @@ async def delegate_task(
 
     result = await manager.delegate(
         goal, context, role=role, max_iterations=max_iterations,
-        difficulty=difficulty, agent_name=agent_name,
+        difficulty=difficulty, agent_name=agent_name, fork_context=fork_context,
     )
     return manager.aggregate_results([result])
 

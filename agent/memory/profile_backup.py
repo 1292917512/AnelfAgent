@@ -1,8 +1,12 @@
 """实体画像备份：覆盖更新前自动留存旧画像（防 LLM 写出坏画像不可恢复）。
 
 画像是唯一权威的覆盖式存储，一次错误的重写就会丢失全部历史描述。
-每次覆盖前把旧内容写入 config/memory/profile_backups/，每实体保留最近
+每次覆盖前把旧内容写入 workspace/backup/profile_backups/，每实体保留最近
 3 份（文件名带时间戳，便于人工恢复或 diff）。
+
+落点纪律（2026-09-09）：备份类内容不进记忆区（config/memory/）——主人
+教导「记忆区不放备份类内容」，旧落点会在记忆区反复复发污染目录卫生；
+统一归 workspace/backup/，与 skills-backup 同约定。
 """
 
 from __future__ import annotations
@@ -16,8 +20,8 @@ _KEEP_PER_ENTITY = 3
 
 
 def _backup_dir() -> Path:
-    from agent.memory.notes import get_memory_dir
-    path = get_memory_dir() / "profile_backups"
+    from core.path import project_root
+    path = project_root() / "workspace" / "backup" / "profile_backups"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

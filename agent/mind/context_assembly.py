@@ -225,7 +225,7 @@ from agent.mind.context_pipeline import (
 # legacy 布局的变动率覆盖表（tail_injection 关闭时）：动态块移到历史之前
 _LEGACY_VOLATILITY: Dict[str, int] = {
     "context": 10,
-    "status": 24, "volatile": 25, "provider": 26, "overflow": 27,
+    "status": 24, "volatile": 25, "overflow": 27,
     "security": 28, "profile": 29, "relation": 30, "goals": 31, "memory": 32,
     "summary": 33, "conversation": 34,
 }
@@ -679,17 +679,6 @@ class ContextAssembly:
     def _blk_memory(self, inp: ContextInput) -> List[Dict]:
         """语义召回 + 跨频道 + 技能注入（每会话基于最新对话重建）。"""
         return list(inp.memory_msgs)
-
-    @context_block("provider", VOL_SESSION + 4, "上下文提供者注入")
-    async def _blk_provider(self, inp: ContextInput) -> List[Dict]:
-        """上下文提供者注入（实体自驱数据，滞后一轮的后台快照）。"""
-        try:
-            from core.context_provider import ContextProviderRegistry
-            snippets, _provider_metrics = await ContextProviderRegistry.collect(inp.scope)
-            return [{"role": "system", "content": s} for s in snippets]
-        except Exception as exc:
-            log(f"上下文提供者收集失败: {exc}", "DEBUG", tag="PFC")
-            return []
 
     @context_block("overflow", VOL_MESSAGE, "上下文溢出提示")
     async def _blk_overflow(self, inp: ContextInput) -> List[Dict]:

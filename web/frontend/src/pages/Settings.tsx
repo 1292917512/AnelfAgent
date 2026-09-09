@@ -7,8 +7,9 @@ import { SystemPanel } from "./settings/SystemPanel";
 import { PythonPanel } from "./settings/PythonPanel";
 import { GitPanel } from "./settings/GitPanel";
 import { ConfigStatusPanel } from "./settings/ConfigStatusPanel";
+import { HooksPanel } from "./settings/HooksPanel";
 
-type SettingsTab = "sysConfig" | "system" | "python" | "git" | "config";
+type SettingsTab = "sysConfig" | "system" | "python" | "git" | "config" | "hooks";
 
 export default function Settings() {
   const { t } = useTranslation("settings");
@@ -20,6 +21,7 @@ export default function Settings() {
     { key: "python", label: t("tabs.python") },
     { key: "git", label: t("tabs.git") },
     { key: "config", label: t("tabs.config") },
+    { key: "hooks", label: t("tabs.hooks") },
   ];
 
   return (
@@ -31,6 +33,7 @@ export default function Settings() {
       {tab === "python" && <PythonPanel />}
       {tab === "git" && <GitPanel />}
       {tab === "config" && <ConfigStatusPanel />}
+      {tab === "hooks" && <HooksPanel />}
     </PageContainer>
   );
 }

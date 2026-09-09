@@ -66,6 +66,12 @@ def _build_stdio_env(user_env: Optional[Dict[str, str]] = None) -> Dict[str, str
     return env
 
 
+def _oauth_provider(srv: MCPServerConfig) -> Any:
+    """按需构造 OAuth 提供者（SDK 在 401 时自动发起授权流；不适用返回 None）。"""
+    from entities.mcp.oauth import make_oauth_provider
+    return make_oauth_provider(srv)
+
+
 def _create_transport(srv: MCPServerConfig) -> Any:
     """根据配置创建传输上下文管理器。"""
     transport = srv.transport or ("stdio" if srv.command else "streamable_http")
@@ -85,6 +91,7 @@ def _create_transport(srv: MCPServerConfig) -> Any:
             url=srv.url,
             headers=srv.headers or None,
             timeout=srv.timeout,
+            auth=_oauth_provider(srv),
         )
 
     if transport == "sse":
@@ -94,6 +101,7 @@ def _create_transport(srv: MCPServerConfig) -> Any:
             headers=srv.headers or None,
             timeout=srv.timeout,
             sse_read_timeout=srv.sse_read_timeout,
+            auth=_oauth_provider(srv),
         )
 
     raise ValueError(f"不支持的传输类型: {transport}")

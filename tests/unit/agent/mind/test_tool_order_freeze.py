@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.mind.context_assembly import ContextAssembly
 from agent.mind.tool_assembly import ToolAssembly
 from agent.mind.work_memory import WorkMemory
@@ -100,3 +102,68 @@ class TestStableBlocks:
         h1 = mgr.compute_hash("人设", "指南", "环境")
         h2 = mgr.compute_hash("人设", "指南", "环境")
         assert h1 == h2
+
+
+class TestReflectToolSchemas:
+    """反思循环精简工具目录（ToolAssembly.get_reflect_tool_schemas）：
+
+    常态集 = always + 选择器（默认 heartbeat），回复级热召回/冻结结转不进入；
+    更多分组由模型经发现/激活自服务扩展。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tools(self):
+        from core.entity import EntityRegistry
+
+        EntityRegistry.register_tool(name="ra_always", func=lambda: "ok", group="g_always", tags=["always"])
+        EntityRegistry.register_tool(name="ra_heartbeat", func=lambda: "ok", group="g_hb", tags=["heartbeat"])
+        EntityRegistry.register_tool(name="ra_core", func=lambda: "ok", group="g_core", tags=["core"])
+        EntityRegistry.register_tool(
+            name="ra_sleep", func=lambda: "ok", group="g_sleep",
+            tags=["always"], allow_sleep=True, sleep_brief="b",
+        )
+        yield
+        for n in ("ra_always", "ra_heartbeat", "ra_core", "ra_sleep"):
+            EntityRegistry.unregister(n)
+
+    async def test_lean_default_catalog(self) -> None:
+        ta = ToolAssembly()
+        names = _names(await ta.get_reflect_tool_schemas(scope="t_reflect_lean"))
+        assert "ra_always" in names
+        assert "ra_heartbeat" in names  # 默认选择器 heartbeat
+        assert "ra_core" not in names   # 非常态标签不进精简目录
+        assert "ra_sleep" not in names  # 沉睡分组未激活（门控与回复路径同纪律）
+
+    async def test_selector_matches_tag_and_group(self) -> None:
+        ta = ToolAssembly()
+        by_tag = _names(await ta.get_reflect_tool_schemas(scope="t_reflect_sel", selectors=["core"]))
+        assert "ra_core" in by_tag
+        by_group = _names(await ta.get_reflect_tool_schemas(scope="t_reflect_sel", selectors=["g_core"]))
+        assert "ra_core" in by_group
+
+    async def test_self_service_activation(self) -> None:
+        """模型经 activate_tool_group 唤醒沉睡分组后，重建目录包含其工具。"""
+        from agent.mind.tool_activation import tool_activation
+
+        scope = "t_reflect_act"
+        tool_activation.activate("g_sleep", rounds=3, scope=scope)
+        try:
+            ta = ToolAssembly()
+            names = _names(await ta.get_reflect_tool_schemas(scope=scope))
+            assert "ra_sleep" in names
+        finally:
+            tool_activation.clear_scope(scope)
+
+    async def test_discovered_tools_included(self) -> None:
+        """list_entity_methods 动态发现的工具在重建后保留。"""
+        ta = ToolAssembly()
+        ta._discovered_tools.add("ra_core")
+        names = _names(await ta.get_reflect_tool_schemas(scope="t_reflect_disc"))
+        assert "ra_core" in names
+
+    async def test_order_deterministic_across_calls(self) -> None:
+        """同一装配输入两次调用产出字节序一致（反思目录跨调用稳定）。"""
+        ta = ToolAssembly()
+        first = _names(await ta.get_reflect_tool_schemas(scope="t_reflect_ord"))
+        second = _names(await ta.get_reflect_tool_schemas(scope="t_reflect_ord"))
+        assert first == second

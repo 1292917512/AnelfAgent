@@ -109,6 +109,12 @@ class FakePfc:
         # 被其他用例增删时会触发 active_tools 重建，打桩需提供该方法
         return []
 
+    async def get_reflect_tool_schemas(
+        self, adapter_key: str = "", scope: str = "", selectors: list | None = None,
+    ) -> list:
+        # REFLECT 模式重建路径的精简目录打桩（与上方同理）
+        return []
+
 
 class FakeMind:
     """最小 Mind 替身：LLM 按 rounds 队列逐轮响应。

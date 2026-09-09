@@ -13,12 +13,16 @@ import os
 import signal
 import sys
 import warnings
+from pathlib import Path
 
 warnings.filterwarnings("ignore", message="urllib3.*doesn't match a supported version")
 
 from core.application import Application
 from core.config import ConfigManager
+from core.instance_guard import acquire_instance, release_instance
 from core.log import enable_file_logging, level_emoji, log, set_log_level
+
+_PID_FILE = Path(__file__).resolve().parent / "logs" / "anelf.pid"
 
 
 def _setup_faulthandler() -> None:
@@ -37,6 +41,11 @@ def create_application(args: argparse.Namespace) -> Application:
         """初始化配置中心并开启文件日志。"""
         ConfigManager.initialize()
         enable_file_logging()
+
+    @app.startup.node(skip_on_error=False)
+    async def acquire_single_instance() -> None:
+        """单实例守卫：清场残留实例（占用端口的老进程）并写入 PID 文件。"""
+        acquire_instance(_PID_FILE, Path(__file__).resolve().parent)
 
     @app.startup.node(skip_on_error=False)
     async def run_bootstrap() -> None:
@@ -70,9 +79,8 @@ def create_application(args: argparse.Namespace) -> Application:
         from core.path import ConfigPaths
 
         hooks_path = str(ConfigPaths.HOOKS)
-        if not os.path.exists(hooks_path):
-            return
         reload_hooks(hooks_path)
+        # 无条件监听：watcher 轮询路径，启动时不存在、运行中新建也能捕获
         get_config_watcher().watch(hooks_path, lambda p=hooks_path: reload_hooks(p))
         log(f"用户 hooks 热更新监听已启动: {hooks_path}", tag="Hook")
 
@@ -105,6 +113,7 @@ def create_application(args: argparse.Namespace) -> Application:
 
     app.on_pre_shutdown("flush_pending_memory", _flush_pending_memory)
     app.on_pre_shutdown("silence_shutdown_logs", _silence_shutdown_logs)
+    app.on_pre_shutdown("release_instance", lambda: release_instance(_PID_FILE))
 
     from agent.runtime.bootstrap import cancel_background_tasks
     app.on_pre_shutdown("cancel_background_tasks", cancel_background_tasks)

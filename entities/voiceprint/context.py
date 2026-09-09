@@ -9,20 +9,20 @@ from __future__ import annotations
 
 from typing import Optional
 
-from core.config import get_config_bool
 from core.context_provider import ProviderSnapshot
 from entities._sdk import context_provider
 
 from .store import get_voiceprint_store
 
 
-@context_provider(name="voiceprint_status", priority=30, max_tokens=300, group="voiceprint")
+@context_provider(
+    name="voiceprint_status", priority=30, max_tokens=300,
+    group="voiceprint", inject_key="voiceprint_context_inject",
+)
 class VoiceprintStatusProvider:
     """注入音源库摘要：已确认说话人名单 + 待确认数 + 未读片段数。"""
 
     async def provide(self, scope: str) -> Optional[ProviderSnapshot]:
-        if not get_config_bool("voiceprint_context_inject", True):
-            return None
         store = get_voiceprint_store()
         summary = await store.summary()
         names = summary["confirmed_names"]

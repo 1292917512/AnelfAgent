@@ -65,6 +65,7 @@ def test_request_restart_wait_idle_uses_idle_scheduler(monkeypatch: pytest.Monke
 def test_wait_idle_then_shutdown_waits_for_quiet(monkeypatch: pytest.MonkeyPatch):
     """思维忙碌时等待，空闲后才触发优雅关闭。"""
     monkeypatch.setattr(service, "_IDLE_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(service, "_arm_restart_watchdog", lambda: None)
     busy_states = iter([True, True, False])
     monkeypatch.setattr(service, "is_mind_busy", lambda: next(busy_states, False))
     calls: list[bool] = []
@@ -79,6 +80,7 @@ def test_wait_idle_then_shutdown_cap_forces(monkeypatch: pytest.MonkeyPatch):
     """思维持续忙碌超上限时强制关停（防死等）。"""
     monkeypatch.setattr(service, "_IDLE_POLL_INTERVAL", 0.01)
     monkeypatch.setattr(service, "_IDLE_WAIT_CAP", 0.05)
+    monkeypatch.setattr(service, "_arm_restart_watchdog", lambda: None)
     monkeypatch.setattr(service, "is_mind_busy", lambda: True)
     calls: list[bool] = []
     monkeypatch.setattr(
@@ -86,6 +88,45 @@ def test_wait_idle_then_shutdown_cap_forces(monkeypatch: pytest.MonkeyPatch):
 
     service._wait_idle_then_shutdown()
     assert calls == [True]
+
+
+def test_schedule_restart_arms_watchdog(monkeypatch: pytest.MonkeyPatch):
+    """立即重启路径：排定时布防看门狗（关停卡死保底 _exit(42)）。"""
+    armed: list[bool] = []
+    monkeypatch.setattr(service, "_arm_restart_watchdog", lambda: armed.append(True))
+    monkeypatch.setattr(
+        service.Lifecycle, "request_shutdown", staticmethod(lambda restart: None))
+
+    service.schedule_restart(delay=0.01)
+    import time as _time
+
+    _time.sleep(0.1)  # 等 Timer 线程触发
+    assert armed == [True]
+
+
+def test_restart_watchdog_forces_exit_42(monkeypatch: pytest.MonkeyPatch):
+    """看门狗到期无条件以重启退出码 42 退出，确保守护脚本接管。"""
+    monkeypatch.setattr(service.time, "sleep", lambda seconds: None)
+    exits: list[int] = []
+    monkeypatch.setattr("os._exit", exits.append)
+
+    service._restart_watchdog()
+    assert exits == [42]
+
+
+def test_idle_path_arms_watchdog_after_shutdown_request(monkeypatch: pytest.MonkeyPatch):
+    """等空闲路径：看门狗在关停请求发出后才布防（避免等空闲期间误触发）。"""
+    monkeypatch.setattr(service, "_IDLE_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(service, "is_mind_busy", lambda: False)
+    events: list[str] = []
+    monkeypatch.setattr(
+        service.Lifecycle, "request_shutdown",
+        staticmethod(lambda restart: events.append("shutdown")))
+    monkeypatch.setattr(
+        service, "_arm_restart_watchdog", lambda: events.append("watchdog"))
+
+    service._wait_idle_then_shutdown()
+    assert events == ["shutdown", "watchdog"]
 
 
 def test_handoff_roundtrip(handoff_file):

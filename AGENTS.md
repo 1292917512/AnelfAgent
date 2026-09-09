@@ -295,6 +295,8 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 4. context 层（便签 + 文件索引）—— 尾部动态区最前：心跳任务/技能评审会写便签，
    放前缀锚点位会让每次漂移作废其后 20-40K 历史缓存；内容寻址缓存保证未变时字节稳定
 5. volatile 层（状态/画像/短期记忆/召回/技能注入等）—— 每会话构建
+6. provider 层（上下文提供者实时注入）—— think_loop 每轮发送组装时收集最新快照，
+   置于工具链之后、exec_context 之前（工具链前缀字节稳定，实时内容逐轮新鲜）
 ```
 
 #### 思维循环防护（think_loop）
@@ -320,13 +322,14 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 唤醒预算 | `agent/mind/wake_budget.py` | 连续自动唤醒超 `background_wake_budget`（默认 3）不再触发新周期（防自我激励循环），真人输入重置 |
 | 会话用量统计 | `agent/mind/scope_usage.py` | per-scope 累计 LLM 用量与 turns（`scope_usage` 表增量累加），`GET /api/status/usage` 查询 |
 | /name 技能手势 | `agent/skills/gesture.py` | 真实用户消息以 `/技能名` 开头 → 绕过语义评分确定性注入（防伪造：仅外部消息路径检测） |
-| 用户 hook 事件面 | `agent/hooks/` | `config/hooks.json` 声明 tool_pre/tool_post/reply_end 脚本；exit 2 阻塞（stderr 为理由）、串行、deny 胜过一切；空配置零开销 |
+| 用户 hook 事件面 | `agent/hooks/` + `services/hooks.py` + `web/routers/hooks.py` | `config/hooks.json` 声明 tool_pre/tool_post/reply_end 脚本；exit 2 阻塞（stderr 为理由）、串行、deny 胜过一切；空配置零开销。管理面：设置页「钩子」标签可视化编辑（保存即热生效），样例 `config/hooks.example.json`；校验与运行时同源（`parse_hooks_data`） |
 | 长任务交接 | `agent/task/handoff.py` | 任务定义 `handoff: true` 时：输出末尾 `# HANDOFF` 块持久化，下次运行注入（确定性接力） |
 | 消息来源打标 | `_source` 键 | 系统注入消息带 `{"origin": ...}`，`normalize_for_send` 与 `_layer` 一并剥离（LLM 不可见，供归因） |
 | 子代理统一注册表 | `LLMManager._sub_agents` + `delegate_task(agent_name=...)` | 一套档案体系（llm_clients.json 顶层 `sub_agents` 键）：名称 → 有序模型候选池（前者不可用依次回退）。**内置难度档 easy/medium/hard（tier 1-3，受保护）就是 difficulty 1/2/3 的语法糖**，与自定义档案（tier 0）同构存储、同套 CRUD；解析优先级 agent_name > difficulty > 默认，本档全不可用降挡。AI 经 model_control 组 4 个工具增删改查（list/create/update/delete_sub_agents，update 的 models 参数整池替换），Web 经 `/models/sub-agents`，双路径同 LLMManager 内存态 + 原子落盘即热生效；legacy `delegation_tiers` 键加载时自动迁移；档案内容不注入 prompt 层（AI 按需 list 查询，零缓存影响） |
 | idle 空闲调度 | `agent/heartbeat/` IDLE 模式 | 连续 N 拍无思考活动（`mind.last_activity_ts` 锚点，任务自身执行也刷新）触发唯一空闲任务（反思+自由活动，如 self_reflection）；确定性调度优先，REFLECT 元决策延迟登记由其消费；`validate_schedules` 强校验全局仅一条 |
 | 心跳忙碌延后 | `assistant._heartbeat_loop` | 回复/反思/上轮 tick 未收尾时不跳过整轮，按 `heartbeat_busy_defer_seconds`（默认 60s）短间隔轮询、空闲即补跑；延后期间不递增任何计数器 |
 | 同任务排队去重 | `HeartbeatEngine._task_inflight` | tick/manual/AI 四路径共用的执行中集合，排队里同一种任务只允许一条 |
+| 单实例守卫与重启保底 | `core/instance_guard.py` + `entities/devops/service.py` 重启看门狗 + `restart.sh` | 实例守卫：启动写 `logs/anelf.pid`（项目目录天然按检出副本隔离实例身份），PID 文件指向的活进程经 cmdline 校验（本项目 launch.py）判定为残留实例时 SIGTERM→10s 宽限→SIGKILL 清场接管端口，cmdline 不匹配只警告不误杀（防 PID 复用）；僵尸进程经 psutil status 判定视为已死。重启看门狗：restart_app 排定关停后 90s 进程仍存活（优雅关停卡死）→ 无条件 `os._exit(42)` 保底，守护脚本必然接管；等空闲路径在关停请求发出后才布防（防等空闲误触发）。restart.sh 优先 PID 文件精准终止，pkill 兜底模式收紧到 `$ROOT/.*launch`（旧版 `python.*launch` 会误杀其他项目）。修复 2026-09 实证：8/29 残留进程占面板端口 10 天，restart_app 协作式重启对其无管辖权 |
 | 崩溃守护与通报 | `start.sh`/`start.bat` 守护循环 + `core/crash_report.py` + `crash_recovery` | 致命信号退出（SIGSEGV 等，退出码 128+n；SIGKILL/SIGTERM 不重启）自动退避重启（5×次数秒，上限 60s），崩溃状态落盘 `logs/crash_state.json`，连续 5 次崩溃停止拉起防崩溃循环（稳定运行 ≥600s 后崩溃重置计数）；重启后 crash_recovery 消费崩溃状态并关联 macOS DiagnosticReports（.ips）生成崩溃上下文——有回复检查点则随中断元消息注入对应会话，无检查点则经 PushHub 写全局通知并唤醒一轮思维（重启报到技能接管向主人报平安）；状态标记 reported 只通报一次。AI 详情查询走 devops `get_crash_report` 工具 / 面板 `/crash-info` |
 | ladybug native 串行门 | `agent/memory/cognee/client.py` `_apply_native_gate` | 进程级线程锁串行所有 ladybug native 执行：锁包在提交到线程池的查询任务上（execute + 结果消费全程），由执行线程持有——wait_for 超时取消协程不会提前放锁，孤儿 native 查询跑完才放行下一条；`_drop_native_resources` 同锁保护，拆除句柄前等在途执行结束。修复 2026-08 SIGSEGV（NodeTableScanState::scanNext 空指针，孤儿查询与后续查询/拆除并发使用同一 connection） |
 | 技能治理决策协议 | `agent/skills/`（skill_index 事实层 + tools 决策协议） | 事实归系统、决策归 AI：create/update 在事实层检测到显著信号（语义相近≥`skills_similar_threshold` / 触发词碰撞≥`skills_trigger_collision_limit` / 容量水位 / 无实质变化）时**不拒绝**，返回 needs_decision 诊断报告，AI 带 decision 回执重呼写入（rationale 落盘问责）或改走 merge/放弃；评审上下文由 SkillIndex 供给（语义相近 top10 + 库健康摘要）；use/match 信号分离（检索注入不刷活动时间，get_skill 计数不刷活动，策展重力因此可触发）；检索端近重复折叠（≥`skills_match_redundancy` 折叠并入合并信号）；merge_skills 可逆合并（源 ARCHIVED 带 merged_into）；重力含试用期快筛（零参与 14 天降级）与 stale 软保留（仍被检索到不归档）。向量生命周期：缓存键 = 模型名 + 文本 hash（模型切换即全库失效重嵌，防跨模型余弦混算）；交互路径预算化补算（`skills_embed_budget`，advisory 收紧 8），心跳 `warm()` 批量预热；死键清理时机 = 嵌入完成后（warm/embed_now）+ 删除时（service 直调），列表重建不清理（防误杀待嵌入键）；Web 经 `services._runtime` 拿 Mind 侧索引展示 embedded 状态与覆盖统计，CRUD 后 embed_now 即时重嵌；Mind 构造时重绑定工具依赖避免双向量缓存。向量构建状态机（Web 可观测/可操作/可配置）：`build_state()` 暴露 idle/warming/rebuilding + 进度 + 上次重建记录；`skills_warm_batch_size`（心跳每拍批量）/ `skills_rebuild_batch_size`（全量重建批量）可调；Web 经 `POST /skills/vectors/rebuild` 手动触发重建（幂等，进行中返回当前进度）；每个技能行内 `POST /skills/{name}/embed` 单技能生成/重新生成（不等全库重建）。向量持久化：`skill_vectors.sqlite3`（主库同目录独立文件，短连接 schema 自治，pack_embedding float32 BLOB）——嵌入即 upsert，首次访问懒加载恢复（模型+文本 hash 双因子校验，失配行清除并标记重建），**重启零重嵌**；模型切换内存与 DB 同步清空 |
@@ -354,7 +357,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 文件扫描剪枝 | `entities/filesystem/scan.py`（新模块） | os.walk 按目录名剪枝（默认 .git/node_modules/__pycache__/.venv/dist/build/各类缓存，`search_exclude_dirs` 可配置）——不再进结果也不再向下遍历；glob 语义对齐 Claude Code（裸 `*.png` 任意深度、`**/` 零目录语义补齐）；内容模式跳过二进制扩展名与 >2MB 大文件；结果 path 保持绝对路径（直接可喂 read_file） |
 | 二进制嗅探 | `scan.looks_binary`（前 8KB NUL 采样） | read_file 扩展名表之外的内容级防线——文本读取走 `errors="replace"` 永不抛解码异常，无扩展名/冷门扩展名二进制文件此前乱码灌上下文；命中返回既有 `{"type":"binary"}` JSON 引导媒体工具 |
 | Retry-After 采信 | `agent/llm/retry.py::parse_retry_after` | litellm RateLimitError 携带 headers（本机已验证）；支持秒数/HTTP 日期/毫秒变体。限流退避取 max(服务端指令, 本地抖动指数)；服务端要求 >60s（`RETRY_AFTER_WAIT_CAP`）视为本轮放弃当前候选转回退链——不白烧请求与配额 |
-| 用量归属与口径 | `scope_usage.bind_usage_scope` + `_is_ephemeral_scope` | ① 委托链经 ContextVar 绑定父会话 scope，子代理 reflect 的 LLM 用量归属父会话（/status/usage 可见委托成本）；② `reflect:{uuid}` 一次性 scope 不建统计行——此前每个子代理落孤儿行，累积挤爆容量上限后**新会话用量被整体静默丢弃**；③ list/summary 输出 `prompt_miss_tokens = prompt - cache_read`（DeepSeek 口径 prompt 含缓存命中，防消费方相加重复计）。scope 解析链：anything.entity_scope > usage_scope 绑定 > 激活上下文 |
+| 用量归属与口径 | `scope_usage.bind_usage_scope` + `_is_ephemeral_scope` + `UsageInfo.prompt_includes_cache` | ① 委托链经 ContextVar 绑定父会话 scope，子代理 reflect 的 LLM 用量归属父会话（/status/usage 可见委托成本）；② `reflect:{uuid}` 一次性 scope 不建统计行——此前每个子代理落孤儿行，累积挤爆容量上限后**新会话用量被整体静默丢弃**；③ 记账口径归一：提取层按 `usage_prompt_includes_cache` 判定 prompt 是否含缓存（details 包装/DeepSeek 命中字段=含；仅原生 Anthropic 字段=不含），命中率一律 `cache_read / total_input_tokens`（修复原生 Anthropic 口径下 read>prompt 被钳成 100% 的虚报），scope_usage 累计前补回缓存量，list/summary 输出 `prompt_miss_tokens = prompt - cache_read` 在两种口径下均成立。scope 解析链：anything.entity_scope > usage_scope 绑定 > 激活上下文 |
 | WebUI 聊天广播 | `core.event_bus.EVENT_CHAT_BROADCAST` + web/routers/chat.py SSE 桥接 | channels/webui 经事件总线推帧（`_broadcast`/`_broadcast_scoped` 发射 EVENT_CHAT_BROADCAST），web 层订阅桥接 SSE 订阅者——频道不反向依赖 web 层（旧 `channels.webui → web.routers.chat` 环已拆）；健康探针改查 `event_bus.has_listeners` |
 | TTFT 首 token 计时 | `ChatResult.ttft_ms` + `EVENT_THINKING_LLM_END` | 流式路径记首 delta 到达时刻（毫秒）；与 duration_ms 相减即输出生成耗时——"排队慢"与"生成长"两个独立延迟源分别可诊断（对齐 dsh trajectory TTFT）。非流式为 None |
 | 一次性通知历史固化 | `scheduler.enqueue_scope_reply`（async）+ `_append_one_shot_history` | 一次性事件（后台任务完成/实体推送/定时提醒/重启补回/会话切换/委托完成）写目标会话**对话历史**（system，trigger_mind=False）而非短期记忆——此前驻留 volatile 层：每轮重复催促已处理完的事项，且每条新通知重写会话层前缀反复打断 prompt cache，清理全靠模型自觉。await 返回即历史落库，随后的回复周期拉取必含（无竞态）；写入失败回退短期记忆兜底。push 的 seq/inflight 随投递完成后登记（水位只统计已固化事实）。委托轮内会合的完整详情同样固化历史（`_append_one_shot_history` 直达），轮外完成由 registry unclaimed 回调统一负责不双投递；回调支持协程（`_finish` 总在主循环 ensure_future）。短期记忆回归纯持续提醒语义 |
@@ -398,6 +401,27 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | embedding 用量账本 | `agent/memory/embedding/usage.py` + `GET /status/usage` 的 `embedding` 段 | 引擎级埋点（查询/批量/多模态全覆盖）：日级 calls/texts/chars，内存累加 + 防抖落盘 `<data_dir>/embedding_usage.json`（保留 90 天，worker close 落盘）。cognee 自带引擎不在此口径（token 数以供应商控制台为准） |
 | cognee 向量索引清理 | `scripts/dedupe_cognee_vector_index.py` | 一次性治理脚本（幂等，应用运行中可执行，冲突自动重试）：EdgeType_relationship_name/Entity_name/EntityType_name 按 text 精确去重 + 存量 goal 投影注入 delete 退场；tombstone 由 cognee 自动压缩回收 |
 | cognee 1.4.1 → 1.5.3 | `pyproject.toml` | requires_python >=3.10 兼容，litellm>=1.83.7 与锁定 1.95 兼容，ladybug 0.17.1→0.19.0（native 串行门仍生效）；官方声明 1.5.x 无破坏性变更，集成面（add/cognify/search/improve/DataItem/prune）经单测验证 |
+
+#### 实体操作态势注入（第九轮新增）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 操作回报装饰器 | `entities/_sdk.py`（ToolOp / track_ops） | 工具执行后把操作事实（scope/工具/目标/成败/耗时）回报给实体的态势追踪器：目标参数按名提取、成败按统一错误契约判定（error 键/ok 键/非 JSON 视为成功）、同步异步包装器保种类（iscoroutinefunction 不受影响）、回报异常仅 DEBUG 绝不影响主流程。实体侧以 `track_fs_op`/`track_ssh_op` 绑定各自追踪器，单点接入 |
+| 文件操作态势 | `entities/filesystem/ops_context.py`（provider `fs_ops`，group=os，inject_key=`os_context_inject`） | 按会话追踪：当前 Shell 目录（复用 shell_state cwd）+ 活跃目录（路径类目标自动提取，命令类跳过）+ 最近操作流水；停止操作超 `os_context_ttl_seconds`（默认 600s）渲染返回 None 注入自动消失。**目录说明文档规则**：当前目录优先、最近活跃目录其次，按 `os_context_doc_names`（默认 AGENTS.md,README.md，仅纯文件名防路径引导）注入，mtime 缓存自动失效，配额 `os_context_doc_max_files`×`os_context_doc_max_chars`；`os_context_docs_enabled` 可关 |
+| SSH 操作态势 | `entities/ssh/ops_state.py`（provider `ssh_ops`，inject_key=`ssh_ops_context_inject`）+ `context.py` | 按 (会话, 连接) 追踪：只展示本会话近期操作过的主机（连接状态/远程目录/最近操作），与全局花名册 provider `ssh_status` 分工；远程目录说明文档在操作成功后经 `manager.run_capture` 旁路通道后台抓取（30s 最小复用窗口 + `ssh_remote_doc_cache_seconds` 缓存），渲染零远程 I/O；TTL `ssh_ops_ttl_seconds` 到期自动消失 |
+| SSH 远程目录持久跟踪 | `entities/ssh/manager.py`（compose_exec_command / extract_captured_pwd 纯函数 + ManagedConnection.work_dir） | ssh_exec 命令经 POSIX pwd 捕获尾块包装（brace 组内 cd 失败则无标记、原退出码语义不变），捕获目录对后续命令生效（与本地 shell cwd 语义对齐），结果新增 work_dir 键；标记缺失且有目标目录 = cd 失败/提前退出 → 清除持久目录自愈；显式断开重置；非 POSIX 远端可关 `ssh_work_dir_tracking`（退化回简单 cd 前缀）。snapshot 带 work_dir（Web/API 可见） |
+
+> Model Experience：① 模型看到本会话的实时操作态势（目录/约定文档/操作流水），仅注入正在操作的会话与主机，其他会话零感知；② token 仅活跃窗口存在（默认 10 分钟无操作即消失），稳态为零，上限受 provider max_tokens 与文档配额约束；③ 注入走 think_loop 尾部 provider 层（工具链之后、exec_context 之前，每轮实时收集），不触碰任何前缀缓存层；配置中心/AI 配置工具经 entity/os、entity/ssh 组键热调全部参数
+
+#### 记忆遗忘治理（第十轮新增）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 遗忘层兜底召回 | `store/search.py`（search_forgotten / search_archived / search_tombstones）+ recall 工具 `forgotten` 字段 + `restore_memory` 工具 | 归档记忆（向量余弦强信号 + 关键词 LIKE 弱信号 0.35 基准，归档表无索引走分批扫描）与墓碑 gist（关键词命中比例 × 0.3，最低权重）统一检索，与主检索并行执行。采纳规则：归档向量强匹配（≥ `memory_archive_recall_min_score`，默认 0.5）随时浮现；弱命中与全部墓碑仅主检索无果时出现（"似曾相识"而非干扰）。归档项 `restorable: true`，AI 经 `restore_memory(id)` 恢复（向量/访问记录原样回填零重嵌，审计落 restore 事件）；墓碑 `restorable: false`，hint 引导基于梗概重新 memorize。附带条数上限 `memory_forgotten_recall_limit`（默认 3） |
+| 遗忘墓碑表 | `memories_tombstone`（connection schema）+ `purge_archived_memories` | 归档物理删除前把 gist（内容截断 200 字符 + 标签 + 来源/原因，**不存向量**）留入墓碑表——实体虽删，"曾经知道什么"的元记忆仍在。行数硬上限 `memory_tombstone_max_rows`（默认 5 万，0=不限），超限 FIFO 淘汰最老（purged_at_ns + id 序），长期运行严格有界；purge 按归档时间最旧优先。memory_stats 健康状态带 archived_memories/tombstones 计数 |
+| 检索练习效应 | `relax_importance` 访问护盾 | 重要性松弛有效速率 ÷ (1 + ln(access_count))：历史访问越多的记忆向基线回归越慢（10 次 ≈ ÷3.3，25 次 ≈ ÷4.2），常被想起的记忆更抗遗忘；纯公式调整零新增数据，访问 0/1 次行为与旧版一致 |
+
+> Model Experience：① recall 返回可能附带 forgotten 字段（归档可恢复项 / 墓碑梗概 + forgotten_hint 恢复指引），restore_memory 常驻 memory 组；② token 仅召回工具返回时按需出现（≤3 条 × 300 字符），无命中零开销，稳态为零；③ 全部为存储/检索层改动，不触碰任何 prompt 前缀缓存层；配置中心经 memory/recall、memory/consolidation 组键热调
 
 ### 前端结构
 
@@ -494,7 +518,9 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `agent/runtime/bootstrap.py` | 启动流程（初始化 → 组装 → 启动 → 健康检查） |
 | `agent/runtime/state_restore.py` | 启动状态恢复（工具覆盖/实体启停/自定义标签回放，纯 core 操作；services 同名方法委托于此） |
 | `agent/runtime/singleton.py` | AgentRuntime 全局单例（get_runtime Optional 读 / require_runtime 未就绪抛错；services._runtime 为其 web 侧门面） |
-| `entities/_sdk.py` | 工具注册 + LLM 桥接 |
+| `entities/_sdk.py` | 工具注册 + LLM 桥接 + 操作回报装饰器（ToolOp / track_ops，实体态势注入的数据源） |
+| `entities/filesystem/ops_context.py` | 文件操作态势（按会话追踪当前目录/活跃目录/最近操作 + 目录说明文档注入 + provider fs_ops） |
+| `entities/ssh/ops_state.py` | SSH 操作态势（按 会话×连接 追踪 + 远程说明文档后台抓取 + 渲染，provider 在 context.py） |
 | `agent/channel/manager.py` | 频道管理（register / route / activate_channel 动态加载未注册频道 / set_channel_enabled 启停意图落盘统一配置 / list_configured_channels 目录扫描） |
 | `agent/channel/config.py` | 频道配置统一接入（CONFIG_MODEL 扫描注册 adapter/<id> 组 / ChannelConfigStore 频道目录文件存储后端 / set_channel_config 频道内部写入口 / config_key 键前缀约定） |
 | `agent/channel/tool_bridge.py` | 频道工具桥接（@channel_tool 扫描注册 / 通用能力路由 / 敏感门控 / 按频道接口开关 channel_tool_states） |
@@ -521,7 +547,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `agent/runtime/wiring.py` | 运行时统一施绑点（wire_runtime：bootstrap 组装尾部唯一接线入口） |
 | `core/crash_report.py` | 崩溃状态设施（守护脚本崩溃状态 logs/crash_state.json 读写 + macOS .ips 崩溃报告解析关联 + AI 可注入摘要渲染） |
 | `agent/mind/crash_recovery.py` | 崩溃尾部修复（回复检查点残留注入中断元消息 + 崩溃上下文收集消费） |
-| `core/context_provider.py` | 上下文提供者注册表（实体 → volatile 层实时快照注入；provider 以 group 声明所属工具分组，分组工具全禁用时停止采集与注入，与实体目录可见性同口径） |
+| `core/context_provider.py` | 上下文提供者注册表（实体实时快照注入，think_loop 每轮发送组装时经 collect() 取当前最新快照——缓存超 2s 新鲜度阈值即内联并发重收（provider 契约零 I/O + 各 1s 硬超时），注入位置在工具链之后、exec_context 之前；两道门控均热读取：①inject_key 注入开关——会产出注入内容的 provider 必须声明，约定 `<组名>_context_inject`，_sdk 装饰器兜底注册进 `entity/<group>` 组（实体自行声明的定义优先），频道 provider 走 CONFIG_MODEL 字段；②group 实体启停联动——分组工具全禁用时停止采集与注入，与实体目录可见性同口径） |
 
 ### 工具分组体系
 
@@ -557,6 +583,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `os` | 操作系统 | `entities/filesystem/tools.py` | media:file |
 | `ssh` | SSH 远程管理 | `entities/ssh/tools.py` | —（整组 allow_sleep 沉睡，`activate_tool_group` 唤醒） |
 | `voiceprint` | 音源库 | `entities/voiceprint/tools.py` | always/core/media:voice/media:audio |
+| `vault` | 密码本 | `entities/vault/tools.py` | —（整组 allow_sleep 沉睡；reveal/totp/delete 标 risk=CRITICAL） |
 | `sticker` | 表情包 | `entities/sticker/tools.py` | always/media:image（部分工具 allow_sleep） |
 | `environment` | 环境信息 | `entities/system/tools.py` | — |
 | `model_control` | 模型控制 | `entities/model_control/tools.py` | core |
@@ -601,7 +628,7 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
 
 **晚绑定准入**：模块级运行时引用一律用 `core.latebind.LateBinding` 声明端口（消费方所在层声明、`agent/runtime/wiring.py` 统一施绑、check_health 经 `assert_wired()` 校验），禁止新增 `set_xxx` / `_xxx_ref` 式模块全局；仅限三种成因（import 时装饰器注册的工具拿不到构造参数 / 循环初始化 / 跨层桥），其余一律构造注入
 
-**系统注入消息必须带 `_source` 来源标记**：think_loop / round_helpers / context_compressor 向消息链注入的 system 元消息（压缩反馈、rehydration、超时恢复、长度恢复、后台任务、实体推送等）须附 `"_source": {"origin": "<词汇>"}`，发送前由 `normalize_for_send` 与 `_layer` 一并剥离（LLM 不可见，供快照归因/审计）。已用词汇：`compression` / `rehydration` / `timeout_recovery` / `length_recovery` / `background_task` / `push`；新增注入点复用或扩充词汇表，勿省略标记。注意 `_source` 不进 DB（对话历史只存 role/content），仅作用于内存消息链。
+**系统注入消息必须带 `_source` 来源标记**：think_loop / round_helpers / context_compressor 向消息链注入的 system 元消息（压缩反馈、rehydration、超时恢复、长度恢复、后台任务、实体推送等）须附 `"_source": {"origin": "<词汇>"}`，发送前由 `normalize_for_send` 与 `_layer` 一并剥离（LLM 不可见，供快照归因/审计）。已用词汇：`compression` / `rehydration` / `timeout_recovery` / `length_recovery` / `background_task` / `push` / `context_provider`；新增注入点复用或扩充词汇表，勿省略标记。注意 `_source` 不进 DB（对话历史只存 role/content），仅作用于内存消息链。
 
 **Model Experience 三行声明（新功能必答）**：任何影响模型输入/输出的新功能，须在其模块 docstring 或本表登记三件事——① 模型看到什么（注入了什么内容、走哪个通道）② token 影响（增量还是节省、量级）③ 缓存影响（是否触碰前缀层；volatile/tool_chain 尾部动态区则注明不破前缀）。对齐 dsh 每 README 必答 "Model Experience / Token effect / KV Cache effect" 的纪律——缓存是本项目一等指标，新功能不声明即视为未评估。
 

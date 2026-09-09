@@ -37,6 +37,10 @@ FRONTEND_DIR = PROJECT_ROOT / "web" / "frontend"
 
 # 延迟触发关闭，确保触发重启的 HTTP 响应/工具结果先行返回
 _SHUTDOWN_DELAY = 1.0
+# 重启看门狗：排定重启后超过该时长进程仍存活（优雅关停卡死），
+# 无条件 os._exit(42) 保底，确保守护脚本必然接管。
+# 取值需覆盖正常关停耗时（记忆兜底 30s 上限 + 各组件 per_timeout 清理）
+_RESTART_WATCHDOG_SECONDS = 90.0
 # 前端构建超时（秒）
 _BUILD_TIMEOUT = 300
 # 构建日志仅保留尾部，避免状态接口返回过大
@@ -80,8 +84,27 @@ def _is_supervised() -> bool:
     return False
 
 
+def _restart_watchdog() -> None:
+    """重启保底：优雅关停卡死时直接以退出码 42 退出，交由守护脚本拉起。"""
+    import os
+
+    from core.lifecycle import RESTART_EXIT_CODE
+
+    time.sleep(_RESTART_WATCHDOG_SECONDS)
+    log(
+        f"优雅关停超过 {_RESTART_WATCHDOG_SECONDS:.0f}s 未完成，看门狗强制退出（退出码 {RESTART_EXIT_CODE}）",
+        "WARNING", tag="运维",
+    )
+    os._exit(RESTART_EXIT_CODE)
+
+
+def _arm_restart_watchdog() -> None:
+    threading.Thread(target=_restart_watchdog, daemon=True, name="devops.restart_watchdog").start()
+
+
 def schedule_restart(delay: float = _SHUTDOWN_DELAY) -> None:
     """延迟触发优雅关闭并标记重启意图（任意线程可调）。"""
+    _arm_restart_watchdog()
     threading.Timer(delay, Lifecycle.request_shutdown, args=(True,)).start()
 
 
@@ -91,6 +114,7 @@ def _wait_idle_then_shutdown() -> None:
     while is_mind_busy() and time.monotonic() < deadline:
         time.sleep(_IDLE_POLL_INTERVAL)
     Lifecycle.request_shutdown(True)
+    _arm_restart_watchdog()  # 关停请求发出后才布防，避免看门狗在等空闲期间误触发
 
 
 def schedule_restart_when_idle(delay: float = _SHUTDOWN_DELAY) -> None:

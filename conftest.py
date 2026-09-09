@@ -95,12 +95,13 @@ def _isolate_embedding_registry():
 
 
 def _is_module_test(path: Path) -> bool:
-    """模块内测试判定：entities/<name>/tests/ 或 channels/<id>/tests/ 下的用例。"""
+    """模块内测试判定：entities/channels 下任意层级的 tests/ 目录
+    （含实体组件子包的内嵌套件，如 entities/<name>/modules/<mod>/tests/）。"""
     try:
         rel = path.relative_to(_REPO_ROOT)
     except ValueError:
         return False
-    return len(rel.parts) >= 3 and rel.parts[0] in _MODULE_PARENTS and rel.parts[2] == "tests"
+    return len(rel.parts) >= 3 and rel.parts[0] in _MODULE_PARENTS and "tests" in rel.parts
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

@@ -124,6 +124,51 @@ def usage_has_cache_fields(usage: Any) -> bool:
     return any(_dig_present(usage, p) for p in paths)
 
 
+def usage_prompt_includes_cache(usage: Any) -> bool:
+    """prompt_tokens 是否已含缓存 tokens（两种记账口径归一）。
+
+    含缓存的信号（details 包装 / DeepSeek 命中字段）：
+    - prompt_tokens_details.cached_tokens / input_tokens_details.cached_tokens
+      存在（OpenAI 两协议，以及 litellm 变换后的 Anthropic——其
+      calculate_usage 把缓存加回 prompt_tokens 并必附 details 包装）；
+    - prompt_cache_hit_tokens 存在（DeepSeek 磁盘缓存，prompt 含命中）。
+
+    仅有原生 Anthropic 字段（cache_read_input_tokens/cache_creation_input_tokens）
+    而无 details 包装 = 原始 Anthropic 记账（input_tokens 不含缓存，
+    流式 chunk 与 anthropic 兼容网关透传即此形态），prompt_tokens 需补回。
+    """
+    if not usage:
+        return True
+    if _dig_present(usage, "prompt_tokens_details.cached_tokens"):
+        return True
+    if _dig_present(usage, "input_tokens_details.cached_tokens"):
+        return True
+    if _dig_present(usage, "prompt_cache_hit_tokens"):
+        return True
+    if _dig_present(usage, "cache_read_input_tokens") or _dig_present(
+        usage, "cache_creation_input_tokens"
+    ):
+        return False
+    return True
+
+
+_caliber_conflict_warned = False
+
+
+def _warn_caliber_conflict_once() -> None:
+    """口径冲突告警（每进程一次）：端点缓存命中量超过 prompt_tokens。"""
+    global _caliber_conflict_warned
+    if _caliber_conflict_warned:
+        return
+    _caliber_conflict_warned = True
+    from core.log import log
+    log(
+        "LLM 用量口径冲突：缓存命中量超过 prompt_tokens，该端点实际按"
+        " prompt 不含缓存记账，已按此归一（此前命中率显示为虚高）",
+        "WARNING",
+    )
+
+
 @dataclass(slots=True)
 class UsageInfo:
     """LLM 调用的 token 用量统计。"""
@@ -137,13 +182,45 @@ class UsageInfo:
     # 端点是否回报缓存统计字段（False = 不可观测，展示"—"而非谎报 0%；
     # 由流式旁路按原始 chunk 字段存在性动态判定，替代供应商名静态登记）
     cache_observable: bool = True
+    # prompt_tokens 是否已含缓存 tokens（提取时按记账口径判定，见
+    # usage_prompt_includes_cache）；False 时总输入 = prompt + read + creation
+    prompt_includes_cache: bool = True
+
+    def __post_init__(self) -> None:
+        # 记账口径自洽校验：含缓存口径下 read+creation 必然 ≤ prompt；超过即
+        # 端点实际按"prompt 不含缓存"记账（GLM/DeepSeek 部分端点实测 read 可达
+        # prompt 的 1.9 倍——这些端点带 details 包装被字段规则误判为含缓存）。
+        # 不校正则命中率被 min(1.0, …) 钳成 100% 虚报，观测面板整体失真。
+        if (
+            self.prompt_includes_cache
+            and self.cache_read_input_tokens + self.cache_creation_input_tokens
+            > self.prompt_tokens
+        ):
+            self.prompt_includes_cache = False
+            _warn_caliber_conflict_once()
+
+    @property
+    def total_input_tokens(self) -> int:
+        """总输入 tokens（两种记账口径归一后的分母）。"""
+        if self.prompt_includes_cache:
+            return self.prompt_tokens
+        return (
+            self.prompt_tokens
+            + self.cache_read_input_tokens
+            + self.cache_creation_input_tokens
+        )
 
     @property
     def cache_hit_rate(self) -> float:
-        """本轮 prompt 缓存命中率（cache_read / prompt_tokens）。"""
-        if self.prompt_tokens <= 0:
+        """本轮 prompt 缓存命中率（命中词 / 总输入词）。
+
+        分母为归一后的总输入：修复原生 Anthropic 记账口径（input_tokens
+        不含缓存）下 read/prompt > 1 被钳到 100% 的虚报。
+        """
+        total = self.total_input_tokens
+        if total <= 0:
             return 0.0
-        return min(1.0, self.cache_read_input_tokens / self.prompt_tokens)
+        return min(1.0, self.cache_read_input_tokens / total)
 
 
 @dataclass(slots=True)

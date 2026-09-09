@@ -1,0 +1,1 @@
+../../../../../../entities/vault/panel.tsx

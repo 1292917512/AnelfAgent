@@ -487,6 +487,13 @@ class LLMManager(BaseEntity):
                 result.append(client)
         return result
 
+    def get_client_by_id(self, model_id: str) -> Optional[LLMClient]:
+        """按模型 ID 获取客户端（不存在或已停用返回 None）。"""
+        client = self._clients.get(model_id)
+        if client is not None and client.config.enabled:
+            return client
+        return None
+
     def get_chat_client(self, *, require_tools: bool = False) -> Optional[LLMClient]:
         return self.get_by_type(ModelType.CHAT, require_tools=require_tools)
 

@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any, Dict, NamedTuple, Optional
 
+from core.config import get_config_float, get_config_int
 from core.latebind import LateBinding
 from core.log import log
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
@@ -306,7 +308,9 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
     "tags 中的 user:频道:uid / group:频道:gid 是该记忆归属的人/群标识——"
     "引用内容前先确认归属，uid 与当前对话对象不符的是别人的事，勿张冠李戴；"
     "depth=deep 做深度召回（图谱检索+二跳联想，更全但更慢）；"
-    "filter_tags 为硬过滤（结果必须含全部指定标签），tags 仅作相关度加权。",
+    "filter_tags 为硬过滤（结果必须含全部指定标签），tags 仅作相关度加权；"
+    "返回的 forgotten 字段是已遗忘的记忆（强相关或常规检索无果时附带）："
+    "kind=archived 的可经 restore_memory(id) 恢复，kind=tombstone 的仅剩梗概需重新 memorize。",
 )
 async def recall(
     query: str,
@@ -359,21 +363,28 @@ async def recall(
                 entity_scope = f"{scope_type}_{scope_id}"
                 break
         pool_multiplier = cognee_config.recall_pool_multiplier * (2 if is_deep else 1)
-        results = await federated_search(
-            store.search_unified(
+        # 遗忘层兜底与主检索并行：归档（可恢复）+ 墓碑（仅痕迹）统一打分
+        results, forgotten = await asyncio.gather(
+            federated_search(
+                store.search_unified(
+                    query=query,
+                    query_vec=query_vec,
+                    query_tags=tag_list,
+                    limit=limit * pool_multiplier,
+                    require_tags=hard_tags,
+                ),
                 query=query,
-                query_vec=query_vec,
+                client=get_cognee_client(),
+                config=cognee_config,
+                limit=limit,
+                entity_scope=entity_scope,
                 query_tags=tag_list,
-                limit=limit * pool_multiplier,
-                require_tags=hard_tags,
+                deep=is_deep,
             ),
-            query=query,
-            client=get_cognee_client(),
-            config=cognee_config,
-            limit=limit,
-            entity_scope=entity_scope,
-            query_tags=tag_list,
-            deep=is_deep,
+            store.search_forgotten(
+                query, query_vec,
+                limit=get_config_int("memory_forgotten_recall_limit", 3),
+            ),
         )
 
         if min_score > 0:
@@ -399,6 +410,16 @@ async def recall(
             **({"path": r.path} if r.source == "file" else {}),
             **({"dataset": r.dataset_name} if r.dataset_name else {}),
         } for r in results]
+
+        # 遗忘层采纳规则：向量强匹配（≥ 配置阈值）随时浮现；
+        # 关键词弱命中只在常规检索无果时出现（"似曾相识"而非干扰）
+        archive_min = get_config_float("memory_archive_recall_min_score", 0.5)
+        main_empty = not results
+        forgotten_items = [
+            item for item in forgotten
+            if item["score"] >= archive_min or (main_empty and item["score"] >= 0.25)
+        ]
+        forgotten_out = [_format_forgotten_item(item) for item in forgotten_items]
 
         # 关联扩展：沿标签网络联想相关记忆（想到一件事 → 唤起相关的事）
         if is_deep:
@@ -429,9 +450,41 @@ async def recall(
             "results": items,
             "related": related_items,
             **({"relations": relations} if relations else {}),
+            **({
+                "forgotten": forgotten_out,
+                "forgotten_hint": "以下为已遗忘的记忆，不参与常规召回。"
+                "kind=archived 的可经 restore_memory(id) 恢复到活跃记忆库；"
+                "kind=tombstone 的原文已物理删除仅剩梗概，如需找回请基于梗概重新 memorize。",
+            } if forgotten_out else {}),
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="搜索记忆")
+
+
+def _format_forgotten_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    """遗忘层检索项 → 工具输出格式（归档可恢复 / 墓碑仅梗概）。"""
+    base: Dict[str, Any] = {
+        "kind": item["kind"],
+        "type": item["type"],
+        "tags": item["tags"],
+        "score": round(float(item["score"]), 3),
+        "reason": item["reason"],
+    }
+    if item["kind"] == "archived":
+        return {
+            "id": item["id"],
+            **base,
+            "content": str(item["content"])[:300],
+            "archived_at": time.strftime("%Y-%m-%d", time.localtime(item["archived_at"])),
+            "restorable": True,
+        }
+    return {
+        "id": item["id"],
+        **base,
+        "gist": item["gist"],
+        "purged_at": time.strftime("%Y-%m-%d", time.localtime(item["purged_at"])),
+        "restorable": False,
+    }
 
 
 async def _recall_associations(
@@ -710,6 +763,36 @@ async def forget(memory_id: int) -> str:
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="遗忘记忆")
+
+
+@deferred_tool(
+    group="memory", tags=["always"], source="mind.memory",
+    description="把一条已遗忘（归档）的记忆恢复到活跃记忆库，恢复后正常参与召回。"
+    "仅当 recall 返回的 forgotten 列表中 kind=archived 且确认内容确有需要时使用。",
+)
+async def restore_memory(memory_id: int) -> str:
+    """从归档恢复记忆（向量与访问记录原样回填，无需重新嵌入）。
+
+    Args:
+        memory_id: 归档记忆的 ID（recall 返回的 forgotten 列表中 kind=archived 项的 id）
+    """
+    try:
+        deps = _deps()
+        if deps is None:
+            return _store_not_ready()
+        ok = await deps.store.restore_memory(memory_id)
+        if not ok:
+            return tool_error(
+                f"归档中不存在记忆 #{memory_id}",
+                cause=ErrorCause.NOT_FOUND, retryable=False,
+                hint="该记忆可能已被恢复，或已超归档保留期被物理删除"
+                "（forgotten 列表中 kind=tombstone 的项仅剩梗概，请基于梗概重新 memorize）",
+            )
+        return json.dumps({
+            "ok": True, "id": memory_id, "action": "restored",
+        }, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action="恢复记忆")
 
 
 # ------------------------------------------------------------------

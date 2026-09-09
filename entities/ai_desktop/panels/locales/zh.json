@@ -1,0 +1,78 @@
+{
+  "loadFailed": "组件数据加载失败（实体可能未启用或服务未重启）",
+  "retry": "重试",
+  "stats": {
+    "total": "组件总数",
+    "enabled": "已启用",
+    "injecting": "注入中",
+    "errors": "异常"
+  },
+  "preview": {
+    "title": "AI 实际看到的注入内容",
+    "refresh": "刷新预览",
+    "empty": "当前没有启用的组件产生注入内容",
+    "hint": "以上内容在每个回复轮次注入 AI 的动态上下文（volatile 层），随组件启停与数据刷新实时变化"
+  },
+  "modules": {
+    "hint": "共 {{count}} 个上下文组件，新增后端组件自动出现在此处",
+    "empty": "暂无已注册的上下文组件",
+    "footerHint": "组件的启停与配置也可在「配置」页签或配置中心（entity/ai_desktop 组）中修改，AI 亦可通过工具管理"
+  },
+  "module": {
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "refresh": "立即刷新数据",
+    "lastError": "最近错误",
+    "status": "当前状态",
+    "lastRefresh": "数据刷新于",
+    "injectedText": "注入文本",
+    "settings": "组件设置"
+  },
+  "detail": {
+    "now": "当前时间",
+    "timezone": "时区",
+    "festivalsToday": "今日节日",
+    "nextHoliday": "下一法定假日",
+    "none": "无",
+    "noneInWindow": "预告窗口内无",
+    "daysLater": "{{count}} 天后",
+    "condition": "天气",
+    "temp": "气温",
+    "feels": "体感",
+    "humidity": "湿度",
+    "wind": "风",
+    "todayRange": "今日气温",
+    "fetchedAt": "更新于",
+    "disabled": "组件已停用，不产生上下文注入",
+    "noContent": "当前无注入内容"
+  },
+  "config": {
+    "unsaved": "有未保存的修改",
+    "invalidNumber": "请输入合法数字",
+    "saveFailed": "配置保存失败"
+  },
+  "messages": {
+    "toggleSuccess": "「{{name}}」状态已更新",
+    "toggleFailed": "组件启停失败",
+    "refreshSuccess": "「{{name}}」数据已刷新",
+    "refreshFailed": "数据刷新失败"
+  },
+  "weather": {
+    "add": "添加地区",
+    "addPlaceholder": "检索城市名，从候选中确认添加（如 上海 / 东京）",
+    "remove": "移除该地区",
+    "duplicate": "该地区已在列表中",
+    "pending": "等待采集（保存后数秒内自动刷新）",
+    "sourceHint": "数据源：Open-Meteo 公开气象服务；地区经检索确认后带坐标落库，不会错配城市",
+    "noResults": "未找到匹配地区，请换更精确的名称",
+    "searchFailed": "地区检索失败（网络异常）"
+  },
+  "datetime": {
+    "extraTitle": "额外关注时区（每个时区注入一行时间）",
+    "add": "添加",
+    "addPlaceholder": "IANA 时区名，如 Asia/Tokyo",
+    "duplicate": "该时区已在列表中",
+    "invalidZone": "无效的时区名，不会产生注入",
+    "zoneHint": "IANA 时区数据库名称，如 America/New_York、Europe/London"
+  }
+}

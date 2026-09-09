@@ -720,6 +720,7 @@ class Mind:
             adapter_key: str = "",
             blocked_tools: Optional[Set[str]] = None,
             completion: Optional[Dict] = None,
+            reflect_tool_selectors: Optional[List[str]] = None,
     ) -> None:
         """统一思维循环。"""
         await _tl_think_loop(
@@ -728,6 +729,7 @@ class Mind:
             anything, base_messages, options,
             adapter_key=adapter_key, blocked_tools=blocked_tools,
             completion=completion,
+            reflect_tool_selectors=reflect_tool_selectors,
         )
 
     @staticmethod
@@ -955,6 +957,8 @@ class Mind:
 
         tool_tags 非空时按选择器加载工具集（替代默认的 "heartbeat" 标签）。
         选择器优先按 tag 匹配，同时兼容按 group 名匹配（如 mcp:web-fetch）。
+        工具目录为精简常态集（always + 选择器），更多分组由模型经
+        list_entity_methods / activate_tool_group 按需唤醒（自服务扩展）。
         默认过滤 output 类工具（send_message/send_file 等），可按任务配置放开。
         extra_blocked_tools 可追加屏蔽特定工具（如子代理 leaf 角色屏蔽 delegate_task）。
 
@@ -977,32 +981,15 @@ class Mind:
         # 每次反思会话使用唯一 scope：并行子代理/心跳 reflect 的 plan 与
         # 工具激活状态按 scope 隔离，共享字面量会互相串扰
         reflect_scope = f"reflect:{uuid.uuid4().hex[:8]}"
-        base_tools = await self.pfc.get_active_tool_schemas(adapter_key, scope=reflect_scope)
-        # 可见性与权限分离：schema 数组全量保留（与回复调用共享同一冻结
-        # 前缀，tools 是 prompt 最大头，裁剪会在数组早期位置断裂缓存）；
-        # 禁用工具由 think_loop 执行侧拦截（合成错误结果，模型自我纠正）
-        active_tools = list(base_tools)
-
+        # 反思工具目录为精简常态集（always + 选择器，见 ToolAssembly.
+        # get_reflect_tool_schemas）：高频内部调用不再扛回复级全量 schema；
+        # 更多分组由模型经 list_entity_methods / activate_tool_group 按需唤醒。
+        # 可见性与权限分离：禁用工具不从数组移除，由 think_loop 执行侧拦截
+        # （合成错误结果，模型自我纠正）
         extra_selectors = tool_tags if tool_tags else ["heartbeat"]
-        existing_names = {s.get("function", {}).get("name", "") for s in active_tools}
-
-        def _merge_extra_schemas(schemas: List[Dict]) -> None:
-            for schema in schemas:
-                name = schema.get("function", {}).get("name", "")
-                if name and name not in existing_names and name not in blocked_tools:
-                    active_tools.append(schema)
-                    existing_names.add(name)
-
-        for selector in extra_selectors:
-            sel = (selector or "").strip()
-            if not sel:
-                continue
-            # 1) 先按 tag 匹配（历史行为）
-            _merge_extra_schemas(EntityRegistry.get_tool_schema_by_tags([sel]))
-            # 2) 再按 group 匹配（含 mcp:web-fetch 分组选择器与 web-fetch 简写）
-            groups = [sel] if ":" in sel else [sel, f"mcp:{sel}"]
-            for group in groups:
-                _merge_extra_schemas(EntityRegistry.get_tool_schemas_by_group(group))
+        active_tools = await self.pfc.get_reflect_tool_schemas(
+            adapter_key, scope=reflect_scope, selectors=extra_selectors,
+        )
 
         collected_text: List[str] = []
         execution_steps: List[str] = []
@@ -1024,6 +1011,7 @@ class Mind:
                 options=options,
                 blocked_tools=blocked_tools,
                 completion=completion,
+                reflect_tool_selectors=extra_selectors,
             )
 
         total = "\n".join(collected_text)

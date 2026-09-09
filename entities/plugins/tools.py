@@ -41,6 +41,10 @@ register_configs_safe({
             "description": "是否在启动时自动激活已安装的插件",
             "default": True,
         },
+        "plugins_context_inject": {
+            "description": "是否向 AI 上下文注入插件操作状态（进行中的安装/升级与最近失败）",
+            "default": True,
+        },
         "plugin_tools_sleep_default": {
             "description": "插件工具默认沉睡（不驻留完整 schema，需要时激活分组使用）",
             "default": True,
@@ -55,7 +59,10 @@ register_configs_safe({
 wire_plugin_manager(get_plugin_manager())
 
 
-@context_provider(name="plugins", priority=30, max_tokens=200, group="plugins")
+@context_provider(
+    name="plugins", priority=30, max_tokens=200,
+    group="plugins", inject_key="plugins_context_inject",
+)
 async def plugin_operation_status(scope: str):
     """插件操作状态：进行中的安装/升级/订阅与最近失败。
 

@@ -740,3 +740,50 @@ def test_thinking_contract_serialization() -> None:
     empty = LLMClientConfig(model="m", supports_reasoning=True)
     assert "thinking" not in empty.to_model_dict()
     assert "thinking" not in empty.to_dict()
+
+
+class TestPromptCacheKey:
+    """供应商缓存亲和键：绑定 scope 时携带 prompt_cache_key，未绑定/关闭时不携带。"""
+
+    def _client(self) -> LLMClient:
+        return LLMClient(LLMClientConfig(model="gpt-4.1", api_type="openai"))
+
+    def test_scope_bound_carries_key(self) -> None:
+        from agent.mind.scope_usage import bind_usage_scope
+
+        token = bind_usage_scope("user_u1")
+        try:
+            kwargs = self._client()._build_kwargs([{"role": "user", "content": "hi"}])
+        finally:
+            from agent.mind.scope_usage import usage_scope_var
+            usage_scope_var.reset(token)
+        assert kwargs["prompt_cache_key"] == "user_u1"
+
+    def test_unbound_scope_omits_key(self) -> None:
+        kwargs = self._client()._build_kwargs([{"role": "user", "content": "hi"}])
+        assert "prompt_cache_key" not in kwargs
+
+    def test_disabled_by_config(self, monkeypatch) -> None:
+        from agent.mind.scope_usage import bind_usage_scope, usage_scope_var
+
+        monkeypatch.setattr(
+            "agent.llm.prompt_cache.get_config_bool",
+            lambda key, default=False: False if key == "prompt_cache_key_enabled" else default,
+        )
+        token = bind_usage_scope("user_u1")
+        try:
+            kwargs = self._client()._build_kwargs([{"role": "user", "content": "hi"}])
+        finally:
+            usage_scope_var.reset(token)
+        assert "prompt_cache_key" not in kwargs
+
+    def test_responses_path_via_extra(self) -> None:
+        from agent.mind.scope_usage import bind_usage_scope, usage_scope_var
+
+        token = bind_usage_scope("group_g1")
+        try:
+            kwargs = self._client()._build_responses_kwargs(
+                [{"role": "user", "content": "hi"}], None, None, None)
+        finally:
+            usage_scope_var.reset(token)
+        assert kwargs["extra"]["prompt_cache_key"] == "group_g1"

@@ -5,8 +5,11 @@
  * 经 vite moduleFrontendsPlugin 软链到 src/plugins/channels/<id>/（软链提交 git），
  * 本模块通过 import.meta.glob 构建时自动发现。
  *
- * 插件 index.ts 为轻量 eager 模块：声明清单 + 自注册 i18n；组件经 loader
+ * 插件 index.ts 为轻量清单模块：声明清单 + 自注册 i18n；组件经 loader
  * 动态 import 保持懒加载分块。删除频道目录即整体热拔出，核心零改动。
+ *
+ * 清单经 initChannelPlugins() 在应用渲染前逐个隔离加载：单插件模块级异常
+ * 仅跳过该插件并记日志，不再拖垮整个入口 chunk（整站黑屏）。
  */
 import { lazy, type ComponentType, type LazyExoticComponent } from "react";
 
@@ -24,19 +27,52 @@ export interface ChannelPlugin {
   hiddenInChannelList?: boolean;
 }
 
-// 构建时解析：频道插件清单（eager；清单轻量，组件经 loader 懒加载）
-const pluginModules = import.meta.glob<{ default: ChannelPlugin }>(
+// 构建时解析：频道插件清单 loader（隔离加载，单插件失败不影响其余）
+const pluginLoaders = import.meta.glob<{ default: ChannelPlugin }>(
   "../plugins/channels/*/index.ts",
-  { eager: true },
 );
 
 const plugins = new Map<string, ChannelPlugin>();
-for (const [path, mod] of Object.entries(pluginModules)) {
-  const match = path.match(/\/plugins\/channels\/([^/]+)\/index\.ts$/);
-  if (match?.[1]) plugins.set(match[1], mod.default);
+
+// 组件映射由 initChannelPlugins 填充（lazy 组件为静态引用，渲染期零工厂调用，
+// 满足 react-hooks/static-components；loader 仍为动态 import，保持懒加载分块）
+export const CHANNEL_LOGIN_COMPONENTS: Record<
+  string,
+  LazyExoticComponent<ComponentType<{ compact?: boolean }>>
+> = {};
+export const CHANNEL_PANEL_COMPONENTS: Record<string, LazyExoticComponent<ComponentType>> = {};
+
+/**
+ * 应用渲染前加载全部频道插件清单（main.tsx 调用，幂等）。
+ * 单插件模块级异常只跳过该插件，其余插件与核心 UI 不受影响。
+ */
+export async function initChannelPlugins(): Promise<void> {
+  await Promise.all(
+    Object.entries(pluginLoaders).map(async ([path, load]) => {
+      const match = path.match(/\/plugins\/channels\/([^/]+)\/index\.ts$/);
+      const key = match?.[1];
+      if (!key) return;
+      try {
+        const mod = await load();
+        plugins.set(key, mod.default);
+      } catch (error) {
+        console.error(`[channel-plugins] 频道插件加载失败已跳过: ${key}`, error);
+      }
+    }),
+  );
+  for (const [key, plugin] of plugins) {
+    if (plugin.login) {
+      CHANNEL_LOGIN_COMPONENTS[key] = lazy(
+        plugin.login as () => Promise<{ default: ComponentType<{ compact?: boolean }> }>,
+      );
+    }
+    if (plugin.panel) {
+      CHANNEL_PANEL_COMPONENTS[key] = lazy(plugin.panel);
+    }
+  }
 }
 
-/** 获取频道插件清单（无插件返回 undefined）。 */
+/** 获取频道插件清单（无插件或插件加载失败返回 undefined）。 */
 export function getChannelPlugin(channelKey: string): ChannelPlugin | undefined {
   return plugins.get(channelKey);
 }
@@ -55,23 +91,4 @@ export function listPluginRoutes(): Array<{ path: string; page: LazyExoticCompon
     }
   }
   return routes;
-}
-
-// 组件映射在模块初始化时构建一次（lazy 组件为静态引用，渲染期零工厂调用，
-// 满足 react-hooks/static-components；loader 仍为动态 import，保持懒加载分块）
-export const CHANNEL_LOGIN_COMPONENTS: Record<
-  string,
-  LazyExoticComponent<ComponentType<{ compact?: boolean }>>
-> = {};
-export const CHANNEL_PANEL_COMPONENTS: Record<string, LazyExoticComponent<ComponentType>> = {};
-
-for (const [key, plugin] of plugins) {
-  if (plugin.login) {
-    CHANNEL_LOGIN_COMPONENTS[key] = lazy(
-      plugin.login as () => Promise<{ default: ComponentType<{ compact?: boolean }> }>,
-    );
-  }
-  if (plugin.panel) {
-    CHANNEL_PANEL_COMPONENTS[key] = lazy(plugin.panel);
-  }
 }

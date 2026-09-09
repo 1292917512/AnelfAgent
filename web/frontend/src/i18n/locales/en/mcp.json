@@ -70,5 +70,7 @@
   "stayAwakeOn": "Set to always-on: tools stay in the schema",
   "stayAwakeOff": "Set to sleeping: only a brief remains, activate on demand",
   "stayAwakeHintOn": "Pin as always-on (recommended for frequently used servers)",
-  "stayAwakeHintOff": "Let it sleep (shrinks context prefix, better cache hits)"
+  "stayAwakeHintOff": "Let it sleep (shrinks context prefix, better cache hits)",
+  "oauthPending": "Authorization required — click to open",
+  "oauthAuthorized": "Authorized"
 }

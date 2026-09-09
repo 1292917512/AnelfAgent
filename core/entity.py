@@ -495,6 +495,7 @@ _DEFAULT_GROUP_ORDER: Dict[str, int] = {
     "entity": 15, "mcp_manage": 16, "devops": 17,
     "skills": 18, "delegation": 19, "ui": 20, "session": 21, "ssh": 22,
     "voiceprint": 23,
+    "vault": 24,
 }
 
 

@@ -162,3 +162,40 @@ class MCPService(MCPServerStore):
             return {"success": False, "message": str(e)}
         except Exception as e:
             return {"success": False, "message": f"操作失败: {extract_exception_detail(e)}"}
+
+    # ------------------------------------------------------------------
+    # OAuth 授权状态（entities.mcp.oauth 的 services 侧收口）
+    # ------------------------------------------------------------------
+
+    async def oauth_status(self, name: str = "") -> Dict[str, Any]:
+        """OAuth 状态：单 server 或全部（凭据存在性 + 待授权链接）。"""
+        import asyncio as _asyncio
+
+        from entities.mcp.oauth import has_credentials, pending_auth
+
+        pending = await _asyncio.to_thread(pending_auth)
+        if name:
+            entry = pending.get(name) or {}
+            return {
+                "server": name,
+                "authorized": await _asyncio.to_thread(has_credentials, name),
+                "pending_url": entry.get("url", ""),
+            }
+        result: Dict[str, Any] = {}
+        for srv in self.list_servers():
+            srv_name = srv.get("name", "")
+            entry = pending.get(srv_name) or {}
+            result[srv_name] = {
+                "authorized": await _asyncio.to_thread(has_credentials, srv_name),
+                "pending_url": entry.get("url", ""),
+            }
+        return result
+
+    async def oauth_logout(self, name: str) -> Dict[str, Any]:
+        """清除 OAuth 凭据（下次连接重新授权）。"""
+        import asyncio as _asyncio
+
+        from entities.mcp.oauth import delete_credentials
+
+        removed = await _asyncio.to_thread(delete_credentials, name)
+        return {"server": name, "removed": removed}

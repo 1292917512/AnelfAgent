@@ -1,0 +1,8 @@
+{
+  "dify_enabled": true,
+  "dify_base_url": "",
+  "dify_admin_email": "admin@dify.local",
+  "dify_auto_setup": true,
+  "dify_context_inject": true,
+  "dify_timeout": 30
+}

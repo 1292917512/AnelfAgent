@@ -1,0 +1,118 @@
+{
+  "tabs": {
+    "status": "Connection",
+    "apps": "Apps & Workflows",
+    "run": "Run",
+    "models": "Model Providers",
+    "mcp": "MCP Bridge"
+  },
+  "messages": {
+    "actionDone": "Done",
+    "actionFailed": "Action failed",
+    "urlSaved": "Instance URL saved",
+    "connectFailed": "Connection failed",
+    "adminSaved": "Admin credentials verified and saved",
+    "adminFailed": "Failed to save credentials"
+  },
+  "connect": {
+    "card": "Dify Connection",
+    "desc": "Connect to an externally deployed Dify instance (this entity is a bridge, not an installer)",
+    "baseUrl": "Instance URL",
+    "connect": "Connect",
+    "hint": "Point to the Dify nginx entry (e.g. http://127.0.0.1:8899). Connecting probes reachability; uninitialized self-hosted instances get an auto-created admin. No Dify yet? Ask the AI to deploy it with its ops/SSH abilities, then connect here.",
+    "reachability": "Reachability",
+    "reachable": "Reachable",
+    "unreachable": "Unreachable",
+    "version": "Version",
+    "setup": "Setup",
+    "setupDone": "Finished",
+    "setupPending": "Pending",
+    "appsTracked": "Tracked apps",
+    "openConsole": "Open Dify Console",
+    "admin": "Admin Credentials",
+    "adminDesc": "Admin account auto-created by the entity or entered manually",
+    "adminReady": "Credentials saved",
+    "adminMissing": "Not configured",
+    "adminHint": "Use this email and password to sign in to the native Dify console for manual editing; the password is stored masked in the entity secrets.json."
+  },
+  "actions": {
+    "refresh": "Refresh",
+    "cancel": "Cancel",
+    "save": "Save"
+  },
+  "confirm": {
+    "deleteTitle": "Delete App",
+    "deleteMsg": "This deletes \"{{name}}\" (irreversible; local API keys and MCP bridge are cleaned up too). Continue?",
+    "mcpDisableTitle": "Disable MCP Bridge",
+    "mcpDisableMsg": "This disables the MCP server of \"{{name}}\" and removes its tool registration from Anelf. Continue?"
+  },
+  "admin": {
+    "modalTitle": "Dify Admin Credentials",
+    "modalDesc": "Credentials are verified with a real login before being saved. Enter them here to take over an already-initialized instance; for uninitialized ones just click Connect to auto-create.",
+    "email": "Admin email",
+    "password": "Admin password",
+    "passwordPlaceholder": "Enter password",
+    "passwordKeepHint": "Leave ******** unchanged to keep the saved password"
+  },
+  "apps": {
+    "title": "Applications",
+    "count": "{{count}} apps",
+    "empty": "No apps yet — use Create or Import DSL above",
+    "create": "Create",
+    "import": "Import DSL",
+    "createTitle": "Create App",
+    "importTitle": "Import DSL as New App",
+    "fieldName": "App name",
+    "fieldMode": "App mode",
+    "fieldDesc": "Description (optional)",
+    "importNamePlaceholder": "Leave empty to use the name inside the DSL",
+    "editDsl": "Edit DSL",
+    "publish": "Publish",
+    "createKey": "Issue API Key",
+    "copy": "Duplicate",
+    "delete": "Delete",
+    "dslTitle": "Edit DSL · {{name}}",
+    "dslLoading": "Exporting DSL...",
+    "applyDraft": "Save as Draft",
+    "applyPublish": "Save & Publish",
+    "modes": {
+      "chat": "Chat (chat)",
+      "agent-chat": "Agent Chat (agent-chat)",
+      "advanced-chat": "Advanced Chat (advanced-chat)",
+      "workflow": "Workflow (workflow)",
+      "completion": "Completion (completion)"
+    }
+  },
+  "run": {
+    "title": "Run & Debug",
+    "desc": "Run an app directly: workflows take input variables; chat apps take a message",
+    "app": "App",
+    "selectPlaceholder": "Select an app to run",
+    "selectApp": "Select an app first",
+    "query": "Message",
+    "queryPlaceholder": "Message to send to the app",
+    "queryRequired": "Message must not be empty",
+    "conversation": "Conversation ID (auto-continued)",
+    "inputs": "Inputs (JSON object)",
+    "inputsInvalid": "Inputs is not a valid JSON object",
+    "execute": "Run",
+    "running": "Running, please wait...",
+    "result": "Result"
+  },
+  "models": {
+    "title": "Model Providers",
+    "desc": "Apps can call a model only after its provider credentials are configured (dot: green = configured)",
+    "empty": "No providers (connect first)",
+    "configure": "Configure credentials",
+    "credTitle": "Credentials · {{name}}",
+    "credDesc": "Provider: {{provider}}. Field names are provider-defined (e.g. openai uses openai_api_key); Dify validation errors are returned on mismatch.",
+    "credInvalid": "Credentials are not valid JSON"
+  },
+  "mcp": {
+    "title": "MCP Bridge",
+    "desc": "Expose a Dify app as an MCP server and auto-register it into Anelf so the AI can call it directly",
+    "enable": "Enable Bridge",
+    "disable": "Disable Bridge",
+    "bridgedHint": "Bridged (endpoint URL available in the enable response or via the dify_mcp_status AI tool)"
+  }
+}

@@ -460,6 +460,8 @@ def get_skill(name: str) -> str:
     # 先计数再重读，返回真实值而非手工补偿
     deps.store.record_use(name, touch=False)
     skill = deps.store.get(name) or skill
+    from agent.skills.dependencies import dependency_notice, missing_mcp_dependencies
+    missing = missing_mcp_dependencies(skill)
     return json.dumps({
         "ok": True,
         "name": skill.name,
@@ -472,4 +474,6 @@ def get_skill(name: str) -> str:
         "patch_count": skill.patch_count,
         "rationale": skill.rationale,
         "merged_into": skill.merged_into,
+        "missing_dependencies": missing,
+        "dependency_notice": dependency_notice(skill) if missing else "",
     }, ensure_ascii=False)

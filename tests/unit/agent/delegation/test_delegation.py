@@ -299,3 +299,47 @@ class TestDelegationProgress:
             assert received == []
         finally:
             event_bus.off_by_owner("test_delegation_idle")
+
+
+class TestForkContext:
+    """fork_context：父会话近期记录作为只读快照注入子代理提示词。"""
+
+    def test_history_block_included_when_present(self):
+        from agent.delegation.sub_agent import _SUB_AGENT_PROMPT, SubAgent
+
+        agent = SubAgent(
+            None, "目标", "背景",
+            parent_history="user: 最近在看 Claude 插件\nassistant: 已整理清单",
+        )
+        text = _SUB_AGENT_PROMPT.format(
+            goal=agent.goal, context=agent.context,
+            history_block=(
+                f"\n[主对话近期记录]（仅供参考，按时间顺序）\n{agent.parent_history}\n"
+                if agent.parent_history else ""
+            ),
+            role_hint="",
+        )
+        assert "主对话近期记录" in text
+        assert "最近在看 Claude 插件" in text
+
+    def test_no_history_block_by_default(self):
+        from agent.delegation.sub_agent import _SUB_AGENT_PROMPT, SubAgent
+
+        agent = SubAgent(None, "目标")
+        text = _SUB_AGENT_PROMPT.format(
+            goal=agent.goal, context="（无额外背景）",
+            history_block="", role_hint="",
+        )
+        assert "主对话近期记录" not in text
+
+    async def test_load_parent_history_scope_gating(self):
+        """非会话 scope 返回空；会话 scope 读取失败容错为空。"""
+        from agent.delegation.delegation_manager import DelegationManager
+
+        mgr = DelegationManager.__new__(DelegationManager)
+        mgr._mind = None
+        assert await mgr._load_parent_history("_global") == ""
+        assert await mgr._load_parent_history("") == ""
+        assert await mgr._load_parent_history("reflect:abc") == ""
+        # 会话 scope 但存储未就绪 → 容错空串
+        assert await mgr._load_parent_history("user_webui:u1") == ""

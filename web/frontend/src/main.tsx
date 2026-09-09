@@ -5,6 +5,7 @@ import App from "./App";
 import { getInitialTheme } from "./stores/app-store";
 import { toast } from "./stores/toast-store";
 import { apiErrorMessage, setApiErrorHandler } from "./lib/api";
+import { initChannelPlugins } from "./lib/channel-plugins";
 import i18n from "./i18n";
 import "./styles/globals.css";
 
@@ -35,10 +36,13 @@ const initialTheme = getInitialTheme();
 document.documentElement.setAttribute("data-theme", initialTheme);
 document.documentElement.classList.toggle("dark", initialTheme === "dark");
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <App />
-    </QueryClientProvider>
-  </StrictMode>,
-);
+// 频道插件清单隔离加载完成后再渲染（插件 index.ts 自注册 i18n 需先于首帧）
+initChannelPlugins().then(() => {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <App />
+      </QueryClientProvider>
+    </StrictMode>,
+  );
+});

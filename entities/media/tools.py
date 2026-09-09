@@ -2,10 +2,10 @@
 
 架构：tools.py（统一接口/参数归一/沙箱校验/产物落盘）
   → providers.run_capability（按媒体库配置的 provider 优先级链路由）
-  → providers/models.py（llm_clients.json 已配置模型）/ providers/minimax.py（MiniMax 直连模块）
+  → providers/ 下可插拔 provider 模块（注册即接入，见 providers/__init__.py）
 
-provider 参数：auto（默认，按配置优先级链自动路由+失败降级）或指定 provider 名
-（models/minimax），可在媒体库配置面板调整各能力优先级。
+provider 参数：auto（默认，按配置优先级链自动路由+失败降级）或指定 provider 名；
+可用值与能力优先级均在媒体库配置面板查看/调整，不在本文档枚举（防随组件增删过时）。
 """
 
 from __future__ import annotations
@@ -16,7 +16,14 @@ import mimetypes
 import os
 from typing import Any, Dict, List, Optional
 
-from entities._sdk import ErrorCause, error_from_exception, tool, tool_error
+from entities._sdk import (
+    ErrorCause,
+    error_from_exception,
+    get_active_llm_client,
+    is_video_path,
+    tool,
+    tool_error,
+)
 
 from . import utils
 from .config import apply_style, get_default, load_config
@@ -34,6 +41,13 @@ def _check_provider(provider: str) -> Optional[str]:
     return None
 
 
+def _main_model_supports_vision() -> bool:
+    """主对话模型是否具备视觉能力（与 think_loop 图片注入门控同源：
+    rt.llm 与 mind.llm 由 switch_llm 同步维护；运行时未就绪返回 None → False 走识别链）。"""
+    client = get_active_llm_client()
+    return bool(getattr(getattr(client, "config", None), "supports_vision", False))
+
+
 def _dumps(out: Dict[str, Any]) -> str:
     return json.dumps(out, ensure_ascii=False)
 
@@ -46,11 +60,16 @@ def _dumps(out: Dict[str, Any]) -> str:
 async def recognize_image(image_path: str = "", prompt: str = "", provider: str = "auto", **kwargs: str) -> str:
     """识别/分析图片或视频内容。支持本地文件路径或 URL。
 
+    主模型具备视觉能力时：本地图片不调用识别链，按 _multimodal 约定把原图
+    直接注入工具链尾部（动态区，不动前缀缓存），主模型亲自看图分析，
+    省一次视觉模型调用；显式指定 provider 时强制走识别链。
+    主模型无视觉能力时：经媒体库视觉模型链识别，返回文字描述。
+
     Args:
         image_path: 图片/视频的绝对路径或 URL
         prompt: 可选的分析提示，如"描述图片中的文字"
-        provider: auto（默认，视觉模型链失败自动降级 MiniMax Coding Plan 订阅配额）/
-            models / minimax（直连 Coding Plan，不占视觉模型调用）
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名
+            （可用值见媒体库配置 / media_config(action="providers")，随 provider 模块增删变化）
     """
     if not image_path:
         image_path = (
@@ -69,10 +88,11 @@ async def recognize_image(image_path: str = "", prompt: str = "", provider: str 
     err = _check_provider(provider)
     if err:
         return err
+    provider = provider or "auto"
 
-    from entities._sdk import is_video_path
     is_video = is_video_path(image_path)
-    if not image_path.startswith(("http://", "https://", "data:image/")):
+    is_remote = image_path.startswith(("http://", "https://", "data:image/"))
+    if not is_remote:
         try:
             resolved = utils.resolve_workspace_path(image_path)
         except ValueError as e:
@@ -83,8 +103,19 @@ async def recognize_image(image_path: str = "", prompt: str = "", provider: str 
                               retryable=False, resolved=resolved)
         image_path = resolved
 
-    default_prompt = "请简要描述这个视频的内容。" if is_video else "请简要描述这张图片的内容。"
-    desc_prompt = prompt or default_prompt
+    desc_prompt = prompt or (
+        "请简要描述这个视频的内容。" if is_video else "请简要描述这张图片的内容。"
+    )
+    # 主模型有视觉能力时跳过识别链，直接按 _multimodal 约定回注原图——
+    # 省一次视觉模型调用；视频与远程 URL 无法注入本地 block，仍走识别链
+    if not is_video and not is_remote and provider == "auto" and _main_model_supports_vision():
+        return _dumps({
+            "success": True,
+            "image_path": image_path,
+            "_multimodal": True,
+            "text": f"[系统] 图片已附上，请直接查看并按调用要求分析（{desc_prompt}）。",
+            "images": [image_path],
+        })
     try:
         out = await run_capability(
             "vision", "视频识别" if is_video else "图片识别", provider=provider,
@@ -107,7 +138,7 @@ async def voice_to_text(audio_source: str = "", provider: str = "auto", **kwargs
 
     Args:
         audio_source: 音频文件的本地路径（如 workspace/uploads/voice/xxx.ogg）或 URL
-        provider: auto（默认）/ models / minimax
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     if not audio_source:
         audio_source = kwargs.get("path", "") or kwargs.get("file_path", "") or kwargs.get("url", "")
@@ -170,7 +201,7 @@ async def text_to_voice(
         speed: 语速 0.5~2.0，0 表示默认（仅 MiniMax 协议）
         pitch: 语调 -12~12，0 表示原音色（仅 MiniMax 协议）
         language_boost: 语种增强（仅 MiniMax 协议）：Chinese/English/Japanese/auto 等
-        provider: auto（默认）/ models / minimax
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     err = _check_provider(provider)
     if err:
@@ -235,7 +266,7 @@ async def clone_voice(
         audio_path: 克隆源音频（本地路径或 URL，mp3/m4a/wav，10 秒~5 分钟，≤20MB）
         voice_id: 自定义音色 ID（8-256 字符，字母开头，可含数字/横线/下划线）
         preview_text: 可选试听文本（克隆后用新音色朗读，≤1000 字）
-        provider: auto（默认）/ models / minimax
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     if not voice_id.strip():
         return tool_error("未提供 voice_id", cause=ErrorCause.PARAM, retryable=False)
@@ -276,7 +307,7 @@ async def design_voice(prompt: str, preview_text: str = "", voice_id: str = "", 
         prompt: 音色描述（如"悬疑小说旁白，低沉磁性的男声"）
         preview_text: 试听文本（≤500 字，留空使用默认试听文本）
         voice_id: 可选自定义音色 ID，留空自动生成
-        provider: auto（默认）/ models / minimax
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     if not prompt.strip():
         return tool_error("prompt 不能为空", cause=ErrorCause.PARAM, retryable=False)
@@ -304,7 +335,7 @@ async def list_voices(voice_type: str = "all", provider: str = "auto") -> str:
 
     Args:
         voice_type: system / voice_cloning / voice_generation / all
-        provider: auto（默认）/ models / minimax
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     err = _check_provider(provider)
     if err:
@@ -336,7 +367,7 @@ async def delete_voice(voice_id: str, voice_type: str = "voice_cloning", provide
     Args:
         voice_id: 要删除的音色 ID
         voice_type: voice_cloning（复刻）或 voice_generation（设计）
-        provider: auto（默认）/ models / minimax
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     if not voice_id.strip():
         return tool_error("未提供 voice_id", cause=ErrorCause.PARAM, retryable=False)
@@ -371,7 +402,7 @@ async def generate_music(
         prompt: 音乐风格/情绪描述（≤2000 字）
         lyrics: 歌词（\\n 换行，支持 [Verse]/[Chorus] 等结构标签，≤3500 字）
         is_instrumental: 是否纯音乐（默认否）
-        provider: auto（默认）/ models
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     if not prompt.strip() and not lyrics.strip():
         return tool_error("prompt 与 lyrics 至少提供一项",
@@ -406,7 +437,7 @@ async def generate_lyrics(
         lyrics: 已有歌词（mode=edit 时必填，≤3500 字）
         title: 保留的歌名（可选）
         mode: write_full_song（写整首）或 edit（修改已有歌词）
-        provider: auto（默认）/ models
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     err = _check_provider(provider)
     if err:
@@ -449,7 +480,7 @@ async def generate_video(
         resolution: 分辨率，留空用媒体库配置默认；如 "2K"（MiniMax-H3）或 "768P"/"1080P"（Hailuo）
         ratio: 画面比例，如 "16:9"/"9:16"（仅 MiniMax-H3 文生视频有效）
         style: 可选风格预设名（见媒体库配置的 style_presets）或自定义风格描述
-        provider: auto（默认）/ models
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     err = _check_provider(provider)
     if err:
@@ -490,7 +521,7 @@ async def query_video_task(task_id: str, download: bool = True, provider: str = 
     Args:
         task_id: 视频任务 ID（MiniMax 平台任务，由创建任务响应或任务列表获得）
         download: 任务成功时是否下载视频到本地（默认是）
-        provider: auto（默认）/ models
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     if not task_id.strip():
         return tool_error("未提供 task_id", cause=ErrorCause.PARAM, retryable=False)
@@ -516,7 +547,7 @@ async def list_video_tasks(page_num: int = 1, page_size: int = 20, status: str =
         page_num: 页码，从 1 开始
         page_size: 每页条数
         status: 可选状态过滤：queued/running/succeeded/failed/cancelled/expired
-        provider: auto（默认）/ models
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     err = _check_provider(provider)
     if err:
@@ -533,7 +564,7 @@ async def cancel_video_task(task_id: str, provider: str = "auto") -> str:
 
     Args:
         task_id: 视频任务 ID
-        provider: auto（默认）/ models
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     if not task_id.strip():
         return tool_error("未提供 task_id", cause=ErrorCause.PARAM, retryable=False)
@@ -571,7 +602,7 @@ async def generate_image(
         num_inference_steps: 推理步数，默认 20（仅 models 链生效），越高越精细但更慢
         style: 可选风格预设名（见媒体库配置的 style_presets，如 nekomimi_maid）或自定义风格描述
         reference_image: 人物参考照片的本地路径或 URL（非空=人物参考图生图，仅 minimax 模块）
-        provider: auto（默认）/ models / minimax
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     err = _check_provider(provider)
     if err:
@@ -609,7 +640,7 @@ async def edit_image(
         image_path: 要编辑的图片，本地路径或 URL
         prompt: 编辑指令，描述希望如何修改图片
         num_inference_steps: 推理步数，默认 20
-        provider: auto（默认）/ models
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     err = _check_provider(provider)
     if err:
@@ -750,7 +781,7 @@ async def rerank_search(query: str, documents: str, provider: str = "auto") -> s
     Args:
         query: 查询语句
         documents: JSON 格式的文档字符串数组，如 '["文档1", "文档2"]'
-        provider: auto（默认）/ models
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名（见媒体库配置）
     """
     err = _check_provider(provider)
     if err:

@@ -6,6 +6,7 @@ import { entitiesApi } from "@/lib/api";
 import { TabBar } from "@/components/common/TabBar";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
+import { Switch } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import type { ConfigValues, EntityDetail as EntityDetailType } from "@/lib/types";
 import { getEntityPanel } from "@/lib/entity-panels";
@@ -15,8 +16,6 @@ import {
   Wrench,
   LayoutDashboard,
   PanelRight,
-  ToggleLeft,
-  ToggleRight,
   Save,
 } from "lucide-react";
 
@@ -31,7 +30,7 @@ function ConfigForm({ entity }: { entity: EntityDetailType }) {
   useEffect(() => {
     const initial: ConfigValues = {};
     for (const item of entity.config_items) {
-      initial[item.key] = entity.configs[item.key] ?? item.default_value;
+      initial[item.key] = item.value ?? item.default;
     }
     setDraft(initial);
     setDirty(false);
@@ -57,17 +56,17 @@ function ConfigForm({ entity }: { entity: EntityDetailType }) {
             <label className="text-xs font-medium text-foreground block">{item.key}</label>
             <p className="text-[10px] text-muted">{item.description}</p>
           </div>
-          <div className="w-56">
-            {item.value_type === "bool" ? (
-              <button
-                onClick={() => { setDraft((d) => ({ ...d, [item.key]: !d[item.key] })); setDirty(true); }}
-                className="text-accent"
-              >
-                {draft[item.key] ? <ToggleRight size={24} /> : <ToggleLeft size={24} className="text-muted" />}
-              </button>
+          <div className="w-56 flex justify-end">
+            {item.type === "boolean" ? (
+              <Switch
+                checked={Boolean(draft[item.key])}
+                disabled={!item.editable}
+                onChange={(v) => { setDraft((d) => ({ ...d, [item.key]: v })); setDirty(true); }}
+              />
             ) : item.enum_options?.length ? (
               <select
                 value={String(draft[item.key] ?? "")}
+                disabled={!item.editable}
                 onChange={(e) => { setDraft((d) => ({ ...d, [item.key]: e.target.value })); setDirty(true); }}
                 className="w-full px-2 py-1.5 rounded-md border border-border bg-elevated text-xs text-foreground"
               >
@@ -77,8 +76,11 @@ function ConfigForm({ entity }: { entity: EntityDetailType }) {
               </select>
             ) : (
               <input
-                type={item.value_type === "int" || item.value_type === "float" ? "number" : "text"}
-                value={String(draft[item.key] ?? "")}
+                type={item.type === "integer" || item.type === "float" ? "number" : "text"}
+                value={typeof draft[item.key] === "object"
+                  ? JSON.stringify(draft[item.key])
+                  : String(draft[item.key] ?? "")}
+                disabled={!item.editable}
                 onChange={(e) => { setDraft((d) => ({ ...d, [item.key]: e.target.value })); setDirty(true); }}
                 className="w-full px-2 py-1.5 rounded-md border border-border bg-elevated text-xs text-foreground font-mono"
               />

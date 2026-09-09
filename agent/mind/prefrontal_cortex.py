@@ -207,6 +207,14 @@ class PrefrontalCortex:
     async def get_active_tool_schemas(self, adapter_key: str = "", scope: str = "") -> list[dict]:
         return await self.tool_assembly.get_active_tool_schemas(adapter_key, scope)
 
+    async def get_reflect_tool_schemas(
+        self,
+        adapter_key: str = "",
+        scope: str = "",
+        selectors: Optional[List[str]] = None,
+    ) -> list[dict]:
+        return await self.tool_assembly.get_reflect_tool_schemas(adapter_key, scope, selectors)
+
     # ==================================================================
     # ContextAssembly 委托
     # ==================================================================

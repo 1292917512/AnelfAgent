@@ -12,7 +12,8 @@
     "system": "系统信息",
     "python": "Python",
     "git": "Git",
-    "config": "配置概览"
+    "config": "配置概览",
+    "hooks": "钩子"
   },
   "os": "操作系统",
   "architecture": "架构",
@@ -76,5 +77,28 @@
     "cross_channel_recall_max_results": "跨频道召回数量",
     "cross_channel_recall_scan_limit": "跨频道扫描条数",
     "cross_channel_narrative_max_items": "跨频道叙事条数"
+  },
+  "hooks": {
+    "title": "用户钩子",
+    "subtitle": "config/hooks.json 的可视化编辑：工具执行前/后与回复完成时运行自定义脚本，保存即热生效",
+    "save": "保存",
+    "saved": "已保存（生效 {{count}} 条）",
+    "saveFailed": "保存失败",
+    "loadExample": "载入样例",
+    "add": "添加",
+    "empty": "暂无钩子",
+    "noHooks": "尚未配置任何钩子，可点击「载入样例」快速开始",
+    "activeCount": "生效 {{count}} 条",
+    "matcher": "匹配器",
+    "matcherPlaceholder": "工具名 glob，如 delete_* 或 *",
+    "timeout": "超时(秒)",
+    "command": "命令",
+    "commandPlaceholder": "shell 命令；payload JSON 经 stdin 传入，exit 2 可阻断工具调用",
+    "hint": "payload 经 stdin 以 JSON 传入，并镜像到环境变量 HOOK_EVENT/HOOK_TOOL；exit 2 = 阻断（stderr 为理由）；reply_end 可用 stdout 输出 REPLACE:<json-string> 改写最终回复。",
+    "events": {
+      "tool_pre": "工具执行前",
+      "tool_post": "工具执行后",
+      "reply_end": "回复完成"
+    }
   }
 }

@@ -100,3 +100,59 @@ class TestPushNotify:
 
         monkeypatch.setattr(singleton, "get_runtime", _raise)
         assert _sdk.push_notify("内容", "voiceprint", scope="user_webui:u1") is False
+
+
+# ------------------------------------------------------------------
+# context_provider 注入开关（inject_key）兜底注册
+# ------------------------------------------------------------------
+
+class TestContextProviderInjectKey:
+    def test_auto_registers_config_item(self) -> None:
+        """inject_key + group 声明时，未注册的配置键自动兜底注册进 entity/<group> 组。"""
+        from core.config import ConfigRegistry
+        from core.context_provider import ContextProviderRegistry
+        from entities._sdk import context_provider
+
+        @context_provider(
+            name="sdk_demo_provider", group="sdk_demo",
+            inject_key="sdk_demo_context_inject",
+        )
+        async def _provide(scope: str) -> None:
+            return None
+
+        item = ConfigRegistry.get_item("sdk_demo_context_inject")
+        assert item is not None
+        assert item.group == "entity/sdk_demo"
+        assert item.default_value is True
+        # 注册表为全局共享，按名字定位（不能假定注册顺序）
+        meta = next(
+            m for m in ContextProviderRegistry.get_all()
+            if m.name == "sdk_demo_provider"
+        )
+        assert meta.inject_key == "sdk_demo_context_inject"
+
+    def test_existing_definition_not_overwritten(self) -> None:
+        """实体自行 register_configs 声明的定义优先，兜底注册不覆盖。"""
+        from core.config import ConfigRegistry, register_configs_safe
+        from entities._sdk import context_provider
+
+        register_configs_safe({
+            "entity/sdk_demo2": {
+                "sdk_demo2_context_inject": {
+                    "description": "自定义注入开关描述",
+                    "default": False,
+                },
+            },
+        })
+
+        @context_provider(
+            name="sdk_demo2_provider", group="sdk_demo2",
+            inject_key="sdk_demo2_context_inject",
+        )
+        async def _provide(scope: str) -> None:
+            return None
+
+        item = ConfigRegistry.get_item("sdk_demo2_context_inject")
+        assert item is not None
+        assert item.description == "自定义注入开关描述"
+        assert item.default_value is False

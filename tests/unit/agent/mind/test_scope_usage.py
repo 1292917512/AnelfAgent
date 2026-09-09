@@ -162,3 +162,29 @@ class TestEphemeralScopeAndAttribution:
             assert rows[0]["prompt_miss_tokens"] == 300
         finally:
             await sqlite.close()
+
+
+class TestAccountingNormalization:
+    async def test_anthropic_native_accounting_normalized(self) -> None:
+        """Anthropic 原生口径（prompt 不含缓存）记录时归一补回——
+        下游 prompt_miss = prompt - cache_read 计算列才成立。"""
+        from agent.llm.types import UsageInfo
+
+        flushed: list = []
+
+        async def cb(scope, delta):
+            flushed.append(dict(delta))
+
+        s = ScopeUsageStats(flush_callback=cb)
+        usage = UsageInfo(
+            prompt_tokens=100, completion_tokens=50, total_tokens=150,
+            cache_read_input_tokens=800, cache_creation_input_tokens=100,
+            prompt_includes_cache=False,
+        )
+        s.record("user_qq:1", "reply", usage)
+        await s.flush("user_qq:1")
+        delta = flushed[-1]
+        # prompt 归一为含缓存的总输入：100 + 800 + 100
+        assert delta["prompt_tokens"] == 1000
+        assert delta["total_tokens"] == 1050
+        # prompt_miss 计算列 = 1000 - 800 = 200（真实未命中输入）

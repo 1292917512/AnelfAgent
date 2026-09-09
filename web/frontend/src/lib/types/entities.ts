@@ -8,11 +8,15 @@ export interface EntityManifest {
 export interface EntityConfigItem {
   key: string;
   description: string;
-  value_type: string;
-  default_value: unknown;
-  current_value: unknown;
+  /** 配置类型（与配置中心同口径：boolean/integer/float/string/text/enum/...） */
+  type: string;
+  /** 当前值（PASSWORD 类型为掩码） */
+  value: unknown;
+  /** 默认值 */
+  default: unknown;
   editable: boolean;
-  enum_options?: string[];
+  required?: boolean;
+  enum_options?: string[] | null;
 }
 
 export interface EntityToolInfo {

@@ -254,28 +254,12 @@ class ToolAssembly:
                     "frozen_carryover",
                 )
 
-        # 沉睡过滤：移除未激活分组中的可沉睡工具
-        sleepable_groups = EntityRegistry.get_sleepable_groups()
-        if sleepable_groups:
-            before = len(all_schemas)
-            all_schemas = [
-                s for s in all_schemas
-                if not self._is_sleeping_tool(
-                    s.get("function", {}).get("name", ""), sleepable_groups, scope,
-                )
-            ]
-            slept = before - len(all_schemas)
-            if slept:
-                source_counts["sleeping"] = -slept
-
-        # check_fn 门控过滤
-        names = [s.get("function", {}).get("name", "") for s in all_schemas]
-        active_entities = await EntityRegistry.get_active_tools(names)
-        active_names = {e.name for e in active_entities}
-        all_schemas = [
-            s for s in all_schemas
-            if s.get("function", {}).get("name", "") in active_names
-        ]
+        # 门控过滤（沉睡 + check_fn，与反思目录共用同一设施）
+        before = len(all_schemas)
+        all_schemas = await self._apply_tool_gates(all_schemas, scope)
+        slept = before - len(all_schemas)
+        if slept:
+            source_counts["gated"] = -slept
 
         # 排序：追加式冻结（默认）保证回复间字节稳定；否则按双桶排序键
         from core.config import get_config_bool
@@ -293,6 +277,98 @@ class ToolAssembly:
         log(f"活跃工具集: {len(all_schemas)} 个 ({sources}) [{', '.join(tool_names)}]", "DEBUG", tag="PFC")
 
         return all_schemas
+
+    # 反思/任务循环未指定 tool_tags 时的默认选择器（心跳任务常态工具面）
+    REFLECT_DEFAULT_SELECTORS: tuple[str, ...] = ("heartbeat",)
+
+    async def get_reflect_tool_schemas(
+        self,
+        adapter_key: str = "",
+        scope: str = "",
+        selectors: Optional[list[str]] = None,
+    ) -> list[dict]:
+        """反思循环（心跳任务/子代理/元决策）的精简工具目录。
+
+        构成 = always 常态工具 + 频道工具（有 adapter 时）+ 选择器匹配
+        （默认 heartbeat 标签；兼容 group 名与 mcp: 简写）+ 动态发现与已
+        激活分组（自服务扩展）。刻意不含回复级的热召回与冻结结转——那是
+        跨回复前缀缓存状态，反思 scope 一次性、无结转价值；精简目录显著
+        降低高频内部调用的 schema 开销。更多分组由模型经
+        list_entity_methods / activate_tool_group（均为 always 工具）按需
+        唤醒，工具分组目录在 stable 提示中常驻可见。
+        """
+        from agent.mind.tool_activation import tool_activation
+
+        seen_names: set[str] = set()
+        all_schemas: list[dict] = []
+        scoped_names: set[str] = set()
+
+        def _merge(schemas: list[dict], *, scoped: bool = False) -> None:
+            for s in schemas:
+                name = s.get("function", {}).get("name", "")
+                if name and name not in seen_names:
+                    seen_names.add(name)
+                    all_schemas.append(s)
+                    if scoped:
+                        scoped_names.add(name)
+
+        _merge(EntityRegistry.get_tool_schema_by_tags(["always"]))
+
+        if adapter_key:
+            _merge(self.get_channel_tool_schemas(adapter_key), scoped=True)
+            _merge(EntityRegistry.get_tool_schema_by_tags([adapter_key]), scoped=True)
+
+        effective = selectors if selectors else list(self.REFLECT_DEFAULT_SELECTORS)
+        for selector in effective:
+            sel = (selector or "").strip()
+            if not sel:
+                continue
+            # 1) 先按 tag 匹配，2) 再按 group 匹配（含 mcp: 简写）
+            _merge(EntityRegistry.get_tool_schema_by_tags([sel]))
+            groups = [sel] if ":" in sel else [sel, f"mcp:{sel}"]
+            for group in groups:
+                _merge(EntityRegistry.get_tool_schemas_by_group(group))
+
+        # 自服务扩展：list_entity_methods 动态发现 + activate_tool_group 唤醒
+        if self._discovered_tools:
+            _merge(EntityRegistry.get_tool_schema_by_names(
+                sorted(self._discovered_tools)))
+        for group in tool_activation.active_groups(scope):
+            _merge(EntityRegistry.get_tool_schemas_by_group(group), scoped=True)
+
+        all_schemas = await self._apply_tool_gates(all_schemas, scope)
+
+        # 确定性排序（与回复同一排序键，目录跨调用字节稳定）；不使用回复级
+        # 冻结结转——避免把回复的冻结历史重新引入精简目录
+        from core.config import get_config_bool
+        deterministic = get_config_bool("tool_order_deterministic", True)
+        all_schemas.sort(
+            key=lambda s: self._tool_sort_key(s, scoped_names, deterministic=deterministic)
+        )
+
+        tool_names = [s.get("function", {}).get("name", "") for s in all_schemas]
+        log(f"反思工具集: {len(all_schemas)} 个 (selectors={effective}) [{', '.join(tool_names)}]", "DEBUG", tag="PFC")
+        return all_schemas
+
+    async def _apply_tool_gates(self, all_schemas: list[dict], scope: str) -> list[dict]:
+        """门控过滤（回复与反思两条装配路径共用）：沉睡过滤 + check_fn 前置条件。"""
+        # 沉睡过滤：移除未激活分组中的可沉睡工具
+        sleepable_groups = EntityRegistry.get_sleepable_groups()
+        if sleepable_groups:
+            all_schemas = [
+                s for s in all_schemas
+                if not self._is_sleeping_tool(
+                    s.get("function", {}).get("name", ""), sleepable_groups, scope,
+                )
+            ]
+        # check_fn 门控过滤
+        names = [s.get("function", {}).get("name", "") for s in all_schemas]
+        active_entities = await EntityRegistry.get_active_tools(names)
+        active_names = {e.name for e in active_entities}
+        return [
+            s for s in all_schemas
+            if s.get("function", {}).get("name", "") in active_names
+        ]
 
     # 核心流程工具固定优先级（同桶内排序最前）
     _CORE_TOOL_PRIORITY: dict[str, int] = {

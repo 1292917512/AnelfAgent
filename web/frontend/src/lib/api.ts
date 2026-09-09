@@ -496,6 +496,10 @@ export const mcpApi = {
     ),
   tools: (name: string) =>
     api.get<MCPToolInfo[]>(`/mcp/${encodeURIComponent(name)}/tools`),
+  oauthStatus: () =>
+    api.get<Record<string, { authorized: boolean; pending_url: string }>>("/mcp/oauth-status"),
+  oauthLogout: (name: string) =>
+    api.delete<{ server: string; removed: boolean }>(`/mcp/${encodeURIComponent(name)}/oauth`),
 };
 
 /** 从 axios 错误中提取可读信息（统一用于 toast 反馈） */
@@ -935,4 +939,24 @@ export const graphApi = {
   mergeNodes: (source_key: string, target_key: string) =>
     api.post<{ ok: boolean; edges_moved: number; edges_merged: number }>(
       "/memory/graph/merge", { source_key, target_key }),
+};
+
+// ── 用户 hooks（/hooks，config/hooks.json 管理面） ──
+export interface HookEntry {
+  matcher: string;
+  command: string;
+  timeout?: number;
+}
+export interface HooksConfig {
+  path: string;
+  exists: boolean;
+  events: string[];
+  hooks: Record<string, HookEntry[]>;
+  active: Record<string, number>;
+}
+export const hooksApi = {
+  get: () => api.get<HooksConfig>("/hooks"),
+  save: (hooks: Record<string, HookEntry[]>) =>
+    api.put<{ saved: boolean; count: number }>("/hooks", hooks),
+  example: () => api.get<Record<string, HookEntry[]>>("/hooks/example"),
 };

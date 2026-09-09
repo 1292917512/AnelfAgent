@@ -281,6 +281,12 @@ _CONSOLIDATOR_CONFIGS = {
             "advanced": True,
             "unit": "天",
         },
+        "memory_tombstone_max_rows": {
+            "description": "遗忘墓碑表最大行数（归档物理删除时留存 gist 梗概；超限 FIFO 淘汰最老，0 = 不限）",
+            "default": 50000,
+            "advanced": True,
+            "unit": "条",
+        },
         "memory_audit_retention_days": {
             "description": "记忆审计日志保留天数（表只追加，超期清理防线性膨胀）",
             "default": 30,
@@ -315,6 +321,21 @@ _CONSOLIDATOR_CONFIGS = {
             "description": "平凡消息（≤6 字符客套话）跳过检索与查询改写",
             "default": True,
             "advanced": True,
+        },
+        "memory_forgotten_recall_limit": {
+            "description": "每次召回最多附带展示的已遗忘记忆条数（归档 + 墓碑合并）",
+            "default": 3,
+            "advanced": True,
+            "unit": "条",
+        },
+        "memory_archive_recall_min_score": {
+            "description": "归档记忆兜底召回的最低相关度（低于此分的归档与全部墓碑仅在主检索无果时出现）",
+            "default": 0.5,
+            "advanced": True,
+            "value_type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
         },
     },
     "memory/notes": {

@@ -86,9 +86,9 @@ class CacheUsageTracker:
         total_prompt = sum(r["prompt_tokens"] for r in measurable)
         total_read = sum(r["cache_read_input_tokens"] for r in measurable)
         total_creation = sum(r["cache_creation_input_tokens"] for r in measurable)
-        # 均值按单次命中率（record 时已钳到 ≤1.0）算术平均，而非总 read/总 prompt——
-        # Anthropic 记账口径下 input_tokens 不含缓存部分，read 可大于 prompt，
-        # 按总量重算会把窗口均值放大到 100% 以上（两种口径混窗时更明显）
+        # 均值按单次命中率算术平均（record 时经 UsageInfo.total_input_tokens
+        # 归一分母并钳到 ≤1.0），而非总 read/总 prompt——两种记账口径
+        # （prompt 含/不含缓存）混窗时总量重算会系统性失真
         rates = [r["cache_hit_rate"] for r in measurable]
         return {
             "sample_count": len(records),

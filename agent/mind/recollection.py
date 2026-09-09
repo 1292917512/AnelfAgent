@@ -264,10 +264,15 @@ async def _match_skills(
             # （只计匹配，不刷新活动——被匹配不等于被消费，不能阻断闲置降级）
             if skill.name in forced_names:
                 mind.skill_store.record_use(skill.name)
-                skill_lines.append(
+                from agent.skills.dependencies import dependency_notice
+                notice = dependency_notice(skill)
+                entry_text = (
                     f"## {skill.name} — {skill.description}\n"
                     f"（用户显式调用，全文如下）\n{skill.content}"
                 )
+                if notice:
+                    entry_text += f"\n{notice}"
+                skill_lines.append(entry_text)
             else:
                 mind.skill_store.record_match(skill.name)
                 triggers = "、".join(skill.trigger_patterns[:6])

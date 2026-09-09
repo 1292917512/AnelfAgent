@@ -79,6 +79,53 @@ class TestMergedExclusion:
         results = await store.search_by_tags(["topic:c"])
         assert [e.content for e in results] == ["有效"]
 
+
+class TestForgottenFallback:
+    async def test_archived_surfaces_when_main_empty(self, bound_store, store: MemoryStore) -> None:
+        mid = await store.add(_entry("goneanchor 消失的记忆", ["topic:gone"]))
+        assert await store.archive_memory(mid)
+
+        result = json.loads(await bound_store.recall("goneanchor"))
+        assert result["count"] == 0
+        assert len(result["forgotten"]) == 1
+        item = result["forgotten"][0]
+        assert item["kind"] == "archived"
+        assert item["id"] == mid
+        assert item["restorable"] is True
+        assert "消失的记忆" in item["content"]
+        assert "forgotten_hint" in result
+
+    async def test_weak_archived_hidden_when_main_has_results(
+        self, bound_store, store: MemoryStore,
+    ) -> None:
+        await store.add(_entry("sharedanchor 活跃的记忆", ["topic:a"]))
+        archived_id = await store.add(_entry("sharedanchor 归档的记忆", ["topic:b"]))
+        assert await store.archive_memory(archived_id)
+
+        result = json.loads(await bound_store.recall("sharedanchor"))
+        assert result["count"] >= 1
+        # 主检索有结果时，关键词弱命中（0.35 < 0.5）的归档记忆不浮现
+        assert "forgotten" not in result
+
+    async def test_restore_memory_tool(self, bound_store, store: MemoryStore) -> None:
+        mid = await store.add(_entry("backanchor 恢复的记忆", ["topic:back"]))
+        assert await store.archive_memory(mid)
+
+        result = json.loads(await bound_store.restore_memory(mid))
+        assert result["ok"] is True
+        restored = await store.get(mid)
+        assert restored is not None
+        assert restored.content.startswith("backanchor")
+        # 恢复后重新参与常规召回
+        recalled = json.loads(await bound_store.recall("backanchor"))
+        assert recalled["count"] >= 1
+        assert "forgotten" not in recalled
+
+    async def test_restore_missing_returns_not_found(self, bound_store) -> None:
+        result = json.loads(await bound_store.restore_memory(999999))
+        assert result["cause"] == "not_found"
+        assert result["retryable"] is False
+
     async def test_zero_importance_excluded_from_hybrid(self, store: MemoryStore) -> None:
         await store.add(_entry("hybridanchor 混合检索有效", ["topic:d"]))
         await store.add(_entry("hybridanchor 混合检索合并", ["topic:d"], importance=0.0))

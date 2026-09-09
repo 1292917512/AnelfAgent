@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "prebuild": "node scripts/module-links.mjs",
+    "build": "tsc -b && vite build --outDir dist.next && node scripts/swap-dist.mjs",
     "preview": "vite preview",
     "lint": "eslint src"
   },

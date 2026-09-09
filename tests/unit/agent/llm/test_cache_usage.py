@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.llm.response_parsing import _usage_from_object
 from agent.llm.responses.types import ResponseUsage
 from agent.llm.types import UsageInfo
 
 
 class TestChatCompletionsUsage:
-    def test_anthropic_cache_fields(self) -> None:
-        """Anthropic 直出 cache_read/cache_creation 字段。"""
+    def test_anthropic_native_excludes_cache(self) -> None:
+        """原生 Anthropic 记账（直出 cache 字段、无 details 包装）：
+        prompt_tokens 不含缓存，命中率分母须补回 read+creation。"""
         usage = SimpleNamespace(
             prompt_tokens=1000,
             completion_tokens=50,
@@ -23,7 +26,40 @@ class TestChatCompletionsUsage:
         assert result is not None
         assert result.cache_read_input_tokens == 800
         assert result.cache_creation_input_tokens == 150
-        assert result.cache_hit_rate == 0.8
+        assert result.prompt_includes_cache is False
+        assert result.total_input_tokens == 1950
+        # 800 / (1000 + 800 + 150)，而非 800/1000
+        assert result.cache_hit_rate == pytest.approx(800 / 1950)
+
+    def test_anthropic_litellm_transformed_includes_cache(self) -> None:
+        """经 litellm 变换的 Anthropic usage：缓存已加回 prompt_tokens
+        且附 details 包装——分母不再补回（防双重计数）。"""
+        usage = SimpleNamespace(
+            prompt_tokens=1950,
+            completion_tokens=50,
+            total_tokens=2000,
+            cache_read_input_tokens=800,
+            cache_creation_input_tokens=150,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=800),
+        )
+        result = _usage_from_object(usage)
+        assert result is not None
+        assert result.prompt_includes_cache is True
+        assert result.total_input_tokens == 1950
+        assert result.cache_hit_rate == pytest.approx(800 / 1950)
+
+    def test_deepseek_hit_rate(self) -> None:
+        """DeepSeek 磁盘缓存：prompt_cache_hit_tokens，prompt 含命中。"""
+        usage = SimpleNamespace(
+            prompt_tokens=2000,
+            completion_tokens=100,
+            total_tokens=2100,
+            prompt_cache_hit_tokens=500,
+        )
+        result = _usage_from_object(usage)
+        assert result is not None
+        assert result.prompt_includes_cache is True
+        assert result.cache_hit_rate == pytest.approx(0.25)
 
     def test_openai_cached_tokens_mapping(self) -> None:
         """OpenAI prompt_tokens_details.cached_tokens 映射到 cache_read。"""
@@ -93,9 +129,46 @@ class TestCacheHitRate:
         assert UsageInfo().cache_hit_rate == 0.0
 
     def test_capped_at_one(self) -> None:
-        """异常数据（read > prompt）时命中率截断到 1。"""
-        usage = UsageInfo(prompt_tokens=10, cache_read_input_tokens=50)
+        """read + creation ≤ prompt 的边界数据不触发口径校正。"""
+        usage = UsageInfo(prompt_tokens=100, cache_read_input_tokens=100)
+        assert usage.prompt_includes_cache is True
         assert usage.cache_hit_rate == 1.0
+
+
+class TestCaliberConflictGuard:
+    """记账口径自洽校验：read+creation > prompt ⇒ prompt 不可能含缓存，
+    强制归为不含口径（GLM/DeepSeek 部分端点实测 read 超 prompt 1.9 倍，
+    不校正则命中率被钳成 100% 虚报）。"""
+
+    def test_conflict_flips_to_exclusive(self) -> None:
+        usage = UsageInfo(prompt_tokens=56265, cache_read_input_tokens=73216)
+        assert usage.prompt_includes_cache is False
+        assert usage.total_input_tokens == 56265 + 73216
+        assert usage.cache_hit_rate == pytest.approx(73216 / (56265 + 73216))
+
+    def test_conflict_via_details_wrapper(self) -> None:
+        """GLM 形态：带 details 包装被字段规则判为含缓存，但 read > prompt
+        暴露端点实际按不含记账——构造时即校正。"""
+        usage = SimpleNamespace(
+            prompt_tokens=56265,
+            completion_tokens=500,
+            total_tokens=56765,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=73216),
+        )
+        result = _usage_from_object(usage)
+        assert result is not None
+        assert result.prompt_includes_cache is False
+        assert result.cache_hit_rate == pytest.approx(73216 / 129481)
+
+    def test_legit_includes_not_flipped(self) -> None:
+        """含缓存口径下 read+creation ≤ prompt 是合法常态，不得误校正。"""
+        usage = UsageInfo(
+            prompt_tokens=1950,
+            cache_read_input_tokens=800,
+            cache_creation_input_tokens=150,
+        )
+        assert usage.prompt_includes_cache is True
+        assert usage.total_input_tokens == 1950
 
 
 class TestStreamUsageChunk:

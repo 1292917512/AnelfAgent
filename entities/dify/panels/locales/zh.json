@@ -1,0 +1,118 @@
+{
+  "tabs": {
+    "status": "连接",
+    "apps": "应用与工作流",
+    "run": "运行调试",
+    "models": "模型供应商",
+    "mcp": "MCP 桥接"
+  },
+  "messages": {
+    "actionDone": "操作完成",
+    "actionFailed": "操作失败",
+    "urlSaved": "连接地址已保存",
+    "connectFailed": "连接失败",
+    "adminSaved": "管理员凭据验证通过并已保存",
+    "adminFailed": "凭据保存失败"
+  },
+  "connect": {
+    "card": "Dify 连接",
+    "desc": "连接外部已部署的 Dify 实例（本实体是桥梁，不负责部署）",
+    "baseUrl": "实例地址",
+    "connect": "连接",
+    "hint": "指向 Dify 的 nginx 入口（如 http://127.0.0.1:8899）。连接时会自动探测可达性；未初始化的自托管实例将自动创建管理员。Dify 尚未部署？可让 AI 用运维/SSH 能力完成部署后再回来连接。",
+    "reachability": "可达性",
+    "reachable": "可达",
+    "unreachable": "不可达",
+    "version": "版本",
+    "setup": "初始化",
+    "setupDone": "已完成",
+    "setupPending": "待初始化",
+    "appsTracked": "纳管应用",
+    "openConsole": "打开 Dify 控制台",
+    "admin": "管理员凭据",
+    "adminDesc": "自动创建或手动录入的 Dify 管理员账号",
+    "adminReady": "凭据已保存",
+    "adminMissing": "凭据未配置",
+    "adminHint": "使用该邮箱与密码可登录 Dify 原生控制台手工编辑应用；密码脱敏存储于实体 secrets.json。"
+  },
+  "actions": {
+    "refresh": "刷新",
+    "cancel": "取消",
+    "save": "保存"
+  },
+  "confirm": {
+    "deleteTitle": "删除应用",
+    "deleteMsg": "将删除应用「{{name}}」（不可恢复，本地 API Key 与 MCP 桥接一并清理）。确定删除？",
+    "mcpDisableTitle": "停用 MCP 桥接",
+    "mcpDisableMsg": "将停用「{{name}}」的 MCP Server 并移除 Anelf 侧工具注册。确定停用？"
+  },
+  "admin": {
+    "modalTitle": "Dify 管理员凭据",
+    "modalDesc": "凭据会先经真实登录验证，通过后才保存。接管已完成初始化的实例时在此录入；未初始化实例直接点「连接」即可自动创建。",
+    "email": "管理员邮箱",
+    "password": "管理员密码",
+    "passwordPlaceholder": "输入密码",
+    "passwordKeepHint": "保持 ******** 不变表示沿用已保存的密码"
+  },
+  "apps": {
+    "title": "应用列表",
+    "count": "共 {{count}} 个应用",
+    "empty": "暂无应用，点击右上角「新建」或「导入 DSL」开始",
+    "create": "新建",
+    "import": "导入 DSL",
+    "createTitle": "新建应用",
+    "importTitle": "导入 DSL 新建应用",
+    "fieldName": "应用名称",
+    "fieldMode": "应用模式",
+    "fieldDesc": "描述（可选）",
+    "importNamePlaceholder": "留空使用 DSL 中的名称",
+    "editDsl": "编辑 DSL",
+    "publish": "发布",
+    "createKey": "签发 API Key",
+    "copy": "复制",
+    "delete": "删除",
+    "dslTitle": "编辑 DSL · {{name}}",
+    "dslLoading": "正在导出 DSL...",
+    "applyDraft": "保存为草稿",
+    "applyPublish": "保存并发布",
+    "modes": {
+      "chat": "对话（chat）",
+      "agent-chat": "Agent 对话（agent-chat）",
+      "advanced-chat": "高级编排对话（advanced-chat）",
+      "workflow": "工作流（workflow）",
+      "completion": "文本生成（completion）"
+    }
+  },
+  "run": {
+    "title": "运行调试",
+    "desc": "选择应用直接运行：工作流类填输入变量，对话类填消息内容",
+    "app": "应用",
+    "selectPlaceholder": "选择要运行的应用",
+    "selectApp": "请先选择应用",
+    "query": "消息内容",
+    "queryPlaceholder": "输入要发送给应用的消息",
+    "queryRequired": "消息内容不能为空",
+    "conversation": "会话 ID（自动延续多轮）",
+    "inputs": "输入变量（JSON 对象）",
+    "inputsInvalid": "输入变量不是合法 JSON 对象",
+    "execute": "运行",
+    "running": "运行中，请稍候...",
+    "result": "运行结果"
+  },
+  "models": {
+    "title": "模型供应商",
+    "desc": "配置模型凭据后 Dify 应用才能调用对应模型（圆点：绿=已配置）",
+    "empty": "未获取到供应商列表（请先完成连接）",
+    "configure": "配置凭据",
+    "credTitle": "配置凭据 · {{name}}",
+    "credDesc": "供应商标识：{{provider}}。字段名由供应商定义（如 openai 为 openai_api_key），填错会返回 Dify 校验错误。",
+    "credInvalid": "凭据不是合法 JSON"
+  },
+  "mcp": {
+    "title": "MCP 桥接",
+    "desc": "把 Dify 应用暴露为 MCP Server 并自动注册进 Anelf：AI 即可直接调用应用能力",
+    "enable": "启用桥接",
+    "disable": "停用桥接",
+    "bridgedHint": "已桥接（端点 URL 可在启用响应或 AI 工具 dify_mcp_status 中查看）"
+  }
+}

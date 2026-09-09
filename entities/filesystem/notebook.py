@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 
 from core.log import log
 from entities._sdk import ErrorCause, error_from_exception, tool, tool_error
+from entities.filesystem.ops_context import track_fs_op
 
 
 def _load_notebook(fp: str) -> Dict[str, Any]:
@@ -47,6 +48,7 @@ def summarize_notebook(fp: str) -> str:
 
 
 @tool(name="notebook_edit", group="os")
+@track_fs_op("path")
 def notebook_edit(path: str, cell_index: int, new_source: str = "",
                   cell_type: str = "", edit_mode: str = "replace") -> str:
     """编辑 Jupyter notebook（.ipynb）的单元格。

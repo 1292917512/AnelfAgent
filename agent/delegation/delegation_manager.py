@@ -292,6 +292,7 @@ class DelegationManager:
             delegation_id: str = "",
             agent_name: str = "",
             emit_events: bool = True,
+            fork_context: bool = False,
     ) -> SubAgentResult:
         """委托单个子任务（阻塞至完成）。
 
@@ -394,11 +395,15 @@ class DelegationManager:
         # 其 LLM 用量经此绑定归属父会话（/status/usage 可见委托成本）
         usage_token = bind_usage_scope(scope) if scope else None
         try:
+            parent_history = (
+                await self._load_parent_history(scope) if fork_context else ""
+            )
             agent = SubAgent(
                 self._mind, goal, context,
                 role=role, max_iterations=max_iterations, task_index=task_index,
                 model_id=model_id, agent_name=agent_name,
                 delegation_id=delegation_id,
+                parent_history=parent_history,
             )
             run_task = asyncio.create_task(
                 agent.run(), name=f"delegation.run.{delegation_id}",
@@ -488,6 +493,38 @@ class DelegationManager:
             if not children:
                 self._children.pop(parent_id, None)
 
+    async def _load_parent_history(self, scope: str) -> str:
+        """fork_context 快照：父会话最近消息渲染为紧凑文本（只读参考）。
+
+        上限 20 条 / 4000 字符 / 单条 300 字符；scope 非会话域或读取
+        失败返回空串（不阻断委托）。媒体块等非文本内容跳过。
+        """
+        base, _chat_id = _parse_scope_chat_id(scope)
+        if not base.startswith(("user_", "group_")) or "_" not in base:
+            return ""
+        scope_type, scope_id = base.split("_", 1)
+        try:
+            from agent.storage.storage_router import StorageDomain
+            rows = await self._mind.conversation_data.router.fetch(
+                StorageDomain.CONVERSATION,
+                scope_type=scope_type, scope_id=scope_id, limit=20,
+            )
+        except Exception as e:
+            log(f"fork_context 读取父会话失败: {e}", "DEBUG", tag="委托")
+            return ""
+        lines: List[str] = []
+        total = 0
+        for row in rows[-20:]:
+            content = row.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            line = f"{row.get('role', '?')}: {content[:300]}"
+            if total + len(line) > 4000:
+                break
+            lines.append(line)
+            total += len(line)
+        return "\n".join(lines)
+
     async def delegate_batch(
             self,
             tasks: List[Dict[str, Any]],
@@ -514,6 +551,7 @@ class DelegationManager:
                     task_index=i,
                     difficulty=t.get("difficulty", difficulty),
                     agent_name=str(t.get("agent") or agent_name),
+                    fork_context=bool(t.get("fork_context", False)),
                 )
                 for i, t in enumerate(tasks)
             ),
@@ -545,6 +583,7 @@ class DelegationManager:
             scope: str = "",
             difficulty: int = 0,
             agent_name: str = "",
+            fork_context: bool = False,
     ) -> str:
         """后台委托：登记注册表后立即返回 delegation_id，结果异步送达。
 
@@ -597,6 +636,7 @@ class DelegationManager:
             self._run_background(
                 delegation_id, goal, context, role, max_iterations, scope,
                 difficulty=difficulty, agent_name=agent_name,
+                fork_context=fork_context,
             ),
             name=f"delegation.{delegation_id}",
         )
@@ -622,6 +662,7 @@ class DelegationManager:
             *,
             difficulty: int = 0,
             agent_name: str = "",
+            fork_context: bool = False,
     ) -> None:
         """后台执行委托并按注册表路由结果（轮内会合 / 完成即新 turn）。
 
@@ -631,7 +672,7 @@ class DelegationManager:
         try:
             result = await self.delegate(
                 goal, context, role=role, max_iterations=max_iterations,
-                scope_hint=scope, difficulty=difficulty,
+                scope_hint=scope, difficulty=difficulty, fork_context=fork_context,
                 delegation_id=delegation_id, agent_name=agent_name,
                 emit_events=False,
             )

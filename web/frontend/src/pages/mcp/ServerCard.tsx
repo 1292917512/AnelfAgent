@@ -10,12 +10,13 @@ import { ToolsSection } from "./ToolsSection";
 
 interface ServerCardProps {
   server: MCPServer;
+  oauth?: { authorized: boolean; pending_url: string };
   onEdit: (server: MCPServer) => void;
   onDelete: (server: MCPServer) => void;
 }
 
 /** 单个 MCP 服务器卡片：状态、操作（连接/断开、编辑、删除）、工具列表 */
-export function ServerCard({ server, onEdit, onDelete }: ServerCardProps) {
+export function ServerCard({ server, oauth, onEdit, onDelete }: ServerCardProps) {
   const { t } = useTranslation("mcp");
   const queryClient = useQueryClient();
 
@@ -91,6 +92,13 @@ export function ServerCard({ server, onEdit, onDelete }: ServerCardProps) {
                   {t("nTools", { count: server.tool_count })}
                 </Badge>
               )}
+              {oauth?.pending_url ? (
+                <a href={oauth.pending_url} target="_blank" rel="noreferrer">
+                  <Badge variant="warn">{t("oauthPending")}</Badge>
+                </a>
+              ) : oauth?.authorized ? (
+                <Badge variant="info">{t("oauthAuthorized")}</Badge>
+              ) : null}
               {server.sleeping ? (
                 <Badge variant="neutral">{t("sleepingBadge")}</Badge>
               ) : (

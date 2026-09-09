@@ -13,6 +13,7 @@ from agent.llm.types import (
     UsageInfo,
     cache_tokens_from_usage,
     usage_has_cache_fields,
+    usage_prompt_includes_cache,
 )
 from core.log import log
 
@@ -43,6 +44,9 @@ def install_usage_tap(stream: Any) -> Optional[Dict[str, Any]]:
                 sink["seen"] = True
                 if usage_has_cache_fields(usage):
                     sink["fields"] = True
+                    # 记账口径（prompt 是否含缓存）随原始 chunk 判定，
+                    # 供汇合槽补值时一并修正分母
+                    sink["includes"] = usage_prompt_includes_cache(usage)
                 read, creation = cache_tokens_from_usage(usage)
                 if read:
                     sink["read"] = read
@@ -65,10 +69,19 @@ def _merge_sink(usage: Optional[UsageInfo], sink: Optional[Dict[str, Any]]) -> O
     read = usage.cache_read_input_tokens or sink.get("read", 0)
     creation = usage.cache_creation_input_tokens or sink.get("creation", 0)
     observable = usage.cache_observable or bool(sink.get("fields"))
+    # 缓存值来自旁路原始 chunk 时，记账口径以原始 chunk 的判定为准
+    # （如 Anthropic 网关上 litellm 主路未补回缓存量的形态）
+    includes = usage.prompt_includes_cache
+    if sink.get("includes") is False and (
+        read != usage.cache_read_input_tokens
+        or creation != usage.cache_creation_input_tokens
+    ):
+        includes = False
     if (
         read == usage.cache_read_input_tokens
         and creation == usage.cache_creation_input_tokens
         and observable == usage.cache_observable
+        and includes == usage.prompt_includes_cache
     ):
         return usage
     return UsageInfo(
@@ -78,6 +91,7 @@ def _merge_sink(usage: Optional[UsageInfo], sink: Optional[Dict[str, Any]]) -> O
         cache_read_input_tokens=read,
         cache_creation_input_tokens=creation,
         cache_observable=observable,
+        prompt_includes_cache=includes,
     )
 
 
@@ -249,6 +263,8 @@ def _usage_from_object(usage: Any) -> Optional[UsageInfo]:
         cache_creation_input_tokens=cache_creation,
         # 字段存在性即观测性：字段在值为 0 = 真实未命中；字段缺失 = 端点不回报
         cache_observable=usage_has_cache_fields(usage),
+        # 记账口径归一（Anthropic 原生口径 prompt 不含缓存）
+        prompt_includes_cache=usage_prompt_includes_cache(usage),
     )
     return result if result.total_tokens or result.prompt_tokens or result.completion_tokens else None
 

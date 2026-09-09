@@ -8,7 +8,8 @@
  * panel.tsx 内用相对导入引用子组件；面板专属 i18n 放 panels/locales/{zh,en}.json，
  * 由 panel.tsx 经 registerPluginI18n 自注册。
  *
- * 新增实体面板后需重新执行 link_entity_panels.py 并重启 dev server。
+ * 新增实体面板后软链由 prebuild 钩子（scripts/module-links.mjs）自动同步，
+ * dev 模式下由 vite moduleFrontendsPlugin 监听自动维护。
  */
 import { lazy, type ComponentType, type LazyExoticComponent } from "react";
 

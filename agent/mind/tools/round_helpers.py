@@ -151,6 +151,9 @@ class _ThinkLoopCtx:
     # 不从 tools 数组移除——可见性（schema 数组全量冻结、跨调用字节一致）
     # 与权限（执行时拦截）分离，保证工具数组前缀缓存跨模式共享
     blocked_tools: frozenset = frozenset()
+    # REFLECT 模式的工具选择器（mind.reflect 传入）：工具集版本变化重建
+    # active_tools 时按同批选择器还原精简目录；REPLY 模式不使用
+    reflect_tool_selectors: tuple[str, ...] = ()
 
 
 # ==================================================================
@@ -215,6 +218,7 @@ async def _prepare_think_context(
         adapter_key: str,
         blocked_tools: Optional[Set[str]] = None,
         completion: Optional[Dict] = None,
+        reflect_tool_selectors: Optional[List[str]] = None,
 ) -> tuple[_ThinkLoopCtx, _ThinkRoundState]:
     """think_loop 会话初始化：adapter/基线消息/快照水位/守卫/管线/流式探测。"""
     from agent.mind.guardrails import GuardrailController
@@ -295,6 +299,7 @@ async def _prepare_think_context(
         turn_id=turn_id,
         delta_emitter=_make_delta_emitter(current_scope, turn_id),
         blocked_tools=frozenset(blocked_tools or ()),
+        reflect_tool_selectors=tuple(reflect_tool_selectors or ()),
     )
     state = _ThinkRoundState(
         wait_budget=wait_budget,

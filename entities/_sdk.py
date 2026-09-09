@@ -33,9 +33,15 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, TypeVar
+import functools
+import inspect
+import json
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple, TypeVar
 
 from core.entity import EntityRegistry
+from core.log import log
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_schema import extract_tool_params, get_first_line
 
@@ -54,6 +60,7 @@ __all__ = [
     "get_session_llm_params", "canonical_efforts",
     "activate_tool_group_now", "notify_tool_set_changed",
     "tool_error", "error_from_exception", "ErrorCause",
+    "ToolOp", "track_ops",
 ]
 
 # 兼容别名：tests/entities/test_sdk_extract_params.py 仍引用该私有名，暂不能删除
@@ -590,6 +597,147 @@ def canonical_efforts() -> List[str]:
 
 
 # ------------------------------------------------------------------
+# 操作态势回报（实体动态上下文的数据源）
+# ------------------------------------------------------------------
+
+
+@dataclass
+class ToolOp:
+    """一次工具执行的操作事实（track_ops 回报给实体态势追踪器的记录）。
+
+    Attributes:
+        scope: 执行所在会话 scope（思维会话外为 "_global"）。
+        tool: 工具名（被装饰函数名）。
+        target: 展示用目标文本（多目标经 " → " 连接，截断 100 字符）。
+        targets: 原始目标参数值（供追踪器提取目录等结构化信息）。
+        arguments: 全部绑定参数（供追踪器读取附加参数，如 SSH 连接名）。
+        ok: 成败判定（见 track_ops）。
+        note: 失败备注（错误消息或退出码，截断 120 字符）。
+        duration_ms: 工具执行耗时（毫秒）。
+    """
+
+    scope: str
+    tool: str
+    target: str
+    targets: Tuple[str, ...]
+    arguments: Dict[str, Any]
+    ok: bool
+    note: str
+    duration_ms: int
+
+
+def _classify_tool_result(result: Any) -> Tuple[bool, str]:
+    """按统一错误契约判定工具结果成败。
+
+    含 error 键 = 失败（备注取错误消息）；含 ok 键取其布尔（失败时
+    备注取 returncode/exit_code）；非 JSON 文本（如 read_file 内容）= 成功。
+    """
+    if not isinstance(result, str):
+        return True, ""
+    text = result.lstrip()
+    if not text.startswith("{"):
+        return True, ""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return True, ""
+    if not isinstance(data, dict):
+        return True, ""
+    if data.get("error"):
+        return False, str(data["error"])[:120]
+    ok = bool(data.get("ok", True))
+    note = ""
+    if not ok:
+        for key in ("returncode", "exit_code"):
+            code = data.get(key)
+            if code is not None:
+                note = f"退出码 {code}"
+                break
+    return ok, note
+
+
+def track_ops(
+    sink: Callable[[ToolOp], None],
+    *target_params: str,
+) -> Callable[[F], F]:
+    """装饰器：工具执行后把操作事实回报给实体的态势追踪器。
+
+    态势追踪器据此向 volatile 层注入"本会话正在操作什么"的实时上下文
+    （如 filesystem/ops_context、ssh/ops_state），本装饰器只做事实采集。
+
+    Args:
+        sink: 追踪器入口，接收 ToolOp；异常仅记 DEBUG，绝不影响工具主流程。
+        target_params: 构成操作目标的参数名（如 file_path / command），
+            其值拼接为展示文本并随 ToolOp.targets 传递原始值。
+
+    成败判定：抛异常 = 失败（原样重抛）；其余按 _classify_tool_result。
+    同步/异步工具均适用（包装器保种类，iscoroutinefunction 判定不受影响）。
+    """
+
+    def decorator(func: F) -> F:
+        tool_name = func.__name__
+        try:
+            sig = inspect.signature(func)
+        except (TypeError, ValueError):
+            sig = None
+
+        def _report(args: tuple, kwargs: dict, result: Any,
+                    exc: Optional[BaseException], started: float) -> None:
+            try:
+                arguments: Dict[str, Any] = {}
+                if sig is not None:
+                    arguments = dict(sig.bind_partial(*args, **kwargs).arguments)
+                targets = tuple(
+                    str(arguments[p]) for p in target_params
+                    if arguments.get(p) not in (None, "")
+                )
+                target = " → ".join(targets)
+                if len(target) > 100:
+                    target = target[:97] + "..."
+                if exc is not None:
+                    ok, note = False, f"{type(exc).__name__}: {exc}"[:120]
+                else:
+                    ok, note = _classify_tool_result(result)
+                sink(ToolOp(
+                    scope=get_current_scope(), tool=tool_name, target=target,
+                    targets=targets, arguments=arguments, ok=ok, note=note,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                ))
+            except Exception as report_exc:
+                log(f"操作态势回报失败（已忽略）: {tool_name} - {report_exc}",
+                    "DEBUG", tag="OpsTrack")
+
+        if inspect.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                started = time.monotonic()
+                try:
+                    result = await func(*args, **kwargs)
+                except BaseException as exc:
+                    _report(args, kwargs, None, exc, started)
+                    raise
+                _report(args, kwargs, result, None, started)
+                return result
+
+            return async_wrapper  # type: ignore[return-value]
+
+        @functools.wraps(func)
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            started = time.monotonic()
+            try:
+                result = func(*args, **kwargs)
+            except BaseException as exc:
+                _report(args, kwargs, None, exc, started)
+                raise
+            _report(args, kwargs, result, None, started)
+            return result
+
+        return sync_wrapper  # type: ignore[return-value]
+
+    return decorator
+
+
+# ------------------------------------------------------------------
 # 上下文提供者（实体向 PFC volatile 层注入实时数据）
 # ------------------------------------------------------------------
 
@@ -606,6 +754,7 @@ def context_provider(
     max_tokens: int = 500,
     scope: Optional[str] = None,
     group: Optional[str] = None,
+    inject_key: Optional[str] = None,
 ) -> Callable:
     """装饰器：将类或函数注册为上下文提供者。
 
@@ -642,11 +791,31 @@ def context_provider(
         group: 所属工具分组（如 "ssh"）。声明后随实体启停联动：分组内全部
             工具被禁用时停止采集与注入，重新启用自动恢复；None 表示全局常驻。
             属于某个实体分组的 provider 应始终声明，否则关闭实体无法停止其注入。
+        inject_key: 注入开关配置键（约定 ``<group>_context_inject``）。会产出
+            注入内容的 provider 必须声明——配置为 False 时框架停止采集与注入
+            （在 _is_active 层拦截，provide 内无需再手工检查）。声明后若该键
+            尚未注册，装饰器自动以默认值 True 兜底注册进 ``entity/<group>``
+            配置组（实体自行 register_configs 声明的更丰富定义优先，不被覆盖）；
+            频道等不走 entity 配置组的 provider 直接传 ProviderMeta.inject_key。
     """
     from core.context_provider import ContextProviderRegistry, ProviderMeta
 
     def decorator(cls_or_func: Any) -> Any:
         provider_name = name or getattr(cls_or_func, "__name__", str(cls_or_func))
+        provider_desc = getattr(cls_or_func, "__doc__", "") or ""
+
+        if inject_key and group:
+            # 注入开关兜底注册（实体未自行声明时），配置中心/实体配置 tab 自动出现
+            from core.config import ConfigRegistry, register_configs_safe
+            if ConfigRegistry.get_item(inject_key) is None:
+                register_configs_safe({
+                    f"entity/{group}": {
+                        inject_key: {
+                            "description": f"是否向 AI 上下文注入{provider_desc.strip().rstrip('。') or provider_name}",
+                            "default": True,
+                        },
+                    },
+                })
 
         if isinstance(cls_or_func, type):
             # 类模式：实例化后注册
@@ -657,8 +826,9 @@ def context_provider(
                 max_tokens=max_tokens,
                 scope_filter=scope,
                 group=group,
+                inject_key=inject_key,
                 instance=instance,
-                description=getattr(cls_or_func, "__doc__", "") or "",
+                description=provider_desc,
             )
             ContextProviderRegistry.register(meta)
             return cls_or_func
@@ -670,8 +840,9 @@ def context_provider(
                 max_tokens=max_tokens,
                 scope_filter=scope,
                 group=group,
+                inject_key=inject_key,
                 provide_fn=cls_or_func,
-                description=getattr(cls_or_func, "__doc__", "") or "",
+                description=provider_desc,
             )
             ContextProviderRegistry.register(meta)
             return cls_or_func

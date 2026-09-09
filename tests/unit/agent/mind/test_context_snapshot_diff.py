@@ -166,3 +166,47 @@ class TestContinuousCapture:
         """未布防且未开连续：不捕获（零开销路径）。"""
         assert not await snapshot.try_capture(_messages(), [], "fake")
         assert snapshot.get() is None
+
+
+class TestPrefixStableCaliber:
+    """prefix_stable 判定口径：每轮必变层（tool_chain/provider/exec_context）
+    的变更不计入前缀稳定性（否则时间类注入会被误报为前缀断裂）。"""
+
+    def _write_snapshot(self, tmp_path, sections: list) -> None:
+        (tmp_path / "snapshot_20260909_000000.json").write_text(
+            json.dumps({
+                "captured_at": 1.0, "model": "m", "kind": "reply",
+                "sections": sections, "cache": {},
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def test_provider_change_not_counted(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "agent.mind.context_snapshot._SNAPSHOT_DIR", str(tmp_path),
+        )
+        self._write_snapshot(tmp_path, [
+            {"layer": "stable", "changed": False},
+            {"layer": "conversation", "changed": False},
+            {"layer": "provider", "changed": True},
+            {"layer": "tool_chain", "changed": True},
+            {"layer": "exec_context", "changed": True},
+        ])
+        items = ContextSnapshot.list_snapshots()
+        assert items[0]["prefix_stable"] is True
+
+    def test_memory_layer_change_marks_drift(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "agent.mind.context_snapshot._SNAPSHOT_DIR", str(tmp_path),
+        )
+        self._write_snapshot(tmp_path, [
+            {"layer": "stable", "changed": False},
+            {"layer": "memory", "changed": True},
+            {"layer": "provider", "changed": True},
+        ])
+        items = ContextSnapshot.list_snapshots()
+        assert items[0]["prefix_stable"] is False

@@ -99,9 +99,16 @@ class ScopeUsageStats:
                 }
                 self._acc[scope] = entry
             entry["llm_calls"] += 1
-            entry["prompt_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
-            entry["completion_tokens"] += int(getattr(usage, "completion_tokens", 0) or 0)
-            entry["total_tokens"] += int(getattr(usage, "total_tokens", 0) or 0)
+            # 记账口径归一（UsageInfo.total_input_tokens）：Anthropic 原生口径
+            # prompt 不含缓存，统一补回后再累计——下游 prompt_miss = prompt -
+            # cache_read 的计算列在两种口径下才都成立
+            total_input = getattr(usage, "total_input_tokens", None)
+            if total_input is None:
+                total_input = int(getattr(usage, "prompt_tokens", 0) or 0)
+            completion = int(getattr(usage, "completion_tokens", 0) or 0)
+            entry["prompt_tokens"] += int(total_input)
+            entry["completion_tokens"] += completion
+            entry["total_tokens"] += int(total_input) + completion
             entry["cache_read_tokens"] += int(getattr(usage, "cache_read_input_tokens", 0) or 0)
             entry["_pending"] += 1
             if entry["_pending"] >= max(1, get_config_int("usage_stats_flush_every", 20)):

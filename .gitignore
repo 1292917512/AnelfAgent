@@ -81,6 +81,9 @@ config/personas/yanyi.json
 config/mengli_aigc/
 # Personal runtime event logs (治理事件、心跳日志等)
 config/events/
+# Personal project assets (攻略笔记 / NAS 探查报告 / 个人脚本)
+config/knowledge/
+config/projects/
 
 # === Root-level ComfyUI workflow templates (personal downloads) ===
 /*_template.json

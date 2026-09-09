@@ -152,3 +152,151 @@ class TestGroupGating:
         EntityRegistry.disable_group("cp_group")
         status = ContextProviderRegistry.get_status()
         assert status["providers"][0]["active"] is False
+
+
+class TestInjectKeyGating:
+    """声明 inject_key 的 provider 受配置开关门控：False 即停止采集与注入。"""
+
+    def _register(self) -> None:
+        async def _provide(scope: str) -> ProviderSnapshot:
+            return ProviderSnapshot(content="[gated] 状态", tokens=10, bytes=20, ready=True)
+
+        ContextProviderRegistry.register(
+            ProviderMeta(
+                name="gated", provide_fn=_provide,
+                inject_key="gated_context_inject",
+            ),
+        )
+
+    async def test_switch_off_stops_injection(self) -> None:
+        """开关关闭 → 快照不采集不注入；重新打开自动恢复。"""
+        from core.config import ConfigManager
+
+        self._register()
+        ConfigManager.set("gated_context_inject", True)
+        await ContextProviderRegistry._collect_background("s1", 4000)
+        assert ContextProviderRegistry._last_snippets["s1"] == ["[gated] 状态"]
+
+        ConfigManager.set("gated_context_inject", False)
+        await ContextProviderRegistry._collect_background("s1", 4000)
+        assert ContextProviderRegistry._last_snippets["s1"] == []
+
+        ConfigManager.set("gated_context_inject", True)
+        await ContextProviderRegistry._collect_background("s1", 4000)
+        assert ContextProviderRegistry._last_snippets["s1"] == ["[gated] 状态"]
+
+    def test_switch_defaults_true_when_unset(self) -> None:
+        """配置项未设置时默认放行（开关是退出机制而非准入门槛）。"""
+        self._register()
+        meta = ContextProviderRegistry.get_all()[0]
+        assert ContextProviderRegistry._is_active(meta) is True
+
+    def test_status_exposes_inject_key_and_active(self) -> None:
+        """Web 面板可观测 provider 的注入开关键与活动状态。"""
+        from core.config import ConfigManager
+
+        self._register()
+        ConfigManager.set("gated_context_inject", False)
+        provider = ContextProviderRegistry.get_status()["providers"][0]
+        assert provider["inject_key"] == "gated_context_inject"
+        assert provider["active"] is False
+
+
+class TestLastContentExposure:
+    """每个 provider 最近一次注入的正文被记录并暴露给 Web 面板（跨 scope 取最新）。"""
+
+    async def test_last_content_recorded_and_updated(self) -> None:
+        contents = iter(["[demo] 第一次", "[demo] 第二次"])
+
+        async def _provide(scope: str) -> ProviderSnapshot:
+            return ProviderSnapshot(content=next(contents), tokens=10, bytes=20)
+
+        ContextProviderRegistry.register(
+            ProviderMeta(name="content_demo", provide_fn=_provide),
+        )
+        await ContextProviderRegistry._collect_background("s1", 4000)
+        provider = ContextProviderRegistry.get_status()["providers"][0]
+        assert provider["last_content"] == "[demo] 第一次"
+        assert provider["last_content_scope"] == "s1"
+        assert provider["last_content_at"] > 0
+
+        await ContextProviderRegistry._collect_background("s2", 4000)
+        provider = ContextProviderRegistry.get_status()["providers"][0]
+        assert provider["last_content"] == "[demo] 第二次"
+        assert provider["last_content_scope"] == "s2"
+
+    async def test_no_injection_no_content(self) -> None:
+        async def _provide(scope: str) -> None:
+            return None
+
+        ContextProviderRegistry.register(
+            ProviderMeta(name="empty_demo", provide_fn=_provide),
+        )
+        await ContextProviderRegistry._collect_background("s1", 4000)
+        provider = ContextProviderRegistry.get_status()["providers"][0]
+        assert provider["last_content"] is None
+        assert provider["last_content_at"] == 0.0
+
+
+class TestFreshCollect:
+    """collect 的实时语义：首次/过期即内联重收，新鲜窗口内复用缓存。"""
+
+    async def test_first_collect_returns_content_immediately(self) -> None:
+        """首次调用即返回内容（不再滞后一轮返回空）。"""
+        self._register_counter()
+        snippets, _ = await ContextProviderRegistry.collect("s1")
+        assert snippets == ["[fresh] 第1次"]
+
+    async def test_within_ttl_reuses_cache(self) -> None:
+        """新鲜度窗口内复用缓存，不重复调用 provider。"""
+        counter = self._register_counter()
+        await ContextProviderRegistry.collect("s1")
+        snippets, _ = await ContextProviderRegistry.collect("s1")
+        assert snippets == ["[fresh] 第1次"]
+        assert counter[0] == 1
+
+    async def test_stale_cache_refreshes_inline(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """缓存超过新鲜度阈值即内联重收，返回最新内容。"""
+        monkeypatch.setattr(
+            "core.context_provider._COLLECT_FRESH_SECONDS", 0.0,
+        )
+        counter = self._register_counter()
+        await ContextProviderRegistry.collect("s1")
+        snippets, _ = await ContextProviderRegistry.collect("s1")
+        assert snippets == ["[fresh] 第2次"]
+        assert counter[0] == 2
+
+    async def test_providers_collected_concurrently(self) -> None:
+        """多 provider 并发采集：两个各 0.4s 的 provider 总耗时应 < 0.8s。"""
+        import asyncio
+        import time
+
+        async def _slow(scope: str) -> ProviderSnapshot:
+            await asyncio.sleep(0.4)
+            return ProviderSnapshot(content="慢速内容")
+
+        ContextProviderRegistry.register(
+            ProviderMeta(name="slow_a", provide_fn=_slow),
+        )
+        ContextProviderRegistry.register(
+            ProviderMeta(name="slow_b", provide_fn=_slow),
+        )
+        start = time.perf_counter()
+        snippets, _ = await ContextProviderRegistry.collect("s1")
+        elapsed = time.perf_counter() - start
+        assert snippets == ["慢速内容", "慢速内容"]
+        assert elapsed < 0.8
+
+    def _register_counter(self) -> list:
+        counter = [0]
+
+        async def _provide(scope: str) -> ProviderSnapshot:
+            counter[0] += 1
+            return ProviderSnapshot(content=f"[fresh] 第{counter[0]}次")
+
+        ContextProviderRegistry.register(
+            ProviderMeta(name="fresh", provide_fn=_provide),
+        )
+        return counter

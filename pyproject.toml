@@ -56,6 +56,9 @@ dependencies = [
     "yarl>=1.24.5",
     "apscheduler>=3.11.3",
     "colorama>=0.4.6",
+    "holidays>=0.103",
+    "pyotp>=2.10.0",
+    "argon2-cffi>=25.1.0",
 ]
 
 [[tool.uv.index]]

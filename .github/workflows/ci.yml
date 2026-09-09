@@ -60,10 +60,10 @@ jobs:
           if grep -qE '^(core/|agent/|tests/|conftest\.py|pyproject\.toml|uv\.lock|\.github/workflows/ci\.yml)' <<<"$changed"; then
             entries='[{"name":"all","paths":""}]'
           else
-            # 实体模块：跑模块内套件 + 跨实体共享套件（_sdk 桥接 / 外围工具契约）
+            # 实体模块：跑模块整套件（含组件子包内嵌 tests/）+ 跨实体共享套件（_sdk 桥接 / 外围工具契约）
             for top in $(grep -oE '^entities/[^/]+' <<<"$changed_py" | sort -u); do
               if [ -d "$top" ]; then
-                [ -d "$top/tests" ] && add "entity-${top#entities/}" "$top/tests tests/unit/entities"
+                [ -d "$top/tests" ] && add "entity-${top#entities/}" "$top tests/unit/entities"
               else
                 add "entities-shared" "tests/unit/entities"  # entities/_sdk.py 等根级共享件
               fi

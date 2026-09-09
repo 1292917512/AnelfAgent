@@ -185,6 +185,29 @@ def register_mcp_tools() -> None:
     )
 
     EntityRegistry.register_tool(
+        name="mcp_auth_status",
+        func=_tool_mcp_auth_status,
+        description="查询 MCP server 的 OAuth 授权状态：待授权链接（需发给用户打开完成授权）、"
+        "是否已有凭据。连接需要授权的 server 前先查询。",
+        group="mcp_manage",
+        params=[
+            ToolParam(name="server_name", description="MCP 服务器名称", type="string", required=True),
+        ],
+        source="mcp", tags=["core"],
+    )
+
+    EntityRegistry.register_tool(
+        name="mcp_auth_logout",
+        func=_tool_mcp_auth_logout,
+        description="清除 MCP server 的 OAuth 凭据（下次连接重新授权）。",
+        group="mcp_manage",
+        params=[
+            ToolParam(name="server_name", description="MCP 服务器名称", type="string", required=True),
+        ],
+        source="mcp", tags=["core"],
+    )
+
+    EntityRegistry.register_tool(
         name="reload_mcp_config",
         func=_tool_reload_mcp_config,
         description="重新从配置文件加载 MCP 服务器配置，自动处理新增/删除/变更的服务器（热重载）。",
@@ -194,7 +217,7 @@ def register_mcp_tools() -> None:
     )
 
     log(
-        "MCP 管理工具已注册 (list/get/update/set/add/remove/connect/disconnect/toggle/reload/template)",
+        "MCP 管理工具已注册 (list/get/update/set/add/remove/connect/disconnect/toggle/reload/template/auth)",
         tag="思维",
     )
 
@@ -454,6 +477,35 @@ def _tool_get_mcp_config_template() -> str:
             "enabled 建议用 set_mcp_server_enabled 显式控制，避免 toggle 带来的状态不确定",
         ],
     }, ensure_ascii=False)
+
+
+@mcp_tool_call(require_bridge=False)
+async def _tool_mcp_auth_status(server_name: str) -> str:
+    """查询 OAuth 授权状态（凭据存在性 + 待授权链接）。"""
+    import asyncio
+
+    from entities.mcp.oauth import has_credentials, pending_auth
+
+    pending = await asyncio.to_thread(pending_auth, server_name)
+    entry = pending.get(server_name) or {}
+    return _safe_json({
+        "server": server_name,
+        "authorized": await asyncio.to_thread(has_credentials, server_name),
+        "pending_url": entry.get("url", ""),
+        "hint": "把 pending_url 发给用户，请其在浏览器中打开完成授权；授权完成后服务会自动继续连接"
+                if entry.get("url") else "",
+    })
+
+
+@mcp_tool_call(require_bridge=False)
+async def _tool_mcp_auth_logout(server_name: str) -> str:
+    """清除 OAuth 凭据。"""
+    import asyncio
+
+    from entities.mcp.oauth import delete_credentials
+
+    removed = await asyncio.to_thread(delete_credentials, server_name)
+    return _safe_json({"server": server_name, "removed": removed})
 
 
 @mcp_tool_call(require_bridge=True)

@@ -69,6 +69,12 @@ async def add_server(req: CreateServerRequest) -> Dict[str, Any]:
         raise HTTPException(400, str(e)) from e
 
 
+@router.get("/oauth-status")
+async def oauth_status_all() -> Dict[str, Any]:
+    """全部 server 的 OAuth 状态（凭据存在性 + 待授权链接），供列表页一次性渲染。"""
+    return await _mcp_svc.oauth_status()
+
+
 @router.get("/{name}")
 async def get_server(name: str) -> Dict[str, Any]:
     cfg = _mcp_svc.get_server_config(name, mask_secrets=True)
@@ -132,3 +138,15 @@ async def set_stay_awake(name: str, req: StayAwakeRequest) -> Dict[str, Any]:
 @router.get("/{name}/tools")
 async def get_server_tools(name: str) -> List[Dict[str, Any]]:
     return _mcp_svc.get_server_tool_details(name)
+
+
+@router.get("/{name}/oauth")
+async def oauth_status(name: str) -> Dict[str, Any]:
+    """OAuth 授权状态：是否已有凭据 + 待授权链接（供前端展示授权入口）。"""
+    return await _mcp_svc.oauth_status(name)
+
+
+@router.delete("/{name}/oauth")
+async def oauth_logout(name: str) -> Dict[str, Any]:
+    """清除 OAuth 凭据（下次连接重新授权）。"""
+    return await _mcp_svc.oauth_logout(name)

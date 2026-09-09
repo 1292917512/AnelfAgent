@@ -593,12 +593,28 @@ class MCPBridge:
         try:
             await asyncio.wait_for(ready_event.wait(), timeout=30.0)
         except asyncio.TimeoutError:
+            # OAuth 授权需要用户操作时间：检测到待授权登记就把就绪等待
+            # 延长到授权窗口（授权码到达后 SDK 会自动继续初始化）
+            from entities.mcp.oauth import _CALLBACK_TIMEOUT, pending_auth
+            if pending_auth(srv.name):
+                try:
+                    await asyncio.wait_for(ready_event.wait(), timeout=_CALLBACK_TIMEOUT)
+                except asyncio.TimeoutError:
+                    pass
+                else:
+                    return self._finish_connect(srv, result_box)
             stop_event.set()
             with self._lock:
                 self._stop_events.pop(srv.name, None)
                 self._lifecycle_tasks.pop(srv.name, None)
             self._set_last_error(srv.name, "连接初始化超时")
             raise TimeoutError(f"MCP server '{srv.name}' 初始化超时（30s）") from None
+
+        return self._finish_connect(srv, result_box)
+
+    def _finish_connect(self, srv: MCPServerConfig, result_box: List[Any]) -> int:
+        """连接就绪收尾：失败入箱抛异常；成功清错误态与待授权登记。"""
+        from entities.mcp.oauth import clear_pending_auth
 
         if result_box and isinstance(result_box[0], Exception):
             with self._lock:
@@ -607,6 +623,7 @@ class MCPBridge:
             self._set_last_error(srv.name, extract_exception_detail(result_box[0]))
             raise result_box[0]
 
+        clear_pending_auth(srv.name)
         self._set_last_error(srv.name, "")
         return result_box[0] if result_box else 0
 

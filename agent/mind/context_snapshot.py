@@ -300,10 +300,11 @@ class ContextSnapshot:
                 # 主口径，一次低命中会粘性盖在随后一串辅助调用捕获行上，
                 # 被误读为"连续多次低命中"
                 last_call = cache.get("last_call_any") or cache.get("last_call") or {}
-                # 前缀字节是否稳定：除每轮必变的工具链/执行态外所有 section 未变
-                # （None=无基线无法判定）。命中低而前缀稳定 ⇒ 供应商侧缓存波动，
-                # 列表以"平台波动"标识，与内容断裂导致的真实低命中区分
-                tail_layers = {"tool_chain", "exec_context"}
+                # 前缀字节是否稳定：除每轮必变的工具链/实时注入/执行态外
+                # 所有 section 未变（None=无基线无法判定）。命中低而前缀稳定
+                # ⇒ 供应商侧缓存波动，列表以"平台波动"标识，与内容断裂导致的
+                # 真实低命中区分
+                tail_layers = {"tool_chain", "provider", "exec_context"}
                 prefix_flags = [
                     s.get("changed") for s in data.get("sections", [])
                     if s.get("layer") not in tail_layers

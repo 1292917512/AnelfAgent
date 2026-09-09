@@ -22,7 +22,10 @@ from entities.ssh.manager import (
     STATUS_ERROR,
     SshCommandInterrupted,
     SshConnectionManager,
+    _decode_remote_text,
     _probe_tcp,
+    compose_exec_command,
+    extract_captured_pwd,
 )
 from entities.ssh.store import SshConfigStore
 
@@ -100,7 +103,7 @@ class FakeConn:
         self.sftp = FakeSftp()
         self.closed = False
 
-    async def create_process(self, command: str) -> FakeProcess:
+    async def create_process(self, command: str, **kwargs: Any) -> FakeProcess:
         self.run_commands.append(command)
         outcome = self._run_outcomes.pop(0)
         if isinstance(outcome, OpenError):
@@ -172,7 +175,7 @@ class TestExecute:
         assert result["exit_code"] == 0
         assert result["stdout"] == "hello\n"
         assert result["connection"] == "web"
-        assert fake.run_commands == ["echo hi"]
+        assert fake.run_commands == [compose_exec_command("echo hi", "", True)]
 
     async def test_nonzero_exit_code(self, manager: SshConnectionManager) -> None:
         fake = FakeConn([FakeResult(127, "", "not found")])
@@ -186,7 +189,7 @@ class TestExecute:
         fake = FakeConn([FakeResult(0, "", "")])
         with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
             await manager.execute("ls", work_dir="/var/log")
-        assert fake.run_commands == ["cd /var/log && ls"]
+        assert fake.run_commands == [compose_exec_command("ls", "/var/log", True)]
 
     async def test_connection_reused(self, manager: SshConnectionManager) -> None:
         """连续两次执行复用同一连接（connect 只调用一次）。"""
@@ -441,3 +444,197 @@ class TestStatusSnapshot:
         assert await manager.remove_profile("web") is True
         assert manager.get_snapshot("web") is None
         assert fake.closed is True
+
+
+class TestComposeExecCommand:
+    """命令组装纯函数：cd 前缀 + pwd 捕获尾块（保留原退出码）。"""
+
+    def test_plain_command_gets_capture_tail(self) -> None:
+        composed = compose_exec_command("echo hi", "", True)
+        assert composed.startswith("echo hi\n")
+        assert "__anelf_ec=$?" in composed
+        assert "$PWD" in composed
+        assert composed.endswith("exit $__anelf_ec")
+
+    def test_work_dir_wraps_brace_group(self) -> None:
+        composed = compose_exec_command("ls", "/var/log", True)
+        assert composed.startswith("cd /var/log && {\nls\n")
+        # 捕获尾块在组内：cd 失败时整组跳过（无标记、退出码为 cd 的）
+        assert composed.rstrip().endswith("}")
+
+    def test_work_dir_quoted(self) -> None:
+        composed = compose_exec_command("ls", "/my dir/app", True)
+        assert composed.startswith("cd '/my dir/app' && {")
+
+    def test_tracking_disabled_legacy_concat(self) -> None:
+        assert compose_exec_command("ls", "/var/log", False) == "cd /var/log && ls"
+        assert compose_exec_command("ls", "", False) == "ls"
+
+
+class TestExtractCapturedPwd:
+    def test_extract_and_strip(self) -> None:
+        stdout = "file1\nfile2\n\n__ANELF_PWD_BEGIN__/var/log__ANELF_PWD_END__\n"
+        path, cleaned = extract_captured_pwd(stdout)
+        assert path == "/var/log"
+        assert cleaned == "file1\nfile2"
+
+    def test_no_marker_passthrough(self) -> None:
+        assert extract_captured_pwd("plain output\n") == (None, "plain output\n")
+
+    def test_last_marker_wins(self) -> None:
+        stdout = (
+            "__ANELF_PWD_BEGIN__/fake__ANELF_PWD_END__\n"
+            "real output\n__ANELF_PWD_BEGIN__/real__ANELF_PWD_END__\n"
+        )
+        path, cleaned = extract_captured_pwd(stdout)
+        assert path == "/real"
+        assert "__ANELF_PWD_BEGIN__/fake__ANELF_PWD_END__" in cleaned
+
+
+class TestWorkDirTracking:
+    """execute 的远程工作目录捕获与持久化（POSIX pwd 捕获）。"""
+
+    @staticmethod
+    def _stdout_with_marker(body: str, path: str) -> str:
+        return f"{body}\n__ANELF_PWD_BEGIN__{path}__ANELF_PWD_END__\n"
+
+    async def test_captured_dir_persists_and_applies_next(
+        self, manager: SshConnectionManager,
+    ) -> None:
+        fake = FakeConn([
+            FakeResult(0, self._stdout_with_marker("ok", "/var/www"), ""),
+            FakeResult(0, self._stdout_with_marker("ok2", "/var/www"), ""),
+        ])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            first = await manager.execute("cd /var/www && ls")
+            second = await manager.execute("ls")
+        assert first["work_dir"] == "/var/www"
+        assert first["stdout"] == "ok"
+        # 第二次执行自动带上持久目录前缀
+        assert fake.run_commands[1].startswith("cd /var/www && {")
+        assert second["work_dir"] == "/var/www"
+
+    async def test_explicit_work_dir_overrides_persisted(
+        self, manager: SshConnectionManager,
+    ) -> None:
+        fake = FakeConn([
+            FakeResult(0, self._stdout_with_marker("", "/a"), ""),
+            FakeResult(0, self._stdout_with_marker("", "/b"), ""),
+        ])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            await manager.execute("true")
+            result = await manager.execute("true", work_dir="/b")
+        assert fake.run_commands[1].startswith("cd /b && {")
+        assert result["work_dir"] == "/b"
+
+    async def test_missing_marker_with_dir_self_heals(
+        self, manager: SshConnectionManager,
+    ) -> None:
+        """cd 失败（无捕获标记、非零码）→ 清除持久目录偏好，下条命令回归登录目录。"""
+        fake = FakeConn([
+            FakeResult(0, self._stdout_with_marker("", "/gone"), ""),
+            FakeResult(1, "", "bash: cd: /gone: No such file or directory"),
+            FakeResult(0, self._stdout_with_marker("home", "/root"), ""),
+        ])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            await manager.execute("true")
+            failed = await manager.execute("ls")
+            third = await manager.execute("pwd")
+        assert failed["ok"] is False
+        assert failed["work_dir"] == ""
+        assert not fake.run_commands[2].startswith("cd ")
+        assert third["work_dir"] == "/root"
+
+    async def test_tracking_disabled_no_wrap(
+        self, manager: SshConnectionManager, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(
+            manager_module, "get_config_bool",
+            lambda key, default=False: False if key == "ssh_work_dir_tracking" else default,
+        )
+        fake = FakeConn([FakeResult(0, "x", "")])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            result = await manager.execute("ls", work_dir="/var/log")
+        assert fake.run_commands == ["cd /var/log && ls"]
+        assert result["work_dir"] == ""
+
+    async def test_disconnect_resets_work_dir(
+        self, manager: SshConnectionManager,
+    ) -> None:
+        fake = FakeConn([FakeResult(0, self._stdout_with_marker("", "/var/www"), "")])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            await manager.execute("cd /var/www")
+            await manager.disconnect("web")
+        assert manager.get_snapshot("web") is not None
+        assert manager._connections["web"].work_dir == ""
+
+
+class TestRunCapture:
+    async def test_returns_stdout_when_connected(
+        self, manager: SshConnectionManager,
+    ) -> None:
+        fake = FakeConn([])
+        fake.run = AsyncMock(return_value=FakeResult(0, "captured", ""))
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            await manager.connect("web")
+            out = await manager.run_capture("web", "cat AGENTS.md")
+        assert out == "captured"
+
+    async def test_returns_none_when_not_connected(
+        self, manager: SshConnectionManager,
+    ) -> None:
+        assert await manager.run_capture("web", "pwd") is None
+
+    async def test_failure_returns_none(
+        self, manager: SshConnectionManager,
+    ) -> None:
+        fake = FakeConn([])
+        fake.run = AsyncMock(side_effect=OSError("链路抖动"))
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            await manager.connect("web")
+            assert await manager.run_capture("web", "pwd") is None
+
+
+class TestDecodeRemoteText:
+    """远端输出智能解码：Windows GBK 代码页中文不再乱码，UTF-8 路径不受影响。"""
+
+    def test_gbk_chinese_corrected(self) -> None:
+        """GBK 编码的 Windows 中文错误（GBK 字节对常为合法 UTF-8 双字节
+        序列，utf-8/replace 会静默产出希腊字母乱码）经矫正还原。"""
+        data = "系统找不到指定的路径。\r\n".encode("gbk")
+        assert _decode_remote_text(data) == "系统找不到指定的路径。\r\n"
+
+    def test_gbk_mixed_content(self) -> None:
+        data = "素材包（pmx 同目录贴图是否在）".encode("gbk")
+        assert _decode_remote_text(data) == "素材包（pmx 同目录贴图是否在）"
+
+    def test_utf8_chinese_untouched(self) -> None:
+        data = "文件不存在\n".encode("utf-8")
+        assert _decode_remote_text(data) == "文件不存在\n"
+
+    def test_utf8_emoji_untouched(self) -> None:
+        data = "done ✅🐾\n".encode("utf-8")
+        assert _decode_remote_text(data) == "done ✅🐾\n"
+
+    def test_ascii_passthrough(self) -> None:
+        assert _decode_remote_text(b"total 42\n") == "total 42\n"
+
+    def test_binary_falls_back_to_replace(self) -> None:
+        """真二进制：GB18030 结果无 CJK 不采信，回退 utf-8/replace。"""
+        out = _decode_remote_text(bytes([0x00, 0xFF, 0xFE, 0x01, 0x99, 0x88, 0x77]))
+        assert isinstance(out, str)
+
+    def test_str_and_none_passthrough(self) -> None:
+        assert _decode_remote_text("abc") == "abc"
+        assert _decode_remote_text(None) == ""
+        assert _decode_remote_text(b"") == ""
+
+    async def test_execute_decodes_gbk_stdout(
+        self, manager: SshConnectionManager,
+    ) -> None:
+        """execute 链路：bytes 形态的 GBK stdout 经智能解码后进入结构化结果。"""
+        gbk_stdout = "系统找不到指定的路径。\r\n".encode("gbk")
+        fake = FakeConn([FakeResult(1, gbk_stdout, b"")])
+        with patch("entities.ssh.manager.asyncssh.connect", AsyncMock(return_value=fake)):
+            result = await manager.execute("dir C:\\nothing", name="web")
+        assert result["stdout"] == "系统找不到指定的路径。\r\n"

@@ -1,0 +1,78 @@
+{
+  "loadFailed": "Failed to load modules (entity may be disabled or the server needs a restart)",
+  "retry": "Retry",
+  "stats": {
+    "total": "Modules",
+    "enabled": "Enabled",
+    "injecting": "Injecting",
+    "errors": "Errors"
+  },
+  "preview": {
+    "title": "What the AI Actually Sees",
+    "refresh": "Refresh preview",
+    "empty": "No enabled module is producing context right now",
+    "hint": "This content is injected into the AI's dynamic context (volatile layer) every reply turn, changing with module toggles and data refreshes"
+  },
+  "modules": {
+    "hint": "{{count}} context modules in total; new backend modules appear here automatically",
+    "empty": "No context modules registered",
+    "footerHint": "Module toggles and settings are also available in the Config tab or the config center (entity/ai_desktop group); the AI can manage them via tools too"
+  },
+  "module": {
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "refresh": "Refresh data now",
+    "lastError": "Last error",
+    "status": "Current Status",
+    "lastRefresh": "Data refreshed at",
+    "injectedText": "Injected Text",
+    "settings": "Module Settings"
+  },
+  "detail": {
+    "now": "Current Time",
+    "timezone": "Timezone",
+    "festivalsToday": "Festivals Today",
+    "nextHoliday": "Next Public Holiday",
+    "none": "None",
+    "noneInWindow": "None within window",
+    "daysLater": "in {{count}} days",
+    "condition": "Condition",
+    "temp": "Temperature",
+    "feels": "feels like",
+    "humidity": "Humidity",
+    "wind": "Wind",
+    "todayRange": "Today's Range",
+    "fetchedAt": "updated",
+    "disabled": "Module disabled; no context is injected",
+    "noContent": "No content right now"
+  },
+  "config": {
+    "unsaved": "Unsaved changes",
+    "invalidNumber": "Please enter a valid number",
+    "saveFailed": "Failed to save config"
+  },
+  "messages": {
+    "toggleSuccess": "\"{{name}}\" state updated",
+    "toggleFailed": "Failed to toggle module",
+    "refreshSuccess": "\"{{name}}\" data refreshed",
+    "refreshFailed": "Failed to refresh data"
+  },
+  "weather": {
+    "add": "Add location",
+    "addPlaceholder": "Search a city, then pick from candidates (e.g. Shanghai / Tokyo)",
+    "remove": "Remove this location",
+    "duplicate": "Location already in the list",
+    "pending": "Pending fetch (auto-refreshes seconds after saving)",
+    "sourceHint": "Source: Open-Meteo public weather service; locations are confirmed via search and stored with coordinates",
+    "noResults": "No matching locations; try a more specific name",
+    "searchFailed": "Location search failed (network error)"
+  },
+  "datetime": {
+    "extraTitle": "Extra timezones (each injects one time line)",
+    "add": "Add",
+    "addPlaceholder": "IANA timezone, e.g. Asia/Tokyo",
+    "duplicate": "Timezone already in the list",
+    "invalidZone": "Invalid timezone name; produces no injection",
+    "zoneHint": "IANA tz database names, e.g. America/New_York, Europe/London"
+  }
+}

@@ -160,10 +160,11 @@ async def _append_multimodal_result(
     """展开多模态工具结果约定，把候选图片以 user 消息注入上下文。
 
     工具返回 JSON 含 ``{"_multimodal": true, "text": ..., "images": [路径...]}``
-    时（如 search_sticker / search_image / find_similar_image），将图片加载
-    压缩后以 image_url block 注入，视觉模型即可"亲眼看到"候选再做选择
-    （借鉴 nekro-agent MULTIMODAL_AGENT 的检索体验）。非视觉模型跳过，
-    文本摘要（text/results 字段）已随 tool 消息提供全部信息。
+    时（如 recognize_image / search_sticker / search_image / find_similar_image），
+    将图片加载压缩后以 image_url block 注入工具链尾部（动态区，不动前缀缓存），
+    视觉模型即可"亲眼看到"候选再做选择（借鉴 nekro-agent MULTIMODAL_AGENT 的
+    检索体验）。非视觉模型跳过，文本摘要（text/results 字段）已随 tool 消息
+    提供全部信息。
     """
     if '"_multimodal"' not in output:
         return

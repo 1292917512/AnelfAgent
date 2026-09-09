@@ -202,6 +202,26 @@ class MemoryConnectionManager:
         """)
         await self._ensure_column(db, "memories_archive", "version", "INTEGER NOT NULL DEFAULT 1")
 
+        # ---- 遗忘墓碑表（归档物理删除后的 gist 痕迹：仅存梗概与标签，不存向量） ----
+        # 行数受 memory_tombstone_max_rows 硬上限约束（FIFO 淘汰最老），长期运行严格有界；
+        # 提供"曾经知道什么"的元记忆，召回无果时以最低权重参与兜底检索
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS memories_tombstone (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_id INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                gist TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                purge_reason TEXT NOT NULL DEFAULT '',
+                archived_at_ns INTEGER NOT NULL DEFAULT 0,
+                purged_at_ns INTEGER NOT NULL
+            );
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tomb_purged ON memories_tombstone(purged_at_ns);"
+        )
+
         # ---- 文件索引表 ----
         await db.execute("""
             CREATE TABLE IF NOT EXISTS files (
