@@ -202,6 +202,9 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
     capabilities: Set[ChannelCapability]
     metadata: ChannelMetadata
 
+    # 频道列表展示排序权重（越小越靠前，默认 100），频道自声明
+    display_order: int = 100
+
     # 子类必填：配置类
     _Configs: ClassVar[Type[ChannelConfig]] = ChannelConfig
 

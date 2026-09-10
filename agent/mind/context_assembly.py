@@ -14,6 +14,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from agent.mind.usage_rules import (
+    BACKGROUND_TASK_HINT,
+    PARALLEL_CALL_HINT,
+    PLAN_USAGE_RULES,
+    TOOL_USAGE_RULES,
+)
 from core.entity import EntityRegistry
 from core.log import log
 
@@ -28,6 +34,15 @@ if TYPE_CHECKING:
 def _get_mind_config():
     from agent.config import get_mind_config
     return get_mind_config()
+
+
+def _memory_rules_text() -> str:
+    """记忆体系铁律生效文本（唯一来源 config/memory_rules.md，agent.memory.rules_doc
+    持有；人类经 Web 记忆页编辑，AI 无写入路径）。参与 stable 指纹门控，
+    编辑后工具块按新文本重建一次，之后恢复字节冻结。
+    """
+    from agent.memory.rules_doc import load_rules
+    return load_rules().strip()
 
 
 def _delegation_enabled() -> bool:
@@ -114,63 +129,9 @@ def _format_scope_label(scope: str, adapter_key: str = "") -> str:
 # ==================================================================
 # 提示词模板常量
 # ==================================================================
-
-# 工具使用指引（仅保留无法程序强制的引导性内容；
-# "失败勿重复"由工具守卫强制，
-# 并行调用用法由 stable 层 _PARALLEL_CALL_HINT 统一提供，此处不重复）
-_TOOL_USAGE_RULES = (
-    "[工具使用指引]\n"
-    "1. 如果返回“工具不存在/未知工具”，必须先调用 list_entity_methods 获取精确方法名，禁止继续猜测相似名称。\n"
-    "2. 同一任务连续两次出现未知工具后，必须停止继续猜测并改用已确认可用工具，或直接结束并说明限制。"
-)
-
-_PLAN_USAGE_RULES = (
-    "[计划模式指引]\n"
-    "1. **默认走计划模式**：除最简单的单步问答/闲聊外，所有任务（信息搜集、目录分析、文件操作、代码修改、"
-    "多步推理等任何需要 2 步以上的工作）都应**先调用 present_plan 再执行**——用户会在浮窗中实时看到你的计划与进度。\n"
-    "2. \"公告\" = **调用 present_plan 工具**，不是用文字描述，禁止输出计划文本或步骤清单。\n"
-    "3. present_plan(goal, steps, files, risks) 调用后立即返回 plan_id，无需等待用户批准，直接开始执行。\n"
-    "4. 步骤进度由系统**自动追踪**（每步完成自动打勾），你无需手动维护进度。\n"
-    "5. 如某步完成质量较好，**可选**调用 update_goal(goal_id=plan_id, step_index=i, step_status='completed', note='...') 精确标记。\n"
-    "6. 任务完成后正常 end_reply 即可，系统会自动把计划收敛到终态（未做的步骤标记为 skipped）。\n"
-    "7. 用户可在浮窗中取消计划，你会收到中断信号，需立即停止后续步骤。\n"
-    "8. 仅以下情况不用 plan：单步问答、纯闲聊、一次工具调用就能完成的简单查询。"
-)
-
-_MEMORY_USAGE_HINT = (
-    "[记忆使用提示]\n"
-    "记忆系统职责边界（记什么用什么，禁止混写）：\n"
-    "- 数据库记忆（memorize/recall）= 「什么事」：事实 type:fact、事件 type:event、"
-    "反思 type:reflection、永久规则 type:permanent\n"
-    "- 实体画像（get/update_entity_profile）= 「谁」：单个实体的性格/偏好/互动风格，一人一份覆盖更新\n"
-    "- 关系图谱（graph_* 工具）= 「谁和谁/什么和什么 什么关系」：A 是 B 的同事、A 喜欢 C 这类"
-    "结构化关系一律 graph_add_relation 落库（必填 evidence），不要写进画像或记忆正文\n"
-    "- 便签文件 = 工作笔记与索引（规则/计划/教训/称呼速查），不堆详情、不复制画像全文\n"
-    "- 短期记忆 = 临时提醒区（任务指令/定时提醒/推送），事项完成后用 remove_short_term_memory 清理，不堆积\n"
-    "- 技能系统 = 工具使用经验/工作流技巧（create_skill，不要写成记忆，避免双写漂移）\n"
-    "- cognee 图谱 = 以上内容的语义投影层，仅供模糊检索增强，不是权威存储，不直接写入\n"
-    "披露边界（全记得，但不什么都说）：\n"
-    "- 记忆按来源人归属，对任何人的对话都可用于理解上下文与联想；但标注「私事」的记忆"
-    "（sensitivity=private/secret）不要向第三方透露，除非对方就是当事人或本人明确同意\n"
-    "- 谈及他人的私事前先想清楚「这话该不该由我告诉这个人」；拿捏不准就含糊带过\n"
-    "查询路由：\n"
-    "- 看到人物 UID → get_entity_profile 查画像；想知道某人的关系网 → graph_query；"
-    "两实体的关系链 → graph_path\n"
-    "- 想了解某话题 → recall 语义搜索 DB（找不到再加 depth=\"deep\" 深度召回；"
-    "结果带 source 标明出处：memory=数据库 / file=便签 / cognee_*=知识图谱投影）\n"
-    "- 看到 [reply_to:id] / 已知 message_id 且需原文 → lookup_message 精确取回（含窗口外）\n"
-    "- 翻阅窗口外旧对话（语义）→ recall_conversation\n"
-    "- 新事实/事件 → memorize 存 DB（标签: type:/user:/group:/topic:），必要时更新便签索引\n"
-    "- 工具出错 → recall_tool_errors 查历史错误\n"
-    "- 整理记忆 → 先 view_memory_outline 看文件结构，按顶部分类标准写入\n"
-    "落盘诚实（禁止谎报已记住）：\n"
-    "- 记忆写入工具的 verdict 字段是最终裁决：只有 stored/updated/merged 才算真正记住\n"
-    "- verdict=skipped_duplicate（重复未写入）或返回 error 时，禁止向用户声称「已记住」；"
-    "应如实说明（如「这条和我已有的记忆重复，没有重复存储」）\n"
-    "- 写入被跳过/失败后，禁止不做内容变更地自动重试相同内容\n"
-    "检索纪律：recall 等检索类工具每轮合计最多调用 3 次；"
-    "浅召回找不到再加 depth=\"deep\"，不要连环检索碰运气"
-)
+# stable 工具块的静态引导文本统一收敛在 agent.mind.usage_rules
+# （AI 无写入路径、字节恒定走内容寻址缓存）；此处仅保留 exec_context
+# 构建期的轮内动态文案。
 
 _FINAL_ROUND_WARNING = (
     "⚠️ [最终轮次] 这是最后一轮机会，系统将在本轮后强制结束。"
@@ -183,22 +144,6 @@ _URGENT_ROUND_WARNING = (
 )
 
 _NO_PENDING_HINT = "[当前无外部消息] 自主思考阶段：可执行工具操作，或调用 end_reply 结束"
-
-_PARALLEL_CALL_HINT = (
-    "# 并行工具调用\n"
-    "同一轮可以发起多个工具调用（原生并行），参数已确定的独立操作应一次性全部发起，减少对话轮次。\n"
-    "**先完成全部必要工具，再回复用户——回复一律调用 send_message**"
-    "（工具调用，不结束本轮，中途进度也可随时发送）。\n"
-    "**end_reply 会彻底结束本轮对话，不存在「下一轮再继续」——文字中声明要做的操作，"
-    "必须在调用 end_reply 之前实际发起工具调用，只说不做等于放弃。**"
-)
-
-_BACKGROUND_TASK_HINT = (
-    "# 后台任务\n"
-    "delegate_task(background=true) 启动的后台任务，完成时系统会自动通知你（触发新一轮对话），无需守候。\n"
-    "- 想查进度 → 调用 check_background_tasks\n"
-    "- 想等结果 → 告知用户后调用 end_reply 结束本轮，完成时你会被自动唤醒"
-)
 
 _PENDING_HINT = "→ 处理消息或执行操作，完成后调用 end_reply。空消息表示自主思考阶段（非对方发送），不要重复发送消息"
 
@@ -223,10 +168,11 @@ from agent.mind.context_pipeline import (
 )
 
 # legacy 布局的变动率覆盖表（tail_injection 关闭时）：动态块移到历史之前
+# 相对序与默认布局一致（按字节稳定度从静到动）
 _LEGACY_VOLATILITY: Dict[str, int] = {
-    "context": 10,
-    "status": 24, "volatile": 25, "overflow": 27,
-    "security": 28, "profile": 29, "relation": 30, "goals": 31, "memory": 32,
+    "context": 10, "hub": 11,
+    "profile": 20, "relation": 21, "goals": 21, "volatile": 22, "status": 23,
+    "overflow": 27, "security": 28, "memory": 32,
     "summary": 33, "conversation": 34,
 }
 
@@ -245,8 +191,9 @@ class ContextAssembly:
         self._tool_assembly = tool_assembly
         self._channel_manager = channel_manager
         self._conversation_data = conversation_data
-        # stable_fingerprint 版本门控缓存：(tools_version, activation_version, models_summary, direct_vision) → hash
-        self._fp_cache: Optional[tuple[int, int, str, bool, str]] = None
+        # stable_fingerprint 版本门控缓存：(tools_version, activation_version, models_summary,
+        # direct_vision, memory_rules, registry_version) → hash
+        self._fp_cache: Optional[tuple[int, int, str, bool, str, int, str]] = None
         # 上下文构建管线：默认布局（动态在历史之后）+ legacy 回退布局
         self._pipeline = ContextPipeline(self)
         self._pipeline_legacy = ContextPipeline(self, volatility_overrides=_LEGACY_VOLATILITY)
@@ -305,21 +252,23 @@ class ContextAssembly:
             lines.append("")
             lines.append(context_reading_rules)
 
-        # 工具使用指引 + 计划前置 + 记忆使用提示（静态引导，归入 stable 层冻结复用）
+        # 工具使用指引 + 计划前置 + 记忆铁律（静态引导，归入 stable 层冻结复用）
         lines.append("")
-        lines.append(_TOOL_USAGE_RULES)
+        lines.append(TOOL_USAGE_RULES)
         lines.append("")
-        lines.append(_PLAN_USAGE_RULES)
-        lines.append("")
-        lines.append(_MEMORY_USAGE_HINT)
+        lines.append(PLAN_USAGE_RULES)
+        memory_rules = _memory_rules_text()
+        if memory_rules:
+            lines.append("")
+            lines.append(memory_rules)
 
         lines.append("")
-        lines.append(_PARALLEL_CALL_HINT)
+        lines.append(PARALLEL_CALL_HINT)
 
         # 后台任务行为规范：仅子代理委托启用时注入（无后台任务来源则规则无意义）
         if _delegation_enabled():
             lines.append("")
-            lines.append(_BACKGROUND_TASK_HINT)
+            lines.append(BACKGROUND_TASK_HINT)
 
         return [{"role": "system", "content": "\n".join(lines)}]
 
@@ -453,19 +402,25 @@ class ContextAssembly:
     def stable_fingerprint(self, models_summary: str = "", direct_vision: bool = False) -> str:
         """计算 stable 层动态输入的指纹（任一输入变化即触发重建）。
 
-        覆盖：工具目录、可沉睡分组、工具规则、模型摘要、媒体规则、运行环境。
-        不含激活状态（目录文案已静态化，激活状态由 exec_context 动态呈现）。
-        以 _tools_version + 激活版本门控：工具集与激活状态未变时直接返回缓存哈希，
-        跳过 json.dumps 开销（激活版本仍参与门控：schemas 成员随激活变化需重建检测）。
+        覆盖：工具目录、可沉睡分组、工具规则、记忆铁律文档、模型摘要、媒体规则、
+        运行环境。不含激活状态（目录文案已静态化，激活状态由 exec_context 动态呈现）。
+        以 _tools_version + 激活版本 + 铁律文本门控：工具集/激活状态/铁律文档均未变时
+        直接返回缓存哈希，跳过 json.dumps 开销（铁律文本经 mtime 缓存读取，
+        未变时仅一次 stat syscall，Web/手工编辑后随门控失配重建一次）。
         """
         from agent.mind.tool_activation import tool_activation
 
+        memory_rules = _memory_rules_text()
         cache_key = (
             self._tool_assembly.tools_version,
             tool_activation.version, models_summary, direct_vision,
+            memory_rules,
+            # 注册表-only 变化（实体热插拔/分组权重调整）不触碰 tools_version，
+            # 必须纳入门控，否则目录重建滞后一轮
+            EntityRegistry.version(),
         )
-        if self._fp_cache is not None and self._fp_cache[:4] == cache_key:
-            return self._fp_cache[4]
+        if self._fp_cache is not None and self._fp_cache[:6] == cache_key:
+            return self._fp_cache[6]
 
         import json as _json
 
@@ -480,12 +435,13 @@ class ContextAssembly:
             _json.dumps(catalog, sort_keys=True, ensure_ascii=False),
             _json.dumps(sleepable, sort_keys=True, ensure_ascii=False),
             "\n".join(rules),
+            memory_rules,
             models_summary,
             self._build_media_rules(direct_vision),
             str(_delegation_enabled()),
             _env_info_block(),
         )
-        self._fp_cache = (cache_key[0], cache_key[1], cache_key[2], cache_key[3], result)
+        self._fp_cache = (*cache_key, result)
         return result
 
     async def build_llm_context(
@@ -506,13 +462,15 @@ class ContextAssembly:
             goal_msgs: Optional[List[Dict]] = None,
             summary_row: Optional[Dict] = None,
             status_text: str = "",
+            hub_text: str = "",
     ) -> List[Dict]:
         """组装完整 LLM 上下文（声明式管线），每次调用实时从 DB 获取最新对话历史。
 
         各内容块的顺序由 @context_block 声明的变动率决定（值越大变动越频繁，
-        排越靠后，见 context_pipeline）：
-        stable(0) → context(10) → summary(20) → conversation(30) →
-        status/profile/volatile/memory/provider(40+) → overflow/security(50+)
+        排越靠后，见 context_pipeline；尾部动态区内部按字节稳定度从静到动）：
+        stable(0) → summary(20) → conversation(30) →
+        context(35) → hub(36) → profile(37) → relation/goals/volatile(38) →
+        status(39) → memory(43) → overflow/security(50+)
         tail_injection 关闭时经变动率覆盖表回退旧布局（动态在历史之前）。
 
         Args:
@@ -536,6 +494,7 @@ class ContextAssembly:
             adapter_key=adapter_key,
             scope=scope,
             prefetched_conversation=prefetched_conversation,
+            hub_text=hub_text,
         )
         pipeline = self._pipeline if _tail_injection_enabled() else self._pipeline_legacy
         all_msgs = await pipeline.build(inp)
@@ -577,6 +536,17 @@ class ContextAssembly:
         if not inp.context_text:
             return []
         return [{"role": "system", "content": inp.context_text}]
+
+    @context_block("hub", VOL_TAIL_HEAD + 1, "主标签记忆（索引中枢与工作窗口）")
+    def _blk_hub(self, inp: ContextInput) -> List[Dict]:
+        """主标签记忆（main:hub）：AI 的索引中枢与长工作流即时记录窗口。
+
+        独立成块（不并入 context 层便签消息）：AI 更新只漂移本消息，
+        不影响便签/文件索引的内容寻址缓存。
+        """
+        if not inp.hub_text:
+            return []
+        return [{"role": "system", "content": inp.hub_text}]
 
     @context_block("summary", VOL_PERIODIC, "早期对话摘要（折叠周期内固定）")
     def _blk_summary(self, inp: ContextInput) -> List[Dict]:
@@ -640,29 +610,22 @@ class ContextAssembly:
         inp.max_conversation_size = max_size
         return conversation_list
 
-    @context_block("status", VOL_SESSION, "记忆系统状态（心跳维护）")
-    def _blk_status(self, inp: ContextInput) -> List[Dict]:
-        """记忆状态区块（心跳维护，周期性变化）：尾部动态区独立注入。"""
-        if not inp.status_text:
-            return []
-        return [{"role": "system", "content": inp.status_text}]
-
-    @context_block("profile", VOL_SESSION + 1, "实体画像注入")
+    @context_block("profile", VOL_TAIL_HEAD + 2, "实体画像注入")
     def _blk_profile(self, inp: ContextInput) -> List[Dict]:
-        """实体画像（每实体一条，动态区中最稳定，放最前）。"""
+        """实体画像（每实体一条）：仅在画像分析批次更新时字节变化，动态区中最稳定，放最前。"""
         return list(inp.profile_msgs)
 
-    @context_block("relation", VOL_SESSION + 2, "关系网络注入")
+    @context_block("relation", VOL_TAIL_HEAD + 3, "关系网络注入")
     def _blk_relation(self, inp: ContextInput) -> List[Dict]:
         """关系网络快照（当前会话相关实体的已知关系，随实体集合低频变）。"""
         return list(inp.relation_msgs)
 
-    @context_block("goals", VOL_SESSION + 2, "活跃目标注入")
+    @context_block("goals", VOL_TAIL_HEAD + 3, "活跃目标注入")
     def _blk_goals(self, inp: ContextInput) -> List[Dict]:
         """活跃目标快照（仅目标 CRUD 时字节变化，对话轮次间完全稳定）。"""
         return list(inp.goal_msgs)
 
-    @context_block("volatile", VOL_SESSION + 2, "短期记忆（volatile 层）")
+    @context_block("volatile", VOL_TAIL_HEAD + 3, "短期记忆（volatile 层）")
     def _blk_volatile(self, inp: ContextInput) -> List[Dict]:
         """短期记忆桶（角色按存储原样使用，主流格式不做转换）。"""
         clips = list(self._work_memory.get_temporary(inp.scope))
@@ -675,9 +638,17 @@ class ContextAssembly:
         }
         return [header] + clips
 
+    @context_block("status", VOL_TAIL_HEAD + 4, "记忆系统状态（心跳维护）")
+    def _blk_status(self, inp: ContextInput) -> List[Dict]:
+        """记忆状态区块（心跳维护）：累计指标与 24h 审计使其在活跃期几乎每 tick 都变，
+        是本族中变动最频繁的块，置于召回块之前（其后的块每周期必然重建，无前缀损失）。"""
+        if not inp.status_text:
+            return []
+        return [{"role": "system", "content": inp.status_text}]
+
     @context_block("memory", VOL_SESSION + 3, "语义召回 + 跨频道 + 技能匹配")
     def _blk_memory(self, inp: ContextInput) -> List[Dict]:
-        """语义召回 + 跨频道 + 技能注入（每会话基于最新对话重建）。"""
+        """语义召回 + 跨频道 + 技能注入（每会话基于最新对话重建，尾部动态区最末）。"""
         return list(inp.memory_msgs)
 
     @context_block("overflow", VOL_MESSAGE, "上下文溢出提示")

@@ -95,5 +95,7 @@
     "reply_to": "Reply To",
     "inline_keyboard": "Inline Keyboard",
     "streaming": "Streaming"
-  }
+  },
+  "reload": "Sync",
+  "reloading": "Syncing..."
 }

@@ -31,7 +31,7 @@ entity_manifest(
     icon="monitor",
     description="向 AI 动态上下文注入实时环境信息的可插拔组件平台（时间/节日/天气）",
     version="1.0.0",
-    order=25,
+    order=40,
     group="ai_desktop",
 )
 

@@ -156,3 +156,49 @@ class TestContextProviderInjectKey:
         assert item is not None
         assert item.description == "自定义注入开关描述"
         assert item.default_value is False
+
+
+# ------------------------------------------------------------------
+# entity_manifest order → 分组排序权重接线（实体自决排序）
+# ------------------------------------------------------------------
+
+class TestEntityManifestOrder:
+    def test_order_wires_to_group_order_weight(self) -> None:
+        """entity_manifest 的 order 同步注册为分组排序权重。"""
+        from core.entity import EntityRegistry
+        from entities._sdk import entity_manifest
+
+        entity_manifest(display_name="t", group="_sdk_order_demo", order=42)
+        try:
+            assert EntityRegistry.group_sort_key("_sdk_order_demo") == (42, "_sdk_order_demo")
+            assert EntityRegistry.get_group_manifest("_sdk_order_demo")["order"] == 42
+        finally:
+            EntityRegistry.unregister_group("_sdk_order_demo")
+        # 注销后权重与 manifest 一并回收（不在默认表的分组）
+        assert EntityRegistry.group_sort_key("_sdk_order_demo")[0] == 1000
+        assert EntityRegistry.get_group_manifest("_sdk_order_demo") == {}
+
+    def test_unregistered_group_sorts_last(self) -> None:
+        """未注册权重的分组按字母序排在已注册分组之后。"""
+        from core.entity import EntityRegistry
+
+        assert EntityRegistry.group_sort_key("memory") < EntityRegistry.group_sort_key("_zzz_never")
+        key = EntityRegistry.group_sort_key("_zzz_never")
+        assert key == (1000, "_zzz_never")
+
+    def test_default_table_bands_keep_similar_groups_adjacent(self) -> None:
+        """默认权重表分段：同类分组同段相邻（记忆/规划/能力/运维/管理/界面）。"""
+        from core.entity import _DEFAULT_GROUP_ORDER
+
+        bands = [
+            {"output", "thinking"},
+            {"memory", "graph", "notes"},
+            {"planning", "skills", "delegation"},
+            {"web", "media", "os", "environment", "ssh", "sticker", "share", "voiceprint", "vault"},
+            {"model_control", "ollama", "logs", "devops"},
+            {"channel_ops", "entity", "mcp_manage", "plugins"},
+            {"ui", "session"},
+        ]
+        weights = [{_DEFAULT_GROUP_ORDER[g] for g in band} for band in bands]
+        for lower, upper in zip(weights, weights[1:], strict=False):
+            assert max(lower) < min(upper)

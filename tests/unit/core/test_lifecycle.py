@@ -109,3 +109,41 @@ def test_request_shutdown_without_requester_keeps_restart_flag_clear():
     """关闭触发器未注册时不应残留重启意图（否则日后正常退出会被误判为重启）。"""
     Lifecycle.request_shutdown(restart=True)
     assert not Lifecycle.restart_requested()
+
+
+async def test_unregister_runs_cleanup_and_removes_only_that_component():
+    cleaned: list[str] = []
+    Lifecycle.register("victim", None, cleanup=lambda: cleaned.append("victim"))
+    Lifecycle.register("survivor", "inst", cleanup=lambda: cleaned.append("survivor"))
+
+    assert await Lifecycle.unregister("victim") is True
+    assert cleaned == ["victim"]
+    assert Lifecycle.get("victim") is None
+    assert Lifecycle.get("survivor") is not None
+    assert [s["name"] for s in Lifecycle.snapshot()] == ["survivor"]
+    # 重复注销返回 False，不重复执行 cleanup
+    assert await Lifecycle.unregister("victim") is False
+    assert cleaned == ["victim"]
+
+
+async def test_unregister_cleanup_failure_still_detaches():
+    def boom() -> None:
+        raise RuntimeError("cleanup failed")
+
+    Lifecycle.register("bad", None, cleanup=boom)
+    assert await Lifecycle.unregister("bad") is True
+    assert Lifecycle.get("bad") is None
+
+
+async def test_start_one_runs_hook_only_for_named_component():
+    started: list[str] = []
+    Lifecycle.register("a", None, on_start=lambda: started.append("a"))
+    Lifecycle.register("b", None, on_start=lambda: started.append("b"))
+
+    assert Lifecycle.started() is False
+    await Lifecycle.start_all()
+    assert Lifecycle.started() is True
+
+    assert await Lifecycle.start_one("b") is True
+    assert started == ["a", "b", "b"]
+    assert await Lifecycle.start_one("missing") is False

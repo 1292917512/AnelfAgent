@@ -277,7 +277,9 @@ async def _sync_enabled_flag(server_name: str, enabled: bool, action: str) -> No
         store = _new_store()
         await asyncio.to_thread(store.set_server_enabled, server_name, enabled, reload=False)
     except Exception as inner_exc:
-        log(f"同步 enabled 状态失败({action}): {inner_exc}", "DEBUG", tag="mcp")
+        # 写回失败会让配置文件与运行时状态漂移（文件 disabled 但运行中已连接）
+        log(f"同步 enabled 状态失败({action})，配置文件与运行时状态可能不一致: {inner_exc}",
+            "WARNING", tag="mcp")
 
 
 async def _do_connect_server(bridge: MCPBridge, server_name: str, action: str) -> Dict[str, Any]:

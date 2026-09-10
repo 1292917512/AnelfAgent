@@ -297,6 +297,17 @@ def notify_tool_set_changed() -> None:
         pass
 
 
+def replay_tool_states() -> None:
+    """回放持久化的工具启停/属性覆盖到当前注册表（实体热插入/热重载后调用）。
+
+    幂等：仅对注册表中现存实体生效。
+    """
+    from agent.runtime.state_restore import apply_entity_states, apply_tool_overrides
+
+    apply_tool_overrides()
+    apply_entity_states()
+
+
 def get_current_channel() -> str:
     """获取当前会话频道 adapter_key（未绑定时返回空串，延迟导入 agent.channel）。
 
@@ -882,7 +893,9 @@ def entity_manifest(
         icon: lucide 图标名（如 globe / image / terminal）。
         description: 实体功能描述。
         version: 语义化版本号。
-        order: 工具目录排序权重（越小越靠前，默认 50）。
+        order: 工具目录排序权重（越小越靠前，默认 50）。分段约定见
+            core/entity.py 默认权重表（0-9 输出思维 / 10-19 记忆 / 20-29 规划执行 /
+            30-49 能力感知 / 50-59 模型运维 / 60-69 管理集成 / 70-79 界面会话）。
         nav: 侧边栏导航声明（可选），字段：
             - path: 前端路由路径（默认 "/<group>"）
             - label: i18n key（默认 group 名）
@@ -906,6 +919,8 @@ def entity_manifest(
     if nav is not None:
         manifest["nav"] = nav
     EntityRegistry.register_group_manifest(group, manifest)
+    # 实体自声明排序权重：覆盖默认权重表（core/entity.py _DEFAULT_GROUP_ORDER 兜底）
+    EntityRegistry.register_group_order(group, order)
 
 
 def entity_config(

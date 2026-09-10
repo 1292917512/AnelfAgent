@@ -11,7 +11,8 @@
     "cognee": "Cognee",
     "graph": "关系图谱",
     "daily": "日记",
-    "docs": "文档"
+    "docs": "文档",
+    "rules": "铁律"
   },
   "healthTitle": "记忆状态",
   "healthSubtitle": "记忆系统健康状态",
@@ -278,5 +279,9 @@
   },
   "dimsValue": "{{dims}} 维",
   "rebuildVectorsConfirm": "将清空全部记忆向量数据并按当前模型全量重建（后台执行，期间语义检索退化为纯关键词，完成后自动恢复）。通常仅在切换 embedding 模型后需要，确定继续？",
-  "fullRebuildConfirm": "将清空文件索引并全量重建（耗时取决于文件数量，期间文件检索可能不完整）。确定继续？"
+  "fullRebuildConfirm": "将清空文件索引并全量重建（耗时取决于文件数量，期间文件检索可能不完整）。确定继续？",
+  "rulesPanel": {
+    "title": "记忆体系铁律",
+    "hint": "系统级提示词文档（config/memory_rules.md），注入 stable 工具块；AI 无写入路径，仅此处可整文档编辑"
+  }
 }

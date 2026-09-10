@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 from typing import Any, Dict, List
 
 from core.log import log
@@ -134,32 +133,42 @@ class MCPService(MCPServerStore):
     # ------------------------------------------------------------------
 
     def toggle_server(self, name: str) -> Dict[str, Any]:
-        """连接或断开 MCP 服务器，同时持久化 enabled 状态。返回结构化结果。"""
+        """切换 MCP 服务器的启用状态（启用⇄禁用），返回结构化结果。
+
+        以配置文件的 enabled 为准而非当前连接状态：已启用（无论是否连上）
+        → 禁用并断开；已禁用 → 启用并热重载连接。此前按连接状态判断，
+        已启用但连不上（目标不可用）的 server 点按钮只会反复尝试连接，
+        永远无法禁用，导致每次重启都自动重连报错。
+        """
         from entities.mcp.bridge import extract_exception_detail, get_mcp_bridge
         bridge = get_mcp_bridge()
         if not bridge:
             return {"success": False, "message": "MCP Bridge 未初始化"}
         try:
-            if name in bridge.get_connected_servers():
-                bridge.disconnect_server_by_name(name)
-                self._set_enabled(name, False)
-                return {"success": True, "message": f"已断开 {name}"}
-            # 连接前先同步磁盘配置，避免配置被外部修改后内存副本过期导致连接失败
-            self._trigger_reload()
-            if name in bridge.get_connected_servers():
-                self._set_enabled(name, True)
-                return {"success": True, "message": f"已连接 {name}"}
-            count = bridge.connect_server_by_name(name)
-            self._set_enabled(name, True)
+            cfg = self.get_server_config(name)
+            if cfg is None:
+                return {"success": False, "message": f"服务器 '{name}' 不存在"}
+            enabling = not cfg.get("enabled", True)
+            # 落盘 + 热重载：禁用走 reload 的断开分支，启用走 reload 的连接分支
+            self.set_server_enabled(name, enabling)
+            if not enabling:
+                return {
+                    "success": True, "enabled": False, "connected": False,
+                    "message": f"已禁用 {name}（重启后不再自动连接）",
+                }
+            connected_map = bridge.get_connected_servers()
+            if name in connected_map:
+                tools = connected_map[name]
+                return {
+                    "success": True, "enabled": True, "connected": True,
+                    "message": f"已启用并连接 {name}，发现 {len(tools)} 个工具",
+                    "tool_count": len(tools),
+                }
+            err = bridge.get_last_errors().get(name, "")
             return {
-                "success": True,
-                "message": f"已连接 {name}，发现 {count} 个工具",
-                "tool_count": count,
+                "success": True, "enabled": True, "connected": False,
+                "message": f"已启用 {name}，但连接失败: {err or '目标不可用'}（重启后会自动重试）",
             }
-        except (TimeoutError, concurrent.futures.TimeoutError):
-            return {"success": False, "message": f"连接 {name} 超时，请检查服务器是否可用"}
-        except ValueError as e:
-            return {"success": False, "message": str(e)}
         except Exception as e:
             return {"success": False, "message": f"操作失败: {extract_exception_detail(e)}"}
 

@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
-import { Activity, FolderTree, ListTodo, Search, Settings, X } from "lucide-react";
+import { lazy, Suspense } from "react";
+import { Activity, FolderTree, ListTodo, Loader2, Search, Settings, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkbenchStore, type DockTab } from "@/stores/workbench-store";
 import { useIsMobile } from "@/lib/use-media-query";
@@ -9,7 +10,11 @@ import { TracePanel } from "./dock/TracePanel";
 import { DockTasksPanel } from "./dock/TasksPanel";
 import { SearchPanel } from "./dock/SearchPanel";
 import { SettingsPanel } from "./dock/SettingsPanel";
-import { FileTreePanel } from "./dock/FileTreePanel";
+
+// 文件树依赖 react-arborist（react-dnd/react-window 体积较大），按需加载
+const FileTreePanel = lazy(() =>
+  import("./filetree/FileTreePanel").then((m) => ({ default: m.FileTreePanel })),
+);
 
 const PANELS: Record<DockTab, () => React.JSX.Element> = {
   status: StatusPanel,
@@ -92,7 +97,15 @@ export function LeftDock() {
           </button>
         </div>
       )}
-      <FileTreePanel />
+      <Suspense
+        fallback={
+          <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted">
+            <Loader2 size={13} className="animate-spin" />
+          </div>
+        }
+      >
+        <FileTreePanel />
+      </Suspense>
     </div>
   );
 

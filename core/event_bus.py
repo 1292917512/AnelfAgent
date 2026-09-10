@@ -244,6 +244,10 @@ EVENT_ADAPTER_STARTED = "adapter_started"
 EVENT_ADAPTER_STOPPED = "adapter_stopped"
 EVENT_ADAPTER_MESSAGE_RECEIVED = "adapter_message_received"
 
+# 模块热插拔事件（payload: {"kind": "entity"|"channel", "name": <目录名>}）
+EVENT_MODULE_ADDED = "module_added"
+EVENT_MODULE_REMOVED = "module_removed"
+
 # 系统级调用追踪事件
 EVENT_TRACE_CALL_START = "trace_call_start"
 EVENT_TRACE_CALL_END = "trace_call_end"

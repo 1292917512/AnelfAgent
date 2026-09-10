@@ -67,7 +67,19 @@ class AdapterService:
                     "status": "stopped",
                     "status_display": "⚪ 未启用" if not enabled else "⚪ 已停止",
                 })
+        # 按频道自声明的展示权重排序（display_order，一类的放一块），同权重按 key 稳定
+        from agent.channel.manager import get_channel_display_order
+        result.sort(key=lambda item: (get_channel_display_order(item["key"]), item["key"]))
         return result
+
+    @staticmethod
+    async def reload_channels() -> Dict[str, Any]:
+        """热同步频道：对账 channels/ 目录（新增热插入 / 消失热拔除 / 存续热重载）。
+
+        存续频道的代码热更会断开重连一次。
+        """
+        from agent.channel.hotplug import sync_channels
+        return await sync_channels(reload_existing=True)
 
     async def toggle_adapter(self, key: str) -> None:
         """启动或停止指定频道（挂起直到完成或超时）。

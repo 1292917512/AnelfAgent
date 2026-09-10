@@ -51,6 +51,8 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
 
     display_name = "网页界面"
 
+    display_order = 10
+
     capabilities: Set[ChannelCapability] = {
             ChannelCapability.SEND_TEXT,
             ChannelCapability.SEND_PHOTO,

@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { adaptersApi, configMetaApi, warnApiError } from "@/lib/api";
 import type { AdapterInfo, ConfigMetaItem, ConfigValues } from "@/lib/types";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
-import { Save, CheckCircle } from "lucide-react";
+import { Save, CheckCircle, RefreshCw } from "lucide-react";
 import { isChannelHidden } from "@/lib/channel-plugins";
 import { AdapterCard } from "@/pages/channels/AdapterCard";
 import { UnmatchedGroupCard } from "@/pages/channels/UnmatchedGroupCard";
@@ -91,6 +91,15 @@ export function ChannelsPanel({
     },
   });
 
+  // 热同步 channels/ 目录：新增热插入 / 删除热拔除 / 存续代码热重载
+  const reloadMutation = useMutation({
+    mutationFn: () => adaptersApi.reload(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["adapters"] });
+      queryClient.invalidateQueries({ queryKey: ["configMeta"] });
+    },
+  });
+
   const adapters: AdapterInfo[] = (data?.adapters ?? []).filter(
     (a: AdapterInfo) => !isChannelHidden(a.key),
   );
@@ -133,7 +142,14 @@ export function ChannelsPanel({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-2">
+        <button onClick={() => reloadMutation.mutate()} disabled={reloadMutation.isPending}
+          title={t("reload")}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md
+            bg-secondary text-muted border border-border hover:text-heading transition-all disabled:opacity-50">
+          <RefreshCw size={14} className={reloadMutation.isPending ? "animate-spin" : ""} />
+          {reloadMutation.isPending ? t("reloading") : t("reload")}
+        </button>
         {dirtyKeys.size > 0 && (
           <div className="flex items-center gap-2">
             {saveOk && (

@@ -23,7 +23,8 @@ export function ServerCard({ server, oauth, onEdit, onDelete }: ServerCardProps)
   const toggleMutation = useMutation({
     mutationFn: () => mcpApi.toggle(server.name).then((r) => r.data),
     onSuccess: (data) => {
-      if (data.success) {
+      // 启用成功但目标暂不可达：启用已落盘，如实以错误样式提示连接失败
+      if (data.success && !(data.enabled && data.connected === false)) {
         toast.success(data.message);
       } else {
         toast.error(data.message);
@@ -53,12 +54,14 @@ export function ServerCard({ server, oauth, onEdit, onDelete }: ServerCardProps)
   });
   const status = isToggling ? "warn" : server.connected ? "ok" : "offline";
   const statusLabel = isToggling
-    ? server.connected
-      ? t("disconnecting")
-      : t("connecting")
+    ? server.enabled
+      ? t("disabling")
+      : t("enabling")
     : server.connected
       ? t("connectedStatus")
-      : t("disconnectedStatus");
+      : server.enabled
+        ? t("disconnectedStatus")
+        : t("disabledStatus");
 
   return (
     <div
@@ -141,10 +144,10 @@ export function ServerCard({ server, oauth, onEdit, onDelete }: ServerCardProps)
           <button
             onClick={() => toggleMutation.mutate()}
             disabled={isToggling}
-            title={server.connected ? t("disconnect") : t("connect")}
+            title={server.enabled ? t("disable") : t("enable")}
             className={cn(
               "p-1.5 rounded transition-colors disabled:cursor-wait",
-              server.connected
+              server.enabled
                 ? "text-ok hover:text-danger"
                 : "text-muted hover:text-ok",
             )}

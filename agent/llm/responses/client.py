@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from enum import Enum
 from typing import Any, AsyncGenerator, Dict, Optional, Union
 
 import litellm
@@ -161,7 +162,12 @@ def parse_responses_payload(
 
 def normalize_stream_event(event: Any) -> ResponseStreamEvent:
     data = _as_dict(event)
-    event_type = str(data.get("type") or getattr(event, "type", "") or "generic")
+    raw_type = data.get("type") or getattr(event, "type", "")
+    if isinstance(raw_type, Enum):
+        # OpenAI SDK 流事件的 type 是 str-enum 成员，py<3.12 下 str() 得到
+        # "ResponsesAPIStreamEvents.RESPONSE_COMPLETED"，必须取 value
+        raw_type = raw_type.value
+    event_type = str(raw_type or "generic")
     return ResponseStreamEvent(
         type=event_type,
         data=data,
@@ -336,7 +342,6 @@ class ResponsesClient:
         request_params: Optional[dict[str, Any]] = None,
         extra_body: Optional[dict[str, Any]] = None,
         extra_headers: Optional[dict[str, str]] = None,
-        prefer_bridge_for_custom: bool = True,
         http_client: Any = None,
     ) -> None:
         self.model = model
@@ -348,11 +353,7 @@ class ResponsesClient:
         self.extra_body = dict(extra_body or {})
         self.extra_headers = dict(extra_headers or {})
         self.http_client = http_client
-        self.route = resolve_responses_route(
-            api_type=api_type,
-            api_base=api_base,
-            prefer_bridge_for_custom=prefer_bridge_for_custom,
-        )
+        self.route = resolve_responses_route(api_type=api_type)
 
     def ensure_create_supported(self, tools: Optional[list[Any]] = None) -> ResponsesRoute:
         if self.route.transport == TransportMode.UNSUPPORTED:

@@ -489,6 +489,7 @@ _PATH_SPECS: Dict[str, Tuple[str, str]] = {
     "APP_CONFIG": ("config", "app_config.json"),
     "WEBUI_CONFIG": ("config", "webui.json"),
     "MIND_CONFIG": ("config", "mind_config.json"),
+    "MEMORY_RULES": ("config", "memory_rules.md"),
     "LLM_CLIENTS": ("config", "llm_clients.json"),
     "MCP_SERVERS": ("config", "mcp_servers.json"),
     "MCP_OAUTH_TOKENS": ("config", "mcp_oauth.json"),

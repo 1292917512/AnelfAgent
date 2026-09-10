@@ -485,17 +485,27 @@ _JSON_ERROR_PREVIEW_LEN = 200
 # 实体目录中未注册排序权重分组的兜底权重（按字母序排在已注册分组之后）
 _UNREGISTERED_GROUP_WEIGHT = 1000
 
-# 默认分组排序权重表（数字越小越靠前）。
-# 各业务模块注册工具分组时可通过 EntityRegistry.register_group_order() 覆盖；
-# 未在此表中的分组按字母序排在末尾。
+# 默认分组排序权重表（数字越小越靠前），按类别分段让同类分组相邻：
+#   0-9 输出与思维 / 10-19 记忆 / 20-29 规划与执行 / 30-49 能力与感知
+#   50-59 模型与运维 / 60-69 管理与集成 / 70-79 界面与会话
+# 本表仅为兜底：实体经 entity_manifest(order=...) 自声明权重（_sdk 接线
+# register_group_order）后覆盖本表；未注册权重的分组按字母序排在末尾。
 _DEFAULT_GROUP_ORDER: Dict[str, int] = {
-    "output": 0, "memory": 1, "graph": 2, "notes": 3, "thinking": 4,
-    "planning": 5, "web": 6, "media": 7, "os": 9, "environment": 10,
-    "model_control": 11, "ollama": 12, "logs": 13, "channel_ops": 14,
-    "entity": 15, "mcp_manage": 16, "devops": 17,
-    "skills": 18, "delegation": 19, "ui": 20, "session": 21, "ssh": 22,
-    "voiceprint": 23,
-    "vault": 24,
+    # 输出与思维
+    "output": 0, "thinking": 1,
+    # 记忆
+    "memory": 10, "graph": 11, "notes": 12,
+    # 规划与执行
+    "planning": 20, "skills": 21, "delegation": 22,
+    # 能力与感知
+    "web": 30, "media": 31, "os": 32, "environment": 33, "ssh": 34,
+    "sticker": 35, "share": 36, "voiceprint": 37, "vault": 38,
+    # 模型与运维
+    "model_control": 50, "ollama": 51, "logs": 52, "devops": 53,
+    # 管理与集成
+    "channel_ops": 60, "entity": 61, "mcp_manage": 62, "plugins": 63,
+    # 界面与会话
+    "ui": 70, "session": 71,
 }
 
 
@@ -734,6 +744,19 @@ class EntityRegistry:
         return list(cls._groups.keys())
 
     @classmethod
+    def list_declared_groups(cls) -> List[str]:
+        """返回所有已声明描述的分组名（含尚无实体的分组，热插拔差集记录用）。"""
+        return list(cls._group_descriptions.keys())
+
+    @classmethod
+    def list_group_tools(cls, group: str) -> List[str]:
+        """返回分组内现存的工具实体名（热拔除时判断分组是否已被腾空）。"""
+        return [
+            n for n in cls._groups.get(group, [])
+            if n in cls._entities and cls._entities[n].entity_type == EntityType.TOOL
+        ]
+
+    @classmethod
     def register_group_order(cls, group: str, weight: int) -> None:
         """注册分组在实体目录中的排序权重（越小越靠前）。
 
@@ -742,6 +765,11 @@ class EntityRegistry:
         """
         cls._group_order_weights[group] = weight
         cls._catalog_cache = None
+
+    @classmethod
+    def group_sort_key(cls, group: str) -> tuple:
+        """分组排序键（权重, 组名）：未注册权重的分组按字母序排在末尾。"""
+        return (cls._group_order_weights.get(group, _UNREGISTERED_GROUP_WEIGHT), group)
 
     @classmethod
     def get_entity_catalog(cls) -> List[Dict[str, Any]]:
@@ -777,8 +805,7 @@ class EntityRegistry:
             })
 
         def _sort_key(entry: Dict[str, Any]) -> tuple:
-            g = entry["group"]
-            return (cls._group_order_weights.get(g, _UNREGISTERED_GROUP_WEIGHT), g)
+            return cls.group_sort_key(entry["group"])
 
         catalog.sort(key=_sort_key)
         cls._catalog_cache = catalog
@@ -1264,7 +1291,11 @@ class EntityRegistry:
 
     @classmethod
     def unregister_group(cls, group: str) -> int:
-        """注销分组内全部实体，返回移除的实体数。"""
+        """注销分组内全部实体并清理分组元数据，返回移除的实体数。
+
+        展示清单（manifest）随分组一并清除；排序权重回落到默认表
+        （默认表未收录的分组直接删除权重，热插拔回收后不留残留）。
+        """
         names = list(cls._groups.get(group, []))
         count = 0
         for n in names:
@@ -1272,6 +1303,13 @@ class EntityRegistry:
                 count += 1
         cls._groups.pop(group, None)
         cls._group_descriptions.pop(group, None)
+        cls._group_manifests.pop(group, None)
+        default_weight = _DEFAULT_GROUP_ORDER.get(group)
+        if default_weight is None:
+            cls._group_order_weights.pop(group, None)
+        elif cls._group_order_weights.get(group) != default_weight:
+            cls._group_order_weights[group] = default_weight
+        cls._catalog_cache = None
         if count:
             log(f"🧹 分组已注销: {group} ({count} 个实体)", "DEBUG")
         return count

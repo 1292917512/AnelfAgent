@@ -187,3 +187,180 @@ class TestUpdateMemoryStatusBlock:
         mtime = main.stat().st_mtime_ns
         assert notes.update_memory_status_block("状态A") is False
         assert main.stat().st_mtime_ns == mtime
+
+
+# ==================================================================
+# 「当前状态」分界容错（标题层级/编号漂移）与受管区块写保护
+# ==================================================================
+
+class TestStatusHeadingSplit:
+    def _write_main(self, memory_dir: Path, content: str) -> Path:
+        main = memory_dir / "memory.md"
+        main.write_text(content, encoding="utf-8")
+        return main
+
+    def test_numbered_subheading_splits(self, memory_dir: Path) -> None:
+        """「## 四、当前状态」式编号子标题同样作为静态/动态分界。"""
+        self._write_main(
+            memory_dir,
+            "# 主便签\n\n## 一、铁律速查\n铁律内容\n\n"
+            "## 四、当前状态\n\n## 记忆系统状态\n状态内容\n",
+        )
+        static = notes.build_static_guide()
+        dynamic = notes.build_dynamic_notes()
+        assert "铁律内容" in static
+        assert "状态内容" not in static  # 状态区不进 stable 层
+        assert "当前状态" in dynamic
+
+    def test_auto_block_not_double_injected_into_static(self, memory_dir: Path) -> None:
+        """分界命中后，AUTO 状态区块不进静态指南（仅经 build_memory_status_block 注入）。"""
+        self._write_main(
+            memory_dir,
+            "# 指南\n\n## 四、当前状态\n\n"
+            f"{notes.AUTO_STATUS_BEGIN}\n心跳状态正文\n{notes.AUTO_STATUS_END}\n",
+        )
+        static = notes.build_static_guide()
+        assert "心跳状态正文" not in static
+        status = notes.build_memory_status_block()
+        assert "心跳状态正文" in status
+
+    def test_insert_after_numbered_heading(self, memory_dir: Path) -> None:
+        main = self._write_main(memory_dir, "# 指南\n\n## 四、当前状态\n\n## 手写区\n内容\n")
+        assert notes.update_memory_status_block("状态A") is True
+        text = main.read_text(encoding="utf-8")
+        assert text.index("## 四、当前状态") < text.index(notes.AUTO_STATUS_BEGIN)
+        assert "状态A" in text and "## 手写区" in text
+
+    def test_no_heading_appends_canonical_marker(self, memory_dir: Path) -> None:
+        main = self._write_main(memory_dir, "# 指南\n")
+        assert notes.update_memory_status_block("状态B") is True
+        text = main.read_text(encoding="utf-8")
+        assert "# 当前状态" in text and "状态B" in text
+
+    def test_table_row_mention_not_treated_as_heading(self, memory_dir: Path) -> None:
+        """表格行内出现「当前状态」字样不误判为分界标题。"""
+        self._write_main(
+            memory_dir,
+            "# 指南\n\n| memory.md | 指南 + 当前状态 | 不限 |\n",
+        )
+        static = notes.build_static_guide()
+        assert "指南 + 当前状态" in static
+
+
+class TestManagedBlockProtection:
+    BLOCK = f"{notes.AUTO_STATUS_BEGIN}\n系统维护内容\n{notes.AUTO_STATUS_END}"
+
+    def _write_file(self, memory_dir: Path, rel: str = "memory/note1.md") -> Path:
+        target = memory_dir.parent / rel
+        target.write_text(f"# 笔记\n\n{self.BLOCK}\n\n## 手写区\n内容\n", encoding="utf-8")
+        return target
+
+    def test_write_memory_file_rejects_block_change(self, memory_dir: Path) -> None:
+        self._write_file(memory_dir)
+        with pytest.raises(ValueError, match="系统受管区块"):
+            notes.write_memory_file(
+                "memory/note1.md", "# 笔记\n\n篡改区块\n\n## 手写区\n内容\n",
+            )
+
+    def test_write_memory_file_allows_outside_edit(self, memory_dir: Path) -> None:
+        target = self._write_file(memory_dir)
+        notes.write_memory_file(
+            "memory/note1.md", f"# 笔记\n\n{self.BLOCK}\n\n## 手写区\n新内容\n",
+        )
+        assert "新内容" in target.read_text(encoding="utf-8")
+
+    def test_patch_rejects_edit_inside_block(self, memory_dir: Path) -> None:
+        self._write_file(memory_dir)
+        with pytest.raises(ValueError, match="系统受管区块"):
+            notes.patch_memory_file_content("memory/note1.md", "系统维护内容", "篡改")
+
+    def test_patch_outside_block_allowed(self, memory_dir: Path) -> None:
+        target = self._write_file(memory_dir)
+        notes.patch_memory_file_content("memory/note1.md", "手写区\n内容", "手写区\n新内容")
+        assert "新内容" in target.read_text(encoding="utf-8")
+
+    def test_edit_lines_rejects_block_overlap(self, memory_dir: Path) -> None:
+        self._write_file(memory_dir)
+        with pytest.raises(ValueError, match="系统受管区块"):
+            notes.edit_file_lines("memory/note1.md", 3, 5, "篡改")
+
+    def test_write_section_rejects_managed_section(self, memory_dir: Path) -> None:
+        self._write_file(memory_dir)
+        with pytest.raises(ValueError, match="系统受管区块"):
+            notes.write_section_content("memory/note1.md", "# 笔记", "整节覆写")
+
+    def test_delete_section_rejects_managed_section(self, memory_dir: Path) -> None:
+        target = self._write_file(memory_dir)
+        with pytest.raises(ValueError, match="系统受管区块"):
+            notes.delete_section_content("memory/note1.md", "# 笔记")
+        assert self.BLOCK in target.read_text(encoding="utf-8")
+
+    def test_append_allowed(self, memory_dir: Path) -> None:
+        target = self._write_file(memory_dir)
+        notes.append_to_memory_file("memory/note1.md", "追加行\n")
+        text = target.read_text(encoding="utf-8")
+        assert "追加行" in text and self.BLOCK in text
+
+    def test_save_notes_content_rejects_block_removal(self, memory_dir: Path) -> None:
+        (memory_dir / "memory.md").write_text(
+            f"# 主便签\n\n{self.BLOCK}\n", encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="系统受管区块"):
+            notes.save_notes_content("# 主便签\n")
+
+
+class TestStatusBlockTagOverview:
+    async def test_tag_overview_line(self, memory_dir: Path, store) -> None:
+        """状态区块携带标签索引观测行（规模分布 + 高频联想标签）。"""
+        from types import SimpleNamespace
+
+        from agent.heartbeat.engine import HeartbeatEngine
+        from agent.memory.memory_types import MemoryEntry, MemoryType
+
+        await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content="tagfact 主人喜欢火锅",
+            tags=["type:fact", "topic:火锅", "user:qq:1"], importance=0.7,
+        ))
+        engine = HeartbeatEngine.__new__(HeartbeatEngine)
+        engine.mind = SimpleNamespace(memory_store=store)
+        await engine._write_memory_status()
+        text = (memory_dir / "memory.md").read_text(encoding="utf-8")
+        assert "标签索引：共 3 个" in text
+        assert "topic:火锅" in text
+
+
+# ==================================================================
+# 记忆体系铁律文档（config/memory_rules.md）
+# ==================================================================
+
+class TestRulesDoc:
+    @pytest.fixture
+    def rules_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        from agent.memory import rules_doc
+
+        target = tmp_path / "config" / "memory_rules.md"
+        monkeypatch.setattr(rules_doc, "rules_path", lambda: target)
+        monkeypatch.setattr(rules_doc, "_cache", None)
+        return target
+
+    def test_seed_default_on_missing(self, rules_file: Path) -> None:
+        from agent.memory import rules_doc
+
+        text = rules_doc.load_rules()
+        assert text == rules_doc.DEFAULT_RULES
+        assert rules_file.read_text(encoding="utf-8") == rules_doc.DEFAULT_RULES
+
+    def test_save_and_load_roundtrip(self, rules_file: Path) -> None:
+        from agent.memory import rules_doc
+
+        rules_doc.load_rules()  # 种子落盘
+        rules_doc.save_rules("自定义铁律文档\n第二行")
+        assert rules_doc.load_rules() == "自定义铁律文档\n第二行"
+
+    def test_external_edit_picked_up(self, rules_file: Path) -> None:
+        """手工编辑文件（绕过 save_rules）经 mtime 失效被读取到。"""
+        from agent.memory import rules_doc
+
+        rules_doc.load_rules()
+        rules_file.write_text("手工编辑的内容", encoding="utf-8")
+        assert rules_doc.load_rules() == "手工编辑的内容"

@@ -310,6 +310,20 @@ class MemoryService:
         from agent.memory.notes import get_notes_path
         return str(get_notes_path())
 
+    # ==================================================================
+    # 记忆体系铁律文档（config/memory_rules.md，stable 工具块的规则段来源）
+    # ==================================================================
+
+    @staticmethod
+    def get_memory_rules() -> str:
+        from agent.memory.rules_doc import load_rules
+        return load_rules()
+
+    @staticmethod
+    def save_memory_rules(content: str) -> None:
+        from agent.memory.rules_doc import save_rules
+        save_rules(content)
+
     @staticmethod
     def list_memory_files() -> List[Dict[str, str]]:
         from agent.memory.notes import list_all_memory_files

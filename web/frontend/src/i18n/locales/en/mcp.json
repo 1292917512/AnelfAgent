@@ -14,14 +14,10 @@
   "hideTools": "Hide tools",
   "noTools": "No tools registered for this server",
   "toolsLoadFailed": "Failed to load tool details",
-  "connecting": "Connecting...",
-  "disconnecting": "Disconnecting...",
   "connectedStatus": "Connected",
   "disconnectedStatus": "Disconnected",
   "enabledStatus": "Enabled",
   "disabledStatus": "Disabled",
-  "connect": "Connect",
-  "disconnect": "Disconnect",
   "lastError": "Last error",
   "deleteTitle": "Delete Server",
   "deleteMessage": "Delete MCP server \"{{name}}\"? This disconnects it and removes it from the config file. This action cannot be undone.",
@@ -72,5 +68,9 @@
   "stayAwakeHintOn": "Pin as always-on (recommended for frequently used servers)",
   "stayAwakeHintOff": "Let it sleep (shrinks context prefix, better cache hits)",
   "oauthPending": "Authorization required — click to open",
-  "oauthAuthorized": "Authorized"
+  "oauthAuthorized": "Authorized",
+  "enabling": "Enabling...",
+  "disabling": "Disabling...",
+  "enable": "Enable (and connect)",
+  "disable": "Disable (no auto-connect on restart)"
 }

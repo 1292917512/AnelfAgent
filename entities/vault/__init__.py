@@ -33,7 +33,7 @@ entity_manifest(
     icon="key-round",
     description="加密密码库：主密码解锁、TOTP 验证器、模糊检索、泄露体检、导入导出",
     version="1.0.0",
-    order=25,
+    order=38,
     group="vault",
 )
 

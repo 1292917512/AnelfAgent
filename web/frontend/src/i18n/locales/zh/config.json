@@ -70,6 +70,7 @@
     "system/migration": "数据迁移",
     "system/logging": "日志",
     "system/hooks": "用户钩子",
+    "system/hotplug": "热插拔",
     "entity/os": "系统命令",
     "entity/ssh": "SSH 远程",
     "entity/web": "网络工具",

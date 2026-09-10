@@ -133,3 +133,80 @@ class TestListServers:
     def test_remove_missing_server_raises(self, svc: MCPService) -> None:
         with pytest.raises(ValueError, match="不存在"):
             svc.remove_server("ghost")
+
+
+class _FakeBridge:
+    """可控连接状态与错误信息的假 MCPBridge。"""
+
+    def __init__(self, connected: tuple = (), errors: Dict[str, str] | None = None) -> None:
+        self._connected = {n: [f"{n}_tool"] for n in connected}
+        self._errors = dict(errors or {})
+
+    def get_connected_servers(self) -> Dict[str, list]:
+        return dict(self._connected)
+
+    def get_last_errors(self) -> Dict[str, str]:
+        return dict(self._errors)
+
+
+def _patch_bridge(monkeypatch: pytest.MonkeyPatch, bridge: _FakeBridge) -> None:
+    import entities.mcp.bridge as bridge_module
+    monkeypatch.setattr(bridge_module, "get_mcp_bridge", lambda: bridge)
+
+
+class TestToggleServer:
+    """toggle 以配置文件 enabled 为准：已启用→禁用，已禁用→启用并连接。"""
+
+    def test_disable_enabled_but_disconnected_server(
+        self, svc: MCPService, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """已启用但连不上（目标不可用）的 server 必须能禁用——这是修复的核心场景。"""
+        _patch_bridge(monkeypatch, _FakeBridge())
+
+        result = svc.toggle_server("alpha")
+
+        assert result["success"] is True
+        assert result["enabled"] is False
+        assert result["connected"] is False
+        assert "禁用" in result["message"]
+        cfg = svc.get_server_config("alpha")
+        assert cfg is not None and cfg["enabled"] is False
+
+    def test_enable_disabled_server_connect_success(
+        self, svc: MCPService, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _patch_bridge(monkeypatch, _FakeBridge(connected=("beta",)))
+
+        result = svc.toggle_server("beta")
+
+        assert result["success"] is True
+        assert result["enabled"] is True
+        assert result["connected"] is True
+        assert result["tool_count"] == 1
+        cfg = svc.get_server_config("beta")
+        assert cfg is not None and cfg["enabled"] is True
+
+    def test_enable_disabled_server_connect_failure_keeps_enabled(
+        self, svc: MCPService, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """启用后连不上：启用意图落盘保留（重启重试），如实回报连接失败与 last_error。"""
+        _patch_bridge(monkeypatch, _FakeBridge(errors={"beta": "连接初始化超时"}))
+
+        result = svc.toggle_server("beta")
+
+        assert result["success"] is True
+        assert result["enabled"] is True
+        assert result["connected"] is False
+        assert "连接初始化超时" in result["message"]
+        cfg = svc.get_server_config("beta")
+        assert cfg is not None and cfg["enabled"] is True
+
+    def test_toggle_unknown_server(
+        self, svc: MCPService, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _patch_bridge(monkeypatch, _FakeBridge())
+
+        result = svc.toggle_server("ghost")
+
+        assert result["success"] is False
+        assert "不存在" in result["message"]

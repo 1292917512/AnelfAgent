@@ -52,7 +52,6 @@ def _native_route() -> ResponsesRoute:
         capability=capability,
         force_chat_completions_api=False,
         api_type="openai",
-        api_base="https://api.openai.com/v1",
     )
 
 

@@ -59,6 +59,7 @@ class AcfunChannel(AcfunToolsMixin, BaseChannel[AcfunConfig]):
 
     channel_id = "acfun"
     display_name = "AcFun"
+    display_order = 30
     capabilities: Set[ChannelCapability] = {
         ChannelCapability.SEND_TEXT,
         ChannelCapability.REPLY_TO,

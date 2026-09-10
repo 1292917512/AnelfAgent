@@ -35,6 +35,8 @@ class Lifecycle:
     _shutdown_requester: Optional[Callable[[], None]] = None
     _requester_loop: Optional[asyncio.AbstractEventLoop] = None
     _restart_requested: bool = False
+    # start_all 是否已完成（运行时后注册的组件据此决定是否立即补启动）
+    _started: bool = False
 
     @classmethod
     def register(
@@ -79,6 +81,60 @@ class Lifecycle:
                     fn()
             except Exception as e:
                 log(f"启动钩子失败: {name} - {e}", "WARNING")
+        cls._started = True
+
+    @classmethod
+    def started(cls) -> bool:
+        """start_all 是否已完成（运行时后注册的组件据此决定立即补启动）。"""
+        return cls._started
+
+    @classmethod
+    async def start_one(cls, name: str) -> bool:
+        """单独执行指定组件的 on_start 钩子（运行时后注册组件的补启动）。"""
+        fn = next((f for n, f in cls._start_hooks if n == name), None)
+        if fn is None:
+            return False
+        try:
+            if asyncio.iscoroutinefunction(fn):
+                await fn()
+            else:
+                fn()
+            return True
+        except Exception as e:
+            log(f"启动钩子失败: {name} - {e}", "WARNING")
+            return False
+
+    @classmethod
+    async def unregister(cls, name: str, per_timeout: Optional[float] = 30.0) -> bool:
+        """注销单个组件：执行其 cleanup 后从注册表摘除（模块热拔除回收用）。
+
+        与 shutdown_all 的全量逆序语义不同，仅影响指定组件；
+        cleanup 异常仅记日志，组件仍被摘除。
+        """
+        known = name in cls._instances or any(n == name for n, _ in cls._cleanups)
+        if not known:
+            return False
+        cleanup = next((fn for n, fn in cls._cleanups if n == name), None)
+        if cleanup is not None:
+            try:
+                if asyncio.iscoroutinefunction(cleanup):
+                    if per_timeout is not None:
+                        await asyncio.wait_for(cleanup(), timeout=per_timeout)
+                    else:
+                        await cleanup()
+                else:
+                    cleanup()
+                log(f"已清理: {name}")
+            except asyncio.TimeoutError:
+                log(f"清理超时（{per_timeout}s）: {name}", "ERROR")
+            except Exception as e:
+                log(f"清理失败: {name} - {e}", "WARNING")
+        cls._instances.pop(name, None)
+        cls._cleanups = [(n, fn) for n, fn in cls._cleanups if n != name]
+        cls._start_hooks = [(n, fn) for n, fn in cls._start_hooks if n != name]
+        cls._tick_hooks = [(n, fn) for n, fn in cls._tick_hooks if n != name]
+        cls._order = [n for n in cls._order if n != name]
+        return True
 
     @classmethod
     async def tick_all(cls) -> None:
@@ -118,6 +174,7 @@ class Lifecycle:
         cls._start_hooks.clear()
         cls._tick_hooks.clear()
         cls._order.clear()
+        cls._started = False
 
     @classmethod
     def snapshot(cls) -> List[Dict[str, Any]]:
@@ -148,6 +205,7 @@ class Lifecycle:
         cls._shutdown_requester = None
         cls._requester_loop = None
         cls._restart_requested = False
+        cls._started = False
 
     @classmethod
     def set_shutdown_requester(cls, fn: Callable[[], None]) -> None:

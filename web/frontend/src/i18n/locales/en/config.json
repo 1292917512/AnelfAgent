@@ -70,6 +70,7 @@
     "system/migration": "Migration",
     "system/logging": "Logging",
     "system/hooks": "User Hooks",
+    "system/hotplug": "Hot-plug",
     "entity/os": "OS & Shell",
     "entity/ssh": "SSH",
     "entity/web": "Web Tools",

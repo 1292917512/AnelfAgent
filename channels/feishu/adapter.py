@@ -83,6 +83,8 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
 
     display_name = "飞书"
 
+    display_order = 23
+
     capabilities: Set[ChannelCapability] = {
             # 发送类
             ChannelCapability.SEND_TEXT,

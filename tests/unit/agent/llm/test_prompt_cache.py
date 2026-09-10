@@ -430,8 +430,11 @@ class TestCacheAffinityHandler:
         h1 = client._get_cache_affinity_handler()
         h2 = client._get_cache_affinity_handler()
         assert h1 is h2
+        # litellm>=1.96 的 client 属性在已关闭时会惰性重建新池，
+        # 必须取当时的实例引用再断言关闭
+        pool = h1.client
         asyncio.run(client.close())
-        assert h1.client.is_closed
+        assert pool.is_closed
         assert client._cache_affinity_handler is None
 
 

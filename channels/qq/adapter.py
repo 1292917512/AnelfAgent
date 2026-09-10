@@ -78,6 +78,8 @@ class OneBotV11Channel(QQToolsMixin, BaseChannel[QQConfig]):
 
     display_name = "QQ"
 
+    display_order = 20
+
     capabilities: Set[ChannelCapability] = {
             ChannelCapability.SEND_TEXT,
             ChannelCapability.SEND_PHOTO,

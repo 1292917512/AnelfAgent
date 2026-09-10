@@ -36,6 +36,15 @@ async def list_adapters() -> Dict[str, Any]:
     return {"ready": True, "adapters": adapters}
 
 
+@router.post("/reload")
+async def reload_channels() -> Dict[str, Any]:
+    """热同步频道目录：新增热插入 / 消失热拔除 / 存续代码热重载。"""
+    try:
+        return await _adapter_svc.reload_channels()
+    except Exception as e:
+        raise server_error("热同步频道", e) from e
+
+
 @router.put("/{key}/toggle")
 async def toggle_adapter(key: str) -> Dict[str, str]:
     try:

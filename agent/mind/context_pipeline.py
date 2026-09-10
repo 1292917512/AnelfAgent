@@ -109,6 +109,8 @@ class ContextInput:
     tools_text: str = ""
     context_text: str = ""
     status_text: str = ""
+    # 主标签记忆（main:hub 索引中枢与工作窗口，recollection 每周期拉取）
+    hub_text: str = ""
     # 召回产物
     memory_msgs: List[Dict] = field(default_factory=list)
     profile_msgs: List[Dict] = field(default_factory=list)

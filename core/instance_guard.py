@@ -26,6 +26,9 @@ from core.log import log
 _TERM_GRACE_SECONDS = 10.0
 _TERM_POLL_INTERVAL = 0.2
 
+# Windows 无 SIGKILL；os.kill 对 SIGTERM 直接走 TerminateProcess，同为强杀语义
+_SIGKILL: signal.Signals = getattr(signal, "SIGKILL", signal.SIGTERM)
+
 _TAG = "实例"
 
 
@@ -75,7 +78,7 @@ def _terminate(pid: int) -> bool:
             return True
         time.sleep(_TERM_POLL_INTERVAL)
     try:
-        os.kill(pid, signal.SIGKILL)
+        os.kill(pid, _SIGKILL)
     except OSError:
         pass
     time.sleep(0.3)

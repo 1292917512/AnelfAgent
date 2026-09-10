@@ -1,13 +1,13 @@
 import { useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { entitiesApi } from "@/lib/api";
+import { entitiesApi, toolsApi } from "@/lib/api";
 import { StatusDot } from "@/components/common/StatusDot";
 import { cn } from "@/lib/utils";
 import type { EntityListItem } from "@/lib/types";
 import {
   Globe, Image, Terminal, Box, Cpu, FileText,
-  MessageSquare, Sticker, FolderTree, Server, Boxes, Puzzle,
+  MessageSquare, Sticker, FolderTree, Server, Boxes, Puzzle, RefreshCw,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -29,10 +29,17 @@ const ICON_MAP: Record<string, LucideIcon> = {
 export default function Entities() {
   const { t } = useTranslation("entities");
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const { data: entities } = useQuery({
     queryKey: ["entities-list"],
     queryFn: () => entitiesApi.list().then((r) => r.data as EntityListItem[]),
+  });
+
+  // 热同步 entities/ 目录：新增热插入 / 删除热拔除 / 存续代码热重载
+  const reloadMut = useMutation({
+    mutationFn: () => toolsApi.reload(),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["entities-list"] }),
   });
 
   // 按 group 去重（一个 group 可能有多个实体，取第一个的 manifest）
@@ -46,9 +53,18 @@ export default function Entities() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="px-4 md:px-6 py-4 border-b border-border">
-        <h1 className="text-lg font-semibold text-heading">{t("title")}</h1>
-        <p className="text-xs text-muted mt-0.5">{t("subtitle")}</p>
+      <div className="px-4 md:px-6 py-4 border-b border-border flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-lg font-semibold text-heading">{t("title")}</h1>
+          <p className="text-xs text-muted mt-0.5">{t("subtitle")}</p>
+        </div>
+        <button onClick={() => reloadMut.mutate()} disabled={reloadMut.isPending}
+          title={t("reload")}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md
+            bg-secondary text-muted border border-border hover:text-heading transition-all disabled:opacity-50">
+          <RefreshCw size={14} className={reloadMut.isPending ? "animate-spin" : ""} />
+          {reloadMut.isPending ? t("reloading") : t("reload")}
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 md:p-6">

@@ -6,39 +6,14 @@ from typing import Any, Dict, List, Optional
 
 from core.log import log
 
-_GROUP_ORDER = {
-    "output": 0,
-    "memory": 1,
-    "graph": 2,
-    "notes": 3,
-    "thinking": 4,
-    "planning": 5,
-    "web": 6,
-    "media": 7,
-    "os": 9,
-    "environment": 10,
-    "model_control": 11,
-    "ollama": 12,
-    "logs": 13,
-    "channel_ops": 14,
-    "entity": 15,
-    "mcp_manage": 16,
-    "devops": 17,
-    "skills": 18,
-    "delegation": 19,
-    "ui": 20,
-    "session": 21,
-    "ssh": 22,
-    "voiceprint": 23,
-    "vault": 24,
-}
-
 
 def _group_sort_key(group: str) -> tuple:
-    """分组排序键：预定义顺序 → 普通分组 → mcp:* 最后。"""
-    if group.startswith("mcp:"):
-        return (100, group)
-    return (_GROUP_ORDER.get(group, 50), group)
+    """分组排序键：统一读取 EntityRegistry 权重（实体经 manifest order 自声明）。
+
+    未注册权重的分组（含 mcp:*）按字母序排在末尾，与 LLM 工具目录同口径。
+    """
+    from core.entity import EntityRegistry
+    return EntityRegistry.group_sort_key(group)
 
 
 class ToolService:
@@ -160,10 +135,10 @@ class ToolService:
         from agent.runtime.state_restore import apply_tool_overrides
         return apply_tool_overrides()
 
-    def reload_entities(self) -> Dict[str, Any]:
-        """热重载实体：重新扫描 entities/ 目录。"""
+    async def reload_entities(self) -> Dict[str, Any]:
+        """热同步实体：对账 entities/ 目录（新增热插入 / 消失热拔除 / 存续热重载）。"""
         from entities import reload_entities
-        return reload_entities()
+        return await reload_entities(reload_existing=True)
 
     def list_plugins(self) -> List[Dict[str, Any]]:
         """返回已安装插件列表（管理面归 entities/plugins 实体）。"""

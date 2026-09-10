@@ -15,7 +15,7 @@ entity_manifest(
     icon="image",
     description="统一媒体工具面：图片识别/生成/编辑、语音合成/识别、音色管理、音乐、视频、重排序；provider 优先级可配置",
     version="2.0.0",
-    order=25,
+    order=31,
     group="media",
 )
 

@@ -209,7 +209,7 @@ export function FileEditor() {
       className={cn(
         "flex flex-col h-full bg-panel border-border",
         isMobile
-          ? "w-[90vw] max-w-lg border-l shadow-xl shrink-0"
+          ? "w-full shrink-0"
           : "w-full min-w-0 border-r",
       )}
     >
@@ -281,12 +281,11 @@ export function FileEditor() {
     </div>
   );
 
-  // 移动端为抽屉式覆盖，桌面端参与布局流（不遮挡文件树）；点遮罩仅收起面板
+  // 移动端为全屏覆盖（编辑需要全宽；点遮罩/关闭仅收起面板，标签保留），桌面端参与布局流
   if (isMobile) {
     return (
       <div className="fixed inset-0 z-40" role="dialog" aria-modal="true">
-        <div className="absolute inset-0 bg-black/50" onClick={collapseFilePanel} />
-        <div className="absolute inset-y-0 right-0">{body}</div>
+        <div className="absolute inset-0">{body}</div>
       </div>
     );
   }

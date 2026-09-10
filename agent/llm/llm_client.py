@@ -50,7 +50,7 @@ from agent.llm.config import (
     LLMClientConfig,
     ModelType,
 )
-from agent.llm.protocol import ChatProtocol, resolve_chat_protocol
+from agent.llm.protocol import ChatProtocol, is_native_responses_provider, resolve_chat_protocol
 from agent.llm.proxy import _PROXY_ENV_KEYS, _ProxyEnvLease, _ProxyHttpClient
 from agent.llm.reasoning import (
     normalize_effort,
@@ -59,6 +59,7 @@ from agent.llm.reasoning import (
     set_nested_field,
     to_litellm_effort,
 )
+from agent.llm.resilience.classifier import ErrorCategory, classify_llm_error
 from agent.llm.types import (
     ChatResult,
     ChatStreamDelta,
@@ -218,6 +219,9 @@ class LLMClient(BaseEntity):
         self._learned_no_forced_tool_choice: bool = False
         # chat_completions 不支持的内置工具类型已告警标记（每客户端只告警一次）
         self._builtin_chat_warned: bool = False
+        # auto 协议下学到「端点未实现 /responses」（404），本次运行内回退
+        # chat_completions；显式 chat_protocol=responses 不触发（绝对 native）
+        self._responses_native_blocked: bool = False
         super().__init__()
         proxy = self.config.effective_proxy
         info(
@@ -336,24 +340,50 @@ class LLMClient(BaseEntity):
     # 端点报错中输出上限的两种常见表述：
     #   "Range of max_tokens should be [1, 131072]"      (阿里云/千问系)
     #   "does not support max tokens > 524288"           (MiniMax 系)
+    # Responses 端点的对应字段名为 max_output_tokens，一并识别
     _MAX_TOKENS_RANGE_RE = re.compile(r"\[\s*1\s*,\s*(\d+)\s*\]")
-    _MAX_TOKENS_GT_RE = re.compile(r"max(?:imum)?[ _]tokens?\s*>\s*(\d+)", re.IGNORECASE)
+    _MAX_TOKENS_GT_RE = re.compile(
+        r"max(?:imum)?[ _](?:output[ _])?tokens?\s*>\s*(\d+)", re.IGNORECASE,
+    )
 
     @classmethod
     def _parse_output_cap_from_error(cls, exc: Exception) -> Optional[int]:
-        """从 400 报错文本中解析端点的 max_tokens 上限，解析不到返回 None。"""
+        """从 400 报错文本中解析端点的输出上限，解析不到返回 None。"""
         if getattr(exc, "status_code", None) != 400 and not isinstance(
             exc, litellm.BadRequestError
         ):
             return None
-        message = str(exc)
-        if "max_tokens" not in message and "max tokens" not in message.lower():
+        lowered = str(exc).lower()
+        if not any(
+            s in lowered
+            for s in ("max_tokens", "max tokens", "max_output_tokens", "max output tokens")
+        ):
             return None
-        m = cls._MAX_TOKENS_RANGE_RE.search(message) or cls._MAX_TOKENS_GT_RE.search(message)
+        m = cls._MAX_TOKENS_RANGE_RE.search(lowered) or cls._MAX_TOKENS_GT_RE.search(lowered)
         if not m:
             return None
         cap = int(m.group(1))
         return cap if cap > 0 else None
+
+    def _learn_output_cap(self, exc: Exception, kwargs: Dict[str, Any], key: str) -> bool:
+        """从端点 400 报错学习输出上限并钳制 kwargs[key]，命中返回 True 以重试。
+
+        chat_completions 通道 key 为 max_tokens，Responses 通道为
+        max_output_tokens；学习结果本次运行内缓存（_learned_output_cap），
+        两通道构建请求时均预防性钳制。
+        """
+        new_cap = self._parse_output_cap_from_error(exc)
+        current = kwargs.get(key)
+        if new_cap is None or not current or current <= new_cap:
+            return False
+        self._learned_output_cap = new_cap
+        kwargs[key] = new_cap
+        info(
+            f"LLMClient [{self.config.name}] 端点限制 {key} ≤ {new_cap}"
+            f"（原请求 {current}），已钳制并重试，本次运行内缓存",
+            tag="模型",
+        )
+        return True
 
     async def _start_completion(self, kwargs: Dict[str, Any]) -> Any:
         """发起 litellm.acompletion：端点报错自适应学习后重试。
@@ -370,16 +400,7 @@ class LLMClient(BaseEntity):
                 if self._learn_tool_choice_rejection(exc, kwargs):
                     kwargs["tool_choice"] = "auto"
                     continue
-                new_cap = self._parse_output_cap_from_error(exc)
-                current = kwargs.get("max_tokens")
-                if new_cap is not None and current and current > new_cap:
-                    self._learned_output_cap = new_cap
-                    kwargs["max_tokens"] = new_cap
-                    info(
-                        f"LLMClient [{self.config.name}] 端点限制 max_tokens ≤ {new_cap}"
-                        f"（原请求 {current}），已钳制并重试，本次运行内缓存",
-                        tag="模型",
-                    )
+                if self._learn_output_cap(exc, kwargs, "max_tokens"):
                     continue
                 raise
 
@@ -827,7 +848,6 @@ class LLMClient(BaseEntity):
             request_params=self.config.request_params,
             extra_body={**self.config.extra_params, **self.config.extra_body},
             extra_headers=self.config.extra_headers or None,
-            prefer_bridge_for_custom=True,
             http_client=http_client,
         )
 
@@ -919,6 +939,41 @@ class LLMClient(BaseEntity):
         )
         return create_kwargs
 
+    def _should_fallback_from_responses(self, exc: Exception) -> bool:
+        """auto 协议下端点未实现 /responses（404）时回退 chat_completions。
+
+        仅 chat_protocol=auto 且走 native 通道时回退：显式 responses 是
+        「绝对走官方接口」的声明，404 原样上抛；bridge 通道（anthropic 等）
+        的 404 来自 chat_completions 端点本身，回退无意义。
+        命中后记客户端级标记，本进程内后续调用直接走 chat_completions。
+        """
+        if self.config.chat_protocol != ChatProtocol.AUTO.value:
+            return False
+        if not is_native_responses_provider(self.config.api_type):
+            return False
+        if classify_llm_error(exc).category is not ErrorCategory.NOT_FOUND:
+            return False
+        self._responses_native_blocked = True
+        log(
+            f"模型 [{self.config.name}] 端点未实现 /responses（404），"
+            f"本进程内回退 chat_completions（chat_protocol=auto）",
+            "WARNING", tag="模型",
+        )
+        return True
+
+    async def _start_responses_create(self, create_kwargs: Dict[str, Any]) -> Any:
+        """发起 Responses create：端点报错自适应学习后重试（与 _start_completion 同纪律）。"""
+        while True:
+            try:
+                return await self.responses_create(**create_kwargs)
+            except Exception as exc:
+                if self._learn_tool_choice_rejection(exc, create_kwargs):
+                    create_kwargs["tool_choice"] = "auto"
+                    continue
+                if self._learn_output_cap(exc, create_kwargs, "max_output_tokens"):
+                    continue
+                raise
+
     async def _chat_via_responses(
             self,
             messages: list[dict],
@@ -928,7 +983,7 @@ class LLMClient(BaseEntity):
             tool_choice: Optional[Any] = None,
     ) -> ChatResult:
         create_kwargs = self._build_responses_kwargs(messages, options, tools, tool_choice)
-        result = await self.responses_create(**create_kwargs)
+        result = await self._start_responses_create(create_kwargs)
         return result.to_chat_result()
 
     async def _chat_stream_via_responses(
@@ -948,31 +1003,48 @@ class LLMClient(BaseEntity):
         from agent.llm.responses.client import parse_responses_payload
 
         stream_kwargs = self._build_responses_kwargs(messages, options, tools, tool_choice)
-        async for event in self.responses_stream(**stream_kwargs):
-            if event.type == "response.output_text.delta":
-                text = str(event.data.get("delta") or "")
-                if text:
-                    yield ChatStreamDelta(content=text)
-            elif event.type in (
-                "response.reasoning_text.delta",
-                "response.reasoning_summary_text.delta",
-            ):
-                reasoning = str(event.data.get("delta") or "")
-                if reasoning:
-                    yield ChatStreamDelta(reasoning_content=reasoning)
-            elif event.type in ("response.completed", "response.incomplete"):
-                result = parse_responses_payload(event.data.get("response") or event.data)
-                chat_result = result.to_chat_result()
-                yield ChatStreamDelta(
-                    tool_calls=chat_result.tool_calls,
-                    finish_reason=chat_result.finish_reason or "stop",
-                    usage=chat_result.usage,
-                )
-            elif event.type in ("response.failed", "response.error", "error"):
-                result = parse_responses_payload(event.data.get("response") or event.data)
-                raise RuntimeError(
-                    f"Responses 流式调用失败: {result.error or event.data}"
-                )
+        # 端点报错自适应（tool_choice 降级 / max_output_tokens 钳制）：
+        # 仅在未产出任何增量时允许换参重试，防重复下发
+        emitted = False
+        while True:
+            try:
+                async for event in self.responses_stream(**stream_kwargs):
+                    if event.type == "response.output_text.delta":
+                        text = str(event.data.get("delta") or "")
+                        if text:
+                            emitted = True
+                            yield ChatStreamDelta(content=text)
+                    elif event.type in (
+                        "response.reasoning_text.delta",
+                        "response.reasoning_summary_text.delta",
+                    ):
+                        reasoning = str(event.data.get("delta") or "")
+                        if reasoning:
+                            emitted = True
+                            yield ChatStreamDelta(reasoning_content=reasoning)
+                    elif event.type in ("response.completed", "response.incomplete"):
+                        result = parse_responses_payload(event.data.get("response") or event.data)
+                        chat_result = result.to_chat_result()
+                        yield ChatStreamDelta(
+                            tool_calls=chat_result.tool_calls,
+                            finish_reason=chat_result.finish_reason or "stop",
+                            usage=chat_result.usage,
+                        )
+                    elif event.type in ("response.failed", "response.error", "error"):
+                        result = parse_responses_payload(event.data.get("response") or event.data)
+                        raise RuntimeError(
+                            f"Responses 流式调用失败: {result.error or event.data}"
+                        )
+                return
+            except Exception as exc:
+                if emitted:
+                    raise
+                if self._learn_tool_choice_rejection(exc, stream_kwargs):
+                    stream_kwargs["tool_choice"] = "auto"
+                    continue
+                if self._learn_output_cap(exc, stream_kwargs, "max_output_tokens"):
+                    continue
+                raise
 
     async def chat(
             self,
@@ -983,13 +1055,20 @@ class LLMClient(BaseEntity):
             tool_choice: Optional[Any] = None,
     ) -> ChatResult:
         """非流式聊天补全（通过 litellm 统一路由）。"""
-        if self.resolved_chat_protocol == ChatProtocol.RESPONSES:
-            return await self._chat_via_responses(
-                messages,
-                options=options,
-                tools=tools,
-                tool_choice=tool_choice,
-            )
+        if (
+            self.resolved_chat_protocol == ChatProtocol.RESPONSES
+            and not self._responses_native_blocked
+        ):
+            try:
+                return await self._chat_via_responses(
+                    messages,
+                    options=options,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                )
+            except Exception as exc:
+                if not self._should_fallback_from_responses(exc):
+                    raise
         kwargs = self._build_kwargs(messages, options, tools, tool_choice)
         debug(
             f"LLM chat: {self.config.litellm_model}, msgs={len(kwargs['messages'])}",
@@ -1024,15 +1103,25 @@ class LLMClient(BaseEntity):
         usage 仅在最终 chunk（finish chunk 或无 choices 的 usage-only chunk）输出。
         chat_protocol=responses 时分发到 Responses 流式实现。
         """
-        if self.resolved_chat_protocol == ChatProtocol.RESPONSES:
-            async for delta in self._chat_stream_via_responses(
-                messages,
-                options=options,
-                tools=tools,
-                tool_choice=tool_choice,
-            ):
-                yield delta
-            return
+        if (
+            self.resolved_chat_protocol == ChatProtocol.RESPONSES
+            and not self._responses_native_blocked
+        ):
+            yielded_any = False
+            try:
+                async for delta in self._chat_stream_via_responses(
+                    messages,
+                    options=options,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                ):
+                    yielded_any = True
+                    yield delta
+                return
+            except Exception as exc:
+                # 已产出增量则禁止回退（重来会重复下发内容）
+                if yielded_any or not self._should_fallback_from_responses(exc):
+                    raise
         kwargs = self._build_kwargs(messages, options, tools, tool_choice, stream=True)
         kwargs["stream_options"] = {"include_usage": True}
         stream: Any = None
@@ -1378,8 +1467,11 @@ class LLMClient(BaseEntity):
             await embed_client.aclose()
         affinity_handler = self._cache_affinity_handler
         self._cache_affinity_handler = None
-        if affinity_handler is not None and not affinity_handler.client.is_closed:
-            await affinity_handler.client.aclose()
+        if affinity_handler is not None:
+            # litellm>=1.96 的 client 属性在已关闭时会惰性重建，单次取用后关闭
+            pool = affinity_handler.client
+            if not pool.is_closed:
+                await pool.aclose()
 
     def update_config(self, **kwargs: Any) -> None:
         old_proxy = self.config.effective_proxy

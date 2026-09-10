@@ -11,7 +11,8 @@
     "cognee": "Cognee",
     "graph": "Graph",
     "daily": "Daily",
-    "docs": "Docs"
+    "docs": "Docs",
+    "rules": "Rules"
   },
   "healthTitle": "Memory Status",
   "healthSubtitle": "Memory system health status",
@@ -278,5 +279,9 @@
   },
   "dimsValue": "{{dims}} dims",
   "rebuildVectorsConfirm": "This wipes ALL memory vectors and rebuilds with the current model (runs in background; semantic search degrades to keyword-only until done). Usually only needed after switching the embedding model. Continue?",
-  "fullRebuildConfirm": "This wipes the file index and rebuilds from scratch (duration depends on file count; file search may be incomplete meanwhile). Continue?"
+  "fullRebuildConfirm": "This wipes the file index and rebuilds from scratch (duration depends on file count; file search may be incomplete meanwhile). Continue?",
+  "rulesPanel": {
+    "title": "Memory System Rules",
+    "hint": "System-level prompt document (config/memory_rules.md) injected into the stable tools block; the AI has no write path — editable only here as a whole document"
+  }
 }

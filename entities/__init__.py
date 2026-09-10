@@ -4,7 +4,8 @@
 每个实体是一个子目录，包含 ``tools.py`` 文件，
 使用 ``@tool`` 装饰器和 ``entity()`` 声明注册到 ``EntityRegistry``。
 导入本模块的 ``discover_entities()`` 即可触发全部实体注册。
-``reload_entities()`` 支持运行时热重载。
+运行时的目录增删与代码热更由 ``entities/hotplug.py`` 的 ``sync_entities()``
+对账完成（Web 刷新入口 / 目录监听自动触发）。
 
 实体自治规范（Entity Autonomy）：
 - ``entities/<name>/router.py:build_router()`` → 自动挂载到 ``/api/entity/<name>``
@@ -14,40 +15,30 @@
 
 from __future__ import annotations
 
-import asyncio
-import importlib
-import sys
-from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from core.log import log
 
-_loaded_modules: set[str] = set()
+from . import hotplug as _hotplug
+
+# 兼容历史导出（归属记录与回收实现已迁移至 entities/hotplug.py）
+_loaded_modules = _hotplug._loaded_modules
 
 
-def discover_entities() -> list[str]:
+def discover_entities() -> List[str]:
     """扫描 entities/ 下所有子目录，导入 tools.py 触发 @tool 注册。
 
     返回成功加载的实体模块名列表。
     """
-    entity_dir = Path(__file__).parent
-    loaded: list[str] = []
-    failed: list[str] = []
+    loaded: List[str] = []
+    failed: List[str] = []
 
-    for item in sorted(entity_dir.iterdir()):
-        if not item.is_dir() or item.name.startswith("_"):
-            continue
-        tools_file = item / "tools.py"
-        if not tools_file.exists():
-            continue
-        module_path = f"entities.{item.name}.tools"
-        try:
-            importlib.import_module(module_path)
-            loaded.append(item.name)
-            _loaded_modules.add(item.name)
-        except Exception as e:
-            failed.append(item.name)
-            log(f"entity load failed: {item.name} - {e}", "WARNING")
+    for name in sorted(_hotplug.scan_entity_dirs()):
+        if _hotplug.load_entity(name):
+            _hotplug._loaded_modules.add(name)
+            loaded.append(name)
+        else:
+            failed.append(name)
 
     if loaded:
         log(f"entities loaded: {', '.join(loaded)} ({len(loaded)})")
@@ -71,82 +62,16 @@ async def discover_entity_lifecycles() -> int:
     此时 MemoryStore/LLMManager 等基础设施已就绪。
     实体没有该函数则跳过；调用失败仅 WARNING 不中断启动。
     """
-    entity_dir = Path(__file__).parent
     registered = 0
-
-    for item in sorted(entity_dir.iterdir()):
-        if not item.is_dir() or item.name.startswith("_"):
-            continue
-        init_file = item / "__init__.py"
-        if not init_file.exists():
-            continue
-        module_path = f"entities.{item.name}"
-        try:
-            mod = importlib.import_module(module_path)
-        except Exception as e:
-            log(f"实体 lifecycle 模块加载失败: {item.name} - {e}", "WARNING", tag="实体")
-            continue
-        register = getattr(mod, "register_lifecycle", None)
-        if not callable(register):
-            continue
-        try:
-            result = register()
-            if asyncio.iscoroutine(result):
-                await result
+    entity_dir = _hotplug.scan_entity_dirs()
+    for name in sorted(entity_dir):
+        if await _hotplug.register_entity_lifecycle(name):
             registered += 1
-            log(f"实体 lifecycle 已注册: {item.name}", "DEBUG", tag="实体")
-        except Exception as e:
-            log(f"实体 lifecycle 注册失败: {item.name} - {e}", "WARNING", tag="实体")
-
     if registered:
         log(f"实体 lifecycle 注册完成: {registered} 个", tag="实体")
     return registered
 
 
-def reload_entities() -> Dict[str, Any]:
-    """Hot-reload: rescan entities/ directory, load new ones, report status.
-
-    Returns summary dict with added/existing/failed counts.
-    """
-    entity_dir = Path(__file__).parent
-    added: list[str] = []
-    existing: list[str] = []
-    failed: list[str] = []
-
-    for item in sorted(entity_dir.iterdir()):
-        if not item.is_dir() or item.name.startswith("_"):
-            continue
-        tools_file = item / "tools.py"
-        if not tools_file.exists():
-            continue
-
-        module_path = f"entities.{item.name}.tools"
-
-        if item.name in _loaded_modules:
-            existing.append(item.name)
-            try:
-                mod = sys.modules.get(module_path)
-                if mod:
-                    importlib.reload(mod)
-            except Exception as e:
-                log(f"entity reload failed: {item.name} - {e}", "DEBUG")
-            continue
-
-        try:
-            importlib.import_module(module_path)
-            added.append(item.name)
-            _loaded_modules.add(item.name)
-            log(f"entity hot-loaded: {item.name}")
-        except Exception as e:
-            failed.append(item.name)
-            log(f"entity hot-load failed: {item.name} - {e}", "WARNING")
-
-    result = {
-        "added": added,
-        "existing": existing,
-        "failed": failed,
-        "total": len(_loaded_modules),
-    }
-    if added:
-        log(f"hot-reload: {len(added)} new entities: {', '.join(added)}")
-    return result
+async def reload_entities(reload_existing: bool = True) -> Dict[str, Any]:
+    """热同步实体：对账 entities/ 目录，新增热插入、消失热拔除、存续热重载。"""
+    return await _hotplug.sync_entities(reload_existing=reload_existing)

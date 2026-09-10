@@ -7,6 +7,9 @@ export interface WorkspaceNode {
   size?: number;
   modified: number;
   binary?: boolean;
+  /** 目录是否含有可见子项（空目录不显示展开箭头，避免无效请求） */
+  has_children?: boolean;
+  /** 已加载的子项；目录未加载时为 undefined（配合 has_children 渲染展开箭头） */
   children?: WorkspaceNode[];
 }
 

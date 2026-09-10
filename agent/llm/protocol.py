@@ -133,15 +133,20 @@ def resolve_chat_protocol(
     configured: str,
     *,
     api_type: str,
-    prefer_native: bool = True,
 ) -> ChatProtocol:
-    """解析模型配置中的 chat_protocol。"""
+    """解析模型配置中的 chat_protocol。
+
+    auto：openai/azure 优先 Responses（native 直连；端点未实现 /responses
+    时由 LLMClient 记忆 404 并回退 chat_completions），其余 api_type 回退
+    chat_completions。显式 responses 即绝对走官方 /responses 接口
+    （非 openai 系 api_type 无官方端点，经 litellm bridge 桥接）。
+    """
     value = (configured or ChatProtocol.CHAT_COMPLETIONS.value).strip().lower()
     if value not in CHAT_PROTOCOLS:
         raise ValueError(f"无效的 chat_protocol: {configured}")
     protocol = ChatProtocol(value)
     if protocol != ChatProtocol.AUTO:
         return protocol
-    if prefer_native and is_native_responses_provider(api_type):
+    if is_native_responses_provider(api_type):
         return ChatProtocol.RESPONSES
     return ChatProtocol.CHAT_COMPLETIONS

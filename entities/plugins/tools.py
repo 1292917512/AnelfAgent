@@ -29,6 +29,7 @@ entity_manifest(
     display_name="插件管理",
     icon="puzzle",
     description="插件包的安装、升级、移除与市场订阅管理",
+    order=63,
     version="1.0.0",
     group="plugins",
 )

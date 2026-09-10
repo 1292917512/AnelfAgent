@@ -57,6 +57,12 @@ _MCP_CONFIGS = {
                            "（视觉模型可直接看到截图；关闭则仅保留文本占位）",
             "default": True,
         },
+        "mcp_liveness_ping_seconds": {
+            "description": "已连接 server 的存活探测周期秒数（周期性 ping 检测进程死亡/静默断线，"
+                           "0=关闭探测；关闭后死连接只能等调用失败才被发现）",
+            "default": 60,
+            "unit": "秒",
+        },
     },
 }
 

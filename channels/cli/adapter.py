@@ -44,6 +44,7 @@ class CLIChannel(BaseChannel[CLIConfig]):
     # ---- BaseChannel 必填类属性 ----
     channel_id = "cli"
     display_name = "命令行"
+    display_order = 90
     capabilities = {ChannelCapability.SEND_TEXT}
     metadata = ChannelMetadata(
         name="CLI",

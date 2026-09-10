@@ -40,6 +40,7 @@ entity_manifest(
     display_name="网络工具",
     icon="globe",
     description="联网检索、网页正文读取、GitHub 仓库文档、HTTP 请求、文件下载",
+    order=30,
     version="1.0.0",
     group="web",
 )

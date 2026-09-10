@@ -86,7 +86,12 @@ def load_notes_content() -> str:
 
 
 def save_notes_content(content: str) -> None:
-    """覆盖写入主便签文件内容（原子写入，``_atomic_write`` 的公开入口）。"""
+    """覆盖写入主便签文件内容（原子写入，``_atomic_write`` 的公开入口）。
+
+    系统受管区块（AUTO 标记对）必须逐字节保留——本入口服务 AI 工具与
+    Web 编辑，系统自身的区块维护走 update_memory_status_block。
+    """
+    _assert_managed_blocks_intact(load_notes_content(), content)
     _atomic_write(get_notes_path(), content)
 
 
@@ -196,9 +201,48 @@ _HIGH_PRIORITY_KEYWORDS = (
 # 一级标题分界点：之前为静态指南（归 stable 层），之后为动态状态（归 context 层）
 _DYNAMIC_SPLIT_MARKER = "# 当前状态"
 
+# 「当前状态」标题行容错匹配：允许任意标题层级与前缀编号（## 四、当前状态 等），
+# 主便签经人工/AI 演进后标题形式可能漂移，分界语义锚定标题文本而非精确字节
+_STATUS_HEADING_RE = re.compile(
+    r"^#{1,6}\s*(?:[一二三四五六七八九十百\d]+[、.．]\s*)?当前状态[^\n]*$",
+    re.MULTILINE,
+)
+
 # 主便签中的系统受管状态区块标记：区块内容仅由心跳维护重写，AI/用户手写部分不动
 AUTO_STATUS_BEGIN = "<!-- AUTO:memory-status BEGIN -->"
 AUTO_STATUS_END = "<!-- AUTO:memory-status END -->"
+
+# 系统受管区块（<!-- AUTO:name BEGIN/END --> 标记对）：内容由系统写入路径维护，
+# 便签写工具必须逐字节保留（写保护见 _assert_managed_blocks_intact）
+_MANAGED_BLOCK_RE = re.compile(
+    r"<!-- AUTO:([\w-]+) BEGIN -->.*?<!-- AUTO:\1 END -->",
+    re.DOTALL,
+)
+
+
+def _split_at_status_heading(content: str) -> tuple[str, str]:
+    """以「当前状态」标题行为分界拆分主便签，返回（静态指南段, 动态状态段）。
+
+    动态段含标题行本身；无匹配时返回（全文, ""）——此时全文按静态指南处理。
+    """
+    m = _STATUS_HEADING_RE.search(content)
+    if not m:
+        return content, ""
+    return content[:m.start()], content[m.start():]
+
+
+def _assert_managed_blocks_intact(old_text: str, new_text: str) -> None:
+    """校验系统受管区块（AUTO 标记对）在写入后逐字节保留，被改动/删除时拒绝。
+
+    系统写入路径（update_memory_status_block 等）直接走 _atomic_write，
+    不经过本校验；便签写工具（AI/Web）一律先校验再落盘。
+    """
+    for match in _MANAGED_BLOCK_RE.finditer(old_text):
+        if match.group(0) not in new_text:
+            raise ValueError(
+                f"系统受管区块（AUTO:{match.group(1)}）不允许修改或删除，"
+                "该区块由系统自动维护，请只编辑标记外的内容"
+            )
 
 
 def update_memory_status_block(body: str) -> bool:
@@ -214,14 +258,13 @@ def update_memory_status_block(body: str) -> bool:
         pre, rest = text.split(AUTO_STATUS_BEGIN, 1)
         _, post = rest.split(AUTO_STATUS_END, 1)
         new_text = pre + block + post
-    elif _DYNAMIC_SPLIT_MARKER in text:
-        new_text = text.replace(
-            _DYNAMIC_SPLIT_MARKER,
-            _DYNAMIC_SPLIT_MARKER + "\n\n" + block + "\n",
-            1,
-        )
     else:
-        new_text = text.rstrip() + f"\n\n{_DYNAMIC_SPLIT_MARKER}\n\n{block}\n"
+        static_part, dynamic_part = _split_at_status_heading(text)
+        if dynamic_part:
+            heading_line, _, rest = dynamic_part.partition("\n")
+            new_text = static_part + heading_line + "\n\n" + block + "\n" + rest
+        else:
+            new_text = text.rstrip() + f"\n\n{_DYNAMIC_SPLIT_MARKER}\n\n{block}\n"
     if new_text == text:
         return False
     _atomic_write(path, new_text)
@@ -414,6 +457,8 @@ def write_memory_file(file_path: str, content: str) -> int:
     """写入指定记忆文件（原子写入），返回行数。"""
     target = _validate_md_path(file_path)
     with _heartbeat_write_guard(file_path):
+        existing = target.read_text(encoding="utf-8") if target.exists() else ""
+        _assert_managed_blocks_intact(existing, content)
         _atomic_write(target, content)
     return content.count("\n") + 1
 
@@ -452,6 +497,7 @@ def patch_memory_file_content(
         else:
             new_content = content.replace(old_text, new_text, 1)
             replaced = 1
+        _assert_managed_blocks_intact(content, new_content)
         _atomic_write(target, new_content)
     return {"replaced": replaced, "total_occurrences": total}
 
@@ -484,7 +530,9 @@ def edit_file_lines(
                 new_content += "\n"
             replacement = new_content.splitlines(keepends=True)
         new_lines = lines[: start_line - 1] + replacement + lines[end_line:]
-        _atomic_write(target, "".join(new_lines))
+        new_text = "".join(new_lines)
+        _assert_managed_blocks_intact("".join(lines), new_text)
+        _atomic_write(target, new_text)
     return {"total_lines": len(new_lines)}
 
 
@@ -605,7 +653,9 @@ def write_section_content(
                 content += "\n"
             body_lines = content.splitlines(keepends=True)
         new_lines = lines[:heading_line] + body_lines + lines[end_line:]
-        _atomic_write(target, "".join(new_lines))
+        new_text = "".join(new_lines)
+        _assert_managed_blocks_intact(file_content, new_text)
+        _atomic_write(target, new_text)
         return {
             "action": "replaced",
             "heading": heading,
@@ -649,7 +699,9 @@ def delete_section_content(file_path: str, heading: str) -> dict:
     heading_line: int = sec["heading_line"]
     end_line: int = sec["end_line"]
     new_lines = lines[:heading_line - 1] + lines[end_line:]
-    _atomic_write(target, "".join(new_lines))
+    new_text = "".join(new_lines)
+    _assert_managed_blocks_intact(file_content, new_text)
+    _atomic_write(target, new_text)
     result: dict = {
         "deleted_lines": end_line - heading_line + 1,
         "total_lines": len(new_lines),
@@ -727,14 +779,15 @@ def _build_file_index() -> str:
 def build_static_guide() -> str:
     """构建静态指南内容（归入 stable 层，对话内冻结）。
 
-    包含 memory.md 中「# 记忆系统指南」到「# 当前状态」之间的文档，
+    包含 memory.md 中「当前状态」标题之前的文档（铁律/架构/使用原则），
     以及 skills.md 的常用工作流。这些内容在运行期间极少变化。
     """
     content = load_notes_content()
     if not content.strip():
         return ""
-    # 以「# 当前状态」为分界，前半部分为静态指南
-    static_part = content.split(_DYNAMIC_SPLIT_MARKER, 1)[0].strip()
+    # 以「当前状态」标题为分界，前半部分为静态指南
+    static_part, _ = _split_at_status_heading(content)
+    static_part = static_part.strip()
     # skills.md 工作流手册
     skills_path = get_memory_dir() / "skills.md"
     skills_text = ""
@@ -757,9 +810,8 @@ def build_dynamic_notes() -> str:
     content = load_notes_content()
     if not content.strip():
         return ""
-    # 以「# 当前状态」为分界，后半部分为动态内容
-    parts = content.split(_DYNAMIC_SPLIT_MARKER, 1)
-    dynamic_part = (_DYNAMIC_SPLIT_MARKER + parts[1]) if len(parts) > 1 else ""
+    # 以「当前状态」标题为分界，后半部分为动态内容
+    _, dynamic_part = _split_at_status_heading(content)
     dynamic_part = _strip_auto_status_block(dynamic_part)
     if not dynamic_part.strip():
         return ""
@@ -871,8 +923,7 @@ async def write_notes(content: str) -> str:
     """
     try:
         async with _file_lock:
-            p = get_notes_path()
-            _atomic_write(p, content)
+            save_notes_content(content)
         lines = content.count("\n") + 1
         log(f"便签更新: {lines} 行", tag="思维")
         return json.dumps(

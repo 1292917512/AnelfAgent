@@ -58,6 +58,11 @@ _TOOL_SYNC_DEBOUNCE_SEC = 1.0
 # 连接稳定运行该时长后，重连重试预算复位（秒）：
 # 长期运行的服务偶发抖动不应累计耗尽预算而永久死亡
 _RECONNECT_BUDGET_RESET_SEC = 300.0
+# 存活探测（ping）的默认周期与单次超时（秒）：
+# stdio 子进程退出/网络静默断开时 SDK 不会通知等待方，不主动探测
+# session 会永远滞留为"已连接"僵尸状态；周期可经 mcp_liveness_ping_seconds 调整
+_DEFAULT_LIVENESS_PING_SEC = 60.0
+_LIVENESS_PING_TIMEOUT_SEC = 10.0
 
 # 分组目录描述的截断上限
 _GROUP_DESC_TOOL_LIMIT = 8        # 描述中列出的工具数量上限
@@ -445,6 +450,13 @@ class MCPBridge:
                 raise
             log(f"MCP server '{server_name}' 连接已断开，尝试重连...", "WARNING")
             if not await self._try_reconnect(server_name):
+                srv_cfg = self._find_server_config(server_name)
+                if srv_cfg is not None and not srv_cfg.enabled:
+                    return tool_error(
+                        f"MCP server '{server_name}' 连接已断开，且当前为禁用状态",
+                        cause=ErrorCause.STATE, retryable=False,
+                        hint="如需使用请先经 connect_mcp_server 或 Web 面板启用",
+                    )
                 return tool_error(
                     f"MCP server '{server_name}' 连接已断开且重连失败",
                     cause=ErrorCause.NETWORK, retryable=True,
@@ -494,6 +506,11 @@ class MCPBridge:
 
         srv = self._find_server_config(server_name)
         if not srv:
+            return False
+        if not srv.enabled:
+            # 禁用状态下调用失败只报断线，不复活连接——
+            # 否则 enabled=false 的 server 会被一次工具调用重新拉起
+            log(f"MCP server '{server_name}' 已禁用，跳过重连", tag="MCP")
             return False
         try:
             with self._lock:
@@ -681,7 +698,7 @@ class MCPBridge:
                                 self._set_last_error(srv.name, "")
                                 log(f"MCP server '{srv.name}' 自动重连成功 (第 {iteration} 次)，{count} 个工具")
 
-                            await stop_event.wait()
+                            await self._wait_with_liveness(srv.name, session, stop_event)
                             return
 
                 except Exception as exc:
@@ -727,6 +744,42 @@ class MCPBridge:
                 self._lifecycle_tasks.pop(srv.name, None)
             if not first_attempt:
                 self._cleanup_server_entities(srv.name)
+
+    async def _wait_with_liveness(self, name: str, session: Any, stop_event: Any) -> None:
+        """等待停止信号，期间按周期 ping 探测连接存活。
+
+        stdio 子进程退出或网络静默断开时，SDK 的接收循环结束不会通知
+        等待方——纯 ``stop_event.wait()`` 会让死连接永远显示"已连接"。
+        周期性 send_ping 让死活状态在一个探测周期内收敛：探测失败抛
+        ConnectionError，由 lifecycle 的断线分支按配置决定重连或退出。
+        周期经 mcp_liveness_ping_seconds 热读取（≤0 关闭探测）。
+        """
+        import asyncio
+
+        from core.config import get_config
+
+        while True:
+            try:
+                interval = float(
+                    get_config("mcp_liveness_ping_seconds", _DEFAULT_LIVENESS_PING_SEC) or 0
+                )
+            except Exception:
+                interval = _DEFAULT_LIVENESS_PING_SEC
+            if interval <= 0:
+                await stop_event.wait()
+                return
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                return
+            except asyncio.TimeoutError:
+                pass  # 探测周期到（正常控制流，非异常）
+            try:
+                await asyncio.wait_for(
+                    session.send_ping(), timeout=_LIVENESS_PING_TIMEOUT_SEC,
+                )
+            except Exception as exc:
+                raise ConnectionError(f"存活探测失败: {exc}") from exc
+            log(f"MCP server '{name}' 存活探测正常", "DEBUG", tag="MCP")
 
     def _session_kwargs(self, server_name: str) -> Dict[str, Any]:
         """构造 ClientSession 关键字参数。

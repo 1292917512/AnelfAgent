@@ -89,6 +89,8 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
 
     display_name = "HTTP 接口"
 
+    display_order = 40
+
     capabilities: Set[ChannelCapability] = {ChannelCapability.SEND_TEXT}
 
     async def start(self) -> None:

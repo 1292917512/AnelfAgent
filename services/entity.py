@@ -29,21 +29,25 @@ class EntityService:
         else:
             entities = EntityRegistry.get_all()
 
-        return [
-            {
-                "name": e.name,
-                "type": e.entity_type.value,
-                "description": e.description,
-                "enabled": e.enabled,
-                "group": e.group,
-                "source": e.source,
-                "tags": e.tags,
-                "config_group": e.config_group,
-                "has_instance": e.instance is not None,
-                "manifest": EntityRegistry.get_group_manifest(e.group),
-            }
-            for e in entities
-        ]
+        return sorted(
+            (
+                {
+                    "name": e.name,
+                    "type": e.entity_type.value,
+                    "description": e.description,
+                    "enabled": e.enabled,
+                    "group": e.group,
+                    "source": e.source,
+                    "tags": e.tags,
+                    "config_group": e.config_group,
+                    "has_instance": e.instance is not None,
+                    "manifest": EntityRegistry.get_group_manifest(e.group),
+                }
+                for e in entities
+            ),
+            # 按分组排序权重归类（一类的放一块），同组内按实体名稳定
+            key=lambda item: (*EntityRegistry.group_sort_key(item["group"]), item["name"]),
+        )
 
     @staticmethod
     def _resolve_metadata(name: str) -> Optional[Any]:

@@ -1,17 +1,20 @@
-"""Responses 请求路由与能力校验。"""
+"""Responses 请求路由与能力校验。
+
+路由语义：openai/azure 一律 native 直连 /responses（显式选择 responses 协议
+即绝对走官方接口；auto 模式下端点未实现 /responses 的回退由 LLMClient 处理），
+其余 api_type（anthropic 等）没有官方 Responses 端点，经 litellm bridge 桥接。
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
-from urllib.parse import urlparse
 
 from agent.llm.protocol import (
     BUILTIN_TOOL_TYPES,
     ProviderCapability,
     TransportMode,
     get_provider_capability,
-    is_native_responses_provider,
 )
 
 
@@ -27,43 +30,10 @@ class ResponsesRoute:
     capability: ProviderCapability
     force_chat_completions_api: bool
     api_type: str
-    api_base: str
 
 
-_OFFICIAL_OPENAI_HOSTS = frozenset({
-    "api.openai.com",
-    "openai.azure.com",
-})
-
-
-def _host_of(api_base: str) -> str:
-    if not api_base:
-        return ""
-    parsed = urlparse(api_base if "://" in api_base else f"https://{api_base}")
-    return (parsed.hostname or "").lower()
-
-
-def is_custom_openai_compatible(api_type: str, api_base: str) -> bool:
-    """openai/azure 但指向自定义兼容端点。"""
-    if api_type not in {"openai", "azure"}:
-        return False
-    host = _host_of(api_base)
-    if not host:
-        return api_type == "openai"
-    if host in _OFFICIAL_OPENAI_HOSTS:
-        return False
-    if host.endswith(".openai.azure.com") or host.endswith(".azure.com"):
-        return False
-    return True
-
-
-def resolve_responses_route(
-    *,
-    api_type: str,
-    api_base: str = "",
-    prefer_bridge_for_custom: bool = True,
-) -> ResponsesRoute:
-    """按 provider/base_url 选择 native 或 bridge。"""
+def resolve_responses_route(*, api_type: str) -> ResponsesRoute:
+    """按 api_type 能力矩阵选择 native 或 bridge。"""
     capability = get_provider_capability(api_type)
     if capability.create == TransportMode.UNSUPPORTED:
         return ResponsesRoute(
@@ -71,33 +41,19 @@ def resolve_responses_route(
             capability=capability,
             force_chat_completions_api=False,
             api_type=api_type,
-            api_base=api_base,
         )
-
-    if is_native_responses_provider(api_type):
-        if prefer_bridge_for_custom and is_custom_openai_compatible(api_type, api_base):
-            # 兼容网关未必实现 /responses，默认走 bridge，避免直接 404。
-            return ResponsesRoute(
-                transport=TransportMode.BRIDGE,
-                capability=capability,
-                force_chat_completions_api=True,
-                api_type=api_type,
-                api_base=api_base,
-            )
+    if capability.create == TransportMode.NATIVE:
         return ResponsesRoute(
             transport=TransportMode.NATIVE,
             capability=capability,
             force_chat_completions_api=False,
             api_type=api_type,
-            api_base=api_base,
         )
-
     return ResponsesRoute(
         transport=TransportMode.BRIDGE,
         capability=capability,
         force_chat_completions_api=True,
         api_type=api_type,
-        api_base=api_base,
     )
 
 

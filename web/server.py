@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import secrets
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -96,6 +97,77 @@ def _mount_entity_routers(app: FastAPI) -> None:
         prefix_tpl="/api/entity/{}",
         tag_tpl="entity-{}",
     )
+
+
+def _mount_one_module_router(app: FastAPI, kind: str, name: str) -> None:
+    """运行时挂载单个模块路由（热插入目录时经 EVENT_MODULE_ADDED 触发）。
+
+    已挂载过同名前缀时先摘除再挂载（幂等，代码重导入后路由对象需刷新）。
+    """
+    import importlib
+
+    if kind == "channel":
+        pkg_name, entry_file, prefix_tpl, tag_tpl = (
+            "channels", "adapter.py", "/api/channels/{}", "channel-{}",
+        )
+    else:
+        pkg_name, entry_file, prefix_tpl, tag_tpl = (
+            "entities", "router.py", "/api/entity/{}", "entity-{}",
+        )
+    prefix = prefix_tpl.format(name)
+    pkg_dir = Path(__file__).resolve().parent.parent / pkg_name
+    if not (pkg_dir / name / entry_file).exists():
+        return
+    try:
+        module_path = f"{pkg_name}.{name}.{entry_file[:-3]}"
+        mod = sys.modules.get(module_path) or importlib.import_module(module_path)
+    except Exception:
+        return
+    build_router = getattr(mod, "build_router", None)
+    if not callable(build_router):
+        return
+    _unmount_module_router(app, prefix)
+    try:
+        app.include_router(build_router(), prefix=prefix, tags=[tag_tpl.format(name)])
+        log(f"模块路由已热挂载: {prefix}")
+    except Exception as exc:
+        log(f"模块路由热挂载失败: {name} - {exc}", "WARNING")
+
+
+def _unmount_module_router(app: FastAPI, prefix: str) -> int:
+    """运行时摘除指定前缀的模块路由（热拔除目录时经 EVENT_MODULE_REMOVED 触发）。"""
+    routes = app.router.routes
+    doomed = [
+        r for r in routes
+        if (lambda p: p == prefix or p.startswith(prefix + "/"))(getattr(r, "path", ""))
+    ]
+    for r in doomed:
+        routes.remove(r)
+    if doomed:
+        log(f"模块路由已热卸载: {prefix} ({len(doomed)} 条)")
+    return len(doomed)
+
+
+def _subscribe_module_hotplug(app: FastAPI) -> None:
+    """订阅模块热插拔事件：目录增删时同步挂载/摘除模块自带路由。"""
+    from core.event_bus import (
+        EVENT_MODULE_ADDED,
+        EVENT_MODULE_REMOVED,
+        event_bus,
+    )
+
+    @event_bus.on(EVENT_MODULE_ADDED, owner="web.server")
+    async def _on_added(payload: Dict[str, Any]) -> None:
+        kind, name = payload.get("kind", ""), payload.get("name", "")
+        if kind in ("entity", "channel") and name:
+            _mount_one_module_router(app, kind, name)
+
+    @event_bus.on(EVENT_MODULE_REMOVED, owner="web.server")
+    async def _on_removed(payload: Dict[str, Any]) -> None:
+        kind, name = payload.get("kind", ""), payload.get("name", "")
+        if kind in ("entity", "channel") and name:
+            prefix = f"/api/channels/{name}" if kind == "channel" else f"/api/entity/{name}"
+            _unmount_module_router(app, prefix)
 
 
 def _make_token(password: str) -> str:
@@ -242,6 +314,7 @@ def create_app() -> FastAPI:
 
     _mount_channel_routers(app)
     _mount_entity_routers(app)
+    _subscribe_module_hotplug(app)
 
     @app.get("/health")
     async def health() -> Dict[str, str]:

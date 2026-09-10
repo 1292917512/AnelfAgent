@@ -26,7 +26,7 @@ entity_manifest(
     icon="terminal",
     description="完整 SSH 客户端：连接管理、命令执行、文件传输，AI 与用户共用",
     version="1.0.0",
-    order=30,
+    order=34,
     group="ssh",
 )
 

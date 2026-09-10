@@ -17,6 +17,7 @@ from core.config import (
     ConfigRegistry,
     ConfigValueType,
     mask_secret,
+    register_configs_safe,
     register_model_configs,
 )
 
@@ -207,3 +208,30 @@ class TestConfigStores:
         ConfigManager.update({"st_x": 1, "plain": 2})
         assert store.data == {"st_x": 1}
         assert ConfigManager.get("plain") == 2
+
+
+class TestUnregister:
+    """热拔除回收：配置组与外部存储后端的注销。"""
+
+    def test_unregister_group_removes_items_and_group(self) -> None:
+        register_configs_safe({
+            "entity/_t_hotplug": {"_t_hp_key": {"description": "t", "default": 1}},
+        })
+        assert ConfigRegistry.get_item("_t_hp_key") is not None
+        assert "entity/_t_hotplug" in ConfigRegistry.get_all_groups()
+
+        assert ConfigRegistry.unregister_group("entity/_t_hotplug") == 1
+        assert ConfigRegistry.get_item("_t_hp_key") is None
+        assert "entity/_t_hotplug" not in ConfigRegistry.get_all_groups()
+        # 幂等：重复注销返回 0
+        assert ConfigRegistry.unregister_group("entity/_t_hotplug") == 0
+
+    def test_unregister_store_detaches_routing(self) -> None:
+        store = _MemoryStore()
+        ConfigManager.register_store("st_", store)
+        assert ConfigManager.unregister_store("st_") is True
+        assert ConfigManager.unregister_store("st_") is False
+        # 注销后键读写回落到主配置层
+        ConfigManager.set("st_a", 5)
+        assert "st_a" in ConfigManager.get_all()
+        assert store.data == {}

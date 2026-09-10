@@ -19,6 +19,7 @@ from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import deferred_tool
 
 from .embedding import Embedder, wake_embedding_worker
+from .hub import HUB_TAG
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
 from .store.tag_intel import ASSOC_PREFIXES, ENTITY_PREFIXES
@@ -104,7 +105,7 @@ async def memorize(
 
     Args:
         content: 要记住的内容（简洁扼要，一两句话）
-        tags: 标签，逗号分隔。推荐前缀：type:(fact/event/permanent) user:(uid) group:(id) topic:(主题) channel:(频道) goal:(目标id)。type:permanent 表示永久记忆；与某目标相关的记忆打 goal:xxx 标签，可在目标视角串联召回
+        tags: 标签，逗号分隔。推荐前缀：type:(fact/event/permanent) user:(uid) group:(id) topic:(主题) channel:(频道) goal:(目标id)。type:permanent 表示永久记忆；与某目标相关的记忆打 goal:xxx 标签，可在目标视角串联召回。打新标签前先用 memory_index 查看既有形态，复用优先于新造；主标签记忆经 type:permanent + main:hub 整段覆写更新
         importance: 重要性 0-1，默认 0.7。permanent 类型自动设为 1.0
         sensitivity: 私密度。normal（默认）/ private（他人私事，不向第三方透露）/ secret（高度敏感）。
             记住「全记得但不什么都说」：private/secret 的记忆照常参与召回，仅在向他人转述时克制
@@ -263,11 +264,17 @@ async def _tag_near_duplicate_hints(tag_list: list[str]) -> list[str]:
 
 
 async def _upsert_permanent(content: str, tag_list: list[str], importance: float) -> str:
-    """永久记忆的 upsert：按非 type: 标签匹配已有条目，存在则更新，不存在则新增。"""
+    """永久记忆的 upsert：按非 type: 标签匹配已有条目，存在则更新，不存在则新增。
+
+    主标签记忆（main:hub）只按 HUB_TAG 单标签匹配——AI 覆写时可自由附带
+    其他标签，交集匹配会因此失配而创建出重复 hub。
+    """
     deps = _deps()
     assert deps is not None  # 调用方 memorize 已做未就绪检查
     store = deps.store
     match_tags = [t for t in tag_list if not t.startswith("type:")]
+    if HUB_TAG in match_tags:
+        match_tags = [HUB_TAG]
     existing: list[MemoryEntry] = []
     if match_tags:
         candidates = await store.search_by_tags(match_tags, limit=10)
@@ -756,6 +763,13 @@ async def forget(memory_id: int) -> str:
         deps = _deps()
         if deps is None:
             return _store_not_ready()
+        entry = await deps.store.get(memory_id)
+        if entry is not None and HUB_TAG in entry.tags:
+            return tool_error(
+                "主标签记忆（main:hub）是系统常驻的索引中枢，禁止归档",
+                cause=ErrorCause.PERMISSION, retryable=False,
+                hint="需要更新其内容时，用 memorize 携带 type:permanent + main:hub 标签整段覆写",
+            )
         ok = await deps.store.archive_memory(memory_id, reason="manual_forget")
         return json.dumps({
             "ok": ok,

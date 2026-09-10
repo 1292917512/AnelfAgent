@@ -86,9 +86,9 @@ export function NotesPanel() {
   );
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <Card title={t("memoryFiles")}>
-        <div className="space-y-1">
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:flex-1 md:min-h-0">
+      <Card title={t("memoryFiles")} className="md:flex md:flex-col md:min-h-0">
+        <div className="space-y-1 max-h-[45vh] md:max-h-none overflow-y-auto md:flex-1 md:min-h-0">
           <button onClick={openMain} className={cn("w-full text-left p-2 rounded-md text-sm transition-colors flex items-center gap-2", isMainEdit ? "bg-accent-subtle text-accent" : "text-foreground hover:bg-hover")}>
             <FileText size={14} className="flex-shrink-0" />
             <div className="min-w-0"><p className="font-medium">{t("mainNote")}</p><p className="text-[11px] text-muted font-mono truncate">{notes?.path ?? MAIN_NOTE_PATH}</p></div>
@@ -101,7 +101,7 @@ export function NotesPanel() {
           ))}
         </div>
       </Card>
-      <Card title={isMainEdit ? t("mainNote") : editingPath ? editingPath.split("/").pop() ?? "" : t("selectFile")} className="md:col-span-2" actions={
+      <Card title={isMainEdit ? t("mainNote") : editingPath ? editingPath.split("/").pop() ?? "" : t("selectFile")} className="md:col-span-2 md:flex md:flex-col md:min-h-0" actions={
         (isMainEdit || editingPath) ? (
           <button onClick={() => { if (isMainEdit) saveMainMutation.mutate(editContent); else if (editingPath) saveFileMutation.mutate({ path: editingPath, content: editContent }); }}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] transition-all"><Save size={14} /> {t("common:save")}</button>
@@ -109,7 +109,7 @@ export function NotesPanel() {
       }>
         {(isMainEdit || editingPath) ? (
           <textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} rows={16}
-            className="w-full bg-elevated border border-input rounded-md px-3 py-2 text-sm text-foreground font-mono outline-none focus:border-ring resize-y" />
+            className="w-full bg-elevated border border-input rounded-md px-3 py-2 text-sm text-foreground font-mono outline-none focus:border-ring resize-y md:resize-none md:flex-1 md:min-h-0" />
         ) : (<p className="text-sm text-muted">{t("clickToEdit")}</p>)}
       </Card>
 

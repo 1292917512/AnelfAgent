@@ -417,6 +417,43 @@ def create_bootstrap() -> FlowMachine:
         for channel in discover_channels():
             cm.register(channel)
 
+    @machine.node(skip_on_error=True, depends_on=["register_entities", "register_channels"])
+    async def watch_module_dirs():
+        """注册 entities/ 与 channels/ 目录结构监听：目录增删自动触发热插拔同步。
+
+        登记于 discover 完成之后，启动期的初始结构不会触发同步；
+        代码原地修改不监听（经 Web 刷新手动热更，避免保存即打断运行）。
+        """
+        from agent.channel.config import channels_dir
+        from agent.channel.config_watcher import get_config_watcher
+        from core.config import get_config_bool, register_configs_safe
+        from entities.hotplug import _entities_dir
+
+        register_configs_safe({
+            "system/hotplug": {
+                "hotplug_watch_enabled": {
+                    "description": "监听实体/频道目录增删并自动热插拔（代码修改经刷新按钮手动热更）",
+                    "default": True,
+                },
+            },
+        })
+
+        def _on_entities_changed() -> None:
+            if not get_config_bool("hotplug_watch_enabled", True):
+                return
+            from entities.hotplug import sync_entities
+            asyncio.create_task(sync_entities(), name="hotplug.entities")
+
+        def _on_channels_changed() -> None:
+            if not get_config_bool("hotplug_watch_enabled", True):
+                return
+            from agent.channel.hotplug import sync_channels
+            asyncio.create_task(sync_channels(), name="hotplug.channels")
+
+        watcher = get_config_watcher()
+        watcher.watch_dir(str(_entities_dir()), _on_entities_changed, marker="tools.py")
+        watcher.watch_dir(str(channels_dir()), _on_channels_changed, marker="adapter.py")
+
     @machine.node(skip_on_error=False, depends_on=["register_channels", "start_agent"])
     async def register_channel_services():
         """频道与看门狗注册进 Lifecycle：on_start 后台启动，cleanup 逆序回收。

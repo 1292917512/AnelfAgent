@@ -466,6 +466,23 @@ async def read_notes() -> Dict[str, str]:
     return {"content": _mem_svc.read_notes(), "path": _mem_svc.get_notes_path()}
 
 
+# ── 记忆体系铁律文档（config/memory_rules.md；stable 工具块规则段，AI 无写入路径） ──
+
+@router.get("/rules")
+async def get_memory_rules() -> Dict[str, str]:
+    return {"content": _mem_svc.get_memory_rules()}
+
+
+class WriteMemoryRulesRequest(BaseModel):
+    content: str
+
+
+@router.put("/rules")
+async def save_memory_rules(req: WriteMemoryRulesRequest) -> Dict[str, str]:
+    _mem_svc.save_memory_rules(req.content)
+    return {"status": "ok"}
+
+
 class WriteNotesRequest(BaseModel):
     content: str
 

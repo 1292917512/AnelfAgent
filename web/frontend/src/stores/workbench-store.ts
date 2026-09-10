@@ -59,6 +59,10 @@ interface WorkbenchState {
   activateFile: (path: string) => void;
   closeFile: (path?: string) => void;
   closeAllFiles: () => void;
+  /** 文件树重命名/移动联动：oldPath 为文件则精确重映射，为目录则重映射其下全部已打开标签 */
+  remapOpenFile: (oldPath: string, newPath: string) => void;
+  /** 文件树删除联动：关闭该路径本身或其目录下全部已打开标签 */
+  closeFilesUnder: (path: string) => void;
   /** 收起编辑器面板（保留全部标签与未保存草稿） */
   collapseFilePanel: () => void;
   /** 切换编辑器全屏展开 */
@@ -140,6 +144,35 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
       };
     }),
   closeAllFiles: () => set({ openFiles: [], fileRoots: {}, openFilePath: null, filePanelOpen: false, filePanelExpanded: false }),
+  remapOpenFile: (oldPath, newPath) =>
+    set((s) => {
+      // 命中规则：精确路径或其目录前缀（oldPath 为目录时重映射整棵子树的标签）
+      const hit = (p: string) => p === oldPath || p.startsWith(oldPath + "/");
+      const remap = (p: string) => (p === oldPath ? newPath : newPath + p.slice(oldPath.length));
+      if (!s.openFiles.some(hit)) return {};
+      const openFiles = s.openFiles.map((p) => (hit(p) ? remap(p) : p));
+      const fileRoots: Record<string, WorkspaceRoot> = {};
+      for (const [p, r] of Object.entries(s.fileRoots)) fileRoots[hit(p) ? remap(p) : p] = r;
+      const openFilePath = s.openFilePath && hit(s.openFilePath) ? remap(s.openFilePath) : s.openFilePath;
+      return { openFiles, fileRoots, openFilePath };
+    }),
+  closeFilesUnder: (path) =>
+    set((s) => {
+      const hit = (p: string) => p === path || p.startsWith(path + "/");
+      if (!s.openFiles.some(hit)) return {};
+      const openFiles = s.openFiles.filter((p) => !hit(p));
+      const fileRoots = Object.fromEntries(Object.entries(s.fileRoots).filter(([p]) => !hit(p)));
+      const openFilePath =
+        s.openFilePath && hit(s.openFilePath) ? (openFiles[openFiles.length - 1] ?? null) : s.openFilePath;
+      const empty = openFiles.length === 0;
+      return {
+        openFiles,
+        fileRoots,
+        openFilePath,
+        filePanelOpen: empty ? false : s.filePanelOpen,
+        filePanelExpanded: empty ? false : s.filePanelExpanded,
+      };
+    }),
   collapseFilePanel: () => set({ filePanelOpen: false }),
   toggleFilePanelExpanded: () => set((s) => ({ filePanelExpanded: !s.filePanelExpanded, filePanelOpen: true })),
   setFileTreeFocus: (path) => set({ fileTreeFocus: path }),

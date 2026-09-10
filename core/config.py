@@ -251,6 +251,17 @@ class ConfigRegistry:
         return cls._registry.get(key)
 
     @classmethod
+    def unregister_group(cls, group: str) -> int:
+        """注销整个配置组及其全部配置项（模块热拔除时回收），返回移除的配置项数。"""
+        with cls._lock:
+            keys = cls._groups.pop(group, [])
+            count = 0
+            for key in keys:
+                if cls._registry.pop(key, None) is not None:
+                    count += 1
+            return count
+
+    @classmethod
     def get_group_items(cls, group: str) -> List[ConfigItem]:
         """获取分组下的所有配置项"""
         keys = cls._groups.get(group, [])
@@ -357,6 +368,12 @@ class ConfigManager:
         with cls._lock:
             cls._stores[prefix] = store
         store.load()
+
+    @classmethod
+    def unregister_store(cls, prefix: str) -> bool:
+        """注销外部存储后端（模块热拔除时回收），命中前缀的键读写回落到主配置。"""
+        with cls._lock:
+            return cls._stores.pop(prefix, None) is not None
 
     @classmethod
     def _store_for(cls, key: str) -> "Optional[ConfigStore]":

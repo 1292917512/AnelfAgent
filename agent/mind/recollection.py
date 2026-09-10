@@ -106,6 +106,13 @@ async def get_recollection(
             return []
         return [{"role": "system", "content": content}] if content else []
 
+    # 主标签记忆（main:hub）：索引中枢与长工作流工作窗口，完整/精简模式均注入
+    # （精简模式砍掉的是召回与环境便签；主标签是 AI 自己的维护面，与 pins 同口径）
+    hub_text = ""
+    if mind.memory_store is not None:
+        from agent.memory.hub import load_hub_block
+        hub_text = await load_hub_block(mind.memory_store)
+
     if lean:
         memory_msgs, profile_msgs, relation_msgs, goal_msgs = [], [], [], []
         # 永久记忆直接取 pins（不跑检索）：内容字节稳定，并入 context 层
@@ -192,6 +199,7 @@ async def get_recollection(
         goal_msgs=goal_msgs,
         summary_row=summary_row,
         status_text=status_text,
+        hub_text=hub_text,
     )
 
 

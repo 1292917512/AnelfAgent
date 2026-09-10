@@ -1,4 +1,5 @@
 import type { TFunction } from "i18next";
+import i18n from "@/i18n";
 import type { ReasoningEffort } from "@/lib/types";
 
 /** reasoning effort 的 7 个等级（与后端 ReasoningEffort 一一对应） */
@@ -17,15 +18,17 @@ function cap(s: string): string {
 }
 
 /**
- * 渲染 7 个 reasoning effort <option>（label 取 t(`${keyPrefix}effort{Off|Minimal|...}`)）。
+ * 渲染 7 个 reasoning effort <option>（label 取 t(`${keyPrefix}effort{Off|Minimal|...}`)，
+ * 档位名后括号标注下发给端点的具体等级标签，如「深度（high）」）。
  * 各页面命名空间前缀不同：config 页 "tasks."、heartbeat 页 "schedule."、models 页无前缀。
  * 空值/"跟随全局"等首选项由调用方按语义自行添加。
  */
 export function ReasoningEffortOptions({ t, keyPrefix = "" }: { t: TFunction; keyPrefix?: string }) {
+  const [lp, rp] = i18n.language?.startsWith("zh") ? ["（", "）"] : [" (", ")"];
   return (
     <>
       {REASONING_EFFORT_VALUES.map((v) => (
-        <option key={v} value={v}>{t(`${keyPrefix}effort${cap(v)}`)}</option>
+        <option key={v} value={v}>{`${t(`${keyPrefix}effort${cap(v)}`)}${lp}${v}${rp}`}</option>
       ))}
     </>
   );

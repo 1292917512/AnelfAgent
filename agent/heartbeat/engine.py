@@ -520,6 +520,15 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"自动记忆捕获失败: {e}", "DEBUG", tag="心跳")
 
+        # 主标签记忆（main:hub）自愈：缺失/被清理时重建骨架（幂等）
+        if self.mind.memory_store:
+            try:
+                from agent.memory.hub import ensure_hub
+                if await ensure_hub(self.mind.memory_store):
+                    hb_log.append_entry("[主标签记忆] 骨架缺失，已重建")
+            except Exception as e:
+                log(f"主标签记忆自愈失败: {e}", "DEBUG", tag="心跳")
+
         # 主便签记忆状态区块：让 AI 随时了解自己的记忆情况（内容不变时不写）
         await self._write_memory_status(consolidate_report, type_counts)
 
@@ -701,6 +710,33 @@ class HeartbeatEngine:
                         for a, n in sorted(audit.items(), key=lambda kv: -kv[1])
                     )
                     lines.append(f"- 近 24h 记忆变更：{detail}")
+            except Exception:
+                pass
+            # 标签索引观测：标签空间规模 + 高频联想标签（AI 据此维护标签纪律、防止膨胀）
+            try:
+                from core.config import get_config_int as _get_int
+                tag_top_n = _get_int("memory_status_tag_top_n", 8)
+                if tag_top_n > 0:
+                    tag_df = await store.list_tags()
+                    if tag_df:
+                        from agent.memory.store.tag_intel import ASSOC_PREFIXES
+                        prefix_counts: Dict[str, int] = {}
+                        for tag in tag_df:
+                            prefix = tag.split(":", 1)[0] if ":" in tag else "其他"
+                            prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
+                        dist = " / ".join(
+                            f"{k} {v}" for k, v in
+                            sorted(prefix_counts.items(), key=lambda kv: -kv[1])
+                        )
+                        hot = [
+                            f"{t}({c})" for t, c in
+                            sorted(tag_df.items(), key=lambda kv: -kv[1])
+                            if t.startswith(ASSOC_PREFIXES)
+                        ][:tag_top_n]
+                        tag_line = f"- 标签索引：共 {len(tag_df)} 个（{dist}）"
+                        if hot:
+                            tag_line += f" · 高频: {', '.join(hot)}"
+                        lines.append(tag_line)
             except Exception:
                 pass
             for fname, cap in self._NOTES_CAPACITY.items():

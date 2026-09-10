@@ -650,7 +650,10 @@ class MemoryRetriever:
             return []
         out: list[MemorySearchResult] = []
         # list_recent 窗口内按时间升序返回，反转为最新优先
+        from agent.memory.hub import HUB_TAG
         for e in reversed(entries):
+            if HUB_TAG in e.tags:
+                continue  # 主标签记忆有专属注入块（hub 层），不占 pin 名额
             rid = f"mem:{e.id}"
             if rid in existing:
                 continue

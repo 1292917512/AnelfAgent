@@ -47,5 +47,9 @@ export interface MCPToolInfo {
 export interface MCPToggleResult {
   success: boolean;
   message: string;
+  /** 切换后的启用状态（enabled=false 时 connected 恒为 false） */
+  enabled?: boolean;
+  /** 启用后是否实际连上（目标暂不可达时为 false，启用已落盘） */
+  connected?: boolean;
   tool_count?: number;
 }

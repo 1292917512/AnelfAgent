@@ -25,7 +25,7 @@ entity_manifest(
     description="把本机 SillyTavern 纳管为实体：进程生命周期、git 更新/提交、"
                 "角色卡与模型配置桥接、运行状态动态上下文注入",
     version="1.0.0",
-    order=30,
+    order=39,
     nav={"path": "/entities/sillytavern", "label": "sillytavern", "nav_group": "group_ability"},
     group="sillytavern",
 )

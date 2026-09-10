@@ -162,10 +162,11 @@ class TestGoldenOrder:
             anything=SN(uid=1, group_id=0),
         )
         layers = [m["_layer"] for m in msgs]
+        # 尾部动态区按字节稳定度从静到动：画像（批次更新）→ 状态（每 tick 变）→ 召回（每周期重建）
         assert layers == [
             "stable", "stable", "summary",
             "conversation", "conversation",
-            "context", "status", "profile", "memory",
+            "context", "profile", "status", "memory",
         ], layers
         # 会话消息角色保持 DB 原样（尾部为 user，不触发 prefill 修复）
         conv = [m for m in msgs if m["_layer"] == "conversation"]

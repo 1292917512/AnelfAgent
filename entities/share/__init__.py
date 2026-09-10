@@ -21,7 +21,7 @@ entity_manifest(
     icon="Share2",
     description="文件下载 / 媒体渲染 / 网址推送，支持过期策略与手动撤销",
     version="1.1.0",
-    order=35,
+    order=36,
     group="share",
 )
 

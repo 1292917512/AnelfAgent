@@ -14,14 +14,10 @@
   "hideTools": "收起工具",
   "noTools": "该服务器暂无已注册工具",
   "toolsLoadFailed": "工具详情加载失败",
-  "connecting": "连接中...",
-  "disconnecting": "断开中...",
   "connectedStatus": "已连接",
   "disconnectedStatus": "未连接",
   "enabledStatus": "已启用",
   "disabledStatus": "已禁用",
-  "connect": "连接",
-  "disconnect": "断开连接",
   "lastError": "最近错误",
   "deleteTitle": "删除服务器",
   "deleteMessage": "确定删除 MCP 服务器「{{name}}」吗？该操作会同时断开连接并从配置文件中移除，不可恢复。",
@@ -72,5 +68,9 @@
   "stayAwakeHintOn": "设为常驻（工具组始终出现在工具列表，高频服务推荐）",
   "stayAwakeHintOff": "设为沉睡（缩小上下文前缀，提升缓存命中）",
   "oauthPending": "待授权 → 点击打开",
-  "oauthAuthorized": "已授权"
+  "oauthAuthorized": "已授权",
+  "enabling": "启用中...",
+  "disabling": "禁用中...",
+  "enable": "启用（并尝试连接）",
+  "disable": "禁用（重启后不再自动连接）"
 }

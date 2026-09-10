@@ -29,7 +29,7 @@ entity_manifest(
     icon="Workflow",
     description="连接外部 Dify 实例的桥梁：应用/工作流编排、运行调用、MCP 桥接，AI 与用户共管",
     version="1.0.0",
-    order=25,
+    order=41,
     group="dify",
 )
 

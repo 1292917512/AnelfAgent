@@ -442,6 +442,10 @@ export const memoryApi = {
     read: () => api.get<{ content: string; path: string }>("/memory/notes"),
     write: (content: string) => api.put("/memory/notes", { content }),
   },
+  rules: {
+    get: () => api.get<{ content: string }>("/memory/rules"),
+    save: (content: string) => api.put("/memory/rules", { content }),
+  },
   files: {
     list: () => api.get<MemoryFileInfo[]>("/memory/files"),
     read: (path: string) => api.get<{ content: string }>("/memory/files/content", { params: { path } }),
@@ -511,6 +515,7 @@ export function apiErrorMessage(err: unknown, fallback: string): string {
 // Adapters（频道配置读写统一走 configMetaApi，组 adapter/<id>）
 export const adaptersApi = {
   list: () => api.get<AdapterListResult>("/adapters/"),
+  reload: () => api.post("/adapters/reload"),
   toggle: (key: string) => api.put(`/adapters/${encodeURIComponent(key)}/toggle`),
   testHealth: (key: string) =>
     api.post<ChannelTestHealthResult>(`/adapters/${encodeURIComponent(key)}/test/health`),
@@ -621,6 +626,18 @@ export const workspaceApi = {
     api.put("/workspace/file", { path, content, root }),
   mkdir: (path: string, root: WorkspaceRoot = "workspace") => api.post("/workspace/mkdir", { path, root }),
   remove: (path: string, root: WorkspaceRoot = "workspace") => api.delete("/workspace/file", { params: { path, root } }),
+  /** 重命名 / 移动（dst 为目标全路径，目标父目录须已存在） */
+  move: (src: string, dst: string, root: WorkspaceRoot = "workspace") =>
+    api.post<{ status: string; path: string }>("/workspace/move", { src, dst, root }),
+  /** 上传文件到指定目录（multipart，重名 409） */
+  upload: (dir: string, file: File, root: WorkspaceRoot = "workspace") => {
+    const form = new FormData();
+    form.append("file", file);
+    return api.post<{ status: string; path: string; size: number }>("/workspace/upload", form, {
+      params: { dir, root },
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+  },
   search: (q: string, limit = 30) =>
     api.get<{ query: string; files: WorkspaceSearchHit[] }>("/workspace/search", { params: { q, limit } }),
   /** 原始字节服务 URL（图片/音视频预览；inline 供 iframe 内联渲染，如 PDF） */

@@ -65,6 +65,8 @@ class TelegramAdapter(BaseChannel[TelegramConfig]):
 
     display_name = "Telegram"
 
+    display_order = 22
+
     capabilities: Set[ChannelCapability] = {
             # 发送类
             ChannelCapability.SEND_TEXT,

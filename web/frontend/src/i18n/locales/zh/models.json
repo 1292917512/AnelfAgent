@@ -116,7 +116,7 @@
     "context_window": "上下文窗口",
     "max_tokens": "最大输出 Token",
     "chat_protocol": "对话协议",
-    "chat_protocolHint": "Mind 默认仍走 Chat Completions；选 responses 时内部自动桥接",
+    "chat_protocolHint": "responses = 直连官方 /responses 接口（anthropic 等无官方端点的经桥接）；auto = 优先 Responses，端点不支持自动回退 Chat Completions",
     "temperatureHint": "留空 = 不下发，由模型默认决定",
     "builtin_tools": "内置工具",
     "builtin_toolsHint": "供应商服务端执行的内置工具（逗号分隔），与本地同名工具冲突时内置优先；常见：web_search, web_extractor, code_interpreter, t2i_search, i2i_search"
@@ -124,7 +124,7 @@
   "chatProtocol": {
     "chat_completions": "Chat Completions",
     "responses": "Responses API",
-    "auto": "自动（官方 OpenAI/Azure 优先 Responses）"
+    "auto": "自动（优先 Responses，端点不支持自动回退）"
   },
   "providerFields": {
     "id": "供应商 ID",

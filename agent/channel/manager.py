@@ -15,7 +15,7 @@ from core.log import log
 from core.tags import strip_message_meta_tags
 
 from .base import BaseChannel, ChannelStatus
-from .config import channels_dir, config_key
+from .config import channels_dir, config_key, register_channel_schema
 
 
 def list_configured_channels() -> Dict[str, bool]:
@@ -46,6 +46,42 @@ def set_channel_enabled(channel_id: str, enabled: bool) -> bool:
     ConfigManager.set(config_key(channel_id, "enabled"), bool(enabled))
     ConfigManager.save()
     return True
+
+
+def load_channel_class(channel_id: str) -> Optional[Type[BaseChannel]]:
+    """导入频道 adapter 模块并解析频道类。
+
+    ``CHANNEL_CLASS`` 标准符号优先，缺失时回退扫描模块内的 BaseChannel 子类；
+    目录/模块缺失或导入失败返回 None。
+    """
+    if not (channels_dir() / channel_id / "adapter.py").exists():
+        return None
+    try:
+        mod = importlib.import_module(f"channels.{channel_id}.adapter")
+    except Exception as exc:
+        log(f"频道模块加载失败: {channel_id} - {exc}", "ERROR", tag="通道")
+        return None
+    channel_cls: Optional[Type[BaseChannel]] = getattr(mod, "CHANNEL_CLASS", None)
+    if channel_cls is None:
+        for attr_name in dir(mod):
+            attr = getattr(mod, attr_name)
+            if isinstance(attr, type) and issubclass(attr, BaseChannel) and attr is not BaseChannel:
+                channel_cls = attr
+                break
+    return channel_cls
+
+
+def get_channel_display_order(channel_id: str) -> int:
+    """读取频道自声明的展示排序权重（display_order，缺省 100）。
+
+    已注册频道读实例类属性；未实例化频道经模块导入读类属性
+    （模块在 discover 阶段已导入过，此处命中 importlib 缓存）。
+    """
+    channel = get_channel_manager().get(channel_id)
+    if channel is not None:
+        return int(getattr(channel, "display_order", 100))
+    channel_cls = load_channel_class(channel_id)
+    return int(getattr(channel_cls, "display_order", 100)) if channel_cls else 100
 
 
 class ChannelManager(BaseEntity):
@@ -196,19 +232,10 @@ class ChannelManager(BaseEntity):
         if not (channel_dir / "adapter.py").exists():
             log(f"频道激活失败，目录或 adapter.py 不存在: {channel_id}", "WARNING", tag="通道")
             return False
-        try:
-            mod = importlib.import_module(f"channels.{channel_id}.adapter")
-        except Exception as exc:
-            log(f"频道模块加载失败: {channel_id} - {exc}", "ERROR", tag="通道")
-            return False
-
-        channel_cls: Optional[Type[BaseChannel]] = getattr(mod, "CHANNEL_CLASS", None)
-        if channel_cls is None:
-            for attr_name in dir(mod):
-                attr = getattr(mod, attr_name)
-                if isinstance(attr, type) and issubclass(attr, BaseChannel) and attr is not BaseChannel:
-                    channel_cls = attr
-                    break
+        # 确保配置 schema/store/watcher 已注册（幂等）——启动后被跳过的频道
+        # 或运行时新增的频道目录可能尚未接入统一配置面
+        register_channel_schema(channel_id)
+        channel_cls = load_channel_class(channel_id)
         if channel_cls is None:
             log(f"频道类未找到: {channel_id}", "ERROR", tag="通道")
             return False

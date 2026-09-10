@@ -63,6 +63,7 @@ class WeixinChannel(BaseChannel[WeixinConfig]):
 
     channel_id = "weixin"
     display_name = "微信"
+    display_order = 21
     capabilities: Set[ChannelCapability] = {
         ChannelCapability.SEND_TEXT,
         ChannelCapability.SEND_PHOTO,

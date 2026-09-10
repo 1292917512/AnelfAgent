@@ -20,9 +20,9 @@ export function ConvPanel() {
   });
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <Card title={t("conversationList")}>
-        <div className="space-y-1 max-h-80 overflow-y-auto">
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:flex-1 md:min-h-0">
+      <Card title={t("conversationList")} className="md:flex md:flex-col md:min-h-0">
+        <div className="space-y-1 max-h-[45vh] md:max-h-none overflow-y-auto md:flex-1 md:min-h-0">
           {scopes.length === 0 && <p className="text-sm text-muted">{t("noConversation")}</p>}
           {scopes.map((s: Record<string, string>) => (
             <button key={`${s.scope_type}-${s.scope_id}`} onClick={() => setSelected({ type: s.scope_type ?? "", id: s.scope_id ?? "" })}
@@ -32,10 +32,10 @@ export function ConvPanel() {
           ))}
         </div>
       </Card>
-      <Card title={t("messageRecord")} className="md:col-span-2" actions={selected ? (
+      <Card title={t("messageRecord")} className="md:col-span-2 md:flex md:flex-col md:min-h-0" actions={selected ? (
         <button onClick={() => clearConvMutation.mutate()} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-all"><Trash2 size={14} /> {t("clearConversation")}</button>
       ) : undefined}>
-        <div className="flex flex-col-reverse space-y-2 space-y-reverse max-h-96 overflow-y-auto">
+        <div className="flex flex-col-reverse space-y-2 space-y-reverse max-h-[45vh] md:max-h-none overflow-y-auto md:flex-1 md:min-h-0">
           {!selected && <p className="text-sm text-muted">{t("selectConversation")}</p>}
           {[...messages].reverse().map((m: Record<string, unknown>) => (
             <div key={m.id != null ? String(m.id) : `${m.role}-${m.timestamp}`} className={cn("flex items-start gap-2 p-2 rounded-md text-sm", m.role === "user" ? "bg-accent-subtle" : "bg-elevated border border-border")}>

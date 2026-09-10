@@ -95,5 +95,7 @@
     "reply_to": "引用回复",
     "inline_keyboard": "内联键盘",
     "streaming": "流式输出"
-  }
+  },
+  "reload": "热同步",
+  "reloading": "热同步中..."
 }

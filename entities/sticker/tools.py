@@ -38,6 +38,7 @@ entity_manifest(
     display_name="表情包",
     icon="sticker",
     description="收藏/语义检索/发送表情包，文搜图、图搜图",
+    order=35,
     version="1.0.0",
     group="sticker",
 )

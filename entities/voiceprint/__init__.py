@@ -28,7 +28,7 @@ entity_manifest(
     icon="audio-lines",
     description="说话人声纹库：识别/归属管理/合并，语音转写语义检索，上游 pipeline 对接",
     version="1.0.0",
-    order=40,
+    order=37,
     group="voiceprint",
 )
 

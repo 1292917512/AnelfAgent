@@ -29,6 +29,7 @@ def _fake_mind(pins_text: str = "") -> SN:
     return SN(
         char=SN(get_personality_msg=lambda: [{"content": "人格"}]),
         retriever=retriever,
+        memory_store=None,  # 替身无记忆库：主标签记忆注入位为空
         _direct_vision=lambda: False,
         _file_cache=_FileCache(),
         _resolve_entity_scope=lambda anything: "user_lean:test",
@@ -108,4 +109,5 @@ class TestLeanRecollection:
         assert kwargs["relation_msgs"] == []
         assert kwargs["goal_msgs"] == []
         assert kwargs["status_text"] == ""
+        assert kwargs["hub_text"] == ""  # 无记忆库时主标签记忆位为空
         assert mind._build_layered_prompts.call_args.kwargs["lean"] is True

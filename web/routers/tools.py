@@ -58,8 +58,8 @@ async def toggle_group(group: str) -> Dict[str, Any]:
 
 @router.post("/reload")
 async def reload_entities() -> Dict[str, Any]:
-    result = _tool_svc.reload_entities()
-    return result
+    """热同步实体目录：新增热插入 / 消失热拔除 / 存续代码热重载。"""
+    return await _tool_svc.reload_entities()
 
 
 @router.get("/plugins")

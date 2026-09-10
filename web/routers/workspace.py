@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 from core.log import log
@@ -22,8 +22,12 @@ router = APIRouter(prefix="/workspace", tags=["workspace"])
 
 _MAX_READ_BYTES = 512 * 1024
 _MAX_WRITE_BYTES = 2 * 1024 * 1024
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _TREE_MAX_ENTRIES = 500
 _PROJECT_TREE_MAX_ENTRIES = 3000
+# 单层目录返回上限：顶层（请求目标本身）不受全局配额限制，只受本上限约束，
+# 保证任何目录都能被逐层展开到（修复配额被浅层兄弟耗尽导致深层分支消失的问题）
+_DIR_MAX_CHILDREN = 500
 _SEARCH_MAX_RESULTS = 30
 _SEARCHABLE_EXTS = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".md", ".txt", ".yaml", ".yml",
@@ -104,10 +108,41 @@ def _is_binary(path: str) -> bool:
         return True
 
 
-def _entry(abs_path: str, *, with_children: bool, depth: int, budget: List[int], root: str = "") -> Optional[Dict[str, Any]]:
-    """构建单个目录树条目，budget[0] 为剩余条目配额。"""
-    if budget[0] <= 0:
-        return None
+def _dir_has_visible_children(dir_abs: str) -> bool:
+    """目录是否含有可见子项（与树渲染同一过滤口径：隐藏项 / _SKIP_DIRS 不算）。"""
+    try:
+        with os.scandir(dir_abs) as it:
+            for e in it:
+                if e.name.startswith("."):
+                    continue
+                if e.is_dir(follow_symlinks=False) and e.name in _SKIP_DIRS:
+                    continue
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _entry(
+    abs_path: str,
+    *,
+    depth: int,
+    budget: List[int],
+    stats: Dict[str, bool],
+    root: str = "",
+    free: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """构建单个目录树条目。
+
+    budget[0] 为剩余全局配额（仅递归展开的层级消耗）；free=True 的层（请求目标
+    的直接子级）不消耗配额，保证逐层懒加载永远拿得到完整的一层。stats["truncated"]
+    记录本次请求是否发生过任何截断（配额耗尽或单层超限）。
+    """
+    if not free:
+        if budget[0] <= 0:
+            stats["truncated"] = True
+            return None
+        budget[0] -= 1
     name = os.path.basename(abs_path)
     try:
         st = os.stat(abs_path)
@@ -116,7 +151,6 @@ def _entry(abs_path: str, *, with_children: bool, depth: int, budget: List[int],
     is_dir = os.path.isdir(abs_path)
     if is_dir and name in _SKIP_DIRS:
         return None
-    budget[0] -= 1
     node: Dict[str, Any] = {
         "name": name,
         "path": _rel(abs_path, root=root),
@@ -124,15 +158,25 @@ def _entry(abs_path: str, *, with_children: bool, depth: int, budget: List[int],
         "modified": int(st.st_mtime),
     }
     if is_dir:
-        node["children"] = _list_dir(abs_path, depth=depth - 1, budget=budget, root=root) if with_children and depth > 0 else []
+        node["has_children"] = _dir_has_visible_children(abs_path)
+        if depth > 0 and node["has_children"]:
+            node["children"] = _list_dir(abs_path, depth=depth - 1, budget=budget, stats=stats, root=root)
     else:
         node["size"] = st.st_size
         node["binary"] = _is_binary(abs_path)
     return node
 
 
-def _list_dir(dir_abs: str, *, depth: int, budget: List[int], root: str = "") -> List[Dict[str, Any]]:
-    """列出一层目录（文件夹优先，按名称排序），按需递归。"""
+def _list_dir(
+    dir_abs: str,
+    *,
+    depth: int,
+    budget: List[int],
+    stats: Dict[str, bool],
+    root: str = "",
+    free: bool = False,
+) -> List[Dict[str, Any]]:
+    """列出一层目录（文件夹优先，按名称排序），按需递归。free 语义同 _entry。"""
     try:
         names = sorted(os.listdir(dir_abs), key=lambda n: (not os.path.isdir(os.path.join(dir_abs, n)), n.lower()))
     except OSError:
@@ -141,12 +185,13 @@ def _list_dir(dir_abs: str, *, depth: int, budget: List[int], root: str = "") ->
     for name in names:
         if name.startswith("."):
             continue
-        node = _entry(os.path.join(dir_abs, name), with_children=True, depth=depth, budget=budget, root=root)
+        if len(nodes) >= _DIR_MAX_CHILDREN:
+            stats["truncated"] = True
+            break
+        node = _entry(os.path.join(dir_abs, name), depth=depth, budget=budget, stats=stats, root=root, free=free)
         if node is None:
             continue
         nodes.append(node)
-        if budget[0] <= 0:
-            break
     return nodes
 
 
@@ -159,18 +204,21 @@ async def get_tree(
     """获取目录树（默认两层，懒加载可传子路径）。
 
     root=project 时浏览整个项目根目录，规则与工作区完全一致（仅基准目录不同）。
+    请求目标的直接子级不受全局配额限制（仅受单层 500 条上限），全局配额只约束
+    递归预取的更深层级——任何目录都能逐层展开，不会因浅层兄弟过多而消失。
     """
     base_root = _resolve_root(root)
     base = _resolve(path, root)
     if not os.path.isdir(base):
         raise HTTPException(status_code=404, detail="目录不存在")
     budget = [_PROJECT_TREE_MAX_ENTRIES if root == "project" else _TREE_MAX_ENTRIES]
+    stats: Dict[str, bool] = {"truncated": False}
     # 目录遍历为同步磁盘 I/O（项目根 3000 条配额），移入线程避免阻塞事件循环
-    children = await asyncio.to_thread(_list_dir, base, depth=depth, budget=budget, root=base_root)
+    children = await asyncio.to_thread(_list_dir, base, depth=depth, budget=budget, stats=stats, root=base_root, free=True)
     return {
         "path": "" if base == base_root else _rel(base, root=base_root),
         "children": children,
-        "truncated": budget[0] <= 0,
+        "truncated": stats["truncated"],
     }
 
 
@@ -259,6 +307,89 @@ async def make_dir(req: MkdirRequest) -> Dict[str, Any]:
     except OSError as e:
         raise server_error("创建目录", e) from e
     return {"status": "ok", "path": _rel(fp, root=_resolve_root(req.root))}
+
+
+class MoveRequest(BaseModel):
+    src: str
+    dst: str
+    root: str = "workspace"
+
+
+@router.post("/move")
+async def move_entry(req: MoveRequest) -> Dict[str, Any]:
+    """重命名 / 移动文件或目录（dst 为目标全路径，目标父目录须已存在）。"""
+    base_root = _resolve_root(req.root)
+    src = _resolve(req.src, req.root)
+    dst = _resolve(req.dst, req.root)
+    if not os.path.exists(src):
+        raise HTTPException(status_code=404, detail="源路径不存在")
+    if src == dst:
+        return {"status": "ok", "path": _rel(src, root=base_root)}
+    if dst == base_root:
+        raise HTTPException(status_code=400, detail="不能覆盖根目录")
+    if os.path.exists(dst):
+        raise HTTPException(status_code=409, detail="目标路径已存在")
+    if os.path.isdir(src):
+        src_real = os.path.realpath(src)
+        dst_real = os.path.realpath(dst)
+        if dst_real == src_real or dst_real.startswith(src_real + os.sep):
+            raise HTTPException(status_code=400, detail="不能把目录移动到自身内部")
+    if not os.path.isdir(os.path.dirname(dst)):
+        raise HTTPException(status_code=404, detail="目标目录不存在")
+    try:
+        import shutil
+        await asyncio.to_thread(shutil.move, src, dst)
+    except OSError as e:
+        raise server_error("移动", e) from e
+    rel = _rel(dst, root=base_root)
+    log(f"工作台移动: {_rel(src, root=base_root)} -> {rel}", "DEBUG", tag="工作区")
+    return {"status": "ok", "path": rel}
+
+
+@router.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    dir: str = Query(""),
+    root: str = Query("workspace"),
+) -> Dict[str, Any]:
+    """上传文件到指定目录（multipart，上限 50MB，重名拒绝覆盖）。"""
+    target_dir = _resolve(dir, root)
+    if not os.path.isdir(target_dir):
+        raise HTTPException(status_code=404, detail="目标目录不存在")
+    name = os.path.basename(file.filename or "").strip()
+    if not name or name.startswith(".") or name in _SKIP_DIRS:
+        raise HTTPException(status_code=400, detail="非法文件名")
+    fp = os.path.join(target_dir, name)
+    if os.path.exists(fp):
+        raise HTTPException(status_code=409, detail="同名文件已存在")
+    try:
+        await _save_upload(file, fp)
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail=str(e)) from e
+    except OSError as e:
+        raise server_error("上传文件", e) from e
+    rel = _rel(fp, root=_resolve_root(root))
+    log(f"工作台上传: {rel} ({os.path.getsize(fp)}B)", "DEBUG", tag="工作区")
+    return {"status": "ok", "path": rel, "size": os.path.getsize(fp)}
+
+
+async def _save_upload(file: UploadFile, fp: str) -> None:
+    """分块落盘上传内容，超限即清理并抛 ValueError。"""
+    total = 0
+    try:
+        with open(fp, "wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > _MAX_UPLOAD_BYTES:
+                    raise ValueError("文件超过 50MB 上传限制")
+                await asyncio.to_thread(out.write, chunk)
+    finally:
+        await file.close()
+        if total > _MAX_UPLOAD_BYTES:
+            try:
+                os.remove(fp)
+            except OSError:
+                pass
 
 
 @router.delete("/file")

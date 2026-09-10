@@ -24,7 +24,13 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Type
 
-from core.config import ConfigManager, ConfigStore, parse_env_value, register_model_configs
+from core.config import (
+    ConfigManager,
+    ConfigRegistry,
+    ConfigStore,
+    parse_env_value,
+    register_model_configs,
+)
 from core.log import log
 from core.path import project_root
 
@@ -166,13 +172,40 @@ def load_channel_config_model(channel_id: str) -> Optional[Type[ChannelConfig]]:
     return model
 
 
-def register_channel_schemas() -> List[str]:
-    """扫描 channels/ 注册所有频道的配置存储与 schema，返回注册的频道 id 列表。
+def register_channel_schema(channel_id: str) -> bool:
+    """注册单个频道的配置存储与 schema（幂等），返回是否成功。
 
     幂等：重复调用仅刷新 schema 定义与重载配置文件，已有值不被默认值覆盖。
     """
     from .config_watcher import get_config_watcher
 
+    channel_dir = channels_dir() / channel_id
+    if not (channel_dir / "adapter.py").exists():
+        return False
+    model = load_channel_config_model(channel_id)
+    if model is None:
+        return False
+    store = ChannelConfigStore(channel_id, channel_dir / "channel_config.json")
+    ConfigManager.register_store(f"{channel_id}_", store)
+    register_model_configs(
+        f"adapter/{channel_id}", model,
+        key_prefix=channel_id, only_fields=_declared_fields(model),
+    )
+    get_config_watcher().watch(str(store.path), store.reload_notify)
+    return True
+
+
+def unregister_channel_schema(channel_id: str) -> None:
+    """回收频道的配置存储 / schema / 配置文件监听（频道热拔除时调用）。"""
+    from .config_watcher import get_config_watcher
+
+    ConfigManager.unregister_store(f"{channel_id}_")
+    ConfigRegistry.unregister_group(f"adapter/{channel_id}")
+    get_config_watcher().unwatch(str(channels_dir() / channel_id / "channel_config.json"))
+
+
+def register_channel_schemas() -> List[str]:
+    """扫描 channels/ 注册所有频道的配置存储与 schema，返回注册的频道 id 列表。"""
     root = channels_dir()
     registered: List[str] = []
     if not root.is_dir():
@@ -180,17 +213,6 @@ def register_channel_schemas() -> List[str]:
     for item in sorted(root.iterdir()):
         if not item.is_dir() or item.name.startswith("_"):
             continue
-        if not (item / "adapter.py").exists():
-            continue
-        model = load_channel_config_model(item.name)
-        if model is None:
-            continue
-        store = ChannelConfigStore(item.name, item / "channel_config.json")
-        ConfigManager.register_store(f"{item.name}_", store)
-        register_model_configs(
-            f"adapter/{item.name}", model,
-            key_prefix=item.name, only_fields=_declared_fields(model),
-        )
-        get_config_watcher().watch(str(store.path), store.reload_notify)
-        registered.append(item.name)
+        if register_channel_schema(item.name):
+            registered.append(item.name)
     return registered
