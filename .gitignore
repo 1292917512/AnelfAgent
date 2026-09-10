@@ -86,6 +86,8 @@ config/events/
 # Personal project assets (攻略笔记 / NAS 探查报告 / 个人脚本)
 config/knowledge/
 config/projects/
+# Root-level personal project workspace (renders / models / scripts)
+/projects/
 
 # === Root-level ComfyUI workflow templates (personal downloads) ===
 /*_template.json
