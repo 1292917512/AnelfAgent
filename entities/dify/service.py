@@ -28,7 +28,6 @@ from .client import (
 )
 from .config import DifySecretsStore, generate_password, get_dify_store
 from .dsl import (
-    DslError,
     dsl_diff_stat,
     parse_dsl,
     rename_dsl_app,
@@ -552,7 +551,7 @@ async def run_workflow(ref: str, inputs: Dict[str, Any], user: str = "anelf-agen
     try:
         result = await svc.run_workflow(inputs, user=user)
     except DifyNotFoundError:
-        raise DifyStateError("工作流不可运行：应用可能未发布（dify_publish）或 API 未开通")
+        raise DifyStateError("工作流不可运行：应用可能未发布（dify_publish）或 API 未开通") from None
     wf_data = result.get("data") or {}
     return {
         "ok": True,

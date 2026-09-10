@@ -20,8 +20,6 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from core.log import log
-
 
 class DifyApiError(Exception):
     """Dify API 错误（含 HTTP 状态码与响应摘要）。"""

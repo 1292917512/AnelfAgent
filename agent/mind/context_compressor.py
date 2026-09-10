@@ -295,7 +295,6 @@ class ContextCompressor:
         "extract_page_links", "web_request", "recall", "get_conversation",
     })
     _MICROCOMPACT_PLACEHOLDER = "[旧工具结果已清理，需要时请重新调用工具获取]"
-    _DUP_HINT_PLACEHOLDER = "[重复的系统提示已折叠]"
 
     # token 估算结果缓存（内容哈希 → token 数），进程内共享。
     # OrderedDict LRU 逐条淘汰（悬崖式全清会造成下一轮全上下文重编码突发；
@@ -348,26 +347,32 @@ class ContextCompressor:
         return cleared
 
     def _collapse_dup_hints(self, tool_chain: List[Dict]) -> int:
-        """折叠链中内容完全相同的重复 system 提示（仅保留最新一条全文）。
+        """移除链中内容完全相同的重复 system 提示（仅保留最新一条全文）。
 
         多轮会话中每轮追加的引导提示（如"工具结果仅你可见"）内容相同，
-        旧副本对 AI 无增量信息，折叠为占位符；最新一条保留以维持引导强度。
+        旧副本对 AI 无增量信息，直接移除；最新一条保留以维持引导强度。
+        与工具结果/图片块的占位符折叠不同：system 提示是独立消息、不参与
+        tool_call 配对，移除不破坏任何结构约束（中途 system 角色在发送边界
+        由 normalize_roles 归一为 user，无协议风险）。
         """
+        # 每种内容仅保留最后出现的下标
         last_index: Dict[str, int] = {}
         for i, m in enumerate(tool_chain):
             if m.get("role") == "system":
                 content = m.get("content")
                 if isinstance(content, str) and content:
                     last_index[content] = i
-        collapsed = 0
-        # 单遍替换：非最后出现的重复内容折叠为占位符（与嵌套扫描结果一致）
-        for i, m in enumerate(tool_chain):
-            if m.get("role") != "system":
-                continue
-            content = m.get("content")
-            if isinstance(content, str) and content and last_index.get(content) != i:
-                tool_chain[i] = {**m, "content": self._DUP_HINT_PLACEHOLDER}
-                collapsed += 1
+        # 就地过滤（保持列表对象身份，ctx.tool_chain 的持有方无感知）
+        kept = [
+            m for i, m in enumerate(tool_chain)
+            if m.get("role") != "system"
+            or not isinstance(m.get("content"), str)
+            or not m.get("content")
+            or last_index.get(m["content"]) == i
+        ]
+        collapsed = len(tool_chain) - len(kept)
+        if collapsed:
+            tool_chain[:] = kept
         return collapsed
 
     _IMAGE_BLOCK_PLACEHOLDER = (

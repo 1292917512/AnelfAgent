@@ -54,7 +54,11 @@ def _compressor() -> ContextCompressor:
 
 class TestCollapseDupHints:
     def test_duplicate_system_hints_collapsed(self) -> None:
-        """内容相同的 system 提示仅保留最新一条全文。"""
+        """内容相同的 system 提示仅保留最新一条全文，旧副本直接移除。
+
+        system 提示是独立消息、不参与 tool_call 配对，移除无结构风险；
+        占位符对模型零信息量，保留只会逐轮烧 token。
+        """
         hint = "[系统提示] 工具结果仅你可见"
         chain = [
             {"role": "user", "content": "问"},
@@ -68,10 +72,25 @@ class TestCollapseDupHints:
         n = _compressor().microcompact(chain)
         assert n >= 2
         full = [m for m in chain if m.get("content") == hint]
-        collapsed = [m for m in chain if m.get("content") == "[重复的系统提示已折叠]"]
-        assert len(full) == 1 and len(collapsed) == 2
-        # 保留的是最新一条（索引最大）
-        assert chain[5]["content"] == hint
+        assert len(full) == 1
+        # 保留的是最新一条（原索引 5），其余消息顺序与配对不变
+        assert [m["role"] for m in chain] == ["user", "assistant", "assistant", "system", "tool"]
+        assert chain[3]["content"] == hint
+
+    def test_unique_system_hints_untouched(self) -> None:
+        """无重复的 system 提示（含非空唯一内容）一条不动。"""
+        chain = [
+            {"role": "system", "content": "提示A"},
+            {"role": "assistant", "content": "答"},
+            {"role": "system", "content": "提示B"},
+            {"role": "tool", "tool_call_id": "x", "content": "r" * 300},
+        ] * 2  # 翻倍后链长越阈值，但每段内部提示互不重复
+        n = _compressor().microcompact(chain)
+        hints = [m for m in chain if m.get("role") == "system"]
+        assert all(m["content"] in ("提示A", "提示B") for m in hints)
+        # 重复段（提示A/提示B 各两份）只保留各一条
+        assert [m["content"] for m in hints] == ["提示A", "提示B"]
+        assert n >= 2
 
     def test_short_chain_untouched(self) -> None:
         chain = [{"role": "system", "content": "x"}] * 2
