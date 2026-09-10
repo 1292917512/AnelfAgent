@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "web": "Web Tools"
+    },
+    "configSections": {
+      "entity/web": "Web Tools"
+    }
+  },
   "tabs": {
     "providers": "Providers",
     "settings": "General"

@@ -1,8 +1,8 @@
 import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Pencil, Upload } from "lucide-react";
-import { stickersApi } from "@/lib/api";
-import type { StickerItem } from "@/lib/types";
+import { stickersApi } from "../api";
+import type { StickerItem } from "../types";
 import { Button, Input, Modal, Textarea } from "@/components/ui";
 
 export interface StickerFormState {
@@ -33,7 +33,7 @@ export function UploadStickerModal({
   pending: boolean;
   onSubmit: () => void;
 }) {
-  const { t } = useTranslation(["stickers", "common"]);
+  const { t } = useTranslation(["sticker", "common"]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   return (
     <Modal
@@ -132,7 +132,7 @@ export function EditStickerModal({
   pending: boolean;
   onSubmit: () => void;
 }) {
-  const { t } = useTranslation(["stickers", "common"]);
+  const { t } = useTranslation(["sticker", "common"]);
   return (
     <Modal
       open={!!target}

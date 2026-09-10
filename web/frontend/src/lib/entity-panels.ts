@@ -6,7 +6,9 @@
  * src/pages/entities/panels/，本文件通过 import.meta.glob 自动发现（构建时解析）。
  * 面板可按实体拆分为 entities/<name>/panels/ 子目录（整体软链为 panels/<name>/），
  * panel.tsx 内用相对导入引用子组件；面板专属 i18n 放 panels/locales/{zh,en}.json，
- * 由 panel.tsx 经 registerPluginI18n 自注册。
+ * 由 lib/entity-plugin-locales.ts 启动时 eager 注册（保留键 _registry 的
+ * groups/configSections 映射声明工具页/配置中心分组名），panel.tsx 无需自行
+ * registerPluginI18n；无面板的实体可只建 locales 目录自持组名翻译。
  *
  * 新增实体面板后软链由 prebuild 钩子（scripts/module-links.mjs）自动同步，
  * dev 模式下由 vite moduleFrontendsPlugin 监听自动维护。

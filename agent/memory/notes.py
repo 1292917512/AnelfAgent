@@ -840,7 +840,7 @@ def build_memory_status_block() -> str:
     body = body.strip()
     if not body:
         return ""
-    return f"[记忆系统状态]（心跳自动维护，memory_stats() 可查明细）\n{body}"
+    return f"[记忆系统状态]（心跳维护；计数与审计明细经 memory_stats 查看）\n{body}"
 
 
 def build_file_index_block() -> str:

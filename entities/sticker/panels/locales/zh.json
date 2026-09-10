@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "sticker": "表情包"
+    },
+    "configSections": {
+      "entity/sticker": "表情包"
+    }
+  },
   "subtitle": "管理 Agent 收藏的表情包，浏览全量图片感知索引（文搜图 / 图搜图的数据来源）",
   "tabStickers": "表情包",
   "tabImages": "图片索引",
@@ -41,5 +49,12 @@
   "rebuildVectors": "重建向量",
   "rebuildConfirm": "将清空 {{count}} 条与当前模型（{{model}}，{{dims}} 维）不一致的向量，并由后台按当前模型重新生成，期间相关检索质量会暂时下降。",
   "rebuildStarted": "重建已开始，后台将自动回填",
-  "rebuildFailed": "重建失败（无可用向量模型？）"
+  "rebuildFailed": "重建失败（无可用向量模型？）",
+  "panel": {
+    "statsTitle": "表情包统计",
+    "total": "总数",
+    "indexed": "已索引",
+    "fuzzyTitle": "模糊匹配",
+    "fuzzyHint": "模糊匹配阈值和自动回复配置请在「配置」标签页中调整。"
+  }
 }

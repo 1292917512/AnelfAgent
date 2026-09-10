@@ -6,7 +6,8 @@
 
 职责切分：
 - 系统侧（本模块）：骨架创建与自愈（ensure_hub）、注入渲染（load_hub_block）、
-  预算截断；使用规则在 agent.mind.usage_rules.MEMORY_RULES（stable 层铁律）
+  预算截断；使用规则在 config/memory_rules.md「记忆体系铁律」（stable 层，
+  见 agent.memory.rules_doc——骨架与注入头刻意不重复纪律文案，单一权威源）
 - AI 侧：经 memorize 携带 type:permanent + main:hub 整段覆写维护内容
   （索引段精细维护、即时区完工即清理），禁止归档/删除（forget 侧有拦截）
 
@@ -34,19 +35,10 @@ HUB_TAG = "main:hub"
 
 HUB_TAGS = ["type:permanent", HUB_TAG]
 
-HUB_SKELETON = (
-    "## 标签索引\n"
-    "（活跃标签 → 各记忆系统入口的映射，精细维护、随用随更；"
-    "标签前缀语义与纪律见 stable 层「记忆体系铁律」）\n"
-    "\n"
-    "## 即时记录\n"
-    "（长工作流的进行中状态：当前在做什么、进行到哪步、下一步是什么；完工即清理）\n"
-)
+# 骨架只声明段结构，段义与维护纪律在铁律（stable 层同前缀可见，不在此重复）
+HUB_SKELETON = "## 标签索引\n\n## 即时记录\n"
 
-_INJECT_HEADER = (
-    "[主标签记忆] 你的索引中枢与工作窗口（每轮置顶；"
-    "更新方式与维护纪律见「记忆体系铁律」）"
-)
+_INJECT_HEADER = "[主标签记忆] 索引中枢与工作窗口"
 
 
 async def get_hub_entry(store: "MemoryStore") -> Optional[MemoryEntry]:

@@ -15,6 +15,8 @@
   "modelId": "模型 ID",
   "modelName": "模型名称 (API model)",
   "vision": "视觉",
+  "videoUnderstanding": "视频理解",
+  "videoUnderstandingHint": "端点接受视频内容（video block）；视频识别链仅向声明此能力的模型投送",
   "toolCall": "工具调用",
   "deepThinking": "深度思考",
   "forcedToolChoice": "强制工具选择",

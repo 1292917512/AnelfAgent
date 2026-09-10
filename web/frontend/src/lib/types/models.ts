@@ -17,6 +17,8 @@ export interface ModelConfig {
   model: string;
   model_types: string[];
   supports_vision: boolean;
+  /** 视频理解能力（端点接受 video block）；视频识别链按此优先投送 */
+  supports_video: boolean;
   supports_tools: boolean;
   supports_forced_tool_choice: boolean;
   vision_format: string;

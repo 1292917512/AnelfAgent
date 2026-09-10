@@ -59,6 +59,8 @@ dependencies = [
     "holidays>=0.103",
     "pyotp>=2.10.0",
     "argon2-cffi>=25.1.0",
+    "icalendar>=7.3.0",
+    "recurring-ical-events>=3.8.2",
 ]
 
 [[tool.uv.index]]

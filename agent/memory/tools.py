@@ -91,9 +91,8 @@ def _current_scope_tag() -> str:
 
 @deferred_tool(
     group="memory", tags=["always"], source="mind.memory", timeout=300.0,
-    description="将一条关键信息存入长期记忆。内容应简洁精炼。使用 type:permanent 标签可存储永远不会被遗忘的重要信息。"
-    "返回 verdict 字段即最终裁决：stored/updated/merged 才是真的记住了；"
-    "skipped_duplicate 表示与既有记忆重复、未写入——此时不要对用户声称「已记住」，也不要原样重试。",
+    description="将一条关键信息存入长期记忆（内容简洁精炼；type:permanent 为永久记忆）。"
+    "返回 verdict 落盘裁决，落盘纪律见「记忆体系铁律」。",
 )
 async def memorize(
     content: str,
@@ -105,16 +104,15 @@ async def memorize(
 
     Args:
         content: 要记住的内容（简洁扼要，一两句话）
-        tags: 标签，逗号分隔。推荐前缀：type:(fact/event/permanent) user:(uid) group:(id) topic:(主题) channel:(频道) goal:(目标id)。type:permanent 表示永久记忆；与某目标相关的记忆打 goal:xxx 标签，可在目标视角串联召回。打新标签前先用 memory_index 查看既有形态，复用优先于新造；主标签记忆经 type:permanent + main:hub 整段覆写更新
+        tags: 标签，逗号分隔。前缀：type:(fact/event/permanent) user:(uid) group:(id) topic:(主题) channel:(频道) goal:(目标id)。
+            与某目标相关的记忆打 goal:xxx 标签，可在目标视角串联召回
         importance: 重要性 0-1，默认 0.7。permanent 类型自动设为 1.0
-        sensitivity: 私密度。normal（默认）/ private（他人私事，不向第三方透露）/ secret（高度敏感）。
-            记住「全记得但不什么都说」：private/secret 的记忆照常参与召回，仅在向他人转述时克制
+        sensitivity: 私密度。normal（默认）/ private（他人私事）/ secret（高度敏感）；
+            私事参与召回照常，转述边界见「记忆体系铁律」
 
     Returns:
-        JSON 字符串。verdict 为落盘裁决：stored（新写入）/ updated（合并更新既有记忆）/
+        JSON 字符串。verdict 为落盘裁决：stored（新写入）/ updated（更新既有记忆）/
         merged（多条合并）/ skipped_duplicate（重复，未写入）。
-        只有 stored/updated/merged 才算真正记住；skipped_duplicate 或 error 时必须如实告知，
-        禁止谎称"已记住"，禁止不做变更地自动重试相同内容。
     """
     try:
         deps = _deps()
@@ -311,11 +309,8 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
 @deferred_tool(
     group="memory", tags=["always"], source="mind.memory",
     description="在长期记忆中语义搜索，返回最相关的记忆及其联想关联。"
-    "每条结果带 source 标明出处（memory=数据库记忆 / file=便签文件 / cognee_graph|cognee_chunk=知识图谱）；"
-    "tags 中的 user:频道:uid / group:频道:gid 是该记忆归属的人/群标识——"
-    "引用内容前先确认归属，uid 与当前对话对象不符的是别人的事，勿张冠李戴；"
-    "depth=deep 做深度召回（图谱检索+二跳联想，更全但更慢）；"
-    "filter_tags 为硬过滤（结果必须含全部指定标签），tags 仅作相关度加权；"
+    "结果带 source 出处（memory=数据库 / file=便签 / cognee_graph|cognee_chunk=知识图谱）"
+    "与归属标注（uid/group 语义及引用纪律见「记忆体系铁律」）；"
     "返回的 forgotten 字段是已遗忘的记忆（强相关或常规检索无果时附带）："
     "kind=archived 的可经 restore_memory(id) 恢复，kind=tombstone 的仅剩梗概需重新 memorize。",
 )
@@ -1295,15 +1290,25 @@ async def recall_conversation(
 
 @deferred_tool(
     group="memory", tags=["core", "heartbeat"], source="mind.memory",
-    description="查看记忆系统统计和健康状态。返回各类型记忆数量、阈值预警、索引状态等信息。",
+    description="查看记忆系统统计和健康状态。返回各类型记忆数量、阈值预警、索引状态、"
+    "运行指标（召回通道/写入去重累计计数）与近 24h 变更审计等信息。",
 )
 async def memory_stats() -> str:
-    """查看记忆系统统计和健康状态。"""
+    """查看记忆系统统计和健康状态。
+
+    心跳状态区块只注入 AI 可行动项，本工具是遥测明细的唯一查询面。
+    """
     try:
         deps = _deps()
         if deps is None:
             return _store_not_ready()
         health = await deps.store.get_health_status()
+        from . import metrics as memory_metrics
+        if memory_metrics.snapshot():
+            health["metrics"] = memory_metrics.snapshot()
+        audit = await deps.store.get_audit_summary(hours=24)
+        if audit:
+            health["recent_changes_24h"] = audit
         return json.dumps(health, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="读取记忆统计")

@@ -8,7 +8,8 @@ import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ModelConfigCard } from "@/pages/memory/cognee/ModelConfigCard";
 import { CogneeGraphCard } from "@/pages/memory/cognee/CogneeGraphCard";
-import { devopsApi, memoryApi } from "@/lib/api";
+import { memoryApi } from "@/lib/api";
+import { devopsApi } from "@/pages/entities/panels/devops/api";
 import { formatSize } from "@/lib/utils";
 import type { CogneeResolvedInfo, ConfigValues } from "@/lib/types";
 

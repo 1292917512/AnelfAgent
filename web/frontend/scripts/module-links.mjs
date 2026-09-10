@@ -9,6 +9,8 @@
  * 链接域：
  * - 实体面板：entities/<name>/panel.tsx（+ panels/ 子目录）
  *   → src/pages/entities/panels/
+ *   （无 panel.tsx 但带 panels/locales/ 的实体同样链接 panels/ 目录：
+ *   locale-only 实体经 entity-plugin-locales.ts 自持组名翻译）
  * - 频道前端：channels/<id>/frontend/（整目录，需含 index.ts）
  *   → src/plugins/channels/<id>/
  */
@@ -51,16 +53,25 @@ function syncDir(targetDir, expected) {
 export function syncModuleLinks() {
   const linked = [];
 
-  // 实体面板：entities/<name>/panel.tsx + panels/ 子目录
+  // 实体面板：entities/<name>/panel.tsx + panels/ 子目录；
+  // locale-only 实体（无 panel.tsx 但有 panels/locales/）也链接 panels/ 目录
   const entityExpected = new Map();
   if (fs.existsSync(entitiesDir)) {
     for (const name of fs.readdirSync(entitiesDir).sort()) {
       if (name.startsWith("_") || name.startsWith(".")) continue;
       const panelSrc = path.join(entitiesDir, name, "panel.tsx");
-      if (!fs.existsSync(panelSrc)) continue;
-      entityExpected.set(`${name}.tsx`, path.relative(panelsDir, panelSrc));
       const subDir = path.join(entitiesDir, name, "panels");
-      if (fs.existsSync(subDir) && fs.statSync(subDir).isDirectory()) {
+      const hasSubDir = fs.existsSync(subDir) && fs.statSync(subDir).isDirectory();
+      const hasLocales = hasSubDir && fs.existsSync(path.join(subDir, "locales"));
+      if (!fs.existsSync(panelSrc)) {
+        if (hasLocales) {
+          entityExpected.set(name, path.relative(panelsDir, subDir));
+          linked.push(`entity:${name}`);
+        }
+        continue;
+      }
+      entityExpected.set(`${name}.tsx`, path.relative(panelsDir, panelSrc));
+      if (hasSubDir) {
         entityExpected.set(name, path.relative(panelsDir, subDir));
       }
       linked.push(`entity:${name}`);

@@ -1,4 +1,9 @@
 {
+  "_registry": {
+    "groups": {
+      "sillytavern": "SillyTavern"
+    }
+  },
   "title": "Tavern",
   "subtitle": "Manage SillyTavern runtime, characters, model and repository",
   "tabOverview": "Overview",

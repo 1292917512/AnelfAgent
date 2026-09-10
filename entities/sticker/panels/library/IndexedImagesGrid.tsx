@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Trash2 } from "lucide-react";
-import { stickersApi } from "@/lib/api";
-import type { IndexedImage, IndexedImageListResult } from "@/lib/types";
+import { stickersApi } from "../api";
+import type { IndexedImage, IndexedImageListResult } from "../types";
 import { LoadingBlock } from "@/components/ui";
 import { Pagination } from "@/components/common/Pagination";
 
@@ -19,7 +19,7 @@ export function IndexedImagesGrid({
   onPageChange: (page: number) => void;
   onRemove: (path: string) => void;
 }) {
-  const { t } = useTranslation(["stickers", "common"]);
+  const { t } = useTranslation(["sticker", "common"]);
   return (
     <>
       <p className="text-xs text-muted">{t("imagesHint")}</p>

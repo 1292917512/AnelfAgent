@@ -1,0 +1,10 @@
+{
+  "_registry": {
+    "groups": {
+      "mcp_manage": "MCP 管理"
+    },
+    "configSections": {
+      "entity/mcp": "MCP 服务"
+    }
+  }
+}

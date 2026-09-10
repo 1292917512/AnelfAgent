@@ -310,8 +310,8 @@ class TestManagedBlockProtection:
 
 
 class TestStatusBlockTagOverview:
-    async def test_tag_overview_line(self, memory_dir: Path, store) -> None:
-        """状态区块携带标签索引观测行（规模分布 + 高频联想标签）。"""
+    async def test_tag_bloat_quiet_below_threshold(self, memory_dir: Path, store) -> None:
+        """标签空间健康时不注入标签行（常态零占用）。"""
         from types import SimpleNamespace
 
         from agent.heartbeat.engine import HeartbeatEngine
@@ -325,8 +325,37 @@ class TestStatusBlockTagOverview:
         engine.mind = SimpleNamespace(memory_store=store)
         await engine._write_memory_status()
         text = (memory_dir / "memory.md").read_text(encoding="utf-8")
-        assert "标签索引：共 3 个" in text
-        assert "topic:火锅" in text
+        assert "标签索引" not in text
+
+    async def test_tag_bloat_warns_above_threshold(
+        self, memory_dir: Path, store, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """标签总数超阈值时注入膨胀提醒（高频明细走 memory_index，不进 prompt）。"""
+        from types import SimpleNamespace
+
+        from agent.heartbeat.engine import HeartbeatEngine
+
+        monkeypatch.setattr(
+            "core.config.get_config_int",
+            lambda key, default=0: 2 if key == "memory_tag_bloat_threshold" else default,
+        )
+        from agent.memory.memory_types import MemoryEntry, MemoryType
+
+        await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content="tagfact 主人喜欢火锅",
+            tags=["type:fact", "topic:火锅", "user:qq:1"], importance=0.7,
+        ))
+        engine = HeartbeatEngine.__new__(HeartbeatEngine)
+        engine.mind = SimpleNamespace(
+            memory_store=SimpleNamespace(
+                get_type_counts=store.get_type_counts,
+                count_archived=store.count_archived,
+                list_tags=store.list_tags,
+            )
+        )
+        await engine._write_memory_status()
+        text = (memory_dir / "memory.md").read_text(encoding="utf-8")
+        assert "存在膨胀" in text and "memory_index" in text
 
 
 # ==================================================================

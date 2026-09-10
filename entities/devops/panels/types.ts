@@ -1,4 +1,4 @@
-// ── 运维管理（devops 实体路由 /api/entity/devops） ──
+/** devops 实体类型（/api/entity/devops 运维管理路由）。 */
 
 export interface DevopsBuildResult {
   ok: boolean;

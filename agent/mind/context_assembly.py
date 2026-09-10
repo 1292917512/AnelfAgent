@@ -147,6 +147,9 @@ _NO_PENDING_HINT = "[当前无外部消息] 自主思考阶段：可执行工具
 
 _PENDING_HINT = "→ 处理消息或执行操作，完成后调用 end_reply。空消息表示自主思考阶段（非对方发送），不要重复发送消息"
 
+# exec_context 步骤清单渲染上限：防重复操作只需近期步骤，超出部分以省略行带过
+_MAX_RENDERED_STEPS = 12
+
 # 会话通知：其他会话的未读消息以"弹窗"形式提示（固定模板，动态内容在末尾 exec_context）
 _SESSION_NOTIFY_HINT = (
     "→ 回复默认发往当前会话，无需选择投递目标；"
@@ -852,8 +855,18 @@ class ContextAssembly:
             lines.append(f"[短期记忆] {temp_count}/{wm.max_temp} 条")
 
         if execution_steps:
-            lines.append("[已完成步骤（以下操作已执行成功，请勿重复）]")
-            lines.extend(execution_steps)
+            # 步骤清单预算化：防重复操作只需近期步骤，exec_context 每轮全量重建，
+            # 无界清单在长回复下按轮次平方膨胀 token（最终执行摘要仍消费全量清单）
+            if len(execution_steps) > _MAX_RENDERED_STEPS:
+                omitted = len(execution_steps) - _MAX_RENDERED_STEPS
+                lines.append(
+                    f"[已完成步骤] 此前 {omitted} 步已省略，最近 {_MAX_RENDERED_STEPS} 步"
+                    "（均已成功执行，请勿重复）："
+                )
+                lines.extend(execution_steps[-_MAX_RENDERED_STEPS:])
+            else:
+                lines.append("[已完成步骤（以下操作已执行成功，请勿重复）]")
+                lines.extend(execution_steps)
 
         pending = wm.peek_all_tasks()
         if pending:

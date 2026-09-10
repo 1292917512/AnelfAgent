@@ -15,18 +15,12 @@ import {
 } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
-import { registerPluginI18n } from "@/lib/plugin-i18n";
 import { OverviewPanel } from "./sillytavern/OverviewPanel";
 import { ChatPanel } from "./sillytavern/ChatPanel";
 import { CharactersPanel } from "./sillytavern/CharactersPanel";
 import { ModelPanel } from "./sillytavern/ModelPanel";
 import { GitPanel } from "./sillytavern/GitPanel";
 import { ConfigPanel } from "./sillytavern/ConfigPanel";
-import zh from "./sillytavern/locales/zh.json";
-import en from "./sillytavern/locales/en.json";
-
-registerPluginI18n("sillytavern", { zh, en });
-
 type StTab = "overview" | "chat" | "characters" | "model" | "git" | "config";
 
 const TABS: TabItem<StTab>[] = [

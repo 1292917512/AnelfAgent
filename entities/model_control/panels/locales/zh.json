@@ -1,0 +1,8 @@
+{
+  "_registry": {
+    "groups": {
+      "model_control": "模型控制",
+      "ollama": "Ollama"
+    }
+  }
+}

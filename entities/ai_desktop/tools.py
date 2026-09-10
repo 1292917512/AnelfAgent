@@ -11,19 +11,20 @@ from entities._sdk import save_config_value, tool, tool_error
 
 from . import framework
 from .modules.weather import parse_locations, search_locations
+from .modules.weather.module import WeatherModule
 
 
 @tool(name="ai_desktop_modules", group="ai_desktop", concurrency_safe=True)
 def ai_desktop_modules(
     action: str = "list", module: str = "", name: str = "", value: str = "",
 ) -> str:
-    """管理 AI 桌面上下文组件：list 查看组件综合信息（启停状态/配置项/当前注入文本/实时详情），preview 预览整体注入内容，enable/disable 启停组件，set_config 修改组件配置（如时区），search_location/add_location/remove_location 管理天气地区（地区经检索确认落库，保证不错配城市）。
+    """管理 AI 桌面上下文组件：list 查看组件综合信息（启停状态/配置项/当前注入文本/实时详情），preview 预览整体注入内容，enable/disable 启停组件，set_config 修改组件配置（如时区），forecast 查询逐日天气预报（weather 组件），search_location/add_location/remove_location 管理天气地区（地区经检索确认落库，保证不错配城市）。
 
     Args:
-        action: 操作类型：list（默认）/ preview / enable / disable / set_config / search_location / add_location / remove_location
+        action: 操作类型：list（默认）/ preview / enable / disable / set_config / forecast / search_location / add_location / remove_location
         module: 组件 key（enable/disable/set_config 时必填，如 datetime、weather）
-        name: set_config 时为配置项短名（如 timezone）；add_location/remove_location 时为地区名
-        value: 配置值（set_config 时必填；列表类配置传 JSON 字符串）
+        name: set_config 时为配置项短名（如 timezone）；forecast 时为地区名（留空查全部启用地区）；add_location/remove_location 时为地区名
+        value: 配置值（set_config 时必填；列表类配置传 JSON 字符串）；forecast 时为查询天数（默认 5，最多 7）
     """
     action = action.strip().lower()
 
@@ -82,6 +83,9 @@ def ai_desktop_modules(
     if action == "search_location":
         return _search_location(name or value)
 
+    if action == "forecast":
+        return _forecast(name, value)
+
     if action == "add_location":
         return _add_location(name)
 
@@ -90,9 +94,29 @@ def ai_desktop_modules(
 
     return tool_error(
         f"未知操作: {action}（可用: list / preview / enable / disable / "
-        f"set_config / search_location / add_location / remove_location）",
+        f"set_config / forecast / search_location / add_location / remove_location）",
         cause=ErrorCause.PARAM,
     )
+
+
+def _forecast(name: str, value: str) -> str:
+    """查询逐日天气预报（缓存快照，最多 7 天；name 为空查全部启用地区）。"""
+    target = framework.get_module("weather")
+    if not isinstance(target, WeatherModule):
+        return tool_error("天气组件不可用", cause=ErrorCause.STATE)
+    try:
+        days = int(value) if value.strip() else 5
+    except ValueError:
+        days = 5
+    forecast = target.forecast_for(name.strip(), days)
+    if not forecast:
+        known = target.enabled_location_names()
+        return tool_error(
+            f"暂无预报数据: {name or '(全部地区)'}（启用地区: {', '.join(known) or '空'}；"
+            f"数据可能尚未采集）",
+            cause=ErrorCause.NOT_FOUND,
+        )
+    return json.dumps({"forecast": forecast}, ensure_ascii=False)
 
 
 def _resolve_module(key: str) -> Union["framework.DesktopModule", str]:

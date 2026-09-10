@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { shareApi } from "@/lib/api";
+import { shareApi } from "./api";
 import { Card } from "@/components/common/Card";
 import { RefreshCw, Search, ScrollText } from "lucide-react";
 

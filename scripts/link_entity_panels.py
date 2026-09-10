@@ -6,6 +6,8 @@
 
 - 实体面板：entities/<name>/panel.tsx（+ panels/ 子目录）
   → web/frontend/src/pages/entities/panels/
+  （无 panel.tsx 但带 panels/locales/ 的实体同样链接 panels/ 目录：
+  locale-only 实体经 entity-plugin-locales.ts 自持组名翻译）
 - 频道前端：channels/<id>/frontend/（整目录，需含 index.ts）
   → web/frontend/src/plugins/channels/<id>/
 
@@ -52,11 +54,16 @@ def link_panels() -> list[str]:
         if not entity_dir.is_dir() or entity_dir.name.startswith("_"):
             continue
         panel_src = entity_dir / "panel.tsx"
+        sub_dir = entity_dir / "panels"
+        has_locales = sub_dir.is_dir() and (sub_dir / "locales").is_dir()
         if not panel_src.exists():
+            # locale-only 实体：无面板但有 panels/locales/，同样链接供组名自注册
+            if has_locales:
+                expected[entity_dir.name] = os.path.relpath(sub_dir, PANELS_DIR)
+                linked.append(entity_dir.name)
             continue
         expected[f"{entity_dir.name}.tsx"] = os.path.relpath(panel_src, PANELS_DIR)
         # 面板拆分子目录：entities/<name>/panels/ → panels/<name>/
-        sub_dir = entity_dir / "panels"
         if sub_dir.is_dir():
             expected[entity_dir.name] = os.path.relpath(sub_dir, PANELS_DIR)
         linked.append(entity_dir.name)

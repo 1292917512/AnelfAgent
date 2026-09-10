@@ -140,6 +140,9 @@ class LLMClientConfig:
     timeout: float = DEFAULT_TIMEOUT
     proxy_url: str = ""
     supports_vision: bool = False
+    # 视频理解能力（端点接受 video content block）；需在 supports_vision 之上单独声明，
+    # 视频识别链按此过滤候选，避免把整段视频 base64 发给不吃视频的模型空烧
+    supports_video: bool = False
     supports_tools: bool = True
     # 端点是否接受强制工具选择（tool_choice=required/any）；
     # thinking 服务端常开的端点（如 Kimi）应置 False，强制值将降级为 auto
@@ -353,6 +356,7 @@ class LLMClientConfig:
             "timeout": self.timeout,
             "proxy_url": self.proxy_url,
             "supports_vision": self.supports_vision,
+            "supports_video": self.supports_video,
             "supports_tools": self.supports_tools,
             "supports_forced_tool_choice": self.supports_forced_tool_choice,
             "vision_format": self.vision_format,
@@ -383,6 +387,7 @@ class LLMClientConfig:
             "model": self.model,
             "model_types": self.model_types,
             "supports_vision": self.supports_vision,
+            "supports_video": self.supports_video,
             "supports_tools": self.supports_tools,
             "supports_forced_tool_choice": self.supports_forced_tool_choice,
             "vision_format": self.vision_format,

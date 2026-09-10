@@ -2,6 +2,7 @@ import i18n from "i18next";
 import type { Resource, ResourceLanguage } from "i18next";
 import { initReactI18next } from "react-i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
+import { registerEntityPluginLocales } from "@/lib/entity-plugin-locales";
 
 // 自动加载所有 locales/<lang>/<ns>.json，命名规则决定 namespace 名
 // 新增 namespace 只需新建文件，无需改动本模块
@@ -41,5 +42,8 @@ i18n
       caches: ["localStorage"],
     },
   });
+
+// 实体面板 locale 启动时注册（面板组件懒加载，组名等全局词汇须首帧前就绪）
+registerEntityPluginLocales();
 
 export default i18n;

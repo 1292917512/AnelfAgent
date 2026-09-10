@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "share": "文件分享"
+    },
+    "configSections": {
+      "entity/share": "分享"
+    }
+  },
   "tabs": {
     "overview": "总览",
     "links": "链接列表",

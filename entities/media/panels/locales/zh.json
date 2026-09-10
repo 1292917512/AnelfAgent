@@ -1,4 +1,9 @@
 {
+  "_registry": {
+    "groups": {
+      "media": "多媒体"
+    }
+  },
   "tabs": {
     "priority": "能力优先级",
     "defaults": "音色与默认参数",

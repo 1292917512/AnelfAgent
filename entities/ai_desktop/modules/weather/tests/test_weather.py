@@ -99,7 +99,7 @@ class TestMultiLocation:
         assert text is not None
         lines = text.split("\n")
         assert len(lines) == 2  # 广州停用不注入
-        assert lines[0].startswith("[天气] 北京：晴，26°C（体感 28°C）")
+        assert lines[0].startswith("[天气] 北京：今日 晴 20~31°C，现在 26°C（体感 28°C）")
         assert lines[1].startswith("[天气] 上海：")
 
     @pytest.mark.asyncio
@@ -116,7 +116,7 @@ class TestMultiLocation:
         })
         await module.refresh()
         text = module.render()
-        assert text == "[天气] 北京：晴，26°C（体感 28°C），湿度 45%，西南风 12km/h，今日 20~31°C"
+        assert text == "[天气] 北京：今日 晴 20~31°C，现在 26°C（体感 28°C），湿度 45%，西南风 12km/h"
         detail = module.detail()
         error_entry = next(l for l in detail["locations"] if l["name"] == "不存在市")
         assert error_entry["error"] == "未找到地区: 不存在市"
@@ -266,3 +266,45 @@ class TestAiToolLocationOps:
         out = json.loads(ai_tools.ai_desktop_modules(
             "set_config", module="weather", name="refresh_minutes", value="1"))
         assert out["value"] == 10
+
+
+class TestDailyForecast:
+    """7 日预报解析与注入行明日摘要。"""
+
+    _DAILY = {
+        "time": ["2026-09-10", "2026-09-11", "2026-09-12"],
+        "weather_code": [0, 61, 95],
+        "temperature_2m_max": [30.1, 28.0, 25.4],
+        "temperature_2m_min": [15.0, 17.2, 18.8],
+        "precipitation_probability_max": [0, 65, 90],
+    }
+
+    def test_parse_daily(self) -> None:
+        forecast = WeatherModule._parse_daily(self._DAILY)
+        assert len(forecast) == 3
+        assert forecast[0] == {"date": "2026-09-10", "condition": "晴",
+                               "tmin": 15.0, "tmax": 30.1, "precip_prob": 0.0}
+        assert forecast[1]["condition"] == "小雨"
+        assert forecast[2]["precip_prob"] == 90.0
+
+    def test_parse_daily_empty(self) -> None:
+        assert WeatherModule._parse_daily({}) == []
+
+    def test_render_line_with_tomorrow(self) -> None:
+        """明日摘要进入注入行；降水概率过半时附降水提示。"""
+        data = {**_SAMPLE, "forecast": WeatherModule._parse_daily(self._DAILY)}
+        line = WeatherModule._format_line(data)
+        assert "｜明日 小雨 17~28°C 降水65%" in line
+
+    def test_render_line_without_forecast(self) -> None:
+        line = WeatherModule._format_line(_SAMPLE)
+        assert "明日" not in line
+
+    def test_forecast_for(self) -> None:
+        _set_locations([{"name": "北京", "enabled": True}])
+        module = WeatherModule()
+        module._data = {"北京": {**_SAMPLE, "label": "北京",
+                                 "forecast": WeatherModule._parse_daily(self._DAILY)}}
+        result = module.forecast_for("北京", 2)
+        assert len(result["北京"]) == 2
+        assert module.forecast_for("不存在", 5) == {}

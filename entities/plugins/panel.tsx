@@ -1,9 +1,3 @@
-import { registerPluginI18n } from "@/lib/plugin-i18n";
-import zh from "./plugins/locales/zh.json";
-import en from "./plugins/locales/en.json";
-
-registerPluginI18n("plugins", { zh, en });
-
 /**
  * 插件管理实体面板 — 已装插件管理 / 市场订阅 / 浏览安装。
  *

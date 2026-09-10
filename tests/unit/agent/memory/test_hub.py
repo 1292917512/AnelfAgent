@@ -54,13 +54,14 @@ class TestLoadHubBlock:
     ) -> None:
         monkeypatch.setattr(
             "core.config.get_config_int",
-            lambda key, default=0, **kw: 100 if key == "memory_hub_inject_max_chars" else default,
+            lambda key, default=0, **kw: 8 if key == "memory_hub_inject_max_chars" else default,
         )
         await hub.ensure_hub(store)
         block = await hub.load_hub_block(store)
         assert "超出注入预算已截断" in block
-        # 保头：索引段完整保留
+        # 保头：索引段完整保留；截尾：即时记录段被裁
         assert "## 标签索引" in block
+        assert "## 即时记录" not in block
 
 
 class TestPinsExclusion:

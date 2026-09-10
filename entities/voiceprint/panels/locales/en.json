@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "voiceprint": "Voiceprint Library"
+    },
+    "configSections": {
+      "entity/voiceprint": "Voiceprint"
+    }
+  },
   "subtitle": "Speaker voiceprint library: identify, attribute, and search voice transcripts",
   "tabs": {
     "overview": "Overview",

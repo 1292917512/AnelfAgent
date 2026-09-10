@@ -1,7 +1,7 @@
 import type { TOptions } from "i18next";
 import { Pencil, RefreshCw, Trash2 } from "lucide-react";
-import { stickersApi } from "@/lib/api";
-import type { StickerItem } from "@/lib/types";
+import { stickersApi } from "../api";
+import type { StickerItem } from "../types";
 
 export function StickerCard({
   sticker,

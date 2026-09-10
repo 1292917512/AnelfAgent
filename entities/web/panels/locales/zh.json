@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "web": "网络工具"
+    },
+    "configSections": {
+      "entity/web": "网络工具"
+    }
+  },
   "tabs": {
     "providers": "能力提供者",
     "settings": "通用设置"

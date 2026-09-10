@@ -71,7 +71,11 @@ class MiniMaxProvider(MediaProvider):
         raise CapabilityNotSupported(f"minimax provider 不支持能力 '{capability}'")
 
     async def _vision(self, *, image_path: str, prompt: str) -> Dict[str, Any]:
+        from entities._sdk import is_video_path
         from entities.minimax.client import image_to_data_url
+        if is_video_path(image_path):
+            # understand_image 仅接受图片格式，视频不在本 provider 能力内
+            raise CapabilityNotSupported("minimax provider 不支持视频识别")
         client = _client()
         if not client.coding_plan_configured:
             raise ProviderUnavailable("MiniMax Coding Plan 未配置凭据")

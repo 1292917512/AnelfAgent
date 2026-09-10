@@ -152,6 +152,40 @@ def _current_scope() -> str:
     return ""
 
 
+async def add_reminder(
+    note: str, run_at_ts: float, scope: str, channel: str = "",
+) -> Dict[str, Any]:
+    """写入一条持久化提醒（模块级复用入口：工具与 entities 日历共用）。
+
+    到期由心跳 ``check_due_reminders`` 触发一轮完整 REPLY，重启不丢失。
+    返回提醒记录（含 id）。
+    """
+    reminder = {
+        "id": uuid.uuid4().hex[:8],
+        "note": note.strip(),
+        "run_at_ts": run_at_ts,
+        "scope": scope,
+        "channel": channel,
+        "created_ts": time.time(),
+    }
+    async with _reminders_lock:
+        reminders = await asyncio.to_thread(_load_reminders)
+        reminders.append(reminder)
+        await asyncio.to_thread(_save_reminders, reminders)
+    return reminder
+
+
+async def remove_reminder(reminder_id: str) -> bool:
+    """按 id 删除一条未触发提醒（模块级复用入口），返回是否存在。"""
+    async with _reminders_lock:
+        reminders = await asyncio.to_thread(_load_reminders)
+        kept = [r for r in reminders if r["id"] != reminder_id]
+        if len(kept) == len(reminders):
+            return False
+        await asyncio.to_thread(_save_reminders, kept)
+    return True
+
+
 async def _append_one_shot_history(
         pfc: Any, scope: str, channel: str, prompt: str) -> bool:
     """一次性事件通知写入目标会话的对话历史（system 角色，不触发思维）。
@@ -275,18 +309,10 @@ async def schedule_reminder(note: str, run_at: str = "", delay_seconds: int = 0)
     if not scope:
         return _no_reply_target()
 
-    reminder = {
-        "id": uuid.uuid4().hex[:8],
-        "note": note.strip(),
-        "run_at_ts": run_at_ts,
-        "scope": scope,
-        "channel": getattr(mind.pfc, "get_adapter_key", lambda s: "")(scope),
-        "created_ts": time.time(),
-    }
-    async with _reminders_lock:
-        reminders = await asyncio.to_thread(_load_reminders)
-        reminders.append(reminder)
-        await asyncio.to_thread(_save_reminders, reminders)
+    reminder = await add_reminder(
+        note, run_at_ts, scope,
+        getattr(mind.pfc, "get_adapter_key", lambda s: "")(scope),
+    )
 
     run_at_str = datetime.fromtimestamp(run_at_ts).strftime("%Y-%m-%d %H:%M:%S")
     log(f"定时提醒已创建: id={reminder['id']} run_at={run_at_str} scope={scope} note={note[:50]}", tag="调度")
@@ -326,12 +352,8 @@ async def cancel_reminder(reminder_id: str) -> str:
     Args:
         reminder_id: 提醒 ID（通过 list_reminders 获取）
     """
-    async with _reminders_lock:
-        reminders = await asyncio.to_thread(_load_reminders)
-        kept = [r for r in reminders if r["id"] != reminder_id]
-        if len(kept) == len(reminders):
-            return tool_error(f"提醒不存在: {reminder_id}", cause=ErrorCause.NOT_FOUND, retryable=False)
-        await asyncio.to_thread(_save_reminders, kept)
+    if not await remove_reminder(reminder_id):
+        return tool_error(f"提醒不存在: {reminder_id}", cause=ErrorCause.NOT_FOUND, retryable=False)
     log(f"定时提醒已取消: id={reminder_id}", tag="调度")
     return json.dumps({"ok": True, "message": f"提醒 {reminder_id} 已取消"}, ensure_ascii=False)
 

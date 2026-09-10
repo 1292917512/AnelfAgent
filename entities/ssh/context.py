@@ -20,7 +20,7 @@ from .manager import STATUS_CONNECTED, get_ssh_manager
 
 
 @context_provider(
-    name="ssh_status", priority=30, max_tokens=200,
+    name="ssh_status", priority=16, max_tokens=200,
     group="ssh", inject_key="ssh_context_inject",
 )
 class SshStatusProvider:
@@ -54,7 +54,7 @@ class SshStatusProvider:
 
 
 @context_provider(
-    name="ssh_ops", priority=31, max_tokens=2000,
+    name="ssh_ops", priority=30, max_tokens=2000,
     group="ssh", inject_key="ssh_ops_context_inject",
 )
 class SshOpsProvider:

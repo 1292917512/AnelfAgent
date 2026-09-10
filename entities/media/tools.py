@@ -53,12 +53,72 @@ def _dumps(out: Dict[str, Any]) -> str:
 
 
 # ==================================================================
-# 图片识别（vision）
+# 图片/视频识别（vision）
 # ==================================================================
 
-@tool(name="recognize_image", group="media", tags=["media:image", "media:video"], timeout=300.0)
+async def _recognize_visual(media_path: str, prompt: str, provider: str, kwargs: Dict[str, str]) -> str:
+    """recognize_image / recognize_video 共用的识别流程：参数归一 → 沙箱校验 → 直注或识别链。"""
+    if not media_path:
+        media_path = (
+            kwargs.get("media_file", "")
+            or kwargs.get("image_source", "")
+            or kwargs.get("video_source", "")
+            or kwargs.get("path", "")
+            or kwargs.get("file_path", "")
+            or kwargs.get("url", "")
+        )
+    if media_path.startswith("image:"):
+        return tool_error(f"路径不需要 'image:' 前缀，请直接传路径: {media_path[6:]}",
+                          cause=ErrorCause.PARAM, retryable=False)
+    if not media_path:
+        return tool_error("未提供图片/视频路径或 URL",
+                          cause=ErrorCause.PARAM, retryable=False)
+    err = _check_provider(provider)
+    if err:
+        return err
+    provider = provider or "auto"
+
+    is_video = is_video_path(media_path)
+    is_remote = media_path.startswith(("http://", "https://", "data:image/"))
+    if not is_remote:
+        try:
+            resolved = utils.resolve_workspace_path(media_path)
+        except ValueError as e:
+            return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
+                              hint="请使用工作目录（workspace）内的路径")
+        if not os.path.exists(resolved):
+            return tool_error(f"文件不存在: {media_path}", cause=ErrorCause.NOT_FOUND,
+                              retryable=False, resolved=resolved)
+        media_path = resolved
+
+    desc_prompt = prompt or (
+        "请简要描述这个视频的内容。" if is_video else "请简要描述这张图片的内容。"
+    )
+    # 主模型有视觉能力时跳过识别链，直接按 _multimodal 约定回注原图——
+    # 省一次视觉模型调用；视频与远程 URL 无法注入本地 block，仍走识别链
+    if not is_video and not is_remote and provider == "auto" and _main_model_supports_vision():
+        return _dumps({
+            "success": True,
+            "image_path": media_path,
+            "_multimodal": True,
+            "text": f"[系统] 图片已附上，请直接查看并按调用要求分析（{desc_prompt}）。",
+            "images": [media_path],
+        })
+    try:
+        out = await run_capability(
+            "vision", "视频识别" if is_video else "图片识别", provider=provider,
+            image_path=media_path, prompt=desc_prompt,
+        )
+        if out.get("success"):
+            out["image_path"] = media_path
+        return _dumps(out)
+    except Exception as e:
+        return error_from_exception(e, action="识别视频" if is_video else "识别图片")
+
+
+@tool(name="recognize_image", group="media", tags=["media:image"], timeout=300.0)
 async def recognize_image(image_path: str = "", prompt: str = "", provider: str = "auto", **kwargs: str) -> str:
-    """识别/分析图片或视频内容。支持本地文件路径或 URL。
+    """识别/分析图片内容（视频请用 recognize_video）。支持本地文件路径或 URL。
 
     主模型具备视觉能力时：本地图片不调用识别链，按 _multimodal 约定把原图
     直接注入工具链尾部（动态区，不动前缀缓存），主模型亲自看图分析，
@@ -71,61 +131,24 @@ async def recognize_image(image_path: str = "", prompt: str = "", provider: str 
         provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名
             （可用值见媒体库配置 / media_config(action="providers")，随 provider 模块增删变化）
     """
-    if not image_path:
-        image_path = (
-            kwargs.get("media_file", "")
-            or kwargs.get("image_source", "")
-            or kwargs.get("path", "")
-            or kwargs.get("file_path", "")
-            or kwargs.get("url", "")
-        )
-    if image_path.startswith("image:"):
-        return tool_error(f"image_path 不需要 'image:' 前缀，请直接传路径: {image_path[6:]}",
-                          cause=ErrorCause.PARAM, retryable=False)
-    if not image_path:
-        return tool_error("未提供图片路径或 URL，请使用 image_path 参数",
-                          cause=ErrorCause.PARAM, retryable=False)
-    err = _check_provider(provider)
-    if err:
-        return err
-    provider = provider or "auto"
+    return await _recognize_visual(image_path, prompt, provider, kwargs)
 
-    is_video = is_video_path(image_path)
-    is_remote = image_path.startswith(("http://", "https://", "data:image/"))
-    if not is_remote:
-        try:
-            resolved = utils.resolve_workspace_path(image_path)
-        except ValueError as e:
-            return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
-                              hint="请使用工作目录（workspace）内的路径")
-        if not os.path.exists(resolved):
-            return tool_error(f"文件不存在: {image_path}", cause=ErrorCause.NOT_FOUND,
-                              retryable=False, resolved=resolved)
-        image_path = resolved
 
-    desc_prompt = prompt or (
-        "请简要描述这个视频的内容。" if is_video else "请简要描述这张图片的内容。"
-    )
-    # 主模型有视觉能力时跳过识别链，直接按 _multimodal 约定回注原图——
-    # 省一次视觉模型调用；视频与远程 URL 无法注入本地 block，仍走识别链
-    if not is_video and not is_remote and provider == "auto" and _main_model_supports_vision():
-        return _dumps({
-            "success": True,
-            "image_path": image_path,
-            "_multimodal": True,
-            "text": f"[系统] 图片已附上，请直接查看并按调用要求分析（{desc_prompt}）。",
-            "images": [image_path],
-        })
-    try:
-        out = await run_capability(
-            "vision", "视频识别" if is_video else "图片识别", provider=provider,
-            image_path=image_path, prompt=desc_prompt,
-        )
-        if out.get("success"):
-            out["image_path"] = image_path
-        return _dumps(out)
-    except Exception as e:
-        return error_from_exception(e, action="识别图片")
+@tool(name="recognize_video", group="media", tags=["media:video"], timeout=300.0)
+async def recognize_video(video_path: str = "", prompt: str = "", provider: str = "auto", **kwargs: str) -> str:
+    """识别/分析视频内容（画面理解）。支持本地文件路径或 URL。
+
+    经媒体库视觉模型链把视频发送给声明 supports_video 的模型识别（未声明
+    的模型不投送），返回文字描述。与 recognize_image 的区别：
+    视频无法直注主模型上下文，始终走识别链。
+
+    Args:
+        video_path: 视频的绝对路径或 URL
+        prompt: 可选的分析提示，如"总结视频里发生的事情"
+        provider: auto（默认，按媒体库配置链路由+失败自动降级）或指定 provider 名
+            （可用值见媒体库配置 / media_config(action="providers")，随 provider 模块增删变化）
+    """
+    return await _recognize_visual(video_path, prompt, provider, kwargs)
 
 
 # ==================================================================

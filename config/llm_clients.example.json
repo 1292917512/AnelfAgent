@@ -16,6 +16,7 @@
             "chat"
           ],
           "supports_vision": true,
+          "supports_video": false,
           "supports_tools": true,
           "vision_format": "base64",
           "temperature": 0.4,
@@ -66,6 +67,7 @@
             "chat"
           ],
           "supports_vision": true,
+          "supports_video": false,
           "supports_tools": true,
           "vision_format": "base64",
           "temperature": 0.4,

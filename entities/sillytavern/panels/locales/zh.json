@@ -1,4 +1,9 @@
 {
+  "_registry": {
+    "groups": {
+      "sillytavern": "SillyTavern 酒馆"
+    }
+  },
   "title": "酒馆管理",
   "subtitle": "SillyTavern 实例的运行、角色、模型与仓库管理",
   "tabOverview": "运行状态",

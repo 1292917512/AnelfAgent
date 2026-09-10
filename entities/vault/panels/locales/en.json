@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "vault": "Password Vault"
+    },
+    "configSections": {
+      "entity/vault": "Password Vault"
+    }
+  },
   "loading": "Loading…",
   "autoLock": "Auto-lock in {{minutes}} min",
   "tabs": {

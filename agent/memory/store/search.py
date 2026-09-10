@@ -371,7 +371,7 @@ class SearchEngine:
 
         vec_results, fts_results = await asyncio.gather(vec_coro, fts_coro)
 
-        # 运行指标：召回通道命中观测（进程内累计，心跳状态区块展示）
+        # 运行指标：召回通道命中观测（进程内累计，memory_stats 工具查询）
         try:
             from .. import metrics
             metrics.incr("recall.requests")

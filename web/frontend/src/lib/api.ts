@@ -26,7 +26,6 @@ import type {
   ContextSnapshotData,
   CreateModelConfig,
   CreateProviderConfig,
-  CreateShareRequest,
   DbConnection,
   DbConnectionPayload,
   DbConnectionTestResult,
@@ -49,9 +48,6 @@ import type {
   VolumeBackupInfo,
   VolumeInfo,
   VolumeOperationState,
-  DevopsActionResult,
-  DevopsBuildState,
-  DevopsCrashInfo,
   EntityDetail,
   EntityListItem,
   GlobalSearchResult,
@@ -78,20 +74,12 @@ import type {
   PythonPackage,
   RemoteModelInfo,
   RunningDelegation,
-  ShareLink,
-  ShareLinkListResult,
-  ShareStats,
-  DownloadLogListResult,
   SkillItem,
   SkillBuildState,
   SkillLibraryHealth,
   SnapshotListItem,
   SnapshotRecord,
   SnapshotResponse,
-  StickerItem,
-  StickerListResult,
-  StickerStats,
-  IndexedImageListResult,
   TaskConfig,
   TestChatResult,
   UiStateReport,
@@ -128,19 +116,12 @@ export type {
   ReasoningEffort,
   RemoteModelInfo,
   RunningDelegation,
-  ShareLink,
-  ShareLinkListResult,
-  ShareStats,
   SkillItem,
   SkillBuildState,
   SkillLibraryHealth,
   SnapshotListItem,
   SnapshotRecord,
   SnapshotResponse,
-  StickerItem,
-  StickerListResult,
-  StickerStats,
-  IndexedImageListResult,
   TaskConfig,
   TaskSchedule,
   WebToolsConfig,
@@ -720,15 +701,6 @@ export const systemApi = {
   testGithub: () => api.post("/system/git/test"),
 };
 
-// DevOps（运维管理实体专属路由 /api/entity/devops）
-export const devopsApi = {
-  restart: () => api.post<DevopsActionResult>("/entity/devops/restart"),
-  crashInfo: () => api.get<DevopsCrashInfo>("/entity/devops/crash-info"),
-  buildAndRestart: () => api.post<DevopsActionResult>("/entity/devops/build-restart"),
-  buildState: () => api.get<DevopsBuildState>("/entity/devops/build-state"),
-  update: () => api.post<DevopsActionResult>("/entity/devops/update"),
-  updateAndRestart: () => api.post<DevopsActionResult>("/entity/devops/update-restart"),
-};
 
 // Skills
 export const skillsApi = {
@@ -756,31 +728,6 @@ export const configMetaApi = {
     api.put(`/config/meta/${encodeURIComponent(key)}`, { value }),
 };
 
-// Stickers（表情包与图片索引）
-export const stickersApi = {
-  list: (params: { query?: string; page?: number; page_size?: number }) =>
-    api.get<StickerListResult>("/stickers", { params }),
-  stats: () => api.get<StickerStats>("/stickers/stats"),
-  upload: (data: FormData) =>
-    api.post<{ success: boolean; sticker: StickerItem }>("/stickers", data, {
-      headers: { "Content-Type": "multipart/form-data" },
-      timeout: 120000,
-    }),
-  update: (id: string, data: { description?: string; tags?: string[]; emotion?: string }) =>
-    api.put(`/stickers/${encodeURIComponent(id)}`, data),
-  reindex: (id: string) =>
-    api.post(`/stickers/${encodeURIComponent(id)}/reindex`, null, { timeout: 120000 }),
-  rebuildEmbeddings: (mode: "mismatched" | "all" = "mismatched") =>
-    api.post<{ ok: boolean; dims: number; cleared: Record<string, number> }>(
-      "/stickers/embedding/rebuild", { mode }, { timeout: 120000 }),
-  remove: (id: string) => api.delete(`/stickers/${encodeURIComponent(id)}`),
-  fileUrl: (id: string) => `/api/stickers/${encodeURIComponent(id)}/file`,
-  listImages: (params: { page?: number; page_size?: number }) =>
-    api.get<IndexedImageListResult>("/stickers/images/list", { params }),
-  imageFileUrl: (path: string) => `/api/stickers/images/file?path=${encodeURIComponent(path)}`,
-  removeImage: (path: string) =>
-    api.delete("/stickers/images", { params: { path } }),
-};
 
 // Database（数据管理页 · 数据库管理）
 export const databaseApi = {
@@ -917,19 +864,6 @@ export const volumeApi = {
     ),
 };
 
-// Share（文件分享推送）
-export const shareApi = {
-  list: (params: { status?: string; page?: number; page_size?: number; query?: string }) =>
-    api.get<ShareLinkListResult>("/entity/share/links", { params }),
-  create: (data: CreateShareRequest) =>
-    api.post<ShareLink>("/entity/share/links", data),
-  revoke: (token: string) =>
-    api.delete(`/entity/share/links/${encodeURIComponent(token)}`),
-  stats: () =>
-    api.get<ShareStats>("/entity/share/stats"),
-  getLogs: (params: { token?: string; page?: number; page_size?: number }) =>
-    api.get<DownloadLogListResult>("/entity/share/logs", { params }),
-};
 
 // ── 关系图谱（/memory/graph，权威存储在记忆库 graph_nodes/graph_edges） ──
 export const graphApi = {

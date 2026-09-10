@@ -17,7 +17,7 @@ from .config import get_dify_store
 
 
 @context_provider(
-    name="dify_status", priority=35, max_tokens=160,
+    name="dify_status", priority=12, max_tokens=160,
     group="dify", inject_key="dify_context_inject",
 )
 class DifyStatusProvider:

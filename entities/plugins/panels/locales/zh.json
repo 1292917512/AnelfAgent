@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "plugins": "插件管理"
+    },
+    "configSections": {
+      "entity/plugins": "插件管理"
+    }
+  },
   "installed": "已安装插件",
   "installedDesc": "本地已安装的插件包，变更即时生效、无需重启",
   "noPlugins": "尚未安装插件，可在下方浏览市场或直接安装",
@@ -23,7 +31,6 @@
   "installDone": "插件 {name} 安装完成",
   "removeDone": "插件 {name} 已移除",
   "toggleDone": "插件 {name} 已{state}",
-
   "marketplaces": "插件市场",
   "marketplacesDesc": "订阅市场目录（本地路径或 git 仓库），浏览并安装其中的插件",
   "addMarketplace": "订阅市场",
@@ -40,7 +47,6 @@
   "removeMarketplaceConfirm": "确定退订市场 {name} 吗？",
   "noMarketplaces": "尚未订阅任何市场",
   "addFirst": "订阅",
-
   "browse": "浏览与安装",
   "browseDesc": "检索全部已订阅市场中的插件，或直接从 git 地址 / 本地路径安装",
   "searchPlaceholder": "搜索插件名称、描述或分类…",

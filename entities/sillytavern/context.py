@@ -68,7 +68,7 @@ def _collect_once() -> None:
         _snapshot["bridge_ok"] = False
 
 
-@context_provider(name="sillytavern_status", priority=30, max_tokens=300, group="sillytavern")
+@context_provider(name="sillytavern_status", priority=22, max_tokens=300, group="sillytavern")
 class SillyTavernStatusProvider:
     """酒馆运行中注入状态卡片；关闭时零注入。"""
 

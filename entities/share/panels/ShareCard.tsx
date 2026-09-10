@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import type { ChatShareInfo } from "@/lib/types";
 import { toast } from "@/stores/toast-store";
-import { MediaPreview } from "./MediaPreview";
+import { MediaPreview } from "@/pages/chat/render/MediaPreview";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";

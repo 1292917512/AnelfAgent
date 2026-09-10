@@ -400,6 +400,37 @@ def push_notify(
         return False
 
 
+async def add_persistent_reminder(
+    note: str, run_at_ts: float, scope: str = "", channel: str = "",
+) -> str:
+    """写入一条持久化定时提醒（entities 桥接 mind 调度器），返回提醒 id。
+
+    到期由心跳触发一轮完整 REPLY（重启不丢失），供日历事件等实体复用；
+    请勿绕开此桥直写 reminders.json。系统未就绪返回空串。
+    """
+    if not scope:
+        scope = get_current_scope()
+        if scope == "_global":
+            scope = get_owner_scope()
+    try:
+        from agent.mind.tools.scheduler import add_reminder
+        reminder = await add_reminder(note, run_at_ts, scope, channel)
+        return str(reminder["id"])
+    except Exception:
+        return ""
+
+
+async def cancel_persistent_reminder(reminder_id: str) -> bool:
+    """按 id 取消一条未触发的持久化提醒（add_persistent_reminder 配对）。"""
+    if not reminder_id:
+        return False
+    try:
+        from agent.mind.tools.scheduler import remove_reminder
+        return await remove_reminder(reminder_id)
+    except Exception:
+        return False
+
+
 def load_image_from_path(path: str) -> Any:
     """从本地路径加载图片为 base64 ImageContent。"""
     from agent.llm.image_utils import load_image_from_path as _load
@@ -796,7 +827,10 @@ def context_provider(
 
     Args:
         name: 提供者唯一标识（默认取类名/函数名）。
-        priority: 注入优先级（越小越优先，预算超限时低优先级先被截断）。
+        priority: 注入优先级（越小越靠前，预算超限时大值先被截断）。语义为变动率
+            排序：快照越静态越小（靠前），含时间/秒计数等逐轮变化内容的实时
+            快照越大（靠尾部动态区末尾）。段位：10-19 状态级 / 20-29 摘要级 /
+            30-39 会话操作态势 / 40+ 实时快照（详见 core.context_provider.ProviderMeta）。
         max_tokens: 静态预估上限（Web 展示 + 预算告警参考）。
         scope: 作用域过滤。None=全局；"webui:*"=前缀匹配；"webui:u123"=精确匹配。
         group: 所属工具分组（如 "ssh"）。声明后随实体启停联动：分组内全部

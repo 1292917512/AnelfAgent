@@ -1,9 +1,3 @@
-import { registerPluginI18n } from "@/lib/plugin-i18n";
-import zh from "./devops/locales/zh.json";
-import en from "./devops/locales/en.json";
-
-registerPluginI18n("devops", { zh, en });
-
 /**
  * devops 实体自定义面板 — 服务控制与项目更新。
  *
@@ -15,8 +9,8 @@ import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { GitBranch, Hammer, RefreshCw, Rocket } from "lucide-react";
-import { devopsApi } from "@/lib/api";
-import type { DevopsActionResult } from "@/lib/types";
+import { devopsApi } from "./devops/api";
+import type { DevopsActionResult } from "./devops/types";
 import { Card } from "@/components/common/Card";
 import { Button } from "@/components/ui";
 

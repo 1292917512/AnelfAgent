@@ -1,9 +1,3 @@
-import { registerPluginI18n } from "@/lib/plugin-i18n";
-import zh from "./ssh/locales/zh.json";
-import en from "./ssh/locales/en.json";
-
-registerPluginI18n("ssh", { zh, en });
-
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Network, SquareTerminal } from "lucide-react";

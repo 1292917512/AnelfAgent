@@ -698,7 +698,7 @@ class MCPBridge:
                                 self._set_last_error(srv.name, "")
                                 log(f"MCP server '{srv.name}' 自动重连成功 (第 {iteration} 次)，{count} 个工具")
 
-                            await self._wait_with_liveness(srv.name, session, stop_event)
+                            await self._wait_with_liveness(session, stop_event)
                             return
 
                 except Exception as exc:
@@ -745,13 +745,14 @@ class MCPBridge:
             if not first_attempt:
                 self._cleanup_server_entities(srv.name)
 
-    async def _wait_with_liveness(self, name: str, session: Any, stop_event: Any) -> None:
+    async def _wait_with_liveness(self, session: Any, stop_event: Any) -> None:
         """等待停止信号，期间按周期 ping 探测连接存活。
 
         stdio 子进程退出或网络静默断开时，SDK 的接收循环结束不会通知
         等待方——纯 ``stop_event.wait()`` 会让死连接永远显示"已连接"。
         周期性 send_ping 让死活状态在一个探测周期内收敛：探测失败抛
-        ConnectionError，由 lifecycle 的断线分支按配置决定重连或退出。
+        ConnectionError，由 lifecycle 的断线分支按配置决定重连或退出
+        （该分支自带断开/重试/放弃/重连成功日志，探测成功不打日志）。
         周期经 mcp_liveness_ping_seconds 热读取（≤0 关闭探测）。
         """
         import asyncio
@@ -779,7 +780,6 @@ class MCPBridge:
                 )
             except Exception as exc:
                 raise ConnectionError(f"存活探测失败: {exc}") from exc
-            log(f"MCP server '{name}' 存活探测正常", "DEBUG", tag="MCP")
 
     def _session_kwargs(self, server_name: str) -> Dict[str, Any]:
         """构造 ClientSession 关键字参数。

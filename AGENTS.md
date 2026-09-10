@@ -377,6 +377,14 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | cognee LanceDB 物理压缩与存储统计 | `cognee/storage.py`（物理存储维护模块：压缩 + 统计 + 快照 + 调度）+ coordinator 空闲窗口调度 | cognee 删除/更新只在 Lance 追加 tombstone 新版本，历史版本物理数据永不回收（磁盘单调膨胀的根因）。`compact_lance_tree` 遍历 `system/databases/**/*.lance.db` 逐表 `optimize(cleanup_older_than)`（碎片合并+索引优化+清理早于 `compact_retention_days` 的版本，最新版本永远保留、逻辑数据零影响），压缩前后用同一条统计遍历实测占用；worker 队列排空后的空闲窗口按 `compact_interval_seconds`（默认 86400s）自动执行（与写入单消费者天然互斥），失败仅记日志下个周期重试。手动触发三入口同路径 `coordinator.request_compact()`：AI 工具 `compact_cognee_storage`（memory 组）/ `POST /memory/cognee/compact` / Web 记忆页「压缩存储」按钮；worker 存活时登记请求待空闲执行，未运行则内联执行。状态经 sync.last_compact_at/last_compact_summary 暴露。`StorageStatsTracker`（单例 `cognee_storage_stats`）：大库遍历可达数十秒，请求路径永不遍历——内存 TTL → 磁盘快照（`<data_root>/storage_stats.json`，重启即恢复真实值）→ 空统计三级返回，过期仅调度后台单任务刷新；所有缓存写入携带单调代际号，invalidate/adopt/新刷新使在途旧遍历结果被丢弃（防压缩后数字被旧遍历回写）；coordinator 启动预热、压缩尾声 `adopt(after_stats)` 直接收录实测值免二次遍历、rebuild 清场后 `invalidate(root)` 连快照删除。`/cognee/status` 的 storage 字段与数据库管理页 cognee 条目（size_bytes=整个数据目录，此前仅 stat 元数据库文件曾 177M 显示 vs 30G 实际）共用该 tracker |
 | 存储卷（数据平面模块化管理） | `core/storage_volume.py`（注册表 + 位置指派 + 主库路径权威 `main_sqlite_path`）+ `agent/storage/volume_restore.py`（重启落盘交换）+ `services/volume_ops.py`（备份/恢复/迁移/SQL 导出导入） | 所有持久化数据统一登记为存储卷（8 卷：agent 主库 / memory / skill_vectors / stickers / voiceprints / share 六个 SQLITE + cognee 树 + 便签树），各存储模块 import 时自注册 VolumeDescriptor（惰性 default_path 保持测试隔离）；同族库路径均由 `main_sqlite_path()`（env > 项目根 ConfigPaths.SQLITE_DB）派生 stem，放在 core 使 entities 无需依赖 agent。路径解析优先级：env_override > 位置指派（`config/storage_volumes.json`，cognee 卷转发 cognee.json data_root 单一权威）> 模块默认派生——**无指派文件时所有路径与历史完全一致，数据零移动**。能力按形态派生：SQLITE 全量（备份/恢复/迁移/SQL 导出导入）、cognee 树无 SQL 传输、便签树（路径即数据根）仅备份/恢复（占用也只计卷成员：根级 *.md + events/groups/profile_backups，不计数据根其余内容）。备份：SQLite 走 Backup API 在线热备（`services.database.online_sqlite_backup` 唯一实现，整目录迁移同源复用）、树走 tgz（cognee 经 coordinator `run_in_idle_window` 空闲窗口与写入互斥，manifest 的 consistency 如实标注）；保留数 `volume_backup_retention`（storage/backup 组，默认 5）自动清理。恢复与迁移均为「校验 + 拷贝 + 指派/标记 + 重启生效」：恢复写 pending 标记（`<data_dir>/backups/volumes/.pending-restore.json`），bootstrap `init_storage` 最早消费（任何连接打开前交换文件；旧库 -wal/-shm 必清除防回放；现文件留 `.pre-restore-<ts>.bak` 滚动保留 3 份）；便签树恢复为选择性覆盖，cognee 树整树替换。迁移目标校验复用 `data_migration.validate_target_dir`（i18n 标识 tokens 共用），尺寸估计异步分口径（cognee 走统计缓存/便签走成员/SQLite 走 stat），不在事件循环上遍历大目录。外部 SQL 为备份/转移通道（运行时各库仍本地 SQLite）：`SqlTransferClient`（与只读浏览适配器分离的写通道）做 DDL 方言翻译 + rowid 窗口流式批量传输，导出登记清单表 `_anelf_export`、导入仅认清单（快照往返闭环）；派生索引（FTS5/vec0 影子表）不传输，导入后由各存储建表逻辑重建。Web 面板：数据管理页「存储卷」Tab（`pages/database/volumes/`），API 前缀 `/database/volumes`；`services.database.ensure_volume_modules()` 兜底触发卷登记，库注册表由卷驱动（share 库由此补登），cognee 浏览路径仍指元数据库文件。目录遍历/占用统一走 `core.file_utils.walk_files/directory_size` |
 
+#### 每轮动态区预算与纪律归一（第十二轮新增）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 纪律单一权威源 | `agent/memory/rules_doc.py`（铁律）+ memorize/recall schema + hub 骨架/注入头 + 召回块头 | 同一纪律只讲一遍：路由/纪律归铁律（stable 唯一来源），工具 schema 只留参数语义，hub 骨架只声明段结构，召回块头训诫压为一行指针；铁律新增 hub 即时段与便签「当前状态」的分工句（两个"当前在做什么"写入口不再含糊）。铁律 1993→1628 字符，memorize/recall description 去重后合计省 ~250 字符（均属 stable 前缀，一次性重建后恢复冻结） |
+| exec_context 步骤预算 | `context_assembly._MAX_RENDERED_STEPS`（12） | `[已完成步骤]` 渲染只保留最近 12 步 + 省略行（"此前 N 步已省略"）；exec_context 每轮全量重建，无界清单在长回复下按轮次平方膨胀 token，防重复操作只需近期步骤；finish_think 的最终执行摘要仍消费全量清单（一次性） |
+| 非输出提示独白信号驱动 | `think_loop._handle_tool_round` | "工具结果仅你可见"提示只在**本轮工具调用伴随文本独白**时注入（独白 = 模型误以为文字可达用户的信号）；静默工具轮零注入——exec_context 每轮已有输出契约，重复追加是纯 token 烧耗 |
+
 #### 记忆投影防护（第六轮新增）
 
 | 机制 | 位置 | 说明 |
@@ -435,9 +443,9 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 记忆体系铁律（系统级提示词文档） | `agent/memory/rules_doc.py`（文档持有：种子/读取/保存）+ `config/memory_rules.md`（文件载体，ConfigPaths.MEMORY_RULES，随配置目录搬迁）+ `context_assembly._memory_rules_text` | 写入路由（五系统 + 技能分流，一条信息只进一个系统、出处用指针）/ 标签纪律（前缀语义、打标即入联想网络、写前 memory_index 查既有形态、tags 软加权 vs filter_tags 硬过滤）/ 主标签记忆用法 / 披露边界 / 查询路由 / 落盘诚实 / 检索纪律。独立 Markdown 文档：缺失时以模块常量 DEFAULT_RULES 种子落盘（人类直接拿到完整默认文档）；AI 无写入路径，人类经 Web 记忆页「规则」标签整文档编辑（GET/PUT /api/memory/rules，经 services/memory.py 收口）或手编文件。读取走 mtime 缓存（stable 指纹计算每周期仅一次 stat），生效文本参与 stable 指纹门控（编辑后工具块重建一次再冻结） |
 | 主标签记忆（main:hub） | `agent/memory/hub.py`（骨架/自愈/渲染）+ `_blk_hub`（context_assembly，vol 36 独立块）+ tools 侧三守卫 | 带保留标签 `main:hub` 的 PERMANENT 记忆，每回复周期置顶注入（完整与 lean 模式同口径）：AI 经 memorize（type:permanent + main:hub）整段 upsert 维护——`_upsert_permanent` 对 hub 仅按 HUB_TAG 单标签匹配防重复；`_load_permanent_pins` 排除 hub 防霸占 pin 名额；`forget` 拦截 hub 归档；心跳维护段 `ensure_hub` 自愈重建骨架。注入预算 `memory_hub_inject_max_chars`（默认 3000，保索引段截尾部） |
 | 便签受管区块硬保护 | `agent/memory/notes.py`（`_MANAGED_BLOCK_RE` + `_assert_managed_blocks_intact`） | `<!-- AUTO:name BEGIN/END -->` 标记对圈定的系统受管区块，便签写工具（write_notes/save_notes_content/write_memory_file/patch/edit_lines/write_section/delete_section）写入前校验逐字节保留，改动/删除即拒绝；系统写入路径（update_memory_status_block 直走 `_atomic_write`）天然豁免。同时修复「当前状态」分界容错：`_STATUS_HEADING_RE` 锚定标题文本而非精确字节（`## 四、当前状态` 等编号子标题同样命中），静态指南正确归 stable 层、状态块不再双重注入 |
-| 标签索引观测 | `agent/heartbeat/engine.py::_write_memory_status` | 状态区块追加「标签索引」行：标签空间规模按前缀分布 + 高频联想标签 top-N（`memory_status_tag_top_n`，默认 8，数据源 `store.list_tags()` 零新表），AI 据此维护标签纪律防止膨胀 |
+| 标签索引观测 | `agent/heartbeat/engine.py::_write_memory_status` | 状态区块仅保留 AI 可行动项（库容/cognee 同步与熔断/最近整理/便签超标），注入准入 = 看到能改变行为；标签膨胀提醒条件化（总数超 `memory_tag_bloat_threshold`（默认 400，0=关）才注入归并提醒行）；运维遥测（召回通道计数/写入去重分布/24h 变更审计/高频标签明细）不进 prompt，由 memory_stats 工具按需查询（`metrics.snapshot()` + `get_audit_summary` 组合进返回值） |
 
-> Model Experience：① 模型看到 stable 工具块的完整记忆铁律（写入路由/标签纪律/主标签用法）、context 层 vol 36 的 `[主标签记忆]` 独立块、状态区块多一行标签概览；② token 增量 = 铁律约 400 字（stable 恒定摊销为零）+ hub 块 ≤3000 字符可配 + 状态行 <200 字符；③ 缓存：铁律字节恒定永久命中，hub 独立消息只损自身，分界修复后心跳状态改写不再击穿 stable 人设块（净收益）；配置中心经 memory/recall（hub 预算）、memory/consolidation（标签概览条数）组键热调
+> Model Experience：① 模型看到 stable 工具块的完整记忆铁律（写入路由/标签纪律/主标签用法 + hub 即时段与便签「当前状态」的分工）/ context 层 vol 36 的 `[主标签记忆]` 独立块 / 状态区块（仅行动项，标签膨胀超阈值才多一行提醒）；② token：铁律 ~1600 字符（stable 恒定摊销为零）+ hub 块 ≤3000 字符可配 + 状态区块常态 <150 字符，遥测经 memory_stats 按需取；③ 缓存：铁律字节恒定永久命中，hub 独立消息只损自身，分界修复后心跳状态改写不再击穿 stable 人设块（净收益）；配置中心经 memory/recall（hub 预算）、memory/consolidation（膨胀阈值）组键热调
 
 ### 前端结构
 
@@ -471,7 +479,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 频道/实体的前端与后端收敛到同一模块目录，核心框架只做通用加载，删除模块目录即整体拔出（UI/API/文案/路由零残留）：
 
 - **频道前端**：`channels/<id>/frontend/`（index.ts 清单 + components/ + api.ts + types.ts + locales/{zh,en}.json），经 `moduleFrontendsPlugin`（vite.config.ts）/ `scripts/link_entity_panels.py` 整目录软链到 `src/plugins/channels/<id>/`（**软链须提交 git**——CI 中 `tsc -b` 先于 vite buildStart）。index.ts 为轻量 eager 清单：`registerPluginI18n("channel-<id>", {zh, en})` 自注册文案 + 组件 loader 动态 import。清单字段：`login`（频道卡片登录入口）/ `panel`（卡片展开区自定义面板）/ `route`+`page`（整页路由，App.tsx 动态注册）/ `hiddenInChannelList`（频道列表隐藏）。频道页（AdapterCard/UnmatchedGroupCard/ChannelsPanel/ChannelTestPanel/Sidebar）全部经 `lib/channel-plugins.ts` 注册表驱动，**禁止 `key === "xxx"` 硬编码**。频道在配置中心的分组展示名也由频道自注册：`registerPluginI18n("config", {sections: {"adapter/<id>": ...}})`（deep 合并进核心 config 命名空间），核心 locale 不写具体频道文案
-- **实体面板**：`entities/<name>/panel.tsx`（+ `panels/` 子目录拆分）软链到 `src/pages/entities/panels/`；面板专属 i18n 放 `panels/locales/{zh,en}.json` 由 panel.tsx 顶部 `registerPluginI18n(<ns>)` 自注册（ns 名不变）；面板专属 API/类型放 `panels/api.ts` / `panels/types.ts`（不污染核心 lib/api.ts、lib/types）。**共享型例外**（被核心页面消费的实体功能留核心）：sticker（核心表情包库页）、share（聊天 ShareCard）、mcp / graph / devops（核心管理页共用其 API）
+- **实体面板**：`entities/<name>/panel.tsx`（+ `panels/` 子目录拆分）软链到 `src/pages/entities/panels/`；面板专属 i18n 放 `panels/locales/{zh,en}.json`，由 `lib/entity-plugin-locales.ts` 在 i18n 初始化后 **eager 注册**（面板组件懒加载，locale 静态打入主 chunk，panel.tsx 无需再自行 registerPluginI18n）；locale 文件的保留键 `_registry` 以显式映射声明全局词汇——`groups: {groupKey: 展示名}`（工具页分组名，合入 tools 命名空间）与 `configSections: {"entity/<key>": 展示名}`（配置中心分组名，合入 config 命名空间），实体目录名与分组 key 不必相同、一个实体可拥有多个分组；**实体的组名翻译一律自持于模块目录（热拔出零残留），核心 tools.json/config.json 不写实体条目**；无面板的实体也可只建 `panels/locales/` 目录（locale-only 实体同样被软链同步覆盖）；面板专属 API/类型放 `panels/api.ts` / `panels/types.ts`（不污染核心 lib/api.ts、lib/types）。**共享型例外**（被核心页面消费的实体功能）：实现代码一律归实体目录，核心只持路由薄壳/协议类型并经软链路径 `@/pages/entities/panels/<name>/` 引用——sticker（库管理组件群在实体 `panels/library/`，核心 `pages/Stickers.tsx` 与 Data 页为薄壳引用）、share（ShareCard 与链接管理在实体 `panels/`，核心仅留 SSE 协议类型 `lib/types/share.ts`）、devops（`panels/api.ts`+`types.ts`，核心数据库/记忆页经软链引用）；mcp / graph 为纯核心管理页（无实体面板，类型与 API 留核心）
 - 插件 API 复用核心 axios 实例（`import { api, apiErrorMessage } from "@/lib/api"`），类型放插件 types.ts，不进 lib/types
 
 ### 关键文件索引
@@ -563,7 +571,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `agent/runtime/wiring.py` | 运行时统一施绑点（wire_runtime：bootstrap 组装尾部唯一接线入口） |
 | `core/crash_report.py` | 崩溃状态设施（守护脚本崩溃状态 logs/crash_state.json 读写 + macOS .ips 崩溃报告解析关联 + AI 可注入摘要渲染） |
 | `agent/mind/crash_recovery.py` | 崩溃尾部修复（回复检查点残留注入中断元消息 + 崩溃上下文收集消费） |
-| `core/context_provider.py` | 上下文提供者注册表（实体实时快照注入，think_loop 每轮发送组装时经 collect() 取当前最新快照——缓存超 2s 新鲜度阈值即内联并发重收（provider 契约零 I/O + 各 1s 硬超时），注入位置在工具链之后、exec_context 之前；两道门控均热读取：①inject_key 注入开关——会产出注入内容的 provider 必须声明，约定 `<组名>_context_inject`，_sdk 装饰器兜底注册进 `entity/<group>` 组（实体自行声明的定义优先），频道 provider 走 CONFIG_MODEL 字段；②group 实体启停联动——分组工具全禁用时停止采集与注入，与实体目录可见性同口径） |
+| `core/context_provider.py` | 上下文提供者注册表（实体实时快照注入，think_loop 每轮发送组装时经 collect() 取当前最新快照——缓存超 2s 新鲜度阈值即内联并发重收（provider 契约零 I/O + 各 1s 硬超时），注入位置在工具链之后、exec_context 之前；**priority 语义为变动率排序**（越小越靠前，与管线 volatility 教义同构）：10-19 状态级（连接/解锁/在线清单）/ 20-29 摘要级 / 30-39 会话操作态势 / 40+ 实时快照（含时间/秒计数），预算超限时大值先截断；两道门控均热读取：①inject_key 注入开关——会产出注入内容的 provider 必须声明，约定 `<组名>_context_inject`，_sdk 装饰器兜底注册进 `entity/<group>` 组（实体自行声明的定义优先），频道 provider 走 CONFIG_MODEL 字段；②group 实体启停联动——分组工具全禁用时停止采集与注入，与实体目录可见性同口径） |
 
 ### 工具分组体系
 
@@ -577,7 +585,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 
 修改分组名时必须同步更新：
 1. 后端 `@tool(group=...)` / `@deferred_tool(group=...)` / `entity(group, ...)` / `activate_group(group, ...)`
-2. 前端 `i18n/locales/zh/tools.json` 和 `en/tools.json` 的 `groups` 对象
+2. 前端翻译：核心分组（agent 层）改 `i18n/locales/zh/tools.json` 和 `en/tools.json` 的 `groups` 对象；**实体分组改其实体 `panels/locales/{zh,en}.json` 的 `_registry.groups` / `_registry.configSections`**（启动时 eager 自注册，核心 locale 不写实体条目）
 3. `core/entity.py` 的 `_DEFAULT_GROUP_ORDER`（LLM 工具目录排序）
 4. `services/tool.py` 的 `_GROUP_ORDER`（WebUI 工具列表排序）
 
@@ -610,6 +618,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `mcp_manage` | MCP 管理 | `entities/mcp/bridge.py`（动态） | — |
 | `mcp:*` | MCP 服务 | 动态注册 | — |
 | `plugins` | 插件管理 | `entities/plugins/tools.py`（AI 管理面）+ `activation.py`（激活编排：技能入库 workspace/skills + MCP 合并带 plugin 来源标记 + tools.py 差集注册）+ `router.py`（/api/entity/plugins）+ 核心引擎 `core/plugins/`（清单多点发现解析、plugins.json 注册表、git/local 负载获取与原子替换、PluginManager 编排，激活经钩子外置） | — |
+| `ai_desktop` | AI 桌面 | `entities/ai_desktop/tools.py`（组件管理 + 天气预报查询）+ `modules/calendar/tools.py`（日程增删/标注/ICS 订阅，提醒经 _sdk 桥接 mind 持久化提醒） | — |
 | `devops` | 运维管理 | `entities/devops/tools.py`（重启/构建/git 更新/崩溃信息查询 get_crash_report，核心逻辑在 `service.py`，Web 面板经 `router.py` + `panel.tsx` 复用同一实现） | — |
 
 ### 缓存命中率排查手册（ZCode 排障）

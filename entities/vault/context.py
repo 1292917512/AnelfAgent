@@ -14,7 +14,7 @@ from entities._sdk import context_provider
 
 @context_provider(
     name="vault_status",
-    priority=40,
+    priority=14,
     max_tokens=60,
     group="vault",
     inject_key="vault_context_inject",

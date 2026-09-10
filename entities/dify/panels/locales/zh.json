@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "dify": "Dify 平台"
+    },
+    "configSections": {
+      "entity/dify": "Dify 平台"
+    }
+  },
   "tabs": {
     "status": "连接",
     "apps": "应用与工作流",

@@ -940,10 +940,13 @@ async def _handle_tool_round(
     if _round_output_sent_successfully(tool_chain, tool_calls):
         state.pending_text = ""
 
-    # 非输出工具后：提醒结果仅自己可见（输出类工具已直接发往用户，无需再确认）
+    # 非输出工具伴随文本独白时提醒"结果仅自己可见"——独白是模型误以为
+    # 文字可达用户的信号；纯工具轮无需提示（exec_context 每轮已有输出契约）
     if ctx.mode == ThinkMode.REPLY:
+        round_had_text = bool(_strip_think_blocks(result.content or "").strip())
         if (
-            not (called & _OUTPUT_TOOL_NAMES)
+            round_had_text
+            and not (called & _OUTPUT_TOOL_NAMES)
             and _END_REPLY_TOOL_NAME not in called
         ):
             tool_chain.append({

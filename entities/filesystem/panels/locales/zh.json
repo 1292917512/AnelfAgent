@@ -1,0 +1,10 @@
+{
+  "_registry": {
+    "groups": {
+      "os": "操作系统"
+    },
+    "configSections": {
+      "entity/os": "系统命令"
+    }
+  }
+}

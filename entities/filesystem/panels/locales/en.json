@@ -1,0 +1,10 @@
+{
+  "_registry": {
+    "groups": {
+      "os": "Operating System"
+    },
+    "configSections": {
+      "entity/os": "OS & Shell"
+    }
+  }
+}

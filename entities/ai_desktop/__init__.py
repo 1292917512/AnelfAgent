@@ -24,12 +24,12 @@ from entities._sdk import entity, entity_manifest
 from . import framework
 from .modules import load_modules
 
-entity("ai_desktop", "AI 桌面 - 动态环境信息上下文注入（时间/节日/天气等可插拔组件）")
+entity("ai_desktop", "AI 桌面 - 动态环境信息上下文注入（时间/节日/天气/日程/订阅额度等可插拔组件）")
 
 entity_manifest(
     display_name="AI 桌面",
     icon="monitor",
-    description="向 AI 动态上下文注入实时环境信息的可插拔组件平台（时间/节日/天气）",
+    description="向 AI 动态上下文注入实时环境信息的可插拔组件平台（时间/节日/天气预报/日历日程/订阅额度）",
     version="1.0.0",
     order=40,
     group="ai_desktop",

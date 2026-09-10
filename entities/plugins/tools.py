@@ -61,7 +61,7 @@ wire_plugin_manager(get_plugin_manager())
 
 
 @context_provider(
-    name="plugins", priority=30, max_tokens=200,
+    name="plugins", priority=45, max_tokens=200,
     group="plugins", inject_key="plugins_context_inject",
 )
 async def plugin_operation_status(scope: str):

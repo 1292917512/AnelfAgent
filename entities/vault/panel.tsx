@@ -1,9 +1,3 @@
-import { registerPluginI18n } from "@/lib/plugin-i18n";
-import zh from "./vault/locales/zh.json";
-import en from "./vault/locales/en.json";
-
-registerPluginI18n("vault", { zh, en });
-
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";

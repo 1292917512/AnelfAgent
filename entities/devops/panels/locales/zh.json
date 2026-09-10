@@ -1,4 +1,9 @@
 {
+  "_registry": {
+    "groups": {
+      "devops": "运维管理"
+    }
+  },
   "serviceControl": "服务控制",
   "serviceControlDesc": "重启服务，或重新构建前端后重启",
   "restartService": "重启服务",

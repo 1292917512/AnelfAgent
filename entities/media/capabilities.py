@@ -11,14 +11,14 @@ from typing import Any, Dict
 
 CAPABILITY_GUIDE: Dict[str, Dict[str, Any]] = {
     "vision": {
-        "tools": ["recognize_image"],
+        "tools": ["recognize_image", "recognize_video"],
         "summary": "识别/分析图片或视频内容（本地路径或 URL）",
         "key_params": {
-            "image_path": "图片/视频路径或 URL（必填）",
+            "image_path/video_path": "图片/视频路径或 URL（必填）",
             "prompt": "分析指令，如'描述图片中的文字'（可选）",
         },
         "example": 'recognize_image(image_path="workspace/uploads/image/xxx.png", prompt="描述图片")',
-        "notes": "主模型有视觉时本地图片直接回注原图（不走识别链，更快）；无视觉时按媒体库配置链识别（实时 provider 状态见 media_config providers）",
+        "notes": "主模型有视觉时本地图片直接回注原图（不走识别链，更快）；无视觉时按媒体库配置链识别。视频始终走识别链，仅投送声明 supports_video 的模型（实时 provider 状态见 media_config providers）",
     },
     "asr": {
         "tools": ["voice_to_text"],

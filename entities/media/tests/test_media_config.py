@@ -125,7 +125,7 @@ class TestMediaConfigStatus:
         }
         vision = caps["vision"]
         assert vision["available"] is True  # models 已配置
-        assert vision["tools"] == ["recognize_image"]
+        assert vision["tools"] == ["recognize_image", "recognize_video"]
         assert vision["chain"] == ["models", "minimax"]
         states = {p["name"]: p["configured"] for p in vision["providers"]}
         assert states == {"models": True, "minimax": False}

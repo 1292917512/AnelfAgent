@@ -216,6 +216,25 @@ export function WeatherLocations({ mod, onSave, onRefresh }: WeatherLocationsPro
                 <MiniCell label={t("detail.fetchedAt")} value={formatTime(status.fetched_at)} />
               </div>
             )}
+            {loc.enabled && status?.forecast && status.forecast.length > 1 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {status.forecast.slice(1, 7).map((f) => (
+                  <span
+                    key={f.date}
+                    className="inline-flex items-center gap-1 rounded bg-card border border-border/50 px-2 py-0.5 text-[10px] text-muted"
+                  >
+                    <span className="font-mono">{f.date.slice(5)}</span>
+                    <span className="text-foreground">{f.condition}</span>
+                    {f.tmin != null && f.tmax != null && (
+                      <span>{`${f.tmin.toFixed(0)}~${f.tmax.toFixed(0)}°`}</span>
+                    )}
+                    {f.precip_prob != null && f.precip_prob >= 50 && (
+                      <span className="text-accent">{`${f.precip_prob.toFixed(0)}%`}</span>
+                    )}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         );
       })}

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { stickersApi } from "@/lib/api";
+import { stickersApi } from "../api";
 import { cn } from "@/lib/utils";
-import type { StickerItem } from "@/lib/types";
+import type { StickerItem } from "../types";
 import { Button, ConfirmDialog, Input, LoadingBlock, toast } from "@/components/ui";
 import {
   Image as ImageIcon,
@@ -21,7 +21,7 @@ type Tab = "stickers" | "images";
 
 /** 表情包管理面板 — 可嵌入「数据管理」页 Tab，也可由 /stickers 独立页复用 */
 export function StickersPanel() {
-  const { t } = useTranslation(["stickers", "common"]);
+  const { t } = useTranslation(["sticker", "common"]);
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<Tab>("stickers");
   const [search, setSearch] = useState("");

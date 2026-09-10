@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { shareApi } from "@/lib/api";
+import { shareApi } from "./api";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
 import { FileText, TrendingUp } from "lucide-react";

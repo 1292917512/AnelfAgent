@@ -1,4 +1,9 @@
 {
+  "_registry": {
+    "groups": {
+      "devops": "DevOps"
+    }
+  },
   "serviceControl": "Service Control",
   "serviceControlDesc": "Restart the service, or rebuild the frontend and restart",
   "restartService": "Restart Service",

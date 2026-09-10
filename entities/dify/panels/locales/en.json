@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "dify": "Dify Platform"
+    },
+    "configSections": {
+      "entity/dify": "Dify Platform"
+    }
+  },
   "tabs": {
     "status": "Connection",
     "apps": "Apps & Workflows",

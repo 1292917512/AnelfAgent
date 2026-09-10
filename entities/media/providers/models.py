@@ -179,7 +179,12 @@ class ModelsProvider(MediaProvider):
         raise RuntimeError(f"所有视觉模型均调用失败: {last_err}")
 
     async def _run_video(self, video_path: str, prompt: str) -> Dict[str, Any]:
-        """视频理解：按视觉模型优先级链逐个尝试 describe_video。"""
+        """视频理解：按视觉模型优先级链逐个尝试 describe_video。
+
+        严格候选过滤：仅投送声明 supports_video 的模型——整段视频 base64 体积大，
+        而多数视觉端点并不接受 video block，未声明即视为不支持，不做全链喷洒试错；
+        无声明模型时直接报配置缺失，引导在模型配置中显式开启。
+        """
         from entities._sdk import (
             download_video_to_base64,
             get_model_type_enum,
@@ -191,6 +196,11 @@ class ModelsProvider(MediaProvider):
         all_vision = _mgr().get_all_by_type(ModelType.VISION)
         if not all_vision:
             raise ProviderUnavailable("未配置视觉模型")
+        candidates = [c for c in all_vision if getattr(c.config, "supports_video", False)]
+        if not candidates:
+            raise ProviderUnavailable(
+                "未配置支持视频理解的模型（请在模型配置中为支持视频的模型开启 supports_video）"
+            )
 
         last_err = ""
         attempts = 0
@@ -216,12 +226,12 @@ class ModelsProvider(MediaProvider):
             b64_vid = await download_video_to_base64(video_path)
             if not b64_vid:
                 raise RuntimeError(f"无法下载视频（链接可能已过期）: {video_path[:100]}")
-            result = await _try_candidates(all_vision, b64_vid)
+            result = await _try_candidates(candidates, b64_vid)
             if result is not None:
                 return result
         else:
             vid = load_video_from_path(video_path)
-            result = await _try_candidates(all_vision, vid)
+            result = await _try_candidates(candidates, vid)
             if result is not None:
                 return result
         if attempts and policy_rejects == attempts:

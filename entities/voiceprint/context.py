@@ -16,7 +16,7 @@ from .store import get_voiceprint_store
 
 
 @context_provider(
-    name="voiceprint_status", priority=30, max_tokens=300,
+    name="voiceprint_status", priority=20, max_tokens=300,
     group="voiceprint", inject_key="voiceprint_context_inject",
 )
 class VoiceprintStatusProvider:

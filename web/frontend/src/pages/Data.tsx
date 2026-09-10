@@ -4,7 +4,7 @@ import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
 import { Database, HardDrive, Layers, Smile } from "lucide-react";
 import { DatabasePanel } from "@/pages/database/DatabasePanel";
-import { StickersPanel } from "@/pages/stickers/StickersPanel";
+import { StickersPanel } from "@/pages/entities/panels/sticker/library/StickersPanel";
 import { StoragePanel } from "@/pages/database/StoragePanel";
 import { VolumePanel } from "@/pages/database/volumes/VolumePanel";
 

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from types import SimpleNamespace
+from typing import Any, Dict, List
 
 import pytest
 
@@ -170,3 +171,58 @@ class TestErrorAggregation:
         assert "minimax-tts" in out["errors"]
         assert out.get("cause") == "network"  # 429 → 限流可重试
         assert out.get("retryable") is True
+
+
+class _FakeVisionClient:
+    """可编排 describe_video 行为的假视觉客户端。"""
+
+    def __init__(self, name: str, supports_video: bool, error: Exception | None = None) -> None:
+        self.config = SimpleNamespace(name=name, supports_video=supports_video)
+        self._error = error
+        self.calls = 0
+
+    async def describe_video(self, video: Any, prompt: str = "") -> str:
+        self.calls += 1
+        if self._error:
+            raise self._error
+        return f"{self.config.name} 的描述"
+
+
+class TestVideoCandidateFilter:
+    """models provider._run_video：按 supports_video 声明过滤候选模型。"""
+
+    @staticmethod
+    def _patch_env(monkeypatch: pytest.MonkeyPatch, clients: List[_FakeVisionClient]) -> None:
+        import entities._sdk as sdk
+        import entities.media.providers.models as models_mod
+
+        monkeypatch.setattr(
+            models_mod, "_mgr",
+            lambda: SimpleNamespace(get_all_by_type=lambda _mt: clients),
+        )
+        monkeypatch.setattr(sdk, "load_video_from_path", lambda _p: SimpleNamespace(data="x"))
+
+    async def test_prefers_supports_video_declared(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """有模型声明 supports_video 时，未声明模型不投送整段视频。"""
+        from entities.media.providers.models import ModelsProvider
+
+        plain = _FakeVisionClient("plain", supports_video=False)
+        capable = _FakeVisionClient("capable", supports_video=True)
+        self._patch_env(monkeypatch, [plain, capable])
+
+        out = await ModelsProvider()._run_video("/tmp/x.mp4", "描述")
+
+        assert out["model"] == "capable"
+        assert plain.calls == 0
+        assert capable.calls == 1
+
+    async def test_none_declared_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """无模型声明 supports_video → 报配置缺失，不做全链喷洒试错。"""
+        from entities.media.providers.models import ModelsProvider
+
+        plain = _FakeVisionClient("plain", supports_video=False)
+        self._patch_env(monkeypatch, [plain])
+
+        with pytest.raises(ProviderUnavailable, match="supports_video"):
+            await ModelsProvider()._run_video("/tmp/x.mp4", "描述")
+        assert plain.calls == 0

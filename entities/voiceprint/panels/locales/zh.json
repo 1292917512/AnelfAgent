@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "voiceprint": "音源库"
+    },
+    "configSections": {
+      "entity/voiceprint": "音源库"
+    }
+  },
   "subtitle": "说话人声纹库：识别、归属管理、语音转写检索",
   "tabs": {
     "overview": "总览",

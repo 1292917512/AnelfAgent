@@ -31,6 +31,7 @@ export function ManualAddForm({
         context_window: form.context_window,
         supports_tools: form.supports_tools,
         supports_vision: form.supports_vision,
+        supports_video: form.supports_vision && form.supports_video,
         supports_forced_tool_choice: form.supports_forced_tool_choice,
         supports_reasoning: form.supports_reasoning,
       });
@@ -73,6 +74,14 @@ export function ManualAddForm({
             className="accent-accent2 w-3.5 h-3.5" />
           <span className="text-xs text-foreground">{t("vision")}</span>
         </label>
+        {form.supports_vision && (
+          <label className="flex items-center gap-2 cursor-pointer" title={t("videoUnderstandingHint")}>
+            <input type="checkbox" checked={form.supports_video}
+              onChange={(e) => setForm({ ...form, supports_video: e.target.checked })}
+              className="accent-accent2 w-3.5 h-3.5" />
+            <span className="text-xs text-foreground">{t("videoUnderstanding")}</span>
+          </label>
+        )}
         <label className="flex items-center gap-2 cursor-pointer">
           <input type="checkbox" checked={form.supports_reasoning}
             onChange={(e) => setForm({ ...form, supports_reasoning: e.target.checked })}

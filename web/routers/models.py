@@ -264,6 +264,7 @@ class CreateModelReq(BaseModel):
     timeout: float = Field(default=120.0, gt=0)
     context_window: int = Field(default=0, ge=0)
     supports_vision: bool = False
+    supports_video: bool = False
     supports_tools: bool = True
     supports_forced_tool_choice: bool = True
     vision_format: VisionFormat = "base64"
@@ -501,6 +502,7 @@ class UpdateModelReq(CreateModelReq):
     timeout: Optional[float] = Field(default=None, gt=0)
     context_window: Optional[int] = Field(default=None, ge=0)
     supports_vision: Optional[bool] = None
+    supports_video: Optional[bool] = None
     supports_tools: Optional[bool] = None
     supports_forced_tool_choice: Optional[bool] = None
     vision_format: Optional[VisionFormat] = None

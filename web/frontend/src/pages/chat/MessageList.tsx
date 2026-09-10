@@ -8,7 +8,7 @@ import { useDelegationStore } from "@/stores/delegation-store";
 import { MediaBubble } from "./render/MediaBubble";
 import { PlanCard } from "./render/PlanCard";
 import { DelegationCard } from "./render/DelegationCard";
-import { ShareCard } from "./render/ShareCard";
+import { ShareCard } from "@/pages/entities/panels/share/ShareCard";
 import { SystemNotice } from "./render/SystemNotice";
 import { ToolSummaryCard } from "./render/ToolSummaryCard";
 import { ToolCallsCard } from "./render/ToolCallsCard";

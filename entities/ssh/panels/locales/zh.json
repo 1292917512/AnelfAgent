@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "ssh": "SSH 远程管理"
+    },
+    "configSections": {
+      "entity/ssh": "SSH 远程"
+    }
+  },
   "tabs": {
     "connections": "连接管理",
     "exec": "命令执行"

@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "ssh": "SSH Remote"
+    },
+    "configSections": {
+      "entity/ssh": "SSH"
+    }
+  },
   "tabs": {
     "connections": "Connections",
     "exec": "Run Command"

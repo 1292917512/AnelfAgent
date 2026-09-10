@@ -1,4 +1,9 @@
 {
+  "_registry": {
+    "groups": {
+      "media": "Media"
+    }
+  },
   "tabs": {
     "priority": "Capability Priority",
     "defaults": "Voice & Defaults",

@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "share": "File Share"
+    },
+    "configSections": {
+      "entity/share": "Share"
+    }
+  },
   "tabs": {
     "overview": "Overview",
     "links": "Links",

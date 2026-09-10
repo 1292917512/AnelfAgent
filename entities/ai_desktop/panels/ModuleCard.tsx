@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { Box, Clock, CloudSun, RefreshCw } from "lucide-react";
+import { Box, CalendarDays, Clock, CloudSun, CreditCard, RefreshCw } from "lucide-react";
 import { Card } from "@/components/common/Card";
 import { Button, Switch } from "@/components/ui";
 import { ConfigField } from "./ConfigField";
@@ -11,6 +11,8 @@ import type { DesktopModuleInfo } from "./types";
 const MODULE_ICONS: Record<string, typeof Box> = {
   datetime: Clock,
   weather: CloudSun,
+  subscription: CreditCard,
+  calendar: CalendarDays,
 };
 
 /** 由专属编辑器接管的配置项（不进通用编辑列表） */

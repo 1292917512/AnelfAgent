@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "ai_desktop": "AI 桌面"
+    },
+    "configSections": {
+      "entity/ai_desktop": "AI 桌面"
+    }
+  },
   "loadFailed": "组件数据加载失败（实体可能未启用或服务未重启）",
   "retry": "重试",
   "stats": {
@@ -74,5 +82,20 @@
     "duplicate": "该时区已在列表中",
     "invalidZone": "无效的时区名，不会产生注入",
     "zoneHint": "IANA 时区数据库名称，如 America/New_York、Europe/London"
+  },
+  "subscription": {
+    "noCredential": "未在 LLM 供应商配置中找到凭据",
+    "pending": "等待首次采集",
+    "resetAt": "重置",
+    "lowQuota": "有窗口余量不足 10%，请注意节省使用"
+  },
+  "calendar": {
+    "today": "今天",
+    "tomorrow": "明天",
+    "allDay": "全天",
+    "empty": "暂无日程；AI 可通过 calendar_manage 工具添加，也可订阅外部日历",
+    "remind": "提前{{minutes}}分钟提醒",
+    "subCount": "{{count}} 项",
+    "subFailed": "同步失败"
   }
 }

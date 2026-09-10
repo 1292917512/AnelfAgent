@@ -397,7 +397,7 @@ class MemoryRetriever:
             lines.append(f"{head}{e.content}")
         from core.sanitizer import sanitize_for_context
         return [{"role": "system", "content": sanitize_for_context(
-            "[近期记忆]（归属标注含义同记忆召回：称呼[uid:xxx] 指明记忆涉及谁）\n"
+            "[近期记忆]（归属标注：称呼[uid:xxx] 指明记忆涉及谁）\n"
             + "\n---\n".join(lines)
         )}]
 
@@ -799,12 +799,9 @@ class MemoryRetriever:
         dynamic_lines: list[str] = []
         if mem_lines:
             dynamic_lines.append(
-                "[系统注入·记忆召回] 以下为自动检索到的相关记忆，不代表当前任务进程，仅作参考：\n"
-                "- 💡=直接相关，🔗=联想关联\n"
-                "- 每条开头的归属标注（称呼[uid:xxx] / [group_id:xxx]）指明这条记忆涉及谁——"
-                "引用内容前先确认归属：uid 与当前对话对象不符的记忆是别人的事，"
-                "切勿张冠李戴当作当前对象的经历；拿不准就含糊处理或向对方求证\n"
-                "- 标注「私事」的记忆不要向第三方透露，除非对方就是当事人：\n"
+                "[系统注入·记忆召回] 以下为自动检索到的相关记忆，不代表当前任务进程，仅作参考"
+                "（💡=直接相关，🔗=联想关联；每条开头的归属标注指明记忆涉及谁，"
+                "uid 与当前对话对象不符勿张冠李戴，「私事」不外传——纪律见记忆体系铁律）：\n"
                 + "\n".join(mem_lines)
             )
         if file_lines:

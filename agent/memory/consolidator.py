@@ -224,11 +224,11 @@ _CONSOLIDATOR_CONFIGS = {
             "description": "是否启用自动遗忘（心跳时清理低价值记忆）",
             "default": True,
         },
-        "memory_status_tag_top_n": {
-            "description": "记忆状态区块中展示的高频标签条数（标签索引观测面，0 = 不展示）",
-            "default": 8,
+        "memory_tag_bloat_threshold": {
+            "description": "标签膨胀提醒阈值：标签总数超过时在记忆状态区块注入归并提醒（高频标签明细经 memory_index 查看）；0 = 不提醒",
+            "default": 400,
             "advanced": True,
-            "unit": "条",
+            "unit": "个",
         },
         "memory_consolidate_every_n_ticks": {
             "description": "整理执行间隔（每 N 次心跳一次全量整理）",

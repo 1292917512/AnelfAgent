@@ -58,6 +58,10 @@ class WeatherModule(DesktopModule):
         """当前配置的地区列表。"""
         return parse_locations(self.get_config("locations", ""))
 
+    def enabled_location_names(self) -> List[str]:
+        """启用地区名列表（工具报错提示用）。"""
+        return [loc["name"] for loc in self._locations() if loc["enabled"]]
+
     def due(self, now: float) -> bool:
         """刷新间隔取配置值（热生效）；启用地区存在缺数据时立即到期。"""
         try:
@@ -117,10 +121,10 @@ class WeatherModule(DesktopModule):
 
     @staticmethod
     def _format_line(data: Dict[str, Any]) -> str:
-        """单地区数据 → 注入行文本。"""
-        segments = [str(data["condition"])]
+        """单地区数据 → 注入行文本（今日/明日两段式；降水概率过半时提示）。"""
+        segments: List[str] = []
         if data.get("temp") is not None:
-            temp_part = f"{data['temp']:.0f}°C"
+            temp_part = f"现在 {data['temp']:.0f}°C"
             if data.get("feels") is not None:
                 temp_part += f"（体感 {data['feels']:.0f}°C）"
             segments.append(temp_part)
@@ -129,9 +133,42 @@ class WeatherModule(DesktopModule):
         if data.get("wind_speed") is not None:
             wind_part = f"{data['wind_direction']}风 " if data.get("wind_direction") else "风速 "
             segments.append(f"{wind_part}{data['wind_speed']:.0f}km/h")
+
+        today_part = f"今日 {data['condition']}"
         if data.get("today_min") is not None and data.get("today_max") is not None:
-            segments.append(f"今日 {data['today_min']:.0f}~{data['today_max']:.0f}°C")
-        return f"[天气] {data['label']}：" + "，".join(segments)
+            today_part += f" {data['today_min']:.0f}~{data['today_max']:.0f}°C"
+        forecast = data.get("forecast") or []
+        if forecast and forecast[0].get("precip_prob") is not None \
+                and forecast[0]["precip_prob"] >= 50:
+            today_part += f" 降水{forecast[0]['precip_prob']:.0f}%"
+        segments.insert(0, today_part)
+        line = f"[天气] {data['label']}：" + "，".join(segments)
+
+        if len(forecast) > 1:
+            tomorrow = forecast[1]
+            part = f"｜明日 {tomorrow['condition']}"
+            if tomorrow.get("tmin") is not None and tomorrow.get("tmax") is not None:
+                part += f" {tomorrow['tmin']:.0f}~{tomorrow['tmax']:.0f}°C"
+            precip = tomorrow.get("precip_prob")
+            if precip is not None and precip >= 50:
+                part += f" 降水{precip:.0f}%"
+            line += part
+        return line
+
+    def forecast_for(self, name: str = "", days: int = 5) -> Dict[str, Any]:
+        """逐日预报查询（AI 工具用）：name 为空时返回全部启用地区。"""
+        days = max(1, min(days, 7))
+        result: Dict[str, Any] = {}
+        for loc in self._locations():
+            if not loc["enabled"]:
+                continue
+            if name and loc["name"] != name:
+                continue
+            data = self._data.get(loc["name"])
+            if not data or "error" in data:
+                continue
+            result[loc["name"]] = (data.get("forecast") or [])[:days]
+        return result
 
     # ---- 以下为同步采集实现（经 asyncio.to_thread 调用） ----
 
@@ -181,9 +218,10 @@ class WeatherModule(DesktopModule):
                 "current": "temperature_2m,relative_humidity_2m,"
                            "apparent_temperature,weather_code,"
                            "wind_speed_10m,wind_direction_10m",
-                "daily": "temperature_2m_max,temperature_2m_min",
+                "daily": "temperature_2m_max,temperature_2m_min,weather_code,"
+                         "precipitation_probability_max",
                 "timezone": "auto",
-                "forecast_days": 1,
+                "forecast_days": 7,
             },
         )
         resp.raise_for_status()
@@ -203,5 +241,25 @@ class WeatherModule(DesktopModule):
             "wind_direction": wind_direction_text(current.get("wind_direction_10m")),
             "today_max": to_number(maxes[0]) if maxes else None,
             "today_min": to_number(mins[0]) if mins else None,
+            "forecast": self._parse_daily(daily),
             "fetched_at": time.time(),
         }
+
+    @staticmethod
+    def _parse_daily(daily: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """daily 段 → 逐日预报列表（date/condition/tmin/tmax/降水概率）。"""
+        dates = daily.get("time") or []
+        codes = daily.get("weather_code") or []
+        maxes = daily.get("temperature_2m_max") or []
+        mins = daily.get("temperature_2m_min") or []
+        precip = daily.get("precipitation_probability_max") or []
+        forecast: List[Dict[str, Any]] = []
+        for i, day in enumerate(dates):
+            forecast.append({
+                "date": str(day),
+                "condition": weather_text(codes[i]) if i < len(codes) else "",
+                "tmin": to_number(mins[i]) if i < len(mins) else None,
+                "tmax": to_number(maxes[i]) if i < len(maxes) else None,
+                "precip_prob": to_number(precip[i]) if i < len(precip) else None,
+            })
+        return forecast

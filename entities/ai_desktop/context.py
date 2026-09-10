@@ -19,7 +19,7 @@ _SCHED_TICK_SECONDS = 5.0
 
 
 @context_provider(
-    name="ai_desktop", priority=15, max_tokens=400,
+    name="ai_desktop", priority=50, max_tokens=400,
     group="ai_desktop", inject_key="ai_desktop_context_inject",
 )
 class AiDesktopProvider:

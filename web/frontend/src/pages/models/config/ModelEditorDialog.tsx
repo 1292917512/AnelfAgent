@@ -210,6 +210,7 @@ export function ModelEditorDialog({
     top_p: model.top_p ?? null,
     chat_protocol: model.chat_protocol ?? "chat_completions",
     supports_vision: model.supports_vision,
+    supports_video: model.supports_video,
     vision_format: model.vision_format,
     supports_tools: model.supports_tools,
     supports_forced_tool_choice: model.supports_forced_tool_choice,
@@ -584,6 +585,14 @@ export function ModelEditorDialog({
               <option value="url">url</option>
               <option value="both">both</option>
             </Select>
+          )}
+          {draft.supports_vision && (
+            <label className="flex items-center gap-2 cursor-pointer" title={t("videoUnderstandingHint")}>
+              <input type="checkbox" checked={draft.supports_video ?? false}
+                onChange={(e) => patch({ supports_video: e.target.checked })}
+                className="accent-accent2 w-3.5 h-3.5" />
+              <span className="text-xs text-foreground">{t("videoUnderstanding")}</span>
+            </label>
           )}
           <label className="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" checked={draft.supports_tools ?? true}

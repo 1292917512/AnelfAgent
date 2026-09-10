@@ -641,7 +641,13 @@ class HeartbeatEngine:
         self, consolidate_report: Any = None,
         type_counts: Optional[Dict[str, int]] = None,
     ) -> None:
-        """将记忆系统状态写入主便签受管区块（让 AI 随时了解自己的记忆情况）。"""
+        """将记忆系统状态写入主便签受管区块（仅 AI 可行动项）。
+
+        注入准入 = AI 看到能改变行为：库容规模 / cognee 同步与熔断（解释图谱
+        检索为何滞后）/ 遗忘整理感知 / 标签膨胀提醒 / 便签超标。运维遥测
+        （召回通道计数、写入去重分布、24h 变更审计、高频标签明细）不进
+        prompt，由 memory_stats 工具按需查询——这是状态区块保持低噪的边界。
+        """
         store = self.mind.memory_store
         if not store:
             return
@@ -652,14 +658,10 @@ class HeartbeatEngine:
                 type_counts = await store.get_type_counts()
             total = sum(type_counts.values())
             archived = await store.count_archived()
-            dist = " / ".join(
-                f"{t} {c}" for t, c in sorted(type_counts.items(), key=lambda kv: -kv[1])
-            )
             lines = [
-                "## 记忆系统状态（系统自动维护，勿手改）",
+                "## 记忆系统状态",
                 "",
-                f"- 活跃记忆：{total} 条（{dist}）",
-                f"- 已归档：{archived} 条（遗忘/手动归档，可由系统恢复）",
+                f"- 活跃记忆：{total} 条 · 已归档：{archived} 条",
             ]
             try:
                 from agent.memory.cognee.config import load_cognee_config
@@ -693,50 +695,18 @@ class HeartbeatEngine:
                     parts.append(f"合并 {consolidate_report.merged_count}")
                 stamp = datetime.now().strftime("%m-%d %H:%M")
                 lines.append(f"- 最近整理（{stamp}）：{' · '.join(parts) if parts else '无需整理'}")
-            # 运行指标（召回通道/写入去重/自动捕获累计计数）
-            try:
-                from agent.memory import metrics as memory_metrics
-                lines.extend(memory_metrics.render_status_lines())
-            except Exception:
-                pass
-            # 近 24h 记忆变更摘要（审计事件流消费口）
-            try:
-                audit = await store.get_audit_summary(hours=24)
-                if audit:
-                    action_names = {"update": "更新", "delete": "删除",
-                                    "archive": "归档", "merge": "合并"}
-                    detail = " · ".join(
-                        f"{action_names.get(a, a)} {n}"
-                        for a, n in sorted(audit.items(), key=lambda kv: -kv[1])
-                    )
-                    lines.append(f"- 近 24h 记忆变更：{detail}")
-            except Exception:
-                pass
-            # 标签索引观测：标签空间规模 + 高频联想标签（AI 据此维护标签纪律、防止膨胀）
+            # 标签膨胀提醒：仅在标签总数超阈值时注入（高频标签明细经 memory_index 查看，
+            # 常态零占用——标签空间健康时这行对 AI 是纯噪音）
             try:
                 from core.config import get_config_int as _get_int
-                tag_top_n = _get_int("memory_status_tag_top_n", 8)
-                if tag_top_n > 0:
+                bloat_threshold = _get_int("memory_tag_bloat_threshold", 400)
+                if bloat_threshold > 0:
                     tag_df = await store.list_tags()
-                    if tag_df:
-                        from agent.memory.store.tag_intel import ASSOC_PREFIXES
-                        prefix_counts: Dict[str, int] = {}
-                        for tag in tag_df:
-                            prefix = tag.split(":", 1)[0] if ":" in tag else "其他"
-                            prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
-                        dist = " / ".join(
-                            f"{k} {v}" for k, v in
-                            sorted(prefix_counts.items(), key=lambda kv: -kv[1])
+                    if len(tag_df) > bloat_threshold:
+                        lines.append(
+                            f"- ⚠️ 标签索引：共 {len(tag_df)} 个，存在膨胀——"
+                            "打新标签前先用 memory_index 查重，相近话题归并既有标签"
                         )
-                        hot = [
-                            f"{t}({c})" for t, c in
-                            sorted(tag_df.items(), key=lambda kv: -kv[1])
-                            if t.startswith(ASSOC_PREFIXES)
-                        ][:tag_top_n]
-                        tag_line = f"- 标签索引：共 {len(tag_df)} 个（{dist}）"
-                        if hot:
-                            tag_line += f" · 高频: {', '.join(hot)}"
-                        lines.append(tag_line)
             except Exception:
                 pass
             for fname, cap in self._NOTES_CAPACITY.items():

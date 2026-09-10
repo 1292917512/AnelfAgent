@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { Eye, Wrench, Brain, Layers } from "lucide-react";
+import { Eye, Wrench, Brain, Layers, Video } from "lucide-react";
 import { Badge, Select } from "@/components/ui";
 import { modelsApi } from "@/lib/api";
 import type { ApiTypeInfo, ModelConfig } from "@/lib/types";
@@ -67,14 +67,15 @@ export interface ManualModelForm {
   context_window: number;
   supports_tools: boolean;
   supports_vision: boolean;
+  supports_video: boolean;
   supports_reasoning: boolean;
   supports_forced_tool_choice: boolean;
 }
 
 export const EMPTY_MANUAL_MODEL: ManualModelForm = {
   id: "", model: "", context_window: 0,
-  supports_tools: true, supports_vision: false, supports_reasoning: false,
-  supports_forced_tool_choice: true,
+  supports_tools: true, supports_vision: false, supports_video: false,
+  supports_reasoning: false, supports_forced_tool_choice: true,
 };
 
 /** 模型能力/类型/上下文/成本徽标组 */
@@ -84,6 +85,9 @@ export function ModelBadges({ model }: { model: ModelConfig }) {
     <div className="flex gap-1 ml-1 flex-wrap">
       {model.supports_vision && (
         <Badge variant="accent2"><Eye size={9} /> {t("vision")}</Badge>
+      )}
+      {model.supports_video && (
+        <Badge variant="accent2"><Video size={9} /> {t("videoUnderstanding")}</Badge>
       )}
       {model.supports_tools && (
         <Badge variant="accent"><Wrench size={9} /> {t("toolCall")}</Badge>

@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { shareApi, workspaceApi } from "@/lib/api";
+import { workspaceApi } from "@/lib/api";
+import { shareApi } from "./api";
 import { Card } from "@/components/common/Card";
 import { Copy, Download, ExternalLink, FileText, FolderOpen, Globe, Image as ImageIcon, Link2, Plus, ChevronRight, ChevronDown } from "lucide-react";
 import { toast } from "@/stores/toast-store";
-import type { CreateShareRequest, ShareLink, ShareType, WorkspaceNode } from "@/lib/types";
+import type { WorkspaceNode } from "@/lib/types";
+import type { CreateShareRequest, ShareLink, ShareType } from "./types";
 
 const EXPIRES_OPTIONS = ["1h", "6h", "24h", "7d", "30d", "never"] as const;
 

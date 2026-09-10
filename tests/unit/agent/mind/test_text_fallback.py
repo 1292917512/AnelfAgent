@@ -98,7 +98,24 @@ async def test_bare_text_no_continue_or_sent_ack(anything, deliver_mock) -> None
 
 
 async def test_non_output_tools_inject_visibility_hint(anything, deliver_mock) -> None:
-    """查资料类工具后注入「结果仅你可见」。"""
+    """查资料类工具伴随文本独白时注入「结果仅你可见」（独白 = 误以为文字可达用户）。"""
+    mind = _mind()
+    mind._rounds = [
+        tool_result("我先查一下相关记忆", ["recall"]),
+        tool_result("", ["end_reply"]),
+    ]
+    chain: List = []
+    await _run(mind, anything, chain=chain)
+
+    hints = [
+        m for m in chain if m.get("role") == "system"
+        and "仅你可见" in m.get("content", "")
+    ]
+    assert hints
+
+
+async def test_silent_tool_round_no_visibility_hint(anything, deliver_mock) -> None:
+    """静默工具轮（无伴随文本）不注入提示——exec_context 每轮已有输出契约。"""
     mind = _mind()
     mind._rounds = [
         tool_result("", ["recall"]),
@@ -111,7 +128,7 @@ async def test_non_output_tools_inject_visibility_hint(anything, deliver_mock) -
         m for m in chain if m.get("role") == "system"
         and "仅你可见" in m.get("content", "")
     ]
-    assert hints
+    assert not hints
 
 
 async def test_send_message_no_sent_ack(anything, deliver_mock) -> None:

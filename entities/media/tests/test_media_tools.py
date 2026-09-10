@@ -8,7 +8,7 @@ from typing import Any, Dict
 import pytest
 
 import entities.media.tools as media_tools
-from entities.media.tools import recognize_image
+from entities.media.tools import recognize_image, recognize_video
 
 
 @pytest.fixture
@@ -21,12 +21,24 @@ def local_image(tmp_path, monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 @pytest.fixture
+def local_video(tmp_path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """伪造 workspace 内存在的视频文件，沙箱解析直通。"""
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    monkeypatch.setattr(media_tools.utils, "resolve_workspace_path", lambda p: str(clip))
+    return str(clip)
+
+
+@pytest.fixture
 def chain_spy(monkeypatch: pytest.MonkeyPatch) -> Dict[str, Any]:
-    """mock 识别链并记录是否被调用。"""
+    """mock 识别链并记录调用情况。"""
     state: Dict[str, Any] = {"called": False}
 
     async def _fake(capability: str, label: str, **kwargs: Any) -> Dict[str, Any]:
         state["called"] = True
+        state["capability"] = capability
+        state["label"] = label
+        state["kwargs"] = kwargs
         return {"success": True, "description": "一只猫", "model": "v1"}
 
     monkeypatch.setattr(media_tools, "run_capability", _fake)
@@ -73,13 +85,8 @@ class TestDirectInjectFastPath:
         assert "_multimodal" not in out
 
     async def test_video_still_uses_chain(
-            self, monkeypatch: pytest.MonkeyPatch, tmp_path, chain_spy: Dict[str, Any],
+            self, local_video: str, chain_spy: Dict[str, Any],
     ) -> None:
-        clip = tmp_path / "clip.mp4"
-        clip.write_bytes(b"fake")
-        monkeypatch.setattr(
-            media_tools.utils, "resolve_workspace_path", lambda p: str(clip),
-        )
         out = json.loads(await recognize_image(image_path="workspace/clip.mp4"))
 
         assert chain_spy["called"] is True
@@ -127,3 +134,35 @@ class TestVisionChainFallback:
 
         assert "_multimodal" not in out
         assert out["error"] == "无可用视觉模型"
+
+
+class TestRecognizeVideo:
+    """recognize_video 独立工具入口：视频始终走识别链，不直注主模型。"""
+
+    async def test_video_uses_chain_even_with_vision_main_model(
+            self, monkeypatch: pytest.MonkeyPatch, local_video: str, chain_spy: Dict[str, Any],
+    ) -> None:
+        """主模型有视觉也不直注（视频无法注入本地 block），走视频识别链。"""
+        monkeypatch.setattr(media_tools, "_main_model_supports_vision", lambda: True)
+        out = json.loads(await recognize_video(video_path="workspace/clip.mp4"))
+
+        assert chain_spy["called"] is True
+        assert chain_spy["capability"] == "vision"
+        assert chain_spy["label"] == "视频识别"
+        assert chain_spy["kwargs"]["image_path"] == local_video
+        assert out["description"] == "一只猫"
+        assert out["image_path"] == local_video
+        assert "_multimodal" not in out
+
+    async def test_default_prompt_is_video(
+            self, local_video: str, chain_spy: Dict[str, Any],
+    ) -> None:
+        await recognize_video(video_path="workspace/clip.mp4")
+
+        assert "视频" in chain_spy["kwargs"]["prompt"]
+
+    async def test_missing_path_param_error(self) -> None:
+        out = json.loads(await recognize_video())
+
+        assert out["cause"] == "param"
+        assert out["retryable"] is False

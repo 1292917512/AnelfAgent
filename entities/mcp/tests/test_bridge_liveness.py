@@ -47,7 +47,7 @@ def test_liveness_wait_returns_on_stop(bridge: MCPBridge, fast_ping_interval: No
     async def scenario() -> None:
         stop = asyncio.Event()
         waiter = asyncio.ensure_future(
-            bridge._wait_with_liveness("s1", session, stop)
+            bridge._wait_with_liveness(session, stop)
         )
         await asyncio.sleep(0.15)
         stop.set()
@@ -63,7 +63,7 @@ def test_liveness_ping_failure_raises(bridge: MCPBridge, fast_ping_interval: Non
 
     async def scenario() -> None:
         stop = asyncio.Event()
-        await bridge._wait_with_liveness("s1", session, stop)
+        await bridge._wait_with_liveness(session, stop)
 
     with pytest.raises(ConnectionError, match="存活探测失败"):
         bridge._run_coro(scenario(), timeout=5)
@@ -78,7 +78,7 @@ def test_liveness_disabled_by_zero_interval(bridge: MCPBridge) -> None:
         async def scenario() -> None:
             stop = asyncio.Event()
             waiter = asyncio.ensure_future(
-                bridge._wait_with_liveness("s1", session, stop)
+                bridge._wait_with_liveness(session, stop)
             )
             await asyncio.sleep(0.15)
             stop.set()

@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "ai_desktop": "AI Desktop"
+    },
+    "configSections": {
+      "entity/ai_desktop": "AI Desktop"
+    }
+  },
   "loadFailed": "Failed to load modules (entity may be disabled or the server needs a restart)",
   "retry": "Retry",
   "stats": {
@@ -74,5 +82,20 @@
     "duplicate": "Timezone already in the list",
     "invalidZone": "Invalid timezone name; produces no injection",
     "zoneHint": "IANA tz database names, e.g. America/New_York, Europe/London"
+  },
+  "subscription": {
+    "noCredential": "No credential found in LLM provider config",
+    "pending": "Waiting for first fetch",
+    "resetAt": "Resets",
+    "lowQuota": "A window is below 10% remaining — use sparingly"
+  },
+  "calendar": {
+    "today": "Today",
+    "tomorrow": "Tomorrow",
+    "allDay": "All day",
+    "empty": "No events yet; the AI can add via calendar_manage, or subscribe external calendars",
+    "remind": "Remind {{minutes}}min ahead",
+    "subCount": "{{count}} events",
+    "subFailed": "sync failed"
   }
 }

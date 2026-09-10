@@ -1,15 +1,13 @@
-import { registerPluginI18n } from "@/lib/plugin-i18n";
-import zh from "./ai_desktop/locales/zh.json";
-import en from "./ai_desktop/locales/en.json";
-
-registerPluginI18n("ai_desktop", { zh, en });
-
 /**
  * AI 桌面实体面板 — 上下文注入组件的完整管理页。
  *
  * 统计卡（组件/启用/注入/异常）+ 整体注入预览 + 组件卡片
  * （实时状态详情、实际注入文本、配置编辑、启停与手动刷新）。
  * 数据驱动自 /api/entity/ai_desktop/modules，新增后端组件自动出现卡片。
+ *
+ * i18n：locales/{zh,en}.json 由 lib/entity-plugin-locales.ts 启动时 eager
+ * 注册（命名空间 ai_desktop），无需在本文件自行 registerPluginI18n；
+ * _registry.groups/configSections 声明工具页与配置中心的分组名。
  */
 import { useState } from "react";
 import { useTranslation } from "react-i18next";

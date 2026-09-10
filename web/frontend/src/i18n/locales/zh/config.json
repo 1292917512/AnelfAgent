@@ -71,17 +71,9 @@
     "system/logging": "日志",
     "system/hooks": "用户钩子",
     "system/hotplug": "热插拔",
-    "entity/os": "系统命令",
-    "entity/ssh": "SSH 远程",
-    "entity/web": "网络工具",
-    "entity/voiceprint": "音源库",
-    "entity/mcp": "MCP 服务",
-    "entity/sticker": "表情包",
-    "entity/share": "分享",
     "planning/core": "目标注入",
     "task/handoff": "任务交接",
-    "storage/backup": "存储卷备份",
-    "entity/plugins": "插件管理"
+    "storage/backup": "存储卷备份"
   },
   "window": {
     "title": "对话窗口",

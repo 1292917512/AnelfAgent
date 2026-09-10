@@ -1,9 +1,3 @@
-import { registerPluginI18n } from "@/lib/plugin-i18n";
-import zh from "./dify/locales/zh.json";
-import en from "./dify/locales/en.json";
-
-registerPluginI18n("dify", { zh, en });
-
 /**
  * Dify 平台实体面板 — 连接 / 应用与工作流 / 运行调试 / 模型供应商 / MCP 桥接。
  *

@@ -56,6 +56,7 @@ config/approval_policies.json
 config/plugins.json
 config/hooks.json
 config/mcp_oauth.json
+config/calendar.json
 # 运行时配置
 config/heartbeat.json
 config/cognee.json
