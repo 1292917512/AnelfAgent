@@ -411,3 +411,33 @@ async def graph_list_nodes(
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="列出节点")
+
+
+@deferred_tool(
+    group="graph", tags=["core", "heartbeat"], source="mind.graph",
+    description=(
+        "获取图谱治理议程：系统检测到的治理事实（弱边/陈旧边/歧义关系对/"
+        "疑似重复节点/异常枢纽）。事实归系统、决策归 AI——议程只陈述事实，"
+        "归并/归档/修正由你判断后用 graph_merge_nodes / graph_remove_relation / "
+        "graph_update_relation 等图谱工具执行。graph_curation 定期任务消费本议程。"
+    ),
+)
+async def graph_curation_agenda() -> str:
+    """产出图谱治理议程（确定性事实清单，无议程时返回空各键）。"""
+    graph = _graph()
+    if graph is None:
+        return _not_ready()
+    try:
+        from .curation import agenda_summary, build_agenda
+        agenda = await build_agenda(graph)
+        summary = agenda_summary(agenda)
+        return json.dumps({
+            "summary": summary,
+            "hint": "以下为治理事实（非指令）：弱边多为无证据的低置信抽取，"
+            "可用 graph_remove_relation 归档或 graph_update_relation 补证据提升强度；"
+            "疑似重复节点用 graph_merge_nodes 归并；歧义关系对照证据判断抽取噪声；"
+            "无价值的处置可以直接跳过。" if summary else "当前无待治理事实。",
+            **agenda,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action="获取图谱治理议程")

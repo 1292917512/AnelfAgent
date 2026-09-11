@@ -22,6 +22,7 @@ from .embedding import Embedder, wake_embedding_worker
 from .hub import HUB_TAG
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry, MemorySearchResult, MemoryType
+from .probe import deep_probe_hub
 from .store.tag_intel import ASSOC_PREFIXES, ENTITY_PREFIXES
 
 
@@ -365,6 +366,23 @@ async def recall(
                 entity_scope = f"{scope_type}_{scope_id}"
                 break
         pool_multiplier = cognee_config.recall_pool_multiplier * (2 if is_deep else 1)
+        # 实体标签 → 图谱节点：邻域查询（relations 字段）与 cognee node_name
+        # 定向检索共用——聊天对象明确时定向检索精度远高于泛化语义检索
+        node_keys: list[str] = []
+        for tag in (tag_list or []):
+            if tag.startswith(ENTITY_PREFIXES):
+                prefix, value = tag.split(":", 1)
+                # 裸 uid 补当前频道前缀，与图谱节点 key 对齐
+                node_keys.append(f"{prefix}:{_normalize_scope_id(value)}")
+        if entity_scope and not node_keys and "_" in entity_scope:
+            prefix, value = entity_scope.split("_", 1)
+            node_keys.append(f"{prefix}:{value}")
+        node_names: list[str] = []
+        if node_keys:
+            try:
+                node_names = await store.graph.labels_for_keys(node_keys)
+            except Exception:
+                node_names = []
         # 遗忘层兜底与主检索并行：归档（可恢复）+ 墓碑（仅痕迹）统一打分
         results, forgotten = await asyncio.gather(
             federated_search(
@@ -382,6 +400,7 @@ async def recall(
                 entity_scope=entity_scope,
                 query_tags=tag_list,
                 deep=is_deep,
+                node_names=node_names or None,
             ),
             store.search_forgotten(
                 query, query_vec,
@@ -399,6 +418,13 @@ async def recall(
         ]
         if mem_ids:
             await store.record_access(mem_ids)
+
+        # 主动检索入召回账本：同一回复内异步深探不重复注入 AI 已取回的内容
+        #（scope 未知时广播到全部活跃账本，防与回复账本隔离）
+        try:
+            deep_probe_hub.record(entity_scope, results=results)
+        except Exception:
+            pass
 
         items = [{
             "id": r.id,
@@ -431,20 +457,14 @@ async def recall(
 
         # 深度召回追加关系网络邻域：查询涉及的实体在图谱中的已知关系
         relations: list[str] = []
-        if is_deep:
-            node_keys = []
-            for tag in (tag_list or []):
-                if tag.startswith(ENTITY_PREFIXES):
-                    prefix, value = tag.split(":", 1)
-                    # 裸 uid 补当前频道前缀，与图谱节点 key 对齐
-                    node_keys.append(f"{prefix}:{_normalize_scope_id(value)}")
-            if entity_scope and not node_keys and "_" in entity_scope:
-                prefix, value = entity_scope.split("_", 1)
-                node_keys.append(f"{prefix}:{value}")
-            if node_keys:
-                from .graph import format_triple
-                edges = await store.graph.edges_for_scopes(node_keys, limit=10)
-                relations = [format_triple(e) for e in edges]
+        if is_deep and node_keys:
+            from .graph import format_triple
+            edges = await store.graph.edges_for_scopes(node_keys, limit=10)
+            relations = [format_triple(e) for e in edges]
+            # 工具返回的关系边同样入账本：异步深探不重复注入 AI 已取回的关系
+            deep_probe_hub.record(
+                entity_scope, edge_ids=(int(e["id"]) for e in edges),
+            )
 
         return json.dumps({
             "count": len(items),

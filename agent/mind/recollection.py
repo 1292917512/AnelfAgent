@@ -77,7 +77,7 @@ async def get_recollection(
             return [], []
         profile_msgs, recall_msgs = await mind.retriever.recall_split(
             tail, entity_scope=entity_scope, related_scopes=related_scopes,
-            query_vec=query_vec,
+            query_vec=query_vec, fire_probe=not lean,
         )
         log(f"语义召回: {len(recall_msgs)} 条, 画像: {len(profile_msgs)} 条", tag="思维")
         return profile_msgs, recall_msgs

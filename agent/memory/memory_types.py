@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
@@ -78,3 +79,40 @@ class MemorySearchResult(BaseModel):
     dataset_id: str = ""
     dataset_name: str = ""
     provenance: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RetrievalPlan(BaseModel):
+    """检索规划：轻量 LLM 对"该查什么"的结构化决策（被动召回的驱动计划）。
+
+    由 MemoryRetriever 产出、异步深探消费——放在类型层供双方共享，
+    规划逻辑归 retriever，执行归 probe。
+    """
+
+    queries: List[str] = Field(default_factory=list)
+    """互补检索查询（1-3 条），首条为主查询。"""
+
+    entities: List[str] = Field(default_factory=list)
+    """对话中提及的实体名（人名/称呼/项目/话题），用于图谱解析与定向检索。"""
+
+    deep_needed: bool = False
+    """是否需要异步深度检索（关系类问题 / 多实体交叉 / 明确回忆过去）。"""
+
+    rationale: str = ""
+    """规划依据（审计用，不注入上下文）。"""
+
+    node_keys: List[str] = Field(default_factory=list)
+    """entities 解析到的图谱节点 key（运行期产物，非 LLM 输出）。"""
+
+    node_labels: List[str] = Field(default_factory=list)
+    """对应节点 label（cognee node_name 定向检索入参）。"""
+
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalized_content_key(snippet: str, *, max_chars: int = 120) -> str:
+    """跨来源内容去重键：去空白后的前缀（同名事实不同 id 命中时的兜底判定）。
+
+    召回注入格式化与召回账本共用的权威实现。
+    """
+    return _WHITESPACE_RE.sub("", snippet or "")[:max_chars]

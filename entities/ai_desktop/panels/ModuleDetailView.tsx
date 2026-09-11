@@ -63,7 +63,6 @@ function SubscriptionDetailView({ mod }: { mod: DesktopModuleInfo }) {
     const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
     return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${hm}`;
   };
-
   const quotaText = (w: NonNullable<SubscriptionProvider["windows"]>[number]): string => {
     if (w.limit != null && w.remaining != null && w.limit < 10000) {
       return `${w.remaining}/${w.limit}`;

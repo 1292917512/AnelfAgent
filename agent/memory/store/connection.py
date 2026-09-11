@@ -423,9 +423,18 @@ class MemoryConnectionManager:
                 created_ns INTEGER NOT NULL,
                 updated_ns INTEGER NOT NULL,
                 archived INTEGER NOT NULL DEFAULT 0,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                last_accessed_ns INTEGER NOT NULL DEFAULT 0,
                 UNIQUE (subject_id, predicate, object_id)
             );
         """)
+        # 访问追踪（存量库迁移）：被检索命中的边计数加成，衰减带访问护盾
+        await self._ensure_column(
+            db, "graph_edges", "access_count", "INTEGER NOT NULL DEFAULT 0",
+        )
+        await self._ensure_column(
+            db, "graph_edges", "last_accessed_ns", "INTEGER NOT NULL DEFAULT 0",
+        )
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_ge_subject ON graph_edges(subject_id);"
         )

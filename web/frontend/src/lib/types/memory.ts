@@ -104,6 +104,57 @@ export interface CogneeDataset {
   [key: string]: unknown;
 }
 
+export interface RecallTestPlan {
+  queries: string[];
+  entities: string[];
+  node_keys: string[];
+  node_labels: string[];
+  deep_needed: boolean;
+  rationale: string;
+}
+
+export interface RecallTestItem {
+  id: string;
+  source: "memory" | "file" | "cognee_chunk" | "cognee_graph";
+  score: number;
+  content: string;
+  type: string;
+  tags: string[];
+  dataset: string;
+  path: string;
+  provenance: Record<string, unknown>;
+}
+
+export interface RecallTestForgotten {
+  id: string;
+  kind?: string;
+  score?: number;
+  content?: string;
+  gist?: string;
+  [key: string]: unknown;
+}
+
+export interface RecallTestResult {
+  plan: RecallTestPlan;
+  depth: "shallow" | "deep";
+  cognee: {
+    enabled: boolean;
+    recall_enabled: boolean;
+    datasets: string[];
+    search_types: string[];
+  };
+  items: RecallTestItem[];
+  relations: string[];
+  forgotten: RecallTestForgotten[];
+  timings: {
+    plan_ms?: number;
+    search_ms?: number;
+    total_ms?: number;
+    [key: string]: number | undefined;
+  };
+  error?: string;
+}
+
 export interface LTMItem {
   id: number;
   content: string;

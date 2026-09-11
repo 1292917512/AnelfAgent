@@ -6,7 +6,6 @@ import functools
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from services import GraphService, MemoryService
@@ -95,18 +94,6 @@ async def improve_cognee(req: CogneeImproveRequest) -> Any:
     return await _mem_svc.improve_cognee(req.dataset_name)
 
 
-@router.get("/cognee/graph")
-async def get_cognee_graph(
-    dataset: Optional[str] = Query(None),
-) -> HTMLResponse:
-    """渲染 Cognee 官方知识图谱 HTML（同源输出，供前端内嵌/新窗口打开）。"""
-    try:
-        html = await _mem_svc.get_cognee_graph_html(dataset)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return HTMLResponse(html)
-
-
 @router.get("/ltm/stats")
 @_runtime_fallback({"type_counts": {}, "total": 0})
 async def get_ltm_stats() -> Dict[str, Any]:
@@ -162,6 +149,28 @@ async def search_ltm(
     limit: int = Query(20, ge=1, le=100),
 ) -> List[Dict[str, Any]]:
     return await _mem_svc.search_ltm(query=query, tags=tags, limit=limit)
+
+
+class RecallTestRequest(BaseModel):
+    query: str
+    depth: str = "shallow"
+    tags: Optional[list[str]] = None
+    entity_scope: str = ""
+    limit: int = 8
+    search_types: Optional[list[str]] = None
+
+
+@router.post("/recall-test")
+@_runtime_fallback(_FALLBACK_ERROR)
+async def recall_test(req: RecallTestRequest) -> Dict[str, Any]:
+    """召回测试：与真实召回同管线（规划→多查询融合→关系/遗忘层），无副作用。"""
+    if not req.query.strip():
+        raise HTTPException(status_code=400, detail="查询不能为空")
+    return await _mem_svc.recall_test(
+        req.query.strip(),
+        depth=req.depth, tags=req.tags, entity_scope=req.entity_scope,
+        limit=req.limit, search_types=req.search_types,
+    )
 
 
 @router.get("/ltm/{mem_id}")

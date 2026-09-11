@@ -1,7 +1,8 @@
-"""Cognee 集成单元测试：客户端边界 / 同步 outbox / 协调器投影 / RRF 融合 / 图谱 HTML 净化。"""
+"""Cognee 集成单元测试：客户端边界 / 同步 outbox / 协调器投影 / RRF 融合 / 定向检索。"""
 
 from __future__ import annotations
 
+import hashlib
 import time
 from types import SimpleNamespace
 
@@ -11,7 +12,6 @@ from agent.memory.cognee.client import CogneeClient
 from agent.memory.cognee.config import CogneeConfig
 from agent.memory.cognee.coordinator import CogneeCoordinator
 from agent.memory.cognee.fusion import datasets_for_scope, reciprocal_rank_fusion
-from agent.memory.cognee.graph_html import sanitize_cognee_graph_html
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemorySearchResult, MemoryType
 
@@ -376,10 +376,16 @@ async def test_coordinator_projects_and_deletes_memory(tmp_path) -> None:
 
 
 class _GraphFakeClient(_FakeCogneeClient):
-    """relations 数据集假客户端（按 anelf_graph_node_id 反解数据 ID）。"""
+    """图谱投影假客户端（按 anelf_graph_node_id 反解数据 ID；含 per-scope 关系数据集）。"""
 
     async def list_datasets(self):
-        return [SimpleNamespace(id="rel-dataset-id", name="anelf_relations")]
+        digest_1 = hashlib.sha256(b"qq:1").hexdigest()[:16]
+        digest_2 = hashlib.sha256(b"qq:2").hexdigest()[:16]
+        return [
+            SimpleNamespace(id="rel-dataset-id", name="anelf_relations"),
+            SimpleNamespace(id="rel-qq-1", name=f"anelf_relations_user_{digest_1}"),
+            SimpleNamespace(id="rel-qq-2", name=f"anelf_relations_user_{digest_2}"),
+        ]
 
     async def list_data(self, _dataset_id):
         return [
@@ -408,18 +414,24 @@ async def test_coordinator_projects_graph_nodes(tmp_path) -> None:
         )
         await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
 
-        # 两端节点均投影到 relations 数据集，文档含关系内容
-        for node_id in (edge["subject"]["id"], edge["object"]["id"]):
+        # 实体型节点投影到各自 per-scope 关系数据集（scope 隔离），文档含关系内容
+        digest_1 = hashlib.sha256(b"qq:1").hexdigest()[:16]
+        digest_2 = hashlib.sha256(b"qq:2").hexdigest()[:16]
+        expected = {
+            edge["subject"]["id"]: f"anelf_relations_user_{digest_1}",
+            edge["object"]["id"]: f"anelf_relations_user_{digest_2}",
+        }
+        for node_id, dataset_name in expected.items():
             mapping = await store.get_cognee_mapping(node_id, entry_kind="graph_node")
             assert mapping is not None
-            assert mapping["dataset_name"] == "anelf_relations"
+            assert mapping["dataset_name"] == dataset_name
             assert mapping["data_id"] == f"data-{node_id}"
         assert any("朋友" in item["data"] and "老王" in item["data"] for item in client.items)
 
-        # 节点归档 → 删除其投影
+        # 节点归档 → 删除其投影（按 mapping 指向的数据集路由）
         await store.graph.set_node_archived("user:qq:2", True)
         await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
-        assert ("rel-dataset-id", f"data-{edge['object']['id']}") in client.deleted
+        assert ("rel-qq-2", f"data-{edge['object']['id']}") in client.deleted
         assert await store.get_cognee_mapping(
             edge["object"]["id"], entry_kind="graph_node",
         ) is None
@@ -803,10 +815,13 @@ def test_datasets_for_scope_isolated_and_hashed() -> None:
     second = datasets_for_scope(config, "user_other-id", None)
 
     assert first[0] == "test_global"
-    assert first[1] == "test_relations"  # 关系网络数据集对所有 scope 开放
-    assert len(first) == 3
+    assert first[1] == "test_relations"  # 全局关系数据集（自由型节点）对所有 scope 开放
+    assert len(first) == 4
     assert "sensitive-id" not in first[2]
     assert first[2] != second[2]
+    # 实体型节点的 per-scope 关系投影数据集与记忆数据集同构派生
+    assert first[3] == f"test_relations_{first[2].removeprefix('test_')}"
+    assert first[3] != second[3]
 
 
 def test_rrf_deduplicates_projected_native_memory() -> None:
@@ -837,33 +852,6 @@ def test_rrf_deduplicates_projected_native_memory() -> None:
     assert len(results) == 1
     assert results[0].source == "memory"
     assert results[0].score == 1.0
-
-
-# ==================================================================
-# 图谱 HTML 净化
-# ==================================================================
-
-def test_sanitize_inlines_local_d3_and_strips_google_fonts() -> None:
-    raw = """
-    <html><head>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    </head><body>ok</body></html>
-    """
-    out = sanitize_cognee_graph_html(raw)
-    assert 'src="https://d3js.org' not in out
-    assert "fonts.googleapis.com" not in out
-    assert "fonts.gstatic.com" not in out
-    assert out.count("<script>") >= 1
-    assert "zoomIdentity" in out
-    assert "ok" in out
-
-
-def test_sanitize_rejects_html_without_d3() -> None:
-    with pytest.raises(RuntimeError, match="d3"):
-        sanitize_cognee_graph_html("<html><body>no graph</body></html>")
 
 
 # ==================================================================
@@ -1099,3 +1087,98 @@ async def test_coordinator_compact_idle_scheduling(tmp_path) -> None:
         await asyncio.sleep(0.05)  # 等 adopt 的快照保存任务收尾
     finally:
         await store.close()
+
+
+# ==================================================================
+# 定向实体检索（node_name 通道）
+# ==================================================================
+
+class _TargetingFakeClient:
+    """定向检索假客户端：记录 recall 调用参数。"""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    async def initialize(self):
+        return SimpleNamespace(ready=True)
+
+    def search_type(self, name):
+        return str(name).upper()
+
+    async def recall(self, query, **kwargs):
+        self.calls.append(kwargs)
+        return []
+
+
+@pytest.mark.asyncio
+async def test_search_cognee_targeted_lane_uses_node_names() -> None:
+    from agent.memory.cognee.fusion import search_cognee
+
+    client = _TargetingFakeClient()
+    config = CogneeConfig(enabled=True)
+    await search_cognee(
+        client, config, "查询", ["anelf_global"], 5,
+        ["CHUNKS"], node_names=["阿辰", "老王"],
+    )
+    targeted = [c for c in client.calls if c.get("node_name")]
+    # 定向通道每数据集一次（不随 search_types 翻倍），node_name 透传 cognee
+    assert len(targeted) == 1
+    assert targeted[0]["node_name"] == ["阿辰", "老王"]
+    assert targeted[0]["top_k"] == max(5, 5 * config.recall_pool_multiplier)
+    # 常规通道不带 node_name
+    assert len(client.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_search_cognee_without_node_names_skips_targeted_lane() -> None:
+    from agent.memory.cognee.fusion import search_cognee
+
+    client = _TargetingFakeClient()
+    await search_cognee(
+        client, CogneeConfig(enabled=True), "查询", ["anelf_global"], 5, ["CHUNKS"],
+    )
+    assert all("node_name" not in c for c in client.calls)
+
+
+# ==================================================================
+# 投影文档解析（fusion 边界：干净正文 + 标签回填）
+# ==================================================================
+
+class _ProjectionFakeClient(_TargetingFakeClient):
+    """返回带投影文档头的 chunk，验证边界解析。"""
+
+    def __init__(self):
+        super().__init__()
+        self._items = None
+
+    async def recall(self, query, **kwargs):
+        if self._items is None:
+            from agent.memory.cognee.types import CogneeRecallItem
+            self._items = [
+                CogneeRecallItem(
+                    id="cognee:1",
+                    content=(
+                        "Memory type: semantic\nSource: entity_1\nImportance: 0.6\n"
+                        "Tags: user:qq:1, topic:火锅\nMetadata: {}\n\n阿辰喜欢火锅"
+                    ),
+                    score=0.9,
+                    source="cognee_chunk",
+                    dataset_name="anelf_global",
+                ),
+            ]
+        return self._items
+
+
+@pytest.mark.asyncio
+async def test_search_cognee_parses_projection_and_backfills_tags() -> None:
+    from agent.memory.cognee.fusion import search_cognee
+
+    client = _ProjectionFakeClient()
+    results = await search_cognee(
+        client, CogneeConfig(enabled=True), "查询", ["anelf_global"], 5, ["CHUNKS"],
+    )
+    assert len(results) == 1
+    r = results[0]
+    # 正文剥离头部字段（无 "Memory type:" 噪音），标签回填（归属标注/加权可用）
+    assert r.snippet == "阿辰喜欢火锅"
+    assert r.tags == ["user:qq:1", "topic:火锅"]

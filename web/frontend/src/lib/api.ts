@@ -362,15 +362,6 @@ export const memoryApi = {
     datasets: () => api.get<CogneeDataset[]>("/memory/cognee/datasets"),
     improve: (datasetName: string) =>
       api.post("/memory/cognee/improve", { dataset_name: datasetName }),
-    /** 同源 HTML；超时需覆盖默认 30s，图谱生成可能较慢 */
-    graphHtml: (dataset: string) =>
-      api.get<string>("/memory/cognee/graph", {
-        params: { dataset },
-        responseType: "text",
-        timeout: 180_000,
-        headers: { Accept: "text/html" },
-        transformResponse: [(data) => data],
-      }),
   },
   stm: {
     list: () => api.get("/memory/stm"),
@@ -396,6 +387,14 @@ export const memoryApi = {
     merge: (ids: number[], content: string) =>
       api.post("/memory/ltm/merge", { ids, content }),
   },
+  recallTest: (data: {
+    query: string;
+    depth?: "shallow" | "deep";
+    tags?: string[];
+    entity_scope?: string;
+    limit?: number;
+    search_types?: string[];
+  }) => api.post("/memory/recall-test", data),
   conv: {
     scopes: () => api.get("/memory/conversations/scopes"),
     messages: (scopeType: string, scopeId: string, limit = 200) =>

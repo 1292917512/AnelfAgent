@@ -167,6 +167,13 @@ class TaskDefinition(BaseModel):
     expires_at: str = ""
     """生效截止时间（"YYYY-MM-DD" 或 "YYYY-MM-DD HH:MM"，空 = 永久有效）。
     到期后由心跳引擎自动停用任务并移除调度绑定，定义文件保留可改期恢复。"""
+    schedule_mode: str = "manual"
+    """定义文件声明的初始调度（manual/heartbeat/scheduled/idle）：心跳配置
+    无该任务调度时一次性种子化（heartbeat.json 一旦存在即唯一权威）。"""
+    schedule_every_n_beats: int = 10
+    """初始 heartbeat/idle 调度的拍数（与 schedule_mode 配套）。"""
+    schedule_times: List[str] = Field(default_factory=list)
+    """初始 scheduled 调度的每日时间点（与 schedule_mode 配套）。"""
     created_at: float = 0.0
     """创建时间（epoch 秒，0 = 未知；供执行期任务自检判断新旧）。"""
     updated_at: float = 0.0
@@ -205,6 +212,9 @@ class TaskDefinition(BaseModel):
             folder=str(data.get("folder", "") or "").strip("/"),
             handoff=_to_bool(data.get("handoff", False)),
             expires_at=normalize_task_time(data.get("expires_at")),
+            schedule_mode=str(data.get("mode", data.get("schedule_mode", "manual"))).strip().lower() or "manual",
+            schedule_every_n_beats=max(1, int(data.get("every_n_beats", 10))),
+            schedule_times=[str(t).strip() for t in data.get("schedule_times", []) if str(t).strip()],
             created_at=_to_float(data.get("created_at")),
             updated_at=_to_float(data.get("updated_at")),
         )
@@ -243,6 +253,12 @@ class TaskDefinition(BaseModel):
             result["created_at"] = self.created_at
         if self.updated_at > 0:
             result["updated_at"] = self.updated_at
+        if self.schedule_mode != "manual":
+            result["mode"] = self.schedule_mode
+            if self.schedule_mode == "scheduled":
+                result["schedule_times"] = self.schedule_times
+            else:
+                result["every_n_beats"] = self.schedule_every_n_beats
         return result
 
     def should_run_for_entity(self, has_entity: bool) -> bool:

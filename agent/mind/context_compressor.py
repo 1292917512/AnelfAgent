@@ -22,7 +22,7 @@ import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from agent.mind.message_schema import is_genuine_user_message
 from agent.mind.tools.result_parse import extract_error_text
@@ -261,6 +261,18 @@ def _merge_list(existing: List[str], new: List[str]) -> List[str]:
             merged.append(item)
     return merged
 
+
+class _RewriteOutcome(NamedTuple):
+    """单类原地清理的结果：清除条数与最早重写位置（无重写为 None）。
+
+    最早重写位置供重复提示折叠搭便车——该位置之前的消息字节未动，
+    供应商前缀缓存仍然有效；之后本轮必然重编码，移除消息零增量成本。
+    """
+
+    cleared: int
+    first_index: Optional[int]
+
+
 class ContextCompressor:
     """上下文压缩器：检测溢出并压缩中间轮次。"""
 
@@ -307,18 +319,27 @@ class ContextCompressor:
         在完整压缩之前先做轻量清理：工具链较长时，只读工具的旧结果
         （read_file/shell/web 等）通常已失效，直接替换为占位符，
         避免触发更重 LLM 摘要压缩。返回清理条数。
+
+        两类原地重写（结果清理/图片折叠）必须先于重复提示折叠执行：
+        折叠会移除消息使链内索引失效，只能收尾，且以本轮最早重写位置
+        为边界搭便车（见 _collapse_dup_hints）。
         """
         threshold = self.config.microcompact_chain_threshold
         if threshold <= 0 or len(tool_chain) < threshold:
             return 0
-        cleared = self._clear_stale_tool_results(tool_chain)
-        cleared += self._collapse_dup_hints(tool_chain)
-        cleared += self._clear_stale_image_blocks(tool_chain)
+        tool_results = self._clear_stale_tool_results(tool_chain)
+        image_folds = self._clear_stale_image_blocks(tool_chain)
+        rewrite_heads = [r.first_index for r in (tool_results, image_folds) if r.first_index is not None]
+        cleared = tool_results.cleared + image_folds.cleared
+        cleared += self._collapse_dup_hints(
+            tool_chain,
+            min(rewrite_heads) if rewrite_heads else None,
+        )
         if cleared:
-            log(f"Microcompact: 清理 {cleared} 条旧结果/重复提示/历史图片块", "DEBUG", tag="压缩")
+            log(f"Microcompact: 清理 {cleared} 条旧结果/历史图片块/搭便车重复提示", "DEBUG", tag="压缩")
         return cleared
 
-    def _clear_stale_tool_results(self, tool_chain: List[Dict]) -> int:
+    def _clear_stale_tool_results(self, tool_chain: List[Dict]) -> _RewriteOutcome:
         """把较早的只读工具结果替换为占位符（保留最新 keep_recent 条）。"""
         # 定位 role=tool 消息，保留最新 keep_recent 条不动
         tool_msg_indexes = [
@@ -334,6 +355,7 @@ class ContextCompressor:
                     if isinstance(tc, dict) and tc.get("id"):
                         call_names[tc["id"]] = (tc.get("function") or {}).get("name", "")
         cleared = 0
+        first_index: Optional[int] = None
         for i in clearable:
             msg = tool_chain[i]
             name = call_names.get(msg.get("tool_call_id", ""), "")
@@ -344,28 +366,41 @@ class ContextCompressor:
                     and content != self._MICROCOMPACT_PLACEHOLDER:
                 tool_chain[i] = {**msg, "content": self._MICROCOMPACT_PLACEHOLDER}
                 cleared += 1
-        return cleared
+                if first_index is None:
+                    first_index = i
+        return _RewriteOutcome(cleared, first_index)
 
-    def _collapse_dup_hints(self, tool_chain: List[Dict]) -> int:
-        """移除链中内容完全相同的重复 system 提示（仅保留最新一条全文）。
+    def _collapse_dup_hints(self, tool_chain: List[Dict], first_rewrite: Optional[int]) -> int:
+        """折叠 first_rewrite 之后内容相同的重复 system 提示（仅保留最新一条全文）。
 
         多轮会话中每轮追加的引导提示（如"工具结果仅你可见"）内容相同，
-        旧副本对 AI 无增量信息，直接移除；最新一条保留以维持引导强度。
+        旧副本对 AI 无增量信息；但移除链中消息会使供应商前缀缓存从被删
+        位置起整体失效——为省百字符级副本以全价重编码其后整段（Anthropic
+        线还要付 1.25× 缓存重写）是纯亏的交换。因此折叠只发生在
+        first_rewrite（本轮结果清理/图片折叠的最早重写位置）之后的区域：
+        那段本轮必然重编码，删除零增量成本。无重写（None）时不动链；
+        边界之前保留的副本按缓存读价驻留，由完整压缩收编。
         与工具结果/图片块的占位符折叠不同：system 提示是独立消息、不参与
         tool_call 配对，移除不破坏任何结构约束（中途 system 角色在发送边界
         由 normalize_roles 归一为 user，无协议风险）。
         """
-        # 每种内容仅保留最后出现的下标
+        if first_rewrite is None:
+            return 0
+        # 每种内容仅保留 first_rewrite 之后最后出现的下标
         last_index: Dict[str, int] = {}
         for i, m in enumerate(tool_chain):
-            if m.get("role") == "system":
+            if m.get("role") == "system" and i > first_rewrite:
                 content = m.get("content")
                 if isinstance(content, str) and content:
                     last_index[content] = i
-        # 就地过滤（保持列表对象身份，ctx.tool_chain 的持有方无感知）
+        # 就地过滤（保持列表对象身份，ctx.tool_chain 的持有方无感知）；
+        # first_rewrite 及之前的副本一律保留——删除会把本轮缓存失效区
+        # 向前扩大到原本字节稳定的前缀段
         kept = [
-            m for i, m in enumerate(tool_chain)
+            m
+            for i, m in enumerate(tool_chain)
             if m.get("role") != "system"
+            or i <= first_rewrite
             or not isinstance(m.get("content"), str)
             or not m.get("content")
             or last_index.get(m["content"]) == i
@@ -380,7 +415,7 @@ class ContextCompressor:
         "标签仍指向本地文件，确需重看时用 recognize_image/read_file 重新读取"
     )
 
-    def _clear_stale_image_blocks(self, tool_chain: List[Dict]) -> int:
+    def _clear_stale_image_blocks(self, tool_chain: List[Dict]) -> _RewriteOutcome:
         """折叠链中非最新的图片 base64 块（保留最新一条含图消息不动）。
 
         视觉模型下图片以 base64 content block 驻留工具链（单张可达数百 KB
@@ -400,6 +435,7 @@ class ContextCompressor:
             ):
                 image_msg_indexes.append(i)
         cleared = 0
+        first_index: Optional[int] = None
         for i in image_msg_indexes[:-1]:
             msg = tool_chain[i]
             new_blocks: List[Dict] = []
@@ -417,7 +453,9 @@ class ContextCompressor:
                     new_blocks.append(block)
             if replaced:
                 tool_chain[i] = {**msg, "content": new_blocks}
-        return cleared
+                if first_index is None:
+                    first_index = i
+        return _RewriteOutcome(cleared, first_index)
 
     def _record_compress_result(self, success: bool) -> None:
         """记录压缩成败，连续失败达阈值熔断。"""

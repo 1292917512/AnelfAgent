@@ -366,3 +366,65 @@ class TestReflectDeferral:
         count = await execute_reflect(mind, Decision(type=DecisionType.REFLECT, reason=""))
         assert count == 1
         engine.run_task.assert_awaited_once_with("self_reflection")
+
+
+# ==================================================================
+# 定义文件调度种子（_seed_declared_schedules）
+# ==================================================================
+
+class _SeedFakeRegistry:
+    """最小任务注册表替身（list_all / get）。"""
+
+    def __init__(self, tasks: list[TaskDefinition]) -> None:
+        self._tasks = {t.name: t for t in tasks}
+
+    def list_all(self):
+        return list(self._tasks.values())
+
+    def get(self, name: str):
+        return self._tasks.get(name)
+
+
+def _seed_engine(tasks: list[TaskDefinition], cfg: HeartbeatConfig) -> HeartbeatEngine:
+    engine = HeartbeatEngine.__new__(HeartbeatEngine)
+    engine.task_registry = _SeedFakeRegistry(tasks)  # type: ignore[assignment]
+    engine.config = cfg
+    engine._warned_missing_tasks = set()
+    return engine
+
+
+def test_seed_declared_schedules_registers_missing() -> None:
+    cfg = HeartbeatConfig()
+    task = TaskDefinition(
+        name="graph_curation", prompt="p",
+        schedule_mode="heartbeat", schedule_every_n_beats=48,
+    )
+    engine = _seed_engine([task], cfg)
+    engine._seed_declared_schedules()
+    schedule = cfg.get_schedule("graph_curation")
+    assert schedule is not None
+    assert schedule.mode == ScheduleMode.HEARTBEAT
+    assert schedule.every_n_beats == 48
+
+
+def test_seed_declared_schedules_never_overrides_existing() -> None:
+    """heartbeat.json 已有该任务调度 → 定义文件声明不覆盖（运行时配置唯一权威）。"""
+    cfg = HeartbeatConfig(task_schedules=[
+        TaskSchedule(task_name="graph_curation", mode=ScheduleMode.HEARTBEAT, every_n_beats=7),
+    ])
+    task = TaskDefinition(
+        name="graph_curation", prompt="p",
+        schedule_mode="heartbeat", schedule_every_n_beats=48,
+    )
+    engine = _seed_engine([task], cfg)
+    engine._seed_declared_schedules()
+    assert cfg.get_schedule("graph_curation").every_n_beats == 7
+    assert len(cfg.task_schedules) == 1
+
+
+def test_seed_declared_schedules_skips_manual() -> None:
+    cfg = HeartbeatConfig()
+    task = TaskDefinition(name="manual_task", prompt="p")  # schedule_mode 默认 manual
+    engine = _seed_engine([task], cfg)
+    engine._seed_declared_schedules()
+    assert cfg.get_schedule("manual_task") is None

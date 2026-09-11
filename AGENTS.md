@@ -385,6 +385,25 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | exec_context 步骤预算 | `context_assembly._MAX_RENDERED_STEPS`（12） | `[已完成步骤]` 渲染只保留最近 12 步 + 省略行（"此前 N 步已省略"）；exec_context 每轮全量重建，无界清单在长回复下按轮次平方膨胀 token，防重复操作只需近期步骤；finish_think 的最终执行摘要仍消费全量清单（一次性） |
 | 非输出提示独白信号驱动 | `think_loop._handle_tool_round` | "工具结果仅你可见"提示只在**本轮工具调用伴随文本独白**时注入（独白 = 模型误以为文字可达用户的信号）；静默工具轮零注入——exec_context 每轮已有输出契约，重复追加是纯 token 烧耗 |
 
+#### 记忆枢纽化：LLM 检索规划 + 异步深探 + 图谱治理（第十三轮新增）
+
+召回链路升级为记忆系统的枢纽：首轮同步召回由 LLM 规划驱动（非被动关键词匹配），LLM 思考期间异步深检索增量注入（一块连续记忆面、全程防重复），cognee 检索面全量接入，图谱获得遗忘与 AI 策展。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| LLM 检索规划 | `memory_retriever.plan_retrieval`（公开 API，升级自 `_rewrite_query`，仍受 `memory_query_rewrite_enabled` 门控） | 轻量 LLM（light_llm 通道）把对话尾部转成结构化计划 `{queries(1-3 互补), entities, deep_needed, rationale}`，失败/超时回退原查询单发（8s 预算不变）。多计划查询并行经 federated_search 后 `merge_consensus`（retriever 公开 API）融合：同键（fusion `dedupe_key`：anelf_memory_id / 内容哈希）取最高分，≥2 查询命中 ×1.1 共识加成（确定性可靠性信号）。计划实体经 `GraphStore.resolve_nodes_for_tags` 解析为图谱节点 → 原生一跳邻域 + cognee `node_name` 定向检索 |
+| 异步深探 + provider 注入 | `agent/memory/probe.py`（DeepProbeHub + RecallLedger + provider `memory_deep_probe`） | 回复路径（recollection `fire_probe=True`，心跳/任务/子代理零影响）检索完成后：基底层产物入召回账本 → 规划判定 `deep_needed` 或已解析实体节点时 `spawn()` 异步启动深探（在 5s 召回超时之外与 LLM 首轮思考并行）：cognee GRAPH_COMPLETION / GRAPH_COMPLETION_CONTEXT_EXTENSION / node_name 定向 + 原生图谱邻域。分两阶段刷新（类脑唤醒：快段原生图谱邻域毫秒级先渲染注入，慢段 cognee LLM 检索完成后并入更新）；增量行经 `recall_format` 行格式化（与基底层召回同构的 💡 归属标注 正文（时间 记）），分节条理化（▸ 标题 · 说明 + 缩进条目）；完成后写入 hub 持久渲染缓存（`state.rendered`），经上下文提供者 `memory_deep_probe`（priority 34、group=memory、`memory_probe_inject` 门控）每轮读取注入 provider 层——异步完成前为空零注入，完成后每轮在场且字节稳定（无新产物拿旧值，不消失），新回复 begin_reply 重置（不跨回复持久，防与基底层召回常驻重复）。provider 消息不进压缩历史（每轮重新收集、逐字存活），位于最新工具结果之后注意力最强处。触发按需非被动（LLM 规划判定），单飞防重，per-scope 新回复替换 + 惰性 TTL 清扫；配置 `memory/probe` 组（enabled/max_chars 1600/timeout 60s），指标 probe.* |
+| 召回账本（三键防重复） | `probe.RecallLedger`（键归一权威 `memory_types.normalized_content_key`） | per-reply 三键集合（结果 id / 图谱边 id / 内容归一前缀），三条召回通道共用：基底层注入（recall_split 末尾 + load_relation_snippets 边 id）、AI recall 工具返回（tools.py 记账，探针不重复 AI 已取回内容）、异步深探渲染前查账——一次回复内同一事实只出现一次（"一块连续记忆面"的机械保证）；`begin_reply` 重置 |
+| cognee 检索面全量接入 | `cognee/fusion.py` + `cognee/config.py` | ① `federated_search`/`search_cognee`（公开）新增 `node_names` → cognee `recall(node_name=...)` 定向检索通道（每数据集一次，recall 工具 deep 模式/探针/规划实体定向三处共用）；`parse_memory_projection` 在边界解析投影文档头（干净正文入 snippet、Tags 回填结果标签——归属标注/上下文加权/联想种子对 cognee 结果同样生效，所有消费面一次受益）；② `deep_search_types` 默认追加 GRAPH_COMPLETION_CONTEXT_EXTENSION、SUMMARIES（存量配置=旧默认时一次性迁移升级，自定义列表原样保留；不支持类型运行时静默跳过）；③ `cognee_weight` 0.8→1.0 平权（来源优先级已保证原生胜出）；④ 被动路径补传 `query_tags`（scope 数据集推导缺口）；⑤ 深类型只经探针（异步）与 recall 工具（显式）发生，被动召回保持轻量 |
+| 关系投影 scope 隔离 | `coordinator.graph_dataset_for_node` + `fusion.datasets_for_scope` | 实体型节点（user:/group:）投影入 per-scope 数据集 `{prefix}_relations_{type}_{hash}`（scope id 派生与记忆数据集同构），自由型节点（topic/person/concept…）仍入全局 `{prefix}_relations`——实体私人关系网络按 scope 隔离检索（消除跨 scope 稀释），公共知识保持全局共享；删除按 mapping 数据集路由，存量经既有 rebuild_cognee 重建迁移 |
+| 图谱遗忘与衰减 | `graph/store.py`（relax_edge_strength / forget_weak_edges / archive_orphan_nodes + access_count/last_accessed_ns 列与 `_record_edge_access`）+ consolidator 第 9 步 | 检索命中即计数（edges_for_scopes/query_relations 批量记录）；边强度向基线 0.5 松弛（访问护盾 ÷(1+ln(access_count))，与记忆 importance 松弛同公式）、强度 <0.25 且超 90 天软归档（复用 set_relation_archived 自动触发 cognee 投影更新）、孤立自由型节点超期归档（user/group 会话锚点永不自动归档）；阈值保守（松弛 30 天起/归档 90 天起），配置 `memory/graph` 组，报告字段进 ConsolidationReport，指标 graph.relaxed/forgotten |
+| 图谱治理议程（AI 策展） | `graph/curation.py`（阈值配置 + 议程组装；数据访问在 `GraphStore.curation_facts`）+ 工具 `graph_curation_agenda`（group=graph, tags=core/heartbeat）+ 任务 `config/tasks/graph_curation.json` + 心跳 `[图谱治理议程]` 摘要行 | 事实归系统、决策归 AI（对齐技能 curator 范式）：确定性事实生产（弱边/陈旧边/同主语同谓词歧义对/同类型同称呼疑似重复节点/超阈度数枢纽异常，阈值 `memory/graph` 组可调）——心跳维护段渲染摘要进心跳日志，AI 经 `graph_curation_agenda` 读完整议程、用 graph_merge_nodes/graph_remove_relation/graph_update_relation 执行治理（graph_curation 任务 heartbeat 模式定期消费，处置摘要写心跳日志；user/group 锚点与人工强关系受 prompt 保护） |
+| 整理回收节奏放缓 | `memory_consolidate_every_n_ticks` 默认 12→48 | 心跳 300s 下约 1 小时→4 小时一轮全量整理（记忆遗忘/松弛 + 图谱衰减/遗忘同频），可配置中心热调 |
+| 召回测试面板 | `POST /api/memory/recall-test`（编排归 services/memory.py，复用 retriever 公开 API：plan_retrieval/merge_consensus） + 前端 `pages/memory/RecallTester.tsx`（Memory 页「召回测试」Tab + CogneePanel 顶部嵌入 cognee 预设） | 与真实召回同管线（规划→多查询共识融合→关系/遗忘层）的无副作用执行：展示 LLM 检索计划（queries/entities/deep_needed/rationale）、检索通道数据集与类型、按来源分组结果（完整 provenance/score）、关系网络、遗忘层、各阶段耗时（plan/search/total ms）；不记访问不触发探针；`search_types` 参数可逐类型测试 cognee 检索 |
+| cognee 版本注记 | `pyproject.toml` | 1.5.4（2026-09-04）锁 `litellm<1.97.0` 与本项目 litellm 1.100 不可共存，**停在 1.5.3**（1.5.4 为无 API 变更的补丁版，无升级收益）；升级前必须检查其 litellm 上界 |
+
+> Model Experience（第十三轮）：① 模型看到什么——检索规划驱动的多查询召回结果（共识命中更可靠）、`[记忆召回·续]` 异步增量（关系/新增记忆/图谱综合分节，与首轮零重复）、recall deep 的 node_name 定向结果、graph_curation_agenda 议程（心跳任务消费）；② token 影响——规划 1 次轻量 LLM 调用（替代原改写，零增量）+ 深探增量每回复 ≤1600 字符一次性 + 图谱综合 LLM 调用仅探针路径（指定廉价模型）；③ 缓存影响——全部落在 tool_chain 尾部动态区（轮顶 merge，append-once）与工具通道，不触碰任何 prompt 前缀缓存层。
+
 #### 记忆投影防护（第六轮新增）
 
 | 机制 | 位置 | 说明 |
@@ -524,7 +543,10 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `agent/mind/push.py` | 实体推送中枢 PushHub（[push:] 标签包装 + 短期记忆 + 入队唤醒 + 轮内弹窗 drain_inflight；entities 经 _sdk.push_notify 桥接） |
 | `agent/mind/tools/media_pipeline.py` | 媒体标签转换 |
 | `agent/memory/memory_store.py` | 长期记忆存储（SQLite + FTS5 + Embedding；软归档遗忘 + importance 松弛回归） |
-| `agent/memory/graph/store.py` | 关系图谱权威存储（graph_nodes/graph_edges；(s,p,o) 唯一 upsert + 别名归一 + 软删 + cognee 投影入队） |
+| `agent/memory/probe.py` | 异步深探 + 召回账本（DeepProbeHub / RecallLedger：回复期间分阶段深度检索经 provider 注入持久渲染缓存，三键防重复） |
+| `agent/memory/recall_format.py` | 召回行格式化权威（归属标注/时间尾注/记忆行组装，被动召回与深探共用） |
+| `agent/memory/graph/store.py` | 关系图谱权威存储（graph_nodes/graph_edges；(s,p,o) 唯一 upsert + 别名归一 + 软删 + cognee 投影入队 + 访问追踪/衰减/弱边遗忘/孤立节点归档） |
+| `agent/memory/graph/curation.py` | 图谱治理议程（确定性事实生产：弱边/陈旧/歧义/疑似重复/枢纽，供 AI 策展决策） |
 | `agent/memory/graph/tools.py` | 关系图谱工具组（graph_add_relation / graph_query / graph_path / graph_merge_nodes 等，group=graph） |
 | `agent/memory/graph/extract.py` | 心跳关系抽取（对话 → JSON 候选解析 → 落库，origin=heartbeat_extract） |
 | `agent/memory/store/tag_intel.py` | 标签智能（df/共现图谱/提及词表 TTL 缓存；IDF 评分、共现与图谱邻居联想、查询提及识别的统一驱动层） |
@@ -595,7 +617,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 |---|---|---|---|
 | `output` | 消息输出 | `channel/output_tools.py` | always |
 | `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/heartbeat |
-| `graph` | 关系图谱 | `agent/memory/graph/tools.py` | always/core/heartbeat |
+| `graph` | 关系图谱 | `agent/memory/graph/tools.py`（含 graph_curation_agenda 治理议程） | always/core/heartbeat |
 | `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
 | `thinking` | 思维工具 | `agent/mind/mind.py` + `agent/mind/tool_activation.py` + `agent/mind/context_compressor.py` + `agent/mind/tools/short_term_tools.py`（短期记忆自管理） | always |
 | `planning` | 目标规划 | `agent/planning/tools.py` + `agent/task/tools.py`（任务/调度自管理） | planning/goal/heartbeat |
@@ -653,7 +675,7 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
 
 **晚绑定准入**：模块级运行时引用一律用 `core.latebind.LateBinding` 声明端口（消费方所在层声明、`agent/runtime/wiring.py` 统一施绑、check_health 经 `assert_wired()` 校验），禁止新增 `set_xxx` / `_xxx_ref` 式模块全局；仅限三种成因（import 时装饰器注册的工具拿不到构造参数 / 循环初始化 / 跨层桥），其余一律构造注入
 
-**系统注入消息必须带 `_source` 来源标记**：think_loop / round_helpers / context_compressor 向消息链注入的 system 元消息（压缩反馈、rehydration、超时恢复、长度恢复、后台任务、实体推送等）须附 `"_source": {"origin": "<词汇>"}`，发送前由 `normalize_for_send` 与 `_layer` 一并剥离（LLM 不可见，供快照归因/审计）。已用词汇：`compression` / `rehydration` / `timeout_recovery` / `length_recovery` / `background_task` / `push` / `context_provider`；新增注入点复用或扩充词汇表，勿省略标记。注意 `_source` 不进 DB（对话历史只存 role/content），仅作用于内存消息链。
+**系统注入消息必须带 `_source` 来源标记**：think_loop / round_helpers / context_compressor 向消息链注入的 system 元消息（压缩反馈、rehydration、超时恢复、长度恢复、后台任务、实体推送等）须附 `"_source": {"origin": "<词汇>"}`，发送前由 `normalize_for_send` 与 `_layer` 一并剥离（LLM 不可见，供快照归因/审计）。已用词汇：`compression` / `rehydration` / `timeout_recovery` / `length_recovery` / `background_task` / `push` / `context_provider`（含异步深探增量）；新增注入点复用或扩充词汇表，勿省略标记。注意 `_source` 不进 DB（对话历史只存 role/content），仅作用于内存消息链。
 
 **Model Experience 三行声明（新功能必答）**：任何影响模型输入/输出的新功能，须在其模块 docstring 或本表登记三件事——① 模型看到什么（注入了什么内容、走哪个通道）② token 影响（增量还是节省、量级）③ 缓存影响（是否触碰前缀层；volatile/tool_chain 尾部动态区则注明不破前缀）。对齐 dsh 每 README 必答 "Model Experience / Token effect / KV Cache effect" 的纪律——缓存是本项目一等指标，新功能不声明即视为未评估。
 

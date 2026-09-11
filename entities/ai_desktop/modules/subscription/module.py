@@ -122,7 +122,7 @@ class SubscriptionModule(DesktopModule):
 
     @staticmethod
     def _format_window(window: Dict[str, Any]) -> str:
-        """单窗口 → "每5小时 剩 87/100（重置 16:37）" 片段。"""
+        """单窗口 → "每5小时 剩 87/100（重置 09-12 03:37）" 片段。"""
         label = str(window.get("label") or "窗口")
         limit = window.get("limit")
         remaining = window.get("remaining")
@@ -135,10 +135,7 @@ class SubscriptionModule(DesktopModule):
             quota = "余量未知"
         reset = window.get("reset_at")
         if reset:
-            dt = datetime.fromtimestamp(float(reset))
-            within_day = float(reset) - time.time() < 24 * 3600
-            fmt = "%H:%M" if within_day else "%m-%d"
-            quota += f"（重置 {dt.strftime(fmt)}）"
+            quota += f"（重置 {datetime.fromtimestamp(float(reset)).strftime('%m-%d %H:%M')}）"
         return f"{label} {quota}"
 
     def detail(self) -> Dict[str, Any]:

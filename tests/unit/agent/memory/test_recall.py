@@ -40,18 +40,31 @@ class TestFocusQuery:
 
 
 class TestMergeResults:
-    def test_dedupes_by_id_keeps_higher_score(self) -> None:
+    """多路融合（merge_consensus）：同键取最高分、按分排序截断。"""
+
+    def test_dedupes_by_key_keeps_higher_score(self) -> None:
         primary = [_result("a", 0.5), _result("b", 0.3)]
         secondary = [_result("a", 0.8), _result("c", 0.6)]
-        merged = MemoryRetriever._merge_results(primary, secondary, limit=10)
+        merged = MemoryRetriever.merge_consensus(
+            [primary, secondary], limit=10, consensus_lanes=1,
+        )
         ids = [r.id for r in merged]
         assert ids == ["a", "c", "b"]
         assert merged[0].score == 0.8
 
     def test_limit_applied(self) -> None:
         primary = [_result(f"r{i}", 0.1 * i) for i in range(10)]
-        merged = MemoryRetriever._merge_results(primary, [], limit=3)
+        merged = MemoryRetriever.merge_consensus([primary], limit=3)
         assert len(merged) == 3
+
+    def test_focus_lane_counts_merge_but_not_consensus(self) -> None:
+        """补充 lane（consensus_lanes 之外）参与合并竞争但不计共识加成。"""
+        planned = [_result("a", 0.6)]
+        focus = [_result("a", 0.7)]
+        merged = MemoryRetriever.merge_consensus(
+            [planned, focus], limit=10, consensus_lanes=1,
+        )
+        assert merged[0].score == 0.7  # 取最高分，单计划 lane 命中无共识加成
 
 
 class TestTimeReference:

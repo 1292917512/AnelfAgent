@@ -185,31 +185,48 @@ def _kimi_window_label(window: Dict[str, Any]) -> str:
     return f"每{int(duration)}{unit_name}"
 
 
+def _kimi_fill_missing(detail: Dict[str, Any]) -> Dict[str, Any]:
+    """补齐 Kimi 窗口的缺省字段（API 在余量为 0 或未使用时省略对应键）。
+
+    remaining 缺失回退 limit - used（配额耗尽时 API 不再返回 remaining），
+    used 缺失回退 limit - remaining（新窗口未使用时省略 used）。
+    """
+    limit = to_float(detail.get("limit"))
+    used = to_float(detail.get("used"))
+    remaining = to_float(detail.get("remaining"))
+    if limit is None:
+        return detail
+    if remaining is None and used is not None:
+        remaining = max(0.0, limit - used)
+    if used is None and remaining is not None:
+        used = max(0.0, limit - remaining)
+    return {"limit": limit, "used": used, "remaining": remaining,
+            "resetTime": detail.get("resetTime")}
+
+
 def parse_kimi(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Kimi usages 响应归一化（周期主额度 + 短窗口）。"""
     windows: List[Dict[str, Any]] = []
     for item in payload.get("limits") or []:
-        detail = item.get("detail") or {}
-        limit = to_float(detail.get("limit"))
-        remaining = to_float(detail.get("remaining"))
+        detail = _kimi_fill_missing(item.get("detail") or {})
         windows.append({
             "label": _kimi_window_label(item.get("window") or {}),
-            "used": to_float(detail.get("used")),
-            "limit": limit,
-            "remaining": remaining,
-            "remaining_percent": _remaining_percent(remaining, limit),
+            "used": detail.get("used"),
+            "limit": detail.get("limit"),
+            "remaining": detail.get("remaining"),
+            "remaining_percent": _remaining_percent(
+                detail.get("remaining"), detail.get("limit")),
             "reset_at": iso_to_sec(detail.get("resetTime")),
         })
-    usage = payload.get("usage") or {}
-    limit = to_float(usage.get("limit"))
-    remaining = to_float(usage.get("remaining"))
-    if limit is not None:
+    usage = _kimi_fill_missing(payload.get("usage") or {})
+    if usage.get("limit") is not None:
         windows.append({
             "label": "周期总额",
-            "used": to_float(usage.get("used")),
-            "limit": limit,
-            "remaining": remaining,
-            "remaining_percent": _remaining_percent(remaining, limit),
+            "used": usage.get("used"),
+            "limit": usage.get("limit"),
+            "remaining": usage.get("remaining"),
+            "remaining_percent": _remaining_percent(
+                usage.get("remaining"), usage.get("limit")),
             "reset_at": iso_to_sec(usage.get("resetTime")),
         })
     membership = (payload.get("user") or {}).get("membership") or {}

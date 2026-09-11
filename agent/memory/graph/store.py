@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import time
@@ -130,6 +131,7 @@ class GraphStore:
             metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
         except (json.JSONDecodeError, TypeError):
             metadata = {}
+        keys = row.keys()
         return {
             "id": int(row["id"]),
             "subject": {
@@ -154,6 +156,8 @@ class GraphStore:
             "created": row["created_ns"] / 1e9,
             "updated": row["updated_ns"] / 1e9,
             "archived": bool(row["archived"]),
+            "access_count": int(row["access_count"]) if "access_count" in keys else 0,
+            "last_accessed": (row["last_accessed_ns"] / 1e9) if "last_accessed_ns" in keys else 0.0,
         }
 
     _EDGE_SELECT = (
@@ -561,6 +565,7 @@ class GraphStore:
                 break
         # 强度降序 + id 升序决胜：边更新只动 updated_ns 不影响次序，渲染字节稳定
         edges = sorted(all_edges.values(), key=lambda e: (-e["strength"], e["id"]))[:limit]
+        await self._record_edge_access(db, [e["id"] for e in edges])
         node_ids = {node["id"]}
         for edge in edges:
             node_ids.add(edge["subject"]["id"])
@@ -568,6 +573,43 @@ class GraphStore:
         node_map = await self.get_nodes_by_ids(sorted(node_ids))
         nodes = [node_map[nid] for nid in sorted(node_ids) if nid in node_map]
         return {"found": True, "node": node, "nodes": nodes, "edges": edges}
+
+    async def _record_edge_access(self, db: aiosqlite.Connection, edge_ids: list[int]) -> None:
+        """检索命中即计数（衰减访问护盾的数据源）；写失败静默（读路径优先）。"""
+        if not edge_ids:
+            return
+        try:
+            placeholders = ",".join("?" for _ in edge_ids)
+            async with self._conn.tx(db):
+                await db.execute(
+                    f"UPDATE graph_edges SET access_count=access_count+1, last_accessed_ns=? "
+                    f"WHERE id IN ({placeholders}) AND archived=0",
+                    (time.time_ns(), *edge_ids),
+                )
+        except Exception:
+            pass
+
+    async def resolve_nodes_for_tags(
+        self, names: list[str], *, limit: int = 4,
+    ) -> list[Dict[str, Any]]:
+        """实体名/话题词 → 图谱节点（label 或 node_key 子串匹配，更新近者优先）。
+
+        供检索规划实体定向：计划实体名解析为节点后驱动邻域查询与
+        cognee node_name 定向检索。空名单/无命中返回空。
+        """
+        found: Dict[str, Dict[str, Any]] = {}
+        for name in names[:8]:
+            name = (name or "").strip()
+            if len(name) < 2:
+                continue
+            try:
+                for node in await self.list_nodes(query=name, limit=3):
+                    found.setdefault(str(node["node_key"]), node)
+            except Exception:
+                continue
+            if len(found) >= limit:
+                break
+        return list(found.values())[:limit]
 
     async def edges_for_scopes(
         self,
@@ -586,7 +628,9 @@ class GraphStore:
                 ids.append(node["id"])
         edges = await self._edges_for_node_ids(db, ids)
         edges.sort(key=lambda e: (-e["strength"], e["id"]))  # id 决胜保证字节稳定
-        return edges[:limit]
+        edges = edges[:limit]
+        await self._record_edge_access(db, [e["id"] for e in edges])
+        return edges
 
     async def find_path(
         self,
@@ -759,6 +803,197 @@ class GraphStore:
             "node_types": {str(r["node_type"]): int(r["c"]) for r in type_rows},
             "top_predicates": {str(r["predicate"]): int(r["c"]) for r in pred_rows},
         }
+
+    # ------------------------------------------------------------------
+    # 治理：衰减与遗忘（记忆整理器周期调用，全部确定性 SQL、无 LLM）
+    # ------------------------------------------------------------------
+
+    async def relax_edge_strength(
+        self,
+        *,
+        stale_days: int = 30,
+        rate: float = 0.05,
+        baseline: float = 0.5,
+        limit: int = 500,
+    ) -> int:
+        """边强度松弛：长期未活动的活跃边向基线回归（访问护盾）。
+
+        护盾公式与记忆 importance 松弛一致：有效速率 ÷ (1 + ln(access_count))，
+        常被检索命中的关系更抗遗忘。不触碰 updated_ns（与记忆松弛同语义，
+        重复整理持续向基线收敛，到基线后不再入选）。
+        """
+        db = await self._conn.get_db()
+        cutoff_ns = time.time_ns() - int(stale_days * 86_400 * 1e9)
+        cursor = await db.execute(
+            "SELECT id, strength, access_count FROM graph_edges "
+            "WHERE archived=0 AND strength > ? AND "
+            "(CASE WHEN last_accessed_ns > 0 THEN last_accessed_ns ELSE updated_ns END) < ? "
+            "ORDER BY updated_ns ASC LIMIT ?",
+            (baseline, cutoff_ns, max(1, limit)),
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            return 0
+        relaxed = 0
+        async with self._conn.tx(db):
+            for row in rows:
+                access = int(row["access_count"] or 0)
+                shield = 1.0 + math.log(access) if access > 1 else 1.0
+                strength = float(row["strength"])
+                new_strength = baseline + (strength - baseline) * (1.0 - rate / shield)
+                await db.execute(
+                    "UPDATE graph_edges SET strength=? WHERE id=?",
+                    (round(max(baseline, new_strength), 4), int(row["id"])),
+                )
+                relaxed += 1
+        return relaxed
+
+    async def forget_weak_edges(
+        self,
+        *,
+        min_age_days: int = 90,
+        strength_threshold: float = 0.25,
+        limit: int = 100,
+    ) -> int:
+        """弱边遗忘：强度低于阈值且长期无活动的边软归档（可恢复，自动触发投影更新）。"""
+        db = await self._conn.get_db()
+        cutoff_ns = time.time_ns() - int(min_age_days * 86_400 * 1e9)
+        cursor = await db.execute(
+            "SELECT id FROM graph_edges WHERE archived=0 AND strength < ? AND "
+            "(CASE WHEN last_accessed_ns > 0 THEN last_accessed_ns ELSE updated_ns END) < ? "
+            "ORDER BY strength ASC, updated_ns ASC LIMIT ?",
+            (strength_threshold, cutoff_ns, max(1, limit)),
+        )
+        edge_ids = [int(r["id"]) for r in await cursor.fetchall()]
+        archived = 0
+        for edge_id in edge_ids:
+            if await self.set_relation_archived(edge_id, True):
+                archived += 1
+        return archived
+
+    async def archive_orphan_nodes(self, *, min_age_days: int = 60, limit: int = 50) -> int:
+        """孤立节点归档：无活跃边且长期未更新的自由型节点软归档。
+
+        user/group 实体节点是会话锚点（scope 注入与画像依赖），永不自动归档。
+        """
+        db = await self._conn.get_db()
+        cutoff_ns = time.time_ns() - int(min_age_days * 86_400 * 1e9)
+        cursor = await db.execute(
+            "SELECT n.node_key FROM graph_nodes n "
+            "WHERE n.archived=0 AND n.updated_ns < ? AND n.node_type NOT IN ('user','group') "
+            "AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.archived=0 "
+            "AND (e.subject_id=n.id OR e.object_id=n.id)) "
+            "ORDER BY n.updated_ns ASC LIMIT ?",
+            (cutoff_ns, max(1, limit)),
+        )
+        keys = [str(r["node_key"]) for r in await cursor.fetchall()]
+        archived = 0
+        for key in keys:
+            if await self.set_node_archived(key, True):
+                archived += 1
+        return archived
+
+    async def labels_for_keys(self, node_keys: list[str]) -> list[str]:
+        """按键批量取节点展示名（去重保序）——cognee node_name 定向检索入参。"""
+        node_map = await self.get_nodes_by_keys(node_keys)
+        labels: list[str] = []
+        for key in node_keys:
+            node = node_map.get(key)
+            label = str(node.get("label", "")).strip() if node else ""
+            if label and label not in labels:
+                labels.append(label)
+        return labels
+
+    async def curation_facts(
+        self,
+        *,
+        weak_strength: float,
+        stale_cutoff_ns: int,
+        ambiguity_min_strength: float,
+        hub_degree: int,
+    ) -> Dict[str, list]:
+        """图谱治理事实的确定性查询（治理议程的数据底座）。
+
+        阈值语义与配置归 ``graph/curation.py``（领域层），本方法只做
+        数据访问；各项上限固定（弱边/陈旧/歧义/重复 10、枢纽 5）。
+        """
+        db = await self._conn.get_db()
+
+        async def _edges(where: str, params: list[Any], order: str, limit: int) -> list[Dict[str, Any]]:
+            cursor = await db.execute(
+                f"{self._EDGE_SELECT} WHERE {where} ORDER BY {order} LIMIT {limit}",
+                params,
+            )
+            return [self._row_to_edge(row) for row in await cursor.fetchall()]
+
+        facts: Dict[str, list] = {
+            "weak_edges": await _edges(
+                "e.archived=0 AND e.strength < ?", [weak_strength],
+                "e.strength ASC", 10,
+            ),
+            "stale_edges": await _edges(
+                "e.archived=0 AND (CASE WHEN e.last_accessed_ns > 0 "
+                "THEN e.last_accessed_ns ELSE e.updated_ns END) < ?",
+                [stale_cutoff_ns], "e.updated_ns ASC", 10,
+            ),
+        }
+
+        # 歧义组：同主语同谓词指向多个强对象（抽取噪声或真实多值）
+        cursor = await db.execute(
+            "SELECT e.subject_id AS sid, s.node_key AS s_key, s.label AS s_label, "
+            "e.predicate, COUNT(DISTINCT e.object_id) AS c "
+            "FROM graph_edges e JOIN graph_nodes s ON e.subject_id = s.id "
+            "WHERE e.archived=0 AND e.strength >= ? "
+            "GROUP BY e.subject_id, e.predicate "
+            "HAVING c >= 2 ORDER BY c DESC LIMIT 10",
+            (ambiguity_min_strength,),
+        )
+        ambiguous: list[Dict[str, Any]] = []
+        for row in await cursor.fetchall():
+            edges = await _edges(
+                "e.archived=0 AND e.subject_id=? AND e.predicate=? AND e.strength >= ?",
+                [int(row["sid"]), str(row["predicate"]), ambiguity_min_strength],
+                "e.strength DESC", 10,
+            )
+            if len(edges) >= 2:
+                ambiguous.append({
+                    "subject_key": str(row["s_key"]),
+                    "subject_label": str(row["s_label"]),
+                    "predicate": str(row["predicate"]),
+                    "edges": edges,
+                })
+        facts["ambiguous_groups"] = ambiguous
+
+        # 疑似重复节点：同类型且称呼归一（去空白/小写）后相同
+        cursor = await db.execute(
+            "SELECT node_type, LOWER(TRIM(label)) AS norm, "
+            "COUNT(*) AS c, GROUP_CONCAT(node_key) AS keys, GROUP_CONCAT(label) AS labels "
+            "FROM graph_nodes WHERE archived=0 AND TRIM(label) != '' "
+            "GROUP BY node_type, norm HAVING c > 1 LIMIT 10"
+        )
+        facts["duplicate_nodes"] = [
+            {
+                "node_type": str(r["node_type"]),
+                "nodes": str(r["keys"]).split(","),
+                "labels": str(r["labels"]).split(","),
+            }
+            for r in await cursor.fetchall()
+        ]
+
+        # 枢纽异常：度数超阈的自由型节点（万物连接点多 为抽取错误）
+        cursor = await db.execute(
+            "SELECT n.node_key, n.label, n.node_type, COUNT(e.id) AS deg "
+            "FROM graph_nodes n JOIN graph_edges e "
+            "ON ((e.subject_id = n.id OR e.object_id = n.id) AND e.archived = 0) "
+            "WHERE n.archived = 0 AND n.node_type NOT IN ('user', 'group') "
+            "GROUP BY n.id HAVING deg > ? ORDER BY deg DESC LIMIT 5",
+            (hub_degree,),
+        )
+        facts["hub_nodes"] = [
+            {"node": str(r["node_key"]), "label": str(r["label"]), "degree": int(r["deg"])}
+            for r in await cursor.fetchall()
+        ]
+        return facts
 
     # ------------------------------------------------------------------
     # cognee 投影

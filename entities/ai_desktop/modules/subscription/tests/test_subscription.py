@@ -180,3 +180,42 @@ class TestDetail:
         }
         states = {p["key"]: p["state"] for p in module.detail()["providers"]}
         assert states == {"glm": "ok", "minimax": "no_credential", "kimi": "error"}
+
+
+class TestKimiMissingFields:
+    """配额耗尽时 API 省略 remaining / 新窗口省略 used 的回退补齐。"""
+
+    def test_exhausted_quota_derives_remaining(self) -> None:
+        result = parse_kimi({
+            "usage": {"limit": "100", "used": "100",
+                      "resetTime": "2026-09-12T03:37:59Z"},
+        })
+        total = result["windows"][0]
+        assert total["remaining"] == 0.0
+        assert total["remaining_percent"] == 0.0
+
+    def test_fresh_window_derives_used(self) -> None:
+        result = parse_kimi({
+            "limits": [{
+                "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                "detail": {"limit": "100", "remaining": "100",
+                           "resetTime": "2026-09-11T02:37:59Z"},
+            }],
+        })
+        short = result["windows"][0]
+        assert short["used"] == 0.0
+        assert short["remaining_percent"] == 100.0
+
+    def test_no_limit_keeps_unknown(self) -> None:
+        result = parse_kimi({"usage": {"used": "5"}})
+        assert result["windows"] == []
+
+
+class TestResetFormat:
+    """重置时间统一 MM-DD HH:MM 完整格式。"""
+
+    def test_format_window_full_datetime(self) -> None:
+        window = {"label": "每5小时", "limit": 100.0, "remaining": 87.0,
+                  "reset_at": 1789058279.0}
+        assert SubscriptionModule._format_window(window) == \
+            "每5小时 剩 87/100（重置 09-11 00:37）"

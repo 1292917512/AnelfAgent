@@ -34,7 +34,9 @@ dependencies = [
     "python-telegram-bot>=22.0",
     # 飞书 / Lark
     "lark-oapi>=1.5.0",
-    # Cognee 知识图谱记忆后端（默认安装，uv sync 自动拉取）
+    # Cognee 知识图谱记忆后端（默认安装，uv sync 自动拉取）。
+    # 1.5.4 锁 litellm<1.97 与本项目 litellm 1.100 不兼容，停在 1.5.3
+    #（1.5.4 为无 API 变更的补丁版，无升级收益）
     "cognee==1.5.3",
     "sqlite-vec>=0.1.9",
     "tiktoken>=0.12.0",

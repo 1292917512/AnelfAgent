@@ -123,16 +123,24 @@ class CogneeConfig:
     write_breaker_window_seconds: float = 300.0
     write_breaker_cooldown_seconds: float = 1800.0
     native_weight: float = 1.0
-    cognee_weight: float = 0.8
+    # cognee 与原生同权：融合去重时来源优先级已保证原生结果胜出（memory >
+    # file > cognee_chunk > cognee_graph），权重不再额外压制——图谱投影
+    # 的净增量事实（跨记忆实体关联）值得与原生结果同台竞争
+    cognee_weight: float = 1.0
     rrf_k: int = 60
     recall_pool_multiplier: int = 3
     search_types: list[str] = field(
         default_factory=lambda: ["CHUNKS", "CHUNKS_LEXICAL"],
     )
-    # 深度召回（recall depth=deep）使用的搜索类型：在浅召回基础上追加图谱类检索。
-    # 不支持的类型在运行时被静默跳过，保持向后兼容。
+    # 深度召回（recall depth=deep / 异步深探）使用的搜索类型：在浅召回
+    # 基础上追加图谱类检索。不支持的类型在运行时被静默跳过，保持向后兼容。
+    # GRAPH_COMPLETION：图谱合成答案；CONTEXT_EXTENSION：迭代图上下文
+    # 扩展；SUMMARIES：实体摘要卡。均为 LLM 参与通道，只经显式深检发生。
     deep_search_types: list[str] = field(
-        default_factory=lambda: ["CHUNKS", "CHUNKS_LEXICAL", "GRAPH_COMPLETION"],
+        default_factory=lambda: [
+            "CHUNKS", "CHUNKS_LEXICAL", "GRAPH_COMPLETION",
+            "GRAPH_COMPLETION_CONTEXT_EXTENSION", "SUMMARIES",
+        ],
     )
     chat: CogneeChatModelConfig = field(default_factory=CogneeChatModelConfig)
     embedding: CogneeEmbeddingModelConfig = field(default_factory=CogneeEmbeddingModelConfig)
@@ -175,6 +183,10 @@ class CogneeConfig:
         return asdict(self)
 
 
+#: 旧版深检索默认值（用于识别"从未自定义"的存量配置，升级到新默认）
+_LEGACY_DEEP_TYPES = ["CHUNKS", "CHUNKS_LEXICAL", "GRAPH_COMPLETION"]
+
+
 def load_cognee_config() -> CogneeConfig:
     """读取 Cognee 配置；缺失或损坏时返回安全默认值。"""
     path = Path(ConfigPaths.COGNEE_CONFIG)
@@ -186,6 +198,10 @@ def load_cognee_config() -> CogneeConfig:
         raw = json.loads(path.read_text(encoding="utf-8"))
         allowed = CogneeConfig.__dataclass_fields__.keys()
         values = {key: value for key, value in raw.items() if key in allowed}
+        # 一次性默认值迁移：deep_search_types 仍是旧默认（用户从未自定义）时
+        # 升级到新默认（含 CONTEXT_EXTENSION/SUMMARIES）；自定义过的列表原样保留
+        if values.get("deep_search_types") == _LEGACY_DEEP_TYPES:
+            values.pop("deep_search_types")
         values["chat"] = _build_nested(CogneeChatModelConfig, values.get("chat"))
         values["embedding"] = _build_nested(CogneeEmbeddingModelConfig, values.get("embedding"))
         return CogneeConfig(**values).normalized()

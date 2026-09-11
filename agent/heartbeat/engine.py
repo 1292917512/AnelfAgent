@@ -93,6 +93,9 @@ class HeartbeatEngine:
         self.mind = mind
         self.config = get_heartbeat_config()
         self.task_registry = TaskRegistry()
+        # 定义文件调度种子必须在启动时执行：reload 仅 Web API 触发，
+        # 随仓库分发的任务（如 graph_curation）不经过 Web 就永远没有调度
+        self._seed_declared_schedules()
         self.executor = TaskExecutor(mind)
         self._total_ticks: int = 0
         self._tick_lock = asyncio.Lock()
@@ -166,7 +169,38 @@ class HeartbeatEngine:
         self._warned_missing_tasks.clear()
         from .config import reload_heartbeat_config
         self.config = reload_heartbeat_config()
+        self._seed_declared_schedules()
         self._prune_orphan_schedules()
+
+    def _seed_declared_schedules(self) -> None:
+        """一次性调度种子：任务定义文件声明的初始调度（mode/every_n_beats）
+        在心跳配置无该任务调度时生效——随仓库分发的任务（如 graph_curation）
+        无需手动绑定即自动运行；heartbeat.json 一旦存在该任务的调度即成为
+        唯一权威（用户改过的不被覆盖）。
+        """
+        from .config import ScheduleMode, TaskSchedule
+
+        seeded = False
+        for task in self.task_registry.list_all():
+            mode = (task.schedule_mode or "manual").strip().lower()
+            if mode not in ("heartbeat", "scheduled", "idle"):
+                continue
+            if self.config.get_schedule(task.name) is not None:
+                continue
+            self.config.set_schedule(TaskSchedule(
+                task_name=task.name,
+                mode=ScheduleMode(mode),
+                every_n_beats=max(1, task.schedule_every_n_beats),
+                schedule_times=list(task.schedule_times),
+            ))
+            seeded = True
+            log(
+                f"任务 {task.name} 按定义文件种子化调度（mode={mode}, "
+                f"every_n_beats={task.schedule_every_n_beats}）",
+                tag="心跳",
+            )
+        if seeded:
+            self.config.save()
 
     # ------------------------------------------------------------------
     # 心跳主循环
@@ -555,6 +589,18 @@ class HeartbeatEngine:
                     hb_log.append_entry(f"[技能治理议程] {summary}")
         except Exception as e:
             log(f"技能策展失败: {e}", "DEBUG", tag="心跳")
+
+        # 图谱治理议程：确定性事实摘要（弱边/陈旧/歧义/重复/枢纽），
+        # AI 经 graph_curation 任务消费完整议程并用图谱工具执行治理
+        try:
+            if self.mind.memory_store is not None:
+                from agent.memory.graph.curation import agenda_summary, build_agenda
+                graph_agenda = await build_agenda(self.mind.memory_store.graph)
+                graph_summary = agenda_summary(graph_agenda)
+                if graph_summary:
+                    hb_log.append_entry(f"[图谱治理议程] {graph_summary}")
+        except Exception as e:
+            log(f"图谱治理议程构建失败: {e}", "DEBUG", tag="心跳")
 
         entity = await self._pop_analysis_entity()
         if entity:

@@ -35,6 +35,9 @@ class ConsolidationReport:
     archive_purged: int = 0
     cognee_pending: int = 0
     vocab_refreshed: int = 0
+    graph_relaxed: int = 0
+    graph_edges_forgotten: int = 0
+    graph_nodes_archived: int = 0
     errors: List[str] = field(default_factory=list)
 
     def to_log_lines(self) -> List[str]:
@@ -57,6 +60,12 @@ class ConsolidationReport:
             lines.append(f"cognee 同步积压 {self.cognee_pending} 条（已唤醒）")
         if self.vocab_refreshed:
             lines.append(f"FTS 词典刷新 {self.vocab_refreshed} 词")
+        if self.graph_relaxed or self.graph_edges_forgotten or self.graph_nodes_archived:
+            lines.append(
+                f"图谱治理: 强度松弛 {self.graph_relaxed} 边, "
+                f"弱边归档 {self.graph_edges_forgotten} 条, "
+                f"孤立节点归档 {self.graph_nodes_archived} 个"
+            )
         if self.errors:
             lines.append(f"异常 {len(self.errors)} 项: {'; '.join(self.errors[:3])}")
         return lines
@@ -159,6 +168,32 @@ class MemoryConsolidator:
         except Exception as exc:
             report.errors.append(f"词典刷新失败: {exc}")
 
+        # 9. 图谱治理：边强度松弛（访问护盾）→ 弱边软归档 → 孤立节点归档。
+        #    归档经 set_relation_archived/set_node_archived 自动触发 cognee
+        #    投影更新；全部确定性 SQL，阈值保守（松弛 30 天起、归档 90 天起）
+        try:
+            report.graph_relaxed = await self._store.graph.relax_edge_strength(
+                stale_days=get_config_int("graph_edge_relax_days", 30),
+                rate=get_config_float("graph_edge_relax_rate", 0.05),
+            )
+            report.graph_edges_forgotten = await self._store.graph.forget_weak_edges(
+                min_age_days=get_config_int("graph_edge_forget_min_age_days", 90),
+                strength_threshold=get_config_float("graph_edge_forget_strength", 0.25),
+            )
+            report.graph_nodes_archived = await self._store.graph.archive_orphan_nodes(
+                min_age_days=get_config_int("graph_orphan_node_days", 60),
+            )
+            if report.graph_relaxed or report.graph_edges_forgotten or report.graph_nodes_archived:
+                try:
+                    from . import metrics
+                    metrics.incr("graph.relaxed", report.graph_relaxed)
+                    metrics.incr("graph.forgotten", report.graph_edges_forgotten)
+                except Exception:
+                    pass
+        except Exception as exc:
+            report.errors.append(f"图谱治理失败: {exc}")
+            log(f"图谱治理失败: {exc}", "WARNING", tag="记忆")
+
         if report.forgotten_count or report.merged_count or report.limit_removed:
             log(
                 f"记忆整理完成: 遗忘 {report.forgotten_count}, 合并 {report.merged_count}, "
@@ -231,8 +266,8 @@ _CONSOLIDATOR_CONFIGS = {
             "unit": "个",
         },
         "memory_consolidate_every_n_ticks": {
-            "description": "整理执行间隔（每 N 次心跳一次全量整理）",
-            "default": 12,
+            "description": "整理执行间隔（每 N 次心跳一次全量整理；默认约 4 小时一轮，含记忆遗忘与图谱治理）",
+            "default": 48,
             "advanced": True,
             "unit": "次",
         },
@@ -348,6 +383,44 @@ _CONSOLIDATOR_CONFIGS = {
             "min": 0,
             "max": 1,
             "step": 0.05,
+        },
+    },
+    "memory/graph": {
+        "graph_edge_relax_days": {
+            "description": "图谱边强度松弛：超过 N 天无活动（未访问未更新）的边向基线 0.5 回归（访问护盾，常被检索的关系更抗遗忘）",
+            "default": 30,
+            "advanced": True,
+            "unit": "天",
+        },
+        "graph_edge_relax_rate": {
+            "description": "图谱边强度松弛速率（每次整理回归基线的比例，0 = 关闭）",
+            "default": 0.05,
+            "advanced": True,
+            "value_type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
+        },
+        "graph_edge_forget_min_age_days": {
+            "description": "图谱弱边遗忘最小年龄（早于此年龄不归档）",
+            "default": 90,
+            "advanced": True,
+            "unit": "天",
+        },
+        "graph_edge_forget_strength": {
+            "description": "图谱弱边遗忘强度阈值（低于此分且超龄的边软归档，可恢复）",
+            "default": 0.25,
+            "advanced": True,
+            "value_type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
+        },
+        "graph_orphan_node_days": {
+            "description": "孤立节点归档年龄（无活跃边且超期的自由型节点软归档；user/group 会话锚点永不自动归档）",
+            "default": 60,
+            "advanced": True,
+            "unit": "天",
         },
     },
     "memory/notes": {

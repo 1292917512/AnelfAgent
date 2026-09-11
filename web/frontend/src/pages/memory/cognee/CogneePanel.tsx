@@ -7,7 +7,7 @@ import { toast } from "@/components/ui";
 import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { type FieldMeta } from "@/pages/config/AppField";
 import { ModelConfigCard } from "@/pages/memory/cognee/ModelConfigCard";
-import { CogneeGraphCard } from "@/pages/memory/cognee/CogneeGraphCard";
+import { RecallTester } from "@/pages/memory/RecallTester";
 import { memoryApi } from "@/lib/api";
 import { devopsApi } from "@/pages/entities/panels/devops/api";
 import { formatSize } from "@/lib/utils";
@@ -124,6 +124,7 @@ export function CogneePanel() {
 
   return (
     <div className="space-y-4">
+      <RecallTester preset="cognee" />
       <Card
         title={t("cognee.statusTitle")}
         subtitle={availability?.reason || t("cognee.statusSubtitle")}
@@ -245,8 +246,6 @@ export function CogneePanel() {
           <p className="text-sm text-muted">{t("cognee.noDatasets")}</p>
         )}
       </Card>
-
-      <CogneeGraphCard ready={Boolean(availability?.ready)} datasets={datasets} />
 
       <ConfigFormPanel
         title={t("cognee.generalTitle")}

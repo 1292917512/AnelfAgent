@@ -481,20 +481,38 @@ class CogneeCoordinator:
 
     @property
     def relations_dataset(self) -> str:
-        """关系图谱投影数据集（全图一个 dataset，关系天然跨实体不按 scope 拆）。"""
+        """全局关系投影数据集（自由型节点：topic/person/concept 等公共知识）。"""
         prefix = _SAFE_DATASET_RE.sub("_", self.config.dataset_prefix)
         return f"{prefix}_relations"
 
+    def graph_dataset_for_node(self, node: dict[str, Any]) -> str:
+        """节点投影数据集：实体型节点（user/group）入 per-scope 关系数据集，
+        自由型节点入全局。
+
+        实体私人关系网络按 scope 隔离（消除跨 scope 检索稀释）；
+        话题/概念等公共知识保持全局共享——"甲和乙是什么关系"这类
+        跨实体问题正是图谱价值。scope id 派生与记忆数据集一致
+        （user:qq:123 → "qq:123" 的 sha256 前 16 位）。
+        """
+        prefix = _SAFE_DATASET_RE.sub("_", self.config.dataset_prefix)
+        ntype = str(node.get("node_type", ""))
+        key = str(node.get("node_key", ""))
+        if ntype in {"user", "group"} and ":" in key:
+            scope_id = key.split(":", 1)[1]
+            digest = hashlib.sha256(scope_id.encode("utf-8")).hexdigest()[:16]
+            return f"{prefix}_relations_{ntype}_{digest}"
+        return f"{prefix}_relations"
+
     async def _process_graph_upserts(self, items: list[dict[str, Any]]) -> None:
-        """关系节点投影：渲染最新邻域文档，先删后加到 relations 数据集。
+        """关系节点投影：渲染最新邻域文档，先删后加到节点所属数据集。
 
         入队负载仅是快照触发器，文档在消费时从权威库实时渲染，
         保证投影内容不被入队后的后续变更过期。结构指纹（节点身份 +
         各边谓词/方向/对端，不含强度与证据）与上次成功同步一致时
         直接跳过——关系强化与证据刷新不再触发整篇重投影。
+        实体型节点按 scope 分组数据集推送（见 graph_dataset_for_node）。
         """
-        dataset_name = self.relations_dataset
-        active: list[tuple[dict[str, Any], str, str]] = []
+        grouped: dict[str, list[tuple[dict[str, Any], str, str]]] = defaultdict(list)
         for item in items:
             projection = await self.store.graph.render_node_projection(item["entry_id"])
             if projection is None:
@@ -523,13 +541,21 @@ class CogneeCoordinator:
                 except Exception as exc:
                     await self._fail(item, f"清理旧投影失败: {_error_text(exc)}")
                     continue
-            active.append((item, document, fingerprint))
-        if not active:
-            return
+            node = await self.store.graph.get_node_by_id(item["entry_id"])
+            dataset = self.graph_dataset_for_node(node or {})
+            grouped[dataset].append((item, document, fingerprint))
+        for dataset_name, entries in grouped.items():
+            await self._push_graph_group(dataset_name, entries)
 
+    async def _push_graph_group(
+        self,
+        dataset_name: str,
+        entries: list[tuple[dict[str, Any], str, str]],
+    ) -> None:
+        """把一组图谱投影推入指定数据集（add → cognify → 映射回填）。"""
         try:
             data_items: list[Any] = []
-            for item, document, _fingerprint in active:
+            for item, document, _fingerprint in entries:
                 data_items.append(await self.client.make_data_item(
                     document,
                     label=f"anelf-graph-node-{item['entry_id']}",
@@ -549,7 +575,7 @@ class CogneeCoordinator:
             self._breaker.observe()
             await self._maybe_improve(dataset_name)
             identifiers = await self._resolve_data_ids(dataset_name, "anelf_graph_node_id")
-            for item, _doc, fingerprint in active:
+            for item, _doc, fingerprint in entries:
                 ids = identifiers.get(str(item["entry_id"]))
                 if not ids:
                     await self._fail(item, "无法解析 Cognee 数据 ID")
@@ -566,7 +592,7 @@ class CogneeCoordinator:
             self._last_error = ""
         except Exception as exc:
             self._last_error = _error_text(exc)
-            for item, _doc, _fingerprint in active:
+            for item, _doc, _fingerprint in entries:
                 await self._fail(item, self._last_error)
 
     async def _maybe_improve(self, dataset_name: str) -> None:

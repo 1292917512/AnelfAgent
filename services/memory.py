@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -190,6 +191,122 @@ class MemoryService:
             }
             for r in results
         ]
+
+    async def recall_test(
+        self,
+        query: str,
+        *,
+        depth: str = "shallow",
+        tags: Optional[List[str]] = None,
+        entity_scope: str = "",
+        limit: int = 8,
+        search_types: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """召回测试（记忆/cognee 界面诊断面板）：与真实召回同管线的无副作用执行。
+
+        编排检索规划（retriever.plan_retrieval）→ 多计划查询联邦检索 →
+        共识融合（retriever.merge_consensus）→ 关系/遗忘层；不记访问、
+        不触发异步深探。诊断编排放服务层，retriever 保持纯检索。
+        """
+        import time as _time
+
+        rt = require_runtime()
+        retriever = rt.mind.retriever
+        store = rt.mind.memory_store
+        if retriever is None or store is None:
+            return {"error": "记忆系统未初始化"}
+
+        from agent.memory.cognee.config import load_cognee_config
+        from agent.memory.cognee.fusion import datasets_for_scope, federated_search
+        from agent.memory.cognee.runtime import get_cognee_client
+        from agent.memory.memory_types import MemorySearchResult
+        from agent.memory.store.tag_intel import ENTITY_PREFIXES
+
+        timings: Dict[str, Any] = {}
+        total_start = _time.perf_counter()
+        tag_list = [t for t in (tags or []) if t.strip()]
+        deep = depth.strip().lower() == "deep"
+        cognee_config = load_cognee_config()
+        if search_types:
+            import dataclasses
+            cognee_config = dataclasses.replace(
+                cognee_config,
+                search_types=[s.strip().upper() for s in search_types if s.strip()],
+            )
+        datasets = datasets_for_scope(cognee_config, entity_scope, tag_list or None)
+
+        # 1) 检索规划（含实体→图谱节点解析）
+        t0 = _time.perf_counter()
+        plan = await retriever.plan_retrieval(query)
+        timings["plan_ms"] = round((_time.perf_counter() - t0) * 1000, 1)
+
+        # 2) 多计划查询并行联邦检索 + 共识融合（与被动召回同口径）
+        t0 = _time.perf_counter()
+        planned_queries = [q for q in plan.queries[:3] if q and len(q.strip()) >= 4] or [query]
+        query_vec = await rt.mind.embedder.embed_query(query) if query else None
+
+        async def _lane(q: str, targeted: bool) -> List[MemorySearchResult]:
+            vec = query_vec if q == query else await rt.mind.embedder.embed_query(q)
+            return await federated_search(
+                store.search_unified(
+                    query=q, query_vec=vec, query_tags=tag_list or None,
+                    limit=limit * cognee_config.recall_pool_multiplier,
+                ),
+                query=q, client=get_cognee_client(), config=cognee_config,
+                limit=limit, entity_scope=entity_scope,
+                query_tags=tag_list or None, deep=deep,
+                node_names=plan.node_labels if targeted else None,
+            )
+
+        lanes = await asyncio.gather(*(
+            _lane(q, i == 0) for i, q in enumerate(planned_queries)
+        ))
+        results = retriever.merge_consensus(list(lanes), limit=limit * 2)
+        timings["search_ms"] = round((_time.perf_counter() - t0) * 1000, 1)
+
+        # 3) 关系邻域 + 遗忘层（并行，与 recall 工具同口径）
+        node_keys = list(plan.node_keys)
+        for tag in tag_list:
+            if tag.startswith(ENTITY_PREFIXES) and tag not in node_keys:
+                node_keys.append(tag)
+        forgotten_task = asyncio.create_task(
+            store.search_forgotten(query, query_vec, limit=3),
+        )
+        relations: List[str] = []
+        if node_keys:
+            try:
+                from agent.memory.graph import format_triple
+                edges = await store.graph.edges_for_scopes(node_keys[:6], limit=10)
+                relations = [format_triple(e) for e in edges]
+            except Exception:
+                relations = []
+        forgotten = await forgotten_task
+        timings["total_ms"] = round((_time.perf_counter() - total_start) * 1000, 1)
+
+        return {
+            "plan": plan.model_dump(),
+            "depth": "deep" if deep else "shallow",
+            "cognee": {
+                "enabled": cognee_config.enabled,
+                "recall_enabled": cognee_config.recall_enabled,
+                "datasets": datasets,
+                "search_types": (cognee_config.deep_search_types if deep else cognee_config.search_types),
+            },
+            "items": [{
+                "id": r.id,
+                "source": r.source,
+                "score": round(r.score, 3),
+                "content": r.snippet[:500],
+                "type": r.memory_type or "",
+                "tags": r.tags,
+                "dataset": r.dataset_name,
+                "path": r.path or "",
+                "provenance": r.provenance,
+            } for r in results],
+            "relations": relations,
+            "forgotten": forgotten,
+            "timings": timings,
+        }
 
     async def merge_ltm(self, ids: List[int], content: str) -> Dict[str, Any]:
         rt = require_runtime()
@@ -699,62 +816,6 @@ class MemoryService:
         return result
 
     @staticmethod
-    async def get_cognee_graph_html(dataset: Optional[str] = None) -> str:
-        """渲染 Cognee 官方知识图谱为自包含交互式 HTML。
-
-        Args:
-            dataset: 数据集名称；空值自动回退到首个可用数据集
-                （访问控制开启时 cognee 强制要求指定数据集）。
-
-        Raises:
-            RuntimeError: Cognee 未就绪、无数据集或渲染失败。
-        """
-        from pathlib import Path
-
-        from agent.memory.cognee.graph_html import sanitize_cognee_graph_html
-        from agent.memory.cognee.runtime import get_cognee_client
-        from core.path import ConfigPaths, PathManager
-
-        client = get_cognee_client()
-        if not client:
-            raise RuntimeError("Cognee 运行时未初始化")
-        if not client.availability().ready:
-            raise RuntimeError("Cognee 未就绪")
-
-        target = dataset
-        if not target:
-            names = [
-                str(item.get("name", ""))
-                for item in await MemoryService.list_cognee_datasets()
-            ]
-            names = [name for name in names if name]
-            if not names:
-                raise RuntimeError("Cognee 暂无数据集可渲染")
-            target = "main_dataset" if "main_dataset" in names else names[0]
-
-        out_dir = Path(ConfigPaths.COGNEE_DATA_DIR)
-        PathManager.ensure_dir_exists(str(out_dir))
-        # 可视化不应占用流水线级超时（可至 1800s）；过长会导致前端一直「渲染中」
-        graph_timeout = min(max(float(client.config.timeout_seconds), 90.0), 180.0)
-        try:
-            html = await client.visualize_graph(
-                destination_file_path=str(out_dir / "graph.html"),
-                dataset=target,
-                include_session_events=False,
-                timeout=graph_timeout,
-            )
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            raise RuntimeError(f"Cognee 图谱渲染失败: {exc}") from exc
-        return sanitize_cognee_graph_html(str(html))
-
-    # ==================================================================
-    # 目标计划（Goals）
-    # ==================================================================
-
-    _GOAL_SOURCE = "goal"
-
     async def _goal_entries(self, store: Any) -> List[tuple]:
         """查询并解析全部目标条目，返回 [(MemoryEntry, goal_dict)]（单次操作内复用）。"""
         import json

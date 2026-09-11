@@ -1,8 +1,9 @@
-"""缓存优化回归测试：_layer 非破坏剥离 / 重复提示折叠 / 摘要截断 / 工具确定性排序。"""
+"""缓存优化回归测试：_layer 非破坏剥离 / 重复提示边界折叠 / 摘要截断 / 工具确定性排序。"""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Dict, List
 
 from agent.mind.context_compressor import ContextCompressor
 from agent.mind.message_schema import normalize_for_send
@@ -53,12 +54,19 @@ def _compressor() -> ContextCompressor:
 
 
 class TestCollapseDupHints:
-    def test_duplicate_system_hints_collapsed(self) -> None:
-        """内容相同的 system 提示仅保留最新一条全文，旧副本直接移除。
+    """重复提示折叠只在既有重写断点之后搭便车，绝不独立制造缓存断点。"""
 
-        system 提示是独立消息、不参与 tool_call 配对，移除无结构风险；
-        占位符对模型零信息量，保留只会逐轮烧 token。
-        """
+    @staticmethod
+    def _call(cid: str, name: str = "read_file") -> Dict:
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": cid, "type": "function", "function": {"name": name, "arguments": "{}"}}],
+        }
+
+    def test_dups_survive_without_rewrite(self) -> None:
+        """无结果清理/图片折叠时重复提示不动：为省百字符副本独立制造缓存
+        断裂（其后整段全价重编码）是纯亏的交换，副本按缓存读价驻留。"""
         hint = "[系统提示] 工具结果仅你可见"
         chain = [
             {"role": "user", "content": "问"},
@@ -67,30 +75,104 @@ class TestCollapseDupHints:
             {"role": "system", "content": hint},
             {"role": "assistant", "content": "答2"},
             {"role": "system", "content": hint},
+            # 短结果且无配对 assistant tool_calls：本轮无任何重写
             {"role": "tool", "tool_call_id": "x", "content": "r"},
         ]
+        assert _compressor().microcompact(chain) == 0
+        assert [m["content"] for m in chain if m["role"] == "system"] == [hint] * 3
+
+    def test_collapse_free_rides_after_result_rewrite(self) -> None:
+        """结果清理建立断点后，断点之后的重复副本折叠（保留最新）；
+        断点之前的副本原样保留——删除会把本轮缓存失效区向前扩大。"""
+        hint = "[系统提示] 工具结果仅你可见"
+        chain = [
+            {"role": "system", "content": hint},  # 0 断点前：保留
+            self._call("c0"),
+            {"role": "tool", "tool_call_id": "c0", "content": "x" * 500},  # 2 → 断点
+            {"role": "system", "content": hint},  # 3 断点后：折叠
+            self._call("c1"),
+            {"role": "tool", "tool_call_id": "c1", "content": "x" * 500},  # 5 → 占位符
+            self._call("c2"),
+            {"role": "tool", "tool_call_id": "c2", "content": "y" * 500},  # 7 窗口内：保留
+            self._call("c3"),
+            {"role": "tool", "tool_call_id": "c3", "content": "z" * 500},  # 9 窗口内：保留
+            {"role": "system", "content": hint},  # 10 最新副本：保留
+        ]
         n = _compressor().microcompact(chain)
-        assert n >= 2
-        full = [m for m in chain if m.get("content") == hint]
-        assert len(full) == 1
-        # 保留的是最新一条（原索引 5），其余消息顺序与配对不变
-        assert [m["role"] for m in chain] == ["user", "assistant", "assistant", "system", "tool"]
-        assert chain[3]["content"] == hint
+        # n = 2 条结果清理 + 1 条搭便车副本
+        assert n == 3
+        hints = [m["content"] for m in chain if m["role"] == "system"]
+        assert hints == [hint, hint]
+        tools = [m["content"] for m in chain if m["role"] == "tool"]
+        assert tools[0] == ContextCompressor._MICROCOMPACT_PLACEHOLDER
+        assert tools[1] == ContextCompressor._MICROCOMPACT_PLACEHOLDER
+        assert tools[2] == "y" * 500
+        assert tools[3] == "z" * 500
+        # tool_call 配对结构完整
+        roles = [m["role"] for m in chain]
+        assert roles.count("assistant") == roles.count("tool") == 4
+
+    def test_collapse_free_rides_after_image_fold(self) -> None:
+        """图片折叠同样建立断点：无结果可清时副本仍可在图片断点后折叠。"""
+        hint = "[系统提示] 工具结果仅你可见"
+        img_block = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,XXX"}}
+        chain: List[Dict] = [
+            {
+                "role": "user",
+                "content": [  # 0 → 折叠＝断点
+                    {"type": "text", "text": "[media_path:/tmp/a.jpg] 看图1"},
+                    img_block,
+                ],
+            },
+            {"role": "assistant", "content": "看到了"},
+            {"role": "system", "content": hint},  # 2 断点后：折叠
+            {
+                "role": "user",
+                "content": [  # 3 最新含图：不动
+                    {"type": "text", "text": "[media_path:/tmp/b.jpg] 看图2"},
+                    img_block,
+                ],
+            },
+            {"role": "assistant", "content": "也看到了"},
+            {"role": "system", "content": hint},  # 5 最新副本：保留
+        ]
+        n = _compressor().microcompact(chain)
+        assert n == 2  # 1 图片块 + 1 副本
+        hints = [m["content"] for m in chain if m["role"] == "system"]
+        assert hints == [hint]
 
     def test_unique_system_hints_untouched(self) -> None:
-        """无重复的 system 提示（含非空唯一内容）一条不动。"""
+        """互不重复的 system 提示即使落在断点之后也一条不删（折叠只针对重复副本）。"""
         chain = [
             {"role": "system", "content": "提示A"},
-            {"role": "assistant", "content": "答"},
+            self._call("c0"),
+            {"role": "tool", "tool_call_id": "c0", "content": "r" * 300},
             {"role": "system", "content": "提示B"},
-            {"role": "tool", "tool_call_id": "x", "content": "r" * 300},
-        ] * 2  # 翻倍后链长越阈值，但每段内部提示互不重复
+            self._call("c1"),
+            {"role": "tool", "tool_call_id": "c1", "content": "r" * 300},
+            self._call("c2"),
+            {"role": "tool", "tool_call_id": "c2", "content": "r" * 300},
+        ]
         n = _compressor().microcompact(chain)
-        hints = [m for m in chain if m.get("role") == "system"]
-        assert all(m["content"] in ("提示A", "提示B") for m in hints)
-        # 重复段（提示A/提示B 各两份）只保留各一条
-        assert [m["content"] for m in hints] == ["提示A", "提示B"]
-        assert n >= 2
+        assert n == 1  # 仅结果清理
+        hints = [m["content"] for m in chain if m["role"] == "system"]
+        assert hints == ["提示A", "提示B"]
+
+    def test_idempotent_on_rerun(self) -> None:
+        """已清理过的链再次执行零动作（占位符不重复清理，副本不再增删）。"""
+        chain = [
+            self._call("c0"),
+            {"role": "tool", "tool_call_id": "c0", "content": "x" * 500},
+            {"role": "system", "content": "提示"},
+            self._call("c1"),
+            {"role": "tool", "tool_call_id": "c1", "content": "x" * 500},
+            self._call("c2"),
+            {"role": "tool", "tool_call_id": "c2", "content": "x" * 500},
+            {"role": "system", "content": "提示"},
+        ]
+        c = _compressor()
+        assert c.microcompact(chain) == 2  # 1 条结果（keep=2 窗口）+ 1 条副本
+        assert c.microcompact(chain) == 0
 
     def test_short_chain_untouched(self) -> None:
         chain = [{"role": "system", "content": "x"}] * 2
