@@ -36,7 +36,8 @@
     "planning": "Planning",
     "task": "Tasks",
     "storage": "Storage & Backup",
-    "other": "Other"
+    "other": "Other",
+    "model": "Models"
   },
   "sections": {
     "mind/core": "Core",
@@ -73,7 +74,8 @@
     "system/hotplug": "Hot-plug",
     "planning/core": "Goal Injection",
     "task/handoff": "Task Handoff",
-    "storage/backup": "Volume Backup"
+    "storage/backup": "Volume Backup",
+    "model/describe": "Media Describe"
   },
   "window": {
     "title": "Conversation Window",

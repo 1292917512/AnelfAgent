@@ -307,10 +307,19 @@ class LLMClient(BaseEntity):
     # 未知模型的默认输出预算：激进取值（新模型输出能力通常只增不减），
     # 超出端点限制时会从报错中解析真实上限并缓存，后续请求自动钳制。
     _ANTHROPIC_DEFAULT_MAX_TOKENS = 65536
-    # 图片/视频描述的输出预算：Responses 协议的 max_output_tokens 与
-    # Anthropic 的 max_tokens 都把思考 token 计入预算，小预算会被推理
-    # 独占烧光（正文为空）；预算只封顶不定价，按推理模型最坏余量取值
-    _DESCRIBE_OUTPUT_BUDGET = 16384
+
+    def _describe_output_budget(self) -> int:
+        """图片/视频描述的输出预算：模型级显式配置 > 全局配置项 > 激进默认。
+
+        Responses 的 max_output_tokens 与 Anthropic 的 max_tokens 都把思考
+        token 计入预算，小预算会被推理独占烧光（正文为空），故默认值按
+        推理模型最坏余量取；预算只封顶不定价，端点上限更低时经报错
+        自适应钳制。
+        """
+        if self.config.max_tokens and self.config.max_tokens > 0:
+            return self.config.max_tokens
+        from core.config import get_config_int
+        return get_config_int("describe_output_budget", 16384)
 
     def _infer_anthropic_max_tokens(self) -> int:
         """推断 Anthropic 输出预算。
@@ -1193,7 +1202,7 @@ class LLMClient(BaseEntity):
             prompt, images, flat_url=self.config.use_flat_image_url,
         )
         messages: list[dict] = [{"role": "user", "content": content}]
-        result = await self.chat(messages, options={"max_tokens": self._DESCRIBE_OUTPUT_BUDGET})
+        result = await self.chat(messages, options={"max_tokens": self._describe_output_budget()})
         text = (result.content or "").strip()
         if not text:
             # 空结果视为调用失败，让上层回退到下一个视觉模型
@@ -1218,7 +1227,7 @@ class LLMClient(BaseEntity):
             video.to_openai_block(),
         ]
         result = await self.chat([{"role": "user", "content": content}],
-                                 options={"max_tokens": self._DESCRIBE_OUTPUT_BUDGET})
+                                 options={"max_tokens": self._describe_output_budget()})
         text = (result.content or "").strip()
         if not text:
             # 空结果视为调用失败，让上层回退到下一个视觉模型
@@ -1231,7 +1240,7 @@ class LLMClient(BaseEntity):
         url = join_endpoint(self.config.base_url, "/v1/messages")
         payload: Dict[str, Any] = {
             "model": self.config.model,
-            "max_tokens": self._DESCRIBE_OUTPUT_BUDGET,
+            "max_tokens": self._describe_output_budget(),
             "messages": [{"role": "user", "content": [
                 video.to_anthropic_block(),
                 {"type": "text", "text": prompt},
@@ -1522,3 +1531,27 @@ class LLMClient(BaseEntity):
             f"model={self.config.litellm_model!r}, "
             f"base_url={self.config.base_url!r})"
         )
+
+
+# ------------------------------------------------------------------
+# 配置注册
+# ------------------------------------------------------------------
+
+from core.config import ConfigValueType, register_configs_safe  # noqa: E402
+
+register_configs_safe({
+    "model/describe": {
+        "describe_output_budget": {
+            "description": (
+                "图片/视频描述的输出预算上限。思考 token 计入该预算"
+                "（Responses/Anthropic 协议），过小会被推理独占烧光导致描述为空；"
+                "模型级显式 max_tokens 配置优先于此值"
+            ),
+            "default": 16384,
+            "value_type": ConfigValueType.INTEGER,
+            "min": 1024,
+            "max": 131072,
+            "unit": "tokens",
+        },
+    },
+})

@@ -787,3 +787,21 @@ class TestPromptCacheKey:
         finally:
             usage_scope_var.reset(token)
         assert kwargs["extra"]["prompt_cache_key"] == "group_g1"
+
+
+class TestDescribeOutputBudget:
+    """图片/视频描述输出预算：模型级配置 > 全局配置项 > 激进默认。"""
+
+    def test_model_config_takes_priority(self) -> None:
+        client = LLMClient(LLMClientConfig(model="k3", api_type="openai", max_tokens=2048))
+        assert client._describe_output_budget() == 2048
+
+    def test_global_config_applies_when_model_silent(self) -> None:
+        client = LLMClient(LLMClientConfig(model="k3", api_type="openai"))
+        assert client._describe_output_budget() == 16384
+
+    def test_global_config_hot_adjustable(self, monkeypatch) -> None:
+        client = LLMClient(LLMClientConfig(model="k3", api_type="openai"))
+        # get_config_int 经函数内 import 使用，patch core.config 出口
+        monkeypatch.setattr("core.config.get_config_int", lambda key, default: 8192 if key == "describe_output_budget" else default)
+        assert client._describe_output_budget() == 8192

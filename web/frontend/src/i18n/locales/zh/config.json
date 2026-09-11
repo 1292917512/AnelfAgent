@@ -36,7 +36,8 @@
     "planning": "目标规划",
     "task": "任务系统",
     "storage": "存储与备份",
-    "other": "其他"
+    "other": "其他",
+    "model": "模型"
   },
   "sections": {
     "mind/core": "核心",
@@ -73,7 +74,8 @@
     "system/hotplug": "热插拔",
     "planning/core": "目标注入",
     "task/handoff": "任务交接",
-    "storage/backup": "存储卷备份"
+    "storage/backup": "存储卷备份",
+    "model/describe": "媒体描述"
   },
   "window": {
     "title": "对话窗口",
