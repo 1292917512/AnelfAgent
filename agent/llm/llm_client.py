@@ -307,8 +307,10 @@ class LLMClient(BaseEntity):
     # 未知模型的默认输出预算：激进取值（新模型输出能力通常只增不减），
     # 超出端点限制时会从报错中解析真实上限并缓存，后续请求自动钳制。
     _ANTHROPIC_DEFAULT_MAX_TOKENS = 65536
-    # 视频内容描述的输出预算（视频理解只需简述，固定小预算）
-    _VIDEO_DESCRIBE_MAX_TOKENS = 1024
+    # 图片/视频描述的输出预算：Responses 协议的 max_output_tokens 与
+    # Anthropic 的 max_tokens 都把思考 token 计入预算，小预算会被推理
+    # 独占烧光（正文为空）；预算只封顶不定价，按推理模型最坏余量取值
+    _DESCRIBE_OUTPUT_BUDGET = 16384
 
     def _infer_anthropic_max_tokens(self) -> int:
         """推断 Anthropic 输出预算。
@@ -1191,7 +1193,7 @@ class LLMClient(BaseEntity):
             prompt, images, flat_url=self.config.use_flat_image_url,
         )
         messages: list[dict] = [{"role": "user", "content": content}]
-        result = await self.chat(messages, options={"max_tokens": 1024})
+        result = await self.chat(messages, options={"max_tokens": self._DESCRIBE_OUTPUT_BUDGET})
         text = (result.content or "").strip()
         if not text:
             # 空结果视为调用失败，让上层回退到下一个视觉模型
@@ -1216,7 +1218,7 @@ class LLMClient(BaseEntity):
             video.to_openai_block(),
         ]
         result = await self.chat([{"role": "user", "content": content}],
-                                 options={"max_tokens": self._VIDEO_DESCRIBE_MAX_TOKENS})
+                                 options={"max_tokens": self._DESCRIBE_OUTPUT_BUDGET})
         text = (result.content or "").strip()
         if not text:
             # 空结果视为调用失败，让上层回退到下一个视觉模型
@@ -1229,7 +1231,7 @@ class LLMClient(BaseEntity):
         url = join_endpoint(self.config.base_url, "/v1/messages")
         payload: Dict[str, Any] = {
             "model": self.config.model,
-            "max_tokens": self._VIDEO_DESCRIBE_MAX_TOKENS,
+            "max_tokens": self._DESCRIBE_OUTPUT_BUDGET,
             "messages": [{"role": "user", "content": [
                 video.to_anthropic_block(),
                 {"type": "text", "text": prompt},
