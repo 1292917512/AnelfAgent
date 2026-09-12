@@ -46,14 +46,20 @@ class TestGetWorkspaceRoot:
 
     @pytest.mark.parametrize("dangerous", [".", "~", "/"])
     def test_project_root_guard_falls_back(
-            self, monkeypatch: pytest.MonkeyPatch, dangerous: str) -> None:
-        """防呆守卫：配置覆盖项目根（或其祖先）时回退默认 workspace/。"""
+            self, monkeypatch: pytest.MonkeyPatch, tmp_path,
+            dangerous: str) -> None:
+        """防呆守卫：配置覆盖项目根（或其祖先）时回退默认 workspace/。
+
+        项目根与 HOME 一并指到临时目录（密闭）：用例不得依赖检出位置——
+        仓库不在用户目录下时 ~ 不是项目根祖先，守卫语义随位置漂移。
+        """
         from core import path as path_mod
-        from core.path import project_root
-        monkeypatch.setattr(path_mod, "_PROJECT_ROOT", str(project_root()))
+
+        proj = str(tmp_path / "proj")
+        monkeypatch.setattr(path_mod, "_PROJECT_ROOT", proj)
+        monkeypatch.setenv("HOME", str(tmp_path))
         _set_workspace_cfg(monkeypatch, dangerous)
-        assert paths_mod.get_workspace_root() == \
-            os.path.join(project_root(), "workspace")
+        assert paths_mod.get_workspace_root() == os.path.join(proj, "workspace")
 
 
 class TestResolveWorkspacePath:
