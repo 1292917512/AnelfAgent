@@ -280,6 +280,7 @@ agent.planning → agent.memory
 | `agent/memory/` | 混合语义记忆（`store/` 存储层）+ 便签 + 可选 Cognee |
 | `agent/skills/` | 技能存储 / 匹配 / 后台评审 / 策展 |
 | `agent/delegation/` | 子代理调度（leaf / orchestrator / 分级选模） |
+| `agent/hooks_llm/` | LLM 钩子面（事件驱动的异步 LLM 工作注册原语；评审/任务事件/实体钩子并行拉起） |
 | `agent/approval/` | 统一权限与批准门 |
 | `agent/security/` | 会话令牌 / 威胁扫描 |
 | `agent/heartbeat/` · `task/` · `planning/` | 心跳调度 / 任务定义 / 目标规划 |
@@ -392,9 +393,12 @@ uv run pytest -m integration     # 仅集成测试（需凭证的用例自动跳
 uv run ruff check .              # Lint
 uv run mypy core/                # 类型检查（core 严格层）
 uv add <package>                 # 新增依赖（请勿对 uv venv 使用 pip install）
+
+scripts/check.sh                 # 本地 CI 镜像门禁：与 CI 同口径一键验证（push 前跑）
+scripts/check.sh --fast          # 仅静态门禁（ruff + lint-imports + mypy 三平台）
 ```
 
-CI（GitHub Actions，`.github/workflows/ci.yml`）：push/PR 时先按改动路径归类——`lint` job 全仓静态门禁（ruff → import-linter → mypy），`tests` job 按模块动态矩阵分腿（实体/频道改动只跑对应模块 `tests/` 套件，主干改动触发全量腿），`frontend` job 跑 `npm run lint` + `npm run build`；文档类提交全跳过。
+CI（GitHub Actions，`.github/workflows/ci.yml`）：push/PR 时先按改动路径归类——`lint` job 全仓静态门禁（ruff → import-linter → mypy core 三平台），`tests` job 按模块动态矩阵分腿（实体/频道改动只跑对应模块 `tests/` 套件，主干改动触发全量腿），`frontend` job 跑 `npm run lint` + `npm run build`；文档类提交全跳过。
 
 更细的架构约定见仓库根目录 [`AGENTS.md`](AGENTS.md)（供编辑器 / Agent 注入的工作区指令，非运行时依赖）。
 

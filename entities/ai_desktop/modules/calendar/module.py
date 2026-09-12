@@ -140,7 +140,8 @@ class CalendarModule(DesktopModule):
         from ..datetime import festivals
 
         today = date.today()
-        sunday = today + timedelta(days=6 - today.weekday())  # 本周日
+        # 本周日（周日当天窗口收缩为只有今天，至少延伸到明天保证「明天」行在场）
+        sunday = max(today + timedelta(days=6 - today.weekday()), today + timedelta(days=1))
         events = store.events_between(today, sunday)
 
         by_day: Dict[str, List[str]] = {}
