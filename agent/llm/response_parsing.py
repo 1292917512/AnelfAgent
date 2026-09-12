@@ -11,6 +11,7 @@ from agent.llm.types import (
     ChatStreamDelta,
     ToolCall,
     UsageInfo,
+    _usage_int,
     cache_tokens_from_usage,
     usage_has_cache_fields,
     usage_prompt_includes_cache,
@@ -23,14 +24,19 @@ _THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 def install_usage_tap(stream: Any) -> Optional[Dict[str, Any]]:
     """给 litellm 流式包装器装原始 usage 旁路，返回汇合槽（无旁路时 None）。
 
-    litellm 的流式 chunk 转换会丢弃供应商扩展 usage 字段（DeepSeek
-    prompt_cache_hit_tokens 等——openai SDK 层字段完好，litellm 均丢）。本函数以透明转发生成器替换包装器的 completion_stream：
-    转发每个原始 chunk 前把其 usage 的缓存字段挖进汇合槽；下游构造
-    UsageInfo 时以槽内值补全。litellm 内部结构变化（属性缺失）时
-    不装旁路，优雅降级为现状（字段缺失 = 不可观测），零侵入风险。
+    litellm 的流式 chunk 转换对供应商 usage 有两层失真：丢弃供应商扩展
+    字段（DeepSeek prompt_cache_hit_tokens 等——openai SDK 层字段完好，
+    litellm 均丢）；对未收录模型（openai/glm-5.3 等）更会用本地 tiktoken
+    估算整体伪造 usage（prompt 偏离端点真实值、completion 清零、缓存
+    details 丢失，2026-09 glm-5.3 实测 prompt 虚高 1.8 倍）。本函数以透明
+    转发生成器替换包装器的 completion_stream：转发每个原始 chunk 前把其
+    usage 的真实数值全量挖进汇合槽；下游构造 UsageInfo 时以槽内值为准。
+    litellm 内部结构变化（属性缺失）时不装旁路，优雅降级为现状
+    （字段缺失 = 不可观测），零侵入风险。
 
-    汇合槽键：seen=原始流出现过 usage；fields=usage 携带缓存字段
-    （存在性，与值无关）；read/creation=非零缓存值。
+    汇合槽键：seen=原始流出现过 usage；fields=usage 携带缓存字段（存在性，
+    与值无关）；includes=原始 usage 的记账口径（prompt 是否含缓存）；
+    prompt/completion/total=原始真实 token 数；read/creation=非零缓存值。
     """
     raw = getattr(stream, "completion_stream", None)
     if raw is None or not hasattr(raw, "__aiter__"):
@@ -42,11 +48,19 @@ def install_usage_tap(stream: Any) -> Optional[Dict[str, Any]]:
             usage = getattr(raw_chunk, "usage", None)
             if usage is not None:
                 sink["seen"] = True
+                prompt = _usage_int(usage, "prompt_tokens")
+                completion = _usage_int(usage, "completion_tokens")
+                total = _usage_int(usage, "total_tokens")
+                if prompt:
+                    sink["prompt"] = prompt
+                if completion:
+                    sink["completion"] = completion
+                if total:
+                    sink["total"] = total
+                # 记账口径（prompt 是否含缓存）随原始 usage 的字段形态判定
+                sink["includes"] = usage_prompt_includes_cache(usage)
                 if usage_has_cache_fields(usage):
                     sink["fields"] = True
-                    # 记账口径（prompt 是否含缓存）随原始 chunk 判定，
-                    # 供汇合槽补值时一并修正分母
-                    sink["includes"] = usage_prompt_includes_cache(usage)
                 read, creation = cache_tokens_from_usage(usage)
                 if read:
                     sink["read"] = read
@@ -59,35 +73,72 @@ def install_usage_tap(stream: Any) -> Optional[Dict[str, Any]]:
 
 
 def _merge_sink(usage: Optional[UsageInfo], sink: Optional[Dict[str, Any]]) -> Optional[UsageInfo]:
-    """用旁路汇合槽补全 UsageInfo：缓存字段值 + 可观测性动态判定。
+    """用旁路汇合槽补全 UsageInfo：真实 token 数值 + 可观测性动态判定。
+
+    旁路见过原始 usage（sink 有 prompt）时全字段以原始值为准——主路
+    litellm 数值可能是对未收录模型的 tiktoken 估算（尺度与端点真实
+    token 不一致，混入会把缓存命中率拉向 ~50% 的数学假象），口径也随
+    原始 usage 的字段形态判定。旁路未见原始 usage 时保持主路数值，
+    仅在缓存值来自旁路时按其口径修正（Anthropic 网关上 litellm 主路
+    未补回缓存量的形态）。
 
     可观测性：旁路见过原始 usage 但其上无缓存字段 ⇒ 端点流式不回报
     （不可观测，而非真实 0%）；主路有值时一律不动。
     """
-    if usage is None or not sink:
+    if usage is None:
+        if not sink or not sink.get("prompt"):
+            return usage
+        # 主路 usage 缺失但旁路见过原始 usage：以旁路真实值构造，
+        # 避免端点已回报的用量被静默丢弃
+        prompt = sink["prompt"]
+        completion = sink.get("completion", 0)
+        return UsageInfo(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=sink.get("total") or prompt + completion,
+            cache_read_input_tokens=sink.get("read", 0),
+            cache_creation_input_tokens=sink.get("creation", 0),
+            cache_observable=bool(sink.get("fields")),
+            prompt_includes_cache=bool(sink.get("includes", True)),
+        )
+    if not sink:
         return usage
-    read = usage.cache_read_input_tokens or sink.get("read", 0)
-    creation = usage.cache_creation_input_tokens or sink.get("creation", 0)
-    observable = usage.cache_observable or bool(sink.get("fields"))
-    # 缓存值来自旁路原始 chunk 时，记账口径以原始 chunk 的判定为准
-    # （如 Anthropic 网关上 litellm 主路未补回缓存量的形态）
+    prompt = usage.prompt_tokens
+    completion = usage.completion_tokens
+    total = usage.total_tokens
+    read = usage.cache_read_input_tokens
+    creation = usage.cache_creation_input_tokens
     includes = usage.prompt_includes_cache
-    if sink.get("includes") is False and (
-        read != usage.cache_read_input_tokens
-        or creation != usage.cache_creation_input_tokens
-    ):
-        includes = False
+    if sink.get("prompt"):
+        prompt = sink["prompt"]
+        completion = sink.get("completion", 0)
+        total = sink.get("total") or prompt + completion
+        read = sink.get("read", 0)
+        creation = sink.get("creation", 0)
+        includes = bool(sink.get("includes", True))
+    else:
+        read = read or sink.get("read", 0)
+        creation = creation or sink.get("creation", 0)
+        if sink.get("includes") is False and (
+            read != usage.cache_read_input_tokens
+            or creation != usage.cache_creation_input_tokens
+        ):
+            includes = False
+    observable = usage.cache_observable or bool(sink.get("fields"))
     if (
-        read == usage.cache_read_input_tokens
+        prompt == usage.prompt_tokens
+        and completion == usage.completion_tokens
+        and total == usage.total_tokens
+        and read == usage.cache_read_input_tokens
         and creation == usage.cache_creation_input_tokens
         and observable == usage.cache_observable
         and includes == usage.prompt_includes_cache
     ):
         return usage
     return UsageInfo(
-        prompt_tokens=usage.prompt_tokens,
-        completion_tokens=usage.completion_tokens,
-        total_tokens=usage.total_tokens,
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
         cache_read_input_tokens=read,
         cache_creation_input_tokens=creation,
         cache_observable=observable,

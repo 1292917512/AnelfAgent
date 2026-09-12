@@ -763,10 +763,13 @@ class ContextAssembly:
             safety_limit: int = 0,
             anything: Optional["Everything"] = None,
             budget_hint: str = "",
+            cache_hint: str = "",
     ) -> dict:
         """构建当前轮次的执行状态消息（轮次、耗时、工具态势、频道、历史步骤、待处理消息）。
 
         budget_hint：上下文预算提醒文本（think_loop 按上轮真实用量计算），
+        非空时追加到本轮 exec_context。
+        cache_hint：上轮缓存命中状态行（think_loop 按上轮真实 usage 渲染），
         非空时追加到本轮 exec_context。
         """
         import time
@@ -829,6 +832,10 @@ class ContextAssembly:
         # 上下文预算提醒（逼近压缩阈值时让模型主动收敛）
         if budget_hint:
             lines.append(budget_hint)
+
+        # 上轮缓存命中状态（usage 真实值；首轮/不可观测/配置关闭时为空不注入）
+        if cache_hint:
+            lines.append(cache_hint)
 
         # 沉睡分组激活状态（剩余最后一轮时提示续期）
         from agent.mind.tool_activation import tool_activation

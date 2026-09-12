@@ -362,7 +362,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 文件扫描剪枝 | `entities/filesystem/scan.py`（新模块） | os.walk 按目录名剪枝（默认 .git/node_modules/__pycache__/.venv/dist/build/各类缓存，`search_exclude_dirs` 可配置）——不再进结果也不再向下遍历；glob 语义对齐 Claude Code（裸 `*.png` 任意深度、`**/` 零目录语义补齐）；内容模式跳过二进制扩展名与 >2MB 大文件；结果 path 保持绝对路径（直接可喂 read_file） |
 | 二进制嗅探 | `scan.looks_binary`（前 8KB NUL 采样） | read_file 扩展名表之外的内容级防线——文本读取走 `errors="replace"` 永不抛解码异常，无扩展名/冷门扩展名二进制文件此前乱码灌上下文；命中返回既有 `{"type":"binary"}` JSON 引导媒体工具 |
 | Retry-After 采信 | `agent/llm/retry.py::parse_retry_after` | litellm RateLimitError 携带 headers（本机已验证）；支持秒数/HTTP 日期/毫秒变体。限流退避取 max(服务端指令, 本地抖动指数)；服务端要求 >60s（`RETRY_AFTER_WAIT_CAP`）视为本轮放弃当前候选转回退链——不白烧请求与配额 |
-| 用量归属与口径 | `scope_usage.bind_usage_scope` + `_is_ephemeral_scope` + `UsageInfo.prompt_includes_cache` | ① 委托链经 ContextVar 绑定父会话 scope，子代理 reflect 的 LLM 用量归属父会话（/status/usage 可见委托成本）；② `reflect:{uuid}` 一次性 scope 不建统计行——此前每个子代理落孤儿行，累积挤爆容量上限后**新会话用量被整体静默丢弃**；③ 记账口径归一：提取层按 `usage_prompt_includes_cache` 判定 prompt 是否含缓存（details 包装/DeepSeek 命中字段=含；仅原生 Anthropic 字段=不含），命中率一律 `cache_read / total_input_tokens`（修复原生 Anthropic 口径下 read>prompt 被钳成 100% 的虚报），scope_usage 累计前补回缓存量，list/summary 输出 `prompt_miss_tokens = prompt - cache_read` 在两种口径下均成立。scope 解析链：anything.entity_scope > usage_scope 绑定 > 激活上下文 |
+| 用量归属与口径 | `scope_usage.bind_usage_scope` + `_is_ephemeral_scope` + `UsageInfo.prompt_includes_cache` | ① 委托链经 ContextVar 绑定父会话 scope，子代理 reflect 的 LLM 用量归属父会话（/status/usage 可见委托成本）；② `reflect:{uuid}` 一次性 scope 不建统计行——此前每个子代理落孤儿行，累积挤爆容量上限后**新会话用量被整体静默丢弃**；③ 记账口径归一：提取层按 `usage_prompt_includes_cache` 判定 prompt 是否含缓存（details 包装/DeepSeek 命中字段=含；仅原生 Anthropic 字段=不含），命中率一律 `cache_read / total_input_tokens`（修复原生 Anthropic 口径下 read>prompt 被钳成 100% 的虚报），scope_usage 累计前补回缓存量，list/summary 输出 `prompt_miss_tokens = prompt - cache_read` 在两种口径下均成立。scope 解析链：anything.entity_scope > usage_scope 绑定 > 激活上下文。④ 流式 usage 旁路全字段优先（`response_parsing.install_usage_tap`/`_merge_sink`）：litellm 1.100 对未收录模型（openai/glm-5.3 等）的流式 chunk 用本地 tiktoken 估算**伪造 usage**（prompt 虚高 ~1.8 倍、completion 清零、缓存 details 丢弃），旁路只补缓存字段会形成"真实 read ÷ 伪造 prompt"尺度混血（命中率 ~50% 假象 + 口径守卫误翻，2026-09 实证）；旁路捕获原始 chunk 全量字段，见过原始 usage 即全字段以其为准（主路缺失时据其构造）。非流式与 native Responses 路径 usage 透传正常不受影响 |
 | WebUI 聊天广播 | `core.event_bus.EVENT_CHAT_BROADCAST` + web/routers/chat.py SSE 桥接 | channels/webui 经事件总线推帧（`_broadcast`/`_broadcast_scoped` 发射 EVENT_CHAT_BROADCAST），web 层订阅桥接 SSE 订阅者——频道不反向依赖 web 层（旧 `channels.webui → web.routers.chat` 环已拆）；健康探针改查 `event_bus.has_listeners` |
 | TTFT 首 token 计时 | `ChatResult.ttft_ms` + `EVENT_THINKING_LLM_END` | 流式路径记首 delta 到达时刻（毫秒）；与 duration_ms 相减即输出生成耗时——"排队慢"与"生成长"两个独立延迟源分别可诊断（对齐 dsh trajectory TTFT）。非流式为 None |
 | 一次性通知历史固化 | `scheduler.enqueue_scope_reply`（async）+ `_append_one_shot_history` | 一次性事件（后台任务完成/实体推送/定时提醒/重启补回/会话切换/委托完成）写目标会话**对话历史**（system，trigger_mind=False）而非短期记忆——此前驻留 volatile 层：每轮重复催促已处理完的事项，且每条新通知重写会话层前缀反复打断 prompt cache，清理全靠模型自觉。await 返回即历史落库，随后的回复周期拉取必含（无竞态）；写入失败回退短期记忆兜底。push 的 seq/inflight 随投递完成后登记（水位只统计已固化事实）。委托轮内会合的完整详情同样固化历史（`_append_one_shot_history` 直达），轮外完成由 registry unclaimed 回调统一负责不双投递；回调支持协程（`_finish` 总在主循环 ensure_future）。短期记忆回归纯持续提醒语义 |
@@ -387,6 +387,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 纪律单一权威源 | `agent/memory/rules_doc.py`（铁律）+ memorize/recall schema + hub 骨架/注入头 + 召回块头 | 同一纪律只讲一遍：路由/纪律归铁律（stable 唯一来源），工具 schema 只留参数语义，hub 骨架只声明段结构，召回块头训诫压为一行指针；铁律新增 hub 即时段与便签「当前状态」的分工句（两个"当前在做什么"写入口不再含糊）。铁律 1993→1628 字符，memorize/recall description 去重后合计省 ~250 字符（均属 stable 前缀，一次性重建后恢复冻结） |
 | reflect 工具族合并 | `mind.reflect` + `think_loop` 工具集重建 + 配置 `reflect_share_reply_tools`（默认开） | 无选择器的反思/任务循环复用回复级装配（get_active_tool_schemas，同族追加式冻结）：实测默认 reflect 目录已膨胀至与 reply 趋同（101-126 vs 106-125 工具），"精简"前提失效，两族交替即整段 30K+ 缓存重写（OpenAI 式隐式缓存按 tools 数组+消息整条做键，实验实证 tools 一字节变化≈全损）；合并后 reply/默认 reflect 共享单一冻结数组族。带选择器的子代理档案仍走精简目录（真实精简 + 一次性 scope 无结转价值） |
 | exec_context 步骤预算 | `context_assembly._MAX_RENDERED_STEPS`（12） | `[已完成步骤]` 渲染只保留最近 12 步 + 省略行（"此前 N 步已省略"）；exec_context 每轮全量重建，无界清单在长回复下按轮次平方膨胀 token，防重复操作只需近期步骤；finish_think 的最终执行摘要仍消费全量清单（一次性） |
+| 缓存命中状态行 | `round_helpers._cache_status_hint` + `build_execution_context(cache_hint=)`（budget_hint 同族先例） | 上轮真实 usage 的命中率与 read/输入 tokens（口径归一后的 total_input 为分母）注入 exec_context，AI 自感知前缀缓存健康；注入准入 `last_prompt_tokens > 0`（首轮/压缩重置轮天然抑制）且端点可观测（不可观测静默缺席不谎报 0%）；配置 `cache_status_hint_enabled`（cache/prompt 组） |
 | 非输出提示独白信号驱动 | `think_loop._handle_tool_round` | "工具结果仅你可见"提示只在**本轮工具调用伴随文本独白**时注入（独白 = 模型误以为文字可达用户的信号）；静默工具轮零注入——exec_context 每轮已有输出契约，重复追加是纯 token 烧耗 |
 
 #### 记忆枢纽化：LLM 检索规划 + 异步深探 + 图谱治理（第十三轮新增）
@@ -407,6 +408,13 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | cognee 版本注记 | `pyproject.toml` | 1.5.4（2026-09-04）锁 `litellm<1.97.0` 与本项目 litellm 1.100 不可共存，**停在 1.5.3**（1.5.4 为无 API 变更的补丁版，无升级收益）；升级前必须检查其 litellm 上界 |
 
 > Model Experience（第十三轮）：① 模型看到什么——检索规划驱动的多查询召回结果（共识命中更可靠）、`[记忆召回·续]` 异步增量（关系/新增记忆/图谱综合分节，与首轮零重复）、recall deep 的 node_name 定向结果、graph_curation_agenda 议程（心跳任务消费）；② token 影响——规划 1 次轻量 LLM 调用（替代原改写，零增量）+ 深探增量每回复 ≤1600 字符一次性 + 图谱综合 LLM 调用仅探针路径（指定廉价模型）；③ 缓存影响——全部落在 tool_chain 尾部动态区（轮顶 merge，append-once）与工具通道，不触碰任何 prompt 前缀缓存层。
+
+#### 子代理可观测性（第十四轮新增）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 日志 actor 归因（主 AI vs 子代理） | `core/log.py`（`_log_actor` ContextVar + `bind_log_actor`/`reset_log_actor`/`current_log_actor`）+ `DelegationManager.delegate` 绑定点（`_actor_label`：`子代理@{agent\|role}#{id尾6位}`） | core 持有的通用执行主体标签原语：`log()` 内在脱敏后把非空 actor 渲染为 `[actor] ` 消息前缀——console/文件/环形缓冲区（AI 日志查询工具）/监听器全链路一致，未绑定（主 AI/系统路径）零前缀零开销。委托在 `bind_delegation_id` 同位绑定、同 finally 复位；ContextVar 经 create_task 复制进整个子代理执行树，其 think_loop/LLM/工具日志全部自动带前缀；嵌套委托内层覆盖外层（归因到最内层执行者）；follow_up/后台路径同函数自动覆盖 |
+| 全局子代理总览与面板操作 | `DelegationManager.running_snapshot_all`（+ `is_running`；进度 hook 顺带把 iteration/current_tool 写入 `_running` 条目）+ `journal.recent_history`/`read_progress_tail` + `services/delegation.py`（Web 侧唯一入口）+ `web/routers/delegation.py`（`/delegations/overview|history|{id}/progress|{id}/steer|{id}/cancel`）+ 前端 `pages/dashboard/DelegationsPanel.tsx`（Dashboard 概况「子代理」卡片） | 全 scope 运行快照：归属维度（scope/chat_id/started_at）+ 实时进度（展示轮次从 1 起，对齐前端口径）+ 事件归集用量；`running_snapshot(scope)` 重构为共享 `_snapshot_item` + 过滤。历史由账本 started/closed 配对折叠（含 lost），按结束时间倒序。面板操作汇入既有闭环零新机制：**指令**（steer/after 双档，消息标注「来自 Web 面板」回执子代理 AI）、**停止**（cancel 级联，后台委托经注册表完成通知、前台经工具结果归因回馈父 AI）、**进度**（Drawer 轮询进度流尾部）。`ChatService.list_delegations/cancel_delegation` 收编为 DelegationService 委托（单一路径）；聊天页 DelegationCard/单会话端点保持原样，面板为纯增量 |
 
 #### 记忆投影防护（第六轮新增）
 
@@ -657,7 +665,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程分三层责任，排查时**先定位层再下结论**，不要默认"缓存崩了"：
 
 1. **客户端字节稳定性**（完全可控）：变动率排序组装 + tools 冻结 + 摘要窗口 + 单一装饰点。验证 = 快照 section 哈希 diff + **PrefixGuard 运行时哈希链**（records.jsonl 的 `prefix_drift` 字段定位首个断裂消息）。
-2. **供应商缓存行为**（不可控）：磁盘缓存传播延迟/驱逐/节点亲和。判读特征 = prefix_stable=True 而 read 浮动、1~2 轮自愈。
+2. **供应商缓存行为**（不可控）：磁盘缓存传播延迟/驱逐/节点亲和。判读特征 = prefix_stable=True 而 read 浮动、1~2 轮自愈，列表以「平台波动」徽标标识。**合法断裂单独标识**：折叠/压缩是已知的前缀整体重写，完成点经 `prefix_guard.note_legal_break(scope, reason)` 登记（conversation_fold 成功路径 reason=fold、`_compress_context` 成功路径 reason=compress）——清空该 scope 全部基线（折后首轮校验不误报漂移），并在 120s 窗口内（覆盖首轮失败的重试链）让快照记录携带 `legal_break`，列表以「折叠/压缩」徽标与「平台波动」区分。
 3. **统计与展示口径**：kind 分桶 / age_sec 回声 / unobservable / 单次钳制率平均。
 
 > **完整手册**（诊断决策树、PrefixGuard、断点预算、压缩前缀复用、e2e 回归、供应商字段）见 [`docs/cache-troubleshooting.md`](docs/cache-troubleshooting.md)。

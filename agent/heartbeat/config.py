@@ -15,8 +15,18 @@ from agent.llm.reasoning import CANONICAL_EFFORTS
 from core.log import log
 from core.path import ConfigPaths
 
-_CONFIG_PATH = Path(ConfigPaths.HEARTBEAT_CONFIG)
 _REASONING_EFFORT_VALUES = frozenset(CANONICAL_EFFORTS)
+
+
+def _config_path() -> Path:
+    """配置文件路径（每次动态解析 ConfigPaths）。
+
+    刻意不用模块级常量：常量在导入时冻结，与 ConfigPaths 的动态属性
+    （可搬迁/可测试隔离）分裂后，load 与 save 会指向不同文件——测试
+    隔离 ConfigPaths 时曾因此把内存默认档写回真实 config/heartbeat.json，
+    覆盖线上 16 条调度（2026-09-12 第 9-11 次调度脱落事故根因）。
+    """
+    return Path(ConfigPaths.HEARTBEAT_CONFIG)
 
 
 def _normalize_reasoning_effort(value: Any) -> str:
@@ -162,13 +172,13 @@ class HeartbeatConfig:
     def save(self, path: Optional[Path] = None) -> None:
         from core.file_utils import atomic_write_text
 
-        p = path or _CONFIG_PATH
+        p = path or _config_path()
         content = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
         atomic_write_text(p, content)
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> HeartbeatConfig:
-        p = path or _CONFIG_PATH
+        p = path or _config_path()
         if not p.exists():
             return _try_migrate()
         try:
@@ -219,12 +229,15 @@ def _parse_config(raw: Dict[str, Any]) -> HeartbeatConfig:
 
 
 def _try_migrate() -> HeartbeatConfig:
-    """首次运行：尝试从旧 introspection.json 迁移。"""
+    """配置文件缺失时构建初始配置（零副作用：不落盘、不动旧文件）。
+
+    首份文件由后续正常写路径（引擎种子化 / tick 计数持久化 / 调度 CRUD）
+    创建；此处若主动 save，测试隔离 ConfigPaths 之外的场景（如文件被误删）
+    会立即以内存默认档覆盖性重建，掩盖真实故障。
+    """
     old_path = Path(ConfigPaths.INTROSPECTION_CONFIG)
     if not old_path.exists():
-        cfg = HeartbeatConfig()
-        cfg.save()
-        return cfg
+        return HeartbeatConfig()
 
     try:
         old = json.loads(old_path.read_text("utf-8"))
@@ -265,15 +278,10 @@ def _try_migrate() -> HeartbeatConfig:
             every_n_beats=reflect_beats,
         ))
 
-        cfg.save()
-        old_path.rename(old_path.with_suffix(".json.bak"))
-        log("从 introspection.json 迁移心跳配置完成", tag="心跳")
         return cfg
     except Exception as exc:
         log(f"心跳配置迁移失败: {exc}", "WARNING", tag="心跳")
-        cfg = HeartbeatConfig()
-        cfg.save()
-        return cfg
+        return HeartbeatConfig()
 
 
 _instance: Optional[HeartbeatConfig] = None

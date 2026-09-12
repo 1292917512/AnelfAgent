@@ -95,6 +95,7 @@ class ContextSnapshot:
             *,
             kind: str = "",
             prefix_drift: Optional[Dict[str, Any]] = None,
+            legal_break: Optional[str] = None,
     ) -> bool:
         """尝试捕获（在 _invoke_llm_unified 中 normalize 前调用）。
 
@@ -103,6 +104,8 @@ class ContextSnapshot:
         kind 为调用用途（reply/reflect…），随快照记录供列表按用途解读命中率。
         prefix_drift 为 PrefixGuard 的前缀断裂归因（None=前缀稳定/无基线），
         随快照落盘供缓存命中率下跌归因。
+        legal_break 为合法断裂原因（fold/compress，None=不在合法断裂窗口），
+        供命中率列表与供应商侧波动区分。
         """
         if not self._armed and not self._continuous:
             return False
@@ -142,6 +145,7 @@ class ContextSnapshot:
                 "prefix_break": self._compute_prefix_break(sections),
                 "cache": self._build_cache_block(sections),
                 "prefix_drift": prefix_drift,
+                "legal_break": legal_break,
             }
             self._armed = False
 
@@ -222,6 +226,7 @@ class ContextSnapshot:
                 "prefix_break": snapshot.get("prefix_break"),
                 "cache": snapshot.get("cache"),
                 "prefix_drift": snapshot.get("prefix_drift"),
+                "legal_break": snapshot.get("legal_break"),
             }
             with open(cls._records_path(), "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -329,6 +334,7 @@ class ContextSnapshot:
                     "model": data.get("model", ""),
                     "kind": data.get("kind", ""),
                     "prefix_stable": prefix_stable,
+                    "legal_break": data.get("legal_break"),
                     "model_context_window": data.get("model_context_window", 0),
                     "estimated_tokens": data.get("estimated_tokens", 0),
                     "message_count": data.get("message_count", 0),

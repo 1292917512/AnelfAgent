@@ -39,6 +39,9 @@ import type {
   DbRow,
   DbRowInput,
   DbRowsResult,
+  DelegationHistoryItem,
+  DelegationOverviewItem,
+  DelegationProgress,
   GraphData,
   GraphEdge,
   GraphNode,
@@ -225,6 +228,21 @@ export const chatApi = {
     ),
   cancelDelegation: (delegationId: string) =>
     api.post<{ status: string; error?: string }>(`/chat/delegations/${delegationId}/cancel`),
+};
+
+// Delegations（全局子代理总览 — Dashboard「子代理」面板）
+export const delegationApi = {
+  overview: () => api.get<{ running: DelegationOverviewItem[] }>("/delegations/overview"),
+  history: (limit = 20) =>
+    api.get<{ items: DelegationHistoryItem[] }>("/delegations/history", { params: { limit } }),
+  progress: (delegationId: string, tail = 200) =>
+    api.get<DelegationProgress>(`/delegations/${delegationId}/progress`, { params: { tail } }),
+  steer: (delegationId: string, message: string, mode: "steer" | "after" = "steer") =>
+    api.post<{ status: string; error?: string; note?: string }>(
+      `/delegations/${delegationId}/steer`, { message, mode },
+    ),
+  cancel: (delegationId: string) =>
+    api.post<{ status: string; error?: string }>(`/delegations/${delegationId}/cancel`),
 };
 
 // Status

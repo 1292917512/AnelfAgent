@@ -9,11 +9,22 @@ import type { ContextSnapshotData, SnapshotListItem } from "@/lib/types";
 import { downloadJson } from "./downloadJson";
 
 /** 缓存命中率徽标：≥70% 绿 / ≥30% 黄 / 其余灰；
+ *  合法断裂窗口（折叠/压缩刚重写前缀）= 首轮低命中属预期，单独标识；
  *  前缀字节稳定但命中低 = 供应商侧缓存波动（非内容断裂），单独标识 */
-function CacheHitBadge({ rate, prefixStable }: { rate?: number | null; prefixStable?: boolean | null }) {
+function CacheHitBadge({ rate, prefixStable, legalBreak }: { rate?: number | null; prefixStable?: boolean | null; legalBreak?: string | null }) {
   const { t } = useTranslation("context");
   if (rate == null) return null;
   const pct = Math.round(rate * 100);
+  if (pct < 70 && legalBreak) {
+    return (
+      <span
+        className="px-1.5 py-px rounded text-[9px] font-medium bg-violet-500/15 text-violet-500"
+        title={t(`history.legalBreakDesc.${legalBreak}`, { defaultValue: legalBreak })}
+      >
+        {pct}% · {t(`history.legalBreak.${legalBreak}`, { defaultValue: legalBreak })}
+      </span>
+    );
+  }
   if (pct < 70 && prefixStable === true) {
     return (
       <span
@@ -132,7 +143,7 @@ export function HistoryTab() {
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-mono text-foreground">{s.model}</span>
                   <KindBadge kind={s.kind} />
-                  <CacheHitBadge rate={s.cache_hit_rate} prefixStable={s.prefix_stable} />
+                  <CacheHitBadge rate={s.cache_hit_rate} prefixStable={s.prefix_stable} legalBreak={s.legal_break} />
                   <span className="text-[10px] text-muted">{new Date(s.captured_at * 1000).toLocaleString()}</span>
                 </div>
                 <div className="flex items-center gap-3 mt-1 text-[10px] text-muted">

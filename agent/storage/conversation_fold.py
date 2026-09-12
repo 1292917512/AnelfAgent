@@ -345,7 +345,22 @@ class ConversationFolder:
                 f"(累计 {old_folded + len(folded_rows)} 条)",
                 tag="存储",
             )
+            self._note_prefix_legal_break(scope_type, scope_id)
             self._dispatch_prewarm(scope_type, scope_id)
+
+    @staticmethod
+    def _note_prefix_legal_break(scope_type: str, scope_id: str) -> None:
+        """向 PrefixGuard 登记合法断裂：折叠重写摘要 = 已知的前缀重写，
+        折后首轮校验不误报断裂，快照/命中率列表可据因标识"折叠"，
+        与供应商侧波动区分（观测性登记，fail-open 不影响折叠主流程）。"""
+        try:
+            from agent.messages import build_entity_scope
+            from agent.mind.prefix_guard import prefix_guard
+            adapter, _, base_id = scope_id.partition(":")
+            prefix_guard.note_legal_break(
+                build_entity_scope(scope_type, adapter, base_id), "fold")
+        except Exception:
+            pass
 
     def _dispatch_prewarm(self, scope_type: str, scope_id: str) -> None:
         """折叠成功后异步预热新前缀（把缓存断点代价转移到空闲后台）。"""

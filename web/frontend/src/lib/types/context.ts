@@ -193,6 +193,8 @@ export interface SnapshotListItem {
   kind?: string;
   /** 前缀字节是否稳定（除工具链/执行态外所有 section 未变；null=无基线） */
   prefix_stable?: boolean | null;
+  /** 合法断裂原因（fold=对话折叠 / compress=上下文压缩；null=不在合法断裂窗口） */
+  legal_break?: string | null;
   model_context_window: number;
   estimated_tokens: number;
   message_count: number;

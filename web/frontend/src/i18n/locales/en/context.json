@@ -30,7 +30,15 @@
       "reflect": "task"
     },
     "jitter": "provider jitter",
-    "jitterDesc": "Prefix bytes unchanged but hit dropped — provider-side cache write propagation delay/jitter; self-recovers in 1-2 rounds, no action needed"
+    "jitterDesc": "Prefix bytes unchanged but hit dropped — provider-side cache write propagation delay/jitter; self-recovers in 1-2 rounds, no action needed",
+    "legalBreak": {
+      "fold": "folded",
+      "compress": "compacted"
+    },
+    "legalBreakDesc": {
+      "fold": "Conversation fold just rewrote the summary prefix — low hit on the first post-fold round is expected and self-recovers next round",
+      "compress": "Context compaction just rewrote the prefix — low hit on the first post-compaction round is expected and self-recovers next round"
+    }
   },
   "providers": {
     "empty": "No context providers",

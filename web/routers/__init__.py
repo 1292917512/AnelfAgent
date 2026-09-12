@@ -11,6 +11,7 @@ from web.routers.config import router as config_router
 from web.routers.config_meta import router as config_meta_router
 from web.routers.context import router as context_router
 from web.routers.database import router as database_router
+from web.routers.delegation import router as delegation_router
 from web.routers.entities import router as entities_router
 from web.routers.hooks import router as hooks_router
 from web.routers.mcp import router as mcp_router
@@ -53,3 +54,4 @@ api_router.include_router(workspace_router)
 api_router.include_router(search_router)
 api_router.include_router(stickers_router)
 api_router.include_router(database_router)
+api_router.include_router(delegation_router)

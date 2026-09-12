@@ -36,6 +36,31 @@
     "progress": {
       "round": "Thinking round {{n}}",
       "usingTool": "Using tool: {{tool}}"
+    },
+    "panel": {
+      "title": "Sub-agents",
+      "running": "Running",
+      "history": "Recent",
+      "empty": "No running sub-agents",
+      "noHistory": "No execution history",
+      "progress": "Logs",
+      "steer": "Steer",
+      "stop": "Stop",
+      "steerTitle": "Send Steering Message",
+      "steerModeSteer": "steer (inject at step boundary)",
+      "steerModeAfter": "after (resume at wrap-up)",
+      "steerPlaceholder": "Message to append to the sub-agent…",
+      "steerSubmit": "Send",
+      "steerSent": "Message delivered",
+      "opFailed": "Operation failed",
+      "turns": "{{n}} turns",
+      "tokens": "{{n}} tokens",
+      "truncated": "(tail only)",
+      "progressEmpty": "No progress logs yet",
+      "statusSuccess": "Success",
+      "statusFailed": "Failed",
+      "statusCancelled": "Cancelled",
+      "statusLost": "Interrupted"
     }
   },
   "activity": {

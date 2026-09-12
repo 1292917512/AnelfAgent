@@ -42,7 +42,7 @@ from core.event_bus import (
     EVENT_DELEGATION_STARTED,
     event_bus,
 )
-from core.log import log
+from core.log import bind_log_actor, log, reset_log_actor
 
 if TYPE_CHECKING:
     from agent.mind.mind import Mind
@@ -84,6 +84,11 @@ def _cancelled_result(
         goal=goal, success=False, error=CANCELLED_MESSAGE,
         role=normalize_role(role), task_index=task_index, cancelled=True,
     )
+
+
+def _actor_label(agent_name: str, role: str, delegation_id: str) -> str:
+    """子代理日志 actor 标签：日志行据此区分主 AI（无前缀）与子代理执行。"""
+    return f"子代理@{agent_name or normalize_role(role)}#{delegation_id[-6:]}"
 
 
 def _max_concurrent() -> int:
@@ -208,13 +213,24 @@ class DelegationManager:
         bucket["duration_ms"] += int(payload.get("duration_ms") or 0)
 
     async def _emit_progress(self, kind: str, **fields: Any) -> None:
-        """子代理内部活动 → delegation_progress 事件（仅运行中的委托）。"""
+        """子代理内部活动 → delegation_progress 事件（仅运行中的委托）。
+
+        顺带把最新进度（当前轮次/正在执行的工具）写入运行条目，
+        全局运行快照（running_snapshot_all）无需读日志即可展示实时进度。
+        """
         delegation_id = current_delegation_id()
         if not delegation_id:
             return
         info = self._running.get(delegation_id)
         if info is None:
             return
+        if kind == "round":
+            # 事件 iteration 从 0 起，快照存展示轮次（从 1 起，对齐前端口径）
+            info["iteration"] = int(fields.get("iteration", 0)) + 1
+        elif kind == "tool_start":
+            info["current_tool"] = str(fields.get("tool", ""))
+        elif kind == "tool_end":
+            info["current_tool"] = ""
         try:
             await event_bus.emit(EVENT_DELEGATION_PROGRESS, {
                 "scope": info["scope"],
@@ -270,24 +286,53 @@ class DelegationManager:
             self.cancel(did)
         return len(targets)
 
+    def _snapshot_item(self, did: str, info: Dict[str, Any], now: float) -> Dict[str, Any]:
+        """运行快照条目构造（scope 过滤快照与全局快照共用）。"""
+        return {
+            "delegation_id": did,
+            "goal": str(info.get("goal", "")),
+            "role": str(info.get("role", "leaf")),
+            "task_index": int(info.get("task_index", 0)),
+            "background": bool(info.get("background")),
+            "model": str(info.get("model", "")),
+            "agent": str(info.get("agent", "")),
+            "elapsed_seconds": int(now - float(info.get("started_at", now))),
+            "usage": dict(self._usage.get(did) or {}),
+        }
+
     def running_snapshot(self, scope: str) -> List[Dict[str, Any]]:
         """指定 scope 下运行中的委托快照（前端刷新后恢复卡片用）。"""
         now = time.time()
         return [
-            {
-                "delegation_id": did,
-                "goal": str(info.get("goal", "")),
-                "role": str(info.get("role", "leaf")),
-                "task_index": int(info.get("task_index", 0)),
-                "background": bool(info.get("background")),
-                "model": str(info.get("model", "")),
-                "agent": str(info.get("agent", "")),
-                "elapsed_seconds": int(now - float(info.get("started_at", now))),
-                "usage": dict(self._usage.get(did) or {}),
-            }
+            self._snapshot_item(did, info, now)
             for did, info in self._running.items()
             if info.get("scope") == scope
         ]
+
+    def running_snapshot_all(self) -> List[Dict[str, Any]]:
+        """全 scope 运行中委托快照（Dashboard 全局总览面板用）。
+
+        在 scope 快照字段之上附带归属维度（scope/chat_id/started_at）与
+        实时进度（iteration 展示轮次 / current_tool 正在执行的工具）。
+        """
+        now = time.time()
+        items: List[Dict[str, Any]] = []
+        for did, info in self._running.items():
+            item = self._snapshot_item(did, info, now)
+            item.update({
+                "scope": str(info.get("scope", "")),
+                "chat_id": str(info.get("chat_id", "")),
+                "started_at": float(info.get("started_at", now)),
+                "iteration": int(info.get("iteration", 0)),
+                "current_tool": str(info.get("current_tool", "")),
+            })
+            items.append(item)
+        items.sort(key=lambda item: float(item["started_at"]))
+        return items
+
+    def is_running(self, delegation_id: str) -> bool:
+        """委托是否仍在运行中（含并发槽等待阶段）。"""
+        return delegation_id in self._running or delegation_id in self._pending
 
     def steer(self, delegation_id: str, message: str, mode: str = "steer") -> Dict[str, Any]:
         """向运行中的委托发送转向指令，返回结构化结果（含错误）。
@@ -565,6 +610,10 @@ class DelegationManager:
             return _cancelled_result(goal, role=role, task_index=task_index)
 
         id_token = bind_delegation_id(delegation_id)
+        # 日志 actor 归因：子代理执行树内的全部日志行（think_loop/LLM/工具）
+        # 自动带 [子代理@…#…] 前缀，与主 AI（无前缀）一眼可辨；ContextVar 经
+        # create_task 复制进整个执行树，嵌套委托内层绑定覆盖外层（归因到最内层）
+        actor_token = bind_log_actor(_actor_label(agent_name, role, delegation_id))
         # 用量归属：子代理 reflect 的一次性 scope 不建独立统计行，
         # 其 LLM 用量经此绑定归属父会话（/status/usage 可见委托成本）；
         # 委托维度的用量桶同步开账（事件归集，随结果带出）
@@ -664,6 +713,7 @@ class DelegationManager:
         finally:
             if usage_token is not None:
                 reset_usage_scope(usage_token)
+            reset_log_actor(actor_token)
             reset_delegation_id(id_token)
             self._usage.pop(delegation_id, None)
             semaphore.release()

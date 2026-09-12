@@ -36,6 +36,31 @@
     "progress": {
       "round": "第 {{n}} 轮思考中",
       "usingTool": "正在使用工具: {{tool}}"
+    },
+    "panel": {
+      "title": "子代理",
+      "running": "运行中",
+      "history": "最近执行",
+      "empty": "当前无运行中的子代理",
+      "noHistory": "暂无执行记录",
+      "progress": "进度",
+      "steer": "指令",
+      "stop": "停止",
+      "steerTitle": "发送转向指令",
+      "steerModeSteer": "steer（步骤边界注入）",
+      "steerModeAfter": "after（收束边界续跑）",
+      "steerPlaceholder": "输入要追加给子代理的指令…",
+      "steerSubmit": "发送",
+      "steerSent": "指令已投递",
+      "opFailed": "操作失败",
+      "turns": "{{n}} 轮",
+      "tokens": "{{n}} tokens",
+      "truncated": "（仅显示尾部）",
+      "progressEmpty": "暂无进度日志",
+      "statusSuccess": "成功",
+      "statusFailed": "失败",
+      "statusCancelled": "已取消",
+      "statusLost": "中断"
     }
   },
   "activity": {

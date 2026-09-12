@@ -188,9 +188,11 @@ class UsageInfo:
 
     def __post_init__(self) -> None:
         # 记账口径自洽校验：含缓存口径下 read+creation 必然 ≤ prompt；超过即
-        # 端点实际按"prompt 不含缓存"记账（GLM/DeepSeek 部分端点实测 read 可达
-        # prompt 的 1.9 倍——这些端点带 details 包装被字段规则误判为含缓存）。
-        # 不校正则命中率被 min(1.0, …) 钳成 100% 虚报，观测面板整体失真。
+        # 端点实际按"prompt 不含缓存"记账。注意 read>prompt 也可能是上游数值
+        # 尺度混淆的假象（2026-09 实证：litellm 1.100 对未收录模型用 tiktoken
+        # 估算伪造流式 prompt、真实 read 经旁路补回，两者尺度不一必然冲突——
+        # 已由旁路全字段优先根治，本守卫仅剩兜底意义）；冲突仍按含缓存不可能
+        # 的不变量归一，不校正则命中率被 min(1.0, …) 钳成 100% 虚报。
         if (
             self.prompt_includes_cache
             and self.cache_read_input_tokens + self.cache_creation_input_tokens

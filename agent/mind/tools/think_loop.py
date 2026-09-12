@@ -39,6 +39,7 @@ from agent.mind.tools.round_helpers import (
     _OUTPUT_TOOL_NAMES,
     _PLAN_MANAGEMENT_TOOL_NAMES,
     ThinkMode,
+    _cache_status_hint,
     _check_tool_results_all_errors,
     _collect_round_error_briefs,
     _collect_round_failures,
@@ -470,6 +471,7 @@ async def _run_think_rounds(
             adapter_key=ctx.adapter_key, safety_limit=safety_limit,
             anything=anything,
             budget_hint=_token_budget_hint(ctx, state),
+            cache_hint=_cache_status_hint(state),
         )
         # 纯工具模式（可选）且有可用工具时，API 级强制工具选择
         require_tools = bool(ctx.active_tools) and ctx.pure_tool_mode
@@ -501,6 +503,8 @@ async def _run_think_rounds(
             state.last_cache_read_tokens = result.usage.cache_read_input_tokens
             state.last_cache_creation_tokens = result.usage.cache_creation_input_tokens
             state.last_cache_hit_rate = result.usage.cache_hit_rate
+            state.last_total_input_tokens = result.usage.total_input_tokens
+            state.last_cache_observable = result.usage.cache_observable
 
         # 上下文用量快照（usage 锚定：API 真实用量优先；供 webui 状态栏显示）
         await _emit_context_usage(ctx, state)

@@ -107,6 +107,52 @@ class TestPrefixGuardIsolation:
         assert g.check("s2", [_msg("stable", "B2")]) is None
 
 
+class TestLegalBreak:
+    """合法断裂登记（fold/compress）：清基线不误报 + 窗口内可取因。"""
+
+    def test_note_clears_baseline_no_false_drift(self) -> None:
+        """折叠重写 summary 后首轮校验：不报断裂（已知重写，基线重建）。"""
+        g = PrefixGuard()
+        g.check("s1", [_msg("stable", "头"), _msg("summary", "旧摘要")])
+        g.note_legal_break("s1", "fold")
+        assert g.check("s1", [_msg("stable", "头"), _msg("summary", "新摘要")]) is None
+        assert g.drift_count == 0
+
+    def test_reason_available_within_window(self) -> None:
+        """窗口内每次调用均可取因（覆盖首轮失败的重试链）。"""
+        g = PrefixGuard()
+        g.note_legal_break("s1", "fold")
+        assert g.legal_break_reason("s1") == "fold"
+        assert g.legal_break_reason("s1") == "fold"
+
+    def test_reason_expires_after_ttl(self, monkeypatch) -> None:
+        """窗口过期后取因为 None（惰性清除）。"""
+        import agent.mind.prefix_guard as guard_mod
+        g = PrefixGuard()
+        g.note_legal_break("s1", "compress")
+        assert g.legal_break_reason("s1") == "compress"
+        future = guard_mod.time.monotonic() + 200.0
+        monkeypatch.setattr(guard_mod.time, "monotonic", lambda: future)
+        assert g.legal_break_reason("s1") is None
+        assert g.legal_break_reason("s1") is None
+
+    def test_note_isolates_scopes(self) -> None:
+        """登记按 scope 隔离：其他 scope 的基线与标记不受影响。"""
+        g = PrefixGuard()
+        g.check("s1", [_msg("stable", "A")])
+        g.check("s2", [_msg("stable", "B")])
+        g.note_legal_break("s1", "fold")
+        assert g.legal_break_reason("s2") is None
+        # s2 基线仍在：内容变化正常报断裂
+        assert g.check("s2", [_msg("stable", "B2")]) is not None
+
+    def test_empty_scope_noop(self) -> None:
+        g = PrefixGuard()
+        g.note_legal_break("", "fold")
+        assert g.legal_break_reason("") is None
+        assert g.legal_break_reason("s1") is None
+
+
 class TestPrefixGuardRobustness:
     def test_non_string_content_no_crash(self) -> None:
         g = PrefixGuard()

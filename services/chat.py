@@ -203,11 +203,8 @@ class ChatService:
 
     def list_delegations(self, chat_id: str) -> List[Dict[str, Any]]:
         """列出该会话运行中的子代理委托。"""
-        rt = get_runtime()
-        if rt is None:
-            return []
-        dm = getattr(rt.mind, "delegation_manager", None)
-        return dm.running_snapshot(self.scope_for_chat(chat_id)) if dm is not None else []
+        from services.delegation import DelegationService
+        return DelegationService().running_for_scope(self.scope_for_chat(chat_id))
 
     def cancel_delegation(self, delegation_id: str) -> Optional[bool]:
         """取消运行中的子代理委托。
@@ -215,11 +212,8 @@ class ChatService:
         Returns:
             True/False 表示取消结果；None 表示 runtime 未就绪。
         """
-        rt = get_runtime()
-        if rt is None:
-            return None
-        dm = getattr(rt.mind, "delegation_manager", None)
-        return dm.cancel(delegation_id) if dm is not None else False
+        from services.delegation import DelegationService
+        return DelegationService().cancel(delegation_id)
 
     def register_output(self, output: Any, adapter_key: str = "webui") -> None:
         """将一个轻量频道注册到 ChannelManager。"""

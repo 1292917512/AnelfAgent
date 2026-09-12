@@ -65,3 +65,54 @@ export interface RunningDelegation {
   agent?: string;
   elapsed_seconds: number;
 }
+
+// ── 全局子代理总览（Dashboard「子代理」面板 → /delegations/*） ──
+
+/** GET /delegations/overview 的全局运行中委托条目（全 scope，含实时进度与用量） */
+export interface DelegationOverviewItem {
+  delegation_id: string;
+  goal: string;
+  role: "leaf" | "orchestrator";
+  task_index: number;
+  background: boolean;
+  model?: string;
+  agent?: string;
+  elapsed_seconds: number;
+  usage: {
+    turns?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    duration_ms?: number;
+  };
+  /** 归属会话 scope（user_{adapter}:{uid} 格式） */
+  scope: string;
+  chat_id: string;
+  started_at: number;
+  /** 实时进度：当前思考轮次（从 1 起，0 = 尚未进入首轮） */
+  iteration: number;
+  /** 实时进度：正在执行的工具名（空 = 无） */
+  current_tool: string;
+}
+
+/** GET /delegations/history 的近期执行条目（账本 started/closed 配对折叠） */
+export interface DelegationHistoryItem {
+  delegation_id: string;
+  goal: string;
+  scope: string;
+  agent?: string;
+  model?: string;
+  adapter_key: string;
+  /** 终态：成功/失败/已取消/lost（进程中断） */
+  status: string;
+  started_at: number;
+  finished_at: number;
+  duration_seconds: number;
+}
+
+/** GET /delegations/{id}/progress 的进度流尾部 */
+export interface DelegationProgress {
+  delegation_id: string;
+  lines: string[];
+  truncated: boolean;
+  running: boolean;
+}

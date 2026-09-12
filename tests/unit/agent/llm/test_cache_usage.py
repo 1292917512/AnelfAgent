@@ -171,6 +171,116 @@ class TestCaliberConflictGuard:
         assert usage.total_input_tokens == 1950
 
 
+class TestMergeSinkRawPreferred:
+    """旁路原始 usage 优先（litellm 对未收录模型伪造流式 usage 的根治）。
+
+    2026-09 实证：litellm 1.100 对 openai/glm-5.3 的流式 chunk 用本地
+    tiktoken 估算伪造 usage（prompt 虚高 1.8 倍、completion 清零、缓存
+    details 丢弃），旁路只补缓存字段会造成真实 read ÷ 伪造 prompt 的
+    尺度混血，命中率被拉向 ~50% 的数学假象。
+    """
+
+    def test_raw_usage_preferred_over_fabricated(self) -> None:
+        """主路为 litellm 伪造值、旁路有原始真实值：全字段以原始值为准。"""
+        from agent.llm.response_parsing import _merge_sink
+        fabricated = UsageInfo(
+            prompt_tokens=41428, completion_tokens=0, total_tokens=41428,
+            cache_observable=False,
+        )
+        sink = {
+            "prompt": 22819, "completion": 100, "total": 22919,
+            "read": 22784, "fields": True, "includes": True,
+        }
+        merged = _merge_sink(fabricated, sink)
+        assert merged is not None
+        assert merged.prompt_tokens == 22819
+        assert merged.completion_tokens == 100
+        assert merged.total_tokens == 22919
+        assert merged.cache_read_input_tokens == 22784
+        assert merged.prompt_includes_cache is True
+        assert merged.cache_observable is True
+        assert merged.cache_hit_rate == pytest.approx(22784 / 22819, abs=1e-4)
+
+    def test_raw_cold_miss_is_real_zero(self) -> None:
+        """原始 usage 有缓存字段但命中为 0：真实未命中（0%），非不可观测。"""
+        from agent.llm.response_parsing import _merge_sink
+        fabricated = UsageInfo(
+            prompt_tokens=41428, completion_tokens=0, total_tokens=41428,
+            cache_observable=False,
+        )
+        sink = {"prompt": 22819, "completion": 100, "total": 22919,
+                "fields": True, "includes": True}
+        merged = _merge_sink(fabricated, sink)
+        assert merged is not None
+        assert merged.cache_read_input_tokens == 0
+        assert merged.cache_observable is True
+        assert merged.cache_hit_rate == 0.0
+
+    def test_main_missing_constructed_from_sink(self) -> None:
+        """主路 usage 缺失而旁路见过原始 usage：以旁路值构造，不丢真实用量。"""
+        from agent.llm.response_parsing import _merge_sink
+        sink = {"prompt": 22819, "completion": 100, "total": 22919,
+                "read": 22784, "fields": True, "includes": True}
+        merged = _merge_sink(None, sink)
+        assert merged is not None
+        assert merged.prompt_tokens == 22819
+        assert merged.cache_read_input_tokens == 22784
+        assert merged.cache_hit_rate == pytest.approx(22784 / 22819, abs=1e-4)
+
+    def test_main_missing_without_sink_stays_none(self) -> None:
+        """主路缺失且旁路未见原始 usage：保持 None（不可观测）。"""
+        from agent.llm.response_parsing import _merge_sink
+        assert _merge_sink(None, None) is None
+        assert _merge_sink(None, {"read": 100}) is None
+
+    def test_anthropic_native_caliber_from_raw(self) -> None:
+        """原始 usage 为 Anthropic 原生形态（无 details 包装）：
+        口径随原始对象判定为 prompt 不含缓存，无需数值守卫翻转。"""
+        from agent.llm.response_parsing import _merge_sink
+        fabricated = UsageInfo(
+            prompt_tokens=500, completion_tokens=0, total_tokens=500,
+            cache_observable=False,
+        )
+        sink = {"prompt": 300, "completion": 20, "read": 700, "fields": True,
+                "includes": False}
+        merged = _merge_sink(fabricated, sink)
+        assert merged is not None
+        assert merged.prompt_tokens == 300
+        assert merged.cache_read_input_tokens == 700
+        assert merged.prompt_includes_cache is False
+        assert merged.total_input_tokens == 300 + 700
+
+
+class TestInstallUsageTap:
+    async def test_tap_captures_full_raw_usage(self) -> None:
+        """旁路从原始 chunk 捕获全量真实字段（prompt/completion/total/缓存/口径）。"""
+        from agent.llm.response_parsing import install_usage_tap
+
+        raw_usage = SimpleNamespace(
+            prompt_tokens=22819, completion_tokens=100, total_tokens=22919,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=22784),
+        )
+
+        async def raw_stream():
+            yield SimpleNamespace(usage=None)
+            yield SimpleNamespace(usage=raw_usage)
+
+        stream = SimpleNamespace(completion_stream=raw_stream())
+        sink = install_usage_tap(stream)
+        assert sink is not None
+        async for _ in stream.completion_stream:
+            pass
+        assert sink == {
+            "seen": True, "prompt": 22819, "completion": 100, "total": 22919,
+            "includes": True, "fields": True, "read": 22784,
+        }
+
+    def test_tap_not_installed_without_completion_stream(self) -> None:
+        """litellm 内部结构变化（无 completion_stream）时不装旁路，优雅降级。"""
+        from agent.llm.response_parsing import install_usage_tap
+        assert install_usage_tap(SimpleNamespace()) is None
+
+
 class TestStreamUsageChunk:
     async def test_usage_chunk_with_empty_choice(self) -> None:
         """阿里 anthropic 网关形态：finish chunk 之后再发一个带空 choice、

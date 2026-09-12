@@ -5,9 +5,21 @@
 
 from __future__ import annotations
 
+import json
 import time
 
+import pytest
+
 from agent.delegation import journal
+
+
+def _write_ledger(records: list) -> None:
+    """以显式 ts 直写账本行（历史折叠测试需要确定性的时间序）。"""
+    path = journal.ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fp:
+        for rec in records:
+            fp.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 class TestProgress:
@@ -92,6 +104,84 @@ class TestRetention:
         assert not old.exists()
         assert fresh.exists()
         assert keep.exists()
+
+
+class TestProgressTail:
+    def test_read_tail_lines(self) -> None:
+        # 会话级共享 delegation 目录，用唯一 id 避免与其他用例的进度流交叉
+        journal.append_progress("tail-d1", "第一行")
+        journal.append_progress("tail-d1", "第二行")
+        result = journal.read_progress_tail("tail-d1")
+        assert [line.split("] ", 1)[1] for line in result["lines"]] == ["第一行", "第二行"]
+        assert result["truncated"] is False
+
+    def test_missing_file_empty(self) -> None:
+        assert journal.read_progress_tail("tail-ghost") == {"lines": [], "truncated": False}
+
+    def test_max_lines_truncates(self) -> None:
+        for i in range(10):
+            journal.append_progress("tail-d2", f"第{i}行")
+        result = journal.read_progress_tail("tail-d2", max_lines=3)
+        assert len(result["lines"]) == 3
+        assert result["truncated"] is True
+        assert result["lines"][-1].endswith("第9行")
+
+    def test_oversize_file_tail_read(self) -> None:
+        path = journal.progress_path("tail-d3")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x" * 100_000 + "\n[00:00:01] 末尾行\n", encoding="utf-8")
+        result = journal.read_progress_tail("tail-d3")
+        assert result["truncated"] is True
+        assert result["lines"][-1] == "[00:00:01] 末尾行"
+
+
+class TestHistory:
+    @pytest.fixture(autouse=True)
+    def _fresh_dir(self, tmp_path, monkeypatch) -> None:
+        """历史折叠对账本全量敏感，隔离到独立目录（与 TestRetention 同模式）。"""
+        from core import path as path_mod
+
+        monkeypatch.setattr(
+            path_mod.ConfigPaths, "DELEGATION_DIR",
+            str(tmp_path / "delegations"), raising=False,
+        )
+
+    def test_started_closed_folded(self) -> None:
+        _write_ledger([
+            {"event": "started", "id": "d1", "ts": 100.0, "goal": "任务一",
+             "scope": "user_qq:1", "agent": "", "model": "m1", "adapter_key": "qq"},
+            {"event": "closed", "id": "d1", "ts": 130.0, "status": "成功"},
+            {"event": "started", "id": "d2", "ts": 140.0, "goal": "任务二", "scope": "user_qq:2"},
+        ])
+        items = journal.recent_history()
+        # 未闭合（运行中/未扫描）的不入历史
+        assert [i["delegation_id"] for i in items] == ["d1"]
+        item = items[0]
+        assert item["goal"] == "任务一" and item["status"] == "成功"
+        assert item["model"] == "m1" and item["adapter_key"] == "qq"
+        assert item["scope"] == "user_qq:1"
+        assert item["started_at"] == 100.0 and item["finished_at"] == 130.0
+        assert item["duration_seconds"] == 30
+
+    def test_ordered_by_finished_desc_and_limited(self) -> None:
+        records: list = []
+        for i in range(5):
+            records.append({"event": "started", "id": f"d{i}", "ts": 100.0 + i, "goal": f"g{i}"})
+            records.append({"event": "closed", "id": f"d{i}", "ts": 200.0 + i, "status": "失败"})
+        _write_ledger(records)
+        items = journal.recent_history(limit=3)
+        assert [i["delegation_id"] for i in items] == ["d4", "d3", "d2"]
+
+    def test_lost_status_preserved(self) -> None:
+        _write_ledger([
+            {"event": "started", "id": "d1", "ts": 100.0, "goal": "g"},
+            {"event": "closed", "id": "d1", "ts": 150.0, "status": "lost"},
+        ])
+        items = journal.recent_history()
+        assert items[0]["status"] == "lost"
+
+    def test_empty_ledger(self) -> None:
+        assert journal.recent_history() == []
 
 
 class TestRecovery:

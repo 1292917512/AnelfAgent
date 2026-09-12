@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.config import get_config
@@ -31,6 +32,10 @@ from core.log import log
 # （快照 expected_prefix_tokens 口径），本守卫层是其超集（多 conversation，
 # 用于捕捉历史层被意外改写）。
 _DEFAULT_GUARDED_LAYERS = ("stable", "summary", "conversation")
+
+# 合法断裂标记的携带窗口：覆盖折后/压后首轮调用及其失败重试链
+# （退避重试与首轮共享同一冷前缀，低命中同属合法重写代价）
+_LEGAL_BREAK_TTL_SECONDS = 120.0
 
 
 def _guarded_layers() -> Tuple[str, ...]:
@@ -75,6 +80,10 @@ class PrefixGuard:
         # 按调用用途分键：reply/reflect/compress 各自前缀族独立，
         # 避免主对话与辅助调用交替时跨族误报断裂
         self._chains: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
+        # scope → (合法断裂原因, 窗口截止时刻)：折叠与压缩是已知的前缀重写，
+        # 登记后下次校验重建基线（不误报断裂），并把原因带给快照记录——
+        # 缓存命中率列表借此与"平台波动"（前缀稳定但命中低）准确区分
+        self._legal_breaks: Dict[str, Tuple[str, float]] = {}
         # 累计断裂次数（供可观测性）
         self.drift_count: int = 0
         self.check_count: int = 0
@@ -159,6 +168,37 @@ class PrefixGuard:
         else:
             for key in [k for k in self._chains if k[0] == scope]:
                 self._chains.pop(key, None)
+
+    def note_legal_break(self, scope: str, reason: str) -> None:
+        """登记合法断裂（fold=对话折叠 / compress=上下文压缩）。
+
+        折叠与压缩是已知的前缀整体重写：清空该 scope 全部基线（下次校验
+        重建，不误报断裂），并以短窗口标记携带原因——llm_invoker 在窗口内
+        的调用经 legal_break_reason 取因写入快照记录，使缓存命中率列表
+        能把"合法重写后首轮低命中"与供应商侧波动/真实漂移准确区分。
+        """
+        if not scope:
+            return
+        self.reset(scope)
+        self._legal_breaks[scope] = (
+            reason, time.monotonic() + _LEGAL_BREAK_TTL_SECONDS)
+
+    def legal_break_reason(self, scope: str) -> Optional[str]:
+        """该 scope 当前是否处于合法断裂窗口内（窥视不消耗；过期惰性清除）。
+
+        窗口非一次性：折后首轮失败的重试链与首轮共享同一冷前缀，低命中
+        同属折后代价，窗口内每次调用都应能取到原因。
+        """
+        if not scope:
+            return None
+        entry = self._legal_breaks.get(scope)
+        if entry is None:
+            return None
+        reason, expires_at = entry
+        if time.monotonic() > expires_at:
+            self._legal_breaks.pop(scope, None)
+            return None
+        return reason
 
     def stats(self) -> Dict[str, Any]:
         return {

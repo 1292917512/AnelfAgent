@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 from collections import deque
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional
 
@@ -67,6 +68,27 @@ _STDLIB_LEVEL_MAP = {
 _listeners: Dict[str, List[Callable[[Dict[str, Any]], None]]] = {}
 _all_listeners: List[Callable[[Dict[str, Any]], None]] = []
 _listeners_lock = threading.Lock()
+
+# 日志 actor 上下文：标识当前执行主体（如子代理委托），非空时作为 [actor] 前缀
+# 渲染进消息——console/文件/环形缓冲区/监听器全链路一致。ContextVar 经
+# asyncio.create_task 自动复制进整个执行树，由执行发起方绑定、finally 复位；
+# 未绑定（主 AI/系统路径）零前缀零开销。
+_log_actor: ContextVar[str] = ContextVar("log_actor", default="")
+
+
+def bind_log_actor(label: str) -> Token[str]:
+    """绑定当前上下文的日志 actor 标签，返回复位令牌。"""
+    return _log_actor.set(label)
+
+
+def reset_log_actor(token: Token[str]) -> None:
+    """按令牌复位日志 actor 标签。"""
+    _log_actor.reset(token)
+
+
+def current_log_actor() -> str:
+    """当前上下文的日志 actor 标签（未绑定为空串）。"""
+    return _log_actor.get()
 
 
 def _internal_debug(message: str) -> None:
@@ -163,6 +185,9 @@ def log(message: str, level: str = "INFO", tag: Optional[str] = None) -> None:
         level = "INFO"
 
     message = _maybe_sanitize(message)
+    actor = _log_actor.get()
+    if actor:
+        message = f"[{actor}] {message}"
     with_exc = level in ["ERROR", "CRITICAL"] and sys.exc_info()[0] is not None
 
     if _USE_LOGURU:

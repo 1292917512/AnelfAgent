@@ -76,6 +76,39 @@ def append_progress(delegation_id: str, line: str) -> None:
         log(f"委托进度流写入失败（已忽略）: {delegation_id}: {exc}", "DEBUG", tag="委托")
 
 
+# 进度流尾部读取的字节上限（超大文件只回读尾部，不整文件载入）
+_PROGRESS_TAIL_MAX_BYTES = 65_536
+
+
+def read_progress_tail(delegation_id: str, max_lines: int = 200) -> Dict[str, Any]:
+    """读取委托进度流尾部行（面板进度查看用；不存在返回空，fail-open）。"""
+    result: Dict[str, Any] = {"lines": [], "truncated": False}
+    if not delegation_id:
+        return result
+    path = progress_path(delegation_id)
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fp:
+            if size > _PROGRESS_TAIL_MAX_BYTES:
+                fp.seek(-_PROGRESS_TAIL_MAX_BYTES, 2)
+                raw = fp.read()
+                result["truncated"] = True
+            else:
+                raw = fp.read()
+        text = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        if result["truncated"] and lines:
+            # 尾部回读的首行可能是半行，丢弃
+            lines = lines[1:]
+        if max_lines > 0 and len(lines) > max_lines:
+            lines = lines[-max_lines:]
+            result["truncated"] = True
+        result["lines"] = lines
+    except OSError:
+        pass
+    return result
+
+
 # ------------------------------------------------------------------
 # transcript（续跑数据源）
 # ------------------------------------------------------------------
@@ -135,6 +168,77 @@ def append_ledger(event: str, delegation_id: str, **fields: Any) -> None:
         log(f"委托账本写入失败（已忽略）: {delegation_id}: {exc}", "DEBUG", tag="委托")
 
 
+def _read_ledger_records(tail_bytes: int = 0) -> List[Dict[str, Any]]:
+    """读取账本记录（tail_bytes>0 时只回读尾部该字节数；坏行跳过）。"""
+    path = ledger_path()
+    try:
+        if tail_bytes > 0:
+            size = path.stat().st_size
+            with path.open("rb") as fp:
+                if size > tail_bytes:
+                    fp.seek(-tail_bytes, 2)
+                raw = fp.read()
+            lines = raw.decode("utf-8", errors="replace").splitlines()
+            if size > tail_bytes and lines:
+                lines = lines[1:]  # 尾部回读首行可能是半行
+        else:
+            lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    records: List[Dict[str, Any]] = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+# 历史折叠的账本回读上限（7 天账单体积有限，尾部 512KB 足够覆盖近期执行）
+_HISTORY_LEDGER_TAIL_BYTES = 524_288
+
+
+def recent_history(limit: int = 20) -> List[Dict[str, Any]]:
+    """近期委托执行历史（面板「最近执行」数据源）。
+
+    账本 started/closed 按 id 配对折叠为执行条目；只收录已闭合
+    （含 lost）的委托——运行中的由 running_snapshot_all 实时呈现。
+    按结束时间倒序，limit 截断。
+    """
+    started: Dict[str, Dict[str, Any]] = {}
+    closed: Dict[str, Dict[str, Any]] = {}
+    for record in _read_ledger_records(_HISTORY_LEDGER_TAIL_BYTES):
+        did = str(record.get("id", ""))
+        if not did:
+            continue
+        event = record.get("event")
+        if event == LEDGER_STARTED:
+            started[did] = record
+        elif event == LEDGER_CLOSED:
+            closed[did] = record
+    items: List[Dict[str, Any]] = []
+    for did, close_rec in closed.items():
+        start_rec = started.get(did, {})
+        started_ts = float(start_rec.get("ts", 0.0) or 0.0)
+        finished_ts = float(close_rec.get("ts", 0.0) or 0.0)
+        items.append({
+            "delegation_id": did,
+            "goal": str(start_rec.get("goal", "")),
+            "scope": str(start_rec.get("scope", "")),
+            "agent": str(start_rec.get("agent", "")),
+            "model": str(start_rec.get("model", "")),
+            "adapter_key": str(start_rec.get("adapter_key", "")),
+            "status": str(close_rec.get("status", "")),
+            "started_at": started_ts,
+            "finished_at": finished_ts,
+            "duration_seconds": max(0, int(finished_ts - started_ts)) if started_ts else 0,
+        })
+    items.sort(key=lambda item: float(item["finished_at"]), reverse=True)
+    return items[: max(1, limit)]
+
+
 def unclosed_delegations() -> List[Dict[str, Any]]:
     """扫描账本中未闭合的委托（started 无对应 closed；同一 id 以最后事件为准）。
 
@@ -142,19 +246,8 @@ def unclosed_delegations() -> List[Dict[str, Any]]:
     调用方决定是否重试，此处先闭合防重启风暴；注入内容只含事实（目标/
     会话/启动时间），丢失无 irreversible 后果。
     """
-    path = ledger_path()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
     latest: Dict[str, Dict[str, Any]] = {}
-    for line in lines:
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(record, dict):
-            continue
+    for record in _read_ledger_records():
         did = str(record.get("id", ""))
         if did:
             latest[did] = record

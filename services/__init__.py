@@ -7,6 +7,7 @@ from services.chat import ChatService
 from services.config import ConfigService
 from services.context import ContextService
 from services.database import DatabaseService
+from services.delegation import DelegationService
 from services.entity import EntityService
 from services.graph import GraphService
 from services.heartbeat import HeartbeatService
@@ -34,6 +35,7 @@ __all__ = [
     "ConfigService",
     "ContextService",
     "DatabaseService",
+    "DelegationService",
     "EntityService",
     "GraphService",
     "HeartbeatService",
