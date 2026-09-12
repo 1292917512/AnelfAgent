@@ -20,13 +20,19 @@ from core.path import ConfigPaths
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import deferred_tool
 
-from .model import normalize_task_time, parse_task_time
+from .model import (
+    _normalize_reasoning_effort,
+    normalize_task_time,
+    parse_task_time,
+)
 
 _TASK_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _TASK_MEMORY_TYPES = {"reflection", "semantic", "episodic"}
 _SCHEDULE_MODES = {"heartbeat", "scheduled", "idle", "manual"}
 # update_task 的 expires_at 清除标记（空串 = 不变）
 _EXPIRY_CLEAR_TOKENS = {"clear", "永久"}
+# update_task 的可选覆盖字段清除标记（model_id / reasoning_effort）
+_OPTIONAL_CLEAR_TOKENS = {"clear", "none"}
 
 
 def _validate_expiry(value: str) -> str:
@@ -82,7 +88,7 @@ def _split_csv(value: str) -> List[str]:
         "创建一个新的心跳任务定义（沉淀可复用的自治流程）。"
         "当你发现某类工作反复出现、值得定期自动执行时，用它把流程固化下来；"
         "创建后默认 manual 触发，需要自动执行时用 set_task_schedule 绑定调度；"
-        "临时性任务可设 expires_at，到期自动停用。"
+        "例行任务建议指定轻量 model_id 省成本，临时性任务可设 expires_at 到期自动停用。"
     ),
 )
 async def create_task(
@@ -94,8 +100,12 @@ async def create_task(
     importance: float = 0.5,
     tags: str = "",
     tool_tags: str = "heartbeat",
+    null_keywords: str = "",
     allow_output_tools: bool = False,
     save_result_to_memory: bool = True,
+    model_id: str = "",
+    reasoning_effort: str = "",
+    handoff: bool = False,
     expires_at: str = "",
 ) -> str:
     """创建任务定义。
@@ -109,8 +119,12 @@ async def create_task(
         importance: 结果记忆重要性 0-1（默认 0.5）
         tags: 结果记忆标签，逗号分隔（如 type:reflection,topic:周报）
         tool_tags: 执行时可用的工具标签，逗号分隔（默认 heartbeat）
+        null_keywords: 空响应关键词，逗号分隔（命中则本次产出不入库不记忆）
         allow_output_tools: 是否允许对外发消息（默认 False，仅内部反思类任务）
         save_result_to_memory: 结果是否写入长期记忆（默认 True）
+        model_id: 指定执行模型 ID（空 = 默认模型；例行任务建议指定轻量模型省成本）
+        reasoning_effort: 任务级思考等级（off/minimal/low/medium/high/xhigh/max，空 = 全局默认）
+        handoff: 是否为多轮接力任务（输出末尾 # HANDOFF 块持久化供下次运行接续）
         expires_at: 生效截止时间（YYYY-MM-DD 或 YYYY-MM-DD HH:MM，空 = 永久有效）；
             到期后系统自动停用任务并移除调度，适合临时性/阶段性任务
     """
@@ -125,6 +139,12 @@ async def create_task(
         if memory_type not in _TASK_MEMORY_TYPES:
             return tool_error(
                 f"memory_type 须为 {sorted(_TASK_MEMORY_TYPES)} 之一",
+                cause=ErrorCause.PARAM, retryable=False,
+            )
+        effective_effort = _normalize_reasoning_effort(reasoning_effort)
+        if reasoning_effort.strip() and effective_effort is None:
+            return tool_error(
+                f"reasoning_effort 非法: {reasoning_effort!r}（须为 off/minimal/low/medium/high/xhigh/max）",
                 cause=ErrorCause.PARAM, retryable=False,
             )
         normalized_expiry = ""
@@ -152,14 +172,19 @@ async def create_task(
                 "importance": max(0.0, min(1.0, importance)),
                 "tags": _split_csv(tags),
                 "source": name,
-                "null_keywords": [],
+                "null_keywords": _split_csv(null_keywords),
                 "tool_tags": _split_csv(tool_tags) or ["heartbeat"],
                 "prompt": prompt.strip(),
                 "allow_output_tools": allow_output_tools,
                 "save_result_to_memory": save_result_to_memory,
+                "handoff": bool(handoff),
                 "created_at": now,
                 "updated_at": now,
             }
+            if model_id.strip():
+                data["model_id"] = model_id.strip()
+            if effective_effort:
+                data["reasoning_effort"] = effective_effort
             if normalized_expiry:
                 data["expires_at"] = normalized_expiry
             _write_task_data(name, data)
@@ -177,7 +202,10 @@ async def create_task(
 
 @deferred_tool(
     group="planning", tags=["planning", "heartbeat"], source="mind.task",
-    description="修改已有任务定义的字段（prompt/启用状态/记忆类型/标签/expires_at 等，空参数不变）。",
+    description=(
+        "修改已有任务定义的字段（prompt/启用状态/记忆类型/标签/指定模型/思考等级/"
+        "外发与记忆开关/接力开关/null_keywords/expires_at 等，空参数不变）。"
+    ),
 )
 async def update_task(
     name: str,
@@ -189,6 +217,12 @@ async def update_task(
     importance: float = -1.0,
     tags: str = "",
     tool_tags: str = "",
+    null_keywords: str = "",
+    allow_output_tools: str = "",
+    save_result_to_memory: str = "",
+    model_id: str = "",
+    reasoning_effort: str = "",
+    handoff: str = "",
     expires_at: str = "",
 ) -> str:
     """修改任务定义。
@@ -203,6 +237,13 @@ async def update_task(
         importance: 0-1（负数不变）
         tags: 结果记忆标签（空串不变，逗号分隔，整体替换）
         tool_tags: 执行工具标签（空串不变，逗号分隔，整体替换）
+        null_keywords: 空响应关键词（空串不变，逗号分隔，整体替换）
+        allow_output_tools: "true"/"false" 是否允许对外发消息（空串不变）
+        save_result_to_memory: "true"/"false" 结果是否写入长期记忆（空串不变）
+        model_id: 指定执行模型 ID（空串不变；"clear"/"none" 恢复默认模型）
+        reasoning_effort: 思考等级 off/minimal/low/medium/high/xhigh/max
+            （空串不变；"clear"/"none" 恢复全局默认）
+        handoff: "true"/"false" 多轮接力任务开关（空串不变）
         expires_at: 生效截止时间 YYYY-MM-DD 或 YYYY-MM-DD HH:MM（空串不变，
             "clear"/"永久" 清除即恢复永久有效）；延期可让被停用的任务恢复
             （需同时 enabled="true" 并重新 set_task_schedule）
@@ -244,6 +285,37 @@ async def update_task(
             if tool_tags.strip():
                 data["tool_tags"] = _split_csv(tool_tags)
                 changed.append("tool_tags")
+            if null_keywords.strip():
+                data["null_keywords"] = _split_csv(null_keywords)
+                changed.append("null_keywords")
+            if allow_output_tools.strip().lower() in ("true", "false"):
+                data["allow_output_tools"] = allow_output_tools.strip().lower() == "true"
+                changed.append("allow_output_tools")
+            if save_result_to_memory.strip().lower() in ("true", "false"):
+                data["save_result_to_memory"] = save_result_to_memory.strip().lower() == "true"
+                changed.append("save_result_to_memory")
+            if model_id.strip():
+                if model_id.strip().lower() in _OPTIONAL_CLEAR_TOKENS:
+                    data.pop("model_id", None)
+                else:
+                    data["model_id"] = model_id.strip()
+                changed.append("model_id")
+            if reasoning_effort.strip():
+                if reasoning_effort.strip().lower() in _OPTIONAL_CLEAR_TOKENS:
+                    data.pop("reasoning_effort", None)
+                else:
+                    effective = _normalize_reasoning_effort(reasoning_effort)
+                    if effective is None:
+                        return tool_error(
+                            f"reasoning_effort 非法: {reasoning_effort!r}"
+                            "（须为 off/minimal/low/medium/high/xhigh/max，或 clear 恢复默认）",
+                            cause=ErrorCause.PARAM, retryable=False,
+                        )
+                    data["reasoning_effort"] = effective
+                changed.append("reasoning_effort")
+            if handoff.strip().lower() in ("true", "false"):
+                data["handoff"] = handoff.strip().lower() == "true"
+                changed.append("handoff")
             if expires_at.strip():
                 if expires_at.strip().lower() in _EXPIRY_CLEAR_TOKENS:
                     data.pop("expires_at", None)
@@ -290,8 +362,11 @@ async def delete_task(name: str) -> str:
         schedule_removed = cfg.remove_schedule(name)
         if schedule_removed:
             cfg.save()
+        # 清理执行历史（防同名重建后残留记录误导）
+        from .history import clear_history
+        history_cleared = clear_history(name)
         _reload_engine()
-        log(f"🛠 AI 删除任务: {name}（调度绑定移除: {schedule_removed}）", tag="任务")
+        log(f"🛠 AI 删除任务: {name}（调度绑定移除: {schedule_removed}，历史清理: {history_cleared}）", tag="任务")
         return json.dumps({
             "ok": True, "task": name, "schedule_removed": schedule_removed,
         }, ensure_ascii=False)

@@ -47,36 +47,40 @@ class TestLeanLayeredPrompts:
     async def test_lean_context_keeps_only_pins(self) -> None:
         """lean：context 层只含永久记忆块，不读便签/文件索引/状态区块。"""
         mind = _fake_mind("[系统注入·永久记忆] 语音教导")
-        (_, _, context_text, _, _, _, status_text) = (
+        (_, _, context_text, _, _, _, status_text, heartbeat_text) = (
             await recollection._build_layered_prompts(
                 mind, None, "models", "[系统注入·永久记忆] 语音教导", lean=True,
             )
         )
         assert "语音教导" in context_text
         assert status_text == ""
+        assert heartbeat_text == ""
         # 便签/索引/状态均未加载（静态指南属 stable 人设块，正常加载）
         assert "build_dynamic_notes" not in mind._file_cache.calls
         assert "build_file_index_block" not in mind._file_cache.calls
         assert "build_memory_status_block" not in mind._file_cache.calls
+        assert "build_heartbeat_status_block" not in mind._file_cache.calls
 
     async def test_lean_without_pins_has_no_context_block(self) -> None:
         """lean 且无永久记忆：不注入空便签提示，context 层整体缺省。"""
         mind = _fake_mind()
-        (_, _, context_text, _, _, _, status_text) = (
+        (_, _, context_text, _, _, _, status_text, heartbeat_text) = (
             await recollection._build_layered_prompts(mind, None, "models", "", lean=True)
         )
         assert context_text == ""
         assert status_text == ""
+        assert heartbeat_text == ""
 
     async def test_full_mode_loads_notes_and_status(self) -> None:
         """非 lean：便签/索引/状态正常加载（回归保护）。"""
         mind = _fake_mind()
-        (_, _, context_text, _, _, _, status_text) = (
+        (_, _, context_text, _, _, _, status_text, heartbeat_text) = (
             await recollection._build_layered_prompts(mind, None, "models", "", lean=False)
         )
         assert "build_dynamic_notes" in mind._file_cache.calls
         assert "build_file_index_block" in mind._file_cache.calls
         assert status_text == "罐头"
+        assert heartbeat_text == "罐头"
         assert context_text  # 空便签提示或内容拼接，非空
 
 
@@ -93,7 +97,7 @@ class TestLeanRecollection:
         mind._get_models_summary = lambda: "models"
         mind._extract_related_scopes = lambda conv, scope: []
         mind._build_layered_prompts = AsyncMock(
-            return_value=("p", "t", "c", True, True, True, "")
+            return_value=("p", "t", "c", True, True, True, "", "")
         )
         mind._resolve_target_id = lambda anything: ""
         mind.pfc.build_llm_context = AsyncMock(
@@ -109,5 +113,6 @@ class TestLeanRecollection:
         assert kwargs["relation_msgs"] == []
         assert kwargs["goal_msgs"] == []
         assert kwargs["status_text"] == ""
+        assert kwargs["heartbeat_text"] == ""
         assert kwargs["hub_text"] == ""  # 无记忆库时主标签记忆位为空
         assert mind._build_layered_prompts.call_args.kwargs["lean"] is True

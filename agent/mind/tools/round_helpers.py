@@ -95,6 +95,9 @@ class _ThinkRoundState:
     # 未送达文本：独白/附带正文暂存，轮末经统一投递点保底投递一次；
     # 输出类工具成功送达后被取代清空
     pending_text: str = ""
+    # 本轮回复已有输出类工具成功送达：置位后轮末纯文本不再兜底投递
+    # （收尾独白不外发，与输出契约「禁止纯文本投递」一致）
+    output_sent: bool = False
     max_output_recoveries: int = 0
     last_prompt_tokens: int = 0
     # 最近一次 LLM 调用的供应商侧缓存用量（context_usage 事件展示用）
@@ -631,7 +634,7 @@ async def _merge_pushes(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
 
 
 def _merge_steered_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:
-    """并入转向指令（steer）：运行中委托在步骤边界收到的追加指示。
+    """并入转向指令（steer 档）：运行中委托在步骤边界收到的追加指示。
 
     委托方向运行中的子代理发送的转向消息暂存于 SteerInbox（按
     delegation_id），SubAgent 经 ContextVar 绑定 drain 闭包——此处轮顶
@@ -640,7 +643,7 @@ def _merge_steered_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None
     步骤边界生效，可改变进行中的工作。
     """
     from agent.delegation.steer import drain_steered_messages
-    messages = drain_steered_messages()
+    messages = drain_steered_messages("steer")
     if not messages:
         return
     lines = ["[转向指令] 委托方在你执行期间发来新指令，请据此调整当前工作"
@@ -650,6 +653,27 @@ def _merge_steered_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None
                            "_source": {"origin": "steer"}})
     log(f"并入 {len(messages)} 条转向指令（步骤边界）", tag="委托")
     ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮前: 并入 {len(messages)} 条转向指令")
+
+
+def merge_after_messages(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bool:
+    """收束边界消费 after 档指令：子代理本要结束时注入追加指示续跑。
+
+    对齐 pi 的 followUp 档（仅当代理即将停止时投递）：与 steer 档的差别
+    在时机——steer 改变进行中的工作，after 在"这批做完后"追加。注入后
+    重置反思纯文本计数，循环继续；主会话未绑定 drain 时恒空（返回
+    False，走原收束路径）。
+    """
+    from agent.delegation.steer import drain_steered_messages
+    messages = drain_steered_messages("after")
+    if not messages:
+        return False
+    lines = ["[追加指令] 委托方在你即将收束时发来追加要求，请在既有进展上继续完成："]
+    lines.extend(f"- {msg}" for msg in messages)
+    ctx.tool_chain.append({"role": "user", "content": "\n".join(lines),
+                           "_source": {"origin": "steer"}})
+    log(f"并入 {len(messages)} 条追加指令（收束边界续跑）", tag="委托")
+    ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮: 并入 {len(messages)} 条追加指令，续跑")
+    return True
 
 
 async def _emit_context_usage(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> None:

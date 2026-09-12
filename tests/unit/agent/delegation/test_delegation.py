@@ -305,31 +305,21 @@ class TestForkContext:
     """fork_context：父会话近期记录作为只读快照注入子代理提示词。"""
 
     def test_history_block_included_when_present(self):
-        from agent.delegation.sub_agent import _SUB_AGENT_PROMPT, SubAgent
+        from agent.delegation.sub_agent import SubAgent
 
         agent = SubAgent(
             None, "目标", "背景",
             parent_history="user: 最近在看 Claude 插件\nassistant: 已整理清单",
         )
-        text = _SUB_AGENT_PROMPT.format(
-            goal=agent.goal, context=agent.context,
-            history_block=(
-                f"\n[主对话近期记录]（仅供参考，按时间顺序）\n{agent.parent_history}\n"
-                if agent.parent_history else ""
-            ),
-            role_hint="",
-        )
+        text = agent.build_prompt()
         assert "主对话近期记录" in text
         assert "最近在看 Claude 插件" in text
 
     def test_no_history_block_by_default(self):
-        from agent.delegation.sub_agent import _SUB_AGENT_PROMPT, SubAgent
+        from agent.delegation.sub_agent import SubAgent
 
         agent = SubAgent(None, "目标")
-        text = _SUB_AGENT_PROMPT.format(
-            goal=agent.goal, context="（无额外背景）",
-            history_block="", role_hint="",
-        )
+        text = agent.build_prompt()
         assert "主对话近期记录" not in text
 
     async def test_load_parent_history_scope_gating(self):

@@ -72,7 +72,7 @@ export function FlowView({ session, autoFollow, onNodeClick }: Props) {
       }
     }
     prevNodeCount.current = nodes.length;
-  }, [nodes.length, autoFollow, fitView, setCenter, getZoom]);
+  }, [nodes, autoFollow, fitView, setCenter, getZoom]);
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     onNodeClick(node.id);

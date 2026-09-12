@@ -350,6 +350,12 @@ async def trigger_task(name: str, folder: str = Query("")) -> Dict[str, str]:
     return {"status": "triggered", "task": name}
 
 
+@router.get("/tasks/{name}/history")
+async def get_task_history(name: str) -> List[Dict[str, Any]]:
+    """读取指定任务的执行历史（新→旧，最近 N 条）。"""
+    return _task_svc.get_task_history(name)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Web 工具配置（entities/web/config.json）
 # ──────────────────────────────────────────────────────────────────────────────

@@ -48,8 +48,10 @@ def _manager_not_ready() -> str:
     name="delegate_task",
     group="delegation", tags=["always"], source="mind.delegation",
     description="将子任务委托给隔离的子代理执行。适合可独立完成的子任务（调研、分析、批量处理）。"
-    "支持 tasks 数组并行委托多个子任务。子代理无法发送消息，只返回文字总结。"
-    "可用 list_sub_agents 查看子代理档案（名称 → 模型候选池；含内置难度档 easy/medium/hard）。",
+    "支持 tasks 数组并行委托多个子任务。子代理无法发送消息，只返回文字总结"
+    "（含 turns/tokens 用量；档案带 output_schema 时为 JSON）。"
+    "可用 list_sub_agents 查看子代理档案（名称 → 模型候选池 + 专职守则/工具面/输出契约；"
+    "含内置难度档 easy/medium/hard）。",
 )
 async def delegate_task(
         goal: str = "",
@@ -222,7 +224,7 @@ async def check_background_tasks(task_id: str = "") -> str:
     snapshot["hint"] = (
         "有运行中任务时：可稍后用本工具再查，或 end_reply 结束本轮——"
         "任务完成时系统会自动通知你并触发新一轮回复。"
-        "长任务（如后台 shell）可传 task_id 增量读取新输出。"
+        "长任务（后台 shell / 子代理委托）可传 task_id 增量读取新输出。"
         if snapshot["running"] else "当前没有运行中的后台任务。"
     )
     return json.dumps(snapshot, ensure_ascii=False)
@@ -263,17 +265,25 @@ async def terminate_background_task(task_id: str) -> str:
 @deferred_tool(
     name="send_to_agent",
     group="delegation", tags=["always"], source="mind.delegation",
-    description="向运行中的委托发送转向指令（steer）：指令在子代理当前步骤完成后注入，"
+    description="向运行中的委托发送指令（steer）：指令在子代理当前步骤完成后注入，"
     "可改变进行中的工作——不必取消重开、已完成的部分保留。"
     "适合用户中途修改需求、补充约束、追加信息等场景。"
+    "deliver_as=after 时改为收束边界投递（子代理本要结束时注入续跑，"
+    "适合「做完这批后顺便…」型追加）。"
     "目标 delegation_id 可从 delegate_task 的返回或 check_background_tasks 获取。",
 )
-async def send_to_agent(delegation_id: str, message: str) -> str:
-    """向运行中的子代理发送转向指令（步骤边界注入）。
+async def send_to_agent(
+        delegation_id: str,
+        message: str,
+        deliver_as: str = "steer",
+) -> str:
+    """向运行中的子代理发送指令（按档位选择注入边界）。
 
     Args:
         delegation_id: 目标委托 ID（delegate_task 返回 / check_background_tasks 查看）
-        message: 转向指令内容（需求变更、补充约束等；应明确说明要调整什么）
+        message: 指令内容（需求变更、补充约束等；应明确说明要调整什么）
+        deliver_as: steer（默认，步骤边界注入——改变进行中的工作）/
+            after（收束边界注入——子代理本要结束时追加续跑）
     """
     if not _delegation_enabled():
         return tool_error(
@@ -284,12 +294,59 @@ async def send_to_agent(delegation_id: str, message: str) -> str:
     manager = _manager_or_none()
     if manager is None:
         return _manager_not_ready()
-    result = manager.steer(delegation_id.strip(), message)
+    result = manager.steer(delegation_id.strip(), message, deliver_as.strip().lower())
     if "error" in result:
         return tool_error(
             result["error"],
             cause=ErrorCause.NOT_FOUND if "不存在" in result["error"] else ErrorCause.PARAM,
             retryable=False,
+            hint=result.get("hint"),
+        )
+    return json.dumps(result, ensure_ascii=False)
+
+
+@deferred_tool(
+    name="follow_up_agent",
+    group="delegation", tags=["always"], source="mind.delegation",
+    description="续跑一个已结束的委托：上次的完整执行上下文（工具调用与中间结论）"
+    "原样在场，追加指令后继续——无损续聊，优于把总结当 context 重新委托。"
+    "适合「接着上次那个调研继续深挖」、失败委托换个思路重试等场景。"
+    "运行中的委托不可续跑（用 send_to_agent）；transcript 过期清理后不可续跑"
+    "（默认保留 7 天，重新委托即可）。",
+)
+async def follow_up_agent(
+        delegation_id: str,
+        message: str,
+        background: bool = False,
+        max_iterations: int = 0,
+) -> str:
+    """续跑已结束的委托（transcript 消息链为上下文）。
+
+    Args:
+        delegation_id: 上次委托的 ID（delegate_task 返回 / check_background_tasks 已完成列表）
+        message: 续跑指令（要继续做什么、补充什么信息、修正什么方向）
+        background: 是否后台执行（立即返回新 delegation_id，完成自动通知）
+        max_iterations: 续跑迭代预算（0 = 沿用上次委托的预算）
+    """
+    if not _delegation_enabled():
+        return tool_error(
+            "子代理委托已禁用",
+            cause=ErrorCause.STATE, retryable=False,
+            hint="如需启用，请将配置 delegation_enabled 设为 true",
+        )
+    manager = _manager_or_none()
+    if manager is None:
+        return _manager_not_ready()
+    if not (message or "").strip():
+        return tool_error("message 不能为空", cause=ErrorCause.PARAM, retryable=False)
+    result = await manager.follow_up(
+        delegation_id.strip(), message,
+        background=background, max_iterations=max_iterations,
+    )
+    if "error" in result:
+        return tool_error(
+            result["error"],
+            cause=ErrorCause.NOT_FOUND, retryable=False,
             hint=result.get("hint"),
         )
     return json.dumps(result, ensure_ascii=False)

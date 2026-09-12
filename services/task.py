@@ -163,21 +163,41 @@ class TaskService:
     """任务单元管理服务（Web 侧入口）。"""
 
     def list_tasks(self) -> List[Dict[str, Any]]:
-        """列出所有任务单元（config/tasks/**/*.json，递归子目录）。"""
+        """列出所有任务单元（config/tasks/**/*.json，递归子目录）。
+
+        附带最近一次执行概况（last_run：时间/时长/状态/触发来源，无记录时缺省），
+        执行明细经 get_task_history 查询。
+        """
+        from agent.task import history as task_history
+
         _ensure_tasks_dir()
         tasks: List[Dict[str, Any]] = []
         for json_file in sorted(_TASKS_DIR.rglob("*.json")):
+            # 跳过任务运行数据文件（如 <name>.handoff.json），与 TaskRegistry.reload 同口径
+            if json_file.name.endswith(".handoff.json"):
+                continue
             try:
                 data = _normalize_task(json.loads(json_file.read_text("utf-8")))
                 data["folder"] = _task_folder_of(json_file)
                 tasks.append(data)
             except Exception as e:
                 log(f"任务配置解析失败 ({json_file.name}): {e}", "DEBUG")
+        last_runs = task_history.get_summary()
+        for data in tasks:
+            last_run = last_runs.get(str(data.get("name") or ""))
+            if last_run is not None:
+                data["last_run"] = last_run
         return tasks
 
     def get_task(self, name: str, folder: str = "") -> Dict[str, Any]:
         """读取单个任务定义。"""
         return _load_task(name, folder)
+
+    @staticmethod
+    def get_task_history(name: str) -> List[Dict[str, Any]]:
+        """读取指定任务的执行历史（新→旧，最近 N 条，无记录返回空列表）。"""
+        from agent.task import history as task_history
+        return task_history.get_history(name)
 
     async def create_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """创建任务定义文件并热重载注册表。
@@ -313,6 +333,13 @@ class TaskService:
 
         self.reload_registry()
         self._remove_task_schedule(name)
+        self._clear_task_history(name)
+
+    @staticmethod
+    def _clear_task_history(name: str) -> None:
+        """任务删除后清理执行历史（防同名重建后残留记录误导）。"""
+        from agent.task import history as task_history
+        task_history.clear_history(name)
 
     def trigger_task(self, name: str, folder: str = "") -> None:
         """手动触发执行指定任务，在后台异步执行。

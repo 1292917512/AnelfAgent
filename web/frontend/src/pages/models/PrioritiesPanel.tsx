@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { modelsApi } from "@/lib/api";
@@ -184,7 +184,7 @@ export function PrioritiesPanel() {
   );
 
   const availableTypes = TYPE_ORDER.filter(tp => (priorities[tp]?.length ?? 0) > 0);
-  const currentItems = priorities[activeType] ?? [];
+  const currentItems = useMemo(() => priorities[activeType] ?? [], [priorities, activeType]);
 
   const handleDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event;

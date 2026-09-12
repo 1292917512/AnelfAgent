@@ -119,7 +119,7 @@ def test_read_file_binary_sniff(tmp_path, monkeypatch: pytest.MonkeyPatch) -> No
 
     # _safe_path 每次调用都会 _load_config 重读全局，须一并打桩
     monkeypatch.setattr(tools, "_load_config", lambda: None)
-    monkeypatch.setattr(tools, "_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(tools, "_ws_root", lambda: str(tmp_path))
     monkeypatch.setattr(tools, "_SANDBOX", False)
     blob = tmp_path / "payload"
     blob.write_bytes(b"\x00\x01\x02\x00binary")

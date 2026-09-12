@@ -33,7 +33,27 @@ export interface HeartbeatStatus {
   last_activity_sec?: number | null;
   /** 是否存在待空闲窗口消费的反思 */
   reflection_pending?: boolean;
-  schedules: (TaskSchedule & { task_exists: boolean; task_enabled: boolean })[];
+  schedules: (TaskSchedule & {
+    task_exists: boolean;
+    task_enabled: boolean;
+    /** 该调度任务最近一次执行概况（无执行记录时缺省） */
+    last_run?: TaskRunSummary | null;
+  })[];
+}
+
+/** 任务最近一次执行概况 */
+export interface TaskRunSummary {
+  started_at: number;
+  duration_ms: number;
+  status: "success" | "no_output" | "error" | string;
+  trigger: "heartbeat" | "scheduled" | "idle" | "manual" | string;
+}
+
+/** 任务单次执行记录（历史明细） */
+export interface TaskExecutionRecord extends TaskRunSummary {
+  task_name: string;
+  preview: string;
+  error: string;
 }
 
 export interface TaskConfig {
@@ -59,6 +79,8 @@ export interface TaskConfig {
   created_at?: number;
   updated_at?: number;
   folder?: string;
+  /** 最近一次执行概况（从未执行时缺省） */
+  last_run?: TaskRunSummary | null;
 }
 
 // ── Config Meta ────────────────────────────────────────────────

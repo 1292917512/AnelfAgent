@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { ContextSnapshotData } from "@/lib/types";
 import { SnapshotSectionBlock } from "@/components/common/SnapshotBlocks";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Zap } from "lucide-react";
 
 interface SnapshotDetailProps {
   snapshot: ContextSnapshotData;
@@ -152,14 +152,36 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
         )}
       </div>
 
-      {/* 分类 sections */}
+      {/* 分类 sections（按 wire 顺序 = 发送给模型的真实顺序） */}
       <div className="space-y-2">
         <div className="flex items-center justify-between px-1">
           <span className="text-xs font-semibold text-heading">{t("sections.title")}</span>
           <span className="text-[10px] text-muted font-mono">~{totalSectionTokens}t</span>
         </div>
+        {snapshot.prefix_break && snapshot.prefix_break.layer != null && (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-[11px] text-amber-500">
+            <Zap size={11} className="shrink-0" />
+            <span>
+              {t("sections.breakBanner", {
+                label: snapshot.prefix_break.label ?? snapshot.prefix_break.layer,
+                index: snapshot.prefix_break.index ?? 0,
+                tokens: (snapshot.prefix_break.before_tokens ?? 0).toLocaleString(),
+              })}
+            </span>
+          </div>
+        )}
+        {snapshot.prefix_break && snapshot.prefix_break.layer == null && (
+          <div className="px-3 py-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 text-[11px] text-emerald-500">
+            {t("sections.stableAll")}
+          </div>
+        )}
         {snapshot.sections.map((section) => (
-          <SnapshotSectionBlock key={section.layer} section={section} totalTokens={totalSectionTokens} />
+          <SnapshotSectionBlock
+            key={section.layer}
+            section={section}
+            totalTokens={totalSectionTokens}
+            prefixBreak={snapshot.prefix_break ?? null}
+          />
         ))}
       </div>
     </div>

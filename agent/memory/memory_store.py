@@ -42,7 +42,7 @@ from .store._shared import (
     get_memory_config_value as _get_memory_config_value,
 )
 from .store.cognee_queue import ENTRY_KIND_MEMORY, CogneeSyncQueue
-from .store.connection import MemoryConnectionManager
+from .store.connection import MemoryConnectionManager, fetch_count
 from .store.file_index import FileIndexStore
 from .store.search import SearchEngine
 from .store.tag_intel import ENTITY_PREFIXES
@@ -172,7 +172,7 @@ class MemoryStore(BaseEntity):
             "SELECT id, content FROM memories WHERE embedding_blob IS NULL LIMIT ?",
             (batch_size,),
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         if not rows:
             return 0
 
@@ -205,7 +205,7 @@ class MemoryStore(BaseEntity):
             "SELECT id, hash, text FROM chunks WHERE embedding IS NULL LIMIT ?",
             (batch_size,),
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         if not rows:
             return 0
 
@@ -381,7 +381,7 @@ class MemoryStore(BaseEntity):
             select_sql += " WHERE type=?"
             select_params = (memory_type.value,)
             delete_sql = "DELETE FROM memories WHERE type=?"
-            delete_params = select_params
+            delete_params: tuple[Any, ...] = select_params
         elif include_permanent:
             delete_sql = "DELETE FROM memories"
             delete_params = ()
@@ -585,6 +585,8 @@ class MemoryStore(BaseEntity):
             )
             # 投影同步：用更新后的 importance 重建负载（封顶防风暴）
             for entry in affected[:200]:
+                if entry.id is None:
+                    continue
                 await self._cognee.enqueue_sync(
                     db, entry.id, "upsert",
                     entry_projection_payload(entry, entry.id),
@@ -1048,7 +1050,7 @@ class MemoryStore(BaseEntity):
         sql += " ORDER BY ts_ns DESC LIMIT ?"
         params.append(limit)
         cursor = await db.execute(sql, params)
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         return [row_to_entry(r) for r in reversed(rows)]
 
     async def list_by_source(
@@ -1298,7 +1300,7 @@ class MemoryStore(BaseEntity):
             f"SELECT {_MEM_COLUMNS} FROM memories WHERE id IN ({placeholders})",
             ids,
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         if not rows:
             return 0
 
@@ -1469,12 +1471,10 @@ class MemoryStore(BaseEntity):
     async def count_pending_embeddings(self) -> Dict[str, int]:
         """统计待后台 worker 回填向量的行数（memories / chunks）。"""
         db = await self._get_db()
-        mem = (await (await db.execute(
-            "SELECT COUNT(*) as cnt FROM memories WHERE embedding_blob IS NULL"
-        )).fetchone())["cnt"]
-        chunks = (await (await db.execute(
-            "SELECT COUNT(*) as cnt FROM chunks WHERE embedding IS NULL"
-        )).fetchone())["cnt"]
+        mem = await fetch_count(
+            db, "SELECT COUNT(*) FROM memories WHERE embedding_blob IS NULL")
+        chunks = await fetch_count(
+            db, "SELECT COUNT(*) FROM chunks WHERE embedding IS NULL")
         return {"memories": mem, "chunks": chunks}
 
     async def rebuild_embeddings(self) -> Dict[str, int]:
@@ -1484,12 +1484,10 @@ class MemoryStore(BaseEntity):
         vec 索引表直接删除，维度在首次写入时按新向量惰性重建。
         """
         db = await self._get_db()
-        mem = (await (await db.execute(
-            "SELECT COUNT(*) as cnt FROM memories WHERE embedding_blob IS NOT NULL"
-        )).fetchone())["cnt"]
-        chunks = (await (await db.execute(
-            "SELECT COUNT(*) as cnt FROM chunks WHERE embedding IS NOT NULL"
-        )).fetchone())["cnt"]
+        mem = await fetch_count(
+            db, "SELECT COUNT(*) FROM memories WHERE embedding_blob IS NOT NULL")
+        chunks = await fetch_count(
+            db, "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL")
         async with self._tx(db):
             await db.execute("UPDATE memories SET embedding_blob=NULL")
             await db.execute("UPDATE chunks SET embedding=NULL")

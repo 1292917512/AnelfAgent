@@ -174,7 +174,7 @@ from agent.mind.context_pipeline import (
 # 相对序与默认布局一致（按字节稳定度从静到动）
 _LEGACY_VOLATILITY: Dict[str, int] = {
     "context": 10, "hub": 11,
-    "profile": 20, "relation": 21, "goals": 21, "volatile": 22, "status": 23,
+    "profile": 20, "relation": 21, "goals": 21, "volatile": 22, "heartbeat": 23, "status": 23,
     "overflow": 27, "security": 28, "memory": 32,
     "summary": 33, "conversation": 34,
 }
@@ -465,6 +465,7 @@ class ContextAssembly:
             goal_msgs: Optional[List[Dict]] = None,
             summary_row: Optional[Dict] = None,
             status_text: str = "",
+            heartbeat_text: str = "",
             hub_text: str = "",
     ) -> List[Dict]:
         """组装完整 LLM 上下文（声明式管线），每次调用实时从 DB 获取最新对话历史。
@@ -473,7 +474,7 @@ class ContextAssembly:
         排越靠后，见 context_pipeline；尾部动态区内部按字节稳定度从静到动）：
         stable(0) → summary(20) → conversation(30) →
         context(35) → hub(36) → profile(37) → relation/goals/volatile(38) →
-        status(39) → memory(43) → overflow/security(50+)
+        heartbeat/status(39) → memory(43) → overflow/security(50+)
         tail_injection 关闭时经变动率覆盖表回退旧布局（动态在历史之前）。
 
         Args:
@@ -482,12 +483,14 @@ class ContextAssembly:
             profile_msgs: 实体画像消息（每实体一条，与 memory_msgs 分离放置）。
             summary_row: 对话摘要行（{summary, watermarks, folded_count}）。
             status_text: 记忆状态区块文本（心跳维护，尾部动态区注入）。
+            heartbeat_text: 心跳与任务态势区块文本（心跳维护，尾部动态区注入）。
         """
         inp = ContextInput(
             persona_text=persona_text,
             tools_text=tools_text,
             context_text=context_text,
             status_text=status_text,
+            heartbeat_text=heartbeat_text,
             memory_msgs=memory_msgs,
             profile_msgs=profile_msgs or [],
             relation_msgs=relation_msgs or [],
@@ -648,6 +651,15 @@ class ContextAssembly:
         if not inp.status_text:
             return []
         return [{"role": "system", "content": inp.status_text}]
+
+    @context_block("heartbeat", VOL_TAIL_HEAD + 4, "心跳与任务态势（心跳维护）")
+    def _blk_heartbeat(self, inp: ContextInput) -> List[Dict]:
+        """心跳态势区块（AUTO:heartbeat-status）：调度节奏与最近执行概况——
+        仅任务实际执行或调度变更时字节变化（对话期间冻结），与记忆状态块同族
+        置于召回块之前；同变动率下按层名排在 status 之前（变动频率低于它）。"""
+        if not inp.heartbeat_text:
+            return []
+        return [{"role": "system", "content": inp.heartbeat_text}]
 
     @context_block("memory", VOL_SESSION + 3, "语义召回 + 跨频道 + 技能匹配")
     def _blk_memory(self, inp: ContextInput) -> List[Dict]:

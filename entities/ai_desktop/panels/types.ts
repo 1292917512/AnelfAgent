@@ -92,6 +92,9 @@ export interface QuotaWindow {
   remaining?: number | null;
   /** 重置时间（秒级时间戳） */
   reset_at?: number | null;
+  /** 余额型窗口（按量计费供应商） */
+  balance?: number | null;
+  currency?: string;
 }
 
 /** 订阅额度组件单个供应商状态 */

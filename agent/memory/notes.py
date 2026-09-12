@@ -208,9 +208,11 @@ _STATUS_HEADING_RE = re.compile(
     re.MULTILINE,
 )
 
-# 主便签中的系统受管状态区块标记：区块内容仅由心跳维护重写，AI/用户手写部分不动
+# 主便签中的系统受管状态区块标记：区块内容仅由对应系统维护路径重写，AI/用户手写部分不动
 AUTO_STATUS_BEGIN = "<!-- AUTO:memory-status BEGIN -->"
 AUTO_STATUS_END = "<!-- AUTO:memory-status END -->"
+AUTO_HEARTBEAT_BEGIN = "<!-- AUTO:heartbeat-status BEGIN -->"
+AUTO_HEARTBEAT_END = "<!-- AUTO:heartbeat-status END -->"
 
 # 系统受管区块（<!-- AUTO:name BEGIN/END --> 标记对）：内容由系统写入路径维护，
 # 便签写工具必须逐字节保留（写保护见 _assert_managed_blocks_intact）
@@ -218,6 +220,11 @@ _MANAGED_BLOCK_RE = re.compile(
     r"<!-- AUTO:([\w-]+) BEGIN -->.*?<!-- AUTO:\1 END -->",
     re.DOTALL,
 )
+
+
+def _managed_markers(name: str) -> tuple[str, str]:
+    """受管区块名 → (起始标记, 结束标记)。"""
+    return f"<!-- AUTO:{name} BEGIN -->", f"<!-- AUTO:{name} END -->"
 
 
 def _split_at_status_heading(content: str) -> tuple[str, str]:
@@ -234,7 +241,7 @@ def _split_at_status_heading(content: str) -> tuple[str, str]:
 def _assert_managed_blocks_intact(old_text: str, new_text: str) -> None:
     """校验系统受管区块（AUTO 标记对）在写入后逐字节保留，被改动/删除时拒绝。
 
-    系统写入路径（update_memory_status_block 等）直接走 _atomic_write，
+    系统写入路径（update_managed_block 等）直接走 _atomic_write，
     不经过本校验；便签写工具（AI/Web）一律先校验再落盘。
     """
     for match in _MANAGED_BLOCK_RE.finditer(old_text):
@@ -245,18 +252,20 @@ def _assert_managed_blocks_intact(old_text: str, new_text: str) -> None:
             )
 
 
-def update_memory_status_block(body: str) -> bool:
-    """更新主便签中的自动记忆状态区块，返回是否发生写入。
+def update_managed_block(name: str, body: str) -> bool:
+    """更新主便签中指定名称的系统受管区块，返回是否发生写入。
 
-    区块固定位于 `# 当前状态` 动态分界之后（context 层），避免污染 stable
-    层提示缓存；内容未变化时不写文件（避免无意义重索引与缓存失效）。
+    区块固定位于 `# 当前状态` 动态分界之后（context 层读取时被剥离，
+    由对应 builder 单独注入尾部动态区），避免污染 stable 层提示缓存；
+    内容未变化时不写文件（避免无意义重索引与缓存失效）。
     """
+    begin, end = _managed_markers(name)
     path = get_notes_path()
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    block = f"{AUTO_STATUS_BEGIN}\n{body.rstrip()}\n{AUTO_STATUS_END}"
-    if AUTO_STATUS_BEGIN in text and AUTO_STATUS_END in text:
-        pre, rest = text.split(AUTO_STATUS_BEGIN, 1)
-        _, post = rest.split(AUTO_STATUS_END, 1)
+    block = f"{begin}\n{body.rstrip()}\n{end}"
+    if begin in text and end in text:
+        pre, rest = text.split(begin, 1)
+        _, post = rest.split(end, 1)
         new_text = pre + block + post
     else:
         static_part, dynamic_part = _split_at_status_heading(text)
@@ -271,6 +280,22 @@ def update_memory_status_block(body: str) -> bool:
     return True
 
 
+def read_managed_block(name: str) -> str:
+    """读取指定受管区块的正文（不存在或为空返回空串）。"""
+    begin, end = _managed_markers(name)
+    content = load_notes_content()
+    if begin not in content or end not in content:
+        return ""
+    _, rest = content.split(begin, 1)
+    body, _ = rest.split(end, 1)
+    return body.strip()
+
+
+def update_memory_status_block(body: str) -> bool:
+    """更新记忆状态受管区块（AUTO:memory-status）。"""
+    return update_managed_block("memory-status", body)
+
+
 async def update_memory_status_block_async(body: str) -> bool:
     """update_memory_status_block 的加锁异步变体。
 
@@ -279,6 +304,12 @@ async def update_memory_status_block_async(body: str) -> bool:
     """
     async with _file_lock:
         return update_memory_status_block(body)
+
+
+async def update_heartbeat_status_block_async(body: str) -> bool:
+    """更新心跳态势受管区块（AUTO:heartbeat-status）的加锁异步变体。"""
+    async with _file_lock:
+        return update_managed_block("heartbeat-status", body)
 
 _SECTION_SPLIT_RE = re.compile(r"(?=^## )", re.MULTILINE)
 
@@ -803,16 +834,16 @@ def build_dynamic_notes() -> str:
     包含 memory.md 中「# 当前状态」之后的全部内容，
     经 _smart_truncate_notes 按预算裁剪。
 
-    AUTO:memory-status 区块（心跳维护的计数）被剥离——它随心跳/记忆写入
-    周期性变化，留在 context 层会击穿其后的摘要与历史缓存前缀；
-    该区块由 build_memory_status_block 单独注入尾部动态区。
+    全部 AUTO 受管区块（memory-status / heartbeat-status 等心跳维护的计数）
+    被剥离——它们随心跳周期性变化，留在 context 层会击穿其后的摘要与历史
+    缓存前缀；各区块由对应 builder 单独注入尾部动态区。
     """
     content = load_notes_content()
     if not content.strip():
         return ""
     # 以「当前状态」标题为分界，后半部分为动态内容
     _, dynamic_part = _split_at_status_heading(content)
-    dynamic_part = _strip_auto_status_block(dynamic_part)
+    dynamic_part = _strip_managed_blocks(dynamic_part)
     if not dynamic_part.strip():
         return ""
     from core.config import get_config_int
@@ -821,26 +852,29 @@ def build_dynamic_notes() -> str:
     )
 
 
-def _strip_auto_status_block(text: str) -> str:
-    """移除 AUTO:memory-status 区块（含标记行）。"""
-    if AUTO_STATUS_BEGIN not in text or AUTO_STATUS_END not in text:
-        return text
-    pre, rest = text.split(AUTO_STATUS_BEGIN, 1)
-    _, post = rest.split(AUTO_STATUS_END, 1)
-    return (pre.rstrip() + "\n" + post.lstrip()).strip()
+def _strip_managed_blocks(text: str) -> str:
+    """移除全部系统受管区块（含标记行）——它们经 status 族单独注入尾部动态区。"""
+    return _MANAGED_BLOCK_RE.sub("", text).strip()
 
 
 def build_memory_status_block() -> str:
     """提取 AUTO:memory-status 区块内容（尾部动态区独立注入用）。"""
-    content = load_notes_content()
-    if AUTO_STATUS_BEGIN not in content or AUTO_STATUS_END not in content:
-        return ""
-    _, rest = content.split(AUTO_STATUS_BEGIN, 1)
-    body, _ = rest.split(AUTO_STATUS_END, 1)
-    body = body.strip()
+    body = read_managed_block("memory-status")
     if not body:
         return ""
     return f"[记忆系统状态]（心跳维护；计数与审计明细经 memory_stats 查看）\n{body}"
+
+
+def build_heartbeat_status_block() -> str:
+    """提取 AUTO:heartbeat-status 区块内容（尾部动态区独立注入用）。"""
+    body = read_managed_block("heartbeat-status")
+    if not body:
+        return ""
+    return (
+        "[心跳与任务态势]（心跳维护快照；任务明细经 list_tasks / task_history 查看，"
+        "工作日志经 get_heartbeat_log 查看；任务与调度的增改经 create_task / "
+        "update_task / set_task_schedule / execute_task 操作）\n" + body
+    )
 
 
 def build_file_index_block() -> str:

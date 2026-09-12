@@ -38,8 +38,18 @@ from . import log as hb_log
 from .config import ScheduleMode, get_heartbeat_config
 
 if TYPE_CHECKING:
+    from agent.heartbeat.config import TaskSchedule
     from agent.messages import EntityData
     from agent.mind.mind import Mind
+
+
+def _format_interval(seconds: int) -> str:
+    """秒数折算为人类可读周期（调度节奏描述用）。"""
+    if seconds >= 3600 and seconds % 3600 == 0:
+        return f"{seconds // 3600} 小时"
+    if seconds >= 60:
+        return f"{seconds // 60} 分钟"
+    return f"{seconds} 秒"
 
 _ENTITY_ANALYSIS_PROMPT = (
     "请对 {entity} 进行画像分析并输出结构化 Markdown 总结。\n\n"
@@ -171,6 +181,11 @@ class HeartbeatEngine:
         self.config = reload_heartbeat_config()
         self._seed_declared_schedules()
         self._prune_orphan_schedules()
+        # 态势区块即时刷新：任务/调度 CRUD 走 reload 热更，不必等下个心跳拍
+        try:
+            asyncio.create_task(self._write_heartbeat_status())
+        except RuntimeError:
+            pass  # 无运行事件循环（测试/构造期）：等下个 tick 兜底
 
     def _seed_declared_schedules(self) -> None:
         """一次性调度种子：任务定义文件声明的初始调度（mode/every_n_beats）
@@ -291,6 +306,7 @@ class HeartbeatEngine:
                     model_id=schedule.model_id,
                     reasoning_effort=schedule.reasoning_effort,
                     extra_note=pending_extra_note,
+                    trigger=schedule.mode.value,
                 )
             except Exception as exc:
                 # at-least-once：执行失败不更新标记，下个 tick 重试；
@@ -433,6 +449,7 @@ class HeartbeatEngine:
                     try:
                         result = await self.executor.run(
                             task, entity, temperature=self.config.analysis_temperature,
+                            trigger="manual",
                         )
                     except Exception as exc:
                         log(f"手动任务 [{task_name}] 执行失败: {exc}", "WARNING", tag="心跳")
@@ -565,6 +582,10 @@ class HeartbeatEngine:
 
         # 主便签记忆状态区块：让 AI 随时了解自己的记忆情况（内容不变时不写）
         await self._write_memory_status(consolidate_report, type_counts)
+
+        # 主便签心跳态势区块：让 AI 在任意会话了解自身调度与任务运行情况
+        # （内容不变时不写；不含逐拍计数，保证任务未执行期间字节稳定）
+        await self._write_heartbeat_status()
 
         # 过期日期便签归档：提炼进长期记忆（自动同步 cognee）后删除文件
         try:
@@ -765,6 +786,84 @@ class HeartbeatEngine:
             await notes_mod.update_memory_status_block_async("\n".join(lines))
         except Exception as exc:
             log(f"记忆状态区块写入失败: {exc}", "DEBUG", tag="心跳")
+
+    async def _write_heartbeat_status(self) -> None:
+        """心跳与任务态势写入主便签受管区块（AUTO:heartbeat-status）。
+
+        注入准入与记忆状态区块一致 = AI 看到能改变行为：调度节奏（什么会自动
+        发生、多久一次）、最近执行结果（失败需自查）、任务规模（计数级——具体
+        任务内容对决策无价值，经 list_tasks / task_history 按需取）。刻意不含
+        total_ticks / beat_count 等逐拍计数：每拍必变会让区块永远无法字节稳定，
+        违背「任务未执行期间内容冻结」的缓存纪律。
+        """
+        try:
+            from agent.memory import notes as notes_mod
+            from agent.task import history as task_history
+
+            all_tasks = self.task_registry.list_all()
+            enabled_count = sum(1 for t in all_tasks if t.enabled)
+            last_runs = task_history.get_summary()
+
+            interval = max(1, int(self.config.interval_seconds))
+            schedule_count = sum(
+                1 for s in self.config.task_schedules
+                if self.task_registry.get(s.task_name) is not None
+            )
+            lines = [
+                f"- 心跳：{'运行中' if self.config.enabled else '已停用'}，每 {interval}s 一拍",
+                f"- 任务：共 {len(all_tasks)} 个（启用 {enabled_count}），调度绑定 {schedule_count} 条",
+            ]
+            for s in self.config.task_schedules:
+                if self.task_registry.get(s.task_name) is None:
+                    continue
+                lines.append(
+                    f"  - {s.task_name}（{self._describe_schedule_cadence(s, interval)}）"
+                    f"{self._describe_last_run(last_runs.get(s.task_name))}"
+                )
+
+            failed = sorted(
+                name for name, run in last_runs.items()
+                if run.get("status") == "error" and self.task_registry.get(name) is not None
+            )
+            if failed:
+                lines.append(
+                    f"- ⚠️ 最近执行失败：{', '.join(failed)}（用 task_history 查看错误详情）"
+                )
+
+            await notes_mod.update_heartbeat_status_block_async("\n".join(lines))
+        except Exception as exc:
+            log(f"心跳态势区块写入失败: {exc}", "DEBUG", tag="心跳")
+
+    @staticmethod
+    def _describe_schedule_cadence(schedule: "TaskSchedule", interval_seconds: int) -> str:
+        """调度节奏的人类可读描述（模式 + 折算周期）。"""
+        if schedule.mode == ScheduleMode.HEARTBEAT:
+            approx = max(1, schedule.every_n_beats) * interval_seconds
+            return f"每 {schedule.every_n_beats} 拍执行（约 {_format_interval(approx)}）"
+        if schedule.mode == ScheduleMode.SCHEDULED:
+            times = ", ".join(schedule.schedule_times) if schedule.schedule_times else "未设时间"
+            return f"每日 {times}"
+        if schedule.mode == ScheduleMode.IDLE:
+            approx = max(1, schedule.every_n_beats) * interval_seconds
+            return f"连续空闲 {schedule.every_n_beats} 拍后执行（约 {_format_interval(approx)}）"
+        return "仅手动"
+
+    @staticmethod
+    def _describe_last_run(last: Optional[Dict[str, Any]]) -> str:
+        """最近一次执行概况描述（无记录返回「尚未执行」）。"""
+        if not last:
+            return "，尚未执行"
+        from agent.task.history import format_duration_ms
+        started = float(last.get("started_at") or 0.0)
+        status = str(last.get("status") or "")
+        status_text = {
+            "success": "成功", "no_output": "无产出", "error": "失败",
+        }.get(status, status or "未知")
+        when = (
+            time.strftime("%m-%d %H:%M", time.localtime(started))
+            if started > 0 else "未知时间"
+        )
+        return f"，上次 {when} {status_text}（{format_duration_ms(int(last.get('duration_ms') or 0))}）"
 
     # ------------------------------------------------------------------
     # 过期日期便签归档
@@ -1072,6 +1171,8 @@ class HeartbeatEngine:
     def get_status(self) -> Dict[str, Any]:
         """返回心跳引擎运行状态。"""
         activity_ts = float(getattr(self.mind, "last_activity_ts", 0.0) or 0.0)
+        from agent.task import history as task_history
+        last_runs = task_history.get_summary()
         return {
             "enabled": self.config.enabled,
             "interval_seconds": self.config.interval_seconds,
@@ -1086,6 +1187,7 @@ class HeartbeatEngine:
                     "task_exists": self.task_registry.get(s.task_name) is not None,
                     "task_enabled": (self.task_registry.get(s.task_name) or TaskDefinition(name="")).enabled,
                     "model_id": s.model_id,
+                    "last_run": last_runs.get(s.task_name),
                 }
                 for s in self.config.task_schedules
             ],

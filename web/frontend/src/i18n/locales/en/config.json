@@ -75,7 +75,8 @@
     "planning/core": "Goal Injection",
     "task/handoff": "Task Handoff",
     "storage/backup": "Volume Backup",
-    "model/describe": "Media Describe"
+    "model/describe": "Media Describe",
+    "task/history": "Execution History"
   },
   "window": {
     "title": "Conversation Window",

@@ -282,7 +282,7 @@ class Mind:
             self.skill_reviewer.start()
 
         # 子代理委托管理器（delegate_task 工具经 wiring 端口消费本实例）
-        from agent.delegation import DelegationManager
+        from agent.delegation.delegation_manager import DelegationManager
         self.delegation_manager = DelegationManager(self)
         count = activate_group("delegation", "子代理 - 复杂任务拆分委托与并行执行")
         log(f"🤖 子代理工具已注册 ({count} 个)", tag="委托")
@@ -981,15 +981,25 @@ class Mind:
         # 每次反思会话使用唯一 scope：并行子代理/心跳 reflect 的 plan 与
         # 工具激活状态按 scope 隔离，共享字面量会互相串扰
         reflect_scope = f"reflect:{uuid.uuid4().hex[:8]}"
-        # 反思工具目录为精简常态集（always + 选择器，见 ToolAssembly.
-        # get_reflect_tool_schemas）：高频内部调用不再扛回复级全量 schema；
-        # 更多分组由模型经 list_entity_methods / activate_tool_group 按需唤醒。
+        # 工具目录选择：无显式选择器（心跳任务/元决策等默认反思）时复用回复级
+        # 装配——回复的追加式冻结数组是全进程单一工具族，reflect 独立装配会
+        # 形成第二个等大工具族，两族交替即整段缓存重写（实测 reply/reflect
+        # 工具数已趋同 106~126，"精简"前提不再成立）；带选择器的子代理档案
+        # 仍走精简目录（真实精简 + 一次性 scope 无结转价值）。
         # 可见性与权限分离：禁用工具不从数组移除，由 think_loop 执行侧拦截
         # （合成错误结果，模型自我纠正）
-        extra_selectors = tool_tags if tool_tags else ["heartbeat"]
-        active_tools = await self.pfc.get_reflect_tool_schemas(
-            adapter_key, scope=reflect_scope, selectors=extra_selectors,
-        )
+        from core.config import get_config_bool
+        share_reply_tools = get_config_bool("reflect_share_reply_tools", True)
+        if tool_tags or not share_reply_tools:
+            extra_selectors = tool_tags if tool_tags else ["heartbeat"]
+            active_tools = await self.pfc.get_reflect_tool_schemas(
+                adapter_key, scope=reflect_scope, selectors=extra_selectors,
+            )
+        else:
+            extra_selectors = []
+            active_tools = await self.pfc.get_active_tool_schemas(
+                adapter_key, scope=reflect_scope,
+            )
 
         collected_text: List[str] = []
         execution_steps: List[str] = []
@@ -1058,13 +1068,13 @@ class Mind:
             permanent_text: str = "",
             *,
             lean: bool = False,
-    ) -> Tuple[str, str, str, bool, bool, bool, str]:
+    ) -> Tuple[str, str, str, bool, bool, bool, str, str]:
         """构建 stable 人设块/工具块/context 层三段提示（委托 recollection 模块）。
 
         permanent_text：永久记忆置顶块（召回路径剥离，字节稳定），并入 context 层
-        走内容寻址缓存。返回追加 status_text：心跳维护的记忆状态区块（尾部动态区
-        独立注入，不入 context 层，避免计数更新击穿缓存前缀）。
-        lean 为任务精简模式：context 层只留永久记忆块，status_text 留空。
+        走内容寻址缓存。返回追加 status_text / heartbeat_text：心跳维护的记忆状态
+        与心跳态势区块（尾部动态区独立注入，不入 context 层，避免计数更新击穿
+        缓存前缀）。lean 为任务精简模式：context 层只留永久记忆块，两者留空。
         """
         return await _recollection._build_layered_prompts(
             self, anything, models_summary, permanent_text, lean=lean,

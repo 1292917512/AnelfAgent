@@ -5,7 +5,7 @@ import { StatusDot } from "@/components/common/StatusDot";
 import { heartbeatApi, statusApi, memoryApi, tasksApi, type TaskConfig } from "@/lib/api";
 import { RefreshCw, Play, Zap } from "lucide-react";
 import { useState } from "react";
-import { cn } from "@/lib/utils";
+import { cn, formatAge, formatDurationMs } from "@/lib/utils";
 
 export function StatusPanel() {
   const { t } = useTranslation("heartbeat");
@@ -46,6 +46,12 @@ export function StatusPanel() {
     if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
     if (seconds >= 60) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
     return `${seconds}s`;
+  };
+
+  const runStatusText = (status: string) => {
+    const key = `status.runStatus_${status || "unknown"}`;
+    const label = t(key);
+    return label === key ? status : label;
   };
 
   const schedules = hbStatus?.schedules ?? [];
@@ -162,6 +168,29 @@ export function StatusPanel() {
                     {s.mode === "scheduled" && (
                       <p className="text-[11px] text-muted mt-0.5">
                         {t("schedule.times")}: {(s.schedule_times ?? []).join(", ") || "—"}
+                      </p>
+                    )}
+
+                    {s.last_run && (
+                      <p className="text-[11px] text-muted mt-0.5">
+                        {t("status.lastRun")}{" "}
+                        <span className="tabular-nums">{formatAge(s.last_run.started_at)}</span>
+                        {t("status.lastRunAgo")}
+                        {" · "}
+                        <span
+                          className={cn(
+                            "font-medium",
+                            s.last_run.status === "success"
+                              ? "text-ok"
+                              : s.last_run.status === "error"
+                                ? "text-danger"
+                                : "text-muted",
+                          )}
+                        >
+                          {runStatusText(s.last_run.status)}
+                        </span>
+                        {" · "}
+                        {formatDurationMs(s.last_run.duration_ms)}
                       </p>
                     )}
                   </div>

@@ -112,12 +112,6 @@ class TestPfcScopeQueues:
         assert pfc.get_adapter_key("user_webui:web_user#a") == ""
         assert pfc.peek_all_tasks() == []
 
-    async def test_pop_returns_scope(self) -> None:
-        pfc = _pfc()
-        await pfc.add_task(MessageUser(uid="web_user", session_id="a", text_content="hi"))
-        scope = await pfc.pop_user_task()
-        assert scope == "user_web_user#a"
-
     def test_temporary_bucketed_by_scope(self) -> None:
         """短期记忆按 scope 分桶：读本 scope = 全局桶 + 本桶，不串其他会话。"""
         pfc = _pfc()

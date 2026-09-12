@@ -406,7 +406,8 @@ async def add_persistent_reminder(
     """写入一条持久化定时提醒（entities 桥接 mind 调度器），返回提醒 id。
 
     到期由心跳触发一轮完整 REPLY（重启不丢失），供日历事件等实体复用；
-    请勿绕开此桥直写 reminders.json。系统未就绪返回空串。
+    请勿绕开此桥直写 reminders.json。无会话上下文时 scope 不可路由，
+    add_reminder 拒绝写入——如实记日志并返回空串（调用方降级为不提醒）。
     """
     if not scope:
         scope = get_current_scope()
@@ -416,7 +417,8 @@ async def add_persistent_reminder(
         from agent.mind.tools.scheduler import add_reminder
         reminder = await add_reminder(note, run_at_ts, scope, channel)
         return str(reminder["id"])
-    except Exception:
+    except Exception as exc:
+        log(f"持久化提醒创建失败（scope 不可路由: {scope!r}）: {exc}", "WARNING")
         return ""
 
 

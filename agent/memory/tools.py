@@ -1543,22 +1543,107 @@ async def log_to_heartbeat(content: str) -> str:
         return error_from_exception(e, action="写入心跳日志")
 
 
+@deferred_tool(
+    group="memory", tags=["heartbeat"], source="mind.heartbeat",
+    description=(
+        "读取最近的心跳工作日志（自己在心跳/任务中经 log_to_heartbeat 记录的操作总结，"
+        "以及系统维护摘要）。回顾近期自主工作、核实某任务是否真的做过时使用。"
+    ),
+)
+async def get_heartbeat_log(count: int = 3) -> str:
+    """读取最近 N 条心跳日志块（新→旧原文）。
+
+    Args:
+        count: 读取的日志块数（1-20，默认 3；每块对应一次心跳周期）
+    """
+    try:
+        from agent.heartbeat.log import load_recent
+        entries = max(1, min(20, int(count)))
+        text = load_recent(entries)
+        if not text.strip():
+            return json.dumps({
+                "ok": True, "count": 0, "log": "",
+                "message": "暂无心跳日志（尚无心跳周期或日志已被裁剪）",
+            }, ensure_ascii=False)
+        return json.dumps({
+            "ok": True, "count": entries,
+            "log": text[-8000:],  # 超长截尾保最近条目
+        }, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action="读取心跳日志")
+
+
 # ------------------------------------------------------------------
 # 任务执行
 # ------------------------------------------------------------------
 
 @deferred_tool(
     group="memory", tags=["core", "heartbeat"], source="mind.memory",
-    description="列出所有可执行的任务。任务是预定义的流程化工作，可按名称触发执行。",
+    description=(
+        "列出所有可执行的任务（含每个任务最近一次执行概况：时间/时长/状态/触发来源）。"
+        "任务是预定义的流程化工作，可按名称触发执行；需要历次执行明细用 task_history。"
+    ),
 )
 async def list_tasks() -> str:
     """列出所有可执行的任务。"""
     try:
         from agent.runtime.singleton import require_runtime
-        tasks = require_runtime().mind.heartbeat_engine.task_registry.list_info()
+        engine = require_runtime().mind.heartbeat_engine
+        tasks = engine.task_registry.list_info()
+        from agent.task.history import get_summary
+        summary = get_summary()
+        for item in tasks:
+            last = summary.get(str(item.get("name") or ""))
+            if last is not None:
+                item["last_run"] = _with_readable_time(last)
         return json.dumps({"total": len(tasks), "tasks": tasks}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="列出任务")
+
+
+def _with_readable_time(record: Dict[str, Any]) -> Dict[str, Any]:
+    """执行概况副本附可读时间文本（epoch 保留，模型直接读文本）。"""
+    import time as _time
+    readable = dict(record)
+    started_at = float(record.get("started_at") or 0.0)
+    if started_at > 0:
+        readable["started_at_text"] = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(started_at))
+    return readable
+
+
+@deferred_tool(
+    group="memory", tags=["core", "heartbeat"], source="mind.task",
+    description=(
+        "查看指定任务最近几次的执行记录（每次的开始时间/耗时/状态/触发来源/"
+        "产出摘要/错误信息）。评估任务是否按时运行、是否反复失败、上次产出了什么时使用。"
+    ),
+)
+async def task_history(task_name: str) -> str:
+    """查看任务执行历史（新→旧）。
+
+    Args:
+        task_name: 任务名称（通过 list_tasks 获取）
+    """
+    try:
+        from agent.task.history import get_history
+        records = get_history(task_name)
+        if not records:
+            return json.dumps({
+                "ok": True, "task": task_name, "count": 0, "records": [],
+                "message": "该任务暂无执行记录（可能从未执行过，或记录已被任务删除清理）",
+            }, ensure_ascii=False)
+        rendered = []
+        for rec in records:
+            from agent.task.history import format_duration_ms
+            item = _with_readable_time(rec)
+            item["duration_text"] = format_duration_ms(int(rec.get("duration_ms") or 0))
+            rendered.append(item)
+        return json.dumps({
+            "ok": True, "task": task_name, "count": len(rendered),
+            "records": rendered,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action="查询任务执行历史")
 
 
 @deferred_tool(

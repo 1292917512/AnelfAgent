@@ -23,7 +23,12 @@
     "recentLog": "最近心跳日志",
     "noLog": "暂无心跳日志",
     "loadingLog": "加载心跳日志…",
-    "refreshLog": "刷新日志"
+    "refreshLog": "刷新日志",
+    "lastRun": "上次执行",
+    "lastRunAgo": " 前",
+    "runStatus_success": "成功",
+    "runStatus_no_output": "无产出",
+    "runStatus_error": "失败"
   },
   "config": {
     "title": "心跳配置",

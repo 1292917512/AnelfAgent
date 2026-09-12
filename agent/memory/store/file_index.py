@@ -20,7 +20,7 @@ from ._shared import (
     extract_like_keywords,
     get_memory_config_value,
 )
-from .connection import MemoryConnectionManager
+from .connection import MemoryConnectionManager, fetch_count
 
 
 class FileIndexStore:
@@ -168,7 +168,7 @@ class FileIndexStore:
             "WHERE embedding IS NOT NULL AND id > ? ORDER BY id LIMIT ?",
             (last_id, batch_size),
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         new_last = str(rows[-1]["id"]) if rows else last_id
         return rows, new_last
 
@@ -290,13 +290,12 @@ class FileIndexStore:
     async def get_index_status(self) -> Dict[str, Any]:
         """返回文件索引的统计信息。"""
         db = await self._conn.get_db()
-        file_count = (await (await db.execute("SELECT COUNT(*) as cnt FROM files")).fetchone())["cnt"]
-        chunk_count = (await (await db.execute("SELECT COUNT(*) as cnt FROM chunks")).fetchone())["cnt"]
-        chunk_with_emb = (await (await db.execute(
-            "SELECT COUNT(*) as cnt FROM chunks WHERE embedding IS NOT NULL"
-        )).fetchone())["cnt"]
-        mem_count = (await (await db.execute("SELECT COUNT(*) as cnt FROM memories")).fetchone())["cnt"]
-        cache_count = (await (await db.execute("SELECT COUNT(*) as cnt FROM embedding_cache")).fetchone())["cnt"]
+        file_count = await fetch_count(db, "SELECT COUNT(*) FROM files")
+        chunk_count = await fetch_count(db, "SELECT COUNT(*) FROM chunks")
+        chunk_with_emb = await fetch_count(
+            db, "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL")
+        mem_count = await fetch_count(db, "SELECT COUNT(*) FROM memories")
+        cache_count = await fetch_count(db, "SELECT COUNT(*) FROM embedding_cache")
         return {
             "files": file_count,
             "chunks": chunk_count,

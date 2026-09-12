@@ -54,6 +54,9 @@ class ContextSnapshot:
         self._lock = asyncio.Lock()
         # 上一次快照的 section 哈希（layer → sha1 前缀），用于逐 section 变更对比
         self._last_section_hashes: Dict[str, str] = {}
+        # 上一次快照的逐消息哈希（layer → [sha1]），用于区块内"已缓存前缀 /
+        # 本轮新增"切分（追加式层的新增部分与既有前缀分开呈现）
+        self._last_msg_hashes: Dict[str, List[str]] = {}
 
     @property
     def armed(self) -> bool:
@@ -136,6 +139,7 @@ class ContextSnapshot:
                 "tool_names": tool_names,
                 "tools": tools or [],
                 "sections": sections,
+                "prefix_break": self._compute_prefix_break(sections),
                 "cache": self._build_cache_block(sections),
                 "prefix_drift": prefix_drift,
             }
@@ -163,6 +167,7 @@ class ContextSnapshot:
         self._armed = False
         self._snapshot = None
         self._last_section_hashes = {}
+        self._last_msg_hashes = {}
 
     def get_status(self) -> Dict[str, Any]:
         """返回当前状态（API 用）。"""
@@ -209,9 +214,12 @@ class ContextSnapshot:
                         "estimated_tokens": s["estimated_tokens"],
                         "hash": s.get("hash"),
                         "changed": s.get("changed"),
+                        "stable_count": s.get("stable_count"),
+                        "new_count": s.get("new_count"),
                     }
                     for s in snapshot.get("sections", [])
                 ],
+                "prefix_break": snapshot.get("prefix_break"),
                 "cache": snapshot.get("cache"),
                 "prefix_drift": snapshot.get("prefix_drift"),
             }
@@ -424,7 +432,15 @@ class ContextSnapshot:
             })
 
         new_hashes: Dict[str, str] = {}
+        new_msg_hashes: Dict[str, List[str]] = {}
         sections: List[Dict[str, Any]] = []
+
+        def _msg_hash(m: Dict) -> str:
+            payload = json.dumps(
+                {k: m.get(k) for k in ("role", "content", "tool_calls", "tool_call_id")},
+                ensure_ascii=False, sort_keys=True, default=str,
+            )
+            return hashlib.sha1(payload.encode("utf-8", errors="replace")).hexdigest()[:10]
 
         def _make_section(layer: str, msgs: List[Dict]) -> Dict[str, Any]:
             section_chars = sum(m["chars"] for m in msgs)
@@ -432,7 +448,20 @@ class ContextSnapshot:
                 "".join(str(m["content"]) for m in msgs).encode("utf-8", errors="replace")
             ).hexdigest()[:12]
             new_hashes[layer] = digest
+            msg_hashes = [_msg_hash(m) for m in msgs]
+            new_msg_hashes[layer] = msg_hashes
             previous = self._last_section_hashes.get(layer)
+            prev_msg_hashes = self._last_msg_hashes.get(layer)
+            # 逐消息最长公共前缀：前 N 条与上次快照逐字节一致（可命中缓存），
+            # 其后为本轮新增/变化；无基线为 None
+            if prev_msg_hashes is None:
+                stable_count: Optional[int] = None
+            else:
+                stable_count = 0
+                for cur, prev in zip(msg_hashes, prev_msg_hashes, strict=False):
+                    if cur != prev:
+                        break
+                    stable_count += 1
             meta = get_layer_meta(layer)
             return {
                 "layer": layer,
@@ -443,6 +472,9 @@ class ContextSnapshot:
                 "hash": digest,
                 # 与上一次快照对比：None=首次快照无基线，True/False=是否变更
                 "changed": None if previous is None else previous != digest,
+                # 区块内静态/动态切分（None=无基线）
+                "stable_count": stable_count,
+                "new_count": None if stable_count is None else len(msgs) - stable_count,
                 # 变动率元数据（注册中心；Web 展示缓存稳定性依据）
                 "volatility": meta.volatility if meta else None,
                 "volatility_label": meta.volatility_label if meta else None,
@@ -460,29 +492,52 @@ class ContextSnapshot:
                 sections.append(_make_section(layer, msgs))
 
         self._last_section_hashes = new_hashes
+        self._last_msg_hashes = new_msg_hashes
         return sections
+
+    @staticmethod
+    def _compute_prefix_break(sections: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """全局前缀断链点：按 wire 顺序首个字节分歧位置。
+
+        层首现（无基线）= 本层全量新增；层收缩（stable==count 但整层 hash
+        变化，如压缩删除尾部）在层末分叉。全部层均无基线（首次快照）返回
+        None；layer=None 表示与上次快照完全一致。
+        """
+        if not sections or all(s.get("stable_count") is None for s in sections):
+            return None
+        before_tokens = 0
+        for section in sections:
+            stable = section.get("stable_count")
+            stable_chars = sum(
+                m["chars"] for m in section["messages"][:stable or 0]
+            )
+            if stable is None or stable < section["count"] or section.get("changed") is True:
+                return {
+                    "layer": section["layer"],
+                    "label": section["label"],
+                    "index": stable or 0,
+                    "before_tokens": before_tokens + stable_chars // 4,
+                }
+            before_tokens += section["estimated_tokens"]
+        return {"layer": None, "label": None, "index": None, "before_tokens": before_tokens}
 
     @staticmethod
     def _build_cache_block(sections: List[Dict[str, Any]]) -> Dict[str, Any]:
         """构建缓存观测区块：上次调用真实缓存用量 + 两种前缀口径。
 
-        - estimated_cacheable_prefix_tokens：从头连续未变更的 section 累计
-          （近似最长可复用前缀，供对比"这次变更差多少缓存"），无基线时 None
+        - estimated_cacheable_prefix_tokens：消息级断链点之前的全部 tokens
+          （与上次快照逐字节一致的最长前缀；会话追加等缓存友好变更计入
+          既有部分），无基线时 None
         - expected_prefix_tokens：按断点锚点布局的理论可命中前缀
           （CACHEABLE_PREFIX_LAYERS 字节稳定层的 tokens 合计）——与本次
           cache_read 对比即可秒判：expected 高而 read=0 ⇒ 非内容漂移
           （网关侧/连接亲和问题）；expected 与 read 同步降 ⇒ 前缀内容变更
         """
-        prefix_tokens: Optional[int] = 0
-        for section in sections:
-            if section.get("changed") is False:
-                prefix_tokens += section["estimated_tokens"]
-            elif section.get("changed") is None:
-                # 首次快照无基线：无法判断稳定性
-                prefix_tokens = None
-                break
-            else:
-                break
+        prefix_break = ContextSnapshot._compute_prefix_break(sections)
+        if prefix_break is None:
+            prefix_tokens: Optional[int] = None
+        else:
+            prefix_tokens = prefix_break["before_tokens"]
 
         from agent.llm.prompt_cache import CACHEABLE_PREFIX_LAYERS
         expected_tokens = sum(

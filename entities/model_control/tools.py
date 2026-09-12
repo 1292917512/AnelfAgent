@@ -356,9 +356,11 @@ def set_model_priority(model_type: str, model_ids: str) -> str:
 
 
 @tool(name="list_sub_agents", group="model_control", tags=["core"],
-      description="查看全部子代理档案（名称 → 有序模型候选池 + 描述）。"
+      description="查看全部子代理档案（名称 → 有序模型候选池 + 执行面）。"
                   "delegate_task 传 agent_name 即可使用对应档案；内置 easy/medium/hard "
-                  "即难度三挡（difficulty 1/2/3 的语法糖），可直接指定或调整其模型池")
+                  "即难度三挡（difficulty 1/2/3 的语法糖），可直接指定或调整其模型池。"
+                  "自定义档案可携带执行面：instructions 专职守则 / tool_tags 工具选择器 / "
+                  "blocked_tools 追加屏蔽 / output_schema 结构化产出契约")
 def list_sub_agents() -> str:
     """列出全部子代理档案，供 delegate_task 的 agent_name 参数选用。"""
     try:
@@ -375,9 +377,19 @@ def list_sub_agents() -> str:
 
 
 @tool(name="create_sub_agent", group="model_control", tags=["core"],
-      description="创建自定义子代理档案（名称 + 绑定模型 + 描述），持久化并热生效。"
-                  "创建后 delegate_task(agent_name=名称) 即使用该档案")
-def create_sub_agent(name: str, model_id: str, description: str = "") -> str:
+      description="创建自定义子代理档案（名称 + 绑定模型 + 执行面），持久化并热生效。"
+                  "创建后 delegate_task(agent_name=名称) 即使用该档案。"
+                  "执行面（可选）：instructions 专职守则 / tool_tags 工具选择器 / "
+                  "blocked_tools 追加屏蔽 / output_schema 结构化产出契约")
+def create_sub_agent(
+        name: str,
+        model_id: str,
+        description: str = "",
+        instructions: str = "",
+        tool_tags: str = "",
+        blocked_tools: str = "",
+        output_schema: str = "",
+) -> str:
     """创建自定义子代理档案并持久化，立即生效。
 
     Args:
@@ -385,10 +397,23 @@ def create_sub_agent(name: str, model_id: str, description: str = "") -> str:
             easy/medium/hard 为内置难度档保留名，不可创建）
         model_id: 绑定的模型 ID（须为已配置的 chat 模型，通过 list_models 查看）
         description: 用途描述（可选，帮助后续选用）
+        instructions: 专职守则（可选，≤4000 字符）：该档案子代理的执行契约——
+            做什么/怎么做/红线（如「只读调研，禁止修改任何文件」）
+        tool_tags: 工具选择器，逗号分隔（可选，如 "heartbeat,web"；空 = 默认 heartbeat 常态集，
+            子代理仍可 activate_tool_group 按需扩展）
+        blocked_tools: 追加屏蔽的工具名，逗号分隔（可选，如 "run_shell_command,write_file"）
+        output_schema: 输出契约，JSON object 字符串（可选，如 {"summary": "", "facts": []}）；
+            子代理最终总结须为该结构的 JSON，父级拿到结构化结果
     """
     try:
         from entities._sdk import get_llm_manager
-        ok, message = get_llm_manager().create_sub_agent(name, model_id, description)
+        ok, message = get_llm_manager().create_sub_agent(
+            name, model_id, description,
+            instructions=instructions,
+            tool_tags=tool_tags or None,
+            blocked_tools=blocked_tools or None,
+            output_schema=output_schema or None,
+        )
         if not ok:
             return tool_error(message, cause=ErrorCause.PARAM, retryable=False)
         return json.dumps({"ok": True, "message": message, "name": name, "model_id": model_id},
@@ -398,14 +423,19 @@ def create_sub_agent(name: str, model_id: str, description: str = "") -> str:
 
 
 @tool(name="update_sub_agent", group="model_control", tags=["core"],
-      description="更新子代理档案（换绑模型/调整候选池/改描述），空参数保持原值，持久化并热生效。"
-                  "内置难度档（easy/medium/hard）可经 models 调整其完整模型池（池内顺序即优先级，"
-                  "前面的不可用时依次回退）")
+      description="更新子代理档案（换绑模型/调整候选池/改描述/改执行面），空参数保持原值，"
+                  "持久化并热生效。内置难度档（easy/medium/hard）可经 models 调整其完整模型池"
+                  "（池内顺序即优先级，前面的不可用时依次回退），但不收执行面——"
+                  "难度语义只是换模型，行为契约归自定义档案")
 def update_sub_agent(
         name: str,
         model_id: str = "",
         models: str = "",
         description: str = "",
+        instructions: str = "",
+        tool_tags: str = "",
+        blocked_tools: str = "",
+        output_schema: str = "",
 ) -> str:
     """更新子代理档案并持久化，立即生效。
 
@@ -415,12 +445,29 @@ def update_sub_agent(
         models: 逗号分隔的完整候选池（如 "glm-flash,qwen-max"），整体替换、
             池内顺序即优先级；空 = 不变（清空池请经 Web 界面）
         description: 新描述（空 = 不变）
+        instructions: 新专职守则（空 = 不变；"clear" 清除）
+        tool_tags: 新工具选择器，逗号分隔（空 = 不变；"clear" 清除恢复默认）
+        blocked_tools: 新增屏蔽工具，逗号分隔（空 = 不变；"clear" 清除）
+        output_schema: 新输出契约 JSON object 字符串（空 = 不变；"clear" 清除）
     """
     try:
         from entities._sdk import get_llm_manager
         pool = [s.strip() for s in models.split(",") if s.strip()] if models else None
+        tags: Any = None
+        blocked: Any = None
+        if tool_tags:
+            tags = [] if tool_tags == "clear" else tool_tags
+        if blocked_tools:
+            blocked = [] if blocked_tools == "clear" else blocked_tools
+        schema: Any = None
+        if output_schema:
+            schema = None if output_schema == "clear" else output_schema
         ok, message = get_llm_manager().update_sub_agent(
             name, model_id=model_id, models=pool, description=description,
+            instructions=instructions or None,
+            tool_tags=tags,
+            blocked_tools=blocked,
+            output_schema=schema,
         )
         if not ok:
             return tool_error(message, cause=ErrorCause.PARAM, retryable=False)

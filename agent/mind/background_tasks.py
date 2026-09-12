@@ -223,7 +223,7 @@ class BackgroundTaskRegistry:
         if rec.info.scope != (scope or "_global"):
             return {"ok": False, "error": f"任务 {task_id} 不属于当前会话"}
         if not rec.output_file:
-            return {"ok": False, "error": f"任务 {task_id} 无关联输出文件（仅 shell 类任务支持增量读取）"}
+            return {"ok": False, "error": f"任务 {task_id} 无关联输出文件（仅 shell/子代理委托类任务支持增量读取）"}
         offset = self._output_cursors.get(task_id, 0)
         try:
             with open(rec.output_file, "rb") as f:

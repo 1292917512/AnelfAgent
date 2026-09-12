@@ -12,6 +12,7 @@ from entities.ai_desktop.modules.subscription.providers import (
     _kimi_window_label,
     iso_to_sec,
     ms_to_sec,
+    parse_deepseek,
     parse_glm,
     parse_kimi,
     parse_minimax,
@@ -173,13 +174,14 @@ class TestDetail:
         module = SubscriptionModule()
         module._credentials_at = time.time()
         module._credentials = {"glm": ("key", "zhipu"), "minimax": ("", ""),
-                               "kimi": ("key", "Kimi")}
+                               "kimi": ("key", "Kimi"), "deepseek": ("", "")}
         module._data = {
             "glm": parse_glm(_GLM_PAYLOAD) | {"fetched_at": 1.0},
             "kimi": {"error": "请求超时"},
         }
         states = {p["key"]: p["state"] for p in module.detail()["providers"]}
-        assert states == {"glm": "ok", "minimax": "no_credential", "kimi": "error"}
+        assert states == {"glm": "ok", "minimax": "no_credential",
+                          "kimi": "error", "deepseek": "no_credential"}
 
 
 class TestKimiMissingFields:
@@ -219,3 +221,56 @@ class TestResetFormat:
                   "reset_at": 1789058279.0}
         assert SubscriptionModule._format_window(window) == \
             "每5小时 剩 87/100（重置 09-11 00:37）"
+
+
+_DEEPSEEK_PAYLOAD = {
+    "is_available": True,
+    "balance_infos": [
+        {"currency": "CNY", "total_balance": "68.49",
+         "granted_balance": "0.00", "topped_up_balance": "68.49"},
+    ],
+}
+
+
+class TestDeepseekParse:
+    def test_balance_extraction(self) -> None:
+        result = parse_deepseek(_DEEPSEEK_PAYLOAD)
+        assert result["plan"] == "可用"
+        window = result["windows"][0]
+        assert window["balance"] == 68.49
+        assert window["currency"] == "CNY"
+
+    def test_cny_preferred(self) -> None:
+        result = parse_deepseek({
+            "is_available": True,
+            "balance_infos": [
+                {"currency": "USD", "total_balance": "1.00"},
+                {"currency": "CNY", "total_balance": "68.49"},
+            ],
+        })
+        assert result["windows"][0]["balance"] == 68.49
+
+    def test_unavailable_flag(self) -> None:
+        result = parse_deepseek({"is_available": False,
+                                 "balance_infos": [{"currency": "CNY", "total_balance": "0"}]})
+        assert result["plan"] == "余额不足"
+        assert result["windows"][0]["balance"] == 0.0
+
+    def test_no_balance_raises(self) -> None:
+        import pytest
+        with pytest.raises(ValueError):
+            parse_deepseek({"balance_infos": []})
+
+
+class TestBalanceRender:
+    def test_format_window_balance(self) -> None:
+        window = {"label": "账户余额", "balance": 68.49, "currency": "CNY"}
+        assert SubscriptionModule._format_window(window) == "账户余额 ¥68.49"
+
+    def test_render_line_with_balance(self) -> None:
+        module = SubscriptionModule()
+        module._credentials_at = time.time()
+        module._credentials = {"deepseek": ("key", "11")}
+        module._data = {"deepseek": parse_deepseek(_DEEPSEEK_PAYLOAD)
+                        | {"fetched_at": time.time()}}
+        assert module.render() == "[订阅] DeepSeek（可用）：账户余额 ¥68.49"

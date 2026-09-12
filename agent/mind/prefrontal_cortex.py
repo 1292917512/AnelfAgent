@@ -101,12 +101,6 @@ class PrefrontalCortex:
     ) -> None:
         self.work_memory.requeue_analysis(group_id, uid, adapter_key)
 
-    async def pop_user_task(self) -> Optional[str]:
-        return await self.work_memory.pop_user_task()
-
-    async def pop_group_task(self) -> Optional[str]:
-        return await self.work_memory.pop_group_task()
-
     async def pop_analysis_task(self) -> Optional[EntityData]:
         return await self.work_memory.pop_analysis_task()
 

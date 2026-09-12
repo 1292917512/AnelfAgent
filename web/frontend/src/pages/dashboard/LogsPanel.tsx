@@ -25,16 +25,22 @@ const HIGHLIGHT_DURATION_MS = 2500;export function LogsPanel() {
   const [following, setFollowing] = useState(true);
   const [pendingCount, setPendingCount] = useState(0);
   const [confirmClear, setConfirmClear] = useState(false);
-  const [highlightSeq, setHighlightSeq] = useState<number | null>(null);  const pausedRef = useRef(paused);
-  pausedRef.current = paused;
+  const [highlightSeq, setHighlightSeq] = useState<number | null>(null);
+  const pausedRef = useRef(paused);
   const followingRef = useRef(following);
-  followingRef.current = following;
+  // 渲染期禁止写 ref（React Compiler 规则）：状态 → ref 同步放 effect，
+  // 读取方（SSE/滚动回调）均在渲染之后触发，时序不受影响
+  useEffect(() => {
+    pausedRef.current = paused;
+    followingRef.current = following;
+  }, [paused, following]);
   const backlogRef = useRef<LogRow[]>([]);
   const seqRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   /** 跳转定位的消息内容（URL ?jump= 传入，仅消费一次） */
-  const jumpMsgRef = useRef<string | null>(searchParams.get("jump"));  const queryClient = useQueryClient();
+  const jumpMsgRef = useRef<string | null>(searchParams.get("jump"));
+  const queryClient = useQueryClient();
   const { data: stats } = useQuery({
     queryKey: ["logStats"],
     queryFn: () => statusApi.logStats().then((r) => r.data),

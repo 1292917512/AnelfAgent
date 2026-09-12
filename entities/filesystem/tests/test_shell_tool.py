@@ -13,7 +13,7 @@ from entities.filesystem import shell_state, tools
 @pytest.fixture()
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(tools, "_load_config", lambda: None)
-    monkeypatch.setattr(tools, "_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(tools, "_ws_root", lambda: str(tmp_path))
     monkeypatch.setattr(tools, "_SANDBOX", True)
     shell_state._cwds.pop("_global", None)
     yield tmp_path

@@ -21,7 +21,7 @@ _KEEP_PER_ENTITY = 3
 
 def _backup_dir() -> Path:
     from core.path import project_root
-    path = project_root() / "workspace" / "backup" / "profile_backups"
+    path = Path(project_root()) / "workspace" / "backup" / "profile_backups"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

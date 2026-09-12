@@ -512,6 +512,8 @@ _PATH_SPECS: Dict[str, Tuple[str, str]] = {
     "MEMORY_DIR": ("data", ""),
     "COGNEE_DATA_DIR": ("data", "cognee"),
     "HEARTBEAT_LOG": ("data", "heartbeat.md"),
+    "TASK_HISTORY": ("data", "task_history.json"),
+    "DELEGATION_DIR": ("data", "delegations"),
     "SQLITE_DB": ("data", "data/agent.sqlite3"),
     "UPLOAD_DIR": ("literal", "workspace/uploads"),
     "PLUGINS_DIR": ("literal", "workspace/plugins"),

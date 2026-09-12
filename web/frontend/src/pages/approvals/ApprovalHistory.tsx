@@ -62,7 +62,10 @@ export function ApprovalHistory() {
     queryFn: () => approvalsApi.history(100).then((r) => r.data),
   });
 
-  const history: ApprovalHistoryItem[] = data?.history ?? [];
+  const history: ApprovalHistoryItem[] = useMemo(
+    () => data?.history ?? [],
+    [data],
+  );
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: history.length };

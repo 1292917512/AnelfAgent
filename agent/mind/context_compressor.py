@@ -831,9 +831,9 @@ class ContextCompressor:
         for m in messages:
             if m.get("tool_calls"):
                 pending.extend(
-                    tc.get("id")
+                    tcid
                     for tc in m.get("tool_calls") or []
-                    if isinstance(tc, dict) and tc.get("id")
+                    if isinstance(tc, dict) and (tcid := tc.get("id"))
                 )
             elif m.get("role") == "tool":
                 tcid = m.get("tool_call_id")
@@ -939,6 +939,12 @@ class ContextCompressor:
 
         if summarizer is None:
             summarizer = getattr(self._mind, "summarize_text", None)
+        if summarizer is None:
+            # LLM 摘要不可用：直接走确定性拼接（docstring 声明的回退语义）
+            fallback = self._fallback_summary(middle)
+            if previous_summary:
+                return f"{previous_summary}\n{fallback}"
+            return fallback
 
         async def _call(batch: List[Dict]) -> str:
             result = summarizer(
@@ -954,27 +960,26 @@ class ContextCompressor:
             return (getattr(result, "content", None) or str(result or "")).strip()
 
         try:
-            if summarizer is not None:
-                try:
-                    text = await _call(middle)
-                except Exception as exc:
-                    # 摘要请求自身超窗口：从最老端丢弃三分之一重试一次
-                    # （保尾部近期内容；再次溢出则落入确定性回退）
-                    from agent.llm.resilience.classifier import (
-                        ErrorCategory,
-                        classify_llm_error,
-                    )
-                    overflow = (
-                        classify_llm_error(exc).category
-                        is ErrorCategory.CONTEXT_OVERFLOW
-                    )
-                    if not overflow or len(middle) <= 4:
-                        raise
-                    dropped = max(1, len(middle) // 3)
-                    log(f"摘要请求上下文超限，丢弃最老 {dropped} 条重试", "WARNING", tag="压缩")
-                    text = await _call(middle[dropped:])
-                if text:
-                    return text[: self.config.summary_max_chars]
+            try:
+                text = await _call(middle)
+            except Exception as exc:
+                # 摘要请求自身超窗口：从最老端丢弃三分之一重试一次
+                # （保尾部近期内容；再次溢出则落入确定性回退）
+                from agent.llm.resilience.classifier import (
+                    ErrorCategory,
+                    classify_llm_error,
+                )
+                overflow = (
+                    classify_llm_error(exc).category
+                    is ErrorCategory.CONTEXT_OVERFLOW
+                )
+                if not overflow or len(middle) <= 4:
+                    raise
+                dropped = max(1, len(middle) // 3)
+                log(f"摘要请求上下文超限，丢弃最老 {dropped} 条重试", "WARNING", tag="压缩")
+                text = await _call(middle[dropped:])
+            if text:
+                return text[: self.config.summary_max_chars]
         except Exception as exc:
             self.metrics.failures += 1
             log(f"压缩摘要生成失败，回退确定性摘要: {exc}", "WARNING", tag="压缩")

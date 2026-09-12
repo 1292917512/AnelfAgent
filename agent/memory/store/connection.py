@@ -11,7 +11,7 @@ import asyncio
 import re
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional, Sequence
 
 import aiosqlite
 
@@ -19,6 +19,17 @@ from core.log import log
 
 # 连接健康检查节流间隔（秒）：避免每次 get_db 都执行 SELECT 1
 _HEALTH_CHECK_INTERVAL = 30.0
+
+
+async def fetch_count(db: aiosqlite.Connection, sql: str,
+                      params: Sequence[Any] = ()) -> int:
+    """执行 COUNT 聚合并返回数值。
+
+    COUNT 恒返回一行（fetchone 实际不会为 None）；aiosqlite 把 fetchone
+    注解为 Row | None，在此统一收窄，调用点不再逐处下标判空。
+    """
+    row = await (await db.execute(sql, params)).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 class MemoryConnectionManager:

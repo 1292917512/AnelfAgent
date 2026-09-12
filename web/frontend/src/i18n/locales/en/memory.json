@@ -258,7 +258,17 @@
     "storageGraph": "Graph",
     "storageMetadata": "Metadata",
     "storageData": "Raw docs",
-    "lastCompact": "Last compact"
+    "lastCompact": "Last compact",
+    "probeTitle": "Deep Probe Status",
+    "probeSubtitle": "Observability of async deep retrieval during replies (delta beyond base recall; empty injection is normal when the first round covered it)",
+    "probeStarted": "Started",
+    "probeCompleted": "Completed",
+    "probeInjected": "Injected",
+    "probeTimeout": "Timeout",
+    "probeDisabled": "Probe disabled",
+    "probeInjectOff": "Injection off",
+    "probeNoActivity": "No activity yet (planner triggers only when needed — try a relation question like \"How are X and Y related?\")",
+    "probeRunning": "probing"
   },
   "docs": {
     "title": "Document Index",

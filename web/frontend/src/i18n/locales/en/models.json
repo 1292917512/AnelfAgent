@@ -138,8 +138,8 @@
     "media_protocol": "Image Gen Protocol"
   },
   "subagents": {
-    "desc": "Unified sub-agent profiles: each profile binds an ordered model pool; delegate_task with agent_name uses that profile (pool order is priority, falls through on unavailable models).",
-    "usageHint": "Built-in difficulty tiers easy/medium/hard and custom profiles share one registry: difficulty 1/2/3 is sugar for the built-ins, agent_name=easy also works. Changes take effect immediately.",
+    "desc": "Unified sub-agent profiles: model pool + execution facets (instructions / tool tags / blocked tools / output schema). delegate_task with agent_name uses the profile (pool order = priority, fallback on failure).",
+    "usageHint": "Built-in tiers easy/medium/hard share the same registry (difficulty 1/2/3 is sugar). Custom profiles may carry execution facets. Changes apply immediately.",
     "builtinTitle": "Built-in Difficulty Tiers",
     "builtinHint": "delegate_task difficulty 1/2/3 maps to easy/medium/hard; an exhausted tier falls down to the lower tier.",
     "builtinBadge": "Built-in",
@@ -156,7 +156,7 @@
     "addToPool": "Add to pool",
     "remove": "Remove",
     "customTitle": "Custom Profiles",
-    "customHint": "Create \"name → model\" bindings for common work types (e.g. researcher); use via delegate_task agent_name.",
+    "customHint": "Create profiles for recurring work types (e.g. researcher): a model pool plus optional facets (instructions / tool tags / blocked tools / output schema).",
     "createTitle": "Create profile",
     "namePlaceholder": "Name, e.g. researcher",
     "nameHint": "Starts with a letter; letters/digits/underscore/hyphen only, ≤32 chars; easy/medium/hard are reserved for built-ins",
@@ -169,7 +169,16 @@
     "confirmDelete": "Confirm",
     "modelMissing": "Model missing",
     "unavailable": "No available model",
-    "empty": "No custom profiles yet; create one above"
+    "empty": "No custom profiles yet; create one above",
+    "facetsBadge": "facets",
+    "facetsToggle": "Facets",
+    "facetsHint": "Facets only apply inside the sub-agent's ephemeral context (never the conversation prefix): instructions shape behavior, tags/blocked control the tool surface, output schema requires a structured JSON summary.",
+    "instructionsPlaceholder": "Instructions (optional, ≤4000 chars), e.g. read-only research, never modify files",
+    "toolTagsPlaceholder": "Tool tags (comma separated, empty = default), e.g. heartbeat,web",
+    "blockedToolsPlaceholder": "Blocked tools (comma separated, optional), e.g. run_shell_command",
+    "schemaPlaceholder": "Output schema JSON (optional), e.g. {\"summary\": \"\", \"facts\": []}",
+    "schemaHint": "The sub-agent's final summary must be JSON of this shape; empty = free text",
+    "schemaInvalid": "Output schema is not a valid JSON object"
   },
   "modelTypeLabels": {
     "chat": "Chat",

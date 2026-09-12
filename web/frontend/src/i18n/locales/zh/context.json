@@ -58,7 +58,14 @@
     "title": "上下文分层",
     "changed": "已变更",
     "unchanged": "未变更",
-    "volatilityTitle": "变动率 {{value}}（值越大变动越频繁，排越靠后）"
+    "volatilityTitle": "变动率 {{value}}（值越大变动越频繁，排越靠后）",
+    "cachedPrefix": "缓存 {{count}} 条",
+    "newAdds": "新增 {{count}} 条",
+    "cachedPrefixRegion": "已缓存前缀 {{count}} 条（与上次快照逐字节一致，点击展开）",
+    "breakPoint": "断链点",
+    "breakDesc": "此前 ~{{tokens}}t 本轮可命中缓存，此后为本轮重写内容",
+    "breakBanner": "断链点：{{label}} 第 {{index}} 条（0 起）——此前 ~{{tokens}}t 可命中，其后本轮重写",
+    "stableAll": "与上次快照逐字节一致：全前缀稳定，本轮理论上应全量命中（命中低 ⇒ 供应商侧波动）"
   },
   "tools": {
     "title": "工具清单"

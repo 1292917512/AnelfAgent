@@ -38,7 +38,7 @@ description: "AnelfAgent 项目指令 — 开发规范与架构速查（对所�
 | `agent/mind/` | 思维核心（自主决策 / 多轮推理 / 跨频道感知） | 工具编排在 `mind/tools/` |
 | `agent/memory/` | 语义记忆（FTS5 + Embedding 混合检索 / 便签 / 文件索引） | 不依赖 mind |
 | `agent/skills/` | 技能自学习（事实索引 / 匹配 / 后台评审 / 策展；事实归系统、决策归 AI） | 文件存储在 `workspace/skills/` |
-| `agent/delegation/` | 子代理调度（delegate_task / 并行 fan-out / 深度限制） | 经 `mind.reflect()` 隔离执行 |
+| `agent/delegation/` | 子代理调度（档案 schema / 并行 fan-out / 续跑 / 双档转向 / 运行日志） | 经 `mind.reflect()` 隔离执行 |
 | `agent/security/` | 安全防护（会话令牌 / 威胁扫描） | 脱敏核心在 `core/sanitizer.py` |
 | `agent/task/` | 独立任务系统（定义 / 注册表 / 执行器） | 纯内容定义，不含调度逻辑 |
 | `agent/heartbeat/` | 心跳调度（引擎 / 配置 / 日志 / 内置维护） | 管理何时执行任务，持久化计数器 |
@@ -192,7 +192,8 @@ entity_scope 含频道 adapter 维度，跨频道同号实体（如 QQ uid 与 W
 `user_{adapter}:{uid}` / `group_{adapter}:{gid}` / `user_{adapter}:{uid}#{chat_id}`
 （如 `user_qq:123`、`user_webui:web_user#chat_1`）。构造一律用 `build_entity_scope()`，
 解析一律用 `parse_entity_scope()`（返回 scope_type/adapter/base_id/session_id，兼容无 adapter 旧格式），
-禁止手工 f-string 拼接。记忆标签同构：`user:{adapter}:{uid}`。存量数据由
+会话合法性判据用 `is_conversation_scope()`（投递面守卫：待回复队列/持久化提醒
+拒绝不可路由 scope），禁止手工 f-string 拼接。记忆标签同构：`user:{adapter}:{uid}`。存量数据由
 `agent/storage/scope_migrate.py` 启动时自动迁移（`legacy_adapter_default` 配置归属频道，默认 qq）；
 别名实体的跨频道历史合并由 `alias_merge_history` 配置（默认开）。
 
@@ -325,10 +326,11 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 用户 hook 事件面 | `agent/hooks/` + `services/hooks.py` + `web/routers/hooks.py` | `config/hooks.json` 声明 tool_pre/tool_post/reply_end 脚本；exit 2 阻塞（stderr 为理由）、串行、deny 胜过一切；空配置零开销。管理面：设置页「钩子」标签可视化编辑（保存即热生效），样例 `config/hooks.example.json`；校验与运行时同源（`parse_hooks_data`） |
 | 长任务交接 | `agent/task/handoff.py` | 任务定义 `handoff: true` 时：输出末尾 `# HANDOFF` 块持久化，下次运行注入（确定性接力） |
 | 消息来源打标 | `_source` 键 | 系统注入消息带 `{"origin": ...}`，`normalize_for_send` 与 `_layer` 一并剥离（LLM 不可见，供归因） |
-| 子代理统一注册表 | `LLMManager._sub_agents` + `delegate_task(agent_name=...)` | 一套档案体系（llm_clients.json 顶层 `sub_agents` 键）：名称 → 有序模型候选池（前者不可用依次回退）。**内置难度档 easy/medium/hard（tier 1-3，受保护）就是 difficulty 1/2/3 的语法糖**，与自定义档案（tier 0）同构存储、同套 CRUD；解析优先级 agent_name > difficulty > 默认，本档全不可用降挡。AI 经 model_control 组 4 个工具增删改查（list/create/update/delete_sub_agents，update 的 models 参数整池替换），Web 经 `/models/sub-agents`，双路径同 LLMManager 内存态 + 原子落盘即热生效；legacy `delegation_tiers` 键加载时自动迁移；档案内容不注入 prompt 层（AI 按需 list 查询，零缓存影响） |
+| 子代理统一注册表 | `agent/delegation/profile.py`（schema 单一权威）+ `LLMManager._sub_agents`（存储宿主）+ `delegate_task(agent_name=...)` | 一套档案体系（llm_clients.json 顶层 `sub_agents` 键）：**模型面**（名称 → 有序模型候选池，前者不可用依次回退）+ **执行面** AgentFacets（instructions 专职守则 / tool_tags reflect 工具选择器 / blocked_tools 追加屏蔽 / output_schema 结构化产出契约——注入子代理 reflect 临时上下文，不进任何 stable 前缀层）。**内置难度档 easy/medium/hard（tier 1-3，受保护）就是 difficulty 1/2/3 的语法糖**，恒为纯模型池（难度语义只是换模型，不收执行面）；与自定义档案（tier 0）同构存储、同套 CRUD；解析优先级 agent_name > difficulty > 默认，本档全不可用降挡。AI 经 model_control 组 4 个工具增删改查（update 的 instructions/output_schema 传 "clear" 清除、tool_tags/blocked_tools 传空列表清除），Web 经 `/models/sub-agents`（模型页子代理面板可编辑执行面），双路径同 LLMManager 内存态 + 原子落盘即热生效；legacy `delegation_tiers` 键加载时自动迁移。output_schema 是提示词契约 + 产出宽容提取校验（`extract_json_output`：原文/剥围栏/平衡大括号三候选），schema_ok 事实报告进聚合结果——系统不替 AI 拒绝产出 |
 | idle 空闲调度 | `agent/heartbeat/` IDLE 模式 | 连续 N 拍无思考活动（`mind.last_activity_ts` 锚点，任务自身执行也刷新）触发唯一空闲任务（反思+自由活动，如 self_reflection）；确定性调度优先，REFLECT 元决策延迟登记由其消费；`validate_schedules` 强校验全局仅一条 |
 | 心跳忙碌延后 | `assistant._heartbeat_loop` | 回复/反思/上轮 tick 未收尾时不跳过整轮，按 `heartbeat_busy_defer_seconds`（默认 60s）短间隔轮询、空闲即补跑；延后期间不递增任何计数器 |
 | 同任务排队去重 | `HeartbeatEngine._task_inflight` | tick/manual/AI 四路径共用的执行中集合，排队里同一种任务只允许一条 |
+| 待回复队列毒丸防护 | `agent/messages/everything.py::is_conversation_scope`（单点判据）+ `scheduler.enqueue_scope_reply`/`add_reminder`（校验）+ `decision_executor.pop_next_reply_target`（就地清除）+ `work_memory.consume_scope_task`（双队列消费） | 回归自 2026-09-12 事故：日历提醒在无会话上下文（心跳任务内建日程）落 scope=`_global`，到期经 enqueue_scope_reply 直入 pending_user，回复路径解析不了只能跳过，自主循环 0 退避无限空转（fast-path 刷屏、日志 8GB）。三层防线：①源头——`add_reminder` 拒绝持久化不可路由 scope 的提醒（ValueError；`_sdk.add_persistent_reminder` 桥接如实记日志返回空串，事件降级为不提醒）；②入口——`enqueue_scope_reply` 拒绝非会话 scope 入队（退化为全局短期记忆桶，对齐 PushHub 兜底）；③兜底——回复消费点对解析失败的队列条目就地清除 + WARNING，任何坏条目最多空转一轮即收敛。`consume_scope_task` 双队列都查（不按前缀路由），对落错队列的条目同样健壮 |
 | 单实例守卫与重启保底 | `core/instance_guard.py` + `entities/devops/service.py` 重启看门狗 + `restart.sh` | 实例守卫：启动写 `logs/anelf.pid`（项目目录天然按检出副本隔离实例身份），PID 文件指向的活进程经 cmdline 校验（本项目 launch.py）判定为残留实例时 SIGTERM→10s 宽限→SIGKILL 清场接管端口，cmdline 不匹配只警告不误杀（防 PID 复用）；僵尸进程经 psutil status 判定视为已死。重启看门狗：restart_app 排定关停后 90s 进程仍存活（优雅关停卡死）→ 无条件 `os._exit(42)` 保底，守护脚本必然接管；等空闲路径在关停请求发出后才布防（防等空闲误触发）。restart.sh 优先 PID 文件精准终止，pkill 兜底模式收紧到 `$ROOT/.*launch`（旧版 `python.*launch` 会误杀其他项目）。修复 2026-09 实证：8/29 残留进程占面板端口 10 天，restart_app 协作式重启对其无管辖权 |
 | 崩溃守护与通报 | `start.sh`/`start.bat` 守护循环 + `core/crash_report.py` + `crash_recovery` | 致命信号退出（SIGSEGV 等，退出码 128+n；SIGKILL/SIGTERM 不重启）自动退避重启（5×次数秒，上限 60s），崩溃状态落盘 `logs/crash_state.json`，连续 5 次崩溃停止拉起防崩溃循环（稳定运行 ≥600s 后崩溃重置计数）；重启后 crash_recovery 消费崩溃状态并关联 macOS DiagnosticReports（.ips）生成崩溃上下文——有回复检查点则随中断元消息注入对应会话，无检查点则经 PushHub 写全局通知并唤醒一轮思维（重启报到技能接管向主人报平安）；状态标记 reported 只通报一次。AI 详情查询走 devops `get_crash_report` 工具 / 面板 `/crash-info` |
 | ladybug native 串行门 | `agent/memory/cognee/client.py` `_apply_native_gate` | 进程级线程锁串行所有 ladybug native 执行：锁包在提交到线程池的查询任务上（execute + 结果消费全程），由执行线程持有——wait_for 超时取消协程不会提前放锁，孤儿 native 查询跑完才放行下一条；`_drop_native_resources` 同锁保护，拆除句柄前等在途执行结束。修复 2026-08 SIGSEGV（NodeTableScanState::scanNext 空指针，孤儿查询与后续查询/拆除并发使用同一 connection） |
@@ -364,10 +366,11 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | WebUI 聊天广播 | `core.event_bus.EVENT_CHAT_BROADCAST` + web/routers/chat.py SSE 桥接 | channels/webui 经事件总线推帧（`_broadcast`/`_broadcast_scoped` 发射 EVENT_CHAT_BROADCAST），web 层订阅桥接 SSE 订阅者——频道不反向依赖 web 层（旧 `channels.webui → web.routers.chat` 环已拆）；健康探针改查 `event_bus.has_listeners` |
 | TTFT 首 token 计时 | `ChatResult.ttft_ms` + `EVENT_THINKING_LLM_END` | 流式路径记首 delta 到达时刻（毫秒）；与 duration_ms 相减即输出生成耗时——"排队慢"与"生成长"两个独立延迟源分别可诊断（对齐 dsh trajectory TTFT）。非流式为 None |
 | 一次性通知历史固化 | `scheduler.enqueue_scope_reply`（async）+ `_append_one_shot_history` | 一次性事件（后台任务完成/实体推送/定时提醒/重启补回/会话切换/委托完成）写目标会话**对话历史**（system，trigger_mind=False）而非短期记忆——此前驻留 volatile 层：每轮重复催促已处理完的事项，且每条新通知重写会话层前缀反复打断 prompt cache，清理全靠模型自觉。await 返回即历史落库，随后的回复周期拉取必含（无竞态）；写入失败回退短期记忆兜底。push 的 seq/inflight 随投递完成后登记（水位只统计已固化事实）。委托轮内会合的完整详情同样固化历史（`_append_one_shot_history` 直达），轮外完成由 registry unclaimed 回调统一负责不双投递；回调支持协程（`_finish` 总在主循环 ensure_future）。短期记忆回归纯持续提醒语义 |
-| 子代理转向（Steer） | `agent/delegation/steer.py` + `DelegationManager.steer` + `round_helpers._merge_steered_messages` + 工具 `send_to_agent` | 对齐 dsh steer 语义（2026-08 adjacent-agent-steer-messaging）：运行中委托可在**步骤边界**收到追加指令、改变进行中的工作——不取消重开、已完成部分保留。寻址按 delegation_id（前台/后台统一，只要在 _running）；消息暂存 `SteerInbox`（单委托上限 8 条、单条 4000 字符截断），SubAgent.run 经 `bind_steer_drain` ContextVar 绑定 drain 闭包（create_task 复制进整个执行树），think_loop 轮顶 drain 注入工具链尾部（user 角色 + [转向指令] 标记 + `_source:steer`），当轮 LLM 即见；主会话未绑定 drain 恒空零开销（用户插话本有 _merge_new_messages 机制）。委托结束（成败/超时）finally 清箱防残留误入后续同名委托。工具返回结构化错误：不存在（not_found，引导 check_background_tasks）/空消息/超上限 |
+| 子代理指令双档（steer/after） | `agent/delegation/steer.py` + `DelegationManager.steer` + `round_helpers._merge_steered_messages`/`merge_after_messages` + 工具 `send_to_agent(deliver_as=)` | 对齐 dsh steer 语义（2026-08 adjacent-agent-steer-messaging）与 pi 的 steer/followUp 拆分：**steer 档**（默认）在**步骤边界**注入追加指令、改变进行中的工作；**after 档**在**收束边界**注入（think_loop REFLECT 连续纯文本达上限本要结束时 `merge_after_messages` 消费，重置计数续跑）——「做完这批后顺便…」型追加不取消不重开、已完成部分保留。寻址按 delegation_id（前台/后台统一，只要在 _running）；消息暂存 `SteerInbox` 按档位分离（单委托上限 8 条两档合并计、单条 4000 字符截断），SubAgent.run 经 `bind_steer_drain` ContextVar 绑定 mode 参数化 drain 闭包（create_task 复制进整个执行树），主会话未绑定 drain 恒空零开销。委托结束（成败/超时）finally 清箱防残留误入后续同名委托。工具返回结构化错误：不存在（not_found，有 transcript 时引导 follow_up_agent）/空消息/非法档位/超上限 |
 | SSE 断线可见性与恢复 | `chat-store.ts`（sseConnected + refreshAfterReconnect）+ MessageList 横幅 | 对齐 dsh 连接恢复指示器：`es.onopen` 置连上、`onerror` 置断开——聊天流顶部显示琥珀色"正在重连"横幅（i18n zh/en）；断线后重连（_wasConnected 区分初次）自动补拉当前会话最近一页历史，按消息 id 尾部对齐合并（保留本地已加载的更早消息），修复断线窗口内落地的回复帧（delta/turn_end）静默缺失需整页刷新的问题。sending 卡死由既有发送看门狗兜底，不误复位进行中回复 |
 | 反思产出语义（纯结论） | `think_loop._handle_tool_round` 工具轮边界清空 | REFLECT 模式下模型发起工具调用即判定此前纯文本为中间独白（"我先分析一下…"）——从 collected_text 移除（字符数归档进 execution_steps 可追溯），产出只保留收束前**最后一个未被工具调用打断的连续文本段**。此前全轮合并 + 聚合截断（头75%尾25%）会让中间噪音挤占 [2000,24000] 预算、稀释关键结论——子代理结果、任务产出（存记忆）、元决策 REFLECT 输入三处同时受益。REPLY 模式 collected_text 无消费方，零影响 |
 | 委托结束原因贯通 | `think_loop completion 容器` → `mind.reflect(completion=)` → `SubAgentResult.completed_reason` | 结束原因三值：completed / budget_exhausted（轮次预算用尽，产出可能只是中途状态）/ interrupted（协作中断），经调用方传入的 completion 字典带出（不传容器零影响）。聚合结果对 budget_exhausted 条目附 `hint`（"拆小任务重新委托"），后台完成通知同样标注——父代理可区分"完整结论"与"半成品"并决策续委托。空产出时 no_output |
+| 委托可续跑与运行日志 | `agent/delegation/journal.py`（进度流/transcript/ledger）+ `DelegationManager.follow_up` + 工具 `follow_up_agent` | 对齐 dsh continuable subagents：委托结束把最终消息链（completion 容器 `messages` = base+tool_chain，think_loop finally 带出）持久化为 transcript（`<data_dir>/delegations/<id>.json`，256KB 上限超出降级为不可续跑档案），`follow_up_agent(delegation_id, message)` 以消息链为 base_messages 追加 [续跑指令] 无损续跑（前台/后台两路，血缘 parent_delegation_id 贯通；运行中委托拒绝并引导 send_to_agent）。**进度流**：轮次/工具事件行追加 `<id>.log` 并 `attach_output_file` 接入注册表——`check_background_tasks(task_id=...)` 现有单游标增量管线立即可读子代理中间进展（与后台 shell 同构）。**用量归集**：EVENT_THINKING_LLM_END 按 ContextVar 归属 delegation_id 分桶（turns/input/output/duration），随 SubAgentResult.usage 进聚合结果与 resolved 事件，running_snapshot 实时可见——父 AI 可判断"烧了 30 轮才出这点结论，该拆任务了"。**崩溃账本**：ledger.jsonl started/closed 各一行，bootstrap recover_interrupted 节点扫未闭合条目 → 按归属会话聚合注入"后台委托被进程中断"元消息（at-most-once：扫描即闭合；同 scope 一条防轰炸），非会话域仅记日志。retention 滚动清理（`delegation_journal_retention_days` 默认 7 天，新事件顺带执行）；`delegation_transcript_enabled` 可关。**归属修复**：前台/嵌套委托注册表登记从 `_global` 改为 `_owner_scope`（usage_scope 绑定 > 激活上下文，与完成路由同链）——check_background_tasks 真正可见前台委托、嵌套委托用量归属父会话 |
 | 前台委托注册表化 | `delegate()` registry 登记 + killer + `complete(claimed=True)` | 前台/嵌套委托同样登记 BackgroundTaskRegistry：check_background_tasks 可见（含耗时）、terminate_background_task 可单独停止（killer 走 _cancel_marks + 桥回主循环 cancel，转"用户取消"结果返回父级，不再只能中断整个回复或等 600s 超时）。完成走 `complete(..., claimed=True)`（调用方声明结果已被工具返回值消费，跳过轮外完成回调防双投递；异常路径也收尾防条目滞留 running）。`registry.complete` 新增 claimed 覆盖参数（None=按等待者判定，不变行为） |
 | 压缩文件清单累积 | `context_compressor._extract_file_operations` + `[已操作文件]` 行 | 从被压缩中间段的工作链**规则提取**"读过/改过"的文件清单（确定性，不经 LLM 保真），作为独立 `[已操作文件]` system 消息在摘要区追加——不随摘要文本的有损转述衰减、不占 summary_max_chars 预算；下次压缩时从摘要文本回读合并（`_extract_file_operations_from_summary`，单调增长的事实链）。LLM 摘要管语义（任务/决定/实体），规则清单管文件事实——两层分离。上限 30 条/类 |
 | hook REPLACE 解析 | `agent/hooks/runner._extract_replace` | hook stdout 输出一行前缀 `REPLACE:<json-string>` 即返回替换内容（`HookOutcome.replace`，串行取第一个）；非字符串/非 JSON 静默忽略（stdout 是日志通道，向后兼容）。**当前无消费方**——reply_end 的 replace 消费经核验无效（complete_reply 的 content 恒空，出站文本已投递），已在实现中回退，解析层保留供未来 tool_post 等场景复用 |
@@ -382,6 +385,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 纪律单一权威源 | `agent/memory/rules_doc.py`（铁律）+ memorize/recall schema + hub 骨架/注入头 + 召回块头 | 同一纪律只讲一遍：路由/纪律归铁律（stable 唯一来源），工具 schema 只留参数语义，hub 骨架只声明段结构，召回块头训诫压为一行指针；铁律新增 hub 即时段与便签「当前状态」的分工句（两个"当前在做什么"写入口不再含糊）。铁律 1993→1628 字符，memorize/recall description 去重后合计省 ~250 字符（均属 stable 前缀，一次性重建后恢复冻结） |
+| reflect 工具族合并 | `mind.reflect` + `think_loop` 工具集重建 + 配置 `reflect_share_reply_tools`（默认开） | 无选择器的反思/任务循环复用回复级装配（get_active_tool_schemas，同族追加式冻结）：实测默认 reflect 目录已膨胀至与 reply 趋同（101-126 vs 106-125 工具），"精简"前提失效，两族交替即整段 30K+ 缓存重写（OpenAI 式隐式缓存按 tools 数组+消息整条做键，实验实证 tools 一字节变化≈全损）；合并后 reply/默认 reflect 共享单一冻结数组族。带选择器的子代理档案仍走精简目录（真实精简 + 一次性 scope 无结转价值） |
 | exec_context 步骤预算 | `context_assembly._MAX_RENDERED_STEPS`（12） | `[已完成步骤]` 渲染只保留最近 12 步 + 省略行（"此前 N 步已省略"）；exec_context 每轮全量重建，无界清单在长回复下按轮次平方膨胀 token，防重复操作只需近期步骤；finish_think 的最终执行摘要仍消费全量清单（一次性） |
 | 非输出提示独白信号驱动 | `think_loop._handle_tool_round` | "工具结果仅你可见"提示只在**本轮工具调用伴随文本独白**时注入（独白 = 模型误以为文字可达用户的信号）；静默工具轮零注入——exec_context 每轮已有输出契约，重复追加是纯 token 烧耗 |
 
@@ -463,6 +467,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 主标签记忆（main:hub） | `agent/memory/hub.py`（骨架/自愈/渲染）+ `_blk_hub`（context_assembly，vol 36 独立块）+ tools 侧三守卫 | 带保留标签 `main:hub` 的 PERMANENT 记忆，每回复周期置顶注入（完整与 lean 模式同口径）：AI 经 memorize（type:permanent + main:hub）整段 upsert 维护——`_upsert_permanent` 对 hub 仅按 HUB_TAG 单标签匹配防重复；`_load_permanent_pins` 排除 hub 防霸占 pin 名额；`forget` 拦截 hub 归档；心跳维护段 `ensure_hub` 自愈重建骨架。注入预算 `memory_hub_inject_max_chars`（默认 3000，保索引段截尾部） |
 | 便签受管区块硬保护 | `agent/memory/notes.py`（`_MANAGED_BLOCK_RE` + `_assert_managed_blocks_intact`） | `<!-- AUTO:name BEGIN/END -->` 标记对圈定的系统受管区块，便签写工具（write_notes/save_notes_content/write_memory_file/patch/edit_lines/write_section/delete_section）写入前校验逐字节保留，改动/删除即拒绝；系统写入路径（update_memory_status_block 直走 `_atomic_write`）天然豁免。同时修复「当前状态」分界容错：`_STATUS_HEADING_RE` 锚定标题文本而非精确字节（`## 四、当前状态` 等编号子标题同样命中），静态指南正确归 stable 层、状态块不再双重注入 |
 | 标签索引观测 | `agent/heartbeat/engine.py::_write_memory_status` | 状态区块仅保留 AI 可行动项（库容/cognee 同步与熔断/最近整理/便签超标），注入准入 = 看到能改变行为；标签膨胀提醒条件化（总数超 `memory_tag_bloat_threshold`（默认 400，0=关）才注入归并提醒行）；运维遥测（召回通道计数/写入去重分布/24h 变更审计/高频标签明细）不进 prompt，由 memory_stats 工具按需查询（`metrics.snapshot()` + `get_audit_summary` 组合进返回值） |
+| 心跳态势注入 | `agent/heartbeat/engine.py::_write_heartbeat_status` + `agent/memory/notes.py`（通用受管区块 `update_managed_block`/`read_managed_block`，AUTO:heartbeat-status）+ `context_assembly._blk_heartbeat`（heartbeat 层，变动率 39 与 status 同族、层名序在前） | AI 自我感知通道：心跳节奏（enabled/间隔）、任务规模（**计数级**——具体内容对决策无价值，经 list_tasks/task_history 按需取）、每条调度的节奏折算与最近一次执行（时间/状态/耗时，消费执行历史 `get_summary`）、最近失败任务告警行；区块头指向详情与操作工具（list_tasks/task_history/get_heartbeat_log + create/update_task/set_task_schedule/execute_task）。缓存纪律：写入仅在内容变化时落盘（任务未执行期间字节冻结），刻意不含 total_ticks/beat_count 逐拍计数；注入走尾部动态区 status 族（对 stable 前缀/摘要/历史零影响）；任务/调度 CRUD 经 engine.reload() 即时刷新（不等下个心跳拍）；lean 任务上下文不注入 |
 
 > Model Experience：① 模型看到 stable 工具块的完整记忆铁律（写入路由/标签纪律/主标签用法 + hub 即时段与便签「当前状态」的分工）/ context 层 vol 36 的 `[主标签记忆]` 独立块 / 状态区块（仅行动项，标签膨胀超阈值才多一行提醒）；② token：铁律 ~1600 字符（stable 恒定摊销为零）+ hub 块 ≤3000 字符可配 + 状态区块常态 <150 字符，遥测经 memory_stats 按需取；③ 缓存：铁律字节恒定永久命中，hub 独立消息只损自身，分界修复后心跳状态改写不再击穿 stable 人设块（净收益）；配置中心经 memory/recall（hub 预算）、memory/consolidation（膨胀阈值）组键热调
 
@@ -532,9 +537,12 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `agent/skills/background_review.py` | 技能后台评审（感知完备：语义相近候选 + 库健康摘要；沉淀/合并/治理由 LLM 自主决策） |
 | `agent/skills/curator.py` | 技能策展（重力：闲置降级/归档 + 试用期快筛；议程：治理事实供 AI 消费） |
 | `agent/skills/sources/` | 外部技能源（可插拔：SkillSource 抽象 + 注册表热插拔；内置 SkillHub 源，删模块即卸载） |
-| `agent/delegation/sub_agent.py` | 子代理（leaf/orchestrator 角色 + 深度限制） |
-| `agent/delegation/delegation_manager.py` | 委托调度（并发上限/预算/聚合/后台模式） |
-| `agent/delegation/delegate_tool.py` | delegate_task 工具（agent_name 直指子代理档案；difficulty 1/2/3 为内置档案语法糖） |
+| `agent/delegation/profile.py` | 子代理档案 schema 单一权威（模型面 + 执行面 AgentFacets；内置档/名称校验/归一化） |
+| `agent/delegation/sub_agent.py` | 子代理（leaf/orchestrator 角色 + 深度限制 + facets 消费 + schema 提取 + 续跑 base_messages） |
+| `agent/delegation/delegation_manager.py` | 委托调度（并发上限/预算/聚合/后台模式/续跑/用量归集/运行日志） |
+| `agent/delegation/journal.py` | 委托运行日志（进度流/transcript/崩溃 ledger/retention 清理） |
+| `agent/delegation/recovery.py` | 委托崩溃恢复（账本未闭合条目 → 中断元消息注入） |
+| `agent/delegation/delegate_tool.py` | delegate_task / send_to_agent(steer·after) / follow_up_agent / check·terminate_background_tasks 工具组 |
 | `agent/mind/work_memory.py` | 工作记忆数据面（消息队列 / 待办持久化 / 短期记忆（溢出晋升 events 便签）/ 态势路由，PFC 组件） |
 | `agent/mind/tool_assembly.py` | 工具装配（召回 / tag 激活 / schema 合并门控，PFC 组件） |
 | `agent/mind/context_assembly.py` | 上下文组装（系统提示 / Prompt 分层缓存 / 执行上下文，PFC 组件） |
@@ -554,10 +562,11 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `agent/memory/tools.py` | 记忆工具（memorize / recall（source 标志 + depth 浅深 + filter_tags 硬过滤）/ forget 软归档） |
 | `agent/memory/notes.py` | 便签文件系统 |
 | `agent/task/model.py` | 任务数据模型（TaskDefinition / TaskResult） |
-| `agent/task/registry.py` | 任务注册表（config/tasks/*.json 加载/CRUD） |
+| `agent/task/registry.py` | 任务注册表（config/tasks/*.json 加载/CRUD；reload 跳过 `*.handoff.json` 等运行数据文件） |
 | `agent/task/executor.py` | 任务执行器（LLM 调用 + 结果存储；`task_lean_context` 精简上下文：人设+工具+永久记忆+任务指令，环境便签/召回/状态由任务按规则经工具取回——任务间共享稳定前缀、每轮 prompt 更小；`extra_note` 尾部追加动态备注，idle 反思原因注入不破前缀） |
+| `agent/task/history.py` | 任务执行历史（每任务保留最近 N 条：开始时间/耗时/状态/触发来源/产出摘要；`<data_dir>/task_history.json`，executor 各终态唯一写入方，Web 任务列表 last_run + `GET /tasks/{name}/history` 与 AI list_tasks/task_history 只读消费；任务删除时清理） |
 | `agent/task/tools.py` | 任务/调度自管理工具（create_task / update_task / delete_task / set_task_schedule，与 Web 管理面同路径热重载） |
-| `agent/heartbeat/engine.py` | 心跳调度引擎（tick 循环 + 内置维护 + 主便签 AUTO:memory-status 状态区块） |
+| `agent/heartbeat/engine.py` | 心跳调度引擎（tick 循环 + 内置维护 + 主便签 AUTO:memory-status / AUTO:heartbeat-status 状态区块） |
 | `agent/heartbeat/config.py` | 心跳配置（HeartbeatConfig + TaskSchedule） |
 | `agent/heartbeat/log.py` | 心跳日志读写 |
 | `agent/planning/tools.py` | 规划工具（create_goal/update_goal/delete_goal） |

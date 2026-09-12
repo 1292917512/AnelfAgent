@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { approvalsApi, statusApi, mcpApi, adaptersApi } from "@/lib/api";
@@ -78,6 +79,16 @@ export function AttentionPanel() {
     refetchInterval: 10000,
   });
 
+  // 到期倒计时基准：渲染期禁调 Date.now（React Compiler 规则），经 1s tick 驱动；
+  // 无待批准请求时不计时（此时倒计时不被消费）
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
+  const pendingTotal = (pendingData?.pending?.length ?? 0);
+  useEffect(() => {
+    if (pendingTotal === 0) return;
+    const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [pendingTotal]);
+
   const items: AttentionItem[] = [];
 
   // Agent 未就绪
@@ -94,7 +105,7 @@ export function AttentionPanel() {
   const pending = (pendingData?.pending ?? []) as { request_id: string; tool_name: string; expires_at: number }[];
   if (pending.length > 0) {
     const nearest = Math.min(...pending.map((p) => p.expires_at));
-    const seconds = Math.max(0, Math.floor(nearest - Date.now() / 1000));
+    const seconds = Math.max(0, Math.floor(nearest - nowSec));
     items.push({
       key: "pending-approvals",
       severity: seconds < 30 ? "danger" : "warn",

@@ -432,22 +432,6 @@ class WorkMemory:
         self._unread_counts.pop(scope, None)
         self._group_recent_senders.pop(scope, None)
 
-    async def pop_user_task(self) -> Optional[str]:
-        """弹出下一个私聊待回复 scope（entity_scope 字符串）。"""
-        if not self.pending_user.is_empty():
-            scope = self.pending_user.popleft()
-            self._clear_scope_state(scope)
-            return scope
-        return None
-
-    async def pop_group_task(self) -> Optional[str]:
-        """弹出下一个群聊待回复 scope（entity_scope 字符串）。"""
-        if not self.pending_group.is_empty():
-            scope = self.pending_group.popleft()
-            self._clear_scope_state(scope)
-            return scope
-        return None
-
     async def pop_analysis_task(self) -> Optional[EntityData]:
         if not self.pending_analysis.is_empty():
             group_id, uid, adapter_key = self.pending_analysis.popleft()
@@ -538,12 +522,18 @@ class WorkMemory:
         return result
 
     def consume_scope_task(self, scope: str) -> bool:
-        """消费指定 scope 的待回复条目（含关联状态清理）。"""
+        """消费指定 scope 的待回复条目（含关联状态清理）。
+
+        两个队列都查（不按前缀路由）：scope 字符串跨队列天然唯一，
+        双查对落在错误队列的条目同样健壮，也让回复路径能就地清除
+        无法解析的毒丸条目（留在队列会让自主循环空转）。
+        """
         if not scope:
             return False
         self._clear_scope_state(scope)
-        queue = self.pending_group if scope.startswith("group_") else self.pending_user
-        return self._consume_from_queue(queue, scope)
+        removed_user = self._consume_from_queue(self.pending_user, scope)
+        removed_group = self._consume_from_queue(self.pending_group, scope)
+        return removed_user or removed_group
 
     def get_unread_count(self, scope: str) -> int:
         """指定 scope 的未读消息数（消费后清零）。"""

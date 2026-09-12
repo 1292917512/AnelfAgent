@@ -430,9 +430,13 @@ async def pop_next_reply_target(mind: Mind) -> Optional[Everything]:
         if scope in mind._active_scopes:
             continue
         scope_type, scope_adapter, base_id, session_id = parse_entity_scope(scope)
-        adapter_key = scope_adapter or mind.pfc.get_adapter_key(scope)
         if not scope_type:
+            # 毒丸条目：无法解析的 scope 回复路径永远消费不掉，留在队列
+            # 会让自主循环以 0 退避无限空转——就地清除并告警
+            log(f"清除无法路由的待处理条目: scope={scope!r}", "WARNING", tag="思维")
+            mind.pfc.consume_scope_task(scope)
             continue
+        adapter_key = scope_adapter or mind.pfc.get_adapter_key(scope)
         target_id: Union[int, str] = base_id
         try:
             target_id = int(base_id)

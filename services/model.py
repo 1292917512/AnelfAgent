@@ -189,8 +189,24 @@ class ModelService:
     def list_sub_agents(self) -> List[Dict[str, Any]]:
         return self._manager().list_sub_agents()
 
-    def create_sub_agent(self, name: str, model_id: str, description: str = "") -> tuple[bool, str]:
-        return self._manager().create_sub_agent(name, model_id, description)
+    def create_sub_agent(
+        self,
+        name: str,
+        model_id: str,
+        description: str = "",
+        *,
+        instructions: str = "",
+        tool_tags: Any = None,
+        blocked_tools: Any = None,
+        output_schema: Any = None,
+    ) -> tuple[bool, str]:
+        return self._manager().create_sub_agent(
+            name, model_id, description,
+            instructions=instructions,
+            tool_tags=tool_tags,
+            blocked_tools=blocked_tools,
+            output_schema=output_schema,
+        )
 
     def update_sub_agent(
         self,
@@ -198,9 +214,18 @@ class ModelService:
         model_id: str = "",
         models: Optional[List[str]] = None,
         description: str = "",
+        *,
+        instructions: Optional[str] = None,
+        tool_tags: Any = None,
+        blocked_tools: Any = None,
+        output_schema: Any = None,
     ) -> tuple[bool, str]:
         return self._manager().update_sub_agent(
             name, model_id=model_id, models=models, description=description,
+            instructions=instructions,
+            tool_tags=tool_tags,
+            blocked_tools=blocked_tools,
+            output_schema=output_schema,
         )
 
     def remove_sub_agent(self, name: str) -> tuple[bool, str]:

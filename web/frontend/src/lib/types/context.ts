@@ -65,11 +65,25 @@ export interface SnapshotSection {
   hash?: string;
   /** 与上一次快照对比是否变更；null/undefined = 首次快照无基线 */
   changed?: boolean | null;
+  /** 与上一次快照逐字节一致的前缀条数（null = 无基线）；其后为本轮新增/变化 */
+  stable_count?: number | null;
+  /** 本轮新增/变化的条数（count - stable_count；null = 无基线） */
+  new_count?: number | null;
   /** 变动率（值越大变动越频繁，来自构建管线注册中心） */
   volatility?: number | null;
   /** 变动率分档（静态/低频/周期/追加/每会话/每轮） */
   volatility_label?: string | null;
   messages: SnapshotMessage[];
+}
+
+/** 全局前缀断链点：按 wire 顺序首个字节分歧位置（layer=null 表示全前缀稳定） */
+export interface SnapshotPrefixBreak {
+  layer: string | null;
+  label: string | null;
+  /** 断链消息在本层内的 0 起索引 */
+  index: number | null;
+  /** 断链点之前的全部 tokens（本轮可命中缓存的上限估计） */
+  before_tokens: number;
 }
 
 /** 单次 LLM 调用的缓存用量记录 */
@@ -128,6 +142,8 @@ export interface ContextSnapshotData {
   tool_names: string[];
   tools: unknown[];
   sections: SnapshotSection[];
+  /** 全局前缀断链点（null/缺省 = 无基线） */
+  prefix_break?: SnapshotPrefixBreak | null;
   cache?: SnapshotCacheInfo;
 }
 

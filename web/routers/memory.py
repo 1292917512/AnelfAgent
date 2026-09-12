@@ -84,6 +84,13 @@ async def backfill_cognee(req: CogneeBackfillRequest) -> Dict[str, Any]:
     return await _mem_svc.backfill_cognee(limit=req.limit, dry_run=req.dry_run)
 
 
+@router.get("/probe-status")
+@_runtime_fallback(lambda: {"enabled": False, "inject_enabled": False, "counters": {}, "scopes": []})
+async def get_probe_status() -> Dict[str, Any]:
+    """异步深探观测：开关/计数器/渲染状态（Cognee 面板「深探状态」卡片数据源）。"""
+    return _mem_svc.get_probe_status()
+
+
 @router.get("/cognee/datasets")
 async def list_cognee_datasets() -> List[Dict[str, Any]]:
     return await _mem_svc.list_cognee_datasets()

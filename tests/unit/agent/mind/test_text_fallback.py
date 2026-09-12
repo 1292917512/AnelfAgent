@@ -2,7 +2,8 @@
 
 输出契约：回复一律走 send_message；纯文本在循环内只是独白（不终局、不中途
 投递），轮结束（end_reply / 沉默 / 空输出 / 独白上限掐断）时经轮末统一投递点
-保底送达来源会话一次。跨会话发送走 switch_session / send_message 工具。
+保底送达来源会话一次；本轮已有输出工具成功送达则不再投递（收尾独白不外发）。
+跨会话发送走 switch_session / send_message 工具。
 """
 
 from __future__ import annotations
@@ -167,25 +168,25 @@ async def test_tool_then_bare_text_delivered_at_end(anything, deliver_mock) -> N
     assert any("未送达文本已投递" in s for s in steps)
 
 
-async def test_send_message_then_bare_text_still_delivered(anything, deliver_mock) -> None:
-    """send_message 成功后继续独白：轮末仍保底投递（不区分是否已走正路）。"""
+async def test_send_message_then_bare_text_not_delivered(anything, deliver_mock) -> None:
+    """send_message 成功后继续独白：本轮已有送达，轮末纯文本不再重复投递。"""
     mind = _mind()
     mind._rounds = [
         tool_result("", ["send_message"]),
         text_result("补充说明一下～"),
         tool_result("", ["end_reply"]),
     ]
-    await _run(mind, anything)
+    steps: List[str] = []
+    await _run(mind, anything, steps)
 
-    deliver_mock.assert_awaited_once()
-    _, content = deliver_mock.await_args.args
-    assert content == "补充说明一下～"
+    deliver_mock.assert_not_awaited()
+    assert any("不再重复投递" in s for s in steps)
 
 
-async def test_send_message_then_other_tool_then_text_delivers(
+async def test_send_message_then_other_tool_then_text_not_delivered(
         anything, deliver_mock,
 ) -> None:
-    """send_message 后再调其他工具，随后纯文本仍可投递。"""
+    """send_message 后再调其他工具，随后纯文本同样不再投递（送达标记跨轮持续）。"""
     mind = _mind()
     mind._rounds = [
         tool_result("", ["send_message"]),
@@ -196,16 +197,15 @@ async def test_send_message_then_other_tool_then_text_delivers(
     steps: List[str] = []
     await _run(mind, anything, steps)
 
-    deliver_mock.assert_awaited_once()
-    _, content = deliver_mock.await_args.args
-    assert content == "补充最终结论～"
+    deliver_mock.assert_not_awaited()
     assert mind.llm_calls == 4
+    assert any("不再重复投递" in s for s in steps)
 
 
-async def test_send_message_mixed_with_other_tool_then_text_delivers(
+async def test_send_message_mixed_with_other_tool_then_text_not_delivered(
         anything, deliver_mock,
 ) -> None:
-    """同轮 send_message+recall 后纯文本仍可投递。"""
+    """同轮 send_message+recall 已送达，其后纯文本不再投递。"""
     mind = _mind()
     mind._rounds = [
         tool_result("", ["send_message", "recall"]),
@@ -214,9 +214,7 @@ async def test_send_message_mixed_with_other_tool_then_text_delivers(
     ]
     await _run(mind, anything)
 
-    deliver_mock.assert_awaited_once()
-    _, content = deliver_mock.await_args.args
-    assert content == "混合轮后的最终答复～"
+    deliver_mock.assert_not_awaited()
 
 
 async def test_bare_text_no_thought_label(anything, deliver_mock) -> None:
@@ -334,15 +332,13 @@ async def test_end_reply_content_delivered(anything, deliver_mock) -> None:
     assert content == "这是最后一段话～"
 
 
-async def test_end_reply_content_delivered_even_with_send_message(anything, deliver_mock) -> None:
-    """同轮已有 send_message，也不抑制 end_reply 附带正文的纯文本投递。"""
+async def test_end_reply_content_suppressed_after_send_message(anything, deliver_mock) -> None:
+    """同轮 send_message 已送达，end_reply 附带正文不再重复投递。"""
     mind = _mind()
     mind._rounds = [tool_result("补充一句", ["send_message", "end_reply"])]
     await _run(mind, anything)
 
-    deliver_mock.assert_awaited_once()
-    _, content = deliver_mock.await_args.args
-    assert content == "补充一句"
+    deliver_mock.assert_not_awaited()
 
 
 async def test_end_reply_empty_content_not_delivered(anything, deliver_mock) -> None:

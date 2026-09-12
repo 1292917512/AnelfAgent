@@ -16,7 +16,7 @@ from entities.filesystem import file_state, tools
 def workspace(tmp_path, monkeypatch):
     """把沙箱 workspace 指向临时目录，并隔离文件状态缓存。"""
     monkeypatch.setattr(tools, "_load_config", lambda: None)
-    monkeypatch.setattr(tools, "_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(tools, "_ws_root", lambda: str(tmp_path))
     monkeypatch.setattr(tools, "_SANDBOX", True)
     file_state.clear_scope("_global")
     yield tmp_path
@@ -394,7 +394,7 @@ class TestLocationAnnotation:
         from entities.filesystem import paths
         ws_dir = tmp_path / "ws"
         monkeypatch.setattr(paths, "get_workspace_root", lambda: str(ws_dir))
-        monkeypatch.setattr(tools, "_WORKSPACE", str(ws_dir))
+        monkeypatch.setattr(tools, "_ws_root", lambda: str(ws_dir))
         monkeypatch.setattr(tools, "_SANDBOX", False)
         outside = tmp_path / "outside.txt"
         result = json.loads(tools.write_file(str(outside), "data"))

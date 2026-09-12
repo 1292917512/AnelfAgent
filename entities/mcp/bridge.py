@@ -116,6 +116,7 @@ class MCPBridge:
         self._last_errors: Dict[str, str] = {}          # name -> 最近一次连接错误详情
         self._op_locks: Dict[str, threading.Lock] = {}  # name -> 连接/断开操作串行锁
         self._sync_pending: set = set()                 # name -> 工具列表同步防抖中
+        self._orphan_swept = False                      # 启动孤儿清扫只跑一次
         self._lock = threading.Lock()
         self._reload_lock = threading.Lock()  # reload_config 全局串行
 
@@ -382,8 +383,11 @@ class MCPBridge:
                     log("_signal_stop 异常已忽略", "DEBUG")
 
     async def _async_connect_all(self) -> int:
-        """并发连接所有启用的 MCP server。"""
+        """并发连接所有已启用的 MCP server。"""
         import asyncio
+
+        await self._sweep_orphans_once()
+
         coros = [
             self._connect_one_safe(srv)
             for srv in self.config.servers
@@ -393,6 +397,22 @@ class MCPBridge:
             return 0
         results = await asyncio.gather(*coros, return_exceptions=True)
         return sum(r for r in results if isinstance(r, int))
+
+    async def _sweep_orphans_once(self) -> None:
+        """进程生命周期内首次连接前清扫历史实例泄漏的 stdio 孤儿进程。
+
+        stdio server 的关停在崩溃/SIGKILL 路径整体跳过，sh -c 管道形态
+        下 SDK 也只终止包装进程——每次重启都可能泄漏一批。详见 orphan_sweep。
+        """
+        from .orphan_sweep import stdio_command_signatures, sweep_orphans_async
+
+        if self._orphan_swept:
+            return
+        self._orphan_swept = True
+        signatures = stdio_command_signatures(self.config.servers)
+        swept = await sweep_orphans_async(signatures)
+        if swept:
+            log(f"MCP 孤儿清扫完成: 终止 {len(swept)} 棵残留进程树", tag="MCP")
 
     async def _connect_one_safe(self, srv: MCPServerConfig) -> int:
         """连接单个 server，捕获异常防止影响其他 server 的并发连接。

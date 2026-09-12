@@ -105,7 +105,7 @@ class TestCacheBlock:
     async def test_prefix_estimation_stops_at_change(
         self, snapshot: ContextSnapshot, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """头部连续未变更才计入前缀：conversation 变化后 memory 不计入。"""
+        """消息级断链：conversation 第 3 条被原地改写，前缀计入其前 2 条。"""
         import agent.mind.cache_stats as cache_mod
         monkeypatch.setattr(cache_mod, "cache_usage_tracker", CacheUsageTracker())
 
@@ -125,6 +125,105 @@ class TestCacheBlock:
             + by_layer["summary"]["estimated_tokens"]
         )
         assert data["cache"]["estimated_cacheable_prefix_tokens"] == expected
+        # 断链点落在 conversation 层首条（该层唯一消息被原地改写）
+        assert data["prefix_break"]["layer"] == "conversation"
+        assert data["prefix_break"]["index"] == 0
+
+    async def test_append_keeps_stable_prefix(
+        self, snapshot: ContextSnapshot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """追加式增长（工具链/会话常态）：既有消息全稳定，仅新增计入重写区。"""
+        import agent.mind.cache_stats as cache_mod
+        monkeypatch.setattr(cache_mod, "cache_usage_tracker", CacheUsageTracker())
+
+        msgs = [
+            {"role": "system", "content": "人设", "_layer": "stable"},
+            {"role": "assistant", "content": "调用A", "tool_calls": [{"id": "c1", "function": {"name": "recall"}}], "_layer": "tool_chain"},
+            {"role": "tool", "content": "结果A", "tool_call_id": "c1", "_layer": "tool_chain"},
+        ]
+        await snapshot.arm()
+        await snapshot.try_capture(msgs, [], "fake")
+
+        grown = msgs + [
+            {"role": "assistant", "content": "调用B", "tool_calls": [{"id": "c2", "function": {"name": "recall"}}], "_layer": "tool_chain"},
+            {"role": "tool", "content": "结果B", "tool_call_id": "c2", "_layer": "tool_chain"},
+        ]
+        await snapshot.arm()
+        await snapshot.try_capture(grown, [], "fake")
+
+        data = snapshot.get()
+        assert data is not None
+        by_layer = {s["layer"]: s for s in data["sections"]}
+        # 工具链：前 2 条已缓存、新增 2 条
+        assert by_layer["tool_chain"]["stable_count"] == 2
+        assert by_layer["tool_chain"]["new_count"] == 2
+        # 断链点在工具链第 2 条；此前 stable 层全部可命中
+        assert data["prefix_break"]["layer"] == "tool_chain"
+        assert data["prefix_break"]["index"] == 2
+        assert data["prefix_break"]["before_tokens"] >= by_layer["stable"]["estimated_tokens"]
+
+    async def test_shrunk_chain_breaks_at_layer_tail(
+        self, snapshot: ContextSnapshot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """链收缩（压缩删除尾部）：stable==count 但整层变化，断链点不得穿过。"""
+        import agent.mind.cache_stats as cache_mod
+        monkeypatch.setattr(cache_mod, "cache_usage_tracker", CacheUsageTracker())
+
+        msgs = [
+            {"role": "system", "content": "人设", "_layer": "stable"},
+            {"role": "assistant", "content": "调用A", "tool_calls": [{"id": "c1", "function": {"name": "recall"}}], "_layer": "tool_chain"},
+            {"role": "tool", "content": "结果A", "tool_call_id": "c1", "_layer": "tool_chain"},
+            {"role": "tool", "content": "结果B", "tool_call_id": "c2", "_layer": "tool_chain"},
+        ]
+        await snapshot.arm()
+        await snapshot.try_capture(msgs, [], "fake")
+
+        shrunk = msgs[:3]  # 压缩删除最后一条
+        await snapshot.arm()
+        await snapshot.try_capture(shrunk, [], "fake")
+
+        data = snapshot.get()
+        assert data is not None
+        by_layer = {s["layer"]: s for s in data["sections"]}
+        chain = by_layer["tool_chain"]
+        # 既有 2 条全匹配（stable==count），但整层 hash 变化（尾部被删）
+        assert chain["stable_count"] == 2
+        assert chain["changed"] is True
+        # 断链点不得穿过收缩层：停在工具层层末
+        assert data["prefix_break"]["layer"] == "tool_chain"
+        assert data["prefix_break"]["index"] == 2
+        # 前缀估算只计到收缩层为止（不把不存在的下游当命中）
+        assert data["cache"]["estimated_cacheable_prefix_tokens"] == (
+            by_layer["stable"]["estimated_tokens"] + chain["estimated_tokens"]
+        )
+
+    async def test_new_layer_breaks_at_its_head(
+        self, snapshot: ContextSnapshot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """新层首现：断链点在该层第 0 条，而非整份快照"无基线"。"""
+        import agent.mind.cache_stats as cache_mod
+        monkeypatch.setattr(cache_mod, "cache_usage_tracker", CacheUsageTracker())
+
+        base = [
+            {"role": "system", "content": "人设", "_layer": "stable"},
+            {"role": "user", "content": "你好", "_layer": "conversation"},
+        ]
+        await snapshot.arm()
+        await snapshot.try_capture(base, [], "fake")
+
+        # memory 层首现（召回首次产生）
+        grown = base + [{"role": "system", "content": "召回", "_layer": "memory"}]
+        await snapshot.arm()
+        await snapshot.try_capture(grown, [], "fake")
+
+        data = snapshot.get()
+        assert data is not None
+        assert data["prefix_break"]["layer"] == "memory"
+        assert data["prefix_break"]["index"] == 0
+        by_layer = {s["layer"]: s for s in data["sections"]}
+        assert data["prefix_break"]["before_tokens"] >= (
+            by_layer["stable"]["estimated_tokens"] + by_layer["conversation"]["estimated_tokens"]
+        )
 
 
 class TestContinuousCapture:

@@ -175,7 +175,20 @@
     "effortMax": "极限",
     "effortXhigh": "超高",
     "effortOff": "关闭",
-    "effortMinimal": "极简"
+    "effortMinimal": "极简",
+    "lastRunPrefix": "上次执行 ",
+    "lastRunAgoSuffix": " 前",
+    "lastRunDuration": "历时 {{duration}}",
+    "runStatusSuccess": "成功",
+    "runStatusNoOutput": "无产出",
+    "runStatusError": "失败",
+    "trigger_heartbeat": "心跳调度",
+    "trigger_scheduled": "每日定时",
+    "trigger_idle": "空闲触发",
+    "trigger_manual": "手动",
+    "historyTitle": "执行记录",
+    "historyLoading": "加载执行记录…",
+    "historyEmpty": "暂无执行记录"
   },
   "costMap": {
     "title": "LiteLLM 模型价格表",

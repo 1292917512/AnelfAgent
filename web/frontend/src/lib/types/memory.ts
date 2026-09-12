@@ -98,6 +98,21 @@ export interface CogneeStatus {
   };
 }
 
+export interface ProbeScopeStatus {
+  scope: string;
+  running: boolean;
+  rendered_chars: number;
+  rendered_preview: string;
+  age_seconds: number;
+}
+
+export interface ProbeStatus {
+  enabled: boolean;
+  inject_enabled: boolean;
+  counters: Record<string, number>;
+  scopes: ProbeScopeStatus[];
+}
+
 export interface CogneeDataset {
   id: string;
   name: string;

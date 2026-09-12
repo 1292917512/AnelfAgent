@@ -344,11 +344,21 @@ class SubAgentCreateReq(BaseModel):
     name: str
     model_id: str
     description: str = ""
+    instructions: str = ""
+    tool_tags: List[str] = Field(default_factory=list)
+    blocked_tools: List[str] = Field(default_factory=list)
+    output_schema: Optional[Dict[str, Any]] = None
 
 
 @router.post("/sub-agents")
 async def create_sub_agent(req: SubAgentCreateReq) -> Dict[str, Any]:
-    ok, message = _svc.create_sub_agent(req.name, req.model_id, req.description)
+    ok, message = _svc.create_sub_agent(
+        req.name, req.model_id, req.description,
+        instructions=req.instructions,
+        tool_tags=req.tool_tags,
+        blocked_tools=req.blocked_tools,
+        output_schema=req.output_schema,
+    )
     if not ok:
         raise HTTPException(400, message)
     return {"status": "ok", "message": message}
@@ -358,6 +368,10 @@ class SubAgentUpdateReq(BaseModel):
     model_id: Optional[str] = None
     models: Optional[List[str]] = None
     description: Optional[str] = None
+    instructions: Optional[str] = None
+    tool_tags: Optional[List[str]] = None
+    blocked_tools: Optional[List[str]] = None
+    output_schema: Optional[Dict[str, Any]] = None
 
 
 @router.put("/sub-agents/{name}")
@@ -367,9 +381,13 @@ async def update_sub_agent(name: str, req: SubAgentUpdateReq) -> Dict[str, Any]:
         model_id=req.model_id or "",
         models=req.models,
         description=req.description or "",
+        instructions=req.instructions,
+        tool_tags=req.tool_tags,
+        blocked_tools=req.blocked_tools,
+        output_schema=req.output_schema,
     )
     if not ok:
-        raise HTTPException(404, message)
+        raise HTTPException(404 if "不存在" in message else 400, message)
     return {"status": "ok", "message": message}
 
 

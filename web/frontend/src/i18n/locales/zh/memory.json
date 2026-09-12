@@ -258,7 +258,17 @@
     "storageGraph": "图库",
     "storageMetadata": "元数据",
     "storageData": "原始文档",
-    "lastCompact": "上次压缩"
+    "lastCompact": "上次压缩",
+    "probeTitle": "深探状态",
+    "probeSubtitle": "回复期间异步深检索的触发与注入观测（增量为基底层召回之外的新内容，全被首轮覆盖时不注入属正常）",
+    "probeStarted": "触发",
+    "probeCompleted": "完成",
+    "probeInjected": "注入",
+    "probeTimeout": "超时",
+    "probeDisabled": "深探已关闭",
+    "probeInjectOff": "注入已关闭",
+    "probeNoActivity": "暂无触发（检索规划判定需要深检时才会启动——试试问关系类问题，如「XX 和 YY 是什么关系」）",
+    "probeRunning": "深探进行中"
   },
   "docs": {
     "title": "文档索引",

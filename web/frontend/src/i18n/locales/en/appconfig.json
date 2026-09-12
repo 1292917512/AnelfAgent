@@ -175,7 +175,20 @@
     "effortMax": "Max",
     "effortXhigh": "Extra High",
     "effortOff": "Off",
-    "effortMinimal": "Minimal"
+    "effortMinimal": "Minimal",
+    "lastRunPrefix": "Last run ",
+    "lastRunAgoSuffix": " ago",
+    "lastRunDuration": "took {{duration}}",
+    "runStatusSuccess": "Success",
+    "runStatusNoOutput": "No output",
+    "runStatusError": "Failed",
+    "trigger_heartbeat": "Heartbeat",
+    "trigger_scheduled": "Daily",
+    "trigger_idle": "Idle",
+    "trigger_manual": "Manual",
+    "historyTitle": "Execution History",
+    "historyLoading": "Loading history…",
+    "historyEmpty": "No execution records yet"
   },
   "costMap": {
     "title": "LiteLLM Cost Map",

@@ -23,7 +23,12 @@
     "recentLog": "Recent Heartbeat Log",
     "noLog": "No heartbeat log yet",
     "loadingLog": "Loading log…",
-    "refreshLog": "Refresh"
+    "refreshLog": "Refresh",
+    "lastRun": "Last run",
+    "lastRunAgo": " ago",
+    "runStatus_success": "success",
+    "runStatus_no_output": "no output",
+    "runStatus_error": "failed"
   },
   "config": {
     "title": "Heartbeat Config",

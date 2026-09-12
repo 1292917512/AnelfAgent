@@ -170,3 +170,73 @@ class TestAggregateReason:
             SubAgentResult(goal="调研", success=True, output="结论"),
         ]))
         assert "completed_reason" not in out["results"][0]
+
+
+class TestAfterBoundary:
+    """收束边界 after 档：子代理本要结束时注入追加指令续跑。"""
+
+    async def test_after_message_extends_reflect(self) -> None:
+        from agent.delegation.steer import SteerInbox, bind_steer_drain
+
+        inbox = SteerInbox()
+        inbox.push("da", "补充：顺便统计总数", mode="after")
+        mind = _reflect_mind([
+            text_result("初版结论。"),
+            text_result("初版结论。"),
+            text_result("初版结论。"),
+            # after 注入后继续：再 3 轮纯文本收束
+            text_result("补充后的完整结论。"),
+            text_result("补充后的完整结论。"),
+            text_result("补充后的完整结论。"),
+        ])
+        collected: list = []
+        chain: list = []
+        with bind_steer_drain(lambda mode: inbox.drain("da", mode)):
+            await run_think_loop(
+                mind, mode=ThinkMode.REFLECT, base_messages=_base(),
+                collected_text=collected, chain=chain,
+            )
+        # 6 轮全跑完（after 注入把收束推迟了一轮周期）
+        assert mind.llm_calls == 6
+        assert any(
+            m.get("role") == "user" and "追加指令" in str(m.get("content"))
+            for m in chain
+        )
+        # 产出含注入后的最终段
+        assert "补充后的完整结论。" in "".join(collected)
+
+    async def test_no_after_messages_unchanged(self) -> None:
+        from agent.delegation.steer import bind_steer_drain
+
+        mind = _reflect_mind([text_result("结论。") for _ in range(3)])
+        collected: list = []
+        with bind_steer_drain(lambda mode: []):
+            await run_think_loop(
+                mind, mode=ThinkMode.REFLECT, base_messages=_base(),
+                collected_text=collected,
+            )
+        assert mind.llm_calls == 3
+
+
+class TestCompletionMessages:
+    """completion 容器带出最终消息链（transcript 持久化数据源）。"""
+
+    async def test_messages_include_base_and_chain(self) -> None:
+        mind = _reflect_mind([
+            tool_result("", ["recall"]),
+            text_result("最终结论"),
+            text_result("最终结论"),
+            text_result("最终结论"),
+        ])
+        completion: dict = {}
+        await run_think_loop(
+            mind, mode=ThinkMode.REFLECT,
+            base_messages=[{"role": "user", "content": "分析"}],
+            completion=completion,
+        )
+        messages = completion["messages"]
+        assert messages[0] == {"role": "user", "content": "分析"}
+        # 工具调用与结果成对在场（续跑回放需要的完整链）
+        roles = [m["role"] for m in messages]
+        assert "assistant" in roles and "tool" in roles
+        assert messages[-1]["role"] == "assistant"

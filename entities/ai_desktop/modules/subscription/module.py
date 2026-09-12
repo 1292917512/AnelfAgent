@@ -1,10 +1,11 @@
-"""订阅额度组件 — Coding Plan 供应商用量监控注入。
+"""订阅额度组件 — Coding Plan 用量与按量账户余额监控注入。
 
-轮询型组件：后台按 ``refresh_minutes``（默认 30 分钟）轮询三家 Coding Plan
-供应商（智谱 GLM / MiniMax / Kimi）的用量查询接口，凭据自动匹配自
-llm_clients.json 的供应商配置（base_url 关键字识别，Kimi 的 OAuth access
-token 同样存于 api_key 字段）。无凭据的供应商自动跳过，单家失败收敛为
-该家 error 条目不扩散。render 只读缓存快照，每家一行注入文本。
+轮询型组件：后台按 ``refresh_minutes``（默认 30 分钟）轮询订阅供应商
+（智谱 GLM / MiniMax / Kimi）的用量查询接口与按量供应商（DeepSeek）的
+账户余额接口，凭据自动匹配自 llm_clients.json 的供应商配置（base_url
+关键字识别，Kimi 的 OAuth access token 同样存于 api_key 字段）。
+无凭据的供应商自动跳过，单家失败收敛为该家 error 条目不扩散。
+render 只读缓存快照，每家一行注入文本。
 
 Model Experience:
     模型看到什么 —— 各有凭据供应商一行 ``[订阅] 名称（档位）：窗口余量/重置时间``，
@@ -36,7 +37,7 @@ class SubscriptionModule(DesktopModule):
 
     key = "subscription"
     display_name = "订阅额度"
-    description = "Coding Plan 订阅用量监控（智谱 GLM / MiniMax / Kimi，凭据取自 LLM 供应商配置）"
+    description = "订阅用量与账户余额监控（智谱 GLM / MiniMax / Kimi / DeepSeek，凭据取自 LLM 供应商配置）"
     priority = 30
     refresh_interval = 1800.0
     config_schema = {
@@ -122,8 +123,15 @@ class SubscriptionModule(DesktopModule):
 
     @staticmethod
     def _format_window(window: Dict[str, Any]) -> str:
-        """单窗口 → "每5小时 剩 87/100（重置 09-12 03:37）" 片段。"""
+        """单窗口 → "每5小时 剩 87/100（重置 09-12 03:37）" 片段。
+
+        余额型窗口（按量计费供应商）→ "账户余额 ¥68.49"（无重置时间）。
+        """
         label = str(window.get("label") or "窗口")
+        if window.get("balance") is not None:
+            currency = str(window.get("currency") or "CNY")
+            symbol = {"CNY": "¥", "USD": "$", "EUR": "€"}.get(currency, f"{currency} ")
+            return f"{label} {symbol}{window['balance']:.2f}"
         limit = window.get("limit")
         remaining = window.get("remaining")
         pct = window.get("remaining_percent")

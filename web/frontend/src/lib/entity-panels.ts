@@ -12,6 +12,9 @@
  *
  * 新增实体面板后软链由 prebuild 钩子（scripts/module-links.mjs）自动同步，
  * dev 模式下由 vite moduleFrontendsPlugin 监听自动维护。
+ *
+ * 懒加载组件在模块加载时全量预建（lazy 只是包装、不触发导入）——
+ * 渲染期创建组件会触发 React Compiler 的"Cannot create components during render"。
  */
 import { lazy, type ComponentType, type LazyExoticComponent } from "react";
 
@@ -20,8 +23,14 @@ const panelModules = import.meta.glob<{ default: ComponentType }>(
   "../pages/entities/panels/*.tsx",
 );
 
-// 构建懒加载组件映射
-const panelCache = new Map<string, LazyExoticComponent<ComponentType>>();
+// name → 懒加载组件（模块加载时一次性构建）
+const panelRegistry = new Map<string, LazyExoticComponent<ComponentType>>();
+for (const [path, loader] of Object.entries(panelModules)) {
+  const match = path.match(/\/([^/]+)\.tsx$/);
+  if (match?.[1]) {
+    panelRegistry.set(match[1], lazy(loader));
+  }
+}
 
 /**
  * 获取实体面板的懒加载组件。
@@ -29,21 +38,10 @@ const panelCache = new Map<string, LazyExoticComponent<ComponentType>>();
  * @returns 懒加载组件，或 null（无自定义面板）
  */
 export function getEntityPanel(name: string): LazyExoticComponent<ComponentType> | null {
-  if (panelCache.has(name)) {
-    return panelCache.get(name)!;
-  }
-  const path = `../pages/entities/panels/${name}.tsx`;
-  const loader = panelModules[path];
-  if (!loader) return null;
-  const comp = lazy(loader);
-  panelCache.set(name, comp);
-  return comp;
+  return panelRegistry.get(name) ?? null;
 }
 
 /** 列出所有有自定义面板的实体名。 */
 export function listEntityPanels(): string[] {
-  return Object.keys(panelModules).map((p) => {
-    const match = p.match(/\/([^/]+)\.tsx$/);
-    return match?.[1] ?? "";
-  }).filter(Boolean);
+  return [...panelRegistry.keys()];
 }

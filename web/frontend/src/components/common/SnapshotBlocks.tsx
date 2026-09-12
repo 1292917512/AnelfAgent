@@ -7,9 +7,9 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import type { SnapshotMessage, SnapshotSection } from "@/lib/types";
+import type { SnapshotMessage, SnapshotSection, SnapshotPrefixBreak } from "@/lib/types";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
-import { ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Check, Zap } from "lucide-react";
 
 export const LAYER_COLORS: Record<string, string> = {
   stable: "border-l-violet-500",
@@ -128,15 +128,33 @@ interface SnapshotSectionBlockProps {
   totalTokens?: number;
   /** 初始展开状态 */
   defaultOpen?: boolean;
+  /** 全局前缀断链点（本层命中时在分歧位置渲染标记行） */
+  prefixBreak?: SnapshotPrefixBreak | null;
 }
 
-export function SnapshotSectionBlock({ section, totalTokens, defaultOpen = false }: SnapshotSectionBlockProps) {
+export function SnapshotSectionBlock({ section, totalTokens, defaultOpen = false, prefixBreak }: SnapshotSectionBlockProps) {
   const { t } = useTranslation("context");
   const [open, setOpen] = useState(defaultOpen);
+  const [stableOpen, setStableOpen] = useState(false);
   const colorClass = LAYER_COLORS[section.layer] || "border-l-muted";
   const showTokens = typeof totalTokens === "number" && totalTokens > 0;
   const barColor = LAYER_BAR_COLORS[section.layer] || "bg-muted";
   const pct = showTokens ? Math.round((section.estimated_tokens / totalTokens) * 100) : 0;
+
+  // 区块内静态/动态切分：仅混合层（既有稳定前缀又有新增）分段呈现，
+  // 完全稳定/完全新增的层保持直接渲染；层收缩（stable==count 但整层变化，
+  // 如压缩删尾）按 changed 徽标呈现
+  const hasBaseline = section.stable_count != null;
+  const stableCount = section.stable_count ?? 0;
+  const newCount = section.new_count ?? 0;
+  const splitable = hasBaseline && stableCount > 0 && newCount > 0;
+  const stableMsgs = splitable ? section.messages.slice(0, stableCount) : [];
+  const newMsgs = splitable ? section.messages.slice(stableCount) : section.messages;
+  const isBreakLayer = prefixBreak?.layer === section.layer;
+  const fullyStable = hasBaseline && newCount === 0 && section.changed === false;
+  // 层收缩（断链索引 >= 本层消息数）时分叉在层末，标记渲染于消息之后
+  const breakAtTail = isBreakLayer && !splitable
+    && (prefixBreak?.index ?? 0) >= section.messages.length;
 
   return (
     <div className={cn("border-l-2 pl-3", colorClass)}>
@@ -155,15 +173,27 @@ export function SnapshotSectionBlock({ section, totalTokens, defaultOpen = false
             {section.volatility_label}
           </span>
         )}
-        {section.changed === true && (
-          <span className="px-1 py-px rounded text-[9px] font-medium bg-amber-500/15 text-amber-500">
-            {t("sections.changed")}
-          </span>
-        )}
-        {section.changed === false && (
+        {hasBaseline && newCount > 0 ? (
+          <>
+            {splitable && (
+              <span className="px-1 py-px rounded text-[9px] font-medium bg-emerald-500/15 text-emerald-500">
+                {t("sections.cachedPrefix", { count: stableCount })}
+              </span>
+            )}
+            <span className="px-1 py-px rounded text-[9px] font-medium bg-amber-500/15 text-amber-500">
+              {t("sections.newAdds", { count: newCount })}
+            </span>
+          </>
+        ) : fullyStable ? (
           <span className="px-1 py-px rounded text-[9px] font-medium bg-emerald-500/15 text-emerald-500">
             {t("sections.unchanged")}
           </span>
+        ) : (
+          section.changed === true && (
+            <span className="px-1 py-px rounded text-[9px] font-medium bg-amber-500/15 text-amber-500">
+              {t("sections.changed")}
+            </span>
+          )
         )}
         {showTokens && (
           <>
@@ -179,15 +209,59 @@ export function SnapshotSectionBlock({ section, totalTokens, defaultOpen = false
       )}
       {open && (
         <div className={cn("pb-2", showTokens ? "space-y-1.5 ml-5" : "space-y-1")}>
-          {section.messages.map((msg, i) => (
+          {/* 静态前缀：与上次快照逐字节一致（默认折叠，缓存可命中区） */}
+          {stableMsgs.length > 0 && (
+            <div>
+              <button
+                onClick={() => setStableOpen(!stableOpen)}
+                className="flex items-center gap-1 text-[10px] text-emerald-500/80 hover:text-emerald-500"
+              >
+                {stableOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                {t("sections.cachedPrefixRegion", { count: stableMsgs.length })}
+              </button>
+              {stableOpen && (
+                <div className="space-y-1 mt-1 opacity-70">
+                  {stableMsgs.map((msg, i) => (
+                    <SnapshotMessageItem
+                      key={i}
+                      msg={msg}
+                      variant={showTokens ? "card" : "inline"}
+                      longThreshold={showTokens ? 500 : 300}
+                      idLength={showTokens ? 16 : 12}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {/* 全局断链点标记：本轮缓存命中至此为止 */}
+          {isBreakLayer && !breakAtTail && (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded border border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-500">
+              <Zap size={10} className="shrink-0" />
+              <span className="font-semibold">{t("sections.breakPoint")}</span>
+              <span className="text-amber-500/80">
+                {t("sections.breakDesc", { tokens: (prefixBreak?.before_tokens ?? 0).toLocaleString() })}
+              </span>
+            </div>
+          )}
+          {newMsgs.map((msg, i) => (
             <SnapshotMessageItem
-              key={i}
+              key={stableMsgs.length + i}
               msg={msg}
               variant={showTokens ? "card" : "inline"}
               longThreshold={showTokens ? 500 : 300}
               idLength={showTokens ? 16 : 12}
             />
           ))}
+          {breakAtTail && (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded border border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-500">
+              <Zap size={10} className="shrink-0" />
+              <span className="font-semibold">{t("sections.breakPoint")}</span>
+              <span className="text-amber-500/80">
+                {t("sections.breakDesc", { tokens: (prefixBreak?.before_tokens ?? 0).toLocaleString() })}
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>

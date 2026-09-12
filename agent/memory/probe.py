@@ -216,6 +216,20 @@ class DeepProbeHub:
         state = self._states.get(scope)
         return state.rendered if state is not None else ""
 
+    def snapshot(self) -> List[Dict[str, object]]:
+        """观测快照：各 scope 的深探状态（在途任务/渲染规模/预览），诊断注入是否发生。"""
+        now = time.monotonic()
+        return [
+            {
+                "scope": state.scope,
+                "running": state.task is not None and not state.task.done(),
+                "rendered_chars": len(state.rendered),
+                "rendered_preview": state.rendered[:160],
+                "age_seconds": int(now - state.created_at),
+            }
+            for state in self._states.values()
+        ]
+
     async def _run(self, state: _ProbeState, plan: RetrievalPlan, store: "MemoryStore") -> None:
         timeout = max(5.0, get_config_float("memory_probe_timeout_seconds", 60.0))
         try:

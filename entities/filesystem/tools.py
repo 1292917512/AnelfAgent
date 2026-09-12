@@ -52,19 +52,27 @@ entity("os", "操作系统 - 文件读写、目录管理、Shell 命令、Python
 # 沙箱路径解析
 # ------------------------------------------------------------------
 
-_WORKSPACE = "workspace"
 _SANDBOX = True
 
 
 def _load_config() -> None:
-    global _WORKSPACE, _SANDBOX
+    global _SANDBOX
     try:
         from core.config import ConfigManager
-        _WORKSPACE = ConfigManager.get("workspace_root", "workspace")
         _SANDBOX = ConfigManager.get("sandbox_enabled", True)
     except Exception as e:
         from core.log import log
         log(f"文件系统沙箱配置加载失败: {e}", "DEBUG")
+
+
+def _ws_root() -> str:
+    """workspace 根绝对路径（唯一解析入口：相对配置锚项目根 + 防项目根守卫）。
+
+    所有需要 workspace 根的调用点一律经此获取，禁止各自 abspath 配置原形
+    （进程 cwd 基准会造成锚点漂移）。
+    """
+    from entities.filesystem import paths as _paths
+    return _paths.get_workspace_root()
 
 
 def safe_path(path: str) -> str:
@@ -75,11 +83,11 @@ def safe_path(path: str) -> str:
     """
     from entities.filesystem import paths as _paths
     _load_config()
-    ws_abs = os.path.abspath(_WORKSPACE)
+    ws_abs = _ws_root()
     os.makedirs(ws_abs, exist_ok=True)
     resolved = _paths.resolve_workspace_path(path, ws_abs)
     if _SANDBOX and not _paths.check_sandbox(resolved, ws_abs):
-        raise ValueError(f"沙箱限制: {path} 不在工作目录 ({_WORKSPACE}) 内")
+        raise ValueError(f"沙箱限制: {path} 不在工作区 ({ws_abs}) 内")
     return resolved
 
 
@@ -827,7 +835,7 @@ def _redundant_workspace_prefix(command: str) -> Optional[str]:
     cwd 已是 workspace 根目录，该前缀会指向不存在的嵌套路径（workspace/workspace/...）。
     仅用于失败归因提示，不做拦截；无命中返回 None。
     """
-    prefix = os.path.basename(os.path.abspath(_WORKSPACE)) + "/"
+    prefix = os.path.basename(_ws_root()) + "/"
     try:
         tokens = shlex.split(command, posix=True)
     except ValueError:
@@ -915,11 +923,12 @@ def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = 
         from entities.filesystem import shell_state
 
         _load_config()
+        ws_root = _ws_root()
 
         # 沙箱预检：拦截漂出 workspace 的写操作（配置 sandbox_shell_write_check 可关）
         if _SANDBOX and _shell_write_check_enabled():
             from entities.filesystem.shell_guard import check_command_safety
-            violation = check_command_safety(command, _WORKSPACE)
+            violation = check_command_safety(command, ws_root)
             if violation:
                 return tool_error(
                     f"沙箱拦截: {violation}。"
@@ -929,14 +938,14 @@ def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = 
                     sandbox_violation=True,
                 )
 
-        cwd = shell_state.get_cwd(_WORKSPACE, sandbox=_SANDBOX)
+        cwd = shell_state.get_cwd(ws_root, sandbox=_SANDBOX)
 
         if run_in_background:
             # 0 = 自动：后台缺省预期时长由 launch_background 读
             # background_shell_alert_after 决定（超时提醒语义，不终止进程）
             return json.dumps(
                 launch_background(
-                    command, cwd, _WORKSPACE,
+                    command, cwd, ws_root,
                     timeout_sec=float(timeout) if timeout > 0 else 0.0,
                 ),
                 ensure_ascii=False,
@@ -957,12 +966,12 @@ def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = 
         notes: List[str] = []
         if is_posix:
             captured = shell_state.read_captured_pwd(pwd_file)
-            if captured and shell_state.set_cwd(captured, _WORKSPACE, sandbox=_SANDBOX):
+            if captured and shell_state.set_cwd(captured, ws_root, sandbox=_SANDBOX):
                 notes.append("注意: 工作目录已重置回 workspace 根目录（沙箱不允许漂出）")
 
         stdout = result.stdout.strip()
         stderr = result.stderr.strip() if result.stderr else ""
-        stdout, persisted = shell_state.truncate_or_persist(stdout, _WORKSPACE)
+        stdout, persisted = shell_state.truncate_or_persist(stdout, ws_root)
         if len(stderr) > 2000:
             stderr = stderr[:2000] + "\n... (stderr 已截断)"
 
@@ -981,11 +990,11 @@ def run_shell_command(command: str, timeout: int = 0, run_in_background: bool = 
                     "注意: 命令以非零码结束但无错误输出——若是 grep/搜索/测试类命令，"
                     "这通常表示无匹配或条件不成立，不是执行失败，无需重试"
                 )
-            payload["cwd"] = shell_state.get_cwd(_WORKSPACE, sandbox=_SANDBOX)
-            payload["workspace_root"] = os.path.abspath(_WORKSPACE)
+            payload["cwd"] = shell_state.get_cwd(ws_root, sandbox=_SANDBOX)
+            payload["workspace_root"] = ws_root
             redundant = _redundant_workspace_prefix(command)
             if redundant:
-                prefix = os.path.basename(os.path.abspath(_WORKSPACE)) + "/"
+                prefix = os.path.basename(_ws_root()) + "/"
                 stripped = redundant
                 while stripped.startswith(prefix):
                     stripped = stripped[len(prefix):]
@@ -1013,7 +1022,7 @@ def python_exec(code: str, timeout: int = 30) -> str:
     """执行 Python 代码片段并返回输出结果，适合数据计算、文本处理等场景。
 
     注意：本工具直接启动 Python 进程，不经过 run_shell_command 的 shell 写预检；
-    沙箱开启时子进程工作目录被限定在 workspace 根目录。
+    子进程工作目录无条件锚定 workspace 根（相对路径基准与文件工具一致）。
 
     Args:
         code: 要执行的 Python 代码
@@ -1024,11 +1033,11 @@ def python_exec(code: str, timeout: int = 30) -> str:
     try:
         _load_config()
         timeout = max(1, int(timeout))
-        run_kwargs: Dict[str, Any] = {}
-        if _SANDBOX:
-            ws_abs = os.path.abspath(_WORKSPACE)
-            os.makedirs(ws_abs, exist_ok=True)
-            run_kwargs["cwd"] = ws_abs
+        # cwd 无条件锚定 workspace：曾仅在沙箱开启时设定，关闭时子进程以
+        # 项目根为 cwd，AI 代码中的相对路径会误写项目根
+        ws_abs = _ws_root()
+        os.makedirs(ws_abs, exist_ok=True)
+        run_kwargs: Dict[str, Any] = {"cwd": ws_abs}
         result = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True, text=True, timeout=timeout,
@@ -1041,7 +1050,7 @@ def python_exec(code: str, timeout: int = 30) -> str:
         # stderr 小限截断（多为回溯/警告，完整价值低）
         from entities.filesystem import shell_state
         stdout, persisted_path = shell_state.truncate_or_persist(
-            stdout, os.path.abspath(_WORKSPACE),
+            stdout, ws_abs,
         )
         if len(stderr) > 1000:
             stderr = stderr[:1000] + "\n... (截断)"

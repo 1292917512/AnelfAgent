@@ -147,7 +147,14 @@ def pytest_runtest_call(item: pytest.Item):
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """报告退出时仍存活的非守护线程（会阻塞进程退出的泄漏）。"""
+    """报告退出时仍存活的非守护线程，并将泄漏线程转为守护放行退出。
+
+    共享线程池与进程单例长驻连接（如 vault 的 aiosqlite）在生产由
+    Lifecycle 逆序收尾；测试进程没有该环节，测试期触发的惰性连接会以
+    非守护线程滞留、永久阻塞解释器退出（曾致合并跑"跑完退不出"）。
+    报告保留完整归因，随后把已泄漏线程标记为守护——进程可退出，
+    泄漏仍可见可修。
+    """
     # 共享线程池（async_helper 等）是刻意的长生命周期设计，Lifecycle 已注册
     # 关闭钩子；会话收尾主动关闭并从泄漏报告中排除，避免误报与归因错乱。
     try:
@@ -162,7 +169,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         and not t.name.startswith("async_helper")
     ]
     if leaked:
-        print(f"\n[thread-leak] {len(leaked)} 个非守护线程仍存活，将阻塞 pytest 退出：")
+        print(f"\n[thread-leak] {len(leaked)} 个非守护线程仍存活：")
         frames = sys._current_frames()
         for t in leaked:
             origin = _thread_origins.get(t.ident or 0, "未知用例")
@@ -174,3 +181,29 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             if frame is not None:
                 stack = "".join(traceback.format_stack(frame, limit=5))
                 print(f"    当前栈顶:\n{stack}")
+        _release_leaked_threads(leaked, frames)
+
+
+def _release_leaked_threads(
+        leaked: list, frames: dict) -> None:
+    """尽力让已泄漏的非守护线程自行退出；未知类型保留阻塞（真实泄漏待修）。
+
+    当前已知族：aiosqlite 连接工作线程（测试期惰性打开、无 Lifecycle 收尾）。
+    其退出条件是从队列取到返回 _STOP_RUNNING_SENTINEL 的函数；经线程参数
+    直接投递哨兵（同步队列跨线程安全，不依赖已关闭的事件循环）。
+    运行中线程的 _target 已被删除，按当前栈帧函数名识别。
+    """
+    try:
+        from aiosqlite.core import _STOP_RUNNING_SENTINEL
+    except ImportError:
+        return
+    for t in leaked:
+        frame = frames.get(t.ident or 0)
+        if not frame or frame.f_code.co_name != "_connection_worker_thread":
+            continue
+        try:
+            tx = t._args[0]
+            tx.put((None, lambda: _STOP_RUNNING_SENTINEL))
+            t.join(timeout=2)
+        except Exception:
+            pass

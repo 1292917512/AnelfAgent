@@ -324,12 +324,22 @@ class TestStickyDynamicTools:
 
 
 class TestMemoryStatusSplit:
-    def test_strip_auto_status_block(self) -> None:
-        from agent.memory.notes import AUTO_STATUS_BEGIN, AUTO_STATUS_END, _strip_auto_status_block
+    def test_strip_managed_blocks(self) -> None:
+        from agent.memory.notes import (
+            AUTO_HEARTBEAT_BEGIN,
+            AUTO_HEARTBEAT_END,
+            AUTO_STATUS_BEGIN,
+            AUTO_STATUS_END,
+            _strip_managed_blocks,
+        )
 
-        text = f"# 当前状态\n\n{AUTO_STATUS_BEGIN}\n- 活跃记忆：297 条\n{AUTO_STATUS_END}\n\n## 主人信息\n内容"
-        out = _strip_auto_status_block(text)
+        text = (
+            f"# 当前状态\n\n{AUTO_STATUS_BEGIN}\n- 活跃记忆：297 条\n{AUTO_STATUS_END}\n\n"
+            f"{AUTO_HEARTBEAT_BEGIN}\n- 心跳：运行中\n{AUTO_HEARTBEAT_END}\n\n## 主人信息\n内容"
+        )
+        out = _strip_managed_blocks(text)
         assert "活跃记忆" not in out
+        assert "心跳" not in out
         assert "主人信息" in out
 
     def test_memory_status_block_extracted(self, monkeypatch) -> None:

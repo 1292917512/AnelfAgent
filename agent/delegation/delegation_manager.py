@@ -4,9 +4,15 @@
   嵌套委托不竞争顶层槽位以避免持槽等待死锁；获取槽位带超时
 - 并行模式：tasks 数组 fan-out，asyncio.gather 并发执行
 - 预算控制：每个子代理独立的迭代预算（默认 15 轮）
-- 结果聚合：按 task_index 排序，摘要按父上下文剩余空间动态截断
+- 结果聚合：按 task_index 排序，摘要按父上下文剩余空间动态截断，
+  每项附执行用量（turns/tokens/耗时）与输出契约校验结果
 - 后台模式：登记 BackgroundTaskRegistry 后立即返回 delegation_id，
   结果按注册表路由（轮内会合注入 / 完成即新 turn 通知）
+- 续跑：follow_up 以 transcript 消息链为 base_messages 无损续跑
+  （follow_up_agent 工具）；send_to_agent 双档投递（steer 步骤边界 /
+  after 收束边界追加）
+- 运行日志（journal）：进度流接入注册表增量读取；ledger 崩溃账本供
+  启动恢复；用量经 LLM 事件按 delegation_id 归集
 - 事件发射：``EVENT_DELEGATION_STARTED`` / ``EVENT_DELEGATION_PROGRESS`` /
   ``EVENT_DELEGATION_RESOLVED`` —— 前端据此渲染 DelegationCard 实时进度。
 """
@@ -18,6 +24,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.delegation import journal
+from agent.delegation.profile import AgentFacets
 from agent.delegation.sub_agent import (
     SubAgent,
     SubAgentResult,
@@ -41,11 +49,7 @@ if TYPE_CHECKING:
 
 EVENT_DELEGATION_COMPLETED = "delegation.completed"
 
-# scope 工具与 plan 模块共享（统一实现，避免逐字重复）
 from agent.planning.tracker import (  # noqa: E402
-    current_scope as _current_scope,
-)
-from agent.planning.tracker import (
     parse_scope_chat_id as _parse_scope_chat_id,
 )
 
@@ -59,6 +63,8 @@ _SUMMARY_NOTICE_MAX_CHARS = 1_500
 _RESOLVED_OUTPUT_PREVIEW_CHARS = 2_000
 # 摘要截断保留比例（头部 75% + 尾部 25%）
 _TRIM_HEAD_FRACTION = 0.75
+# 续跑指令注入的最大消息链长度（条数；防异常巨型 transcript 撑爆上下文）
+_FOLLOWUP_MAX_MESSAGES = 400
 
 # 用户取消的取消消息（写入工具结果，引导 AI 不要自动重试）
 CANCELLED_MESSAGE = (
@@ -90,6 +96,31 @@ def _acquire_timeout_seconds() -> float:
     return max(1.0, get_config_float("delegation_acquire_timeout_seconds", 300.0))
 
 
+def _owner_scope(scope_hint: str) -> str:
+    """委托归属会话解析（与后台任务完成路由同链）。
+
+    显式 scope_hint 优先（后台路径由工具传入 current_owner_scope()）；
+    否则按 usage_scope 绑定 > 激活上下文解析——嵌套委托归属父会话而非
+    reflect 一次性 scope，用量归属与通知路由才能对齐。
+    """
+    if scope_hint:
+        return scope_hint
+    from agent.mind.tool_activation import current_owner_scope
+    return current_owner_scope()
+
+
+def _usage_bucket() -> Dict[str, int]:
+    return {"turns": 0, "input_tokens": 0, "output_tokens": 0, "duration_ms": 0}
+
+
+def _adapter_key_of(mind: Any, scope: str) -> str:
+    """scope 的回复路由 adapter（ledger 记录；pfc 未就绪时容错空串）。"""
+    try:
+        return str(mind.pfc.get_adapter_key(scope) or "")
+    except Exception:
+        return ""
+
+
 class DelegationManager:
     """子代理委托管理器。"""
 
@@ -108,40 +139,73 @@ class DelegationManager:
         self._pending: set[str] = set()
         # 父子关系（父 delegation_id → 后代 id 集合）：取消级联用
         self._children: Dict[str, set[str]] = {}
+        # 按委托归集的 LLM 用量（turns/tokens/耗时；完成时随结果带出后清理）
+        self._usage: Dict[str, Dict[str, int]] = {}
         self._install_progress_hook()
 
     # ------------------------------------------------------------------
-    # 进度事件（子代理运行期 → 前端 DelegationCard 实时进度）
+    # 进度事件（子代理运行期 → 前端 DelegationCard 实时进度 + 进度流/用量归集）
     # ------------------------------------------------------------------
 
     def _install_progress_hook(self) -> None:
-        """订阅思维循环的轮次/工具事件，转译为 delegation_progress。
+        """订阅思维循环的轮次/工具/LLM 事件，转译为 delegation_progress
+        并归集运行产物。
 
         event_bus 处理器在发射方上下文中内联执行，因此经 ContextVar 读取
-        当前委托 ID 即可把子代理的内部活动归属到对应委托卡片。
+        当前委托 ID 即可把子代理的内部活动归属到对应委托卡片、写入对应
+        委托的进度流与用量桶。
         """
         from core.event_bus import (
+            EVENT_THINKING_LLM_END,
             EVENT_THINKING_REPLY_ROUND,
             EVENT_THINKING_TOOL_END,
             EVENT_THINKING_TOOL_START,
         )
 
         async def _on_round(payload: Dict[str, Any]) -> None:
-            await self._emit_progress("round", iteration=int(payload.get("iteration", 0)))
+            iteration = int(payload.get("iteration", 0))
+            await self._emit_progress("round", iteration=iteration)
+            self._journal_progress(f"第 {iteration + 1} 轮开始")
 
         async def _on_tool_start(payload: Dict[str, Any]) -> None:
-            await self._emit_progress("tool_start", tool=str(payload.get("tool_name", "")))
+            tool = str(payload.get("tool_name", ""))
+            await self._emit_progress("tool_start", tool=tool)
+            self._journal_progress(f"工具 {tool} …")
 
         async def _on_tool_end(payload: Dict[str, Any]) -> None:
-            await self._emit_progress(
-                "tool_end",
-                tool=str(payload.get("tool_name", "")),
-                success=bool(payload.get("success")),
-            )
+            tool = str(payload.get("tool_name", ""))
+            success = bool(payload.get("success"))
+            await self._emit_progress("tool_end", tool=tool, success=success)
+            self._journal_progress(f"工具 {tool} {'完成' if success else '失败'}")
+
+        async def _on_llm_end(payload: Dict[str, Any]) -> None:
+            self._record_usage(payload)
 
         event_bus.on(EVENT_THINKING_REPLY_ROUND, _on_round, owner="delegation")
         event_bus.on(EVENT_THINKING_TOOL_START, _on_tool_start, owner="delegation")
         event_bus.on(EVENT_THINKING_TOOL_END, _on_tool_end, owner="delegation")
+        event_bus.on(EVENT_THINKING_LLM_END, _on_llm_end, owner="delegation")
+
+    def _journal_progress(self, line: str) -> None:
+        """进度流写入（仅运行中的委托；fail-open）。"""
+        delegation_id = current_delegation_id()
+        if not delegation_id or delegation_id not in self._running:
+            return
+        journal.append_progress(delegation_id, line)
+
+    def _record_usage(self, payload: Dict[str, Any]) -> None:
+        """LLM 用量按当前委托归集（事件在发射方上下文执行，归属准确）。"""
+        delegation_id = current_delegation_id()
+        if not delegation_id:
+            return
+        bucket = self._usage.get(delegation_id)
+        if bucket is None:
+            return
+        usage = payload.get("usage") or {}
+        bucket["turns"] += 1
+        bucket["input_tokens"] += int(usage.get("prompt_tokens") or 0)
+        bucket["output_tokens"] += int(usage.get("completion_tokens") or 0)
+        bucket["duration_ms"] += int(payload.get("duration_ms") or 0)
 
     async def _emit_progress(self, kind: str, **fields: Any) -> None:
         """子代理内部活动 → delegation_progress 事件（仅运行中的委托）。"""
@@ -219,39 +283,120 @@ class DelegationManager:
                 "model": str(info.get("model", "")),
                 "agent": str(info.get("agent", "")),
                 "elapsed_seconds": int(now - float(info.get("started_at", now))),
+                "usage": dict(self._usage.get(did) or {}),
             }
             for did, info in self._running.items()
             if info.get("scope") == scope
         ]
 
-    def steer(self, delegation_id: str, message: str) -> Dict[str, Any]:
-        """向运行中的委托发送转向指令（步骤边界注入，不取消不重开）。
+    def steer(self, delegation_id: str, message: str, mode: str = "steer") -> Dict[str, Any]:
+        """向运行中的委托发送转向指令，返回结构化结果（含错误）。
 
+        双档投递：steer = 步骤边界注入（改变进行中的工作）；after =
+        收束边界注入（本要结束时追加续跑，不取消、已完成部分保留）。
         前台/后台委托统一支持：只要还在 _running 即可转向；消息经
-        SteerInbox 暂存，子代理 think_loop 下一轮轮顶注入。收件箱满
-        （单委托 8 条）返回结构化错误——转向是纠偏不是聊天通道。
+        SteerInbox 按档位暂存。收件箱满（单委托 8 条，两档合并计）返回
+        结构化错误——转向是纠偏不是聊天通道。
         """
-        from agent.delegation.steer import steer_inbox
+        from agent.delegation.steer import MODE_STEER, steer_inbox
         if delegation_id not in self._running:
+            hint = (
+                "可先调用 check_background_tasks 查看运行中的任务"
+                if not journal.load_transcript(delegation_id)
+                else "该委托已结束，可用 follow_up_agent 无损续跑"
+            )
             return {
                 "error": f"委托不存在或已结束: {delegation_id}",
-                "hint": "可先调用 check_background_tasks 查看运行中的任务",
+                "hint": hint,
             }
         if not (message or "").strip():
             return {"error": "message 不能为空"}
-        if not steer_inbox.push(delegation_id, message):
+        if mode not in ("steer", "after"):
+            return {"error": f"deliver_as 须为 steer 或 after（收到 {mode!r}）"}
+        if not steer_inbox.push(delegation_id, message, mode):
             return {
                 "error": f"委托 {delegation_id} 的转向消息已达上限，请等待其消化后再发",
                 "queued": steer_inbox.pending_count(delegation_id),
             }
         goal = str(self._running[delegation_id].get("goal", ""))[:80]
-        log(f"转向指令入箱: {delegation_id} ({goal}) msg={message[:60]}", tag="委托")
+        log(
+            f"转向指令入箱 ({mode}): {delegation_id} ({goal}) msg={message[:60]}",
+            tag="委托",
+        )
+        note = (
+            "指令将在子代理当前步骤完成后注入（不取消、已完成部分保留）"
+            if mode == MODE_STEER
+            else "指令将在子代理本要结束时注入续跑（不取消、已完成部分保留）"
+        )
         return {
             "ok": True,
             "delegation_id": delegation_id,
             "queued": steer_inbox.pending_count(delegation_id),
-            "note": "指令将在子代理当前步骤完成后注入（不取消、已完成部分保留）",
+            "note": note,
         }
+
+    async def follow_up(
+            self,
+            delegation_id: str,
+            message: str,
+            *,
+            background: bool = False,
+            max_iterations: int = 0,
+    ) -> Dict[str, Any]:
+        """续跑已结束的委托：以 transcript 消息链为 base_messages 无损续聊。
+
+        语义对齐 dsh continuable subagents：上次执行的完整上下文（工具
+        调用/中间结论）原样在场，追加指令后继续——替代"把有损总结当
+        context 重新委托"。运行中的委托不可续跑（用 send_to_agent 转向）；
+        transcript 缺失/超限/被清理时返回结构化错误。
+        """
+        if delegation_id in self._running or delegation_id in self._pending:
+            return {
+                "error": f"委托 {delegation_id} 仍在运行，请用 send_to_agent 转向而非续跑",
+            }
+        transcript = journal.load_transcript(delegation_id)
+        if transcript is None:
+            return {
+                "error": f"委托 {delegation_id} 无可续跑 transcript（不存在/超限/已过期清理）",
+                "hint": "请用 delegate_task 重新委托，并在 context 中带上此前的关键结论",
+            }
+        messages = list(transcript.get("messages"))[-_FOLLOWUP_MAX_MESSAGES:]
+        goal = str(transcript.get("goal", "")) or delegation_id
+        agent_name = str(transcript.get("agent", "") or "")
+        facets = AgentFacets.from_dict(transcript.get("facets"))
+        follow_message = {
+            "role": "user",
+            "content": (
+                "[续跑指令] 该委托上次已结束（原因："
+                f"{transcript.get('completed_reason', 'completed')}），"
+                "以上是你的完整执行上下文，请在既有进展基础上继续：\n"
+                f"{(message or '').strip()}"
+            ),
+            "_source": {"origin": "steer"},
+        }
+        base_messages = messages + [follow_message]
+        budget = max_iterations or int(transcript.get("max_iterations") or 0)
+        common = dict(
+            role=str(transcript.get("role", "leaf")),
+            max_iterations=budget,
+            agent_name=agent_name,
+            facets=facets if facets else None,
+            base_messages=base_messages,
+            parent_delegation_id=delegation_id,
+        )
+        if background:
+            new_id = self.delegate_background(goal, "", **common)
+            return {
+                "ok": True, "mode": "background",
+                "parent_delegation_id": delegation_id,
+                "delegation_id": new_id,
+                "message": "续跑已在后台执行，完成后系统会自动通知你"
+                           "（可用 check_background_tasks 查询进度）。",
+            }
+        result = await self.delegate(goal, "", **common)
+        payload: Dict[str, Any] = json.loads(self.aggregate_results([result]))
+        payload["parent_delegation_id"] = delegation_id
+        return payload
 
     def _resolve_model(self, agent_name: str, difficulty: Any) -> str:
         """子代理模型解析：命名档案 > 内置难度档 > 默认模型。
@@ -275,6 +420,26 @@ class DelegationManager:
             log("子代理模型解析失败，使用默认模型", "DEBUG", tag="委托")
         return ""
 
+    def _resolve_facets(self, agent_name: str) -> Optional[AgentFacets]:
+        """命名档案的执行面（instructions/tool_tags/blocked/output_schema）。
+
+        未指定档案 / 档案无执行面（含内置难度档）返回 None——子代理走
+        默认模板与默认工具选择器。难度档刻意不携带执行面：难度语义只是
+        换模型，行为契约归自定义档案。
+        """
+        if not agent_name:
+            return None
+        mgr = getattr(self._mind, "llm_manager", None)
+        if mgr is None:
+            return None
+        try:
+            profile = mgr.get_sub_agent_profile(agent_name)
+        except Exception:
+            return None
+        if profile is None or not profile.facets:
+            return None
+        return profile.facets
+
     # ------------------------------------------------------------------
     # 同步委托
     # ------------------------------------------------------------------
@@ -293,16 +458,21 @@ class DelegationManager:
             agent_name: str = "",
             emit_events: bool = True,
             fork_context: bool = False,
+            facets: Optional[AgentFacets] = None,
+            base_messages: Optional[List[Dict]] = None,
+            parent_delegation_id: str = "",
     ) -> SubAgentResult:
         """委托单个子任务（阻塞至完成）。
 
         子代理在独立 asyncio.Task 中执行并登记到 _running：
-        - 进度事件经 ContextVar 归属到本委托（前端实时进度）
+        - 进度事件经 ContextVar 归属到本委托（前端实时进度 + 进度流落盘）
         - cancel() 取消该 Task 时转化为"用户取消"结果返回给调用方，
           而不是让 CancelledError 击穿父级思维循环
         delegation_id：外部预登记的 id（后台委托路径透传，全程单一 id）；
-        agent_name：命名子代理档案（模型解析优先于 difficulty）；
-        emit_events=False 时 started/resolved 事件由调用方负责（防重复发射）。
+        agent_name：命名子代理档案（模型与执行面解析优先于 difficulty）；
+        emit_events=False 时 started/resolved 事件由调用方负责（防重复发射）；
+        facets/base_messages/parent_delegation_id 为续跑三元组（follow_up
+        内部路径）：显式执行面覆盖档案解析，消息链跳过模板构建。
         """
         # 顶层委托（depth 0）与嵌套委托（depth>=1）分离并发槽，
         # 嵌套方持槽等待时不再竞争同一把信号量
@@ -310,19 +480,23 @@ class DelegationManager:
         timeout = _acquire_timeout_seconds()
         registry = getattr(self._mind, "background_tasks", None)
         owns_registry_entry = False
+        # 归属会话与完成路由同链解析（usage_scope 绑定 > 激活上下文）：
+        # 嵌套/前台委托都归属真实会话，check_background_tasks 可见
+        scope = _owner_scope(scope_hint)
         if not delegation_id:
             if registry is not None:
                 # 前台/嵌套委托同样登记注册表：check_background_tasks 可见
                 # （含耗时）、terminate_background_task 可单独停止（无需中断
                 # 整个回复）。完成时以 claimed=True 收尾——前台的通知语义
                 # 就是工具结果本身，不走轮外完成回调
-                delegation_id = registry.register(scope_hint or "_global", "delegation", goal[:80])
+                delegation_id = registry.register(scope, "delegation", goal[:80])
                 owns_registry_entry = True
             else:
                 delegation_id = uuid.uuid4().hex[:8]
-        scope = scope_hint or _current_scope()
         _user_scope, chat_id = _parse_scope_chat_id(scope)
         model_id = self._resolve_model(agent_name, difficulty)
+        if facets is None:
+            facets = self._resolve_facets(agent_name)
         # 父子登记：嵌套委托归属当前委托，取消时级联
         parent_id = current_delegation_id()
         if parent_id:
@@ -392,8 +566,10 @@ class DelegationManager:
 
         id_token = bind_delegation_id(delegation_id)
         # 用量归属：子代理 reflect 的一次性 scope 不建独立统计行，
-        # 其 LLM 用量经此绑定归属父会话（/status/usage 可见委托成本）
+        # 其 LLM 用量经此绑定归属父会话（/status/usage 可见委托成本）；
+        # 委托维度的用量桶同步开账（事件归集，随结果带出）
         usage_token = bind_usage_scope(scope) if scope else None
+        self._usage[delegation_id] = _usage_bucket()
         try:
             parent_history = (
                 await self._load_parent_history(scope) if fork_context else ""
@@ -404,6 +580,9 @@ class DelegationManager:
                 model_id=model_id, agent_name=agent_name,
                 delegation_id=delegation_id,
                 parent_history=parent_history,
+                facets=facets,
+                base_messages=base_messages,
+                parent_delegation_id=parent_delegation_id,
             )
             run_task = asyncio.create_task(
                 agent.run(), name=f"delegation.run.{delegation_id}",
@@ -421,6 +600,21 @@ class DelegationManager:
                         return False  # 循环已关闭（关停中）
 
                 registry.attach_killer(delegation_id, _kill_front)
+            # 进入执行：进度流接线（增量读取）+ 崩溃账本开账
+            journal.append_progress(
+                delegation_id,
+                f"委托启动: {goal[:120]}"
+                + (f"（续跑自 {parent_delegation_id}）" if parent_delegation_id else ""),
+            )
+            if registry is not None:
+                registry.attach_output_file(
+                    delegation_id, str(journal.progress_path(delegation_id)),
+                )
+            journal.append_ledger(
+                journal.LEDGER_STARTED, delegation_id,
+                goal=goal[:200], scope=scope, agent=agent_name, model=model_id,
+                adapter_key=_adapter_key_of(self._mind, scope),
+            )
             self._running[delegation_id] = {
                 "task": run_task,
                 "goal": goal,
@@ -447,6 +641,12 @@ class DelegationManager:
             finally:
                 self._cancel_marks.discard(delegation_id)
                 self._running.pop(delegation_id, None)
+                if result is not None:
+                    result.usage = dict(self._usage.get(delegation_id) or {})
+                    self._persist_transcript(
+                        delegation_id, goal, scope, agent_name, model_id,
+                        normalize_role(role), max_iterations, facets, result,
+                    )
                 # 注册表收尾：结果由工具返回值消费（claimed=True），异常路径
                 # 也不例外——否则条目滞留 running 永不消失
                 if owns_registry_entry and registry is not None:
@@ -465,9 +665,24 @@ class DelegationManager:
             if usage_token is not None:
                 reset_usage_scope(usage_token)
             reset_delegation_id(id_token)
+            self._usage.pop(delegation_id, None)
             semaphore.release()
             if parent_id:
                 self._detach_child(parent_id, delegation_id)
+
+        # 进度流与账本收尾（终态事实：取消/失败同样闭合）
+        if result is not None:
+            status = (
+                "已取消" if result.cancelled
+                else ("成功" if result.success else "失败")
+            )
+            tail = (result.output if result.success else result.error) or ""
+            journal.append_progress(
+                delegation_id, f"委托结束（{status}）: {tail[:400]}",
+            )
+            journal.append_ledger(
+                journal.LEDGER_CLOSED, delegation_id, status=status,
+            )
 
         # 发射 resolved 事件
         if emit_events:
@@ -479,11 +694,49 @@ class DelegationManager:
                     "output": result.output[:_RESOLVED_OUTPUT_PREVIEW_CHARS],
                     "error": result.error,
                     "task_index": task_index,
+                    "usage": dict(result.usage),
                     **({"cancelled": True} if result.cancelled else {}),
                 })
             except Exception:
                 log("delegate 异常已忽略", "DEBUG")
         return result
+
+    def _persist_transcript(
+            self,
+            delegation_id: str,
+            goal: str,
+            scope: str,
+            agent_name: str,
+            model_id: str,
+            role: str,
+            max_iterations: int,
+            facets: Optional[AgentFacets],
+            result: SubAgentResult,
+    ) -> None:
+        """transcript 落盘（follow_up 续跑数据源；消息链缺失则跳过）。"""
+        if not result.messages:
+            return
+        try:
+            from core.config import get_config_bool
+            if not get_config_bool("delegation_transcript_enabled", True):
+                return
+        except Exception:
+            pass
+        journal.save_transcript({
+            "delegation_id": delegation_id,
+            "goal": goal,
+            "scope": scope,
+            "agent": agent_name,
+            "model_id": model_id,
+            "role": role,
+            "max_iterations": max_iterations,
+            "facets": facets.to_dict() if facets else None,
+            "messages": result.messages[-_FOLLOWUP_MAX_MESSAGES:],
+            "output": result.output,
+            "success": result.success,
+            "completed_reason": result.completed_reason,
+            "finished_at": time.time(),
+        })
 
     def _detach_child(self, parent_id: str, delegation_id: str) -> None:
         """解除父子登记（子委托结束后清理，空集即删）。"""
@@ -584,16 +837,22 @@ class DelegationManager:
             difficulty: int = 0,
             agent_name: str = "",
             fork_context: bool = False,
+            facets: Optional[AgentFacets] = None,
+            base_messages: Optional[List[Dict]] = None,
+            parent_delegation_id: str = "",
     ) -> str:
         """后台委托：登记注册表后立即返回 delegation_id，结果异步送达。
 
         送达路径（由 BackgroundTaskRegistry 路由）：
         - 父 Agent 正挂起等待 → 完成事件注入当前思考循环（轮内会合）；
         - 否则 → 完成事件排入回复队列触发新一轮 REPLY（完成即新 turn）。
+        facets/base_messages/parent_delegation_id 为续跑三元组（follow_up
+        的后台分支透传）。
         """
         registry = getattr(self._mind, "background_tasks", None)
+        display_goal = f"[续跑] {goal[:72]}" if parent_delegation_id else goal[:80]
         if registry is not None:
-            delegation_id = registry.register(scope or "_global", "delegation", goal[:80])
+            delegation_id = registry.register(scope or _owner_scope(""), "delegation", display_goal)
             # 终止句柄：AI 经 terminate_background_task 决策取消本委托。
             # cancel 内的 Task.cancel 非线程安全，killer 可能在线程池执行，
             # 经 call_soon_threadsafe 桥回主循环；标记先行保证按用户取消路由
@@ -612,7 +871,7 @@ class DelegationManager:
             delegation_id = uuid.uuid4().hex[:8]
 
         # 发射 started 事件
-        effective_scope = scope or _current_scope()
+        effective_scope = scope or _owner_scope("")
         _user_scope, chat_id = _parse_scope_chat_id(effective_scope)
         model_id = self._resolve_model(agent_name, difficulty)
         try:
@@ -637,6 +896,9 @@ class DelegationManager:
                 delegation_id, goal, context, role, max_iterations, scope,
                 difficulty=difficulty, agent_name=agent_name,
                 fork_context=fork_context,
+                facets=facets,
+                base_messages=base_messages,
+                parent_delegation_id=parent_delegation_id,
             ),
             name=f"delegation.{delegation_id}",
         )
@@ -663,6 +925,9 @@ class DelegationManager:
             difficulty: int = 0,
             agent_name: str = "",
             fork_context: bool = False,
+            facets: Optional[AgentFacets] = None,
+            base_messages: Optional[List[Dict]] = None,
+            parent_delegation_id: str = "",
     ) -> None:
         """后台执行委托并按注册表路由结果（轮内会合 / 完成即新 turn）。
 
@@ -675,6 +940,9 @@ class DelegationManager:
                 scope_hint=scope, difficulty=difficulty, fork_context=fork_context,
                 delegation_id=delegation_id, agent_name=agent_name,
                 emit_events=False,
+                facets=facets,
+                base_messages=base_messages,
+                parent_delegation_id=parent_delegation_id,
             )
         except asyncio.CancelledError:
             # 用户取消（含并发槽等待阶段）：转化为取消结果继续走正常路由；
@@ -714,7 +982,7 @@ class DelegationManager:
             })
 
             # 向 webui 前端推 resolved（DelegationCard 关闭/标完成）
-            effective_scope = scope or _current_scope()
+            effective_scope = _owner_scope(scope)
             _user_scope, chat_id = _parse_scope_chat_id(effective_scope)
             try:
                 await event_bus.emit(EVENT_DELEGATION_RESOLVED, {
@@ -809,6 +1077,9 @@ class DelegationManager:
             }
             if r.error:
                 item["error"] = r.error
+            if r.usage:
+                # 执行用量：父级可据此判断子代理是否烧了过多轮次（该拆任务了）
+                item["usage"] = dict(r.usage)
             if r.cancelled:
                 item["cause"] = "user_cancel"
                 item["retryable"] = False
@@ -816,6 +1087,11 @@ class DelegationManager:
                 # 轮次预算用尽：产出可能只是中途状态，父级可决策拆小重委托
                 item["completed_reason"] = "budget_exhausted"
                 item["hint"] = "轮次预算用尽，结果可能不完整；需要更完整结论可拆分为更小的子任务重新委托"
+            if r.schema_ok is False:
+                # 输出契约未满足：事实报告，父级决定重试还是将就用文本
+                item["schema_ok"] = False
+                item["hint"] = (item.get("hint", "") + " " if item.get("hint") else "") + \
+                    "输出未满足档案 output_schema 契约（未解析出合法 JSON），如需结构化结果可重试或续跑补交"
             items.append(item)
         succeeded = sum(1 for r in results if r.success)
         return json.dumps({
@@ -892,6 +1168,17 @@ _DELEGATION_CONFIGS = {
             "default": 300,
             "advanced": True,
             "unit": "秒",
+        },
+        "delegation_transcript_enabled": {
+            "description": "委托 transcript 持久化（follow_up_agent 无损续跑的数据源）",
+            "default": True,
+            "advanced": True,
+        },
+        "delegation_journal_retention_days": {
+            "description": "委托运行日志（进度流/transcript）保留天数",
+            "default": 7,
+            "advanced": True,
+            "unit": "天",
         },
     },
 }

@@ -11,15 +11,27 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import threading
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import litellm
 
+from agent.delegation.profile import (
+    BUILTIN_AGENT_NAMES,
+    DIFFICULTY_AGENTS,
+    DIFFICULTY_DESCRIPTIONS,
+    MAX_BLOCKED_TOOLS,
+    MAX_TOOL_TAGS,
+    AgentFacets,
+    SubAgentProfile,
+    normalize_instructions,
+    normalize_tag_list,
+    parse_output_schema,
+    valid_sub_agent_name,
+)
 from agent.llm.llm_client import (
     API_TYPE_ANTHROPIC,
     API_TYPES,
@@ -82,48 +94,6 @@ class ProviderConfig:
             proxy_url=data.get("proxy_url", ""),
             media_protocol=data.get("media_protocol", ""),
         )
-
-
-@dataclass
-class SubAgentProfile:
-    """子代理档案：名称 → 有序模型候选池。
-
-    统一注册表：内置难度档（easy/medium/hard，tier 1-3，delegate_task 的
-    difficulty 参数是其语法糖）与自定义档案（tier 0）同构存储、同套 CRUD。
-    解析时按池内顺序取首个可用模型；内置难度档保留降挡（hard→medium→easy）。
-    """
-
-    name: str
-    models: List[str] = field(default_factory=list)
-    description: str = ""
-    tier: int = 0
-    """难度挡位：0 = 自定义档案；1/2/3 = 内置难度档（受保护，不可删除/改名）。"""
-
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
-            "models": list(self.models),
-            "description": self.description,
-        }
-        if self.tier:
-            d["tier"] = self.tier
-        return d
-
-
-# 内置难度档：difficulty 参数 → 档案名的唯一映射（语义糖）
-_DIFFICULTY_AGENTS: Dict[int, str] = {1: "easy", 2: "medium", 3: "hard"}
-_DIFFICULTY_DESCRIPTIONS: Dict[int, str] = {
-    1: "简单任务（检索/格式化等机械工作，最经济）",
-    2: "中等任务（常规分析/执行）",
-    3: "困难任务（复杂推理/多步规划，最强）",
-}
-_BUILTIN_AGENT_NAMES = frozenset(_DIFFICULTY_AGENTS.values())
-
-# 命名子代理的合法名称：英文字母开头，字母/数字/下划线/连字符，≤32 字符
-_SUB_AGENT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
-
-
-def _valid_sub_agent_name(name: str) -> bool:
-    return bool(_SUB_AGENT_NAME_RE.match(name or ""))
 
 
 class LLMManager(BaseEntity):
@@ -273,16 +243,16 @@ class LLMManager(BaseEntity):
         self._sub_agents = {
             name: SubAgentProfile(
                 name=name, tier=tier,
-                description=_DIFFICULTY_DESCRIPTIONS[tier],
+                description=DIFFICULTY_DESCRIPTIONS[tier],
             )
-            for tier, name in sorted(_DIFFICULTY_AGENTS.items())
+            for tier, name in sorted(DIFFICULTY_AGENTS.items())
         }
         seen_builtin: set[str] = set()
         for raw_name, item in (data.get("sub_agents") or {}).items():
             if not isinstance(item, dict):
                 continue
             name = str(raw_name)
-            if name in _BUILTIN_AGENT_NAMES:
+            if name in BUILTIN_AGENT_NAMES:
                 # 内置难度档：models 列表，描述缺省保留默认
                 profile = self._sub_agents[name]
                 profile.models = self._clean_pool(item.get("models"))
@@ -290,7 +260,7 @@ class LLMManager(BaseEntity):
                     profile.description = str(item["description"])
                 seen_builtin.add(name)
                 continue
-            if not _valid_sub_agent_name(name):
+            if not valid_sub_agent_name(name):
                 warning(f"子代理档案名称非法，已跳过: {name!r}", tag="模型")
                 continue
             models = self._clean_pool(item.get("models"))
@@ -303,6 +273,7 @@ class LLMManager(BaseEntity):
             self._sub_agents[name] = SubAgentProfile(
                 name=name, models=models,
                 description=str(item.get("description", "") or ""),
+                facets=AgentFacets.from_dict(item),
             )
         # legacy delegation_tiers 迁移：仅填充未以新格式出现的内置难度档
         # （首次加载后 save_config 写统一格式，legacy 键自然消失）
@@ -311,7 +282,7 @@ class LLMManager(BaseEntity):
                 tier = int(key)
             except (TypeError, ValueError):
                 continue
-            builtin_name = _DIFFICULTY_AGENTS.get(tier)
+            builtin_name = DIFFICULTY_AGENTS.get(tier)
             if builtin_name is None or builtin_name in seen_builtin or not isinstance(mids, list):
                 continue
             self._sub_agents[builtin_name].models = [
@@ -1499,7 +1470,7 @@ class LLMManager(BaseEntity):
         return None
 
     def list_sub_agents(self) -> List[Dict[str, Any]]:
-        """返回全部子代理档案（内置难度档在前，含模型可用性标记）。"""
+        """返回全部子代理档案（内置难度档在前，含模型可用性与执行面）。"""
         result: List[Dict[str, Any]] = []
         for profile in self._sub_agents.values():
             first_available = next(
@@ -1513,6 +1484,10 @@ class LLMManager(BaseEntity):
                 "description": profile.description,
                 "tier": profile.tier,
                 "builtin": profile.tier > 0,
+                "instructions": profile.facets.instructions,
+                "tool_tags": list(profile.facets.tool_tags),
+                "blocked_tools": list(profile.facets.blocked_tools),
+                "output_schema": profile.facets.output_schema,
                 "first_available": first_available,
                 "model_missing": any(mid not in self._clients for mid in profile.models),
                 "model_enabled": first_available is not None,
@@ -1520,16 +1495,28 @@ class LLMManager(BaseEntity):
         return result
 
     def create_sub_agent(
-        self, name: str, model_id: str, description: str = "",
+        self,
+        name: str,
+        model_id: str,
+        description: str = "",
+        *,
+        instructions: str = "",
+        tool_tags: Any = None,
+        blocked_tools: Any = None,
+        output_schema: Any = None,
     ) -> tuple[bool, str]:
-        """创建自定义子代理档案（校验名称唯一与模型合法性后持久化）。"""
+        """创建自定义子代理档案（校验名称唯一与模型合法性后持久化）。
+
+        执行面（instructions/tool_tags/blocked_tools/output_schema）经
+        AgentFacets 归一，非法 output_schema 直接拒绝（能力契约启动前检查）。
+        """
         name = (name or "").strip()
-        if name in _BUILTIN_AGENT_NAMES:
+        if name in BUILTIN_AGENT_NAMES:
             return False, (
                 f"'{name}' 是内置难度档名称（difficulty 参数的映射目标），"
                 "不可创建同名自定义档案；如需调整其模型池请用 update_sub_agent"
             )
-        if not _valid_sub_agent_name(name):
+        if not valid_sub_agent_name(name):
             return False, (
                 "名称需以英文字母开头，仅含字母/数字/下划线/连字符，长度 1-32"
             )
@@ -1537,8 +1524,21 @@ class LLMManager(BaseEntity):
             return False, f"子代理档案 '{name}' 已存在"
         if err := self._validate_sub_agent_model(model_id):
             return False, err
+        schema, schema_err = parse_output_schema(output_schema)
+        if schema_err:
+            return False, schema_err
         self._sub_agents[name] = SubAgentProfile(
             name=name, models=[model_id], description=description or "",
+            facets=AgentFacets(
+                instructions=normalize_instructions(instructions),
+                tool_tags=normalize_tag_list(
+                    tool_tags, max_items=MAX_TOOL_TAGS,
+                ),
+                blocked_tools=normalize_tag_list(
+                    blocked_tools, max_items=MAX_BLOCKED_TOOLS,
+                ),
+                output_schema=schema,
+            ),
         )
         self.save_config()
         info(f"子代理档案 '{name}' 已创建 (model={model_id})", tag="模型")
@@ -1550,15 +1550,31 @@ class LLMManager(BaseEntity):
         model_id: str = "",
         models: Optional[List[str]] = None,
         description: str = "",
+        *,
+        instructions: Optional[str] = None,
+        tool_tags: Any = None,
+        blocked_tools: Any = None,
+        output_schema: Any = None,
     ) -> tuple[bool, str]:
-        """更新子代理档案（内置难度档可改池/描述；空参数保持原值）。
+        """更新子代理档案（空参数保持原值）。
 
         models 显式列表整体替换候选池（内置难度档多模型、自定义档案
         降级链均由此设置）；model_id 为单模型快捷写法（与 models 互斥，后者优先）。
+        执行面：instructions/output_schema 传 "clear" 清除；tool_tags/
+        blocked_tools 传空列表清除（None = 不变）；内置难度档不收执行面
+        （难度语义只是换模型，行为契约归自定义档案）。
         """
         profile = self._sub_agents.get((name or "").strip())
         if profile is None:
             return False, f"子代理档案 '{name}' 不存在"
+        facet_update = any(x is not None for x in (
+            instructions, tool_tags, blocked_tools, output_schema,
+        ))
+        if facet_update and profile.tier:
+            return False, (
+                f"'{name}' 是内置难度档（纯模型池），不支持执行面配置；"
+                "专职守则/工具面/输出契约请建自定义档案"
+            )
         next_pool: Optional[List[str]] = None
         if models is not None:
             next_pool = self._clean_pool(models)
@@ -1570,13 +1586,37 @@ class LLMManager(BaseEntity):
             profile.models = next_pool
         if description:
             profile.description = description
+        if facet_update:
+            schema, schema_err = (
+                parse_output_schema(output_schema)
+                if output_schema is not None and output_schema != "clear"
+                else (None, None)
+            )
+            if schema_err:
+                return False, schema_err
+            if instructions is not None:
+                profile.facets.instructions = (
+                    "" if instructions == "clear" else normalize_instructions(instructions)
+                )
+            if tool_tags is not None:
+                profile.facets.tool_tags = normalize_tag_list(
+                    tool_tags, max_items=MAX_TOOL_TAGS,
+                )
+            if blocked_tools is not None:
+                profile.facets.blocked_tools = normalize_tag_list(
+                    blocked_tools, max_items=MAX_BLOCKED_TOOLS,
+                )
+            if output_schema is not None:
+                profile.facets.output_schema = (
+                    None if output_schema == "clear" else schema
+                )
         self.save_config()
         return True, f"子代理档案 '{name}' 已更新"
 
     def remove_sub_agent(self, name: str) -> tuple[bool, str]:
         """删除自定义子代理档案（内置难度档受保护）。"""
         name = (name or "").strip()
-        if name in _BUILTIN_AGENT_NAMES:
+        if name in BUILTIN_AGENT_NAMES:
             return False, (
                 f"'{name}' 是内置难度档，不可删除；"
                 "如需停用可清空其模型池（update_sub_agent(models=[])）"
@@ -1587,6 +1627,14 @@ class LLMManager(BaseEntity):
         self.save_config()
         info(f"子代理档案 '{name}' 已删除", tag="模型")
         return True, f"子代理档案 '{name}' 已删除"
+
+    def get_sub_agent_profile(self, name: str) -> Optional[SubAgentProfile]:
+        """按名称取子代理档案（含执行面；不存在返回 None）。
+
+        委托侧（DelegationManager）消费档案的唯一入口——模型面走
+        resolve_sub_agent_model，执行面从这里取。
+        """
+        return self._sub_agents.get((name or "").strip())
 
     def _first_enabled_in_pool(self, profile: SubAgentProfile) -> Optional[str]:
         """按池内顺序取首个存在且启用的模型。"""
@@ -1622,10 +1670,10 @@ class LLMManager(BaseEntity):
             tier = int(difficulty)
         except (TypeError, ValueError):
             return None
-        if tier not in _DIFFICULTY_AGENTS:
+        if tier not in DIFFICULTY_AGENTS:
             return None
         for t in range(tier, 0, -1):
-            profile = self._sub_agents.get(_DIFFICULTY_AGENTS[t])
+            profile = self._sub_agents.get(DIFFICULTY_AGENTS[t])
             if profile is None:
                 continue
             resolved = self._first_enabled_in_pool(profile)

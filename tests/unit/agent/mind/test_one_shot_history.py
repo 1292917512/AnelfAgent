@@ -114,6 +114,26 @@ async def test_invalid_scope_falls_back() -> None:
 
 
 @pytest.mark.asyncio
+async def test_global_scope_rejected_from_queue() -> None:
+    """回归（2026-09-12 自主循环空转事故）：_global 等不可路由 scope 拒绝入队。
+
+    旧实现把 _global 追加进 pending_user，而回复路径消费不掉它，自主循环
+    以 0 退避无限空转（fast-path 刷屏）。正确行为：落全局短期记忆桶
+    （无 scope 参数）、不写历史、不污染待处理队列。
+    """
+    pfc = _pfc(_FakeRouter())
+    await enqueue_scope_reply(pfc, "_global", "", "定时提醒: 测试提醒", "[定时提醒] ...")
+    # 全局桶兜底（一次性事实仍可见），且不按 scope 分桶
+    assert len(pfc.temporary) == 1
+    clip, scope = pfc.temporary[0]
+    assert scope == ""
+    assert clip["role"] == "system"
+    # 待处理队列零污染 + 历史零写入
+    assert pfc.pending_user == []
+    assert pfc.pending_group == []
+
+
+@pytest.mark.asyncio
 async def test_session_scope_roundtrip() -> None:
     """多会话 scope（user_webui:web_user#chat1）解析与写入正确。"""
     router = _FakeRouter()

@@ -64,6 +64,10 @@ function SubscriptionDetailView({ mod }: { mod: DesktopModuleInfo }) {
     return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${hm}`;
   };
   const quotaText = (w: NonNullable<SubscriptionProvider["windows"]>[number]): string => {
+    if (w.balance != null) {
+      const symbol = { CNY: "¥", USD: "$", EUR: "€" }[w.currency ?? "CNY"] ?? `${w.currency ?? ""} `;
+      return `${symbol}${w.balance.toFixed(2)}`;
+    }
     if (w.limit != null && w.remaining != null && w.limit < 10000) {
       return `${w.remaining}/${w.limit}`;
     }
@@ -107,23 +111,26 @@ function SubscriptionDetailView({ mod }: { mod: DesktopModuleInfo }) {
                 {(p.windows ?? []).map((w, i) => (
                   <div key={`${w.label}-${i}`} className="flex items-center gap-2">
                     <span className="w-16 text-[11px] text-muted flex-shrink-0">{w.label}</span>
-                    <div className="flex-1 h-1.5 rounded-full bg-border/50 overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${
-                          (w.remaining_percent ?? 100) <= 10
-                            ? "bg-danger"
-                            : (w.remaining_percent ?? 100) <= 30
-                              ? "bg-warn"
-                              : "bg-ok"
-                        }`}
-                        style={{ width: `${Math.max(0, Math.min(100, w.remaining_percent ?? 0))}%` }}
-                      />
-                    </div>
+                    {w.balance == null && (
+                      <div className="flex-1 h-1.5 rounded-full bg-border/50 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${
+                            (w.remaining_percent ?? 100) <= 10
+                              ? "bg-danger"
+                              : (w.remaining_percent ?? 100) <= 30
+                                ? "bg-warn"
+                                : "bg-ok"
+                          }`}
+                          style={{ width: `${Math.max(0, Math.min(100, w.remaining_percent ?? 0))}%` }}
+                        />
+                      </div>
+                    )}
+                    {w.balance != null && <span className="flex-1" />}
                     <span className="w-20 text-right text-[11px] font-medium text-foreground flex-shrink-0">
                       {quotaText(w)}
                     </span>
                     <span className="w-24 text-right text-[10px] text-muted flex-shrink-0">
-                      {t("subscription.resetAt")} {formatReset(w.reset_at)}
+                      {w.balance != null ? "" : `${t("subscription.resetAt")} ${formatReset(w.reset_at)}`}
                     </span>
                   </div>
                 ))}

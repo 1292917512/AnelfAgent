@@ -76,9 +76,9 @@ export interface ModelPriorityItem {
 }
 
 /**
- * 子代理统一档案：名称 → 有序模型候选池。
- * 内置难度档（easy/medium/hard，tier 1-3）是 delegate_task.difficulty 的映射目标；
- * 自定义档案（tier 0）经 agent_name 直指。池内顺序即优先级，前者不可用依次回退。
+ * 子代理统一档案：模型面（有序候选池）+ 执行面（专职守则/工具面/输出契约）。
+ * 内置难度档（easy/medium/hard，tier 1-3）是 delegate_task.difficulty 的映射目标，
+ * 恒为纯模型池；自定义档案（tier 0）经 agent_name 直指，可携带执行面。
  */
 export interface SubAgentProfile {
   name: string;
@@ -87,12 +87,28 @@ export interface SubAgentProfile {
   /** 难度挡位：0 = 自定义档案；1/2/3 = 内置难度档 */
   tier: number;
   builtin: boolean;
+  /** 专职守则（执行契约，注入子代理 reflect 上下文；空 = 通用模板） */
+  instructions: string;
+  /** reflect 工具选择器（空数组 = 默认 heartbeat 常态集） */
+  tool_tags: string[];
+  /** 追加屏蔽的工具名 */
+  blocked_tools: string[];
+  /** 结构化产出契约（JSON object；null = 自由文本总结） */
+  output_schema: JsonObject | null;
   /** 池内首个可用模型（池空/全不可用时为 null） */
   first_available: string | null;
   /** 池内存在已删除的模型引用 */
   model_missing: boolean;
   /** 池内是否存在可用模型 */
   model_enabled: boolean;
+}
+
+/** 子代理档案执行面（创建/更新请求的可选字段） */
+export interface SubAgentFacets {
+  instructions?: string;
+  tool_tags?: string[];
+  blocked_tools?: string[];
+  output_schema?: JsonObject | null;
 }
 
 // ── Models (inline from api.ts) ────────────────────────────────

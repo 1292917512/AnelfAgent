@@ -5,7 +5,8 @@
 Model Experience:
 - 模型看到：任务指令头部带 [执行时间] 与任务元信息（[任务创建]/[最近更新]/
   [生效截止]，运行开始时生成一次，全程冻结）；extra_note（idle 反思触发原因等）
-  追加在任务指令（最后一条消息）尾部
+  追加在任务指令（最后一条消息）尾部；历次执行的时长/状态/产出摘要经
+  执行历史落盘，由 list_tasks（概况）与 task_history（明细）只读查询
 - token 影响：极小（数十 token）
 - KV Cache 影响：均位于最后一条消息内——执行时间一次运行内字节冻结、
   extra_note 纯尾部追加，任务稳定前缀（人设+工具+永久记忆）不受影响
@@ -49,6 +50,7 @@ class TaskExecutor:
         model_id: str = "",
         reasoning_effort: str = "",
         extra_note: str = "",
+        trigger: str = "manual",
     ) -> Optional[TaskResult]:
         """执行一个任务，返回结果；正常无产出返回 None，执行异常则抛出。
 
@@ -59,6 +61,8 @@ class TaskExecutor:
         reasoning_effort 优先级：参数传入 > task.reasoning_effort > 全局设置。
         extra_note：追加到任务指令之后的动态备注（如 idle 反思触发原因）——
         位于最后一条消息内，属纯尾部追加，不影响任务稳定前缀的缓存命中。
+        trigger：执行触发来源（heartbeat/scheduled/idle/manual），随执行历史
+        落盘供 Web 与 AI 查询。
         """
         if not task.prompt:
             log(f"任务 [{task.name}] prompt 为空，跳过", "WARNING", tag="任务")
@@ -71,6 +75,19 @@ class TaskExecutor:
         effective_model = model_id or task.model_id or ""
         effective_effort = reasoning_effort or task.reasoning_effort or ""
         await self._emit("unit_start", task, entity)
+
+        started_at = time.time()
+        started_mono = time.monotonic()
+
+        def _record(status: str, preview: str = "", error: str = "") -> None:
+            from .history import record_execution
+            record_execution(
+                task.name,
+                started_at=started_at,
+                duration_ms=int((time.monotonic() - started_mono) * 1000),
+                status=status, trigger=trigger,
+                preview=preview, error=error,
+            )
 
         try:
             tool_hits_before = self.mind.pfc.get_tool_use_total()
@@ -90,12 +107,14 @@ class TaskExecutor:
                     log(f"任务 [{task.name}] 工具执行完成（无文本产出）", tag="任务")
                 else:
                     log(f"任务 [{task.name}] 无产出", tag="任务")
+                    _record("no_output")
                     await self._emit("unit_end", task, entity, has_output=False)
                     return None
 
             for kw in task.null_keywords:
                 if kw in content:
                     log(f"任务 [{task.name}] 匹配空响应关键词 [{kw}]，跳过", tag="任务")
+                    _record("no_output", preview=content)
                     await self._emit("unit_end", task, entity, has_output=False)
                     return None
 
@@ -115,11 +134,13 @@ class TaskExecutor:
             else:
                 log(f"任务 [{task.name}] 配置为不写入记忆，跳过存储", tag="任务")
             log(f"任务 [{task.name}] 完成: {content[:80]}", tag="任务")
+            _record("success", preview=content)
             await self._emit("unit_end", task, entity, has_output=True, content_preview=content[:300])
             return result
 
         except Exception as exc:
             log(f"任务 [{task.name}] 异常: {exc}", "WARNING", tag="任务")
+            _record("error", error=str(exc))
             await self._emit("unit_error", task, entity, error=str(exc))
             raise
 

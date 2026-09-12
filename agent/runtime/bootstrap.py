@@ -584,6 +584,7 @@ def create_bootstrap() -> FlowMachine:
         from core.config import get_config_bool
         if not get_config_bool("recovery_interrupted_enabled", True):
             return
+        from agent.delegation.recovery import recover_interrupted_delegations
         from agent.mind.crash_recovery import (
             collect_crash_context,
             recover_interrupted_replies,
@@ -594,6 +595,8 @@ def create_bootstrap() -> FlowMachine:
             # 消费上次崩溃状态（守护脚本写入 + 系统崩溃报告关联），仅注入一次
             crash_context = collect_crash_context()
             recovered = await recover_interrupted_replies(mind, crash_context)
+            # 委托崩溃恢复同范式：账本未闭合条目 → 中断元消息（独立于回复检查点）
+            await recover_interrupted_delegations(mind)
             # 恢复流程已执行（无论是否有检查点要处理），崩溃上下文不再保留：
             # 提前标记会让恢复失败时上下文永久丢失
             if crash_context:

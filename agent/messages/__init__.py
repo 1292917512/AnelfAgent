@@ -9,6 +9,7 @@ from .everything import (
     Nothing,
     build_entity_scope,
     build_scope_id,
+    is_conversation_scope,
     parse_entity_scope,
 )
 from .presets import (
@@ -39,5 +40,6 @@ __all__ = [
     "parse_entity_scope",
     "build_entity_scope",
     "build_scope_id",
+    "is_conversation_scope",
 ]
 

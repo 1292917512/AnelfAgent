@@ -40,6 +40,18 @@ _DEFAULT_DOC_NAMES = "AGENTS.md,README.md"
 
 _OPS_CONFIGS = {
     "entity/os": {
+        "workspace_root": {
+            "description": (
+                "工作区根目录：文件/Shell/Python 工具所有相对路径的统一锚点。"
+                "相对路径以项目根为基准解析；支持绝对路径把工作区放到项目外。"
+                "不可设为项目根或其上级目录（会把项目本体暴露为可写，自动回退默认）"
+            ),
+            "default": "workspace",
+        },
+        "sandbox_enabled": {
+            "description": "沙箱：开启时文件与 Shell 写操作限制在工作区内，漂出自动拦截",
+            "default": True,
+        },
         "os_context_inject": {
             "description": "是否向 AI 上下文注入文件操作态势（当前目录/目录说明文档/最近操作）",
             "default": True,

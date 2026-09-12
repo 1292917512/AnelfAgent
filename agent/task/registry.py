@@ -40,6 +40,10 @@ class TaskRegistry:
         if not self._dir.is_dir():
             return 0
         for json_file in sorted(self._dir.rglob("*.json")):
+            # 跳过任务运行数据文件（如 <name>.handoff.json）——不是任务定义，
+            # 解析必然失败且每次 reload 产生 WARNING 噪音
+            if json_file.name.endswith(".handoff.json"):
+                continue
             self._file_stems.add(json_file.stem)
             try:
                 data: Dict[str, Any] = json.loads(json_file.read_text("utf-8"))

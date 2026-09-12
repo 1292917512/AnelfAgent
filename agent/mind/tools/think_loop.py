@@ -65,6 +65,7 @@ from agent.mind.tools.round_helpers import (
     _ThinkLoopCtx,
     _ThinkRoundState,
     _token_budget_hint,
+    merge_after_messages,
     resolve_tool_calls,
     should_end_reply,
 )
@@ -345,6 +346,10 @@ async def think_loop(
             ctx.completion["reason"] = (
                 "interrupted" if state.interrupted else state.completion_reason
             )
+            # 最终消息链（base + 工具链）随容器带出：SubAgent 据此持久化
+            # transcript 供 follow_up 续跑。中断路径消息不完整，同样带出
+            # （是否可续跑由 messages 是否存在决定，收束路径恒有值）。
+            ctx.completion["messages"] = ctx.base_messages + ctx.tool_chain
         # plan 全退出路径唯一收敛点：正常结束已由 _finish_round 收敛（finalized
         # 置位）；中断 / 安全上限等异常退出在此收敛——中断 → cancelled，其余 →
         # completed。无 active plan 时 finalize_plan 零成本，幂等安全。
@@ -390,9 +395,10 @@ async def _run_think_rounds(
             return
 
         # 工具集版本检查：激活/发现/注册表变化时重建 active_tools。
-        # REPLY 走回复级全量装配（追加式冻结保证前缀字节稳定）；
-        # REFLECT 走精简目录装配（与 mind.reflect 初始装配同一入口，
-        # 重建不会退回全量、也不会丢失选择器工具）
+        # REPLY 与无选择器的 REFLECT（reflect_share_reply_tools，与
+        # mind.reflect 初始装配同族）走回复级全量装配（追加式冻结保证
+        # 前缀字节稳定）；带选择器的 REFLECT 走精简目录装配（与初始
+        # 装配同一入口，重建不会退回全量、也不会丢失选择器工具）
         cur_tools_version = (
             getattr(mind.pfc, "tools_version", 0),
             _tool_act_mgr.version,
@@ -400,7 +406,7 @@ async def _run_think_rounds(
         )
         if cur_tools_version != last_tools_version:
             last_tools_version = cur_tools_version
-            if mode is ThinkMode.REFLECT:
+            if mode is ThinkMode.REFLECT and ctx.reflect_tool_selectors:
                 ctx.active_tools = await mind.pfc.get_reflect_tool_schemas(
                     ctx.adapter_key, scope=ctx.current_scope,
                     selectors=list(ctx.reflect_tool_selectors),
@@ -624,12 +630,19 @@ async def _deliver_pending_text(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> 
     """轮末统一投递点：把未经输出工具送达的最后一段文本保底投递给用户。
 
     纯文本在循环内只是独白（不终局、不中途投递）；轮结束时若仍有未送达
-    文本，过滤沉默标记/伪造工具调用/上下文复述后投递一次——无论模型是否
-    走了 send_message 正路，用户总能收到最终说法。
+    文本，过滤沉默标记/伪造工具调用/上下文复述后投递一次。本轮已通过
+    输出工具成功送达过则不再投递——收尾独白不外发，用户只收到 send_message
+    的内容。
     """
     text = state.pending_text
     state.pending_text = ""
     if ctx.mode != ThinkMode.REPLY or ctx.anything is None or not text:
+        return
+    if state.output_sent:
+        log("本轮已有消息送达，未送达文本不再重复投递", "DEBUG", tag="思维")
+        ctx.execution_steps.append(
+            f"→ 第{state.iteration + 1}轮: 本轮已有消息送达，未送达文本不再重复投递"
+        )
         return
     if should_suppress(text):
         return
@@ -830,9 +843,14 @@ async def _handle_text_only_round(
             return _StageOutcome.CONTINUE
 
         if ctx.mode == ThinkMode.REFLECT:
-            # 反思模式：连续纯文本达到上限即收束（产出已累积在 collected_text）
+            # 反思模式：连续纯文本达到上限即收束（产出已累积在 collected_text）；
+            # 收束边界先消费 after 档追加指令——有后续要求则续跑而非结束
             state.reflect_text_rounds += 1
             if state.reflect_text_rounds >= _MAX_REFLECT_TEXT_ROUNDS:
+                if merge_after_messages(ctx, state):
+                    state.reflect_text_rounds = 0
+                    state.iteration += 1
+                    return _StageOutcome.CONTINUE
                 log(
                     f"反思连续纯文本 {state.reflect_text_rounds} 次，结束本轮反思",
                     "WARNING", tag="思维",
@@ -937,9 +955,11 @@ async def _handle_tool_round(
 
     called = {tc.name for tc in tool_calls}
 
-    # 输出类工具成功送达后，此前暂存的独白文本已被正式回复取代
+    # 输出类工具成功送达后，此前暂存的独白文本已被正式回复取代；
+    # 登记本轮已有送达，轮末纯文本不再兜底投递
     if _round_output_sent_successfully(tool_chain, tool_calls):
         state.pending_text = ""
+        state.output_sent = True
 
     # 非输出工具伴随文本独白时提醒"结果仅自己可见"——独白是模型误以为
     # 文字可达用户的信号；纯工具轮无需提示（exec_context 每轮已有输出契约）

@@ -54,7 +54,7 @@ async def migrate_memories_to_md(db_path: str, workspace_dir: Path) -> int:
             "SELECT id, type, content, source, importance, ts_ns, tags_json "
             "FROM memories WHERE migrated = 0 ORDER BY ts_ns ASC"
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
 
     if not rows:
         return 0

@@ -206,3 +206,68 @@ async def test_goal_tags_linkage(store) -> None:
     data = json.loads(raw)
     assert data["success"] is True
     assert data["related_memory_count"] == 1
+
+
+# ==================================================================
+# 任务定义可选覆盖字段（model_id / reasoning_effort / handoff / 布尔开关）
+# ==================================================================
+
+
+class TestTaskOptionalOverrides:
+    async def test_create_with_overrides(self) -> None:
+        raw = await task_tools.create_task(
+            "cheap_routine", "例行整理",
+            model_id="glm-flash", reasoning_effort="low",
+            handoff=True, null_keywords="暂无,无需处理",
+        )
+        assert json.loads(raw)["ok"] is True
+        saved = json.loads(task_tools._task_path("cheap_routine").read_text("utf-8"))
+        assert saved["model_id"] == "glm-flash"
+        assert saved["reasoning_effort"] == "low"
+        assert saved["handoff"] is True
+        assert saved["null_keywords"] == ["暂无", "无需处理"]
+
+    async def test_create_rejects_invalid_effort(self) -> None:
+        raw = await task_tools.create_task("bad_effort", "x", reasoning_effort="ultra")
+        assert "error" in json.loads(raw)
+
+    async def test_update_overrides_set_and_clear(self) -> None:
+        await task_tools.create_task("ov_task", "做点事", model_id="m1", reasoning_effort="high")
+
+        raw = await task_tools.update_task(
+            "ov_task", model_id="m2", reasoning_effort="low",
+            handoff="true", allow_output_tools="true",
+            save_result_to_memory="false", null_keywords="无产出",
+        )
+        data = json.loads(raw)
+        assert data["ok"] is True
+        assert set(data["changed"]) == {
+            "model_id", "reasoning_effort", "handoff",
+            "allow_output_tools", "save_result_to_memory", "null_keywords",
+        }
+        saved = json.loads(task_tools._task_path("ov_task").read_text("utf-8"))
+        assert saved["model_id"] == "m2"
+        assert saved["reasoning_effort"] == "low"
+        assert saved["handoff"] is True
+        assert saved["allow_output_tools"] is True
+        assert saved["save_result_to_memory"] is False
+        assert saved["null_keywords"] == ["无产出"]
+
+        # clear 恢复默认（字段移除），布尔开关可回拨
+        raw = await task_tools.update_task(
+            "ov_task", model_id="clear", reasoning_effort="none",
+            handoff="false", allow_output_tools="false",
+        )
+        assert json.loads(raw)["ok"] is True
+        saved = json.loads(task_tools._task_path("ov_task").read_text("utf-8"))
+        assert "model_id" not in saved
+        assert "reasoning_effort" not in saved
+        assert saved["handoff"] is False
+        assert saved["allow_output_tools"] is False
+
+    async def test_update_rejects_invalid_effort_keeps_file(self) -> None:
+        await task_tools.create_task("keep_me", "做点事")
+        before = task_tools._task_path("keep_me").read_text("utf-8")
+        raw = await task_tools.update_task("keep_me", reasoning_effort="turbo")
+        assert "error" in json.loads(raw)
+        assert task_tools._task_path("keep_me").read_text("utf-8") == before

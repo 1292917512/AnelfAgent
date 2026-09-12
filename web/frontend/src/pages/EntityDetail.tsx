@@ -259,6 +259,7 @@ export default function EntityDetail() {
 
         {tab === "panel" && PanelComponent && (
           <Suspense fallback={<div className="text-sm text-muted py-4">{t("loading")}</div>}>
+            {/* eslint-disable-next-line react-hooks/static-components -- 面板按实体名动态解析：注册表模块加载时预建（entity-panels.ts），非渲染期创建组件 */}
             <PanelComponent />
           </Suspense>
         )}

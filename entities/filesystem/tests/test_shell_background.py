@@ -15,7 +15,7 @@ from entities.filesystem import shell_background, tools
 @pytest.fixture()
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(tools, "_load_config", lambda: None)
-    monkeypatch.setattr(tools, "_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(tools, "_ws_root", lambda: str(tmp_path))
     monkeypatch.setattr(tools, "_SANDBOX", True)
     from entities.filesystem import shell_state
     shell_state._cwds.pop("_global", None)

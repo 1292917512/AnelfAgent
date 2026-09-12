@@ -7,3 +7,9 @@ def safe_workspace_path(path: str) -> str:
     """解析工作区内路径（沙箱检查），越界抛 ValueError。"""
     from entities.filesystem.tools import safe_path
     return safe_path(path)
+
+
+def workspace_root() -> str:
+    """工作区根目录绝对路径（统一解析：相对配置锚项目根 + 防项目根守卫）。"""
+    from entities.filesystem.paths import get_workspace_root
+    return get_workspace_root()

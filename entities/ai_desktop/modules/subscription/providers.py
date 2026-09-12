@@ -7,6 +7,11 @@
      "windows": [{"label": "5小时", "remaining_percent": 99.0,
                   "used": …, "limit": …, "remaining": …, "reset_at": 秒级时间戳}]}
 
+另支持按量计费供应商的账户余额查询（DeepSeek）——窗口条目改用
+``{"label": "账户余额", "balance": 68.49, "currency": "CNY"}``（无余量百分比
+与重置时间）。硅基流动的 /v1/user/info 已 410 弃用且无公开替代、阿里云
+百炼需 AccessKey 签名体系，均暂不接入。
+
 凭据链：llm_clients.json 中按 base_url 关键字匹配的首个带 api_key 供应商
 （Kimi 的 Coding OAuth access token 亦存于该字段），与 entities/web 的
 凭据回退同一口径；本模块自持实现以保持子包自治（删除即整体拔出）。
@@ -234,6 +239,29 @@ def parse_kimi(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"plan": level, "windows": windows}
 
 
+# ---- DeepSeek（按量计费余额） ----
+# GET https://api.deepseek.com/user/balance（标准 Bearer 鉴权）
+# balance_infos[]: {currency, total_balance, granted_balance, topped_up_balance}；
+# is_available=false 表示余额不足
+
+
+def parse_deepseek(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """DeepSeek 账户余额响应归一化（优先 CNY 条目）。"""
+    infos = payload.get("balance_infos") or []
+    row = next((i for i in infos if str(i.get("currency", "")).upper() == "CNY"),
+               infos[0] if infos else None)
+    if row is None:
+        raise ValueError("响应中没有余额数据")
+    return {
+        "plan": "可用" if payload.get("is_available") else "余额不足",
+        "windows": [{
+            "label": "账户余额",
+            "balance": to_float(row.get("total_balance")),
+            "currency": str(row.get("currency", "")).upper(),
+        }],
+    }
+
+
 PROVIDERS: Tuple[ProviderSpec, ...] = (
     ProviderSpec(
         key="glm",
@@ -255,5 +283,12 @@ PROVIDERS: Tuple[ProviderSpec, ...] = (
         host_keywords=("kimi.com", "moonshot"),
         endpoint="https://api.kimi.com/coding/v1/usages",
         parse=parse_kimi,
+    ),
+    ProviderSpec(
+        key="deepseek",
+        display_name="DeepSeek",
+        host_keywords=("deepseek.com",),
+        endpoint="https://api.deepseek.com/user/balance",
+        parse=parse_deepseek,
     ),
 )

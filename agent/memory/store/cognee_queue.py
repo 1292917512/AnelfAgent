@@ -24,7 +24,7 @@ from ._shared import (
     projection_content_hash,
     row_to_entry,
 )
-from .connection import MemoryConnectionManager
+from .connection import MemoryConnectionManager, fetch_count
 
 # 投影条目类型
 ENTRY_KIND_MEMORY = "memory"
@@ -304,12 +304,8 @@ class CogneeSyncQueue:
         执行删除而产生批量伪失败；队列清零使状态计数从新一轮重建起算。
         """
         db = await self._conn.get_db()
-        queued = (await (await db.execute(
-            "SELECT COUNT(*) AS c FROM cognee_sync_queue"
-        )).fetchone())["c"]
-        mapped = (await (await db.execute(
-            "SELECT COUNT(*) AS c FROM cognee_entry_map"
-        )).fetchone())["c"]
+        queued = await fetch_count(db, "SELECT COUNT(*) FROM cognee_sync_queue")
+        mapped = await fetch_count(db, "SELECT COUNT(*) FROM cognee_entry_map")
         async with self._conn.tx(db):
             await db.execute("DELETE FROM cognee_sync_queue")
             await db.execute("DELETE FROM cognee_entry_map")
@@ -340,7 +336,7 @@ class CogneeSyncQueue:
             sql += " LIMIT ?"
             params = (limit,)
         cursor = await db.execute(sql, params)
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         async with self._conn.tx(db):
             for row in rows:
                 entry = row_to_entry(row)

@@ -282,7 +282,7 @@ class SearchEngine:
             "AND importance > 0 AND id > ? ORDER BY id LIMIT ?",
             (last_id, batch_size),
         )
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
         new_last = int(rows[-1]["id"]) if rows else last_id
         return rows, new_last
 

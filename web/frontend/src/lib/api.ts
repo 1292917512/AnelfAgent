@@ -21,6 +21,7 @@ import type {
   CogneeDataset,
   CogneeStatus,
   ConfigMetaGroup,
+  ProbeStatus,
   ConfigValues,
   ContextProviderStatus,
   ContextSnapshotData,
@@ -54,6 +55,7 @@ import type {
   GoalStep,
   HeartbeatConfig,
   HeartbeatStatus,
+  SubAgentFacets,
   SubAgentProfile,
   LifecycleService,
   LogEntry,
@@ -81,6 +83,7 @@ import type {
   SnapshotRecord,
   SnapshotResponse,
   TaskConfig,
+  TaskExecutionRecord,
   TestChatResult,
   UiStateReport,
   UpdateModelConfig,
@@ -123,6 +126,8 @@ export type {
   SnapshotRecord,
   SnapshotResponse,
   TaskConfig,
+  TaskExecutionRecord,
+  TaskRunSummary,
   TaskSchedule,
   WebToolsConfig,
   WorkspaceFile,
@@ -297,9 +302,12 @@ export const modelsApi = {
 // 子代理统一注册表（内置难度档 + 自定义档案）
 export const subAgentsApi = {
   list: () => api.get<{ sub_agents: SubAgentProfile[] }>("/models/sub-agents"),
-  create: (data: { name: string; model_id: string; description?: string }) =>
+  create: (data: { name: string; model_id: string; description?: string } & SubAgentFacets) =>
     api.post<{ status: string; message: string }>("/models/sub-agents", data),
-  update: (name: string, data: { model_id?: string; models?: string[]; description?: string }) =>
+  update: (
+    name: string,
+    data: { model_id?: string; models?: string[]; description?: string } & SubAgentFacets,
+  ) =>
     api.put(`/models/sub-agents/${encodeURIComponent(name)}`, data),
   remove: (name: string) =>
     api.delete(`/models/sub-agents/${encodeURIComponent(name)}`),
@@ -360,6 +368,7 @@ export const memoryApi = {
     backfill: (limit = 0, dryRun = true) =>
       api.post("/memory/cognee/backfill", { limit, dry_run: dryRun }),
     datasets: () => api.get<CogneeDataset[]>("/memory/cognee/datasets"),
+    probeStatus: () => api.get<ProbeStatus>("/memory/probe-status"),
     improve: (datasetName: string) =>
       api.post("/memory/cognee/improve", { dataset_name: datasetName }),
   },
@@ -593,6 +602,8 @@ export const tasksApi = {
     api.delete(`/config/tasks/${encodeURIComponent(name)}`, { params: { folder: folder || undefined } }),
   trigger: (name: string, folder = "") =>
     api.post<{ status: string; task: string }>(`/config/tasks/trigger/${encodeURIComponent(name)}`, null, { params: { folder: folder || undefined } }),
+  history: (name: string) =>
+    api.get<TaskExecutionRecord[]>(`/config/tasks/${encodeURIComponent(name)}/history`),
 };
 
 // Workspace 文件浏览/编辑（root: workspace 工作区 / project 项目根，规则一致仅基准不同）

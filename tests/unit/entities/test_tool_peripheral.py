@@ -41,12 +41,12 @@ class TestRegistryDeclarations:
 
 
 class TestPythonExecPersist:
-    def test_large_stdout_persisted(self, monkeypatch) -> None:
+    def test_large_stdout_persisted(self, monkeypatch, tmp_path) -> None:
         """stdout 超阈值落盘（与 run_shell_command 同一机制），不截断丢弃。"""
         import entities.filesystem.tools as tools
 
         monkeypatch.setattr(tools, "_load_config", lambda: None)
-        monkeypatch.setattr(tools, "_WORKSPACE", "workspace")
+        monkeypatch.setattr(tools, "_ws_root", lambda: str(tmp_path))
         monkeypatch.setattr(tools, "_SANDBOX", False)
 
         big = "x" * (30_000 + 500)
@@ -58,12 +58,12 @@ class TestPythonExecPersist:
             saved = f.read()
         assert len(saved) >= 30_000
 
-    def test_small_stdout_unchanged(self, monkeypatch) -> None:
+    def test_small_stdout_unchanged(self, monkeypatch, tmp_path) -> None:
         """小输出不落盘（保持原样，返回结构无 persisted 键）。"""
         import entities.filesystem.tools as tools
 
         monkeypatch.setattr(tools, "_load_config", lambda: None)
-        monkeypatch.setattr(tools, "_WORKSPACE", "workspace")
+        monkeypatch.setattr(tools, "_ws_root", lambda: str(tmp_path))
         monkeypatch.setattr(tools, "_SANDBOX", False)
 
         result = json.loads(tools.python_exec("print('hello')"))
@@ -71,12 +71,12 @@ class TestPythonExecPersist:
         assert result["stdout"] == "hello"
         assert "persisted" not in result
 
-    def test_stderr_still_capped(self, monkeypatch) -> None:
+    def test_stderr_still_capped(self, monkeypatch, tmp_path) -> None:
         """stderr 仍按小限截断（多为回溯/警告，不占用落盘通道）。"""
         import entities.filesystem.tools as tools
 
         monkeypatch.setattr(tools, "_load_config", lambda: None)
-        monkeypatch.setattr(tools, "_WORKSPACE", "workspace")
+        monkeypatch.setattr(tools, "_ws_root", lambda: str(tmp_path))
         monkeypatch.setattr(tools, "_SANDBOX", False)
 
         result = json.loads(tools.python_exec(

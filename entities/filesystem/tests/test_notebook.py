@@ -13,7 +13,7 @@ from entities.filesystem.notebook import notebook_edit
 @pytest.fixture()
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(tools, "_load_config", lambda: None)
-    monkeypatch.setattr(tools, "_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(tools, "_ws_root", lambda: str(tmp_path))
     monkeypatch.setattr(tools, "_SANDBOX", True)
     nb = {
         "cells": [

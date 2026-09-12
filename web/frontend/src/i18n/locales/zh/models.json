@@ -138,8 +138,8 @@
     "media_protocol": "图片生成协议"
   },
   "subagents": {
-    "desc": "子代理统一档案：每个档案绑定有序模型候选池，delegate_task 指定 agent_name 即使用对应档案（池内顺序即优先级，前者不可用依次回退）。",
-    "usageHint": "内置难度档 easy/medium/hard 与自定义档案同套管理：difficulty 1/2/3 是内置档的语法糖，也可直接 agent_name=easy 等指定。增删改即时生效。",
+    "desc": "子代理统一档案：模型面（有序候选池）+ 执行面（专职守则/工具面/输出契约），delegate_task 指定 agent_name 即使用对应档案（池内顺序即优先级，前者不可用依次回退）。",
+    "usageHint": "内置难度档 easy/medium/hard 与自定义档案同套管理：difficulty 1/2/3 是内置档的语法糖，也可直接 agent_name=easy 等指定。自定义档案可携带执行面。增删改即时生效。",
     "builtinTitle": "内置难度档",
     "builtinHint": "delegate_task 的 difficulty 1/2/3 分别映射到 easy/medium/hard；本档全不可用时自动降挡到低档。",
     "builtinBadge": "内置",
@@ -156,7 +156,7 @@
     "addToPool": "加入候选池",
     "remove": "移出",
     "customTitle": "自定义档案",
-    "customHint": "为常用工作类型创建「名称 → 模型」绑定（如 researcher），delegate_task 指定 agent_name 使用。",
+    "customHint": "为常用工作类型创建档案（如 researcher）：绑定模型候选池 + 可选执行面（专职守则/工具选择器/屏蔽工具/输出契约），delegate_task 指定 agent_name 使用。",
     "createTitle": "新建档案",
     "namePlaceholder": "名称，如 researcher",
     "nameHint": "名称以英文字母开头，仅含字母/数字/下划线/连字符，≤32 字符；easy/medium/hard 为内置档保留名",
@@ -169,7 +169,16 @@
     "confirmDelete": "确认删除",
     "modelMissing": "模型缺失",
     "unavailable": "无可用模型",
-    "empty": "暂无自定义档案，可在上方创建"
+    "empty": "暂无自定义档案，可在上方创建",
+    "facetsBadge": "执行面",
+    "facetsToggle": "执行面",
+    "facetsHint": "执行面只在子代理的临时执行上下文生效（不进对话前缀）：专职守则约束行为，工具选择器/屏蔽控制工具面，输出契约要求结构化 JSON 总结。",
+    "instructionsPlaceholder": "专职守则（可选，≤4000 字符），如：只读调研，禁止修改任何文件；结论必须附来源",
+    "toolTagsPlaceholder": "工具选择器（逗号分隔，空=默认），如 heartbeat,web",
+    "blockedToolsPlaceholder": "屏蔽工具（逗号分隔，可选），如 run_shell_command",
+    "schemaPlaceholder": "输出契约 JSON（可选），如 {\"summary\": \"\", \"facts\": []}",
+    "schemaHint": "子代理最终总结须为该结构的 JSON；留空 = 自由文本总结",
+    "schemaInvalid": "输出契约不是合法的 JSON object"
   },
   "modelTypeLabels": {
     "chat": "对话",

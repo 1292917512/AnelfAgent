@@ -58,7 +58,14 @@
     "title": "Context Layers",
     "changed": "changed",
     "unchanged": "unchanged",
-    "volatilityTitle": "Volatility {{value}} (higher = changes more often, placed later)"
+    "volatilityTitle": "Volatility {{value}} (higher = changes more often, placed later)",
+    "cachedPrefix": "{{count}} cached",
+    "newAdds": "{{count}} new",
+    "cachedPrefixRegion": "{{count}} cached prefix messages (byte-identical to last capture, click to expand)",
+    "breakPoint": "prefix break",
+    "breakDesc": "~{{tokens}}t before this point are cacheable this round; content after is rewritten",
+    "breakBanner": "Prefix break: {{label}} message #{{index}} (0-based) — ~{{tokens}}t cacheable before, rewritten after",
+    "stableAll": "Byte-identical to last capture: prefix fully stable (low hit rate ⇒ provider-side variance)"
   },
   "tools": {
     "title": "Tools"

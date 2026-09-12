@@ -32,6 +32,9 @@ def _parse_memory_type(type_str: Optional[str]):
 
 class MemoryService:
 
+    # goal 条目的记忆 source 标记（与 agent.planning.tools._GOAL_SOURCE 同值）
+    _GOAL_SOURCE = "goal"
+
     # ==================================================================
     # 短期记忆（PFC temporary）
     # ==================================================================
@@ -191,6 +194,23 @@ class MemoryService:
             }
             for r in results
         ]
+
+    def get_probe_status(self) -> Dict[str, Any]:
+        """异步深探观测面：开关/计数器/各 scope 渲染状态（诊断注入是否发生）。"""
+        from agent.memory import metrics as memory_metrics
+        from agent.memory.probe import deep_probe_hub
+        from core.config import get_config_bool
+
+        counters = {
+            key: value for key, value in memory_metrics.snapshot().items()
+            if key.startswith("probe.")
+        }
+        return {
+            "enabled": get_config_bool("memory_probe_enabled", True),
+            "inject_enabled": get_config_bool("memory_probe_inject", True),
+            "counters": counters,
+            "scopes": deep_probe_hub.snapshot(),
+        }
 
     async def recall_test(
         self,
@@ -476,7 +496,7 @@ class MemoryService:
             return {"error": "记忆系统未初始化"}
         return await store.get_index_status()
 
-    async def resync_files(self, force: bool = False) -> Dict[str, int]:
+    async def resync_files(self, force: bool = False) -> Dict[str, Any]:
         rt = require_runtime()
         store = rt.mind.memory_store
         if not store:
@@ -485,7 +505,7 @@ class MemoryService:
         from agent.memory.notes import get_workspace_dir
         return await sync_files(store, rt.mind.embedder, get_workspace_dir(), force=force)
 
-    async def clean_embedding_cache(self) -> Dict[str, int]:
+    async def clean_embedding_cache(self) -> Dict[str, Any]:
         rt = require_runtime()
         store = rt.mind.memory_store
         if not store:
@@ -815,7 +835,6 @@ class MemoryService:
             return result.model_dump(mode="json")
         return result
 
-    @staticmethod
     async def _goal_entries(self, store: Any) -> List[tuple]:
         """查询并解析全部目标条目，返回 [(MemoryEntry, goal_dict)]（单次操作内复用）。"""
         import json

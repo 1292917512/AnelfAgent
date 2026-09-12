@@ -41,13 +41,9 @@ _TEXT_EXTS = _SEARCHABLE_EXTS | {
 
 
 def _workspace_root() -> str:
-    """返回工作区根目录绝对路径。"""
-    try:
-        from core.config import ConfigManager
-        root = ConfigManager.get("workspace_root", "workspace")
-    except Exception:
-        root = "workspace"
-    root_abs = os.path.abspath(root)
+    """返回工作区根目录绝对路径（统一解析入口，与 AI 文件工具同基准）。"""
+    from services.filesystem import workspace_root
+    root_abs = workspace_root()
     os.makedirs(root_abs, exist_ok=True)
     return root_abs
 

@@ -234,3 +234,52 @@ class TestPersistence:
         mgr.create_sub_agent("researcher", "chat-b")
         mgr.remove_model("chat-b")
         assert _profile(mgr, "researcher")["model_missing"] is True
+
+
+class TestFacets:
+    """档案执行面：instructions / tool_tags / blocked_tools / output_schema。"""
+
+    def test_create_with_facets(self, tmp_path) -> None:
+        mgr = _make_manager(tmp_path)
+        ok, _ = mgr.create_sub_agent(
+            "scout", "chat-b", "调研专员",
+            instructions="只读调研，禁止修改文件",
+            tool_tags="heartbeat, web",
+            blocked_tools=["run_shell_command"],
+            output_schema='{"summary": "", "facts": []}',
+        )
+        assert ok
+        p = _profile(mgr, "scout")
+        assert p["instructions"] == "只读调研，禁止修改文件"
+        assert p["tool_tags"] == ["heartbeat", "web"]
+        assert p["blocked_tools"] == ["run_shell_command"]
+        assert p["output_schema"] == {"summary": "", "facts": []}
+        # 持久化往返
+        mgr2 = LLMManager(str(tmp_path / "llm.json"))
+        p2 = _profile(mgr2, "scout")
+        assert p2["instructions"] == "只读调研，禁止修改文件"
+        assert p2["output_schema"]["facts"] == []
+
+    def test_create_rejects_invalid_schema(self, tmp_path) -> None:
+        mgr = _make_manager(tmp_path)
+        ok, message = mgr.create_sub_agent("bad", "chat-a", output_schema="not json")
+        assert not ok and "output_schema" in message
+
+    def test_update_clear_semantics(self, tmp_path) -> None:
+        mgr = _make_manager(tmp_path)
+        mgr.create_sub_agent("x1", "chat-a", instructions="守则",
+                             tool_tags=["web"], output_schema={"a": 1})
+        ok, _ = mgr.update_sub_agent(
+            "x1", instructions="clear", tool_tags=[], output_schema="clear",
+        )
+        assert ok
+        p = _profile(mgr, "x1")
+        assert p["instructions"] == "" and p["tool_tags"] == [] and p["output_schema"] is None
+
+    def test_builtin_rejects_facets(self, tmp_path) -> None:
+        mgr = _make_manager(tmp_path)
+        ok, message = mgr.update_sub_agent("easy", instructions="守则")
+        assert not ok and "执行面" in message
+        # 模型池更新不受影响
+        ok, _ = mgr.update_sub_agent("easy", models=["chat-a"])
+        assert ok

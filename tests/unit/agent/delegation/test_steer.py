@@ -59,9 +59,13 @@ class TestDrainHook:
     def test_bound_drain_visible_and_reset(self) -> None:
         inbox = SteerInbox()
         inbox.push("d1", "转向A")
-        with bind_steer_drain(lambda: inbox.drain("d1")):
-            assert drain_steered_messages() == ["转向A"]
-            assert drain_steered_messages() == []  # 已取走
+        inbox.push("d1", "收束后追加B", mode="after")
+        with bind_steer_drain(lambda mode: inbox.drain("d1", mode)):
+            assert drain_steered_messages("steer") == ["转向A"]
+            assert drain_steered_messages("steer") == []  # 已取走
+            # steer 取走不触碰 after 档
+            assert drain_steered_messages("after") == ["收束后追加B"]
+            assert drain_steered_messages() == []  # 默认档位 = steer
         # 退出绑定后回空（ContextVar reset）
         assert drain_steered_messages() == []
 
@@ -74,7 +78,7 @@ class TestDrainHook:
         async def child() -> None:
             seen.extend(drain_steered_messages())
 
-        with bind_steer_drain(lambda: inbox.drain("d9")):
+        with bind_steer_drain(lambda mode: inbox.drain("d9", mode)):
             task = asyncio.create_task(child())
         await task
         assert seen == ["传播检查"]
@@ -88,7 +92,9 @@ class TestMergeSteered:
 
         ctx = SimpleNamespace(tool_chain=[], execution_steps=[])
         state = SimpleNamespace(iteration=3)
-        with bind_steer_drain(lambda: ["需求变更：只保留中文输出"]):
+        inbox = SteerInbox()
+        inbox.push("d1", "需求变更：只保留中文输出")
+        with bind_steer_drain(lambda mode: inbox.drain("d1", mode)):
             _merge_steered_messages(ctx, state)
         assert len(ctx.tool_chain) == 1
         msg = ctx.tool_chain[0]
