@@ -675,9 +675,16 @@ class Mind:
             *,
             adapter_key: str = "",
     ) -> None:
-        """执行回复，异常时发送错误提示。"""
+        """执行回复，异常时发送错误提示。
+
+        创建 completion 容器贯穿本次回复：think_loop 结束处写入完整消息链
+        （base + tool_chain），complete_reply 据此在 EVENT_AFTER_REPLY 附带
+        messages 快照，供 hooks_llm 钩子面以 transcript 档位消费。
+        """
         self.note_activity()
-        await _tl_reply(self, anything, images, adapter_key=adapter_key)
+        completion: Dict[str, Any] = {}
+        await _tl_reply(self, anything, images, adapter_key=adapter_key,
+                        completion=completion)
 
     def _collect_pending_images(self, scope: str = "") -> List[ImageContent]:
         return _tl_collect_images(self, scope=scope)

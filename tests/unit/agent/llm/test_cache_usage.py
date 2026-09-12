@@ -348,3 +348,33 @@ class TestDeclarativeFieldTable:
             "prompt_tokens_details": {"cached_tokens": 256},
         })
         assert read == 256
+
+
+class TestResponsesUsageCaliber:
+    """Responses 协议 usage 转换与 Chat Completions 同纪律。"""
+
+    def test_unobservable_without_cache_fields(self) -> None:
+        """端点未回报缓存字段：标记不可观测（状态行抑制），而非谎报可测 0%。"""
+        from agent.llm.responses.types import ResponseUsage
+
+        usage = ResponseUsage(
+            input_tokens=100, output_tokens=10,
+            raw={"input_tokens": 100, "output_tokens": 10},
+        ).to_usage_info()
+        assert usage.cache_observable is False
+        assert usage.cache_hit_rate == 0.0
+
+    def test_observable_with_cache_fields(self) -> None:
+        from agent.llm.responses.types import ResponseUsage
+
+        usage = ResponseUsage(
+            input_tokens=100, output_tokens=10,
+            raw={
+                "input_tokens": 100, "output_tokens": 10,
+                "input_tokens_details": {"cached_tokens": 40},
+            },
+        ).to_usage_info()
+        assert usage.cache_observable is True
+        assert usage.cache_read_input_tokens == 40
+        assert usage.prompt_includes_cache is True
+        assert usage.cache_hit_rate == 0.4

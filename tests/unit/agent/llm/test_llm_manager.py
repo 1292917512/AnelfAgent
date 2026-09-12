@@ -422,3 +422,50 @@ async def test_internal_usage_record_failure_is_fail_open(
         client=primary, max_retries=0, timeout=10,
     )
     assert result.content == "ok"
+
+
+@pytest.mark.asyncio
+async def test_record_usage_default_records(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """默认 record_usage=True：成功结果由管理器记账（内部辅助调用同口径）。"""
+    manager = LLMManager(str(tmp_path / "llm.json"))
+    primary = _client("primary")
+    primary.chat = AsyncMock(return_value=ChatResult(content="ok"))
+    recorded: list = []
+    monkeypatch.setattr(
+        LLMManager, "_record_internal_usage",
+        staticmethod(lambda *args: recorded.append(args)),
+    )
+
+    await manager.chat_with_fallback(
+        [{"role": "user", "content": "hello"}], client=primary, timeout=10,
+    )
+    assert len(recorded) == 1
+
+
+@pytest.mark.asyncio
+async def test_record_usage_disabled_skips(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """record_usage=False：调用方自行记账（主对话路径），管理器侧不双写。
+
+    回归：主对话每次 LLM 调用曾在缓存命中统计与 scope 成本账本中各记两次
+    （管理器默认 kind=internal 一次 + _invoke_llm_unified 按真实 purpose 一次）。
+    """
+    manager = LLMManager(str(tmp_path / "llm.json"))
+    primary = _client("primary")
+    primary.chat = AsyncMock(return_value=ChatResult(content="ok"))
+    recorded: list = []
+    monkeypatch.setattr(
+        LLMManager, "_record_internal_usage",
+        staticmethod(lambda *args: recorded.append(args)),
+    )
+
+    await manager.chat_with_fallback(
+        [{"role": "user", "content": "hello"}], client=primary, timeout=10,
+        record_usage=False,
+    )
+    assert recorded == []

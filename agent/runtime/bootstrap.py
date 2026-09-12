@@ -292,10 +292,12 @@ def create_bootstrap() -> FlowMachine:
     )
     async def assemble_runtime():
         """纯组装：Mind -> Assistant -> Runtime -> set_runtime -> 统一施绑。"""
-        from agent.mind import Mind
-
         # 提前导入工具模块，使其 deferred 工具在 Mind 初始化激活
-        # thinking/session 分组时一并注册（依赖引用经 wiring 统一施绑）
+        # thinking/session/delegation 分组时一并注册（依赖引用经 wiring 统一施绑）；
+        # delegate_tool 漏导入会导致 activate_group("delegation") 弹出空组、
+        # delegation 整组永不注册（activate_group 对空组连组名都不登记）
+        import agent.delegation.delegate_tool  # noqa: F401
+        from agent.mind import Mind
         from agent.mind.tools import scheduler, session_tools, short_term_tools  # noqa: F401
         from agent.runtime.assistant import AgentAssistant
         from agent.runtime.runtime import AgentRuntime
@@ -338,6 +340,10 @@ def create_bootstrap() -> FlowMachine:
         # 晚绑定统一施绑（mind 工具组 / cognee 可选后端 / sticker worker + 跨模块回调），
         # 漏接线由 check_health 的 assert_wired 暴露为启动红字
         tools_ctx: dict[str, Any] = machine.get_result("register_internal_tools") or {}
+        # LLM 钩子面运行时：实例化后随统一施绑分发（本节点只创建，事件装配
+        # 由 runtime.start 在施绑后进行，避免订阅早于端口就绪）
+        from agent.hooks_llm import HookRuntime
+        hooks_llm_runtime = HookRuntime(mind)
         wire_runtime(
             mind=mind,
             data_center=data_center,
@@ -347,6 +353,15 @@ def create_bootstrap() -> FlowMachine:
             cognee_client=mem.get("cognee_client"),
             cognee_coordinator=mem.get("cognee_coordinator"),
             image_index_worker=tools_ctx["image_index_worker"],
+            hooks_llm_runtime=hooks_llm_runtime,
+        )
+        hooks_llm_runtime.start()
+        # 注册为 Lifecycle 组件：关停时经 cleanup 做 drain——先停订阅切断新触发
+        # （进水口），再等运行中的钩子收尾（思考后收），与全局 drain 语义一致
+        from core.lifecycle import Lifecycle
+        Lifecycle.register(
+            "hooks_llm", hooks_llm_runtime,
+            cleanup=hooks_llm_runtime.drain,
         )
 
         log(

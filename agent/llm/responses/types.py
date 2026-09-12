@@ -10,6 +10,7 @@ from agent.llm.types import (
     ToolCall,
     UsageInfo,
     cache_tokens_from_usage,
+    usage_has_cache_fields,
     usage_prompt_includes_cache,
 )
 
@@ -32,6 +33,9 @@ class ResponseUsage:
             cache_read_input_tokens=cache_read,
             cache_creation_input_tokens=cache_creation,
             prompt_includes_cache=usage_prompt_includes_cache(self.raw),
+            # 与 Chat Completions 路径同纪律：端点未回报缓存字段时标记
+            # 不可观测（状态行抑制注入），而非谎报可测的 0% 命中
+            cache_observable=usage_has_cache_fields(self.raw),
         )
 
 

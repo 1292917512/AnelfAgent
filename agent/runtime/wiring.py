@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
+    from agent.hooks_llm import HookRuntime
     from agent.memory.cognee.client import CogneeClient
     from agent.memory.cognee.coordinator import CogneeCoordinator
     from agent.memory.embedding import Embedder, EmbeddingWorker
@@ -29,6 +30,7 @@ def wire_runtime(
     cognee_client: Optional["CogneeClient"],
     cognee_coordinator: Optional["CogneeCoordinator"],
     image_index_worker: "ImageIndexWorker",
+    hooks_llm_runtime: Optional["HookRuntime"] = None,
 ) -> None:
     """统一施绑全部晚绑定端口并接线跨模块回调。
 
@@ -72,6 +74,10 @@ def wire_runtime(
     delegation_manager_port.set(mind.delegation_manager)
     auto_capture_port.set(mind.auto_capture_pipeline)
     skill_tools_port.set(SkillToolDeps(mind.skill_store, mind.skill_matcher))
+
+    # LLM 钩子面运行时（组合根实例化后分发；事件装配由调用方在施绑后 start）
+    from agent.hooks_llm import hooks_llm_runtime_port
+    hooks_llm_runtime_port.set(hooks_llm_runtime)
 
     # 记忆存储族（memory/graph/planning 工具组共用同一 MemoryStore）
     memory_tools_port.set(MemoryToolDeps(memory_store, embedder))

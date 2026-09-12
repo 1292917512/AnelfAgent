@@ -13,7 +13,8 @@
     "python": "Python",
     "git": "Git",
     "config": "配置概览",
-    "hooks": "钩子"
+    "hooks": "钩子",
+    "llmHooks": "LLM 钩子"
   },
   "os": "操作系统",
   "architecture": "架构",
@@ -99,6 +100,33 @@
       "tool_pre": "工具执行前",
       "tool_post": "工具执行后",
       "reply_end": "回复完成"
+    }
+  },
+  "llmHooks": {
+    "title": "LLM 钩子面",
+    "subtitle": "对话/思考边界派生的异步 LLM 工作（同一事件可挂多个钩子并行拉起）",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "running": "运行中",
+    "stopped": "未启动",
+    "noHooks": "暂无已注册钩子",
+    "eventsLabel": "事件",
+    "govConcurrent": "全局并发",
+    "govTranscript": "transcript 快照",
+    "transcriptOn": "开启（≤{{chars}} 字符）",
+    "transcriptOff": "关闭",
+    "iterations": "轮次",
+    "concurrent": "并发",
+    "cooldown": "冷却",
+    "debounce": "防抖",
+    "toolTags": "工具",
+    "outputAllowed": "允许外发",
+    "owner": "归属",
+    "hint": "钩子由代码（@llm_hook）、任务（trigger_event）与实体注册；开关与治理参数经配置中心 hooks_llm 组热调。",
+    "source": {
+      "code": "代码",
+      "task": "任务",
+      "entity": "实体"
     }
   }
 }

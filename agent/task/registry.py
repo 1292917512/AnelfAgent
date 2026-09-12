@@ -83,6 +83,7 @@ class TaskRegistry:
                 "allow_output_tools": t.allow_output_tools,
                 "save_result_to_memory": t.save_result_to_memory,
                 "reasoning_effort": t.reasoning_effort or "",
+                "trigger_event": t.trigger_event,
                 "expires_at": t.expires_at,
                 "created_at": t.created_at,
                 "updated_at": t.updated_at,

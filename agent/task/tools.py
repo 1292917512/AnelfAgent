@@ -31,8 +31,19 @@ _TASK_MEMORY_TYPES = {"reflection", "semantic", "episodic"}
 _SCHEDULE_MODES = {"heartbeat", "scheduled", "idle", "manual"}
 # update_task 的 expires_at 清除标记（空串 = 不变）
 _EXPIRY_CLEAR_TOKENS = {"clear", "永久"}
-# update_task 的可选覆盖字段清除标记（model_id / reasoning_effort）
+# update_task 的可选覆盖字段清除标记（model_id / reasoning_effort / trigger_event）
 _OPTIONAL_CLEAR_TOKENS = {"clear", "none"}
+
+
+def _validate_trigger_event(value: str) -> str:
+    """校验任务事件触发名（须在钩子事件白名单内）；非法时抛 ValueError。"""
+    from agent.hooks_llm import HOOK_EVENTS
+    v = value.strip()
+    if v and v not in HOOK_EVENTS:
+        raise ValueError(
+            f"trigger_event 非法: {value!r}（须为 {sorted(HOOK_EVENTS)} 之一）"
+        )
+    return v
 
 
 def _validate_expiry(value: str) -> str:
@@ -107,6 +118,7 @@ async def create_task(
     reasoning_effort: str = "",
     handoff: bool = False,
     expires_at: str = "",
+    trigger_event: str = "",
 ) -> str:
     """创建任务定义。
 
@@ -127,6 +139,8 @@ async def create_task(
         handoff: 是否为多轮接力任务（输出末尾 # HANDOFF 块持久化供下次运行接续）
         expires_at: 生效截止时间（YYYY-MM-DD 或 YYYY-MM-DD HH:MM，空 = 永久有效）；
             到期后系统自动停用任务并移除调度，适合临时性/阶段性任务
+        trigger_event: 事件触发（after_reply/context_pressure/delegation_resolved，
+            空 = 不启用）；与时间调度正交——事件发生即触发本任务，适合"某事后跟进"
     """
     try:
         if not _TASK_NAME_RE.match(name or ""):
@@ -147,6 +161,10 @@ async def create_task(
                 f"reasoning_effort 非法: {reasoning_effort!r}（须为 off/minimal/low/medium/high/xhigh/max）",
                 cause=ErrorCause.PARAM, retryable=False,
             )
+        try:
+            normalized_trigger = _validate_trigger_event(trigger_event)
+        except ValueError as ve:
+            return tool_error(str(ve), cause=ErrorCause.PARAM, retryable=False)
         normalized_expiry = ""
         if expires_at.strip():
             try:
@@ -187,6 +205,8 @@ async def create_task(
                 data["reasoning_effort"] = effective_effort
             if normalized_expiry:
                 data["expires_at"] = normalized_expiry
+            if normalized_trigger:
+                data["trigger_event"] = normalized_trigger
             _write_task_data(name, data)
         _reload_engine()
         log(f"🛠 AI 创建任务: {name}", tag="任务")
@@ -224,6 +244,7 @@ async def update_task(
     reasoning_effort: str = "",
     handoff: str = "",
     expires_at: str = "",
+    trigger_event: str = "",
 ) -> str:
     """修改任务定义。
 
@@ -247,6 +268,8 @@ async def update_task(
         expires_at: 生效截止时间 YYYY-MM-DD 或 YYYY-MM-DD HH:MM（空串不变，
             "clear"/"永久" 清除即恢复永久有效）；延期可让被停用的任务恢复
             （需同时 enabled="true" 并重新 set_task_schedule）
+        trigger_event: 事件触发 after_reply/context_pressure/delegation_resolved
+            （空串不变；"clear"/"none" 清除事件触发）
     """
     try:
         from .registry import task_files_lock
@@ -326,6 +349,15 @@ async def update_task(
                     except ValueError as ve:
                         return tool_error(str(ve), cause=ErrorCause.PARAM, retryable=False)
                     changed.append("expires_at")
+            if trigger_event.strip():
+                if trigger_event.strip().lower() in _OPTIONAL_CLEAR_TOKENS:
+                    data.pop("trigger_event", None)
+                else:
+                    try:
+                        data["trigger_event"] = _validate_trigger_event(trigger_event)
+                    except ValueError as ve:
+                        return tool_error(str(ve), cause=ErrorCause.PARAM, retryable=False)
+                changed.append("trigger_event")
             if not changed:
                 return tool_error("没有任何字段需要更新", cause=ErrorCause.PARAM, retryable=False)
 

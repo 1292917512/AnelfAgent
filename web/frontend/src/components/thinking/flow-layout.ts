@@ -32,7 +32,14 @@ export function buildFlowElements(session: ThinkingSession | null): { nodes: Nod
   const positions = new Map<string, { x: number; y: number }>();
   let leafCol = 0;
 
-  const layout = (node: TraceNode, depth: number): number => {
+  const layout = (node: TraceNode, depth: number, trail: Set<string>): number => {
+    // parent_id 环（数据异常）：按叶子落位，防无限递归撑爆栈
+    if (trail.has(node.id)) {
+      const col = leafCol++;
+      positions.set(node.id, { x: col * COL_W, y: depth * ROW_H });
+      return col;
+    }
+    trail.add(node.id);
     const children = childrenMap.get(node.id) ?? [];
     let col: number;
     if (children.length === 0) {
@@ -41,16 +48,17 @@ export function buildFlowElements(session: ThinkingSession | null): { nodes: Nod
       let first = Infinity;
       let last = -Infinity;
       for (const child of children) {
-        const childCol = layout(child, depth + 1);
+        const childCol = layout(child, depth + 1, trail);
         first = Math.min(first, childCol);
         last = Math.max(last, childCol);
       }
       col = (first + last) / 2;
     }
+    trail.delete(node.id);
     positions.set(node.id, { x: col * COL_W, y: depth * ROW_H });
     return col;
   };
-  for (const root of roots) layout(root, 0);
+  for (const root of roots) layout(root, 0, new Set());
 
   const nodes: Node[] = session.nodes.map((n) => ({
     id: n.id,

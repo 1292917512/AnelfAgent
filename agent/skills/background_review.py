@@ -1,37 +1,41 @@
 """技能后台评审（参考 hermes-agent background_review）。
 
-每轮对话结束后，spawn 后台任务评审本轮执行摘要，由 LLM 自主决策是否沉淀/
-合并/治理技能（不影响主对话）。
+每轮对话结束后，经 LLM 钩子面（agent/hooks_llm）派生一个后台评审任务，
+继承本轮完整上下文（transcript），由 LLM 自主决策是否沉淀/合并/治理技能
+（异步并行，不影响主对话与下一轮）。
 
 设计定位（决策导向，非禁止导向）：评审的上下文由事实层（SkillIndex）供给——
 语义相近候选 + 库健康摘要。过去的失败不是 LLM 不会判断，而是它看不见库
 （只给最近活动的 20 条）；把现状算清楚呈现给它，判断交给它。
 
-评审材料契约：读取 EVENT_AFTER_REPLY.execution_summary
-（由 finish_think → complete_reply 写入），不依赖 pfc.temporary。
+评审材料契约：钩子面以 transcript 档位带入本轮完整消息链（base + tool_chain），
+替代旧版仅 ~3K 字符的执行摘要——工具结果细节不再被摘要蒸馏丢弃，"任务方法/
+排障经验"类技能的沉淀判断材料更完整。transcript 快照经 hooks_llm 护栏截断
+（保头保尾），成本受 hooks_llm_transcript_max_chars 约束。
 
-防失控设计：
-- 上一次评审未完成时跳过本次（不堆积）
+防失控设计（钩子面治理 + 本层语义）：
+- 上一轮评审未完成时跳过本次（钩子 per-hook 并发=1，单飞不堆积）
 - 评审使用受限工具集（仅 skills 组），禁止外发消息
 - 评审轮次上限小（默认 6 轮，含决策协议的回执往返），无价值时 LLM 直接 end_reply
 """
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Optional
 
+from agent.hooks_llm import HookContext, HookRegistry, llm_hook
 from agent.skills.skill_index import SkillIndex
 from agent.skills.skill_store import SkillStore
-from core.event_bus import EVENT_AFTER_REPLY, event_bus
 from core.log import log
 
 if TYPE_CHECKING:
     from agent.mind.mind import Mind
 
-_REVIEW_PROMPT = """你是技能评审员，负责技能库的沉淀与治理。刚完成了一轮对话：
+_HOOK_NAME = "skill_review"
+_HOOK_OWNER = "skills.review"
 
-## 本轮执行摘要
-{summary}
+_REVIEW_INSTRUCTION = """以上是本轮对话的完整执行上下文（你的回复、工具调用与结果原文）。
+
+你现在是技能评审员，负责技能库的沉淀与治理。请基于上方真实执行过程评审：
 
 ## 语义相近的现有技能（合并优先考察对象）
 {candidates}
@@ -71,33 +75,37 @@ _REVIEW_PROMPT = """你是技能评审员，负责技能库的沉淀与治理。
 """
 
 _MAX_REVIEW_ITERATIONS = 6
-_MAX_SUMMARY_CHARS = 3000
 _MAX_CANDIDATES = 10
+# 评审触发最小材料：transcript 快照至少包含非空消息链才评审
+_MIN_TRANSCRIPT_MESSAGES = 2
 
 
 class SkillReviewer:
-    """技能后台评审器：对话结束后评审经验，自主决策沉淀与治理。"""
+    """技能后台评审器：经钩子面注册评审钩子，继承完整上下文异步评审。"""
 
     def __init__(self, mind: "Mind", store: SkillStore, index: Optional[SkillIndex] = None) -> None:
         self._mind = mind
         self._store = store
         self._index = index or SkillIndex(store)
-        self._task: Optional[asyncio.Task] = None
         self._started = False
 
     def start(self) -> None:
-        """订阅回复完成事件（幂等）。"""
+        """经钩子面注册评审钩子（幂等）。
+
+        不再自订阅 EVENT_AFTER_REPLY——钩子面统一负责事件订阅、并行拉起、
+        防递归与治理；本类只提供评审的事实供给与执行体。
+        """
         if self._started:
             return
-        event_bus.on(EVENT_AFTER_REPLY, self._on_after_reply, owner="skills.review")
+        if not self._enabled():
+            return
+        self._register_hook()
         self._started = True
-        log("技能后台评审已启动", "DEBUG", tag="技能")
+        log("技能后台评审已启动（经 LLM 钩子面）", "DEBUG", tag="技能")
 
     def stop(self) -> None:
-        """停止评审（取消订阅与进行中的任务）。"""
-        event_bus.off_by_owner("skills.review")
-        if self._task and not self._task.done():
-            self._task.cancel()
+        """停止评审（注销钩子）。"""
+        HookRegistry.unregister(_HOOK_NAME)
         self._started = False
 
     @staticmethod
@@ -105,26 +113,31 @@ class SkillReviewer:
         from core.config import get_config_bool
         return get_config_bool("skills_review_enabled", True)
 
-    async def _on_after_reply(self, payload: dict) -> None:
-        """回复完成后触发后台评审（不阻塞主流程）。"""
-        if not self._enabled():
-            return
-        if payload.get("error"):
-            return
-        summary = str(payload.get("execution_summary") or "").strip()
-        if not summary:
-            return
-        if self._task and not self._task.done():
-            log("上一次技能评审未完成，跳过本次", "DEBUG", tag="技能")
-            return
-        self._task = asyncio.create_task(
-            self._review(summary), name="skills.review",
-        )
+    def _register_hook(self) -> None:
+        """注册 skill_review 钩子（transcript 档位 + 条件门控）。"""
+        reviewer = self
 
-    async def _build_candidates(self, summary: str) -> str:
+        def _when(payload: dict) -> bool:
+            # 无错误 + transcript 快照带出真实消息链才评审
+            if payload.get("error"):
+                return False
+            messages = payload.get("messages")
+            return isinstance(messages, list) and len(messages) >= _MIN_TRANSCRIPT_MESSAGES
+
+        @llm_hook(
+            _HOOK_NAME, event="after_reply", context="transcript",
+            when=_when, tool_tags=["skills"], allow_output_tools=False,
+            max_iterations=_MAX_REVIEW_ITERATIONS, max_concurrent=1,
+            owner=_HOOK_OWNER, source="code",
+            description="每轮对话后评审执行过程，自主决策技能沉淀/合并/治理",
+        )
+        async def _skill_review_hook(ctx: HookContext) -> Optional[str]:
+            return await reviewer._run(ctx)
+
+    async def _build_candidates(self, seed_text: str) -> str:
         """语义相近技能候选（评审查重的感知基础，无 Embedder 时降级为高频技能）。"""
         try:
-            similar = await self._index.similar(text=summary, top_k=_MAX_CANDIDATES)
+            similar = await self._index.similar(text=seed_text, top_k=_MAX_CANDIDATES)
             if similar:
                 return "\n".join(
                     f"- {s.name}（相似度 {sim:.2f}，use={s.use_count}/match={s.match_count}/"
@@ -180,25 +193,37 @@ class SkillReviewer:
             lines.append(f"检索折叠合并信号: {rendered}")
         return "\n".join(lines)
 
-    async def _review(self, summary: str) -> None:
-        """执行评审：感知完备的上下文 + 受限工具集，由 LLM 自主决策。"""
-        try:
-            summary = summary[:_MAX_SUMMARY_CHARS]
-            candidates = await self._build_candidates(summary)
-            health = self._build_health()
+    async def _run(self, ctx: HookContext) -> Optional[str]:
+        """评审执行体：transcript 快照 + 评审指令 → reflect 自主决策。
 
-            prompt = _REVIEW_PROMPT.format(
-                summary=summary, candidates=candidates, health=health,
-            )
-            log("技能后台评审开始", "DEBUG", tag="技能")
-            await self._mind.reflect(
-                [{"role": "user", "content": prompt}],
-                max_iterations=_MAX_REVIEW_ITERATIONS,
-                tool_tags=["skills"],
-                allow_output_tools=False,
-            )
-            log("技能后台评审完成", "DEBUG", tag="技能")
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            log(f"技能后台评审失败: {type(exc).__name__}: {exc}", "WARNING", tag="技能")
+        快照即 base_messages（人设/stable 前缀 + 本轮完整执行过程），评审指令
+        以 user 角色追加在尾部——模型在「刚做完这轮」的语境里直接评审。
+        返回产出文本供钩子面登记（None/空 = 无沉淀）。
+        """
+        if not ctx.transcript_available():
+            return None
+        execution_summary = str(ctx.payload.get("execution_summary") or "")
+        seed = execution_summary[:2000] or self._transcript_seed(ctx)
+        candidates = await self._build_candidates(seed)
+        health = self._build_health()
+        instruction = _REVIEW_INSTRUCTION.format(candidates=candidates, health=health)
+
+        messages = list(ctx.messages) + [{"role": "user", "content": instruction}]
+        log("技能后台评审开始（transcript 上下文）", "DEBUG", tag="技能")
+        output = await self._mind.reflect(
+            messages,
+            max_iterations=_MAX_REVIEW_ITERATIONS,
+            tool_tags=["skills"],
+            allow_output_tools=False,
+        )
+        log("技能后台评审完成", "DEBUG", tag="技能")
+        return (output or "").strip() or None
+
+    @staticmethod
+    def _transcript_seed(ctx: HookContext) -> str:
+        """执行摘要缺失时的语义检索种子：取 transcript 末段文本。"""
+        for msg in reversed(ctx.messages):
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()[:2000]
+        return ""

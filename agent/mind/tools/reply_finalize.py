@@ -29,12 +29,16 @@ async def finish_think(
         execution_steps: List[str],
         iterations: int,
         tool_chain: Optional[List[Dict]] = None,
+        completion: Optional[Dict] = None,
 ) -> None:
     """思维循环结束处理：工具摘要入库 + 经 EVENT_AFTER_REPLY 交给技能评审。
 
     Plan 收敛不在此处：正常结束由 think_loop 的 ``_finish_round`` 在调用本函数前
     执行 ``tracker.finalize_plan``；异常路径（中断/安全上限）由 think_loop 顶层
     finally 统一收敛（中断 → cancelled，其余 → completed）。
+
+    completion 为本次回复的容器（已由 think_loop 写入完整消息链），透传给
+    complete_reply 供 EVENT_AFTER_REPLY 附带 messages 快照。
     """
     execution_summary = _build_execution_summary(tool_chain, execution_steps)
     if execution_summary.startswith("[已执行操作摘要]"):
@@ -51,6 +55,7 @@ async def finish_think(
         mind, anything, "", iterations,
         tool_chain=tool_chain,
         execution_summary=execution_summary,
+        completion=completion,
     )
 
 
@@ -167,6 +172,7 @@ async def complete_reply(
         error: bool = False,
         tool_chain: Optional[List[Dict]] = None,
         execution_summary: str = "",
+        completion: Optional[Dict] = None,
 ) -> None:
     """清理回复状态并发出完成事件。
 
@@ -174,6 +180,10 @@ async def complete_reply(
     assistant 角色写入对话历史，此处不再重复记录。
 
     EVENT_AFTER_REPLY.execution_summary 是 SkillReviewer 的唯一评审材料来源。
+
+    completion 非 None 且已写入完整消息链时，EVENT_AFTER_REPLY 附带 messages
+    快照（base + tool_chain），供 hooks_llm 钩子面以 transcript 档位消费；
+    快照为逐条浅拷贝的冻结副本，不随主对话后续 mutate 变化。
     """
     from agent.mind.autonomous import MindPhase
 
@@ -203,10 +213,19 @@ async def complete_reply(
         except Exception:
             pass  # hook 失败不影响回复完成
 
+    # 回复上下文快照：completion 已写入完整消息链时带出（冻结副本），
+    # 供 hooks_llm 钩子面以 transcript 档位并行消费；error / 缺失为空列表。
+    reply_messages: List[Dict] = []
+    if not error and completion:
+        raw_messages = completion.get("messages")
+        if isinstance(raw_messages, list):
+            reply_messages = [dict(m) for m in raw_messages if isinstance(m, dict)]
+
     await event_bus.emit(EVENT_AFTER_REPLY, {
         "scope": _scope,
         "content": content[:100] if content else "",
         "iterations": iterations,
         "error": error,
         "execution_summary": execution_summary,
+        "messages": reply_messages,
     })

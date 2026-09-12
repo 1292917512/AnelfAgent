@@ -79,5 +79,6 @@
     "tools": "工具清单"
   },
   "contextTab": "上下文管理",
-  "planStepsCount": "{{count}} 步"
+  "planStepsCount": "{{count}} 步",
+  "delegationSession": "子代理"
 }

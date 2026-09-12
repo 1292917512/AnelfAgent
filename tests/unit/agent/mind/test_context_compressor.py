@@ -63,12 +63,12 @@ class TestShouldCompress:
     def test_disabled(self) -> None:
         c = _compressor(10_000)
         c.config = CompressionConfig(enabled=False)
-        assert not c.should_compress(_make_messages(100), last_prompt_tokens=999_999)
+        assert not c.should_compress(_make_messages(100), last_input_tokens=999_999)
 
     def test_real_usage_triggers(self) -> None:
         c = _compressor(10_000, threshold_percent=0.75)
-        assert c.should_compress([], last_prompt_tokens=8_000)
-        assert not c.should_compress([], last_prompt_tokens=5_000)
+        assert c.should_compress([], last_input_tokens=8_000)
+        assert not c.should_compress([], last_input_tokens=5_000)
 
     def test_estimated_fallback(self) -> None:
         c = _compressor(1_000, threshold_percent=0.75)

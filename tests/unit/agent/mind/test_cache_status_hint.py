@@ -7,8 +7,7 @@ from agent.mind.tools.round_helpers import _cache_status_hint, _ThinkRoundState
 
 def _state(**kwargs) -> _ThinkRoundState:
     base = dict(
-        last_prompt_tokens=22819,
-        last_total_input_tokens=22819,
+        last_input_tokens=22819,
         last_cache_read_tokens=22784,
         last_cache_creation_tokens=0,
         last_cache_hit_rate=22784 / 22819,
@@ -31,18 +30,17 @@ class TestCacheStatusHint:
         assert "写入 1,024" in hint
 
     def test_suppressed_without_real_usage(self) -> None:
-        """首轮/压缩后重置轮（last_prompt_tokens=0）不注入。"""
-        assert _cache_status_hint(_state(last_prompt_tokens=0)) == ""
+        """首轮/压缩后重置轮（last_input_tokens=0）不注入。"""
+        assert _cache_status_hint(_state(last_input_tokens=0)) == ""
 
     def test_suppressed_when_unobservable(self) -> None:
         """端点不回报缓存字段：静默缺席而非谎报 0%。"""
         assert _cache_status_hint(_state(last_cache_observable=False)) == ""
 
-    def test_excludes_caliber_uses_total_input(self) -> None:
-        """prompt 不含缓存口径：输入总量取归一后的 total_input。"""
+    def test_exclusive_caliber_shows_normalized_input(self) -> None:
+        """prompt 不含缓存口径：输入占用为归一后的 total_input（含缓存读/写）。"""
         hint = _cache_status_hint(_state(
-            last_prompt_tokens=300,
-            last_total_input_tokens=1000,
+            last_input_tokens=1000,
             last_cache_read_tokens=700,
             last_cache_hit_rate=0.7,
         ))

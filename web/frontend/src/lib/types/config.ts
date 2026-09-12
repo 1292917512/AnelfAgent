@@ -73,6 +73,9 @@ export interface TaskConfig {
   save_result_to_memory?: boolean;
   model_id?: string | null;
   reasoning_effort?: ReasoningEffort | null;
+  /** 事件触发（after_reply/context_pressure/delegation_resolved，空/缺省 = 不启用）；
+   *  与时间调度正交——事件发生即触发本任务 */
+  trigger_event?: string;
   /** 生效截止时间（"YYYY-MM-DD" 或 "YYYY-MM-DD HH:MM"，空/缺省 = 永久有效），到期自动停用 */
   expires_at?: string;
   /** 创建/最近更新时间（epoch 秒，0 = 未知） */

@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from core.log import log
+from core.trace_session import thinking_session
 
 if TYPE_CHECKING:
     from agent.delegation.profile import AgentFacets
@@ -315,18 +316,29 @@ class SubAgent:
             messages = [{"role": "user", "content": self.build_prompt()}]
         try:
             with bind_steer_drain(drain):
-                output = await asyncio.wait_for(
-                    self._mind.reflect(
-                        messages,
-                        max_iterations=self.max_iterations,
-                        allow_output_tools=False,
-                        extra_blocked_tools=extra_blocked,
-                        tool_tags=tool_tags,
-                        options=options,
-                        completion=completion,
-                    ),
-                    timeout=timeout,
-                )
+                # 子代理独立的思维链路会话：链路节点不混入父会话（并发委托
+                # 共享父 _SessionFlow 会错配 round/llm 节点配对，后台委托会在
+                # 父会话结束后产生孤儿运行中节点）；思维链路页据此区分主 AI
+                # 与子代理执行（tracer 未启用时事件无订阅者，近零开销）
+                async with thinking_session({
+                    "is_delegation": True,
+                    "goal": self.goal[:120],
+                    "agent": self.agent_name,
+                    "role": self.role,
+                    "delegation_id": self.delegation_id,
+                }):
+                    output = await asyncio.wait_for(
+                        self._mind.reflect(
+                            messages,
+                            max_iterations=self.max_iterations,
+                            allow_output_tools=False,
+                            extra_blocked_tools=extra_blocked,
+                            tool_tags=tool_tags,
+                            options=options,
+                            completion=completion,
+                        ),
+                        timeout=timeout,
+                    )
         except asyncio.TimeoutError:
             log(
                 f"子代理整体超时（>{timeout:.0f}s）: {self.goal[:60]}",

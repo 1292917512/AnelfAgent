@@ -51,6 +51,9 @@ from core.trace_session import current_session_id as _ctx_session_id
 
 _OWNER = "thinking_tracer"
 _MAX_SYSTEM_NODES = 200
+# 单会话节点数上限：长会话（多轮回复/批量委托）无界增长会把内存与
+# 前端布局拖垮——触顶后新事件丢弃并留一次截断标记（会话可正常结束）
+_MAX_SESSION_NODES = 500
 # 立即推送（不进入批量缓冲）的广播事件类型
 _IMMEDIATE_EVENTS = frozenset({"session_start", "session_end", "session_update"})
 
@@ -113,9 +116,12 @@ class TraceSession:
     nodes: List[TraceNode] = field(default_factory=list)
     is_heartbeat: bool = False
     is_introspection: bool = False
+    is_delegation: bool = False
     ended: bool = False
     end_time: Optional[float] = None
     available_tools: List[str] = field(default_factory=list)
+    # 节点数触顶标记（防长会话无界增长；触顶后新事件丢弃并留一次截断标记）
+    nodes_truncated: bool = False
 
     def to_summary(self) -> Dict[str, Any]:
         return {
@@ -124,6 +130,7 @@ class TraceSession:
             "end_time": self.end_time,
             "is_heartbeat": self.is_heartbeat,
             "is_introspection": self.is_introspection,
+            "is_delegation": self.is_delegation,
             "node_count": len(self.nodes),
             "ended": self.ended,
             "duration_ms": round((self.end_time - self.start_time) * 1000) if self.end_time else None,
@@ -242,7 +249,9 @@ class Tracer:
         """设置追踪开关。
 
         - 开启时：如果有订阅者，立即注册处理器
-        - 关闭时：立即注销处理器并断开所有订阅者
+        - 关闭时：立即注销处理器并断开所有订阅者；
+          在途会话一并收束（否则处理器注销后它们永远等不到 SESSION_END，
+          前端把它们永久显示为运行中）
         """
         self.enabled = enabled
         if enabled:
@@ -251,6 +260,24 @@ class Tracer:
         else:
             if self._registered:
                 self._unregister_handlers()
+            for session in self._sessions.values():
+                if session.ended:
+                    continue
+                session.ended = True
+                session.end_time = time.time()
+                node = TraceNode(
+                    id=f"{session.id}_end",
+                    type=NodeType.SESSION_END,
+                    label="追踪已关闭",
+                    data={"reason": "tracer_disabled"},
+                )
+                session.nodes.append(node)
+                self._broadcast("session_end", {
+                    "session_id": session.id,
+                    "node": node.to_dict(),
+                    "summary": session.to_summary(),
+                })
+                self._flows.pop(session.id, None)
         log(f"思维追踪 {'开启' if enabled else '关闭'}", tag="思维追踪")
 
     # ==================================================================
@@ -267,26 +294,46 @@ class Tracer:
         sid = _ctx_session_id.get()
         return self._flows.get(sid) if sid else None
 
+    def _append_session_node(self, session: TraceSession, node: TraceNode) -> bool:
+        """向会话追加节点（节点数上限保护）。返回是否真正追加（决定是否广播）。"""
+        if len(session.nodes) >= _MAX_SESSION_NODES:
+            if not session.nodes_truncated:
+                session.nodes_truncated = True
+                marker = TraceNode(
+                    id=f"{session.id}_truncated",
+                    type=NodeType.SYSTEM_EVENT,
+                    label=f"节点数超上限（{_MAX_SESSION_NODES}），后续链路事件已截断",
+                    status=NodeStatus.WARNING,
+                )
+                session.nodes.append(marker)
+                self._broadcast("node_added", {
+                    "session_id": session.id,
+                    "node": marker.to_dict(),
+                })
+            return False
+        session.nodes.append(node)
+        return True
+
     def _add_node(self, node: TraceNode) -> None:
         """向当前思维会话追加节点。无会话时静默丢弃（Mind 专属路径使用）。"""
         session = self._current_session()
         if not session:
             return
-        session.nodes.append(node)
-        self._broadcast("node_added", {
-            "session_id": session.id,
-            "node": node.to_dict(),
-        })
+        if self._append_session_node(session, node):
+            self._broadcast("node_added", {
+                "session_id": session.id,
+                "node": node.to_dict(),
+            })
 
     def _add_system_node(self, node: TraceNode) -> None:
         """追加系统节点：有会话时进入会话，无会话时进入系统节点列表。"""
         session = self._current_session()
         if session:
-            session.nodes.append(node)
-            self._broadcast("node_added", {
-                "session_id": session.id,
-                "node": node.to_dict(),
-            })
+            if self._append_session_node(session, node):
+                self._broadcast("node_added", {
+                    "session_id": session.id,
+                    "node": node.to_dict(),
+                })
         else:
             self._system_nodes.append(node)
             if len(self._system_nodes) > _MAX_SYSTEM_NODES:
@@ -468,17 +515,22 @@ class Tracer:
     async def _on_session_start(self, payload: Dict[str, Any]) -> None:
         sid = str(payload.get("session_id") or _ctx_session_id.get() or uuid.uuid4().hex[:12])
         is_intro = bool(payload.get("is_introspection", False))
+        is_delegation = bool(payload.get("is_delegation", False))
         session = TraceSession(
             id=sid,
             start_time=time.time(),
             is_heartbeat=payload.get("is_heartbeat", False),
             is_introspection=is_intro,
+            is_delegation=is_delegation,
         )
         self._sessions[sid] = session
         self._flows[sid] = _SessionFlow()
         self._trim_sessions()
 
-        if is_intro:
+        if is_delegation:
+            agent = str(payload.get("agent") or payload.get("role") or "leaf")
+            label = f"子代理 @{agent}: {str(payload.get('goal', ''))[:40]}"
+        elif is_intro:
             entity = payload.get("entity", "全局")
             label = f"内省: {entity}"
         elif session.is_heartbeat:
@@ -507,7 +559,9 @@ class Tracer:
         session.ended = True
         session.end_time = time.time()
         reason = payload.get("reason", "")
-        if session.is_introspection:
+        if session.is_delegation:
+            label = "子代理结束" + (f": {reason}" if reason else "")
+        elif session.is_introspection:
             label = "内省完成" + (f": {reason}" if reason and reason != "introspection_completed" else "")
         else:
             label = f"会话结束: {reason}"
@@ -607,12 +661,16 @@ class Tracer:
             label_suffix = f" → {', '.join(tool_calls)}" if tool_calls else ""
             reasoning_badge = " [推理]" if has_reasoning else ""
             error_badge = " [失败]" if not success else ""
+            # 节点 data 剔除完整消息链（messages 仅供 llm_end 钩子面作快照源）：
+            # 逐轮一份完整上下文驻留内存并经 SSE 广播到思维面板是不可接受的
+            # 副作用；诊断字段（model/usage/duration/tool_calls…）全保留
+            node_data = {k: v for k, v in payload.items() if k != "messages"}
             self._update_node(
                 nid,
                 status=NodeStatus.COMPLETED if success else NodeStatus.ERROR,
                 duration_ms=payload.get("duration_ms"),
                 label=f"LLM: {model} ({payload.get('duration_ms', 0)}ms){label_suffix}{reasoning_badge}{error_badge}",
-                data=payload,
+                data=node_data,
             )
 
     async def _on_tool_start(self, payload: Dict[str, Any]) -> None:

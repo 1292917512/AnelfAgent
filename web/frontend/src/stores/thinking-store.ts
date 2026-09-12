@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { ContextSnapshotData, PlanRecord, SessionSummary, ThinkingSession, TraceNode } from "@/lib/types";
+import { thinkingApi } from "@/lib/api";
 import { usePlanStore } from "./plan-store";
 import { useChatStore } from "./chat-store";
 
@@ -10,8 +11,11 @@ const MAX_SESSIONS = 100;
 
 // SSE 连接管理（全局单例，不随页面切换断开）
 let _eventSource: EventSource | null = null;
+// 断线重连判定（首次连接不触发重同步）
+let _wasConnected = false;
 let _storeSetters: {
   setConnected: (v: boolean) => void;
+  onReconnect: () => void;
   handleSessionStart: (data: { session: SessionSummary; node: TraceNode }) => void;
   handleSessionEnd: (data: { session_id: string; node: TraceNode; summary: SessionSummary }) => void;
   handleNodeAdded: (data: { session_id: string; node: TraceNode }) => void;
@@ -26,11 +30,21 @@ function connectSSE(setters: typeof _storeSetters) {
   const es = new EventSource("/api/thinking/stream");
   _eventSource = es;
 
-  es.onopen = () => setters?.setConnected(true);
+  es.onopen = () => {
+    setters?.setConnected(true);
+    // 重连成功：断线窗口内的事件（含 session_end）已丢失，REST 全量对齐一次
+    if (_wasConnected) setters?.onReconnect();
+    _wasConnected = true;
+  };
   es.onerror = () => {
     if (es.readyState === EventSource.CLOSED) {
       setters?.setConnected(false);
       _eventSource = null;
+      _wasConnected = false;
+      // 连接彻底关闭（服务端重启/网络中断）：延迟重建，恢复后自愈
+      setTimeout(() => {
+        if (!_eventSource && _storeSetters) connectSSE(_storeSetters);
+      }, 5000);
     }
   };
 
@@ -57,7 +71,9 @@ function disconnectSSE() {
     _eventSource.close();
     _eventSource = null;
   }
+  _wasConnected = false;
   _storeSetters?.setConnected(false);
+  _storeSetters = null;
 }
 
 interface ThinkingState {
@@ -77,6 +93,7 @@ interface ThinkingState {
 
   setEnabled: (v: boolean) => void;
   setConnected: (v: boolean) => void;
+  onReconnect: () => void;
   setSessions: (s: SessionSummary[]) => void;
   setActiveSessionId: (id: string | null) => void;
   setActiveSession: (s: ThinkingSession | null) => void;
@@ -121,6 +138,19 @@ export const useThinkingStore = create<ThinkingState>((set, get) => ({
   setAutoFollow: (v) => set({ autoFollow: v }),
   setStatusSynced: (v) => set({ _statusSynced: v }),
 
+  onReconnect: () => {
+    // SSE 断线窗口内的事件已丢失：REST 全量对齐会话列表与当前会话详情
+    const { activeSessionId } = get();
+    thinkingApi.sessions(50).then((r) => {
+      set({ sessions: r.data.sessions ?? [] });
+    }).catch(() => {});
+    if (activeSessionId) {
+      thinkingApi.session(activeSessionId).then((r) => {
+        if (r.data && !r.data.error) set({ activeSession: r.data });
+      }).catch(() => {});
+    }
+  },
+
   setSnapshotArmed: (v) => set({ snapshotArmed: v }),
   setSnapshotData: (d) => set({ snapshotData: d }),
   setShowSnapshot: (v) => set({ showSnapshot: v }),
@@ -130,6 +160,7 @@ export const useThinkingStore = create<ThinkingState>((set, get) => ({
     const state = get();
     connectSSE({
       setConnected: state.setConnected,
+      onReconnect: state.onReconnect,
       handleSessionStart: state.handleSessionStart,
       handleSessionEnd: state.handleSessionEnd,
       handleNodeAdded: state.handleNodeAdded,

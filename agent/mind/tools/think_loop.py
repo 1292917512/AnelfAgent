@@ -140,16 +140,23 @@ async def reply_entry(
         images: Optional[List["ImageContent"]] = None,
         *,
         adapter_key: str = "",
+        completion: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """执行回复，异常时发送错误提示。"""
+    """执行回复，异常时发送错误提示。
+
+    completion 非 None 时由 think_loop 在结束处写入结束原因与完整消息链
+    （回复上下文快照），供事件层把 transcript 带出给钩子面消费。
+    """
     await event_bus.emit(EVENT_BEFORE_REPLY, {"phase": "llm_calling"})
     try:
-        await reply_loop(mind, anything, images or [], adapter_key=adapter_key)
+        await reply_loop(mind, anything, images or [], adapter_key=adapter_key,
+                         completion=completion)
     except Exception as exc:
         log(f"reply 异常: {type(exc).__name__}: {exc}", "ERROR", tag="思维")
         error_msg = f"抱歉，处理消息时出错了: {type(exc).__name__}: {exc}"
         await _send_reply_error(anything, error_msg)
-        await complete_reply(mind, anything, error_msg, 0, error=True)
+        await complete_reply(mind, anything, error_msg, 0, error=True,
+                             completion=completion)
 
 
 async def _send_reply_error(anything: "Everything", error_msg: str) -> None:
@@ -168,6 +175,7 @@ async def reply_loop(
         images: Optional[List["ImageContent"]] = None,
         *,
         adapter_key: str = "",
+        completion: Optional[Dict[str, Any]] = None,
 ) -> None:
     """多轮对话循环入口：处理图片，进入统一思维循环。"""
     mc = mind._get_mind_config()
@@ -214,6 +222,7 @@ async def reply_loop(
             base_messages=base_messages,
             options={"push_watermark": push_watermark} if push_watermark else None,
             adapter_key=adapter_key,
+            completion=completion,
         )
 
 
@@ -433,7 +442,7 @@ async def _run_think_rounds(
         # 上下文压缩：溢出风险（或手动请求）时压缩中间轮次
         if mind.compressor is not None and mind.compressor.should_compress(
             ctx.base_messages + ctx.tool_chain,
-            last_prompt_tokens=state.last_prompt_tokens,
+            last_input_tokens=state.last_input_tokens,
             scope=ctx.current_scope,
         ):
             try:
@@ -455,7 +464,7 @@ async def _run_think_rounds(
                 log(f"上下文压缩失败，本轮不压缩继续: {exc}", "WARNING", tag="压缩")
             else:
                 # 压缩后旧真用量已失真，清零避免下轮以过期值重复触发压缩
-                state.last_prompt_tokens = 0
+                state.last_input_tokens = 0
                 execution_steps.append(f"→ 第{state.iteration + 1}轮前: 上下文已压缩")
 
         # 并入循环期间到达的新用户消息（让 AI 在当前回复中一并处理，
@@ -497,13 +506,14 @@ async def _run_think_rounds(
             continue
 
         state.consecutive_overflow_compressions = 0
-        if result.usage and result.usage.prompt_tokens:
-            state.last_prompt_tokens = result.usage.prompt_tokens
         if result.usage:
+            # 输入占用锚点用归一化总输入口径：独占口径（原生 Anthropic）下
+            # prompt_tokens 不含缓存读/写，以其为锚会低估真实占用
+            if result.usage.total_input_tokens:
+                state.last_input_tokens = result.usage.total_input_tokens
             state.last_cache_read_tokens = result.usage.cache_read_input_tokens
             state.last_cache_creation_tokens = result.usage.cache_creation_input_tokens
             state.last_cache_hit_rate = result.usage.cache_hit_rate
-            state.last_total_input_tokens = result.usage.total_input_tokens
             state.last_cache_observable = result.usage.cache_observable
 
         # 上下文用量快照（usage 锚定：API 真实用量优先；供 webui 状态栏显示）
@@ -534,7 +544,8 @@ async def _run_think_rounds(
     log(f"达到安全上限 ({safety_limit} 轮)，强制结束", "WARNING", tag="思维")
     if mode == ThinkMode.REPLY and anything:
         await _deliver_pending_text(ctx, state)
-        await finish_think(mind, anything, execution_steps, safety_limit, ctx.tool_chain)
+        await finish_think(mind, anything, execution_steps, safety_limit, ctx.tool_chain,
+                           completion=ctx.completion)
 
 
 # ==================================================================
@@ -569,6 +580,7 @@ async def _handle_interrupt(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bool
         )
         await finish_think(
             ctx.mind, ctx.anything, ctx.execution_steps, state.iteration, ctx.tool_chain,
+            completion=ctx.completion,
         )
     return True
 
@@ -705,6 +717,7 @@ async def _finish_round(
     if ctx.mode == ThinkMode.REPLY and ctx.anything:
         await finish_think(
             ctx.mind, ctx.anything, ctx.execution_steps, state.iteration + 1, ctx.tool_chain,
+            completion=ctx.completion,
         )
 
 
@@ -906,10 +919,13 @@ async def _handle_tool_round(
     state.consecutive_empty_calls = 0
     state.consecutive_text_rounds = 0
     state.reflect_text_rounds = 0
-    # 反思产出语义：模型发起工具调用即说明此前的纯文本是中间独白而非
+    # 反思产出语义：模型发起工作工具调用即说明此前的纯文本是中间独白而非
     # 最终结论——从产出中移除（过程留痕进 execution_steps），产出只保留
-    # 收束前最后一个未被工具调用打断的连续文本段
-    if ctx.mode == ThinkMode.REFLECT and ctx.collected_text:
+    # 收束前最后一个未被工具调用打断的连续文本段。
+    # end_reply 是收束信号而非工作工具：纯 end_reply 批次不构成"打断"，
+    # 已收集的连续文本段即最终结论，必须保留（同批正文在下方收束处理纳入）
+    pure_end_reply = all(tc.name == _END_REPLY_TOOL_NAME for tc in tool_calls)
+    if ctx.mode == ThinkMode.REFLECT and ctx.collected_text and not pure_end_reply:
         dropped_chars = sum(len(s) for s in ctx.collected_text)
         execution_steps.append(
             f"→ 第{state.iteration + 1}轮: 中间独白 {dropped_chars} 字归档为过程"
@@ -1014,11 +1030,15 @@ async def _handle_tool_round(
                 )
                 state.iteration += 1
                 return _StageOutcome.CONTINUE
-        # end_reply 同批的 assistant 正文 = 尚未投递的尾部文本，纳入轮末统一投递点
-        if ctx.mode == ThinkMode.REPLY:
-            end_text = _strip_think_blocks(result.content or "").strip()
-            if end_text:
+        # end_reply 同批的 assistant 正文：REPLY = 尚未投递的尾部文本，
+        # 纳入轮末统一投递点；REFLECT = 与收束信号同轮发表的结论——
+        # 收束信号不是工作工具，其同批文本即最终连续文本段，纳入产出
+        end_text = _strip_think_blocks(result.content or "").strip()
+        if end_text:
+            if ctx.mode == ThinkMode.REPLY:
                 state.pending_text = end_text
+            else:
+                ctx.collected_text.append(end_text)
         log(f"AI 主动结束{ctx.mode_label} (轮次 {state.iteration + 1})", tag="思维")
         # Plan 收敛由 finish_think 统一处理（所有正常结束路径的必经之地）
         await _finish_round(ctx, state)

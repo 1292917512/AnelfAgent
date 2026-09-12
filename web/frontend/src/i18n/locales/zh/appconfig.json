@@ -188,7 +188,12 @@
     "trigger_manual": "手动",
     "historyTitle": "执行记录",
     "historyLoading": "加载执行记录…",
-    "historyEmpty": "暂无执行记录"
+    "historyEmpty": "暂无执行记录",
+    "triggerEvent": "事件触发",
+    "triggerEventNone": "不启用（仅时间调度/手动）",
+    "triggerEventAfterReply": "对话结束后 (after_reply)",
+    "triggerEventContextPressure": "上下文压力 (context_pressure)",
+    "triggerEventDelegationResolved": "子代理完成 (delegation_resolved)"
   },
   "costMap": {
     "title": "LiteLLM 模型价格表",

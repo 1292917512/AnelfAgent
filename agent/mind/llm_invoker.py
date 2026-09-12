@@ -225,9 +225,13 @@ async def _invoke_llm_unified(
             "DEBUG", tag="思维",
         )
     usage_percent: Optional[float] = None
-    if usage_data.get("total_tokens") and max_ctx > 0:
-        usage_percent = round(usage_data["total_tokens"] / max_ctx * 100, 1)
-    await event_bus.emit(EVENT_THINKING_LLM_END, {
+    if result.usage and max_ctx > 0:
+        # 占用率用归一化输入 + 输出：独占口径（原生 Anthropic）下
+        # total_tokens 不含缓存读/写，会低估真实窗口占用
+        occupancy = result.usage.total_input_tokens + result.usage.completion_tokens
+        if occupancy > 0:
+            usage_percent = round(occupancy / max_ctx * 100, 1)
+    payload: Dict[str, Any] = {
         "model": result.model or model_name,
         "duration_ms": round(elapsed_ms),
         # TTFT（流式路径）：排队/首 token 延迟，与 duration_ms（总时长）
@@ -241,8 +245,27 @@ async def _invoke_llm_unified(
         "usage": usage_data,
         "usage_percent": usage_percent,
         "max_tokens": max_ctx,
-    })
+    }
+    # 本次调用的发送消息链仅在有 llm_end transcript 钩子注册时附带——
+    # 它是钩子面的快照源，无条件携带会让每次 LLM 调用都为潜在消费者
+    # 付常驻成本（一次多轮回复十余次调用）；零钩子时完全零开销
+    if _llm_end_transcript_hook_registered():
+        payload["messages"] = messages
+    await event_bus.emit(EVENT_THINKING_LLM_END, payload)
     return result
+
+
+def _llm_end_transcript_hook_registered() -> bool:
+    """是否有 llm_end + transcript 档位的钩子注册（决定 LLM_END 是否附带消息链）。"""
+    try:
+        from agent.hooks_llm import HookContextMode, HookRegistry
+        from agent.hooks_llm.spec import HOOK_EVENT_LLM_END
+        return any(
+            s.context is HookContextMode.TRANSCRIPT
+            for s in HookRegistry.for_event(HOOK_EVENT_LLM_END)
+        )
+    except Exception:
+        return False
 
 
 def _merge_llm_options(mind: "Mind", options: Optional[dict]) -> dict:
@@ -291,6 +314,9 @@ async def _llm_chat_with_retry(
             client=primary,
             max_retries=mc.llm_max_retries,
             timeout=mc.llm_timeout,
+            # 主对话路径的记账权威在 _invoke_llm_unified（scope 解析链覆盖
+            # 消息实体维度），此处关闭管理器侧记账防双写
+            record_usage=False,
         )
     else:
         result = await asyncio.wait_for(

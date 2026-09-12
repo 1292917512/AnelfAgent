@@ -618,6 +618,7 @@ class LLMManager(BaseEntity):
         timeout: float = 120.0,
         purpose: str = "internal",
         stream: bool = False,
+        record_usage: bool = True,
     ) -> ChatResult:
         """带重试和模型回退的统一聊天调用。
 
@@ -629,6 +630,9 @@ class LLMManager(BaseEntity):
 
         purpose 标记调用用途（guardian/summarize/skill_review 等）：成功结果的
         usage 记入缓存命中统计与 scope 成本账本，内部辅助调用与主对话同口径。
+        record_usage=False 用于调用方自行记账的场景（主对话路径的记账权威是
+        _invoke_llm_unified——其 scope 解析链覆盖消息实体维度，本层只有
+        ContextVar 维度，双写会导致缓存统计与成本账本全部翻倍）。
 
         stream=True 走流式通道：空闲窗口（客户端超时配置）内无任何新片段才判
         超时，思考/输出期间不设墙钟——深度思考模型的内部调用不再被整段掐断。
@@ -680,7 +684,8 @@ class LLMManager(BaseEntity):
                 )
                 if index:
                     info(f"回退成功: {candidate.config.name}", tag="模型")
-                self._record_internal_usage(result, candidate, purpose)
+                if record_usage:
+                    self._record_internal_usage(result, candidate, purpose)
                 return result
             except LLMNotConfiguredError:
                 raise

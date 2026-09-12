@@ -137,10 +137,17 @@ def _mount_one_module_router(app: FastAPI, kind: str, name: str) -> None:
 def _unmount_module_router(app: FastAPI, prefix: str) -> int:
     """运行时摘除指定前缀的模块路由（热拔除目录时经 EVENT_MODULE_REMOVED 触发）。"""
     routes = app.router.routes
-    doomed = [
-        r for r in routes
-        if (lambda p: p == prefix or p.startswith(prefix + "/"))(getattr(r, "path", ""))
-    ]
+
+    def _matches(route: Any) -> bool:
+        path = getattr(route, "path", "")
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+        # 新版 FastAPI 懒加载包含（_IncludedRouter）：路由不展开、无 .path，
+        # 按 include_context.prefix 匹配（缺失即旧版展开式路由，上方已判）
+        ctx = getattr(route, "include_context", None)
+        return ctx is not None and getattr(ctx, "prefix", None) == prefix
+
+    doomed = [r for r in routes if _matches(r)]
     for r in doomed:
         routes.remove(r)
     if doomed:

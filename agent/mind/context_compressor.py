@@ -2,7 +2,8 @@
 
 自动检测上下文溢出风险，智能压缩中间轮次，保留关键信息，延长对话寿命：
 
-- 溢出检测：优先使用上轮真实 prompt_tokens，否则本地估算
+- 溢出检测：优先使用上轮真实输入占用（口径归一的 total_input_tokens，
+  含缓存读/写），否则本地估算
   （tiktoken cl100k_base 真实分词，缺失/异常时回退 chars/4）；
   阈值 = (context_length - max_output) × threshold_percent（小窗口退化 0.85）
 - 压缩策略：保头（system 层 + 首轮）保尾（最近 N 条），中间轮次由 LLM 生成结构化摘要
@@ -617,7 +618,7 @@ class ContextCompressor:
             self,
             messages: List[Dict],
             *,
-            last_prompt_tokens: int = 0,
+            last_input_tokens: int = 0,
             scope: str = "",
     ) -> bool:
         """判断是否需要压缩（真实用量优先，估算兜底；支持手动请求）。"""
@@ -628,7 +629,7 @@ class ContextCompressor:
         threshold = self.threshold_tokens()
         if threshold <= 0:
             return False
-        tokens = last_prompt_tokens or self.estimate_tokens(messages)
+        tokens = last_input_tokens or self.estimate_tokens(messages)
         return tokens >= threshold
 
     def request_manual(self, scope: str, focus_topic: str = "") -> None:

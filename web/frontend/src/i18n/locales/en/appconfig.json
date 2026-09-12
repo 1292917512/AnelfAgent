@@ -188,7 +188,12 @@
     "trigger_manual": "Manual",
     "historyTitle": "Execution History",
     "historyLoading": "Loading history…",
-    "historyEmpty": "No execution records yet"
+    "historyEmpty": "No execution records yet",
+    "triggerEvent": "Event trigger",
+    "triggerEventNone": "Disabled (schedule/manual only)",
+    "triggerEventAfterReply": "After reply (after_reply)",
+    "triggerEventContextPressure": "Context pressure (context_pressure)",
+    "triggerEventDelegationResolved": "Delegation resolved (delegation_resolved)"
   },
   "costMap": {
     "title": "LiteLLM Cost Map",

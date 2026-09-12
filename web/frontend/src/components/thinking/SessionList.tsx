@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { SessionSummary } from "@/stores/thinking-store";
-import { Clock, Zap, Brain } from "lucide-react";
+import { Bot, Clock, Zap, Brain } from "lucide-react";
 
 interface Props {
   sessions: SessionSummary[];
@@ -38,7 +38,9 @@ export function SessionList({ sessions, activeId, onSelect }: Props) {
             )}
           >
             <div className="flex items-center gap-1.5 mb-0.5">
-              {s.is_introspection ? (
+              {s.is_delegation ? (
+                <Bot size={11} className="text-blue-500 shrink-0" />
+              ) : s.is_introspection ? (
                 <Brain size={11} className="text-ok shrink-0" />
               ) : s.is_heartbeat ? (
                 <Clock size={11} className="text-warn shrink-0" />
@@ -46,7 +48,13 @@ export function SessionList({ sessions, activeId, onSelect }: Props) {
                 <Zap size={11} className="text-accent shrink-0" />
               )}
               <span className="font-medium truncate">
-                {s.is_introspection ? t("introspection") : s.is_heartbeat ? t("heartbeat") : t("thinkingSession")}
+                {s.is_delegation
+                  ? t("delegationSession")
+                  : s.is_introspection
+                    ? t("introspection")
+                    : s.is_heartbeat
+                      ? t("heartbeat")
+                      : t("thinkingSession")}
               </span>
               {!s.ended && (
                 <span className="ml-auto px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-ok-subtle text-ok">

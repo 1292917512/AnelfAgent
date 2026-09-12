@@ -124,6 +124,8 @@ class HeartbeatEngine:
         self._fold_activity_ts: Dict[str, int] = {}
         self._fold_idle_beats: Dict[str, int] = {}
         self._prune_orphan_schedules()
+        # 任务事件触发装配（带 trigger_event 的任务经 LLM 钩子面注册；reconcile 幂等）
+        self._sync_event_triggers()
 
     def _prune_orphan_schedules(self) -> None:
         """清理任务文件已删除的孤儿调度（任务文件仍在但加载失败的不动，保留 WARN 提示）。"""
@@ -181,11 +183,25 @@ class HeartbeatEngine:
         self.config = reload_heartbeat_config()
         self._seed_declared_schedules()
         self._prune_orphan_schedules()
+        self._sync_event_triggers()
         # 态势区块即时刷新：任务/调度 CRUD 走 reload 热更，不必等下个心跳拍
         try:
             asyncio.create_task(self._write_heartbeat_status())
         except RuntimeError:
             pass  # 无运行事件循环（测试/构造期）：等下个 tick 兜底
+
+    def _sync_event_triggers(self) -> None:
+        """装配任务事件触发钩子（带 trigger_event 的任务经 LLM 钩子面注册）。
+
+        任务 CRUD / 启动加载共用本函数（reconcile 语义，幂等）；钩子面未装配
+        （HookRegistry 可用即可，runtime 事件订阅在 bootstrap 后）时仍安全——
+        注册进注册表即可，事件分发由 runtime 启动后接管。
+        """
+        try:
+            from agent.task.event_trigger import sync_task_event_hooks
+            sync_task_event_hooks(self)
+        except Exception as exc:
+            log(f"任务事件触发装配失败: {exc}", "WARNING", tag="任务")
 
     def _seed_declared_schedules(self) -> None:
         """一次性调度种子：任务定义文件声明的初始调度（mode/every_n_beats）

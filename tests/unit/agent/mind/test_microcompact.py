@@ -61,11 +61,11 @@ class TestMicrocompact:
 class TestCircuitBreaker:
     def test_broken_after_consecutive_failures(self):
         c = _compressor(max_consecutive_failures=3)
-        assert c.should_compress([], last_prompt_tokens=80000)
+        assert c.should_compress([], last_input_tokens=80000)
         for _ in range(3):
             c._record_compress_result(False)
         assert c._broken
-        assert not c.should_compress([], last_prompt_tokens=80000)
+        assert not c.should_compress([], last_input_tokens=80000)
 
     def test_success_resets_counter(self):
         c = _compressor(max_consecutive_failures=3)

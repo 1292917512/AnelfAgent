@@ -286,6 +286,7 @@ class TaskCreate(BaseModel):
     model_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
     expires_at: str = ""
+    trigger_event: str = ""
     folder: str = ""
 
 
@@ -316,6 +317,7 @@ class TaskUpdate(BaseModel):
     model_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
     expires_at: Optional[str] = None
+    trigger_event: Optional[str] = None
     folder: Optional[str] = None
 
 

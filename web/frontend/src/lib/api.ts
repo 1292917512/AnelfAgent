@@ -939,3 +939,35 @@ export const hooksApi = {
     api.put<{ saved: boolean; count: number }>("/hooks", hooks),
   example: () => api.get<Record<string, HookEntry[]>>("/hooks/example"),
 };
+
+// ── LLM 钩子面（/hooks-llm，agent/hooks_llm 注册表观测，只读） ──
+export interface LlmHookItem {
+  name: string;
+  event: string;
+  context: string;
+  description: string;
+  owner: string;
+  source: string;
+  priority: number;
+  max_iterations: number;
+  max_concurrent: number;
+  cooldown_seconds: number;
+  debounce_seconds: number;
+  model: string;
+  allow_output_tools: boolean;
+  tool_tags: string[];
+}
+export interface LlmHooksOverview {
+  enabled: boolean;
+  runtime_started: boolean;
+  events: string[];
+  hooks: LlmHookItem[];
+  governance: {
+    max_concurrent: number;
+    transcript_enabled: boolean;
+    transcript_max_chars: number;
+  };
+}
+export const hooksLlmApi = {
+  get: () => api.get<LlmHooksOverview>("/hooks-llm"),
+};

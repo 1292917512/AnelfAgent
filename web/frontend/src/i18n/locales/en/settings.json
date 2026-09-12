@@ -13,7 +13,8 @@
     "python": "Python",
     "git": "Git",
     "config": "Config Overview",
-    "hooks": "Hooks"
+    "hooks": "Hooks",
+    "llmHooks": "LLM Hooks"
   },
   "os": "OS",
   "architecture": "Architecture",
@@ -99,6 +100,33 @@
       "tool_pre": "Before Tool",
       "tool_post": "After Tool",
       "reply_end": "Reply Completed"
+    }
+  },
+  "llmHooks": {
+    "title": "LLM Hooks",
+    "subtitle": "Async LLM work spawned at reply/thinking boundaries (multiple hooks per event run in parallel)",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "running": "Running",
+    "stopped": "Stopped",
+    "noHooks": "No hooks registered",
+    "eventsLabel": "Events",
+    "govConcurrent": "Global concurrency",
+    "govTranscript": "Transcript snapshot",
+    "transcriptOn": "On (≤{{chars}} chars)",
+    "transcriptOff": "Off",
+    "iterations": "Iterations",
+    "concurrent": "Concurrency",
+    "cooldown": "Cooldown",
+    "debounce": "Debounce",
+    "toolTags": "Tools",
+    "outputAllowed": "Output allowed",
+    "owner": "Owner",
+    "hint": "Hooks are registered by code (@llm_hook), tasks (trigger_event) and entities; toggle and governance via the hooks_llm group in Config.",
+    "source": {
+      "code": "Code",
+      "task": "Task",
+      "entity": "Entity"
     }
   }
 }

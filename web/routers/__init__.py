@@ -14,6 +14,7 @@ from web.routers.database import router as database_router
 from web.routers.delegation import router as delegation_router
 from web.routers.entities import router as entities_router
 from web.routers.hooks import router as hooks_router
+from web.routers.hooks_llm import router as hooks_llm_router
 from web.routers.mcp import router as mcp_router
 from web.routers.memory import router as memory_router
 from web.routers.models import router as models_router
@@ -49,6 +50,7 @@ api_router.include_router(approvals_router)
 api_router.include_router(system_router)
 api_router.include_router(entities_router)
 api_router.include_router(hooks_router)
+api_router.include_router(hooks_llm_router)
 api_router.include_router(thinking_router)
 api_router.include_router(workspace_router)
 api_router.include_router(search_router)

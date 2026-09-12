@@ -79,5 +79,6 @@
     "tools": "Tools"
   },
   "contextTab": "Context",
-  "planStepsCount": "{{count}} steps"
+  "planStepsCount": "{{count}} steps",
+  "delegationSession": "Sub-agent"
 }

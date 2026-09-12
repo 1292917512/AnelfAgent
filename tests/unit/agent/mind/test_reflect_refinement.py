@@ -1,7 +1,9 @@
 """反思产出语义与结束原因（think_loop REFLECT 细化）单元测试。
 
-1. 产出语义：模型发起工具调用即把此前的纯文本判为中间独白（归档过程），
+1. 产出语义：模型发起工作工具调用即把此前的纯文本判为中间独白（归档过程），
    产出只保留收束前最后一个未被工具调用打断的连续文本段；
+   end_reply 是收束信号而非工作工具——纯 end_reply 批次不清空已收集结论，
+   其同批正文即最终连续文本段，纳入产出；
 2. 结束原因：completed / budget_exhausted / interrupted 随 completion 容器写出。
 """
 
@@ -10,6 +12,7 @@ from __future__ import annotations
 from helpers.think_loop_fakes import (
     FakeMind,
     FakePfc,
+    end_reply_result,
     run_think_loop,
     text_result,
     tool_result,
@@ -77,6 +80,68 @@ class TestReflectOutputSemantics:
             mind, mode=ThinkMode.REFLECT, base_messages=_base(),
             steps=steps,
         )
+        assert any("中间独白" in s for s in steps)
+
+
+class TestEndReplyOutputPreservation:
+    """end_reply 是收束信号而非工作工具：其使用不摧毁已收集产出。
+
+    回归自 2026-09 子代理 no_output 事故：reflect 契约教模型"完成就调
+    end_reply"，但纯文本轮后的裸 end_reply 会触发独白清除、同批正文又
+    从不进 collected_text——照契约办事必丢产出（子代理/任务/内省同病）。
+    """
+
+    async def test_bare_end_reply_preserves_conclusion(self) -> None:
+        """结论文本轮 → 裸 end_reply 收束：结论保留（纯批次不构成"工作打断"）。"""
+        mind = _reflect_mind([
+            text_result("最终答案：543。"),
+            end_reply_result(),
+        ])
+        collected: list = []
+        await run_think_loop(
+            mind, mode=ThinkMode.REFLECT, base_messages=_base(),
+            collected_text=collected,
+        )
+        assert collected == ["最终答案：543。"]
+
+    async def test_end_reply_same_round_text_collected(self) -> None:
+        """结论与 end_reply 同轮发表：同批文本即最终连续文本段，纳入产出。"""
+        mind = _reflect_mind([
+            tool_result("最终答案：543。", ["end_reply"]),
+        ])
+        collected: list = []
+        await run_think_loop(
+            mind, mode=ThinkMode.REFLECT, base_messages=_base(),
+            collected_text=collected,
+        )
+        assert collected == ["最终答案：543。"]
+
+    async def test_conclusion_segments_joined_across_end_reply(self) -> None:
+        """连续结论段 + end_reply 同批文本：无工作打断的整段全部保留。"""
+        mind = _reflect_mind([
+            text_result("第一部分。"),
+            tool_result("第二部分。", ["end_reply"]),
+        ])
+        collected: list = []
+        await run_think_loop(
+            mind, mode=ThinkMode.REFLECT, base_messages=_base(),
+            collected_text=collected,
+        )
+        assert collected == ["第一部分。", "第二部分。"]
+
+    async def test_mixed_batch_still_drops_interim_text(self) -> None:
+        """混合批次（工作工具 + end_reply）：此前独白仍归档，同批结论文本保留。"""
+        mind = _reflect_mind([
+            text_result("我先查一下……"),
+            tool_result("最终答案：543。", ["recall", "end_reply"]),
+        ])
+        collected: list = []
+        steps: list = []
+        await run_think_loop(
+            mind, mode=ThinkMode.REFLECT, base_messages=_base(),
+            collected_text=collected, steps=steps,
+        )
+        assert collected == ["最终答案：543。"]
         assert any("中间独白" in s for s in steps)
 
 

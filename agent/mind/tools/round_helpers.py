@@ -99,13 +99,14 @@ class _ThinkRoundState:
     # （收尾独白不外发，与输出契约「禁止纯文本投递」一致）
     output_sent: bool = False
     max_output_recoveries: int = 0
-    last_prompt_tokens: int = 0
+    # 上轮真实输入占用（口径归一：prompt 含/不含缓存两种记账下均为真实占用；
+    # 独占口径——原生 Anthropic——下原始 prompt_tokens 不含缓存读/写，
+    # 以其为锚会低估占用、压缩触发偏晚）
+    last_input_tokens: int = 0
     # 最近一次 LLM 调用的供应商侧缓存用量（context_usage 事件与 exec_context 状态行展示用）
     last_cache_read_tokens: int = 0
     last_cache_creation_tokens: int = 0
     last_cache_hit_rate: float = 0.0
-    # 口径归一后的总输入（prompt 含/不含缓存两种记账下均为真实分母）
-    last_total_input_tokens: int = 0
     # 端点是否回报缓存统计字段（False = 不可观测，状态行抑制注入而非谎报 0%）
     last_cache_observable: bool = True
     # 后台任务等待：本轮回复累计预算（秒）
@@ -690,7 +691,7 @@ async def _emit_context_usage(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
     if mind.compressor is None:
         return
     try:
-        _tokens = state.last_prompt_tokens or mind.compressor.estimate_tokens(
+        _tokens = state.last_input_tokens or mind.compressor.estimate_tokens(
             ctx.base_messages + ctx.tool_chain)
         _threshold = mind.compressor.threshold_tokens()
         _window = mind.get_model_context_length()
@@ -702,7 +703,7 @@ async def _emit_context_usage(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> No
                 "window": _window,
                 "percent": round(_tokens / _threshold * 100, 1),
                 "cache_read_input_tokens": state.last_cache_read_tokens,
-                "cache_creation_tokens": state.last_cache_creation_tokens,
+                "cache_creation_input_tokens": state.last_cache_creation_tokens,
                 "cache_hit_rate": state.last_cache_hit_rate,
             })
     except Exception:
@@ -746,7 +747,7 @@ def _token_budget_hint(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> str:
         window = mind.get_model_context_length()
         if threshold <= 0 or window <= 0:
             return ""
-        tokens = state.last_prompt_tokens or compressor.estimate_tokens(
+        tokens = state.last_input_tokens or compressor.estimate_tokens(
             ctx.base_messages + ctx.tool_chain)
         if tokens <= 0:
             return ""
@@ -780,7 +781,7 @@ register_configs_safe(_CACHE_STATUS_CONFIGS)
 def _cache_status_hint(state: _ThinkRoundState) -> str:
     """上一轮 LLM 调用的缓存命中状态行（无真实用量或不可观测时返回空串）。
 
-    注入准入：last_prompt_tokens > 0（首轮与压缩后重置轮天然抑制）且端点
+    注入准入：last_input_tokens > 0（首轮与压缩后重置轮天然抑制）且端点
     回报了缓存字段——不可观测时静默缺席而非谎报 0%。输入总量取口径归一后
     的 total_input_tokens（prompt 含/不含缓存两种记账下均为真实分母）。
     """
@@ -790,9 +791,9 @@ def _cache_status_hint(state: _ThinkRoundState) -> str:
             return ""
     except Exception:
         return ""
-    if state.last_prompt_tokens <= 0 or not state.last_cache_observable:
+    if state.last_input_tokens <= 0 or not state.last_cache_observable:
         return ""
-    usage_text = f"read {state.last_cache_read_tokens:,} / 输入 {state.last_total_input_tokens:,} tokens"
+    usage_text = f"read {state.last_cache_read_tokens:,} / 输入 {state.last_input_tokens:,} tokens"
     if state.last_cache_creation_tokens > 0:
         usage_text += f"，写入 {state.last_cache_creation_tokens:,}"
     return f"[缓存] 上轮命中 {state.last_cache_hit_rate * 100:.1f}%（{usage_text}）"
@@ -829,7 +830,7 @@ async def _handle_overflow(
             tools=ctx.active_tools,
         )
     # 紧急压缩后旧真用量已失真，清零防止下轮误判再次溢出
-    state.last_prompt_tokens = 0
+    state.last_input_tokens = 0
     ctx.execution_steps.append(f"→ 第{state.iteration + 1}轮: 上下文超限，已紧急压缩")
     state.iteration += 1
     return True

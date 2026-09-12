@@ -124,6 +124,15 @@ export function TaskFormFields({ task, set, isCreate }: {
             <ReasoningEffortOptions t={t} keyPrefix="tasks." />
           </Select>
         </Field>
+        <Field label={t("tasks.triggerEvent")}>
+          <Select className="w-full" value={task.trigger_event ?? ""}
+            onChange={(e) => set("trigger_event", e.target.value || undefined)}>
+            <option value="">{t("tasks.triggerEventNone")}</option>
+            <option value="after_reply">{t("tasks.triggerEventAfterReply")}</option>
+            <option value="context_pressure">{t("tasks.triggerEventContextPressure")}</option>
+            <option value="delegation_resolved">{t("tasks.triggerEventDelegationResolved")}</option>
+          </Select>
+        </Field>
         <div className="flex items-center justify-between md:col-span-2">
           <label className="text-xs text-muted font-medium">{t("tasks.allowOutputTools")}</label>
           <Switch checked={task.allow_output_tools ?? false} onChange={(v) => set("allow_output_tools", v)} />

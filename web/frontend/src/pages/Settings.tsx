@@ -8,8 +8,9 @@ import { PythonPanel } from "./settings/PythonPanel";
 import { GitPanel } from "./settings/GitPanel";
 import { ConfigStatusPanel } from "./settings/ConfigStatusPanel";
 import { HooksPanel } from "./settings/HooksPanel";
+import { LlmHooksPanel } from "./settings/LlmHooksPanel";
 
-type SettingsTab = "sysConfig" | "system" | "python" | "git" | "config" | "hooks";
+type SettingsTab = "sysConfig" | "system" | "python" | "git" | "config" | "hooks" | "llmHooks";
 
 export default function Settings() {
   const { t } = useTranslation("settings");
@@ -22,6 +23,7 @@ export default function Settings() {
     { key: "git", label: t("tabs.git") },
     { key: "config", label: t("tabs.config") },
     { key: "hooks", label: t("tabs.hooks") },
+    { key: "llmHooks", label: t("tabs.llmHooks") },
   ];
 
   return (
@@ -34,6 +36,7 @@ export default function Settings() {
       {tab === "git" && <GitPanel />}
       {tab === "config" && <ConfigStatusPanel />}
       {tab === "hooks" && <HooksPanel />}
+      {tab === "llmHooks" && <LlmHooksPanel />}
     </PageContainer>
   );
 }

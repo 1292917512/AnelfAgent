@@ -59,7 +59,7 @@ class Application:
                 if asyncio.iscoroutine(result):
                     await result
             except Exception as exc:
-                log(f"关停前置钩子失败: {name} - {exc}", "WARNING", tag="关停")
+                log(f"关停前置钩子失败: {name} - {type(exc).__name__}: {exc}", "WARNING", tag="关停")
         await Lifecycle.shutdown_all()
 
     def _arm_signals(self, loop: asyncio.AbstractEventLoop) -> None:

@@ -52,7 +52,7 @@ if TYPE_CHECKING:
 __all__ = [
     "tool", "deferred_tool", "entity", "activate_group",
     "entity_manifest", "entity_config", "context_provider",
-    "push_notify",
+    "push_notify", "register_entity_llm_hook",
     "get_embedder", "wake_embedding_worker", "register_embedding_backlog",
     "download_media_to_uploads", "execute_send_action",
     "set_default_model", "get_active_llm_client", "get_llm_client_class",
@@ -396,6 +396,84 @@ def push_notify(
         from agent.runtime.singleton import require_runtime
         return bool(require_runtime().mind.push_hub.push(
             scope, source, content, channel=channel, trigger=trigger))
+    except Exception:
+        return False
+
+
+def register_entity_llm_hook(
+    name: str,
+    event: str,
+    handler: Callable[..., Any],
+    *,
+    context: str = "none",
+    owner: str = "",
+    description: str = "",
+    tool_tags: Optional[List[str]] = None,
+    allow_output_tools: bool = False,
+    max_iterations: int = 6,
+    model: str = "",
+    max_concurrent: int = 1,
+    cooldown_seconds: float = 0.0,
+    debounce_seconds: float = 0.0,
+    priority: int = 50,
+) -> bool:
+    """实体注册一个 LLM 钩子（达到事件条件即并行拉起一段 LLM 工作，不卡主思考）。
+
+    经 LLM 钩子面（agent/hooks_llm）注册——同一事件可挂多个钩子并发执行，
+    各自独立的并发/频控/防递归治理；钩子 LLM 产出经后台任务注册表路由，
+    不阻塞、不打扰主对话。
+
+    Args:
+        name: 全局唯一钩子名（建议带实体前缀，如 weather_analyze）。
+        event: 生命周期事件（after_reply/context_pressure/delegation_resolved/llm_end）。
+            llm_end 为高频事件（每次 LLM 调用后触发），强制最小冷却 20s，
+            声明更小值也会被钳到下限。
+        handler: 执行体，签名 async (ctx: HookContext) -> Optional[str]；
+            ctx.messages 为按 context 档位构建的上下文快照，ctx.payload 为事件数据。
+        context: 上下文档位 none/lean/transcript（默认 none）。
+        owner: 注册归属（缺省取调用方实体模块名，便于卸载批量清理）。
+        description: 人类可读描述（Web 面板展示）。
+        tool_tags: reflect 工具选择器（默认复用回复级装配）。
+        allow_output_tools: 是否放开外发工具（默认禁止）。
+        max_iterations: reflect 轮次预算。
+        model: 执行模型 ID（空 = 默认主模型）。
+        max_concurrent: 该钩子并发上限。
+        cooldown_seconds: per-scope 最小触发间隔。
+        debounce_seconds: 同 scope 高频合并窗口（取最后快照）。
+        priority: 同事件多钩子拉起顺序（值大先拉起，执行仍并行）。
+
+    Returns:
+        注册是否成功（事件非法/钩子面不可用/已存在同名被覆盖前失败返回 False）。
+    """
+    try:
+        from agent.hooks_llm import HookContextMode, HookRegistry, LLMHookSpec
+        from agent.hooks_llm.spec import (
+            HOOK_EVENT_LLM_END,
+            LLM_END_MIN_COOLDOWN_SECONDS,
+        )
+
+        if not owner:
+            # owner 推断：handler 定义在 entities.<name>[.子模块] 时取 <name>
+            # （热拔卸载按 owner 批量清理的归属键）；非 entities 模块退化为 entity
+            module = getattr(handler, "__module__", "") or ""
+            parts = module.split(".")
+            owner = parts[1] if len(parts) >= 2 and parts[0] == "entities" and parts[1] else "entity"
+        cooldown = max(0.0, cooldown_seconds)
+        if event == HOOK_EVENT_LLM_END:
+            cooldown = max(cooldown, LLM_END_MIN_COOLDOWN_SECONDS)
+        spec = LLMHookSpec(
+            name=name, event=event, handler=handler,
+            context=HookContextMode(context),
+            tool_tags=tuple(tool_tags or ()), allow_output_tools=allow_output_tools,
+            max_iterations=max_iterations, model=model,
+            max_concurrent=max(1, max_concurrent),
+            cooldown_seconds=cooldown,
+            debounce_seconds=max(0.0, debounce_seconds),
+            priority=priority, owner=str(owner), description=description,
+            source="entity",
+        )
+        HookRegistry.register(spec)
+        return True
     except Exception:
         return False
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from agent.delegation.delegation_manager import DelegationManager
 from agent.delegation.sub_agent import bind_delegation_id, reset_delegation_id
@@ -150,3 +150,42 @@ class TestLogActorAttribution:
         result = await manager.delegate("标签检查", agent_name="researcher")
         assert result.success
         assert observed and observed[0].startswith("子代理@researcher#")
+
+
+class TestDelegationThinkingSession:
+    """子代理独立的思维链路会话（与主 AI 链路区分，防共享配对状态错配）。"""
+
+    async def test_run_emits_delegation_session(self) -> None:
+        from core.event_bus import (
+            EVENT_THINKING_SESSION_END,
+            EVENT_THINKING_SESSION_START,
+            event_bus,
+        )
+
+        starts: List[Dict[str, Any]] = []
+        ends: List[Dict[str, Any]] = []
+
+        async def _on_start(payload: Dict[str, Any]) -> None:
+            starts.append(payload)
+
+        async def _on_end(payload: Dict[str, Any]) -> None:
+            ends.append(payload)
+
+        event_bus.on(EVENT_THINKING_SESSION_START, _on_start, owner="test_delegation_session")
+        event_bus.on(EVENT_THINKING_SESSION_END, _on_end, owner="test_delegation_session")
+        try:
+            from agent.delegation.sub_agent import SubAgent
+
+            agent = SubAgent(_FakeMind(), "算数任务", agent_name="researcher")
+            result = await agent.run()
+        finally:
+            event_bus.off_by_owner("test_delegation_session")
+
+        assert result.success
+        assert len(starts) == 1
+        assert starts[0]["is_delegation"] is True
+        assert starts[0]["goal"] == "算数任务"
+        assert starts[0]["agent"] == "researcher"
+        # 会话随执行结束闭合（含异常路径的 finally 保证）
+        assert len(ends) == 1
+        assert ends[0]["session_id"] == starts[0]["session_id"]

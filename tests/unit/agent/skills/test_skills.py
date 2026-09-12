@@ -823,49 +823,76 @@ class TestSkillWebSerialization:
 
 
 class TestSkillReviewerContract:
-    """SkillReviewer 与 finish_think / EVENT_AFTER_REPLY 的数据契约。"""
+    """SkillReviewer 与 LLM 钩子面（agent/hooks_llm）的契约。
 
-    async def test_reads_execution_summary_from_event(self, store: SkillStore, monkeypatch) -> None:
+    评审已迁移：不再自订阅 EVENT_AFTER_REPLY，而是经钩子面注册
+    ``skill_review`` 钩子（event=after_reply, context=transcript），
+    继承本轮完整上下文执行评审。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_hook_registry(self):
+        from agent.hooks_llm import HookRegistry
+        HookRegistry.clear()
+        yield
+        HookRegistry.clear()
+
+    async def test_registers_hook_and_reflects_with_transcript(self, store: SkillStore, monkeypatch) -> None:
         from unittest.mock import AsyncMock
 
-        from agent.skills.background_review import SkillReviewer
-        from core.event_bus import EVENT_AFTER_REPLY, event_bus
+        from agent.hooks_llm import HookContext, HookContextMode, HookRegistry
+        from agent.skills.background_review import _HOOK_NAME, SkillReviewer
 
-        mind = SimpleNamespace(reflect=AsyncMock(return_value=""))
+        mind = SimpleNamespace(reflect=AsyncMock(return_value="沉淀了一个技能"))
         reviewer = SkillReviewer(mind, store)
         monkeypatch.setattr(SkillReviewer, "_enabled", staticmethod(lambda: True))
         reviewer.start()
         try:
-            await event_bus.emit(EVENT_AFTER_REPLY, {
-                "error": False,
-                "iterations": 2,
-                "execution_summary": "[已执行操作摘要]\n  #1 recall(q=x) → ok",
-            })
-            assert reviewer._task is not None
-            await reviewer._task
+            spec = HookRegistry.get(_HOOK_NAME)
+            assert spec is not None
+            assert spec.event == "after_reply"
+            assert spec.context is HookContextMode.TRANSCRIPT
+            assert spec.tool_tags == ("skills",)
+
+            ctx = HookContext(
+                name=spec.name, event="after_reply", scope="user_q:1",
+                payload={"error": False, "execution_summary": "[已执行操作摘要]\n  #1 recall(q=x) → ok"},
+                messages=[
+                    {"role": "system", "content": "人设"},
+                    {"role": "user", "content": "[uid:1] 帮我查 recall 用法"},
+                    {"role": "assistant", "content": "", "tool_calls": []},
+                    {"role": "tool", "tool_call_id": "c1", "content": "recall(q=x) → ok"},
+                ],
+            )
+            out = await spec.handler(ctx)
             mind.reflect.assert_awaited_once()
-            prompt = mind.reflect.await_args.args[0][0]["content"]
-            assert "recall(q=x)" in prompt
+            base_messages = mind.reflect.await_args.args[0]
+            # transcript 快照在前、评审指令以 user 角色追加在尾部
+            assert base_messages[0]["content"] == "人设"
+            assert base_messages[-1]["role"] == "user"
+            assert "技能评审员" in base_messages[-1]["content"]
+            assert out == "沉淀了一个技能"
         finally:
             reviewer.stop()
+            assert HookRegistry.get(_HOOK_NAME) is None
 
-    async def test_skips_when_summary_missing(self, store: SkillStore, monkeypatch) -> None:
-        from unittest.mock import AsyncMock
+    async def test_when_gate_requires_transcript_messages(self, store: SkillStore, monkeypatch) -> None:
+        from agent.hooks_llm import HookRegistry
+        from agent.skills.background_review import _HOOK_NAME, SkillReviewer
 
-        from agent.skills.background_review import SkillReviewer
-        from core.event_bus import EVENT_AFTER_REPLY, event_bus
-
-        mind = SimpleNamespace(reflect=AsyncMock(return_value=""), pfc=SimpleNamespace(temporary=[]))
+        mind = SimpleNamespace()
         reviewer = SkillReviewer(mind, store)
         monkeypatch.setattr(SkillReviewer, "_enabled", staticmethod(lambda: True))
         reviewer.start()
         try:
-            await event_bus.emit(EVENT_AFTER_REPLY, {
-                "error": False,
-                "iterations": 1,
-                "execution_summary": "",
-            })
-            assert reviewer._task is None
-            mind.reflect.assert_not_awaited()
+            spec = HookRegistry.get(_HOOK_NAME)
+            assert spec is not None and spec.when is not None
+            # error / 无快照 / 快照过薄 → 门控不触发
+            assert spec.when({"error": True, "messages": [{"role": "user", "content": "x"}] * 3}) is False
+            assert spec.when({"error": False, "messages": []}) is False
+            assert spec.when({"error": False, "messages": [{"role": "user", "content": "x"}]}) is False
+            assert spec.when({"error": False, "messages": [
+                {"role": "user", "content": "a"}, {"role": "assistant", "content": "b"},
+            ]}) is True
         finally:
             reviewer.stop()

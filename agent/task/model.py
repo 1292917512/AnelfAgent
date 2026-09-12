@@ -174,6 +174,11 @@ class TaskDefinition(BaseModel):
     """初始 heartbeat/idle 调度的拍数（与 schedule_mode 配套）。"""
     schedule_times: List[str] = Field(default_factory=list)
     """初始 scheduled 调度的每日时间点（与 schedule_mode 配套）。"""
+    trigger_event: str = ""
+    """事件触发：生命周期事件名（after_reply/context_pressure/delegation_resolved，
+    空 = 不启用）。与四种时间调度正交——时间调度管"何时跑"，事件触发管
+    "发生了什么之后跑"；经 LLM 钩子面（agent/hooks_llm）并行拉起，不进
+    heartbeat.json 调度，复用引擎 _task_inflight 同任务去重。"""
     created_at: float = 0.0
     """创建时间（epoch 秒，0 = 未知；供执行期任务自检判断新旧）。"""
     updated_at: float = 0.0
@@ -215,6 +220,7 @@ class TaskDefinition(BaseModel):
             schedule_mode=str(data.get("mode", data.get("schedule_mode", "manual"))).strip().lower() or "manual",
             schedule_every_n_beats=max(1, int(data.get("every_n_beats", 10))),
             schedule_times=[str(t).strip() for t in data.get("schedule_times", []) if str(t).strip()],
+            trigger_event=str(data.get("trigger_event", "") or "").strip(),
             created_at=_to_float(data.get("created_at")),
             updated_at=_to_float(data.get("updated_at")),
         )
@@ -259,6 +265,8 @@ class TaskDefinition(BaseModel):
                 result["schedule_times"] = self.schedule_times
             else:
                 result["every_n_beats"] = self.schedule_every_n_beats
+        if self.trigger_event:
+            result["trigger_event"] = self.trigger_event
         return result
 
     def should_run_for_entity(self, has_entity: bool) -> bool:
