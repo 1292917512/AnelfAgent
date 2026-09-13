@@ -8,7 +8,7 @@
     "prebuild": "node scripts/module-links.mjs",
     "build": "tsc -b && vite build --outDir dist.next && node scripts/swap-dist.mjs",
     "preview": "vite preview",
-    "lint": "eslint src"
+    "lint": "cd ../.. && web/frontend/node_modules/.bin/eslint web/frontend/src \"entities/*/panel.tsx\" \"entities/*/panels/**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",

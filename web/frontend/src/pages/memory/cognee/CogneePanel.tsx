@@ -9,7 +9,7 @@ import { type FieldMeta } from "@/pages/config/AppField";
 import { ModelConfigCard } from "@/pages/memory/cognee/ModelConfigCard";
 import { RecallTester } from "@/pages/memory/RecallTester";
 import { memoryApi } from "@/lib/api";
-import { devopsApi } from "@/pages/entities/panels/devops/api";
+import { devopsApi } from "@entities/devops/panels/api";
 import { formatSize } from "@/lib/utils";
 import type { CogneeResolvedInfo, ConfigValues } from "@/lib/types";
 

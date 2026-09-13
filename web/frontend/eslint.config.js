@@ -8,7 +8,9 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["src/**/*.{ts,tsx}"],
+    // src 核心源码 + 实体面板源码（../../entities 下的 panel.tsx/panels/，
+    // 经 @entities 别名直引，与核心同规则同门禁）
+    files: ["src/**/*.{ts,tsx}", "../../entities/**/*.{ts,tsx}"],
     languageOptions: {
       globals: { ...globals.browser },
     },

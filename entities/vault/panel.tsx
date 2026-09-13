@@ -3,14 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ArrowLeftRight, KeyRound, Lock, ShieldCheck, Timer, Wand2 } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import { vaultApi } from "./vault/api";
-import type { VaultEntry } from "./vault/types";
-import { UnlockScreen } from "./vault/UnlockScreen";
-import { VaultList } from "./vault/VaultList";
-import { EntryForm } from "./vault/EntryForm";
-import { GeneratorPanel } from "./vault/GeneratorPanel";
-import { SecurityPanel } from "./vault/SecurityPanel";
-import { PortablePanel } from "./vault/PortablePanel";
+import { vaultApi } from "./panels/api";
+import type { VaultEntry } from "./panels/types";
+import { UnlockScreen } from "./panels/UnlockScreen";
+import { VaultList } from "./panels/VaultList";
+import { EntryForm } from "./panels/EntryForm";
+import { GeneratorPanel } from "./panels/GeneratorPanel";
+import { SecurityPanel } from "./panels/SecurityPanel";
+import { PortablePanel } from "./panels/PortablePanel";
 
 type VaultTab = "entries" | "generator" | "security" | "portable";
 

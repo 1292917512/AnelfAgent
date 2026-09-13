@@ -1,0 +1,79 @@
+{
+  "_registry": {
+    "groups": {
+      "smart_home": "Smart Home"
+    },
+    "configSections": {
+      "entity/smart_home": "Smart Home"
+    }
+  },
+  "loadFailed": "Failed to load smart home data (entity may be disabled or server needs a restart)",
+  "retry": "Retry",
+  "status": {
+    "connected": "Connected to {{name}} · {{count}} devices",
+    "disconnected": "{{name}} disconnected (reconnecting)",
+    "unconfigured": "Home Assistant connection not configured",
+    "unconfiguredHint": "Fill in smart_home_ha_url and smart_home_ha_token (long-lived access token) in the Config tab",
+    "refresh": "Refresh"
+  },
+  "preview": {
+    "title": "What the AI actually sees",
+    "refresh": "Refresh preview",
+    "empty": "No device state is being injected (disconnected or no available devices in enabled domains)"
+  },
+  "devices": {
+    "hint": "{{count}} devices, grouped by room (states pushed in real time over WebSocket)",
+    "empty": "No devices yet (none onboarded in Home Assistant)",
+    "emptyOffline": "Device overview and controls appear here once connected",
+    "ungrouped": "Ungrouped"
+  },
+  "device": {
+    "unavailable": "Unavailable"
+  },
+  "state": {
+    "on": "On",
+    "off": "Off",
+    "triggered": "Triggered",
+    "normal": "Normal"
+  },
+  "hvac": {
+    "off": "Off",
+    "cool": "Cool",
+    "heat": "Heat",
+    "heat_cool": "Auto",
+    "auto": "Auto",
+    "dry": "Dry",
+    "fan_only": "Fan"
+  },
+  "cover": {
+    "open": "Open",
+    "closed": "Closed",
+    "opening": "Opening",
+    "closing": "Closing",
+    "close": "Close"
+  },
+  "player": {
+    "playing": "Playing",
+    "paused": "Paused",
+    "idle": "Idle",
+    "off": "Off",
+    "on": "On"
+  },
+  "scene": {
+    "ready": "Ready",
+    "activate": "Activate"
+  },
+  "domains": {
+    "hint": "Device domains ({{count}}) — enabling controls context injection and device control for that domain",
+    "deviceCount": "{{available}}/{{total}} available",
+    "footerHint": "Domain toggles and settings are also available in the Config tab or the config center (entity/smart_home group); the AI can manage them via the smart_home_domains tool"
+  },
+  "config": {
+    "unsaved": "Unsaved changes",
+    "invalidNumber": "Please enter a valid number",
+    "saveFailed": "Failed to save config"
+  },
+  "messages": {
+    "controlFailed": "Control failed"
+  }
+}

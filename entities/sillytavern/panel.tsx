@@ -15,12 +15,12 @@ import {
 } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { PageContainer, PageHeader } from "@/components/common/PageContainer";
-import { OverviewPanel } from "./sillytavern/OverviewPanel";
-import { ChatPanel } from "./sillytavern/ChatPanel";
-import { CharactersPanel } from "./sillytavern/CharactersPanel";
-import { ModelPanel } from "./sillytavern/ModelPanel";
-import { GitPanel } from "./sillytavern/GitPanel";
-import { ConfigPanel } from "./sillytavern/ConfigPanel";
+import { OverviewPanel } from "./panels/OverviewPanel";
+import { ChatPanel } from "./panels/ChatPanel";
+import { CharactersPanel } from "./panels/CharactersPanel";
+import { ModelPanel } from "./panels/ModelPanel";
+import { GitPanel } from "./panels/GitPanel";
+import { ConfigPanel } from "./panels/ConfigPanel";
 type StTab = "overview" | "chat" | "characters" | "model" | "git" | "config";
 
 const TABS: TabItem<StTab>[] = [

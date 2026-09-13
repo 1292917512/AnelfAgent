@@ -4,13 +4,13 @@ import {
   AudioLines, Clock3, FolderClock, Inbox, LayoutDashboard, Search, Settings, Users,
 } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import { OverviewPanel } from "./voiceprint/OverviewPanel";
-import { SpeakersPanel } from "./voiceprint/SpeakersPanel";
-import { RecordingsPanel } from "./voiceprint/RecordingsPanel";
-import { TimelinePanel } from "./voiceprint/TimelinePanel";
-import { TranscriptsPanel } from "./voiceprint/TranscriptsPanel";
-import { IngestPanel } from "./voiceprint/IngestPanel";
-import { SettingsPanel } from "./voiceprint/SettingsPanel";
+import { OverviewPanel } from "./panels/OverviewPanel";
+import { SpeakersPanel } from "./panels/SpeakersPanel";
+import { RecordingsPanel } from "./panels/RecordingsPanel";
+import { TimelinePanel } from "./panels/TimelinePanel";
+import { TranscriptsPanel } from "./panels/TranscriptsPanel";
+import { IngestPanel } from "./panels/IngestPanel";
+import { SettingsPanel } from "./panels/SettingsPanel";
 
 type VoiceprintTab =
   "overview" | "speakers" | "recordings" | "timeline" | "transcripts" | "ingest" | "settings";

@@ -1,1 +1,0 @@
-../../../../../../entities/sillytavern/panel.tsx

@@ -1,1 +1,0 @@
-../../../../../../entities/ai_desktop/panel.tsx

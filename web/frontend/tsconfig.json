@@ -19,8 +19,10 @@
     "noUncheckedIndexedAccess": true,
     "baseUrl": ".",
     "preserveSymlinks": true,
+    "resolveJsonModule": true,
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@entities/*": ["../../entities/*"]
     }
   },
   "include": ["src"]

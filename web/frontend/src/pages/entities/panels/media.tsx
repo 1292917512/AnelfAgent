@@ -1,1 +1,0 @@
-../../../../../../entities/media/panel.tsx

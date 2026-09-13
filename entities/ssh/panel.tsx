@@ -2,10 +2,10 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Network, SquareTerminal } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import type { SshConnection } from "./ssh/types";
-import { ConnectionsPanel } from "./ssh/ConnectionsPanel";
-import { ConnectionForm } from "./ssh/ConnectionForm";
-import { ExecPanel } from "./ssh/ExecPanel";
+import type { SshConnection } from "./panels/types";
+import { ConnectionsPanel } from "./panels/ConnectionsPanel";
+import { ConnectionForm } from "./panels/ConnectionForm";
+import { ExecPanel } from "./panels/ExecPanel";
 
 type SshTab = "connections" | "exec";
 

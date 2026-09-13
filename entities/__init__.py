@@ -10,7 +10,7 @@
 实体自治规范（Entity Autonomy）：
 - ``entities/<name>/router.py:build_router()`` → 自动挂载到 ``/api/entity/<name>``
 - ``entities/<name>/__init__.py:register_lifecycle()`` → bootstrap 自动调用
-- ``entities/<name>/panel.tsx`` → 前端 entity-panels 自动发现（scripts/link_entity_panels.py）
+- ``entities/<name>/panel.tsx`` → 前端代码生成接入（web/frontend/scripts/module-links.mjs 扫描生成 src/generated 接入表，@entities 别名直引）
 """
 
 from __future__ import annotations

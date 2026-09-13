@@ -117,6 +117,9 @@ channels/**/channel_config.json
 # === Frontend build ===
 web/frontend/dist/
 web/frontend/node_modules/
+# 模块源码的 node 模块解析桥（module-links.mjs 自愈软链 → web/frontend/node_modules）
+entities/node_modules
+channels/node_modules
 
 # === Build & packaging ===
 /build/

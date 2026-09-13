@@ -9,11 +9,11 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppWindow, Cpu, Link2, Play, Share2 } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import { StatusTab } from "./dify/StatusTab";
-import { AppsTab } from "./dify/AppsTab";
-import { RunTab } from "./dify/RunTab";
-import { ModelsTab } from "./dify/ModelsTab";
-import { McpTab } from "./dify/McpTab";
+import { StatusTab } from "./panels/StatusTab";
+import { AppsTab } from "./panels/AppsTab";
+import { RunTab } from "./panels/RunTab";
+import { ModelsTab } from "./panels/ModelsTab";
+import { McpTab } from "./panels/McpTab";
 
 type DifyTab = "status" | "apps" | "run" | "models" | "mcp";
 

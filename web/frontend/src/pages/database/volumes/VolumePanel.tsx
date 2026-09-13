@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { volumeApi } from "@/lib/api";
-import { devopsApi } from "@/pages/entities/panels/devops/api";
+import { devopsApi } from "@entities/devops/panels/api";
 import { LoadingBlock, toast } from "@/components/ui";
 import { AlertTriangle, Layers, RotateCw } from "lucide-react";
 import { VolumeCard } from "./VolumeCard";

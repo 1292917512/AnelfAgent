@@ -1,1 +1,0 @@
-../../../../../../entities/dify/panel.tsx

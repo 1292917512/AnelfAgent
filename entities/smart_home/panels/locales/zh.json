@@ -1,0 +1,79 @@
+{
+  "_registry": {
+    "groups": {
+      "smart_home": "智能家居"
+    },
+    "configSections": {
+      "entity/smart_home": "智能家居"
+    }
+  },
+  "loadFailed": "智能家居数据加载失败（实体可能未启用或服务未重启）",
+  "retry": "重试",
+  "status": {
+    "connected": "已连接 {{name}} · {{count}} 台设备",
+    "disconnected": "{{name}} 连接中断（自动重连中）",
+    "unconfigured": "尚未配置 Home Assistant 连接",
+    "unconfiguredHint": "请在「配置」页签填写 smart_home_ha_url 与 smart_home_ha_token（长期访问令牌）",
+    "refresh": "刷新"
+  },
+  "preview": {
+    "title": "AI 实际看到的注入内容",
+    "refresh": "刷新预览",
+    "empty": "当前没有可用的设备状态注入（未连接或全部设备域无可用设备）"
+  },
+  "devices": {
+    "hint": "共 {{count}} 台设备，按房间分组（状态经 WebSocket 实时推送）",
+    "empty": "暂无设备（Home Assistant 中尚未接入设备）",
+    "emptyOffline": "连接成功后此处展示设备总览与控制",
+    "ungrouped": "未分组"
+  },
+  "device": {
+    "unavailable": "不可用"
+  },
+  "state": {
+    "on": "开",
+    "off": "关",
+    "triggered": "触发",
+    "normal": "正常"
+  },
+  "hvac": {
+    "off": "关",
+    "cool": "制冷",
+    "heat": "制热",
+    "heat_cool": "温控",
+    "auto": "自动",
+    "dry": "除湿",
+    "fan_only": "送风"
+  },
+  "cover": {
+    "open": "开",
+    "closed": "关",
+    "opening": "正在开",
+    "closing": "正在关",
+    "close": "关"
+  },
+  "player": {
+    "playing": "播放中",
+    "paused": "已暂停",
+    "idle": "待机",
+    "off": "关",
+    "on": "开"
+  },
+  "scene": {
+    "ready": "待激活",
+    "activate": "激活"
+  },
+  "domains": {
+    "hint": "设备域组件（共 {{count}} 个）——启停决定该域设备是否注入上下文与允许控制",
+    "deviceCount": "{{available}}/{{total}} 台可用",
+    "footerHint": "设备域的启停与配置也可在「配置」页签或配置中心（entity/smart_home 组）中修改，AI 亦可经 smart_home_domains 工具管理"
+  },
+  "config": {
+    "unsaved": "有未保存的修改",
+    "invalidNumber": "请输入合法数字",
+    "saveFailed": "配置保存失败"
+  },
+  "messages": {
+    "controlFailed": "控制失败"
+  }
+}

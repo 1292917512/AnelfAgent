@@ -1,7 +1,7 @@
 /**
  * devops 实体自定义面板 — 服务控制与项目更新。
  *
- * 通过 scripts/link_entity_panels.py 软链接到前端 panels 目录，
+ * 经 module-links.mjs 代码生成接入（@entities 别名直引实体目录），
  * Vite import.meta.glob 自动发现并懒加载。
  * 与 AI 运维工具共用同一实现（/api/entity/devops → entities/devops/service.py）。
  */
@@ -9,8 +9,8 @@ import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { GitBranch, Hammer, RefreshCw, Rocket } from "lucide-react";
-import { devopsApi } from "./devops/api";
-import type { DevopsActionResult } from "./devops/types";
+import { devopsApi } from "./panels/api";
+import type { DevopsActionResult } from "./panels/types";
 import { Card } from "@/components/common/Card";
 import { Button } from "@/components/ui";
 

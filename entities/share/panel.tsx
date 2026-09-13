@@ -2,10 +2,10 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
 import { Activity, Link2, Plus, ScrollText } from "lucide-react";
-import { OverviewPanel } from "./share/OverviewPanel";
-import { LinksPanel } from "./share/LinksPanel";
-import { CreateDialog } from "./share/CreateDialog";
-import { LogsPanel } from "./share/LogsPanel";
+import { OverviewPanel } from "./panels/OverviewPanel";
+import { LinksPanel } from "./panels/LinksPanel";
+import { CreateDialog } from "./panels/CreateDialog";
+import { LogsPanel } from "./panels/LogsPanel";
 
 type ShareTab = "overview" | "links" | "create" | "logs";
 

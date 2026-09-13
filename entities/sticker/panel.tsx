@@ -2,13 +2,13 @@
  * sticker 实体自定义面板 — 表情包统计与配置指引（实体详情页 tab）。
  *
  * 完整的表情包库管理在「数据管理」页（复用 panels/library 组件群），
- * 本面板只呈现轻量统计；经 scripts/link_entity_panels.py 软链接到前端
+ * 本面板只呈现轻量统计；经 module-links.mjs 代码生成接入前端
  * panels 目录，i18n 由 entity-plugin-locales 启动时注册（ns: sticker）。
  */
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Card } from "@/components/common/Card";
-import { stickersApi } from "./sticker/api";
+import { stickersApi } from "./panels/api";
 
 export default function StickerPanel() {
   const { t } = useTranslation("sticker");

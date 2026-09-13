@@ -17,9 +17,9 @@ import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
 import { Button, LoadingBlock } from "@/components/ui";
 import { toast } from "@/stores/toast-store";
-import { aiDesktopApi } from "./ai_desktop/api";
-import { ModuleCard } from "./ai_desktop/ModuleCard";
-import type { DesktopModuleInfo } from "./ai_desktop/types";
+import { aiDesktopApi } from "./panels/api";
+import { ModuleCard } from "./panels/ModuleCard";
+import type { DesktopModuleInfo } from "./panels/types";
 
 export default function AiDesktopPanel() {
   const { t } = useTranslation("ai_desktop");

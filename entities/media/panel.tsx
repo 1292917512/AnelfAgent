@@ -1,16 +1,16 @@
 /**
  * 媒体库实体自定义面板 — provider 优先级、音色与默认参数、风格预设。
  *
- * 通过 scripts/link_entity_panels.py 软链接到前端 panels 目录，
+ * 经 module-links.mjs 代码生成接入（@entities 别名直引实体目录），
  * Vite import.meta.glob 自动发现并懒加载。
  */
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowUpDown, Palette, SlidersHorizontal } from "lucide-react";
 import { TabBar, type TabItem } from "@/components/common/TabBar";
-import { PriorityPanel } from "./media/PriorityPanel";
-import { DefaultsPanel } from "./media/DefaultsPanel";
-import { StylesPanel } from "./media/StylesPanel";
+import { PriorityPanel } from "./panels/PriorityPanel";
+import { DefaultsPanel } from "./panels/DefaultsPanel";
+import { StylesPanel } from "./panels/StylesPanel";
 
 type MediaTab = "priority" | "defaults" | "styles";
 

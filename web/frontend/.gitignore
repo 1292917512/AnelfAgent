@@ -3,3 +3,5 @@ dist/
 dist.next/
 dist.old-*/
 .vite/
+# 实体面板接入表（scripts/module-links.mjs 代码生成，prebuild/dev 自动重写）
+src/generated/

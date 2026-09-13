@@ -2,9 +2,10 @@
  * 实体面板 locale 的启动时注册 — 面板组件懒加载，但工具页分组名 /
  * 配置中心分组名等全局词汇必须在首帧前就绪。
  *
- * 由 i18n 初始化完成后调用一次（src/i18n/index.ts），import.meta.glob eager
- * 收集 panels/<name>/locales/{zh,en}.json（JSON 体积极小，静态打入主 chunk；
- * 无面板的实体也可只放 locales 目录自持翻译）：
+ * 由 i18n 初始化完成后调用一次（src/i18n/index.ts），消费
+ * src/generated/entity-panel-locales.ts（scripts/module-links.mjs 扫描
+ * entities/<name>/panels/locales/{zh,en}.json 生成的 eager 表；JSON 体积
+ * 极小，静态打入主 chunk；无面板的实体也可只放 locales 目录自持翻译）：
  *
  * 1. 整包（剥除保留键 _registry）注册进实体命名空间 <name>——面板打开前
  *    文案已就绪，panel.tsx 无需再自行 registerPluginI18n；
@@ -17,6 +18,7 @@
  *    实体翻译自持于模块目录，热拔出零残留，核心 locale 不写实体条目。
  */
 import { registerPluginI18n } from "./plugin-i18n";
+import { panelLocales } from "../generated/entity-panel-locales";
 
 /** locale 文件保留键：需合入核心命名空间的全局词汇（显式键 → 展示名） */
 interface RegistryMeta {
@@ -29,11 +31,6 @@ interface RegistryMeta {
 type LocaleBundle = Record<string, unknown> & { _registry?: RegistryMeta };
 type Lang = "zh" | "en";
 
-const localeModules = import.meta.glob<{ default: LocaleBundle }>(
-  "../pages/entities/panels/*/locales/*.json",
-  { eager: true },
-);
-
 interface Collected {
   bundles: Partial<Record<Lang, Record<string, unknown>>>;
   metas: Partial<Record<Lang, RegistryMeta>>;
@@ -42,14 +39,10 @@ interface Collected {
 /** 注册全部实体面板的 locale（i18n 初始化完成后调用一次） */
 export function registerEntityPluginLocales(): void {
   const collected = new Map<string, Collected>();
-  for (const [path, mod] of Object.entries(localeModules)) {
-    const match = path.match(/\/panels\/([^/]+)\/locales\/(zh|en)\.json$/);
-    const name = match?.[1];
-    const lang = match?.[2] as Lang | undefined;
-    if (!name || !lang) continue;
+  for (const { name, lang, bundle } of panelLocales) {
     const entry = collected.get(name) ?? { bundles: {}, metas: {} };
-    const { _registry, ...bundle } = mod.default;
-    entry.bundles[lang] = bundle;
+    const { _registry, ...rest } = bundle as LocaleBundle;
+    entry.bundles[lang] = rest;
     entry.metas[lang] = _registry ?? {};
     collected.set(name, entry);
   }

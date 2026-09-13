@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { volumeApi } from "@/lib/api";
-import { devopsApi } from "@/pages/entities/panels/devops/api";
+import { devopsApi } from "@entities/devops/panels/api";
 import type { VolumeInfo } from "@/lib/types";
 import { Badge, Button, toast } from "@/components/ui";
 import {
