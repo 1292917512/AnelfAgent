@@ -16,8 +16,9 @@ _TOMORROW = _TODAY + timedelta(days=1)
 
 
 @pytest.fixture(autouse=True)
-def _clean_store():
-    """每个用例前后清空日历存储（conftest 已隔离 config 目录到 tmp_path）。"""
+def _clean_store(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """配置目录重定向到用例临时目录并清空日历存储（xdist 多进程共享仓库 config/ 目录，直写真实文件会互踩）。"""
+    monkeypatch.setenv("ANELF_CONFIG_DIR", str(tmp_path))
     store.save_events([])
     yield
     store.save_events([])
