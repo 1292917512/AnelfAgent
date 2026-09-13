@@ -216,7 +216,16 @@ class TestKimiMissingFields:
 class TestResetFormat:
     """重置时间统一 MM-DD HH:MM 完整格式。"""
 
-    def test_format_window_full_datetime(self) -> None:
+    @pytest.fixture
+    def _shanghai_tz(self, monkeypatch: pytest.MonkeyPatch):
+        """钉死本地时区（渲染走 datetime.fromtimestamp 本地时区，保证任何机器可复现）。"""
+        monkeypatch.setenv("TZ", "Asia/Shanghai")
+        time.tzset()
+        yield
+        monkeypatch.undo()
+        time.tzset()
+
+    def test_format_window_full_datetime(self, _shanghai_tz) -> None:
         window = {"label": "每5小时", "limit": 100.0, "remaining": 87.0,
                   "reset_at": 1789058279.0}
         assert SubscriptionModule._format_window(window) == \

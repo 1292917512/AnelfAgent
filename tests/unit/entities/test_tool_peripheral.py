@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 
 # 触发目标实体模块导入（@tool 装饰器在导入时注册）
 import entities.devops.tools  # noqa: F401
@@ -23,13 +24,18 @@ _READONLY_TOOLS = [
     "repo_docs", "get_entity_config",
 ]
 
+# 条件注册工具（entities/system/tools.py 仅在 git 命令可用时注册 git 工具组），
+# 无 git 环境下不属于注册缺口
+_GIT_CONDITIONAL = {"get_git_config"} if not shutil.which("git") else set()
+
 
 class TestRegistryDeclarations:
     def test_readonly_tools_marked_concurrency_safe(self) -> None:
         """只读工具必须标 concurrency_safe——否则与写工具同轮混发时被切进串行批，并行机会流失。"""
         missing = [
             name for name in _READONLY_TOOLS
-            if not (EntityRegistry.get(name) and EntityRegistry.get(name).meta.get("concurrency_safe"))
+            if name not in _GIT_CONDITIONAL
+            and not (EntityRegistry.get(name) and EntityRegistry.get(name).meta.get("concurrency_safe"))
         ]
         assert missing == []
 
