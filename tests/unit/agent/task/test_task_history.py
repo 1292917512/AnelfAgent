@@ -1,4 +1,4 @@
-"""任务执行历史单元测试：存储读写 / 上限裁剪 / 摘要 / 清理 / 执行器终态记录。"""
+"""任务执行历史单元测试：存储读写 / 上限裁剪 / 摘要 / 清理 / 执行器终态记录 / 调度事实源。"""
 
 from __future__ import annotations
 
@@ -97,6 +97,30 @@ class TestHistoryStore:
         _record("t7", 42.0)
         raw = json.loads((tmp_path / "task_history.json").read_text("utf-8"))
         assert raw["t7"][0]["started_at"] == 42.0
+
+
+class TestLastGoodRuns:
+    """调度槽位去重的事实源：只认 success/no_output，返回最近一次非失败的时间戳。"""
+
+    def test_good_statuses_counted_error_skipped(self) -> None:
+        _record("a", 100.0, status="success")
+        _record("b", 200.0, status="error")
+        _record("c", 300.0, status="no_output")
+
+        runs = task_history.get_last_good_runs()
+        assert runs["a"] == 100.0
+        assert "b" not in runs  # 只有失败记录 = 未成功跑过（保留重试语义）
+        assert runs["c"] == 300.0
+
+    def test_later_error_does_not_hide_earlier_good(self) -> None:
+        """成功后的失败重试不抹掉"已跑过"事实。"""
+        _record("a", 100.0, status="success")
+        _record("a", 200.0, status="error")
+
+        assert task_history.get_last_good_runs()["a"] == 100.0
+
+    def test_empty_history(self) -> None:
+        assert task_history.get_last_good_runs() == {}
 
 
 def _fake_mind(reflect_return: str = "", reflect_exc: Exception | None = None) -> SimpleNamespace:

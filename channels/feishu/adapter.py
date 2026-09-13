@@ -11,6 +11,7 @@ import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from typing import Any, ClassVar, Dict, Optional, Set
 
 import lark_oapi as lark
@@ -66,7 +67,7 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
         self._stop_event: Optional[asyncio.Event] = None
         self._start_error: str = ""
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._known_chats: Dict[str, Dict[str, Any]] = {}
+        self._known_chats: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         # 发送者昵称缓存（contact API，权限缺失自动降级）
         self._user_names = UserNameCache()
         # Webhook 模式的 aiohttp runner
@@ -135,6 +136,10 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             log("飞书 App ID / App Secret 未配置，频道无法启动", "WARNING")
             self._status = ChannelStatus.ERROR
             return
+
+        # 恢复持久化的已知会话注册表（scope 归一与群/私分类的事实源）
+        from .state import load_known_chats
+        self._known_chats.update(load_known_chats())
 
         domain_str: str = self.config.domain
         domain = lark.FEISHU_DOMAIN if domain_str == "feishu" else lark.LARK_DOMAIN
@@ -207,13 +212,66 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
     # 消息处理器装配（WS / Webhook 共用）
     # ------------------------------------------------------------------
 
-    def _on_chat_seen(self, chat_id: str, chat_type: str) -> None:
-        """入站消息时登记已知会话（list_known_chats 数据源，保留已查到的名称）。"""
+    def _record_known_chat(
+        self, chat_id: str, chat_type: str = "", name: str = "", sender_open_id: str = ""
+    ) -> None:
+        """登记已知会话（LRU + 变更即持久化）。
+
+        p2p 会话记录对端 open_id：规范会话 scope 为
+        ``user_feishu:{open_id}#{chat_id}``，scope 归一钩子依赖该映射。
+        """
         known = self._known_chats.get(chat_id)
+        changed = False
         if known is None:
-            self._known_chats[chat_id] = {"chat_id": chat_id, "name": "", "type": chat_type}
-        elif not known.get("type"):
+            known = {"chat_id": chat_id, "name": "", "type": ""}
+            self._known_chats[chat_id] = known
+            changed = True
+        else:
+            self._known_chats.move_to_end(chat_id)
+        if chat_type and known.get("type") != chat_type:
             known["type"] = chat_type
+            changed = True
+        if name and known.get("name") != name:
+            known["name"] = name
+            changed = True
+        if chat_type == "p2p" and sender_open_id and known.get("peer_open_id") != sender_open_id:
+            known["peer_open_id"] = sender_open_id
+            changed = True
+        if changed:
+            from .state import save_known_chats
+            save_known_chats(self._known_chats)
+
+    def _on_chat_seen(self, chat_id: str, chat_type: str, sender_open_id: str = "") -> None:
+        """入站消息时登记已知会话（list_known_chats / scope 归一数据源）。"""
+        self._record_known_chat(chat_id, chat_type, sender_open_id=sender_open_id)
+
+    def is_known_group(self, target_id: str) -> bool:
+        """目标是否为已知群聊（resolve_channel_type 的重启后兜底判据）。"""
+        return self._known_chats.get(target_id, {}).get("type") == "group"
+
+    def conversation_scope_for_target(
+        self, target_id: str, channel_type: str
+    ) -> Optional[tuple[str, str]]:
+        """把发送目标归一到规范会话 scope（与入站消息同键）。
+
+        飞书私聊的发送目标是 chat_id 或对方 open_id，而入站会话 scope 为
+        ``user_feishu:{open_id}#{chat_id}``；不做归一时 AI 主动发送的
+        assistant 记录会写到 ``user_feishu:{chat_id}``，把同一会话的历史
+        撕裂成两个 scope（AI 看不到自己说过什么，反复重发）。
+        """
+        if channel_type == "group":
+            return None
+        known = self._known_chats.get(target_id)
+        if known is not None and known.get("type") != "group":
+            peer = known.get("peer_open_id") or ""
+            if peer:
+                return "user", f"feishu:{peer}#{target_id}"
+            return None
+        if target_id.startswith("ou_"):
+            for chat_id, info in self._known_chats.items():
+                if info.get("peer_open_id") == target_id:
+                    return "user", f"feishu:{target_id}#{chat_id}"
+        return None
 
     async def _resolve_name(self, open_id: str) -> str:
         """解析用户昵称（client 未就绪或权限缺失时返回空串）。"""
@@ -618,12 +676,9 @@ class FeishuChannel(BaseChannel[FeishuConfig]):
             from . import send as feishu_send
             result = await feishu_send.get_chat_info(self._client, chat_id)
             # 记录已知会话
-            name = result.get("name", "")
-            self._known_chats[chat_id] = {
-                "chat_id": chat_id,
-                "name": name,
-                "type": result.get("chat_type", ""),
-            }
+            self._record_known_chat(
+                chat_id, result.get("chat_type", ""), name=result.get("name", "")
+            )
             return _ok(result)
         except Exception as exc:
             return to_error_json(exc, "查询群信息")

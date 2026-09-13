@@ -4,8 +4,11 @@
 不放 config/tasks/ —— 那里的 *.json 会被任务注册表当作定义文件扫描）。
 
 写入方唯一：TaskExecutor.run 的各终态路径（tick 调度与手动触发共用该汇聚点），
-记录失败仅记日志，绝不影响任务执行主流程；读取方为 Web（services.task）与
-AI（list_tasks 概览 / task_history 明细），均为只读消费。
+记录失败仅记日志，绝不影响任务执行主流程；读取方为心跳调度（"今日已跑"判据）、
+Web（services.task）与 AI（list_tasks 概览 / task_history 明细），均为只读消费。
+
+本模块同时是调度去重的事实源：记录在任务终态即原子落盘，先于任何调度侧记账，
+进程重启/崩溃/取消都不会丢失"已完成"这一事实。
 """
 
 from __future__ import annotations
@@ -25,6 +28,9 @@ STATUS_SUCCESS = "success"
 STATUS_NO_OUTPUT = "no_output"
 STATUS_ERROR = "error"
 _VALID_STATUSES = frozenset({STATUS_SUCCESS, STATUS_NO_OUTPUT, STATUS_ERROR})
+
+# 非失败状态集合：调度的"今日已跑"判据只认这些（error 保留重试语义，at-least-once）
+_GOOD_STATUSES = frozenset({STATUS_SUCCESS, STATUS_NO_OUTPUT})
 
 # 触发来源词汇（心跳调度三种模式 + 手动）
 VALID_TRIGGERS = frozenset({"heartbeat", "scheduled", "idle", "manual"})
@@ -127,6 +133,27 @@ def get_history(task_name: str) -> List[Dict[str, Any]]:
         records = list(_load_all().get(task_name, []))
     records.reverse()
     return records
+
+
+def get_last_good_runs() -> Dict[str, float]:
+    """各任务最近一次非失败执行（success/no_output）的开始时间戳（秒）。
+
+    心跳调度判定"槽位是否已跑"的唯一事实源：执行历史在任务终态即原子
+    落盘，重启/崩溃/取消不丢"已完成"事实；error 记录不计（失败保留重试
+    语义）。记录数受上限裁剪，取的是"最近一次非失败"，与其后是否有失败
+    重试无关。无记录的任务不在返回中（调用方按 0 处理）。
+    """
+    with _LOCK:
+        data = _load_all()
+    runs: Dict[str, float] = {}
+    for name, records in data.items():
+        for record in reversed(records):
+            if record.get("status") in _GOOD_STATUSES:
+                started_at = float(record.get("started_at") or 0.0)
+                if started_at > 0:
+                    runs[name] = started_at
+                break
+    return runs
 
 
 def get_summary() -> Dict[str, Dict[str, Any]]:

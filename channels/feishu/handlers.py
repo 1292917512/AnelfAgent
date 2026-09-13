@@ -54,7 +54,7 @@ def _is_duplicate(message_id: str) -> bool:
 
 OnMessageCallback = Callable[[AdapterMessage], Awaitable[None]]
 NameResolver = Callable[[str], Awaitable[str]]
-ChatSeenCallback = Callable[[str, str], None]
+ChatSeenCallback = Callable[[str, str, str], None]
 
 
 def build_message_handler(
@@ -149,9 +149,9 @@ async def _handle_message_event(
     chat_type = message.chat_type or "p2p"
     parent_id = message.parent_id or ""
 
-    # 登记已知会话（list_known_chats 数据源）
+    # 登记已知会话（list_known_chats / scope 归一数据源，p2p 需记录对端 open_id）
     if chat_id and on_chat_seen:
-        on_chat_seen(chat_id, chat_type)
+        on_chat_seen(chat_id, chat_type, sender_open_id)
 
     # 引用消息原文预览（随 [reply_to:xxx] 标签注入，AI 可看到被回复内容摘要）
     reply_content = ""

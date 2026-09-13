@@ -18,7 +18,6 @@ export interface TaskSchedule {
   every_n_beats?: number;
   beat_count?: number;
   schedule_times?: string[];
-  last_run_date?: string;
   model_id?: string;
   reasoning_effort?: ReasoningEffort | "";
 }

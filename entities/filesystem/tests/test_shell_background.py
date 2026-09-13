@@ -118,7 +118,8 @@ class TestLaunchBackground:
         """scope 穿透：后台任务登记到归属会话（委托链父会话优先），
         完成通知才能路由回发起会话。"""
         monkeypatch.setattr(shell_background, "get_owner_scope", lambda: "user_test:1")
-        shell_background.launch_background("echo scoped", str(workspace), str(workspace))
+        # 命令需存活到断言之后：瞬时命令在快机器上可能先完成、任务已从 running 移出
+        shell_background.launch_background("sleep 0.5; echo scoped", str(workspace), str(workspace))
         assert len(registry.running("user_test:1")) == 1
         assert registry.running("_global") == []
 

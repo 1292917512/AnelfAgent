@@ -609,11 +609,17 @@ async def _create_message(
     msg_type: str,
     content: str,
 ) -> Dict[str, Any]:
-    """创建消息（底层封装）。"""
+    """创建消息（底层封装）。
+
+    receive_id_type 按目标 id 形态自动选择：``ou_`` 前缀为用户 open_id
+    （私聊回复路径以 uid 为目标），其余按 chat_id；给 open_id 发消息会
+    落到 Bot 与该用户的 p2p 会话，与 chat_id 直达是同一会话。
+    """
+    receive_id_type = "open_id" if chat_id.startswith("ou_") else "chat_id"
 
     def _do() -> Dict[str, Any]:
         req = CreateMessageRequest.builder() \
-            .receive_id_type("chat_id") \
+            .receive_id_type(receive_id_type) \
             .request_body(
                 CreateMessageRequestBody.builder()
                 .receive_id(chat_id)

@@ -133,8 +133,17 @@ class TestHandleMessageEvent:
     def test_chat_seen_recorded(self) -> None:
         seen: List[tuple] = []
         data = _make_event(f"m10_{time.time_ns()}", chat_id="oc_new", chat_type="group")
-        asyncio.run(_dispatch(data, on_chat_seen=lambda cid, ct: seen.append((cid, ct))))  # type: ignore[misc]
-        assert seen == [("oc_new", "group")]
+        asyncio.run(_dispatch(data, on_chat_seen=lambda cid, ct, sid: seen.append((cid, ct, sid))))  # type: ignore[misc]
+        assert seen == [("oc_new", "group", "ou_user1")]
+
+    def test_chat_seen_carries_p2p_peer(self) -> None:
+        """p2p 入站消息登记已知会话时必须携带对端 open_id（scope 归一映射源）。"""
+        seen: List[tuple] = []
+        data = _make_event(
+            f"m10b_{time.time_ns()}", chat_id="oc_p2p1", chat_type="p2p", sender_open_id="ou_peer1",
+        )
+        asyncio.run(_dispatch(data, on_chat_seen=lambda cid, ct, sid: seen.append((cid, ct, sid))))  # type: ignore[misc]
+        assert seen == [("oc_p2p1", "p2p", "ou_peer1")]
 
     def test_post_at_replaced_by_name(self) -> None:
         raw = json.dumps({"zh_cn": {"content": [[

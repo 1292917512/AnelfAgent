@@ -244,6 +244,20 @@ tick() 单次心跳：
 四种触发模式：heartbeat（每 N 次心跳）/ scheduled（每天指定时间）/
 idle（连续 N 次心跳无思考活动后，全局仅一条）/ manual（仅手动）。
 
+**scheduled 槽位去重以执行历史为唯一事实源**：调度配置只存定义与节拍计数，
+不记 last_run 标记——`task_history.get_last_good_runs()`（终态即原子落盘，
+success/no_output 计入、error 保留重试）给出各任务最近一次非失败执行时间戳，
+调度重绑、执行期 reload 换配置对象、进程重启/取消都不再导致重复追跑
+（2026-09 两轮事故根因：标记混存于调度对象，set_task_schedule 重建条目与
+tick 缓存引用都会把它抹掉）。判定采用 occurrence 锚点语义（对齐 dsh
+resolveEveryOccurrence）：每个调度时刻取最近一个已到期 occurrence（今日已过点，
+或昨日深夜跨午夜窗口点）与上次执行时间戳比较——多时刻槽位逐点独立
+（09:00 跑过不抑制 21:30）、停机只补最近一次不枚举积压、跨午夜补跑不吞今日
+正当槽位。连续失败达上限的定时任务经 `_task_giveup_dates` 台账当日放弃、跨日
+自动恢复；`HeartbeatConfig.set_schedule` 重绑时继承同名条目 beat_count（定义
+调整不抹进度），tick 收尾按任务名现取条目复位计数（不写执行前缓存的引用），
+无调度任务的失败/放弃台账随 `_prune_stale_runtime_state` 对账清理。
+
 **idle 空闲调度**：计数维度是"距上次思考的连续空闲心跳数"——`mind.last_activity_ts`
 锚点（`reply()`/`reflect()` 入口刷新，覆盖对话/任务/子代理/反思，**含 idle 任务自身**；
 心跳元决策的 LLM 调用不经 reflect 故不计）。本 tick 无确定性到期任务时才评估触发，

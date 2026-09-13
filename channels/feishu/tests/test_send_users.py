@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 
-from channels.feishu.send import _serialize_history_message, _should_attach_reply, resolve_emoji_type
+from channels.feishu.send import (
+    _create_message,
+    _serialize_history_message,
+    _should_attach_reply,
+    resolve_emoji_type,
+)
 from channels.feishu.users import UserNameCache
 
 
@@ -20,6 +26,39 @@ def _fake_client(code: int = 0, name: str = "张三") -> Any:
     user_res = SimpleNamespace(get=lambda req: resp)
     v3 = SimpleNamespace(user=user_res)
     return SimpleNamespace(contact=SimpleNamespace(v3=v3))
+
+
+class TestCreateMessageReceiveIdType:
+    """receive_id_type 按目标 id 形态自动选择（ou_ → open_id，其余 → chat_id）。
+
+    回归背景：私聊回复路径以用户 open_id 为目标，硬编码 chat_id 会被
+    飞书 API 拒绝，轮末保底投递对私聊整体失效。
+    """
+
+    def _run(self, target: str) -> Any:
+        captured: dict = {}
+
+        def _create(req: Any) -> Any:
+            captured["receive_id_type"] = req.receive_id_type
+            captured["receive_id"] = req.request_body.receive_id
+            return SimpleNamespace(
+                code=0, msg="", success=lambda: True,
+                data=SimpleNamespace(message_id="om_x"),
+            )
+
+        client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(
+            message=SimpleNamespace(create=_create),
+        )))
+        asyncio.run(_create_message(client, target, "text", json.dumps({"text": "hi"})))
+        return captured
+
+    def test_open_id_target(self) -> None:
+        captured = self._run("ou_04b1d18f78b663214f05414d8d8c5e23")
+        assert captured["receive_id_type"] == "open_id"
+
+    def test_chat_id_target(self) -> None:
+        captured = self._run("oc_c6ea83980a39e44e6522ca588e9317df")
+        assert captured["receive_id_type"] == "chat_id"
 
 
 class TestUserNameCache:

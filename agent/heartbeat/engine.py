@@ -5,6 +5,11 @@
 2. 遍历 task_schedules 检查是否到达触发条件
 3. 持久化计数器
 
+"槽位已跑"判据不存于调度配置：执行历史（agent.task.history）在任务终态
+即原子落盘，是唯一事实源——调度重绑、reload 换配置对象、进程重启/取消
+都不会抹掉"已完成"，从结构上杜绝同日重复追跑。定时槽采用 occurrence
+锚点判定：每个调度时刻取最近一次到期点与上次执行时间戳比较。
+
 由 Mind 定时器周期性调用，不自行管理定时器。
 
 idle 空闲调度（ScheduleMode.IDLE）：计数维度是"距上次思考的连续空闲心跳数"
@@ -23,10 +28,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.memory.memory_types import MemoryEntry, MemoryType
+from agent.task import history as task_history
 from agent.task.executor import TaskExecutor
 from agent.task.executor import _clean_llm_output as _clean_llm
 from agent.task.model import TaskDefinition, TaskResult
@@ -110,6 +116,10 @@ class HeartbeatEngine:
         self._total_ticks: int = 0
         self._tick_lock = asyncio.Lock()
         self._task_failures: Dict[str, int] = {}
+        # 定时任务连续失败达上限后的"今日放弃"台账（任务名 → 放弃日期）：
+        # 替代旧的"放弃即标记今日已跑"写法——标记已不存于调度配置，
+        # 同日不再重试靠本台账，跨日自动恢复重试
+        self._task_giveup_dates: Dict[str, str] = {}
         self._analysis_attempts: Dict[tuple, int] = {}
         self._warned_missing_tasks: set[str] = set()
         # 同任务排队去重：正在执行/排队触发的任务名集合（tick 与手动触发共用，
@@ -124,6 +134,7 @@ class HeartbeatEngine:
         self._fold_activity_ts: Dict[str, int] = {}
         self._fold_idle_beats: Dict[str, int] = {}
         self._prune_orphan_schedules()
+        self._prune_stale_runtime_state()
         # 任务事件触发装配（带 trigger_event 的任务经 LLM 钩子面注册；reconcile 幂等）
         self._sync_event_triggers()
 
@@ -141,6 +152,17 @@ class HeartbeatEngine:
             self._warned_missing_tasks.discard(name)
         self.config.save()
         log(f"已清理 {len(orphans)} 个孤儿心跳调度: {orphans}", tag="心跳")
+
+    def _prune_stale_runtime_state(self) -> None:
+        """清理无对应调度的运行态台账（失败计数 / 放弃日期）。
+
+        调度已移除的任务不会再被选取，残留台账只会在同名调度重建时
+        误抑制首跑；随构造与 reload 对账，与孤儿调度清理同节奏。
+        """
+        scheduled = {s.task_name for s in self.config.task_schedules}
+        for ledger in (self._task_failures, self._task_giveup_dates):
+            for name in [n for n in ledger if n not in scheduled]:
+                ledger.pop(name, None)
 
     async def _disable_expired_tasks(self) -> None:
         """停用过期任务：超过 expires_at 的任务自动 enabled=false 并移除调度绑定。
@@ -183,6 +205,7 @@ class HeartbeatEngine:
         self.config = reload_heartbeat_config()
         self._seed_declared_schedules()
         self._prune_orphan_schedules()
+        self._prune_stale_runtime_state()
         self._sync_event_triggers()
         # 态势区块即时刷新：任务/调度 CRUD 走 reload 热更，不必等下个心跳拍
         try:
@@ -265,8 +288,12 @@ class HeartbeatEngine:
         pending_task: Optional[TaskDefinition] = None
         pending_schedule_idx: int = -1
         pending_extra_note: str = ""
-        # 计数器/标记脏标记：无 heartbeat/idle 模式调度且未执行任务时跳过落盘
+        # 计数器脏标记：无 heartbeat/idle 模式调度且未执行任务时跳过落盘
         dirty = False
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        # 各任务最近一次非失败执行时间戳（槽位去重事实源，首个 scheduled
+        # 调度评估时惰性加载一次，本 tick 内共用）
+        good_runs: Optional[Dict[str, float]] = None
 
         for idx, schedule in enumerate(self.config.task_schedules):
             task = self.task_registry.get(schedule.task_name)
@@ -296,7 +323,13 @@ class HeartbeatEngine:
                     pending_schedule_idx = idx
 
             elif schedule.mode == ScheduleMode.SCHEDULED:
-                if self._is_scheduled_now(schedule.schedule_times, schedule.last_run_date) and pending_task is None:
+                # 连续失败达上限的定时任务今日不再重试（跨日自动恢复）
+                if self._task_giveup_dates.get(schedule.task_name) == today_str:
+                    continue
+                if good_runs is None:
+                    good_runs = task_history.get_last_good_runs()
+                last_good_ts = good_runs.get(schedule.task_name, 0.0)
+                if self._is_scheduled_now(schedule.schedule_times, last_good_ts) and pending_task is None:
                     pending_task = task
                     pending_schedule_idx = idx
 
@@ -325,8 +358,9 @@ class HeartbeatEngine:
                     trigger=schedule.mode.value,
                 )
             except Exception as exc:
-                # at-least-once：执行失败不更新标记，下个 tick 重试；
-                # 连续失败超过上限则放弃本轮（避免故障任务卡死调度）
+                # at-least-once：执行失败不会产生非失败历史记录，下个 tick 自然
+                # 重试；连续失败达上限则放弃本轮（定时任务今日不再重试，计数类
+                # 任务复位计数下个周期重试），避免故障任务卡死调度
                 failures = self._task_failures.get(pending_task.name, 0) + 1
                 self._task_failures[pending_task.name] = failures
                 if entity is not None and failures < self._MAX_TASK_FAILURES:
@@ -341,30 +375,39 @@ class HeartbeatEngine:
                         log(f"画像分析重入队失败: {rq_exc}", "WARNING", tag="心跳")
                 if failures < self._MAX_TASK_FAILURES:
                     log(f"任务 [{pending_task.name}] 执行失败（第 {failures} 次），"
-                        f"保留标记待重试: {exc}", "WARNING", tag="心跳")
+                        f"保留下个 tick 重试: {exc}", "WARNING", tag="心跳")
                     if dirty:
                         self.config.save()
                     return executed
-                log(f"任务 [{pending_task.name}] 连续 {failures} 次失败，放弃本轮: {exc}",
-                    "ERROR", tag="心跳")
+                if schedule.mode == ScheduleMode.SCHEDULED:
+                    self._task_giveup_dates[pending_task.name] = today_str
+                log(
+                    f"任务 [{pending_task.name}] 连续 {failures} 次失败，放弃本轮: {exc}"
+                    + ("（今日不再重试）" if schedule.mode == ScheduleMode.SCHEDULED else ""),
+                    "ERROR", tag="心跳",
+                )
             else:
                 self._task_failures.pop(pending_task.name, None)
+                self._task_giveup_dates.pop(pending_task.name, None)
                 executed.append(pending_task.name)
             finally:
                 self._task_inflight.discard(pending_task.name)
 
-            # at-least-once：先执行任务，成功后才更新标记并原子落盘；
-            # 若执行中途崩溃，标记未更新，下次 tick 会重新触发
-            if schedule.mode == ScheduleMode.HEARTBEAT:
-                schedule.beat_count = 0
-            elif schedule.mode == ScheduleMode.SCHEDULED:
-                schedule.last_run_date = datetime.now().strftime("%Y-%m-%d")
-            elif schedule.mode == ScheduleMode.IDLE:
-                # 任务执行经 mind.reflect 已刷新思考活动 → 下次评估计数自然归零，
-                # 此处仅复位持久化计数并消费待反思标记
-                schedule.beat_count = 0
-                self._reflection_pending = ""
-            dirty = True
+            # 运行态复位（执行成功或放弃本轮）：按任务名从当前配置现取条目——
+            # 执行期间任务工具/Web 保存可能触发 reload 换掉 self.config，
+            # 用执行前缓存的引用会把复位写进孤儿对象（丢失后任务被立即重跑）。
+            # 定时任务的"今日已跑"无需在此记账：执行历史在任务终态已原子落盘
+            current = self.config.get_schedule(pending_task.name)
+            if current is not None:
+                if current.mode == ScheduleMode.HEARTBEAT:
+                    current.beat_count = 0
+                    dirty = True
+                elif current.mode == ScheduleMode.IDLE:
+                    # 任务执行经 mind.reflect 已刷新思考活动 → 下次评估计数自然
+                    # 归零，此处仅复位持久化计数并消费待反思标记
+                    current.beat_count = 0
+                    self._reflection_pending = ""
+                    dirty = True
 
         if dirty:
             self.config.save()
@@ -814,7 +857,6 @@ class HeartbeatEngine:
         """
         try:
             from agent.memory import notes as notes_mod
-            from agent.task import history as task_history
 
             all_tasks = self.task_registry.list_all()
             enabled_count = sum(1 for t in all_tasks if t.enabled)
@@ -869,7 +911,6 @@ class HeartbeatEngine:
         """最近一次执行概况描述（无记录返回「尚未执行」）。"""
         if not last:
             return "，尚未执行"
-        from agent.task.history import format_duration_ms
         started = float(last.get("started_at") or 0.0)
         status = str(last.get("status") or "")
         status_text = {
@@ -879,7 +920,7 @@ class HeartbeatEngine:
             time.strftime("%m-%d %H:%M", time.localtime(started))
             if started > 0 else "未知时间"
         )
-        return f"，上次 {when} {status_text}（{format_duration_ms(int(last.get('duration_ms') or 0))}）"
+        return f"，上次 {when} {status_text}（{task_history.format_duration_ms(int(last.get('duration_ms') or 0))}）"
 
     # ------------------------------------------------------------------
     # 过期日期便签归档
@@ -1157,16 +1198,17 @@ class HeartbeatEngine:
             log(f"alias 对话收集失败: {exc}", "WARNING", tag="心跳")
             return []
 
-    def _is_scheduled_now(self, times: List[str], last_run_date: str) -> bool:
-        """检查当前时间是否匹配调度时间（且今天未执行过）。
+    def _is_scheduled_now(self, times: List[str], last_good_ts: float) -> bool:
+        """检查是否存在已到期且未被执行覆盖的调度时刻（occurrence 锚点判定）。
 
-        支持跨午夜补触发：调度时间在昨日深夜且距今不超过一个 tick 间隔时
-        视为到期，避免 tick 恰好跨过（如 23:50 → 次日 00:05）导致当天任务错过。
+        每个配置时刻取"最近一个已到期的 occurrence"——今日已过点，或昨日
+        深夜且距今不超过一个 tick 间隔的跨午夜点——与该任务最近一次非失败
+        执行时间比较：occurrence 晚于上次执行即到期。语义要点：
+        - 多时刻槽位逐点独立判定（09:00 跑过不抑制 21:30）；
+        - 停机/错过只补最近一次 occurrence，不枚举积压（对齐 dsh anchor 语义）；
+        - 跨午夜补跑昨夜槽不吞掉今日的正当槽位（比较的是时间戳而非日期）。
         """
         now = datetime.now()
-        today = now.strftime("%Y-%m-%d")
-        if last_run_date == today:
-            return False
         current_minutes = now.hour * 60 + now.minute
         interval_minutes = max(1, int(getattr(self.config, "interval_seconds", 60)) // 60)
         for t in times:
@@ -1178,16 +1220,20 @@ class HeartbeatEngine:
             except (ValueError, TypeError):
                 continue
             if current_minutes >= target:
-                return True
-            # 跨午夜窗口：目标在昨日深夜，距今不超过一个 tick 间隔
-            if (1440 - target) + current_minutes <= interval_minutes:
+                occurrence = now.replace(
+                    hour=target // 60, minute=target % 60, second=0, microsecond=0)
+            elif (1440 - target) + current_minutes <= interval_minutes:
+                occurrence = (now - timedelta(days=1)).replace(
+                    hour=target // 60, minute=target % 60, second=0, microsecond=0)
+            else:
+                continue
+            if last_good_ts < occurrence.timestamp():
                 return True
         return False
 
     def get_status(self) -> Dict[str, Any]:
         """返回心跳引擎运行状态。"""
         activity_ts = float(getattr(self.mind, "last_activity_ts", 0.0) or 0.0)
-        from agent.task import history as task_history
         last_runs = task_history.get_summary()
         return {
             "enabled": self.config.enabled,

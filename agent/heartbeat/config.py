@@ -85,14 +85,18 @@ class ScheduleMode(str, Enum):
 
 @dataclass
 class TaskSchedule:
-    """单个任务在心跳中的调度绑定。"""
+    """单个任务在心跳中的调度绑定。
+
+    本类只承载调度定义与节拍计数；"今日是否已跑"不在这里记账——
+    执行历史（agent.task.history）在任务终态即原子落盘，是唯一事实源，
+    调度重绑/reload 换对象都不会抹掉它。
+    """
 
     task_name: str
     mode: ScheduleMode = ScheduleMode.MANUAL
     every_n_beats: int = 10
     beat_count: int = 0
     schedule_times: List[str] = field(default_factory=list)
-    last_run_date: str = ""
     model_id: str = ""
     """指定该调度使用的模型 ID，为空时使用任务定义或默认模型。"""
     reasoning_effort: str = ""
@@ -108,7 +112,6 @@ class TaskSchedule:
             d["beat_count"] = self.beat_count
         elif self.mode == ScheduleMode.SCHEDULED:
             d["schedule_times"] = self.schedule_times
-            d["last_run_date"] = self.last_run_date
         if self.model_id:
             d["model_id"] = self.model_id
         effort = _normalize_reasoning_effort(self.reasoning_effort)
@@ -125,7 +128,6 @@ class TaskSchedule:
             every_n_beats=int(data.get("every_n_beats", 10)),
             beat_count=int(data.get("beat_count", 0)),
             schedule_times=_normalize_schedule_times(list(data.get("schedule_times", []))),
-            last_run_date=data.get("last_run_date", ""),
             model_id=data.get("model_id", ""),
             reasoning_effort=_normalize_reasoning_effort(data.get("reasoning_effort", "")),
         )
@@ -148,9 +150,18 @@ class HeartbeatConfig:
         return None
 
     def set_schedule(self, schedule: TaskSchedule) -> None:
-        """添加或更新任务调度绑定。"""
+        """添加或更新任务调度绑定。
+
+        重绑（同名替换）时继承既有条目的节拍计数：调度定义的调整（改时间/
+        改间隔）不应抹掉运行态进度——计数被清零会让任务提前或延后触发。
+        仅在新旧双方都是计数类模式（heartbeat/idle）时继承，其余归零。
+        Web 整表保存不走此路径（前端全量回传自带计数值，含显式清零）。
+        """
         for i, s in enumerate(self.task_schedules):
             if s.task_name == schedule.task_name:
+                counter_modes = (ScheduleMode.HEARTBEAT, ScheduleMode.IDLE)
+                if s.mode in counter_modes and schedule.mode in counter_modes:
+                    schedule.beat_count = s.beat_count
                 self.task_schedules[i] = schedule
                 return
         self.task_schedules.append(schedule)

@@ -48,10 +48,25 @@ async def _record_sent_reply(
     try:
         from agent.messages import build_scope_id
         from agent.storage.storage_router import StorageDomain
-        scope_type = "group" if channel_type == "group" else "user"
-        base_id = str(target_id)
-        suffix = f"#{session_id}" if session_id and session_id != base_id else ""
-        scope_id = build_scope_id(adapter_key, base_id, suffix)
+        # 频道自决议钩子：会话标识与用户标识不一致的频道（飞书 p2p 等）
+        # 把发送目标归一到与入站消息相同的规范 scope，避免历史撕裂
+        resolved_scope: Optional[tuple[str, str]] = None
+        if adapter_key:
+            ch = _get_channel(adapter_key)
+            if ch is not None:
+                try:
+                    resolved_scope = ch.conversation_scope_for_target(
+                        str(target_id), channel_type
+                    )
+                except Exception as exc:
+                    log(f"频道 scope 解析钩子异常（回退通用规则）: {exc}", "DEBUG", tag="通道")
+        if resolved_scope is not None:
+            scope_type, scope_id = resolved_scope
+        else:
+            scope_type = "group" if channel_type == "group" else "user"
+            base_id = str(target_id)
+            suffix = f"#{session_id}" if session_id and session_id != base_id else ""
+            scope_id = build_scope_id(adapter_key, base_id, suffix)
         await conversation_data.router.append(
             StorageDomain.CONVERSATION,
             scope_type=scope_type, scope_id=scope_id,

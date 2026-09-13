@@ -595,6 +595,19 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         """设置消息表情反应（默认不支持）。"""
         return False
 
+    def conversation_scope_for_target(
+        self, target_id: str, channel_type: str
+    ) -> Optional[Tuple[str, str]]:
+        """把发送目标解析为规范会话 scope，返回 (scope_type, scope_id)。
+
+        默认返回 None 表示使用通用规则（scope_type 取 channel_type、
+        scope_id 取 ``{adapter}:{target_id}``）。会话标识与用户标识不一致的
+        频道（如飞书 p2p：发送目标是 chat_id，规范 scope 是
+        ``user_feishu:{open_id}#{chat_id}``）应覆盖本方法，保证 AI 主动发送
+        与入站消息写入同一会话历史。
+        """
+        return None
+
     # ------------------------------------------------------------------
     # 命令系统钩子
     # ------------------------------------------------------------------
