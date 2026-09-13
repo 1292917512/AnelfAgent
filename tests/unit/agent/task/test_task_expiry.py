@@ -308,3 +308,33 @@ class TestTaskMetaLines:
         # handoff 规则顺延为第 6 条
         suffix_h = TaskExecutor._build_task_suffix(False, handoff=True)
         assert "\n6. 本任务为多轮接力任务" in suffix_h
+
+
+# ==================================================================
+# memory_type 解析（单一权威 TASK_MEMORY_TYPES + 严格解析）
+# ==================================================================
+
+
+class TestMemoryTypeParsing:
+    """TaskDefinition.from_dict 的 memory_type 严格解析（回归：episodic 曾被静默钳为 reflection）。"""
+
+    def test_episodic_accepted(self) -> None:
+        from agent.memory.memory_types import MemoryType
+
+        task = TaskDefinition.from_dict({"name": "t", "memory_type": "episodic"})
+        assert task.memory_type == MemoryType.EPISODIC
+
+    def test_default_is_reflection(self) -> None:
+        from agent.memory.memory_types import MemoryType
+
+        assert TaskDefinition.from_dict({"name": "t"}).memory_type == MemoryType.REFLECTION
+
+    def test_round_trip_preserves_type(self) -> None:
+        task = TaskDefinition.from_dict({"name": "t", "memory_type": "episodic"})
+        assert TaskDefinition.from_dict(task.to_dict()).memory_type == task.memory_type
+
+    @pytest.mark.parametrize("bad", ["entity", "permanent", "bogus"])
+    def test_invalid_raises(self, bad: str) -> None:
+        """不在任务产出允许集合内的类型显式报错（注册表逐文件容错暴露 WARNING）。"""
+        with pytest.raises(ValueError, match="memory_type"):
+            TaskDefinition.from_dict({"name": "t", "memory_type": bad})

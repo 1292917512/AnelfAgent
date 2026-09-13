@@ -65,6 +65,22 @@ class ModelsProvider(MediaProvider):
             log(f"models provider 可用性检查失败: {e}", "DEBUG", tag="媒体")
             return False
 
+    def status_details(self, capability: str) -> Dict[str, Any]:
+        """vision 能力附加视频理解模型清单（supports_video 声明模型，供面板展示）。"""
+        if capability != CAP_VISION:
+            return {}
+        try:
+            from entities._sdk import get_model_type_enum
+            video_models = [
+                c.config.name
+                for c in _mgr().get_all_by_type(get_model_type_enum().VISION)
+                if getattr(c.config, "supports_video", False)
+            ]
+            return {"video_models": video_models}
+        except Exception as e:
+            log(f"models provider 视频模型清单获取失败: {e}", "DEBUG", tag="媒体")
+            return {}
+
     async def run(self, capability: str, **kwargs: Any) -> Dict[str, Any]:
         if capability == CAP_VISION:
             return await self._run_vision(**kwargs)

@@ -28,12 +28,24 @@ _SCOPE_MAP: Dict[str, TaskScope] = {
     "any": TaskScope.ANY,
 }
 
-_MEMORY_TYPE_MAP: Dict[str, MemoryType] = {
-    "reflection": MemoryType.REFLECTION,
-    "semantic": MemoryType.SEMANTIC,
-    "entity": MemoryType.ENTITY,
-}
+# 任务产出允许写入的记忆类型（单一权威：from_dict 解析与工具层校验同源于此）
+TASK_MEMORY_TYPES: frozenset[MemoryType] = frozenset({
+    MemoryType.REFLECTION, MemoryType.SEMANTIC, MemoryType.EPISODIC,
+})
+_TASK_MEMORY_TYPE_MAP: Dict[str, MemoryType] = {mt.value: mt for mt in TASK_MEMORY_TYPES}
 _REASONING_EFFORT_VALUES = frozenset(CANONICAL_EFFORTS)
+
+
+def _parse_memory_type(value: Any) -> MemoryType:
+    """解析任务 memory_type：非法值抛错（静默回退曾让 episodic 被钳成 reflection
+    且无迹可查；注册表逐文件容错，坏文件以 WARNING 暴露）。"""
+    raw = str(value or "").strip().lower() or "reflection"
+    memory_type = _TASK_MEMORY_TYPE_MAP.get(raw)
+    if memory_type is None:
+        raise ValueError(
+            f"无效的 memory_type: {raw!r}（可选: {sorted(_TASK_MEMORY_TYPE_MAP)}）"
+        )
+    return memory_type
 
 
 def _to_bool(value: Any) -> bool:
@@ -194,16 +206,13 @@ class TaskDefinition(BaseModel):
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> TaskDefinition:
         scope = _SCOPE_MAP.get(data.get("scope", "global"), TaskScope.GLOBAL)
-        memory_type = _MEMORY_TYPE_MAP.get(
-            data.get("memory_type", "reflection"), MemoryType.REFLECTION,
-        )
         return cls(
             name=data["name"],
             display_name=data.get("display_name", data["name"]),
             description=data.get("description", ""),
             scope=scope,
             enabled=data.get("enabled", True),
-            memory_type=memory_type,
+            memory_type=_parse_memory_type(data.get("memory_type", "reflection")),
             importance=float(data.get("importance", 0.5)),
             tags=list(data.get("tags", [])),
             source=data.get("source", data["name"]),

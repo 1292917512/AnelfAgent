@@ -515,6 +515,16 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 > Model Experience：① 模型看到 stable 工具块的完整记忆铁律（写入路由/标签纪律/主标签用法 + hub 即时段与便签「当前状态」的分工）/ context 层 vol 36 的 `[主标签记忆]` 独立块 / 状态区块（仅行动项，标签膨胀超阈值才多一行提醒）；② token：铁律 ~1600 字符（stable 恒定摊销为零）+ hub 块 ≤3000 字符可配 + 状态区块常态 <150 字符，遥测经 memory_stats 按需取；③ 缓存：铁律字节恒定永久命中，hub 独立消息只损自身，分界修复后心跳状态改写不再击穿 stable 人设块（净收益）；配置中心经 memory/recall（hub 预算）、memory/consolidation（膨胀阈值）组键热调
 
+#### 视频理解链路与能力声明（第十七轮新增）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| supports_video 能力声明 | `agent/llm/config.py`（`LLMClientConfig.supports_video`，序列化往返）+ `entities/media/providers/models.py::_run_video`（严格候选过滤） | 视频识别链**仅投送声明 supports_video 的视觉模型**——整段视频 base64 体积大且多数视觉端点不接受 video block，未声明即视为不支持，无声明模型时报配置缺失引导显式开启（不做全链喷洒试错）。声明入口三处同源：llm_clients.json / Web 模型编辑器「视频理解」开关（勾选视觉后出现）/ AI `update_model_config`（model_control 白名单）；媒体库「能力优先级」面板经 provider `status_details` 钩子展示声明模型清单 |
+| describe_video 直发 HTTP | `agent/llm/llm_client.py::describe_video` + `_parse_video_describe_text` | 不经过对话协议层与 litellm——两侧转换层都不认识 video block（litellm Anthropic 转换层校验拒绝；Responses 转换层无 video 映射，不识别部件透传后被端点静默忽略，表现为"没收到视频"）。anthropic 端点原生 video block（/v1/messages），其余端点 OpenAI 兼容 video_url block（/chat/completions），端点不支持即以 HTTP 错误显式暴露供候选链回退。MiniMax 视频理解仅官方 Anthropic 兼容端点（type="video" block，仅 M3，内联 ≤50MB）——openai/responses 通道的 M3 条目不可声明 supports_video，须挂独立 anthropic 供应商条目（model_types=["vision"] 的纯视觉条目经 `_ensure_priorities_complete` 通用循环进 vision 优先级、不进 chat 链） |
+| 任务 memory_type 单一权威 | `agent/task/model.py::TASK_MEMORY_TYPES` + `_parse_memory_type`（严格解析）+ `agent/task/tools.py`（校验同源派生） | 任务产出允许的记忆类型集合单点定义（reflection/semantic/episodic），from_dict 与 create/update_task 校验同源；非法值**抛错显式暴露**（注册表逐文件容错降级 WARNING）——修复静默钳制事故：旧 `_MEMORY_TYPE_MAP` 缺 episodic，全部 episodic 任务文件加载时被无迹回退为 reflection |
+
+> Model Experience：① 模型可调 recognize_video（media:video 标签激活）与 media_config 能力指南（vision 双工具 + 实时声明模型清单）；② AI 经 update_model_config(model, supports_video, true/false) 自助开关视频能力（与 Web 面板同源持久化）；③ 视频不直注主模型上下文（无本地 block 注入路径），识别结果以文字描述返回，不触碰任何前缀缓存层
+
 ### 前端结构
 
 页面采用壳组件 + 子面板目录拆分模式，通用 TabBar 切换：
@@ -704,7 +714,7 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
 2. **供应商缓存行为**（不可控）：磁盘缓存传播延迟/驱逐/节点亲和。判读特征 = prefix_stable=True 而 read 浮动、1~2 轮自愈，列表以「平台波动」徽标标识。**合法断裂单独标识**：折叠/压缩是已知的前缀整体重写，完成点经 `prefix_guard.note_legal_break(scope, reason)` 登记（conversation_fold 成功路径 reason=fold、`_compress_context` 成功路径 reason=compress）——清空该 scope 全部基线（折后首轮校验不误报漂移），并在 120s 窗口内（覆盖首轮失败的重试链）让快照记录携带 `legal_break`，列表以「折叠/压缩」徽标与「平台波动」区分。
 3. **统计与展示口径**：kind 分桶 / age_sec 回声 / unobservable / 单次钳制率平均。
 
-> **完整手册**（诊断决策树、PrefixGuard、断点预算、压缩前缀复用、e2e 回归、供应商字段）见 [`docs/cache-troubleshooting.md`](docs/cache-troubleshooting.md)。
+**litellm 升级同步规范（机械门禁）**：litellm 的流式 usage 处理是脆弱契约（1.100 曾对未收录模型用 tiktoken 估算伪造 usage：prompt 虚高 ~1.8 倍、completion 清零、details 丢弃），因此 ① pyproject 精确锁定版本（`litellm==x.y.z`，禁止范围符）；② 版本变动必须运行全模型缓存与用量健康门并全绿后才放行：`LLM_CACHE_E2E=1 uv run pytest tests/integration/test_llm_cache_hit_e2e.py`（`LLM_CACHE_E2E_MODELS=a,b` 可子集）——对配置内全部启用 chat 模型经真实 LLMClient 管线发两次同前缀流式调用，断言：两次 usage 均回报 / completion>0（伪造指纹）/ 含缓存口径 read+creation ≤ prompt（尺度混血指纹）/ 可观测时第二次 cached>0 且命中 ≥0.7（判别区间：伪造尺度混血 ≈0.55、平台粒度损失实测下限 ≈0.78；暖调用按 2/4/8s 递增窗口吸收供应商写读传播滞后）。
 
 **记忆系统红线清单**（改动记忆/召回/画像注入时逐条自查；前四条有不变量测试锁定，见 `tests/unit/agent/mind/test_cache_layer_invariants.py`）：
 1. **vol ≤ 30 禁入**：记忆召回/画像/关系/技能/状态/短期记忆内容块的 volatility 必须 > VOL_HISTORY(30)（stable/summary/conversation 是缓存前缀，一个字节变化即断裂）。新增 `@context_block` 时先想"这块多久变一次"。

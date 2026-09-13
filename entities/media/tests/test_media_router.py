@@ -226,3 +226,15 @@ class TestVideoCandidateFilter:
         with pytest.raises(ProviderUnavailable, match="supports_video"):
             await ModelsProvider()._run_video("/tmp/x.mp4", "描述")
         assert plain.calls == 0
+
+    def test_status_details_lists_video_models(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """vision 能力的 status_details 暴露 supports_video 声明模型清单（面板展示用）。"""
+        from entities.media.providers.models import ModelsProvider
+
+        plain = _FakeVisionClient("plain", supports_video=False)
+        capable = _FakeVisionClient("capable", supports_video=True)
+        self._patch_env(monkeypatch, [plain, capable])
+
+        provider = ModelsProvider()
+        assert provider.status_details("vision") == {"video_models": ["capable"]}
+        assert provider.status_details("tts") == {}

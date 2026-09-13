@@ -348,10 +348,16 @@ class MemoryService:
 
     async def list_conv_messages(
         self, scope_type: str, scope_id: str, limit: int = 200,
+        before_id: Optional[int] = None,
+        ts_from: Optional[float] = None,
+        ts_to: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         rt = require_runtime()
         return await rt.data_center.sqlite.fetch_conversation_with_id(
             scope_type=scope_type, scope_id=scope_id, limit=limit,
+            before_id=before_id,
+            ts_from_ns=int(ts_from * 1e9) if ts_from is not None else None,
+            ts_to_ns=int(ts_to * 1e9) if ts_to is not None else None,
         )
 
     async def delete_conv(self, row_id: int) -> None:

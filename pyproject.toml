@@ -5,8 +5,11 @@ description = "AnelfAgent — Unified Agent Framework"
 readme = "README.md"
 requires-python = ">=3.11, <3.13"
 dependencies = [
-    # 智能体核心（litellm 统一 LLM API，内含 openai 作为传递依赖）
-    "litellm>=1.97,<2.0.0",
+    # 智能体核心（litellm 统一 LLM API，内含 openai 作为传递依赖）。
+    # 精确锁定：litellm 流式 usage 处理对本项目是脆弱契约（1.100 曾对未收录
+    # 模型伪造流式 usage），版本变动必须同步运行缓存健康门验证后再放行：
+    #   LLM_CACHE_E2E=1 uv run pytest tests/integration/test_llm_cache_hit_e2e.py
+    "litellm==1.100.1",
     "aiosqlite>=0.21.0",
     "pydantic>=2.10.0",
     "fastapi>=0.116.2",

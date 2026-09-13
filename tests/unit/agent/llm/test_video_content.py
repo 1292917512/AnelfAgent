@@ -168,23 +168,35 @@ class TestDescribeVideo:
             await client.describe_video(VideoContent(data="QUJD"))
 
     @pytest.mark.asyncio
-    async def test_openai_goes_through_chat(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """非 anthropic 端点走 chat() 的 video_url block。"""
+    async def test_openai_direct_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """非 anthropic 端点直发 /chat/completions，发 OpenAI 兼容 video_url block。"""
         client = LLMClient(_make_config(API_TYPE_OPENAI))
-        captured: Dict[str, Any] = {}
+        resp = _FakeResponse(200, {"choices": [
+            {"message": {"content": "视频描述"}},
+        ]})
+        fake = _FakeHttp(resp)
+        monkeypatch.setattr(client, "_direct_http", lambda: fake)
 
-        class _Result:
-            content = "视频描述"
-
-        async def _fake_chat(messages: list[dict], options: Any = None) -> Any:
-            captured["messages"] = messages
-            return _Result()
-
-        monkeypatch.setattr(client, "chat", _fake_chat)
         vid = VideoContent(data="QUJD", mime_type="video/mp4")
         text = await client.describe_video(vid, prompt="描述视频")
 
         assert text == "视频描述"
-        content = captured["messages"][0]["content"]
-        assert {"type": "text", "text": "描述视频"} in content
-        assert vid.to_openai_block() in content
+        assert fake.last_url == "https://example.com/apps/anthropic/chat/completions"
+        assert fake.last_headers["Authorization"] == "Bearer sk-test"
+        content = fake.last_payload["messages"][0]["content"]
+        assert content[0] == {"type": "text", "text": "描述视频"}
+        assert content[1] == vid.to_openai_block()
+
+    @pytest.mark.asyncio
+    async def test_openai_parts_content_parsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """OpenAI 兼容端点返回 parts 形态 content 时同样提取文本。"""
+        client = LLMClient(_make_config(API_TYPE_OPENAI))
+        resp = _FakeResponse(200, {"choices": [
+            {"message": {"content": [{"type": "text", "text": "部件文本"}]}},
+        ]})
+        fake = _FakeHttp(resp)
+        monkeypatch.setattr(client, "_direct_http", lambda: fake)
+
+        text = await client.describe_video(VideoContent(data="QUJD"))
+
+        assert text == "部件文本"

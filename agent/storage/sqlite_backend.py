@@ -929,14 +929,17 @@ class SqliteBackend:
     # ------------------------------------------------------------------
 
     async def list_conversation_scopes(self) -> list[dict]:
-        """列出所有会话 scope（去重），返回 [{scope_type, scope_id, count}]。"""
+        """列出所有会话 scope（去重），返回 [{scope_type, scope_id, count, last_ts}]。"""
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT scope_type, scope_id, COUNT(*) as cnt "
-            "FROM conversation_messages GROUP BY scope_type, scope_id ORDER BY cnt DESC"
+            "SELECT scope_type, scope_id, COUNT(*) as cnt, MAX(ts_ns) as last_ts "
+            "FROM conversation_messages GROUP BY scope_type, scope_id ORDER BY last_ts DESC"
         )
         rows = await cursor.fetchall()
-        return [{"scope_type": r[0], "scope_id": r[1], "count": r[2]} for r in rows]
+        return [
+            {"scope_type": r[0], "scope_id": r[1], "count": r[2], "last_ts": r[3]}
+            for r in rows
+        ]
 
     async def list_conversation_scope_keys(self) -> list[dict]:
         """列出所有会话 scope（不含计数）：每 tick 的自动捕获扫描用，
@@ -988,34 +991,43 @@ class SqliteBackend:
         self, *, scope_type: str, scope_id: str, limit: int = 100,
         before_id: int | None = None,
         after_id: int | None = None,
+        ts_from_ns: int | None = None,
+        ts_to_ns: int | None = None,
     ) -> list[dict]:
         """获取会话记录（含 row id，用于定向删除与翻页/增量拉取）。
 
         before_id：分页游标，仅取 id 早于该值的消息（"加载更早"场景）。
         after_id：增量游标，仅取 id 晚于该值的消息并按 id 升序返回
         （自动捕获等按游标逐批消费场景，不会因窗口截断漏消息）。
+        ts_from_ns / ts_to_ns：可选时间范围过滤（含边界），与游标可叠加。
         """
         db = await self._get_db()
+        where = ["scope_type=?", "scope_id=?"]
+        params: list = [scope_type, scope_id]
+        if ts_from_ns is not None:
+            where.append("ts_ns>=?")
+            params.append(int(ts_from_ns))
+        if ts_to_ns is not None:
+            where.append("ts_ns<=?")
+            params.append(int(ts_to_ns))
         if after_id is not None:
+            where.append("id>?")
+            params.append(int(after_id))
             cursor = await db.execute(
-                "SELECT id, role, content, ts_ns FROM conversation_messages "
-                "WHERE scope_type=? AND scope_id=? AND id>? ORDER BY id ASC LIMIT ?",
-                (scope_type, scope_id, int(after_id), int(limit)),
+                f"SELECT id, role, content, ts_ns FROM conversation_messages "
+                f"WHERE {' AND '.join(where)} ORDER BY id ASC LIMIT ?",
+                (*params, int(limit)),
             )
             rows = await cursor.fetchall()
             return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
         if before_id is not None:
-            cursor = await db.execute(
-                "SELECT id, role, content, ts_ns FROM conversation_messages "
-                "WHERE scope_type=? AND scope_id=? AND id<? ORDER BY ts_ns DESC LIMIT ?",
-                (scope_type, scope_id, int(before_id), int(limit)),
-            )
-        else:
-            cursor = await db.execute(
-                "SELECT id, role, content, ts_ns FROM conversation_messages "
-                "WHERE scope_type=? AND scope_id=? ORDER BY ts_ns DESC LIMIT ?",
-                (scope_type, scope_id, int(limit)),
-            )
+            where.append("id<?")
+            params.append(int(before_id))
+        cursor = await db.execute(
+            f"SELECT id, role, content, ts_ns FROM conversation_messages "
+            f"WHERE {' AND '.join(where)} ORDER BY ts_ns DESC LIMIT ?",
+            (*params, int(limit)),
+        )
         rows = await cursor.fetchall()
         rows = list(reversed(rows))
         return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]

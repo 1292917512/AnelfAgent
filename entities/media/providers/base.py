@@ -64,6 +64,10 @@ class MediaProvider:
         """该能力所需的凭据/模型是否就绪。未就绪时路由器跳过本 provider。"""
         return True
 
+    def status_details(self, capability: str) -> Dict[str, Any]:
+        """能力状态的附加诊断信息（供面板展示与排障），默认无。"""
+        return {}
+
     async def run(self, capability: str, **kwargs: Any) -> Dict[str, Any]:
         raise CapabilityNotSupported(f"provider '{self.name}' 不支持能力 '{capability}'")
 

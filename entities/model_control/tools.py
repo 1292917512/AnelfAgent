@@ -137,6 +137,7 @@ def get_current_model() -> str:
                 "timeout": cfg.timeout,
                 "supports_tools": cfg.supports_tools,
                 "supports_vision": cfg.supports_vision,
+                "supports_video": cfg.supports_video,
             })
             issues = llm.get_runtime_issues()
             if issues:
@@ -211,6 +212,7 @@ _UPDATABLE_FIELDS = {
     "supports_forced_tool_choice": bool,
     "supports_reasoning": bool,
     "supports_vision": bool,
+    "supports_video": bool,
     "supports_tools": bool,
     "reasoning_effort": str,
 }
@@ -219,7 +221,7 @@ _UPDATABLE_FIELDS = {
 @tool(name="update_model_config", group="model_control", tags=["core"],
       description="持久化修改指定模型的配置参数"
                   "（timeout/max_tokens/context_window/supports_forced_tool_choice/supports_reasoning"
-                  "/supports_vision/supports_tools/reasoning_effort），"
+                  "/supports_vision/supports_video/supports_tools/reasoning_effort），"
                   "用于固化端点行为与能力声明（如 list_models 中 runtime_issues 提示的问题），重启后仍生效")
 def update_model_config(model_name: str, field: str, value: str) -> str:
     """持久化修改模型配置并写入配置文件，立即生效。
@@ -227,7 +229,8 @@ def update_model_config(model_name: str, field: str, value: str) -> str:
     Args:
         model_name: 模型名称（通过 list_models 查看）
         field: 配置字段，可选值: timeout（秒）、max_tokens、context_window、
-            supports_forced_tool_choice / supports_reasoning / supports_vision / supports_tools（布尔）、
+            supports_forced_tool_choice / supports_reasoning / supports_vision /
+            supports_video / supports_tools（布尔）、
             reasoning_effort（low/medium/high 或空串清除）
         value: 新值（按字段类型解析）
     """

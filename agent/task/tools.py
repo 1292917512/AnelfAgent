@@ -21,13 +21,14 @@ from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import deferred_tool
 
 from .model import (
+    TASK_MEMORY_TYPES,
     _normalize_reasoning_effort,
     normalize_task_time,
     parse_task_time,
 )
 
 _TASK_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-_TASK_MEMORY_TYPES = {"reflection", "semantic", "episodic"}
+_TASK_MEMORY_TYPES = {mt.value for mt in TASK_MEMORY_TYPES}
 _SCHEDULE_MODES = {"heartbeat", "scheduled", "idle", "manual"}
 # update_task 的 expires_at 清除标记（空串 = 不变）
 _EXPIRY_CLEAR_TOKENS = {"clear", "永久"}

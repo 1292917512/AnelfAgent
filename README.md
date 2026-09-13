@@ -2,8 +2,10 @@
 
 **v0.3** · 统一智能体框架 — 自主思考 · 语义记忆 · 工具编排 · 多模态生成 · 多通道通信
 
+**简体中文** | [English](README_EN.md)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![uv](https://img.shields.io/badge/package%20manager-uv-DE5FE9.svg)](https://github.com/astral-sh/uv)
 
 AnelfAgent 是面向个人与团队的开源 AI 智能体运行时：内置自主决策引擎、混合语义记忆、技能自学习、子代理调度、MCP 工具桥接与多平台通道适配，覆盖文本、图像、语音、视频、音乐多模态生成，并提供现代化 WebUI 完成配置、对话与运维全生命周期管理。
@@ -25,7 +27,7 @@ AnelfAgent 是面向个人与团队的开源 AI 智能体运行时：内置自�
 | **持续进化** | 技能自学习闭环 + 心跳任务调度 + 目标规划 |
 | **安全可控** | 统一权限引擎（allow / ask / deny）+ 频道化批准 + WebUI 认证 + 敏感信息脱敏 |
 | **自运维** | SSH 远程管理 / 记忆备份 / 项目更新 / 文件分享 — AI 可自主管理自身部署 |
-| **多端接入** | QQ / 飞书 / 微信 / Bilibili / Acfun / WebUI / HTTP / CLI + OpenAI 兼容 Responses API |
+| **多端接入** | QQ / 飞书 / 微信 / Telegram / Bilibili / Acfun / WebUI / HTTP / CLI + OpenAI 兼容 Responses API |
 
 ---
 
@@ -107,7 +109,8 @@ stable（人设 + 工具提示，对话内冻结）
 
 - **两级结构**：Provider（提供商）→ Model（模型），按能力类型（chat / tools / vision / embedding …）组织
 - **启用开关**：禁用模型自动从选择 / 回退 / 执行路径中剔除，状态持久化
-- **子代理分级**（`delegation_tiers`）：按任务难度把子代理路由到不同挡位模型，全禁用时自动降挡
+- **子代理档案**（`sub_agents`）：名称 → 有序模型候选池 + 执行面（专职守则 / 工具选择器 / 结构化产出契约），内置难度档 1–3 为纯模型池语法糖，全不可用时自动降挡
+- **思考契约配置驱动**：每个模型在配置中声明思考参数映射（`thinking` 字段），代码对模型名零特判
 - **代理支持**：`HTTP(S)_PROXY` 环境变量租约 + 可深拷贝代理客户端
 - **协议适配**：Chat Completions 与 Responses 双协议（`agent/llm/responses`），统一经 litellm 转发
 
@@ -128,12 +131,21 @@ stable（人设 + 工具提示，对话内冻结）
 
 Embedding + FTS5 + 标签匹配 + 时间衰减的混合评分；记忆类型覆盖实体画像、知识、事件、永久记忆，并支持 Markdown 便签。存储层拆分为 `memory/store/`（连接 / 检索 / 文件索引 / 队列）与上层领域逻辑解耦。
 
+- **记忆铁律文档**：写入路由 / 标签纪律 / 查询路由收敛为单一系统级提示词文档（`config/memory_rules.md`），Web 记忆页可视化编辑
+- **主标签记忆**（`main:hub`）：每回复周期置顶注入的永久记忆，AI 整段维护、心跳自愈
+- **遗忘治理**：重要性松弛 + 检索练习效应 + 归档 / 墓碑兜底召回（`restore_memory` 可恢复）
+- **图谱治理**：边强度衰减 / 弱边遗忘 + AI 策展议程（事实归系统、决策归 AI）
+
 可选启用 **Cognee** 知识图谱投影与联邦召回（`config/cognee.json` / WebUI 记忆配置），与 SQLite 权威存储并存，失败自动降级。
 
 ### 技能自学习与子代理
 
-- **技能闭环**：对话后后台评审 → `workspace/skills/SKILL.md` 沉淀 → 语义匹配注入 → 心跳策展（降级 / 归档）
-- **子代理**：`delegate_task` 支持 leaf / orchestrator 角色、并行 fan-out、后台模式与独立迭代预算，可按难度分级选模
+- **技能闭环**：对话后经 LLM 钩子面后台评审 → `workspace/skills/SKILL.md` 沉淀 → 语义匹配注入 → 心跳策展（降级 / 归档）
+- **子代理**：`delegate_task` 支持并行 fan-out、后台模式与独立迭代预算，按档案选模；`follow_up_agent` 以完整 transcript 无损续跑；进度流 / 用量归集 / Web 面板全链路可观测
+
+### LLM 钩子面
+
+「在 LLM 思考边界派生带上下文的异步 LLM 工作」的统一注册原语，与心跳 / 任务系统平行：同一事件（`after_reply` / `delegation_resolved` / `llm_end` …）可挂多个钩子并行拉起，各自独立治理（并发 / 冷却 / 防抖）。技能后台评审、任务事件触发、实体钩子均经此落地。
 
 ### 心跳与任务
 
@@ -142,19 +154,27 @@ Embedding + FTS5 + 标签匹配 + 时间衰减的混合评分；记忆类型覆�
 | 触发模式 | 说明 |
 |---|---|
 | `heartbeat` | 每 N 次心跳执行 |
-| `scheduled` | 每天指定时间 |
+| `scheduled` | 每天指定时间（多槽位独立去重） |
+| `idle` | 连续 N 拍无思考活动后触发（全局唯一一条） |
 | `manual` | 仅手动 / AI 主动触发 |
+| `trigger_event` | 事件触发（经 LLM 钩子面，与调度正交） |
 
-每次心跳还会跑内置维护：实体画像、记忆健康检查、技能策展、日志合并等。
+每次心跳还会跑内置维护：实体画像、记忆健康检查、技能策展、日志合并、空闲会话折叠等。
+
+### 插件与热插拔
+
+- **插件系统**（`entities/plugins`）：插件 = 清单 + skills/ + .mcp.json + tools.py 的目录包，支持市场订阅（本地目录或 git 仓库），AI 可自主安装 / 升级 / 移除
+- **模块热插拔**：实体 / 频道目录增删经目录监听自动对账（新增即时注册、删除完整拆除），Web 端亦可手动热同步
 
 ### 自运维与外部数据
 
 | 实体 / 服务 | 能力 |
 |---|---|
-| **SSH 远程管理** | 连接管理 / 命令执行 / 文件传输，支持默认连接与 WebUI 面板 |
-| **DevOps** | 记忆同步到私有 GitHub 仓库 / 拉取项目更新 / 重启应用 |
+| **SSH 远程管理** | 连接管理 / 命令执行 / 文件传输，远程目录持久跟踪，支持默认连接与 WebUI 面板 |
+| **DevOps** | 记忆同步到私有 GitHub 仓库 / 拉取项目更新 / 重启应用（支持重启交接留言） |
 | **文件分享** | 为工作区文件生成对外可下载链接并管理其生命周期 |
 | **外部 SQL 数据源** | PostgreSQL / MySQL 只读连接注册表（`config/db_connections.json`），供 WebUI 数据管理页浏览与查询 |
+| **存储卷管理** | 全部持久化数据登记为存储卷（8 卷），支持在线热备份 / 恢复 / 迁移 / SQL 导出导入，Web 数据管理页可视化操作 |
 | **数据目录迁移** | 在线热备份拷贝 + 校验 + `data_root` 切换 |
 
 ### 多通道适配
@@ -166,17 +186,18 @@ Embedding + FTS5 + 标签匹配 + 时间衰减的混合评分；记忆类型覆�
 | **QQ** | OneBot v11 + NapCat（直连） |
 | **飞书** | WebSocket 事件驱动 |
 | **微信** | iLink Bot API，扫码登录，无需公网 webhook（详见 [`channels/weixin/README.md`](channels/weixin/README.md)） |
+| **Telegram** | Bot API 长轮询 |
+| **Bilibili / Acfun** | 弹幕与私信接入 |
 | **WebUI** | SSE 推送；三栏对话工作台（文件树 / 对话流 / Dock） |
 | **HTTP API** | 同步请求-响应 |
 | **CLI** | 终端调试 |
-| **NoneBot 桥接** | 完整 NoneBot 子进程客户端（独立 venv）：装适配器接 QQ 官方/Telegram/Discord/KOOK 等平台、浏览安装插件商店、AI 可触发插件命令（详见 [`channels/nonebot_bridge/README.md`](channels/nonebot_bridge/README.md)） |
 | **Responses API** | OpenAI 兼容网关（`/v1/responses`），可把 AnelfAgent 当作模型服务对外提供 |
 
 WebUI 对话工作台支持 AI **反向驱动界面**（`ui_notify` / `ui_ask` / `ui_open_panel` 等 → SSE `ui_command`）。
 
 ### MCP 桥接
 
-支持 stdio / SSE / Streamable HTTP；后台异步连接，工具自动注册为实体，可热重载。
+支持 stdio / SSE / Streamable HTTP；后台异步连接，工具自动注册为实体，可热重载；工具列表变更通知热同步，图像结果落盘注入视觉模型。
 
 ---
 
@@ -184,7 +205,7 @@ WebUI 对话工作台支持 AI **反向驱动界面**（`ui_notify` / `ui_ask` /
 
 | 分类 | 技术 |
 |---|---|
-| 运行时 | Python 3.10–3.11 · [uv](https://github.com/astral-sh/uv) · FastAPI · Uvicorn · Pydantic v2 |
+| 运行时 | Python 3.11–3.12 · [uv](https://github.com/astral-sh/uv) · FastAPI · Uvicorn · Pydantic v2 |
 | LLM | litellm（统一 100+ 提供商）· Chat Completions / Responses 双协议 |
 | 存储 | aiosqlite（WAL）· FTS5 · Embedding（sqlite-vec）· 可选 Cognee |
 | 外部数据 | asyncpg（PostgreSQL）· aiomysql（MySQL）· asyncssh（SSH） |
@@ -199,7 +220,7 @@ WebUI 对话工作台支持 AI **反向驱动界面**（`ui_notify` / `ui_ask` /
 
 ### 环境要求
 
-- Python **3.10 ~ 3.11**
+- Python **3.11 ~ 3.12**
 - Node.js **18+**（构建前端）
 - [uv](https://github.com/astral-sh/uv)（推荐）
 
@@ -270,24 +291,26 @@ agent.planning → agent.memory
 禁止: agent → web | core → agent | services → web | entities → agent（经 _sdk 桥接）
 ```
 
+以上方向由 import-linter 机械守卫（`uv run lint-imports`，CI 红绿门禁）。
+
 ### 目录职责
 
 | 目录 | 职责 |
 |---|---|
-| `core/` | EntityRegistry / 配置（`ConfigPaths` 动态路径）/ 生命周期 / 标签 / 事件 / 门控 / 脱敏 / 日志 |
+| `core/` | EntityRegistry / 配置（`ConfigPaths` 动态路径）/ 生命周期 / 标签 / 事件 / 门控 / 脱敏 / 日志 / 存储卷注册表 |
 | `agent/mind/` | 思维循环 / PFC / Prompt 分层 / 守卫 / 压缩 / 思维会话 |
 | `agent/llm/` | LLM 客户端与管理器 / 错误分类重试 / 弹性回退 / 能力探测 / 多模态适配器 / Responses 协议 |
 | `agent/memory/` | 混合语义记忆（`store/` 存储层）+ 便签 + 可选 Cognee |
 | `agent/skills/` | 技能存储 / 匹配 / 后台评审 / 策展 |
-| `agent/delegation/` | 子代理调度（leaf / orchestrator / 分级选模） |
+| `agent/delegation/` | 子代理调度（档案 / 并行 fan-out / 续跑 / 运行日志） |
 | `agent/hooks_llm/` | LLM 钩子面（事件驱动的异步 LLM 工作注册原语；评审/任务事件/实体钩子并行拉起） |
 | `agent/approval/` | 统一权限与批准门 |
 | `agent/security/` | 会话令牌 / 威胁扫描 |
 | `agent/heartbeat/` · `task/` · `planning/` | 心跳调度 / 任务定义 / 目标规划 |
 | `agent/messages/` | 会话 scope 构建与解析 / 人设预设 |
 | `agent/channel/` · `runtime/` · `storage/` | 频道管理 / 启动装配 / 存储路由与迁移 |
-| `channels/` | 频道适配器（目录自动发现） |
-| `entities/` | 工具实体（目录自动发现，经 `_sdk` 注册） |
+| `channels/` | 频道适配器（目录自动发现 + 热插拔） |
+| `entities/` | 工具实体（目录自动发现 + 热插拔，经 `_sdk` 注册） |
 | `services/` | 业务封装，供 Web API 调用 |
 | `web/` | FastAPI 路由 + React 前端 |
 | `config/` | JSON 配置 · SQLite 数据 · 人设 · 任务定义 |
@@ -295,21 +318,27 @@ agent.planning → agent.memory
 
 ### 内置实体（entities/）
 
-| 实体 | 分组 | 说明 |
-|---|---|---|
-| `filesystem` | `os` | 文件读写 / 目录树 / 搜索（沙箱） |
-| `web` | `web` | 搜索 / 抓取 / 网页内容提取 |
-| `media` | `media` | 图像识别 / 语音转写与合成等多媒体处理 |
-| `minimax` | `minimax` | MiniMax 语音 / 图片 / 音色克隆 |
-| `sticker` | `sticker` | 表情包收藏 / 检索 / 发送，文搜图 / 图搜图 |
-| `ui` | `ui` | 界面交互（`ui_notify` / `ui_ask` / `ui_open_panel` 等） |
-| `ssh` | `ssh` | SSH 连接管理 / 命令执行 / 文件传输 |
-| `devops` | `devops` | 记忆备份 / 项目更新 / 应用重启 |
-| `share` | `share` | 文件分享链接管理 |
-| `mcp` | `mcp:*` | MCP 服务桥接（动态注册） |
-| `entity_query` | `entity` | 实体目录两级发现 |
-| `model_control` | `model_control` | 模型切换 / 参数调整 / Ollama 管理 |
-| `system` | `environment` | 系统信息 / Python 环境 / Git / 日志查询 |
+| 实体 | 说明 |
+|---|---|
+| `filesystem` | 文件读写 / 目录树 / 搜索（沙箱） |
+| `web` | 搜索 / 抓取 / 网页内容提取 |
+| `media` | 图像识别 / 语音转写与合成等多媒体处理 |
+| `minimax` | MiniMax 语音 / 图片 / 音色克隆 |
+| `sticker` | 表情包收藏 / 检索 / 发送，文搜图 / 图搜图 |
+| `ui` | 界面交互（`ui_notify` / `ui_ask` / `ui_open_panel` 等） |
+| `ssh` | SSH 连接管理 / 命令执行 / 文件传输 |
+| `devops` | 记忆备份 / 项目更新 / 应用重启 |
+| `share` | 文件分享链接管理 |
+| `vault` | 密码本 — 加密凭据库 / TOTP 验证器 / 模糊检索 / 泄露体检 |
+| `voiceprint` | 音源库 — 说话人声纹识别与档案管理、语音转写语义检索 |
+| `ai_desktop` | AI 桌面 — 时间 / 节日 / 天气 / 日程 / 订阅额度等环境信息可插拔注入 |
+| `dify` | 连接既有 Dify 实例：应用与工作流 DSL 管理、运行调用、MCP 桥接 |
+| `sillytavern` | 本机 SillyTavern 纳管：进程生命周期 / git 更新 / 角色卡管理 |
+| `plugins` | 插件安装 / 升级 / 移除与市场订阅 |
+| `mcp` | MCP 服务桥接（动态注册） |
+| `entity_query` | 实体目录两级发现 |
+| `model_control` | 模型切换 / 参数调整 / Ollama 管理 |
+| `system` | 系统信息 / Python 环境 / Git / 日志查询 |
 
 ### 项目结构（摘要）
 
@@ -321,11 +350,11 @@ AnelfAgent/
 │   ├── mind/                 # 思维循环 / PFC / Prompt 分层 / 守卫 / 压缩 / 思维会话
 │   ├── llm/                  # LLM 管理 / 弹性回退 / 探测 / 多模态适配器 / Responses
 │   ├── memory/               # 混合语义记忆（store/）+ 便签 + Cognee
-│   ├── skills/ · delegation/ · approval/ · security/
+│   ├── skills/ · delegation/ · hooks_llm/ · approval/ · security/
 │   ├── heartbeat/ · task/ · planning/ · messages/
 │   ├── channel/ · runtime/ · storage/
-├── channels/                 # qq / feishu / weixin / bilibili / acfun / telegram / webui / http_api / cli
-├── entities/                 # filesystem / web / media / minimax / sticker / ui / ssh / devops / share / mcp / ...
+├── channels/                 # qq / feishu / weixin / telegram / bilibili / acfun / webui / http_api / cli
+├── entities/                 # filesystem / web / media / vault / voiceprint / ai_desktop / dify / plugins / mcp / ...
 ├── services/ · web/ · config/ · scripts/ · tests/
 └── workspace/                # 运行时工作区（上传 / 技能等，本地生成）
 ```
@@ -364,17 +393,18 @@ async def get_weather(city: str) -> str:
 
 约定：返回 `str`（JSON）、完整类型注解 + Google docstring、内部捕获异常，错误统一走 `core.tool_errors`（entities 经 `_sdk` 导入）。
 
-新增 **group key** 时须同步：后端注册、`i18n/locales/{zh,en}/tools.json`、以及 `core/entity.py` / `services/tool.py` 中的分组排序表。
+新增 **group key** 时须同步：后端注册、`i18n/locales/{zh,en}/tools.json`、以及 `core/entity.py` 中的分组排序（实体可经 `entity_manifest(order=)` 自声明覆盖）。
 
 ### 添加心跳任务
 
-在 `config/tasks/` 创建任务 JSON，再于 WebUI 心跳页绑定调度规则。
+在 `config/tasks/` 创建任务 JSON，再于 WebUI 心跳页绑定调度规则；亦可配置 `trigger_event` 让任务由事件触发。
 
 ### 添加频道
 
 在 `channels/{name}/` 提供：
 
 - `adapter.py` — 继承 `BaseChannel`，实现 `channel_id` / `display_name` / `capabilities` / `start` / `stop` / `send_text`
+- `config.py` — 暴露 `CONFIG_MODEL`（pydantic 模型即配置唯一声明源）
 - `channel_config.json`（可用 `.example.json` 作模板）
 - `__init__.py` — 导出 `CHANNEL_CLASS`
 
@@ -391,6 +421,7 @@ uv run pytest tests/unit         # 分层单元测试（core/agent/services/web�
 uv run pytest entities/web/tests # 单模块测试（实体/频道单测在各模块内 tests/）
 uv run pytest -m integration     # 仅集成测试（需凭证的用例自动跳过）
 uv run ruff check .              # Lint
+uv run lint-imports              # 依赖方向契约检查
 uv run mypy core/                # 类型检查（core 严格层）
 uv add <package>                 # 新增依赖（请勿对 uv venv 使用 pip install）
 
@@ -408,7 +439,7 @@ CI（GitHub Actions，`.github/workflows/ci.yml`）：push/PR 时先按改动路
 
 个人配置与框架代码通过 `.gitignore` 分离：API Key、Token、记忆库、心跳计数、频道密钥等不进仓库，仅保留 `*.example.json` 等模板。配置值支持 `${ENV_VAR}` 引用语法，把密钥外置到环境变量。
 
-个人数据（API 配置 / 心跳与任务 / 记忆数据 / 频道密钥 / 人设等）的备份由用户自行负责（如 NAS 定期备份）。
+个人数据（API 配置 / 心跳与任务 / 记忆数据 / 频道密钥 / 人设等）的备份由用户自行负责（如 NAS 定期备份，或经存储卷面板导出）。
 
 ---
 
@@ -429,7 +460,7 @@ AnelfAgent 的多平台能力建立在这些优秀开源项目之上：
 
 特别感谢 [Nekro Agent](https://github.com/KroMiose/nekro-agent) 在多平台智能体架构与多模态候选注入体验上的参考与启发。
 
-> **协议说明**：AnelfAgent 通过 OneBot v11 WebSocket 与 NapCatQQ 通信，不包含也不修改 NapCat 源码。NoneBot2 经 NoneBot 桥接频道以独立子进程运行（worker 隔离 venv），遵循其 MIT 协议。微信频道对接腾讯 iLink Bot API，协议实现参考社区适配器实践。
+> **协议说明**：AnelfAgent 通过 OneBot v11 WebSocket 与 NapCatQQ 通信，不包含也不修改 NapCat 源码。微信频道对接腾讯 iLink Bot API，协议实现参考社区适配器实践。
 
 ### 参与贡献
 

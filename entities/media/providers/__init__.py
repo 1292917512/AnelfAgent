@@ -47,15 +47,23 @@ def provider_status() -> List[Dict[str, Any]]:
     status: List[Dict[str, Any]] = []
     for name, provider in _PROVIDERS.items():
         caps = {}
+        details: Dict[str, Any] = {}
         for cap in sorted(provider.capabilities):
             try:
                 caps[cap] = provider.is_configured(cap)
             except Exception:
                 caps[cap] = False
+            try:
+                detail = provider.status_details(cap)
+            except Exception:
+                detail = {}
+            if detail:
+                details[cap] = detail
         status.append({
             "name": name,
             "capabilities": sorted(provider.capabilities),
             "configured": caps,
+            "details": details,
         })
     return status
 

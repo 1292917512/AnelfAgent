@@ -424,8 +424,21 @@ export const memoryApi = {
   }) => api.post("/memory/recall-test", data),
   conv: {
     scopes: () => api.get("/memory/conversations/scopes"),
-    messages: (scopeType: string, scopeId: string, limit = 200) =>
-      api.get("/memory/conversations", { params: { scope_type: scopeType, scope_id: scopeId, limit } }),
+    messages: (
+      scopeType: string,
+      scopeId: string,
+      opts: { limit?: number; beforeId?: number; tsFrom?: number; tsTo?: number } = {},
+    ) =>
+      api.get("/memory/conversations", {
+        params: {
+          scope_type: scopeType,
+          scope_id: scopeId,
+          limit: opts.limit ?? 200,
+          ...(opts.beforeId != null ? { before_id: opts.beforeId } : {}),
+          ...(opts.tsFrom != null ? { ts_from: opts.tsFrom } : {}),
+          ...(opts.tsTo != null ? { ts_to: opts.tsTo } : {}),
+        },
+      }),
     delete: (rowId: number) => api.delete(`/memory/conversations/${rowId}`),
     clear: (scopeType: string, scopeId: string) =>
       api.post("/memory/conversations/clear", { scope_type: scopeType, scope_id: scopeId }),

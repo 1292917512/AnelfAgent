@@ -1216,53 +1216,72 @@ class LLMClient(BaseEntity):
     ) -> str:
         """视频理解：描述视频内容。
 
-        anthropic 类端点走原生 video content block 直连（litellm 的 Anthropic
-        转换层不认识 video block，会在消息校验阶段拒绝）；其余端点走 OpenAI
-        兼容的 video_url content block。
+        直发 HTTP，不经过对话协议层与 litellm——两侧转换层都不认识 video block：
+        litellm 的 Anthropic 转换层在校验阶段拒绝；Responses 转换层无 video 映射，
+        不识别部件透传后被端点静默忽略（表现为模型声称"没收到视频"）。直发保证
+        载荷逐字节到达端点，端点不支持即以 HTTP 错误显式暴露（供候选链回退）。
+        anthropic 端点用原生 video block（/v1/messages）；其余端点用 OpenAI
+        兼容 video_url block（/chat/completions）。
         """
+        self._ensure_configured()
         if self.config.api_type == API_TYPE_ANTHROPIC:
-            return await self._describe_video_anthropic(video, prompt)
-        content: list[dict] = [
-            {"type": "text", "text": prompt},
-            video.to_openai_block(),
-        ]
-        result = await self.chat([{"role": "user", "content": content}],
-                                 options={"max_tokens": self._describe_output_budget()})
-        text = (result.content or "").strip()
+            url = join_endpoint(self.config.base_url, "/v1/messages")
+            headers = {"anthropic-version": "2023-06-01"}
+            if self.config.api_key:
+                headers["x-api-key"] = self.config.api_key
+            payload: Dict[str, Any] = {
+                "model": self.config.model,
+                "max_tokens": self._describe_output_budget(),
+                "messages": [{"role": "user", "content": [
+                    video.to_anthropic_block(),
+                    {"type": "text", "text": prompt},
+                ]}],
+            }
+        else:
+            url = join_endpoint(self.config.base_url, "/chat/completions")
+            headers = {}
+            if self.config.api_key:
+                headers["Authorization"] = f"Bearer {self.config.api_key}"
+            payload = {
+                "model": self.config.model,
+                "max_tokens": self._describe_output_budget(),
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    video.to_openai_block(),
+                ]}],
+            }
+        headers["Content-Type"] = "application/json"
+        headers.update(self.config.extra_headers)
+        resp = await self._direct_http().post(url, json=payload, headers=headers)
+        if resp.status_code != 200:
+            raise RuntimeError(f"视频识别请求失败 (HTTP {resp.status_code}): {resp.text[:200]}")
+        text = self._parse_video_describe_text(resp.json())
         if not text:
             # 空结果视为调用失败，让上层回退到下一个视觉模型
             raise RuntimeError("视觉模型返回空结果")
         return text
 
-    async def _describe_video_anthropic(self, video: VideoContent, prompt: str) -> str:
-        """Anthropic Messages 扩展 video block 直连请求。"""
-        self._ensure_configured()
-        url = join_endpoint(self.config.base_url, "/v1/messages")
-        payload: Dict[str, Any] = {
-            "model": self.config.model,
-            "max_tokens": self._describe_output_budget(),
-            "messages": [{"role": "user", "content": [
-                video.to_anthropic_block(),
-                {"type": "text", "text": prompt},
-            ]}],
-        }
-        headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
-        if self.config.api_key:
-            headers["x-api-key"] = self.config.api_key
-        headers.update(self.config.extra_headers)
-        resp = await self._direct_http().post(url, json=payload, headers=headers)
-        if resp.status_code != 200:
-            raise RuntimeError(f"视频识别请求失败 (HTTP {resp.status_code}): {resp.text[:200]}")
-        data = resp.json()
-        text = "".join(
-            block.get("text", "")
-            for block in data.get("content", [])
-            if isinstance(block, dict) and block.get("type") == "text"
-        ).strip()
-        if not text:
-            # 空结果视为调用失败，让上层回退到下一个视觉模型
-            raise RuntimeError("视觉模型返回空结果")
-        return text
+    def _parse_video_describe_text(self, data: Dict[str, Any]) -> str:
+        """按协议形态从视频识别响应中提取文本。"""
+        if self.config.api_type == API_TYPE_ANTHROPIC:
+            return "".join(
+                block.get("text", "")
+                for block in data.get("content", [])
+                if isinstance(block, dict) and block.get("type") == "text"
+            ).strip()
+        choices = data.get("choices") or []
+        if not choices:
+            return ""
+        content = (choices[0].get("message") or {}).get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            return "".join(
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ).strip()
+        return ""
 
     def _direct_http(self) -> httpx.AsyncClient:
         """绕过 litellm 的直连请求共享连接池（原生向量 / 视频识别复用）。"""

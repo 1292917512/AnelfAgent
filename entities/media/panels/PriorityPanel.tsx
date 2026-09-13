@@ -70,37 +70,48 @@ export function PriorityPanel() {
             <div className="space-y-1.5">
               {chain.map((name, index) => {
                 const ready = configuredOf(name, cap);
+                const detail = providers.find((item) => item.name === name)?.details?.[cap];
                 return (
                   <div
                     key={name}
-                    className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-md border border-border bg-card"
+                    className="px-2.5 py-1.5 rounded-md border border-border bg-card"
                   >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="w-5 h-5 flex items-center justify-center rounded-full bg-secondary text-[10px] font-bold text-muted shrink-0">
-                        {index + 1}
-                      </span>
-                      <span className="text-xs font-medium text-heading">{t(`providers.${name}`)}</span>
-                      <StatusDot status={ready ? "ok" : "danger"} />
-                      <span className="text-[10px] text-muted">
-                        {ready ? t("priority.configured") : t("priority.notConfigured")}
-                      </span>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="w-5 h-5 flex items-center justify-center rounded-full bg-secondary text-[10px] font-bold text-muted shrink-0">
+                          {index + 1}
+                        </span>
+                        <span className="text-xs font-medium text-heading">{t(`providers.${name}`)}</span>
+                        <StatusDot status={ready ? "ok" : "danger"} />
+                        <span className="text-[10px] text-muted">
+                          {ready ? t("priority.configured") : t("priority.notConfigured")}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => move(cap, index, -1)}
+                          disabled={index === 0}
+                          className="p-1 rounded text-muted hover:text-foreground disabled:opacity-30"
+                        >
+                          <ArrowUp size={13} />
+                        </button>
+                        <button
+                          onClick={() => move(cap, index, 1)}
+                          disabled={index === chain.length - 1}
+                          className="p-1 rounded text-muted hover:text-foreground disabled:opacity-30"
+                        >
+                          <ArrowDown size={13} />
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        onClick={() => move(cap, index, -1)}
-                        disabled={index === 0}
-                        className="p-1 rounded text-muted hover:text-foreground disabled:opacity-30"
-                      >
-                        <ArrowUp size={13} />
-                      </button>
-                      <button
-                        onClick={() => move(cap, index, 1)}
-                        disabled={index === chain.length - 1}
-                        className="p-1 rounded text-muted hover:text-foreground disabled:opacity-30"
-                      >
-                        <ArrowDown size={13} />
-                      </button>
-                    </div>
+                    {detail && "video_models" in detail && (
+                      <p className="pl-7 pt-1 text-[10px] text-muted">
+                        {t("priority.videoModels")}:{" "}
+                        {detail.video_models?.length
+                          ? detail.video_models.join("、")
+                          : t("priority.noVideoModels")}
+                      </p>
+                    )}
                   </div>
                 );
               })}

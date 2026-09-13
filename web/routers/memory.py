@@ -270,8 +270,14 @@ async def list_conv_messages(
     scope_type: str = Query("user"),
     scope_id: str = Query(...),
     limit: int = Query(200, ge=1, le=1000),
+    before_id: Optional[int] = Query(None, ge=1),
+    ts_from: Optional[float] = Query(None, gt=0),
+    ts_to: Optional[float] = Query(None, gt=0),
 ) -> List[Dict[str, Any]]:
-    return await _mem_svc.list_conv_messages(scope_type, scope_id, limit)
+    return await _mem_svc.list_conv_messages(
+        scope_type, scope_id, limit,
+        before_id=before_id, ts_from=ts_from, ts_to=ts_to,
+    )
 
 
 @router.delete("/conversations/{row_id}")

@@ -10,7 +10,7 @@
     "styles": "Style Presets"
   },
   "caps": {
-    "vision": "Image Recognition",
+    "vision": "Image / Video Recognition",
     "asr": "Speech Recognition",
     "tts": "Text to Speech",
     "voice_mgmt": "Voice Management",
@@ -27,7 +27,9 @@
   "priority": {
     "hint": "Adjust the provider call order for each capability: the top provider is tried first, with automatic fallback on failure. For model-level priority, use the Models page.",
     "configured": "Configured",
-    "notConfigured": "Not configured"
+    "notConfigured": "Not configured",
+    "videoModels": "Video understanding",
+    "noVideoModels": "No video-capable model declared"
   },
   "defaults": {
     "voiceTitle": "Voice Settings",

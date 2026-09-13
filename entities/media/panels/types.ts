@@ -6,6 +6,8 @@ export interface MediaProviderStatus {
   capabilities: string[];
   /** 各能力是否已配置就绪（凭据/模型） */
   configured: Record<string, boolean>;
+  /** 各能力的附加诊断信息（如 vision 的 video_models：声明 supports_video 的模型清单） */
+  details?: Record<string, { video_models?: string[] }>;
 }
 
 /** 媒体库配置（/api/entity/media/config 响应）。 */
