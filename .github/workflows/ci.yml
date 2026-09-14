@@ -148,9 +148,18 @@ jobs:
         env:
           UV_INDEX_URL: https://pypi.org/simple
 
-      # paths 为空（all 腿）时走 pyproject testpaths 全量收集
+      # paths 为空（all 腿）时走 pyproject testpaths 全量收集。
+      # 失败行转 ::error 注解——注解经公开 API 可读（日志需登录），
+      # 未登录也能定位失败用例。
       - name: Pytest (${{ matrix.name }})
-        run: uv run pytest ${{ matrix.paths }} --cov --cov-report=xml --cov-report=term -n auto
+        run: |
+          set +e
+          uv run pytest ${{ matrix.paths }} --cov --cov-report=xml --cov-report=term -n auto > /tmp/pytest.log 2>&1
+          status=$?
+          grep -E '^(FAILED|ERROR) ' /tmp/pytest.log | head -30 \
+            | sed 's/^/::error title=pytest::/' || true
+          tail -5 /tmp/pytest.log
+          exit $status
 
       - name: Upload coverage report
         if: always()  # pytest 失败时也上传，便于排查

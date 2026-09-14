@@ -218,12 +218,17 @@ class TestResetFormat:
 
     @pytest.fixture
     def _shanghai_tz(self, monkeypatch: pytest.MonkeyPatch):
-        """钉死本地时区（渲染走 datetime.fromtimestamp 本地时区，保证任何机器可复现）。"""
-        monkeypatch.setenv("TZ", "Asia/Shanghai")
-        time.tzset()
-        yield
-        monkeypatch.undo()
-        time.tzset()
+        """钉死渲染时区为 +8（fromtimestamp 走固定时区替身，不依赖系统 tzdata）。"""
+        from datetime import datetime, timedelta, timezone
+
+        class _FixedTzDatetime(datetime):
+            @classmethod
+            def fromtimestamp(cls, ts, tz=None):
+                return datetime.fromtimestamp(
+                    ts, timezone(timedelta(hours=8)))
+
+        import entities.ai_desktop.modules.subscription.module as sub_module
+        monkeypatch.setattr(sub_module, "datetime", _FixedTzDatetime)
 
     def test_format_window_full_datetime(self, _shanghai_tz) -> None:
         window = {"label": "每5小时", "limit": 100.0, "remaining": 87.0,

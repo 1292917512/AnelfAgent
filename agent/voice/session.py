@@ -1,10 +1,12 @@
-"""语音会话管理器：租约、缓冲、能量法端点检测、WAV 成段交付。
+"""语音会话管理器：租约、缓冲、输入预处理、端点检测、WAV 成段交付。
 
 配置项（core.config 热读取，配置中心自动可见）：
 - voice_silence_ms：静音判段阈值（默认 800ms 连续静音收束成段）
 - voice_min_utterance_ms：有效语音段最短时长（过短视为误触发丢弃）
 - voice_max_utterance_s：单段最长时长（超时强制切段，防无限缓冲）
 - voice_vad_floor_min：端点检测噪声地板下限（RMS，自适应地板的保守底）
+- voice_turn_detector：端点检测梯队（auto/smart_turn/silero/energy）
+- voice_denoise / voice_agc：输入预处理链开关
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, Optional
 
+from agent.voice.preprocess import PcmPreprocessor, create_preprocessor
 from core.audio_frames import AudioFrame, EnergyVad
 from core.config import register_configs_safe
 from core.latebind import LateBinding, WireError
@@ -26,9 +29,54 @@ _LOG_TAG = "语音"
 
 register_configs_safe({
     "voice": {
+        "voice_turn_detector": {
+            "description": "端点检测实现：auto=自动梯队（语义端点→VAD→能量法，"
+                           "模型未就绪自动降级）/ smart_turn / silero / energy；"
+                           "模型经 Web 设置页或 download_local_model 工具下载",
+            "default": "auto",
+            "options": ["auto", "smart_turn", "silero", "energy"],
+        },
+        "voice_onset_ms": {
+            "description": "语音起始确认时长（持续有声这么久才算说话开始）",
+            "default": 120, "unit": "ms", "min": 50, "max": 1000, "advanced": True,
+        },
         "voice_silence_ms": {
-            "description": "语音端点检测：连续静音多少毫秒后收束成段",
+            "description": "语音端点检测：连续静音多少毫秒后触发收束判定",
             "default": 800, "unit": "ms", "min": 200, "max": 5000,
+        },
+        "voice_silero_onset_prob": {
+            "description": "silero VAD 语音起始概率阈值",
+            "default": 0.5, "min": 0.1, "max": 0.9, "advanced": True,
+        },
+        "voice_silero_close_prob": {
+            "description": "silero VAD 语音结束概率阈值（迟滞下沿）",
+            "default": 0.35, "min": 0.05, "max": 0.8, "advanced": True,
+        },
+        "voice_smart_turn_threshold": {
+            "description": "语义端点收束阈值：说完概率达到该值才收束（调低更快截断，"
+                           "调高更能容纳停顿思考）",
+            "default": 0.5, "min": 0.1, "max": 0.95,
+        },
+        "voice_smart_turn_eval_interval_ms": {
+            "description": "语义端点候选等待期的复评间隔",
+            "default": 250, "unit": "ms", "min": 100, "max": 1000, "advanced": True,
+        },
+        "voice_smart_turn_max_silence_ms": {
+            "description": "语义端点硬上限：静音累计到该时长仍未确认即强制收束",
+            "default": 3000, "unit": "ms", "min": 1000, "max": 10000,
+        },
+        "voice_denoise": {
+            "description": "麦克风输入谱减降噪（静音帧学噪声谱，语音帧抑制稳态噪声）",
+            "default": True,
+        },
+        "model_asset_mirror": {
+            "description": "本地模型下载源镜像：auto=直连失败自动回退镜像 / off=仅直连 / "
+                           "自定义 https 前缀替换 huggingface.co",
+            "default": "auto", "advanced": True,
+        },
+        "voice_agc": {
+            "description": "麦克风输入自动增益（语音向目标响度自适应放大，含限幅防削波）",
+            "default": True,
         },
         "voice_min_utterance_ms": {
             "description": "有效语音段最短时长（低于视为误触发丢弃）",
@@ -94,6 +142,7 @@ class _Session:
     delivery: VoiceDelivery = field(default_factory=VoiceDelivery)
     started_at: float = field(default_factory=time.time)
     buffer: bytearray = field(default_factory=bytearray)
+    preprocessor: Optional[PcmPreprocessor] = None
     vad: Optional[EnergyVad] = None
     duration_ms: float = 0.0
     speech_ms: float = 0.0
@@ -138,6 +187,7 @@ class VoiceSessionManager:
         self._sessions[owner] = _Session(
             owner=owner, connection_id=connection_id, sample_rate=sample_rate,
             delivery=delivery or VoiceDelivery(),
+            preprocessor=create_preprocessor(sample_rate),
             vad=EnergyVad(floor_min=get_config_float("voice_vad_floor_min", 100.0)),
         )
         log(f"语音会话开始: owner={owner} rate={sample_rate}", "DEBUG", tag=_LOG_TAG)
@@ -148,20 +198,28 @@ class VoiceSessionManager:
         return session is not None and session.connection_id == connection_id
 
     async def accept_frame(self, owner: str, connection_id: str, frame: AudioFrame) -> None:
-        """接收一条音频帧：缓冲 + 端点检测，到段即 finalize。"""
+        """接收一条音频帧：预处理 → 缓冲 + 端点检测，到段即 finalize。"""
         session = self._sessions.get(owner)
         if session is None or session.connection_id != connection_id:
             return  # 无租约的帧静默丢弃（客户端协议错误由控制面拒绝，不逐帧报错）
         silence_ms, _min_ms, max_s = self._cfg()
 
-        session.buffer.extend(frame.pcm)
-        session.duration_ms += frame.duration_ms
-        if session.vad is not None and session.vad.is_speech(frame.pcm):
+        pcm = frame.pcm
+        if session.preprocessor is not None:
+            pcm = session.preprocessor.feed(pcm)
+            if not pcm:
+                self._arm_watchdog(session, silence_ms)
+                return  # 预处理链内部缓冲未凑满一帧
+        duration_ms = len(pcm) / 2 / session.sample_rate * 1000
+
+        session.buffer.extend(pcm)
+        session.duration_ms += duration_ms
+        if session.vad is not None and session.vad.is_speech(pcm):
             session.silence_ms = 0.0
             session.has_speech = True
-            session.speech_ms += frame.duration_ms
+            session.speech_ms += duration_ms
         else:
-            session.silence_ms += frame.duration_ms
+            session.silence_ms += duration_ms
 
         if session.duration_ms >= max_s * 1000:
             await self._finalize(session, reason="时长上限")
@@ -193,10 +251,11 @@ class VoiceSessionManager:
         if session.watchdog is not None:
             session.watchdog.cancel()
         loop = asyncio.get_running_loop()
-        session.watchdog = loop.call_later(
-            (silence_ms + 200) / 1000,
-            lambda s=session: asyncio.ensure_future(self._watchdog_fire(s)),
-        )
+
+        def _fire(s: _Session = session) -> None:
+            asyncio.ensure_future(self._watchdog_fire(s))
+
+        session.watchdog = loop.call_later((silence_ms + 200) / 1000, _fire)
 
     async def _watchdog_fire(self, session: _Session) -> None:
         if self._sessions.get(session.owner) is not session:
@@ -206,11 +265,16 @@ class VoiceSessionManager:
         await self._finalize(session, reason="静音看门狗")
 
     async def _finalize(self, session: _Session, *, reason: str) -> None:
-        """成段交付：校验最小时长 → 写 WAV → 交 sink；会话从注册表摘除。"""
+        """成段交付：冲刷预处理 → 校验最短时长 → 写 WAV → 交 sink；会话摘除。"""
         if self._sessions.pop(session.owner, None) is None:
             return
         if session.watchdog is not None:
             session.watchdog.cancel()
+        if session.preprocessor is not None:
+            tail = session.preprocessor.flush()
+            if tail:
+                session.buffer.extend(tail)
+                session.duration_ms += len(tail) / 2 / session.sample_rate * 1000
         _silence_ms, min_ms, _max_s = self._cfg()
         if not session.has_speech or session.speech_ms < min_ms:
             log(

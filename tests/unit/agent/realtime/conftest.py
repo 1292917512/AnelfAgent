@@ -25,6 +25,17 @@ def clean_registries():
         get_tts_registry().register(p)
 
 
+@pytest.fixture(autouse=True)
+def energy_detector():
+    """端点检测钉在能量法：引擎用例喂合成音（非真语音，模型级 VAD 不认），
+    不随宿主机是否装了 onnxruntime/下载了模型而漂移。"""
+    from core.config import ConfigManager
+
+    ConfigManager.set("voice_turn_detector", "energy")
+    yield
+    ConfigManager.set("voice_turn_detector", "auto")
+
+
 @pytest.fixture
 def app(monkeypatch):
     fake = FakeApp()

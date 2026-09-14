@@ -14,7 +14,8 @@
     "git": "Git",
     "config": "Config Overview",
     "hooks": "Hooks",
-    "llmHooks": "LLM Hooks"
+    "llmHooks": "LLM Hooks",
+    "localModels": "Local Models"
   },
   "os": "OS",
   "architecture": "Architecture",
@@ -128,5 +129,23 @@
       "task": "Task",
       "entity": "Entity"
     }
+  },
+  "localModels": {
+    "title": "Local Model Assets",
+    "dir": "Directory",
+    "statusReady": "Ready",
+    "statusMissing": "Not downloaded",
+    "statusDownloading": "Downloading",
+    "statusError": "Failed",
+    "download": "Download",
+    "redownload": "Re-download",
+    "delete": "Delete",
+    "runtimeTitle": "Runtime Dependency",
+    "runtimeSubtitle": "Python runtime for local model inference (onnxruntime); effective immediately after install",
+    "runtimeInstalled": "Installed {{version}}",
+    "runtimeNotInstalled": "Not installed",
+    "runtimeMissing": "Requires {{pkg}}",
+    "installRuntime": "Install onnxruntime",
+    "installing": "Installing…"
   }
 }

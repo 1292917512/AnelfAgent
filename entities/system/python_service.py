@@ -953,6 +953,45 @@ def reset_pip_mirror(python_path: Optional[str] = None) -> CommandResult:
         )
 
 
+def install_packages(packages: List[str], python_path: Optional[str] = None) -> CommandResult:
+    """安装 Python 包到当前环境（uv 管理环境走 uv pip install，其余走 pip install）。"""
+    specs = [p.strip() for p in packages if p and p.strip()]
+    if not specs:
+        return CommandResult(ok=False, stdout="", stderr="未指定要安装的包")
+    python_exe = python_path or sys.executable
+    uv_path = which_tool("uv") if detect_env_manager(python_exe).get("uv_managed") else None
+    if uv_path:
+        cmd = [uv_path, "pip", "install", *specs]
+    elif is_pip_available(python_exe):
+        cmd = [python_exe, "-m", "pip", "install", *specs]
+    else:
+        return CommandResult(ok=False, stdout="", stderr="无可用的包安装器（uv 与 pip 均不可用）")
+    log(f"📦 安装 Python 包: {' '.join(specs)}", "INFO")
+    result = run_command(cmd, timeout_sec=600)
+    if result.ok:
+        log(f"✅ 包安装完成: {' '.join(specs)}", "INFO")
+    else:
+        log(f"❌ 包安装失败: {result.stderr[:500]}", "ERROR")
+    return result
+
+
+def uninstall_packages(packages: List[str], python_path: Optional[str] = None) -> CommandResult:
+    """从当前环境卸载 Python 包（uv 管理环境走 uv pip uninstall，其余走 pip uninstall）。"""
+    specs = [p.strip() for p in packages if p and p.strip()]
+    if not specs:
+        return CommandResult(ok=False, stdout="", stderr="未指定要卸载的包")
+    python_exe = python_path or sys.executable
+    uv_path = which_tool("uv") if detect_env_manager(python_exe).get("uv_managed") else None
+    if uv_path:
+        cmd = [uv_path, "pip", "uninstall", "-y", *specs]
+    elif is_pip_available(python_exe):
+        cmd = [python_exe, "-m", "pip", "uninstall", "-y", *specs]
+    else:
+        return CommandResult(ok=False, stdout="", stderr="无可用的包管理器（uv 与 pip 均不可用）")
+    log(f"🗑️ 卸载 Python 包: {' '.join(specs)}", "INFO")
+    return run_command(cmd, timeout_sec=300)
+
+
 # ==================== 综合状态检查 ====================
 
 @dual_mode

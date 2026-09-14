@@ -108,8 +108,11 @@ class TestSpeakerAnnotation:
         from agent.audio import service as audio_service_mod
         from core.config import ConfigManager
 
-        monkeypatch.setattr(ConfigManager, "get",
-                            staticmethod(lambda k, d=None: False if k == "realtime_speaker_annotate" else d))
+        real_get = ConfigManager.get
+        monkeypatch.setattr(
+            ConfigManager, "get",
+            staticmethod(lambda k, d=None: (
+                False if k == "realtime_speaker_annotate" else real_get(k, d))))
 
         async def _embed(self, path: str):
             return [0.1]

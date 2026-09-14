@@ -62,8 +62,9 @@ class AudioServiceFacade:
 
         # 语音会话（agent/voice）配置快照
         voice_keys = (
-            "voice_silence_ms", "voice_min_utterance_ms",
+            "voice_turn_detector", "voice_silence_ms", "voice_min_utterance_ms",
             "voice_max_utterance_s", "voice_vad_floor_min",
+            "voice_smart_turn_threshold", "voice_denoise", "voice_agc",
         )
         voice_config = {k: ConfigManager.get(k) for k in voice_keys}
 

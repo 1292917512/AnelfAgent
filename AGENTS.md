@@ -534,7 +534,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 统一实时枢纽 | `core/realtime_hub.py`（取代旧 `core/sse_hub.py`，已删除） | SSE（`web/routers/chat.py:/stream`）与 WebSocket（`web/routers/chat_ws.py:/chat/ws`）共享同一订阅/分发面。订阅者带身份（connection_id/client_kind=web\|desktop）与 topic 过滤；帧按类型分级背压——增量帧（delta 等）队列满丢旧保新，终态帧（reply/media/turn_end/ui_command/approval_request/share）不可静默丢，腾不出位即判死订阅者（`Subscriber.dead`，连接侧断开由客户端重连 + /history 重同步） |
 | WS envelope 协议 | `web/routers/chat_ws.py` | 上行文本帧 JSON `{"action", "request_id"?}`，二进制帧仅承载麦克风 PCM；下行 `{"type", ...}` 数据帧（事件名与 SSE 帧一致）+ `{"type":"status","message":{"code","details"}}` 结构化错误帧（错误码封闭集见模块头部常量）。action v1：ping/send_message/interrupt/ui_answer/ui_state_report/voice_start/voice_end + 音频会话别名 start_session(input_type=audio)/end_session。client=desktop 单槽位"最新连接赢"（CONNECTION_SUPERSEDED 踢旧连接防双写），client=web 多开不踢。鉴权自校验（BaseHTTPMiddleware 不覆盖 WS）：cookie `_anelf_token` 或 `?token=`，与 HTTP 面同一密码体系 |
 | 二进制音频帧 | `core/audio_frames.py` | 麦克风上行二进制帧格式（magic 4 字节标识 + LE uint32 采样率 + PCM16），采样率白名单 {16000,24000,48000}，单帧 120ms 漂移门；坏帧只丢帧不关连接。Web 实时语音与桌面壳共用同一帧格式 |
-| 语音会话模块 | `agent/voice/`（独立可插拔） | MicLease 式租约（同 owner 同时一条语音连接，冲突抛 VoiceLeaseBusy 显式拒绝）+ 端点检测用 `core/audio_frames.py::EnergyVad`（滑窗 10 分位数噪声地板 + 上行限速防起始追平/语音内慢速防切断长句、迟滞双门限、onset 连续帧确认、DC 阻断滤波；配置键 voice_vad_floor_min）+ 看门狗兜底收束（无条件，防租约泄漏）+ 成段写 WAV（workspace/uploads/voice/）。会话开启时绑定 VoiceDelivery（用户/会话/落点频道），成段随 utterance 交 `voice_sink_port`（**LateBinding 端口**，跨层桥成因；组合根 `agent/runtime/wiring.py` 施绑 `deliver_utterance`）。配置组 `voice`（silence_ms/min_utterance_ms/max_utterance_s/energy_threshold 热读取）。成段广播 EVENT_VOICE_UTTERANCE（钩子面/未来 Realtime 管线消费）；transcript 字段为 Realtime/ASR 预留 |
+| 语音会话模块 | `agent/voice/`（独立可插拔） | MicLease 式租约（同 owner 同时一条语音连接，冲突抛 VoiceLeaseBusy 显式拒绝）+ 输入预处理链（见第二十四轮：降噪/AGC/限幅，成段前 flush 冲刷）+ 段内端点检测用 `core/audio_frames.py::EnergyVad`（滑窗 10 分位数噪声地板 + 上行限速防起始追平/语音内慢速防切断长句、迟滞双门限、onset 连续帧确认、DC 阻断滤波；配置键 voice_vad_floor_min）+ 看门狗兜底收束（无条件，防租约泄漏）+ 成段写 WAV（workspace/uploads/voice/）。会话开启时绑定 VoiceDelivery（用户/会话/落点频道），成段随 utterance 交 `voice_sink_port`（**LateBinding 端口**，跨层桥成因；组合根 `agent/runtime/wiring.py` 施绑 `deliver_utterance`）。配置组 `voice`（turn_detector/onset_ms/silence_ms/smart_turn_*/denoise/agc/min_utterance_ms/max_utterance_s/vad_floor_min 热读取）。成段广播 EVENT_VOICE_UTTERANCE（钩子面/未来 Realtime 管线消费）；transcript 字段为 Realtime/ASR 预留 |
 | 语音接入统一入口 | `agent/voice/deliver.py` + `services/voice.py` | deliver_utterance 把语音段作为 VOICE MessageSegment 经 **AgentApp.send_message 统一入口**（→ Everything → pipeline → Mind）投递，与频道语音消息完全同路径（[media_type:voice] 标签 + voice 工具链），不发明第二条语音路径；services/voice 是 web 层纯门面（只封 VoiceDelivery 绑定租约，无投递逻辑），VoiceLeaseBusy 经此再导出（web/routers 不得直接依赖 agent，经 services 收口） |
 | 富媒体上下文注入 | `core/context_provider.py` + `agent/mind/tools/think_loop.py::_collect_provider_messages` + `agent/mind/tools/vision.py::build_provider_media_message` | ProviderSnapshot 携带 `media: List[ContextMedia]`（core 中立表达，kind=image/audio/video）；collect() 产出 VolatileClip{text, media, source}。组装点按 kind 分派（协议物理约束）：clip 文本走 system 消息；image 在视觉模型下集中组 user 角色多模态消息（image block 仅 user 角色可靠；等距抽样 ≤3 张保头中尾；图在文前），非视觉降级为 [media_type:image] 标签；**audio/video 一律降级为 [media_type:xxx][media_path:...] 标签**并入 clip 文本（litellm 对话转换层不接受这两类 block，视频直发 HTTP 教训见 describe_video），AI 经既有媒体工具链处理——不静默丢媒体。位置在工具链之后、exec_context 之前，`_layer: provider`，不触碰 stable/历史前缀 |
 | ai_desktop 媒体契约 | `entities/ai_desktop/framework.py` | DesktopModule 新增 `render_media() -> List[ContextMedia]`（默认空）；`render_context()`（文本）不变，`render_media()` 汇总各组件媒体；文本必须自足（降级路径只文本+标签生效） |
@@ -562,7 +562,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 实时语音引擎 | `agent/realtime/`（engine/session/playback） | 全双工语音对话：会话状态机 LISTENING/THINKING/SPEAKING + 轮次令牌（turn_id 贯穿 ASR 定稿→思维→TTS→播放帧）+ barge-in（播放/思考中开口即 turn_id+1、取消 TTS、清空播放队列、发 interrupted 收束帧）+ 租约（同 owner 显式拒绝）。播放链 `PcmResampler` 边界连续重采样（相位/尾样本跨块延续，任意源率→播放率默认 48k）+ 有界 `PlaybackQueue`（满时丢最旧音频帧；audio_chunk/audio_done 帧对，final 帧永不被挤掉） |
 | 级联管线（默认模式） | `agent/realtime/engine.py::user_turn/_on_delta/_run_tts` | 麦克风帧 → 端点检测 → 流式 ASR 定稿 → **AgentApp 统一入口**进思维（人格/记忆/工具全量生效，与文字消息同一条大脑路径）→ event_bus 回复增量（scope 匹配的 `assistant_delta`/`after_reply` 仲裁，barge-in 后旧轮增量不再送 TTS）→ TTS 管线 → 下行音频帧；回复文本照常走频道事件流（语音只是第二种呈现，不产生第二条对话路径）。ASR 定稿片段同步入核心音频库 |
 | 原生双方言 | `agent/realtime/native/`（base/openai/gemini） | realtime_mode=native 时启用：OpenAI Realtime（session.update/pcm16/server_vad/response.cancel）与 Gemini Live（setup/media_chunks/interrupted）双方言客户端，凭据取 llm_clients 供应商链（openai/googleapis 匹配）；提供方 speech_started 事件驱动引擎打断；引擎侧麦克风按 input_rate 重采样喂入；系统指令缺省从人格档案组装（realtime_native_instructions 可覆盖） |
-| 端点检测 | `agent/voice/turn_detection.py` | TurnDetector 协议 + 双实现：silero（模型级，onnxruntime + voice_silero_model_path，30ms 块概率 + 迟滞双阈值，依赖缺失自动降级）/ energy（零依赖 EnergyVad 恒可用）。voice_turn_detector 配置选择 |
+| 端点检测 | `agent/voice/turn_detection.py` | TurnDetector 协议 + 梯队实现（voice_turn_detector 默认 auto：smart_turn→silero→energy 缺失自动降级）：smart_turn=语义端点（见第二十四轮）、silero=v5/v6 模型级 VAD（512 样本窗+64 上下文+sr/state 输入）、energy=零依赖兜底；模型经本地模型资产解析（workspace/models/） |
 | 流式 ASR | `agent/audio/streaming.py`（asr_stream 类别）+ `entities/audiosync/funasr_stream.py` | StreamingAsrSession 协议（accept_pcm → partial/final 事件）；FunASR 组件滚动窗部分转写（step/window 配置，仅展示辅助）+ 收束定稿（带结构化分段）；无流式提供者时引擎退化为整段缓冲转写 |
 | TTS 管线 | `agent/tts/`（providers/sentences/pipeline/decode/builtin）+ `entities/minimax/`（HTTP/WS 组件） | 流式提供者协议（TtsStream=PCM 块流+采样率声明）+ 优先级链运行时降级（首字节前无缝切换、首字节后截断该句）；`SentenceSplitter` 流式断句（CJK 标点/英文缩写与小数豁免/超长软切/短尾合并）+ `strip_for_speech` 朗读清洗（markdown/旁白剥离、CJK 空格规范化、emoji 剔除）；句级管线预取（tts_prefetch_sentences）；压缩流经 ffmpeg 管道解码 PCM16。内置提供者：openai 风格（audio/speech 流式，模型配置 tts 链凭据）/ edge-tts（MP3→解码，可选库）；组件：minimax HTTP（t2a_v2 流式 PCM 直出）/ minimax WS（T2A WebSocket 双工长连接），经 `_sdk.register_tts_provider` 注册同链互备 |
 | WS 语音数据面 | `web/routers/chat_ws.py` + `services/voice.py` | voice_start 增加 mode=realtime：sink 挂本连接订阅队列（JSON 事件走下行泵，音频帧以 __audio__ 标记转二进制 PCM 帧直发，满时丢最旧保最新）；voice_end/断连统一收尾（实时优先）；**麦克风单会话纪律**（成段录音与实时通话互斥，双向 VoiceLeaseBusy） |
@@ -592,6 +592,20 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 能力前端 | `pages/Retrieval.tsx`（/retrieval，检索导航项）+ Vision「生成能力」页签 + Sound「生成」页签 | 检索页：能力×提供者矩阵 + 抓取设置；视觉页：生成能力链排序（共用 `components/common/CapabilityChainPanel.tsx`）+ 风格预设 CRUD（默认参数在配置 tab 热编辑）；声音页：声音能力链 + 默认音色/克隆参考配置。媒体库/网络工具实体面板随目录删除零残留 |
 
 > Model Experience：① 核心能力主用工具全部 tags=["always"] 常驻 schema（识别/生成/检索/下载），管理工具 core 标签按需激活，能力矩阵经 vision_config/sound_config/retrieval_providers 自发现（含实时可用状态与调用示例）；② token 影响：常驻工具 +18 schema（前缀缓存摊薄）；③ 缓存影响：always 工具并入既有 always 区块，排序冻结机制不变
+
+#### 语音链路核心质量（第二十四轮新增）
+
+语义端点检测 + 输入预处理链 + 本地模型资产双通道管理（Web 与 AI 工具同一能力面）：
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 语义端点检测 | `agent/voice/turn_detection.py::SmartTurnTurnDetector` | VAD 提议、语义裁决的融合端点：基座检测器触发 SPEECH_END 后进入候选等待，对尾部 8 秒音频本地推理"说完概率"（SmartTurn ONNX，Whisper log-mel 特征纯 numpy 提取），≥ voice_smart_turn_threshold 才收束，否则按 voice_smart_turn_eval_interval_ms 复评、voice_smart_turn_max_silence_ms 硬上限兜底（绝不挂死）；候选期用户重新开口即取消（基座重复 START 被吞掉，同一段语音不误开新轮）；模型缺失或连续 3 次推理失败熔断退化为纯 VAD。运行时进程内单例共享（会话间无状态） |
+| 输入预处理链 | `agent/voice/preprocess.py` | 谱减降噪 → 自动增益 → 限幅：流式 STFT（sqrt-Hann 50% 重叠 OLA，帧长 32ms，任意采样率）纯 numpy 零依赖。降噪静音帧学稳态噪声谱（绝对电平门 + 连续帧确认防开头语音误学，建立期被响帧打断即弃半成品）、语音帧超减抑制（-12dB 单频点地板防音乐噪声）；AGC 语音帧向目标响度自适应、静音帧保持增益（不放大底噪）；限幅峰值软顶（瞬时攻击慢恢复）。voice_denoise / voice_agc 独立开关，全关字节直通零开销；flush() 收尾冲刷吐尽内部滞留样本 |
+| 预处理接线 | `agent/realtime/session.py` + `agent/realtime/engine.py` + `agent/voice/session.py` | 实时会话与段会话的麦克风帧统一先过预处理链再进端点检测/ASR/缓冲；轮次收束（转写兜底与声纹识别吃到 flush 后的完整音频）与段成段（写 WAV 前）冲刷；打断 reset 同步重置链状态 |
+| 本地模型资产 | `agent/model_assets.py` + `services/model_assets.py` + `web/routers/model_assets.py`（/api/local-models） | 登记制资产（id/来源/版本/SHA-256 固定，silero_vad v6.2.1 与 smart_turn v3.2-cpu）；落盘 workspace/models/（AI 工作路径内，文件工具可直接查看）；流式下载 + 哈希校验 + 原子替换 + 进度可查，同资产并发请求合并单飞，下载中拒绝删除；直连受限网络自动回退镜像源（model_asset_mirror：auto 回退 hf-mirror / off / 自定义前缀）。Web 设置页「本地模型」页签（下载/进度/删除/运行时安装）与 AI 工具 `list/download/delete_local_model`（voice 组 core 标签）同一管理面——语音端点降级时 AI 可自主补装模型恢复满配 |
+| 运行时安装 | `entities/system/python_service.py::install_packages/uninstall_packages` + 工具 `install_python_packages/uninstall_python_packages`（environment 组）+ POST /api/local-models/runtime/install | uv 管理环境自动走 uv pip、其余走 pip；模型缺运行时依赖（onnxruntime）时 Web 面板一键安装、AI 工具返回值附安装提示 |
+
+> Model Experience：① 端点检测梯队与预处理开关全部为 voice 组配置键（配置中心热调），AI 可经配置工具调节收束灵敏度与降噪开关；② token 影响：+3 个 core 标签工具 schema（按需激活，不常驻）；③ 缓存影响：无——语音链路完全在思维循环之外
 
 #### 音频核心层与能力页签（第二十轮新增，第二十一轮重构）
 
@@ -678,6 +692,9 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `agent/skills/background_review.py` | 技能后台评审（感知完备：语义相近候选 + 库健康摘要；沉淀/合并/治理由 LLM 自主决策） |
 | `agent/skills/curator.py` | 技能策展（重力：闲置降级/归档 + 试用期快筛；议程：治理事实供 AI 消费） |
 | `agent/skills/sources/` | 外部技能源（可插拔：SkillSource 抽象 + 注册表热插拔；内置 SkillHub 源，删模块即卸载） |
+| `agent/voice/turn_detection.py` | 端点检测协议与梯队实现（energy / silero v6 / smart_turn 语义端点融合 + auto 工厂降级） |
+| `agent/voice/preprocess.py` | 麦克风输入预处理链（谱减降噪 → AGC → 限幅，流式 STFT 纯 numpy；feed/flush/reset） |
+| `agent/model_assets.py` | 本地模型资产注册表与下载管理（SHA-256 校验/进度/单飞合并）+ AI 工具面 |
 | `agent/delegation/profile.py` | 子代理档案 schema 单一权威（模型面 + 执行面 AgentFacets；内置档/名称校验/归一化） |
 | `agent/delegation/sub_agent.py` | 子代理（leaf/orchestrator 角色 + 深度限制 + facets 消费 + schema 提取 + 续跑 base_messages） |
 | `agent/delegation/delegation_manager.py` | 委托调度（并发上限/预算/聚合/后台模式/续跑/用量归集/运行日志） |
@@ -769,6 +786,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | group key | 中文名 | 注册文件 | tags |
 |---|---|---|---|
 | `output` | 消息输出 | `channel/output_tools.py` | always |
+| `voice` | 语音会话与本地模型 | `agent/realtime/tools.py` + `agent/model_assets.py` | always/core |
 | `memory` | 记忆管理 | `agent/memory/tools.py` | always/core/heartbeat |
 | `graph` | 关系图谱 | `agent/memory/graph/tools.py`（含 graph_curation_agenda 治理议程） | always/core/heartbeat |
 | `notes` | 便签记忆 | `agent/memory/notes.py` | core/heartbeat |
@@ -785,7 +803,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `audiosync` | 音源同步 | `entities/audiosync/tools.py` | always/core |
 | `vault` | 密码本 | `entities/vault/tools.py` | —（整组 allow_sleep 沉睡；reveal/totp/delete 标 risk=CRITICAL） |
 | `sticker` | 表情包 | `entities/sticker/tools.py` | always/media:image（部分工具 allow_sleep） |
-| `environment` | 环境信息 | `entities/system/tools.py` | — |
+| `environment` | 环境信息 | `entities/system/tools.py`（含 install/uninstall_python_packages 包安装） | — |
 | `model_control` | 模型控制 | `entities/model_control/tools.py` | core |
 | `ollama` | Ollama | `entities/model_control/tools.py` | — |
 | `logs` | 日志查询 | `entities/logs/tools.py` | — |

@@ -262,6 +262,7 @@ def create_bootstrap() -> FlowMachine:
         import agent.channel.output_tools  # noqa: F401
         import agent.memory.graph.tools  # noqa: F401
         import agent.memory.tools  # noqa: F401
+        import agent.model_assets  # noqa: F401
         import agent.planning.tools  # noqa: F401
         import agent.realtime.tools  # noqa: F401
         import agent.retrieval.tools  # noqa: F401
@@ -303,7 +304,7 @@ def create_bootstrap() -> FlowMachine:
         log(f"👁 视觉工具已注册 ({count} 个)", tag="视觉")
         count = activate_group("retrieval", "检索 - 联网检索、网页读取、仓库文档、HTTP 请求、文件下载、文档重排序")
         log(f"🔎 检索工具已注册 ({count} 个)", tag="检索")
-        count = activate_group("voice", "语音 - 实时通话状态查询与主动语音输出")
+        count = activate_group("voice", "语音 - 实时通话状态查询、主动语音输出、本地模型安装维护")
         log(f"🎙 语音工具已注册 ({count} 个)", tag="语音")
         from agent.audio.worker import register_backlog as register_audio_backlog
         register_audio_backlog()

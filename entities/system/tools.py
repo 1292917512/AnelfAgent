@@ -118,6 +118,56 @@ def get_pip_mirror_info() -> str:
         return error_from_exception(e, action="获取 pip 镜像配置")
 
 
+@tool(name="install_python_packages", group="environment", timeout=620.0)
+def install_python_packages(packages: str) -> str:
+    """向当前 Python 环境安装包（uv 管理环境走 uv pip install，其余走 pip install）。
+
+    适用于运行时依赖缺失的场景（如本地模型推理需要 onnxruntime）；
+    安装完成后新包即刻可用。可先用 list_python_packages 确认现状。
+
+    Args:
+        packages: 要安装的包名（多个用空格分隔，如 "onnxruntime"；可带版本约束）
+    """
+    specs = [p for p in (s.strip() for s in packages.split()) if p]
+    if not specs:
+        return error_from_exception(ValueError("未指定要安装的包"), action="安装 Python 包")
+    try:
+        from entities.system.python_service import install_packages
+        result = install_packages(specs)
+        payload = {
+            "ok": result.ok,
+            "packages": specs,
+            "stdout": result.stdout[-2000:],
+            "stderr": result.stderr[-2000:],
+        }
+        if not result.ok:
+            payload["hint"] = "安装失败：可检查镜像源（get_pip_mirror_info）或网络后重试"
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"安装 Python 包 {packages}")
+
+
+@tool(name="uninstall_python_packages", group="environment", timeout=300.0)
+def uninstall_python_packages(packages: str) -> str:
+    """从当前 Python 环境卸载包（uv 管理环境走 uv pip uninstall，其余走 pip uninstall）。
+
+    Args:
+        packages: 要卸载的包名（多个用空格分隔）
+    """
+    specs = [p for p in (s.strip() for s in packages.split()) if p]
+    if not specs:
+        return error_from_exception(ValueError("未指定要卸载的包"), action="卸载 Python 包")
+    try:
+        from entities.system.python_service import uninstall_packages
+        result = uninstall_packages(specs)
+        return json.dumps({
+            "ok": result.ok, "packages": specs,
+            "stdout": result.stdout[-2000:], "stderr": result.stderr[-2000:],
+        }, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"卸载 Python 包 {packages}")
+
+
 # ── Git 管理（仅在检测到 git 命令时注册）────────────────────────────
 
 if _GIT_AVAILABLE:

@@ -228,6 +228,9 @@ class RealtimeEngine:
                     return
             await native.send_audio(pcm)
             return
+        pcm = session.preprocessor.feed(pcm)
+        if not pcm:
+            return  # 预处理链内部缓冲未凑满一帧
         event = session.detector.accept_pcm(pcm)
         if event is TurnEvent.SPEECH_START:
             await self._on_speech_start(session)
@@ -331,6 +334,10 @@ class RealtimeEngine:
                     transcript = event.text
                     segments = event.segments
             session.asr_session = None
+        # 冲刷预处理链的滞留样本（整段兜底与声纹识别吃到完整音频）
+        tail = session.preprocessor.flush()
+        if tail:
+            session.pcm_buffer.extend(tail)
         if not transcript and session.pcm_buffer:
             transcript, segments = await self._whole_transcribe(
                 bytes(session.pcm_buffer), session.sample_rate)

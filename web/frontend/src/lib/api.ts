@@ -1323,3 +1323,35 @@ export const retrievalApi = {
   saveSettings: (data: { proxy?: string; ssrf_protection?: boolean }) =>
     api.put<RetrievalSettings>("/retrieval/settings", data),
 };
+
+export interface LocalModelAsset {
+  id: string;
+  name: string;
+  filename: string;
+  version: string;
+  license: string;
+  description: string;
+  url: string;
+  path: string;
+  size_bytes: number;
+  runtime_ready: boolean;
+  pip_requires: string;
+  status: "ready" | "missing" | "downloading" | "error";
+  received?: number;
+  total?: number;
+  error?: string;
+}
+
+export interface LocalModelsStatus {
+  models: LocalModelAsset[];
+  dir: string;
+  runtime: { installed: boolean; version: string };
+}
+
+export const localModelsApi = {
+  list: () => api.get<LocalModelsStatus>("/local-models"),
+  download: (assetId: string) => api.post<LocalModelAsset>(`/local-models/${assetId}/download`, {}),
+  remove: (assetId: string) => api.delete<Record<string, unknown>>(`/local-models/${assetId}`),
+  installRuntime: (pkg = "onnxruntime") =>
+    api.post<Record<string, unknown>>("/local-models/runtime/install", { package: pkg }),
+};

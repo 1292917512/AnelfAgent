@@ -466,3 +466,26 @@ class TestSilentFailurePaths:
         finally:
             ConfigManager.set("tts_sentence_timeout_s", 20)
             await engine.stop("c1")
+
+
+class TestPreprocessWiring:
+    async def test_mic_frames_pass_preprocessor(self, app) -> None:
+        """级联管线的麦克风帧先过预处理链再进端点检测/ASR。"""
+        engine = RealtimeEngine()
+        sink = FakeSink()
+        session = await engine.start("c9", _delivery(), sink.as_sink(), RATE)
+        try:
+            seen: list[bytes] = []
+            original = session.preprocessor.feed
+
+            def _recording_feed(pcm: bytes) -> bytes:
+                seen.append(pcm)
+                return original(pcm)
+
+            session.preprocessor.feed = _recording_feed  # type: ignore[method-assign]
+            for _ in range(10):
+                await engine.accept_pcm("c9", pcm_silence(20))
+            assert len(seen) == 10
+            assert all(frame == pcm_silence(20) for frame in seen)
+        finally:
+            await engine.stop("c9")

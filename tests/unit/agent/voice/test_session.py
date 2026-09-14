@@ -105,7 +105,8 @@ class TestEndpointing:
         assert u.duration_ms >= 300
         rate, frames = _read_wav(u.file_path)
         assert rate == 48000
-        assert frames == 480 * 50  # 有声 30 帧 + 触发收束前的 20 帧静音
+        # 预处理链按跳距定帧输出（滞留 ≤ 一个帧长，收束前冲刷补齐）
+        assert 480 * 50 <= frames <= 480 * 55 + 1536
 
     async def test_short_utterance_discarded(self, manager, sink):
         """低于最短时长的段视为误触发丢弃。"""
@@ -202,3 +203,24 @@ class TestDeliver:
         finally:
             if saved is not None:
                 voice_sink_port.set(saved)
+
+
+class TestPreprocessWiring:
+    async def test_frames_pass_preprocessor(self, manager, sink, monkeypatch):
+        """段会话的输入帧先过预处理链再入缓冲/端点检测。"""
+        from agent.voice import session as voice_session
+
+        seen: list[bytes] = []
+
+        class Recorder:
+            def feed(self, pcm: bytes) -> bytes:
+                seen.append(pcm)
+                return pcm
+
+            def reset(self) -> None:
+                pass
+
+        monkeypatch.setattr(voice_session, "create_preprocessor", lambda rate: Recorder())
+        manager.start_session("o1", "conn-a", 48000)
+        await manager.accept_frame("o1", "conn-a", LOUD)
+        assert seen == [LOUD.pcm]

@@ -14,7 +14,8 @@
     "git": "Git",
     "config": "配置概览",
     "hooks": "钩子",
-    "llmHooks": "LLM 钩子"
+    "llmHooks": "LLM 钩子",
+    "localModels": "本地模型"
   },
   "os": "操作系统",
   "architecture": "架构",
@@ -128,5 +129,23 @@
       "task": "任务",
       "entity": "实体"
     }
+  },
+  "localModels": {
+    "title": "本地模型资产",
+    "dir": "存放目录",
+    "statusReady": "已就绪",
+    "statusMissing": "未下载",
+    "statusDownloading": "下载中",
+    "statusError": "失败",
+    "download": "下载",
+    "redownload": "重新下载",
+    "delete": "删除",
+    "runtimeTitle": "运行时依赖",
+    "runtimeSubtitle": "本地模型推理的 Python 运行时（onnxruntime）；安装后即刻生效",
+    "runtimeInstalled": "已安装 {{version}}",
+    "runtimeNotInstalled": "未安装",
+    "runtimeMissing": "需安装 {{pkg}}",
+    "installRuntime": "安装 onnxruntime",
+    "installing": "安装中…"
   }
 }

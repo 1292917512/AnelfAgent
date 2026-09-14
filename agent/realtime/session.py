@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from agent.realtime.playback import PcmResampler, PlaybackQueue
+from agent.voice.preprocess import PcmPreprocessor, create_preprocessor
 from agent.voice.session import VoiceDelivery
 from agent.voice.turn_detection import TurnDetector, create_turn_detector
 from core.log import log
@@ -59,6 +60,9 @@ class RealtimeSession:
     state: SessionState = SessionState.LISTENING
     turn_id: int = 0
     detector: TurnDetector = field(init=False)
+    """端点检测器（auto 梯队：语义端点 → VAD → 能量法）。"""
+    preprocessor: PcmPreprocessor = field(init=False)
+    """输入预处理链（降噪 → 增益 → 限幅；全关直通）。"""
     playback: PlaybackQueue = field(default_factory=PlaybackQueue)
     asr_session: Any = None
     """流式 ASR 会话（引擎在首个语音帧开启；无流式提供者时退化为整段缓冲）。"""
@@ -79,6 +83,7 @@ class RealtimeSession:
 
     def __post_init__(self) -> None:
         self.detector = create_turn_detector(self.sample_rate)
+        self.preprocessor = create_preprocessor(self.sample_rate)
 
     # ------------------------------------------------------------------
     # 状态迁移（rt_state 事件随迁随发，前端状态条据此渲染）
@@ -148,6 +153,7 @@ class RealtimeSession:
         self.tts_pipeline = None
         self.playback.clear()
         self.detector.reset()
+        self.preprocessor.reset()
         await self.set_state(SessionState.LISTENING)
 
     async def close(self) -> None:
