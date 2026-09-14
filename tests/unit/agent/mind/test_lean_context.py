@@ -111,7 +111,6 @@ class TestLeanRecollection:
         assert kwargs["memory_msgs"] == []
         assert kwargs["profile_msgs"] == []
         assert kwargs["relation_msgs"] == []
-        assert kwargs["goal_msgs"] == []
         assert kwargs["status_text"] == ""
         assert kwargs["heartbeat_text"] == ""
         assert kwargs["hub_text"] == ""  # 无记忆库时主标签记忆位为空

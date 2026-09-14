@@ -78,10 +78,7 @@ class MiniMaxError(Exception):
 
 
 def normalize_search_results(data: Dict[str, Any], query: str, max_results: int) -> Dict[str, Any]:
-    """将 Coding Plan 搜索响应归一化为与 web_search 一致的结构。
-
-    web 实体的搜索兜底链路与媒体库 minimax provider 共用此归一化。
-    """
+    """将 Coding Plan 搜索响应归一化为与 web_search 一致的结构。"""
     organic = data.get("organic", [])[:max_results]
     refs = [
         {

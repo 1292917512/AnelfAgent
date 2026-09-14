@@ -1,4 +1,4 @@
-"""上下文压缩管线（参考 hermes-agent context_compressor / conversation_compression）。
+"""上下文压缩管线。
 
 自动检测上下文溢出风险，智能压缩中间轮次，保留关键信息，延长对话寿命：
 
@@ -73,7 +73,7 @@ class CompressionConfig:
     microcompact_chain_threshold: int = 40
     # Microcompact 保留的最新工具结果条数
     microcompact_keep_recent: int = 6
-    # 连续压缩失败熔断次数（对齐 Claude Code MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES）
+    # 连续压缩失败熔断次数
     max_consecutive_failures: int = 3
     # 前缀复用摘要：摘要调用复用主对话前缀（system+tools+消息）以命中 KV 缓存
     prefix_reuse: bool = True
@@ -288,7 +288,7 @@ class ContextCompressor:
         self._manual_requests: Dict[str, str] = {}
         # per-scope 压缩锁：同一 scope 的压缩串行，其他 scope 互不阻塞
         self._scope_locks: Dict[str, asyncio.Lock] = {}
-        # 连续失败熔断（对齐 Claude Code：连续 3 次失败后停止尝试）
+        # 连续失败熔断（连续 3 次失败后停止尝试）
         self._consecutive_failures = 0
         self._broken = False
 
@@ -301,7 +301,7 @@ class ContextCompressor:
     def config(self, value: CompressionConfig) -> None:
         self._config_override = value
 
-    # 可 microcompact 清理的只读工具（对齐 Claude Code COMPACTABLE_TOOLS）
+    # 可 microcompact 清理的只读工具
     _MICROCOMPACTABLE_TOOLS = frozenset({
         "read_file", "search_files", "list_directory", "file_info",
         "run_shell_command", "web_fetch", "web_search",
@@ -315,7 +315,7 @@ class ContextCompressor:
     _token_est_cache: "OrderedDict[str, int]" = OrderedDict()
 
     def microcompact(self, tool_chain: List[Dict]) -> int:
-        """清理工具链中较早的只读工具结果为占位符（对齐 Claude Code microCompact）。
+        """清理工具链中较早的只读工具结果为占位符（microCompact）。
 
         在完整压缩之前先做轻量清理：工具链较长时，只读工具的旧结果
         （read_file/shell/web 等）通常已失效，直接替换为占位符，
@@ -474,7 +474,7 @@ class ContextCompressor:
     # ------------------------------------------------------------------
 
     def threshold_tokens(self) -> int:
-        """计算压缩触发阈值（参考 hermes：输出预留从窗口扣除，小窗口退化 85%）。"""
+        """计算压缩触发阈值（输出预留从窗口扣除，小窗口退化 85%）。"""
         context_length = self._mind.get_model_context_length()
         if context_length <= 0:
             return 0
@@ -734,7 +734,7 @@ class ContextCompressor:
         if self.config.prefix_reuse and tools:
             prefix_messages = head_system + head + middle
 
-        # 2.6 分离前次压缩摘要：迭代更新而非"摘要的摘要"（参考 hermes _previous_summary）
+        # 2.6 分离前次压缩摘要：迭代更新而非"摘要的摘要"
         previous_summary, middle = self._extract_previous_summary(middle)
 
         # 2.7 用户原话保护：抽出 middle 中的 user 消息原文保留（参考 Mini-Agent），
@@ -909,7 +909,7 @@ class ContextCompressor:
         """生成中间轮次摘要（LLM 优先，失败回退确定性拼接）。
 
         previous_summary 非空时走迭代更新：LLM 将既有摘要与本次片段合并，
-        避免多次压缩退化为"摘要的摘要"（参考 hermes _previous_summary）。
+        避免多次压缩退化为"摘要的摘要"。
 
         prefix_messages + tools 非空时走前缀复用路径：摘要调用复用主对话
         system+tools+消息前缀（字节级命中 KV 缓存），指令作为末条 user 消息；
@@ -1101,7 +1101,7 @@ class ContextCompressor:
     def _render_for_summary(messages: List[Dict]) -> str:
         """将消息渲染为摘要输入文本（工具结果规则折叠 + 重复去重 + 超长截断）。
 
-        规则预剪枝（参考 hermes _prune_old_tool_results，不调 LLM）：
+        规则预剪枝（不调 LLM）：
         工具结果正文对摘要价值低，折叠为单行；相同结果只保留首份。
         渲染结果经统一出向边界清洗：对话内容可能包含用户粘贴的密钥、
         孤代理字符，直接喂给摘要模型有泄漏与 400 双重风险。

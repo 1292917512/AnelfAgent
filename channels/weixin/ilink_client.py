@@ -1,7 +1,6 @@
 """iLink Bot API 协议层 — 个人微信（Weixin）频道的底层通信实现。
 
-移植自 hermes-agent ``gateway/platforms/weixin.py`` 的协议部分（纯函数），
-不包含任何频道框架依赖，便于独立测试。
+协议部分为纯函数实现，不包含任何频道框架依赖，便于独立测试。
 
 设计要点：
 - 长轮询 ``getupdates`` 驱动入站消息投递；
@@ -833,7 +832,6 @@ def _should_split_short_chat_block_for_weixin(block: str) -> bool:
 def truncate_message(content: str, max_length: int) -> List[str]:
     """把超长单块截断为多段（保留代码栅栏，追加 (n/m) 指示）。
 
-    替代 hermes ``BasePlatformAdapter.truncate_message`` 的自实现：
     优先在换行处断开；代码块被截断时在段尾闭合栅栏、下一段重新打开。
     """
     if len(content) <= max_length:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, NamedTuple, Optional
 
 from core.tool_errors import ErrorCause
 
@@ -64,6 +64,19 @@ class ActionSpec:
     """值参数语义提示（非法值报错与动作清单展示用）。"""
     convert: Optional[Callable[[str], Any]] = None
     """字符串值到服务数据类型的转换器。"""
+    ha_domain: Optional[str] = None
+    """平台服务域覆盖（None 为跟随设备自身域；如语音播报的 tts 域）。"""
+
+
+class ServiceCall(NamedTuple):
+    """解析完成的平台服务调用（build_service_call 产物）。"""
+
+    ha_domain: Optional[str]
+    """平台服务域（None 表示跟随设备自身域）。"""
+    service: str
+    """平台服务名。"""
+    data: Dict[str, Any]
+    """服务调用参数（entity_id 由调用方注入）。"""
 
 
 class SmartHomeCallError(Exception):

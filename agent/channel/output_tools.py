@@ -17,7 +17,9 @@ from core.latebind import LateBinding
 from core.log import log
 from core.tags import strip_message_meta_tags
 from core.tool_errors import ErrorCause, error_from_exception
-from entities._sdk import deferred_tool
+from entities._sdk import deferred_tool, get_current_scope
+
+from .outbound_guard import guard_outbound, note_outbound
 
 if TYPE_CHECKING:
     from agent.storage.data_center import ConversationData
@@ -25,6 +27,34 @@ if TYPE_CHECKING:
 #: 会话记录端口（将 AI 回复写入对话历史；工具 import 时注册、拿不到
 #: DataCenter 构造参数，由 agent.runtime.wiring 统一施绑）
 conversation_data_port: LateBinding["ConversationData"] = LateBinding("channel.output")
+
+
+def _resolve_conversation_scope(
+    adapter_key: str, target_id: str, channel_type: str, session_id: str = "",
+) -> tuple[str, str]:
+    """解析发送目标的规范会话 (scope_type, scope_id)。
+
+    频道自决议钩子：会话标识与用户标识不一致的频道（飞书 p2p 等）把发送
+    目标归一到与入站消息相同的规范 scope，避免历史撕裂；无钩子频道按
+    channel_type + adapter 前缀派生。scope_id 含 adapter 前缀（与 entity_scope
+    规则一致），出站哨兵与历史入库共用本解析保证 scope 对齐。
+    """
+    from agent.messages import build_scope_id
+
+    resolved_scope: Optional[tuple[str, str]] = None
+    if adapter_key:
+        ch = _get_channel(adapter_key)
+        if ch is not None:
+            try:
+                resolved_scope = ch.conversation_scope_for_target(str(target_id), channel_type)
+            except Exception as exc:
+                log(f"频道 scope 解析钩子异常（回退通用规则）: {exc}", "DEBUG", tag="通道")
+    if resolved_scope is not None:
+        return resolved_scope
+    scope_type = "group" if channel_type == "group" else "user"
+    base_id = str(target_id)
+    suffix = f"#{session_id}" if session_id and session_id != base_id else ""
+    return scope_type, build_scope_id(adapter_key, base_id, suffix)
 
 
 async def _record_sent_reply(
@@ -46,27 +76,10 @@ async def _record_sent_reply(
         return
     conversation_data = conversation_data_port.get()
     try:
-        from agent.messages import build_scope_id
         from agent.storage.storage_router import StorageDomain
-        # 频道自决议钩子：会话标识与用户标识不一致的频道（飞书 p2p 等）
-        # 把发送目标归一到与入站消息相同的规范 scope，避免历史撕裂
-        resolved_scope: Optional[tuple[str, str]] = None
-        if adapter_key:
-            ch = _get_channel(adapter_key)
-            if ch is not None:
-                try:
-                    resolved_scope = ch.conversation_scope_for_target(
-                        str(target_id), channel_type
-                    )
-                except Exception as exc:
-                    log(f"频道 scope 解析钩子异常（回退通用规则）: {exc}", "DEBUG", tag="通道")
-        if resolved_scope is not None:
-            scope_type, scope_id = resolved_scope
-        else:
-            scope_type = "group" if channel_type == "group" else "user"
-            base_id = str(target_id)
-            suffix = f"#{session_id}" if session_id and session_id != base_id else ""
-            scope_id = build_scope_id(adapter_key, base_id, suffix)
+        scope_type, scope_id = _resolve_conversation_scope(
+            adapter_key, target_id, channel_type, session_id,
+        )
         await conversation_data.router.append(
             StorageDomain.CONVERSATION,
             scope_type=scope_type, scope_id=scope_id,
@@ -233,14 +246,27 @@ async def execute_send_action(
         invoke: Callable[[Any, str, str], Awaitable[Any]],
         enrich: Optional[Callable[[dict, bool], None]] = None,
         success_suffix: str = "",
+        outbound_preview: str = "",
 ) -> str:
-    """统一发送执行管道：校验 -> 目标解析 -> 调用频道 -> 结果解析 -> 日志。"""
+    """统一发送执行管道：校验 -> 目标解析 -> 出站哨兵 -> 调用频道 -> 结果解析 -> 日志。
+
+    outbound_preview 为本次发送内容的短摘要（供出站哨兵的近期窗口判定与
+    拒绝回执展示），空串时哨兵记录退化为操作名。
+    """
     ch, err = _validate_channel(channel_id)
     if err:
         return err
 
     try:
         resolved_target_id, channel_type = _resolve_send_target(channel_id, target_id)
+        scope_type, scope_id = _resolve_conversation_scope(
+            channel_id, resolved_target_id, channel_type,
+        )
+        target_scope = f"{scope_type}_{scope_id}"
+        thinker = get_current_scope()
+        rejection = guard_outbound(target_scope, thinker)
+        if rejection:
+            return rejection
         raw = await invoke(ch, resolved_target_id, channel_type)
         parsed, ok = _check_send_result(raw, channel_id, target_id)
         _attach_target_resolution_meta(
@@ -253,6 +279,7 @@ async def execute_send_action(
             enrich(parsed, ok)
 
         if ok:
+            note_outbound(target_scope, thinker, outbound_preview or operation)
             log(f"{operation}已发送: [{channel_id}] -> {target_id}{success_suffix}", tag="通道")
         else:
             log(f"{operation}发送失败: [{channel_id}] -> {target_id}: {parsed.get('error', '?')}", "WARNING", tag="通道")
@@ -354,6 +381,7 @@ async def send_message(
         invoke=_invoke,
         enrich=_enrich,
         success_suffix=f" ({len(content)}字)",
+        outbound_preview=content[:80],
     )
 
     # 发送成功后将 AI 回复记录到对话历史（assistant 角色）
@@ -393,6 +421,7 @@ async def send_photo(channel_id: str, target_id: str, photo: str, caption: str =
         operation="图片",
         invoke=_invoke,
         enrich=_enrich,
+        outbound_preview=caption or "图片",
     )
 
 
@@ -419,6 +448,7 @@ async def send_voice(channel_id: str, target_id: str, voice: str) -> str:
         operation="语音",
         invoke=_invoke,
         enrich=_enrich,
+        outbound_preview="语音",
     )
 
 
@@ -448,4 +478,5 @@ async def send_file(channel_id: str, target_id: str, file_path: str, caption: st
         operation="文件",
         invoke=_invoke,
         enrich=_enrich,
+        outbound_preview=caption or "文件",
     )

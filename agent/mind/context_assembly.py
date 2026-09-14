@@ -174,7 +174,7 @@ from agent.mind.context_pipeline import (
 # 相对序与默认布局一致（按字节稳定度从静到动）
 _LEGACY_VOLATILITY: Dict[str, int] = {
     "context": 10, "hub": 11,
-    "profile": 20, "relation": 21, "goals": 21, "volatile": 22, "heartbeat": 23, "status": 23,
+    "profile": 20, "relation": 21, "volatile": 22, "heartbeat": 23, "status": 23,
     "overflow": 27, "security": 28, "memory": 32,
     "summary": 33, "conversation": 34,
 }
@@ -462,7 +462,6 @@ class ContextAssembly:
             scope: str = "",
             profile_msgs: Optional[List[Dict]] = None,
             relation_msgs: Optional[List[Dict]] = None,
-            goal_msgs: Optional[List[Dict]] = None,
             summary_row: Optional[Dict] = None,
             status_text: str = "",
             heartbeat_text: str = "",
@@ -473,9 +472,11 @@ class ContextAssembly:
         各内容块的顺序由 @context_block 声明的变动率决定（值越大变动越频繁，
         排越靠后，见 context_pipeline；尾部动态区内部按字节稳定度从静到动）：
         stable(0) → summary(20) → conversation(30) →
-        context(35) → hub(36) → profile(37) → relation/goals/volatile(38) →
+        context(35) → hub(36) → profile(37) → relation/volatile(38) →
         heartbeat/status(39) → memory(43) → overflow/security(50+)
         tail_injection 关闭时经变动率覆盖表回退旧布局（动态在历史之前）。
+        目标/计划态势不经此层：规划面经 plan_ops provider 每轮注入
+        （agent.planning.situation），回复中途的 goal CRUD 下一轮即见。
 
         Args:
             prefetched_conversation: 外部已获取的对话历史（避免重复拉取）。
@@ -494,7 +495,6 @@ class ContextAssembly:
             memory_msgs=memory_msgs,
             profile_msgs=profile_msgs or [],
             relation_msgs=relation_msgs or [],
-            goal_msgs=goal_msgs or [],
             summary_row=summary_row,
             anything=anything,
             adapter_key=adapter_key,
@@ -625,11 +625,6 @@ class ContextAssembly:
     def _blk_relation(self, inp: ContextInput) -> List[Dict]:
         """关系网络快照（当前会话相关实体的已知关系，随实体集合低频变）。"""
         return list(inp.relation_msgs)
-
-    @context_block("goals", VOL_TAIL_HEAD + 3, "活跃目标注入")
-    def _blk_goals(self, inp: ContextInput) -> List[Dict]:
-        """活跃目标快照（仅目标 CRUD 时字节变化，对话轮次间完全稳定）。"""
-        return list(inp.goal_msgs)
 
     @context_block("volatile", VOL_TAIL_HEAD + 3, "短期记忆（volatile 层）")
     def _blk_volatile(self, inp: ContextInput) -> List[Dict]:
@@ -819,7 +814,7 @@ class ContextAssembly:
         if tool_parts:
             lines.append(f"[工具态势] {' | '.join(tool_parts)}")
 
-        # 目标 nag 提醒（对齐 Claude Code todo_reminder：10 轮未更新才提醒）
+        # 目标 nag 提醒（目标连续 10 轮未更新才提醒）
         try:
             from agent.mind.tool_activation import ToolActivationManager
             from agent.planning.nag import maybe_nag

@@ -27,8 +27,8 @@ from entities._sdk import entity, entity_config, entity_manifest
 from . import framework
 from .domains import load_domains
 from .manager import get_smart_home_manager
+from .providers import all_providers, load_providers
 from .providers import config_entries as provider_config_entries
-from .providers import load_providers
 
 entity("smart_home", "智能家居 - 家居设备状态感知与控制（Home Assistant 接入，灯光/空调/窗帘等设备域组件可插拔）")
 
@@ -57,18 +57,26 @@ entity_config({
 
 
 def _handle_config_changed(key: str, _value: Any) -> None:
-    """连接配置变更时调度重连（仅在事件循环内生效）。"""
-    if not key.startswith("smart_home_ha_"):
+    """供应商连接配置变更时调度对应 provider 重连（仅在事件循环内生效）。"""
+    if not key.startswith("smart_home_"):
+        return
+    # 配置键形态 smart_home_<provider_key>_<field>，按注册 provider 前缀匹配
+    provider_key = ""
+    for provider in all_providers():
+        if key.startswith(f"smart_home_{provider.key}_"):
+            provider_key = provider.key
+            break
+    if not provider_key:
         return
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(get_smart_home_manager().reconnect())
+    loop.create_task(get_smart_home_manager().reconnect(provider_key))
 
 
-# 连接配置（url/token）被修改（Web/AI/配置中心任一路径）时自动重连，
-# 域配置项经热读取生效无需处理
+# 连接配置（url/token/账号等）被修改（Web/AI/配置中心任一路径）时自动重连
+# 对应 provider，域配置项经热读取生效无需处理
 ConfigManager.add_listener("smart_home_", _handle_config_changed)
 
 

@@ -1,4 +1,4 @@
-"""edit_utils 纯函数测试（移植自 Claude Code FileEditTool/utils.ts 语义）。"""
+"""edit_utils 纯函数测试（四级递降容错匹配语义）。"""
 
 from __future__ import annotations
 

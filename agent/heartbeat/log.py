@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import threading
 import time as _time
+import traceback
 from pathlib import Path
 from typing import List, Optional
 
@@ -52,6 +53,27 @@ def load_recent(count: int = 3) -> str:
         return ""
 
 
+def _audit_writer(text: str) -> None:
+    """写入审计：记录内容前缀与调用方归因（本模块外的首个栈帧）。
+
+    心跳日志曾出现无执行支撑的「反思已登记/反思完成」幽灵行（2026-09-15
+    事故：写入时刻无任何已知调用路径痕迹），本审计保证每次落盘都能从
+    日志缓冲（/api/status/logs，tag=心跳日志）反查写入者。
+    """
+    caller = "未知"
+    try:
+        this_file = str(Path(__file__))
+        # 从栈顶回溯：最近的模块外帧才是真正调用方（栈底方向混有 pytest/启动器帧）
+        for frame in reversed(traceback.extract_stack()):
+            if this_file not in (frame.filename or ""):
+                name = Path(frame.filename or "?").name
+                caller = f"{name}:{frame.lineno}:{frame.name}"
+                break
+    except Exception:
+        pass
+    log(f"心跳日志写入: [{caller}] {text[:60]}", tag="心跳日志")
+
+
 def append_entry(text: str) -> None:
     """向最后一条心跳日志追加一行内容。日志文件不存在时创建，避免条目静默丢失。"""
     try:
@@ -62,6 +84,7 @@ def append_entry(text: str) -> None:
                 ts = _time.strftime("%Y-%m-%d %H:%M:%S")
                 content = f"# 心跳日志\n\n### {ts} 心跳"
             _atomic_write(LOG_PATH, content.rstrip() + f"\n- {text}\n")
+        _audit_writer(text)
     except Exception as e:
         log(f"心跳日志追加失败: {e}", "DEBUG")
 
@@ -99,5 +122,6 @@ def write_log(
                 text = blocks[0] + "\n### " + "\n### ".join(blocks[-max_n:])
 
             _atomic_write(LOG_PATH, text)
+        _audit_writer(f"心跳条目: {', '.join(task_names or [])} 消息={pending_messages} 目标={active_goals}")
     except Exception as e:
         log(f"心跳日志写入失败: {e}", "DEBUG")

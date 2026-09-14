@@ -145,7 +145,7 @@ def fix_empty_tool_call_content(messages: List[Dict]) -> List[Dict]:
 
 
 def ensure_tool_result_pairing(messages: List[Dict]) -> List[Dict]:
-    """tool_use/tool_result 配对铁律（对齐 Claude Code ensureToolResultPairing）。
+    """tool_use/tool_result 配对铁律。
 
     发送前最后一道防线：
     - assistant 的 tool_calls 缺少对应 role=tool 结果 → 合成错误结果

@@ -9,12 +9,20 @@
   },
   "loadFailed": "Failed to load smart home data (entity may be disabled or server needs a restart)",
   "retry": "Retry",
-  "status": {
-    "connected": "Connected to {{name}} · {{count}} devices",
-    "disconnected": "{{name}} disconnected (reconnecting)",
-    "unconfigured": "Home Assistant connection not configured",
-    "unconfiguredHint": "Fill in smart_home_ha_url and smart_home_ha_token (long-lived access token) in the Config tab",
-    "refresh": "Refresh"
+  "providers": {
+    "hint": "Providers ({{count}}) — device source platforms, auto-connect once configured",
+    "connected": "Connected · {{count}} devices",
+    "disconnected": "Disconnected",
+    "unconfigured": "Not configured",
+    "reconnect": "Reconnect",
+    "discover": "Discover",
+    "discovering": "Discovering…",
+    "addHost": "Add",
+    "manualHostPlaceholder": "Enter speaker IP (cross-subnet / discovery failed)",
+    "configHint": "Fill in this provider's connection info in the Config tab",
+    "configHint_ha": "Fill in the Home Assistant URL and long-lived access token in the Config tab",
+    "configHint_xiaomi": "Fill in your Xiaomi account and password in the Config tab (login token is cached and reused)",
+    "configHint_xiaodu": "Xiaodu is LAN-direct, no credentials needed — click Discover after connecting"
   },
   "preview": {
     "title": "What the AI actually sees",
@@ -57,7 +65,9 @@
     "paused": "Paused",
     "idle": "Idle",
     "off": "Off",
-    "on": "On"
+    "on": "On",
+    "speak": "Speak",
+    "speakPlaceholder": "Type a message and press Enter…"
   },
   "scene": {
     "ready": "Ready",
@@ -74,6 +84,12 @@
     "saveFailed": "Failed to save config"
   },
   "messages": {
-    "controlFailed": "Control failed"
+    "controlFailed": "Control failed",
+    "reconnectFailed": "Reconnect failed",
+    "discoverFound": "Discovered and added {{count}} devices",
+    "discoverEmpty": "No new devices found (make sure the speaker is on the same LAN)",
+    "discoverFailed": "Discovery failed",
+    "hostAdded": "Added — takes effect after reconnect",
+    "hostAddFailed": "Failed to add"
   }
 }

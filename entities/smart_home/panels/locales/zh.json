@@ -9,12 +9,20 @@
   },
   "loadFailed": "智能家居数据加载失败（实体可能未启用或服务未重启）",
   "retry": "重试",
-  "status": {
-    "connected": "已连接 {{name}} · {{count}} 台设备",
-    "disconnected": "{{name}} 连接中断（自动重连中）",
-    "unconfigured": "尚未配置 Home Assistant 连接",
-    "unconfiguredHint": "请在「配置」页签填写 smart_home_ha_url 与 smart_home_ha_token（长期访问令牌）",
-    "refresh": "刷新"
+  "providers": {
+    "hint": "供应商接入（共 {{count}} 家）——设备来源平台，配置齐备后自动连接",
+    "connected": "已连接 · {{count}} 台设备",
+    "disconnected": "连接中断",
+    "unconfigured": "未配置",
+    "reconnect": "重连",
+    "discover": "发现设备",
+    "discovering": "发现中…",
+    "addHost": "添加",
+    "manualHostPlaceholder": "手动输入音箱 IP（跨网段/发现失败时）",
+    "configHint": "请在「配置」页签填写该供应商的连接信息",
+    "configHint_ha": "请在「配置」页签填写 Home Assistant 地址与长期访问令牌",
+    "configHint_xiaomi": "请在「配置」页签填写小米账号与密码（登录态自动缓存复用）",
+    "configHint_xiaodu": "小度为局域网直连，无需凭据——连接后点「发现设备」接入音箱"
   },
   "preview": {
     "title": "AI 实际看到的注入内容",
@@ -57,7 +65,9 @@
     "paused": "已暂停",
     "idle": "待机",
     "off": "关",
-    "on": "开"
+    "on": "开",
+    "speak": "语音播报",
+    "speakPlaceholder": "输入播报文本，回车发送…"
   },
   "scene": {
     "ready": "待激活",
@@ -74,6 +84,12 @@
     "saveFailed": "配置保存失败"
   },
   "messages": {
-    "controlFailed": "控制失败"
+    "controlFailed": "控制失败",
+    "reconnectFailed": "重连失败",
+    "discoverFound": "发现并接入 {{count}} 台设备",
+    "discoverEmpty": "未发现新设备（确认音箱与本机在同一局域网）",
+    "discoverFailed": "设备发现失败",
+    "hostAdded": "已添加，重连后生效",
+    "hostAddFailed": "添加失败"
   }
 }

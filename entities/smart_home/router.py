@@ -22,7 +22,7 @@ from core.tool_errors import ErrorCause
 from . import framework
 from .manager import get_smart_home_manager
 from .models import SmartHomeCallError
-from .schemas import ControlRequest, DevicesResult, StatusResult
+from .schemas import ControlRequest, DevicesResult, ProviderStatus, StatusResult
 
 # 错误归因 → HTTP 状态码（面板按语义展示）
 _CAUSE_STATUS = {
@@ -42,8 +42,38 @@ def build_router() -> APIRouter:
 
     @router.get("/status", response_model=StatusResult)
     async def get_status() -> dict:
-        """平台连接状态（配置齐备/已连接/设备计数/最近错误）。"""
+        """全供应商连接状态（配置齐备/已连接/设备计数/最近错误）。"""
         return get_smart_home_manager().status()
+
+    @router.post("/providers/{key}/reconnect", response_model=ProviderStatus)
+    async def reconnect_provider(key: str) -> dict:
+        """重连指定供应商（面板「重连」按钮）。"""
+        from .providers import get_provider
+
+        provider = get_provider(key)
+        if provider is None:
+            raise HTTPException(status_code=404, detail=f"未找到供应商: {key}")
+        await get_smart_home_manager().reconnect(key)
+        return provider.status()
+
+    @router.post("/providers/{key}/discover")
+    async def discover_provider(key: str) -> dict:
+        """发现指定供应商的可接入设备（面板「发现设备」按钮）。"""
+        from .providers import get_provider
+
+        provider = get_provider(key)
+        if provider is None:
+            raise HTTPException(status_code=404, detail=f"未找到供应商: {key}")
+        if not provider.discovery_supported:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{provider.display_name} 不支持设备发现",
+            )
+        try:
+            found = await provider.discover()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"发现失败: {exc}") from exc
+        return {"found": found, "count": len(found)}
 
     @router.get("/devices", response_model=DevicesResult)
     async def list_devices(domain: str = "", area: str = "", name: str = "") -> dict:

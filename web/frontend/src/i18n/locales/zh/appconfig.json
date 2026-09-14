@@ -7,9 +7,7 @@
     "memoryConfigSubtitle": "调整记忆搜索、管理和整理参数",
     "network": "网络 / 下载",
     "networkMoved": "网络代理与工作区配置已收编进配置中心，支持检索与即改即存",
-    "networkMovedAction": "前往配置中心",
-    "webTools": "搜索引擎",
-    "webToolsSubtitle": "网页抓取代理设置（搜索经 MiniMax Coding Plan）"
+    "networkMovedAction": "前往配置中心"
   },
   "fields": {
     "heartbeat_interval": "心跳间隔（秒）",
@@ -31,7 +29,6 @@
     "memory_max_per_type": "每类记忆上限",
     "heartbeat_max_entries": "心跳最大条目",
     "auto_consolidate_enabled": "自动整理便签",
-    "web_proxy": "网页抓取代理",
     "conversation_analysis_threshold": "对话分析阈值"
   },
   "descs": {
@@ -46,8 +43,7 @@
     "memory_warn_threshold": "单类型记忆超过此数量时发出预警",
     "memory_max_per_type": "单类型记忆的硬上限",
     "heartbeat_max_entries": "heartbeat.md 保留的最大条目数",
-    "auto_consolidate_enabled": "是否在心跳时自动整理记忆文件",
-    "web_proxy": "网页抓取代理地址，留空直连，例：http://127.0.0.1:7890"
+    "auto_consolidate_enabled": "是否在心跳时自动整理记忆文件"
   },
   "actions": {
     "save": "保存",

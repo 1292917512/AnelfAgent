@@ -22,5 +22,8 @@
   "capabilities": "Capabilities",
   "stickers": "Stickers",
   "data": "Data",
-  "sillytavern": "SillyTavern"
+  "sillytavern": "SillyTavern",
+  "vision": "Vision",
+  "sound": "Sound",
+  "retrieval": "Retrieval"
 }

@@ -42,11 +42,13 @@ async def get_recollection(
             若为 None，内部自动从 DB 获取最新对话。
         anything: 消息对象，用于确定对话 scope。
         lean: 精简模式（心跳任务/子代理）：只保留人设 + 工具 + 永久记忆，
-            不做环境注入（动态便签/文件索引/状态/召回/画像/目标）。批处理
+            不做环境注入（动态便签/文件索引/状态/召回/画像）。批处理
             任务按规则经 recall/get_conversation 工具按需取数，环境块对它们
             是冗余；且任务每轮都会写便签/文件使其漂移——带上既撑大每轮
             prompt，又让下一次任务首轮缓存从便签处断裂（首轮 ~66% 的
             结构下限来源）。精简后任务间共享同一稳定前缀。
+            目标/计划态势不经此层（规划面经 plan_ops provider 每轮注入，
+            reflect scope 自动缺席，见 agent.planning.situation）。
     """
     # 若未传入对话历史，从 DB 实时获取
     if conversation_list is None:
@@ -92,21 +94,6 @@ async def get_recollection(
         ]
         return await mind.retriever.load_relation_snippets(all_scopes)
 
-    async def _load_goals() -> List[Dict]:
-        """活跃目标快照：让 AI 在普通对话中始终感知自己的进行中目标。"""
-        if not mind.memory_store:
-            return []
-        try:
-            from core.config import get_config_bool
-            if not get_config_bool("goals_inject_enabled", True):
-                return []
-            from agent.planning.tools import build_goals_injection
-            content = await build_goals_injection(mind.memory_store, scope=entity_scope)
-        except Exception as exc:
-            log(f"活跃目标注入构建失败: {exc}", "DEBUG", tag="思维")
-            return []
-        return [{"role": "system", "content": content}] if content else []
-
     # 主标签记忆（main:hub）：索引中枢与长工作流工作窗口，完整/精简模式均注入
     # （精简模式砍掉的是召回与环境便签；主标签是 AI 自己的维护面，与 pins 同口径）
     hub_text = ""
@@ -115,7 +102,7 @@ async def get_recollection(
         hub_text = await load_hub_block(mind.memory_store)
 
     if lean:
-        memory_msgs, profile_msgs, relation_msgs, goal_msgs = [], [], [], []
+        memory_msgs, profile_msgs, relation_msgs = [], [], []
         # 永久记忆直接取 pins（不跑检索）：内容字节稳定，并入 context 层
         pin_msgs: List[Dict] = []
         if mind.retriever is not None:
@@ -123,14 +110,34 @@ async def get_recollection(
             pin_msgs = await mind.retriever._format_unified_results(pinned) if pinned else []
         permanent_text = str(pin_msgs[0]["content"]) if pin_msgs else ""
     else:
-        # 五条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行
-        (profile_msgs, memory_msgs), relation_msgs, goal_msgs, (cross_recall_msgs, recalled_scopes), skill_msgs = await asyncio.gather(
+        # 四条召回路径互相独立（各自读 DB/检索，无共享状态），并行执行
+        (profile_msgs, memory_msgs), relation_msgs, (cross_recall_msgs, recalled_scopes), skill_msgs = await asyncio.gather(
             _recall_memory(),
             _load_relations(),
-            _load_goals(),
             mind._recall_cross_channel(tail, current_adapter, entity_scope, query_vec=query_vec),
             mind._match_skills(tail, query_vec=query_vec, scope=entity_scope),
         )
+
+        # 自我画像（agent:self）随画像层注入：置于画像块首位
+        # （自我认知优先于他人画像；低频变化，内容寻址缓存友好）
+        if mind.memory_store is not None:
+            try:
+                from agent.memory.self_profile import (
+                    load_self_profile,
+                    render_self_profile_block,
+                )
+                self_block = render_self_profile_block(
+                    await load_self_profile(mind.memory_store)
+                )
+                if self_block:
+                    profile_msgs.insert(0, {"role": "system", "content": self_block})
+                # 已确认反思（证据驱动晋升的中间层）随画像区呈现
+                from agent.memory.reflection_lifecycle import load_confirmed_block
+                confirmed_block = await load_confirmed_block(mind.memory_store)
+                if confirmed_block:
+                    profile_msgs.insert(1, {"role": "system", "content": confirmed_block})
+            except Exception as exc:
+                log(f"自我画像注入失败: {exc}", "DEBUG", tag="思维")
 
         # 跨频道语义召回 + 叙事面包屑
         memory_msgs.extend(cross_recall_msgs)
@@ -170,7 +177,7 @@ async def get_recollection(
         except Exception as exc:
             log(f"对话摘要获取失败: {exc}", "DEBUG", tag="思维")
 
-    # Prompt 分层构建（参考 hermes 三层架构）：
+    # Prompt 分层构建：
     # stable 人设块（人设+环境+静态指南）长期冻结，stable 工具块（目录+规则）随工具集重建，
     # context 层（便签）低频重建，volatile 层（语义召回等）每轮构建并置于其后，保证前缀缓存命中。
     models_summary = mind._get_models_summary()
@@ -197,7 +204,6 @@ async def get_recollection(
         scope=entity_scope,
         profile_msgs=profile_msgs,
         relation_msgs=relation_msgs,
-        goal_msgs=goal_msgs,
         summary_row=summary_row,
         status_text=status_text,
         heartbeat_text=heartbeat_text,

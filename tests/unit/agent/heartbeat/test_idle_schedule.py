@@ -59,7 +59,7 @@ def _make_engine(
     file_stems: frozenset[str] = frozenset(),
     save_calls: list[HeartbeatConfig] | None = None,
 ) -> tuple[HeartbeatEngine, SimpleNamespace]:
-    mind = SimpleNamespace(last_activity_ts=last_activity)
+    mind = SimpleNamespace(last_activity_ts=last_activity, is_reply=False)
     config = HeartbeatConfig(task_schedules=schedules)
 
     # 隔离真实配置文件：TaskRegistry / get_heartbeat_config / save 均指向测试替身
@@ -428,3 +428,46 @@ def test_seed_declared_schedules_skips_manual() -> None:
     engine = _seed_engine([task], cfg)
     engine._seed_declared_schedules()
     assert cfg.get_schedule("manual_task") is None
+
+
+class TestReplyPriorityGate:
+    """回复优先门控：回复进行中 tick 只做维护与提醒，不启动任务、不递增计数。"""
+
+    async def test_tick_defers_task_while_replying(self, monkeypatch) -> None:
+        schedules = [TaskSchedule(task_name="a", mode=ScheduleMode.HEARTBEAT, every_n_beats=1)]
+        tasks = {"a": _task("a")}
+        engine, mind = _make_engine(schedules, tasks, monkeypatch)
+        mind.is_reply = True
+
+        executed = await engine.tick()
+        assert executed == []
+        engine.executor.run.assert_not_awaited()
+        # 让路不递增计数器（对齐心跳忙碌延后语义）
+        assert schedules[0].beat_count == 0
+
+        # 回复收尾后下个 tick 正常补跑
+        mind.is_reply = False
+        assert await engine.tick() == ["a"]
+
+    async def test_gate_preserves_pending_reflection(self, monkeypatch) -> None:
+        schedules = [TaskSchedule(task_name="self_reflection", mode=ScheduleMode.IDLE, every_n_beats=10)]
+        tasks = {"self_reflection": _task("self_reflection")}
+        engine, mind = _make_engine(schedules, tasks, monkeypatch)
+        engine.mark_reflection_pending("对话质量下滑")
+        mind.is_reply = True
+
+        assert await engine.tick() == []
+        # 待反思标记未被消费，空闲后由 idle 任务消费
+        assert engine.reflection_pending is True
+        mind.is_reply = False
+        assert await engine.tick() == ["self_reflection"]
+        assert engine.reflection_pending is False
+
+    async def test_gate_still_runs_maintenance(self, monkeypatch) -> None:
+        schedules = [TaskSchedule(task_name="a", mode=ScheduleMode.HEARTBEAT, every_n_beats=1)]
+        tasks = {"a": _task("a")}
+        engine, mind = _make_engine(schedules, tasks, monkeypatch)
+        mind.is_reply = True
+
+        await engine.tick()
+        engine._run_maintenance.assert_awaited_once()

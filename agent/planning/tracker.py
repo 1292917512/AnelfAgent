@@ -1,7 +1,6 @@
 """Plan 状态追踪器 — 计划模式程序级进度的统一实现。
 
-设计原则（参考 hermes 的 progress callback / Claude Code 的
-updateProgressFromMessage）：进度由程序从执行流自动推断，AI 不需要
+设计原则：进度由程序从执行流自动推断，AI 不需要
 主动汇报；AI 调 update_goal 只是"可选的精确标记"，不是必要条件。
 
 本模块是 plan 状态机与事件发射的**唯一入口**，消费者：
@@ -159,6 +158,10 @@ async def _persist(entry: MemoryEntry, goal: Dict[str, Any]) -> None:
     goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     entry.content = json.dumps(goal, ensure_ascii=False)
     await store.update(entry, clear_embedding=True)
+    # 状态机全部推进路径（advance/finalize/cancel/update_goal）的实际落库点：
+    # 去抖短路（语义未变）不失效，快照与存储严格同步
+    from agent.planning import situation
+    situation.invalidate()
 
 
 # ------------------------------------------------------------------
@@ -265,6 +268,9 @@ async def submit_plan(
             await store.add(entry)
         except Exception as exc:
             log(f"plan 持久化失败（不影响执行）: {exc}", "WARNING", tag="规划")
+        else:
+            from agent.planning import situation
+            situation.invalidate()
 
     try:
         if _is_user_facing(scope):

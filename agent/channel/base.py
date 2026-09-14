@@ -1,7 +1,6 @@
 """BaseChannel — 频道抽象基类。
 
-借鉴 nekro-agent 的 BaseAdapter + BaseAdapterConfig + AdapterMetadata 设计，
-提供统一的频道抽象。
+统一的频道抽象。
 
 核心特性：
 1. **元数据声明**（ChannelMetadata）：让频道自描述，便于 WebUI 与文档生成
@@ -80,7 +79,7 @@ from .tool_bridge import channel_tool
 
 
 class ChannelMetadata(BaseModel):
-    """频道元数据（借鉴 nekro-agent AdapterMetadata）。
+    """频道元数据。
 
     让频道自描述，供 WebUI / 文档 / 日志使用。
     """
@@ -94,7 +93,7 @@ class ChannelMetadata(BaseModel):
 
 
 class ChannelConfig(BaseModel):
-    """频道配置基类（借鉴 nekro-agent BaseAdapterConfig，pydantic 化）。
+    """频道配置基类（pydantic 化）。
 
     所有频道通用配置项。子类继承后追加平台特有字段即可。
 
@@ -298,20 +297,40 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         逐段调用映射的 send_* 方法，从 JSON 返回中收集 message_id
         （单值 ``message_id`` 与列表 ``message_ids`` 均识别），
         汇总为统一 SendResponse；单段失败不中断后续段。
+
+        失败显式化契约（不静默）：
+        - 段类型无映射（本频道未声明支持）或 send_* 返回 success:false，
+          都记入失败清单，最终在 error 字段逐段列明；
+        - 任一段失败则整体 success=False（调用方据此标记未送达），
+          已成功段的 message_ids 仍随响应返回。
+
+        message_id 收集是尽力而为：部分频道无平台消息 ID（如 webui 的
+        广播推送），success 即视为送达，不因缺 ID 误判失败。
         """
         try:
             chat_id = request.channel.channel_id
             message_ids: List[str] = []
+            failures: List[str] = []
             for seg in request.segments:
                 seg_type = seg.type.value
                 method_name = self._SEGMENT_SENDERS.get(seg_type)
-                if not method_name:
-                    continue
-                method = getattr(self, method_name, None)
+                method = getattr(self, method_name, None) if method_name else None
                 if method is None:
+                    failures.append(f"段类型 {seg_type} 不受支持（本频道无发送映射）")
                     continue
                 result_json = await self._call_segment_sender(method, seg, request, chat_id)
-                message_ids.extend(self._extract_message_ids(result_json))
+                ok, ids, error = self._parse_segment_result(result_json)
+                if not ok:
+                    failures.append(f"段类型 {seg_type} 发送失败: {error}")
+                    continue
+                message_ids.extend(ids)
+            if failures:
+                return SendResponse(
+                    success=False,
+                    error="；".join(failures),
+                    message_id=message_ids[0] if message_ids else "",
+                    message_ids=message_ids,
+                )
             if message_ids:
                 return SendResponse(
                     success=True,
@@ -346,21 +365,27 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         return await method(chat_id, *args, **kwargs)
 
     @staticmethod
-    def _extract_message_ids(result_json: str) -> List[str]:
-        """从 send_* 的 JSON 返回中收集 message_id（message_id 单值 / message_ids 列表）。"""
+    def _parse_segment_result(result_json: str) -> Tuple[bool, List[str], str]:
+        """解析 send_* 的 JSON 返回：(是否成功, message_id 列表, 失败原因)。
+
+        success 即送达（无平台 ID 的频道不强制 message_id）；
+        success:false 或非法 JSON 为失败，失败原因取 error 字段。
+        """
         try:
             result = json.loads(result_json)
         except (TypeError, ValueError):
-            return []
-        if not isinstance(result, dict) or not result.get("success"):
-            return []
+            return False, [], "返回格式异常"
+        if not isinstance(result, dict):
+            return False, [], "返回格式异常"
+        if not result.get("success"):
+            return False, [], str(result.get("error") or "未知错误")
         ids: List[str] = []
         for mid in result.get("message_ids") or []:
             ids.append(str(mid))
         single = result.get("message_id")
         if single:
             ids.append(str(single))
-        return ids
+        return True, ids, ""
 
     # ------------------------------------------------------------------
     # 便捷发送方法（默认实现，内部走 forward_message）
@@ -513,7 +538,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         return _ok({"chats": list(known.values()), "count": len(known)})
 
     # ------------------------------------------------------------------
-    # 信息查询（抽象，借鉴 nekro-agent）
+    # 信息查询（抽象）
     # ------------------------------------------------------------------
 
     @abstractmethod

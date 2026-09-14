@@ -22,6 +22,9 @@ class SmartHomeProvider(ABC):
     """平台全局唯一标识（英文，作为配置键前缀的一部分）。"""
     display_name: ClassVar[str] = ""
     """平台展示名。"""
+    entity_prefix: ClassVar[str] = ""
+    """本平台设备 entity_id 的统一前缀（多供应商归属路由依据；HA 等原生
+    ID 平台为空串，作为兜底归属）。"""
     config_schema: ClassVar[Dict[str, Dict[str, Any]]] = {}
     """平台连接配置项声明（键不含前缀，注册时自动加 ``smart_home_<key>_`` 前缀）。
 
@@ -81,3 +84,22 @@ class SmartHomeProvider(ABC):
     @abstractmethod
     def status(self) -> Dict[str, Any]:
         """连接状态的可序列化描述（面板/工具/上下文注入共用）。"""
+
+    # ---- 可选契约（原生语音播报） ----
+
+    def supports_speak(self, device: DeviceState) -> bool:
+        """是否支持对指定设备原生语音播报（TTS 不经第三方平台服务）。"""
+        return False
+
+    async def speak(self, device: DeviceState, text: str) -> None:
+        """原生语音播报（supports_speak 为真时由 manager 直调，失败抛异常）。"""
+        raise NotImplementedError(f"{self.display_name} 不支持语音播报")
+
+    # ---- 可选契约（设备发现，供 Web 一键接入） ----
+
+    discovery_supported: ClassVar[bool] = False
+    """是否支持局域网/账号设备发现（面板「发现设备」按钮）。"""
+
+    async def discover(self) -> List[Dict[str, Any]]:
+        """发现可接入设备（discovery_supported 为真时实现，返回候选列表）。"""
+        raise NotImplementedError(f"{self.display_name} 不支持设备发现")

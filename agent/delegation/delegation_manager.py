@@ -53,7 +53,7 @@ from agent.planning.tracker import (  # noqa: E402
     parse_scope_chat_id as _parse_scope_chat_id,
 )
 
-# 结果摘要预算（参考 hermes：父上下文剩余空间的 50% 均分给各子任务）
+# 结果摘要预算（父上下文剩余空间的 50% 均分给各子任务）
 _SUMMARY_HEADROOM_FRACTION = 0.5
 _MIN_SUMMARY_CHARS = 2_000
 _MAX_SUMMARY_CHARS = 24_000
@@ -1153,7 +1153,7 @@ class DelegationManager:
         }, ensure_ascii=False)
 
     def _summary_char_budget(self, n_summaries: int) -> int:
-        """每个子任务摘要的字符预算（父上下文剩余空间均分，参考 hermes）。"""
+        """每个子任务摘要的字符预算（父上下文剩余空间均分）。"""
         context_length = self._mind.get_model_context_length()
         if context_length <= 0:
             return _MAX_SUMMARY_CHARS

@@ -18,10 +18,13 @@ Model Experience:
 from __future__ import annotations
 
 import time
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional
 
 from core.config import ConfigManager
 from core.log import log
+
+if TYPE_CHECKING:
+    from core.context_provider import ContextMedia
 
 _LOG_TAG = "AI桌面"
 
@@ -101,6 +104,15 @@ class DesktopModule:
     def render(self) -> Optional[str]:
         """返回注入文本（零 I/O）；None/空串表示本轮不注入。"""
         return None
+
+    def render_media(self) -> List["ContextMedia"]:
+        """返回随注入文本附带的媒体（零 I/O，默认无）。
+
+        媒体是文本的附件而非替代：render() 的文本必须自足（无视觉/降级
+        路径只有文本与媒体标签生效）。典型场景：屏幕模块把最近一帧截图
+        随环境描述注入。
+        """
+        return []
 
     def detail(self) -> Dict[str, Any]:
         """组件当前状态的结构化详情（零 I/O，面板展示用）。
@@ -227,6 +239,19 @@ def render_context() -> str:
     if not parts:
         return ""
     return "[桌面环境]\n" + "\n".join(parts)
+
+
+def render_media() -> List["ContextMedia"]:
+    """汇总全部启用组件本轮附带的媒体（单组件异常不影响其他组件）。"""
+    media: List["ContextMedia"] = []
+    for module in all_modules():
+        if not module.is_enabled():
+            continue
+        try:
+            media.extend(module.render_media())
+        except Exception as exc:
+            log(f"组件 {module.key} 媒体渲染异常: {exc}", "DEBUG", tag=_LOG_TAG)
+    return media
 
 
 async def refresh_due(now: Optional[float] = None) -> None:

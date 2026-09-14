@@ -1,4 +1,4 @@
-"""file_state 文件读取状态缓存测试（移植自 Claude Code fileStateCache 语义）。"""
+"""file_state 文件读取状态缓存测试（read-before-write 与过期检查语义）。"""
 
 from __future__ import annotations
 

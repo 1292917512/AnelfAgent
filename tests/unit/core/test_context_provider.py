@@ -112,15 +112,15 @@ class TestGroupGating:
 
         self._register_grouped()
         await ContextProviderRegistry._collect_background("s1", 4000)
-        assert ContextProviderRegistry._last_snippets["s1"] == ["[grouped] 状态"]
+        assert [c.text for c in ContextProviderRegistry._last_clips["s1"]] == ["[grouped] 状态"]
 
         EntityRegistry.disable_group("cp_group")
         await ContextProviderRegistry._collect_background("s1", 4000)
-        assert ContextProviderRegistry._last_snippets["s1"] == []
+        assert [c.text for c in ContextProviderRegistry._last_clips["s1"]] == []
 
         EntityRegistry.enable_group("cp_group")
         await ContextProviderRegistry._collect_background("s1", 4000)
-        assert ContextProviderRegistry._last_snippets["s1"] == ["[grouped] 状态"]
+        assert [c.text for c in ContextProviderRegistry._last_clips["s1"]] == ["[grouped] 状态"]
 
     async def test_partial_disable_keeps_provider_active(self) -> None:
         """分组内仍有启用工具时（目录中分组仍可见）provider 继续注入。"""
@@ -129,7 +129,7 @@ class TestGroupGating:
         self._register_grouped()
         EntityRegistry.disable("cp_g1")
         await ContextProviderRegistry._collect_background("s1", 4000)
-        assert ContextProviderRegistry._last_snippets["s1"] == ["[grouped] 状态"]
+        assert [c.text for c in ContextProviderRegistry._last_clips["s1"]] == ["[grouped] 状态"]
 
     async def test_ungrouped_provider_always_active(self) -> None:
         """未声明 group 的 provider 视为全局常驻，不随实体启停。"""
@@ -138,7 +138,7 @@ class TestGroupGating:
         self._register_grouped(group=None, name="global")
         EntityRegistry.disable_group("cp_group")
         await ContextProviderRegistry._collect_background("s1", 4000)
-        assert ContextProviderRegistry._last_snippets["s1"] == ["[global] 状态"]
+        assert [c.text for c in ContextProviderRegistry._last_clips["s1"]] == ["[global] 状态"]
 
     def test_status_exposes_group_and_active(self) -> None:
         """Web 面板可观测 provider 的归属分组与活动状态。"""
@@ -175,15 +175,15 @@ class TestInjectKeyGating:
         self._register()
         ConfigManager.set("gated_context_inject", True)
         await ContextProviderRegistry._collect_background("s1", 4000)
-        assert ContextProviderRegistry._last_snippets["s1"] == ["[gated] 状态"]
+        assert [c.text for c in ContextProviderRegistry._last_clips["s1"]] == ["[gated] 状态"]
 
         ConfigManager.set("gated_context_inject", False)
         await ContextProviderRegistry._collect_background("s1", 4000)
-        assert ContextProviderRegistry._last_snippets["s1"] == []
+        assert [c.text for c in ContextProviderRegistry._last_clips["s1"]] == []
 
         ConfigManager.set("gated_context_inject", True)
         await ContextProviderRegistry._collect_background("s1", 4000)
-        assert ContextProviderRegistry._last_snippets["s1"] == ["[gated] 状态"]
+        assert [c.text for c in ContextProviderRegistry._last_clips["s1"]] == ["[gated] 状态"]
 
     def test_switch_defaults_true_when_unset(self) -> None:
         """配置项未设置时默认放行（开关是退出机制而非准入门槛）。"""
@@ -244,15 +244,15 @@ class TestFreshCollect:
     async def test_first_collect_returns_content_immediately(self) -> None:
         """首次调用即返回内容（不再滞后一轮返回空）。"""
         self._register_counter()
-        snippets, _ = await ContextProviderRegistry.collect("s1")
-        assert snippets == ["[fresh] 第1次"]
+        clips, _ = await ContextProviderRegistry.collect("s1")
+        assert [c.text for c in clips] == ["[fresh] 第1次"]
 
     async def test_within_ttl_reuses_cache(self) -> None:
         """新鲜度窗口内复用缓存，不重复调用 provider。"""
         counter = self._register_counter()
         await ContextProviderRegistry.collect("s1")
-        snippets, _ = await ContextProviderRegistry.collect("s1")
-        assert snippets == ["[fresh] 第1次"]
+        clips, _ = await ContextProviderRegistry.collect("s1")
+        assert [c.text for c in clips] == ["[fresh] 第1次"]
         assert counter[0] == 1
 
     async def test_stale_cache_refreshes_inline(
@@ -264,8 +264,8 @@ class TestFreshCollect:
         )
         counter = self._register_counter()
         await ContextProviderRegistry.collect("s1")
-        snippets, _ = await ContextProviderRegistry.collect("s1")
-        assert snippets == ["[fresh] 第2次"]
+        clips, _ = await ContextProviderRegistry.collect("s1")
+        assert [c.text for c in clips] == ["[fresh] 第2次"]
         assert counter[0] == 2
 
     async def test_providers_collected_concurrently(self) -> None:
@@ -284,9 +284,9 @@ class TestFreshCollect:
             ProviderMeta(name="slow_b", provide_fn=_slow),
         )
         start = time.perf_counter()
-        snippets, _ = await ContextProviderRegistry.collect("s1")
+        clips, _ = await ContextProviderRegistry.collect("s1")
         elapsed = time.perf_counter() - start
-        assert snippets == ["慢速内容", "慢速内容"]
+        assert [c.text for c in clips] == ["慢速内容", "慢速内容"]
         assert elapsed < 0.8
 
     def _register_counter(self) -> list:
@@ -300,3 +300,37 @@ class TestFreshCollect:
             ProviderMeta(name="fresh", provide_fn=_provide),
         )
         return counter
+
+
+class TestMediaClips:
+    """快照携带媒体附件：collect 产出 VolatileClip.media（按 kind 保序）。"""
+
+    async def test_media_survives_collect(self) -> None:
+        from core.context_provider import ContextMedia
+
+        async def _provide(scope: str) -> ProviderSnapshot:
+            return ProviderSnapshot(
+                content="[环境] 状态",
+                media=[ContextMedia.image("/tmp/a.png"), ContextMedia.audio("/tmp/b.wav")],
+                tokens=10,
+            )
+
+        ContextProviderRegistry.register(ProviderMeta(name="media", provide_fn=_provide))
+        clips, _ = await ContextProviderRegistry.collect("s1")
+        assert len(clips) == 1
+        assert clips[0].text == "[环境] 状态"
+        assert [m.kind for m in clips[0].media] == ["image", "audio"]
+        assert clips[0].media[0].data == "/tmp/a.png"
+
+    async def test_media_only_snapshot_injected(self) -> None:
+        """无文本但有媒体的快照不被跳过（媒体即内容）。"""
+        from core.context_provider import ContextMedia
+
+        async def _provide(scope: str) -> ProviderSnapshot:
+            return ProviderSnapshot(media=[ContextMedia.video("/tmp/c.mp4")])
+
+        ContextProviderRegistry.register(ProviderMeta(name="media_only", provide_fn=_provide))
+        clips, _ = await ContextProviderRegistry.collect("s1")
+        assert len(clips) == 1
+        assert clips[0].text == ""
+        assert clips[0].media[0].kind == "video"

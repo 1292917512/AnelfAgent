@@ -418,7 +418,7 @@ async def get_weather(city: str) -> str:
 uv sync                          # 安装依赖（含 Cognee 等）
 uv run pytest                    # 全量测试（unit + 无需凭证的 integration）
 uv run pytest tests/unit         # 分层单元测试（core/agent/services/web，快速）
-uv run pytest entities/web/tests # 单模块测试（实体/频道单测在各模块内 tests/）
+uv run pytest entities/minimax/tests # 单模块测试（实体/频道单测在各模块内 tests/）
 uv run pytest -m integration     # 仅集成测试（需凭证的用例自动跳过）
 uv run ruff check .              # Lint
 uv run lint-imports              # 依赖方向契约检查
@@ -458,7 +458,7 @@ AnelfAgent 的多平台能力建立在这些优秀开源项目之上：
 | [lark-oapi](https://github.com/larksuite/oapi-sdk-python) | 飞书 / Lark SDK | MIT |
 | [FastAPI](https://github.com/fastapi/fastapi) / [MCP](https://modelcontextprotocol.io/) | Web 与工具协议 | MIT |
 
-特别感谢 [Nekro Agent](https://github.com/KroMiose/nekro-agent) 在多平台智能体架构与多模态候选注入体验上的参考与启发。
+特别感谢 [Nekro Agent](https://github.com/KroMiose/nekro-agent) 在多平台智能体架构、多模态候选注入体验与实时语音链路（含麦克风上行音频帧协议）上的参考与启发。
 
 > **协议说明**：AnelfAgent 通过 OneBot v11 WebSocket 与 NapCatQQ 通信，不包含也不修改 NapCat 源码。微信频道对接腾讯 iLink Bot API，协议实现参考社区适配器实践。
 

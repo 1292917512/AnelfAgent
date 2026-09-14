@@ -37,7 +37,7 @@ import asyncio
 import inspect
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.log import log
@@ -61,11 +61,48 @@ _MAX_TRACKED_SCOPES = 200
 
 
 @dataclass
+class ContextMedia:
+    """上下文注入携带的媒体（core 层中立表达，组装点按 kind 分派注入形态）。
+
+    kind 决定组装点的注入形态（视觉/对话协议的物理约束，不是偏好）：
+    - image：视觉模型下以 image_url block 真实直注（user 角色多模态消息，
+      转 agent.llm.types.ImageContent）；非视觉模型降级为媒体标签引用；
+    - audio / video：对话协议层（litellm 转换层）不接受这两类 block
+      （视频直发 HTTP 已有教训，见 llm_client.describe_video），一律降级为
+      [media_type:kind][media_path:...] 标签引用，AI 经既有媒体工具处理。
+
+    data 为本地路径 / http(s) URL / base64 数据三种形态（is_url 仅标识 URL）；
+    audio/video 体积大，约定只传路径或 URL，不传 base64。
+    """
+
+    kind: str
+    """媒体类别：image / audio / video。"""
+    data: str
+    mime_type: str = ""
+    is_url: bool = False
+
+    @classmethod
+    def image(cls, data: str, mime_type: str = "image/jpeg", is_url: bool = False) -> "ContextMedia":
+        return cls(kind="image", data=data, mime_type=mime_type, is_url=is_url)
+
+    @classmethod
+    def audio(cls, data: str, mime_type: str = "audio/wav", is_url: bool = False) -> "ContextMedia":
+        return cls(kind="audio", data=data, mime_type=mime_type, is_url=is_url)
+
+    @classmethod
+    def video(cls, data: str, mime_type: str = "video/mp4", is_url: bool = False) -> "ContextMedia":
+        return cls(kind="video", data=data, mime_type=mime_type, is_url=is_url)
+
+
+@dataclass
 class ProviderSnapshot:
     """实体提供给 PFC 的一次快照。
 
     Attributes:
-        content: 注入文本。None 或空字符串表示本轮不注入。
+        content: 注入文本。None 或空字符串表示本轮无文本注入（仍可携带 images）。
+        media: 随快照注入的媒体附件（如桌面截图/环境音/录屏片段）；注入形态按
+            ContextMedia.kind 分派（见该类 docstring）。文本是语义载体、媒体是
+            附件——附件内容应以 content 文本加以说明，保证降级路径语义不丢。
         ready: False 表示实体尚未加载完成（可选注入占位文案）。
         tokens: 实体自报 token 数（用于预算计算）。
         bytes: 实际字节数（用于监控展示）。
@@ -74,11 +111,21 @@ class ProviderSnapshot:
     """
 
     content: Optional[str] = None
+    media: List[ContextMedia] = field(default_factory=list)
     ready: bool = True
     tokens: int = 0
     bytes: int = 0
     fetched_at: float = 0.0
     default_when_not_ready: str = ""
+
+
+@dataclass
+class VolatileClip:
+    """collect() 产出的注入单元：一段文本 + 可选媒体附件 + 来源 provider。"""
+
+    text: str
+    media: List[ContextMedia] = field(default_factory=list)
+    source: str = ""
 
 
 @dataclass
@@ -149,7 +196,7 @@ class ContextProviderRegistry:
     # 按 scope 的统计状态（LRU，容量上限 _MAX_TRACKED_SCOPES）
     _last_metrics: "OrderedDict[str, List[ProviderMetric]]" = OrderedDict()
     _last_collect: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-    _last_snippets: "OrderedDict[str, List[str]]" = OrderedDict()
+    _last_clips: "OrderedDict[str, List[VolatileClip]]" = OrderedDict()
     _peak: "OrderedDict[str, int]" = OrderedDict()
     # scope -> 进行中的后台收集任务（同一 scope 同时只有一个收集任务）
     _inflight: Dict[str, "asyncio.Task[None]"] = {}
@@ -187,7 +234,7 @@ class ContextProviderRegistry:
         cls,
         scope: str = "",
         budget: int = DEFAULT_COLLECT_BUDGET,
-    ) -> Tuple[List[str], List[ProviderMetric]]:
+    ) -> Tuple[List[VolatileClip], List[ProviderMetric]]:
         """返回当前最新快照；缓存超过新鲜度阈值时内联并发重收。
 
         provider 契约是零 I/O 读内存快照（_safe_provide 有 1s 硬超时且
@@ -199,7 +246,7 @@ class ContextProviderRegistry:
             budget: token 预算上限，收集超限日志警告并截断。
 
         Returns:
-            (snippets, metrics) — snippets 是注入文本列表，metrics 是监督指标。
+            (clips, metrics) — clips 是注入单元（文本+可选媒体附件）列表，metrics 是监督指标。
         """
         last = cls._last_collect.get(scope, {})
         stale = (
@@ -218,9 +265,9 @@ class ContextProviderRegistry:
 
                 task.add_done_callback(_cleanup)
             await task
-        snippets = list(cls._last_snippets.get(scope, []))
+        clips = list(cls._last_clips.get(scope, []))
         metrics = list(cls._last_metrics.get(scope, []))
-        return snippets, metrics
+        return clips, metrics
 
     @classmethod
     def _bounded_put(cls, store: "OrderedDict[str, Any]", key: str, value: Any) -> None:
@@ -246,7 +293,7 @@ class ContextProviderRegistry:
                 *(cls._safe_provide(meta, scope) for meta in metas)
             )
 
-            snippets: List[str] = []
+            clips: List[VolatileClip] = []
             metrics: List[ProviderMetric] = []
             used_tokens = 0
             used_bytes = 0
@@ -259,11 +306,11 @@ class ContextProviderRegistry:
                 # 未加载完：有兜底文案则注入占位，否则跳过
                 if not snap.ready:
                     if snap.default_when_not_ready:
-                        snippets.append(snap.default_when_not_ready)
+                        clips.append(VolatileClip(text=snap.default_when_not_ready, source=meta.name))
                     continue
 
-                # 空内容跳过
-                if not snap.content:
+                # 空快照跳过（文本与画面都没有 = 本轮无注入）
+                if not snap.content and not snap.media:
                     continue
 
                 # 预算检查
@@ -276,7 +323,9 @@ class ContextProviderRegistry:
                     )
                     break
 
-                snippets.append(snap.content)
+                clips.append(VolatileClip(
+                    text=snap.content or "", media=list(snap.media), source=meta.name,
+                ))
                 used_tokens += snap.tokens
                 used_bytes += snap.bytes
                 cls._last_contents[meta.name] = {
@@ -297,7 +346,7 @@ class ContextProviderRegistry:
                 ))
 
             # 记录本次收集结果（供下一轮 collect 与 Web API 读取）
-            cls._bounded_put(cls._last_snippets, scope, snippets)
+            cls._bounded_put(cls._last_clips, scope, clips)
             cls._bounded_put(cls._last_metrics, scope, metrics)
             cls._bounded_put(cls._last_collect, scope, {
                 "used_tokens": used_tokens,
@@ -565,5 +614,5 @@ class ContextProviderRegistry:
         cls._last_contents.clear()
         cls._last_metrics.clear()
         cls._last_collect.clear()
-        cls._last_snippets.clear()
+        cls._last_clips.clear()
         cls._peak.clear()

@@ -755,7 +755,7 @@ class MemoryRetriever:
             recent_boost: float = 1.1,
             recent_hours: float = 168.0,  # 7 天
     ) -> list[MemorySearchResult]:
-        """时间感知加权：事件记忆 + 近期记忆分数提升（参考 nekro 检索加权）。"""
+        """时间感知加权：事件记忆 + 近期记忆分数提升。"""
         import time as _time
         now = _time.time()
         for r in results:

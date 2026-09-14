@@ -30,7 +30,7 @@ class SmartHomeContextProvider:
             return None
         if not status.get("connected"):
             return ProviderSnapshot(
-                content="[智能家居] 与 Home Assistant 连接中断，设备状态不可用",
+                content="[智能家居] 全部供应商连接中断，设备状态不可用",
                 ready=True,
             )
         content = framework.render_context(manager.devices())

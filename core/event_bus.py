@@ -277,6 +277,9 @@ EVENT_UI_COMMAND = "ui_command"
 # 分享链接创建（entities/share → 聊天 SSE → 前端分享卡片）
 EVENT_SHARE_CREATED = "share_created"
 
+# 语音段成段（agent/voice → 钩子面/未来 Realtime 管线；payload 见 voice.session._deliver）
+EVENT_VOICE_UTTERANCE = "voice_utterance"
+
 # ------------------------------------------------------------------
 # Plan 模式（present_plan / update_goal 工具 → 前端 plan 浮窗与卡片）
 # ------------------------------------------------------------------

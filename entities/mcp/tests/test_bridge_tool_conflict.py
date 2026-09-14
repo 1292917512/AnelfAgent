@@ -1,6 +1,6 @@
 """MCP 工具注册名冲突处理（entities.mcp.bridge）单元测试。
 
-测试名一律用全仓唯一的探测名：真实工具名（如 entities.web.tools 的
+测试名一律用全仓唯一的探测名：真实工具名（如 agent.retrieval.tools 的
 web_search）经模块级 @tool 注册驻留全局 EntityRegistry——同 worker 的
 其他测试只要 import 过该模块，"MCP 先占原名（无冲突）"的前提就会随
 测试分布（xdist worker 数不同）随机破产。探测名与真实名走完全相同的

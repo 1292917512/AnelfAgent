@@ -6,11 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.tool_schema import extract_tool_params
 from entities import _sdk
-from entities._sdk import _extract_params
 
 # ------------------------------------------------------------------
-# _extract_params（复现历史 bug：**kwargs 容错参数曾生成虚假 schema 字段）
+# extract_tool_params（**kwargs 容错参数不得生成虚假 schema 字段）
 # ------------------------------------------------------------------
 
 def _tool_with_kwargs(image_path: str = "", prompt: str = "", **kwargs: str) -> str:
@@ -35,13 +35,13 @@ def _tool_with_args(first: str, *args: str, flag: bool = False) -> str:
 
 class TestExtractParams:
     def test_skips_var_keyword(self) -> None:
-        params = _extract_params(_tool_with_kwargs)
+        params = extract_tool_params(_tool_with_kwargs)
         names = [p.name for p in params]
         assert names == ["image_path", "prompt"]
         assert all(not p.required for p in params)
 
     def test_skips_var_positional(self) -> None:
-        params = _extract_params(_tool_with_args)
+        params = extract_tool_params(_tool_with_args)
         names = [p.name for p in params]
         assert names == ["first", "flag"]
         assert params[0].required is True
@@ -194,7 +194,7 @@ class TestEntityManifestOrder:
             {"output", "thinking"},
             {"memory", "graph", "notes"},
             {"planning", "skills", "delegation"},
-            {"web", "media", "os", "environment", "ssh", "sticker", "share", "voiceprint", "vault"},
+            {"retrieval", "minimax", "os", "environment", "ssh", "sticker", "share", "audio", "vault", "vision"},
             {"model_control", "ollama", "logs", "devops"},
             {"channel_ops", "entity", "mcp_manage", "plugins"},
             {"ui", "session"},

@@ -1,8 +1,8 @@
-"""配置服务 -- Mind 配置字段路由与 Web 工具实体配置。"""
+"""配置服务 -- Mind 配置字段路由。"""
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 
 class ConfigService:
@@ -26,19 +26,3 @@ class ConfigService:
         """保存单个 MindConfig 字段（双轨同步 + 实时生效）。"""
         from agent.config import get_config_provider
         get_config_provider().save_mind_config(**{key: value})
-
-    # ------------------------------------------------------------------
-    # Web 工具实体配置（entities/web/config.json）
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def get_web_tools_proxy() -> str:
-        """返回 Web 工具的代理配置。"""
-        from entities.web.web_config import get_proxy
-        return get_proxy()
-
-    @staticmethod
-    def update_web_tools_config(updates: Dict[str, Any]) -> None:
-        """保存 Web 工具配置（代理等）。"""
-        from entities.web.web_config import update_config
-        update_config(updates)

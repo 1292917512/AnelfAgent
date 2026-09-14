@@ -256,3 +256,63 @@ class TestUrlFallbackNotification:
         content = result[-1]["content"]
         assert all(b.get("type") != "text" or "下载失败" not in b.get("text", "")
                    for b in content)
+
+
+class TestProviderMediaMessage:
+    """provider 快照画面的 user 角色多模态注入消息构建（build_provider_media_message）。"""
+
+    def _config(self) -> LLMClientConfig:
+        return LLMClientConfig(name="v", supports_vision=True, vision_format="base64")
+
+    def _img(self, tag: str) -> ImageContent:
+        return ImageContent(data=base64.b64encode(tag.encode()).decode(), mime_type="image/jpeg")
+
+    async def test_sampling_keeps_head_middle_tail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """多于上限时等距抽样保头/中/尾（信息量最高的是两端与中点）。"""
+        from agent.mind.tools import vision as vision_mod
+
+        async def _fake_report(images, *a, **kw):
+            return images, [], []
+
+        monkeypatch.setattr("agent.llm.image_utils.ensure_base64_report", _fake_report)
+        images = [self._img(f"img{i}") for i in range(8)]
+        msg = await vision_mod.build_provider_media_message(images, self._config())
+
+        assert msg is not None and msg["role"] == "user"
+        assert msg["_layer"] == "provider"
+        blocks = msg["content"]
+        urls = [b["image_url"]["url"] for b in blocks if b["type"] == "image_url"]
+        # 8 张 → 抽样 3 张：首(img0)/中(img4)/尾(img7)
+        expected = [f"data:image/jpeg;base64,{base64.b64encode(f'img{i}'.encode()).decode()}"
+                    for i in (0, 4, 7)]
+        assert urls == expected
+        caption = next(b["text"] for b in blocks if b["type"] == "text")
+        assert "抽样展示 3 张" in caption
+
+    async def test_url_fallback_becomes_url_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """下载失败的 URL 图以原 URL block 注入（端点兜底），caption 说明数量。"""
+        from agent.mind.tools import vision as vision_mod
+
+        async def _fake_report(images, *a, **kw):
+            return images[:1], ["https://x.com/fail.png"], ["broken-local"]
+
+        monkeypatch.setattr("agent.llm.image_utils.ensure_base64_report", _fake_report)
+        msg = await vision_mod.build_provider_media_message(
+            [self._img("a"), self._img("b")], self._config(),
+        )
+        assert msg is not None
+        urls = [b["image_url"]["url"] for b in msg["content"] if b["type"] == "image_url"]
+        assert urls[-1] == "https://x.com/fail.png"
+        caption = next(b["text"] for b in msg["content"] if b["type"] == "text")
+        assert "加载失败" in caption
+
+    async def test_all_failed_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """全部加载失败时不追加消息（调用方不注入空块）。"""
+        from agent.mind.tools import vision as vision_mod
+
+        async def _fake_report(images, *a, **kw):
+            return [], [], ["x", "y"]
+
+        monkeypatch.setattr("agent.llm.image_utils.ensure_base64_report", _fake_report)
+        msg = await vision_mod.build_provider_media_message([self._img("a")], self._config())
+        assert msg is None

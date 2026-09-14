@@ -5,15 +5,23 @@ from __future__ import annotations
 import json
 import shutil
 
+# 核心能力工具为 deferred 注册：导入后按组激活（与 bootstrap 同一机制）
+import agent.audio.gen_tools  # noqa: F401
+import agent.retrieval.tools  # noqa: F401
+import agent.vision.gen_tools  # noqa: F401
+
 # 触发目标实体模块导入（@tool 装饰器在导入时注册）
 import entities.devops.tools  # noqa: F401
 import entities.entity_query.tools  # noqa: F401
-import entities.media.tools  # noqa: F401
 import entities.model_control.tools  # noqa: F401
 import entities.system.tools  # noqa: F401
 import entities.ui.tools  # noqa: F401
-import entities.web.tools  # noqa: F401
 from core.entity import EntityRegistry
+from entities._sdk import activate_group
+
+activate_group("audio")
+activate_group("vision")
+activate_group("retrieval")
 
 _READONLY_TOOLS = [
     "list_models", "get_current_model", "get_model_priority",

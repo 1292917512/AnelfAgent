@@ -1,4 +1,4 @@
-"""工具沉睡/激活状态机（参考 nekro-agent prompt_activation）。
+"""工具沉睡/激活状态机。
 
 声明 ``allow_sleep=True`` + ``sleep_brief`` 的工具默认处于沉睡状态：
 不出现在 LLM 的完整 schema 中，仅在工具目录里展示简短描述（低 token）。

@@ -7,9 +7,7 @@
     "memoryConfigSubtitle": "Adjust memory search, management and consolidation parameters",
     "network": "Network / Download",
     "networkMoved": "Network proxy and workspace settings have moved to the Configuration page, with search and instant save",
-    "networkMovedAction": "Go to Configuration",
-    "webTools": "Search Engine",
-    "webToolsSubtitle": "Web scraping proxy settings (search via MiniMax Coding Plan)"
+    "networkMovedAction": "Go to Configuration"
   },
   "fields": {
     "heartbeat_interval": "Heartbeat Interval (s)",
@@ -31,7 +29,6 @@
     "memory_max_per_type": "Max Per Memory Type",
     "heartbeat_max_entries": "Heartbeat Max Entries",
     "auto_consolidate_enabled": "Auto Consolidate Notes",
-    "web_proxy": "Web Scraping Proxy",
     "conversation_analysis_threshold": "Conversation Analysis Threshold"
   },
   "descs": {
@@ -46,8 +43,7 @@
     "memory_warn_threshold": "Warning when single-type memory exceeds this count",
     "memory_max_per_type": "Hard limit per memory type",
     "heartbeat_max_entries": "Maximum entries kept in heartbeat.md",
-    "auto_consolidate_enabled": "Automatically consolidate memory files during heartbeat",
-    "web_proxy": "Web scraping proxy, leave empty for direct, e.g. http://127.0.0.1:7890"
+    "auto_consolidate_enabled": "Automatically consolidate memory files during heartbeat"
   },
   "actions": {
     "save": "Save",

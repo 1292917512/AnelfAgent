@@ -2,7 +2,7 @@
 
 检索结果采用多模态约定：返回 {"_multimodal": true, "text": ..., "images": [...]} 时，
 思维循环会把候选图片直接注入上下文，让视觉模型"亲眼看到"候选再决定使用哪张
-（借鉴 nekro-agent 的 MULTIMODAL_AGENT 体验）。
+（多模态候选注入体验）。
 """
 
 from __future__ import annotations
@@ -83,8 +83,8 @@ def stickers_dir() -> str:
 
 
 def _resolve_path(path: str) -> str:
-    """复用 media 实体的沙箱感知路径解析。"""
-    from entities.media.utils import resolve_workspace_path
+    """工作区沙箱感知路径解析（核心层统一实现）。"""
+    from entities._sdk import resolve_workspace_path
     return resolve_workspace_path(path)
 
 
@@ -168,7 +168,7 @@ def get_embedder() -> Any:
 
 
 async def _embed_text(description: str, tags: List[str]) -> Optional[list]:
-    """embedding 文本 = description + tags（与 nekro 一致的索引模型）。"""
+    """embedding 文本 = description + tags。"""
     text = f"{description} {' '.join(tags)}".strip()
     if not text:
         return None
@@ -423,6 +423,7 @@ async def send_sticker(
         operation="表情包",
         invoke=_invoke,
         enrich=_enrich,
+        outbound_preview=caption or "表情包",
     )
     try:
         if json.loads(result).get("success") is not False:

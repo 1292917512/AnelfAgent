@@ -426,7 +426,7 @@ async def _compress_context(
 
     压缩成败记录到熔断器（连续失败 3 次停止尝试）；
     成功后执行 rehydration：重读压缩前正在处理的文件，恢复工作现场
-    （对齐 Claude Code post-compact rehydration，消费 file_state 缓存）。
+    （压缩后关键文件内容再水化，消费 file_state 缓存）。
 
     tools: 当前激活工具 schema 数组，传入时启用前缀复用摘要
     （摘要调用复用主对话前缀命中 KV 缓存）。
@@ -454,7 +454,7 @@ async def _compress_context(
     return new_base, new_chain
 
 
-# rehydration 单文件字符上限与总预算（对齐 Claude Code 5K/文件、50K 总量）
+# rehydration 单文件字符上限与总预算（5K/文件、50K 总量）
 _REHYDRATE_MAX_FILES = 5
 _REHYDRATE_PER_FILE_CHARS = 5000
 _REHYDRATE_TOTAL_CHARS = 50000
@@ -840,7 +840,7 @@ async def _handle_overflow(
 # 阶段函数（无 finish_think 依赖的叶子阶段）
 # ==================================================================
 
-# max_output_tokens 截断恢复（对齐 Claude Code，最多 3 次）
+# max_output_tokens 截断恢复（最多 3 次）
 _MAX_OUTPUT_RECOVERY_LIMIT = 3
 _PROMPT_MAX_OUTPUT_CONTINUE = (
     "[系统] 你的上一条输出达到了长度上限被截断。"
@@ -854,7 +854,7 @@ def _handle_length_recovery(
         state: _ThinkRoundState,
         result: "ChatResult",
 ) -> _StageOutcome:
-    """max_tokens 截断续写（对齐 Claude Code 两级恢复，最多 3 次）。
+    """max_tokens 截断续写（两级恢复，最多 3 次）。
 
     截断轮的 tool_calls 参数可能不完整（JSON 断裂），一律丢弃不执行；
     恢复次数耗尽时同样跳过本轮 tool_calls 并提示拆分/结束。
@@ -917,7 +917,7 @@ _THINK_BLOCK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | 
 
 
 def _strip_think_blocks(text: str) -> str:
-    """剥离 content 中内联的 <think>/<thinking> 推理块（参考 hermes）。
+    """剥离 content 中内联的 <think>/<thinking> 推理块。
 
     推理内容应只走 reasoning_content 独立字段，内联 think 块若留在 content
     会泄漏到对话记录与频道消息中，并膨胀上下文。
@@ -1084,8 +1084,7 @@ def _collect_round_failures(tool_chain: List[Dict], tool_calls: List["ToolCall"]
 # ------------------------------------------------------------------
 # Plan 程序级自动进度（不依赖 AI 调 update_goal）
 #
-# 设计原则（参考 hermes 的 progress callback / Claude Code 的
-# updateProgressFromMessage）：进度由程序从执行流自动推断，AI 不需要
+# 设计原则：进度由程序从执行流自动推断，AI 不需要
 # 主动汇报；AI 调 update_goal 只是"可选的精确标记"，不是必要条件。
 #
 # 全部状态机与事件发射统一由 ``agent.planning.tracker`` 实现：
@@ -1144,12 +1143,12 @@ def _streaming_enabled() -> bool:
 # 工具执行支撑
 # ==================================================================
 
-# 并行执行上限（对齐 Claude Code CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY 默认 10）
+# 并行执行上限（默认 10）
 _MAX_TOOL_CONCURRENCY = 10
 
 
 def _partition_tool_calls(tool_calls: List["ToolCall"]) -> List[tuple]:
-    """按并发安全性把工具调用切分为连续批次（对齐 Claude Code toolOrchestration）。
+    """按并发安全性把工具调用切分为连续批次。
 
     连续的并发安全调用组成并行批次，其余各自串行。
     安全判定 fail-closed：查询失败一律视为不安全。

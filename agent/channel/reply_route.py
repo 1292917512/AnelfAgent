@@ -17,7 +17,7 @@ from typing import Optional
 from core.log import log
 from core.tags import strip_message_meta_tags
 
-# 沉默标记：AI 整条回复恰好是其中之一时视为"决定不回复"（hermes 式精确匹配，
+# 沉默标记：AI 整条回复恰好是其中之一时视为"决定不回复"（精确匹配，
 # 正文里提到这些词不会误杀——要求整条规范化后完全相等且有长度上限）
 _SILENT_MARKERS = frozenset({"[silent]", "silent", "no_reply", "no reply"})
 _SILENT_MAX_LEN = 64
@@ -34,7 +34,7 @@ def is_silent(text: str) -> bool:
     return normalized.lower() in _SILENT_MARKERS
 
 
-# 沉默旁白（hermes delivery.py 移植 + 中文变体）：整条回复只是一个"沉默姿态"，
+# 沉默旁白：整条回复只是一个"沉默姿态"，
 # 覆盖 *(silent)*、`silent`、(沉默)、*沉默*、🔇、裸 "." / "…" 等。
 # 锚定整条字符串 + 长度上限，正文中包含这些词的正常回复不会被误杀。
 _SILENCE_NARRATION_RE = re.compile(
@@ -208,6 +208,7 @@ async def deliver_text(target: ReplyTarget, content: str) -> bool:
             operation="消息",
             invoke=_invoke,
             success_suffix=f" ({len(content)}字, 纯文本投递)",
+            outbound_preview=content[:80],
         )
     except Exception as exc:
         log(f"纯文本投递异常: {exc}", "WARNING", tag="通道")

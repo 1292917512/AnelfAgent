@@ -120,6 +120,8 @@ web/frontend/node_modules/
 # 模块源码的 node 模块解析桥（module-links.mjs 自愈软链 → web/frontend/node_modules）
 entities/node_modules
 channels/node_modules
+# 小米云登录凭据缓存（smart_home xiaomi provider 运行时文件）
+entities/smart_home/providers/xiaomi/.mi.token
 
 # === Build & packaging ===
 /build/

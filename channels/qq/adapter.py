@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from typing import TYPE_CHECKING, Any, Dict, Optional, Set
 
@@ -95,6 +94,15 @@ class OneBotV11Channel(QQToolsMixin, BaseChannel[QQConfig]):
             ChannelCapability.REPLY_TO,
             ChannelCapability.MESSAGE_REACTION,
         }
+
+    # 段分发映射：QQ 频道实际支持 text/image/voice/file 四类段
+    # （video/audio 无 OneBot 发送实现，经模板显式报错而非静默跳过）
+    _SEGMENT_SENDERS = {
+        "text": "send_text",
+        "image": "send_photo",
+        "voice": "send_voice",
+        "file": "send_file",
+    }
 
     async def start(self) -> None:
         await self._transport.start()
@@ -217,27 +225,8 @@ class OneBotV11Channel(QQToolsMixin, BaseChannel[QQConfig]):
     # ------------------------------------------------------------------
 
     async def forward_message(self, request: SendRequest) -> SendResponse:
-        """统一发送入口（协议）。"""
-        try:
-            chat_id = request.channel.channel_id
-            message_ids: list[str] = []
-            for seg in request.segments:
-                seg_type = seg.type.value
-                if seg_type == "text":
-                    result_json = await self.send_text(chat_id, seg.content, reply_to=request.reply_to)
-                    result = json.loads(result_json)
-                    if result.get("success") and result.get("message_id"):
-                        message_ids.append(result["message_id"])
-                elif seg_type == "image":
-                    result_json = await self.send_photo(chat_id, seg.file_path, caption=seg.caption)
-                    result = json.loads(result_json)
-                    if result.get("success") and result.get("message_id"):
-                        message_ids.append(result["message_id"])
-            if message_ids:
-                return SendResponse(success=True, message_id=message_ids[0], message_ids=message_ids)
-            return SendResponse(success=True, message_id="empty")
-        except Exception as exc:
-            return SendResponse(success=False, error=str(exc))
+        """统一发送入口（段分发模板；voice/file 段不再静默跳过）。"""
+        return await self._forward_via_segment_map(request)
 
     async def get_self_info(self) -> ChannelUser:
         if not hasattr(self, "_self_id") or not self._self_id:

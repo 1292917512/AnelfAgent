@@ -1,5 +1,5 @@
 /**
- * ContextChip — 上下文用量状态（对齐 Claude Code 状态栏的 context %）。
+ * ContextChip — 上下文用量状态（context %）。
  *
  * 数据来自内核 context_usage 事件（usage 锚定：API 真实用量优先）。
  * 颜色：>90% 红（临近压缩），>70% 黄，其余灰。

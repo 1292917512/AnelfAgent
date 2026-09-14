@@ -33,6 +33,9 @@ import {
   Smile,
   Database,
   Share2,
+  Eye,
+  AudioLines,
+  Search,
   type LucideIcon,
 } from "lucide-react";
 
@@ -62,6 +65,9 @@ export const ICON_MAP: Record<string, LucideIcon> = {
   Share2,
   Boxes,
   ScanText,
+  Eye,
+  AudioLines,
+  Search,
 };
 
 export const FALLBACK_NAV: NavItem[] = [
@@ -77,6 +83,9 @@ export const FALLBACK_NAV: NavItem[] = [
   { path: "/mcp", label: "mcp", icon: "Plug", group: "group_ability" },
   { path: "/tags", label: "tags", icon: "Tags", group: "group_ability" },
   { path: "/channels", label: "channels", icon: "Radio", group: "group_ability" },
+  { path: "/vision", label: "vision", icon: "Eye", group: "group_core" },
+  { path: "/sound", label: "sound", icon: "AudioLines", group: "group_core" },
+  { path: "/retrieval", label: "retrieval", icon: "Search", group: "group_core" },
   { path: "/thinking", label: "thinking", icon: "Workflow", group: "group_ability" },
   { path: "/data", label: "data", icon: "Database", group: "group_system" },
   { path: "/approvals", label: "approvals", icon: "Shield", group: "group_system" },

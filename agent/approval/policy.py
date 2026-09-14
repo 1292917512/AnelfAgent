@@ -31,6 +31,8 @@ class WorkspacePathFns(NamedTuple):
 
     get_root: Callable[[], str]
     resolve: Callable[[str], str]
+    #: 沙箱准入判定（沙箱关闭时恒 True；缺省 True 兼容未携带判定的绑定）
+    allowed: Callable[[str], bool] = lambda _p: True
 
 
 #: 工作区路径解析端口（agent.runtime.wiring 以 entities 实现施绑）
@@ -50,7 +52,7 @@ class ApprovalPolicy(BaseModel):
     """单个批准策略。
 
     匹配规则：tool_name_pattern 支持 glob（如 "filesystem.*"），
-    也支持 Claude Code 风格的参数模式 ``工具名(参数glob)``，
+    也支持参数模式 ``工具名(参数glob)``，
     如 ``run_shell_command(npm test*)``、``edit_file(config/**)`` —
     此时仅当工具的关键参数（命令字符串/文件路径）同时匹配才命中。
     """
@@ -157,8 +159,8 @@ def extract_matchable_arg(tool_name: str, tool_args: Dict[str, Any]) -> str:
     """提取工具的关键参数用于 ``工具名(参数glob)`` 匹配。
 
     已知工具取其关键参数（命令/路径/URL），多值以空格连接；
-    路径类参数先做与执行层一致的规范化（对齐 Claude Code backfillObservableInput，
-    防止 ``./config/x``、``config/../config/x``、``~/x`` 绕过路径规则）；
+    路径类参数先做与执行层一致的规范化
+    （防止 ``./config/x``、``config/../config/x``、``~/x`` 绕过路径规则）；
     未知工具退化为参数的紧凑 JSON。
     """
     keys = _ARG_KEYS.get(tool_name)

@@ -1,4 +1,4 @@
-"""LLM 错误分类器（参考 hermes-agent error_classifier，按 litellm 异常体系裁剪）。
+"""LLM 错误分类器（按 litellm 异常体系归因）。
 
 将 LLM 调用异常分类为可操作的类别，每种类别对应不同的处理策略：
 - rate_limit:        指数退避 + 抖动后重试

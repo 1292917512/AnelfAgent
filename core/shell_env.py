@@ -1,4 +1,4 @@
-"""Shell 子进程环境变量卫生 — 对齐 codex unified_exec 的注入策略。
+"""Shell 子进程环境变量卫生 — 子进程环境注入策略。
 
 给工具发起的 shell 命令注入一组"面向脚本"的环境变量，避免两个常见事故：
 - ANSI 色码混进输出（NO_COLOR / TERM=dumb / COLORTERM=""）——浪费 token
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Dict
 
-# 注入的环境变量（对齐 codex process_manager.rs 的强制集）
+# 注入的环境变量（强制集）
 _SHELL_ENV_DEFAULTS: Dict[str, str] = {
     "NO_COLOR": "1",
     "TERM": "dumb",

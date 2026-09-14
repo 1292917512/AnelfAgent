@@ -1,9 +1,10 @@
 /**
  * 智能家居实体面板 — 设备实时总览与控制的完整管理页。
  *
- * 连接状态条 + 注入预览 + 按房间分组的设备卡片（域特化控制件）+
- * 设备域组件管理（启停/配置）。实时性经 /api/entity/smart_home/stream
- * SSE 推送（state 事件就地更新缓存，sync/connection 事件整表刷新）。
+ * 供应商连接卡片（状态/重连/发现设备）+ 注入预览 + 按房间分组的设备卡片
+ * （域特化控制件）+ 设备域组件管理（启停/配置）。实时性经
+ * /api/entity/smart_home/stream SSE 推送（state 事件就地更新缓存，
+ * sync/connection 事件整表刷新）。
  *
  * i18n：locales/{zh,en}.json 由 lib/entity-plugin-locales.ts 启动时 eager
  * 注册（命名空间 smart_home）；_registry.groups/configSections 声明
@@ -16,10 +17,9 @@ import {
   AlertTriangle,
   Eye,
   Home,
-  PlugZap,
   Puzzle,
   RefreshCw,
-  Unplug,
+  Server,
 } from "lucide-react";
 import { Card } from "@/components/common/Card";
 import { Button, LoadingBlock } from "@/components/ui";
@@ -27,11 +27,12 @@ import { toast } from "@/stores/toast-store";
 import { smartHomeApi } from "./panels/api";
 import { DeviceCard } from "./panels/DeviceCard";
 import { DomainCard } from "./panels/DomainCard";
+import { ProviderCard } from "./panels/ProviderCard";
 import type {
-  ConnectionStatus,
   DeviceInfo,
   DevicesResponse,
   StateEventPayload,
+  StatusResponse,
 } from "./panels/types";
 
 export default function SmartHomePanel() {
@@ -93,7 +94,7 @@ export default function SmartHomePanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryClient]);
 
-  const status: ConnectionStatus | undefined = statusQuery.data;
+  const status: StatusResponse | undefined = statusQuery.data;
   const devices = useMemo(() => devicesQuery.data?.devices ?? [], [devicesQuery.data]);
   const domains = useMemo(() => domainsQuery.data?.domains ?? [], [domainsQuery.data]);
 
@@ -169,37 +170,20 @@ export default function SmartHomePanel() {
 
   return (
     <div className="space-y-4">
-      {/* 连接状态条 */}
-      <Card>
-        <div className="flex items-center gap-3">
-          {status.connected ? (
-            <PlugZap className="h-4 w-4 text-ok flex-shrink-0" />
-          ) : (
-            <Unplug className="h-4 w-4 text-muted flex-shrink-0" />
-          )}
-          <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-medium text-heading">
-              {status.configured
-                ? status.connected
-                  ? t("status.connected", {
-                      name: status.provider_name,
-                      count: status.device_count,
-                    })
-                  : t("status.disconnected", { name: status.provider_name })
-                : t("status.unconfigured")}
-            </div>
-            {status.last_error && (
-              <div className="text-[11px] text-danger truncate">{status.last_error}</div>
-            )}
-            {!status.configured && (
-              <div className="text-[11px] text-muted">{t("status.unconfiguredHint")}</div>
-            )}
-          </div>
-          <Button variant="ghost" size="icon" onClick={refreshAll} title={t("status.refresh")}>
-            <RefreshCw className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      </Card>
+      {/* 供应商连接卡片 */}
+      <div className="flex items-center gap-2 text-sm text-muted">
+        <Server className="h-4 w-4" />
+        {t("providers.hint", { count: status.providers.length })}
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {status.providers.map((provider) => (
+          <ProviderCard
+            key={provider.provider}
+            provider={provider}
+            onChanged={refreshAll}
+          />
+        ))}
+      </div>
 
       {/* 注入预览 */}
       <Card>

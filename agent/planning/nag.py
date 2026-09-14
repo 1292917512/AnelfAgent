@@ -1,4 +1,4 @@
-"""目标 nag 提醒 — 对齐 Claude Code todo_reminder 的启发式注入。
+"""目标 nag 提醒 — 目标长期未触碰时的启发式注入。
 
 规划工具（goal CRUD）不常驻上下文；当某 scope 曾创建过目标、
 且连续 N 轮未调用任何目标工具、距上次提醒也超过 N 轮时，
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Dict
 
-# 对齐 Claude Code TODO_REMINDER_CONFIG：10 轮未使用 + 10 轮未提醒
+# 提醒节奏：连续 10 轮未调用目标工具 + 距上次提醒超 10 轮
 ROUNDS_SINCE_USE = 10
 ROUNDS_BETWEEN_NAGS = 10
 

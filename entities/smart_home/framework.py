@@ -23,7 +23,7 @@ from core.config import ConfigManager
 from core.log import log
 from core.tool_errors import ErrorCause
 
-from .models import ActionSpec, DeviceState, SmartHomeCallError
+from .models import ActionSpec, DeviceState, ServiceCall, SmartHomeCallError
 
 _LOG_TAG = "智能家居"
 
@@ -135,8 +135,12 @@ class DeviceDomain:
             "toggle": ActionSpec("toggle", "切换"),
         }
 
-    def build_service_call(self, action: str, raw_value: str = "") -> Tuple[str, Dict[str, Any]]:
-        """把外部动作请求解析为平台服务调用（非法输入抛 SmartHomeCallError）。"""
+    def build_service_call(self, action: str, raw_value: str = "") -> ServiceCall:
+        """把外部动作请求解析为平台服务调用（非法输入抛 SmartHomeCallError）。
+
+        ha_domain 为 None 表示跟随设备自身域；动作需要跨域服务（如语音播报
+        走 tts 域）时由 ActionSpec.ha_domain 声明或子类覆盖本方法。
+        """
         candidates = self.actions()
         spec = candidates.get(action.strip())
         if spec is None:
@@ -162,7 +166,7 @@ class DeviceDomain:
                     f"（{spec.value_hint}；{exc}）",
                     ErrorCause.PARAM,
                 ) from exc
-        return spec.service, data
+        return ServiceCall(spec.ha_domain, spec.service, data)
 
     # ---- 序列化（Web API / AI 工具共用） ----
 

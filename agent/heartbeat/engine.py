@@ -264,7 +264,7 @@ class HeartbeatEngine:
         """单次心跳 — 返回本次执行的任务名列表。
 
         每次心跳只执行一个到期任务（避免长任务阻塞），
-        所有计数器无论是否执行都会递增并持久化。
+        计数器随评估递增并持久化；回复进行中让路时不递增（见 _tick_inner）。
         使用 asyncio.Lock 保证 Web 手动 tick 与调度 tick 互斥。
         """
         async with self._tick_lock:
@@ -284,6 +284,16 @@ class HeartbeatEngine:
             await check_due_reminders()
         except Exception as e:
             log(f"定时提醒检查失败: {e}", "DEBUG", tag="心跳")
+
+        # 回复优先：用户回复进行中时本 tick 只做维护与提醒，不启动新任务。
+        # 任务上下文是启动时刻的快照（对话历史周期内不重读），与在途回复
+        # 并发会双方各认为「还没回复」而对同一问题双答（2026-09-14 双发
+        # 事故）。让路语义与心跳忙碌延后一致：不递增任何计数器、保留待反思
+        # 标记，回复收尾后的下个 tick 自然补跑（调度层防线；出站层见
+        # agent/channel/outbound_guard.py）。
+        if self.mind.is_reply:
+            log("回复进行中，本 tick 不启动任务（维护照常）", "DEBUG", tag="心跳")
+            return executed
 
         pending_task: Optional[TaskDefinition] = None
         pending_schedule_idx: int = -1
@@ -432,7 +442,10 @@ class HeartbeatEngine:
                 schedule.beat_count = 0
             else:
                 schedule.beat_count += 1
-            if schedule.beat_count >= schedule.every_n_beats or self._reflection_pending:
+            # 积极性缩放：proactivity_level 越高，空闲反思/自由活动触发越快
+            from agent.mind.proactivity import idle_beats_factor
+            effective_beats = max(1, round(schedule.every_n_beats * idle_beats_factor()))
+            if schedule.beat_count >= effective_beats or self._reflection_pending:
                 extra_note = ""
                 if self._reflection_pending:
                     extra_note = f"\n\n[反思触发原因]\n{self._reflection_pending}"

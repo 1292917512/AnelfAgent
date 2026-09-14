@@ -3,7 +3,7 @@
 工具可声明 ``check_fn``（零参数 callable，返回 bool 或 Awaitable[bool]），
 前置条件不满足时工具不出现在 LLM 的 schema 中，避免工具列表膨胀。
 
-缓存策略（参考 hermes-agent registry）：
+缓存策略：
 - 检查结果缓存 ``ttl_seconds``（默认 30s），避免每次请求都探测外部状态
 - 瞬态故障宽限：最近 ``failure_grace_seconds``（默认 60s）内成功过的检查，
   偶发失败视为抖动，返回 last-good True 且【不缓存失败】，下次调用重新探测

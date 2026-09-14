@@ -418,7 +418,7 @@ Current format: `config/permission_rules.json` (preferred); legacy `approval_pol
 uv sync                          # Install dependencies (incl. Cognee)
 uv run pytest                    # Full test run (unit + credential-free integration)
 uv run pytest tests/unit         # Layered unit tests (core/agent/services/web, fast)
-uv run pytest entities/web/tests # Single-module tests (entity/channel tests live in each module's tests/)
+uv run pytest entities/minimax/tests # Single-module tests (entity/channel tests live in each module's tests/)
 uv run pytest -m integration     # Integration tests only (credential-required cases skip automatically)
 uv run ruff check .              # Lint
 uv run lint-imports              # Dependency-direction contract check
@@ -458,7 +458,7 @@ AnelfAgent's multi-platform capabilities build upon these excellent open-source 
 | [lark-oapi](https://github.com/larksuite/oapi-sdk-python) | Feishu / Lark SDK | MIT |
 | [FastAPI](https://github.com/fastapi/fastapi) / [MCP](https://modelcontextprotocol.io/) | Web & tool protocols | MIT |
 
-Special thanks to [Nekro Agent](https://github.com/KroMiose/nekro-agent) for inspiration on multi-platform agent architecture and the multimodal candidate-injection experience.
+Special thanks to [Nekro Agent](https://github.com/KroMiose/nekro-agent) for inspiration on multi-platform agent architecture, the multimodal candidate-injection experience, and the realtime voice pipeline (including the microphone uplink audio frame protocol).
 
 > **License note**: AnelfAgent communicates with NapCatQQ over OneBot v11 WebSocket and does not include or modify NapCat source code. The WeChat channel integrates with Tencent's iLink Bot API, with protocol implementation informed by community adapter practices.
 

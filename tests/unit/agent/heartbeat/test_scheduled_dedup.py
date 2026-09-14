@@ -72,7 +72,7 @@ def _make_engine(
     tasks: dict[str, TaskDefinition],
     monkeypatch: pytest.MonkeyPatch,
 ) -> HeartbeatEngine:
-    mind = SimpleNamespace(last_activity_ts=0.0)
+    mind = SimpleNamespace(last_activity_ts=0.0, is_reply=False)
     config = HeartbeatConfig(task_schedules=schedules)
     monkeypatch.setattr(
         "agent.heartbeat.engine.TaskRegistry", lambda: _FakeRegistry(tasks),

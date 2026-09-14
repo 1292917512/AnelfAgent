@@ -203,6 +203,56 @@ async def judge_write(content: str, candidates: List[MemoryEntry]) -> Dict[str, 
     return decision
 
 
+def _bigram_dice(a: str, b: str) -> float:
+    """CJK 友好的 bigram Dice 相似度（信号归属用，候选内最相似者认领）。"""
+    import re as _re
+    ta = set(_re.sub(r"\s+", "", a or "")[i:i + 2] for i in range(max(0, len(_re.sub(r"\s+", "", a or "")) - 1)))
+    tb = set(_re.sub(r"\s+", "", b or "")[i:i + 2] for i in range(max(0, len(_re.sub(r"\s+", "", b or "")) - 1)))
+    if not ta or not tb:
+        return 0.0
+    return 2 * len(ta & tb) / (len(ta) + len(tb))
+
+
+async def apply_evidence_signals(
+    store: MemoryStore,
+    action: str,
+    new_content: str,
+    candidates: List[MemoryEntry],
+    *,
+    target_ids: Optional[List[int]] = None,
+) -> None:
+    """裁决落地后的证据回流（fail-open，绝不阻塞写入路径）。
+
+    用户对同一事实的复述/演进是既有记忆的确认信号（信号来自 dedup
+    裁决这一硬判定，而非对话语气的猜测）：
+    - skip（用户复述了既有事实）→ 候选中最相似者记一次用户确认（+1.0）；
+    - update/merge（事实演进但谱系存活）→ target_ids 按 id 直取
+      （merge 后旧 id 已归档，调用方须传合并产物的新 id），各记 +0.5。
+    负向信号（反驳/纠错）不在此处判定——由反思生命周期（reflection_lifecycle）
+    的自检与显式纠正路径施加，避免把"演进"误读为"被推翻"。
+    """
+    from .evidence import apply_reinforcement
+
+    try:
+        ids: List[int] = []
+        delta = 0.5
+        if action == "skip" and candidates:
+            best = max(candidates, key=lambda e: _bigram_dice(e.content, new_content))
+            if best.id is not None:
+                ids = [best.id]
+            delta = 1.0
+        elif action in ("update", "merge") and target_ids:
+            ids = [i for i in target_ids if i]
+        for memory_id in ids:
+            fresh = await store.get(memory_id)
+            if fresh is None:
+                continue
+            apply_reinforcement(fresh.metadata, delta, user_originated=True)
+            await store.update(fresh)
+    except Exception as exc:
+        log(f"证据信号回流失败（已忽略）: {exc}", "DEBUG", tag="记忆")
+
+
 async def apply_update(
     store: MemoryStore,
     target_id: int,

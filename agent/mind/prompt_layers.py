@@ -1,4 +1,4 @@
-"""Prompt 分层缓存（参考 hermes-agent system_prompt 三层架构）。
+"""Prompt 分层缓存。
 
 系统提示按变更频率分三层构建，保证 stable 层在对话内字节级不变，
 从而命中 LLM 供应商的 Prompt Caching 前缀复用（Anthropic 缓存前缀 90% 折扣）：

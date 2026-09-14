@@ -3,17 +3,14 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Copy, KeyRound, RefreshCw, Shield, Trash2 } from "lucide-react";
-import { authApi, configApi, type ApiKeyCreated, type ApiKeyInfo, type WebToolsConfig } from "@/lib/api";
+import { authApi, configApi, type ApiKeyCreated, type ApiKeyInfo } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
 import { Badge, Button, Input } from "@/components/ui";
-import { type FieldMeta } from "@/pages/config/AppField";
-import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
 import { LiteLLMCostMapCard } from "@/pages/config/LiteLLMCostMapCard";
-import type { ConfigValues } from "@/lib/types";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 
-/** 系统配置面板：密码 / API Keys / 成本表 / Web 工具（网络与下载配置已收编进配置中心） */
+/** 系统配置面板：密码 / API Keys / 成本表（网络与下载配置已收编进配置中心） */
 export function SysConfigPanel() {
   const { t } = useTranslation("appconfig");
 
@@ -24,23 +21,11 @@ export function SysConfigPanel() {
 
   const proxyUrl = typeof data?.["https_proxy"] === "string" ? (data["https_proxy"] as string) : "";
 
-  const webToolsFields: FieldMeta[] = [
-    { key: "proxy", label: t("fields.web_proxy"), type: "string", desc: t("descs.web_proxy") },
-  ];
-
   return (
     <div className="space-y-4">
       <PasswordCard />
       <ApiKeysCard />
       <LiteLLMCostMapCard defaultProxy={proxyUrl} />
-      <ConfigFormPanel
-        title={t("sections.webTools")}
-        subtitle={t("sections.webToolsSubtitle")}
-        fields={webToolsFields}
-        queryKey="webToolsConfig"
-        fetchFn={() => configApi.getWebTools().then((r) => r.data as unknown as ConfigValues)}
-        saveFn={(values) => configApi.saveWebTools(values as unknown as Partial<WebToolsConfig>)}
-      />
       <Card title={t("sections.network")} subtitle={t("sections.networkMoved")}>
         <Link
           to="/config?key=proxy_enabled"

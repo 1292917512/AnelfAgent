@@ -1,5 +1,5 @@
 /**
- * 加载活动行 — 对齐 Claude Code SpinnerWithVerb 的对话窗口加载态：
+ * 加载活动行 — 对话窗口加载态：
  * 随机动词 + 耗时计时 + 当前工具活动（来自 thinking SSE 的运行中节点）。
  *
  * 设计为瞬时指示器（处理期间显示），不向聊天历史写入任何条目，
@@ -46,7 +46,7 @@ export function ActivityRow() {
     const verbs = t("activity.verbs", { returnObjects: true }) as string[];
     return pickVerb(Array.isArray(verbs) ? verbs : [], verbSeed + Math.floor(elapsed / 3));
   }, [t, verbSeed, elapsed]);
-  // 卡死提示：8 秒无进展时变暗红（对齐 Claude Code stalled 动画）
+  // 卡死提示：8 秒无进展时变暗红
   const stalled = elapsed >= 8 && !currentTool;
 
   return (

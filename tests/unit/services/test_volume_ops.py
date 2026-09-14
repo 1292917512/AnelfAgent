@@ -299,7 +299,7 @@ class TestRegistryParity:
                 register()
 
         registry = _database_registry()
-        for expected in ("agent", "memory", "stickers", "voiceprints", "skill_vectors", "share", "cognee"):
+        for expected in ("agent", "memory", "stickers", "audio", "skill_vectors", "share", "cognee"):
             assert expected in registry, f"缺少库: {expected}"
         assert registry["agent"]["path"].endswith("agent.sqlite3")
         assert "cognee_db" in registry["cognee"]["path"]

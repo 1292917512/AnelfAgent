@@ -1,4 +1,4 @@
-"""工具并发安全分级测试（对齐 Claude Code toolOrchestration 语义）。"""
+"""工具并发安全分级测试（连续只读并行、写操作串行语义）。"""
 
 from __future__ import annotations
 

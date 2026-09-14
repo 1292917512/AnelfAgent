@@ -1,0 +1,62 @@
+{
+  "title": "Vision",
+  "subtitle": "Pluggable visual sources: screen capture, external frame push, change-driven context injection",
+  "tabs": {
+    "overview": "Overview",
+    "config": "Config",
+    "capabilities": "Generation"
+  },
+  "latestFrame": "Latest frame",
+  "noFrame": "No frame yet",
+  "noFrameHint": "Start watching or push frames externally to preview here",
+  "refresh": "Refresh",
+  "sources": "Visual sources",
+  "captures": "{{count}} captures",
+  "lastCapture": "Last capture",
+  "startWatch": "Start watch",
+  "stopWatch": "Stop watch",
+  "externalSource": "External source",
+  "watchFailed": "Watch operation failed",
+  "configTitle": "Vision config",
+  "hotHint": "Changes take effect immediately, no restart needed",
+  "noConfig": "No config items",
+  "saved": "Saved",
+  "saveFailed": "Save failed",
+  "autoSaveOn": "Auto-save on",
+  "injection": {
+    "title": "Context injection",
+    "active": "Injecting",
+    "inactive": "Inactive",
+    "lastMedia": "Last frame injected",
+    "lastText": "Last status injected"
+  },
+  "sourceDisabled": "Disabled",
+  "watching": "Watching",
+  "caps": {
+    "understand": "Image/Video Understanding",
+    "image_gen": "Image Generation",
+    "image_edit": "Image Editing",
+    "video": "Video Generation"
+  },
+  "chains": {
+    "hint": "Provider priority chain per capability (reorder; first configured handles the call, failures degrade automatically)",
+    "configured": "Configured",
+    "notConfigured": "Not configured",
+    "videoModels": "Video-capable models",
+    "noVideoModels": "(no models declare video support)",
+    "save": "Save Priority",
+    "saving": "Saving…"
+  },
+  "providers": {
+    "models": "Model Config Chain",
+    "minimax": "MiniMax"
+  },
+  "presets": {
+    "title": "Style Presets",
+    "subtitle": "Presets referenced by the style param of image/video generation tools (name → style description)",
+    "empty": "No presets yet",
+    "namePlaceholder": "Preset name",
+    "descPlaceholder": "Style description (appended to the prompt)",
+    "add": "Add"
+  }
+}

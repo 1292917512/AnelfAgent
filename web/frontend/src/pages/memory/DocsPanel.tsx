@@ -7,7 +7,7 @@ import { Card } from "@/components/common/Card";
 import { ConfirmDialog } from "@/components/ui";
 import { FileText, Loader2, Trash2, Upload } from "lucide-react";
 
-const ACCEPT = ".pdf,.docx,.txt,.md";
+const ACCEPT = ".pdf,.docx,.xlsx,.pptx,.txt,.md";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

@@ -42,7 +42,7 @@ def test_env_block_contains_python_summary():
 
 
 # ==================================================================
-# goal nag 提醒注入（对齐 Claude Code todo_reminder 启发式）
+# goal nag 提醒注入（目标长期未触碰的启发式提醒）
 # ==================================================================
 
 @pytest.fixture(autouse=True)

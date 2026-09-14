@@ -1,0 +1,260 @@
+{
+  "title": "声音",
+  "subtitle": "声音核心能力：语音会话与实时对话、声纹身份、话语检索、语音合成与识别",
+  "tabs": {
+    "overview": "总览",
+    "voice": "语音会话",
+    "library": "解析库",
+    "speakers": "说话人",
+    "timeline": "时间线",
+    "transcripts": "话语检索",
+    "identify": "识别入库",
+    "realtime": "实时对话",
+    "generation": "生成"
+  },
+  "providers": {
+    "models": "模型配置链",
+    "minimax": "MiniMax"
+  },
+  "asr": "转写",
+  "voiceprint": "声纹",
+  "ready": "就绪",
+  "notConfigured": "未配置",
+  "noProviders": "暂无提供者（配置 FunASR 等服务后注册）",
+  "libraryStats": "内部解析库",
+  "segments": "片段",
+  "speakers": "说话人",
+  "audioMinutes": "音频分钟",
+  "analyzeTitle": "文件解析入库",
+  "analyzeHint": "对上传目录（workspace/uploads/）内的音频文件执行转写并写入内部解析库",
+  "analyze": "解析",
+  "analyzeDone": "解析完成，入库 {{count}} 段",
+  "analyzeFailed": "解析失败",
+  "voiceTitle": "语音会话参数",
+  "voiceHint": "实时语音会话的端点检测与成段参数（热生效）",
+  "libraryTitle": "解析库检索",
+  "searchPlaceholder": "转写文本关键词…",
+  "speakerPlaceholder": "说话人 key",
+  "search": "检索",
+  "resultCount": "{{count}} 条",
+  "noResults": "无匹配片段",
+  "unknownSpeaker": "未知说话人",
+  "emptyTranscript": "（无转写文本）",
+  "saved": "已保存",
+  "saveFailed": "保存失败",
+  "timeline": {
+    "ranges": {
+      "today": "今天",
+      "yesterday": "昨天",
+      "d3": "最近3天",
+      "d7": "最近7天",
+      "all": "最近30天"
+    },
+    "count": "共 {{count}} 段",
+    "empty": "该时间段没有语音记录",
+    "emptyHint": "换个时间段，或等待目录同步入库新的录制",
+    "filterBySpeaker": "只看此人"
+  },
+  "filters": {
+    "allStatus": "全部状态",
+    "confirmed": "已确认",
+    "pending": "待确认",
+    "keyword": "搜索姓名/角色/编号",
+    "searchPlaceholder": "搜索话语内容（语义检索）",
+    "allSpeakers": "全部说话人",
+    "timeFrom": "起始日期",
+    "timeTo": "结束日期"
+  },
+  "empty": {
+    "speakers": "暂无说话人",
+    "speakersHint": "等待上游推送新声纹，或点击右上角注册已知说话人",
+    "segments": "暂无话语记录",
+    "segmentsHint": "调整过滤条件，或等待上游 pipeline 推送语音片段",
+    "recordings": "暂无录制",
+    "recordingsHint": "在「设置」中开启目录同步并配置 NAS 音频目录，新增录制将自动入库"
+  },
+  "fields": {
+    "samples": "样本",
+    "totalAudio": "累计时长",
+    "matches": "命中",
+    "lastSeen": "最近出现",
+    "firstSeen": "首次出现",
+    "name": "姓名",
+    "rolePlaceholder": "角色标签（如 家人/同事）",
+    "thresholdPlaceholder": "独立阈值（留空用全局）",
+    "notes": "备注",
+    "effectiveThreshold": "有效阈值",
+    "samplePool": "声纹样本池",
+    "score": "得分",
+    "recentSegments": "近期话语",
+    "noTranscript": "（无转写文本）",
+    "unknownSpeaker": "未知说话人",
+    "entityScopePlaceholder": "实体 scope（如 user:webui:123）",
+    "boundEntity": "已绑定实体"
+  },
+  "actions": {
+    "enroll": "注册说话人",
+    "detail": "详情",
+    "confirm": "确认",
+    "merge": "合并",
+    "search": "搜索",
+    "markAllRead": "全部已读",
+    "prunePending": "全部剔除",
+    "consolidate": "智能合并",
+    "consolidateRun": "执行合并（{{count}} 人）",
+    "simmap": "分布图",
+    "bind": "绑定",
+    "unbind": "解绑"
+  },
+  "groups": {
+    "pending": "待确认（{{count}}）",
+    "confirmed": "已确认（{{count}}）"
+  },
+  "modals": {
+    "confirmTitle": "确认说话人 {{key}}",
+    "mergeTitle": "合并 {{key}} 到…",
+    "mergeHint": "源说话人的样本池、话语记录与统计将并入目标，源档案将被删除。",
+    "mergeTarget": "选择目标说话人",
+    "enrollTitle": "注册说话人（音频）",
+    "enrollHint": "上传一段该说话人的清晰人声，将经 FunASR 提取声纹建档。",
+    "editTranscriptTitle": "修订转写文本",
+    "editTranscriptPlaceholder": "修正后的文本（人名/术语纠错…）",
+    "editTranscriptHint": "保存后语义检索向量将按新文本自动重建；批量修正可让 AI 用 transcript_replace 一次全改。",
+    "deleteTitle": "删除说话人",
+    "deleteHint": "将级联删除 {{key}} 及其声纹样本池与全部话语片段。想保留话语只改归属请用「合并」。此操作不可恢复。",
+    "pruneTitle": "剔除全部待确认说话人",
+    "pruneHint": "将级联剔除 {{count}} 个待确认说话人及其声纹样本与全部话语片段。此操作不可恢复。",
+    "consolidateTitle": "智能合并（按声纹相似度）",
+    "consolidateHint": "以下临时说话人的声纹质心相似度 ≥ {{threshold}}，疑似同一人被分裂；绿色为合并后保留的档案（累计时长最长）。",
+    "consolidateKeep": "保留",
+    "consolidateEmpty": "没有发现可合并的分裂说话人，也没有低价值档案",
+    "insignificantTitle": "一并清理 {{count}} 个低价值说话人（命中≤{{matches}}次 且 时长≤{{seconds}}s，多为环境音/路人）"
+  },
+  "status": {
+    "confirmed": "已确认",
+    "pending": "待确认",
+    "newSpeaker": "新人",
+    "unread": "未读"
+  },
+  "messages": {
+    "opFailed": "操作失败",
+    "confirmSuccess": "已确认说话人",
+    "mergeSuccess": "合并完成",
+    "deleteSuccess": "已删除",
+    "enrollSuccess": "注册成功，入库 {{count}} 条样本",
+    "updateSuccess": "已保存",
+    "sampleDeleted": "样本已删除",
+    "reassignSuccess": "归属已更新",
+    "markedRead": "已标记 {{count}} 条已读",
+    "ingestSuccess": "已入库",
+    "configSaved": "配置已保存",
+    "syncDone": "同步完成：新增 {{new}} 个文件，入库 {{ingested}} 个",
+    "rebuildSuccess": "重建完成",
+    "pruneSuccess": "已剔除 {{count}} 个待确认说话人",
+    "consolidateSuccess": "合并完成：{{clusters}} 次合并，{{count}} 人归并",
+    "syncPaused": "同步已暂停（配置已持久化）",
+    "syncResumed": "同步已恢复",
+    "bindSuccess": "实体绑定已更新",
+    "unbindSuccess": "已解除绑定"
+  },
+  "simmap": {
+    "title": "声纹相似度分布图",
+    "empty": "暂无待确认说话人",
+    "estimated": "估计 {{count}} 人",
+    "total": "共 {{count}} 个档案",
+    "thresholdHint": "绿色 ≥ 阈值 {{threshold}} 为可合并",
+    "noSimilar": "无相似他人"
+  },
+  "ingest": {
+    "tryTitle": "上传音频试识别",
+    "trySubtitle": "经 FunASR 转写并提取声纹，返回 Top 候选匹配",
+    "ingestAfterIdentify": "识别后入库",
+    "run": "开始识别",
+    "needFunasr": "请先在音源同步组件配置 audiosync_funasr_endpoint",
+    "noSpeech": "音频中未检测到有效语音段",
+    "noCandidate": "无候选（库为空或未提取到声纹）",
+    "pipelineTitle": "上游 pipeline 对接契约"
+  },
+  "sync": {
+    "title": "目录自动同步",
+    "noSource": "未配置同步来源（音源同步组件的 audiosync_watch_dir 或 OpenList）",
+    "enabled": "已启用",
+    "disabled": "未启用",
+    "lastScan": "最近扫描",
+    "runNow": "立即同步",
+    "enableHint": "在音源同步组件中开启 audiosync_watch_enabled 并配置 audiosync_watch_dir（NAS 挂载目录）或 OpenList 连接",
+    "segments": "段",
+    "status": {
+      "done": "已入库",
+      "no_speech": "无人声",
+      "error": "失败"
+    },
+    "paused": "已暂停",
+    "pause": "暂停同步",
+    "resume": "恢复同步"
+  },
+  "stats": {
+    "pending": "待确认",
+    "bound": "已绑定实体",
+    "unread": "未读",
+    "notConfigured": "未配置"
+  },
+  "injection": {
+    "title": "上下文注入",
+    "hint": "说话人名单与未读动态随每轮对话注入 AI 上下文（audio_context_inject 可关）",
+    "active": "注入中",
+    "inactive": "未注入"
+  },
+  "realtime": {
+    "call": "开始通话",
+    "hangup": "挂断",
+    "hint": "正在收听——直接开口说话，她思考后会用语音回复你（播放中开口可打断）",
+    "state": {
+      "listening": "收听中",
+      "thinking": "思考中",
+      "speaking": "说话中"
+    },
+    "bargeInOn": "可打断",
+    "bargeInOff": "不可打断",
+    "you": "你",
+    "agent": "她",
+    "startFailed": "语音通道启动失败（检查麦克风权限与 ASR/TTS 配置）",
+    "bargeIn": "可打断"
+  },
+  "ttsProviders": "语音合成提供者",
+  "realtimeStatus": "实时语音",
+  "realtimeSessions": "{{count}} 个通话中",
+  "caps": {
+    "tts": "语音合成",
+    "voice_mgmt": "音色管理",
+    "music": "音乐生成"
+  },
+  "chains": {
+    "hint": "能力调用的提供者优先级链（拖动排序，首个已配置的承担调用，失败自动降级）",
+    "configured": "已配置",
+    "notConfigured": "未配置",
+    "videoModels": "视频理解模型",
+    "noVideoModels": "（无）",
+    "save": "保存优先级",
+    "saving": "保存中…"
+  },
+  "generation": {
+    "defaultsTitle": "默认发声配置",
+    "defaultsSubtitle": "语音合成工具不传参数时使用的默认值",
+    "fields": {
+      "tts_default_voice": "默认音色 ID",
+      "tts_default_reference_audio": "克隆参考音频",
+      "tts_default_reference_text": "克隆参考文本"
+    },
+    "placeholders": {
+      "tts_default_voice": "如 male-qn-qingse（可用 list_voices 查询）",
+      "tts_default_reference_audio": "URL 或工作区路径（设置后默认走克隆发声）",
+      "tts_default_reference_text": "参考音频对应的文字内容"
+    },
+    "descs": {
+      "tts_default_voice": "预置音色；与克隆参考音频二选一（参考音频优先）",
+      "tts_default_reference_audio": "声音克隆的参考音频，需配合参考文本",
+      "tts_default_reference_text": "克隆时必须提供参考音频中的文字"
+    }
+  }
+}

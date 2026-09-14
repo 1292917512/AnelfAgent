@@ -1,4 +1,4 @@
-"""威胁模式扫描（参考 hermes-agent threat_patterns，补充中文注入模式）。
+"""威胁模式扫描（英文/中文注入模式库）。
 
 扫描上下文文件、记忆写入、工具结果中的已知 prompt 注入与攻击模式：
 - 经典注入（忽略以上指令 / ignore previous instructions）

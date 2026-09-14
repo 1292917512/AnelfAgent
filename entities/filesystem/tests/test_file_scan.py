@@ -41,7 +41,7 @@ def test_noise_dirs_pruned(tree) -> None:
 
 
 def test_plain_pattern_matches_any_depth(tree) -> None:
-    """裸模式任意深度命中（对齐 Claude Code Glob）。"""
+    """裸模式任意深度命中。"""
     assert "sub/b.py" in _names(tree, "*.py")
 
 

@@ -1,6 +1,6 @@
 """文件读取状态缓存 — read-before-write 与过期检查的基础设施。
 
-移植自 Claude Code ``src/utils/fileStateCache.ts`` 与 FileEditTool 的校验语义：
+校验语义：
 - 写入类工具（edit_file/write_file）要求目标文件在本 scope 内被完整读取过
 - mtime 晚于读取时间且内容不一致 → 判定为"读取后被外部修改"，拒绝写入
 - mtime 变化但内容逐字节一致（云同步/杀软触碰）→ 刷新时间戳后放行
@@ -19,9 +19,9 @@ from typing import Dict, Optional, Tuple
 
 from entities._sdk import get_current_scope
 
-# 单 scope 最大缓存文件数（对齐 Claude Code READ_FILE_STATE_CACHE_SIZE）
+# 单 scope 最大缓存文件数
 MAX_ENTRIES = 100
-# 单 scope 缓存内容总字节上限（对齐 Claude Code 25MB）
+# 单 scope 缓存内容总字节上限（25MB）
 MAX_CACHE_BYTES = 25 * 1024 * 1024
 
 

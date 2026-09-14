@@ -106,25 +106,69 @@ if TYPE_CHECKING:
 # 上下文提供者实时注入（每轮尾部收集，零 I/O 契约 + 并发超时兜底）
 # ==================================================================
 
-async def _collect_provider_messages(scope: str) -> List[Dict]:
-    """收集上下文提供者的当前最新快照，封装为 system 消息列表。
+async def _collect_provider_messages(mind: "Mind", scope: str) -> List[Dict]:
+    """收集上下文提供者的当前最新快照，封装为注入消息列表。
 
     注入位置在工具链之后、exec_context 之前（每轮组装点调用）：
     时间/天气等实时内容逐轮新鲜，其字节变化又不打断工具链前缀缓存。
     收集失败 fail-open 为空列表（绝不影响主回复流程）。
+
+    多模态契约（按 ContextMedia.kind 分派，物理约束见该类 docstring）：
+    - clip 文本走 system 消息（与历史一致）；
+    - image：视觉模型下集中组一条 user 角色多模态消息（image block 仅在
+      user 角色可靠生效）；非视觉模型降级为 [media_type:image] 标签；
+    - audio / video：一律降级为 [media_type:xxx][media_path:...] 标签
+      并入所属 clip 的 system 文本（对话协议层不接受这两类 block；
+      stable 层媒体规则已教会 AI 用对应工具处理标签）——不静默丢媒体。
     """
     try:
         from core.context_provider import ContextProviderRegistry
-        snippets, _metrics = await ContextProviderRegistry.collect(scope)
-        return [
-            {
-                "role": "system",
-                "content": s,
-                "_layer": "provider",
-                "_source": {"origin": "context_provider"},
-            }
-            for s in snippets
-        ]
+        clips, _metrics = await ContextProviderRegistry.collect(scope)
+        config = getattr(getattr(mind, "llm", None), "config", None)
+        vision = bool(config is not None and getattr(config, "supports_vision", False))
+
+        messages: List[Dict] = []
+        images: List["ImageContent"] = []
+        for clip in clips:
+            ref_lines: List[str] = []
+            for m in clip.media:
+                if m.kind == "image" and vision:
+                    from agent.llm.types import ImageContent
+                    images.append(ImageContent(
+                        data=m.data, mime_type=m.mime_type or "image/jpeg",
+                        is_url=m.is_url,
+                    ))
+                else:
+                    # 降级路径：媒体以标签引用注入（与对话历史的媒体标签同构）
+                    ref_lines.append(f"[media_type:{m.kind}][media_path:{m.data}]")
+            text = clip.text
+            if ref_lines:
+                refs = " ".join(ref_lines)
+                text = f"{text}\n{refs}" if text else f"[环境媒体] {refs}"
+            if text:
+                messages.append({
+                    "role": "system",
+                    "content": text,
+                    "_layer": "provider",
+                    "_source": {"origin": "context_provider"},
+                })
+        if images:
+            from agent.mind.tools.vision import build_provider_media_message
+            media_msg = await build_provider_media_message(images, config)
+            if media_msg is not None:
+                messages.append(media_msg)
+            else:
+                # 全部加载/下载失败：降级为标签引用，不静默丢图
+                refs = " ".join(
+                    f"[media_type:image][media_path:{i.data}]" for i in images
+                )
+                messages.append({
+                    "role": "system",
+                    "content": f"[环境媒体] {refs}（画面加载失败，未能直注）",
+                    "_layer": "provider",
+                    "_source": {"origin": "context_provider"},
+                })
+        return messages
     except Exception as exc:
         log(f"上下文提供者收集失败: {exc}", "DEBUG", tag="思维")
         return []
@@ -494,7 +538,7 @@ async def _run_think_rounds(
         # （缓存断点不在此注入——发送边界由 llm/prompt_cache 按 _layer 统一装饰，
         # 链尾锚点天然随链增长前移）
         # provider 实时注入：每轮收集最新快照，置于工具链之后、exec_context 之前
-        provider_msgs = await _collect_provider_messages(ctx.current_scope)
+        provider_msgs = await _collect_provider_messages(mind, ctx.current_scope)
         llm_messages = (
             ctx.base_messages + ctx.tool_chain + provider_msgs + [exec_context]
         )
@@ -1124,7 +1168,7 @@ async def execute_tool_calls(
             return blocked_results[tc.id]
         return await execute_one_tool(mind, tc, iteration, anything)
 
-    # 并发安全分级（对齐 Claude Code）：连续只读调用并行（上限 10），写操作严格串行。
+    # 并发安全分级：连续只读调用并行（上限 10），写操作严格串行。
     # 无论哪条路径，tool 消息都按 tool_calls 原始顺序追加，保证配对完整。
     semaphore = asyncio.Semaphore(_MAX_TOOL_CONCURRENCY)
 

@@ -1,0 +1,62 @@
+{
+  "title": "视觉感知",
+  "subtitle": "可插拔视觉源：屏幕捕获、外部画面推送与变化驱动的上下文注入",
+  "tabs": {
+    "overview": "总览",
+    "config": "配置",
+    "capabilities": "生成能力"
+  },
+  "latestFrame": "最新画面",
+  "noFrame": "尚无画面",
+  "noFrameHint": "开启监视或经外部推送注入画面后在此预览",
+  "refresh": "刷新",
+  "sources": "视觉源",
+  "captures": "捕获 {{count}} 次",
+  "lastCapture": "最近捕获",
+  "startWatch": "开始监视",
+  "stopWatch": "停止监视",
+  "externalSource": "外部推送源",
+  "watchFailed": "监视操作失败",
+  "configTitle": "视觉配置",
+  "hotHint": "修改即时热生效，无需重启",
+  "noConfig": "暂无配置项",
+  "saved": "已保存",
+  "saveFailed": "保存失败",
+  "autoSaveOn": "自动保存",
+  "injection": {
+    "title": "上下文注入",
+    "active": "注入中",
+    "inactive": "未注入",
+    "lastMedia": "最近画面注入",
+    "lastText": "最近状态注入"
+  },
+  "sourceDisabled": "已停用",
+  "watching": "监视中",
+  "caps": {
+    "understand": "图片/视频理解",
+    "image_gen": "图片生成",
+    "image_edit": "图片编辑",
+    "video": "视频生成"
+  },
+  "chains": {
+    "hint": "能力调用的提供者优先级链（拖动排序，首个已配置的承担调用，失败自动降级）",
+    "configured": "已配置",
+    "notConfigured": "未配置",
+    "videoModels": "视频理解模型",
+    "noVideoModels": "（无声明支持视频的模型）",
+    "save": "保存优先级",
+    "saving": "保存中…"
+  },
+  "providers": {
+    "models": "模型配置链",
+    "minimax": "MiniMax"
+  },
+  "presets": {
+    "title": "风格预设",
+    "subtitle": "图像/视频生成工具 style 参数引用的预设（预设名 → 风格描述）",
+    "empty": "暂无预设",
+    "namePlaceholder": "预设名",
+    "descPlaceholder": "风格描述（拼接在提示词末尾）",
+    "add": "添加"
+  }
+}

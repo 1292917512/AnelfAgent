@@ -166,7 +166,7 @@ class TestFormatMessage:
         line = "word " * 50
         out = ilink.format_message(line)
         assert all(len(l) <= 120 for l in out.splitlines())
-        # 无空格的 CJK 长行保持原样（break_long_words=False，与 hermes 一致）
+        # 无空格的 CJK 长行保持原样（break_long_words=False）
         cjk = "字" * 200
         assert ilink.format_message(cjk) == cjk
 

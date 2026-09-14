@@ -104,7 +104,7 @@ def _pipeline():
 
 
 class TestEmptyResultPlaceholder:
-    """空结果占位（对齐 Claude Code）：空白输出给模型明确的完成语义。"""
+    """空结果占位：空白输出给模型明确的完成语义。"""
 
     def test_empty_string(self):
         assert _pipeline().process("read_file", "{}", "") == "(read_file 执行完成，无输出)"

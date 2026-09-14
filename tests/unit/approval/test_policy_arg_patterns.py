@@ -1,4 +1,4 @@
-"""审批策略参数模式匹配测试（Claude Code 风格 "工具名(参数glob)" 规则）。"""
+"""审批策略参数模式匹配测试（"工具名(参数glob)" 规则）。"""
 
 from __future__ import annotations
 

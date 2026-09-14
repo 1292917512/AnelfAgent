@@ -1,5 +1,4 @@
-"""filesystem 工具集成测试：edit/read/write（移植自 Claude Code 校验语义，
-见 docs/refactor/01-claudecode-tools.md）+ search_files 检索与工具 prompt。"""
+"""filesystem 工具集成测试：edit/read/write 校验语义 + search_files 检索与工具 prompt。"""
 
 from __future__ import annotations
 
@@ -174,6 +173,52 @@ class TestEditFile:
 # ------------------------------------------------------------------
 # read_file
 # ------------------------------------------------------------------
+
+class TestReadFileDocuments:
+    """文档扩展路由：PDF/Word/Excel/PPT 提取纯文本，旧版二进制给转换指引。"""
+
+    def test_xlsx_returns_extracted_text(self, workspace):
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "数据"
+        ws.append(["名称", "数量"])
+        ws.append(["苹果", 3])
+        fp = workspace / "t.xlsx"
+        wb.save(str(fp))
+
+        result = json.loads(_read(fp))
+        assert result["type"] == "document"
+        assert result["ext"] == ".xlsx"
+        assert "[数据]" in result["content"]
+        assert "苹果\t3" in result["content"]
+
+    def test_docx_returns_extracted_text(self, workspace):
+        import docx
+
+        document = docx.Document()
+        document.add_paragraph("Word 文档内容")
+        fp = workspace / "t.docx"
+        document.save(str(fp))
+
+        result = json.loads(_read(fp))
+        assert result["type"] == "document"
+        assert "Word 文档内容" in result["content"]
+
+    def test_legacy_binary_hints_conversion(self, workspace):
+        fp = workspace / "old.xls"
+        fp.write_bytes(b"\xd0\xcf\x11\xe0fake")
+        result = json.loads(_read(fp))
+        assert result["type"] == "binary"
+        assert ".docx/.xlsx/.pptx" in result["hint"]
+
+    def test_corrupt_document_returns_structured_error(self, workspace):
+        fp = workspace / "bad.xlsx"
+        fp.write_bytes(b"not a zip")
+        result = json.loads(_read(fp))
+        assert "error" in result
+
 
 class TestReadFile:
     def test_line_numbers_present(self, workspace):

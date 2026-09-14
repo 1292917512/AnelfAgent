@@ -54,7 +54,27 @@ __all__ = [
     "entity_manifest", "entity_config", "context_provider",
     "push_notify", "register_entity_llm_hook",
     "get_embedder", "wake_embedding_worker", "register_embedding_backlog",
+    "register_audio_provider", "register_tts_provider", "audio_transcribe", "audio_speaker_embed",
+    "audio_ingest_payload", "audio_has_provider", "KIND_ASR", "KIND_VOICEPRINT",
+    "get_audio_store", "register_audio_source_fetcher",
+    "audio_get_recording", "audio_list_recording_paths", "audio_mark_recording",
+    "audio_set_recording_files", "audio_delete_recording",
+    "IngestPayload", "IngestResult", "SegmentIn",
+    "KIND_ASR_STREAM", "AsrEvent", "StreamingAsrProvider", "StreamingAsrSession",
+    "TtsStream", "decode_stream_to_pcm16",
+    "PreprocessError", "probe", "ensure_16k_mono_wav", "mean_volume_db",
+    "detect_silences", "split_wav", "merge_to_wav",
+    "register_vision_source", "unregister_vision_source", "vision_ingest_frame",
+    "VisualSource", "CapturedFrame",
+    "register_visual_provider", "unregister_visual_provider",
+    "register_sound_provider", "unregister_sound_provider",
+    "register_retrieval_provider", "unregister_retrieval_provider",
+    "CapabilityProvider", "ProviderUnavailable", "CapabilityNotSupported",
+    "RetrievalProvider", "run_coro_sync", "llm_provider_key",
+    "SOURCE_CONFIG", "SOURCE_LLM", "SOURCE_ENV",
+    "resolve_workspace_path",
     "download_media_to_uploads", "execute_send_action",
+    "extract_document_text", "supported_doc_exts",
     "set_default_model", "get_active_llm_client", "get_llm_client_class",
     "get_llm_manager", "save_config_value",
     "get_session_llm_params", "canonical_efforts",
@@ -62,9 +82,6 @@ __all__ = [
     "tool_error", "error_from_exception", "ErrorCause",
     "ToolOp", "track_ops",
 ]
-
-# 兼容别名：tests/entities/test_sdk_extract_params.py 仍引用该私有名，暂不能删除
-_extract_params = extract_tool_params
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -113,13 +130,13 @@ def tool(
         allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
         sleep_brief: 沉睡状态下展示给 AI 的简短描述
         concurrency_safe: 是否可与其他安全工具并行执行（只读工具才应开启，
-            默认 False — 与 Claude Code isConcurrencySafe 一致的 fail-closed 语义）
+            默认 False — fail-closed 语义）
         risk: 风险等级标记（如 CRITICAL），供审批规则引擎匹配拦截
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
         tool_desc = description or get_first_line(func.__doc__) or tool_name
-        params = _extract_params(func)
+        params = extract_tool_params(func)
 
         meta = {}
         if timeout is not None:
@@ -186,7 +203,7 @@ def deferred_tool(
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
         tool_desc = description or get_first_line(func.__doc__) or tool_name
-        params = _extract_params(func)
+        params = extract_tool_params(func)
 
         meta = {}
         if timeout is not None:
@@ -594,6 +611,243 @@ def register_embedding_backlog(name: str, handler: Any) -> None:
     _reg(name, handler)
 
 
+from agent.audio.providers import KIND_ASR, KIND_VOICEPRINT  # noqa: E402  # 桥层再导出
+from agent.audio.schemas import (  # noqa: E402  # 桥层再导出（外部音源推送契约）
+    IngestPayload,
+    IngestResult,
+    SegmentIn,
+)
+from agent.audio.streaming import (  # noqa: E402  # 桥层再导出（流式 ASR 组件契约）
+    KIND_ASR_STREAM,
+    AsrEvent,
+    StreamingAsrProvider,
+    StreamingAsrSession,
+)
+from agent.tts.decode import decode_stream_to_pcm16  # noqa: E402  # 桥层再导出
+from agent.tts.providers import TtsStream  # noqa: E402  # 桥层再导出（流式 TTS 组件契约）
+
+
+def extract_document_text(path: str) -> str:
+    """提取文档纯文本（PDF/Word/Excel/PPT/文本），无可用文本抛 ValueError。"""
+    from pathlib import Path
+
+    from agent.memory.doc_extract import extract_document_text as _extract
+    return _extract(Path(path))
+
+
+def supported_doc_exts() -> tuple:
+    """可解析的文档扩展名集合（含点号小写）。"""
+    from agent.memory.doc_extract import SUPPORTED_DOC_EXTS
+    return tuple(sorted(SUPPORTED_DOC_EXTS))
+
+
+def get_audio_store() -> Any:
+    """核心音频库单例（声纹身份/片段/录制单元统一存储）。"""
+    from agent.audio import get_audio_store as _get
+    return _get()
+
+
+async def audio_transcribe(audio_path: str, source_time: str = "") -> list:
+    """经核心音频服务转写音频（ASR 提供者优先级链）。"""
+    from agent.audio import get_audio_service
+    return await get_audio_service().transcribe(audio_path, source_time=source_time)
+
+
+async def audio_speaker_embed(audio_path: str) -> Any:
+    """经核心音频服务提取声纹向量（无可用提供者返回 None）。"""
+    from agent.audio import get_audio_service
+    return await get_audio_service().speaker_embed(audio_path)
+
+
+async def audio_ingest_payload(payload: IngestPayload) -> IngestResult:
+    """解析结果经核心入库管线存档（噪音过滤 → 声纹识别 → 落库）。"""
+    from agent.audio import get_audio_service
+    return await get_audio_service().ingest_payload(payload)
+
+
+async def audio_has_provider(kind: str) -> bool:
+    """该类别是否有可用音频提供者（工具/路由的 check 门控用）。"""
+    from agent.audio import get_audio_registry
+    return await get_audio_registry().resolve(kind) is not None
+
+
+def register_audio_provider(provider: Any) -> None:
+    """注册音频能力提供者（ASR 转写 / 声纹提取组件接入核心层）。
+
+    provider 需满足 agent.audio.providers 的协议（name/kind/priority +
+    check_available + transcribe/embed），注册后进入相应类别的优先级链。
+    """
+    from agent.audio.providers import get_audio_registry
+    get_audio_registry().register(provider)
+
+
+def register_audio_source_fetcher(name: str, fetcher: Any, priority: int = 50) -> None:
+    """注册音源取回器（回听/分析定位原始音频：远程下载/挂载映射等组件）。
+
+    fetcher 契约：async (source_path) -> (local_path, is_temp)；
+    is_temp=True 表示临时文件（调用方用后负责删除）。
+    """
+    from agent.audio.source_fetch import register_source_fetcher
+    register_source_fetcher(name, fetcher, priority=priority)
+
+
+def register_tts_provider(provider: Any) -> None:
+    """注册流式 TTS 提供者（语音合成组件接入核心层）。
+
+    provider 需满足 agent.tts.providers 的协议（name/priority +
+    check_available + stream_synthesize），注册后进入优先级链；
+    运行时失败按链降级（首字节前无缝切换，首字节后截断该句）。
+    """
+    from agent.tts.providers import get_tts_registry
+    get_tts_registry().register(provider)
+
+
+# 录制单元登记桥（音源同步组件的增量依据与合并清单读写）
+async def audio_get_recording(path: str) -> Any:
+    return await get_audio_store().get_recording(path)
+
+
+async def audio_list_recording_paths() -> list:
+    return await get_audio_store().list_recording_paths()
+
+
+async def audio_mark_recording(path: str, **kwargs: Any) -> None:
+    await get_audio_store().mark_recording(path, **kwargs)
+
+
+async def audio_set_recording_files(path: str, files: list) -> None:
+    await get_audio_store().set_recording_files(path, files)
+
+
+async def audio_delete_recording(path: str) -> dict:
+    return await get_audio_store().delete_recording(path)
+
+
+# ffmpeg 音频预处理桥（核心实现，组件共用）
+from agent.audio.ffmpeg import (  # noqa: E402
+    PreprocessError,
+    detect_silences,
+    ensure_16k_mono_wav,
+    mean_volume_db,
+    merge_to_wav,
+    probe,
+    split_wav,
+)
+
+# ------------------------------------------------------------------
+# 视觉桥接（延迟导入 agent.vision）
+# ------------------------------------------------------------------
+from agent.vision.capture import CapturedFrame  # noqa: E402  # 桥层再导出
+from agent.vision.framework import VisualSource  # noqa: E402  # 桥层再导出
+
+
+def register_vision_source(source: VisualSource) -> None:
+    """注册视觉源组件（屏幕/摄像头/外部画面桥等接入核心视觉框架）。
+
+    source 需声明 key/display_name，并按类型声明 poll_interval（>0 轮询型，
+    watcher 定频采帧）与 can_capture（即时取帧能力）；外部推送型源帧经
+    vision_ingest_frame 或 POST /api/vision/push 汇入同一缓冲。
+    """
+    from agent.vision.framework import register_source
+    register_source(source)
+
+
+def unregister_vision_source(key: str) -> None:
+    """注销视觉源组件（实体热拔除时调用）。"""
+    from agent.vision.framework import unregister_source
+    unregister_source(key)
+
+
+async def vision_ingest_frame(
+    path: str,
+    source: str,
+    *,
+    width: int = 0,
+    height: int = 0,
+    captured_at: Optional[float] = None,
+) -> tuple:
+    """外部帧汇入视觉缓冲统一入口（判变 + 注入轨迹），返回 (帧, 是否内容级变化)。"""
+    from agent.vision.buffer import get_vision_buffer
+    return await get_vision_buffer().ingest(
+        path, source, width=width, height=height, captured_at=captured_at)
+
+
+# ------------------------------------------------------------------
+# 能力组件桥接（视觉生成 / 声音合成 / 检索提供者接入核心路由）
+# ------------------------------------------------------------------
+from agent.capabilities import (  # noqa: E402  # 桥层再导出（组件实现契约）
+    CapabilityNotSupported,
+    CapabilityProvider,
+    ProviderUnavailable,
+)
+
+
+def register_visual_provider(provider: Any) -> None:
+    """注册视觉能力提供者（图片/视频理解、图像生成/编辑、视频生成组件）。
+
+    provider 需满足 agent.capabilities.CapabilityProvider 协议
+    （name/capabilities + is_configured + run），能力名:
+    understand / image_gen / image_edit / video。
+    """
+    from agent.vision.capabilities import get_visual_router
+    get_visual_router().register(provider)
+
+
+def unregister_visual_provider(name: str) -> None:
+    """注销视觉能力提供者（组件热拔除时调用）。"""
+    from agent.vision.capabilities import get_visual_router
+    get_visual_router().unregister(name)
+
+
+def register_sound_provider(provider: Any) -> None:
+    """注册声音能力提供者（一次性语音合成/音色管理/音乐生成组件）。
+
+    provider 需满足 agent.capabilities.CapabilityProvider 协议，能力名:
+    tts / voice_mgmt / music。
+    """
+    from agent.audio.capabilities import get_sound_router
+    get_sound_router().register(provider)
+
+
+def unregister_sound_provider(name: str) -> None:
+    """注销声音能力提供者（组件热拔除时调用）。"""
+    from agent.audio.capabilities import get_sound_router
+    get_sound_router().unregister(name)
+
+
+def register_retrieval_provider(provider: Any) -> None:
+    """注册检索提供者（联网检索/网页读取/仓库文档组件）。
+
+    provider 需继承 agent.retrieval.providers.base.Provider 并按需实现
+    SearchCap / ReaderCap / RepoCap 协议方法。
+    """
+    from agent.retrieval import providers
+    providers.register(provider)
+def unregister_retrieval_provider(name: str) -> None:
+    """注销检索提供者（组件热拔除时调用）。"""
+    from agent.retrieval import providers
+    providers.unregister(name)
+
+
+# 检索组件实现契约（桥层再导出）：Provider 基类 + 凭据来源常量 + 凭据回退辅助
+from agent.retrieval.providers.base import (  # noqa: E402
+    SOURCE_CONFIG,
+    SOURCE_ENV,
+    SOURCE_LLM,
+    llm_provider_key,
+    run_coro_sync,
+)
+from agent.retrieval.providers.base import (
+    Provider as RetrievalProvider,
+)
+
+
+def resolve_workspace_path(path: str) -> str:
+    """解析工具入参路径为绝对路径（工作区沙箱校验，越界抛 ValueError）。"""
+    from agent.utils.workspace import resolve_workspace_path as _resolve
+    return _resolve(path)
+
+
 # ------------------------------------------------------------------
 # 频道桥接（延迟导入 agent.channel）
 # ------------------------------------------------------------------
@@ -630,8 +884,9 @@ async def execute_send_action(
     invoke: Callable[[Any, str, str], Awaitable[Any]],
     enrich: Optional[Callable[[dict, bool], None]] = None,
     success_suffix: str = "",
+    outbound_preview: str = "",
 ) -> str:
-    """经频道统一发送管道执行发送：校验 -> 目标解析 -> 调用频道 -> 结果解析 -> 日志。
+    """经频道统一发送管道执行发送：校验 -> 目标解析 -> 出站哨兵 -> 调用频道 -> 结果解析 -> 日志。
 
     Args:
         channel_id: 目标频道 ID
@@ -640,6 +895,7 @@ async def execute_send_action(
         invoke: 真实发送回调 invoke(ch, resolved_target_id, channel_type)
         enrich: 结果补充回调 enrich(parsed, ok)，向返回 JSON 附加调用方字段
         success_suffix: 成功日志的附加信息
+        outbound_preview: 发送内容短摘要（出站哨兵近期窗口判定与拒绝回执展示）
 
     Returns:
         结果 JSON 字符串（含 success/channel_id/target_id 及 enrich 附加字段）。
@@ -652,6 +908,7 @@ async def execute_send_action(
         invoke=invoke,
         enrich=enrich,
         success_suffix=success_suffix,
+        outbound_preview=outbound_preview,
     )
 
 

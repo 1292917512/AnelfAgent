@@ -73,7 +73,7 @@ def _wire_function_ports():
 def _isolate_embedding_registry():
     """隔离 EmbeddingWorker 端口与挂起注册表（embedding_worker_port / _pending_backlogs）。
 
-    实体模块（如 entities.voiceprint.worker）在导入期向全局挂起表注册
+    实体/核心模块（如 agent.audio.worker）在导入期向全局挂起表注册
     backlog；测试内施绑端口会将其挂载到测试 worker，handler 随即打开
     全局单例存储的真实数据库——aiosqlite 连接线程无人关闭，挂住 pytest
     进程退出。逐用例快照/清空/恢复，阻断跨层污染。
@@ -92,6 +92,22 @@ def _isolate_embedding_registry():
         port.set(saved_worker)
     embedding_worker._pending_backlogs.clear()
     embedding_worker._pending_backlogs.update(saved_pending)
+
+
+@pytest.fixture(autouse=True)
+async def _isolate_audio_library(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """隔离核心音频库单例：测试态指向临时库文件，用例结束关闭连接。
+
+    与 ConfigManager/embedding 注册表隔离同理：入库管线会触达全局单例，
+    不隔离则测试写入真实 data/audio.sqlite3，且 aiosqlite 连接线程
+    无人关闭挂住 pytest 进程退出。
+    """
+    from agent.audio import store as audio_store_mod
+
+    lib = audio_store_mod.AudioStore(str(tmp_path / "audio.sqlite3"))
+    monkeypatch.setattr(audio_store_mod, "_store", lib)
+    yield lib
+    await lib.close()
 
 
 def _is_module_test(path: Path) -> bool:

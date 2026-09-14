@@ -22,5 +22,8 @@
   "capabilities": "能力中心",
   "stickers": "表情包",
   "data": "数据管理",
-  "sillytavern": "酒馆"
+  "sillytavern": "酒馆",
+  "vision": "视觉",
+  "sound": "声音",
+  "retrieval": "检索"
 }

@@ -171,6 +171,8 @@ async def memorize(
         action = decision.get("action", "store")
         metrics.incr(f"write.dedup_llm_{action}")
         if action == "skip":
+            from .dedup import apply_evidence_signals
+            await apply_evidence_signals(store, action, content, candidates)
             return json.dumps({
                 "ok": False, "verdict": "skipped_duplicate",
                 "message": f"已有等价记忆，跳过（{decision.get('reason', '语义重复')}）（未重复写入）",
@@ -184,6 +186,11 @@ async def memorize(
                 if sensitivity != "normal":
                     updated.metadata["sensitivity"] = sensitivity
                     await store.update(updated)
+                from .dedup import apply_evidence_signals
+                await apply_evidence_signals(
+                    store, action, content, candidates,
+                    target_ids=[updated.id] if updated.id else None,
+                )
                 wake_embedding_worker()
                 return json.dumps({
                     "ok": True, "id": updated.id, "action": "updated", "verdict": "updated",
@@ -196,6 +203,10 @@ async def memorize(
             merged_content = str(decision.get("content") or content)
             new_id = await store.merge_memories(merge_ids, merged_content)
             if new_id:
+                from .dedup import apply_evidence_signals
+                await apply_evidence_signals(
+                    store, action, content, candidates, target_ids=[new_id],
+                )
                 wake_embedding_worker()
                 return json.dumps({
                     "ok": True, "id": new_id, "action": "merged", "verdict": "merged",
@@ -211,6 +222,8 @@ async def memorize(
             importance=max(0.0, min(1.0, importance)),
             metadata=({"sensitivity": sensitivity} if sensitivity != "normal" else {}),
         )
+        from .reflection_lifecycle import seed_reflection
+        seed_reflection(entry)
 
         # 近重复提示须在写入前计算（写入后新标签已进入统计，会被误判为既有标签）
         hints = await _tag_near_duplicate_hints(tag_list)

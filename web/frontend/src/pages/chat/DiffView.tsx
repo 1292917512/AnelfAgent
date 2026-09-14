@@ -1,5 +1,5 @@
 /**
- * DiffView — unified diff 渲染（红绿增删 + 行号，对齐 Claude Code StructuredDiff）。
+ * DiffView — unified diff 渲染（红绿增删 + 行号）。
  *
  * 过程性展示：edit_file 的 diff 经 file_diff 事件到达，
  * 只在流式过程区显示，不落对话历史。

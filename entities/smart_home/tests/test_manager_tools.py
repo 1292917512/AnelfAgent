@@ -80,6 +80,8 @@ DEVICES = [
     _device("sensor.temp", "sensor", "客厅温度", "23.5", area="客厅",
             attributes={"unit_of_measurement": "°C"}),
     _device("vacuum.robo", "vacuum", "扫地机", "docked", area="客厅"),
+    _device("media_player.xiaodu", "media_player", "小度音箱", "idle",
+            area="客厅"),
 ]
 
 
@@ -89,17 +91,17 @@ def manager(monkeypatch: pytest.MonkeyPatch) -> SmartHomeManager:
     fake = FakeProvider(DEVICES)
     mgr = SmartHomeManager()
     monkeypatch.setattr(
-        "entities.smart_home.manager.active_provider", lambda: fake,
+        "entities.smart_home.manager.all_providers", lambda: [fake],
     )
     return mgr
 
 
 @pytest.fixture()
 def fake(monkeypatch: pytest.MonkeyPatch) -> FakeProvider:
-    """工具测试用的假平台（patch manager 模块的 active_provider）。"""
+    """工具测试用的假平台（patch manager 模块的 all_providers）。"""
     provider = FakeProvider(DEVICES)
     monkeypatch.setattr(
-        "entities.smart_home.manager.active_provider", lambda: provider,
+        "entities.smart_home.manager.all_providers", lambda: [provider],
     )
     return provider
 
@@ -119,7 +121,7 @@ class TestQuery:
     def test_status(self, manager: SmartHomeManager) -> None:
         status = manager.status()
         assert status["connected"] is True
-        assert status["device_count"] == 4
+        assert status["device_count"] == 5
 
 
 class TestCallService:
@@ -138,7 +140,7 @@ class TestCallService:
                                          monkeypatch: pytest.MonkeyPatch) -> None:
         provider = FakeProvider(DEVICES, configured=False)
         monkeypatch.setattr(
-            "entities.smart_home.manager.active_provider", lambda: provider,
+            "entities.smart_home.manager.all_providers", lambda: [provider],
         )
         mgr = SmartHomeManager()
         with pytest.raises(SmartHomeCallError) as info:
@@ -174,7 +176,7 @@ class TestCallService:
                                          monkeypatch: pytest.MonkeyPatch) -> None:
         provider = FakeProvider(DEVICES, connected=False)
         monkeypatch.setattr(
-            "entities.smart_home.manager.active_provider", lambda: provider,
+            "entities.smart_home.manager.all_providers", lambda: [provider],
         )
         mgr = SmartHomeManager()
         with pytest.raises(SmartHomeCallError) as info:
@@ -189,6 +191,31 @@ class TestCallService:
         # sensor 域只读：动作校验先于平台调用失败
         assert info.value.cause == ErrorCause.PARAM
         assert "无" in str(info.value)
+
+    @pytest.mark.asyncio
+    async def test_speak_routes_to_tts_domain(self,
+                                              manager: SmartHomeManager,
+                                              fake: FakeProvider) -> None:
+        ConfigManager.set("smart_home_media_player_tts_service",
+                          "tts.cloud_say")
+        result = await manager.call_service(
+            "media_player.xiaodu", "speak", "主人，晚饭好了",
+        )
+        assert result["service"] == "tts.cloud_say"
+        assert fake.calls == [{
+            "domain": "tts", "service": "cloud_say",
+            "entity_id": "media_player.xiaodu",
+            "data": {"message": "主人，晚饭好了"},
+        }]
+        ConfigManager.set("smart_home_media_player_tts_service", "")
+
+    @pytest.mark.asyncio
+    async def test_speak_unconfigured_rejected(self,
+                                               manager: SmartHomeManager) -> None:
+        ConfigManager.set("smart_home_media_player_tts_service", "")
+        with pytest.raises(SmartHomeCallError) as info:
+            await manager.call_service("media_player.xiaodu", "speak", "你好")
+        assert info.value.cause == ErrorCause.CONFIG
 
 
 class TestBroadcast:

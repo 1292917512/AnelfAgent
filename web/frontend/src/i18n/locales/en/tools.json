@@ -27,7 +27,11 @@
     "channel_ops": "Channel Ops",
     "skills": "Skills",
     "delegation": "Sub-agents",
-    "session": "Session Manager"
+    "session": "Session Manager",
+    "vision": "Vision",
+    "audio": "Sound",
+    "voice": "Voice",
+    "retrieval": "Retrieval"
   },
   "reload": "Reload",
   "reloading": "Reloading...",

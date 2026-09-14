@@ -37,12 +37,12 @@ async def test_memory_store_default_construction_opens_db(tmp_path):
 
 
 async def test_entity_stores_default_construction(tmp_path):
+    from agent.audio.store import AudioStore
     from entities.share.store import ShareStore
     from entities.sticker.store import StickerStore
-    from entities.voiceprint.store import VoiceprintStore
 
     assert StickerStore()._db_path == str(tmp_path / "agent_stickers.sqlite3")
-    assert VoiceprintStore()._db_path == str(tmp_path / "agent_voiceprints.sqlite3")
+    assert AudioStore()._db_path == str(tmp_path / "agent_audio.sqlite3")
 
     share = ShareStore()
     assert share._db_path == str(tmp_path / "agent_share.sqlite3")

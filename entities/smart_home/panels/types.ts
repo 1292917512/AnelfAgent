@@ -1,14 +1,23 @@
 /** 智能家居面板类型定义（对齐后端 schemas/framework 序列化） */
 
-/** 平台连接状态（SmartHomeProvider.status） */
-export interface ConnectionStatus {
-  provider: string | null;
+/** 单供应商连接状态（SmartHomeProvider.status） */
+export interface ProviderStatus {
+  provider: string;
   provider_name: string;
   configured: boolean;
   connected: boolean;
   device_count: number;
   last_error: string | null;
   connected_at: number | null;
+  discovery: boolean;
+}
+
+/** 连接状态（多供应商聚合，manager.status） */
+export interface StatusResponse {
+  providers: ProviderStatus[];
+  configured: boolean;
+  connected: boolean;
+  device_count: number;
 }
 
 /** 单台设备状态（DeviceState.to_dict） */
@@ -58,10 +67,8 @@ export interface DeviceDomainInfo {
   configs: DomainConfigItem[];
 }
 
-export type StatusResponse = ConnectionStatus;
-
 export interface DevicesResponse {
-  connection: ConnectionStatus;
+  connection: StatusResponse;
   devices: DeviceInfo[];
   count: number;
 }
@@ -84,9 +91,15 @@ export interface ControlResponse {
   service: string;
 }
 
-/** SSE state 事件载荷（manager 广播） */
+/** 发现设备结果（POST /providers/{key}/discover） */
+export interface DiscoverResponse {
+  found: Array<{ entity_id: string; name: string }>;
+  count: number;
+}
+
+/** SSE 事件载荷（manager 广播；connection 事件为单供应商状态） */
 export interface StateEventPayload {
   event: string;
   device?: DeviceInfo;
-  status?: ConnectionStatus;
+  status?: ProviderStatus;
 }

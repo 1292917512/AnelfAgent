@@ -267,6 +267,8 @@ def build_meta_decision_messages(
     """构建元决策 prompt 完整消息列表。"""
     system_parts = [m["content"] for m in personality_msgs if m.get("content")]
     system_parts.append(META_DECISION_SYSTEM)
+    from agent.mind.proactivity import proactivity_guidance
+    system_parts.append(proactivity_guidance())
     messages: List[Dict] = [{"role": "system", "content": "\n\n".join(system_parts)}]
     for m in memory_context:
         messages.append({**m, "role": "user"} if m.get("role") == "system" else m)

@@ -37,7 +37,13 @@ from core.config import get_config_bool, get_config_int, register_configs_safe
 from core.latebind import LateBinding
 from core.log import log
 
-from .dedup import apply_update, gather_dedup_candidates, judge_write, light_llm
+from .dedup import (
+    apply_evidence_signals,
+    apply_update,
+    gather_dedup_candidates,
+    judge_write,
+    light_llm,
+)
 from .memory_types import MemoryEntry, MemoryType
 
 if TYPE_CHECKING:
@@ -83,7 +89,8 @@ _EXTRACT_PROMPT = """\
    "topic": "主题词（一两个字）",
    "importance": 0.5到1.0（重要约定/承诺 0.8 以上）,
    "sensitivity": "normal" 或 "private"（个人隐私/悄悄话标 private）,
-   "date": "事件发生的日期 YYYY-MM-DD（仅 event 且能从对话确定时填写，否则省略）"}]
+   "date": "事件发生的日期 YYYY-MM-DD（仅 event 且能从对话确定时填写，否则省略）",
+   "temporal_scope": "仅 event 填写：episode=一次性事件 / state=持续状态 / pattern=反复模式（拿不准用 pattern）"}]
 
 【背景（最近的旧对话，仅供理解）】
 {background}
@@ -162,6 +169,9 @@ def parse_extraction(raw: str, *, max_items: int) -> List[Dict[str, Any]]:
         date = str(item.get("date", "")).strip()
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             date = ""
+        temporal_scope = str(item.get("temporal_scope", "")).strip().lower()
+        if temporal_scope not in ("episode", "state", "pattern"):
+            temporal_scope = ""
         # 发言者 uid（与批次内真实出现的 uid 的交叉校验在写库侧进行）
         speaker = str(item.get("speaker", "")).strip()[:64]
         out.append({
@@ -171,6 +181,7 @@ def parse_extraction(raw: str, *, max_items: int) -> List[Dict[str, Any]]:
             "importance": importance,
             "sensitivity": sensitivity if sensitivity in ("private", "secret") else "normal",
             "date": date,
+            "temporal_scope": temporal_scope,
             "speaker": speaker,
         })
         if len(out) >= max_items:
@@ -514,6 +525,7 @@ class AutoCapturePipeline:
                 from . import metrics
                 metrics.incr(f"write.dedup_llm_{action}")
                 if action == "skip":
+                    await apply_evidence_signals(store, action, item["content"], candidates)
                     continue
                 if action == "update" and decision.get("target_id"):
                     updated = await apply_update(
@@ -521,14 +533,23 @@ class AutoCapturePipeline:
                         str(decision.get("content") or item["content"]), tags,
                     )
                     if updated is not None:
+                        await apply_evidence_signals(
+                            store, action, item["content"], candidates,
+                            target_ids=[updated.id] if updated.id else None,
+                        )
                         stored += 1
                         continue
                 if action == "merge" and decision.get("target_ids"):
+                    merge_ids = [int(i) for i in decision["target_ids"]]
                     new_id = await store.merge_memories(
-                        [int(i) for i in decision["target_ids"]],
+                        merge_ids,
                         str(decision.get("content") or item["content"]),
                     )
                     if new_id:
+                        await apply_evidence_signals(
+                            store, action, item["content"], candidates,
+                            target_ids=[new_id],
+                        )
                         stored += 1
                         continue
                 metadata: Dict[str, Any] = {}
@@ -536,6 +557,8 @@ class AutoCapturePipeline:
                     metadata["sensitivity"] = item["sensitivity"]
                 if item["date"] and item["type"] == "event":
                     metadata["activity_date"] = item["date"]
+                if item.get("temporal_scope") and item["type"] == "event":
+                    metadata["temporal_scope"] = item["temporal_scope"]
                 entry = MemoryEntry(
                     memory_type=(
                         MemoryType.EPISODIC if item["type"] == "event"

@@ -107,7 +107,7 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
         if env_vars:
             env.update(env_vars)
         # 环境变量卫生：NO_COLOR/pager/UTF-8 locale 兜底（用户显式值优先，
-        # 防 ANSI 色码混入输出与 pager 在管道下挂起——对齐 codex unified_exec）
+        # 防 ANSI 色码混入输出与 pager 在管道下挂起）
         for key, value in shell_env_defaults().items():
             env.setdefault(key, value)
 
@@ -133,7 +133,7 @@ def run_command(command: Union[str, List[str]], timeout_sec: int = 300, env_vars
             run_kwargs['creationflags'] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         else:
             # 独立进程组：超时时整组终止，避免 shell 子进程（孙进程）泄漏
-            # （对齐 Claude Code tree-kill 语义；subprocess.run 只杀直接子进程）
+            # （subprocess.run 只杀直接子进程，进程组才能整树清理）
             run_kwargs['start_new_session'] = True
 
         if is_windows:

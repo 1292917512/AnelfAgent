@@ -230,7 +230,7 @@ def register_volume(descriptor: VolumeDescriptor) -> None:
 def main_sqlite_path() -> str:
     """主库（agent 卷）默认路径的唯一权威：环境变量 > 项目根下 ConfigPaths.SQLITE_DB。
 
-    同族库（memory/stickers/voiceprints/skill_vectors/share）的默认路径
+    同族库（memory/stickers/audio/skill_vectors/share）的默认路径
     均由本路径派生 stem——放在 core 使 entities 层无需依赖 agent。
     """
     import os

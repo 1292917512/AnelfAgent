@@ -151,6 +151,66 @@ async def _inject_image_blocks(
 # 单个工具结果允许附带的最大图片数（防上下文膨胀）
 _MAX_TOOL_RESULT_IMAGES = 6
 
+# provider 快照注入画面的抽样上限：多于该数时保留头/中/尾
+# （一段视觉材料信息量最高的是两端与中点；压缩/下载成本由 ensure_base64_report 承担）
+_MAX_PROVIDER_IMAGES = 3
+
+
+def _sample_head_middle_tail(images: List["ImageContent"], limit: int) -> List["ImageContent"]:
+    """等距抽样保头/中/尾（保持时间序=相关性序，不重复）。
+
+    limit=3 时取首/中/尾三张——一段视觉材料信息量最高的是两端与中点。
+    """
+    if len(images) <= limit or limit <= 1:
+        return images[:limit] if limit == 1 else images
+    n = len(images)
+    indexes = sorted({round(i * (n - 1) / (limit - 1)) for i in range(limit)})
+    return [images[i] for i in indexes]
+
+
+async def build_provider_media_message(
+        images: List["ImageContent"],
+        config: "LLMClientConfig",
+) -> Optional[Dict]:
+    """把 provider 快照附带的画面组一条 user 角色多模态注入消息（视觉模型）。
+
+    视觉模型的 image block 只在 user 角色可靠生效（system 不行），故 provider
+    的画面不走 system 注入块，而在此集中成一条紧随其后的 user 消息；
+    图在文前（时间序=相关性序），位置在工具链之后、exec_context 之前，
+    不触碰 stable/历史前缀缓存。无有效画面时返回 None（调用方不追加）。
+    """
+    from agent.llm.image_utils import ensure_base64_report
+    from agent.llm.types import ImageContent
+
+    sampled = _sample_head_middle_tail(images, _MAX_PROVIDER_IMAGES)
+    prepared, url_fallbacks, failed = await ensure_base64_report(sampled)
+    blocks: List[Dict] = [
+        img.to_openai_block(flat_url=config.use_flat_image_url) for img in prepared
+    ]
+    for url in url_fallbacks:
+        blocks.append(ImageContent(data=url, is_url=True).to_openai_block(
+            flat_url=config.use_flat_image_url,
+        ))
+    if not blocks:
+        return None
+    notes: List[str] = []
+    if len(images) > len(sampled):
+        notes.append(f"共 {len(images)} 张，抽样展示 {len(sampled)} 张（头/中/尾）")
+    if failed:
+        notes.append(f"{len(failed)} 张加载失败未注入（{'; '.join(failed)}）")
+    note_text = f"（{'；'.join(notes)}）" if notes else ""
+    blocks.append({
+        "type": "text",
+        "text": f"[系统提示] 以上 {len(blocks)} 张图片是环境信息附带的实时画面"
+                f"{note_text}，请结合上文环境信息理解。",
+    })
+    return {
+        "role": "user",
+        "content": blocks,
+        "_layer": "provider",
+        "_source": {"origin": "context_provider"},
+    }
+
 
 async def _append_multimodal_result(
         mind: Mind,
@@ -162,9 +222,8 @@ async def _append_multimodal_result(
     工具返回 JSON 含 ``{"_multimodal": true, "text": ..., "images": [路径...]}``
     时（如 recognize_image / search_sticker / search_image / find_similar_image），
     将图片加载压缩后以 image_url block 注入工具链尾部（动态区，不动前缀缓存），
-    视觉模型即可"亲眼看到"候选再做选择（借鉴 nekro-agent MULTIMODAL_AGENT 的
-    检索体验）。非视觉模型跳过，文本摘要（text/results 字段）已随 tool 消息
-    提供全部信息。
+    视觉模型即可"亲眼看到"候选再做选择。非视觉模型跳过，文本摘要
+    （text/results 字段）已随 tool 消息提供全部信息。
     """
     if '"_multimodal"' not in output:
         return

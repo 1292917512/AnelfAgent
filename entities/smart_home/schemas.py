@@ -35,13 +35,23 @@ class DevicesResult(BaseModel):
     count: int
 
 
-class StatusResult(BaseModel):
-    """连接状态出站模型。"""
+class ProviderStatus(BaseModel):
+    """单供应商连接状态出站模型。"""
 
-    provider: Optional[str]
+    provider: str
     provider_name: str
     configured: bool
     connected: bool
     device_count: int
     last_error: Optional[str]
     connected_at: Optional[float]
+    discovery: bool = False
+
+
+class StatusResult(BaseModel):
+    """连接状态出站模型（多供应商聚合）。"""
+
+    providers: List[ProviderStatus]
+    configured: bool
+    connected: bool
+    device_count: int

@@ -1,9 +1,7 @@
-"""edit_file 的纯函数算法库 — 移植自 Claude Code ``src/tools/FileEditTool/utils.ts``。
+"""edit_file 的纯函数算法库。
 
-包含：四级递降容错匹配（精确 → 弯引号归一 → 行尾空白 → Unicode 标点/空白归一，
-对齐 codex apply-patch seek_sequence / git apply 模糊行为）、引号风格保持、
-逐行尾空格清理、删行特例、unified diff。
-未移植 DESANITIZATIONS（ Anthropic API 特有的 token 消毒表，Anelf 不适用）。
+包含：四级递降容错匹配（精确 → 弯引号归一 → 行尾空白 → Unicode 标点/空白归一）、
+引号风格保持、逐行尾空格清理、删行特例、unified diff。
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ RIGHT_SINGLE_CURLY_QUOTE = "’"
 LEFT_DOUBLE_CURLY_QUOTE = "“"
 RIGHT_DOUBLE_CURLY_QUOTE = "”"
 
-# Unicode 归一化映射（对齐 codex seek_sequence::normalise，模仿 git apply 的模糊行为）。
+# Unicode 归一化映射（模仿 git apply 的模糊行为）。
 # 模型按看到的显示字符写 old_string，但原文可能是 NBSP/全角空格/连字符等宽字符变体。
 _UNICODE_NORMALIZE_TABLE = str.maketrans({
     # 各类破折号/减号 → ASCII 连字符

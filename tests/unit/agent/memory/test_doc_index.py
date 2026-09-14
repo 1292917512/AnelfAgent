@@ -48,8 +48,48 @@ class TestExtractDocumentText:
         _make_docx(p, "Word 文档段落内容")
         assert "Word 文档段落内容" in extract_document_text(p)
 
+    def test_xlsx(self, tmp_path) -> None:
+        """xlsx 逐表提取：表名标题 + 制表符单元格行，空表跳过。"""
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws1 = wb.active
+        ws1.title = "成绩"
+        ws1.append(["姓名", "分数"])
+        ws1.append(["张三", 95])
+        wb.create_sheet("空表")
+        wb.save(str(tmp_path / "t.xlsx"))
+        text = extract_document_text(tmp_path / "t.xlsx")
+        assert "[成绩]" in text
+        assert "姓名\t分数" in text
+        assert "张三\t95" in text
+        assert "空表" not in text  # 空表跳过
+
+    def test_pptx(self, tmp_path) -> None:
+        """pptx 逐页提取：文本框 + 备注，空页跳过。"""
+        from pptx import Presentation
+
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        slide.shapes.title.text = "季度汇报"
+        slide.placeholders[1].text = "收入增长 20%"
+        prs.save(str(tmp_path / "t.pptx"))
+        text = extract_document_text(tmp_path / "t.pptx")
+        assert "[幻灯片 1]" in text
+        assert "季度汇报" in text
+        assert "收入增长 20%" in text
+
+    def test_empty_xlsx_raises(self, tmp_path) -> None:
+        """全空工作簿无可用文本，显式报错。"""
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        wb.save(str(tmp_path / "empty.xlsx"))
+        with pytest.raises(ValueError, match="无可用文本"):
+            extract_document_text(tmp_path / "empty.xlsx")
+
     def test_unsupported_ext(self, tmp_path) -> None:
-        p = tmp_path / "a.xlsx"
+        p = tmp_path / "a.exe"
         p.write_bytes(b"fake")
         with pytest.raises(ValueError, match="不支持"):
             extract_document_text(p)

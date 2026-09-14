@@ -44,6 +44,7 @@ class AiDesktopProvider:
 
     async def provide(self, scope: str) -> Optional[ProviderSnapshot]:
         content = framework.render_context()
-        if not content:
+        media = framework.render_media()
+        if not content and not media:
             return None
-        return ProviderSnapshot(content=content, ready=True)
+        return ProviderSnapshot(content=content or None, media=media, ready=True)

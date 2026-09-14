@@ -100,3 +100,107 @@ class TestProviderTailInjection:
         await run_think_loop(mind, mode=ThinkMode.REPLY, base_messages=[])
         round1 = mind.sent_messages[0]
         assert all(_layer_of(m) != "provider" for m in round1)
+
+
+class TestProviderMediaDispatch:
+    """clip 媒体按 kind 分派：image 视觉直注 / 降级标签；audio/video 一律标签引用。"""
+
+    def _register_media_provider(self, media: list, text: str = "[环境] 桌面状态") -> None:
+        async def _provide(scope: str) -> ProviderSnapshot:
+            return ProviderSnapshot(content=text, media=media)
+
+        ContextProviderRegistry.register(
+            ProviderMeta(name="media_demo", provide_fn=_provide),
+        )
+
+    def _vision_mind(self) -> FakeMind:
+        from types import SimpleNamespace
+        mind = FakeMind(
+            rounds=[end_reply_result()], default_text=None,
+            pfc=FakePfc(exec_layer=True),
+        )
+        mind.llm = SimpleNamespace(
+            config=SimpleNamespace(supports_vision=True, use_flat_image_url=False),
+        )
+        return mind
+
+    async def test_image_direct_injected_for_vision_model(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """视觉模型：图片组 user 角色多模态消息（image block + 说明文本）。"""
+        import base64
+
+        from agent.llm.types import ImageContent
+
+        async def _fake_report(images, *a, **kw):
+            return [
+                ImageContent(
+                    data=base64.b64encode(b"x").decode(), mime_type="image/jpeg",
+                ),
+            ], [], []
+
+        monkeypatch.setattr("agent.llm.image_utils.ensure_base64_report", _fake_report)
+        from core.context_provider import ContextMedia
+        self._register_media_provider([ContextMedia.image("/tmp/shot.png")])
+
+        mind = self._vision_mind()
+        await run_think_loop(mind, mode=ThinkMode.REPLY, base_messages=[])
+        msgs = mind.sent_messages[0]
+
+        sys_msg = next(m for m in msgs if _layer_of(m) == "provider" and m["role"] == "system")
+        assert sys_msg["content"] == "[环境] 桌面状态"
+        media_msg = next(
+            m for m in msgs if _layer_of(m) == "provider" and m["role"] == "user"
+        )
+        assert any(b["type"] == "image_url" for b in media_msg["content"])
+        # 图片直注后 clip 文本不再附带媒体标签（避免双重表达）
+        assert "[media_type:" not in sys_msg["content"]
+
+    async def test_image_degrades_to_tag_without_vision(self) -> None:
+        """非视觉模型：图片降级为媒体标签并入 clip 文本（AI 走媒体工具）。"""
+        from core.context_provider import ContextMedia
+        self._register_media_provider([ContextMedia.image("/tmp/shot.png")])
+
+        mind = FakeMind(
+            rounds=[end_reply_result()], default_text=None,
+            pfc=FakePfc(exec_layer=True),
+        )  # 无 llm 配置 = 非视觉
+        await run_think_loop(mind, mode=ThinkMode.REPLY, base_messages=[])
+        msgs = mind.sent_messages[0]
+
+        sys_msg = next(m for m in msgs if _layer_of(m) == "provider")
+        assert "[media_type:image][media_path:/tmp/shot.png]" in sys_msg["content"]
+        assert all(m["role"] != "user" for m in msgs if _layer_of(m) == "provider")
+
+    async def test_audio_video_always_tag_reference(self) -> None:
+        """audio/video 即使视觉模型也走标签引用（对话协议层不接受这两类 block）。"""
+        from core.context_provider import ContextMedia
+        self._register_media_provider([
+            ContextMedia.audio("/tmp/env.wav"),
+            ContextMedia.video("/tmp/clip.mp4"),
+        ])
+
+        mind = self._vision_mind()
+        await run_think_loop(mind, mode=ThinkMode.REPLY, base_messages=[])
+        msgs = mind.sent_messages[0]
+
+        sys_msg = next(m for m in msgs if _layer_of(m) == "provider" and m["role"] == "system")
+        assert "[media_type:audio][media_path:/tmp/env.wav]" in sys_msg["content"]
+        assert "[media_type:video][media_path:/tmp/clip.mp4]" in sys_msg["content"]
+        assert all(m["role"] != "user" for m in msgs if _layer_of(m) == "provider")
+
+    async def test_media_only_clip_creates_reference_message(self) -> None:
+        """纯媒体 clip（无文本）也产出标签消息，不静默丢失。"""
+        from core.context_provider import ContextMedia
+        self._register_media_provider([ContextMedia.audio("/tmp/env.wav")], text="")
+
+        mind = FakeMind(
+            rounds=[end_reply_result()], default_text=None,
+            pfc=FakePfc(exec_layer=True),
+        )
+        await run_think_loop(mind, mode=ThinkMode.REPLY, base_messages=[])
+        msgs = mind.sent_messages[0]
+
+        sys_msg = next(m for m in msgs if _layer_of(m) == "provider")
+        assert sys_msg["content"].startswith("[环境媒体]")
+        assert "[media_type:audio]" in sys_msg["content"]

@@ -325,7 +325,7 @@ class StickerStore:
         source: str = "",
         embedding: Optional[List[float]] = None,
     ) -> Dict[str, Any]:
-        """新增表情包；content_hash 重复时原地更新元数据（去重语义同 nekro）。"""
+        """新增表情包；content_hash 重复时原地更新元数据。"""
         db = await self._get_db()
         now = time.time_ns()
 

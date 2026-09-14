@@ -60,11 +60,20 @@ def wire_runtime(
     from agent.mind.tools.result_pipeline import shell_persist_port
     from agent.mind.tools.round_helpers import file_state_cache_port
     from entities.filesystem.file_state import get_cache as get_file_state_cache
-    from entities.filesystem.paths import get_workspace_root, resolve_workspace_path
+    from entities.filesystem.paths import (
+        check_sandbox,
+        get_workspace_root,
+        resolve_workspace_path,
+        sandbox_enabled,
+    )
     from entities.filesystem.shell_state import persist_output
     from entities.sticker.worker import submit_image
 
-    workspace_paths_port.set(WorkspacePathFns(get_workspace_root, resolve_workspace_path))
+    workspace_paths_port.set(WorkspacePathFns(
+        get_root=get_workspace_root,
+        resolve=resolve_workspace_path,
+        allowed=lambda p: (not sandbox_enabled()) or check_sandbox(p),
+    ))
     file_state_cache_port.set(get_file_state_cache)
     shell_persist_port.set(persist_output)
     image_index_submit_port.set(submit_image)
@@ -79,6 +88,11 @@ def wire_runtime(
     from agent.hooks_llm import hooks_llm_runtime_port
     hooks_llm_runtime_port.set(hooks_llm_runtime)
 
+    # 语音段交付（agent/voice 端口；经 AgentApp 统一入口转 Everything 进消息管线）
+    from agent.voice.deliver import deliver_utterance
+    from agent.voice.session import voice_sink_port
+    voice_sink_port.set(deliver_utterance)
+
     # 记忆存储族（memory/graph/planning 工具组共用同一 MemoryStore）
     memory_tools_port.set(MemoryToolDeps(memory_store, embedder))
     graph_store_port.set(memory_store)
@@ -87,6 +101,10 @@ def wire_runtime(
     # 会话数据（输出工具回写历史 / 对话折叠工具）
     conversation_data_port.set(data_center.conversation_data)
     fold_data_port.set(data_center.conversation_data)
+
+    # 出站哨兵：在途回复 scope 读取器（Mind._active_scopes 单一事实源）
+    from agent.channel.outbound_guard import bind_reply_scopes
+    bind_reply_scopes(mind.active_reply_scopes)
 
     # Embedding 后台 worker（施绑后挂载施绑前挂起的外部 backlog 注册）
     embedding_worker_port.set(embedding_worker)

@@ -1,6 +1,6 @@
 """Shell 会话状态 — 每 scope 的 cwd 持久化与超限输出落盘。
 
-移植自 Claude Code Bash 工具语义（``src/utils/Shell.ts``、``bashProvider.ts``）：
+设计语义：
 - 每条命令在独立进程中执行（无持久 shell），但工作目录跨命令持久
 - cwd 持久通过命令尾部追加 ``pwd -P`` 捕获实现
 - cwd 漂出 workspace 或被删除时自动重置并附注
@@ -19,9 +19,9 @@ from typing import Dict, Optional
 from core.log import log
 from entities._sdk import get_current_scope
 
-# 模型可见输出上限（对齐 Claude Code BASH_MAX_OUTPUT_LENGTH 默认 30000）
+# 模型可见输出上限（默认 30000 字符）
 MAX_OUTPUT_CHARS = 30000
-# 落盘预览大小（对齐 Claude Code persisted-output 预览 2KB）
+# 落盘预览大小（2KB）
 PREVIEW_CHARS = 2048
 
 _cwds: Dict[str, str] = {}

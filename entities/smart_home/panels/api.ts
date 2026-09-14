@@ -2,8 +2,10 @@ import { api } from "@/lib/api";
 import type {
   ControlResponse,
   DevicesResponse,
+  DiscoverResponse,
   DomainsResponse,
   PreviewResponse,
+  ProviderStatus,
   StatusResponse,
 } from "./types";
 
@@ -20,7 +22,13 @@ export const smartHomeApi = {
       action,
       value,
     }),
+  reconnect: (key: string) =>
+    api.post<ProviderStatus>(`/entity/smart_home/providers/${encodeURIComponent(key)}/reconnect`),
+  discover: (key: string) =>
+    api.post<DiscoverResponse>(`/entity/smart_home/providers/${encodeURIComponent(key)}/discover`),
   // 配置写复用通用实体配置端点（连接 url/token、域启停、域配置项等）
   updateConfig: (key: string, value: unknown) =>
     api.put("/entities/smart_home/config", { key, value }),
+  getConfig: () =>
+    api.get<{ values: Record<string, unknown> }>("/entities/smart_home/config"),
 };

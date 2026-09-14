@@ -228,8 +228,8 @@ def _ensure_strict_password() -> None:
 _AUTH_EXEMPT = frozenset({
     "/api/auth/login",
     "/api/auth/check",
-    # 音源库 ingest 供外部 pipeline 推送，由端点自校验 X-Ingest-Token（fail-closed）
-    "/api/entity/voiceprint/ingest",
+    # 音源推送供外部 pipeline 上行，由端点自校验 X-Ingest-Token（fail-closed）
+    "/api/entity/audiosync/ingest",
 })
 
 

@@ -14,6 +14,7 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from core.path import upload_url_for
 from services import ChatService, UiService
 from services.chat import UPLOAD_DIR as _UPLOAD_DIR
 from services.chat import classify_file_type as _classify_file
@@ -44,12 +45,12 @@ def _upload_max_bytes() -> int:
         max_mb = 50.0
     return max(1, int(max_mb)) * 1024 * 1024
 
-from core import sse_hub  # noqa: E402  订阅注册中心在 core 层（频道侧也要用）
+from core import realtime_hub  # noqa: E402  实时枢纽在 core 层（频道侧也要用）
 
 
 def broadcast_chat_event(event: Dict[str, Any]) -> None:
-    """向所有 SSE 订阅者推送聊天事件。"""
-    sse_hub.broadcast(event)
+    """向所有实时订阅者（SSE + WebSocket）推送聊天事件。"""
+    realtime_hub.publish(event)
 
 
 def _setup_chat_broadcast_bridge() -> None:
@@ -157,7 +158,7 @@ async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
         "name": filename,
         "type": file_type,
         "size": len(content),
-        "url": f"/api/chat/files/{file_type}/{safe_name}",
+        "url": upload_url_for(file_type, safe_name),
     }
 
 
@@ -346,20 +347,20 @@ async def cancel_delegation(delegation_id: str) -> Dict[str, Any]:
 
 @router.get("/stream")
 async def chat_stream(request: Request) -> EventSourceResponse:
-    """SSE 端点：推送聊天消息事件。"""
-    queue: asyncio.Queue[Dict[str, Any]] = sse_hub.subscribe()
+    """SSE 端点：推送聊天消息事件（实时枢纽的 web 客户端视图）。"""
+    sub = realtime_hub.subscribe(client_kind="web")
 
     async def event_generator():
         try:
             while True:
-                if await request.is_disconnected():
+                if sub.dead or await request.is_disconnected():
                     break
                 try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    msg = await asyncio.wait_for(sub.queue.get(), timeout=30.0)
                     yield {"event": msg.get("event", "message"), "data": json.dumps(msg, ensure_ascii=False)}
                 except asyncio.TimeoutError:
                     yield {"event": "ping", "data": ""}
         finally:
-            sse_hub.unsubscribe(queue)
+            realtime_hub.unsubscribe(sub)
 
     return EventSourceResponse(event_generator())

@@ -29,6 +29,26 @@ def _clean_outbound(text: str) -> str:
     return strip_functional_tags(strip_message_meta_tags(text or "")).strip()
 
 
+def _media_frame_url(path: str) -> str:
+    """media 帧 URL 契约：帧内只传可服务 URL，不传本地绝对路径。
+
+    - http(s) / /api/ 开头的引用原样透传；
+    - 上传目录（workspace/uploads/{type}/）下的本地路径改写为可服务 URL
+      （URL 规则单点定义在 core.path，桌面壳与浏览器拿到同一种东西）；
+    - 其余路径原样透传（调用方自担可访问性，记 DEBUG 便于排查）。
+    """
+    from core.log import log
+    from core.path import upload_path_to_url
+
+    if not path or path.startswith(("http://", "https://", "/api/")):
+        return path
+    url = upload_path_to_url(path)
+    if url is not None:
+        return url
+    log(f"media 帧路径不在上传目录内，原样透传: {path[:80]}", "DEBUG", tag="WebUI")
+    return path
+
+
 class WebUIChannel(BaseChannel[WebUIConfig]):
     """WebUI 频道 — 通过 SSE 向前端推送 Agent 消息（文本/图片/语音/视频）。"""
 
@@ -212,9 +232,9 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
 
     @staticmethod
     def _has_online_clients() -> bool:
-        """是否有在线 WebUI 客户端（SSE 订阅者，注册中心在 core 层）。"""
-        from core import sse_hub
-        return sse_hub.subscriber_count() > 0
+        """是否有在线 WebUI 客户端（实时枢纽的 web 订阅者，注册中心在 core 层）。"""
+        from core import realtime_hub
+        return realtime_hub.subscriber_count(client_kind="web") > 0
 
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
         text = _clean_outbound(text)
@@ -237,7 +257,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     async def send_photo(self, chat_id: str, photo: str, caption: str = "", **kwargs: Any) -> str:
         await self._broadcast("media", {
             "media_type": "image",
-            "url": photo,
+            "url": _media_frame_url(photo),
             "caption": _clean_outbound(caption),
             "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
@@ -246,7 +266,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     async def send_voice(self, chat_id: str, voice: str, **kwargs: Any) -> str:
         await self._broadcast("media", {
             "media_type": "voice",
-            "url": voice,
+            "url": _media_frame_url(voice),
             "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
         return json.dumps({"success": True}, ensure_ascii=False)
@@ -254,7 +274,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     async def send_audio(self, chat_id: str, audio: str, caption: str = "", **kwargs: Any) -> str:
         await self._broadcast("media", {
             "media_type": "audio",
-            "url": audio,
+            "url": _media_frame_url(audio),
             "caption": _clean_outbound(caption),
             "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
@@ -263,7 +283,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     async def send_video(self, chat_id: str, video: str, caption: str = "", **kwargs: Any) -> str:
         await self._broadcast("media", {
             "media_type": "video",
-            "url": video,
+            "url": _media_frame_url(video),
             "caption": _clean_outbound(caption),
             "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })
@@ -272,7 +292,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     async def send_file(self, chat_id: str, file_path: str, caption: str = "", **kwargs: Any) -> str:
         await self._broadcast("media", {
             "media_type": "file",
-            "url": file_path,
+            "url": _media_frame_url(file_path),
             "caption": _clean_outbound(caption),
             "chat_id": self._resolve_chat_id(chat_id, kwargs),
         })

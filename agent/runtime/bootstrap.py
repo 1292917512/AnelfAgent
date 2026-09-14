@@ -97,6 +97,20 @@ def create_bootstrap() -> FlowMachine:
         log(f"LLM 默认客户端: {llm.config.name} ({llm.config.model})")
         return {"manager": manager, "llm": llm}
 
+    @machine.node(skip_on_error=True, depends_on=["init_storage"])
+    async def init_audio():
+        """音频核心库：建库 + 旧实体声纹库一次性迁移（幂等）。"""
+        from agent.audio import get_audio_store
+        from core.lifecycle import Lifecycle
+
+        store = get_audio_store()
+
+        async def _init() -> None:
+            await store.initialize()
+            await store.migrate_legacy()
+
+        Lifecycle.register("audio_store", store, cleanup=store.close, on_start=_init)
+
     @machine.node(skip_on_error=False, depends_on=[])
     async def init_channel_system():
         """初始化频道管理器和输入管道。"""
@@ -104,6 +118,12 @@ def create_bootstrap() -> FlowMachine:
         cm = get_channel_manager()
         pipeline = InputPipeline()
         return {"channel_manager": cm, "pipeline": pipeline}
+
+    @machine.node(skip_on_error=True, depends_on=["init_storage"])
+    async def migrate_legacy_configs():
+        """旧实体本地配置（媒体库/网络工具）一次性导入统一配置体系（幂等）。"""
+        from agent.runtime.config_migrate import migrate_legacy_entity_configs
+        migrate_legacy_entity_configs()
 
     @machine.node(skip_on_error=True, depends_on=[])
     async def register_entities():
@@ -234,17 +254,32 @@ def create_bootstrap() -> FlowMachine:
         各工具模块 import 时完成 deferred 注册，本节点只按组弹出激活；
         agent.task.tools 挂在 planning 组，须在 planning 激活前 import。
         """
+        import agent.audio.context  # noqa: F401
+        import agent.audio.gen_tools  # noqa: F401
+        import agent.audio.tools  # noqa: F401
+        import agent.audio.worker  # noqa: F401
         import agent.channel.manage_tools  # noqa: F401
         import agent.channel.output_tools  # noqa: F401
         import agent.memory.graph.tools  # noqa: F401
         import agent.memory.tools  # noqa: F401
         import agent.planning.tools  # noqa: F401
+        import agent.realtime.tools  # noqa: F401
+        import agent.retrieval.tools  # noqa: F401
         import agent.skills.tools  # noqa: F401
         import agent.storage.conversation_fold  # noqa: F401
         import agent.task.tools  # noqa: F401
+        import agent.vision.context  # noqa: F401
+        import agent.vision.gen_tools  # noqa: F401
+        import agent.vision.tools  # noqa: F401
+
+        # 内部提供者注册：内部模型利用（llm_clients 模型链）接入各核心路由
+        from agent.audio.models_asr import register_models_asr
         from agent.memory.graph.tools import _resolve_alias
         from agent.memory.notes import register_notes_tools
+        from agent.tts.builtin import register_builtin_tts_providers
         from entities._sdk import activate_group
+        register_models_asr()
+        register_builtin_tts_providers()
 
         mem = machine.get(BK.MEMORY)
         # 关系图谱别名解析桥（store 侧接线，工具依赖经 wiring 端口施绑）
@@ -262,6 +297,16 @@ def create_bootstrap() -> FlowMachine:
             "技能 - 经验技能的创建、检索、合并与策展，及外部技能源（可插拔商店）的搜索与安装",
         )
         log(f"🎓 技能工具已注册 ({count} 个)", tag="技能")
+        count = activate_group("audio", "音频 - 声纹身份管理、声纹识别、语音转写检索与编辑、语音合成与音色管理、音乐生成")
+        log(f"🎧 音频工具已注册 ({count} 个)", tag="音频")
+        count = activate_group("vision", "视觉 - 视觉源查看、画面监视与视觉源管理、图片/视频理解与生成")
+        log(f"👁 视觉工具已注册 ({count} 个)", tag="视觉")
+        count = activate_group("retrieval", "检索 - 联网检索、网页读取、仓库文档、HTTP 请求、文件下载、文档重排序")
+        log(f"🔎 检索工具已注册 ({count} 个)", tag="检索")
+        count = activate_group("voice", "语音 - 实时通话状态查询与主动语音输出")
+        log(f"🎙 语音工具已注册 ({count} 个)", tag="语音")
+        from agent.audio.worker import register_backlog as register_audio_backlog
+        register_audio_backlog()
         register_notes_tools(workspace_dir=mem.get("workspace_dir"))
 
         # 图片感知索引 worker：入站图片后台沉淀（phash/描述/向量），支撑文搜图/图搜图
@@ -276,7 +321,8 @@ def create_bootstrap() -> FlowMachine:
         )
         return {"image_index_worker": image_index_worker}
 
-    @machine.node(skip_on_error=True, depends_on=["register_entities", "init_memory"])
+    @machine.node(skip_on_error=True,
+                  depends_on=["register_entities", "init_memory", "init_audio"])
     async def register_entity_lifecycles():
         """扫描并调用所有实体的 register_lifecycle() 启动钩子。
 

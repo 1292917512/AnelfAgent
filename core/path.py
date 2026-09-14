@@ -565,3 +565,43 @@ class ConfigPaths(metaclass=_ConfigPathsMeta):
     - ``ANELF_DATA_DIR``：数据目录（SQLite / 便签 / cognee，优先级最高）
     - app_config.json 的 ``data_root``：数据目录（优先级低于环境变量）
     """
+
+
+# ----------------------------------------------------------------------
+# 上传目录的对外可服务 URL 规则（单点定义）
+# web 上传端点建 URL、webui 频道 media 帧改写、services 反解为本地路径，
+# 三处共用同一约定，禁止各处手工拼 "/api/chat/files/..."。
+# ----------------------------------------------------------------------
+
+UPLOAD_URL_PREFIX = "/api/chat/files"
+
+
+def upload_url_for(file_type: str, filename: str) -> str:
+    """由文件类别与文件名构造可服务 URL（``/api/chat/files/{type}/{name}``）。"""
+    return f"{UPLOAD_URL_PREFIX}/{file_type}/{filename}"
+
+
+def upload_path_to_url(path: str) -> Optional[str]:
+    """上传目录下的本地路径改写为可服务 URL；目录外/非两段的相对余返回 None。"""
+    try:
+        rel = os.path.relpath(path, ConfigPaths.UPLOAD_DIR)
+    except (ValueError, OSError):
+        return None
+    if rel.startswith(".."):
+        return None
+    parts = Path(rel).parts
+    if len(parts) != 2:
+        return None
+    return upload_url_for(parts[0], parts[1])
+
+
+def parse_upload_url(url: str) -> Optional[Tuple[str, str]]:
+    """反解可服务 URL 为 (file_type, filename)；非本前缀或形态非法返回 None。"""
+    prefix = f"{UPLOAD_URL_PREFIX}/"
+    if not url.startswith(prefix):
+        return None
+    rest = url[len(prefix):]
+    parts = rest.split("/", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1] or ".." in parts[1]:
+        return None
+    return parts[0], parts[1]

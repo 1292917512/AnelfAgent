@@ -3,9 +3,8 @@
 文件路径操作受沙箱保护，默认限制在 workspace/ 目录下。
 沙箱通过 app_config.json 中的 workspace_root 和 sandbox_enabled 配置。
 
-edit_file/read_file/write_file 的编辑安全语义移植自 Claude Code
-（read-before-write、mtime 过期检查、弯引号容忍匹配、行尾往返），
-详见 docs/refactor/01-claudecode-tools.md。
+edit_file/read_file/write_file 的编辑安全语义：
+read-before-write、mtime 过期检查、弯引号容忍匹配、行尾往返。
 
 Model Experience（run_shell_command 失败归因 notes）:
 - 模型看到什么：命令失败且命中归因模式时，结果 notes 附带事实陈述——
@@ -103,7 +102,7 @@ def _location_of(fp: str) -> str:
 
 
 # ------------------------------------------------------------------
-# 工具长 prompt（对齐 Claude Code prompt.ts，经 description 参数完整进入 schema）
+# 工具长 prompt（经 description 参数完整进入 schema）
 # ------------------------------------------------------------------
 
 _READ_FILE_PROMPT = """读取文本文件内容，输出带行号（格式: 行号→内容）。
@@ -156,7 +155,7 @@ _SHELL_PROMPT = """在系统 shell 中执行命令并返回输出。
 # 工具
 # ------------------------------------------------------------------
 
-# 读取上限（对齐 Claude Code FileReadTool/limits.ts）
+# 读取上限
 _READ_MAX_LINES = 2000
 _READ_MAX_BYTES = 256 * 1024
 _READ_MAX_TOKENS = 25000  # 按 ~4 字符/token 估算
@@ -189,9 +188,8 @@ def _write_text_with_metadata(fp: str, content: str, encoding: str = "utf-8",
 def _atomic_write_bytes(fp: str, data: bytes) -> None:
     """原子写：先写同目录临时文件，fsync 后 os.replace 到目标。
 
-    长驻进程下避免"写到一半崩溃/断电留下半截文件"（codex apply-patch 也未做
-    原子写，此处为长驻场景的加强）。临时文件与目标同目录（保证同文件系统，
-    rename 才是原子的）；异常路径负责清理临时文件。
+    长驻进程下避免"写到一半崩溃/断电留下半截文件"。临时文件与目标同目录
+    （保证同文件系统，rename 才是原子的）；异常路径负责清理临时文件。
     """
     import tempfile
     directory = os.path.dirname(fp) or "."
@@ -240,7 +238,7 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
                     ".mp3", ".wav", ".ogg", ".flac", ".m4a", ".opus", ".amr",
                     ".mp4", ".avi", ".mkv", ".mov", ".webm",
                     ".zip", ".tar", ".gz", ".7z", ".rar",
-                    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+                    ".doc", ".xls", ".ppt",
                     ".exe", ".dll", ".so", ".bin", ".dat", ".sqlite3"}
         ext = os.path.splitext(fp)[1].lower()
         if ext == ".ipynb":
@@ -249,14 +247,32 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
                 return summarize_notebook(fp)
             except Exception as e:
                 return error_from_exception(e, action="读取 notebook")
+        # 可解析文档（PDF/Word/Excel/PPT）：提取纯文本而非二进制存根
+        if ext in (".pdf", ".docx", ".xlsx", ".pptx"):
+            from entities._sdk import extract_document_text
+            try:
+                text = extract_document_text(fp)
+            except Exception as e:
+                return error_from_exception(e, action=f"解析文档 {os.path.basename(fp)}")
+            return json.dumps({
+                "type": "document",
+                "path": fp,
+                "ext": ext,
+                "content": text,
+                "lines": text.count("\n") + 1,
+            }, ensure_ascii=False)
         if ext in bin_exts:
             size = os.path.getsize(fp)
+            hint = ("旧版二进制格式（.doc/.xls/.ppt）无法直接解析，"
+                    "可请用户另存为 .docx/.xlsx/.pptx 后再读"
+                    if ext in (".doc", ".xls", ".ppt")
+                    else "Use recognize_image for images, voice_to_text for audio")
             return json.dumps({
                 "type": "binary",
                 "path": fp,
                 "size": size,
                 "ext": ext,
-                "hint": "Use recognize_image for images, voice_to_text for audio",
+                "hint": hint,
             }, ensure_ascii=False)
 
         # 内容级二进制嗅探：扩展名表覆盖不到无扩展名/冷门扩展名的二进制文件，
@@ -305,7 +321,7 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
         covers_all = start_line == 1 and end_line >= total_lines and not truncated
         is_full_read = covers_all
 
-        # 读重去重：相同范围且文件未变 → 返回存根（对齐 Claude Code Read 去重）
+        # 读重去重：相同范围且文件未变 → 返回存根
         cached = file_state.get_cache().get(fp)
         if cached is not None and mtime <= cached.mtime:
             same_range = (is_full_read and not cached.is_partial_view) or (
@@ -377,7 +393,7 @@ def write_file(file_path: str, content: str) -> str:
         return error_from_exception(e, action="写入文件")
 
 
-# 编辑文件大小上限（对齐 Claude Code MAX_EDIT_FILE_SIZE = 1GiB）
+# 编辑文件大小上限（1GiB）
 _EDIT_MAX_FILE_BYTES = 1024 * 1024 * 1024
 
 
@@ -399,7 +415,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
         new_string: 替换后的文本
         replace_all: 是否替换所有出现处，默认 False
     """
-    # 容忍模型传入字符串形式的布尔值（对齐 Claude Code semanticBoolean）
+    # 容忍模型传入字符串形式的布尔值
     replace_all = coerce_bool_arg(replace_all, False)
     try:
         fp = safe_path(file_path)
@@ -528,7 +544,7 @@ def _shell_write_check_enabled() -> bool:
 
 
 def _suggest_similar_path(fp: str) -> str:
-    """为不存在的路径给出相似文件建议（对齐 Claude Code 的 Did-you-mean）。"""
+    """为不存在的路径给出相似文件建议（Did-you-mean）。"""
     parent = os.path.dirname(fp) or "."
     name = os.path.basename(fp)
     try:

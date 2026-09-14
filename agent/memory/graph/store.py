@@ -25,7 +25,7 @@ from ..store.cognee_queue import ENTRY_KIND_GRAPH_NODE, CogneeSyncQueue
 from ..store.connection import MemoryConnectionManager
 
 # 内置节点类型（key 前缀）；未知前缀归为 custom
-NODE_TYPES = ("user", "group", "person", "topic", "project", "org", "thing", "concept")
+NODE_TYPES = ("user", "group", "agent", "person", "topic", "project", "org", "thing", "concept")
 
 # 边的来源：manual_tool（AI 工具）/ heartbeat_extract（心跳抽取）/ web_ui（前端）
 EDGE_ORIGINS = ("manual_tool", "heartbeat_extract", "web_ui")

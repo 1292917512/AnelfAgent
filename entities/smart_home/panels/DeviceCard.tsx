@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import {
   Blinds,
   Lightbulb,
+  Megaphone,
   Minus,
   Pause,
   Play,
@@ -80,8 +81,16 @@ export function DeviceCard({ device, domainKey, domain, pending, onControl }: De
   const Icon = DOMAIN_ICONS[domainKey] ?? ToggleLeft;
   const attrs = device.attributes as Record<string, number | string | undefined>;
   const disabled = pending || !device.available || !domain?.enabled;
+  const [speakText, setSpeakText] = useState("");
   const control = (action: string, value = "") =>
     onControl(device.entity_id, action, value);
+
+  const speak = () => {
+    const text = speakText.trim();
+    if (!text) return;
+    control("speak", text);
+    setSpeakText("");
+  };
 
   const brightnessPct =
     typeof attrs.brightness === "number" ? Math.round((attrs.brightness / 255) * 100) : null;
@@ -226,6 +235,31 @@ export function DeviceCard({ device, domainKey, domain, pending, onControl }: De
               onCommit={(v) => control("set_volume", String(v))}
             />
           )}
+        </div>
+      )}
+
+      {/* 播放器：语音播报（域动作含 speak 时展示） */}
+      {domainKey === "media_player" && device.state !== "off" && domain?.actions.speak && (
+        <div className="flex items-center gap-1.5">
+          <input
+            type="text"
+            className="flex-1 min-w-0 h-7 rounded-md border border-border bg-background px-2 text-[12px] text-foreground placeholder:text-muted disabled:opacity-40"
+            placeholder={t("player.speakPlaceholder")}
+            value={speakText}
+            disabled={disabled}
+            onChange={(e) => setSpeakText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") speak();
+            }}
+          />
+          <Button
+            variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0"
+            disabled={disabled || !speakText.trim()}
+            title={t("player.speak")}
+            onClick={speak}
+          >
+            <Megaphone className="h-3.5 w-3.5" />
+          </Button>
         </div>
       )}
 

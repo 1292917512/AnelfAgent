@@ -1,0 +1,57 @@
+{
+  "title": "Retrieval",
+  "subtitle": "Provider management for web search, page reading and repo docs, plus fetch settings",
+  "tabs": {
+    "providers": "Providers",
+    "settings": "Fetch Settings"
+  },
+  "caps": {
+    "search": "Web Search",
+    "reader": "Page Reader",
+    "repo": "Repo Docs"
+  },
+  "matrix": {
+    "auto": "Auto",
+    "activeNow": "Active",
+    "noneAvailable": "No provider available",
+    "autoDesc": "Use the first enabled + credential-configured provider by priority"
+  },
+  "provider": {
+    "enable": "Enable",
+    "disable": "Disable",
+    "disabledBadge": "Disabled",
+    "configured": "Configured",
+    "notConfigured": "No credential",
+    "noCredential": "No credential required",
+    "unsupported": "Unsupported",
+    "sourcePrefix": "Credential source",
+    "source": {
+      "config": "Local config",
+      "llm": "LLM provider",
+      "env": "Environment"
+    },
+    "keyPlaceholderSet": "Credential saved; enter a new key to replace",
+    "keyPlaceholderEmpty": "Enter API Key",
+    "saveKey": "Save",
+    "clearKey": "Clear"
+  },
+  "test": {
+    "run": "Test",
+    "testing": "Testing…",
+    "inputPlaceholder": {
+      "search": "Test query (optional)",
+      "reader": "Test URL (optional)",
+      "repo": "owner/repo (optional)"
+    },
+    "failed": "Test failed"
+  },
+  "settings": {
+    "proxy": "Fetch Proxy",
+    "proxySubtitle": "Proxy used by direct fetching (page reader / HTTP request / download)",
+    "proxyPlaceholder": "http://127.0.0.1:7890 (optional, empty = direct)",
+    "ssrf": "SSRF Protection",
+    "ssrfSubtitle": "Block requests to loopback/private/link-local addresses (recommended)",
+    "ssrfOn": "Enabled",
+    "ssrfOff": "Disabled"
+  }
+}

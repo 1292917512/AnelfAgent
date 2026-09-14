@@ -41,6 +41,22 @@ if TYPE_CHECKING:
     from agent.mind.mind import Mind
 
 
+# 反思域决策回执行行前缀：这些行由决策执行器写回心跳日志，回喂元决策态势
+# 会形成自指循环（元决策读到「反思已登记/反思完成」历史 → 强化同类判定 →
+# 再触发反思，2026-09「对话质量下滑」连爆事故的燃料）；「距上次反思」时间
+# 锚点与登记侧冷却已覆盖其信息价值，态势注入前剥离
+_DECISION_ECHO_PREFIXES = ("反思已登记", "反思完成", "反思登记被冷却拒绝")
+
+
+def _strip_decision_echo(text: str) -> str:
+    """剥离心跳日志中的反思域决策回执行行（保留维护议程类信息）。"""
+    kept = [
+        line for line in text.splitlines()
+        if not line.lstrip("- ").startswith(_DECISION_ECHO_PREFIXES)
+    ]
+    return "\n".join(kept).strip()
+
+
 async def _cycle_body(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat: bool = False) -> None:
     """自主循环主体（会话生命周期由 _autonomous_cycle 管理）。"""
 
@@ -305,6 +321,8 @@ async def _gather_situation(mind: "Mind", *, is_heartbeat: bool = False) -> Situ
     active_goals = await mind._collect_active_goals()
     general_tasks = mind.pfc.peek_general_tasks()
     heartbeat_log = _hb_load_recent(3) if is_heartbeat else ""
+    if heartbeat_log:
+        heartbeat_log = _strip_decision_echo(heartbeat_log)
 
     return SituationContext(
         pending_messages=pending,

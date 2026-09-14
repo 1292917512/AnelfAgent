@@ -35,11 +35,6 @@ def all_providers() -> List[SmartHomeProvider]:
     return list(_PROVIDERS.values())
 
 
-def active_provider() -> Optional[SmartHomeProvider]:
-    """当前生效的平台连接（首个已注册平台）。"""
-    return next(iter(_PROVIDERS.values()), None)
-
-
 def config_entries() -> Dict[str, Any]:
     """汇总全部平台的连接配置项（键已加前缀），供注册进 entity/smart_home 组。"""
     entries: Dict[str, Any] = {}

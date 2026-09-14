@@ -1,6 +1,6 @@
 """后台 shell 执行 — run_shell_command 的 run_in_background 实现。
 
-对齐 Claude Code Bash 后台语义：
+设计语义：
 - 立即返回任务 ID 与输出文件路径，不阻塞当前轮
 - stdout/stderr 合并写入 .tool-results/ 输出文件（可用 read_file 随时查看）
 - 完成时经 BackgroundTaskRegistry 通知（轮内会合 / 轮外注入，复用委派同款机制）

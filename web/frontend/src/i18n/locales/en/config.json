@@ -76,7 +76,9 @@
     "task/handoff": "Task Handoff",
     "storage/backup": "Volume Backup",
     "model/describe": "Media Describe",
-    "task/history": "Execution History"
+    "task/history": "Execution History",
+    "channel/outbound": "Outbound Guard",
+    "retrieval": "Retrieval"
   },
   "window": {
     "title": "Conversation Window",

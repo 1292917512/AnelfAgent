@@ -81,13 +81,13 @@ VOLUME_MODULES = (
     "agent.memory.cognee.config",
     "agent.skills.skill_index",
     "entities.sticker.store",
-    "entities.voiceprint.store",
+    "agent.audio.store",
     "entities.share.store",
 )
 
 # 数据库浏览面的固定展示顺序，未知卷按注册序追加
 _DISPLAY_ORDER = (
-    "agent", "memory", "stickers", "voiceprints", "skill_vectors", "share", "cognee",
+    "agent", "memory", "stickers", "audio", "skill_vectors", "share", "cognee",
 )
 
 

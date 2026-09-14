@@ -1,0 +1,260 @@
+{
+  "title": "Sound",
+  "subtitle": "Core sound: voice sessions & realtime talk, voice identities, transcripts, TTS & ASR",
+  "tabs": {
+    "overview": "Overview",
+    "voice": "Voice session",
+    "library": "Library",
+    "speakers": "Speakers",
+    "timeline": "Timeline",
+    "transcripts": "Transcripts",
+    "identify": "Identify",
+    "realtime": "Realtime",
+    "generation": "Generation"
+  },
+  "providers": {
+    "models": "Model Config Chain",
+    "minimax": "MiniMax"
+  },
+  "asr": "ASR",
+  "voiceprint": "Voiceprint",
+  "ready": "Ready",
+  "notConfigured": "Not configured",
+  "noProviders": "No providers (register FunASR etc. to enable)",
+  "libraryStats": "Internal analysis library",
+  "segments": "Segments",
+  "speakers": "Speakers",
+  "audioMinutes": "Audio minutes",
+  "analyzeTitle": "Analyze file into library",
+  "analyzeHint": "Transcribe an audio file from the upload dir (workspace/uploads/) into the internal library",
+  "analyze": "Analyze",
+  "analyzeDone": "Analyzed, {{count}} segments stored",
+  "analyzeFailed": "Analysis failed",
+  "voiceTitle": "Voice session parameters",
+  "voiceHint": "Endpointing and segmentation parameters for realtime voice sessions (hot-applied)",
+  "libraryTitle": "Library search",
+  "searchPlaceholder": "Transcript keywords…",
+  "speakerPlaceholder": "Speaker key",
+  "search": "Search",
+  "resultCount": "{{count}} results",
+  "noResults": "No matching segments",
+  "unknownSpeaker": "Unknown speaker",
+  "emptyTranscript": "(no transcript)",
+  "saved": "Saved",
+  "saveFailed": "Save failed",
+  "timeline": {
+    "ranges": {
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "d3": "Last 3 days",
+      "d7": "Last 7 days",
+      "all": "Last 30 days"
+    },
+    "count": "{{count}} segments",
+    "empty": "No voice records in this range",
+    "emptyHint": "Try another range, or wait for directory sync to ingest new recordings",
+    "filterBySpeaker": "Only this speaker"
+  },
+  "filters": {
+    "allStatus": "All statuses",
+    "confirmed": "Confirmed",
+    "pending": "Pending",
+    "keyword": "Search name/role/key",
+    "searchPlaceholder": "Search transcripts (semantic)",
+    "allSpeakers": "All speakers",
+    "timeFrom": "From",
+    "timeTo": "To"
+  },
+  "empty": {
+    "speakers": "No speakers yet",
+    "speakersHint": "Wait for upstream voiceprints, or enroll a known speaker at top right",
+    "segments": "No transcripts",
+    "segmentsHint": "Adjust filters, or wait for the upstream pipeline to push segments",
+    "recordings": "No recordings yet",
+    "recordingsHint": "Enable directory sync in Settings and configure the NAS audio directory; new recordings will be ingested automatically"
+  },
+  "fields": {
+    "samples": "Samples",
+    "totalAudio": "Total audio",
+    "matches": "Matches",
+    "lastSeen": "Last seen",
+    "firstSeen": "First seen",
+    "name": "Name",
+    "rolePlaceholder": "Role tag (e.g. Family/Colleague)",
+    "thresholdPlaceholder": "Custom threshold (blank = global)",
+    "notes": "Notes",
+    "effectiveThreshold": "Effective threshold",
+    "samplePool": "Voiceprint sample pool",
+    "score": "Score",
+    "recentSegments": "Recent transcripts",
+    "noTranscript": "(no transcript)",
+    "unknownSpeaker": "Unknown speaker",
+    "entityScopePlaceholder": "Entity scope (e.g. user:webui:123)",
+    "boundEntity": "Bound entity"
+  },
+  "actions": {
+    "enroll": "Enroll speaker",
+    "detail": "Detail",
+    "confirm": "Confirm",
+    "merge": "Merge",
+    "search": "Search",
+    "markAllRead": "Mark all read",
+    "prunePending": "Prune all",
+    "consolidate": "Smart merge",
+    "consolidateRun": "Merge ({{count}} people)",
+    "simmap": "Similarity map",
+    "bind": "Bind",
+    "unbind": "Unbind"
+  },
+  "groups": {
+    "pending": "Pending ({{count}})",
+    "confirmed": "Confirmed ({{count}})"
+  },
+  "modals": {
+    "confirmTitle": "Confirm speaker {{key}}",
+    "mergeTitle": "Merge {{key}} into…",
+    "mergeHint": "The source speaker's sample pool, transcripts and stats will be merged into the target; the source profile will be deleted.",
+    "mergeTarget": "Select target speaker",
+    "enrollTitle": "Enroll speaker (audio)",
+    "enrollHint": "Upload clear speech of this speaker; a voiceprint will be extracted via FunASR.",
+    "editTranscriptTitle": "Edit transcript",
+    "editTranscriptPlaceholder": "Corrected text (name/term fixes…)",
+    "editTranscriptHint": "Semantic vectors are rebuilt after saving; for batch fixes ask AI to run transcript_replace.",
+    "deleteTitle": "Delete speaker",
+    "deleteHint": "This cascades: deletes {{key}} with its voiceprint samples AND all its segments. To keep the segments, use Merge instead. This cannot be undone.",
+    "pruneTitle": "Prune all pending speakers",
+    "pruneHint": "This cascades: prunes {{count}} pending speakers with their voiceprint samples AND all their segments. This cannot be undone.",
+    "consolidateTitle": "Smart merge (by voiceprint similarity)",
+    "consolidateHint": "These pending speakers' centroid similarity ≥ {{threshold}} — likely the same person split apart. Green marks the profile kept after merge (longest audio).",
+    "consolidateKeep": "keep",
+    "consolidateEmpty": "No split speakers or insignificant profiles found",
+    "insignificantTitle": "Also prune {{count}} insignificant speakers (≤{{matches}} matches & ≤{{seconds}}s, likely ambience/passersby)"
+  },
+  "status": {
+    "confirmed": "Confirmed",
+    "pending": "Pending",
+    "newSpeaker": "New",
+    "unread": "Unread"
+  },
+  "messages": {
+    "opFailed": "Operation failed",
+    "confirmSuccess": "Speaker confirmed",
+    "mergeSuccess": "Merged",
+    "deleteSuccess": "Deleted",
+    "enrollSuccess": "Enrolled with {{count}} samples",
+    "updateSuccess": "Saved",
+    "sampleDeleted": "Sample deleted",
+    "reassignSuccess": "Attribution updated",
+    "markedRead": "Marked {{count}} as read",
+    "ingestSuccess": "Ingested",
+    "configSaved": "Config saved",
+    "syncDone": "Sync done: {{new}} new files, {{ingested}} ingested",
+    "rebuildSuccess": "Rebuilt",
+    "pruneSuccess": "Pruned {{count}} pending speakers",
+    "consolidateSuccess": "Merged: {{clusters}} merges, {{count}} people consolidated",
+    "syncPaused": "Sync paused (persisted)",
+    "syncResumed": "Sync resumed",
+    "bindSuccess": "Entity binding updated",
+    "unbindSuccess": "Binding removed"
+  },
+  "simmap": {
+    "title": "Voiceprint similarity map",
+    "empty": "No pending speakers",
+    "estimated": "Est. {{count}} persons",
+    "total": "{{count}} profiles",
+    "thresholdHint": "Green ≥ {{threshold}} = mergable",
+    "noSimilar": "No similar speakers"
+  },
+  "ingest": {
+    "tryTitle": "Try identifying an audio",
+    "trySubtitle": "Transcribe via FunASR and extract voiceprints, returning top candidates",
+    "ingestAfterIdentify": "Ingest after identify",
+    "run": "Identify",
+    "needFunasr": "Configure audiosync_funasr_endpoint in the Audio Sync entity first",
+    "noSpeech": "No valid speech detected in the audio",
+    "noCandidate": "No candidates (empty library or no voiceprint extracted)",
+    "pipelineTitle": "Upstream pipeline contract"
+  },
+  "sync": {
+    "title": "Directory auto-sync",
+    "noSource": "No sync source configured (audiosync_watch_dir or OpenList in the Audio Sync entity)",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "lastScan": "Last scan",
+    "runNow": "Sync now",
+    "enableHint": "Enable audiosync_watch_enabled in the Audio Sync entity and configure audiosync_watch_dir (NAS mount) or OpenList",
+    "segments": "segments",
+    "status": {
+      "done": "Ingested",
+      "no_speech": "No speech",
+      "error": "Failed"
+    },
+    "paused": "Paused",
+    "pause": "Pause sync",
+    "resume": "Resume sync"
+  },
+  "stats": {
+    "pending": "Pending",
+    "bound": "Bound",
+    "unread": "Unread",
+    "notConfigured": "Not configured"
+  },
+  "injection": {
+    "title": "Context injection",
+    "hint": "Speaker roster and unread updates are injected into AI context every turn (audio_context_inject)",
+    "active": "Injecting",
+    "inactive": "Inactive"
+  },
+  "realtime": {
+    "call": "Start call",
+    "hangup": "Hang up",
+    "hint": "Listening — just speak; she will reply with voice (speak during playback to interrupt)",
+    "state": {
+      "listening": "Listening",
+      "thinking": "Thinking",
+      "speaking": "Speaking"
+    },
+    "bargeInOn": "Barge-in on",
+    "bargeInOff": "Barge-in off",
+    "you": "You",
+    "agent": "Her",
+    "startFailed": "Voice channel failed to start (check mic permission and ASR/TTS config)",
+    "bargeIn": "Barge-in"
+  },
+  "ttsProviders": "TTS providers",
+  "realtimeStatus": "Realtime voice",
+  "realtimeSessions": "{{count}} in call",
+  "caps": {
+    "tts": "Speech Synthesis",
+    "voice_mgmt": "Voice Management",
+    "music": "Music Generation"
+  },
+  "chains": {
+    "hint": "Provider priority chain per capability (reorder; first configured handles the call, failures degrade automatically)",
+    "configured": "Configured",
+    "notConfigured": "Not configured",
+    "videoModels": "Video-capable models",
+    "noVideoModels": "(none)",
+    "save": "Save Priority",
+    "saving": "Saving…"
+  },
+  "generation": {
+    "defaultsTitle": "Default Voice Settings",
+    "defaultsSubtitle": "Defaults used when synthesis tools are called without explicit params",
+    "fields": {
+      "tts_default_voice": "Default Voice ID",
+      "tts_default_reference_audio": "Clone Reference Audio",
+      "tts_default_reference_text": "Clone Reference Text"
+    },
+    "placeholders": {
+      "tts_default_voice": "e.g. male-qn-qingse (query with list_voices)",
+      "tts_default_reference_audio": "URL or workspace path (clone takes precedence)",
+      "tts_default_reference_text": "Text spoken in the reference audio"
+    },
+    "descs": {
+      "tts_default_voice": "Preset voice; mutually exclusive with clone reference (reference wins)",
+      "tts_default_reference_audio": "Reference audio for voice cloning, requires reference text",
+      "tts_default_reference_text": "Required for cloning: the text spoken in the reference audio"
+    }
+  }
+}

@@ -8,6 +8,9 @@ Plan 模式（present_plan）：
 - Agent 自发提交计划后立即开始执行，**不**等待用户批准（不走 ApprovalGate）。
 - 计划状态机与事件发射统一由 ``agent.planning.tracker`` 实现（本文件只做工具包装）。
 - 用户通过浮窗"取消"按钮触发 ``EVENT_PLAN_CANCELLED``（cancel-plan 路由 → tracker.cancel_plan）。
+
+态势注入与 not_found 自纠上下文统一由 ``agent.planning.situation`` 提供，
+本文件全部写路径变更后调 ``situation.invalidate()`` 保持快照新鲜。
 """
 
 from __future__ import annotations
@@ -19,9 +22,8 @@ from typing import Any, Dict, List, Optional
 
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
-from agent.planning import tracker
+from agent.planning import situation, tracker
 from agent.planning.tracker import planning_store_port
-from core.config import register_configs_safe
 from core.log import log
 from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import deferred_tool
@@ -29,14 +31,8 @@ from entities._sdk import deferred_tool
 _GOAL_SOURCE = "goal"
 _GROUP = "planning"
 
-register_configs_safe({
-    "planning/core": {
-        "goals_inject_enabled": {
-            "description": "对话上下文中注入活跃目标快照（让 AI 始终感知进行中的目标）",
-            "default": True,
-        },
-    },
-})
+# update_goal 允许的步骤终态（与 tracker 状态机一致）
+_STEP_STATUSES = frozenset({"pending", "in_progress", "completed", "skipped"})
 
 
 def _bound_store() -> Optional[MemoryStore]:
@@ -58,6 +54,22 @@ async def _find_goal(
 ) -> tuple[Optional[MemoryEntry], Optional[Dict[str, Any]]]:
     """按 goal_id 定位记忆条目与目标数据（委托 tracker 统一实现）。"""
     return await tracker.find_goal_by_id(goal_id)
+
+
+async def _goal_not_found(goal_id: str) -> str:
+    """目标不存在的统一错误：附活跃目标简报供 AI 立即自纠（换用存在的
+    goal_id），而非对着过期 id 反复重试。"""
+    briefs = await situation.active_goal_briefs()
+    hint = (
+        "目标可能已被删除或收敛；请改用活跃目标列表中的 goal_id，或 list_goals 确认全貌"
+        if briefs
+        else "当前无活跃目标（可能已删除/完成）；如需新目标用 create_goal 创建"
+    )
+    return tool_error(
+        f"目标 '{goal_id}' 不存在",
+        cause=ErrorCause.NOT_FOUND, retryable=False,
+        hint=hint, active_goals=briefs or None,
+    )
 
 
 def _make_goal(
@@ -122,6 +134,7 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
         metadata={"goal_id": goal["goal_id"], "status": "active"},
     )
     entry_id = await store.add(entry)
+    situation.invalidate()
     goal["memory_id"] = entry_id
     return json.dumps({"success": True, "goal": goal}, ensure_ascii=False)
 
@@ -192,13 +205,36 @@ async def update_goal(
 
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is None or target_goal is None:
-        return tool_error(f"目标 '{goal_id}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
+        return await _goal_not_found(goal_id)
 
-    if 0 <= step_index < len(target_goal.get("steps", [])):
+    steps: List[Dict[str, Any]] = target_goal.get("steps", [])
+    # 参数诚实校验：越界索引/非法状态此前被静默忽略（返回 success 但未生效），
+    # AI 误以为已标记——错误 + 步骤概览让它一次修正
+    if (step_status or note) and not 0 <= step_index < len(steps):
+        if not steps:
+            return tool_error(
+                f"目标 '{goal_id}' 没有步骤，无法更新步骤状态",
+                cause=ErrorCause.PARAM, retryable=False,
+                hint="仅当创建目标时提供了 steps 才有步骤；如需记录进度可先补建带步骤的目标",
+            )
+        return tool_error(
+            f"步骤索引 {step_index} 超出范围（有效 0~{len(steps) - 1}）",
+            cause=ErrorCause.PARAM, retryable=False,
+            hint="步骤索引从 0 起；目标步骤如下",
+            steps=[f"{i}: {s.get('content', '')}" for i, s in enumerate(steps)],
+        )
+    if step_status and step_status not in _STEP_STATUSES:
+        return tool_error(
+            f"非法步骤状态 '{step_status}'",
+            cause=ErrorCause.PARAM, retryable=False,
+            hint=f"有效值: {' / '.join(sorted(_STEP_STATUSES))}",
+        )
+
+    if 0 <= step_index < len(steps):
         if step_status:
-            target_goal["steps"][step_index]["status"] = step_status
+            steps[step_index]["status"] = step_status
         if note:
-            target_goal["steps"][step_index]["note"] = note
+            steps[step_index]["note"] = note
 
     if goal_status:
         if goal_status == "completed" and target_goal.get("recurring"):
@@ -248,6 +284,7 @@ async def update_goal(
             await tracker._emit_status(scope, goal_id, target_goal["status"])
     except Exception as exc:
         log(f"update_goal 事件发射失败（不影响结果）: {exc}", "DEBUG", tag="规划")
+    situation.invalidate()
 
     result: Dict[str, Any] = {"success": True, "goal": target_goal}
     if target_goal["status"] in ("completed", "cancelled"):
@@ -275,6 +312,7 @@ async def delete_goal(goal_id: str) -> str:
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is not None and target_goal is not None and target_entry.id:
         await store.delete(target_entry.id)
+        situation.invalidate()
         # 通知前端移除计划卡片（否则 PlanPanel 残留已删除的计划）
         try:
             from core.event_bus import EVENT_PLAN_DELETED, event_bus
@@ -291,7 +329,7 @@ async def delete_goal(goal_id: str) -> str:
             "deleted_goal": target_goal.get("title", ""),
         }, ensure_ascii=False)
 
-    return tool_error(f"目标 '{goal_id}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
+    return await _goal_not_found(goal_id)
 
 
 @deferred_tool(group=_GROUP, tags=["planning", "heartbeat"])
@@ -317,75 +355,14 @@ async def get_goal(goal_id: str) -> str:
             "related_memory_count": related_count,
         }, ensure_ascii=False)
 
-    return tool_error(f"目标 '{goal_id}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
+    return await _goal_not_found(goal_id)
 
 
 # ------------------------------------------------------------------
-# 公共查询函数（供 Mind 自主循环调用）
+# 公共查询函数
 # ------------------------------------------------------------------
-
-async def collect_active_goals(store: MemoryStore) -> list[str]:
-    """从 MemoryStore 收集活跃目标摘要。"""
-    goals = await collect_active_goal_entries(store, limit=10)
-    return [f"{g['goal_id']}: {g['title']} ({g['done']}/{g['total']} 步)" for g in goals]
-
-
-async def collect_active_goal_entries(
-    store: MemoryStore,
-    *,
-    scope: str = "",
-    limit: int = 5,
-) -> List[Dict[str, Any]]:
-    """收集活跃目标（结构化）：对话内计划（present_plan）按 scope 隔离，长期目标全局可见。"""
-    try:
-        entries = await store.list_by_source(
-            _GOAL_SOURCE, memory_type=MemoryType.SEMANTIC, limit=50,
-        )
-    except Exception:
-        return []
-    goals: List[Dict[str, Any]] = []
-    for entry in entries:
-        try:
-            data = json.loads(entry.content)
-        except (json.JSONDecodeError, AttributeError):
-            continue
-        if data.get("status") != "active":
-            continue
-        metadata = entry.metadata or {}
-        if metadata.get("kind") == "present_plan" and metadata.get("scope", "") != scope:
-            continue
-        steps = data.get("steps", [])
-        goals.append({
-            "goal_id": data.get("goal_id", ""),
-            "title": data.get("title", ""),
-            "done": sum(1 for s in steps if s.get("status") == "completed"),
-            "total": len(steps),
-        })
-        if len(goals) >= limit:
-            break
-    return goals
-
-
-async def build_goals_injection(
-    store: MemoryStore,
-    *,
-    scope: str = "",
-    limit: int = 5,
-) -> str:
-    """构建活跃目标注入块（每轮调用；内容仅在目标变更时字节变化）。"""
-    goals = await collect_active_goal_entries(store, scope=scope, limit=limit)
-    if not goals:
-        return ""
-    lines = [
-        f"[系统注入·活跃目标] 你当前有 {len(goals)} 个进行中的目标"
-        "（list_goals 查看全部，update_goal 推进，完成后 delete_goal 收敛）："
-    ]
-    for g in goals:
-        progress = f"（{g['done']}/{g['total']} 步）" if g["total"] else ""
-        title = g["title"][:60]
-        lines.append(f"- [{g['goal_id']}] {title}{progress}")
-    from core.sanitizer import sanitize_for_context
-    return sanitize_for_context("\n".join(lines))
+# 活跃目标的态势消费（上下文注入 / 错误简报 / 自主循环收集）统一由
+# agent.planning.situation 提供（版本化快照，单一数据源）。
 
 
 @deferred_tool(

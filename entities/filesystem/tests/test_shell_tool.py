@@ -1,4 +1,4 @@
-"""run_shell_command 对齐 Claude Code Bash 语义的测试（cwd 持久/输出落盘/超时）。"""
+"""run_shell_command 语义测试（cwd 持久/输出落盘/超时）。"""
 
 from __future__ import annotations
 

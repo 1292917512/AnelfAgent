@@ -38,7 +38,7 @@ _TOOL_RESULT_HEAD_RATIO = 0.75
 _TOOL_JSON_STR_MAX_CHARS = 1200
 _TOOL_JSON_LIST_MAX_ITEMS = 40
 _TOOL_JSON_DICT_MAX_ITEMS = 80
-# 结果持久化阈值与预览大小（对齐 Claude Code 50K 字符 / 2KB 预览）
+# 结果持久化阈值与预览大小（50K 字符 / 2KB 预览）
 _PERSIST_THRESHOLD_CHARS = 50_000
 _PERSIST_PREVIEW_CHARS = 2048
 
@@ -46,7 +46,7 @@ _PERSIST_PREVIEW_CHARS = 2048
 def _persist_oversized_result(tool_name: str, output: str) -> Optional[str]:
     """超持久化阈值的结果完整落盘，返回 预览+路径 的替代文本；未超返回 None。
 
-    对齐 Claude Code processToolResultBlock：信息不丢失，模型按需分段读取。
+    信息不丢失，模型按需分段读取。
     """
     if len(output) <= _PERSIST_THRESHOLD_CHARS:
         return None
@@ -101,7 +101,7 @@ class ToolResultPipeline:
             skip_guardrail: bool = False,
     ) -> str:
         """按管线加工单个工具结果，返回可注入上下文的最终文本。"""
-        # 0. 空结果占位（对齐 Claude Code：防止模型在空工具结果后复读 stop 序列）
+        # 0. 空结果占位（防止模型在空工具结果后复读 stop 序列）
         if not output or not output.strip():
             return f"({tool_name} 执行完成，无输出)"
         output = self._sanitize(output)
@@ -186,7 +186,7 @@ class ToolResultPipeline:
     def _truncate(self, tool_name: str, output: str) -> str:
         """裁剪超长工具结果（超限落盘优先，动态预算其次，静态阈值兜底）。
 
-        对齐 Claude Code persisted-output：超过持久化阈值的结果完整写盘，
+        超过持久化阈值的结果完整写盘，
         模型只收到预览 + 路径（可用 read_file offset/limit 查看全文），
         避免破坏性截断导致信息彻底丢失。
         """

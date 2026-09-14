@@ -1,4 +1,4 @@
-"""技能后台评审（参考 hermes-agent background_review）。
+"""技能后台评审。
 
 每轮对话结束后，经 LLM 钩子面（agent/hooks_llm）派生一个后台评审任务，
 继承本轮完整上下文（transcript），由 LLM 自主决策是否沉淀/合并/治理技能

@@ -1,0 +1,120 @@
+{
+  "_registry": {
+    "groups": {
+      "audiosync": "音源同步"
+    },
+    "configSections": {
+      "entity/audiosync": "音源同步"
+    }
+  },
+  "subtitle": "外部音源接入：目录镜像同步（本地/OpenList）+ 上游推送 + FunASR 转写组件",
+  "tabs": {
+    "overview": "总览",
+    "recordings": "录制",
+    "settings": "设置"
+  },
+  "overview": {
+    "recordings": "录制",
+    "samples": "声纹样本",
+    "healthTitle": "配置体检",
+    "healthSubtitle": "各项对接是否就绪，未完成项附配置指引",
+    "checkFunasr": "FunASR 转写服务",
+    "checkFunasrHint": "在「设置」配置 audiosync_funasr_endpoint",
+    "checkWatch": "目录自动同步",
+    "checkWatchHint": "在「设置」开启 audiosync_watch_enabled",
+    "checkWatchNoSource": "已开启但未配置来源（watch_dir 或 OpenList）",
+    "checkIngest": "上游推送（ingest token）",
+    "checkIngestHint": "可选：配置 audiosync_ingest_token 供外部 pipeline 推送",
+    "checkIndex": "检索索引",
+    "optional": "可选",
+    "mirrorTitle": "镜像同步对照",
+    "nasSide": "NAS 音源",
+    "libSide": "音频核心库",
+    "syncTitle": "同步实况",
+    "pendingTitle": "待同步",
+    "nasTotal": "NAS 单元",
+    "excluded": "已排除",
+    "syncBusy": "同步进行中，实时进度稍后自动刷新…",
+    "syncingProgress": "同步中 {{done}}/{{total}}",
+    "allSynced": "全部已同步，音源与音频库一致 ✓",
+    "result": {
+      "new": "新增",
+      "ingested": "入库",
+      "deleted": "删除",
+      "no_speech": "无人声",
+      "failed": "失败"
+    },
+    "reason": {
+      "new": "新增",
+      "changed": "有变更",
+      "retry": "待重试"
+    },
+    "stage": {
+      "download": "下载中",
+      "analyze": "分析中",
+      "merge": "合并中",
+      "transcribe": "转写中",
+      "ingest": "入库中"
+    },
+    "source": "同步来源"
+  },
+  "recordings": {
+    "files": "个文件",
+    "noSpeechHint": "无有效人声，未产生片段",
+    "rebuild": "删除重建（清理后重新入库）",
+    "rebuildOutcome": {
+      "done": "重建完成",
+      "deleted": "来源已不存在，已清理本地",
+      "excluded": "命中排除规则，未重建",
+      "no_speech": "重新处理：无人声",
+      "error": "重建失败"
+    },
+    "deleteTitle": "删除录制",
+    "deleteHint": "将删除 {{time}} 的录制及其全部语音片段与关联声纹样本（不影响说话人档案）。此操作不可恢复。"
+  },
+  "sync": {
+    "title": "目录自动同步",
+    "noSource": "未配置同步来源（设置 audiosync_watch_dir 或 OpenList）",
+    "enabled": "已启用",
+    "disabled": "未启用",
+    "lastScan": "最近扫描",
+    "runNow": "立即同步",
+    "enableHint": "在「设置」中开启 audiosync_watch_enabled 并配置 audiosync_watch_dir（NAS 挂载目录）或 OpenList 连接",
+    "segments": "段",
+    "status": {
+      "done": "已入库",
+      "no_speech": "无人声",
+      "error": "失败"
+    },
+    "paused": "已暂停",
+    "pause": "暂停同步",
+    "resume": "恢复同步"
+  },
+  "stats": {
+    "speakers": "说话人",
+    "pending": "待确认",
+    "segments": "语音片段",
+    "unread": "未读",
+    "notConfigured": "未配置",
+    "threshold": "阈值",
+    "embeddingModel": "文本向量模型"
+  },
+  "empty": {
+    "recordings": "暂无录制",
+    "recordingsHint": "在「设置」中开启目录同步并配置 NAS 音频目录，新增录制将自动入库",
+    "segments": "暂无话语记录"
+  },
+  "fields": {
+    "noTranscript": "（无转写文本）",
+    "unknownSpeaker": "未知说话人"
+  },
+  "messages": {
+    "opFailed": "操作失败",
+    "deleteSuccess": "已删除",
+    "configSaved": "配置已保存",
+    "syncDone": "同步完成：新增 {{new}} 个文件，入库 {{ingested}} 个",
+    "rebuildSuccess": "重建完成",
+    "syncPaused": "同步已暂停（配置已持久化）",
+    "syncResumed": "同步已恢复"
+  }
+}

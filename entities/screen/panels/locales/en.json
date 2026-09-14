@@ -1,0 +1,10 @@
+{
+  "_registry": {
+    "groups": {
+      "screen": "Screen Source"
+    },
+    "configSections": {
+      "entity/screen": "Screen Source"
+    }
+  }
+}

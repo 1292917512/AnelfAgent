@@ -266,6 +266,8 @@ class TaskExecutor:
             tags=result.tags,
             importance=result.importance,
         )
+        from agent.memory.reflection_lifecycle import seed_reflection
+        seed_reflection(entry)
         await self.mind.memory_store.add(entry)
         from agent.memory.embedding import wake_embedding_worker
         wake_embedding_worker()

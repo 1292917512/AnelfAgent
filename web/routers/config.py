@@ -356,30 +356,3 @@ async def trigger_task(name: str, folder: str = Query("")) -> Dict[str, str]:
 async def get_task_history(name: str) -> List[Dict[str, Any]]:
     """读取指定任务的执行历史（新→旧，最近 N 条）。"""
     return _task_svc.get_task_history(name)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Web 工具配置（entities/web/config.json）
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-class WebToolsConfigUpdate(BaseModel):
-    proxy: Optional[str] = None
-
-
-@router.get("/web-tools")
-async def get_web_tools_config() -> Dict[str, Any]:
-    """返回 Web 工具配置（仅非敏感字段；提供者矩阵管理走 /api/entity/web/matrix）。"""
-    return {"proxy": _config_svc.get_web_tools_proxy()}
-
-
-@router.put("/web-tools")
-async def save_web_tools_config(data: WebToolsConfigUpdate) -> Dict[str, str]:
-    """保存 Web 工具配置（代理等）。"""
-    updates: Dict[str, Any] = {}
-    if data.proxy is not None:
-        updates["proxy"] = data.proxy
-    if not updates:
-        return {"status": "ok", "message": "无变更"}
-    _config_svc.update_web_tools_config(updates)
-    return {"status": "ok"}

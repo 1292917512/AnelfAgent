@@ -141,16 +141,17 @@ class TestBuildServiceCall:
     def test_simple_action(self) -> None:
         domain = framework.get_domain("dummy_test")
         assert domain is not None
-        service, data = domain.build_service_call("turn_on")
-        assert service == "turn_on"
-        assert data == {}
+        call = domain.build_service_call("turn_on")
+        assert call.ha_domain is None
+        assert call.service == "turn_on"
+        assert call.data == {}
 
     def test_value_action_converted(self) -> None:
         domain = framework.get_domain("dummy_test")
         assert domain is not None
-        service, data = domain.build_service_call("set_level", "3")
-        assert service == "set_level"
-        assert data == {"level": 3}
+        call = domain.build_service_call("set_level", "3")
+        assert call.service == "set_level"
+        assert call.data == {"level": 3}
 
     def test_unknown_action_rejected(self) -> None:
         domain = framework.get_domain("dummy_test")
@@ -205,14 +206,51 @@ class TestBuiltinDomainFormats:
         assert domain is not None
         with pytest.raises(SmartHomeCallError):
             domain.build_service_call("set_brightness", "120")
-        service, data = domain.build_service_call("set_brightness", "60")
-        assert (service, data) == ("turn_on", {"brightness_pct": 60})
+        call = domain.build_service_call("set_brightness", "60")
+        assert (call.service, call.data) == ("turn_on", {"brightness_pct": 60})
 
     def test_media_player_volume_mapped(self) -> None:
         domain = framework.get_domain("media_player")
         assert domain is not None
-        service, data = domain.build_service_call("set_volume", "40")
-        assert (service, data) == ("volume_set", {"volume_level": 0.4})
+        call = domain.build_service_call("set_volume", "40")
+        assert (call.service, call.data) == ("volume_set", {"volume_level": 0.4})
+
+    def test_media_player_speak_cross_domain(self) -> None:
+        domain = framework.get_domain("media_player")
+        assert domain is not None
+        ConfigManager.set("smart_home_media_player_tts_service", "tts.cloud_say")
+        call = domain.build_service_call("speak", "主人，任务完成了")
+        assert call.ha_domain == "tts"
+        assert call.service == "cloud_say"
+        assert call.data == {"message": "主人，任务完成了"}
+        ConfigManager.set("smart_home_media_player_tts_service", "")
+
+    def test_media_player_speak_requires_tts_service(self) -> None:
+        domain = framework.get_domain("media_player")
+        assert domain is not None
+        ConfigManager.set("smart_home_media_player_tts_service", "")
+        with pytest.raises(SmartHomeCallError) as info:
+            domain.build_service_call("speak", "你好")
+        assert info.value.cause == ErrorCause.CONFIG
+        assert "tts_service" in str(info.value)
+
+    def test_media_player_speak_requires_text(self) -> None:
+        domain = framework.get_domain("media_player")
+        assert domain is not None
+        with pytest.raises(SmartHomeCallError) as info:
+            domain.build_service_call("speak", "")
+        assert info.value.cause == ErrorCause.PARAM
+
+    def test_media_player_play_media(self) -> None:
+        domain = framework.get_domain("media_player")
+        assert domain is not None
+        call = domain.build_service_call("play_media", "https://example.com/a.mp3")
+        assert call.ha_domain is None
+        assert call.service == "play_media"
+        assert call.data == {
+            "media_content_id": "https://example.com/a.mp3",
+            "media_content_type": "music",
+        }
 
     def test_scene_name_only(self) -> None:
         domain = framework.get_domain("scene")

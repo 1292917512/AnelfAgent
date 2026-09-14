@@ -25,8 +25,9 @@ from agent.mind.context_pipeline import (
 )
 
 # 记忆系统相关内容块：必须全部位于历史锚点之后的尾部动态区
+# （目标/计划态势原 goals 层已并入 provider 层：plan_ops 每轮注入，见 agent.planning.situation）
 _MEMORY_FAMILY_LAYERS = (
-    "hub", "status", "profile", "relation", "goals", "volatile", "memory", "provider",
+    "hub", "status", "profile", "relation", "volatile", "memory", "provider",
 )
 # 缓存前缀层：stable/summary/conversation 之外任何内容不得混入
 _PREFIX_LAYERS = ("stable", "summary", "conversation")
@@ -51,7 +52,7 @@ class TestLayerVolatilityInvariants:
             )
 
     def test_dynamic_tail_ordered_by_stability(self):
-        """尾部动态区内部按字节稳定度从静到动：画像/关系/目标（离散事件才变）在上，
+        """尾部动态区内部按字节稳定度从静到动：画像/关系（离散事件才变）在上，
         状态块（指标计数几乎每 tick 变）与召回块（每周期重建）压尾——
         排错会让低频块的稳定字节被高频块的漂移连坐击穿。"""
         def vol(layer: str) -> int:
@@ -59,7 +60,7 @@ class TestLayerVolatilityInvariants:
             return meta.volatility
 
         assert vol("context") < vol("hub") < vol("profile")
-        assert vol("profile") <= vol("relation") <= vol("goals") <= vol("volatile")
+        assert vol("profile") <= vol("relation") <= vol("volatile")
         assert vol("volatile") < vol("status") < vol("memory")
 
     def test_stable_layer_is_zero(self):

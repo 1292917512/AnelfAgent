@@ -1,6 +1,6 @@
 """微信频道 — 通过腾讯 iLink Bot API 接入个人微信。
 
-协议层实现完整移植自 hermes-agent 的 weixin 适配器：
+协议层要点：
 - 长轮询 ``getupdates`` 收消息（无需公网端点 / webhook）
 - 文本 / 图片 / 视频 / 文件 / 语音收发，媒体走 AES-128-ECB 加密 CDN
 - 每条出站回复回显对端最新 ``context_token``（-14 会话过期自动降级重发）

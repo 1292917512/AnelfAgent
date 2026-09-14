@@ -17,7 +17,7 @@ export function ToolStatusIcon({ status }: { status: string }) {
   return <X className="h-3.5 w-3.5 text-red-500" />;
 }
 
-/** 一行式工具调用标题（对齐 Claude Code userFacingName 风格） */
+/** 一行式工具调用标题（用户可读的动词化命名） */
 export function toolTitle(name: string, args?: string): string {
   if (!args) return name;
   try {

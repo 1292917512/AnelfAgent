@@ -38,6 +38,11 @@ class ConsolidationReport:
     graph_relaxed: int = 0
     graph_edges_forgotten: int = 0
     graph_nodes_archived: int = 0
+    reflection_seeded: int = 0
+    reflection_confirmed: int = 0
+    reflection_promoted: int = 0
+    reflection_denied: int = 0
+    reflection_archived: int = 0
     errors: List[str] = field(default_factory=list)
 
     def to_log_lines(self) -> List[str]:
@@ -66,6 +71,23 @@ class ConsolidationReport:
                 f"弱边归档 {self.graph_edges_forgotten} 条, "
                 f"孤立节点归档 {self.graph_nodes_archived} 个"
             )
+        reflection_total = (
+            self.reflection_seeded + self.reflection_confirmed + self.reflection_promoted
+            + self.reflection_denied + self.reflection_archived
+        )
+        if reflection_total:
+            parts = []
+            if self.reflection_seeded:
+                parts.append(f"播种 {self.reflection_seeded}")
+            if self.reflection_confirmed:
+                parts.append(f"确认 {self.reflection_confirmed}")
+            if self.reflection_promoted:
+                parts.append(f"晋升 {self.reflection_promoted}")
+            if self.reflection_denied:
+                parts.append(f"否决 {self.reflection_denied}")
+            if self.reflection_archived:
+                parts.append(f"归档 {self.reflection_archived}")
+            lines.append(f"反思生命周期: {', '.join(parts)}")
         if self.errors:
             lines.append(f"异常 {len(self.errors)} 项: {'; '.join(self.errors[:3])}")
         return lines
@@ -108,6 +130,22 @@ class MemoryConsolidator:
             report.errors.append(f"重要性松弛失败: {exc}")
             log(f"记忆重要性松弛失败: {exc}", "WARNING", tag="记忆")
 
+        # 2.5 反思生命周期推进：证据分评估 → pending→confirmed→晋升/否决/归档
+        # （晋升是人格生长的唯一通道；与遗忘并行——遗忘管"记不记得住"，
+        # 证据分管"可不可信"）
+        try:
+            from .reflection_lifecycle import advance_reflections
+            lc_report = await advance_reflections(self._store)
+            report.reflection_seeded = lc_report.seeded
+            report.reflection_confirmed = lc_report.confirmed
+            report.reflection_promoted = lc_report.promoted
+            report.reflection_denied = lc_report.denied
+            report.reflection_archived = lc_report.archived
+            report.errors.extend(lc_report.errors)
+        except Exception as exc:
+            report.errors.append(f"反思生命周期推进失败: {exc}")
+            log(f"反思生命周期推进失败: {exc}", "WARNING", tag="记忆")
+
         # 3. 类型上限强制
         try:
             report.limit_removed = await self._store.enforce_type_limits()
@@ -119,7 +157,11 @@ class MemoryConsolidator:
         try:
             threshold = get_config_float("memory_merge_similarity", 0.92)
             pairs = await self._store.find_similar_memories(threshold)
+            from .evidence import is_protected
             for a, b, sim in pairs:
+                # protected（PERMANENT/宪法级）不可作为被合并丢弃的一方
+                if is_protected(a) or is_protected(b):
+                    continue
                 # 保留有效分较高者，合并另一条的 tags/访问次数
                 keep, drop = (a, b) if (
                     self._store.compute_effective_score(a)

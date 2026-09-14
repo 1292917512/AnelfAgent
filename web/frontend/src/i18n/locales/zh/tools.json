@@ -27,7 +27,11 @@
     "channel_ops": "频道操作",
     "skills": "技能",
     "delegation": "子代理",
-    "session": "会话管理"
+    "session": "会话管理",
+    "vision": "视觉",
+    "audio": "声音",
+    "voice": "语音",
+    "retrieval": "检索"
   },
   "reload": "重新加载",
   "reloading": "重新加载中...",

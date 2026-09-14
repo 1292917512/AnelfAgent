@@ -92,7 +92,6 @@ import type {
   UpdateModelConfig,
   UpdateProviderConfig,
   StartupNode,
-  WebToolsConfig,
   WorkspaceFile,
   WorkspaceNode,
   WorkspaceSearchHit,
@@ -132,7 +131,6 @@ export type {
   TaskExecutionRecord,
   TaskRunSummary,
   TaskSchedule,
-  WebToolsConfig,
   WorkspaceFile,
   WorkspaceNode,
   WorkspaceSearchHit,
@@ -609,8 +607,6 @@ export const configApi = {
   getApp: () => api.get<ConfigValues>("/config/app"),
   getMind: () => api.get("/config/mind"),
   saveMind: (data: ConfigValues) => api.put("/config/mind", data),
-  getWebTools: () => api.get<WebToolsConfig>("/config/web-tools"),
-  saveWebTools: (data: Partial<WebToolsConfig>) => api.put("/config/web-tools", data),
 };
 
 // Heartbeat
@@ -769,6 +765,299 @@ export const configMetaApi = {
     api.put(`/config/meta/${encodeURIComponent(key)}`, { value }),
 };
 
+
+// Vision（视觉感知页 · 核心能力）
+export const visionApi = {
+  status: () => api.get("/vision/status"),
+  sources: () => api.get<{ sources: VisionSourceInfo[] }>("/vision/sources"),
+  watch: (action: string, source = "screen", interval = 0) =>
+    api.post<{ watching: string[] }>("/vision/watch", { action, source, interval }),
+  latestUrl: (source = "") =>
+    `/api/vision/latest${source ? `?source=${encodeURIComponent(source)}` : ""}`,
+  capabilities: () => api.get<CapabilityStatus>("/vision/capabilities"),
+};
+
+/** 能力路由状态（视觉/声音能力页共用）：提供者配置状态 + 各能力生效优先级链 */
+export interface CapabilityStatus {
+  providers: {
+    name: string;
+    capabilities: string[];
+    configured: Record<string, boolean>;
+    details: Record<string, Record<string, unknown>>;
+  }[];
+  chains: Record<string, string[]>;
+}
+
+export interface VisionSourceInfo {
+  key: string;
+  display_name: string;
+  description: string;
+  pollable: boolean;
+  can_capture: boolean;
+  enabled: boolean;
+  watching: boolean;
+}
+
+// Audio（音频能力页 · 核心能力 + 音频库管理面）
+export const audioApi = {
+  status: () => api.get<AudioStatus>("/audio/status"),
+  stats: () => api.get<AudioLibraryStats>("/audio/stats"),
+  capabilities: () => api.get<CapabilityStatus>("/audio/capabilities"),
+  analyze: (path: string) => api.post("/audio/analyze", { path }),
+  // 声纹身份
+  speakers: (params?: { status?: string; keyword?: string; limit?: number; offset?: number }) =>
+    api.get<AudioSpeakerListResult>("/audio/speakers", { params }),
+  speakerDetail: (id: number) => api.get<AudioSpeakerDetail>(`/audio/speakers/${id}`),
+  updateSpeaker: (id: number, data: AudioSpeakerUpdatePayload) =>
+    api.patch<{ speaker: AudioSpeaker }>(`/audio/speakers/${id}`, data),
+  confirmSpeaker: (id: number, name: string, role = "") =>
+    api.post<{ speaker: AudioSpeaker }>(`/audio/speakers/${id}/confirm`, { name, role }),
+  bindSpeaker: (id: number, entityScope: string) =>
+    api.post<{ speaker: AudioSpeaker }>(`/audio/speakers/${id}/bind`,
+      { entity_scope: entityScope }),
+  mergeSpeakers: (sourceId: number, targetId: number) =>
+    api.post("/audio/speakers/merge", { source_id: sourceId, target_id: targetId }),
+  pruneSpeakers: (includeWithSamples = false) =>
+    api.post<{ pruned: number }>("/audio/speakers/prune",
+      { include_with_samples: includeWithSamples }),
+  consolidateSpeakers: (payload: {
+    dry_run: boolean; threshold?: number; prune_insignificant?: boolean;
+  }) => api.post<AudioConsolidateResult>("/audio/speakers/consolidate", payload),
+  similarityMap: (params?: { status?: string; neighbors?: number }) =>
+    api.get<AudioSimilarityMapResult>("/audio/speakers/similarity-map", { params }),
+  deleteSpeaker: (id: number) => api.delete(`/audio/speakers/${id}`),
+  deleteSample: (sampleId: number) => api.delete(`/audio/samples/${sampleId}`),
+  enrollAudio: (file: File, name: string, role = "", notes = "") => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("name", name);
+    form.append("role", role);
+    form.append("notes", notes);
+    return api.post<{ speaker: AudioSpeaker; samples_enrolled: number }>(
+      "/audio/enroll/audio", form);
+  },
+  identifyAudio: (file: File, ingest = false) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("ingest", String(ingest));
+    return api.post<AudioIdentifyResult>("/audio/identify/audio", form);
+  },
+  // 语音片段（时间线 / 检索 / 编辑）
+  segments: (params: {
+    speaker_id?: number; recording_path?: string; time_from?: string; time_to?: string;
+    q?: string; unread_only?: boolean; limit?: number; offset?: number; order?: string;
+  }) => api.get<AudioSegmentListResult>("/audio/segments", { params }),
+  updateSegment: (id: number, data: { speaker_id?: number | null; transcript?: string }) =>
+    api.patch<{ segment: AudioSegment }>(`/audio/segments/${id}`, data),
+  deleteSegment: (id: number) => api.delete(`/audio/segments/${id}`),
+  markRead: (segmentIds?: number[]) =>
+    api.post<{ marked_read: number }>("/audio/segments/mark-read", segmentIds ?? null),
+  // 录制单元
+  recordings: (params?: { limit?: number; offset?: number }) =>
+    api.get<AudioRecordingListResult>("/audio/recordings", { params }),
+  deleteRecording: (path: string) =>
+    api.delete("/audio/recordings", { params: { path } }),
+};
+
+export interface AudioProviderInfo {
+  name: string;
+  kind: string;
+  priority: number;
+  available: boolean;
+}
+
+export interface AudioInjectionStatus {
+  provider: string;
+  active: boolean;
+}
+
+export interface AudioStatus {
+  providers: AudioProviderInfo[];
+  asr_available: boolean;
+  voiceprint_available: boolean;
+  tts_providers: Array<{ name: string; priority: number; available: boolean }>;
+  tts_available: boolean;
+  realtime: {
+    enabled: boolean; mode: string; sessions: number;
+    owners: string[]; states: Record<string, string>;
+  };
+  voice_config: Record<string, unknown>;
+  library: AudioLibraryStats;
+  injection: AudioInjectionStatus;
+}
+
+export interface AudioLibraryStats {
+  speakers?: number;
+  pending_speakers?: number;
+  bound_speakers?: number;
+  samples?: number;
+  segments?: number;
+  unread_segments?: number;
+  audio_ms?: number;
+  missing_embeddings?: number;
+  recordings?: number;
+  vec_available?: boolean;
+  fts_available?: boolean;
+  db_path?: string;
+  match_threshold?: number;
+  asr_configured?: boolean;
+}
+
+export interface AudioSpeaker {
+  id: number;
+  speaker_key: string;
+  name: string;
+  role: string;
+  status: string;
+  threshold: number | null;
+  notes: string;
+  device_source: string;
+  entity_scope: string;
+  total_audio_ms: number;
+  first_seen_ns: number;
+  last_seen_ns: number;
+  match_count: number;
+  archived: boolean;
+  sample_count?: number;
+}
+
+export interface AudioSpeakerListResult {
+  items: AudioSpeaker[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AudioSpeakerDetail {
+  speaker: AudioSpeaker;
+  effective_threshold: number;
+  samples: Array<{
+    id: number; segment_id: number | null; score: number;
+    source: string; created_ns: number; dims: number;
+  }>;
+  recent_segments: AudioSegment[];
+}
+
+export interface AudioSpeakerUpdatePayload {
+  name?: string;
+  role?: string;
+  status?: string;
+  threshold?: number | null;
+  notes?: string;
+  device_source?: string;
+}
+
+export interface AudioSegment {
+  id: number;
+  recording_path: string;
+  source_file: string;
+  device_source: string;
+  start_ms: number;
+  part_start_ms: number;
+  end_ms: number;
+  speaker_id: number | null;
+  speaker_name: string;
+  speaker_key: string;
+  entity_scope: string;
+  is_new_speaker: boolean;
+  similarity: number;
+  transcript: string;
+  has_embedding: boolean;
+  ts_ns: number;
+  read: boolean;
+  score?: number;
+}
+
+export interface AudioSegmentListResult {
+  items: AudioSegment[];
+  total: number;
+  limit?: number;
+  offset?: number;
+  speaker?: { id: number; name: string; speaker_key: string };
+}
+
+export interface AudioRecording {
+  path: string;
+  kind: string;
+  fingerprint: string;
+  started_ns: number;
+  file_count: number;
+  status: string;
+  error: string;
+  segments: number;
+  files: Array<{ path: string; duration_s: number }>;
+  synced_ns: number;
+}
+
+export interface AudioRecordingListResult {
+  items: AudioRecording[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AudioIdentifyCandidate {
+  id: number;
+  speaker_key: string;
+  name: string;
+  role: string;
+  status: string;
+  threshold: number;
+  similarity: number;
+  matched: boolean;
+}
+
+export interface AudioIdentifyResult {
+  ingested: boolean;
+  segments: Array<{
+    start_ms: number;
+    end_ms: number;
+    text: string;
+    candidates: AudioIdentifyCandidate[];
+  }>;
+}
+
+export interface AudioConsolidateResult {
+  dry_run: boolean;
+  threshold: number;
+  clusters: Array<{
+    keep_id: number;
+    best_similarity: number;
+    members: Array<{
+      id: number; speaker_key: string; name: string;
+      total_audio_ms: number; match_count: number; similarity: number;
+    }>;
+  }>;
+  cluster_count: number;
+  speakers_affected: number;
+  merges: Array<{ from: string; into: string; samples_moved: number }>;
+  insignificant: Array<{
+    id: number; speaker_key: string; name: string;
+    match_count: number; total_audio_ms: number;
+  }>;
+  insignificant_limits: { max_matches: number; max_audio_ms: number };
+  pruned: Array<{
+    id: number; speaker_key: string; name: string;
+    match_count: number; total_audio_ms: number;
+  }>;
+}
+
+export interface AudioSimilarityMapResult {
+  status: string;
+  threshold: number;
+  speakers_total: number;
+  estimated_persons: number;
+  speakers: Array<{
+    id: number; speaker_key: string; name: string; status: string;
+    match_count: number; total_audio_ms: number; cluster_size: number;
+    top_similar: Array<{
+      id: number; speaker_key: string; name: string; status: string;
+      similarity: number; mergable: boolean;
+    }>;
+  }>;
+  clusters: AudioConsolidateResult["clusters"];
+  matrix?: { order: number[]; values: number[][] } | null;
+}
 
 // Database（数据管理页 · 数据库管理）
 export const databaseApi = {
@@ -983,4 +1272,54 @@ export interface LlmHooksOverview {
 }
 export const hooksLlmApi = {
   get: () => api.get<LlmHooksOverview>("/hooks-llm"),
+};
+
+// Retrieval（检索能力页 · 提供者矩阵 + 抓取设置）
+export interface RetrievalProviderInfo {
+  name: string;
+  display_name: string;
+  description: string;
+  enabled: boolean;
+  configured: boolean;
+  requires_credential: boolean;
+  credential_source: string;
+  capabilities: string[];
+}
+
+export interface RetrievalMatrix {
+  capabilities: string[];
+  selection: Record<string, string>;
+  active: Record<string, string>;
+  providers: RetrievalProviderInfo[];
+}
+
+export interface RetrievalTestResult {
+  ok: boolean;
+  latency_ms?: number;
+  summary?: string;
+  excerpt?: string;
+  error?: string;
+}
+
+export interface RetrievalSettings {
+  proxy: string;
+  active: Record<string, string>;
+  disabled_providers: string[];
+  ssrf_protection: boolean;
+  bigmodel_key_configured: boolean;
+}
+
+export const retrievalApi = {
+  matrix: () => api.get<RetrievalMatrix>("/retrieval/matrix"),
+  setActive: (capability: string, provider: string) =>
+    api.put<RetrievalMatrix>("/retrieval/active", { capability, provider }),
+  setEnabled: (name: string, enabled: boolean) =>
+    api.put<RetrievalMatrix>(`/retrieval/providers/${name}/enabled`, { enabled }),
+  setCredential: (name: string, apiKey: string) =>
+    api.put<RetrievalMatrix>(`/retrieval/providers/${name}/credential`, { api_key: apiKey }),
+  test: (name: string, capability: string, input = "") =>
+    api.post<RetrievalTestResult>(`/retrieval/providers/${name}/test`, { capability, input }),
+  settings: () => api.get<RetrievalSettings>("/retrieval/settings"),
+  saveSettings: (data: { proxy?: string; ssrf_protection?: boolean }) =>
+    api.put<RetrievalSettings>("/retrieval/settings", data),
 };

@@ -112,15 +112,15 @@ class ChatService:
 
         image_contents: Optional[List[Any]] = None
         if images:
+            from core.path import parse_upload_url
             image_contents = []
             for img in images:
-                # Convert API URL back to local path for consistent path-based handling
-                if img.startswith("/api/chat/files/"):
-                    parts = img.replace("/api/chat/files/", "").split("/", 1)
-                    if len(parts) == 2:
-                        local = str(UPLOAD_DIR / parts[0] / parts[1])
-                        if Path(local).exists():
-                            img = local
+                # 可服务 URL 反解为本地路径（URL 规则单点定义在 core.path）
+                parsed = parse_upload_url(img)
+                if parsed is not None:
+                    local = str(UPLOAD_DIR / parsed[0] / parsed[1])
+                    if Path(local).exists():
+                        img = local
                 if img.startswith("http"):
                     image_contents.append(ImageContent(data=img, is_url=True))
                 else:

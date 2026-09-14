@@ -13,8 +13,8 @@
 百炼需 AccessKey 签名体系，均暂不接入。
 
 凭据链：llm_clients.json 中按 base_url 关键字匹配的首个带 api_key 供应商
-（Kimi 的 Coding OAuth access token 亦存于该字段），与 entities/web 的
-凭据回退同一口径；本模块自持实现以保持子包自治（删除即整体拔出）。
+（Kimi 的 Coding OAuth access token 亦存于该字段）；本模块自持实现以保持
+子包自治（删除即整体拔出）。
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Jupyter Notebook 单元格编辑（对齐 Claude Code NotebookEdit）。
+"""Jupyter Notebook 单元格编辑。
 
 edit_file 对 .ipynb 拒绝并引导到本工具（JSON 结构直接做字符串替换易损坏）；
 read_file 对 .ipynb 返回 cell 列表摘要而非二进制元数据。

@@ -153,41 +153,49 @@ async def test_set_task_schedule_idle_single_instance() -> None:
 
 
 # ==================================================================
-# 目标注入
+# 目标态势（agent.planning.situation）
 # ==================================================================
 
 
 @pytest.mark.asyncio
-async def test_build_goals_injection(store) -> None:
+async def test_goals_situation_render(store) -> None:
     raw = await planning_tools.create_goal("整理周报", steps="收集|汇总|发送")
     goal = json.loads(raw)["goal"]
 
-    content = await planning_tools.build_goals_injection(store)
-    assert "[系统注入·活跃目标]" in content
+    from agent.planning import situation
+    situation.reset()
+    await situation.ensure_snapshot()
+    content = situation.render("user_qq:1")
+    assert "[规划态势]" in content
     assert goal["goal_id"] in content
     assert "0/3 步" in content
+    assert "○收集" in content
 
     # 完成态目标不再注入
     await planning_tools.update_goal(goal["goal_id"], goal_status="completed")
-    content = await planning_tools.build_goals_injection(store)
-    assert content == ""
+    await situation.ensure_snapshot()
+    assert situation.render("user_qq:1") == ""
+    situation.reset()
 
 
 @pytest.mark.asyncio
 async def test_goal_entries_scope_isolation(store) -> None:
     """present_plan 产出的对话内计划按 scope 隔离，长期目标全局可见。"""
-    from agent.planning import tracker
+    from agent.planning import situation, tracker
 
     await tracker.submit_plan("user_qq:1", "会话内计划", tracker.parse_steps("步骤一"))
     await planning_tools.create_goal("长期目标")
 
-    own = await planning_tools.collect_active_goal_entries(store, scope="user_qq:1")
-    titles = {g["title"] for g in own}
-    assert titles == {"会话内计划", "长期目标"}
+    situation.reset()
+    await situation.ensure_snapshot()
+    own = situation.render("user_qq:1")
+    assert "会话内计划" in own
+    assert "长期目标" in own
 
-    other = await planning_tools.collect_active_goal_entries(store, scope="user_qq:2")
-    titles = {g["title"] for g in other}
-    assert titles == {"长期目标"}
+    other = situation.render("user_qq:2")
+    assert "会话内计划" not in other
+    assert "长期目标" in other
+    situation.reset()
 
 
 @pytest.mark.asyncio

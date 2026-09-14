@@ -509,6 +509,11 @@ class Mind:
         return bool(self._active_scopes)
 
     @property
+    def active_reply_scopes(self) -> frozenset[str]:
+        """在途回复会话的 scope 集合（出站哨兵经 wiring 读取，单一事实源）。"""
+        return frozenset(self._active_scopes)
+
+    @property
     def is_reflecting(self) -> bool:
         return self._reflecting
 
@@ -621,11 +626,9 @@ class Mind:
         return _cc_collect_channel_info(self)
 
     async def _collect_active_goals(self) -> List[str]:
-        """从 MemoryStore 收集活跃目标摘要。"""
-        if not self.memory_store:
-            return []
-        from agent.planning.tools import collect_active_goals
-        return await collect_active_goals(self.memory_store)
+        """收集活跃目标摘要（规划态势快照单一数据源，见 agent.planning.situation）。"""
+        from agent.planning import situation as _plan_situation
+        return await _plan_situation.active_goal_lines()
 
 
     # ==================================================================

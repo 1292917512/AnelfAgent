@@ -4,9 +4,11 @@ from fastapi import APIRouter
 
 from web.routers.adapters import router as adapters_router
 from web.routers.approvals import router as approvals_router
+from web.routers.audio import router as audio_router
 from web.routers.auth import router as auth_router
 from web.routers.channel_webui import router as channel_webui_router
 from web.routers.chat import router as chat_router
+from web.routers.chat_ws import router as chat_ws_router
 from web.routers.config import router as config_router
 from web.routers.config_meta import router as config_meta_router
 from web.routers.context import router as context_router
@@ -19,6 +21,7 @@ from web.routers.mcp import router as mcp_router
 from web.routers.memory import router as memory_router
 from web.routers.models import router as models_router
 from web.routers.personas import router as personas_router
+from web.routers.retrieval import router as retrieval_router
 from web.routers.search import router as search_router
 from web.routers.skills import router as skills_router
 from web.routers.status import router as status_router
@@ -27,6 +30,7 @@ from web.routers.system import router as system_router
 from web.routers.tags import router as tags_router
 from web.routers.thinking import router as thinking_router
 from web.routers.tools import router as tools_router
+from web.routers.vision import router as vision_router
 from web.routers.workspace import router as workspace_router
 
 api_router = APIRouter(prefix="/api")
@@ -36,6 +40,7 @@ api_router.include_router(config_router)
 api_router.include_router(config_meta_router)
 api_router.include_router(context_router)
 api_router.include_router(chat_router)
+api_router.include_router(chat_ws_router)
 api_router.include_router(status_router)
 api_router.include_router(models_router)
 api_router.include_router(tools_router)
@@ -45,6 +50,8 @@ api_router.include_router(skills_router)
 api_router.include_router(memory_router)
 api_router.include_router(mcp_router)
 api_router.include_router(adapters_router)
+api_router.include_router(audio_router)
+api_router.include_router(vision_router)
 api_router.include_router(channel_webui_router)
 api_router.include_router(approvals_router)
 api_router.include_router(system_router)
@@ -57,3 +64,4 @@ api_router.include_router(search_router)
 api_router.include_router(stickers_router)
 api_router.include_router(database_router)
 api_router.include_router(delegation_router)
+api_router.include_router(retrieval_router)

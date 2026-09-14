@@ -1,7 +1,3 @@
-export interface WebToolsConfig {
-  proxy: string;
-}
-
 export type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface HeartbeatConfig {
