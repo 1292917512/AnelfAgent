@@ -40,12 +40,14 @@ def test_uv_managed_summary(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_interpreter_mismatch_reported(monkeypatch: pytest.MonkeyPatch):
+    # 假路径不得与真实解释器 realpath 相撞：CI 的 venv 常符号链接到系统
+    # Python（/usr/bin/python3.x），用 /usr/bin/python3 会被判为同一解释器
     monkeypatch.setattr(
         python_service.shutil, "which",
-        lambda c: "/usr/bin/python3" if c == "python3" else None,
+        lambda c: "/opt/alt-env/python3" if c == "python3" else None,
     )
     s = python_service.get_runtime_env_summary()
-    assert "/usr/bin/python3" in s and "不同" in s
+    assert "/opt/alt-env/python3" in s and "不同" in s
     # 解释器不一致时只报身份差异，不延伸装包判断
     assert "不含 pip" not in s
 
