@@ -4,10 +4,13 @@
 晚绑定端口分发（工具 import 时注册、拿不到构造参数；由 agent.runtime.wiring
 统一施绑，tracker 与工具组共用同一端口）。
 
-Plan 模式（present_plan）：
-- Agent 自发提交计划后立即开始执行，**不**等待用户批准（不走 ApprovalGate）。
-- 计划状态机与事件发射统一由 ``agent.planning.tracker`` 实现（本文件只做工具包装）。
-- 用户通过浮窗"取消"按钮触发 ``EVENT_PLAN_CANCELLED``（cancel-plan 路由 → tracker.cancel_plan）。
+两种规划生命周期（以 metadata.kind 判别，详见 tracker 模块说明）：
+- Plan 模式（present_plan → PLAN_KIND）：Agent 自发提交计划后立即开始
+  执行，**不**等待用户批准（不走 ApprovalGate），进度由 tracker 程序级
+  推断；用户通过浮窗"取消"按钮触发 ``EVENT_PLAN_CANCELLED``
+  （cancel-plan 路由 → tracker.cancel_plan）。
+- 持久目标（create_goal → GOAL_KIND）：跨会话长期目标，AI 经 update_goal
+  手动推进步骤，系统不做任何自动推进/收敛。
 
 态势注入与 not_found 自纠上下文统一由 ``agent.planning.situation`` 提供，
 本文件全部写路径变更后调 ``situation.invalidate()`` 保持快照新鲜。
@@ -21,14 +24,13 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.memory.memory_store import MemoryStore
-from agent.memory.memory_types import MemoryEntry, MemoryType
+from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
 from agent.planning import situation, tracker
-from agent.planning.tracker import planning_store_port
+from agent.planning.tracker import GOAL_KIND, planning_store_port
 from core.log import log
 from core.tool_errors import ErrorCause, tool_error
 from entities._sdk import deferred_tool
 
-_GOAL_SOURCE = "goal"
 _GROUP = "planning"
 
 # update_goal 允许的步骤终态（与 tracker 状态机一致）
@@ -127,11 +129,13 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
     entry = MemoryEntry(
         memory_type=MemoryType.SEMANTIC,
         content=json.dumps(goal, ensure_ascii=False),
-        source=_GOAL_SOURCE,
+        source=GOAL_SOURCE,
         importance=0.8,
         # goal:{id} 标签：记忆联想网络沿该标签把相关记忆与目标互链
         tags=[f"goal:{goal['goal_id']}"],
-        metadata={"goal_id": goal["goal_id"], "status": "active"},
+        # kind 声明生命周期归属：持久目标只由 AI 手动推进，plan 状态机
+        # （自动推进/会话收敛）不触碰；无 scope——目标是跨会话的全局对象
+        metadata={"goal_id": goal["goal_id"], "status": "active", "kind": GOAL_KIND},
     )
     entry_id = await store.add(entry)
     situation.invalidate()
@@ -156,7 +160,7 @@ async def list_goals(status: str = "active") -> str:
     if store is None:
         return _store_not_ready()
 
-    entries = await store.list_recent(limit=50, memory_type=MemoryType.SEMANTIC, source=_GOAL_SOURCE)
+    entries = await store.list_recent(limit=50, memory_type=MemoryType.SEMANTIC, source=GOAL_SOURCE)
 
     goals: List[Dict[str, Any]] = []
     for entry in entries:

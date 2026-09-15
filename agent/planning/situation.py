@@ -25,8 +25,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.memory.memory_types import MemoryType
-from agent.planning.tracker import GOAL_SOURCE, planning_store_port
+from agent.memory.memory_types import GOAL_SOURCE, MemoryType
+from agent.planning.tracker import PLAN_KIND, planning_store_port
 from core.config import register_configs_safe
 from core.context_provider import ContextProviderRegistry, ProviderMeta
 from core.log import log
@@ -45,7 +45,6 @@ _STEP_CHARS = 18
 _MAX_RENDER_CHARS = 1400
 
 _STEP_MARKS = {"completed": "✓", "in_progress": "▶", "pending": "○", "skipped": "−"}
-_PLAN_KIND = "present_plan"
 
 register_configs_safe({
     "planning/core": {
@@ -114,7 +113,7 @@ def _parse_goal(entry: Any) -> Optional[_GoalView]:
     if not isinstance(data, dict) or data.get("status") != "active":
         return None
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
-    is_plan = metadata.get("kind") == _PLAN_KIND
+    is_plan = metadata.get("kind") == PLAN_KIND
     steps: List[Tuple[str, str]] = []
     raw_steps = data.get("steps")
     if isinstance(raw_steps, list):

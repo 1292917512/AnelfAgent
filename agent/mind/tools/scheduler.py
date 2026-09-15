@@ -4,6 +4,10 @@
 - schedule_reminder：持久化定时提醒（支持绝对时间/长延迟），存储在
   config/reminders.json，由心跳 tick 检查到期并触发一轮完整 REPLY。
 
+两者共用 ``_resolve_target`` 目标解析：显式 scope 参数优先（非法值报
+PARAM 错误，不静默回退），缺省走当前会话上下文推断；任务/反思等无会话
+上下文中设定提醒必须显式指定目标，否则明确报错而非碰运气。
+
 通过 deferred_tool 模式注册（group="thinking"），bootstrap 阶段激活。
 """
 
@@ -42,20 +46,73 @@ def _no_reply_target() -> str:
     return tool_error(
         "无法确定回复目标",
         cause=ErrorCause.STATE, retryable=False,
-        hint="该工具需要在用户或群组会话上下文中调用",
+        hint=(
+            "当前上下文（任务/反思/子代理）推不出用户或群组会话，"
+            "请显式传 scope（如 user_qq:123 / group_qq:456）后重试"
+        ),
     )
+
+
+def _invalid_scope(scope: str) -> str:
+    """显式 scope 非法的统一错误（显式参数必须被采纳或明确拒绝，不静默回退）。"""
+    return tool_error(
+        f"scope 非法: {scope!r}",
+        cause=ErrorCause.PARAM, retryable=False,
+        hint="需为可路由的会话 scope，如 user_qq:123 / group_qq:456（qq 为频道适配器）",
+    )
+
+
+def _channel_for_scope(scope: str, pfc: Any) -> str:
+    """scope 的投递频道：PFC 登记表优先（活跃会话可能携带更精确路由），
+    无登记时从 scope 的 adapter 段派生——显式指定目标的提醒在触发时
+    无活跃会话可查，投递路由必须自足。"""
+    registered = getattr(pfc, "get_adapter_key", lambda s: "")(scope)
+    if registered:
+        return registered
+    from agent.messages.everything import parse_entity_scope
+    _, adapter, _, _ = parse_entity_scope(scope)
+    return adapter
+
+
+def _resolve_target(explicit: str, pfc: Any) -> tuple[str, str]:
+    """解析回复目标，两个工具共用的统一入口。
+
+    显式 scope 优先（PARAM 错误拒绝非法值，不静默回退）；缺省走上下文
+    推断（_current_scope：ContextVar → 活跃会话回退）——任务/反思上下文
+    推不出目标时明确报错，而不是碰运气。
+
+    Returns:
+        (scope, "") 成功；("" , error_json) 失败（调用方直接返回）。
+    """
+    explicit = explicit.strip()
+    if explicit:
+        from agent.messages import is_conversation_scope
+        if not is_conversation_scope(explicit):
+            return "", _invalid_scope(explicit)
+        return explicit, ""
+    scope = _current_scope()
+    if not scope:
+        return "", _no_reply_target()
+    return scope, ""
 
 
 @deferred_tool(
     group="thinking", tags=["core"], source="mind.scheduler",
-    description="延迟指定秒数后自动触发一轮新的对话回复，适用于需要等一会儿再主动联系用户的场景。",
+    description=(
+        "延迟指定秒数后自动触发一轮新的对话回复，适用于需要等一会儿再主动联系用户的场景。"
+        "在任务/反思等无会话上下文中使用时需显式传 scope 指定目标。"
+    ),
 )
-async def schedule_reply(delay_seconds: int = 30, reason: str = "") -> str:
+async def schedule_reply(
+    delay_seconds: int = 30, reason: str = "", scope: str = "",
+) -> str:
     """延迟指定秒数后自动触发一轮新的对话回复。
 
     Args:
         delay_seconds: 延迟秒数（1-600），默认30秒
         reason: 延迟原因，会作为提示注入下一轮上下文
+        scope: 回复目标会话（如 user_qq:123 / group_qq:456）；
+            缺省取当前会话上下文，非会话上下文必须显式指定
     """
     if not mind_port.bound:
         return _system_not_ready()
@@ -63,18 +120,18 @@ async def schedule_reply(delay_seconds: int = 30, reason: str = "") -> str:
 
     delay = max(1, min(delay_seconds, _MAX_DELAY))
 
-    scope = _current_scope()
-    if not scope:
-        return _no_reply_target()
+    target, err = _resolve_target(scope, mind.pfc)
+    if err:
+        return err
 
-    reply_channel = getattr(mind.pfc, "get_adapter_key", lambda s: "")(scope)
-    log(f"计划 {delay}s 后触发回复: scope={scope} reason={reason}", tag="调度")
-    spawn(_delayed_reply(delay, reply_channel, scope, reason), name="mind.delayed_reply")
+    reply_channel = _channel_for_scope(target, mind.pfc)
+    log(f"计划 {delay}s 后触发回复: scope={target} reason={reason}", tag="调度")
+    spawn(_delayed_reply(delay, reply_channel, target, reason), name="mind.delayed_reply")
 
     return json.dumps({
         "ok": True,
         "delay_seconds": delay,
-        "scope": scope,
+        "scope": target,
         "channel": reply_channel,
         "hint": f"{delay}秒后系统将自动触发一轮新的对话回复",
     }, ensure_ascii=False)
@@ -285,16 +342,21 @@ def _parse_run_at(run_at: str) -> Optional[float]:
     description=(
         "设定一个持久化的定时提醒：到时间后自动触发一轮对话（可搜索、可发消息）。"
         "支持绝对时间（如 2026-07-21 08:00）或长延迟（可超过10分钟），重启不丢失。"
-        "适用于'明天早上告诉我比分'、'两小时后提醒我'等场景。"
+        "适用于'明天早上告诉我比分'、'两小时后提醒我'等场景；"
+        "在任务/反思等无会话上下文中设定时需显式传 scope 指定提醒对象。"
     ),
 )
-async def schedule_reminder(note: str, run_at: str = "", delay_seconds: int = 0) -> str:
+async def schedule_reminder(
+    note: str, run_at: str = "", delay_seconds: int = 0, scope: str = "",
+) -> str:
     """设定持久化定时提醒，到期自动触发一轮完整对话回复。
 
     Args:
         note: 提醒内容（到时要做什么，如"搜索世界杯决赛比分并告诉主人"）
         run_at: 绝对触发时间，格式 "YYYY-MM-DD HH:MM" 或 "HH:MM"（与 delay_seconds 二选一）
         delay_seconds: 相对延迟秒数（可超过600，与 run_at 二选一）
+        scope: 提醒目标会话（如 user_qq:123 / group_qq:456）；
+            缺省取当前会话上下文，非会话上下文（任务/反思/子代理）必须显式指定
     """
     if not mind_port.bound:
         return _system_not_ready()
@@ -320,22 +382,22 @@ async def schedule_reminder(note: str, run_at: str = "", delay_seconds: int = 0)
     if run_at_ts <= time.time():
         return tool_error("触发时间必须晚于当前时间", cause=ErrorCause.PARAM, retryable=False)
 
-    scope = _current_scope()
-    if not scope:
-        return _no_reply_target()
+    target, err = _resolve_target(scope, mind.pfc)
+    if err:
+        return err
 
     reminder = await add_reminder(
-        note, run_at_ts, scope,
-        getattr(mind.pfc, "get_adapter_key", lambda s: "")(scope),
+        note, run_at_ts, target, _channel_for_scope(target, mind.pfc),
     )
 
     run_at_str = datetime.fromtimestamp(run_at_ts).strftime("%Y-%m-%d %H:%M:%S")
-    log(f"定时提醒已创建: id={reminder['id']} run_at={run_at_str} scope={scope} note={note[:50]}", tag="调度")
+    log(f"定时提醒已创建: id={reminder['id']} run_at={run_at_str} scope={target} note={note[:50]}", tag="调度")
     return json.dumps({
         "ok": True,
         "reminder_id": reminder["id"],
         "run_at": run_at_str,
-        "scope": scope,
+        "scope": target,
+        "channel": reminder["channel"],
         "note": reminder["note"],
         "hint": "提醒已持久化，到时间后系统会自动触发一轮对话（重启不丢失）",
     }, ensure_ascii=False)

@@ -93,3 +93,76 @@ async def test_schedule_reminder_rejects_past_time() -> None:
         assert "error" in result
     finally:
         mind_port.unbind()
+
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_explicit_scope_without_conversation() -> None:
+    """任务/反思上下文（无活跃会话）经显式 scope 设定提醒。
+
+    回归 2026-09-15 晨报事故：旧实现回退遍历 _active_scopes（仅回复周期
+    进行中非空），深夜无会话时非确定性地报「无法确定回复目标」。
+    """
+    class FakePFC:
+        def get_adapter_key(self, scope: str) -> str:
+            return ""
+
+    class FakeMind:
+        pfc = FakePFC()
+        _active_scopes: set = set()
+
+    _wire_mind(FakeMind())
+    try:
+        result = json.loads(await scheduler.schedule_reminder(
+            note="晨报", run_at="2099-01-01 08:00", scope="user_qq:1292917512",
+        ))
+        assert result["ok"] is True
+        assert result["scope"] == "user_qq:1292917512"
+        # 无 PFC 登记时投递频道从 scope 的 adapter 段派生
+        assert result["channel"] == "qq"
+
+        listed = json.loads(await scheduler.list_reminders())
+        assert listed["reminders"][0]["scope"] == "user_qq:1292917512"
+    finally:
+        mind_port.unbind()
+
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_invalid_scope_rejected() -> None:
+    """显式 scope 非法（非会话域）报 PARAM 错误，不静默回退上下文推断。"""
+    class FakePFC:
+        pass
+
+    class FakeMind:
+        pfc = FakePFC()
+        _active_scopes = {"user_123"}
+
+    _wire_mind(FakeMind())
+    try:
+        for bad in ("reflect:task001", "_global", "随便写的"):
+            result = json.loads(await scheduler.schedule_reminder(
+                note="x", run_at="2099-01-01 08:00", scope=bad,
+            ))
+            assert result["cause"] == "param", bad
+    finally:
+        mind_port.unbind()
+
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_no_target_reports_clearly() -> None:
+    """无显式 scope 且上下文推不出目标：明确报错并提示显式传参。"""
+    class FakePFC:
+        pass
+
+    class FakeMind:
+        pfc = FakePFC()
+        _active_scopes: set = set()
+
+    _wire_mind(FakeMind())
+    try:
+        result = json.loads(await scheduler.schedule_reminder(
+            note="x", run_at="2099-01-01 08:00",
+        ))
+        assert result["cause"] == "state"
+        assert "scope" in result["hint"]
+    finally:
+        mind_port.unbind()

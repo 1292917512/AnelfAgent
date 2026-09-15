@@ -1,19 +1,25 @@
-"""Plan 状态追踪器 — 计划模式程序级进度的统一实现。
+"""Plan 状态追踪器 — 规划条目状态机的统一实现。
 
-设计原则：进度由程序从执行流自动推断，AI 不需要
-主动汇报；AI 调 update_goal 只是"可选的精确标记"，不是必要条件。
+规划存储（source=goal）承载两种生命周期，以 ``metadata.kind`` 判别，
+互不越界：
+
+- ``PLAN_KIND``（present_plan 会话计划）：程序从执行流自动推断进度——
+  提交即首步 in_progress，每轮工具批次后推进，think_loop 退出时收敛
+  终态（诚实语义：正常结束 in_progress → completed；中断/取消 → skipped；
+  pending 一律 → skipped，不假装完成）。生命周期与会话绑定。
+- ``GOAL_KIND``（create_goal 持久目标）：跨会话的长期目标，进度由 AI
+  经 update_goal 手动推进，**任何自动推进/收敛路径都不得触碰**——目标
+  的存续只由 AI 显式标记或 delete_goal 终结。
 
 本模块是 plan 状态机与事件发射的**唯一入口**，消费者：
-- ``agent/planning/tools.py``：present_plan / update_goal 工具
+- ``agent/planning/tools.py``：present_plan / goal CRUD 工具
 - ``agent/mind/tools/think_loop.py``：每轮自动推进 + 会话结束收敛
 - ``web/routers/chat.py``：cancel-plan 路由
 
-三层进度机制：
+三层进度机制（仅作用于 PLAN_KIND）：
 1. ``submit_plan``：present_plan 工具内调用，公告计划 + 首步 in_progress
 2. ``advance_plan_step``：每轮工具批次后推进当前步骤（粗粒度兜底）
-3. ``finalize_plan``：think_loop 全退出路径的唯一收敛入口（诚实语义：
-   正常结束 in_progress → completed；中断/取消 in_progress → skipped；
-   pending 一律 → skipped，不假装完成）
+3. ``finalize_plan``：think_loop 全退出路径的唯一收敛入口
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.memory.memory_store import MemoryStore
-from agent.memory.memory_types import MemoryEntry, MemoryType
+from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
 from core.event_bus import (
     EVENT_PLAN_CANCELLED,
     EVENT_PLAN_STATUS_CHANGED,
@@ -35,7 +41,10 @@ from core.event_bus import (
 from core.latebind import LateBinding
 from core.log import log
 
-GOAL_SOURCE = "goal"
+#: 会话执行计划的 metadata.kind（present_plan 生命周期：程序推断进度）
+PLAN_KIND = "present_plan"
+#: 持久目标的 metadata.kind（create_goal 生命周期：AI 手动推进）
+GOAL_KIND = "goal"
 
 # 计划管理工具：调用它们不算"执行了一步"，不触发自动推进。
 # 否则 present_plan 当轮 step 0 就被误标完成（进度超前 bug）。
@@ -91,16 +100,14 @@ def make_scope(user_id: str, chat_id: str = "") -> str:
 # 内部：active plan 查询（三个消费者共享，消除三份重复遍历）
 # ------------------------------------------------------------------
 
-def _goal_scope_matches(entry: MemoryEntry, scope: str) -> bool:
-    """plan 的 metadata.scope 与当前 scope 匹配（空 scope 视为全局，兼容旧数据）。"""
-    plan_scope = (entry.metadata or {}).get("scope", "")
-    return not plan_scope or plan_scope == scope
-
-
 async def _find_active_plan(
     scope: str,
 ) -> Tuple[Optional[MemoryEntry], Optional[Dict[str, Any]]]:
-    """查找当前 scope 的 active plan（取最近一条）。
+    """查找当前 scope 的 active 会话计划（取最近一条）。
+
+    只认 ``metadata.kind == PLAN_KIND`` 且 scope 严格相等的条目——
+    持久目标（GOAL_KIND）与历史无 kind 条目一律排除，防止任意会话
+    退出时的自动收敛把跨会话目标连带扫成终态。
 
     Returns:
         (entry, goal) 或 (None, None)。
@@ -116,13 +123,16 @@ async def _find_active_plan(
         log(f"active plan 查询失败: {exc}", "DEBUG", tag="规划")
         return None, None
     for entry in entries:
+        metadata = entry.metadata or {}
+        if metadata.get("kind") != PLAN_KIND:
+            continue
         try:
             goal = json.loads(entry.content)
         except (json.JSONDecodeError, AttributeError):
             continue
         if goal.get("status") != "active":
             continue
-        if not _goal_scope_matches(entry, scope):
+        if metadata.get("scope") != scope:
             continue
         return entry, goal
     return None, None
@@ -262,7 +272,7 @@ async def submit_plan(
                 tags=[f"goal:{plan_id}"],
                 metadata={
                     "goal_id": plan_id, "status": "active",
-                    "kind": "present_plan", "scope": scope,
+                    "kind": PLAN_KIND, "scope": scope,
                 },
             )
             await store.add(entry)

@@ -29,6 +29,12 @@ class MemoryType(str, Enum):
     """永久记忆：重要知识和关键信息，不会被自动清理。"""
 
 
+#: 规划条目（目标/执行计划）的 source 标记：content 是结构化 JSON 文档
+#: 而非自由文本，由规划状态机独占维护——语义合并（dedup）不得将其作为
+#: 候选，合并会破坏结构并让目标凭空消失。定义在记忆层供各层共用。
+GOAL_SOURCE = "goal"
+
+
 class MemoryEntry(BaseModel):
     """单条记忆。"""
 

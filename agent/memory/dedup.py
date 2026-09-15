@@ -30,10 +30,19 @@ from core.config import (
 from core.log import log
 
 from .memory_store import MemoryStore
-from .memory_types import MemoryEntry, MemoryType
+from .memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
 
-# 画像/永久记忆不参与去重裁决：画像由画像系统覆盖维护，permanent 走 upsert
+# 判重候选准入排除项（系统独占维护的条目不参与语义合并）：
+# - 画像由画像系统覆盖维护，permanent 走 upsert；
+# - 规划条目（goal source）的 content 是结构化 JSON，合并会破坏结构
+#   并让目标凭空消失（含 goal:{id} 标签的 memorize 极易命中）。
 _EXCLUDED_TYPES = {MemoryType.ENTITY, MemoryType.PERMANENT}
+_EXCLUDED_SOURCES = {GOAL_SOURCE}
+
+
+def _mergeable(entry: MemoryEntry) -> bool:
+    """判重候选准入：排除系统独占维护的条目（类型与来源双口径）。"""
+    return entry.memory_type not in _EXCLUDED_TYPES and entry.source not in _EXCLUDED_SOURCES
 
 _DEDUP_JUDGE_PROMPT = """\
 你是记忆系统的写入裁决器。一条新记忆即将写入长期记忆库，下面是与它可能相关的既有记忆。
@@ -95,14 +104,14 @@ async def gather_dedup_candidates(
     embedder: Any,
     content: str,
 ) -> List[MemoryEntry]:
-    """召回去重候选：FTS + 向量双路并集（按 id 去重，过滤画像/永久记忆）。"""
+    """召回去重候选：FTS + 向量双路并集（按 id 去重，准入见 _mergeable）。"""
     limit: int = get_config_int("memory_dedup_candidate_limit", 8)
     vec_min: float = get_config_float("memory_dedup_vec_min_score", 0.45)
 
     merged: Dict[int, MemoryEntry] = {}
     try:
         for entry, _score in await store.search_fts(content, limit=5):
-            if entry.id and entry.memory_type not in _EXCLUDED_TYPES:
+            if entry.id and _mergeable(entry):
                 merged[entry.id] = entry
     except Exception as exc:
         log(f"去重候选 FTS 召回失败: {exc}", "DEBUG", tag="记忆")
@@ -112,7 +121,7 @@ async def gather_dedup_candidates(
             vec = await embedder.embed_query(content)
             if vec:
                 for entry, _score in await store.search_vector(vec, limit=5, min_score=vec_min):
-                    if entry.id and entry.memory_type not in _EXCLUDED_TYPES:
+                    if entry.id and _mergeable(entry):
                         merged.setdefault(entry.id, entry)
         except Exception as exc:
             log(f"去重候选向量召回失败: {exc}", "DEBUG", tag="记忆")

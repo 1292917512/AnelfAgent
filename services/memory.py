@@ -32,9 +32,6 @@ def _parse_memory_type(type_str: Optional[str]):
 
 class MemoryService:
 
-    # goal 条目的记忆 source 标记（与 agent.planning.tools._GOAL_SOURCE 同值）
-    _GOAL_SOURCE = "goal"
-
     # ==================================================================
     # 短期记忆（PFC temporary）
     # ==================================================================
@@ -845,8 +842,8 @@ class MemoryService:
         """查询并解析全部目标条目，返回 [(MemoryEntry, goal_dict)]（单次操作内复用）。"""
         import json
 
-        from agent.memory.memory_types import MemoryType
-        entries = await store.list_recent(limit=100, memory_type=MemoryType.SEMANTIC, source=self._GOAL_SOURCE)
+        from agent.memory.memory_types import GOAL_SOURCE, MemoryType
+        entries = await store.list_recent(limit=100, memory_type=MemoryType.SEMANTIC, source=GOAL_SOURCE)
         parsed: List[tuple] = []
         for entry in entries:
             try:
@@ -895,7 +892,8 @@ class MemoryService:
         store = rt.mind.memory_store
         if not store:
             return {"error": "记忆系统未初始化"}
-        from agent.memory.memory_types import MemoryEntry, MemoryType
+        from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
+        from agent.planning.tracker import GOAL_KIND
         goal: Dict[str, Any] = {
             "goal_id": uuid.uuid4().hex[:16],
             "title": title,
@@ -914,9 +912,9 @@ class MemoryService:
         entry = MemoryEntry(
             memory_type=MemoryType.SEMANTIC,
             content=json.dumps(goal, ensure_ascii=False),
-            source=self._GOAL_SOURCE,
+            source=GOAL_SOURCE,
             importance=0.8,
-            metadata={"goal_id": goal["goal_id"], "status": "active"},
+            metadata={"goal_id": goal["goal_id"], "status": "active", "kind": GOAL_KIND},
         )
         entry_id = await store.add(entry)
         goal["memory_id"] = entry_id
@@ -939,7 +937,7 @@ class MemoryService:
         store = rt.mind.memory_store
         if not store:
             return None
-        from agent.memory.memory_types import MemoryEntry, MemoryType
+        from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
         target_entry = None
         target_goal = None
         for entry, goal in await self._goal_entries(store):
@@ -971,9 +969,14 @@ class MemoryService:
         new_entry = MemoryEntry(
             memory_type=MemoryType.SEMANTIC,
             content=json.dumps(target_goal, ensure_ascii=False),
-            source=self._GOAL_SOURCE,
+            source=GOAL_SOURCE,
             importance=0.8 if target_goal["status"] == "active" else 0.3,
-            metadata={"goal_id": goal_id, "status": target_goal["status"]},
+            # 合并保留既有键（kind 等生命周期声明），整覆会丢失归属
+            metadata={
+                **(target_entry.metadata or {}),
+                "goal_id": goal_id,
+                "status": target_goal["status"],
+            },
         )
         # 先写入新条目成功后再删旧条目，add 失败时目标不丢失
         new_id = await store.add(new_entry)

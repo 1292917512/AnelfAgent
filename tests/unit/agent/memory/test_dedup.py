@@ -1,13 +1,49 @@
-"""记忆去重裁决 light_llm 调用行为单元测试（流式通道 + 思考档位配置）。"""
+"""记忆去重裁决单元测试：候选准入 / light_llm 调用行为（流式通道 + 思考档位）。"""
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from agent.memory import dedup
+
+
+@pytest.mark.asyncio
+async def test_gather_candidates_excludes_goal_source(tmp_path) -> None:
+    """goal 条目（结构化 JSON，规划状态机独占）不进判重候选——回归
+    2026-09-15 事故：带 goal:{id} 标签的 memorize 语义合并把目标条目吞掉。"""
+    from agent.memory.memory_store import MemoryStore
+    from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
+
+    store = MemoryStore(str(tmp_path / "mem.db"))
+    try:
+        goal_doc = json.dumps({
+            "goal_id": "ebafea16", "title": "反思死循环二次复发排查与闭环",
+            "status": "active",
+            "steps": [{"index": 0, "content": "夜间排查根因", "status": "pending"}],
+        }, ensure_ascii=False)
+        await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content=goal_doc,
+            source=GOAL_SOURCE, tags=["goal:ebafea16"],
+        ))
+        await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content="反思死循环排查的结论与时间线",
+        ))
+
+        query = "反思死循环二次复发排查与闭环"
+        # 前置：FTS 确实召回了 goal 条目（保证过滤逻辑被真实执行）
+        fts_hits = [e for e, _ in await store.search_fts(query, limit=5)]
+        assert any(e.source == GOAL_SOURCE for e in fts_hits)
+
+        candidates = await dedup.gather_dedup_candidates(store, None, query)
+        assert all(e.source != GOAL_SOURCE for e in candidates)
+        # 普通语义记忆仍可作为候选
+        assert any(e.source != GOAL_SOURCE for e in candidates)
+    finally:
+        await store.close()
 
 
 class _FakeManager:
