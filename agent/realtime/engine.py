@@ -553,6 +553,73 @@ class RealtimeEngine:
             base = f"{base}#{delivery.session_id}"
         return base
 
+    def session_for_scope(self, scope: str) -> Optional[RealtimeSession]:
+        """按思维 scope 找通话会话（频道消息自动语音路由的挂接点）。"""
+        for session in self._sessions.values():
+            if self._scope_of(session) == scope:
+                return session
+        return None
+
+    async def speak_to_scope(self, scope: str, text: str, voice: str = "") -> Dict[str, Any]:
+        """把一段文本播给 scope 对应的通话会话（send_message 自动语音路由）。
+
+        状态感知：用户说话中不插播（消息以文字送达，返回 spoken=False）；
+        她正在说话则追加到播放队列；空闲/思考中则开新播报。文字消息本身
+        已由频道层送达，这里只负责"同时说出来"。
+        """
+        session = self.session_for_scope(scope)
+        if session is None or session.closed or not text.strip():
+            return {"spoken": False, "reason": "no-session"}
+        if session.detector.in_speech:
+            return {"spoken": False, "reason": "user-speaking"}
+
+        from core.config import get_config as _gc
+
+        resolved = voice.strip() or str(_gc("realtime_tts_voice", "") or "").strip()
+        turn_id = session.turn_id
+        appending = session.state is SessionState.SPEAKING
+        if not appending:
+            await session.set_state(SessionState.SPEAKING)
+
+        from agent.tts import TtsPipeline
+
+        from .playback import PlaybackFrame
+        pipeline = TtsPipeline(voice=resolved, sample_rate=24000)
+        pipeline.feed(text.strip())
+        pipeline.finish()
+        session.last_say_error = ""
+
+        async def _run() -> None:
+            finished = False
+            try:
+                produced = 0
+                async for rate, chunk in pipeline.stream():
+                    if session.closed or session.turn_id != turn_id:
+                        pipeline.cancel()
+                        return
+                    produced += 1
+                    session.playback.push(PlaybackFrame(
+                        pcm=chunk, sample_rate=rate, turn_id=turn_id))
+                if produced == 0:
+                    session.last_say_error = "全部 TTS 提供者不可用"
+                    await session.sink.send_event("rt_error", {
+                        "level": "warn",
+                        "message": "语音合成失败（全部 TTS 提供者不可用）：这段话没能说出口",
+                    })
+                    return
+                session.playback.finish(turn_id)
+                finished = True
+            finally:
+                if not finished and not session.closed \
+                        and session.state is SessionState.SPEAKING:
+                    await session.set_state(SessionState.LISTENING)
+
+        # 追加播报共用她当前的播报任务生命周期：取消旧任务、由新任务接管队列
+        if session.tts_task is not None and not session.tts_task.done() and appending:
+            session.tts_task.cancel()
+        session.tts_task = asyncio.create_task(_run(), name=f"rt.speak.{session.owner}")
+        return {"spoken": True, "appending": appending, "turn_id": turn_id}
+
     async def _on_delta(self, payload: Dict[str, Any]) -> None:
         scope = str(payload.get("scope", ""))
         pending = self._pending.get(scope)

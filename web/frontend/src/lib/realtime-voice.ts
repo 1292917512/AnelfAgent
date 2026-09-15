@@ -17,6 +17,8 @@ export interface RealtimeVoiceCallbacks {
   onState?: (state: RtState, turnId: number) => void;
   onPartial?: (text: string) => void;
   onFinal?: (text: string, role?: string) => void;
+  /** 上行输入电平（0..1，麦克风 RMS；约每帧回调一次） */
+  onLevel?: (level: number) => void;
   onAudioDone?: (turnId: number, interrupted: boolean) => void;
   onError?: (message: string) => void;
   onClose?: () => void;
@@ -92,6 +94,8 @@ export class RealtimeVoiceClient {
   private ws: WebSocket | null = null;
   private captureCtx: AudioContext | null = null;
   private playbackCtx: AudioContext | null = null;
+  private gainNode: GainNode | null = null;
+  private _volume = 1;
   private stream: MediaStream | null = null;
   private playTime = 0;
   private active = false;
@@ -193,6 +197,10 @@ export class RealtimeVoiceClient {
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(encodeFrame(floatToPcm16(ev.data), CAPTURE_RATE));
       }
+      const samples = ev.data ?? new Float32Array(0);
+      let sum = 0;
+      for (let i = 0; i < samples.length; i++) { const v = samples[i] ?? 0; sum += v * v; }
+      this.cb.onLevel?.(Math.min(1, Math.sqrt(sum / Math.max(1, samples.length)) * 4));
     };
     source.connect(node);
     node.connect(this.captureCtx.destination);
@@ -243,9 +251,18 @@ export class RealtimeVoiceClient {
     }
   }
 
+  /** 输出音量（0..1）；对播放链 gain 节点实时生效 */
+  setOutputVolume(v: number): void {
+    this._volume = Math.max(0, Math.min(1, v));
+    if (this.gainNode) this.gainNode.gain.value = this._volume;
+  }
+
   private async playPcm(pcm: ArrayBuffer, rate: number): Promise<void> {
     if (!this.playbackCtx) {
       this.playbackCtx = new AudioContext({ sampleRate: rate });
+      this.gainNode = this.playbackCtx.createGain();
+      this.gainNode.gain.value = this._volume;
+      this.gainNode.connect(this.playbackCtx.destination);
       this.playTime = 0;
     }
     const ctx = this.playbackCtx;
@@ -257,7 +274,7 @@ export class RealtimeVoiceClient {
     buffer.copyToChannel(samples, 0);
     const source = ctx.createBufferSource();
     source.buffer = buffer;
-    source.connect(ctx.destination);
+    source.connect(this.gainNode ?? ctx.destination);
     const now = ctx.currentTime;
     this.playTime = Math.max(this.playTime, now + 0.04);
     source.start(this.playTime);
@@ -276,5 +293,6 @@ export class RealtimeVoiceClient {
     this.stopCapture();
     void this.playbackCtx?.close().catch(() => undefined);
     this.playbackCtx = null;
+    this.gainNode = null;
   }
 }

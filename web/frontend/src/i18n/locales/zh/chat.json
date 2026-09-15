@@ -53,5 +53,22 @@
   "toolCallsFailed": "含失败",
   "expand": "展开全文",
   "collapse": "收起",
-  "loadEarlier": "加载更早消息"
+  "loadEarlier": "加载更早消息",
+  "call": {
+    "start": "语音通话",
+    "startTitle": "开启实时语音通话（本会话）",
+    "connecting": "连接中…",
+    "startFailed": "语音通道启动失败",
+    "micDenied": "麦克风权限被拒绝：地址栏锁/麦克风图标重新允许，或查系统设置 → 隐私与安全性 → 麦克风",
+    "micNotFound": "未找到麦克风设备",
+    "micBusy": "麦克风被其他应用占用",
+    "micInsecure": "当前页面非安全上下文，浏览器禁止取麦克风：用 http://127.0.0.1:8092 / localhost 或 https 访问",
+    "hangup": "挂断",
+    "stateListening": "收听中",
+    "stateThinking": "思考中",
+    "stateSpeaking": "说话中",
+    "micLevel": "输入电平",
+    "volume": "输出音量",
+    "hint": "通话中你的消息会以语音实时应答；再次开口可随时打断"
+  }
 }

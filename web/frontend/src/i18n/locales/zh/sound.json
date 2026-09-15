@@ -9,7 +9,6 @@
     "timeline": "时间线",
     "transcripts": "话语检索",
     "identify": "识别入库",
-    "realtime": "实时对话",
     "generation": "生成"
   },
   "providers": {
@@ -204,26 +203,6 @@
     "hint": "说话人名单与未读动态随每轮对话注入 AI 上下文（audio_context_inject 可关）",
     "active": "注入中",
     "inactive": "未注入"
-  },
-  "realtime": {
-    "call": "开始通话",
-    "hangup": "挂断",
-    "hint": "正在收听——直接开口说话，她思考后会用语音回复你（播放中开口可打断）",
-    "state": {
-      "listening": "收听中",
-      "thinking": "思考中",
-      "speaking": "说话中"
-    },
-    "bargeInOn": "可打断",
-    "bargeInOff": "不可打断",
-    "you": "你",
-    "agent": "她",
-    "startFailed": "语音通道启动失败（检查麦克风权限与 ASR/TTS 配置）",
-    "bargeIn": "可打断",
-    "micDenied": "麦克风权限被拒绝：点击地址栏左侧的锁/麦克风图标重新允许，或检查 系统设置 → 隐私与安全性 → 麦克风",
-    "micNotFound": "未找到麦克风设备：请确认麦克风已连接且未被禁用",
-    "micBusy": "麦克风被其他应用占用：关闭正在使用麦克风的程序后重试",
-    "micInsecure": "当前页面不是安全上下文，浏览器禁止取麦克风：请用 http://127.0.0.1:8092 或 localhost 访问（局域网 IP 需走 https）"
   },
   "ttsProviders": "语音合成提供者",
   "realtimeStatus": "实时语音",

@@ -53,5 +53,22 @@
   "toolCallsFailed": "with failures",
   "expand": "Expand",
   "collapse": "Collapse",
-  "loadEarlier": "Load earlier messages"
+  "loadEarlier": "Load earlier messages",
+  "call": {
+    "start": "Voice call",
+    "startTitle": "Start realtime voice call (this chat)",
+    "connecting": "Connecting…",
+    "startFailed": "Failed to start voice channel",
+    "micDenied": "Microphone denied: re-allow via the address-bar lock/mic icon, or check system privacy settings",
+    "micNotFound": "No microphone found",
+    "micBusy": "Microphone is occupied by another app",
+    "micInsecure": "Page is not a secure context: use http://127.0.0.1:8092 / localhost or https",
+    "hangup": "Hang up",
+    "stateListening": "Listening",
+    "stateThinking": "Thinking",
+    "stateSpeaking": "Speaking",
+    "micLevel": "Input level",
+    "volume": "Output volume",
+    "hint": "Messages are answered by voice in real time; speak again to interrupt anytime"
+  }
 }

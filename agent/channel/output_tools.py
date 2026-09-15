@@ -385,14 +385,57 @@ async def send_message(
     )
 
     # 发送成功后将 AI 回复记录到对话历史（assistant 角色）
+    spoken_note = ""
     try:
         if json.loads(result).get("success") is not False:
             await _record_sent_reply(
                 resolved_target, content, resolved_channel_type, adapter_key=channel_id
             )
+            # 通话自动语音路由：该会话正在实时通话中时，消息同时 TTS 播给电话
+            spoken_note = await _speak_if_on_call(channel_id, resolved_target, content)
     except (json.JSONDecodeError, TypeError):
         log("_enrich 异常已忽略", "DEBUG")
+    if spoken_note:
+        try:
+            parsed_result = json.loads(result)
+            if isinstance(parsed_result, dict):
+                parsed_result["voice"] = spoken_note
+                result = json.dumps(parsed_result, ensure_ascii=False)
+        except json.JSONDecodeError:
+            pass
     return result
+
+
+async def _speak_if_on_call(channel_id: str, target_id: str, content: str) -> str:
+    """目标会话在通话中则把消息同步播出；返回给 AI 的状态注记（空=无需注记）。
+
+    呈现形态归频道：AI 只管发消息，通话感知由出口层完成——用户说话中
+    不插播（消息以文字送达），其余状态立即/追加播报。
+    """
+    try:
+        from agent.realtime.engine import get_realtime_engine
+
+        engine = get_realtime_engine()
+        for session in engine._sessions.values():
+            delivery = session.delivery
+            if delivery.adapter_key != channel_id:
+                continue
+            base = f"user_{delivery.adapter_key}:{delivery.user_id}"
+            if delivery.session_id and delivery.session_id != delivery.user_id:
+                base = f"{base}#{delivery.session_id}"
+            scope_type, scope_id = _resolve_conversation_scope(
+                channel_id, target_id, "private", "",
+            )
+            # 通话 scope 与发送目标 scope 对齐（webui 单用户域）
+            if base not in (scope_id, f"user_{channel_id}:{target_id}"):
+                continue
+            out = await engine.speak_to_scope(base, content)
+            if out.get("spoken"):
+                return "spoken" + ("-appended" if out.get("appending") else "")
+            return ""
+    except Exception as exc:
+        log(f"通话语音路由异常（忽略，消息已文字送达）: {exc}", "DEBUG", tag="通道")
+    return ""
 
 
 @deferred_tool(group="output", tags=["send_photo"], source="channel.output")

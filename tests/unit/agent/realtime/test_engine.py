@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import math
 
 import pytest
@@ -304,53 +303,6 @@ class TestCrossModeLease:
             await engine.stop("c1")
 
 
-class TestRealtimeSayTool:
-    async def test_say_rejected_without_session(self) -> None:
-        import json
-
-        import agent.realtime.tools as tools_mod
-        body = json.loads(await tools_mod.realtime_say("你好"))
-        assert "error" in body
-
-    async def test_say_rejected_when_busy(self, app) -> None:
-        """用户轮进行中主动开口 → 可重试错误（不切断用户轮）。"""
-        import json
-
-        import agent.realtime.tools as tools_mod
-        engine = RealtimeEngine()
-        engine_mod = __import__("agent.realtime.engine", fromlist=["engine"])
-        sink = FakeSink()
-        session = await engine.start("c1", _delivery(), sink.as_sink(), RATE)
-        try:
-            engine_mod._engine = engine
-            await session.set_state(SessionState.SPEAKING)
-            body = json.loads(await tools_mod.realtime_say("插句话"))
-            assert "error" in body
-            assert body["retryable"] is True
-        finally:
-            engine_mod._engine = None
-            await engine.stop("c1")
-
-    async def test_say_when_idle(self, app) -> None:
-        """空闲时主动开口：TTS 合成并播放，状态进 SPEAKING。"""
-        import json
-
-        import agent.realtime.tools as tools_mod
-        engine = RealtimeEngine()
-        engine_mod = __import__("agent.realtime.engine", fromlist=["engine"])
-        sink = FakeSink()
-        await engine.start("c1", _delivery(), sink.as_sink(), RATE)
-        try:
-            engine_mod._engine = engine
-            body = json.loads(await tools_mod.realtime_say("主动说一句。"))
-            assert body.get("success") is True
-            await _wait_for(lambda: any(e[0] == "audio_done" for e in sink.events))
-            assert sink.audio
-        finally:
-            engine_mod._engine = None
-            await engine.stop("c1")
-
-
 class TestSilentFailurePaths:
     async def test_empty_transcript_sends_discarded_final(self, app) -> None:
         """未识别到有效语音：rt_final(discarded) 收帧，状态保持收听。"""
@@ -492,22 +444,29 @@ class TestPreprocessWiring:
             await engine.stop("c9")
 
 
-class TestRealtimeReplyTool:
-    async def test_reply_without_session_rejected(self, app) -> None:
-        from agent.realtime.tools import realtime_reply
+class TestSpeakToScope:
+    async def test_no_session_not_spoken(self, app) -> None:
+        from agent.realtime.engine import get_realtime_engine
 
-        out = json.loads(await realtime_reply("你好"))
-        assert out.get("success") is not True or "没有进行中的实时通话" in out.get("detail", out.get("hint", "")) or out.get("error") or "通话" in str(out)
+        out = await get_realtime_engine().speak_to_scope(
+            "user_webui:u1", "你好")
+        assert out == {"spoken": False, "reason": "no-session"}
 
-    async def test_say_and_reply_accept_voice(self, app) -> None:
-        """voice 参数经音色解析透传（_resolve_voice）。"""
-        from agent.realtime import tools as rt_tools
+    async def test_user_speaking_not_interrupted(self, app) -> None:
+        from agent.realtime.engine import get_realtime_engine
 
-        assert rt_tools._resolve_voice(" taffy_voice_0805 ") == "taffy_voice_0805"
-        from core.config import ConfigManager
-        ConfigManager.set("realtime_tts_voice", "longanhuan_v3.6")
-        assert rt_tools._resolve_voice("") == "longanhuan_v3.6"
-        ConfigManager.set("realtime_tts_voice", "")
+        engine = get_realtime_engine()
+        sink = FakeSink()
+        await engine.start("c-spk", _delivery(), sink.as_sink(), RATE)
+        try:
+            session = engine.session_for_scope("user_webui:u1")
+            assert session is not None
+            session.detector._in_speech = True  # 模拟用户说话中
+            out = await engine.speak_to_scope("user_webui:u1", "你好")
+            assert out["spoken"] is False and out["reason"] == "user-speaking"
+            session.detector._in_speech = False
+        finally:
+            await engine.stop("c-spk")
 
 
 class TestCallContextInjection:
@@ -525,8 +484,54 @@ class TestCallContextInjection:
         sink = FakeSink()
         await engine.start("c-ctx", _delivery(), sink.as_sink(), RATE)
         try:
-            snap = await RealtimeCallProvider().provide("user_webui:web_user")
-            assert snap is not None and "realtime_reply" in snap.content
-            assert "send_message" in snap.content
+            snap = await RealtimeCallProvider().provide("user_webui:u1")
+            assert snap is not None and "send_message" in snap.content
+            assert "自动以语音播出" in snap.content
+            assert "频道=webui" in snap.content
         finally:
             await engine.stop("c-ctx")
+
+
+class TestSendMessageAutoRoute:
+    """send_message 通话自动语音路由：出口层呈现形态判定。"""
+
+    async def test_route_spokes_when_on_call(self, app, monkeypatch) -> None:
+        from agent.channel import output_tools
+        from agent.realtime.engine import get_realtime_engine
+
+        engine = get_realtime_engine()
+        sink = FakeSink()
+        await engine.start("c-ar", _delivery(), sink.as_sink(), RATE)
+        try:
+            spoken: list[tuple[str, str]] = []
+
+            async def fake_speak(scope: str, text: str, voice: str = ""):
+                spoken.append((scope, text))
+                return {"spoken": True, "turn_id": 1}
+
+            monkeypatch.setattr(engine, "speak_to_scope", fake_speak)
+            note = await output_tools._speak_if_on_call("webui", "u1", "你好呀")
+            assert note == "spoken"
+            assert spoken and spoken[0] == ("user_webui:u1", "你好呀")
+        finally:
+            await engine.stop("c-ar")
+
+    async def test_route_skipped_without_call(self, app) -> None:
+        from agent.channel import output_tools
+
+        note = await output_tools._speak_if_on_call("webui", "u1", "你好")
+        assert note == ""
+
+    async def test_route_skipped_for_other_channel(self, app) -> None:
+        from agent.realtime.engine import get_realtime_engine
+
+        engine = get_realtime_engine()
+        sink = FakeSink()
+        await engine.start("c-ar2", _delivery(), sink.as_sink(), RATE)
+        try:
+            note = await __import__(
+                "agent.channel.output_tools", fromlist=["_speak_if_on_call"]
+            )._speak_if_on_call("qq", "12345", "你好")
+            assert note == ""
+        finally:
+            await engine.stop("c-ar2")
