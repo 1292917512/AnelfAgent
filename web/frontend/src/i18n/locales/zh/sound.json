@@ -285,6 +285,7 @@
     "unreachable": "不可达",
     "notConfigured": "未配置",
     "recheck": "重新检测",
-    "save": "保存"
+    "save": "保存",
+    "placeholder": "输入服务地址"
   }
 }

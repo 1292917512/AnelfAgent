@@ -151,3 +151,36 @@ class TestSoundConfig:
         out = json.loads(await sound_config("get"))
         assert out["success"] is True
         assert "default_voice" in out["config"]
+
+
+class TestSoundConfigFunasr:
+    async def test_get_includes_funasr(self, monkeypatch) -> None:
+        from core.config import ConfigManager
+        from entities.audiosync import client as funasr_client
+
+        async def fake_probe() -> bool:
+            return True
+
+        monkeypatch.setattr(funasr_client, "probe_available", fake_probe)
+        monkeypatch.setattr(funasr_client, "reset_probe_cache", lambda: None)
+        ConfigManager.set("funasr_endpoint", "http://funasr.local")
+        out = json.loads(await sound_config(action="get"))
+        assert out["config"]["funasr_endpoint"] == "http://funasr.local"
+        assert out["config"]["funasr_reachable"] is True
+        ConfigManager.set("funasr_endpoint", "")
+
+    async def test_set_funasr_endpoint_reports_reachability(self, monkeypatch) -> None:
+        from entities.audiosync import client as funasr_client
+
+        async def fake_probe() -> bool:
+            return False
+
+        monkeypatch.setattr(funasr_client, "probe_available", fake_probe)
+        monkeypatch.setattr(funasr_client, "reset_probe_cache", lambda: None)
+        out = json.loads(await sound_config(action="set", key="funasr_endpoint",
+                                            value="http://funasr.local"))
+        assert out["success"] is True
+        assert out["reachable"] is False
+        assert "不可达" in out["hint"]
+        from core.config import ConfigManager
+        ConfigManager.set("funasr_endpoint", "")

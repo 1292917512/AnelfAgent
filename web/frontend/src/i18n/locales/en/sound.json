@@ -285,6 +285,7 @@
     "unreachable": "Unreachable",
     "notConfigured": "Not configured",
     "recheck": "Re-check",
-    "save": "Save"
+    "save": "Save",
+    "placeholder": "Enter service address"
   }
 }

@@ -123,7 +123,7 @@ export function AudioOverviewPanel() {
         <div className="flex items-center gap-2">
           <Input
             className="flex-1 font-mono text-xs"
-            placeholder="http://nas:10095"
+            placeholder={t("funasr.placeholder")}
             value={funasrDraft ?? funasr?.endpoint ?? ""}
             onChange={(e) => setFunasrDraft(e.target.value)}
           />

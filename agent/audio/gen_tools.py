@@ -376,22 +376,26 @@ _SCALAR_KEYS = {
     "default_voice": "tts_default_voice",
     "default_reference_audio": "tts_default_reference_audio",
     "default_reference_text": "tts_default_reference_text",
+    "funasr_endpoint": "funasr_endpoint",
+    "funasr_timeout": "funasr_timeout",
 }
 
 
 @deferred_tool(name="sound_config", group=_group, tags=["core"])
 async def sound_config(action: str = "capabilities", key: str = "", value: str = "") -> str:
-    """查看声音能力矩阵与提供者状态，或修改默认音色/参考音频/优先级链。
+    """查看声音能力矩阵与提供者状态，或修改默认音色/FunASR 服务/优先级链。
 
     典型用法：
     - 规划声音任务前先 capabilities 查当前可用能力与调用示例
     - design_voice/clone_voice 创建音色后，set default_voice <voice_id> 设为默认音色
+    - 转写/声纹不可用时，set funasr_endpoint http://<host>:<port> 配置本地转写服务
 
     Args:
         action: capabilities（能力矩阵：工具选型+参数+示例+实时可用状态，默认）/
             providers（各提供者能力与配置状态）/ get（全部声音配置）/ set（修改指定键）
         key: set 时必填。可选：default_voice / default_reference_audio /
-            default_reference_text / provider_priority.<能力名>
+            default_reference_text / funasr_endpoint（FunASR 服务地址）/
+            funasr_timeout（秒）/ provider_priority.<能力名>
             （value 为 JSON 数组如 '["models"]'，能力名: tts/voice_mgmt/music）
         value: set 时必填，配置值（provider_priority 用 JSON 数组字符串）
     """
@@ -402,11 +406,17 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
     router = get_sound_router()
 
     if action == "get":
+        from entities.audiosync import client as funasr_client
+
+        funasr_client.reset_probe_cache()
         return _dumps({"success": True, "config": {
             "provider_priority": ConfigManager.get("sound_provider_priority", {}),
             "default_voice": ConfigManager.get("tts_default_voice", ""),
             "default_reference_audio": ConfigManager.get("tts_default_reference_audio", ""),
             "default_reference_text": ConfigManager.get("tts_default_reference_text", ""),
+            "funasr_endpoint": funasr_client._endpoint_config(),
+            "funasr_timeout": ConfigManager.get("funasr_timeout", 120),
+            "funasr_reachable": await funasr_client.probe_available(),
         }})
     if action == "providers":
         return _dumps({"success": True, **router.status(list(SOUND_CAPABILITIES))})
@@ -463,6 +473,15 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
         result: Dict[str, Any] = {"success": True, "key": key, "value": str(value)}
         if key == "default_voice":
             result["hint"] = "默认音色已更新，text_to_voice 不传 voice 时将使用该音色"
+        if key == "funasr_endpoint":
+            from entities.audiosync import client as funasr_client
+
+            funasr_client.reset_probe_cache()
+            reachable = await funasr_client.probe_available()
+            result["reachable"] = reachable
+            result["hint"] = (
+                "服务在线，转写/流式转写/声纹提取即刻可用" if reachable
+                else "地址已保存但服务不可达：请确认服务已启动、地址端口正确")
         return _dumps(result)
 
     if key.startswith("provider_priority."):
@@ -489,4 +508,5 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
 
     return tool_error(f"不支持的配置键: {key}", cause=ErrorCause.PARAM, retryable=False,
                       hint="可选: default_voice / default_reference_audio / "
-                           "default_reference_text / provider_priority.<能力>")
+                           "default_reference_text / funasr_endpoint / funasr_timeout / "
+                           "provider_priority.<能力>")
