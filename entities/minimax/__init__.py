@@ -64,3 +64,9 @@ register_provider_key(
     extra_fields=[{"key": "api_host", "label": "订阅接入点",
                    "default": "", "secret": False}],
 )
+register_provider_key(
+    "minimax_coding_plan", domain="retrieval", title="MiniMax Coding Plan",
+    description="Token Plan 订阅 Key（联网检索走订阅配额）",
+    extra_fields=[{"key": "api_host", "label": "订阅接入点",
+                   "default": "", "secret": False}],
+)

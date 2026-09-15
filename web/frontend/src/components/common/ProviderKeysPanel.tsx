@@ -57,7 +57,7 @@ export function ProviderKeysPanel({ domain }: { domain: string }) {
           value={draft ?? ""}
           onChange={(e) => setDrafts((d) => ({ ...d, [draftKey]: e.target.value }))}
         />
-        <span className="text-[11px] text-muted whitespace-nowrap">
+        <span className={`text-[11px] whitespace-nowrap ${field.configured ? "text-muted" : "text-warn"}`}>
           {field.configured ? (field.value || t("providerKeys.configured")) : t("providerKeys.notConfigured")}
         </span>
         <Button

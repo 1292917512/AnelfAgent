@@ -29,7 +29,7 @@ _LOG_TAG = "凭据"
 
 _SECRET_FIELDS = frozenset({"api_key"})
 
-_registry: Dict[str, Dict[str, Any]] = {}
+_registry: Dict[str, List[Dict[str, Any]]] = {}
 _lock = threading.Lock()
 _cache: Optional[Dict[str, Dict[str, Any]]] = None
 _cache_mtime: float = -1.0
@@ -57,12 +57,16 @@ def register_provider_key(
             [{"key": "api_host", "label": "接入点", "default": "...", "secret": False}]
     """
     with _lock:
-        _registry[name] = {
+        # 同一凭据可挂多个域面板（如订阅 Key 声音/检索两域共用）：幂等去重追加
+        entries = _registry.setdefault(name, [])
+        entry = {
             "domain": domain,
             "title": title,
             "description": description,
             "extra_fields": list(extra_fields or []),
         }
+        if entry not in entries:
+            entries.append(entry)
 
 
 def _load() -> Dict[str, Dict[str, Any]]:
@@ -135,36 +139,33 @@ def list_provider_keys(domain: str = "") -> List[Dict[str, Any]]:
     含文件里存在但未登记的条目（config 手填场景），标记 unregistered。
     """
     entries: List[Dict[str, Any]] = []
-    known = set(_registry)
-    for name, meta in _registry.items():
-        if domain and meta["domain"] != domain:
-            continue
+    for name, metas in _registry.items():
         stored = _load().get(name) or {}
-        fields: List[Dict[str, Any]] = [{
-            "key": "api_key",
-            "value": _mask(str(stored.get("api_key", "") or "")),
-            "configured": bool(str(stored.get("api_key", "") or "").strip()),
-            "secret": True,
-        }]
-        for extra in meta["extra_fields"]:
-            raw = str(stored.get(extra["key"], "") or "").strip()
-            secret = bool(extra.get("secret", False))
-            fields.append({
-                "key": extra["key"],
-                "label": extra.get("label", extra["key"]),
-                "value": _mask(raw) if secret else raw,
-                "configured": bool(raw),
-                "secret": secret,
+        for meta in metas:
+            if domain and meta["domain"] != domain:
+                continue
+            fields: List[Dict[str, Any]] = [{
+                "key": "api_key",
+                "value": _mask(str(stored.get("api_key", "") or "")),
+                "configured": bool(str(stored.get("api_key", "") or "").strip()),
+                "secret": True,
+            }]
+            for extra in meta["extra_fields"]:
+                raw = str(stored.get(extra["key"], "") or "").strip()
+                secret = bool(extra.get("secret", False))
+                fields.append({
+                    "key": extra["key"],
+                    "label": extra.get("label", extra["key"]),
+                    "value": _mask(raw) if secret else raw,
+                    "configured": bool(raw),
+                    "secret": secret,
+                })
+            entries.append({
+                "name": name, "domain": meta["domain"], "title": meta["title"],
+                "description": meta["description"], "fields": fields,
             })
-        entries.append({
-            "name": name, "domain": meta["domain"], "title": meta["title"],
-            "description": meta["description"], "fields": fields,
-        })
-    for name in sorted(set(_load()) - known):
+    for name in sorted(set(_load()) - set(_registry)):
         stored = _load().get(name) or {}
-        if domain and not any(
-                m["domain"] == domain for m in _registry.values()):
-            continue
         entries.append({
             "name": name, "domain": "", "title": name,
             "description": "（文件中存在但未被任何组件登记）",

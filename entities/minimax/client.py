@@ -50,18 +50,6 @@ def reload_config() -> None:
     _load_config()
 
 
-def update_config(updates: Dict[str, Any]) -> Dict[str, Any]:
-    """更新配置并持久化到 config.json（进程级缓存同步刷新），返回更新后的完整配置。"""
-    global _config_cache
-    current = dict(_load_config())
-    current.update(updates)
-    with open(_CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(current, f, ensure_ascii=False, indent=4)
-    _config_cache = current
-    log("MiniMax 配置已更新", tag="MiniMax")
-    return dict(current)
-
-
 def get_config(key: str, default: Any = "") -> Any:
     return _load_config().get(key, default)
 

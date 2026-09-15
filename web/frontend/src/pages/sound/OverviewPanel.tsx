@@ -140,9 +140,6 @@ export function AudioOverviewPanel() {
         </div>
       </div>
 
-      {/* 组件凭据（外部平台 Key 集中配置） */}
-      <ProviderKeysPanel domain="sound" />
-
       {/* TTS 提供者链 */}
       <div className="rounded-md border border-border bg-card p-4 space-y-2">
         <div className="flex items-center gap-2">
@@ -163,6 +160,9 @@ export function AudioOverviewPanel() {
           )}
         </div>
       </div>
+
+      {/* 组件凭据（外部平台 Key 集中配置） */}
+      <ProviderKeysPanel domain="sound" />
 
       {/* 实时语音状态 */}
       <div className="rounded-md border border-border bg-card p-4 space-y-2">

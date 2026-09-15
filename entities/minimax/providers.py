@@ -18,12 +18,10 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from entities._sdk import (
     SOURCE_CONFIG,
     SOURCE_ENV,
-    SOURCE_LLM,
     CapabilityNotSupported,
     ProviderUnavailable,
     RetrievalProvider,
     TtsStream,
-    llm_provider_key,
     run_coro_sync,
 )
 
@@ -227,8 +225,7 @@ class MiniMaxSoundProvider:
 class MiniMaxSearchProvider(RetrievalProvider):
     """MiniMax Coding Plan 网页检索（订阅配额，不计 API 调用费）。
 
-    凭据解析链：凭据中心 minimax_coding_plan → minimax
-    → llm_clients.json 中 minimaxi.com 供应商凭据 → MINIMAX_API_KEY 环境变量。
+    凭据解析链：凭据中心 minimax_coding_plan → minimax → MINIMAX_API_KEY 环境变量。
     """
 
     name = "minimax"
@@ -242,9 +239,6 @@ class MiniMaxSearchProvider(RetrievalProvider):
             value = get_provider_key(name)
             if value:
                 return value, SOURCE_CONFIG
-        api_key, _provider_id = llm_provider_key("minimaxi.com", "minimax.io")
-        if api_key:
-            return api_key, SOURCE_LLM
         env_key = os.environ.get("MINIMAX_API_KEY", "").strip()
         return (env_key, SOURCE_ENV) if env_key else ("", "")
 
