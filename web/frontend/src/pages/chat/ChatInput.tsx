@@ -4,7 +4,7 @@ import { FileText, Image as ImageIcon, Loader2, Music, Paperclip, Send, Square, 
 import { Button } from "@/components/ui";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
-import { RealtimeCallBar } from "./RealtimeCallBar";
+import { RealtimeCallPanel, RealtimeCallProvider, RealtimeCallToggle } from "./RealtimeCallBar";
 
 const FILE_TYPE_ICONS: Record<string, typeof FileText> = {
   image: ImageIcon,
@@ -98,10 +98,8 @@ export function ChatInput() {
   }, [addFiles]);
 
   return (
+    <RealtimeCallProvider>
     <div className="shrink-0">
-      {/* 实时通话条（频道实时形态：开关/状态/转写/电平/音量） */}
-      <RealtimeCallBar />
-
       {/* 待发送文件预览 */}
       {pendingFiles.length > 0 && (
         <div className="flex gap-2 py-2 overflow-x-auto">
@@ -134,6 +132,9 @@ export function ChatInput() {
         </div>
       )}
 
+      {/* 通话状态条（仅通话中显示：状态/转写/电平/音量） */}
+      <RealtimeCallPanel />
+
       {/* 输入卡片 */}
       <div
         className="border border-input rounded-lg bg-card focus-within:border-ring transition-colors"
@@ -162,6 +163,7 @@ export function ChatInput() {
             <Button variant="ghost" size="icon" onClick={() => fileInputRef.current?.click()} title={t("attachFiles")}>
               <Paperclip size={18} />
             </Button>
+            <RealtimeCallToggle />
           </div>
           {sending ? (
             <Button
@@ -187,5 +189,6 @@ export function ChatInput() {
         </div>
       </div>
     </div>
+    </RealtimeCallProvider>
   );
 }
