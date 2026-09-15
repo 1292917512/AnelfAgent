@@ -203,7 +203,9 @@ async def clone_voice(
             resolved = os.path.abspath(ws.save_audio(resp.content, fmt="mp3", prefix="clone_src"))
         except Exception as e:
             return error_from_exception(e, action="下载克隆源音频")
+        source_url = audio_path  # 需公网 URL 的提供者（如百炼复刻）直用源链接
     else:
+        source_url = ""
         try:
             resolved = ws.resolve_workspace_path(audio_path)
         except ValueError as e:
@@ -215,7 +217,8 @@ async def clone_voice(
 
     return _dumps(await get_sound_router().run(
         "voice_mgmt", "音色复刻", provider=provider or "auto",
-        op="clone", resolved=resolved, voice_id=voice_id.strip(), preview_text=preview_text,
+        op="clone", resolved=resolved, source_url=source_url,
+        voice_id=voice_id.strip(), preview_text=preview_text,
     ))
 
 

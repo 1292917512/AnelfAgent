@@ -498,8 +498,8 @@ _DEFAULT_GROUP_ORDER: Dict[str, int] = {
     # 规划与执行
     "planning": 20, "skills": 21, "delegation": 22,
     # 能力与感知
-    "retrieval": 30, "minimax": 31, "os": 32, "environment": 33, "ssh": 34,
-    "sticker": 35, "share": 36, "audio": 37, "vault": 38, "vision": 39,
+    "retrieval": 30, "minimax": 31, "dashscope": 32, "os": 33, "environment": 34, "ssh": 35,
+    "sticker": 36, "share": 37, "audio": 38, "vault": 39, "vision": 40,
     # 模型与运维
     "model_control": 50, "ollama": 51, "logs": 52, "devops": 53,
     # 管理与集成

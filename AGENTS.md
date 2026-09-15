@@ -607,6 +607,15 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 > Model Experience：① 端点检测梯队与预处理开关全部为 voice 组配置键（配置中心热调），AI 可经配置工具调节收束灵敏度与降噪开关；② token 影响：+3 个 core 标签工具 schema（按需激活，不常驻）；③ 缓存影响：无——语音链路完全在思维循环之外
 
+#### 阿里百炼语音组件（第二十五轮新增）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 百炼语音组件 | `entities/dashscope/` | 四类组件注册进核心：流式 ASR（Recognition 流式会话，SDK 回调线程经 call_soon_threadsafe 桥入事件循环 → AsrEvent partial/final；dashscope_stream_asr_model 默认 fun-asr-realtime）→ asr_stream 链；非流式转写（Recognition.call 整段 WAV，segments 与 FunASR 客户端同构）→ asr 链；流式 TTS（SpeechSynthesizer 双向流式 PCM 直出 24k/16k）→ 核心 TTS 注册表；声音能力（一次性合成 + 音色管理：VoiceEnrollmentService 复刻/列表/删除，复刻需公网音频 URL——源 URL 直用、本地文件经 dashscope_clone_upload_url 上传端点换直链）→ 声音能力路由 |
+| 密钥与依赖 | `entities/dashscope/sdk.py` | dashscope SDK 为可选依赖（未装/无 Key 组件整体不可用，链自动沿用其余提供者）；Key 解析顺序：dashscope_api_key → llm_clients 中 dashscope 兼容提供者 → DASHSCOPE_API_KEY 环境变量。配置组 entity/dashscope（模型名/音色/优先级均可调，asr/tts 默认 priority 20：本地 FunASR 10 之后、内部模型链 50 之前） |
+
+> Model Experience：① 声音能力矩阵（sound_config capabilities）自动多出 dashscope 提供者与实时可用状态；② token 影响：无新增 schema（复用既有 voice_to_text/text_to_voice/clone_voice 工具，路由层多一个提供者）；③ 缓存影响：无
+
 #### 音频核心层与能力页签（第二十轮新增，第二十一轮重构）
 
 | 机制 | 位置 | 说明 |
@@ -803,6 +812,7 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；�
 | `audiosync` | 音源同步 | `entities/audiosync/tools.py` | always/core |
 | `vault` | 密码本 | `entities/vault/tools.py` | —（整组 allow_sleep 沉睡；reveal/totp/delete 标 risk=CRITICAL） |
 | `sticker` | 表情包 | `entities/sticker/tools.py` | always/media:image（部分工具 allow_sleep） |
+| `dashscope` | 阿里百炼语音 | `entities/dashscope/`（流式/非流式识别、CosyVoice/Qwen-TTS 合成、音色复刻） | — |
 | `environment` | 环境信息 | `entities/system/tools.py`（含 install/uninstall_python_packages 包安装） | — |
 | `model_control` | 模型控制 | `entities/model_control/tools.py` | core |
 | `ollama` | Ollama | `entities/model_control/tools.py` | — |

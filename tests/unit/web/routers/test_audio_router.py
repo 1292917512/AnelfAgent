@@ -151,8 +151,12 @@ class TestRecordingsApi:
 
 
 class TestErrorMapping:
-    def test_enroll_audio_503_without_asr(self, client: TestClient) -> None:
+    def test_enroll_audio_503_without_asr(
+            self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         """无可用 ASR 提供者时音频注册返回 503（而非 422 参数语义）。"""
+        # 钉死百炼组件凭据（宿主机可能装有 dashscope SDK 且可解析真实 Key）
+        from entities.dashscope import sdk as dashscope_sdk
+        monkeypatch.setattr(dashscope_sdk, "resolve_api_key", lambda: "")
         ConfigManager.set("funasr_endpoint", "")
         resp = client.post(
             "/api/audio/enroll/audio",
@@ -161,7 +165,10 @@ class TestErrorMapping:
         )
         assert resp.status_code == 503
 
-    def test_identify_audio_503_without_asr(self, client: TestClient) -> None:
+    def test_identify_audio_503_without_asr(
+            self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        from entities.dashscope import sdk as dashscope_sdk
+        monkeypatch.setattr(dashscope_sdk, "resolve_api_key", lambda: "")
         ConfigManager.set("funasr_endpoint", "")
         resp = client.post(
             "/api/audio/identify/audio",
