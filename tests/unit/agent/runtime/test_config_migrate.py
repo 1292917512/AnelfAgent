@@ -118,3 +118,26 @@ class TestSsrfKeyMigration:
         mem_config["retrieval_ssrf_protection"] = True
         config_migrate.migrate_legacy_entity_configs(str(tmp_path))
         assert mem_config["retrieval_ssrf_protection"] is True
+
+
+class TestFunasrKeyMigration:
+    def test_legacy_endpoint_migrated(self, tmp_path, mem_config):
+        mem_config["audiosync_funasr_endpoint"] = "http://nas:10095"
+        config_migrate.migrate_legacy_entity_configs(str(tmp_path))
+        assert mem_config["funasr_endpoint"] == "http://nas:10095"
+
+    def test_empty_legacy_not_migrated(self, tmp_path, mem_config):
+        mem_config["audiosync_funasr_endpoint"] = ""
+        config_migrate.migrate_legacy_entity_configs(str(tmp_path))
+        assert "funasr_endpoint" not in mem_config
+
+    def test_existing_new_key_wins(self, tmp_path, mem_config):
+        mem_config["audiosync_funasr_endpoint"] = "http://old:1"
+        mem_config["funasr_endpoint"] = "http://new:2"
+        config_migrate.migrate_legacy_entity_configs(str(tmp_path))
+        assert mem_config["funasr_endpoint"] == "http://new:2"
+
+    def test_legacy_timeout_migrated(self, tmp_path, mem_config):
+        mem_config["audiosync_funasr_timeout"] = "60"
+        config_migrate.migrate_legacy_entity_configs(str(tmp_path))
+        assert mem_config["funasr_timeout"] == "60"

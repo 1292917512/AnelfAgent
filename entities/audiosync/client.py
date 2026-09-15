@@ -12,7 +12,7 @@
     abs_* 为 epoch 毫秒绝对时间（source_time + 段内偏移），缺省时由调用方
     按录制基准时间 + 段内偏移自行换算（旧契约完全兼容）。
 
-endpoint 与超时经实体配置 audiosync_funasr_endpoint / audiosync_funasr_timeout 调整；
+endpoint 与超时经声音系统配置 funasr_endpoint / funasr_timeout 调整；
 未配置 endpoint 时所有方法抛 FunAsrNotConfigured，由调用方转为友好错误。
 """
 
@@ -43,21 +43,58 @@ async def _ensure_wav(audio_path: str) -> tuple[str, bool]:
 
 
 def _endpoint_config() -> str:
-    return str(get_config("audiosync_funasr_endpoint", "") or "").strip().rstrip("/")
+    return str(get_config("funasr_endpoint", "") or "").strip().rstrip("/")
 
 
 def _endpoint() -> str:
     endpoint = _endpoint_config()
     if not endpoint:
         raise FunAsrNotConfigured(
-            "未配置 FunASR 服务地址（audiosync_funasr_endpoint），"
-            "请在实体详情页配置中填写，如 http://nas:10095")
+            "未配置 FunASR 服务地址（funasr_endpoint），"
+            "请在声音系统配置中填写，如 http://nas:10095")
     return endpoint
 
 
 def is_configured() -> bool:
     """FunASR 服务是否已配置（工具 check_fn 门控用）。"""
     return bool(_endpoint_config())
+
+
+_PROBE_TTL_OK = 30.0
+_PROBE_TTL_FAIL = 60.0
+_probe_cache: tuple[float, bool] = (0.0, False)
+
+
+async def probe_available() -> bool:
+    """服务真实可达性（未配置或不可达均为 False；短 TTL 缓存防链解析抖动）。
+
+    探测发 GET 到服务根路径，任何 HTTP 应答（含 404）都视为可达——
+    目的只是确认服务进程活着，具体业务正确性由实际调用报错。
+    """
+    global _probe_cache
+    import time
+
+    endpoint = _endpoint_config()
+    if not endpoint:
+        return False
+    now = time.monotonic()
+    cached_at, cached_ok = _probe_cache
+    if now - cached_at < (_PROBE_TTL_OK if cached_ok else _PROBE_TTL_FAIL):
+        return cached_ok
+    try:
+        async with httpx.AsyncClient(timeout=3.0, trust_env=False) as client:
+            await client.get(endpoint)
+        ok = True
+    except Exception:
+        ok = False
+    _probe_cache = (now, ok)
+    return ok
+
+
+def reset_probe_cache() -> None:
+    """清空探测缓存（测试/配置变更后用）。"""
+    global _probe_cache
+    _probe_cache = (0.0, False)
 
 
 async def transcribe(audio_path: str, source_time: str = "") -> List[Dict[str, Any]]:
@@ -78,7 +115,7 @@ async def transcribe(audio_path: str, source_time: str = "") -> List[Dict[str, A
         FunAsrError: 网络/状态码/响应格式错误。
     """
     endpoint = _endpoint()
-    timeout = max(10.0, get_config_float("audiosync_funasr_timeout", 120.0))
+    timeout = max(10.0, get_config_float("funasr_timeout", 120.0))
     if not os.path.isfile(audio_path):
         raise FunAsrError(f"音频文件不存在: {audio_path}")
 

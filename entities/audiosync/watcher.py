@@ -318,7 +318,7 @@ class AudioSyncWatcher:
         不存在则仅删除（与镜像语义一致）。排除规则内的路径拒绝重建。
         """
         if not await audio_has_provider(KIND_ASR):
-            return {"error": "无可用 ASR 提供者（配置 audiosync_funasr_endpoint 后可用）",
+            return {"error": "无可用 ASR 提供者（配置 funasr_endpoint 后可用）",
                     "results": []}
         async with self._sync_lock:
             try:
@@ -355,7 +355,7 @@ class AudioSyncWatcher:
         if not await audio_has_provider(KIND_ASR):
             return {"scanned": 0, "new": 0, "ingested": 0, "deleted": 0,
                     "failed": 0, "no_speech": 0,
-                    "error": "无可用 ASR 提供者（配置 audiosync_funasr_endpoint 后可用）"}
+                    "error": "无可用 ASR 提供者（配置 funasr_endpoint 后可用）"}
         units = [u for u in await self._discover_units() if not is_excluded(u["path"])]
         summary: Dict[str, Any] = {"scanned": len(units), "new": 0, "ingested": 0,
                                    "deleted": 0, "failed": 0, "no_speech": 0, "error": ""}

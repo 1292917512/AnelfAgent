@@ -2,8 +2,7 @@
 
 把实体的 FunASR HTTP 客户端（client.py，实体主动拉取通道）封装为
 核心音频注册表的两个提供者组件：ASR 转写与声纹向量提取（后者由
-分段向量均值导出）。配置沿用同步组件配置键 audiosync_funasr_endpoint /
-audiosync_funasr_timeout（用户既有的服务地址配置自然生效）。
+分段向量均值导出）。服务地址经声音系统配置 funasr_endpoint / funasr_timeout 调整。
 """
 
 from __future__ import annotations
@@ -19,10 +18,11 @@ class FunAsrAsrProvider:
     name = "funasr"
     kind = "asr"
     priority = 10
+    unavailable_hint = "未配置 FunASR 服务地址或服务不可达（声音系统配置 funasr_endpoint）"
 
     async def check_available(self) -> bool:
-        from .client import is_configured
-        return is_configured()
+        from .client import probe_available
+        return await probe_available()
 
     async def transcribe(
         self, audio_path: str, source_time: str = "",
@@ -37,10 +37,11 @@ class FunAsrVoiceprintProvider:
     name = "funasr"
     kind = "voiceprint"
     priority = 10
+    unavailable_hint = "未配置 FunASR 服务地址或服务不可达（声音系统配置 funasr_endpoint）"
 
     async def check_available(self) -> bool:
-        from .client import is_configured
-        return is_configured()
+        from .client import probe_available
+        return await probe_available()
 
     async def embed(self, audio_path: str) -> Optional[List[float]]:
         from .client import transcribe

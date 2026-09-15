@@ -864,6 +864,7 @@ export interface AudioProviderInfo {
   kind: string;
   priority: number;
   available: boolean;
+  hint?: string;
 }
 
 export interface AudioInjectionStatus {

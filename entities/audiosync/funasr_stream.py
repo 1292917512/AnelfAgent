@@ -78,10 +78,11 @@ class FunAsrStreamingAsrProvider:
     name = "funasr_stream"
     kind = "asr_stream"
     priority = 10
+    unavailable_hint = "未配置 FunASR 服务地址或服务不可达（声音系统配置 funasr_endpoint）"
 
     async def check_available(self) -> bool:
-        from .client import is_configured
-        return is_configured()
+        from .client import probe_available
+        return await probe_available()
 
     def open_session(self, sample_rate: int = 16000) -> _FunAsrStreamSession:
         return _FunAsrStreamSession(sample_rate, self._transcribe_pcm)

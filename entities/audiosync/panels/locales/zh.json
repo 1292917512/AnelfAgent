@@ -19,7 +19,7 @@
     "healthTitle": "配置体检",
     "healthSubtitle": "各项对接是否就绪，未完成项附配置指引",
     "checkFunasr": "FunASR 转写服务",
-    "checkFunasrHint": "在「设置」配置 audiosync_funasr_endpoint",
+    "checkFunasrHint": "在「声音系统配置」配置 funasr_endpoint",
     "checkWatch": "目录自动同步",
     "checkWatchHint": "在「设置」开启 audiosync_watch_enabled",
     "checkWatchNoSource": "已开启但未配置来源（watch_dir 或 OpenList）",

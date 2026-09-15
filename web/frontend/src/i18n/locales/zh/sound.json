@@ -170,7 +170,7 @@
     "trySubtitle": "经 FunASR 转写并提取声纹，返回 Top 候选匹配",
     "ingestAfterIdentify": "识别后入库",
     "run": "开始识别",
-    "needFunasr": "请先在音源同步组件配置 audiosync_funasr_endpoint",
+    "needFunasr": "请先在声音系统配置 funasr_endpoint",
     "noSpeech": "音频中未检测到有效语音段",
     "noCandidate": "无候选（库为空或未提取到声纹）",
     "pipelineTitle": "上游 pipeline 对接契约"
@@ -272,5 +272,10 @@
     "off": "关",
     "missingHint": "端点检测模型未下载，当前为降级档位（噪音/停顿场景收束质量较低）。",
     "goDownload": "去设置 → 本地模型下载"
+  },
+  "kind": {
+    "asr": "转写（ASR）",
+    "asr_stream": "流式转写（实时通话）",
+    "voiceprint": "声纹提取"
   }
 }

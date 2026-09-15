@@ -170,7 +170,7 @@
     "trySubtitle": "Transcribe via FunASR and extract voiceprints, returning top candidates",
     "ingestAfterIdentify": "Ingest after identify",
     "run": "Identify",
-    "needFunasr": "Configure audiosync_funasr_endpoint in the Audio Sync entity first",
+    "needFunasr": "Configure funasr_endpoint in Sound system settings first",
     "noSpeech": "No valid speech detected in the audio",
     "noCandidate": "No candidates (empty library or no voiceprint extracted)",
     "pipelineTitle": "Upstream pipeline contract"
@@ -272,5 +272,10 @@
     "off": "Off",
     "missingHint": "Endpoint models not downloaded; running a degraded tier (weaker turn closing in noise/pauses).",
     "goDownload": "Download in Settings → Local Models"
+  },
+  "kind": {
+    "asr": "Transcription (ASR)",
+    "asr_stream": "Streaming ASR (realtime)",
+    "voiceprint": "Voiceprint embedding"
   }
 }

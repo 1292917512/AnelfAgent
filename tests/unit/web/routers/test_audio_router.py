@@ -153,7 +153,7 @@ class TestRecordingsApi:
 class TestErrorMapping:
     def test_enroll_audio_503_without_asr(self, client: TestClient) -> None:
         """无可用 ASR 提供者时音频注册返回 503（而非 422 参数语义）。"""
-        ConfigManager.set("audiosync_funasr_endpoint", "")
+        ConfigManager.set("funasr_endpoint", "")
         resp = client.post(
             "/api/audio/enroll/audio",
             files={"file": ("a.wav", b"fake", "audio/wav")},
@@ -162,7 +162,7 @@ class TestErrorMapping:
         assert resp.status_code == 503
 
     def test_identify_audio_503_without_asr(self, client: TestClient) -> None:
-        ConfigManager.set("audiosync_funasr_endpoint", "")
+        ConfigManager.set("funasr_endpoint", "")
         resp = client.post(
             "/api/audio/identify/audio",
             files={"file": ("a.wav", b"fake", "audio/wav")},

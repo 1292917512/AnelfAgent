@@ -140,5 +140,14 @@ def migrate_legacy_entity_configs(entities_dir: str = "") -> None:
                           bool(ConfigManager.get("web_ssrf_protection", True)))
         migrated_any = True
 
+    # FunASR 配置归属迁移（音源同步实体键 → 声音系统键）
+    for old_key, new_key in (
+            ("audiosync_funasr_endpoint", "funasr_endpoint"),
+            ("audiosync_funasr_timeout", "funasr_timeout")):
+        old_value = str(ConfigManager.get(old_key, "") or "").strip()
+        if old_value and not str(ConfigManager.get(new_key, "") or "").strip():
+            ConfigManager.set(new_key, old_value)
+            migrated_any = True
+
     if migrated_any:
         ConfigManager.save()

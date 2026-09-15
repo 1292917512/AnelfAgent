@@ -36,16 +36,6 @@ entity_manifest(
 # 实体配置项：分组名 entity/audiosync，实体详情页配置 tab 自动展示
 register_configs_safe({
     "entity/audiosync": {
-        "audiosync_funasr_endpoint": {
-            "description": "FunASR 服务地址（如 http://nas:10095），用于音频转写与声纹提取",
-            "default": "",
-        },
-        "audiosync_funasr_timeout": {
-            "description": "FunASR 服务调用超时",
-            "default": 120,
-            "advanced": True,
-            "unit": "秒",
-        },
         "audiosync_ingest_token": {
             "description": "外部音源推送令牌（X-Ingest-Token 头，留空则 /ingest 关闭）",
             "default": "",

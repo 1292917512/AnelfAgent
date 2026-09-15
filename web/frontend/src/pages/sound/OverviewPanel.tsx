@@ -48,16 +48,25 @@ export function AudioOverviewPanel() {
           </span>
         </div>
         <div className="space-y-1.5">
-          {status.providers.map((p) => (
-            <div key={`${p.kind}/${p.name}`} className="flex items-center gap-3 rounded-md bg-elevated px-3 py-2">
-              {p.available ? (
-                <CheckCircle2 size={14} className="text-green-500 shrink-0" />
-              ) : (
-                <XCircle size={14} className="text-muted shrink-0" />
+          {status.providers.map((p, i) => (
+            <div key={`${p.kind}/${p.name}`}>
+              {(i === 0 || status.providers[i - 1]?.kind !== p.kind) && (
+                <p className="text-[11px] font-medium text-muted mt-2 mb-0.5">
+                  {t(`kind.${p.kind}`, { defaultValue: p.kind })}
+                </p>
               )}
-              <span className="text-sm text-foreground">{p.name}</span>
-              <span className="text-[11px] font-mono text-muted">{p.kind}</span>
-              <span className="ml-auto text-[11px] text-muted">priority {p.priority}</span>
+              <div className="flex items-center gap-3 rounded-md bg-elevated px-3 py-2">
+                {p.available ? (
+                  <CheckCircle2 size={14} className="text-green-500 shrink-0" />
+                ) : (
+                  <XCircle size={14} className="text-muted shrink-0" />
+                )}
+                <span className="text-sm text-foreground">{p.name}</span>
+                <span className="ml-auto text-[11px] text-muted">priority {p.priority}</span>
+              </div>
+              {!p.available && p.hint && (
+                <p className="text-[11px] text-muted mt-0.5 ml-6">{p.hint}</p>
+              )}
             </div>
           ))}
           {status.providers.length === 0 && (

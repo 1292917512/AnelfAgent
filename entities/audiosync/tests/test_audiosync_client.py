@@ -11,7 +11,7 @@ from core.config import ConfigManager
 @pytest.fixture
 def funasr_env(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """配置 endpoint + 造一个假音频文件。"""
-    ConfigManager.set("audiosync_funasr_endpoint", "http://funasr.local")
+    ConfigManager.set("funasr_endpoint", "http://funasr.local")
     audio = tmp_path / "clip.m4a"
     audio.write_bytes(b"fake-audio")
     captured: dict = {}
@@ -82,6 +82,31 @@ class TestTranscribe:
         assert len(segments) == 1
 
     async def test_not_configured(self) -> None:
-        ConfigManager.set("audiosync_funasr_endpoint", "")
+        ConfigManager.set("funasr_endpoint", "")
         with pytest.raises(client_mod.FunAsrNotConfigured):
             await client_mod.transcribe("/tmp/any.wav")
+
+
+class TestProbe:
+    async def test_unconfigured_probes_false_without_network(self) -> None:
+        from entities.audiosync import client as c
+
+        ConfigManager.set("funasr_endpoint", "")
+        c.reset_probe_cache()
+        assert await c.probe_available() is False
+
+    async def test_probe_result_cached(self, monkeypatch) -> None:
+        from entities.audiosync import client as c
+
+        ConfigManager.set("funasr_endpoint", "http://funasr.local")
+        c.reset_probe_cache()
+        calls = {"n": 0}
+
+        async def _fake_get(self, url):
+            calls["n"] += 1
+            raise RuntimeError("unreachable")
+
+        monkeypatch.setattr(c.httpx.AsyncClient, "get", _fake_get)
+        assert await c.probe_available() is False
+        assert await c.probe_available() is False  # 命中缓存不再发请求
+        assert calls["n"] == 1

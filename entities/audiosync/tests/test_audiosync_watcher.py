@@ -25,7 +25,7 @@ def watch_dir(tmp_path):
     d.mkdir()
     ConfigManager.set("audiosync_watch_enabled", True)
     ConfigManager.set("audiosync_watch_dir", str(d))
-    ConfigManager.set("audiosync_funasr_endpoint", "http://funasr.local")
+    ConfigManager.set("funasr_endpoint", "http://funasr.local")
     return d
 
 
@@ -37,8 +37,14 @@ def _write(path: str, content: bytes = b"audio") -> None:
 
 @pytest.fixture
 def mock_pipeline(monkeypatch: pytest.MonkeyPatch):
-    """打桩 ffmpeg 合并与 FunASR 转写，记录调用。"""
+    """打桩 ffmpeg 合并与 FunASR 转写（含可用性探测），记录调用。"""
     calls = {"merge": 0, "transcribe": 0, "merged_inputs": []}
+
+    async def fake_probe() -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "entities.audiosync.client.probe_available", fake_probe)
 
     async def fake_merge(paths):
         calls["merge"] += 1

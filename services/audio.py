@@ -58,7 +58,10 @@ class AudioServiceFacade:
             providers.append({
                 "name": p.name, "kind": p.kind, "priority": p.priority,
                 "available": available,
+                "hint": "" if available else str(getattr(p, "unavailable_hint", "") or ""),
             })
+        # 按能力分组、组内优先级升序（小值优先与链解析一致）
+        providers.sort(key=lambda e: (e["kind"], e["priority"]))
 
         # 语音会话（agent/voice）配置快照
         voice_keys = (
