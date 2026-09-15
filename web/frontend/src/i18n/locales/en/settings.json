@@ -146,6 +146,10 @@
     "runtimeNotInstalled": "Not installed",
     "runtimeMissing": "Requires {{pkg}}",
     "installRuntime": "Install onnxruntime",
-    "installing": "Installing…"
+    "installing": "Installing…",
+    "statusVerifying": "Verifying",
+    "phaseConnecting": "Connecting to source… (falls back to mirror if slow)",
+    "phaseVerifying": "Verifying SHA-256…",
+    "proxyHint": "Slow or failing? Enable the global proxy in Config"
   }
 }

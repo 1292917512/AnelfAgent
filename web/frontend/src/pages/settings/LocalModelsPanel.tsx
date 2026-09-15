@@ -13,6 +13,7 @@ function formatSize(bytes: number): string {
 function statusBadge(model: LocalModelAsset, t: (k: string) => string) {
   if (model.status === "ready") return <Badge variant="ok">{t("localModels.statusReady")}</Badge>;
   if (model.status === "downloading") return <Badge variant="info">{t("localModels.statusDownloading")}</Badge>;
+  if (model.status === "verifying") return <Badge variant="info">{t("localModels.statusVerifying")}</Badge>;
   if (model.status === "error") return <Badge variant="danger">{t("localModels.statusError")}</Badge>;
   return <Badge variant="neutral">{t("localModels.statusMissing")}</Badge>;
 }
@@ -31,9 +32,10 @@ function ModelRow({ model, busy }: { model: LocalModelAsset; busy: boolean }) {
     onSuccess: invalidate,
   });
 
-  const downloading = model.status === "downloading";
+  const downloading = model.status === "downloading" || model.status === "verifying";
+  const connecting = model.status === "downloading" && model.phase === "connecting";
   const progress =
-    downloading && model.total
+    model.status === "downloading" && model.total
       ? Math.min(100, Math.round(((model.received ?? 0) / model.total) * 100))
       : null;
 
@@ -49,7 +51,7 @@ function ModelRow({ model, busy }: { model: LocalModelAsset; busy: boolean }) {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {model.status !== "ready" && !downloading && (
+          {!downloading && model.status !== "ready" && (
             <Button size="sm" disabled={busy || download.isPending} onClick={() => download.mutate()}>
               {model.size_bytes > 0 ? t("localModels.redownload") : t("localModels.download")}
             </Button>
@@ -71,9 +73,13 @@ function ModelRow({ model, busy }: { model: LocalModelAsset; busy: boolean }) {
             />
           </div>
           <div className="text-xs text-muted font-mono">
-            {progress === null
-              ? formatSize(model.received ?? 0)
-              : `${formatSize(model.received ?? 0)} / ${formatSize(model.total ?? 0)} (${progress}%)`}
+            {model.status === "verifying"
+              ? t("localModels.phaseVerifying")
+              : connecting
+                ? t("localModels.phaseConnecting")
+                : progress === null
+                  ? formatSize(model.received ?? 0)
+                  : `${formatSize(model.received ?? 0)} / ${formatSize(model.total ?? 0)} (${progress}%)`}
           </div>
         </div>
       )}
@@ -97,7 +103,8 @@ export function LocalModelsPanel() {
     queryKey: ["localModels"],
     queryFn: () => localModelsApi.list().then((r) => r.data),
     refetchInterval: (query) =>
-      query.state.data?.models.some((m) => m.status === "downloading") ? 1000 : false,
+      query.state.data?.models.some(
+        (m) => m.status === "downloading" || m.status === "verifying") ? 1000 : false,
   });
 
   const installRuntime = useMutation({
@@ -106,7 +113,8 @@ export function LocalModelsPanel() {
   });
 
   const runtime = data?.runtime;
-  const anyDownloading = data?.models.some((m) => m.status === "downloading") ?? false;
+  const anyDownloading =
+    data?.models.some((m) => m.status === "downloading" || m.status === "verifying") ?? false;
 
   return (
     <div className="space-y-4">
@@ -136,6 +144,11 @@ export function LocalModelsPanel() {
       <Card
         title={t("localModels.title")}
         subtitle={data?.dir ? `${t("localModels.dir")}: ${data.dir}` : undefined}
+        actions={
+          <a href="/webui/config?key=proxy_enabled" className="text-xs text-accent hover:underline">
+            {t("localModels.proxyHint")}
+          </a>
+        }
       >
         {isLoading ? (
           <LoadingBlock />

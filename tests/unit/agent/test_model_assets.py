@@ -174,3 +174,53 @@ class TestMirrorFallback:
             assert urls[1] == "https://my-mirror.example/org/model.onnx"
         finally:
             ConfigManager.set("model_asset_mirror", "auto")
+
+
+class TestGithubMirrorFallback:
+    def test_sources_auto_appends_ghfast_for_github_raw(self) -> None:
+        asset = _asset("https://raw.githubusercontent.com/user/repo/v6/m.onnx")
+        urls = ModelAssetManager._sources(asset)
+        assert urls[0].startswith("https://raw.githubusercontent.com/")
+        assert urls[1] == "https://ghfast.top/https://raw.githubusercontent.com/user/repo/v6/m.onnx"
+
+    def test_sources_off_disables_all_mirrors(self) -> None:
+        from core.config import ConfigManager
+
+        ConfigManager.set("model_asset_mirror", "off")
+        try:
+            assert len(ModelAssetManager._sources(_asset("https://huggingface.co/o/m.onnx"))) == 1
+            assert len(ModelAssetManager._sources(
+                _asset("https://raw.githubusercontent.com/u/r/m.onnx"))) == 1
+        finally:
+            ConfigManager.set("model_asset_mirror", "auto")
+
+
+class TestProxySelection:
+    def test_https_uses_https_env(self, monkeypatch) -> None:
+        from agent.model_assets import _proxy_for
+
+        monkeypatch.setenv("https_proxy", "http://p:7890")
+        monkeypatch.setenv("http_proxy", "http://other:1")
+        assert _proxy_for("https://example.com/m.onnx") == "http://p:7890"
+
+    def test_http_uses_http_env(self, monkeypatch) -> None:
+        from agent.model_assets import _proxy_for
+
+        monkeypatch.delenv("https_proxy", raising=False)
+        monkeypatch.setenv("HTTP_PROXY", "http://p:7890")
+        assert _proxy_for("http://example.com/m.onnx") == "http://p:7890"
+
+    def test_loopback_exempt(self, monkeypatch) -> None:
+        from agent.model_assets import _proxy_for
+
+        monkeypatch.setenv("https_proxy", "http://p:7890")
+        monkeypatch.setenv("http_proxy", "http://p:7890")
+        assert _proxy_for("http://127.0.0.1:8080/m.onnx") is None
+        assert _proxy_for("http://localhost:8080/m.onnx") is None
+
+    def test_no_env_direct(self, monkeypatch) -> None:
+        from agent.model_assets import _proxy_for
+
+        for key in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"):
+            monkeypatch.delenv(key, raising=False)
+        assert _proxy_for("https://example.com/m.onnx") is None

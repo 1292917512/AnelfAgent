@@ -146,6 +146,10 @@
     "runtimeNotInstalled": "未安装",
     "runtimeMissing": "需安装 {{pkg}}",
     "installRuntime": "安装 onnxruntime",
-    "installing": "安装中…"
+    "installing": "安装中…",
+    "statusVerifying": "校验中",
+    "phaseConnecting": "连接源站中…（直连慢时自动切换镜像）",
+    "phaseVerifying": "SHA-256 校验中…",
+    "proxyHint": "下载慢/失败？配置页开全局网络代理"
   }
 }

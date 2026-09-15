@@ -2,11 +2,13 @@
 
 资产登记（来源/版本/SHA-256 固定），落盘 ``workspace/models/``（AI
 工作路径内，文件工具可直接查看）；下载为流式落盘 + 哈希校验 + 原子
-替换，进度可查询。AI 经 list/download/delete_local_model 工具自主
-安装维护，Web 经 services/model_assets 提供同一能力。
+替换，进度带阶段（connecting/fetching/verifying）可查询。下载走全局
+网络代理（配置页 proxy_enabled 启动时写入的环境变量，回环地址豁免），
+直连受限时自动回退镜像源。AI 经 list/download/delete_local_model 工具
+自主安装维护，Web 经 services/model_assets 提供同一能力。
 
 运行时依赖（onnxruntime）不在此安装——经 install_python_packages
-工具或 Web 设置页装入 Python 环境。
+工具或 Web 面板安装。
 """
 
 from __future__ import annotations
@@ -27,6 +29,26 @@ from entities._sdk import deferred_tool
 _LOG_TAG = "模型资产"
 
 _PART_SUFFIX = ".part"
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _proxy_for(url: str) -> Optional[str]:
+    """按全局代理环境变量取该 URL 的代理（回环地址豁免，返回 None 直连）。
+
+    环境变量由启动流程从配置页的网络代理（proxy_enabled/http_proxy/
+    https_proxy）写入——模型下载与全项目共用同一代理开关。
+    """
+    import os
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(url).hostname or "").strip("[]")
+    if host.lower() in _LOOPBACK_HOSTS:
+        return None
+    env = os.environ
+    if url.startswith("https:"):
+        return env.get("https_proxy") or env.get("HTTPS_PROXY") or None
+    return env.get("http_proxy") or env.get("HTTP_PROXY") or None
 
 
 @dataclass(frozen=True)
@@ -154,12 +176,13 @@ class ModelAssetManager:
         for asset in self._assets:
             path = self.path_of(asset)
             state = dict(self._states.get(asset.id, {}))
-            downloading = state.get("status") == "downloading"
-            if not downloading:
+            live = state.get("status") in ("downloading", "verifying")
+            if not live:
                 if state.get("status") not in ("error",):
                     state["status"] = "ready" if self.verify(asset) else "missing"
                 state.pop("received", None)
                 state.pop("total", None)
+                state.pop("phase", None)
             try:
                 size = os.path.getsize(path) if os.path.exists(path) else 0
             except OSError:
@@ -203,7 +226,9 @@ class ModelAssetManager:
         asset = self.asset(asset_id)
         task = self._tasks.get(asset.id)
         if task is None or task.done():
-            self._states[asset.id] = {"status": "downloading", "received": 0, "total": 0}
+            self._states[asset.id] = {
+                "status": "downloading", "phase": "connecting",
+                "received": 0, "total": 0}
             task = asyncio.create_task(
                 self._download_asset(asset), name=f"model.download.{asset.id}")
             self._tasks[asset.id] = task
@@ -212,7 +237,9 @@ class ModelAssetManager:
     async def _download_asset(self, asset: ModelAsset) -> None:
         path = self.path_of(asset)
         part = path + _PART_SUFFIX
-        self._states[asset.id] = {"status": "downloading", "received": 0, "total": 0}
+        self._states[asset.id] = {
+            "status": "downloading", "phase": "connecting",
+            "received": 0, "total": 0}
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
             import aiohttp
@@ -222,18 +249,24 @@ class ModelAssetManager:
             last_exc: Exception | None = None
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 for url in self._sources(asset):
+                    proxy = _proxy_for(url)
+                    if proxy:
+                        log(f"模型下载经代理: {proxy}", "DEBUG", tag=_LOG_TAG)
                     try:
-                        async with session.get(url) as resp:
+                        async with session.get(url, proxy=proxy) as resp:
                             resp.raise_for_status()
                             total = int(resp.headers.get("Content-Length") or 0)
                             received = 0
+                            self._states[asset.id] = {
+                                "status": "downloading", "phase": "fetching",
+                                "received": 0, "total": total}
                             with open(part, "wb") as fh:
                                 async for chunk in resp.content.iter_chunked(1024 * 256):
                                     fh.write(chunk)
                                     digest.update(chunk)
                                     received += len(chunk)
                                     self._states[asset.id] = {
-                                        "status": "downloading",
+                                        "status": "downloading", "phase": "fetching",
                                         "received": received, "total": total,
                                     }
                         last_exc = None
@@ -244,6 +277,7 @@ class ModelAssetManager:
                             "DEBUG", tag=_LOG_TAG)
                 if last_exc is not None:
                     raise last_exc
+            self._states[asset.id] = {"status": "verifying"}
             if digest.hexdigest().lower() != asset.sha256.lower():
                 raise IOError(
                     f"SHA-256 校验失败（预期 {asset.sha256[:12]}…，"
@@ -264,17 +298,23 @@ class ModelAssetManager:
 
     @staticmethod
     def _sources(asset: ModelAsset) -> list[str]:
-        """下载候选源：直连优先，直连受限网络自动回退镜像（model_asset_mirror）。"""
+        """下载候选源：直连优先，直连受限网络自动回退镜像（model_asset_mirror）。
+
+        镜像仅改传输路径不改内容——资产哈希钉死，镜像被污染会在校验步
+        显式失败，不构成供应链风险。
+        """
         from core.config import get_config
 
         mirror = str(get_config("model_asset_mirror", "auto") or "auto").strip()
         urls = [asset.url]
+        if mirror == "off":
+            return urls
         if asset.url.startswith("https://huggingface.co/"):
-            hf_mirror = "https://hf-mirror.com/"
-            if mirror == "auto":
-                urls.append(asset.url.replace("https://huggingface.co/", hf_mirror, 1))
-            elif mirror.startswith("https://"):
-                urls.append(asset.url.replace("https://huggingface.co/", mirror, 1))
+            alt = "https://hf-mirror.com/" if mirror == "auto" else mirror
+            urls.append(asset.url.replace("https://huggingface.co/", alt, 1))
+        elif asset.url.startswith("https://raw.githubusercontent.com/"):
+            alt = "https://ghfast.top/" if mirror == "auto" else mirror
+            urls.append(alt + asset.url)
         return urls
 
     def delete(self, asset_id: str) -> Dict[str, Any]:

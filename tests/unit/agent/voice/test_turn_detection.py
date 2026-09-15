@@ -203,3 +203,53 @@ class TestFactory:
             assert isinstance(create_turn_detector(RATE), EnergyTurnDetector)
         finally:
             ConfigManager_set("voice_turn_detector", "auto")
+
+
+class TestDetectorStatus:
+    def test_status_matches_factory_resolution(self, monkeypatch) -> None:
+        from agent.model_assets import get_model_asset_manager
+
+        mgr = get_model_asset_manager()
+        monkeypatch.setattr(td, "_runtime_failed", False)
+        monkeypatch.setattr(
+            mgr, "resolve",
+            lambda asset_id: {
+                "silero_vad": "/m/silero.onnx", "smart_turn": "/m/smart.onnx",
+            }.get(asset_id))
+        monkeypatch.setattr(
+            "agent.model_assets.runtime_ready", lambda asset: True)
+        st = td.detector_status()
+        assert st == {
+            "configured": "auto", "effective": "smart_turn", "base": "silero",
+            "runtime_ready": True,
+            "models": {"silero_vad": "ready", "smart_turn": "ready"},
+        }
+
+    def test_status_energy_when_no_models(self, monkeypatch) -> None:
+        from agent.model_assets import get_model_asset_manager
+
+        monkeypatch.setattr(td, "_runtime_failed", False)
+        monkeypatch.setattr(
+            get_model_asset_manager(), "resolve", lambda asset_id: None)
+        monkeypatch.setattr(
+            "agent.model_assets.runtime_ready", lambda asset: False)
+        st = td.detector_status()
+        assert st["effective"] == "energy"
+        assert st["models"]["smart_turn"] == "missing"
+
+    def test_status_pinned_kind_no_cross_fallback(self, monkeypatch) -> None:
+        from agent.model_assets import get_model_asset_manager
+
+        mgr = get_model_asset_manager()
+        monkeypatch.setattr(td, "_runtime_failed", False)
+        monkeypatch.setattr(
+            mgr, "resolve",
+            lambda asset_id: "/m/silero.onnx" if asset_id == "silero_vad" else None)
+        monkeypatch.setattr(
+            "agent.model_assets.runtime_ready", lambda asset: True)
+        ConfigManager_set("voice_turn_detector", "smart_turn")
+        try:
+            # 钉死 smart_turn：模型缺失时不跨档借 silero，与工厂一致
+            assert td.detector_status()["effective"] == "energy"
+        finally:
+            ConfigManager_set("voice_turn_detector", "auto")

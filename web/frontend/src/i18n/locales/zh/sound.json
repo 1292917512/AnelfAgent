@@ -256,5 +256,21 @@
       "tts_default_reference_audio": "声音克隆的参考音频，需配合参考文本",
       "tts_default_reference_text": "克隆时必须提供参考音频中的文字"
     }
+  },
+  "chain": {
+    "title": "语音链路",
+    "tier": {
+      "smart_turn": "语义端点",
+      "silero": "VAD 模型级",
+      "energy": "能量法"
+    },
+    "tierSmartTurn": "语义端点（基座 {{base}}）",
+    "configured": "配置",
+    "denoise": "降噪",
+    "agc": "自动增益",
+    "on": "开",
+    "off": "关",
+    "missingHint": "端点检测模型未下载，当前为降级档位（噪音/停顿场景收束质量较低）。",
+    "goDownload": "去设置 → 本地模型下载"
   }
 }

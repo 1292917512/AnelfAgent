@@ -103,10 +103,13 @@ class RealtimeEngine:
         return next(iter(self._sessions.values()), None)
 
     def status(self) -> Dict[str, Any]:
+        from agent.voice.turn_detection import detector_status
+
         return {
             "sessions": len(self._sessions),
             "owners": sorted(self._sessions),
             "states": {o: s.state.value for o, s in self._sessions.items()},
+            "endpoint": detector_status(),
         }
 
     async def _check_cascade_ready(self, sink: RealtimeSink) -> None:

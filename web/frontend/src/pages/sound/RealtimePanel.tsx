@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Mic, MicOff, Radio, Zap } from "lucide-react";
+import { Activity, Mic, MicOff, Radio, Zap } from "lucide-react";
 import { RealtimeVoiceClient, type RtState } from "@/lib/realtime-voice";
 import { useChatStore } from "@/stores/chat-store";
-import { configMetaApi } from "@/lib/api";
+import { audioApi, configMetaApi } from "@/lib/api";
 import { Badge, Button, Switch, toast } from "@/components/ui";
 
 interface TurnEntry {
@@ -93,8 +93,56 @@ export function RealtimePanel() {
 
   useEffect(() => () => stop(), []);
 
+  const { data: audioStatus } = useQuery({
+    queryKey: ["audioStatus"],
+    queryFn: () => audioApi.status().then((r) => r.data),
+    refetchInterval: 15000,
+  });
+  const endpoint = audioStatus?.realtime.endpoint;
+  const voiceCfg = audioStatus?.voice_config ?? {};
+  const denoise = Boolean(voiceCfg.voice_denoise);
+  const agc = Boolean(voiceCfg.voice_agc);
+  const tierLabel = endpoint
+    ? endpoint.effective === "smart_turn"
+      ? t("chain.tierSmartTurn", { base: t(`chain.tier.${endpoint.base}`) })
+      : t(`chain.tier.${endpoint.effective}`)
+    : null;
+  const tierVariant = endpoint?.effective === "energy" ? "warn" : "ok";
+  const modelsMissing =
+    endpoint && (endpoint.models.smart_turn === "missing" || endpoint.models.silero_vad === "missing");
+
   return (
     <div className="space-y-4 max-w-3xl">
+      {/* 语音链路生效状态 */}
+      <div className="rounded-md border border-border bg-card p-4 space-y-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Activity size={14} className="text-accent" />
+          <span className="text-sm font-medium">{t("chain.title")}</span>
+          {tierLabel && <Badge variant={tierVariant}>{tierLabel}</Badge>}
+          {endpoint && (
+            <span className="text-xs text-muted">
+              {t("chain.configured")}: {endpoint.configured}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-4 flex-wrap text-xs text-muted">
+          <span>
+            {t("chain.denoise")}:{" "}
+            <span className={denoise ? "text-ok" : "text-warn"}>{denoise ? t("chain.on") : t("chain.off")}</span>
+          </span>
+          <span>
+            {t("chain.agc")}:{" "}
+            <span className={agc ? "text-ok" : "text-warn"}>{agc ? t("chain.on") : t("chain.off")}</span>
+          </span>
+        </div>
+        {modelsMissing && (
+          <p className="text-xs text-warn">
+            {t("chain.missingHint")}{" "}
+            <a href="/webui/settings" className="text-accent hover:underline">{t("chain.goDownload")}</a>
+          </p>
+        )}
+      </div>
+
       {/* 控制台 */}
       <div className="rounded-md border border-border bg-card p-4 space-y-3">
         <div className="flex items-center gap-3">

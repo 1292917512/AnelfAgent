@@ -256,5 +256,21 @@
       "tts_default_reference_audio": "Reference audio for voice cloning, requires reference text",
       "tts_default_reference_text": "Required for cloning: the text spoken in the reference audio"
     }
+  },
+  "chain": {
+    "title": "Voice Chain",
+    "tier": {
+      "smart_turn": "Semantic endpoint",
+      "silero": "Model VAD",
+      "energy": "Energy"
+    },
+    "tierSmartTurn": "Semantic endpoint (base {{base}})",
+    "configured": "Configured",
+    "denoise": "Denoise",
+    "agc": "Auto gain",
+    "on": "On",
+    "off": "Off",
+    "missingHint": "Endpoint models not downloaded; running a degraded tier (weaker turn closing in noise/pauses).",
+    "goDownload": "Download in Settings → Local Models"
   }
 }

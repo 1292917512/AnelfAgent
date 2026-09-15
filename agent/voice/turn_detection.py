@@ -449,3 +449,35 @@ def create_turn_detector(sample_rate: int = 16000) -> TurnDetector:
             log("silero 模型未就绪，降级能量法", "WARNING", tag=_LOG_TAG)
     log("端点检测: 能量法", "DEBUG", tag=_LOG_TAG)
     return EnergyTurnDetector(sample_rate)
+
+
+def detector_status() -> dict:
+    """端点检测当前生效档位（配置 × 模型在位情况，与工厂同规则的静态解析）。
+
+    供声音页与 realtime_status 展示"实际在用哪一档"；只查文件与运行时
+    在位性（哈希缓存），不加载模型。
+    """
+    from agent.model_assets import get_model_asset_manager, runtime_ready
+
+    kind = str(get_config("voice_turn_detector", "auto") or "auto").strip().lower()
+    mgr = get_model_asset_manager()
+    ort_ready = runtime_ready(mgr.asset("silero_vad"))
+    silero_ready = ort_ready and mgr.resolve("silero_vad") is not None
+    smart_ready = ort_ready and mgr.resolve("smart_turn") is not None and not _runtime_failed
+
+    effective, base = "energy", "energy"
+    if kind in ("auto", "smart_turn") and smart_ready:
+        effective = "smart_turn"
+        base = "silero" if silero_ready else "energy"
+    elif kind in ("auto", "silero") and silero_ready:
+        effective = "silero"
+    return {
+        "configured": kind,
+        "effective": effective,
+        "base": base,
+        "runtime_ready": ort_ready,
+        "models": {
+            "silero_vad": "ready" if silero_ready else "missing",
+            "smart_turn": "ready" if smart_ready else "missing",
+        },
+    }

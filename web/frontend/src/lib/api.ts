@@ -871,6 +871,14 @@ export interface AudioInjectionStatus {
   active: boolean;
 }
 
+export interface VoiceEndpointStatus {
+  configured: string;
+  effective: "smart_turn" | "silero" | "energy";
+  base: string;
+  runtime_ready: boolean;
+  models: Record<string, "ready" | "missing">;
+}
+
 export interface AudioStatus {
   providers: AudioProviderInfo[];
   asr_available: boolean;
@@ -880,6 +888,7 @@ export interface AudioStatus {
   realtime: {
     enabled: boolean; mode: string; sessions: number;
     owners: string[]; states: Record<string, string>;
+    endpoint?: VoiceEndpointStatus;
   };
   voice_config: Record<string, unknown>;
   library: AudioLibraryStats;
@@ -1336,7 +1345,8 @@ export interface LocalModelAsset {
   size_bytes: number;
   runtime_ready: boolean;
   pip_requires: string;
-  status: "ready" | "missing" | "downloading" | "error";
+  status: "ready" | "missing" | "downloading" | "verifying" | "error";
+  phase?: "connecting" | "fetching";
   received?: number;
   total?: number;
   error?: string;
