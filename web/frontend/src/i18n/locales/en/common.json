@@ -52,5 +52,15 @@
   "refresh": "Refresh",
   "retry": "Retry",
   "pageErrorTitle": "Failed to load page",
-  "pageErrorDesc": "The page failed to render. If the app was just updated, a refresh usually fixes it."
+  "pageErrorDesc": "The page failed to render. If the app was just updated, a refresh usually fixes it.",
+  "providerKeys": {
+    "title": "Provider Keys",
+    "hint": "Centralized external platform keys (config/provider_keys.json, git-ignored)",
+    "empty": "No components in this domain require credentials",
+    "configured": "Configured",
+    "notConfigured": "Not configured",
+    "save": "Save",
+    "saved": "Credential saved",
+    "saveFailed": "Failed to save credential"
+  }
 }

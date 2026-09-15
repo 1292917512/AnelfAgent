@@ -1367,6 +1367,30 @@ export interface LocalModelsStatus {
   runtime: { installed: boolean; version: string };
 }
 
+export interface ProviderKeyField {
+  key: string;
+  label?: string;
+  value: string;
+  configured: boolean;
+  secret: boolean;
+}
+
+export interface ProviderKeyEntry {
+  name: string;
+  domain: string;
+  title: string;
+  description: string;
+  fields: ProviderKeyField[];
+  unregistered?: boolean;
+}
+
+export const providerKeysApi = {
+  list: (domain = "") =>
+    api.get<{ providers: ProviderKeyEntry[] }>("/provider-keys", { params: domain ? { domain } : {} }),
+  set: (provider: string, field: string, value: string) =>
+    api.put<Record<string, unknown>>(`/provider-keys/${encodeURIComponent(provider)}`, { field, value }),
+};
+
 export const localModelsApi = {
   list: () => api.get<LocalModelsStatus>("/local-models"),
   download: (assetId: string) => api.post<LocalModelAsset>(`/local-models/${assetId}/download`, {}),

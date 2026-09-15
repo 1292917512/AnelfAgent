@@ -4,44 +4,25 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
-from core.config import ConfigManager
 from core.log import log
 
 _LOG_TAG = "百炼"
 
 
 def resolve_api_key() -> str:
-    """API Key 解析：组件配置 → llm_clients dashscope 兼容提供者 → 环境变量。"""
-    key = str(ConfigManager.get("dashscope_api_key", "") or "").strip()
-    if key:
-        return key
-    key = _key_from_llm_clients() or ""
+    """API Key 解析：凭据中心（provider_keys.json）→ 环境变量。
+
+    语音等实时模块的凭据只走组件凭据中心，不依赖大模型配置
+    （llm_clients 里的 dashscope Key 由启动迁移一次性提取）。
+    """
+    from entities._sdk import get_provider_key
+
+    key = get_provider_key("dashscope")
     if key:
         return key
     import os
 
     return os.environ.get("DASHSCOPE_API_KEY", "").strip()
-
-
-def _key_from_llm_clients() -> Optional[str]:
-    """从 llm_clients.json 找 dashscope 兼容提供者的 api_key。"""
-    import json
-    import os
-
-    from core.path import config_dir
-
-    path = os.path.join(config_dir(), "llm_clients.json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except Exception:
-        return None
-    for provider in data.get("providers", []):
-        base = str(provider.get("base_url", "") or "")
-        key = str(provider.get("api_key", "") or "").strip()
-        if key and "dashscope.aliyuncs.com" in base:
-            return key
-    return None
 
 
 def import_sdk() -> Tuple[Optional[object], str]:

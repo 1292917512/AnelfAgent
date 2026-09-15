@@ -6,7 +6,8 @@
 - 检索组件（Coding Plan 联网检索）→ 检索提供者矩阵
 - 流式 TTS 组件（HTTP / WebSocket 双传输）→ 核心 TTS 注册表
 
-配置自管于本目录 config.json（api_key 平台按量 / coding_plan_api_key 订阅），
+凭据经组件凭据中心（provider_keys.json，Web/AI/文件三面可配）；
+非凭据参数自管于本目录 config.json（默认音色/模型/代理），
 删除本目录即整体拔出（各核心路由的注册随之消失）。
 """
 
@@ -49,3 +50,17 @@ def register_components() -> None:
 
 
 register_components()
+
+# 组件凭据登记（域页签的组件凭据面板与 AI 工具据此展示）
+from entities._sdk import register_provider_key  # noqa: E402
+
+register_provider_key(
+    "minimax", domain="sound", title="MiniMax 平台",
+    description="语音合成/音色复刻/图片生成的平台按量 Key",
+)
+register_provider_key(
+    "minimax_coding_plan", domain="sound", title="MiniMax Coding Plan",
+    description="Token Plan 订阅 Key（图片理解/联网检索走订阅配额）",
+    extra_fields=[{"key": "api_host", "label": "订阅接入点",
+                   "default": "", "secret": False}],
+)

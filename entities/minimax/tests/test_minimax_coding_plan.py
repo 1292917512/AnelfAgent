@@ -9,52 +9,55 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+import entities._sdk as sdk_bridge
 import entities.minimax.client as client_mod
+from core import provider_keys as pk
 from entities.minimax.client import MiniMaxClient, MiniMaxError
-
-_CONFIG = {
-    "api_key": "platform-key",
-    "coding_plan_api_key": "cp-key",
-    "coding_plan_api_host": "",
-}
 
 
 @pytest.fixture(autouse=True)
-def _config(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(client_mod, "_config_cache", dict(_CONFIG))
+def _credentials(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """凭据中心隔离到临时存储；预置 minimax / minimax_coding_plan 两条。"""
+    monkeypatch.setattr(pk, "_path", lambda: str(tmp_path / "keys.json"))
+    monkeypatch.setattr(pk, "_cache", None)
+    monkeypatch.setattr(pk, "_registry", {})
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
     monkeypatch.delenv("MINIMAX_API_HOST", raising=False)
+    monkeypatch.setattr(
+        sdk_bridge, "get_provider_key",
+        lambda name, field="api_key": pk.get_provider_key(name, field))
+    pk.set_provider_key("minimax", "api_key", "platform-key")
+    pk.set_provider_key("minimax_coding_plan", "api_key", "cp-key")
 
 
 class TestCredentialResolution:
     def test_coding_plan_key_priority(self):
         assert MiniMaxClient._coding_plan_key() == "cp-key"
 
-    def test_fallback_to_api_key(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(client_mod, "_config_cache", {"api_key": "platform-key"})
+    def test_fallback_to_platform_key(self, monkeypatch: pytest.MonkeyPatch):
+        pk.set_provider_key("minimax_coding_plan", "api_key", "")
         assert MiniMaxClient._coding_plan_key() == "platform-key"
 
     def test_fallback_to_env(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(client_mod, "_config_cache", {})
+        pk.set_provider_key("minimax_coding_plan", "api_key", "")
+        pk.set_provider_key("minimax", "api_key", "")
         monkeypatch.setenv("MINIMAX_API_KEY", "env-key")
         assert MiniMaxClient._coding_plan_key() == "env-key"
 
     def test_host_default(self):
         assert MiniMaxClient._coding_plan_host() == "https://api.minimaxi.com"
 
-    def test_host_config_and_env(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(
-            client_mod, "_config_cache",
-            {"coding_plan_api_host": "https://api.minimax.io"},
-        )
+    def test_host_credential_and_env(self, monkeypatch: pytest.MonkeyPatch):
+        pk.set_provider_key("minimax_coding_plan", "api_host", "https://api.minimax.io")
         assert MiniMaxClient._coding_plan_host() == "https://api.minimax.io"
-        monkeypatch.setattr(client_mod, "_config_cache", {})
+        pk.set_provider_key("minimax_coding_plan", "api_host", "")
         monkeypatch.setenv("MINIMAX_API_HOST", "https://api.minimax.io")
         assert MiniMaxClient._coding_plan_host() == "https://api.minimax.io"
 
     def test_configured_property(self, monkeypatch: pytest.MonkeyPatch):
         assert MiniMaxClient().coding_plan_configured is True
-        monkeypatch.setattr(client_mod, "_config_cache", {})
+        pk.set_provider_key("minimax_coding_plan", "api_key", "")
+        pk.set_provider_key("minimax", "api_key", "")
         assert MiniMaxClient().coding_plan_configured is False
 
 

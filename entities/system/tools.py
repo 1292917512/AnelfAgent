@@ -301,3 +301,48 @@ def get_context_remaining() -> str:
         }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="查询上下文剩余")
+
+
+@tool(name="list_provider_keys", group="environment", tags=["core"], concurrency_safe=True)
+def list_provider_keys(domain: str = "") -> str:
+    """列出组件凭据（外部平台 API Key）的配置状态（值脱敏，只显示前4后4位）。
+
+    域过滤可选 sound / vision 等；组件不可用多半是凭据未配置，经本工具
+    查看后可用 set_provider_key 补齐。
+
+    Args:
+        domain: 可选域过滤（如 sound），留空列全部
+    """
+    try:
+        from entities._sdk import list_provider_keys as _list
+        return json.dumps({"providers": _list(domain.strip())}, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action="列出组件凭据")
+
+
+@tool(name="set_provider_key", group="environment", tags=["core"])
+def set_provider_key(provider: str, api_key: str = "", field: str = "api_key", value: str = "") -> str:
+    """配置一个组件凭据（如 minimax / minimax_coding_plan / dashscope 的 API Key）。
+
+    配好即刻生效（组件由不可用转为可用）。可选 list_provider_keys 查看
+    可用条目与字段。
+
+    Args:
+        provider: 提供者标识（list_provider_keys 里的 name）
+        api_key: 要写入的 Key（field 为 api_key 时的简写）
+        field: 凭据字段名（默认 api_key；附加字段如 api_host 用 value 传）
+        value: 要写入的字段值（field 非 api_key 时使用）
+    """
+    if not provider.strip():
+        return error_from_exception(ValueError("未提供 provider"), action="配置组件凭据")
+    real_value = api_key.strip() if field == "api_key" and api_key.strip() else value.strip()
+    try:
+        from entities._sdk import set_provider_key as _set
+        _set(provider.strip(), field.strip() or "api_key", real_value)
+        return json.dumps({
+            "ok": True, "provider": provider.strip(),
+            "field": field.strip() or "api_key",
+            "cleared": not real_value,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"配置组件凭据 {provider}")

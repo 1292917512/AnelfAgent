@@ -42,6 +42,12 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 
 from core.entity import EntityRegistry
 from core.log import log
+from core.provider_keys import (  # 组件凭据中心桥
+    get_provider_key,
+    list_provider_keys,
+    register_provider_key,
+    set_provider_key,
+)
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_schema import extract_tool_params, get_first_line
 
@@ -54,6 +60,8 @@ __all__ = [
     "entity_manifest", "entity_config", "context_provider",
     "push_notify", "register_entity_llm_hook",
     "get_embedder", "wake_embedding_worker", "register_embedding_backlog",
+    "register_provider_key", "get_provider_key", "set_provider_key",
+    "list_provider_keys",
     "register_audio_provider", "register_tts_provider", "audio_transcribe", "audio_speaker_embed",
     "audio_ingest_payload", "audio_has_provider", "KIND_ASR", "KIND_VOICEPRINT",
     "get_audio_store", "register_audio_source_fetcher",

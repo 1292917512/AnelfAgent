@@ -52,5 +52,15 @@
   "refresh": "刷新",
   "retry": "重试",
   "pageErrorTitle": "页面加载失败",
-  "pageErrorDesc": "页面内容渲染异常。若是刚更新版本，刷新页面通常即可恢复。"
+  "pageErrorDesc": "页面内容渲染异常。若是刚更新版本，刷新页面通常即可恢复。",
+  "providerKeys": {
+    "title": "组件凭据",
+    "hint": "外部平台 Key 集中配置（config/provider_keys.json，已忽略 git 跟踪）",
+    "empty": "当前域没有需要凭据的组件",
+    "configured": "已配置",
+    "notConfigured": "未配置",
+    "save": "保存",
+    "saved": "凭据已保存",
+    "saveFailed": "凭据保存失败"
+  }
 }

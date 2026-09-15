@@ -10,6 +10,19 @@ import pytest
 from agent.runtime import config_migrate
 
 
+@pytest.fixture(autouse=True)
+def _isolate_provider_keys(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """凭据迁移隔离：三个源/目标路径全部重定向到临时区（防动真文件）。"""
+    from core import provider_keys as pk
+
+    monkeypatch.setattr(pk, "_path", lambda: str(tmp_path / "keys.json"))
+    monkeypatch.setattr(pk, "_cache", None)
+    monkeypatch.setattr(config_migrate, "_minimax_config_path",
+                        lambda: str(tmp_path / "entities" / "minimax" / "config.json"))
+    monkeypatch.setattr(config_migrate, "_llm_clients_path",
+                        lambda: str(tmp_path / "llm_clients.json"))
+
+
 @pytest.fixture
 def mem_config(monkeypatch: pytest.MonkeyPatch):
     """内存态配置隔离。"""
@@ -141,3 +154,76 @@ class TestFunasrKeyMigration:
         mem_config["audiosync_funasr_timeout"] = "60"
         config_migrate.migrate_legacy_entity_configs(str(tmp_path))
         assert mem_config["funasr_timeout"] == "60"
+
+
+class TestProviderKeysMigration:
+    def test_minimax_entity_keys_migrated(self, tmp_path, mem_config, monkeypatch):
+        import json as _json
+
+        from core import provider_keys as pk
+
+        store_file = tmp_path / "keys.json"
+        monkeypatch.setattr(pk, "_path", lambda: str(store_file))
+        monkeypatch.setattr(pk, "_cache", None)
+        monkeypatch.setattr(pk, "_registry", {})
+
+        entity_cfg = tmp_path / "entities" / "minimax" / "config.json"
+        entity_cfg.parent.mkdir(parents=True)
+        entity_cfg.write_text(_json.dumps({
+            "api_key": "sk-mm", "coding_plan_api_key": "sk-cp",
+            "coding_plan_api_host": "https://cp.example", "default_voice_id": "v1",
+        }), encoding="utf-8")
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            config_migrate._migrate_provider_keys()
+        finally:
+            os.chdir(cwd)
+        assert pk.get_provider_key("minimax") == "sk-mm"
+        assert pk.get_provider_key("minimax_coding_plan") == "sk-cp"
+        assert pk.get_provider_key("minimax_coding_plan", field="api_host") == "https://cp.example"
+        # 源文件：凭据字段清除，参数保留
+        after = _json.loads(entity_cfg.read_text(encoding="utf-8"))
+        assert "api_key" not in after and after["default_voice_id"] == "v1"
+
+    def test_existing_key_not_overwritten(self, tmp_path, mem_config, monkeypatch):
+        import json as _json
+
+        from core import provider_keys as pk
+
+        store_file = tmp_path / "keys.json"
+        monkeypatch.setattr(pk, "_path", lambda: str(store_file))
+        monkeypatch.setattr(pk, "_cache", None)
+        monkeypatch.setattr(pk, "_registry", {})
+        pk.set_provider_key("minimax", "api_key", "sk-existing")
+
+        entity_cfg = tmp_path / "entities" / "minimax" / "config.json"
+        entity_cfg.parent.mkdir(parents=True)
+        entity_cfg.write_text(_json.dumps({"api_key": "sk-old"}), encoding="utf-8")
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            config_migrate._migrate_provider_keys()
+        finally:
+            os.chdir(cwd)
+        assert pk.get_provider_key("minimax") == "sk-existing"
+
+    def test_dashscope_llm_clients_extracted(self, tmp_path, mem_config, monkeypatch):
+        import json as _json
+
+        from core import provider_keys as pk
+
+        store_file = tmp_path / "keys.json"
+        monkeypatch.setattr(pk, "_path", lambda: str(store_file))
+        monkeypatch.setattr(pk, "_cache", None)
+        monkeypatch.setattr(pk, "_registry", {})
+        (tmp_path / "llm_clients.json").write_text(_json.dumps({
+            "providers": [
+                {"id": "mm", "base_url": "https://api.minimaxi.com/v1", "api_key": "sk-x"},
+                {"id": "ds", "base_url": "https://dashscope.aliyuncs.com/api/v1",
+                 "api_key": "sk-ds-from-llm"},
+            ]}), encoding="utf-8")
+        monkeypatch.setattr(config_migrate, "_llm_clients_path",
+                            lambda: str(tmp_path / "llm_clients.json"))
+        config_migrate._migrate_provider_keys()
+        assert pk.get_provider_key("dashscope") == "sk-ds-from-llm"

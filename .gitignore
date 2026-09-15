@@ -49,6 +49,7 @@ nohup.out
 # === Sensitive configs (copy *.example.json and rename) ===
 # 核心配置
 config/app_config.json
+config/provider_keys.json
 config/llm_clients.json
 config/mcp_servers.json
 config/mind_config.json

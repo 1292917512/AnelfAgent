@@ -22,6 +22,7 @@ from web.routers.memory import router as memory_router
 from web.routers.model_assets import router as model_assets_router
 from web.routers.models import router as models_router
 from web.routers.personas import router as personas_router
+from web.routers.provider_keys import router as provider_keys_router
 from web.routers.retrieval import router as retrieval_router
 from web.routers.search import router as search_router
 from web.routers.skills import router as skills_router
@@ -47,6 +48,7 @@ api_router.include_router(models_router)
 api_router.include_router(tools_router)
 api_router.include_router(tags_router)
 api_router.include_router(personas_router)
+api_router.include_router(provider_keys_router)
 api_router.include_router(skills_router)
 api_router.include_router(memory_router)
 api_router.include_router(model_assets_router)

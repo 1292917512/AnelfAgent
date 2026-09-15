@@ -1,7 +1,9 @@
 """MiniMax HTTP API 客户端。
 
 封装 MiniMax 平台的语音合成、图片生成、音色管理等 API，
-使用 httpx 异步客户端，配置从实体级 config.json 加载。
+使用 httpx 异步客户端。凭据（api_key / coding plan）经组件凭据中心
+（config/provider_keys.json，Web/AI/文件三面可配）；非凭据参数
+（默认音色/模型/代理）从实体级 config.json 加载。
 """
 
 from __future__ import annotations
@@ -106,7 +108,9 @@ class MiniMaxClient:
     """MiniMax 平台 API 客户端。"""
 
     def __init__(self, api_key: str = "", proxy_url: str = "") -> None:
-        self._api_key = api_key or get_config("api_key")
+        from entities._sdk import get_provider_key
+
+        self._api_key = api_key or get_provider_key("minimax")
         self._proxy_url = proxy_url or get_config("proxy")
 
     @property
@@ -522,18 +526,22 @@ class MiniMaxClient:
 
     @staticmethod
     def _coding_plan_key() -> str:
-        """Coding Plan 凭据：coding_plan_api_key → api_key → MINIMAX_API_KEY 环境变量。"""
+        """Coding Plan 凭据：凭据中心 minimax_coding_plan → 平台 key → 环境变量。"""
+        from entities._sdk import get_provider_key
+
         return (
-            get_config("coding_plan_api_key")
-            or get_config("api_key")
+            get_provider_key("minimax_coding_plan")
+            or get_provider_key("minimax")
             or os.environ.get("MINIMAX_API_KEY", "")
         )
 
     @staticmethod
     def _coding_plan_host() -> str:
-        """Coding Plan 站点：coding_plan_api_host → MINIMAX_API_HOST 环境变量 → 国内站。"""
+        """Coding Plan 站点：凭据中心附加字段 → MINIMAX_API_HOST 环境变量 → 国内站。"""
+        from entities._sdk import get_provider_key
+
         return (
-            get_config("coding_plan_api_host")
+            get_provider_key("minimax_coding_plan", field="api_host")
             or os.environ.get("MINIMAX_API_HOST", "")
             or _BASE_URL
         )
@@ -646,7 +654,7 @@ def minimax_error_response(exc: Exception, action: str, hint: str = "") -> str:
             return tool_error(
                 f"{action}鉴权失败: {exc.status_msg}",
                 cause=ErrorCause.CONFIG, retryable=False,
-                hint="检查 entities/minimax/config.json 的凭据是否与站点（国内/国际）匹配",
+                hint="凭据中心（声音页组件凭据）的 minimax 条目是否与站点（国内/国际）匹配",
             )
         return tool_error(
             f"{action}失败: {exc}",
@@ -659,7 +667,7 @@ def minimax_error_response(exc: Exception, action: str, hint: str = "") -> str:
             return tool_error(
                 f"{action}鉴权被拒绝 (HTTP {code})",
                 cause=ErrorCause.CONFIG, retryable=False,
-                hint="检查 entities/minimax/config.json 的凭据是否与站点（国内/国际）匹配",
+                hint="凭据中心（声音页组件凭据）的 minimax 条目是否与站点（国内/国际）匹配",
             )
         if code == 429:
             return tool_error(

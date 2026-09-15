@@ -6,7 +6,7 @@
 - MiniMaxSearchProvider：Coding Plan 联网检索 → 检索提供者矩阵
 - MiniMaxTtsProvider / MiniMaxWsTtsProvider：HTTP/WS 双传输流式 TTS → 核心 TTS 注册表
 
-凭据来自本实体 config.json：api_key（平台按量，tts/音色/图片）与
+凭据经组件凭据中心（provider_keys.json）：minimax（平台按量，tts/音色/图片）与
 coding_plan_api_key（Token Plan 订阅，图片理解/检索）独立解析。
 """
 
@@ -227,19 +227,19 @@ class MiniMaxSoundProvider:
 class MiniMaxSearchProvider(RetrievalProvider):
     """MiniMax Coding Plan 网页检索（订阅配额，不计 API 调用费）。
 
-    凭据解析链：本实体 config.json 的 coding_plan_api_key → api_key
+    凭据解析链：凭据中心 minimax_coding_plan → minimax
     → llm_clients.json 中 minimaxi.com 供应商凭据 → MINIMAX_API_KEY 环境变量。
     """
 
     name = "minimax"
     display_name = "MiniMax"
     description = "MiniMax Coding Plan 联网检索（订阅配额，不计 API 调用费）"
-    key_hint = "配置 MiniMax 实体的 coding_plan_api_key，或 LLM 供应商（minimaxi.com）的 API Key"
+    key_hint = "凭据中心（声音页组件凭据）配置 minimax_coding_plan，或 minimax 平台 Key"
 
     def credential(self) -> Tuple[str, str]:
-        from entities.minimax.client import get_config
-        for key in ("coding_plan_api_key", "api_key"):
-            value = str(get_config(key) or "").strip()
+        from entities._sdk import get_provider_key
+        for name in ("minimax_coding_plan", "minimax"):
+            value = get_provider_key(name)
             if value:
                 return value, SOURCE_CONFIG
         api_key, _provider_id = llm_provider_key("minimaxi.com", "minimax.io")
@@ -249,8 +249,8 @@ class MiniMaxSearchProvider(RetrievalProvider):
         return (env_key, SOURCE_ENV) if env_key else ("", "")
 
     def set_api_key(self, api_key: str) -> None:
-        from entities.minimax.client import update_config
-        update_config({"coding_plan_api_key": api_key.strip()})
+        from entities._sdk import set_provider_key
+        set_provider_key("minimax_coding_plan", "api_key", api_key)
 
     def search(self, query: str, max_results: int) -> Dict[str, Any]:
         api_key, _source = self.credential()

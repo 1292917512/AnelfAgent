@@ -111,6 +111,61 @@ def _migrate_web_config(path: str) -> int:
     return count
 
 
+
+def _minimax_config_path() -> str:
+    return os.path.join("entities", "minimax", "config.json")
+
+
+def _llm_clients_path() -> str:
+    from core.path import config_dir
+
+    return os.path.join(config_dir(), "llm_clients.json")
+
+
+def _migrate_provider_keys() -> None:
+    """组件凭据一次性归拢到 config/provider_keys.json（只搬缺失项，不动源文件）。"""
+    from core import provider_keys as pk
+
+    def _put(provider: str, field: str, value: str) -> bool:
+        value = str(value or "").strip()
+        if not value or pk.get_provider_key(provider, field):
+            return False
+        pk.set_provider_key(provider, field, value)
+        return True
+
+    moved = False
+    # MiniMax：实体 config.json 的 api_key / coding_plan_*
+    mm_config = _minimax_config_path()
+    try:
+        with open(mm_config, encoding="utf-8") as fh:
+            data = json.load(fh)
+        moved |= _put("minimax", "api_key", data.get("api_key", ""))
+        moved |= _put("minimax_coding_plan", "api_key", data.get("coding_plan_api_key", ""))
+        moved |= _put("minimax_coding_plan", "api_host", data.get("coding_plan_api_host", ""))
+        for legacy in ("api_key", "coding_plan_api_key", "coding_plan_api_host"):
+            data.pop(legacy, None)
+        with open(mm_config, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=4)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log(f"MiniMax 实体凭据迁移失败（跳过）: {e}", "WARNING", tag=_LOG_TAG)
+    # DashScope：llm_clients dashscope 兼容 Key 一次性提取 + 旧配置键
+    try:
+        with open(_llm_clients_path(), encoding="utf-8") as fh:
+            clients = json.load(fh)
+        for provider in clients.get("providers", []):
+            base = str(provider.get("base_url", "") or "")
+            if "dashscope.aliyuncs.com" in base:
+                moved |= _put("dashscope", "api_key", provider.get("api_key", ""))
+                break
+    except Exception:
+        pass
+    moved |= _put("dashscope", "api_key", ConfigManager.get("dashscope_api_key", ""))
+    if moved:
+        log("组件凭据已归拢到 config/provider_keys.json", tag=_LOG_TAG)
+
+
 def migrate_legacy_entity_configs(entities_dir: str = "") -> None:
     """导入旧实体本地配置到统一配置体系（幂等，启动时调用一次）。"""
     if not entities_dir:
@@ -139,6 +194,9 @@ def migrate_legacy_entity_configs(entities_dir: str = "") -> None:
         ConfigManager.set("retrieval_ssrf_protection",
                           bool(ConfigManager.get("web_ssrf_protection", True)))
         migrated_any = True
+
+    # 组件凭据归拢：实体 config.json / llm_clients / 旧配置键 → 凭据中心
+    _migrate_provider_keys()
 
     # FunASR 配置归属迁移（音源同步实体键 → 声音系统键）
     for old_key, new_key in (

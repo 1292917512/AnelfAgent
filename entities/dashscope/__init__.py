@@ -9,9 +9,10 @@
 - 声音能力组件（一次性合成 + 音色管理：复刻/列表/删除）→ 声音能力路由。
 
 依赖官方 dashscope SDK（可选依赖：未安装或未解析到 api_key 时组件整体
-不可用，各链自动沿用其余提供者）。密钥解析顺序：dashscope_api_key
-配置 → llm_clients 中 dashscope 兼容提供者的 key → DASHSCOPE_API_KEY
-环境变量。配置经统一配置体系（entity/dashscope 组，配置中心可搜可改）。
+不可用，各链自动沿用其余提供者）。凭据经组件凭据中心
+（provider_keys.json 的 dashscope 条目，Web/AI/文件三面可配），
+环境变量 DASHSCOPE_API_KEY 兜底；非凭据参数（模型/音色/优先级）经
+统一配置体系（entity/dashscope 组，配置中心可搜可改）。
 """
 
 from core.config import register_configs_safe
@@ -31,11 +32,6 @@ entity_manifest(
 
 register_configs_safe({
     "entity/dashscope": {
-        "dashscope_api_key": {
-            "description": "阿里百炼 API Key（留空自动复用 llm_clients 中 dashscope 兼容提供者的 Key 或环境变量）",
-            "default": "",
-            "password": True,
-        },
         "dashscope_stream_asr_model": {
             "description": "流式识别模型（实时通话）：fun-asr-realtime / qwen-audio-3.0-asr-flash-streaming",
             "default": "fun-asr-realtime",
@@ -92,3 +88,10 @@ def register_components() -> None:
 
 
 register_components()
+
+from entities._sdk import register_provider_key  # noqa: E402
+
+register_provider_key(
+    "dashscope", domain="sound", title="阿里百炼",
+    description="语音识别/合成/音色复刻的 DashScope API Key（fun-asr、CosyVoice、Qwen-TTS）",
+)
