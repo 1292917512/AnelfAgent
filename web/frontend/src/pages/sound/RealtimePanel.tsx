@@ -84,7 +84,16 @@ export function RealtimePanel() {
       clientRef.current = client;
       setActive(true);
     } catch (err) {
-      toast.error(t("realtime.startFailed"));
+      const e = err as { name?: string; message?: string };
+      let msg = t("realtime.startFailed");
+      if (e?.name === "NotAllowedError") msg = t("realtime.micDenied");
+      else if (e?.name === "NotFoundError") msg = t("realtime.micNotFound");
+      else if (e?.name === "NotReadableError") msg = t("realtime.micBusy");
+      else if (!navigator.mediaDevices?.getUserMedia) msg = t("realtime.micInsecure");
+      else if (e?.name === "Error" && e.message && e.message !== "Failed to fetch") {
+        msg = e.message;  // 服务端拒绝原因（voice_ack 拒绝帧的 details）
+      }
+      toast.error(msg);
       console.error(err);
     } finally {
       setConnecting(false);

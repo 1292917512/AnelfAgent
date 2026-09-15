@@ -219,7 +219,11 @@
     "you": "You",
     "agent": "Her",
     "startFailed": "Voice channel failed to start (check mic permission and ASR/TTS config)",
-    "bargeIn": "Barge-in"
+    "bargeIn": "Barge-in",
+    "micDenied": "Microphone permission denied: re-allow via the lock/mic icon in the address bar, or check System Settings → Privacy → Microphone",
+    "micNotFound": "No microphone found: make sure a mic is connected and enabled",
+    "micBusy": "Microphone is occupied by another app: close it and retry",
+    "micInsecure": "Page is not a secure context, browser blocks microphone access: use http://127.0.0.1:8092 or localhost (LAN IP requires https)"
   },
   "ttsProviders": "TTS providers",
   "realtimeStatus": "Realtime voice",
