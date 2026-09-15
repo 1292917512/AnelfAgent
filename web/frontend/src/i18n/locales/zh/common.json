@@ -61,6 +61,14 @@
     "notConfigured": "未配置",
     "save": "保存",
     "saved": "凭据已保存",
-    "saveFailed": "凭据保存失败"
+    "saveFailed": "凭据保存失败",
+    "localModels": "本地模型资产",
+    "localModelsSummary": "已就绪 {{ready}}/{{total}}",
+    "localModelsLink": "去设置管理",
+    "domain": {
+      "sound": "声音",
+      "vision": "视觉",
+      "retrieval": "检索"
+    }
   }
 }

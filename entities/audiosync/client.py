@@ -43,7 +43,13 @@ async def _ensure_wav(audio_path: str) -> tuple[str, bool]:
 
 
 def _endpoint_config() -> str:
-    return str(get_config("funasr_endpoint", "") or "").strip().rstrip("/")
+    """服务地址：凭据中心（组件凭据面板）→ 配置体系 funasr_endpoint 兜底。"""
+    from entities._sdk import get_provider_key
+
+    return (
+        get_provider_key("funasr", field="funasr_endpoint")
+        or str(get_config("funasr_endpoint", "") or "")
+    ).strip().rstrip("/")
 
 
 def _endpoint() -> str:

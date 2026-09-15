@@ -2,7 +2,8 @@
   "tabs": {
     "config": "模型配置",
     "priorities": "模型管理",
-    "subagents": "子代理"
+    "subagents": "子代理",
+    "providerKeys": "组件凭据"
   },
   "disabled": "已停用",
   "enableHint": "启用（停用后不参与任务执行）",

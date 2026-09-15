@@ -61,6 +61,14 @@
     "notConfigured": "Not configured",
     "save": "Save",
     "saved": "Credential saved",
-    "saveFailed": "Failed to save credential"
+    "saveFailed": "Failed to save credential",
+    "localModels": "Local model assets",
+    "localModelsSummary": "{{ready}}/{{total}} ready",
+    "localModelsLink": "Manage in Settings",
+    "domain": {
+      "sound": "Sound",
+      "vision": "Vision",
+      "retrieval": "Retrieval"
+    }
   }
 }

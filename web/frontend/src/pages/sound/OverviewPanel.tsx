@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { audioApi, configMetaApi, type AudioStatus } from "@/lib/api";
 import { Badge, Button, Input, LoadingBlock, toast } from "@/components/ui";
-import { ProviderKeysPanel } from "@/components/common/ProviderKeysPanel";
 import { AudioLines, CheckCircle2, Database, FileAudio, Mic, Phone, Radio, ServerCog, XCircle } from "lucide-react";
 
 /** 音频总览：提供者链状态 + FunASR 服务 + 音频库统计 + 上下文注入情况 + 文件解析入库 */
@@ -160,9 +159,6 @@ export function AudioOverviewPanel() {
           )}
         </div>
       </div>
-
-      {/* 组件凭据（外部平台 Key 集中配置） */}
-      <ProviderKeysPanel domain="sound" />
 
       {/* 实时语音状态 */}
       <div className="rounded-md border border-border bg-card p-4 space-y-2">

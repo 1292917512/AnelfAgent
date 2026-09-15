@@ -45,25 +45,28 @@ def register_provider_key(
     title: str,
     description: str = "",
     extra_fields: Optional[List[Dict[str, Any]]] = None,
+    domains: Optional[List[str]] = None,
 ) -> None:
     """登记一个组件凭据条目（组件导入时调用，幂等）。
 
     Args:
         name: 提供者标识（如 minimax / dashscope / minimax_coding_plan）
-        domain: 所属域（sound / vision / retrieval…，域页签按此过滤）
+        domain: 主域（卡片的归属页签域）
         title: 展示名
         description: 用途说明（面板与 AI 工具展示）
         extra_fields: api_key 之外的附加字段声明
             [{"key": "api_host", "label": "接入点", "default": "...", "secret": False}]
+        domains: 该凭据服务的域列表（视图透显，卡只出现一次；
+            缺省即 [domain]）
     """
     with _lock:
-        # 同一凭据可挂多个域面板（如订阅 Key 声音/检索两域共用）：幂等去重追加
         entries = _registry.setdefault(name, [])
         entry = {
             "domain": domain,
             "title": title,
             "description": description,
             "extra_fields": list(extra_fields or []),
+            "domains": list(domains or [domain]),
         }
         if entry not in entries:
             entries.append(entry)
@@ -142,7 +145,7 @@ def list_provider_keys(domain: str = "") -> List[Dict[str, Any]]:
     for name, metas in _registry.items():
         stored = _load().get(name) or {}
         for meta in metas:
-            if domain and meta["domain"] != domain:
+            if domain and domain not in meta.get("domains", [meta["domain"]]):
                 continue
             fields: List[Dict[str, Any]] = [{
                 "key": "api_key",

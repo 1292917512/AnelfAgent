@@ -2,7 +2,8 @@
   "tabs": {
     "config": "Model Config",
     "priorities": "Model Management",
-    "subagents": "Sub-agents"
+    "subagents": "Sub-agents",
+    "providerKeys": "Provider Keys"
   },
   "disabled": "Disabled",
   "enableHint": "Enabled (disabled models are excluded from task execution)",

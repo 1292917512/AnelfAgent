@@ -57,16 +57,12 @@ from entities._sdk import register_provider_key  # noqa: E402
 register_provider_key(
     "minimax", domain="sound", title="MiniMax 平台",
     description="语音合成/音色复刻/图片生成的平台按量 Key",
+    domains=["sound", "vision"],
 )
 register_provider_key(
     "minimax_coding_plan", domain="sound", title="MiniMax Coding Plan",
     description="Token Plan 订阅 Key（图片理解/联网检索走订阅配额）",
-    extra_fields=[{"key": "api_host", "label": "订阅接入点",
-                   "default": "", "secret": False}],
-)
-register_provider_key(
-    "minimax_coding_plan", domain="retrieval", title="MiniMax Coding Plan",
-    description="Token Plan 订阅 Key（联网检索走订阅配额）",
+    domains=["sound", "vision", "retrieval"],
     extra_fields=[{"key": "api_host", "label": "订阅接入点",
                    "default": "", "secret": False}],
 )

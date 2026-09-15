@@ -1,19 +1,24 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { providerKeysApi, type ProviderKeyEntry } from "@/lib/api";
+import { localModelsApi, providerKeysApi, type ProviderKeyEntry } from "@/lib/api";
 import { Badge, Button, Input, toast } from "@/components/ui";
-import { KeyRound } from "lucide-react";
+import { KeyRound, Package } from "lucide-react";
 
-/** 通用组件凭据面板：域内组件的外部 API Key 集中配置（脱敏展示，就地编辑）。 */
-export function ProviderKeysPanel({ domain }: { domain: string }) {
+/** 通用组件凭据面板：组件外部凭据集中配置（脱敏展示，就地编辑）。
+ *  domain 缺省展示全部域；本地模型资产摘要并入同一外部依赖管理面。 */
+export function ProviderKeysPanel({ domain }: { domain?: string }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
   const { data, isLoading } = useQuery({
-    queryKey: ["providerKeys", domain],
+    queryKey: ["providerKeys", domain ?? "all"],
     queryFn: () => providerKeysApi.list(domain).then((r) => r.data),
+  });
+  const { data: localModels } = useQuery({
+    queryKey: ["localModels"],
+    queryFn: () => localModelsApi.list().then((r) => r.data),
   });
 
   const saveMut = useMutation({
@@ -26,7 +31,7 @@ export function ProviderKeysPanel({ domain }: { domain: string }) {
         return next;
       });
       toast.success(t("providerKeys.saved"));
-      queryClient.invalidateQueries({ queryKey: ["providerKeys", domain] });
+      queryClient.invalidateQueries({ queryKey: ["providerKeys", domain ?? "all"] });
     },
     onError: (e: unknown) => {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -80,9 +85,10 @@ export function ProviderKeysPanel({ domain }: { domain: string }) {
         <span className="text-xs text-muted">{t("providerKeys.hint")}</span>
       </div>
       {providers.map((p) => (
-        <div key={p.name} className="space-y-1.5">
+        <div key={`${p.name}.${p.domain}`} className="space-y-1.5">
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium text-foreground">{p.title}</span>
+            <Badge variant="neutral">{t(`providerKeys.domain.${p.domain}`, { defaultValue: p.domain || "-" })}</Badge>
             {p.fields.some((f) => f.configured) ? (
               <Badge variant="ok">{t("providerKeys.configured")}</Badge>
             ) : (
@@ -93,6 +99,22 @@ export function ProviderKeysPanel({ domain }: { domain: string }) {
           {p.fields.map((f) => renderField(p, f))}
         </div>
       ))}
+
+      {localModels && (
+        <div className="pt-2 border-t border-border/60 flex items-center gap-2 flex-wrap">
+          <Package size={13} className="text-accent" />
+          <span className="text-xs font-medium text-foreground">{t("providerKeys.localModels")}</span>
+          <span className="text-xs text-muted">
+            {t("providerKeys.localModelsSummary", {
+              ready: localModels.models.filter((m) => m.status === "ready").length,
+              total: localModels.models.length,
+            })}
+          </span>
+          <a href="/webui/settings" className="ml-auto text-xs text-accent hover:underline">
+            {t("providerKeys.localModelsLink")}
+          </a>
+        </div>
+      )}
     </div>
   );
 }

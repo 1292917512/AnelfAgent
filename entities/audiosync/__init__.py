@@ -157,3 +157,14 @@ _register_audio_providers()  # FunASR 组件接入核心音频注册表
 from .funasr_stream import register_streaming_provider as _register_stream  # noqa: E402
 
 _register_stream()  # 流式 ASR 组件接入核心注册表
+
+
+from entities._sdk import register_provider_key  # noqa: E402
+
+register_provider_key(
+    "funasr", domain="sound", title="FunASR 转写服务",
+    description="自部署转写服务地址（转写/流式转写/声纹提取）",
+    domains=["sound"],
+    extra_fields=[{"key": "funasr_endpoint", "label": "服务地址",
+                   "default": "", "secret": False}],
+)

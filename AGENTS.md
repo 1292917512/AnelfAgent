@@ -611,7 +611,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 凭据中心 | `core/provider_keys.py` + `config/provider_keys.json`（gitignored，跟踪 example 模板） | 外部平台 API Key 的统一存取面：组件经 `_sdk.register_provider_key` 登记条目（name/domain/title/描述/附加字段），`get/set_provider_key` 读写，`list_provider_keys` 脱敏列举（含文件手填但未登记的条目）。三面配置等价：Web（域页签的通用 `ProviderKeysPanel`，`/api/provider-keys`）、配置文件（直接编辑 JSON）、AI（`list_provider_keys`/`set_provider_key` 工具，environment 组 core）——同一存储无第二真源 |
+| 凭据中心 | `core/provider_keys.py` + `config/provider_keys.json`（gitignored，跟踪 example 模板） | 外部平台 API Key 的统一存取面：组件经 `_sdk.register_provider_key` 登记条目（name/domain/title/描述/附加字段），`get/set_provider_key` 读写，`list_provider_keys` 脱敏列举（含文件手填但未登记的条目）。三面配置等价：Web（**模型配置页「组件凭据」页签**，全域凭据一张表，卡按 `domains` 多域透显、`/api/provider-keys`）、配置文件（直接编辑 JSON）、AI（`list_provider_keys`/`set_provider_key` 工具，environment 组 core）——同一存储无第二真源；FunASR 服务地址与本地模型资产摘要并入同一外部依赖管理面 |
 | 配置归位 | minimax / dashscope 组件 | 原则：大模型类生成继续走 llm_clients 模型配置；实时/特殊协议的语音等模块凭据只走凭据中心（dashscope 脱离 llm_clients 扫描，环境变量兜底），非凭据参数（模型名/音色/优先级）留各自配置组。MiniMax 凭据从实体 config.json 迁到凭据中心（参数留在 config.json）；启动迁移 `_migrate_provider_keys` 一次性归拢（minimax 实体键 + llm_clients dashscope Key + 旧 dashscope_api_key 配置键，只搬缺失项） |
 | 领域分层 | 域 ↔ 组件 | 声音/视觉域只提炼能力接口（能力路由 + 提供者注册表），具体平台由组件实现并登记凭据；无组件/无凭据时链自动降级，不影响其余用户 |
 
