@@ -458,7 +458,10 @@ AnelfAgent 的多平台能力建立在这些优秀开源项目之上：
 | [lark-oapi](https://github.com/larksuite/oapi-sdk-python) | 飞书 / Lark SDK | MIT |
 | [FastAPI](https://github.com/fastapi/fastapi) / [MCP](https://modelcontextprotocol.io/) | Web 与工具协议 | MIT |
 
-特别感谢 [Nekro Agent](https://github.com/KroMiose/nekro-agent) 在多平台智能体架构、多模态候选注入体验与实时语音链路（含麦克风上行音频帧协议）上的参考与启发。
+特别感谢以下两个项目（相互独立、各有侧重）在架构与体验上的参考与启发：
+
+- [Nekro Agent](https://github.com/KroMiose/nekro-agent)（开源智能体框架）：多平台智能体架构、多模态候选注入体验与实时语音链路（含麦克风上行音频帧协议）。
+- [N.E.K.O / Project-N-E-K-O](https://github.com/Project-N-E-K-O/N.E.K.O)（桌面陪伴智能体）：实时语音内核质量方向——语义端点检测与输入音频预处理的思路、本地推理模型的管理形态，以及"内核能力 + 桌面陪伴"的产品形态探索。
 
 > **协议说明**：AnelfAgent 通过 OneBot v11 WebSocket 与 NapCatQQ 通信，不包含也不修改 NapCat 源码。微信频道对接腾讯 iLink Bot API，协议实现参考社区适配器实践。
 

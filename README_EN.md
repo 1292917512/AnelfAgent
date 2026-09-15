@@ -458,7 +458,10 @@ AnelfAgent's multi-platform capabilities build upon these excellent open-source 
 | [lark-oapi](https://github.com/larksuite/oapi-sdk-python) | Feishu / Lark SDK | MIT |
 | [FastAPI](https://github.com/fastapi/fastapi) / [MCP](https://modelcontextprotocol.io/) | Web & tool protocols | MIT |
 
-Special thanks to [Nekro Agent](https://github.com/KroMiose/nekro-agent) for inspiration on multi-platform agent architecture, the multimodal candidate-injection experience, and the realtime voice pipeline (including the microphone uplink audio frame protocol).
+Special thanks to the following two independent projects for architectural and experiential inspiration:
+
+- [Nekro Agent](https://github.com/KroMiose/nekro-agent) (open-source agent framework): multi-platform agent architecture, the multimodal candidate-injection experience, and the realtime voice pipeline (including the microphone uplink audio frame protocol).
+- [N.E.K.O / Project-N-E-K-O](https://github.com/Project-N-E-K-O/N.E.K.O) (desktop companion agent): realtime voice kernel quality — the ideas behind semantic endpoint detection and input audio preprocessing, the local inference model management pattern, and the "capable kernel + desktop companion" product direction.
 
 > **License note**: AnelfAgent communicates with NapCatQQ over OneBot v11 WebSocket and does not include or modify NapCat source code. The WeChat channel integrates with Tencent's iLink Bot API, with protocol implementation informed by community adapter practices.
 
