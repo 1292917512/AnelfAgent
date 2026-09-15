@@ -202,8 +202,15 @@ class TestAsr:
         finals = await session.close()
         assert any(e.kind == "final" and e.text == "你好世界" for e in finals)
 
-    async def test_nonstream_segments_shape(self, fake_sdk, api_key, tmp_path) -> None:
+    async def test_nonstream_segments_shape(
+            self, fake_sdk, api_key, tmp_path, monkeypatch) -> None:
         from agent.audio import get_audio_registry
+
+        async def _passthrough(path: str):
+            return path, False
+
+        import entities._sdk as sdk_bridge
+        monkeypatch.setattr(sdk_bridge, "ensure_16k_mono_wav", _passthrough)
 
         wav = tmp_path / "a.wav"
         import wave
