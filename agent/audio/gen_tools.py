@@ -377,9 +377,9 @@ async def generate_lyrics(
 
 _SCALAR_KEYS = {
     "default_voice": "tts_default_voice",
+    "realtime_voice": "realtime_tts_voice",
     "default_reference_audio": "tts_default_reference_audio",
     "default_reference_text": "tts_default_reference_text",
-    "funasr_endpoint": "funasr_endpoint",
     "funasr_timeout": "funasr_timeout",
 }
 
@@ -396,8 +396,9 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
     Args:
         action: capabilities（能力矩阵：工具选型+参数+示例+实时可用状态，默认）/
             providers（各提供者能力与配置状态）/ get（全部声音配置）/ set（修改指定键）
-        key: set 时必填。可选：default_voice / default_reference_audio /
-            default_reference_text / funasr_endpoint（FunASR 服务地址）/
+        key: set 时必填。可选：default_voice（合成默认音色）/
+            realtime_voice（实时通话默认音色，克隆音色 ID 可用）/
+            default_reference_audio / default_reference_text /
             funasr_timeout（秒）/ provider_priority.<能力名>
             （value 为 JSON 数组如 '["models"]'，能力名: tts/voice_mgmt/music）
         value: set 时必填，配置值（provider_priority 用 JSON 数组字符串）
@@ -417,7 +418,7 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
             "default_voice": ConfigManager.get("tts_default_voice", ""),
             "default_reference_audio": ConfigManager.get("tts_default_reference_audio", ""),
             "default_reference_text": ConfigManager.get("tts_default_reference_text", ""),
-            "funasr_endpoint": funasr_client._endpoint_config(),
+            "realtime_voice": ConfigManager.get("realtime_tts_voice", ""),
             "funasr_timeout": ConfigManager.get("funasr_timeout", 120),
             "funasr_reachable": await funasr_client.probe_available(),
         }})
@@ -510,6 +511,6 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
         return _dumps({"success": True, "key": key, "chain": router.chain(cap)})
 
     return tool_error(f"不支持的配置键: {key}", cause=ErrorCause.PARAM, retryable=False,
-                      hint="可选: default_voice / default_reference_audio / "
-                           "default_reference_text / funasr_endpoint / funasr_timeout / "
+                      hint="可选: default_voice / realtime_voice / default_reference_audio / "
+                           "default_reference_text / funasr_timeout / "
                            "provider_priority.<能力>")

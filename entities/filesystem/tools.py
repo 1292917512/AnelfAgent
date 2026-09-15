@@ -232,7 +232,8 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
         fp = safe_path(file_path)
         if not os.path.isfile(fp):
             return tool_error(f"文件不存在: {file_path}", cause=ErrorCause.NOT_FOUND,
-                              retryable=False, resolved=fp)
+                              retryable=False, resolved=fp,
+                              hint=_memory_note_hint(file_path, fp))
         # Binary files: return metadata instead of trying to decode
         bin_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico",
                     ".mp3", ".wav", ".ogg", ".flac", ".m4a", ".opus", ".amr",
@@ -361,7 +362,8 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
             "hint": "Binary file, cannot read as text",
         }, ensure_ascii=False)
     except Exception as e:
-        return error_from_exception(e, action="读取文件")
+        return error_from_exception(e, action="读取文件",
+                                    hint=_memory_note_hint(file_path))
 
 
 @tool(name="write_file", group="os", description=_WRITE_FILE_PROMPT)
@@ -376,7 +378,12 @@ def write_file(file_path: str, content: str) -> str:
     """
     try:
         fp = safe_path(file_path)
-        if os.path.exists(fp):
+        exists = os.path.exists(fp)
+        if not exists:
+            guard = _memory_key_create_guard(file_path)
+            if guard:
+                return guard
+        if exists:
             ok, message = file_state.check_writable(fp)
             if not ok:
                 return tool_error(message, cause=ErrorCause.STATE, retryable=False, path=fp)
@@ -420,10 +427,12 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     try:
         fp = safe_path(file_path)
     except Exception as e:
-        return error_from_exception(e, action="解析文件路径")
+        return error_from_exception(e, action="解析文件路径",
+                                    hint=_memory_note_hint(file_path))
 
-    def _err(message: str, code: int, cause: Optional[ErrorCause] = None) -> str:
-        return tool_error(message, code=code, cause=cause)
+    def _err(message: str, code: int, cause: Optional[ErrorCause] = None,
+             hint: Optional[str] = None) -> str:
+        return tool_error(message, code=code, cause=cause, hint=hint)
 
     if old_string == new_string:
         return _err("未做任何修改：old_string 与 new_string 完全相同。", 1)
@@ -435,6 +444,9 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     if not exists:
         if old_string == "":
             # 空 old_string + 文件不存在 = 创建新文件
+            guard = _memory_key_create_guard(file_path)
+            if guard:
+                return guard
             try:
                 _write_text_with_metadata(fp, new_string, "utf-8", "LF")
                 file_state.record_write(fp, new_string, os.path.getmtime(fp))
@@ -444,7 +456,9 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
             except Exception as e:
                 return _err(f"创建文件失败: {e}", 11)
         suggestion = _suggest_similar_path(fp)
-        return _err(f"文件不存在: {file_path}。{suggestion}", 4)
+        return _err(f"文件不存在: {file_path}。{suggestion}", 4,
+                    cause=ErrorCause.NOT_FOUND,
+                    hint=_memory_note_hint(file_path, fp))
 
     if old_string == "":
         return _err("文件已存在，不能用空 old_string 创建。如需整体覆盖请使用 write_file，"
@@ -581,6 +595,9 @@ def append_file(path: str, content: str) -> str:
             existing, encoding, eol = _read_text_with_metadata(fp)
             _write_text_with_metadata(fp, existing + content, encoding, eol)
         else:
+            guard = _memory_key_create_guard(path)
+            if guard:
+                return guard
             _write_text_with_metadata(fp, content, "utf-8", "LF")
         # 若缓存中有该文件的读取记录，追加后同步刷新，避免后续编辑被误判为过期
         if file_state.get_cache().get(fp) is not None:
@@ -894,6 +911,48 @@ def _memory_key_note(key: str) -> str:
     if os.path.isfile(real):
         return f"{base}，实际文件在 {real}"
     return base
+
+
+def _memory_note_hint(file_path: str, resolved: Optional[str] = None) -> Optional[str]:
+    """识别指向记忆便签文件的路径，返回改用 notes 组工具的引导；未命中返回 None。
+
+    精确命中才提示（不打扰 workspace 普通文件与其他路径）：
+    - 绝对/解析后路径落在记忆便签根目录内的 .md 文件；或
+    - 相对路径形如记忆索引键（memory/*.md）且对应便签真实存在。
+    """
+    from core.path import ConfigPaths
+    mem_root = os.path.realpath(ConfigPaths.MEMORY_DIR)
+    notes_ws = os.path.dirname(mem_root)
+    for p in (resolved, file_path):
+        if not p or not os.path.isabs(p):
+            continue
+        real = os.path.realpath(p)
+        if real.startswith(mem_root + os.sep) and real.endswith(".md"):
+            key = os.path.relpath(real, notes_ws)
+            return (f"{file_path} 指向记忆便签文件（键 {key}），filesystem 组工具锚定 workspace 无法访问；"
+                    f"请改用 notes 组工具（read_memory_file / patch_memory_file 等）")
+    key = file_path.replace("\\", "/")
+    if _MEMORY_KEY_RE.match(key) and os.path.isfile(os.path.join(notes_ws, key)):
+        return (f"{key} 是记忆便签索引键（实际文件在 {os.path.join(notes_ws, key)}），"
+                f"非 workspace 相对路径；请改用 notes 组工具（read_memory_file / patch_memory_file 等）")
+    return None
+
+
+def _memory_key_create_guard(file_path: str) -> Optional[str]:
+    """拦截以记忆索引键形态（memory/*.md）经 filesystem 工具新建文件的误用。
+
+    便签键空间锚定数据目录，filesystem 工具锚定 workspace——该形态的新建几乎必然
+    是想用 notes 组工具写便签，直接创建会在 workspace 下产生错位的 memory/ 目录。
+    命中返回错误 JSON，未命中返回 None。
+    """
+    key = file_path.replace("\\", "/")
+    if not _MEMORY_KEY_RE.match(key):
+        return None
+    return tool_error(
+        f"{key} 是记忆便签索引键形态，filesystem 组工具锚定 workspace，在此创建会与便签错位。",
+        cause=ErrorCause.PARAM, retryable=False,
+        hint="新建/修改记忆便签请用 notes 组工具（write_memory_file / append_memory_file）",
+    )
 
 
 def _missing_module_hint(stdout: str, stderr: str) -> Optional[str]:

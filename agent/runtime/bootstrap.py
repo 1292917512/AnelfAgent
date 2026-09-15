@@ -264,6 +264,7 @@ def create_bootstrap() -> FlowMachine:
         import agent.memory.tools  # noqa: F401
         import agent.model_assets  # noqa: F401
         import agent.planning.tools  # noqa: F401
+        import agent.realtime.context  # noqa: F401
         import agent.realtime.tools  # noqa: F401
         import agent.retrieval.tools  # noqa: F401
         import agent.skills.tools  # noqa: F401

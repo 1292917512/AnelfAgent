@@ -173,8 +173,8 @@ class TestSoundConfigFunasr:
         monkeypatch.setattr(funasr_client, "reset_probe_cache", lambda: None)
         pk.set_provider_key("funasr", "funasr_endpoint", "http://funasr.local")
         out = json.loads(await sound_config(action="get"))
-        assert out["config"]["funasr_endpoint"] == "http://funasr.local"
         assert out["config"]["funasr_reachable"] is True
+        assert isinstance(out["config"]["realtime_voice"], str)
 
     async def test_set_funasr_endpoint_reports_reachability(self, monkeypatch) -> None:
         from entities.audiosync import client as funasr_client
@@ -184,8 +184,7 @@ class TestSoundConfigFunasr:
 
         monkeypatch.setattr(funasr_client, "probe_available", fake_probe)
         monkeypatch.setattr(funasr_client, "reset_probe_cache", lambda: None)
-        out = json.loads(await sound_config(action="set", key="funasr_endpoint",
-                                            value="http://funasr.local"))
+        out = json.loads(await sound_config(action="set", key="realtime_voice",
+                                            value="taffy_voice_0805"))
         assert out["success"] is True
-        assert out["reachable"] is False
-        assert "不可达" in out["hint"]
+        assert out["value"] == "taffy_voice_0805"

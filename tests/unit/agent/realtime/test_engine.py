@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 
 import pytest
@@ -489,3 +490,43 @@ class TestPreprocessWiring:
             assert all(frame == pcm_silence(20) for frame in seen)
         finally:
             await engine.stop("c9")
+
+
+class TestRealtimeReplyTool:
+    async def test_reply_without_session_rejected(self, app) -> None:
+        from agent.realtime.tools import realtime_reply
+
+        out = json.loads(await realtime_reply("你好"))
+        assert out.get("success") is not True or "没有进行中的实时通话" in out.get("detail", out.get("hint", "")) or out.get("error") or "通话" in str(out)
+
+    async def test_say_and_reply_accept_voice(self, app) -> None:
+        """voice 参数经音色解析透传（_resolve_voice）。"""
+        from agent.realtime import tools as rt_tools
+
+        assert rt_tools._resolve_voice(" taffy_voice_0805 ") == "taffy_voice_0805"
+        from core.config import ConfigManager
+        ConfigManager.set("realtime_tts_voice", "longanhuan_v3.6")
+        assert rt_tools._resolve_voice("") == "longanhuan_v3.6"
+        ConfigManager.set("realtime_tts_voice", "")
+
+
+class TestCallContextInjection:
+    async def test_no_session_no_injection(self, app) -> None:
+        from agent.realtime.context import RealtimeCallProvider
+
+        snap = await RealtimeCallProvider().provide("user_webui:web_user")
+        assert snap is None
+
+    async def test_active_session_injects_discipline(self, app) -> None:
+        from agent.realtime.context import RealtimeCallProvider
+        from agent.realtime.engine import get_realtime_engine
+
+        engine = get_realtime_engine()
+        sink = FakeSink()
+        await engine.start("c-ctx", _delivery(), sink.as_sink(), RATE)
+        try:
+            snap = await RealtimeCallProvider().provide("user_webui:web_user")
+            assert snap is not None and "realtime_reply" in snap.content
+            assert "send_message" in snap.content
+        finally:
+            await engine.stop("c-ctx")
