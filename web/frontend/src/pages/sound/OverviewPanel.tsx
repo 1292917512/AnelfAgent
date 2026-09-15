@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { audioApi, configMetaApi, type AudioStatus } from "@/lib/api";
+import { audioApi, type AudioStatus } from "@/lib/api";
 import { Badge, Button, Input, LoadingBlock, toast } from "@/components/ui";
 import { AudioLines, CheckCircle2, Database, FileAudio, Mic, Phone, Radio, ServerCog, XCircle } from "lucide-react";
 
@@ -10,7 +10,6 @@ export function AudioOverviewPanel() {
   const { t } = useTranslation("sound");
   const queryClient = useQueryClient();
   const [path, setPath] = useState("");
-  const [funasrDraft, setFunasrDraft] = useState<string | null>(null);
 
   const { data: status, isLoading } = useQuery({
     queryKey: ["audioStatus"],
@@ -20,16 +19,6 @@ export function AudioOverviewPanel() {
   const { data: funasr } = useQuery({
     queryKey: ["funasrStatus"],
     queryFn: () => audioApi.funasrStatus().then((r) => r.data),
-  });
-  const funasrSave = useMutation({
-    mutationFn: (v: string) => configMetaApi.save("funasr_endpoint", v.trim()),
-    onSuccess: () => {
-      setFunasrDraft(null);
-      toast.success(t("common:saveSuccess"));
-      queryClient.invalidateQueries({ queryKey: ["funasrStatus"] });
-      queryClient.invalidateQueries({ queryKey: ["audioStatus"] });
-    },
-    onError: () => toast.error(t("common:saveFailed")),
   });
   const funasrCheck = useMutation({
     mutationFn: () => audioApi.funasrStatus(true).then((r) => r.data),
@@ -98,7 +87,7 @@ export function AudioOverviewPanel() {
         </div>
       </div>
 
-      {/* FunASR 转写服务（声音域自管：状态 + 地址配置就地闭环） */}
+      {/* FunASR 转写服务（只读状态；地址配置在 模型页 → 组件凭据） */}
       <div className="rounded-md border border-border bg-card p-4 space-y-2">
         <div className="flex items-center gap-2">
           <ServerCog size={15} className="text-accent" />
@@ -119,23 +108,14 @@ export function AudioOverviewPanel() {
             {t("funasr.recheck")}
           </Button>
         </div>
-        <p className="text-xs text-muted">{t("funasr.desc")}</p>
-        <div className="flex items-center gap-2">
-          <Input
-            className="flex-1 font-mono text-xs"
-            placeholder={t("funasr.placeholder")}
-            value={funasrDraft ?? funasr?.endpoint ?? ""}
-            onChange={(e) => setFunasrDraft(e.target.value)}
-          />
-          <Button
-            size="sm"
-            variant="primary"
-            disabled={funasrDraft === null || funasrSave.isPending}
-            loading={funasrSave.isPending}
-            onClick={() => funasrDraft !== null && funasrSave.mutate(funasrDraft)}
-          >
-            {t("funasr.save")}
-          </Button>
+        <div className="flex items-center gap-2 flex-wrap text-xs">
+          <span className="text-muted">{t("funasr.desc")}</span>
+          {funasr?.endpoint && (
+            <span className="font-mono text-muted">{funasr.endpoint}</span>
+          )}
+          <a href="/webui/models" className="text-accent hover:underline">
+            {t("funasr.goConfigure")}
+          </a>
         </div>
       </div>
 

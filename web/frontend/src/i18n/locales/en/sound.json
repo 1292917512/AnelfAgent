@@ -289,7 +289,6 @@
     "unreachable": "Unreachable",
     "notConfigured": "Not configured",
     "recheck": "Re-check",
-    "save": "Save",
-    "placeholder": "Enter service address"
+    "goConfigure": "Configure in Models → Provider Keys"
   }
 }
