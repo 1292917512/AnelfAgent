@@ -93,6 +93,35 @@ function dispatchUiCommand(data: UiCommandPayload) {
 export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext): void {
   const { updateBucket } = ctx;
 
+  // 实时通话：用户语音转写定稿 → 聊天流（语音形态消息）
+  es.addEventListener("voice_transcript", (e) => {
+    try {
+      const data = JSON.parse(e.data) as { content: string; chat_id?: string };
+      const chatId = routeChatId(data);
+      updateBucket(chatId, (b) => ({
+        messages: [
+          ...b.messages.map((m) => (m.queued ? { ...m, queued: undefined } : m)),
+          { role: "user", content: data.content, cid: nextCid(), ts: Date.now() / 1000, voice: "transcript" as const },
+        ],
+      }));
+    } catch {
+      /* 忽略畸形帧 */
+    }
+  });
+
+  // 实时通话：AI 回复已同步语音播出 → 标记最近一条 assistant 消息
+  es.addEventListener("voice_spoken", () => {
+    updateBucket(ctx.getActiveChatId(), (b) => {
+      const idx = [...b.messages].reverse().findIndex((m) => m.role === "assistant");
+      if (idx === -1) return {};
+      const real = b.messages.length - 1 - idx;
+      const messages = [...b.messages];
+      const target = messages[real];
+      if (target) messages[real] = { ...target, voice: "spoken" as const };
+      return { messages };
+    });
+  });
+
   es.addEventListener("reply", (e) => {
     try {
       const data = JSON.parse(e.data) as SseReplyEvent;

@@ -70,5 +70,9 @@
     "micLevel": "Input level",
     "volume": "Output volume",
     "hint": "Messages are answered by voice in real time; speak again to interrupt anytime"
+  },
+  "voice": {
+    "transcript": "Voice transcript",
+    "spoken": "Spoken aloud"
   }
 }

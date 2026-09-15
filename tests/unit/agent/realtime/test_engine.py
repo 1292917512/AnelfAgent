@@ -535,3 +535,32 @@ class TestSendMessageAutoRoute:
             assert note == ""
         finally:
             await engine.stop("c-ar2")
+
+
+class TestVoiceFormEvents:
+    """语音形态事件：用户转写进聊天流、AI 回复标记播出（webui 频道）。"""
+
+    async def test_transcript_broadcast_on_webui(self, app) -> None:
+        from agent.realtime.engine import get_realtime_engine
+
+        engine = get_realtime_engine()
+        sink = FakeSink()
+        await engine.start("c-vc", _delivery(), sink.as_sink(), RATE)
+        try:
+
+            session = engine.session_for_scope("user_webui:u1")
+            assert session is not None
+            await engine._broadcast_transcript(session, "你好呀")
+        finally:
+            await engine.stop("c-vc")
+
+    async def test_no_broadcast_for_other_channel(self, app) -> None:
+        from agent.realtime.engine import RealtimeSession, get_realtime_engine
+        from agent.voice.session import VoiceDelivery
+
+        session = RealtimeSession(
+            owner="x", delivery=VoiceDelivery(
+                user_id="u1", adapter_key="qq"),
+            sample_rate=RATE,
+            sink=FakeSink().as_sink())
+        await get_realtime_engine()._broadcast_transcript(session, "hi")

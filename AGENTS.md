@@ -596,6 +596,17 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 > Model Experience：① 核心能力主用工具全部 tags=["always"] 常驻 schema（识别/生成/检索/下载），管理工具 core 标签按需激活，能力矩阵经 vision_config/sound_config/retrieval_providers 自发现（含实时可用状态与调用示例）；② token 影响：常驻工具 +18 schema（前缀缓存摊薄）；③ 缓存影响：always 工具并入既有 always 区块，排序冻结机制不变
 
+#### 通话频道化与语音形态数据（第二十七轮新增）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 频道实时能力 | `agent/channel/channel_types.py`（REALTIME_VOICE）+ `agent/realtime/protocol.py` | 实时语音是频道能力（channel capability），webui 频道第一个声明并实现；对外接入契约单一定义点（WS 控制流 + PCM 帧格式 + 下行事件表 + 对话数据划分约定），外部客户端按协议连 /api/chat/ws 即可接入，能力探测经 /api/adapters 的 capabilities |
+| 通话自动语音路由 | `agent/channel/output_tools.py::_speak_if_on_call` → `agent/realtime/engine.py::speak_to_scope` | **呈现形态归频道**：AI 统一经 send_message 发消息，出口层自动路由——通话会话的消息同步 TTS 播出（她在说→追加；思考/空闲→新播报；用户说话中→不插播仅文字），结果注记 voice 字段；AI 无专用语音工具 |
+| 语音形态消息 | `engine._broadcast_transcript`（voice_transcript 事件）+ `output_tools._broadcast_voice_spoken`（voice_spoken 事件） | 对话数据划分：用户语音转写定稿与 AI 语音播出均进频道聊天流（SSE 事件 → 前端消息气泡，voice=transcript/spoken 形态徽标）；对话历史同桶（语音轮与文字轮对记忆/上下文一视同仁） |
+| 通话入口（工作区） | `web/frontend/src/pages/chat/RealtimeCallBar.tsx` | 聊天输入区通话条：开关/状态灯/实时转写/输入电平/输出音量；声音页只保留能力管理面 |
+
+> Model Experience：① 通话中 AI 收到频道信息注入（RealtimeCallProvider：频道/会话/状态+自动播报说明），无通话零注入；② token 影响：无新增工具 schema（realtime_reply/realtime_say 已随自动路由退役，voice 组仅 realtime_status）；③ 缓存影响：注入在 volatile 层，不破前缀
+
 #### 语音链路核心质量（第二十四轮新增）
 
 语义端点检测 + 输入预处理链 + 本地模型资产双通道管理（Web 与 AI 工具同一能力面）：

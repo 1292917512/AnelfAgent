@@ -27,6 +27,8 @@ export interface ChatMessage {
   caption?: string;
   /** 结构化消息种类：tool_summary=工具执行摘要卡片 / system_notice=系统提示细条 */
   kind?: "tool_summary" | "system_notice";
+  /** 语音形态：transcript=实时通话的用户转写 / spoken=已同步语音播出（AI 回复） */
+  voice?: "transcript" | "spoken";
   /** 警示色调（发送超时/失败等 system_notice 用） */
   tone?: "warn";
   /** 本轮工具调用记录（reply 到达时从流式区固化，渲染为消息内折叠卡片） */

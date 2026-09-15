@@ -54,6 +54,8 @@ class ChannelCapability(str, Enum):
     REPLY_TO = "reply_to"
     INLINE_KEYBOARD = "inline_keyboard"
     STREAMING = "streaming"
+    # 实时语音通话（频道实时形态：PCM 帧上行 + 语音/事件流下行，协议见 core/audio_frames.py）
+    REALTIME_VOICE = "realtime_voice"
 
 
 def _ok(data: Optional[dict] = None) -> str:

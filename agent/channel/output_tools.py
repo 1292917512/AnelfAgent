@@ -431,11 +431,29 @@ async def _speak_if_on_call(channel_id: str, target_id: str, content: str) -> st
                 continue
             out = await engine.speak_to_scope(base, content)
             if out.get("spoken"):
+                await _broadcast_voice_spoken(channel_id, scope_id or base, content)
                 return "spoken" + ("-appended" if out.get("appending") else "")
             return ""
     except Exception as exc:
         log(f"通话语音路由异常（忽略，消息已文字送达）: {exc}", "DEBUG", tag="通道")
     return ""
+
+
+async def _broadcast_voice_spoken(channel_id: str, scope_id: str, content: str) -> None:
+    """语音播出事件 → 前端把对应回复标记为已语音播出（形态呈现）。"""
+    if channel_id != "webui":
+        return  # 其他频道无对应事件面；接入实时能力的频道自行实现
+    try:
+        from core.event_bus import EVENT_CHAT_BROADCAST, event_bus
+
+        await event_bus.emit(EVENT_CHAT_BROADCAST, {
+            "event": "voice_spoken",
+            "role": "assistant",
+            "content": content[:80],
+            "scope_id": scope_id,
+        })
+    except Exception:
+        pass
 
 
 @deferred_tool(group="output", tags=["send_photo"], source="channel.output")

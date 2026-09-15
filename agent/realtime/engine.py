@@ -358,7 +358,25 @@ class RealtimeEngine:
         await session.sink.send_event("rt_final", {
             "text": transcript, "turn_id": session.turn_id,
         })
+        await self._broadcast_transcript(session, transcript)
         await self.user_turn(session, transcript, segments, speaker)
+
+    @staticmethod
+    async def _broadcast_transcript(session: RealtimeSession, text: str) -> None:
+        """用户语音转写定稿 → 频道聊天流（语音轮在消息流双向呈现）。"""
+        if session.delivery.adapter_key != "webui" or not text.strip():
+            return
+        try:
+            from core.event_bus import EVENT_CHAT_BROADCAST, event_bus
+
+            await event_bus.emit(EVENT_CHAT_BROADCAST, {
+                "event": "voice_transcript",
+                "role": "user",
+                "content": text,
+                "chat_id": session.delivery.session_id,
+            })
+        except Exception:
+            pass
 
     async def _identify_speaker(
         self, pcm: bytes, sample_rate: int,

@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2 } from "lucide-react";
+import { Loader2, Mic, Volume2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { usePlanStore } from "@/stores/plan-store";
@@ -57,6 +57,13 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
           >
             {msg.queued && (
               <div className="text-[10px] text-muted mb-1">{t("queued")}</div>
+            )}
+            {msg.voice && (
+              <div className="flex items-center gap-1 text-[10px] text-muted mb-1">
+                {msg.voice === "transcript"
+                  ? <><Mic size={10} />{t("voice.transcript")}</>
+                  : <><Volume2 size={10} />{t("voice.spoken")}</>}
+              </div>
             )}
             <CollapsibleMarkdown
               content={msg.content}

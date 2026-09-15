@@ -74,6 +74,7 @@ class WebUIChannel(BaseChannel[WebUIConfig]):
     display_order = 10
 
     capabilities: Set[ChannelCapability] = {
+        ChannelCapability.REALTIME_VOICE,
             ChannelCapability.SEND_TEXT,
             ChannelCapability.SEND_PHOTO,
             ChannelCapability.SEND_VOICE,
