@@ -83,11 +83,6 @@ export function OverviewPanel() {
 
   const checks = [
     {
-      ok: stats?.asr_configured ?? false,
-      label: t("overview.checkFunasr"),
-      hint: t("overview.checkFunasrHint"),
-    },
-    {
       ok: (watch?.enabled && !!watch?.source) ?? false,
       label: t("overview.checkWatch"),
       hint: watch?.enabled ? t("overview.checkWatchNoSource") : t("overview.checkWatchHint"),

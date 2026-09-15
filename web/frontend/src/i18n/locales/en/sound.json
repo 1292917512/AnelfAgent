@@ -277,5 +277,14 @@
     "asr": "Transcription (ASR)",
     "asr_stream": "Streaming ASR (realtime)",
     "voiceprint": "Voiceprint embedding"
+  },
+  "funasr": {
+    "title": "FunASR transcribe service",
+    "desc": "Self-hosted service for transcription / streaming ASR / voiceprint; takes effect immediately after saving",
+    "reachable": "Online",
+    "unreachable": "Unreachable",
+    "notConfigured": "Not configured",
+    "recheck": "Re-check",
+    "save": "Save"
   }
 }

@@ -56,6 +56,12 @@ async def capabilities() -> Dict[str, Any]:
     return _audio.sound_capabilities()
 
 
+@router.get("/funasr/status")
+async def funasr_status(refresh: bool = False) -> Dict[str, Any]:
+    """FunASR 转写服务状态（配置在位 + 真实可达；refresh 重置探测缓存）。"""
+    return await _audio.funasr_status(refresh=refresh)
+
+
 class AnalyzeRequest(BaseModel):
     path: str
 

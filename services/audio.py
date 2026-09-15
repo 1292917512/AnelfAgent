@@ -421,3 +421,17 @@ class AudioServiceFacade:
         result["text_embedding_model"] = str(
             ConfigManager.get("embedding_text_model", "") or "") or "default"
         return result
+
+    @staticmethod
+    async def funasr_status(refresh: bool = False) -> Dict[str, Any]:
+        """FunASR 转写服务状态（声音域自检：配置在位 + 真实可达）。"""
+        from entities.audiosync import client as funasr
+
+        if refresh:
+            funasr.reset_probe_cache()
+        reachable = await funasr.probe_available()
+        return {
+            "configured": bool(funasr._endpoint_config()),
+            "endpoint": funasr._endpoint_config(),
+            "reachable": reachable,
+        }

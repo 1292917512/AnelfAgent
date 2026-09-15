@@ -18,8 +18,6 @@
     "samples": "Voiceprint samples",
     "healthTitle": "Setup checklist",
     "healthSubtitle": "Integration readiness with configuration hints",
-    "checkFunasr": "FunASR transcribe service",
-    "checkFunasrHint": "Set funasr_endpoint in Sound system settings",
     "checkWatch": "Directory auto-sync",
     "checkWatchHint": "Enable audiosync_watch_enabled in Settings",
     "checkWatchNoSource": "Enabled but no source (watch_dir or OpenList)",

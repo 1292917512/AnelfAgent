@@ -799,10 +799,18 @@ export interface VisionSourceInfo {
 }
 
 // Audio（音频能力页 · 核心能力 + 音频库管理面）
+export interface FunasrStatus {
+  configured: boolean;
+  endpoint: string;
+  reachable: boolean;
+}
+
 export const audioApi = {
   status: () => api.get<AudioStatus>("/audio/status"),
   stats: () => api.get<AudioLibraryStats>("/audio/stats"),
   capabilities: () => api.get<CapabilityStatus>("/audio/capabilities"),
+  funasrStatus: (refresh = false) =>
+    api.get<FunasrStatus>("/audio/funasr/status", { params: refresh ? { refresh: true } : {} }),
   analyze: (path: string) => api.post("/audio/analyze", { path }),
   // 声纹身份
   speakers: (params?: { status?: string; keyword?: string; limit?: number; offset?: number }) =>

@@ -277,5 +277,14 @@
     "asr": "转写（ASR）",
     "asr_stream": "流式转写（实时通话）",
     "voiceprint": "声纹提取"
+  },
+  "funasr": {
+    "title": "FunASR 转写服务",
+    "desc": "本地转写/流式转写/声纹提取的执行服务（自部署）；地址保存后即刻生效",
+    "reachable": "服务在线",
+    "unreachable": "不可达",
+    "notConfigured": "未配置",
+    "recheck": "重新检测",
+    "save": "保存"
   }
 }

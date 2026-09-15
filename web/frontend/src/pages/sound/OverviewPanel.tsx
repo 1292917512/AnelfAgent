@@ -1,20 +1,43 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { audioApi, type AudioStatus } from "@/lib/api";
+import { audioApi, configMetaApi, type AudioStatus } from "@/lib/api";
 import { Badge, Button, Input, LoadingBlock, toast } from "@/components/ui";
-import { AudioLines, CheckCircle2, Database, FileAudio, Mic, Phone, Radio, XCircle } from "lucide-react";
+import { AudioLines, CheckCircle2, Database, FileAudio, Mic, Phone, Radio, ServerCog, XCircle } from "lucide-react";
 
-/** 音频总览：提供者链状态 + 音频库统计 + 上下文注入情况 + 文件解析入库 */
+/** 音频总览：提供者链状态 + FunASR 服务 + 音频库统计 + 上下文注入情况 + 文件解析入库 */
 export function AudioOverviewPanel() {
   const { t } = useTranslation("sound");
   const queryClient = useQueryClient();
   const [path, setPath] = useState("");
+  const [funasrDraft, setFunasrDraft] = useState<string | null>(null);
 
   const { data: status, isLoading } = useQuery({
     queryKey: ["audioStatus"],
     queryFn: () => audioApi.status().then((r) => r.data as AudioStatus),
     refetchInterval: 8000,
+  });
+  const { data: funasr } = useQuery({
+    queryKey: ["funasrStatus"],
+    queryFn: () => audioApi.funasrStatus().then((r) => r.data),
+  });
+  const funasrSave = useMutation({
+    mutationFn: (v: string) => configMetaApi.save("funasr_endpoint", v.trim()),
+    onSuccess: () => {
+      setFunasrDraft(null);
+      toast.success(t("common:saveSuccess"));
+      queryClient.invalidateQueries({ queryKey: ["funasrStatus"] });
+      queryClient.invalidateQueries({ queryKey: ["audioStatus"] });
+    },
+    onError: () => toast.error(t("common:saveFailed")),
+  });
+  const funasrCheck = useMutation({
+    mutationFn: () => audioApi.funasrStatus(true).then((r) => r.data),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["funasrStatus"], data);
+      toast[data.reachable ? "success" : "error"](
+        data.reachable ? t("funasr.reachable") : t("funasr.unreachable"));
+    },
   });
 
   const analyzeMut = useMutation({
@@ -72,6 +95,47 @@ export function AudioOverviewPanel() {
           {status.providers.length === 0 && (
             <p className="text-xs text-muted">{t("noProviders")}</p>
           )}
+        </div>
+      </div>
+
+      {/* FunASR 转写服务（声音域自管：状态 + 地址配置就地闭环） */}
+      <div className="rounded-md border border-border bg-card p-4 space-y-2">
+        <div className="flex items-center gap-2">
+          <ServerCog size={15} className="text-accent" />
+          <span className="text-sm font-semibold text-heading">{t("funasr.title")}</span>
+          {funasr && (
+            <Badge variant={funasr.reachable ? "ok" : funasr.configured ? "danger" : "neutral"}>
+              {funasr.reachable
+                ? t("funasr.reachable")
+                : funasr.configured ? t("funasr.unreachable") : t("funasr.notConfigured")}
+            </Badge>
+          )}
+          <Button
+            size="sm"
+            className="ml-auto"
+            loading={funasrCheck.isPending}
+            onClick={() => funasrCheck.mutate()}
+          >
+            {t("funasr.recheck")}
+          </Button>
+        </div>
+        <p className="text-xs text-muted">{t("funasr.desc")}</p>
+        <div className="flex items-center gap-2">
+          <Input
+            className="flex-1 font-mono text-xs"
+            placeholder="http://nas:10095"
+            value={funasrDraft ?? funasr?.endpoint ?? ""}
+            onChange={(e) => setFunasrDraft(e.target.value)}
+          />
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={funasrDraft === null || funasrSave.isPending}
+            loading={funasrSave.isPending}
+            onClick={() => funasrDraft !== null && funasrSave.mutate(funasrDraft)}
+          >
+            {t("funasr.save")}
+          </Button>
         </div>
       </div>
 
