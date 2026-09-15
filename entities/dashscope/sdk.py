@@ -33,7 +33,7 @@ def import_sdk() -> Tuple[Optional[object], str]:
         return None, "未安装 dashscope SDK（install_python_packages 安装后可用）"
     key = resolve_api_key()
     if not key:
-        return None, "未解析到阿里百炼 API Key（dashscope_api_key / llm_clients / 环境变量均无）"
+        return None, "未解析到阿里百炼 API Key（组件凭据 dashscope / 环境变量 DASHSCOPE_API_KEY 均无）"
     dashscope.api_key = key
     return dashscope, ""
 

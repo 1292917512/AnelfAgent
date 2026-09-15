@@ -141,11 +141,9 @@ def fake_sdk(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def api_key(monkeypatch: pytest.MonkeyPatch):
-    from core.config import ConfigManager
 
     monkeypatch.setattr(pkg.sdk, "resolve_api_key", lambda: "sk-test")
     yield
-    ConfigManager.set("dashscope_api_key", "")
 
 
 class TestRegistration:
