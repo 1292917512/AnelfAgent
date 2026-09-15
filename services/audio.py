@@ -432,6 +432,5 @@ class AudioServiceFacade:
         reachable = await funasr.probe_available()
         return {
             "configured": bool(funasr._endpoint_config()),
-            "endpoint": funasr._endpoint_config(),
             "reachable": reachable,
         }

@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from core.config import get_config, get_config_float
+from core.config import get_config_float
 from core.log import log
 from entities._sdk import PreprocessError, ensure_16k_mono_wav
 
@@ -43,21 +43,18 @@ async def _ensure_wav(audio_path: str) -> tuple[str, bool]:
 
 
 def _endpoint_config() -> str:
-    """服务地址：凭据中心（组件凭据面板）→ 配置体系 funasr_endpoint 兜底。"""
+    """服务地址（凭据中心单源；配置/编辑经组件凭据面板/AI 工具/文件）。"""
     from entities._sdk import get_provider_key
 
-    return (
-        get_provider_key("funasr", field="funasr_endpoint")
-        or str(get_config("funasr_endpoint", "") or "")
-    ).strip().rstrip("/")
+    return get_provider_key("funasr", field="funasr_endpoint").rstrip("/")
 
 
 def _endpoint() -> str:
     endpoint = _endpoint_config()
     if not endpoint:
         raise FunAsrNotConfigured(
-            "未配置 FunASR 服务地址（funasr_endpoint），"
-            "请在声音系统配置中填写，如 http://nas:10095")
+            "未配置 FunASR 服务地址（组件凭据 funasr），"
+            "请在模型页 → 组件凭据配置，如 http://nas:10095")
     return endpoint
 
 

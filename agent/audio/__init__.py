@@ -152,10 +152,6 @@ register_configs_safe({
             "default": 50,
             "advanced": True,
         },
-        "funasr_endpoint": {
-            "description": "FunASR 服务地址（如 http://nas:10095），用于音频转写、流式转写与声纹提取",
-            "default": "",
-        },
         "funasr_timeout": {
             "description": "FunASR 服务调用超时",
             "default": 120,

@@ -801,7 +801,6 @@ export interface VisionSourceInfo {
 // Audio（音频能力页 · 核心能力 + 音频库管理面）
 export interface FunasrStatus {
   configured: boolean;
-  endpoint: string;
   reachable: boolean;
 }
 

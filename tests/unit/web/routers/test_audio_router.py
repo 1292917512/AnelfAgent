@@ -7,7 +7,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from agent.audio import matcher
-from core.config import ConfigManager
+
+
+@pytest.fixture
+def funasr_cred(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """FunASR 地址写入隔离的凭据中心存储（不碰真凭据文件）。"""
+    from core import provider_keys as pk
+
+    monkeypatch.setattr(pk, "_path", lambda: str(tmp_path / "keys.json"))
+    monkeypatch.setattr(pk, "_cache", None)
+
+    def _set(value: str) -> None:
+        pk.set_provider_key("funasr", "funasr_endpoint", value)
+
+    return _set
 from web.routers.audio import router as audio_router
 
 
@@ -152,12 +165,12 @@ class TestRecordingsApi:
 
 class TestErrorMapping:
     def test_enroll_audio_503_without_asr(
-            self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+            self, client: TestClient, monkeypatch: pytest.MonkeyPatch, funasr_cred) -> None:
         """无可用 ASR 提供者时音频注册返回 503（而非 422 参数语义）。"""
         # 钉死百炼组件凭据（宿主机可能装有 dashscope SDK 且可解析真实 Key）
         from entities.dashscope import sdk as dashscope_sdk
         monkeypatch.setattr(dashscope_sdk, "resolve_api_key", lambda: "")
-        ConfigManager.set("funasr_endpoint", "")
+        funasr_cred("")
         resp = client.post(
             "/api/audio/enroll/audio",
             files={"file": ("a.wav", b"fake", "audio/wav")},
@@ -166,10 +179,10 @@ class TestErrorMapping:
         assert resp.status_code == 503
 
     def test_identify_audio_503_without_asr(
-            self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+            self, client: TestClient, monkeypatch: pytest.MonkeyPatch, funasr_cred) -> None:
         from entities.dashscope import sdk as dashscope_sdk
         monkeypatch.setattr(dashscope_sdk, "resolve_api_key", lambda: "")
-        ConfigManager.set("funasr_endpoint", "")
+        funasr_cred("")
         resp = client.post(
             "/api/audio/identify/audio",
             files={"file": ("a.wav", b"fake", "audio/wav")},
@@ -178,17 +191,15 @@ class TestErrorMapping:
 
 
 class TestFunasrStatus:
-    def test_funasr_status_shape(self, client: TestClient, monkeypatch) -> None:
+    def test_funasr_status_shape(self, client: TestClient, monkeypatch, funasr_cred) -> None:
         async def fake_probe() -> bool:
             return True
 
         from entities.audiosync import client as funasr_client
         monkeypatch.setattr(funasr_client, "probe_available", fake_probe)
-        ConfigManager.set("funasr_endpoint", "http://funasr.local")
+        funasr_cred("http://funasr.local")
         resp = client.get("/api/audio/funasr/status")
         assert resp.status_code == 200
         data = resp.json()
-        assert data == {
-            "configured": True, "endpoint": "http://funasr.local", "reachable": True,
-        }
-        ConfigManager.set("funasr_endpoint", "")
+        assert data == {"configured": True, "reachable": True}
+        funasr_cred("")

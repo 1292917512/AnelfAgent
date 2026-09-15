@@ -110,9 +110,6 @@ export function AudioOverviewPanel() {
         </div>
         <div className="flex items-center gap-2 flex-wrap text-xs">
           <span className="text-muted">{t("funasr.desc")}</span>
-          {funasr?.endpoint && (
-            <span className="font-mono text-muted">{funasr.endpoint}</span>
-          )}
           <a href="/webui/models" className="text-accent hover:underline">
             {t("funasr.goConfigure")}
           </a>

@@ -5,13 +5,26 @@ from __future__ import annotations
 import pytest
 
 import entities.audiosync.client as client_mod
-from core.config import ConfigManager
 
 
 @pytest.fixture
-def funasr_env(tmp_path, monkeypatch: pytest.MonkeyPatch):
+def funasr_cred(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """FunASR 地址写入隔离的凭据中心存储（不碰真凭据文件）。"""
+    from core import provider_keys as pk
+
+    monkeypatch.setattr(pk, "_path", lambda: str(tmp_path / "keys.json"))
+    monkeypatch.setattr(pk, "_cache", None)
+
+    def _set(value: str) -> None:
+        pk.set_provider_key("funasr", "funasr_endpoint", value)
+
+    return _set
+
+
+@pytest.fixture
+def funasr_env(tmp_path, monkeypatch: pytest.MonkeyPatch, funasr_cred):
     """配置 endpoint + 造一个假音频文件。"""
-    ConfigManager.set("funasr_endpoint", "http://funasr.local")
+    funasr_cred("http://funasr.local")
     audio = tmp_path / "clip.m4a"
     audio.write_bytes(b"fake-audio")
     captured: dict = {}
@@ -81,24 +94,24 @@ class TestTranscribe:
         assert captured["data"] is None
         assert len(segments) == 1
 
-    async def test_not_configured(self) -> None:
-        ConfigManager.set("funasr_endpoint", "")
+    async def test_not_configured(self, funasr_cred) -> None:
+        funasr_cred("")
         with pytest.raises(client_mod.FunAsrNotConfigured):
             await client_mod.transcribe("/tmp/any.wav")
 
 
 class TestProbe:
-    async def test_unconfigured_probes_false_without_network(self) -> None:
+    async def test_unconfigured_probes_false_without_network(self, funasr_cred) -> None:
         from entities.audiosync import client as c
 
-        ConfigManager.set("funasr_endpoint", "")
+        funasr_cred("")
         c.reset_probe_cache()
         assert await c.probe_available() is False
 
-    async def test_probe_result_cached(self, monkeypatch) -> None:
+    async def test_probe_result_cached(self, monkeypatch, funasr_cred) -> None:
         from entities.audiosync import client as c
 
-        ConfigManager.set("funasr_endpoint", "http://funasr.local")
+        funasr_cred("http://funasr.local")
         c.reset_probe_cache()
         calls = {"n": 0}
 
