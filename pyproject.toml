@@ -72,6 +72,9 @@ dependencies = [
     "mss>=10.2.0",
     "openpyxl>=3.1.5",
     "python-pptx>=1.0.2",
+    # 本地语音模型推理（语义端点/smart_turn 与 silero VAD；缺失时端点
+    # 检测自动降级能量法，面板提示安装）
+    "onnxruntime>=1.16",
 ]
 
 [[tool.uv.index]]
