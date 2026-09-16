@@ -151,8 +151,10 @@ _PENDING_HINT = "→ 处理消息或执行操作，完成后调用 end_reply。�
 _MAX_RENDERED_STEPS = 12
 
 # 会话通知：其他会话的未读消息以"弹窗"形式提示（固定模板，动态内容在末尾 exec_context）
+# 「处理中」= 该会话已被并行回复周期认领（Mind._active_scopes），代答即重复回复
 _SESSION_NOTIFY_HINT = (
     "→ 回复默认发往当前会话，无需选择投递目标；"
+    "标注「处理中」的会话已有并行回复在途，不要代答（跨会话直接发送会造成重复回复）；"
     "如需处理其他会话的新消息，调用 switch_session(scope) 切换，"
     "可先调用 list_sessions 查看全部会话"
 )
@@ -910,11 +912,22 @@ class ContextAssembly:
         pending = wm.peek_all_tasks()
         if pending:
             current = _safe_entity_scope(anything)
+            # 处理权归属如实呈现：被并行回复周期认领的会话标注「处理中」，
+            # 消除"待处理但无人认领"的歧义——代答撞车的根因是链间不可见，
+            # 信息补全后模型不再需要靠猜（事实源 Mind._active_scopes，经
+            # outbound_guard 的统一读取面，与出站哨兵共用同一 provider）
+            from agent.channel.outbound_guard import active_reply_scopes
+            active = active_reply_scopes()
             lines.append(f"[会话通知] {len(pending)} 个会话有新消息待处理：")
             for scope, _uid, _gid, preview in pending[:5]:
                 unread = wm.get_unread_count(scope)
                 label = _format_scope_label(scope, wm.get_adapter_key(scope))
-                marker = "（当前会话）" if scope == current else ""
+                if scope == current:
+                    marker = "（当前会话）"
+                elif scope in active:
+                    marker = "（处理中，另有回复在途，无需代答）"
+                else:
+                    marker = ""
                 unread_text = f"{unread} 条未读: " if unread > 0 else ""
                 lines.append(f"  • {label}{marker} — {unread_text}{preview[:80]}")
             if len(pending) > 5:

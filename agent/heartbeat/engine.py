@@ -651,6 +651,16 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"话题指令清扫失败: {e}", "DEBUG", tag="心跳")
 
+        # 目标停滞概况：长期未更新的目标只呈现事实（心跳日志一行），
+        # 存续判断权在 AI——长期目标是规划常态，系统不做基于时间的自动清理
+        try:
+            from agent.planning.situation import stale_goal_line
+            stale_line = await stale_goal_line()
+            if stale_line:
+                hb_log.append_entry(stale_line)
+        except Exception as e:
+            log(f"目标停滞概况构建失败: {e}", "DEBUG", tag="心跳")
+
         # 主标签记忆（main:hub）自愈：缺失/被清理时重建骨架（幂等）
         if self.mind.memory_store:
             try:

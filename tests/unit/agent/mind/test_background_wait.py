@@ -420,8 +420,8 @@ class TestDelegationBackgroundIntegration:
 
         mind = _DelegationMind()
         manager = DelegationManager(mind)
-        delegation_id = manager.delegate_background("生成图片", scope="user_123")
-        assert mind.background_tasks.running("user_123")[0].task_id == delegation_id
+        delegation_id = manager.delegate_background("生成图片", scope="user_qq:123")
+        assert mind.background_tasks.running("user_qq:123")[0].task_id == delegation_id
 
         task = manager._background_tasks[delegation_id]
         await asyncio.wait_for(task, timeout=5)
@@ -430,10 +430,10 @@ class TestDelegationBackgroundIntegration:
             await asyncio.sleep(0)
 
         # 完成即新 turn：scope 已排入回复队列，并触发新一轮
-        assert "user_123" in mind.pfc.pending_user
+        assert "user_qq:123" in mind.pfc.pending_user
         mind.try_execute_mind.assert_called_once()
         # 事件已标记送达，后续 wait_any 不会重复返回
-        result = await mind.background_tasks.wait_any("user_123", timeout=0.1)
+        result = await mind.background_tasks.wait_any("user_qq:123", timeout=0.1)
         assert result.reason == "timeout"
 
     async def test_background_claimed_by_suspension(self) -> None:
@@ -443,17 +443,17 @@ class TestDelegationBackgroundIntegration:
         mind = _DelegationMind()
         manager = DelegationManager(mind)
         wait_task = asyncio.create_task(
-            mind.background_tasks.wait_any("user_123", timeout=5)
+            mind.background_tasks.wait_any("user_qq:123", timeout=5)
         )
         await asyncio.sleep(0.05)  # 确保 wait_any 已登记等待者
-        delegation_id = manager.delegate_background("生成图片", scope="user_123")
+        delegation_id = manager.delegate_background("生成图片", scope="user_qq:123")
         bg = manager._background_tasks.get(delegation_id)
 
         result = await wait_task
         assert result.reason == "completed"
         assert result.completions[0].task_id == delegation_id
         # 轮内会合：不排入回复队列、不触发新一轮
-        assert "user_123" not in mind.pfc.pending_user
+        assert "user_qq:123" not in mind.pfc.pending_user
         mind.try_execute_mind.assert_not_called()
         if bg is not None:
             await asyncio.wait_for(bg, timeout=5)
@@ -469,12 +469,12 @@ class TestDelegationBackgroundIntegration:
             await asyncio.sleep(30)
             return "迟到的结果"
         mind.reflect = AsyncMock(side_effect=_slow_reflect)
-        delegation_id = manager.delegate_background("长任务", scope="user_123")
+        delegation_id = manager.delegate_background("长任务", scope="user_qq:123")
         await asyncio.sleep(0.05)
-        assert len(mind.background_tasks.running("user_123")) == 1
+        assert len(mind.background_tasks.running("user_qq:123")) == 1
 
         result = await asyncio.to_thread(
-            mind.background_tasks.terminate, "user_123", delegation_id)
+            mind.background_tasks.terminate, "user_qq:123", delegation_id)
         assert result["ok"] and result["terminated"]
         bg = manager._background_tasks.get(delegation_id)
         if bg is not None:
@@ -483,9 +483,9 @@ class TestDelegationBackgroundIntegration:
             await asyncio.sleep(0)
 
         # 取消终态完成 + 轮外通知照常送达
-        completed = mind.background_tasks.completed("user_123")
+        completed = mind.background_tasks.completed("user_qq:123")
         assert completed and not completed[0].success
-        assert "user_123" in mind.pfc.pending_user
+        assert "user_qq:123" in mind.pfc.pending_user
 
     async def test_check_background_tasks_tool(self) -> None:
         """check_background_tasks 工具返回运行中与已完成任务快照。"""

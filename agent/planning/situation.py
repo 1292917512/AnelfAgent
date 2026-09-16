@@ -46,6 +46,10 @@ _MAX_RENDER_CHARS = 1400
 
 _STEP_MARKS = {"completed": "✓", "in_progress": "▶", "pending": "○", "skipped": "−"}
 
+# 停滞概况的报告门槛（天）：超过即列入心跳事实行，由 AI 决策处置
+_STALE_REPORT_DAYS = 7.0
+_TS_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 register_configs_safe({
     "planning/core": {
         "goals_inject_enabled": {
@@ -67,6 +71,7 @@ class _GoalView:
     steps: List[Tuple[str, str]]
     done: int
     total: int
+    updated_days: float
 
 
 @dataclass(slots=True)
@@ -124,6 +129,11 @@ def _parse_goal(entry: Any) -> Optional[_GoalView]:
     goal_id = str(data.get("goal_id", ""))
     if not goal_id:
         return None
+    try:
+        updated = time.mktime(time.strptime(str(data.get("updated_at", "")), _TS_FORMAT))
+        updated_days = max(0.0, (time.time() - updated) / 86400)
+    except (ValueError, OverflowError):
+        updated_days = 0.0
     return _GoalView(
         goal_id=goal_id,
         title=sanitize_for_context(str(data.get("title", "")), max_chars=_TITLE_CHARS),
@@ -132,6 +142,7 @@ def _parse_goal(entry: Any) -> Optional[_GoalView]:
         steps=steps,
         done=sum(1 for status, _ in steps if status == "completed"),
         total=len(steps),
+        updated_days=updated_days,
     )
 
 
@@ -195,7 +206,7 @@ def render(scope: str) -> str:
     ordered = [g for g in visible if g.is_plan] + [g for g in visible if not g.is_plan]
     lines = [
         f"[规划态势] 进行中的目标 {len(visible)} 个（每轮刷新，goal_id 以此为准；"
-        "update_goal 推进步骤，完成后 delete_goal 收敛）：",
+        "update_goal 推进步骤，标记 completed/cancelled 即自动清理）：",
     ]
     for goal in ordered[:_MAX_GOALS]:
         lines.append(("▸ " if goal.is_plan else "• ") + _goal_line(goal))
@@ -245,6 +256,35 @@ async def active_goal_lines() -> List[str]:
         log(f"活跃目标摘要构建失败: {exc}", "DEBUG", tag="规划")
         return []
     return [f"{g.goal_id}: {g.title} ({g.done}/{g.total} 步)" for g in snap.goals[:10]]
+
+
+async def stale_goal_line() -> str:
+    """长期未更新目标的事实概况行（心跳日志消费，空串不注入）。
+
+    只呈现事实不做处置：目标规划适应长期工作，存续判断权在 AI——
+    停滞可能是被遗忘，也可能是无需日常推进的长期目标。
+    """
+    try:
+        snap = await ensure_snapshot()
+    except Exception as exc:
+        log(f"目标停滞概况构建失败: {exc}", "DEBUG", tag="规划")
+        return ""
+    stale = sorted(
+        (g for g in snap.goals if g.updated_days >= _STALE_REPORT_DAYS),
+        key=lambda g: g.updated_days,
+        reverse=True,
+    )
+    if not stale:
+        return ""
+    items = ", ".join(
+        f"{g.goal_id}({g.updated_days:.0f}天)" for g in stale[:5]
+    )
+    more = f" 等 {len(stale)} 个" if len(stale) > 5 else ""
+    return (
+        f"[目标停滞] {len(stale)} 个活跃目标 ≥{_STALE_REPORT_DAYS:.0f} 天未更新: "
+        f"{items}{more}——由你决策：仍在推进则 update_goal 刷新，"
+        "已放弃则标记终态或 delete_goal（系统不自动清理）"
+    )
 
 
 # 规划态势注入（priority 30 会话操作态势档：仅目标 CRUD 时字节变化，

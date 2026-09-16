@@ -100,6 +100,25 @@ class TestClassifyByExceptionType:
         assert not c.retryable
         assert c.should_fallback
 
+    def test_content_policy_cn_provider_signatures(self) -> None:
+        """百炼 DataInspectionFailed 与智谱 cyber_policy 审核拒绝须归 CONTENT_POLICY。"""
+        ali = litellm.BadRequestError(
+            'OpenAIException - {"error":{"code":"DataInspectionFailed",'
+            '"message":"<400> InternalError.Algo.DataInspectionFailed: '
+            'Output data may contain inappropriate content."}}',
+            model="m", llm_provider="openai",
+        )
+        zhipu = litellm.BadRequestError(
+            'OpenAIException - {"error":{"code":"cyber_policy",'
+            '"message":"系统检测到输入或生成内容可能包含不安全或敏感内容"}}',
+            model="m", llm_provider="openai",
+        )
+        for exc in (ali, zhipu):
+            c = classify_llm_error(exc)
+            assert c.category == ErrorCategory.CONTENT_POLICY
+            assert not c.retryable
+            assert c.should_fallback
+
 
 class TestClassifyByMessagePattern:
     def test_wrapped_context_error(self) -> None:

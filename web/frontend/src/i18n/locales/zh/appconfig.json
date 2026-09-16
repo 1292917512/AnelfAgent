@@ -164,7 +164,7 @@
     "allowOutputTools": "允许任务外发（send_*）",
     "saveResultToMemory": "结果写入记忆",
     "reasoningEffort": "思考等级",
-    "defaultReasoningEffort": "全局默认",
+    "defaultReasoningEffort": "跟随模型",
     "effortLow": "轻量",
     "effortMedium": "均衡",
     "effortHigh": "深度",

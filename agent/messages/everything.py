@@ -242,10 +242,12 @@ def parse_entity_scope(scope: str) -> tuple[str, str, str, str]:
 
 
 def is_conversation_scope(scope: str) -> bool:
-    """是否为可路由的会话 scope（user_/group_ 前缀且 base id 可解析）。
+    """是否为可路由的会话 scope（user_/group_ 前缀、base id 可解析且含频道前缀）。
 
-    待回复队列与提醒等投递面的合法性判据：False 的 scope（如 "_global"）
-    既无处写历史也无法被回复路径消费，入队会让自主循环空转。
+    待回复队列与提醒等投递面的合法性判据：可路由要求 scope 自带频道前缀
+    （出站投递据此解析目标频道）。缺少前缀的旧格式（如 "user_123"）与
+    "_global" 一样既无法投递也无法被回复路径正确消费，入队会让自主循环空转。
     """
-    return parse_entity_scope(scope)[0] != ""
+    scope_type, adapter, _base_id, _session_id = parse_entity_scope(scope)
+    return bool(scope_type and adapter)
 

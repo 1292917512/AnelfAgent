@@ -3,7 +3,8 @@
 新语义：
 - present_plan 不再触发 ApprovalGate，调用后立即返回 ok + plan_id + status='executing'
 - 同时 emit EVENT_PLAN_SUBMITTED 事件（scope / chat_id / plan_id / goal / steps / files / risks）
-- update_goal 成功后 emit EVENT_PLAN_STEP_UPDATED / EVENT_PLAN_STATUS_CHANGED 事件
+- update_goal 成功后 emit EVENT_PLAN_STEP_UPDATED 事件；终态（completed/cancelled）
+  即删条目并 emit EVENT_PLAN_DELETED（前端卡片移除）
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import asyncio
 import json
 
 from core.event_bus import (
-    EVENT_PLAN_STATUS_CHANGED,
+    EVENT_PLAN_DELETED,
     EVENT_PLAN_STEP_UPDATED,
     EVENT_PLAN_SUBMITTED,
     event_bus,
@@ -125,7 +126,7 @@ class TestUpdateGoal:
             planning_store_port.unbind()
 
     async def test_emits_status_changed_on_completed(self, tmp_path):
-        """update_goal 设置 goal_status='completed' 时发射 plan_status_changed。"""
+        """update_goal 设置终态时即删条目并发射 plan_deleted（前端卡片移除）。"""
         from agent.memory.memory_store import MemoryStore
         from agent.planning.tracker import planning_store_port
 
@@ -142,12 +143,11 @@ class TestUpdateGoal:
         async def _capture(payload):
             captured.append(payload)
 
-        event_bus.on(EVENT_PLAN_STATUS_CHANGED, _capture, owner="test.plan")
+        event_bus.on(EVENT_PLAN_DELETED, _capture, owner="test.plan")
         try:
             await update_goal(goal_id=goal_id, goal_status="completed")
             await asyncio.sleep(0.05)
             assert len(captured) == 1
-            assert captured[0]["goal_status"] == "completed"
             assert captured[0]["plan_id"] == goal_id
         finally:
             event_bus.off_by_owner("test.plan")

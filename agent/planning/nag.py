@@ -61,7 +61,7 @@ def maybe_nag(scope: str) -> str:
     return (
         f"[目标提醒] 你已有 {st.round - st.last_use_round} 轮未更新目标。"
         "如目标仍在进行，请用 list_goals 查看进度并更新；"
-        "已完成的目标请用 update_goal 标记完成或用 delete_goal 删除，避免堆积。"
+        "已放弃的目标请用 update_goal 标记终态或 delete_goal 删除（系统不自动清理）。"
         "（请勿向用户提及本提醒）"
     )
 

@@ -91,7 +91,9 @@ _PARAM_ERROR_PATTERNS = (
 _CONTENT_POLICY_PATTERNS = (
     "content_policy", "content policy", "content_filter",
     "is sensitive", "sensitive content", "new_sensitive",
-    "moderation", "unsafe content",
+    "moderation", "unsafe content", "inappropriate content",
+    # 国产厂商审核签名：百炼 DataInspectionFailed / 智谱 cyber_policy
+    "datainspectionfailed", "cyber_policy",
 )
 
 # 流式响应体内的错误载荷（litellm 以通用异常抛出，无类型与状态码）

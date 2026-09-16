@@ -215,13 +215,15 @@ async def add_reminder(
     """写入一条持久化提醒（模块级复用入口：工具与 entities 日历共用）。
 
     到期由心跳 ``check_due_reminders`` 触发一轮完整 REPLY，重启不丢失。
-    scope 必须是可路由的会话 scope（user_/group_ 且可解析）——到期要靠
-    REPLY 决策投递，非会话 scope 无处投递还可能让自主循环空转，抛
-    ValueError 拒绝。返回提醒记录（含 id）。
+    scope 必须是可路由的会话 scope（user_/group_ 且含频道前缀可解析）——
+    到期要靠 REPLY 决策投递，非会话 scope 无处投递还可能让自主循环空转，
+    抛 ValueError 拒绝。返回提醒记录（含 id）。
     """
     from agent.messages import is_conversation_scope
     if not is_conversation_scope(scope):
-        raise ValueError(f"定时提醒需要可路由的会话 scope（user_/group_），收到: {scope!r}")
+        raise ValueError(
+            f"定时提醒需要可路由的会话 scope（如 user_qq:123，含频道前缀），收到: {scope!r}"
+        )
     reminder = {
         "id": uuid.uuid4().hex[:8],
         "note": note.strip(),
@@ -291,14 +293,16 @@ async def enqueue_scope_reply(
     即历史已落库——随后的回复周期拉取历史必含本条，无竞态。历史写入失败
     时回退短期记忆兜底（信息不丢，退化为旧语义）。
 
-    无法解析的 scope（非 user_/group_ 会话）拒绝入待处理队列——回复路径
-    消费不掉它，会让自主循环以 0 退避无限空转；退化为全局短期记忆桶
-    （对齐 PushHub 全局兜底），任何下一周期可见。
+    无法解析或缺少频道前缀的 scope（非 user_/group_ 会话）拒绝入待处理
+    队列——回复路径消费不掉它，会让自主循环以 0 退避无限空转；退化为
+    全局短期记忆桶（对齐 PushHub 全局兜底），任何下一周期可见。
     """
     from agent.messages import is_conversation_scope
     if not is_conversation_scope(scope):
-        log(f"拒绝入队不可路由 scope（退化为全局短期记忆）: scope={scope!r} preview={preview[:60]}",
-            "WARNING", tag="调度")
+        log(
+            f"拒绝入队不可路由 scope（退化为全局短期记忆）: scope={scope!r} preview={preview[:60]}",
+            "WARNING", tag="调度",
+        )
         pfc.add_temporary({"role": "system", "content": prompt})
         return
     if not await _append_one_shot_history(pfc, scope, channel, prompt):

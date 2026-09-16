@@ -25,6 +25,7 @@ def _isolated(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(outbound_guard, "_reply_scopes_provider", None)
     monkeypatch.setattr(outbound_guard, "get_config_bool", lambda key, default: True)
     monkeypatch.setattr(outbound_guard, "get_config_int", lambda key, default: 180)
+    monkeypatch.setattr(output_tools, "_pending_settler", None)
 
     # 频道校验与目标解析替身化：测试只关心哨兵分支
     monkeypatch.setattr(
@@ -111,3 +112,104 @@ class TestGuardIntegration:
         payload = json.loads(result)
         assert payload["success"] is True
         assert ch.sent == ["回复正文"]
+
+
+class TestCrossSessionSettlement:
+    """跨会话代答结算：回复周期向其他会话发送成功后消费其待处理条目。
+
+    链间上下文互不可见，"已代答"事实只能经共享队列传递——否则周期末
+    调度器按待处理事实再派正式回复，同一会话双份。
+    """
+
+    @staticmethod
+    def _bind_settler(monkeypatch: pytest.MonkeyPatch, consumed: list[str]) -> None:
+        def _settle(scope: str) -> bool:
+            consumed.append(scope)
+            return True
+
+        monkeypatch.setattr(output_tools, "_pending_settler", _settle)
+
+    async def test_reply_cross_session_settles(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        consumed: list[str] = []
+        self._bind_settler(monkeypatch, consumed)
+        token = bind_scope("user_qq:999888777")
+        try:
+            result, ch = await _send("代答内容")
+        finally:
+            reset_scope(token)
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert ch.sent == ["代答内容"]
+        assert consumed == [_SCOPE]
+        assert payload["settled_pending"] == _SCOPE
+        assert "switch_session" in payload["settled_note"]
+
+    async def test_reply_same_session_not_settled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """同会话多段回复是合法形态，不触发结算。"""
+        consumed: list[str] = []
+        self._bind_settler(monkeypatch, consumed)
+        token = bind_scope(_SCOPE)
+        try:
+            result, _ch = await _send("多段回复")
+        finally:
+            reset_scope(token)
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert consumed == []
+        assert "settled_pending" not in payload
+
+    async def test_reflect_not_settled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """任务/反思链的发送是主动通知（提醒/汇报），不等价于回复待处理。"""
+        consumed: list[str] = []
+        self._bind_settler(monkeypatch, consumed)
+        token = bind_scope("reflect:eeee5555")
+        try:
+            result, _ch = await _send("定时提醒")
+        finally:
+            reset_scope(token)
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert consumed == []
+        assert "settled_pending" not in payload
+
+    async def test_system_path_not_settled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """系统路径（重启通知/推送）不吞用户待回复。"""
+        consumed: list[str] = []
+        self._bind_settler(monkeypatch, consumed)
+        result, _ch = await _send("系统通知")
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert consumed == []
+
+    async def test_settler_failure_does_not_break_send(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(_scope: str) -> bool:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(output_tools, "_pending_settler", _boom)
+        token = bind_scope("user_qq:999888777")
+        try:
+            result, ch = await _send("正常发送")
+        finally:
+            reset_scope(token)
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert ch.sent == ["正常发送"]
+        assert "settled_pending" not in payload
+
+    async def test_no_pending_entry_no_settle_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """目标会话无待处理条目时结算静默（主动转发合法，返回值不加字段）。"""
+        consumed: list[str] = []
+
+        def _settle(scope: str) -> bool:
+            consumed.append(scope)
+            return False
+
+        monkeypatch.setattr(output_tools, "_pending_settler", _settle)
+        token = bind_scope("user_qq:999888777")
+        try:
+            result, _ch = await _send("帮我转发的通知")
+        finally:
+            reset_scope(token)
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert "settled_pending" not in payload

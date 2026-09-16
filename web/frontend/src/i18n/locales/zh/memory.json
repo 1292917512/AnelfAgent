@@ -189,8 +189,6 @@
   "goalDescPlaceholder": "目标描述（可选）",
   "createGoal": "创建目标",
   "goalStatusActive": "进行中",
-  "goalStatusCompleted": "已完成",
-  "goalStatusCancelled": "已取消",
   "goalStatusAll": "全部",
   "stepPending": "待办",
   "stepInProgress": "进行中",

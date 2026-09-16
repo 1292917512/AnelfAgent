@@ -8,8 +8,10 @@
   终态（诚实语义：正常结束 in_progress → completed；中断/取消 → skipped；
   pending 一律 → skipped，不假装完成）。生命周期与会话绑定。
 - ``GOAL_KIND``（create_goal 持久目标）：跨会话的长期目标，进度由 AI
-  经 update_goal 手动推进，**任何自动推进/收敛路径都不得触碰**——目标
-  的存续只由 AI 显式标记或 delete_goal 终结。
+  经 update_goal 手动推进，任何自动推进路径不得触碰；删除只发生在
+  AI 显式操作（update_goal 终态即删 / 全部步骤完成后自动收口 /
+  delete_goal），长期停滞的目标由心跳产出事实概况供 AI 决策，系统不
+  做基于时间的自动清理。
 
 本模块是 plan 状态机与事件发射的**唯一入口**，消费者：
 - ``agent/planning/tools.py``：present_plan / goal CRUD 工具
@@ -33,6 +35,7 @@ from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
 from core.event_bus import (
     EVENT_PLAN_CANCELLED,
+    EVENT_PLAN_DELETED,
     EVENT_PLAN_STATUS_CHANGED,
     EVENT_PLAN_STEP_UPDATED,
     EVENT_PLAN_SUBMITTED,
@@ -450,3 +453,33 @@ async def find_goal_by_id(
             break
         offset += page_size
     return None, None
+
+
+# ------------------------------------------------------------------
+# 条目移除（显式删除 / 终态收敛共用；系统不做任何基于时间的自动清理）
+# ------------------------------------------------------------------
+
+async def remove_goal(entry: MemoryEntry) -> bool:
+    """删除目标条目并同步前端（EVENT_PLAN_DELETED 移除卡片）与态势快照。
+
+    仅由 AI 显式操作触发（delete_goal / update_goal 终态收敛）。
+
+    Returns:
+        是否实际删除。
+    """
+    store = _bound_store()
+    if store is None or not entry.id:
+        return False
+    await store.delete(entry.id)
+    from agent.planning import situation
+    situation.invalidate()
+    scope = current_scope()
+    _, chat_id = parse_scope_chat_id(scope)
+    try:
+        await event_bus.emit(EVENT_PLAN_DELETED, {
+            "scope": scope, "chat_id": chat_id,
+            "plan_id": (entry.metadata or {}).get("goal_id", ""),
+        })
+    except Exception as exc:
+        log(f"目标删除事件发射失败（不影响结果）: {exc}", "DEBUG", tag="规划")
+    return True

@@ -20,7 +20,7 @@ interface GoalData {
   memory_id?: number;
 }
 
-type GoalFilter = "all" | "active" | "completed";
+type GoalFilter = "all" | "active";
 
 export function GoalsPanel() {
   const { t } = useTranslation("memory");
@@ -111,7 +111,6 @@ export function GoalsPanel() {
           <select value={filter} onChange={(e) => setFilter(e.target.value as GoalFilter)}
             className="flex-1 bg-card border border-input rounded-md px-2 py-1.5 text-xs text-foreground outline-none">
             <option value="active">{t("goalStatusActive")}</option>
-            <option value="completed">{t("goalStatusCompleted")}</option>
             <option value="all">{t("goalStatusAll")}</option>
           </select>
           <button onClick={() => { setShowCreate(!showCreate); setSelectedGoalId(null); setEditing(false); }}

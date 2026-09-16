@@ -309,3 +309,92 @@ class TestPrefixStableCaliber:
         ])
         items = ContextSnapshot.list_snapshots()
         assert items[0]["prefix_stable"] is False
+
+
+class TestFamilyIsolation:
+    """变更对比基线按 (scope, kind) 前缀族分键。
+
+    回归自 2026-09-16 观测事故：reply 与 reflect（精简 stable、不同 tools
+    数组）交替捕获时，全局单份基线把族间差异误标为层漂移——历史列表每行
+    都显示"stable 已变更、断裂点在第 0 条"，被误读为最高层前缀天天断裂。
+    """
+
+    async def test_cross_kind_no_false_drift(self, snapshot: ContextSnapshot) -> None:
+        """reply 与 reflect（stable 内容不同）交替：各自族内内容未变，
+        不得把族间差异标为 changed。"""
+        reply_msgs = _messages()
+        reflect_msgs = [
+            {"role": "system", "content": "任务精简人设", "_layer": "stable"},
+            {"role": "user", "content": "任务指令", "_layer": "conversation"},
+        ]
+        await snapshot.arm()
+        await snapshot.try_capture(reply_msgs, [], "fake", kind="reply", scope="group_qq:1")
+        await snapshot.arm()
+        await snapshot.try_capture(reflect_msgs, [], "fake", kind="reflect", scope="reflect:abc")
+        await snapshot.arm()
+        await snapshot.try_capture(reply_msgs, [], "fake", kind="reply", scope="group_qq:1")
+
+        data = snapshot.get()
+        assert data is not None
+        by_layer = {s["layer"]: s for s in data["sections"]}
+        # 第三次捕获与第一次同为 reply 族且逐字节未变：不得误报漂移
+        assert by_layer["stable"]["changed"] is False
+        assert by_layer["summary"]["changed"] is False
+        assert by_layer["conversation"]["changed"] is False
+        assert data["prefix_break"] is None or data["prefix_break"]["layer"] is None
+
+    async def test_cross_scope_no_false_drift(self, snapshot: ContextSnapshot) -> None:
+        """同 kind 不同会话（scope）交替：conversation 层的会话差异不算漂移，
+        各自族内的 stable 共享层未变不得误报。"""
+        msgs_a = _messages()
+        msgs_b = [
+            {"role": "system", "content": "人设", "_layer": "stable"},
+            {"role": "system", "content": "摘要", "_layer": "summary"},
+            {"role": "user", "content": "另一个会话", "_layer": "conversation"},
+        ]
+        await snapshot.arm()
+        await snapshot.try_capture(msgs_a, [], "fake", kind="reply", scope="group_qq:1")
+        await snapshot.arm()
+        await snapshot.try_capture(msgs_b, [], "fake", kind="reply", scope="user_qq:2")
+        await snapshot.arm()
+        await snapshot.try_capture(msgs_a, [], "fake", kind="reply", scope="group_qq:1")
+
+        data = snapshot.get()
+        assert data is not None
+        by_layer = {s["layer"]: s for s in data["sections"]}
+        assert by_layer["stable"]["changed"] is False
+        assert by_layer["conversation"]["changed"] is False
+
+    async def test_real_drift_still_detected_within_family(
+            self, snapshot: ContextSnapshot) -> None:
+        """族内真实漂移仍被检测：同族 stable 内容变化必须标 changed。"""
+        await snapshot.arm()
+        await snapshot.try_capture(_messages(), [], "fake", kind="reply", scope="group_qq:1")
+        drifted = [
+            {"role": "system", "content": "人设被改写", "_layer": "stable"},
+            {"role": "system", "content": "摘要", "_layer": "summary"},
+            {"role": "user", "content": "你好", "_layer": "conversation"},
+        ]
+        await snapshot.arm()
+        await snapshot.try_capture(drifted, [], "fake", kind="reply", scope="group_qq:1")
+
+        data = snapshot.get()
+        assert data is not None
+        by_layer = {s["layer"]: s for s in data["sections"]}
+        assert by_layer["stable"]["changed"] is True
+
+    async def test_record_carries_scope(self, snapshot: ContextSnapshot) -> None:
+        """连续捕获的紧凑记录携带 scope（前缀族取证用）。"""
+        snapshot.set_continuous(True)
+        await snapshot.try_capture(_messages(), [], "fake", kind="reply", scope="group_qq:1")
+        records = ContextSnapshot.list_records(10)
+        assert records and records[-1].get("scope") == "group_qq:1"
+
+    async def test_baseline_families_bounded(self, snapshot: ContextSnapshot) -> None:
+        """基线族数量有界：一次性 reflect scope 不无界累积。"""
+        from agent.mind import context_snapshot as mod
+        for i in range(mod._MAX_DIFF_FAMILIES + 8):
+            await snapshot.arm()
+            await snapshot.try_capture(
+                _messages(), [], "fake", kind="reflect", scope=f"reflect:{i}")
+        assert len(snapshot._last_section_hashes) <= mod._MAX_DIFF_FAMILIES * 4

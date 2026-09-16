@@ -49,7 +49,7 @@ async def test_schedule_reminder_persists_and_lists() -> None:
 
     class FakeMind:
         pfc = FakePFC()
-        _active_scopes = {"user_123"}
+        _active_scopes = {"user_qq:123"}
         _reply_adapter_key = "qq"
 
     _wire_mind(FakeMind())
@@ -58,7 +58,7 @@ async def test_schedule_reminder_persists_and_lists() -> None:
             note="搜索比分并告诉主人", run_at="2099-01-01 08:00",
         ))
         assert result["ok"] is True
-        assert result["scope"] == "user_123"
+        assert result["scope"] == "user_qq:123"
 
         listed = json.loads(await scheduler.list_reminders())
         assert listed["total"] == 1
@@ -79,7 +79,7 @@ async def test_schedule_reminder_rejects_past_time() -> None:
 
     class FakeMind:
         pfc = FakePFC()
-        _active_scopes = {"user_123"}
+        _active_scopes = {"user_qq:123"}
         _reply_adapter_key = ""
 
     _wire_mind(FakeMind())

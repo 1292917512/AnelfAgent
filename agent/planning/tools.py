@@ -10,7 +10,9 @@
   推断；用户通过浮窗"取消"按钮触发 ``EVENT_PLAN_CANCELLED``
   （cancel-plan 路由 → tracker.cancel_plan）。
 - 持久目标（create_goal → GOAL_KIND）：跨会话长期目标，AI 经 update_goal
-  手动推进步骤，系统不做任何自动推进/收敛。
+  手动推进步骤；关闭只由完成事实驱动——终态（completed/cancelled）即删、
+  全部步骤完成后自动收口，长期停滞由心跳产出事实概况供 AI 决策，系统
+  不做基于时间的自动清理。
 
 态势注入与 not_found 自纠上下文统一由 ``agent.planning.situation`` 提供，
 本文件全部写路径变更后调 ``situation.invalidate()`` 保持快照新鲜。
@@ -35,6 +37,10 @@ _GROUP = "planning"
 
 # update_goal 允许的步骤终态（与 tracker 状态机一致）
 _STEP_STATUSES = frozenset({"pending", "in_progress", "completed", "skipped"})
+# update_goal 允许的目标整体状态
+_GOAL_STATUSES = frozenset({"active", "completed", "cancelled"})
+# 可清空字段的占位值（description 传 clear/none 置空）
+_CLEAR_TOKENS = frozenset({"clear", "none"})
 
 
 def _bound_store() -> Optional[MemoryStore]:
@@ -103,9 +109,9 @@ def _make_goal(
 @deferred_tool(
     group=_GROUP, tags=["planning", "heartbeat"],
     description=(
-        "创建一个新的目标计划。"
-        "创建后记住 goal_id，完成后需调用 update_goal 将状态改为 completed，"
-        "或调用 delete_goal 删除已完成的目标。"
+        "创建一个新的目标计划（可为长期目标，存续由你管理，系统不按时间自动清理）。"
+        "创建后记住 goal_id，推进进度用 update_goal；"
+        "标记 completed/cancelled 时目标会自动清理，无需手动删除。"
     ),
 )
 async def create_goal(title: str, description: str = "", steps: str = "", recurring: bool = False) -> str:
@@ -116,8 +122,6 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
         description: 目标详细描述
         steps: 执行步骤，用 | 分隔（如 "搜索资料|分析数据|总结报告"）
         recurring: 是否为循环计划，完成后自动重置步骤为 pending 并恢复 active
-
-    注意：非循环目标完成后需调用 delete_goal(goal_id) 删除。
     """
     store = _bound_store()
     if store is None:
@@ -145,16 +149,13 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
 
 @deferred_tool(
     group=_GROUP, tags=["planning", "heartbeat"],
-    description=(
-        "列出目标计划。检查 active 状态的目标，"
-        "已完成的用 update_goal 标记为 completed 或用 delete_goal 删除。"
-    ),
+    description="列出目标计划。检查 active 状态的目标，废弃的用 delete_goal 删除。",
 )
 async def list_goals(status: str = "active") -> str:
     """列出目标计划。
 
     Args:
-        status: 筛选状态，active（默认）/ completed / all
+        status: 筛选状态，active（默认）/ all
     """
     store = _bound_store()
     if store is None:
@@ -182,9 +183,9 @@ async def list_goals(status: str = "active") -> str:
 @deferred_tool(
     group=_GROUP, tags=["planning", "heartbeat"],
     description=(
-        "更新目标计划的步骤状态或整体状态。"
-        "用于更新进行中的步骤进度。"
-        "完成目标后建议直接用 delete_goal 删除，避免目标堆积。"
+        "更新目标计划：步骤状态、整体状态或文本（标题/描述），空参数不变。"
+        "标记 goal_status 为 completed/cancelled 时目标自动清理；"
+        "全部步骤标记完成后目标同样自动收口——均无需再调 delete_goal。"
     ),
 )
 async def update_goal(
@@ -193,15 +194,20 @@ async def update_goal(
     step_status: str = "",
     note: str = "",
     goal_status: str = "",
+    title: str = "",
+    description: str = "",
 ) -> str:
-    """更新目标计划的步骤状态或整体状态。
+    """更新目标计划的步骤状态、整体状态或文本。
 
     Args:
         goal_id: 目标 ID
         step_index: 要更新的步骤索引（-1 表示不更新步骤）
         step_status: 步骤状态（pending / in_progress / completed / skipped）
         note: 步骤备注
-        goal_status: 整体目标状态（active / completed / cancelled），留空不更新
+        goal_status: 整体目标状态（active / completed / cancelled），留空不更新；
+            终态写入即自动删除该目标
+        title: 新标题（空串不变）
+        description: 新描述（空串不变；clear/none 置空）
     """
     store = _bound_store()
     if store is None:
@@ -210,6 +216,13 @@ async def update_goal(
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is None or target_goal is None:
         return await _goal_not_found(goal_id)
+
+    if not (step_status or note or goal_status or title.strip() or description.strip()):
+        return tool_error(
+            "没有任何字段需要更新",
+            cause=ErrorCause.PARAM, retryable=False,
+            hint="可更新 step_status/note/goal_status/title/description 之一",
+        )
 
     steps: List[Dict[str, Any]] = target_goal.get("steps", [])
     # 参数诚实校验：越界索引/非法状态此前被静默忽略（返回 success 但未生效），
@@ -233,6 +246,19 @@ async def update_goal(
             cause=ErrorCause.PARAM, retryable=False,
             hint=f"有效值: {' / '.join(sorted(_STEP_STATUSES))}",
         )
+    if goal_status and goal_status not in _GOAL_STATUSES:
+        return tool_error(
+            f"非法目标状态 '{goal_status}'",
+            cause=ErrorCause.PARAM, retryable=False,
+            hint="有效值: active / completed / cancelled",
+        )
+
+    if title.strip():
+        target_goal["title"] = title.strip()
+    if description.strip():
+        target_goal["description"] = (
+            "" if description.strip().lower() in _CLEAR_TOKENS else description.strip()
+        )
 
     if 0 <= step_index < len(steps):
         if step_status:
@@ -240,15 +266,50 @@ async def update_goal(
         if note:
             steps[step_index]["note"] = note
 
-    if goal_status:
-        if goal_status == "completed" and target_goal.get("recurring"):
-            for s in target_goal.get("steps", []):
-                s["status"] = "pending"
-                s["note"] = ""
-            target_goal["status"] = "active"
-            goal_status = "active"
-        else:
-            target_goal["status"] = goal_status
+    if goal_status == "completed" and target_goal.get("recurring"):
+        # 循环目标完成即重置：步骤归零、恢复 active，跨周期存续
+        for s in target_goal.get("steps", []):
+            s["status"] = "pending"
+            s["note"] = ""
+        target_goal["status"] = "active"
+    elif goal_status in ("completed", "cancelled"):
+        # 终态即清：不保留终态条目（删除 + 前端卡片移除 + 态势同步）
+        await tracker.remove_goal(target_entry)
+        return json.dumps({
+            "success": True,
+            "message": f"目标 '{goal_id}' 已标记为 {goal_status} 并自动清理",
+            "goal_id": goal_id,
+            "title": target_goal.get("title", ""),
+        }, ensure_ascii=False)
+    elif goal_status:
+        target_goal["status"] = goal_status
+
+    # 全步骤完成自动收口：本轮推进步骤后计划内步骤全部 done（completed/
+    # skipped）且无显式整体状态指令时关闭目标——完成事实驱动的唯一自动
+    # 关闭路径，不因停滞时间等其他原因关闭
+    if (
+        step_status
+        and not goal_status
+        and steps
+        and not target_goal.get("recurring")
+        and target_goal.get("status") == "active"
+        and all(s.get("status") in ("completed", "skipped") for s in steps)
+    ):
+        try:
+            if 0 <= step_index < len(steps):
+                await tracker._emit_step(
+                    tracker.current_scope(), goal_id, step_index,
+                    steps[step_index].get("status", "completed"), note=note,
+                )
+        except Exception as exc:
+            log(f"update_goal 事件发射失败（不影响结果）: {exc}", "DEBUG", tag="规划")
+        await tracker.remove_goal(target_entry)
+        return json.dumps({
+            "success": True,
+            "message": f"目标 '{goal_id}' 全部步骤已完成，自动收口清理",
+            "goal_id": goal_id,
+            "title": target_goal.get("title", ""),
+        }, ensure_ascii=False)
 
     target_goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -291,16 +352,14 @@ async def update_goal(
     situation.invalidate()
 
     result: Dict[str, Any] = {"success": True, "goal": target_goal}
-    if target_goal["status"] in ("completed", "cancelled"):
-        result["hint"] = f"目标已标记为 {target_goal['status']}，建议立即调用 delete_goal('{goal_id}') 删除"
     return json.dumps(result, ensure_ascii=False)
 
 
 @deferred_tool(
     group=_GROUP, tags=["planning", "heartbeat"],
     description=(
-        "删除一个目标计划。"
-        "完成目标后应立即调用此工具删除，避免已完成目标干扰记忆召回。"
+        "删除一个目标计划（用于废弃仍在进行的目标）。"
+        "已完成/取消的目标无需本工具：update_goal 标记终态时自动清理。"
     ),
 )
 async def delete_goal(goal_id: str) -> str:
@@ -315,18 +374,8 @@ async def delete_goal(goal_id: str) -> str:
 
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is not None and target_goal is not None and target_entry.id:
-        await store.delete(target_entry.id)
-        situation.invalidate()
-        # 通知前端移除计划卡片（否则 PlanPanel 残留已删除的计划）
-        try:
-            from core.event_bus import EVENT_PLAN_DELETED, event_bus
-            scope = tracker.current_scope()
-            _, chat_id = tracker.parse_scope_chat_id(scope)
-            await event_bus.emit(EVENT_PLAN_DELETED, {
-                "scope": scope, "chat_id": chat_id, "plan_id": goal_id,
-            })
-        except Exception as exc:
-            log(f"delete_goal 事件发射失败（不影响结果）: {exc}", "DEBUG", tag="规划")
+        # 删除 + 前端卡片移除（EVENT_PLAN_DELETED）+ 态势同步统一走 tracker
+        await tracker.remove_goal(target_entry)
         return json.dumps({
             "success": True,
             "message": f"目标 '{goal_id}' 已删除",

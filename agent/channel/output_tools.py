@@ -28,6 +28,46 @@ if TYPE_CHECKING:
 #: DataCenter 构造参数，由 agent.runtime.wiring 统一施绑）
 conversation_data_port: LateBinding["ConversationData"] = LateBinding("channel.output")
 
+#: 待处理结算器（mind.pfc.consume_scope_task，由 agent.runtime.wiring 统一施绑）
+_pending_settler: Optional[Callable[[str], bool]] = None
+
+
+def bind_pending_settler(settler: Callable[[str], bool]) -> None:
+    """施绑跨会话代答结算器（PFC 待处理队列的消费入口）。
+
+    思维链之间上下文互不可见（对话历史按 scope 隔离、各链消息链启动时
+    冻结，待处理队列是唯一共享事实面）——回复周期代答了其他会话后，
+    「已代答」事实若不落队列，周期末调度器仍按待处理事实再派一次正式
+    回复，同一会话双份。未施绑时结算退化为不结算（发送不受影响）。
+    """
+    global _pending_settler
+    _pending_settler = settler
+
+
+def _settle_cross_session_reply(target_scope: str, thinker: str, parsed: dict) -> None:
+    """回复周期跨会话发送成功的待处理结算（记录事实，不做拦截）。
+
+    仅限 thinker 为会话 scope（user_/group_ 前缀）且目标非当前会话：
+    reflect 任务链的发送多为主动通知（提醒/汇报），不等价于回复该会话的
+    待处理消息；系统路径（_global/空）同理。结算结果写入返回 JSON 供
+    代答链知情——若误结算了仍有未回应事项的会话，模型可经
+    switch_session 主动处理自纠。
+    """
+    if _pending_settler is None:
+        return
+    if not thinker.startswith(("user_", "group_")) or thinker == target_scope:
+        return
+    try:
+        if _pending_settler(target_scope):
+            parsed["settled_pending"] = target_scope
+            parsed["settled_note"] = (
+                "该会话的待处理消息已因本次代答标记为已处理，系统不会再另起回复；"
+                "若其中还有未被回应的事项，可 switch_session 主动处理"
+            )
+            log(f"跨会话代答结算: {thinker} -> {target_scope} 待处理已消费", tag="通道")
+    except Exception as exc:
+        log(f"跨会话代答结算失败（不影响发送结果）: {exc}", "DEBUG", tag="通道")
+
 
 def _resolve_conversation_scope(
     adapter_key: str, target_id: str, channel_type: str, session_id: str = "",
@@ -292,6 +332,7 @@ async def execute_send_action(
 
         if ok:
             note_outbound(target_scope, thinker, outbound_preview or operation)
+            _settle_cross_session_reply(target_scope, thinker, parsed)
             log(f"{operation}已发送: [{channel_id}] -> {target_id}{success_suffix}", tag="通道")
         else:
             log(f"{operation}发送失败: [{channel_id}] -> {target_id}: {parsed.get('error', '?')}", "WARNING", tag="通道")

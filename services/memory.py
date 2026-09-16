@@ -988,10 +988,30 @@ class MemoryService:
                     s["status"] = "pending"
                     s["note"] = ""
                 target_goal["status"] = "active"
+            elif status in ("completed", "cancelled"):
+                # 终态即清（与 AI 工具面同步语义）：不保留终态条目，直接删除
+                if target_entry.id:
+                    await store.delete(target_entry.id)
+                target_goal["status"] = status
+                target_goal["memory_id"] = target_entry.id
+                return target_goal
             else:
                 target_goal["status"] = status
         if steps is not None:
             target_goal["steps"] = steps
+            # 全步骤完成自动收口（与 AI 工具面同步语义）：完成事实驱动的
+            # 唯一自动关闭，不因停滞时间等其他原因关闭
+            if (
+                status is None
+                and steps
+                and not target_goal.get("recurring")
+                and target_goal.get("status") == "active"
+                and all(s.get("status") in ("completed", "skipped") for s in steps)
+            ):
+                if target_entry.id:
+                    await store.delete(target_entry.id)
+                target_goal["memory_id"] = target_entry.id
+                return target_goal
         target_goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         new_entry = MemoryEntry(
             memory_type=MemoryType.SEMANTIC,

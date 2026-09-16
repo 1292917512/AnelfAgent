@@ -127,21 +127,22 @@ class MCPBridge:
         self._thread.start()
         EntityRegistry.register_override_hook(self._on_external_override)
 
-    def _on_external_override(self, old: Any, new: Any) -> None:
+    def _on_external_override(self, old: Any, new: Any) -> bool:
         """同名被非 MCP 来源覆盖时，MCP 工具让位为 {server}__{name} 前缀名保留。
 
         重名仲裁纪律：内置/频道工具保留原名，MCP 工具改名——覆盖发生处
         （EntityRegistry.register）只认名字不认归属，MCP 侧在此自我保全。
+        返回 True 表示旧 MCP 工具已接管保留，注册表对本次覆盖不再重复告警。
         """
         if old.source != "mcp" or new.source == "mcp":
-            return
+            return False
         if not old.group.startswith("mcp:"):
-            return
+            return False
         server_name = old.group[len("mcp:"):]
         original = self._tool_original_names.get(old.name, old.name)
         prefixed = _sanitize_tool_name(f"{server_name}__{original}")
         if EntityRegistry.exists(prefixed):
-            return
+            return True  # 前缀名已在（此前已让位），旧工具无损
 
         bridge = self
 
@@ -166,6 +167,7 @@ class MCPBridge:
             self._tool_original_names[prefixed] = original
         log(f"MCP 工具让位改名: '{old.name}' → '{prefixed}'（原名由 {new.source} 来源保留）",
             "WARNING")
+        return True
 
     def _run_loop(self) -> None:
         import asyncio

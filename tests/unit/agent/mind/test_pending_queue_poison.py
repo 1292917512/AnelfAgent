@@ -42,6 +42,16 @@ class TestAddReminderScopeValidation:
             with pytest.raises(ValueError, match="会话 scope"):
                 await add_reminder("note", 1e12 + 60, bad)
 
+    async def test_rejects_legacy_scope_without_adapter(self, tmp_path, monkeypatch) -> None:
+        """缺频道前缀的旧格式（user_123）不可路由——到期投递解析不出频道，
+        历史上正是裸 id 影子会话的入队源头（2026-09-14 提醒核销轮）。"""
+        monkeypatch.setattr(
+            scheduler_mod, "_reminders_path",
+            lambda: tmp_path / "reminders.json",
+        )
+        with pytest.raises(ValueError, match="频道前缀"):
+            await add_reminder("note", 1e12 + 60, "user_1292917512")
+
     async def test_accepts_conversation_scope(self, tmp_path, monkeypatch) -> None:
         """合法会话 scope 正常写入文件。"""
         path = tmp_path / "reminders.json"

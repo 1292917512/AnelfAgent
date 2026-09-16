@@ -152,7 +152,7 @@ class LLMClientConfig:
     provider_id: str = ""
     supports_reasoning: bool = False
     # 每模型专属思考等级（off/minimal/low/medium/high/xhigh/max）；
-    # 空=跟随全局/任务注入的等级。非法值在 __post_init__ 归一为 ""
+    # 空=不主动下发，由调用方（任务/心跳/会话参数）按次注入。非法值在 __post_init__ 归一为 ""
     reasoning_effort: str = ""
     # 思考下发契约（供应商无关声明）：本模型如何把思考档位填进请求体。
     # {"param": "reasoning_effort"|"thinking.type", "map": {...档位映射},
@@ -241,7 +241,7 @@ class LLMClientConfig:
         if self.reasoning_effort and not normalized_effort:
             log(
                 f"模型 [{self.name}] 配置了无效的 reasoning_effort="
-                f"{self.reasoning_effort!r}，已重置为跟随全局",
+                f"{self.reasoning_effort!r}，已重置为不下发",
                 "WARNING", tag="模型",
             )
         self.reasoning_effort = normalized_effort

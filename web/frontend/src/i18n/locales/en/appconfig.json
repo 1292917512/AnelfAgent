@@ -164,7 +164,7 @@
     "allowOutputTools": "Allow outbound send_* tools",
     "saveResultToMemory": "Write result to memory",
     "reasoningEffort": "Reasoning effort",
-    "defaultReasoningEffort": "Global default",
+    "defaultReasoningEffort": "Follow model",
     "effortLow": "Low",
     "effortMedium": "Medium",
     "effortHigh": "High",

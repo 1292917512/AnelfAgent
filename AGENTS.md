@@ -43,7 +43,7 @@ description: "AnelfAgent 项目指令 — 开发规范与架构速查（对所�
 | `agent/security/` | 安全防护（会话令牌 / 威胁扫描） | 脱敏核心在 `core/sanitizer.py` |
 | `agent/task/` | 独立任务系统（定义 / 注册表 / 执行器） | 纯内容定义，不含调度逻辑 |
 | `agent/heartbeat/` | 心跳调度（引擎 / 配置 / 日志 / 内置维护） | 管理何时执行任务，持久化计数器 |
-| `agent/planning/` | 自主规划（目标 CRUD / 执行追踪） | 依赖 memory |
+| `agent/planning/` | 自主规划（目标 CRUD / 执行追踪 / 终态即清，存续决策归 AI） | 依赖 memory |
 | `channels/` | 频道适配器（目录自动发现 + 热插拔 sync_channels） | 继承 BaseChannel，display_order 自声明排序 |
 | `entities/` | 工具实体（目录自动发现 + 热插拔 sync_entities） | 通过 `@tool`/`entity()` 注册，通过 `_sdk.py` 桥接 LLM |
 | `services/` | 业务封装层（model/chat/task/heartbeat/approval/context/config/sticker/system/ui/filesystem/mcp 等；mcp 为 entities.mcp 薄门面） | 供 Web API 调用，不依赖 web |
@@ -193,8 +193,14 @@ entity_scope 含频道 adapter 维度，跨频道同号实体（如 QQ uid 与 W
 `user_{adapter}:{uid}` / `group_{adapter}:{gid}` / `user_{adapter}:{uid}#{chat_id}`
 （如 `user_qq:123`、`user_webui:web_user#chat_1`）。构造一律用 `build_entity_scope()`，
 解析一律用 `parse_entity_scope()`（返回 scope_type/adapter/base_id/session_id，兼容无 adapter 旧格式），
-会话合法性判据用 `is_conversation_scope()`（投递面守卫：待回复队列/持久化提醒
-拒绝不可路由 scope），禁止手工 f-string 拼接。记忆标签同构：`user:{adapter}:{uid}`。存量数据由
+会话合法性判据用 `is_conversation_scope()`（可路由 = user_/group_ 且含频道前缀；投递面守卫：
+待回复队列/持久化提醒/一次性通知拒绝不可路由 scope），禁止手工 f-string 拼接。
+元决策 decide 的 target 是 LLM 自由文本，一律经 `decision_executor.normalize_target_scope`
+规范化后才可用：规范 scope 直接采信，旧格式/裸 id/频道前缀（`qq:123`、`qq_123`）形态按
+PFC `known_scopes()`（待回复队列 + 路由登记）唯一解析回填，无匹配或歧义时 REPLY 回退
+`pop_next_reply_target`、PROACTIVE 放弃告警——畸形 target 不再拼出影子会话
+（2026-09-14~16 内部触发轮操作摘要落 `qq:qq:`/裸 id 影子 scope 事故的根因收口）。
+记忆标签同构：`user:{adapter}:{uid}`。存量数据由
 `agent/storage/scope_migrate.py` 启动时自动迁移（`legacy_adapter_default` 配置归属频道，默认 qq）；
 别名实体的跨频道历史合并由 `alias_merge_history` 配置（默认开）。
 
@@ -236,6 +242,10 @@ tick() 单次心跳：
      + 空闲自动折叠（连续 conversation_fold_idle_beats 个心跳无新消息
      且积压 ≥ conversation_fold_idle_min 的会话 → 后台折叠 + 折后预热，
      把缓存断点移到无人时段）
+     + 目标停滞概况（situation.stale_goal_line：updated_at ≥7 天未更新的活跃
+     目标一行事实，呈现给 AI 决策续期/删除——目标规划适应长期工作，
+     系统不做基于时间的自动清理；目标关闭只由完成事实驱动：update_goal
+     终态即删、全部步骤完成后自动收口、delete_goal 显式删除）
   2. 遍历 task_schedules，递增 beat_count
   3. 选取一个到期任务 → TaskExecutor.run() → 结果记入心跳日志
   4. 持久化计数器到 config/heartbeat.json
@@ -346,7 +356,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 心跳忙碌延后 | `assistant._heartbeat_loop` | 回复/反思/上轮 tick 未收尾时不跳过整轮，按 `heartbeat_busy_defer_seconds`（默认 60s）短间隔轮询、空闲即补跑；延后期间不递增任何计数器 |
 | 跨周期双答防护 | `heartbeat/engine._tick_inner` 回复优先门控 + `agent/channel/outbound_guard.py` 出站哨兵（挂 `execute_send_action`）| 回归自 2026-09-14 两次双发事故：思维周期消息链在启动时刻冻结（对话历史周期内不重读），回复周期与任务/反思周期并发时互相看不到对方出站——反思按「主人 6 分钟未获回复」的过期快照代答、慢速回复随后再交卷，或闹钟回复刚交付、反思按旧待办重发。两层防线：①调度层——`mind.is_reply` 为真时 tick 只做维护与提醒不启动任务（不递增计数器、保留待反思标记，空闲后补跑）；②出站层——反思/任务上下文（think scope `reflect:` 前缀，经 `_sdk.get_current_scope` 读取）的 send 工具出站前查活状态：目标会话正有回复在飞（`Mind.active_reply_scopes` 经 wiring 施绑的读取器，单一事实源）或近窗口内已有**其他**思维链出站（进程内记录，`outbound_guard_recent_seconds` 默认 180s，0=关）即拒，拒绝 JSON 带 guard 归因 + 近期出站预览供模型自适应；回复周期自身与系统路径豁免（多段回复合法），同思维链连续出站放行。配置组 `channel/outbound`（`outbound_guard_enabled` 可关） |
 | 同任务排队去重 | `HeartbeatEngine._task_inflight` | tick/manual/AI 四路径共用的执行中集合，排队里同一种任务只允许一条 |
-| 待回复队列毒丸防护 | `agent/messages/everything.py::is_conversation_scope`（单点判据）+ `scheduler.enqueue_scope_reply`/`add_reminder`（校验）+ `decision_executor.pop_next_reply_target`（就地清除）+ `work_memory.consume_scope_task`（双队列消费） | 回归自 2026-09-12 事故：日历提醒在无会话上下文（心跳任务内建日程）落 scope=`_global`，到期经 enqueue_scope_reply 直入 pending_user，回复路径解析不了只能跳过，自主循环 0 退避无限空转（fast-path 刷屏、日志 8GB）。三层防线：①源头——`add_reminder` 拒绝持久化不可路由 scope 的提醒（ValueError；`_sdk.add_persistent_reminder` 桥接如实记日志返回空串，事件降级为不提醒）；②入口——`enqueue_scope_reply` 拒绝非会话 scope 入队（退化为全局短期记忆桶，对齐 PushHub 兜底）；③兜底——回复消费点对解析失败的队列条目就地清除 + WARNING，任何坏条目最多空转一轮即收敛。`consume_scope_task` 双队列都查（不按前缀路由），对落错队列的条目同样健壮 |
+| 待回复队列毒丸防护 | `agent/messages/everything.py::is_conversation_scope`（单点判据）+ `scheduler.enqueue_scope_reply`/`add_reminder`（校验）+ `decision_executor.pop_next_reply_target`（就地清除）+ `work_memory.consume_scope_task`（双队列消费） | 回归自 2026-09-12 事故：日历提醒在无会话上下文（心跳任务内建日程）落 scope=`_global`，到期经 enqueue_scope_reply 直入 pending_user，回复路径解析不了只能跳过，自主循环 0 退避无限空转（fast-path 刷屏、日志 8GB）。三层防线：①源头——`add_reminder` 拒绝持久化不可路由 scope 的提醒（ValueError；`_sdk.add_persistent_reminder` 桥接如实记日志返回空串，事件降级为不提醒）；②入口——`enqueue_scope_reply` 拒绝非会话 scope 入队（退化为全局短期记忆桶，对齐 PushHub 兜底）；③兜底——回复消费点对解析失败或缺频道前缀的队列条目就地清除 + WARNING，任何坏条目最多空转一轮即收敛。`consume_scope_task` 双队列都查（不按前缀路由），对落错队列的条目同样健壮 |
 | 单实例守卫与重启保底 | `core/instance_guard.py` + `entities/devops/service.py` 重启看门狗 + `restart.sh` | 实例守卫：启动写 `logs/anelf.pid`（项目目录天然按检出副本隔离实例身份），PID 文件指向的活进程经 cmdline 校验（本项目 launch.py）判定为残留实例时 SIGTERM→10s 宽限→SIGKILL 清场接管端口，cmdline 不匹配只警告不误杀（防 PID 复用）；僵尸进程经 psutil status 判定视为已死。重启看门狗：restart_app 排定关停后 90s 进程仍存活（优雅关停卡死）→ 无条件 `os._exit(42)` 保底，守护脚本必然接管；等空闲路径在关停请求发出后才布防（防等空闲误触发）。restart.sh 优先 PID 文件精准终止，pkill 兜底模式收紧到 `$ROOT/.*launch`（旧版 `python.*launch` 会误杀其他项目）。修复 2026-09 实证：8/29 残留进程占面板端口 10 天，restart_app 协作式重启对其无管辖权 |
 | 崩溃守护与通报 | `start.sh`/`start.bat` 守护循环 + `core/crash_report.py` + `crash_recovery` | 致命信号退出（SIGSEGV 等，退出码 128+n；SIGKILL/SIGTERM 不重启）自动退避重启（5×次数秒，上限 60s），崩溃状态落盘 `logs/crash_state.json`，连续 5 次崩溃停止拉起防崩溃循环（稳定运行 ≥600s 后崩溃重置计数）；重启后 crash_recovery 消费崩溃状态并关联 macOS DiagnosticReports（.ips）生成崩溃上下文——有回复检查点则随中断元消息注入对应会话，无检查点则经 PushHub 写全局通知并唤醒一轮思维（重启报到技能接管向主人报平安）；状态标记 reported 只通报一次。AI 详情查询走 devops `get_crash_report` 工具 / 面板 `/crash-info` |
 | ladybug native 串行门 | `agent/memory/cognee/client.py` `_apply_native_gate` | 进程级线程锁串行所有 ladybug native 执行：锁包在提交到线程池的查询任务上（execute + 结果消费全程），由执行线程持有——wait_for 超时取消协程不会提前放锁，孤儿 native 查询跑完才放行下一条；`_drop_native_resources` 同锁保护，拆除句柄前等在途执行结束。修复 2026-08 SIGSEGV（NodeTableScanState::scanNext 空指针，孤儿查询与后续查询/拆除并发使用同一 connection） |
@@ -404,6 +414,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 纪律单一权威源 | `agent/memory/rules_doc.py`（铁律）+ memorize/recall schema + hub 骨架/注入头 + 召回块头 | 同一纪律只讲一遍：路由/纪律归铁律（stable 唯一来源），工具 schema 只留参数语义，hub 骨架只声明段结构，召回块头训诫压为一行指针；铁律新增 hub 即时段与便签「当前状态」的分工句（两个"当前在做什么"写入口不再含糊）。铁律 1993→1628 字符，memorize/recall description 去重后合计省 ~250 字符（均属 stable 前缀，一次性重建后恢复冻结） |
 | reflect 工具族合并 | `mind.reflect` + `think_loop` 工具集重建 + 配置 `reflect_share_reply_tools`（默认开） | 无选择器的反思/任务循环复用回复级装配（get_active_tool_schemas，同族追加式冻结）：实测默认 reflect 目录已膨胀至与 reply 趋同（101-126 vs 106-125 工具），"精简"前提失效，两族交替即整段 30K+ 缓存重写（OpenAI 式隐式缓存按 tools 数组+消息整条做键，实验实证 tools 一字节变化≈全损）；合并后 reply/默认 reflect 共享单一冻结数组族。带选择器的子代理档案仍走精简目录（真实精简 + 一次性 scope 无结转价值） |
 | exec_context 步骤预算 | `context_assembly._MAX_RENDERED_STEPS`（12） | `[已完成步骤]` 渲染只保留最近 12 步 + 省略行（"此前 N 步已省略"）；exec_context 每轮全量重建，无界清单在长回复下按轮次平方膨胀 token，防重复操作只需近期步骤；finish_think 的最终执行摘要仍消费全量清单（一次性） |
+| 执行摘要入库瘦身 + 执行日志工具 | `reply_finalize._compact_summary_for_history` + `agent/mind/tools/execution_log.py`（per-scope 环形缓冲 + `get_execution_log` 工具，thinking 组） | 对话历史中的 `[已执行操作摘要]` 只入库统计头 + 最近 5 条 + 查询指引（历史每次窗口加载都计费，25 次工具级长轮次不再以千字符摘要挤占窗口）；完整清单进进程内环形缓冲（每会话 8 轮），AI 经 `get_execution_log(turns=)` 按需取回。完整版仍随 EVENT_AFTER_REPLY 发射（SkillReviewer 种子）。缓存影响：只改历史层新写入条目的字节（水位线后纯追加区，旧前缀不动），工具注册走追加式冻结一次重建 |
 | 缓存命中状态行 | `round_helpers._cache_status_hint` + `build_execution_context(cache_hint=)`（budget_hint 同族先例） | 上轮真实 usage 的命中率与 read/输入 tokens（口径归一后的 total_input 为分母）注入 exec_context，AI 自感知前缀缓存健康；注入准入 `last_input_tokens > 0`（首轮/压缩重置轮天然抑制）且端点可观测（不可观测静默缺席不谎报 0%）；配置 `cache_status_hint_enabled`（cache/prompt 组） |
 | 非输出提示独白信号驱动 | `think_loop._handle_tool_round` | "工具结果仅你可见"提示只在**本轮工具调用伴随文本独白**时注入（独白 = 模型误以为文字可达用户的信号）；静默工具轮零注入——exec_context 每轮已有输出契约，重复追加是纯 token 烧耗 |
 | 规划态势轮内注入 | `agent/planning/situation.py`（版本化快照 + provider `plan_ops`，priority 30 会话操作态势档） | 活跃目标/计划快照（goal_id/标题/步骤进度/步骤状态标记，当前 scope 的执行计划置顶）经 provider 层**每轮**注入，取代旧 recollection 每回复一次的 `_blk_goals`——修复回复中途目标被删除/收敛后快照过期、AI 拿过期 goal_id 连续打 update_goal not_found 的回归。单一数据源：全部规划写路径（tools 的 goal CRUD / tracker 的 `_persist`·`submit_plan`）变更后调 `situation.invalidate()`，快照按版本失配（+60s 再同步窗口兜底越轨写入）单飞重建，稳态渲染零 I/O；reflect 前缀 scope（任务/子代理）不注入保持 lean 语义；goal CRUD 的 not_found 错误附 `active_goals` 简报供 AI 一次自纠，update_goal 越界 step_index/非法 step_status 返回 PARAM 错误（此前静默 no-op 返回 success）；配置沿用 `goals_inject_enabled`（planning/core 组），group=planning 随工具组启停联动 |

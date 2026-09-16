@@ -15,6 +15,7 @@ from agent.messages import (
     Everything,
     MessageAssistant,
     MessageAssistantGroup,
+    build_entity_scope,
     parse_entity_scope,
 )
 from agent.mind.autonomous import Decision, DecisionType, MindPhase
@@ -290,9 +291,10 @@ async def execute_proactive(mind: Mind, decision: Decision) -> None:
         return
     anything = resolve_reply_target(mind, target)
     if not anything:
-        anything = build_proactive_target(mind, target)
+        anything = routable_target(mind, target)
     if not anything:
-        log(f"PROACTIVE 无法构建目标: {target}", "WARNING", tag="思维")
+        log(f"PROACTIVE 目标不可路由，已放弃: {target}", "WARNING", tag="思维")
+        _hb_append(f"主动消息放弃: 目标 '{target}' 无法解析为可路由会话 - {decision.content[:40]}")
         return
 
     proactive_prompt = (
@@ -334,7 +336,7 @@ async def execute_tool_action(mind: Mind, decision: Decision) -> None:
         if decision.target and output:
             anything = resolve_reply_target(mind, decision.target)
             if not anything:
-                anything = build_proactive_target(mind, decision.target)
+                anything = routable_target(mind, decision.target)
             if anything:
                 await mind.channel_manager.reply(anything, output)
     except Exception as exc:
@@ -399,81 +401,80 @@ async def execute_self_task(mind: Mind, decision: Decision) -> None:
         log(f"AI 自主任务失败: {exc}", "WARNING", tag="思维")
 
 
-def build_proactive_target(mind: Mind, target: str) -> Optional[Everything]:
-    """根据 target 字符串构建主动消息目标对象。"""
-    if not target:
-        return None
+def normalize_target_scope(mind: Mind, target: str) -> str:
+    """把决策目标标识规范化为可路由 scope；无法唯一确定时返回空串。
 
-    channel_keys = set(mind.channel_manager.list_channels().keys())
-    if target in channel_keys:
-        return MessageAssistant(uid="proactive", adapter_key=target)
-    if not channel_keys:
-        return None
+    决策 target 由 LLM 自由生成，形态不定：规范 scope（user_qq:123 /
+    group_qq:456，含 #session 后缀）直接采信；其余形态（旧格式 user_123、
+    裸 id、频道前缀 qq:123 及其下划线变体）按已知会话（待回复队列 + 路由
+    登记）唯一解析回填类型与频道前缀。无匹配或歧义（同 base id 命中多个
+    会话）视为不可路由——由调用方回退队列消费或放弃，不拼出影子会话。
+    """
+    text = target.strip()
+    if not text:
+        return ""
 
-    default_key = next(iter(channel_keys))
-    scope_type, scope_adapter, base_id, session_id = parse_entity_scope(target)
-    adapter_key = scope_adapter or default_key
-    if scope_type == "group":
-        group_id: Union[int, str] = base_id
-        try:
-            group_id = int(base_id)
-        except ValueError:
-            log("build_proactive_target 异常已忽略", "DEBUG")
-        return MessageAssistantGroup(
-            group_id=group_id, adapter_key=adapter_key, session_id=session_id
-        )
+    scope_type, adapter, base_id, session_id = parse_entity_scope(text)
+    if scope_type and adapter:
+        return build_entity_scope(scope_type, adapter, base_id, session_id)
 
-    # 兼容裸 group_/user_ 前缀之外的旧调用形态
-    raw = target.removeprefix("user_") if scope_type != "user" else base_id
-    uid: Union[int, str] = raw
+    candidates: set[str] = set()
+    for scope in mind.pfc.known_scopes():
+        s_type, s_adapter, s_base, s_session = parse_entity_scope(scope)
+        if not s_type:
+            continue
+        if scope_type:
+            # 旧格式 user_123：类型明确，按 base id（含子会话）补频道前缀
+            if (s_type, s_base) == (scope_type, base_id) and session_id in ("", s_session):
+                candidates.add(scope)
+        else:
+            # 裸 id / qq:123 / qq_123：与已知会话的 base id 或 scope_id 全等命中
+            scope_id = f"{s_adapter}:{s_base}"
+            if text in (s_base, scope_id) or text.replace("_", ":", 1) == scope_id:
+                candidates.add(scope)
+    if len(candidates) == 1:
+        return candidates.pop()
+    return ""
+
+
+def _coerce_base_id(base_id: str) -> Union[int, str]:
+    """数字 base id 归一为 int（频道投递侧普遍按数字 uid 寻址）。"""
     try:
-        uid = int(raw)
+        return int(base_id)
     except ValueError:
-        log("build_proactive_target 异常已忽略", "DEBUG")
-    return MessageAssistant(uid=uid, adapter_key=adapter_key, session_id=session_id)
+        return base_id
 
 
-def _build_reply_message(mind: Mind, scope: str, *, require_pending: bool) -> Optional[Everything]:
-    """按 scope 消费待回复任务并构造带 session_id 的回复目标消息。"""
-    if scope in mind._active_scopes:
-        return None
-    scope_type, scope_adapter, base_id, session_id = parse_entity_scope(scope)
-    if not scope_type:
-        return None
-    adapter_key = scope_adapter or mind.pfc.get_adapter_key(scope)
-    consumed = mind.pfc.consume_scope_task(scope)
-    if require_pending and not consumed:
-        return None
-    target_id: Union[int, str] = base_id
-    try:
-        target_id = int(base_id)
-    except ValueError:
-        log("_build_reply_message 异常已忽略", "DEBUG")
+def _build_target_message(scope: str) -> Everything:
+    """按规范 scope 构造投递目标消息（uid/group_id 取 base id，携带频道与子会话）。"""
+    scope_type, adapter, base_id, session_id = parse_entity_scope(scope)
+    target_id = _coerce_base_id(base_id)
     if scope_type == "group":
-        return MessageAssistantGroup(group_id=target_id, adapter_key=adapter_key, session_id=session_id)
-    return MessageAssistant(uid=target_id, adapter_key=adapter_key, session_id=session_id)
+        return MessageAssistantGroup(group_id=target_id, adapter_key=adapter, session_id=session_id)
+    return MessageAssistant(uid=target_id, adapter_key=adapter, session_id=session_id)
+
+
+def routable_target(mind: Mind, target: str) -> Optional[Everything]:
+    """规范化决策目标为投递目标（不消费待回复队列）。
+
+    供主动消息、工具操作结果投递等无待回复事实的场景使用。
+    """
+    scope = normalize_target_scope(mind, target)
+    return _build_target_message(scope) if scope else None
 
 
 def resolve_reply_target(mind: Mind, target: str) -> Optional[Everything]:
-    """根据 target 在已知路由中查找并消费对应任务。
+    """解析决策目标并精确消费其待回复条目。
 
-    支持格式：user_123 / group_456 / user_123#chat_id / 纯 ID（自动补前缀）。
-    判活前置：scope 已被占用时不消费队列条目（避免并行 scope 串台丢消息）。
+    目标先规范化（见 normalize_target_scope）；不可路由或未命中待回复
+    队列时返回 None，由调用方回退队列顺序消费（pop_next_reply_target）。
     """
-    if not target:
+    scope = normalize_target_scope(mind, target)
+    if not scope or scope in mind._active_scopes:
         return None
-
-    if target.startswith(("user_", "group_")):
-        return _build_reply_message(mind, target, require_pending=False)
-
-    msg = _build_reply_message(mind, f"user_{target}", require_pending=True)
-    if msg is not None:
-        log(f"将 target '{target}' 补充 user_ 前缀匹配到 user_{target}", tag="思维")
-        return msg
-    msg = _build_reply_message(mind, f"group_{target}", require_pending=True)
-    if msg is not None:
-        log(f"将 target '{target}' 补充 group_ 前缀匹配到 group_{target}", tag="思维")
-    return msg
+    if not mind.pfc.consume_scope_task(scope):
+        return None
+    return _build_target_message(scope)
 
 
 async def pop_next_reply_target(mind: Mind) -> Optional[Everything]:
@@ -486,22 +487,14 @@ async def pop_next_reply_target(mind: Mind) -> Optional[Everything]:
     for scope, _, _, _ in mind.pfc.peek_all_tasks():
         if scope in mind._active_scopes:
             continue
-        scope_type, scope_adapter, base_id, session_id = parse_entity_scope(scope)
-        if not scope_type:
-            # 毒丸条目：无法解析的 scope 回复路径永远消费不掉，留在队列
-            # 会让自主循环以 0 退避无限空转——就地清除并告警
+        scope_type, scope_adapter, _base_id, _session_id = parse_entity_scope(scope)
+        if not scope_type or not scope_adapter:
+            # 毒丸条目：无法解析或缺少频道前缀的 scope 出站投递不了，留在
+            # 队列会让自主循环以 0 退避无限空转——就地清除并告警
             log(f"清除无法路由的待处理条目: scope={scope!r}", "WARNING", tag="思维")
             mind.pfc.consume_scope_task(scope)
             continue
-        adapter_key = scope_adapter or mind.pfc.get_adapter_key(scope)
-        target_id: Union[int, str] = base_id
-        try:
-            target_id = int(base_id)
-        except ValueError:
-            log("pop_next_reply_target 异常已忽略", "DEBUG")
         # 按 scope 精确消费（含未读计数/预览清理），不依赖队首位置
         mind.pfc.consume_scope_task(scope)
-        if scope_type == "group":
-            return MessageAssistantGroup(group_id=target_id, adapter_key=adapter_key, session_id=session_id)
-        return MessageAssistant(uid=target_id, adapter_key=adapter_key, session_id=session_id)
+        return _build_target_message(scope)
     return None

@@ -12,12 +12,16 @@ import asyncio
 import json
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.mind.context_pipeline import get_layer_meta, list_layer_metas
 from core.log import log
 
 _SNAPSHOT_DIR = os.path.join("logs", "context_snapshots")
+
+# 变更对比基线的族数量上限（每族 = scope × kind；各族按层存若干哈希条目，
+# 条目总量上限约为族数 × 层数）
+_MAX_DIFF_FAMILIES = 64
 
 
 # ======================================================================
@@ -52,11 +56,15 @@ class ContextSnapshot:
         self._continuous: bool = False
         self._snapshot: Optional[Dict[str, Any]] = None
         self._lock = asyncio.Lock()
-        # 上一次快照的 section 哈希（layer → sha1 前缀），用于逐 section 变更对比
-        self._last_section_hashes: Dict[str, str] = {}
-        # 上一次快照的逐消息哈希（layer → [sha1]），用于区块内"已缓存前缀 /
-        # 本轮新增"切分（追加式层的新增部分与既有前缀分开呈现）
-        self._last_msg_hashes: Dict[str, List[str]] = {}
+        # 上一次快照的 section 哈希（(scope, kind, layer) → sha1 前缀），用于
+        # 逐 section 变更对比。基线按前缀族（scope × 调用用途）分键——
+        # reply 与 reflect/任务的前缀构成不同（精简 stable、不同 tools 数组），
+        # 跨族对比会把"族间差异"误标为"层漂移"（每行都显示 stable 变更），
+        # 与 PrefixGuard 的 (scope, kind) 分键同一分类学
+        self._last_section_hashes: Dict[Tuple[str, str, str], str] = {}
+        # 上一次快照的逐消息哈希（(scope, kind, layer) → [sha1]），用于区块内
+        # "已缓存前缀 / 本轮新增"切分（追加式层的新增部分与既有前缀分开呈现）
+        self._last_msg_hashes: Dict[Tuple[str, str, str], List[str]] = {}
 
     @property
     def armed(self) -> bool:
@@ -94,6 +102,7 @@ class ContextSnapshot:
             model: str,
             *,
             kind: str = "",
+            scope: str = "",
             prefix_drift: Optional[Dict[str, Any]] = None,
             legal_break: Optional[str] = None,
     ) -> bool:
@@ -102,6 +111,8 @@ class ContextSnapshot:
         未布防且未开启连续捕获时立即返回 False（零开销）。
         一次性布防捕获后自动解除；连续模式持续捕获并追加紧凑记录。
         kind 为调用用途（reply/reflect…），随快照记录供列表按用途解读命中率。
+        scope 为会话 scope（含 reflect 的一次性 scope），与 kind 共同构成
+        变更对比的前缀族键——跨族比较会把族间差异误标为层漂移。
         prefix_drift 为 PrefixGuard 的前缀断裂归因（None=前缀稳定/无基线），
         随快照落盘供缓存命中率下跌归因。
         legal_break 为合法断裂原因（fold/compress，None=不在合法断裂窗口），
@@ -115,7 +126,7 @@ class ContextSnapshot:
             if not oneshot and not self._continuous:
                 return False
 
-            sections = self._categorize(messages)
+            sections = self._categorize(messages, (scope, kind))
             tool_names = [
                 (t.get("function", {}) or {}).get("name", "")
                 for t in (tools or [])
@@ -135,6 +146,7 @@ class ContextSnapshot:
                 "captured_at": time.time(),
                 "model": model,
                 "kind": kind,
+                "scope": scope,
                 "model_context_window": model_context_window,
                 "estimated_tokens": estimated_tokens,
                 "message_count": len(messages),
@@ -207,6 +219,7 @@ class ContextSnapshot:
                 "file": filename,
                 "model": snapshot.get("model"),
                 "kind": snapshot.get("kind"),
+                "scope": snapshot.get("scope"),
                 "estimated_tokens": snapshot.get("estimated_tokens"),
                 "message_count": snapshot.get("message_count"),
                 "tool_count": snapshot.get("tool_count"),
@@ -395,12 +408,17 @@ class ContextSnapshot:
     # 分类
     # ------------------------------------------------------------------
 
-    def _categorize(self, messages: List[Dict]) -> List[Dict[str, Any]]:
+    def _categorize(
+            self,
+            messages: List[Dict],
+            family: Tuple[str, str] = ("", ""),
+    ) -> List[Dict[str, Any]]:
         """按 _layer 标签将消息分类为 sections（含内容哈希与上次快照的变更对比）。
 
         无标签消息按位置推断：进入工具链区域（出现 tool/带 tool_calls 的
         assistant）后，未标记的 system 消息（纠正提示/通知等）归入 tool_chain。
         层标签与变动率元数据来自 context_pipeline 注册中心（单一数据源）。
+        family 为 (scope, kind) 前缀族键：变更对比只与同族的上次快照进行。
         """
         import hashlib
 
@@ -437,8 +455,8 @@ class ContextSnapshot:
                 "tool_call_id": msg.get("tool_call_id"),
             })
 
-        new_hashes: Dict[str, str] = {}
-        new_msg_hashes: Dict[str, List[str]] = {}
+        new_hashes: Dict[Tuple[str, str, str], str] = {}
+        new_msg_hashes: Dict[Tuple[str, str, str], List[str]] = {}
         sections: List[Dict[str, Any]] = []
 
         def _msg_hash(m: Dict) -> str:
@@ -453,11 +471,12 @@ class ContextSnapshot:
             digest = hashlib.sha1(
                 "".join(str(m["content"]) for m in msgs).encode("utf-8", errors="replace")
             ).hexdigest()[:12]
-            new_hashes[layer] = digest
+            key = (family[0], family[1], layer)
+            new_hashes[key] = digest
             msg_hashes = [_msg_hash(m) for m in msgs]
-            new_msg_hashes[layer] = msg_hashes
-            previous = self._last_section_hashes.get(layer)
-            prev_msg_hashes = self._last_msg_hashes.get(layer)
+            new_msg_hashes[key] = msg_hashes
+            previous = self._last_section_hashes.get(key)
+            prev_msg_hashes = self._last_msg_hashes.get(key)
             # 逐消息最长公共前缀：前 N 条与上次快照逐字节一致（可命中缓存），
             # 其后为本轮新增/变化；无基线为 None
             if prev_msg_hashes is None:
@@ -497,8 +516,17 @@ class ContextSnapshot:
             if layer not in order:
                 sections.append(_make_section(layer, msgs))
 
-        self._last_section_hashes = new_hashes
-        self._last_msg_hashes = new_msg_hashes
+        # 更新该族的基线（重插保序实现 LRU 触达；超容量逐出最久未用的族——
+        # reflect 的一次性 scope 每次委托都是新族，无界累积会缓慢泄漏）
+        for store, values in (
+            (self._last_section_hashes, new_hashes),
+            (self._last_msg_hashes, new_msg_hashes),
+        ):
+            for key, value in values.items():
+                store.pop(key, None)
+                store[key] = value
+            while len(store) > _MAX_DIFF_FAMILIES * 4:
+                store.pop(next(iter(store)))
         return sections
 
     @staticmethod

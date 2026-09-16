@@ -123,7 +123,7 @@ export function ScheduleRow({
             value={s.reasoning_effort ?? ""}
             onChange={(e) => onUpdate({ reasoning_effort: e.target.value as TaskSchedule["reasoning_effort"] })}
           >
-            <option value="">{t("schedule.globalEffort")}</option>
+            <option value="">{t("schedule.followModel")}</option>
             <ReasoningEffortOptions t={t} keyPrefix="schedule." />
           </Select>
         </div>

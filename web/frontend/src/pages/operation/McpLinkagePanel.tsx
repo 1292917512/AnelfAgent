@@ -62,7 +62,7 @@ export function McpLinkagePanel() {
   });
   const execMut = useMutation({
     mutationFn: async (opId: string) => {
-      let args: Record<string, unknown> = {};
+      let args: Record<string, unknown>;
       try {
         args = execArgs.trim() ? JSON.parse(execArgs) : {};
       } catch {

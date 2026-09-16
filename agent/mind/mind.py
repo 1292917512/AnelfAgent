@@ -63,9 +63,6 @@ from agent.mind.message_schema import (
 )
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tools.decision_executor import (
-    build_proactive_target as _de_build_proactive,
-)
-from agent.mind.tools.decision_executor import (
     execute_decision as _de_execute,
 )
 from agent.mind.tools.decision_executor import (
@@ -666,10 +663,6 @@ class Mind:
     async def _execute_reflect(self, decision: Optional[Decision] = None, *, skip_interval: bool = False) -> int:
         """执行反思决策。"""
         return await _de_reflect(self, decision, skip_interval=skip_interval)
-
-    def _build_proactive_target(self, target: str) -> Optional[Everything]:
-        """根据 target 字符串构建主动消息目标对象。"""
-        return _de_build_proactive(self, target)
 
     def _resolve_reply_target(self, target: str) -> Optional[Everything]:
         """根据 target 在已知路由中查找并消费对应任务。"""

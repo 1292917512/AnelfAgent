@@ -65,9 +65,36 @@ class TestUpdateGoal:
         assert updated is not None
         assert updated["status"] == "completed"
 
-        goals = await svc.list_goals()
-        assert len(goals) == 1
-        assert goals[0]["status"] == "completed"
+        # 终态即清（与 AI 工具面同步语义）：条目不保留
+        assert await svc.list_goals() == []
+
+    async def test_update_steps_all_done_autocloses(self, svc: MemoryService, store: MemoryStore) -> None:
+        """全部步骤 done 的 steps 替换触发自动收口（与 AI 工具面同步语义）。"""
+        await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC,
+            content=json.dumps(_make_goal(), ensure_ascii=False),
+            source="goal", importance=0.8,
+        ))
+        updated = await svc.update_goal("g1", steps=[
+            {"step": "a", "status": "completed"},
+            {"step": "b", "status": "completed"},
+        ])
+        assert updated is not None
+        assert await svc.list_goals() == []
+
+    async def test_update_steps_partial_keeps(self, svc: MemoryService, store: MemoryStore) -> None:
+        """步骤未全部 done 时正常写回。"""
+        await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC,
+            content=json.dumps(_make_goal(), ensure_ascii=False),
+            source="goal", importance=0.8,
+        ))
+        updated = await svc.update_goal("g1", steps=[
+            {"step": "a", "status": "completed"},
+            {"step": "b", "status": "pending"},
+        ])
+        assert updated is not None
+        assert len(await svc.list_goals()) == 1
 
     async def test_update_missing_returns_none(self, svc: MemoryService) -> None:
         assert await svc.update_goal("nonexistent", status="completed") is None

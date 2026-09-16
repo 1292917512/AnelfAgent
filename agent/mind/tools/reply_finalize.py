@@ -11,8 +11,28 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 
 from core.event_bus import EVENT_AFTER_REPLY, event_bus
 
-# 入库执行摘要的字符上限（保头保尾截断；摘要持久化在 DB，每次窗口加载都计费）
-_EXEC_SUMMARY_MAX_CHARS = 4000
+from . import execution_log
+
+# 入库简版保留的尾部条数（历史每次窗口加载都计费，只留近期操作）
+_HISTORY_TAIL_LINES = 5
+# 完整摘要的字符上限（环形缓冲与事件 payload 消费；保头保尾 + 中间省略）
+_EXEC_SUMMARY_MAX_CHARS = 16000
+_EXEC_SUMMARY_HEADER = "[已执行操作摘要]"
+
+
+def _compact_summary_for_history(summary: str) -> str:
+    """把完整执行摘要裁剪为入库简版（统计头 + 最近几条 + 查询指引）。"""
+    lines = summary.splitlines()
+    if len(lines) <= _HISTORY_TAIL_LINES + 1:
+        return summary
+    omitted = len(lines) - 1 - _HISTORY_TAIL_LINES
+    return "\n".join(
+        [
+            f"{lines[0]}（此处仅列最近 {_HISTORY_TAIL_LINES} 条，"
+            f"此前 {omitted} 条已省略，完整清单可调用 get_execution_log 查看）：",
+            *lines[-_HISTORY_TAIL_LINES:],
+        ]
+    )
 
 if TYPE_CHECKING:
     from agent.messages import Everything
@@ -46,13 +66,18 @@ async def finish_think(
     实时语音引擎据此归因结算（旧轮迟到的完成事件不再误杀新一轮语音流）。
     """
     execution_summary = _build_execution_summary(tool_chain, execution_steps)
-    if execution_summary.startswith("[已执行操作摘要]"):
+    if execution_summary.startswith(_EXEC_SUMMARY_HEADER):
+        # 完整清单进执行日志缓冲（get_execution_log 按需查询），
+        # 入库只留尾部简版——历史每轮窗口加载都计费，长轮次摘要
+        # 不再整段挤占上下文窗口
+        scope = getattr(anything, "entity_scope", "") if anything is not None else ""
+        execution_log.record(scope, execution_summary, iterations=iterations)
         # 工具执行记录持久化到对话历史（system 角色），
         # 等价于主流 function calling 历史中的 assistant(tool_calls) + tool results。
         # 不再写入短期记忆（DB 历史每轮都会加载，避免双重注入）。
         await mind._add_system_context(
             anything,
-            execution_summary,
+            _compact_summary_for_history(execution_summary),
             role="system",
         )
 
@@ -66,13 +91,14 @@ async def finish_think(
 
 
 def _build_execution_summary(
-        tool_chain: Optional[List[Dict]],
-        execution_steps: List[str],
+    tool_chain: Optional[List[Dict]],
+    execution_steps: List[str],
 ) -> str:
-    """从工具链构建执行摘要；无工具结果时回退到步骤日志。
+    """从工具链构建完整执行摘要；无工具结果时回退到步骤日志。
 
-    摘要同时用于：对话历史入库（仅工具摘要）与 EVENT_AFTER_REPLY.execution_summary
-    （SkillReviewer 契约）。
+    摘要同时用于：执行日志缓冲（get_execution_log 查询）与
+    EVENT_AFTER_REPLY.execution_summary（SkillReviewer 契约）；
+    入库历史由 ``_compact_summary_for_history`` 裁剪为尾部简版。
     """
     if tool_chain:
         call_map: Dict[str, str] = {}  # tool_call_id → "name(args_preview)"

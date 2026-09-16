@@ -570,7 +570,7 @@ async def delete_memory_file(path: str = Query(...)) -> Dict[str, str]:
 @router.get("/goals")
 @_runtime_fallback(lambda status="all": {"goals": [], "total": 0, "filter": status})
 async def list_goals(
-    status: str = Query("all", description="筛选状态: active / completed / cancelled / all"),
+    status: str = Query("all", description="筛选状态: active / all（终态目标即删不保留）"),
 ) -> Dict[str, Any]:
     goals = await _mem_svc.list_goals(status=status)
     return {"goals": goals, "total": len(goals), "filter": status}
@@ -595,7 +595,9 @@ class CreateGoalRequest(BaseModel):
 @router.post("/goals")
 async def create_goal(req: CreateGoalRequest) -> Dict[str, Any]:
     try:
-        return await _mem_svc.create_goal(req.title, req.description, req.steps, req.due_time, req.recurring)
+        return await _mem_svc.create_goal(
+            req.title, req.description, req.steps, req.due_time, req.recurring,
+        )
     except RuntimeError:
         raise HTTPException(503, "运行时未初始化") from None
 

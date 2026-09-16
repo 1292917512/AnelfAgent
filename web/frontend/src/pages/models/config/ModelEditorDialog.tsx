@@ -20,7 +20,7 @@ import type {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button, Input, Modal, Select, Switch, Textarea } from "@/components/ui";
-import { ReasoningEffortOptions } from "@/components/common/ReasoningEffortSelect";
+import { ReasoningEffortOptions, highestContractEffort } from "@/components/common/ReasoningEffortSelect";
 import { MODEL_TYPE_OPTIONS } from "./shared";
 
 type JsonField = "request_params" | "extra_body" | "extra_headers" | "thinking";
@@ -215,7 +215,10 @@ export function ModelEditorDialog({
     supports_tools: model.supports_tools,
     supports_forced_tool_choice: model.supports_forced_tool_choice,
     supports_reasoning: model.supports_reasoning,
-    reasoning_effort: model.reasoning_effort ?? "",
+    // 历史空档（跟随已移除的全局配置）按模型思考契约最高档归一，保存时固化
+    reasoning_effort: model.supports_reasoning
+      ? model.reasoning_effort || highestContractEffort(model.thinking)
+      : model.reasoning_effort ?? "",
     model_types: model.model_types,
     enabled: model.enabled,
   }));
@@ -457,7 +460,20 @@ export function ModelEditorDialog({
                 <input
                   type="checkbox"
                   checked={draft.supports_reasoning ?? false}
-                  onChange={(e) => patch({ supports_reasoning: e.target.checked })}
+                  onChange={(e) => {
+                    const supports = e.target.checked;
+                    if (!supports || draft.reasoning_effort) {
+                      patch({ supports_reasoning: supports });
+                      return;
+                    }
+                    let thinking: unknown = model.thinking;
+                    try {
+                      thinking = JSON.parse(jsonDrafts.thinking);
+                    } catch {
+                      // JSON 草稿无效时按已保存契约归一
+                    }
+                    patch({ supports_reasoning: supports, reasoning_effort: highestContractEffort(thinking) });
+                  }}
                   className="accent-[rgb(168,85,247)] w-3.5 h-3.5"
                 />
                 <span className="text-xs text-foreground">{t("deepThinking")}</span>
@@ -468,7 +484,6 @@ export function ModelEditorDialog({
                   value={draft.reasoning_effort ?? ""}
                   onChange={(e) => patch({ reasoning_effort: e.target.value })}
                 >
-                  <option value="">{t("effortInherit")}</option>
                   <ReasoningEffortOptions t={t} />
                 </Select>
               )}

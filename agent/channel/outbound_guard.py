@@ -82,6 +82,19 @@ def bind_reply_scopes(provider: Callable[[], frozenset[str]]) -> None:
     _reply_scopes_provider = provider
 
 
+def active_reply_scopes() -> frozenset[str]:
+    """在途回复会话集合（Mind._active_scopes 的统一读取面，未施绑为空）。
+
+    出站哨兵的拦截判定与思维层会话通知的「处理中」标注共用同一事实源。
+    """
+    if _reply_scopes_provider is None:
+        return frozenset()
+    try:
+        return _reply_scopes_provider()
+    except Exception:
+        return frozenset()
+
+
 def _reply_scope_active(scope: str) -> bool:
     if _reply_scopes_provider is None:
         return False

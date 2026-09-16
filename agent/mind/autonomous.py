@@ -215,6 +215,8 @@ META_DECISION_SYSTEM = """你是决策核心。分析当前态势，调用 decid
 决策规则：
 - 消息预览可能被截断，不影响决策——reply 阶段可看到完整内容
 - 同一 scope 的多条消息只需一个 reply，不要重复
+- target 必须原样使用态势中的会话 scope（如 user_qq:123 / group_qq:456），
+  不要自行改写、缩写或去掉频道前缀
 - plan 与 self_task 的分工：plan 产生/推进长期目标（goal 会持续追踪），
   self_task 是一次性具体待办（做完即止）；待处理任务（self_task）需要你选择 tool_action 来执行
 - 可以连续调用多个 decide 来表达多个决策
@@ -237,7 +239,10 @@ DECISION_TOOLS: list[dict] = [
                     },
                     "target": {
                         "type": "string",
-                        "description": "目标标识（reply 填消息来源 scope，如 user_123）",
+                        "description": (
+                            "目标会话 scope，如 user_qq:123 / group_qq:456"
+                            "（reply 原样使用待处理消息的 scope，不要改写格式）"
+                        ),
                     },
                     "reason": {
                         "type": "string",

@@ -200,13 +200,15 @@ class TestUpdateGoalValidation:
         assert "completed" in result["hint"]
 
     async def test_goal_status_only_update_still_works(self, store):
-        """仅更新整体状态（step_index=-1）的既有语义不受校验影响。"""
+        """仅更新整体状态（step_index=-1）不受校验影响；终态即清删除条目。"""
+        from agent.planning import tracker as _tracker
+
         raw = await planning_tools.create_goal("目标", steps="a")
         goal_id = json.loads(raw)["goal"]["goal_id"]
 
         result = json.loads(await planning_tools.update_goal(goal_id, goal_status="completed"))
         assert result["success"] is True
-        assert result["goal"]["status"] == "completed"
+        assert await _tracker.find_goal_by_id(goal_id) == (None, None)
 
 
 class TestSituationLines:

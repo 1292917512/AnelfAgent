@@ -109,11 +109,12 @@ async def _invoke_llm_unified(
 
     # 上下文快照捕获（normalize 前，_layer 标签尚存；未布防时零开销）
     # kind=调用用途（reply/reflect…）：列表行按用途区分主对话与任务调用，
-    # 任务首轮的结构性低命中不再被误读为主对话缓存故障
+    # 任务首轮的结构性低命中不再被误读为主对话缓存故障；scope 与 kind
+    # 共同构成变更对比的前缀族键（跨族对比会把族间差异误标为层漂移）
     from agent.mind.context_snapshot import context_snapshot
     await context_snapshot.try_capture(
-        messages, tools, model_name, kind=purpose, prefix_drift=prefix_drift,
-        legal_break=legal_break,
+        messages, tools, model_name, kind=purpose, scope=_guard_scope,
+        prefix_drift=prefix_drift, legal_break=legal_break,
     )
 
     # 缓存断点装饰（唯一装饰点，_layer 标签尚存时按锚点表放置；

@@ -538,21 +538,28 @@ class EntityRegistry:
     # 分组排序权重（越小越靠前），经 register_group_order() 注册
     _group_order_weights: Dict[str, int] = {}
     # 跨来源覆盖监听：注册名被不同 source 的工具覆盖时回调 (old, new)，
-    # 供 MCP bridge 把被覆盖的工具让位改名保留（重名仲裁：内置保留原名，MCP 加前缀）
-    _override_hooks: List[Callable[["EntityMetadata", "EntityMetadata"], None]] = []
+    # 供 MCP bridge 把被覆盖的工具让位改名保留（重名仲裁：内置保留原名，MCP 加前缀）；
+    # 返回 True 表示旧实体已由监听器接管保留，注册表不再发"已覆盖"告警
+    _override_hooks: List[
+        Callable[["EntityMetadata", "EntityMetadata"], Optional[bool]]
+    ] = []
 
     @classmethod
     def register_override_hook(
-        cls, hook: Callable[["EntityMetadata", "EntityMetadata"], None],
+        cls, hook: Callable[["EntityMetadata", "EntityMetadata"], Optional[bool]],
     ) -> None:
-        """注册跨来源覆盖监听（幂等去重）。"""
+        """注册跨来源覆盖监听（幂等去重）。
+
+        监听器返回 True 表示旧实体已接管保留（如 MCP 让位改名），
+        本次覆盖的结果说明由监听器负责，注册表不重复告警。
+        """
         with cls._lock:
             if hook not in cls._override_hooks:
                 cls._override_hooks.append(hook)
 
     @classmethod
     def unregister_override_hook(
-        cls, hook: Callable[["EntityMetadata", "EntityMetadata"], None],
+        cls, hook: Callable[["EntityMetadata", "EntityMetadata"], Optional[bool]],
     ) -> None:
         """移除跨来源覆盖监听（不存在时静默跳过）。"""
         with cls._lock:
@@ -607,11 +614,6 @@ class EntityRegistry:
                     log(f"⚠️ 实体名称冲突: {metadata.name}", "WARNING")
                     return False
                 if existing.source != metadata.source:
-                    log(
-                        f"⚠️ 实体名称冲突，已覆盖: {metadata.name} "
-                        f"({existing.source} → {metadata.source})",
-                        "WARNING",
-                    )
                     overridden = existing
                 cls._remove_from_indexes(metadata.name)
 
@@ -621,13 +623,22 @@ class EntityRegistry:
                 cls._groups.setdefault(metadata.group, []).append(metadata.name)
             cls.bump_version()
 
-        # 锁外通知覆盖监听（监听器可能回注册新实体，避免持锁重入）
+        # 锁外通知覆盖监听（监听器可能回注册新实体，避免持锁重入）；
+        # 任一监听器接管保留旧实体时，覆盖结果由其说明，不再重复告警
         if overridden is not None:
+            preserved = False
             for hook in list(cls._override_hooks):
                 try:
-                    hook(overridden, metadata)
+                    if hook(overridden, metadata) is True:
+                        preserved = True
                 except Exception as exc:
                     log(f"实体覆盖监听回调失败 ({metadata.name}): {exc}", "WARNING")
+            if not preserved:
+                log(
+                    f"⚠️ 实体名称冲突，已覆盖: {metadata.name} "
+                    f"({overridden.source} → {metadata.source})",
+                    "WARNING",
+                )
 
         log(f"✅ 实体注册: {metadata.name} [{metadata.entity_type.value}]", "DEBUG")
         return True

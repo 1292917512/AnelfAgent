@@ -592,7 +592,7 @@ class LLMClient(BaseEntity):
         """解析本次调用的规范思考等级，并弹出 params 中的 reasoning_effort。
 
         优先级：调用方 options > 每模型专属配置（config.reasoning_effort）；
-        全局等级由上层（Mind/任务/心跳）注入 options，不在此处理。
+        按次等级由上层（任务/心跳/会话参数）注入 options，不在此处理。
         模型不支持思考（supports_reasoning=False）时静默忽略。
         返回 None 表示本次不下发 effort；调用方显式传入非法值抛 ValueError。
         """

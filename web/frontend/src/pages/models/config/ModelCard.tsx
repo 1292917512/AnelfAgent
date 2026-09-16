@@ -39,7 +39,7 @@ export function ModelCard({
       model.supports_reasoning
         ? model.reasoning_effort
           ? t(`effort${model.reasoning_effort.charAt(0).toUpperCase()}${model.reasoning_effort.slice(1)}`)
-          : t("effortInherit")
+          : "—"
         : "—",
     ],
   ];

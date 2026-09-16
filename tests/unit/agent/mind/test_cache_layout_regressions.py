@@ -198,7 +198,7 @@ class TestExecutionSummaryCap:
 
     def test_many_tools_head_tail_kept(self) -> None:
         chain = []
-        for i in range(40):
+        for i in range(80):
             chain.append({
                 "role": "assistant",
                 "tool_calls": [{
@@ -211,9 +211,11 @@ class TestExecutionSummaryCap:
                 "content": "结果" * 150,
             })
         summary = _build_execution_summary(chain, [])
-        assert len(summary) < 4600
+        # 完整版上限 16000，超出部分保头保尾 + 中间省略
+        # （入库历史另有简版尾部裁剪，见 test_execution_log）
+        assert len(summary) < 16600
         assert "已省略" in summary
-        assert "本轮共执行 40 次工具" in summary
+        assert "本轮共执行 80 次工具" in summary
 
 
 class TestDeterministicToolOrder:

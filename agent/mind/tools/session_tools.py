@@ -145,9 +145,9 @@ async def switch_session(scope: str, reason: str = "") -> str:
 
     scope = (scope or "").strip()
     scope_type, scope_adapter, _base_id, _session_id = parse_entity_scope(scope)
-    if not scope_type:
+    if not scope_type or not scope_adapter:
         return json.dumps({
-            "error": f"无效的 scope: '{scope}'",
+            "error": f"无效的 scope: '{scope}'（需含频道前缀）",
             "hint": "格式应为 user_qq:123 / group_qq:456 / user_webui:u#chat_id，可先调用 list_sessions 获取",
         }, ensure_ascii=False)
 
@@ -163,18 +163,7 @@ async def switch_session(scope: str, reason: str = "") -> str:
             "hint": "该会话正在处理中，无需重复切换",
         }, ensure_ascii=False)
 
-    # 路由信息：scope 自带 adapter 段优先，其次待处理队列，回退频道活动快照
-    adapter_key = scope_adapter or mind.pfc.get_adapter_key(scope)
-    preview = ""
-    if not adapter_key:
-        act = _snapshot_activities(mind).get(scope, {})
-        adapter_key = act.get("adapter_key", "")
-        preview = act.get("last_preview", "")
-    if not adapter_key:
-        return json.dumps({
-            "error": f"未知会话: '{scope}'（无路由信息）",
-            "hint": "可先调用 list_sessions 查看可切换的会话",
-        }, ensure_ascii=False)
+    preview = _snapshot_activities(mind).get(scope, {}).get("last_preview", "")
 
     prompt = "[会话切换] 你主动切换到该会话处理消息"
     if reason:
@@ -183,7 +172,7 @@ async def switch_session(scope: str, reason: str = "") -> str:
 
     from agent.mind.tools.scheduler import enqueue_scope_reply
     await enqueue_scope_reply(
-        mind.pfc, scope, adapter_key,
+        mind.pfc, scope, scope_adapter,
         preview or f"会话切换: {reason or '主动处理'}"[:60],
         prompt,
     )
@@ -193,6 +182,6 @@ async def switch_session(scope: str, reason: str = "") -> str:
     return json.dumps({
         "ok": True,
         "scope": scope,
-        "channel": adapter_key,
+        "channel": scope_adapter,
         "hint": "该会话已排入处理队列，将以独立上下文开启新回复；你当前的回复仍发往当前会话",
     }, ensure_ascii=False)

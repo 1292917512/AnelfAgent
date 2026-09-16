@@ -140,6 +140,9 @@ class PrefrontalCortex:
     def get_adapter_key(self, scope: str) -> str:
         return self.work_memory.get_adapter_key(scope)
 
+    def known_scopes(self) -> set[str]:
+        return self.work_memory.known_scopes()
+
     def set_message_preview(self, scope: str, preview: str) -> None:
         self.work_memory.set_message_preview(scope, preview)
 

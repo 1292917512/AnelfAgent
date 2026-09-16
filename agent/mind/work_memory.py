@@ -566,6 +566,13 @@ class WorkMemory:
     def get_adapter_key(self, scope: str) -> str:
         return self._task_adapter_keys.get(scope, "")
 
+    def known_scopes(self) -> set[str]:
+        """已知会话 scope 全集（待回复队列 + 消息路由登记）。"""
+        scopes: set[str] = set(self.pending_user.queue)
+        scopes.update(self.pending_group.queue)
+        scopes.update(self._task_adapter_keys)
+        return scopes
+
     def set_message_preview(self, scope: str, preview: str) -> None:
         """登记 scope 的待处理消息预览（供态势收集与提示注入）。"""
         if scope:
