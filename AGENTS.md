@@ -739,6 +739,8 @@ lib/utils.ts                  # cn() 类名合并工具（样式走 Tailwind 内
 i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 须一一对应；插件文案不进核心 locale）
 ```
 
+**新增核心页面五处同步**（缺一即"页面在但入口不可见"）：① `pages/<Page>.tsx`（App.tsx 经 import.meta.glob 按文件名懒加载）② `lib/core-routes.ts` 加路由行 ③ `components/layout/Sidebar.tsx` 的 FALLBACK_NAV 加导航项（图标须先在 ICON_MAP）④ `i18n/locales/{zh,en}/nav.json` 加标签键 + `<page>.json` 页面文案 ⑤ **运行态导航优先取 `config/webui.json` 的 navigation 覆盖表**（gitignored 用户配置，FALLBACK_NAV 仅兜底）——已有部署的机器须同步补项，否则新页面侧边栏不出现。
+
 #### 模块前端插件体系（热插拔）
 
 频道/实体的前端与后端收敛到同一模块目录，核心框架只做通用加载，删除模块目录即整体拔出（UI/API/文案/路由零残留）：
