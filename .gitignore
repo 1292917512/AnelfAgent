@@ -62,6 +62,7 @@ config/calendar.json
 config/heartbeat.json
 config/cognee.json
 config/reminders.json
+config/operations.json
 config/webui.json
 config/permission_rules.json
 config/db_connections.json
