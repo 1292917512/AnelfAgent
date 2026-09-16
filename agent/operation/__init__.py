@@ -19,5 +19,15 @@ register_configs_safe({
             "description": "是否允许执行桌面操控动作（高危总开关；急停可鼠标猛移屏幕左上角）",
             "default": True,
         },
+        "operation_context_window_seconds": {
+            "description": "操作活跃窗口（秒）：窗口内有操作执行才注入操作态势上下文，"
+                           "平时零注入；每次执行滑动续期",
+            "default": 600, "unit": "秒", "min": 60, "max": 7200, "advanced": True,
+        },
+        "operation_desktop_verify": {
+            "description": "桌面动作执行后自动看屏验证（联动视觉 screen 源，动作结果附最新"
+                           "画面帧；AI 可用 desktop_act 的 verify 参数逐次覆盖）",
+            "default": True,
+        },
     },
 })

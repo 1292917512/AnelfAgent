@@ -50,6 +50,18 @@ def mcp_gateway() -> Optional[McpGateway]:
 
 
 _history: deque = deque(maxlen=_HISTORY_MAX)
+_last_activity: float = 0.0
+"""最近一次操作执行时刻——操作活跃窗口的锚点（态势注入据此按需触发）。"""
+
+
+def touch_activity() -> None:
+    global _last_activity
+    _last_activity = time.time()
+
+
+def seconds_since_activity() -> float:
+    """距最近一次操作执行的秒数（从未执行返回 inf）。"""
+    return (time.time() - _last_activity) if _last_activity else float("inf")
 
 
 def _record(op_id: str, kind: str, args: Dict[str, Any], outcome: Dict[str, Any]) -> None:
@@ -91,6 +103,7 @@ async def execute(op_id: str, args: Optional[Dict[str, Any]] = None) -> Dict[str
                 outcome = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     _record(op_id, spec.kind, args, outcome)
+    touch_activity()
     log(f"操作执行 {op_id}: {'成功' if outcome.get('ok') else outcome.get('error')}",
         "DEBUG", tag=_LOG_TAG)
     return outcome
@@ -104,7 +117,9 @@ def history(limit: int = 10) -> List[Dict[str, Any]]:
 
 
 async def status() -> Dict[str, Any]:
-    """运行态：桌面执行器可用性、MCP servers、操作计数、近期历史。"""
+    """运行态：桌面执行器可用性、活跃窗口、MCP servers、操作计数、近期历史。"""
+    from core.config import get_config_bool, get_config_int
+
     specs = framework.list_operations()
     desktop_ready = desktop.runtime_ready()
     gateway = mcp_gateway()
@@ -114,11 +129,19 @@ async def status() -> Dict[str, Any]:
             servers = gateway.server_status()
         except Exception as exc:
             log(f"MCP 状态获取失败: {exc}", "DEBUG", tag=_LOG_TAG)
+    window = max(0, get_config_int("operation_context_window_seconds", 600))
+    since = seconds_since_activity()
     return {
         "desktop": {
             "available": desktop_ready,
             "screen": list(desktop.screen_size()) if desktop_ready else None,
+            "verify": get_config_bool("operation_desktop_verify", True),
             "hint": "" if desktop_ready else desktop.install_hint(),
+        },
+        "active": {
+            "window_seconds": window,
+            "seconds_since_activity": None if since == float("inf") else round(since),
+            "context_injecting": since <= window,
         },
         "mcp": {"available": gateway is not None, "servers": servers},
         "counts": {

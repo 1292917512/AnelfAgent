@@ -49,7 +49,7 @@ export function OperationActionsPanel() {
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label={t("statDesktop")}
           variant={desktopOk ? "ok" : "warn"}
@@ -64,8 +64,28 @@ export function OperationActionsPanel() {
             </span>
           }
         />
-        <StatCard label={t("statOperations")} value={`${status?.counts?.enabled ?? 0} / ${status?.counts?.operations ?? 0}`} />
-        <StatCard label={t("statMcpRegistered")} value={status?.counts?.mcp_registered ?? 0} />
+        <StatCard
+          label={t("statVerify")}
+          value={
+            <span className="flex items-center gap-2 text-base font-medium">
+              <StatusDot status={status?.desktop?.verify ? "ok" : "offline"} />
+              {status?.desktop?.verify ? t("verifyOn") : t("verifyOff")}
+            </span>
+          }
+        />
+        <StatCard
+          label={t("statContext")}
+          variant={status?.active?.context_injecting ? "ok" : "default"}
+          value={
+            <span className="flex items-center gap-2 text-base font-medium">
+              <StatusDot status={status?.active?.context_injecting ? "ok" : "offline"} />
+              {status?.active?.context_injecting
+                ? t("contextActive", { n: status?.active?.seconds_since_activity ?? 0 })
+                : t("contextIdle")}
+            </span>
+          }
+        />
+        <StatCard label={t("statLinked")} value={status?.counts?.mcp_registered ?? 0} />
       </div>
       {!desktopOk && status?.desktop?.hint && (
         <p className="text-xs text-warn">{status.desktop.hint}</p>

@@ -1,8 +1,10 @@
-"""操作 AI 工具面 — 桌面操控、MCP 操作注册与语义化执行。
+"""操作 AI 工具面 — 桌面操控与 MCP 操作关联。
 
-桌面动作为统一入口 desktop_act（动作枚举 + 可选参数，参数契约见
-list_operations 的目录描述）；注册的 MCP 操作经 execute_operation
-按注释语义调用。看屏定位用视觉组既有工具（vision_look），此处不重复。
+设计定位（关联 ≠ 执行通道）：注册的 MCP 操作是**语义索引**——注入操作
+态势让 AI 在操作语境下知道有哪些语义化能力；实际执行仍走 mcp:<server>
+工具组（activate_tool_group 激活），不设第二执行通道。桌面动作为统一
+入口 desktop_act（动作枚举 + 可选参数），执行后默认自动看屏验证
+（联动视觉 screen 源，verify 参数可逐次覆盖）。
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ def _runtime_gate() -> str:
 @deferred_tool(
     group="operation", tags=["always"], source="agent.operation",
     description="执行桌面操控动作（click/double_click/right_click/move/drag/scroll/type/"
-    "hotkey/key）。先用 vision_look 看屏定位坐标。",
+    "hotkey/key），成功后默认自动看屏验证（结果附最新画面）。先 vision_look 定位坐标。",
 )
 async def desktop_act(
     action: str,
@@ -47,8 +49,9 @@ async def desktop_act(
     button: str = "left",
     duration: float = 0.0,
     interval: float = 0.0,
+    verify: str = "auto",
 ) -> str:
-    """执行一个桌面操控动作。
+    """执行一个桌面操控动作（看屏 → 操作 → 验证闭环的操作端）。
 
     Args:
         action: click/double_click/right_click/move/drag/scroll/type/hotkey/key
@@ -60,6 +63,8 @@ async def desktop_act(
         button: 鼠标键（left/right/middle）
         duration: move/drag 滑动时长秒
         interval: type 逐字间隔秒
+        verify: 动作后自动看屏验证——auto=按配置（默认开）/ on=强制 / off=跳过
+            （纯 move/scroll 类可 off 省 token；点击/输入类建议保持验证）
     """
     gate = _runtime_gate()
     if gate:
@@ -77,12 +82,47 @@ async def desktop_act(
         "x": x, "y": y, "x2": x2, "y2": y2, "text": text, "keys": keys,
         "amount": amount, "button": button, "duration": duration, "interval": interval,
     })
+    if outcome.get("ok") and _should_verify(verify):
+        return await _with_screen_verify(outcome)
+    return json.dumps(outcome, ensure_ascii=False)
+
+
+def _should_verify(verify: str) -> bool:
+    from core.config import get_config_bool
+
+    mode = (verify or "auto").strip().lower()
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    return get_config_bool("operation_desktop_verify", True)
+
+
+async def _with_screen_verify(outcome: dict) -> str:
+    """动作结果附最新屏幕帧（多模态工具结果契约：顶层 _multimodal+images）。
+
+    视觉源不可用/捕获失败时静默回退纯文本结果——验证是增强不是依赖。
+    """
+    try:
+        from agent.vision.tools import vision_look
+
+        frame_raw = await vision_look(source="screen")
+        frame = json.loads(frame_raw)
+        if isinstance(frame, dict) and frame.get("_multimodal"):
+            frame["action_result"] = outcome
+            frame["text"] = (
+                f"动作已执行：{outcome.get('result', '')}。"
+                "以下是执行后的屏幕画面，请核对是否达到预期。"
+            )
+            return json.dumps(frame, ensure_ascii=False)
+    except Exception as exc:
+        log(f"看屏验证失败（回退纯结果）: {exc}", "DEBUG", tag=_LOG_TAG)
     return json.dumps(outcome, ensure_ascii=False)
 
 
 @deferred_tool(
     group="operation", tags=["always"], source="agent.operation",
-    description="列出全部操作（内置桌面动作 + 注册的 MCP 操作），含注释与参数说明。",
+    description="列出全部操作（内置桌面动作 + 关联的 MCP 操作），含注释与参数说明。",
 )
 def list_operations() -> str:
     """列出操作目录（id/类型/说明/注释/启停）。"""
@@ -91,7 +131,7 @@ def list_operations() -> str:
     for s in specs:
         state = "启用" if s.enabled else "停用"
         note = f"｜注: {s.annotation}" if s.annotation else ""
-        server = f"｜server: {s.server}" if s.kind == framework.KIND_MCP else ""
+        server = f"｜工具组 mcp:{s.server}" if s.kind == framework.KIND_MCP else ""
         lines.append(
             f"- {s.id}（{s.kind}/{state}）{s.title}: {s.description[:120]}{server}{note}"
         )
@@ -99,39 +139,17 @@ def list_operations() -> str:
 
 
 @deferred_tool(
-    group="operation", tags=["always"], source="agent.operation",
-    description="执行一个注册的 MCP 操作（按 list_operations 的注释语义调用）。",
-)
-async def execute_operation(op_id: str, args_json: str = "{}") -> str:
-    """执行注册的 MCP 操作。
-
-    Args:
-        op_id: 操作 id（mcp.{server}.{工具名}，见 list_operations）
-        args_json: 工具参数 JSON 对象字符串（参数 schema 见操作目录）
-    """
-    try:
-        args = json.loads(args_json) if args_json and args_json.strip() else {}
-        if not isinstance(args, dict):
-            raise ValueError("args_json 必须是 JSON 对象")
-    except (json.JSONDecodeError, ValueError) as exc:
-        return tool_error(
-            f"args_json 解析失败: {exc}", cause=ErrorCause.PARAM, retryable=False,
-        )
-    outcome = await executor.execute(op_id, args)
-    return json.dumps(outcome, ensure_ascii=False)
-
-
-@deferred_tool(
     group="operation", source="agent.operation",
-    description="把一个 MCP 工具注册为一等操作（可加语义注释，注入上下文供后续调用）。",
+    description="把一个 MCP 工具关联为操作（语义索引：注释注入操作态势；执行仍走 "
+    "mcp:<server> 工具组）。从已配置 MCP 的工具清单中挑选常用/语义化能力关联。",
 )
 def register_mcp_operation(server: str, tool: str, note: str = "") -> str:
-    """注册 MCP 工具为操作。
+    """关联 MCP 工具为操作。
 
     Args:
         server: MCP server 名（须已连接）
         tool: 工具名（operation_status 可查已连接 server 的工具清单）
-        note: 语义注释（如"打开网页"）
+        note: 语义注释（如"打开网页"——操作态势注入的主体内容）
     """
     gateway = executor.mcp_gateway()
     if gateway is None:
@@ -158,13 +176,16 @@ def register_mcp_operation(server: str, tool: str, note: str = "") -> str:
         server=server, tool=matched, annotation=note,
         description=description, params=params,
     )
-    log(f"MCP 操作已注册: {spec.id}", "INFO", tag=_LOG_TAG)
-    return json.dumps({"ok": True, "op_id": spec.id, "params": params}, ensure_ascii=False)
+    log(f"MCP 操作已关联: {spec.id}", "INFO", tag=_LOG_TAG)
+    return json.dumps({
+        "ok": True, "op_id": spec.id, "params": params,
+        "note": f"已关联为语义索引；执行时激活工具组 mcp:{server} 调用 {matched}",
+    }, ensure_ascii=False)
 
 
 @deferred_tool(group="operation", source="agent.operation")
 def remove_operation(op_id: str) -> str:
-    """移除一个注册的 MCP 操作（内置桌面动作不可删）。"""
+    """移除一个关联的 MCP 操作（内置桌面动作不可删）。"""
     ok = framework.remove_operation(op_id)
     return json.dumps({"ok": ok, "error": "" if ok else "操作不存在或不可删除"},
                       ensure_ascii=False)
@@ -184,7 +205,7 @@ def update_operation(op_id: str, note: str = "", enabled: bool = True) -> str:
 
 @deferred_tool(
     group="operation", tags=["always"], source="agent.operation",
-    description="操作运行态：桌面执行器可用性、MCP servers 连接与工具清单、最近执行历史。",
+    description="操作运行态：桌面执行器/活跃窗口/已连接 MCP servers 与工具清单/最近执行历史。",
 )
 async def operation_status() -> str:
     """查询操作运行态与已连接 MCP server 的工具清单。"""
@@ -199,7 +220,7 @@ async def operation_status() -> str:
 
 
 def _tool_meta(registered_name: str) -> tuple:
-    """从实体注册表取工具描述与参数 schema（注册快照用）。"""
+    """从实体注册表取工具描述与参数 schema（关联快照用）。"""
     try:
         from core.entity import EntityRegistry, EntityType
 

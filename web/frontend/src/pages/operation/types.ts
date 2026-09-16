@@ -46,7 +46,12 @@ export interface HistoryEntry {
 }
 
 export interface OperationStatus {
-  desktop: { available: boolean; screen: number[] | null; hint: string };
+  desktop: { available: boolean; screen: number[] | null; verify: boolean; hint: string };
+  active: {
+    window_seconds: number;
+    seconds_since_activity: number | null;
+    context_injecting: boolean;
+  };
   mcp: { available: boolean; servers: McpServerStatus[] };
   counts: { operations: number; enabled: number; mcp_registered: number };
   history: HistoryEntry[];

@@ -621,19 +621,21 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 > Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
 
-#### 操作核心能力：桌面操控 + MCP 操作注册（第三十一轮新增）
+#### 操作核心能力：桌面操控 + MCP 操作关联（第三十一轮新增，同轮重构定型）
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 操作注册表 | `agent/operation/framework.py` + `config/operations.json` | 操作 = 可执行/可注释/可停用的能力单元：内置桌面动作（desktop.*，九个 pyautogui 动作，不可删）+ MCP 注册操作（mcp.{server}.{工具}，把已连接 server 的工具提升为带注释的一等操作）；注释与启停对两类一视同仁（线程锁+原子写持久化，provider_keys 同款纪律） |
-| 桌面执行器 | `agent/operation/desktop.py` | pyautogui 可选依赖（find_spec 探测，缺失返回带 install_python_packages 安装提示的结构化错误）；全部动作 to_thread + 30s 超时；FAILSAFE 保持开启（鼠标猛移屏幕左上角物理中止）；type 仅 ASCII（pyautogui 限制，非 ASCII 提示剪贴板+hotkey 粘贴路线）。看屏定位用视觉组 vision_look，操作只负责"做" |
-| 执行与网关端口 | `agent/operation/executor.py` | 统一执行入口（停用/缺运行时/网关未就绪均结构化失败）+ 环形执行历史（AI 与 Web 共用可观测面）；MCP 调用经 `operation_mcp_port` 晚绑定端口——组合根施绑"运行时取桥单例"的工厂，agent 层零 entities 依赖、MCP 热拔除安全 |
-| 上下文注入 | `agent/operation/context.py`（provider：operation，priority 33，operation 组） | 操作态势注入：桌面可用性（如实反映未装依赖）+ 注册操作与注释（语义名不注入则 AI 无从知晓）+ 已连接 MCP 概览（未注册工具提示 activate_tool_group 直用）；无内容零注入 |
-| AI 工具面 | `agent/operation/tools.py`（operation 组：desktop_act/list/execute/register_mcp/remove/update/status） | desktop_act 统一入口（九动作枚举+可选参数）；register_mcp_operation 校验 server 已连接与工具存在并快照参数 schema；operation_status 含桌面运行态/MCP 工具清单/执行历史 |
-| Web 面 | `services/operation.py` → `web/routers/operation.py`（/operation）→ `pages/Operation.tsx`（操作目录/MCP 联动两页签） | 操作目录（注释行内编辑/启停/删除）；MCP 联动（server 状态卡、已连接工具清单勾选注册、参数 JSON 测试执行、执行历史）；Web 执行仅限 MCP 操作（桌面动作需屏幕上下文，desktop_act 才是正确入口） |
-| 接入 | bootstrap `init_mcp` 施绑网关端口 + `register_internal_tools` 激活 operation 组 | 浏览器操控 = 注册 Playwright MCP 的工具为操作（零代码：AI 或 Web 均可注册）；操作可观测（注入+页签+历史三面） |
+| 操作注册表 | `agent/operation/framework.py` + `config/operations.json`（gitignored 用户状态） | 操作 = 可注释/可停用的能力单元：内置桌面动作（desktop.*，九个 pyautogui 动作，不可删）+ MCP 关联操作（mcp.{server}.{工具}）；注释与启停对两类一视同仁（线程锁+原子写，provider_keys 同款纪律） |
+| **关联 ≠ 执行通道** | 设计定位 | MCP 关联是**语义索引**：把常用工具提升为带注释的一等操作注入操作态势，让 AI 在操作语境直接知道"有哪些语义化能力、属于哪个工具组"；**实际执行仍走 mcp:<server> 工具组**（activate_tool_group 激活）——不设第二执行通道（execute_operation 已删，冗余）。浏览器操控 = 关联 Playwright/browser-use MCP 的工具（零代码，AI 或 Web 均可） |
+| 桌面执行器 | `agent/operation/desktop.py` + pyproject 声明依赖 pyautogui | 核心能力走声明依赖（onnxruntime 教训：不声明会被 uv sync 卸载）；探测保留但语义为环境异常提示（uv sync 恢复 / macOS 辅助功能授权）。全部动作 to_thread + 30s 超时；FAILSAFE 开启（鼠标猛移屏幕左上角物理中止）；type 仅 ASCII（中文提示剪贴板+hotkey 粘贴路线） |
+| 看屏验证联动 | `tools.py::desktop_act(verify=auto/on/off)` → `vision.tools.vision_look("screen")` | 操作↔视觉联动闭环：动作成功后自动截屏，结果按多模态契约（顶层 _multimodal+images）附最新画面帧——AI 直接"看到"操作后果做下一步决策；verify 参数逐次覆盖 + operation_desktop_verify 全局开关（配置中心/Web 可控）；视觉源不可用静默回退纯文本结果（验证是增强不是依赖） |
+| 按需态势注入 | `agent/operation/context.py`（provider：operation，priority 36=视觉之后，operation 组） | **注入不是常态**：仅操作活跃窗口内有执行才注入（operation_context_window_seconds 默认 600s，每次执行滑动续期），静默期零注入。内容三段静态前动态后：桌面纪律（看屏→操作→验证循环/高危确认/ASCII/急停）→ 关联操作（注释+参数+所属工具组 mcp:<server>；有注释在前、最近执行在前排序）→ 近期执行 ✓/✗（行动连续性）。分段字符预算 + skip-not-stop（超预算跳条不半截截断，末尾汇总省略数）。**未关联 server 的工具清单不进注入**（194 工具列表烧 token 无意义） |
+| 执行与网关端口 | `agent/operation/executor.py` | 统一执行入口（停用/缺运行时/网关未就绪均结构化失败）+ 环形执行历史（AI 与 Web 共用，驱动活跃窗口）；MCP 调用经 `operation_mcp_port` 晚绑定端口——组合根施绑"运行时取桥单例"工厂，agent 层零 entities 依赖、MCP 热拔除安全 |
+| AI 工具面 | `agent/operation/tools.py`（operation 组：desktop_act/list_operations/register_mcp_operation/remove/update/operation_status） | desktop_act 统一入口（九动作+verify）；register_mcp_operation 校验已连接+快照参数 schema（返回注明"执行走 mcp:<server> 工具组"）；operation_status 含桌面态/活跃窗口/工具清单/历史 |
+| Web 面 | `services/operation.py` → `web/routers/operation.py` → `pages/Operation.tsx` | 操作目录页签：执行器/看屏验证/态势注入（活跃窗口）/关联数四状态卡 + 目录管理 + 操作纪律卡；MCP 联动页签：**已关联列表为主体**（注释行内编辑/Switch 启停/取消关联/行内展开测试执行）+ Modal 批量添加（server 选择→工具多选/搜索/全选，已关联禁选）+ server 状态卡 + 执行历史。Web 测试执行仅限 MCP 关联（验证关联有效）；桌面动作由 AI 在对话中执行 |
+| 接入 | bootstrap `init_mcp` 施绑网关端口 + `register_internal_tools` 激活 operation 组 | 新增核心页面五处同步清单见前端架构节（webui.json navigation 覆盖表优先于 FALLBACK_NAV） |
 
-> Model Experience：① AI 全自助：装依赖（install_python_packages）→ 看屏（vision_look）→ 操控（desktop_act）→ 注册常用 MCP 工具为带注释的操作（register_mcp_operation）→ 语义化执行（execute_operation）；② token 影响：+7 工具 schema（3 个 always），态势注入约 50-300 token（无操作时近零）；③ 缓存影响：provider 层尾部动态区，不破前缀
+> Model Experience：① AI 操作闭环：vision_look 看屏定位 → desktop_act 执行（默认自动回看验证，画面直接进多模态结果）→ 按验证结果决定下一步；MCP 能力经 operation_status 查清单 → register_mcp_operation 关联常用工具（语义注释）→ 操作语境自动获得态势注入 → activate_tool_group("mcp:<server>") 执行；② token 影响：+6 工具 schema（3 个 always）；态势注入仅操作活跃窗口内出现（≤800 token），静默期零成本；③ 缓存影响：provider 层 priority 36（视觉后），动态段在尾部
 
 #### 通话会话续命：断连重挂与宽限收线（第三十轮新增）
 

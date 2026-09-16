@@ -99,6 +99,7 @@ class TestExecutor:
         assert calls == [("srv__do_thing", {"k": 1})]
         entry = executor.history(1)[0]
         assert entry["op"] == "mcp.srv.do_thing" and entry["ok"] is True
+        assert executor.seconds_since_activity() < 5  # 执行触发活跃窗口
 
     async def test_mcp_error_result_maps_to_failure(self, operations_file, monkeypatch):
         framework.register_mcp_operation(server="srv", tool="srv__bad")
@@ -120,29 +121,39 @@ class TestExecutor:
 
 
 class TestContextProvider:
-    async def test_provider_renders_registered_ops(self, operations_file, monkeypatch):
+    async def test_idle_window_zero_injection(self, operations_file, monkeypatch):
+        """静默期（活跃窗口外）零注入——操作语境才触发态势。"""
+        from agent.operation.context import OperationProvider
+
+        monkeypatch.setattr(executor, "seconds_since_activity", lambda: float("inf"))
+        assert await OperationProvider().provide("scope") is None
+
+    async def test_active_window_renders_linked_ops(self, operations_file, monkeypatch):
         from agent.operation.context import OperationProvider
 
         framework.register_mcp_operation(
             server="playwright", tool="playwright__browser_navigate",
             annotation="打开网页",
         )
-        gateway = executor.McpGateway(
-            call=None, connected_servers=lambda: {"playwright": ["playwright__browser_navigate"]},
-            server_status=lambda: [],
-        )
-        monkeypatch.setattr(executor, "mcp_gateway", lambda: gateway)
+        monkeypatch.setattr(executor, "seconds_since_activity", lambda: 10.0)
         snap = await OperationProvider().provide("user_webui:u1")
         assert snap is not None
         text = snap.content or ""
         assert "mcp.playwright.browser_navigate" in text
         assert "打开网页" in text
-        assert "桌面操控" in text  # 可用性行如实反映（就绪/未装两种文案）
+        assert "mcp:playwright" in text  # 关联指向执行工具组
+        assert "桌面操控" in text  # 纪律行（就绪时）或不可用提示
 
-    async def test_provider_desktop_line_without_mcp(self, operations_file, monkeypatch):
+    async def test_unregistered_servers_not_listed(self, operations_file, monkeypatch):
+        """未关联 server 的工具清单不进注入（只列关联，不列目录）。"""
         from agent.operation.context import OperationProvider
 
-        monkeypatch.setattr(executor, "mcp_gateway", lambda: None)
-        # 桌面目录仍在但无 MCP 注册/连接：桌面可用性行保留
+        gateway = executor.McpGateway(
+            call=None, connected_servers=lambda: {"huge": [f"t{i}" for i in range(194)]},
+            server_status=lambda: [],
+        )
+        monkeypatch.setattr(executor, "mcp_gateway", lambda: gateway)
+        monkeypatch.setattr(executor, "seconds_since_activity", lambda: 10.0)
         snap = await OperationProvider().provide("scope")
-        assert snap is not None and "桌面操控" in (snap.content or "")
+        text = (snap.content if snap else "") or ""
+        assert "huge" not in text
