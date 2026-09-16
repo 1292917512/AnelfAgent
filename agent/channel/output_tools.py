@@ -434,8 +434,6 @@ async def _speak_if_on_call(channel_id: str, target_id: str, content: str) -> st
         )
         # 规范 entity scope（user_webui:u1 形态；引擎侧基座匹配吸收 #session 后缀）
         target_scope = f"{scope_type}_{scope_id}" if scope_type and scope_id else scope_id
-        if not engine.session_for_scope(target_scope):
-            return ""
         out = await engine.speak_to_scope(target_scope, content)
         if out.get("spoken"):
             return "spoken" + ("-appended" if out.get("appending") else "")

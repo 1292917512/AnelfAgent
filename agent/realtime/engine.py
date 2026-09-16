@@ -16,7 +16,7 @@ agent/realtime/arbiter.py），barge-in 后旧轮增量不再送 TTS（文本照
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from agent.realtime.arbiter import (
     PRIORITY_REPLY,
@@ -678,7 +678,7 @@ class RealtimeEngine:
 
     def _make_spoken_notifier(
         self, session: RealtimeSession, text: str,
-    ) -> Any:
+    ) -> Callable[[Utterance], Awaitable[None]]:
         """主动播报的自然播完回调：广播 voice_spoken（形态标记与实际播出对齐）。"""
         async def _on_spoken(_u: Utterance) -> None:
             await self._broadcast_voice_spoken(session, text)
@@ -811,6 +811,12 @@ class RealtimeEngine:
         逐块三重自检（会话关闭 / 轮次令牌 / 车道归属），任一失效即自灭；
         自然收束与零产出收尾都经车道（收尾权独占——不重复 audio_done）。
         """
+
+        def _finish() -> None:
+            """作为活动单元入队收束帧（被取代时车道拒绝，no-op）。"""
+            session.lane.finish(
+                u, push_final=lambda ut: session.playback.finish(ut.turn_id))
+
         try:
             async for rate, chunk in pipeline.stream():
                 if session.closed or session.turn_id != u.turn_id \
@@ -829,15 +835,13 @@ class RealtimeEngine:
                         "level": "warn",
                         "message": f"语音合成失败（全部 TTS 提供者不可用）：{message}",
                     })
-                # 零产出收尾：仅当自己是活动单元且无其他收束帧待排空时
-                # 补空收束（把状态收回 LISTENING）；否则由既有收束帧兜底
+                # 零产出收尾：仅当无其他收束帧待排空时补空收束（收回
+                # LISTENING）；否则由既有收束帧兜底
                 if not session.closed and session.lane.is_active(u) \
                         and session.playback.pending_finals == 0:
-                    session.lane.finish(
-                        u, push_final=lambda ut: session.playback.finish(ut.turn_id))
+                    _finish()
                 return
-            session.lane.finish(
-                u, push_final=lambda ut: session.playback.finish(ut.turn_id))
+            _finish()
         except asyncio.CancelledError:
             pipeline.cancel()
             raise
@@ -846,8 +850,7 @@ class RealtimeEngine:
             # 已产出部分照常收束（音频完整结束），零产出按空收束规则
             if not session.closed and session.lane.is_active(u) \
                     and (u.produced > 0 or session.playback.pending_finals == 0):
-                session.lane.finish(
-                    u, push_final=lambda ut: session.playback.finish(ut.turn_id))
+                _finish()
         finally:
             session.lane.settled(u)
 

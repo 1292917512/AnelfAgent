@@ -220,10 +220,13 @@ class EvidenceLTMRequest(BaseModel):
 @router.post("/ltm/{mem_id}/evidence")
 @_runtime_fallback(_FALLBACK_ERROR)
 async def apply_ltm_evidence(mem_id: int, req: EvidenceLTMRequest) -> Dict[str, Any]:
-    """对一条记忆施加用户证据信号（确认/反驳）——反思反馈回路的人审入口。"""
+    """对一条反思施加用户证据信号（确认/反驳）——反思反馈回路的人审入口。"""
     if req.signal not in ("confirm", "dispute"):
         raise HTTPException(422, "signal 仅支持 confirm / dispute")
-    result = await _mem_svc.apply_ltm_evidence(mem_id, req.signal)
+    try:
+        result = await _mem_svc.apply_ltm_evidence(mem_id, req.signal)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     if result is None:
         raise HTTPException(404, "记忆不存在")
     return result

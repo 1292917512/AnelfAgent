@@ -471,21 +471,20 @@ async def load_verification_block(
 def record_user_feedback(entry: MemoryEntry, verdict: str) -> None:
     """对一条反思直接施加用户反馈信号（只改内存对象，落盘由调用方 update）。
 
-    Web 人审（confirm/dispute）与 auto_capture 反馈分类（confirmed/denied/
-    ignored）的共用入口：证据增量 + lifecycle.feedback 登记（防重复回流）。
+    verdict 取 confirmed / denied / ignored（Web 人审的 confirm/dispute 由
+    调用方映射）：证据增量 + lifecycle.feedback 登记（防重复回流）。
     """
-    if verdict == "confirmed" or verdict == "confirm":
+    if verdict == "confirmed":
         evidence.apply_reinforcement(entry.metadata, 1.0, user_originated=True)
-        feedback = "confirmed"
-    elif verdict == "denied" or verdict == "dispute":
+    elif verdict == "denied":
         evidence.apply_disputation(entry.metadata, 1.0)
-        feedback = "denied"
-    else:
+    elif verdict == "ignored":
         # 忽略是弱负向：轻微降低先验（不计连击，见 evidence 信号语义）
         evidence.apply_reinforcement(entry.metadata, -0.2, user_originated=False)
-        feedback = "ignored"
+    else:
+        raise ValueError(f"非法反馈判定: {verdict!r}")
     lc = get_lifecycle(entry)
-    lc[_F_FEEDBACK] = feedback
+    lc[_F_FEEDBACK] = verdict
     _put_lifecycle(entry, lc)
 
 

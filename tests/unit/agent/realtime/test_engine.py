@@ -570,7 +570,7 @@ class TestSpeakArbitration:
     """播报车道竞争场景：打断期间外插轮次 / 迟到完成事件 / 完成时才标记。"""
 
     async def test_reply_preempts_proactive_speak(self, app) -> None:
-        """S1：思考中主动消息在播 → 回复首增量到达 → 回复抢占、不双任务并发。"""
+        """思考中主动消息在播 → 回复首增量到达 → 回复抢占，不双任务并发混音。"""
         engine = RealtimeEngine()
         sink = FakeSink()
         session = await engine.start("c-s1", _delivery(), sink.as_sink(), RATE)
@@ -611,7 +611,7 @@ class TestSpeakArbitration:
             await engine.stop("c-s2")
 
     async def test_late_after_reply_keeps_new_turn(self, app, monkeypatch) -> None:
-        """S2：旧轮迟到的完成事件归因不上 → 宽限观察，不误杀新一轮语音流。"""
+        """旧轮迟到的完成事件归因不上 → 宽限观察，不误杀新一轮语音流。"""
         import agent.realtime.engine as engine_mod
         monkeypatch.setattr(engine_mod, "_SETTLE_GRACE_SECONDS", 0.2)
 
@@ -637,7 +637,7 @@ class TestSpeakArbitration:
             await engine.stop("c-s3")
 
     async def test_voice_spoken_marks_on_completion_only(self, app, monkeypatch) -> None:
-        """S6：voice_spoken 在实际播出完成时广播；被打断的播报不标记。"""
+        """voice_spoken 在实际播出完成时广播；被打断的播报不标记。"""
         engine = RealtimeEngine()
         sink = FakeSink()
         session = await engine.start("c-s4", _delivery(), sink.as_sink(), RATE)
@@ -662,7 +662,7 @@ class TestSpeakArbitration:
             await engine.stop("c-s4")
 
     async def test_scope_suffix_base_match(self, app) -> None:
-        """S9：#session 会话后缀不阻断自动路由（基座匹配）。"""
+        """#session 会话后缀不阻断自动路由（基座匹配）。"""
         engine = RealtimeEngine()
         delivery = VoiceDelivery(user_id="u1", user_name="用户",
                                  session_id="chat9", adapter_key="webui")

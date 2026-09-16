@@ -161,7 +161,8 @@ async def _recent_assistant_texts(scope: str) -> Tuple[List[str], Optional[int]]
         return [], None
 
 
-# 提示缓存：{scope: (最新 assistant 消息 id, 上次提示文本)}——消息不变不重算
+# 提示缓存：{scope: (最新 assistant 消息 id, 上次提示文本)}——消息 id 不变不重算
+_HINT_CACHE_MAX_SCOPES = 64
 _hint_cache: Dict[str, Tuple[Optional[int], str]] = {}
 
 
@@ -171,7 +172,7 @@ async def build_repeat_hint(scope: str) -> str:
         return ""
     texts, last_id = await _recent_assistant_texts(scope)
     cached = _hint_cache.get(scope)
-    if cached and cached[0] == last_id and last_id is not None:
+    if cached is not None and cached[0] == last_id:
         return cached[1]
     terms = compute_hint_terms(texts)
     hint = (
@@ -180,6 +181,8 @@ async def build_repeat_hint(scope: str) -> str:
         + "。本次回复注意换新角度或新话题，除非对方主动回到这些话题。"
         if terms else ""
     )
+    if len(_hint_cache) >= _HINT_CACHE_MAX_SCOPES and scope not in _hint_cache:
+        _hint_cache.pop(next(iter(_hint_cache)), None)
     _hint_cache[scope] = (last_id, hint)
     return hint
 

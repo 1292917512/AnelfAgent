@@ -31,7 +31,7 @@ def _run_lane(lane: SpeakLane, log: list, specs: list, gate: asyncio.Event | Non
                 log.append((u.uid, "end"))
             finally:
                 lane.settled(u)
-        return asyncio.get_event_loop().create_task(_produce())
+        return asyncio.create_task(_produce())
 
     for priority, source in specs:
         lane.submit(
@@ -69,7 +69,7 @@ class TestSerialization:
                     log.append((u.uid, "end"))
                 finally:
                     lane.settled(u)
-            return asyncio.get_event_loop().create_task(_produce())
+            return asyncio.create_task(_produce())
 
         lane.submit(turn_id=1, priority=PRIORITY_SPEAK, source="speak", starter=starter)
         await asyncio.sleep(0.05)
@@ -99,7 +99,7 @@ class TestSerialization:
                     log.append((u.uid, "end"))
                 finally:
                     lane.settled(u)
-            return asyncio.get_event_loop().create_task(_produce())
+            return asyncio.create_task(_produce())
 
         lane.submit(turn_id=1, priority=PRIORITY_REPLY, source="reply", starter=starter)
         await asyncio.sleep(0.05)
@@ -128,7 +128,7 @@ class TestFinishExclusivity:
                     lane.finish(u, push_final=lambda x: finals.append(x.uid))
                 finally:
                     lane.settled(u)
-            return asyncio.get_event_loop().create_task(_produce())
+            return asyncio.create_task(_produce())
 
         lane.submit(turn_id=1, priority=PRIORITY_SPEAK, source="speak", starter=starter)
         await asyncio.sleep(0.02)
@@ -154,7 +154,7 @@ class TestFinishExclusivity:
                         lane.finish(u, push_final=lambda x: None)  # 二次收尾 no-op
                 finally:
                     lane.settled(u)
-            return asyncio.get_event_loop().create_task(_produce())
+            return asyncio.create_task(_produce())
 
         lane.submit(
             turn_id=1, priority=PRIORITY_SPEAK, source="speak",
@@ -178,7 +178,7 @@ class TestReset:
                     log.append((u.uid, "ran"))
                 finally:
                     lane.settled(u)
-            return asyncio.get_event_loop().create_task(_produce())
+            return asyncio.create_task(_produce())
 
         lane.submit(turn_id=1, priority=PRIORITY_SPEAK, source="speak", starter=starter)
         lane.submit(turn_id=1, priority=PRIORITY_SPEAK, source="speak", starter=starter)
@@ -199,7 +199,7 @@ class TestReset:
                     await asyncio.sleep(30)  # 模拟卡死（不吃取消？会吃：cancel 生效）
                 finally:
                     lane.settled(u)
-            return asyncio.get_event_loop().create_task(_produce())
+            return asyncio.create_task(_produce())
 
         lane.submit(turn_id=1, priority=PRIORITY_SPEAK, source="speak", starter=starter)
         await asyncio.sleep(0.02)

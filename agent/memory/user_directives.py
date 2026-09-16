@@ -60,9 +60,10 @@ _DIRECTIVE_CONFIGS = {
 
 register_configs_safe(_DIRECTIVE_CONFIGS)
 
-# 指令句式（zh/en 并行）：捕获组为话题词；术语长度 2-20，边界截断见 _clean_term
+# 指令句式（zh/en 并行）：捕获组为话题词；术语长度 2-20，边界截断见 _clean_term。
+# 只收明确禁令句式——"不想听音乐了"这类即时请求不是禁令，不收（防误伤）
 _PATTERNS: List[re.Pattern[str]] = [
-    re.compile(r"(?:别再提|不要再提|别提|不想再听|不想听|别再说|不要再聊|别再聊|少提)(?:关于|有关|起)?(.{2,20}?)(?=[，。！？；、,.!?;~\s]|$)"),
+    re.compile(r"(?:别再提|不要再提|别提|不想再听|别再说|不要再聊|别再聊|少提)(?:关于|有关|起)?(.{2,20}?)(?=[，。！？；、,.!?;~\s]|$)"),
     re.compile(r"别跟我(?:说|聊)(?:起|到)?(?:关于|有关)?(.{2,20}?)(?=[，。！？；、,.!?;~\s]|$)"),
     re.compile(r"(?:stop|don't|dont|do\s+not)\s+(?:talking\s+about|mentioning|bringing\s+up)\s+(?:about\s+)?(.{2,40}?)(?=[.!?;,]|$)", re.IGNORECASE),
 ]

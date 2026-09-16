@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional, Set
 
 from core.log import log
 
@@ -67,7 +67,7 @@ class SpeakLane:
     _active: Optional[Utterance] = None
     _starters: Dict[int, StarterFn] = field(default_factory=dict)
     """排队单元的启动器挂账（uid → starter）：轮到时取用后即销。"""
-    _live: set = field(default_factory=set)
+    _live: Set["asyncio.Task[None]"] = field(default_factory=set)
     """在产任务集合（强引用防 GC + 关停时有界结算的对象）。"""
 
     @property
@@ -176,12 +176,7 @@ class SpeakLane:
         self._queue.sort(key=lambda u: (u.priority, u.uid))
         nxt = self._queue.pop(0)
         starter = self._starters.pop(nxt.uid, None)
-        if starter is None:
-            # 防御：挂账丢失（reset 竞态等）——作废该单元继续推进，车道不卡死
-            log(f"播报单元 #{nxt.uid}({nxt.source}) 缺启动器，作废跳过", "WARNING", tag=_LOG_TAG)
-            nxt.superseded = True
-            self._advance()
-            return
+        assert starter is not None, "排队单元必有启动器挂账（reset 原子清空队列与挂账）"
         self._active = nxt
         nxt.task = starter(nxt)
         self._live.add(nxt.task)
