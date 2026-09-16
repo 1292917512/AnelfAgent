@@ -71,5 +71,11 @@ register_configs_safe({
             "description": "下行播放采样率（客户端播放设备率，TTS 产出自动重采样对齐）",
             "default": 48000, "unit": "Hz", "advanced": True,
         },
+        "realtime_reconnect_grace_seconds": {
+            "description": "连接断开后的会话保留窗口：同一用户在此窗口内重新"
+                           "voice_start 即重挂续命（轮次/播放/挂起回复保留），"
+                           "超窗自动收线；0 = 断开立即收线",
+            "default": 5.0, "unit": "秒", "min": 0.0, "max": 60.0, "advanced": True,
+        },
     },
 })

@@ -6,6 +6,12 @@
   PCM16 单声道，~60ms/帧，采样率白名单 {16000, 24000, 48000}）
 - 控制流：voice_start（mode=realtime，携带 user_id/user_name/chat_id/
   sample_rate）→ voice_ack（active/rejected）→ 通话事件流 → voice_end
+- 会话续命：连接断开后服务端保留会话 realtime_reconnect_grace_seconds
+  （默认 5s）——同一用户（同 adapter+user_id）在窗口内重新 voice_start 即
+  重挂：轮次令牌、播放队列（掉线期间生产的音频接续播放）、挂起回复全部
+  保留，chat_id 变化时挂起回复随迁到新会话 scope；重挂以下行 rt_state
+  （resumed=true）确认，超窗自动收线。采样率变化不支持重挂（端点检测与
+  预处理链按率构建），走全新会话
 - 下行帧：同为二进制 PCM 帧（magic + 采样率 + PCM16，播放率默认 48k）
 
 下行 JSON 事件（通话生命周期内）：

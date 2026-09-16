@@ -678,3 +678,92 @@ class TestSpeakArbitration:
 def session_lane_idle(engine: RealtimeEngine, owner: str) -> bool:
     session = engine._sessions.get(owner)
     return session is not None and session.lane.active is None
+
+
+class TestSessionReattach:
+    """会话续命：断连宽限窗内同用户重挂（轮次/播放/挂起回复保留）。"""
+
+    async def test_reattach_preserves_state(self, app) -> None:
+        engine = RealtimeEngine()
+        sink_a = FakeSink()
+        session = await engine.start("conn-a", _delivery(), sink_a.as_sink(), RATE)
+        await engine.user_turn(session, "刚才说到哪了")
+        turn_before = session.turn_id
+        scope = "user_webui:u1"
+        assert scope in engine._pending
+
+        await engine.handle_disconnect("conn-a")  # 断连 → 宽限窗
+        sink_b = FakeSink()
+        reattached = await engine.start("conn-b", _delivery(), sink_b.as_sink(), RATE)
+
+        assert reattached is session  # 同一会话对象，未重建
+        assert session.turn_id == turn_before
+        assert engine._pending[scope]["session"] is session  # 挂起回复保留
+        assert engine.owns("conn-b") and not engine.owns("conn-a")
+        # 重挂确认帧（resumed）发到新连接
+        states = [p for name, p in sink_b.events if name == "rt_state"]
+        assert states and states[-1].get("resumed") is True
+        await engine.stop("conn-b")
+
+    async def test_grace_expiry_stops_session(self, app, monkeypatch) -> None:
+        import agent.realtime.engine as engine_mod
+        monkeypatch.setattr(engine_mod, "_grace_seconds", lambda: 0.05)
+
+        engine = engine_mod.RealtimeEngine()
+        sink = FakeSink()
+        await engine.start("conn-c", _delivery(), sink.as_sink(), RATE)
+        await engine.handle_disconnect("conn-c")
+        await _wait_for(lambda: not engine._sessions)
+        assert not engine.owns("conn-c")
+
+    async def test_reattach_cancels_grace(self, app, monkeypatch) -> None:
+        import agent.realtime.engine as engine_mod
+        monkeypatch.setattr(engine_mod, "_grace_seconds", lambda: 0.3)
+
+        engine = engine_mod.RealtimeEngine()
+        sink = FakeSink()
+        session = await engine.start("conn-d", _delivery(), sink.as_sink(), RATE)
+        await engine.handle_disconnect("conn-d")
+        await engine.start("conn-d2", _delivery(), FakeSink().as_sink(), RATE)
+        await asyncio.sleep(0.5)  # 越过宽限时长：会话仍存活（宽限已取消）
+        assert engine.owns("conn-d2")
+        await engine.stop("conn-d2")
+
+    async def test_chat_switch_rebinds_scope(self, app) -> None:
+        engine = RealtimeEngine()
+        session = await engine.start("conn-e", _delivery(), FakeSink().as_sink(), RATE)
+        await engine.user_turn(session, "切会话前的悬置回复")
+        assert "user_webui:u1" in engine._pending
+
+        # 同一用户换 chat 重挂：挂起回复随迁到新 scope
+        delivery2 = VoiceDelivery(user_id="u1", user_name="用户",
+                                  session_id="chat7", adapter_key="webui")
+        await engine.start("conn-e2", delivery2, FakeSink().as_sink(), RATE)
+        assert "user_webui:u1" not in engine._pending
+        assert "user_webui:u1#chat7" in engine._pending
+        assert engine.session_for_scope("user_webui:u1#chat7") is session
+        await engine.stop("conn-e2")
+
+    async def test_sample_rate_mismatch_rebuilds(self, app) -> None:
+        engine = RealtimeEngine()
+        session = await engine.start("conn-f", _delivery(), FakeSink().as_sink(), RATE)
+        fresh = await engine.start(
+            "conn-f2", _delivery(), FakeSink().as_sink(), RATE + 8000)
+        assert fresh is not session  # 采样率变 → 全新会话（检测器按率构建）
+        assert not engine.owns("conn-f")
+        await engine.stop("conn-f2")
+
+    async def test_old_owner_end_is_noop_after_takeover(self, app) -> None:
+        engine = RealtimeEngine()
+        session = await engine.start("conn-g", _delivery(), FakeSink().as_sink(), RATE)
+        await engine.start("conn-g2", _delivery(), FakeSink().as_sink(), RATE)
+        await engine.stop("conn-g")  # 旧连接迟到的 voice_end：不误伤新会话
+        assert engine.owns("conn-g2")
+        assert not session.closed
+        await engine.stop("conn-g2")
+
+    async def test_explicit_end_bypasses_grace(self, app) -> None:
+        engine = RealtimeEngine()
+        await engine.start("conn-h", _delivery(), FakeSink().as_sink(), RATE)
+        await engine.stop("conn-h")  # 显式挂断立即收线（无宽限）
+        assert not engine._sessions and not engine._grace_tasks

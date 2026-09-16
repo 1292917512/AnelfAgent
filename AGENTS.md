@@ -621,6 +621,16 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 > Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
 
+#### 通话会话续命：断连重挂与宽限收线（第三十轮新增）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 会话重挂 | `engine._reattach` + `_by_user` 身份索引（adapter:user_id → owner） | 同一用户重新 voice_start 时接续既有会话而非重建：轮次令牌、端点检测与预处理状态、播放队列（掉线期间生产的音频接续播放）、车道与挂起回复全保留（chat_id 变化时挂起回复随迁到新 scope——通话中切会话不断线）；sink 与播放写任务换到新连接；旧连接此后一切帧/voice_end 因 owner 不符 no-op（多端接管安全）。采样率变化不支持重挂（检测器/预处理链按率构建）走全新会话；重挂以下行 rt_state(resumed=true) 确认 |
+| 断连宽限 | `engine.handle_disconnect`（WS 断开走此，voice_end 显式挂断仍立即收线）+ `realtime_reconnect_grace_seconds`（默认 5s，0=立即） | 断开后会话保留等重挂，超窗自动收线；宽限任务按用户身份去重，重挂即取消 |
+| 客户端自动重连 | `web/frontend/src/lib/realtime-voice.ts` | 意外断连（wantActive 通话意图仍在）按 400ms×次数 退避重连三次，重挂成功状态由 rt_state 同步；穷尽才真正关断。显式挂断不重连 |
+
+> Model Experience：① 网络抖动/页面刷新不再打断通话（"喂？还在吗"场景消失）；② 对比说明：NEKO 的 hot-swap（预热备胎客户端+原子 promote）解决的是"原生协议会话与模型绑定"问题——Anelf 级联管线的大模型/TTS/ASR 均按调用解析、切模型天然不断线，故不搬预热机制，只取"会话续命不丢状态"的价值内核；③ token 影响：无新增工具 schema；④ 缓存影响：无（连接层变更）
+
 #### 实时响应仲裁与进程级健壮性（第二十九轮新增）
 
 | 机制 | 位置 | 说明 |

@@ -99,6 +99,8 @@ export class RealtimeVoiceClient {
   private stream: MediaStream | null = null;
   private playTime = 0;
   private active = false;
+  private wantActive = false;
+  /** 通话意图（用户未挂断）：意外断连时据此自动重连（服务端宽限窗内重挂续命） */
 
   constructor(
     private cb: RealtimeVoiceCallbacks,
@@ -111,6 +113,7 @@ export class RealtimeVoiceClient {
 
   async start(): Promise<void> {
     if (this.active) return;
+    this.wantActive = true;
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
@@ -127,11 +130,14 @@ export class RealtimeVoiceClient {
     this.ws = ws;
     ws.onmessage = (ev) => this.handleMessage(ev);
     ws.onclose = () => {
-      this.stopCapture();
-      if (this.active) {
-        this.active = false;
-        this.cb.onClose?.();
+      if (!this.wantActive) {
+        this.stopCapture();
+        return;
       }
+      // 意外断连：重连窗口内服务端保留会话，重挂后轮次/播放接续
+      this.active = false;
+      this.stopCapture();
+      void this.reconnect();
     };
 
     await new Promise<void>((resolve, reject) => {
@@ -157,6 +163,23 @@ export class RealtimeVoiceClient {
     }
     await this.startCapture();
     this.active = true;
+  }
+
+  private async reconnect(): Promise<void> {
+    for (let attempt = 1; attempt <= 3 && this.wantActive; attempt++) {
+      await new Promise((r) => setTimeout(r, 400 * attempt));
+      if (!this.wantActive) return;
+      try {
+        await this.start();
+        return; // 重挂成功：状态由 rt_state(resumed) 同步
+      } catch {
+        /* 继续退避重试 */
+      }
+    }
+    if (this.wantActive) {
+      this.wantActive = false;
+      this.cb.onClose?.();
+    }
   }
 
   private waitForAck(ws: WebSocket): Promise<string | null> {
@@ -283,6 +306,7 @@ export class RealtimeVoiceClient {
 
   stop(): void {
     this.active = false;
+    this.wantActive = false;
     try {
       this.ws?.send(JSON.stringify({ action: "voice_end" }));
     } catch {

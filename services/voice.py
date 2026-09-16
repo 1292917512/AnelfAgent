@@ -64,8 +64,9 @@ class VoiceService:
         await get_voice_manager().end_session(connection_id, connection_id)
 
     async def drop_connection(self, connection_id: str) -> None:
-        """连接断开清理（实时与成段两条路径都收尾；已录语音不丢）。"""
-        await get_realtime_engine().stop(connection_id)
+        """连接断开清理：实时会话进宽限窗口（同用户重连即重挂续命，超窗
+        收线），成段路径立即收尾（已录语音不丢）。"""
+        await get_realtime_engine().handle_disconnect(connection_id)
         await get_voice_manager().drop_connection(connection_id)
 
     # ------------------------------------------------------------------

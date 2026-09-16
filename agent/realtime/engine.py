@@ -27,7 +27,7 @@ from agent.realtime.playback import PlaybackFrame
 from agent.realtime.session import RealtimeSession, RealtimeSink, SessionState
 from agent.voice.session import VoiceDelivery, VoiceLeaseBusy
 from agent.voice.turn_detection import TurnEvent
-from core.config import get_config_bool, get_config_int
+from core.config import get_config_bool, get_config_float, get_config_int
 from core.log import log
 
 _LOG_TAG = "实时语音"
@@ -35,6 +35,11 @@ _LOG_TAG = "实时语音"
 # 回复完成事件归因失败时的宽限观察窗：期间有新增量则并入同一语音流，
 # 无则强制结算（有界失败恢复——绝不因归因不上而让回复"说不停"）
 _SETTLE_GRACE_SECONDS = 1.5
+
+
+def _grace_seconds() -> float:
+    """断连重挂宽限（秒；0 = 断开立即收线）。"""
+    return max(0.0, get_config_float("realtime_reconnect_grace_seconds", 5.0))
 
 
 class RealtimeEngine:
@@ -46,11 +51,19 @@ class RealtimeEngine:
         """scope → 等待回复的会话与思维轮标记（TTS 增量的准入与结算归因）。"""
         self._settle_tasks: Dict[str, asyncio.Task] = {}
         """scope → 回复结算宽限任务（归因失败的延迟结算；新增量/新轮取消）。"""
+        self._by_user: Dict[str, str] = {}
+        """用户身份（adapter:user_id）→ 当前 owner——重挂的会话寻址索引。"""
+        self._grace_tasks: Dict[str, asyncio.Task] = {}
+        """用户身份 → 断连宽限收线任务（重挂即取消）。"""
         self._bus_hooked = False
 
     # ------------------------------------------------------------------
     # 会话生命周期
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _identity(delivery: VoiceDelivery) -> str:
+        return f"{delivery.adapter_key}:{delivery.user_id}"
 
     async def start(
         self,
@@ -59,12 +72,30 @@ class RealtimeEngine:
         sink: RealtimeSink,
         sample_rate: int = 16000,
     ) -> RealtimeSession:
-        """开启实时语音会话（同 owner 已有会话则显式拒绝）。"""
+        """开启实时语音会话（同 owner 已有会话则显式拒绝）。
+
+        同一用户已有会话时走重挂：断线重连/换端接续同一通话（轮次、播放
+        队列、挂起回复原样保留，播放写任务换到新连接），不再整段重建。
+        """
         if owner in self._sessions:
             raise VoiceLeaseBusy(f"已有进行中的实时语音会话（owner={owner}）")
         if not get_config_bool("realtime_enabled", True):
             raise RuntimeError("实时语音已停用（realtime_enabled）")
         from core.config import get_config
+
+        identity = self._identity(delivery)
+        old_owner = self._by_user.get(identity)
+        if old_owner is not None and old_owner != owner:
+            session = self._sessions.get(old_owner)
+            if session is not None and not session.closed \
+                    and session.sample_rate == sample_rate:
+                await self._reattach(session, owner=owner, delivery=delivery, sink=sink)
+                return session
+            # 会话已亡/采样率变了（检测器与预处理链按率构建）：旧账清掉走全新会话
+            if session is not None:
+                await self.stop(old_owner)
+            self._by_user.pop(identity, None)
+
         mode = str(get_config("realtime_mode", "cascade") or "cascade").lower()
         if mode != "native":
             await self._check_cascade_ready(sink)
@@ -72,12 +103,14 @@ class RealtimeEngine:
             owner=owner, delivery=delivery, sample_rate=sample_rate, sink=sink)
         session.start_writer(get_config_int("realtime_playback_rate", 48000))
         self._sessions[owner] = session
+        self._by_user[identity] = owner
         if mode == "native":
             try:
                 await self._start_native(session)
             except Exception:
                 # 连接失败不留半截会话（否则重试撞租约）
                 self._sessions.pop(owner, None)
+                self._by_user.pop(identity, None)
                 await session.close()
                 raise
         else:
@@ -90,11 +123,95 @@ class RealtimeEngine:
             "DEBUG", tag=_LOG_TAG)
         return session
 
+    async def _reattach(
+        self,
+        session: RealtimeSession,
+        *,
+        owner: str,
+        delivery: VoiceDelivery,
+        sink: RealtimeSink,
+    ) -> None:
+        """把存活会话重挂到新连接（断线重连/换端/切换会话）。
+
+        保留：轮次令牌、端点检测与预处理状态、播放队列（掉线期间生产
+        的音频接续播放）、车道与挂起回复（scope 随 delivery 迁移）。
+        换新：sink 与播放写任务（跟着新连接走）。旧连接此后的一切
+        voice 帧/voice_end 因 owner 不符均为 no-op。
+        """
+
+        old_owner = session.owner
+        old_scope = self._scope_of(session)
+        self._sessions.pop(old_owner, None)
+        self._sessions[owner] = session
+        session.owner = owner
+        session.delivery = delivery
+        session.sink = sink
+        self._by_user[self._identity(delivery)] = owner
+
+        # scope 变化（切换会话重绑）：挂起回复与结算宽限随迁
+        new_scope = self._scope_of(session)
+        if new_scope != old_scope:
+            if old_scope in self._pending:
+                self._pending[new_scope] = self._pending.pop(old_scope)
+            task = self._settle_tasks.pop(old_scope, None)
+            if task is not None:
+                self._settle_tasks[new_scope] = task
+
+        # 播放写任务换到新连接：停旧起新，队列内容不动（掉线期间音频接续播）
+        if session.writer_task is not None and not session.writer_task.done():
+            session.writer_task.cancel()
+        session.start_writer(get_config_int("realtime_playback_rate", 48000))
+
+        grace = self._grace_tasks.pop(self._identity(delivery), None)
+        if grace is not None and not grace.done():
+            grace.cancel()
+        # 强制状态帧同步新端（set_state 同态早退不发）
+        await session.sink.send_event("rt_state", {
+            "state": session.state.value, "turn_id": session.turn_id, "resumed": True,
+        })
+        log(f"实时语音会话重挂: {old_owner} → {owner} (turn={session.turn_id})",
+            "INFO", tag=_LOG_TAG)
+
+    async def handle_disconnect(self, owner: str) -> None:
+        """连接断开：宽限窗口内保留会话等重挂，超窗按 voice_end 收线。
+
+        显式挂断不走这里（voice_end → stop 立即收线）。
+        """
+        session = self._sessions.get(owner)
+        if session is None:
+            return
+        grace_seconds = _grace_seconds()
+        if grace_seconds <= 0:
+            await self.stop(owner)
+            return
+        identity = self._identity(session.delivery)
+        existing = self._grace_tasks.get(identity)
+        if existing is not None and not existing.done():
+            return
+
+        async def _expire() -> None:
+            await asyncio.sleep(grace_seconds)
+            self._grace_tasks.pop(identity, None)
+            current = self._by_user.get(identity)
+            if current is not None and current in self._sessions:
+                await self.stop(current)
+                log(f"断连宽限超时，实时语音会话收线: identity={identity}",
+                    "DEBUG", tag=_LOG_TAG)
+
+        self._grace_tasks[identity] = asyncio.create_task(
+            _expire(), name=f"rt.grace.{identity}")
+
     async def stop(self, owner: str) -> None:
-        """结束实时语音会话（幂等）。"""
+        """结束实时语音会话（幂等；显式挂断与宽限超时共用）。"""
         session = self._sessions.pop(owner, None)
         if session is None:
             return
+        identity = self._identity(session.delivery)
+        if self._by_user.get(identity) == owner:
+            self._by_user.pop(identity, None)
+        grace = self._grace_tasks.pop(identity, None)
+        if grace is not None and not grace.done():
+            grace.cancel()
         scope = self._scope_of(session)
         self._pending.pop(scope, None)
         self._cancel_settle_fallback(scope)
