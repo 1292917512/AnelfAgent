@@ -1,124 +1,165 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Monitor, MousePointerClick, Pencil, Trash2, X } from "lucide-react";
 import { operationApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
-import { cn } from "@/lib/utils";
+import { StatCard } from "@/components/common/StatCard";
+import { StatusDot } from "@/components/common/StatusDot";
+import { Badge, Button, EmptyState, Input, LoadingBlock, Switch, toast } from "@/components/ui";
+import type { OperationEntry, OperationStatus } from "./types";
 
-export interface OperationEntry {
-  id: string;
-  kind: "desktop" | "mcp";
-  title: string;
-  description: string;
-  annotation: string;
-  enabled: boolean;
-  server?: string;
-  tool?: string;
-  params?: { name: string; description?: string; type?: string; required?: boolean }[];
-  removable: boolean;
-}
-
-/** 操作目录：内置桌面动作与注册的 MCP 操作的注释/启停/执行面板。 */
+/** 操作目录：桌面动作与注册 MCP 操作的注释 / 启停 / 移除。 */
 export function OperationActionsPanel() {
   const { t } = useTranslation("operation");
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<string | null>(null);
   const [draftNote, setDraftNote] = useState("");
 
-  const { data, isLoading } = useQuery({
+  const { data: items, isLoading } = useQuery({
     queryKey: ["operationList"],
     queryFn: () => operationApi.list().then((r) => r.data.items as OperationEntry[]),
   });
   const { data: status } = useQuery({
     queryKey: ["operationStatus"],
-    queryFn: () => operationApi.status().then((r) => r.data),
+    queryFn: () => operationApi.status().then((r) => r.data as OperationStatus),
     refetchInterval: 8000,
   });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["operationList"] });
   const updateMut = useMutation({
     mutationFn: ({ id, note, enabled }: { id: string; note?: string; enabled?: boolean }) =>
-      operationApi.update(id, { ...(note !== undefined ? { note } : {}), ...(enabled !== undefined ? { enabled } : {}) }),
-    onSuccess: invalidate,
+      operationApi.update(id, {
+        ...(note !== undefined ? { note } : {}),
+        ...(enabled !== undefined ? { enabled } : {}),
+      }),
+    onSuccess: () => { invalidate(); toast.success(t("saved")); },
   });
   const removeMut = useMutation({
     mutationFn: (id: string) => operationApi.remove(id),
-    onSuccess: invalidate,
+    onSuccess: (r) => {
+      if (r.data.ok) { invalidate(); toast.success(t("removed")); }
+      else toast.error(String(r.data.error || t("removeFailed")));
+    },
   });
 
-  if (isLoading) return <p className="text-sm text-muted">{t("common:loading")}</p>;
-  const items = data || [];
+  if (isLoading) return <LoadingBlock />;
+  const ops = items || [];
+  const desktopOk = Boolean(status?.desktop?.available);
 
   return (
     <div className="space-y-4">
-      <Card title={t("actionsTitle")} subtitle={
-        status?.desktop?.available
-          ? t("desktopReady", { w: status.desktop.screen?.[0], h: status.desktop.screen?.[1] })
-          : t("desktopMissing")
-      }>
-        <div className="space-y-2">
-          {items.map((op) => (
-            <div key={op.id} className={cn(
-              "p-3 rounded-md border transition-all",
-              op.enabled ? "bg-elevated border-border" : "bg-elevated/50 border-border opacity-60",
-            )}>
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className={cn(
-                      "text-[10px] px-1.5 py-0.5 rounded border",
-                      op.kind === "desktop" ? "border-border text-muted" : "bg-accent-subtle text-accent",
-                    )}>{op.kind === "desktop" ? t("kindDesktop") : "MCP"}</span>
-                    <span className="text-sm font-medium text-foreground truncate">{op.title}</span>
-                    <span className="text-[11px] text-muted font-mono">{op.id}</span>
-                    {op.server && <span className="text-[11px] text-muted">· {op.server}</span>}
-                  </div>
-                  <p className="text-xs text-muted mt-1 break-words">{op.description}</p>
-                  {editing === op.id ? (
-                    <div className="flex gap-2 mt-2">
-                      <input
-                        value={draftNote}
-                        onChange={(e) => setDraftNote(e.target.value)}
-                        placeholder={t("notePlaceholder")}
-                        className="flex-1 bg-card border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none focus:border-ring"
-                      />
-                      <button
-                        onClick={() => { updateMut.mutate({ id: op.id, note: draftNote }); setEditing(null); }}
-                        className="px-2 py-1 text-xs rounded-md bg-accent text-primary-foreground">{t("common:save")}</button>
-                      <button onClick={() => setEditing(null)} className="px-2 py-1 text-xs text-muted">{t("common:cancel")}</button>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <StatCard
+          label={t("statDesktop")}
+          variant={desktopOk ? "ok" : "warn"}
+          value={
+            <span className="flex items-center gap-2 text-base font-medium">
+              <StatusDot status={desktopOk ? "ok" : "warn"} />
+              {desktopOk
+                ? status?.desktop?.screen
+                  ? `${status.desktop.screen[0]}×${status.desktop.screen[1]}`
+                  : t("desktopReadyShort")
+                : t("desktopUnavailable")}
+            </span>
+          }
+        />
+        <StatCard label={t("statOperations")} value={`${status?.counts?.enabled ?? 0} / ${status?.counts?.operations ?? 0}`} />
+        <StatCard label={t("statMcpRegistered")} value={status?.counts?.mcp_registered ?? 0} />
+      </div>
+      {!desktopOk && status?.desktop?.hint && (
+        <p className="text-xs text-warn">{status.desktop.hint}</p>
+      )}
+
+      <Card title={t("actionsTitle")} subtitle={t("actionsSubtitle")}>
+        {ops.length === 0 ? (
+          <EmptyState icon={MousePointerClick} title={t("noOperations")} />
+        ) : (
+          <div className="space-y-2">
+            {ops.map((op) => (
+              <div key={op.id} className="rounded-md border border-border bg-elevated p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={op.kind === "desktop" ? "neutral" : "accent"}>
+                        {op.kind === "desktop" ? t("kindDesktop") : "MCP"}
+                      </Badge>
+                      <span className="text-sm font-medium text-foreground">{op.title}</span>
+                      <code className="text-[11px] text-muted">{op.id}</code>
+                      {op.server && <Badge variant="info">{op.server}</Badge>}
+                      {!op.enabled && <Badge variant="warn">{t("common:disabled")}</Badge>}
                     </div>
-                  ) : (
-                    <p className={cn("text-xs mt-1", op.annotation ? "text-accent" : "text-muted italic")}>
-                      {op.annotation ? `“${op.annotation}”` : t("noNote")}
-                      <button
-                        onClick={() => { setEditing(op.id); setDraftNote(op.annotation); }}
-                        className="ml-2 underline underline-offset-2 hover:text-accent">{t("editNote")}</button>
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => updateMut.mutate({ id: op.id, enabled: !op.enabled })}
-                    className={cn(
-                      "px-2 py-1 text-xs rounded-md border transition-colors",
-                      op.enabled
-                        ? "text-ok border-[var(--ok)] hover:bg-ok-subtle"
-                        : "text-muted border-border",
-                    )}>
-                    {op.enabled ? t("common:enabled") : t("common:disabled")}
-                  </button>
-                  {op.removable && (
-                    <button
-                      onClick={() => removeMut.mutate(op.id)}
-                      className="px-2 py-1 text-xs rounded-md border border-border text-muted hover:text-danger hover:border-danger">
-                      {t("common:delete")}
-                    </button>
-                  )}
+                    <p className="mt-1 text-xs text-muted break-words">{op.description}</p>
+
+                    {editing === op.id ? (
+                      <div className="mt-2 flex gap-2">
+                        <Input
+                          value={draftNote}
+                          onChange={(e) => setDraftNote(e.target.value)}
+                          placeholder={t("notePlaceholder")}
+                          className="flex-1 text-xs"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              updateMut.mutate({ id: op.id, note: draftNote });
+                              setEditing(null);
+                            }
+                            if (e.key === "Escape") setEditing(null);
+                          }}
+                        />
+                        <Button size="sm" onClick={() => { updateMut.mutate({ id: op.id, note: draftNote }); setEditing(null); }}>
+                          {t("common:save")}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
+                          <X size={14} />
+                        </Button>
+                      </div>
+                    ) : (
+                      <p className="mt-1 flex items-center gap-2 text-xs">
+                        {op.annotation ? (
+                          <span className="text-accent">“{op.annotation}”</span>
+                        ) : (
+                          <span className="italic text-muted">{t("noNote")}</span>
+                        )}
+                        <Button
+                          size="icon" variant="ghost" className="h-6 w-6"
+                          title={t("editNote")}
+                          onClick={() => { setEditing(op.id); setDraftNote(op.annotation); }}
+                        >
+                          <Pencil size={12} />
+                        </Button>
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Switch
+                      checked={op.enabled}
+                      onChange={(v) => updateMut.mutate({ id: op.id, enabled: v })}
+                    />
+                    {op.removable && (
+                      <Button
+                        size="icon" variant="ghost" className="h-7 w-7 text-muted hover:text-danger"
+                        title={t("common:delete")}
+                        onClick={() => removeMut.mutate(op.id)}
+                      >
+                        <Trash2 size={14} />
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card title={t("guideTitle")} subtitle={t("guideSubtitle")}>
+        <ul className="space-y-1.5 text-xs text-muted">
+          <li className="flex items-start gap-2"><Monitor size={14} className="mt-0.5 shrink-0 text-accent" />{t("guideLook")}</li>
+          <li className="flex items-start gap-2"><MousePointerClick size={14} className="mt-0.5 shrink-0 text-accent" />{t("guideAct")}</li>
+          <li className="flex items-start gap-2"><X size={14} className="mt-0.5 shrink-0 text-accent" />{t("guideStop")}</li>
+        </ul>
       </Card>
     </div>
   );

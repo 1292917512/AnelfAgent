@@ -13,8 +13,9 @@ import importlib.util
 from typing import Any, Dict, Tuple
 
 _MISSING_HINT = (
-    "pyautogui 未安装——调 install_python_packages 安装 pyautogui 后可用"
-    "（macOS 还需在系统设置中为本进程授予辅助功能权限）"
+    "pyautogui 不可用——它是声明依赖，环境未同步时执行 uv sync 恢复；"
+    "macOS 还需在系统设置→隐私与安全性→辅助功能中授权本进程，"
+    "否则动作执行成功但系统不响应"
 )
 
 
