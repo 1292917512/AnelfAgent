@@ -621,6 +621,20 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 > Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
 
+#### 操作核心能力：桌面操控 + MCP 操作注册（第三十一轮新增）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 操作注册表 | `agent/operation/framework.py` + `config/operations.json` | 操作 = 可执行/可注释/可停用的能力单元：内置桌面动作（desktop.*，九个 pyautogui 动作，不可删）+ MCP 注册操作（mcp.{server}.{工具}，把已连接 server 的工具提升为带注释的一等操作）；注释与启停对两类一视同仁（线程锁+原子写持久化，provider_keys 同款纪律） |
+| 桌面执行器 | `agent/operation/desktop.py` | pyautogui 可选依赖（find_spec 探测，缺失返回带 install_python_packages 安装提示的结构化错误）；全部动作 to_thread + 30s 超时；FAILSAFE 保持开启（鼠标猛移屏幕左上角物理中止）；type 仅 ASCII（pyautogui 限制，非 ASCII 提示剪贴板+hotkey 粘贴路线）。看屏定位用视觉组 vision_look，操作只负责"做" |
+| 执行与网关端口 | `agent/operation/executor.py` | 统一执行入口（停用/缺运行时/网关未就绪均结构化失败）+ 环形执行历史（AI 与 Web 共用可观测面）；MCP 调用经 `operation_mcp_port` 晚绑定端口——组合根施绑"运行时取桥单例"的工厂，agent 层零 entities 依赖、MCP 热拔除安全 |
+| 上下文注入 | `agent/operation/context.py`（provider：operation，priority 33，operation 组） | 操作态势注入：桌面可用性（如实反映未装依赖）+ 注册操作与注释（语义名不注入则 AI 无从知晓）+ 已连接 MCP 概览（未注册工具提示 activate_tool_group 直用）；无内容零注入 |
+| AI 工具面 | `agent/operation/tools.py`（operation 组：desktop_act/list/execute/register_mcp/remove/update/status） | desktop_act 统一入口（九动作枚举+可选参数）；register_mcp_operation 校验 server 已连接与工具存在并快照参数 schema；operation_status 含桌面运行态/MCP 工具清单/执行历史 |
+| Web 面 | `services/operation.py` → `web/routers/operation.py`（/operation）→ `pages/Operation.tsx`（操作目录/MCP 联动两页签） | 操作目录（注释行内编辑/启停/删除）；MCP 联动（server 状态卡、已连接工具清单勾选注册、参数 JSON 测试执行、执行历史）；Web 执行仅限 MCP 操作（桌面动作需屏幕上下文，desktop_act 才是正确入口） |
+| 接入 | bootstrap `init_mcp` 施绑网关端口 + `register_internal_tools` 激活 operation 组 | 浏览器操控 = 注册 Playwright MCP 的工具为操作（零代码：AI 或 Web 均可注册）；操作可观测（注入+页签+历史三面） |
+
+> Model Experience：① AI 全自助：装依赖（install_python_packages）→ 看屏（vision_look）→ 操控（desktop_act）→ 注册常用 MCP 工具为带注释的操作（register_mcp_operation）→ 语义化执行（execute_operation）；② token 影响：+7 工具 schema（3 个 always），态势注入约 50-300 token（无操作时近零）；③ 缓存影响：provider 层尾部动态区，不破前缀
+
 #### 通话会话续命：断连重挂与宽限收线（第三十轮新增）
 
 | 机制 | 位置 | 说明 |

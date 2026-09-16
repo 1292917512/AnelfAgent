@@ -769,6 +769,20 @@ export const configMetaApi = {
 
 
 // Vision（视觉感知页 · 核心能力）
+export const operationApi = {
+  list: () => api.get("/operation/list"),
+  status: () => api.get("/operation/status"),
+  mcpTools: (server?: string) =>
+    api.get("/operation/mcp-tools", { params: { server: server || "" } }),
+  registerMcp: (server: string, tool: string, note: string) =>
+    api.post("/operation/register-mcp", { server, tool, note }),
+  update: (opId: string, payload: { note?: string; enabled?: boolean }) =>
+    api.put(`/operation/${opId}`, payload),
+  remove: (opId: string) => api.delete(`/operation/${opId}`),
+  execute: (opId: string, args: Record<string, unknown>) =>
+    api.post(`/operation/${opId}/execute`, { args }),
+};
+
 export const visionApi = {
   status: () => api.get("/vision/status"),
   sources: () => api.get<{ sources: VisionSourceInfo[] }>("/vision/sources"),

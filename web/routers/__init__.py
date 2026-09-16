@@ -21,6 +21,7 @@ from web.routers.mcp import router as mcp_router
 from web.routers.memory import router as memory_router
 from web.routers.model_assets import router as model_assets_router
 from web.routers.models import router as models_router
+from web.routers.operation import router as operation_router
 from web.routers.personas import router as personas_router
 from web.routers.provider_keys import router as provider_keys_router
 from web.routers.retrieval import router as retrieval_router
@@ -56,6 +57,7 @@ api_router.include_router(mcp_router)
 api_router.include_router(adapters_router)
 api_router.include_router(audio_router)
 api_router.include_router(vision_router)
+api_router.include_router(operation_router)
 api_router.include_router(channel_webui_router)
 api_router.include_router(approvals_router)
 api_router.include_router(system_router)

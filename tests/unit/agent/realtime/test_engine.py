@@ -722,7 +722,7 @@ class TestSessionReattach:
 
         engine = engine_mod.RealtimeEngine()
         sink = FakeSink()
-        session = await engine.start("conn-d", _delivery(), sink.as_sink(), RATE)
+        await engine.start("conn-d", _delivery(), sink.as_sink(), RATE)
         await engine.handle_disconnect("conn-d")
         await engine.start("conn-d2", _delivery(), FakeSink().as_sink(), RATE)
         await asyncio.sleep(0.5)  # 越过宽限时长：会话仍存活（宽限已取消）

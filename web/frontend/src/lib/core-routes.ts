@@ -29,6 +29,7 @@ export const CORE_ROUTES: CoreRoute[] = [
   { path: "memory", page: "Memory" },
   { path: "stickers", page: "Stickers" },
   { path: "vision", page: "Vision" },
+  { path: "operation", page: "Operation" },
   { path: "sound", page: "Sound" },
   { path: "retrieval", page: "Retrieval" },
   { path: "data", page: "Data" },
