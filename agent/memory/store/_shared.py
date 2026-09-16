@@ -108,6 +108,60 @@ def file_temporal_decay(path: str) -> float:
     return 1.0
 
 
+# temporal_scope 的合法取值（写入侧 auto_capture/memorize 已校验）
+_TEMPORAL_STATE = "state"
+_TEMPORAL_EPISODE = "episode"
+
+
+def _temporal_reference_ts(metadata: Dict[str, Any], timestamp: float) -> float:
+    """时间语义基准时刻：优先事件发生日（activity_date），缺省回落写入时刻。"""
+    raw = str((metadata or {}).get("activity_date", "") or "")
+    if raw:
+        try:
+            from datetime import datetime
+            return datetime.strptime(raw[:10], "%Y-%m-%d").timestamp()
+        except ValueError:
+            pass
+    return timestamp
+
+
+def temporal_is_past(metadata: Dict[str, Any], timestamp: float, now: Optional[float] = None) -> bool:
+    """state/episode 类记忆是否已越过"当前有效"窗口（pattern 永不过期）。
+
+    state（持续状态）超期 = 状态大概率已变（出差回来了、计划结束了）；
+    episode（一次性事件）超期 = 事件已成往事。两者都应按过去时表述，
+    而非从记忆里消失——遗忘曲线与 importance 衰减负责淘汰，时间语义
+    只负责"怎么说"与检索降权。
+    """
+    scope = str((metadata or {}).get("temporal_scope", "") or "")
+    if scope == _TEMPORAL_STATE:
+        ttl_days = int(get_memory_config_value("memory_state_past_days", 7) or 7)
+    elif scope == _TEMPORAL_EPISODE:
+        ttl_days = int(get_memory_config_value("memory_episode_past_days", 3) or 3)
+    else:
+        return False
+    ref = _temporal_reference_ts(metadata, timestamp)
+    if ref <= 0:
+        return False
+    age_days = ((now or time.time()) - ref) / 86400.0
+    return age_days > max(0, ttl_days)
+
+
+def temporal_weight(metadata: Dict[str, Any], timestamp: float, now: Optional[float] = None) -> float:
+    """超期 state/episode 的检索降权系数（未过期/无时间语义恒 1.0）。
+
+    过期状态不应再以"现状"的权重被召回（用户已离开上海就别再说他在上海），
+    但相关查询时仍可低权命中（聊往事时用得上）。
+    """
+    if temporal_is_past(metadata, timestamp, now=now):
+        try:
+            weight = float(get_memory_config_value("memory_temporal_expired_weight", 0.5))
+        except (TypeError, ValueError):
+            weight = 0.5
+        return min(1.0, max(0.0, weight))
+    return 1.0
+
+
 def compute_effective_score(entry: MemoryEntry, now: Optional[float] = None) -> float:
     """计算记忆的有效分：importance × 时间衰减 × 访问强化。
 

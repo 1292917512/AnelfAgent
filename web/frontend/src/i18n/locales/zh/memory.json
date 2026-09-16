@@ -54,6 +54,8 @@
   "searchMemory": "搜索记忆...",
   "clearSearch": "清除",
   "mergeSelected": "合并",
+  "confirmEvidence": "确认属实（+证据）",
+  "disputeEvidence": "反驳纠正（-证据）",
   "mergePrompt": "将 {{count}} 条记忆合并为一条",
   "mergeInputPlaceholder": "输入合并后的内容...",
   "importanceLabel": "重要度",

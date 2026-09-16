@@ -54,6 +54,8 @@
   "searchMemory": "Search memories...",
   "clearSearch": "Clear",
   "mergeSelected": "Merge",
+  "confirmEvidence": "Confirm (+evidence)",
+  "disputeEvidence": "Dispute (-evidence)",
   "mergePrompt": "Merge {{count}} memories into one",
   "mergeInputPlaceholder": "Enter merged content...",
   "importanceLabel": "Importance",

@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { memoryApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
-import { Trash2, Save, Plus, Pencil, X, Search, Merge } from "lucide-react";
+import { Trash2, Save, Plus, Pencil, X, Search, Merge, Check, ThumbsDown } from "lucide-react";
 
 const LTM_PAGE_SIZE = 50;
 
@@ -52,6 +52,11 @@ export function LTMPanel() {
   const mergeMutation = useMutation({
     mutationFn: () => memoryApi.ltm.merge(Array.from(selectedIds), mergeContent),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["ltmPaginated"] }); setSelectedIds(new Set()); setShowMerge(false); setMergeContent(""); },
+  });
+  const evidenceMutation = useMutation({
+    mutationFn: ({ id, signal }: { id: number; signal: "confirm" | "dispute" }) =>
+      memoryApi.ltm.evidence(id, signal).then((r) => r.data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ltmPaginated"] }),
   });
 
   const toggleSelect = (id: number) => {
@@ -150,6 +155,22 @@ export function LTMPanel() {
                     {!!item.source && <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted">{String(item.source)}</span>}
                   </div>
                   <div className="flex gap-1">
+                    {String(item.type) === "reflection" && (
+                      <>
+                        <button
+                          onClick={() => evidenceMutation.mutate({ id, signal: "confirm" })}
+                          className="p-1 text-muted hover:text-ok transition-colors"
+                          title={t("confirmEvidence")}>
+                          <Check size={14} />
+                        </button>
+                        <button
+                          onClick={() => evidenceMutation.mutate({ id, signal: "dispute" })}
+                          className="p-1 text-muted hover:text-danger transition-colors"
+                          title={t("disputeEvidence")}>
+                          <ThumbsDown size={14} />
+                        </button>
+                      </>
+                    )}
                     <button onClick={() => { if (isEditing) { setEditingId(null); } else { setEditingId(id); setEditContent(String(item.content ?? "")); setEditImportance(Number(item.importance ?? 0.5)); } }}
                       className="p-1 text-muted hover:text-accent transition-colors">{isEditing ? <X size={14} /> : <Pencil size={14} />}</button>
                     <button onClick={() => deleteMutation.mutate(id)} className="p-1 text-muted hover:text-danger transition-colors"><Trash2 size={14} /></button>

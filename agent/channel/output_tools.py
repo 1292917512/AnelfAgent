@@ -267,6 +267,18 @@ async def execute_send_action(
         rejection = guard_outbound(target_scope, thinker)
         if rejection:
             return rejection
+        # 复读闸门：主动任务上下文（reflect:）的发送与近期回复高度重叠时拒发；
+        # 用户触发的回复周期不设闸（问什么答什么是用户的选择）
+        if thinker.startswith("reflect:"):
+            try:
+                from agent.memory.anti_repeat import check_repeat_gate
+                suppression = await check_repeat_gate(
+                    target_scope, outbound_preview or operation,
+                )
+                if suppression:
+                    return suppression
+            except Exception as exc:
+                log(f"复读闸门检查失败（放行）: {exc}", "DEBUG", tag="通道")
         raw = await invoke(ch, resolved_target_id, channel_type)
         parsed, ok = _check_send_result(raw, channel_id, target_id)
         _attach_target_resolution_meta(

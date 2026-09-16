@@ -411,6 +411,8 @@ export const memoryApi = {
       api.get("/memory/ltm/paginated", { params: { page, page_size: pageSize, memory_type: memoryType } }),
     merge: (ids: number[], content: string) =>
       api.post("/memory/ltm/merge", { ids, content }),
+    evidence: (id: number, signal: "confirm" | "dispute") =>
+      api.post(`/memory/ltm/${id}/evidence`, { signal }),
   },
   recallTest: (data: {
     query: string;

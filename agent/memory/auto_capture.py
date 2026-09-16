@@ -82,15 +82,23 @@ _EXTRACT_PROMPT = """\
 - event：发生的具体事件，带时间锚点（如"小李[uid:456] 周日去看了演唱会"）
 - 不提取：寒暄客套、情绪性短句、常识、一次性指令、正在进行的任务过程
 
+## importance 校准（结合实体记忆：主体是已识别的人时，身份/关系级信息从高档取值）
+- 0.9-1.0：身份级事实——姓名/生日/住址/职业/重要人际关系，以及明确说"记住这个/帮我记住"
+- 0.8：长期偏好与习惯、重要约定与承诺
+- 0.7：阶段性计划与近期动态
+- 0.6：一般偏好线索、次要观察
+- 0.5：弱线索（不确定的照实标低分，不要在提取侧预过滤——下游有裁决）
+importance 决定记忆的先验可信度与留存优先级，请严格对照上表，不要一律给中间值。
+
 ## 输出格式（只输出 JSON 数组，没有值得提取的内容时输出 []）
 [{"content": "一两句话的记忆内容（用称呼写明主体是谁，禁止「用户」「有人」这类模糊指代）",
    "speaker": "该信息发言者的 uid（取自消息行的 [uid:xxx]；AI 说的或无法确定时省略）",
    "type": "fact" 或 "event",
    "topic": "主题词（一两个字）",
-   "importance": 0.5到1.0（重要约定/承诺 0.8 以上）,
+   "importance": 0.5到1.0（按上方校准表取值）,
    "sensitivity": "normal" 或 "private"（个人隐私/悄悄话标 private）,
    "date": "事件发生的日期 YYYY-MM-DD（仅 event 且能从对话确定时填写，否则省略）",
-   "temporal_scope": "仅 event 填写：episode=一次性事件 / state=持续状态 / pattern=反复模式（拿不准用 pattern）"}]
+   "temporal_scope": "仅 event 填写：episode=一次性事件 / state=持续状态（会结束的：出差/养猫/减肥） / pattern=反复模式（拿不准用 pattern）"}]
 
 【背景（最近的旧对话，仅供理解）】
 {background}
@@ -589,6 +597,15 @@ class AutoCapturePipeline:
                     log(f"自动捕获 [{scope_key}]: +{relations} 条图谱关系", tag="记忆")
             except Exception as exc:
                 log(f"自动捕获关系抽取失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")
+
+        # 反馈分类联动：已呈现的待验证认知 × 本批用户消息 → 证据回流
+        # （证据系统的用户信号源；与关系抽取同构——同批材料顺手裁决）
+        if get_config_bool("memory_reflection_feedback_enabled", True):
+            try:
+                from .reflection_lifecycle import classify_reflection_feedback
+                await classify_reflection_feedback(store, scope_key, messages)
+            except Exception as exc:
+                log(f"反思反馈分类失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")
         return stored
 
     async def _extract_relations(

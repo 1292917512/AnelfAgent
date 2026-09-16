@@ -100,6 +100,7 @@ async def memorize(
     tags: str = "",
     importance: float = 0.7,
     sensitivity: str = "normal",
+    temporal_scope: str = "",
 ) -> str:
     """将一条关键信息存入长期记忆。
 
@@ -107,9 +108,15 @@ async def memorize(
         content: 要记住的内容（简洁扼要，一两句话）
         tags: 标签，逗号分隔。前缀：type:(fact/event/permanent) user:(uid) group:(id) topic:(主题) channel:(频道) goal:(目标id)。
             与某目标相关的记忆打 goal:xxx 标签，可在目标视角串联召回
-        importance: 重要性 0-1，默认 0.7。permanent 类型自动设为 1.0
+        importance: 重要性 0-1，按校准表取值：0.9+ 身份级事实（姓名/生日/住址/重要关系、
+            用户明确说"记住这个"）；0.8 长期偏好与习惯、重要约定与承诺；0.7 阶段性计划
+            与近期动态；0.6 一般偏好线索；0.5 弱线索。主体是已相识的人时身份/关系级从高档。
+            permanent 类型自动设为 1.0
         sensitivity: 私密度。normal（默认）/ private（他人私事）/ secret（高度敏感）；
             私事参与召回照常，转述边界见「记忆体系铁律」
+        temporal_scope: 时间语义，仅事件/状态类填写：state=持续状态（如"在上海出差"，
+            超期自动按过去时转述并降权）/ episode=一次性事件 / pattern=反复模式（默认）。
+            稳定事实（fact）不填
 
     Returns:
         JSON 字符串。verdict 为落盘裁决：stored（新写入）/ updated（更新既有记忆）/
@@ -153,6 +160,9 @@ async def memorize(
         sensitivity = (sensitivity or "normal").strip().lower()
         if sensitivity not in ("normal", "private", "secret"):
             sensitivity = "normal"
+        temporal_scope = (temporal_scope or "").strip().lower()
+        if temporal_scope not in ("state", "episode", "pattern"):
+            temporal_scope = ""
 
         # 第一级：规则判重（子串/字面高相似，零成本快速拦截）
         if await store.has_similar_content(content):
@@ -220,7 +230,10 @@ async def memorize(
             content=content,
             tags=tag_list,
             importance=max(0.0, min(1.0, importance)),
-            metadata=({"sensitivity": sensitivity} if sensitivity != "normal" else {}),
+            metadata=({
+                **({"sensitivity": sensitivity} if sensitivity != "normal" else {}),
+                **({"temporal_scope": temporal_scope} if temporal_scope else {}),
+            }),
         )
         from .reflection_lifecycle import seed_reflection
         seed_reflection(entry)
@@ -1882,6 +1895,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
         # 同步更新 MemoryStore 中的 ENTITY 记忆
         deps = _deps()
         if deps is not None:
+            from .self_profile import PROFILE_MEMORY_IMPORTANCE
             source = f"entity_{p_id}"
             scope_tag = f"{p_type}:{p_id}"
             old_entries = await deps.store.list_recent(
@@ -1895,7 +1909,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
                 content=personality.strip(),
                 source=source,
                 tags=[scope_tag, "type:profile"],
-                importance=0.8,
+                importance=PROFILE_MEMORY_IMPORTANCE,
             )
             await deps.store.add(entry)
             wake_embedding_worker()

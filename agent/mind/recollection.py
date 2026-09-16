@@ -101,6 +101,23 @@ async def get_recollection(
         from agent.memory.hub import load_hub_block
         hub_text = await load_hub_block(mind.memory_store)
 
+    # 话题纪律与新鲜度：指令（ban-topic）两种模式都注入——主动消息更不能踩线；
+    # 复读软提示仅需对话回复路径（任务由发送侧闸门兜底）
+    directives_text = ""
+    repeat_hint_text = ""
+    if entity_scope:
+        try:
+            from agent.memory.user_directives import build_directives_block
+            directives_text = build_directives_block(entity_scope)
+        except Exception:
+            directives_text = ""
+        if not lean:
+            try:
+                from agent.memory.anti_repeat import build_repeat_hint
+                repeat_hint_text = await build_repeat_hint(entity_scope)
+            except Exception:
+                repeat_hint_text = ""
+
     if lean:
         memory_msgs, profile_msgs, relation_msgs = [], [], []
         # 永久记忆直接取 pins（不跑检索）：内容字节稳定，并入 context 层
@@ -131,11 +148,26 @@ async def get_recollection(
                 )
                 if self_block:
                     profile_msgs.insert(0, {"role": "system", "content": self_block})
-                # 已确认反思（证据驱动晋升的中间层）随画像区呈现
-                from agent.memory.reflection_lifecycle import load_confirmed_block
-                confirmed_block = await load_confirmed_block(mind.memory_store)
+                # 反思族随画像区呈现（可见性按会话参与实体过滤）：
+                # 已确认（可自然引用）→ 待验证（AI 自然求证，回应回流证据）
+                from agent.memory.reflection_lifecycle import (
+                    load_confirmed_block,
+                    load_verification_block,
+                    scope_tags_from_entity_scopes,
+                )
+                visible_tags = scope_tags_from_entity_scopes(
+                    ([entity_scope] if entity_scope else []) + related_scopes
+                )
+                confirmed_block = await load_confirmed_block(
+                    mind.memory_store, visible_tags=visible_tags,
+                )
                 if confirmed_block:
                     profile_msgs.insert(1, {"role": "system", "content": confirmed_block})
+                verification_block = await load_verification_block(
+                    mind.memory_store, visible_tags=visible_tags,
+                )
+                if verification_block:
+                    profile_msgs.insert(2, {"role": "system", "content": verification_block})
             except Exception as exc:
                 log(f"自我画像注入失败: {exc}", "DEBUG", tag="思维")
 
@@ -208,6 +240,8 @@ async def get_recollection(
         status_text=status_text,
         heartbeat_text=heartbeat_text,
         hub_text=hub_text,
+        directives_text=directives_text,
+        repeat_hint_text=repeat_hint_text,
     )
 
 

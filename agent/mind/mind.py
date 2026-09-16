@@ -352,6 +352,18 @@ class Mind:
         log(f"感知输入: {preview}", tag="思维")
         await self.add_conversation(anything)
 
+        # 用户话题指令抽取（ban-topic）：所有用户消息必经点，纯正则零 LLM，
+        # 失败不影响消息主流程
+        try:
+            from agent.messages import CharType
+            if getattr(anything, "char_type", None) in (None, CharType.USER):
+                from agent.memory.user_directives import observe_message
+                await observe_message(
+                    anything.entity_scope, anything.get_text_content() or "",
+                )
+        except Exception:
+            pass
+
         # 中断指令优先：整条消息精确匹配中断关键词且该 scope 正在回复时，
         # 请求中断进行中的会话，而非作为新消息入队（用户意图是"刹车"而非对话）
         scope = anything.entity_scope

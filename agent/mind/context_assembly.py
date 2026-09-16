@@ -160,6 +160,7 @@ _SESSION_NOTIFY_HINT = (
 
 from agent.mind.context_pipeline import (
     VOL_HISTORY,
+    VOL_LOW,
     VOL_MESSAGE,
     VOL_PERIODIC,
     VOL_SESSION,
@@ -173,9 +174,10 @@ from agent.mind.context_pipeline import (
 # legacy 布局的变动率覆盖表（tail_injection 关闭时）：动态块移到历史之前
 # 相对序与默认布局一致（按字节稳定度从静到动）
 _LEGACY_VOLATILITY: Dict[str, int] = {
+    "discipline": 9,
     "context": 10, "hub": 11,
     "profile": 20, "relation": 21, "volatile": 22, "heartbeat": 23, "status": 23,
-    "overflow": 27, "security": 28, "memory": 32,
+    "overflow": 27, "security": 28, "freshness": 31, "memory": 32,
     "summary": 33, "conversation": 34,
 }
 
@@ -466,14 +468,16 @@ class ContextAssembly:
             status_text: str = "",
             heartbeat_text: str = "",
             hub_text: str = "",
+            directives_text: str = "",
+            repeat_hint_text: str = "",
     ) -> List[Dict]:
         """组装完整 LLM 上下文（声明式管线），每次调用实时从 DB 获取最新对话历史。
 
         各内容块的顺序由 @context_block 声明的变动率决定（值越大变动越频繁，
         排越靠后，见 context_pipeline；尾部动态区内部按字节稳定度从静到动）：
-        stable(0) → summary(20) → conversation(30) →
+        stable(0) → discipline(10) → summary(20) → conversation(30) →
         context(35) → hub(36) → profile(37) → relation/volatile(38) →
-        heartbeat/status(39) → memory(43) → overflow/security(50+)
+        heartbeat/status(39) → freshness(42) → memory(43) → overflow/security(50+)
         tail_injection 关闭时经变动率覆盖表回退旧布局（动态在历史之前）。
         目标/计划态势不经此层：规划面经 plan_ops provider 每轮注入
         （agent.planning.situation），回复中途的 goal CRUD 下一轮即见。
@@ -485,6 +489,8 @@ class ContextAssembly:
             summary_row: 对话摘要行（{summary, watermarks, folded_count}）。
             status_text: 记忆状态区块文本（心跳维护，尾部动态区注入）。
             heartbeat_text: 心跳与任务态势区块文本（心跳维护，尾部动态区注入）。
+            directives_text: 用户话题指令纪律块（ban-topic，稳定前缀区）。
+            repeat_hint_text: 话题新鲜度软提示（防复读，尾部动态区）。
         """
         inp = ContextInput(
             persona_text=persona_text,
@@ -501,6 +507,8 @@ class ContextAssembly:
             scope=scope,
             prefetched_conversation=prefetched_conversation,
             hub_text=hub_text,
+            directives_text=directives_text,
+            repeat_hint_text=repeat_hint_text,
         )
         pipeline = self._pipeline if _tail_injection_enabled() else self._pipeline_legacy
         all_msgs = await pipeline.build(inp)
@@ -553,6 +561,15 @@ class ContextAssembly:
         if not inp.hub_text:
             return []
         return [{"role": "system", "content": inp.hub_text}]
+
+    @context_block("discipline", VOL_LOW, "话题禁令（用户指令）")
+    def _blk_discipline(self, inp: ContextInput) -> List[Dict]:
+        """用户话题指令（ban-topic）：对方明确划过的边界，属硬纪律——
+        置于稳定前缀区最前（VOL_LOW），内容仅指令增删时变化，缓存友好；
+        任务精简模式同样注入（主动消息更不能踩线）。"""
+        if not inp.directives_text:
+            return []
+        return [{"role": "system", "content": inp.directives_text}]
 
     @context_block("summary", VOL_PERIODIC, "早期对话摘要（折叠周期内固定）")
     def _blk_summary(self, inp: ContextInput) -> List[Dict]:
@@ -655,6 +672,14 @@ class ContextAssembly:
         if not inp.heartbeat_text:
             return []
         return [{"role": "system", "content": inp.heartbeat_text}]
+
+    @context_block("freshness", VOL_SESSION + 2, "话题新鲜度提示（防复读软提示）")
+    def _blk_freshness(self, inp: ContextInput) -> List[Dict]:
+        """防复读软提示：最近回复反复谈及的话题提醒（随最新一条 AI 回复
+        变化），置于召回块之前引导生成侧换角度。"""
+        if not inp.repeat_hint_text:
+            return []
+        return [{"role": "system", "content": inp.repeat_hint_text}]
 
     @context_block("memory", VOL_SESSION + 3, "语义召回 + 跨频道 + 技能匹配")
     def _blk_memory(self, inp: ContextInput) -> List[Dict]:

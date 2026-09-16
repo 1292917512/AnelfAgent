@@ -29,6 +29,7 @@ from ._shared import (
     get_memory_config_value,
     idf_tag_score,
     row_to_entry,
+    temporal_weight,
     time_decay,
 )
 from .connection import MemoryConnectionManager
@@ -469,7 +470,11 @@ class SearchEngine:
             freq = frequency_boost(entry.access_count, max_access)
             decay = recency * w_recency + freq * w_frequency + entry.importance * w_importance
 
-            final = semantic * w_semantic + decay * w_decay
+            # temporal_scope 时间语义：超期 state/episode（状态已变/事件已过）
+            # 整体降权——不再以"现状"的排位被召回，聊往事时仍可低权命中
+            final = (
+                semantic * w_semantic + decay * w_decay
+            ) * temporal_weight(entry.metadata, entry.timestamp)
             if bypass_threshold or final >= min_score:
                 results.append((entry, final))
 
@@ -564,7 +569,14 @@ class SearchEngine:
 
         unified: list[MemorySearchResult] = []
         for entry, score in mem_results:
-            activity_date = str(entry.metadata.get("activity_date", ""))
+            metadata = entry.metadata or {}
+            activity_date = str(metadata.get("activity_date", ""))
+            temporal_scope = str(metadata.get("temporal_scope", ""))
+            provenance: Dict[str, Any] = {}
+            if activity_date:
+                provenance["activity_date"] = activity_date
+            if temporal_scope:
+                provenance["temporal_scope"] = temporal_scope
             unified.append(MemorySearchResult(
                 id=f"mem:{entry.id}",
                 snippet=entry.content[:700],
@@ -573,8 +585,8 @@ class SearchEngine:
                 memory_type=entry.memory_type.value,
                 tags=entry.tags,
                 timestamp=entry.timestamp,
-                sensitivity=str(entry.metadata.get("sensitivity", "normal")),
-                provenance=({"activity_date": activity_date} if activity_date else {}),
+                sensitivity=str(metadata.get("sensitivity", "normal")),
+                provenance=provenance,
             ))
 
         unified.extend(chunk_results)

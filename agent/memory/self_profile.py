@@ -31,6 +31,10 @@ SELF_PROFILE_SOURCE = "entity_agent_self"
 SELF_TAG = "agent:self"
 """自画像记忆条目标签。"""
 
+PROFILE_MEMORY_IMPORTANCE = 0.9
+"""画像 ENTITY 镜像的统一重要度：画像内容是身份级事实（importance 校准表
+最高档），高于普通语义记忆——画像条目理应在检索与遗忘线上更耐久。"""
+
 _SELF_SCOPE_TYPE = "agent"
 _SELF_SCOPE_ID = "self"
 
@@ -125,7 +129,7 @@ async def update_profile_content(
             content=content,
             source=source,
             tags=[target_scope, "type:profile"],
-            importance=0.8,
+            importance=PROFILE_MEMORY_IMPORTANCE,
             timestamp=time.time(),
         )
         await store.add(entry)

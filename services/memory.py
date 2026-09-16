@@ -118,6 +118,35 @@ class MemoryService:
             entry.tags = tags
         return await store.update(entry)
 
+    async def apply_ltm_evidence(self, mem_id: int, signal: str) -> Optional[Dict[str, Any]]:
+        """对一条记忆施加用户证据信号（确认/反驳）——反思反馈回路的人审入口。
+
+        返回 {ok, score}；记忆不存在返回 None。信号同时写进 lifecycle.feedback
+        （防随后的 auto_capture 分类重复回流）。
+        """
+        rt = require_runtime()
+        store = rt.mind.memory_store
+        if not store:
+            return None
+        entry = await store.get(mem_id)
+        if not entry:
+            return None
+        from agent.memory import evidence
+        from agent.memory.reflection_lifecycle import (
+            REFLECTION_TAG,
+            record_user_feedback,
+        )
+        if signal not in ("confirm", "dispute"):
+            raise ValueError("signal 仅支持 confirm / dispute")
+        if REFLECTION_TAG in (entry.tags or []):
+            record_user_feedback(entry, signal)
+        elif signal == "confirm":
+            evidence.apply_reinforcement(entry.metadata, evidence.USER_CONFIRM_DELTA, user_originated=True)
+        else:
+            evidence.apply_disputation(entry.metadata, evidence.USER_DISPUTE_DELTA)
+        await store.update(entry)
+        return {"ok": True, "score": round(evidence.evidence_score(entry), 3)}
+
     async def create_ltm(self, content: str, memory_type: str = "semantic", importance: float = 0.5, tags: Optional[List[str]] = None) -> int:
         rt = require_runtime()
         store = rt.mind.memory_store

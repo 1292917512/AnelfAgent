@@ -32,6 +32,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.memory.memory_types import MemoryEntry, MemoryType
+from agent.memory.self_profile import PROFILE_MEMORY_IMPORTANCE
 from agent.task import history as task_history
 from agent.task.executor import TaskExecutor
 from agent.task.executor import _clean_llm_output as _clean_llm
@@ -643,6 +644,13 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"自动记忆捕获失败: {e}", "DEBUG", tag="心跳")
 
+        # 用户话题指令（ban-topic）过期清扫：沉默不续期，到期自动解除
+        try:
+            from agent.memory.user_directives import sweep_expired
+            await sweep_expired()
+        except Exception as e:
+            log(f"话题指令清扫失败: {e}", "DEBUG", tag="心跳")
+
         # 主标签记忆（main:hub）自愈：缺失/被清理时重建骨架（幂等）
         if self.mind.memory_store:
             try:
@@ -1049,6 +1057,8 @@ class HeartbeatEngine:
             source="events_archive",
             tags=tags,
             importance=0.6,
+            # 日期便签归档天然是一次性事件：带上时间语义让超期后按过去时转述
+            metadata={"temporal_scope": "episode", "activity_date": note_date},
         )
         await store.add(entry)
         from agent.memory.embedding import wake_embedding_worker
@@ -1148,7 +1158,7 @@ class HeartbeatEngine:
                 content=content,
                 source=source,
                 tags=[scope_tag, "type:profile"],
-                importance=0.8,
+                importance=PROFILE_MEMORY_IMPORTANCE,
             )
             await self.mind.memory_store.add(entry)
             from agent.memory.embedding import wake_embedding_worker
@@ -1171,7 +1181,7 @@ class HeartbeatEngine:
             memory_type=MemoryType.ENTITY,
             source=source,
             tags=[scope_tag, "type:profile"],
-            importance=0.8,
+            importance=PROFILE_MEMORY_IMPORTANCE,
         )
 
     async def _pop_analysis_entity(self) -> Optional["EntityData"]:

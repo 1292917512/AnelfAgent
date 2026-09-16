@@ -3,15 +3,18 @@
 被动召回（memory_retriever）与异步深探（probe）共用同一套行格式——
 同一种事实一种长相：``💡 归属标注 正文（时间 记，私事）``。归属标注
 （称呼[uid:xxx]）与会话消息 [uid:] 标签同构，模型可直接对照当前对话
-对象确认归属。
+对象确认归属。temporal_scope 超期的 state/episode 追加"过去时"尾注，
+让模型以"曾经"而非"现在"的口径转述。
 
-叶子模块：只依赖标签前缀常量与图谱查询面（注入侧无 I/O 之外的逻辑）。
+叶子模块：只依赖标签前缀常量、图谱查询面与 store 纯函数（注入侧无
+I/O 之外的逻辑）。
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from .store._shared import temporal_is_past
 from .store.tag_intel import ENTITY_PREFIXES
 
 if TYPE_CHECKING:
@@ -97,6 +100,10 @@ async def format_memory_line(
         time_str = format_memory_time(ts)
         if time_str:
             tail_parts.append(f"{time_str} 记")
+    # 时间语义：超期 state/episode 标注过去时，状态类信息防"现在时"误述
+    prov = provenance or {}
+    if prov.get("temporal_scope") and temporal_is_past(dict(prov), ts):
+        tail_parts.append("过去时·可能已变")
     if sensitivity in ("private", "secret"):
         tail_parts.append("私事")
     tail = f"（{'，'.join(tail_parts)}）" if tail_parts else ""

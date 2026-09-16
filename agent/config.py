@@ -167,6 +167,27 @@ _MIND_CONFIGS = {
             "advanced": True,
             "unit": "条",
         },
+        "memory_state_past_days": {
+            "description": "state 类记忆（持续状态）超期天数：超期后按过去时渲染并检索降权",
+            "default": 7,
+            "advanced": True,
+            "unit": "天",
+        },
+        "memory_episode_past_days": {
+            "description": "episode 类记忆（一次性事件）超期天数",
+            "default": 3,
+            "advanced": True,
+            "unit": "天",
+        },
+        "memory_temporal_expired_weight": {
+            "description": "超期 state/episode 记忆的检索降权系数（0~1，1 为不降权）",
+            "default": 0.5,
+            "advanced": True,
+            "value_type": ConfigValueType.RANGE,
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
+        },
     },
     "memory/cross_channel": {
         "cross_channel_enabled": {
@@ -303,6 +324,8 @@ _MIND_SYNC_FIELDS: tuple[str, ...] = (
     "cross_channel_enabled", "cross_channel_window_minutes",
     "cross_channel_recall_min_score", "cross_channel_recall_max_results",
     "cross_channel_recall_scan_limit", "cross_channel_narrative_max_items",
+    "memory_state_past_days", "memory_episode_past_days",
+    "memory_temporal_expired_weight",
 )
 
 # 公开别名：供 web 层等外部模块引用（私有名 _MIND_SYNC_FIELDS 保留内部使用）
@@ -353,6 +376,10 @@ class MindConfig:
     memory_recall_top_k: int = 5
     memory_recall_min_score: float = 0.1
     memory_time_decay_days: int = 30
+    # temporal_scope 时间语义（state/episode 超期降权与过去时渲染）
+    memory_state_past_days: int = 7
+    memory_episode_past_days: int = 3
+    memory_temporal_expired_weight: float = 0.5
     # 记忆管理配置
     memory_warn_threshold: int = 200
     memory_max_per_type: int = 500

@@ -607,6 +607,20 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 > Model Experience：① 通话中 AI 收到频道信息注入（RealtimeCallProvider：频道/会话/状态+自动播报说明），无通话零注入；② token 影响：无新增工具 schema（realtime_reply/realtime_say 已随自动路由退役，voice 组仅 realtime_status）；③ 缓存影响：注入在 volatile 层，不破前缀
 
+#### 记忆代谢闭环：反馈回路 / 时间语义 / 话题纪律 / 防复读（第二十八轮新增）
+
+对标补强四项记忆能力，全部长在既有心跳/auto_capture/上下文管线上，零新循环零新工具：
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 证据反馈回路 | `agent/memory/reflection_lifecycle.py`（load_verification_block / classify_reflection_feedback / record_user_feedback）+ `auto_capture._extract_and_store` 尾部 | 证据系统此前只进不出（apply_disputation 零调用方）。闭环：pending/confirmed 反思经画像区"待验证认知"块呈现进对话（呈现即登记 surfaced_at，24h 冷却防追问骚扰）→ auto_capture 周期把该 scope 用户新消息对着"已呈现未裁决"条目跑 light_llm 分类（confirmed +1.0 / denied +1.0 反驳 / ignored -0.2）→ 证据回流驱动晋升/归档；Web 记忆页 LTM 反思条目 ✓/👎 按钮走同一 record_user_feedback（人审直改）。**可见性规则**：带 user:/group: 标签的反思只在对应 scope（含群聊参与人）可见，#session 后缀按用户级对齐，无实体标签的自认知全局可见——A 的反思绝不注入 B 的对话（已确认块同步收敛到此规则，原为全局注入） |
+| temporal_scope 时间语义 | `store/_shared.py::temporal_is_past/temporal_weight` + `store/search.py` 评分 + `recall_format.py` 过去时尾注 | 提取侧早有 episode/state/pattern 输出但全库无消费方（写而不读）。激活：读时判定超期（state 7 天 / episode 3 天，activity_date 优先于写入时刻，pattern 永不）→ 注入行追加"过去时·可能已变"尾注（防"现在时"误述）+ 检索整体降权（memory_temporal_expired_weight 0.5，聊往事仍可低权命中，淘汰仍归遗忘曲线）；memorize 工具补 temporal_scope 参数、events 归档提炼天然带 episode 语义 |
+| 用户话题指令 | `agent/memory/user_directives.py`（新）+ `Mind.accept_feel` 钩子 + context 管线 discipline 块（VOL_LOW）+ 心跳清扫 | ban-topic：纯正则抽取"别再提X"（零 LLM），挂说出来时的会话 scope（私聊管私聊、群聊管群，不跨会话扩大）；TTL 随命中线性增长（3 天×次数，上限 30 天）沉默不续期自然淡忘；注入稳定前缀区（仅指令增删变化），任务精简模式同样注入（主动消息更不能踩线） |
+| 防复读 | `agent/memory/anti_repeat.py`（新）+ context 管线 freshness 块（VOL_SESSION+2）+ `execute_send_action` 闸门 | 两级防线作用面刻意不同：软提示（近期 AI 回复 df≥3 的高频 ngram top5，随最新回复缓存）引导全部回复周期换角度——提醒触发的 REPLY 必须送达只能引导；硬闸门（字符 2-gram Dice ≥0.55）仅拦 reflect: 任务上下文的主动发送，用户触发的回复不设闸（问什么答什么是用户的选择） |
+| importance 校准 | `auto_capture._EXTRACT_PROMPT` 校准表 + memorize 工具描述 + `self_profile.PROFILE_MEMORY_IMPORTANCE` | 提取侧锚点表（0.9+ 身份级/明确"记住这个"，0.8 长期偏好与承诺，0.7 阶段动态，0.6 线索，0.5 弱线索不预过滤）结合实体记忆——主体是已识别的人时身份/关系级从高档；画像 ENTITY 镜像 importance 统一 0.8→0.9（身份级事实，四处写入点共用单点常量），种子阶梯 initial_reinforcement 的精度由此对齐 |
+
+> Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
+
 #### 语音链路核心质量（第二十四轮新增）
 
 语义端点检测 + 输入预处理链 + 本地模型资产双通道管理（Web 与 AI 工具同一能力面）：
