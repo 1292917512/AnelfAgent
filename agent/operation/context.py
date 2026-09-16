@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import time
+from typing import Optional
 
+from core.context_provider import ProviderSnapshot
 from entities._sdk import context_provider
 
 from . import executor, framework
@@ -24,7 +26,7 @@ class OperationProvider:
     def __init__(self) -> None:
         self.last_inject_at: float = 0.0
 
-    async def provide(self, scope: str) -> str:
+    async def provide(self, scope: str) -> Optional[ProviderSnapshot]:
         from . import desktop as desktop_exec
 
         snap = framework.snapshot_for_context()
@@ -61,6 +63,8 @@ class OperationProvider:
             except Exception:
                 pass
         if not lines:
-            return ""
+            return None
         self.last_inject_at = time.time()
-        return "[系统注入·操作态势] " + "\n".join(lines)
+        return ProviderSnapshot(
+            content="[系统注入·操作态势] " + "\n".join(lines), ready=True,
+        )

@@ -132,7 +132,9 @@ class TestContextProvider:
             server_status=lambda: [],
         )
         monkeypatch.setattr(executor, "mcp_gateway", lambda: gateway)
-        text = await OperationProvider().provide("user_webui:u1")
+        snap = await OperationProvider().provide("user_webui:u1")
+        assert snap is not None
+        text = snap.content or ""
         assert "mcp.playwright.browser_navigate" in text
         assert "打开网页" in text
         assert "桌面操控" in text  # 可用性行如实反映（就绪/未装两种文案）
@@ -142,5 +144,5 @@ class TestContextProvider:
 
         monkeypatch.setattr(executor, "mcp_gateway", lambda: None)
         # 桌面目录仍在但无 MCP 注册/连接：桌面可用性行保留
-        text = await OperationProvider().provide("scope")
-        assert "桌面操控" in text
+        snap = await OperationProvider().provide("scope")
+        assert snap is not None and "桌面操控" in (snap.content or "")

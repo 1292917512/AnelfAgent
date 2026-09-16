@@ -233,13 +233,4 @@ async def deliver_text(target: ReplyTarget, content: str) -> bool:
         session_id=target.session_id,
         adapter_key=target.channel_id,
     )
-    # 通话中的轮末纯文本同样播出（与 send_message 自动语音路由同一出口，
-    # 通话感知归频道——AI 不需要也不应该为此改用工具）
-    try:
-        from agent.channel.output_tools import _speak_if_on_call
-        await _speak_if_on_call(
-            target.channel_id, resolved.get("target_id", target.target_id), content,
-        )
-    except Exception:
-        pass
     return True
