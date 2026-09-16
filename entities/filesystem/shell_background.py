@@ -30,6 +30,8 @@ from core.log import log
 from core.tool_errors import error_from_exception
 from entities._sdk import get_background_registry, get_owner_scope
 
+from .child_guard import register_child, unregister_child
+
 # 完成通知摘要的最大长度（输出文件尾部摘录）
 _SUMMARY_TAIL_CHARS = 2000
 # 超时提醒携带的输出尾部长度
@@ -109,6 +111,8 @@ def launch_background(command: str, cwd: str, workspace: str,
         daemon=True,
     )
     thread.start()
+    # 子进程看护登记（独立进程组的 owner-death 守卫：启动清扫孤儿 + 关停终止）
+    register_child(proc.pid, desc)
     log(f"后台 shell 任务已启动: {task_id} (pid={proc.pid}, 预期={timeout_sec or '不限'}) {desc}", tag="后台")
 
     expect_note = (
@@ -150,6 +154,7 @@ def _wait_and_complete(proc: subprocess.Popen, out_fp, output_file: str,
         log(f"后台 shell 任务超时提醒: {task_id} (预期 {expected_sec:.0f}s)", "WARNING", tag="后台")
         returncode = proc.wait()
     out_fp.close()
+    unregister_child(proc.pid)
     summary = _tail(output_file, _SUMMARY_TAIL_CHARS)
     if killed.is_set():
         head = f"已被 AI 终止（退出码 {returncode}）"

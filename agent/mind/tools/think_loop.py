@@ -589,7 +589,7 @@ async def _run_think_rounds(
     if mode == ThinkMode.REPLY and anything:
         await _deliver_pending_text(ctx, state)
         await finish_think(mind, anything, execution_steps, safety_limit, ctx.tool_chain,
-                           completion=ctx.completion)
+                           completion=ctx.completion, turn_id=ctx.turn_id)
 
 
 # ==================================================================
@@ -624,7 +624,7 @@ async def _handle_interrupt(ctx: _ThinkLoopCtx, state: _ThinkRoundState) -> bool
         )
         await finish_think(
             ctx.mind, ctx.anything, ctx.execution_steps, state.iteration, ctx.tool_chain,
-            completion=ctx.completion,
+            completion=ctx.completion, turn_id=ctx.turn_id,
         )
     return True
 
@@ -761,7 +761,7 @@ async def _finish_round(
     if ctx.mode == ThinkMode.REPLY and ctx.anything:
         await finish_think(
             ctx.mind, ctx.anything, ctx.execution_steps, state.iteration + 1, ctx.tool_chain,
-            completion=ctx.completion,
+            completion=ctx.completion, turn_id=ctx.turn_id,
         )
 
 

@@ -621,6 +621,21 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 > Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
 
+#### 实时响应仲裁与进程级健壮性（第二十九轮新增）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 播报车道 | `agent/realtime/arbiter.py`（SpeakLane/Utterance）+ `RealtimeSession.lane` | 会话内全部 TTS 播报的串行化、优先级与归因（对标实时响应仲裁的通用内核，协议特有部分不搬）：①单工车道——同一时刻至多一个"生产中"单元写播放队列，多来源（回复流/send_message 自动路由）绝不交错；②优先级抢占——回复（PRIORITY_REPLY）抢占在播主动消息（已入队音频照常排空，听感"说完这句就回应你"），主动消息绝不抢回复、彼此 FIFO 全播；③归因收尾——单元持单调 uid 逐块自检，被取代者不写帧/不迁状态/不重复 audio_done，收尾权独占 |
+| 回复完成归因 | `reply_finalize.py`（EVENT_AFTER_REPLY 带 turn_id，与增量事件同源）+ `engine._on_after_reply/_settle_reply/_arm_settle_fallback` | 完成事件按 mind turn 归因结算：对得上立即收尾语音流；归因不上（旧轮迟到/子会话代发）宽限观察（1.5s，新增量到达即取消）后兜底结算——绝不因归因失败让回复"说不停"，也不误杀新一轮语音流；pending 不弹出，连续语音轮的增量可重开语音流 |
+| 语音收束离线化 | `engine._spawn_finalize` + `session.finalize_task` | ASR 定稿/声纹识别/入轮在后台任务执行，麦克风帧流不再被定稿阻塞（收束期间到达的新语音进新一轮，不再丢帧）；先就地摘下 ASR 会话并快照缓冲再走网络调用；收束任务串行链防两段语音乱序 |
+| 通话路由补全 | `engine.session_for_scope`（基座匹配，#session 后缀不阻断）+ `reply_route.deliver_text` 语音路由 + voice_spoken 移交引擎 | 多会话通话中主动消息不再静默不播；轮末纯文本同样自动播出（与 send_message 同一出口）；voice_spoken 在实际播出完成时广播（取消/失败不标记），形态标记与听感对齐 |
+| 关停总预算 | `core/lifecycle.py::shutdown_all(deadline=)` + `core/application.py`（shutdown_budget_seconds 默认 45s，system/shutdown 组） | 逆序清理按剩余预算裁剪单项上限，耗尽即跳过余下组件记名——有序关停不因个别组件卡死无限期拖长（二次信号强杀仍是最终兜底）；实例锁释放移到后置钩子（全部服务回收之后），消除"正在退出的旧实例"双实例窗口 |
+| Web 绑定 fail-fast | `web/server.py::WebServerService._serve` | uvicorn 绑定失败不抛异常（serve 静默返回）→ 检测 `server.started` 请求优雅关停——半活实例（Agent 在跑而 WebUI 不可达）不再苟活 |
+| 实时引擎入 Lifecycle | `bootstrap.register_channel_services` 注册 `realtime_engine`（cleanup=shutdown_all_sessions） | 进程退出不再依赖 WS 断连的隐式清理（Web 关停超时强取消路径下 finally 里的 await 不可靠）；每会话有界（5s）收尾 |
+| 子进程看护 | `entities/filesystem/child_guard.py` + shell_background 登记 + `entities/filesystem/__init__.register_lifecycle` | 后台 shell（独立进程组）的 owner-death 守卫：pgid 登记 logs/shell_children.json，启动清扫上次实例孤儿（SIGTERM→5s→SIGKILL 整组），关停终止全部在册子进程；裸 create_task 收编（心跳 tick/热插拔/bilibili → async_helper.spawn 受管） |
+
+> Model Experience：① 通话听感：打断后她"说完这句就回应你"，主动消息排队不抢话、不混音，两条提醒按序全播；② token 影响：无新增工具 schema；③ 缓存影响：无（车道完全在语音链路内）；④ 稳定性：Ctrl+C 卡死有 45s 总预算兜底、端口占用快速失败由守护重拉、崩溃不留孤儿 shell
+
 #### 语音链路核心质量（第二十四轮新增）
 
 语义端点检测 + 输入预处理链 + 本地模型资产双通道管理（Web 与 AI 工具同一能力面）：

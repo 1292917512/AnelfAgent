@@ -6,15 +6,19 @@
    ``Lifecycle.start_all()`` 正序拉起所有注册服务的 on_start 钩子
 2. 运行：阻塞等待关停事件（OS 信号 / ``Lifecycle.request_shutdown``）
 3. 关停：前置钩子（记忆兜底 / 日志静音 / 后台任务取消）→
-   ``Lifecycle.shutdown_all()`` 逆序回收全部服务
+   ``Lifecycle.shutdown_all()``（全局预算内逆序回收）→ 后置钩子
+   （实例锁释放——必须等全部服务回收之后，否则释放窗口期新实例
+   会撞上仍在退出的旧实例）
 
-core 不依赖 agent：关停前置钩子由组合根（launch.py）注入。
+core 不依赖 agent：关停前置/后置钩子由组合根（launch.py）注入。
 """
 import asyncio
 import contextlib
 import signal
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.config import get_config_float
 from core.flow import FlowMachine, FlowResult
 from core.lifecycle import HookFn, Lifecycle
 from core.log import log
@@ -28,10 +32,18 @@ class Application:
         self.last_startup: Optional[FlowResult] = None
         self._shutdown_event: Optional[asyncio.Event] = None
         self._pre_shutdown_hooks: List[Tuple[str, HookFn]] = []
+        self._post_shutdown_hooks: List[Tuple[str, HookFn]] = []
 
     def on_pre_shutdown(self, name: str, fn: HookFn) -> None:
         """注册关停前置钩子（在 Lifecycle.shutdown_all 之前按注册顺序执行）。"""
         self._pre_shutdown_hooks.append((name, fn))
+
+    def on_post_shutdown(self, name: str, fn: HookFn) -> None:
+        """注册关停后置钩子（Lifecycle.shutdown_all 之后执行）。
+
+        放这里的动作必须"即使组件清理被预算裁剪也安全"——如实例锁释放。
+        """
+        self._post_shutdown_hooks.append((name, fn))
 
     async def run(self) -> None:
         """编排进程生命周期；启动失败也会走完关停序列以回收半成品资源。"""
@@ -51,7 +63,7 @@ class Application:
         await self._shutdown()
 
     async def _shutdown(self) -> None:
-        """关停序列：前置钩子（失败降级为日志）→ Lifecycle 逆序清理。"""
+        """关停序列：前置钩子（失败降级为日志）→ 全局预算内逆序清理 → 后置钩子。"""
         log("正在关闭...")
         for name, fn in self._pre_shutdown_hooks:
             try:
@@ -60,7 +72,15 @@ class Application:
                     await result
             except Exception as exc:
                 log(f"关停前置钩子失败: {name} - {type(exc).__name__}: {exc}", "WARNING", tag="关停")
-        await Lifecycle.shutdown_all()
+        budget = max(5.0, get_config_float("shutdown_budget_seconds", 45.0))
+        await Lifecycle.shutdown_all(deadline=time.monotonic() + budget)
+        for name, fn in self._post_shutdown_hooks:
+            try:
+                result = fn()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as exc:
+                log(f"关停后置钩子失败: {name} - {type(exc).__name__}: {exc}", "WARNING", tag="关停")
 
     def _arm_signals(self, loop: asyncio.AbstractEventLoop) -> None:
         """布防 SIGINT/SIGTERM：首次触发优雅关停，二次触发移除处理器走默认强杀。"""

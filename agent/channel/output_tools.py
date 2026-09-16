@@ -422,50 +422,27 @@ async def _speak_if_on_call(channel_id: str, target_id: str, content: str) -> st
     """目标会话在通话中则把消息同步播出；返回给 AI 的状态注记（空=无需注记）。
 
     呈现形态归频道：AI 只管发消息，通话感知由出口层完成——用户说话中
-    不插播（消息以文字送达），其余状态立即/追加播报。
+    不插播（消息以文字送达），其余状态经播报车道依序播出（回复流优先）。
+    voice_spoken 由引擎在实际播出完成时广播（取消/失败不标记）。
     """
     try:
         from agent.realtime.engine import get_realtime_engine
 
         engine = get_realtime_engine()
-        for session in engine._sessions.values():
-            delivery = session.delivery
-            if delivery.adapter_key != channel_id:
-                continue
-            base = f"user_{delivery.adapter_key}:{delivery.user_id}"
-            if delivery.session_id and delivery.session_id != delivery.user_id:
-                base = f"{base}#{delivery.session_id}"
-            scope_type, scope_id = _resolve_conversation_scope(
-                channel_id, target_id, "private", "",
-            )
-            # 通话 scope 与发送目标 scope 对齐（webui 单用户域）
-            if base not in (scope_id, f"user_{channel_id}:{target_id}"):
-                continue
-            out = await engine.speak_to_scope(base, content)
-            if out.get("spoken"):
-                await _broadcast_voice_spoken(channel_id, scope_id or base, content)
-                return "spoken" + ("-appended" if out.get("appending") else "")
+        scope_type, scope_id = _resolve_conversation_scope(
+            channel_id, target_id, "private", "",
+        )
+        # 规范 entity scope（user_webui:u1 形态；引擎侧基座匹配吸收 #session 后缀）
+        target_scope = f"{scope_type}_{scope_id}" if scope_type and scope_id else scope_id
+        if not engine.session_for_scope(target_scope):
             return ""
+        out = await engine.speak_to_scope(target_scope, content)
+        if out.get("spoken"):
+            return "spoken" + ("-appended" if out.get("appending") else "")
+        return ""
     except Exception as exc:
         log(f"通话语音路由异常（忽略，消息已文字送达）: {exc}", "DEBUG", tag="通道")
     return ""
-
-
-async def _broadcast_voice_spoken(channel_id: str, scope_id: str, content: str) -> None:
-    """语音播出事件 → 前端把对应回复标记为已语音播出（形态呈现）。"""
-    if channel_id != "webui":
-        return  # 其他频道无对应事件面；接入实时能力的频道自行实现
-    try:
-        from core.event_bus import EVENT_CHAT_BROADCAST, event_bus
-
-        await event_bus.emit(EVENT_CHAT_BROADCAST, {
-            "event": "voice_spoken",
-            "role": "assistant",
-            "content": content[:80],
-            "scope_id": scope_id,
-        })
-    except Exception:
-        pass
 
 
 @deferred_tool(group="output", tags=["send_photo"], source="channel.output")

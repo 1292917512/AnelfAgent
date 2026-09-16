@@ -21,6 +21,7 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from agent.realtime.arbiter import SpeakLane
 from agent.realtime.playback import PcmResampler, PlaybackQueue
 from agent.voice.preprocess import PcmPreprocessor, create_preprocessor
 from agent.voice.session import VoiceDelivery
@@ -73,9 +74,12 @@ class RealtimeSession:
     _native_pump_task: Optional[asyncio.Task] = None
     barge_in_task: Optional[asyncio.Task] = None
     """打断确认任务（回声防护的观察窗；确认/取消/会话收尾时收束）。"""
-    tts_task: Optional[asyncio.Task] = None
+    finalize_task: Optional[asyncio.Task] = None
+    """语音收束处理任务（ASR 定稿/声纹/用户轮入库离线化，不阻塞麦克风帧流）。"""
+    lane: SpeakLane = field(default_factory=SpeakLane)
+    """播报车道：全部 TTS 播报的串行化与归因（生产任务由车道持有）。"""
     tts_pipeline: Any = None
-    """当前轮的 TTS 管线（引擎驱动；增量文本入口）。"""
+    """当前回复轮的 TTS 管线（引擎驱动；增量文本入口）。"""
     writer_task: Optional[asyncio.Task] = None
     last_say_error: str = ""
     """最近一次主动语音的失败原因（无失败为空；realtime_status 暴露给 AI 确认）。"""
@@ -147,9 +151,8 @@ class RealtimeSession:
                 pass
 
     async def interrupt(self) -> None:
-        """barge-in：取消合成、清空播放、回到收听（新轮由下次语音起始开启）。"""
-        if self.tts_task is not None and not self.tts_task.done():
-            self.tts_task.cancel()
+        """barge-in：车道重置（取消一切播报生产与排队）、清空播放、回到收听。"""
+        self.lane.reset()
         self.tts_pipeline = None
         self.playback.clear()
         self.detector.reset()
@@ -157,11 +160,15 @@ class RealtimeSession:
         await self.set_state(SessionState.LISTENING)
 
     async def close(self) -> None:
-        """会话收尾：取消全部任务（幂等）。"""
+        """会话收尾：车道有界结算 + 取消全部任务（幂等）。"""
         self.closed = True
-        for task in (self.tts_task, self.writer_task, self.barge_in_task):
-            if task is not None and not task.done():
-                task.cancel()
+        await self.lane.settle(timeout=2.0)
+        tasks = [t for t in (self.writer_task, self.barge_in_task, self.finalize_task)
+                 if t is not None and not t.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.wait(tasks, timeout=2.0)
         if self.asr_session is not None:
             try:
                 await self.asr_session.close()

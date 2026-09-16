@@ -446,11 +446,27 @@ class WebServerService:
 
         app = create_app()
         config = uvicorn.Config(app, host=host, port=port, log_level="warning")
-        self._server = _QuietServer(config)
+        server = _QuietServer(config)
+        self._server = server
 
         local_url = f"http://127.0.0.1:{port}"
         log(f"WebUI 已启动: {local_url}  (监听 {host}:{port}，局域网可访问)")
         try:
-            await self._server.serve()
+            await server.serve()
+        except Exception as e:
+            log(f"Web 服务器运行异常: {e}", "ERROR")
+            self._request_fail_fast(f"Web 服务器异常退出: {e}")
         finally:
             self._server = None
+            # 绑定失败 uvicorn 不抛异常（serve 静默返回）：半活实例（Agent
+            # 在跑而 WebUI 不可达）不可接受，请求优雅关停由外层守护决策
+            if not server.started:
+                self._request_fail_fast(
+                    f"WebUI 未能监听 {host}:{port}（端口被占用或配置错误），进程将退出"
+                )
+
+    def _request_fail_fast(self, reason: str) -> None:
+        """半活实例熔断：请求进程优雅关停（外层守护按退出码决策重试）。"""
+        from core.lifecycle import Lifecycle
+        log(f"{reason}", "CRITICAL", tag="启动")
+        Lifecycle.request_shutdown()

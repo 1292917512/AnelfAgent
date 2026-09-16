@@ -13,8 +13,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
+from core.config import register_configs_safe
 from core.log import log
 
 CleanupFn = Union[Callable[[], None], Callable[[], Awaitable[None]]]
@@ -22,6 +24,22 @@ HookFn = Union[Callable[[], None], Callable[[], Awaitable[None]]]
 
 # 与 start.sh / start.bat 重启循环约定的退出码：进程以该码退出时由外层脚本重新拉起
 RESTART_EXIT_CODE = 42
+
+_LIFECYCLE_CONFIGS = {
+    "system/shutdown": {
+        "shutdown_budget_seconds": {
+            "description": "优雅关停的全局预算（秒）：逆序清理按剩余预算裁剪单项上限，"
+                           "耗尽即跳过余下组件（二次 Ctrl+C 仍可强杀兜底）",
+            "default": 45.0,
+            "min": 5.0,
+            "max": 300.0,
+            "unit": "秒",
+            "advanced": True,
+        },
+    },
+}
+
+register_configs_safe(_LIFECYCLE_CONFIGS)
 
 
 class Lifecycle:
@@ -149,24 +167,39 @@ class Lifecycle:
                 log(f"tick 钩子失败: {name} - {e}", "WARNING")
 
     @classmethod
-    async def shutdown_all(cls, per_timeout: Optional[float] = 30.0) -> None:
+    async def shutdown_all(
+        cls,
+        per_timeout: Optional[float] = 30.0,
+        *,
+        deadline: Optional[float] = None,
+    ) -> None:
         """逆序执行所有 cleanup 回调，释放资源。
 
         per_timeout：单个 cleanup 的最大耗时（秒），超时记 ERROR 继续下一个，
         防止个别组件卡死拖住整个进程退出；None 表示不限时。
+        deadline：全局关停预算的时刻戳（time.monotonic 口径）。给出时单项
+        上限取 min(per_timeout, 剩余预算)；预算耗尽即跳过余下组件并记名——
+        有序关停不因个别组件卡死而无限期拖长（二次信号强杀仍是最终兜底）。
         """
         for name, fn in reversed(cls._cleanups):
+            effective = per_timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    log(f"关停预算耗尽，跳过余下组件清理（当前: {name}）", "ERROR")
+                    break
+                effective = min(per_timeout, remaining) if per_timeout is not None else remaining
             try:
                 if asyncio.iscoroutinefunction(fn):
-                    if per_timeout is not None:
-                        await asyncio.wait_for(fn(), timeout=per_timeout)
+                    if effective is not None:
+                        await asyncio.wait_for(fn(), timeout=effective)
                     else:
                         await fn()
                 else:
                     fn()
                 log(f"已清理: {name}")
             except asyncio.TimeoutError:
-                log(f"清理超时（{per_timeout}s）: {name}", "ERROR")
+                log(f"清理超时（{effective:.0f}s）: {name}", "ERROR")
             except Exception as e:
                 log(f"清理失败: {name} - {e}", "WARNING")
         cls._instances.clear()

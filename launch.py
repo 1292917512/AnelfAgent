@@ -116,10 +116,13 @@ def create_application(args: argparse.Namespace) -> Application:
 
     app.on_pre_shutdown("flush_pending_memory", _flush_pending_memory)
     app.on_pre_shutdown("silence_shutdown_logs", _silence_shutdown_logs)
-    app.on_pre_shutdown("release_instance", lambda: release_instance(_PID_FILE))
 
     from agent.runtime.bootstrap import cancel_background_tasks
     app.on_pre_shutdown("cancel_background_tasks", cancel_background_tasks)
+
+    # 实例锁在全部服务回收之后释放：前置释放的窗口期里，新启动实例的
+    # 守卫看不到"正在优雅退出的旧实例"，会撞上端口与双写存储
+    app.on_post_shutdown("release_instance", lambda: release_instance(_PID_FILE))
 
     return app
 

@@ -61,10 +61,11 @@ async def _cycle_body(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat
     """自主循环主体（会话生命周期由 _autonomous_cycle 管理）。"""
 
     if is_heartbeat:
-        # 心跳 tick 后台执行，不阻塞主循环的消息处理
+        # 心跳 tick 后台执行，不阻塞主循环的消息处理（受管任务：强引用防 GC + 异常记日志）
         if not mind._heartbeat_running:
             mind._heartbeat_running = True
-            asyncio.create_task(mind._run_heartbeat_tick_bg())
+            from core.async_helper import spawn
+            spawn(mind._run_heartbeat_tick_bg(), name="mind.heartbeat.tick")
 
     # 廉价前置判断：仅检查队列是否有待处理项，命中 fast-path 时跳过昂贵的 memory/goals 查询
     cheap_pending = mind.pfc.peek_all_tasks()

@@ -86,6 +86,8 @@ class PlaybackQueue:
         self._queue: asyncio.Queue[Optional[PlaybackFrame]] = asyncio.Queue(
             maxsize=self._MAX_FRAMES)
         self._generation = 0
+        self._pending_finals = 0
+        """已入队未被写任务消费的收束帧数——"队列是否还有待排空收尾"的判据。"""
 
     def push(self, frame: PlaybackFrame) -> None:
         """入队一帧；满时丢最旧音频帧（final 帧永远不被挤掉）。"""
@@ -101,11 +103,13 @@ class PlaybackQueue:
 
     def finish(self, turn_id: int) -> None:
         """放置该轮的自然收束帧（audio_done）。"""
+        self._pending_finals += 1
         self.push(PlaybackFrame(pcm=b"", sample_rate=0, turn_id=turn_id, final=True))
 
     def clear(self) -> None:
         """打断清空：丢弃全部待发帧并放置打断哨兵（读侧立即收到 None）。"""
         self._generation += 1
+        self._pending_finals = 0
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
@@ -118,8 +122,15 @@ class PlaybackQueue:
 
     async def read(self) -> Optional[PlaybackFrame]:
         """读下一帧；None = 打断哨兵（调用方发 interrupted 收束）。"""
-        return await self._queue.get()
+        frame = await self._queue.get()
+        if frame is not None and frame.final:
+            self._pending_finals = max(0, self._pending_finals - 1)
+        return frame
 
     @property
     def generation(self) -> int:
         return self._generation
+
+    @property
+    def pending_finals(self) -> int:
+        return self._pending_finals

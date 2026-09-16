@@ -30,6 +30,8 @@ async def finish_think(
         iterations: int,
         tool_chain: Optional[List[Dict]] = None,
         completion: Optional[Dict] = None,
+        *,
+        turn_id: str = "",
 ) -> None:
     """思维循环结束处理：工具摘要入库 + 经 EVENT_AFTER_REPLY 交给技能评审。
 
@@ -39,6 +41,9 @@ async def finish_think(
 
     completion 为本次回复的容器（已由 think_loop 写入完整消息链），透传给
     complete_reply 供 EVENT_AFTER_REPLY 附带 messages 快照。
+
+    turn_id 为本次思维会话标识（与增量事件同源）：EVENT_AFTER_REPLY 携带它，
+    实时语音引擎据此归因结算（旧轮迟到的完成事件不再误杀新一轮语音流）。
     """
     execution_summary = _build_execution_summary(tool_chain, execution_steps)
     if execution_summary.startswith("[已执行操作摘要]"):
@@ -56,6 +61,7 @@ async def finish_think(
         tool_chain=tool_chain,
         execution_summary=execution_summary,
         completion=completion,
+        turn_id=turn_id,
     )
 
 
@@ -173,6 +179,7 @@ async def complete_reply(
         tool_chain: Optional[List[Dict]] = None,
         execution_summary: str = "",
         completion: Optional[Dict] = None,
+        turn_id: str = "",
 ) -> None:
     """清理回复状态并发出完成事件。
 
@@ -184,6 +191,9 @@ async def complete_reply(
     completion 非 None 且已写入完整消息链时，EVENT_AFTER_REPLY 附带 messages
     快照（base + tool_chain），供 hooks_llm 钩子面以 transcript 档位消费；
     快照为逐条浅拷贝的冻结副本，不随主对话后续 mutate 变化。
+
+    turn_id 与增量事件同源（本次思维会话标识）：订阅方据此把完成事件与
+    自己采纳的增量对齐（实时语音的结算归因）；空串 = 无法归因。
     """
     from agent.mind.autonomous import MindPhase
 
@@ -228,4 +238,5 @@ async def complete_reply(
         "error": error,
         "execution_summary": execution_summary,
         "messages": reply_messages,
+        "turn_id": turn_id,
     })

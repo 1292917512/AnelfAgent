@@ -504,14 +504,16 @@ def create_bootstrap() -> FlowMachine:
         def _on_entities_changed() -> None:
             if not get_config_bool("hotplug_watch_enabled", True):
                 return
+            from core.async_helper import spawn
             from entities.hotplug import sync_entities
-            asyncio.create_task(sync_entities(), name="hotplug.entities")
+            spawn(sync_entities(), name="hotplug.entities")
 
         def _on_channels_changed() -> None:
             if not get_config_bool("hotplug_watch_enabled", True):
                 return
             from agent.channel.hotplug import sync_channels
-            asyncio.create_task(sync_channels(), name="hotplug.channels")
+            from core.async_helper import spawn
+            spawn(sync_channels(), name="hotplug.channels")
 
         watcher = get_config_watcher()
         watcher.watch_dir(str(_entities_dir()), _on_entities_changed, marker="tools.py")
@@ -566,6 +568,14 @@ def create_bootstrap() -> FlowMachine:
                 on_start=lambda: start_channel_supervisor(cm),
                 cleanup=stop_channel_supervisor,
             )
+        # 实时语音会话入 Lifecycle：进程退出时不再依赖 WS 断连的隐式清理
+        # （Web 关停超时强取消路径下 finally 里的 await 不可靠）
+        from agent.realtime.engine import get_realtime_engine
+
+        engine = get_realtime_engine()
+        Lifecycle.register(
+            "realtime_engine", engine, cleanup=engine.shutdown_all_sessions,
+        )
 
     @machine.node(skip_on_error=True, depends_on=["start_agent"])
     async def recover_unanswered():

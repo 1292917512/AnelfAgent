@@ -3,12 +3,14 @@
 级联管线（cascade 模式，默认）：麦克风帧 → 端点检测 → 流式 ASR 定稿
 → 用户消息经 AgentApp 统一入口进入思维（人格/记忆/工具全量生效，
 与文字消息同一条大脑路径）→ event_bus 的回复增量 → TTS 管线 →
-播放队列 → 下行音频帧。回复文本同时走既有频道事件流（聊天记录/WS
-delta）——语音只是回复的第二种呈现，不产生第二条对话路径。
+播报车道 → 播放队列 → 下行音频帧。回复文本同时走既有频道事件流
+（聊天记录/WS delta）——语音只是回复的第二种呈现，不产生第二条对话路径。
 
 仲裁纪律：同一 scope 的思维轮天然串行（Mind 的 scope 队列）；语音侧
-只跟踪"当前期待回复的一轮"（_pending_scope + 起始 mind turn），barge-in
-后旧轮增量不再送 TTS（文本照常在聊天记录呈现）。
+只跟踪"当前期待回复的一轮"（_pending + 起始 mind turn + 结算标记），
+全部 TTS 播报经会话的播报车道串行化（回复优先于主动播报，见
+agent/realtime/arbiter.py），barge-in 后旧轮增量不再送 TTS（文本照常
+在聊天记录呈现）。
 """
 
 from __future__ import annotations
@@ -16,6 +18,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, List, Optional
 
+from agent.realtime.arbiter import (
+    PRIORITY_REPLY,
+    PRIORITY_SPEAK,
+    Utterance,
+)
 from agent.realtime.playback import PlaybackFrame
 from agent.realtime.session import RealtimeSession, RealtimeSink, SessionState
 from agent.voice.session import VoiceDelivery, VoiceLeaseBusy
@@ -25,6 +32,10 @@ from core.log import log
 
 _LOG_TAG = "实时语音"
 
+# 回复完成事件归因失败时的宽限观察窗：期间有新增量则并入同一语音流，
+# 无则强制结算（有界失败恢复——绝不因归因不上而让回复"说不停"）
+_SETTLE_GRACE_SECONDS = 1.5
+
 
 class RealtimeEngine:
     """实时语音引擎（进程内单例，经 get_realtime_engine 获取）。"""
@@ -32,7 +43,9 @@ class RealtimeEngine:
     def __init__(self) -> None:
         self._sessions: Dict[str, RealtimeSession] = {}
         self._pending: Dict[str, Dict[str, Any]] = {}
-        """scope → 等待回复的会话与思维轮标记（TTS 增量的准入判定）。"""
+        """scope → 等待回复的会话与思维轮标记（TTS 增量的准入与结算归因）。"""
+        self._settle_tasks: Dict[str, asyncio.Task] = {}
+        """scope → 回复结算宽限任务（归因失败的延迟结算；新增量/新轮取消）。"""
         self._bus_hooked = False
 
     # ------------------------------------------------------------------
@@ -82,7 +95,9 @@ class RealtimeEngine:
         session = self._sessions.pop(owner, None)
         if session is None:
             return
-        self._pending.pop(self._scope_of(session), None)
+        scope = self._scope_of(session)
+        self._pending.pop(scope, None)
+        self._cancel_settle_fallback(scope)
         pump = getattr(session, "_native_pump_task", None)
         if pump is not None and not pump.done():
             pump.cancel()
@@ -94,6 +109,14 @@ class RealtimeEngine:
                 pass
         await session.close()
         log(f"实时语音会话结束: owner={owner}", "DEBUG", tag=_LOG_TAG)
+
+    async def shutdown_all_sessions(self) -> None:
+        """Lifecycle 关停钩子：有界结束全部通话会话（进程退出不留半开语音通道）。"""
+        for owner in list(self._sessions):
+            try:
+                await asyncio.wait_for(self.stop(owner), timeout=5.0)
+            except Exception as exc:
+                log(f"语音会话关停异常 [{owner}]: {exc}", "WARNING", tag=_LOG_TAG)
 
     def owns(self, owner: str) -> bool:
         return owner in self._sessions
@@ -240,7 +263,31 @@ class RealtimeEngine:
         if session.detector.in_speech or session.asr_session is not None:
             await self._feed_asr(session, pcm)
         if event is TurnEvent.SPEECH_END:
-            await self._on_speech_end(session)
+            self._spawn_finalize(session)
+
+    def _spawn_finalize(self, session: RealtimeSession) -> None:
+        """语音收束离线化：定稿/声纹/入轮在后台任务执行，麦克风帧流不阻塞。
+
+        串行链：等上一段收束处理落地（上限 10s）再处理本段，防止两段
+        连续语音的定稿与用户轮乱序。
+        """
+        prev = session.finalize_task
+
+        async def _run() -> None:
+            if prev is not None and not prev.done():
+                try:
+                    await asyncio.wait({prev}, timeout=10.0)
+                except Exception:
+                    pass
+            if session.closed:
+                return
+            try:
+                await self._on_speech_end(session)
+            except Exception as exc:
+                log(f"语音收束处理异常: {exc}", "WARNING", tag=_LOG_TAG)
+
+        session.finalize_task = asyncio.create_task(
+            _run(), name=f"rt.finalize.{session.owner}")
 
     async def _on_speech_start(self, session: RealtimeSession) -> None:
         """语音起始：新用户轮开始（turn_id+1）；播放/思考中的打断确认。
@@ -282,8 +329,9 @@ class RealtimeEngine:
             _confirm(), name=f"rt.bargein.{session.owner}")
 
     async def _barge_in(self, session: RealtimeSession) -> None:
-        """打断当前轮：TTS 取消、播放清空、旧思维轮增量不再送 TTS。"""
+        """打断当前轮：车道重置、播放清空、旧思维轮增量不再送 TTS。"""
         scope = self._scope_of(session)
+        self._cancel_settle_fallback(scope)
         pending = self._pending.pop(scope, None)
         if pending and pending.get("session") is session:
             pending["superseded"] = True
@@ -317,18 +365,31 @@ class RealtimeEngine:
                     })
 
     async def _on_speech_end(self, session: RealtimeSession) -> None:
-        """语音收束：ASR 定稿 → 用户轮次（打断确认窗口内收束的按回声丢弃）。"""
+        """语音收束：ASR 定稿 → 用户轮次（打断确认窗口内收束的按回声丢弃）。
+
+        在后台收束任务中执行（见 _spawn_finalize）：先就地摘下 ASR 会话
+        并快照音频缓冲（同步、零等待），后续网络调用期间到达的新语音帧
+        进入新一轮（不再喂给已定稿的会话，不混入本轮缓冲）。
+        """
         if session.barge_in_task is not None and not session.barge_in_task.done():
             # 打断确认窗口内就收束了——短促碎响（扬声器回声），丢弃不成轮
             session.barge_in_task.cancel()
             session.barge_in_task = None
             session.pcm_buffer.clear()
             return
+        asr = session.asr_session
+        session.asr_session = None
+        # 冲刷预处理链的滞留样本（整段兜底与声纹识别吃到完整音频）
+        tail = session.preprocessor.flush()
+        if tail:
+            session.pcm_buffer.extend(tail)
+        buffered = bytes(session.pcm_buffer)
+        session.pcm_buffer.clear()
         transcript = ""
         segments: List[Dict[str, Any]] = []
-        if session.asr_session is not None:
+        if asr is not None:
             try:
-                events = await session.asr_session.commit()
+                events = await asr.commit()
             except Exception as exc:
                 log(f"流式 ASR 定稿失败（降级整段）: {exc}", "DEBUG", tag=_LOG_TAG)
                 events = []
@@ -336,25 +397,18 @@ class RealtimeEngine:
                 if event.kind == "final":
                     transcript = event.text
                     segments = event.segments
-            session.asr_session = None
-        # 冲刷预处理链的滞留样本（整段兜底与声纹识别吃到完整音频）
-        tail = session.preprocessor.flush()
-        if tail:
-            session.pcm_buffer.extend(tail)
-        if not transcript and session.pcm_buffer:
+        if not transcript and buffered:
             transcript, segments = await self._whole_transcribe(
-                bytes(session.pcm_buffer), session.sample_rate)
+                buffered, session.sample_rate)
         transcript = transcript.strip()
         if not transcript:
             # 未识别到有效语音：显式收帧（客户端清部分转写），状态保持收听
-            session.pcm_buffer.clear()
             await session.sink.send_event("rt_final", {
                 "text": "", "turn_id": session.turn_id, "discarded": True,
             })
             return
         # 说话人只读识别（仅有效语音轮；标注谁在说话，应对由 AI 决定）
-        speaker = await self._identify_speaker(bytes(session.pcm_buffer), session.sample_rate)
-        session.pcm_buffer.clear()
+        speaker = await self._identify_speaker(buffered, session.sample_rate)
         await session.sink.send_event("rt_final", {
             "text": transcript, "turn_id": session.turn_id,
         })
@@ -497,9 +551,10 @@ class RealtimeEngine:
         turn_id = session.turn_id
         await session.set_state(SessionState.THINKING)
         scope = self._scope_of(session)
+        self._cancel_settle_fallback(scope)
         self._pending[scope] = {
             "session": session, "turn_id": turn_id,
-            "mind_turn": None, "superseded": False,
+            "mind_turn": None, "settled_turn": None, "superseded": False,
         }
         delivery = session.delivery
         content = transcript
@@ -572,9 +627,14 @@ class RealtimeEngine:
         return base
 
     def session_for_scope(self, scope: str) -> Optional[RealtimeSession]:
-        """按思维 scope 找通话会话（频道消息自动语音路由的挂接点）。"""
+        """按思维 scope 找通话会话（频道消息自动语音路由的挂接点）。
+
+        基座匹配：#session 会话后缀不参与比较——发送侧解析的目标 scope
+        不带后缀时同样命中（多会话通话中主动消息不静默丢失）。
+        """
+        base = scope.split("#", 1)[0]
         for session in self._sessions.values():
-            if self._scope_of(session) == scope:
+            if self._scope_of(session).split("#", 1)[0] == base:
                 return session
         return None
 
@@ -582,8 +642,9 @@ class RealtimeEngine:
         """把一段文本播给 scope 对应的通话会话（send_message 自动语音路由）。
 
         状态感知：用户说话中不插播（消息以文字送达，返回 spoken=False）；
-        她正在说话则追加到播放队列；空闲/思考中则开新播报。文字消息本身
-        已由频道层送达，这里只负责"同时说出来"。
+        车道忙则依序排队（回复在播时不被打断，主动消息之间按序全播）。
+        文字消息本身已由频道层送达，这里只负责"同时说出来"——实际播出
+        完成时经车道回调广播 voice_spoken（取消/失败不标记）。
         """
         session = self.session_for_scope(scope)
         if session is None or session.closed or not text.strip():
@@ -594,49 +655,51 @@ class RealtimeEngine:
         from core.config import get_config as _gc
 
         resolved = voice.strip() or str(_gc("realtime_tts_voice", "") or "").strip()
+        body = text.strip()
         turn_id = session.turn_id
-        appending = session.state is SessionState.SPEAKING
-        if not appending:
+        appending = session.lane.active is not None or session.playback.pending_finals > 0
+        if session.state is not SessionState.SPEAKING:
             await session.set_state(SessionState.SPEAKING)
-
-        from agent.tts import TtsPipeline
-
-        from .playback import PlaybackFrame
-        pipeline = TtsPipeline(voice=resolved, sample_rate=24000)
-        pipeline.feed(text.strip())
-        pipeline.finish()
         session.last_say_error = ""
 
-        async def _run() -> None:
-            finished = False
-            try:
-                produced = 0
-                async for rate, chunk in pipeline.stream():
-                    if session.closed or session.turn_id != turn_id:
-                        pipeline.cancel()
-                        return
-                    produced += 1
-                    session.playback.push(PlaybackFrame(
-                        pcm=chunk, sample_rate=rate, turn_id=turn_id))
-                if produced == 0:
-                    session.last_say_error = "全部 TTS 提供者不可用"
-                    await session.sink.send_event("rt_error", {
-                        "level": "warn",
-                        "message": "语音合成失败（全部 TTS 提供者不可用）：这段话没能说出口",
-                    })
-                    return
-                session.playback.finish(turn_id)
-                finished = True
-            finally:
-                if not finished and not session.closed \
-                        and session.state is SessionState.SPEAKING:
-                    await session.set_state(SessionState.LISTENING)
+        def _starter(u: Utterance) -> asyncio.Task:
+            from agent.tts import TtsPipeline
+            pipeline = TtsPipeline(voice=resolved, sample_rate=24000)
+            pipeline.feed(body)
+            pipeline.finish()
+            return asyncio.create_task(
+                self._produce(session, u, pipeline), name=f"rt.speak.{session.owner}")
 
-        # 追加播报共用她当前的播报任务生命周期：取消旧任务、由新任务接管队列
-        if session.tts_task is not None and not session.tts_task.done() and appending:
-            session.tts_task.cancel()
-        session.tts_task = asyncio.create_task(_run(), name=f"rt.speak.{session.owner}")
+        session.lane.submit(
+            turn_id=turn_id, priority=PRIORITY_SPEAK, source="speak",
+            starter=_starter, on_spoken=self._make_spoken_notifier(session, body),
+        )
         return {"spoken": True, "appending": appending, "turn_id": turn_id}
+
+    def _make_spoken_notifier(
+        self, session: RealtimeSession, text: str,
+    ) -> Any:
+        """主动播报的自然播完回调：广播 voice_spoken（形态标记与实际播出对齐）。"""
+        async def _on_spoken(_u: Utterance) -> None:
+            await self._broadcast_voice_spoken(session, text)
+        return _on_spoken
+
+    @staticmethod
+    async def _broadcast_voice_spoken(session: RealtimeSession, text: str) -> None:
+        """语音播出完成 → 频道聊天流（前端标记对应回复为已语音播出）。"""
+        if session.delivery.adapter_key != "webui" or not text.strip():
+            return
+        try:
+            from core.event_bus import EVENT_CHAT_BROADCAST, event_bus
+
+            await event_bus.emit(EVENT_CHAT_BROADCAST, {
+                "event": "voice_spoken",
+                "role": "assistant",
+                "content": text[:80],
+                "scope_id": f"user_{session.delivery.adapter_key}:{session.delivery.user_id}",
+            })
+        except Exception:
+            pass
 
     async def _on_delta(self, payload: Dict[str, Any]) -> None:
         scope = str(payload.get("scope", ""))
@@ -650,16 +713,28 @@ class RealtimeEngine:
         if session.closed:
             return
         mind_turn = payload.get("turn_id")
-        if pending["mind_turn"] is None:
+        settled_turn = pending.get("settled_turn")
+        if pending["mind_turn"] is None or (settled_turn and mind_turn != settled_turn):
+            # 首增量，或上一回复结算后的新一轮增量（连续语音轮的回复依次到达）：
+            # 开新管线新单元——车道会先终结任何在播的主动播报（回复优先）
+            self._cancel_settle_fallback(scope)
+            pending["settled_turn"] = None
             pending["mind_turn"] = mind_turn
-            # 管线就地创建：首个增量立即入管（随后 stream 任务驱动合成）
             from agent.tts import TtsPipeline
             from core.config import get_config
-            session.tts_pipeline = TtsPipeline(
+            pipeline = TtsPipeline(
                 voice=str(get_config("realtime_tts_voice", "") or ""),
                 sample_rate=24000)
-            session.tts_task = asyncio.create_task(
-                self._run_tts(session), name=f"rt.tts.{session.owner}")
+            session.tts_pipeline = pipeline
+
+            def _starter(u: Utterance) -> asyncio.Task:
+                return asyncio.create_task(
+                    self._produce(session, u, pipeline), name=f"rt.tts.{session.owner}")
+
+            session.lane.submit(
+                turn_id=session.turn_id, priority=PRIORITY_REPLY, source="reply",
+                starter=_starter,
+            )
             await session.set_state(SessionState.SPEAKING)
         elif pending["mind_turn"] != mind_turn:
             # 新一轮思维轮（如工具调用后的续写）：并入同一语音回复流
@@ -668,48 +743,113 @@ class RealtimeEngine:
             session.tts_pipeline.feed(delta)
 
     async def _on_after_reply(self, payload: Dict[str, Any]) -> None:
+        """回复完成：按 mind turn 归因结算语音流（不弹幕式信任 scope 匹配）。
+
+        归因得上（完成事件带 turn_id 且与采纳的增量一致，或本轮无增量）
+        → 立即结算；归因不上（旧轮迟到完成/子会话代发）→ 宽限观察后
+        兜底结算。pending 不弹出——连续语音轮的新增量可重开语音流。
+        """
         scope = str(payload.get("scope", ""))
-        pending = self._pending.pop(scope, None)
+        pending = self._pending.get(scope)
         if not pending or pending.get("superseded"):
             return
         session: RealtimeSession = pending["session"]
-        if payload.get("error") and not session.closed:
+        if session.closed:
+            return
+        if payload.get("error"):
             await session.sink.send_event("rt_error", {
                 "level": "warn", "message": "这轮回复出错了，可以再说一次",
             })
+        turn = str(payload.get("turn_id", "") or "")
+        adopted = pending.get("mind_turn")
+        if adopted and turn and turn != adopted:
+            self._arm_settle_fallback(scope)
+            return
+        await self._settle_reply(scope, session, pending)
+
+    async def _settle_reply(
+        self, scope: str, session: RealtimeSession, pending: Dict[str, Any],
+    ) -> None:
+        """结算回复语音流：管线收尾（生产循环自然收束）或空轮直接回收听。"""
+        self._cancel_settle_fallback(scope)
+        pending["settled_turn"] = pending.get("mind_turn")
         if session.tts_pipeline is not None:
             session.tts_pipeline.finish()
         elif session.state is SessionState.THINKING:
             # 纯工具轮/空回复（无任何增量文本）：未开声即收尾
             await session.set_state(SessionState.LISTENING)
 
-    async def _run_tts(self, session: RealtimeSession) -> None:
-        """TTS 管线驱动：增量文本 → 句级合成 → 播放队列。"""
-        pipeline = session.tts_pipeline
-        if pipeline is None:
+    def _arm_settle_fallback(self, scope: str) -> None:
+        """宽限结算：归因失败后延迟强制结算（新增量到达会取消本任务）。"""
+        existing = self._settle_tasks.get(scope)
+        if existing is not None and not existing.done():
             return
-        turn_id = session.turn_id
-        produced = 0
+
+        async def _later() -> None:
+            await asyncio.sleep(_SETTLE_GRACE_SECONDS)
+            self._settle_tasks.pop(scope, None)
+            pending = self._pending.get(scope)
+            if not pending or pending.get("superseded"):
+                return
+            session: RealtimeSession = pending["session"]
+            if session.closed:
+                return
+            log(f"回复完成事件归因失败，宽限后结算 [{scope}]", "DEBUG", tag=_LOG_TAG)
+            await self._settle_reply(scope, session, pending)
+
+        self._settle_tasks[scope] = asyncio.create_task(
+            _later(), name=f"rt.settle.{scope}")
+
+    def _cancel_settle_fallback(self, scope: str) -> None:
+        task = self._settle_tasks.pop(scope, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _produce(self, session: RealtimeSession, u: Utterance, pipeline: Any) -> None:
+        """播报单元生产循环：TTS 管线 → 播放队列（车道活动单元唯一写帧人）。
+
+        逐块三重自检（会话关闭 / 轮次令牌 / 车道归属），任一失效即自灭；
+        自然收束与零产出收尾都经车道（收尾权独占——不重复 audio_done）。
+        """
         try:
             async for rate, chunk in pipeline.stream():
-                if session.closed or session.turn_id != turn_id:
+                if session.closed or session.turn_id != u.turn_id \
+                        or not session.lane.is_active(u):
                     pipeline.cancel()
                     return
-                produced += 1
+                u.produced += 1
                 session.playback.push(PlaybackFrame(
-                    pcm=chunk, sample_rate=rate, turn_id=turn_id))
-            if produced == 0 and not session.closed:
-                await session.sink.send_event("rt_error", {
-                    "level": "warn",
-                    "message": "语音合成失败（全部 TTS 提供者不可用）：本轮回复只有文字",
-                })
-            session.playback.finish(turn_id)
+                    pcm=chunk, sample_rate=rate, turn_id=u.turn_id))
+            if u.produced == 0:
+                if not session.closed:
+                    session.last_say_error = "全部 TTS 提供者不可用"
+                    message = ("这段话没能说出口" if u.source == "speak"
+                               else "本轮回复只有文字")
+                    await session.sink.send_event("rt_error", {
+                        "level": "warn",
+                        "message": f"语音合成失败（全部 TTS 提供者不可用）：{message}",
+                    })
+                # 零产出收尾：仅当自己是活动单元且无其他收束帧待排空时
+                # 补空收束（把状态收回 LISTENING）；否则由既有收束帧兜底
+                if not session.closed and session.lane.is_active(u) \
+                        and session.playback.pending_finals == 0:
+                    session.lane.finish(
+                        u, push_final=lambda ut: session.playback.finish(ut.turn_id))
+                return
+            session.lane.finish(
+                u, push_final=lambda ut: session.playback.finish(ut.turn_id))
         except asyncio.CancelledError:
             pipeline.cancel()
             raise
         except Exception as exc:
             log(f"TTS 管线异常: {exc}", "WARNING", tag=_LOG_TAG)
-            session.playback.finish(turn_id)
+            # 已产出部分照常收束（音频完整结束），零产出按空收束规则
+            if not session.closed and session.lane.is_active(u) \
+                    and (u.produced > 0 or session.playback.pending_finals == 0):
+                session.lane.finish(
+                    u, push_final=lambda ut: session.playback.finish(ut.turn_id))
+        finally:
+            session.lane.settled(u)
 
 
 # ------------------------------------------------------------------

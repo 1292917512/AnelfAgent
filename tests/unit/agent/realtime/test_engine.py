@@ -564,3 +564,117 @@ class TestVoiceFormEvents:
             sample_rate=RATE,
             sink=FakeSink().as_sink())
         await get_realtime_engine()._broadcast_transcript(session, "hi")
+
+
+class TestSpeakArbitration:
+    """播报车道竞争场景：打断期间外插轮次 / 迟到完成事件 / 完成时才标记。"""
+
+    async def test_reply_preempts_proactive_speak(self, app) -> None:
+        """S1：思考中主动消息在播 → 回复首增量到达 → 回复抢占、不双任务并发。"""
+        engine = RealtimeEngine()
+        sink = FakeSink()
+        session = await engine.start("c-s1", _delivery(), sink.as_sink(), RATE)
+        try:
+            await engine.user_turn(session, "帮我看看天气")
+            assert session.state is SessionState.THINKING
+            out = await engine.speak_to_scope("user_webui:u1", "提醒：晚饭订好了")
+            assert out["spoken"] is True
+            await _wait_for(lambda: session.lane.active is not None
+                            and session.lane.active.source == "speak")
+            speak_ut = session.lane.active
+
+            await engine._on_delta({"scope": "user_webui:u1", "delta": "今天晴", "turn_id": "t1"})
+            await _wait_for(lambda: session.lane.active is not None
+                            and session.lane.active.source == "reply")
+            assert speak_ut.superseded is True  # 旧主动播报被取代，不再写帧
+            await engine._on_after_reply({"scope": "user_webui:u1", "turn_id": "t1"})
+            await _wait_for(lambda: session.lane.active is None)
+            # 恰一个自然收束（audio_done 非打断）——不重复、不缺失
+            dones = [p for name, p in sink.events if name == "audio_done"]
+            assert len([d for d in dones if not d.get("interrupted")]) == 1
+        finally:
+            await engine.stop("c-s1")
+
+    async def test_speaks_queue_not_interleaved(self, app) -> None:
+        """两条主动消息按序全播（车道排队，音频不混排）。"""
+        engine = RealtimeEngine()
+        sink = FakeSink()
+        await engine.start("c-s2", _delivery(), sink.as_sink(), RATE)
+        try:
+            await engine.speak_to_scope("user_webui:u1", "第一条消息")
+            await engine.speak_to_scope("user_webui:u1", "第二条消息")
+            await _wait_for(lambda: session_lane_idle(engine, "c-s2"))
+            dones = [p for name, p in sink.events if name == "audio_done"
+                     and not p.get("interrupted")]
+            assert len(dones) == 2  # 各自完整收束一次
+        finally:
+            await engine.stop("c-s2")
+
+    async def test_late_after_reply_keeps_new_turn(self, app, monkeypatch) -> None:
+        """S2：旧轮迟到的完成事件归因不上 → 宽限观察，不误杀新一轮语音流。"""
+        import agent.realtime.engine as engine_mod
+        monkeypatch.setattr(engine_mod, "_SETTLE_GRACE_SECONDS", 0.2)
+
+        engine = engine_mod.RealtimeEngine()
+        sink = FakeSink()
+        session = await engine.start("c-s3", _delivery(), sink.as_sink(), RATE)
+        try:
+            await engine.user_turn(session, "第一个问题")
+            await engine._on_delta({"scope": "user_webui:u1", "delta": "答一", "turn_id": "t1"})
+            await _wait_for(lambda: session.lane.active is not None)
+            # 旧轮（turn_id=t0）的完成事件迟到：归因不上 → 宽限，不立即结算
+            await engine._on_after_reply({"scope": "user_webui:u1", "turn_id": "t0"})
+            assert session.tts_pipeline is not None
+            assert session.state is SessionState.SPEAKING
+            # 宽限期内新一轮增量到达 → 并入/重开语音流，宽限任务取消
+            await engine._on_delta({"scope": "user_webui:u1", "delta": "答二", "turn_id": "t2"})
+            await engine._on_after_reply({"scope": "user_webui:u1", "turn_id": "t2"})
+            await _wait_for(lambda: session_lane_idle(engine, "c-s3"))
+            dones = [p for name, p in sink.events if name == "audio_done"
+                     and not p.get("interrupted")]
+            assert len(dones) >= 1
+        finally:
+            await engine.stop("c-s3")
+
+    async def test_voice_spoken_marks_on_completion_only(self, app, monkeypatch) -> None:
+        """S6：voice_spoken 在实际播出完成时广播；被打断的播报不标记。"""
+        engine = RealtimeEngine()
+        sink = FakeSink()
+        session = await engine.start("c-s4", _delivery(), sink.as_sink(), RATE)
+        spoken_log: list[str] = []
+
+        async def _fake_broadcast(sess, text):
+            spoken_log.append(text)
+
+        monkeypatch.setattr(RealtimeEngine, "_broadcast_voice_spoken",
+                            staticmethod(_fake_broadcast))
+        try:
+            await engine.speak_to_scope("user_webui:u1", "会被打断的话")
+            await _wait_for(lambda: session.lane.active is not None)
+            await session.interrupt()  # barge-in：播报被取消
+            await _wait_for(lambda: session.lane.active is None)
+            assert spoken_log == []  # 未播完，不标记
+
+            await engine.speak_to_scope("user_webui:u1", "完整播出的提醒")
+            await _wait_for(lambda: session.lane.active is None)
+            assert spoken_log == ["完整播出的提醒"]
+        finally:
+            await engine.stop("c-s4")
+
+    async def test_scope_suffix_base_match(self, app) -> None:
+        """S9：#session 会话后缀不阻断自动路由（基座匹配）。"""
+        engine = RealtimeEngine()
+        delivery = VoiceDelivery(user_id="u1", user_name="用户",
+                                 session_id="chat9", adapter_key="webui")
+        await engine.start("c-s5", delivery, FakeSink().as_sink(), RATE)
+        try:
+            assert engine.session_for_scope("user_webui:u1") is not None
+            assert engine.session_for_scope("user_webui:u1#chat9") is not None
+            assert engine.session_for_scope("user_webui:u2") is None
+        finally:
+            await engine.stop("c-s5")
+
+
+def session_lane_idle(engine: RealtimeEngine, owner: str) -> bool:
+    session = engine._sessions.get(owner)
+    return session is not None and session.lane.active is None
