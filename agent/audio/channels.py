@@ -1,4 +1,4 @@
-"""声纹信道归一：来源/设备标识 → 信道taxonomy。
+"""声纹信道归一：来源/设备标识 → 规范信道分类。
 
 同一人声经不同软件/设备/线路提取的嵌入存在信道漂移（采样率、编码
 压缩、麦克风频响、AGC/降噪各不相同）。样本与匹配按信道标注后，
@@ -6,8 +6,6 @@
 """
 
 from __future__ import annotations
-
-KNOWN_CHANNELS = ("mic", "phone", "voip", "chat", "web", "enroll")
 
 _PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("voip", ("realtime", "voip", "call", "webrtc", "通话")),

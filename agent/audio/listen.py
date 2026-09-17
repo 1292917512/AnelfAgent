@@ -190,7 +190,11 @@ async def listen_segment(
     if segment["speaker_id"]:
         result["speaker_now"] = await store.get_speaker(int(segment["speaker_id"]))
     if fresh_vector:
-        candidates = await matcher.match_vector(store, fresh_vector, top_k=3)
+        from .channels import normalize_channel
+        candidates = await matcher.match_vector(
+            store, fresh_vector,
+            channel=normalize_channel(str(segment.get("device_source") or "")),
+            top_k=3)
         result["speaker_fresh"] = candidates[0] if candidates else None
         result["candidates"] = candidates
 

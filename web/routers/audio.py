@@ -164,7 +164,7 @@ async def merge_speakers(req: MergeRequest) -> Dict[str, Any]:
 
 @router.post("/speakers/{speaker_id}/refine")
 async def refine_speaker(speaker_id: int) -> Dict[str, Any]:
-    """声纹精化：样本池质心重立质心锚（采样越多越精确）。"""
+    """声纹重建：以当前样本池重立声纹锚（剔除坏样本后复位用）。"""
     try:
         return await _audio.refine_speaker(speaker_id)
     except ValueError as exc:

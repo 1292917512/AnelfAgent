@@ -29,6 +29,7 @@ from entities._sdk import (
 
 from . import matcher
 from .store import get_audio_store, parse_time_ns
+from .vectors import cosine, sample_weight, unit_rows, weighted_centroid
 
 _group = "audio"
 _LOG_TAG = "音频"
@@ -385,7 +386,6 @@ async def voice_compare(audio_a: str, audio_b: str) -> str:
                 (s["vector"], max(0, int(s["end_ms"]) - int(s["start_ms"])))
                 for s in segments if s.get("vector")]
 
-        from agent.audio.vectors import cosine, sample_weight, unit_rows, weighted_centroid
         voiced_a = await _voiced(audio_a)
         voiced_b = await _voiced(audio_b)
         if not voiced_a or not voiced_b:
@@ -468,7 +468,7 @@ async def speaker_refine(speaker: str) -> str:
     except ValueError as e:
         return tool_error(str(e), cause=ErrorCause.PARAM, retryable=False)
     except Exception as e:
-        return error_from_exception(e, action=f"精化声纹 [{speaker}]")
+        return error_from_exception(e, action=f"重建声纹 [{speaker}]")
 
 
 @deferred_tool(group=_group, tags=["core"])
@@ -538,20 +538,10 @@ async def speaker_enroll(
         if not voiced:
             return tool_error("音频中未提取到有效声纹", cause=ErrorCause.STATE,
                               retryable=True, hint="换一段包含清晰人声的音频")
-        store = get_audio_store()
-        speaker = await matcher.enroll(
-            store, name, voiced[0][0], role=role, notes=notes,
-            device_source=resolved, entity_scope=entity_scope.strip(),
-            duration_ms=voiced[0][1])
-        # 多余向量作为多样本入池（跨段落多场景，提升鲁棒性）
-        rejected = bool(speaker.pop("sample_rejected", False))
-        for vec, duration_ms in voiced[1:matcher.max_samples_per_speaker()]:
-            rejected = rejected or await store.add_sample(
-                int(speaker["id"]), vec, source="enroll",
-                channel="enroll", duration_ms=duration_ms) < 0
-        result = {"speaker": speaker, "samples_enrolled": len(voiced)}
-        if rejected:
-            result["sample_rejected"] = True
+        result = await matcher.enroll_samples(
+            get_audio_store(), name, voiced, role=role, notes=notes,
+            device_source=resolved, entity_scope=entity_scope.strip())
+        if result["sample_rejected"]:
             result["hint"] = "部分样本与既有声纹相干度过低被拒入，请确认音频属于本人"
         return _dump(result)
     except ValueError as e:

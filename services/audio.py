@@ -260,7 +260,7 @@ class AudioServiceFacade:
         return await matcher.merge(get_audio_store(), source_id, target_id)
 
     async def refine_speaker(self, speaker_id: int) -> Dict[str, Any]:
-        """声纹精化（质心锚重估）；样本池为空 raise ValueError（路由转 422）。"""
+        """声纹重建（样本池重立锚）；样本池为空 raise ValueError（路由转 422）。"""
         return await matcher.refine(get_audio_store(), speaker_id)
 
     async def enroll_speaker(self, req: Any) -> Dict[str, Any]:
@@ -289,14 +289,9 @@ class AudioServiceFacade:
                   for s in segments if s.get("vector")]
         if not voiced:
             raise RuntimeError("音频中未提取到有效声纹")
-        store = get_audio_store()
-        speaker = await matcher.enroll(
-            store, name, voiced[0][0], role=role, notes=notes,
-            device_source=filename, duration_ms=voiced[0][1])
-        for vec, duration_ms in voiced[1:matcher.max_samples_per_speaker()]:
-            await store.add_sample(int(speaker["id"]), vec, source="enroll",
-                                   channel="enroll", duration_ms=duration_ms)
-        return {"speaker": speaker, "samples_enrolled": len(voiced)}
+        return await matcher.enroll_samples(
+            get_audio_store(), name, voiced, role=role, notes=notes,
+            device_source=filename)
 
     async def prune_speakers(self, include_with_samples: bool) -> Dict[str, Any]:
         deleted = await get_audio_store().prune_pending_speakers(

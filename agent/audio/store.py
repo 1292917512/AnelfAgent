@@ -5,11 +5,11 @@
 供 AI 检索（"谁说过什么"）与对话上下文使用。核心能力由 Agent 集成，
 具体业务（目录同步、外部推送）以组件形式经 entities._sdk 桥接读写。
 
-存储：独立 SQLite 卷（storage_volume "audio"，默认 data/audio.sqlite3），WAL。
-索引：文本向量 BLOB 为权威数据，sqlite-vec vec0 表为派生索引（与
-MemoryStore 同一范式）；无 sqlite-vec 时降级 Python 余弦全表扫描；
-FTS5（预分词 transcript_tokens，CJK 可检索）支撑转写全文检索。
-声纹匹配走锚扫描（说话人量级小），不建样本级向量索引。
+存储：独立 SQLite 卷（storage_volume "audio"，默认为主库同族派生路径
+stem + '_audio'），WAL。索引：文本向量 BLOB 为权威数据，sqlite-vec vec0
+表为派生索引（与 MemoryStore 同一范式）；无 sqlite-vec 时降级 Python
+余弦全表扫描；FTS5（预分词 transcript_tokens，CJK 可检索）支撑转写全文
+检索。声纹匹配走锚扫描（说话人量级小），不建样本级向量索引。
 
 四张主表：
 - audio_segments：语音片段（转写 + 说话人归属 + 文件内时间戳 + 未读标记）
@@ -42,9 +42,6 @@ from core.log import log
 from .vectors import blend, cosine, sample_weight, unit_rows
 
 _LOG_TAG = "音频"
-
-# 声纹向量维度（cam++ 模型输出）
-VOICEPRINT_DIMS = 192
 
 # 声纹子系统 schema 版本（PRAGMA user_version）：落后时清声纹数据重建
 _SCHEMA_VERSION = 2
@@ -910,7 +907,6 @@ class AudioStore:
         score: float = 0.0,
         source: str = "",
         max_samples: Optional[int] = None,
-        update_anchor: bool = True,
     ) -> int:
         """样本入池并折叠声纹锚，返回样本 id（相干门未过返回 -1 未入池）。
 
@@ -919,17 +915,14 @@ class AudioStore:
         淘汰：池满优先淘汰同信道最早样本（信道涌入只挤占自己，保持池的
         信道多样性），该信道无样本时淘汰全局最早。
         折叠：锚 = 历史合格样本的时长加权质心，增量更新（学习率随
-        累积量自然衰减）；update_anchor=False 供身份合并整体迁移后精确合成。
+        累积量自然衰减）。
         """
         db = await self._get_db()
-        anchor: List[float] = []
-        weight = 0.0
-        if update_anchor:
-            anchor, weight = await self.get_speaker_anchor(speaker_id)
-            if anchor and cosine(vector, anchor) < coherence_floor():
-                log(f"样本与声纹锚相干度过低，拒绝入池（说话人 {speaker_id}）",
-                    "DEBUG", tag=_LOG_TAG)
-                return -1
+        anchor, weight = await self.get_speaker_anchor(speaker_id)
+        if anchor and cosine(vector, anchor) < coherence_floor():
+            log(f"样本与声纹锚相干度过低，拒绝入池（说话人 {speaker_id}）",
+                "DEBUG", tag=_LOG_TAG)
+            return -1
 
         limit = max(1, max_samples if max_samples is not None
                     else get_config("audio_max_samples_per_speaker", 10))
@@ -956,14 +949,13 @@ class AudioStore:
         assert cursor.lastrowid is not None
         sample_id = int(cursor.lastrowid)
 
-        if update_anchor:
-            if anchor:
-                merged, total = blend(anchor, weight, vector, sample_weight(duration_ms))
-            else:
-                merged, total = list(vector), sample_weight(duration_ms)
-            await db.execute(
-                "UPDATE speakers SET vector=?, anchor_weight=? WHERE id=?",
-                (_vec_to_blob(merged), total, speaker_id))
+        if anchor:
+            merged, total = blend(anchor, weight, vector, sample_weight(duration_ms))
+        else:
+            merged, total = list(vector), sample_weight(duration_ms)
+        await db.execute(
+            "UPDATE speakers SET vector=?, anchor_weight=? WHERE id=?",
+            (_vec_to_blob(merged), total, speaker_id))
         await db.commit()
         return sample_id
 
@@ -985,13 +977,6 @@ class AudioStore:
             "UPDATE speakers SET vector=?, anchor_weight=? WHERE id=?",
             (_vec_to_blob(vector), weight, speaker_id))
         await db.commit()
-
-    async def list_speaker_anchors(self) -> List[Tuple[int, List[float]]]:
-        """全部在档声纹锚（逐向量访问；批量扫描用 speaker_anchor_matrix）。"""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT id, vector FROM speakers WHERE archived=0 AND vector IS NOT NULL")
-        return [(int(r["id"]), _blob_to_vec(r["vector"])) for r in await cursor.fetchall()]
 
     async def speaker_anchor_matrix(self) -> Tuple[List[int], np.ndarray]:
         """全部在档声纹锚 → (说话人 id 序列, 行归一化矩阵 [N, D])。

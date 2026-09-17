@@ -9,11 +9,13 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
 Vec = Sequence[float]
+# 接受任何可 asarray 的向量形态（list / ndarray）
+VecLike = Union[Vec, np.ndarray]
 
 
 def _row_matrix(vectors: Sequence[Vec]) -> Optional[np.ndarray]:
@@ -36,7 +38,7 @@ def cosine(a: Vec, b: Vec) -> float:
     return float(vec_a @ vec_b / (na * nb))
 
 
-def cosine_many(matrix: np.ndarray, vector: Vec) -> np.ndarray:
+def cosine_many(matrix: np.ndarray, vector: VecLike) -> np.ndarray:
     """矩阵各行与向量的余弦（[N,D]×[D] → [N]；零向量行得 0）。"""
     if matrix.size == 0:
         return np.zeros(0)

@@ -374,3 +374,21 @@ class TestSpeakerCompare:
         a = await matcher.enroll(store, "张三", vec(0))
         with pytest.raises(ValueError):
             await matcher.compare(store, int(a["id"]), 9999)
+
+
+class TestEnrollSamples:
+    async def test_multi_vector_enrollment(self, store: AudioStore) -> None:
+        """多向量注册：首条建档，其余入池，返回统计。"""
+        voiced = [(vec(0), 3000), (tilted(0, 0.9), 2000), (tilted(0, 0.85), 1500)]
+        result = await matcher.enroll_samples(store, "张三", voiced)
+        assert result["samples_enrolled"] == 3
+        assert result["sample_rejected"] is False
+        assert len(await store.list_samples(int(result["speaker"]["id"]))) == 3
+
+    async def test_alien_vector_flagged(self, store: AudioStore) -> None:
+        """同名档案混入异人向量：相干门拒入并置 sample_rejected。"""
+        await matcher.enroll(store, "张三", vec(0))
+        result = await matcher.enroll_samples(
+            store, "张三", [(vec(0), 1000), (vec(9), 1000)])
+        assert result["sample_rejected"] is True
+        assert len(await store.list_samples(int(result["speaker"]["id"]))) == 2

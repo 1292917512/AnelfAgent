@@ -23,7 +23,7 @@ class SegmentIn(BaseModel):
     end_ms: int = Field(default=0, ge=0, description="批内结束毫秒")
     text: str = Field(default="", description="转写文本")
     vector: Optional[List[float]] = Field(
-        default=None, description="192 维声纹向量（cam++），缺省时该段不参与识别")
+        default=None, description="声纹向量（维度随嵌入模型），缺省时该段不参与识别")
     abs_start_ms: Optional[int] = Field(
         default=None, description="绝对起始时刻（epoch 毫秒，按 source_time 换算）")
     abs_end_ms: Optional[int] = Field(

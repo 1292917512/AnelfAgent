@@ -9,13 +9,13 @@
 - 说话人得分 = max(锚相似度, 信道模板相似度, 最佳样本相似度)：锚抑制
   单样本噪音，信道模板补偿跨设备漂移，最佳样本保留特征峰值；
 - 分离度门（AS-Norm，业界标准打分后端）：候选得分还需高出本次查询的
-  冒充者分布（对其余说话人锚得分做 z 归一）——"很多人 都像"的模糊查询
+  冒充者分布（对其余说话人锚得分做 z 归一）——"很多人都像"的模糊查询
   降级为临时说话人待确认，而不是冒险认亲（防投毒优先于防分裂）。
 
 阈值语义：
 - 全局阈值 audio_match_threshold（默认 0.75）；说话人 threshold 非空时覆盖
-- 相似度 ≥ 阈值 且（分离度不足门槛或冒充 cohort <3 时仅阈值）→ 已知人；
-  否则新人（自动建临时说话人 spk_tmp_XXXX，待确认）
+- 相似度 ≥ 阈值，且分离度门启用时 z 分值 ≥ audio_match_separation
+  → 已知人；否则新人（自动建临时说话人 spk_tmp_XXXX，待确认）
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import numpy as np
 from core.config import get_config_bool, get_config_float, get_config_int
 
 from .store import AudioStore
-from .vectors import blend, cosine, cosine_many, sample_weight, weighted_centroid
+from .vectors import blend, cosine, cosine_many, sample_weight, unit_rows, weighted_centroid
 
 # 锚扫描入围：距全局阈值的边距（覆盖更宽松的独立阈值）+ TopN 进精评
 _SHORTLIST_MARGIN = 0.25
@@ -110,10 +110,9 @@ async def match_vector(
     if not ids:
         return []
     query = np.asarray(vector, dtype=np.float64)
-    query_norm = float(np.linalg.norm(query))
-    if query_norm == 0.0:
+    if not np.any(query):
         return []
-    sims = cosine_many(matrix, vector)
+    sims = cosine_many(matrix, query)
 
     floor = global_threshold() - _SHORTLIST_MARGIN
     ranked = sorted(zip(ids, sims.tolist(), strict=True),
@@ -281,6 +280,38 @@ async def enroll(
     return result
 
 
+async def enroll_samples(
+    store: AudioStore,
+    name: str,
+    voiced: List[Tuple[List[float], int]],
+    *,
+    role: str = "",
+    notes: str = "",
+    device_source: str = "",
+    entity_scope: str = "",
+    source: str = "enroll",
+    channel: str = "enroll",
+) -> Dict[str, Any]:
+    """注册一段音频的多条声纹向量：首条建档/累积，其余入池。
+
+    voiced 为 [(向量, 时长毫秒)]，超出样本池上限的部分舍弃。
+    返回 {"speaker", "samples_enrolled", "sample_rejected"}——
+    sample_rejected 为 True 表示有样本被相干门拒入（声音对不上）。
+    """
+    speaker = await enroll(
+        store, name, voiced[0][0], role=role, notes=notes,
+        device_source=device_source, entity_scope=entity_scope,
+        source=source, channel=channel, duration_ms=voiced[0][1])
+    rejected = bool(speaker.pop("sample_rejected", False))
+    for vec, duration_ms in voiced[1:max_samples_per_speaker()]:
+        added = await store.add_sample(
+            int(speaker["id"]), vec, source=source,
+            channel=channel, duration_ms=duration_ms)
+        rejected = rejected or added < 0
+    return {"speaker": speaker, "samples_enrolled": len(voiced),
+            "sample_rejected": rejected}
+
+
 async def confirm(
     store: AudioStore,
     speaker_id: int,
@@ -334,7 +365,7 @@ async def compare(
 
     Returns:
         {
-            "speakers": {...},           # 双方简报（含样本数/信道分布/实体绑定）
+            "speakers": {...},           # 双方简报
             "anchor_similarity": float,  # 锚对锚（长期身份的相契度）
             "best_sample_similarity": float | None,  # 样本池最佳配对（峰值证据）
             "channels": {channel: {"similarity", "samples"}},  # 同信道模板交叉
@@ -353,41 +384,37 @@ async def compare(
 
     best_sample: Optional[float] = None
     if samples_a and samples_b:
-        from .vectors import unit_rows
         matrix_a = np.asarray([v for v, _, _ in samples_a], dtype=np.float64)
         matrix_b = np.asarray([v for v, _, _ in samples_b], dtype=np.float64)
         best_sample = float((unit_rows(matrix_a) @ unit_rows(matrix_b).T).max())
 
-    def _centroids(samples: List[Tuple[List[float], int, str]]) -> Dict[str, List[float]]:
+    def _by_channel(
+        samples: List[Tuple[List[float], int, str]],
+    ) -> Dict[str, Tuple[List[float], int]]:
+        """信道 → (加权质心, 样本数)。"""
         grouped: Dict[str, List[Tuple[List[float], float]]] = {}
         for vec, duration_ms, channel in samples:
-            grouped.setdefault(channel or "mic", []).append(
-                (vec, sample_weight(duration_ms)))
-        result: Dict[str, List[float]] = {}
+            grouped.setdefault(channel, []).append((vec, sample_weight(duration_ms)))
+        result: Dict[str, Tuple[List[float], int]] = {}
         for channel, pairs in grouped.items():
             centroid = weighted_centroid(pairs)
             if centroid is not None:
-                result[channel] = centroid[0]
+                result[channel] = (centroid[0], len(pairs))
         return result
 
     channels: Dict[str, Any] = {}
-    cent_a, cent_b = _centroids(samples_a), _centroids(samples_b)
-    counts_a: Dict[str, int] = {}
-    counts_b: Dict[str, int] = {}
-    for _, _, channel in samples_a:
-        counts_a[channel or "mic"] = counts_a.get(channel or "mic", 0) + 1
-    for _, _, channel in samples_b:
-        counts_b[channel or "mic"] = counts_b.get(channel or "mic", 0) + 1
+    cent_a, cent_b = _by_channel(samples_a), _by_channel(samples_b)
     for channel in sorted(set(cent_a) & set(cent_b)):
         channels[channel] = {
-            "similarity": round(cosine(cent_a[channel], cent_b[channel]), 4),
-            "samples": [counts_a.get(channel, 0), counts_b.get(channel, 0)],
+            "similarity": round(cosine(cent_a[channel][0], cent_b[channel][0]), 4),
+            "samples": [cent_a[channel][1], cent_b[channel][1]],
         }
 
     merge_floor = get_config_float("audio_merge_threshold", 0.70)
-    best = max(x for x in (anchor_sim, best_sample,
-                           *(c["similarity"] for c in channels.values()))
-               if x is not None) if (anchor_sim or best_sample or channels) else 0.0
+    scores = [s for s in (anchor_sim, best_sample,
+                          *(c["similarity"] for c in channels.values()))
+              if s is not None]
+    best = max(scores) if scores else 0.0
     verdict = "建议合并（达到合并阈值）" if best >= merge_floor else "相契度不足，谨慎合并"
     return {
         "speakers": {
