@@ -162,6 +162,15 @@ async def merge_speakers(req: MergeRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/speakers/{speaker_id}/refine")
+async def refine_speaker(speaker_id: int) -> Dict[str, Any]:
+    """声纹精化：样本池质心重立质心锚（采样越多越精确）。"""
+    try:
+        return await _audio.refine_speaker(speaker_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post("/speakers/prune")
 async def prune_speakers(payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
     """批量剔除待确认说话人；include_with_samples=true 时连样本一并剔除。"""

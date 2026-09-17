@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { GitMerge, Grid3X3, Pencil, Plus, RefreshCw, Trash2, UserCheck } from "lucide-react";
+import { Focus, GitMerge, Grid3X3, Pencil, Plus, RefreshCw, Trash2, UserCheck } from "lucide-react";
 import { audioApi } from "@/lib/api";
 import type { SpeakerListItem } from "./types";
 import { Card } from "@/components/common/Card";
@@ -116,6 +116,18 @@ export function SpeakersPanel() {
     onError,
   });
 
+  const refineMut = useMutation({
+    mutationFn: (id: number) => audioApi.refineSpeaker(id),
+    onSuccess: (r) => {
+      toast.success(t("messages.refineSuccess", {
+        samples: r.data.samples,
+        drift: r.data.anchor_similarity ?? t("messages.refineInitial"),
+      }));
+      invalidate();
+    },
+    onError,
+  });
+
   const consolidateRun = useMutation({
     mutationFn: () =>
       audioApi.consolidateSpeakers({
@@ -173,6 +185,14 @@ export function SpeakersPanel() {
             onClick={() => { setMergeSource(s); setMergeTargetId(""); }}
           >
             <GitMerge size={13} />
+          </Button>
+          <Button
+            size="sm" variant="ghost"
+            disabled={refineMut.isPending}
+            title={t("actions.refineHint")}
+            onClick={() => refineMut.mutate(s.id)}
+          >
+            <Focus size={13} />
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setDeleteTarget(s)}>
             <Trash2 size={13} />

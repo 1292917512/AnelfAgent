@@ -142,7 +142,8 @@
     "consolidateRun": "执行合并（{{count}} 人）",
     "simmap": "分布图",
     "bind": "绑定",
-    "unbind": "解绑"
+    "unbind": "解绑",
+    "refineHint": "精化声纹（样本池质心重立质心锚）"
   },
   "groups": {
     "pending": "待确认（{{count}}）",
@@ -193,7 +194,9 @@
     "syncPaused": "同步已暂停（配置已持久化）",
     "syncResumed": "同步已恢复",
     "bindSuccess": "实体绑定已更新",
-    "unbindSuccess": "已解除绑定"
+    "unbindSuccess": "已解除绑定",
+    "refineSuccess": "声纹已精化（{{samples}} 样本，漂移 {{drift}}）",
+    "refineInitial": "首次精化"
   },
   "simmap": {
     "title": "声纹相似度分布图",

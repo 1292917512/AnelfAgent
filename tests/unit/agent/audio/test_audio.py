@@ -12,8 +12,16 @@ from agent.audio import (
     AudioNotConfigured,
     get_audio_registry,
     get_audio_service,
+    matcher,
 )
 from agent.audio.store import AudioStore
+
+
+def vec(dim: int) -> list[float]:
+    """192 维单位向量基（dim 位为 1），向量间两两正交。"""
+    v = [0.0] * 192
+    v[dim] = 1.0
+    return v
 
 
 class FakeAsr:
@@ -332,3 +340,46 @@ class TestEntityBinding:
                                          ts_ns=time.time_ns())
         seg = await store.get_segment(seg_id)
         assert seg is not None and seg["entity_scope"] == "user:webui:u1"
+
+
+class TestVoiceprintRefine:
+    async def test_refine_sets_anchor_with_drift(self, store):
+        s = await store.create_speaker(name="张三")
+        for i in range(3):
+            await store.add_sample(int(s["id"]), vec(0) if i == 0 else vec(1))
+        result = await matcher.refine(store, int(s["id"]))
+        assert result["samples"] == 3
+        assert result["anchor_similarity"] is None  # 首次精化无漂移
+        anchor = await store.get_speaker_anchor(int(s["id"]))
+        assert len(anchor) == 192
+        # 再次精化：新旧锚融合，漂移为余弦（≤1）
+        result2 = await matcher.refine(store, int(s["id"]))
+        assert result2["anchor_similarity"] is not None
+        assert result2["anchor_similarity"] <= 1.0
+
+    async def test_refine_requires_samples(self, store):
+        s = await store.create_speaker(name="张三")
+        with pytest.raises(ValueError, match="样本池为空"):
+            await matcher.refine(store, int(s["id"]))
+
+    async def test_anchor_survives_pool_churn_in_match(self, store):
+        """样本池整体更迭（旧样本淘汰）后，质心锚仍把身份找回来。"""
+        s = await store.create_speaker(name="张三")
+        await store.bind_entity(int(s["id"]), "user:webui:u1")
+        await store.add_sample(int(s["id"]), vec(0))
+        await matcher.refine(store, int(s["id"]))
+        # 池换血：删掉全部样本，只剩质心锚
+        for sample in await store.list_samples(int(s["id"])):
+            await store.delete_sample(int(sample["id"]))
+        candidates = await matcher.match_vector(store, vec(0))
+        assert candidates and candidates[0]["speaker_key"] == s["speaker_key"]
+        assert candidates[0]["entity_scope"] == "user:webui:u1"
+
+    async def test_merge_refines_target(self, store):
+        src = await store.create_speaker(name="临时")
+        dst = await store.create_speaker(name="张三")
+        await store.add_sample(int(src["id"]), vec(2))
+        await store.add_sample(int(dst["id"]), vec(0))
+        result = await matcher.merge(store, int(src["id"]), int(dst["id"]))
+        assert "refined" in result and result["refined"]["samples"] >= 1
+        assert await store.get_speaker_anchor(int(dst["id"]))

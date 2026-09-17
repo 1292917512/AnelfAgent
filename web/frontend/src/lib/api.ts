@@ -820,6 +820,9 @@ export const audioApi = {
     api.patch<{ speaker: AudioSpeaker }>(`/audio/speakers/${id}`, data),
   confirmSpeaker: (id: number, name: string, role = "") =>
     api.post<{ speaker: AudioSpeaker }>(`/audio/speakers/${id}/confirm`, { name, role }),
+  refineSpeaker: (id: number) =>
+    api.post<{ samples: number; anchor_similarity: number | null }>(
+      `/audio/speakers/${id}/refine`),
   bindSpeaker: (id: number, entityScope: string) =>
     api.post<{ speaker: AudioSpeaker }>(`/audio/speakers/${id}/bind`,
       { entity_scope: entityScope }),

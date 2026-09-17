@@ -255,3 +255,19 @@ class TestVoicePresetApi:
         resp = client.post("/api/audio/voice-presets/assign",
                            json={"scene": "night", "preset_id": ""})
         assert resp.status_code == 422
+
+
+class TestSpeakerRefineApi:
+    async def test_refine_flow(self, client: TestClient, _isolate_audio_library) -> None:
+        resp = client.post("/api/audio/speakers", json={
+            "name": "张三", "vector": vec(4)})
+        speaker_id = resp.json()["id"]
+        resp = client.post(f"/api/audio/speakers/{speaker_id}/refine")
+        assert resp.status_code == 200
+        assert resp.json()["samples"] == 1
+        assert resp.json()["anchor_similarity"] is None
+
+    async def test_refine_empty_pool_422(self, client: TestClient, _isolate_audio_library) -> None:
+        speaker = await _isolate_audio_library.create_speaker(name="空池")
+        resp = client.post(f"/api/audio/speakers/{speaker['id']}/refine")
+        assert resp.status_code == 422

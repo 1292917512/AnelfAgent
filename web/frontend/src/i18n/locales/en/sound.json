@@ -142,7 +142,8 @@
     "consolidateRun": "Merge ({{count}} people)",
     "simmap": "Similarity map",
     "bind": "Bind",
-    "unbind": "Unbind"
+    "unbind": "Unbind",
+    "refineHint": "Refine voiceprint (re-anchor from sample centroid)"
   },
   "groups": {
     "pending": "Pending ({{count}})",
@@ -193,7 +194,9 @@
     "syncPaused": "Sync paused (persisted)",
     "syncResumed": "Sync resumed",
     "bindSuccess": "Entity binding updated",
-    "unbindSuccess": "Binding removed"
+    "unbindSuccess": "Binding removed",
+    "refineSuccess": "Voiceprint refined ({{samples}} samples, drift {{drift}})",
+    "refineInitial": "initial"
   },
   "simmap": {
     "title": "Voiceprint similarity map",

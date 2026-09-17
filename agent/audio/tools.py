@@ -325,6 +325,8 @@ async def speaker_bind(speaker: str, entity_scope: str = "") -> str:
 async def speaker_merge(source: str, target: str) -> str:
     """合并两个说话人身份：source 的样本池/话语记录/统计并入 target，source 删除。
 
+    合并后自动精化目标声纹（融合样本池重立质心锚）。
+
     Args:
         source: 被合并的说话人（通常是临时ID，id/key/姓名）
         target: 保留的目标说话人（id/key/姓名）
@@ -346,6 +348,32 @@ async def speaker_merge(source: str, target: str) -> str:
         return tool_error(str(e), cause=ErrorCause.PARAM, retryable=False)
     except Exception as e:
         return error_from_exception(e, action=f"合并说话人 [{source}→{target}]")
+
+
+@deferred_tool(group=_group, tags=["core"])
+async def speaker_refine(speaker: str) -> str:
+    """精化声纹：用累积的语音样本重立质心锚，采样越多声纹越精确。
+
+    质心锚是超出样本池窗口的长期身份记忆，参与匹配判据与检索——
+    样本池更迭后身份仍连续。合并说话人后自动精化，也可在样本
+    积累变多时随时手动精化。
+
+    Args:
+        speaker: 说话人引用（id/key/姓名）
+    """
+    if (gate := _gate()):
+        return gate
+    try:
+        target, err = await _resolve_speaker(speaker)
+        if err:
+            return err
+        assert target is not None
+        result = await matcher.refine(get_audio_store(), int(target["id"]))
+        return _dump(result)
+    except ValueError as e:
+        return tool_error(str(e), cause=ErrorCause.PARAM, retryable=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"精化声纹 [{speaker}]")
 
 
 @deferred_tool(group=_group, tags=["core"])

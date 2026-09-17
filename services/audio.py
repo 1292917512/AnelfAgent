@@ -258,6 +258,10 @@ class AudioServiceFacade:
     async def merge_speakers(self, source_id: int, target_id: int) -> Dict[str, Any]:
         return await matcher.merge(get_audio_store(), source_id, target_id)
 
+    async def refine_speaker(self, speaker_id: int) -> Dict[str, Any]:
+        """声纹精化（质心锚重估）；样本池为空 raise ValueError（路由转 422）。"""
+        return await matcher.refine(get_audio_store(), speaker_id)
+
     async def enroll_speaker(self, req: Any) -> Dict[str, Any]:
         return await matcher.enroll(
             get_audio_store(), req.name, req.vector, role=req.role,

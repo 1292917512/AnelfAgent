@@ -70,3 +70,24 @@ class TestTools:
         assert "error" in json.loads(raw)
         raw = await tools_mod.speaker_bind(str(speaker["id"]), "")
         assert json.loads(raw)["bound"] is False
+
+
+class TestSpeakerRefineTool:
+    async def test_refine_reports_samples_and_drift(self, store) -> None:
+        await matcher.enroll(store, "张三", vec(3))
+        raw = await tools_mod.speaker_refine("张三")
+        body = json.loads(raw)
+        assert body["samples"] == 1
+        assert body["anchor_similarity"] is None
+        raw = await tools_mod.speaker_refine("张三")
+        assert json.loads(raw)["anchor_similarity"] is not None
+
+    async def test_refine_empty_pool_param_error(self, store) -> None:
+        speaker = await store.create_speaker(name="空池")
+        raw = await tools_mod.speaker_refine(str(speaker["id"]))
+        body = json.loads(raw)
+        assert "error" in body and body.get("cause") == "param"
+
+    async def test_refine_unknown_speaker(self, store) -> None:
+        raw = await tools_mod.speaker_refine("不存在的人")
+        assert "error" in json.loads(raw)

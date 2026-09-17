@@ -29,7 +29,7 @@ import time
 from array import array
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiosqlite
 
@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS speakers (
     first_seen_ns INTEGER NOT NULL,
     last_seen_ns INTEGER NOT NULL,
     match_count INTEGER NOT NULL DEFAULT 0,
-    archived INTEGER NOT NULL DEFAULT 0
+    archived INTEGER NOT NULL DEFAULT 0,
+    vector BLOB
 );
 CREATE INDEX IF NOT EXISTS idx_speakers_status ON speakers(status, archived);
 CREATE INDEX IF NOT EXISTS idx_speakers_entity ON speakers(entity_scope);
@@ -337,6 +338,7 @@ class AudioStore:
                 # 旧表升级先于建表：v1 表结构缺少新列，直接建索引会失败
                 v1_migrated = await self._migrate_v1_segments(db)
                 await db.executescript(_SCHEMA)
+                await self._ensure_speaker_anchor_column(db)
                 await self._init_fts(db)
                 if v1_migrated and self.fts_available:
                     # 外部内容 FTS 表重建后为空：全量重建索引覆盖迁入行
@@ -392,6 +394,14 @@ class AudioStore:
         except Exception as exc:
             log(f"FTS5 不可用，转写检索降级为 LIKE: {exc}", "WARNING", tag=_LOG_TAG)
             self.fts_available = False
+
+    @staticmethod
+    async def _ensure_speaker_anchor_column(db: aiosqlite.Connection) -> None:
+        """既有库补列：speakers.vector（质心锚，建表语句之后新增的列）。"""
+        cursor = await db.execute("PRAGMA table_info(speakers)")
+        cols = {str(r["name"]) for r in await cursor.fetchall()}
+        if "vector" not in cols:
+            await db.execute("ALTER TABLE speakers ADD COLUMN vector BLOB")
 
     async def _migrate_v1_segments(self, db: aiosqlite.Connection) -> bool:
         """初版音频库表结构升级：旧列（abs_*/speaker_key/vector）重建为新列。
@@ -1238,6 +1248,28 @@ class AudioStore:
         row = await cursor.fetchone()
         return _blob_to_vec(row["vector"]) if row else None
 
+    async def get_speaker_anchor(self, speaker_id: int) -> List[float]:
+        """读取质心锚（未精化为空表）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT vector FROM speakers WHERE id=? AND vector IS NOT NULL", (speaker_id,))
+        row = await cursor.fetchone()
+        return _blob_to_vec(row["vector"]) if row else []
+
+    async def set_speaker_anchor(self, speaker_id: int, vector: List[float]) -> None:
+        """写入质心锚（声纹精化）。"""
+        db = await self._get_db()
+        await db.execute(
+            "UPDATE speakers SET vector=? WHERE id=?", (_vec_to_blob(vector), speaker_id))
+        await db.commit()
+
+    async def list_speaker_anchors(self) -> List[Tuple[int, List[float]]]:
+        """全部在档质心锚（锚检索用；说话人量级小，线性扫）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT id, vector FROM speakers WHERE archived=0 AND vector IS NOT NULL")
+        return [(int(r["id"]), _blob_to_vec(r["vector"])) for r in await cursor.fetchall()]
+
     async def get_speaker_vectors(self, speaker_id: int) -> List[List[float]]:
         """读取说话人全部样本向量（质心计算用）。"""
         db = await self._get_db()
@@ -1824,19 +1856,24 @@ class AudioStore:
             return self._summary_cache
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT name, role FROM speakers "
+            "SELECT name, role, entity_scope FROM speakers "
             "WHERE archived=0 AND status='confirmed' AND name != '' "
             "ORDER BY last_seen_ns DESC LIMIT ?", (_SUMMARY_NAMES_LIMIT,))
-        names = [
-            f"{r['name']}({r['role']})" if r["role"] else r["name"]
-            for r in await cursor.fetchall()
-        ]
+        names: List[str] = []
+        bindings: List[str] = []
+        for r in await cursor.fetchall():
+            label = f"{r['name']}({r['role']})" if r["role"] else r["name"]
+            names.append(label)
+            scope = str(r["entity_scope"] or "")
+            if scope:
+                bindings.append(f"{label}→{scope}")
         cursor = await db.execute(
             "SELECT COUNT(*) AS c FROM speakers WHERE archived=0 AND status='pending'")
         pending = int(_scalar(await cursor.fetchone(), "c"))
         unread = await self.unread_count()
         self._summary_cache = {
             "confirmed_names": names,
+            "entity_bindings": bindings,
             "pending_count": pending,
             "unread_count": unread,
         }

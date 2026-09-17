@@ -395,3 +395,14 @@ class TestReviewRegressions:
         assert totals["speakers"] == 0  # 撞键映射复用，不重复建档
         items = (await store.list_segments())["items"]
         assert items[0]["speaker_id"] == archived["id"]
+
+
+class TestSummaryBindings:
+    async def test_bindings_in_summary(self, store: AudioStore) -> None:
+        s = await store.create_speaker(name="张三", role="家人")
+        await store.bind_entity(int(s["id"]), "user:webui:u1")
+        lonely = await store.create_speaker(name="李四")
+        summary = await store.summary()
+        assert "张三(家人)" in summary["confirmed_names"]
+        assert summary["entity_bindings"] == ["张三(家人)→user:webui:u1"]
+        assert lonely["name"] in "李四"

@@ -58,9 +58,9 @@ async def match_vector(
 ) -> List[Dict[str, Any]]:
     """声纹检索：输入 192 维向量，返回 TopK 候选（按相似度降序）。
 
-    说话人得分 = max(最佳样本相似度, 质心相似度)：
-    单样本捕捉特征峰值，质心（均值向量）抑制单样本噪音，
-    二者取优提升短段/噪音场景的稳定性（audio_centroid_match 可关）。
+    说话人得分 = max(最佳样本相似度, 样本池质心相似度, 质心锚相似度)：
+    单样本捕捉特征峰值，池质心抑制单样本噪音，质心锚（精化固化的
+    历史质心）在样本池更迭后仍保持身份连续（audio_centroid_match 可关）。
     """
     sample_hits = await store.search_sample_vectors(vector, limit=max(top_k * 5, 25))
     best_by_speaker: Dict[int, float] = {}
@@ -69,9 +69,14 @@ async def match_vector(
         if hit["score"] > best_by_speaker.get(speaker_id, 0.0):
             best_by_speaker[speaker_id] = hit["score"]
 
-    # 质心匹配：均值向量作为第二判据（只对已有候选计算，控制开销）
+    # 质心匹配：均值向量与质心锚作为第二判据（锚兼独立检索来源——
+    # 样本池整体更迭/淘汰后精化锚仍能把人找回来）
     if get_config_bool("audio_centroid_match", True):
         from .store import _mean_vec
+        for speaker_id, anchor in await store.list_speaker_anchors():
+            anchor_sim = round(_cosine_sim(vector, anchor), 4)
+            if anchor_sim > best_by_speaker.get(speaker_id, 0.0):
+                best_by_speaker[speaker_id] = anchor_sim
         for speaker_id in list(best_by_speaker):
             vectors = await store.get_speaker_vectors(speaker_id)
             if not vectors:
@@ -207,6 +212,36 @@ async def confirm(
         speaker_id, name=name, status="confirmed", role=role or None)
 
 
+async def refine(
+    store: AudioStore,
+    speaker_id: int,
+) -> Dict[str, Any]:
+    """声纹精化：样本池质心与既有质心锚融合，固化为主向量。
+
+    采样数据越多精化越准——质心锚是超出样本池窗口（上限淘汰）的
+    长期身份记忆，兼作锚检索来源。返回漂移（新旧锚余弦，首次精化
+    为 None）；样本池为空时 raise ValueError。
+    """
+    speaker = await store.get_speaker(speaker_id)
+    if not speaker:
+        raise ValueError("说话人不存在")
+    vectors = await store.get_speaker_vectors(speaker_id)
+    if not vectors:
+        raise ValueError("样本池为空，先累积语音样本再精化")
+    from .store import _mean_vec
+    centroid = _mean_vec(vectors)
+    old = await store.get_speaker_anchor(speaker_id)
+    anchor = _mean_vec([old, centroid]) if old else centroid
+    drift = round(_cosine_sim(old, anchor), 4) if old else None
+    await store.set_speaker_anchor(speaker_id, anchor)
+    return {
+        "speaker": _speaker_brief(speaker),
+        "samples": len(vectors),
+        "anchor_similarity": drift,
+        "hint": "质心锚已更新（越接近 1 漂移越小）；匹配取 max(最佳样本, 池质心, 质心锚)",
+    }
+
+
 async def merge(
     store: AudioStore,
     source_id: int,
@@ -243,10 +278,14 @@ async def merge(
     await store.merge_speaker_stats(target_id, source)
     await store.delete_speaker(source_id)
 
+    # 融合后的样本池即刻精化：合并出的身份以新质心锚为准
+    refined = await refine(store, target_id)
+
     merged = await store.get_speaker(target_id)
     return {
         "target": merged,
         "merged_from": {"id": source["id"], "speaker_key": source["speaker_key"],
                         "name": source["name"]},
         "samples_moved": moved,
+        "refined": refined,
     }
