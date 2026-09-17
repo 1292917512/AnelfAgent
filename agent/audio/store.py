@@ -1361,6 +1361,7 @@ class AudioStore:
         self,
         *,
         speaker_id: Optional[int] = None,
+        entity_scope: str = "",
         recording_path: str = "",
         from_ns: Optional[int] = None,
         to_ns: Optional[int] = None,
@@ -1369,8 +1370,9 @@ class AudioStore:
         offset: int = 0,
         order: str = "desc",
     ) -> Dict[str, Any]:
-        """片段时间线查询（说话人/录制/时间范围/未读硬过滤）。
+        """片段时间线查询（说话人/绑定实体/录制/时间范围/未读硬过滤）。
 
+        entity_scope 按说话人的实体绑定过滤（声纹→实体的检索路径）。
         order: 'desc' 最新在前（默认）/ 'asc' 时间正序（时间线视图）。
         """
         db = await self._get_db()
@@ -1379,6 +1381,10 @@ class AudioStore:
         if speaker_id is not None:
             where.append("seg.speaker_id=?")
             params.append(speaker_id)
+        if entity_scope:
+            where.append("seg.speaker_id IN "
+                         "(SELECT id FROM speakers WHERE entity_scope=?)")
+            params.append(entity_scope)
         if recording_path:
             where.append("seg.recording_path=?")
             params.append(recording_path)
@@ -1408,17 +1414,19 @@ class AudioStore:
         *,
         query_vec: Optional[List[float]] = None,
         speaker_id: Optional[int] = None,
+        entity_scope: str = "",
         from_ns: Optional[int] = None,
         to_ns: Optional[int] = None,
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
-        """转写混合检索：FTS5/向量双路召回 + 说话人/时间硬过滤。
+        """转写混合检索：FTS5/向量双路召回 + 说话人/绑定实体/时间硬过滤。
 
         评分：0.6 × 语义分 + 0.4 × FTS 归一分；query 为空时退化为时间线查询。
         """
         if not query.strip():
             result = await self.list_segments(
-                speaker_id=speaker_id, from_ns=from_ns, to_ns=to_ns, limit=limit)
+                speaker_id=speaker_id, entity_scope=entity_scope,
+                from_ns=from_ns, to_ns=to_ns, limit=limit)
             return result["items"]
 
         db = await self._get_db()
@@ -1472,6 +1480,10 @@ class AudioStore:
         if speaker_id is not None:
             where.append("seg.speaker_id=?")
             params.append(speaker_id)
+        if entity_scope:
+            where.append("seg.speaker_id IN "
+                         "(SELECT id FROM speakers WHERE entity_scope=?)")
+            params.append(entity_scope)
         if from_ns is not None:
             where.append("seg.ts_ns>=?")
             params.append(from_ns)

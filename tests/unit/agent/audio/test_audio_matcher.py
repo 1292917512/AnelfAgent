@@ -349,3 +349,28 @@ class TestPrunePending:
         assert await store.list_samples(tmp["id"]) == []
         assert await store.get_segment(seg_id) is None  # 片段级联删除
         assert await store.get_speaker(confirmed["id"]) is not None
+
+
+class TestSpeakerCompare:
+    async def test_compare_reports_all_criteria(self, store: AudioStore) -> None:
+        """精确对比：锚对锚 + 样本最佳配对 + 同信道模板交叉 + 合并判读。"""
+        a = await matcher.enroll(store, "张三", vec(0), channel="mic")
+        b = await matcher.enroll(store, "张三分身", tilted(0, 0.9), channel="mic")
+        result = await matcher.compare(store, int(a["id"]), int(b["id"]))
+        assert result["anchor_similarity"] == pytest.approx(0.9, abs=1e-3)
+        assert result["best_sample_similarity"] == pytest.approx(0.9, abs=1e-3)
+        assert result["channels"]["mic"]["similarity"] == pytest.approx(0.9, abs=1e-3)
+        assert result["channels"]["mic"]["samples"] == [1, 1]
+        assert "建议合并" in result["merge_hint"]  # 0.9 ≥ 合并阈值 0.70
+
+    async def test_compare_distant_pair_below_merge_line(self, store: AudioStore) -> None:
+        a = await matcher.enroll(store, "张三", vec(0))
+        b = await matcher.enroll(store, "李四", vec(1))
+        result = await matcher.compare(store, int(a["id"]), int(b["id"]))
+        assert result["anchor_similarity"] == pytest.approx(0.0, abs=1e-6)
+        assert "谨慎合并" in result["merge_hint"]
+
+    async def test_compare_unknown_speaker_rejected(self, store: AudioStore) -> None:
+        a = await matcher.enroll(store, "张三", vec(0))
+        with pytest.raises(ValueError):
+            await matcher.compare(store, int(a["id"]), 9999)

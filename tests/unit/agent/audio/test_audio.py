@@ -171,6 +171,26 @@ class TestEntityBinding:
         seg = await store.get_segment(seg_id)
         assert seg is not None and seg["entity_scope"] == "user:webui:u1"
 
+    async def test_segments_filterable_by_entity_scope(self, store):
+        """声纹→实体检索：时间线与混合检索均可按绑定实体过滤。"""
+        a = await store.create_speaker(name="张三")
+        b = await store.create_speaker(name="李四")
+        await store.bind_entity(int(a["id"]), "user:qq:456")
+        await store.add_segment(speaker_id=int(a["id"]), transcript="张三说吃饭")
+        await store.add_segment(speaker_id=int(b["id"]), transcript="李四说开会")
+
+        result = await store.list_segments(entity_scope="user:qq:456")
+        assert [s["transcript"] for s in result["items"]] == ["张三说吃饭"]
+
+        hits = await store.search_segments("吃饭", entity_scope="user:qq:456")
+        assert [s["speaker_name"] for s in hits] == ["张三"]
+        # 他人的话语不会被该实体过滤命中
+        hits = await store.search_segments("开会", entity_scope="user:qq:456")
+        assert hits == []
+        # 空查询退化为时间线，实体过滤同样生效
+        timeline = await store.search_segments("", entity_scope="user:qq:456")
+        assert [s["transcript"] for s in timeline] == ["张三说吃饭"]
+
 
 class TestVoiceprintAnchor:
     async def test_anchor_folds_on_every_accepted_sample(self, store):

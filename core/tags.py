@@ -258,6 +258,11 @@ reply_to_tag = Tag(tag_name="reply_to", tag_name_desc="回复引用的消息 ID"
 poke_tag = Tag(tag_name="poke", tag_name_desc="戳一戳事件的目标用户")
 reaction_tag = Tag(tag_name="reaction", tag_name_desc="表情回应的 emoji ID")
 forward_tag = Tag(tag_name="forward", tag_name_desc="转发消息的来源（原始发送者、频道名或消息 ID）")
+speaker_scope_tag = Tag(
+    tag_name="speaker_scope",
+    tag_name_desc="语音消息经声纹识别后，说话人绑定的实体 scope"
+                  "（如 user:qq:456）——听到的是谁，按此召回该实体的画像与记忆",
+)
 
 # 富文本内容标签
 json_card_tag = Tag(tag_name="json_card", tag_name_desc="JSON 卡片消息（QQ 分享链接、小程序卡片等），格式 [json_card:摘要文本]")

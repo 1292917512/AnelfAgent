@@ -35,7 +35,8 @@ class TestSpeakerAnnotation:
 
         async def _match(store, vector, channel=""):
             return [{"matched": True, "id": 1, "name": "张三",
-                     "speaker_key": "spk_1", "similarity": 0.87}]
+                     "speaker_key": "spk_1", "similarity": 0.87,
+                     "entity_scope": "user:qq:456"}]
 
         monkeypatch.setattr(audio_service_mod.AudioService, "speaker_embed", _embed)
         monkeypatch.setattr("agent.audio.matcher.match_vector", _match)
@@ -53,6 +54,8 @@ class TestSpeakerAnnotation:
             await _wait_for(lambda: len(app.messages) == 1)
             content = app.messages[0]["content"]
             assert content.startswith("[语音 说话人:张三 置信:0.87]")
+            # 绑定实体以机器可解析标签随行（思维层据此自动召回画像/记忆）
+            assert "[speaker_scope:user:qq:456]" in content
             assert "你好世界" in content
         finally:
             await engine.stop("c1")

@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -322,6 +322,83 @@ async def refine(
         "anchor_similarity": drift,
         "hint": "声纹锚已按当前样本池重建（漂移越接近 1 变化越小）；"
                 "匹配取 max(锚, 信道模板, 最佳样本)",
+    }
+
+
+async def compare(
+    store: AudioStore,
+    speaker_id_a: int,
+    speaker_id_b: int,
+) -> Dict[str, Any]:
+    """精确对比两个说话人的声纹：锚余弦 + 样本最佳配对 + 同信道模板交叉。
+
+    Returns:
+        {
+            "speakers": {...},           # 双方简报（含样本数/信道分布/实体绑定）
+            "anchor_similarity": float,  # 锚对锚（长期身份的相契度）
+            "best_sample_similarity": float | None,  # 样本池最佳配对（峰值证据）
+            "channels": {channel: {"similarity", "samples"}},  # 同信道模板交叉
+            "merge_hint": str,           # 相对合并阈值的判读
+        }
+    """
+    speaker_a = await store.get_speaker(speaker_id_a)
+    speaker_b = await store.get_speaker(speaker_id_b)
+    if not speaker_a or not speaker_b:
+        raise ValueError("对比的说话人不存在")
+    samples_a = await store.get_speaker_samples(speaker_id_a)
+    samples_b = await store.get_speaker_samples(speaker_id_b)
+    anchor_a, _ = await store.get_speaker_anchor(speaker_id_a)
+    anchor_b, _ = await store.get_speaker_anchor(speaker_id_b)
+    anchor_sim = cosine(anchor_a, anchor_b) if anchor_a and anchor_b else None
+
+    best_sample: Optional[float] = None
+    if samples_a and samples_b:
+        from .vectors import unit_rows
+        matrix_a = np.asarray([v for v, _, _ in samples_a], dtype=np.float64)
+        matrix_b = np.asarray([v for v, _, _ in samples_b], dtype=np.float64)
+        best_sample = float((unit_rows(matrix_a) @ unit_rows(matrix_b).T).max())
+
+    def _centroids(samples: List[Tuple[List[float], int, str]]) -> Dict[str, List[float]]:
+        grouped: Dict[str, List[Tuple[List[float], float]]] = {}
+        for vec, duration_ms, channel in samples:
+            grouped.setdefault(channel or "mic", []).append(
+                (vec, sample_weight(duration_ms)))
+        result: Dict[str, List[float]] = {}
+        for channel, pairs in grouped.items():
+            centroid = weighted_centroid(pairs)
+            if centroid is not None:
+                result[channel] = centroid[0]
+        return result
+
+    channels: Dict[str, Any] = {}
+    cent_a, cent_b = _centroids(samples_a), _centroids(samples_b)
+    counts_a: Dict[str, int] = {}
+    counts_b: Dict[str, int] = {}
+    for _, _, channel in samples_a:
+        counts_a[channel or "mic"] = counts_a.get(channel or "mic", 0) + 1
+    for _, _, channel in samples_b:
+        counts_b[channel or "mic"] = counts_b.get(channel or "mic", 0) + 1
+    for channel in sorted(set(cent_a) & set(cent_b)):
+        channels[channel] = {
+            "similarity": round(cosine(cent_a[channel], cent_b[channel]), 4),
+            "samples": [counts_a.get(channel, 0), counts_b.get(channel, 0)],
+        }
+
+    merge_floor = get_config_float("audio_merge_threshold", 0.70)
+    best = max(x for x in (anchor_sim, best_sample,
+                           *(c["similarity"] for c in channels.values()))
+               if x is not None) if (anchor_sim or best_sample or channels) else 0.0
+    verdict = "建议合并（达到合并阈值）" if best >= merge_floor else "相契度不足，谨慎合并"
+    return {
+        "speakers": {
+            "a": _speaker_brief(speaker_a),
+            "b": _speaker_brief(speaker_b),
+        },
+        "anchor_similarity": round(anchor_sim, 4) if anchor_sim is not None else None,
+        "best_sample_similarity": round(best_sample, 4) if best_sample is not None else None,
+        "channels": channels,
+        "merge_threshold": merge_floor,
+        "merge_hint": f"最高相契度 {round(best, 4)}（判读线 {merge_floor}）：{verdict}",
     }
 
 

@@ -103,3 +103,32 @@ class TestSpeakerRefineTool:
     async def test_refine_unknown_speaker(self, store) -> None:
         raw = await tools_mod.speaker_refine("不存在的人")
         assert "error" in json.loads(raw)
+
+
+class TestSpeakerCompareTool:
+    async def test_compare_tool_reports_criteria(self, store) -> None:
+        await matcher.enroll(store, "张三", vec(0))
+        await matcher.enroll(store, "分身", vec(1))
+        body = json.loads(await tools_mod.speaker_compare("张三", "分身"))
+        assert body["anchor_similarity"] == pytest.approx(0.0, abs=1e-6)
+        assert "谨慎合并" in body["merge_hint"]
+
+    async def test_compare_unknown_speaker_error(self, store) -> None:
+        await matcher.enroll(store, "张三", vec(0))
+        body = json.loads(await tools_mod.speaker_compare("张三", "不存在"))
+        assert body["cause"] == "not_found"
+
+
+class TestTranscriptSearchEntityFilter:
+    async def test_entity_param_filters_and_validates(self, store) -> None:
+        speaker = await matcher.enroll(store, "张三", vec(0))
+        await store.bind_entity(int(speaker["id"]), "user:qq:456")
+        await store.add_segment(speaker_id=int(speaker["id"]), transcript="张三说吃饭")
+        await store.add_segment(transcript="路人说开会")
+
+        body = json.loads(await tools_mod.transcript_search(
+            query="", entity="user:qq:456"))
+        assert [i["transcript"] for i in body["items"]] == ["张三说吃饭"]
+
+        bad = json.loads(await tools_mod.transcript_search(query="", entity="bogus"))
+        assert bad["cause"] == "param"

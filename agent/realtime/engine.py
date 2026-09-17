@@ -593,10 +593,11 @@ class RealtimeEngine:
                     pass
         best = candidates[0] if candidates else None
         if not best or not best.get("matched"):
-            return {"name": "", "similarity": 0.0}
+            return {"name": "", "similarity": 0.0, "entity_scope": ""}
         return {
             "name": str(best.get("name") or best.get("speaker_key") or ""),
             "similarity": round(float(best.get("similarity", 0.0)), 2),
+            "entity_scope": str(best.get("entity_scope") or ""),
         }
 
     async def _pcm_temp_wav(self, pcm: bytes, sample_rate: int) -> str:
@@ -687,6 +688,11 @@ class RealtimeEngine:
             tag = (f"[语音 说话人:{speaker['name']} 置信:{speaker['similarity']}]"
                    if speaker.get("name")
                    else "[语音 说话人:未注册]")
+            scope = str(speaker.get("entity_scope") or "")
+            if scope:
+                # 机器可解析的召回键：思维层据此自动召回该实体的画像/关系/记忆
+                from core.tags import tag_label
+                tag += tag_label("speaker_scope", scope)
             content = f"{tag} {transcript}"
         try:
             from agent.runtime.agent_app import get_agent_app

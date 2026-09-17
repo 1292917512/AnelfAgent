@@ -13,6 +13,8 @@ import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
 from core.config import ConfigManager, get_config_bool
 from core.log import log
 from entities._sdk import (
@@ -138,6 +140,7 @@ async def speaker_get(speaker: str) -> str:
 async def transcript_search(
     query: str = "",
     speaker: str = "",
+    entity: str = "",
     time_from: str = "",
     time_to: str = "",
     limit: int = 10,
@@ -147,6 +150,7 @@ async def transcript_search(
     Args:
         query: 检索内容（自然语言），空则纯时间线查询
         speaker: 说话人引用（id/key/姓名），空为全部人
+        entity: 实体 scope（如 'user:qq:456'，按声纹绑定过滤该实体说过的话），空不限
         time_from: 起始时间（如 '2026-08-01' 或 '2026-08-01 14:00'），空不限
         time_to: 结束时间，空不限
         limit: 返回数量上限（默认 10）
@@ -161,6 +165,11 @@ async def transcript_search(
                 return err
             assert target is not None
             speaker_id = int(target["id"])
+        entity_scope = entity.strip()
+        if entity_scope and not entity_scope.startswith(("user:", "group:", "agent:")):
+            return tool_error(
+                "entity 须为实体 scope（user:/group:/agent: 前缀，见音频库声纹关联清单）",
+                cause=ErrorCause.PARAM, retryable=False)
 
         from_ns = parse_time_ns(time_from)
         to_ns = parse_time_ns(time_to)
@@ -178,6 +187,7 @@ async def transcript_search(
         store = get_audio_store()
         items = await store.search_segments(
             query, query_vec=query_vec, speaker_id=speaker_id,
+            entity_scope=entity_scope,
             from_ns=from_ns, to_ns=to_ns, limit=max(1, min(limit, 50)))
         return _dump({"items": items, "total": len(items), "query": query})
     except Exception as e:
@@ -319,6 +329,90 @@ async def speaker_bind(speaker: str, entity_scope: str = "") -> str:
                       "entity_scope": entity_scope.strip()})
     except Exception as e:
         return error_from_exception(e, action=f"绑定实体 [{speaker}]")
+
+
+@deferred_tool(group=_group, tags=["core"], concurrency_safe=True)
+async def speaker_compare(speaker_a: str, speaker_b: str) -> str:
+    """精确对比两个说话人的声纹：锚对锚（长期身份）、样本最佳配对、同信道模板交叉。
+
+    合并/绑定前的终极核查——返回各判据分值与相对合并阈值的判读。
+
+    Args:
+        speaker_a: 说话人引用（id/key/姓名）
+        speaker_b: 说话人引用（id/key/姓名）
+    """
+    if (gate := _gate()):
+        return gate
+    try:
+        target_a, err = await _resolve_speaker(speaker_a)
+        if err:
+            return err
+        target_b, err = await _resolve_speaker(speaker_b)
+        if err:
+            return err
+        assert target_a is not None and target_b is not None
+        result = await matcher.compare(
+            get_audio_store(), int(target_a["id"]), int(target_b["id"]))
+        return _dump(result)
+    except ValueError as e:
+        return tool_error(str(e), cause=ErrorCause.PARAM, retryable=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"对比说话人 [{speaker_a} vs {speaker_b}]")
+
+
+@deferred_tool(group=_group, tags=["core", "media:voice", "media:audio"])
+async def voice_compare(audio_a: str, audio_b: str) -> str:
+    """对比两段音频的声纹是否同一人：各自提取声纹后给质心与最佳段配对相似度。
+
+    Args:
+        audio_a: 第一段音频路径（绝对路径或 workspace 相对路径）
+        audio_b: 第二段音频路径
+    """
+    if (gate := _gate()):
+        return gate
+    try:
+        if not await audio_has_provider(KIND_ASR):
+            return tool_error(
+                "无可用 ASR 提供者，无法提取声纹", cause=ErrorCause.CONFIG,
+                retryable=False, hint="请在音源同步组件配置 FunASR 服务地址")
+
+        async def _voiced(audio_path: str) -> List[Tuple[List[float], int]]:
+            resolved = _resolve_audio_path(audio_path)
+            if not os.path.isfile(resolved):
+                raise FileNotFoundError(audio_path)
+            segments = await audio_transcribe(resolved)
+            return [
+                (s["vector"], max(0, int(s["end_ms"]) - int(s["start_ms"])))
+                for s in segments if s.get("vector")]
+
+        from agent.audio.vectors import cosine, sample_weight, unit_rows, weighted_centroid
+        voiced_a = await _voiced(audio_a)
+        voiced_b = await _voiced(audio_b)
+        if not voiced_a or not voiced_b:
+            return tool_error("音频中未提取到有效声纹", cause=ErrorCause.STATE,
+                              retryable=True, hint="换一段包含清晰人声的音频")
+        centroid_a = weighted_centroid([(v, sample_weight(d)) for v, d in voiced_a])
+        centroid_b = weighted_centroid([(v, sample_weight(d)) for v, d in voiced_b])
+        assert centroid_a is not None and centroid_b is not None
+        matrix_a = np.asarray([v for v, _ in voiced_a])
+        matrix_b = np.asarray([v for v, _ in voiced_b])
+        best_pair = float((unit_rows(matrix_a) @ unit_rows(matrix_b).T).max())
+        overall = cosine(centroid_a[0], centroid_b[0])
+        threshold = matcher.global_threshold()
+        verdict = "很可能是同一人" if max(overall, best_pair) >= threshold else "相似度不足，倾向不同人"
+        return _dump({
+            "centroid_similarity": round(overall, 4),
+            "best_segment_similarity": round(best_pair, 4),
+            "segments": [len(voiced_a), len(voiced_b)],
+            "threshold": threshold,
+            "hint": f"质心 vs 最佳段配对（{round(max(overall, best_pair), 4)} / 阈值 {threshold}）：{verdict}",
+        })
+    except FileNotFoundError as e:
+        return tool_error(f"音频文件不存在: {e}", cause=ErrorCause.NOT_FOUND, retryable=False)
+    except ValueError as e:
+        return tool_error(str(e), cause=ErrorCause.PARAM, retryable=False)
+    except Exception as e:
+        return error_from_exception(e, action=f"对比音频 [{audio_a} vs {audio_b}]")
 
 
 @deferred_tool(group=_group, tags=["core"])
