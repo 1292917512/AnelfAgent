@@ -877,6 +877,9 @@ export const audioApi = {
     api.get<AudioRecordingListResult>("/audio/recordings", { params }),
   deleteRecording: (path: string) =>
     api.delete("/audio/recordings", { params: { path } }),
+  rebuildRecording: (path: string) =>
+    api.post<{ error: string; results: Array<{ path: string; outcome: string }> }>(
+      "/entity/audiosync/sync/rebuild", { paths: [path] }),
   // 音色预设（AI 与 Web 共用的音色库）
   voicePresets: () => api.get<VoicePresetOverview>("/audio/voice-presets"),
   saveVoicePreset: (data: VoicePresetPayload) =>

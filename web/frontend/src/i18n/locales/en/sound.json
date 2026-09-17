@@ -313,5 +313,30 @@
     "chat": "Voice message",
     "web": "Web upload",
     "enroll": "Enrollment"
+  },
+  "recordings": {
+    "title": "Recording units",
+    "count": "{{count}}",
+    "hint": "Ingested audio sources. Rebuild = clear all segments & voiceprint registrations of the unit and trigger an immediate rescan (re-transcribe + speaker attribution, requires the audio-sync component); Delete = clear only.",
+    "meta": "{{files}} files / {{segments}} segments",
+    "rebuild": "Rebuild",
+    "delete": "Delete",
+    "empty": "No recordings registered",
+    "rebuildTitle": "Rebuild recording unit",
+    "rebuildConfirm": "All transcript segments and voiceprint samples of this unit will be cleared, then re-parsed by the audio-sync component (speaker attribution rebuilt). Continue?",
+    "deleteTitle": "Delete recording",
+    "deleteConfirm": "All transcript segments and voiceprint samples of this unit will be cascade-deleted (no rescan). Continue?",
+    "status": {
+      "done": "done",
+      "no_speech": "no speech",
+      "error": "error",
+      "pending": "pending"
+    },
+    "outcome": {
+      "done": "Rebuilt: re-transcribed and re-attributed",
+      "deleted": "Source no longer exists; registration and segments cleared",
+      "excluded": "Path matches exclusion rules; not rebuilt",
+      "missing": "Unit not found in sources"
+    }
   }
 }

@@ -2,8 +2,13 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { audioApi, type AudioStatus } from "@/lib/api";
-import { Badge, Button, Input, LoadingBlock, toast } from "@/components/ui";
-import { AudioLines, CheckCircle2, Database, FileAudio, Mic, Phone, Radio, ServerCog, XCircle } from "lucide-react";
+import {
+  Badge, Button, ConfirmDialog, Input, LoadingBlock, toast,
+} from "@/components/ui";
+import {
+  AudioLines, CheckCircle2, Database, FileAudio, FolderSync, Mic, Phone,
+  Radio, ServerCog, XCircle,
+} from "lucide-react";
 
 /** 音频总览：提供者链状态 + FunASR 服务 + 音频库统计 + 上下文注入情况 + 文件解析入库 */
 export function AudioOverviewPanel() {
@@ -38,6 +43,49 @@ export function AudioOverviewPanel() {
     onError: (e: unknown) => {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       toast.error(detail || t("analyzeFailed"));
+    },
+  });
+
+  const { data: recordings } = useQuery({
+    queryKey: ["audioRecordings"],
+    queryFn: () => audioApi.recordings({ limit: 50 }).then((r) => r.data),
+  });
+
+  const [rebuildTarget, setRebuildTarget] = useState<string | null>(null);
+  const [deleteRecTarget, setDeleteRecTarget] = useState<string | null>(null);
+
+  const rebuildMut = useMutation({
+    mutationFn: (p: string) => audioApi.rebuildRecording(p).then((r) => r.data),
+    onSuccess: (data) => {
+      const outcome = data.results?.[0]?.outcome ?? "error";
+      if (data.error || outcome === "error") {
+        toast.error(data.error || t("messages.opFailed"));
+        return;
+      }
+      toast.success(t(`recordings.outcome.${outcome}`, { defaultValue: outcome }));
+      setRebuildTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["audioRecordings"] });
+      queryClient.invalidateQueries({ queryKey: ["audioStatus"] });
+      queryClient.invalidateQueries({ queryKey: ["audioTimeline"] });
+      queryClient.invalidateQueries({ queryKey: ["audioSegments"] });
+    },
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(detail || t("messages.opFailed"));
+    },
+  });
+
+  const deleteRecMut = useMutation({
+    mutationFn: (p: string) => audioApi.deleteRecording(p).then((r) => r.data),
+    onSuccess: () => {
+      toast.success(t("messages.deleteSuccess"));
+      setDeleteRecTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["audioRecordings"] });
+      queryClient.invalidateQueries({ queryKey: ["audioStatus"] });
+    },
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(detail || t("messages.opFailed"));
     },
   });
 
@@ -181,6 +229,78 @@ export function AudioOverviewPanel() {
         </div>
         {lib.db_path && <p className="text-[11px] font-mono text-muted break-all">{lib.db_path}</p>}
       </div>
+
+      {/* 录制单元（音源重建入口） */}
+      <div className="rounded-md border border-border bg-card p-4 space-y-2">
+        <div className="flex items-center gap-2">
+          <FolderSync size={15} className="text-accent" />
+          <span className="text-sm font-semibold text-heading">{t("recordings.title")}</span>
+          <span className="ml-auto text-xs text-muted">
+            {t("recordings.count", { count: recordings?.total ?? 0 })}
+          </span>
+        </div>
+        <p className="text-xs text-muted">{t("recordings.hint")}</p>
+        <div className="space-y-1.5">
+          {(recordings?.items ?? []).map((rec) => (
+            <div
+              key={rec.path}
+              className="flex items-center gap-3 rounded-md bg-elevated px-3 py-2"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-mono text-foreground truncate" title={rec.path}>
+                  {rec.path}
+                </p>
+                <p className="text-[11px] text-muted">
+                  {t("recordings.meta", {
+                    files: rec.file_count,
+                    segments: rec.segments,
+                  })}
+                  {" · "}
+                  <Badge variant={rec.status === "done" ? "ok" : rec.status === "error" ? "danger" : "neutral"}>
+                    {t(`recordings.status.${rec.status}`, { defaultValue: rec.status })}
+                  </Badge>
+                </p>
+              </div>
+              <Button
+                size="sm" variant="secondary" className="shrink-0"
+                loading={rebuildMut.isPending && rebuildTarget === rec.path}
+                onClick={() => setRebuildTarget(rec.path)}
+              >
+                {t("recordings.rebuild")}
+              </Button>
+              <Button
+                size="sm" variant="ghost" className="shrink-0 text-danger"
+                onClick={() => setDeleteRecTarget(rec.path)}
+              >
+                {t("recordings.delete")}
+              </Button>
+            </div>
+          ))}
+          {(recordings?.items ?? []).length === 0 && (
+            <p className="text-xs text-muted">{t("recordings.empty")}</p>
+          )}
+        </div>
+      </div>
+
+      <ConfirmDialog
+        open={rebuildTarget !== null}
+        onClose={() => setRebuildTarget(null)}
+        onConfirm={() => rebuildTarget && rebuildMut.mutate(rebuildTarget)}
+        title={t("recordings.rebuildTitle")}
+        message={t("recordings.rebuildConfirm")}
+        danger
+        loading={rebuildMut.isPending}
+      />
+
+      <ConfirmDialog
+        open={deleteRecTarget !== null}
+        onClose={() => setDeleteRecTarget(null)}
+        onConfirm={() => deleteRecTarget && deleteRecMut.mutate(deleteRecTarget)}
+        title={t("recordings.deleteTitle")}
+        message={t("recordings.deleteConfirm")}
+        danger
+        loading={deleteRecMut.isPending}
+      />
 
       {/* 上下文注入情况 */}
       <div className="rounded-md border border-border bg-card p-4 space-y-2">
