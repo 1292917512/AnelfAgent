@@ -3,6 +3,7 @@
   "subtitle": "声音核心能力：语音会话与实时对话、声纹身份、话语检索、语音合成与识别",
   "tabs": {
     "overview": "总览",
+    "presets": "音色",
     "voice": "语音会话",
     "library": "解析库",
     "speakers": "说话人",
@@ -10,6 +11,44 @@
     "transcripts": "话语检索",
     "identify": "识别入库",
     "generation": "生成"
+  },
+  "voicePreset": {
+    "assignTitle": "场景指派",
+    "assignSubtitle": "全部合成入口统一解析：一次性合成与流式管线读默认场景；通话未指派时跟随默认",
+    "assignDefault": "默认音色",
+    "assignRealtime": "通话音色",
+    "noneDefault": "未指派（提供者协议音色）",
+    "noneRealtime": "跟随默认",
+    "libraryTitle": "预设库",
+    "librarySubtitle": "AI 与 Web 共用：预置音色 ID 或克隆参考对（二选一）+ 注释",
+    "add": "新建预设",
+    "edit": "编辑预设",
+    "name": "名称",
+    "namePlaceholder": "如 温柔少女音",
+    "voiceId": "预置音色 ID",
+    "voiceIdPlaceholder": "如 male-qn-qingse（list_voices 可查）",
+    "referenceAudio": "克隆参考音频",
+    "referenceAudioPlaceholder": "URL 或工作区路径（与预置音色二选一）",
+    "referenceText": "参考文本",
+    "referenceTextPlaceholder": "参考音频中说的话（克隆必填）",
+    "note": "注释",
+    "notePlaceholder": "用途/风格备注（AI 也能看到）",
+    "kindPreset": "预置",
+    "kindClone": "克隆",
+    "badgeDefault": "默认",
+    "badgeRealtime": "通话",
+    "setDefault": "设为默认",
+    "setRealtime": "设为通话",
+    "emptyTitle": "暂无音色预设",
+    "emptyDesc": "新建预设后指派为默认或通话音色，全部合成入口统一生效",
+    "cloneNote": "克隆型预设仅一次性合成可用（实时通话走预置音色）",
+    "eitherHint": "预置音色 ID 与克隆参考音频二选一；克隆需填参考文本",
+    "saved": "预设已保存",
+    "saveFailed": "预设保存失败",
+    "deleted": "预设已删除",
+    "deleteFailed": "预设删除失败",
+    "assignFailed": "指派失败",
+    "nameRequired": "名称不能为空"
   },
   "providers": {
     "models": "模型配置链",
@@ -220,28 +259,6 @@
     "noVideoModels": "（无）",
     "save": "保存优先级",
     "saving": "保存中…"
-  },
-  "generation": {
-    "defaultsTitle": "默认发声配置",
-    "defaultsSubtitle": "语音合成工具不传参数时使用的默认值",
-    "fields": {
-      "tts_default_voice": "默认音色 ID",
-      "realtime_tts_voice": "通话音色",
-      "tts_default_reference_audio": "克隆参考音频",
-      "tts_default_reference_text": "克隆参考文本"
-    },
-    "placeholders": {
-      "tts_default_voice": "如 male-qn-qingse（可用 list_voices 查询）",
-      "realtime_tts_voice": "留空跟随默认音色",
-      "tts_default_reference_audio": "URL 或工作区路径（设置后默认走克隆发声）",
-      "tts_default_reference_text": "参考音频对应的文字内容"
-    },
-    "descs": {
-      "tts_default_voice": "全局默认音色，全部合成入口统一使用",
-      "realtime_tts_voice": "实时通话单独使用的音色覆盖",
-      "tts_default_reference_audio": "声音克隆的参考音频，需配合参考文本",
-      "tts_default_reference_text": "克隆时必须提供参考音频中的文字"
-    }
   },
   "chain": {
     "title": "语音链路",

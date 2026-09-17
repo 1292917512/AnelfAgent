@@ -126,6 +126,56 @@ class AudioServiceFacade:
         from agent.audio.capabilities import SOUND_CAPABILITIES, get_sound_router
         return get_sound_router().status(list(SOUND_CAPABILITIES))
 
+    # ------------------------------------------------------------------
+    # 音色预设（AI 与 Web 共用的音色库）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def voice_preset_overview() -> Dict[str, Any]:
+        """预设库 + 场景指派（声音页·音色面板数据）。"""
+        from dataclasses import asdict
+
+        from agent.tts import presets
+
+        return {
+            "presets": [asdict(p) for p in presets.list_presets()],
+            "assignments": {
+                scene: str(ConfigManager.get(key, "") or "")
+                for scene, key in presets.SCENE_KEYS.items()
+            },
+        }
+
+    @staticmethod
+    def save_voice_preset(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """新建/更新音色预设；校验失败 raise ValueError（路由转 422）。"""
+        from dataclasses import asdict
+
+        from agent.tts import presets
+
+        preset = presets.save_preset(
+            id=str(payload.get("id", "") or ""),
+            name=str(payload.get("name", "") or ""),
+            voice_id=str(payload.get("voice_id", "") or ""),
+            reference_audio=str(payload.get("reference_audio", "") or ""),
+            reference_text=str(payload.get("reference_text", "") or ""),
+            note=str(payload.get("note", "") or ""),
+        )
+        return asdict(preset)
+
+    @staticmethod
+    def delete_voice_preset(preset_id: str) -> None:
+        """删除未被指派的预设；被指派 raise ValueError。"""
+        from agent.tts import presets
+
+        presets.remove_preset(preset_id)
+
+    @staticmethod
+    def assign_voice(scene: str, preset_id: str) -> None:
+        """场景指派（default/realtime；preset_id 空=清除/跟随默认）。"""
+        from agent.tts import presets
+
+        presets.assign_voice(scene, preset_id)
+
     async def analyze_file(self, path: str) -> Dict[str, Any]:
         """对 uploads 内音频文件转写并经入库管线存档（含声纹识别）。
 

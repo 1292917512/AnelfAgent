@@ -54,15 +54,64 @@ def _archive(path: str) -> None:
         log(f"旧配置文件归档失败 {path}: {e}", "WARNING", tag=_LOG_TAG)
 
 
+def _preset_from_legacy(voice_id: str, ref_audio: str, ref_text: str,
+                        name: str, note: str) -> bool:
+    """旧平铺音色值 → 音色预设建档并指派为默认（已有指派不覆盖）。"""
+    from agent.tts import presets
+
+    voice_id, ref_audio, ref_text = voice_id.strip(), ref_audio.strip(), ref_text.strip()
+    if ref_audio and ref_text:
+        voice_id = ""
+    elif voice_id:
+        ref_audio = ref_text = ""
+    else:
+        return False
+    if str(ConfigManager.get("sound_voice_default", "") or "").strip():
+        return False
+    preset = presets.save_preset(
+        name=name, voice_id=voice_id,
+        reference_audio=ref_audio, reference_text=ref_text, note=note)
+    presets.assign_voice("default", preset.id)
+    return True
+
+
+def _migrate_voice_presets() -> bool:
+    """旧平铺音色键（tts_default_* / realtime_tts_voice）→ 音色预设。
+
+    预设库非空（用户已建档）时跳过，绝不覆盖新体系的用户选择。
+    """
+    from agent.tts import presets
+
+    if presets.list_presets():
+        return False
+    moved = _preset_from_legacy(
+        str(ConfigManager.get("tts_default_voice", "") or ""),
+        str(ConfigManager.get("tts_default_reference_audio", "") or ""),
+        str(ConfigManager.get("tts_default_reference_text", "") or ""),
+        name="默认音色", note="迁移自旧默认音色配置")
+    realtime_voice = str(ConfigManager.get("realtime_tts_voice", "") or "").strip()
+    if realtime_voice and not str(ConfigManager.get("sound_voice_realtime", "") or "").strip():
+        preset = presets.save_preset(
+            name="通话音色", voice_id=realtime_voice, note="迁移自旧通话音色配置")
+        presets.assign_voice("realtime", preset.id)
+        moved = True
+    if moved:
+        log("旧平铺音色配置已迁移为音色预设", tag=_LOG_TAG)
+    return moved
+
+
 def _migrate_media_config(path: str) -> int:
-    """媒体库配置 → vision_*/sound_*/tts_default_* 键。"""
+    """媒体库配置 → vision_*/sound_* 键与默认音色预设。"""
     data = _load_json(path)
     if not data:
         return 0
     count = 0
-    count += _set_if_empty("tts_default_voice", str(data.get("default_voice", "") or ""))
-    count += _set_if_empty("tts_default_reference_audio", str(data.get("default_reference_audio", "") or ""))
-    count += _set_if_empty("tts_default_reference_text", str(data.get("default_reference_text", "") or ""))
+    if _preset_from_legacy(
+            str(data.get("default_voice", "") or ""),
+            str(data.get("default_reference_audio", "") or ""),
+            str(data.get("default_reference_text", "") or ""),
+            name="默认音色", note="迁移自媒体库实体配置"):
+        count += 1
 
     defaults = data.get("defaults")
     if isinstance(defaults, dict):
@@ -197,6 +246,9 @@ def migrate_legacy_entity_configs(entities_dir: str = "") -> None:
 
     # 组件凭据归拢：实体 config.json / llm_clients / 旧配置键 → 凭据中心
     _migrate_provider_keys()
+
+    # 旧平铺音色键 → 音色预设（预设制统一收口后的一次性建档）
+    migrated_any |= _migrate_voice_presets()
 
     # FunASR 配置归属迁移（音源同步实体键 → 声音系统键）
     for old_key, new_key in (

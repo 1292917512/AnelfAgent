@@ -56,6 +56,58 @@ async def capabilities() -> Dict[str, Any]:
     return _audio.sound_capabilities()
 
 
+# ── 音色预设（AI 与 Web 共用的音色库） ─────────────────────────────
+
+
+class VoicePresetRequest(BaseModel):
+    id: str = ""
+    name: str
+    voice_id: str = ""
+    reference_audio: str = ""
+    reference_text: str = ""
+    note: str = ""
+
+
+class VoiceAssignRequest(BaseModel):
+    scene: str
+    preset_id: str = ""
+
+
+@router.get("/voice-presets")
+async def voice_presets() -> Dict[str, Any]:
+    """音色预设库与场景指派（声音页·音色面板）。"""
+    return _audio.voice_preset_overview()
+
+
+@router.post("/voice-presets")
+async def save_voice_preset(req: VoicePresetRequest) -> Dict[str, Any]:
+    """新建/更新音色预设（id 空=新建）。"""
+    try:
+        return _audio.save_voice_preset(req.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.delete("/voice-presets/{preset_id}")
+async def delete_voice_preset(preset_id: str) -> Dict[str, Any]:
+    """删除未被指派的音色预设。"""
+    try:
+        _audio.delete_voice_preset(preset_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"success": True, "deleted": preset_id}
+
+
+@router.post("/voice-presets/assign")
+async def assign_voice(req: VoiceAssignRequest) -> Dict[str, Any]:
+    """场景指派：default / realtime（preset_id 空=清除；realtime 空=跟随默认）。"""
+    try:
+        _audio.assign_voice(req.scene.strip(), req.preset_id.strip())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"success": True, "scene": req.scene, "preset_id": req.preset_id}
+
+
 @router.get("/funasr/status")
 async def funasr_status(refresh: bool = False) -> Dict[str, Any]:
     """FunASR 转写服务状态（配置在位 + 真实可达；refresh 重置探测缓存）。"""

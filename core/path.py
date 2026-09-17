@@ -496,7 +496,7 @@ _PATH_SPECS: Dict[str, Tuple[str, str]] = {
     "HEARTBEAT_CONFIG": ("config", "heartbeat.json"),
     "REMINDERS": ("config", "reminders.json"),
     "USER_DIRECTIVES": ("config", "user_directives.json"),
-    "OPERATIONS": ("config", "operations.json"),
+    "VOICE_PRESETS": ("config", "voice_presets.json"),
     "CALENDAR": ("config", "calendar.json"),
     "INTROSPECTION_CONFIG": ("config", "introspection.json"),
     "INTROSPECTION_DIR": ("config", "introspection"),

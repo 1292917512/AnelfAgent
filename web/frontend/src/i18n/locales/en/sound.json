@@ -3,6 +3,7 @@
   "subtitle": "Core sound: voice sessions & realtime talk, voice identities, transcripts, TTS & ASR",
   "tabs": {
     "overview": "Overview",
+    "presets": "Voices",
     "voice": "Voice session",
     "library": "Library",
     "speakers": "Speakers",
@@ -10,6 +11,44 @@
     "transcripts": "Transcripts",
     "identify": "Identify",
     "generation": "Generation"
+  },
+  "voicePreset": {
+    "assignTitle": "Scene Assignment",
+    "assignSubtitle": "Every synthesis entry resolves here: one-shot and streaming follow the default scene; calls follow default when unassigned",
+    "assignDefault": "Default Voice",
+    "assignRealtime": "Call Voice",
+    "noneDefault": "Unassigned (provider protocol voice)",
+    "noneRealtime": "Follow default",
+    "libraryTitle": "Preset Library",
+    "librarySubtitle": "Shared by AI and Web: preset voice ID or clone reference (either one) + note",
+    "add": "New Preset",
+    "edit": "Edit Preset",
+    "name": "Name",
+    "namePlaceholder": "e.g. Soft Girl Voice",
+    "voiceId": "Preset Voice ID",
+    "voiceIdPlaceholder": "e.g. male-qn-qingse (query with list_voices)",
+    "referenceAudio": "Clone Reference Audio",
+    "referenceAudioPlaceholder": "URL or workspace path (mutually exclusive with voice ID)",
+    "referenceText": "Reference Text",
+    "referenceTextPlaceholder": "Text spoken in the reference audio (required for cloning)",
+    "note": "Note",
+    "notePlaceholder": "Usage / style remarks (visible to AI too)",
+    "kindPreset": "Preset",
+    "kindClone": "Clone",
+    "badgeDefault": "Default",
+    "badgeRealtime": "Call",
+    "setDefault": "Set Default",
+    "setRealtime": "Set Call",
+    "emptyTitle": "No voice presets yet",
+    "emptyDesc": "Create a preset and assign it as default or call voice — every synthesis entry follows",
+    "cloneNote": "Clone presets work for one-shot synthesis only (calls use preset voices)",
+    "eitherHint": "Choose either a preset voice ID or a clone reference; cloning requires reference text",
+    "saved": "Preset saved",
+    "saveFailed": "Failed to save preset",
+    "deleted": "Preset deleted",
+    "deleteFailed": "Failed to delete preset",
+    "assignFailed": "Assignment failed",
+    "nameRequired": "Name is required"
   },
   "providers": {
     "models": "Model Config Chain",
@@ -220,28 +259,6 @@
     "noVideoModels": "(none)",
     "save": "Save Priority",
     "saving": "Saving…"
-  },
-  "generation": {
-    "defaultsTitle": "Default Voice Settings",
-    "defaultsSubtitle": "Defaults used when synthesis tools are called without explicit params",
-    "fields": {
-      "tts_default_voice": "Default Voice ID",
-      "realtime_tts_voice": "Call Voice",
-      "tts_default_reference_audio": "Clone Reference Audio",
-      "tts_default_reference_text": "Clone Reference Text"
-    },
-    "placeholders": {
-      "tts_default_voice": "e.g. male-qn-qingse (query with list_voices)",
-      "realtime_tts_voice": "Leave empty to follow the default voice",
-      "tts_default_reference_audio": "URL or workspace path (clone takes precedence)",
-      "tts_default_reference_text": "Text spoken in the reference audio"
-    },
-    "descs": {
-      "tts_default_voice": "Global default voice used by every synthesis entry",
-      "realtime_tts_voice": "Voice override for realtime calls only",
-      "tts_default_reference_audio": "Reference audio for voice cloning, requires reference text",
-      "tts_default_reference_text": "Required for cloning: the text spoken in the reference audio"
-    }
   },
   "chain": {
     "title": "Voice Chain",

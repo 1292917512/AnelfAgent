@@ -9,7 +9,7 @@ import pytest
 
 import agent.audio.gen_tools as gen_tools
 from agent.audio.capabilities import get_sound_router, reset_sound_router
-from agent.audio.gen_tools import sound_config, text_to_voice, voice_to_text
+from agent.audio.gen_tools import sound_config, text_to_voice, voice_preset, voice_to_text
 
 
 @pytest.fixture(autouse=True)
@@ -50,10 +50,15 @@ class _FakeProvider:
 
 
 class TestTextToVoice:
-    async def test_default_voice_from_config(
+    async def test_default_voice_from_preset(
             self, mem_config, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-        """不传 voice/参考音频时使用默认音色配置。"""
-        mem_config["tts_default_voice"] = "female-yujie"
+        """不传 voice/参考音频时使用默认音色预设。"""
+        from agent.tts import presets as tts_presets
+
+        monkeypatch.setattr(
+            tts_presets, "_store_path", lambda: str(tmp_path / "voice_presets.json"))
+        preset = tts_presets.save_preset(name="御姐", voice_id="female-yujie")
+        tts_presets.assign_voice("default", preset.id)
         mem_config["sound_provider_priority"] = {"tts": ["fake"]}
         provider = _FakeProvider("fake", frozenset({"tts"}))
         router = get_sound_router()
@@ -122,6 +127,45 @@ class TestVoiceToText:
         assert out.get("cause") == "config"
 
 
+class TestVoicePresetTool:
+    @pytest.fixture(autouse=True)
+    def preset_env(self, tmp_path, monkeypatch: pytest.MonkeyPatch, mem_config) -> None:
+        from agent.tts import presets as tts_presets
+
+        monkeypatch.setattr(
+            tts_presets, "_store_path", lambda: str(tmp_path / "voice_presets.json"))
+
+    async def test_save_apply_list_flow(self, mem_config) -> None:
+        out = json.loads(await voice_preset("save", name="御姐", voice_id="female-yujie"))
+        assert out["success"] is True
+        preset_id = out["preset"]["id"]
+
+        out = json.loads(await voice_preset("apply", scene="default", preset_id=preset_id))
+        assert out["success"] is True
+        assert out["effective"]["default"] == "female-yujie"
+        assert mem_config["sound_voice_default"] == preset_id
+
+        out = json.loads(await voice_preset("list"))
+        assert out["assignments"]["default"] == preset_id
+        assert out["presets"][0]["name"] == "御姐"
+
+    async def test_delete_assigned_rejected(self, mem_config) -> None:
+        out = json.loads(await voice_preset("save", name="御姐", voice_id="female-yujie"))
+        preset_id = out["preset"]["id"]
+        await voice_preset("apply", scene="realtime", preset_id=preset_id)
+        out = json.loads(await voice_preset("delete", preset_id=preset_id))
+        assert "error" in out
+        assert out.get("cause") == "param"
+
+    async def test_validation_error(self, mem_config) -> None:
+        out = json.loads(await voice_preset("save", name="", voice_id="v"))
+        assert "error" in out
+        out = json.loads(await voice_preset("save", name="x", voice_id="v",
+                                            reference_audio="http://a/b.mp3",
+                                            reference_text="t"))
+        assert "error" in out
+
+
 class TestSoundConfig:
     async def test_capabilities_matrix(self, mem_config) -> None:
         get_sound_router().register(_FakeProvider("fake", frozenset({"tts"})))
@@ -130,10 +174,11 @@ class TestSoundConfig:
         assert "tts" in out["capabilities"]
         assert "asr" in out["capabilities"]
 
-    async def test_set_default_voice(self, mem_config) -> None:
+    async def test_set_voice_key_rejected(self, mem_config) -> None:
+        """音色归 voice_preset 工具，sound_config 不再收音色键。"""
         out = json.loads(await sound_config("set", "default_voice", "v1"))
-        assert out["success"] is True
-        assert mem_config["tts_default_voice"] == "v1"
+        assert "error" in out
+        assert out.get("cause") == "param"
 
     async def test_set_provider_priority(self, mem_config) -> None:
         get_sound_router().register(_FakeProvider("fake", frozenset({"tts"})))
@@ -150,7 +195,7 @@ class TestSoundConfig:
     async def test_get_config(self, mem_config) -> None:
         out = json.loads(await sound_config("get"))
         assert out["success"] is True
-        assert "default_voice" in out["config"]
+        assert "funasr_timeout" in out["config"]
 
 
 class TestSoundConfigFunasr:
@@ -174,7 +219,6 @@ class TestSoundConfigFunasr:
         pk.set_provider_key("funasr", "funasr_endpoint", "http://funasr.local")
         out = json.loads(await sound_config(action="get"))
         assert out["config"]["funasr_reachable"] is True
-        assert isinstance(out["config"]["realtime_voice"], str)
 
     async def test_set_funasr_endpoint_reports_reachability(self, monkeypatch) -> None:
         from entities.audiosync import client as funasr_client
@@ -184,7 +228,8 @@ class TestSoundConfigFunasr:
 
         monkeypatch.setattr(funasr_client, "probe_available", fake_probe)
         monkeypatch.setattr(funasr_client, "reset_probe_cache", lambda: None)
-        out = json.loads(await sound_config(action="set", key="realtime_voice",
-                                            value="taffy_voice_0805"))
+        out = json.loads(await sound_config(action="set", key="funasr_endpoint",
+                                            value="http://funasr.local"))
         assert out["success"] is True
-        assert out["value"] == "taffy_voice_0805"
+        assert out["value"] == "http://funasr.local"
+        assert out["reachable"] is False

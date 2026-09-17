@@ -135,17 +135,13 @@ register_configs_safe({
             "value_type": "json",
             "advanced": True,
         },
-        "tts_default_voice": {
-            "description": "全局默认音色 ID（全部合成入口统一使用；实时通话可用 "
-                           "realtime_tts_voice 单独覆盖；留空用提供者协议音色）",
+        "sound_voice_default": {
+            "description": "默认音色预设 ID（声音页·音色面板或 voice_preset 工具管理；"
+                           "空=未指派，合成入口用提供者协议音色）",
             "default": "",
         },
-        "tts_default_reference_audio": {
-            "description": "声音克隆默认参考音频（URL 或工作区路径；设置后默认走克隆发声）",
-            "default": "",
-        },
-        "tts_default_reference_text": {
-            "description": "声音克隆默认参考音频对应的文字内容",
+        "sound_voice_realtime": {
+            "description": "通话音色预设 ID（空=跟随默认预设；克隆型预设不适用流式通话）",
             "default": "",
         },
         "audio_models_asr_priority": {

@@ -768,21 +768,6 @@ export const configMetaApi = {
 };
 
 
-// Vision（视觉感知页 · 核心能力）
-export const operationApi = {
-  list: () => api.get("/operation/list"),
-  status: () => api.get("/operation/status"),
-  mcpTools: (server?: string) =>
-    api.get("/operation/mcp-tools", { params: { server: server || "" } }),
-  registerMcp: (server: string, tool: string, note: string) =>
-    api.post("/operation/register-mcp", { server, tool, note }),
-  update: (opId: string, payload: { note?: string; enabled?: boolean }) =>
-    api.put(`/operation/${opId}`, payload),
-  remove: (opId: string) => api.delete(`/operation/${opId}`),
-  execute: (opId: string, args: Record<string, unknown>) =>
-    api.post(`/operation/${opId}/execute`, { args }),
-};
-
 export const visionApi = {
   status: () => api.get("/vision/status"),
   sources: () => api.get<{ sources: VisionSourceInfo[] }>("/vision/sources"),
@@ -880,7 +865,37 @@ export const audioApi = {
     api.get<AudioRecordingListResult>("/audio/recordings", { params }),
   deleteRecording: (path: string) =>
     api.delete("/audio/recordings", { params: { path } }),
+  // 音色预设（AI 与 Web 共用的音色库）
+  voicePresets: () => api.get<VoicePresetOverview>("/audio/voice-presets"),
+  saveVoicePreset: (data: VoicePresetPayload) =>
+    api.post<VoicePresetEntry>("/audio/voice-presets", data),
+  deleteVoicePreset: (id: string) => api.delete(`/audio/voice-presets/${id}`),
+  assignVoice: (scene: "default" | "realtime", presetId: string) =>
+    api.post("/audio/voice-presets/assign", { scene, preset_id: presetId }),
 };
+
+export interface VoicePresetEntry {
+  id: string;
+  name: string;
+  voice_id: string;
+  reference_audio: string;
+  reference_text: string;
+  note: string;
+}
+
+export interface VoicePresetPayload {
+  id?: string;
+  name: string;
+  voice_id?: string;
+  reference_audio?: string;
+  reference_text?: string;
+  note?: string;
+}
+
+export interface VoicePresetOverview {
+  presets: VoicePresetEntry[];
+  assignments: { default: string; realtime: string };
+}
 
 export interface AudioProviderInfo {
   name: string;

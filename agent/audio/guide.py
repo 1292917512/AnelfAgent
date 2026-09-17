@@ -28,7 +28,7 @@ SOUND_CAPABILITY_GUIDE: Dict[str, Dict[str, Any]] = {
             "reference_audio+reference_text": "声音克隆（仅 models 链 OpenAI 风格协议）",
         },
         "example": 'text_to_voice(text="你好", voice="male-qn-qingse", emotion="happy")',
-        "notes": "默认音色可用 sound_config(set, default_voice, ...) 修改",
+        "notes": "不传音色时用默认音色预设（voice_preset 工具管理指派）",
     },
     "voice_mgmt": {
         "tools": ["clone_voice", "design_voice", "list_voices", "delete_voice"],
@@ -38,8 +38,8 @@ SOUND_CAPABILITY_GUIDE: Dict[str, Dict[str, Any]] = {
             "design_voice": "prompt（音色描述）+ preview_text（可选）",
             "list_voices": "voice_type: system/voice_cloning/voice_generation/all",
         },
-        "example": 'design_voice(prompt="低沉磁性的悬疑旁白男声") → sound_config("set", "default_voice", <voice_id>)',
-        "notes": "创建音色后可经 sound_config 设为默认音色，完成自助换装",
+        "example": 'design_voice(prompt="低沉磁性的悬疑旁白男声") → voice_preset("save", name="悬疑旁白", voice_id=<voice_id>) → voice_preset("apply", scene="default", preset_id=<id>)',
+        "notes": "创建音色后存为预设并指派场景，完成自助换装（声音页·音色面板同库可管）",
     },
     "music": {
         "tools": ["generate_music", "generate_lyrics"],

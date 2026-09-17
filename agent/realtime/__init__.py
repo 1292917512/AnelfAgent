@@ -53,10 +53,6 @@ register_configs_safe({
                            "识别与应对方式由 AI 自行决定）",
             "default": True,
         },
-        "realtime_tts_voice": {
-            "description": "实时通话音色（音色 ID；留空跟随全局默认音色 tts_default_voice）",
-            "default": "",
-        },
         "realtime_context_inject": {
             "description": "通话期间向 AI 注入通话状态与应答节奏训诫（先应声再干活）",
             "default": True,

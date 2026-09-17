@@ -203,3 +203,55 @@ class TestFunasrStatus:
         data = resp.json()
         assert data == {"configured": True, "reachable": True}
         funasr_cred("")
+
+
+class TestVoicePresetApi:
+    @pytest.fixture(autouse=True)
+    def preset_env(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
+        """音色预设库与指派键隔离到临时域。"""
+        from agent.tts import presets as tts_presets
+        from core.config import ConfigManager
+
+        monkeypatch.setattr(
+            tts_presets, "_store_path", lambda: str(tmp_path / "voice_presets.json"))
+        store: dict = {}
+        monkeypatch.setattr(
+            ConfigManager, "get", staticmethod(lambda k, d=None: store.get(k, d)))
+        monkeypatch.setattr(
+            ConfigManager, "set", staticmethod(lambda k, v: store.__setitem__(k, v)))
+        monkeypatch.setattr(ConfigManager, "save", staticmethod(lambda: True))
+
+    def test_crud_and_assign_flow(self, client: TestClient) -> None:
+        resp = client.get("/api/audio/voice-presets")
+        assert resp.status_code == 200
+        assert resp.json()["presets"] == []
+
+        resp = client.post("/api/audio/voice-presets", json={
+            "name": "御姐", "voice_id": "female-yujie", "note": "沉稳",
+        })
+        assert resp.status_code == 200
+        preset_id = resp.json()["id"]
+        assert preset_id.startswith("vp_")
+
+        resp = client.post("/api/audio/voice-presets/assign", json={
+            "scene": "default", "preset_id": preset_id})
+        assert resp.status_code == 200
+        resp = client.get("/api/audio/voice-presets")
+        assert resp.json()["assignments"]["default"] == preset_id
+
+        # 被指派的预设拒绝删除；解除指派后可删
+        resp = client.delete(f"/api/audio/voice-presets/{preset_id}")
+        assert resp.status_code == 422
+        client.post("/api/audio/voice-presets/assign",
+                    json={"scene": "default", "preset_id": ""})
+        resp = client.delete(f"/api/audio/voice-presets/{preset_id}")
+        assert resp.status_code == 200
+
+    def test_validation_422(self, client: TestClient) -> None:
+        resp = client.post("/api/audio/voice-presets", json={
+            "name": "x", "voice_id": "v",
+            "reference_audio": "http://a/b.mp3", "reference_text": "t"})
+        assert resp.status_code == 422
+        resp = client.post("/api/audio/voice-presets/assign",
+                           json={"scene": "night", "preset_id": ""})
+        assert resp.status_code == 422

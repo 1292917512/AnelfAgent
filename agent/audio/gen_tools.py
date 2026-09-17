@@ -13,6 +13,7 @@ import base64
 import json
 import mimetypes
 import os
+from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
 from agent.audio.capabilities import SOUND_CAPABILITIES, get_sound_router
@@ -108,7 +109,7 @@ async def text_to_voice(
     1. 预置音色：voice 参数（可用 list_voices 查询各提供者音色）
     2. 声音克隆：reference_audio 参考音频 + reference_text 对应文字（仅 models 链 OpenAI 风格协议）
 
-    两者都不传时，使用默认音色配置。超过 3000 字的长文本
+    两者都不传时，使用默认音色预设。超过 3000 字的长文本
     在支持的协议上自动走异步合成。
 
     Args:
@@ -122,19 +123,19 @@ async def text_to_voice(
         language_boost: 语种增强（MiniMax 协议）：Chinese/English/Japanese/auto 等
         provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
     """
-    from agent.tts import default_voice
-    from core.config import ConfigManager
+    from agent.tts import default_preset
 
     err = _check_provider(provider)
     if err:
         return err
     if not voice and not reference_audio:
-        default_ref = str(ConfigManager.get("tts_default_reference_audio", "") or "")
-        if default_ref:
-            reference_audio = default_ref
-            reference_text = reference_text or str(ConfigManager.get("tts_default_reference_text", "") or "")
-        else:
-            voice = default_voice()
+        preset = default_preset()
+        if preset is not None:
+            if preset.reference_audio:
+                reference_audio = preset.reference_audio
+                reference_text = reference_text or preset.reference_text
+            else:
+                voice = preset.voice_id
 
     if reference_audio and not reference_text:
         return tool_error("使用声音克隆时必须提供 reference_text",
@@ -373,36 +374,112 @@ async def generate_lyrics(
 
 
 # ==================================================================
+# 音色预设（AI 与 Web 共用的音色库）
+# ==================================================================
+
+@deferred_tool(name="voice_preset", group=_group, tags=["core"])
+async def voice_preset(
+    action: str = "list",
+    id: str = "",
+    name: str = "",
+    voice_id: str = "",
+    reference_audio: str = "",
+    reference_text: str = "",
+    note: str = "",
+    scene: str = "",
+    preset_id: str = "",
+) -> str:
+    """管理音色预设（命名的音色库，AI 与主人共用）：查看/保存/删除/场景指派。
+
+    预设 = 预置音色 ID 或克隆参考对（二选一）+ 注释。场景指派：
+    default（全局默认，text_to_voice 不传音色与实时通话统一生效）/
+    realtime（通话专用，留空跟随默认）。clone_voice/design_voice 造出
+    新音色后，保存预设并指派即全链路换声。
+
+    Args:
+        action: list（预设清单 + 当前指派与生效音色，默认）/ save（新建或更新）/
+            delete（删除未被指派的预设）/ apply（场景指派）
+        id: save 更新时传目标预设 ID（空=新建）
+        name: 预设名（save 必填）
+        voice_id: 预置音色 ID（与 reference_audio 二选一；克隆音色填克隆 ID）
+        reference_audio: 克隆参考音频 URL 或工作区路径（需配 reference_text）
+        reference_text: 参考音频对应文字
+        note: 注释（用途/风格备注，主人可在声音页·音色面板看到）
+        scene: apply 时必填：default / realtime
+        preset_id: apply 时指派的预设 ID（空=清除指派；realtime 空=跟随默认）
+    """
+    from agent.tts import presets
+    from agent.tts.voice import default_voice, realtime_voice, scene_assignment
+
+    action = action.strip().lower()
+    try:
+        if action == "list":
+            return _dumps({
+                "success": True,
+                "presets": [asdict(p) for p in presets.list_presets()],
+                "assignments": {
+                    scene: scene_assignment(scene)
+                    for scene in presets.SCENE_KEYS
+                },
+                "effective": {
+                    "default": default_voice(),
+                    "realtime": realtime_voice(),
+                },
+                "hint": "apply 指派场景；被指派的预设删除前需先解除指派",
+            })
+        if action == "save":
+            preset = presets.save_preset(
+                id=id, name=name, voice_id=voice_id,
+                reference_audio=reference_audio,
+                reference_text=reference_text, note=note)
+            return _dumps({
+                "success": True, "preset": asdict(preset),
+                "hint": "预设已保存；apply 动作指派场景后全链路生效",
+            })
+        if action == "delete":
+            presets.remove_preset(preset_id)
+            return _dumps({"success": True, "deleted": preset_id})
+        if action == "apply":
+            presets.assign_voice(scene, preset_id)
+            return _dumps({
+                "success": True, "scene": scene, "preset_id": preset_id,
+                "effective": {
+                    "default": default_voice(),
+                    "realtime": realtime_voice(),
+                },
+            })
+        return tool_error(f"未知操作: {action}", cause=ErrorCause.PARAM, retryable=False,
+                          hint="可选: list / save / delete / apply")
+    except ValueError as e:
+        return tool_error(str(e), cause=ErrorCause.PARAM, retryable=False)
+
+
+# ==================================================================
 # 声音能力配置管理
 # ==================================================================
 
 _SCALAR_KEYS = {
-    "default_voice": "tts_default_voice",
-    "realtime_voice": "realtime_tts_voice",
-    "default_reference_audio": "tts_default_reference_audio",
-    "default_reference_text": "tts_default_reference_text",
     "funasr_timeout": "funasr_timeout",
 }
 
 
 @deferred_tool(name="sound_config", group=_group, tags=["core"])
 async def sound_config(action: str = "capabilities", key: str = "", value: str = "") -> str:
-    """查看声音能力矩阵与提供者状态，或修改默认音色/FunASR 服务/优先级链。
+    """查看声音能力矩阵与提供者状态，或修改 FunASR 服务/优先级链。
 
     典型用法：
     - 规划声音任务前先 capabilities 查当前可用能力与调用示例
-    - design_voice/clone_voice 创建音色后，set default_voice <voice_id> 设为默认音色
     - 转写/声纹不可用时，set funasr_endpoint http://<host>:<port> 配置本地转写服务
 
     Args:
         action: capabilities（能力矩阵：工具选型+参数+示例+实时可用状态，默认）/
-            providers（各提供者能力与配置状态）/ get（全部声音配置）/ set（修改指定键）
-        key: set 时必填。可选：default_voice（合成默认音色）/
-            realtime_voice（实时通话默认音色，克隆音色 ID 可用）/
-            default_reference_audio / default_reference_text /
-            funasr_timeout（秒）/ provider_priority.<能力名>
-            （value 为 JSON 数组如 '["models"]'，能力名: tts/voice_mgmt/music）
+            providers（各提供者能力与配置状态）/ get（声音配置）/ set（修改指定键）
+        key: set 时必填。可选：funasr_timeout（秒）/
+            provider_priority.<能力名>（value 为 JSON 数组如 '["models"]'，
+            能力名: tts/voice_mgmt/music）
         value: set 时必填，配置值（provider_priority 用 JSON 数组字符串）
+
+    音色与场景指派归 voice_preset 工具（音色库增删改查），不在本工具。
     """
     from core.config import ConfigManager
     from entities._sdk import save_config_value
@@ -416,10 +493,6 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
         funasr_client.reset_probe_cache()
         return _dumps({"success": True, "config": {
             "provider_priority": ConfigManager.get("sound_provider_priority", {}),
-            "default_voice": ConfigManager.get("tts_default_voice", ""),
-            "default_reference_audio": ConfigManager.get("tts_default_reference_audio", ""),
-            "default_reference_text": ConfigManager.get("tts_default_reference_text", ""),
-            "realtime_voice": ConfigManager.get("realtime_tts_voice", ""),
             "funasr_timeout": ConfigManager.get("funasr_timeout", 120),
             "funasr_reachable": await funasr_client.probe_available(),
         }})
@@ -473,21 +546,25 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
         return tool_error("set 操作必须提供 key", cause=ErrorCause.PARAM, retryable=False)
     key = key.strip()
 
+    if key == "funasr_endpoint":
+        from core import provider_keys as pk
+        from entities.audiosync import client as funasr_client
+
+        endpoint = value.strip()
+        if not endpoint:
+            return tool_error("funasr_endpoint 不能为空", cause=ErrorCause.PARAM, retryable=False)
+        pk.set_provider_key("funasr", "funasr_endpoint", endpoint)
+        funasr_client.reset_probe_cache()
+        reachable = await funasr_client.probe_available()
+        return _dumps({
+            "success": True, "key": key, "value": endpoint, "reachable": reachable,
+            "hint": ("服务在线，转写/流式转写/声纹提取即刻可用" if reachable
+                     else "地址已保存但服务不可达：请确认服务已启动、地址端口正确"),
+        })
+
     if key in _SCALAR_KEYS:
         save_config_value(_SCALAR_KEYS[key], str(value))
-        result: Dict[str, Any] = {"success": True, "key": key, "value": str(value)}
-        if key == "default_voice":
-            result["hint"] = "默认音色已更新，全部合成入口统一使用（通话未单独覆盖时同样生效）"
-        if key == "funasr_endpoint":
-            from entities.audiosync import client as funasr_client
-
-            funasr_client.reset_probe_cache()
-            reachable = await funasr_client.probe_available()
-            result["reachable"] = reachable
-            result["hint"] = (
-                "服务在线，转写/流式转写/声纹提取即刻可用" if reachable
-                else "地址已保存但服务不可达：请确认服务已启动、地址端口正确")
-        return _dumps(result)
+        return _dumps({"success": True, "key": key, "value": str(value)})
 
     if key.startswith("provider_priority."):
         cap = key.split(".", 1)[1].strip()
@@ -512,6 +589,5 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
         return _dumps({"success": True, "key": key, "chain": router.chain(cap)})
 
     return tool_error(f"不支持的配置键: {key}", cause=ErrorCause.PARAM, retryable=False,
-                      hint="可选: default_voice / realtime_voice / default_reference_audio / "
-                           "default_reference_text / funasr_timeout / "
+                      hint="可选: funasr_endpoint / funasr_timeout / "
                            "provider_priority.<能力>")

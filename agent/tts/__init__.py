@@ -7,14 +7,22 @@
 - sentences.py：流式断句（CJK 标点/软切/短尾合并）与朗读清洗
   （markdown/旁白剥离、CJK 空格规范化）；
 - pipeline.py：句级流式管线（文本增量 → 断句 → 预取合成 → 有序 PCM）；
+- presets.py：音色预设注册表（AI 与 Web 共用的音色库 + 场景指派）；
 - voice.py：音色解析（全部合成入口的单一音色决策链）；
 - decode.py：压缩音频流 → PCM16 流（ffmpeg 管道，组件共用）。
 """
 
 from agent.tts.pipeline import TtsPipeline
+from agent.tts.presets import VoicePreset, assign_voice, list_presets
 from agent.tts.providers import TtsProvider, TtsStream, get_tts_registry, synthesize_sentence
 from agent.tts.sentences import SentenceSplitter, strip_for_speech
-from agent.tts.voice import default_voice, realtime_voice, resolve_voice
+from agent.tts.voice import (
+    default_preset,
+    default_voice,
+    realtime_preset,
+    realtime_voice,
+    resolve_voice,
+)
 from core.config import register_configs_safe
 
 __all__ = [
@@ -22,8 +30,13 @@ __all__ = [
     "TtsPipeline",
     "TtsProvider",
     "TtsStream",
+    "VoicePreset",
+    "assign_voice",
+    "default_preset",
     "default_voice",
     "get_tts_registry",
+    "list_presets",
+    "realtime_preset",
     "realtime_voice",
     "resolve_voice",
     "strip_for_speech",
