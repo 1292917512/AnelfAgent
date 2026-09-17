@@ -34,11 +34,12 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiosqlite
+import numpy as np
 
 from core.config import get_config, get_config_float
 from core.log import log
 
-from .vectors import blend, cosine, sample_weight
+from .vectors import blend, cosine, sample_weight, unit_rows
 
 _LOG_TAG = "音频"
 
@@ -986,11 +987,30 @@ class AudioStore:
         await db.commit()
 
     async def list_speaker_anchors(self) -> List[Tuple[int, List[float]]]:
-        """全部在档声纹锚（匹配候选来源；说话人量级小，线性扫）。"""
+        """全部在档声纹锚（逐向量访问；批量扫描用 speaker_anchor_matrix）。"""
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT id, vector FROM speakers WHERE archived=0 AND vector IS NOT NULL")
         return [(int(r["id"]), _blob_to_vec(r["vector"])) for r in await cursor.fetchall()]
+
+    async def speaker_anchor_matrix(self) -> Tuple[List[int], np.ndarray]:
+        """全部在档声纹锚 → (说话人 id 序列, 行归一化矩阵 [N, D])。
+
+        维度以首行为准（单提供者单模型，正常全库同维；异常行剔除）。
+        行归一化后一次矩阵-向量积即得全库锚相似度。
+        """
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT id, vector FROM speakers WHERE archived=0 AND vector IS NOT NULL")
+        rows = await cursor.fetchall()
+        if not rows:
+            return [], np.zeros((0, 0))
+        decoded = [(int(r["id"]), np.frombuffer(r["vector"], dtype=np.float32)
+                    .astype(np.float64)) for r in rows]
+        dims = int(decoded[0][1].shape[0])
+        kept = [(sid, vec) for sid, vec in decoded if vec.shape[0] == dims]
+        matrix = np.stack([vec for _, vec in kept]) if kept else np.zeros((0, dims))
+        return [sid for sid, _ in kept], unit_rows(matrix)
 
     async def get_speaker_samples(
         self, speaker_id: int, channel: str = "",

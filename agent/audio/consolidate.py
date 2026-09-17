@@ -13,12 +13,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from core.config import get_config_float, get_config_int
 from core.log import log
 
 from . import matcher
 from .store import AudioStore
-from .vectors import cosine
+from .vectors import pairwise_sims
 
 _LOG_TAG = "音频"
 
@@ -39,17 +41,22 @@ def insignificant_limits() -> tuple[int, int]:
     )
 
 
-async def _speaker_anchors(
+async def _anchor_similarity(
     store: AudioStore, *, status: str,
-) -> tuple[Dict[int, List[float]], Dict[int, Dict[str, Any]]]:
-    """按状态取说话人及其声纹锚（无锚的档案不参与聚类）。"""
+) -> tuple[List[int], Dict[int, Dict[str, Any]], np.ndarray]:
+    """按状态取参与聚类的说话人 id、档案映射与锚两两余弦矩阵。
+
+    无锚的档案（从未有合格样本）不参与聚类。
+    """
     listing = await store.list_speakers(status=status, limit=500)
     speakers = {int(s["id"]): s for s in listing["items"]}
-    anchors: Dict[int, List[float]] = {}
-    for speaker_id, anchor in await store.list_speaker_anchors():
-        if speaker_id in speakers and anchor:
-            anchors[speaker_id] = anchor
-    return anchors, speakers
+    ids, matrix = await store.speaker_anchor_matrix()
+    pos_of = {sid: i for i, sid in enumerate(ids)}
+    keep = [sid for sid in ids if sid in speakers]
+    if not keep:
+        return [], speakers, np.zeros((0, 0))
+    sub = matrix[[pos_of[sid] for sid in keep]]
+    return keep, speakers, pairwise_sims(sub)
 
 
 class _UnionFind:
@@ -80,18 +87,17 @@ async def find_merge_clusters(
     每簇：{"members": [{speaker 简报 + anchor_similarity}], "best_similarity": float}
     """
     threshold = threshold if threshold is not None else merge_threshold()
-    anchors, speakers = await _speaker_anchors(store, status=status)
+    ids, speakers, sims = await _anchor_similarity(store, status=status)
 
-    ids = list(anchors)
     uf = _UnionFind(ids)
     best_sim: Dict[int, float] = {i: 0.0 for i in ids}
-    for i, a in enumerate(ids):
-        for b in ids[i + 1:]:
-            sim = cosine(anchors[a], anchors[b])
+    for x in range(len(ids)):
+        for y in range(x + 1, len(ids)):
+            sim = float(sims[x, y])
             if sim >= threshold:
-                uf.union(a, b)
-                best_sim[a] = max(best_sim[a], sim)
-                best_sim[b] = max(best_sim[b], sim)
+                uf.union(ids[x], ids[y])
+                best_sim[ids[x]] = max(best_sim[ids[x]], sim)
+                best_sim[ids[y]] = max(best_sim[ids[y]], sim)
 
     groups: Dict[int, List[int]] = {}
     for i in ids:
@@ -139,14 +145,13 @@ async def similarity_map(
       行序与 speakers 一致，簇在视觉上自然成块）
     """
     threshold = threshold if threshold is not None else merge_threshold()
-    anchors, speakers = await _speaker_anchors(store, status=status)
-
-    ids = list(anchors)
+    ids, speakers, sims_matrix = await _anchor_similarity(store, status=status)
+    n = len(ids)
     sims: Dict[int, Dict[int, float]] = {i: {} for i in ids}
-    for x, a in enumerate(ids):
-        for b in ids[x + 1:]:
-            sim = round(cosine(anchors[a], anchors[b]), 4)
-            sims[a][b] = sims[b][a] = sim
+    for x in range(n):
+        for y in range(x + 1, n):
+            sim = round(float(sims_matrix[x, y]), 4)
+            sims[ids[x]][ids[y]] = sims[ids[y]][ids[x]] = sim
 
     uf = _UnionFind(ids)
     for a in ids:

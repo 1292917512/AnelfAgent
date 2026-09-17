@@ -62,6 +62,17 @@ register_configs_safe({
             "max": 1,
             "step": 0.05,
         },
+        "audio_match_separation": {
+            "description": "判识分离度门槛（AS-Norm）：候选得分须高出本次查询的"
+                           "冒充者分布 z 分值；「好几个人都像」的模糊查询降级为"
+                           "临时说话人待确认。库中说话人 <4 时自动不启用；0 关闭",
+            "default": 2.0,
+            "advanced": True,
+            "value_type": "range",
+            "min": 0,
+            "max": 6,
+            "step": 0.5,
+        },
         "audio_merge_threshold": {
             "description": "合并阈值：离线整理时质心相似度 ≥ 此值的临时说话人"
                            "建议合并（比匹配阈值宽松）",

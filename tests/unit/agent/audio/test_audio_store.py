@@ -423,6 +423,51 @@ class TestSchemaRebuild:
         await store2.close()
 
 
+def tilted_unit(dim: int, cosine: float) -> list[float]:
+    """与 vec(dim) 余弦为 cosine 的单位向量。"""
+    import math
+    v = vec(dim + 1)
+    v[dim] = cosine
+    v[dim + 1] = math.sqrt(1 - cosine * cosine)
+    return v
+
+
+class TestVectorAlgebra:
+    """numpy 向量代数：批量接口与逐对接口数值一致。"""
+
+    def test_cosine_many_matches_cosine(self) -> None:
+        import numpy as np
+
+        from agent.audio.vectors import cosine, cosine_many
+        tilted = tilted_unit(0, 0.8)
+        matrix = np.asarray([vec(0), vec(1), tilted])
+        sims = cosine_many(matrix, vec(0))
+        assert sims[0] == pytest.approx(1.0)
+        assert sims[1] == pytest.approx(0.0)
+        assert float(sims[2]) == pytest.approx(cosine(tilted, vec(0)))
+
+    def test_unit_rows_handles_zero_row(self) -> None:
+        import numpy as np
+
+        from agent.audio.vectors import pairwise_sims
+        matrix = np.asarray([vec(0), [0.0] * 192])
+        sims = pairwise_sims(matrix)
+        assert sims[0, 0] == pytest.approx(1.0)
+        assert sims[0, 1] == pytest.approx(0.0)  # 零行相似度为 0，非 NaN
+
+    async def test_speaker_anchor_matrix(self, store: AudioStore) -> None:
+        import numpy as np
+
+        s1 = await store.create_speaker(name="张三")
+        s2 = await store.create_speaker(name="李四")
+        await store.add_sample(int(s1["id"]), vec(0))
+        await store.add_sample(int(s2["id"]), vec(1))
+        ids, matrix = await store.speaker_anchor_matrix()
+        assert set(ids) == {int(s1["id"]), int(s2["id"])}
+        assert matrix.shape == (2, 192)
+        assert np.allclose(np.linalg.norm(matrix, axis=1), 1.0)  # 行已归一化
+
+
 class TestSummaryBindings:
     async def test_bindings_in_summary(self, store: AudioStore) -> None:
         s = await store.create_speaker(name="张三", role="家人")

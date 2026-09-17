@@ -130,7 +130,8 @@
     "entityScopePlaceholder": "Entity scope (e.g. user:webui:123)",
     "boundEntity": "Bound entity",
     "anchorWeight": "Voiceprint anchor",
-    "anchorWeightValue": "{{seconds}}s effective speech ({{count}} pooled samples)"
+    "anchorWeightValue": "{{seconds}}s effective speech ({{count}} pooled samples)",
+    "separation": "separation"
   },
   "actions": {
     "enroll": "Enroll speaker",

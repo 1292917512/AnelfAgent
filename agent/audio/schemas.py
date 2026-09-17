@@ -62,7 +62,7 @@ class IngestResult(BaseModel):
 
 
 class IdentifyCandidate(BaseModel):
-    """识别候选说话人（三判据评分：锚/信道模板/最佳样本）。"""
+    """识别候选说话人（三判据评分：锚/信道模板/最佳样本 + 分离度）。"""
 
     id: int
     speaker_key: str
@@ -76,6 +76,7 @@ class IdentifyCandidate(BaseModel):
     anchor_similarity: float = 0.0
     sample_similarity: float = 0.0
     channel_similarity: Optional[float] = None
+    separation: Optional[float] = None
     entity_scope: str = ""
 
 

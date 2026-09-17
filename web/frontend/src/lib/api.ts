@@ -1063,6 +1063,7 @@ export interface AudioIdentifyCandidate {
   anchor_similarity?: number;
   sample_similarity?: number;
   channel_similarity?: number | null;
+  separation?: number | null;
   entity_scope?: string;
 }
 

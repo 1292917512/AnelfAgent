@@ -1,4 +1,4 @@
-"""声纹匹配引擎：锚扫描候选、信道感知评分、识别建档与身份合并。
+"""声纹匹配引擎：锚扫描候选、信道感知评分、分离度门与识别建档。
 
 声纹模型（一人一档案，多样本聚合）：
 - 每个说话人维护一个声纹锚——全部历史合格样本的时长加权质心，随每次
@@ -7,11 +7,15 @@
 - 样本池是带信道标注的近期多样本窗口，支撑信道模板（同一人经微信/电话/
   麦克风提取的嵌入存在信道漂移，同信道质心可补偿）与最佳样本判据；
 - 说话人得分 = max(锚相似度, 信道模板相似度, 最佳样本相似度)：锚抑制
-  单样本噪音，信道模板补偿跨设备漂移，最佳样本保留特征峰值。
+  单样本噪音，信道模板补偿跨设备漂移，最佳样本保留特征峰值；
+- 分离度门（AS-Norm，业界标准打分后端）：候选得分还需高出本次查询的
+  冒充者分布（对其余说话人锚得分做 z 归一）——"很多人 都像"的模糊查询
+  降级为临时说话人待确认，而不是冒险认亲（防投毒优先于防分裂）。
 
 阈值语义：
 - 全局阈值 audio_match_threshold（默认 0.75）；说话人 threshold 非空时覆盖
-- 相似度 ≥ 阈值 → 已知人；< 阈值 → 新人（自动建临时说话人 spk_tmp_XXXX，待确认）
+- 相似度 ≥ 阈值 且（分离度不足门槛或冒充 cohort <3 时仅阈值）→ 已知人；
+  否则新人（自动建临时说话人 spk_tmp_XXXX，待确认）
 """
 
 from __future__ import annotations
@@ -19,21 +23,33 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from core.config import get_config_bool, get_config_float, get_config_int
 
 from .store import AudioStore
-from .vectors import blend, cosine, sample_weight, weighted_centroid
+from .vectors import blend, cosine, cosine_many, sample_weight, weighted_centroid
 
 # 锚扫描入围：距全局阈值的边距（覆盖更宽松的独立阈值）+ TopN 进精评
 _SHORTLIST_MARGIN = 0.25
 _SHORTLIST_TOP = 8
 # 信道模板生效所需的最少同信道样本数
 _MIN_CHANNEL_SAMPLES = 2
+# AS-Norm 冒充 cohort 的 top-K 上限（说话人量大于此值时取最高分的前 K 个）
+_COHORT_TOP_K = 100
 
 
 def global_threshold() -> float:
     """全局匹配阈值（audio_match_threshold，默认 0.75）。"""
     return get_config_float("audio_match_threshold", 0.75)
+
+
+def separation_floor() -> float:
+    """判识分离度门槛（audio_match_separation，默认 2.0，0=关闭）。
+
+    AS-Norm z 分值：候选锚得分相对本次查询冒充分布（其余说话人
+    top-K 得分的均值/标准差）的偏离量。"""
+    return get_config_float("audio_match_separation", 2.0)
 
 
 def max_samples_per_speaker() -> int:
@@ -62,6 +78,22 @@ def _speaker_brief(speaker: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _cohort_separation(
+    speaker_pos: int, anchor_sims: np.ndarray,
+) -> Optional[float]:
+    """AS-Norm z 分值：候选得分相对本次查询冒充分布的偏离。
+
+    cohort = 其余说话人的锚得分（量大时取 top-K），z = (s−μ)/σ。
+    cohort 不足 3 人时返回 None（分布无统计意义，门自动不启用）。
+    """
+    cohort = np.delete(anchor_sims, speaker_pos)
+    if len(cohort) < 3:
+        return None
+    cohort = np.sort(cohort)[::-1][:_COHORT_TOP_K]
+    std = float(cohort.std())
+    return float((anchor_sims[speaker_pos] - cohort.mean()) / max(std, 1e-6))
+
+
 async def match_vector(
     store: AudioStore,
     vector: List[float],
@@ -69,51 +101,67 @@ async def match_vector(
     channel: str = "",
     top_k: int = 5,
 ) -> List[Dict[str, Any]]:
-    """声纹检索：锚全量扫描入围，候选按三判据精评（按相似度降序）。
+    """声纹检索：锚全量矩阵扫描入围，候选按三判据 + 分离度门精评。
 
     入围 = 锚相似度 ≥ 全局阈值 - 边距 或 锚相似度 TopN；精评才加载
     样本池（锚是主判据，池只在入围者上展开）。
     """
-    anchor_sims: Dict[int, float] = {}
-    for speaker_id, anchor in await store.list_speaker_anchors():
-        anchor_sims[speaker_id] = cosine(vector, anchor)
-    if not anchor_sims:
+    ids, matrix = await store.speaker_anchor_matrix()
+    if not ids:
         return []
+    query = np.asarray(vector, dtype=np.float64)
+    query_norm = float(np.linalg.norm(query))
+    if query_norm == 0.0:
+        return []
+    sims = cosine_many(matrix, vector)
+
     floor = global_threshold() - _SHORTLIST_MARGIN
-    ranked = sorted(anchor_sims.items(), key=lambda kv: kv[1], reverse=True)
+    ranked = sorted(zip(ids, sims.tolist(), strict=True),
+                    key=lambda kv: kv[1], reverse=True)
     shortlist = [sid for sid, sim in ranked if sim >= floor][:max(_SHORTLIST_TOP, top_k)]
     if not shortlist:
         shortlist = [sid for sid, _ in ranked[:top_k]]
+    pos_of = {sid: i for i, sid in enumerate(ids)}
+    margin = separation_floor()
 
     candidates: List[Dict[str, Any]] = []
     for speaker_id in shortlist:
         speaker = await store.get_speaker(speaker_id)
         if not speaker:
             continue
-        anchor_sim = anchor_sims[speaker_id]
+        anchor_sim = float(sims[pos_of[speaker_id]])
         sample_sim = 0.0
         channel_sim: Optional[float] = None
-        channel_pairs: List[tuple[List[float], float]] = []
-        for vec, duration_ms, sample_channel in await store.get_speaker_samples(speaker_id):
-            sim = cosine(vector, vec)
-            if sim > sample_sim:
-                sample_sim = sim
-            if channel and sample_channel == channel:
-                channel_pairs.append((vec, sample_weight(duration_ms)))
-        if len(channel_pairs) >= _MIN_CHANNEL_SAMPLES:
-            centroid = weighted_centroid(channel_pairs)
-            if centroid is not None:
-                channel_sim = cosine(vector, centroid[0])
+        samples = await store.get_speaker_samples(speaker_id)
+        if samples:
+            pool_matrix = np.asarray([vec for vec, _, _ in samples], dtype=np.float64)
+            sample_sims = cosine_many(pool_matrix, vector)
+            sample_sim = float(sample_sims.max())
+            if channel:
+                channel_idx = [
+                    i for i, (_, _, sample_channel) in enumerate(samples)
+                    if sample_channel == channel]
+                if len(channel_idx) >= _MIN_CHANNEL_SAMPLES:
+                    centroid = weighted_centroid(
+                        [(samples[i][0], sample_weight(samples[i][1])) for i in channel_idx])
+                    if centroid is not None:
+                        channel_sim = cosine(vector, centroid[0])
 
         score = max(anchor_sim, sample_sim, channel_sim or 0.0)
+        separation = _cohort_separation(pos_of[speaker_id], sims) if margin > 0 else None
+        threshold = effective_threshold(speaker)
+        matched = bool(score >= threshold)
+        if matched and separation is not None:
+            matched = separation >= margin
         candidates.append({
             **_speaker_brief(speaker),
             "similarity": round(score, 4),
-            "matched": score >= effective_threshold(speaker),
+            "matched": matched,
             "channel": channel,
             "anchor_similarity": round(anchor_sim, 4),
             "sample_similarity": round(sample_sim, 4),
             "channel_similarity": round(channel_sim, 4) if channel_sim is not None else None,
+            "separation": round(separation, 3) if separation is not None else None,
         })
     candidates.sort(key=lambda x: x["similarity"], reverse=True)
     return candidates[:max(1, top_k)]

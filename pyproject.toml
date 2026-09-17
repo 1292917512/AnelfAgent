@@ -11,6 +11,8 @@ dependencies = [
     #   LLM_CACHE_E2E=1 uv run pytest tests/integration/test_llm_cache_hit_e2e.py
     "litellm==1.100.1",
     "aiosqlite>=0.21.0",
+    # 声纹向量代数（agent/audio/vectors.py 直接依赖）
+    "numpy>=1.26.0",
     "pydantic>=2.10.0",
     "fastapi>=0.116.2",
     "httpx>=0.28.0",

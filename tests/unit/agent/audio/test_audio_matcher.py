@@ -123,6 +123,55 @@ class TestMatchAndIdentify:
         assert candidates[1]["matched"] is False
 
 
+class TestSeparationGate:
+    """AS-Norm 分离度门：候选须高出本次查询的冒充者分布才认亲。"""
+
+    @staticmethod
+    async def _enroll_four(store: AudioStore) -> None:
+        for name, dim in (("张三", 0), ("李四", 1), ("王五", 2), ("赵六", 3)):
+            await matcher.enroll(store, name, vec(dim))
+
+    async def test_ambiguous_query_downgraded(self, store: AudioStore) -> None:
+        """贴近阈值的漂移查询且他人也得分（模糊）→ 降级待确认，不冒险认亲。"""
+        await self._enroll_four(store)
+        # tilted(0,0.76) 对李四（e1 分量 0.65）也像 → cohort 抬高 → z < 2
+        candidates = await matcher.match_vector(store, tilted(0, 0.76))
+        assert candidates[0]["name"] == "张三"
+        assert candidates[0]["similarity"] >= 0.75  # 余弦过了阈值
+        assert candidates[0]["separation"] is not None
+        assert candidates[0]["separation"] < 2.0
+        assert candidates[0]["matched"] is False  # 分离度门拒绝
+
+    async def test_clear_query_passes(self, store: AudioStore) -> None:
+        """清晰查询（远超阈值且 cohort 低）→ 分离度足够，正常认亲。"""
+        await self._enroll_four(store)
+        candidates = await matcher.match_vector(store, tilted(0, 0.9))
+        assert candidates[0]["name"] == "张三"
+        assert candidates[0]["separation"] > 2.0
+        assert candidates[0]["matched"] is True
+
+    async def test_small_library_skips_gate(self, store: AudioStore) -> None:
+        """冒充 cohort <3 人无统计意义 → 门自动不启用（纯余弦判定）。"""
+        await matcher.enroll(store, "张三", vec(0))
+        await matcher.enroll(store, "李四", vec(1))
+        await matcher.enroll(store, "王五", vec(2))
+        candidates = await matcher.match_vector(store, tilted(0, 0.76))
+        assert candidates[0]["separation"] is None
+        assert candidates[0]["matched"] is True
+
+    async def test_gate_disabled_by_config(self, store: AudioStore) -> None:
+        """audio_match_separation=0 → 门关闭，回到纯阈值判定。"""
+        from core.config import ConfigManager
+        ConfigManager.set("audio_match_separation", 0)
+        try:
+            await self._enroll_four(store)
+            candidates = await matcher.match_vector(store, tilted(0, 0.76))
+            assert candidates[0]["separation"] is None
+            assert candidates[0]["matched"] is True
+        finally:
+            ConfigManager.set("audio_match_separation", 2.0)
+
+
 class TestConfirmAndMerge:
     async def test_confirm_pending(self, store: AudioStore) -> None:
         created = await matcher.identify(store, vec(3))

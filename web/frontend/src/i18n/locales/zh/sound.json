@@ -130,7 +130,8 @@
     "entityScopePlaceholder": "实体 scope（如 user:webui:123）",
     "boundEntity": "已绑定实体",
     "anchorWeight": "声纹锚",
-    "anchorWeightValue": "{{seconds}} 秒等效语音（样本池 {{count}} 条）"
+    "anchorWeightValue": "{{seconds}} 秒等效语音（样本池 {{count}} 条）",
+    "separation": "分离度"
   },
   "actions": {
     "enroll": "注册说话人",

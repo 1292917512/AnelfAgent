@@ -87,6 +87,11 @@ export function IdentifyPanel() {
                         seg.candidates.map((c) => (
                           <Badge key={c.id} variant={c.matched ? "ok" : "neutral"}>
                             {c.name || c.speaker_key} {c.similarity.toFixed(3)}
+                            {c.separation != null && (
+                              <span className="ml-1 opacity-70">
+                                ·{t("fields.separation")} {c.separation.toFixed(1)}
+                              </span>
+                            )}
                           </Badge>
                         ))
                       )}
