@@ -3,10 +3,12 @@
 数据流（对应一次音频处理结果）：
     IngestPayload
       → 噪音过滤（纯标点/空文本段直接跳过，不计片段不建档）
+      → 信道归一（device_source → voip/mic/chat/...，随样本入池）
       → 短段策略（时长 < audio_min_segment_ms 的段声纹不可靠：
           只做转写留存（speaker=NULL），不匹配不建档；attach 模式
           挂到同录制前一段的说话人）
-      → 逐段 matcher.identify（已知人命中回写 + 样本累积 / 新人建临时档案）
+      → 逐段 matcher.identify（已知人命中回写 + 样本累积/锚折叠
+          / 新人建临时档案）
       → store.add_segment（未读收件箱 +1）
       → wake_embedding_worker（后台回填转写文本向量）
 """
@@ -21,6 +23,7 @@ from core.config import get_config_bool, get_config_int
 from core.log import log
 
 from . import matcher
+from .channels import normalize_channel
 from .schemas import IngestPayload, IngestResult, IngestResultItem
 from .store import AudioStore, get_audio_store
 
@@ -63,6 +66,7 @@ async def ingest_payload(
     base_ts_ns = int(payload.ts * 1_000_000_000) if payload.ts else time.time_ns()
     skip_noise = get_config_bool("audio_skip_noise_segments", True)
     min_ms = _min_segment_ms()
+    channel = normalize_channel(payload.device_source)
 
     results: List[IngestResultItem] = []
     skipped = 0
@@ -83,7 +87,7 @@ async def ingest_payload(
         short_segment = 0 < audio_ms < min_ms
         if seg.vector and not short_segment:
             identified = await matcher.identify(
-                store, seg.vector, audio_ms=audio_ms, ts_ns=base_ts_ns)
+                store, seg.vector, audio_ms=audio_ms, ts_ns=base_ts_ns, channel=channel)
             speaker = identified["speaker"]
             if speaker:
                 speaker_id = int(speaker["id"])

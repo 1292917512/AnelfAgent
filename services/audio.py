@@ -189,7 +189,8 @@ class AudioServiceFacade:
         real = os.path.realpath(path)
         if not real.startswith(upload_root + os.sep) or not os.path.isfile(real):
             raise FileNotFoundError(f"文件不在上传目录内或不存在: {path}")
-        return await get_audio_service().transcribe_and_store(real)
+        return await get_audio_service().transcribe_and_store(
+            real, device_source="web")
 
     async def transcribe_upload(
         self, filename: str, content: bytes, source_time: str = "",
@@ -276,9 +277,7 @@ class AudioServiceFacade:
                 store, item.name, item.vectors[0], role=item.role, notes=item.notes,
                 source="import")
             for vec in item.vectors[1:]:
-                await store.add_sample(
-                    int(speaker["id"]), vec, source="import",
-                    max_samples=matcher.max_samples_per_speaker())
+                await store.add_sample(int(speaker["id"]), vec, source="import")
             imported.append({"id": speaker["id"], "speaker_key": speaker["speaker_key"],
                              "name": speaker["name"], "samples": len(item.vectors)})
         return {"imported": imported, "total": len(imported)}
@@ -286,16 +285,18 @@ class AudioServiceFacade:
     async def enroll_audio(self, filename: str, content: bytes, name: str,
                            role: str = "", notes: str = "") -> Dict[str, Any]:
         segments = await self.transcribe_upload(filename, content)
-        vectors = [s["vector"] for s in segments if s.get("vector")]
-        if not vectors:
+        voiced = [(s["vector"], max(0, int(s["end_ms"]) - int(s["start_ms"])))
+                  for s in segments if s.get("vector")]
+        if not voiced:
             raise RuntimeError("音频中未提取到有效声纹")
         store = get_audio_store()
         speaker = await matcher.enroll(
-            store, name, vectors[0], role=role, notes=notes, device_source=filename)
-        for vec in vectors[1:matcher.max_samples_per_speaker()]:
+            store, name, voiced[0][0], role=role, notes=notes,
+            device_source=filename, duration_ms=voiced[0][1])
+        for vec, duration_ms in voiced[1:matcher.max_samples_per_speaker()]:
             await store.add_sample(int(speaker["id"]), vec, source="enroll",
-                                   max_samples=matcher.max_samples_per_speaker())
-        return {"speaker": speaker, "samples_enrolled": len(vectors)}
+                                   channel="enroll", duration_ms=duration_ms)
+        return {"speaker": speaker, "samples_enrolled": len(voiced)}
 
     async def prune_speakers(self, include_with_samples: bool) -> Dict[str, Any]:
         deleted = await get_audio_store().prune_pending_speakers(

@@ -163,6 +163,13 @@ export function SpeakersPanel() {
           <span>{t("fields.totalAudio")}: {formatDuration(s.total_audio_ms)}</span>
           <span>{t("fields.matches")}: {s.match_count}</span>
         </div>
+        <div className="flex flex-wrap items-center gap-1">
+          {Object.entries(s.channels ?? {}).map(([ch, n]) => (
+            <Badge key={ch} variant="neutral">
+              {t(`channels.${ch}`, ch)}×{n}
+            </Badge>
+          ))}
+        </div>
         <div>{t("fields.lastSeen")}: {formatNs(s.last_seen_ns)}</div>
         <div className="flex items-center gap-1 pt-1">
           <Button size="sm" variant="secondary" onClick={() => setDetailId(s.id)}>

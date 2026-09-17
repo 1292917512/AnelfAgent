@@ -325,7 +325,8 @@ async def speaker_bind(speaker: str, entity_scope: str = "") -> str:
 async def speaker_merge(source: str, target: str) -> str:
     """合并两个说话人身份：source 的样本池/话语记录/统计并入 target，source 删除。
 
-    合并后自动精化目标声纹（融合样本池重立质心锚）。
+    声纹锚按累计权重精确合成（与重放两档案全部历史样本等价）——
+    合并是"同一人被分裂成两个档案"的归一路径。
 
     Args:
         source: 被合并的说话人（通常是临时ID，id/key/姓名）
@@ -352,11 +353,11 @@ async def speaker_merge(source: str, target: str) -> str:
 
 @deferred_tool(group=_group, tags=["core"])
 async def speaker_refine(speaker: str) -> str:
-    """精化声纹：用累积的语音样本重立质心锚，采样越多声纹越精确。
+    """重建声纹锚：以当前样本池重立（剔除坏样本后用它复位，丢弃被污染的历史累积）。
 
-    质心锚是超出样本池窗口的长期身份记忆，参与匹配判据与检索——
-    样本池更迭后身份仍连续。合并说话人后自动精化，也可在样本
-    积累变多时随时手动精化。
+    声纹锚（历史合格样本的加权质心）随每次合格采样自动折叠更新，
+    常规情况无需重建；适用场景是手动剔除坏样本后复位、或怀疑锚被
+    长期误匹配带偏。返回漂移（新旧锚余弦，越接近 1 变化越小）。
 
     Args:
         speaker: 说话人引用（id/key/姓名）
@@ -408,7 +409,10 @@ async def speaker_enroll(
     notes: str = "",
     entity_scope: str = "",
 ) -> str:
-    """注册正式说话人：提供音频提取声纹建档（冷启动/已知人录入）。
+    """注册说话人：提供音频提取声纹建档（冷启动/已知人录入）。
+
+    同名已确认档案直接累积样本（一人一档案）；声音对不上的累积
+    会被相干门拒入（返回 sample_rejected 标记）。
 
     Args:
         name: 说话人姓名
@@ -435,19 +439,27 @@ async def speaker_enroll(
             return tool_error(f"音频文件不存在: {audio_path}", cause=ErrorCause.NOT_FOUND,
                               retryable=False)
         segments = await audio_transcribe(resolved)
-        vectors = [s["vector"] for s in segments if s.get("vector")]
-        if not vectors:
+        voiced = [(s["vector"], max(0, int(s["end_ms"]) - int(s["start_ms"])))
+                  for s in segments if s.get("vector")]
+        if not voiced:
             return tool_error("音频中未提取到有效声纹", cause=ErrorCause.STATE,
                               retryable=True, hint="换一段包含清晰人声的音频")
         store = get_audio_store()
         speaker = await matcher.enroll(
-            store, name, vectors[0], role=role, notes=notes,
-            device_source=resolved, entity_scope=entity_scope.strip())
-        # 多余向量作为多样本入池（提升鲁棒性）
-        for vec in vectors[1:matcher.max_samples_per_speaker()]:
-            await store.add_sample(int(speaker["id"]), vec, source="enroll",
-                                   max_samples=matcher.max_samples_per_speaker())
-        return _dump({"speaker": speaker, "samples_enrolled": len(vectors)})
+            store, name, voiced[0][0], role=role, notes=notes,
+            device_source=resolved, entity_scope=entity_scope.strip(),
+            duration_ms=voiced[0][1])
+        # 多余向量作为多样本入池（跨段落多场景，提升鲁棒性）
+        rejected = bool(speaker.pop("sample_rejected", False))
+        for vec, duration_ms in voiced[1:matcher.max_samples_per_speaker()]:
+            rejected = rejected or await store.add_sample(
+                int(speaker["id"]), vec, source="enroll",
+                channel="enroll", duration_ms=duration_ms) < 0
+        result = {"speaker": speaker, "samples_enrolled": len(voiced)}
+        if rejected:
+            result["sample_rejected"] = True
+            result["hint"] = "部分样本与既有声纹相干度过低被拒入，请确认音频属于本人"
+        return _dump(result)
     except ValueError as e:
         return tool_error(str(e), cause=ErrorCause.PARAM, retryable=False)
     except Exception as e:
@@ -973,12 +985,12 @@ async def speaker_consolidate(
     """相似度合并整理 + 低价值清理：归并被分裂的临时说话人，清除环境音档案。
 
     解决"一场会议裂出几十个说话人"：入库单段匹配（0.75）对短段过严，
-    本工具用更稳定的样本质心 + 更宽松阈值（默认 0.70）做事后归并；
+    本工具用更稳定的声纹锚 + 更宽松阈值（默认 0.70）做事后归并；
     合并后仍低价值的（命中 ≤2 且累计 ≤5s，多为环境音/背景人声）可一并剔除。
     强烈建议先 dry_run=true 预览分簇与低价值清单，确认后 dry_run=false 执行。
 
     Args:
-        threshold: 质心相似度阈值（0 用全局配置 audio_merge_threshold，默认 0.70）
+        threshold: 锚相似度阈值（0 用全局配置 audio_merge_threshold，默认 0.70）
         dry_run: true 只预览不执行
         include_confirmed: 是否把已确认说话人也纳入聚类（默认只整理待确认）
         prune_insignificant: 执行时是否一并剔除低价值说话人

@@ -1,4 +1,4 @@
-"""音频核心层测试：提供者注册表/优先级链、服务解析、入库管线、旧库迁移。"""
+"""音频核心层测试：提供者注册表/优先级链、服务解析、入库管线、声纹锚。"""
 
 from __future__ import annotations
 
@@ -21,6 +21,15 @@ def vec(dim: int) -> list[float]:
     """192 维单位向量基（dim 位为 1），向量间两两正交。"""
     v = [0.0] * 192
     v[dim] = 1.0
+    return v
+
+
+def tilted(dim: int, cosine: float) -> list[float]:
+    """构造与 vec(dim) 余弦相似度为 cosine 的向量。"""
+    import math
+    v = vec(dim + 1)
+    v[dim] = cosine
+    v[dim + 1] = math.sqrt(1 - cosine * cosine)
     return v
 
 
@@ -137,185 +146,6 @@ class TestService:
         assert items[0]["transcript"] == "by f"
 
 
-class TestMigration:
-    async def test_migrate_legacy_voiceprints(self, store, tmp_path, monkeypatch):
-        """旧实体声纹库（说话人/样本/片段/录制）一次性迁入，幂等。"""
-        import aiosqlite
-        legacy = tmp_path / "agent_voiceprints.sqlite3"
-        async with aiosqlite.connect(str(legacy)) as db:
-            await db.executescript("""
-                CREATE TABLE speakers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, speaker_key TEXT UNIQUE,
-                    name TEXT DEFAULT '', role TEXT DEFAULT '', status TEXT DEFAULT 'confirmed',
-                    threshold REAL, notes TEXT DEFAULT '', device_source TEXT DEFAULT '',
-                    total_audio_ms INTEGER DEFAULT 0, first_seen_ns INTEGER DEFAULT 0,
-                    last_seen_ns INTEGER DEFAULT 0, match_count INTEGER DEFAULT 0,
-                    archived INTEGER DEFAULT 0);
-                CREATE TABLE voice_samples (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, speaker_id INTEGER,
-                    vector BLOB, segment_id INTEGER, score REAL DEFAULT 0,
-                    source TEXT DEFAULT '', created_ns INTEGER DEFAULT 0);
-                CREATE TABLE voice_segments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, recording_path TEXT DEFAULT '',
-                    source_file TEXT DEFAULT '', device_source TEXT DEFAULT '',
-                    start_ms INTEGER DEFAULT 0, end_ms INTEGER DEFAULT 0,
-                    part_start_ms INTEGER DEFAULT 0, speaker_id INTEGER,
-                    is_new_speaker INTEGER DEFAULT 0, similarity REAL DEFAULT 0,
-                    transcript TEXT DEFAULT '', transcript_embedding BLOB,
-                    ts_ns INTEGER DEFAULT 0, read INTEGER DEFAULT 0);
-                CREATE TABLE recordings (
-                    path TEXT PRIMARY KEY, kind TEXT DEFAULT 'folder',
-                    fingerprint TEXT DEFAULT '', started_ns INTEGER DEFAULT 0,
-                    file_count INTEGER DEFAULT 0, status TEXT DEFAULT 'done',
-                    error TEXT DEFAULT '', segments INTEGER DEFAULT 0,
-                    files_json TEXT DEFAULT '[]', synced_ns INTEGER DEFAULT 0);
-            """)
-            await db.execute(
-                "INSERT INTO speakers(speaker_key, name, first_seen_ns, last_seen_ns) "
-                "VALUES ('spk_0001', '张三', 1, 2)")
-            await db.execute(
-                "INSERT INTO voice_samples(speaker_id, vector, source, created_ns) "
-                "VALUES (1, ?, 'enroll', 100)", (b"\x00" * 768,))
-            await db.execute(
-                "INSERT INTO voice_segments(recording_path, source_file, start_ms, end_ms, "
-                "speaker_id, transcript, ts_ns) "
-                "VALUES ('/nas/a', 'a.wav', 0, 500, 1, '旧片段', 1000)")
-            await db.execute(
-                "INSERT INTO recordings(path, kind, synced_ns) VALUES ('/nas/a', 'folder', 100)")
-            await db.commit()
-        monkeypatch.setattr(
-            "agent.audio.store._legacy_db_candidates", lambda: [str(legacy)])
-        totals = await store.migrate_legacy()
-        assert totals == {"speakers": 1, "samples": 1, "segments": 1, "recordings": 1}
-        # 幂等：再跑一次零增量
-        assert await store.migrate_legacy() == {
-            "speakers": 0, "samples": 0, "segments": 0, "recordings": 0}
-        speaker = await store.get_speaker_by_key("spk_0001")
-        assert speaker is not None and speaker["name"] == "张三"
-        items = (await store.list_segments())["items"]
-        assert items[0]["transcript"] == "旧片段"
-        assert items[0]["speaker_id"] == speaker["id"]
-        assert await store.get_recording("/nas/a") is not None
-
-    async def test_migrate_v1_audio_segments(self, tmp_path):
-        """初版音频库表（abs_*/speaker_key/vector 列）升级为新结构。"""
-        import aiosqlite
-        db_path = str(tmp_path / "audio.sqlite3")
-        async with aiosqlite.connect(db_path) as db:
-            await db.execute(
-                "CREATE TABLE audio_segments ("
-                "id INTEGER PRIMARY KEY AUTOINCREMENT, source_file TEXT DEFAULT '', "
-                "device_source TEXT DEFAULT '', ts_ns INTEGER NOT NULL, "
-                "start_ms INTEGER DEFAULT 0, end_ms INTEGER DEFAULT 0, "
-                "abs_start_ms INTEGER, abs_end_ms INTEGER, transcript TEXT DEFAULT '', "
-                "transcript_tokens TEXT DEFAULT '', speaker_key TEXT DEFAULT '', "
-                "speaker_name TEXT DEFAULT '', similarity REAL DEFAULT 0, "
-                "vector BLOB, created_at REAL NOT NULL)")
-            await db.execute(
-                "INSERT INTO audio_segments(source_file, ts_ns, transcript, speaker_key, "
-                "created_at) VALUES ('a.wav', 1000, '你好', 'spk_0001', 1.0)")
-            await db.commit()
-        store = AudioStore(db_path)
-        await store.initialize()
-        items = (await store.list_segments())["items"]
-        assert len(items) == 1 and items[0]["transcript"] == "你好"
-        # v1 迁移后 FTS 索引已全量重建（迁入行可被全文召回）
-        hits = await store.search_segments("你好")
-        assert hits and hits[0]["transcript"] == "你好"
-        # v1 说话人引用暂存，待旧声纹库迁入后回填
-        assert await store._get_meta("v1_segment_speaker_keys")
-        speaker = await store.create_speaker(name="张三")
-        await store._set_meta("v1_segment_speaker_keys",
-                              '{"1": "' + speaker["speaker_key"] + '"}')
-        await store._backfill_v1_speaker_keys()
-        items = (await store.list_segments())["items"]
-        assert items[0]["speaker_id"] == speaker["id"]
-        await store.close()
-
-    async def test_migrate_oldest_schema_without_later_columns(self, store, tmp_path, monkeypatch):
-        """最老库（无 recording_path/part_start_ms/abs_start_ms 等后加列）宽容迁移。"""
-        import aiosqlite
-        legacy = tmp_path / "agent_voiceprints.sqlite3"
-        async with aiosqlite.connect(str(legacy)) as db:
-            await db.executescript("""
-                CREATE TABLE speakers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, speaker_key TEXT UNIQUE,
-                    name TEXT DEFAULT '');
-                CREATE TABLE voice_samples (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, speaker_id INTEGER,
-                    vector BLOB, created_ns INTEGER DEFAULT 0);
-                CREATE TABLE voice_segments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, source_file TEXT DEFAULT '',
-                    start_ms INTEGER DEFAULT 0, end_ms INTEGER DEFAULT 0,
-                    speaker_id INTEGER, similarity REAL DEFAULT 0,
-                    transcript TEXT DEFAULT '', ts_ns INTEGER DEFAULT 0,
-                    read INTEGER DEFAULT 0);
-            """)
-            await db.execute(
-                "INSERT INTO speakers(speaker_key, name) VALUES ('spk_0001', '张三')")
-            await db.execute(
-                "INSERT INTO voice_samples(speaker_id, vector, created_ns) "
-                "VALUES (1, ?, 100)", (b"\x00" * 768,))
-            await db.execute(
-                "INSERT INTO voice_segments(source_file, start_ms, end_ms, speaker_id, "
-                "transcript, ts_ns) VALUES ('a.wav', 0, 500, 1, '旧片段', 1000)")
-            await db.commit()
-        monkeypatch.setattr(
-            "agent.audio.store._legacy_db_candidates", lambda: [str(legacy)])
-        totals = await store.migrate_legacy()
-        assert totals["speakers"] == 1 and totals["samples"] == 1
-        assert totals["segments"] == 1
-        speaker = await store.get_speaker_by_key("spk_0001")
-        assert speaker is not None
-        items = (await store.list_segments())["items"]
-        assert items[0]["transcript"] == "旧片段"
-        assert items[0]["speaker_id"] == speaker["id"]
-        assert items[0]["recording_path"] == ""
-
-    async def test_migrate_enriches_v1_rows_instead_of_duplicating(
-        self, store, tmp_path, monkeypatch,
-    ):
-        """早期已迁过的行（recording_path=''）命中时富化更新而非重复插入。"""
-        import aiosqlite
-        speaker = await store.create_speaker(name="张三")
-        v1_seg = await store.add_segment(
-            source_file="a.wav", start_ms=0, end_ms=500, transcript="旧片段", ts_ns=1000)
-        legacy = tmp_path / "agent_voiceprints.sqlite3"
-        async with aiosqlite.connect(str(legacy)) as db:
-            await db.executescript("""
-                CREATE TABLE speakers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, speaker_key TEXT UNIQUE,
-                    name TEXT DEFAULT '', first_seen_ns INTEGER DEFAULT 0,
-                    last_seen_ns INTEGER DEFAULT 0);
-                CREATE TABLE voice_samples (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, speaker_id INTEGER,
-                    vector BLOB, created_ns INTEGER DEFAULT 0);
-                CREATE TABLE voice_segments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, recording_path TEXT DEFAULT '',
-                    source_file TEXT DEFAULT '', start_ms INTEGER DEFAULT 0,
-                    end_ms INTEGER DEFAULT 0, speaker_id INTEGER,
-                    transcript TEXT DEFAULT '', ts_ns INTEGER DEFAULT 0,
-                    read INTEGER DEFAULT 0);
-            """)
-            await db.execute(
-                f"INSERT INTO speakers(speaker_key, name) "
-                f"VALUES ('{speaker['speaker_key']}', '张三')")
-            await db.execute(
-                "INSERT INTO voice_segments(recording_path, source_file, start_ms, end_ms, "
-                "speaker_id, transcript, ts_ns) "
-                "VALUES ('/nas/a', 'a.wav', 0, 500, 1, '旧片段', 1000)")
-            await db.commit()
-        monkeypatch.setattr(
-            "agent.audio.store._legacy_db_candidates", lambda: [str(legacy)])
-        totals = await store.migrate_legacy()
-        assert totals["segments"] == 0  # 未重复插入
-        items = (await store.list_segments())["items"]
-        assert len(items) == 1
-        assert items[0]["id"] == v1_seg
-        assert items[0]["recording_path"] == "/nas/a"  # 已富化
-        assert items[0]["speaker_id"] == speaker["id"]
-
-
 class TestEntityBinding:
     async def test_bind_and_reverse_lookup(self, store):
         s = await store.create_speaker(name="张三")
@@ -342,20 +172,39 @@ class TestEntityBinding:
         assert seg is not None and seg["entity_scope"] == "user:webui:u1"
 
 
-class TestVoiceprintRefine:
-    async def test_refine_sets_anchor_with_drift(self, store):
+class TestVoiceprintAnchor:
+    async def test_anchor_folds_on_every_accepted_sample(self, store):
+        """采样越多锚越准：每次合格采样自动折叠（低学习率动态更新）。"""
         s = await store.create_speaker(name="张三")
-        for i in range(3):
-            await store.add_sample(int(s["id"]), vec(0) if i == 0 else vec(1))
-        result = await matcher.refine(store, int(s["id"]))
-        assert result["samples"] == 3
-        assert result["anchor_similarity"] is None  # 首次精化无漂移
-        anchor = await store.get_speaker_anchor(int(s["id"]))
-        assert len(anchor) == 192
-        # 再次精化：新旧锚融合，漂移为余弦（≤1）
-        result2 = await matcher.refine(store, int(s["id"]))
-        assert result2["anchor_similarity"] is not None
-        assert result2["anchor_similarity"] <= 1.0
+        await store.add_sample(int(s["id"]), vec(0), duration_ms=3000)
+        await store.add_sample(int(s["id"]), tilted(0, 0.9), duration_ms=1000)
+        anchor, weight = await store.get_speaker_anchor(int(s["id"]))
+        assert weight == pytest.approx(4.0)  # 3s + 1s（均未触截断）
+        # 折叠方向偏向长样本：锚与 vec(0) 的余弦高于与倾斜样本的余弦
+        from agent.audio.vectors import cosine
+        assert cosine(anchor, vec(0)) > cosine(anchor, tilted(0, 0.9))
+
+    async def test_refine_rebuilds_anchor_from_pool(self, store):
+        """重建：锚以当前样本池重立——剔除坏样本后可复位（漂移落下）。"""
+        s = await store.create_speaker(name="张三")
+        sid = int(s["id"])
+        await store.add_sample(sid, vec(0), duration_ms=1000)
+        await store.add_sample(sid, tilted(0, 0.8), duration_ms=1000)
+        result = await matcher.refine(store, sid)
+        assert result["samples"] == 2
+        assert result["anchor_similarity"] == pytest.approx(1.0, abs=1e-3)  # 池=全史
+        anchor, weight = await store.get_speaker_anchor(sid)
+        assert anchor[0] == pytest.approx(0.9, abs=1e-6)   # (1 + 0.8) / 2
+        assert anchor[1] == pytest.approx(0.3, abs=1e-6)   # 0.6 / 2
+        assert weight == pytest.approx(2.0)
+        # 剔除早期样本后重建：锚不再记忆已删样本（漂移 < 1）
+        for sample in await store.list_samples(sid):
+            if sample["duration_ms"] == 1000 and sample["channel"] == "":
+                first_id = sample["id"]
+        await store.delete_sample(first_id)
+        result = await matcher.refine(store, sid)
+        assert result["samples"] == 1
+        assert result["anchor_similarity"] < 0.999
 
     async def test_refine_requires_samples(self, store):
         s = await store.create_speaker(name="张三")
@@ -363,23 +212,37 @@ class TestVoiceprintRefine:
             await matcher.refine(store, int(s["id"]))
 
     async def test_anchor_survives_pool_churn_in_match(self, store):
-        """样本池整体更迭（旧样本淘汰）后，质心锚仍把身份找回来。"""
+        """样本池整体更迭（旧样本淘汰/删除）后，声纹锚仍把身份找回来。"""
         s = await store.create_speaker(name="张三")
         await store.bind_entity(int(s["id"]), "user:webui:u1")
         await store.add_sample(int(s["id"]), vec(0))
-        await matcher.refine(store, int(s["id"]))
-        # 池换血：删掉全部样本，只剩质心锚
+        # 池换血：删掉全部样本，只剩声纹锚（长期记忆）
         for sample in await store.list_samples(int(s["id"])):
             await store.delete_sample(int(sample["id"]))
         candidates = await matcher.match_vector(store, vec(0))
         assert candidates and candidates[0]["speaker_key"] == s["speaker_key"]
         assert candidates[0]["entity_scope"] == "user:webui:u1"
 
-    async def test_merge_refines_target(self, store):
+    async def test_merge_blends_anchors_exactly(self, store):
+        """合并：锚按累计权重精确合成（与重放全部历史样本等价）。"""
         src = await store.create_speaker(name="临时")
         dst = await store.create_speaker(name="张三")
-        await store.add_sample(int(src["id"]), vec(2))
-        await store.add_sample(int(dst["id"]), vec(0))
+        await store.add_sample(int(src["id"]), vec(2), duration_ms=1000)
+        await store.add_sample(int(dst["id"]), vec(0), duration_ms=3000)
         result = await matcher.merge(store, int(src["id"]), int(dst["id"]))
-        assert "refined" in result and result["refined"]["samples"] >= 1
-        assert await store.get_speaker_anchor(int(dst["id"]))
+        assert result["samples_moved"] == 1
+        assert result["anchor_similarity"] is not None
+        anchor, weight = await store.get_speaker_anchor(int(dst["id"]))
+        assert weight == pytest.approx(4.0)
+        assert anchor[0] == pytest.approx(3.0 / 4.0, abs=1e-6)
+        assert anchor[2] == pytest.approx(1.0 / 4.0, abs=1e-6)
+
+    async def test_identify_passes_channel_and_duration(self, store):
+        """identify 的信道/时长随样本入池（通话=voip 场景）。"""
+        s = await matcher.enroll(store, "张三", vec(0), channel="enroll", duration_ms=2000)
+        result = await matcher.identify(
+            store, tilted(0, 0.95), audio_ms=5000, channel="voip")
+        assert result["is_new"] is False
+        samples = await store.list_samples(int(s["id"]))
+        voip = [sm for sm in samples if sm["channel"] == "voip"]
+        assert voip and voip[0]["duration_ms"] == 5000

@@ -74,13 +74,25 @@ class TestTools:
 
 class TestSpeakerRefineTool:
     async def test_refine_reports_samples_and_drift(self, store) -> None:
-        await matcher.enroll(store, "张三", vec(3))
-        raw = await tools_mod.speaker_refine("张三")
-        body = json.loads(raw)
+        import math
+
+        speaker = await matcher.enroll(store, "张三", vec(3))
+        body = json.loads(await tools_mod.speaker_refine("张三"))
         assert body["samples"] == 1
-        assert body["anchor_similarity"] is None
-        raw = await tools_mod.speaker_refine("张三")
-        assert json.loads(raw)["anchor_similarity"] is not None
+        # 池未变：重建锚 ≈ 自动折叠锚（漂移 ~1）
+        assert body["anchor_similarity"] == pytest.approx(1.0, abs=1e-3)
+        # 加入偏离样本后剔除原样本：重建不再记忆已删样本（漂移落下）
+        tilted = vec(3).copy()
+        tilted[3] = 0.8
+        tilted[4] = math.sqrt(1 - 0.8 * 0.8)
+        sid = int(speaker["id"])
+        await store.add_sample(sid, tilted, duration_ms=4000)
+        for sample in await store.list_samples(sid):
+            if sample["duration_ms"] == 0:
+                await store.delete_sample(int(sample["id"]))
+        body = json.loads(await tools_mod.speaker_refine("张三"))
+        assert body["samples"] == 1
+        assert body["anchor_similarity"] < 0.999
 
     async def test_refine_empty_pool_param_error(self, store) -> None:
         speaker = await store.create_speaker(name="空池")

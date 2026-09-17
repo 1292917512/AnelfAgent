@@ -75,54 +75,58 @@ class TestSpeakerCrud:
 
 
 class TestSamplePool:
-    async def test_fifo_eviction(self, store: AudioStore) -> None:
-        from core.config import ConfigManager
-
-        ConfigManager.set("audio_sample_evict_strategy", "fifo")
+    async def test_channel_fifo_eviction_keeps_diversity(self, store: AudioStore) -> None:
+        """池满优先淘汰同信道最早样本：某信道涌入只挤占自己，其他信道幸存。"""
         s = await store.create_speaker(name="张三")
-        for i in range(4):
-            await store.add_sample(s["id"], vec(i), max_samples=3)
-        samples = await store.list_samples(s["id"])
-        assert len(samples) == 3  # 最早的 vec(0) 被淘汰
-
-    async def test_outlier_eviction(self, store: AudioStore) -> None:
-        """outlier 策略：极端样本被淘汰（即使它更早入池），代表性样本保留。"""
-        from core.config import ConfigManager
-
-        ConfigManager.set("audio_sample_evict_strategy", "outlier")
-        s = await store.create_speaker(name="张三")
-        # 3 个相似样本 + 1 个正交极端样本，池满后再来 1 个相似样本
-        await store.add_sample(s["id"], vec(0), max_samples=3)
-        await store.add_sample(s["id"], [0.99, 0.01] + [0.0] * 190, max_samples=3)
-        await store.add_sample(s["id"], vec(5), max_samples=3)  # 极端样本
-        new_id = await store.add_sample(s["id"], [0.98, 0.02] + [0.0] * 190, max_samples=3)
-        assert new_id > 0
+        near = vec(0)
+        await store.add_sample(s["id"], near, channel="mic", max_samples=3)
+        await store.add_sample(s["id"], near, channel="voip", max_samples=3)
+        # voip 信道连续涌入 3 条（全部与锚相干）
+        for _ in range(3):
+            await store.add_sample(s["id"], near, channel="voip", max_samples=3)
         samples = await store.list_samples(s["id"])
         assert len(samples) == 3
-        # 极端样本 vec(5) 应已被淘汰：池中向量都集中在 vec(0) 附近
-        vectors = [await store.get_sample_vector(sm["id"]) for sm in samples]
-        assert all(v and v[0] > 0.9 for v in vectors)
+        channels = [sm["channel"] for sm in samples]
+        assert "mic" in channels  # mic 样本不被 voip 涌入挤掉
 
-    async def test_outlier_rejects_noisy_new_sample(self, store: AudioStore) -> None:
-        """outlier 策略：池满时噪音新样本与质心差异过大 → 拒绝入池。"""
-        from core.config import ConfigManager
-
-        ConfigManager.set("audio_sample_evict_strategy", "outlier")
+    async def test_coherence_gate_rejects_alien_sample(self, store: AudioStore) -> None:
+        """相干门：与锚余弦低于门限的样本拒入（防错人/噪音投毒）。"""
         s = await store.create_speaker(name="张三")
-        await store.add_sample(s["id"], vec(0), max_samples=2)
-        await store.add_sample(s["id"], [0.99, 0.01] + [0.0] * 190, max_samples=2)
-        rejected = await store.add_sample(s["id"], vec(7), max_samples=2)
+        await store.add_sample(s["id"], vec(0), duration_ms=5000)
+        anchor_before, weight_before = await store.get_speaker_anchor(s["id"])
+        rejected = await store.add_sample(s["id"], vec(7), duration_ms=5000)
         assert rejected == -1
-        assert len(await store.list_samples(s["id"])) == 2
+        assert len(await store.list_samples(s["id"])) == 1
+        anchor_after, weight_after = await store.get_speaker_anchor(s["id"])
+        assert anchor_after == pytest.approx(anchor_before)
+        assert weight_after == pytest.approx(weight_before)
 
-    async def test_search_vectors(self, store: AudioStore) -> None:
-        s1 = await store.create_speaker(name="张三")
-        s2 = await store.create_speaker(name="李四")
-        await store.add_sample(s1["id"], vec(0))
-        await store.add_sample(s2["id"], vec(1))
-        hits = await store.search_sample_vectors(vec(0), limit=5)
-        assert hits[0]["speaker_id"] == s1["id"]
-        assert hits[0]["score"] > 0.99
+    async def test_anchor_folds_with_duration_weight(self, store: AudioStore) -> None:
+        """锚 = 历史合格样本的时长加权质心，权重按 [0.5, 10] 秒截断累积。"""
+        import math
+
+        from agent.audio.vectors import sample_weight
+
+        s = await store.create_speaker(name="张三")
+        await store.add_sample(s["id"], vec(0), duration_ms=10000)  # 权重 10
+        tilted = vec(0).copy()
+        tilted[0] = 0.8
+        tilted[1] = math.sqrt(1 - 0.64)
+        await store.add_sample(s["id"], tilted, duration_ms=100)  # 权重下限 0.5
+        anchor, weight = await store.get_speaker_anchor(s["id"])
+        w0, w1 = sample_weight(10000), sample_weight(100)
+        assert weight == pytest.approx(w0 + w1)
+        assert anchor[0] == pytest.approx((w0 * 1.0 + w1 * 0.8) / (w0 + w1), abs=1e-6)
+        assert anchor[1] == pytest.approx(w1 * 0.6 / (w0 + w1), abs=1e-6)
+
+    async def test_list_speakers_carries_channels(self, store: AudioStore) -> None:
+        s = await store.create_speaker(name="张三")
+        await store.add_sample(s["id"], vec(0), channel="voip")
+        await store.add_sample(s["id"], vec(0), channel="voip")
+        await store.add_sample(s["id"], vec(0), channel="mic")
+        result = await store.list_speakers()
+        assert result["items"][0]["sample_count"] == 3
+        assert result["items"][0]["channels"] == {"voip": 2, "mic": 1}
 
     async def test_delete_sample(self, store: AudioStore) -> None:
         s = await store.create_speaker(name="张三")
@@ -364,37 +368,59 @@ class TestReviewRegressions:
         removed = await store.delete_recording("/r1")
         assert removed["samples_deleted"] == 1
 
-    async def test_migration_skips_archived_key_collision(
-        self, store: AudioStore, tmp_path, monkeypatch,
-    ) -> None:
-        """旧库 speaker_key 与已归档档案撞键：映射复用而非 UNIQUE 崩溃。"""
+
+class TestSchemaRebuild:
+    async def test_version_gate_rebuilds_voiceprint_tables(self, tmp_path) -> None:
+        """v1 声纹表（无 channel/anchor_weight 列）开门即重建：声纹清空、
+        转写保留（归属重置未知）、新模型列就位。"""
         import aiosqlite
-        archived = await store.create_speaker(name="旧张三")
-        await store.archive_speaker(archived["id"])
-        legacy = tmp_path / "agent_voiceprints.sqlite3"
-        async with aiosqlite.connect(str(legacy)) as db:
+        db_path = str(tmp_path / "audio.sqlite3")
+        store = AudioStore(db_path)
+        await store.initialize()
+        speaker = await store.create_speaker(name="旧张三")
+        await store.add_sample(int(speaker["id"]), vec(0))
+        seg_id = await store.add_segment(
+            speaker_id=int(speaker["id"]), transcript="旧片段", ts_ns=1000)
+        await store.close()
+        # 降级成 v1 声纹表（旧列布局 + user_version=0）
+        async with aiosqlite.connect(db_path) as db:
             await db.executescript("""
+                DROP TABLE voice_samples;
+                DROP TABLE speakers;
                 CREATE TABLE speakers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, speaker_key TEXT UNIQUE,
-                    name TEXT DEFAULT '');
-                CREATE TABLE voice_segments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, source_file TEXT DEFAULT '',
-                    start_ms INTEGER DEFAULT 0, speaker_id INTEGER,
-                    transcript TEXT DEFAULT '', ts_ns INTEGER DEFAULT 0);
+                    name TEXT DEFAULT '', vector BLOB);
+                CREATE TABLE voice_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, speaker_id INTEGER,
+                    vector BLOB, source TEXT DEFAULT '', created_ns INTEGER DEFAULT 0);
+                PRAGMA user_version=0;
             """)
-            await db.execute(
-                f"INSERT INTO speakers(speaker_key, name) "
-                f"VALUES ('{archived['speaker_key']}', '张三')")
-            await db.execute(
-                "INSERT INTO voice_segments(source_file, start_ms, speaker_id, transcript, ts_ns) "
-                "VALUES ('a.wav', 0, 1, '旧片段', 1000)")
             await db.commit()
-        monkeypatch.setattr(
-            "agent.audio.store._legacy_db_candidates", lambda: [str(legacy)])
-        totals = await store.migrate_legacy()
-        assert totals["speakers"] == 0  # 撞键映射复用，不重复建档
-        items = (await store.list_segments())["items"]
-        assert items[0]["speaker_id"] == archived["id"]
+
+        store2 = AudioStore(db_path)
+        await store2.initialize()
+        assert (await store2.list_speakers())["total"] == 0
+        segment = await store2.get_segment(seg_id)
+        assert segment is not None and segment["transcript"] == "旧片段"
+        assert segment["speaker_id"] is None  # 归属重置未知
+        s = await store2.create_speaker(name="新张三")
+        assert await store2.add_sample(int(s["id"]), vec(0), channel="voip") > 0
+        await store2.close()
+
+    async def test_reopen_preserves_data(self, tmp_path) -> None:
+        """版本就位后重开不重建（数据存活）。"""
+        db_path = str(tmp_path / "audio.sqlite3")
+        store = AudioStore(db_path)
+        await store.initialize()
+        s = await store.create_speaker(name="张三")
+        await store.add_sample(int(s["id"]), vec(0))
+        await store.close()
+
+        store2 = AudioStore(db_path)
+        await store2.initialize()
+        result = await store2.list_speakers()
+        assert result["total"] == 1 and result["items"][0]["name"] == "张三"
+        await store2.close()
 
 
 class TestSummaryBindings:

@@ -128,7 +128,9 @@
     "noTranscript": "（无转写文本）",
     "unknownSpeaker": "未知说话人",
     "entityScopePlaceholder": "实体 scope（如 user:webui:123）",
-    "boundEntity": "已绑定实体"
+    "boundEntity": "已绑定实体",
+    "anchorWeight": "声纹锚",
+    "anchorWeightValue": "{{seconds}} 秒等效语音（样本池 {{count}} 条）"
   },
   "actions": {
     "enroll": "注册说话人",
@@ -143,7 +145,7 @@
     "simmap": "分布图",
     "bind": "绑定",
     "unbind": "解绑",
-    "refineHint": "精化声纹（样本池质心重立质心锚）"
+    "refineHint": "重建声纹锚（以当前样本池重立）"
   },
   "groups": {
     "pending": "待确认（{{count}}）",
@@ -292,5 +294,13 @@
     "notConfigured": "未配置",
     "recheck": "重新检测",
     "goConfigure": "去 模型页 → 组件凭据 配置地址"
+  },
+  "channels": {
+    "mic": "麦克风",
+    "phone": "电话",
+    "voip": "网络通话",
+    "chat": "语音消息",
+    "web": "网页上传",
+    "enroll": "注册采样"
   }
 }

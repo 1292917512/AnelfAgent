@@ -570,6 +570,7 @@ class RealtimeEngine:
         wav_path = ""
         try:
             from agent.audio import get_audio_store
+            from agent.audio.channels import normalize_channel
             from agent.audio.matcher import match_vector
             from agent.audio.service import get_audio_service
 
@@ -577,7 +578,8 @@ class RealtimeEngine:
             vector = await get_audio_service().speaker_embed(wav_path)
             if not vector:
                 return None
-            candidates = await match_vector(get_audio_store(), vector)
+            candidates = await match_vector(
+                get_audio_store(), vector, channel=normalize_channel("realtime"))
         except Exception as exc:
             log(f"说话人识别失败（跳过标注）: {exc}", "DEBUG", tag=_LOG_TAG)
             return None

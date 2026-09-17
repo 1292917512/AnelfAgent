@@ -87,20 +87,20 @@ register_configs_safe({
             "unit": "毫秒",
         },
         "audio_max_samples_per_speaker": {
-            "description": "每说话人声纹样本池上限（超出时按淘汰策略清理）",
-            "default": 5,
+            "description": "每说话人声纹样本池上限（池满优先淘汰同信道最早样本，保持信道多样性）",
+            "default": 10,
             "advanced": True,
             "unit": "条",
         },
-        "audio_sample_evict_strategy": {
-            "description": "样本淘汰策略：outlier=淘汰与质心最不相似的样本"
-                           "（噪音新样本也会被拒入）；fifo=淘汰最早样本",
-            "default": "outlier",
-        },
-        "audio_centroid_match": {
-            "description": "是否启用质心匹配（得分取 max(最佳样本, 均值向量)，"
-                           "抑制单样本噪音提升稳定性）",
-            "default": True,
+        "audio_sample_coherence_floor": {
+            "description": "样本入池相干门限：与声纹锚余弦低于此值的样本拒入"
+                           "（防错人/噪音投毒；远低于匹配阈值，不拦信道漂移）",
+            "default": 0.45,
+            "advanced": True,
+            "value_type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
         },
         "audio_auto_accumulate": {
             "description": "是否在命中已知人时自动累积新声纹样本入其样本池",

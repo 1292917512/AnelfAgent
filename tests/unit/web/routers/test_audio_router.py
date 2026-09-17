@@ -265,7 +265,8 @@ class TestSpeakerRefineApi:
         resp = client.post(f"/api/audio/speakers/{speaker_id}/refine")
         assert resp.status_code == 200
         assert resp.json()["samples"] == 1
-        assert resp.json()["anchor_similarity"] is None
+        # 池未变：重建锚 ≈ 自动折叠锚（漂移 ~1）
+        assert resp.json()["anchor_similarity"] == pytest.approx(1.0, abs=1e-3)
 
     async def test_refine_empty_pool_422(self, client: TestClient, _isolate_audio_library) -> None:
         speaker = await _isolate_audio_library.create_speaker(name="空池")

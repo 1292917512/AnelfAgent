@@ -39,6 +39,47 @@ class TestMatchAndIdentify:
         assert candidates[0]["matched"] is True
         assert candidates[0]["similarity"] == pytest.approx(0.9, abs=1e-3)
 
+    async def test_channel_template_scoring(self, store: AudioStore) -> None:
+        """信道判据：同信道样本的加权质心参与 max 评分，补偿信道漂移。
+
+        手机信道的重样本把锚拉离查询方向（锚判据失分），麦克风信道
+        两条对称样本的质心精确落回查询方向——信道模板给出满分边际。
+        """
+        s = await store.create_speaker(name="张三")
+        sid = int(s["id"])
+        p = [0.574, 0.0, 0.819] + [0.0] * 189          # phone：偏 e2 平面
+        m1 = [0.906, 0.423, 0.0] + [0.0] * 189         # mic：对称偏 e1
+        m2 = [0.906, -0.423, 0.0] + [0.0] * 189
+        await store.add_sample(sid, p, channel="phone", duration_ms=10000)
+        await store.add_sample(sid, m1, channel="mic", duration_ms=1000)
+        await store.add_sample(sid, m2, channel="mic", duration_ms=1000)
+
+        no_channel = await matcher.match_vector(store, vec(0))
+        assert no_channel[0]["matched"] is True
+        assert no_channel[0]["similarity"] == pytest.approx(0.906, abs=1e-3)
+        assert no_channel[0]["anchor_similarity"] < 0.75  # 锚被 phone 权重拉偏
+
+        with_channel = await matcher.match_vector(store, vec(0), channel="mic")
+        best = with_channel[0]
+        assert best["channel_similarity"] == pytest.approx(1.0, abs=1e-3)
+        assert best["similarity"] == pytest.approx(1.0, abs=1e-3)  # 信道判据赢得 max
+        assert best["matched"] is True
+
+    async def test_enroll_same_name_accumulates(self, store: AudioStore) -> None:
+        """一人一档案：同名已确认档案直接累积样本，不重复建档。"""
+        s1 = await matcher.enroll(store, "张三", vec(0))
+        s2 = await matcher.enroll(store, "张三", tilted(0, 0.9))
+        assert s2["id"] == s1["id"]
+        assert (await store.list_speakers())["total"] == 1
+        assert len(await store.list_samples(int(s1["id"]))) == 2
+
+    async def test_enroll_alien_voice_rejected_on_accumulate(self, store: AudioStore) -> None:
+        """同名累积仍过相干门：声音对不上的注册被拒入（防张冠李戴）。"""
+        s1 = await matcher.enroll(store, "张三", vec(0))
+        s2 = await matcher.enroll(store, "张三", vec(7))
+        assert s2["sample_rejected"] is True
+        assert len(await store.list_samples(int(s1["id"]))) == 1
+
     async def test_identify_known_accumulates(self, store: AudioStore) -> None:
         s = await matcher.enroll(store, "张三", vec(0))
         result = await matcher.identify(store, tilted(0, 0.95), audio_ms=3000)

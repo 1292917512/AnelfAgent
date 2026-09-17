@@ -105,6 +105,14 @@ export function SpeakerDetailModal({ speakerId, onClose }: SpeakerDetailModalPro
             <span>{t("fields.matches")}: {speaker.match_count}</span>
             <span>{t("fields.firstSeen")}: {formatNs(speaker.first_seen_ns)}</span>
             <span>{t("fields.lastSeen")}: {formatNs(speaker.last_seen_ns)}</span>
+            {speaker.anchor_weight ? (
+              <span className="col-span-2">
+                {t("fields.anchorWeight")}: {t("fields.anchorWeightValue", {
+                  seconds: speaker.anchor_weight,
+                  count: data?.samples.length ?? 0,
+                })}
+              </span>
+            ) : null}
           </div>
 
           <div className="grid grid-cols-2 gap-2">
@@ -184,7 +192,10 @@ export function SpeakerDetailModal({ speakerId, onClose }: SpeakerDetailModalPro
                   className="flex items-center gap-3 rounded-md border border-border bg-elevated px-2 py-1 text-xs"
                 >
                   <span className="text-muted">#{s.id}</span>
-                  <Badge variant="neutral">{s.source || "auto"}</Badge>
+                  {s.channel && <Badge variant="neutral">{t(`channels.${s.channel}`, s.channel)}</Badge>}
+                  {s.duration_ms > 0 && (
+                    <span className="text-muted">{formatDuration(s.duration_ms)}</span>
+                  )}
                   <span className="text-muted">{t("fields.score")}: {s.score.toFixed(3)}</span>
                   <span className="text-muted">{formatNs(s.created_ns)}</span>
                   <div className="flex-1" />

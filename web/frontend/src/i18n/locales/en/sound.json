@@ -128,7 +128,9 @@
     "noTranscript": "(no transcript)",
     "unknownSpeaker": "Unknown speaker",
     "entityScopePlaceholder": "Entity scope (e.g. user:webui:123)",
-    "boundEntity": "Bound entity"
+    "boundEntity": "Bound entity",
+    "anchorWeight": "Voiceprint anchor",
+    "anchorWeightValue": "{{seconds}}s effective speech ({{count}} pooled samples)"
   },
   "actions": {
     "enroll": "Enroll speaker",
@@ -143,7 +145,7 @@
     "simmap": "Similarity map",
     "bind": "Bind",
     "unbind": "Unbind",
-    "refineHint": "Refine voiceprint (re-anchor from sample centroid)"
+    "refineHint": "Rebuild voiceprint anchor from current sample pool"
   },
   "groups": {
     "pending": "Pending ({{count}})",
@@ -292,5 +294,13 @@
     "notConfigured": "Not configured",
     "recheck": "Re-check",
     "goConfigure": "Configure in Models → Provider Keys"
+  },
+  "channels": {
+    "mic": "Mic",
+    "phone": "Phone",
+    "voip": "VoIP call",
+    "chat": "Voice message",
+    "web": "Web upload",
+    "enroll": "Enrollment"
   }
 }

@@ -1,9 +1,9 @@
-"""说话人相似度合并（离线整理）：质心聚类找出同一人被分裂的临时档案。
+"""说话人相似度合并（离线整理）：锚聚类找出同一人被分裂的临时档案。
 
 背景：入库时的单段匹配（≥match_threshold 认亲）对短段/噪音声纹过于严格，
 一场会议容易裂出大量临时说话人（一句话一个人）。本模块做事后整理：
-- 每个说话人取样本池的**质心**（样本向量均值，比单段稳定）
-- 质心两两余弦 ≥ merge_threshold（默认 0.70，比单段匹配宽松）的归为同簇
+- 每个说话人取声纹锚（历史合格样本的加权质心，比单段稳定得多）
+- 锚两两余弦 ≥ merge_threshold（默认 0.70，比单段匹配宽松）的归为同簇
 - 合并执行：每簇并入 累计音频时长最长 的成员（信息量最大的留下）
 
 dry_run 模式只返回分簇预览（成员 + 簇内相似度），确认后再正式执行。
@@ -18,12 +18,13 @@ from core.log import log
 
 from . import matcher
 from .store import AudioStore
+from .vectors import cosine
 
 _LOG_TAG = "音频"
 
 
 def merge_threshold() -> float:
-    """质心合并阈值（audio_merge_threshold，默认 0.70）。"""
+    """锚合并阈值（audio_merge_threshold，默认 0.70）。"""
     return get_config_float("audio_merge_threshold", 0.70)
 
 
@@ -38,30 +39,17 @@ def insignificant_limits() -> tuple[int, int]:
     )
 
 
-def _mean_vector(vectors: List[List[float]]) -> Optional[List[float]]:
-    if not vectors:
-        return None
-    dims = len(vectors[0])
-    acc = [0.0] * dims
-    count = 0
-    for vec in vectors:
-        if len(vec) != dims:
-            continue
-        for i, x in enumerate(vec):
-            acc[i] += x
-        count += 1
-    if not count:
-        return None
-    return [x / count for x in acc]
-
-
-def _cosine(a: List[float], b: List[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b, strict=False))
-    na = sum(x * x for x in a) ** 0.5
-    nb = sum(y * y for y in b) ** 0.5
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
+async def _speaker_anchors(
+    store: AudioStore, *, status: str,
+) -> tuple[Dict[int, List[float]], Dict[int, Dict[str, Any]]]:
+    """按状态取说话人及其声纹锚（无锚的档案不参与聚类）。"""
+    listing = await store.list_speakers(status=status, limit=500)
+    speakers = {int(s["id"]): s for s in listing["items"]}
+    anchors: Dict[int, List[float]] = {}
+    for speaker_id, anchor in await store.list_speaker_anchors():
+        if speaker_id in speakers and anchor:
+            anchors[speaker_id] = anchor
+    return anchors, speakers
 
 
 class _UnionFind:
@@ -87,31 +75,19 @@ async def find_merge_clusters(
     threshold: Optional[float] = None,
     status: str = "pending",
 ) -> List[Dict[str, Any]]:
-    """按质心相似度聚类，返回建议合并的簇（成员数 ≥2）。
+    """按锚相似度聚类，返回建议合并的簇（成员数 ≥2）。
 
-    每簇：{"members": [{speaker 简报 + centroid_similarity}], "best_similarity": float}
+    每簇：{"members": [{speaker 简报 + anchor_similarity}], "best_similarity": float}
     """
     threshold = threshold if threshold is not None else merge_threshold()
-    listing = await store.list_speakers(status=status, limit=500)
-    speakers = listing["items"]
-    centroids: Dict[int, List[float]] = {}
-    for speaker in speakers:
-        vectors: List[List[float]] = []
-        for sample in await store.list_samples(int(speaker["id"])):
-            vec = await store.get_sample_vector(int(sample["id"]))
-            if vec:
-                vectors.append(vec)
-        centroid = _mean_vector(vectors)
-        if centroid:
-            centroids[int(speaker["id"])] = centroid
+    anchors, speakers = await _speaker_anchors(store, status=status)
 
-    ids = list(centroids)
+    ids = list(anchors)
     uf = _UnionFind(ids)
-    # 记录每个成员的最近簇内相似度（展示用）
     best_sim: Dict[int, float] = {i: 0.0 for i in ids}
     for i, a in enumerate(ids):
         for b in ids[i + 1:]:
-            sim = _cosine(centroids[a], centroids[b])
+            sim = cosine(anchors[a], anchors[b])
             if sim >= threshold:
                 uf.union(a, b)
                 best_sim[a] = max(best_sim[a], sim)
@@ -121,21 +97,19 @@ async def find_merge_clusters(
     for i in ids:
         groups.setdefault(uf.find(i), []).append(i)
 
-    speaker_map = {int(s["id"]): s for s in speakers}
     clusters: List[Dict[str, Any]] = []
     for members in groups.values():
         if len(members) < 2:
             continue
-        members.sort(
-            key=lambda i: speaker_map[i]["total_audio_ms"], reverse=True)
+        members.sort(key=lambda i: speakers[i]["total_audio_ms"], reverse=True)
         clusters.append({
             "members": [
                 {
                     "id": i,
-                    "speaker_key": speaker_map[i]["speaker_key"],
-                    "name": speaker_map[i]["name"],
-                    "total_audio_ms": speaker_map[i]["total_audio_ms"],
-                    "match_count": speaker_map[i]["match_count"],
+                    "speaker_key": speakers[i]["speaker_key"],
+                    "name": speakers[i]["name"],
+                    "total_audio_ms": speakers[i]["total_audio_ms"],
+                    "match_count": speakers[i]["match_count"],
                     "similarity": round(best_sim[i], 4),
                 }
                 for i in members
@@ -165,24 +139,15 @@ async def similarity_map(
       行序与 speakers 一致，簇在视觉上自然成块）
     """
     threshold = threshold if threshold is not None else merge_threshold()
-    listing = await store.list_speakers(status=status, limit=500)
-    speakers = listing["items"]
-    centroids: Dict[int, List[float]] = {}
-    for speaker in speakers:
-        vectors = await store.get_speaker_vectors(int(speaker["id"]))
-        centroid = _mean_vector(vectors)
-        if centroid:
-            centroids[int(speaker["id"])] = centroid
+    anchors, speakers = await _speaker_anchors(store, status=status)
 
-    ids = list(centroids)
-    # 全量两两相似度
+    ids = list(anchors)
     sims: Dict[int, Dict[int, float]] = {i: {} for i in ids}
     for x, a in enumerate(ids):
         for b in ids[x + 1:]:
-            sim = round(_cosine(centroids[a], centroids[b]), 4)
+            sim = round(cosine(anchors[a], anchors[b]), 4)
             sims[a][b] = sims[b][a] = sim
 
-    # 并查集分簇 + 估计人数
     uf = _UnionFind(ids)
     for a in ids:
         for b, sim in sims[a].items():
@@ -192,7 +157,6 @@ async def similarity_map(
     for i in ids:
         groups.setdefault(uf.find(i), []).append(i)
 
-    speaker_map = {int(s["id"]): s for s in speakers}
     cluster_of = {i: uf.find(i) for i in ids}
     cluster_sizes = {root: len(members) for root, members in groups.items()}
 
@@ -201,12 +165,12 @@ async def similarity_map(
         key=lambda i: (
             cluster_of[i],
             -max(sims[i].values(), default=0.0),
-            -speaker_map[i]["total_audio_ms"],
+            -speakers[i]["total_audio_ms"],
         ),
     )
     speaker_entries: List[Dict[str, Any]] = []
     for i in ordered:
-        s = speaker_map[i]
+        s = speakers[i]
         top = sorted(sims[i].items(), key=lambda kv: kv[1], reverse=True)[:max(1, neighbors)]
         speaker_entries.append({
             "id": i,
@@ -219,9 +183,9 @@ async def similarity_map(
             "top_similar": [
                 {
                     "id": j,
-                    "speaker_key": speaker_map[j]["speaker_key"],
-                    "name": speaker_map[j]["name"],
-                    "status": speaker_map[j]["status"],
+                    "speaker_key": speakers[j]["speaker_key"],
+                    "name": speakers[j]["name"],
+                    "status": speakers[j]["status"],
                     "similarity": sim,
                     "mergable": sim >= threshold,
                 }

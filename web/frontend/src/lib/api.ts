@@ -969,7 +969,9 @@ export interface AudioSpeaker {
   last_seen_ns: number;
   match_count: number;
   archived: boolean;
+  anchor_weight?: number;
   sample_count?: number;
+  channels?: Record<string, number>;
 }
 
 export interface AudioSpeakerListResult {
@@ -984,6 +986,7 @@ export interface AudioSpeakerDetail {
   effective_threshold: number;
   samples: Array<{
     id: number; segment_id: number | null; score: number;
+    channel: string; duration_ms: number;
     source: string; created_ns: number; dims: number;
   }>;
   recent_segments: AudioSegment[];
@@ -1056,6 +1059,11 @@ export interface AudioIdentifyCandidate {
   threshold: number;
   similarity: number;
   matched: boolean;
+  channel?: string;
+  anchor_similarity?: number;
+  sample_similarity?: number;
+  channel_similarity?: number | null;
+  entity_scope?: string;
 }
 
 export interface AudioIdentifyResult {

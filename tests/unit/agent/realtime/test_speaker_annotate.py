@@ -33,7 +33,7 @@ class TestSpeakerAnnotation:
         async def _embed(self, path: str):
             return [0.1, 0.2, 0.3]
 
-        async def _match(store, vector):
+        async def _match(store, vector, channel=""):
             return [{"matched": True, "id": 1, "name": "张三",
                      "speaker_key": "spk_1", "similarity": 0.87}]
 
@@ -64,7 +64,7 @@ class TestSpeakerAnnotation:
         async def _embed(self, path: str):
             return [0.1, 0.2, 0.3]
 
-        async def _match(store, vector):
+        async def _match(store, vector, channel=""):
             return [{"matched": False, "id": 2, "name": "临时",
                      "speaker_key": "spk_tmp", "similarity": 0.3}]
 

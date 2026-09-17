@@ -6,18 +6,21 @@
 具体业务（目录同步、外部推送）以组件形式经 entities._sdk 桥接读写。
 
 存储：独立 SQLite 卷（storage_volume "audio"，默认 data/audio.sqlite3），WAL。
-索引：声纹/文本向量 BLOB 为权威数据，sqlite-vec vec0 表为派生索引（与
+索引：文本向量 BLOB 为权威数据，sqlite-vec vec0 表为派生索引（与
 MemoryStore 同一范式）；无 sqlite-vec 时降级 Python 余弦全表扫描；
 FTS5（预分词 transcript_tokens，CJK 可检索）支撑转写全文检索。
+声纹匹配走锚扫描（说话人量级小），不建样本级向量索引。
 
 四张主表：
 - audio_segments：语音片段（转写 + 说话人归属 + 文件内时间戳 + 未读标记）
-- speakers：声纹身份档案（姓名/角色/独立阈值/确认状态/实体绑定/累计统计）
-- voice_samples：声纹多样本池（每人最多 N 条不同场景样本，按策略淘汰）
+- speakers：声纹身份档案（姓名/角色/独立阈值/确认状态/实体绑定/累计统计
+  + 声纹锚：历史合格样本的加权质心及其累计权重）
+- voice_samples：声纹多样本池（带信道标注与时长的近期窗口，
+  池满按同信道先进先出淘汰以保持信道多样性）
 - recordings：录制单元登记（同步增量依据 + 合并清单，回听定位用）
 
 实体绑定：speakers.entity_scope 关联实体画像 scope（user:/group:/agent:self），
-声纹身份与实体系统双向可查（绑定后 AI 检索话语即知"这是哪个实体说的话"。
+声纹身份与实体系统双向可查（绑定后 AI 检索话语即知"这是哪个实体说的话"）。
 """
 
 from __future__ import annotations
@@ -28,19 +31,30 @@ import os
 import time
 from array import array
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiosqlite
 
-from core.config import get_config
+from core.config import get_config, get_config_float
 from core.log import log
-from core.path import data_dir
+
+from .vectors import blend, cosine, sample_weight
 
 _LOG_TAG = "音频"
 
 # 声纹向量维度（cam++ 模型输出）
 VOICEPRINT_DIMS = 192
+
+# 声纹子系统 schema 版本（PRAGMA user_version）：落后时清声纹数据重建
+_SCHEMA_VERSION = 2
+
+
+def coherence_floor() -> float:
+    """样本入池相干门限（audio_sample_coherence_floor，默认 0.45）。
+
+    与锚余弦低于此值的样本视为异人/噪音拒入——门限远低于匹配阈值，
+    只拦截投毒，不拦信道漂移。"""
+    return get_config_float("audio_sample_coherence_floor", 0.45)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS audio_segments (
@@ -81,7 +95,8 @@ CREATE TABLE IF NOT EXISTS speakers (
     last_seen_ns INTEGER NOT NULL,
     match_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
-    vector BLOB
+    vector BLOB,
+    anchor_weight REAL NOT NULL DEFAULT 0.0
 );
 CREATE INDEX IF NOT EXISTS idx_speakers_status ON speakers(status, archived);
 CREATE INDEX IF NOT EXISTS idx_speakers_entity ON speakers(entity_scope);
@@ -91,6 +106,8 @@ CREATE TABLE IF NOT EXISTS voice_samples (
     speaker_id INTEGER NOT NULL REFERENCES speakers(id),
     vector BLOB NOT NULL,
     segment_id INTEGER,
+    channel TEXT NOT NULL DEFAULT '',
+    duration_ms INTEGER NOT NULL DEFAULT 0,
     score REAL NOT NULL DEFAULT 0,
     source TEXT NOT NULL DEFAULT '',
     created_ns INTEGER NOT NULL
@@ -155,16 +172,6 @@ def _default_db_path() -> str:
     return f"{stem}_audio{ext or '.sqlite3'}"
 
 
-def _legacy_db_candidates() -> List[str]:
-    """旧实体声纹库候选路径（一次性迁移的数据来源）。"""
-    from core.storage_volume import main_sqlite_path
-    stem, ext = os.path.splitext(main_sqlite_path())
-    return [
-        f"{stem}_voiceprints{ext or '.sqlite3'}",
-        str(Path(data_dir()) / "voiceprint.sqlite3"),
-    ]
-
-
 def _register_volume() -> None:
     from core.storage_volume import VolumeDescriptor, VolumeKind, register_volume
     register_volume(VolumeDescriptor(
@@ -187,27 +194,6 @@ def _blob_to_vec(blob: bytes) -> List[float]:
     a = array("f")
     a.frombytes(blob)
     return list(a)
-
-
-def _cosine(a: List[float], b: List[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b, strict=False))
-    na = sum(x * x for x in a) ** 0.5
-    nb = sum(y * y for y in b) ** 0.5
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
-
-
-def _mean_vec(vectors: List[List[float]]) -> List[float]:
-    """向量均值（质心）：多样本的代表向量。"""
-    dims = len(vectors[0])
-    acc = [0.0] * dims
-    for vec in vectors:
-        for i, x in enumerate(vec):
-            acc[i] += x
-    return [x / len(vectors) for x in acc]
 
 
 def parse_time_ns(expr: str) -> Optional[int]:
@@ -256,6 +242,7 @@ def _row_to_speaker(row: aiosqlite.Row) -> Dict[str, Any]:
         "last_seen_ns": row["last_seen_ns"],
         "match_count": row["match_count"],
         "archived": bool(row["archived"]),
+        "anchor_weight": round(float(row["anchor_weight"] or 0.0), 1),
     }
 
 
@@ -264,6 +251,8 @@ def _row_to_sample(row: aiosqlite.Row) -> Dict[str, Any]:
         "id": row["id"],
         "speaker_id": row["speaker_id"],
         "segment_id": row["segment_id"],
+        "channel": row["channel"],
+        "duration_ms": row["duration_ms"],
         "score": row["score"],
         "source": row["source"],
         "created_ns": row["created_ns"],
@@ -327,7 +316,6 @@ class AudioStore:
             return existing
         async with self._lock:
             if self._db is None:
-                self._relocate_v1_db_file()
                 os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
                 db = await aiosqlite.connect(self._db_path)
                 db.row_factory = aiosqlite.Row
@@ -335,40 +323,43 @@ class AudioStore:
                 await db.execute("PRAGMA synchronous=NORMAL;")
                 await db.execute("PRAGMA busy_timeout=5000;")
                 self._vec_available = await self._load_vec_extension(db)
-                # 旧表升级先于建表：v1 表结构缺少新列，直接建索引会失败
-                v1_migrated = await self._migrate_v1_segments(db)
-                await db.executescript(_SCHEMA)
-                await self._ensure_speaker_anchor_column(db)
+                await self._sync_schema(db)
                 await self._init_fts(db)
-                if v1_migrated and self.fts_available:
-                    # 外部内容 FTS 表重建后为空：全量重建索引覆盖迁入行
-                    await db.execute(
-                        "INSERT INTO audio_segments_fts(audio_segments_fts) VALUES('rebuild')")
                 await db.commit()
                 self._db = db
                 log(f"AudioStore 就绪: {self._db_path} "
                     f"(vec={self._vec_available}, fts={self.fts_available})", tag=_LOG_TAG)
         return self._db
 
-    def _relocate_v1_db_file(self) -> None:
-        """初版库文件位置迁移：data/audio.sqlite3 → 主库同族派生路径（一次性）。
+    async def _sync_schema(self, db: aiosqlite.Connection) -> None:
+        """建表 + 声纹子系统版本门。
 
-        仅默认派生路径才搬迁：用户经位置指派自定义卷路径时，指派位置
-        即用户意图，旧文件不搬（数据管理面可手动迁移）。
+        user_version 落后（含未标记的 0）时先丢弃旧声纹表再按当前布局
+        重建（旧列布局下直接执行建索引会失败；全新库 DROP IF EXISTS
+        为空操作）；声纹可由录音/通话重新累积，转写片段与录制登记保留，
+        片段归属重置为未知（由新模型重新识别归属）。
         """
-        from core.path import data_dir
-        if os.path.abspath(self._db_path) != os.path.abspath(_default_db_path()):
+        cursor = await db.execute("PRAGMA user_version")
+        row = await cursor.fetchone()
+        assert row is not None
+        version = int(row[0])
+        if version == _SCHEMA_VERSION:
             return
-        legacy = Path(data_dir()) / "audio.sqlite3"
-        target = Path(self._db_path)
-        if legacy.is_file() and not target.exists() and legacy.resolve() != target.resolve():
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(legacy, target)
-                log(f"初版音频库文件已迁移: {legacy} → {target}", "INFO", tag=_LOG_TAG)
-            except OSError as exc:
-                log(f"初版音频库文件迁移失败（沿用旧位置）: {exc}", "WARNING", tag=_LOG_TAG)
-                self._db_path = str(legacy)
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='speakers'")
+        had_legacy = await cursor.fetchone() is not None
+        await db.executescript("""
+            DROP TABLE IF EXISTS voice_samples;
+            DROP TABLE IF EXISTS speakers;
+            DROP TABLE IF EXISTS samples_vec;
+        """)
+        if had_legacy:
+            log(f"声纹库模型升级 v{version}→v{_SCHEMA_VERSION}：清空声纹数据重建",
+                "WARNING", tag=_LOG_TAG)
+        await db.executescript(_SCHEMA)
+        await db.execute("UPDATE audio_segments SET speaker_id=NULL, is_new_speaker=0")
+        await db.execute("DELETE FROM meta WHERE key='samples_vec_dims'")
+        await db.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     async def _load_vec_extension(self, db: aiosqlite.Connection) -> bool:
         try:
@@ -394,56 +385,6 @@ class AudioStore:
         except Exception as exc:
             log(f"FTS5 不可用，转写检索降级为 LIKE: {exc}", "WARNING", tag=_LOG_TAG)
             self.fts_available = False
-
-    @staticmethod
-    async def _ensure_speaker_anchor_column(db: aiosqlite.Connection) -> None:
-        """既有库补列：speakers.vector（质心锚，建表语句之后新增的列）。"""
-        cursor = await db.execute("PRAGMA table_info(speakers)")
-        cols = {str(r["name"]) for r in await cursor.fetchall()}
-        if "vector" not in cols:
-            await db.execute("ALTER TABLE speakers ADD COLUMN vector BLOB")
-
-    async def _migrate_v1_segments(self, db: aiosqlite.Connection) -> bool:
-        """初版音频库表结构升级：旧列（abs_*/speaker_key/vector）重建为新列。
-
-        旧行的 speaker_key 暂存 meta，待旧声纹库说话人迁入后回填 speaker_id。
-        返回是否发生了升级（调用方据此重建 FTS 索引）。
-        """
-        cursor = await db.execute("PRAGMA table_info(audio_segments)")
-        cols = {r["name"] for r in await cursor.fetchall()}
-        if "recording_path" in cols or "abs_start_ms" not in cols:
-            return False
-        cursor = await db.execute(
-            "SELECT id, speaker_key FROM audio_segments WHERE speaker_key != ''")
-        key_map = {str(r["id"]): r["speaker_key"] for r in await cursor.fetchall()}
-        await db.executescript("""
-            DROP TRIGGER IF EXISTS audio_segments_ai;
-            DROP TRIGGER IF EXISTS audio_segments_ad;
-            DROP TRIGGER IF EXISTS audio_segments_au;
-            DROP TABLE IF EXISTS audio_segments_fts;
-            ALTER TABLE audio_segments RENAME TO audio_segments_v1;
-            CREATE TABLE IF NOT EXISTS meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-        """)
-        await db.executescript(_SCHEMA.split("CREATE TABLE IF NOT EXISTS speakers")[0])
-        await db.execute("""
-            INSERT INTO audio_segments
-                (id, source_file, device_source, start_ms, end_ms, similarity,
-                 transcript, transcript_tokens, ts_ns, created_at)
-            SELECT id, source_file, device_source, start_ms, end_ms, similarity,
-                   transcript, transcript_tokens, ts_ns, created_at
-            FROM audio_segments_v1
-        """)
-        await db.execute("DROP TABLE audio_segments_v1")
-        if key_map:
-            await db.execute(
-                "INSERT INTO meta(key, value) VALUES('v1_segment_speaker_keys', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (json.dumps(key_map, ensure_ascii=False),))
-        log(f"初版音频库表结构已升级（{len(key_map)} 条说话人引用待回填）", "INFO", tag=_LOG_TAG)
-        return True
 
     async def close(self) -> None:
         if self._db is not None:
@@ -478,204 +419,6 @@ class AudioStore:
             "INSERT INTO meta(key, value) VALUES(?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
         await db.commit()
-
-    # ------------------------------------------------------------------
-    # 旧库迁移（一次性，幂等）
-    # ------------------------------------------------------------------
-
-    async def migrate_legacy(self) -> Dict[str, int]:
-        """从旧实体声纹库迁入说话人/样本/片段/录制登记（幂等，可重复调用）。"""
-        totals = {"speakers": 0, "samples": 0, "segments": 0, "recordings": 0}
-        for candidate in _legacy_db_candidates():
-            if candidate == self._db_path or not Path(candidate).is_file():
-                continue
-            try:
-                imported = await self._migrate_legacy_db(candidate)
-            except Exception as exc:
-                log(f"旧声纹库迁移跳过 [{candidate}]: {exc}", "WARNING", tag=_LOG_TAG)
-                continue
-            for key, value in imported.items():
-                totals[key] += value
-        await self._backfill_v1_speaker_keys()
-        if any(totals.values()):
-            log(f"旧声纹库已迁入音频核心库: {totals}", "INFO", tag=_LOG_TAG)
-            self._mark_dirty()
-        return totals
-
-    async def _migrate_legacy_db(self, legacy_path: str) -> Dict[str, int]:
-        src = await aiosqlite.connect(legacy_path)
-        src.row_factory = aiosqlite.Row
-        try:
-            cursor = await src.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='voice_segments'")
-            if not await cursor.fetchone():
-                return {"speakers": 0, "samples": 0, "segments": 0, "recordings": 0}
-
-            async def _read(table: str) -> List[Dict[str, Any]]:
-                try:
-                    rows = await (await src.execute(f"SELECT * FROM {table}")).fetchall()
-                    return [dict(r) for r in rows]
-                except Exception:
-                    return []
-
-            speakers = await _read("speakers")
-            samples = await _read("voice_samples")
-            segments = await _read("voice_segments")
-            recordings = await _read("recordings")
-        finally:
-            await src.close()
-
-        # 历史库的列不齐（早期 schema 无 recording_path/part_start_ms 等后加列）：
-        # 一律 dict.get 带缺省读取——宽容属于迁移职责，运行时 schema 是确定的新结构
-        db = await self._get_db()
-        now_ns = time.time_ns()
-        imported = {"speakers": 0, "samples": 0, "segments": 0, "recordings": 0}
-        legacy_to_new: Dict[int, int] = {}
-        for spk in speakers:
-            speaker_key = str(spk.get("speaker_key") or "").strip()
-            if not speaker_key:
-                continue
-            existing_id = await self._speaker_id_by_key_any_state(speaker_key)
-            if existing_id is not None:
-                new_id = existing_id
-            else:
-                cursor = await db.execute(
-                    "INSERT INTO speakers(speaker_key, name, role, status, threshold, notes, "
-                    "device_source, entity_scope, total_audio_ms, first_seen_ns, "
-                    "last_seen_ns, match_count, archived) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (speaker_key,
-                     str(spk.get("name") or ""), str(spk.get("role") or ""),
-                     str(spk.get("status") or "confirmed"), spk.get("threshold"),
-                     str(spk.get("notes") or ""), str(spk.get("device_source") or ""),
-                     str(spk.get("entity_scope") or ""),
-                     int(spk.get("total_audio_ms") or 0),
-                     int(spk.get("first_seen_ns") or now_ns),
-                     int(spk.get("last_seen_ns") or now_ns),
-                     int(spk.get("match_count") or 0), int(spk.get("archived") or 0)))
-                assert cursor.lastrowid is not None
-                new_id = int(cursor.lastrowid)
-                imported["speakers"] += 1
-            legacy_to_new[int(spk["id"])] = new_id
-
-        for sample in samples:
-            if sample.get("speaker_id") is None or not sample.get("vector"):
-                continue
-            new_speaker = legacy_to_new.get(int(sample["speaker_id"]))
-            if new_speaker is None:
-                continue
-            created_ns = int(sample.get("created_ns") or 0)
-            cursor = await db.execute(
-                "SELECT 1 FROM voice_samples WHERE speaker_id=? AND created_ns=? LIMIT 1",
-                (new_speaker, created_ns))
-            if await cursor.fetchone():
-                continue
-            source = str(sample.get("source") or "")
-            await db.execute(
-                "INSERT INTO voice_samples(speaker_id, vector, segment_id, score, source, "
-                "created_ns) VALUES(?,?,?,?,?,?)",
-                (new_speaker, sample["vector"], None, float(sample.get("score") or 0.0),
-                 f"legacy:{source}" if source else "legacy", created_ns))
-            imported["samples"] += 1
-
-        for seg in segments:
-            source_file = str(seg.get("source_file") or "")
-            start_ms = int(seg.get("start_ms") or 0)
-            recording_path = str(seg.get("recording_path") or "")
-            speaker_id = legacy_to_new.get(int(seg["speaker_id"])) \
-                if seg.get("speaker_id") is not None else None
-            # 去重键不含 recording_path：早期迁入的行该列为 ''，同一来源段
-            # 命中时回填富化字段而非重复插入（一一对应原则）
-            cursor = await db.execute(
-                "SELECT id, recording_path FROM audio_segments "
-                "WHERE source_file=? AND start_ms=? AND recording_path IN (?, '') LIMIT 1",
-                (source_file, start_ms, recording_path))
-            hit = await cursor.fetchone()
-            if hit:
-                if not str(hit["recording_path"] or "") and recording_path:
-                    await db.execute(
-                        "UPDATE audio_segments SET recording_path=?, speaker_id=?, "
-                        "part_start_ms=?, is_new_speaker=?, read=?, device_source=?, "
-                        "transcript_embedding=COALESCE(transcript_embedding, ?) WHERE id=?",
-                        (recording_path, speaker_id,
-                         int(seg.get("part_start_ms") or 0),
-                         int(seg.get("is_new_speaker") or 0), int(seg.get("read") or 0),
-                         str(seg.get("device_source") or ""),
-                         seg.get("transcript_embedding"), int(hit["id"])))
-                continue
-            await db.execute(
-                "INSERT INTO audio_segments(recording_path, source_file, device_source, "
-                "start_ms, end_ms, part_start_ms, speaker_id, is_new_speaker, similarity, "
-                "transcript, transcript_tokens, transcript_embedding, ts_ns, read, created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (recording_path, source_file, str(seg.get("device_source") or ""),
-                 start_ms, int(seg.get("end_ms") or 0),
-                 int(seg.get("part_start_ms") or 0), speaker_id,
-                 int(seg.get("is_new_speaker") or 0), float(seg.get("similarity") or 0.0),
-                 str(seg.get("transcript") or ""),
-                 await _tokenize(str(seg.get("transcript") or "")),
-                 seg.get("transcript_embedding"), int(seg.get("ts_ns") or now_ns),
-                 int(seg.get("read") or 0), time.time()))
-            imported["segments"] += 1
-
-        for rec in recordings:
-            path = str(rec.get("path") or "").strip()
-            if not path:
-                continue
-            cursor = await db.execute(
-                "SELECT 1 FROM recordings WHERE path=? LIMIT 1", (path,))
-            if await cursor.fetchone():
-                continue
-            await db.execute(
-                "INSERT INTO recordings(path, kind, fingerprint, started_ns, file_count, "
-                "status, error, segments, files_json, synced_ns) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (path, str(rec.get("kind") or "folder"),
-                 str(rec.get("fingerprint") or ""), int(rec.get("started_ns") or 0),
-                 int(rec.get("file_count") or 0), str(rec.get("status") or "done"),
-                 str(rec.get("error") or ""), int(rec.get("segments") or 0),
-                 str(rec.get("files_json") or "[]"), int(rec.get("synced_ns") or now_ns)))
-            imported["recordings"] += 1
-
-        # 说话人序号续接（防新档 key 与迁入 key 冲突）
-        cursor = await db.execute("SELECT value FROM meta WHERE key='speaker_seq'")
-        row = await cursor.fetchone()
-        seq = int(row["value"]) if row else 0
-        max_seq = seq
-        for spk in speakers:
-            key = str(spk.get("speaker_key") or "")
-            suffix = key.rsplit("_", 1)[-1]
-            if suffix.isdigit():
-                max_seq = max(max_seq, int(suffix))
-        if max_seq > seq:
-            await db.execute(
-                "INSERT INTO meta(key, value) VALUES('speaker_seq', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(max_seq),))
-        await db.commit()
-        return imported
-
-    async def _backfill_v1_speaker_keys(self) -> None:
-        """初版库片段的 speaker_key 暂存映射 → 说话人迁入后回填 speaker_id。"""
-        raw = await self._get_meta("v1_segment_speaker_keys")
-        if not raw:
-            return
-        try:
-            key_map: Dict[str, str] = json.loads(raw)
-        except json.JSONDecodeError:
-            await self._set_meta("v1_segment_speaker_keys", "")
-            return
-        db = await self._get_db()
-        resolved = 0
-        for seg_id, speaker_key in key_map.items():
-            speaker = await self.get_speaker_by_key(speaker_key)
-            if not speaker:
-                continue
-            await db.execute(
-                "UPDATE audio_segments SET speaker_id=? WHERE id=? AND speaker_id IS NULL",
-                (speaker["id"], int(seg_id)))
-            resolved += 1
-        await db.commit()
-        await self._set_meta("v1_segment_speaker_keys", "")
-        if resolved:
-            log(f"初版库片段说话人回填: {resolved}/{len(key_map)}", "INFO", tag=_LOG_TAG)
 
     # ------------------------------------------------------------------
     # 录制单元登记（同步增量依据 + 合并清单）
@@ -762,20 +505,21 @@ class AudioStore:
     async def delete_recording(self, path: str) -> Dict[str, Any]:
         """删除录制单元及其全部衍生资源（同步镜像的删除传播）。
 
-        级联：片段（含 FTS/vec 索引）→ 片段关联的声纹样本（含 vec 索引）→ 登记行。
-        说话人档案保留（可能还有其他录制的样本）。
+        级联：片段（含 FTS/vec 索引）→ 片段关联的声纹样本 → 登记行。
+        说话人档案保留（可能还有其他录制的样本；锚的历史贡献不清算，
+        需要复位时对该说话人执行声纹重建）。
         """
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT id FROM audio_segments WHERE recording_path=?", (path,))
         segment_ids = [r["id"] for r in await cursor.fetchall()]
-        sample_ids: List[int] = []
+        sample_count = 0
         if segment_ids:
             placeholders = ",".join("?" for _ in segment_ids)
             cursor = await db.execute(
-                f"SELECT id FROM voice_samples WHERE segment_id IN ({placeholders})",
+                f"SELECT COUNT(*) AS c FROM voice_samples WHERE segment_id IN ({placeholders})",
                 segment_ids)
-            sample_ids = [r["id"] for r in await cursor.fetchall()]
+            sample_count = int(_scalar(await cursor.fetchone(), "c"))
             await db.execute(
                 f"DELETE FROM voice_samples WHERE segment_id IN ({placeholders})",
                 segment_ids)
@@ -783,108 +527,102 @@ class AudioStore:
                 "DELETE FROM audio_segments WHERE recording_path=?", (path,))
         await db.execute("DELETE FROM recordings WHERE path=?", (path,))
         await db.commit()
-        for sid in sample_ids:
-            await self._vec_delete("samples", sid)
         for seg_id in segment_ids:
-            await self._vec_delete("segments", seg_id)
+            await self._vec_delete(seg_id)
         self._mark_dirty()
-        return {"segments_deleted": len(segment_ids), "samples_deleted": len(sample_ids)}
+        return {"segments_deleted": len(segment_ids), "samples_deleted": sample_count}
 
     # ------------------------------------------------------------------
-    # vec0 派生索引（samples 固定 192 维；segments 维度首次回填时确定）
+    # vec0 派生索引（转写文本向量；维度首次回填时确定）
     # ------------------------------------------------------------------
 
-    async def _ensure_vec_table(self, db: aiosqlite.Connection, kind: str, dims: int) -> bool:
+    async def _ensure_vec_table(self, db: aiosqlite.Connection, dims: int) -> bool:
         """确保 vec0 索引表存在且维度匹配；维度变更时从 BLOB 重建。返回可用性。"""
         if not self._vec_available:
             return False
-        table = f"{kind}_vec"
-        meta_key = f"{kind}_vec_dims"
-        cursor = await db.execute("SELECT value FROM meta WHERE key=?", (meta_key,))
+        cursor = await db.execute("SELECT value FROM meta WHERE key='segments_vec_dims'")
         row = await cursor.fetchone()
         existing_dims = int(row["value"]) if row else 0
 
         if existing_dims == dims:
             cursor = await db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='segments_vec'")
             if await cursor.fetchone():
                 return True
 
         if existing_dims and existing_dims != dims:
-            log(f"{kind} 向量维度变更 {existing_dims}→{dims}，重建 vec 索引", "WARNING", tag=_LOG_TAG)
-            await db.execute(f"DROP TABLE IF EXISTS {table}")
+            log(f"向量维度变更 {existing_dims}→{dims}，重建 vec 索引", "WARNING", tag=_LOG_TAG)
+            await db.execute("DROP TABLE IF EXISTS segments_vec")
 
         try:
             await db.execute(
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} "
+                "CREATE VIRTUAL TABLE IF NOT EXISTS segments_vec "
                 f"USING vec0(embedding float[{dims}] distance_metric=cosine)")
             await db.execute(
-                "INSERT INTO meta(key, value) VALUES(?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (meta_key, str(dims)))
+                "INSERT INTO meta(key, value) VALUES('segments_vec_dims', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(dims),))
         except Exception as exc:
             log(f"vec 索引表创建失败（降级全表扫描）: {exc}", "WARNING", tag=_LOG_TAG)
             self._vec_available = False
             return False
 
         # 从权威 BLOB 回填派生索引
-        main_table = "voice_samples" if kind == "samples" else "audio_segments"
-        vec_col = "vector" if kind == "samples" else "transcript_embedding"
         try:
             import sqlite_vec
             cursor = await db.execute(
-                f"SELECT id, {vec_col} FROM {main_table} WHERE {vec_col} IS NOT NULL")
+                "SELECT id, transcript_embedding FROM audio_segments "
+                "WHERE transcript_embedding IS NOT NULL")
             for row in await cursor.fetchall():
-                vec = _blob_to_vec(row[vec_col])
+                vec = _blob_to_vec(row["transcript_embedding"])
                 if len(vec) != dims:
                     continue
                 await db.execute(
-                    f"INSERT OR REPLACE INTO {table}(rowid, embedding) VALUES(?, ?)",
+                    "INSERT OR REPLACE INTO segments_vec(rowid, embedding) VALUES(?, ?)",
                     (row["id"], sqlite_vec.serialize_float32(vec)))
             await db.commit()
         except Exception as exc:
             log(f"vec 索引回填失败: {exc}", "WARNING", tag=_LOG_TAG)
         return True
 
-    async def _vec_upsert(self, kind: str, rowid: int, vec: List[float]) -> None:
+    async def _vec_upsert(self, rowid: int, vec: List[float]) -> None:
         db = await self._get_db()
-        if not await self._ensure_vec_table(db, kind, len(vec)):
+        if not await self._ensure_vec_table(db, len(vec)):
             return
         try:
             import sqlite_vec
             # vec0 虚表的 INSERT OR REPLACE 不一定生效，先删后插保证幂等
-            await db.execute(f"DELETE FROM {kind}_vec WHERE rowid=?", (rowid,))
+            await db.execute("DELETE FROM segments_vec WHERE rowid=?", (rowid,))
             await db.execute(
-                f"INSERT INTO {kind}_vec(rowid, embedding) VALUES(?, ?)",
+                "INSERT INTO segments_vec(rowid, embedding) VALUES(?, ?)",
                 (rowid, sqlite_vec.serialize_float32(vec)))
             await db.commit()
         except Exception as exc:
             log(f"vec 写入失败: {exc}", "DEBUG", tag=_LOG_TAG)
 
-    async def _vec_delete(self, kind: str, rowid: int) -> None:
+    async def _vec_delete(self, rowid: int) -> None:
         if not self._vec_available:
             return
         try:
             db = await self._get_db()
-            await db.execute(f"DELETE FROM {kind}_vec WHERE rowid=?", (rowid,))
+            await db.execute("DELETE FROM segments_vec WHERE rowid=?", (rowid,))
             await db.commit()
         except Exception:
             log("_vec_delete 异常已忽略", "DEBUG")
 
     async def _vec_search(
-        self, kind: str, query_vec: List[float], limit: int,
+        self, query_vec: List[float], limit: int,
     ) -> Optional[List[Dict[str, Any]]]:
         """vec0 KNN 检索，返回 [{id, score}]；不可用返回 None。"""
         if not self._vec_available:
             return None
         db = await self._get_db()
-        if not await self._ensure_vec_table(db, kind, len(query_vec)):
+        if not await self._ensure_vec_table(db, len(query_vec)):
             return None
         try:
             import sqlite_vec
             cursor = await db.execute(
-                f"SELECT rowid, distance FROM {kind}_vec "
-                f"WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+                "SELECT rowid, distance FROM segments_vec "
+                "WHERE embedding MATCH ? AND k = ? ORDER BY distance",
                 (sqlite_vec.serialize_float32(query_vec), limit))
             rows = await cursor.fetchall()
             return [{"id": r["rowid"], "score": round(1.0 - r["distance"], 4)} for r in rows]
@@ -1050,40 +788,31 @@ class AudioStore:
             return None
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT id FROM voice_samples WHERE speaker_id=?", (speaker_id,))
-        sample_ids = [r["id"] for r in await cursor.fetchall()]
-        cursor = await db.execute(
             "SELECT id FROM audio_segments WHERE speaker_id=?", (speaker_id,))
         segment_ids = [r["id"] for r in await cursor.fetchall()]
         await db.execute("DELETE FROM voice_samples WHERE speaker_id=?", (speaker_id,))
         await db.execute("DELETE FROM audio_segments WHERE speaker_id=?", (speaker_id,))
         await db.execute("DELETE FROM speakers WHERE id=?", (speaker_id,))
         await db.commit()
-        for sid in sample_ids:
-            await self._vec_delete("samples", sid)
         for seg_id in segment_ids:
-            await self._vec_delete("segments", seg_id)
+            await self._vec_delete(seg_id)
         self._mark_dirty()
         return current
 
     async def archive_speaker(self, speaker_id: int) -> Optional[Dict[str, Any]]:
         """软归档说话人：档案标记归档（查询面过滤），样本池删除，片段归属保留。
 
-        归档是单向终态（无 unarchive 通道）：样本池不可恢复，归属重建
+        归档是单向终态（无 unarchive 通道）：样本池与锚不可恢复，归属重建
         需重新注册/合并。仅用于确认不再参与识别的历史身份。
         """
         current = await self.get_speaker(speaker_id)
         if not current:
             return None
         db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT id FROM voice_samples WHERE speaker_id=?", (speaker_id,))
-        sample_ids = [r["id"] for r in await cursor.fetchall()]
-        await db.execute("UPDATE speakers SET archived=1 WHERE id=?", (speaker_id,))
+        await db.execute("UPDATE speakers SET archived=1, vector=NULL, anchor_weight=0 "
+                         "WHERE id=?", (speaker_id,))
         await db.execute("DELETE FROM voice_samples WHERE speaker_id=?", (speaker_id,))
         await db.commit()
-        for sid in sample_ids:
-            await self._vec_delete("samples", sid)
         self._mark_dirty()
         result = dict(current)
         result["archived"] = True
@@ -1132,7 +861,7 @@ class AudioStore:
     async def list_speakers(
         self, *, status: str = "", keyword: str = "", limit: int = 50, offset: int = 0,
     ) -> Dict[str, Any]:
-        """说话人列表（含样本数），支持状态过滤与姓名/角色关键字。"""
+        """说话人列表（含样本数与信道分布），支持状态过滤与姓名/角色关键字。"""
         db = await self._get_db()
         where = ["archived=0"]
         params: List[Any] = []
@@ -1148,18 +877,25 @@ class AudioStore:
         total = int(_scalar(await cursor.fetchone(), "c"))
         cursor = await db.execute(
             f"SELECT s.*, (SELECT COUNT(*) FROM voice_samples v WHERE v.speaker_id=s.id) "
-            f"AS sample_count FROM speakers s WHERE {where_sql} "
+            f"AS sample_count, (SELECT GROUP_CONCAT(channel, ',') FROM voice_samples v "
+            f"WHERE v.speaker_id=s.id) AS channels_csv "
+            f"FROM speakers s WHERE {where_sql} "
             f"ORDER BY s.last_seen_ns DESC LIMIT ? OFFSET ?",
             (*params, limit, offset))
         items = []
         for row in await cursor.fetchall():
             item = _row_to_speaker(row)
             item["sample_count"] = row["sample_count"]
+            channels: Dict[str, int] = {}
+            for channel in str(row["channels_csv"] or "").split(","):
+                if channel:
+                    channels[channel] = channels.get(channel, 0) + 1
+            item["channels"] = channels
             items.append(item)
         return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     # ------------------------------------------------------------------
-    # 声纹样本池
+    # 声纹样本池与锚
     # ------------------------------------------------------------------
 
     async def add_sample(
@@ -1168,114 +904,132 @@ class AudioStore:
         vector: List[float],
         *,
         segment_id: Optional[int] = None,
+        channel: str = "",
+        duration_ms: int = 0,
         score: float = 0.0,
         source: str = "",
-        max_samples: int = 5,
+        max_samples: Optional[int] = None,
+        update_anchor: bool = True,
     ) -> int:
-        """样本入池，返回样本 id（新样本被判为极端样本时返回 -1 未入池）。
+        """样本入池并折叠声纹锚，返回样本 id（相干门未过返回 -1 未入池）。
 
-        淘汰策略（audio_sample_evict_strategy）：
-        - outlier（默认）：池满时计算全部候选（现有+新样本）的质心，
-          淘汰与质心相似度最低的极端样本——可能是新样本本身（噪音拒入），
-          样本池随使用自我优化、保持代表性
-        - fifo：淘汰最早样本（时间先进先出）
+        门控：与既有锚的余弦低于 audio_sample_coherence_floor 的样本拒入
+        （错认人/噪音防投毒；新档案无锚时不设门）。
+        淘汰：池满优先淘汰同信道最早样本（信道涌入只挤占自己，保持池的
+        信道多样性），该信道无样本时淘汰全局最早。
+        折叠：锚 = 历史合格样本的时长加权质心，增量更新（学习率随
+        累积量自然衰减）；update_anchor=False 供身份合并整体迁移后精确合成。
         """
         db = await self._get_db()
-        strategy = str(get_config("audio_sample_evict_strategy", "outlier")
-                       or "outlier")
+        anchor: List[float] = []
+        weight = 0.0
+        if update_anchor:
+            anchor, weight = await self.get_speaker_anchor(speaker_id)
+            if anchor and cosine(vector, anchor) < coherence_floor():
+                log(f"样本与声纹锚相干度过低，拒绝入池（说话人 {speaker_id}）",
+                    "DEBUG", tag=_LOG_TAG)
+                return -1
 
-        if strategy == "outlier":
-            cursor = await db.execute(
-                "SELECT id, vector FROM voice_samples WHERE speaker_id=? "
-                "ORDER BY created_ns ASC", (speaker_id,))
-            existing = [(int(r["id"]), _blob_to_vec(r["vector"]))
-                    for r in await cursor.fetchall()]
-            if len(existing) >= max(1, max_samples):
-                candidates: List[tuple[Optional[int], List[float]]] = [
-                    *existing, (None, vector)]
-                centroid = _mean_vec([v for _, v in candidates])
-                worst_id: Optional[int] = None
-                worst_is_new = False
-                worst_sim = 2.0
-                for cand_id, cand_vec in candidates:
-                    sim = _cosine(cand_vec, centroid)
-                    if sim < worst_sim:
-                        worst_sim = sim
-                        worst_id = cand_id
-                        worst_is_new = cand_id is None
-                if worst_is_new:
-                    log(f"新样本为极端样本（质心相似度 {worst_sim:.3f}），拒绝入池",
-                        "DEBUG", tag=_LOG_TAG)
-                    return -1
-                await db.execute(
-                    "DELETE FROM voice_samples WHERE id=?", (worst_id,))
-                await db.commit()
-                if worst_id is not None:
-                    await self._vec_delete("samples", worst_id)
-
-        now = time.time_ns()
+        limit = max(1, max_samples if max_samples is not None
+                    else get_config("audio_max_samples_per_speaker", 10))
         cursor = await db.execute(
-            "INSERT INTO voice_samples(speaker_id, vector, segment_id, score, source, created_ns) "
-            "VALUES(?,?,?,?,?,?)",
-            (speaker_id, _vec_to_blob(vector), segment_id, score, source, now))
+            "SELECT COUNT(*) AS c FROM voice_samples WHERE speaker_id=?", (speaker_id,))
+        if int(_scalar(await cursor.fetchone(), "c")) >= limit:
+            cursor = await db.execute(
+                "SELECT id FROM voice_samples WHERE speaker_id=? AND channel=? "
+                "ORDER BY created_ns ASC LIMIT 1", (speaker_id, channel))
+            row = await cursor.fetchone()
+            if row is None:
+                cursor = await db.execute(
+                    "SELECT id FROM voice_samples WHERE speaker_id=? "
+                    "ORDER BY created_ns ASC LIMIT 1", (speaker_id,))
+                row = await cursor.fetchone()
+            if row is not None:
+                await db.execute("DELETE FROM voice_samples WHERE id=?", (row["id"],))
+
+        cursor = await db.execute(
+            "INSERT INTO voice_samples(speaker_id, vector, segment_id, channel, "
+            "duration_ms, score, source, created_ns) VALUES(?,?,?,?,?,?,?,?)",
+            (speaker_id, _vec_to_blob(vector), segment_id, channel,
+             max(0, duration_ms), score, source, time.time_ns()))
         assert cursor.lastrowid is not None
         sample_id = int(cursor.lastrowid)
 
-        if strategy != "outlier":
-            # FIFO 淘汰最早样本
-            cursor = await db.execute(
-                "SELECT id FROM voice_samples WHERE speaker_id=? ORDER BY created_ns DESC",
-                (speaker_id,))
-            all_ids = [r["id"] for r in await cursor.fetchall()]
-            evict_ids = all_ids[max(1, max_samples):]
-            if evict_ids:
-                placeholders = ",".join("?" for _ in evict_ids)
-                await db.execute(
-                    f"DELETE FROM voice_samples WHERE id IN ({placeholders})", evict_ids)
-                await db.commit()
-                for evict_id in evict_ids:
-                    await self._vec_delete("samples", evict_id)
-        else:
-            await db.commit()
-        await self._vec_upsert("samples", sample_id, vector)
+        if update_anchor:
+            if anchor:
+                merged, total = blend(anchor, weight, vector, sample_weight(duration_ms))
+            else:
+                merged, total = list(vector), sample_weight(duration_ms)
+            await db.execute(
+                "UPDATE speakers SET vector=?, anchor_weight=? WHERE id=?",
+                (_vec_to_blob(merged), total, speaker_id))
+        await db.commit()
         return sample_id
 
-    async def get_sample_vector(self, sample_id: int) -> Optional[List[float]]:
-        """读取单条样本的声纹向量（合并迁移用）。"""
+    async def get_speaker_anchor(self, speaker_id: int) -> Tuple[List[float], float]:
+        """读取声纹锚与其累计权重（未建立为空）。"""
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT vector FROM voice_samples WHERE id=?", (sample_id,))
+            "SELECT vector, anchor_weight FROM speakers "
+            "WHERE id=? AND vector IS NOT NULL", (speaker_id,))
         row = await cursor.fetchone()
-        return _blob_to_vec(row["vector"]) if row else None
+        return (_blob_to_vec(row["vector"]), float(row["anchor_weight"])) if row else ([], 0.0)
 
-    async def get_speaker_anchor(self, speaker_id: int) -> List[float]:
-        """读取质心锚（未精化为空表）。"""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT vector FROM speakers WHERE id=? AND vector IS NOT NULL", (speaker_id,))
-        row = await cursor.fetchone()
-        return _blob_to_vec(row["vector"]) if row else []
-
-    async def set_speaker_anchor(self, speaker_id: int, vector: List[float]) -> None:
-        """写入质心锚（声纹精化）。"""
+    async def set_speaker_anchor(
+        self, speaker_id: int, vector: List[float], weight: float,
+    ) -> None:
+        """写入声纹锚与累计权重（样本池重立/合并精确合成）。"""
         db = await self._get_db()
         await db.execute(
-            "UPDATE speakers SET vector=? WHERE id=?", (_vec_to_blob(vector), speaker_id))
+            "UPDATE speakers SET vector=?, anchor_weight=? WHERE id=?",
+            (_vec_to_blob(vector), weight, speaker_id))
         await db.commit()
 
     async def list_speaker_anchors(self) -> List[Tuple[int, List[float]]]:
-        """全部在档质心锚（锚检索用；说话人量级小，线性扫）。"""
+        """全部在档声纹锚（匹配候选来源；说话人量级小，线性扫）。"""
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT id, vector FROM speakers WHERE archived=0 AND vector IS NOT NULL")
         return [(int(r["id"]), _blob_to_vec(r["vector"])) for r in await cursor.fetchall()]
 
-    async def get_speaker_vectors(self, speaker_id: int) -> List[List[float]]:
-        """读取说话人全部样本向量（质心计算用）。"""
+    async def get_speaker_samples(
+        self, speaker_id: int, channel: str = "",
+    ) -> List[Tuple[List[float], int, str]]:
+        """读取样本池 (向量, 时长毫秒, 信道)；channel 非空时只取该信道。"""
+        db = await self._get_db()
+        if channel:
+            cursor = await db.execute(
+                "SELECT vector, duration_ms, channel FROM voice_samples "
+                "WHERE speaker_id=? AND channel=?", (speaker_id, channel))
+        else:
+            cursor = await db.execute(
+                "SELECT vector, duration_ms, channel FROM voice_samples "
+                "WHERE speaker_id=?", (speaker_id,))
+        return [(_blob_to_vec(r["vector"]), int(r["duration_ms"]), str(r["channel"]))
+                for r in await cursor.fetchall()]
+
+    async def move_samples(self, from_speaker_id: int, to_speaker_id: int) -> int:
+        """样本池整体迁移（身份合并）：保留信道/时长/挂接，返回迁移条数。
+
+        池溢出按创建时间保留最近样本；锚不在此折叠——由合并方对两档案
+        锚做加权精确合成（与重放全部历史样本等价）。
+        """
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT vector FROM voice_samples WHERE speaker_id=?", (speaker_id,))
-        return [_blob_to_vec(r["vector"]) for r in await cursor.fetchall()]
+            "UPDATE voice_samples SET speaker_id=? WHERE speaker_id=?",
+            (to_speaker_id, from_speaker_id))
+        moved = cursor.rowcount
+        limit = max(1, get_config("audio_max_samples_per_speaker", 10))
+        cursor = await db.execute(
+            "SELECT id FROM voice_samples WHERE speaker_id=? "
+            "ORDER BY created_ns DESC LIMIT -1 OFFSET ?", (to_speaker_id, limit))
+        overflow = [r["id"] for r in await cursor.fetchall()]
+        if overflow:
+            placeholders = ",".join("?" for _ in overflow)
+            await db.execute(
+                f"DELETE FROM voice_samples WHERE id IN ({placeholders})", overflow)
+        await db.commit()
+        return moved
 
     async def reassign_segments(self, from_speaker_id: int, to_speaker_id: int) -> int:
         """批量改派片段归属（身份合并用），返回影响行数。"""
@@ -1304,48 +1058,11 @@ class AudioStore:
         return [_row_to_sample(r) for r in await cursor.fetchall()]
 
     async def delete_sample(self, sample_id: int) -> bool:
+        """删除单条样本（锚的历史贡献不清算，需要复位时执行声纹重建）。"""
         db = await self._get_db()
         cursor = await db.execute("DELETE FROM voice_samples WHERE id=?", (sample_id,))
         await db.commit()
-        if cursor.rowcount:
-            await self._vec_delete("samples", sample_id)
-            return True
-        return False
-
-    async def search_sample_vectors(
-        self, query_vec: List[float], limit: int = 25,
-    ) -> List[Dict[str, Any]]:
-        """样本级 KNN：返回 [{sample_id, speaker_id, score}]，vec 不可用时全表余弦降级。"""
-        db = await self._get_db()
-        hits = await self._vec_search("samples", query_vec, limit)
-        if hits is not None:
-            if not hits:
-                return []
-            result = []
-            for hit in hits:
-                cursor = await db.execute(
-                    "SELECT speaker_id FROM voice_samples WHERE id=?", (hit["id"],))
-                row = await cursor.fetchone()
-                if row:
-                    result.append({
-                        "sample_id": hit["id"],
-                        "speaker_id": row["speaker_id"],
-                        "score": hit["score"],
-                    })
-            return result
-        # 降级：Python 全表余弦
-        cursor = await db.execute("SELECT id, speaker_id, vector FROM voice_samples")
-        scored: List[Dict[str, Any]] = []
-        for row in await cursor.fetchall():
-            score = _cosine(query_vec, _blob_to_vec(row["vector"]))
-            if score > 0:
-                scored.append({
-                    "sample_id": row["id"],
-                    "speaker_id": row["speaker_id"],
-                    "score": round(score, 4),
-                })
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        return bool(cursor.rowcount)
 
     # ------------------------------------------------------------------
     # 语音片段
@@ -1432,7 +1149,7 @@ class AudioStore:
             "transcript_embedding=NULL WHERE id=?",
             (transcript, await _tokenize(transcript), segment_id))
         await db.commit()
-        await self._vec_delete("segments", segment_id)
+        await self._vec_delete(segment_id)
         self._wake_embedding_worker()
         return await self.get_segment(segment_id)
 
@@ -1490,7 +1207,7 @@ class AudioStore:
         if changed_ids and not dry_run:
             await db.commit()
             for seg_id in changed_ids:
-                await self._vec_delete("segments", seg_id)
+                await self._vec_delete(seg_id)
             self._wake_embedding_worker()
         return {
             "matched": len(changed_ids),
@@ -1549,9 +1266,9 @@ class AudioStore:
         await db.execute(
             f"DELETE FROM audio_segments WHERE id IN ({placeholders})", rest_ids)
         await db.commit()
-        await self._vec_delete("segments", int(first["id"]))
+        await self._vec_delete(int(first["id"]))
         for seg_id in rest_ids:
-            await self._vec_delete("segments", int(seg_id))
+            await self._vec_delete(int(seg_id))
         self._mark_dirty()
         self._wake_embedding_worker()
         return await self.get_segment(int(first["id"]))
@@ -1601,7 +1318,7 @@ class AudioStore:
              second_text, await _tokenize(second_text),
              second_ts, 1 if segment["read"] else 0, time.time()))
         await db.commit()
-        await self._vec_delete("segments", segment_id)
+        await self._vec_delete(segment_id)
         self._mark_dirty()
         self._wake_embedding_worker()
         assert cursor.lastrowid is not None
@@ -1615,7 +1332,7 @@ class AudioStore:
         cursor = await db.execute("DELETE FROM audio_segments WHERE id=?", (segment_id,))
         await db.commit()
         if cursor.rowcount:
-            await self._vec_delete("segments", segment_id)
+            await self._vec_delete(segment_id)
             self._mark_dirty()
             return True
         return False
@@ -1690,7 +1407,7 @@ class AudioStore:
 
         # 向量召回
         if query_vec:
-            vec_hits = await self._vec_search("segments", query_vec, limit * 3)
+            vec_hits = await self._vec_search(query_vec, limit * 3)
             if vec_hits is None:
                 vec_hits = await self._python_segment_scan(query_vec, limit * 3)
             for hit in vec_hits:
@@ -1761,7 +1478,7 @@ class AudioStore:
             "WHERE transcript_embedding IS NOT NULL")
         scored: List[Dict[str, Any]] = []
         for row in await cursor.fetchall():
-            score = _cosine(query_vec, _blob_to_vec(row["transcript_embedding"]))
+            score = cosine(query_vec, _blob_to_vec(row["transcript_embedding"]))
             if score > 0.05:
                 scored.append({"id": row["id"], "score": round(score, 4)})
         scored.sort(key=lambda x: x["score"], reverse=True)
@@ -1806,7 +1523,7 @@ class AudioStore:
             "UPDATE audio_segments SET transcript_embedding=? WHERE id=?",
             (_vec_to_blob(vec), segment_id))
         await db.commit()
-        await self._vec_upsert("segments", segment_id, vec)
+        await self._vec_upsert(segment_id, vec)
 
     # ------------------------------------------------------------------
     # 统计与上下文摘要

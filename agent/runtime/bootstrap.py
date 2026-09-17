@@ -99,7 +99,7 @@ def create_bootstrap() -> FlowMachine:
 
     @machine.node(skip_on_error=True, depends_on=["init_storage"])
     async def init_audio():
-        """音频核心库：建库 + 旧实体声纹库一次性迁移（幂等）。"""
+        """音频核心库：建库（声纹 v2 模型，版本门自动处理旧库）。"""
         from agent.audio import get_audio_store
         from core.lifecycle import Lifecycle
 
@@ -107,7 +107,6 @@ def create_bootstrap() -> FlowMachine:
 
         async def _init() -> None:
             await store.initialize()
-            await store.migrate_legacy()
 
         Lifecycle.register("audio_store", store, cleanup=store.close, on_start=_init)
 
