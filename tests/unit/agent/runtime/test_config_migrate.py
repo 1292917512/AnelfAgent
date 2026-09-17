@@ -35,9 +35,9 @@ def mem_config(monkeypatch: pytest.MonkeyPatch):
     return store
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def preset_store(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    """音色预设库隔离到临时域（迁移建档写此文件）。"""
+    """音色预设库隔离到临时域（模块级 autouse：迁移建档绝不写真实库）。"""
     from agent.tts import presets as tts_presets
 
     target = tmp_path / "voice_presets.json"
@@ -70,10 +70,11 @@ class TestMediaConfigMigration:
 
         config_migrate.migrate_legacy_entity_configs(str(tmp_path))
 
-        # 默认音色建档为预设（参考对优先，克隆型）并指派默认场景
+        # 默认音色建档为预设（参考对优先，克隆型；预设名取参考文件名）
         from agent.tts import presets as tts_presets
         presets_list = tts_presets.list_presets()
         assert len(presets_list) == 1
+        assert presets_list[0].name == "克隆·ref"
         assert presets_list[0].reference_audio == "workspace/ref.mp3"
         assert presets_list[0].reference_text == "参考文本"
         assert mem_config["sound_voice_default"] == presets_list[0].id
@@ -112,12 +113,26 @@ class TestMediaConfigMigration:
 
         from agent.tts import presets as tts_presets
         presets_list = tts_presets.list_presets()
-        assert len(presets_list) == 2
+        # 预设名用音色 ID（可辨识且互异），指派各自场景
+        assert [p.name for p in presets_list] == ["female-yujie", "qiaopi_mengmei"]
         assert mem_config["sound_voice_default"] == presets_list[0].id
         assert mem_config["sound_voice_realtime"] == presets_list[1].id
         # 预设库非空后再次迁移不重复建档
         config_migrate.migrate_legacy_entity_configs(str(tmp_path))
         assert tts_presets.list_presets() == presets_list
+
+    def test_legacy_same_voice_no_duplicate_preset(self, tmp_path, mem_config, preset_store):
+        """默认与通话同音色：只建一条预设，通话跟随默认（语义等价）。"""
+        mem_config["tts_default_voice"] = "qiaopi_mengmei"
+        mem_config["realtime_tts_voice"] = "qiaopi_mengmei"
+
+        config_migrate.migrate_legacy_entity_configs(str(tmp_path))
+
+        from agent.tts import presets as tts_presets
+        presets_list = tts_presets.list_presets()
+        assert [p.name for p in presets_list] == ["qiaopi_mengmei"]
+        assert mem_config["sound_voice_default"] == presets_list[0].id
+        assert not mem_config.get("sound_voice_realtime")
 
     def test_idempotent_second_run(self, tmp_path, mem_config, preset_store):
         _write(str(tmp_path / "media" / "config.json"), {"default_voice": "v1"})

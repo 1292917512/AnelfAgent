@@ -119,6 +119,8 @@ def save_preset(
         raise ValueError("克隆参考音频必须配参考文本")
     with _STORE_LOCK:
         presets = _load()
+        if any(p.name == name and p.id != preset_id for p in presets):
+            raise ValueError(f"预设名称已存在: {name}")
         if preset_id:
             for i, existing in enumerate(presets):
                 if existing.id == preset_id:

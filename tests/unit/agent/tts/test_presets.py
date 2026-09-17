@@ -52,6 +52,14 @@ class TestValidation:
         with pytest.raises(ValueError, match="名称"):
             presets.save_preset(voice_id="v")
 
+    def test_duplicate_name_rejected(self, preset_env) -> None:
+        presets.save_preset(name="御姐", voice_id="female-yujie")
+        with pytest.raises(ValueError, match="名称已存在"):
+            presets.save_preset(name="御姐", voice_id="another")
+        # 自己改名到原名的更新不受影响
+        preset = presets.list_presets()[0]
+        presets.save_preset(id=preset.id, name="御姐", voice_id="female-yujie")
+
     def test_voice_and_reference_mutually_exclusive(self, preset_env) -> None:
         with pytest.raises(ValueError, match="二选一"):
             presets.save_preset(
