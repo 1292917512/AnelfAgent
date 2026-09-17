@@ -144,6 +144,13 @@ class VectorIdentifyRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
 
 
+class MarkReadRequest(BaseModel):
+    """批量已读/未读标记（ids 为空 = 全部）。"""
+
+    segment_ids: Optional[List[int]] = None
+    read: bool = True
+
+
 class SegmentUpdateRequest(BaseModel):
     """片段编辑（归属改派 / 转写文本修订）。"""
 

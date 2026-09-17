@@ -146,7 +146,10 @@
     "simmap": "分布图",
     "bind": "绑定",
     "unbind": "解绑",
-    "refineHint": "重建声纹锚（以当前样本池重立）"
+    "refineHint": "重建声纹锚（以当前样本池重立）",
+    "markAllUnread": "全部未读",
+    "markAllUnreadHint": "恢复全部片段为未读",
+    "clearFiltered": "按筛选清空"
   },
   "groups": {
     "pending": "待确认（{{count}}）",
@@ -170,7 +173,10 @@
     "consolidateHint": "以下临时说话人的声纹质心相似度 ≥ {{threshold}}，疑似同一人被分裂；绿色为合并后保留的档案（累计时长最长）。",
     "consolidateKeep": "保留",
     "consolidateEmpty": "没有发现可合并的分裂说话人，也没有低价值档案",
-    "insignificantTitle": "一并清理 {{count}} 个低价值说话人（命中≤{{matches}}次 且 时长≤{{seconds}}s，多为环境音/路人）"
+    "insignificantTitle": "一并清理 {{count}} 个低价值说话人（命中≤{{matches}}次 且 时长≤{{seconds}}s，多为环境音/路人）",
+    "clearTitle": "批量清空片段",
+    "clearHint": "按当前筛选（说话人/时间）删除全部命中片段，级联删除挂接的声纹样本。转写内容不可恢复，确认继续？",
+    "clearRangeHint": "删除当前时间段与说话人筛选下的全部片段，级联删除挂接的声纹样本。转写内容不可恢复，确认继续？"
   },
   "status": {
     "confirmed": "已确认",
@@ -199,7 +205,9 @@
     "bindSuccess": "实体绑定已更新",
     "unbindSuccess": "已解除绑定",
     "refineSuccess": "声纹已精化（{{samples}} 样本，漂移 {{drift}}）",
-    "refineInitial": "首次精化"
+    "refineInitial": "首次精化",
+    "markedUnread": "已恢复 {{count}} 条未读",
+    "clearedSegments": "已清空 {{count}} 条片段"
   },
   "simmap": {
     "title": "声纹相似度分布图",

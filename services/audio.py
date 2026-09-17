@@ -24,6 +24,7 @@ from agent.audio.schemas import (  # noqa: F401  # 门面再导出（web 层请�
     EnrollRequest,
     IdentifyCandidate,
     ImportRequest,
+    MarkReadRequest,
     MergeRequest,
     SegmentAddRequest,
     SegmentMergeRequest,
@@ -443,8 +444,20 @@ class AudioServiceFacade:
     async def delete_segment(self, segment_id: int) -> bool:
         return await get_audio_store().delete_segment(segment_id)
 
-    async def mark_read(self, segment_ids: Optional[List[int]]) -> int:
-        return await get_audio_store().mark_read(segment_ids)
+    async def mark_read(self, segment_ids: Optional[List[int]], read: bool = True) -> int:
+        return await get_audio_store().mark_read(segment_ids, read=read)
+
+    async def delete_segments(
+        self, *, speaker_id: Optional[int] = None, entity_scope: str = "",
+        recording_path: str = "", time_from: str = "", time_to: str = "",
+        unread_only: bool = False,
+    ) -> Dict[str, int]:
+        from agent.audio.store import parse_time_ns
+        return await get_audio_store().delete_segments(
+            speaker_id=speaker_id, entity_scope=entity_scope,
+            recording_path=recording_path,
+            from_ns=parse_time_ns(time_from), to_ns=parse_time_ns(time_to),
+            unread_only=unread_only)
 
     async def listen_segment(self, segment_id: int, apply: bool) -> Dict[str, Any]:
         from agent.audio.listen import listen_segment

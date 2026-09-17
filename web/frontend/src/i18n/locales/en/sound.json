@@ -146,7 +146,10 @@
     "simmap": "Similarity map",
     "bind": "Bind",
     "unbind": "Unbind",
-    "refineHint": "Rebuild voiceprint anchor from current sample pool"
+    "refineHint": "Rebuild voiceprint anchor from current sample pool",
+    "markAllUnread": "All unread",
+    "markAllUnreadHint": "Restore all segments to unread",
+    "clearFiltered": "Clear filtered"
   },
   "groups": {
     "pending": "Pending ({{count}})",
@@ -170,7 +173,10 @@
     "consolidateHint": "These pending speakers' centroid similarity ≥ {{threshold}} — likely the same person split apart. Green marks the profile kept after merge (longest audio).",
     "consolidateKeep": "keep",
     "consolidateEmpty": "No split speakers or insignificant profiles found",
-    "insignificantTitle": "Also prune {{count}} insignificant speakers (≤{{matches}} matches & ≤{{seconds}}s, likely ambience/passersby)"
+    "insignificantTitle": "Also prune {{count}} insignificant speakers (≤{{matches}} matches & ≤{{seconds}}s, likely ambience/passersby)",
+    "clearTitle": "Batch clear segments",
+    "clearHint": "Delete all segments matching current filters (speaker/time), cascading linked voiceprint samples. Transcripts cannot be recovered. Continue?",
+    "clearRangeHint": "Delete all segments in the current time range and speaker filter, cascading linked voiceprint samples. Transcripts cannot be recovered. Continue?"
   },
   "status": {
     "confirmed": "Confirmed",
@@ -199,7 +205,9 @@
     "bindSuccess": "Entity binding updated",
     "unbindSuccess": "Binding removed",
     "refineSuccess": "Voiceprint refined ({{samples}} samples, drift {{drift}})",
-    "refineInitial": "initial"
+    "refineInitial": "initial",
+    "markedUnread": "Restored {{count}} to unread",
+    "clearedSegments": "Cleared {{count}} segments"
   },
   "simmap": {
     "title": "Voiceprint similarity map",

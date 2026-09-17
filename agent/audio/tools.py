@@ -667,11 +667,12 @@ async def audio_set_threshold(value: float) -> str:
 
 
 @deferred_tool(group=_group, tags=["core"])
-async def audio_mark_read(segment_ids: str = "") -> str:
-    """将语音片段标记为已读（清空未读收件箱或指定片段）。
+async def audio_mark_read(segment_ids: str = "", read: bool = True) -> str:
+    """批量标记语音片段已读/未读（清空未读收件箱、恢复未读或指定片段）。
 
     Args:
-        segment_ids: 逗号分隔的片段 id，空为全部标记已读
+        segment_ids: 逗号分隔的片段 id，空为全部
+        read: true 标记已读 / false 恢复未读
     """
     if (gate := _gate()):
         return gate
@@ -684,10 +685,10 @@ async def audio_mark_read(segment_ids: str = "") -> str:
                 return tool_error("segment_ids 须为逗号分隔的数字", cause=ErrorCause.PARAM,
                                   retryable=False)
         store = get_audio_store()
-        marked = await store.mark_read(ids)
-        return _dump({"marked_read": marked})
+        marked = await store.mark_read(ids, read=read)
+        return _dump({"marked": marked, "read": read})
     except Exception as e:
-        return error_from_exception(e, action="标记已读")
+        return error_from_exception(e, action="标记已读状态")
 
 
 @deferred_tool(group=_group, tags=["core"])

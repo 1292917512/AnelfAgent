@@ -1,9 +1,12 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { CheckCheck, Trash2, Undo2 } from "lucide-react";
 import { audioApi } from "@/lib/api";
 import type { VoiceSegment } from "./types";
-import { Badge, EmptyState, Select, Spinner } from "@/components/ui";
+import {
+  Badge, Button, ConfirmDialog, EmptyState, Select, Spinner, toast,
+} from "@/components/ui";
 import { formatOffset } from "./format";
 
 type RangeKey = "today" | "yesterday" | "d3" | "d7" | "all";
@@ -40,8 +43,10 @@ function fmtTime(ns: number): string {
 /** 时间线：指定时间段内谁在什么时间说了什么（说话人分色 + 按录制分块）。 */
 export function TimelinePanel() {
   const { t } = useTranslation("sound");
+  const queryClient = useQueryClient();
   const [range, setRange] = useState<RangeKey>("today");
   const [speakerId, setSpeakerId] = useState("");
+  const [clearOpen, setClearOpen] = useState(false);
   // 挂载时刻快照（渲染期不取实时时钟，保证渲染幂等）
   const [nowSnapshot] = useState(() => Math.floor(Date.now() / 1000));
 
@@ -70,6 +75,40 @@ export function TimelinePanel() {
         limit: 200,
       }).then((r) => r.data),
     refetchInterval: 30_000,
+  });
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["audioTimeline"] });
+    queryClient.invalidateQueries({ queryKey: ["audioSegments"] });
+  };
+
+  const onError = (err: unknown) => {
+    const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+    toast.error(msg || t("messages.opFailed"));
+  };
+
+  const markMutation = useMutation({
+    mutationFn: (read: boolean) => audioApi.markRead(undefined, read),
+    onSuccess: (r) => {
+      toast.success(t(r.data.read ? "messages.markedRead" : "messages.markedUnread",
+        { count: r.data.marked }));
+      invalidate();
+    },
+    onError,
+  });
+
+  const clearMutation = useMutation({
+    mutationFn: () =>
+      audioApi.deleteSegments({
+        ...rangeParams,
+        speaker_id: speakerId ? Number(speakerId) : undefined,
+      }),
+    onSuccess: (r) => {
+      toast.success(t("messages.clearedSegments", { count: r.data.deleted }));
+      setClearOpen(false);
+      invalidate();
+    },
+    onError,
   });
 
   const speakers = speakersData?.items ?? [];
@@ -131,7 +170,40 @@ export function TimelinePanel() {
         <span className="text-xs text-muted shrink-0">
           {t("timeline.count", { count: data?.total ?? 0 })}
         </span>
+        <Button
+          size="sm" variant="ghost" className="shrink-0"
+          title={t("actions.markAllRead")}
+          loading={markMutation.isPending}
+          onClick={() => markMutation.mutate(true)}
+        >
+          <CheckCheck size={14} />
+        </Button>
+        <Button
+          size="sm" variant="ghost" className="shrink-0"
+          title={t("actions.markAllUnreadHint")}
+          loading={markMutation.isPending}
+          onClick={() => markMutation.mutate(false)}
+        >
+          <Undo2 size={14} />
+        </Button>
+        <Button
+          size="sm" variant="ghost" className="shrink-0 text-danger"
+          title={t("actions.clearFiltered")}
+          onClick={() => setClearOpen(true)}
+        >
+          <Trash2 size={14} />
+        </Button>
       </div>
+
+      <ConfirmDialog
+        open={clearOpen}
+        onClose={() => setClearOpen(false)}
+        onConfirm={() => clearMutation.mutate()}
+        title={t("modals.clearTitle")}
+        message={t("modals.clearRangeHint")}
+        danger
+        loading={clearMutation.isPending}
+      />
 
       {isLoading ? (
         <div className="flex justify-center py-10"><Spinner /></div>

@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { CheckCheck, Pencil, Search, Trash2 } from "lucide-react";
+import { CheckCheck, Pencil, Search, Trash2, Undo2 } from "lucide-react";
 import { audioApi } from "@/lib/api";
 import type { VoiceSegment } from "./types";
 import {
-  Badge, Button, EmptyState, Input, Modal, Select, Spinner, Textarea, toast,
+  Badge, Button, ConfirmDialog, EmptyState, Input, Modal, Select, Spinner,
+  Textarea, toast,
 } from "@/components/ui";
 import { formatNs, formatOffset } from "./format";
 
@@ -74,10 +75,28 @@ export function TranscriptsPanel() {
   });
 
   const markAllMutation = useMutation({
-    mutationFn: () => audioApi.markRead(),
+    mutationFn: (read: boolean) => audioApi.markRead(undefined, read),
     onSuccess: (r) => {
-      toast.success(t("messages.markedRead", { count: r.data.marked_read }));
+      toast.success(t(r.data.read ? "messages.markedRead" : "messages.markedUnread",
+        { count: r.data.marked }));
       invalidate();
+    },
+    onError,
+  });
+
+  const [clearOpen, setClearOpen] = useState(false);
+  const clearMutation = useMutation({
+    mutationFn: () =>
+      audioApi.deleteSegments({
+        speaker_id: speakerId ? Number(speakerId) : undefined,
+        time_from: timeFrom || undefined,
+        time_to: timeTo || undefined,
+      }),
+    onSuccess: (r) => {
+      toast.success(t("messages.clearedSegments", { count: r.data.deleted }));
+      setClearOpen(false);
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ["audioTimeline"] });
     },
     onError,
   });
@@ -121,12 +140,38 @@ export function TranscriptsPanel() {
         <Button
           size="sm" variant="ghost" className="shrink-0"
           loading={markAllMutation.isPending}
-          onClick={() => markAllMutation.mutate()}
+          onClick={() => markAllMutation.mutate(true)}
         >
           <CheckCheck size={14} className="mr-1" />
           {t("actions.markAllRead")}
         </Button>
+        <Button
+          size="sm" variant="ghost" className="shrink-0"
+          title={t("actions.markAllUnreadHint")}
+          loading={markAllMutation.isPending}
+          onClick={() => markAllMutation.mutate(false)}
+        >
+          <Undo2 size={14} className="mr-1" />
+          {t("actions.markAllUnread")}
+        </Button>
+        <Button
+          size="sm" variant="ghost" className="shrink-0 text-danger"
+          onClick={() => setClearOpen(true)}
+        >
+          <Trash2 size={14} className="mr-1" />
+          {t("actions.clearFiltered")}
+        </Button>
       </div>
+
+      <ConfirmDialog
+        open={clearOpen}
+        onClose={() => setClearOpen(false)}
+        onConfirm={() => clearMutation.mutate()}
+        title={t("modals.clearTitle")}
+        message={t("modals.clearHint")}
+        danger
+        loading={clearMutation.isPending}
+      />
 
       {isLoading ? (
         <div className="flex justify-center py-10"><Spinner /></div>

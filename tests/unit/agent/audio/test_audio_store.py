@@ -169,6 +169,33 @@ class TestSegments:
         assert await store.unread_count() == 1
         assert await store.mark_read(None) == 1
         assert await store.unread_count() == 0
+        # 双向：全部恢复未读 / 指定恢复
+        assert await store.mark_read(None, read=False) == 2
+        assert await store.unread_count() == 2
+        assert await store.mark_read([id1], read=True) == 1
+        assert await store.unread_count() == 1
+
+    async def test_delete_segments_filtered(self, store: AudioStore) -> None:
+        """按筛选批量清空：级联挂接样本，说话人档案与其余片段保留。"""
+        s1 = await store.create_speaker(name="张三")
+        s2 = await store.create_speaker(name="李四")
+        keep = await store.add_segment(
+            speaker_id=s2["id"], transcript="李四的话", ts_ns=1000)
+        target = await store.add_segment(
+            speaker_id=s1["id"], transcript="张三的话", ts_ns=5000)
+        await store.add_sample(int(s1["id"]), vec(0), segment_id=target)
+
+        result = await store.delete_segments(speaker_id=int(s1["id"]))
+        assert result == {"deleted": 1, "samples_deleted": 1}
+        assert await store.get_segment(keep) is not None
+        assert await store.list_samples(int(s1["id"])) == []
+        assert await store.get_speaker(int(s1["id"])) is not None  # 档案保留
+
+        # 时间窗过滤 + 全清
+        assert await store.delete_segments(from_ns=6000) == {
+            "deleted": 0, "samples_deleted": 0}
+        assert (await store.delete_segments())["deleted"] == 1
+        assert await store.unread_count() == 0
 
     async def test_embedding_backfill_fields(self, store: AudioStore) -> None:
         s = await store.create_speaker(name="张三")

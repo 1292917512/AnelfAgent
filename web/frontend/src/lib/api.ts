@@ -862,8 +862,16 @@ export const audioApi = {
   updateSegment: (id: number, data: { speaker_id?: number | null; transcript?: string }) =>
     api.patch<{ segment: AudioSegment }>(`/audio/segments/${id}`, data),
   deleteSegment: (id: number) => api.delete(`/audio/segments/${id}`),
-  markRead: (segmentIds?: number[]) =>
-    api.post<{ marked_read: number }>("/audio/segments/mark-read", segmentIds ?? null),
+  markRead: (segmentIds?: number[], read = true) =>
+    api.post<{ marked: number; read: boolean }>("/audio/segments/mark-read", {
+      segment_ids: segmentIds ?? null,
+      read,
+    }),
+  deleteSegments: (params: {
+    speaker_id?: number; entity?: string; recording_path?: string;
+    time_from?: string; time_to?: string; unread_only?: boolean;
+  }) =>
+    api.delete<{ deleted: number; samples_deleted: number }>("/audio/segments", { params }),
   // 录制单元
   recordings: (params?: { limit?: number; offset?: number }) =>
     api.get<AudioRecordingListResult>("/audio/recordings", { params }),

@@ -19,6 +19,7 @@ from services.audio import (
     IdentifyCandidate,
     ImportRequest,
     ListenError,
+    MarkReadRequest,
     MergeRequest,
     SegmentAddRequest,
     SegmentMergeRequest,
@@ -405,10 +406,26 @@ async def delete_segment(segment_id: int) -> Dict[str, Any]:
 
 
 @router.post("/segments/mark-read")
-async def mark_read(segment_ids: Optional[List[int]] = None) -> Dict[str, Any]:
-    """标记片段已读；body 为 id 数组或 null（全部）。"""
-    marked = await _audio.mark_read(segment_ids)
-    return {"marked_read": marked}
+async def mark_read(req: MarkReadRequest) -> Dict[str, Any]:
+    """批量标记片段已读/未读；segment_ids 为空作用于全部。"""
+    marked = await _audio.mark_read(req.segment_ids, read=req.read)
+    return {"marked": marked, "read": req.read}
+
+
+@router.delete("/segments")
+async def delete_segments(
+    speaker_id: Optional[int] = None,
+    entity: str = "",
+    recording_path: str = "",
+    time_from: str = "",
+    time_to: str = "",
+    unread_only: bool = False,
+) -> Dict[str, Any]:
+    """按筛选批量清空片段（级联挂接的声纹样本）；无条件时清空全部片段。"""
+    return await _audio.delete_segments(
+        speaker_id=speaker_id, entity_scope=entity.strip(),
+        recording_path=recording_path,
+        time_from=time_from, time_to=time_to, unread_only=unread_only)
 
 
 # ── 录制单元 ──────────────────────────────────────────────────────

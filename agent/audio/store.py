@@ -1501,20 +1501,81 @@ class AudioStore:
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
 
-    async def mark_read(self, segment_ids: Optional[List[int]] = None) -> int:
-        """标记片段已读；segment_ids 为 None 时全部已读。返回影响行数。"""
+    async def mark_read(
+        self, segment_ids: Optional[List[int]] = None, *, read: bool = True,
+    ) -> int:
+        """标记片段已读/未读；segment_ids 为 None 时作用于全部。返回影响行数。"""
         db = await self._get_db()
+        flag = 1 if read else 0
         if segment_ids is None:
-            cursor = await db.execute("UPDATE audio_segments SET read=1 WHERE read=0")
+            cursor = await db.execute(
+                f"UPDATE audio_segments SET read={flag} WHERE read={1 - flag}")
         elif segment_ids:
             placeholders = ",".join("?" for _ in segment_ids)
             cursor = await db.execute(
-                f"UPDATE audio_segments SET read=1 WHERE id IN ({placeholders})", segment_ids)
+                f"UPDATE audio_segments SET read={flag} WHERE id IN ({placeholders})",
+                segment_ids)
         else:
             return 0
         await db.commit()
         self._mark_dirty()
         return cursor.rowcount
+
+    async def delete_segments(
+        self,
+        *,
+        speaker_id: Optional[int] = None,
+        entity_scope: str = "",
+        recording_path: str = "",
+        from_ns: Optional[int] = None,
+        to_ns: Optional[int] = None,
+        unread_only: bool = False,
+    ) -> Dict[str, int]:
+        """按筛选批量删除片段（时间线的批量清空）；级联删除挂接的声纹样本。
+
+        筛选与 list_segments 同构；全部条件为空时清空片段表。
+        说话人档案与录制登记保留（录制单元请走 delete_recording 级联）。
+        """
+        db = await self._get_db()
+        where = ["1=1"]
+        params: List[Any] = []
+        if speaker_id is not None:
+            where.append("seg.speaker_id=?")
+            params.append(speaker_id)
+        if entity_scope:
+            where.append("seg.speaker_id IN "
+                         "(SELECT id FROM speakers WHERE entity_scope=?)")
+            params.append(entity_scope)
+        if recording_path:
+            where.append("seg.recording_path=?")
+            params.append(recording_path)
+        if from_ns is not None:
+            where.append("seg.ts_ns>=?")
+            params.append(from_ns)
+        if to_ns is not None:
+            where.append("seg.ts_ns<=?")
+            params.append(to_ns)
+        if unread_only:
+            where.append("seg.read=0")
+        cursor = await db.execute(
+            f"SELECT seg.id FROM audio_segments seg WHERE {' AND '.join(where)}", params)
+        ids = [int(r["id"]) for r in await cursor.fetchall()]
+        if not ids:
+            return {"deleted": 0, "samples_deleted": 0}
+        placeholders = ",".join("?" for _ in ids)
+        cursor = await db.execute(
+            f"SELECT COUNT(*) AS c FROM voice_samples WHERE segment_id IN ({placeholders})",
+            ids)
+        samples_deleted = int(_scalar(await cursor.fetchone(), "c"))
+        await db.execute(
+            f"DELETE FROM voice_samples WHERE segment_id IN ({placeholders})", ids)
+        await db.execute(
+            f"DELETE FROM audio_segments WHERE id IN ({placeholders})", ids)
+        await db.commit()
+        for seg_id in ids:
+            await self._vec_delete(seg_id)
+        self._mark_dirty()
+        return {"deleted": len(ids), "samples_deleted": samples_deleted}
 
     async def unread_count(self) -> int:
         db = await self._get_db()

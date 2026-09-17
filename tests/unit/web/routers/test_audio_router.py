@@ -135,8 +135,24 @@ class TestSegmentApi:
         assert resp.status_code == 200
         assert resp.json()["segment"]["speaker_id"] is None
 
-        resp = client.post("/api/audio/segments/mark-read", json=None)
-        assert resp.json()["marked_read"] == 1
+        resp = client.post("/api/audio/segments/mark-read",
+                           json={"segment_ids": None, "read": True})
+        assert resp.json() == {"marked": 1, "read": True}
+        # 恢复未读（误标全部已读的撤销通道）
+        resp = client.post("/api/audio/segments/mark-read",
+                           json={"segment_ids": None, "read": False})
+        assert resp.json() == {"marked": 1, "read": False}
+        assert client.get("/api/audio/segments").json()["items"][0]["read"] is False
+
+        # 按筛选批量清空（该片段已改派为未知归属，按说话人过滤不命中；
+        # 无筛选清空全部）
+        resp = client.request("DELETE", "/api/audio/segments",
+                              params={"speaker_id": s["id"]})
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 0
+        resp = client.request("DELETE", "/api/audio/segments")
+        assert resp.json()["deleted"] == 1
+        assert client.get("/api/audio/segments").json()["total"] == 0
 
     async def test_stats(self, client: TestClient, _isolate_audio_library) -> None:
         await matcher.enroll(_isolate_audio_library, "张三", vec(0))
