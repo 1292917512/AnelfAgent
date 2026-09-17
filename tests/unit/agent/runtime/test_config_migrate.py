@@ -35,16 +35,6 @@ def mem_config(monkeypatch: pytest.MonkeyPatch):
     return store
 
 
-@pytest.fixture(autouse=True)
-def preset_store(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    """音色预设库隔离到临时域（模块级 autouse：迁移建档绝不写真实库）。"""
-    from agent.tts import presets as tts_presets
-
-    target = tmp_path / "voice_presets.json"
-    monkeypatch.setattr(tts_presets, "_store_path", lambda: str(target))
-    return target
-
-
 def _write(path: str, data: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -52,7 +42,7 @@ def _write(path: str, data: dict) -> None:
 
 
 class TestMediaConfigMigration:
-    def test_full_media_config_imported(self, tmp_path, mem_config, preset_store):
+    def test_full_media_config_imported(self, tmp_path, mem_config):
         _write(str(tmp_path / "media" / "config.json"), {
             "provider_priority": {
                 "vision": ["models", "minimax"],
@@ -70,14 +60,7 @@ class TestMediaConfigMigration:
 
         config_migrate.migrate_legacy_entity_configs(str(tmp_path))
 
-        # 默认音色建档为预设（参考对优先，克隆型；预设名取参考文件名）
-        from agent.tts import presets as tts_presets
-        presets_list = tts_presets.list_presets()
-        assert len(presets_list) == 1
-        assert presets_list[0].name == "克隆·ref"
-        assert presets_list[0].reference_audio == "workspace/ref.mp3"
-        assert presets_list[0].reference_text == "参考文本"
-        assert mem_config["sound_voice_default"] == presets_list[0].id
+        # 默认音色字段随旧平铺键废止，不再搬运（预设制直接在音色面板配置）
         assert mem_config["vision_default_image_size"] == "1664x928"
         assert mem_config["vision_default_video_resolution"] == "768P"
         assert mem_config["vision_default_video_duration"] == 6
@@ -95,46 +78,10 @@ class TestMediaConfigMigration:
         assert not os.path.exists(str(tmp_path / "media" / "config.json"))
         assert os.path.exists(str(tmp_path / "media" / "config.json.migrated"))
 
-    def test_existing_assignment_not_overwritten(self, tmp_path, mem_config, preset_store):
-        mem_config["sound_voice_default"] = "vp_existing"
-        _write(str(tmp_path / "media" / "config.json"), {"default_voice": "legacy"})
 
-        config_migrate.migrate_legacy_entity_configs(str(tmp_path))
 
-        assert mem_config["sound_voice_default"] == "vp_existing"
-        from agent.tts import presets as tts_presets
-        assert tts_presets.list_presets() == []
 
-    def test_legacy_flat_keys_migrate_once(self, tmp_path, mem_config, preset_store):
-        mem_config["tts_default_voice"] = "female-yujie"
-        mem_config["realtime_tts_voice"] = "qiaopi_mengmei"
-
-        config_migrate.migrate_legacy_entity_configs(str(tmp_path))
-
-        from agent.tts import presets as tts_presets
-        presets_list = tts_presets.list_presets()
-        # 预设名用音色 ID（可辨识且互异），指派各自场景
-        assert [p.name for p in presets_list] == ["female-yujie", "qiaopi_mengmei"]
-        assert mem_config["sound_voice_default"] == presets_list[0].id
-        assert mem_config["sound_voice_realtime"] == presets_list[1].id
-        # 预设库非空后再次迁移不重复建档
-        config_migrate.migrate_legacy_entity_configs(str(tmp_path))
-        assert tts_presets.list_presets() == presets_list
-
-    def test_legacy_same_voice_no_duplicate_preset(self, tmp_path, mem_config, preset_store):
-        """默认与通话同音色：只建一条预设，通话跟随默认（语义等价）。"""
-        mem_config["tts_default_voice"] = "qiaopi_mengmei"
-        mem_config["realtime_tts_voice"] = "qiaopi_mengmei"
-
-        config_migrate.migrate_legacy_entity_configs(str(tmp_path))
-
-        from agent.tts import presets as tts_presets
-        presets_list = tts_presets.list_presets()
-        assert [p.name for p in presets_list] == ["qiaopi_mengmei"]
-        assert mem_config["sound_voice_default"] == presets_list[0].id
-        assert not mem_config.get("sound_voice_realtime")
-
-    def test_idempotent_second_run(self, tmp_path, mem_config, preset_store):
+    def test_idempotent_second_run(self, tmp_path, mem_config):
         _write(str(tmp_path / "media" / "config.json"), {"default_voice": "v1"})
         config_migrate.migrate_legacy_entity_configs(str(tmp_path))
         snapshot = dict(mem_config)
