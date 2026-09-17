@@ -14,6 +14,7 @@ from typing import AsyncIterator
 
 from agent.tts.decode import decode_stream_to_pcm16
 from agent.tts.providers import TtsStream, get_tts_registry
+from agent.tts.voice import resolve_voice
 from core.log import log
 
 _LOG_TAG = "语音合成"
@@ -46,7 +47,7 @@ class OpenAiTtsProvider:
         model = manager.get_tts_model() or "tts-1"
         payload = {
             "model": model,
-            "voice": voice or "alloy",
+            "voice": resolve_voice(voice, "alloy"),
             "input": text,
             "response_format": "pcm",
         }
@@ -85,8 +86,7 @@ class EdgeTtsProvider:
     async def _stream(
         self, text: str, *, voice: str, sample_rate: int,
     ) -> AsyncIterator[bytes]:
-        from core.config import get_config
-        voice_name = voice or str(get_config("tts_edge_voice", "zh-CN-XiaoxiaoNeural"))
+        voice_name = resolve_voice(voice, "zh-CN-XiaoxiaoNeural")
 
         async def _mp3() -> AsyncIterator[bytes]:
             import edge_tts

@@ -595,6 +595,71 @@ class TestSpeakArbitration:
         finally:
             await engine.stop("c-s1")
 
+    async def test_reply_preempt_drops_queued_speak_audio(self, app, clean_registries) -> None:
+        """回复抢占主动播报：未播音频清空（不排空），回复音频即时开声。"""
+        gate = asyncio.Event()
+        produced = {"speak": 0, "reply": 0}
+
+        class GatedTts:
+            name = "gated_tts"
+            priority = 1
+
+            async def check_available(self) -> bool:
+                return True
+
+            def stream_synthesize(self, text: str, *, voice: str = "", sample_rate: int = 24000):
+                kind = "speak" if "提醒" in text else "reply"
+
+                async def _chunks():
+                    marker = b"\xaa" if kind == "speak" else b"\xbb"
+                    for _ in range(6):
+                        await gate.wait()
+                        gate.clear()
+                        produced[kind] += 1
+                        yield marker * 240
+
+                return TtsStream(_chunks(), 24000)
+
+        async def _produce_n(kind: str, n: int) -> None:
+            while produced[kind] < n:
+                gate.set()
+                await asyncio.sleep(0.01)
+
+        get_tts_registry().reset()
+        get_tts_registry().register(GatedTts())
+        engine = RealtimeEngine()
+        sink = FakeSink()
+
+        async def _slow_audio(pcm: bytes, rate: int) -> None:
+            await asyncio.sleep(0.03)  # 写任务慢于生产 → 队列积压，抢占才有残帧可清
+            sink.audio.append((pcm, rate))
+
+        async def _event(name: str, payload: dict) -> None:
+            sink.events.append((name, payload))
+
+        rt_sink = RealtimeSink(send_audio=_slow_audio, send_event=_event)
+        session = await engine.start("c-s2", _delivery(), rt_sink, RATE)
+        try:
+            await engine.user_turn(session, "帮我看看天气")
+            await engine.speak_to_scope("user_webui:u1", "提醒：晚饭订好了")
+            await _wait_for(lambda: session.lane.active is not None
+                            and session.lane.active.source == "speak")
+            await _produce_n("speak", 5)
+
+            await engine._on_delta({"scope": "user_webui:u1", "delta": "今天晴", "turn_id": "t1"})
+            await engine._on_after_reply({"scope": "user_webui:u1", "turn_id": "t1"})
+            await _produce_n("reply", 6)
+            await _wait_for(lambda: any(
+                name == "audio_done" and not p.get("interrupted")
+                for name, p in sink.events))
+
+            aa = sum(1 for pcm, _ in sink.audio if b"\xaa" in pcm)
+            bb = sum(1 for pcm, _ in sink.audio if b"\xbb" in pcm)
+            assert produced["reply"] == 6 and bb == 6      # 回复全部播出
+            assert aa < produced["speak"]                 # 主动播报未播帧被抢占清场
+        finally:
+            await engine.stop("c-s2")
+
     async def test_speaks_queue_not_interleaved(self, app) -> None:
         """两条主动消息按序全播（车道排队，音频不混排）。"""
         engine = RealtimeEngine()

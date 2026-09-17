@@ -164,9 +164,22 @@ class MemoryRetriever:
 
         log(f"💾 被动召回: \"{query[:50]}\" (embedding={'是' if self._embedder.available else '否'})", tag="思维")
 
+        # 召回总时限：规划与检索全程共享一个预算（规划占前四成份额，
+        # 超份额回退原查询保住检索段），整体超时走回退，不阻塞对话主流程
+        recall_timeout = 5.0
+        try:
+            from core.config import get_config_float
+            recall_timeout = max(1.0, get_config_float("memory_recall_timeout_seconds", 5.0))
+        except Exception:
+            pass
+        plan_budget = max(1.0, recall_timeout * 0.4)
+
+        plan = RetrievalPlan(queries=[query] if query else [])
+        mention_tags: List[str] = []
+
         # 检索规划 + 查询提及识别：并行执行（互不依赖，都在检索关键路径上）
         # 规划：轻量 LLM 把对话尾部转成结构化计划（多查询/实体/是否深探，
-        # 含实体→图谱节点解析），失败回退原查询单发——召回由 LLM 决策
+        # 含实体→图谱节点解析），失败/超份额回退原查询单发——召回由 LLM 决策
         # 而非被动关键词匹配
         # 提及识别：对话中提到的已知实体/话题 → 标签（主评分与联想种子）
         async def _mentions() -> List[str]:
@@ -176,52 +189,61 @@ class MemoryRetriever:
                 log(f"查询提及识别失败: {exc}", "DEBUG", tag="思维")
                 return []
 
-        plan, mention_tags = await asyncio.gather(
-            self.plan_retrieval(query), _mentions(),
-        )
-        search_query = plan.queries[0] if plan.queries else query
+        async def _plan() -> RetrievalPlan:
+            try:
+                return await asyncio.wait_for(
+                    self.plan_retrieval(query), timeout=plan_budget)
+            except asyncio.TimeoutError:
+                log(f"💾 检索规划超时（{plan_budget:.1f}s），回退原查询",
+                    "WARNING", tag="思维")
+                return RetrievalPlan(queries=[query] if query else [])
 
-        # 计划查询（互补多查询，首条带实体定向）；规划失败时退化为原查询
-        planned_queries: List[str] = [q for q in plan.queries[:3] if q and len(q.strip()) >= 4]
-        if not planned_queries:
-            planned_queries = [search_query] if search_query else []
+        async def _planned_recall() -> List[MemorySearchResult]:
+            nonlocal plan, mention_tags
+            plan, mention_tags = await asyncio.gather(_plan(), _mentions())
 
-        async def _query_search(q: str, *, targeted: bool = False) -> List[MemorySearchResult]:
-            vec = query_vec if (query_vec is not None and q == query) else await self._embedder.embed_query(q)
-            from .cognee.fusion import federated_search
-            from .cognee.runtime import get_cognee_client
-            cognee_config = self._cognee_config()
-            return await federated_search(
-                self._store.search_unified(
+            # 计划查询（互补多查询，首条带实体定向）；规划失败时退化为原查询
+            search_query = plan.queries[0] if plan.queries else query
+            planned_queries = [
+                q for q in plan.queries[:3] if q and len(q.strip()) >= 4]
+            if not planned_queries:
+                planned_queries = [search_query] if search_query else []
+
+            async def _query_search(q: str, *, targeted: bool = False) -> List[MemorySearchResult]:
+                vec = query_vec if (query_vec is not None and q == query) else await self._embedder.embed_query(q)
+                from .cognee.fusion import federated_search
+                from .cognee.runtime import get_cognee_client
+                cognee_config = self._cognee_config()
+                return await federated_search(
+                    self._store.search_unified(
+                        query=q,
+                        query_vec=vec,
+                        query_tags=mention_tags or None,
+                        limit=k * cognee_config.recall_pool_multiplier,
+                        min_score=min_score,
+                    ),
                     query=q,
-                    query_vec=vec,
+                    client=get_cognee_client(),
+                    config=cognee_config,
+                    limit=k,
+                    entity_scope=entity_scope,
                     query_tags=mention_tags or None,
-                    limit=k * cognee_config.recall_pool_multiplier,
+                    node_names=plan.node_labels if targeted else None,
+                )
+
+            # 多窗口补充：以最近一条用户消息为焦点查询（规划退化为单查询时
+            # 焦点窗口仍是有效的第二检索角度）；焦点不参与共识计数
+            focus_query = self._extract_focus_query(conversation)
+
+            async def _focus_search() -> List[MemorySearchResult]:
+                focus_vec = await self._embedder.embed_query(focus_query)
+                return await self._store.search_unified(
+                    query=focus_query,
+                    query_vec=focus_vec,
+                    limit=k,
                     min_score=min_score,
-                ),
-                query=q,
-                client=get_cognee_client(),
-                config=cognee_config,
-                limit=k,
-                entity_scope=entity_scope,
-                query_tags=mention_tags or None,
-                node_names=plan.node_labels if targeted else None,
-            )
+                )
 
-        # 多窗口补充：以最近一条用户消息为焦点查询（规划退化为单查询时
-        # 焦点窗口仍是有效的第二检索角度）；焦点不参与共识计数
-        focus_query = self._extract_focus_query(conversation)
-
-        async def _focus_search() -> List[MemorySearchResult]:
-            focus_vec = await self._embedder.embed_query(focus_query)
-            return await self._store.search_unified(
-                query=focus_query,
-                query_vec=focus_vec,
-                limit=k,
-                min_score=min_score,
-            )
-
-        async def _searches() -> List[MemorySearchResult]:
             if not planned_queries:
                 return []
             tasks = [_query_search(q, targeted=(i == 0)) for i, q in enumerate(planned_queries)]
@@ -231,15 +253,8 @@ class MemoryRetriever:
             lanes = list(await asyncio.gather(*tasks))
             return self.merge_consensus(lanes, limit=k * 2, consensus_lanes=n_plan_lanes)
 
-        # 召回总时限：检索路径整体超时后直接走回退，不阻塞对话主流程
-        recall_timeout = 5.0
         try:
-            from core.config import get_config_float
-            recall_timeout = max(1.0, get_config_float("memory_recall_timeout_seconds", 5.0))
-        except Exception:
-            pass
-        try:
-            results = await asyncio.wait_for(_searches(), timeout=recall_timeout)
+            results = await asyncio.wait_for(_planned_recall(), timeout=recall_timeout)
         except asyncio.TimeoutError:
             log(f"💾 被动召回超时（{recall_timeout}s），回退近期记忆", "WARNING", tag="思维")
             try:

@@ -9,6 +9,7 @@ const CAPS = ["tts", "voice_mgmt", "music"];
 
 const DEFAULT_FIELDS = [
   "tts_default_voice",
+  "realtime_tts_voice",
   "tts_default_reference_audio",
   "tts_default_reference_text",
 ] as const;

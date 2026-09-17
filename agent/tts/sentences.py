@@ -3,8 +3,10 @@
 断句（SentenceSplitter）：LLM 增量文本流 → 完整句队列。
 - 句末标点（。！？!?；;）与换行成句；英文缩写/小数点不成句（点前是字母
   且点后是字母/数字的 '.' 不切）；
-- 超长句强制次级切分：超过 tts_sentence_max_chars 时在逗号/顿号/空格处
-  截断（听感停顿自然），无切点则硬切；
+- 首句快速切分：首句未产出前在软切点提前断句（窗口 6~36 字）——
+  TTS 首请求不等待第一个完整句，开声延迟从整句缩到首个分句；
+- 超长句强制次级切分：超过 tts_sentence_max_chars 时在软切点截断
+  （听感停顿自然），无切点则硬切；
 - 短尾合并：末尾碎片并入前句（避免单字成句的机械停顿）。
 
 朗读清洗（strip_for_speech）：把书面文本转成"能听"的口播稿。
@@ -28,6 +30,10 @@ from core.config import get_config_bool, get_config_int
 _SENT_END = "。！？!?；;"
 # 次级切点（超长句的软切位置）
 _SOFT_BREAK = "，、,：:—- "
+# 首句快速切分窗口：缓冲超过上限即在窗口内软切（≥ 下限），开声不等整句；
+# 窗口内无软切点不硬切（等句末标点或转入常规超长规则）
+_FIRST_MAX_CHARS = 16
+_FIRST_MIN_CHARS = 6
 
 _CODE_FENCE_RE = re.compile(r"```[\s\S]*?```", re.MULTILINE)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
@@ -85,6 +91,8 @@ class SentenceSplitter:
 
     def __init__(self) -> None:
         self._buf = ""
+        self._emitted = 0
+        """已产出句数——首句产出前启用快速切分（压开声延迟）。"""
 
     @staticmethod
     def _max_chars() -> int:
@@ -101,6 +109,7 @@ class SentenceSplitter:
 
     def reset(self) -> None:
         self._buf = ""
+        self._emitted = 0
 
     def _drain(self, *, final: bool) -> List[str]:
         out: List[str] = []
@@ -115,6 +124,7 @@ class SentenceSplitter:
         if final and self._buf.strip():
             out.append(self._buf.strip())
             self._buf = ""
+        self._emitted += len(out)
         return self._merge_tails(out)
 
     def _find_cut(self, *, final: bool) -> Optional[int]:
@@ -132,7 +142,13 @@ class SentenceSplitter:
                 return i + 1
             if ch == "\n" and buf[:i].strip():
                 return i + 1
-        # 超长软切（流式进行中也在软切点断句，控制首句延迟）
+        # 首句快速切分：首句未产出时在窗口内软切（早开声）
+        if self._emitted == 0 and len(buf) > _FIRST_MAX_CHARS:
+            hi = min(len(buf), _FIRST_MAX_CHARS + 20)
+            for i in range(hi - 1, _FIRST_MIN_CHARS - 1, -1):
+                if buf[i] in _SOFT_BREAK:
+                    return i + 1
+        # 超长软切（流式进行中也在软切点断句，控制单句延迟）
         max_chars = self._max_chars()
         if len(buf) > max_chars:
             for i in range(min(len(buf), max_chars + 20) - 1, 20, -1):

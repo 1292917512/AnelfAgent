@@ -186,7 +186,7 @@ class MiniMaxClient:
             language_boost: 语种增强 Chinese/English/auto 等
         """
         model = model or get_config("default_tts_model", "speech-2.8-hd")
-        voice_id = voice_id or get_config("default_voice_id", "male-qn-qingse")
+        voice_id = voice_id or "male-qn-qingse"
 
         voice_setting: Dict[str, Any] = {
             "voice_id": voice_id,

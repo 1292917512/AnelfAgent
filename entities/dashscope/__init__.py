@@ -55,8 +55,10 @@ register_configs_safe({
             "default": "qwen-audio-3.0-tts-plus",
         },
         "dashscope_tts_voice": {
-            "description": "默认音色（系统音色名或复刻音色 ID；qwen-audio 系如 longanhuan_v3.6）",
+            "description": "百炼协议音色（系统音色名或复刻音色 ID；仅在未配置全局默认"
+                           "音色 tts_default_voice 时使用，如 longanhuan_v3.6）",
             "default": "longanhuan_v3.6",
+            "advanced": True,
         },
         "dashscope_tts_priority": {
             "description": "合成提供者在 TTS 链中的优先级（小值优先；MiniMax 默认 10/15）",

@@ -136,7 +136,8 @@ register_configs_safe({
             "advanced": True,
         },
         "tts_default_voice": {
-            "description": "语音合成默认音色 ID（text_to_voice 不传 voice 时使用）",
+            "description": "全局默认音色 ID（全部合成入口统一使用；实时通话可用 "
+                           "realtime_tts_voice 单独覆盖；留空用提供者协议音色）",
             "default": "",
         },
         "tts_default_reference_audio": {

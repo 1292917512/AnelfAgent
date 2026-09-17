@@ -122,6 +122,7 @@ async def text_to_voice(
         language_boost: 语种增强（MiniMax 协议）：Chinese/English/Japanese/auto 等
         provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
     """
+    from agent.tts import default_voice
     from core.config import ConfigManager
 
     err = _check_provider(provider)
@@ -133,7 +134,7 @@ async def text_to_voice(
             reference_audio = default_ref
             reference_text = reference_text or str(ConfigManager.get("tts_default_reference_text", "") or "")
         else:
-            voice = str(ConfigManager.get("tts_default_voice", "") or "")
+            voice = default_voice()
 
     if reference_audio and not reference_text:
         return tool_error("使用声音克隆时必须提供 reference_text",
@@ -476,7 +477,7 @@ async def sound_config(action: str = "capabilities", key: str = "", value: str =
         save_config_value(_SCALAR_KEYS[key], str(value))
         result: Dict[str, Any] = {"success": True, "key": key, "value": str(value)}
         if key == "default_voice":
-            result["hint"] = "默认音色已更新，text_to_voice 不传 voice 时将使用该音色"
+            result["hint"] = "默认音色已更新，全部合成入口统一使用（通话未单独覆盖时同样生效）"
         if key == "funasr_endpoint":
             from entities.audiosync import client as funasr_client
 

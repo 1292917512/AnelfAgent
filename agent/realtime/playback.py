@@ -120,6 +120,22 @@ class PlaybackQueue:
         except asyncio.QueueFull:
             pass
 
+    def drop_pending(self) -> None:
+        """抢占清场：丢弃全部待发帧（含收束帧，不放打断哨兵）。
+
+        回复抢占主动播报时调用——被取代单元的未播音频不再排空，
+        新音频紧接当前已下发帧直落，回复即时开声。
+        """
+        dropped_finals = 0
+        while True:
+            try:
+                frame = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if frame is not None and frame.final:
+                dropped_finals += 1
+        self._pending_finals = max(0, self._pending_finals - dropped_finals)
+
     async def read(self) -> Optional[PlaybackFrame]:
         """读下一帧；None = 打断哨兵（调用方发 interrupted 收束）。"""
         frame = await self._queue.get()

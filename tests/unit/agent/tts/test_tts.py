@@ -67,6 +67,22 @@ class TestSentenceSplitter:
         out = sp.feed(long_text)
         assert out and out[0].endswith("，")
 
+    def test_first_sentence_soft_cut_before_full_stop(self) -> None:
+        """首句在窗口内软切（不等句末标点）——开声延迟压到首个分句。"""
+        sp = SentenceSplitter()
+        assert sp.feed("嗯，我看一下这个问题") == []
+        assert sp.feed("，然后") == []
+        out = sp.feed("回复你一下嘛")
+        assert out == ["嗯，我看一下这个问题，"]
+        # 首句已产出 → 后续回到常规规则（等句末标点）
+        assert sp.feed("好。") == ["然后回复你一下嘛好。"]
+
+    def test_first_sentence_without_soft_break_waits(self) -> None:
+        """窗口内无软切点不硬切：短无标点串整段保持，等句末或常规超长规则。"""
+        sp = SentenceSplitter()
+        assert sp.feed("一" * 50) == []
+        assert sp.flush() == ["一" * 50]
+
     def test_flush_takes_remainder(self) -> None:
         sp = SentenceSplitter()
         sp.feed("没有标点的尾巴")

@@ -54,12 +54,11 @@ register_configs_safe({
             "default": True,
         },
         "realtime_tts_voice": {
-            "description": "实时对话默认音色（音色 ID；克隆音色如 taffy_voice_0805 或平台音色，"
-                           "留空用 TTS 链默认）",
+            "description": "实时通话音色（音色 ID；留空跟随全局默认音色 tts_default_voice）",
             "default": "",
         },
         "realtime_context_inject": {
-            "description": "通话期间向 AI 注入应答纪律提醒（用 realtime_reply 说出来，不发文字）",
+            "description": "通话期间向 AI 注入通话状态与应答节奏训诫（先应声再干活）",
             "default": True,
             "advanced": True,
         },

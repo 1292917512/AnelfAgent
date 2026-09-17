@@ -211,6 +211,31 @@ async def test_recall_split_without_fire_probe_skips_hub(store, monkeypatch) -> 
     assert hub.state_for("user_qq:1") is None
 
 
+@pytest.mark.asyncio
+async def test_recall_budget_bounds_slow_planning(store, monkeypatch) -> None:
+    """召回总时限收编检索规划：规划超份额回退原查询，整体召回不超预算。"""
+    import time
+
+    from agent.memory.memory_retriever import MemoryRetriever
+    from agent.memory.memory_types import RetrievalPlan
+
+    async def _slow_plan(self, query: str) -> RetrievalPlan:
+        await asyncio.sleep(30)
+        return RetrievalPlan(queries=[query])
+
+    monkeypatch.setattr(MemoryRetriever, "plan_retrieval", _slow_plan)
+    monkeypatch.setattr(
+        "core.config.get_config_float",
+        lambda key, default: 1.0 if key == "memory_recall_timeout_seconds" else default,
+    )
+    retriever = MemoryRetriever(store, _NullEmbedder())
+    conversation = [{"role": "user", "content": "这是一段足够长的对话上下文内容用于测试召回预算约束"}]
+    started = time.monotonic()
+    await retriever.recall_split(conversation, entity_scope="user_qq:1")
+    # 旧结构里规划自身就有 8s 内部超时且在总时限之外；收编后全程 ≤ 召回预算
+    assert time.monotonic() - started < 5.0
+
+
 def test_record_broadcasts_when_scope_unknown() -> None:
     """记账无 scope 时广播：进行中回复的账本也能感知（防隔离漏去重）。"""
     from agent.memory.memory_types import MemorySearchResult

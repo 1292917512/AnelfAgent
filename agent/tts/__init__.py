@@ -7,12 +7,14 @@
 - sentences.py：流式断句（CJK 标点/软切/短尾合并）与朗读清洗
   （markdown/旁白剥离、CJK 空格规范化）；
 - pipeline.py：句级流式管线（文本增量 → 断句 → 预取合成 → 有序 PCM）；
+- voice.py：音色解析（全部合成入口的单一音色决策链）；
 - decode.py：压缩音频流 → PCM16 流（ffmpeg 管道，组件共用）。
 """
 
 from agent.tts.pipeline import TtsPipeline
 from agent.tts.providers import TtsProvider, TtsStream, get_tts_registry, synthesize_sentence
 from agent.tts.sentences import SentenceSplitter, strip_for_speech
+from agent.tts.voice import default_voice, realtime_voice, resolve_voice
 from core.config import register_configs_safe
 
 __all__ = [
@@ -20,7 +22,10 @@ __all__ = [
     "TtsPipeline",
     "TtsProvider",
     "TtsStream",
+    "default_voice",
     "get_tts_registry",
+    "realtime_voice",
+    "resolve_voice",
     "strip_for_speech",
     "synthesize_sentence",
 ]
@@ -43,10 +48,6 @@ register_configs_safe({
         "tts_strip_narration": {
             "description": "朗读时剥离旁白（星号/括号包裹的动作神态描写不朗读）",
             "default": True,
-        },
-        "tts_default_voice": {
-            "description": "默认音色（留空用各提供者的默认音色；实时对话可单独指定）",
-            "default": "",
         },
     },
 })

@@ -290,7 +290,7 @@ class MiniMaxTtsProvider:
         from entities.minimax.client import get_config
         client = _client()
         model = get_config("default_tts_model", "speech-2.8-hd")
-        voice_id = voice or get_config("default_voice_id", "male-qn-qingse")
+        voice_id = voice or "male-qn-qingse"
         payload: Dict[str, Any] = {
             "model": model,
             "text": text,

@@ -632,6 +632,20 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 > Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
 
+#### 声音系统统一收口 + 通话实时性（第三十二轮新增）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 音色解析单一入口 | `agent/tts/voice.py`（default_voice / realtime_voice / resolve_voice） | 链序：调用点显式音色 → 场景覆盖 `realtime_tts_voice`（空=跟随默认）→ 全局默认 `tts_default_voice` → 提供者协议音色（代码内持有，仅全局未配置时生效）。此前"默认音色"六处平行（tts 组与 audio 组双重注册 / realtime 专用键 / dashscope_tts_voice / minimax 私有 config.json default_voice_id / 幽灵键 tts_edge_voice）各读各的；收敛后用户面只有两个键（声音页与 sound_config 工具同一入口）：tts_default_voice 单点注册（audio 组），dashscope_tts_voice 转协议音色语义，minimax 私键读取删除，幽灵键消除。全部合成入口（text_to_voice/级联通话/native 会话/主动播报/内置提供者）经同一解析链 |
+| 声音页音色入口 | `pages/sound/GenerationPanel.tsx` + sound i18n | 生成页签补通话音色字段（留空跟随默认）——realtime_tts_voice 不再只能进配置中心或靠 AI 工具改 |
+| 通话应答节奏训诫 | `agent/realtime/context.py`（RealtimeCallProvider，max_tokens 120→220） | 注入增"先应声再干活"：工具/长任务前先 send_message 应一声（出口层自动语音播出）再执行、结束后再正式回复——工具轮静默即通话卡顿；provider 层每轮 LLM 调用携带，无需引擎/工具面改动 |
+| 声纹识别并行 | `engine._on_speech_end` | 声纹只读识别与 ASR 定稿并行执行（二者都只依赖本段音频快照，互不依赖）——定稿→思维启动的关键路径收敛为一段网络往返（此前串行定稿→声纹→入轮） |
+| 首句快速断句 | `agent/tts/sentences.py`（首句窗口 6~36 字） | 首句未产出前在软切点提前断句——TTS 首请求不等第一个完整句，开声延迟从整句缩到首个分句；窗口内无软切点不硬切（短应答/无标点串回落常规规则，等句末或超长软切） |
+| 抢占清场 | `playback.drop_pending` + `engine._on_delta` 提交回复时 | 回复抢占在播主动播报时清空其未播帧（含收束帧，不放过打断哨兵——非打断语义），回复音频紧跟当前已下发帧直落；pending_finals 计数同步收敛（speak_to_scope 的 appending 判据不受影响） |
+| 召回预算收编规划 | `memory_retriever` recall 路径 | 检索规划（轻 LLM，原 8s 内部超时在召回总时限之外、串行在最前）纳入 `memory_recall_timeout_seconds` 总预算：规划占前四成份额（超份额回退原查询单发，保住检索段），规划+提及+多路检索全程一个 wait_for——被动召回墙钟真正有界（对通话首响与文字回复同效） |
+
+> Model Experience：① 通话首响四段提速：声纹并行（省一次网络往返）+ 首句快断（开声提前约一个分句）+ 抢占清场（回复不被主动播报残余帧拖住）+ 召回预算（规划不再无限前置）；工具轮不再长时间静默（先应声训诫 + send_message 自动播出）；② 音色一致性：声音页一处配置全链路生效；③ token 影响：无新增工具 schema，通话注入上限 120→220（仅通话中占用）；④ 缓存影响：通话注入文案变化触发一次前缀重建（此后稳定）
+
 #### 操作核心能力：桌面操控 + MCP 操作关联（第三十一轮新增，同轮重构定型）
 
 | 机制 | 位置 | 说明 |
@@ -662,7 +676,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 播报车道 | `agent/realtime/arbiter.py`（SpeakLane/Utterance）+ `RealtimeSession.lane` | 会话内全部 TTS 播报的串行化、优先级与归因（对标实时响应仲裁的通用内核，协议特有部分不搬）：①单工车道——同一时刻至多一个"生产中"单元写播放队列，多来源（回复流/send_message 自动路由）绝不交错；②优先级抢占——回复（PRIORITY_REPLY）抢占在播主动消息（已入队音频照常排空，听感"说完这句就回应你"），主动消息绝不抢回复、彼此 FIFO 全播；③归因收尾——单元持单调 uid 逐块自检，被取代者不写帧/不迁状态/不重复 audio_done，收尾权独占 |
+| 播报车道 | `agent/realtime/arbiter.py`（SpeakLane/Utterance）+ `RealtimeSession.lane` | 会话内全部 TTS 播报的串行化、优先级与归因（对标实时响应仲裁的通用内核，协议特有部分不搬）：①单工车道——同一时刻至多一个"生产中"单元写播放队列，多来源（回复流/send_message 自动路由）绝不交错；②优先级抢占——回复（PRIORITY_REPLY）抢占在播主动消息（取消其生产并清空未播音频，回复即时开声；三十二轮起不再排空残余），主动消息绝不抢回复、彼此 FIFO 全播；③归因收尾——单元持单调 uid 逐块自检，被取代者不写帧/不迁状态/不重复 audio_done，收尾权独占 |
 | 回复完成归因 | `reply_finalize.py`（EVENT_AFTER_REPLY 带 turn_id，与增量事件同源）+ `engine._on_after_reply/_settle_reply/_arm_settle_fallback` | 完成事件按 mind turn 归因结算：对得上立即收尾语音流；归因不上（旧轮迟到/子会话代发）宽限观察（1.5s，新增量到达即取消）后兜底结算——绝不因归因失败让回复"说不停"，也不误杀新一轮语音流；pending 不弹出，连续语音轮的增量可重开语音流 |
 | 语音收束离线化 | `engine._spawn_finalize` + `session.finalize_task` | ASR 定稿/声纹识别/入轮在后台任务执行，麦克风帧流不再被定稿阻塞（收束期间到达的新语音进新一轮，不再丢帧）；先就地摘下 ASR 会话并快照缓冲再走网络调用；收束任务串行链防两段语音乱序 |
 | 通话路由补全 | `engine.session_for_scope`（基座匹配，#session 后缀不阻断）+ voice_spoken 移交引擎 | 多会话通话中主动消息不再静默不播；voice_spoken 在实际播出完成时广播（取消/失败不标记），形态标记与听感对齐。轮末纯文本**不**在 deliver_text 重复路由——级联模式下回复增量已经 `_on_delta` 流入 TTS 车道，出口层再播会双重发声（语音出口唯二：增量流 / send_message 自动路由） |
@@ -671,7 +685,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 实时引擎入 Lifecycle | `bootstrap.register_channel_services` 注册 `realtime_engine`（cleanup=shutdown_all_sessions） | 进程退出不再依赖 WS 断连的隐式清理（Web 关停超时强取消路径下 finally 里的 await 不可靠）；每会话有界（5s）收尾 |
 | 子进程看护 | `entities/filesystem/child_guard.py` + shell_background 登记 + `entities/filesystem/__init__.register_lifecycle` | 后台 shell（独立进程组）的 owner-death 守卫：pgid 登记 logs/shell_children.json，启动清扫上次实例孤儿（SIGTERM→5s→SIGKILL 整组），关停终止全部在册子进程；裸 create_task 收编（心跳 tick/热插拔/bilibili → async_helper.spawn 受管） |
 
-> Model Experience：① 通话听感：打断后她"说完这句就回应你"，主动消息排队不抢话、不混音，两条提醒按序全播；② token 影响：无新增工具 schema；③ 缓存影响：无（车道完全在语音链路内）；④ 稳定性：Ctrl+C 卡死有 45s 总预算兜底、端口占用快速失败由守护重拉、崩溃不留孤儿 shell
+> Model Experience：① 通话听感：回复到来即抢过话头（主动播报未播部分让位），主动消息排队不抢话、不混音，两条提醒按序全播；② token 影响：无新增工具 schema；③ 缓存影响：无（车道完全在语音链路内）；④ 稳定性：Ctrl+C 卡死有 45s 总预算兜底、端口占用快速失败由守护重拉、崩溃不留孤儿 shell
 
 #### 语音链路核心质量（第二十四轮新增）
 

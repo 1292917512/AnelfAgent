@@ -279,11 +279,12 @@ class RealtimeEngine:
         """建立提供方原生实时通道并启动事件泵。"""
         from agent.realtime.native import create_native_client
         from agent.realtime.playback import PcmResampler
+        from agent.tts import realtime_voice
         from core.config import get_config
         provider = str(get_config("realtime_native_provider", "openai") or "openai")
         client = create_native_client(
             provider,
-            voice=str(get_config("realtime_tts_voice", "") or ""),
+            voice=realtime_voice(),
             instructions=self._native_instructions(),
         )
         await client.connect()
@@ -502,6 +503,10 @@ class RealtimeEngine:
             session.pcm_buffer.extend(tail)
         buffered = bytes(session.pcm_buffer)
         session.pcm_buffer.clear()
+        # 声纹识别与 ASR 定稿并行（都只依赖本段音频，互不依赖）——
+        # 思维启动的关键路径收敛为一段网络往返
+        speaker_task = asyncio.create_task(
+            self._identify_speaker(buffered, session.sample_rate))
         transcript = ""
         segments: List[Dict[str, Any]] = []
         if asr is not None:
@@ -520,12 +525,13 @@ class RealtimeEngine:
         transcript = transcript.strip()
         if not transcript:
             # 未识别到有效语音：显式收帧（客户端清部分转写），状态保持收听
+            speaker_task.cancel()
             await session.sink.send_event("rt_final", {
                 "text": "", "turn_id": session.turn_id, "discarded": True,
             })
             return
         # 说话人只读识别（仅有效语音轮；标注谁在说话，应对由 AI 决定）
-        speaker = await self._identify_speaker(buffered, session.sample_rate)
+        speaker = await speaker_task
         await session.sink.send_event("rt_final", {
             "text": transcript, "turn_id": session.turn_id,
         })
@@ -769,9 +775,9 @@ class RealtimeEngine:
         if session.detector.in_speech:
             return {"spoken": False, "reason": "user-speaking"}
 
-        from core.config import get_config as _gc
+        from agent.tts import realtime_voice
 
-        resolved = voice.strip() or str(_gc("realtime_tts_voice", "") or "").strip()
+        resolved = voice.strip() or realtime_voice()
         body = text.strip()
         turn_id = session.turn_id
         appending = session.lane.active is not None or session.playback.pending_finals > 0
@@ -837,10 +843,9 @@ class RealtimeEngine:
             self._cancel_settle_fallback(scope)
             pending["settled_turn"] = None
             pending["mind_turn"] = mind_turn
-            from agent.tts import TtsPipeline
-            from core.config import get_config
+            from agent.tts import TtsPipeline, realtime_voice
             pipeline = TtsPipeline(
-                voice=str(get_config("realtime_tts_voice", "") or ""),
+                voice=realtime_voice(),
                 sample_rate=24000)
             session.tts_pipeline = pipeline
 
@@ -848,10 +853,14 @@ class RealtimeEngine:
                 return asyncio.create_task(
                     self._produce(session, u, pipeline), name=f"rt.tts.{session.owner}")
 
+            active = session.lane.active
             session.lane.submit(
                 turn_id=session.turn_id, priority=PRIORITY_REPLY, source="reply",
                 starter=_starter,
             )
+            if active is not None and active.priority > PRIORITY_REPLY:
+                # 抢占了在播主动播报：未播音频不再排空，回复即时开声
+                session.playback.drop_pending()
             await session.set_state(SessionState.SPEAKING)
         elif pending["mind_turn"] != mind_turn:
             # 新一轮思维轮（如工具调用后的续写）：并入同一语音回复流

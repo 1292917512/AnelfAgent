@@ -27,6 +27,8 @@ async def realtime_status() -> str:
     通话中你发的消息会自动以语音播出（send_message 即可，无需专用工具）。
     """
     try:
+        from agent.tts import realtime_voice
+
         engine = get_realtime_engine()
         session = engine.active_session()
         return _dump({
@@ -34,7 +36,7 @@ async def realtime_status() -> str:
             "mode": get_config("realtime_mode", "cascade"),
             "barge_in": get_config("realtime_barge_in", True),
             "enabled": get_config("realtime_enabled", True),
-            "default_voice": str(get_config("realtime_tts_voice", "") or ""),
+            "default_voice": realtime_voice(),
             "last_say_error": session.last_say_error if session else "",
             "note": "通话中的消息自动语音播出；多连接同开通话时状态作用于最早建立的会话",
         })

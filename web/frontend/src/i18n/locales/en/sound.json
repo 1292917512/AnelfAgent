@@ -226,16 +226,19 @@
     "defaultsSubtitle": "Defaults used when synthesis tools are called without explicit params",
     "fields": {
       "tts_default_voice": "Default Voice ID",
+      "realtime_tts_voice": "Call Voice",
       "tts_default_reference_audio": "Clone Reference Audio",
       "tts_default_reference_text": "Clone Reference Text"
     },
     "placeholders": {
       "tts_default_voice": "e.g. male-qn-qingse (query with list_voices)",
+      "realtime_tts_voice": "Leave empty to follow the default voice",
       "tts_default_reference_audio": "URL or workspace path (clone takes precedence)",
       "tts_default_reference_text": "Text spoken in the reference audio"
     },
     "descs": {
-      "tts_default_voice": "Preset voice; mutually exclusive with clone reference (reference wins)",
+      "tts_default_voice": "Global default voice used by every synthesis entry",
+      "realtime_tts_voice": "Voice override for realtime calls only",
       "tts_default_reference_audio": "Reference audio for voice cloning, requires reference text",
       "tts_default_reference_text": "Required for cloning: the text spoken in the reference audio"
     }

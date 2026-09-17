@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from agent.realtime.playback import PcmResampler, PlaybackFrame, PlaybackQueue
 
 
@@ -88,3 +90,30 @@ class TestPlaybackQueue:
         q.clear()
         assert await q.read() is None
         assert q.generation == 1
+
+    async def test_drop_pending_discards_frames_without_sentinel(self) -> None:
+        """抢占清场：待播帧与收束帧全部丢弃，不放打断哨兵、不动 generation。"""
+        import asyncio
+
+        q = PlaybackQueue()
+        q.push(PlaybackFrame(pcm=b"a", sample_rate=48000))
+        q.finish(turn_id=3)
+        q.push(PlaybackFrame(pcm=b"b", sample_rate=48000))
+        gen = q.generation
+        q.drop_pending()
+        assert q.pending_finals == 0
+        assert q.generation == gen
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(q.read(), timeout=0.05)
+
+    async def test_drop_pending_keeps_pending_finals_consistent(self) -> None:
+        """已消费的收束帧不受影响；只消掉仍在队列里的收束帧计数。"""
+        q = PlaybackQueue()
+        q.finish(turn_id=1)
+        frame = await q.read()
+        assert frame is not None and frame.final
+        assert q.pending_finals == 0
+        q.finish(turn_id=2)
+        assert q.pending_finals == 1
+        q.drop_pending()
+        assert q.pending_finals == 0

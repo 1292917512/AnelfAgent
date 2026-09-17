@@ -226,16 +226,19 @@
     "defaultsSubtitle": "语音合成工具不传参数时使用的默认值",
     "fields": {
       "tts_default_voice": "默认音色 ID",
+      "realtime_tts_voice": "通话音色",
       "tts_default_reference_audio": "克隆参考音频",
       "tts_default_reference_text": "克隆参考文本"
     },
     "placeholders": {
       "tts_default_voice": "如 male-qn-qingse（可用 list_voices 查询）",
+      "realtime_tts_voice": "留空跟随默认音色",
       "tts_default_reference_audio": "URL 或工作区路径（设置后默认走克隆发声）",
       "tts_default_reference_text": "参考音频对应的文字内容"
     },
     "descs": {
-      "tts_default_voice": "预置音色；与克隆参考音频二选一（参考音频优先）",
+      "tts_default_voice": "全局默认音色，全部合成入口统一使用",
+      "realtime_tts_voice": "实时通话单独使用的音色覆盖",
       "tts_default_reference_audio": "声音克隆的参考音频，需配合参考文本",
       "tts_default_reference_text": "克隆时必须提供参考音频中的文字"
     }

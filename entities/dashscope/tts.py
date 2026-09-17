@@ -7,7 +7,8 @@ SpeechSynthesizer 双向流式：streaming_call 提交文本、回调线程吐 P
 由 SDK 保证，句级管线每句新建连接同样成立）。
 
 模型 dashscope_tts_model（qwen-audio-3.0-tts-plus / cosyvoice-v3.5-plus
-…），默认音色 dashscope_tts_voice，优先级 dashscope_tts_priority。
+…），协议音色 dashscope_tts_voice（全局默认音色未配置时生效），
+优先级 dashscope_tts_priority。
 """
 
 from __future__ import annotations

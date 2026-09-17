@@ -50,7 +50,7 @@ class MiniMaxWsTtsProvider:
         from entities.minimax.client import MiniMaxClient, get_config
         client = MiniMaxClient()
         model = get_config("default_tts_model", "speech-2.8-hd")
-        voice_id = voice or get_config("default_voice_id", "male-qn-qingse")
+        voice_id = voice or "male-qn-qingse"
 
         factory = self._ws_factory or websockets.connect
         ws = await factory(_WS_URL, additional_headers=client._auth_headers())
