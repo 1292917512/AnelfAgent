@@ -114,6 +114,10 @@ export function AudioOverviewPanel() {
             {t("funasr.goConfigure")}
           </a>
         </div>
+        {funasr?.endpoint && (
+          <p className="text-[11px] font-mono text-muted break-all">{funasr.endpoint}</p>
+        )}
+        <p className="text-[11px] text-muted">{t("funasr.modelNote")}</p>
       </div>
 
       {/* TTS 提供者链 */}
@@ -171,6 +175,9 @@ export function AudioOverviewPanel() {
           <span className="text-muted">{t("stats.bound")}: <b className="text-foreground">{lib.bound_speakers ?? 0}</b></span>
           <span className="text-muted">{t("stats.unread")}: <b className="text-foreground">{lib.unread_segments ?? 0}</b></span>
           <span className="text-muted">{t("audioMinutes")}: <b className="text-foreground">{audioMinutes}</b></span>
+          {(lib.voiceprint_dims ?? 0) > 0 && (
+            <span className="text-muted">{t("stats.vpDims")}: <b className="text-foreground">{lib.voiceprint_dims}</b></span>
+          )}
         </div>
         {lib.db_path && <p className="text-[11px] font-mono text-muted break-all">{lib.db_path}</p>}
       </div>

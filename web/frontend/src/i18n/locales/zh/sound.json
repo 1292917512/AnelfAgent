@@ -241,7 +241,8 @@
     "pending": "待确认",
     "bound": "已绑定实体",
     "unread": "未读",
-    "notConfigured": "未配置"
+    "notConfigured": "未配置",
+    "vpDims": "声纹维度"
   },
   "injection": {
     "title": "上下文注入",
@@ -294,7 +295,8 @@
     "unreachable": "不可达",
     "notConfigured": "未配置",
     "recheck": "重新检测",
-    "goConfigure": "去 模型页 → 组件凭据 配置地址"
+    "goConfigure": "去 模型页 → 组件凭据 配置地址",
+    "modelNote": "声纹向量由该服务端提取（模型与维度由服务端决定，如 SenseVoice 服务用 cam++ 192 维）；换模型在服务端进行，此处只需地址"
   },
   "channels": {
     "mic": "麦克风",

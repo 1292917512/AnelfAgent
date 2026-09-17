@@ -145,6 +145,8 @@ class TestSegmentApi:
         body = resp.json()
         assert body["speakers"] == 1
         assert body["match_threshold"] == 0.75
+        # 声纹维度实测自库内最新样本（模型身份可观测）
+        assert body["voiceprint_dims"] == 192
 
 
 class TestRecordingsApi:
@@ -201,7 +203,8 @@ class TestFunasrStatus:
         resp = client.get("/api/audio/funasr/status")
         assert resp.status_code == 200
         data = resp.json()
-        assert data == {"configured": True, "reachable": True}
+        assert data == {"configured": True, "reachable": True,
+                        "endpoint": "http://funasr.local"}
         funasr_cred("")
 
 

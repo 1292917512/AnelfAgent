@@ -241,7 +241,8 @@
     "pending": "Pending",
     "bound": "Bound",
     "unread": "Unread",
-    "notConfigured": "Not configured"
+    "notConfigured": "Not configured",
+    "vpDims": "Voiceprint dims"
   },
   "injection": {
     "title": "Context injection",
@@ -294,7 +295,8 @@
     "unreachable": "Unreachable",
     "notConfigured": "Not configured",
     "recheck": "Re-check",
-    "goConfigure": "Configure in Models → Provider Keys"
+    "goConfigure": "Configure in Models → Provider Keys",
+    "modelNote": "Voiceprint vectors are extracted by this service (model & dims decided server-side, e.g. SenseVoice service uses cam++ 192-d); swap models on the server, only the address is configured here"
   },
   "channels": {
     "mic": "Mic",

@@ -1569,6 +1569,10 @@ class AudioStore:
         missing_embed = int(_scalar(await cursor.fetchone(), "c"))
         cursor = await db.execute("SELECT COUNT(*) AS c FROM recordings")
         recordings = int(_scalar(await cursor.fetchone(), "c"))
+        cursor = await db.execute(
+            "SELECT vector FROM voice_samples ORDER BY created_ns DESC LIMIT 1")
+        latest = await cursor.fetchone()
+        voiceprint_dims = (len(latest["vector"]) // 4) if latest else 0
         return {
             "speakers": row["c"] or 0,
             "pending_speakers": row["pending"] or 0,
@@ -1579,6 +1583,7 @@ class AudioStore:
             "audio_ms": seg["audio_ms"] or 0,
             "missing_embeddings": missing_embed,
             "recordings": recordings,
+            "voiceprint_dims": voiceprint_dims,
             "vec_available": self._vec_available,
             "fts_available": self.fts_available,
             "db_path": self._db_path,

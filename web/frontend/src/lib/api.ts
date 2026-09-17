@@ -803,6 +803,7 @@ export interface VisionSourceInfo {
 export interface FunasrStatus {
   configured: boolean;
   reachable: boolean;
+  endpoint: string;
 }
 
 export const audioApi = {
@@ -947,6 +948,7 @@ export interface AudioLibraryStats {
   audio_ms?: number;
   missing_embeddings?: number;
   recordings?: number;
+  voiceprint_dims?: number;
   vec_available?: boolean;
   fts_available?: boolean;
   db_path?: string;

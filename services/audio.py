@@ -474,7 +474,7 @@ class AudioServiceFacade:
 
     @staticmethod
     async def funasr_status(refresh: bool = False) -> Dict[str, Any]:
-        """FunASR 转写服务状态（声音域自检：配置在位 + 真实可达）。"""
+        """FunASR 转写服务状态（声音域自检：配置在位 + 真实可达 + 服务地址）。"""
         from entities.audiosync import client as funasr
 
         if refresh:
@@ -483,4 +483,5 @@ class AudioServiceFacade:
         return {
             "configured": bool(funasr._endpoint_config()),
             "reachable": reachable,
+            "endpoint": funasr._endpoint_config(),
         }
