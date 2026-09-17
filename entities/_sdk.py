@@ -63,6 +63,7 @@ __all__ = [
     "register_provider_key", "get_provider_key", "set_provider_key",
     "list_provider_keys",
     "register_audio_provider", "register_tts_provider", "audio_transcribe", "audio_speaker_embed",
+    "default_tts_voice", "realtime_tts_voice",
     "audio_ingest_payload", "audio_has_provider", "KIND_ASR", "KIND_VOICEPRINT",
     "get_audio_store", "register_audio_source_fetcher",
     "audio_get_recording", "audio_list_recording_paths", "audio_mark_recording",
@@ -73,6 +74,7 @@ __all__ = [
     "PreprocessError", "probe", "ensure_16k_mono_wav", "mean_volume_db",
     "detect_silences", "split_wav", "merge_to_wav",
     "register_vision_source", "unregister_vision_source", "vision_ingest_frame",
+    "vision_look",
     "VisualSource", "CapturedFrame",
     "register_visual_provider", "unregister_visual_provider",
     "register_sound_provider", "unregister_sound_provider",
@@ -710,6 +712,19 @@ def register_tts_provider(provider: Any) -> None:
     get_tts_registry().register(provider)
 
 
+# 音色解析桥（实体合成入口与核心/AI/Web 共用同一预设决策链）
+def default_tts_voice() -> str:
+    """全局默认音色 ID（默认预设指派解析；未指派为空串）。"""
+    from agent.tts.voice import default_voice
+    return default_voice()
+
+
+def realtime_tts_voice() -> str:
+    """实时通话音色 ID（通话预设，未指派跟随默认）。"""
+    from agent.tts.voice import realtime_voice
+    return realtime_voice()
+
+
 # 录制单元登记桥（音源同步组件的增量依据与合并清单读写）
 async def audio_get_recording(path: str) -> Any:
     return await get_audio_store().get_recording(path)
@@ -778,6 +793,12 @@ async def vision_ingest_frame(
     from agent.vision.buffer import get_vision_buffer
     return await get_vision_buffer().ingest(
         path, source, width=width, height=height, captured_at=captured_at)
+
+
+async def vision_look(source: str = "screen") -> str:
+    """立即查看指定视觉源的画面（多模态结果契约：顶层 _multimodal+images）。"""
+    from agent.vision.tools import vision_look as _vision_look
+    return await _vision_look(source=source)
 
 
 # ------------------------------------------------------------------

@@ -202,3 +202,31 @@ class TestEntityManifestOrder:
         weights = [{_DEFAULT_GROUP_ORDER[g] for g in band} for band in bands]
         for lower, upper in zip(weights, weights[1:], strict=False):
             assert max(lower) < min(upper)
+
+
+class TestTtsVoiceBridges:
+    """音色解析桥：实体与核心/AI/Web 共用同一预设决策链。"""
+
+    def test_bridges_resolve_preset_assignment(
+            self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agent.tts import presets as tts_presets
+        from core.config import ConfigManager
+
+        monkeypatch.setattr(
+            tts_presets, "_store_path", lambda: str(tmp_path / "voice_presets.json"))
+        store: dict = {}
+        monkeypatch.setattr(
+            ConfigManager, "get", staticmethod(lambda k, d=None: store.get(k, d)))
+        monkeypatch.setattr(
+            ConfigManager, "set", staticmethod(lambda k, v: store.__setitem__(k, v)))
+        monkeypatch.setattr(ConfigManager, "save", staticmethod(lambda: True))
+
+        assert _sdk.default_tts_voice() == ""
+        preset = tts_presets.save_preset(name="御姐", voice_id="female-yujie")
+        tts_presets.assign_voice("default", preset.id)
+        assert _sdk.default_tts_voice() == "female-yujie"
+        # 通话未指派跟随默认；独立指派后取覆盖值
+        assert _sdk.realtime_tts_voice() == "female-yujie"
+        call = tts_presets.save_preset(name="通话", voice_id="qiaopi_mengmei")
+        tts_presets.assign_voice("realtime", call.id)
+        assert _sdk.realtime_tts_voice() == "qiaopi_mengmei"
