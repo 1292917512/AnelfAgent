@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "operation": "Operations"
+    },
+    "configSections": {
+      "entity/operation": "Operations"
+    }
+  },
   "title": "Operations",
   "subtitle": "Desktop control & MCP operation links: status, annotations, toggles and testing",
   "tabs": {

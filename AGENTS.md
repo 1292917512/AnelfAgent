@@ -597,13 +597,13 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 |------|------|------|
 | 能力路由框架 | `agent/capabilities.py` | CapabilityProvider 协议（name/capabilities/is_configured/run）+ CapabilityRouter（注册表 + 配置化优先级链 + 失败降级 + 错误聚合归因）。链语义：配置键（JSON 字典 {能力: [提供者]}）显式给出非空链时严格按配置；否则默认链 + 声明该能力的已注册组件自动入链（即插即用）。内部模型利用 = 各领域内置 `models` 提供者桥接 llm_clients.json 对应类型模型优先级链；第三方组件经 `_sdk` 注册桥接入同一路由 |
 | 视觉能力域 | `agent/vision/capabilities.py` + `gen_tools.py` + `guide.py` | 能力：understand（图片/视频理解，视频仅投送 supports_video 声明模型）/ image_gen / image_edit / video（生成+任务管理）。工具组 vision（recognize_image/recognize_video/generate_image/edit_image/generate_video 常驻 always + 任务管理与 vision_config 配置工具 core）；配置键 vision_provider_priority / vision_default_* / vision_style_presets（vision 组） |
-| 声音能力域 | `agent/audio/capabilities.py` + `gen_tools.py` + `guide.py` + `models_asr.py` | 能力：tts（一次性合成，实时流式走 agent.tts 注册表互补）/ voice_mgmt / music。voice_to_text 统一进核心 ASR 链（内部 ModelsAsrProvider 桥接 asr 模型链，默认 priority 50 兜底本地组件）。工具组 audio（voice_to_text/text_to_voice/generate_music/generate_lyrics 常驻 always + 音色管理与 sound_config 配置工具 core）；配置键 sound_provider_priority / tts_default_* / audio_models_asr_priority（audio 组） |
+| 声音能力域 | `agent/audio/capabilities.py` + `gen_tools.py` + `guide.py` + `models_asr.py` | 能力：tts（一次性合成，实时流式走 agent.tts 注册表互补）/ voice_mgmt / music。voice_to_text 统一进核心 ASR 链（内部 ModelsAsrProvider 桥接 asr 模型链，默认 priority 50 兜底本地组件）。工具组 audio（voice_to_text/text_to_voice/generate_music/generate_lyrics 常驻 always + 音色管理与 voice_preset/sound_config 配置工具 core）；配置键 sound_provider_priority / sound_voice_default / sound_voice_realtime / audio_models_asr_priority（audio 组） |
 | 检索核心域 | `agent/retrieval/` | 联网检索/网页读取/仓库文档/HTTP 请求/文件下载/文档重排序核心化：providers（能力×提供者矩阵：Provider ABC + SearchCap/ReaderCap/RepoCap Protocol；builtin 本地直连/bigmodel 内置，组件经 `_sdk.register_retrieval_provider` 接入）+ fetcher（SSRF 防护直连抓取）+ extractor（三层正文提取）+ robots + rerank（rerank 模型链）。工具组 retrieval（web_search/web_fetch/repo_docs/web_request/extract_page_links/web_download 常驻 always + retrieval_providers/rerank_search core）；配置统一走 ConfigManager（retrieval_proxy/retrieval_active/retrieval_disabled_providers/retrieval_bigmodel_api_key(password)/retrieval_ssrf_protection，retrieval 组） |
 | 平台组件包 | `entities/minimax/` | MiniMax 直连客户端封装为四类组件注册进核心：MiniMaxVisualProvider（understand+image_gen）/ MiniMaxSoundProvider（tts+voice_mgmt）/ MiniMaxSearchProvider（检索）/ 流式 TTS（HTTP+WS 双传输）。配置自管于实体 config.json；删除目录即整体拔出（核心路由注册随之消失） |
 | 工作区路径统一 | `agent/utils/workspace.py` + `agent.approval.policy.workspace_paths_port`（allowed 判定） | 核心层工具的路径解析/沙箱校验/产物落盘（uploads）统一入口；沙箱准入经端口由 entities.filesystem 施绑（sandbox_enabled + check_sandbox 组合判定），未施绑时仅接受绝对路径 |
-| 旧配置一次性迁移 | `agent/runtime/config_migrate.py` + bootstrap `migrate_legacy_configs` 节点 | 老部署残留的 entities/media|web/config.json（gitignored 本地文件）启动时导入 ConfigManager 对应键（media vision→understand 改名/tts 默认音色/风格预设/优先级链拆分、web proxy/active/disabled/provider_keys.bigmodel + web_ssrf_protection 键名迁移），目标键已有非空值不覆盖，导入后源文件归档 .migrated（幂等） |
+| 旧配置一次性迁移 | `agent/runtime/config_migrate.py` + bootstrap `migrate_legacy_configs` 节点 | 老部署残留的 entities/media|web/config.json（gitignored 本地文件）启动时导入 ConfigManager 对应键（media vision→understand 改名/默认音色预设建档/风格预设/优先级链拆分、web proxy/active/disabled/provider_keys.bigmodel + web_ssrf_protection 键名迁移），目标键已有非空值不覆盖，导入后源文件归档 .migrated（幂等） |
 | 能力数据面 | `services/retrieval.py` + `web/routers/retrieval.py`（/api/retrieval/*）+ GET /api/vision/capabilities + GET /api/audio/capabilities | 检索页矩阵/切换/启停/凭据/连通性测试/抓取设置；视觉与声音页的提供者状态与生效链。旧的 /api/entity/media/*、/api/entity/web/*、/api/config/web-tools 端点整体移除 |
-| 能力前端 | `pages/Retrieval.tsx`（/retrieval，检索导航项）+ Vision「生成能力」页签 + Sound「生成」页签 | 检索页：能力×提供者矩阵 + 抓取设置；视觉页：生成能力链排序（共用 `components/common/CapabilityChainPanel.tsx`）+ 风格预设 CRUD（默认参数在配置 tab 热编辑）；声音页：声音能力链 + 默认音色/克隆参考配置。媒体库/网络工具实体面板随目录删除零残留 |
+| 能力前端 | `pages/Retrieval.tsx`（/retrieval，检索导航项）+ Vision「生成能力」页签 + Sound「生成」页签 | 检索页：能力×提供者矩阵 + 抓取设置；视觉页：生成能力链排序（共用 `components/common/CapabilityChainPanel.tsx`）+ 风格预设 CRUD（默认参数在配置 tab 热编辑）；声音页：音色预设库（增删改查+场景指派，见第三十三轮）+ 声音能力链。媒体库/网络工具实体面板随目录删除零残留 |
 
 > Model Experience：① 核心能力主用工具全部 tags=["always"] 常驻 schema（识别/生成/检索/下载），管理工具 core 标签按需激活，能力矩阵经 vision_config/sound_config/retrieval_providers 自发现（含实时可用状态与调用示例）；② token 影响：常驻工具 +18 schema（前缀缓存摊薄）；③ 缓存影响：always 工具并入既有 always 区块，排序冻结机制不变
 
@@ -632,11 +632,77 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 > Model Experience：① AI 无新增工具 schema（呈现/分类/降权全在管线内）；② token 影响：discipline/freshness 两块按需注入（无指令/无重复话题零字节）；③ 缓存影响：discipline 在稳定前缀区（低频变化），freshness 在尾部动态区；④ 反馈回路让"她记错了"第一次有了纠正通道——用户否认即负向证据，14 天 sub_zero 归档倒计时通电
 
+#### 声纹即 AI 的耳朵：标签化召回与精确对比（第三十七轮新增）
+
+补齐"声音服务于 AI"的最后一公里：声纹识别结果接入消息标签体系驱动记忆召回，AI 获得说话人/音频级的精确对比工具。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| speaker_scope 标签 | `core/tags.py` 新标签 + `engine.user_turn` 标注升级 | 通话中声纹命中且说话人绑定了实体时，标注追加机器可解析的 `[speaker_scope:user:qq:456]`（此前只有给人看的"[语音 说话人:张三]"文本——AI 认出了人，记忆系统却不知情） |
+| 声纹→实体自动召回 | `recollection._speaker_scopes` + `_extract_related_scopes`/`_extract_scopes_from_anything` | 召回层解析标签并归一为权威 entity_scope 格式（`user:qq:123`→`user_qq:123`，音频库绑定格式与思维层 scope 方言的单点转换）——**私聊/通话同样生效**（原 [uid:] 解析仅群聊），听到谁说话就自动召回谁的画像/关系网络/相关记忆；agent: 自绑定跳过（自我画像恒注入） |
+| 精确对比 | `matcher.compare` + AI 工具 `speaker_compare` | 说话人 vs 说话人：锚对锚（长期身份）+ 样本最佳配对（峰值证据）+ 同信道模板交叉（排除信道因素）+ 相对合并阈值的判读——合并/绑定前的终极核查，不再靠 similarity_map 全景图人肉找 |
+| 音频对比 | AI 工具 `voice_compare` | 两段音频是否同一人：各自转写提声纹 → 质心相似度 + 最佳段配对，按全局阈值给判读（认亲核查/怀疑录错人时用） |
+| 实体维度检索 | `store.list_segments/search_segments(entity_scope=)` + `transcript_search(entity=)` | "这个实体说过什么"直达：按声纹绑定过滤话语时间线与混合检索（子查询过滤，count/主查询同路径）；entity 参数校验 scope 前缀 |
+
+> Model Experience：① AI 视角闭环成形：听到声音→认出说话人→（标签）自动带出其画像与记忆→需要核查时 speaker_compare/voice_compare 给数值证据→transcript_search(entity=) 查其全部话语——声音从"转写文本的来源标注"升级为"驱动记忆召回的身份通道"；② token 影响：+2 工具 schema（core 按需激活）；③ 缓存影响：工具数组变化一次重建；④ 格式纪律：音频库绑定用 `user:qq:123`（记忆图谱节点 key 同族），思维层 scope 用 `user_qq:123`，转换只发生在 `_speaker_scopes` 单点
+
+#### 声纹引擎 v2.1：numpy 向量化 + AS-Norm 分离度门（第三十六轮新增）
+
+对照业界生产级工具链（WeSpeaker / SpeechBrain / 3D-Speaker 的打分后端实践）补齐两块：效率（numpy 矩阵运算）与准确度（自适应打分归一化）。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| numpy 向量代数 | `vectors.py`（cosine/cosine_many/unit_rows/pairwise_sims/blend/weighted_centroid，numpy 2.x，pyproject 显式依赖） | 全库锚扫描 = 行归一化矩阵 × 查询向量一次矩阵积（`store.speaker_anchor_matrix` 返回 [N,D] 归一矩阵）；聚类两两相似度 = M·Mᵀ。200 说话人库实测单次匹配 0.71ms（含 SQL 与短名单精评）。对外签名/返回类型不变（纯 Python 标量），np 标量在 matcher 出口统一转换（防 json 序列化炸） |
+| AS-Norm 分离度门 | `matcher._cohort_separation` + 配置 `audio_match_separation`（默认 2.0，0=关闭） | 业界标准打分后端（WeSpeaker 等生产配方标配）：候选锚得分对其余说话人 top-K 冒充分布做 z 归一——"好几个人都像"的模糊查询即使过了余弦阈值也降级为临时说话人待确认（防投毒优先于防分裂），cohort <3 人时门自动不启用。相似度语义不变（用户阈值标定不受影响），separation 作为独立判据字段返回（AI/Web 可解释"为什么不敢认"） |
+| 候选可解释性 | `IdentifyCandidate.separation` + api.ts + 识别面板 Badge | 候选四元组：similarity（决策分）/anchor/sample/channel（三判据）/separation（置信分离度），前端识别面板展示分离度 |
+
+> Model Experience：① AI 视角：候选带 separation 后，"0.76 但分离度 1.8"与"0.90 且分离度 3.7"有了明确的可信度差异；② token 影响：无新增 schema；③ 缓存影响：无；④ 已评估未采纳：嵌入级均值减除/白化（WeSpeaker 配方可用但会移动余弦阈值标定，需重训标定不适用动态小库）、PLDA（需标注数据）、活体检测（本地单用户场景无需求）——最大剩余杠杆在嵌入模型本身（CAM++ → ERes2NetV2，属音源组件侧升级）
+
+#### 声纹库 v2：一人一档案与信道感知（第三十五轮新增）
+
+按工业界主流方案（多段注册 → 聚合鲁棒表示 → 信道补偿 → 低学习率动态更新）完全重构声纹子系统；旧声纹数据按授权清除（`PRAGMA user_version` 版本门自动重建，转写/录制登记保留、片段归属重置未知），全部一次性迁移代码（旧实体声纹库导入 / v1 段表升级 / 库文件搬迁 / ALTER 补列）删除。
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 声纹锚 | `speakers.vector + anchor_weight` + `vectors.py::blend/weighted_centroid` | 锚 = 全部历史合格样本的**时长加权质心**（权重=时长秒截断 [0.5,10]），每次合格采样在 `add_sample` 内增量折叠——学习率 1/(n+1) 自然衰减即"采样越多越准"的低学习率动态更新；加权质心满足结合律 → 合并可精确合成（`matcher.merge` 按累计权重 blend，与重放两档案全部历史样本等价），无需重放 |
+| 信道感知 | `voice_samples.channel/duration_ms` + `channels.py::normalize_channel` + `matcher.match_vector(channel=)` | 同一人经微信/电话/麦克风提取的嵌入有信道漂移：样本带信道标注（voip=通话、mic=录音同步、web=上传、enroll=注册、chat=语音消息、phone），匹配评分 = max(锚, **同信道加权质心模板**, 最佳样本)；通话识别与入库贯通 voip 信道。池满淘汰同信道最早样本（信道涌入只挤占自己，多样性自保持） |
+| 防投毒门控 | `store.add_sample` 相干门 + 配置 `audio_sample_coherence_floor`（默认 0.45） | 与锚余弦低于门限的样本拒入（错认人/噪音），远低于匹配阈值不拦信道漂移；同名 enroll 累积也过门（返回 sample_rejected，防张冠李戴）。淘汰策略配置（outlier/fifo）与质心开关（audio_centroid_match）废止——单一策略，死键已从配置文件清除 |
+| 匹配架构 | `matcher.match_vector`：锚全量扫描入围（阈值-0.25 或 TopN）→ 候选三判据精评 | 样本级 vec0 索引与 KNN 检索删除（锚扫描即完整候选来源，说话人量级小）——vec 索引收敛为转写文本向量专用；候选返回 anchor/sample/channel 三判据分值（可解释"为什么认成他"） |
+| enroll 防分裂 | `matcher.enroll` 同名已确认档案直接累积样本 | 一人一档案：重复注册同名不再裂出新档案；consolidate 聚类从池质心改为锚（更稳定的长期表示），`refine` 语义改为**以当前样本池重建锚**（剔除坏样本后复位、锚被带偏后回收——池=全史时漂移恒 1，删样本后重建才见漂移） |
+| schema 版本门 | `store._sync_schema`（`PRAGMA user_version`，当前 2） | 版本落后（含未标记 0）先 DROP 声纹表再按当前布局重建（旧列布局下建索引会失败）；声纹可再生，转写片段/录制登记/FTS 保留。**纪律：声纹表结构变更必须 bump 版本号** |
+| Web/i18n | 声纹页签信道分布 chips（`list_speakers.channels`）+ 详情样本行信道/时长 + 声纹锚权重行 + channels 词典 | 说话人卡片按信道-计数展示采样分布；详情 Modal 样本行显示信道 Badge 与时长；档案区显示锚权重（等效语音秒数） |
+
+> Model Experience：① AI 视角：识别候选带三判据分值（anchor_similarity/channel_similarity/sample_similarity），"听起来像但信道对不上"有了数据可依；speaker_refine 变为复位手段（平时不需要，锚自动进化）；② token 影响：无新增工具 schema；③ 缓存影响：无；④ 稳定性：相干门在数学上排除了"信道模板独救"的病态池（门内锥体中可被平均救回的样本其最佳样本必先过阈）——测试锁定该不变量
+
+#### 声纹即记忆：实体关联与质心精化（第三十四轮新增，第三十五轮演进出 v2 模型）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 质心锚 | speakers.vector + anchor_weight（第三十五轮起随采样自动折叠，不再依赖手动精化）+ `store.get/set/list_speaker_anchors` | 声纹的长期身份记忆：锚=历史合格样本加权质心，超出样本池窗口的采样历史不丢，身份连续 |
+| 声纹精化 | `matcher.refine` + AI 工具 `speaker_refine` + `POST /audio/speakers/{id}/refine` + 声纹页签按钮 | 第三十五轮起语义为**重建**：以当前样本池重立锚（剔除坏样本后复位），返回漂移；匹配判据 max(锚, 信道模板, 最佳样本)，锚兼独立检索来源（样本池整体更迭后仍能把人找回）；合并改为锚精确合成（不再触发精化） |
+| 实体关联 | `speakers.entity_scope` 绑定（speaker_bind AI/Web 双面）+ `store.summary.entity_bindings` + AudioStatusProvider 注入 | 每轮注入"声纹关联实体：张三→user:webui:u1"——AI 无需调工具即知谁的声纹对应哪个实体画像，语音检索/通话标注按此归属 |
+| 声纹定位 | 设计定位 | 声纹是"听过的声音"的记忆：样本池=带信道标注的经历采样、锚=加权聚合的长期身份、entity_scope=与实体记忆的关联边；AI 闭环=识别（voice_identify）→ 关联（speaker_bind）→ 重建（speaker_refine）→ 合并（speaker_merge） |
+
+> Model Experience：① AI 视角：通话里听到熟人→标注即实体归属；样本攒多了 speaker_refine 一下声纹更准（漂移接近 1 说明已稳定）；两个人实为一人→speaker_merge（合并即精化）；② token 影响：注入多一行绑定清单（有声纹绑定时）；③ 缓存影响：无 schema 变化外的重建；④ 稳定性：既有库 ALTER 补列幂等，空池精化 422 结构化报错
+
+#### 音色预设制：AI 与 Web 共用的音色库（第三十三轮新增）
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 预设注册表 | `agent/tts/presets.py` + `config/voice_presets.json`（gitignored 用户状态） | 预设 = 命名的音色单元（预置音色 ID 或克隆参考对二选一 + 注释），增删改查线程锁+原子写；预设名全库查重（AI/Web 建重名预设即拒）；被场景指派的预设拒绝删除（先解除指派）；指派悬空（文件被外部编辑）按未指派处理不炸 |
+| 场景指派 | 配置键 `sound_voice_default` / `sound_voice_realtime`（audio 组，值为预设 ID） | 指派与预设分离：default 全局默认（克隆对供一次性合成、voice_id 供流式管线），realtime 通话专用（空=跟随默认；克隆型预设不适用流式通话，落协议音色）。取代三十二轮的平铺键（tts_default_voice/realtime_tts_voice/tts_default_reference_* 已从配置文件直接清除并手工建档指派——数据迁移落在配置上，代码零迁移逻辑；预设名全库查重） |
+| 解析链 | `agent/tts/voice.py`（default_preset/realtime_preset/default_voice/realtime_voice/resolve_voice） | 场景指派 → 预设内容 → 提供者协议音色；全部合成入口（text_to_voice/级联通话/native 会话/主动播报/内置提供者）经此单一决策链 |
+| 实体桥接与频道语音 | `entities/_sdk.py::default_tts_voice / realtime_tts_voice` | 实体组件经 _sdk 取统一音色（entities 不直依赖 agent 的合法通道，与核心/AI/Web 同一预设决策链）——核心能力对所有层开放，AI 用核心功能+实体组件闭环。发往各频道的语音消息 = text_to_voice（默认预设解析）→ send_voice，与实时通话同源音色。例外：小度音箱保留设备协议音色（edge-tts 音色域与人格音色互斥，跟随默认预设会在该设备上合成失败） |
+| AI 工具面 | `voice_preset`（audio 组 core：list/save/delete/apply） | AI 与 Web 同库同权：list 带指派与生效音色；save 新建/更新（校验：名称必填、二选一、克隆需参考文本）；delete 带指派保护；apply 场景指派。clone_voice/design_voice 后 save+apply 即全链路换声（guide 示例同步）；sound_config 不再收音色键（get/set 收敛为 funasr/优先级链，funasr_endpoint set 修复为写凭据中心） |
+| Web 面 | `services/audio.py` → `web/routers/audio.py`（/audio/voice-presets CRUD+assign，ValueError→422）→ `pages/sound/VoicePresetPanel.tsx`（声音页「音色」页签） | 场景指派卡（默认/通话下拉）+ 预设库列表（类型/指派 Badge、行内设为默认/设为通话、编辑/删除）+ 新建/编辑 Modal；「生成」页签只留能力链（旧默认音色卡移除） |
+
+> Model Experience：① AI 视角：音色是有名字的库——voice_preset list 看库存与指派，造新声音（clone/design）后存预设再 apply，主人 Web 改的与 AI 改的是同一个库；② token 影响：+1 工具 schema（core 按需），sound_config schema 收窄；③ 缓存影响：工具数组变化一次重建；④ 稳定性：指派保护防误删生效音色，悬空指派自动按未指派降级
+
 #### 声音系统统一收口 + 通话实时性（第三十二轮新增）
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 音色解析单一入口 | `agent/tts/voice.py`（default_voice / realtime_voice / resolve_voice） | 链序：调用点显式音色 → 场景覆盖 `realtime_tts_voice`（空=跟随默认）→ 全局默认 `tts_default_voice` → 提供者协议音色（代码内持有，仅全局未配置时生效）。此前"默认音色"六处平行（tts 组与 audio 组双重注册 / realtime 专用键 / dashscope_tts_voice / minimax 私有 config.json default_voice_id / 幽灵键 tts_edge_voice）各读各的；收敛后用户面只有两个键（声音页与 sound_config 工具同一入口）：tts_default_voice 单点注册（audio 组），dashscope_tts_voice 转协议音色语义，minimax 私键读取删除，幽灵键消除。全部合成入口（text_to_voice/级联通话/native 会话/主动播报/内置提供者）经同一解析链 |
+| 音色解析单一入口 | `agent/tts/voice.py`（default_voice / realtime_voice / resolve_voice） | 链序：调用点显式音色 → 场景覆盖 `realtime_tts_voice`（空=跟随默认）→ 全局默认 `tts_default_voice` → 提供者协议音色（代码内持有，仅全局未配置时生效）。此前"默认音色"六处平行（tts 组与 audio 组双重注册 / realtime 专用键 / dashscope_tts_voice / minimax 私有 config.json default_voice_id / 幽灵键 tts_edge_voice）各读各的；收敛后用户面只有两个键（声音页与 sound_config 工具同一入口）：tts_default_voice 单点注册（audio 组），dashscope_tts_voice 转协议音色语义，minimax 私键读取删除，幽灵键消除。全部合成入口（text_to_voice/级联通话/native 会话/主动播报/内置提供者）经同一解析链（第三十三轮演进出音色预设制，平铺键废止） |
 | 声音页音色入口 | `pages/sound/GenerationPanel.tsx` + sound i18n | 生成页签补通话音色字段（留空跟随默认）——realtime_tts_voice 不再只能进配置中心或靠 AI 工具改 |
 | 通话应答节奏训诫 | `agent/realtime/context.py`（RealtimeCallProvider，max_tokens 120→220） | 注入增"先应声再干活"：工具/长任务前先 send_message 应一声（出口层自动语音播出）再执行、结束后再正式回复——工具轮静默即通话卡顿；provider 层每轮 LLM 调用携带，无需引擎/工具面改动 |
 | 声纹识别并行 | `engine._on_speech_end` | 声纹只读识别与 ASR 定稿并行执行（二者都只依赖本段音频快照，互不依赖）——定稿→思维启动的关键路径收敛为一段网络往返（此前串行定稿→声纹→入轮） |
@@ -646,19 +712,19 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 > Model Experience：① 通话首响四段提速：声纹并行（省一次网络往返）+ 首句快断（开声提前约一个分句）+ 抢占清场（回复不被主动播报残余帧拖住）+ 召回预算（规划不再无限前置）；工具轮不再长时间静默（先应声训诫 + send_message 自动播出）；② 音色一致性：声音页一处配置全链路生效；③ token 影响：无新增工具 schema，通话注入上限 120→220（仅通话中占用）；④ 缓存影响：通话注入文案变化触发一次前缀重建（此后稳定）
 
-#### 操作核心能力：桌面操控 + MCP 操作关联（第三十一轮新增，同轮重构定型）
+#### 操作实体：桌面操控 + MCP 操作关联（第三十一轮新增；实体化迁移——全部能力归纳到 `entities/operation/`，含 Web 面板与数据自持有）
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 操作注册表 | `agent/operation/framework.py` + `config/operations.json`（gitignored 用户状态） | 操作 = 可注释/可停用的能力单元：内置桌面动作（desktop.*，九个 pyautogui 动作，不可删）+ MCP 关联操作（mcp.{server}.{工具}）；注释与启停对两类一视同仁（线程锁+原子写，provider_keys 同款纪律） |
+| 操作注册表 | `entities/operation/framework.py` + 实体目录 `operations.json`（gitignored 用户状态） | 操作 = 可注释/可停用的能力单元：内置桌面动作（desktop.*，九个 pyautogui 动作，不可删）+ MCP 关联操作（mcp.{server}.{工具}）；注释与启停对两类一视同仁（线程锁+原子写，provider_keys 同款纪律）。历史 `config/operations.json` 导入期一次性迁移（拷贝不删源，幂等） |
 | **关联 ≠ 执行通道** | 设计定位 | MCP 关联是**语义索引**：把常用工具提升为带注释的一等操作注入操作态势，让 AI 在操作语境直接知道"有哪些语义化能力、属于哪个工具组"；**实际执行仍走 mcp:<server> 工具组**（activate_tool_group 激活）——不设第二执行通道（execute_operation 已删，冗余）。浏览器操控 = 关联 Playwright/browser-use MCP 的工具（零代码，AI 或 Web 均可） |
-| 桌面执行器 | `agent/operation/desktop.py` + pyproject 声明依赖 pyautogui | 核心能力走声明依赖（onnxruntime 教训：不声明会被 uv sync 卸载）；探测保留但语义为环境异常提示（uv sync 恢复 / macOS 辅助功能授权）。全部动作 to_thread + 30s 超时；FAILSAFE 开启（鼠标猛移屏幕左上角物理中止）；type 仅 ASCII（中文提示剪贴板+hotkey 粘贴路线） |
-| 看屏验证联动 | `tools.py::desktop_act(verify=auto/on/off)` → `vision.tools.vision_look("screen")` | 操作↔视觉联动闭环：动作成功后自动截屏，结果按多模态契约（顶层 _multimodal+images）附最新画面帧——AI 直接"看到"操作后果做下一步决策；verify 参数逐次覆盖 + operation_desktop_verify 全局开关（配置中心/Web 可控）；视觉源不可用静默回退纯文本结果（验证是增强不是依赖） |
-| 按需态势注入 | `agent/operation/context.py`（provider：operation，priority 36=视觉之后，operation 组） | **注入不是常态**：仅操作活跃窗口内有执行才注入（operation_context_window_seconds 默认 600s，每次执行滑动续期），静默期零注入。内容三段静态前动态后：桌面纪律（看屏→操作→验证循环/高危确认/ASCII/急停）→ 关联操作（注释+参数+所属工具组 mcp:<server>；有注释在前、最近执行在前排序）→ 近期执行 ✓/✗（行动连续性）。分段字符预算 + skip-not-stop（超预算跳条不半截截断，末尾汇总省略数）。**未关联 server 的工具清单不进注入**（194 工具列表烧 token 无意义） |
-| 执行与网关端口 | `agent/operation/executor.py` | 统一执行入口（停用/缺运行时/网关未就绪均结构化失败）+ 环形执行历史（AI 与 Web 共用，驱动活跃窗口）；MCP 调用经 `operation_mcp_port` 晚绑定端口——组合根施绑"运行时取桥单例"工厂，agent 层零 entities 依赖、MCP 热拔除安全 |
-| AI 工具面 | `agent/operation/tools.py`（operation 组：desktop_act/list_operations/register_mcp_operation/remove/update/operation_status） | desktop_act 统一入口（九动作+verify）；register_mcp_operation 校验已连接+快照参数 schema（返回注明"执行走 mcp:<server> 工具组"）；operation_status 含桌面态/活跃窗口/工具清单/历史 |
-| Web 面 | `services/operation.py` → `web/routers/operation.py` → `pages/Operation.tsx` | 操作目录页签：执行器/看屏验证/态势注入（活跃窗口）/关联数四状态卡 + 目录管理 + 操作纪律卡；MCP 联动页签：**已关联列表为主体**（注释行内编辑/Switch 启停/取消关联/行内展开测试执行）+ Modal 批量添加（server 选择→工具多选/搜索/全选，已关联禁选）+ server 状态卡 + 执行历史。Web 测试执行仅限 MCP 关联（验证关联有效）；桌面动作由 AI 在对话中执行 |
-| 接入 | bootstrap `init_mcp` 施绑网关端口 + `register_internal_tools` 激活 operation 组 | 新增核心页面五处同步清单见前端架构节（webui.json navigation 覆盖表优先于 FALLBACK_NAV） |
+| 桌面执行器 | `entities/operation/desktop.py` + pyproject 声明依赖 pyautogui | 实体能力走声明依赖（onnxruntime 教训：不声明会被 uv sync 卸载）；探测保留但语义为环境异常提示（uv sync 恢复 / macOS 辅助功能授权）。全部动作 to_thread + 30s 超时；FAILSAFE 开启（鼠标猛移屏幕左上角物理中止）；type 仅 ASCII（中文提示剪贴板+hotkey 粘贴路线） |
+| 看屏验证联动 | `tools.py::desktop_act(verify=auto/on/off)` → `_sdk.vision_look("screen")` 视觉桥 | 操作↔视觉联动闭环：动作成功后自动截屏，结果按多模态契约（顶层 _multimodal+images）附最新画面帧——AI 直接"看到"操作后果做下一步决策；verify 参数逐次覆盖 + operation_desktop_verify 全局开关（配置中心/Web 可控）；视觉源不可用静默回退纯文本结果（验证是增强不是依赖）。vision_look 经 `entities/_sdk.py` 桥延迟导入 agent.vision.tools（_sdk→agent 唯一豁免通道） |
+| 按需态势注入 | `entities/operation/context.py`（provider：operation，priority 36=视觉之后，operation 组） | **注入不是常态**：仅操作活跃窗口内有执行才注入（operation_context_window_seconds 默认 600s，每次执行滑动续期），静默期零注入。内容三段静态前动态后：桌面纪律（看屏→操作→验证循环/高危确认/ASCII/急停）→ 关联操作（注释+参数+所属工具组 mcp:<server>；有注释在前、最近执行在前排序）→ 近期执行 ✓/✗（行动连续性）。分段字符预算 + skip-not-stop（超预算跳条不半截截断，末尾汇总省略数）。**未关联 server 的工具清单不进注入**（194 工具列表烧 token 无意义） |
+| 执行与 MCP 网关 | `entities/operation/executor.py` | 统一执行入口（停用/缺运行时/网关未就绪均结构化失败）+ 环形执行历史（AI 与 Web 共用，驱动活跃窗口）；MCP 调用经 `entities.mcp.bridge.get_mcp_bridge` 现查单例（entities 内直连，桥未初始化/热拔除返回 None，无晚绑定端口） |
+| AI 工具面 | `entities/operation/tools.py`（operation 组：desktop_act/list_operations/register_mcp_operation/remove/update/operation_status） | desktop_act 统一入口（九动作+verify）；register_mcp_operation 校验已连接+快照参数 schema（返回注明"执行走 mcp:<server> 工具组"）；operation_status 含桌面态/活跃窗口/工具清单/历史。@tool 即时注册（实体发现机制），配置组 `entity/operation`（键名不变） |
+| Web 面 | `entities/operation/router.py`（/api/entity/operation）+ `panel.tsx` + `panels/` | 实体详情页双页签：操作目录（执行器/看屏验证/态势注入/关联数四状态卡 + 目录管理 + 操作纪律卡）+ MCP 联动（**已关联列表为主体**：注释行内编辑/Switch 启停/取消关联/行内展开测试执行 + Modal 批量添加 + server 状态卡 + 执行历史）。Web 测试执行仅限 MCP 关联（验证关联有效）；桌面动作由 AI 在对话中执行。侧边栏直达经 manifest nav（/entities/operation，group_ability） |
+| 接入 | 实体目录自动发现（tools.py 标记文件），零 bootstrap 装配 | 热插拔机制纳管（目录装卸即整体增删）；服务面/路由/面板/i18n/数据全部实体自持有 |
 
 > Model Experience：① AI 操作闭环：vision_look 看屏定位 → desktop_act 执行（默认自动回看验证，画面直接进多模态结果）→ 按验证结果决定下一步；MCP 能力经 operation_status 查清单 → register_mcp_operation 关联常用工具（语义注释）→ 操作语境自动获得态势注入 → activate_tool_group("mcp:<server>") 执行；② token 影响：+6 工具 schema（3 个 always）；态势注入仅操作活跃窗口内出现（≤800 token），静默期零成本；③ 缓存影响：provider 层 priority 36（视觉后），动态段在尾部
 

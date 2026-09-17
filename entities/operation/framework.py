@@ -2,7 +2,7 @@
 
 操作（operation）= 一个可执行、可注释、可停用的能力单元。两种来源：
 - 内置桌面动作（DESKTOP_ACTIONS，代码定义，不可删除）；
-- MCP 工具注册的操作（存 config/operations.json，可增删）——把已连接
+- MCP 工具注册的操作（存实体目录 operations.json，可增删）——把已连接
   server 的某个工具提升为带注释的一等操作，供 AI/用户语义化调用。
 
 注释与停用对两类操作一视同仁（override 持久化）；存储为单文件 JSON，
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -63,7 +62,7 @@ DESKTOP_ACTIONS: List[DesktopAction] = [
         "x/y（必填）、button（left/right/middle，默认 left）",
     ),
     DesktopAction("desktop.double_click", "双击", "x/y（必填）"),
-    DesktopAction("desktop.right_click", "右键", "x/y（必填）"),
+    DesktopAction("desktop.right_click", "右击", "x/y（必填）"),
     DesktopAction("desktop.move", "移动鼠标", "x/y（必填）、duration（滑动时长秒）"),
     DesktopAction("desktop.drag", "拖拽", "从 x/y 拖到 x2/y2（均必填）、duration"),
     DesktopAction(
@@ -83,7 +82,32 @@ _STORE_LOCK = threading.Lock()
 
 
 def _store_path() -> Path:
-    return Path(ConfigPaths.OPERATIONS)
+    return Path(__file__).resolve().parent / "operations.json"
+
+
+def _legacy_store_path() -> Path:
+    """历史存储位置（config/operations.json，实体化前的落点）。"""
+    return Path(ConfigPaths.APP_CONFIG).resolve().parent / "operations.json"
+
+
+def _migrate_legacy_store() -> None:
+    """一次性迁移：新文件不存在而历史文件存在时拷贝内容（不删源，幂等）。"""
+    target = _store_path()
+    if target.exists():
+        return
+    legacy = _legacy_store_path()
+    try:
+        if legacy.resolve() == target.resolve():
+            return
+        data = json.loads(legacy.read_text("utf-8"))
+        if not isinstance(data, dict):
+            return
+        _save_store(data)
+        log("操作存储已从 config/operations.json 迁移到实体目录", "INFO", tag="操作")
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        log(f"操作存储历史迁移失败（忽略，从空目录开始）: {exc}", "WARNING", tag="操作")
 
 
 def _load_store() -> Dict[str, Any]:
@@ -249,14 +273,5 @@ def remove_operation(op_id: str) -> bool:
     return True
 
 
-def snapshot_for_context() -> Dict[str, Any]:
-    """上下文注入用的轻量目录（enabled 操作 + 注释）。"""
-    specs = [s for s in list_operations() if s.enabled]
-    return {
-        "desktop": [s.id for s in specs if s.kind == KIND_DESKTOP],
-        "mcp": [
-            {"id": s.id, "server": s.server, "annotation": s.annotation}
-            for s in specs if s.kind == KIND_MCP
-        ],
-        "at": time.time(),
-    }
+# 导入期一次性迁移历史存储（真实路径执行，幂等；测试 monkeypatch 在其后不受影响）
+_migrate_legacy_store()

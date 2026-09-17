@@ -106,11 +106,6 @@ def wire_runtime(
     from agent.channel.outbound_guard import bind_reply_scopes
     bind_reply_scopes(mind.active_reply_scopes)
 
-    # 跨会话代答结算器：回复周期向其他会话发送成功后消费其待处理条目，
-    # 防「代答 + 周期末正式回复」双份（与出站哨兵共用同一接线位）
-    from agent.channel.output_tools import bind_pending_settler
-    bind_pending_settler(mind.pfc.consume_scope_task)
-
     # Embedding 后台 worker（施绑后挂载施绑前挂起的外部 backlog 注册）
     embedding_worker_port.set(embedding_worker)
     attach_pending_backlogs(embedding_worker)

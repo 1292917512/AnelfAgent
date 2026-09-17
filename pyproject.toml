@@ -77,7 +77,7 @@ dependencies = [
     # 本地语音模型推理（语义端点/smart_turn 与 silero VAD；缺失时端点
     # 检测自动降级能量法，面板提示安装）
     "onnxruntime>=1.16",
-    # 桌面操控执行器（agent/operation/desktop.py；核心能力声明依赖，
+    # 桌面操控执行器（entities/operation/desktop.py；实体能力声明依赖，
     # macOS 另需系统辅助功能授权，Linux 无显示环境时动作返回结构化失败）
     "pyautogui>=0.9.54",
 ]

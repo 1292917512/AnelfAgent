@@ -456,9 +456,9 @@ def get_skill(name: str) -> str:
     skill = deps.store.get(name)
     if skill is None:
         return tool_error(f"技能 '{name}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
-    # 读全文计一次使用但不刷新活动时间（评审查阅候选是检查，不是消费）；
+    # 读全文即一次真实消费：计数并刷新活动时间（重力计时以真实使用为准）；
     # 先计数再重读，返回真实值而非手工补偿
-    deps.store.record_use(name, touch=False)
+    deps.store.record_use(name)
     skill = deps.store.get(name) or skill
     from agent.skills.dependencies import dependency_notice, missing_mcp_dependencies
     missing = missing_mcp_dependencies(skill)

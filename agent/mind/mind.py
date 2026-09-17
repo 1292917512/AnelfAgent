@@ -172,10 +172,15 @@ class Mind:
         self.conversation_data = conversation_data
         self.storage_router = storage_router
 
+        # 技能库单例先行（PFC 工具块的技能目录注入来源；匹配/策展/评审稍后装配）
+        from agent.skills import get_skill_store
+        self.skill_store = get_skill_store()
+
         self.pfc = prefrontal_cortex or PrefrontalCortex(
             everything_data=everything_data,
             channel_manager=channel_manager,
             conversation_data=conversation_data,
+            skill_store=self.skill_store,
         )
         self.heartbeat_engine = HeartbeatEngine(self)
 
@@ -264,14 +269,12 @@ class Mind:
         # 上下文压缩器（think_loop 每轮调用前检查溢出风险）
         self.compressor = ContextCompressor(self)
 
-        # 技能自学习系统（存储/事实索引/匹配/策展/后台评审）
+        # 技能自学习系统（匹配/事实索引/策展/后台评审，共享已建库实例）
         from agent.skills import (
             SkillCurator,
             SkillMatcher,
             SkillReviewer,
-            SkillStore,
         )
-        self.skill_store = SkillStore()
         self.skill_matcher = SkillMatcher(self.skill_store, self.embedder)
         self.skill_curator = SkillCurator(self.skill_store, self.skill_matcher.index)
         self.skill_reviewer = SkillReviewer(self, self.skill_store, index=self.skill_matcher.index)

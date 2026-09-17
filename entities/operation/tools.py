@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 
 from core.log import log
-from entities._sdk import ErrorCause, deferred_tool, tool_error
+from entities._sdk import ErrorCause, tool, tool_error, vision_look
 
 from . import executor, framework
 
@@ -32,10 +32,10 @@ def _runtime_gate() -> str:
     return ""
 
 
-@deferred_tool(
-    group="operation", tags=["always"], source="agent.operation",
+@tool(
+    group="operation", tags=["always"],
     description="执行桌面操控动作（click/double_click/right_click/move/drag/scroll/type/"
-    "hotkey/key），成功后默认自动看屏验证（结果附最新画面）。先 vision_look 定位坐标。",
+                "hotkey/key），成功后默认自动看屏验证（结果附最新画面）。先 vision_look 定位坐标。",
 )
 async def desktop_act(
     action: str,
@@ -104,8 +104,6 @@ async def _with_screen_verify(outcome: dict) -> str:
     视觉源不可用/捕获失败时静默回退纯文本结果——验证是增强不是依赖。
     """
     try:
-        from agent.vision.tools import vision_look
-
         frame_raw = await vision_look(source="screen")
         frame = json.loads(frame_raw)
         if isinstance(frame, dict) and frame.get("_multimodal"):
@@ -120,8 +118,8 @@ async def _with_screen_verify(outcome: dict) -> str:
     return json.dumps(outcome, ensure_ascii=False)
 
 
-@deferred_tool(
-    group="operation", tags=["always"], source="agent.operation",
+@tool(
+    group="operation", tags=["always"],
     description="列出全部操作（内置桌面动作 + 关联的 MCP 操作），含注释与参数说明。",
 )
 def list_operations() -> str:
@@ -138,10 +136,10 @@ def list_operations() -> str:
     return "\n".join(lines) or "（无操作）"
 
 
-@deferred_tool(
-    group="operation", source="agent.operation",
+@tool(
+    group="operation",
     description="把一个 MCP 工具关联为操作（语义索引：注释注入操作态势；执行仍走 "
-    "mcp:<server> 工具组）。从已配置 MCP 的工具清单中挑选常用/语义化能力关联。",
+                "mcp:<server> 工具组）。从已配置 MCP 的工具清单中挑选常用/语义化能力关联。",
 )
 def register_mcp_operation(server: str, tool: str, note: str = "") -> str:
     """关联 MCP 工具为操作。
@@ -183,7 +181,7 @@ def register_mcp_operation(server: str, tool: str, note: str = "") -> str:
     }, ensure_ascii=False)
 
 
-@deferred_tool(group="operation", source="agent.operation")
+@tool(group="operation")
 def remove_operation(op_id: str) -> str:
     """移除一个关联的 MCP 操作（内置桌面动作不可删）。"""
     ok = framework.remove_operation(op_id)
@@ -191,7 +189,7 @@ def remove_operation(op_id: str) -> str:
                       ensure_ascii=False)
 
 
-@deferred_tool(group="operation", source="agent.operation")
+@tool(group="operation")
 def update_operation(op_id: str, note: str = "", enabled: bool = True) -> str:
     """更新操作的注释与启停（note 空串清除注释）。"""
     spec = framework.get_operation(op_id)
@@ -203,8 +201,8 @@ def update_operation(op_id: str, note: str = "", enabled: bool = True) -> str:
                       ensure_ascii=False)
 
 
-@deferred_tool(
-    group="operation", tags=["always"], source="agent.operation",
+@tool(
+    group="operation", tags=["always"],
     description="操作运行态：桌面执行器/活跃窗口/已连接 MCP servers 与工具清单/最近执行历史。",
 )
 async def operation_status() -> str:

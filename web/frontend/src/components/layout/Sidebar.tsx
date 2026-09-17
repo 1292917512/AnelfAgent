@@ -86,7 +86,6 @@ export const FALLBACK_NAV: NavItem[] = [
   { path: "/tags", label: "tags", icon: "Tags", group: "group_ability" },
   { path: "/channels", label: "channels", icon: "Radio", group: "group_ability" },
   { path: "/vision", label: "vision", icon: "Eye", group: "group_core" },
-  { path: "/operation", label: "operation", icon: "MousePointerClick", group: "group_core" },
   { path: "/sound", label: "sound", icon: "AudioLines", group: "group_core" },
   { path: "/retrieval", label: "retrieval", icon: "Search", group: "group_core" },
   { path: "/thinking", label: "thinking", icon: "Workflow", group: "group_ability" },

@@ -86,6 +86,30 @@ class TestStableBlocks:
         assert "你是 Anelf。" not in block
         assert "[运行环境]" not in block
 
+    def test_tools_block_appends_skill_catalog(self, tmp_path) -> None:
+        """工具块尾接技能目录：注入 store 才进目录；未注入（隔离构造）不进。
+
+        指纹门控同工具版本：目录随库内容版本变化重建，计数类更新不影响指纹。
+        """
+        from agent.skills.skill_store import SkillStore
+
+        store = SkillStore(str(tmp_path / "skills"))
+        store.create("demo-skill", "演示技能", "c")
+
+        wm = WorkMemory(everything_data=SimpleNamespace())
+        injected = ContextAssembly(wm, ToolAssembly(), skill_store=store)
+        block = injected.build_tools_block()
+        assert "[技能库目录]" in block and "demo-skill" in block
+
+        isolated = ContextAssembly(wm, ToolAssembly())
+        assert "[技能库目录]" not in isolated.build_tools_block()
+
+        fp_before = injected.stable_fingerprint()
+        store.record_use("demo-skill")
+        assert injected.stable_fingerprint() == fp_before  # 计数不触发 stable 重建
+        store.create("another-skill", "另一个", "c")
+        assert injected.stable_fingerprint() != fp_before  # 库内容变化触发重建
+
     def test_stable_layer_combines_blocks(self) -> None:
         asm = self._assembly()
         layer = asm.build_stable_layer(["你是 Anelf。"], static_guide="指南")

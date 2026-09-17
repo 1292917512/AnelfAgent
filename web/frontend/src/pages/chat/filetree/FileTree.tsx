@@ -186,6 +186,7 @@ export function FileTree({ root, onUpload }: Props) {
         <FileTreeContextMenu
           menu={menu}
           root={root}
+          containerRef={boxRef}
           onClose={() => setMenu(null)}
           onDelete={setDeleteTarget}
           onUpload={onUpload}

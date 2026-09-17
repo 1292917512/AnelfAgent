@@ -1,17 +1,51 @@
-"""操作服务门面 — Web 面到操作核心（agent/operation）与 MCP 工具目录的收口。"""
+"""操作服务面 — Web 路由与操作核心（framework/executor）之间的收口。"""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from agent.operation import executor, framework
-from services.mcp import MCPService
+from core.log import log
 
-_mcp_service = MCPService()
+from . import executor, framework
+
+
+def _connected_tools() -> Dict[str, List[str]]:
+    """已连接 server → 注册工具名列表（桥未就绪返回空）。"""
+    try:
+        from entities.mcp.bridge import get_mcp_bridge
+
+        bridge = get_mcp_bridge()
+        if bridge:
+            return bridge.get_connected_servers()
+    except Exception as exc:
+        log(f"获取 MCP 已连接工具失败: {exc}", "DEBUG", tag="操作")
+    return {}
+
+
+def _server_tool_details(name: str) -> List[Dict[str, Any]]:
+    """指定 server 已注册工具的详情（名称/描述/参数 schema）。"""
+    from core.entity import EntityRegistry, EntityType
+
+    details: List[Dict[str, Any]] = []
+    for e in EntityRegistry.get_by_type(EntityType.TOOL):
+        if e.source != "mcp" or e.group != f"mcp:{name}":
+            continue
+        params = [
+            {
+                "name": p.name,
+                "description": p.description,
+                "type": p.type,
+                "required": p.required,
+                "enum": p.enum,
+            }
+            for p in e.meta.get("params", [])
+        ]
+        details.append({"name": e.name, "description": e.description, "params": params})
+    return sorted(details, key=lambda d: d["name"])
 
 
 class OperationService:
-    """操作目录/执行/MCP 注册的服务面（Web 路由唯一交互对象）。"""
+    """操作目录/执行/MCP 注册的服务面（路由唯一交互对象）。"""
 
     def operations(self) -> List[Dict[str, Any]]:
         return [
@@ -29,18 +63,18 @@ class OperationService:
 
     def mcp_tools(self, server: str = "") -> List[Dict[str, Any]]:
         """已连接 server 的工具详情（注册面板选择用；server 空则全量）。"""
-        connected = _mcp_service.get_connected_tools()
+        connected = _connected_tools()
         targets = [server] if server else sorted(connected)
         details: List[Dict[str, Any]] = []
         for name in targets:
             if name not in connected:
                 continue
-            for tool in _mcp_service.get_server_tool_details(name):
+            for tool in _server_tool_details(name):
                 details.append({"server": name, **tool})
         return details
 
     def register_mcp(self, server: str, tool: str, note: str = "") -> Dict[str, Any]:
-        connected = _mcp_service.get_connected_tools()
+        connected = _connected_tools()
         if server not in connected:
             return {"ok": False, "error": f"server 未连接: {server}"}
         matched = next(

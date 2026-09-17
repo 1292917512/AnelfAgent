@@ -1,27 +1,20 @@
-"""技能存储 — SKILL.md 文件格式（YAML frontmatter + markdown 正文）。
+"""技能存储 — SKILL.md 定义文件 + .meta.json 账本文件。
 
-技能是 AI 从任务经验中提炼的可复用知识，存储在 ``workspace/skills/<name>/SKILL.md``：
+技能是 AI 从任务经验中提炼的可复用知识，存储在 ``workspace/skills/<name>/``：
 
-    ---
-    name: web-research
-    description: 网络调研流程
-    trigger_patterns: ["调研", "查资料"]
-    created_by: agent
-    use_count: 3
-    patch_count: 1
-    state: active
-    pinned: false
-    created_at: 1784300000.0
-    last_activity_at: 1784300000.0
-    ---
-
-    # 网络调研流程
-    1. 先 web_search 广泛搜索 ...
+- ``SKILL.md``：定义（YAML frontmatter + markdown 正文），只含内容性字段
+  （名称/描述/触发词/作者/手势开关/决策理由/依赖声明），与社区技能格式
+  兼容，可直接导入导出。
+- ``.meta.json``：账本（计数/状态/时间戳），系统维护的运行时事实。
+  计数更新只改写本文件——定义字节稳定，不被运行时计数污染。
 
 frontmatter 解析优先使用 PyYAML，不可用时降级为简单 key: value 解析。
+首次加载旧格式（账本字段混写在 frontmatter）的技能自动迁移：
+字段拆分落盘，SKILL.md 重写为纯定义。
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
@@ -72,6 +65,7 @@ class Skill(BaseModel):
     # 被合并归档时的去向技能名（可逆归档的恢复线索）
     merged_into: str = ""
     created_at: float = Field(default_factory=time.time)
+    # 活动时钟（手势命中 / 读全文 / 更新时刷新；检索注入不刷新）
     last_activity_at: float = Field(default_factory=time.time)
     # 最近一次被检索注入的时间（stale 层的软保留信号：仍被检索到则不归档）
     last_match_at: float = 0.0
@@ -85,17 +79,24 @@ class Skill(BaseModel):
 
 
 # ------------------------------------------------------------------
-# SKILL.md 序列化
+# 序列化
 # ------------------------------------------------------------------
 
 _FRONTMATTER_RE = re.compile(r"\A\s*---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 
-_META_FIELDS = (
+#: 定义字段（SKILL.md frontmatter，内容性、可随文件分发）
+_DEFINITION_FIELDS = (
     "name", "description", "trigger_patterns", "created_by",
-    "use_count", "match_count", "patch_count", "state", "pinned", "user_invocable",
-    "rationale", "merged_into", "created_at", "last_activity_at", "last_match_at",
-    "dependencies",
+    "user_invocable", "rationale", "created_at", "dependencies",
 )
+
+#: 账本字段（.meta.json，运行时事实，计数更新只改写本文件）
+_LEDGER_FIELDS = (
+    "use_count", "match_count", "patch_count", "state", "pinned",
+    "merged_into", "last_activity_at", "last_match_at",
+)
+
+_META_FILENAME = ".meta.json"
 
 
 def _parse_frontmatter_fallback(text: str) -> Dict[str, Any]:
@@ -142,25 +143,18 @@ def parse_skill_md(text: str) -> Tuple[Dict[str, Any], str]:
 
 
 def render_skill_md(skill: Skill) -> str:
-    """将技能序列化为 SKILL.md 文本。"""
-    meta = {
+    """将技能定义序列化为 SKILL.md 文本（纯内容，不含账本字段）。"""
+    meta: Dict[str, Any] = {
         "name": skill.name,
         "description": skill.description,
         "trigger_patterns": skill.trigger_patterns,
         "created_by": skill.created_by,
-        "use_count": skill.use_count,
-        "match_count": skill.match_count,
-        "patch_count": skill.patch_count,
-        "state": skill.state.value,
-        "pinned": skill.pinned,
-        "user_invocable": skill.user_invocable,
-        "rationale": skill.rationale,
-        "merged_into": skill.merged_into,
         "created_at": skill.created_at,
-        "last_activity_at": skill.last_activity_at,
     }
-    if skill.last_match_at > 0.0:
-        meta["last_match_at"] = skill.last_match_at
+    if not skill.user_invocable:
+        meta["user_invocable"] = False
+    if skill.rationale:
+        meta["rationale"] = skill.rationale
     if skill.dependencies:
         meta["dependencies"] = skill.dependencies
     if _HAS_YAML:
@@ -173,6 +167,33 @@ def render_skill_md(skill: Skill) -> str:
             lines.append(f"{key}: {value}")
         frontmatter = "\n".join(lines)
     return f"---\n{frontmatter}\n---\n\n{skill.content.strip()}\n"
+
+
+def render_skill_ledger(skill: Skill) -> Dict[str, Any]:
+    """技能账本字段（.meta.json 内容）。"""
+    return {
+        "use_count": skill.use_count,
+        "match_count": skill.match_count,
+        "patch_count": skill.patch_count,
+        "state": skill.state.value,
+        "pinned": skill.pinned,
+        "merged_into": skill.merged_into,
+        "last_activity_at": skill.last_activity_at,
+        "last_match_at": skill.last_match_at,
+    }
+
+
+def _build_skill(data: Dict[str, Any]) -> Skill:
+    """从持久化字段组装技能模型（类型收敛 + 状态枚举）。"""
+    if isinstance(data.get("trigger_patterns"), str):
+        data["trigger_patterns"] = [
+            p.strip() for p in data["trigger_patterns"].split(",") if p.strip()
+        ]
+    try:
+        data["state"] = SkillState(data.get("state", "active"))
+    except ValueError:
+        data["state"] = SkillState.ACTIVE
+    return Skill(**data)
 
 
 # ------------------------------------------------------------------
@@ -190,7 +211,7 @@ def _atomic_write(target: Path, content: str) -> None:
 
 
 class SkillStore:
-    """技能库：workspace/skills/ 目录下的 SKILL.md 文件集合。"""
+    """技能库：workspace/skills/ 目录下的 SKILL.md + .meta.json 文件集合。"""
 
     def __init__(self, skills_dir: Optional[str] = None) -> None:
         if skills_dir is None:
@@ -201,7 +222,8 @@ class SkillStore:
         # 读写锁（可重入）：save 原子写 + get/delete 读取串行化，
         # record_use 等读-改-写操作需在同一把锁内完成，避免并发计数互相覆盖
         self._lock = threading.RLock()
-        # 内容版本号：每次 save/delete 递增，供调用方做廉价缓存失效判断
+        # 内容版本号：定义或可匹配状态变更时递增（计数类更新不递增），
+        # 供调用方做廉价缓存失效判断
         self._version = 0
         # 目录签名：外部途径（如 skillhub CLI / 手动拷贝）增删技能时检测变化
         self._last_dir_signature = self._dir_signature()
@@ -226,9 +248,10 @@ class SkillStore:
             return self._version
 
     def _dir_signature(self) -> int:
-        """目录指纹：子目录名 + SKILL.md 大小/_mtime 的轻量签名。
+        """目录指纹：子目录名 + SKILL.md 大小/mtime 的轻量签名。
 
         matcher 按 version 缓存技能列表，仅 stat 不开文件，代价可忽略。
+        账本文件不计入签名——计数更新不应触发缓存失效。
         """
         signature = 0
         try:
@@ -253,8 +276,11 @@ class SkillStore:
     def _skill_path(self, name: str) -> Path:
         return self.skills_dir / self.normalize_name(name) / "SKILL.md"
 
+    def _meta_path(self, name: str) -> Path:
+        return self._skill_path(name).parent / _META_FILENAME
+
     # ------------------------------------------------------------------
-    # CRUD
+    # 读取
     # ------------------------------------------------------------------
 
     def exists(self, name: str) -> bool:
@@ -262,18 +288,49 @@ class SkillStore:
 
     def get(self, name: str) -> Optional[Skill]:
         path = self._skill_path(name)
+        fallback_name = self.normalize_name(name)
         with self._lock:
             if not path.is_file():
                 return None
             try:
-                meta, body = parse_skill_md(path.read_text(encoding="utf-8"))
-                skill = self._skill_from_meta(meta, body, fallback_name=self.normalize_name(name))
-                self._parse_errors.pop(self.normalize_name(name), None)
-                return skill
+                skill = self._load(path, fallback_name)
             except Exception as exc:
                 log(f"技能解析失败: {path}: {exc}", "WARNING", tag="技能")
-                self._parse_errors[self.normalize_name(name)] = f"{type(exc).__name__}: {exc}"[:200]
+                self._parse_errors[fallback_name] = f"{type(exc).__name__}: {exc}"[:200]
                 return None
+            self._parse_errors.pop(fallback_name, None)
+            return skill
+
+    def _load(self, path: Path, fallback_name: str) -> Skill:
+        """组装技能（SKILL.md 定义 + .meta.json 账本）。
+
+        账本文件缺失时按旧格式处理：从 frontmatter 提取账本字段组装，
+        成功后拆分落盘完成迁移。未标注的导入技能（社区格式）账本取
+        定义文件 mtime 作活动时钟——每次加载结果稳定，闲置计时不被重置。
+        """
+        fm, body = parse_skill_md(path.read_text(encoding="utf-8"))
+        mtime = path.stat().st_mtime
+        meta_path = path.parent / _META_FILENAME
+        legacy = not meta_path.is_file()
+        if legacy:
+            ledger = {k: v for k, v in fm.items() if k in _LEDGER_FIELDS}
+        else:
+            ledger = json.loads(meta_path.read_text(encoding="utf-8")) or {}
+
+        data = {k: v for k, v in fm.items() if k in _DEFINITION_FIELDS}
+        data.setdefault("name", fallback_name)
+        data.setdefault("created_at", mtime)
+        data.update(ledger)
+        data.setdefault("last_activity_at", data["created_at"])
+        data["content"] = body
+        skill = _build_skill(data)
+
+        if legacy:
+            _atomic_write(meta_path, json.dumps(
+                render_skill_ledger(skill), ensure_ascii=False, indent=2,
+            ))
+            _atomic_write(path, render_skill_md(skill))
+        return skill
 
     def list_skills(self, *, include_archived: bool = False) -> List[Skill]:
         """列出全部技能（按最近活动排序）。"""
@@ -293,18 +350,32 @@ class SkillStore:
         skills.sort(key=lambda s: s.last_activity_at, reverse=True)
         return skills
 
+    # ------------------------------------------------------------------
+    # 写入
+    # ------------------------------------------------------------------
+
     def save(self, skill: Skill) -> Skill:
-        """保存技能（原子写入 SKILL.md）。"""
+        """保存技能（定义 + 账本原子写入，内容版本递增）。"""
         skill.name = self.normalize_name(skill.name)
-        path = self._skill_path(skill.name)
         with self._lock:
-            _atomic_write(path, render_skill_md(skill))
+            _atomic_write(self._skill_path(skill.name), render_skill_md(skill))
+            _atomic_write(self._meta_path(skill.name), json.dumps(
+                render_skill_ledger(skill), ensure_ascii=False, indent=2,
+            ))
             # save 写入的必然是合法格式（render 自模型），清除同名解析失败登记
             self._parse_errors.pop(skill.name, None)
             self._last_dir_signature = self._dir_signature()
             self._version += 1
         log(f"💾 技能已保存: {skill.name} (state={skill.state.value})", "DEBUG", tag="技能")
         return skill
+
+    def _write_ledger(self, skill: Skill, *, bump: bool = False) -> None:
+        """只落账本（定义文件不动）；bump 时递增内容版本（可匹配集变化）。"""
+        _atomic_write(self._meta_path(skill.name), json.dumps(
+            render_skill_ledger(skill), ensure_ascii=False, indent=2,
+        ))
+        if bump:
+            self._version += 1
 
     def create(
             self,
@@ -379,27 +450,29 @@ class SkillStore:
         log(f"🗑 技能已删除: {name}", tag="技能")
         return True
 
-    def record_use(self, name: str, *, touch: bool = True) -> None:
-        """记录一次真实使用（use_count +1）。
+    # ------------------------------------------------------------------
+    # 账本操作
+    # ------------------------------------------------------------------
 
-        真实使用 = 手势命中 / AI 读全文 / 内容被采用。检索注入走 record_match，
-        两者分离后策展的闲置计时不再被"碰巧被匹配到"刷新。
-        touch=False 供系统侧查阅（如评审读候选）计数但不刷新活动时间——
-        检查不等于消费，不能给技能续命。
+    def record_use(self, name: str) -> None:
+        """记录一次真实使用（use_count +1，刷新活动时间）。
+
+        真实使用 = 手势命中 / AI 读全文 / 内容被采用，均刷新活动时钟
+        （重力计时以真实消费为准）。检索注入走 record_match，两者分离后
+        策展的闲置计时不再被"碰巧被匹配到"刷新。
         """
         with self._lock:
             skill = self.get(name)
             if skill is None:
                 return
             skill.use_count += 1
-            if touch:
-                skill.touch()
-            self.save(skill)
+            skill.touch()
+            self._write_ledger(skill)
 
     def record_match(self, name: str) -> None:
         """记录一次检索注入（match_count +1，仅刷新 last_match_at）。
 
-        不刷新 last_activity_at：被匹配不等于被消费，不能阻断闲置降级；
+        不刷新活动时钟：被匹配不等于被消费，不能阻断闲置降级；
         last_match_at 供 stale 层软保留（仍被检索到的技能不归档）。
         """
         with self._lock:
@@ -408,7 +481,7 @@ class SkillStore:
                 return
             skill.match_count += 1
             skill.last_match_at = time.time()
-            self.save(skill)
+            self._write_ledger(skill)
 
     def merge(
             self,
@@ -450,21 +523,23 @@ class SkillStore:
                     continue
                 src.state = SkillState.ARCHIVED
                 src.merged_into = target_name
-                self.save(src)
+                self._write_ledger(src, bump=True)
             return merged
 
     def set_state(self, name: str, state: SkillState) -> Optional[Skill]:
         """变更技能状态（active/stale/archived）。
 
         状态迁移不刷新活动时间——curator 的自动降级/归档若 touch 会重置
-        闲置计时，导致同一技能永远无法进入下一状态阶段。
+        闲置计时，导致同一技能永远无法进入下一状态阶段。状态影响可匹配集，
+        递增内容版本使目录与缓存即时失效。
         """
         with self._lock:
             skill = self.get(name)
             if skill is None:
                 return None
             skill.state = state
-            return self.save(skill)
+            self._write_ledger(skill, bump=True)
+            return skill
 
     def set_pinned(self, name: str, pinned: bool) -> Optional[Skill]:
         """设置置顶（置顶技能豁免自动归档）。"""
@@ -474,19 +549,23 @@ class SkillStore:
                 return None
             skill.pinned = pinned
             skill.touch()
-            return self.save(skill)
+            self._write_ledger(skill)
+            return skill
 
-    @staticmethod
-    def _skill_from_meta(meta: Dict[str, Any], body: str, *, fallback_name: str) -> Skill:
-        data = {k: v for k, v in meta.items() if k in _META_FIELDS}
-        data.setdefault("name", fallback_name)
-        data["content"] = body
-        if isinstance(data.get("trigger_patterns"), str):
-            data["trigger_patterns"] = [
-                p.strip() for p in data["trigger_patterns"].split(",") if p.strip()
-            ]
-        try:
-            data["state"] = SkillState(data.get("state", "active"))
-        except ValueError:
-            data["state"] = SkillState.ACTIVE
-        return Skill(**data)
+
+# ------------------------------------------------------------------
+# 默认实例
+# ------------------------------------------------------------------
+
+_STORE_LOCK = threading.Lock()
+_STORE: Optional[SkillStore] = None
+
+
+def get_skill_store() -> SkillStore:
+    """默认技能库单例（workspace/skills，进程内共享）。"""
+    global _STORE
+    if _STORE is None:
+        with _STORE_LOCK:
+            if _STORE is None:
+                _STORE = SkillStore()
+    return _STORE

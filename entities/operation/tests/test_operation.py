@@ -1,4 +1,4 @@
-"""操作核心（agent/operation）单元测试：目录持久化 / 执行降级 / MCP 端口 / 历史。"""
+"""操作实体（entities/operation）单元测试：目录持久化 / 执行降级 / MCP 网关 / 历史。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from agent.operation import desktop, executor, framework
+from entities.operation import desktop, executor, framework
 
 
 @pytest.fixture
@@ -123,13 +123,13 @@ class TestExecutor:
 class TestContextProvider:
     async def test_idle_window_zero_injection(self, operations_file, monkeypatch):
         """静默期（活跃窗口外）零注入——操作语境才触发态势。"""
-        from agent.operation.context import OperationProvider
+        from entities.operation.context import OperationProvider
 
         monkeypatch.setattr(executor, "seconds_since_activity", lambda: float("inf"))
         assert await OperationProvider().provide("scope") is None
 
     async def test_active_window_renders_linked_ops(self, operations_file, monkeypatch):
-        from agent.operation.context import OperationProvider
+        from entities.operation.context import OperationProvider
 
         framework.register_mcp_operation(
             server="playwright", tool="playwright__browser_navigate",
@@ -146,7 +146,7 @@ class TestContextProvider:
 
     async def test_unregistered_servers_not_listed(self, operations_file, monkeypatch):
         """未关联 server 的工具清单不进注入（只列关联，不列目录）。"""
-        from agent.operation.context import OperationProvider
+        from entities.operation.context import OperationProvider
 
         gateway = executor.McpGateway(
             call=None, connected_servers=lambda: {"huge": [f"t{i}" for i in range(194)]},

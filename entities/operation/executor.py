@@ -1,8 +1,8 @@
-"""操作执行 — 统一入口、执行历史与 MCP 网关端口。
+"""操作执行 — 统一入口、执行历史与 MCP 网关。
 
-桌面动作直执行（agent/operation/desktop）；MCP 操作经 McpGateway 端口
-调用桥（端口由组合根施绑为"运行时取单例"的工厂——MCP 后初始化/热拔除
-都安全）。执行历史为进程内环形缓冲（Web 与 AI 共用的可观测面）。
+桌面动作直执行（entities/operation/desktop）；MCP 操作经 entities.mcp
+桥调用（get_mcp_bridge 现查单例——桥未初始化/热拔除时返回 None）。
+执行历史为进程内环形缓冲（Web 与 AI 共用的可观测面）。
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import time
 from collections import deque
 from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional
 
-from core.latebind import LateBinding
 from core.log import log
 
 from . import desktop, framework
@@ -24,7 +23,7 @@ _MCP_RESULT_CHARS = 2000
 
 
 class McpGateway(NamedTuple):
-    """MCP 桥的编程调用面（组合根施绑）。"""
+    """MCP 桥的编程调用面。"""
 
     call: Callable[[str, Dict[str, Any]], Awaitable[str]]
     """按注册工具名调用（返回渲染文本或 tool_error JSON）。"""
@@ -34,17 +33,19 @@ class McpGateway(NamedTuple):
     """全部配置 server 的状态（name/connected/tool_count/...）。"""
 
 
-operation_mcp_port: LateBinding[Callable[[], Optional[McpGateway]]] = LateBinding(
-    "operation.mcp_gateway",
-)
-"""MCP 网关工厂（每次取用现查单例——桥未初始化/被拔除时返回 None）。"""
-
-
 def mcp_gateway() -> Optional[McpGateway]:
-    if not operation_mcp_port.bound:
-        return None
+    """现查 MCP 桥单例组装网关（桥未初始化/被拔除时返回 None）。"""
     try:
-        return operation_mcp_port.get()()
+        from entities.mcp.bridge import get_mcp_bridge
+
+        bridge = get_mcp_bridge()
+        if bridge is None:
+            return None
+        return McpGateway(
+            call=bridge.call_tool,
+            connected_servers=bridge.get_connected_servers,
+            server_status=bridge.list_available_servers,
+        )
     except Exception:
         return None
 

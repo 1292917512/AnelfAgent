@@ -1,4 +1,12 @@
 {
+  "_registry": {
+    "groups": {
+      "operation": "桌面操作"
+    },
+    "configSections": {
+      "entity/operation": "操作"
+    }
+  },
   "title": "操作",
   "subtitle": "桌面操控与 MCP 操作关联：状态、注释、启停与测试",
   "tabs": {

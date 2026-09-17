@@ -63,6 +63,7 @@ config/heartbeat.json
 config/cognee.json
 config/reminders.json
 config/operations.json
+config/voice_presets.json
 config/webui.json
 config/permission_rules.json
 config/db_connections.json
@@ -104,6 +105,7 @@ entities/*/config.json
 # Any nested config.json under an entity (e.g. entities/<name>/<name>/...) is also runtime-generated
 entities/**/config.json
 entities/ssh/connections.json
+entities/operation/operations.json
 
 # === Channel secrets ===
 channels/telegram/channel_config.json

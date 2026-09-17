@@ -62,6 +62,7 @@ class FakeEmbedder:
 
 class TestSkillMdFormat:
     def test_roundtrip(self) -> None:
+        """定义序列化只含内容性字段；账本经 store 落盘往返。"""
         skill = Skill(
             name="web-research",
             description="网络调研流程",
@@ -75,33 +76,61 @@ class TestSkillMdFormat:
         assert meta["name"] == "web-research"
         assert meta["description"] == "网络调研流程"
         assert meta["trigger_patterns"] == ["调研", "查资料"]
-        assert meta["use_count"] == 3
-        assert meta["state"] == "active"
+        # 账本字段不进 SKILL.md（纯定义文件，社区格式兼容）
+        assert "use_count" not in meta and "state" not in meta
         assert "步骤" in body
 
     def test_parse_without_frontmatter(self) -> None:
         meta, body = parse_skill_md("# 纯正文")
         assert meta == {} and body == "# 纯正文"
 
-    def test_legacy_frontmatter_defaults(self, store: SkillStore) -> None:
-        """旧格式 SKILL.md（无 match_count/rationale 等新字段）解析即迁移：默认值兜底。"""
+    def test_legacy_frontmatter_migrates(self, store: SkillStore) -> None:
+        """旧格式 SKILL.md（账本混写在 frontmatter）首次加载即迁移拆分。"""
         legacy = (
             "---\n"
             "name: legacy-skill\n"
             "description: 旧版技能\n"
             "use_count: 5\n"
             "state: active\n"
+            "last_activity_at: 1784300000.0\n"
             "---\n\n旧正文\n"
         )
         target = store.skills_dir / "legacy-skill"
         target.mkdir(parents=True, exist_ok=True)
         (target / "SKILL.md").write_text(legacy, encoding="utf-8")
+
         skill = store.get("legacy-skill")
         assert skill is not None
         assert skill.use_count == 5 and skill.match_count == 0
         assert skill.rationale == "" and skill.merged_into == ""
-        assert skill.last_match_at == 0.0
+        assert skill.last_activity_at == 1784300000.0
         assert skill.content == "旧正文"
+        # 拆分落盘：账本进 .meta.json，SKILL.md 重写为纯定义
+        meta_file = target / ".meta.json"
+        assert meta_file.is_file()
+        ledger = json.loads(meta_file.read_text(encoding="utf-8"))
+        assert ledger["use_count"] == 5 and ledger["last_activity_at"] == 1784300000.0
+        fm, _ = parse_skill_md((target / "SKILL.md").read_text(encoding="utf-8"))
+        assert "use_count" not in fm and "state" not in fm
+        assert fm["name"] == "legacy-skill"
+
+    def test_imported_skill_defaults_stable(self, store: SkillStore) -> None:
+        """无账本的导入技能（社区格式）：活动时钟取文件 mtime，多次加载结果稳定。"""
+        target = store.skills_dir / "community-skill"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(
+            "---\nname: community-skill\ndescription: 社区技能\n---\n\n正文\n",
+            encoding="utf-8",
+        )
+        first = store.get("community-skill")
+        assert first is not None and first.state == SkillState.ACTIVE
+        assert first.last_activity_at == first.created_at
+        time.sleep(0.01)
+        second = store.get("community-skill")
+        assert second is not None
+        # mtime 兜底 + 首次加载已落账本：闲置计时不因重复解析被重置
+        assert second.created_at == first.created_at
+        assert second.last_activity_at == first.last_activity_at
 
     def test_parse_error_registered_and_cleared(self, store: SkillStore) -> None:
         """严格解析失败 → 登记为健康事实（抛给 AI 决策）；修复后自动清除。"""
@@ -185,6 +214,16 @@ class TestSkillStore:
         store.record_use("s1")
         assert store.get("s1").use_count == 1
 
+    def test_record_use_refreshes_activity(self, store: SkillStore) -> None:
+        """读全文即消费：use_count +1 且刷新活动时间（重力计时以真实使用为准）。"""
+        store.create("s1", "d", "c")
+        before = store.get("s1").last_activity_at
+        time.sleep(0.01)
+        store.record_use("s1")
+        skill = store.get("s1")
+        assert skill.use_count == 1
+        assert skill.last_activity_at > before
+
     def test_record_match_no_touch(self, store: SkillStore) -> None:
         """检索注入只计匹配：不刷 use_count、不刷活动时间（被匹配≠被消费）。"""
         store.create("s1", "d", "c")
@@ -195,18 +234,6 @@ class TestSkillStore:
         assert skill.match_count == 1 and skill.use_count == 0
         assert skill.last_match_at > 0.0
         assert skill.last_activity_at == before
-
-    def test_record_use_no_touch_mode(self, store: SkillStore) -> None:
-        """touch=False 的使用（如 get_skill 查阅）：计数但不刷新活动时间。"""
-        store.create("s1", "d", "c")
-        before = store.get("s1").last_activity_at
-        time.sleep(0.01)
-        store.record_use("s1", touch=False)
-        skill = store.get("s1")
-        assert skill.use_count == 1 and skill.last_activity_at == before
-        store.record_use("s1")
-        assert store.get("s1").use_count == 2
-        assert store.get("s1").last_activity_at > before
 
     def test_merge_archives_sources(self, store: SkillStore) -> None:
         store.create("a", "desc a", "内容 a", ["qa"])
@@ -241,6 +268,103 @@ class TestSkillStore:
         store.create("s1", "d", "c")
         store.set_pinned("s1", True)
         assert store.get("s1").pinned is True
+
+
+class TestLedgerSeparation:
+    """账本分离：计数更新只改 .meta.json，定义文件与内容版本字节稳定。"""
+
+    def test_counters_leave_definition_untouched(self, store: SkillStore) -> None:
+        store.create("s1", "d", "c")
+        definition = (store.skills_dir / "s1" / "SKILL.md").read_text(encoding="utf-8")
+        version = store.version
+
+        store.record_use("s1")
+        store.record_match("s1")
+        store.set_pinned("s1", True)
+
+        assert (store.skills_dir / "s1" / "SKILL.md").read_text(encoding="utf-8") == definition
+        assert store.version == version  # 计数不进内容版本（缓存不失效）
+        ledger = json.loads((store.skills_dir / "s1" / ".meta.json").read_text(encoding="utf-8"))
+        assert ledger["use_count"] == 1 and ledger["match_count"] == 1
+        assert ledger["pinned"] is True
+
+    def test_state_change_bumps_version(self, store: SkillStore) -> None:
+        store.create("s1", "d", "c")
+        definition = (store.skills_dir / "s1" / "SKILL.md").read_text(encoding="utf-8")
+        version = store.version
+        store.set_state("s1", SkillState.ARCHIVED)
+        assert store.version > version  # 可匹配集变化 → 缓存失效
+        assert (store.skills_dir / "s1" / "SKILL.md").read_text(encoding="utf-8") == definition
+        assert store.get("s1").state == SkillState.ARCHIVED
+
+    def test_definition_save_bumps_version(self, store: SkillStore) -> None:
+        store.create("s1", "d", "c")
+        version = store.version
+        store.patch("s1", content="新内容")
+        assert store.version > version
+        assert "新内容" in (store.skills_dir / "s1" / "SKILL.md").read_text(encoding="utf-8")
+
+
+class TestSkillCatalog:
+    """技能目录：stable 工具块的全量在役清单（append-only + 预算降级）。"""
+
+    def test_lists_active_in_creation_order(self, store: SkillStore) -> None:
+        from agent.skills.catalog import catalog_section
+
+        store.create("first", "第一个技能", "c")
+        time.sleep(0.01)
+        store.create("second", "第二个技能", "c")
+        store.create("archived-one", "已归档", "c")
+        store.set_state("archived-one", SkillState.ARCHIVED)
+
+        text = catalog_section(store)
+        assert "[技能库目录]" in text
+        assert text.index("- first:") < text.index("- second:")
+        assert "archived-one" not in text  # 目录只含在役技能
+
+    def test_append_only_bytes_stable(self, store: SkillStore) -> None:
+        """新技能只在尾部追加；计数类更新不改变目录字节。"""
+        from agent.skills.catalog import catalog_section
+
+        store.create("a-skill", "描述", "c")
+        before = catalog_section(store)
+        store.create("b-skill", "描述", "c")
+        after = catalog_section(store)
+        assert after.startswith(before)  # 既有行不动，新行追加
+        store.record_match("a-skill")
+        store.record_use("b-skill")
+        assert catalog_section(store) == after  # 计数不进目录
+
+    def test_budget_degrades_to_names_with_omission(self, store: SkillStore, monkeypatch) -> None:
+        from agent.skills import catalog as catalog_mod
+
+        monkeypatch.setattr(catalog_mod, "_catalog_enabled", lambda: True)
+        monkeypatch.setattr(
+            "core.config.get_config_int",
+            lambda key, default=0: 30 if key == "skills_catalog_max_chars" else default,
+        )
+        for i in range(6):
+            store.create(f"skill-{i}", f"技能 {i} 的较长描述内容", "c")
+        text = catalog_mod.catalog_section(store)
+        assert "未列出" in text  # 超预算显式省略标记
+        assert "的较长描述" not in text  # 描述被降级（截断/仅名称）
+
+    def test_disabled_returns_empty(self, store: SkillStore, monkeypatch) -> None:
+        from agent.skills import catalog as catalog_mod
+
+        store.create("s1", "d", "c")
+        monkeypatch.setattr(catalog_mod, "_catalog_enabled", lambda: False)
+        assert catalog_mod.catalog_section(store) == ""
+
+    def test_factor_tracks_version(self, store: SkillStore) -> None:
+        from agent.skills.catalog import catalog_factor
+
+        store.create("s1", "d", "c")
+        before = catalog_factor(store)
+        store.record_use("s1")
+        assert catalog_factor(store) == before  # 计数不触发 stable 重建
+        store.create("s2", "d", "c")
+        assert catalog_factor(store) != before
 
 
 class TestSkillMatcher:
@@ -718,6 +842,18 @@ class TestSkillTools:
 
         searched = json.loads(await skill_tools.search_skills("测试"))
         assert len(searched["local"]) >= 1
+
+    async def test_get_skill_counts_consumption(self, store: SkillStore, monkeypatch) -> None:
+        """get_skill 读全文即消费：计数并刷新活动时间（重力计时依据）。"""
+        await self._patch_tools(store, monkeypatch)
+        from agent.skills import tools as skill_tools
+
+        store.create("s1", "d", "c")
+        before = store.get("s1").last_activity_at
+        time.sleep(0.01)
+        result = json.loads(skill_tools.get_skill("s1"))
+        assert result["ok"] and result["use_count"] == 1
+        assert store.get("s1").last_activity_at > before
 
     async def test_decision_protocol_create(self, store: SkillStore, monkeypatch) -> None:
         """决策协议：相近拟议创建首次返回诊断（不写入），带 decision 回执后写入。"""

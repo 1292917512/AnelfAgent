@@ -29,6 +29,28 @@ def _redundancy_threshold() -> float:
     return get_config_float("skills_match_redundancy", 0.90)
 
 
+def _log_path_divergence(
+        matched: List[Tuple["Skill", float]],
+        keyword_ranked: List[Tuple[float, str]],
+        top_k: int,
+) -> None:
+    """双路分歧观测：混合评分入选挤掉了纯关键词路 top-k 技能时记录。
+
+    分歧日志是权重调优（关键词 0.4 / 语义 0.6）的实证依据：
+    关键词命中的技能被语义分挤出注入位 = 触发词信号被淹没的直接证据。
+    """
+    ranked = sorted(keyword_ranked, reverse=True)
+    keyword_top = {name for score, name in ranked[:top_k] if score > 0}
+    mixed_top = {skill.name for skill, _ in matched}
+    displaced = keyword_top - mixed_top
+    if displaced:
+        log(
+            f"技能双路分歧: 关键词路 {sorted(keyword_top)} 中 {sorted(displaced)} "
+            f"被语义分挤出，混合入选 {sorted(mixed_top)}",
+            "DEBUG", tag="技能",
+        )
+
+
 class SkillMatcher:
     """技能匹配：关键词 + 语义混合评分 + 近重复折叠。"""
 
@@ -90,8 +112,11 @@ class SkillMatcher:
         )
 
         scored: List[Tuple[Skill, float]] = []
+        keyword_ranked: List[Tuple[float, str]] = []
         for skill in skills:
-            score = self._keyword_score(skill, query) * _W_KEYWORD
+            keyword = self._keyword_score(skill, query)
+            keyword_ranked.append((keyword, skill.name))
+            score = keyword * _W_KEYWORD
             if query_vec is not None:
                 skill_vec = vectors.get(skill.name)
                 if skill_vec:
@@ -104,6 +129,7 @@ class SkillMatcher:
         if matched:
             names = ", ".join(f"{s.name}({score:.2f})" for s, score in matched)
             log(f"技能匹配: {names}", "DEBUG", tag="技能")
+            _log_path_divergence(matched, keyword_ranked, top_k)
         return matched
 
     def _fold_redundant(

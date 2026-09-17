@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -40,13 +40,15 @@ interface MenuItem {
 interface Props {
   menu: MenuState;
   root: WorkspaceRoot;
+  /** 文件树容器：菜单只跟随该区域的滚动收起，其他面板滚动不打扰 */
+  containerRef: RefObject<HTMLDivElement | null>;
   onClose: () => void;
   onDelete: (node: WorkspaceNode) => void;
   onUpload: (dir: string) => void;
 }
 
 /** 文件树右键菜单：文件/目录/空白区域三套条目，视口内自动收拢定位 */
-export function FileTreeContextMenu({ menu, root, onClose, onDelete, onUpload }: Props) {
+export function FileTreeContextMenu({ menu, root, containerRef, onClose, onDelete, onUpload }: Props) {
   const { t } = useTranslation("workbench");
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: menu.x, y: menu.y });
@@ -70,15 +72,23 @@ export function FileTreeContextMenu({ menu, root, onClose, onDelete, onUpload }:
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
+    // 菜单按视口固定坐标定位，只有锚定上下文（文件树行）移动才失义：
+    // 树容器内的滚动（虚拟列表）与页面级滚动收起菜单；其他区域——典型如
+    // 对话流流式回复的自动吸底滚动——与菜单无关，保持菜单可用
+    const onScroll = (e: Event) => {
+      const target = e.target;
+      if (target === document || target === window) return close();
+      if (target instanceof Element && containerRef.current?.contains(target)) close();
+    };
     document.addEventListener("mousedown", close);
     document.addEventListener("keydown", onKey);
-    document.addEventListener("scroll", close, true);
+    document.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("mousedown", close);
       document.removeEventListener("keydown", onKey);
-      document.removeEventListener("scroll", close, true);
+      document.removeEventListener("scroll", onScroll, true);
     };
-  }, [onClose]);
+  }, [onClose, containerRef]);
 
   const createEntry = async (kind: "file" | "folder") => {
     onClose();

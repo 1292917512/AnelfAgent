@@ -221,46 +221,6 @@ class TestSessionNotification:
         ctx = pfc.build_execution_context([], time.time(), 0, anything=None)
         assert "[当前无外部消息]" in ctx["content"]
 
-    async def test_active_reply_scope_marked(self, monkeypatch) -> None:
-        """在途回复认领的会话标注「处理中」，提示文案引导不代答。"""
-        from agent.channel import outbound_guard
-
-        pfc = _pfc()
-        await pfc.add_task(MessageUser(
-            uid="web_user", session_id="other", text_content="在吗",
-            adapter_key="webui",
-        ))
-        claimed = pfc.peek_all_tasks()[0][0]
-        monkeypatch.setattr(
-            outbound_guard, "active_reply_scopes",
-            lambda: frozenset({claimed}),
-        )
-        current = MessageUser(uid="web_user", session_id="cur", text_content="hi")
-        ctx = pfc.build_execution_context(
-            [], time.time(), 0, anything=current, adapter_key="webui",
-        )
-        content = ctx["content"]
-        assert "（处理中，另有回复在途" in content
-        assert "不要代答" in content
-
-    async def test_unclaimed_scope_not_marked(self, monkeypatch) -> None:
-        """未被认领的会话不加处理中标注（留给系统调度或 switch_session）。"""
-        from agent.channel import outbound_guard
-
-        pfc = _pfc()
-        await pfc.add_task(MessageUser(
-            uid="web_user", session_id="other", text_content="在吗",
-            adapter_key="webui",
-        ))
-        monkeypatch.setattr(
-            outbound_guard, "active_reply_scopes", lambda: frozenset(),
-        )
-        current = MessageUser(uid="web_user", session_id="cur", text_content="hi")
-        ctx = pfc.build_execution_context(
-            [], time.time(), 0, anything=current, adapter_key="webui",
-        )
-        assert "（处理中" not in ctx["content"]
-
 
 # ==================================================================
 # switch_session 工具

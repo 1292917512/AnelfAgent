@@ -302,12 +302,15 @@ async def _match_skills(
             matched_skills = [(s, 1.0) for s in forced] + matched_skills
         if not matched_skills:
             return []
-        # 渐进披露：评分匹配只注目录（名称+描述+触发词），正文经 get_skill 按需自取；
-        # 手势命中（用户显式调用 /name）直接注入全文
+        # 渐进披露：stable 工具块已含全量在役目录，此处只注入与当前任务
+        # 相关度最高的少数技能作定向放大；正文经 get_skill 按需自取，
+        # 手势命中（用户显式调用 /name）直接注入全文（超长截断）
+        inject_max = get_config_int("skills_inject_max_chars", 8000)
+        desc_max = get_config_int("skills_catalog_desc_chars", 72)
         skill_lines = [
-            "[相关技能] 以下技能可能适用于当前任务（目录）。"
+            "[相关技能] 以下技能与当前任务相关度最高（全量在役清单见系统层技能库目录）。"
             "决定使用某个技能时，先用 get_skill 读取其完整内容再按步骤执行；"
-            "不适用则忽略，不要逐条读取。",
+            "不适用则忽略。",
         ]
         for skill, _score in matched_skills:
             # 信号分离：手势命中 = 真实使用（计数 + 刷新活动）；评分命中 = 检索注入
@@ -316,9 +319,12 @@ async def _match_skills(
                 mind.skill_store.record_use(skill.name)
                 from agent.skills.dependencies import dependency_notice
                 notice = dependency_notice(skill)
+                body = skill.content[:inject_max]
+                if len(skill.content) > inject_max:
+                    body += "\n\n（正文超长已截断，完整内容用 get_skill 查看）"
                 entry_text = (
                     f"## {skill.name} — {skill.description}\n"
-                    f"（用户显式调用，全文如下）\n{skill.content}"
+                    f"（用户显式调用，全文如下）\n{body}"
                 )
                 if notice:
                     entry_text += f"\n{notice}"
@@ -326,7 +332,8 @@ async def _match_skills(
             else:
                 mind.skill_store.record_match(skill.name)
                 triggers = "、".join(skill.trigger_patterns[:6])
-                entry = f"## {skill.name} — {skill.description}"
+                desc = skill.description.replace("\n", " ")[:desc_max]
+                entry = f"## {skill.name} — {desc}"
                 if triggers:
                     entry += f"\n触发词: {triggers}"
                 skill_lines.append(entry)

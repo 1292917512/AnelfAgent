@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Monitor, MousePointerClick, Pencil, Trash2, X } from "lucide-react";
-import { operationApi } from "@/lib/api";
+import { operationApi } from "./api";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
 import { StatusDot } from "@/components/common/StatusDot";

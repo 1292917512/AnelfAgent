@@ -137,7 +137,7 @@ def create_bootstrap() -> FlowMachine:
     @machine.node(skip_on_error=True, depends_on=["register_entities"])
     async def init_mcp():
         from core.lifecycle import Lifecycle
-        from entities.mcp.bridge import MCPBridge, get_mcp_bridge, set_mcp_bridge
+        from entities.mcp.bridge import MCPBridge, set_mcp_bridge
         from entities.mcp.config import load_mcp_config
         from entities.mcp.manage_tools import register_mcp_tools
 
@@ -147,20 +147,6 @@ def create_bootstrap() -> FlowMachine:
         Lifecycle.register("mcp_bridge", bridge, cleanup=bridge.shutdown)
         register_mcp_tools()
 
-        # 操作核心的 MCP 网关端口：绑"运行时取单例"的工厂（桥重建/热拔除安全）
-        from agent.operation.executor import McpGateway, operation_mcp_port
-
-        def _gateway() -> McpGateway | None:
-            current = get_mcp_bridge()
-            if current is None:
-                return None
-            return McpGateway(
-                call=current.call_tool,
-                connected_servers=current.get_connected_servers,
-                server_status=current.list_available_servers,
-            )
-
-        operation_mcp_port.set(_gateway)
         log(f"MCP Bridge: {len(config.servers)} servers")
         enabled_count = sum(1 for s in config.servers if s.enabled)
         if enabled_count:
@@ -277,8 +263,6 @@ def create_bootstrap() -> FlowMachine:
         import agent.memory.graph.tools  # noqa: F401
         import agent.memory.tools  # noqa: F401
         import agent.model_assets  # noqa: F401
-        import agent.operation.context  # noqa: F401
-        import agent.operation.tools  # noqa: F401
         import agent.planning.tools  # noqa: F401
         import agent.realtime.context  # noqa: F401
         import agent.realtime.tools  # noqa: F401
@@ -319,11 +303,6 @@ def create_bootstrap() -> FlowMachine:
         log(f"🎧 音频工具已注册 ({count} 个)", tag="音频")
         count = activate_group("vision", "视觉 - 视觉源查看、画面监视与视觉源管理、图片/视频理解与生成")
         log(f"👁 视觉工具已注册 ({count} 个)", tag="视觉")
-        count = activate_group(
-            "operation",
-            "操作 - 桌面操控（desktop_act，看屏用 vision_look）与 MCP 操作注册/注释/语义化执行",
-        )
-        log(f"🖱 操作工具已注册 ({count} 个)", tag="操作")
         count = activate_group("retrieval", "检索 - 联网检索、网页读取、仓库文档、HTTP 请求、文件下载、文档重排序")
         log(f"🔎 检索工具已注册 ({count} 个)", tag="检索")
         count = activate_group("voice", "语音 - 实时通话状态查询、主动语音输出、本地模型安装维护")

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from agent.messages import Everything
     from agent.mind.tool_assembly import ToolAssembly
     from agent.mind.work_memory import WorkMemory
+    from agent.skills.skill_store import SkillStore
     from agent.storage.data_center import ConversationData
 
 
@@ -151,10 +152,8 @@ _PENDING_HINT = "→ 处理消息或执行操作，完成后调用 end_reply。�
 _MAX_RENDERED_STEPS = 12
 
 # 会话通知：其他会话的未读消息以"弹窗"形式提示（固定模板，动态内容在末尾 exec_context）
-# 「处理中」= 该会话已被并行回复周期认领（Mind._active_scopes），代答即重复回复
 _SESSION_NOTIFY_HINT = (
     "→ 回复默认发往当前会话，无需选择投递目标；"
-    "标注「处理中」的会话已有并行回复在途，不要代答（跨会话直接发送会造成重复回复）；"
     "如需处理其他会话的新消息，调用 switch_session(scope) 切换，"
     "可先调用 list_sessions 查看全部会话"
 )
@@ -193,14 +192,17 @@ class ContextAssembly:
             tool_assembly: "ToolAssembly",
             channel_manager: Optional["ChannelManager"] = None,
             conversation_data: Optional["ConversationData"] = None,
+            skill_store: Optional["SkillStore"] = None,
     ) -> None:
         self._work_memory = work_memory
         self._tool_assembly = tool_assembly
         self._channel_manager = channel_manager
         self._conversation_data = conversation_data
+        # 技能库（目录注入来源）：未注入时不进技能目录，测试构造默认与磁盘隔离
+        self._skill_store = skill_store
         # stable_fingerprint 版本门控缓存：(tools_version, activation_version, models_summary,
-        # direct_vision, memory_rules, registry_version) → hash
-        self._fp_cache: Optional[tuple[int, int, str, bool, str, int, str]] = None
+        # direct_vision, memory_rules, registry_version, catalog_factor) → hash
+        self._fp_cache: Optional[tuple[int, int, str, bool, str, int, str, str]] = None
         # 上下文构建管线：默认布局（动态在历史之后）+ legacy 回退布局
         self._pipeline = ContextPipeline(self)
         self._pipeline_legacy = ContextPipeline(self, volatility_overrides=_LEGACY_VOLATILITY)
@@ -384,13 +386,18 @@ class ContextAssembly:
             models_summary: str = "",
             direct_vision: bool = False,
     ) -> str:
-        """构建工具块：工具使用规则 + 工具目录 + 媒体规则（随工具集变化重建）。"""
+        """构建工具块：工具使用规则 + 工具目录 + 媒体规则 + 技能目录（随能力集变化重建）。"""
         parts: list[str] = []
         for msg in self.build_tool_system_prompt(
                 models_summary=models_summary, direct_vision=direct_vision,
         ):
             if msg.get("content"):
                 parts.append(msg["content"])
+        if self._skill_store is not None:
+            from agent.skills.catalog import catalog_section
+            catalog = catalog_section(self._skill_store)
+            if catalog:
+                parts.append(catalog)
         return "\n\n".join(parts)
 
     def build_stable_layer(
@@ -410,12 +417,20 @@ class ContextAssembly:
         """计算 stable 层动态输入的指纹（任一输入变化即触发重建）。
 
         覆盖：工具目录、可沉睡分组、工具规则、记忆铁律文档、模型摘要、媒体规则、
-        运行环境。不含激活状态（目录文案已静态化，激活状态由 exec_context 动态呈现）。
-        以 _tools_version + 激活版本 + 铁律文本门控：工具集/激活状态/铁律文档均未变时
-        直接返回缓存哈希，跳过 json.dumps 开销（铁律文本经 mtime 缓存读取，
-        未变时仅一次 stat syscall，Web/手工编辑后随门控失配重建一次）。
+        运行环境、技能目录。不含激活状态（目录文案已静态化，激活状态由
+        exec_context 动态呈现）。以 _tools_version + 激活版本 + 铁律文本门控：
+        工具集/激活状态/铁律文档均未变时直接返回缓存哈希，跳过 json.dumps 开销
+        （铁律文本经 mtime 缓存读取，未变时仅一次 stat syscall，
+        Web/手工编辑后随门控失配重建一次）。
         """
         from agent.mind.tool_activation import tool_activation
+
+        if self._skill_store is not None:
+            from agent.skills.catalog import catalog_factor, catalog_section
+            catalog_gate = catalog_factor(self._skill_store)
+            catalog_text = catalog_section(self._skill_store)
+        else:
+            catalog_gate, catalog_text = "skills-catalog:none", ""
 
         memory_rules = _memory_rules_text()
         cache_key = (
@@ -425,9 +440,11 @@ class ContextAssembly:
             # 注册表-only 变化（实体热插拔/分组权重调整）不触碰 tools_version，
             # 必须纳入门控，否则目录重建滞后一轮
             EntityRegistry.version(),
+            # 技能目录随库内容版本变化（计数类账本更新不改变版本）
+            catalog_gate,
         )
-        if self._fp_cache is not None and self._fp_cache[:6] == cache_key:
-            return self._fp_cache[6]
+        if self._fp_cache is not None and self._fp_cache[:7] == cache_key:
+            return self._fp_cache[7]
 
         import json as _json
 
@@ -447,6 +464,7 @@ class ContextAssembly:
             self._build_media_rules(direct_vision),
             str(_delegation_enabled()),
             _env_info_block(),
+            catalog_text,
         )
         self._fp_cache = (*cache_key, result)
         return result
@@ -912,22 +930,11 @@ class ContextAssembly:
         pending = wm.peek_all_tasks()
         if pending:
             current = _safe_entity_scope(anything)
-            # 处理权归属如实呈现：被并行回复周期认领的会话标注「处理中」，
-            # 消除"待处理但无人认领"的歧义——代答撞车的根因是链间不可见，
-            # 信息补全后模型不再需要靠猜（事实源 Mind._active_scopes，经
-            # outbound_guard 的统一读取面，与出站哨兵共用同一 provider）
-            from agent.channel.outbound_guard import active_reply_scopes
-            active = active_reply_scopes()
             lines.append(f"[会话通知] {len(pending)} 个会话有新消息待处理：")
             for scope, _uid, _gid, preview in pending[:5]:
                 unread = wm.get_unread_count(scope)
                 label = _format_scope_label(scope, wm.get_adapter_key(scope))
-                if scope == current:
-                    marker = "（当前会话）"
-                elif scope in active:
-                    marker = "（处理中，另有回复在途，无需代答）"
-                else:
-                    marker = ""
+                marker = "（当前会话）" if scope == current else ""
                 unread_text = f"{unread} 条未读: " if unread > 0 else ""
                 lines.append(f"  • {label}{marker} — {unread_text}{preview[:80]}")
             if len(pending) > 5:
