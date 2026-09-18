@@ -283,21 +283,13 @@ class ContextAssembly:
 
     @staticmethod
     def _build_context_reading_rules() -> str:
-        """构建上下文解读和人物关系理解规则。"""
-        return """# 对话上下文理解
+        """构建上下文解读和人物关系理解规则。
 
-## 消息标签
-对话中的 [key:value] 标签含义：
-- [uid:xxx] — 消息发送者的用户ID，同一uid是同一人
-- [name:xxx] — 发送者用户名
-- [nickname:xxx] — 发送者群内昵称
-- [channel:xxx] — 消息来源频道标识（adapter_key），send_message 等频道工具的 channel_id 参数应填此值
-- [session_id:xxx] — 会话ID（同一频道内会话上下文标识）
-- [group_id:xxx] — 群组ID，不同group_id是不同群
-- [message_id:xxx] — 当前这条消息的平台 ID；可用 lookup_message(message_id=xxx) 精确取回（含窗口外）
-- [at_uid:xxx] — 消息中 @ 提及的用户ID
-- [at_uid:all] — @ 全体成员
-- [reply_to:xxx] — 引用回复：xxx 是被引用消息的 message_id。标签后常紧跟该消息的短预览（约 200 字）；预览不够或需要原文/前后文时，调用 lookup_message(message_id=xxx)
+        消息标签的逐项定义单一来源在人设层（core.tags 注册表经
+        get_tag_desc 渲染，含用户自定义标签），此处不重复列举，
+        只保留标签之外的操作指引（引用取回/身份识别/@ 用法/回复方式）。
+        """
+        return """# 对话上下文理解
 
 ## 引用消息怎么用
 - 看见 [reply_to:abc]张三: 你好… → 用户正在回复 id=abc 的消息；预览已内联时通常够用
@@ -320,7 +312,8 @@ class ContextAssembly:
 
 ## 回复方式
 直接输出文字即可回复当前会话（系统自动投递）；需要 @ 提及、引用回复、
-指定其他会话或发送媒体时再调用 send_message 等工具。"""
+指定其他会话或发送媒体时再调用 send_message 等工具
+（channel_id 参数填消息中 [channel:xxx] 标签的值）。"""
 
     @staticmethod
     def _build_media_rules(direct_vision: bool = False) -> str:

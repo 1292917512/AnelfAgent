@@ -134,14 +134,17 @@ def tool(
     参数的名称、类型、是否必填从函数签名自动推导。
 
     Args:
-        timeout: 工具执行超时时间（秒），默认使用全局配置（30秒）
+        timeout: 工具执行超时时间（秒），默认使用全局默认（60秒）
         check_fn: 工具门控前置检查（返回 bool 或 Awaitable[bool]），
             检查不通过时工具不出现在 LLM schema 中
         allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
         sleep_brief: 沉睡状态下展示给 AI 的简短描述
         concurrency_safe: 是否可与其他安全工具并行执行（只读工具才应开启，
-            默认 False — fail-closed 语义）
-        risk: 风险等级标记（如 CRITICAL），供审批规则引擎匹配拦截
+            默认 False — fail-closed 语义）。这是对整条执行链的断言：
+            框架层（事件/审批/ContextVar 隔离）已保证并发安全，
+            标注者只需确保工具体自身只读无共享写状态
+        risk: 风险等级标记（如 CRITICAL），无显式权限规则覆盖时由审批
+            元数据层兜底升级为 ask（见 agent.approval.rules.tool_meta_risk_rule）
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
@@ -197,6 +200,7 @@ def deferred_tool(
     allow_sleep: bool = False,
     sleep_brief: str = "",
     concurrency_safe: bool = False,
+    risk: str = "",
 ) -> Callable[[F], F]:
     """延迟注册装饰器：装饰时仅收集元数据，activate_group() 时批量注册。
 
@@ -204,11 +208,14 @@ def deferred_tool(
     参数名称、类型、描述从函数签名和 docstring 自动推导。
 
     Args:
-        timeout: 工具执行超时时间（秒），默认使用全局配置（30秒）
+        timeout: 工具执行超时时间（秒），默认使用全局默认（60秒）
         check_fn: 工具门控前置检查（返回 bool 或 Awaitable[bool]）
         allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
         sleep_brief: 沉睡状态下展示给 AI 的简短描述
-        concurrency_safe: 是否可与其他安全工具并行执行（只读工具才应开启）
+        concurrency_safe: 是否可与其他安全工具并行执行（只读工具才应开启；
+            框架层已保证并发安全，标注者只需确保工具体自身只读无共享写状态）
+        risk: 风险等级标记（如 CRITICAL），无显式权限规则覆盖时由审批
+            元数据层兜底升级为 ask（见 agent.approval.rules.tool_meta_risk_rule）
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
@@ -220,6 +227,8 @@ def deferred_tool(
             meta["timeout"] = timeout
         if concurrency_safe:
             meta["concurrency_safe"] = True
+        if risk:
+            meta["risk"] = risk
 
         _deferred_registry.setdefault(group, []).append({
             "name": tool_name, "func": func, "description": tool_desc,

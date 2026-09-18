@@ -394,6 +394,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 审批审计持久化 | `agent/approval/audit.py` + `approval_audit` 表 | 所有**非默认放行**的审批决策落账本（人工 approve/deny/cancel/expire、规则拒绝、信任放行、超时放行；常态 rule_allow 高频无信息量不记）。`trust_after_n_approvals` 计数改从账本统计（outcome=approved 累计）——**重启不再从零重数**；trusted 不计入 approved（防自动放行自我强化）。内存 `_decision_history` 已删除，`/approvals/history` 读表分页（offset+tool_name 过滤），stats 走 outcome 聚合。写失败 fail-open 仅记日志 |
+| 工具元数据风险层 | `agent/approval/rules.py::tool_meta_risk_rule`（求值管线第 6 层） | `@tool(risk="CRITICAL")` 声明落地为审批兜底：声明式/会话级规则未命中且默认放行时，CRITICAL 工具合成 ask 规则（guardian 先行评审，危险才升级人工）——修复 risk 元数据全链路无消费者、声明与行为相悖的问题。仅 CRITICAL 升级（MEDIUM/HIGH 只作 guardian 评审与审计的风险标注，write_file 等高频工具不受影响）；显式 allow 规则天然优先（求值顺序保证）；审计 matched_rule=meta:risk 可归因。历史 `shell.*`/`system.*` 等永不命中的死模式已从默认策略集与示例模板清除（换真实工具名） |
 | 文件扫描剪枝 | `entities/filesystem/scan.py`（新模块） | os.walk 按目录名剪枝（默认 .git/node_modules/__pycache__/.venv/dist/build/各类缓存，`search_exclude_dirs` 可配置）——不再进结果也不再向下遍历；glob 语义（裸 `*.png` 任意深度、`**/` 零目录语义补齐）；内容模式跳过二进制扩展名与 >2MB 大文件；结果 path 保持绝对路径（直接可喂 read_file） |
 | 二进制嗅探 | `scan.looks_binary`（前 8KB NUL 采样） | read_file 扩展名表之外的内容级防线——文本读取走 `errors="replace"` 永不抛解码异常，无扩展名/冷门扩展名二进制文件此前乱码灌上下文；命中返回既有 `{"type":"binary"}` JSON 引导媒体工具 |
 | Retry-After 采信 | `agent/llm/retry.py::parse_retry_after` | litellm RateLimitError 携带 headers（本机已验证）；支持秒数/HTTP 日期/毫秒变体。限流退避取 max(服务端指令, 本地抖动指数)；服务端要求 >60s（`RETRY_AFTER_WAIT_CAP`）视为本轮放弃当前候选转回退链——不白烧请求与配额 |

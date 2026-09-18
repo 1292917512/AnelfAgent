@@ -1122,6 +1122,17 @@ async def execute_tool_calls(
 ) -> None:
     """执行工具调用并将 assistant + tool 消息追加到 tool_chain。
 
+    并发边界（concurrency_safe 的契约）：
+    - 并发段仅为 execute_one_tool（审批闸 + 工具体 + 事件/hook）——连续的
+      concurrency_safe 调用经信号量限流并行，结果加工/链拼装/多模态注入
+      始终在父任务按调用序串行。
+    - 框架层共享设施为并发安全：事件总线单线程交错、ContextVar 随任务
+      拷贝隔离（工具内上下文变更不串入兄弟任务）、人工审批段经闸内锁
+      串行呈现；用户 hook（tool_pre/post）会随并行调用并发拉起，hook
+      脚本须自身容忍并发。
+    - 标注责任：内置工具由作者声明（只读才可开）；MCP 工具由服务器
+      readOnlyHint 声明自动映射，写操作保持串行（fail-closed）。
+
     保留 content 和推理字段以维持多轮思维链连续性。
     实际发送内容由工具（如 send_message）的 _record_to_context 负责写入 DB。
     结果加工（脱敏/扫描/守卫/截断）由 ToolResultPipeline 统一处理。

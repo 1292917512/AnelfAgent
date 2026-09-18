@@ -49,7 +49,7 @@ from entities.mcp.config import (
 )
 from entities.mcp.render import _extract_text_blocks, _render_call_result
 from entities.mcp.retry import _RetryBudget
-from entities.mcp.schema import _parse_mcp_tool, _sanitize_tool_name
+from entities.mcp.schema import _parse_mcp_tool, _sanitize_tool_name, clip_description
 from entities.mcp.transport import _create_transport, _list_roots_callback
 
 _MAX_LIFECYCLE_RETRIES = 5
@@ -1038,20 +1038,27 @@ class MCPBridge:
                 )
                 reg_name = prefixed
 
+            # 服务器声明的只读工具（readOnlyHint）可与其他安全工具并行执行：
+            # 远端语义由服务器声明，本地桥接层按 request-id 多路复用天然容忍并发；
+            # 写操作保持串行。注册时读入 meta，重连重注册字节不变。
+            tool_meta = dict(meta or {})
+            if getattr(getattr(t, "annotations", None), "readOnlyHint", False):
+                tool_meta["concurrency_safe"] = True
+
             async def _proxy(_name: str = reg_name, **kwargs: Any) -> str:
                 return await bridge.call_tool(_name, kwargs)
 
             EntityRegistry.register_tool(
                 name=reg_name,
                 func=_proxy,
-                description=getattr(t, "description", "") or t_name,
+                description=clip_description(getattr(t, "description", "") or t_name),
                 group=f"mcp:{server_name}",
                 params=t_params,
                 tags=["mcp", server_name],
                 source="mcp",
                 allow_sleep=sleep,
                 sleep_brief=sleep_brief,
-                meta=meta,
+                meta=tool_meta or None,
             )
             with self._lock:
                 self._tool_server_map[reg_name] = server_name

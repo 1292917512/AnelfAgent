@@ -92,6 +92,51 @@ class TestGateDecisions:
         assert d == ApprovalDecision.APPROVED
         assert len(ch.prompts) == 1
 
+    async def test_parallel_asks_presented_sequentially(self):
+        """并行批中多个 ASK 串行呈现：第二个提示在第一个裁决之后才发出。"""
+        gate = _gate([
+            PermissionRule(pattern="tool_a", effect=PermissionEffect.ASK),
+            PermissionRule(pattern="tool_b", effect=PermissionEffect.ASK),
+        ])
+        ch = MockChannel()
+        events: List[str] = []
+
+        async def tracked_prompt(ctx):
+            events.append(f"prompt:{ctx.tool_name}")
+            return await MockChannel.render_approval_prompt(ch, ctx)
+
+        ch.render_approval_prompt = tracked_prompt
+
+        async def approve_as_decided():
+            decided: set = set()
+            while len(decided) < 2:
+                pending = await gate._manager.list_pending()
+                assert len(pending) <= 1, "串行呈现：同一时刻至多一个挂起会话"
+                if pending:
+                    session = pending[0]
+                    name = session.request.tool_name
+                    await gate.approve(session.request.request_id, decided_by="t")
+                    events.append(f"decided:{name}")
+                    decided.add(name)
+                else:
+                    await asyncio.sleep(0.02)
+
+        task = asyncio.create_task(approve_as_decided())
+        results = await asyncio.gather(
+            gate.request_approval(
+                tool_name="tool_a", tool_args={}, reason="t",
+                channel=ch, chat_id="c", user_id="u", timeout=5),
+            gate.request_approval(
+                tool_name="tool_b", tool_args={}, reason="t",
+                channel=ch, chat_id="c", user_id="u", timeout=5),
+        )
+        await task
+        assert results == [ApprovalDecision.APPROVED] * 2
+        # 第二个提示严格出现在第一个裁决之后（锁内串行）
+        first_decided = next(i for i, e in enumerate(events) if e.startswith("decided:"))
+        second_prompt = [i for i, e in enumerate(events) if e.startswith("prompt:")][1]
+        assert first_decided < second_prompt
+
     async def test_ask_timeout_denies_and_notifies(self):
         gate = _gate([PermissionRule(pattern="write_file", effect=PermissionEffect.ASK,
                                      timeout_seconds=0.3)])

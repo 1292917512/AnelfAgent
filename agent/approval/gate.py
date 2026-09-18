@@ -73,6 +73,9 @@ class ApprovalGate:
         # 由 _session_rules_lock 保护（web 层等外部线程也会读写）
         self._session_rules: List[PermissionRule] = []
         self._session_rules_lock = threading.Lock()
+        # 人工批准段串行锁：并行工具批中多个 ASK 依次呈现，
+        # 避免同轮双弹窗/双频道提示竞态（guardian 评审不受此锁约束）
+        self._ask_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # 规则管理
@@ -291,56 +294,58 @@ class ApprovalGate:
             return ApprovalDecision.APPROVED
 
         # ASK：guardian 判定危险或不可用 → 走人工批准流程
+        # （串行呈现：并行工具批里的多个 ASK 一次一个，用户逐个裁决）
         timeout_seconds = timeout or (rule.timeout_seconds if rule else 60.0)
-        request = ApprovalRequest(
-            tool_name=tool_name,
-            tool_args=self._sanitize_args(tool_args),
-            risk_level=risk_level,
-            reason=reason,
-            requester_channel=channel_id,
-            requester_chat_id=chat_id,
-            requester_user_id=user_id,
-            expires_at=time.time() + timeout_seconds,
-            matched_rule=verdict.matched_pattern or "*",
-        )
-        session = await self._manager.create_session(request)
+        async with self._ask_lock:
+            request = ApprovalRequest(
+                tool_name=tool_name,
+                tool_args=self._sanitize_args(tool_args),
+                risk_level=risk_level,
+                reason=reason,
+                requester_channel=channel_id,
+                requester_chat_id=chat_id,
+                requester_user_id=user_id,
+                expires_at=time.time() + timeout_seconds,
+                matched_rule=verdict.matched_pattern or "*",
+            )
+            session = await self._manager.create_session(request)
 
-        try:
-            await self._send_approval_prompt(channel, chat_id, session)
-        except Exception as exc:
-            log(f"发送批准提示失败: {exc}", "ERROR", tag="权限")
-            await self._manager.cancel(request.request_id, "send_prompt_failed")
-            return ApprovalDecision.CANCELLED
+            try:
+                await self._send_approval_prompt(channel, chat_id, session)
+            except Exception as exc:
+                log(f"发送批准提示失败: {exc}", "ERROR", tag="权限")
+                await self._manager.cancel(request.request_id, "send_prompt_failed")
+                return ApprovalDecision.CANCELLED
 
-        decision = await self._manager.wait_decision(
-            request.request_id, timeout_seconds, abort_check=abort_check,
-        )
+            decision = await self._manager.wait_decision(
+                request.request_id, timeout_seconds, abort_check=abort_check,
+            )
 
-        if decision == ApprovalDecision.EXPIRED:
-            on_timeout = rule.on_timeout if rule else "deny"
-            if on_timeout == "allow":
-                log(f"批准超时但规则允许: {tool_name}", "WARNING", tag="权限")
-                # 超时事实已由 resolve 记为 expired，此处补记最终放行处置
-                audit.record_decision_bg(
-                    tool_name=tool_name, outcome="timeout_allow", decided_by="rule",
-                    reason="on_timeout=allow", channel_id=channel_id, chat_id=chat_id,
-                    user_id=user_id, matched_rule=request.matched_rule,
+            if decision == ApprovalDecision.EXPIRED:
+                on_timeout = rule.on_timeout if rule else "deny"
+                if on_timeout == "allow":
+                    log(f"批准超时但规则允许: {tool_name}", "WARNING", tag="权限")
+                    # 超时事实已由 resolve 记为 expired，此处补记最终放行处置
+                    audit.record_decision_bg(
+                        tool_name=tool_name, outcome="timeout_allow", decided_by="rule",
+                        reason="on_timeout=allow", channel_id=channel_id, chat_id=chat_id,
+                        user_id=user_id, matched_rule=request.matched_rule,
+                    )
+                    return ApprovalDecision.APPROVED
+                if on_timeout == "halt":
+                    raise ApprovalDenied(ApprovalDecision.EXPIRED, "timeout halt")
+                await self._notify_outcome(
+                    channel, chat_id,
+                    f"⏰ 批准请求超时，已拒绝执行 {tool_name}（规则: {request.matched_rule}）",
                 )
-                return ApprovalDecision.APPROVED
-            if on_timeout == "halt":
-                raise ApprovalDenied(ApprovalDecision.EXPIRED, "timeout halt")
-            await self._notify_outcome(
-                channel, chat_id,
-                f"⏰ 批准请求超时，已拒绝执行 {tool_name}（规则: {request.matched_rule}）",
-            )
-            return ApprovalDecision.DENIED
+                return ApprovalDecision.DENIED
 
-        if decision == ApprovalDecision.DENIED:
-            await self._notify_outcome(
-                channel, chat_id,
-                f"🚫 已拒绝执行 {tool_name}（规则: {request.matched_rule}）",
-            )
-        return decision
+            if decision == ApprovalDecision.DENIED:
+                await self._notify_outcome(
+                    channel, chat_id,
+                    f"🚫 已拒绝执行 {tool_name}（规则: {request.matched_rule}）",
+                )
+            return decision
 
     async def approve(self, request_id: str, decided_by: str = "", reason: str = "",
                       remember: str = "once") -> bool:

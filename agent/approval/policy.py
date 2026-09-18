@@ -2,7 +2,9 @@
 
 策略来源：
 1. **声明式配置**（config/approval_policies.json）：运维侧覆盖
-2. **工具 metadata**（@tool(risk="high")）：开发侧默认值
+2. **工具 metadata**（@tool(risk="critical")）：开发侧默认值——仅 CRITICAL
+   在无显式规则覆盖时兜底升级为 ask（实现见 rules.tool_meta_risk_rule，
+   求值管线第 6 层；MEDIUM/HIGH 只作风险标注不改变决策）
 3. **运行时动态**（guardrails 升级）：异常情况下临时提升
 
 匹配优先级：声明式 > 工具 metadata > 运行时
@@ -257,32 +259,54 @@ class ApprovalPolicySet(BaseModel):
 
     @classmethod
     def default(cls) -> "ApprovalPolicySet":
-        """返回默认策略集（仅 CRITICAL 需要批准）。"""
+        """返回默认策略集（高危执行/系统变更需批准，其余默认放行）。
+
+        模式必须是真实工具名（历史版本的 ``shell.*``/``system.*`` 等
+        前缀与本项目工具命名不符，从未命中过任何工具）。
+        """
         return cls(
             policies=[
                 ApprovalPolicy(
-                    tool_name_pattern="shell.*",
+                    tool_name_pattern="run_shell_command",
                     risk_level=RiskLevel.CRITICAL,
                     requires_approval=True,
                     description="Shell 命令执行",
                 ),
                 ApprovalPolicy(
-                    tool_name_pattern="system.*",
+                    tool_name_pattern="python_exec",
                     risk_level=RiskLevel.CRITICAL,
                     requires_approval=True,
-                    description="系统级操作",
+                    description="Python 代码执行",
                 ),
                 ApprovalPolicy(
-                    tool_name_pattern="filesystem.write*",
+                    tool_name_pattern="restart_app",
+                    risk_level=RiskLevel.CRITICAL,
+                    requires_approval=True,
+                    description="应用重启",
+                ),
+                ApprovalPolicy(
+                    tool_name_pattern="update_and_restart",
+                    risk_level=RiskLevel.CRITICAL,
+                    requires_approval=True,
+                    description="代码更新并重启",
+                ),
+                ApprovalPolicy(
+                    tool_name_pattern="write_file",
                     risk_level=RiskLevel.HIGH,
                     requires_approval=True,
                     description="文件写入",
                 ),
                 ApprovalPolicy(
-                    tool_name_pattern="filesystem.delete*",
+                    tool_name_pattern="delete_file",
                     risk_level=RiskLevel.HIGH,
                     requires_approval=True,
                     description="文件删除",
+                ),
+                ApprovalPolicy(
+                    tool_name_pattern="move_file",
+                    risk_level=RiskLevel.HIGH,
+                    requires_approval=True,
+                    description="文件移动",
                 ),
                 ApprovalPolicy(
                     tool_name_pattern="*",

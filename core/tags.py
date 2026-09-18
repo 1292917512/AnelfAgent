@@ -208,16 +208,23 @@ def get_tag_desc() -> str:
 # 内置标签 — 消息上下文
 # ======================================================================
 
-# 上下文标签
+# 上下文标签（描述即定义：渲染进人设层的标签说明，是该标签语义的单一来源；
+# 与工具使用相关的用法指引一并写入描述，不在提示词其他位置重复）
 time_tag = Tag(tag_name="time", tag_name_desc="对话时间")
-uid_tag = Tag(tag_name="uid", tag_name_desc="用户 ID")
-group_id_tag = Tag(tag_name="group_id", tag_name_desc="群组 ID")
-name_tag = Tag(tag_name="name", tag_name_desc="用户名")
-nickname_tag = Tag(tag_name="nickname", tag_name_desc="昵称")
-channel_tag = Tag(tag_name="channel", tag_name_desc="来源频道标识")
+uid_tag = Tag(tag_name="uid", tag_name_desc="消息发送者的用户 ID，同一 uid 是同一人")
+group_id_tag = Tag(tag_name="group_id", tag_name_desc="群组 ID，不同 group_id 是不同群")
+name_tag = Tag(tag_name="name", tag_name_desc="发送者用户名（身份识别以 uid 为准，name 可能变化）")
+nickname_tag = Tag(tag_name="nickname", tag_name_desc="发送者群内昵称（身份识别以 uid 为准）")
+channel_tag = Tag(
+    tag_name="channel",
+    tag_name_desc="来源频道标识（adapter_key），send_message 等频道工具的 channel_id 参数应填此值",
+)
 session_id_tag = Tag(tag_name="session_id", tag_name_desc="会话 ID（同一频道会话上下文标识）")
 platform_tag = Tag(tag_name="platform", tag_name_desc="来源平台（qq/telegram/web 等）")
-message_id_tag = Tag(tag_name="message_id", tag_name_desc="当前消息 ID")
+message_id_tag = Tag(
+    tag_name="message_id",
+    tag_name_desc="当前这条消息的平台 ID，可用 lookup_message(message_id=xxx) 精确取回（含窗口外）",
+)
 to_me_tag = Tag(
     tag_name="to_me",
     tag_name_desc="本条群消息 @ 了你、是直接对你说的话；"
@@ -252,9 +259,16 @@ media_file_id_tag = Tag(
     tag_name_desc="平台文件 ID（如 QQ 文件），可传给 qq_download_file 按需下载到本地后再分析",
 )
 
-# 交互标签
-at_uid_tag = Tag(tag_name="at_uid", tag_name_desc="消息中 @ 提及的用户 ID")
-reply_to_tag = Tag(tag_name="reply_to", tag_name_desc="回复引用的消息 ID")
+# 交互标签（描述即定义，见上方上下文标签块的说明）
+at_uid_tag = Tag(
+    tag_name="at_uid",
+    tag_name_desc="消息中 @ 提及的用户 ID（[at_uid:all] 表示 @ 全体成员）",
+)
+reply_to_tag = Tag(
+    tag_name="reply_to",
+    tag_name_desc="引用回复指向的消息 ID；标签后常紧跟被引用消息的短预览（约 200 字），"
+                  "预览不够或需要原文/前后文时调用 lookup_message(message_id=xxx)",
+)
 poke_tag = Tag(tag_name="poke", tag_name_desc="戳一戳事件的目标用户")
 reaction_tag = Tag(tag_name="reaction", tag_name_desc="表情回应的 emoji ID")
 forward_tag = Tag(tag_name="forward", tag_name_desc="转发消息的来源（原始发送者、频道名或消息 ID）")
@@ -289,8 +303,10 @@ video_gen_tag = Tag(tag_name="video_gen", tag_name_desc="视频生成请求")
 
 # 调度类标签
 always_tag = Tag(tag_name="always", tag_name_desc="永驻工具，始终加载到上下文中", visible_to_llm=False)
-core_tag = Tag(tag_name="core", tag_name_desc="核心工具，高优先级召回", visible_to_llm=False)
-heartbeat_tag = Tag(tag_name="heartbeat", tag_name_desc="心跳任务工具", visible_to_llm=False)
+# core 不参与常驻装配（回复路径只装 always/频道/媒体/热召回/发现/激活六路）：
+# 它是子代理档案 tool_tags 选择器的装载词汇（reflect 精简目录按标签匹配）
+core_tag = Tag(tag_name="core", tag_name_desc="核心工具域标记，供子代理档案 tool_tags 选择器按需装载", visible_to_llm=False)
+heartbeat_tag = Tag(tag_name="heartbeat", tag_name_desc="心跳任务工具（反思/任务循环的默认选择器）", visible_to_llm=False)
 
 # 功能域标签
 planning_tag = Tag(tag_name="planning", tag_name_desc="目标规划与任务管理", visible_to_llm=False)

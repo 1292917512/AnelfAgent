@@ -2,7 +2,8 @@
 
 设计目标（合并原 ApprovalPolicy/白名单/频道规则三套机制）：
 - 单一规则模型：``工具名(参数glob)`` + effect(allow/ask/deny) + scope(global/频道)
-- 单一求值管线：频道deny → 全局deny → 频道ask → 全局ask → 频道allow → 全局allow → 默认
+- 单一求值管线：频道deny → 全局deny → 频道ask → 全局ask → 频道allow → 全局allow
+  → 工具元数据 CRITICAL 兜底 → 默认
 - 每个决策都带 Verdict（决策 + 命中规则 + 原因），拒绝原因全链路可见
 - 旧 ``approval_policies.json`` 自动转换加载，平滑迁移
 
@@ -136,6 +137,38 @@ class PermissionVerdict(BaseModel):
         return self.rule.pattern if self.rule else ""
 
 
+def tool_meta_risk_rule(tool_name: str) -> Optional[PermissionRule]:
+    """工具元数据声明的 CRITICAL 风险 → 合成 ask 规则（求值管线第 6 层兜底）。
+
+    优先级：声明式规则（含会话级）> 工具 metadata > 默认效果。仅 CRITICAL
+    升级为 ask——write_file 等高频工具即便声明 HIGH 也不能逐次评审（评审
+    延迟会拖垮日常自治），MEDIUM/HIGH 只作为 risk_level 标注供 guardian
+    评审与审计参考。显式 allow/ask/deny 规则命中时本层不参与（求值顺序
+    天然保证）。注册表不可用或工具未注册时返回 None（维持默认效果）。
+    """
+    try:
+        from core.entity import EntityRegistry
+        entity = EntityRegistry.get(tool_name)
+    except Exception:
+        return None
+    if entity is None:
+        return None
+    risk = str(entity.meta.get("risk", "") or "").strip().lower()
+    if risk != RiskLevel.CRITICAL.value:
+        return None
+    return PermissionRule(
+        pattern=_META_RISK_PATTERN,
+        effect=PermissionEffect.ASK,
+        risk_level=RiskLevel.CRITICAL,
+        description=f"工具 {tool_name} 元数据声明 risk=CRITICAL（无显式规则覆盖时兜底）",
+        created_by="tool_meta",
+    )
+
+
+# 元数据层合成规则的 pattern 标识（审计/展示用；不参与真实匹配）
+_META_RISK_PATTERN = "meta:risk"
+
+
 class PermissionRuleSet(BaseModel):
     """权限规则集。"""
 
@@ -155,7 +188,8 @@ class PermissionRuleSet(BaseModel):
         3. 用户限定 allow（白名单免审批，兼容旧 auto_approve_users 语义）
         4. 频道 ask → 全局 ask
         5. 频道 allow → 全局 allow
-        6. 默认效果
+        6. 工具元数据 CRITICAL 兜底（默认放行时，见 tool_meta_risk_rule）
+        7. 默认效果
         """
         applicable = [
             r for r in self.rules
@@ -222,6 +256,15 @@ class PermissionRuleSet(BaseModel):
                 rule=PermissionRule(pattern="*", effect=PermissionEffect.ASK,
                                     risk_level=self.default_risk),
                 reason="未命中任何规则，默认请求批准",
+            )
+        # 6. 工具元数据 CRITICAL 兜底：默认放行前，声明 risk=CRITICAL 且无
+        # 显式规则覆盖的工具升级为 ask（guardian 先行评审，危险才升级人工）
+        meta_rule = tool_meta_risk_rule(tool_name)
+        if meta_rule is not None:
+            return PermissionVerdict(
+                decision=PermissionDecision.ASK,
+                rule=meta_rule,
+                reason=f"工具 {tool_name} 声明 CRITICAL 风险且无显式规则覆盖，升级请求批准",
             )
         return PermissionVerdict(decision=PermissionDecision.AUTO_ALLOW, reason="无需批准")
 
