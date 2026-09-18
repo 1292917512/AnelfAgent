@@ -457,15 +457,16 @@ def _apply_memory_budget(msgs: List[Dict]) -> List[Dict]:
 
 
 def _speaker_scopes(text: str) -> List[str]:
-    """解析 [speaker_scope:...] 标签：声纹识别说话人绑定的实体（画像召回键）。
+    """解析 [speaker_scope:...] / [face_scope:...] 标签：声纹/人脸识别绑定的实体（画像召回键）。
 
-    标签值为音频库绑定格式（user:qq:123），转换为召回层权威的 entity_scope
-    格式（user_qq:123）；agent: 绑定是自我指涉（自我画像恒注入）不参与召回。
+    标签值为音频库/人脸库绑定格式（user:qq:123），转换为召回层权威的
+    entity_scope 格式（user_qq:123）；agent: 绑定是自我指涉（自我画像恒注入）
+    不参与召回。声纹（听到的是谁）与人脸（看到的是谁）共用同一召回机制。
     """
     from core.tags import etag_all
     scopes: List[str] = []
     for key, value in etag_all(text or ""):
-        if key != "speaker_scope":
+        if key not in ("speaker_scope", "face_scope"):
             continue
         for prefix in ("user:", "group:"):
             if value.startswith(prefix):
@@ -479,7 +480,7 @@ def _extract_related_scopes(
 ) -> List[str]:
     """从对话中提取涉及的实体 scope，构建画像加载列表。
 
-    - [speaker_scope:...]（声纹识别说话人的绑定实体）：私聊/通话/群聊均生效
+    - [speaker_scope:...] / [face_scope:...]（声纹/人脸识别的绑定实体）：私聊/通话/群聊均生效
     - [uid:] / [at_uid:]（群成员）：uid 是 adapter 相对引用，仅群聊场景参与
     """
     is_group = primary_scope.startswith("group_")

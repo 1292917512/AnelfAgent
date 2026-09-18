@@ -1,0 +1,17 @@
+# AnelfAgent FaceEngine 参考服务端依赖
+#
+# GPU（RTX 3090 / CUDA）安装顺序很重要：先装匹配 CUDA 的 onnxruntime-gpu，
+# 再装 insightface，避免被拉入 CPU 版 onnxruntime 覆盖。详见 README.md。
+#
+# onnxruntime-gpu 版本须与本机 CUDA/cuDNN 匹配（RTX 3090 = Ampere）：
+#   CUDA 11.8 + cuDNN 8.x  → onnxruntime-gpu==1.16.* 或 1.17.*
+#   CUDA 12.x + cuDNN 9.x  → onnxruntime-gpu==1.18.* 及以上
+# 若不确定，先用 CPU 版 onnxruntime 跑通契约，再换 GPU 版。
+
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9      # FastAPI 解析 multipart Form/File 必需
+numpy>=1.24
+opencv-python>=4.8           # cv2.imdecode 图片解码
+insightface>=0.7.3           # SCRFD 检测 + ArcFace 识别（buffalo_l）
+onnxruntime-gpu>=1.16        # GPU 推理后端（CPU 部署改为 onnxruntime）

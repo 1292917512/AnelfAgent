@@ -102,3 +102,38 @@ async def test_light_llm_ignores_invalid_effort(monkeypatch: pytest.MonkeyPatch)
     await dedup.light_llm("p")
 
     assert "reasoning_effort" not in manager.kwargs["options"]
+
+
+@pytest.mark.asyncio
+async def test_light_llm_uses_dedicated_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """memory_light_model 配置生效时经专用轻量模型 client 调用。"""
+    manager = _FakeManager()
+    sentinel = object()
+    manager.get_enabled_client = lambda name: sentinel if name == "fast-model" else None  # type: ignore[method-assign]
+    monkeypatch.setattr("agent.llm.get_llm_manager", lambda: manager)
+    monkeypatch.setattr(
+        dedup, "get_config",
+        lambda key, default=None: "fast-model" if key == "memory_light_model" else default,
+    )
+
+    await dedup.light_llm("p")
+
+    assert manager.kwargs["client"] is sentinel
+
+
+@pytest.mark.asyncio
+async def test_light_llm_unknown_model_falls_back_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """专用模型不存在/停用时 client 为 None，回落默认主模型。"""
+    manager = _FakeManager()
+    manager.get_enabled_client = lambda name: None  # type: ignore[method-assign]
+    monkeypatch.setattr("agent.llm.get_llm_manager", lambda: manager)
+    monkeypatch.setattr(
+        dedup, "get_config",
+        lambda key, default=None: "ghost-model" if key == "memory_light_model" else default,
+    )
+
+    await dedup.light_llm("p")
+
+    assert manager.kwargs["client"] is None

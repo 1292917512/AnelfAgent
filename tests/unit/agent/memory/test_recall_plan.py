@@ -105,6 +105,51 @@ async def test_plan_retrieval_short_query_skips_llm(store, monkeypatch) -> None:
     assert plan.queries == ["短查询"]
 
 
+@pytest.mark.asyncio
+async def test_plan_retrieval_timeout_falls_back(store, monkeypatch) -> None:
+    """预算超时回退原查询：wait_for 收口 LLM 调用与实体解析全程。"""
+    import asyncio
+
+    import agent.memory.dedup as dedup_mod
+
+    async def _slow(prompt: str, **kwargs):
+        await asyncio.sleep(30)
+        return "{}"
+
+    monkeypatch.setattr(dedup_mod, "light_llm", _slow)
+    query = "这是一段足够长的对话上下文" * 4
+    plan = await _retriever(store).plan_retrieval(query, timeout=0.05)
+    assert plan.queries == [query]
+    assert plan.deep_needed is False
+
+
+# ==================================================================
+# 规划预算派生
+# ==================================================================
+
+def test_plan_budget_derivation(monkeypatch) -> None:
+    """预算解析：显式配置优先，缺省按召回总时限四成派生并给检索段留底。"""
+    from agent.memory import memory_retriever as retriever_mod
+
+    values = {"memory_plan_budget_seconds": 0.0}
+    monkeypatch.setattr(
+        "core.config.get_config_float", lambda key, default=0.0: values.get(key, default))
+
+    # 缺省派生：召回总时限 5s → 规划 2s
+    assert retriever_mod._plan_budget_seconds(5.0) == pytest.approx(2.0)
+    # 显式配置生效，但收敛至总时限减 1s（保住检索段）
+    values["memory_plan_budget_seconds"] = 4.0
+    assert retriever_mod._plan_budget_seconds(5.0) == pytest.approx(4.0)
+    values["memory_plan_budget_seconds"] = 10.0
+    assert retriever_mod._plan_budget_seconds(5.0) == pytest.approx(4.0)
+    # 无总时限上下文（独立直调）：显式配置原样生效，缺省 8s
+    assert retriever_mod._plan_budget_seconds() == pytest.approx(10.0)
+    values["memory_plan_budget_seconds"] = 0.0
+    assert retriever_mod._plan_budget_seconds() == pytest.approx(8.0)
+    # 下限 1s
+    assert retriever_mod._plan_budget_seconds(1.0) == pytest.approx(1.0)
+
+
 # ==================================================================
 # 多查询共识融合
 # ==================================================================

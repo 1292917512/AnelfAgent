@@ -51,6 +51,26 @@ _PLAN_PROMPT = (
 )
 
 
+def _plan_budget_seconds(recall_timeout: Optional[float] = None) -> float:
+    """检索规划预算（LLM 规划调用与实体解析合计的墙钟上限）。
+
+    显式配置 memory_plan_budget_seconds 优先；缺省按召回总时限的四成份额
+    派生（无总时限上下文的独立调用为 8s）。规划与检索串行分享召回总预算，
+    召回上下文中收敛至多 recall_timeout - 1s，保证检索段至少 1s。
+    """
+    budget = 0.0
+    try:
+        from core.config import get_config_float
+        budget = get_config_float("memory_plan_budget_seconds", 0.0)
+    except Exception:
+        budget = 0.0
+    if budget <= 0:
+        budget = recall_timeout * 0.4 if recall_timeout is not None else 8.0
+    if recall_timeout is not None:
+        budget = min(budget, max(1.0, recall_timeout - 1.0))
+    return max(1.0, budget)
+
+
 class MemoryRetriever:
     """从 MemoryStore 中根据对话上下文检索相关记忆（被动召回）。"""
 
@@ -164,15 +184,16 @@ class MemoryRetriever:
 
         log(f"💾 被动召回: \"{query[:50]}\" (embedding={'是' if self._embedder.available else '否'})", tag="思维")
 
-        # 召回总时限：规划与检索全程共享一个预算（规划占前四成份额，
-        # 超份额回退原查询保住检索段），整体超时走回退，不阻塞对话主流程
+        # 召回总时限：规划与检索串行共享一个预算（规划段独立预算见
+        # _plan_budget_seconds，超预算回退原查询保住检索段），整体超时走
+        # 回退，不阻塞对话主流程
         recall_timeout = 5.0
         try:
             from core.config import get_config_float
             recall_timeout = max(1.0, get_config_float("memory_recall_timeout_seconds", 5.0))
         except Exception:
             pass
-        plan_budget = max(1.0, recall_timeout * 0.4)
+        plan_budget = _plan_budget_seconds(recall_timeout)
 
         plan = RetrievalPlan(queries=[query] if query else [])
         mention_tags: List[str] = []
@@ -189,18 +210,10 @@ class MemoryRetriever:
                 log(f"查询提及识别失败: {exc}", "DEBUG", tag="思维")
                 return []
 
-        async def _plan() -> RetrievalPlan:
-            try:
-                return await asyncio.wait_for(
-                    self.plan_retrieval(query), timeout=plan_budget)
-            except asyncio.TimeoutError:
-                log(f"💾 检索规划超时（{plan_budget:.1f}s），回退原查询",
-                    "WARNING", tag="思维")
-                return RetrievalPlan(queries=[query] if query else [])
-
         async def _planned_recall() -> List[MemorySearchResult]:
             nonlocal plan, mention_tags
-            plan, mention_tags = await asyncio.gather(_plan(), _mentions())
+            plan, mention_tags = await asyncio.gather(
+                self.plan_retrieval(query, timeout=plan_budget), _mentions())
 
             # 计划查询（互补多查询，首条带实体定向）；规划失败时退化为原查询
             search_query = plan.queries[0] if plan.queries else query
@@ -519,13 +532,19 @@ class MemoryRetriever:
                 return cleaned[:max_chars]
         return ""
 
-    async def plan_retrieval(self, query: str) -> RetrievalPlan:
+    async def plan_retrieval(
+        self, query: str, *, timeout: Optional[float] = None,
+    ) -> RetrievalPlan:
         """检索规划：轻量 LLM 把对话尾部转成结构化检索计划（失败回退单查询）。
 
         取代旧版纯改写：多查询互补扩大召回面（共识命中加成），实体名驱动
         图谱解析与 cognee 定向检索，deep_needed 决定是否异步深探——
         召回由 LLM 决策而非被动关键词匹配。解析全路径容错；返回的
         plan 已完成实体→图谱节点解析（node_keys/node_labels 就绪）。
+
+        timeout 为本次规划的墙钟预算（LLM 调用与实体解析合计），None 时取
+        memory_plan_budget_seconds 配置（未配置为 8s）；超时返回原查询回退
+        计划并记 WARNING。
         """
         fallback = RetrievalPlan(queries=[query] if query else [])
         try:
@@ -536,13 +555,22 @@ class MemoryRetriever:
             return fallback
         if len(query) < 20:
             return fallback
+        budget = timeout if timeout is not None else _plan_budget_seconds()
+        try:
+            return await asyncio.wait_for(
+                self._plan_with_llm(query, fallback), timeout=budget)
+        except asyncio.TimeoutError:
+            log(f"💾 检索规划超时（{budget:.1f}s），回退原查询", "WARNING", tag="思维")
+            return fallback
+
+    async def _plan_with_llm(
+        self, query: str, fallback: RetrievalPlan,
+    ) -> RetrievalPlan:
+        """规划执行体：LLM 产出结构化计划 + 实体解析为图谱节点（分段容错）。"""
         plan = fallback
         try:
             from .dedup import light_llm
-            raw = await asyncio.wait_for(
-                light_llm(_PLAN_PROMPT + query, temperature=0.1),
-                timeout=8.0,
-            )
+            raw = await light_llm(_PLAN_PROMPT + query, temperature=0.1)
             parsed = self._parse_plan_json(raw)
             if parsed is not None:
                 queries = [

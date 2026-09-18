@@ -42,7 +42,7 @@ from core.log import log
 from core.trace_session import thinking_session
 
 from . import log as hb_log
-from .config import ScheduleMode, get_heartbeat_config
+from .config import ScheduleMode, current_interval_seconds, get_heartbeat_config
 
 if TYPE_CHECKING:
     from agent.heartbeat.config import TaskSchedule
@@ -893,7 +893,7 @@ class HeartbeatEngine:
             enabled_count = sum(1 for t in all_tasks if t.enabled)
             last_runs = task_history.get_summary()
 
-            interval = max(1, int(self.config.interval_seconds))
+            interval = current_interval_seconds()
             schedule_count = sum(
                 1 for s in self.config.task_schedules
                 if self.task_registry.get(s.task_name) is not None
@@ -1243,7 +1243,7 @@ class HeartbeatEngine:
         """
         now = datetime.now()
         current_minutes = now.hour * 60 + now.minute
-        interval_minutes = max(1, int(getattr(self.config, "interval_seconds", 60)) // 60)
+        interval_minutes = max(1, current_interval_seconds() // 60)
         for t in times:
             try:
                 hh, mm = str(t).strip().split(":", 1)
@@ -1270,7 +1270,7 @@ class HeartbeatEngine:
         last_runs = task_history.get_summary()
         return {
             "enabled": self.config.enabled,
-            "interval_seconds": self.config.interval_seconds,
+            "interval_seconds": current_interval_seconds(),
             "total_ticks": self._total_ticks,
             "task_count": len(self.task_registry.list_all()),
             "schedule_count": len(self.config.task_schedules),

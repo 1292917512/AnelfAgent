@@ -1,6 +1,8 @@
 """心跳调度配置：HeartbeatConfig + TaskSchedule 数据模型。
 
-持久化到 config/heartbeat.json，管理心跳间隔与任务调度绑定。
+持久化到 config/heartbeat.json，管理任务调度绑定。
+心跳节拍间隔不在本文件存储——单一真源是 mind.heartbeat_interval
+（mind/core 配置组），统一经 current_interval_seconds() 读取。
 """
 
 from __future__ import annotations
@@ -138,7 +140,6 @@ class HeartbeatConfig:
     """心跳系统全局配置。"""
 
     enabled: bool = True
-    interval_seconds: int = 300
     analysis_temperature: float = 0.7
     min_conversations_for_analysis: int = 3
     task_schedules: List[TaskSchedule] = field(default_factory=list)
@@ -174,7 +175,6 @@ class HeartbeatConfig:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "enabled": self.enabled,
-            "interval_seconds": self.interval_seconds,
             "analysis_temperature": self.analysis_temperature,
             "min_conversations_for_analysis": self.min_conversations_for_analysis,
             "task_schedules": [s.to_dict() for s in self.task_schedules],
@@ -232,7 +232,6 @@ def _parse_config(raw: Dict[str, Any]) -> HeartbeatConfig:
     )
     return HeartbeatConfig(
         enabled=raw.get("enabled", True),
-        interval_seconds=int(raw.get("interval_seconds", 300)),
         analysis_temperature=float(raw.get("analysis_temperature", 0.7)),
         min_conversations_for_analysis=int(raw.get("min_conversations_for_analysis", 3)),
         task_schedules=schedules,
@@ -258,16 +257,8 @@ def _try_migrate() -> HeartbeatConfig:
             min_conversations_for_analysis=int(old.get("min_conversations_for_analysis", 3)),
         )
 
-        old_interval = 300
-        try:
-            from agent.config import get_config_provider
-            old_interval = get_config_provider().mind.heartbeat_interval
-        except Exception:
-            log("_try_migrate 异常已忽略", "DEBUG")
-        cfg.interval_seconds = old_interval
-
         reflect_hours = float(old.get("reflect_min_hours", 1.0))
-        reflect_beats = max(1, int(reflect_hours * 3600 / cfg.interval_seconds))
+        reflect_beats = max(1, int(reflect_hours * 3600 / current_interval_seconds()))
 
         introspection_dir = Path(ConfigPaths.INTROSPECTION_DIR)
         if introspection_dir.is_dir():
@@ -309,3 +300,17 @@ def reload_heartbeat_config() -> HeartbeatConfig:
     global _instance
     _instance = HeartbeatConfig.load()
     return _instance
+
+
+def current_interval_seconds() -> int:
+    """当前生效的心跳节拍间隔（秒）——单一真源 mind.heartbeat_interval 的统一读口。
+
+    心跳循环（assistant._heartbeat_loop）实际按该值休眠；引擎态势文案、
+    调度节奏折算、定时任务跨午夜窗口与 Web 状态展示一律读本函数，
+    heartbeat.json 不存间隔副本（双源写读分离曾是"配置改了不生效"的根因）。
+    """
+    try:
+        from agent.config import get_config_provider
+        return max(1, int(get_config_provider().mind.heartbeat_interval))
+    except Exception:
+        return 300

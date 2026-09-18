@@ -172,6 +172,7 @@ class AudioSyncWatcher:
 
     def __init__(self) -> None:
         self._task: Optional[asyncio.Task[None]] = None
+        self._manual_task: Optional[asyncio.Task[Dict[str, Any]]] = None
         self._stop = asyncio.Event()
         self._sync_lock = asyncio.Lock()
         self._wake = asyncio.Event()
@@ -194,13 +195,15 @@ class AudioSyncWatcher:
     async def close(self) -> None:
         self._stop.set()
         self._wake.set()
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        for task in (self._task, self._manual_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._task = None
+        self._manual_task = None
 
     async def _loop(self) -> None:
         while not self._stop.is_set():
@@ -227,7 +230,7 @@ class AudioSyncWatcher:
             "source": source.desc() if source else "",
             "source_key": source.key if source else "",
             "running": self._task is not None,
-            "syncing": self._progress is not None,
+            "syncing": self._sync_lock.locked(),
             "progress": self._progress,
             "last_scan_ns": self._last_scan_ns,
             "last_result": self._last_result,
@@ -252,6 +255,46 @@ class AudioSyncWatcher:
             self._last_result = dict(result)
             self._last_error = str(result.get("error", ""))
             return result
+
+    async def trigger(self, wait_seconds: float = 20.0) -> Dict[str, Any]:
+        """后台触发一轮镜像同步（长批量操作，执行不绑定调用方生命周期）。
+
+        一轮同步（下载 → 合并 → 分批转写 → 入库）可远超工具/HTTP 的超时
+        上限，同步等待必然超时且取消会丢弃已完成的单元内工作。故执行一律
+        放独立后台任务：已有同步在跑时不重复发起、立即返回事实；
+        wait_seconds 内完成（小增量常态）直接返回本轮摘要，未完成返回
+        started，进度与结果经 status() 轮询。
+        """
+        if self._sync_lock.locked() or self._manual_sync_running():
+            return {"started": False, "completed": False, "error": "",
+                    "reason": "已有同步进行中（周期循环/面板/上次手动触发），"
+                              "经 status 查询进度与结果"}
+        task = asyncio.create_task(self._manual_sync(), name="audiosync.manual")
+        self._manual_task = task
+        if wait_seconds > 0:
+            await asyncio.wait({task}, timeout=wait_seconds)
+        if not task.done():
+            return {"started": True, "completed": False, "error": "",
+                    "hint": "同步在后台执行中，经 status 查询进度与结果"}
+        if task.cancelled():
+            return {"started": True, "completed": False,
+                    "error": "同步任务被取消（系统关停）"}
+        return {"started": True, "completed": True, "error": "",
+                "result": task.result()}
+
+    def _manual_sync_running(self) -> bool:
+        """手动触发的后台同步是否在途（含排队等锁）。"""
+        return self._manual_task is not None and not self._manual_task.done()
+
+    async def _manual_sync(self) -> Dict[str, Any]:
+        """手动触发轮的执行体（异常自持，错误经 status() 暴露）。"""
+        try:
+            return await self.sync_now()
+        except Exception as exc:
+            self._last_error = str(exc)
+            log(f"手动同步异常: {exc}", "WARNING", tag=_LOG_TAG)
+            return {"scanned": 0, "new": 0, "ingested": 0, "deleted": 0,
+                    "failed": 0, "no_speech": 0, "error": str(exc)}
 
     async def preview(self) -> Dict[str, Any]:
         """待同步预览：扫描来源并与登记表 diff（只读，不处理文件）。

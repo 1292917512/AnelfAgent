@@ -36,6 +36,7 @@
     "planning": "目标规划",
     "task": "任务系统",
     "storage": "存储与备份",
+    "vision": "视觉",
     "other": "其他",
     "model": "模型"
   },
@@ -78,7 +79,8 @@
     "model/describe": "媒体描述",
     "task/history": "执行历史",
     "channel/outbound": "出站哨兵",
-    "retrieval": "检索"
+    "retrieval": "检索",
+    "vision/face": "人脸识别"
   },
   "window": {
     "title": "对话窗口",

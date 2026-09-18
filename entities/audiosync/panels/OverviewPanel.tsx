@@ -58,8 +58,12 @@ export function OverviewPanel() {
     mutationFn: () => audiosyncApi.syncNow(),
     onSuccess: (r) => {
       const d = r.data;
-      if (d.error) toast.error(d.error);
-      else toast.success(t("messages.syncDone", { new: d.new, ingested: d.ingested }));
+      const err = d.error || d.result?.error;
+      if (err) toast.error(err);
+      else if (d.completed && d.result)
+        toast.success(t("messages.syncDone", { new: d.result.new, ingested: d.result.ingested }));
+      else if (d.started) toast.info(t("messages.syncStarted"));
+      else toast.info(t("messages.syncAlreadyRunning"));
       invalidateAll();
     },
     onError: () => toast.error(t("messages.opFailed")),

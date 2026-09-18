@@ -75,23 +75,34 @@ async def light_llm(prompt: str, *, temperature: float = 0.1, timeout: float = 1
     """轻量一次性 LLM 调用（无工具、带模型回退），供裁决/提取类内部任务使用。
 
     经 chat_with_fallback 流式通道调用：按空闲窗口判死（思考/输出中不计时，
-    完全静默超 timeout 才超时），长思考模型不再被墙钟掐断。思考等级可经
+    完全静默超 timeout 才超时），长思考模型不再被墙钟掐断。可经
+    memory_light_model 指定专用轻量模型（检索规划在回复关键路径上，更快
+    的模型直接降低召回延迟；不存在/停用回落默认主模型），思考等级经
     memory_judge_reasoning_effort 配置（空 = 跟随模型自身配置）。
 
     Model Experience:
-    - 模型看到什么：无 prompt 层变化；仅通道（流式）与可选思考档位。
+    - 模型看到什么：无 prompt 层变化；仅通道（流式）与可选专用模型/思考档位。
     - token 影响：指定低思考档可显著省 token；流式本身不改用量。
     - 缓存影响：独立小请求，不触碰任何对话前缀层。
     """
     from agent.llm import get_llm_manager
 
+    manager = get_llm_manager()
+    client = None
+    model_id = str(get_config("memory_light_model", "") or "").strip()
+    if model_id:
+        client = manager.get_enabled_client(model_id)
+        if client is None:
+            log(f"轻量内部模型不存在或已停用，回落默认主模型: {model_id}",
+                "WARNING", tag="思维")
     options: Dict[str, Any] = {"temperature": temperature}
     effort = normalize_effort(get_config("memory_judge_reasoning_effort", ""))
     if effort:
         options["reasoning_effort"] = effort
-    result = await get_llm_manager().chat_with_fallback(
+    result = await manager.chat_with_fallback(
         [{"role": "user", "content": prompt}],
         options=options,
+        client=client,
         max_retries=1,
         timeout=timeout,
         stream=True,
@@ -309,8 +320,13 @@ _DEDUP_CONFIGS = {
             "max": 1,
             "step": 0.05,
         },
+        "memory_light_model": {
+            "description": "轻量内部调用的专用模型 ID（检索规划、判重裁决、自动捕获提取等 light_llm 通道）：指定更快的已配置模型可显著降低回复关键路径上的规划延迟（不存在/停用回落默认主模型，失败仍走回退链）；空 = 默认主模型",
+            "default": "",
+            "advanced": True,
+        },
         "memory_judge_reasoning_effort": {
-            "description": "裁决/提取类内部调用的思考等级（判重裁决、自动捕获提取、关系抽取）：轻量任务通常无需深度思考，低档省时省 token（模型不支持思考时自动忽略）；空 = 跟随模型自身配置",
+            "description": "裁决/提取类内部调用的思考等级（检索规划、判重裁决、自动捕获提取、关系抽取）：轻量任务通常无需深度思考，低档省时省 token（模型不支持思考时自动忽略）；空 = 跟随模型自身配置",
             "default": "",
             "value_type": ConfigValueType.ENUM,
             "options": ["", *CANONICAL_EFFORTS],

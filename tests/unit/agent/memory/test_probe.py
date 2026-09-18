@@ -168,7 +168,7 @@ async def test_recall_split_fires_probe_and_drains_delta(store, monkeypatch) -> 
         evidence="常一起吃饭",
     )
 
-    async def _plan(self, query: str) -> RetrievalPlan:
+    async def _plan(self, query: str, *, timeout: float | None = None) -> RetrievalPlan:
         return RetrievalPlan(queries=["阿辰的朋友"], deep_needed=True, node_keys=["user:qq:1"])
 
     monkeypatch.setattr(MemoryRetriever, "plan_retrieval", _plan)
@@ -213,13 +213,13 @@ async def test_recall_split_without_fire_probe_skips_hub(store, monkeypatch) -> 
 
 @pytest.mark.asyncio
 async def test_recall_budget_bounds_slow_planning(store, monkeypatch) -> None:
-    """召回总时限收编检索规划：规划超份额回退原查询，整体召回不超预算。"""
+    """召回总时限兜底：规划段失控时整体召回仍不超预算（外层 wait_for 回退）。"""
     import time
 
     from agent.memory.memory_retriever import MemoryRetriever
     from agent.memory.memory_types import RetrievalPlan
 
-    async def _slow_plan(self, query: str) -> RetrievalPlan:
+    async def _slow_plan(self, query: str, *, timeout: float | None = None) -> RetrievalPlan:
         await asyncio.sleep(30)
         return RetrievalPlan(queries=[query])
 

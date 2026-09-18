@@ -254,6 +254,15 @@ tick() 单次心跳：
 四种触发模式：heartbeat（每 N 次心跳）/ scheduled（每天指定时间）/
 idle（连续 N 次心跳无思考活动后，全局仅一条）/ manual（仅手动）。
 
+**心跳间隔单一真源 = `mind.heartbeat_interval`**（mind/core 配置组）：
+`assistant._heartbeat_loop` 实际按其休眠，且 sleep 可被 ConfigManager 变更
+监听唤醒——间隔热更后立即按新值重排休眠，不等旧周期到期（同值同步不唤醒，
+不重置 sleep 进度）。heartbeat.json 不存间隔副本（双源写读分离曾是"配置改了
+不生效 + 两处显示分裂"的根因）：引擎态势文案/调度节奏折算/scheduled 跨午夜
+窗口与 Web 心跳页展示统一读 `heartbeat/config.current_interval_seconds()`；
+Web 心跳页保存 interval_seconds 经 `HeartbeatService._save_interval_seconds`
+路由 `save_mind_config`（与 PUT /config/meta 同 coerce+clamp 纪律，下限 60s）。
+
 **scheduled 槽位去重以执行历史为唯一事实源**：调度配置只存定义与节拍计数，
 不记 last_run 标记——`task_history.get_last_good_runs()`（终态即原子落盘，
 success/no_output 计入、error 保留重试）给出各任务最近一次非失败执行时间戳，
@@ -425,7 +434,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| LLM 检索规划 | `memory_retriever.plan_retrieval`（公开 API，升级自 `_rewrite_query`，仍受 `memory_query_rewrite_enabled` 门控） | 轻量 LLM（light_llm 通道）把对话尾部转成结构化计划 `{queries(1-3 互补), entities, deep_needed, rationale}`，失败/超时回退原查询单发（8s 预算不变）。多计划查询并行经 federated_search 后 `merge_consensus`（retriever 公开 API）融合：同键（fusion `dedupe_key`：anelf_memory_id / 内容哈希）取最高分，≥2 查询命中 ×1.1 共识加成（确定性可靠性信号）。计划实体经 `GraphStore.resolve_nodes_for_tags` 解析为图谱节点 → 原生一跳邻域 + cognee `node_name` 定向检索 |
+| LLM 检索规划 | `memory_retriever.plan_retrieval`（公开 API，升级自 `_rewrite_query`，仍受 `memory_query_rewrite_enabled` 门控） | 轻量 LLM（light_llm 通道，可经 `memory_light_model` 指定专用轻量模型降低关键路径延迟）把对话尾部转成结构化计划 `{queries(1-3 互补), entities, deep_needed, rationale}`，失败/超时回退原查询单发（预算 `memory_plan_budget_seconds`，0 = 按召回总超时 40% 份额派生、召回路径中至多占总超时减 1s，独立直调缺省 8s；LLM 调用与实体解析合计单一 wait_for 收口）。多计划查询并行经 federated_search 后 `merge_consensus`（retriever 公开 API）融合：同键（fusion `dedupe_key`：anelf_memory_id / 内容哈希）取最高分，≥2 查询命中 ×1.1 共识加成（确定性可靠性信号）。计划实体经 `GraphStore.resolve_nodes_for_tags` 解析为图谱节点 → 原生一跳邻域 + cognee `node_name` 定向检索 |
 | 异步深探 + provider 注入 | `agent/memory/probe.py`（DeepProbeHub + RecallLedger + provider `memory_deep_probe`） | 回复路径（recollection `fire_probe=True`，心跳/任务/子代理零影响）检索完成后：基底层产物入召回账本 → 规划判定 `deep_needed` 或已解析实体节点时 `spawn()` 异步启动深探（在 5s 召回超时之外与 LLM 首轮思考并行）：cognee GRAPH_COMPLETION / GRAPH_COMPLETION_CONTEXT_EXTENSION / node_name 定向 + 原生图谱邻域。分两阶段刷新（类脑唤醒：快段原生图谱邻域毫秒级先渲染注入，慢段 cognee LLM 检索完成后并入更新）；增量行经 `recall_format` 行格式化（与基底层召回同构的 💡 归属标注 正文（时间 记）），分节条理化（▸ 标题 · 说明 + 缩进条目）；完成后写入 hub 持久渲染缓存（`state.rendered`），经上下文提供者 `memory_deep_probe`（priority 34、group=memory、`memory_probe_inject` 门控）每轮读取注入 provider 层——异步完成前为空零注入，完成后每轮在场且字节稳定（无新产物拿旧值，不消失），新回复 begin_reply 重置（不跨回复持久，防与基底层召回常驻重复）。provider 消息不进压缩历史（每轮重新收集、逐字存活），位于最新工具结果之后注意力最强处。触发按需非被动（LLM 规划判定），单飞防重，per-scope 新回复替换 + 惰性 TTL 清扫；配置 `memory/probe` 组（enabled/max_chars 1600/timeout 60s），指标 probe.* |
 | 召回账本（三键防重复） | `probe.RecallLedger`（键归一权威 `memory_types.normalized_content_key`） | per-reply 三键集合（结果 id / 图谱边 id / 内容归一前缀），三条召回通道共用：基底层注入（recall_split 末尾 + load_relation_snippets 边 id）、AI recall 工具返回（tools.py 记账，探针不重复 AI 已取回内容）、异步深探渲染前查账——一次回复内同一事实只出现一次（"一块连续记忆面"的机械保证）；`begin_reply` 重置 |
 | cognee 检索面全量接入 | `cognee/fusion.py` + `cognee/config.py` | ① `federated_search`/`search_cognee`（公开）新增 `node_names` → cognee `recall(node_name=...)` 定向检索通道（每数据集一次，recall 工具 deep 模式/探针/规划实体定向三处共用）；`parse_memory_projection` 在边界解析投影文档头（干净正文入 snippet、Tags 回填结果标签——归属标注/上下文加权/联想种子对 cognee 结果同样生效，所有消费面一次受益）；② `deep_search_types` 默认追加 GRAPH_COMPLETION_CONTEXT_EXTENSION、SUMMARIES（存量配置=旧默认时一次性迁移升级，自定义列表原样保留；不支持类型运行时静默跳过）；③ `cognee_weight` 0.8→1.0 平权（来源优先级已保证原生胜出）；④ 被动路径补传 `query_tags`（scope 数据集推导缺口）；⑤ 深类型只经探针（异步）与 recall 工具（显式）发生，被动召回保持轻量 |
@@ -657,6 +666,8 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 候选可解释性 | `IdentifyCandidate.separation` + api.ts + 识别面板 Badge | 候选四元组：similarity（决策分）/anchor/sample/channel（三判据）/separation（置信分离度），前端识别面板展示分离度 |
 
 > Model Experience：① AI 视角：候选带 separation 后，"0.76 但分离度 1.8"与"0.90 且分离度 3.7"有了明确的可信度差异；② token 影响：无新增 schema；③ 缓存影响：无；④ 已评估未采纳：嵌入级均值减除/白化（WeSpeaker 配方可用但会移动余弦阈值标定，需重训标定不适用动态小库）、PLDA（需标注数据）、活体检测（本地单用户场景无需求）——最大剩余杠杆在嵌入模型本身（CAM++ → ERes2NetV2，属音源组件侧升级）
+>
+> 受控仿真基准（workspace/tmp/vpbench/bench.py：v1=be989b0 决策逻辑忠实重演 vs v2=当前真实代码；30 说话人、强失真、共享信道漂移模型）：已知信道识别两者持平且零错误认亲；**新信道经"碎片→合并"闭环后 v1 0% vs v2 100%**（v1 的 outlier 淘汰在合并时拒收远离心质心的新信道样本，永远无法适应；v2 收进池建模板）；单发投毒（cos≈0.78 超阈值他人声音）两者均 0 入池；**适应性迭代投毒（0.78→0.956 逐步逼近档案表示）v1 0/96 入池 vs v2 96/96 入池——但受害者识别率 100%→100% 不动摇**（锚的加权历史 + 同信道 FIFO 淘汰保护信道模板共同兜底，池污染可由 speaker_refine 重建复位）。设计权衡明示：相干门（0.45）的"宽"正是新信道适应的前提——新信道样本对锚 cos≈0.61，任何能拦 0.78 攻击样本的门都会先拦死它；适应性投毒要求攻击者持有受害者足量语音，本地单用户场景在威胁模型外，恢复通道（删样本+重建）AI/Web 双面可用
 
 #### 声纹库 v2：一人一档案与信道感知（第三十五轮新增）
 
@@ -708,7 +719,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 声纹识别并行 | `engine._on_speech_end` | 声纹只读识别与 ASR 定稿并行执行（二者都只依赖本段音频快照，互不依赖）——定稿→思维启动的关键路径收敛为一段网络往返（此前串行定稿→声纹→入轮） |
 | 首句快速断句 | `agent/tts/sentences.py`（首句窗口 6~36 字） | 首句未产出前在软切点提前断句——TTS 首请求不等第一个完整句，开声延迟从整句缩到首个分句；窗口内无软切点不硬切（短应答/无标点串回落常规规则，等句末或超长软切） |
 | 抢占清场 | `playback.drop_pending` + `engine._on_delta` 提交回复时 | 回复抢占在播主动播报时清空其未播帧（含收束帧，不放过打断哨兵——非打断语义），回复音频紧跟当前已下发帧直落；pending_finals 计数同步收敛（speak_to_scope 的 appending 判据不受影响） |
-| 召回预算收编规划 | `memory_retriever` recall 路径 | 检索规划（轻 LLM，原 8s 内部超时在召回总时限之外、串行在最前）纳入 `memory_recall_timeout_seconds` 总预算：规划占前四成份额（超份额回退原查询单发，保住检索段），规划+提及+多路检索全程一个 wait_for——被动召回墙钟真正有界（对通话首响与文字回复同效） |
+| 召回预算收编规划 | `memory_retriever` recall 路径 | 检索规划（轻 LLM，原 8s 内部超时在召回总时限之外、串行在最前）纳入 `memory_recall_timeout_seconds` 总预算：规划段独立预算 `memory_plan_budget_seconds`（0 = 占前四成份额派生，收敛至多总超时减 1s 保住检索段；超预算回退原查询单发），规划+提及+多路检索全程一个 wait_for——被动召回墙钟真正有界（对通话首响与文字回复同效） |
 
 > Model Experience：① 通话首响四段提速：声纹并行（省一次网络往返）+ 首句快断（开声提前约一个分句）+ 抢占清场（回复不被主动播报残余帧拖住）+ 召回预算（规划不再无限前置）；工具轮不再长时间静默（先应声训诫 + send_message 自动播出）；② 音色一致性：声音页一处配置全链路生效；③ token 影响：无新增工具 schema，通话注入上限 120→220（仅通话中占用）；④ 缓存影响：通话注入文案变化触发一次前缀重建（此后稳定）
 

@@ -102,7 +102,7 @@ export function ConfigPanel() {
               <label className="text-xs text-muted font-medium">{t("config.interval")}</label>
               <div className="flex items-center gap-2">
                 <Input
-                  type="number" min={10} step={10}
+                  type="number" min={60} step={10}
                   value={form.interval_seconds ?? 300}
                   onChange={(e) => setField("interval_seconds", parseInt(e.target.value) || 300)}
                 />

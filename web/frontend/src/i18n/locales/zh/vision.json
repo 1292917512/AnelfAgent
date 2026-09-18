@@ -4,7 +4,8 @@
   "tabs": {
     "overview": "总览",
     "config": "配置",
-    "capabilities": "生成能力"
+    "capabilities": "生成能力",
+    "face": "人脸识别"
   },
   "latestFrame": "最新画面",
   "noFrame": "尚无画面",
@@ -58,5 +59,139 @@
     "namePlaceholder": "预设名",
     "descPlaceholder": "风格描述（拼接在提示词末尾）",
     "add": "添加"
+  },
+  "face": {
+    "tabs": {
+      "overview": "总览",
+      "persons": "人物档案",
+      "events": "出现事件"
+    },
+    "engine": {
+      "title": "人脸识别服务",
+      "reachable": "可达",
+      "unreachable": "不可达",
+      "notConfigured": "未配置",
+      "recheck": "重新检测",
+      "desc": "检测+512 维向量提取由自部署 GPU 服务承担（InsightFace buffalo_l）。地址配置在",
+      "goConfigure": "模型页 → 组件凭据（face）",
+      "model": "模型",
+      "dim": "向量维度",
+      "device": "推理设备",
+      "modelNote": "人脸库（人物档案/样本/绑定/事件）存储在 Agent 侧；引擎只负责提取向量。"
+    },
+    "stats": {
+      "title": "库统计",
+      "persons": "人物",
+      "pending": "待确认",
+      "bound": "已绑定实体",
+      "samples": "样本",
+      "events": "出现事件",
+      "unread": "未读事件",
+      "dims": "向量维度",
+      "matchThreshold": "匹配阈值",
+      "mergeThreshold": "合并判读线",
+      "separation": "分离度门"
+    },
+    "status": {
+      "confirmed": "已确认",
+      "pending": "待确认"
+    },
+    "fields": {
+      "samples": "样本",
+      "matches": "命中",
+      "unbound": "未绑定实体",
+      "lastSeen": "最近出现",
+      "name": "姓名",
+      "role": "角色",
+      "rolePlaceholder": "角色（如 主人/同事）",
+      "scopePlaceholder": "实体 scope（如 user:qq:456，可空）",
+      "notes": "备注"
+    },
+    "actions": {
+      "detail": "详情",
+      "confirm": "确认",
+      "bind": "绑定实体",
+      "merge": "合并",
+      "refineHint": "以样本池重建人脸锚",
+      "identify": "上传识别",
+      "enroll": "注册人脸",
+      "consolidate": "智能整理",
+      "prunePending": "清理待确认",
+      "consolidateRun": "合并 {{count}} 人"
+    },
+    "filters": {
+      "allStatus": "全部状态",
+      "confirmed": "已确认",
+      "pending": "待确认",
+      "keyword": "姓名/角色/编号过滤"
+    },
+    "empty": {
+      "persons": "暂无人物档案",
+      "personsHint": "上传一张正脸照注册人物，或开启入站图片自动识别后由系统建档",
+      "events": "暂无出现事件",
+      "eventsHint": "频道图片/视觉帧经人脸识别后，命中结果会出现在这里"
+    },
+    "groups": {
+      "pending": "待确认 ({{count}})",
+      "confirmed": "已确认 ({{count}})"
+    },
+    "identify": {
+      "noMatch": "未匹配到已知人物"
+    },
+    "detail": {
+      "title": "人物档案",
+      "threshold": "有效阈值",
+      "custom": "独立",
+      "samples": "样本池 ({{count}})",
+      "noSamples": "暂无样本",
+      "deleteSample": "删除样本",
+      "recentEvents": "近期出现",
+      "noEvents": "暂无出现事件"
+    },
+    "events": {
+      "sourceFilter": "来源过滤（如 inbound）",
+      "unreadOnly": "仅未读",
+      "markAllRead": "全部标记已读",
+      "unread": "未读",
+      "faceUnit": "脸",
+      "noHit": "无已知人物命中",
+      "unknown": "未知"
+    },
+    "modals": {
+      "confirmTitle": "确认临时人物 {{key}}",
+      "bindTitle": "绑定实体：{{name}}",
+      "bindHint": "绑定后该人物出现在画面中时，其实体画像与记忆自动参与召回；留空解除绑定。",
+      "mergeTitle": "合并人物 {{key}}",
+      "mergeHint": "将源人物并入目标人物：样本迁移、人脸锚按权重合成，源档案删除。",
+      "mergeTarget": "选择合并目标（保留的档案）",
+      "enrollTitle": "注册人脸",
+      "enrollHint": "上传一张正脸、光线充足、分辨率足够的图片；取最显著的脸建档。",
+      "identifyTitle": "上传识别",
+      "identifyIngest": "识别结果入库（事件时间线 + 样本累积 + 新人建档）",
+      "deleteTitle": "删除人物",
+      "deleteHint": "确认删除人物 {{key}}？样本池将一并删除，出现事件保留。",
+      "pruneTitle": "清理待确认人物",
+      "pruneHint": "将删除全部 {{count}} 个待确认（临时）人物档案及其样本。",
+      "consolidateTitle": "智能整理",
+      "consolidateEmpty": "没有可合并的簇，也没有低价值人物。",
+      "consolidateHint": "按人脸锚相似度（判读线 {{threshold}}）聚类，每簇并入命中最多者。",
+      "consolidateKeep": "保留",
+      "insignificantTitle": "低价值临时人物 {{count}} 个（命中 ≤ {{matches}} 次，多为路人）一并清理"
+    },
+    "messages": {
+      "opFailed": "操作失败",
+      "saveSuccess": "已保存",
+      "confirmSuccess": "已确认人物",
+      "mergeSuccess": "已合并人物",
+      "bindSuccess": "已更新实体绑定",
+      "deleteSuccess": "已删除",
+      "enrollSuccess": "注册成功",
+      "identifySuccess": "识别完成，检测到 {{count}} 张脸",
+      "pruneSuccess": "已清理 {{count}} 个临时人物",
+      "refineSuccess": "人脸锚已重建（{{samples}} 样本，漂移 {{drift}}）",
+      "refineInitial": "首次建立",
+      "consolidateSuccess": "整理完成：合并 {{clusters}} 簇，影响 {{count}} 个档案",
+      "markReadSuccess": "已全部标记已读"
+    }
   }
 }

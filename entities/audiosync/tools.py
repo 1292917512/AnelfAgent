@@ -20,11 +20,16 @@ def _dump(data: Any) -> str:
 
 @tool(group=_group, tags=["core"])
 async def audiosync_sync_now() -> str:
-    """立即执行一轮音源目录增量同步：扫描配置的音频来源（本地目录/OpenList），新增文件自动转写并声纹识别入库。"""
+    """触发一轮音源目录增量同步（后台执行）：扫描配置的音频来源（本地目录/OpenList），新增文件自动转写并声纹识别入库。
+
+    同步是长批量操作，本工具立即返回不阻塞：completed=true 时 result 为本轮摘要；
+    started=true 且 completed=false 表示仍在后台执行；started=false 表示已有一轮
+    同步进行中（不会重复发起）。后两种情况经 audiosync_status 轮询进度与结果。
+    """
     try:
         from .watcher import get_audiosync_watcher
         watcher = get_audiosync_watcher()
-        result = await watcher.sync_now()
+        result = await watcher.trigger()
         result["status"] = watcher.status()
         return _dump(result)
     except Exception as e:

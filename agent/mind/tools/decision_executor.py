@@ -130,7 +130,7 @@ async def execute_reply(mind: Mind, decision: Decision) -> None:
         if pending_images or pending_media:
             mind.pfc.activate_media_tools(pending_images, pending_media)
         if mind.media_pipeline and pending_media:
-            media_texts = await mind.media_pipeline.process_segments(pending_media)
+            media_texts = await mind.media_pipeline.process_segments(pending_media, scope)
             if media_texts:
                 combined = '\n'.join(media_texts)
                 await mind._add_system_context(anything, combined)

@@ -110,6 +110,22 @@ async def _isolate_audio_library(tmp_path, monkeypatch: pytest.MonkeyPatch):
     await lib.close()
 
 
+@pytest.fixture(autouse=True)
+async def _isolate_face_library(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """隔离核心人脸库单例：测试态指向临时库文件，用例结束关闭连接。
+
+    与音频库隔离同理：人脸识别入库管线会触达全局单例，不隔离则测试写入
+    真实 data/agent_face.sqlite3，且 aiosqlite 连接线程无人关闭挂住 pytest
+    进程退出。
+    """
+    from agent.vision.face import store as face_store_mod
+
+    lib = face_store_mod.FaceStore(str(tmp_path / "face.sqlite3"))
+    monkeypatch.setattr(face_store_mod, "_store", lib)
+    yield lib
+    await lib.close()
+
+
 def _is_module_test(path: Path) -> bool:
     """模块内测试判定：entities/channels 下任意层级的 tests/ 目录
     （含实体组件子包的内嵌套件，如 entities/<name>/modules/<mod>/tests/）。"""

@@ -26,14 +26,26 @@ export interface SyncWatchStatus {
   last_error: string;
 }
 
-export interface SyncCycleResult {
+/** 一轮同步的摘要（watcher.sync_now 返回值）。 */
+export interface SyncCycleSummary {
   scanned: number;
   new: number;
   ingested: number;
   deleted?: number;
   failed?: number;
   no_speech?: number;
-  error: string;
+  paused?: boolean;
+  error?: string;
+}
+
+/** POST /sync 返回（触发语义：后台执行立即返回，进度经 /sync/status 轮询）。 */
+export interface SyncTriggerResult {
+  started: boolean;
+  completed: boolean;
+  error?: string;
+  reason?: string;
+  hint?: string;
+  result?: SyncCycleSummary;
   status?: SyncWatchStatus;
 }
 
@@ -82,7 +94,7 @@ export const audiosyncApi = {
   config: () => api.get<{ items: AudiosyncConfigItem[] }>("/entity/audiosync/config"),
   updateConfig: (updates: Record<string, unknown>) =>
     api.put<{ updated: number }>("/entity/audiosync/config", { updates }),
-  syncNow: () => api.post<SyncCycleResult>("/entity/audiosync/sync"),
+  syncNow: () => api.post<SyncTriggerResult>("/entity/audiosync/sync"),
   syncStatus: () => api.get<SyncWatchStatus>("/entity/audiosync/sync/status"),
   syncPreview: () => api.get<SyncPreview>("/entity/audiosync/sync/preview"),
   rebuildRecordings: (paths: string[]) =>

@@ -36,6 +36,7 @@
     "planning": "Planning",
     "task": "Tasks",
     "storage": "Storage & Backup",
+    "vision": "Vision",
     "other": "Other",
     "model": "Models"
   },
@@ -78,7 +79,8 @@
     "model/describe": "Media Describe",
     "task/history": "Execution History",
     "channel/outbound": "Outbound Guard",
-    "retrieval": "Retrieval"
+    "retrieval": "Retrieval",
+    "vision/face": "Face Recognition"
   },
   "window": {
     "title": "Conversation Window",

@@ -76,6 +76,8 @@ def _make_engine(
         monkeypatch.setattr(
             HeartbeatConfig, "save", lambda self, path=None: save_calls.append(self),
         )
+    # 间隔真源（mind.heartbeat_interval）打桩，隔离真实 mind 配置
+    monkeypatch.setattr("agent.heartbeat.engine.current_interval_seconds", lambda: 300)
     engine = HeartbeatEngine(mind)
     # 内置维护与执行器全部替身化：测试只关心调度决策
     engine._run_maintenance = AsyncMock()  # type: ignore[method-assign]

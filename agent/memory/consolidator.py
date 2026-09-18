@@ -394,6 +394,12 @@ _CONSOLIDATOR_CONFIGS = {
             "advanced": True,
             "unit": "秒",
         },
+        "memory_plan_budget_seconds": {
+            "description": "检索规划（轻量 LLM 产出多查询计划）的独立超时预算，超时回退原查询单发；0 = 按召回总超时的 40% 份额派生（召回路径中至多占总超时减 1 秒，保证检索段时间）",
+            "default": 0.0,
+            "advanced": True,
+            "unit": "秒",
+        },
         "memory_recall_permanent_pin": {
             "description": "永久记忆置顶注入条数（0 = 关闭；教导/规则类每轮固定注入）",
             "default": 3,

@@ -263,6 +263,11 @@ speaker_scope_tag = Tag(
     tag_name_desc="语音消息经声纹识别后，说话人绑定的实体 scope"
                   "（如 user:qq:456）——听到的是谁，按此召回该实体的画像与记忆",
 )
+face_scope_tag = Tag(
+    tag_name="face_scope",
+    tag_name_desc="画面经人脸识别后，在场人物绑定的实体 scope"
+                  "（如 user:qq:456）——看到的是谁，按此召回该实体的画像与记忆",
+)
 
 # 富文本内容标签
 json_card_tag = Tag(tag_name="json_card", tag_name_desc="JSON 卡片消息（QQ 分享链接、小程序卡片等），格式 [json_card:摘要文本]")

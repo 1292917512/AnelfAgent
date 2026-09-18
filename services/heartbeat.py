@@ -22,9 +22,33 @@ class HeartbeatService:
 
     @staticmethod
     def get_config() -> Dict[str, Any]:
-        """返回心跳调度配置。"""
-        from agent.heartbeat.config import get_heartbeat_config
-        return get_heartbeat_config().to_dict()
+        """返回心跳调度配置。
+
+        interval_seconds 为单一真源 mind.heartbeat_interval 的派生视图
+        （heartbeat.json 不存间隔副本），与配置中心展示恒一致。
+        """
+        from agent.heartbeat.config import current_interval_seconds, get_heartbeat_config
+        return {
+            **get_heartbeat_config().to_dict(),
+            "interval_seconds": current_interval_seconds(),
+        }
+
+    @staticmethod
+    def _save_interval_seconds(value: Any) -> None:
+        """心跳间隔写入单一真源 mind.heartbeat_interval（双轨同步 + 即时热更）。
+
+        与 PUT /config/meta 同纪律：经注册项 coerce + clamp 收敛后再保存；
+        保存触发的 ConfigManager 变更通知会唤醒心跳循环按新间隔重排。
+        """
+        from agent.config import get_config_provider
+        from core.config import ConfigRegistry
+
+        item = ConfigRegistry.get_item("heartbeat_interval")
+        try:
+            parsed = item.clamp(item.coerce_value(value)) if item else max(60.0, float(value))
+        except (TypeError, ValueError):
+            raise HeartbeatServiceError(f"心跳间隔取值非法: {value}", status_code=400) from None
+        get_config_provider().save_mind_config(heartbeat_interval=float(parsed))
 
     @staticmethod
     def save_config(params: Dict[str, Any]) -> None:
@@ -33,9 +57,11 @@ class HeartbeatService:
         Args:
             params: 仅含显式提供字段的更新字典（enabled / interval_seconds /
                 analysis_temperature / min_conversations_for_analysis / task_schedules）。
+                interval_seconds 路由到 mind.heartbeat_interval（单一真源），
+                其余字段落 heartbeat.json。
 
         Raises:
-            HeartbeatServiceError: task_schedules 校验失败（400）。
+            HeartbeatServiceError: 间隔取值非法或 task_schedules 校验失败（400）。
         """
         from agent.heartbeat.config import (
             TaskSchedule,
@@ -43,11 +69,12 @@ class HeartbeatService:
             validate_schedules,
         )
 
+        if "interval_seconds" in params:
+            HeartbeatService._save_interval_seconds(params["interval_seconds"])
+
         cfg = get_heartbeat_config()
         if "enabled" in params:
             cfg.enabled = params["enabled"]
-        if "interval_seconds" in params:
-            cfg.interval_seconds = max(10, params["interval_seconds"])
         if "analysis_temperature" in params:
             cfg.analysis_temperature = params["analysis_temperature"]
         if "min_conversations_for_analysis" in params:

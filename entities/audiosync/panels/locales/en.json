@@ -111,6 +111,8 @@
     "deleteSuccess": "Deleted",
     "configSaved": "Config saved",
     "syncDone": "Sync done: {{new}} new files, {{ingested}} ingested",
+    "syncStarted": "Sync started in background, progress refreshes automatically",
+    "syncAlreadyRunning": "Sync already in progress, progress refreshes automatically",
     "rebuildSuccess": "Rebuilt",
     "syncPaused": "Sync paused (persisted)",
     "syncResumed": "Sync resumed"

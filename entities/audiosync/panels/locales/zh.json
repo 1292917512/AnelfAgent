@@ -111,6 +111,8 @@
     "deleteSuccess": "已删除",
     "configSaved": "配置已保存",
     "syncDone": "同步完成：新增 {{new}} 个文件，入库 {{ingested}} 个",
+    "syncStarted": "同步已在后台启动，进度稍后自动刷新",
+    "syncAlreadyRunning": "已有同步进行中，进度稍后自动刷新",
     "rebuildSuccess": "重建完成",
     "syncPaused": "同步已暂停（配置已持久化）",
     "syncResumed": "同步已恢复"

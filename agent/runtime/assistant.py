@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from agent.messages import Everything
 from agent.mind.mind import Mind
@@ -31,6 +31,10 @@ class AgentAssistant:
         self._heartbeat_task: Optional[asyncio.Task[None]] = None
         self._heartbeat_interval = heartbeat_interval or self._load_heartbeat_interval()
         self._heartbeat_enabled = heartbeat_enabled
+        # 间隔热更：配置变更监听唤醒进行中的 sleep，立即按新间隔重排
+        self._interval_wake = asyncio.Event()
+        self._applied_interval = self._heartbeat_interval
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     @staticmethod
     def _load_heartbeat_interval() -> float:
@@ -189,17 +193,50 @@ class AgentAssistant:
         m = self.mind
         return bool(m.is_reply or m.is_reflecting or m._heartbeat_running)
 
+    def _on_interval_config_changed(self, key: str, value: Any) -> None:
+        """ConfigManager 变更监听：间隔值真实变化时唤醒进行中的 sleep。
+
+        回调可能来自非事件循环线程（AI 配置工具在执行器中运行），经
+        call_soon_threadsafe 置事件。save_mind_config 双轨同步会对全部
+        Mind 字段执行 ConfigManager.set，故与已应用的休眠值比较，
+        同值写入不唤醒（不重置 sleep 进度）。
+        """
+        try:
+            new_interval = float(value)
+        except (TypeError, ValueError):
+            return
+        if abs(new_interval - self._applied_interval) < 1e-6:
+            return
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._interval_wake.set)
+
     async def _heartbeat_loop(self) -> None:
         """定期触发 Mind 自主思考（反思、主动行为、目标推进等）。
 
         AI 执行中（非空闲）时延后心跳而非跳过整轮：短间隔轮询忙碌状态，
         空闲后立即补跑，保证空闲思考（idle 调度）与维护不被长对话饿死。
+        sleep 可被配置变更唤醒：间隔热更后立即按新值重排，不等旧周期到期。
         """
-        while True:
-            await asyncio.sleep(self._current_heartbeat_interval())
-            while self._mind_busy():
-                await asyncio.sleep(self._busy_defer_seconds())
-            try:
-                await self.mind.execute_mind(is_heartbeat=True)
-            except Exception:
-                log("心跳自主思考异常", "ERROR", tag="运行时")
+        from core.config import ConfigManager
+
+        self._loop = asyncio.get_running_loop()
+        ConfigManager.add_listener("heartbeat_interval", self._on_interval_config_changed)
+        try:
+            while True:
+                self._interval_wake.clear()
+                interval = self._current_heartbeat_interval()
+                self._applied_interval = interval
+                try:
+                    await asyncio.wait_for(self._interval_wake.wait(), timeout=interval)
+                    continue  # 间隔配置已变更：立即按新值重算休眠
+                except asyncio.TimeoutError:
+                    pass
+                while self._mind_busy():
+                    await asyncio.sleep(self._busy_defer_seconds())
+                try:
+                    await self.mind.execute_mind(is_heartbeat=True)
+                except Exception:
+                    log("心跳自主思考异常", "ERROR", tag="运行时")
+        finally:
+            ConfigManager.remove_listener("heartbeat_interval", self._on_interval_config_changed)

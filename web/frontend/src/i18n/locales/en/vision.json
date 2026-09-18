@@ -4,7 +4,8 @@
   "tabs": {
     "overview": "Overview",
     "config": "Config",
-    "capabilities": "Generation"
+    "capabilities": "Generation",
+    "face": "Face"
   },
   "latestFrame": "Latest frame",
   "noFrame": "No frame yet",
@@ -58,5 +59,139 @@
     "namePlaceholder": "Preset name",
     "descPlaceholder": "Style description (appended to the prompt)",
     "add": "Add"
+  },
+  "face": {
+    "tabs": {
+      "overview": "Overview",
+      "persons": "Persons",
+      "events": "Appearances"
+    },
+    "engine": {
+      "title": "Face Engine",
+      "reachable": "Reachable",
+      "unreachable": "Unreachable",
+      "notConfigured": "Not configured",
+      "recheck": "Recheck",
+      "desc": "Detection + 512-d embedding are handled by a self-hosted GPU service (InsightFace buffalo_l). Configure the address in",
+      "goConfigure": "Models → Provider Keys (face)",
+      "model": "Model",
+      "dim": "Dim",
+      "device": "Device",
+      "modelNote": "The face library (persons/samples/bindings/events) lives on the Agent side; the engine only extracts vectors."
+    },
+    "stats": {
+      "title": "Library",
+      "persons": "Persons",
+      "pending": "Pending",
+      "bound": "Bound",
+      "samples": "Samples",
+      "events": "Events",
+      "unread": "Unread",
+      "dims": "Dim",
+      "matchThreshold": "Match threshold",
+      "mergeThreshold": "Merge line",
+      "separation": "Separation"
+    },
+    "status": {
+      "confirmed": "Confirmed",
+      "pending": "Pending"
+    },
+    "fields": {
+      "samples": "Samples",
+      "matches": "Matches",
+      "unbound": "Not bound",
+      "lastSeen": "Last seen",
+      "name": "Name",
+      "role": "Role",
+      "rolePlaceholder": "Role (e.g. owner/colleague)",
+      "scopePlaceholder": "Entity scope (e.g. user:qq:456, optional)",
+      "notes": "Notes"
+    },
+    "actions": {
+      "detail": "Detail",
+      "confirm": "Confirm",
+      "bind": "Bind entity",
+      "merge": "Merge",
+      "refineHint": "Rebuild anchor from sample pool",
+      "identify": "Identify",
+      "enroll": "Enroll",
+      "consolidate": "Consolidate",
+      "prunePending": "Prune pending",
+      "consolidateRun": "Merge {{count}}"
+    },
+    "filters": {
+      "allStatus": "All status",
+      "confirmed": "Confirmed",
+      "pending": "Pending",
+      "keyword": "Filter by name/role/key"
+    },
+    "empty": {
+      "persons": "No persons yet",
+      "personsHint": "Enroll from a frontal photo, or enable inbound auto-recognition to build profiles",
+      "events": "No appearance events",
+      "eventsHint": "Face matches from channel images / vision frames will show up here"
+    },
+    "groups": {
+      "pending": "Pending ({{count}})",
+      "confirmed": "Confirmed ({{count}})"
+    },
+    "identify": {
+      "noMatch": "No known person matched"
+    },
+    "detail": {
+      "title": "Person",
+      "threshold": "Effective threshold",
+      "custom": "custom",
+      "samples": "Samples ({{count}})",
+      "noSamples": "No samples",
+      "deleteSample": "Delete sample",
+      "recentEvents": "Recent appearances",
+      "noEvents": "No appearance events"
+    },
+    "events": {
+      "sourceFilter": "Source filter (e.g. inbound)",
+      "unreadOnly": "Unread only",
+      "markAllRead": "Mark all read",
+      "unread": "Unread",
+      "faceUnit": "faces",
+      "noHit": "No known person hit",
+      "unknown": "Unknown"
+    },
+    "modals": {
+      "confirmTitle": "Confirm person {{key}}",
+      "bindTitle": "Bind entity: {{name}}",
+      "bindHint": "Once bound, the entity's profile and memory are auto-recalled when this person appears on camera; leave empty to unbind.",
+      "mergeTitle": "Merge person {{key}}",
+      "mergeHint": "Merge source into target: samples moved, anchors blended by weight, source removed.",
+      "mergeTarget": "Select merge target (kept profile)",
+      "enrollTitle": "Enroll face",
+      "enrollHint": "Upload a frontal, well-lit, high-resolution image; the most prominent face is enrolled.",
+      "identifyTitle": "Identify",
+      "identifyIngest": "Persist result (event timeline + sample accumulation + new profiles)",
+      "deleteTitle": "Delete person",
+      "deleteHint": "Delete person {{key}}? Samples are removed; appearance events are kept.",
+      "pruneTitle": "Prune pending persons",
+      "pruneHint": "This deletes all {{count}} pending (temporary) profiles and their samples.",
+      "consolidateTitle": "Consolidate",
+      "consolidateEmpty": "No mergeable clusters and no low-value persons.",
+      "consolidateHint": "Clustered by anchor similarity (merge line {{threshold}}); each cluster merges into the most-matched member.",
+      "consolidateKeep": "keep",
+      "insignificantTitle": "Also prune {{count}} low-value persons (matches ≤ {{matches}}, mostly passers-by)"
+    },
+    "messages": {
+      "opFailed": "Operation failed",
+      "saveSuccess": "Saved",
+      "confirmSuccess": "Person confirmed",
+      "mergeSuccess": "Persons merged",
+      "bindSuccess": "Entity binding updated",
+      "deleteSuccess": "Deleted",
+      "enrollSuccess": "Enrolled",
+      "identifySuccess": "Done, {{count}} face(s) detected",
+      "pruneSuccess": "Pruned {{count}} temporary person(s)",
+      "refineSuccess": "Anchor rebuilt ({{samples}} samples, drift {{drift}})",
+      "refineInitial": "initial",
+      "consolidateSuccess": "Consolidated: {{clusters}} cluster(s), {{count}} profile(s)",
+      "markReadSuccess": "All marked read"
+    }
   }
 }

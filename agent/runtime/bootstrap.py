@@ -110,6 +110,19 @@ def create_bootstrap() -> FlowMachine:
 
         Lifecycle.register("audio_store", store, cleanup=store.close, on_start=_init)
 
+    @machine.node(skip_on_error=True, depends_on=["init_storage"])
+    async def init_face():
+        """人脸核心库：建库（人物档案/样本池/出现事件，版本门自动处理旧库）。"""
+        from agent.vision.face import get_face_store
+        from core.lifecycle import Lifecycle
+
+        store = get_face_store()
+
+        async def _init() -> None:
+            await store.initialize()
+
+        Lifecycle.register("face_store", store, cleanup=store.close, on_start=_init)
+
     @machine.node(skip_on_error=False, depends_on=[])
     async def init_channel_system():
         """初始化频道管理器和输入管道。"""
@@ -271,6 +284,8 @@ def create_bootstrap() -> FlowMachine:
         import agent.storage.conversation_fold  # noqa: F401
         import agent.task.tools  # noqa: F401
         import agent.vision.context  # noqa: F401
+        import agent.vision.face.context  # noqa: F401
+        import agent.vision.face.tools  # noqa: F401
         import agent.vision.gen_tools  # noqa: F401
         import agent.vision.tools  # noqa: F401
 
@@ -301,7 +316,7 @@ def create_bootstrap() -> FlowMachine:
         log(f"🎓 技能工具已注册 ({count} 个)", tag="技能")
         count = activate_group("audio", "音频 - 声纹身份管理、声纹识别、语音转写检索与编辑、语音合成与音色管理、音乐生成")
         log(f"🎧 音频工具已注册 ({count} 个)", tag="音频")
-        count = activate_group("vision", "视觉 - 视觉源查看、画面监视与视觉源管理、图片/视频理解与生成")
+        count = activate_group("vision", "视觉 - 视觉源查看、画面监视与视觉源管理、图片/视频理解与生成、人脸身份管理与识别")
         log(f"👁 视觉工具已注册 ({count} 个)", tag="视觉")
         count = activate_group("retrieval", "检索 - 联网检索、网页读取、仓库文档、HTTP 请求、文件下载、文档重排序")
         log(f"🔎 检索工具已注册 ({count} 个)", tag="检索")
@@ -320,6 +335,17 @@ def create_bootstrap() -> FlowMachine:
         Lifecycle.register(
             "image_index_worker", image_index_worker,
             cleanup=image_index_worker.close,
+        )
+
+        # 人脸入库 worker：入站图片/视觉帧后台识别（检测→建档→事件→face_scope 打标）
+        # 单例经 worker.set_face_worker 登记，media_pipeline/buffer 经 submit_face_image 投递
+        from agent.vision.face.worker import FaceIngestWorker, set_face_worker
+        face_worker = FaceIngestWorker()
+        await face_worker.start()
+        set_face_worker(face_worker)
+        Lifecycle.register(
+            "face_ingest_worker", face_worker,
+            cleanup=face_worker.close,
         )
         return {"image_index_worker": image_index_worker}
 

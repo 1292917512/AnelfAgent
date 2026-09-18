@@ -75,6 +75,13 @@ class VisionBuffer:
             self.latest_by_source[source] = frame
             self.latest = frame
             self.last_change_at = frame.captured_at
+            # 人脸旁路：内容级变化帧投递人脸 worker（face_watch_enabled 门控在
+            # submit_face_image 内判定，默认关闭；fire-and-forget 不阻塞判变路径）
+            try:
+                from agent.vision.face.worker import submit_face_image
+                submit_face_image(path, f"vision:{source}")
+            except Exception:
+                log("人脸旁路投递异常已忽略", "DEBUG", tag=_LOG_TAG)
         return frame, changed
 
     def _is_changed(self, source: str, cells: list) -> bool:

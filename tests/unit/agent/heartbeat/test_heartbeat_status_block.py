@@ -61,6 +61,8 @@ def _make_engine(
     # reload() 内部经 from .config import 就地导入，需在源模块上打桩防读真实 heartbeat.json
     monkeypatch.setattr("agent.heartbeat.config.reload_heartbeat_config", lambda: config)
     monkeypatch.setattr(HeartbeatConfig, "save", lambda self, path=None: None)
+    # 间隔真源（mind.heartbeat_interval）打桩，隔离真实 mind 配置
+    monkeypatch.setattr("agent.heartbeat.engine.current_interval_seconds", lambda: 300)
     engine = HeartbeatEngine(SimpleNamespace())
     return engine
 
@@ -126,7 +128,7 @@ class TestEngineHeartbeatStatus:
             "broken_task", started_at=time.time() - 600,
             duration_ms=5000, status="error", trigger="scheduled",
         )
-        config = HeartbeatConfig(interval_seconds=300, task_schedules=[
+        config = HeartbeatConfig(task_schedules=[
             TaskSchedule(task_name="self_reflection", mode=ScheduleMode.HEARTBEAT, every_n_beats=10),
             TaskSchedule(task_name="broken_task", mode=ScheduleMode.SCHEDULED, schedule_times=["04:00"]),
             TaskSchedule(task_name="ghost", mode=ScheduleMode.HEARTBEAT),  # 定义缺失：不渲染

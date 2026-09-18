@@ -799,6 +799,237 @@ export interface VisionSourceInfo {
   watching: boolean;
 }
 
+// Face（人脸识别 · 核心视觉的眼睛记忆：人物档案 / 识别 / 出现事件）
+export interface FaceEngineHealth {
+  status: string;
+  model: string;
+  dim: number;
+  device: string;
+  version: string;
+}
+
+export interface FaceStatus {
+  engine: {
+    configured: boolean;
+    endpoint: string;
+    reachable: boolean;
+    health: FaceEngineHealth | null;
+  };
+  stats: FaceStats;
+  thresholds: { match: number; merge: number; separation: number };
+}
+
+export interface FaceStats {
+  persons?: number;
+  pending_persons?: number;
+  bound_persons?: number;
+  samples?: number;
+  events?: number;
+  unread_events?: number;
+  face_dims?: number;
+  db_path?: string;
+}
+
+export interface FacePerson {
+  id: number;
+  person_key: string;
+  name: string;
+  role: string;
+  status: string;
+  threshold: number | null;
+  notes: string;
+  entity_scope: string;
+  first_seen_ns: number;
+  last_seen_ns: number;
+  match_count: number;
+  archived: boolean;
+  anchor_weight: number;
+  sample_count?: number;
+  sources?: Record<string, number>;
+}
+
+export interface FaceSample {
+  id: number;
+  person_id: number;
+  image_path: string;
+  bbox: number[];
+  quality: number;
+  pose: { pitch?: number; yaw?: number; roll?: number };
+  source: string;
+  event_id: number | null;
+  created_ns: number;
+  dims: number;
+}
+
+export interface FaceHit {
+  person_id: number | null;
+  person_key: string;
+  person_name: string;
+  entity_scope: string;
+  similarity: number;
+  is_new: boolean;
+  matched: boolean;
+  det_score: number;
+  bbox: number[];
+  sample_added: boolean;
+}
+
+export interface FaceEvent {
+  id: number;
+  image_path: string;
+  source: string;
+  width: number;
+  height: number;
+  faces: FaceHit[];
+  faces_count: number;
+  ts_ns: number;
+  read: boolean;
+  created_ns: number;
+}
+
+export interface FacePersonListResult {
+  items: FacePerson[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface FaceEventListResult {
+  items: FaceEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface FacePersonDetail {
+  person: FacePerson;
+  effective_threshold: number;
+  samples: FaceSample[];
+  recent_events: FaceEvent[];
+}
+
+export interface FaceIdentifyFace {
+  index: number;
+  bbox: number[];
+  det_score: number;
+  skipped?: string;
+  best_match?: FaceMatchCandidate | null;
+  candidates?: FaceMatchCandidate[];
+}
+
+export interface FaceMatchCandidate {
+  id: number;
+  person_key: string;
+  name: string;
+  role: string;
+  status: string;
+  threshold: number;
+  similarity: number;
+  matched: boolean;
+  anchor_similarity: number;
+  sample_similarity: number;
+  separation: number | null;
+  entity_scope: string;
+}
+
+export interface FaceIdentifyResult {
+  ingested: boolean;
+  width?: number;
+  height?: number;
+  faces_detected?: number;
+  faces?: FaceIdentifyFace[];
+  image_path?: string;
+  source?: string;
+  event_id?: number | null;
+  hits?: FaceHit[];
+  error?: string;
+  skipped?: boolean;
+}
+
+export interface FaceConsolidateResult {
+  dry_run: boolean;
+  threshold: number;
+  clusters: Array<{
+    members: Array<{ id: number; person_key: string; name: string;
+      match_count: number; similarity: number }>;
+    keep_id: number;
+    best_similarity: number;
+  }>;
+  cluster_count: number;
+  persons_affected: number;
+  merges: Array<{ from: string; into: string; samples_moved: number }>;
+  insignificant: Array<{ id: number; person_key: string; name: string; match_count: number }>;
+  insignificant_limits: { max_matches: number };
+  pruned: Array<{ id: number; person_key: string; name: string }>;
+}
+
+export const faceApi = {
+  status: (refresh = false) =>
+    api.get<FaceStatus>("/face/status", { params: refresh ? { refresh: true } : {} }),
+  stats: () => api.get<FaceStats>("/face/stats"),
+  imageUrl: (path: string) => `/api/face/image?path=${encodeURIComponent(path)}`,
+  // 人物身份
+  persons: (params?: { status?: string; keyword?: string; limit?: number; offset?: number }) =>
+    api.get<FacePersonListResult>("/face/persons", { params }),
+  personDetail: (id: number) => api.get<FacePersonDetail>(`/face/persons/${id}`),
+  updatePerson: (id: number, data: {
+    name?: string; role?: string; notes?: string; status?: string; threshold?: number | null;
+  }) => api.patch<{ person: FacePerson }>(`/face/persons/${id}`, data),
+  bindPerson: (id: number, entityScope: string) =>
+    api.post<{ person: FacePerson }>(`/face/persons/${id}/bind`, { entity_scope: entityScope }),
+  confirmPerson: (id: number, name: string, role = "") =>
+    api.post<{ person: FacePerson }>(`/face/persons/${id}/confirm`, { name, role }),
+  refinePerson: (id: number) =>
+    api.post<{ samples: number; anchor_similarity: number | null }>(`/face/persons/${id}/refine`),
+  deletePerson: (id: number) => api.delete(`/face/persons/${id}`),
+  mergePersons: (sourceId: number, targetId: number) =>
+    api.post("/face/persons/merge", { source_id: sourceId, target_id: targetId }),
+  prunePersons: (includeWithSamples = false) =>
+    api.post<{ pruned: number }>("/face/persons/prune",
+      { include_with_samples: includeWithSamples }),
+  consolidatePersons: (payload: {
+    dry_run: boolean; threshold?: number; prune_insignificant?: boolean;
+  }) => api.post<FaceConsolidateResult>("/face/persons/consolidate", payload),
+  deleteSample: (sampleId: number) => api.delete(`/face/samples/${sampleId}`),
+  // 出现事件
+  events: (params?: {
+    person_id?: number; entity_scope?: string; source?: string;
+    unread_only?: boolean; limit?: number; offset?: number;
+  }) => api.get<FaceEventListResult>("/face/events", { params }),
+  markEventsRead: (eventIds?: number[], read = true) =>
+    api.post<{ affected: number }>("/face/events/mark-read",
+      { event_ids: eventIds ?? null, read }),
+  deleteEvent: (id: number) => api.delete(`/face/events/${id}`),
+  // 识别 / 注册 / 对比（上传图片）
+  identifyImage: (file: File, ingest = false) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("ingest", String(ingest));
+    return api.post<FaceIdentifyResult>("/face/identify", form);
+  },
+  enrollImage: (file: File, name: string, opts?: {
+    faceIndex?: number; role?: string; notes?: string; entityScope?: string;
+  }) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("name", name);
+    form.append("face_index", String(opts?.faceIndex ?? 0));
+    form.append("role", opts?.role ?? "");
+    form.append("notes", opts?.notes ?? "");
+    form.append("entity_scope", opts?.entityScope ?? "");
+    return api.post<{ person: FacePerson; faces_in_image: number }>("/face/enroll", form);
+  },
+  compareImages: (fileA: File, fileB: File) => {
+    const form = new FormData();
+    form.append("file_a", fileA);
+    form.append("file_b", fileB);
+    return api.post<{
+      faces_a: number; faces_b: number; same_person: boolean; threshold: number;
+      best: { index_a: number; index_b: number; similarity: number };
+    }>("/face/compare", form);
+  },
+};
+
 // Audio（音频能力页 · 核心能力 + 音频库管理面）
 export interface FunasrStatus {
   configured: boolean;

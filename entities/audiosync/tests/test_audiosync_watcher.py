@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 
@@ -206,6 +207,78 @@ class TestSyncResultSerialization:
         result["status"] = watcher.status()
         dumped = json.dumps(result, ensure_ascii=False)
         assert "scanned" in dumped and "last_result" in dumped
+
+
+class TestTrigger:
+    """后台触发语义：立即返回、执行不绑定调用方生命周期、在跑不重发。"""
+
+    async def test_small_sync_completes_within_grace(
+        self, store: AudioStore, watch_dir, mock_pipeline,
+    ) -> None:
+        _write(os.path.join(str(watch_dir), "a.wav"))
+        watcher = AudioSyncWatcher()
+        out = await watcher.trigger(wait_seconds=5.0)
+        assert out["started"] is True and out["completed"] is True
+        assert out["result"]["ingested"] == 1
+        status = watcher.status()
+        assert status["syncing"] is False
+        assert status["last_result"]["ingested"] == 1
+
+    async def test_long_sync_returns_early_and_finishes_in_background(
+        self, store: AudioStore, watch_dir, mock_pipeline,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        inner = watcher_mod._sdk.audio_transcribe
+
+        async def slow_transcribe(path: str, source_time: str = ""):
+            await asyncio.sleep(0.3)
+            return await inner(path, source_time=source_time)
+
+        monkeypatch.setattr(watcher_mod._sdk, "audio_transcribe", slow_transcribe)
+        _write(os.path.join(str(watch_dir), "a.wav"))
+        watcher = AudioSyncWatcher()
+        out = await watcher.trigger(wait_seconds=0.05)
+        # 宽限窗内未完成 → 立即返回 started，同步在后台继续（调用方超时不波及）
+        assert out["started"] is True and out["completed"] is False
+        assert watcher.status()["syncing"] is True
+        manual = watcher._manual_task
+        assert manual is not None
+        summary = await asyncio.wait_for(manual, timeout=5)
+        assert summary["ingested"] == 1
+        assert watcher.status()["last_result"]["ingested"] == 1
+
+    async def test_trigger_while_busy_does_not_double_start(
+        self, store: AudioStore, watch_dir, mock_pipeline,
+    ) -> None:
+        watcher = AudioSyncWatcher()
+        await watcher._sync_lock.acquire()
+        try:
+            out = await watcher.trigger(wait_seconds=0)
+        finally:
+            watcher._sync_lock.release()
+        assert out["started"] is False and out["completed"] is False
+        assert out["reason"]
+        assert watcher._manual_task is None
+
+    async def test_close_cancels_manual_task(
+        self, store: AudioStore, watch_dir, mock_pipeline,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        inner = watcher_mod._sdk.audio_transcribe
+
+        async def slow_transcribe(path: str, source_time: str = ""):
+            await asyncio.sleep(5)
+            return await inner(path, source_time=source_time)
+
+        monkeypatch.setattr(watcher_mod._sdk, "audio_transcribe", slow_transcribe)
+        _write(os.path.join(str(watch_dir), "a.wav"))
+        watcher = AudioSyncWatcher()
+        out = await watcher.trigger(wait_seconds=0.05)
+        assert out["started"] is True and out["completed"] is False
+        task = watcher._manual_task
+        await watcher.close()
+        assert watcher._manual_task is None
+        assert task is not None and task.cancelled()
 
 
 class TestExcludeRules:

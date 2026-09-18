@@ -15,6 +15,7 @@ from web.routers.context import router as context_router
 from web.routers.database import router as database_router
 from web.routers.delegation import router as delegation_router
 from web.routers.entities import router as entities_router
+from web.routers.face import router as face_router
 from web.routers.hooks import router as hooks_router
 from web.routers.hooks_llm import router as hooks_llm_router
 from web.routers.mcp import router as mcp_router
@@ -56,6 +57,7 @@ api_router.include_router(mcp_router)
 api_router.include_router(adapters_router)
 api_router.include_router(audio_router)
 api_router.include_router(vision_router)
+api_router.include_router(face_router)
 api_router.include_router(channel_webui_router)
 api_router.include_router(approvals_router)
 api_router.include_router(system_router)

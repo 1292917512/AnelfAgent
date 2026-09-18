@@ -92,10 +92,10 @@ def build_router() -> APIRouter:
 
     @router.post("/sync")
     async def sync_now() -> Dict[str, Any]:
-        """手动触发一轮目录增量同步。"""
+        """手动触发一轮目录增量同步（后台执行立即返回；进度经 /sync/status 轮询）。"""
         from .watcher import get_audiosync_watcher
         watcher = get_audiosync_watcher()
-        result = await watcher.sync_now()
+        result = await watcher.trigger()
         result["status"] = watcher.status()
         return result
 

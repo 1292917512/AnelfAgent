@@ -24,11 +24,12 @@ image_index_submit_port: LateBinding[Callable[[str, str], None]] = LateBinding(
 class MediaPipeline:
     """Convert media segments to [media_file:type:path] tags."""
 
-    async def process_segments(self, segments: list) -> List[str]:
+    async def process_segments(self, segments: list, scope: str = "") -> List[str]:
         """Convert media segments to tag strings for LLM context.
 
         Returns list of strings like '[media_file:voice:workspace/uploads/voice/xxx.ogg]'.
         Segments without a local file emit a download hint instead of a fake path.
+        ``scope`` 是当前会话 entity_scope，透传给人脸 worker 作 face_scope 打标依据。
         """
         from core.tags import tag_label
 
@@ -51,6 +52,17 @@ class MediaPipeline:
                             image_index_submit_port.get()(candidate, "inbound")
                 except Exception:
                     log("process_segments 异常已忽略", "DEBUG")
+
+                # 人脸识别：同一入站图片旁路投递人脸 worker（agent 层内直调，
+                # 无跨层端口）；命中绑定实体时由 ingest 打 face_scope 标驱动记忆召回。
+                # scope 经参数透传（worker 据此写一次性历史通知）；失败不影响消息管线
+                try:
+                    from agent.vision.face.worker import submit_face_image
+                    candidate = file_path if file_path and os.path.isfile(file_path) else url
+                    if candidate:
+                        submit_face_image(candidate, "inbound", scope or "")
+                except Exception:
+                    log("人脸识别投递异常已忽略", "DEBUG")
 
             if file_path and os.path.isfile(file_path):
                 tag_text = tag_label("media_file", f"{seg_type}:{file_path}")
