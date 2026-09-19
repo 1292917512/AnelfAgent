@@ -2,8 +2,8 @@ import { NavLink } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
-import type { NavItem } from "@/stores/app-store";
 import { CORE_ROUTE_PATHS } from "@/lib/core-routes";
+import { NAVIGATION, type NavItem } from "@/lib/navigation";
 import { listPluginRoutes } from "@/lib/channel-plugins";
 import {
   Activity,
@@ -72,40 +72,17 @@ export const ICON_MAP: Record<string, LucideIcon> = {
   Search,
 };
 
-export const FALLBACK_NAV: NavItem[] = [
-  { path: "/", label: "chat", icon: "MessageCircle", group: "group_core" },
-  { path: "/dashboard", label: "dashboard", icon: "LayoutDashboard", group: "group_core" },
-  { path: "/models", label: "models", icon: "Cpu", group: "group_core" },
-  { path: "/personas", label: "personas", icon: "UserCircle", group: "group_core" },
-  { path: "/memory", label: "memory", icon: "Brain", group: "group_core" },
-  { path: "/tasks", label: "tasks", icon: "ListChecks", group: "group_core" },
-  { path: "/heartbeat", label: "heartbeat", icon: "HeartPulse", group: "group_core" },
-  { path: "/tools", label: "tools", icon: "Wrench", group: "group_ability" },
-  { path: "/skills", label: "skills", icon: "GraduationCap", group: "group_ability" },
-  { path: "/mcp", label: "mcp", icon: "Plug", group: "group_ability" },
-  { path: "/tags", label: "tags", icon: "Tags", group: "group_ability" },
-  { path: "/channels", label: "channels", icon: "Radio", group: "group_ability" },
-  { path: "/vision", label: "vision", icon: "Eye", group: "group_core" },
-  { path: "/sound", label: "sound", icon: "AudioLines", group: "group_core" },
-  { path: "/retrieval", label: "retrieval", icon: "Search", group: "group_core" },
-  { path: "/thinking", label: "thinking", icon: "Workflow", group: "group_ability" },
-  { path: "/data", label: "data", icon: "Database", group: "group_system" },
-  { path: "/approvals", label: "approvals", icon: "Shield", group: "group_system" },
-  { path: "/config", label: "config", icon: "SlidersHorizontal", group: "group_system" },
-  { path: "/settings", label: "settings", icon: "Settings", group: "group_system" },
-];
-
 export function Sidebar() {
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
-  const navigation = useAppStore((s) => s.navigation);
   const branding = useAppStore((s) => s.branding);
   const { t } = useTranslation("nav");
 
   // 插件整页路由：插件存在才展示对应导航项
   const pluginPaths = new Set(listPluginRoutes().map((r) => `/${r.path}`));
-  const navItems = (navigation.length > 0 ? navigation : FALLBACK_NAV)
-    .filter((item) => CORE_ROUTE_PATHS.has(item.path) || pluginPaths.has(item.path));
+  const navItems = NAVIGATION.filter(
+    (item) => CORE_ROUTE_PATHS.has(item.path) || pluginPaths.has(item.path),
+  );
 
   const groups = navItems.reduce<Record<string, NavItem[]>>((acc, item) => {
     const g = item.group || "other";

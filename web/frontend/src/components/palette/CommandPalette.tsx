@@ -10,7 +10,8 @@ import { useWorkbenchStore } from "@/stores/workbench-store";
 import { PaletteResults } from "./PaletteResults";
 import { PaletteActions } from "./PaletteActions";
 import { groupCls, itemCls } from "./paletteStyles";
-import { FALLBACK_NAV, ICON_MAP } from "../layout/Sidebar";
+import { ICON_MAP } from "../layout/Sidebar";
+import { NAVIGATION } from "@/lib/navigation";
 import { configMetaApi, searchApi } from "@/lib/api";
 import type { GlobalSearchResult } from "@/lib/types";
 
@@ -18,7 +19,6 @@ import type { GlobalSearchResult } from "@/lib/types";
 export function CommandPalette() {
   const open = useAppStore((s) => s.paletteOpen);
   const setOpen = useAppStore((s) => s.setPaletteOpen);
-  const navigation = useAppStore((s) => s.navigation);
 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GlobalSearchResult | null>(null);
@@ -89,7 +89,7 @@ export function CommandPalette() {
   if (!open) return null;
 
   const close = () => setOpen(false);
-  const navItems = navigation.length > 0 ? navigation : FALLBACK_NAV;
+  const navItems = NAVIGATION;
 
   /** 跳转并关闭面板 */
   const go = (path: string) => {

@@ -40,7 +40,6 @@ export default function App() {
       const data = r.data;
       setConfig({
         branding: data.branding,
-        navigation: data.navigation,
       });
     }).catch(warnApiError);
     // chat SSE 由 Chat 页启动（startSSE 幂等，重复进入不会重建连接）

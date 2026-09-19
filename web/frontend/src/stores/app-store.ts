@@ -2,13 +2,6 @@ import { create } from "zustand";
 
 export type Theme = "dark" | "light";
 
-export interface NavItem {
-  path: string;
-  label: string;
-  icon: string;
-  group: string;
-}
-
 export interface Branding {
   title: string;
   subtitle: string;
@@ -21,7 +14,6 @@ interface AppState {
   mobileMenuOpen: boolean;
   paletteOpen: boolean;
   branding: Branding;
-  navigation: NavItem[];
   configLoaded: boolean;
   startedAt: number | null;
 
@@ -29,7 +21,7 @@ interface AppState {
   toggleSidebar: () => void;
   setMobileMenuOpen: (open: boolean) => void;
   setPaletteOpen: (open: boolean) => void;
-  setConfig: (cfg: { branding?: Branding; navigation?: NavItem[] }) => void;
+  setConfig: (cfg: { branding?: Branding }) => void;
   setStartedAt: (serverUptime: number) => void;
 }
 
@@ -53,7 +45,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   mobileMenuOpen: false,
   paletteOpen: false,
   branding: DEFAULT_BRANDING,
-  navigation: [],
   configLoaded: false,
   startedAt: null,
 
@@ -68,14 +59,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 
-  setMobileMenuOpen: (open: boolean) => set({ mobileMenuOpen: open }),
+  setMobileMenuOpen: (open) => set({ mobileMenuOpen: open }),
 
-  setPaletteOpen: (open: boolean) => set({ paletteOpen: open }),
+  setPaletteOpen: (open) => set({ paletteOpen: open }),
 
   setConfig: (cfg) =>
     set((s) => ({
       branding: cfg.branding ?? s.branding,
-      navigation: cfg.navigation ?? s.navigation,
       configLoaded: true,
     })),
 
