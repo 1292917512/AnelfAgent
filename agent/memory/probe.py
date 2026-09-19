@@ -323,7 +323,9 @@ class DeepProbeHub:
         if client is None or not config.enabled or not config.recall_enabled:
             return [], ""
         query = plan.queries[0]
-        datasets = datasets_for_scope(config, state.scope, None)
+        # node_keys（user:适配器:uid 形态）与记忆实体标签同构：除当前会话
+        # scope 外，把查询提及实体的数据集也纳入路由（与被动召回同一语义）
+        datasets = datasets_for_scope(config, state.scope, plan.node_keys)
         try:
             results = await search_cognee(
                 client, config, query, datasets, 5,

@@ -128,7 +128,7 @@ async def update_profile_content(
             memory_type=MemoryType.ENTITY,
             content=content,
             source=source,
-            tags=[target_scope, "type:profile"],
+            tags=[target_scope],
             importance=PROFILE_MEMORY_IMPORTANCE,
             timestamp=time.time(),
         )

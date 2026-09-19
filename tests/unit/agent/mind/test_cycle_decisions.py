@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.mind import cycle as cycle_mod
-from agent.mind.autonomous import Decision, DecisionType, SituationContext
+from agent.mind.autonomous import Decision, DecisionType, PendingMessage, SituationContext
 from agent.mind.mind import Mind
 
 
@@ -127,3 +127,21 @@ class TestHeartbeatDecisionDeferral:
             if len(scheduled) >= 1:
                 break
         assert scheduled == [DecisionType.REPLY.value]
+
+
+class TestSituationSummary:
+    def test_pending_message_renders_to_me_and_kind_markers(self) -> None:
+        """态势摘要携带对话性质标记：@我 / 平台推送类别，元决策据此判优先级。"""
+        ctx = SituationContext(pending_messages=[
+            PendingMessage(scope="group_qq:1", preview="帮我查下天气", group_id="1",
+                           adapter_key="qq", to_me=True),
+            PendingMessage(scope="group_qq:1", preview="大家周末去哪玩", group_id="1",
+                           adapter_key="qq"),
+            PendingMessage(scope="user_qq:2", preview="张三赞了你的消息", adapter_key="qq",
+                           kind="notification"),
+        ])
+        summary = ctx.to_summary()
+        assert "[@我]" in summary
+        assert "[notification]" in summary
+        # 无标记的群消息是群员间对话，不得带 @我 标记
+        assert "大家周末去哪玩" in summary

@@ -53,7 +53,7 @@ class TestSelfProfileStore:
             memory_type=MemoryType.ENTITY,
             content="我对细节要求高",
             source=SELF_PROFILE_SOURCE,
-            tags=[SELF_SCOPE, "type:profile"],
+            tags=[SELF_SCOPE],
         )
         await store.add(entry)
         assert await load_self_profile(store) == "我对细节要求高"

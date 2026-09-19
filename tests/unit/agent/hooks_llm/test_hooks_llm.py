@@ -476,3 +476,29 @@ async def test_drain_timeout_cancels_overrun():
     t0 = _time.monotonic()
     await executor.drain(timeout=0.2)
     assert _time.monotonic() - t0 < 1.0  # 超时即取消，不等满 30s
+
+
+async def test_context_carries_exec_params_from_spec():
+    """ctx 携带钩子声明的执行参数（tool_tags/轮次/外发开关/模型），
+    执行体透传给 reflect——声明即单一事实源，执行体内不得另立常量。"""
+    seen: dict = {}
+
+    async def _h(ctx: HookContext) -> Optional[str]:
+        seen.update(
+            tool_tags=ctx.tool_tags, max_iterations=ctx.max_iterations,
+            allow_output_tools=ctx.allow_output_tools, model=ctx.model,
+        )
+        return None
+
+    spec = LLMHookSpec(
+        name="params", event="after_reply", handler=_h,
+        tool_tags=("skills",), max_iterations=9,
+        allow_output_tools=True, model="light",
+    )
+    executor = _make_executor()
+    executor.dispatch("after_reply", [spec], {"scope": "user_q:1"})
+    await _drain(executor)
+    assert seen == {
+        "tool_tags": ("skills",), "max_iterations": 9,
+        "allow_output_tools": True, "model": "light",
+    }

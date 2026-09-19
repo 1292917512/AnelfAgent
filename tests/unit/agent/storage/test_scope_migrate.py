@@ -190,7 +190,7 @@ class TestMemoryDbMigration:
         )
         await db.execute(
             "INSERT INTO memories VALUES(1,'entity','x','entity_123',?)",
-            (json.dumps(["user:123", "type:profile"]),),
+            (json.dumps(["user:123", "type:fact"]),),
         )
         await db.execute(
             "INSERT INTO memories VALUES(2,'fact','y','',?)",
@@ -202,7 +202,7 @@ class TestMemoryDbMigration:
 
         row = await (await db.execute("SELECT source, tags_json FROM memories WHERE id=1")).fetchone()
         assert row[0] == "entity_qq:123"
-        assert json.loads(row[1]) == ["user:qq:123", "type:profile"]
+        assert json.loads(row[1]) == ["user:qq:123", "type:fact"]
 
         row = await (await db.execute("SELECT source, tags_json FROM memories WHERE id=2")).fetchone()
         assert row[0] == ""

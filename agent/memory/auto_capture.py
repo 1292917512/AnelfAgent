@@ -114,7 +114,7 @@ _META_HEAD_CHARS = 200
 def _extract_speaker(content: str) -> Tuple[str, str]:
     """从消息元数据标签确定性提取发言者身份，返回 (展示标签, uid)。
 
-    标签在入库时由频道渲染（[uid:][name:][nickname:] 前缀），只扫描头部窗口，
+    标签在入库时由频道渲染（[uid:][name:] 前缀），只扫描头部窗口，
     正文中用户手打的类标签语法不构成身份。无身份标签返回 ("", "")。
     """
     from core.tags import etag_all
@@ -124,8 +124,6 @@ def _extract_speaker(content: str) -> Tuple[str, str]:
     for key, value in etag_all(content[:_META_HEAD_CHARS]):
         if key == "uid" and not uid:
             uid = value.strip()
-        elif key == "nickname" and value.strip():
-            name = value.strip()  # 群昵称优先于用户名
         elif key == "name" and not name:
             name = value.strip()
     if not uid:

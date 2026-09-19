@@ -24,7 +24,7 @@ from agent.mind.context_assembly import (
     _safe_entity_scope,  # noqa: F401  # re-export（round_helpers 等引用）
 )
 from agent.mind.tool_assembly import ToolAssembly
-from agent.mind.work_memory import WorkMemory
+from agent.mind.work_memory import PendingSignal, WorkMemory
 from agent.storage.data_center import EverythingData
 from agent.utils.unique_queue import UniqueQueue
 
@@ -142,6 +142,9 @@ class PrefrontalCortex:
 
     def get_adapter_key(self, scope: str) -> str:
         return self.work_memory.get_adapter_key(scope)
+
+    def get_pending_signal(self, scope: str) -> Optional[PendingSignal]:
+        return self.work_memory.get_pending_signal(scope)
 
     def known_scopes(self) -> set[str]:
         return self.work_memory.known_scopes()

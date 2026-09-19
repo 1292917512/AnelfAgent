@@ -77,3 +77,14 @@ class TestStripTags:
         """to_me 标签描述注入人设提示，AI 据此区分 @ 自己的消息与群员闲聊。"""
         assert "to_me标签表示" in get_tag_desc()
         assert "群员之间的对话" in get_tag_desc()
+
+    def test_kind_and_scope_tags_removed_from_outbound(self) -> None:
+        """消息类别与声纹/人脸识别标签属元数据，LLM 复述进回复时须剥离。"""
+        text = "[kind:notification][speaker_scope:user:qq:1][face_scope:user:qq:2] 正文"
+        assert strip_message_meta_tags(text) == " 正文"
+
+    def test_dead_tag_vocabulary_removed(self) -> None:
+        """零产生点的标签不得留在 LLM 词表（poke/reaction/avatar/platform 及与 name 重复的 nickname）。"""
+        desc = get_tag_desc()
+        for dead in ("poke", "reaction", "avatar", "platform", "nickname"):
+            assert f"{dead}标签表示" not in desc

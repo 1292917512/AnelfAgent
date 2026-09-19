@@ -198,9 +198,9 @@ class MemoryRetriever:
         plan = RetrievalPlan(queries=[query] if query else [])
         mention_tags: List[str] = []
 
-        # 检索规划 + 查询提及识别：并行执行（互不依赖，都在检索关键路径上）
+        # 检索规划 + 查询提及识别 + 多路检索并行（都在检索关键路径上）
         # 规划：轻量 LLM 把对话尾部转成结构化计划（多查询/实体/是否深探，
-        # 含实体→图谱节点解析），失败/超份额回退原查询单发——召回由 LLM 决策
+        # 含实体→图谱节点解析），失败/超预算回退原查询单发——召回由 LLM 决策
         # 而非被动关键词匹配
         # 提及识别：对话中提到的已知实体/话题 → 标签（主评分与联想种子）
         async def _mentions() -> List[str]:
@@ -212,15 +212,14 @@ class MemoryRetriever:
 
         async def _planned_recall() -> List[MemorySearchResult]:
             nonlocal plan, mention_tags
-            plan, mention_tags = await asyncio.gather(
-                self.plan_retrieval(query, timeout=plan_budget), _mentions())
-
-            # 计划查询（互补多查询，首条带实体定向）；规划失败时退化为原查询
-            search_query = plan.queries[0] if plan.queries else query
-            planned_queries = [
-                q for q in plan.queries[:3] if q and len(q.strip()) >= 4]
-            if not planned_queries:
-                planned_queries = [search_query] if search_query else []
+            # 规划与检索并行：原查询 lane 先行（复用预计算 query_vec，零
+            # embed 成本），规划慢/超预算只损失多查询增强，不再挤占检索
+            # 预算；计划 lanes 在规划完成后增量追加
+            plan_task = asyncio.ensure_future(
+                self.plan_retrieval(query, timeout=plan_budget))
+            # 提及识别是本地 FTS 查询（毫秒级），先完成供全部 lane 共享标签
+            mention_tags = await _mentions()
+            focus_query = self._extract_focus_query(conversation)
 
             async def _query_search(q: str, *, targeted: bool = False) -> List[MemorySearchResult]:
                 vec = query_vec if (query_vec is not None and q == query) else await self._embedder.embed_query(q)
@@ -244,10 +243,9 @@ class MemoryRetriever:
                     node_names=plan.node_labels if targeted else None,
                 )
 
-            # 多窗口补充：以最近一条用户消息为焦点查询（规划退化为单查询时
-            # 焦点窗口仍是有效的第二检索角度）；焦点不参与共识计数
-            focus_query = self._extract_focus_query(conversation)
-
+            # 多窗口补充：以最近一条用户消息为焦点查询（即时窗口，捕捉当前
+            # 话题）；焦点不参与共识计数，与计划查询重复时仅多一次 embed
+            # （融合按 key 去重，重复无害）
             async def _focus_search() -> List[MemorySearchResult]:
                 focus_vec = await self._embedder.embed_query(focus_query)
                 return await self._store.search_unified(
@@ -257,14 +255,32 @@ class MemoryRetriever:
                     min_score=min_score,
                 )
 
-            if not planned_queries:
-                return []
-            tasks = [_query_search(q, targeted=(i == 0)) for i, q in enumerate(planned_queries)]
-            n_plan_lanes = len(tasks)
-            if focus_query and focus_query not in planned_queries:
-                tasks.append(_focus_search())
-            lanes = list(await asyncio.gather(*tasks))
-            return self.merge_consensus(lanes, limit=k * 2, consensus_lanes=n_plan_lanes)
+            # 基础 lane：原查询恒先行（计划全换词也只做增强，不替换基础
+            # 检索角度）
+            base_task = asyncio.ensure_future(_query_search(query))
+            focus_task = (
+                asyncio.ensure_future(_focus_search())
+                if focus_query and focus_query != query else None)
+
+            plan = await plan_task
+            # 计划 lanes：同串已由基础 lane 覆盖（query_vec 复用零开销），
+            # 跳过；首条异于原查询的计划查询带实体定向（首条即原查询时
+            # 本轮放弃定向，node_keys 邻域仍供深探）
+            targeted_used = False
+            plan_lane_tasks: List[asyncio.Future] = []
+            for q in plan.queries[:3]:
+                if not q or len(q.strip()) < 4 or q == query:
+                    continue
+                plan_lane_tasks.append(asyncio.ensure_future(
+                    _query_search(q, targeted=not targeted_used)))
+                targeted_used = True
+            # 共识段在前（merge_consensus 按前 N 条 lane 计数），基础与
+            # 焦点 lane 只参与合并竞争
+            lanes = list(await asyncio.gather(
+                *plan_lane_tasks, base_task,
+                *([] if focus_task is None else [focus_task])))
+            return self.merge_consensus(
+                lanes, limit=k * 2, consensus_lanes=len(plan_lane_tasks))
 
         try:
             results = await asyncio.wait_for(_planned_recall(), timeout=recall_timeout)

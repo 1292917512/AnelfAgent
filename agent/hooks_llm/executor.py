@@ -209,6 +209,10 @@ class HookExecutor:
             name=spec.name, event=spec.event, scope=scope,
             payload=payload, trigger=spec.event,
             messages=self._build_messages(spec, payload),
+            tool_tags=spec.tool_tags,
+            max_iterations=spec.max_iterations,
+            allow_output_tools=spec.allow_output_tools,
+            model=spec.model,
         )
         hook_sem = self._sem_for(spec)
         async with self._pool:

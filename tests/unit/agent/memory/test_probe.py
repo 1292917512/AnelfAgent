@@ -236,6 +236,52 @@ async def test_recall_budget_bounds_slow_planning(store, monkeypatch) -> None:
     assert time.monotonic() - started < 5.0
 
 
+def _recall_text(memory_msgs: list[dict]) -> str:
+    return "".join(str(m.get("content", "")) for m in memory_msgs)
+
+
+@pytest.mark.asyncio
+async def test_recall_keeps_base_query_when_plan_replaces_it(store, monkeypatch) -> None:
+    """规划与检索并行：计划全换词时原查询 lane 仍先行（增强不替换基础检索角度）。"""
+    from agent.memory.memory_retriever import MemoryRetriever
+    from agent.memory.memory_types import MemoryEntry, MemoryType, RetrievalPlan
+
+    await store.add(MemoryEntry(
+        memory_type=MemoryType.SEMANTIC, content="阿辰喜欢火锅，每周都要去吃一次",
+    ))
+
+    async def _replacing_plan(self, query: str, *, timeout: float | None = None) -> RetrievalPlan:
+        return RetrievalPlan(queries=["完全不相关的其他检索词组"])
+
+    monkeypatch.setattr(MemoryRetriever, "plan_retrieval", _replacing_plan)
+    retriever = MemoryRetriever(store, _NullEmbedder())
+    conversation = [{"role": "user", "content": "阿辰喜欢吃什么呀，我记得之前聊过"}]
+    _profile, memory_msgs = await retriever.recall_split(conversation)
+    assert "火锅" in _recall_text(memory_msgs)
+
+
+@pytest.mark.asyncio
+async def test_plan_slowness_doesnt_starve_search(store, monkeypatch) -> None:
+    """规划超预算回退原查询时检索仍完整执行（规划慢只损失增强，不挤占检索）。"""
+    import agent.memory.dedup as dedup_mod
+    from agent.memory.memory_retriever import MemoryRetriever
+    from agent.memory.memory_types import MemoryEntry, MemoryType
+
+    await store.add(MemoryEntry(
+        memory_type=MemoryType.SEMANTIC, content="阿辰喜欢火锅，每周都要去吃一次",
+    ))
+
+    async def _slow_llm(prompt: str, **kwargs):
+        await asyncio.sleep(30)
+        return "{}"
+
+    monkeypatch.setattr(dedup_mod, "light_llm", _slow_llm)
+    retriever = MemoryRetriever(store, _NullEmbedder())
+    conversation = [{"role": "user", "content": "阿辰喜欢吃什么呀，我记得之前聊过"}]
+    _profile, memory_msgs = await retriever.recall_split(conversation)
+    assert "火锅" in _recall_text(memory_msgs)
+
+
 def test_record_broadcasts_when_scope_unknown() -> None:
     """记账无 scope 时广播：进行中回复的账本也能感知（防隔离漏去重）。"""
     from agent.memory.memory_types import MemorySearchResult

@@ -1226,7 +1226,7 @@ class HeartbeatEngine:
                 memory_type=MemoryType.ENTITY,
                 content=content,
                 source=source,
-                tags=[scope_tag, "type:profile"],
+                tags=[scope_tag],
                 importance=PROFILE_MEMORY_IMPORTANCE,
             )
             await self.mind.memory_store.add(entry)
@@ -1249,7 +1249,7 @@ class HeartbeatEngine:
             content=content,
             memory_type=MemoryType.ENTITY,
             source=source,
-            tags=[scope_tag, "type:profile"],
+            tags=[scope_tag],
             importance=PROFILE_MEMORY_IMPORTANCE,
         )
 

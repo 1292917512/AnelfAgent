@@ -1324,9 +1324,8 @@ class MemoryStore(BaseEntity):
                 ids,
             )
 
-        # 创建合并后的新记忆
+        # 创建合并后的新记忆（标签取并集，出处经 metadata.merged_from 追溯）
         merged_tags = sorted(all_tags)
-        merged_tags.append("merged")
         entry = MemoryEntry(
             memory_type=best_type,
             content=merged_content,

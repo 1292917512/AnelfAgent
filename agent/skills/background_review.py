@@ -74,7 +74,6 @@ _REVIEW_INSTRUCTION = """以上是本轮对话的完整执行上下文（你的�
   禁止直接用文件工具编辑 SKILL.md——手写 frontmatter 会破坏格式契约
 """
 
-_MAX_REVIEW_ITERATIONS = 6
 _MAX_CANDIDATES = 10
 # 评审触发最小材料：transcript 快照至少包含非空消息链才评审
 _MIN_TRANSCRIPT_MESSAGES = 2
@@ -127,7 +126,7 @@ class SkillReviewer:
         @llm_hook(
             _HOOK_NAME, event="after_reply", context="transcript",
             when=_when, tool_tags=["skills"], allow_output_tools=False,
-            max_iterations=_MAX_REVIEW_ITERATIONS, max_concurrent=1,
+            max_iterations=6, max_concurrent=1,
             owner=_HOOK_OWNER, source="code",
             description="每轮对话后评审执行过程，自主决策技能沉淀/合并/治理",
         )
@@ -198,6 +197,7 @@ class SkillReviewer:
 
         快照即 base_messages（人设/stable 前缀 + 本轮完整执行过程），评审指令
         以 user 角色追加在尾部——模型在「刚做完这轮」的语境里直接评审。
+        执行参数（工具面/轮次预算）透传钩子声明，不在执行体另立常量。
         返回产出文本供钩子面登记（None/空 = 无沉淀）。
         """
         if not ctx.transcript_available():
@@ -212,9 +212,9 @@ class SkillReviewer:
         log("技能后台评审开始（transcript 上下文）", "DEBUG", tag="技能")
         output = await self._mind.reflect(
             messages,
-            max_iterations=_MAX_REVIEW_ITERATIONS,
-            tool_tags=["skills"],
-            allow_output_tools=False,
+            max_iterations=ctx.max_iterations,
+            tool_tags=list(ctx.tool_tags),
+            allow_output_tools=ctx.allow_output_tools,
         )
         log("技能后台评审完成", "DEBUG", tag="技能")
         return (output or "").strip() or None

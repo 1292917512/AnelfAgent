@@ -13,7 +13,6 @@ from core.tags import (
     group_id_tag,
     kind_tag,
     name_tag,
-    nickname_tag,
     reply_to_tag,
     tag_label,
     time_tag,
@@ -178,8 +177,7 @@ class EverythingGroup(Everything):
     """带 group_id 的输入/输出消息。"""
 
     group_id: Union[int, str] = 0
-    nickname: Optional[str] = ""
-    tag_list: list[Tag] = Field(default_factory=lambda: [name_tag, uid_tag, group_id_tag, nickname_tag])
+    tag_list: list[Tag] = Field(default_factory=lambda: [name_tag, uid_tag, group_id_tag])
 
     @property
     def is_group_scope(self) -> bool:

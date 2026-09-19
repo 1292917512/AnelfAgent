@@ -106,7 +106,7 @@ async def memorize(
 
     Args:
         content: 要记住的内容（简洁扼要，一两句话）
-        tags: 标签，逗号分隔。前缀：type:(fact/event/permanent) user:(uid) group:(id) topic:(主题) channel:(频道) goal:(目标id)。
+        tags: 标签，逗号分隔。前缀：type:(fact/event/permanent) user:(uid) group:(id) topic:(主题) goal:(目标id)。
             与某目标相关的记忆打 goal:xxx 标签，可在目标视角串联召回
         importance: 重要性 0-1，按校准表取值：0.9+ 身份级事实（姓名/生日/住址/重要关系、
             用户明确说"记住这个"）；0.8 长期偏好与习惯、重要约定与承诺；0.7 阶段性计划
@@ -1908,7 +1908,7 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
                 memory_type=MemoryType.ENTITY,
                 content=personality.strip(),
                 source=source,
-                tags=[scope_tag, "type:profile"],
+                tags=[scope_tag],
                 importance=PROFILE_MEMORY_IMPORTANCE,
             )
             await deps.store.add(entry)

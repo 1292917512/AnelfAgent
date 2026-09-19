@@ -3,7 +3,7 @@
 提供项目级的标签基础设施：
 - 解析工具：tag_label, etag, etag_all, batch_remove_tags 等
 - Tag 类：带名称和描述的标签模型
-- 内置标签：time, uid, group_id, name, nickname, channel, media_file 等
+- 内置标签：time, uid, group_id, name, channel, media_file, kind 等
 """
 
 from __future__ import annotations
@@ -66,10 +66,12 @@ def batch_remove_tags(text: str) -> str:
     return re.sub(r"\[(?:\w+):([^\[\]\n]*)\]", r"\1", text)
 
 
-# 消息上下文元数据标签（渲染进对话历史、仅作系统元数据，禁止出现在出站文本中）
+# 消息上下文元数据标签（渲染进对话历史、仅作系统元数据，禁止出现在出站文本中）。
+# nickname 已不再渲染（与 name 恒同值），保留剥离以覆盖存量历史行
 _META_TAG_NAMES = (
     "time", "channel", "session_id", "message_id",
-    "group_id", "uid", "name", "nickname", "reply_to", "to_me", "push",
+    "group_id", "uid", "name", "nickname", "reply_to", "to_me", "kind", "push",
+    "speaker_scope", "face_scope",
 )
 _meta_tag_pattern = re.compile(r"\[(?:" + "|".join(_META_TAG_NAMES) + r"):[^\]]*\]")
 
@@ -87,7 +89,7 @@ def strip_message_meta_tags(text: str) -> str:
 # 功能性标签（媒体/交互/生成请求）：富媒体频道由独立结构携带，纯文本界面整段剥离
 _FUNC_TAG_NAMES = (
     "media_file", "media_type", "media_path", "media_file_id",
-    "json_card", "tts", "video_gen", "at_uid", "poke", "reaction", "forward",
+    "json_card", "tts", "video_gen", "at_uid", "forward",
 )
 _func_tag_pattern = re.compile(r"\[(?:" + "|".join(_FUNC_TAG_NAMES) + r"):[^\]]*\]")
 
@@ -214,13 +216,11 @@ time_tag = Tag(tag_name="time", tag_name_desc="对话时间")
 uid_tag = Tag(tag_name="uid", tag_name_desc="消息发送者的用户 ID，同一 uid 是同一人")
 group_id_tag = Tag(tag_name="group_id", tag_name_desc="群组 ID，不同 group_id 是不同群")
 name_tag = Tag(tag_name="name", tag_name_desc="发送者用户名（身份识别以 uid 为准，name 可能变化）")
-nickname_tag = Tag(tag_name="nickname", tag_name_desc="发送者群内昵称（身份识别以 uid 为准）")
 channel_tag = Tag(
     tag_name="channel",
     tag_name_desc="来源频道标识（adapter_key），send_message 等频道工具的 channel_id 参数应填此值",
 )
 session_id_tag = Tag(tag_name="session_id", tag_name_desc="会话 ID（同一频道会话上下文标识）")
-platform_tag = Tag(tag_name="platform", tag_name_desc="来源平台（qq/telegram/web 等）")
 message_id_tag = Tag(
     tag_name="message_id",
     tag_name_desc="当前这条消息的平台 ID，可用 lookup_message(message_id=xxx) 精确取回（含窗口外）",
@@ -231,7 +231,6 @@ to_me_tag = Tag(
                   "群聊历史中没有此标签的消息是群员之间的对话，不是发给你的请求，"
                   "无需回应，也不要当作对你的提问、托付或欠下的待办（私聊消息默认都是对你说，无需此标签）",
 )
-avatar_tag = Tag(tag_name="avatar", tag_name_desc="用户头像 URL")
 kind_tag = Tag(
     tag_name="kind",
     tag_name_desc="消息类别：notification 表示平台自动推送的通知（如回复/点赞提醒，"
@@ -269,8 +268,6 @@ reply_to_tag = Tag(
     tag_name_desc="引用回复指向的消息 ID；标签后常紧跟被引用消息的短预览（约 200 字），"
                   "预览不够或需要原文/前后文时调用 lookup_message(message_id=xxx)",
 )
-poke_tag = Tag(tag_name="poke", tag_name_desc="戳一戳事件的目标用户")
-reaction_tag = Tag(tag_name="reaction", tag_name_desc="表情回应的 emoji ID")
 forward_tag = Tag(tag_name="forward", tag_name_desc="转发消息的来源（原始发送者、频道名或消息 ID）")
 speaker_scope_tag = Tag(
     tag_name="speaker_scope",

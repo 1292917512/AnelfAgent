@@ -17,6 +17,7 @@ import asyncio
 import json
 import time
 import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from agent.llm.types import ImageContent
@@ -32,6 +33,20 @@ if TYPE_CHECKING:
     from agent.mind.tool_assembly import ToolAssembly
     from agent.storage.data_center import ConversationData
     from agent.storage.sqlite_backend import SqliteBackend
+
+
+@dataclass(slots=True)
+class PendingSignal:
+    """scope 的最新待处理消息信号：预览、路由与对话性质元数据。
+
+    to_me/kind 为元决策态势提供直接判据（群消息是否 @ 了机器人、
+    是否平台推送而非真人聊天），与消息渲染的 [to_me:]/[kind:] 标签同源。
+    """
+
+    preview: str = ""
+    adapter_key: str = ""
+    to_me: bool = False
+    kind: str = ""
 
 
 def _pfc_persist_enabled() -> bool:
@@ -67,9 +82,8 @@ class WorkMemory:
         self._pending_images: dict[str, List[ImageContent]] = {}
         self._pending_media: dict[str, list] = {}
 
-        # scope → 消息预览 / adapter_key 路由 / 未读计数
-        self._message_previews: dict[str, str] = {}
-        self._task_adapter_keys: dict[str, str] = {}
+        # scope → 最新消息信号（预览 / adapter 路由 / to_me / 消息类别）/ 未读计数
+        self._pending_signals: dict[str, PendingSignal] = {}
         self._unread_counts: dict[str, int] = {}
         # 群聊 scope → 最近发送者 [(uid, name), ...]
         self._group_recent_senders: dict[str, list[tuple[str, str]]] = {}
@@ -306,15 +320,20 @@ class WorkMemory:
 
         preview = anything.get_text_content()[:300] if hasattr(anything, "get_text_content") else str(anything)[:300]
         adapter_key = getattr(anything, "adapter_key", "") or ""
+        message_kind = getattr(anything, "message_kind", "chat") or "chat"
+        signal = PendingSignal(
+            preview=preview,
+            adapter_key=adapter_key,
+            to_me=bool(getattr(anything, "to_me", False)),
+            kind="" if message_kind == "chat" else message_kind,
+        )
 
         self._unread_counts[scope] = self._unread_counts.get(scope, 0) + 1
         if isinstance(anything, EverythingGroup) and anything.is_group_scope:
             self.pending_group.append(scope)
-            self._message_previews[scope] = preview
-            if adapter_key:
-                self._task_adapter_keys[scope] = adapter_key
+            self._pending_signals[scope] = signal
             uid = str(anything.uid) if anything.uid and anything.uid not in (0, "0") else ""
-            name = getattr(anything, "user_name", "") or getattr(anything, "nickname", "") or ""
+            name = getattr(anything, "user_name", "") or ""
             if uid:
                 senders = self._group_recent_senders.setdefault(scope, [])
                 entry = (uid, name)
@@ -325,36 +344,30 @@ class WorkMemory:
             await self._handle_group_message(anything)
         else:
             self.pending_user.append(scope)
-            self._message_previews[scope] = preview
-            if adapter_key:
-                self._task_adapter_keys[scope] = adapter_key
+            self._pending_signals[scope] = signal
 
         await self._handle_user_message(anything)
         self._scan_message_tags(str(anything))
 
     def _scan_message_tags(self, content: str) -> None:
-        """扫描消息中的标签，按 key 和 value 搜索匹配工具。
+        """按消息标签唤醒工具（显式映射，全部唤醒语义在此声明）。
 
-        [media_type:image][media_path:path] -> tag "media:image"
-        [media_file:image:path]             -> tag "media:image"
-        [channel:telegram]                  -> tag "channel", "telegram"
-        [platform:qq]                       -> tag "platform", "qq"
+        [media_type:image] / [media_file:image:路径]  -> tag "media:{类型}" 工具组
+        [channel:qq]                                  -> 该频道专属工具
+        其余元数据标签（time/uid/kind 等）不承载工具路由。
         """
         assembly = self.tool_assembly
         if assembly is None:
             return
-        tags = etag_all(content)
-        for key, value in tags:
+        for key, value in etag_all(content):
             if key in ("media_type", "media_file"):
                 # [media_type:image] 的 value 即媒体类型；[media_file:image:path] 取首段
                 media_kind = value.split(":", 1)[0] if value else ""
                 if media_kind:
-                    assembly.activate_by_tag(f"media:{media_kind}")
-            else:
-                assembly.activate_by_tag(key)
-                first_val = value.split(":")[0] if value else ""
-                if first_val and first_val != key:
-                    assembly.activate_by_tag(first_val)
+                    assembly.activate_by_tag(f"media:{media_kind.lower()}")
+            elif key == "channel" and value:
+                # 工具 tag 恒为小写（EntityRegistry 注册时 lower），频道 id 随配置大小写不定
+                assembly.activate_by_tag(value.lower())
 
     @staticmethod
     def _analysis_threshold() -> int:
@@ -426,9 +439,8 @@ class WorkMemory:
     # ==================================================================
 
     def _clear_scope_state(self, scope: str) -> None:
-        """清理 scope 消费后的关联状态（预览 / 路由 / 未读 / 群发送者）。"""
-        self._message_previews.pop(scope, None)
-        self._task_adapter_keys.pop(scope, None)
+        """清理 scope 消费后的关联状态（信号 / 未读 / 群发送者）。"""
+        self._pending_signals.pop(scope, None)
         self._unread_counts.pop(scope, None)
         self._group_recent_senders.pop(scope, None)
 
@@ -466,8 +478,8 @@ class WorkMemory:
     def get_pending_message_previews(self) -> Dict[str, Tuple[str, str]]:
         """待处理消息预览快照：{scope: (preview, adapter_key)}。"""
         return {
-            scope: (preview, self._task_adapter_keys.get(scope, ""))
-            for scope, preview in self._message_previews.items()
+            scope: (signal.preview, signal.adapter_key)
+            for scope, signal in self._pending_signals.items()
         }
 
     def consume_general_task(self, index: int) -> bool:
@@ -513,12 +525,12 @@ class WorkMemory:
         result: List[Tuple[str, str, str, str]] = []
         for scope in self.pending_user.queue:
             _, _, uid, _ = parse_entity_scope(scope)
-            preview = self._message_previews.get(scope, "")
-            result.append((scope, uid, "0", preview))
+            signal = self._pending_signals.get(scope)
+            result.append((scope, uid, "0", signal.preview if signal else ""))
         for scope in self.pending_group.queue:
             _, _, gid, _ = parse_entity_scope(scope)
-            preview = self._message_previews.get(scope, "")
-            result.append((scope, "0", gid, preview))
+            signal = self._pending_signals.get(scope)
+            result.append((scope, "0", gid, signal.preview if signal else ""))
         return result
 
     def consume_scope_task(self, scope: str) -> bool:
@@ -561,22 +573,33 @@ class WorkMemory:
     def set_adapter_key(self, scope: str, adapter_key: str) -> None:
         """注册 scope → adapter_key 映射（支撑主动消息路由）。"""
         if scope and adapter_key:
-            self._task_adapter_keys[scope] = adapter_key
+            signal = self._pending_signals.get(scope) or PendingSignal()
+            signal.adapter_key = adapter_key
+            self._pending_signals[scope] = signal
 
     def get_adapter_key(self, scope: str) -> str:
-        return self._task_adapter_keys.get(scope, "")
+        signal = self._pending_signals.get(scope)
+        return signal.adapter_key if signal else ""
+
+    def get_pending_signal(self, scope: str) -> Optional[PendingSignal]:
+        """取 scope 的最新消息信号（无登记返回 None）。"""
+        return self._pending_signals.get(scope)
 
     def known_scopes(self) -> set[str]:
         """已知会话 scope 全集（待回复队列 + 消息路由登记）。"""
         scopes: set[str] = set(self.pending_user.queue)
         scopes.update(self.pending_group.queue)
-        scopes.update(self._task_adapter_keys)
+        scopes.update(
+            scope for scope, signal in self._pending_signals.items() if signal.adapter_key
+        )
         return scopes
 
     def set_message_preview(self, scope: str, preview: str) -> None:
         """登记 scope 的待处理消息预览（供态势收集与提示注入）。"""
         if scope:
-            self._message_previews[scope] = preview
+            signal = self._pending_signals.get(scope) or PendingSignal()
+            signal.preview = preview
+            self._pending_signals[scope] = signal
 
     # ==================================================================
     # 媒体收集

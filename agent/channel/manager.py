@@ -288,7 +288,6 @@ class ChannelManager(BaseEntity):
             user_name=message.sender.user_name or user_id,
             group_id=message.channel.channel_id if message.channel.channel_type == CT.GROUP else 0,
             to_me=message.is_to_me,
-            nickname=message.sender.user_name,
             images=images,
             media_segments=media_segments,
             adapter_key=cid,

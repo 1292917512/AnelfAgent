@@ -165,10 +165,10 @@ class TestFetchPending:
 # ==================================================================
 
 class TestExtractSpeaker:
-    def test_with_uid_and_nickname(self) -> None:
+    def test_with_uid_and_name(self) -> None:
         from agent.memory.auto_capture import _extract_speaker
         label, uid = _extract_speaker(
-            "[time:2026-08-31 12:16:00][uid:123][nickname:小明] 我对花生过敏"
+            "[time:2026-08-31 12:16:00][uid:123][name:小明] 我对花生过敏"
         )
         assert label == "小明[uid:123]" and uid == "123"
 
@@ -238,7 +238,7 @@ class TestSpeakerTagging:
         ts = int(time.time() * 10**9)
         messages = [
             {"role": "user", "ts_ns": ts,
-             "content": "[time:2026-08-31 12:16:00][uid:123][nickname:小明] 我对花生过敏，点单注意"},
+             "content": "[time:2026-08-31 12:16:00][uid:123][name:小明] 我对花生过敏，点单注意"},
             {"role": "user", "ts_ns": ts,
              "content": "[uid:456][name:小李] 我周六加班到深夜才回家"},
         ]

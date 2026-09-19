@@ -183,9 +183,12 @@ ConfigPaths.UPLOAD_DIR          # workspace/uploads
 #### 标签系统（core/tags.py）
 
 `[key:value]` 统一数据编码。函数：`tag_label` / `etag` / `etag_all` / `batch_remove_tags`。
-内置标签：time / uid / group_id / name / channel / platform / media_file / reply_to / to_me / push 等
+内置标签：time / uid / group_id / name / channel / session_id / message_id / kind / media_file / reply_to / to_me / push 等
 （to_me 标识"群消息 @ 了机器人"，仅 @ 时渲染，无此标签的群消息 = 群员间对话而非对她的请求；
-push 为实体推送通知标签，标识"非用户消息"；两者出站时随元数据标签一并剥离）。
+push 为实体推送通知标签，标识"非用户消息"；两者出站时随元数据标签一并剥离——
+kind/speaker_scope/face_scope 同属元数据剥离名单，出站清洗名单是标签外泄的唯一防线，新增渲染标签必须同步名单）。
+消息标签的工具唤醒是显式映射（`work_memory._scan_message_tags`）：media_type/media_file → `media:{类型}` 工具组、
+channel → 该频道专属工具；其余元数据标签不承载工具路由（防用户可控值泛化激活）。
 
 #### 会话 scope 格式（agent/messages/everything.py）
 
@@ -721,7 +724,7 @@ _heartbeat_running` 任一为真时不整轮跳过，按 `heartbeat_busy_defer_s
 | 声纹识别并行 | `engine._on_speech_end` | 声纹只读识别与 ASR 定稿并行执行（二者都只依赖本段音频快照，互不依赖）——定稿→思维启动的关键路径收敛为一段网络往返（此前串行定稿→声纹→入轮） |
 | 首句快速断句 | `agent/tts/sentences.py`（首句窗口 6~36 字） | 首句未产出前在软切点提前断句——TTS 首请求不等第一个完整句，开声延迟从整句缩到首个分句；窗口内无软切点不硬切（短应答/无标点串回落常规规则，等句末或超长软切） |
 | 抢占清场 | `playback.drop_pending` + `engine._on_delta` 提交回复时 | 回复抢占在播主动播报时清空其未播帧（含收束帧，不放过打断哨兵——非打断语义），回复音频紧跟当前已下发帧直落；pending_finals 计数同步收敛（speak_to_scope 的 appending 判据不受影响） |
-| 召回预算收编规划 | `memory_retriever` recall 路径 | 检索规划（轻 LLM，原 8s 内部超时在召回总时限之外、串行在最前）纳入 `memory_recall_timeout_seconds` 总预算：规划段独立预算 `memory_plan_budget_seconds`（0 = 占前四成份额派生，收敛至多总超时减 1s 保住检索段；超预算回退原查询单发），规划+提及+多路检索全程一个 wait_for——被动召回墙钟真正有界（对通话首响与文字回复同效） |
+| 召回预算与规划并行 | `memory_retriever` recall 路径 | 检索规划（轻 LLM）与多路检索**并行**：原查询 lane 先行（复用预计算 query_vec 零 embed），规划慢/超预算只损失多查询增强、不再挤占检索预算（2026-09 回归：规划串行在最前，主模型 low 档仍 9s，把检索挤到 1s 致总超时空手回退）；计划 lanes 在规划完成后增量追加（同串跳过、首条异于原查询的带实体定向）。规划段独立预算 `memory_plan_budget_seconds`（0 = 占 `memory_recall_timeout_seconds` 总超时四成份额派生，收敛至多总超时减 1s；超预算回退原查询单发），规划+提及+多路检索全程一个 wait_for——被动召回墙钟真正有界（对通话首响与文字回复同效） |
 
 > Model Experience：① 通话首响四段提速：声纹并行（省一次网络往返）+ 首句快断（开声提前约一个分句）+ 抢占清场（回复不被主动播报残余帧拖住）+ 召回预算（规划不再无限前置）；工具轮不再长时间静默（先应声训诫 + send_message 自动播出）；② 音色一致性：声音页一处配置全链路生效；③ token 影响：无新增工具 schema，通话注入上限 120→220（仅通话中占用）；④ 缓存影响：通话注入文案变化触发一次前缀重建（此后稳定）
 

@@ -27,7 +27,7 @@ async def humanize_entity_tags(graph: Optional["GraphStore"], tags: List[str]) -
     实体标签渲染为「称呼[uid:xxx]」（图谱有称呼时）或「[uid:xxx]」——
     ID 与会话消息的 [uid:xxx] 标签同构，AI 可直接对照当前对话对象确认归属，
     避免仅凭称呼把别人的记忆安到当前对象头上（同名/称呼变更场景）。
-    type:/merged/channel:/date: 等内部机制标签不展示。
+    type: 等内部机制标签不展示。
     """
     display: List[str] = []
     entity_tags: List[str] = []
@@ -38,7 +38,7 @@ async def humanize_entity_tags(graph: Optional["GraphStore"], tags: List[str]) -
             value = tag.split(":", 1)[1].strip()
             if value and value not in display:
                 display.append(value)
-        # 内部标签（type/merged/channel/date 等）对 AI 无信息量，不注入
+        # 内部标签（type: 等）对 AI 无信息量，不注入
     # 批量取节点（单条 IN 查询），替代逐标签串行往返
     node_map: Dict[str, Any] = {}
     if entity_tags and graph is not None:

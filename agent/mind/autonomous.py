@@ -97,6 +97,8 @@ class PendingMessage:
     group_id: Union[int, str] = 0
     timestamp: float = 0.0
     adapter_key: str = ""
+    to_me: bool = False
+    kind: str = ""
 
 
 @dataclass
@@ -153,7 +155,9 @@ class SituationContext:
             lines.append(f"[待处理消息] {len(self.pending_messages)} 条：")
             for pm in self.pending_messages:
                 source = f"[来自{pm.adapter_key}]" if pm.adapter_key else ""
-                lines.append(f"  - {pm.scope}{source}: {pm.preview[:200]}")
+                # 对话性质标记：@我 = 群消息直接对她说；kind = 平台推送/事件，非真人聊天
+                markers = ("[@我]" if pm.to_me else "") + (f"[{pm.kind}]" if pm.kind else "")
+                lines.append(f"  - {pm.scope}{source}{markers}: {pm.preview[:200]}")
         else:
             lines.append("[待处理消息] 无")
 

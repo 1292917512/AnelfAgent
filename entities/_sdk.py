@@ -465,7 +465,9 @@ def register_entity_llm_hook(
             llm_end 为高频事件（每次 LLM 调用后触发），强制最小冷却 20s，
             声明更小值也会被钳到下限。
         handler: 执行体，签名 async (ctx: HookContext) -> Optional[str]；
-            ctx.messages 为按 context 档位构建的上下文快照，ctx.payload 为事件数据。
+            ctx.messages 为按 context 档位构建的上下文快照，ctx.payload 为事件数据，
+            ctx.tool_tags/max_iterations/allow_output_tools/model 为下方同名声明参数的
+            带入（执行 LLM 工作时透传给 reflect，声明即单一事实源）。
         context: 上下文档位 none/lean/transcript（默认 none）。
         owner: 注册归属（缺省取调用方实体模块名，便于卸载批量清理）。
         description: 人类可读描述（Web 面板展示）。

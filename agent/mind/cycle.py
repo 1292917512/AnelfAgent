@@ -307,10 +307,13 @@ async def _gather_situation(mind: "Mind", *, is_heartbeat: bool = False) -> Situ
     for item in mind.pfc.peek_all_tasks():
         scope, uid, group_id, preview = item
         adapter_key = mind.pfc.get_adapter_key(scope)
+        signal = mind.pfc.get_pending_signal(scope)
         pending.append(PendingMessage(
             scope=scope, uid=uid, group_id=group_id,
             preview=preview, timestamp=time.time(),
             adapter_key=adapter_key,
+            to_me=signal.to_me if signal else False,
+            kind=signal.kind if signal else "",
         ))
 
     recent_mem_lines: list[str] = []

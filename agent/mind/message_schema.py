@@ -229,7 +229,7 @@ def normalize_for_send(messages: List[Dict]) -> List[Dict]:
 # prefill 修复后被改写为 user 的 assistant 独白等）没有到达标签——
 # 它们属于执行块而非用户原话。
 _USER_ARRIVAL_TAGS = (
-    "time", "uid", "name", "nickname", "channel", "group_id", "session_id", "message_id",
+    "time", "uid", "name", "channel", "group_id", "session_id", "message_id",
 )
 
 

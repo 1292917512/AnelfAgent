@@ -176,7 +176,6 @@ class AgentApp:
         user_name: str = "",
         group_id: Union[int, str] = 0,
         to_me: bool = False,
-        nickname: str = "",
         images: Optional[list[ImageContent]] = None,
         media_segments: Optional[list] = None,
         adapter_key: str = "",
@@ -210,7 +209,6 @@ class AgentApp:
             "user_name": user_name,
             "group_id": group_id,
             "to_me": to_me,
-            "nickname": nickname,
             "adapter_key": adapter_key,
             "message_id": resolved_message_id,
             "session_id": resolved_session_id,
@@ -408,7 +406,6 @@ def _build_message_everything(payload: dict[str, Any]) -> Everything:
     group_id = payload.get("group_id", 0)
     user_name = payload.get("user_name", "")
     to_me = payload.get("to_me", False)
-    nickname = payload.get("nickname", "")
     images: list[ImageContent] = payload.get("images") or []
     media_segments: list = payload.get("media_segments") or []
     adapter_key: str = payload.get("adapter_key", "")
@@ -425,7 +422,6 @@ def _build_message_everything(payload: dict[str, Any]) -> Everything:
             group_id=group_id,
             user_name=user_name,
             to_me=to_me,
-            nickname=nickname,
             images=images,
             media_segments=media_segments,
             adapter_key=adapter_key,

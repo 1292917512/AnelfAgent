@@ -68,7 +68,7 @@ class TestCrossChannelIsolation:
         assert pfc.peek_all_tasks() == []
 
     async def test_scope_embedded_adapter_survives_routing_table_loss(self) -> None:
-        """路由表（_task_adapter_keys）缺失时，scope 内嵌 adapter 仍能正确路由。
+        """路由登记缺失时，scope 内嵌 adapter 仍能正确路由。
 
         覆盖进程重启后 replay/恢复场景：内存路由表为空，但 scope 自带频道信息。
         """

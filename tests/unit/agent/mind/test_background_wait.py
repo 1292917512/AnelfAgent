@@ -382,16 +382,12 @@ class _DelegationMind:
         self.reflect = AsyncMock(return_value=output)
         self.background_tasks = BackgroundTaskRegistry()
         self.try_execute_mind = AsyncMock()
-        previews: dict = {}
-        adapter_keys: dict = {}
         self.pfc = SimpleNamespace(
             add_temporary=lambda clip, scope="": None,
             pending_user=[],
             pending_group=[],
-            _message_previews=previews,
-            _task_adapter_keys=adapter_keys,
-            set_message_preview=lambda scope, preview: previews.__setitem__(scope, preview),
-            set_adapter_key=lambda scope, key: adapter_keys.__setitem__(scope, key),
+            set_message_preview=lambda scope, preview: None,
+            set_adapter_key=lambda scope, key: None,
             get_adapter_key=lambda scope: "test",
         )
         # 镜像 Mind._on_bg_task_unclaimed：轮外完成经回调排入回复队列并触发新一轮

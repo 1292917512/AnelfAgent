@@ -85,7 +85,12 @@ class LLMHookSpec:
 
 @dataclass(slots=True)
 class HookContext:
-    """钩子执行体收到的上下文（快照 + 触发信息 + 治理元数据）。"""
+    """钩子执行体收到的上下文（快照 + 触发信息 + 声明的执行参数）。
+
+    执行参数（tool_tags/max_iterations/allow_output_tools/model）由执行器
+    从 LLMHookSpec 带入，是钩子声明的单一事实源——执行体调用 mind.reflect
+    等思考入口时应原样透传，不得在执行体内另立常量。
+    """
 
     name: str
     event: str
@@ -97,6 +102,14 @@ class HookContext:
     """按档位构建的上下文快照（已冻结 + 规整，可直接作 reflect base_messages）。"""
     trigger: str = ""
     """触发来源标记（event 名 / 手动 / 任务事件）。"""
+    tool_tags: tuple[str, ...] = ()
+    """reflect 工具选择器（空 = 复用回复级装配）。"""
+    max_iterations: int = 6
+    """reflect 轮次预算。"""
+    allow_output_tools: bool = False
+    """是否放开外发工具（默认禁止，内部派生语义）。"""
+    model: str = ""
+    """执行模型 ID（空 = 默认主模型）。"""
 
     def transcript_available(self) -> bool:
         """transcript 档位快照是否真实带出了消息链。"""
