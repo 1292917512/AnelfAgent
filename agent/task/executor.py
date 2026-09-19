@@ -72,6 +72,11 @@ class TaskExecutor:
             log(f"任务 [{task.name}] scope 不匹配 (scope={task.scope.value}, has_entity={entity is not None})", tag="任务")
             return None
 
+        if "type:reflection" in task.tags:
+            focus = await self._build_reflection_focus(task)
+            if focus:
+                extra_note = f"{extra_note}{focus}"
+
         effective_model = model_id or task.model_id or ""
         effective_effort = reasoning_effort or task.reasoning_effort or ""
         await self._emit("unit_start", task, entity)
@@ -249,27 +254,123 @@ class TaskExecutor:
             save_handoff(task.name, handoff_text)
         return clean_output
 
+    async def _build_reflection_focus(self, task: TaskDefinition) -> str:
+        """为反思类任务组装焦点行：近 24h 工具失败、停滞目标、上次反思锚点。
+
+        让反思有据可依而非全凭模型自觉翻料；三类材料各自独立降级为空，
+        任一来源故障不影响任务运行。尾部追加进 extra_note，不碰稳定前缀。
+        """
+        lines: List[str] = []
+
+        try:
+            store = self.mind.memory_store
+            if store:
+                stats = await store.get_tool_error_stats()
+                top = [s for s in stats if s.get("unresolved")][:3]
+                if top:
+                    brief = ", ".join(
+                        f"{s['tool_name']}×{s['total']}" for s in top
+                    )
+                    lines.append(f"近期待治理工具失败: {brief}")
+        except Exception as exc:
+            log(f"反思焦点-工具失败概况构建失败: {exc}", "DEBUG", tag="任务")
+
+        try:
+            from agent.planning.situation import stale_goal_line
+            stale = await stale_goal_line()
+            if stale:
+                lines.append(stale)
+        except Exception as exc:
+            log(f"反思焦点-目标停滞概况构建失败: {exc}", "DEBUG", tag="任务")
+
+        try:
+            store = self.mind.memory_store
+            if store:
+                recent = await store.list_recent(
+                    limit=1, memory_type=MemoryType.EPISODIC, source=task.name,
+                )
+                if recent:
+                    prev = recent[0]
+                    lines.append(f"上次反思 #{prev.id}: {prev.content[:100]}")
+        except Exception as exc:
+            log(f"反思焦点-上次反思锚点构建失败: {exc}", "DEBUG", tag="任务")
+
+        if not lines:
+            return ""
+        return "\n\n[反思焦点]\n" + "\n".join(lines)
+
     async def _store_result(self, result: TaskResult) -> None:
-        """将任务结果存入 MemoryStore。"""
-        if not self.mind.memory_store or not result.content.strip():
+        """将任务结果存入 MemoryStore，写入前经两级去重治理（与 memorize 同一管线）。
+
+        第一级规则判重零成本拦截字面重复；命中第二级 LLM 语义裁决
+        （store/skip/update/merge），事实演进合并进既有记忆而非新增矛盾记录。
+        LLM 裁决失败回退 store，去重不阻塞任务落库。
+        """
+        store = self.mind.memory_store
+        if not store or not result.content.strip():
             return
 
-        if result.memory_type == MemoryType.REFLECTION:
-            if await self.mind.memory_store.has_similar_content(result.content):
-                log(f"任务结果与已有记忆高度相似，跳过存储: [{result.task_name}]", tag="任务")
+        from agent.memory import metrics
+        from agent.memory.dedup import (
+            apply_evidence_signals,
+            apply_update,
+            gather_dedup_candidates,
+            judge_write,
+        )
+        from agent.memory.embedding import wake_embedding_worker
+
+        content = result.content
+        if await store.has_similar_content(content):
+            metrics.incr("write.dedup_rule_skip")
+            log(f"任务结果与已有记忆重复，跳过存储: [{result.task_name}]", tag="任务")
+            return
+
+        candidates = await gather_dedup_candidates(store, self.mind.embedder, content)
+        verdict = await judge_write(content, candidates)
+        action = verdict.get("action", "store")
+        metrics.incr(f"write.dedup_llm_{action}")
+
+        if action == "skip":
+            await apply_evidence_signals(store, action, content, candidates)
+            log(f"任务结果已有等价记忆，跳过存储: [{result.task_name}]", tag="任务")
+            return
+        if action == "update" and verdict.get("target_id"):
+            updated = await apply_update(
+                store, int(verdict["target_id"]),
+                str(verdict.get("content") or content), result.tags,
+            )
+            if updated is not None:
+                await apply_evidence_signals(
+                    store, action, content, candidates,
+                    target_ids=[updated.id] if updated.id else None,
+                )
+                wake_embedding_worker()
+                log(f"任务结果合并更新到记忆 #{updated.id}: [{result.task_name}]", tag="任务")
+                return
+        if action == "merge" and verdict.get("target_ids"):
+            merge_ids = [int(i) for i in verdict["target_ids"]]
+            new_id = await store.merge_memories(
+                merge_ids, str(verdict.get("content") or content),
+            )
+            if new_id:
+                await apply_evidence_signals(
+                    store, action, content, candidates, target_ids=[new_id],
+                )
+                wake_embedding_worker()
+                log(f"任务结果合并 {len(merge_ids)} 条为记忆 #{new_id}: [{result.task_name}]",
+                    tag="任务")
                 return
 
         entry = MemoryEntry(
             memory_type=result.memory_type,
-            content=result.content,
+            content=content,
             source=result.source,
             tags=result.tags,
             importance=result.importance,
         )
         from agent.memory.reflection_lifecycle import seed_reflection
         seed_reflection(entry)
-        await self.mind.memory_store.add(entry)
-        from agent.memory.embedding import wake_embedding_worker
+        await store.add(entry)
         wake_embedding_worker()
         log(f"任务结果已存储: [{result.task_name}] {result.source}", tag="任务")
 

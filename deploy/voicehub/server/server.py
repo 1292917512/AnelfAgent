@@ -4,14 +4,21 @@
 MOSS 失败自动回退旧链：pyannote 分离(:10098) → SenseVoice ASR(:10099)。
 低质量段 vector=None；分离失败回退单段。声纹匹配(is_miaomiao/unknown 门控)在 Agent 侧（持有说话人库）。
 """
-import os, sys, time, tempfile, subprocess, threading, shutil
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
 os.environ["PATH"] = r"D:\ServicesCenter\tools\ffmpeg\bin;" + r"D:\ServicesCenter\tools\ffmpeg-shared\bin;" + os.environ.get("PATH", "")
-import numpy as np
+import httpx
 import soundfile as sf
+import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
-import httpx
-import uvicorn
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from embedder import Embedder
 

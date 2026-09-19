@@ -1,10 +1,10 @@
-"""出站哨兵：同一会话的跨思维周期出站互斥（防「双答同一问题」）。
+"""出站哨兵：发送管道上的目标会话状态护栏。
 
-背景（2026-09-14 两次双发事故）：思维周期的消息链在启动时刻冻结（对话历史
-周期内不重读——前缀缓存纪律），回复周期与任务/反思周期并发时互相看不到
-对方的出站。快照时间错位让双方各自认为「还没回复」：反思任务按「主人已
-等 6 分钟」的过期快照代答，慢速回复周期调查完毕后又交出自己的答案；或
-闹钟回复刚交付、反思任务按几分钟前读到的待办再发一遍。
+主防线（跨周期双答防护，2026-09-14 两次双发事故）：思维周期的消息链在启动
+时刻冻结（对话历史周期内不重读——前缀缓存纪律），回复周期与任务/反思周期
+并发时互相看不到对方的出站。快照时间错位让双方各自认为「还没回复」：
+反思任务按「主人已等 6 分钟」的过期快照代答，慢速回复周期调查完毕后又交出
+自己的答案；或闹钟回复刚交付、反思任务按几分钟前读到的待办再发一遍。
 
 防线分两层，本模块是出站层：
 - 调度层（agent/heartbeat/engine.py）：回复进行中，tick 不启动新任务；
@@ -15,6 +15,10 @@
   2. 目标会话近期窗口内已有其他思维链出站（刚交付的事实，本周期快照不含）。
   回复周期自身与系统路径（无 think scope）不受限：多段回复是合法形态，
   回复周期就是该会话的当前所有者；同一思维链的连续出站同理放行。
+
+附加防线（空会话拦截，guard_empty_conversation）：AI 思维上下文（回复/
+反思任一）向从未收到过用户消息的会话发送时拒绝——防对陌生/空会话主动
+发起对话；存量空会话由存储层 sweep_empty_conversations 周期整合。
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import time
 from collections import deque
 from typing import Callable, NamedTuple, Optional
 
+from agent.messages import build_scope_id, parse_entity_scope
 from core.config import ConfigValueType, get_config_bool, get_config_int, register_configs_safe
 from core.log import log
 from core.tool_errors import ErrorCause
@@ -53,6 +58,14 @@ _CONFIGS = {
             "max": 3600,
             "step": 30,
             "unit": "秒",
+        },
+        "outbound_guard_empty_enabled": {
+            "description": (
+                "空会话拦截：AI 思维上下文向从未收到过对方消息的会话发送时拒绝"
+                "（防对陌生/空会话主动发起对话）；系统路径不受限"
+            ),
+            "default": True,
+            "value_type": ConfigValueType.BOOLEAN,
         },
     },
 }
@@ -146,6 +159,46 @@ def guard_outbound(target_scope: str, thinker: str) -> str:
                     recent_preview=rec.preview,
                 )
     return ""
+
+
+async def target_has_interaction(entity_scope: str) -> bool | None:
+    """目标会话是否有过用户侧消息；无法判定（runtime 未就绪/查询失败）返回 None。"""
+    scope_type, adapter, base_id, session_id = parse_entity_scope(entity_scope)
+    if not scope_type or not base_id:
+        return None
+    suffix = f"#{session_id}" if session_id and session_id != base_id else ""
+    try:
+        from agent.runtime.singleton import require_runtime
+
+        sqlite = require_runtime().data_center.sqlite
+        return await sqlite.conversation_has_user_message(
+            scope_type=scope_type, scope_id=build_scope_id(adapter, base_id, suffix),
+        )
+    except Exception as exc:
+        log(f"空会话判定查询失败 [{entity_scope}]（放行）: {exc}", "DEBUG", tag="通道")
+        return None
+
+
+async def guard_empty_conversation(target_scope: str, thinker: str) -> str:
+    """空会话拦截：AI 思维上下文向从未有过用户消息的会话发送时拒绝。
+
+    正常回复周期由真实用户消息触发、必有历史；命中空会话即说明是主动
+    搭话（PROACTIVE/心跳任务）或对陌生会话的代发。系统路径（无思维会话，
+    thinker 为 ``_global``/空串）不受限；历史查询失败放行（行为护栏）。
+    """
+    if not get_config_bool("outbound_guard_empty_enabled", True):
+        return ""
+    if thinker in ("", "_global"):
+        return ""
+    if await target_has_interaction(target_scope) is not False:
+        return ""
+    return _reject(
+        "empty_conversation",
+        f"目标会话 {target_scope} 从未收到过对方消息（空会话），不能向其发起对话",
+        "对方从未在该会话中说过话，主动发消息会非常突兀；请等待对方先开口，"
+        "或改记待办/目标，待对方主动联系时再处理",
+        target_scope=target_scope,
+    )
 
 
 def note_outbound(target_scope: str, thinker: str, preview: str) -> None:

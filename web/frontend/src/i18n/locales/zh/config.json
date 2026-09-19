@@ -79,6 +79,7 @@
     "model/describe": "媒体描述",
     "task/history": "执行历史",
     "channel/outbound": "出站哨兵",
+    "heartbeat/maintenance": "心跳维护",
     "retrieval": "检索",
     "vision/face": "人脸识别"
   },

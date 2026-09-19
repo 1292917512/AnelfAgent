@@ -2,8 +2,8 @@
 主模型 ERes2NetV2，加载失败回退 CAM++。输出 192 维向量。
 sherpa-onnx 1.13.x API：SpeakerEmbeddingExtractor(SpeakerEmbeddingExtractorConfig(model=...))"""
 import numpy as np
-import soundfile as sf
 import sherpa_onnx
+import soundfile as sf
 
 
 class Embedder:

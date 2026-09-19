@@ -79,6 +79,7 @@
     "model/describe": "Media Describe",
     "task/history": "Execution History",
     "channel/outbound": "Outbound Guard",
+    "heartbeat/maintenance": "Heartbeat Maintenance",
     "retrieval": "Retrieval",
     "vision/face": "Face Recognition"
   },

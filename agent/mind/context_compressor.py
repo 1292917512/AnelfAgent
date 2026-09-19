@@ -478,7 +478,8 @@ class ContextCompressor:
         context_length = self._mind.get_model_context_length()
         if context_length <= 0:
             return 0
-        effective = context_length
+        output_budget = self._mind.get_model_max_output()
+        effective = context_length - min(output_budget, context_length // 4)
         threshold = int(effective * self.config.threshold_percent)
         if context_length <= _SMALL_WINDOW_TOKENS and threshold >= effective * 0.9:
             return int(effective * _SMALL_WINDOW_FALLBACK_RATIO)

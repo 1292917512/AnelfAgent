@@ -10,7 +10,10 @@ from agent.mind.context_compressor import CompressionConfig, ContextCompressor
 
 
 def _compressor(**cfg) -> ContextCompressor:
-    mind = SimpleNamespace(get_model_context_length=lambda: 100000)
+    mind = SimpleNamespace(
+        get_model_context_length=lambda: 100000,
+        get_model_max_output=lambda: 0,
+    )
     return ContextCompressor(mind, CompressionConfig(**cfg))
 
 

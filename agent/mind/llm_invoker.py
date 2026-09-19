@@ -54,6 +54,29 @@ def get_model_context_length(mind: "Mind") -> int:
     return max_ctx
 
 
+def get_model_max_output(mind: "Mind") -> int:
+    """获取当前模型的输出预算（tokens，带缓存；0 表示未知）。
+
+    优先级：显式配置 max_tokens > litellm 模型信息 max_output_tokens > 0（未知）。
+    与 get_model_context_length 共用模型名缓存键，switch_model 后同步失效。
+    """
+    llm_client = mind.llm if isinstance(mind.llm, LLMClient) else None
+    if llm_client is None:
+        return 0
+    current_model = llm_client.config.litellm_model or ""
+    if mind._cached_max_output > 0 and mind._cached_model_name == current_model:
+        return mind._cached_max_output
+    max_out = llm_client.config.max_tokens or 0
+    if not max_out:
+        try:
+            info = LLMClient.get_model_info(current_model)
+            max_out = info.get("max_output_tokens") or 0
+        except Exception:
+            max_out = 0
+    mind._cached_max_output = max_out
+    return max_out
+
+
 async def _invoke_llm_unified(
         mind: "Mind",
         messages: List[Dict],

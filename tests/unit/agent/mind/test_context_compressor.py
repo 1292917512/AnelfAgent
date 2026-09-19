@@ -14,27 +14,41 @@ from agent.mind.context_compressor import (
 class _FakeMind:
     """最小 Mind 替身：提供窗口查询与摘要生成。"""
 
-    def __init__(self, context_length: int = 10_000) -> None:
+    def __init__(self, context_length: int = 10_000, max_output: int = 0) -> None:
         self._context_length = context_length
+        self._max_output = max_output
         self.summarize_text = AsyncMock(return_value="【摘要】早期对话要点")
 
     def get_model_context_length(self) -> int:
         return self._context_length
+
+    def get_model_max_output(self) -> int:
+        return self._max_output
 
 
 def _make_messages(n: int, prefix: str = "消息") -> List[dict]:
     return [{"role": "user" if i % 2 == 0 else "assistant", "content": f"{prefix}{i}"} for i in range(n)]
 
 
-def _compressor(context_length: int = 10_000, **cfg) -> ContextCompressor:
+def _compressor(context_length: int = 10_000, max_output: int = 0, **cfg) -> ContextCompressor:
     config = CompressionConfig(enabled=True, **cfg)
-    return ContextCompressor(_FakeMind(context_length), config)
+    return ContextCompressor(_FakeMind(context_length, max_output), config)
 
 
 class TestThreshold:
     def test_threshold_from_window(self) -> None:
         c = _compressor(10_000, threshold_percent=0.75)
         assert c.threshold_tokens() == 7_500
+
+    def test_threshold_deducts_output_budget(self) -> None:
+        """输出预留从窗口扣除：128K 窗口 + 32K 输出，阈值按 (128K-32K)×0.75。"""
+        c = _compressor(128_000, max_output=32_000, threshold_percent=0.75)
+        assert c.threshold_tokens() == int((128_000 - 32_000) * 0.75)
+
+    def test_output_budget_capped_at_quarter_window(self) -> None:
+        """输出预留上限为窗口 1/4：超过时按窗口的 3/4 计算。"""
+        c = _compressor(10_000, max_output=8_000, threshold_percent=0.8)
+        assert c.threshold_tokens() == int((10_000 - 2_500) * 0.8)
 
     def test_unknown_window_no_threshold(self) -> None:
         c = _compressor(0)

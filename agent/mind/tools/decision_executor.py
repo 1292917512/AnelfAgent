@@ -296,6 +296,10 @@ async def execute_proactive(mind: Mind, decision: Decision) -> None:
         log(f"PROACTIVE 目标不可路由，已放弃: {target}", "WARNING", tag="思维")
         _hb_append(f"主动消息放弃: 目标 '{target}' 无法解析为可路由会话 - {decision.content[:40]}")
         return
+    if await _target_is_empty_conversation(anything.entity_scope):
+        log(f"PROACTIVE 目标为空会话，已放弃: {target}", "WARNING", tag="思维")
+        _hb_append(f"主动消息放弃: 目标 '{target}' 从未有过对话（空会话），不主动打扰 - {decision.content[:40]}")
+        return
 
     proactive_prompt = (
         f"你要主动联系 {target}。\n"
@@ -338,7 +342,12 @@ async def execute_tool_action(mind: Mind, decision: Decision) -> None:
             if not anything:
                 anything = routable_target(mind, decision.target)
             if anything:
-                await mind.channel_manager.reply(anything, output)
+                if await _target_is_empty_conversation(anything.entity_scope):
+                    _hb_append(
+                        f"工具操作结果未投递: 目标 '{decision.target}' 为空会话 - {content[:40]}"
+                    )
+                else:
+                    await mind.channel_manager.reply(anything, output)
     except Exception as exc:
         _hb_append(f"工具操作失败: {content[:40]} - {exc}")
         log(f"AI 自主工具操作失败: {exc}", "WARNING", tag="思维")
@@ -399,6 +408,17 @@ async def execute_self_task(mind: Mind, decision: Decision) -> None:
     except Exception as exc:
         _hb_append(f"自主任务失败: {content[:40]} - {exc}")
         log(f"AI 自主任务失败: {exc}", "WARNING", tag="思维")
+
+
+async def _target_is_empty_conversation(scope: str) -> bool:
+    """目标会话是否为空会话（从未收到过用户消息）。
+
+    与出站层空会话拦截（channel.outbound_guard）同一事实源；无法判定
+    （runtime 未就绪/查询失败）按非空处理（fail-open，不误伤正常决策）。
+    """
+    from agent.channel.outbound_guard import target_has_interaction
+
+    return await target_has_interaction(scope) is False
 
 
 def normalize_target_scope(mind: Mind, target: str) -> str:

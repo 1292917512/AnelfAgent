@@ -251,6 +251,7 @@ class Mind:
 
         # 当前模型上下文窗口缓存（tokens，0 = 未知）
         self._cached_context_length: int = 0
+        self._cached_max_output: int = 0
         self._cached_model_name: str = ""
 
         # 文件型层 mtime 快检缓存（便签/索引文件未变时跳过 I/O）
@@ -321,6 +322,10 @@ class Mind:
     def get_model_context_length(self) -> int:
         """获取当前模型的上下文窗口（tokens，带缓存；0 表示未知，委托 llm_invoker 模块）。"""
         return _llm_invoker.get_model_context_length(self)
+
+    def get_model_max_output(self) -> int:
+        """获取当前模型的输出预算（tokens，带缓存；0 表示未知，委托 llm_invoker 模块）。"""
+        return _llm_invoker.get_model_max_output(self)
 
     @staticmethod
     def _get_mind_config():

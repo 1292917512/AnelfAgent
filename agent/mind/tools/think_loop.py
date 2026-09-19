@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from typing import TYPE_CHECKING, AbstractSet, Any, Dict, List, Optional, Set
@@ -1225,6 +1226,46 @@ async def execute_tool_calls(
     log_tool_round(iteration, tool_calls)
 
 
+def _record_tool_result_failure(mind: Mind, tc: ToolCall, result: str) -> None:
+    """工具"礼貌失败"（正常返回 tool_error JSON）的选择性落库。
+
+    只把工具/环境侧真实故障（permission/config/network/timeout/state/internal）
+    记入错误台账供反思；AI 自身试错（param/not_found/user_cancel）不入表，
+    保持 recall_tool_errors 的信噪比。fire-and-forget：落库失败不影响结果。
+    """
+    if not mind.memory_store or not result:
+        return
+    text = result.strip()
+    if not text.startswith("{"):
+        return
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return
+    if not isinstance(payload, dict) or "error" not in payload:
+        return
+    cause = str(payload.get("cause", "") or "").strip().lower()
+    _TRACKED_FAILURE_CAUSES = {
+        "permission", "config", "network", "timeout", "state", "internal",
+    }
+    if cause not in _TRACKED_FAILURE_CAUSES:
+        return
+
+    async def _record() -> None:
+        try:
+            await mind.memory_store.record_tool_error(
+                tool_name=tc.name,
+                error_type=cause,
+                error_msg=str(payload.get("error", ""))[:300],
+                args_json=(tc.arguments or "")[:500],
+            )
+        except Exception:
+            pass
+
+    from core.async_helper import spawn
+    spawn(_record(), name=f"tool_error.{tc.name}")
+
+
 async def execute_one_tool(
         mind: Mind,
         tc: ToolCall,
@@ -1276,6 +1317,7 @@ async def execute_one_tool(
                 )
             except Exception:
                 pass  # hook 失败不影响已产出的工具结果
+        _record_tool_result_failure(mind, tc, result)
         return result
     except Exception as exc:
         elapsed_ms = (time.time() - t0) * 1000

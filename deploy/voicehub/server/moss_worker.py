@@ -4,17 +4,21 @@
 契约: POST /transcribe_diarize {"wav": "<16k mono wav path>"}
   -> {"segments": [{"start": float, "end": float, "speaker": "S01", "text": "..."}], "process_time_s": float}
 """
-import os, sys, re, time
+import os
+import re
+import time
+import traceback
+
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 # NSSM 服务环境无用户 PATH：显式挂 ffmpeg（load_audio 解码依赖）
 os.environ["PATH"] = r"D:\ServicesCenter\tools\ffmpeg\bin;" + r"D:\ServicesCenter\tools\ffmpeg-shared\bin;" + os.environ.get("PATH", "")
 
 import torch
+import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import uvicorn
 
 MODEL_PATH = r"D:\ServicesCenter\voicehub\models\moss"
 PROMPT = (
@@ -103,7 +107,7 @@ def transcribe_diarize(req: Req):
             "process_time_s": round(time.time() - t0, 2),
         }
     except Exception as e:
-        import traceback; traceback.print_exc()
+        traceback.print_exc()
         return JSONResponse({"error": str(e)[-2000:]}, status_code=500)
 
 

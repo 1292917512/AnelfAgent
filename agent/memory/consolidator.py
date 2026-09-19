@@ -313,6 +313,18 @@ _CONSOLIDATOR_CONFIGS = {
             "advanced": True,
             "unit": "次",
         },
+        "memory_file_sync_every_n_ticks": {
+            "description": "文件索引同步间隔（每 N 次心跳增量同步记忆文件与上传文档到检索索引；hash 比对，未变文件零写入）",
+            "default": 12,
+            "advanced": True,
+            "unit": "次",
+        },
+        "skills_curator_every_n_ticks": {
+            "description": "技能策展间隔（每 N 次心跳一次重力迁移与治理议程；向量预热仍每拍进行）",
+            "default": 12,
+            "advanced": True,
+            "unit": "次",
+        },
         "memory_forget_min_age_days": {
             "description": "记忆最小保留天数（早于此年龄不遗忘）",
             "default": 30,

@@ -164,3 +164,66 @@ class TestPopNextPurgesUnroutable:
         mind = _mind(queued=("user_1", "2", "_global"))
         assert await pop_next_reply_target(mind) is None
         assert mind.pfc.has_pending_tasks() is False
+
+
+class TestProactiveEmptyConversation:
+    """PROACTIVE 决策对空会话（从未有过用户消息）前置放弃，不进入回复周期。"""
+
+    async def test_proactive_aborts_on_empty_conversation(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent.mind.tools import decision_executor as de
+
+        async def _empty(_scope: str):
+            return False
+
+        monkeypatch.setattr(de, "_hb_append", lambda _text: None)
+        monkeypatch.setattr(
+            "agent.channel.outbound_guard.target_has_interaction", _empty)
+
+        mind = SimpleNamespace(
+            pfc=WorkMemory(SimpleNamespace()),  # type: ignore[arg-type]
+            _active_scopes=set(),
+            reply=AsyncMock(),
+        )
+        await de.execute_proactive(mind, _decision(target=_CANONICAL, content="在吗"))
+        assert mind.reply.await_count == 0
+
+    async def test_proactive_proceeds_when_interacted(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent.mind.tools import decision_executor as de
+
+        async def _interacted(_scope: str):
+            return True
+
+        monkeypatch.setattr(de, "_hb_append", lambda _text: None)
+        monkeypatch.setattr(
+            "agent.channel.outbound_guard.target_has_interaction", _interacted)
+
+        mind = SimpleNamespace(
+            pfc=WorkMemory(SimpleNamespace()),  # type: ignore[arg-type]
+            _active_scopes=set(),
+            reply=AsyncMock(),
+        )
+        await de.execute_proactive(mind, _decision(target=_CANONICAL, content="在吗"))
+        assert mind.reply.await_count == 1
+
+    async def test_query_failure_fails_open(self, monkeypatch) -> None:
+        """空会话判定不可知（runtime 未就绪）按非空处理，不误伤正常决策。"""
+        from agent.mind.tools.decision_executor import _target_is_empty_conversation
+
+        async def _unknown(_scope: str):
+            return None
+
+        monkeypatch.setattr(
+            "agent.channel.outbound_guard.target_has_interaction", _unknown)
+        assert await _target_is_empty_conversation(_CANONICAL) is False
+
+
+def _decision(*, target: str, content: str, reason: str = ""):
+    from agent.mind.autonomous import Decision, DecisionType
+
+    return Decision(
+        type=DecisionType.PROACTIVE, target=target, content=content, reason=reason,
+    )

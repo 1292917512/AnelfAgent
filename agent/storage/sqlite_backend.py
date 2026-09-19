@@ -1042,6 +1042,16 @@ class SqliteBackend:
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
 
+    async def conversation_has_user_message(self, *, scope_type: str, scope_id: str) -> bool:
+        """该会话是否收到过用户侧消息（user 角色）——空会话判定的事实源。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT 1 FROM conversation_messages "
+            "WHERE scope_type=? AND scope_id=? AND role='user' LIMIT 1",
+            (scope_type, scope_id),
+        )
+        return await cursor.fetchone() is not None
+
     async def search_conversation_global(self, keyword: str, *, limit: int = 20) -> list[dict]:
         """跨 scope 关键词搜索会话消息（LIKE 匹配，按时间倒序）。"""
         if not keyword:
@@ -1399,6 +1409,62 @@ class SqliteBackend:
         )
         await db.commit()
         return cursor.rowcount
+
+    async def sweep_empty_conversations(self, *, min_age_seconds: int = 3600) -> dict:
+        """清除空会话（从未有过 user 角色消息的会话）的消息/摘要/回复检查点。
+
+        min_age_seconds 宽限窗口内的会话不动（刚写入的一次性通知可能正被
+        回复周期消费）；消息删除用 NOT EXISTS 单语句守卫，与并发到达的首条
+        用户消息无竞态。返回 {"scopes", "messages", "summaries", "checkpoints"}。
+        """
+        db = await self._get_db()
+        cutoff_ns = time.time_ns() - int(max(0, min_age_seconds) * 1e9)
+        cursor = await db.execute(
+            """
+            SELECT scope_type, scope_id FROM conversation_messages
+            GROUP BY scope_type, scope_id
+            HAVING SUM(CASE WHEN role='user' THEN 1 ELSE 0 END) = 0 AND MAX(ts_ns) < ?
+            """,
+            (cutoff_ns,),
+        )
+        empty_scopes = [(r[0], r[1]) for r in await cursor.fetchall()]
+        report = {"scopes": len(empty_scopes), "messages": 0, "summaries": 0, "checkpoints": 0}
+        if not empty_scopes:
+            return report
+
+        cursor = await db.execute(
+            """
+            DELETE FROM conversation_summary WHERE NOT EXISTS (
+              SELECT 1 FROM conversation_messages m
+              WHERE m.scope_type=conversation_summary.scope_type
+                AND m.scope_id=conversation_summary.scope_id AND m.role='user'
+            )
+            """
+        )
+        report["summaries"] = cursor.rowcount or 0
+        cursor = await db.execute(
+            """
+            DELETE FROM reply_checkpoints WHERE NOT EXISTS (
+              SELECT 1 FROM conversation_messages m
+              WHERE m.scope_type || '_' || m.scope_id = reply_checkpoints.scope_key
+                AND m.role='user'
+            )
+            """
+        )
+        report["checkpoints"] = cursor.rowcount or 0
+        cursor = await db.execute(
+            """
+            DELETE FROM conversation_messages WHERE ts_ns < ? AND NOT EXISTS (
+              SELECT 1 FROM conversation_messages u
+              WHERE u.scope_type=conversation_messages.scope_type
+                AND u.scope_id=conversation_messages.scope_id AND u.role='user'
+            )
+            """,
+            (cutoff_ns,),
+        )
+        report["messages"] = cursor.rowcount or 0
+        await db.commit()
+        return report
 
     async def list_entity_profiles(self) -> list[dict]:
         """列出所有实体画像（含对话计数）。"""

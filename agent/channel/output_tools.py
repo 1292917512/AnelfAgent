@@ -19,7 +19,7 @@ from core.tags import strip_message_meta_tags
 from core.tool_errors import ErrorCause, error_from_exception
 from entities._sdk import deferred_tool, get_current_scope
 
-from .outbound_guard import guard_outbound, note_outbound
+from .outbound_guard import guard_empty_conversation, guard_outbound, note_outbound
 
 if TYPE_CHECKING:
     from agent.storage.data_center import ConversationData
@@ -265,6 +265,11 @@ async def execute_send_action(
         target_scope = f"{scope_type}_{scope_id}"
         thinker = get_current_scope()
         rejection = guard_outbound(target_scope, thinker)
+        if rejection:
+            return rejection
+        # 空会话拦截：目标会话从未收到过对方消息时拒绝（对空会话发起
+        # 对话是突兀的；回复周期由真实用户消息触发，命中即为主动搭话）
+        rejection = await guard_empty_conversation(target_scope, thinker)
         if rejection:
             return rejection
         # 复读闸门：主动任务上下文（reflect:）的发送与近期回复高度重叠时拒发；

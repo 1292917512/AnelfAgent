@@ -134,6 +134,7 @@ class FakeMind:
     ) -> None:
         self.pfc = pfc if pfc is not None else FakePfc()
         self.compressor = None
+        self.memory_store = None
         self._rounds: List[SimpleNamespace] = list(rounds or [])
         self.default_text = default_text
         self.llm_calls = 0

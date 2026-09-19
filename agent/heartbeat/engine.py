@@ -38,6 +38,7 @@ from agent.task.executor import TaskExecutor
 from agent.task.executor import _clean_llm_output as _clean_llm
 from agent.task.model import TaskDefinition, TaskResult
 from agent.task.registry import TaskRegistry
+from core.config import ConfigValueType, register_configs_safe
 from core.log import log
 from core.trace_session import thinking_session
 
@@ -48,6 +49,27 @@ if TYPE_CHECKING:
     from agent.heartbeat.config import TaskSchedule
     from agent.messages import EntityData
     from agent.mind.mind import Mind
+
+
+_SWEEP_CONFIGS = {
+    "heartbeat/maintenance": {
+        "conversation_empty_sweep_interval_seconds": {
+            "description": (
+                "空会话清理间隔（秒）：清除从未收到过用户消息的会话记录"
+                "（含摘要/回复检查点），出站层空会话拦截防新产生，本清理负责存量整合；"
+                "启动后首个心跳总会执行一次，0 = 关闭"
+            ),
+            "default": 86400,
+            "value_type": ConfigValueType.RANGE,
+            "min": 0,
+            "max": 604800,
+            "step": 3600,
+            "unit": "秒",
+        },
+    },
+}
+
+register_configs_safe(_SWEEP_CONFIGS)
 
 
 def _format_interval(seconds: int) -> str:
@@ -134,6 +156,8 @@ class HeartbeatEngine:
         # 空闲折叠跟踪：scope → 最近一次见到的最新消息 ts / 连续无新消息心跳数
         self._fold_activity_ts: Dict[str, int] = {}
         self._fold_idle_beats: Dict[str, int] = {}
+        # 空会话清理的最近执行时刻（初值 0 保证启动后首个心跳即执行一次）
+        self._last_empty_sweep: float = 0.0
         self._prune_orphan_schedules()
         self._prune_stale_runtime_state()
         # 任务事件触发装配（带 trigger_event 的任务经 LLM 钩子面注册；reconcile 幂等）
@@ -637,6 +661,16 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"记忆整理失败: {e}", "DEBUG", tag="心跳")
 
+        # 记忆文件索引周期同步：增量比对 hash，未变文件零写入；
+        # 让 uploads/docs 的外部新增/修改在进程运行期内即可被检索到
+        try:
+            from core.config import get_config_int
+            sync_every = max(1, get_config_int("memory_file_sync_every_n_ticks", 12))
+            if self.mind.memory_store and self._total_ticks % sync_every == 0:
+                await self._resync_file_index()
+        except Exception as e:
+            log(f"文件索引周期同步失败: {e}", "DEBUG", tag="心跳")
+
         # 自动记忆捕获：对话达轮数阈值或静默空闲时提取事实进长期记忆
         try:
             from agent.memory.auto_capture import run_auto_capture
@@ -683,21 +717,25 @@ class HeartbeatEngine:
         except Exception as e:
             log(f"日期便签归档失败: {e}", "DEBUG", tag="心跳")
 
-        # 技能策展：重力迁移（长期未真实使用降级/归档）+ 向量预热 + 治理议程
+        # 技能策展：向量预热每拍（增量覆盖）；重力迁移与治理议程为天级阈值
+        # 语义，按每 N 个 tick 执行一次（默认 12，约每小时一次）
         try:
             curator = getattr(self.mind, "skill_curator", None)
             if curator is not None:
-                report = curator.apply_automatic_transitions()
-                if report["staled"] or report["archived"]:
-                    hb_log.append_entry(
-                        f"[技能策展] 降级 {len(report['staled'])} 个，"
-                        f"归档 {len(report['archived'])} 个"
-                    )
                 await curator.warm_index()
-                agenda = await curator.build_agenda()
-                summary = curator.agenda_summary(agenda)
-                if summary:
-                    hb_log.append_entry(f"[技能治理议程] {summary}")
+                from core.config import get_config_int
+                curator_every = max(1, get_config_int("skills_curator_every_n_ticks", 12))
+                if self._total_ticks % curator_every == 0:
+                    report = curator.apply_automatic_transitions()
+                    if report["staled"] or report["archived"]:
+                        hb_log.append_entry(
+                            f"[技能策展] 降级 {len(report['staled'])} 个，"
+                            f"归档 {len(report['archived'])} 个"
+                        )
+                    agenda = await curator.build_agenda()
+                    summary = curator.agenda_summary(agenda)
+                    if summary:
+                        hb_log.append_entry(f"[技能治理议程] {summary}")
         except Exception as e:
             log(f"技能策展失败: {e}", "DEBUG", tag="心跳")
 
@@ -712,6 +750,9 @@ class HeartbeatEngine:
                     hb_log.append_entry(f"[图谱治理议程] {graph_summary}")
         except Exception as e:
             log(f"图谱治理议程构建失败: {e}", "DEBUG", tag="心跳")
+
+        # 空会话清理：从未收到过用户消息的会话（历史缺陷与一次性通知残留）
+        await self._sweep_empty_conversations_if_due()
 
         entity = await self._pop_analysis_entity()
         if entity:
@@ -751,6 +792,24 @@ class HeartbeatEngine:
             await Lifecycle.tick_all()
         except Exception as e:
             log(f"Lifecycle tick 失败: {e}", "DEBUG", tag="心跳")
+
+    async def _sweep_empty_conversations_if_due(self) -> None:
+        """空会话周期清理：启动后首个心跳执行一次，此后按配置间隔。"""
+        try:
+            from core.config import get_config_int
+
+            interval = max(0, get_config_int("conversation_empty_sweep_interval_seconds", 86400))
+            if not interval or (time.monotonic() - self._last_empty_sweep) < interval:
+                return
+            self._last_empty_sweep = time.monotonic()
+            report = await self.mind.conversation_data.router.sqlite.sweep_empty_conversations()
+            if report["scopes"]:
+                hb_log.append_entry(
+                    f"[空会话清理] {report['scopes']} 个无用户消息的会话已清除"
+                    f"（{report['messages']} 条消息 / {report['summaries']} 条摘要）"
+                )
+        except Exception as e:
+            log(f"空会话清理失败: {e}", "DEBUG", tag="心跳")
 
     async def _check_memory_health(
         self, type_counts: Optional[Dict[str, int]] = None,
@@ -1075,7 +1134,7 @@ class HeartbeatEngine:
         wake_embedding_worker()
 
     async def _resync_file_index(self) -> None:
-        """归档删除文件后重建 chunks 索引（清理已删文件的索引项）。"""
+        """增量同步文件索引：周期维护与归档删除后共用（hash 比对，未变文件零写入）。"""
         store = self.mind.memory_store
         if not store:
             return
@@ -1084,7 +1143,7 @@ class HeartbeatEngine:
             from agent.memory.notes import get_workspace_dir
             await sync_files(store, self.mind.embedder, get_workspace_dir())
         except Exception as exc:
-            log(f"归档后索引同步失败: {exc}", "DEBUG", tag="心跳")
+            log(f"文件索引同步失败: {exc}", "DEBUG", tag="心跳")
 
     async def _run_entity_analysis(self, entity: "EntityData") -> Optional[TaskResult]:
         """内置实体画像分析。"""
