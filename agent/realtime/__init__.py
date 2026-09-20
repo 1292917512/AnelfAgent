@@ -7,8 +7,8 @@
   帧对协议）；
 - engine.py：会话注册与帧路由、级联管线驱动（端点检测 → 流式 ASR →
   统一入口思维 → 回复增量 TTS → 下行音频帧）；
-- native/：提供方原生实时语音客户端（OpenAI Realtime / Gemini Live
-  双方言，realtime_mode=native 时启用）。
+- native/：提供方原生实时语音客户端（OpenAI Realtime / Gemini Live /
+  千问实时语音三方言，realtime_mode=native 时启用）。
 """
 
 from agent.realtime.engine import RealtimeEngine, get_realtime_engine
@@ -36,7 +36,9 @@ register_configs_safe({
             "default": "cascade",
         },
         "realtime_native_provider": {
-            "description": "原生模式的提供方：openai=OpenAI Realtime / gemini=Gemini Live",
+            "description": "原生模式的提供方：openai=OpenAI Realtime / "
+                           "gemini=Gemini Live / qwen=千问实时语音对话（百炼，"
+                           "凭据用组件凭据 dashscope）",
             "default": "openai",
         },
         "realtime_barge_in_onset_ms": {
