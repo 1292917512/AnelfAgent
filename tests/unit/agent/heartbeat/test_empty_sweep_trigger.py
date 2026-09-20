@@ -63,6 +63,25 @@ class TestSweepTrigger:
 
         assert await sqlite.count_conversation(scope_type="user", scope_id="qq:empty") == 0
 
+    async def test_first_tick_sweeps_on_fresh_machine(
+        self, sqlite: SqliteBackend, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """回归：全新机器（monotonic 开机时长小于清理间隔）首心跳也必须执行。
+
+        monotonic 是系统启动至今的时间，CI runner 等全新虚拟机上只有数百秒；
+        「从未执行（_last_empty_sweep=0）」与「开机时长 < 间隔」不得混为一谈。
+        """
+        monkeypatch.setattr("agent.heartbeat.engine.time.monotonic", lambda: 300.0)
+        engine = _engine_with_sqlite(monkeypatch, sqlite)
+        calls = _count_sweep_calls(monkeypatch, sqlite)
+
+        await engine._sweep_empty_conversations_if_due()
+        assert len(calls) == 1
+
+        # 已执行过且间隔未到：跳过
+        await engine._sweep_empty_conversations_if_due()
+        assert len(calls) == 1
+
     async def test_interval_not_elapsed_skips(
         self, sqlite: SqliteBackend, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

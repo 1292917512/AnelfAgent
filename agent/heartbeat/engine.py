@@ -799,7 +799,13 @@ class HeartbeatEngine:
             from core.config import get_config_int
 
             interval = max(0, get_config_int("conversation_empty_sweep_interval_seconds", 86400))
-            if not interval or (time.monotonic() - self._last_empty_sweep) < interval:
+            # _last_empty_sweep=0 表示本进程从未执行（首心跳必清存量）；
+            # 仅当已执行过且间隔未到才跳过——monotonic 是开机时长，
+            # 全新机器上 monotonic()<interval 不等于"刚执行过"
+            if not interval or (
+                self._last_empty_sweep
+                and (time.monotonic() - self._last_empty_sweep) < interval
+            ):
                 return
             self._last_empty_sweep = time.monotonic()
             report = await self.mind.conversation_data.router.sqlite.sweep_empty_conversations()
